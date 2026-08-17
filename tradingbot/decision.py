@@ -5,6 +5,7 @@ Girdi : CoinAnalysis listesi + Portföy + risk ayarları
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field, asdict
 
 from .analyzer import CoinAnalysis
@@ -61,8 +62,15 @@ def _size(analysis: CoinAnalysis, equity: float, cash: float, risk: RiskConfig, 
         return 0.0, 0.0, 0.0
     risk_amt = equity * risk.risk_per_trade_pct / 100.0 * scale
     units = risk_amt / stop_dist
-    cap_units = equity * risk.max_position_pct / 100.0 * scale / price
-    units = min(units, cap_units, cash * 0.98 / price)
+    cap_units = min(equity * risk.max_position_pct / 100.0 * scale, cash * 0.98) / price
+    units = min(units, cap_units)
+    # Binance minimum emir tutarı: risk boyutu minimumun altındaysa ve üst sınır izin veriyorsa minimuma çek
+    if analysis.min_notional > 0 and units * price < analysis.min_notional:
+        units = min(cap_units, analysis.min_notional * 1.02 / price) if cap_units * price >= analysis.min_notional else 0.0
+    if analysis.amount_step > 0 and units > 0:
+        units = math.floor(units / analysis.amount_step + 1e-12) * analysis.amount_step
+    if analysis.min_notional > 0 and units * price < analysis.min_notional * 0.999:
+        units = 0.0
     units = max(0.0, units)
     stop = price - stop_dist
     if analysis.strategy_stop:
@@ -152,11 +160,11 @@ def decide(analyses: list[CoinAnalysis], portfolio: Portfolio, risk: RiskConfig)
             continue
         scale = 0.5 if (btc_bear and not a.symbol.startswith("BTC/")) else 1.0
         units, notional, stop = _size(a, equity, avail_cash, risk, scale)
-        if notional < 10:
+        if units <= 0 or notional < max(1.0, a.min_notional):
             d.action = "WATCH"
-            d.reasons.insert(0, "Yetersiz nakit")
+            d.reasons.insert(0, f"Yetersiz nakit / Binance min emir ({a.min_notional:g} USDT) sağlanamıyor")
             continue
-        d.units, d.notional_usdt, d.stop = round(units, 6), round(notional, 2), stop
+        d.units, d.notional_usdt, d.stop = round(units, 8), round(notional, 2), stop
         d.reasons.append(f"Boyut: {notional:.0f} USDT (risk %{risk.risk_per_trade_pct * scale:g}, stop {stop:.4g})")
         avail_cash -= notional
         open_n += 1

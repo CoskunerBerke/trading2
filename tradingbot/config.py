@@ -13,6 +13,9 @@ DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config.yaml"
 
 @dataclass
 class ExchangeConfig:
+    source: str = "tradingview"          # tradingview | ccxt
+    tv_exchange: str = "BINANCE"
+    rules_exchange: str = "binance"
     candidates: list[str] = field(default_factory=lambda: ["binance", "bybit", "okx", "kucoin"])
     timeframe: str = "4h"
     history_days: int = 730
@@ -25,17 +28,20 @@ class BacktestConfig:
     slippage_pct: float = 0.05
     train_ratio: float = 0.70
     min_trades: int = 15
+    wfo_folds: int = 4
+    wfo_initial_train_ratio: float = 0.45
     min_oos_sharpe: float = 0.30
     min_oos_profit_factor: float = 1.10
+    min_oos_trades: int = 8
 
 
 @dataclass
 class RiskConfig:
-    starting_equity_usdt: float = 10000.0
-    risk_per_trade_pct: float = 1.0
+    starting_equity_usdt: float = 50.0
+    risk_per_trade_pct: float = 2.0
     atr_stop_mult: float = 2.5
-    max_position_pct: float = 25.0
-    max_open_positions: int = 5
+    max_position_pct: float = 30.0
+    max_open_positions: int = 3
     btc_regime_filter: bool = True
     min_confidence_to_buy: float = 55.0
 

@@ -1,15 +1,17 @@
 # ============================================================
 #  Trading Bot — ana yapılandırma
-#  Bu bot ANALİZ + KARAR + SİNYAL üretir ve kağıt (paper) portföy tutar.
+#  Bu bot ANALİZ + KARAR + SİNYAL üretir ve Binance kurallarıyla KAĞIT (paper) portföy tutar.
 #  Gerçek emir GÖNDERMEZ. Tetik insanda kalır.
 # ============================================================
 
 exchange:
-  # Sırayla denenir; ilki başarısız olursa diğerine geçilir (public OHLCV, API key gerekmez)
-  candidates: [binance, bybit, okx, kucoin]
-  timeframe: "4h"          # analiz/backtest zaman dilimi
-  history_days: 730        # geriye dönük veri (gün)
-  cache_dir: "data"        # OHLCV önbelleği (CSV)
+  source: tradingview       # tradingview (birincil: TradingView veri akışından BINANCE:XXX mumları) | ccxt
+  tv_exchange: BINANCE      # TradingView'de hangi borsanın mumları (BINANCE:BTCUSDT)
+  candidates: [binance, bybit, okx, kucoin]   # ccxt yedek zinciri (TradingView düşerse)
+  rules_exchange: binance   # emir kuralları (min tutar, adım) hangi borsadan
+  timeframe: "4h"
+  history_days: 730
+  cache_dir: "data"
 
 coins:
   - BTC/USDT
@@ -24,25 +26,29 @@ coins:
   - DOT/USDT
 
 backtest:
-  fee_pct: 0.10            # tek yön komisyon (%)
-  slippage_pct: 0.05       # tek yön kayma (%)
-  train_ratio: 0.70        # ilk %70 in-sample, son %30 out-of-sample (OOS)
-  min_trades: 15           # bir konfigürasyonun sıralamaya girmesi için min. işlem
-  min_oos_sharpe: 0.30     # OOS Sharpe bu eşiğin altındaysa strateji "edge yok" sayılır
+  fee_pct: 0.10             # Binance spot taker (%)
+  slippage_pct: 0.05
+  train_ratio: 0.70         # bilgi amaçlı tek bölme (son %30)
+  min_trades: 15            # tüm veride min işlem (sıralamaya girmek için)
+  # --- walk-forward optimizasyon ---
+  wfo_folds: 4              # ileriye dönük test adımı sayısı
+  wfo_initial_train_ratio: 0.45   # ilk eğitim penceresi (veri oranı); kalan kısım 4 adıma bölünür
+  min_oos_sharpe: 0.30      # birleşik WFO OOS Sharpe eşiği
   min_oos_profit_factor: 1.10
+  min_oos_trades: 8
 
 risk:
-  starting_equity_usdt: 10000
-  risk_per_trade_pct: 1.0      # her işlemde riske atılan sermaye (%)
-  atr_stop_mult: 2.5           # stop = giriş - ATR * bu çarpan
-  max_position_pct: 25         # tek coine max sermaye (%)
-  max_open_positions: 5
-  btc_regime_filter: true      # BTC düşüş rejimindeyse altcoin AL boyutu yarıya iner
-  min_confidence_to_buy: 55    # 0-100
+  starting_equity_usdt: 50      # 50 USDT ile başla
+  risk_per_trade_pct: 2.0       # işlem başına risk (%) — küçük hesap için 2
+  atr_stop_mult: 2.5
+  max_position_pct: 30          # tek coine max sermaye (%) → 15 USDT
+  max_open_positions: 3
+  btc_regime_filter: true
+  min_confidence_to_buy: 55
 
 obsidian:
   vault_path: "C:/Users/berke/Trading bot/Trading_bot"   # Obsidian'da açtığın kasa
-  folder: ""                   # vault içinde alt klasör (boş = kök)
+  folder: ""
   canvas_name: "Trading Bot Şeması.canvas"
 
 state_dir: "state"

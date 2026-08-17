@@ -192,3 +192,54 @@ def test_drop_unclosed_last_bar():
     last_open = int(df["timestamp"].iloc[-1])
     assert len(drop_unclosed_last_bar(df, "4h", now_ms=last_open + 1000)) == 9
     assert len(drop_unclosed_last_bar(df, "4h", now_ms=last_open + 14_400_000 + 1)) == 10
+
+
+# ---------------------------------------------------------------- TradingView / borsa kuralları / WFO
+def test_tradingview_frame_parsing_and_symbol():
+    from tradingbot.tradingview import _frame, _split_frames, tv_symbol
+    f = _frame("set_auth_token", ["unauthorized_user_token"])
+    assert f.startswith("~m~") and '"m":"set_auth_token"' in f
+    raw = f + "~m~4~m~~h~1"
+    parts = _split_frames(raw)
+    assert len(parts) == 2 and parts[1] == "~h~1"
+    assert tv_symbol("binance", "BTC/USDT") == "BINANCE:BTCUSDT"
+
+
+def test_exchange_rules_rounding_and_validation():
+    from tradingbot.exchange_rules import SymbolRule
+    r = SymbolRule("DOGE/USDT", min_cost=1.0, amount_step=1.0, price_tick=1e-5, taker_fee_pct=0.1, min_amount=1.0)
+    assert r.round_amount(71.9) == 71.0
+    assert r.validate(71.0, 0.07)[0] is True
+    assert r.validate(5.0, 0.07)[0] is False  # 0.35 USDT < min 1
+    b = SymbolRule("BTC/USDT", min_cost=5.0, amount_step=1e-5, price_tick=0.01, taker_fee_pct=0.1, min_amount=1e-5)
+    assert b.round_amount(0.000123456) == pytest.approx(0.00012)
+
+
+def test_backtest_respects_min_notional_for_small_account():
+    df = make_df(300, seed=5)
+    sig = pd.DataFrame({"entries": False, "exits": False}, index=df.index)
+    sig.iloc[50, 0] = True
+    sig.iloc[80, 1] = True
+    # 50 USDT, %2 risk → risk boyutu ~1 USDT; min 5 USDT'ye çekilmeli (cap %30 = 15 USDT izin veriyor)
+    res = run_backtest(df, sig, bars_per_year=2190, starting_equity=50, risk_per_trade_pct=2.0,
+                       max_position_pct=30, atr_stop_mult=50, min_notional=5.0, amount_step=1e-5)
+    assert res.metrics.trades == 1
+    t = res.trades[0]
+    assert t.units * t.entry_price >= 5.0 * 0.999
+    # cap 3 USDT (%6) → minimum sağlanamaz → işlem yok
+    res2 = run_backtest(df, sig, bars_per_year=2190, starting_equity=50, risk_per_trade_pct=2.0,
+                        max_position_pct=6, atr_stop_mult=50, min_notional=5.0)
+    assert res2.metrics.trades == 0
+
+
+def test_walk_forward_sweep_produces_folds():
+    from tradingbot.sweep import sweep_symbol
+    cfg = BotConfig()
+    df = make_df(1500, seed=21, drift=0.0005)
+    res = sweep_symbol("X/USDT", df, bars_per_year=2190, bt_cfg=cfg.backtest, risk_cfg=cfg.risk,
+                       families=["ema_trend", "donchian"], min_notional=5.0, amount_step=1e-5)
+    assert len(res.folds) == cfg.backtest.wfo_folds
+    assert res.wfo is not None and res.best is not None
+    for f in res.folds:
+        assert f.spec and f.train_end < f.test_end
+    assert res.edge_note.startswith(("✅", "❌"))

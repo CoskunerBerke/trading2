@@ -109,7 +109,7 @@ class ObsidianWriter:
             text = (
                 f"### {EMOJI[act]} {a.symbol} — {ACTION_TR[act]} · skor {a.score}\n"
                 f"Fiyat **{_px(a.price)}** ({'+' if a.change_24h_pct >= 0 else ''}{_f(a.change_24h_pct,1)}% 24s) · RSI {_f(a.rsi14,0)} · {a.regime}\n"
-                f"{a.best_family_title or 'strateji yok'} · OOS Sharpe {_f(oos)} · {'✅ edge' if a.has_edge else '❌ edge yok'}\n"
+                f"{a.best_family_title or 'strateji yok'} · WFO Sharpe {_f(oos)} · {'✅ edge' if a.has_edge else '❌ edge yok'}\n"
                 f"[[Coins/{a.base}|Detay →]]"
             )
             if a.error:
@@ -191,7 +191,7 @@ class ObsidianWriter:
             "    classDef core fill:#1e3a5f,stroke:#64b5f6,color:#fff",
             "```",
         ]
-        rows = ["| Coin | Karar | Güven | Skor | Fiyat | 24s % | RSI | Rejim | Strateji | OOS Sharpe | OOS PF | Edge |",
+        rows = ["| Coin | Karar | Güven | Skor | Fiyat | 24s % | RSI | Rejim | Strateji | WFO Sharpe | WFO PF | Edge |",
                 "|---|---|---|---|---|---|---|---|---|---|---|---|"]
         for a in analyses:
             d = dmap.get(a.symbol)
@@ -225,15 +225,20 @@ class ObsidianWriter:
         keys = [("total_return_pct", "Toplam getiri %"), ("cagr_pct", "CAGR %"), ("sharpe", "Sharpe"),
                 ("max_drawdown_pct", "Max DD %"), ("win_rate_pct", "Win rate %"), ("profit_factor", "Profit factor"),
                 ("trades", "İşlem"), ("exposure_pct", "Exposure %"), ("buy_hold_return_pct", "Buy&Hold %")]
-        mt = ["| Metrik | In-sample (%70) | Out-of-sample (%30) | Tüm veri |", "|---|---|---|---|"]
+        mt = ["| Metrik | In-sample (tüm veri) | Walk-forward OOS (birleşik) | Son %30 (tek bölme) |", "|---|---|---|---|"]
         for k, t in keys:
             mt.append(f"| {t} | {_f(tm.get(k))} | {_f(sm.get(k))} | {_f(fm.get(k))} |")
-        top = ["| # | Strateji | IS Sharpe | IS PF | IS işlem | OOS Sharpe | OOS PF | OOS işlem |", "|---|---|---|---|---|---|---|---|"]
+        top = ["| # | Strateji | IS Sharpe | IS PF | IS işlem | son%30 Sharpe | son%30 PF | son%30 işlem |", "|---|---|---|---|---|---|---|---|"]
         for i, r in enumerate(a.top_configs, 1):
             sp = r["spec"]
             lbl = f"{sp['family']}({', '.join(f'{k}={v}' for k, v in sp['params'].items())})"
             top.append(f"| {i} | `{lbl}` | {_f(r['train'].get('sharpe'))} | {_f(r['train'].get('profit_factor'))} | {r['train'].get('trades')} | "
                        f"{_f(r['test'].get('sharpe'))} | {_f(r['test'].get('profit_factor'))} | {r['test'].get('trades')} |")
+        wf = ["| Adım | Eğitim sonu | Test sonu | Seçilen strateji | OOS Sharpe | OOS getiri % | B&H % | İşlem |", "|---|---|---|---|---|---|---|---|"]
+        for f in a.wfo_folds:
+            wf.append(f"| {f['fold']} | {f['train_end']} | {f['test_end']} | `{f['spec']}` | {_f(f['test_sharpe'])} | {_f(f['test_return_pct'])} | {_f(f['test_buy_hold_pct'],1)} | {f['test_trades']} |")
+        if not a.wfo_folds:
+            wf.append("| - | - | - | - | - | - | - | - |")
         dec_lines = []
         if d:
             dec_lines = [f"**Karar:** {EMOJI[act]} **{ACTION_TR[act]}** · güven {d.confidence}"]
@@ -258,6 +263,7 @@ class ObsidianWriter:
             f"- Strateji durumu: **{a.strategy_position}**" + (f" ({a.bars_since_entry} bardır, giriş {_px(a.strategy_entry_price)}, stop {_px(a.strategy_stop)})" if a.strategy_position == "LONG" else ""),
             f"- Son barda giriş sinyali: {'evet' if a.entry_signal_now else 'hayır'} · çıkış sinyali: {'evet' if a.exit_signal_now else 'hayır'}",
             "", "### Metrikler", *mt,
+            "", "### Walk-forward adımları", *wf,
             "", "### Tarama — ilk 5 konfigürasyon", *top,
             "", "[[Dashboard]] · [[Backtests/Sweep]]",
         ])
@@ -284,7 +290,7 @@ class ObsidianWriter:
 
     # ------------------------------------------------------------- sweep notu
     def _sweep_note(self, analyses, meta) -> str:
-        rows = ["| # | Coin | Strateji | IS Sharpe | OOS Sharpe | OOS Max DD | OOS Win % | OOS PF | OOS işlem | Strateji % | Buy&Hold % | Edge |",
+        rows = ["| # | Coin | Strateji | IS Sharpe | WFO Sharpe | WFO Max DD | WFO Win % | WFO PF | WFO işlem | WFO getiri % | Buy&Hold % | Edge |",
                 "|---|---|---|---|---|---|---|---|---|---|---|---|"]
         ranked = sorted([a for a in analyses if a.best_strategy], key=lambda a: a.test_metrics.get("sharpe", -9), reverse=True)
         for i, a in enumerate(ranked, 1):
@@ -297,11 +303,12 @@ class ObsidianWriter:
         return "\n".join([
             "---", f"updated: {meta['run_time']}", "tags: [trading, backtest]", "---",
             "# 🧪 Backtest Sıralaması (parametre taraması)",
-            f"> {len(analyses)} coin · {meta['timeframe']} · in-sample %70 / out-of-sample %30 · komisyon+kayma dahil · ATR stop",
+            f"> {len(analyses)} coin · {meta['timeframe']} · **walk-forward** (anchored, ileriye dönük) OOS · Binance komisyon+kayma+min emir dahil · ATR stop",
             "", f"**{n_edge}/{len(analyses)}** coinde OOS edge doğrulandı · **{beat}/{len(analyses)}** coinde strateji OOS'ta buy&hold'u geçti",
             "", *rows, "",
-            "Seçim kuralı: in-sample Sharpe'a göre en iyi konfigürasyon seçilir, sonra hiç görmediği son %30 veride test edilir. "
-            "OOS Sharpe/PF eşiği geçilmezse coin **BEKLE**'de kalır. Yüksek win-rate ≠ yüksek getiri; sıralama Sharpe'a göredir.",
+            "Seçim kuralı: her walk-forward adımında yalnızca o ana kadarki veriyle en iyi konfigürasyon seçilir ve hiç görülmemiş "
+            "sonraki dönemde çalıştırılır; bu OOS dönemleri birleştirilir (WFO). WFO Sharpe/PF/işlem eşiği geçilmezse coin **BEKLE**'de kalır. "
+            "Yüksek win-rate ≠ yüksek getiri; sıralama Sharpe'a göredir.",
             "", "[[Dashboard]]",
         ])
 

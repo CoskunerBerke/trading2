@@ -44,11 +44,14 @@ class CoinAnalysis:
     best_strategy: str = ""
     best_family_title: str = ""
     best_spec: dict = field(default_factory=dict)
-    train_metrics: dict = field(default_factory=dict)
-    test_metrics: dict = field(default_factory=dict)
-    full_metrics: dict = field(default_factory=dict)
+    train_metrics: dict = field(default_factory=dict)   # tüm veri (in-sample)
+    test_metrics: dict = field(default_factory=dict)    # walk-forward birleşik OOS
+    full_metrics: dict = field(default_factory=dict)    # son %30 tek bölme (bilgi)
+    wfo_folds: list[dict] = field(default_factory=list)
     has_edge: bool = False
     edge_note: str = ""
+    min_notional: float = 0.0
+    amount_step: float = 0.0
     strategy_position: str = "FLAT"  # LONG / FLAT
     entry_signal_now: bool = False
     exit_signal_now: bool = False
@@ -90,8 +93,8 @@ def classify_regime(price: float, e20: float, e50: float, e200: float, adx_v: fl
 
 
 def analyze_symbol(symbol: str, raw: pd.DataFrame, cfg: BotConfig, *, now_ms: int | None = None,
-                   families: list[str] | None = None) -> CoinAnalysis:
-    a = CoinAnalysis(symbol=symbol)
+                   families: list[str] | None = None, min_notional: float = 0.0, amount_step: float = 0.0) -> CoinAnalysis:
+    a = CoinAnalysis(symbol=symbol, min_notional=min_notional, amount_step=amount_step)
     tf = cfg.exchange.timeframe
     df = drop_unclosed_last_bar(raw, tf, now_ms)
     a.bars = len(df)
@@ -117,10 +120,14 @@ def analyze_symbol(symbol: str, raw: pd.DataFrame, cfg: BotConfig, *, now_ms: in
     # --- tarama ---------------------------------------------------------------
     bpy = bars_per_year(tf)
     sw: SweepResult = sweep_symbol(symbol, df, bars_per_year=bpy, bt_cfg=cfg.backtest,
-                                   risk_cfg=cfg.risk, families=families)
+                                   risk_cfg=cfg.risk, families=families,
+                                   min_notional=min_notional, amount_step=amount_step)
     a.has_edge = sw.has_edge
     a.edge_note = sw.edge_note
     a.top_configs = [r.to_dict() for r in sw.top(5)]
+    a.wfo_folds = [f.to_dict() for f in sw.folds]
+    if sw.wfo is not None:
+        a.test_metrics = sw.wfo.to_dict()
     if sw.best is None:
         a.signal = "WATCH"
         a.reasons.append(sw.edge_note or "Uygun strateji yok")
@@ -132,15 +139,15 @@ def analyze_symbol(symbol: str, raw: pd.DataFrame, cfg: BotConfig, *, now_ms: in
     a.best_family_title = FAMILY_TITLES.get(spec.family, spec.family)
     a.best_spec = spec.to_dict()
     a.train_metrics = sw.best.train.to_dict()
-    a.test_metrics = sw.best.test.to_dict()
+    a.full_metrics = sw.best.test.to_dict()
 
     sig = generate_signals(df, spec)
     full = run_backtest(
         df, sig, bars_per_year=bpy, fee_pct=cfg.backtest.fee_pct, slippage_pct=cfg.backtest.slippage_pct,
         risk_per_trade_pct=cfg.risk.risk_per_trade_pct, atr_stop_mult=cfg.risk.atr_stop_mult,
         max_position_pct=cfg.risk.max_position_pct, starting_equity=cfg.risk.starting_equity_usdt,
+        min_notional=min_notional, amount_step=amount_step,
     )
-    a.full_metrics = full.metrics.to_dict()
     a.strategy_position = "LONG" if full.in_position_at_end else "FLAT"
     a.entry_signal_now = bool(sig["entries"].iloc[-1]) and not full.in_position_at_end
     a.exit_signal_now = bool(sig["exits"].iloc[-1]) and full.in_position_at_end

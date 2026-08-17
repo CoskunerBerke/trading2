@@ -21,6 +21,7 @@ from .analyzer import CoinAnalysis, analyze_symbol
 from .config import BotConfig, load_config
 from .data import MarketData
 from .decision import Decision, DecisionSummary, decide
+from .exchange_rules import ExchangeRules
 from .obsidian import ObsidianWriter
 from .portfolio import Portfolio
 from .signals import apply_paper, build_report, console_table, now_iso, persist
@@ -36,7 +37,12 @@ def _setup_logging(verbose: bool) -> None:
 
 
 def _market(cfg: BotConfig) -> MarketData:
-    return MarketData(cfg.exchange.candidates, cfg.exchange.timeframe, cfg.exchange.history_days, cfg.cache_path)
+    return MarketData(cfg.exchange.candidates, cfg.exchange.timeframe, cfg.exchange.history_days, cfg.cache_path,
+                      source=cfg.exchange.source, tv_exchange=cfg.exchange.tv_exchange)
+
+
+def _rules(cfg: BotConfig, symbols: list[str]) -> ExchangeRules:
+    return ExchangeRules(cfg.cache_path / "exchange_rules.json", cfg.exchange.rules_exchange).load(symbols)
 
 
 def _symbols(cfg: BotConfig, args) -> list[str]:
@@ -49,13 +55,14 @@ def cmd_fetch(cfg: BotConfig, args) -> int:
     data = md.fetch_many(_symbols(cfg, args))
     for s, df in data.items():
         print(f"{s:<10} {len(df):>6} bar  {df.index[0]:%Y-%m-%d} → {df.index[-1]:%Y-%m-%d %H:%M}")
-    print(f"Borsa: {md.exchange_id}  Önbellek: {cfg.cache_path}")
+    print(f"Kaynak: {md.source_label}  Önbellek: {cfg.cache_path}")
     return 0
 
 
 def _analyze_all(cfg: BotConfig, symbols: list[str], families: list[str] | None) -> tuple[list[CoinAnalysis], str]:
     md = _market(cfg)
     data = md.fetch_many(symbols)
+    rules = _rules(cfg, symbols)
     analyses: list[CoinAnalysis] = []
     for s in symbols:
         if s not in data:
@@ -65,10 +72,11 @@ def _analyze_all(cfg: BotConfig, symbols: list[str], families: list[str] | None)
             analyses.append(a)
             continue
         t0 = time.time()
-        a = analyze_symbol(s, data[s], cfg, families=families)
+        r = rules.get(s)
+        a = analyze_symbol(s, data[s], cfg, families=families, min_notional=r.min_cost, amount_step=r.amount_step)
         log.info("%s analiz: %s skor=%d strateji=%s edge=%s (%.1fs)", s, a.signal, a.score, a.best_strategy, a.has_edge, time.time() - t0)
         analyses.append(a)
-    return analyses, md.exchange_id or "?"
+    return analyses, md.source_label
 
 
 def cmd_analyze(cfg: BotConfig, args) -> int:
@@ -89,12 +97,20 @@ def cmd_sweep(cfg: BotConfig, args) -> int:
     from .data import bars_per_year
     from .sweep import sweep_symbol
     md = _market(cfg)
-    for s in _symbols(cfg, args):
+    syms = _symbols(cfg, args)
+    rules = _rules(cfg, syms)
+    for s in syms:
         df = md.fetch(s)
+        r = rules.get(s)
         res = sweep_symbol(s, df, bars_per_year=bars_per_year(cfg.exchange.timeframe), bt_cfg=cfg.backtest,
-                           risk_cfg=cfg.risk, families=args.families)
-        print(f"\n== {s} — {len(res.rows)} konfigürasyon | edge={res.has_edge} ({res.edge_note})")
-        print(f"{'#':>3} {'strateji':<44}{'IS Sharpe':>10}{'IS PF':>7}{'IS N':>6}{'OOS Sharpe':>11}{'OOS PF':>8}{'OOS N':>6}{'OOS %':>8}{'B&H %':>8}")
+                           risk_cfg=cfg.risk, families=args.families, min_notional=r.min_cost, amount_step=r.amount_step)
+        print(f"\n== {s} — {len(res.rows)} konfigürasyon | {res.edge_note}")
+        if res.folds:
+            print("  Walk-forward adımları:")
+            for f in res.folds:
+                print(f"    #{f.fold} eğitim→{f.train_end} test→{f.test_end}: {f.spec:<40} OOS Sharpe {f.test_sharpe:>6.2f}  getiri {f.test_return_pct:>6.2f}%  B&H {f.test_buy_hold_pct:>7.1f}%  işlem {f.test_trades}")
+        print("  Tüm veri sıralaması (IS) + son %30 (bilgi):")
+        print(f"{'#':>3} {'strateji':<44}{'IS Sharpe':>10}{'IS PF':>7}{'IS N':>6}{'s30 Sharpe':>11}{'s30 PF':>8}{'s30 N':>6}{'s30 %':>8}{'B&H %':>8}")
         for i, r in enumerate(res.rows[: args.top], 1):
             print(f"{i:>3} {r.spec.label:<44}{r.train.sharpe:>10.2f}{r.train.profit_factor:>7.2f}{r.train.trades:>6}"
                   f"{r.test.sharpe:>11.2f}{r.test.profit_factor:>8.2f}{r.test.trades:>6}{r.test.total_return_pct:>8.1f}{r.test.buy_hold_return_pct:>8.1f}")
@@ -179,7 +195,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     def common(sp):
         sp.add_argument("--symbols", nargs="*", help="Örn: BTC/USDT ETH/USDT (varsayılan: config)")
-        sp.add_argument("--families", nargs="*", choices=["rsi_mr", "ema_trend", "donchian", "bb_mr"], help="Strateji aileleri")
+        sp.add_argument("--families", nargs="*", choices=["rsi2_pullback", "ema_pullback", "rsi_mr", "ema_trend", "donchian", "bb_mr"], help="Strateji aileleri")
 
     s = sub.add_parser("fetch", help="Veriyi çek/önbelleğe al"); common(s); s.set_defaults(fn=cmd_fetch)
     s = sub.add_parser("analyze", help="Coin analizlerini yazdır"); common(s); s.set_defaults(fn=cmd_analyze)

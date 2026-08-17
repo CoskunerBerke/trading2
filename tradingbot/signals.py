@@ -82,7 +82,7 @@ def console_table(decisions: list[Decision], analyses: list[CoinAnalysis], summa
     amap = {a.symbol: a for a in analyses}
     lines = []
     lines.append(f"Piyasa rejimi (BTC): {summary.market_regime}   Equity: {summary.equity:,.2f} USDT   Nakit: {summary.cash:,.2f}   Açık poz: {summary.open_positions}")
-    lines.append(f"{'COIN':<10}{'KARAR':<7}{'GÜVEN':>6}{'FİYAT':>13}{'RSI':>6}{'REJİM':>10}{'OOS SHARPE':>12}{'STRATEJİ':<34}  GEREKÇE")
+    lines.append(f"{'COIN':<10}{'KARAR':<7}{'GÜVEN':>6}{'FİYAT':>13}{'RSI':>6}{'REJİM':>10}{'WFO SHARPE':>12}{'STRATEJİ':<34}  GEREKÇE")
     lines.append("-" * 130)
     for d in decisions:
         a = amap.get(d.symbol)

@@ -87,6 +87,8 @@ def run_backtest(
     max_position_pct: float = 25.0,
     starting_equity: float = 10_000.0,
     atr_length: int = 14,
+    min_notional: float = 0.0,
+    amount_step: float = 0.0,
 ) -> BacktestResult:
     n = len(df)
     empty = BacktestResult(Metrics(bars=n))
@@ -149,8 +151,13 @@ def run_backtest(
             risk_units = (eq_now * risk) / stop_dist
             cap_units = (eq_now * max_pos) / (px * (1.0 + slip) * (1.0 + fee))
             u = max(0.0, min(risk_units, cap_units))
+            if min_notional > 0 and u * px < min_notional:
+                # küçük hesap: risk boyutu borsa minimumunun altındaysa, üst sınır izin veriyorsa minimuma çek
+                u = min(cap_units, min_notional * 1.02 / px) if cap_units * px >= min_notional else 0.0
+            if amount_step > 0 and u > 0:
+                u = math.floor(u / amount_step + 1e-12) * amount_step
             cost = u * px * (1.0 + slip) * (1.0 + fee)
-            if u > 0 and cost <= cash:
+            if u > 0 and cost <= cash and (min_notional <= 0 or u * px >= min_notional * 0.999):
                 cash -= cost
                 units = u
                 entry_px = px

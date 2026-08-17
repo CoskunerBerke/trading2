@@ -1,8 +1,10 @@
 # Trading Bot — çok-coinli analiz · karar · sinyal motoru (Obsidian entegrasyonlu)
 
-> **Ne yapar:** 10 coin için ayrı ayrı analiz yapar, her coin için binlerce strateji varyasyonunu
-> backtest'ten geçirir (in-sample / out-of-sample), portföy bağlamında **AL / SAT / TUT / BEKLE**
-> kararı verir, kağıt (paper) portföyü günceller ve her şeyi **Obsidian**'a şema + not olarak yazar.
+> **Ne yapar:** Mumları doğrudan **TradingView veri akışından** (`BINANCE:BTCUSDT` …) çeker, 10 coin için
+> ayrı ayrı analiz yapar, her coin için 64 strateji konfigürasyonunu **walk-forward** backtest'ten geçirir,
+> portföy bağlamında **AL / SAT / TUT / BEKLE** kararı verir, **Binance'in gerçek emir kurallarıyla**
+> (min 5 USDT, lot adımı, %0.10 komisyon) 50 USDT'lik kağıt (paper) portföyü günceller ve her şeyi
+> **Obsidian**'a şema + not olarak yazar.
 >
 > **Ne yapmaz:** Gerçek borsa emri göndermez, API key istemez. Tetik insanda kalır
 > ("keep AI on analysis — the trigger stays human"). Kâr garantisi yoktur; geçmiş performans
@@ -20,11 +22,12 @@
 
 | Katman | Dosya | Görev |
 |---|---|---|
-| Veri | `tradingbot/data.py` | ccxt ile public OHLCV (binance → bybit → okx → kucoin fallback), CSV önbellek, açık barı düşürme |
+| Veri | `tradingbot/tradingview.py`, `data.py` | **TradingView websocket** (anonim, yalnızca okuma) → BINANCE mumları; düşerse ccxt zinciri (binance→bybit→okx→kucoin); CSV önbellek, açık barı düşürme |
+| Borsa kuralları | `tradingbot/exchange_rules.py` | Binance market filtreleri (min emir tutarı, adet adımı, fiyat adımı, komisyon) — kağıt işlemler bunlara uyar |
 | Göstergeler | `tradingbot/indicators.py` | EMA/SMA/RSI/ATR/ADX/Bollinger/Donchian (saf pandas) |
-| Stratejiler | `tradingbot/strategies.py` | 4 aile: RSI ortalamaya dönüş, EMA trend, Donchian kırılım, Bollinger dönüş — parametre ızgaraları |
+| Stratejiler | `tradingbot/strategies.py` | 6 aile: RSI(2) trend-içi geri çekilme, EMA geri çekilme, RSI ortalamaya dönüş, EMA trend, Donchian kırılım, Bollinger dönüş — 64 konfigürasyon |
 | Backtest | `tradingbot/backtest.py` | Bar-bar, sonraki bar açılışında giriş (look-ahead yok), komisyon+kayma, ATR iz süren stop, risk bazlı boyut; Sharpe/MaxDD/WinRate/PF/CAGR/Buy&Hold |
-| Tarama | `tradingbot/sweep.py` | Her konfigürasyonu %70 in-sample / %30 out-of-sample test eder, edge kuralını uygular |
+| Tarama | `tradingbot/sweep.py` | **Walk-forward** (anchored, 4 adım): her adımda o ana kadarki veriyle en iyi konfigürasyon seçilir, sonraki görülmemiş dönemde test edilir; OOS dönemleri birleştirilir → edge kuralı |
 | Analiz düğümü | `tradingbot/analyzer.py` | Coin başına `CoinAnalysis` (snapshot, rejim, en iyi strateji, sinyal, skor) |
 | Karar düğümü | `tradingbot/decision.py` | Portföy bağlamında AL/SAT/TUT/BEKLE, boyutlama, stop, BTC rejim filtresi, max pozisyon |
 | Sinyal düğümü | `tradingbot/signals.py` | Kağıt işlem, `state/signals.json`, `signals_log.jsonl`, konsol tablosu |
@@ -70,17 +73,18 @@ Kasa: `Trading_bot/`
 
 ## Karar mantığı (özet)
 
-1. Her coin için 46 strateji konfigürasyonu backtest edilir; **in-sample Sharpe**'a göre en iyisi seçilir
-   (min. 15 işlem şartı).
-2. Seçilen strateji **hiç görmediği son %30 veride** (OOS) test edilir. `min_oos_sharpe` (0.30) ve
-   `min_oos_profit_factor` (1.10) eşiklerini geçmezse coin **edge yok → BEKLE**.
+1. Her coin için 64 strateji konfigürasyonu **walk-forward** test edilir: ilk %45 veriyle en iyi seçilir →
+   sonraki dilimde test; pencere genişletilerek 4 kez tekrarlanır. Test dilimleri birleştirilir (WFO OOS).
+2. WFO OOS `min_oos_sharpe` (0.30), `min_oos_profit_factor` (1.10) ve `min_oos_trades` (8) eşiklerini
+   geçmezse coin **edge yok → BEKLE**. Canlı sinyal için tüm veride en iyi konfigürasyon kullanılır.
 3. Edge'i olan coinde son kapanan barda giriş sinyali varsa **AL**; boyut = `equity × risk% / (ATR × stop çarpanı)`,
-   üst sınır `max_position_pct`, `max_open_positions` ve nakit.
+   üst sınır `max_position_pct`, `max_open_positions` ve nakit; Binance min emir tutarı (5 USDT) ve lot adımına yuvarlanır.
 4. Pozisyon varken: stop'a değdiyse / strateji çıkış verdiyse / strateji artık FLAT ise **SAT**, aksi halde **TUT** (iz süren stop yukarı çekilir).
 5. BTC rejimi **DÜŞÜŞ** ise altcoin AL boyutu %50, güven −10.
 6. Skor 0-100 = edge kalitesi (45) + rejim (25) + RSI konumu (20) + volatilite (10). `min_confidence_to_buy` altı → BEKLE.
 
-Bu eşikler kasıtlı olarak **muhafazakâr**dır: ayı piyasasında bot çoğunlukla "BEKLE" der ve sermayeyi korur.
+Bu eşikler kasıtlı olarak **muhafazakâr**dır: ayı piyasasında bot çoğunlukla "BEKLE" der ve sermayeyi korur
+(2026-08 itibarıyla 10 coinin tamamında son 13 ay buy&hold −11 % … −80 %; hiçbir long-only konfigürasyon WFO'da pozitif edge göstermedi → bot nakitte).
 Daha agresif olmak için `config.yaml → backtest.min_oos_sharpe / min_oos_profit_factor` düşürülebilir
 (overfit riski artar).
 
@@ -97,7 +101,7 @@ Testler ağ kullanmaz (sentetik OHLCV): göstergeler, look-ahead kontrolü, stop
 Trading bot/
 ├─ config.yaml            ayarlar
 ├─ requirements.txt
-├─ tradingbot/            paket (yukarıdaki katmanlar)
+├─ tradingbot/            paket (yukarıdaki katmanlar; tradingview.py = TradingView istemcisi)
 ├─ tests/test_bot.py
 ├─ scripts/run_bot.bat, run_bot_loop.bat
 ├─ data/                  OHLCV önbelleği (git dışı)

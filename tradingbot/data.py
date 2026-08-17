@@ -27,9 +27,15 @@ def _cache_file(cache_dir: Path, exchange: str, symbol: str, timeframe: str) -> 
 
 
 class MarketData:
-    """Sırayla borsa dener; ilk çalışan borsayı kilitler; sonuçları CSV'de tutar."""
+    """Veri kaynağı: 'tradingview' (birincil, BINANCE:XXX sembolleri) veya ccxt borsaları.
 
-    def __init__(self, candidates: list[str], timeframe: str, history_days: int, cache_dir: Path):
+    source="tradingview": mumlar TradingView'in veri akışından çekilir (BINANCE:BTCUSDT gibi);
+    hata olursa ccxt zincirine düşer. source="ccxt": doğrudan borsa API'si.
+    Sonuçlar CSV'de önbelleklenir.
+    """
+
+    def __init__(self, candidates: list[str], timeframe: str, history_days: int, cache_dir: Path,
+                 source: str = "tradingview", tv_exchange: str = "BINANCE"):
         self.candidates = candidates
         self.timeframe = timeframe
         self.history_days = history_days
@@ -37,6 +43,27 @@ class MarketData:
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self._exchange = None
         self.exchange_id: str | None = None
+        self.source = source
+        self.tv_exchange = tv_exchange
+        self._tv = None
+        self._tv_failed = False
+
+    @property
+    def source_label(self) -> str:
+        if self.source == "tradingview" and not self._tv_failed:
+            return f"tradingview:{self.tv_exchange}"
+        return self.exchange_id or "?"
+
+    def _fetch_tradingview(self, symbol: str) -> pd.DataFrame | None:
+        from .tradingview import TV_INTERVAL, TradingViewFeed, tv_symbol
+        if self._tv is None:
+            self._tv = TradingViewFeed()
+        interval = TV_INTERVAL.get(self.timeframe)
+        if interval is None:
+            return None
+        need = int(self.history_days * 86_400_000 / TIMEFRAME_MS[self.timeframe]) + 5
+        df = self._tv.fetch_ohlcv(tv_symbol(self.tv_exchange, symbol), interval, n_bars=min(max(need, 300), 5000))
+        return df
 
     # ---- borsa bağlantısı -------------------------------------------------
     def _connect(self):
@@ -60,6 +87,22 @@ class MarketData:
 
     # ---- veri çekme --------------------------------------------------------
     def fetch(self, symbol: str, force_refresh: bool = False) -> pd.DataFrame:
+        if self.source == "tradingview" and not self._tv_failed:
+            try:
+                df = self._fetch_tradingview(symbol)
+                if df is not None and len(df) >= 300:
+                    now_ms = int(time.time() * 1000)
+                    df = df[df["timestamp"] >= now_ms - self.history_days * 86_400_000].reset_index(drop=True)
+                    cache = _cache_file(self.cache_dir, f"tv-{self.tv_exchange.lower()}", symbol, self.timeframe)
+                    df.to_csv(cache, index=False)
+                    return prepare(df)
+                log.warning("TradingView %s için yetersiz veri, ccxt'ye düşülüyor", symbol)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("TradingView başarısız (%s) → ccxt'ye düşülüyor: %s", symbol, exc)
+                self._tv_failed = True
+        return self._fetch_ccxt(symbol, force_refresh)
+
+    def _fetch_ccxt(self, symbol: str, force_refresh: bool = False) -> pd.DataFrame:
         ex = self._connect()
         cache = _cache_file(self.cache_dir, self.exchange_id or "x", symbol, self.timeframe)
         tf_ms = TIMEFRAME_MS[self.timeframe]

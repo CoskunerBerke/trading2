@@ -98,7 +98,34 @@ def bollinger_reversion(df: pd.DataFrame, length: int, mult: float, trend_ema: i
     return out
 
 
+# ---------------------------------------------------------------------------
+# 5) RSI(2) geri çekilme (Connors tarzı): uzun trend yukarıyken kısa RSI aşırı satım
+# ---------------------------------------------------------------------------
+def rsi2_pullback(df: pd.DataFrame, length: int, lo: int, hi: int, trend_ema: int) -> pd.DataFrame:
+    r = ind.rsi(df["close"], length)
+    trend = ind.ema(df["close"], trend_ema)
+    out = _empty(df)
+    out["entries"] = ((r < lo) & (df["close"] > trend)).fillna(False)
+    out["exits"] = ((r > hi) | (df["close"] < trend)).fillna(False)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# 6) EMA geri çekilme: trend yukarı (EMA50>EMA200), fiyat EMA20'nin altına inip tekrar üstüne çıkınca gir
+# ---------------------------------------------------------------------------
+def ema_pullback(df: pd.DataFrame, fast: int, slow: int, trend: int) -> pd.DataFrame:
+    ef, es, et = ind.ema(df["close"], fast), ind.ema(df["close"], slow), ind.ema(df["close"], trend)
+    out = _empty(df)
+    uptrend = (es > et) & (df["close"] > et)
+    reclaim = (df["close"] > ef) & (df["close"].shift(1) <= ef.shift(1))
+    out["entries"] = (uptrend & reclaim).fillna(False)
+    out["exits"] = (df["close"] < es).fillna(False)
+    return out
+
+
 FAMILIES = {
+    "rsi2_pullback": rsi2_pullback,
+    "ema_pullback": ema_pullback,
     "rsi_mr": rsi_mean_reversion,
     "ema_trend": ema_trend,
     "donchian": donchian_breakout,
@@ -106,6 +133,8 @@ FAMILIES = {
 }
 
 FAMILY_TITLES = {
+    "rsi2_pullback": "RSI(2) Trend İçi Geri Çekilme",
+    "ema_pullback": "EMA Geri Çekilme",
     "rsi_mr": "RSI Ortalamaya Dönüş",
     "ema_trend": "EMA Trend Takibi",
     "donchian": "Donchian Kırılım",
@@ -114,6 +143,8 @@ FAMILY_TITLES = {
 
 # Parametre ızgaraları (tarama = slide 4'teki "sweep the variables")
 GRIDS: dict[str, dict[str, list]] = {
+    "rsi2_pullback": {"length": [2, 3], "lo": [10, 20], "hi": [65, 80], "trend_ema": [100, 200]},
+    "ema_pullback": {"fast": [10, 20], "slow": [50], "trend": [200]},
     "rsi_mr": {"length": [7, 14], "lo": [25, 30, 35], "hi": [60, 70], "trend_ema": [0, 200]},
     "ema_trend": {"fast": [9, 20], "slow": [50, 100, 200], "adx_min": [0, 20]},
     "donchian": {"entry_len": [20, 40, 55], "exit_len": [10, 20]},

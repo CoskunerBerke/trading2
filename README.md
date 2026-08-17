@@ -77,7 +77,8 @@ python -m tradingbot obsidian               # son rapordan Obsidian'ı yeniden y
 python -m tradingbot reset-portfolio        # kağıt portföyü sıfırla (eskisi yedeklenir)
 ```
 
-Windows: `scripts\run_bot.bat` (tek sefer) · `scripts\run_bot_loop.bat` (sürekli).
+Windows: `scripts\run_bot.bat` (tek sefer) · `scripts\run_bot_loop.bat` (4h döngü) · **`scripts\watch_7_24.bat` (7/24 ajan izleme; çökerse kendini yeniden başlatır)**.
+Bilgisayar açık kaldığı sürece çalışır; kapanınca durur (VPS'e taşınabilir).
 Görev Zamanlayıcı ile `run_bot.bat`'ı 4 saatte bir (örn. 00:02, 04:02, 08:02 … UTC+3 için 03:02, 07:02, …) çalıştırabilirsin.
 
 ## Obsidian'da ne görürsün
@@ -129,7 +130,7 @@ Trading bot/
 ├─ tradingbot/            paket (yukarıdaki katmanlar; tradingview.py = TradingView istemcisi)
 │  └─ agents/             base, technical (7 ajan), market (Binance canlı), manager (coin yöneticisi + baş yönetici), runner
 ├─ tests/test_bot.py
-├─ scripts/run_bot.bat, run_bot_loop.bat
+├─ scripts/run_bot.bat, run_bot_loop.bat, watch_7_24.bat
 ├─ data/                  OHLCV önbelleği (git dışı)
 ├─ state/                 portfolio.json, signals.json, signals_log.jsonl (git dışı)
 └─ Trading_bot/           Obsidian kasası (bot buraya yazar)

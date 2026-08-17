@@ -1,13 +1,13 @@
 ---
 symbol: FET/USDT
 verdict: SHORT
-conviction: 58
-price: 0.1243
-updated: 2026-08-17T21:19:05+00:00
+conviction: 59
+price: 0.1242
+updated: 2026-08-17T21:39:18+00:00
 tags: [trading, agents]
 ---
-# 🧠 FET/USDT — Ajan Raporu (🔴 SHORT, kanaat %58)
-> 🔴 SHORT · kanaat %58 · 4/6 yönlü ajan hemfikir · fiyat 0.1243 · trend güçlü ayı  ·  2026-08-18 00:19
+# 🧠 FET/USDT — Ajan Raporu (🔴 SHORT, kanaat %59)
+> 🔴 SHORT · kanaat %59 · 4/6 yönlü ajan hemfikir · fiyat 0.1242 · trend güçlü ayı  ·  2026-08-18 00:39
 
 Şema: [[Agents/FET.canvas]] · Backtest/karar: [[Coins/FET]] · [[Agents/Baş Yönetici]] · [[Paper Futures]]
 
@@ -23,7 +23,7 @@ tags: [trading, agents]
 - Kaldıraç ≤ 2x (öneri 1x) · marj ≈ 15.0 USDT · notional ≈ 15.0 USDT · riske atılan ≈ 0.89 USDT
 
 ## ✅ YAP
-- Yön SHORT (kanaat %58). 4h mum 0.1228 altında kapanırsa short.
+- Yön SHORT (kanaat %59). 4h mum 0.1228 altında kapanırsa short.
 - Stop 0.1300 (+%5.95); hedef1 0.1081, hedef2 0.1008; R/R 2.0
 - Kaldıraç ≤ 2x (öneri 1x), marj ≈ 15.0 USDT, riske atılan ≈ 0.89 USDT
 
@@ -40,15 +40,15 @@ tags: [trading, agents]
 ## 📍 Kilit seviyeler
 | Seviye | Fiyat | Uzaklık |
 |---|---|---|
-| ema200_1d | 0.2094 | +68.44% |
-| ema50_1d | 0.1529 | +23.02% |
-| ema20_1d | 0.1377 | +10.81% |
-| ema_resistance | 0.1377 | +10.81% |
-| r2 | 0.1317 | +5.96% |
-| r1 | 0.1254 | +0.88% |
-| high_24h | 0.1244 | +0.08% |
-| s1 | 0.1228 | -1.21% |
-| low_24h | 0.1192 | -4.10% |
+| ema200_1d | 0.2094 | +68.57% |
+| ema50_1d | 0.1529 | +23.12% |
+| ema20_1d | 0.1377 | +10.90% |
+| ema_resistance | 0.1377 | +10.90% |
+| r2 | 0.1317 | +6.05% |
+| r1 | 0.1254 | +0.97% |
+| high_24h | 0.1246 | +0.32% |
+| s1 | 0.1228 | -1.13% |
+| low_24h | 0.1192 | -4.03% |
 
 ## 🤖 Uzman ajan raporları
 ### 🌡️ Volatilite Ajanı — NÖTR (bias +0.00, güven 70)
@@ -79,7 +79,7 @@ Hacim güçlü ayı: satıcı hacmi baskın
 - Metrikler: vol_ratio_1d=1.19, updown_vol_1d=0.44, vol_ratio_4h=0.82, updown_vol_4h=0.42
 
 ### 🧱 Destek/Direnç Ajanı — BOĞA (bias +0.20, güven 55)
-Yakın direnç 0.1254 (+0.9%); yakın destek 0.1228 (−1.2%). Fiyat son aralığın %1'inde.
+Yakın direnç 0.1254 (+1.0%); yakın destek 0.1228 (−1.1%). Fiyat son aralığın %1'inde.
 - 0.1254 üstünde 4h kapanış → hedef 0.1317
 - 0.1228 altında 4h kapanış → risk aralık altı 0.1228
 - 20 günlük en yüksek 0.1606, en düşük 0.1265
@@ -96,13 +96,13 @@ Momentum güçlü ayı (RSI 1d/4h/1h: 26/35/55).
 ### 🧪 Backtest/Edge Ajanı — NÖTR (bias +0.00, güven 0)
 WFO analizi yok (önce `run`).
 
-### 📡 Binance Canlı Piyasa Ajanı — BOĞA (bias +0.34, güven 50)
-Canlı akış boğa: emir defteri alış payı %63, funding %0.0048, 24s %+1.55.
-- 24s: %+1.55, aralık 0.1192–0.1244, fiyat aralığın %98'inde, hacim 10M USDT
-- Emir defteri (ilk 20 kademe): alış 230K / satış 137K USDT → alış payı %63
-- Funding %0.0048 / 8s (yıllık ≈ %5) → nötr
-- Açık pozisyon (OI): 164,807,635 FET
+### 📡 Binance Canlı Piyasa Ajanı — BOĞA (bias +0.30, güven 50)
+Canlı akış boğa: emir defteri alış payı %61, funding %0.0032, 24s %+1.14.
+- 24s: %+1.14, aralık 0.1192–0.1246, fiyat aralığın %93'inde, hacim 9M USDT
+- Emir defteri (ilk 20 kademe): alış 203K / satış 130K USDT → alış payı %61
+- Funding %0.0032 / 8s (yıllık ≈ %3) → nötr
+- Açık pozisyon (OI): 165,552,795 FET
 - Global long/short hesap oranı 1.05 (long %51)
-- Metrikler: chg24_pct=1.55, high24=0.1244, low24=0.1192, pos24=0.98, vol24_usdt=9552688, ob_imbalance=0.63, spread_pct=0.0805, funding_pct=0.0048, funding_annual_pct=5.3, open_interest=164807635.0, long_short_ratio=1.05, long_pct=51.3
+- Metrikler: chg24_pct=1.14, high24=0.1246, low24=0.1192, pos24=0.93, vol24_usdt=9457813, ob_imbalance=0.61, spread_pct=0.0806, funding_pct=0.0032, funding_annual_pct=3.5, open_interest=165552795.0, long_short_ratio=1.05, long_pct=51.3
 
 > ⚠️ Bu rapor otomatik teknik analizdir, yatırım tavsiyesi değildir. Gerçek emir gönderilmez; tetik insanda.

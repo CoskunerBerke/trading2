@@ -48,7 +48,7 @@
    "width": 380,
    "height": 150,
    "color": "4",
-   "text": "### 🧱 Destek/Direnç Ajanı\n**BOĞA** · bias +0.36 · güven 55\nYakın direnç 0.0815 (+1.7%); yakın destek 0.0792 (−1.2%). Fiyat son aralığın %34'inde."
+   "text": "### 🧱 Destek/Direnç Ajanı\n**BOĞA** · bias +0.36 · güven 55\nYakın direnç 0.0815 (+1.8%); yakın destek 0.0792 (−1.2%). Fiyat son aralığın %34'inde."
   },
   {
    "id": "ag_momentum",
@@ -78,7 +78,7 @@
    "width": 380,
    "height": 150,
    "color": "4",
-   "text": "### 📡 Binance Canlı Piyasa Ajanı\n**BOĞA** · bias +0.25 · güven 50\nCanlı akış boğa: emir defteri alış payı %70, funding %0.0050, 24s %+6.56."
+   "text": "### 📡 Binance Canlı Piyasa Ajanı\n**BOĞA** · bias +0.23 · güven 50\nCanlı akış boğa: emir defteri alış payı %68, funding %0.0050, 24s %+6.76."
   },
   {
    "id": "manager",
@@ -88,7 +88,7 @@
    "width": 460,
    "height": 380,
    "color": "6",
-   "text": "## 🧠 POL YÖNETİCİSİ\n⚪ BEKLE · kanaat %18 · 4/5 yönlü ajan hemfikir · fiyat 0.0801 · trend nötr\n\n**Karar: ⚪ BEKLE** · kanaat %18\nSkor +0.11 (−1 ayı … +1 boğa)\n\n- Yön yok → BEKLE. Pozisyon açma; sadece izle.\n- Kaldıraç kullanma. Yeniden değerlendirme: direnç 0.0815 üstünde kapanış (long) / destek 0.0792 altında kapanış (short)\n\n[[Agents/POL|Tam rapor →]] · [[Coins/POL|Backtest →]]\n_2026-08-18 00:19_"
+   "text": "## 🧠 POL YÖNETİCİSİ\n⚪ BEKLE · kanaat %18 · 4/5 yönlü ajan hemfikir · fiyat 0.0801 · trend nötr\n\n**Karar: ⚪ BEKLE** · kanaat %18\nSkor +0.11 (−1 ayı … +1 boğa)\n\n- Yön yok → BEKLE. Pozisyon açma; sadece izle.\n- Kaldıraç kullanma. Yeniden değerlendirme: direnç 0.0815 üstünde kapanış (long) / destek 0.0792 altında kapanış (short)\n\n[[Agents/POL|Tam rapor →]] · [[Coins/POL|Backtest →]]\n_2026-08-18 00:39_"
   },
   {
    "id": "plan",

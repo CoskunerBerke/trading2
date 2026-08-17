@@ -8,7 +8,7 @@
    "width": 420,
    "height": 150,
    "color": "5",
-   "text": "## 🌐 Piyasa Rejimi\n**BTC rejimi:** YATAY\nBorsa: tradingview:BINANCE · TF: 4h\nGüncelleme: 2026-08-18 00:19"
+   "text": "## 🌐 Piyasa Rejimi\n**BTC rejimi:** YATAY\nBorsa: tradingview:BINANCE · TF: 4h\nGüncelleme: 2026-08-18 00:39"
   },
   {
    "id": "coin_BTC",
@@ -18,7 +18,7 @@
    "width": 340,
    "height": 160,
    "color": "6",
-   "text": "### ⚪ BTC/USDT — BEKLE · skor 35\nFiyat **64,310** (+1.9% 24s) · RSI 70 · YATAY\nEMA Trend Takibi · WFO Sharpe -1.91 · ❌ edge yok\n[[Coins/BTC|Detay →]]\n🧠 Yönetici: **⚪ BEKLE** (kanaat %15) · [[Agents/BTC.canvas|Ajanlar →]]"
+   "text": "### ⚪ BTC/USDT — BEKLE · skor 35\nFiyat **64,310** (+1.9% 24s) · RSI 70 · YATAY\nEMA Trend Takibi · WFO Sharpe -1.91 · ❌ edge yok\n[[Coins/BTC|Detay →]]\n🧠 Yönetici: **⚪ BEKLE** (kanaat %8) · [[Agents/BTC.canvas|Ajanlar →]]"
   },
   {
    "id": "coin_ETH",
@@ -38,7 +38,7 @@
    "width": 340,
    "height": 160,
    "color": "6",
-   "text": "### ⚪ SOL/USDT — BEKLE · skor 60\nFiyat **75.81** (+0.8% 24s) · RSI 53 · YÜKSELİŞ\nEMA Trend Takibi · WFO Sharpe -0.06 · ❌ edge yok\n[[Coins/SOL|Detay →]]\n🧠 Yönetici: **⚪ BEKLE** (kanaat %10) · [[Agents/SOL.canvas|Ajanlar →]]"
+   "text": "### ⚪ SOL/USDT — BEKLE · skor 60\nFiyat **75.81** (+0.8% 24s) · RSI 53 · YÜKSELİŞ\nEMA Trend Takibi · WFO Sharpe -0.06 · ❌ edge yok\n[[Coins/SOL|Detay →]]\n🧠 Yönetici: **⚪ BEKLE** (kanaat %11) · [[Agents/SOL.canvas|Ajanlar →]]"
   },
   {
    "id": "coin_BNB",

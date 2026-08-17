@@ -1,13 +1,13 @@
 ---
 symbol: SOL/USDT
 verdict: BEKLE
-conviction: 10
-price: 75.92
-updated: 2026-08-17T21:18:36+00:00
+conviction: 11
+price: 75.9
+updated: 2026-08-17T21:38:50+00:00
 tags: [trading, agents]
 ---
-# 🧠 SOL/USDT — Ajan Raporu (⚪ BEKLE, kanaat %10)
-> ⚪ BEKLE · kanaat %10 · 2/3 yönlü ajan hemfikir · fiyat 75.92 · trend boğa  ·  2026-08-18 00:19
+# 🧠 SOL/USDT — Ajan Raporu (⚪ BEKLE, kanaat %11)
+> ⚪ BEKLE · kanaat %11 · 2/3 yönlü ajan hemfikir · fiyat 75.90 · trend boğa  ·  2026-08-18 00:39
 
 Şema: [[Agents/SOL.canvas]] · Backtest/karar: [[Coins/SOL]] · [[Agents/Baş Yönetici]] · [[Paper Futures]]
 
@@ -37,18 +37,18 @@ tags: [trading, agents]
 ## 📍 Kilit seviyeler
 | Seviye | Fiyat | Uzaklık |
 |---|---|---|
-| ema200_1d | 89.18 | +17.46% |
-| ema_resistance | 78.15 | +2.94% |
-| r2 | 76.81 | +1.17% |
-| r1 | 76.28 | +0.47% |
-| high_24h | 76.22 | +0.40% |
-| s1 | 75.67 | -0.33% |
-| ema50_1d | 75.49 | -0.57% |
-| ema_support | 75.49 | -0.57% |
-| s2 | 75.23 | -0.90% |
-| ema20_1d | 75.12 | -1.06% |
-| strategy_stop | 74.40 | -2.00% |
-| low_24h | 74.10 | -2.40% |
+| ema200_1d | 89.18 | +17.49% |
+| ema_resistance | 78.15 | +2.97% |
+| r2 | 76.81 | +1.20% |
+| r1 | 76.28 | +0.50% |
+| high_24h | 76.22 | +0.42% |
+| s1 | 75.67 | -0.30% |
+| ema50_1d | 75.49 | -0.54% |
+| ema_support | 75.49 | -0.54% |
+| s2 | 75.23 | -0.88% |
+| ema20_1d | 75.12 | -1.03% |
+| strategy_stop | 74.40 | -1.98% |
+| low_24h | 74.10 | -2.37% |
 
 ## 🤖 Uzman ajan raporları
 ### 🌡️ Volatilite Ajanı — NÖTR (bias +0.00, güven 70)
@@ -101,13 +101,13 @@ En iyi strateji EMA Trend Takibi · ❌ WFO OOS (4 adım): Sharpe -0.06 < 0.3, P
 - ⚠️ Walk-forward'da doğrulanmış edge yok: sistematik strateji sinyaline değil, sadece güçlü çoklu-ajan uyumuna işlem aç; boyutu küçük tut
 - Metrikler: has_edge=False, best=ema_trend(fast=20, slow=50, adx_min=0), wfo_sharpe=-0.0581, wfo_pf=0.7588, wfo_trades=22, strategy_position=LONG, signal=WATCH
 
-### 📡 Binance Canlı Piyasa Ajanı — NÖTR (bias +0.05, güven 50)
-Canlı akış nötr: emir defteri alış payı %42, funding %-0.0030, 24s %+1.13.
-- 24s: %+1.13, aralık 74.10–76.22, fiyat aralığın %86'inde, hacim 101M USDT
-- Emir defteri (ilk 20 kademe): alış 884K / satış 1,200K USDT → alış payı %42
-- Funding %-0.0030 / 8s (yıllık ≈ %-3) → nötr
-- Açık pozisyon (OI): 8,661,823 SOL
+### 📡 Binance Canlı Piyasa Ajanı — NÖTR (bias +0.12, güven 50)
+Canlı akış nötr: emir defteri alış payı %49, funding %-0.0017, 24s %+1.31.
+- 24s: %+1.31, aralık 74.10–76.22, fiyat aralığın %85'inde, hacim 101M USDT
+- Emir defteri (ilk 20 kademe): alış 988K / satış 1,040K USDT → alış payı %49
+- Funding %-0.0017 / 8s (yıllık ≈ %-2) → nötr
+- Açık pozisyon (OI): 8,660,660 SOL
 - Global long/short hesap oranı 2.36 (long %70)
-- Metrikler: chg24_pct=1.13, high24=76.22, low24=74.1, pos24=0.86, vol24_usdt=100857152, ob_imbalance=0.42, spread_pct=0.0132, funding_pct=-0.003, funding_annual_pct=-3.3, open_interest=8661823.42, long_short_ratio=2.36, long_pct=70.2
+- Metrikler: chg24_pct=1.31, high24=76.22, low24=74.1, pos24=0.85, vol24_usdt=100878419, ob_imbalance=0.49, spread_pct=0.0132, funding_pct=-0.0017, funding_annual_pct=-1.8, open_interest=8660660.09, long_short_ratio=2.36, long_pct=70.2
 
 > ⚠️ Bu rapor otomatik teknik analizdir, yatırım tavsiyesi değildir. Gerçek emir gönderilmez; tetik insanda.

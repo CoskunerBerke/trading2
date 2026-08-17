@@ -1,13 +1,13 @@
 ---
 symbol: GOOGL/USDT
 verdict: SHORT
-conviction: 52
-price: 344.31
-updated: 2026-08-17T21:18:52+00:00
+conviction: 46
+price: 344.42
+updated: 2026-08-17T21:39:05+00:00
 tags: [trading, agents]
 ---
-# 🧠 GOOGL/USDT — Ajan Raporu (🔴 SHORT, kanaat %52)
-> 🔴 SHORT · kanaat %52 · 3/4 yönlü ajan hemfikir · fiyat 344.31 · trend güçlü ayı  ·  2026-08-18 00:19
+# 🧠 GOOGL/USDT — Ajan Raporu (🔴 SHORT, kanaat %46)
+> 🔴 SHORT · kanaat %46 · 2/3 yönlü ajan hemfikir · fiyat 344.42 · trend güçlü ayı  ·  2026-08-18 00:39
 
 Şema: [[Agents/GOOGL.canvas]] · Backtest/karar: [[Coins/GOOGL]] · [[Agents/Baş Yönetici]] · [[Paper Futures]]
 
@@ -23,7 +23,7 @@ tags: [trading, agents]
 - Kaldıraç ≤ 5x (öneri 2x) · marj ≈ 15.0 USDT · notional ≈ 30.0 USDT · riske atılan ≈ 0.48 USDT
 
 ## ✅ YAP
-- Yön SHORT (kanaat %52). 4h mum 341.89 altında kapanırsa short.
+- Yön SHORT (kanaat %46). 4h mum 341.89 altında kapanırsa short.
 - Stop 346.97 (+%1.59); hedef1 330.43, hedef2 324.10; R/R 2.05
 - Kaldıraç ≤ 5x (öneri 2x), marj ≈ 15.0 USDT, riske atılan ≈ 0.48 USDT
 
@@ -41,16 +41,16 @@ tags: [trading, agents]
 ## 📍 Kilit seviyeler
 | Seviye | Fiyat | Uzaklık |
 |---|---|---|
-| ema50_1d | 352.03 | +2.24% |
+| ema50_1d | 352.03 | +2.21% |
 | ema200_1d | nan | +nan% |
-| ema_resistance | 350.65 | +1.84% |
-| ema20_1d | 350.65 | +1.84% |
-| high_24h | 350.20 | +1.71% |
-| r2 | 348.41 | +1.19% |
-| r1 | 347.13 | +0.82% |
-| low_24h | 342.51 | -0.52% |
-| s1 | 341.89 | -0.70% |
-| s2 | 335.68 | -2.51% |
+| ema_resistance | 350.65 | +1.81% |
+| ema20_1d | 350.65 | +1.81% |
+| high_24h | 350.20 | +1.68% |
+| r2 | 348.41 | +1.16% |
+| r1 | 347.13 | +0.79% |
+| low_24h | 342.51 | -0.55% |
+| s1 | 341.89 | -0.73% |
+| s2 | 335.68 | -2.54% |
 
 ## 🤖 Uzman ajan raporları
 ### 🌡️ Volatilite Ajanı — NÖTR (bias +0.00, güven 70)
@@ -79,7 +79,7 @@ Hacim nötr: dengeli
 - 4 saatlik: son bar hacmi 20-bar ortalamasının 1.50 katı (yüksek); alım/satım hacmi oranı 0.49; OBV 20-bar eğimi -9.2%; hareket hacimle onaylı
 - Metrikler: vol_ratio_1d=0.11, updown_vol_1d=0.97, vol_ratio_4h=1.5, updown_vol_4h=0.49
 
-### 🧱 Destek/Direnç Ajanı — NÖTR (bias +0.08, güven 55)
+### 🧱 Destek/Direnç Ajanı — NÖTR (bias +0.07, güven 55)
 Yakın direnç 347.13 (+0.8%); yakın destek 341.89 (−0.7%). Fiyat son aralığın %31'inde.
 - 347.13 üstünde 4h kapanış → hedef 348.41
 - 341.89 altında 4h kapanış → risk 335.68
@@ -98,14 +98,14 @@ Momentum güçlü ayı (RSI 1d/4h/1h: 49/32/35).
 ### 🧪 Backtest/Edge Ajanı — NÖTR (bias +0.00, güven 0)
 WFO analizi yok (önce `run`).
 
-### 📡 Binance Canlı Piyasa Ajanı — GÜÇLÜ AYI (bias -0.59, güven 50)
-Canlı akış güçlü ayı: emir defteri alış payı %26, funding %0.0102, 24s %-1.34.
-- 24s: %-1.34, aralık 342.51–350.20, fiyat aralığın %23'inde, hacim 60M USDT
-- Emir defteri (ilk 20 kademe): alış 72K / satış 206K USDT → alış payı %26
-- Funding %0.0102 / 8s (yıllık ≈ %11) → longlar ödüyor (long kalabalık)
-- Açık pozisyon (OI): 219,586 GOOGL
+### 📡 Binance Canlı Piyasa Ajanı — NÖTR (bias -0.13, güven 50)
+Canlı akış nötr: emir defteri alış payı %64, funding %0.0132, 24s %-1.40.
+- 24s: %-1.40, aralık 342.51–350.20, fiyat aralığın %25'inde, hacim 60M USDT
+- Emir defteri (ilk 20 kademe): alış 83K / satış 46K USDT → alış payı %64
+- Funding %0.0132 / 8s (yıllık ≈ %15) → longlar ödüyor (long kalabalık)
+- Açık pozisyon (OI): 219,739 GOOGL
 - Global long/short hesap oranı 5.60 (long %85)
 - ⚠️ Kitle çok long (5.6): kontraryen risk, long'da sıkı stop
-- Metrikler: chg24_pct=-1.34, high24=350.2, low24=342.51, pos24=0.23, vol24_usdt=59626358, ob_imbalance=0.26, spread_pct=0.0029, funding_pct=0.0102, funding_annual_pct=11.2, open_interest=219585.75, long_short_ratio=5.6, long_pct=84.9
+- Metrikler: chg24_pct=-1.4, high24=350.2, low24=342.51, pos24=0.25, vol24_usdt=59712375, ob_imbalance=0.64, spread_pct=0.0029, funding_pct=0.0132, funding_annual_pct=14.5, open_interest=219739.13, long_short_ratio=5.6, long_pct=84.9
 
 > ⚠️ Bu rapor otomatik teknik analizdir, yatırım tavsiyesi değildir. Gerçek emir gönderilmez; tetik insanda.

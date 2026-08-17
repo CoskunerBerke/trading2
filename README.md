@@ -26,11 +26,13 @@
 Komutlar: `python -m tradingbot scan` (sadece tarama) · `python -m tradingbot tour` (tek tur) · `python -m tradingbot watch --interval 15 --scan-every 2` (7/24) · `scripts\watch_7_24.bat`.
 Obsidian: `Scanner.md` (huni + setup tablosu), `Paper Futures.md` (açık/kapanan pozisyonlar + görseller), `Learning/Öğrenme.md` (isabet oranları, öğrenilen ağırlıklar, setup istatistikleri, model özellikleri), `Learning/Dersler.md` (her işlemin NEDEN analizi), `Charts/*.png`, `Agents/<COIN>.canvas` (görsel düğümü dahil).
 
+**PC kapalıyken 7/24:** [deploy/BULUT_KURULUM.md](deploy/BULUT_KURULUM.md) — ucuz Linux VPS (systemd servisi, `deploy/setup_vps.sh`), Docker/Railway (`Dockerfile`), Obsidian kasasının git ile telefona/PC'ye senkronu (`obsidian.git_sync`).
+
 > ⚠️ Gerçek para/API bağlanmaz. Bu sistem kağıt işlemle **kanıt biriktirir**; gerçek paraya geçiş kararı ve anahtar bağlama kullanıcıya aittir ve en az yüzlerce kağıt işlemde pozitif beklenti görmeden önerilmez.
 
 ## Çoklu ajan katmanı (coin başına uzmanlar → yönetici → baş yönetici)
 
-Her coin için 8 uzman ajan aynı anda çalışır ve o coinin **yönetici ajanına** rapor verir; yönetici futures/kaldıraç
+Her coin için 9 uzman ajan aynı anda çalışır ve o coinin **yönetici ajanına** rapor verir; yönetici futures/kaldıraç
 planı çıkarır; **Baş Yönetici** tüm coinleri BTC rejimine göre sıralar. Sistem `watch` ile 7/24 döner.
 
 | Ajan | Baktığı şey | Kaynak |
@@ -41,6 +43,7 @@ planı çıkarır; **Baş Yönetici** tüm coinleri BTC rejimine göre sıralar.
 | 📊 Hacim | hacim/20-bar ort., alım-satım hacmi oranı, OBV eğimi, hareket hacimle onaylı mı | 1d/4h |
 | 🧱 Destek/Direnç | swing yüksek/alçaklar (kümelenmiş), Donchian, 20g H/L; "X üstünde kapanış → hedef Y" | 1d/4h |
 | 🚀 Momentum | RSI 1d/4h/1h, MACD histogram, ROC, basit uyumsuzluk | 1d/4h/1h |
+| 🔁 Geçmiş benzerlik (analog) | 1h/4h/1d'de son W barın şekli + gösterge parmak izi, geçmişteki en benzer 30 durum → sonraki H barda ne oldu (ort./medyan getiri, yukarı oranı, MAE/MFE) → "geçmişte böyle olduğunda…" olasılıksal görüş | TradingView 1d/4h/1h |
 | 🧪 Backtest/Edge | walk-forward sonucu (edge var mı, strateji LONG/FLAT mı) | son `run` |
 | 📡 Binance canlı | 24s istatistik, emir defteri dengesi (ilk 20 kademe), funding, open interest, long/short hesap oranı | Binance public |
 

@@ -67,5 +67,6 @@ obsidian:
   vault_path: "C:/Users/berke/Trading bot/Trading_bot"   # Obsidian'da açtığın kasa
   folder: ""
   canvas_name: "Trading Bot Şeması.canvas"
+  git_sync: false              # true: her turdan sonra kasa klasörünü git commit+push et (bulutta çalışırken PC/telefon Obsidian Git ile çeker)
 
 state_dir: "state"

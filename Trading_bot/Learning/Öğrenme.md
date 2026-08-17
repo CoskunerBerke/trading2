@@ -2,7 +2,7 @@
 tags: [trading, learning]
 ---
 # 🧠 Öğrenme Motoru
-> 2026-08-18 00:19 · durum: **VERİ TOPLUYOR** · model ısınıyor (0/20 işlem)
+> 2026-08-18 00:39 · durum: **VERİ TOPLUYOR** · model ısınıyor (0/20 işlem)
 
 ## Anlık görüntü
 | İşlem | Kazanma % | Beklenti (R) | Kağıt equity | Getiri % | Açık | Komisyon |

@@ -2,12 +2,12 @@
 symbol: POL/USDT
 verdict: BEKLE
 conviction: 18
-price: 0.08009
-updated: 2026-08-17T21:18:58+00:00
+price: 0.08008
+updated: 2026-08-17T21:39:12+00:00
 tags: [trading, agents]
 ---
 # 🧠 POL/USDT — Ajan Raporu (⚪ BEKLE, kanaat %18)
-> ⚪ BEKLE · kanaat %18 · 4/5 yönlü ajan hemfikir · fiyat 0.0801 · trend nötr  ·  2026-08-18 00:19
+> ⚪ BEKLE · kanaat %18 · 4/5 yönlü ajan hemfikir · fiyat 0.0801 · trend nötr  ·  2026-08-18 00:39
 
 Şema: [[Agents/POL.canvas]] · Backtest/karar: [[Coins/POL]] · [[Agents/Baş Yönetici]] · [[Paper Futures]]
 
@@ -35,17 +35,17 @@ tags: [trading, agents]
 ## 📍 Kilit seviyeler
 | Seviye | Fiyat | Uzaklık |
 |---|---|---|
-| ema200_1d | 0.0955 | +19.26% |
-| high_24h | 0.0849 | +6.01% |
-| r2 | 0.0841 | +5.05% |
-| r1 | 0.0815 | +1.74% |
-| ema_resistance | 0.0810 | +1.17% |
-| s1 | 0.0792 | -1.16% |
-| s2 | 0.0783 | -2.24% |
-| ema50_1d | 0.0766 | -4.35% |
-| ema_support | 0.0766 | -4.35% |
-| ema20_1d | 0.0751 | -6.20% |
-| low_24h | 0.0746 | -6.85% |
+| ema200_1d | 0.0955 | +19.28% |
+| high_24h | 0.0849 | +6.02% |
+| r2 | 0.0841 | +5.06% |
+| r1 | 0.0815 | +1.76% |
+| ema_resistance | 0.0810 | +1.18% |
+| s1 | 0.0792 | -1.15% |
+| s2 | 0.0783 | -2.22% |
+| ema50_1d | 0.0766 | -4.34% |
+| ema_support | 0.0766 | -4.34% |
+| ema20_1d | 0.0751 | -6.19% |
+| low_24h | 0.0746 | -6.84% |
 
 ## 🤖 Uzman ajan raporları
 ### 🌡️ Volatilite Ajanı — NÖTR (bias +0.00, güven 70)
@@ -77,7 +77,7 @@ Hacim boğa: alıcı hacmi baskın
 - Metrikler: vol_ratio_1d=0.44, updown_vol_1d=0.72, vol_ratio_4h=11.76, updown_vol_4h=7.45
 
 ### 🧱 Destek/Direnç Ajanı — BOĞA (bias +0.36, güven 55)
-Yakın direnç 0.0815 (+1.7%); yakın destek 0.0792 (−1.2%). Fiyat son aralığın %34'inde.
+Yakın direnç 0.0815 (+1.8%); yakın destek 0.0792 (−1.2%). Fiyat son aralığın %34'inde.
 - 0.0815 üstünde 4h kapanış → hedef 0.0841
 - 0.0792 altında 4h kapanış → risk 0.0783
 - 20 günlük en yüksek 0.0786, en düşük 0.0701
@@ -94,13 +94,13 @@ Momentum boğa (RSI 1d/4h/1h: 48/78/67).
 ### 🧪 Backtest/Edge Ajanı — NÖTR (bias +0.00, güven 0)
 WFO analizi yok (önce `run`).
 
-### 📡 Binance Canlı Piyasa Ajanı — BOĞA (bias +0.25, güven 50)
-Canlı akış boğa: emir defteri alış payı %70, funding %0.0050, 24s %+6.56.
-- 24s: %+6.56, aralık 0.0746–0.0849, fiyat aralığın %53'inde, hacim 6M USDT
-- Emir defteri (ilk 20 kademe): alış 30K / satış 13K USDT → alış payı %70
+### 📡 Binance Canlı Piyasa Ajanı — BOĞA (bias +0.23, güven 50)
+Canlı akış boğa: emir defteri alış payı %68, funding %0.0050, 24s %+6.76.
+- 24s: %+6.76, aralık 0.0746–0.0849, fiyat aralığın %53'inde, hacim 6M USDT
+- Emir defteri (ilk 20 kademe): alış 26K / satış 12K USDT → alış payı %68
 - Funding %0.0050 / 8s (yıllık ≈ %5) → nötr
-- Açık pozisyon (OI): 173,746,705 POL
+- Açık pozisyon (OI): 173,697,634 POL
 - Global long/short hesap oranı 1.64 (long %62)
-- Metrikler: chg24_pct=6.56, high24=0.0849, low24=0.0746, pos24=0.53, vol24_usdt=6104495, ob_imbalance=0.7, spread_pct=0.0125, funding_pct=0.005, funding_annual_pct=5.5, open_interest=173746705.0, long_short_ratio=1.64, long_pct=62.2
+- Metrikler: chg24_pct=6.76, high24=0.0849, low24=0.0746, pos24=0.53, vol24_usdt=6126226, ob_imbalance=0.68, spread_pct=0.0125, funding_pct=0.005, funding_annual_pct=5.5, open_interest=173697634.0, long_short_ratio=1.64, long_pct=62.2
 
 > ⚠️ Bu rapor otomatik teknik analizdir, yatırım tavsiyesi değildir. Gerçek emir gönderilmez; tetik insanda.

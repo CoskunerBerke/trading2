@@ -1,13 +1,13 @@
 ---
 symbol: SOXS/USDT
 verdict: SHORT
-conviction: 44
-price: 38.37
-updated: 2026-08-17T21:19:00+00:00
+conviction: 46
+price: 38.3
+updated: 2026-08-17T21:39:14+00:00
 tags: [trading, agents]
 ---
-# 🧠 SOXS/USDT — Ajan Raporu (🔴 SHORT, kanaat %44)
-> 🔴 SHORT · kanaat %44 · 3/4 yönlü ajan hemfikir · fiyat 38.37 · trend güçlü ayı  ·  2026-08-18 00:19
+# 🧠 SOXS/USDT — Ajan Raporu (🔴 SHORT, kanaat %46)
+> 🔴 SHORT · kanaat %46 · 3/4 yönlü ajan hemfikir · fiyat 38.30 · trend güçlü ayı  ·  2026-08-18 00:39
 
 Şema: [[Agents/SOXS.canvas]] · Backtest/karar: [[Coins/SOXS]] · [[Agents/Baş Yönetici]] · [[Paper Futures]]
 
@@ -23,7 +23,7 @@ tags: [trading, agents]
 - Kaldıraç ≤ 5x (öneri 1x) · marj ≈ 15.0 USDT · notional ≈ 15.0 USDT · riske atılan ≈ 0.84 USDT
 
 ## ✅ YAP
-- Yön SHORT (kanaat %44). 39.42 direncine tepkide satıcı mumuyla short (kovalama).
+- Yön SHORT (kanaat %46). 39.42 direncine tepkide satıcı mumuyla short (kovalama).
 - Stop 41.63 (+%5.62); hedef1 34.98, hedef2 32.76; R/R 2.0
 - Kaldıraç ≤ 5x (öneri 1x), marj ≈ 15.0 USDT, riske atılan ≈ 0.84 USDT
 
@@ -39,11 +39,11 @@ tags: [trading, agents]
 ## 📍 Kilit seviyeler
 | Seviye | Fiyat | Uzaklık |
 |---|---|---|
-| high_24h | 40.45 | +5.42% |
-| r2 | 40.33 | +5.12% |
-| r1 | 39.42 | +2.72% |
-| s1 | 37.61 | -1.98% |
-| low_24h | 36.97 | -3.65% |
+| high_24h | 40.45 | +5.61% |
+| r2 | 40.33 | +5.31% |
+| r1 | 39.42 | +2.91% |
+| s1 | 37.61 | -1.80% |
+| low_24h | 36.97 | -3.47% |
 
 ## 🤖 Uzman ajan raporları
 ### 🌡️ Volatilite Ajanı — NÖTR (bias +0.00, güven 70)
@@ -70,7 +70,7 @@ Hacim ayı: satıcı hacmi baskın
 - Metrikler: vol_ratio_4h=2.47, updown_vol_4h=0.63
 
 ### 🧱 Destek/Direnç Ajanı — BOĞA (bias +0.19, güven 55)
-Yakın direnç 39.42 (+2.7%); yakın destek 37.61 (−2.0%). Fiyat son aralığın %2'inde.
+Yakın direnç 39.42 (+2.9%); yakın destek 37.61 (−1.8%). Fiyat son aralığın %2'inde.
 - 39.42 üstünde 4h kapanış → hedef 40.33
 - 37.61 altında 4h kapanış → risk aralık altı 37.61
 - 20 günlük en yüksek 77.50, en düşük 37.61
@@ -85,13 +85,13 @@ Momentum ayı (RSI 1d/4h/1h: -/38/45).
 ### 🧪 Backtest/Edge Ajanı — NÖTR (bias +0.00, güven 0)
 WFO analizi yok (önce `run`).
 
-### 📡 Binance Canlı Piyasa Ajanı — NÖTR (bias +0.14, güven 50)
-Canlı akış nötr: emir defteri alış payı %65, funding %0.0000, 24s %-4.62.
-- 24s: %-4.62, aralık 36.97–40.45, fiyat aralığın %40'inde, hacim 137M USDT
-- Emir defteri (ilk 20 kademe): alış 494K / satış 265K USDT → alış payı %65
+### 📡 Binance Canlı Piyasa Ajanı — NÖTR (bias -0.01, güven 50)
+Canlı akış nötr: emir defteri alış payı %53, funding %0.0000, 24s %-4.82.
+- 24s: %-4.82, aralık 36.97–40.45, fiyat aralığın %38'inde, hacim 137M USDT
+- Emir defteri (ilk 20 kademe): alış 266K / satış 235K USDT → alış payı %53
 - Funding %0.0000 / 8s (yıllık ≈ %0) → nötr
-- Açık pozisyon (OI): 295,257 SOXS
+- Açık pozisyon (OI): 292,186 SOXS
 - Global long/short hesap oranı 1.91 (long %66)
-- Metrikler: chg24_pct=-4.62, high24=40.45, low24=36.97, pos24=0.4, vol24_usdt=137043858, ob_imbalance=0.65, spread_pct=0.0261, funding_pct=0.0, funding_annual_pct=0.0, open_interest=295256.57, long_short_ratio=1.91, long_pct=65.6
+- Metrikler: chg24_pct=-4.82, high24=40.45, low24=36.97, pos24=0.38, vol24_usdt=137275378, ob_imbalance=0.53, spread_pct=0.0261, funding_pct=0.0, funding_annual_pct=0.0, open_interest=292186.49, long_short_ratio=1.91, long_pct=65.6
 
 > ⚠️ Bu rapor otomatik teknik analizdir, yatırım tavsiyesi değildir. Gerçek emir gönderilmez; tetik insanda.

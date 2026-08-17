@@ -48,7 +48,7 @@
    "width": 380,
    "height": 150,
    "color": "3",
-   "text": "### 🧱 Destek/Direnç Ajanı\n**NÖTR** · bias -0.12 · güven 55\nYakın direnç 998.63 (+3.1%); yakın destek 940.83 (−3.0%). Fiyat son aralığın %80'inde."
+   "text": "### 🧱 Destek/Direnç Ajanı\n**NÖTR** · bias -0.12 · güven 55\nYakın direnç 998.63 (+2.9%); yakın destek 940.83 (−3.1%). Fiyat son aralığın %80'inde."
   },
   {
    "id": "ag_momentum",
@@ -77,8 +77,8 @@
    "y": 1190,
    "width": 380,
    "height": 150,
-   "color": "4",
-   "text": "### 📡 Binance Canlı Piyasa Ajanı\n**BOĞA** · bias +0.40 · güven 50\nCanlı akış boğa: emir defteri alış payı %81, funding %0.0000, 24s %+3.96."
+   "color": "3",
+   "text": "### 📡 Binance Canlı Piyasa Ajanı\n**NÖTR** · bias +0.01 · güven 50\nCanlı akış nötr: emir defteri alış payı %47, funding %0.0000, 24s %+3.98."
   },
   {
    "id": "manager",
@@ -87,8 +87,8 @@
    "y": 490,
    "width": 460,
    "height": 380,
-   "color": "4",
-   "text": "## 🧠 LITE YÖNETİCİSİ\n🟢 LONG · kanaat %39 · 4/4 yönlü ajan hemfikir · fiyat 968.77 · trend boğa\n\n**Karar: 🟢 LONG** · kanaat %39\nSkor +0.24 (−1 ayı … +1 boğa)\n\n- Yön LONG (kanaat %39). 940.83 desteğine geri çekilmede alıcı mumuyla long (kovalama).\n- Stop 890.68 (−%5.33); hedef1 1,028, hedef2 1,064; R/R 1.73\n- Kaldıraç ≤ 1x (öneri 1x), marj ≈ 15.0 USDT, riske atılan ≈ 0.8 USDT\n\n[[Agents/LITE|Tam rapor →]] · [[Coins/LITE|Backtest →]]\n_2026-08-18 00:19_"
+   "color": "6",
+   "text": "## 🧠 LITE YÖNETİCİSİ\n⚪ BEKLE · kanaat %33 · 3/3 yönlü ajan hemfikir · fiyat 970.27 · trend boğa\n\n**Karar: ⚪ BEKLE** · kanaat %33\nSkor +0.20 (−1 ayı … +1 boğa)\n\n- Yön yok → BEKLE. Pozisyon açma; sadece izle.\n- Kaldıraç kullanma. Yeniden değerlendirme: direnç 998.63 üstünde kapanış (long) / destek 940.83 altında kapanış (short)\n\n[[Agents/LITE|Tam rapor →]] · [[Coins/LITE|Backtest →]]\n_2026-08-18 00:39_"
   },
   {
    "id": "plan",
@@ -97,8 +97,8 @@
    "y": 350,
    "width": 520,
    "height": 260,
-   "color": "4",
-   "text": "## 🎯 FUTURES PLANI — LONG\n✅ GEÇERLİ\n**Tetik:** 940.83 desteğine geri çekilmede alıcı mumuyla long (kovalama)\nGiriş ~940.83 · Stop 890.68 (%5.33) · Hedef1 1,028 · Hedef2 1,064 · R/R 1.73\nKaldıraç ≤ **1x** (öneri 1x) · marj ≈ 15.0 USDT · notional ≈ 15.0 USDT · risk ≈ 0.8 USDT"
+   "color": "6",
+   "text": "## 🎯 FUTURES PLANI\n⚪ **BEKLE** — yön yok, pozisyon açma.\nMax kaldıraç (volatiliteye göre): 1x\n- Kaldıraç kullanma. Yeniden değerlendirme: direnç 998.63 üstünde kapanış (long) / destek 940.83 altında kapanış (short)"
   },
   {
    "id": "dont",
@@ -108,7 +108,7 @@
    "width": 520,
    "height": 300,
    "color": "1",
-   "text": "## 🚫 YAPMA\n- Piyasa emriyle kovalama; sadece koşul gerçekleşince gir\n- Stop'u aşağı taşıma; hedef1'de yarısını kapat, kalanını başa-baş stopla taşı"
+   "text": "## 🚫 YAPMA\n- (uyarı yok)"
   },
   {
    "id": "ifthen",
@@ -118,7 +118,7 @@
    "width": 520,
    "height": 220,
    "color": "5",
-   "text": "## 🔀 EĞER … İSE\n- EĞER 4h kapanış 940.83 altına inerse → long fikri iptal, 926.37 riski\n- EĞER 4h kapanış 998.63 üstüne çıkarsa → hedef 1,028"
+   "text": "## 🔀 EĞER … İSE\n- EĞER 4h mum 998.63 üstünde hacimle kapanırsa → long senaryosu açılır (hedef 1,028)\n- EĞER 4h mum 940.83 altında hacimle kapanırsa → short senaryosu açılır (hedef 926.37)"
   },
   {
    "id": "levels",
@@ -210,8 +210,8 @@
    "fromSide": "right",
    "toNode": "manager",
    "toSide": "left",
-   "color": "4",
-   "label": "boğa · 50"
+   "color": "3",
+   "label": "nötr · 50"
   },
   {
    "id": "e_chart",

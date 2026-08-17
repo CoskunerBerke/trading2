@@ -1,13 +1,13 @@
 ---
 symbol: LITE/USDT
-verdict: LONG
-conviction: 39
-price: 968.77
-updated: 2026-08-17T21:18:49+00:00
+verdict: BEKLE
+conviction: 33
+price: 970.27
+updated: 2026-08-17T21:39:03+00:00
 tags: [trading, agents]
 ---
-# 🧠 LITE/USDT — Ajan Raporu (🟢 LONG, kanaat %39)
-> 🟢 LONG · kanaat %39 · 4/4 yönlü ajan hemfikir · fiyat 968.77 · trend boğa  ·  2026-08-18 00:19
+# 🧠 LITE/USDT — Ajan Raporu (⚪ BEKLE, kanaat %33)
+> ⚪ BEKLE · kanaat %33 · 3/3 yönlü ajan hemfikir · fiyat 970.27 · trend boğa  ·  2026-08-18 00:39
 
 Şema: [[Agents/LITE.canvas]] · Backtest/karar: [[Coins/LITE]] · [[Agents/Baş Yönetici]] · [[Paper Futures]]
 
@@ -17,37 +17,31 @@ tags: [trading, agents]
 🤖 Öğrenen model P(kazanç): **%50**
 
 ## 🎯 Futures planı
-- Yön: **LONG** · ✅ geçerli
-- Tetik: 940.83 desteğine geri çekilmede alıcı mumuyla long (kovalama) (geri çekilme)
-- Giriş ~940.83 · Stop 890.68 (%5.33) · Hedef1 1,028 · Hedef2 1,064 · R/R 1.73
-- Kaldıraç ≤ 1x (öneri 1x) · marj ≈ 15.0 USDT · notional ≈ 15.0 USDT · riske atılan ≈ 0.8 USDT
+⚪ **BEKLE** — yön yok. Max kaldıraç (volatiliteye göre) 1x.
 
 ## ✅ YAP
-- Yön LONG (kanaat %39). 940.83 desteğine geri çekilmede alıcı mumuyla long (kovalama).
-- Stop 890.68 (−%5.33); hedef1 1,028, hedef2 1,064; R/R 1.73
-- Kaldıraç ≤ 1x (öneri 1x), marj ≈ 15.0 USDT, riske atılan ≈ 0.8 USDT
+- Yön yok → BEKLE. Pozisyon açma; sadece izle.
+- Kaldıraç kullanma. Yeniden değerlendirme: direnç 998.63 üstünde kapanış (long) / destek 940.83 altında kapanış (short)
 
 ## 🚫 YAPMA
-- Piyasa emriyle kovalama; sadece koşul gerçekleşince gir
-- Stop'u aşağı taşıma; hedef1'de yarısını kapat, kalanını başa-baş stopla taşı
 
 ## 🔀 EĞER … İSE
-- EĞER 4h kapanış 940.83 altına inerse → long fikri iptal, 926.37 riski
-- EĞER 4h kapanış 998.63 üstüne çıkarsa → hedef 1,028
+- EĞER 4h mum 998.63 üstünde hacimle kapanırsa → long senaryosu açılır (hedef 1,028)
+- EĞER 4h mum 940.83 altında hacimle kapanırsa → short senaryosu açılır (hedef 926.37)
 
 ## 📍 Kilit seviyeler
 | Seviye | Fiyat | Uzaklık |
 |---|---|---|
-| r2 | 1,028 | +6.06% |
-| high_24h | 1,001 | +3.28% |
-| r1 | 998.63 | +3.08% |
-| s1 | 940.83 | -2.88% |
-| s2 | 926.37 | -4.38% |
-| ema20_1d | 853.40 | -11.91% |
-| ema50_1d | 826.20 | -14.72% |
+| r2 | 1,028 | +5.90% |
+| high_24h | 1,001 | +3.12% |
+| r1 | 998.63 | +2.92% |
+| s1 | 940.83 | -3.03% |
+| s2 | 926.37 | -4.53% |
+| ema20_1d | 853.40 | -12.04% |
+| ema50_1d | 826.20 | -14.85% |
 | ema200_1d | nan | +nan% |
-| low_24h | 923.47 | -4.68% |
-| ema_support | 853.40 | -11.91% |
+| low_24h | 923.47 | -4.82% |
+| ema_support | 853.40 | -12.04% |
 
 ## 🤖 Uzman ajan raporları
 ### 🌡️ Volatilite Ajanı — NÖTR (bias +0.00, güven 70)
@@ -77,7 +71,7 @@ Hacim güçlü boğa: alıcı hacmi baskın
 - Metrikler: vol_ratio_1d=0.07, updown_vol_1d=1.59, vol_ratio_4h=2.84, updown_vol_4h=3.51
 
 ### 🧱 Destek/Direnç Ajanı — NÖTR (bias -0.12, güven 55)
-Yakın direnç 998.63 (+3.1%); yakın destek 940.83 (−3.0%). Fiyat son aralığın %80'inde.
+Yakın direnç 998.63 (+2.9%); yakın destek 940.83 (−3.1%). Fiyat son aralığın %80'inde.
 - 998.63 üstünde 4h kapanış → hedef 1,028
 - 940.83 altında 4h kapanış → risk 926.37
 - 20 günlük en yüksek 967.43, en düşük 583.82
@@ -93,13 +87,13 @@ Momentum güçlü boğa (RSI 1d/4h/1h: 60/66/58).
 ### 🧪 Backtest/Edge Ajanı — NÖTR (bias +0.00, güven 0)
 WFO analizi yok (önce `run`).
 
-### 📡 Binance Canlı Piyasa Ajanı — BOĞA (bias +0.40, güven 50)
-Canlı akış boğa: emir defteri alış payı %81, funding %0.0000, 24s %+3.96.
-- 24s: %+3.96, aralık 923.47–1,001, fiyat aralığın %59'inde, hacim 66M USDT
-- Emir defteri (ilk 20 kademe): alış 6K / satış 1K USDT → alış payı %81
+### 📡 Binance Canlı Piyasa Ajanı — NÖTR (bias +0.01, güven 50)
+Canlı akış nötr: emir defteri alış payı %47, funding %0.0000, 24s %+3.98.
+- 24s: %+3.98, aralık 923.47–1,001, fiyat aralığın %61'inde, hacim 66M USDT
+- Emir defteri (ilk 20 kademe): alış 9K / satış 10K USDT → alış payı %47
 - Funding %0.0000 / 8s (yıllık ≈ %0) → nötr
-- Açık pozisyon (OI): 20,183 LITE
+- Açık pozisyon (OI): 20,135 LITE
 - Global long/short hesap oranı 0.88 (long %47)
-- Metrikler: chg24_pct=3.96, high24=1000.52, low24=923.47, pos24=0.59, vol24_usdt=65675870, ob_imbalance=0.81, spread_pct=0.0072, funding_pct=0.0, funding_annual_pct=0.0, open_interest=20183.13, long_short_ratio=0.88, long_pct=46.8
+- Metrikler: chg24_pct=3.98, high24=1000.52, low24=923.47, pos24=0.61, vol24_usdt=65853197, ob_imbalance=0.47, spread_pct=0.001, funding_pct=0.0, funding_annual_pct=0.0, open_interest=20134.87, long_short_ratio=0.88, long_pct=46.8
 
 > ⚠️ Bu rapor otomatik teknik analizdir, yatırım tavsiyesi değildir. Gerçek emir gönderilmez; tetik insanda.

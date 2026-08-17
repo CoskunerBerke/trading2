@@ -19,7 +19,7 @@ from .agents.manager import ChiefBrief, CoinBrief
 
 VERDICT_COLOR = {"LONG": "4", "SHORT": "1", "BEKLE": "6"}
 VERDICT_EMOJI = {"LONG": "🟢", "SHORT": "🔴", "BEKLE": "⚪"}
-AGENT_ICON = {"volatility": "🌡️", "trend": "📈", "candles": "🕯️", "volume": "📊", "levels": "🧱", "momentum": "🚀", "edge": "🧪", "market": "📡"}
+AGENT_ICON = {"volatility": "🌡️", "trend": "📈", "candles": "🕯️", "volume": "📊", "levels": "🧱", "momentum": "🚀", "edge": "🧪", "market": "📡", "analog": "🔁"}
 
 
 def _bias_color(r: AgentReport) -> str:

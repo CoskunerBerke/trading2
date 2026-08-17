@@ -2,12 +2,12 @@
 symbol: BZ/USDT
 verdict: LONG
 conviction: 45
-price: 89.15
-updated: 2026-08-17T21:18:44+00:00
+price: 89.09
+updated: 2026-08-17T21:38:58+00:00
 tags: [trading, agents]
 ---
 # 🧠 BZ/USDT — Ajan Raporu (🟢 LONG, kanaat %45)
-> 🟢 LONG · kanaat %45 · 5/5 yönlü ajan hemfikir · fiyat 89.15 · trend boğa  ·  2026-08-18 00:19
+> 🟢 LONG · kanaat %45 · 5/5 yönlü ajan hemfikir · fiyat 89.09 · trend boğa  ·  2026-08-18 00:39
 
 Şema: [[Agents/BZ.canvas]] · Backtest/karar: [[Coins/BZ]] · [[Agents/Baş Yönetici]] · [[Paper Futures]]
 
@@ -41,16 +41,16 @@ tags: [trading, agents]
 ## 📍 Kilit seviyeler
 | Seviye | Fiyat | Uzaklık |
 |---|---|---|
-| r2 | 91.32 | +2.43% |
-| r1 | 90.06 | +1.02% |
-| high_24h | 89.37 | +0.25% |
-| s1 | 88.34 | -0.91% |
-| s2 | 87.00 | -2.41% |
-| ema20_1d | 85.42 | -4.19% |
-| ema50_1d | 85.04 | -4.61% |
+| r2 | 91.32 | +2.50% |
+| r1 | 90.06 | +1.09% |
+| high_24h | 89.37 | +0.31% |
+| s1 | 88.34 | -0.84% |
+| s2 | 87.00 | -2.35% |
+| ema20_1d | 85.42 | -4.12% |
+| ema50_1d | 85.04 | -4.54% |
 | ema200_1d | nan | +nan% |
-| ema_support | 87.27 | -2.11% |
-| low_24h | 86.02 | -3.51% |
+| ema_support | 87.27 | -2.05% |
+| low_24h | 86.02 | -3.45% |
 
 ## 🤖 Uzman ajan raporları
 ### 🌡️ Volatilite Ajanı — NÖTR (bias +0.00, güven 70)
@@ -82,7 +82,7 @@ Hacim boğa: alıcı hacmi baskın
 - Metrikler: vol_ratio_1d=0.09, updown_vol_1d=0.98, vol_ratio_4h=2.16, updown_vol_4h=3.95
 
 ### 🧱 Destek/Direnç Ajanı — NÖTR (bias +0.03, güven 55)
-Yakın direnç 90.06 (+1.0%); yakın destek 88.34 (−0.9%). Fiyat son aralığın %42'inde.
+Yakın direnç 90.06 (+1.1%); yakın destek 88.34 (−0.8%). Fiyat son aralığın %42'inde.
 - 90.06 üstünde 4h kapanış → hedef 91.32
 - 88.34 altında 4h kapanış → risk 87.00
 - 20 günlük en yüksek 91.75, en düşük 78.14
@@ -99,13 +99,13 @@ Momentum güçlü boğa (RSI 1d/4h/1h: 53/72/71).
 ### 🧪 Backtest/Edge Ajanı — NÖTR (bias +0.00, güven 0)
 WFO analizi yok (önce `run`).
 
-### 📡 Binance Canlı Piyasa Ajanı — BOĞA (bias +0.35, güven 50)
-Canlı akış boğa: emir defteri alış payı %48, funding %-0.0047, 24s %+3.10.
-- 24s: %+3.10, aralık 86.02–89.37, fiyat aralığın %93'inde, hacim 291M USDT
-- Emir defteri (ilk 20 kademe): alış 674K / satış 720K USDT → alış payı %48
-- Funding %-0.0047 / 8s (yıllık ≈ %-5) → nötr
-- Açık pozisyon (OI): 2,477,636 BZ
+### 📡 Binance Canlı Piyasa Ajanı — BOĞA (bias +0.39, güven 50)
+Canlı akış boğa: emir defteri alış payı %52, funding %-0.0090, 24s %+2.98.
+- 24s: %+2.98, aralık 86.02–89.37, fiyat aralığın %92'inde, hacim 292M USDT
+- Emir defteri (ilk 20 kademe): alış 603K / satış 556K USDT → alış payı %52
+- Funding %-0.0090 / 8s (yıllık ≈ %-10) → shortlar ödüyor (short kalabalık)
+- Açık pozisyon (OI): 2,478,138 BZ
 - Global long/short hesap oranı 0.57 (long %36)
-- Metrikler: chg24_pct=3.1, high24=89.37, low24=86.02, pos24=0.93, vol24_usdt=291055391, ob_imbalance=0.48, spread_pct=0.0112, funding_pct=-0.0047, funding_annual_pct=-5.2, open_interest=2477635.8, long_short_ratio=0.57, long_pct=36.5
+- Metrikler: chg24_pct=2.98, high24=89.37, low24=86.02, pos24=0.92, vol24_usdt=291565929, ob_imbalance=0.52, spread_pct=0.0112, funding_pct=-0.009, funding_annual_pct=-9.9, open_interest=2478137.75, long_short_ratio=0.57, long_pct=36.5
 
 > ⚠️ Bu rapor otomatik teknik analizdir, yatırım tavsiyesi değildir. Gerçek emir gönderilmez; tetik insanda.

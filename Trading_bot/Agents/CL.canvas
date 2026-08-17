@@ -48,7 +48,7 @@
    "width": 380,
    "height": 150,
    "color": "1",
-   "text": "### 🧱 Destek/Direnç Ajanı\n**AYI** · bias -0.26 · güven 55\nYakın direnç 84.62 (+0.7%); yakın destek 82.10 (−2.4%). Fiyat son aralığın %39'inde.\n⚠️ Direnç 84.62 hemen üstte: kırılım kapanışı görmeden long açma"
+   "text": "### 🧱 Destek/Direnç Ajanı\n**AYI** · bias -0.25 · güven 55\nYakın direnç 84.62 (+0.8%); yakın destek 82.10 (−2.3%). Fiyat son aralığın %39'inde.\n⚠️ Direnç 84.62 hemen üstte: kırılım kapanışı görmeden long açma"
   },
   {
    "id": "ag_momentum",
@@ -78,7 +78,7 @@
    "width": 380,
    "height": 150,
    "color": "4",
-   "text": "### 📡 Binance Canlı Piyasa Ajanı\n**BOĞA** · bias +0.21 · güven 50\nCanlı akış boğa: emir defteri alış payı %52, funding %-0.0037, 24s %+3.17."
+   "text": "### 📡 Binance Canlı Piyasa Ajanı\n**BOĞA** · bias +0.30 · güven 50\nCanlı akış boğa: emir defteri alış payı %60, funding %-0.0064, 24s %+3.00."
   },
   {
    "id": "manager",
@@ -88,7 +88,7 @@
    "width": 460,
    "height": 380,
    "color": "6",
-   "text": "## 🧠 CL YÖNETİCİSİ\n⚪ BEKLE · kanaat %29 · 4/5 yönlü ajan hemfikir · fiyat 84.06 · trend nötr\n\n**Karar: ⚪ BEKLE** · kanaat %29\nSkor +0.18 (−1 ayı … +1 boğa)\n\n- Yön yok → BEKLE. Pozisyon açma; sadece izle.\n- Kaldıraç kullanma. Yeniden değerlendirme: direnç 84.62 üstünde kapanış (long) / destek 82.10 altında kapanış (short)\n\n[[Agents/CL|Tam rapor →]] · [[Coins/CL|Backtest →]]\n_2026-08-18 00:19_"
+   "text": "## 🧠 CL YÖNETİCİSİ\n⚪ BEKLE · kanaat %30 · 4/5 yönlü ajan hemfikir · fiyat 83.98 · trend nötr\n\n**Karar: ⚪ BEKLE** · kanaat %30\nSkor +0.18 (−1 ayı … +1 boğa)\n\n- Yön yok → BEKLE. Pozisyon açma; sadece izle.\n- Kaldıraç kullanma. Yeniden değerlendirme: direnç 84.62 üstünde kapanış (long) / destek 82.10 altında kapanış (short)\n\n[[Agents/CL|Tam rapor →]] · [[Coins/CL|Backtest →]]\n_2026-08-18 00:39_"
   },
   {
    "id": "plan",

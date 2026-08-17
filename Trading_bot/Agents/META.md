@@ -1,13 +1,13 @@
 ---
 symbol: META/USDT
 verdict: BEKLE
-conviction: 22
-price: 569.97
-updated: 2026-08-17T21:18:46+00:00
+conviction: 35
+price: 570.18
+updated: 2026-08-17T21:39:00+00:00
 tags: [trading, agents]
 ---
-# 🧠 META/USDT — Ajan Raporu (⚪ BEKLE, kanaat %22)
-> ⚪ BEKLE · kanaat %22 · 2/3 yönlü ajan hemfikir · fiyat 569.97 · trend güçlü ayı  ·  2026-08-18 00:19
+# 🧠 META/USDT — Ajan Raporu (⚪ BEKLE, kanaat %35)
+> ⚪ BEKLE · kanaat %35 · 3/3 yönlü ajan hemfikir · fiyat 570.18 · trend güçlü ayı  ·  2026-08-18 00:39
 
 Şema: [[Agents/META.canvas]] · Backtest/karar: [[Coins/META]] · [[Agents/Baş Yönetici]] · [[Paper Futures]]
 
@@ -34,16 +34,16 @@ tags: [trading, agents]
 ## 📍 Kilit seviyeler
 | Seviye | Fiyat | Uzaklık |
 |---|---|---|
-| ema50_1d | 597.40 | +4.81% |
+| ema50_1d | 597.40 | +4.77% |
 | ema200_1d | nan | +nan% |
-| high_24h | 593.03 | +4.05% |
-| ema_resistance | 592.10 | +3.88% |
-| ema20_1d | 592.10 | +3.88% |
-| r2 | 581.17 | +1.97% |
-| r1 | 577.70 | +1.36% |
-| low_24h | 565.65 | -0.76% |
-| s1 | 563.71 | -1.10% |
-| s2 | 559.40 | -1.85% |
+| high_24h | 593.03 | +4.01% |
+| ema_resistance | 592.10 | +3.84% |
+| ema20_1d | 592.10 | +3.84% |
+| r2 | 581.17 | +1.93% |
+| r1 | 577.70 | +1.32% |
+| low_24h | 565.65 | -0.79% |
+| s1 | 563.71 | -1.13% |
+| s2 | 559.40 | -1.89% |
 
 ## 🤖 Uzman ajan raporları
 ### 🌡️ Volatilite Ajanı — NÖTR (bias +0.00, güven 70)
@@ -73,7 +73,7 @@ Hacim ayı: satıcı hacmi baskın
 - Metrikler: vol_ratio_1d=0.04, updown_vol_1d=1.29, vol_ratio_4h=4.1, updown_vol_4h=0.1
 
 ### 🧱 Destek/Direnç Ajanı — NÖTR (bias +0.08, güven 55)
-Yakın direnç 577.70 (+1.4%); yakın destek 563.71 (−1.1%). Fiyat son aralığın %30'inde.
+Yakın direnç 577.70 (+1.3%); yakın destek 563.71 (−1.1%). Fiyat son aralığın %30'inde.
 - 577.70 üstünde 4h kapanış → hedef 581.17
 - 563.71 altında 4h kapanış → risk 559.40
 - 20 günlük en yüksek 612.84, en düşük 519.43
@@ -91,13 +91,13 @@ Momentum nötr (RSI 1d/4h/1h: 49/21/20).
 ### 🧪 Backtest/Edge Ajanı — NÖTR (bias +0.00, güven 0)
 WFO analizi yok (önce `run`).
 
-### 📡 Binance Canlı Piyasa Ajanı — BOĞA (bias +0.46, güven 50)
-Canlı akış boğa: emir defteri alış payı %100, funding %0.0021, 24s %-3.77.
-- 24s: %-3.77, aralık 565.65–593.03, fiyat aralığın %16'inde, hacim 27M USDT
-- Emir defteri (ilk 20 kademe): alış 2,024K / satış 10K USDT → alış payı %100
-- Funding %0.0021 / 8s (yıllık ≈ %2) → nötr
-- Açık pozisyon (OI): 46,937 META
+### 📡 Binance Canlı Piyasa Ajanı — AYI (bias -0.42, güven 50)
+Canlı akış ayı: emir defteri alış payı %26, funding %0.0051, 24s %-3.76.
+- 24s: %-3.76, aralık 565.65–593.03, fiyat aralığın %17'inde, hacim 27M USDT
+- Emir defteri (ilk 20 kademe): alış 8K / satış 21K USDT → alış payı %26
+- Funding %0.0051 / 8s (yıllık ≈ %6) → nötr
+- Açık pozisyon (OI): 46,982 META
 - Global long/short hesap oranı 2.01 (long %67)
-- Metrikler: chg24_pct=-3.77, high24=593.03, low24=565.65, pos24=0.16, vol24_usdt=27151563, ob_imbalance=1.0, spread_pct=0.0018, funding_pct=0.0021, funding_annual_pct=2.3, open_interest=46936.95, long_short_ratio=2.01, long_pct=66.7
+- Metrikler: chg24_pct=-3.76, high24=593.03, low24=565.65, pos24=0.17, vol24_usdt=27266718, ob_imbalance=0.26, spread_pct=0.0018, funding_pct=0.0051, funding_annual_pct=5.5, open_interest=46981.85, long_short_ratio=2.01, long_pct=66.7
 
 > ⚠️ Bu rapor otomatik teknik analizdir, yatırım tavsiyesi değildir. Gerçek emir gönderilmez; tetik insanda.

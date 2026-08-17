@@ -48,7 +48,7 @@
    "width": 380,
    "height": 150,
    "color": "3",
-   "text": "### 🧱 Destek/Direnç Ajanı\n**NÖTR** · bias +0.08 · güven 55\nYakın direnç 347.13 (+0.8%); yakın destek 341.89 (−0.7%). Fiyat son aralığın %31'inde.\n⚠️ Direnç 347.13 hemen üstte: kırılım kapanışı görmeden long açma"
+   "text": "### 🧱 Destek/Direnç Ajanı\n**NÖTR** · bias +0.07 · güven 55\nYakın direnç 347.13 (+0.8%); yakın destek 341.89 (−0.7%). Fiyat son aralığın %31'inde.\n⚠️ Direnç 347.13 hemen üstte: kırılım kapanışı görmeden long açma"
   },
   {
    "id": "ag_momentum",
@@ -77,8 +77,8 @@
    "y": 1190,
    "width": 380,
    "height": 150,
-   "color": "1",
-   "text": "### 📡 Binance Canlı Piyasa Ajanı\n**GÜÇLÜ AYI** · bias -0.59 · güven 50\nCanlı akış güçlü ayı: emir defteri alış payı %26, funding %0.0102, 24s %-1.34.\n⚠️ Kitle çok long (5.6): kontraryen risk, long'da sıkı stop"
+   "color": "3",
+   "text": "### 📡 Binance Canlı Piyasa Ajanı\n**NÖTR** · bias -0.13 · güven 50\nCanlı akış nötr: emir defteri alış payı %64, funding %0.0132, 24s %-1.40.\n⚠️ Kitle çok long (5.6): kontraryen risk, long'da sıkı stop"
   },
   {
    "id": "manager",
@@ -88,7 +88,7 @@
    "width": 460,
    "height": 380,
    "color": "1",
-   "text": "## 🧠 GOOGL YÖNETİCİSİ\n🔴 SHORT · kanaat %52 · 3/4 yönlü ajan hemfikir · fiyat 344.31 · trend güçlü ayı\n\n**Karar: 🔴 SHORT** · kanaat %52\nSkor -0.32 (−1 ayı … +1 boğa)\n\n- Yön SHORT (kanaat %52). 4h mum 341.89 altında kapanırsa short.\n- Stop 346.97 (+%1.59); hedef1 330.43, hedef2 324.10; R/R 2.05\n- Kaldıraç ≤ 5x (öneri 2x), marj ≈ 15.0 USDT, riske atılan ≈ 0.48 USDT\n\n[[Agents/GOOGL|Tam rapor →]] · [[Coins/GOOGL|Backtest →]]\n_2026-08-18 00:19_"
+   "text": "## 🧠 GOOGL YÖNETİCİSİ\n🔴 SHORT · kanaat %46 · 2/3 yönlü ajan hemfikir · fiyat 344.42 · trend güçlü ayı\n\n**Karar: 🔴 SHORT** · kanaat %46\nSkor -0.28 (−1 ayı … +1 boğa)\n\n- Yön SHORT (kanaat %46). 4h mum 341.89 altında kapanırsa short.\n- Stop 346.97 (+%1.59); hedef1 330.43, hedef2 324.10; R/R 2.05\n- Kaldıraç ≤ 5x (öneri 2x), marj ≈ 15.0 USDT, riske atılan ≈ 0.48 USDT\n\n[[Agents/GOOGL|Tam rapor →]] · [[Coins/GOOGL|Backtest →]]\n_2026-08-18 00:39_"
   },
   {
    "id": "plan",
@@ -210,8 +210,8 @@
    "fromSide": "right",
    "toNode": "manager",
    "toSide": "left",
-   "color": "1",
-   "label": "güçlü ayı · 50"
+   "color": "3",
+   "label": "nötr · 50"
   },
   {
    "id": "e_chart",

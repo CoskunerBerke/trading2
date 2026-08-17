@@ -1,10 +1,10 @@
 ---
-updated: 2026-08-17T20:31:39+00:00
+updated: 2026-08-17T21:36:17+00:00
 exchange: tradingview:BINANCE
 timeframe: 4h
 ---
 # 📊 Trading Bot — Dashboard
-> Son çalışma: **2026-08-18 00:19** · Borsa: tradingview:BINANCE · TF: 4h · BTC rejimi: **YATAY**
+> Son çalışma: **2026-08-18 00:39** · Borsa: tradingview:BINANCE · TF: 4h · BTC rejimi: **YATAY**
 
 Şema için: [[Trading Bot Şeması]] · Sinyal logu: [[Signals/Son Sinyal]] · Backtest: [[Backtests/Sweep]] · Portföy: [[Portfolio]]
 
@@ -33,9 +33,9 @@ flowchart LR
 ## Coin özeti
 | Coin | Spot karar | 🧠 Ajan yöneticisi | Kanaat | Skor | Fiyat | 24s % | RSI | Rejim | Strateji | WFO Sharpe | Edge |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| [[Coins/BTC\|BTC/USDT]] | ⚪ BEKLE | [[Agents/BTC\|⚪ BEKLE]] | 15 | 35 | 64,310 | 1.9 | 70 | YATAY | EMA Trend Takibi | -1.91 | ❌ |
+| [[Coins/BTC\|BTC/USDT]] | ⚪ BEKLE | [[Agents/BTC\|⚪ BEKLE]] | 8 | 35 | 64,310 | 1.9 | 70 | YATAY | EMA Trend Takibi | -1.91 | ❌ |
 | [[Coins/ETH\|ETH/USDT]] | ⚪ BEKLE | [[Agents/ETH\|⚪ BEKLE]] | 0 | 53 | 1,907 | 1.1 | 61 | YATAY | Donchian Kırılım | 0.05 | ❌ |
-| [[Coins/SOL\|SOL/USDT]] | ⚪ BEKLE | [[Agents/SOL\|⚪ BEKLE]] | 10 | 60 | 75.81 | 0.8 | 53 | YÜKSELİŞ | EMA Trend Takibi | -0.06 | ❌ |
+| [[Coins/SOL\|SOL/USDT]] | ⚪ BEKLE | [[Agents/SOL\|⚪ BEKLE]] | 11 | 60 | 75.81 | 0.8 | 53 | YÜKSELİŞ | EMA Trend Takibi | -0.06 | ❌ |
 | [[Coins/BNB\|BNB/USDT]] | ⚪ BEKLE | - | - | 53 | 605.24 | -0.1 | 46 | YATAY | EMA Trend Takibi | -0.59 | ❌ |
 | [[Coins/XRP\|XRP/USDT]] | ⚪ BEKLE | - | - | 35 | 1.00 | 0.0 | 46 | DÜŞÜŞ | EMA Geri Çekilme | -0.97 | ❌ |
 | [[Coins/ADA\|ADA/USDT]] | ⚪ BEKLE | - | - | 29 | 0.1738 | -2.5 | 33 | DÜŞÜŞ | Donchian Kırılım | -0.71 | ❌ |

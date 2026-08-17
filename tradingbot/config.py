@@ -74,6 +74,7 @@ class ObsidianConfig:
     vault_path: str = "C:/Users/berke/Trading bot/Trading_bot"
     folder: str = ""
     canvas_name: str = "Trading Bot Şeması.canvas"
+    git_sync: bool = False
 
     @property
     def root(self) -> Path:
@@ -133,4 +134,6 @@ def load_config(path: str | os.PathLike | None = None) -> BotConfig:
     env_vault = os.environ.get("TRADINGBOT_VAULT_PATH")
     if env_vault:
         cfg.obsidian.vault_path = env_vault
+    if os.environ.get("TRADINGBOT_VAULT_GIT_SYNC", "").lower() in ("1", "true", "yes"):
+        cfg.obsidian.git_sync = True
     return cfg

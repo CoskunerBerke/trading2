@@ -1,13 +1,13 @@
 ---
 symbol: PAXG/USDT
 verdict: LONG
-conviction: 55
-price: 4410.17
-updated: 2026-08-17T21:18:56+00:00
+conviction: 53
+price: 4409.95
+updated: 2026-08-17T21:39:09+00:00
 tags: [trading, agents]
 ---
-# 🧠 PAXG/USDT — Ajan Raporu (🟢 LONG, kanaat %55)
-> 🟢 LONG · kanaat %55 · 4/4 yönlü ajan hemfikir · fiyat 4,410 · trend güçlü boğa  ·  2026-08-18 00:19
+# 🧠 PAXG/USDT — Ajan Raporu (🟢 LONG, kanaat %53)
+> 🟢 LONG · kanaat %53 · 4/4 yönlü ajan hemfikir · fiyat 4,410 · trend güçlü boğa  ·  2026-08-18 00:39
 
 Şema: [[Agents/PAXG.canvas]] · Backtest/karar: [[Coins/PAXG]] · [[Agents/Baş Yönetici]] · [[Paper Futures]]
 
@@ -23,7 +23,7 @@ tags: [trading, agents]
 - Kaldıraç ≤ 5x (öneri 2x) · marj ≈ 15.0 USDT · notional ≈ 30.0 USDT · riske atılan ≈ 0.41 USDT
 
 ## ✅ YAP
-- Yön LONG (kanaat %55). 4h mum 4,436 üstünde kapanırsa long.
+- Yön LONG (kanaat %53). 4h mum 4,436 üstünde kapanırsa long.
 - Stop 4,379 (−%1.37); hedef1 4,579, hedef2 4,648; R/R 2.28
 - Kaldıraç ≤ 5x (öneri 2x), marj ≈ 15.0 USDT, riske atılan ≈ 0.41 USDT
 
@@ -41,10 +41,10 @@ tags: [trading, agents]
 | Seviye | Fiyat | Uzaklık |
 |---|---|---|
 | r2 | 4,457 | +1.07% |
-| r1 | 4,436 | +0.58% |
-| high_24h | 4,423 | +0.29% |
+| r1 | 4,436 | +0.59% |
+| high_24h | 4,423 | +0.30% |
 | s1 | 4,392 | -0.41% |
-| s2 | 4,375 | -0.81% |
+| s2 | 4,375 | -0.80% |
 | low_24h | 4,366 | -1.01% |
 | ema200_1d | 4,344 | -1.49% |
 | ema_support | 4,344 | -1.49% |
@@ -97,13 +97,13 @@ Momentum güçlü boğa (RSI 1d/4h/1h: 64/63/58).
 ### 🧪 Backtest/Edge Ajanı — NÖTR (bias +0.00, güven 0)
 WFO analizi yok (önce `run`).
 
-### 📡 Binance Canlı Piyasa Ajanı — BOĞA (bias +0.25, güven 50)
-Canlı akış boğa: emir defteri alış payı %62, funding %0.0032, 24s %+0.78.
-- 24s: %+0.78, aralık 4,366–4,423, fiyat aralığın %78'inde, hacim 15M USDT
-- Emir defteri (ilk 20 kademe): alış 68K / satış 42K USDT → alış payı %62
-- Funding %0.0032 / 8s (yıllık ≈ %4) → nötr
-- Açık pozisyon (OI): 14,987 PAXG
+### 📡 Binance Canlı Piyasa Ajanı — BOĞA (bias +0.16, güven 50)
+Canlı akış boğa: emir defteri alış payı %54, funding %0.0037, 24s %+0.83.
+- 24s: %+0.83, aralık 4,366–4,423, fiyat aralığın %77'inde, hacim 15M USDT
+- Emir defteri (ilk 20 kademe): alış 47K / satış 39K USDT → alış payı %54
+- Funding %0.0037 / 8s (yıllık ≈ %4) → nötr
+- Açık pozisyon (OI): 14,992 PAXG
 - Global long/short hesap oranı 1.60 (long %62)
-- Metrikler: chg24_pct=0.78, high24=4423.08, low24=4365.54, pos24=0.78, vol24_usdt=14563838, ob_imbalance=0.62, spread_pct=0.0002, funding_pct=0.0032, funding_annual_pct=3.5, open_interest=14987.457, long_short_ratio=1.6, long_pct=61.6
+- Metrikler: chg24_pct=0.83, high24=4423.08, low24=4365.54, pos24=0.77, vol24_usdt=14507442, ob_imbalance=0.54, spread_pct=0.0002, funding_pct=0.0037, funding_annual_pct=4.1, open_interest=14991.901, long_short_ratio=1.6, long_pct=61.6
 
 > ⚠️ Bu rapor otomatik teknik analizdir, yatırım tavsiyesi değildir. Gerçek emir gönderilmez; tetik insanda.

@@ -48,7 +48,7 @@
    "width": 380,
    "height": 150,
    "color": "4",
-   "text": "### 🧱 Destek/Direnç Ajanı\n**BOĞA** · bias +0.20 · güven 55\nYakın direnç 0.1254 (+0.9%); yakın destek 0.1228 (−1.2%). Fiyat son aralığın %1'inde.\n⚠️ Direnç 0.1254 hemen üstte: kırılım kapanışı görmeden long açma"
+   "text": "### 🧱 Destek/Direnç Ajanı\n**BOĞA** · bias +0.20 · güven 55\nYakın direnç 0.1254 (+1.0%); yakın destek 0.1228 (−1.1%). Fiyat son aralığın %1'inde.\n⚠️ Direnç 0.1254 hemen üstte: kırılım kapanışı görmeden long açma"
   },
   {
    "id": "ag_momentum",
@@ -78,7 +78,7 @@
    "width": 380,
    "height": 150,
    "color": "4",
-   "text": "### 📡 Binance Canlı Piyasa Ajanı\n**BOĞA** · bias +0.34 · güven 50\nCanlı akış boğa: emir defteri alış payı %63, funding %0.0048, 24s %+1.55."
+   "text": "### 📡 Binance Canlı Piyasa Ajanı\n**BOĞA** · bias +0.30 · güven 50\nCanlı akış boğa: emir defteri alış payı %61, funding %0.0032, 24s %+1.14."
   },
   {
    "id": "manager",
@@ -88,7 +88,7 @@
    "width": 460,
    "height": 380,
    "color": "1",
-   "text": "## 🧠 FET YÖNETİCİSİ\n🔴 SHORT · kanaat %58 · 4/6 yönlü ajan hemfikir · fiyat 0.1243 · trend güçlü ayı\n\n**Karar: 🔴 SHORT** · kanaat %58\nSkor -0.35 (−1 ayı … +1 boğa)\n\n- Yön SHORT (kanaat %58). 4h mum 0.1228 altında kapanırsa short.\n- Stop 0.1300 (+%5.95); hedef1 0.1081, hedef2 0.1008; R/R 2.0\n- Kaldıraç ≤ 2x (öneri 1x), marj ≈ 15.0 USDT, riske atılan ≈ 0.89 USDT\n\n[[Agents/FET|Tam rapor →]] · [[Coins/FET|Backtest →]]\n_2026-08-18 00:19_"
+   "text": "## 🧠 FET YÖNETİCİSİ\n🔴 SHORT · kanaat %59 · 4/6 yönlü ajan hemfikir · fiyat 0.1242 · trend güçlü ayı\n\n**Karar: 🔴 SHORT** · kanaat %59\nSkor -0.36 (−1 ayı … +1 boğa)\n\n- Yön SHORT (kanaat %59). 4h mum 0.1228 altında kapanırsa short.\n- Stop 0.1300 (+%5.95); hedef1 0.1081, hedef2 0.1008; R/R 2.0\n- Kaldıraç ≤ 2x (öneri 1x), marj ≈ 15.0 USDT, riske atılan ≈ 0.89 USDT\n\n[[Agents/FET|Tam rapor →]] · [[Coins/FET|Backtest →]]\n_2026-08-18 00:39_"
   },
   {
    "id": "plan",
@@ -128,7 +128,7 @@
    "width": 460,
    "height": 300,
    "color": "3",
-   "text": "## 📍 Kilit Seviyeler\n- ema200_1d: 0.2094\n- ema50_1d: 0.1529\n- ema20_1d: 0.1377\n- ema_resistance: 0.1377\n- r2: 0.1317\n- r1: 0.1254\n- high_24h: 0.1244\n- s1: 0.1228\n- low_24h: 0.1192"
+   "text": "## 📍 Kilit Seviyeler\n- ema200_1d: 0.2094\n- ema50_1d: 0.1529\n- ema20_1d: 0.1377\n- ema_resistance: 0.1377\n- r2: 0.1317\n- r1: 0.1254\n- high_24h: 0.1246\n- s1: 0.1228\n- low_24h: 0.1192"
   },
   {
    "id": "chart",

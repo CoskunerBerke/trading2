@@ -1,13 +1,13 @@
 ---
 symbol: CL/USDT
 verdict: BEKLE
-conviction: 29
-price: 84.06
-updated: 2026-08-17T21:18:39+00:00
+conviction: 30
+price: 83.98
+updated: 2026-08-17T21:38:53+00:00
 tags: [trading, agents]
 ---
-# 🧠 CL/USDT — Ajan Raporu (⚪ BEKLE, kanaat %29)
-> ⚪ BEKLE · kanaat %29 · 4/5 yönlü ajan hemfikir · fiyat 84.06 · trend nötr  ·  2026-08-18 00:19
+# 🧠 CL/USDT — Ajan Raporu (⚪ BEKLE, kanaat %30)
+> ⚪ BEKLE · kanaat %30 · 4/5 yönlü ajan hemfikir · fiyat 83.98 · trend nötr  ·  2026-08-18 00:39
 
 Şema: [[Agents/CL.canvas]] · Backtest/karar: [[Coins/CL]] · [[Agents/Baş Yönetici]] · [[Paper Futures]]
 
@@ -33,16 +33,16 @@ tags: [trading, agents]
 ## 📍 Kilit seviyeler
 | Seviye | Fiyat | Uzaklık |
 |---|---|---|
-| r2 | 85.80 | +2.07% |
-| r1 | 84.62 | +0.67% |
-| high_24h | 84.20 | +0.17% |
-| ema50_1d | 80.94 | -3.71% |
+| r2 | 85.80 | +2.17% |
+| r1 | 84.62 | +0.77% |
+| high_24h | 84.20 | +0.26% |
+| ema50_1d | 80.94 | -3.61% |
 | ema200_1d | nan | +nan% |
-| ema_support | 83.53 | -0.63% |
-| s1 | 82.10 | -2.34% |
-| s2 | 81.31 | -3.27% |
-| ema20_1d | 80.87 | -3.80% |
-| low_24h | 80.86 | -3.81% |
+| ema_support | 83.53 | -0.53% |
+| s1 | 82.10 | -2.24% |
+| s2 | 81.31 | -3.18% |
+| ema20_1d | 80.87 | -3.70% |
+| low_24h | 80.86 | -3.72% |
 
 ## 🤖 Uzman ajan raporları
 ### 🌡️ Volatilite Ajanı — NÖTR (bias +0.00, güven 70)
@@ -71,8 +71,8 @@ Hacim boğa: alıcı hacmi baskın
 - 4 saatlik: son bar hacmi 20-bar ortalamasının 2.19 katı (yüksek); alım/satım hacmi oranı 2.85; OBV 20-bar eğimi +14.5%; hareket hacimle onaylı
 - Metrikler: vol_ratio_1d=0.11, updown_vol_1d=0.63, vol_ratio_4h=2.19, updown_vol_4h=2.85
 
-### 🧱 Destek/Direnç Ajanı — AYI (bias -0.26, güven 55)
-Yakın direnç 84.62 (+0.7%); yakın destek 82.10 (−2.4%). Fiyat son aralığın %39'inde.
+### 🧱 Destek/Direnç Ajanı — AYI (bias -0.25, güven 55)
+Yakın direnç 84.62 (+0.8%); yakın destek 82.10 (−2.3%). Fiyat son aralığın %39'inde.
 - 84.62 üstünde 4h kapanış → hedef 85.80
 - 82.10 altında 4h kapanış → risk 81.31
 - 20 günlük en yüksek 88.27, en düşük 74.32
@@ -89,13 +89,13 @@ Momentum güçlü boğa (RSI 1d/4h/1h: 52/71/70).
 ### 🧪 Backtest/Edge Ajanı — NÖTR (bias +0.00, güven 0)
 WFO analizi yok (önce `run`).
 
-### 📡 Binance Canlı Piyasa Ajanı — BOĞA (bias +0.21, güven 50)
-Canlı akış boğa: emir defteri alış payı %52, funding %-0.0037, 24s %+3.17.
-- 24s: %+3.17, aralık 80.86–84.20, fiyat aralığın %96'inde, hacim 613M USDT
-- Emir defteri (ilk 20 kademe): alış 1,667K / satış 1,516K USDT → alış payı %52
-- Funding %-0.0037 / 8s (yıllık ≈ %-4) → nötr
-- Açık pozisyon (OI): 2,109,790 CL
+### 📡 Binance Canlı Piyasa Ajanı — BOĞA (bias +0.30, güven 50)
+Canlı akış boğa: emir defteri alış payı %60, funding %-0.0064, 24s %+3.00.
+- 24s: %+3.00, aralık 80.86–84.20, fiyat aralığın %93'inde, hacim 613M USDT
+- Emir defteri (ilk 20 kademe): alış 1,779K / satış 1,180K USDT → alış payı %60
+- Funding %-0.0064 / 8s (yıllık ≈ %-7) → shortlar ödüyor (short kalabalık)
+- Açık pozisyon (OI): 2,110,742 CL
 - Global long/short hesap oranı 1.00 (long %50)
-- Metrikler: chg24_pct=3.17, high24=84.2, low24=80.86, pos24=0.96, vol24_usdt=612521680, ob_imbalance=0.52, spread_pct=0.0119, funding_pct=-0.0037, funding_annual_pct=-4.0, open_interest=2109789.69, long_short_ratio=1.0, long_pct=50.0
+- Metrikler: chg24_pct=3.0, high24=84.2, low24=80.86, pos24=0.93, vol24_usdt=612570124, ob_imbalance=0.6, spread_pct=0.0119, funding_pct=-0.0064, funding_annual_pct=-7.0, open_interest=2110741.86, long_short_ratio=1.0, long_pct=50.0
 
 > ⚠️ Bu rapor otomatik teknik analizdir, yatırım tavsiyesi değildir. Gerçek emir gönderilmez; tetik insanda.

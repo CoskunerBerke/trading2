@@ -5,7 +5,7 @@ score: 39
 price: 6.342
 regime: YATAY
 has_edge: false
-updated: 2026-08-17T20:31:39+00:00
+updated: 2026-08-17T21:36:17+00:00
 tags: [trading, coin]
 ---
 # ⚪ AVAX/USDT — BEKLE (skor 39)

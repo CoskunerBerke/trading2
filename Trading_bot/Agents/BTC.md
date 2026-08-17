@@ -1,13 +1,13 @@
 ---
 symbol: BTC/USDT
 verdict: BEKLE
-conviction: 15
-price: 64374.01
-updated: 2026-08-17T21:18:14+00:00
+conviction: 8
+price: 64334.58
+updated: 2026-08-17T21:38:40+00:00
 tags: [trading, agents]
 ---
-# 🧠 BTC/USDT — Ajan Raporu (⚪ BEKLE, kanaat %15)
-> ⚪ BEKLE · kanaat %15 · 2/3 yönlü ajan hemfikir · fiyat 64,374 · trend ayı  ·  2026-08-18 00:19
+# 🧠 BTC/USDT — Ajan Raporu (⚪ BEKLE, kanaat %8)
+> ⚪ BEKLE · kanaat %8 · 1/2 yönlü ajan hemfikir · fiyat 64,335 · trend ayı  ·  2026-08-18 00:39
 
 Şema: [[Agents/BTC.canvas]] · Backtest/karar: [[Coins/BTC]] · [[Agents/Baş Yönetici]] · [[Paper Futures]]
 
@@ -20,33 +20,33 @@ tags: [trading, agents]
 
 ## ✅ YAP
 - Yön yok → BEKLE. Pozisyon açma; sadece izle.
-- Kaldıraç kullanma. Yeniden değerlendirme: direnç 64,704 üstünde kapanış (long) / destek 64,116 altında kapanış (short)
+- Kaldıraç kullanma. Yeniden değerlendirme: direnç 64,488 üstünde kapanış (long) / destek 64,116 altında kapanış (short)
 
 ## 🚫 YAPMA
 - Bollinger sıkışması: yön belli olmadan (kırılım kapanışı) pozisyon açma
-- Direnç 64,704 hemen üstte: kırılım kapanışı görmeden long açma
+- Direnç 64,488 hemen üstte: kırılım kapanışı görmeden long açma
 - Destek 64,116 hemen altta: kırılım kapanışı görmeden short açma
 - Walk-forward'da doğrulanmış edge yok: sistematik strateji sinyaline değil, sadece güçlü çoklu-ajan uyumuna işlem aç; boyutu küçük tut
 - Sistematik (WFO) edge yok → bu plan yalnızca takdire bağlı; boyutu asgaride tut
 
 ## 🔀 EĞER … İSE
-- EĞER 4h mum 64,704 üstünde hacimle kapanırsa → long senaryosu açılır (hedef 65,062)
+- EĞER 4h mum 64,488 üstünde hacimle kapanırsa → long senaryosu açılır (hedef 64,704)
 - EĞER 4h mum 64,116 altında hacimle kapanırsa → short senaryosu açılır (hedef 63,778)
 
 ## 📍 Kilit seviyeler
 | Seviye | Fiyat | Uzaklık |
 |---|---|---|
-| ema200_1d | 71,890 | +11.68% |
-| ema_resistance | 66,447 | +3.22% |
-| r2 | 65,062 | +1.07% |
-| r1 | 64,704 | +0.51% |
-| high_24h | 64,610 | +0.37% |
-| ema50_1d | 64,355 | -0.03% |
-| ema_support | 64,355 | -0.03% |
-| s1 | 64,116 | -0.40% |
-| ema20_1d | 63,795 | -0.90% |
-| s2 | 63,778 | -0.93% |
-| low_24h | 62,716 | -2.58% |
+| ema200_1d | 71,890 | +11.74% |
+| r2 | 64,704 | +0.57% |
+| high_24h | 64,610 | +0.43% |
+| r1 | 64,488 | +0.24% |
+| ema50_1d | 64,355 | +0.03% |
+| ema_resistance | 64,355 | +0.03% |
+| s1 | 64,116 | -0.34% |
+| ema20_1d | 63,795 | -0.84% |
+| ema_support | 63,795 | -0.84% |
+| s2 | 63,778 | -0.87% |
+| low_24h | 62,716 | -2.52% |
 
 ## 🤖 Uzman ajan raporları
 ### 🌡️ Volatilite Ajanı — NÖTR (bias +0.00, güven 70)
@@ -58,7 +58,7 @@ Volatilite DÜŞÜK: günlük ATR %1.95 (yüzdelik 0), 30g gerçekleşen vol %22
 - Metrikler: atr_pct_1d=1.95, atr_pct_4h=0.6, atr_rank=0, bb_width_pct=4.43, bb_width_rank=2, realized_vol_30d=21.9, regime=DÜŞÜK, stop_pct=4.87, max_leverage=5
 
 ### 📈 Trend & EMA Çizgileri Ajanı — AYI (bias -0.47, güven 63)
-Fiyat 50g EMA (~64,355) yakınında; yakın destek 50g EMA ~64,355; yakın direnç 100g EMA ~66,447. Çoklu zaman dilimi eğilimi: AYI.
+Fiyat 50g EMA (~64,355) yakınında; yakın destek 20g EMA ~63,795; yakın direnç 50g EMA ~64,355. Çoklu zaman dilimi eğilimi: AYI.
 - Günlük: fiyat EMA200'ün altında, ayı dizilimi (20<50<200), EMA50 eğimi %-0.46/10bar, ADX 19
 - 4 saatlik: fiyat EMA200'ün üstünde, ayı dizilimi (20<50<200), EMA50 eğimi %-0.10/10bar, ADX 24
 - Saatlik: fiyat EMA200'ün üstünde, karışık dizilim, EMA50 eğimi %+0.46/10bar, ADX 41
@@ -77,13 +77,13 @@ Hacim güçlü boğa: alıcı hacmi baskın
 - Metrikler: vol_ratio_1d=0.39, updown_vol_1d=0.99, vol_ratio_4h=2.52, updown_vol_4h=3.65
 
 ### 🧱 Destek/Direnç Ajanı — NÖTR (bias +0.10, güven 55)
-Yakın direnç 64,704 (+0.5%); yakın destek 64,116 (−0.4%). Fiyat son aralığın %26'inde.
-- 64,704 üstünde 4h kapanış → hedef 65,062
+Yakın direnç 64,488 (+0.2%); yakın destek 64,116 (−0.3%). Fiyat son aralığın %26'inde.
+- 64,488 üstünde 4h kapanış → hedef 64,704
 - 64,116 altında 4h kapanış → risk 63,778
 - 20 günlük en yüksek 65,745, en düşük 62,275
-- ⚠️ Direnç 64,704 hemen üstte: kırılım kapanışı görmeden long açma
+- ⚠️ Direnç 64,488 hemen üstte: kırılım kapanışı görmeden long açma
 - ⚠️ Destek 64,116 hemen altta: kırılım kapanışı görmeden short açma
-- Metrikler: resistances=[64703.544, 65061.67, 65491.94125, 65776.595, 66956.15, 67292.15], supports=[64116.0, 63777.725, 63206.78, 62802.27, 62632.8175, 62317.614], range_position=0.26, range_high=82850.0, range_low=57800.19
+- Metrikler: resistances=[64488.145, 64703.544, 65061.67, 65491.94125, 65776.595, 66956.15], supports=[64116.0, 63777.725, 63206.78, 62802.27, 62632.8175, 62317.614], range_position=0.26, range_high=82850.0, range_low=57800.19
 
 ### 🚀 Momentum Ajanı — NÖTR (bias -0.06, güven 43)
 Momentum nötr (RSI 1d/4h/1h: 42/70/72).
@@ -98,13 +98,13 @@ En iyi strateji EMA Trend Takibi · ❌ WFO OOS (4 adım): Sharpe -1.91 < 0.3, P
 - ⚠️ Walk-forward'da doğrulanmış edge yok: sistematik strateji sinyaline değil, sadece güçlü çoklu-ajan uyumuna işlem aç; boyutu küçük tut
 - Metrikler: has_edge=False, best=ema_trend(fast=9, slow=100, adx_min=20), wfo_sharpe=-1.9145, wfo_pf=0.341, wfo_trades=19, strategy_position=FLAT, signal=WATCH
 
-### 📡 Binance Canlı Piyasa Ajanı — AYI (bias -0.43, güven 50)
-Canlı akış ayı: emir defteri alış payı %2, funding %0.0031, 24s %+2.05.
-- 24s: %+2.05, aralık 62,716–64,610, fiyat aralığın %88'inde, hacim 920M USDT
-- Emir defteri (ilk 20 kademe): alış 12K / satış 633K USDT → alış payı %2
-- Funding %0.0031 / 8s (yıllık ≈ %3) → nötr
-- Açık pozisyon (OI): 106,441 BTC
+### 📡 Binance Canlı Piyasa Ajanı — NÖTR (bias +0.12, güven 50)
+Canlı akış nötr: emir defteri alış payı %48, funding %0.0035, 24s %+2.09.
+- 24s: %+2.09, aralık 62,716–64,610, fiyat aralığın %85'inde, hacim 922M USDT
+- Emir defteri (ilk 20 kademe): alış 285K / satış 310K USDT → alış payı %48
+- Funding %0.0035 / 8s (yıllık ≈ %4) → nötr
+- Açık pozisyon (OI): 106,419 BTC
 - Global long/short hesap oranı 1.55 (long %61)
-- Metrikler: chg24_pct=2.05, high24=64610.01, low24=62716.0, pos24=0.88, vol24_usdt=919950955, ob_imbalance=0.02, spread_pct=0.0, funding_pct=0.0031, funding_annual_pct=3.4, open_interest=106440.752, long_short_ratio=1.55, long_pct=60.8
+- Metrikler: chg24_pct=2.09, high24=64610.01, low24=62716.0, pos24=0.85, vol24_usdt=921924512, ob_imbalance=0.48, spread_pct=0.0, funding_pct=0.0035, funding_annual_pct=3.8, open_interest=106419.078, long_short_ratio=1.55, long_pct=60.8
 
 > ⚠️ Bu rapor otomatik teknik analizdir, yatırım tavsiyesi değildir. Gerçek emir gönderilmez; tetik insanda.

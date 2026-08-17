@@ -377,4 +377,6 @@ class EdgeAgent(Agent):
             rep.levels["strategy_stop"] = float(a.strategy_stop)
 
 
-TECHNICAL_AGENTS = [VolatilityAgent(), TrendAgent(), CandleAgent(), VolumeAgent(), LevelsAgent(), MomentumAgent(), EdgeAgent()]
+from .analog import AnalogAgent  # noqa: E402
+
+TECHNICAL_AGENTS = [VolatilityAgent(), TrendAgent(), CandleAgent(), VolumeAgent(), LevelsAgent(), MomentumAgent(), AnalogAgent(), EdgeAgent()]

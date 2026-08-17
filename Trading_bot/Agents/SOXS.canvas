@@ -48,7 +48,7 @@
    "width": 380,
    "height": 150,
    "color": "4",
-   "text": "### 🧱 Destek/Direnç Ajanı\n**BOĞA** · bias +0.19 · güven 55\nYakın direnç 39.42 (+2.7%); yakın destek 37.61 (−2.0%). Fiyat son aralığın %2'inde."
+   "text": "### 🧱 Destek/Direnç Ajanı\n**BOĞA** · bias +0.19 · güven 55\nYakın direnç 39.42 (+2.9%); yakın destek 37.61 (−1.8%). Fiyat son aralığın %2'inde."
   },
   {
    "id": "ag_momentum",
@@ -78,7 +78,7 @@
    "width": 380,
    "height": 150,
    "color": "3",
-   "text": "### 📡 Binance Canlı Piyasa Ajanı\n**NÖTR** · bias +0.14 · güven 50\nCanlı akış nötr: emir defteri alış payı %65, funding %0.0000, 24s %-4.62."
+   "text": "### 📡 Binance Canlı Piyasa Ajanı\n**NÖTR** · bias -0.01 · güven 50\nCanlı akış nötr: emir defteri alış payı %53, funding %0.0000, 24s %-4.82."
   },
   {
    "id": "manager",
@@ -88,7 +88,7 @@
    "width": 460,
    "height": 380,
    "color": "1",
-   "text": "## 🧠 SOXS YÖNETİCİSİ\n🔴 SHORT · kanaat %44 · 3/4 yönlü ajan hemfikir · fiyat 38.37 · trend güçlü ayı\n\n**Karar: 🔴 SHORT** · kanaat %44\nSkor -0.26 (−1 ayı … +1 boğa)\n\n- Yön SHORT (kanaat %44). 39.42 direncine tepkide satıcı mumuyla short (kovalama).\n- Stop 41.63 (+%5.62); hedef1 34.98, hedef2 32.76; R/R 2.0\n- Kaldıraç ≤ 5x (öneri 1x), marj ≈ 15.0 USDT, riske atılan ≈ 0.84 USDT\n\n[[Agents/SOXS|Tam rapor →]] · [[Coins/SOXS|Backtest →]]\n_2026-08-18 00:19_"
+   "text": "## 🧠 SOXS YÖNETİCİSİ\n🔴 SHORT · kanaat %46 · 3/4 yönlü ajan hemfikir · fiyat 38.30 · trend güçlü ayı\n\n**Karar: 🔴 SHORT** · kanaat %46\nSkor -0.28 (−1 ayı … +1 boğa)\n\n- Yön SHORT (kanaat %46). 39.42 direncine tepkide satıcı mumuyla short (kovalama).\n- Stop 41.63 (+%5.62); hedef1 34.98, hedef2 32.76; R/R 2.0\n- Kaldıraç ≤ 5x (öneri 1x), marj ≈ 15.0 USDT, riske atılan ≈ 0.84 USDT\n\n[[Agents/SOXS|Tam rapor →]] · [[Coins/SOXS|Backtest →]]\n_2026-08-18 00:39_"
   },
   {
    "id": "plan",

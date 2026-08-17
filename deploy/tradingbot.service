@@ -1,0 +1,20 @@
+# systemd servisi (Linux VPS): sudo cp deploy/tradingbot.service /etc/systemd/system/ && sudo systemctl enable --now tradingbot
+[Unit]
+Description=Trading Bot 7/24 AI trader (paper)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/tradingbot
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONIOENCODING=utf-8
+Environment=TZ=Europe/Istanbul
+Environment=TRADINGBOT_VAULT_PATH=/opt/tradingbot-vault
+ExecStart=/usr/bin/python3 -m tradingbot watch --interval 15 --scan-every 2
+Restart=always
+RestartSec=60
+
+[Install]
+WantedBy=multi-user.target

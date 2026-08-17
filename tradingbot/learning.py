@@ -20,8 +20,8 @@ from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from pathlib import Path
 
-AGENTS = ["trend", "momentum", "candles", "volume", "levels", "market", "edge"]
-BASE_W = {"trend": 0.25, "momentum": 0.15, "candles": 0.12, "volume": 0.10, "levels": 0.13, "market": 0.12, "edge": 0.20}
+AGENTS = ["trend", "momentum", "candles", "volume", "levels", "market", "analog", "edge"]
+BASE_W = {"trend": 0.22, "momentum": 0.13, "candles": 0.10, "volume": 0.09, "levels": 0.12, "market": 0.11, "analog": 0.15, "edge": 0.18}
 FEATURES = ([f"bias_{a}" for a in AGENTS] + [f"conf_{a}" for a in AGENTS] +
             ["conviction", "rr", "atr_pct", "funding_dir", "ob_dir", "rsi4_dir", "n_warnings", "leverage", "scan_score", "hour_sin", "hour_cos", "is_breakout", "btc_align"])
 
@@ -192,7 +192,7 @@ class Learner:
         why: list[str] = []
         reason = rec.get("exit_reason", "")
         mae, mfe, bars = float(rec.get("mae_pct", 0)), float(rec.get("mfe_pct", 0)), int(rec.get("bars_held", 0))
-        names = {"trend": "Trend", "momentum": "Momentum", "candles": "Mum yapısı", "volume": "Hacim", "levels": "Seviye", "market": "Canlı piyasa", "edge": "Backtest"}
+        names = {"trend": "Trend", "momentum": "Momentum", "candles": "Mum yapısı", "volume": "Hacim", "levels": "Seviye", "market": "Canlı piyasa", "analog": "Geçmiş benzerlik", "edge": "Backtest"}
         if won:
             why.append(f"KÂR (+{r:.2f}R): {reason}. Destekleyen ve haklı çıkan ajanlar: {', '.join(names[a] for a in right) or '-'}.")
             if wrong:

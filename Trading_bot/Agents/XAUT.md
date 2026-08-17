@@ -1,13 +1,13 @@
 ---
 symbol: XAUT/USDT
-verdict: BEKLE
-conviction: 36
-price: 4394.9
-updated: 2026-08-17T21:18:54+00:00
+verdict: LONG
+conviction: 38
+price: 4395.57
+updated: 2026-08-17T21:39:07+00:00
 tags: [trading, agents]
 ---
-# 🧠 XAUT/USDT — Ajan Raporu (⚪ BEKLE, kanaat %36)
-> ⚪ BEKLE · kanaat %36 · 3/3 yönlü ajan hemfikir · fiyat 4,395 · trend boğa  ·  2026-08-18 00:19
+# 🧠 XAUT/USDT — Ajan Raporu (🟢 LONG, kanaat %38)
+> 🟢 LONG · kanaat %38 · 3/3 yönlü ajan hemfikir · fiyat 4,396 · trend boğa  ·  2026-08-18 00:39
 
 Şema: [[Agents/XAUT.canvas]] · Backtest/karar: [[Coins/XAUT]] · [[Agents/Baş Yönetici]] · [[Paper Futures]]
 
@@ -17,33 +17,39 @@ tags: [trading, agents]
 🤖 Öğrenen model P(kazanç): **%50**
 
 ## 🎯 Futures planı
-⚪ **BEKLE** — yön yok. Max kaldıraç (volatiliteye göre) 5x.
+- Yön: **LONG** · ✅ geçerli
+- Tetik: 4h mum 4,421 üstünde kapanırsa long (kırılım)
+- Giriş ~4,425 · Stop 4,366 (%1.35) · Hedef1 4,571 · Hedef2 4,644 · R/R 2.45
+- Kaldıraç ≤ 5x (öneri 2x) · marj ≈ 15.0 USDT · notional ≈ 30.0 USDT · riske atılan ≈ 0.41 USDT
 
 ## ✅ YAP
-- Yön yok → BEKLE. Pozisyon açma; sadece izle.
-- Kaldıraç kullanma. Yeniden değerlendirme: direnç 4,421 üstünde kapanış (long) / destek 4,368 altında kapanış (short)
+- Yön LONG (kanaat %38). 4h mum 4,421 üstünde kapanırsa long.
+- Stop 4,366 (−%1.35); hedef1 4,571, hedef2 4,644; R/R 2.45
+- Kaldıraç ≤ 5x (öneri 2x), marj ≈ 15.0 USDT, riske atılan ≈ 0.41 USDT
 
 ## 🚫 YAPMA
 - Direnç 4,421 hemen üstte: kırılım kapanışı görmeden long açma
 - Destek 4,368 hemen altta: kırılım kapanışı görmeden short açma
+- Piyasa emriyle kovalama; sadece koşul gerçekleşince gir
+- Stop'u aşağı taşıma; hedef1'de yarısını kapat, kalanını başa-baş stopla taşı
 
 ## 🔀 EĞER … İSE
-- EĞER 4h mum 4,421 üstünde hacimle kapanırsa → long senaryosu açılır (hedef 4,459)
-- EĞER 4h mum 4,368 altında hacimle kapanırsa → short senaryosu açılır (hedef 4,349)
+- EĞER 4h kapanış 4,368 altına inerse → long fikri iptal, 4,349 riski
+- EĞER 4h kapanış 4,421 üstüne çıkarsa → hedef 4,459
 
 ## 📍 Kilit seviyeler
 | Seviye | Fiyat | Uzaklık |
 |---|---|---|
-| r2 | 4,459 | +1.46% |
-| r1 | 4,421 | +0.59% |
-| high_24h | 4,409 | +0.32% |
-| s1 | 4,368 | -0.60% |
-| low_24h | 4,351 | -0.99% |
-| s2 | 4,349 | -1.05% |
-| ema20_1d | 4,257 | -3.13% |
-| ema50_1d | 4,201 | -4.42% |
+| r2 | 4,459 | +1.45% |
+| r1 | 4,421 | +0.58% |
+| high_24h | 4,409 | +0.31% |
+| s1 | 4,368 | -0.62% |
+| low_24h | 4,351 | -1.01% |
+| s2 | 4,349 | -1.07% |
+| ema20_1d | 4,257 | -3.15% |
+| ema50_1d | 4,201 | -4.43% |
 | ema200_1d | nan | +nan% |
-| ema_support | 4,257 | -3.13% |
+| ema_support | 4,257 | -3.15% |
 
 ## 🤖 Uzman ajan raporları
 ### 🌡️ Volatilite Ajanı — NÖTR (bias +0.00, güven 70)
@@ -91,13 +97,13 @@ Momentum güçlü boğa (RSI 1d/4h/1h: 63/63/59).
 ### 🧪 Backtest/Edge Ajanı — NÖTR (bias +0.00, güven 0)
 WFO analizi yok (önce `run`).
 
-### 📡 Binance Canlı Piyasa Ajanı — NÖTR (bias -0.08, güven 50)
-Canlı akış nötr: emir defteri alış payı %35, funding %0.0044, 24s %+0.84.
-- 24s: %+0.84, aralık 4,351–4,409, fiyat aralığın %76'inde, hacim 36M USDT
-- Emir defteri (ilk 20 kademe): alış 34K / satış 64K USDT → alış payı %35
-- Funding %0.0044 / 8s (yıllık ≈ %5) → nötr
-- Açık pozisyon (OI): 6,298 XAUT
+### 📡 Binance Canlı Piyasa Ajanı — NÖTR (bias +0.10, güven 50)
+Canlı akış nötr: emir defteri alış payı %49, funding %0.0048, 24s %+0.88.
+- 24s: %+0.88, aralık 4,351–4,409, fiyat aralığın %77'inde, hacim 36M USDT
+- Emir defteri (ilk 20 kademe): alış 33K / satış 34K USDT → alış payı %49
+- Funding %0.0048 / 8s (yıllık ≈ %5) → nötr
+- Açık pozisyon (OI): 6,292 XAUT
 - Global long/short hesap oranı 1.17 (long %54)
-- Metrikler: chg24_pct=0.84, high24=4409.0, low24=4351.24, pos24=0.76, vol24_usdt=35706583, ob_imbalance=0.35, spread_pct=0.0002, funding_pct=0.0044, funding_annual_pct=4.8, open_interest=6298.493, long_short_ratio=1.17, long_pct=54.0
+- Metrikler: chg24_pct=0.88, high24=4409.0, low24=4351.24, pos24=0.77, vol24_usdt=35708178, ob_imbalance=0.49, spread_pct=0.0002, funding_pct=0.0048, funding_annual_pct=5.2, open_interest=6291.943, long_short_ratio=1.17, long_pct=54.0
 
 > ⚠️ Bu rapor otomatik teknik analizdir, yatırım tavsiyesi değildir. Gerçek emir gönderilmez; tetik insanda.

@@ -48,7 +48,7 @@
    "width": 380,
    "height": 150,
    "color": "4",
-   "text": "### 🧱 Destek/Direnç Ajanı\n**BOĞA** · bias +0.24 · güven 55\nYakın direnç 158.47 (+2.2%); yakın destek 153.61 (−0.9%). Fiyat son aralığın %64'inde.\n⚠️ Destek 153.61 hemen altta: kırılım kapanışı görmeden short açma"
+   "text": "### 🧱 Destek/Direnç Ajanı\n**BOĞA** · bias +0.24 · güven 55\nYakın direnç 158.47 (+2.0%); yakın destek 153.61 (−1.1%). Fiyat son aralığın %65'inde."
   },
   {
    "id": "ag_momentum",
@@ -78,7 +78,7 @@
    "width": 380,
    "height": 150,
    "color": "3",
-   "text": "### 📡 Binance Canlı Piyasa Ajanı\n**NÖTR** · bias +0.07 · güven 50\nCanlı akış nötr: emir defteri alış payı %54, funding %0.0123, 24s %+0.67."
+   "text": "### 📡 Binance Canlı Piyasa Ajanı\n**NÖTR** · bias +0.12 · güven 50\nCanlı akış nötr: emir defteri alış payı %58, funding %0.0162, 24s %+0.92."
   },
   {
    "id": "manager",
@@ -88,7 +88,7 @@
    "width": 460,
    "height": 380,
    "color": "6",
-   "text": "## 🧠 AAOI YÖNETİCİSİ\n⚪ BEKLE · kanaat %27 · 4/4 yönlü ajan hemfikir · fiyat 155.02 · trend boğa\n\n**Karar: ⚪ BEKLE** · kanaat %27\nSkor +0.17 (−1 ayı … +1 boğa)\n\n- Yön yok → BEKLE. Pozisyon açma; sadece izle.\n- Kaldıraç kullanma. Yeniden değerlendirme: direnç 158.47 üstünde kapanış (long) / destek 153.61 altında kapanış (short)\n\n[[Agents/AAOI|Tam rapor →]] · [[Coins/AAOI|Backtest →]]\n_2026-08-18 00:19_"
+   "text": "## 🧠 AAOI YÖNETİCİSİ\n⚪ BEKLE · kanaat %28 · 4/4 yönlü ajan hemfikir · fiyat 155.29 · trend boğa\n\n**Karar: ⚪ BEKLE** · kanaat %28\nSkor +0.17 (−1 ayı … +1 boğa)\n\n- Yön yok → BEKLE. Pozisyon açma; sadece izle.\n- Kaldıraç kullanma. Yeniden değerlendirme: direnç 158.47 üstünde kapanış (long) / destek 153.61 altında kapanış (short)\n\n[[Agents/AAOI|Tam rapor →]] · [[Coins/AAOI|Backtest →]]\n_2026-08-18 00:39_"
   },
   {
    "id": "plan",
@@ -108,7 +108,7 @@
    "width": 520,
    "height": 300,
    "color": "1",
-   "text": "## 🚫 YAPMA\n- Destek 153.61 hemen altta: kırılım kapanışı görmeden short açma"
+   "text": "## 🚫 YAPMA\n- (uyarı yok)"
   },
   {
    "id": "ifthen",

@@ -263,7 +263,7 @@ def test_agents_run_and_manager_produces_brief():
             "funding": {"rate": 0.0001}, "open_interest": {"amount": 1000.0}, "long_short": {"ratio": 1.5, "long_pct": 60}}
     ctx = CoinContext(symbol="ETH/USDT", frames=_frames(), live=live, equity_usdt=50, risk_pct=2.0, atr_stop_mult=2.5)
     reports = [a.run(ctx) for a in TECHNICAL_AGENTS + [MarketDataAgent()]]
-    assert len(reports) == 8
+    assert len(reports) == 9
     for r in reports:
         assert -1.0 <= r.bias <= 1.0 and 0 <= r.confidence <= 100
         if r.agent != "edge":
@@ -387,3 +387,16 @@ def test_scanner_note_and_features_from_brief():
     chief = ChiefAgent().decide([b])
     f = features_from_brief(b, chief, 70)
     assert set(k for k in f if k.startswith("bias_")) and f["scan_score"] == pytest.approx(0.7) and "setup_type" in f
+
+
+def test_analog_agent_finds_history_and_is_bounded():
+    from tradingbot.agents.analog import AnalogAgent, find_analogs
+    from tradingbot.agents.base import CoinContext
+    frames = _frames(seed=13)
+    ctx = CoinContext(symbol="ETH/USDT", frames=frames)
+    r = AnalogAgent().run(ctx)
+    assert not r.error and -1 <= r.bias <= 1 and r.findings
+    res = find_analogs(frames["4h"], 30, 6)
+    assert res is not None and res["count"] >= 0
+    if res["count"]:
+        assert 0 <= res["up_ratio"] <= 1 and len(res["dates"]) <= 5

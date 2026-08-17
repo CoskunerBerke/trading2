@@ -1,13 +1,13 @@
 ---
 symbol: AAOI/USDT
 verdict: BEKLE
-conviction: 27
-price: 155.02
-updated: 2026-08-17T21:19:03+00:00
+conviction: 28
+price: 155.29
+updated: 2026-08-17T21:39:16+00:00
 tags: [trading, agents]
 ---
-# 🧠 AAOI/USDT — Ajan Raporu (⚪ BEKLE, kanaat %27)
-> ⚪ BEKLE · kanaat %27 · 4/4 yönlü ajan hemfikir · fiyat 155.02 · trend boğa  ·  2026-08-18 00:19
+# 🧠 AAOI/USDT — Ajan Raporu (⚪ BEKLE, kanaat %28)
+> ⚪ BEKLE · kanaat %28 · 4/4 yönlü ajan hemfikir · fiyat 155.29 · trend boğa  ·  2026-08-18 00:39
 
 Şema: [[Agents/AAOI.canvas]] · Backtest/karar: [[Coins/AAOI]] · [[Agents/Baş Yönetici]] · [[Paper Futures]]
 
@@ -24,7 +24,6 @@ tags: [trading, agents]
 - Kaldıraç kullanma. Yeniden değerlendirme: direnç 158.47 üstünde kapanış (long) / destek 153.61 altında kapanış (short)
 
 ## 🚫 YAPMA
-- Destek 153.61 hemen altta: kırılım kapanışı görmeden short açma
 
 ## 🔀 EĞER … İSE
 - EĞER 4h mum 158.47 üstünde hacimle kapanırsa → long senaryosu açılır (hedef 177.38)
@@ -33,16 +32,16 @@ tags: [trading, agents]
 ## 📍 Kilit seviyeler
 | Seviye | Fiyat | Uzaklık |
 |---|---|---|
-| r2 | 177.38 | +14.42% |
-| high_24h | 161.26 | +4.03% |
-| r1 | 158.47 | +2.23% |
-| s1 | 153.61 | -0.91% |
-| s2 | 149.32 | -3.68% |
-| ema20_1d | 130.31 | -15.94% |
-| ema50_1d | 129.47 | -16.48% |
+| r2 | 177.38 | +14.22% |
+| high_24h | 161.26 | +3.84% |
+| r1 | 158.47 | +2.05% |
+| s1 | 153.61 | -1.08% |
+| s2 | 149.32 | -3.84% |
+| ema20_1d | 130.31 | -16.09% |
+| ema50_1d | 129.47 | -16.63% |
 | ema200_1d | nan | +nan% |
-| low_24h | 147.27 | -5.00% |
-| ema_support | 130.31 | -15.94% |
+| low_24h | 147.27 | -5.16% |
+| ema_support | 130.31 | -16.09% |
 
 ## 🤖 Uzman ajan raporları
 ### 🌡️ Volatilite Ajanı — NÖTR (bias +0.00, güven 70)
@@ -72,12 +71,11 @@ Hacim boğa: alıcı hacmi baskın
 - Metrikler: vol_ratio_1d=0.06, updown_vol_1d=1.15, vol_ratio_4h=2.16, updown_vol_4h=5.66
 
 ### 🧱 Destek/Direnç Ajanı — BOĞA (bias +0.24, güven 55)
-Yakın direnç 158.47 (+2.2%); yakın destek 153.61 (−0.9%). Fiyat son aralığın %64'inde.
+Yakın direnç 158.47 (+2.0%); yakın destek 153.61 (−1.1%). Fiyat son aralığın %65'inde.
 - 158.47 üstünde 4h kapanış → hedef 177.38
 - 153.61 altında 4h kapanış → risk 149.32
 - 20 günlük en yüksek 154.91, en düşük 74.17
-- ⚠️ Destek 153.61 hemen altta: kırılım kapanışı görmeden short açma
-- Metrikler: resistances=[158.47, 177.38, 199.84], supports=[153.60666667, 149.32, 143.895, 140.52, 133.0, 129.792], range_position=0.64, range_high=199.84, range_low=74.17
+- Metrikler: resistances=[158.47, 177.38, 199.84], supports=[153.60666667, 149.32, 143.895, 140.52, 133.0, 129.792], range_position=0.65, range_high=199.84, range_low=74.17
 
 ### 🚀 Momentum Ajanı — BOĞA (bias +0.34, güven 57)
 Momentum boğa (RSI 1d/4h/1h: 63/65/50).
@@ -89,13 +87,13 @@ Momentum boğa (RSI 1d/4h/1h: 63/65/50).
 ### 🧪 Backtest/Edge Ajanı — NÖTR (bias +0.00, güven 0)
 WFO analizi yok (önce `run`).
 
-### 📡 Binance Canlı Piyasa Ajanı — NÖTR (bias +0.07, güven 50)
-Canlı akış nötr: emir defteri alış payı %54, funding %0.0123, 24s %+0.67.
-- 24s: %+0.67, aralık 147.27–161.26, fiyat aralığın %55'inde, hacim 67M USDT
-- Emir defteri (ilk 20 kademe): alış 18K / satış 15K USDT → alış payı %54
-- Funding %0.0123 / 8s (yıllık ≈ %13) → longlar ödüyor (long kalabalık)
-- Açık pozisyon (OI): 73,179 AAOI
+### 📡 Binance Canlı Piyasa Ajanı — NÖTR (bias +0.12, güven 50)
+Canlı akış nötr: emir defteri alış payı %58, funding %0.0162, 24s %+0.92.
+- 24s: %+0.92, aralık 147.27–161.26, fiyat aralığın %57'inde, hacim 67M USDT
+- Emir defteri (ilk 20 kademe): alış 12K / satış 9K USDT → alış payı %58
+- Funding %0.0162 / 8s (yıllık ≈ %18) → longlar ödüyor (long kalabalık)
+- Açık pozisyon (OI): 73,094 AAOI
 - Global long/short hesap oranı 0.93 (long %48)
-- Metrikler: chg24_pct=0.67, high24=161.26, low24=147.27, pos24=0.55, vol24_usdt=66599553, ob_imbalance=0.54, spread_pct=0.0194, funding_pct=0.0123, funding_annual_pct=13.5, open_interest=73178.93, long_short_ratio=0.93, long_pct=48.3
+- Metrikler: chg24_pct=0.92, high24=161.26, low24=147.27, pos24=0.57, vol24_usdt=66628700, ob_imbalance=0.58, spread_pct=0.0129, funding_pct=0.0162, funding_annual_pct=17.8, open_interest=73093.51, long_short_ratio=0.93, long_pct=48.3
 
 > ⚠️ Bu rapor otomatik teknik analizdir, yatırım tavsiyesi değildir. Gerçek emir gönderilmez; tetik insanda.

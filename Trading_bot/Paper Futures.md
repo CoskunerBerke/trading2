@@ -2,7 +2,7 @@
 tags: [trading, paper, futures]
 ---
 # 📈 Kağıt Futures Defteri (gerçek piyasa koşulları, gerçek para YOK)
-> 2026-08-18 00:19 · Equity **50.00 USDT** (başlangıç 50) · getiri +0.00% · açık 0 · kapanan 0 · kazanma %0.0 · ort. +0.00R · komisyon 0.00
+> 2026-08-18 00:39 · Equity **50.00 USDT** (başlangıç 50.0) · getiri +0.00% · açık 0 · kapanan 0 · kazanma %0.0 · ort. +0.00R · komisyon 0.00
 
 ## Açık pozisyonlar
 | ID | Sembol | Yön | Giriş | Şimdi | P&L | Stop | TP1 | TP2 | Kaldıraç | Marj | MAE/MFE % | Tetik | Görsel |

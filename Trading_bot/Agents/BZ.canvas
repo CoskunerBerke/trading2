@@ -48,7 +48,7 @@
    "width": 380,
    "height": 150,
    "color": "3",
-   "text": "### 🧱 Destek/Direnç Ajanı\n**NÖTR** · bias +0.03 · güven 55\nYakın direnç 90.06 (+1.0%); yakın destek 88.34 (−0.9%). Fiyat son aralığın %42'inde.\n⚠️ Destek 88.34 hemen altta: kırılım kapanışı görmeden short açma"
+   "text": "### 🧱 Destek/Direnç Ajanı\n**NÖTR** · bias +0.03 · güven 55\nYakın direnç 90.06 (+1.1%); yakın destek 88.34 (−0.8%). Fiyat son aralığın %42'inde.\n⚠️ Destek 88.34 hemen altta: kırılım kapanışı görmeden short açma"
   },
   {
    "id": "ag_momentum",
@@ -78,7 +78,7 @@
    "width": 380,
    "height": 150,
    "color": "4",
-   "text": "### 📡 Binance Canlı Piyasa Ajanı\n**BOĞA** · bias +0.35 · güven 50\nCanlı akış boğa: emir defteri alış payı %48, funding %-0.0047, 24s %+3.10."
+   "text": "### 📡 Binance Canlı Piyasa Ajanı\n**BOĞA** · bias +0.39 · güven 50\nCanlı akış boğa: emir defteri alış payı %52, funding %-0.0090, 24s %+2.98."
   },
   {
    "id": "manager",
@@ -88,7 +88,7 @@
    "width": 460,
    "height": 380,
    "color": "4",
-   "text": "## 🧠 BZ YÖNETİCİSİ\n🟢 LONG · kanaat %45 · 5/5 yönlü ajan hemfikir · fiyat 89.15 · trend boğa\n\n**Karar: 🟢 LONG** · kanaat %45\nSkor +0.27 (−1 ayı … +1 boğa)\n\n- Yön LONG (kanaat %45). 4h mum 90.06 üstünde kapanırsa long.\n- Stop 87.26 (−%3.21); hedef1 95.54, hedef2 97.36; R/R 1.87\n- Kaldıraç ≤ 3x (öneri 2x), marj ≈ 15.0 USDT, riske atılan ≈ 0.96 USDT\n\n[[Agents/BZ|Tam rapor →]] · [[Coins/BZ|Backtest →]]\n_2026-08-18 00:19_"
+   "text": "## 🧠 BZ YÖNETİCİSİ\n🟢 LONG · kanaat %45 · 5/5 yönlü ajan hemfikir · fiyat 89.09 · trend boğa\n\n**Karar: 🟢 LONG** · kanaat %45\nSkor +0.27 (−1 ayı … +1 boğa)\n\n- Yön LONG (kanaat %45). 4h mum 90.06 üstünde kapanırsa long.\n- Stop 87.26 (−%3.21); hedef1 95.54, hedef2 97.36; R/R 1.87\n- Kaldıraç ≤ 3x (öneri 2x), marj ≈ 15.0 USDT, riske atılan ≈ 0.96 USDT\n\n[[Agents/BZ|Tam rapor →]] · [[Coins/BZ|Backtest →]]\n_2026-08-18 00:39_"
   },
   {
    "id": "plan",

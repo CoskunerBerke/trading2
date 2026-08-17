@@ -235,7 +235,7 @@ class CoinManagerAgent:
 
 
 def _default_weight(agent: str) -> float:
-    return {"trend": 0.25, "momentum": 0.15, "candles": 0.12, "volume": 0.10, "levels": 0.13, "market": 0.12, "edge": 0.20, "volatility": 0.0}.get(agent, 0.1)
+    return {"trend": 0.22, "momentum": 0.13, "candles": 0.10, "volume": 0.09, "levels": 0.12, "market": 0.11, "analog": 0.15, "edge": 0.18, "volatility": 0.0}.get(agent, 0.1)
 
 
 # ---------------------------------------------------------------------- Baş Yönetici

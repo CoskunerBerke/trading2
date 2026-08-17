@@ -137,6 +137,8 @@ class TradingEngine:
             alerts.append(f"{'✅' if l['won'] else '❌'} KAPANDI {l['symbol']} {l['side']} {l['r']:+.2f}R ({l['exit']}) — {l['why'][0][:120]}")
         if obsidian:
             self._write_obsidian(briefs, chief, alerts, scan, chart_paths, analyses)
+            if self.cfg.obsidian.git_sync:
+                self._git_sync()
         summary = {"at": now, "symbols": symbols, "scan": {"universe": scan.universe, "scanned": scan.scanned, "flagged": scan.flagged, "setups": len(scan.setups)} if scan else None,
                    "chief": chief.headline, "opened": opened, "closed": [l["symbol"] for l in lessons], "ledger": self.ledger.summary(prices),
                    "learning": self.learner.snapshot(), "seconds": round(time.time() - t0, 1)}
@@ -204,6 +206,23 @@ class TradingEngine:
         except Exception as exc:  # noqa: BLE001
             log.warning("%s grafik hatası: %s", b.symbol, exc)
             return ""
+
+    def _git_sync(self) -> None:
+        """Kasa klasörü bir git deposuysa: add + commit + push (bulut → PC/telefon senkronu için)."""
+        import subprocess
+        v = str(self.vault)
+        try:
+            if subprocess.run(["git", "-C", v, "rev-parse", "--is-inside-work-tree"], capture_output=True, text=True).returncode != 0:
+                log.warning("git_sync açık ama kasa git deposu değil: %s", v)
+                return
+            subprocess.run(["git", "-C", v, "add", "-A"], check=True, capture_output=True)
+            r = subprocess.run(["git", "-C", v, "commit", "-m", f"bot: {datetime.now().strftime('%Y-%m-%d %H:%M')}"], capture_output=True, text=True)
+            if r.returncode == 0:
+                subprocess.run(["git", "-C", v, "pull", "--rebase", "-q"], capture_output=True)
+                subprocess.run(["git", "-C", v, "push", "-q"], check=True, capture_output=True, timeout=120)
+                log.info("Kasa git'e gönderildi")
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Kasa git senkronu başarısız: %s", exc)
 
     # ------------------------------------------------------------------ Obsidian
     def _write_obsidian(self, briefs, chief, alerts, scan, chart_paths, analyses):

@@ -78,7 +78,7 @@
    "width": 380,
    "height": 150,
    "color": "3",
-   "text": "### 📡 Binance Canlı Piyasa Ajanı\n**NÖTR** · bias +0.05 · güven 50\nCanlı akış nötr: emir defteri alış payı %42, funding %-0.0030, 24s %+1.13."
+   "text": "### 📡 Binance Canlı Piyasa Ajanı\n**NÖTR** · bias +0.12 · güven 50\nCanlı akış nötr: emir defteri alış payı %49, funding %-0.0017, 24s %+1.31."
   },
   {
    "id": "manager",
@@ -88,7 +88,7 @@
    "width": 460,
    "height": 380,
    "color": "6",
-   "text": "## 🧠 SOL YÖNETİCİSİ\n⚪ BEKLE · kanaat %10 · 2/3 yönlü ajan hemfikir · fiyat 75.92 · trend boğa\n\n**Karar: ⚪ BEKLE** · kanaat %10\nSkor +0.06 (−1 ayı … +1 boğa)\n\n- Yön yok → BEKLE. Pozisyon açma; sadece izle.\n- Kaldıraç kullanma. Yeniden değerlendirme: direnç 76.28 üstünde kapanış (long) / destek 75.67 altında kapanış (short)\n\n[[Agents/SOL|Tam rapor →]] · [[Coins/SOL|Backtest →]]\n_2026-08-18 00:19_"
+   "text": "## 🧠 SOL YÖNETİCİSİ\n⚪ BEKLE · kanaat %11 · 2/3 yönlü ajan hemfikir · fiyat 75.90 · trend boğa\n\n**Karar: ⚪ BEKLE** · kanaat %11\nSkor +0.07 (−1 ayı … +1 boğa)\n\n- Yön yok → BEKLE. Pozisyon açma; sadece izle.\n- Kaldıraç kullanma. Yeniden değerlendirme: direnç 76.28 üstünde kapanış (long) / destek 75.67 altında kapanış (short)\n\n[[Agents/SOL|Tam rapor →]] · [[Coins/SOL|Backtest →]]\n_2026-08-18 00:39_"
   },
   {
    "id": "plan",

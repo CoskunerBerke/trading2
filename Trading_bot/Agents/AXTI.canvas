@@ -48,7 +48,7 @@
    "width": 380,
    "height": 150,
    "color": "3",
-   "text": "### 🧱 Destek/Direnç Ajanı\n**NÖTR** · bias -0.09 · güven 55\nYakın direnç 116.85 (+22.8%); yakın destek 91.13 (−4.5%). Fiyat son aralığın %73'inde."
+   "text": "### 🧱 Destek/Direnç Ajanı\n**NÖTR** · bias -0.09 · güven 55\nYakın direnç 116.85 (+22.4%); yakın destek 91.13 (−4.8%). Fiyat son aralığın %73'inde."
   },
   {
    "id": "ag_momentum",
@@ -78,7 +78,7 @@
    "width": 380,
    "height": 150,
    "color": "4",
-   "text": "### 📡 Binance Canlı Piyasa Ajanı\n**BOĞA** · bias +0.46 · güven 50\nCanlı akış boğa: emir defteri alış payı %61, funding %0.0000, 24s %+17.29."
+   "text": "### 📡 Binance Canlı Piyasa Ajanı\n**BOĞA** · bias +0.32 · güven 50\nCanlı akış boğa: emir defteri alış payı %49, funding %0.0000, 24s %+17.73."
   },
   {
    "id": "manager",
@@ -88,7 +88,7 @@
    "width": 460,
    "height": 380,
    "color": "4",
-   "text": "## 🧠 AXTI YÖNETİCİSİ\n🟢 LONG · kanaat %48 · 5/5 yönlü ajan hemfikir · fiyat 95.19 · trend boğa\n\n**Karar: 🟢 LONG** · kanaat %48\nSkor +0.29 (−1 ayı … +1 boğa)\n\n- Yön LONG (kanaat %48). 91.13 desteğine geri çekilmede alıcı mumuyla long (kovalama).\n- Stop 84.39 (−%7.4); hedef1 116.85, hedef2 111.36; R/R 3.81\n- Kaldıraç ≤ 1x (öneri 1x), marj ≈ 13.51 USDT, riske atılan ≈ 1.0 USDT\n\n[[Agents/AXTI|Tam rapor →]] · [[Coins/AXTI|Backtest →]]\n_2026-08-18 00:19_"
+   "text": "## 🧠 AXTI YÖNETİCİSİ\n🟢 LONG · kanaat %46 · 5/5 yönlü ajan hemfikir · fiyat 95.48 · trend boğa\n\n**Karar: 🟢 LONG** · kanaat %46\nSkor +0.28 (−1 ayı … +1 boğa)\n\n- Yön LONG (kanaat %46). 91.13 desteğine geri çekilmede alıcı mumuyla long (kovalama).\n- Stop 84.39 (−%7.4); hedef1 116.85, hedef2 111.36; R/R 3.81\n- Kaldıraç ≤ 1x (öneri 1x), marj ≈ 13.51 USDT, riske atılan ≈ 1.0 USDT\n\n[[Agents/AXTI|Tam rapor →]] · [[Coins/AXTI|Backtest →]]\n_2026-08-18 00:39_"
   },
   {
    "id": "plan",

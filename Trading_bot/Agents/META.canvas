@@ -48,7 +48,7 @@
    "width": 380,
    "height": 150,
    "color": "3",
-   "text": "### 🧱 Destek/Direnç Ajanı\n**NÖTR** · bias +0.08 · güven 55\nYakın direnç 577.70 (+1.4%); yakın destek 563.71 (−1.1%). Fiyat son aralığın %30'inde."
+   "text": "### 🧱 Destek/Direnç Ajanı\n**NÖTR** · bias +0.08 · güven 55\nYakın direnç 577.70 (+1.3%); yakın destek 563.71 (−1.1%). Fiyat son aralığın %30'inde."
   },
   {
    "id": "ag_momentum",
@@ -77,8 +77,8 @@
    "y": 1190,
    "width": 380,
    "height": 150,
-   "color": "4",
-   "text": "### 📡 Binance Canlı Piyasa Ajanı\n**BOĞA** · bias +0.46 · güven 50\nCanlı akış boğa: emir defteri alış payı %100, funding %0.0021, 24s %-3.77."
+   "color": "1",
+   "text": "### 📡 Binance Canlı Piyasa Ajanı\n**AYI** · bias -0.42 · güven 50\nCanlı akış ayı: emir defteri alış payı %26, funding %0.0051, 24s %-3.76."
   },
   {
    "id": "manager",
@@ -88,7 +88,7 @@
    "width": 460,
    "height": 380,
    "color": "6",
-   "text": "## 🧠 META YÖNETİCİSİ\n⚪ BEKLE · kanaat %22 · 2/3 yönlü ajan hemfikir · fiyat 569.97 · trend güçlü ayı\n\n**Karar: ⚪ BEKLE** · kanaat %22\nSkor -0.14 (−1 ayı … +1 boğa)\n\n- Yön yok → BEKLE. Pozisyon açma; sadece izle.\n- Kaldıraç kullanma. Yeniden değerlendirme: direnç 577.70 üstünde kapanış (long) / destek 563.71 altında kapanış (short)\n\n[[Agents/META|Tam rapor →]] · [[Coins/META|Backtest →]]\n_2026-08-18 00:19_"
+   "text": "## 🧠 META YÖNETİCİSİ\n⚪ BEKLE · kanaat %35 · 3/3 yönlü ajan hemfikir · fiyat 570.18 · trend güçlü ayı\n\n**Karar: ⚪ BEKLE** · kanaat %35\nSkor -0.21 (−1 ayı … +1 boğa)\n\n- Yön yok → BEKLE. Pozisyon açma; sadece izle.\n- Kaldıraç kullanma. Yeniden değerlendirme: direnç 577.70 üstünde kapanış (long) / destek 563.71 altında kapanış (short)\n\n[[Agents/META|Tam rapor →]] · [[Coins/META|Backtest →]]\n_2026-08-18 00:39_"
   },
   {
    "id": "plan",
@@ -210,8 +210,8 @@
    "fromSide": "right",
    "toNode": "manager",
    "toSide": "left",
-   "color": "4",
-   "label": "boğa · 50"
+   "color": "1",
+   "label": "ayı · 50"
   },
   {
    "id": "e_chart",

@@ -48,7 +48,7 @@
    "width": 380,
    "height": 150,
    "color": "3",
-   "text": "### 🧱 Destek/Direnç Ajanı\n**NÖTR** · bias +0.03 · güven 55\nYakın direnç 1,927 (+1.1%); yakın destek 1,897 (−0.6%). Fiyat son aralığın %44'inde.\n⚠️ Destek 1,897 hemen altta: kırılım kapanışı görmeden short açma"
+   "text": "### 🧱 Destek/Direnç Ajanı\n**NÖTR** · bias +0.03 · güven 55\nYakın direnç 1,911 (+0.2%); yakın destek 1,897 (−0.5%). Fiyat son aralığın %44'inde.\n⚠️ Direnç 1,911 hemen üstte: kırılım kapanışı görmeden long açma"
   },
   {
    "id": "ag_momentum",
@@ -78,7 +78,7 @@
    "width": 380,
    "height": 150,
    "color": "3",
-   "text": "### 📡 Binance Canlı Piyasa Ajanı\n**NÖTR** · bias -0.11 · güven 50\nCanlı akış nötr: emir defteri alış payı %30, funding %0.0039, 24s %+1.34."
+   "text": "### 📡 Binance Canlı Piyasa Ajanı\n**NÖTR** · bias -0.12 · güven 50\nCanlı akış nötr: emir defteri alış payı %30, funding %0.0043, 24s %+1.42."
   },
   {
    "id": "manager",
@@ -88,7 +88,7 @@
    "width": 460,
    "height": 380,
    "color": "6",
-   "text": "## 🧠 ETH YÖNETİCİSİ\n⚪ BEKLE · kanaat %0 · 1/3 yönlü ajan hemfikir · fiyat 1,907 · trend boğa\n\n**Karar: ⚪ BEKLE** · kanaat %0\nSkor +0.01 (−1 ayı … +1 boğa)\n\n- Yön yok → BEKLE. Pozisyon açma; sadece izle.\n- Kaldıraç kullanma. Yeniden değerlendirme: direnç 1,927 üstünde kapanış (long) / destek 1,897 altında kapanış (short)\n\n[[Agents/ETH|Tam rapor →]] · [[Coins/ETH|Backtest →]]\n_2026-08-18 00:19_"
+   "text": "## 🧠 ETH YÖNETİCİSİ\n⚪ BEKLE · kanaat %0 · 1/3 yönlü ajan hemfikir · fiyat 1,907 · trend boğa\n\n**Karar: ⚪ BEKLE** · kanaat %0\nSkor +0.01 (−1 ayı … +1 boğa)\n\n- Yön yok → BEKLE. Pozisyon açma; sadece izle.\n- Kaldıraç kullanma. Yeniden değerlendirme: direnç 1,911 üstünde kapanış (long) / destek 1,897 altında kapanış (short)\n\n[[Agents/ETH|Tam rapor →]] · [[Coins/ETH|Backtest →]]\n_2026-08-18 00:39_"
   },
   {
    "id": "plan",
@@ -98,7 +98,7 @@
    "width": 520,
    "height": 260,
    "color": "6",
-   "text": "## 🎯 FUTURES PLANI\n⚪ **BEKLE** — yön yok, pozisyon açma.\nMax kaldıraç (volatiliteye göre): 5x\n- Kaldıraç kullanma. Yeniden değerlendirme: direnç 1,927 üstünde kapanış (long) / destek 1,897 altında kapanış (short)"
+   "text": "## 🎯 FUTURES PLANI\n⚪ **BEKLE** — yön yok, pozisyon açma.\nMax kaldıraç (volatiliteye göre): 5x\n- Kaldıraç kullanma. Yeniden değerlendirme: direnç 1,911 üstünde kapanış (long) / destek 1,897 altında kapanış (short)"
   },
   {
    "id": "dont",
@@ -108,7 +108,7 @@
    "width": 520,
    "height": 300,
    "color": "1",
-   "text": "## 🚫 YAPMA\n- Bollinger sıkışması: yön belli olmadan (kırılım kapanışı) pozisyon açma\n- Günlük trend aşağı iken 4h yükseliş = karşı-trend; long boyutunu yarıya indir, hızlı kâr al\n- Destek 1,897 hemen altta: kırılım kapanışı görmeden short açma\n- Walk-forward'da doğrulanmış edge yok: sistematik strateji sinyaline değil, sadece güçlü çoklu-ajan uyumuna işlem aç; boyutu küçük tut\n- Sistematik (WFO) edge yok → bu plan yalnızca takdire bağlı; boyutu asgaride tut"
+   "text": "## 🚫 YAPMA\n- Bollinger sıkışması: yön belli olmadan (kırılım kapanışı) pozisyon açma\n- Günlük trend aşağı iken 4h yükseliş = karşı-trend; long boyutunu yarıya indir, hızlı kâr al\n- Direnç 1,911 hemen üstte: kırılım kapanışı görmeden long açma\n- Destek 1,897 hemen altta: kırılım kapanışı görmeden short açma\n- Walk-forward'da doğrulanmış edge yok: sistematik strateji sinyaline değil, sadece güçlü çoklu-ajan uyumuna işlem aç; boyutu küçük tut\n- Sistematik (WFO) edge yok → bu plan yalnızca takdire bağlı; boyutu asgaride tut"
   },
   {
    "id": "ifthen",
@@ -118,7 +118,7 @@
    "width": 520,
    "height": 220,
    "color": "5",
-   "text": "## 🔀 EĞER … İSE\n- EĞER 4h mum 1,927 üstünde hacimle kapanırsa → long senaryosu açılır (hedef 1,939)\n- EĞER 4h mum 1,897 altında hacimle kapanırsa → short senaryosu açılır (hedef 1,886)"
+   "text": "## 🔀 EĞER … İSE\n- EĞER 4h mum 1,911 üstünde hacimle kapanırsa → long senaryosu açılır (hedef 1,927)\n- EĞER 4h mum 1,897 altında hacimle kapanırsa → short senaryosu açılır (hedef 1,886)"
   },
   {
    "id": "levels",
@@ -128,7 +128,7 @@
    "width": 460,
    "height": 300,
    "color": "3",
-   "text": "## 📍 Kilit Seviyeler\n- ema200_1d: 2,128\n- r2: 1,939\n- r1: 1,927\n- ema_resistance: 1,919\n- high_24h: 1,916\n- s1: 1,897\n- s2: 1,886\n- ema20_1d: 1,883\n- ema_support: 1,883\n- low_24h: 1,869"
+   "text": "## 📍 Kilit Seviyeler\n- ema200_1d: 2,128\n- r2: 1,927\n- ema_resistance: 1,919\n- high_24h: 1,916\n- r1: 1,911\n- s1: 1,897\n- s2: 1,886\n- ema20_1d: 1,883\n- ema_support: 1,883\n- low_24h: 1,869"
   },
   {
    "id": "chart",

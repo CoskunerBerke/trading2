@@ -78,7 +78,7 @@
    "width": 380,
    "height": 150,
    "color": "3",
-   "text": "### 📡 Binance Canlı Piyasa Ajanı\n**NÖTR** · bias -0.08 · güven 50\nCanlı akış nötr: emir defteri alış payı %35, funding %0.0044, 24s %+0.84."
+   "text": "### 📡 Binance Canlı Piyasa Ajanı\n**NÖTR** · bias +0.10 · güven 50\nCanlı akış nötr: emir defteri alış payı %49, funding %0.0048, 24s %+0.88."
   },
   {
    "id": "manager",
@@ -87,8 +87,8 @@
    "y": 490,
    "width": 460,
    "height": 380,
-   "color": "6",
-   "text": "## 🧠 XAUT YÖNETİCİSİ\n⚪ BEKLE · kanaat %36 · 3/3 yönlü ajan hemfikir · fiyat 4,395 · trend boğa\n\n**Karar: ⚪ BEKLE** · kanaat %36\nSkor +0.22 (−1 ayı … +1 boğa)\n\n- Yön yok → BEKLE. Pozisyon açma; sadece izle.\n- Kaldıraç kullanma. Yeniden değerlendirme: direnç 4,421 üstünde kapanış (long) / destek 4,368 altında kapanış (short)\n\n[[Agents/XAUT|Tam rapor →]] · [[Coins/XAUT|Backtest →]]\n_2026-08-18 00:19_"
+   "color": "4",
+   "text": "## 🧠 XAUT YÖNETİCİSİ\n🟢 LONG · kanaat %38 · 3/3 yönlü ajan hemfikir · fiyat 4,396 · trend boğa\n\n**Karar: 🟢 LONG** · kanaat %38\nSkor +0.23 (−1 ayı … +1 boğa)\n\n- Yön LONG (kanaat %38). 4h mum 4,421 üstünde kapanırsa long.\n- Stop 4,366 (−%1.35); hedef1 4,571, hedef2 4,644; R/R 2.45\n- Kaldıraç ≤ 5x (öneri 2x), marj ≈ 15.0 USDT, riske atılan ≈ 0.41 USDT\n\n[[Agents/XAUT|Tam rapor →]] · [[Coins/XAUT|Backtest →]]\n_2026-08-18 00:39_"
   },
   {
    "id": "plan",
@@ -97,8 +97,8 @@
    "y": 350,
    "width": 520,
    "height": 260,
-   "color": "6",
-   "text": "## 🎯 FUTURES PLANI\n⚪ **BEKLE** — yön yok, pozisyon açma.\nMax kaldıraç (volatiliteye göre): 5x\n- Kaldıraç kullanma. Yeniden değerlendirme: direnç 4,421 üstünde kapanış (long) / destek 4,368 altında kapanış (short)"
+   "color": "4",
+   "text": "## 🎯 FUTURES PLANI — LONG\n✅ GEÇERLİ\n**Tetik:** 4h mum 4,421 üstünde kapanırsa long\nGiriş ~4,425 · Stop 4,366 (%1.35) · Hedef1 4,571 · Hedef2 4,644 · R/R 2.45\nKaldıraç ≤ **5x** (öneri 2x) · marj ≈ 15.0 USDT · notional ≈ 30.0 USDT · risk ≈ 0.41 USDT"
   },
   {
    "id": "dont",
@@ -108,7 +108,7 @@
    "width": 520,
    "height": 300,
    "color": "1",
-   "text": "## 🚫 YAPMA\n- Direnç 4,421 hemen üstte: kırılım kapanışı görmeden long açma\n- Destek 4,368 hemen altta: kırılım kapanışı görmeden short açma"
+   "text": "## 🚫 YAPMA\n- Direnç 4,421 hemen üstte: kırılım kapanışı görmeden long açma\n- Destek 4,368 hemen altta: kırılım kapanışı görmeden short açma\n- Piyasa emriyle kovalama; sadece koşul gerçekleşince gir\n- Stop'u aşağı taşıma; hedef1'de yarısını kapat, kalanını başa-baş stopla taşı"
   },
   {
    "id": "ifthen",
@@ -118,7 +118,7 @@
    "width": 520,
    "height": 220,
    "color": "5",
-   "text": "## 🔀 EĞER … İSE\n- EĞER 4h mum 4,421 üstünde hacimle kapanırsa → long senaryosu açılır (hedef 4,459)\n- EĞER 4h mum 4,368 altında hacimle kapanırsa → short senaryosu açılır (hedef 4,349)"
+   "text": "## 🔀 EĞER … İSE\n- EĞER 4h kapanış 4,368 altına inerse → long fikri iptal, 4,349 riski\n- EĞER 4h kapanış 4,421 üstüne çıkarsa → hedef 4,459"
   },
   {
    "id": "levels",

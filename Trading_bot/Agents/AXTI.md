@@ -1,13 +1,13 @@
 ---
 symbol: AXTI/USDT
 verdict: LONG
-conviction: 48
-price: 95.19
-updated: 2026-08-17T21:18:41+00:00
+conviction: 46
+price: 95.48
+updated: 2026-08-17T21:38:56+00:00
 tags: [trading, agents]
 ---
-# 🧠 AXTI/USDT — Ajan Raporu (🟢 LONG, kanaat %48)
-> 🟢 LONG · kanaat %48 · 5/5 yönlü ajan hemfikir · fiyat 95.19 · trend boğa  ·  2026-08-18 00:19
+# 🧠 AXTI/USDT — Ajan Raporu (🟢 LONG, kanaat %46)
+> 🟢 LONG · kanaat %46 · 5/5 yönlü ajan hemfikir · fiyat 95.48 · trend boğa  ·  2026-08-18 00:39
 
 Şema: [[Agents/AXTI.canvas]] · Backtest/karar: [[Coins/AXTI]] · [[Agents/Baş Yönetici]] · [[Paper Futures]]
 
@@ -23,7 +23,7 @@ tags: [trading, agents]
 - Kaldıraç ≤ 1x (öneri 1x) · marj ≈ 13.51 USDT · notional ≈ 13.51 USDT · riske atılan ≈ 1.0 USDT
 
 ## ✅ YAP
-- Yön LONG (kanaat %48). 91.13 desteğine geri çekilmede alıcı mumuyla long (kovalama).
+- Yön LONG (kanaat %46). 91.13 desteğine geri çekilmede alıcı mumuyla long (kovalama).
 - Stop 84.39 (−%7.4); hedef1 116.85, hedef2 111.36; R/R 3.81
 - Kaldıraç ≤ 1x (öneri 1x), marj ≈ 13.51 USDT, riske atılan ≈ 1.0 USDT
 
@@ -40,15 +40,15 @@ tags: [trading, agents]
 ## 📍 Kilit seviyeler
 | Seviye | Fiyat | Uzaklık |
 |---|---|---|
-| r1 | 116.85 | +22.75% |
-| high_24h | 97.92 | +2.87% |
-| s1 | 91.13 | -4.27% |
-| s2 | 85.58 | -10.10% |
-| low_24h | 80.89 | -15.02% |
-| ema20_1d | 73.19 | -23.11% |
-| ema50_1d | 69.34 | -27.16% |
+| r1 | 116.85 | +22.38% |
+| high_24h | 97.92 | +2.56% |
+| s1 | 91.13 | -4.56% |
+| s2 | 85.58 | -10.37% |
+| low_24h | 80.89 | -15.28% |
+| ema20_1d | 73.19 | -23.34% |
+| ema50_1d | 69.34 | -27.38% |
 | ema200_1d | nan | +nan% |
-| ema_support | 73.19 | -23.11% |
+| ema_support | 73.19 | -23.34% |
 
 ## 🤖 Uzman ajan raporları
 ### 🌡️ Volatilite Ajanı — NÖTR (bias +0.00, güven 70)
@@ -78,7 +78,7 @@ Hacim güçlü boğa: alıcı hacmi baskın
 - Metrikler: vol_ratio_1d=0.04, updown_vol_1d=3.35, vol_ratio_4h=5.25, updown_vol_4h=3.38
 
 ### 🧱 Destek/Direnç Ajanı — NÖTR (bias -0.09, güven 55)
-Yakın direnç 116.85 (+22.8%); yakın destek 91.13 (−4.5%). Fiyat son aralığın %73'inde.
+Yakın direnç 116.85 (+22.4%); yakın destek 91.13 (−4.8%). Fiyat son aralığın %73'inde.
 - 116.85 üstünde 4h kapanış → hedef aralık üstü 116.85
 - 91.13 altında 4h kapanış → risk 85.58
 - 20 günlük en yüksek 94.57, en düşük 36.23
@@ -96,13 +96,13 @@ Momentum güçlü boğa (RSI 1d/4h/1h: 58/87/78).
 ### 🧪 Backtest/Edge Ajanı — NÖTR (bias +0.00, güven 0)
 WFO analizi yok (önce `run`).
 
-### 📡 Binance Canlı Piyasa Ajanı — BOĞA (bias +0.46, güven 50)
-Canlı akış boğa: emir defteri alış payı %61, funding %0.0000, 24s %+17.29.
-- 24s: %+17.29, aralık 80.89–97.92, fiyat aralığın %84'inde, hacim 66M USDT
-- Emir defteri (ilk 20 kademe): alış 23K / satış 15K USDT → alış payı %61
+### 📡 Binance Canlı Piyasa Ajanı — BOĞA (bias +0.32, güven 50)
+Canlı akış boğa: emir defteri alış payı %49, funding %0.0000, 24s %+17.73.
+- 24s: %+17.73, aralık 80.89–97.92, fiyat aralığın %86'inde, hacim 66M USDT
+- Emir defteri (ilk 20 kademe): alış 7K / satış 7K USDT → alış payı %49
 - Funding %0.0000 / 8s (yıllık ≈ %0) → nötr
-- Açık pozisyon (OI): 142,877 AXTI
+- Açık pozisyon (OI): 141,830 AXTI
 - Global long/short hesap oranı 0.57 (long %36)
-- Metrikler: chg24_pct=17.29, high24=97.92, low24=80.89, pos24=0.84, vol24_usdt=65656449, ob_imbalance=0.61, spread_pct=0.0105, funding_pct=0.0, funding_annual_pct=0.0, open_interest=142877.18, long_short_ratio=0.57, long_pct=36.5
+- Metrikler: chg24_pct=17.73, high24=97.92, low24=80.89, pos24=0.86, vol24_usdt=66261882, ob_imbalance=0.49, spread_pct=0.0524, funding_pct=0.0, funding_annual_pct=0.0, open_interest=141829.64, long_short_ratio=0.57, long_pct=36.5
 
 > ⚠️ Bu rapor otomatik teknik analizdir, yatırım tavsiyesi değildir. Gerçek emir gönderilmez; tetik insanda.

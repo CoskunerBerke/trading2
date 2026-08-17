@@ -78,7 +78,7 @@
    "width": 380,
    "height": 150,
    "color": "4",
-   "text": "### 📡 Binance Canlı Piyasa Ajanı\n**BOĞA** · bias +0.25 · güven 50\nCanlı akış boğa: emir defteri alış payı %62, funding %0.0032, 24s %+0.78."
+   "text": "### 📡 Binance Canlı Piyasa Ajanı\n**BOĞA** · bias +0.16 · güven 50\nCanlı akış boğa: emir defteri alış payı %54, funding %0.0037, 24s %+0.83."
   },
   {
    "id": "manager",
@@ -88,7 +88,7 @@
    "width": 460,
    "height": 380,
    "color": "4",
-   "text": "## 🧠 PAXG YÖNETİCİSİ\n🟢 LONG · kanaat %55 · 4/4 yönlü ajan hemfikir · fiyat 4,410 · trend güçlü boğa\n\n**Karar: 🟢 LONG** · kanaat %55\nSkor +0.33 (−1 ayı … +1 boğa)\n\n- Yön LONG (kanaat %55). 4h mum 4,436 üstünde kapanırsa long.\n- Stop 4,379 (−%1.37); hedef1 4,579, hedef2 4,648; R/R 2.28\n- Kaldıraç ≤ 5x (öneri 2x), marj ≈ 15.0 USDT, riske atılan ≈ 0.41 USDT\n\n[[Agents/PAXG|Tam rapor →]] · [[Coins/PAXG|Backtest →]]\n_2026-08-18 00:19_"
+   "text": "## 🧠 PAXG YÖNETİCİSİ\n🟢 LONG · kanaat %53 · 4/4 yönlü ajan hemfikir · fiyat 4,410 · trend güçlü boğa\n\n**Karar: 🟢 LONG** · kanaat %53\nSkor +0.32 (−1 ayı … +1 boğa)\n\n- Yön LONG (kanaat %53). 4h mum 4,436 üstünde kapanırsa long.\n- Stop 4,379 (−%1.37); hedef1 4,579, hedef2 4,648; R/R 2.28\n- Kaldıraç ≤ 5x (öneri 2x), marj ≈ 15.0 USDT, riske atılan ≈ 0.41 USDT\n\n[[Agents/PAXG|Tam rapor →]] · [[Coins/PAXG|Backtest →]]\n_2026-08-18 00:39_"
   },
   {
    "id": "plan",

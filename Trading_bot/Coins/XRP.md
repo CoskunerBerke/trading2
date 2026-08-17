@@ -5,7 +5,7 @@ score: 35
 price: 1.0015
 regime: DÜŞÜŞ
 has_edge: false
-updated: 2026-08-17T20:31:39+00:00
+updated: 2026-08-17T21:36:17+00:00
 tags: [trading, coin]
 ---
 # ⚪ XRP/USDT — BEKLE (skor 35)

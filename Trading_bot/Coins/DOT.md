@@ -5,7 +5,7 @@ score: 35
 price: 0.761
 regime: DÜŞÜŞ
 has_edge: false
-updated: 2026-08-17T20:31:39+00:00
+updated: 2026-08-17T21:36:17+00:00
 tags: [trading, coin]
 ---
 # ⚪ DOT/USDT — BEKLE (skor 35)

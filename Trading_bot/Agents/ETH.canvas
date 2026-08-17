@@ -48,7 +48,7 @@
    "width": 380,
    "height": 150,
    "color": "3",
-   "text": "### 🧱 Destek/Direnç Ajanı\n**NÖTR** · bias +0.03 · güven 55\nYakın direnç 1,911 (+0.3%); yakın destek 1,897 (−0.5%). Fiyat son aralığın %44'inde.\n⚠️ Direnç 1,911 hemen üstte: kırılım kapanışı görmeden long açma"
+   "text": "### 🧱 Destek/Direnç Ajanı\n**NÖTR** · bias +0.03 · güven 55\nYakın direnç 1,927 (+1.1%); yakın destek 1,897 (−0.6%). Fiyat son aralığın %44'inde.\n⚠️ Destek 1,897 hemen altta: kırılım kapanışı görmeden short açma"
   },
   {
    "id": "ag_momentum",
@@ -57,8 +57,8 @@
    "y": 850,
    "width": 380,
    "height": 150,
-   "color": "3",
-   "text": "### 🚀 Momentum Ajanı\n**NÖTR** · bias -0.03 · güven 41\nMomentum nötr (RSI 1d/4h/1h: 50/61/58)."
+   "color": "1",
+   "text": "### 🚀 Momentum Ajanı\n**AYI** · bias -0.27 · güven 53\nMomentum ayı (RSI 1d/4h/1h: 50/61/57)."
   },
   {
    "id": "ag_edge",
@@ -77,8 +77,8 @@
    "y": 1190,
    "width": 380,
    "height": 150,
-   "color": "4",
-   "text": "### 📡 Binance Canlı Piyasa Ajanı\n**GÜÇLÜ BOĞA** · bias +0.53 · güven 50\nCanlı akış güçlü boğa: emir defteri alış payı %84, funding %0.0037, 24s %+1.27."
+   "color": "3",
+   "text": "### 📡 Binance Canlı Piyasa Ajanı\n**NÖTR** · bias -0.11 · güven 50\nCanlı akış nötr: emir defteri alış payı %30, funding %0.0039, 24s %+1.34."
   },
   {
    "id": "manager",
@@ -88,7 +88,7 @@
    "width": 460,
    "height": 380,
    "color": "6",
-   "text": "## 🧠 ETH YÖNETİCİSİ\n⚪ BEKLE · kanaat %14 · 2/3 yönlü ajan hemfikir · fiyat 1,906 · trend boğa\n\n**Karar: ⚪ BEKLE** · kanaat %14\nSkor +0.09 (−1 ayı … +1 boğa)\n\n- Yön yok → BEKLE. Pozisyon açma; sadece izle.\n- Kaldıraç kullanma. Yeniden değerlendirme: direnç 1,911 üstünde kapanış (long) / destek 1,897 altında kapanış (short)\n\n[[Agents/ETH|Tam rapor →]] · [[Coins/ETH|Backtest →]]\n_2026-08-17 23:53_"
+   "text": "## 🧠 ETH YÖNETİCİSİ\n⚪ BEKLE · kanaat %0 · 1/3 yönlü ajan hemfikir · fiyat 1,907 · trend boğa\n\n**Karar: ⚪ BEKLE** · kanaat %0\nSkor +0.01 (−1 ayı … +1 boğa)\n\n- Yön yok → BEKLE. Pozisyon açma; sadece izle.\n- Kaldıraç kullanma. Yeniden değerlendirme: direnç 1,927 üstünde kapanış (long) / destek 1,897 altında kapanış (short)\n\n[[Agents/ETH|Tam rapor →]] · [[Coins/ETH|Backtest →]]\n_2026-08-18 00:19_"
   },
   {
    "id": "plan",
@@ -98,7 +98,7 @@
    "width": 520,
    "height": 260,
    "color": "6",
-   "text": "## 🎯 FUTURES PLANI\n⚪ **BEKLE** — yön yok, pozisyon açma.\nMax kaldıraç (volatiliteye göre): 5x\n- Kaldıraç kullanma. Yeniden değerlendirme: direnç 1,911 üstünde kapanış (long) / destek 1,897 altında kapanış (short)"
+   "text": "## 🎯 FUTURES PLANI\n⚪ **BEKLE** — yön yok, pozisyon açma.\nMax kaldıraç (volatiliteye göre): 5x\n- Kaldıraç kullanma. Yeniden değerlendirme: direnç 1,927 üstünde kapanış (long) / destek 1,897 altında kapanış (short)"
   },
   {
    "id": "dont",
@@ -108,7 +108,7 @@
    "width": 520,
    "height": 300,
    "color": "1",
-   "text": "## 🚫 YAPMA\n- Bollinger sıkışması: yön belli olmadan (kırılım kapanışı) pozisyon açma\n- Günlük trend aşağı iken 4h yükseliş = karşı-trend; long boyutunu yarıya indir, hızlı kâr al\n- Direnç 1,911 hemen üstte: kırılım kapanışı görmeden long açma\n- Destek 1,897 hemen altta: kırılım kapanışı görmeden short açma\n- Walk-forward'da doğrulanmış edge yok: sistematik strateji sinyaline değil, sadece güçlü çoklu-ajan uyumuna işlem aç; boyutu küçük tut\n- Sistematik (WFO) edge yok → bu plan yalnızca takdire bağlı; boyutu asgaride tut"
+   "text": "## 🚫 YAPMA\n- Bollinger sıkışması: yön belli olmadan (kırılım kapanışı) pozisyon açma\n- Günlük trend aşağı iken 4h yükseliş = karşı-trend; long boyutunu yarıya indir, hızlı kâr al\n- Destek 1,897 hemen altta: kırılım kapanışı görmeden short açma\n- Walk-forward'da doğrulanmış edge yok: sistematik strateji sinyaline değil, sadece güçlü çoklu-ajan uyumuna işlem aç; boyutu küçük tut\n- Sistematik (WFO) edge yok → bu plan yalnızca takdire bağlı; boyutu asgaride tut"
   },
   {
    "id": "ifthen",
@@ -118,7 +118,7 @@
    "width": 520,
    "height": 220,
    "color": "5",
-   "text": "## 🔀 EĞER … İSE\n- EĞER 4h mum 1,911 üstünde hacimle kapanırsa → long senaryosu açılır (hedef 1,927)\n- EĞER 4h mum 1,897 altında hacimle kapanırsa → short senaryosu açılır (hedef 1,886)"
+   "text": "## 🔀 EĞER … İSE\n- EĞER 4h mum 1,927 üstünde hacimle kapanırsa → long senaryosu açılır (hedef 1,939)\n- EĞER 4h mum 1,897 altında hacimle kapanırsa → short senaryosu açılır (hedef 1,886)"
   },
   {
    "id": "levels",
@@ -128,7 +128,16 @@
    "width": 460,
    "height": 300,
    "color": "3",
-   "text": "## 📍 Kilit Seviyeler\n- ema200_1d: 2,128\n- r2: 1,927\n- ema_resistance: 1,919\n- high_24h: 1,916\n- r1: 1,911\n- s1: 1,897\n- s2: 1,886\n- ema20_1d: 1,883\n- ema_support: 1,883\n- low_24h: 1,869"
+   "text": "## 📍 Kilit Seviyeler\n- ema200_1d: 2,128\n- r2: 1,939\n- r1: 1,927\n- ema_resistance: 1,919\n- high_24h: 1,916\n- s1: 1,897\n- s2: 1,886\n- ema20_1d: 1,883\n- ema_support: 1,883\n- low_24h: 1,869"
+  },
+  {
+   "id": "chart",
+   "type": "file",
+   "file": "Charts/ETH.png",
+   "x": 1240,
+   "y": -20,
+   "width": 520,
+   "height": 340
   }
  ],
  "edges": [
@@ -183,8 +192,8 @@
    "fromSide": "right",
    "toNode": "manager",
    "toSide": "left",
-   "color": "3",
-   "label": "nötr · 41"
+   "color": "1",
+   "label": "ayı · 53"
   },
   {
    "id": "e_edge",
@@ -201,8 +210,16 @@
    "fromSide": "right",
    "toNode": "manager",
    "toSide": "left",
-   "color": "4",
-   "label": "güçlü boğa · 50"
+   "color": "3",
+   "label": "nötr · 50"
+  },
+  {
+   "id": "e_chart",
+   "fromNode": "chart",
+   "fromSide": "bottom",
+   "toNode": "plan",
+   "toSide": "top",
+   "label": "görsel"
   },
   {
    "id": "e_m_plan",

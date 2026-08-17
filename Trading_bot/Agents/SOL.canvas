@@ -48,7 +48,7 @@
    "width": 380,
    "height": 150,
    "color": "3",
-   "text": "### 🧱 Destek/Direnç Ajanı\n**NÖTR** · bias +0.03 · güven 55\nYakın direnç 76.28 (+0.4%); yakın destek 75.67 (−0.4%). Fiyat son aralığın %41'inde.\n⚠️ Direnç 76.28 hemen üstte: kırılım kapanışı görmeden long açma"
+   "text": "### 🧱 Destek/Direnç Ajanı\n**NÖTR** · bias +0.04 · güven 55\nYakın direnç 76.28 (+0.5%); yakın destek 75.67 (−0.3%). Fiyat son aralığın %41'inde.\n⚠️ Direnç 76.28 hemen üstte: kırılım kapanışı görmeden long açma"
   },
   {
    "id": "ag_momentum",
@@ -58,7 +58,7 @@
    "width": 380,
    "height": 150,
    "color": "4",
-   "text": "### 🚀 Momentum Ajanı\n**GÜÇLÜ BOĞA** · bias +0.54 · güven 67\nMomentum güçlü boğa (RSI 1d/4h/1h: 48/53/55)."
+   "text": "### 🚀 Momentum Ajanı\n**GÜÇLÜ BOĞA** · bias +0.59 · güven 69\nMomentum güçlü boğa (RSI 1d/4h/1h: 48/53/58)."
   },
   {
    "id": "ag_edge",
@@ -78,7 +78,7 @@
    "width": 380,
    "height": 150,
    "color": "3",
-   "text": "### 📡 Binance Canlı Piyasa Ajanı\n**NÖTR** · bias +0.11 · güven 50\nCanlı akış nötr: emir defteri alış payı %47, funding %-0.0041, 24s %+1.25."
+   "text": "### 📡 Binance Canlı Piyasa Ajanı\n**NÖTR** · bias +0.05 · güven 50\nCanlı akış nötr: emir defteri alış payı %42, funding %-0.0030, 24s %+1.13."
   },
   {
    "id": "manager",
@@ -88,7 +88,7 @@
    "width": 460,
    "height": 380,
    "color": "6",
-   "text": "## 🧠 SOL YÖNETİCİSİ\n⚪ BEKLE · kanaat %9 · 2/3 yönlü ajan hemfikir · fiyat 75.95 · trend boğa\n\n**Karar: ⚪ BEKLE** · kanaat %9\nSkor +0.06 (−1 ayı … +1 boğa)\n\n- Yön yok → BEKLE. Pozisyon açma; sadece izle.\n- Kaldıraç kullanma. Yeniden değerlendirme: direnç 76.28 üstünde kapanış (long) / destek 75.67 altında kapanış (short)\n\n[[Agents/SOL|Tam rapor →]] · [[Coins/SOL|Backtest →]]\n_2026-08-17 23:53_"
+   "text": "## 🧠 SOL YÖNETİCİSİ\n⚪ BEKLE · kanaat %10 · 2/3 yönlü ajan hemfikir · fiyat 75.92 · trend boğa\n\n**Karar: ⚪ BEKLE** · kanaat %10\nSkor +0.06 (−1 ayı … +1 boğa)\n\n- Yön yok → BEKLE. Pozisyon açma; sadece izle.\n- Kaldıraç kullanma. Yeniden değerlendirme: direnç 76.28 üstünde kapanış (long) / destek 75.67 altında kapanış (short)\n\n[[Agents/SOL|Tam rapor →]] · [[Coins/SOL|Backtest →]]\n_2026-08-18 00:19_"
   },
   {
    "id": "plan",
@@ -129,6 +129,15 @@
    "height": 300,
    "color": "3",
    "text": "## 📍 Kilit Seviyeler\n- ema200_1d: 89.18\n- ema_resistance: 78.15\n- r2: 76.81\n- r1: 76.28\n- high_24h: 76.22\n- s1: 75.67\n- ema50_1d: 75.49\n- ema_support: 75.49\n- s2: 75.23\n- ema20_1d: 75.12"
+  },
+  {
+   "id": "chart",
+   "type": "file",
+   "file": "Charts/SOL.png",
+   "x": 1240,
+   "y": -20,
+   "width": 520,
+   "height": 340
   }
  ],
  "edges": [
@@ -184,7 +193,7 @@
    "toNode": "manager",
    "toSide": "left",
    "color": "4",
-   "label": "güçlü boğa · 67"
+   "label": "güçlü boğa · 69"
   },
   {
    "id": "e_edge",
@@ -203,6 +212,14 @@
    "toSide": "left",
    "color": "3",
    "label": "nötr · 50"
+  },
+  {
+   "id": "e_chart",
+   "fromNode": "chart",
+   "fromSide": "bottom",
+   "toNode": "plan",
+   "toSide": "top",
+   "label": "görsel"
   },
   {
    "id": "e_m_plan",

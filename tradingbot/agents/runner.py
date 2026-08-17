@@ -31,21 +31,29 @@ class AgentRunner:
         self.agents = TECHNICAL_AGENTS + [MarketDataAgent()]
         self.manager = CoinManagerAgent()
         self.chief = ChiefAgent(max_concurrent=cfg.risk.max_open_positions)
+        self.last_frames: dict[str, dict] = {}
 
-    def _frames(self, symbol: str, prefetched_4h=None) -> dict:
+    def set_weights(self, weights: dict | None) -> None:
+        self.manager = CoinManagerAgent(weights or None)
+
+    def _frames(self, symbol: str, prefetched: dict | None = None) -> dict:
+        """prefetched: {"1d": df, "4h": df, "1h": df} (ham OHLCV) — verilenler kullanılır, eksikler TradingView/ccxt'den çekilir."""
         frames = {}
+        prefetched = prefetched or {}
         for tf, md in self.markets.items():
             try:
-                df = prefetched_4h if (tf == "4h" and prefetched_4h is not None) else md.fetch(symbol)
+                df = prefetched.get(tf)
+                if df is None:
+                    df = md.fetch(symbol)
                 df = drop_unclosed_last_bar(df, tf)
                 frames[tf] = ind.add_snapshot_indicators(df)
             except Exception as exc:  # noqa: BLE001
                 log.warning("%s %s verisi alınamadı: %s", symbol, tf, exc)
         return frames
 
-    def run_symbol(self, symbol: str, analysis=None, prefetched_4h=None) -> CoinBrief:
+    def run_symbol(self, symbol: str, analysis=None, prefetched: dict | None = None) -> CoinBrief:
         t0 = time.time()
-        frames = self._frames(symbol, prefetched_4h)
+        frames = self._frames(symbol, prefetched)
         live = self.live.snapshot(symbol)
         ctx = CoinContext(symbol=symbol, frames=frames, live=live, analysis=analysis,
                           equity_usdt=self.cfg.risk.starting_equity_usdt, risk_pct=self.cfg.risk.risk_per_trade_pct,
@@ -53,6 +61,11 @@ class AgentRunner:
         reports = [a.run(ctx) for a in self.agents]
         brief = self.manager.decide(ctx, reports)
         brief.generated_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        h4 = ctx.frame("4h")
+        if h4 is not None:
+            brief.last_close_4h = float(h4["close"].iloc[-1])
+            brief.last_bar_4h = str(h4.index[-1])
+        self.last_frames[symbol] = frames
         log.info("%s ajanlar: %s (kanaat %d) %.1fs", symbol, brief.verdict, brief.conviction, time.time() - t0)
         return brief
 

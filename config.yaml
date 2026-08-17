@@ -46,6 +46,23 @@ risk:
   btc_regime_filter: true
   min_confidence_to_buy: 55
 
+scanner:
+  enabled: true
+  min_volume_usdt: 20000000     # 24s hacim ≥ 20M USDT olan Binance USDT perpetual'ları tara
+  flag_score: 60                # işaretleme eşiği (0-100)
+  top_n: 12                     # derin ajan analizine giden setup sayısı
+  max_symbols: 160              # tur başına en fazla taranan sembol (hacme göre ilk N)
+  core_coins: [BTC/USDT, ETH/USDT, SOL/USDT]   # her turda mutlaka analiz edilenler
+
+futures:
+  enabled: true                 # yönetici planlarını kağıt futures defterinde simüle et
+  starting_equity_usdt: 50
+  max_positions: 3
+  min_pwin: 0.45                # öğrenen model hazırsa: P(kazanç) bunun altındaysa işlem açma
+
+learning:
+  min_trades: 20                # bu kadar kapanmış işlemden sonra öğrenilen ağırlıklar/filtreler devreye girer
+
 obsidian:
   vault_path: "C:/Users/berke/Trading bot/Trading_bot"   # Obsidian'da açtığın kasa
   folder: ""

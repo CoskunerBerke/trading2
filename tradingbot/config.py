@@ -47,6 +47,29 @@ class RiskConfig:
 
 
 @dataclass
+class ScannerConfig:
+    enabled: bool = True
+    min_volume_usdt: float = 20_000_000
+    flag_score: int = 60
+    top_n: int = 12
+    max_symbols: int = 160
+    core_coins: list[str] = field(default_factory=lambda: ["BTC/USDT", "ETH/USDT", "SOL/USDT"])
+
+
+@dataclass
+class FuturesConfig:
+    enabled: bool = True
+    starting_equity_usdt: float = 50.0
+    max_positions: int = 3
+    min_pwin: float = 0.45
+
+
+@dataclass
+class LearningConfig:
+    min_trades: int = 20
+
+
+@dataclass
 class ObsidianConfig:
     vault_path: str = "C:/Users/berke/Trading bot/Trading_bot"
     folder: str = ""
@@ -65,6 +88,9 @@ class BotConfig:
     backtest: BacktestConfig = field(default_factory=BacktestConfig)
     risk: RiskConfig = field(default_factory=RiskConfig)
     obsidian: ObsidianConfig = field(default_factory=ObsidianConfig)
+    scanner: ScannerConfig = field(default_factory=ScannerConfig)
+    futures: FuturesConfig = field(default_factory=FuturesConfig)
+    learning: LearningConfig = field(default_factory=LearningConfig)
     state_dir: str = "state"
     project_root: Path = PROJECT_ROOT
 
@@ -97,6 +123,9 @@ def load_config(path: str | os.PathLike | None = None) -> BotConfig:
         backtest=_build(BacktestConfig, raw.get("backtest")),
         risk=_build(RiskConfig, raw.get("risk")),
         obsidian=_build(ObsidianConfig, raw.get("obsidian")),
+        scanner=_build(ScannerConfig, raw.get("scanner")),
+        futures=_build(FuturesConfig, raw.get("futures")),
+        learning=_build(LearningConfig, raw.get("learning")),
         state_dir=raw.get("state_dir", "state"),
         project_root=cfg_path.parent if cfg_path.exists() else PROJECT_ROOT,
     )

@@ -195,8 +195,80 @@ def cmd_agents(cfg: BotConfig, args) -> int:
     return 0
 
 
+def _print_tour(summ: dict) -> None:
+    sc = summ.get("scan")
+    if sc:
+        print(f"🔎 TARAMA: evren {sc['universe']} → tarandı {sc['scanned']} → işaretlendi {sc['flagged']} → setup {sc['setups']}")
+    print(f"🧠 {summ['chief']}")
+    led = summ["ledger"]
+    print(f"📈 KAĞIT FUTURES: equity {led['equity_mtm']:.2f} USDT ({led['return_pct']:+.2f}%) · açık {led['open']} · kapanan {led['closed']} · kazanma %{led['win_rate']} · ort {led['avg_r']:+.2f}R")
+    for o in summ.get("opened", []):
+        print(f"   ➕ AÇILDI: {o}")
+    for c in summ.get("closed", []):
+        print(f"   ➖ KAPANDI: {c}")
+    lr = summ["learning"]
+    print(f"🎓 ÖĞRENME: {lr['trades']} işlem · kazanma %{lr['win_rate']} · beklenti {lr['expectancy_r']:+.2f}R · model {'AKTİF' if lr['ready'] else 'ısınıyor'} · {summ['seconds']}s")
+
+
+def cmd_scan(cfg: BotConfig, args) -> int:
+    """Tüm piyasayı tara (Binance USDT perpetual evreni), setup'ları listele, Obsidian Scanner.md yaz."""
+    from .scanner import MarketScanner, persist_scan, scanner_note
+    sc = MarketScanner(cfg.scanner.min_volume_usdt, cfg.scanner.flag_score, args.top or cfg.scanner.top_n, max_symbols=args.max or cfg.scanner.max_symbols)
+    res = sc.scan()
+    persist_scan(res, cfg.state_path)
+    print(f"Evren {res.universe} → tarandı {res.scanned} → işaretlendi {res.flagged} → setup {len(res.setups)} ({res.seconds}s)")
+    print(f"{'#':>2} {'sembol':<14}{'yön':<6}{'skor':>5}{'trend':>7}{'mom':>6}{'hacim':>7}{'tetik':>7}{'risk':>6}{'24s%':>7}{'hacim24':>10}  etiketler")
+    for i, r in enumerate(res.setups, 1):
+        print(f"{i:>2} {r.symbol:<14}{r.direction:<6}{r.score:>5}{r.trend:>7}{r.momentum:>6}{r.volume:>7}{r.catalyst:>7}{r.risk:>6}{r.chg24_pct:>+7.1f}{r.vol24_usdt/1e6:>9,.0f}M  {', '.join(r.tags)}")
+    if not args.no_obsidian:
+        (cfg.obsidian.root / "Scanner.md").write_text(scanner_note(res), encoding="utf-8")
+        print(f"Obsidian: {cfg.obsidian.root / 'Scanner.md'}")
+    return 0
+
+
+def cmd_tour(cfg: BotConfig, args) -> int:
+    """Tek tur: tara → ajanlar → plan → kağıt futures → öğren → Obsidian."""
+    from .engine import TradingEngine
+    eng = TradingEngine(cfg)
+    summ = eng.tour(do_scan=not args.no_scan, symbols_override=args.symbols or None, obsidian=not args.no_obsidian)
+    _print_tour(summ)
+    return 0
+
+
 def cmd_watch(cfg: BotConfig, args) -> int:
-    """7/24 izleme: her `interval` dakikada ajanlar; her yeni 4h bar kapanışında tam döngü (WFO + karar + kağıt)."""
+    """7/24 izleme: her `interval` dakikada tam tur (tara→ajanlar→kağıt futures→öğren);
+    her yeni 4h bar kapanışında ayrıca spot walk-forward döngüsü (`run`)."""
+    from .data import TIMEFRAME_MS
+    from .engine import TradingEngine
+    eng = TradingEngine(cfg)
+    tf_ms = TIMEFRAME_MS[cfg.exchange.timeframe]
+    last_full_bar = -1
+    scan_every = max(1, args.scan_every)
+    n = 0
+    log.info("İzleme başladı: tur her %d dk (tarama her %d turda bir), spot WFO döngüsü her %s bar kapanışında. Ctrl+C ile durdur.",
+             args.interval, scan_every, cfg.exchange.timeframe)
+    while True:
+        try:
+            now_ms = int(time.time() * 1000)
+            cur_bar = now_ms // tf_ms
+            if cur_bar != last_full_bar and (now_ms % tf_ms) >= 120_000 and not args.no_wfo:
+                print(f"\n===== {time.strftime('%Y-%m-%d %H:%M:%S')} — SPOT WFO DÖNGÜSÜ (yeni {cfg.exchange.timeframe} bar) =====")
+                run_cycle(cfg, list(cfg.coins), args.families, write_obsidian=not args.no_obsidian, paper=not args.no_paper, agents=False)
+                last_full_bar = cur_bar
+            print(f"\n===== {time.strftime('%Y-%m-%d %H:%M:%S')} — TUR #{n+1} =====")
+            summ = eng.tour(do_scan=(n % scan_every == 0), obsidian=not args.no_obsidian)
+            _print_tour(summ)
+            n += 1
+        except KeyboardInterrupt:
+            print("İzleme durduruldu.")
+            return 0
+        except Exception as exc:  # noqa: BLE001
+            log.exception("İzleme turu hatası: %s", exc)
+        time.sleep(max(1, args.interval) * 60)
+
+
+def _old_cmd_watch(cfg: BotConfig, args) -> int:
+    """(eski) 7/24 izleme"""
     from .data import TIMEFRAME_MS
     symbols = _symbols(cfg, args)
     tf_ms = TIMEFRAME_MS[cfg.exchange.timeframe]
@@ -287,9 +359,14 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(fn=cmd_run)
     s = sub.add_parser("agents", help="Çoklu ajan analizi (coin yöneticileri + baş yönetici)"); common(s)
     s.add_argument("--no-obsidian", action="store_true"); s.set_defaults(fn=cmd_agents)
-    s = sub.add_parser("watch", help="7/24 izleme: ajanlar periyodik, tam döngü her bar kapanışında"); common(s)
-    s.add_argument("--interval", type=int, default=15, help="Ajan turu aralığı (dakika)")
-    s.add_argument("--no-obsidian", action="store_true"); s.add_argument("--no-paper", action="store_true")
+    s = sub.add_parser("scan", help="Tüm Binance USDT perpetual piyasasını tara, setup'ları sırala"); s.add_argument("--top", type=int, default=0)
+    s.add_argument("--max", type=int, default=0, help="en fazla kaç sembol (hacme göre)"); s.add_argument("--no-obsidian", action="store_true"); s.set_defaults(fn=cmd_scan)
+    s = sub.add_parser("tour", help="Tek tur: tara → ajanlar → plan → kağıt futures → öğren → Obsidian"); common(s)
+    s.add_argument("--no-scan", action="store_true"); s.add_argument("--no-obsidian", action="store_true"); s.set_defaults(fn=cmd_tour)
+    s = sub.add_parser("watch", help="7/24 izleme: tur periyodik, spot WFO döngüsü her bar kapanışında"); common(s)
+    s.add_argument("--interval", type=int, default=15, help="Tur aralığı (dakika)")
+    s.add_argument("--scan-every", type=int, default=2, help="Kaç turda bir tam piyasa taraması")
+    s.add_argument("--no-obsidian", action="store_true"); s.add_argument("--no-paper", action="store_true"); s.add_argument("--no-wfo", action="store_true")
     s.set_defaults(fn=cmd_watch)
     s = sub.add_parser("obsidian", help="Son rapordan Obsidian'ı yeniden yaz"); s.set_defaults(fn=cmd_obsidian)
     s = sub.add_parser("reset-portfolio", help="Kağıt portföyü sıfırla"); s.set_defaults(fn=cmd_reset_portfolio)

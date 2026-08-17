@@ -10,6 +10,24 @@
 > ("keep AI on analysis — the trigger stays human"). Kâr garantisi yoktur; geçmiş performans
 > gelecek getiriyi garanti etmez.
 
+## AI Trader döngüsü (7/24): TARA → ANALİZ → SETUP → RİSK → KAĞIT İŞLEM → İZLE → ÖĞREN
+
+| Adım | Modül | Ne olur |
+|---|---|---|
+| 01 TARA | `scanner.py` | **Tüm Binance USDT perpetual evreni** (24s hacim ≥ 20M, ~110-160 sembol) taranır; her sembol için Trend/Momentum/Hacim/Tetikleyici/Risk (25'er puan) → 0-100 **AI skoru**, long & short ayrı; huni: evren → tarandı → işaretlendi (≥60) → **setup** (ilk 12) |
+| 02 ANALİZ | `agents/` | Setup'lar + çekirdek coinler için 8 uzman ajan (TradingView 1d/4h/1h + Binance canlı) |
+| 03 SETUP | `agents/manager.py` | Coin yöneticisi: LONG/SHORT/BEKLE, tetik ("4h mum X üstünde kapanırsa"), giriş, stop, TP1/TP2 (≥1.5R), kaldıraç tavanı, marj |
+| 04 RİSK | `agents/manager.py` (Chief) + `engine.py` | Baş yönetici risk modu; R/R < 1.5 → plan geçersiz; kaldıraç volatiliteye göre; kovalama sınırı %1.5; öğrenen model P(kazanç) < eşik → işlem yok; kara listedeki setup tipleri atlanır |
+| 05 KAĞIT İŞLEM | `paper_futures.py` | 50 USDT kağıt futures defteri: tetik gerçekleşince pozisyon (komisyon %0.05 + kayma + funding), TP1'de yarı kapat + stop başa-baş, likidasyon yaklaşık |
+| 06 İZLE | `engine.py` | Her tur canlı fiyatla stop/TP kontrolü, MAE/MFE takibi, alarmlar |
+| 07 ÖĞREN | `learning.py` | Her kapanan işlem: giriş anındaki 8 ajan bias/güveni + piyasa özellikleri × sonuç → **hangi ajan haklıydı**, "neden kâr/zarar" dersleri; online lojistik regresyon (P(kazanç)); ajan isabet oranlarından **uyarlanır ağırlıklar**; setup×yön beklentisi negatifse **kara liste**; ≥20 işlemden sonra yönetici öğrenilen ağırlıkları kullanır |
+| Görsel | `charts.py` | Her setup/pozisyon için TradingView tarzı PNG: mumlar, EMA20/50/200, ZigZag dalga etiketleri (1)…(5), S/R, GİRİŞ çizgisi, kırmızı STOP kutusu, yeşil TP1/TP2 kutuları |
+
+Komutlar: `python -m tradingbot scan` (sadece tarama) · `python -m tradingbot tour` (tek tur) · `python -m tradingbot watch --interval 15 --scan-every 2` (7/24) · `scripts\watch_7_24.bat`.
+Obsidian: `Scanner.md` (huni + setup tablosu), `Paper Futures.md` (açık/kapanan pozisyonlar + görseller), `Learning/Öğrenme.md` (isabet oranları, öğrenilen ağırlıklar, setup istatistikleri, model özellikleri), `Learning/Dersler.md` (her işlemin NEDEN analizi), `Charts/*.png`, `Agents/<COIN>.canvas` (görsel düğümü dahil).
+
+> ⚠️ Gerçek para/API bağlanmaz. Bu sistem kağıt işlemle **kanıt biriktirir**; gerçek paraya geçiş kararı ve anahtar bağlama kullanıcıya aittir ve en az yüzlerce kağıt işlemde pozitif beklenti görmeden önerilmez.
+
 ## Çoklu ajan katmanı (coin başına uzmanlar → yönetici → baş yönetici)
 
 Her coin için 8 uzman ajan aynı anda çalışır ve o coinin **yönetici ajanına** rapor verir; yönetici futures/kaldıraç
@@ -128,6 +146,7 @@ Trading bot/
 ├─ config.yaml            ayarlar
 ├─ requirements.txt
 ├─ tradingbot/            paket (yukarıdaki katmanlar; tradingview.py = TradingView istemcisi)
+│  ├─ scanner.py          tüm piyasa tarayıcı · engine.py 7/24 motor · paper_futures.py kağıt futures · learning.py öğrenme · charts.py görseller
 │  └─ agents/             base, technical (7 ajan), market (Binance canlı), manager (coin yöneticisi + baş yönetici), runner
 ├─ tests/test_bot.py
 ├─ scripts/run_bot.bat, run_bot_loop.bat, watch_7_24.bat

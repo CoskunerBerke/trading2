@@ -306,3 +306,84 @@ def test_obsidian_agent_writer(tmp_path: Path):
         assert e["fromNode"] in ids and e["toNode"] in ids
     assert (tmp_path / "Agents" / "SOL.md").exists() and (tmp_path / "Agents" / "Baş Yönetici.md").exists()
     assert "SOL/USDT: BEKLE → LONG" in (tmp_path / "Agents" / "Alarmlar.md").read_text(encoding="utf-8")
+
+
+# ---------------------------------------------------------------- Kağıt futures + öğrenme + görsel + tarayıcı notu
+def test_futures_ledger_tp1_breakeven_and_stop(tmp_path: Path):
+    from tradingbot.paper_futures import FuturesLedger
+    led = FuturesLedger(equity=50, starting_equity=50, max_positions=3)
+    pos = led.open("ETH/USDT", "LONG", 100.0, notional=30.0, leverage=2, stop=95.0, target1=110.0, target2=120.0,
+                   setup_type="kırılım", features={"initial_stop": 95.0})
+    assert pos is not None and pos.margin == pytest.approx(15.0) and led.equity < 50
+    pos.features["initial_units"] = pos.units
+    assert led.tick({"ETH/USDT": 105.0}) == []
+    assert led.tick({"ETH/USDT": 110.5}) == []          # TP1: yarısı kapanır, stop başa-baş
+    assert pos.tp1_done and pos.stop == pytest.approx(pos.entry)
+    ev = led.tick({"ETH/USDT": 99.0})                   # başa-baş stop
+    assert len(ev) == 1 and ev[0]["exit_reason"] == "başa-baş stop" and ev[0]["pnl"] > 0
+    assert not led.positions and led.history
+    led.save(tmp_path / "l.json")
+    again = FuturesLedger.load(tmp_path / "l.json", 50)
+    assert again.equity == pytest.approx(led.equity) and len(again.history) == 1
+    # short + likidasyon
+    p2 = led.open("XRP/USDT", "SHORT", 1.0, notional=40.0, leverage=5, stop=1.05, target1=0.95, target2=0.9)
+    assert p2 is not None
+    ev = led.tick({"XRP/USDT": 1.30})
+    assert ev and ev[0]["exit_reason"] in ("likidasyon", "stop")
+
+
+def test_learner_updates_weights_and_generates_lessons(tmp_path: Path):
+    from tradingbot.learning import Learner, AGENTS
+    lr = Learner(tmp_path / "learn.json", min_trades=5)
+    def rec(i, won, agents_for):
+        f = {f"bias_{a}": (0.6 if a in agents_for else -0.4) for a in AGENTS}
+        f.update({f"conf_{a}": 0.6 for a in AGENTS})
+        f.update({"conviction": 0.5, "rr": 2.0, "atr_pct": 0.3, "funding_dir": 0.0, "ob_dir": 0.2, "rsi4_dir": 0.1, "n_warnings": 2,
+                  "leverage": 2, "scan_score": 0.7, "hour_sin": 0, "hour_cos": 1, "is_breakout": 1.0, "btc_align": 1.0, "setup_type": "kırılım"})
+        return {"id": f"F{i}", "symbol": "ETH/USDT", "side": "LONG", "entry": 100, "exit_reason": "hedef2" if won else "stop",
+                "closed_at": "t", "pnl": 3.0 if won else -1.5, "r_multiple": 2.0 if won else -1.0, "mae_pct": -0.5, "mfe_pct": 3.0 if won else 0.2,
+                "bars_held": 6 if won else 1, "leverage": 2, "features": f, "tp1_done": won}
+    for i in range(6):
+        lesson = lr.learn(rec(i, won=(i % 3 != 0), agents_for=["trend", "momentum"]))
+        assert lesson["why"] and ("KÂR" in lesson["why"][0] or "ZARAR" in lesson["why"][0])
+    assert lr.ready and lr.state.n_trades == 6
+    w = lr.learned_agent_weights()
+    assert w and abs(sum(w.values()) - 1.0) < 1e-3
+    # trend/momentum çoğunlukla destekledi ve çoğunluk kazandı → isabetleri > diğerleri
+    hits = lr.state.agent_hits
+    assert hits["trend"][0] / hits["trend"][1] > hits["volume"][0] / hits["volume"][1]
+    p = lr.predict(rec(9, True, ["trend"])["features"])
+    assert 0.0 <= p <= 1.0
+    snap = lr.snapshot()
+    assert snap["trades"] == 6 and "kırılım|LONG" in snap["setup_stats"]
+
+
+def test_render_signal_chart_creates_png(tmp_path: Path):
+    from tradingbot import indicators as ind
+    from tradingbot.charts import render_signal_chart, zigzag
+    from tradingbot.agents.manager import TradePlan
+    df = ind.add_snapshot_indicators(make_df(300, seed=4))
+    plan = TradePlan(direction="LONG", entry_type="kırılım", entry=float(df["close"].iloc[-1]) * 1.01, stop=float(df["close"].iloc[-1]) * 0.97,
+                     target1=float(df["close"].iloc[-1]) * 1.06, target2=float(df["close"].iloc[-1]) * 1.10, rr=2.0, valid=True, trigger_text="test")
+    out = render_signal_chart(df, tmp_path / "c.png", title="TEST/USDT · 4h", plan=plan, levels={"r1": 1.0, "s1": 0.5})
+    assert out.exists() and out.stat().st_size > 10_000
+    piv = zigzag(df["high"].to_numpy(), df["low"].to_numpy(), df["close"].to_numpy(), 3.0)
+    assert len(piv) >= 2
+
+
+def test_scanner_note_and_features_from_brief():
+    from tradingbot.scanner import ScanResult, ScanRow, scanner_note
+    from tradingbot.learning import features_from_brief
+    from tradingbot.agents.base import CoinContext
+    from tradingbot.agents.technical import TECHNICAL_AGENTS
+    from tradingbot.agents.manager import ChiefAgent, CoinManagerAgent
+    rows = [ScanRow(symbol="AAA/USDT", perp="AAA/USDT:USDT", price=1.0, score=75, direction="LONG", tags=["kırılım"]),
+            ScanRow(symbol="BBB/USDT", perp="BBB/USDT:USDT", price=2.0, score=40, direction="SHORT")]
+    res = ScanResult(generated_at="t", universe=2, scanned=2, flagged=1, setups=rows[:1], rows=rows, min_volume=2e7, seconds=1.0)
+    note = scanner_note(res)
+    assert "AAA/USDT" in note and "mermaid" in note
+    ctx = CoinContext(symbol="SOL/USDT", frames=_frames(seed=5))
+    b = CoinManagerAgent().decide(ctx, [a.run(ctx) for a in TECHNICAL_AGENTS])
+    chief = ChiefAgent().decide([b])
+    f = features_from_brief(b, chief, 70)
+    assert set(k for k in f if k.startswith("bias_")) and f["scan_score"] == pytest.approx(0.7) and "setup_type" in f

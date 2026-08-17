@@ -102,6 +102,9 @@ class ObsidianAgentWriter:
         lv_txt = "## 📍 Kilit Seviyeler\n" + "\n".join(
             f"- {k}: {_px(v)}" for k, v in sorted(lv.items(), key=lambda kv: -kv[1])[:10])
         nodes.append({"id": "levels", "type": "text", "x": 620, "y": mid_y + 220, "width": 460, "height": 300, "color": "3", "text": lv_txt})
+        if b.chart:
+            nodes.append({"id": "chart", "type": "file", "file": b.chart, "x": 1240, "y": mid_y - 700, "width": 520, "height": 340})
+            edges.append({"id": "e_chart", "fromNode": "chart", "fromSide": "bottom", "toNode": "plan", "toSide": "top", "label": "görsel"})
         for nid, lbl in (("plan", "plan"), ("dont", "yasaklar"), ("ifthen", "koşullar")):
             edges.append({"id": f"e_m_{nid}", "fromNode": "manager", "fromSide": "right", "toNode": nid, "toSide": "left", "label": lbl})
         edges.append({"id": "e_lv_m", "fromNode": "levels", "fromSide": "top", "toNode": "manager", "toSide": "bottom", "label": "seviyeler"})
@@ -114,7 +117,10 @@ class ObsidianAgentWriter:
                f"updated: {b.generated_at}", "tags: [trading, agents]", "---",
                f"# 🧠 {b.symbol} — Ajan Raporu ({VERDICT_EMOJI[b.verdict]} {b.verdict}, kanaat %{b.conviction})",
                f"> {b.headline}  ·  {local}", "",
-               f"Şema: [[Agents/{b.base}.canvas]] · Backtest/karar: [[Coins/{b.base}]] · [[Agents/Baş Yönetici]]", "",
+               f"Şema: [[Agents/{b.base}.canvas]] · Backtest/karar: [[Coins/{b.base}]] · [[Agents/Baş Yönetici]] · [[Paper Futures]]", "",
+               *([f"![[{b.chart}]]", ""] if b.chart else []),
+               *([f"🔎 Tarayıcı: {b.scan_direction} skor **{b.scan_score}**"] if b.scan_score else []),
+               *([f"🤖 Öğrenen model P(kazanç): **%{b.p_win*100:.0f}**", ""] if b.p_win is not None else []),
                "## 🎯 Futures planı"]
         if p.direction == "BEKLE":
             out.append(f"⚪ **BEKLE** — yön yok. Max kaldıraç (volatiliteye göre) {p.max_leverage}x.")

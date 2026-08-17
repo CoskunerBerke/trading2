@@ -51,6 +51,12 @@ class CoinBrief:
     if_then: list[str] = field(default_factory=list)
     key_levels: dict[str, float] = field(default_factory=dict)
     generated_at: str = ""
+    last_close_4h: float = 0.0
+    last_bar_4h: str = ""
+    scan_score: float = 0.0
+    scan_direction: str = ""
+    p_win: float | None = None            # öğrenen modelin tahmini
+    chart: str = ""                       # Obsidian görsel yolu
 
     @property
     def base(self) -> str:

@@ -182,6 +182,15 @@ class ObsidianWriter:
                       "width": 420, "height": 380})
         edges.append({"id": "e_bt_dec", "fromNode": "backtests", "fromSide": "top", "toNode": "decision", "toSide": "bottom",
                       "label": "edge doğrulama"})
+        # tarayıcı / kağıt futures / öğrenme (varsa)
+        extras = [("scanner", "Scanner.md", -560, -260), ("futures", "Paper Futures.md", -560, mid_y - 170), ("learning", "Learning/Öğrenme.md", -560, mid_y + 220)]
+        for nid, f, x, y in extras:
+            if (self.root / f).exists():
+                nodes.append({"id": nid, "type": "file", "file": f, "x": x, "y": y, "width": 500, "height": 380})
+        if (self.root / "Scanner.md").exists():
+            edges.append({"id": "e_scan_dec", "fromNode": "scanner", "fromSide": "right", "toNode": "decision", "toSide": "top", "label": "setup'lar"})
+        if (self.root / "Learning/Öğrenme.md").exists():
+            edges.append({"id": "e_learn_dec", "fromNode": "learning", "fromSide": "right", "toNode": "decision", "toSide": "bottom", "label": "öğrenilen ağırlıklar"})
         return {"nodes": nodes, "edges": edges}
 
     # --------------------------------------------------------------- dashboard

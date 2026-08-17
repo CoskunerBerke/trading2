@@ -41,13 +41,20 @@ class BinanceLive:
             out["errors"].append(f"ccxt yok: {exc}")
             return out
         fut_sym = f"{symbol}:USDT"
+        src = self._spot
         try:
             t = self._spot.fetch_ticker(symbol)
+        except Exception:  # noqa: BLE001  — spot'ta yoksa (yalnızca perpetual olan semboller) futures'tan
+            src = self._fut
+            try:
+                t = self._fut.fetch_ticker(fut_sym)
+            except Exception as exc:  # noqa: BLE001
+                t = None
+                out["errors"].append(f"ticker: {exc}")
+        if t:
             out["ticker"] = {k: t.get(k) for k in ("last", "high", "low", "quoteVolume", "baseVolume", "percentage", "bid", "ask")}
-        except Exception as exc:  # noqa: BLE001
-            out["errors"].append(f"ticker: {exc}")
         try:
-            ob = self._spot.fetch_order_book(symbol, limit=20)
+            ob = src.fetch_order_book(symbol if src is self._spot else fut_sym, limit=20)
             bid_v = sum(b[1] * b[0] for b in ob["bids"][:20])
             ask_v = sum(a[1] * a[0] for a in ob["asks"][:20])
             out["orderbook"] = {"bid_usdt": bid_v, "ask_usdt": ask_v, "imbalance": bid_v / (bid_v + ask_v) if (bid_v + ask_v) else 0.5,

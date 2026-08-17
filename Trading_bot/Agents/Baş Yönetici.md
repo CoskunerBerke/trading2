@@ -1,10 +1,10 @@
 ---
-updated: 2026-08-17T20:53:34+00:00
+updated: 2026-08-17T21:16:01+00:00
 risk_mode: NÖTR
 tags: [trading, agents, chief]
 ---
 # 🏛️ Baş Yönetici — NÖTR
-> NÖTR · BTC BEKLE · 0 LONG / 2 SHORT / 8 BEKLE · geçerli plan: 2 · 2026-08-17 23:53
+> NÖTR · BTC BEKLE · 4 LONG / 3 SHORT / 8 BEKLE · geçerli plan: 7 · 2026-08-18 00:19
 
 ## Kurallar
 - Piyasa modu NÖTR: yalnızca R/R ≥ 2 ve kanaat ≥ 60 olan planlar; her iki yönde de küçük boyut
@@ -15,15 +15,20 @@ tags: [trading, agents, chief]
 ## Coin sıralaması (kanaat ve plan geçerliliğine göre)
 | # | Coin | Karar | Kanaat | Plan | R/R | Kaldıraç | Manşet |
 |---|---|---|---|---|---|---|---|
-| 1 | [[Agents/XRP\|XRP/USDT]] | 🔴 SHORT | 44 | ✅ | 2.0 | 2x | 🔴 SHORT · kanaat %44 · 3/4 yönlü ajan hemfikir · fiyat 1.00 · trend güçlü ayı |
-| 2 | [[Agents/ADA\|ADA/USDT]] | 🔴 SHORT | 38 | ✅ | 2.0 | 1x | 🔴 SHORT · kanaat %38 · 4/5 yönlü ajan hemfikir · fiyat 0.1742 · trend ayı |
-| 3 | [[Agents/AVAX\|AVAX/USDT]] | ⚪ BEKLE | 23 | — | - | 1x | ⚪ BEKLE · kanaat %23 · 3/5 yönlü ajan hemfikir · fiyat 6.34 · trend güçlü ayı |
-| 4 | [[Agents/LINK\|LINK/USDT]] | ⚪ BEKLE | 22 | — | - | 1x | ⚪ BEKLE · kanaat %22 · 3/4 yönlü ajan hemfikir · fiyat 9.51 · trend boğa |
-| 5 | [[Agents/DOGE\|DOGE/USDT]] | ⚪ BEKLE | 19 | — | - | 1x | ⚪ BEKLE · kanaat %19 · 2/5 yönlü ajan hemfikir · fiyat 0.0703 · trend güçlü ayı |
-| 6 | [[Agents/DOT\|DOT/USDT]] | ⚪ BEKLE | 19 | — | - | 1x | ⚪ BEKLE · kanaat %19 · 3/6 yönlü ajan hemfikir · fiyat 0.7630 · trend güçlü ayı |
-| 7 | [[Agents/ETH\|ETH/USDT]] | ⚪ BEKLE | 14 | — | - | 1x | ⚪ BEKLE · kanaat %14 · 2/3 yönlü ajan hemfikir · fiyat 1,906 · trend boğa |
-| 8 | [[Agents/BTC\|BTC/USDT]] | ⚪ BEKLE | 12 | — | - | 1x | ⚪ BEKLE · kanaat %12 · 2/3 yönlü ajan hemfikir · fiyat 64,334 · trend ayı |
-| 9 | [[Agents/SOL\|SOL/USDT]] | ⚪ BEKLE | 9 | — | - | 1x | ⚪ BEKLE · kanaat %9 · 2/3 yönlü ajan hemfikir · fiyat 75.95 · trend boğa |
-| 10 | [[Agents/BNB\|BNB/USDT]] | ⚪ BEKLE | 5 | — | - | 1x | ⚪ BEKLE · kanaat %5 · 2/3 yönlü ajan hemfikir · fiyat 605.35 · trend nötr |
+| 1 | [[Agents/FET\|FET/USDT]] | 🔴 SHORT | 58 | ✅ | 2.0 | 1x | 🔴 SHORT · kanaat %58 · 4/6 yönlü ajan hemfikir · fiyat 0.1243 · trend güçlü ayı |
+| 2 | [[Agents/PAXG\|PAXG/USDT]] | 🟢 LONG | 55 | ✅ | 2.28 | 2x | 🟢 LONG · kanaat %55 · 4/4 yönlü ajan hemfikir · fiyat 4,410 · trend güçlü boğa |
+| 3 | [[Agents/GOOGL\|GOOGL/USDT]] | 🔴 SHORT | 52 | ✅ | 2.05 | 2x | 🔴 SHORT · kanaat %52 · 3/4 yönlü ajan hemfikir · fiyat 344.31 · trend güçlü ayı |
+| 4 | [[Agents/AXTI\|AXTI/USDT]] | 🟢 LONG | 48 | ✅ | 3.81 | 1x | 🟢 LONG · kanaat %48 · 5/5 yönlü ajan hemfikir · fiyat 95.19 · trend boğa |
+| 5 | [[Agents/BZ\|BZ/USDT]] | 🟢 LONG | 45 | ✅ | 1.87 | 2x | 🟢 LONG · kanaat %45 · 5/5 yönlü ajan hemfikir · fiyat 89.15 · trend boğa |
+| 6 | [[Agents/SOXS\|SOXS/USDT]] | 🔴 SHORT | 44 | ✅ | 2.0 | 1x | 🔴 SHORT · kanaat %44 · 3/4 yönlü ajan hemfikir · fiyat 38.37 · trend güçlü ayı |
+| 7 | [[Agents/LITE\|LITE/USDT]] | 🟢 LONG | 39 | ✅ | 1.73 | 1x | 🟢 LONG · kanaat %39 · 4/4 yönlü ajan hemfikir · fiyat 968.77 · trend boğa |
+| 8 | [[Agents/XAUT\|XAUT/USDT]] | ⚪ BEKLE | 36 | — | - | 1x | ⚪ BEKLE · kanaat %36 · 3/3 yönlü ajan hemfikir · fiyat 4,395 · trend boğa |
+| 9 | [[Agents/CL\|CL/USDT]] | ⚪ BEKLE | 29 | — | - | 1x | ⚪ BEKLE · kanaat %29 · 4/5 yönlü ajan hemfikir · fiyat 84.06 · trend nötr |
+| 10 | [[Agents/AAOI\|AAOI/USDT]] | ⚪ BEKLE | 27 | — | - | 1x | ⚪ BEKLE · kanaat %27 · 4/4 yönlü ajan hemfikir · fiyat 155.02 · trend boğa |
+| 11 | [[Agents/META\|META/USDT]] | ⚪ BEKLE | 22 | — | - | 1x | ⚪ BEKLE · kanaat %22 · 2/3 yönlü ajan hemfikir · fiyat 569.97 · trend güçlü ayı |
+| 12 | [[Agents/POL\|POL/USDT]] | ⚪ BEKLE | 18 | — | - | 1x | ⚪ BEKLE · kanaat %18 · 4/5 yönlü ajan hemfikir · fiyat 0.0801 · trend nötr |
+| 13 | [[Agents/BTC\|BTC/USDT]] | ⚪ BEKLE | 15 | — | - | 1x | ⚪ BEKLE · kanaat %15 · 2/3 yönlü ajan hemfikir · fiyat 64,374 · trend ayı |
+| 14 | [[Agents/SOL\|SOL/USDT]] | ⚪ BEKLE | 10 | — | - | 1x | ⚪ BEKLE · kanaat %10 · 2/3 yönlü ajan hemfikir · fiyat 75.92 · trend boğa |
+| 15 | [[Agents/ETH\|ETH/USDT]] | ⚪ BEKLE | 0 | — | - | 1x | ⚪ BEKLE · kanaat %0 · 1/3 yönlü ajan hemfikir · fiyat 1,907 · trend boğa |
 
 Alarmlar: [[Agents/Alarmlar]] · Dashboard: [[Dashboard]]

@@ -1,0 +1,257 @@
+{
+ "nodes": [
+  {
+   "id": "ag_volatility",
+   "type": "text",
+   "x": 0,
+   "y": 0,
+   "width": 380,
+   "height": 150,
+   "color": "3",
+   "text": "### 🌡️ Volatilite Ajanı\n**NÖTR** · bias +0.00 · güven 70\nVolatilite DÜŞÜK: günlük ATR %3.72 (yüzdelik 11), 30g gerçekleşen vol %53. Önerilen max kaldıraç 3x, stop mesafesi ≈ %9.3.\n⚠️ Bollinger sıkışması: yön belli olmadan (kırılım kapanışı) pozisyon açma"
+  },
+  {
+   "id": "ag_trend",
+   "type": "text",
+   "x": 0,
+   "y": 170,
+   "width": 380,
+   "height": 150,
+   "color": "4",
+   "text": "### 📈 Trend & EMA Çizgileri Ajanı\n**BOĞA** · bias +0.33 · güven 56\nFiyat 100g EMA (~87.27) yakınında; yakın destek 100g EMA ~87.27. Çoklu zaman dilimi eğilimi: BOĞA."
+  },
+  {
+   "id": "ag_candles",
+   "type": "text",
+   "x": 0,
+   "y": 340,
+   "width": 380,
+   "height": 150,
+   "color": "4",
+   "text": "### 🕯️ Mum Yapısı Ajanı\n**BOĞA** · bias +0.47 · güven 56\nMum yapısı boğa: aralığın %67'inde kapandı, gövde %54, üst fitil %33, alt fitil %13 — iç bar (sıkışma); son 5 mumun 2'i yeşil; karışık ya\n⚠️ 4h'de üst üste güçlü yeşil mumlar: tepeden kovalama, geri çekilme bekle"
+  },
+  {
+   "id": "ag_volume",
+   "type": "text",
+   "x": 0,
+   "y": 510,
+   "width": 380,
+   "height": 150,
+   "color": "4",
+   "text": "### 📊 Hacim Ajanı\n**BOĞA** · bias +0.35 · güven 50\nHacim boğa: alıcı hacmi baskın"
+  },
+  {
+   "id": "ag_levels",
+   "type": "text",
+   "x": 0,
+   "y": 680,
+   "width": 380,
+   "height": 150,
+   "color": "3",
+   "text": "### 🧱 Destek/Direnç Ajanı\n**NÖTR** · bias +0.03 · güven 55\nYakın direnç 90.06 (+1.0%); yakın destek 88.34 (−0.9%). Fiyat son aralığın %42'inde.\n⚠️ Destek 88.34 hemen altta: kırılım kapanışı görmeden short açma"
+  },
+  {
+   "id": "ag_momentum",
+   "type": "text",
+   "x": 0,
+   "y": 850,
+   "width": 380,
+   "height": 150,
+   "color": "4",
+   "text": "### 🚀 Momentum Ajanı\n**GÜÇLÜ BOĞA** · bias +0.88 · güven 83\nMomentum güçlü boğa (RSI 1d/4h/1h: 53/72/71)."
+  },
+  {
+   "id": "ag_edge",
+   "type": "text",
+   "x": 0,
+   "y": 1020,
+   "width": 380,
+   "height": 150,
+   "color": "6",
+   "text": "### 🧪 Backtest/Edge Ajanı\n**NÖTR** · bias +0.00 · güven 0\nWFO analizi yok (önce `run`)."
+  },
+  {
+   "id": "ag_market",
+   "type": "text",
+   "x": 0,
+   "y": 1190,
+   "width": 380,
+   "height": 150,
+   "color": "4",
+   "text": "### 📡 Binance Canlı Piyasa Ajanı\n**BOĞA** · bias +0.35 · güven 50\nCanlı akış boğa: emir defteri alış payı %48, funding %-0.0047, 24s %+3.10."
+  },
+  {
+   "id": "manager",
+   "type": "text",
+   "x": 620,
+   "y": 490,
+   "width": 460,
+   "height": 380,
+   "color": "4",
+   "text": "## 🧠 BZ YÖNETİCİSİ\n🟢 LONG · kanaat %45 · 5/5 yönlü ajan hemfikir · fiyat 89.15 · trend boğa\n\n**Karar: 🟢 LONG** · kanaat %45\nSkor +0.27 (−1 ayı … +1 boğa)\n\n- Yön LONG (kanaat %45). 4h mum 90.06 üstünde kapanırsa long.\n- Stop 87.26 (−%3.21); hedef1 95.54, hedef2 97.36; R/R 1.87\n- Kaldıraç ≤ 3x (öneri 2x), marj ≈ 15.0 USDT, riske atılan ≈ 0.96 USDT\n\n[[Agents/BZ|Tam rapor →]] · [[Coins/BZ|Backtest →]]\n_2026-08-18 00:19_"
+  },
+  {
+   "id": "plan",
+   "type": "text",
+   "x": 1240,
+   "y": 350,
+   "width": 520,
+   "height": 260,
+   "color": "4",
+   "text": "## 🎯 FUTURES PLANI — LONG\n✅ GEÇERLİ\n**Tetik:** 4h mum 90.06 üstünde kapanırsa long\nGiriş ~90.15 · Stop 87.26 (%3.21) · Hedef1 95.54 · Hedef2 97.36 · R/R 1.87\nKaldıraç ≤ **3x** (öneri 2x) · marj ≈ 15.0 USDT · notional ≈ 30.0 USDT · risk ≈ 0.96 USDT"
+  },
+  {
+   "id": "dont",
+   "type": "text",
+   "x": 1240,
+   "y": 640,
+   "width": 520,
+   "height": 300,
+   "color": "1",
+   "text": "## 🚫 YAPMA\n- Bollinger sıkışması: yön belli olmadan (kırılım kapanışı) pozisyon açma\n- 4h'de üst üste güçlü yeşil mumlar: tepeden kovalama, geri çekilme bekle\n- Destek 88.34 hemen altta: kırılım kapanışı görmeden short açma\n- Piyasa emriyle kovalama; sadece koşul gerçekleşince gir\n- Stop'u aşağı taşıma; hedef1'de yarısını kapat, kalanını başa-baş stopla taşı"
+  },
+  {
+   "id": "ifthen",
+   "type": "text",
+   "x": 1240,
+   "y": 970,
+   "width": 520,
+   "height": 220,
+   "color": "5",
+   "text": "## 🔀 EĞER … İSE\n- EĞER 4h kapanış 88.34 altına inerse → long fikri iptal, 87.00 riski\n- EĞER 4h kapanış 90.06 üstüne çıkarsa → hedef 91.32"
+  },
+  {
+   "id": "levels",
+   "type": "text",
+   "x": 620,
+   "y": 900,
+   "width": 460,
+   "height": 300,
+   "color": "3",
+   "text": "## 📍 Kilit Seviyeler\n- r2: 91.32\n- r1: 90.06\n- high_24h: 89.37\n- s1: 88.34\n- s2: 87.00\n- ema20_1d: 85.42\n- ema50_1d: 85.04\n- ema200_1d: nan\n- ema_support: 87.27\n- low_24h: 86.02"
+  },
+  {
+   "id": "chart",
+   "type": "file",
+   "file": "Charts/BZ.png",
+   "x": 1240,
+   "y": -20,
+   "width": 520,
+   "height": 340
+  }
+ ],
+ "edges": [
+  {
+   "id": "e_volatility",
+   "fromNode": "ag_volatility",
+   "fromSide": "right",
+   "toNode": "manager",
+   "toSide": "left",
+   "color": "3",
+   "label": "nötr · 70"
+  },
+  {
+   "id": "e_trend",
+   "fromNode": "ag_trend",
+   "fromSide": "right",
+   "toNode": "manager",
+   "toSide": "left",
+   "color": "4",
+   "label": "boğa · 56"
+  },
+  {
+   "id": "e_candles",
+   "fromNode": "ag_candles",
+   "fromSide": "right",
+   "toNode": "manager",
+   "toSide": "left",
+   "color": "4",
+   "label": "boğa · 56"
+  },
+  {
+   "id": "e_volume",
+   "fromNode": "ag_volume",
+   "fromSide": "right",
+   "toNode": "manager",
+   "toSide": "left",
+   "color": "4",
+   "label": "boğa · 50"
+  },
+  {
+   "id": "e_levels",
+   "fromNode": "ag_levels",
+   "fromSide": "right",
+   "toNode": "manager",
+   "toSide": "left",
+   "color": "3",
+   "label": "nötr · 55"
+  },
+  {
+   "id": "e_momentum",
+   "fromNode": "ag_momentum",
+   "fromSide": "right",
+   "toNode": "manager",
+   "toSide": "left",
+   "color": "4",
+   "label": "güçlü boğa · 83"
+  },
+  {
+   "id": "e_edge",
+   "fromNode": "ag_edge",
+   "fromSide": "right",
+   "toNode": "manager",
+   "toSide": "left",
+   "color": "6",
+   "label": "nötr · 0"
+  },
+  {
+   "id": "e_market",
+   "fromNode": "ag_market",
+   "fromSide": "right",
+   "toNode": "manager",
+   "toSide": "left",
+   "color": "4",
+   "label": "boğa · 50"
+  },
+  {
+   "id": "e_chart",
+   "fromNode": "chart",
+   "fromSide": "bottom",
+   "toNode": "plan",
+   "toSide": "top",
+   "label": "görsel"
+  },
+  {
+   "id": "e_m_plan",
+   "fromNode": "manager",
+   "fromSide": "right",
+   "toNode": "plan",
+   "toSide": "left",
+   "label": "plan"
+  },
+  {
+   "id": "e_m_dont",
+   "fromNode": "manager",
+   "fromSide": "right",
+   "toNode": "dont",
+   "toSide": "left",
+   "label": "yasaklar"
+  },
+  {
+   "id": "e_m_ifthen",
+   "fromNode": "manager",
+   "fromSide": "right",
+   "toNode": "ifthen",
+   "toSide": "left",
+   "label": "koşullar"
+  },
+  {
+   "id": "e_lv_m",
+   "fromNode": "levels",
+   "fromSide": "top",
+   "toNode": "manager",
+   "toSide": "bottom",
+   "label": "seviyeler"
+  }
+ ]
+}

@@ -18,7 +18,7 @@
    "width": 380,
    "height": 150,
    "color": "1",
-   "text": "### 📈 Trend & EMA Çizgileri Ajanı\n**AYI** · bias -0.47 · güven 63\nFiyat 50g EMA (~64,355) yakınında; yakın destek 20g EMA ~63,795; yakın direnç 50g EMA ~64,355. Çoklu zaman dilimi eğilimi: AYI."
+   "text": "### 📈 Trend & EMA Çizgileri Ajanı\n**AYI** · bias -0.47 · güven 63\nFiyat 50g EMA (~64,355) yakınında; yakın destek 50g EMA ~64,355; yakın direnç 100g EMA ~66,447. Çoklu zaman dilimi eğilimi: AYI."
   },
   {
    "id": "ag_candles",
@@ -48,7 +48,7 @@
    "width": 380,
    "height": 150,
    "color": "3",
-   "text": "### 🧱 Destek/Direnç Ajanı\n**NÖTR** · bias +0.10 · güven 55\nYakın direnç 64,488 (+0.2%); yakın destek 64,116 (−0.3%). Fiyat son aralığın %26'inde.\n⚠️ Direnç 64,488 hemen üstte: kırılım kapanışı görmeden long açma"
+   "text": "### 🧱 Destek/Direnç Ajanı\n**NÖTR** · bias +0.10 · güven 55\nYakın direnç 64,704 (+0.5%); yakın destek 64,116 (−0.4%). Fiyat son aralığın %26'inde.\n⚠️ Direnç 64,704 hemen üstte: kırılım kapanışı görmeden long açma"
   },
   {
    "id": "ag_momentum",
@@ -58,7 +58,7 @@
    "width": 380,
    "height": 150,
    "color": "3",
-   "text": "### 🚀 Momentum Ajanı\n**NÖTR** · bias -0.06 · güven 43\nMomentum nötr (RSI 1d/4h/1h: 42/70/70)."
+   "text": "### 🚀 Momentum Ajanı\n**NÖTR** · bias -0.06 · güven 43\nMomentum nötr (RSI 1d/4h/1h: 42/70/72)."
   },
   {
    "id": "ag_edge",
@@ -78,7 +78,7 @@
    "width": 380,
    "height": 150,
    "color": "1",
-   "text": "### 📡 Binance Canlı Piyasa Ajanı\n**AYI** · bias -0.20 · güven 50\nCanlı akış ayı: emir defteri alış payı %22, funding %0.0028, 24s %+2.05."
+   "text": "### 📡 Binance Canlı Piyasa Ajanı\n**AYI** · bias -0.43 · güven 50\nCanlı akış ayı: emir defteri alış payı %2, funding %0.0031, 24s %+2.05."
   },
   {
    "id": "manager",
@@ -88,7 +88,7 @@
    "width": 460,
    "height": 380,
    "color": "6",
-   "text": "## 🧠 BTC YÖNETİCİSİ\n⚪ BEKLE · kanaat %12 · 2/3 yönlü ajan hemfikir · fiyat 64,334 · trend ayı\n\n**Karar: ⚪ BEKLE** · kanaat %12\nSkor -0.08 (−1 ayı … +1 boğa)\n\n- Yön yok → BEKLE. Pozisyon açma; sadece izle.\n- Kaldıraç kullanma. Yeniden değerlendirme: direnç 64,488 üstünde kapanış (long) / destek 64,116 altında kapanış (short)\n\n[[Agents/BTC|Tam rapor →]] · [[Coins/BTC|Backtest →]]\n_2026-08-17 23:53_"
+   "text": "## 🧠 BTC YÖNETİCİSİ\n⚪ BEKLE · kanaat %15 · 2/3 yönlü ajan hemfikir · fiyat 64,374 · trend ayı\n\n**Karar: ⚪ BEKLE** · kanaat %15\nSkor -0.10 (−1 ayı … +1 boğa)\n\n- Yön yok → BEKLE. Pozisyon açma; sadece izle.\n- Kaldıraç kullanma. Yeniden değerlendirme: direnç 64,704 üstünde kapanış (long) / destek 64,116 altında kapanış (short)\n\n[[Agents/BTC|Tam rapor →]] · [[Coins/BTC|Backtest →]]\n_2026-08-18 00:19_"
   },
   {
    "id": "plan",
@@ -98,7 +98,7 @@
    "width": 520,
    "height": 260,
    "color": "6",
-   "text": "## 🎯 FUTURES PLANI\n⚪ **BEKLE** — yön yok, pozisyon açma.\nMax kaldıraç (volatiliteye göre): 5x\n- Kaldıraç kullanma. Yeniden değerlendirme: direnç 64,488 üstünde kapanış (long) / destek 64,116 altında kapanış (short)"
+   "text": "## 🎯 FUTURES PLANI\n⚪ **BEKLE** — yön yok, pozisyon açma.\nMax kaldıraç (volatiliteye göre): 5x\n- Kaldıraç kullanma. Yeniden değerlendirme: direnç 64,704 üstünde kapanış (long) / destek 64,116 altında kapanış (short)"
   },
   {
    "id": "dont",
@@ -108,7 +108,7 @@
    "width": 520,
    "height": 300,
    "color": "1",
-   "text": "## 🚫 YAPMA\n- Bollinger sıkışması: yön belli olmadan (kırılım kapanışı) pozisyon açma\n- Direnç 64,488 hemen üstte: kırılım kapanışı görmeden long açma\n- Destek 64,116 hemen altta: kırılım kapanışı görmeden short açma\n- Walk-forward'da doğrulanmış edge yok: sistematik strateji sinyaline değil, sadece güçlü çoklu-ajan uyumuna işlem aç; boyutu küçük tut\n- Sistematik (WFO) edge yok → bu plan yalnızca takdire bağlı; boyutu asgaride tut"
+   "text": "## 🚫 YAPMA\n- Bollinger sıkışması: yön belli olmadan (kırılım kapanışı) pozisyon açma\n- Direnç 64,704 hemen üstte: kırılım kapanışı görmeden long açma\n- Destek 64,116 hemen altta: kırılım kapanışı görmeden short açma\n- Walk-forward'da doğrulanmış edge yok: sistematik strateji sinyaline değil, sadece güçlü çoklu-ajan uyumuna işlem aç; boyutu küçük tut\n- Sistematik (WFO) edge yok → bu plan yalnızca takdire bağlı; boyutu asgaride tut"
   },
   {
    "id": "ifthen",
@@ -118,7 +118,7 @@
    "width": 520,
    "height": 220,
    "color": "5",
-   "text": "## 🔀 EĞER … İSE\n- EĞER 4h mum 64,488 üstünde hacimle kapanırsa → long senaryosu açılır (hedef 64,704)\n- EĞER 4h mum 64,116 altında hacimle kapanırsa → short senaryosu açılır (hedef 63,778)"
+   "text": "## 🔀 EĞER … İSE\n- EĞER 4h mum 64,704 üstünde hacimle kapanırsa → long senaryosu açılır (hedef 65,062)\n- EĞER 4h mum 64,116 altında hacimle kapanırsa → short senaryosu açılır (hedef 63,778)"
   },
   {
    "id": "levels",
@@ -128,7 +128,16 @@
    "width": 460,
    "height": 300,
    "color": "3",
-   "text": "## 📍 Kilit Seviyeler\n- ema200_1d: 71,890\n- r2: 64,704\n- high_24h: 64,610\n- r1: 64,488\n- ema50_1d: 64,355\n- ema_resistance: 64,355\n- s1: 64,116\n- ema20_1d: 63,795\n- ema_support: 63,795\n- s2: 63,778"
+   "text": "## 📍 Kilit Seviyeler\n- ema200_1d: 71,890\n- ema_resistance: 66,447\n- r2: 65,062\n- r1: 64,704\n- high_24h: 64,610\n- ema50_1d: 64,355\n- ema_support: 64,355\n- s1: 64,116\n- ema20_1d: 63,795\n- s2: 63,778"
+  },
+  {
+   "id": "chart",
+   "type": "file",
+   "file": "Charts/BTC.png",
+   "x": 1240,
+   "y": -20,
+   "width": 520,
+   "height": 340
   }
  ],
  "edges": [
@@ -203,6 +212,14 @@
    "toSide": "left",
    "color": "1",
    "label": "ayı · 50"
+  },
+  {
+   "id": "e_chart",
+   "fromNode": "chart",
+   "fromSide": "bottom",
+   "toNode": "plan",
+   "toSide": "top",
+   "label": "görsel"
   },
   {
    "id": "e_m_plan",

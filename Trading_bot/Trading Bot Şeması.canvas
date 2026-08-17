@@ -8,7 +8,7 @@
    "width": 420,
    "height": 150,
    "color": "5",
-   "text": "## 🌐 Piyasa Rejimi\n**BTC rejimi:** YATAY\nBorsa: tradingview:BINANCE · TF: 4h\nGüncelleme: 2026-08-17 23:32"
+   "text": "## 🌐 Piyasa Rejimi\n**BTC rejimi:** YATAY\nBorsa: tradingview:BINANCE · TF: 4h\nGüncelleme: 2026-08-17 23:53"
   },
   {
    "id": "coin_BTC",
@@ -16,9 +16,9 @@
    "x": 0,
    "y": 0,
    "width": 340,
-   "height": 130,
+   "height": 160,
    "color": "6",
-   "text": "### ⚪ BTC/USDT — BEKLE · skor 35\nFiyat **64,310** (+1.9% 24s) · RSI 70 · YATAY\nEMA Trend Takibi · WFO Sharpe -1.91 · ❌ edge yok\n[[Coins/BTC|Detay →]]"
+   "text": "### ⚪ BTC/USDT — BEKLE · skor 35\nFiyat **64,310** (+1.9% 24s) · RSI 70 · YATAY\nEMA Trend Takibi · WFO Sharpe -1.91 · ❌ edge yok\n[[Coins/BTC|Detay →]]\n🧠 Yönetici: **⚪ BEKLE** (kanaat %12) · [[Agents/BTC.canvas|Ajanlar →]]"
   },
   {
    "id": "coin_ETH",
@@ -26,9 +26,9 @@
    "x": 0,
    "y": 150,
    "width": 340,
-   "height": 130,
+   "height": 160,
    "color": "6",
-   "text": "### ⚪ ETH/USDT — BEKLE · skor 53\nFiyat **1,907** (+1.1% 24s) · RSI 61 · YATAY\nDonchian Kırılım · WFO Sharpe 0.05 · ❌ edge yok\n[[Coins/ETH|Detay →]]"
+   "text": "### ⚪ ETH/USDT — BEKLE · skor 53\nFiyat **1,907** (+1.1% 24s) · RSI 61 · YATAY\nDonchian Kırılım · WFO Sharpe 0.05 · ❌ edge yok\n[[Coins/ETH|Detay →]]\n🧠 Yönetici: **⚪ BEKLE** (kanaat %14) · [[Agents/ETH.canvas|Ajanlar →]]"
   },
   {
    "id": "coin_SOL",
@@ -36,9 +36,9 @@
    "x": 0,
    "y": 300,
    "width": 340,
-   "height": 130,
+   "height": 160,
    "color": "6",
-   "text": "### ⚪ SOL/USDT — BEKLE · skor 60\nFiyat **75.81** (+0.8% 24s) · RSI 53 · YÜKSELİŞ\nEMA Trend Takibi · WFO Sharpe -0.06 · ❌ edge yok\n[[Coins/SOL|Detay →]]"
+   "text": "### ⚪ SOL/USDT — BEKLE · skor 60\nFiyat **75.81** (+0.8% 24s) · RSI 53 · YÜKSELİŞ\nEMA Trend Takibi · WFO Sharpe -0.06 · ❌ edge yok\n[[Coins/SOL|Detay →]]\n🧠 Yönetici: **⚪ BEKLE** (kanaat %9) · [[Agents/SOL.canvas|Ajanlar →]]"
   },
   {
    "id": "coin_BNB",
@@ -46,9 +46,9 @@
    "x": 0,
    "y": 450,
    "width": 340,
-   "height": 130,
+   "height": 160,
    "color": "6",
-   "text": "### ⚪ BNB/USDT — BEKLE · skor 53\nFiyat **605.24** (-0.1% 24s) · RSI 46 · YATAY\nEMA Trend Takibi · WFO Sharpe -0.59 · ❌ edge yok\n[[Coins/BNB|Detay →]]"
+   "text": "### ⚪ BNB/USDT — BEKLE · skor 53\nFiyat **605.24** (-0.1% 24s) · RSI 46 · YATAY\nEMA Trend Takibi · WFO Sharpe -0.59 · ❌ edge yok\n[[Coins/BNB|Detay →]]\n🧠 Yönetici: **⚪ BEKLE** (kanaat %5) · [[Agents/BNB.canvas|Ajanlar →]]"
   },
   {
    "id": "coin_XRP",
@@ -56,9 +56,9 @@
    "x": 0,
    "y": 600,
    "width": 340,
-   "height": 130,
+   "height": 160,
    "color": "6",
-   "text": "### ⚪ XRP/USDT — BEKLE · skor 35\nFiyat **1.00** (+0.0% 24s) · RSI 46 · DÜŞÜŞ\nEMA Geri Çekilme · WFO Sharpe -0.97 · ❌ edge yok\n[[Coins/XRP|Detay →]]"
+   "text": "### ⚪ XRP/USDT — BEKLE · skor 35\nFiyat **1.00** (+0.0% 24s) · RSI 46 · DÜŞÜŞ\nEMA Geri Çekilme · WFO Sharpe -0.97 · ❌ edge yok\n[[Coins/XRP|Detay →]]\n🧠 Yönetici: **🔴 SHORT** (kanaat %44) · plan ✅ · [[Agents/XRP.canvas|Ajanlar →]]"
   },
   {
    "id": "coin_ADA",
@@ -66,9 +66,9 @@
    "x": 0,
    "y": 750,
    "width": 340,
-   "height": 130,
+   "height": 160,
    "color": "6",
-   "text": "### ⚪ ADA/USDT — BEKLE · skor 29\nFiyat **0.1738** (-2.5% 24s) · RSI 33 · DÜŞÜŞ\nDonchian Kırılım · WFO Sharpe -0.71 · ❌ edge yok\n[[Coins/ADA|Detay →]]"
+   "text": "### ⚪ ADA/USDT — BEKLE · skor 29\nFiyat **0.1738** (-2.5% 24s) · RSI 33 · DÜŞÜŞ\nDonchian Kırılım · WFO Sharpe -0.71 · ❌ edge yok\n[[Coins/ADA|Detay →]]\n🧠 Yönetici: **🔴 SHORT** (kanaat %38) · plan ✅ · [[Agents/ADA.canvas|Ajanlar →]]"
   },
   {
    "id": "coin_DOGE",
@@ -76,9 +76,9 @@
    "x": 0,
    "y": 900,
    "width": 340,
-   "height": 130,
+   "height": 160,
    "color": "6",
-   "text": "### ⚪ DOGE/USDT — BEKLE · skor 35\nFiyat **0.0703** (+0.5% 24s) · RSI 53 · DÜŞÜŞ\nEMA Trend Takibi · WFO Sharpe -1.44 · ❌ edge yok\n[[Coins/DOGE|Detay →]]"
+   "text": "### ⚪ DOGE/USDT — BEKLE · skor 35\nFiyat **0.0703** (+0.5% 24s) · RSI 53 · DÜŞÜŞ\nEMA Trend Takibi · WFO Sharpe -1.44 · ❌ edge yok\n[[Coins/DOGE|Detay →]]\n🧠 Yönetici: **⚪ BEKLE** (kanaat %19) · [[Agents/DOGE.canvas|Ajanlar →]]"
   },
   {
    "id": "coin_AVAX",
@@ -86,9 +86,9 @@
    "x": 0,
    "y": 1050,
    "width": 340,
-   "height": 130,
+   "height": 160,
    "color": "6",
-   "text": "### ⚪ AVAX/USDT — BEKLE · skor 39\nFiyat **6.34** (-0.1% 24s) · RSI 45 · YATAY\nRSI(2) Trend İçi Geri Çekilme · WFO Sharpe -1.94 · ❌ edge yok\n[[Coins/AVAX|Detay →]]"
+   "text": "### ⚪ AVAX/USDT — BEKLE · skor 39\nFiyat **6.34** (-0.1% 24s) · RSI 45 · YATAY\nRSI(2) Trend İçi Geri Çekilme · WFO Sharpe -1.94 · ❌ edge yok\n[[Coins/AVAX|Detay →]]\n🧠 Yönetici: **⚪ BEKLE** (kanaat %23) · [[Agents/AVAX.canvas|Ajanlar →]]"
   },
   {
    "id": "coin_LINK",
@@ -96,9 +96,9 @@
    "x": 0,
    "y": 1200,
    "width": 340,
-   "height": 130,
+   "height": 160,
    "color": "6",
-   "text": "### ⚪ LINK/USDT — BEKLE · skor 60\nFiyat **9.50** (+0.3% 24s) · RSI 62 · YÜKSELİŞ\nRSI Ortalamaya Dönüş · WFO Sharpe 0.05 · ❌ edge yok\n[[Coins/LINK|Detay →]]"
+   "text": "### ⚪ LINK/USDT — BEKLE · skor 60\nFiyat **9.50** (+0.3% 24s) · RSI 62 · YÜKSELİŞ\nRSI Ortalamaya Dönüş · WFO Sharpe 0.05 · ❌ edge yok\n[[Coins/LINK|Detay →]]\n🧠 Yönetici: **⚪ BEKLE** (kanaat %22) · [[Agents/LINK.canvas|Ajanlar →]]"
   },
   {
    "id": "coin_DOT",
@@ -106,9 +106,9 @@
    "x": 0,
    "y": 1350,
    "width": 340,
-   "height": 130,
+   "height": 160,
    "color": "6",
-   "text": "### ⚪ DOT/USDT — BEKLE · skor 35\nFiyat **0.7610** (-0.5% 24s) · RSI 44 · DÜŞÜŞ\nRSI Ortalamaya Dönüş · WFO Sharpe -1.70 · ❌ edge yok\n[[Coins/DOT|Detay →]]"
+   "text": "### ⚪ DOT/USDT — BEKLE · skor 35\nFiyat **0.7610** (-0.5% 24s) · RSI 44 · DÜŞÜŞ\nRSI Ortalamaya Dönüş · WFO Sharpe -1.70 · ❌ edge yok\n[[Coins/DOT|Detay →]]\n🧠 Yönetici: **⚪ BEKLE** (kanaat %19) · [[Agents/DOT.canvas|Ajanlar →]]"
   },
   {
    "id": "decision",
@@ -118,7 +118,7 @@
    "width": 420,
    "height": 340,
    "color": "2",
-   "text": "## ⚖️ KARAR MOTORU\n**Equity:** 50.00 USDT · **Nakit:** 50.00\n**Açık pozisyon:** 0\n\n🟢 AL 0 · 🔴 SAT 0 · 🟡 TUT 0 · ⚪ BEKLE 10\n\nKurallar: yalnız OOS-doğrulanmış edge · risk bazlı boyut · ATR iz süren stop · max açık pozisyon sınırı · BTC rejim filtresi\n[[Dashboard|Dashboard →]]"
+   "text": "## ⚖️ KARAR MOTORU\n**Equity:** 50.00 USDT · **Nakit:** 50.00\n**Açık pozisyon:** 0\n\n🟢 AL 0 · 🔴 SAT 0 · 🟡 TUT 0 · ⚪ BEKLE 10\n\nKurallar: yalnız OOS-doğrulanmış edge · risk bazlı boyut · ATR iz süren stop · max açık pozisyon sınırı · BTC rejim filtresi\n🏛️ Baş Yönetici: **NÖTR** — NÖTR · BTC BEKLE · 0 LONG / 2 SHORT / 8 BEKLE · geçerli plan: 2 [[Agents/Baş Yönetici|→]]\n[[Dashboard|Dashboard →]]"
   },
   {
    "id": "signal",

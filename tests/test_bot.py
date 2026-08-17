@@ -243,3 +243,66 @@ def test_walk_forward_sweep_produces_folds():
     for f in res.folds:
         assert f.spec and f.train_end < f.test_end
     assert res.edge_note.startswith(("✅", "❌"))
+
+
+# ---------------------------------------------------------------- Çoklu ajan katmanı (ağsız)
+def _frames(seed=3, drift=0.0005):
+    from tradingbot import indicators as ind
+    return {"1d": ind.add_snapshot_indicators(make_df(400, seed=seed, drift=drift * 6, vol=0.04)),
+            "4h": ind.add_snapshot_indicators(make_df(1200, seed=seed + 1, drift=drift, vol=0.02)),
+            "1h": ind.add_snapshot_indicators(make_df(600, seed=seed + 2, drift=drift / 4, vol=0.01))}
+
+
+def test_agents_run_and_manager_produces_brief():
+    from tradingbot.agents.base import CoinContext
+    from tradingbot.agents.technical import TECHNICAL_AGENTS
+    from tradingbot.agents.market import MarketDataAgent
+    from tradingbot.agents.manager import ChiefAgent, CoinManagerAgent
+    live = {"ticker": {"last": 100.0, "high": 104.0, "low": 96.0, "quoteVolume": 5e8, "percentage": 1.2},
+            "orderbook": {"bid_usdt": 300000, "ask_usdt": 100000, "imbalance": 0.75, "spread_pct": 0.01},
+            "funding": {"rate": 0.0001}, "open_interest": {"amount": 1000.0}, "long_short": {"ratio": 1.5, "long_pct": 60}}
+    ctx = CoinContext(symbol="ETH/USDT", frames=_frames(), live=live, equity_usdt=50, risk_pct=2.0, atr_stop_mult=2.5)
+    reports = [a.run(ctx) for a in TECHNICAL_AGENTS + [MarketDataAgent()]]
+    assert len(reports) == 8
+    for r in reports:
+        assert -1.0 <= r.bias <= 1.0 and 0 <= r.confidence <= 100
+        if r.agent != "edge":
+            assert not r.error, f"{r.agent}: {r.error}"
+    brief = CoinManagerAgent().decide(ctx, reports)
+    assert brief.verdict in {"LONG", "SHORT", "BEKLE"} and 0 <= brief.conviction <= 100
+    assert brief.do_list and brief.headline
+    p = brief.plan
+    if p.direction != "BEKLE":
+        assert p.stop and p.entry and p.target1
+        assert p.max_leverage >= 1 and p.suggested_leverage <= p.max_leverage
+        if p.valid:
+            assert p.rr >= 1.5 and p.notional_usdt >= 5
+    chief = ChiefAgent(3).decide([brief])
+    assert chief.risk_mode in {"RISK-ON", "RISK-OFF", "NÖTR"} and chief.ranking
+
+
+def test_agent_error_is_contained():
+    from tradingbot.agents.base import CoinContext
+    from tradingbot.agents.technical import VolatilityAgent
+    ctx = CoinContext(symbol="X/USDT", frames={})
+    r = VolatilityAgent().run(ctx)
+    assert r.error and r.bias == 0.0 and r.confidence == 0
+
+
+def test_obsidian_agent_writer(tmp_path: Path):
+    from tradingbot.agents.base import CoinContext
+    from tradingbot.agents.technical import TECHNICAL_AGENTS
+    from tradingbot.agents.manager import ChiefAgent, CoinManagerAgent
+    from tradingbot.obsidian_agents import ObsidianAgentWriter
+    ctx = CoinContext(symbol="SOL/USDT", frames=_frames(seed=9))
+    reports = [a.run(ctx) for a in TECHNICAL_AGENTS]
+    b = CoinManagerAgent().decide(ctx, reports)
+    chief = ChiefAgent().decide([b])
+    out = ObsidianAgentWriter(tmp_path).write_all([b], chief, ["SOL/USDT: BEKLE → LONG"])
+    canvas = json.loads((tmp_path / "Agents" / "SOL.canvas").read_text(encoding="utf-8"))
+    ids = {n["id"] for n in canvas["nodes"]}
+    assert {"manager", "plan", "dont", "ifthen", "levels"} <= ids and any(i.startswith("ag_") for i in ids)
+    for e in canvas["edges"]:
+        assert e["fromNode"] in ids and e["toNode"] in ids
+    assert (tmp_path / "Agents" / "SOL.md").exists() and (tmp_path / "Agents" / "Baş Yönetici.md").exists()
+    assert "SOL/USDT: BEKLE → LONG" in (tmp_path / "Agents" / "Alarmlar.md").read_text(encoding="utf-8")

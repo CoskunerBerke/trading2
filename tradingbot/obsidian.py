@@ -64,11 +64,13 @@ class ObsidianWriter:
 
     # ------------------------------------------------------------------ giriş
     def write_all(self, analyses: list[CoinAnalysis], decisions: list[Decision], summary: DecisionSummary,
-                  portfolio: dict, executed: list[dict], *, exchange: str, timeframe: str, run_time: str) -> dict:
+                  portfolio: dict, executed: list[dict], *, exchange: str, timeframe: str, run_time: str,
+                  briefs: list | None = None, chief=None) -> dict:
         for d in (self.root, self.coins_dir, self.signals_dir, self.backtests_dir):
             d.mkdir(parents=True, exist_ok=True)
         dmap = {d.symbol: d for d in decisions}
-        meta = {"exchange": exchange, "timeframe": timeframe, "run_time": run_time, "local": _local_now()}
+        meta = {"exchange": exchange, "timeframe": timeframe, "run_time": run_time, "local": _local_now(),
+                "briefs": {b.symbol: b for b in (briefs or [])}, "chief": chief}
 
         canvas_path = self.root / self.canvas_name
         canvas_path.write_text(json.dumps(self._canvas(analyses, dmap, summary, portfolio, meta), ensure_ascii=False, indent=1), encoding="utf-8")
@@ -114,7 +116,13 @@ class ObsidianWriter:
             )
             if a.error:
                 text = f"### ⚠️ {a.symbol}\n{a.error}"
-            nodes.append({"id": f"coin_{a.base}", "type": "text", "x": left_x, "y": y, "width": node_w, "height": node_h,
+            b = meta.get("briefs", {}).get(a.symbol)
+            node_h_i = node_h
+            if b is not None:
+                from .obsidian_agents import agent_summary_line
+                text += "\n" + agent_summary_line(b)
+                node_h_i = node_h + 30
+            nodes.append({"id": f"coin_{a.base}", "type": "text", "x": left_x, "y": y, "width": node_w, "height": node_h_i,
                           "color": COLOR[act], "text": text})
             edges.append({"id": f"e_{a.base}_dec", "fromNode": f"coin_{a.base}", "fromSide": "right",
                           "toNode": "decision", "toSide": "left", "color": COLOR[act],
@@ -129,7 +137,9 @@ class ObsidianWriter:
                 f"**Açık pozisyon:** {summary.open_positions}\n\n"
                 f"🟢 AL {summary.n_buy} · 🔴 SAT {summary.n_sell} · 🟡 TUT {summary.n_hold} · ⚪ BEKLE {summary.n_watch}\n\n"
                 "Kurallar: yalnız OOS-doğrulanmış edge · risk bazlı boyut · ATR iz süren stop · "
-                "max açık pozisyon sınırı · BTC rejim filtresi\n[[Dashboard|Dashboard →]]"
+                "max açık pozisyon sınırı · BTC rejim filtresi\n"
+                + (f"🏛️ Baş Yönetici: **{meta['chief'].risk_mode}** — {meta['chief'].headline} [[Agents/Baş Yönetici|→]]\n" if meta.get("chief") else "")
+                + "[[Dashboard|Dashboard →]]"
             ),
         })
 
@@ -191,15 +201,18 @@ class ObsidianWriter:
             "    classDef core fill:#1e3a5f,stroke:#64b5f6,color:#fff",
             "```",
         ]
-        rows = ["| Coin | Karar | Güven | Skor | Fiyat | 24s % | RSI | Rejim | Strateji | WFO Sharpe | WFO PF | Edge |",
+        rows = ["| Coin | Spot karar | 🧠 Ajan yöneticisi | Kanaat | Skor | Fiyat | 24s % | RSI | Rejim | Strateji | WFO Sharpe | Edge |",
                 "|---|---|---|---|---|---|---|---|---|---|---|---|"]
+        vemoji = {"LONG": "🟢", "SHORT": "🔴", "BEKLE": "⚪"}
         for a in analyses:
             d = dmap.get(a.symbol)
             act = d.action if d else "WATCH"
+            b = meta.get("briefs", {}).get(a.symbol)
+            mv = f"[[Agents/{a.base}\\|{vemoji[b.verdict]} {b.verdict}]]" if b else "-"
             rows.append(
-                f"| [[Coins/{a.base}\\|{a.symbol}]] | {EMOJI[act]} {ACTION_TR[act]} | {d.confidence if d else 0} | {a.score} | {_px(a.price)} | "
+                f"| [[Coins/{a.base}\\|{a.symbol}]] | {EMOJI[act]} {ACTION_TR[act]} | {mv} | {b.conviction if b else '-'} | {a.score} | {_px(a.price)} | "
                 f"{_f(a.change_24h_pct,1)} | {_f(a.rsi14,0)} | {a.regime} | {a.best_family_title or '-'} | "
-                f"{_f(a.test_metrics.get('sharpe'))} | {_f(a.test_metrics.get('profit_factor'))} | {'✅' if a.has_edge else '❌'} |"
+                f"{_f(a.test_metrics.get('sharpe'))} | {'✅' if a.has_edge else '❌'} |"
             )
         return "\n".join([
             "---", f"updated: {meta['run_time']}", f"exchange: {meta['exchange']}", f"timeframe: {meta['timeframe']}", "---",
@@ -210,6 +223,7 @@ class ObsidianWriter:
             "Backtest: [[Backtests/Sweep]] · Portföy: [[Portfolio]]", "",
             "## Akış (analiz → karar → sinyal)", *m, "",
             "## Coin özeti", *rows, "",
+            *(["## 🏛️ Baş Yönetici", f"**{meta['chief'].risk_mode}** — {meta['chief'].headline}", *[f"- {x}" for x in meta['chief'].rules], "Detay: [[Agents/Baş Yönetici]] · Alarmlar: [[Agents/Alarmlar]]", ""] if meta.get("chief") else []),
             "## Portföy",
             f"- Equity: **{_f(portfolio.get('equity'))} USDT** (başlangıç {_f(portfolio.get('starting_equity'))})",
             f"- Nakit: {_f(portfolio.get('cash'))} · Açık pozisyon: {len(portfolio.get('positions', {}))} · "

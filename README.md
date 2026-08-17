@@ -10,6 +10,26 @@
 > ("keep AI on analysis — the trigger stays human"). Kâr garantisi yoktur; geçmiş performans
 > gelecek getiriyi garanti etmez.
 
+## Çoklu ajan katmanı (coin başına uzmanlar → yönetici → baş yönetici)
+
+Her coin için 8 uzman ajan aynı anda çalışır ve o coinin **yönetici ajanına** rapor verir; yönetici futures/kaldıraç
+planı çıkarır; **Baş Yönetici** tüm coinleri BTC rejimine göre sıralar. Sistem `watch` ile 7/24 döner.
+
+| Ajan | Baktığı şey | Kaynak |
+|---|---|---|
+| 🌡️ Volatilite | günlük/4h ATR, ATR yüzdeliği, Bollinger genişliği, 30g gerçekleşen vol → **max kaldıraç** ve stop mesafesi | TradingView 1d/4h |
+| 📈 Trend & EMA çizgileri | 1d/4h/1h EMA 20/50/100/200 dizilimi, eğim, ADX; TradingView "Key facts" tarzı yakın destek/direnç EMA | TradingView 1d/4h/1h |
+| 🕯️ Mum yapısı | son mumun aralıkta nerede kapandığı, gövde/fitil oranı, yutan/çekiç/kayan yıldız/doji/iç bar, HH-HL / LH-LL yapısı | 1d/4h |
+| 📊 Hacim | hacim/20-bar ort., alım-satım hacmi oranı, OBV eğimi, hareket hacimle onaylı mı | 1d/4h |
+| 🧱 Destek/Direnç | swing yüksek/alçaklar (kümelenmiş), Donchian, 20g H/L; "X üstünde kapanış → hedef Y" | 1d/4h |
+| 🚀 Momentum | RSI 1d/4h/1h, MACD histogram, ROC, basit uyumsuzluk | 1d/4h/1h |
+| 🧪 Backtest/Edge | walk-forward sonucu (edge var mı, strateji LONG/FLAT mı) | son `run` |
+| 📡 Binance canlı | 24s istatistik, emir defteri dengesi (ilk 20 kademe), funding, open interest, long/short hesap oranı | Binance public |
+
+**Coin yöneticisi** ağırlıklı skoru (−1…+1) → **LONG / SHORT / BEKLE** + kanaat %, futures planı (tetik: "4h mum X üstünde/altında
+kapanırsa", giriş, stop, hedef1/2, R/R ≥ 1.5 şartı, max kaldıraç, marj/notional/risk USDT), **YAP / YAPMA / EĞER…İSE** listeleri.
+**Baş Yönetici**: RISK-ON / NÖTR / RISK-OFF modu, coin sıralaması, portföy kuralları. Karar değişiklikleri `Agents/Alarmlar.md` + `state/alerts.log`.
+
 ## Mimari (Obsidian şemasıyla birebir)
 
 ```
@@ -51,6 +71,8 @@ python -m tradingbot run --loop 240         # her 4 saatte bir tekrar (bar kapan
 python -m tradingbot analyze --symbols BTC/USDT SOL/USDT
 python -m tradingbot sweep --symbols SOL/USDT --top 20 --families ema_trend donchian
 python -m tradingbot fetch                  # sadece veri önbelleği
+python -m tradingbot agents                 # yalnızca ajan katmanı (≈1 dk): coin yöneticileri + baş yönetici → Obsidian Agents/
+python -m tradingbot watch --interval 15    # 7/24: her 15 dk ajanlar, her 4h bar kapanışında tam döngü
 python -m tradingbot obsidian               # son rapordan Obsidian'ı yeniden yaz (ağ gerekmez)
 python -m tradingbot reset-portfolio        # kağıt portföyü sıfırla (eskisi yedeklenir)
 ```
@@ -70,6 +92,9 @@ Kasa: `Trading_bot/`
 - **`Signals/`** — her çalışmanın karar tablosu (`Son Sinyal.md` her zaman en güncel).
 - **`Backtests/Sweep.md`** — coinlerin en iyi stratejilerinin OOS Sharpe'a göre sıralaması, buy&hold kıyası (slayt-4 tarzı).
 - **`Portfolio.md`** — kağıt portföy: açık pozisyonlar, stoplar, kapanan işlemler.
+- **`Agents/<COIN>.canvas`** — coin başına ajan şeması: solda 8 uzman ajan (renk = ajanın yönü), ortada **COIN YÖNETİCİSİ**, sağda **FUTURES PLANI**, **YAPMA**, **EĞER…İSE**, altta kilit seviyeler.
+- **`Agents/<COIN>.md`** — tüm ajan bulguları/uyarıları/metrikleri + yönetici brifingi. **`Agents/Baş Yönetici.md`**, **`Agents/Alarmlar.md`**.
+- Ana şemadaki her coin düğümünde yöneticinin kararı ve ajan şemasına bağlantı bulunur.
 
 ## Karar mantığı (özet)
 
@@ -102,6 +127,7 @@ Trading bot/
 ├─ config.yaml            ayarlar
 ├─ requirements.txt
 ├─ tradingbot/            paket (yukarıdaki katmanlar; tradingview.py = TradingView istemcisi)
+│  └─ agents/             base, technical (7 ajan), market (Binance canlı), manager (coin yöneticisi + baş yönetici), runner
 ├─ tests/test_bot.py
 ├─ scripts/run_bot.bat, run_bot_loop.bat
 ├─ data/                  OHLCV önbelleği (git dışı)

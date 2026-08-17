@@ -23,6 +23,7 @@ from .data import MarketData
 from .decision import Decision, DecisionSummary, decide
 from .exchange_rules import ExchangeRules
 from .obsidian import ObsidianWriter
+from .obsidian_agents import ObsidianAgentWriter
 from .portfolio import Portfolio
 from .signals import apply_paper, build_report, console_table, now_iso, persist
 
@@ -117,8 +118,31 @@ def cmd_sweep(cfg: BotConfig, args) -> int:
     return 0
 
 
+def _run_agents(cfg: BotConfig, symbols: list[str], analyses: list[CoinAnalysis] | None):
+    from .agents import AgentRunner, persist_agents
+    amap = {a.symbol: a for a in (analyses or [])}
+    briefs, chief = AgentRunner(cfg).run_all(symbols, amap)
+    path, alerts = persist_agents(briefs, chief, cfg.state_path)
+    print("\n🧠 AJAN YÖNETİCİLERİ  —  " + chief.headline)
+    for b in briefs:
+        p = b.plan
+        plan = (f" | {p.direction}: {p.trigger_text} · stop {p.stop:.6g} · R/R {p.rr} · lev≤{p.max_leverage}x" + (" ✅" if p.valid else f" ⛔ {p.invalid_reason}")) if b.verdict != "BEKLE" else ""
+        print(f"  {b.symbol:<10} {b.verdict:<6} kanaat {b.conviction:>3}  {b.headline.split(' · ', 1)[-1][:70]}{plan}")
+    for a in alerts:
+        print(f"  🔔 {a}")
+    return briefs, chief, alerts
+
+
+def _load_last_analyses(cfg: BotConfig) -> list[CoinAnalysis]:
+    src = cfg.state_path / "signals.json"
+    if not src.exists():
+        return []
+    rep = json.loads(src.read_text(encoding="utf-8"))
+    return [CoinAnalysis(**{k: v for k, v in a.items() if k in CoinAnalysis.__dataclass_fields__}) for a in rep["analyses"]]
+
+
 def run_cycle(cfg: BotConfig, symbols: list[str], families: list[str] | None = None, *, write_obsidian: bool = True,
-              paper: bool = True) -> dict:
+              paper: bool = True, agents: bool = True) -> dict:
     when = now_iso()
     analyses, exchange = _analyze_all(cfg, symbols, families)
     pf_path = cfg.state_path / "portfolio.json"
@@ -135,12 +159,69 @@ def run_cycle(cfg: BotConfig, symbols: list[str], families: list[str] | None = N
         for e in executed:
             print(f"  {e['side']:<4} {e['symbol']:<10} @ {e['price']:.6g}  " + (f"{e.get('notional', 0):.0f} USDT stop {e.get('stop', 0):.6g}" if e['side'] == 'BUY' else f"P&L {e.get('pnl', 0):.2f}"))
     print(f"\nRapor: {out}")
+    briefs = chief = None
+    alerts: list[str] = []
+    if agents:
+        try:
+            briefs, chief, alerts = _run_agents(cfg, symbols, analyses)
+        except Exception as exc:  # noqa: BLE001
+            log.exception("Ajan katmanı hatası: %s", exc)
     if write_obsidian:
         writer = ObsidianWriter(cfg.obsidian.root, cfg.obsidian.canvas_name)
         paths = writer.write_all(analyses, decisions, summary, report.portfolio, executed,
-                                 exchange=exchange, timeframe=cfg.exchange.timeframe, run_time=when)
+                                 exchange=exchange, timeframe=cfg.exchange.timeframe, run_time=when, briefs=briefs, chief=chief)
+        if briefs:
+            ObsidianAgentWriter(cfg.obsidian.root).write_all(briefs, chief, alerts)
         print(f"Obsidian: {paths['canvas']}")
     return report.to_dict()
+
+
+def cmd_agents(cfg: BotConfig, args) -> int:
+    """Yalnızca ajan katmanı (WFO taraması yapmaz; son `run` analizini kullanır)."""
+    symbols = _symbols(cfg, args)
+    analyses = _load_last_analyses(cfg)
+    briefs, chief, alerts = _run_agents(cfg, symbols, analyses)
+    if not args.no_obsidian:
+        ObsidianAgentWriter(cfg.obsidian.root).write_all(briefs, chief, alerts)
+        src = cfg.state_path / "signals.json"
+        if src.exists():  # ana şemayı da yönetici kararlarıyla güncelle
+            rep = json.loads(src.read_text(encoding="utf-8"))
+            decisions = [Decision(**{k: v for k, v in d.items() if k in Decision.__dataclass_fields__}) for d in rep["decisions"]]
+            summary = DecisionSummary(**rep["summary"])
+            ObsidianWriter(cfg.obsidian.root, cfg.obsidian.canvas_name).write_all(
+                analyses, decisions, summary, rep["portfolio"], rep.get("executed", []), exchange=rep["exchange"],
+                timeframe=rep["timeframe"], run_time=rep["run_time"], briefs=briefs, chief=chief)
+        print(f"Obsidian ajan şemaları: {cfg.obsidian.root / 'Agents'}")
+    return 0
+
+
+def cmd_watch(cfg: BotConfig, args) -> int:
+    """7/24 izleme: her `interval` dakikada ajanlar; her yeni 4h bar kapanışında tam döngü (WFO + karar + kağıt)."""
+    from .data import TIMEFRAME_MS
+    symbols = _symbols(cfg, args)
+    tf_ms = TIMEFRAME_MS[cfg.exchange.timeframe]
+    last_full_bar = -1
+    log.info("İzleme başladı: ajanlar her %d dk, tam döngü her %s bar kapanışında. Ctrl+C ile durdur.", args.interval, cfg.exchange.timeframe)
+    while True:
+        try:
+            now_ms = int(time.time() * 1000)
+            cur_bar = now_ms // tf_ms
+            if cur_bar != last_full_bar and (now_ms % tf_ms) >= 120_000:   # bar kapanışından ≥2 dk sonra
+                print(f"\n===== {time.strftime('%Y-%m-%d %H:%M:%S')} — TAM DÖNGÜ (yeni {cfg.exchange.timeframe} bar) =====")
+                run_cycle(cfg, symbols, args.families, write_obsidian=not args.no_obsidian, paper=not args.no_paper, agents=True)
+                last_full_bar = cur_bar
+            else:
+                print(f"\n===== {time.strftime('%Y-%m-%d %H:%M:%S')} — AJAN TURU =====")
+                analyses = _load_last_analyses(cfg)
+                briefs, chief, alerts = _run_agents(cfg, symbols, analyses)
+                if not args.no_obsidian:
+                    ObsidianAgentWriter(cfg.obsidian.root).write_all(briefs, chief, alerts)
+        except KeyboardInterrupt:
+            print("İzleme durduruldu.")
+            return 0
+        except Exception as exc:  # noqa: BLE001
+            log.exception("İzleme turu hatası: %s", exc)
+        time.sleep(max(1, args.interval) * 60)
 
 
 def cmd_run(cfg: BotConfig, args) -> int:
@@ -204,6 +285,12 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--loop", type=int, default=0, help="Dakika cinsinden tekrar aralığı (0 = tek sefer)")
     s.add_argument("--no-obsidian", action="store_true"); s.add_argument("--no-paper", action="store_true", help="Kağıt portföyü güncelleme")
     s.set_defaults(fn=cmd_run)
+    s = sub.add_parser("agents", help="Çoklu ajan analizi (coin yöneticileri + baş yönetici)"); common(s)
+    s.add_argument("--no-obsidian", action="store_true"); s.set_defaults(fn=cmd_agents)
+    s = sub.add_parser("watch", help="7/24 izleme: ajanlar periyodik, tam döngü her bar kapanışında"); common(s)
+    s.add_argument("--interval", type=int, default=15, help="Ajan turu aralığı (dakika)")
+    s.add_argument("--no-obsidian", action="store_true"); s.add_argument("--no-paper", action="store_true")
+    s.set_defaults(fn=cmd_watch)
     s = sub.add_parser("obsidian", help="Son rapordan Obsidian'ı yeniden yaz"); s.set_defaults(fn=cmd_obsidian)
     s = sub.add_parser("reset-portfolio", help="Kağıt portföyü sıfırla"); s.set_defaults(fn=cmd_reset_portfolio)
     return p

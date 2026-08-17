@@ -1,0 +1,277 @@
+{
+ "nodes": [
+  {
+   "id": "regime",
+   "type": "text",
+   "x": 620,
+   "y": -260,
+   "width": 420,
+   "height": 150,
+   "color": "5",
+   "text": "## 🌐 Piyasa Rejimi\n**BTC rejimi:** YATAY\nBorsa: binance · TF: 4h\nGüncelleme: 2026-08-17 23:13"
+  },
+  {
+   "id": "coin_BTC",
+   "type": "text",
+   "x": 0,
+   "y": 0,
+   "width": 340,
+   "height": 130,
+   "color": "6",
+   "text": "### ⚪ BTC/USDT — BEKLE · skor 35\nFiyat **64,310** (+1.9% 24s) · RSI 70 · YATAY\nRSI Ortalamaya Dönüş · OOS Sharpe -2.19 · ❌ edge yok\n[[Coins/BTC|Detay →]]"
+  },
+  {
+   "id": "coin_ETH",
+   "type": "text",
+   "x": 0,
+   "y": 150,
+   "width": 340,
+   "height": 130,
+   "color": "6",
+   "text": "### ⚪ ETH/USDT — BEKLE · skor 53\nFiyat **1,907** (+1.1% 24s) · RSI 61 · YATAY\nDonchian Kırılım · OOS Sharpe -1.21 · ❌ edge yok\n[[Coins/ETH|Detay →]]"
+  },
+  {
+   "id": "coin_SOL",
+   "type": "text",
+   "x": 0,
+   "y": 300,
+   "width": 340,
+   "height": 130,
+   "color": "6",
+   "text": "### ⚪ SOL/USDT — BEKLE · skor 60\nFiyat **75.81** (+0.8% 24s) · RSI 53 · YÜKSELİŞ\nEMA Trend Takibi · OOS Sharpe 0.25 · ❌ edge yok\n[[Coins/SOL|Detay →]]"
+  },
+  {
+   "id": "coin_BNB",
+   "type": "text",
+   "x": 0,
+   "y": 450,
+   "width": 340,
+   "height": 130,
+   "color": "6",
+   "text": "### ⚪ BNB/USDT — BEKLE · skor 53\nFiyat **605.24** (-0.1% 24s) · RSI 46 · YATAY\nEMA Trend Takibi · OOS Sharpe -0.15 · ❌ edge yok\n[[Coins/BNB|Detay →]]"
+  },
+  {
+   "id": "coin_XRP",
+   "type": "text",
+   "x": 0,
+   "y": 600,
+   "width": 340,
+   "height": 130,
+   "color": "6",
+   "text": "### ⚪ XRP/USDT — BEKLE · skor 35\nFiyat **1.00** (+0.0% 24s) · RSI 46 · DÜŞÜŞ\nDonchian Kırılım · OOS Sharpe -1.70 · ❌ edge yok\n[[Coins/XRP|Detay →]]"
+  },
+  {
+   "id": "coin_ADA",
+   "type": "text",
+   "x": 0,
+   "y": 750,
+   "width": 340,
+   "height": 130,
+   "color": "6",
+   "text": "### ⚪ ADA/USDT — BEKLE · skor 29\nFiyat **0.1738** (-2.5% 24s) · RSI 33 · DÜŞÜŞ\nDonchian Kırılım · OOS Sharpe -1.42 · ❌ edge yok\n[[Coins/ADA|Detay →]]"
+  },
+  {
+   "id": "coin_DOGE",
+   "type": "text",
+   "x": 0,
+   "y": 900,
+   "width": 340,
+   "height": 130,
+   "color": "6",
+   "text": "### ⚪ DOGE/USDT — BEKLE · skor 35\nFiyat **0.0703** (+0.5% 24s) · RSI 53 · DÜŞÜŞ\nDonchian Kırılım · OOS Sharpe -2.13 · ❌ edge yok\n[[Coins/DOGE|Detay →]]"
+  },
+  {
+   "id": "coin_AVAX",
+   "type": "text",
+   "x": 0,
+   "y": 1050,
+   "width": 340,
+   "height": 130,
+   "color": "6",
+   "text": "### ⚪ AVAX/USDT — BEKLE · skor 39\nFiyat **6.34** (-0.1% 24s) · RSI 45 · YATAY\nRSI Ortalamaya Dönüş · OOS Sharpe -1.20 · ❌ edge yok\n[[Coins/AVAX|Detay →]]"
+  },
+  {
+   "id": "coin_LINK",
+   "type": "text",
+   "x": 0,
+   "y": 1200,
+   "width": 340,
+   "height": 130,
+   "color": "6",
+   "text": "### ⚪ LINK/USDT — BEKLE · skor 60\nFiyat **9.50** (+0.3% 24s) · RSI 62 · YÜKSELİŞ\nRSI Ortalamaya Dönüş · OOS Sharpe -2.01 · ❌ edge yok\n[[Coins/LINK|Detay →]]"
+  },
+  {
+   "id": "coin_DOT",
+   "type": "text",
+   "x": 0,
+   "y": 1350,
+   "width": 340,
+   "height": 130,
+   "color": "6",
+   "text": "### ⚪ DOT/USDT — BEKLE · skor 35\nFiyat **0.7610** (-0.5% 24s) · RSI 44 · DÜŞÜŞ\nEMA Trend Takibi · OOS Sharpe -0.85 · ❌ edge yok\n[[Coins/DOT|Detay →]]"
+  },
+  {
+   "id": "decision",
+   "type": "text",
+   "x": 620,
+   "y": 580,
+   "width": 420,
+   "height": 340,
+   "color": "2",
+   "text": "## ⚖️ KARAR MOTORU\n**Equity:** 10,000.00 USDT · **Nakit:** 10,000.00\n**Açık pozisyon:** 0\n\n🟢 AL 0 · 🔴 SAT 0 · 🟡 TUT 0 · ⚪ BEKLE 10\n\nKurallar: yalnız OOS-doğrulanmış edge · risk bazlı boyut · ATR iz süren stop · max açık pozisyon sınırı · BTC rejim filtresi\n[[Dashboard|Dashboard →]]"
+  },
+  {
+   "id": "signal",
+   "type": "text",
+   "x": 1240,
+   "y": 580,
+   "width": 460,
+   "height": 340,
+   "color": "6",
+   "text": "## 📣 AL / SAT SİNYALİ\n⚪ Bu turda AL/SAT yok — bekleniyor.\n\n_Gerçek emir gönderilmez; tetik sende._ [[Signals/Son Sinyal|Log →]]"
+  },
+  {
+   "id": "portfolio",
+   "type": "text",
+   "x": 1240,
+   "y": 970,
+   "width": 460,
+   "height": 220,
+   "color": "5",
+   "text": "## 💼 Kağıt Portföy\nEquity **10,000.00** · Nakit 10,000.00 · Gerçekleşen P&L 0.00\nAçık pozisyon yok.\n[[Portfolio|Detay →]]"
+  },
+  {
+   "id": "backtests",
+   "type": "file",
+   "file": "Backtests/Sweep.md",
+   "x": 620,
+   "y": 970,
+   "width": 420,
+   "height": 380
+  }
+ ],
+ "edges": [
+  {
+   "id": "e_BTC_dec",
+   "fromNode": "coin_BTC",
+   "fromSide": "right",
+   "toNode": "decision",
+   "toSide": "left",
+   "color": "6",
+   "label": "BEKLE · güven 35"
+  },
+  {
+   "id": "e_ETH_dec",
+   "fromNode": "coin_ETH",
+   "fromSide": "right",
+   "toNode": "decision",
+   "toSide": "left",
+   "color": "6",
+   "label": "BEKLE · güven 53"
+  },
+  {
+   "id": "e_SOL_dec",
+   "fromNode": "coin_SOL",
+   "fromSide": "right",
+   "toNode": "decision",
+   "toSide": "left",
+   "color": "6",
+   "label": "BEKLE · güven 60"
+  },
+  {
+   "id": "e_BNB_dec",
+   "fromNode": "coin_BNB",
+   "fromSide": "right",
+   "toNode": "decision",
+   "toSide": "left",
+   "color": "6",
+   "label": "BEKLE · güven 53"
+  },
+  {
+   "id": "e_XRP_dec",
+   "fromNode": "coin_XRP",
+   "fromSide": "right",
+   "toNode": "decision",
+   "toSide": "left",
+   "color": "6",
+   "label": "BEKLE · güven 35"
+  },
+  {
+   "id": "e_ADA_dec",
+   "fromNode": "coin_ADA",
+   "fromSide": "right",
+   "toNode": "decision",
+   "toSide": "left",
+   "color": "6",
+   "label": "BEKLE · güven 29"
+  },
+  {
+   "id": "e_DOGE_dec",
+   "fromNode": "coin_DOGE",
+   "fromSide": "right",
+   "toNode": "decision",
+   "toSide": "left",
+   "color": "6",
+   "label": "BEKLE · güven 35"
+  },
+  {
+   "id": "e_AVAX_dec",
+   "fromNode": "coin_AVAX",
+   "fromSide": "right",
+   "toNode": "decision",
+   "toSide": "left",
+   "color": "6",
+   "label": "BEKLE · güven 39"
+  },
+  {
+   "id": "e_LINK_dec",
+   "fromNode": "coin_LINK",
+   "fromSide": "right",
+   "toNode": "decision",
+   "toSide": "left",
+   "color": "6",
+   "label": "BEKLE · güven 60"
+  },
+  {
+   "id": "e_DOT_dec",
+   "fromNode": "coin_DOT",
+   "fromSide": "right",
+   "toNode": "decision",
+   "toSide": "left",
+   "color": "6",
+   "label": "BEKLE · güven 35"
+  },
+  {
+   "id": "e_dec_sig",
+   "fromNode": "decision",
+   "fromSide": "right",
+   "toNode": "signal",
+   "toSide": "left",
+   "label": "AL/SAT/TUT/BEKLE"
+  },
+  {
+   "id": "e_reg_dec",
+   "fromNode": "regime",
+   "fromSide": "bottom",
+   "toNode": "decision",
+   "toSide": "top",
+   "label": "rejim filtresi"
+  },
+  {
+   "id": "e_sig_pf",
+   "fromNode": "signal",
+   "fromSide": "bottom",
+   "toNode": "portfolio",
+   "toSide": "top",
+   "label": "kağıt işlem"
+  },
+  {
+   "id": "e_bt_dec",
+   "fromNode": "backtests",
+   "fromSide": "top",
+   "toNode": "decision",
+   "toSide": "bottom",
+   "label": "edge doğrulama"
+  }
+ ]
+}

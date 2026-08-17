@@ -1,0 +1,26 @@
+---
+run_time: 2026-08-17T20:13:05+00:00
+regime: YATAY
+tags: [trading, signal]
+---
+# 📣 Sinyal — 2026-08-17 23:13
+> BTC rejimi **YATAY** · Equity 10,000.00 · AL 0 · SAT 0 · TUT 0 · BEKLE 10
+
+## Kararlar
+| Coin | Karar | Güven | Fiyat | Adet | USDT | Stop | Gerekçe |
+|---|---|---|---|---|---|---|---|
+| BTC/USDT | ⚪ BEKLE | 35 | 64,310 | - | - | - | Edge yok — OOS zayıf: Sharpe -2.19, PF 0.27, 11 işlem |
+| ETH/USDT | ⚪ BEKLE | 53 | 1,907 | - | - | - | Edge yok — OOS zayıf: Sharpe -1.21, PF 0.27, 10 işlem |
+| SOL/USDT | ⚪ BEKLE | 60 | 75.81 | - | - | - | Edge yok — OOS zayıf: Sharpe 0.25, PF 1.19, 11 işlem |
+| BNB/USDT | ⚪ BEKLE | 53 | 605.24 | - | - | - | Edge yok — OOS zayıf: Sharpe -0.15, PF 0.87, 8 işlem |
+| XRP/USDT | ⚪ BEKLE | 35 | 1.00 | - | - | - | Edge yok — OOS zayıf: Sharpe -1.70, PF 0.31, 13 işlem |
+| ADA/USDT | ⚪ BEKLE | 29 | 0.1738 | - | - | - | Edge yok — OOS zayıf: Sharpe -1.42, PF 0.43, 13 işlem |
+| DOGE/USDT | ⚪ BEKLE | 35 | 0.0703 | - | - | - | Edge yok — OOS zayıf: Sharpe -2.13, PF 0.27, 11 işlem |
+| AVAX/USDT | ⚪ BEKLE | 39 | 6.34 | - | - | - | Edge yok — OOS zayıf: Sharpe -1.20, PF 0.55, 8 işlem |
+| LINK/USDT | ⚪ BEKLE | 60 | 9.50 | - | - | - | Edge yok — OOS zayıf: Sharpe -2.01, PF 0.19, 8 işlem |
+| DOT/USDT | ⚪ BEKLE | 35 | 0.7610 | - | - | - | Edge yok — OOS zayıf: Sharpe -0.85, PF 0.40, 6 işlem |
+
+## Kağıt portföyde uygulananlar
+Bu turda işlem yok.
+
+_Gerçek emir gönderilmedi. Tetik insanda._ · [[Dashboard]]

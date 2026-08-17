@@ -1,0 +1,48 @@
+# ============================================================
+#  Trading Bot — ana yapılandırma
+#  Bu bot ANALİZ + KARAR + SİNYAL üretir ve kağıt (paper) portföy tutar.
+#  Gerçek emir GÖNDERMEZ. Tetik insanda kalır.
+# ============================================================
+
+exchange:
+  # Sırayla denenir; ilki başarısız olursa diğerine geçilir (public OHLCV, API key gerekmez)
+  candidates: [binance, bybit, okx, kucoin]
+  timeframe: "4h"          # analiz/backtest zaman dilimi
+  history_days: 730        # geriye dönük veri (gün)
+  cache_dir: "data"        # OHLCV önbelleği (CSV)
+
+coins:
+  - BTC/USDT
+  - ETH/USDT
+  - SOL/USDT
+  - BNB/USDT
+  - XRP/USDT
+  - ADA/USDT
+  - DOGE/USDT
+  - AVAX/USDT
+  - LINK/USDT
+  - DOT/USDT
+
+backtest:
+  fee_pct: 0.10            # tek yön komisyon (%)
+  slippage_pct: 0.05       # tek yön kayma (%)
+  train_ratio: 0.70        # ilk %70 in-sample, son %30 out-of-sample (OOS)
+  min_trades: 15           # bir konfigürasyonun sıralamaya girmesi için min. işlem
+  min_oos_sharpe: 0.30     # OOS Sharpe bu eşiğin altındaysa strateji "edge yok" sayılır
+  min_oos_profit_factor: 1.10
+
+risk:
+  starting_equity_usdt: 10000
+  risk_per_trade_pct: 1.0      # her işlemde riske atılan sermaye (%)
+  atr_stop_mult: 2.5           # stop = giriş - ATR * bu çarpan
+  max_position_pct: 25         # tek coine max sermaye (%)
+  max_open_positions: 5
+  btc_regime_filter: true      # BTC düşüş rejimindeyse altcoin AL boyutu yarıya iner
+  min_confidence_to_buy: 55    # 0-100
+
+obsidian:
+  vault_path: "C:/Users/berke/Trading bot/Trading_bot"   # Obsidian'da açtığın kasa
+  folder: ""                   # vault içinde alt klasör (boş = kök)
+  canvas_name: "Trading Bot Şeması.canvas"
+
+state_dir: "state"

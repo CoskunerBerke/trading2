@@ -5,7 +5,6 @@ import json
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
-import pytest
 
 from tradingbot.accounting import (
     AmountType,
@@ -15,7 +14,6 @@ from tradingbot.accounting import (
     LiquidationParams,
     OrderStatus,
     OrderType,
-    Position,
     PositionSide,
     Side,
     SizeSpec,
@@ -31,12 +29,10 @@ from tradingbot.accounting import (
     R_ZERO_QTY,
     EXIT_STOP,
     EXIT_BE_STOP,
-    EXIT_TP1,
     EXIT_LIQ,
     liquidation_price,
     simple_liq,
     liquidation_buffer_pct,
-    default_filters,
     quantize_order,
     tax_rows,
     vwap_estimate,

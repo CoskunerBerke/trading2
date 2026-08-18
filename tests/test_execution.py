@@ -1,14 +1,12 @@
 """tradingbot.execution testleri — durum makinesi, clientOrderId, PaperGateway, testnet kapıları, LiveGateway kilidi, reconcile."""
 from __future__ import annotations
 
-import re
 from datetime import datetime, timezone
 from decimal import Decimal
 
 import pytest
 
 from tradingbot.accounting import (
-    AmountType,
     FeeSchedule,
     FuturesLedgerV2,
     MarketType,

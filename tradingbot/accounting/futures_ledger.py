@@ -19,12 +19,12 @@ import logging
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Callable, Iterable, Mapping
+from typing import Any, Iterable, Mapping
 
 from ..core import D, ZERO, StorageError, atomic_write_json, iso, quantize_price, quantize_qty, read_json, utc_now
 from .fees import FeeSchedule
 from .filters import LeverageBracket, bracket_for, default_filters
-from .funding import FundingEvent, FundingSchedule, RateLookup
+from .funding import FundingSchedule, RateLookup
 from .liquidation import LiquidationParams, is_liquidated, liquidation_outcome, liquidation_price
 from .models import (
     SCHEMA_VERSION,
@@ -36,7 +36,6 @@ from .models import (
     MarketType,
     Position,
     PositionSide,
-    Side,
     SizeSpec,
     SymbolFilters,
     TickData,

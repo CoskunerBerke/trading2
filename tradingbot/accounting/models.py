@@ -5,7 +5,7 @@ Zamanlar ISO-8601 UTC string olarak saklanır (`+00:00`).
 """
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field, fields
+from dataclasses import dataclass, field, fields
 from decimal import Decimal
 from enum import Enum
 from typing import Any

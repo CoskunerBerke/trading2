@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-import pytest
 
 from tradingbot.futures_backtest import run_futures_backtest
 from tradingbot.validation import (ValidationReport, anchored_wfo, block_bootstrap_ci, champion_challenger_gate,

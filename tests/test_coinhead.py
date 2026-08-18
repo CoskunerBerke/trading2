@@ -6,11 +6,10 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import pytest
 
 from tradingbot import indicators as ind
 from tradingbot.agents.base import CoinContext
-from tradingbot.agents.manager import ChiefAgent, CoinManagerAgent
+from tradingbot.agents.manager import CoinManagerAgent
 from tradingbot.agents.market import MarketDataAgent
 from tradingbot.agents.technical import TECHNICAL_AGENTS
 from tradingbot.coinhead import (ChiefPortfolioManager, CoinHead, CoinHeadConfig, CoinHeadInputs, CoinHeadRegistry, RedTeamContext,

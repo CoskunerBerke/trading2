@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable
 
 from ..accounting.models import Order, OrderStatus, Position, ser
 from ..core import D, ZERO, ExecutionDisabledError, iso

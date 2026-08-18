@@ -14,7 +14,6 @@ Tamamen deterministik/istatistiksel; dış servis gerekmez. state/learning.json'
 """
 from __future__ import annotations
 
-import json
 import math
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone

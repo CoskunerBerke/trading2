@@ -1,7 +1,6 @@
 """Kalibrasyon: Platt (2 parametreli LR), izotonik (PAVA), Brier, log-loss, ECE, güvenilirlik eğrisi."""
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass, field
 
 import numpy as np

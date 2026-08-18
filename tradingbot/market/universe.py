@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Iterable
+from typing import Any, Iterable
 
 from ..core import atomic_write_json, iso, utc_now
 from .providers import FUTURES, SPOT, now_ms

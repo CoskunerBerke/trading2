@@ -14,7 +14,7 @@ import json
 from datetime import datetime
 from pathlib import Path
 
-from .agents.base import AgentReport, tr_lower
+from .agents.base import AgentReport
 from .agents.manager import ChiefBrief, CoinBrief
 
 VERDICT_COLOR = {"LONG": "4", "SHORT": "1", "BEKLE": "6"}

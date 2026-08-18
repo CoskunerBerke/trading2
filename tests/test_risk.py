@@ -1,7 +1,6 @@
 """Phase 5 — Global Risk Engine, kill switch, profiller, modlar (ağsız)."""
 from __future__ import annotations
 
-import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 

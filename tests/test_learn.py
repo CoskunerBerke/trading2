@@ -11,7 +11,7 @@ import pytest
 from tradingbot.learn import (Calibrator, HierarchicalRate, LearnConfig, LearnerV2, LogisticModel, ModelRegistry, ShadowBook, StandardScaler,
                               TradeMemory, brier, build_features, ece, feature_names, isotonic_fit, label_outcome, log_loss, promotion_gate,
                               retrieve_similar, structured_postmortem, drift_check)
-from tradingbot.learn.shadow import ShadowTrade, label_with_candles
+from tradingbot.learn.shadow import label_with_candles
 from tradingbot.learning import Learner
 
 NOW = datetime(2026, 8, 18, 12, 0, tzinfo=timezone.utc)

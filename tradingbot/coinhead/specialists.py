@@ -5,7 +5,6 @@ istisna dışarı sızmaz (fakat sessizce yutulmaz: error alanı dolar, veri kal
 """
 from __future__ import annotations
 
-import math
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
@@ -15,7 +14,7 @@ import pandas as pd
 
 from ..core import iso, stable_id, utc_now
 from .factors import LEGACY_GROUP, split_market_report
-from .schema import SpecialistReport, Stance, stance_from_bias
+from .schema import SpecialistReport, stance_from_bias
 
 REGIMES = ("TREND_UP", "TREND_DOWN", "RANGE", "HIGH_VOL", "LOW_VOL", "SQUEEZE", "BREAKOUT", "PANIC", "EUPHORIC", "ILLIQUID", "UNKNOWN")
 

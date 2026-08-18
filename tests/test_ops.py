@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from tradingbot.core import atomic_write_json, iso, utc_now
+from tradingbot.core import atomic_write_json, iso
 from tradingbot.ops import (AlreadyRunningError, HealthMonitor, HealthState, JsonLineFormatter, Notifier, RedactionFilter,
                             SingletonLock, heartbeat, print_report, read_heartbeat_age, restore_backup, run_backup, run_doctor,
                             setup_logging, verify_backup)

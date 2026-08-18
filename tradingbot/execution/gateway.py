@@ -15,14 +15,12 @@ import hmac
 import logging
 import os
 from datetime import datetime
-from decimal import Decimal
 from typing import Any, Callable, Mapping, Protocol, runtime_checkable
 from urllib.parse import urlencode
 
 from ..accounting.futures_ledger import FuturesLedgerV2
 from ..accounting.models import (
     AmountType,
-    Fill,
     MarketType,
     Order,
     OrderStatus,
@@ -33,7 +31,7 @@ from ..accounting.models import (
     TickData,
 )
 from ..accounting.spot_ledger import SpotLedger
-from ..core import D, ZERO, ExecutionDisabledError, iso, stable_id, to_ms, utc_now
+from ..core import D, ExecutionDisabledError, stable_id, to_ms, utc_now
 from .orders import IllegalTransitionError, OrderStateMachine
 
 log = logging.getLogger(__name__)

@@ -15,7 +15,6 @@ import json
 import logging
 import sys
 import time
-from pathlib import Path
 
 from .analyzer import CoinAnalysis, analyze_symbol
 from .config import BotConfig, load_config

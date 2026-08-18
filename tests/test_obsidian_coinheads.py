@@ -7,7 +7,6 @@ import os
 import time
 from pathlib import Path
 
-from tradingbot.core import atomic_write_text
 from tradingbot.obsidian_coinheads import INCIDENT_CAP, OWNED_DIRS, ObsidianCoinHeadWriter, safe_base
 
 

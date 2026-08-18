@@ -5,7 +5,7 @@ Tek başına risk limitlerini geçemez. Final onay üç bayrak gerektirir:
 """
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from typing import Any
 
 from ..core import iso, utc_now

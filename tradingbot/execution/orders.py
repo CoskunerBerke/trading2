@@ -10,7 +10,6 @@ Yasadışı geçişte `IllegalTransitionError` fırlatılır (sessiz düzeltme y
 from __future__ import annotations
 
 import re
-from typing import Iterable
 
 from ..accounting.models import Order, OrderStatus
 from ..core import TradingBotError, iso

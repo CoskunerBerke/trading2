@@ -11,11 +11,10 @@ import argparse
 import csv
 import json
 import logging
-import sys
 from pathlib import Path
 
 from .config import BotConfig
-from .core import ExecutionDisabledError, iso, istanbul, read_json, utc_now
+from .core import ExecutionDisabledError, read_json, utc_now
 
 log = logging.getLogger("tradingbot.v3")
 

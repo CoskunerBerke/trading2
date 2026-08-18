@@ -55,8 +55,10 @@ class CoinHeadInputs:
     filters: dict[str, Any] = field(default_factory=dict)        # {spot:{min_notional,qty_step,...}, futures:{...,max_leverage}}
     llm_advice: dict[str, Any] | None = None                      # {veto, decision_support, ...} yalnızca ADVISORY/VETO_ONLY
     run_id: str = ""
-    snapshot_id: str = ""
+    snapshot_id: str = ""                                         # opak/benzersiz kimlik — sıralama için KULLANILMAZ
     now_ms: int | None = None
+    snapshot_at_ms: int | None = None                             # olay zamanı (engine run zamanı, UTC ms); None → now_ms
+    snapshot_seq: int = 0                                         # aynı zaman damgası için deterministik tie-breaker (tur sırası)
     listing_age_days: float | None = None
 
 

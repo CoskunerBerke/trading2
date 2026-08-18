@@ -64,6 +64,8 @@ class TradingEngineV3(TradingEngine):
                                        equity_usdt=cfg.futures.starting_equity_usdt, risk_pct=self.profile.risk_per_trade_pct,
                                        decision_ttl_minutes=ch.decision_ttl_minutes)
         self.registry = CoinHeadRegistry(self.head_cfg, max_workers=ch.max_workers)
+        self.registry.load(st)          # snapshot olay-zaman sırası (legacy hash-only state güvenli geçer)
+        self._tour_no = 0               # aynı ms için deterministik tie-breaker
         self.chief_mgr = ChiefPortfolioManager(clusters=v3.risk_profiles.clusters or None)
         self.quality = DataQualityGate(DataQualityConfig(max_candle_age_bars=v3.data.max_candle_age_bars, max_ticker_age_s=v3.data.max_ticker_age_s,
                                                          max_clock_drift_ms=v3.data.max_clock_drift_ms, max_price_divergence_pct=v3.data.max_price_divergence_pct))
@@ -160,6 +162,7 @@ class TradingEngineV3(TradingEngine):
     def tour(self, *, do_scan: bool = True, symbols_override: list[str] | None = None, charts: bool = True, obsidian: bool = True) -> dict:
         t0 = time.time()
         self.run_id = run_id_now()
+        self._tour_no += 1
         now = utc_now()
         now_ms = int(now.timestamp() * 1000)
         st = self.cfg.state_path
@@ -210,7 +213,7 @@ class TradingEngineV3(TradingEngine):
         eth_frames = self.runner.last_frames.get("ETH/USDT")
         btc_regime = None
         inputs: dict[str, CoinHeadInputs] = {}
-        snap_id = stable_id("snap", self.run_id)
+        snap_id = stable_id("snap", self.run_id)   # opak kimlik; sıralama snapshot_at_ms/snapshot_seq ile yapılır
         same_dir = {"LONG": sum(1 for p in state.open_positions if p.side == "LONG"), "SHORT": sum(1 for p in state.open_positions if p.side == "SHORT")}
         for b in briefs:
             frames = self.runner.last_frames.get(b.symbol) or {}
@@ -229,7 +232,8 @@ class TradingEngineV3(TradingEngine):
                                                          "open_position": {"side": opos.side.value} if opos else None},
                                               edge=edge, filters={"futures": {"min_notional": float(f_fut.min_notional), "max_leverage": min(f_fut.max_leverage, self.profile.futures_max_leverage)},
                                                                   "spot": {"min_notional": float(f_spot.min_notional)}},
-                                              run_id=self.run_id, snapshot_id=snap_id, now_ms=now_ms)
+                                              run_id=self.run_id, snapshot_id=snap_id, now_ms=now_ms,
+                                              snapshot_at_ms=now_ms, snapshot_seq=self._tour_no)
         decisions = self.registry.run_many(inputs)
         btc_dec = decisions.get("BTC/USDT")
         chief = self.chief_mgr.decide(list(decisions.values()), {"equity": state.equity, "open_positions": [o.to_dict() for o in state.open_positions],

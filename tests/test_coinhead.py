@@ -172,16 +172,113 @@ def test_registry_lock_stale_and_save(tmp_path: Path):
     reg = CoinHeadRegistry(cfg, max_workers=2)
     fr = frames()
     reports, brief = legacy(fr)
-    d1 = reg.run("ETH/USDT", _inputs(fr, reports, brief, snapshot_id="snap0002"))
+    t = _inputs(fr, reports, brief).now_ms
+    d1 = reg.run("ETH/USDT", _inputs(fr, reports, brief, snapshot_id="snap0002", snapshot_at_ms=t))
     assert d1 is not None
-    stale = reg.run("ETH/USDT", _inputs(fr, reports, brief, snapshot_id="snap0001"))
+    stale = reg.run("ETH/USDT", _inputs(fr, reports, brief, snapshot_id="snap0001", snapshot_at_ms=t - 1000))   # olay zamanı daha eski
     assert stale is None and reg.last_decisions["ETH/USDT"].snapshot_id == "snap0002"
-    out = reg.run_many({"ETH/USDT": _inputs(fr, reports, brief, snapshot_id="snap0003"), "SOL/USDT": _inputs(fr, reports, brief, snapshot_id="snap0003")})
+    out = reg.run_many({"ETH/USDT": _inputs(fr, reports, brief, snapshot_id="snap0003", snapshot_at_ms=t + 1000),
+                        "SOL/USDT": _inputs(fr, reports, brief, snapshot_id="snap0003", snapshot_at_ms=t + 1000)})
     assert set(out) == {"ETH/USDT", "SOL/USDT"}
     p = reg.save(tmp_path, run_id="run1")
     data = json.loads(p.read_text(encoding="utf-8"))
     assert len(data["heads"]) == 2 and data["heads"][0]["specialist_reports"]
+    assert data["snapshot_order"]["ETH/USDT"] == {"at_ms": t + 1000, "seq": 0, "snapshot_id": "snap0003"}
     assert reg.get_or_create("ETH/USDT").coin_head_id == reg.get_or_create("ETH/USDT").coin_head_id
+
+
+# ---------------------------------------------------------------- snapshot sıralaması: olay zamanı, id sözlük sırası DEĞİL
+def _reg_and_inputs():
+    cfg = CoinHeadConfig(consensus_threshold=0.05, min_confidence=0.05)
+    fr = frames()
+    reports, brief = legacy(fr)
+    t = _inputs(fr, reports, brief).now_ms
+    def mk(snap, at, seq=0, **kw):
+        return _inputs(fr, reports, brief, snapshot_id=snap, snapshot_at_ms=at, snapshot_seq=seq, **kw)
+    return CoinHeadRegistry(cfg, max_workers=1), mk, t
+
+
+def test_snapshot_newer_time_but_lexically_smaller_id_is_accepted():
+    reg, mk, t = _reg_and_inputs()
+    assert reg.run("ETH/USDT", mk("ffff-hash", t)) is not None
+    d = reg.run("ETH/USDT", mk("0000-hash", t + 60_000))          # id sözlükte küçük, zaman daha yeni → kabul
+    assert d is not None and reg.last_decisions["ETH/USDT"].snapshot_id == "0000-hash"
+    assert reg.drops["stale_snapshot"] == 0
+
+
+def test_two_consecutive_tours_both_reach_decision():
+    reg, mk, t = _reg_and_inputs()
+    ids = ["9a", "1b", "5c"]                                          # hash sırası rastgele; zaman monoton
+    for i, s in enumerate(ids):
+        out = reg.run_many({"ETH/USDT": mk(s, t + i * 1000, seq=i + 1), "SOL/USDT": mk(s, t + i * 1000, seq=i + 1)})
+        assert set(out) == {"ETH/USDT", "SOL/USDT"}, (i, s)
+    assert reg.drops == {"stale_snapshot": 0, "duplicate_snapshot": 0}
+
+
+def test_same_snapshot_resent_is_rejected_idempotently():
+    reg, mk, t = _reg_and_inputs()
+    d1 = reg.run("ETH/USDT", mk("s1", t))
+    assert d1 is not None
+    assert reg.run("ETH/USDT", mk("s1", t)) is None
+    assert reg.drops["duplicate_snapshot"] == 1 and reg.last_decisions["ETH/USDT"] is d1
+
+
+def test_truly_older_snapshot_is_stale():
+    reg, mk, t = _reg_and_inputs()
+    assert reg.run("ETH/USDT", mk("new", t + 5000, seq=2)) is not None
+    assert reg.run("ETH/USDT", mk("old", t, seq=1)) is None           # eski zaman
+    assert reg.run("ETH/USDT", mk("tie", t + 5000, seq=1)) is None    # aynı zaman, küçük seq → belirsiz → fail-closed
+    assert reg.drops["stale_snapshot"] == 2 and reg.last_decisions["ETH/USDT"].snapshot_id == "new"
+
+
+def test_persisted_registry_keeps_time_order(tmp_path: Path):
+    reg, mk, t = _reg_and_inputs()
+    assert reg.run("ETH/USDT", mk("zz", t + 9000, seq=3)) is not None
+    reg.save(tmp_path, run_id="r")
+    reg2 = CoinHeadRegistry(reg.cfg, max_workers=1)
+    assert reg2.load(tmp_path) == 1
+    assert reg2.run("ETH/USDT", mk("aa", t + 1000, seq=1)) is None    # daha eski → STALE (yeniden açıldıktan sonra da)
+    assert reg2.run("ETH/USDT", mk("zz", t + 9000, seq=3)) is None    # aynı → duplicate
+    assert reg2.run("ETH/USDT", mk("bb", t + 10_000, seq=4)) is not None
+    assert reg2.drops == {"stale_snapshot": 1, "duplicate_snapshot": 1}
+
+
+def test_legacy_hash_only_state_migrates_safely(tmp_path: Path):
+    reg, mk, t = _reg_and_inputs()
+    legacy_state = {"generated_at": "x", "run_id": "r0", "chief": None,
+                    "heads": [{"symbol": "ETH/USDT", "snapshot_id": "ffffffffffffffff", "verdict": "NO_TRADE"}]}   # snapshot_order yok
+    (tmp_path / "coin_heads.json").write_text(json.dumps(legacy_state), encoding="utf-8")
+    assert reg.load(tmp_path) == 1
+    assert reg.run("ETH/USDT", mk("ffffffffffffffff", t)) is None                 # aynı opak id → duplicate
+    assert reg.run("ETH/USDT", mk("0000000000000000", t)) is not None            # sözlükte küçük ama yeni format ilk geçerli → kabul
+    assert reg.drops == {"stale_snapshot": 0, "duplicate_snapshot": 1}
+    reg.save(tmp_path)
+    assert json.loads((tmp_path / "coin_heads.json").read_text(encoding="utf-8"))["snapshot_order"]["ETH/USDT"]["at_ms"] == t
+    # bozuk dosya → boş, ilk snapshot kabul
+    (tmp_path / "coin_heads.json").write_text("{not json", encoding="utf-8")
+    reg3 = CoinHeadRegistry(reg.cfg, max_workers=1)
+    assert reg3.load(tmp_path) == 0 and reg3.run("ETH/USDT", mk("x", t)) is not None
+
+
+def test_replay_determinism_unchanged_by_ordering():
+    reg_a, mk, t = _reg_and_inputs()
+    reg_b = CoinHeadRegistry(reg_a.cfg, max_workers=1)
+    da = reg_a.run("ETH/USDT", mk("s", t, seq=1)).to_dict(include_reports=False)
+    db = reg_b.run("ETH/USDT", mk("s", t, seq=1)).to_dict(include_reports=False)
+    for k in ("expires_at", "generated_at", "latency_ms", "coin_head_id"):
+        da.pop(k, None); db.pop(k, None)
+    assert da == db
+
+
+def test_spot_and_futures_paths_share_ordering_rule():
+    reg, mk, t = _reg_and_inputs()
+    for avail in ({"spot": True, "futures": False}, {"spot": False, "futures": True}):
+        sym = "SPOT/USDT" if avail["spot"] else "FUT/USDT"
+        assert reg.run(sym, mk("h9", t, availability=avail)) is not None
+        assert reg.run(sym, mk("h1", t + 1000, availability=avail)) is not None      # yeni zaman, küçük id → kabul
+        assert reg.run(sym, mk("h5", t - 1000, availability=avail)) is None          # eski → STALE
+        assert reg.last_decisions[sym].snapshot_id == "h1"
+    assert reg.drops["stale_snapshot"] == 2
 
 
 def test_chief_ranks_blocks_crowding_and_requires_three_flags():

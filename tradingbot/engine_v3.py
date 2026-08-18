@@ -158,6 +158,11 @@ class TradingEngineV3(TradingEngine):
         except Exception as exc:  # noqa: BLE001 — kalite kapısı hatası veri geçersiz sayılır (fail-closed)
             return {"ok": False, "verdict": "DATA_INVALID", "issues": [f"QUALITY_CHECK_ERROR:{type(exc).__name__}"], "sources": []}
 
+    def _load_legacy_ledger(self):
+        """v3: `futures_ledger.json`'ın tek sahibi FuturesLedgerV2 (`self.ledger2`, __init__ içinde hemen atanır);
+        legacy v1 yükleyici bu yolu ne okur ne yazar."""
+        return None
+
     # ------------------------------------------------------------------ TUR
     def tour(self, *, do_scan: bool = True, symbols_override: list[str] | None = None, charts: bool = True, obsidian: bool = True) -> dict:
         t0 = time.time()

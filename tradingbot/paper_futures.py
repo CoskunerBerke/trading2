@@ -61,6 +61,41 @@ class FuturesPosition:
         return self.entry - move if self.side == "LONG" else self.entry + move
 
 
+class LedgerSchemaError(ValueError):
+    """Defter dosyası bu yükleyicinin şemasında değil (v2/bilinmeyen/bozuk) — dosya korunur, boş defter üretilmez."""
+
+
+def read_ledger_schema(path: Path, *, strict: bool = True) -> tuple[int, dict]:
+    """Defter JSON'unu oku ve şemayı AÇIKÇA tespit et → (schema_version, dict).
+    v1: `schema_version` yok/1, `wallet_balance`/`kind` yok, `equity` var. v2: `schema_version>=2` veya `wallet_balance`/`kind=='futures'`.
+    strict=True iken v1 dışı her şey `LedgerSchemaError` (bozuk JSON dahil); strict=False iken yalnız sürüm döner (0 = bozuk/bilinmeyen)."""
+    try:
+        d = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        if strict:
+            raise LedgerSchemaError(f"{path}: defter okunamadı/bozuk — dosya korunuyor, boş defter üretilmedi ({exc})") from exc
+        return 0, {}
+    if not isinstance(d, dict):
+        if strict:
+            raise LedgerSchemaError(f"{path}: beklenmeyen defter içeriği ({type(d).__name__})")
+        return 0, {}
+    ver = d.get("schema_version")
+    v2_markers = "wallet_balance" in d or d.get("kind") == "futures"
+    if ver is None and not v2_markers and "equity" in d:
+        return 1, d
+    try:
+        ver_i = int(ver) if ver is not None else (2 if v2_markers else 0)
+    except (TypeError, ValueError):
+        ver_i = 0
+    if ver_i == 1 and not v2_markers:
+        return 1, d
+    if strict:
+        if ver_i >= 2 or v2_markers:
+            raise LedgerSchemaError(f"{path}: schema_version={ver_i} (FuturesLedgerV2) — legacy FuturesLedger bu dosyayı açamaz; sahibi v2 defteridir")
+        raise LedgerSchemaError(f"{path}: bilinmeyen defter şeması (schema_version={ver!r}) — fail-closed, dosya korunuyor")
+    return ver_i if ver_i >= 2 or v2_markers else 0, d
+
+
 @dataclass
 class FuturesLedger:
     equity: float
@@ -75,8 +110,10 @@ class FuturesLedger:
     # ------------------------------------------------------------ kalıcılık
     @classmethod
     def load(cls, path: Path, starting_equity: float, max_positions: int = 3) -> "FuturesLedger":
+        """Yalnız v1 (legacy) şemasını yükler. v2 (`schema_version>=2` / FuturesLedgerV2) dosyasını ASLA parse etmez ve
+        boş deftere DÖNÜŞTÜRMEZ: kontrollü `LedgerSchemaError` fırlatır (fail-closed, dosya korunur). Bozuk JSON da aynı."""
         if path.exists():
-            d = json.loads(path.read_text(encoding="utf-8"))
+            d = read_ledger_schema(path)[1]
             led = cls(equity=float(d["equity"]), starting_equity=float(d.get("starting_equity", starting_equity)), max_positions=max_positions)
             led.positions = {k: FuturesPosition(**v) for k, v in d.get("positions", {}).items()}
             led.history = list(d.get("history", []))
@@ -87,6 +124,8 @@ class FuturesLedger:
 
     def save(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
+        if path.exists() and read_ledger_schema(path, strict=False)[0] != 1:
+            raise LedgerSchemaError(f"{path}: v1 defter v2/bilinmeyen şemalı dosyanın üzerine YAZMAZ (sahibi FuturesLedgerV2)")
         self.updated_at = _now()
         from .core import atomic_write_json
         atomic_write_json(path, {"equity": round(self.equity, 6), "starting_equity": self.starting_equity, "updated_at": self.updated_at,

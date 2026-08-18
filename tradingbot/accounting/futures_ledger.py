@@ -518,7 +518,13 @@ class FuturesLedgerV2:
 
     @classmethod
     def from_dict(cls, d: dict, **overrides) -> "FuturesLedgerV2":
-        if int(d.get("schema_version", 1)) < 2 or "wallet_balance" not in d:
+        try:
+            sv = int(d.get("schema_version", 1))
+        except (TypeError, ValueError) as exc:
+            raise StorageError(f"bilinmeyen defter şeması: schema_version={d.get('schema_version')!r}") from exc
+        if sv > SCHEMA_VERSION or (d.get("kind") not in (None, "futures")):
+            raise StorageError(f"desteklenmeyen defter şeması (schema_version={sv}, kind={d.get('kind')!r}) — fail-closed, dosya korunuyor")
+        if sv < 2 or "wallet_balance" not in d:
             return cls.import_legacy_ledger(d, **overrides)
         max_pos = int(overrides.pop("max_positions", d.get("max_positions", 3)))
         led = cls(d.get("starting_equity", 0), max_positions=max_pos,

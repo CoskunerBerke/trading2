@@ -32,7 +32,7 @@ class TradingEngine:
         self.runner = AgentRunner(cfg)
         self.scanner = MarketScanner(cfg.scanner.min_volume_usdt, cfg.scanner.flag_score, cfg.scanner.top_n, max_symbols=cfg.scanner.max_symbols) if cfg.scanner.enabled else None
         self.ledger_path = cfg.state_path / "futures_ledger.json"
-        self.ledger = FuturesLedger.load(self.ledger_path, cfg.futures.starting_equity_usdt, cfg.futures.max_positions)
+        self.ledger = self._load_legacy_ledger()      # v3 motoru bunu geçersiz kılar: dosyanın tek sahibi FuturesLedgerV2
         self.learner = Learner(cfg.state_path / "learning.json", cfg.learning.min_trades)
         self.trig_path = cfg.state_path / "triggers.json"
         self.triggers: dict[str, str] = json.loads(self.trig_path.read_text(encoding="utf-8")) if self.trig_path.exists() else {}
@@ -42,6 +42,11 @@ class TradingEngine:
         self.last_scan_at = 0.0
 
     # ------------------------------------------------------------------ yardımcılar
+    def _load_legacy_ledger(self):
+        """v1 (legacy) defter yükleyici. Dosya v2 şemasındaysa `LedgerSchemaError` yükselir (fail-closed; dosya korunur):
+        legacy motor v2 execution state'ini açamaz/üzerine yazamaz."""
+        return FuturesLedger.load(self.ledger_path, self.cfg.futures.starting_equity_usdt, self.cfg.futures.max_positions)
+
     def _fut(self):
         if self._fu is None:
             import ccxt

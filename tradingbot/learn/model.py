@@ -113,6 +113,12 @@ class RateStat:
         self.s += x
         self.ss += x * x
 
+    def add_weighted(self, x: float, w: float) -> None:
+        """Yenilik ağırlıklı ekleme: n etkin örnek (Σw), s = Σw·x."""
+        self.n += w
+        self.s += w * x
+        self.ss += w * x * x
+
     @property
     def mean(self) -> float:
         return self.s / self.n if self.n else 0.0
@@ -129,27 +135,41 @@ class RateStat:
 
     @classmethod
     def from_dict(cls, d: dict) -> "RateStat":
-        return cls(int(d.get("n", 0)), float(d.get("s", 0.0)), float(d.get("ss", 0.0)))
+        n = d.get("n", 0)
+        return cls(int(n) if float(n) == int(float(n)) else float(n), float(d.get("s", 0.0)), float(d.get("ss", 0.0)))
 
 
 class HierarchicalRate:
     """global → regime → symbol/setup posterior ortalaması: (s + α·μ_parent) / (n + α). Az verili yaprakta ebeveyne çekilir."""
 
-    def __init__(self, alpha: float = 10.0, prior_mean: float = 0.5):
+    def __init__(self, alpha: float = 10.0, prior_mean: float = 0.5, half_life_days: float | None = None):
         self.alpha = alpha
         self.prior_mean = prior_mean
-        self.stats: dict[str, RateStat] = {}     # anahtar: "" (global) | "regime:X" | "regime:X|leaf:Y" | "leaf:Y"
+        self.half_life_days = half_life_days      # None → ağırlıksız; sayı → yenilik ağırlığı (w = 0.5^(yaş_gün/half_life))
+        self.stats: dict[str, RateStat] = {}     # anahtar: "" | "market:M" | "cluster:C" | "regime:X" | "leaf:Y" | "regime:X|leaf:Y" (+ market/cluster kombinasyonları)
 
-    def add(self, x: float, *, regime: str | None = None, leaf: str | None = None) -> None:
+    @staticmethod
+    def _keys(*, regime=None, leaf=None, market=None, cluster=None) -> list[str]:
         keys = [""]
+        if market:
+            keys.append(f"market:{market}")
+        if cluster:
+            keys.append(f"cluster:{cluster}")
         if regime:
             keys.append(f"regime:{regime}")
         if leaf:
             keys.append(f"leaf:{leaf}")
         if regime and leaf:
             keys.append(f"regime:{regime}|leaf:{leaf}")
-        for k in keys:
-            self.stats.setdefault(k, RateStat()).add(x)
+        return keys
+
+    def add(self, x: float, *, regime: str | None = None, leaf: str | None = None, market: str | None = None, cluster: str | None = None,
+            age_days: float = 0.0) -> None:
+        w = 1.0
+        if self.half_life_days and age_days > 0:
+            w = 0.5 ** (float(age_days) / float(self.half_life_days))
+        for k in self._keys(regime=regime, leaf=leaf, market=market, cluster=cluster):
+            self.stats.setdefault(k, RateStat()).add_weighted(x, w)
 
     def _post(self, key: str, parent_mean: float) -> tuple[float, float]:
         st = self.stats.get(key)
@@ -157,10 +177,14 @@ class HierarchicalRate:
             return parent_mean, 0.0
         return (st.s + self.alpha * parent_mean) / (st.n + self.alpha), float(st.n)
 
-    def estimate(self, *, regime: str | None = None, leaf: str | None = None) -> tuple[float, float]:
-        """→ (posterior mean, n_eff). Sıra: global → regime → leaf → regime|leaf."""
+    def estimate(self, *, regime: str | None = None, leaf: str | None = None, market: str | None = None, cluster: str | None = None) -> tuple[float, float]:
+        """→ (posterior mean, n_eff). Sıra: global → market → cluster → regime → leaf → regime|leaf (her seviye ebeveyne çekilir)."""
         g, n = self._post("", self.prior_mean)
         m = g
+        if market:
+            m, n = self._post(f"market:{market}", m)
+        if cluster:
+            m, n = self._post(f"cluster:{cluster}", m)
         if regime:
             m, n = self._post(f"regime:{regime}", m)
         if leaf:
@@ -185,10 +209,10 @@ class HierarchicalRate:
         return p_neg > prob
 
     def to_dict(self) -> dict:
-        return {"alpha": self.alpha, "prior_mean": self.prior_mean, "stats": {k: v.to_dict() for k, v in self.stats.items()}}
+        return {"alpha": self.alpha, "prior_mean": self.prior_mean, "half_life_days": self.half_life_days, "stats": {k: v.to_dict() for k, v in self.stats.items()}}
 
     @classmethod
     def from_dict(cls, d: dict) -> "HierarchicalRate":
-        h = cls(float(d.get("alpha", 10.0)), float(d.get("prior_mean", 0.5)))
+        h = cls(float(d.get("alpha", 10.0)), float(d.get("prior_mean", 0.5)), d.get("half_life_days"))
         h.stats = {k: RateStat.from_dict(v) for k, v in (d.get("stats") or {}).items()}
         return h

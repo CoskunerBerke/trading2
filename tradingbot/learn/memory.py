@@ -22,16 +22,28 @@ def _append_line(path: Path, obj: dict) -> None:
             pass
 
 
+SOURCES = ("LIVE_PAPER", "HISTORICAL_REPLAY", "SHADOW", "TESTNET", "LIVE")
+
+
 class TradeMemory:
-    def __init__(self, path: Path | str | None = None, repo: Any | None = None):
+    """Değişmez işlem hafızası (JSONL). Her kayıtta zorunlu `source` namespace: LIVE_PAPER | HISTORICAL_REPLAY | SHADOW | TESTNET | LIVE.
+    Replay kayıtları gerçek PAPER hafızasıyla KARIŞMAZ: farklı `source` (ve replay için ayrı dosya yolu)."""
+
+    def __init__(self, path: Path | str | None = None, repo: Any | None = None, *, source: str = "LIVE_PAPER"):
         self.path = Path(path) if path else None
         self.repo = repo
+        if source not in SOURCES:
+            raise ValueError(f"bilinmeyen memory source: {source}")
+        self.source = source
 
     # ------------------------------------------------------------ yazım
     def record_entry(self, snapshot: dict[str, Any]) -> str:
         """Giriş anı: bütün ajan raporları, coin head kararı, dissent, veto, risk kararı, plan, model/prompt sürümleri, veri tazeliği."""
         tid = str(snapshot.get("trade_id") or snapshot.get("id") or new_id("trade"))
-        row = {"kind": "entry", "trade_id": tid, "recorded_at": iso(utc_now()), "hash": payload_hash(snapshot), **snapshot}
+        src = str(snapshot.get("source") or self.source)
+        if src not in SOURCES:
+            raise ValueError(f"bilinmeyen memory source: {src}")
+        row = {"kind": "entry", "trade_id": tid, "recorded_at": iso(utc_now()), "hash": payload_hash(snapshot), "source": src, **{k: v for k, v in snapshot.items() if k != "source"}}
         if self.path:
             _append_line(self.path, row)
         if self.repo is not None:
@@ -44,8 +56,8 @@ class TradeMemory:
         return tid
 
     def record_exit(self, trade_id: str, outcome: dict[str, Any], price_path: list[dict] | None = None, postmortem: dict | None = None) -> None:
-        row = {"kind": "exit", "trade_id": trade_id, "recorded_at": iso(utc_now()), "outcome": outcome, "price_path": price_path or [],
-               "postmortem": postmortem or {}}
+        row = {"kind": "exit", "trade_id": trade_id, "recorded_at": iso(utc_now()), "source": self.source, "outcome": outcome,
+               "price_path": price_path or [], "postmortem": postmortem or {}}
         if self.path:
             _append_line(self.path, row)
         if self.repo is not None:
@@ -60,7 +72,14 @@ class TradeMemory:
                 pass
 
     # ------------------------------------------------------------ okuma
-    def iter_rows(self) -> Iterator[dict]:
+    def iter_rows(self, *, source: str | None = "auto") -> Iterator[dict]:
+        """source="auto" → yalnız bu hafızanın namespace'i (eski kayıtlar source'suz → LIVE_PAPER sayılır); None → hepsi."""
+        want = self.source if source == "auto" else source
+        for row in self._iter_all_rows():
+            if want is None or str(row.get("source") or "LIVE_PAPER") == want:
+                yield row
+
+    def _iter_all_rows(self) -> Iterator[dict]:
         if not self.path or not self.path.exists():
             return iter(())
         def gen():

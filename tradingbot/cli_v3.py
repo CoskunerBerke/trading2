@@ -362,6 +362,46 @@ def cmd_evidence_show(cfg: BotConfig, args) -> int:
     return 0
 
 
+# ---------------------------------------------------------------- tarihsel replay / öğrenme
+def cmd_historical_replay(cfg: BotConfig, args) -> int:
+    """Event-time replay: state/replay/<run_id>/ (gerçek state'e dokunmaz), HISTORICAL_REPLAY namespace, walk-forward, determinism hash."""
+    from .history import HistoryStore
+    from .replay import HistoricalReplay, walk_forward_windows
+    store = HistoryStore(cfg.cache_path / cfg.v3.history.root_dir)
+    syms = list(args.symbols) if args.symbols else list(cfg.coins)
+    run_id = args.run_id or f"replay_{args.market}_{args.tf}_seed{args.seed}_{utc_now():%Y%m%dT%H%M%SZ}"
+    def _ms(v):
+        return int(_dt.datetime.fromisoformat(v).replace(tzinfo=_dt.timezone.utc).timestamp() * 1000) if v else None
+    eng = None
+    if not args.no_patterns:
+        _, eng, n_ev = _pattern_engine(cfg, args, market=args.market, tf=args.tf, symbols=syms)
+        print(f"pattern index: {n_ev} olay")
+    rp = HistoricalReplay(cfg, run_id=run_id, store=store, symbols=syms, market=args.market, tf=args.tf, seed=args.seed,
+                          state_root=Path(args.state_dir) if args.state_dir else None, pattern_engine=eng, start_ms=_ms(getattr(args, "from_", None)),
+                          end_ms=_ms(args.to), decision_stride=args.stride)
+    rp.load()
+    ws = walk_forward_windows(rp.result.start_ms, rp.result.end_ms, train_days=args.train_days, test_days=args.test_days, purge_bars=args.purge, embargo_bars=args.embargo)
+    res = rp.run(windows=ws, on_progress=lambda d: print(f"  {d['t']} kararlar={d['decisions']} açılış={d['opened']} kapanış={d['closed']}"))
+    out = res.to_dict(); out["trades"] = f"{len(res.trades)} işlem (replay_result.json)"
+    out["metrics"] = {k: v for k, v in res.metrics.items() if k != "learner"}
+    _p(out)
+    return 0
+
+
+def cmd_learning_status(cfg: BotConfig, args) -> int:
+    """LearnerV2/registry özeti; --replay <run_id> ile replay state'i, yoksa gerçek PAPER state (kaynak namespace ayrı)."""
+    from .learn import LearnConfig, LearnerV2, ModelRegistry, TradeMemory
+    st = (cfg.state_path / "replay" / args.replay) if args.replay else cfg.state_path
+    src = "HISTORICAL_REPLAY" if args.replay else "LIVE_PAPER"
+    mem = TradeMemory(st / "trade_memory.jsonl", source=src)
+    reg = ModelRegistry(st / "models.json")
+    lr = LearnerV2(mem, reg, LearnConfig(), state_path=st / "learn_v2.json")
+    rows = list(mem.iter_rows())
+    _p({"state_dir": str(st), "source": src, "memory_rows": len(rows), "entries": sum(1 for r in rows if r.get("kind") == "entry"),
+        "exits": sum(1 for r in rows if r.get("kind") == "exit"), "learner": lr.snapshot(), "champion": reg.champion("p_win") if hasattr(reg, "champion") else None})
+    return 0
+
+
 def cmd_stop(cfg: BotConfig, args) -> int:
     """Kooperatif durdurma: canlı worker/dashboard instance'ını doğrula, atomik stop isteği yaz, timeout'a kadar bekle.
     Force yok (varsayılan); --force yalnız kesin PID'ye normal sonlandırma uygular ve graceful sayılmaz."""
@@ -554,6 +594,14 @@ def register(sub: argparse._SubParsersAction) -> None:
         s.add_argument("--horizon", type=int, default=24); s.add_argument("--stride", type=int, default=1); s.add_argument("--live", action="store_true")
     s = sub.add_parser("pattern-query", help="Benzer geçmiş olay sorgusu + maliyet sonrası istatistik"); _pq_args(s); s.set_defaults(fn=cmd_pattern_query)
     s = sub.add_parser("evidence-show", help="EvidencePacket + deterministik Türkçe açıklama"); _pq_args(s); s.set_defaults(fn=cmd_evidence_show)
+    s = sub.add_parser("historical-replay", help="Event-time tarihsel replay (ayrı state, walk-forward, deterministik)")
+    s.add_argument("--symbols", nargs="*", default=None); s.add_argument("--market", choices=["spot", "futures"], default="futures"); s.add_argument("--tf", default="4h")
+    s.add_argument("--seed", type=int, default=0); s.add_argument("--run-id", dest="run_id", default=None); s.add_argument("--state-dir", dest="state_dir", default=None)
+    s.add_argument("--from", dest="from_", default=None); s.add_argument("--to", default=None); s.add_argument("--stride", type=int, default=1)
+    s.add_argument("--train-days", dest="train_days", type=int, default=180); s.add_argument("--test-days", dest="test_days", type=int, default=30)
+    s.add_argument("--purge", type=int, default=6); s.add_argument("--embargo", type=int, default=6); s.add_argument("--no-patterns", dest="no_patterns", action="store_true")
+    s.add_argument("--min-sample", dest="min_sample", type=int, default=30); s.add_argument("--horizon", type=int, default=24); s.set_defaults(fn=cmd_historical_replay)
+    s = sub.add_parser("learning-status", help="LearnerV2/registry özeti (PAPER ya da --replay <run_id>)"); s.add_argument("--replay", default=None); s.set_defaults(fn=cmd_learning_status)
     s = sub.add_parser("stop", help="Kooperatif durdurma (worker/dashboard/all); force yok, timeout'ta dürüst rapor")
     s.add_argument("--target", choices=["worker", "dashboard", "all"], default="all"); s.add_argument("--timeout", type=float, default=120)
     s.add_argument("--force", action="store_true", help="timeout sonrası kesin PID'ye normal sonlandırma (graceful sayılmaz)"); s.set_defaults(fn=cmd_stop)

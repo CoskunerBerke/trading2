@@ -115,11 +115,17 @@ class BotConfig:
 
     @property
     def backups_path(self) -> Path:
+        env = os.environ.get("TRADINGBOT_BACKUPS_DIR")
+        if env:
+            return Path(env)
         sub = self.v3.storage.backups_dir if self.v3 else "backups"
         return self.data_root / sub
 
     @property
     def logs_path(self) -> Path:
+        env = os.environ.get("TRADINGBOT_LOG_DIR")
+        if env:
+            return Path(env)
         sub = self.v3.monitoring.log_dir if self.v3 else "logs"
         return self.data_root / sub
 
@@ -171,6 +177,11 @@ def load_config(path: str | os.PathLike | None = None) -> BotConfig:
             cfg.exchange.cache_dir = str(Path(env_data) / "market")
         if not env_vault and cfg.obsidian.vault_path.startswith("C:/Users/berke"):
             cfg.obsidian.vault_path = str(Path(env_data) / "vault")
+    # ince ayar env'leri (systemd/compose): TRADINGBOT_STATE_DIR / TRADINGBOT_CACHE_DIR
+    if os.environ.get("TRADINGBOT_STATE_DIR"):
+        cfg.state_dir = os.environ["TRADINGBOT_STATE_DIR"]
+    if os.environ.get("TRADINGBOT_CACHE_DIR"):
+        cfg.exchange.cache_dir = os.environ["TRADINGBOT_CACHE_DIR"]
     # v3 bölümleri (typed + doğrulama; risk-kritik hata → ConfigError, program başlamaz)
     from .config_v3 import load_v3
     cfg.v3 = load_v3(raw)

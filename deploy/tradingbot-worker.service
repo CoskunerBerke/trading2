@@ -1,0 +1,68 @@
+# Trading Bot v3 — 7/24 worker (PAPER). Kurulum: deploy/setup_vps_v3.sh
+# sudo cp deploy/tradingbot-worker.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now tradingbot-worker
+[Unit]
+Description=Trading Bot v3 worker (paper trading, 7/24)
+Documentation=file:///opt/tradingbot/app/README.md
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=tradingbot
+Group=tradingbot
+WorkingDirectory=/opt/tradingbot/app
+EnvironmentFile=-/opt/tradingbot/env
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONIOENCODING=utf-8
+Environment=TZ=Europe/Istanbul
+Environment=TRADINGBOT_DATA=/opt/tradingbot/data
+Environment=TRADINGBOT_VAULT_PATH=/opt/tradingbot/data/vault
+Environment=TRADINGBOT_STATE_DIR=/opt/tradingbot/data/state
+Environment=TRADINGBOT_CACHE_DIR=/opt/tradingbot/data/market
+Environment=TRADINGBOT_LOG_DIR=/opt/tradingbot/data/logs
+Environment=TRADINGBOT_BACKUPS_DIR=/opt/tradingbot/data/backups
+Environment=ALLOW_LIVE_TRADING=false
+ExecStartPre=/opt/tradingbot/venv/bin/python -m tradingbot doctor --quick
+ExecStart=/opt/tradingbot/venv/bin/python -m tradingbot watch --interval 15 --scan-every 2
+Restart=on-failure
+RestartSec=30
+TimeoutStartSec=120
+TimeoutStopSec=90
+KillSignal=SIGTERM
+KillMode=mixed
+SendSIGKILL=yes
+Nice=5
+OOMScoreAdjust=200
+MemoryMax=1500M
+CPUQuota=150%
+
+# --- sertleştirme
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/opt/tradingbot/data
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=no
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+AmbientCapabilities=
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

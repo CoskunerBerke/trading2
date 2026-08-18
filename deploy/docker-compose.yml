@@ -1,0 +1,105 @@
+# Trading Bot v3 — worker + dashboard + backup
+#   docker compose -f deploy/docker-compose.yml --env-file deploy/.env up -d --build
+# Bütün kalıcı veri tek volume altında: /data/{state,market,vault,backups,logs}. Sırlar .env'den (imaja girmez).
+name: tradingbot
+
+x-common: &common
+  image: tradingbot:v3
+  build:
+    context: ..
+    dockerfile: Dockerfile.v3
+  init: true                      # PID 1 = tini → SIGTERM iletilir, zombie yok
+  restart: unless-stopped
+  user: "10001:10001"
+  environment:
+    TZ: Europe/Istanbul
+    PYTHONUNBUFFERED: "1"
+    TRADINGBOT_DATA: /data
+    TRADINGBOT_VAULT_PATH: /data/vault
+    TRADINGBOT_STATE_DIR: /data/state
+    TRADINGBOT_CACHE_DIR: /data/market
+    TRADINGBOT_LOG_DIR: /data/logs
+    TRADINGBOT_BACKUPS_DIR: /data/backups
+    ALLOW_LIVE_TRADING: "false"
+  env_file:
+    - path: ./.env
+      required: false
+  logging:
+    driver: json-file
+    options:
+      max-size: "20m"
+      max-file: "5"
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  read_only: false
+  tmpfs:
+    - /tmp:size=256m
+
+services:
+  worker:
+    <<: *common
+    container_name: tradingbot-worker
+    command: ["watch", "--interval", "15", "--scan-every", "2"]
+    volumes:
+      - tradingbot-data:/data
+    stop_grace_period: 90s
+    stop_signal: SIGTERM
+    healthcheck:
+      test: ["CMD", "python", "-m", "tradingbot", "doctor", "--quick"]
+      interval: 60s
+      timeout: 20s
+      retries: 3
+      start_period: 90s
+    deploy:
+      resources:
+        limits:
+          memory: 1500m
+          cpus: "1.5"
+        reservations:
+          memory: 512m
+
+  dashboard:
+    <<: *common
+    container_name: tradingbot-dashboard
+    # Panel salt-okunur; token DASHBOARD_TOKEN env ile (.env) — yalnızca loopback'e yayınlanır, dışarı reverse proxy + TLS ile açın
+    command: ["dashboard", "--host", "0.0.0.0", "--port", "8080"]
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - tradingbot-data:/data:ro
+    stop_grace_period: 20s
+    depends_on:
+      - worker
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/health/live', timeout=5).status == 200 else 1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+          cpus: "0.5"
+
+  backup:
+    <<: *common
+    container_name: tradingbot-backup
+    # Saatlik döngü: sqlite .backup + state JSON kopyası + tar.gz + sha256; saklama 24s/7g/4h (kod içinde)
+    command: ["backup", "--loop", "--hourly"]
+    volumes:
+      - tradingbot-data:/data
+    stop_grace_period: 30s
+    depends_on:
+      - worker
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+          cpus: "0.3"
+
+volumes:
+  tradingbot-data:
+    name: tradingbot-data

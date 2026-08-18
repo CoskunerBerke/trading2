@@ -1,0 +1,51 @@
+# Trading Bot v3 — salt-okunur panel (127.0.0.1:8080). Dışarı açmak için reverse proxy + TLS + DASHBOARD_TOKEN.
+[Unit]
+Description=Trading Bot v3 dashboard (read-only web UI)
+After=network-online.target tradingbot-worker.service
+Wants=network-online.target
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=tradingbot
+Group=tradingbot
+WorkingDirectory=/opt/tradingbot/app
+EnvironmentFile=-/opt/tradingbot/env
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONIOENCODING=utf-8
+Environment=TZ=Europe/Istanbul
+Environment=TRADINGBOT_DATA=/opt/tradingbot/data
+Environment=TRADINGBOT_VAULT_PATH=/opt/tradingbot/data/vault
+Environment=TRADINGBOT_STATE_DIR=/opt/tradingbot/data/state
+Environment=TRADINGBOT_CACHE_DIR=/opt/tradingbot/data/market
+Environment=TRADINGBOT_LOG_DIR=/opt/tradingbot/data/logs
+ExecStart=/opt/tradingbot/venv/bin/python -m tradingbot dashboard --host 127.0.0.1 --port 8080
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=20
+KillSignal=SIGTERM
+MemoryMax=512M
+CPUQuota=50%
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadOnlyPaths=/opt/tradingbot/data
+ReadWritePaths=/opt/tradingbot/data/logs
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

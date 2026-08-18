@@ -95,18 +95,25 @@ class Learner:
         self.min_trades = min_trades
         self.state = LearningState()
         if self.path.exists():
-            try:
-                d = json.loads(self.path.read_text(encoding="utf-8"))
-                self.state = LearningState(**{k: v for k, v in d.items() if k in LearningState.__dataclass_fields__})
+            import logging
+            from .core import read_json
+            d = read_json(self.path, default=None)      # bozuksa .bak'a duser; bozuk kopya kenara alinir (silinmez)
+            if isinstance(d, dict):
+                try:
+                    self.state = LearningState(**{k: v for k, v in d.items() if k in LearningState.__dataclass_fields__})
+                except TypeError:
+                    logging.getLogger(__name__).error("learning.json semasi taninmadi - yeni state ile devam (eski dosya .bak/.corrupt olarak korunur)")
+                    self.state = LearningState()
                 for k in FEATURES:
                     self.state.weights.setdefault(k, 0.0)
-            except Exception:  # noqa: BLE001
-                self.state = LearningState()
+            else:
+                logging.getLogger(__name__).error("learning.json okunamadi ve yedek yok - ogrenme sifirdan (dosya .corrupt-N olarak korundu)")
 
     def save(self) -> None:
         self.state.updated_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps(self.state.to_dict(), indent=1, ensure_ascii=False), encoding="utf-8")
+        from .core import atomic_write_json
+        atomic_write_json(self.path, self.state.to_dict(), keep_backup=True)
 
     # ------------------------------------------------------------ tahmin
     def _vec(self, f: dict) -> dict:

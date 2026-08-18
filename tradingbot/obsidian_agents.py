@@ -48,17 +48,22 @@ class ObsidianAgentWriter:
     def write_all(self, briefs: list[CoinBrief], chief: ChiefBrief, alerts: list[str]) -> dict:
         self.dir.mkdir(parents=True, exist_ok=True)
         local = datetime.now().strftime("%Y-%m-%d %H:%M")
+        from .core import atomic_write_text
         for b in briefs:
-            (self.dir / f"{b.base}.canvas").write_text(json.dumps(self._coin_canvas(b, local), ensure_ascii=False, indent=1), encoding="utf-8")
-            (self.dir / f"{b.base}.md").write_text(self._coin_note(b, local), encoding="utf-8")
-        (self.dir / "Baş Yönetici.md").write_text(self._chief_note(chief, briefs, local), encoding="utf-8")
+            atomic_write_text(self.dir / f"{b.base}.canvas", json.dumps(self._coin_canvas(b, local), ensure_ascii=False, indent=1), skip_if_unchanged=True)
+            atomic_write_text(self.dir / f"{b.base}.md", self._coin_note(b, local), skip_if_unchanged=True)
+        atomic_write_text(self.dir / "Baş Yönetici.md", self._chief_note(chief, briefs, local), skip_if_unchanged=True)
+        p = self.dir / "Alarmlar.md"
         if alerts:
-            p = self.dir / "Alarmlar.md"
-            old = p.read_text(encoding="utf-8") if p.exists() else "# 🔔 Alarmlar (ajan kararı değişiklikleri)\n\n"
-            new = "\n".join(f"- **{local}** — {a}" for a in alerts)
-            p.write_text(old.rstrip() + "\n" + new + "\n", encoding="utf-8")
-        elif not (self.dir / "Alarmlar.md").exists():
-            (self.dir / "Alarmlar.md").write_text("# 🔔 Alarmlar (ajan kararı değişiklikleri)\n\nHenüz alarm yok.\n", encoding="utf-8")
+            old = p.read_text(encoding="utf-8") if p.exists() else "# \U0001F514 Alarmlar (ajan karar\u0131 de\u011fi\u015fiklikleri)\n\n"
+            new_lines = "\n".join(f"- **{local}** \u2014 {a}" for a in alerts)
+            lines = (old.rstrip() + "\n" + new_lines + "\n").splitlines()
+            head, body = lines[:2], lines[2:]
+            if len(body) > 500:                       # sinirsiz buyumesin
+                body = body[-500:]
+            atomic_write_text(p, "\n".join(head + body) + "\n")
+        elif not p.exists():
+            atomic_write_text(p, "# \U0001F514 Alarmlar (ajan karar\u0131 de\u011fi\u015fiklikleri)\n\nHen\u00fcz alarm yok.\n")
         return {"dir": str(self.dir)}
 
     # ---------------------------------------------------------------- canvas

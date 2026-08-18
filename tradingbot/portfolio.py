@@ -50,7 +50,8 @@ class Portfolio:
             "history": self.history[-500:],
             "updated_at": self.updated_at,
         }
-        path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+        from .core import atomic_write_json
+        atomic_write_json(path, data, indent=2, keep_backup=True)
 
     # ---- değerleme -----------------------------------------------------------
     def equity(self, prices: dict[str, float]) -> float:

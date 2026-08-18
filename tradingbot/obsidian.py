@@ -72,17 +72,38 @@ class ObsidianWriter:
         meta = {"exchange": exchange, "timeframe": timeframe, "run_time": run_time, "local": _local_now(),
                 "briefs": {b.symbol: b for b in (briefs or [])}, "chief": chief}
 
+        from .core import atomic_write_text, from_iso, istanbul
         canvas_path = self.root / self.canvas_name
-        canvas_path.write_text(json.dumps(self._canvas(analyses, dmap, summary, portfolio, meta), ensure_ascii=False, indent=1), encoding="utf-8")
-        (self.root / "Dashboard.md").write_text(self._dashboard(analyses, dmap, summary, portfolio, meta), encoding="utf-8")
+        atomic_write_text(canvas_path, json.dumps(self._canvas(analyses, dmap, summary, portfolio, meta), ensure_ascii=False, indent=1), skip_if_unchanged=True)
+        atomic_write_text(self.root / "Dashboard.md", self._dashboard(analyses, dmap, summary, portfolio, meta), skip_if_unchanged=True)
         for a in analyses:
-            (self.coins_dir / f"{a.base}.md").write_text(self._coin_note(a, dmap.get(a.symbol), meta), encoding="utf-8")
-        sig_name = datetime.now().strftime("%Y-%m-%d %H%M") + ".md"
-        (self.signals_dir / sig_name).write_text(self._signal_note(decisions, executed, summary, meta), encoding="utf-8")
-        (self.signals_dir / "Son Sinyal.md").write_text(self._signal_note(decisions, executed, summary, meta), encoding="utf-8")
-        (self.backtests_dir / "Sweep.md").write_text(self._sweep_note(analyses, meta), encoding="utf-8")
-        (self.root / "Portfolio.md").write_text(self._portfolio_note(portfolio, analyses, meta), encoding="utf-8")
+            atomic_write_text(self.coins_dir / f"{_safe(a.base)}.md", self._coin_note(a, dmap.get(a.symbol), meta), skip_if_unchanged=True)
+        # Signals/: yalniz yeni bir run_time icin tarihli not (her 15 dk ayni icerikle dosya uretme); dosya adi Europe/Istanbul
+        try:
+            sig_name = istanbul(from_iso(run_time), "%Y-%m-%d %H%M") + ".md"
+        except (ValueError, TypeError):
+            sig_name = datetime.now().strftime("%Y-%m-%d %H%M") + ".md"
+        note = self._signal_note(decisions, executed, summary, meta)
+        last_marker = self.signals_dir / ".last_run_time"
+        if not last_marker.exists() or last_marker.read_text(encoding="utf-8").strip() != run_time:
+            atomic_write_text(self.signals_dir / sig_name, note)
+            atomic_write_text(last_marker, run_time)
+            self._prune_signals()
+        atomic_write_text(self.signals_dir / "Son Sinyal.md", note, skip_if_unchanged=True)
+        atomic_write_text(self.backtests_dir / "Sweep.md", self._sweep_note(analyses, meta), skip_if_unchanged=True)
+        atomic_write_text(self.root / "Portfolio.md", self._portfolio_note(portfolio, analyses, meta), skip_if_unchanged=True)
         return {"canvas": str(canvas_path), "dashboard": str(self.root / "Dashboard.md"), "signal": str(self.signals_dir / sig_name)}
+
+    def _prune_signals(self, keep_days: int = 30, max_files: int = 200) -> None:
+        """Signals/ tarihli notlari sinirla (kasa sismesin)."""
+        import time as _t
+        files = sorted((p for p in self.signals_dir.glob("*.md") if p.name != "Son Sinyal.md"), key=lambda p: p.stat().st_mtime)
+        cutoff = _t.time() - keep_days * 86400
+        for p in (files[:-max_files] if len(files) > max_files else []):
+            p.unlink(missing_ok=True)
+        for p in files:
+            if p.exists() and p.stat().st_mtime < cutoff:
+                p.unlink(missing_ok=True)
 
     # ------------------------------------------------------------------ canvas
     def _canvas(self, analyses, dmap, summary, portfolio, meta) -> dict:

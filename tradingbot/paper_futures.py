@@ -88,9 +88,10 @@ class FuturesLedger:
     def save(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         self.updated_at = _now()
-        path.write_text(json.dumps({"equity": round(self.equity, 6), "starting_equity": self.starting_equity, "updated_at": self.updated_at,
-                                    "positions": {k: v.to_dict() for k, v in self.positions.items()}, "history": self.history[-1000:],
-                                    "total_fees": round(self.total_fees, 6), "seq": self.seq}, indent=1, ensure_ascii=False), encoding="utf-8")
+        from .core import atomic_write_json
+        atomic_write_json(path, {"equity": round(self.equity, 6), "starting_equity": self.starting_equity, "updated_at": self.updated_at,
+                                 "positions": {k: v.to_dict() for k, v in self.positions.items()}, "history": self.history[-1000:],
+                                 "total_fees": round(self.total_fees, 6), "seq": self.seq}, keep_backup=True)
 
     # ------------------------------------------------------------ açılış
     def can_open(self, symbol: str) -> tuple[bool, str]:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -94,6 +95,7 @@ class BotConfig:
     learning: LearningConfig = field(default_factory=LearningConfig)
     state_dir: str = "state"
     project_root: Path = PROJECT_ROOT
+    v3: Any = None            # config_v3.V3Config (mode PAPER varsayılan; yeni bölümler)
 
     @property
     def state_path(self) -> Path:
@@ -104,6 +106,30 @@ class BotConfig:
     def cache_path(self) -> Path:
         p = Path(self.exchange.cache_dir)
         return p if p.is_absolute() else self.project_root / p
+
+    @property
+    def data_root(self) -> Path:
+        """`TRADINGBOT_DATA` verilirse (VPS/Docker) state/market/vault/backups/logs bu kökün altındadır."""
+        env = os.environ.get("TRADINGBOT_DATA")
+        return Path(env) if env else self.project_root
+
+    @property
+    def backups_path(self) -> Path:
+        sub = self.v3.storage.backups_dir if self.v3 else "backups"
+        return self.data_root / sub
+
+    @property
+    def logs_path(self) -> Path:
+        sub = self.v3.monitoring.log_dir if self.v3 else "logs"
+        return self.data_root / sub
+
+    @property
+    def db_path(self) -> Path:
+        return self.state_path / (self.v3.storage.db_filename if self.v3 else "tradingbot.db")
+
+    @property
+    def mode(self) -> str:
+        return self.v3.mode.mode if self.v3 else "PAPER"
 
 
 def _build(cls, data: dict[str, Any] | None):
@@ -136,4 +162,18 @@ def load_config(path: str | os.PathLike | None = None) -> BotConfig:
         cfg.obsidian.vault_path = env_vault
     if os.environ.get("TRADINGBOT_VAULT_GIT_SYNC", "").lower() in ("1", "true", "yes"):
         cfg.obsidian.git_sync = True
+    # TRADINGBOT_DATA (VPS/Docker): state ve cache bu kökün altına taşınır (config'te mutlak yol yoksa)
+    env_data = os.environ.get("TRADINGBOT_DATA")
+    if env_data:
+        if not Path(cfg.state_dir).is_absolute():
+            cfg.state_dir = str(Path(env_data) / "state")
+        if not Path(cfg.exchange.cache_dir).is_absolute():
+            cfg.exchange.cache_dir = str(Path(env_data) / "market")
+        if not env_vault and cfg.obsidian.vault_path.startswith("C:/Users/berke"):
+            cfg.obsidian.vault_path = str(Path(env_data) / "vault")
+    # v3 bölümleri (typed + doğrulama; risk-kritik hata → ConfigError, program başlamaz)
+    from .config_v3 import load_v3
+    cfg.v3 = load_v3(raw)
+    for w in cfg.v3.warnings:
+        logging.getLogger("tradingbot.config").warning("config: %s", w)
     return cfg

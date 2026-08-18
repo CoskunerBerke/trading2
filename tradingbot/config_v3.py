@@ -211,6 +211,25 @@ class SecuritySection:
 
 
 @dataclass
+class HistorySection:
+    """Tarihsel veri gölü (public Binance; API anahtarı yok). Aralıklar gün; `max_available` → listing'den itibaren."""
+    enabled: bool = True
+    root_dir: str = "history"                        # cache_path altında
+    tier_a_timeframes: list[str] = field(default_factory=lambda: ["1h", "4h", "1d"])
+    tier_b_top_n: int = 50
+    tier_b_timeframes: list[str] = field(default_factory=lambda: ["15m", "1h", "4h", "1d"])
+    tier_c_top_n: int = 20
+    tier_c_1m_days: int = 90
+    tier_c_5m_days: int = 365
+    max_available: bool = True                       # 15m ve üzeri: mümkün olan maksimum
+    default_days: int = 360                          # max_available kapalıysa
+    include_funding: bool = True
+    include_open_interest: bool = True
+    archive_first: bool = True                       # data.binance.vision aylık arşiv → REST tamamlama
+    request_pause_s: float = 0.0                     # ek nezaket beklemesi (rate budget zaten var)
+
+
+@dataclass
 class V3Config:
     app: AppConfig = field(default_factory=AppConfig)
     mode: ModeConfig = field(default_factory=ModeConfig)
@@ -230,13 +249,15 @@ class V3Config:
     dashboard: DashboardSection = field(default_factory=DashboardSection)
     monitoring: MonitoringSection = field(default_factory=MonitoringSection)
     security: SecuritySection = field(default_factory=SecuritySection)
+    history: HistorySection = field(default_factory=HistorySection)
     warnings: list[str] = field(default_factory=list)
 
 
 _SECTIONS = {"app": AppConfig, "mode": ModeConfig, "markets": MarketsConfig, "universe": UniverseSection, "data": DataConfig,
              "coin_heads": CoinHeadsSection, "llm": LLMSection, "futures_v3": FuturesV3Section, "execution": ExecutionSection, "fees": FeesSection,
              "tax_policy": TaxPolicySection, "risk_profiles": RiskProfilesSection, "learning_v3": LearningV3Section, "storage": StorageSection,
-             "obsidian_v3": ObsidianV3Section, "dashboard": DashboardSection, "monitoring": MonitoringSection, "security": SecuritySection}
+             "obsidian_v3": ObsidianV3Section, "dashboard": DashboardSection, "monitoring": MonitoringSection, "security": SecuritySection,
+             "history": HistorySection}
 
 VALID_MODES = ("OBSERVE", "PAPER", "TESTNET", "SHADOW_LIVE", "LIVE_LIMITED", "LIVE")
 VALID_LLM_MODES = ("OFF", "POSTMORTEM_ONLY", "ADVISORY", "VETO_ONLY", "RESEARCH_COUNCIL")

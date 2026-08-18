@@ -7,6 +7,8 @@ Gerçek emir komutu YOKTUR; LIVE yolu bu sürümde kapalıdır.
 """
 from __future__ import annotations
 
+import datetime as _dt
+
 import argparse
 import csv
 import json
@@ -197,6 +199,82 @@ def cmd_dashboard(cfg: BotConfig, args) -> int:
     return 0
 
 
+# ---------------------------------------------------------------- tarihsel veri gölü
+def _history_ctx(cfg: BotConfig, args):
+    from .history import ArchiveClient, CollectSpec, HistoryCollector, HistoryStore
+    from .market.http import HttpClient
+    from .market.providers import BinanceFuturesProvider, BinanceSpotProvider
+    from .market.ratelimit import BudgetPool
+    hc = cfg.v3.history
+    store = HistoryStore(cfg.cache_path / hc.root_dir)
+    pool = BudgetPool(safety=cfg.v3.data.rate_budget_safety)
+    spot = BinanceSpotProvider(HttpClient(BinanceSpotProvider.base_url, pool.get("api.binance.com")))
+    fut = BinanceFuturesProvider(HttpClient(BinanceFuturesProvider.base_url, pool.get("fapi.binance.com")))
+    use_archive = hc.archive_first and not getattr(args, "no_archive", False)
+    col = HistoryCollector(store, spot=spot, futures=fut, archive=ArchiveClient() if use_archive else None, pause_s=hc.request_pause_s)
+    markets = ("spot", "futures") if args.market == "both" else (args.market,)
+    syms = tuple(args.symbols) if args.symbols else tuple(cfg.coins)
+    tfs = tuple(args.timeframes) if args.timeframes else tuple(hc.tier_a_timeframes)
+
+    def _ms(v):
+        return int(_dt.datetime.fromisoformat(v).replace(tzinfo=_dt.timezone.utc).timestamp() * 1000) if v else None
+    from_ms, to_ms = _ms(getattr(args, "from_", None)), _ms(getattr(args, "to", None))
+    spec = CollectSpec(markets=markets, symbols=syms, timeframes=tfs, from_ms=from_ms, to_ms=to_ms, days=args.days,
+                       max_available=bool(args.max_available or (args.days is None and from_ms is None and hc.max_available)),
+                       include_funding=hc.include_funding and "futures" in markets, include_open_interest=hc.include_open_interest and "futures" in markets,
+                       resume=not getattr(args, "no_resume", False), archive_first=use_archive)
+    return store, col, spec
+
+
+def cmd_history_plan(cfg: BotConfig, args) -> int:
+    """Veri indirmeden: sembol/aralık/satır/disk/istek/süre tahmini (listing tespiti için sembol başına 1 hafif istek; --offline ile o da yok)."""
+    store, col, spec = _history_ctx(cfg, args)
+    plan = col.plan(spec, probe_listing=not getattr(args, "offline", False))
+    if args.universe:
+        from .history import build_tier_specs
+        uni = read_json(cfg.state_path / "universe.json", default={}) or {}
+        ents = uni.get("entries") or uni.get("symbols") or []
+        ranked = [e.get("symbol") for e in ents if isinstance(e, dict) and e.get("symbol")] or list(cfg.coins)
+        open_syms = list((read_json(cfg.state_path / "futures_ledger.json", default={}) or {}).get("positions", {}).keys())
+        tp = build_tier_specs(ranked, open_syms, cfg.v3.history)
+        plan["tiers"] = tp.summary
+        ests = []
+        for t, sp in zip("ABC", tp.specs):
+            e = col.plan(sp, probe_listing=False); e.pop("items", None); e["tier"] = t; ests.append(e)
+        plan["tier_estimates"] = ests
+    if not args.verbose and len(plan["items"]) > 12:
+        n = len(plan["items"]) - 12
+        plan["items"] = plan["items"][:12] + [{"...": f"{n} seri daha"}]
+    _p(plan)
+    return 0
+
+
+def cmd_history_collect(cfg: BotConfig, args) -> int:
+    store, col, spec = _history_ctx(cfg, args)
+    if args.dry_run:
+        return cmd_history_plan(cfg, args)
+
+    def _prog(r):
+        print(f"  {r['market']:7s} {r['symbol']:12s} {r['timeframe']:7s} +{r['rows_new']:>7d} (toplam {r['rows_total']}, gap {r.get('gaps', 0)}, bad {r.get('bad_chunks', 0)})")
+    res = col.collect(spec, on_progress=_prog)
+    _p({"stats": res["stats"], "series": len(res["series"]), "finished_at": res["finished_at"]})
+    return 0 if res["stats"]["bad_chunks"] == 0 else 1
+
+
+def cmd_history_validate(cfg: BotConfig, args) -> int:
+    from .history import HistoryStore
+    store = HistoryStore(cfg.cache_path / cfg.v3.history.root_dir)
+    out, bad = [], 0
+    for market, sym, tf in store.series():
+        if args.symbols and sym not in args.symbols:
+            continue
+        v = store.validate(market, sym, tf)
+        out.append(v)
+        bad += 0 if v["ok"] else 1
+    _p({"series": len(out), "invalid": bad, "items": out if args.verbose else [o for o in out if not o["ok"]][:20]})
+    return 0 if bad == 0 else 1
+
+
 def cmd_stop(cfg: BotConfig, args) -> int:
     """Kooperatif durdurma: canlı worker/dashboard instance'ını doğrula, atomik stop isteği yaz, timeout'a kadar bekle.
     Force yok (varsayılan); --force yalnız kesin PID'ye normal sonlandırma uygular ve graceful sayılmaz."""
@@ -370,6 +448,15 @@ def register(sub: argparse._SubParsersAction) -> None:
     s = sub.add_parser("risk-status", help="Risk profili, kill switch, exposure"); s.set_defaults(fn=cmd_risk_status)
     s = sub.add_parser("killswitch-reset", help="Kill switch manuel reset (denetim kaydı)"); s.add_argument("--operator", required=True); s.add_argument("--note", required=True); s.set_defaults(fn=cmd_killswitch_reset)
     s = sub.add_parser("health", help="Sağlık durumu (heartbeat yaşı)"); s.set_defaults(fn=cmd_health)
+    def _hist_args(s):
+        s.add_argument("--market", choices=["spot", "futures", "both"], default="both"); s.add_argument("--symbols", nargs="*", default=None)
+        s.add_argument("--timeframes", nargs="*", default=None); s.add_argument("--days", type=int, default=None); s.add_argument("--max-available", action="store_true")
+        s.add_argument("--from", dest="from_", default=None); s.add_argument("--to", default=None); s.add_argument("--no-resume", action="store_true")
+        s.add_argument("--no-archive", action="store_true"); s.add_argument("--dry-run", action="store_true"); s.add_argument("--universe", action="store_true")
+        s.add_argument("--offline", action="store_true"); s.add_argument("--verbose", "-v", action="store_true")
+    s = sub.add_parser("history-plan", help="Tarihsel veri planı (dry-run: satır/disk/istek/süre tahmini)"); _hist_args(s); s.set_defaults(fn=cmd_history_plan)
+    s = sub.add_parser("history-collect", help="Tarihsel veri topla (archive-first + REST, resume, idempotent)"); _hist_args(s); s.set_defaults(fn=cmd_history_collect)
+    s = sub.add_parser("history-validate", help="Manifest/checksum/gap doğrulaması"); s.add_argument("--symbols", nargs="*", default=None); s.add_argument("--verbose", "-v", action="store_true"); s.set_defaults(fn=cmd_history_validate)
     s = sub.add_parser("stop", help="Kooperatif durdurma (worker/dashboard/all); force yok, timeout'ta dürüst rapor")
     s.add_argument("--target", choices=["worker", "dashboard", "all"], default="all"); s.add_argument("--timeout", type=float, default=120)
     s.add_argument("--force", action="store_true", help="timeout sonrası kesin PID'ye normal sonlandırma (graceful sayılmaz)"); s.set_defaults(fn=cmd_stop)

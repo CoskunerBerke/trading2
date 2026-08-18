@@ -1,0 +1,9 @@
+# LLM POLICY
+
+- Provider interface (`llm/provider.py`): `NoOpLLMProvider` (varsayılan, fail-closed), `AnthropicProvider` (lazy import; anahtar **yalnız** `ANTHROPIC_API_KEY` env'den, `complete()` içinde okunur, asla loglanmaz), `FakeProvider` (test), `BatchStub` (gece postmortem için).
+- Modlar (`llm/service.py`): `OFF | POSTMORTEM_ONLY (varsayılan) | ADVISORY | VETO_ONLY | RESEARCH_COUNCIL`.
+- Yanıt **JSON şema** ile doğrulanır (`llm/schema.py`): `decision_support, bull_case, bear_case, key_uncertainties, contradictions, veto, veto_reasons, confidence, evidence_ids (yalnız verilen id'ler), historical_lessons, recommended_action`. Geçersizse 1 retry, sonra **fail-closed** (`failed=True, veto=False, WAIT_CONFIRMATION`) — LLM hatası hiçbir zaman işlem açtırmaz/büyütmez.
+- Yapamayacakları (kodla): emir gönderme, API anahtarı okuma, risk limiti/kaldıraç/stop değiştirme, kill switch kapatma, strateji config'i canlı değiştirme, model terfisi, deployment, mod geçişi. Servis defter/gateway/config referansı taşımaz. Yalnız `veto` ve `REDUCE_SIZE/SKIP` deterministik kapıya girer.
+- Maliyet: günlük USD/token bütçesi (`state/llm_budget.json`, UTC gün), tur başına aday sınırı, `max_output_tokens`, prompt caching (sabit sistem prompt), semantic cache (`payload_hash(snapshot)`), circuit breaker, model katmanları (ucuz `claude-haiku-4-5-20251001`, güçlü `claude-opus-5`, batch); fiyat tablosu config'tir (`verified_at`), gerçek değildir. Bütçe biterse bot paper veri toplamaya devam eder.
+- Kayıt: her çağrı `state/llm_calls.jsonl` (provider, model, mode, prompt_version, prompt_hash, snapshot_id, output_hash, token'lar, tahmini maliyet, gecikme, cache hit, hata, redakte istek). Redaksiyon: api key/secret/token/password anahtarları + uzun hex/base64.
+- Ne zaman: yalnız yeni güçlü aday, yön değişimi, işlem öncesi, veto durumu, işlem kapanışı, gece postmortem. Yüzlerce coin için her 15 dk çağrılmaz.

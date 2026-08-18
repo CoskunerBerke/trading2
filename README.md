@@ -1,4 +1,44 @@
-# Trading Bot — çok-coinli analiz · karar · sinyal motoru (Obsidian entegrasyonlu)
+# trading2 v3 — 7/24 çoklu ajanlı Spot + Futures **paper** trading, öğrenme, Obsidian ve güvenli canlıya geçiş altyapısı
+
+> **Ne yapar:** Binance Spot ve USDⓈ-M perpetual evrenini tarar, her coin için bir **Coin Head** (uzman ajanlar → faktör grupları → red team → spot/futures planı) çalıştırır, **Baş Yönetici** ve deterministik **Global Risk Engine** onayından geçen planları gerçekçi paper defterlerde (Decimal; komisyon, funding 00/08/16 UTC, kayma, spread, kısmi dolum, tick/step/min-notional, MMR likidasyon, gerçek başa-baş) simüle eder, her işlemi değişmez hafızaya yazar, istatistiksel olarak öğrenir (kalibrasyon, hiyerarşik shrinkage, champion/challenger, gölge işlemler), Obsidian + web dashboard'a yazar.
+>
+> **Ne yapmaz:** Gerçek Binance emri göndermez, API anahtarı istemez, PAPER→TESTNET→LIVE geçişini kendi başına yapmaz. LLM opsiyoneldir, yalnız araştırma/red-team/postmortem yapar; **işlem açamaz**. Kâr garantisi yoktur; hedef masraflar sonrası pozitif beklenen değer, kontrollü drawdown, veri kalitesi, tekrarlanabilirlik ve denetlenebilirliktir. Varsayılan ve zorunlu mod **PAPER**; LIVE bu sürümde kapalıdır.
+
+**Durum:** `main`'deki v2 (aşağıda "v2 — mevcut sistem") korunur ve çalışır. v3 `feature/trading-v3-paper-testnet` dalındadır. Test: `python -m pytest tests -q` → 156 test.
+
+## Hızlı başlangıç (Windows / Linux)
+```bash
+pip install -r requirements.txt          # dev: pip install -r requirements-dev.txt
+python -m tradingbot doctor              # ortam + state + mod kontrolü (PAPER, ALLOW_LIVE_TRADING yok)
+python -m tradingbot migrate             # eski JSON state → SQLite (idempotent, hiçbir dosya silinmez)
+python -m tradingbot tour                # tek v3 turu (Coin Heads + Risk Engine + defter v2); eski motor: --legacy
+python -m tradingbot watch --interval 15 --scan-every 2     # 7/24 (singleton kilit, SIGTERM-uyumlu)
+python -m tradingbot dashboard           # http://127.0.0.1:8080 (13 sayfa, plotly yerel, /health, /metrics)
+```
+Diğer komutlar: `paper-status | spot-status | futures-status | risk-status | mode-status | mode-transition | killswitch-reset | health | reconcile | model-status | validate-model | replay | backtest | collect | universe | export-trades | export-tax | backup | restore` + v2 komutları (`run | analyze | sweep | fetch | agents | scan | obsidian | reset-portfolio`).
+
+## Mimari (özet — ayrıntı `docs/ARCHITECTURE.md`)
+```
+UNIVERSE → DATA QUALITY GATE → FAST SCANNER → CANDIDATE FUNNEL → COIN HEADS ← SPECIALISTS → RED TEAM
+→ COIN HEAD CONSENSUS → CHIEF → GLOBAL RISK ENGINE → SPOT | FUTURES | NO_TRADE → PAPER EXECUTION → MONITOR
+→ ACCOUNTING → LABELING → LEARNING → MODEL VALIDATION → OBSIDIAN + DASHBOARD
+```
+Nihai onay = `coin_head_valid ∧ no_red_team_veto ∧ risk_engine_allowed`. İşlem açmamak (NO_TRADE) sistemin normal ve sık kararıdır.
+
+## Dokümanlar
+`docs/BASELINE_AUDIT.md` (başlangıç denetimi) · `ARCHITECTURE` · `COIN_HEADS` · `DATA_PIPELINE` · `PAPER_ACCOUNTING` (50 USDT/2x NOTIONAL vs MARGIN örneği) · `LEARNING_SYSTEM` · `LLM_POLICY` · `RISK_POLICY` · `BINANCE_TESTNET` · `LIVE_GRADUATION` · `SECURITY` · `THREAT_MODEL` · `OPERATIONS` · `BACKUP_RESTORE` · `OBSIDIAN` · `VPS_DEPLOYMENT` · `INCIDENT_RUNBOOK`.
+
+## Bilinen sınırlamalar (dürüst durum)
+- v3 motoru veri için mevcut TradingView/ccxt yolunu kullanır; Binance resmi provider'lar, universe ve kalite kapısı hazır ve testli, `collect`/`universe` komutlarında ve `MarketFeed` API'sinde kullanılır; motorun ana mum akışının `data.primary: binance` ile tamamen Binance'e alınması sonraki adımdır.
+- Legacy spot WFO döngüsü (`run`) hâlâ `portfolio.json`; v3 SPOT_LONG planları `state/spot_ledger.json` (v2 defter). Futures defteri `futures_ledger.json` v2'ye otomatik geçirilir (kayıpsız).
+- Intrabar stop/TP kontrolü tur içinde 1h uçları + son fiyat ile yapılır; 1m akış/WS mark price henüz bağlı değil.
+- Testnet gateway'leri kodda ve testte (sahte HTTP) hazır; gerçek testnet anahtarıyla uçtan uca çalıştırılmadı.
+- LLM `noop` varsayılan; Anthropic sağlayıcısı ağa karşı test edilmedi (SDK kurulu değil, lazy import).
+- Vergi politikası kapalı ve doğrulanmamış (TR 2026-03-26 TBMM: kripto vergi maddeleri tekliften çıkarıldı); oran uydurulmaz.
+
+---
+
+# v2 — mevcut sistem (korunur)
 
 > **Ne yapar:** Mumları doğrudan **TradingView veri akışından** (`BINANCE:BTCUSDT` …) çeker, 10 coin için
 > ayrı ayrı analiz yapar, her coin için 64 strateji konfigürasyonunu **walk-forward** backtest'ten geçirir,

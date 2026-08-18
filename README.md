@@ -26,6 +26,8 @@ UNIVERSE → DATA QUALITY GATE → FAST SCANNER → CANDIDATE FUNNEL → COIN HE
 Nihai onay = `coin_head_valid ∧ no_red_team_veto ∧ risk_engine_allowed`. İşlem açmamak (NO_TRADE) sistemin normal ve sık kararıdır.
 
 ## Dokümanlar
+`docs/HISTORICAL_LEARNING.md` — **tarihsel pattern zekâsı** (Binance public veri gölü, causal feature store, SimilarPatternEngine + maliyet-sonrası istatistik/fail-closed kodlar, EvidencePacket, hiyerarşik replay öğrenmesi, hızlı exit monitörü, kooperatif `stop`). CLI: `history-plan/collect/validate`, `build-features`, `pattern-query`, `evidence-show`, `historical-replay`, `learning-status`, `stop`.
+
 `docs/BASELINE_AUDIT.md` (başlangıç denetimi) · `ARCHITECTURE` · `COIN_HEADS` · `DATA_PIPELINE` · `PAPER_ACCOUNTING` (50 USDT/2x NOTIONAL vs MARGIN örneği) · `LEARNING_SYSTEM` · `LLM_POLICY` · `RISK_POLICY` · `BINANCE_TESTNET` · `LIVE_GRADUATION` · `SECURITY` · `THREAT_MODEL` · `OPERATIONS` · `BACKUP_RESTORE` · `OBSIDIAN` · `VPS_DEPLOYMENT` · `INCIDENT_RUNBOOK`.
 
 ## Bilinen sınırlamalar (dürüst durum)

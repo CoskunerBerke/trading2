@@ -16,7 +16,7 @@ import logging
 from pathlib import Path
 
 from .config import BotConfig
-from .core import ExecutionDisabledError, read_json, utc_now
+from .core import ExecutionDisabledError, iso, read_json, utc_now
 
 log = logging.getLogger("tradingbot.v3")
 
@@ -275,6 +275,93 @@ def cmd_history_validate(cfg: BotConfig, args) -> int:
     return 0 if bad == 0 else 1
 
 
+# ---------------------------------------------------------------- pattern zekâsı
+def _pattern_engine(cfg: BotConfig, args, *, market: str, tf: str, symbols: list[str] | None = None):
+    """HistoryStore'daki serilerden SimilarPatternEngine kur (aynı tf; BTC bağlamı ve funding varsa eklenir)."""
+    from .history import HistoryStore
+    from .patterns import SimilarPatternEngine
+    store = HistoryStore(cfg.cache_path / cfg.v3.history.root_dir)
+    have = [(m, sym, t) for m, sym, t in store.series() if m == market and t == tf and (not symbols or sym in symbols)]
+    btc = store.read(market, "BTC/USDT", tf)
+    eng = SimilarPatternEngine(min_sample=int(getattr(args, "min_sample", 30) or 30), horizon=int(getattr(args, "horizon", 24) or 24),
+                               fee_pct=cfg.v3.fees.futures_taker_pct if market == "futures" else cfg.v3.fees.spot_taker_pct,
+                               slippage_pct=cfg.v3.fees.slippage_bps / 100, clusters=_clusters(cfg))
+    n_ev = 0
+    for m, sym, t in have:
+        df = store.read(m, sym, t)
+        if len(df) < 200:
+            continue
+        fund = store.read("futures", sym, "funding") if market == "futures" else None
+        n_ev += eng.add_series(sym, m, t, df, btc_df=None if sym == "BTC/USDT" else (btc if len(btc) else None), funding_df=fund if fund is not None and len(fund) else None,
+                               stride=int(getattr(args, "stride", 1) or 1))
+    return store, eng, n_ev
+
+
+def _clusters(cfg: BotConfig) -> dict[str, str]:
+    out = {}
+    for name, syms in (cfg.v3.risk_profiles.clusters or {}).items():
+        for s_ in syms or []:
+            out[s_] = name
+    return out
+
+
+def cmd_build_features(cfg: BotConfig, args) -> int:
+    """HistoryStore serileri → causal feature frame (cache/features/<market>/<symbol>/<tf>.csv.gz) + özet."""
+    import gzip
+    from .history import HistoryStore
+    from .patterns import build_feature_frame, feature_columns
+    store = HistoryStore(cfg.cache_path / cfg.v3.history.root_dir)
+    root = cfg.cache_path / "features"
+    markets = ("spot", "futures") if args.market == "both" else (args.market,)
+    out = []
+    for m, sym, tf in store.series():
+        if m not in markets or (args.symbols and sym not in args.symbols) or (args.timeframes and tf not in args.timeframes) or tf in ("funding",) or tf.startswith("oi_"):
+            continue
+        df = store.read(m, sym, tf)
+        if len(df) < 50:
+            continue
+        btc = store.read(m, "BTC/USDT", tf) if sym != "BTC/USDT" else None
+        fund = store.read("futures", sym, "funding") if m == "futures" else None
+        fr = build_feature_frame(df, tf, btc_df=btc if btc is not None and len(btc) else None, funding_df=fund if fund is not None and len(fund) else None)
+        pth = root / m / sym.replace("/", "_") / f"{tf}.csv.gz"
+        pth.parent.mkdir(parents=True, exist_ok=True)
+        with gzip.open(pth, "wt", encoding="utf-8") as fh:
+            fr.to_csv(fh, index=False, lineterminator="\n")
+        out.append({"market": m, "symbol": sym, "timeframe": tf, "rows": int(len(fr)), "features": len(feature_columns(fr)),
+                    "quality_last": round(float(fr["quality"].iloc[-1]), 3), "path": str(pth.relative_to(cfg.cache_path))})
+    _p({"series": len(out), "feature_rows": int(sum(o["rows"] for o in out)), "items": out if args.verbose else out[:15]})
+    return 0
+
+
+def cmd_pattern_query(cfg: BotConfig, args) -> int:
+    from .patterns import explain_tr, packet_from_query
+    store, eng, n_ev = _pattern_engine(cfg, args, market=args.market, tf=args.tf, symbols=None)
+    res = eng.query(args.symbol, args.market, args.tf, args.side, k=args.k, level=args.level, window=args.window)
+    pk = packet_from_query(res, timestamp=iso(utc_now()), timeframes=[args.tf])
+    _p({"index_events": n_ev, "query": res.get("query"), "ok": res.get("ok"), "codes": res.get("codes"), "n": res.get("n"), "levels": res.get("levels"),
+        "stats": {k: v for k, v in (res.get("stats") or {}).items() if k not in ("breakdown",)}, "neighbors": res.get("neighbors", [])[:10],
+        "explanation_tr": explain_tr(pk)})
+    return 0
+
+
+def cmd_evidence_show(cfg: BotConfig, args) -> int:
+    """Kayıtlı runtime kanıtı (state/evidence/<symbol>.json) varsa onu, yoksa canlı sorguyu EvidencePacket + deterministik açıklama olarak göster."""
+    from .patterns import EvidencePacket, explain_tr, packet_from_query
+    p = cfg.state_path / "evidence" / f"{args.symbol.replace('/', '_')}.json"
+    d = read_json(p, default=None)
+    if isinstance(d, dict) and d.get("packets") and not args.live:
+        for side, pk in d["packets"].items():
+            pkt = EvidencePacket(**{k: v for k, v in pk.items() if k in set(EvidencePacket.__dataclass_fields__)})
+            _p({"side": side, "packet": pkt.to_dict(), "explanation_tr": explain_tr(pkt)})
+        return 0
+    store, eng, n_ev = _pattern_engine(cfg, args, market=args.market, tf=args.tf)
+    for side in (["LONG", "SHORT"] if args.market == "futures" else ["LONG"]):
+        res = eng.query(args.symbol, args.market, args.tf, side, k=args.k, level=args.level, window=args.window)
+        pkt = packet_from_query(res, timestamp=iso(utc_now()), timeframes=[args.tf])
+        _p({"side": side, "packet": pkt.to_dict(), "explanation_tr": explain_tr(pkt)})
+    return 0
+
+
 def cmd_stop(cfg: BotConfig, args) -> int:
     """Kooperatif durdurma: canlı worker/dashboard instance'ını doğrula, atomik stop isteği yaz, timeout'a kadar bekle.
     Force yok (varsayılan); --force yalnız kesin PID'ye normal sonlandırma uygular ve graceful sayılmaz."""
@@ -457,6 +544,16 @@ def register(sub: argparse._SubParsersAction) -> None:
     s = sub.add_parser("history-plan", help="Tarihsel veri planı (dry-run: satır/disk/istek/süre tahmini)"); _hist_args(s); s.set_defaults(fn=cmd_history_plan)
     s = sub.add_parser("history-collect", help="Tarihsel veri topla (archive-first + REST, resume, idempotent)"); _hist_args(s); s.set_defaults(fn=cmd_history_collect)
     s = sub.add_parser("history-validate", help="Manifest/checksum/gap doğrulaması"); s.add_argument("--symbols", nargs="*", default=None); s.add_argument("--verbose", "-v", action="store_true"); s.set_defaults(fn=cmd_history_validate)
+    s = sub.add_parser("build-features", help="Tarihsel serilerden causal feature store üret"); s.add_argument("--market", choices=["spot", "futures", "both"], default="both")
+    s.add_argument("--symbols", nargs="*", default=None); s.add_argument("--timeframes", nargs="*", default=None); s.add_argument("--verbose", "-v", action="store_true"); s.set_defaults(fn=cmd_build_features)
+
+    def _pq_args(s):
+        s.add_argument("--symbol", required=True); s.add_argument("--market", choices=["spot", "futures"], default="futures"); s.add_argument("--tf", default="4h")
+        s.add_argument("--side", choices=["LONG", "SHORT"], default="LONG"); s.add_argument("--k", type=int, default=60); s.add_argument("--window", type=int, default=64)
+        s.add_argument("--level", choices=["auto", "same_coin", "cluster", "universe"], default="auto"); s.add_argument("--min-sample", dest="min_sample", type=int, default=30)
+        s.add_argument("--horizon", type=int, default=24); s.add_argument("--stride", type=int, default=1); s.add_argument("--live", action="store_true")
+    s = sub.add_parser("pattern-query", help="Benzer geçmiş olay sorgusu + maliyet sonrası istatistik"); _pq_args(s); s.set_defaults(fn=cmd_pattern_query)
+    s = sub.add_parser("evidence-show", help="EvidencePacket + deterministik Türkçe açıklama"); _pq_args(s); s.set_defaults(fn=cmd_evidence_show)
     s = sub.add_parser("stop", help="Kooperatif durdurma (worker/dashboard/all); force yok, timeout'ta dürüst rapor")
     s.add_argument("--target", choices=["worker", "dashboard", "all"], default="all"); s.add_argument("--timeout", type=float, default=120)
     s.add_argument("--force", action="store_true", help="timeout sonrası kesin PID'ye normal sonlandırma (graceful sayılmaz)"); s.set_defaults(fn=cmd_stop)

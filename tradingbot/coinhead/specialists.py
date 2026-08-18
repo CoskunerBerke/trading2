@@ -39,6 +39,7 @@ class SpecialistContext:
     max_leverage: int = 5
     now_ms: int | None = None
     listing_age_days: float | None = None
+    pattern_evidence: dict[str, Any] | None = None                        # {"LONG": engine.query(...), "SHORT": ...} — tarihsel benzer olay kanıtı
 
 
 def _base(ctx: SpecialistContext, name: str, group: str, version: str = "v3.0") -> SpecialistReport:
@@ -393,7 +394,46 @@ def adapt_legacy_reports(reports: list[Any], ctx: SpecialistContext) -> list[Spe
     return out
 
 
+def _similar_patterns(ctx: SpecialistContext, rep: SpecialistReport) -> None:
+    """Tarihsel benzer olay kanıtı (SimilarPatternEngine). Kanıt yoksa nötr/kullanılamaz; fail-closed kodlar → bias 0, uyarı.
+    Yön: net beklentisi pozitif ve kodsuz olan taraf; iki taraf da geçerliyse büyük olan; win-rate tek başına kullanılmaz."""
+    ev = ctx.pattern_evidence or {}
+    if not ev:
+        rep.error = "PATTERN_EVIDENCE_MISSING"          # kullanılamaz (usable=False): kanıt yoksa oy da yok
+        rep.confidence_raw = 0.0
+        return
+    best_side, best = None, None
+    for side in ("LONG", "SHORT"):
+        r = ev.get(side) or {}
+        st = r.get("stats") or {}
+        rep.metrics[f"{side.lower()}_n"] = int(r.get("n") or 0)
+        rep.metrics[f"{side.lower()}_net_r"] = float(st.get("mean_net_r") or 0.0)
+        rep.metrics[f"{side.lower()}_p_win"] = float(st.get("p_win_posterior") or 0.5)
+        rep.metrics[f"{side.lower()}_codes"] = list(r.get("codes") or [])
+        if r.get("ok") and (best is None or float(st.get("mean_net_r") or 0) > best):
+            best_side, best = side, float(st.get("mean_net_r") or 0)
+    if best_side is None:
+        rep.bias = 0.0
+        rep.confidence_raw = 10.0
+        codes = sorted({c for side in ("LONG", "SHORT") for c in (ev.get(side) or {}).get("codes") or []})
+        rep.warnings.extend(codes)
+        rep.evidence_against.append("benzer geçmiş olaylarda maliyet sonrası güvenilir kenar yok: " + ", ".join(codes))
+        return
+    st = ev[best_side]["stats"]
+    n = int(ev[best_side]["n"])
+    ci_lo = float((st.get("expectancy_ci") or [0, 0])[0])
+    rep.bias = (1.0 if best_side == "LONG" else -1.0) * min(1.0, 0.3 + 0.35 * min(1.0, best / 0.5) + 0.35 * min(1.0, ci_lo / 0.25))
+    rep.confidence_raw = min(90.0, 30.0 + 40.0 * min(1.0, n / 100.0) + 20.0 * min(1.0, ci_lo / 0.2))
+    rep.evidence_for.append(f"{best_side}: {n} bağımsız benzer olay, net {best:+.2f}R (CI alt {ci_lo:+.2f}), P(kazanç) {st.get('p_win_posterior', 0.5):.2f}")
+    if st.get("edge_decay", 0) < 0:
+        rep.evidence_against.append(f"son 90 gün {st.get('edge_decay'):+.2f}R sapma (edge decay)")
+    rep.metrics["side"] = best_side
+    rep.metrics["independent_sample_count"] = n
+
+
+SimilarPatternAgent = _run("similar_patterns", "historical_edge", _similar_patterns)
+
 NEW_SPECIALISTS: tuple[Callable[[SpecialistContext], SpecialistReport], ...] = (
     DataIntegrityAgent, MarketRegimeAgent, MultiTimeframeAgent, DerivativesAgent, CorrelationBetaAgent,
-    OrderbookLiquidityAgent, RiskSizingAgent, NewsCatalystAgent,
+    OrderbookLiquidityAgent, RiskSizingAgent, NewsCatalystAgent, SimilarPatternAgent,
 )

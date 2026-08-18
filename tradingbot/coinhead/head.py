@@ -59,6 +59,7 @@ class CoinHeadInputs:
     now_ms: int | None = None
     snapshot_at_ms: int | None = None                             # olay zamanı (engine run zamanı, UTC ms); None → now_ms
     snapshot_seq: int = 0                                         # aynı zaman damgası için deterministik tie-breaker (tur sırası)
+    pattern_evidence: dict[str, Any] | None = None               # SimilarPatternEngine.query çıktısı {"LONG": {...}, "SHORT": {...}} (opsiyonel)
     listing_age_days: float | None = None
 
 
@@ -168,7 +169,8 @@ class CoinHead:
         ctx = SpecialistContext(symbol=self.symbol, run_id=run_id, snapshot_id=snap, frames=inp.frames, live=inp.live,
                                 market_type="both", quality=inp.quality, btc_frames=inp.btc_frames, eth_frames=inp.eth_frames,
                                 equity_usdt=self.cfg.equity_usdt, risk_pct=self.cfg.risk_pct, filters=f_fut, fee_taker_pct=self.cfg.fee_taker_pct,
-                                max_leverage=self.cfg.max_leverage, now_ms=inp.now_ms, listing_age_days=inp.listing_age_days)
+                                max_leverage=self.cfg.max_leverage, now_ms=inp.now_ms, listing_age_days=inp.listing_age_days,
+                                pattern_evidence=inp.pattern_evidence)
         # 1) uzmanlar
         reports = adapt_legacy_reports(inp.legacy_reports or [], ctx)
         for spec in NEW_SPECIALISTS:

@@ -5,3 +5,24 @@ data/
 state/
 Trading_bot/.obsidian/workspace*.json
 .env
+# v3 runtime / hassas
+logs/
+backups/
+*.db
+*.db-wal
+*.db-shm
+state/**/*.corrupt-*
+state/**/*.bak
+data/candles/
+Trading_bot/Coin Heads/
+Trading_bot/Trades/
+Trading_bot/Runs/
+Trading_bot/Portfolio/
+Trading_bot/Risk/
+Trading_bot/Models/
+Trading_bot/Operations/
+Trading_bot/Data Quality/
+.env.*
+*.pem
+*.key
+deploy/env

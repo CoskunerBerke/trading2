@@ -70,3 +70,140 @@ obsidian:
   git_sync: false              # true: her turdan sonra kasa klasörünü git commit+push et (bulutta çalışırken PC/telefon Obsidian Git ile çeker)
 
 state_dir: "state"
+
+# ============================================================
+#  v3 bölümleri (geriye uyumlu; eksik anahtarlar güvenli varsayılana düşer, riskle ilgili hatalı değerlerde program BAŞLAMAZ)
+# ============================================================
+app:
+  name: trading2
+  version: "3.0"
+  timezone_display: Europe/Istanbul
+
+mode:
+  mode: PAPER                  # OBSERVE | PAPER | TESTNET | SHADOW_LIVE (LIVE_LIMITED/LIVE bu sürümde kapalı). Geçişler yalnız `mode-transition` ile, manuel.
+  live_trading: false          # ALLOW_LIVE_TRADING env + typed token olmadan hiçbir zaman gerçek emir yok
+  withdrawals: false           # desteklenmiyor
+  account_label: default
+
+markets:
+  spot_enabled: true
+  futures_enabled: true
+  quote_assets: [USDT]
+  allow_usdc: false
+
+universe:                      # dinamik Binance spot + USDⓈ-M perpetual evreni (python -m tradingbot universe)
+  min_quote_volume_24h: 20000000
+  max_spread_pct: 0.2
+  min_depth_0_5pct_usdt: 50000
+  min_listing_age_days: 60
+  max_symbols: 200
+  refresh_minutes: 360
+  tier2_top: 30
+  tier3_top: 10
+
+data:
+  primary: binance             # Binance resmi market-data endpointleri; TradingView/ccxt yedek + karşılaştırma
+  fallback: [tradingview, ccxt]
+  max_candle_age_bars: 2
+  max_ticker_age_s: 120
+  max_clock_drift_ms: 5000
+  max_price_divergence_pct: 0.5
+  rate_budget_safety: 0.7
+
+coin_heads:
+  enabled: true                # false → eski (v2) motor
+  consensus_threshold: 0.22
+  min_confidence: 0.25
+  min_expected_r: 1.5          # maliyet SONRASI beklenen R
+  max_workers: 4
+  decision_ttl_minutes: 240
+  funding_horizon_bars: 12
+
+llm:
+  provider: noop               # noop | anthropic (ANTHROPIC_API_KEY env; anahtar asla config/log/Obsidian'a yazılmaz)
+  mode: POSTMORTEM_ONLY        # OFF | POSTMORTEM_ONLY | ADVISORY | VETO_ONLY | RESEARCH_COUNCIL — LLM asla emir açamaz
+  model_cheap: claude-haiku-4-5-20251001
+  model_strong: claude-opus-5
+  daily_usd_budget: 2.0
+  daily_token_budget: 400000
+  per_tour_candidates: 3
+  max_output_tokens: 1200
+
+futures_v3:
+  margin_mode: isolated
+  leverage_default: 1
+  leverage_max_paper_research: 2
+  tp1_fraction: 0.5
+  ambiguity_policy: worst_case # aynı tikte stop+hedef → stop
+  liq_fee_pct: 0.5
+
+execution:
+  gateway: paper               # paper | binance_spot_testnet | binance_futures_testnet (testnet_enabled + env anahtarları gerekir); live KAPALI
+  testnet_enabled: false
+  reconcile_on_start: true
+
+fees:                          # PAPER'da versiyonlu tarife; API bağlanınca gerçek hesap komisyonu alınabilir (FeeSource)
+  spot_maker_pct: 0.10
+  spot_taker_pct: 0.10
+  futures_maker_pct: 0.02
+  futures_taker_pct: 0.05
+  slippage_bps: 3.0
+  bnb_discount: false
+  source: config
+
+tax_policy:                    # Vergi ≠ borsa komisyonu. Doğrulanmamış oran uydurulmaz: varsayılan kesinti 0.
+  enabled: false
+  status: UNVERIFIED_OR_NOT_EFFECTIVE
+  jurisdiction: TR
+  accounting_method: FIFO
+  source_url: https://www.tbmm.gov.tr/Haber/Detay?Id=24224a43-2062-4397-8761-019d2b9e0bd5
+  source_checked_at: "2026-03-26"
+  manually_confirmed: false
+
+risk_profiles:
+  profile: PAPER_RESEARCH      # PAPER_RESEARCH (mevcut %2 davranışı AYNEN) | TESTNET | SHADOW_LIVE | LIVE_LIMITED
+  overrides: {}                # ör. {daily_loss_stop_pct: 2.0, max_drawdown_kill_pct: 8.0}
+  i_understand: false
+
+learning_v3:
+  enabled: true
+  min_samples_train: 40
+  holdout_frac: 0.2
+  half_life_days: 60
+  calibrator: platt
+  shadow_trades: true
+  auto_promote_in_paper: true  # TESTNET/LIVE'da terfi her zaman manuel
+
+storage:
+  sqlite_enabled: true
+  db_filename: tradingbot.db
+  parquet_dir: candles
+  backups_dir: backups
+  keep_hourly: 24
+  keep_daily: 7
+  keep_weekly: 4
+
+obsidian_v3:
+  coin_heads_enabled: true
+  prune_stale_hours: 48
+  signals_retention_days: 30
+  signals_max_files: 200
+
+dashboard:
+  enabled: true
+  host: 127.0.0.1              # public bind için auth token env + HTTPS/tünel zorunlu
+  port: 8080
+  auth_token_env: TRADINGBOT_DASHBOARD_TOKEN
+  allow_insecure_public: false
+  max_bars: 600
+
+monitoring:
+  json_logs: true
+  log_dir: logs
+  heartbeat_stale_s: 2400
+  telegram_enabled: false
+  discord_enabled: false
+
+security:
+  live_confirmation_required: true
+  redact_logs: true

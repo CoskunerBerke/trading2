@@ -267,6 +267,13 @@ def cmd_watch(cfg: BotConfig, args) -> int:
     scan_every = max(1, args.scan_every)
     n = 0
     stop_flag = {"stop": False}
+    # kooperatif durdurma: instance kaydı (pid+token) + `python -m tradingbot stop` isteğini kısa aralıklarla kontrol
+    from .ops.shutdown import InstanceRecord, StopWatcher
+    inst = InstanceRecord(cfg.state_path, "worker", {"interval_min": args.interval, "scan_every": scan_every})
+    inst.register()
+    watcher = StopWatcher(cfg.state_path, inst.token)
+    if hasattr(eng, "set_stop_check"):
+        eng.set_stop_check(watcher.requested)      # tur ortasında istek gelirse: yeni giriş yok, çıkışlar/defter işlemi tamamlanır
 
     def _sigterm(signum, frame):   # graceful: mevcut tur biter, state kaydedilir, döngü çıkar
         log.info("SIGTERM alındı — mevcut tur bitince duruluyor")
@@ -299,14 +306,33 @@ def cmd_watch(cfg: BotConfig, args) -> int:
                 atomic_write_json(cfg.state_path / "health.json", {"state": "DEGRADED", "at": iso(), "error": f"{type(exc).__name__}: {exc}"[:300]})
             except Exception:  # noqa: BLE001
                 pass
-        # bekleme: SIGTERM'e duyarlı (60 sn parçalar)
+        if watcher.requested():
+            stop_flag["stop"] = True
+        # bekleme: SIGTERM'e ve stop isteğine duyarlı (2 sn parçalar)
         remaining = max(1, args.interval) * 60
         while remaining > 0 and not stop_flag["stop"]:
-            time.sleep(min(60, remaining))
-            remaining -= 60
+            time.sleep(min(2, remaining))
+            remaining -= 2
+            if watcher.requested():
+                stop_flag["stop"] = True
+    # temiz çıkış: state/log flush → istek tüket → instance kaydı sil → yalnız kendi lock'unu kaldır
+    coop = watcher.requested()
+    try:
+        from .core import atomic_write_json, iso
+        atomic_write_json(cfg.state_path / "health.json", {"state": "STOPPED", "at": iso(), "reason": "cooperative_stop" if coop else "signal", "tours": n})
+    except Exception:  # noqa: BLE001
+        pass
+    log.info("İzleme temiz durduruldu (kooperatif=%s, tur=%d)", coop, n)
+    for h in list(log.handlers) + list(logging.getLogger().handlers):
+        try:
+            h.flush()
+        except Exception:  # noqa: BLE001
+            pass
+    watcher.consume()
+    inst.unregister()
     if lock is not None:
         try:
-            lock.release()
+            lock.release(remove_file=True)
         except Exception:  # noqa: BLE001
             pass
     return 0

@@ -66,10 +66,12 @@ class SingletonLock:
         self._fh = fh
         return self
 
-    def release(self) -> None:
+    def release(self, *, remove_file: bool = False) -> None:
+        """Kilidi bırak. remove_file=True: kilit dosyasını yalnız İÇİNDEKİ PID kendi PID'imizse sil (başka instance'ın kilidi silinmez)."""
         fh, self._fh = self._fh, None
         if fh is None:
             return
+        own_pid = self.read_pid()
         try:
             if msvcrt is not None:
                 fh.seek(_LOCK_OFFSET)
@@ -81,6 +83,11 @@ class SingletonLock:
                 fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
         finally:
             fh.close()
+        if remove_file and own_pid == os.getpid():
+            try:
+                self.path.unlink()
+            except OSError:
+                pass
 
     def read_pid(self) -> int | None:
         try:
@@ -98,7 +105,7 @@ class SingletonLock:
             probe.acquire()
         except AlreadyRunningError:
             return True
-        probe.release()
+        probe.release(remove_file=True)     # OS kilidi serbest → bayat dosya güvenle kaldırılır (kendi pid'imizi yazmıştık)
         return False
 
     def __enter__(self) -> "SingletonLock":

@@ -197,6 +197,31 @@ def cmd_dashboard(cfg: BotConfig, args) -> int:
     return 0
 
 
+def cmd_stop(cfg: BotConfig, args) -> int:
+    """Kooperatif durdurma: canlı worker/dashboard instance'ını doğrula, atomik stop isteği yaz, timeout'a kadar bekle.
+    Force yok (varsayılan); --force yalnız kesin PID'ye normal sonlandırma uygular ve graceful sayılmaz."""
+    from .ops.lock import SingletonLock
+    from .ops.shutdown import instance_status, request_stop, terminate_pid, wait_stopped
+    targets = ("worker", "dashboard") if args.target == "all" else (args.target,)
+    before = {k: instance_status(cfg.state_path, k) for k in targets}
+    req = request_stop(cfg.state_path, targets)
+    res = wait_stopped(cfg.state_path, targets, timeout_s=float(args.timeout))
+    forced: dict[str, bool] = {}
+    if args.force:
+        for k, r in res.items():
+            if r == "timeout" and before[k].get("pid"):
+                forced[k] = terminate_pid(int(before[k]["pid"]))
+        if forced:
+            res = {**res, **{k: ("terminated_not_graceful" if ok else "force_failed") for k, ok in forced.items()}}
+    lock = SingletonLock(cfg.state_path / ".lock")
+    out = {"targets": {k: {"pid": before[k].get("pid"), "was_alive": before[k]["alive"], "stale_record": before[k]["stale"], "result": res.get(k)} for k in targets},
+           "requested_tokens": len(req["requested"]), "already_pending": req["already_pending"],
+           "lock": {"file_present": lock.path.exists(), "held_by_other": lock.is_locked_by_other(), "pid_in_file": lock.read_pid()},
+           "graceful": all(res.get(k) in ("stopped", "absent") for k in targets), "forced": forced}
+    _p(out)
+    return 0 if out["graceful"] else 1
+
+
 def cmd_universe(cfg: BotConfig, args) -> int:
     from .market import BinanceFuturesProvider, BinanceSpotProvider, HttpClient, UniverseConfig, build_universe
     from .market.ratelimit import BudgetPool
@@ -345,6 +370,9 @@ def register(sub: argparse._SubParsersAction) -> None:
     s = sub.add_parser("risk-status", help="Risk profili, kill switch, exposure"); s.set_defaults(fn=cmd_risk_status)
     s = sub.add_parser("killswitch-reset", help="Kill switch manuel reset (denetim kaydı)"); s.add_argument("--operator", required=True); s.add_argument("--note", required=True); s.set_defaults(fn=cmd_killswitch_reset)
     s = sub.add_parser("health", help="Sağlık durumu (heartbeat yaşı)"); s.set_defaults(fn=cmd_health)
+    s = sub.add_parser("stop", help="Kooperatif durdurma (worker/dashboard/all); force yok, timeout'ta dürüst rapor")
+    s.add_argument("--target", choices=["worker", "dashboard", "all"], default="all"); s.add_argument("--timeout", type=float, default=120)
+    s.add_argument("--force", action="store_true", help="timeout sonrası kesin PID'ye normal sonlandırma (graceful sayılmaz)"); s.set_defaults(fn=cmd_stop)
     s = sub.add_parser("reconcile", help="Defter ↔ gateway uzlaştırma"); s.set_defaults(fn=cmd_reconcile)
     s = sub.add_parser("dashboard", help="Web dashboard (varsayılan 127.0.0.1:8080)"); s.add_argument("--host", default=None); s.add_argument("--port", type=int, default=None); s.set_defaults(fn=cmd_dashboard)
     s = sub.add_parser("export-trades", help="İşlemleri CSV'ye aktar"); s.add_argument("--out", default=None); s.set_defaults(fn=cmd_export_trades)

@@ -63,6 +63,8 @@ class TradingEngineV3(TradingEngine):
                                        funding_horizon_bars=ch.funding_horizon_bars, max_leverage=self.profile.futures_max_leverage,
                                        equity_usdt=cfg.futures.starting_equity_usdt, risk_pct=self.profile.risk_per_trade_pct,
                                        decision_ttl_minutes=ch.decision_ttl_minutes)
+        self._entry_lock = __import__("threading").RLock()
+        self._stop_check = None                                # kooperatif durdurma: True → yeni giriş yok (çıkışlar sürer)
         self.registry = CoinHeadRegistry(self.head_cfg, max_workers=ch.max_workers)
         self.registry.load(st)          # snapshot olay-zaman sırası (legacy hash-only state güvenli geçer)
         self._tour_no = 0               # aynı ms için deterministik tie-breaker
@@ -120,6 +122,33 @@ class TradingEngineV3(TradingEngine):
                             clusters=self.cfg.v3.risk_profiles.clusters or None)
         atomic_write_json(hwm_path, {"hwm": state.high_water_mark, "updated_at": iso()})
         return state
+
+    def set_stop_check(self, fn) -> None:
+        """`fn() -> bool`: durdurma isteği var mı. İstek varken yeni PAPER girişi açılmaz; açık pozisyon çıkışları ve defter kaydı sürer."""
+        self._stop_check = fn
+
+    def _stopping(self) -> bool:
+        try:
+            return bool(self._stop_check and self._stop_check())
+        except Exception:  # noqa: BLE001
+            return False
+
+    def _persist_risk_state(self, state, risk_log: list[dict], now: datetime) -> bool:
+        """risk.json'u atomik yaz (yetkili spot+futures defterlerinden türetilen birleşik durum). False → yazım başarısız (çağıran fail-closed)."""
+        try:
+            atomic_write_json(self.cfg.state_path / "risk.json", {"generated_at": iso(now), "mode": self.mode_state.mode.value, **self.risk.snapshot(state),
+                                                                   "last_decisions": risk_log[-50:]})
+            return True
+        except Exception as exc:  # noqa: BLE001 — risk durumu yazılamıyorsa yeni giriş kabul edilmez; çıkışlar etkilenmez
+            log.error("risk.json yazılamadı: %s — yeni girişler bu turda kapalı (fail-closed)", exc)
+            return False
+
+    def _refresh_after_fill(self, marks: dict[str, TickData], risk_log: list[dict], now: datetime):
+        """PAPER fill sonrası: yetkili defterlerden portföy durumunu YENİDEN hesapla (aynı turdaki sonraki aday bunu görür) ve risk.json'u
+        atomik güncelle. Dönen (state, entries_allowed)."""
+        state = self._portfolio_state({k: float(v.last) for k, v in marks.items()})
+        ok = self._persist_risk_state(state, risk_log, now)
+        return state, ok
 
     def _marks(self, briefs: list[CoinBrief]) -> dict[str, TickData]:
         out: dict[str, TickData] = {}
@@ -307,7 +336,8 @@ class TradingEngineV3(TradingEngine):
         # 8) durum dosyaları
         self.last_decisions = {s: d.to_dict(include_reports=False) for s, d in decisions.items()}
         self.registry.save(st, self.run_id)
-        atomic_write_json(st / "risk.json", {"generated_at": iso(now), "mode": self.mode_state.mode.value, **self.risk.snapshot(state), "last_decisions": risk_log[-50:]})
+        state = self._portfolio_state(marks_f)      # tur sonu: fill/çıkış sonrası güncel birleşik durum
+        self._persist_risk_state(state, risk_log, now)
         self.mode_state.save()
         from .agents import persist_agents
         _, alerts = persist_agents(briefs, legacy_chief, st)
@@ -339,13 +369,26 @@ class TradingEngineV3(TradingEngine):
 
     # ------------------------------------------------------------------ uygulama
     def _execute(self, decisions, chief, briefs: list[CoinBrief], state, marks: dict[str, TickData], now: datetime) -> tuple[list[str], list[dict]]:
+        with self._entry_lock:          # aday değerlendirme→fill→durum yenileme tek seri kritik bölge (reservation/commit)
+            return self._execute_locked(decisions, chief, briefs, state, marks, now)
+
+    def _execute_locked(self, decisions, chief, briefs: list[CoinBrief], state, marks: dict[str, TickData], now: datetime) -> tuple[list[str], list[dict]]:
         opened: list[str] = []
         risk_log: list[dict] = []
         bmap = {b.symbol: b for b in briefs}
+        # kritik bölge başında durumu YETKİLİ defterlerden yenile (çağıranın state'i bayat olabilir: retry/eşzamanlı yol)
+        state = self._portfolio_state({k: float(v.last) for k, v in marks.items()})
+        entries_allowed = True
         for sym in chief.priority + [s for s, d in decisions.items() if d.is_actionable and s not in chief.priority]:
             d = decisions.get(sym)
             b = bmap.get(sym)
             if d is None or b is None or not d.is_actionable:
+                continue
+            if not entries_allowed:     # önceki fill sonrası risk durumu yazılamadı → yeni giriş yok (fail-closed); çıkışlar tick'te sürer
+                risk_log.append({"symbol": sym, "verdict": d.verdict.value, "risk_allowed": False, "risk_reasons": ["RISK_STATE_PERSIST_FAILED"], "at": iso(now)})
+                continue
+            if self._stopping():        # kooperatif durdurma istendi → yeni giriş kabul edilmez
+                risk_log.append({"symbol": sym, "verdict": d.verdict.value, "risk_allowed": False, "risk_reasons": ["SHUTDOWN_REQUESTED"], "at": iso(now)})
                 continue
             perm = chief.permission.get(sym, {})
             plan = d.active_plan
@@ -399,6 +442,10 @@ class TradingEngineV3(TradingEngine):
                                       "model_versions": d.model_versions | {"p_win_model": self.learner2.snapshot().get("champion")}})
             self.last_decisions[sym] = d.to_dict(include_reports=False)
             opened.append(desc)
+            # fill sonrası: yetkili defterlerden durum yenile → aynı turdaki sonraki adaylar bu pozisyonu/marjı/exposure'ı görür
+            state, entries_allowed = self._refresh_after_fill(marks, risk_log, now)
+            entry["state_after_fill"] = {"open_positions": len(state.open_positions), "used_margin": round(state.used_margin, 6),
+                                         "total_open_risk_usdt": round(state.total_open_risk_usdt, 6), "persisted": entries_allowed}
         self.trig_path.parent.mkdir(parents=True, exist_ok=True)
         atomic_write_json(self.trig_path, self.triggers, indent=None)
         return opened, risk_log

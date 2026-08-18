@@ -465,11 +465,35 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
 
 def run_dashboard(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | str | None = None,
                   cfg: DashboardConfig | None = None) -> None:
+    import threading
+
     import uvicorn
+
+    from ..ops.shutdown import InstanceRecord, StopWatcher
     cfg = cfg or DashboardConfig()
     app = create_app(state_dir, data_dir, vault_dir, cfg)
     log.info("panel başlıyor: http://%s:%s (salt-okunur, token=%s)", cfg.host, cfg.port, "evet" if cfg.auth_token else "yok")
-    uvicorn.run(app, host=cfg.host, port=int(cfg.port), log_level="info", access_log=False)
+    server = uvicorn.Server(uvicorn.Config(app, host=cfg.host, port=int(cfg.port), log_level="info", access_log=False))
+    inst = InstanceRecord(state_dir, "dashboard", {"host": cfg.host, "port": int(cfg.port)})
+    inst.register()
+    watcher = StopWatcher(state_dir, inst.token)
+    threading.Thread(target=poll_stop_request, args=(server, watcher), daemon=True, name="dashboard-stop-poller").start()
+    try:
+        server.run()
+    finally:
+        watcher.consume()
+        inst.unregister()
+        log.info("panel temiz durduruldu")
+
+
+def poll_stop_request(server, watcher, interval_s: float = 1.0) -> None:
+    """Kooperatif durdurma: istek (doğru token) görülünce uvicorn'a `should_exit` verilir (graceful: bağlantılar kapanır, lifespan biter)."""
+    import time as _t
+    while not getattr(server, "should_exit", False):
+        if watcher.requested():
+            server.should_exit = True
+            return
+        _t.sleep(interval_s)
 
 
 __all__ = ["create_app", "run_dashboard"]

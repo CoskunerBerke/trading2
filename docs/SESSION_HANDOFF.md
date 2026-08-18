@@ -1,7 +1,7 @@
 # SESSION HANDOFF — trading2 v3 (yeni Claude oturumu buradan başlar; repo'yu yeniden tarama)
 
 - **Repository:** https://github.com/CoskunerBerke/trading2.git · yerel: `C:\Users\berke\Trading bot`
-- **Aktif branch:** `feature/trading-v3-paper-testnet` · **HEAD:** bkz. `git rev-parse --short HEAD` (fix `2d483e6`, phase 2 `659ae70`, ardından `docs: record uninterrupted paper soak phase 3`)
+- **Aktif branch:** `feature/trading-v3-paper-testnet` · **HEAD:** bkz. `git rev-parse --short HEAD` (fix `2d483e6`, phase 2 `659ae70`, phase 3 `6591137`, ardından `docs: record open-position paper soak phase 4`)
 - **Remote:** branch origin'e push edildi (bu commit dahil); `main` değiştirilmedi (baseline `1728793`); PR/merge yok. origin/main'den 16 commit ileride.
 
 ## Tamamlanan v3 bileşenleri (özet)
@@ -31,12 +31,20 @@ Gerçek emir gönderilmedi. Binance API anahtarı istenmedi/bağlanmadı. LIVE/L
 - Hassas/şüpheli: yok.
 
 ## En son tamamlanan görev
-Kesintisiz 60 dk PAPER soak phase 3 (kaynak değişmedi). Snapshot fix `2d483e6` sahada doğrulandı; phase 2 = USER_INTERRUPTED / INCOMPLETE.
+Phase 4 (açık pozisyon yaşam döngüsü) **FAILED — uygulama hatası, restart/resume aşamasında**; kaynak değiştirilmedi. Phase 3 başarılı, phase 2 USER_INTERRUPTED.
 
 ## Snapshot fix (commit 2d483e6)
 - Kök neden: `CoinHeadRegistry.run` hash `snapshot_id`'yi sözlük sırasıyla karşılaştırıyordu → tur 2 "bayat" düşüyordu.
 - Çözüm: sıralama anahtarı `(snapshot_at_ms, snapshot_seq)` (engine `now_ms` + tur sayacı); `snapshot_id` yalnız opak kimlik → aynı id tekrar gelirse idempotent red; `key <= prev` → STALE (fail-closed). `coin_heads.json` artık `snapshot_order` taşır; `registry.load()` engine başlangıcında okur. Legacy hash-only state: zaman bilinmez → ilk zaman damgalı snapshot kabul, aynı id red. `registry.drops` sayaçları eklendi. Risk/execution/accounting dokunulmadı.
 - Testler: `tests/test_coinhead.py` +8 (yeni-zaman/küçük-id kabul, ardışık turlar, duplicate, gerçek eski STALE, persist sonrası sıra, legacy migration + bozuk dosya, replay determinizmi, spot/futures aynı kural); mevcut registry testi olay-zamanı kuralına uyarlandı.
+
+## Paper soak phase 4 (2026-08-18 19:28:25Z–19:29:23Z) — **FAILED: RESTART/RESUME CRASH** (kaynak dokunulmadı)
+- Ön kontrol OK: branch doğru, PAPER/PAPER_RESEARCH, LIVE/TESTNET kapalı, LLM `noop`, API anahtarı/.env yok, doctor OK, süreç 0, port 8080 boş, bayat lock (5416, ölü) serbest. Backup: `backups/hourly/tradingbot-hourly-20260818T192825Z.tar.gz` (23 dosya).
+- Persisted pozisyon (değiştirilmedi): `F00001` SUI/USDT USDM_PERP SHORT qty 23.076 @ entry_avg 0.65, ISOLATED margin 14.9994, lev 1, stop 0.677739, TP 0.605321/0.581182 (tp1_fraction 0.5), entry_fee 0.0074997, slippage_cost 0.0830736, funding 0, mae −1.00 % / mfe 0, bars_held 0, last_price 0.6536, liq 1.2948, 1 fill (`F00001-e`), history 0, wallet 49.9925, MTM equity 49.9094 (risk.json exposure: open 1, used_margin 14.9994, open_risk 0.6401 — risk engine pozisyonu görüyor).
+- **HATA:** worker (`watch`, PID 11552) başlangıçta çöktü: `engine.py:35` (v1 taban sınıf; `TradingEngineV3` bunun üstüne kurulu) aynı `state/futures_ledger.json` dosyasını legacy `paper_futures.FuturesLedger.load` ile açıyor → `paper_futures.py:81 FuturesPosition(**v)` → `TypeError: unexpected keyword argument 'market_type'` (dosya v2 şeması, schema_version 2/kind futures). Phase 1–3'te pozisyon dict boşken görünmedi; **açık v2 pozisyonla ilk restart** bunu tetikledi. Sonuç: heartbeat ilerlemedi (17:06:31Z kaldı), tur 0, dashboard `/health/live` 200 / `ready` 503.
+- Resume/duplicate: worker hiç çalışmadığı için duplicate emir/fill 0 (fills=1 aynı kaldı); ledger değişmedi (worker ledger'a dokunmadan çöktü); gerçek emir 0, LIVE 0, LLM 0.
+- Kapanış: dashboard PID 8224 `taskkill /PID` (force yok) ile kapandı; port 8080 kapalı, süreç 0; `state/.lock` bayat pid 11552 dosyası kaldı (çöken worker'dan) → doctor "kilit serbest", doctor OK; ledger/state okunabilir (`futures-status` v2: equity 49.9925, MTM 49.9094). Kaynak/test/config/deploy değişmedi.
+- Pozisyon açık ve persisted bırakıldı; manuel kapatma/yapay postmortem yok.
 
 ## Paper soak phase 3 (2026-08-18 16:15:10Z–17:16:49Z, Windows) — **KESİNTİSİZ 60 dk, BAŞARILI**
 - Ön kontrol: branch doğru, PAPER/PAPER_RESEARCH, LIVE kapalı (`live_order_path_enabled: false`, `ALLOW_LIVE_TRADING` unset), TESTNET kapalı, LLM `noop`, kill switch ARMED, doctor OK, önceki süreç 0, port 8080 boş, bayat lock (pid 18168, ölü) doctor "kilit serbest" → app kendi recovery'siyle lock'u devraldı. Backup: `backups/hourly/tradingbot-hourly-20260818T161510Z.tar.gz` (22 dosya).
@@ -62,7 +70,7 @@ Kesintisiz 60 dk PAPER soak phase 3 (kaynak değişmedi). Snapshot fix `2d483e6`
 30 dk kesintisiz, health 200, tur 1 15 karar/4 aday plan/0 açılış, ledger 50 USDT; **bulgu:** tur 2 kararları hash `snapshot_id` sözlük sırası yüzünden bayat düşüyordu → `2d483e6` ile düzeltildi. İkincil: Windows'ta `kill` graceful değil → `state/.lock` bayat pid kalıyor (doctor tanıyor).
 
 ## Sonraki oturumun TEK görevi
-Açık SUI/USDT paper pozisyonunu takip eden 60 dk PAPER soak phase 4: TP/SL/HOLD/EXIT yolunun ve kapanış muhasebesinin (FuturesLedgerV2, learn postmortem) gerçek piyasada çalıştığını doğrula; kaynak değişikliği yok.
+Restart-with-open-position bug'ını minimal düzelt: `engine.py` v1 `FuturesLedger.load` v2 dosyasını (schema_version 2 / `market_type`) parse edemiyor → v1 tabanı v2 dosyasında fail-safe olsun (schema_version≥2 ise legacy ledger'ı boş/salt-okunur yükle ya da bilinmeyen alanları yok say; ledger'ı asla sıfırlama/üzerine yazma), regresyon testi (açık v2 pozisyonla engine init + resume: pozisyon bir kez, duplicate yok), 164+ test yeşil, commit; ardından phase 4'ü yeniden çalıştır (SUI pozisyon yaşam döngüsü, 60 dk).
 
 ## Sonraki oturum doğrulama komutları
 ```bash

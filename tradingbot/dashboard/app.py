@@ -389,6 +389,14 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
             raise HTTPException(404, "dosya yok")
         return JSONResponse(d)
 
+    @app.get("/api/evidence/{base}")
+    def api_evidence(base: str):
+        """Tarihsel benzer olay kanıtı (state/evidence/<SYM>_USDT.json): paketler + deterministik açıklama."""
+        d = state.evidence(base)
+        if d is None:
+            raise HTTPException(404, "kanıt yok")
+        return JSONResponse(d)
+
     @app.get("/api/overview")
     def api_overview():
         return JSONResponse(state.overview())

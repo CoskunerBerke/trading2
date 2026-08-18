@@ -215,6 +215,43 @@ class ObsidianCoinHeadWriter:
             return ""
 
     # ================================================================= COIN HEAD
+    evidence_dir: Path | None = None        # state/evidence (engine tarafından set edilir); yoksa bölüm yazılmaz
+
+    def _evidence_section(self, symbol: str) -> list[str]:
+        """`state/evidence/<sym>.json` → 'Benzer Geçmiş Olaylar' bölümü: bağımsız örnek, P(kazanç)+CI, net beklenti, MAE/MFE, edge decay, kanıt/karşı-kanıt, veto."""
+        if not self.evidence_dir or not symbol:
+            return []
+        p = Path(self.evidence_dir) / f"{symbol.replace('/', '_')}.json"
+        if not p.exists():
+            return []
+        try:
+            import json as _j
+            d = _j.loads(p.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            return []
+        out = ["", "## Benzer Geçmiş Olaylar (tarihsel kanıt, maliyet sonrası)", ""]
+        rws = []
+        for side, pk in (d.get("packets") or {}).items():
+            ci = pk.get("win_rate_ci") or [0, 1]; eci = pk.get("expectancy_ci") or [0, 0]
+            r90 = ((pk.get("recency") or {}).get("90d") or {})
+            rws.append([side, str(pk.get("independent_sample_count", 0)), f"{float(pk.get('win_rate', 0)):.2f} ({float(ci[0]):.2f}–{float(ci[1]):.2f})",
+                        f"{float(pk.get('net_expectancy_r', 0)):+.2f}R ({float(eci[0]):+.2f}…{float(eci[1]):+.2f})", f"{float(pk.get('mae_pct', 0)):.2f}/{float(pk.get('mfe_pct', 0)):.2f}",
+                        f"{float(pk.get('edge_decay', 0)):+.2f}R (n90={r90.get('n', 0)})", ", ".join(pk.get("veto_reasons") or []) or "—", "✅" if pk.get("ok") else "⛔"])
+        out += _table(["Yön", "Bağımsız n", "P(kazanç) (CI)", "Net beklenti (CI)", "MAE/MFE %", "Edge decay", "Kısıt", "Güvenilir"], rws)
+        for side, txt in (d.get("explanation_tr") or {}).items():
+            out.append(f"- **{side}:** {txt}")
+        for side, pk in (d.get("packets") or {}).items():
+            for e in (pk.get("evidence") or [])[:2]:
+                out.append(f"  - kanıt ({side}): {e}")
+            for e in (pk.get("counter_evidence") or [])[:2]:
+                out.append(f"  - karşı-kanıt ({side}): {e}")
+        nb = d.get("neighbors") or {}
+        for side, lst in nb.items():
+            if lst:
+                out.append(f"  - en yakın komşular ({side}): " + "; ".join(f"{x.get('symbol')} @{x.get('event_ts')} {x.get('net_r'):+.2f}R {x.get('exit')}" for x in lst[:5]))
+        out.append(f"- Kaynak: `state/evidence/{symbol.replace('/', '_')}.json` · üretim {d.get('generated_at', '')} · run {d.get('run_id', '')}")
+        return out
+
     def write_coin_head(self, decision: dict, brief: dict | None = None, chart_rel: str | None = None) -> Path:
         """`Coin Heads/<BASE>.md` + `.canvas`. Dönen: .md yolu."""
         d = decision or {}
@@ -277,6 +314,9 @@ class ObsidianCoinHeadWriter:
             out += _table(["Ajan", "Grup", "Duruş", "Bias", "Güven", "Kanıt", "Bayrak"], rws)
         else:
             out.append("- (uzman raporu yok)")
+        ev_sec = self._evidence_section(d.get("symbol", ""))
+        if ev_sec:
+            out += ev_sec
         fs = d.get("factor_scores") or []
         if fs:
             out += ["", "**Faktör grubu skorları**"]

@@ -230,4 +230,19 @@ class StateReader:
         }
 
 
+def _evidence(self, base: str) -> dict | None:
+    import json as _j
+    b = base.upper().replace("/", "_")
+    for name in (b, f"{b}_USDT"):
+        p = Path(self.state_dir) / "evidence" / f"{name}.json"
+        if p.exists():
+            try:
+                return _j.loads(p.read_text(encoding="utf-8"))
+            except Exception:  # noqa: BLE001
+                return None
+    return None
+
+
+StateReader.evidence = _evidence
+
 __all__ = ["StateReader", "STATE_FILES", "JSONL_FILES"]

@@ -110,7 +110,10 @@ class Database:
         with self._lock:
             outer = self._depth == 0
             if outer:
-                self._conn.execute("BEGIN IMMEDIATE")
+                try:
+                    self._conn.execute("BEGIN IMMEDIATE")
+                except sqlite3.OperationalError as exc:      # kilitli/bozuk DB → alan hatası (kill switch DB_WRITE_FAILURE tetikler)
+                    raise StorageError(f"veritabanı yazıma açılamadı: {exc}") from exc
             self._depth += 1
             try:
                 yield self._conn

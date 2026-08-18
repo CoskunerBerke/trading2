@@ -64,6 +64,9 @@ class TradingEngineV3(TradingEngine):
                                        equity_usdt=cfg.futures.starting_equity_usdt, risk_pct=self.profile.risk_per_trade_pct,
                                        decision_ttl_minutes=ch.decision_ttl_minutes)
         self._entry_lock = __import__("threading").RLock()
+        self._pattern_engine = None                            # SimilarPatternEngine (HistoryStore'dan tembel yüklenir)
+        self._pattern_loaded = False
+        self._exit_lock = __import__("threading").RLock()
         self._stop_check = None                                # kooperatif durdurma: True → yeni giriş yok (çıkışlar sürer)
         self.registry = CoinHeadRegistry(self.head_cfg, max_workers=ch.max_workers)
         self.registry.load(st)          # snapshot olay-zaman sırası (legacy hash-only state güvenli geçer)
@@ -87,6 +90,8 @@ class TradingEngineV3(TradingEngine):
         try:
             from .obsidian_coinheads import ObsidianCoinHeadWriter
             self.ch_writer = ObsidianCoinHeadWriter(cfg.obsidian.root) if v3.obsidian_v3.coin_heads_enabled else None
+            if self.ch_writer is not None:
+                self.ch_writer.evidence_dir = st / "evidence"
         except ImportError:
             self.ch_writer = None
 
@@ -149,6 +154,101 @@ class TradingEngineV3(TradingEngine):
         state = self._portfolio_state({k: float(v.last) for k, v in marks.items()})
         ok = self._persist_risk_state(state, risk_log, now)
         return state, ok
+
+    # ------------------------------------------------------------------ tarihsel pattern kanıtı
+    def _load_pattern_engine(self):
+        """HistoryStore (cache/history) içindeki futures 4h serilerinden SimilarPatternEngine kur (bir kez, hata → None, fail-safe)."""
+        if self._pattern_loaded:
+            return self._pattern_engine
+        self._pattern_loaded = True
+        try:
+            hc = self.cfg.v3.history
+            if not hc.enabled:
+                return None
+            from .history import HistoryStore
+            from .patterns import SimilarPatternEngine
+            store = HistoryStore(self.cfg.cache_path / hc.root_dir)
+            series = [(m, s, t) for m, s, t in store.series() if m == "futures" and t == "4h"]
+            if not series:
+                return None
+            clusters = {s: name for name, syms in (self.cfg.v3.risk_profiles.clusters or {}).items() for s in (syms or [])}
+            eng = SimilarPatternEngine(min_sample=30, horizon=self.head_cfg.funding_horizon_bars * 2, fee_pct=self.head_cfg.fee_taker_pct,
+                                       slippage_pct=self.head_cfg.slippage_pct, clusters=clusters)
+            btc = store.read("futures", "BTC/USDT", "4h")
+            n = 0
+            for m, s, t in series:
+                df = store.read(m, s, t)
+                if len(df) < 200:
+                    continue
+                fund = store.read("futures", s, "funding")
+                n += eng.add_series(s, m, t, df, btc_df=btc if (s != "BTC/USDT" and len(btc)) else None, funding_df=fund if len(fund) else None)
+            self._pattern_engine = eng if n else None
+            log.info("pattern index: %d olay, %d seri", n, len(series))
+        except Exception as exc:  # noqa: BLE001 — kanıt yoksa Coin Head kanıtsız çalışır (specialist usable=False)
+            log.warning("pattern index kurulamadı: %s", exc)
+            self._pattern_engine = None
+        return self._pattern_engine
+
+    def _pattern_evidence(self, symbol: str, now_ms: int) -> dict | None:
+        """Sembol için LONG/SHORT kanıtı; veri 3 bardan eskiyse (bayat) kanıt verilmez. state/evidence/<sym>.json'a paket + açıklama yazılır."""
+        eng = self._load_pattern_engine()
+        if eng is None or (symbol, "futures", "4h") not in eng.candles:
+            return None
+        try:
+            last_ts = int(eng.candles[(symbol, "futures", "4h")]["timestamp"].iloc[-1])
+            if now_ms - last_ts > 3 * 14_400_000:
+                return None
+            from .patterns import explain_tr, packet_from_query
+            ev = {side: eng.query(symbol, "futures", "4h", side, k=60) for side in ("LONG", "SHORT")}
+            packets = {side: packet_from_query(r, decision_id=stable_id("evidence", self.run_id, symbol, side), timestamp=iso(utc_now()), timeframes=["4h"]) for side, r in ev.items()}
+            atomic_write_json(self.cfg.state_path / "evidence" / f"{symbol.replace('/', '_')}.json",
+                              {"symbol": symbol, "run_id": self.run_id, "generated_at": iso(utc_now()), "packets": {s: p.to_dict() for s, p in packets.items()},
+                               "explanation_tr": {s: explain_tr(p) for s, p in packets.items()}, "neighbors": {s: r.get("neighbors", [])[:10] for s, r in ev.items()}}, indent=1)
+            return ev
+        except Exception as exc:  # noqa: BLE001
+            log.warning("%s pattern kanıtı üretilemedi: %s", symbol, exc)
+            return None
+
+    # ------------------------------------------------------------------ hızlı çıkış monitörü (tur beklemeden)
+    def exit_check(self) -> list[dict]:
+        """Açık pozisyonlar için canlı fiyatla stop/TP/likidasyon/zaman kontrolü + defter kaydı + öğrenme; tur/tarama beklemez.
+        Yeni giriş AÇMAZ. Dönen: kapanan işlemlerin legacy dict'leri."""
+        with self._exit_lock:
+            if not self.ledger2.positions:
+                return []
+            marks: dict[str, TickData] = {}
+            for sym in list(self.ledger2.positions):
+                try:
+                    snap = self.runner.live.snapshot(sym) or {}
+                    px = float(((snap.get("ticker") or {}).get("last")) or 0)
+                    if px > 0:
+                        marks[sym] = TickData(last=Decimal(str(px)), mark=Decimal(str(px)))
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("%s exit-monitor fiyat alınamadı: %s", sym, exc)
+            if not marks:
+                return []
+            now = utc_now()
+            records = self.ledger2.tick(marks, now_utc=now, bar_advance=False)
+            self.ledger2.save(self.ledger_path)
+            out = []
+            for rec in records:
+                legacy = rec.to_legacy_dict()
+                snap = self.last_decisions.get(rec.symbol) or {}
+                try:
+                    self.learner.learn(legacy)
+                    self.learner2.on_trade_closed(legacy | {"features": legacy.get("features") or {}}, {"regime": snap.get("regime"), "consensus_score": snap.get("consensus_score"),
+                                                                                                        "dissent": snap.get("dissent"), "vetoes": snap.get("vetoes")})
+                except Exception as exc:  # noqa: BLE001 — öğrenme hatası defteri geri almaz
+                    log.exception("exit-monitor öğrenme hatası: %s", exc)
+                out.append(legacy)
+                log.info("exit-monitor: %s %s kapandı (%s) net %.4f", rec.symbol, rec.side, rec.exit_reason, float(rec.net_pnl))
+            if records:
+                try:
+                    state = self._portfolio_state({k: float(v.last) for k, v in marks.items()})
+                    self._persist_risk_state(state, [], now)
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("exit-monitor risk durumu yazılamadı: %s", exc)
+            return out
 
     def _marks(self, briefs: list[CoinBrief]) -> dict[str, TickData]:
         out: dict[str, TickData] = {}
@@ -267,7 +367,8 @@ class TradingEngineV3(TradingEngine):
                                               edge=edge, filters={"futures": {"min_notional": float(f_fut.min_notional), "max_leverage": min(f_fut.max_leverage, self.profile.futures_max_leverage)},
                                                                   "spot": {"min_notional": float(f_spot.min_notional)}},
                                               run_id=self.run_id, snapshot_id=snap_id, now_ms=now_ms,
-                                              snapshot_at_ms=now_ms, snapshot_seq=self._tour_no)
+                                              snapshot_at_ms=now_ms, snapshot_seq=self._tour_no,
+                                              pattern_evidence=self._pattern_evidence(b.symbol, now_ms))
         decisions = self.registry.run_many(inputs)
         btc_dec = decisions.get("BTC/USDT")
         chief = self.chief_mgr.decide(list(decisions.values()), {"equity": state.equity, "open_positions": [o.to_dict() for o in state.open_positions],

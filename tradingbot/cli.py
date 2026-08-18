@@ -310,11 +310,22 @@ def cmd_watch(cfg: BotConfig, args) -> int:
             stop_flag["stop"] = True
         # bekleme: SIGTERM'e ve stop isteğine duyarlı (2 sn parçalar)
         remaining = max(1, args.interval) * 60
+        exit_every = max(10, int(getattr(args, "exit_every", 60) or 60))
+        since_exit = 0
         while remaining > 0 and not stop_flag["stop"]:
             time.sleep(min(2, remaining))
             remaining -= 2
+            since_exit += 2
             if watcher.requested():
                 stop_flag["stop"] = True
+            if since_exit >= exit_every and hasattr(eng, "exit_check"):       # hızlı çıkış monitörü: tur/taramayı beklemez
+                since_exit = 0
+                try:
+                    closed = eng.exit_check()
+                    if closed:
+                        print(f"  ⏱ exit-monitor: {', '.join(c.get('symbol', '?') for c in closed)} kapandı")
+                except Exception as exc:  # noqa: BLE001
+                    log.exception("exit-monitor hatası: %s", exc)
     # temiz çıkış: state/log flush → istek tüket → instance kaydı sil → yalnız kendi lock'unu kaldır
     coop = watcher.requested()
     try:
@@ -437,7 +448,7 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("watch", help="7/24 izleme: tur periyodik, spot WFO döngüsü her bar kapanışında"); common(s)
     s.add_argument("--interval", type=int, default=15, help="Tur aralığı (dakika)")
     s.add_argument("--scan-every", type=int, default=2, help="Kaç turda bir tam piyasa taraması")
-    s.add_argument("--no-obsidian", action="store_true"); s.add_argument("--no-paper", action="store_true"); s.add_argument("--no-wfo", action="store_true")
+    s.add_argument("--no-obsidian", action="store_true"); s.add_argument("--no-paper", action="store_true"); s.add_argument("--exit-every", dest="exit_every", type=int, default=60, help="açık pozisyon çıkış kontrolü periyodu (sn)"); s.add_argument("--no-wfo", action="store_true")
     s.set_defaults(fn=cmd_watch)
     s = sub.add_parser("obsidian", help="Son rapordan Obsidian'ı yeniden yaz"); s.set_defaults(fn=cmd_obsidian)
     s = sub.add_parser("reset-portfolio", help="Kağıt portföyü sıfırla"); s.set_defaults(fn=cmd_reset_portfolio)

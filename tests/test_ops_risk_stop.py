@@ -214,3 +214,51 @@ def test_dashboard_stop_poller_sets_should_exit(tmp_path: Path):
     request_stop(tmp_path, ("dashboard",))
     poll_stop_request(srv, StopWatcher(tmp_path, inst.token, min_interval_s=0), interval_s=0.01)
     assert srv.should_exit is True
+
+
+# ---------------------------------------------------------------- (C) runtime: hızlı exit monitörü + kanıt persist/Obsidian/dashboard
+def test_exit_check_closes_positions_between_tours_and_writes_state(tmp_path: Path, monkeypatch):
+    eng = _engine4(tmp_path, monkeypatch)
+    decisions, chief, briefs, marks = _candidates(eng, SYMS[:1])
+    monkeypatch.setattr(eng.risk, "evaluate", _fake_risk([]))
+    monkeypatch.setattr(eng, "_trigger_fired", lambda *a, **k: True)
+    from tradingbot.core import utc_now
+    opened, _ = eng._execute(decisions, chief, briefs, None, marks, utc_now())
+    assert len(opened) == 1
+    sym, pos = next(iter(eng.ledger2.positions.items()))
+    assert eng.exit_check() == []                                              # fiyat giriş civarı → açık kalır, yeni giriş yok
+    eng._fake_live.price[sym] = float(pos.targets[-1]) * 0.98                  # canlı fiyat TP2 ötesine
+    closed = eng.exit_check()
+    assert len(closed) == 1 and sym not in eng.ledger2.positions and closed[0]["exit_reason"]
+    d = json.loads(eng.ledger_path.read_text(encoding="utf-8"))
+    assert d["positions"] == {} and len(d["history"]) == 1                     # defter tur beklemeden kaydedildi
+    assert eng.learner2.n_closed >= 1
+    rj = json.loads((eng.cfg.state_path / "risk.json").read_text(encoding="utf-8"))
+    assert rj["exposure"]["open_positions"] == 0
+
+
+def test_pattern_evidence_persisted_and_exposed(tmp_path: Path, monkeypatch):
+    from test_patterns import _candles
+    from tradingbot.history import HistoryStore
+    eng = _engine4(tmp_path, monkeypatch)
+    st = HistoryStore(eng.cfg.cache_path / eng.cfg.v3.history.root_dir)
+    import time as _t
+    now_ms = int(_t.time() * 1000)
+    start = now_ms - now_ms % 14_400_000 - 700 * 14_400_000
+    st.write("futures", "ETH/USDT", "4h", _candles(700, seed=4, drift=0.0006, tf_ms=14_400_000, start=start))
+    eng._pattern_loaded = False
+    ev = eng._pattern_evidence("ETH/USDT", now_ms)
+    assert ev is not None and set(ev) == {"LONG", "SHORT"} and "stats" in ev["LONG"]
+    p = eng.cfg.state_path / "evidence" / "ETH_USDT.json"
+    d = json.loads(p.read_text(encoding="utf-8"))
+    assert d["packets"]["LONG"]["independent_sample_count"] == ev["LONG"]["n"] and d["explanation_tr"]["LONG"]
+    # eski veri (3 bardan bayat) → kanıt yok; olmayan sembol → None; history yoksa motor None (fail-safe)
+    assert eng._pattern_evidence("ETH/USDT", now_ms + 5 * 14_400_000) is None and eng._pattern_evidence("ZZZ/USDT", now_ms) is None
+    # Obsidian bölümü
+    from tradingbot.obsidian_coinheads import ObsidianCoinHeadWriter
+    w = ObsidianCoinHeadWriter(tmp_path / "vault"); w.evidence_dir = eng.cfg.state_path / "evidence"
+    sec = w._evidence_section("ETH/USDT")
+    assert sec and any("Benzer Geçmiş Olaylar" in x for x in sec) and any("LONG" in x for x in sec)
+    # dashboard state reader
+    from tradingbot.dashboard.state import StateReader
+    assert StateReader(eng.cfg.state_path).evidence("ETH")["symbol"] == "ETH/USDT"

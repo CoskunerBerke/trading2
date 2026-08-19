@@ -529,10 +529,19 @@ class ObsidianCoinHeadWriter:
         st = str(trade.get("status") or "").upper()
         return st == "CLOSED" or (not st and bool(trade.get("closed_at")))
 
+    def trade_note_path(self, trade_id: str) -> Path:
+        """`Trades/<trade_id>.md` yolu (yazmadan; dondurulmuş not var mı diye bakmak için)."""
+        return self._path(DIR_TRADES, f"{_BAD_CHARS.sub('_', str(trade_id))}.md")
+
+    def trade_note_frozen(self, trade_id: str) -> bool:
+        """Kapanış notu daha önce yazılıp dondurulduysa True (yeniden yazma gereksiz)."""
+        path = self.trade_note_path(trade_id)
+        return path.exists() and "status: CLOSED" in self._read(path)[:600]
+
     def write_trade(self, trade: dict, postmortem: dict | None = None) -> Path:
         """`Trades/<trade_id>.md`. Kapanmış işlemin notu bir kez yazıldıktan sonra dondurulur (yeniden yazılmaz)."""
         tid = str(trade.get("id") or trade.get("trade_id") or "unknown")
-        path = self._path(DIR_TRADES, f"{_BAD_CHARS.sub('_', tid)}.md")
+        path = self.trade_note_path(tid)
         if path.exists():
             head = self._read(path)[:600]
             if "status: CLOSED" in head:
@@ -574,7 +583,8 @@ class ObsidianCoinHeadWriter:
                     out.append(f"- **{k}**: {v}")
         else:
             out.append("- (post-mortem yok)" if closed else "- (işlem açık; kapanınca yazılır)")
-        out += ["", "> Bu not kapanış sonrası dondurulur; düzeltmeler yeni bir not olarak eklenmelidir."]
+        out += ["", f"## Zincir", f"[[Learning/Dersler]] · [[Learning/Öğrenme]] · [[{DIR_MODELS}/Registry]] · [[{DIR_PORTFOLIO}/Futures]] · [[{DIR_COIN_HEADS}/{base}]]", "",
+                "> Bu not kapanış sonrası dondurulur; düzeltmeler yeni bir not olarak eklenmelidir."]
         self._write(path, "\n".join(out) + "\n")
         return path
 

@@ -633,6 +633,23 @@ class TradingEngineV3(TradingEngine):
                 "", "[[Learning/Öğrenme]] · [[Learning/Dersler]] · [[Scanner]] · [[Dashboard]] · [[Risk/Limits]]"]
         return "\n".join(out)
 
+    def _write_trade_notes(self) -> None:
+        """Kapanan her işlem için `Trades/<id>.md` notu (post-mortem ile) — dondurulmuş not varsa atlanır."""
+        if not self.ch_writer:
+            return
+        mem = getattr(self.learner2, "memory", None)
+        for h in self.ledger2.history_dicts()[-30:] + self.spot2.history_dicts()[-30:]:
+            tid = str(h.get("id") or "")
+            if not tid or self.ch_writer.trade_note_frozen(tid):
+                continue
+            pm = None
+            if mem is not None:
+                try:
+                    pm = (mem.get(tid) or {}).get("postmortem") or None
+                except Exception as exc:  # noqa: BLE001 — post-mortem okunamazsa not yine de yazılır
+                    log.warning("%s post-mortem okunamadı: %s", tid, exc)
+            self.ch_writer.write_trade(h, pm)
+
     def _write_obsidian_v3(self, decisions, chief, briefs, state, chart_paths, alerts) -> None:
         if not self.ch_writer:
             return
@@ -644,6 +661,7 @@ class TradingEngineV3(TradingEngine):
             self.ch_writer.write_portfolio(self.spot2.summary({}), self.ledger2.summary({}), [o.to_dict() for o in state.open_positions])
             self.ch_writer.write_risk(self.risk.snapshot(state), self.killswitch.to_dict())
             self.ch_writer.write_models(self.model_registry.to_dict())
+            self._write_trade_notes()
             for a in alerts:
                 if "AÇILDI" in a or "KAPANDI" in a or "KILL" in a:
                     self.ch_writer.append_run_event("trade" if "KILL" not in a else "incident", a, self.run_id)

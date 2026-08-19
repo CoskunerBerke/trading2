@@ -160,3 +160,21 @@ def test_other_writers_and_owned_dirs(tmp_path: Path):
     top = {p.name for p in tmp_path.iterdir()}
     assert top <= set(OWNED_DIRS), top
     assert safe_base("con/usdt") == "CON_" and safe_base("BTC/USDT") == "BTC" and safe_base("A<B") == "A_B"
+
+
+def test_trade_note_chain_links_and_frozen_probe(tmp_path: Path):
+    """İşlem notu Ders/Model/Portföy zincir bağlantılarını taşır; `trade_note_frozen` yalnız kapanmış notta True."""
+    w = ObsidianCoinHeadWriter(tmp_path)
+    t = {"id": "pos_9", "symbol": "SUI/USDT", "side": "SHORT", "entry": 0.65, "opened_at": "2026-08-18T16:48:57+00:00", "status": "OPEN"}
+    assert w.trade_note_path("pos_9") == tmp_path / "Trades" / "pos_9.md"
+    assert not w.trade_note_frozen("pos_9")          # not yok
+    w.write_trade(t)
+    assert not w.trade_note_frozen("pos_9")          # açık not dondurulmuş sayılmaz
+    w.write_trade({**t, "status": "CLOSED", "closed_at": "2026-08-19T15:06:15+00:00", "exit_price": 0.6831,
+                   "net_pnl": -0.7798, "r_multiple": -1.2183, "exit_reason": "stop"},
+                  postmortem={"lesson_text_tr": ["ZARAR (-1.22R): stop."], "postmortem_version": 1})
+    txt = w.trade_note_path("pos_9").read_text(encoding="utf-8")
+    assert w.trade_note_frozen("pos_9")
+    for link in ("[[Learning/Dersler]]", "[[Learning/Öğrenme]]", "[[Models/Registry]]", "[[Portfolio/Futures]]", "[[Coin Heads/SUI]]"):
+        assert link in txt, link
+    assert "ZARAR (-1.22R): stop." in txt

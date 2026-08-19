@@ -130,3 +130,28 @@ def test_v3_engine_refuses_when_config_invalid(tmp_path: Path):
         load_v3({"tax_policy": {"enabled": True}})
     cfg = load_v3({"mode": "PAPER", "unknown_section": {}, "llm": {"mode": "advisory", "foo": 1}})
     assert cfg.llm.mode == "ADVISORY" and any("foo" in w for w in cfg.warnings)
+
+
+def test_v3_closed_trade_writes_frozen_obsidian_trade_note_once(tmp_path: Path, monkeypatch):
+    """Kapanan işlem `Trades/<id>.md` notunu post-mortem + Ders/Model zinciriyle TAM BİR KEZ üretir."""
+    eng = _engine(tmp_path, monkeypatch)
+    s1 = eng.tour(do_scan=False, obsidian=True, charts=False)
+    if not s1["opened"]:
+        pytest.skip("bu turda pozisyon açılmadı")
+    pos = next(iter(eng.ledger2.positions.values()))
+    sym, tid = pos.symbol, pos.id
+    vault = Path(eng.cfg.obsidian.vault_path)
+    assert not (vault / "Trades" / f"{tid}.md").exists()  # açıkken not yok
+    eng._fake_live.price[sym] = float(pos.targets[-1]) * (1.01 if pos.side.value == "LONG" else 0.99)
+    eng.tour(do_scan=False, obsidian=True, charts=False)
+    note = vault / "Trades" / f"{tid}.md"
+    assert note.exists(), "kapanış sonrası işlem notu yazılmadı"
+    txt = note.read_text(encoding="utf-8")
+    assert "status: CLOSED" in txt and "[[Learning/Dersler]]" in txt and "[[Models/Registry]]" in txt
+    assert "## Post-mortem" in txt and "(post-mortem yok)" not in txt  # learner v2 post-mortem'i iliştirildi
+    assert eng.ch_writer.trade_note_frozen(tid)
+    # ikinci tur (retry/restart benzeri) notu yeniden yazmaz → tek kez öğrenilir/dondurulur
+    mtime = note.stat().st_mtime_ns
+    eng.tour(do_scan=False, obsidian=True, charts=False)
+    assert note.stat().st_mtime_ns == mtime
+    assert eng.learner2.n_closed == 1

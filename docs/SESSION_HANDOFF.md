@@ -2,7 +2,7 @@
 
 - **Repository:** https://github.com/CoskunerBerke/trading2.git · yerel `C:\Users\berke\Trading bot` · **branch** `feature/trading-v3-paper-testnet`
 - **HEAD:** `git rev-parse --short HEAD` (bu oturum: `docs: record historical learning session` — önceki 8 mantıksal commit aşağıda). `main` değişmedi; PR/merge/tag yok; yalnız feature branch'e normal push.
-- **Testler:** `python -m pytest tests -q` → **196 passed** (156 → +8 snapshot, +6 ledger restart, +9 ops/risk/stop/runtime, +6 history, +7 patterns, +4 replay/learning). Ruff E9/F63/F7/F82/F401 temiz.
+- **Testler:** `python -m pytest tests -q` → **198 passed** (Phase 6: +2 kapanış-notu regresyonu; `test_risk` cooldown iddiaları sabit saate bağlandı) (156 → +8 snapshot, +6 ledger restart, +9 ops/risk/stop/runtime, +6 history, +7 patterns, +4 replay/learning). Ruff E9/F63/F7/F82/F401 temiz.
 - **Mod:** PAPER / profil PAPER_RESEARCH · LIVE kapalı (`live_order_path_enabled: false`, `ALLOW_LIVE_TRADING` unset) · TESTNET kapalı · LLM `noop` · API anahtarı/.env yok · kill switch ARMED.
 - **Gerçek emir 0 · LIVE çağrısı 0 · TESTNET çağrısı 0 · dış LLM çağrısı 0** (bütün oturum).
 
@@ -54,6 +54,19 @@ Backup'lar: `backups/hourly/tradingbot-hourly-20260818T205349Z…20260819T072955
 - Kapanış: `python -m tradingbot stop --target all` → worker+dashboard 3 sn'de graceful (`health.json` STOPPED/cooperative_stop, tur 4; "İzleme temiz durduruldu", "panel temiz durduruldu"); lock/instance/istek dosyaları kalktı; port 8080 kapalı; süreç 0; doctor OK; kaynak/test/config/deploy değişmedi (yalnız state/log/backup/vault + bu dosya).
 - Gerçek emir 0 · LIVE 0 · TESTNET 0 · LLM 0. Sentetik testlerde TP/SL/BE/zaman çıkış zinciri + trade memory + learner v2 doğrulanmıştır (test_ops_risk_stop / test_ledger_restart / test_engine_v3).
 
+## Phase 6 SONUÇ — İLK GERÇEK DOĞAL KAPANIŞ (2026-08-19 08:36:05Z → 15:24Z, kesintisiz ~6 sa 30 dk)
+- Worker PID 4960 (`watch --interval 15 --scan-every 2 --exit-every 60`) + dashboard; backup `hourly-20260819T083605Z` (sha256 `1a6f4c5f…`) + `manual/futures_ledger.pre-phase6.*`. Resume: 3 pozisyon **bir kez** yüklendi.
+- Sağlık: live/metrics hep 200; `/health/ready` iki kez kısa süre 503 → **kök neden:** heartbeat tur başına yazılıyor, tur aralığı 15 dk = `heartbeat_max_age_s` 900 s ile eşit; sonraki turda kendiliğinden 200. Uygulama hatası değil, kod değiştirilmedi. Traceback 0, ERROR 0, ağ hatası 0, duplicate 0.
+- **F00001 SUI/USDT SHORT — 2026-08-19T15:06:15Z, neden `stop` (doğal, manuel müdahale yok).** Giriş 0.65 @ 2026-08-18T16:48:57Z → çıkış **0.68310487** (ref 0.6829, kayma 0.00472758). Tek exit fill `F00001-stop-1` (BUY 23.076, taker); entry fill değişmedi → duplicate 0. Ledger kayıtları: 1 PNL + 1 FEE.
+- Muhasebe (birebir doğrulandı): brüt **−0.76392798**, entry fee 0.0074997 + exit fee 0.00788166 = **0.01538136**, funding **−0.00051539**, net **−0.77982474**, **R −1.2183** (risk 0.640115 USDT), MAE −5.06 % / MFE +0.55 %, bars 7. Wallet 49.9839135 → **49.2121039**, total_fees → 0.026304679, equity(MTM) 48.39.
+- Zincir **tam ve tam bir kez**: kapanış → değişmez hafıza (`trade_memory.jsonl` exit satırı 1, `recorded_at` 15:09:58Z, post-mortem `pm-v2` gömülü) → LearnerV2 (`n_closed` 1, `pullback|SHORT` exp_r −0.211, calibrator platt n_fit 0 = ısınıyor) → etiket (LOSS / won false / exit_quality STOP / entry_timing MAE_BEFORE_MFE / fee_drag 0.024R) → deterministik post-mortem (LLM yok) → ders (`Learning/Dersler.md`) → `Models/Registry.md` (henüz kayıtlı model yok) → dashboard `/trades`, `/trades/F00001`, `/learning`, `/portfolio/futures`, `/api/evidence/SUI` hepsi 200 ve kaydı gösteriyor.
+- Risk state kapanış anında (15:06:15Z) güncellendi: açık 2, margin 21.8466, open_risk 1.9276, equity 48.4276, kill switch ARMED.
+- **Bulunan gerçek hata + düzeltme (commit `384baf2`):** `Trades/<id>.md` notu hiç üretilmiyordu — `write_trade` çağıransızdı, dolayısıyla Trade → Lesson → Model wikilink zinciri kopuktu. `engine_v3._write_trade_notes()` eklendi (post-mortem hafızadan; dondurulmuş not varsa atlanır → restart/retry ikinci kez yazmaz), nota zincir bağlantıları eklendi. Düzeltme sonrası tek tur `Trading_bot/Trades/F00001.md` üretti; ek tur sonrası hafıza exit 1 / learner n_closed 1 / ledger değişmedi (çift öğrenme yok). `708fd5a` testin zaman bağımlılığını giderdi.
+- Kapanış: `python -m tradingbot stop --target all` → graceful true, forced yok, health STOPPED, port 8080 kapalı, lock/instance/request dosyaları yok, doctor OK.
+- Kalan **iki açık pozisyon korunuyor** (manuel kapatma/stop-TP değişikliği yok): F00002 KORU/USDT SHORT qty 0.376 @ 18.21 (stop 20.8773, last 19.27, MAE −12.08/MFE +3.68, bars 8) · F00003 FIL/USDT SHORT qty 23.809 @ 0.63 (stop 0.668838, last 0.6479, MAE −2.84/MFE +0.43, bars 7). Ledger: schema 2, wallet 49.212103889678140, fees 0.026304678990060, funding 0.0023365487882, history 1, entries 9, her açık pozisyonda 1 fill.
+- Gerçek emir 0 · LIVE 0 · TESTNET 0 · LLM 0 · API anahtarı okunmadı.
+- Bilinen lint borcu (bu oturumdan değil): `ruff --select F401` → tests/test_history.py, test_ops_risk_stop.py, test_replay_learning.py'de 5 kullanılmayan import.
+
 ## Bilinen sınırlamalar (dürüst)
 - Gerçek WebSocket veri döngüsü yok; exit monitörü REST/last fiyatla 60 sn periyotlu; intrabar yalnız bar uçları.
 - Replay CoinHead tam zinciriyle yavaş (`--stride`); pattern index bellek içi.
@@ -62,7 +75,7 @@ Backup'lar: `backups/hourly/tradingbot-hourly-20260818T205349Z…20260819T072955
 - Windows: konsol sinyalleri güvenilmez → kooperatif `stop` birincil yol; ölen süreçten kalan bayat instance/lock dosyaları yalnız raporlanır (lock OS kilidi serbestse probe temizler).
 
 ## Sonraki oturumun TEK görevi
-3 pozisyon hâlâ açık → doğal kapanış izlemeye devam (60 dk soak + kooperatif `stop`; KORU stop'a en yakın) ve ilk gerçek kapanışta zinciri (exit fill/fee/funding/net R, trade memory, learner v2, postmortem, Obsidian Trade→Lesson→Model) doğrula; ardından `history-plan --universe` ile Tier A/B/C bütün-evren indirmesini 7/24 sunucuda başlat.
+Kalan 2 pozisyonun (KORU, FIL) doğal kapanışını izlemeye devam et; kapanışta aynı zinciri (exit fill/fee/funding/net R, trade memory, learner v2, post-mortem, `Trades/<id>.md` + Ders/Model wikilinkleri) doğrula. Ardından `history-plan --universe` ile Tier A/B/C bütün-evren indirmesini 7/24 sunucuda başlat.
 
 ## Kesin resume komutları
 ```bash

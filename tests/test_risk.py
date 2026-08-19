@@ -116,9 +116,9 @@ def test_engine_each_check_trips():
     assert "MIN_EXPECTED_R" in eng.evaluate(_plan(expected_r=0.3), _state()).reasons
     # cooldown'lar
     hist = [{"symbol": f"L{i}/USDT", "closed_at": (NOW - timedelta(hours=2 + i)).isoformat(), "pnl": -0.1} for i in range(3)]
-    assert "CONSEC_LOSS_COOLDOWN" in eng.evaluate(_plan(), _state(history=hist)).reasons
+    assert "CONSEC_LOSS_COOLDOWN" in eng.evaluate(_plan(), _state(history=hist), {"now_utc": NOW}).reasons
     hist = [{"symbol": "ETH/USDT", "closed_at": (NOW - timedelta(hours=3)).isoformat(), "pnl": 0.5}]
-    assert "SYMBOL_COOLDOWN" in eng.evaluate(_plan(), _state(history=hist)).reasons
+    assert "SYMBOL_COOLDOWN" in eng.evaluate(_plan(), _state(history=hist), {"now_utc": NOW}).reasons
     # min emir çatışması: risk %0.5 → 0.25 USDT / stop %10 = 2.5 notional < 5
     d = eng.evaluate(_plan(stop=2700.0, notional=2.5), _state())
     assert "MIN_ORDER_CONFLICT" in d.reasons and d.adjusted_notional is None

@@ -27,7 +27,14 @@ SVC_USER="${TRADINGBOT_SVC_USER:-tradingbot}"
 PY=python3
 
 PHASE="başlangıç"
-trap 'rc=$?; echo "" >&2; echo "[KURULUM BAŞARISIZ] aşama: ${PHASE} (exit ${rc}) — sistem KISMEN kurulu olabilir; betik idempotenttir, sorunu giderip aynı komutla yeniden çalıştırın. Secret/env içeriği bu çıktıda YOKTUR." >&2; exit "$rc"' ERR
+
+on_error() {
+  local rc=$?
+  echo "" >&2
+  echo "[KURULUM BAŞARISIZ] aşama: ${PHASE} (exit ${rc}) — sistem KISMEN kurulu olabilir; betik idempotenttir, sorunu giderip aynı komutla yeniden çalıştırın. Secret/env içeriği bu çıktıda YOKTUR." >&2
+  exit "$rc"
+}
+trap on_error ERR
 
 phase() { PHASE="$1"; echo "== $1"; }
 

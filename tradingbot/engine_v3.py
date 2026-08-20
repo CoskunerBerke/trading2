@@ -68,6 +68,12 @@ class TradingEngineV3(TradingEngine):
         self._pattern_loaded = False
         self._exit_lock = __import__("threading").RLock()
         self._stop_check = None                                # kooperatif durdurma: True → yeni giriş yok (çıkışlar sürer)
+        self._gap_checked = False                              # süreç başına bir kez offline-gap uzlaştırması
+        self._gap_blocked = False                              # GAP_AMBIGUOUS → yeni giriş yok (çıkışlar sürer)
+        self._gap_provider_factory = None                      # test enjeksiyonu; None → gerçek USDⓈ-M public provider
+        if self.ledger2.positions:
+            log.info("resume: %d açık futures pozisyonu (%s) · defter güncelleme %s",
+                     len(self.ledger2.positions), ", ".join(sorted(self.ledger2.positions)), self.ledger2.updated_at or "-")
         self.registry = CoinHeadRegistry(self.head_cfg, max_workers=ch.max_workers)
         self.registry.load(st)          # snapshot olay-zaman sırası (legacy hash-only state güvenli geçer)
         self._tour_no = 0               # aynı ms için deterministik tie-breaker
@@ -209,10 +215,49 @@ class TradingEngineV3(TradingEngine):
             log.warning("%s pattern kanıtı üretilemedi: %s", symbol, exc)
             return None
 
+    # ------------------------------------------------------------------ offline gap uzlaştırması (süreç başına bir kez)
+    def ensure_gap_reconciled(self) -> None:
+        """Restart sonrası ilk çalışmada kesinti penceresini uzlaştırır: kaçan stop/TP/liq/funding olayları
+        arşiv mumlarıyla olay-zamanında işlenir; veri belirsizse GAP_AMBIGUOUS → yeni giriş yok (fail-closed)."""
+        with self._exit_lock:
+            if self._gap_checked:
+                return
+            self._gap_checked = True
+            from .ops.gap import GapReconciler
+            factory = self._gap_provider_factory
+            if factory is None:
+                def factory():
+                    from .market.http import HttpClient
+                    from .market.providers import BinanceFuturesProvider
+                    from .market.ratelimit import BudgetPool
+                    pool = BudgetPool(safety=self.cfg.v3.data.rate_budget_safety)
+                    return BinanceFuturesProvider(HttpClient(BinanceFuturesProvider.base_url, pool.get("fapi.binance.com")))
+            try:
+                rep = GapReconciler(self.ledger2, self.ledger_path, self.cfg.state_path, factory).reconcile(self.run_id or None)
+            except Exception as exc:  # noqa: BLE001 — uzlaştırıcı hatası fail-closed: giriş yok, çıkışlar canlı yoldan sürer
+                log.exception("gap-reconcile hatası: %s", exc)
+                self._gap_blocked = True
+                return
+            self._gap_blocked = bool(rep.blocked)
+            spot_open = self.spot2.positions()
+            if spot_open:
+                log.warning("gap-reconcile spot defterini KAPSAMAZ; %d açık spot pozisyonu canlı tick ile değerlenecek", len(spot_open))
+            for rec in rep.closed:
+                legacy = rec.to_legacy_dict()
+                snap = self.last_decisions.get(rec.symbol) or {}
+                try:
+                    self.learner.learn(legacy)
+                    self.learner2.on_trade_closed(legacy | {"features": legacy.get("features") or {}},
+                                                  {"regime": snap.get("regime"), "consensus_score": snap.get("consensus_score"),
+                                                   "dissent": snap.get("dissent"), "vetoes": snap.get("vetoes")})
+                except Exception as exc:  # noqa: BLE001
+                    log.exception("gap-reconcile öğrenme hatası: %s", exc)
+
     # ------------------------------------------------------------------ hızlı çıkış monitörü (tur beklemeden)
     def exit_check(self) -> list[dict]:
         """Açık pozisyonlar için canlı fiyatla stop/TP/likidasyon/zaman kontrolü + defter kaydı + öğrenme; tur/tarama beklemez.
         Yeni giriş AÇMAZ. Dönen: kapanan işlemlerin legacy dict'leri."""
+        self.ensure_gap_reconciled()
         with self._exit_lock:
             if not self.ledger2.positions:
                 return []
@@ -230,6 +275,8 @@ class TradingEngineV3(TradingEngine):
             now = utc_now()
             records = self.ledger2.tick(marks, now_utc=now, bar_advance=False)
             self.ledger2.save(self.ledger_path)
+            from .ops.gap import write_watermark
+            write_watermark(self.cfg.state_path, now, self.run_id or None)
             out = []
             for rec in records:
                 legacy = rec.to_legacy_dict()
@@ -302,6 +349,8 @@ class TradingEngineV3(TradingEngine):
         st = self.cfg.state_path
         # 0) heartbeat + kill switch tetikleri
         atomic_write_json(st / "heartbeat.json", {"at": iso(now), "run_id": self.run_id, "pid": __import__("os").getpid()})
+        # 0.5) restart sonrası kesinti penceresi uzlaştırması (süreç başına bir kez; belirsizse giriş kilidi)
+        self.ensure_gap_reconciled()
         # 1) TARA (legacy tier-1)
         scan = None
         if self.scanner and do_scan and symbols_override is None:
@@ -410,6 +459,8 @@ class TradingEngineV3(TradingEngine):
         records = self.ledger2.tick(marks, now_utc=now, funding_rate_lookup=static_rates(funding), bar_advance=bar_advance)
         # 6) KAYIT SIRASI: önce defter, sonra öğrenme (crash penceresinde çift öğrenme olmasın)
         self.ledger2.save(self.ledger_path)
+        from .ops.gap import write_watermark
+        write_watermark(st, now, self.run_id or None)
         self.spot2.tick(marks_f, now)
         self.spot2.save(st / "spot_ledger.json")
         lessons = []
@@ -490,6 +541,9 @@ class TradingEngineV3(TradingEngine):
                 continue
             if self._stopping():        # kooperatif durdurma istendi → yeni giriş kabul edilmez
                 risk_log.append({"symbol": sym, "verdict": d.verdict.value, "risk_allowed": False, "risk_reasons": ["SHUTDOWN_REQUESTED"], "at": iso(now)})
+                continue
+            if self._gap_blocked:       # kesinti penceresi uzlaştırılamadı (GAP_AMBIGUOUS) → yeni giriş yok (çıkışlar sürer)
+                risk_log.append({"symbol": sym, "verdict": d.verdict.value, "risk_allowed": False, "risk_reasons": ["GAP_RECONCILE_PENDING"], "at": iso(now)})
                 continue
             perm = chief.permission.get(sym, {})
             plan = d.active_plan

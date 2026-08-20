@@ -30,6 +30,7 @@ PHASE="başlangıç"
 
 on_error() {
   local rc=$?
+  [[ -n "${PF_TMP:-}" && -f "${PF_TMP:-}" ]] && rm -f "$PF_TMP"   # yarım preflight geçici dosyası bırakma
   echo "" >&2
   echo "[KURULUM BAŞARISIZ] aşama: ${PHASE} (exit ${rc}) — sistem KISMEN kurulu olabilir; betik idempotenttir, sorunu giderip aynı komutla yeniden çalıştırın. Secret/env içeriği bu çıktıda YOKTUR." >&2
   exit "$rc"
@@ -45,12 +46,14 @@ run_as_svc() {
 }
 
 REPO="${1:-}"
-BRANCH="${2:-main}"
+BRANCH="${2:-}"          # boş = mevcut checkout'un branch'i korunur; SESSİZCE main SEÇİLMEZ
 
 if [[ "${TRADINGBOT_SETUP_ALLOW_NON_ROOT:-0}" != "1" && $EUID -ne 0 ]]; then
   echo "root olarak çalıştırın (sudo)"; exit 1
 fi
-if [[ -z "$REPO" && ! -d "$APP/.git" ]]; then echo "kullanım: $0 <REPO_URL_or_PATH> [BRANCH]"; exit 1; fi
+if [[ ! -d "$APP/.git" && ( -z "$REPO" || -z "$BRANCH" ) ]]; then
+  echo "kullanım: $0 <REPO_URL_or_PATH> <BRANCH>   (yeni clone için repo VE branch zorunlu; sessiz varsayılan yok)"; exit 1
+fi
 
 phase "paketler"
 export DEBIAN_FRONTEND=noninteractive
@@ -67,12 +70,24 @@ mkdir -p "$BASE" "$DATA/state" "$DATA/market" "$DATA/vault" "$DATA/backups" "$DA
 chmod 700 "$BASE/.ssh"
 
 phase "kod"
+# Bütün git işlemleri repo sahibi SERVICE USER ile yapılır (root'la karışık sahiplik → "dubious
+# ownership" riski yok; global safe.directory eklenmez). Yalnız fetch + checkout + fast-forward;
+# reset/rebase/force yok — behind/diverged/conflict durumunda --ff-only dürüstçe hata verir.
+git_svc() { sudo -u "$SVC_USER" git "$@"; }
 if [[ -d "$APP/.git" ]]; then
-  git -C "$APP" fetch --all --prune
-  git -C "$APP" checkout -q "$BRANCH"
-  git -C "$APP" pull --ff-only
+  CUR_BRANCH="$(git_svc -C "$APP" symbolic-ref --quiet --short HEAD || true)"
+  if [[ -z "$CUR_BRANCH" && -z "$BRANCH" ]]; then
+    echo "HATA: mevcut checkout detached HEAD ve branch argümanı verilmedi — branch'i açıkça belirtin: $0 <REPO_URL_or_PATH> <BRANCH>" >&2
+    exit 1
+  fi
+  TARGET_BRANCH="${BRANCH:-$CUR_BRANCH}"      # argümansız → MEVCUT branch korunur (sessizce main'e geçilmez)
+  git_svc -C "$APP" fetch --all --prune
+  git_svc -C "$APP" checkout -q "$TARGET_BRANCH"
+  git_svc -C "$APP" pull --ff-only
 else
-  git clone --branch "$BRANCH" "$REPO" "$APP"
+  mkdir -p "$APP"
+  chown "$SVC_USER:$SVC_USER" "$APP"
+  git_svc clone --branch "$BRANCH" "$REPO" "$APP"
 fi
 
 phase "venv"
@@ -90,9 +105,28 @@ if [[ ! -f "$ENVFILE" ]]; then
 fi
 chmod 600 "$ENVFILE"
 
+phase "rollback paketi (mevcut unit/preflight yedeği)"
+ROLLBACK_DIR="$BASE/rollback/units-$(date -u +%Y%m%dT%H%M%SZ)"
+mkdir -p "$ROLLBACK_DIR"
+for u in tradingbot-worker.service tradingbot-dashboard.service tradingbot-backup.service tradingbot-backup.timer; do
+  if [[ -f "$SYSTEMD_DIR/$u" ]]; then cp -p "$SYSTEMD_DIR/$u" "$ROLLBACK_DIR/"; fi
+done
+if [[ -f "$BASE/preflight.sh" ]]; then cp -p "$BASE/preflight.sh" "$ROLLBACK_DIR/preflight.sh"; fi
+echo "  rollback paketi: $ROLLBACK_DIR"
+
 phase "preflight kurulumu"
-# Kaynak-kontrollü preflight atomik kurulur (install: geçici dosya + rename); elle kopya source of truth değildir.
-install -m 0755 "$APP/deploy/preflight.sh" "$BASE/preflight.sh"
+# GERÇEKTEN atomik: aynı dosya sistemi ($BASE) üzerinde mktemp → içerik+mode doğrulama → mv (rename).
+# Eski çalışan preflight hiçbir anda yarım dosyayla değiştirilmez; hata durumunda geçici dosya
+# on_error tarafından temizlenir. Sahiplik "sahiplik" fazında $SVC_USER'a geçer.
+PF_TMP="$(mktemp "$BASE/.preflight.sh.XXXXXX")"
+cp "$APP/deploy/preflight.sh" "$PF_TMP"
+chmod 0755 "$PF_TMP"
+if [[ ! -s "$PF_TMP" || ! -x "$PF_TMP" ]]; then
+  echo "HATA: preflight geçici kopyası doğrulanamadı (boş ya da çalıştırılamaz)" >&2
+  exit 1
+fi
+mv -f "$PF_TMP" "$BASE/preflight.sh"
+PF_TMP=""
 
 phase "sahiplik"
 chown -R "$SVC_USER:$SVC_USER" "$BASE"

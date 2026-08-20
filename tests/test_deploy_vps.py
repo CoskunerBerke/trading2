@@ -78,6 +78,31 @@ def test_preflight_matrix_human_text_mentions_stale_but_typed_check_differs_bloc
     assert not ok
 
 
+def test_preflight_real_world_gap_missing_malformed_block_even_when_doctor_ok():
+    """GERÇEK run_doctor sözleşmesi: missing/malformed heartbeat ok=true+warn üretir ve report.ok=true olur —
+    preflight yine de BLOCK etmelidir (eksik/bozuk heartbeat 'stale' sayılmaz)."""
+    for code in ("HEARTBEAT_MISSING", "HEARTBEAT_MALFORMED"):
+        rep = _rep([_chk("config", True), _chk("heartbeat", True, severity="warn", code=code)])
+        assert rep["ok"] is True
+        ok, why = decide(rep)
+        assert not ok and "BLOCK" in why, code
+
+
+def test_preflight_heartbeat_cardinality_and_consistency():
+    # heartbeat check yok → block
+    ok, why = decide(_rep([_chk("config", True)]))
+    assert not ok and "heartbeat check sayısı 0" in why
+    # birden fazla heartbeat check → block
+    ok, why = decide(_rep([_chk("heartbeat", True, code="HEARTBEAT_OK"), _chk("heartbeat", True, code="HEARTBEAT_OK")]))
+    assert not ok and "heartbeat check sayısı 2" in why
+    # report.ok=true ama fail var → tutarsız → block
+    ok, why = decide(_rep([_chk("state_writable", False), _chk("heartbeat", True, code="HEARTBEAT_OK")], ok=True))
+    assert not ok and "tutarsız" in why
+    # code=OK ama ok=false (uyumsuz heartbeat kaydı) → block
+    ok, _ = decide(_rep([_chk("heartbeat", False, code="HEARTBEAT_OK")]))
+    assert not ok
+
+
 def test_preflight_cli_doctor_crash_is_fail_closed(monkeypatch, tmp_path):
     import tradingbot.ops.doctor as doc
     from tradingbot.cli_v3 import cmd_preflight
@@ -87,6 +112,76 @@ def test_preflight_cli_doctor_crash_is_fail_closed(monkeypatch, tmp_path):
     monkeypatch.setattr(doc, "run_doctor", boom)
     cfg = SimpleNamespace(state_path=tmp_path, cache_path=tmp_path, obsidian=SimpleNamespace(root=tmp_path), mode="PAPER")
     assert cmd_preflight(cfg, SimpleNamespace(quick=True)) == 1
+
+
+def _pf_cfg(tmp_path):
+    return SimpleNamespace(state_path=tmp_path, cache_path=tmp_path / "cache", obsidian=SimpleNamespace(root=tmp_path / "vault"), mode="PAPER")
+
+
+def _real_preflight_rc(tmp_path, capsys=None):
+    from tradingbot.cli_v3 import cmd_preflight
+    rc = cmd_preflight(_pf_cfg(tmp_path), SimpleNamespace(quick=True))
+    out = capsys.readouterr().out if capsys is not None else ""
+    return rc, out
+
+
+def test_e2e_preflight_missing_heartbeat_blocks(tmp_path, capsys):
+    rc, out = _real_preflight_rc(tmp_path, capsys)
+    assert rc == 1 and "BLOCK" in out
+
+
+def test_e2e_preflight_malformed_heartbeat_blocks(tmp_path, capsys):
+    (tmp_path / "heartbeat.json").write_text("{bozuk json", encoding="utf-8")
+    rc, out = _real_preflight_rc(tmp_path, capsys)
+    assert rc == 1 and "BLOCK" in out
+
+
+def test_e2e_preflight_fresh_heartbeat_allows(tmp_path, capsys):
+    from tradingbot.core import atomic_write_json, iso, utc_now
+    atomic_write_json(tmp_path / "heartbeat.json", {"at": iso(utc_now())})
+    rc, out = _real_preflight_rc(tmp_path, capsys)
+    assert rc == 0 and "ALLOW" in out
+
+
+def test_e2e_preflight_stale_only_allows_with_warning(tmp_path, capsys):
+    import datetime as dt
+    from tradingbot.core import atomic_write_json, iso, utc_now
+    atomic_write_json(tmp_path / "heartbeat.json", {"at": iso(utc_now() - dt.timedelta(hours=2))})
+    rc, out = _real_preflight_rc(tmp_path, capsys)
+    assert rc == 0 and out.startswith("WARNING") and "HEARTBEAT_STALE" in out
+
+
+def test_e2e_preflight_stale_plus_other_failure_blocks(tmp_path, capsys):
+    import datetime as dt
+    from tradingbot.core import atomic_write_json, iso, utc_now
+    atomic_write_json(tmp_path / "heartbeat.json", {"at": iso(utc_now() - dt.timedelta(hours=2))})
+    (tmp_path / "futures_ledger.json").write_text('{"schema_version": "x"}', encoding="utf-8")   # state_json FAIL
+    rc, out = _real_preflight_rc(tmp_path, capsys)
+    assert rc == 1 and "BLOCK" in out and "state_json" in out
+
+
+def test_e2e_preflight_matches_synthetic_decide_matrix(tmp_path):
+    """Sentetik decide() matrisi ile gerçek run_doctor→cmd_preflight akışı AYNI kararı vermeli."""
+    import datetime as dt
+    from tradingbot.cli_v3 import cmd_preflight
+    from tradingbot.core import atomic_write_json, iso, utc_now
+    from tradingbot.ops.doctor import run_doctor
+
+    def scenario(setup_fn, name):
+        st = tmp_path / name
+        st.mkdir()
+        setup_fn(st)
+        cfg = SimpleNamespace(state_path=st, cache_path=st / "cache", obsidian=SimpleNamespace(root=st / "vault"), mode="PAPER")
+        rep = run_doctor(cfg, st, st / "cache", st / "vault", quick=True).to_dict()
+        allow, _ = decide(rep)
+        rc = cmd_preflight(cfg, SimpleNamespace(quick=True))
+        assert (rc == 0) == allow, f"{name}: decide={allow} cmd_preflight rc={rc}"
+        return allow
+
+    assert scenario(lambda st: None, "missing") is False
+    assert scenario(lambda st: (st / "heartbeat.json").write_text("{bozuk", encoding="utf-8"), "malformed") is False
+    assert scenario(lambda st: atomic_write_json(st / "heartbeat.json", {"at": iso(utc_now())}), "fresh") is True
+    assert scenario(lambda st: atomic_write_json(st / "heartbeat.json", {"at": iso(utc_now() - dt.timedelta(hours=2))}), "stale") is True
 
 
 # ------------------------------------------------------------------ 2) doctor typed heartbeat kodları
@@ -139,11 +234,17 @@ def test_systemd_unit_contracts():
     rw_lines = [ln for ln in dash.splitlines() if ln.startswith("ReadWritePaths=")]
     assert rw_lines and all("/opt/tradingbot/app" not in ln and ln != "ReadWritePaths=/opt/tradingbot" for ln in rw_lines)
     assert "ProtectSystem=strict" in dash
-    # setup: preflight'i kurar, timer'ı enable --now + enabled/active doğrular, fail-fast
-    assert 'install -m 0755 "$APP/deploy/preflight.sh" "$BASE/preflight.sh"' in setup
+    # setup: ATOMİK preflight kurulumu (mktemp + doğrulama + mv), timer enable --now + enabled/active, fail-fast
+    assert 'PF_TMP="$(mktemp "$BASE/.preflight.sh.XXXXXX")"' in setup
+    assert 'mv -f "$PF_TMP" "$BASE/preflight.sh"' in setup and 'install -m 0755 "$APP/deploy/preflight.sh"' not in setup
     assert "systemctl enable --now tradingbot-backup.timer" in setup
     assert "is-enabled tradingbot-backup.timer" in setup and "is-active tradingbot-backup.timer" in setup
     assert "set -Eeuo pipefail" in setup and "trap" in setup
+    # branch güvenliği: sessiz main yok; detached HEAD açık hata; git işlemleri service user ile
+    assert 'BRANCH="${2:-}"' in setup and '"${2:-main}"' not in setup
+    assert "detached HEAD" in setup and 'TARGET_BRANCH="${BRANCH:-$CUR_BRANCH}"' in setup
+    assert 'git_svc() { sudo -u "$SVC_USER" git "$@"; }' in setup
+    assert "rollback paketi" in setup and 'cp -p "$BASE/preflight.sh" "$ROLLBACK_DIR/preflight.sh"' in setup
 
 
 @pytest.mark.skipif(shutil.which("systemd-analyze") is None, reason="systemd-analyze yok (yalnız Linux/CI)")
@@ -172,6 +273,7 @@ STUBS = {
     "ufw": "#!/usr/bin/env bash\nexit 0\n",
     "sudo": """#!/usr/bin/env bash
 # test stub: `sudo -u USER env K=V... CMD...` → K=V export edip CMD'yi mevcut cwd'de çalıştırır
+echo "sudo $*" >> "${SUDO_LOG:-/dev/null}"
 [ "$1" = "-u" ] && shift 2
 if [ "$1" = "env" ]; then shift; while [[ "${1:-}" == *=* ]]; do export "$1"; shift; done; fi
 exec "$@"
@@ -209,16 +311,22 @@ def _sandbox(tmp_path: Path, name: str) -> dict:
     env = dict(os.environ)
     env.update({"TRADINGBOT_BASE": str(base), "TRADINGBOT_SYSTEMD_DIR": str(sd),
                 "TRADINGBOT_SETUP_ALLOW_NON_ROOT": "1", "SYSTEMCTL_LOG": str(tmp_path / name / "systemctl.log"),
-                "PATH": f"{stub}:{env['PATH']}"})
-    return {"base": base, "sd": sd, "env": env, "log": tmp_path / name / "systemctl.log"}
+                "SUDO_LOG": str(tmp_path / name / "sudo.log"), "PATH": f"{stub}:{env['PATH']}"})
+    return {"base": base, "sd": sd, "env": env, "log": tmp_path / name / "systemctl.log",
+            "sudo_log": tmp_path / name / "sudo.log"}
 
 
-def _run_setup(sb: dict, cwd: Path, extra_env: dict | None = None) -> subprocess.CompletedProcess:
+def _repo_branch() -> str:
+    return subprocess.run(["git", "-C", str(REPO_ROOT), "rev-parse", "--abbrev-ref", "HEAD"],
+                          capture_output=True, text=True).stdout.strip() or "HEAD"
+
+
+def _run_setup(sb: dict, cwd: Path, extra_env: dict | None = None, args: list[str] | None = None) -> subprocess.CompletedProcess:
     env = dict(sb["env"])
     env.update(extra_env or {})
-    branch = subprocess.run(["git", "-C", str(REPO_ROOT), "rev-parse", "--abbrev-ref", "HEAD"],
-                            capture_output=True, text=True).stdout.strip() or "HEAD"
-    return subprocess.run([BASH, str(REPO_ROOT / "deploy" / "setup_vps_v3.sh"), str(REPO_ROOT), branch],
+    if args is None:
+        args = [str(REPO_ROOT), _repo_branch()]
+    return subprocess.run([BASH, str(REPO_ROOT / "deploy" / "setup_vps_v3.sh"), *args],
                           cwd=str(cwd), env=env, capture_output=True, text=True, timeout=600)
 
 
@@ -245,9 +353,51 @@ def test_setup_from_foreign_cwd_succeeds_and_is_idempotent(tmp_path):
     log = sb["log"].read_text(encoding="utf-8")
     assert "daemon-reload" in log and "enable --now tradingbot-backup.timer" in log
     assert "is-enabled tradingbot-backup.timer" in log and "is-active tradingbot-backup.timer" in log
-    # idempotent ikinci koşu
-    r2 = _run_setup(sb, foreign)
-    assert r2.returncode == 0 and "Kuruldu (bütün aşamalar tamamlandı)" in r2.stdout
+    # git işlemleri service user yolundan (sudo -u ... git) geçti
+    slog = sb["sudo_log"].read_text(encoding="utf-8")
+    assert "git clone" in slog
+    # atomik preflight: yarım/geçici dosya kalmadı
+    assert not list(sb["base"].glob(".preflight.sh.*"))
+    branch = _repo_branch()
+    # ARGÜMANSIZ ikinci koşu: idempotent VE mevcut feature branch'te KALIR (sessizce main'e geçmez)
+    r2 = _run_setup(sb, foreign, args=[])
+    assert r2.returncode == 0 and "Kuruldu (bütün aşamalar tamamlandı)" in r2.stdout, r2.stdout + r2.stderr
+    cur = subprocess.run(["git", "-C", str(sb["base"] / "app"), "symbolic-ref", "--short", "HEAD"],
+                         capture_output=True, text=True).stdout.strip()
+    assert cur == branch, f"branch değişti: {cur} != {branch}"
+    slog2 = sb["sudo_log"].read_text(encoding="utf-8")
+    assert "git -C" in slog2 and "fetch" in slog2 and "pull --ff-only" in slog2
+    # rollback paketi ikinci koşuda mevcut preflight'i sakladı
+    rb = list((sb["base"] / "rollback").glob("units-*/preflight.sh"))
+    assert rb, "rollback paketi preflight kopyası yok"
+    # EXPLICIT branch argümanıyla üçüncü koşu: aynı branch'e yalnız fast-forward, yine idempotent
+    r3 = _run_setup(sb, foreign, args=[str(REPO_ROOT), branch])
+    assert r3.returncode == 0 and "Kuruldu (bütün aşamalar tamamlandı)" in r3.stdout
+    cur3 = subprocess.run(["git", "-C", str(sb["base"] / "app"), "symbolic-ref", "--short", "HEAD"],
+                          capture_output=True, text=True).stdout.strip()
+    assert cur3 == branch
+    assert not list(sb["base"].glob(".preflight.sh.*"))
+
+
+@needs_linux
+def test_setup_detached_head_without_branch_arg_fails_clearly(tmp_path):
+    sb = _sandbox(tmp_path, "det")
+    cwd = tmp_path / "det"
+    r1 = _run_setup(sb, cwd)
+    assert r1.returncode == 0
+    app = sb["base"] / "app"
+    subprocess.run(["git", "-C", str(app), "checkout", "--detach", "-q"], check=True, capture_output=True)
+    r2 = _run_setup(sb, cwd, args=[])
+    assert r2.returncode != 0
+    assert "detached HEAD" in r2.stdout + r2.stderr
+    assert "Kuruldu (bütün aşamalar tamamlandı)" not in r2.stdout
+
+
+@needs_linux
+def test_setup_new_clone_requires_repo_and_branch(tmp_path):
+    sb = _sandbox(tmp_path, "req")
+    r = _run_setup(sb, tmp_path / "req", args=[str(REPO_ROOT)])      # branch yok, APP/.git yok
+    assert r.returncode != 0 and "zorunlu" in r.stdout + r.stderr
 
 
 @needs_linux

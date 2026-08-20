@@ -2,7 +2,7 @@
 
 - **Repository:** https://github.com/CoskunerBerke/trading2.git · yerel `C:\Users\berke\Trading bot` · **branch** `feature/trading-v3-paper-testnet`
 - **HEAD:** `git rev-parse --short HEAD` (bu oturum: `docs: record historical learning session` — önceki 8 mantıksal commit aşağıda). `main` değişmedi; PR/merge/tag yok; yalnız feature branch'e normal push.
-- **Testler:** `python -m pytest tests -q` → **198 passed** (Phase 6: +2 kapanış-notu regresyonu; `test_risk` cooldown iddiaları sabit saate bağlandı) (156 → +8 snapshot, +6 ledger restart, +9 ops/risk/stop/runtime, +6 history, +7 patterns, +4 replay/learning). Ruff E9/F63/F7/F82/F401 temiz.
+- **Testler:** `python -m pytest tests -q` → **212 passed** (Phase 8: +10 gap-reconcile, +1 heartbeat, +1 universe-plan, +1 namespace, +1 authority) (Phase 6: +2 kapanış-notu regresyonu; `test_risk` cooldown iddiaları sabit saate bağlandı) (156 → +8 snapshot, +6 ledger restart, +9 ops/risk/stop/runtime, +6 history, +7 patterns, +4 replay/learning). Ruff E9/F63/F7/F82/F401 temiz.
 - **Mod:** PAPER / profil PAPER_RESEARCH · LIVE kapalı (`live_order_path_enabled: false`, `ALLOW_LIVE_TRADING` unset) · TESTNET kapalı · LLM `noop` · API anahtarı/.env yok · kill switch ARMED.
 - **Gerçek emir 0 · LIVE çağrısı 0 · TESTNET çağrısı 0 · dış LLM çağrısı 0** (bütün oturum).
 
@@ -76,6 +76,16 @@ Backup'lar: `backups/hourly/tradingbot-hourly-20260818T205349Z…20260819T072955
 - Kapanış sonrası ledger: wallet **47.217875941484741276311217560**, fees 0.052407096617746955883902440, funding 0.0038062735964, history 3, entries 16; açık: F00004 (last 90.12, MAE −1.40, bars 4) + F00005 (last 4468.7, MAE −0.65, bars 2), 1'er fill.
 - Kapanış: `stop --target all` graceful, force yok; süreç/port/lock temiz; doctor OK. Kaynak değişmedi → 198 test baseline geçerli. Gerçek emir 0 · LIVE 0 · TESTNET 0 · LLM 0.
 
+## Phase 8 SONUÇ — 7/24 hazırlık: gap reconciliation + heartbeat + evren planı + VPS raporu (2026-08-20, kaynak commit'leri origin'de)
+- Başlangıç güvenliği: HEAD=origin `eaffb24`, worker/port/lock 0, doctor OK, 198 baseline yeşil; `backups/manual/*.pre-phase8.20260820T070022Z` + `semantic_snapshot.phase8...json` (ledger sha `fa76a91e…`, wallet 47.217875941484741276311217560, F00004 BZ + F00005 XAUT tek fill, duplicate 0). Üç salt-okunur denetçi (STATE_SAFETY / HISTORY_CAPACITY / RESTART_GAP) kanıt topladı; karar/uygulama lead'de kaldı.
+- **`02a4b77` fix(restart):** `ops/gap.py` GapReconciler — `state/exit_watermark.json` (tur + exit-monitor her kayıtta yazar) ile kesinti penceresi ölçülür; açık futures pozisyonları için pencerenin kapanmış mumları (≤48sa 1m / ≤10g 5m / üstü 15m) + gerçek dönem funding oranları çekilir, mevcut `tick()` yoluna olay-zamanı sırasında verilir (worst-case liq>stop>TP korunur; kararlar `state/gap_status.json`). Fail-closed: eksik/belirsiz veri → all-or-nothing GAP_AMBIGUOUS, tur girişleri `GAP_RECONCILE_PENDING` ile reddeder, watermark ilerlemez. Funding'de sessiz dönem kaybı bitti (oran bilinmeyen settlement BEKLER, gelince tam bir kez). 10 regresyon testi.
+- **`1d0c5c1` fix(health):** watch döngüsü ~30 sn'de bir turlardan bağımsız heartbeat yazar; `read_heartbeat_age` `ts`/`at` iki şemayı da okur (doctor'un "kalp atışı yok" körlüğü bitti); `/ready` 15dk-tur 503 dalgalanması kökten çözüldü, gerçek ölümde fail-closed 503 sürer.
+- **`a64b069` feat(history):** `history-plan --universe` gerçek `universe.json` şemasını (`merged`, eligible filtresi) okur; çıktıya `point_in_time:false` + `survivorship_bias` işareti. `universe` çalıştırıldı: spot 3681→32, futures 872→89, birleşik **95 uygun sembol**. Gerçek plan: A 570 seri/2.01M, B 100/3.11M, C 88/10.33M → **758 seri, 15.45M satır, ~622 MB ham, ~21.2k istek, ~2 sa** (indirme BAŞLATILMADI — Windows'ta yalnız plan).
+- **`fb553f8` feat(learning):** SYNTHETIC_TEST namespace'i + izolasyon regresyonu (aynı JSONL'de bile kaynaklar birbirinin sayaç/sorgularını kirletemez; bilinmeyen source ValueError). Replay zaten ayrı state + HISTORICAL_REPLAY.
+- **`56bebcb` ops(vps):** `ops/authority.py` + CLI `authority --claim/--release` — `state/worker_authority.json` başka host'taysa `watch` fail-closed başlamaz (exit 4); `setup_vps_v3.sh` ufw yalnız-SSH + kurulumda otomatik claim.
+- **Kapasite/VPS (docs/VPS_PHASE8_PLAN.md):** ölçülen yoğunluklar ham ~45 B/satır, feature ~468 B/satır (×10.3), replay RAM ~3.7 KB/bar (4h evren 1.5 GB, 1h 5.9 GB → stride); 1. yıl ayak izi 12–17 GB < 45 GB → **öneri: OVH VPS-2 (4 vCore/8 GB/75 GB NVMe), Ubuntu 24.04, AB lokasyonu (~10–14 €/ay)**; satın alma sonrası-deploy öncesi salt-okunur Binance erişim testi. Satın alma YAPILMADI; kullanıcı onayı bekleniyor.
+- F00004/F00005 el sürülmedi (tek fill, aynı ID); worker bu fazda hiç başlatılmadı; gerçek emir 0 · LIVE 0 · TESTNET 0 · LLM 0.
+
 ## Bilinen sınırlamalar (dürüst)
 - Gerçek WebSocket veri döngüsü yok; exit monitörü REST/last fiyatla 60 sn periyotlu; intrabar yalnız bar uçları.
 - Replay CoinHead tam zinciriyle yavaş (`--stride`); pattern index bellek içi.
@@ -84,7 +94,7 @@ Backup'lar: `backups/hourly/tradingbot-hourly-20260818T205349Z…20260819T072955
 - Windows: konsol sinyalleri güvenilmez → kooperatif `stop` birincil yol; ölen süreçten kalan bayat instance/lock dosyaları yalnız raporlanır (lock OS kilidi serbestse probe temizler).
 
 ## Sonraki oturumun TEK görevi
-`history-plan --universe` ile Tier A/B/C bütün-evren indirmesini 7/24 sunucuda başlat. (Arka planda: yeni açılan F00004 BZ + F00005 XAUT pozisyonlarının doğal kapanışları aynı zincirle izlenebilir; zincir artık 3 gerçek kapanışta doğrulandı.)
+Kullanıcı OVH VPS-2 (Ubuntu 24.04, AB) siparişini onaylayıp sunucu bilgileri hazır olduğunda: migrasyon sırasını (docs/VPS_PHASE8_PLAN.md §6) uygula — kooperatif stop → final backup/hash → aktar → salt-okunur doctor/validate → yalnız sunucu worker'ı (authority claim'li) → 24 sa PAPER soak → ardından sunucuda `history-collect` tier'ları ve bütün-evren feature/replay.
 
 ## Kesin resume komutları
 ```bash

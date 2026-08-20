@@ -67,6 +67,15 @@ Backup'lar: `backups/hourly/tradingbot-hourly-20260818T205349Z…20260819T072955
 - Gerçek emir 0 · LIVE 0 · TESTNET 0 · LLM 0 · API anahtarı okunmadı.
 - Bilinen lint borcu (bu oturumdan değil): `ruff --select F401` → tests/test_history.py, test_ops_risk_stop.py, test_replay_learning.py'de 5 kullanılmayan import.
 
+## Phase 7 SONUÇ — KORU + FIL DOĞAL KAPANIŞ (2026-08-19 15:39Z → 2026-08-20 01:52Z, kesintisiz ~10 sa 13 dk, kaynak değişikliği YOK)
+- Worker PID 5520 + dashboard; backup `hourly-20260819T153858Z` + `manual/futures_ledger.pre-phase7.*`. 2 pozisyon bir kez resume; 20 durum kontrolü; traceback 0, ERROR 0; `/ready` 2 kısa bilinen heartbeat-yaşı dalgalanması (uygulama hatası değil); kill switch hep ARMED; duplicate 0.
+- **F00003 FIL/USDT SHORT — 2026-08-19T16:16:05Z `stop`:** 0.63 → 0.66903859 (tek fill `F00003-stop-1`); brüt −0.929470, fee 0.015464, funding **+0.004322 (alındı)**, kayma 0.130965, net **−0.940613**, **R −1.0172**, MAE −6.78 %/MFE +0.43 %, 9 bar.
+- **F00002 KORU/USDT SHORT — 2026-08-20T01:42:15Z `stop`:** 18.21 → 20.976291 (tek fill `F00002-stop-1`); brüt −1.040125, fee 0.007367, funding 0, kayma 0.006125, net **−1.047492**, **R −1.0445**, MAE −15.16 %/MFE +3.68 %, 12 bar; post-mortem dersi: "önce %3.7 lehte gitti, kâr alınmadı → TP1 daha yakın / erken başa-baş".
+- Her iki kapanışta zincir **tam ve tam bir kez**: memory exit 1'er (pm-v2 gömülü) → LearnerV2 `n_closed` 3 (−1.2183/−1.0172/−1.0445; hepsi stop) → ders → **`Trades/F00003.md` + `Trades/F00002.md` dondurulmuş + Ders/Öğrenme/Model/Portföy/Coin Head wikilinkleri (384baf2 düzeltmesi gerçek kapanışlarda çalıştı)** → dashboard /trades /trades/<id> /learning /portfolio/futures 200. Risk state kapanış anında güncellendi.
+- **Yeni doğal PAPER girişleri (gizlenmedi; limitler doğrulandı):** F00004 BZ/USDT LONG 0.165 @ 90.61 (15:39:46Z, stop 88.3408, TP 95.0585/97.2977) ve F00005 XAUT/USDT LONG 0.003 @ 4479.32 (16:51:05Z, stop 4401.1487, TP 4631.6126/4708.4339); her biri tek fill, 1x, ~15 USDT notional. Market limiti 3/3 dolunca NATGAS/HYPE/COHR/INTC adayları `MAX_POSITIONS_MARKET` ile reddedildi; open-risk tepe %4.79 < %6.
+- Kapanış sonrası ledger: wallet **47.217875941484741276311217560**, fees 0.052407096617746955883902440, funding 0.0038062735964, history 3, entries 16; açık: F00004 (last 90.12, MAE −1.40, bars 4) + F00005 (last 4468.7, MAE −0.65, bars 2), 1'er fill.
+- Kapanış: `stop --target all` graceful, force yok; süreç/port/lock temiz; doctor OK. Kaynak değişmedi → 198 test baseline geçerli. Gerçek emir 0 · LIVE 0 · TESTNET 0 · LLM 0.
+
 ## Bilinen sınırlamalar (dürüst)
 - Gerçek WebSocket veri döngüsü yok; exit monitörü REST/last fiyatla 60 sn periyotlu; intrabar yalnız bar uçları.
 - Replay CoinHead tam zinciriyle yavaş (`--stride`); pattern index bellek içi.
@@ -75,7 +84,7 @@ Backup'lar: `backups/hourly/tradingbot-hourly-20260818T205349Z…20260819T072955
 - Windows: konsol sinyalleri güvenilmez → kooperatif `stop` birincil yol; ölen süreçten kalan bayat instance/lock dosyaları yalnız raporlanır (lock OS kilidi serbestse probe temizler).
 
 ## Sonraki oturumun TEK görevi
-Kalan 2 pozisyonun (KORU, FIL) doğal kapanışını izlemeye devam et; kapanışta aynı zinciri (exit fill/fee/funding/net R, trade memory, learner v2, post-mortem, `Trades/<id>.md` + Ders/Model wikilinkleri) doğrula. Ardından `history-plan --universe` ile Tier A/B/C bütün-evren indirmesini 7/24 sunucuda başlat.
+`history-plan --universe` ile Tier A/B/C bütün-evren indirmesini 7/24 sunucuda başlat. (Arka planda: yeni açılan F00004 BZ + F00005 XAUT pozisyonlarının doğal kapanışları aynı zincirle izlenebilir; zincir artık 3 gerçek kapanışta doğrulandı.)
 
 ## Kesin resume komutları
 ```bash

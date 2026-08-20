@@ -226,6 +226,13 @@ def _history_ctx(cfg: BotConfig, args):
     return store, col, spec
 
 
+def universe_ranked_symbols(uni: dict) -> list[str]:
+    """`state/universe.json` → hacme göre sıralı UYGUN semboller. Şema: `merged` (güncel);
+    `entries`/`symbols` eski taslaklar için tolerans. Uygun değilse (eligible=False) plana girmez."""
+    ents = uni.get("merged") or uni.get("entries") or uni.get("symbols") or []
+    return [e.get("symbol") for e in ents if isinstance(e, dict) and e.get("symbol") and e.get("eligible", True)]
+
+
 def cmd_history_plan(cfg: BotConfig, args) -> int:
     """Veri indirmeden: sembol/aralık/satır/disk/istek/süre tahmini (listing tespiti için sembol başına 1 hafif istek; --offline ile o da yok)."""
     store, col, spec = _history_ctx(cfg, args)
@@ -233,11 +240,17 @@ def cmd_history_plan(cfg: BotConfig, args) -> int:
     if args.universe:
         from .history import build_tier_specs
         uni = read_json(cfg.state_path / "universe.json", default={}) or {}
-        ents = uni.get("entries") or uni.get("symbols") or []
-        ranked = [e.get("symbol") for e in ents if isinstance(e, dict) and e.get("symbol")] or list(cfg.coins)
+        ranked = universe_ranked_symbols(uni) or list(cfg.coins)
         open_syms = list((read_json(cfg.state_path / "futures_ledger.json", default={}) or {}).get("positions", {}).keys())
         tp = build_tier_specs(ranked, open_syms, cfg.v3.history)
         plan["tiers"] = tp.summary
+        # DÜRÜSTLÜK: universe.json yalnız BUGÜN listeli/uygun sembolleri içerir (delisted yok) →
+        # bu plan point-in-time DEĞİLDİR; replay eğitiminde survivorship bias riski açıkça işaretlenir.
+        plan["point_in_time"] = False
+        plan["survivorship_bias"] = {"present": True,
+                                     "note": "universe.json bugünün TRADING sembolleri; geçmişte delist edilenler kapsam dışı",
+                                     "universe_generated_at": uni.get("generated_at", ""),
+                                     "ranked_symbols": len(ranked)}
         ests = []
         for t, sp in zip("ABC", tp.specs):
             e = col.plan(sp, probe_listing=False); e.pop("items", None); e["tier"] = t; ests.append(e)

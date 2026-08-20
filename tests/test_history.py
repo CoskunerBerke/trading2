@@ -166,3 +166,13 @@ def test_tier_specs_from_config():
     assert len(a.symbols) == 100 and a.timeframes == ("1h", "4h", "1d") and a.max_available
     assert len(b.symbols) == 50 and b.timeframes == ("15m",)
     assert len(c.symbols) == 21 and "SUI/USDT" in c.symbols and c.per_tf_days == {"1m": 90, "5m": 365}
+
+
+def test_universe_ranked_symbols_reads_merged_and_filters_eligibility():
+    """history-plan --universe, universe.json'ın gerçek şemasını (`merged`) okumalı ve eligible=False'ı elememeli değil, ELEMELİ."""
+    from tradingbot.cli_v3 import universe_ranked_symbols
+    uni = {"merged": [{"symbol": "BTC/USDT", "eligible": True}, {"symbol": "OLD/USDT", "eligible": False},
+                      {"symbol": "ETH/USDT"}, {"no_symbol": 1}]}
+    assert universe_ranked_symbols(uni) == ["BTC/USDT", "ETH/USDT"]
+    assert universe_ranked_symbols({}) == []
+    assert universe_ranked_symbols({"entries": [{"symbol": "X/USDT"}]}) == ["X/USDT"]   # eski taslak şema toleransı

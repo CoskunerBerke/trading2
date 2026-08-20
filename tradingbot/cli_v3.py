@@ -154,8 +154,27 @@ def cmd_doctor(cfg: BotConfig, args) -> int:
         _p({"mode": cfg.mode, "state": str(cfg.state_path), "state_writable": cfg.state_path.exists() or True})
         return 0
     rep = run_doctor(cfg, cfg.state_path, cfg.cache_path, cfg.obsidian.root, quick=args.quick)
-    print_report(rep)
+    if getattr(args, "json", False):
+        _p(rep.to_dict())               # makine-okunur sözleşme (preflight bunu kullanır); exit kodu değişmez
+    else:
+        print_report(rep)
     return 0 if rep.ok else 1
+
+
+def cmd_preflight(cfg: BotConfig, args) -> int:
+    """Systemd ExecStartPre katmanı: doctor'ı süreç içinde çalıştırır, TİPLENMİŞ karar verir (ops/preflight.decide).
+    Normal doctor gevşetilmez; yalnız-bayat-heartbeat istisnası SADECE burada uygulanır. Her hata fail-closed."""
+    from .ops.preflight import decide
+    try:
+        from .ops.doctor import run_doctor
+        rep = run_doctor(cfg, cfg.state_path, cfg.cache_path, cfg.obsidian.root, quick=getattr(args, "quick", True))
+        report = rep.to_dict()
+    except Exception as exc:  # noqa: BLE001 — doctor crash → başlangıç engellenir
+        print(f"BLOCK: doctor çalıştırılamadı ({type(exc).__name__}: {exc}) — fail-closed")
+        return 1
+    allow, reason = decide(report)
+    print(reason)
+    return 0 if allow else 1
 
 
 def cmd_backup(cfg: BotConfig, args) -> int:
@@ -590,7 +609,10 @@ def cmd_futures_backtest(cfg: BotConfig, args) -> int:
 
 # ------------------------------------------------------------------ parser kaydı
 def register(sub: argparse._SubParsersAction) -> None:
-    s = sub.add_parser("doctor", help="Ortam/durum sağlık kontrolü"); s.add_argument("--quick", action="store_true"); s.set_defaults(fn=cmd_doctor)
+    s = sub.add_parser("doctor", help="Ortam/durum sağlık kontrolü"); s.add_argument("--quick", action="store_true")
+    s.add_argument("--json", action="store_true", help="makine-okunur structured sonuç (exit kodu aynı)"); s.set_defaults(fn=cmd_doctor)
+    s = sub.add_parser("preflight", help="Systemd başlangıç ön kontrolü: yalnız-bayat-heartbeat'e izin, geri kalan fail-closed")
+    s.add_argument("--quick", action="store_true", default=True); s.set_defaults(fn=cmd_preflight)
     s = sub.add_parser("migrate", help="Eski JSON state → SQLite (idempotent, kayıpsız)"); s.set_defaults(fn=cmd_migrate)
     s = sub.add_parser("collect", help="Yalnız veri topla (Parquet + kalite)"); s.add_argument("--symbols", nargs="*"); s.set_defaults(fn=cmd_collect)
     s = sub.add_parser("paper-status", help="Kağıt defter özeti (spot+futures v2)"); s.set_defaults(fn=cmd_paper_status)

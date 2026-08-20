@@ -131,6 +131,8 @@ def test_gap_same_candle_stop_and_tp_worst_case(tmp_path: Path):
 # 5) Funding sınırı: kesinti 08:00 UTC settlement'ı kapsar → gerçek oranla TAM BİR KEZ uygulanır
 def test_gap_funding_applied_once(tmp_path: Path):
     led, p = _mk_ledger(tmp_path)
+    led.positions["SUI/USDT"].last_funding_settlement_utc = "2026-08-20T00:00:00+00:00"   # duvar saatinden bağımsız sabit pencere
+    led.save(p)
     start = datetime(2026, 8, 20, 7, 50, tzinfo=UTC)
     write_watermark(tmp_path, start)
     now = datetime(2026, 8, 20, 8, 20, tzinfo=UTC)

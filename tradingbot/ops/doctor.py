@@ -37,6 +37,7 @@ class DoctorCheck:
     ok: bool
     detail: str = ""
     severity: str = "fail"      # fail | warn | info
+    code: str = ""              # kararlı makine-okunur kimlik (örn. HEARTBEAT_STALE); boş = kodlanmamış
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -101,8 +102,8 @@ def run_doctor(cfg_like: Any, state_dir: Path | str, data_dir: Path | str | None
     state_dir = Path(state_dir)
     checks: list[DoctorCheck] = []
 
-    def add(name: str, ok: bool, detail: Any = "", severity: str = "fail") -> None:
-        checks.append(DoctorCheck(name=name, ok=bool(ok), detail=str(detail), severity=severity))
+    def add(name: str, ok: bool, detail: Any = "", severity: str = "fail", code: str = "") -> None:
+        checks.append(DoctorCheck(name=name, ok=bool(ok), detail=str(detail), severity=severity, code=code))
 
     # 1 config
     add("config", cfg_like is not None, "config yüklendi" if cfg_like is not None else "config yok")
@@ -183,12 +184,15 @@ def run_doctor(cfg_like: Any, state_dir: Path | str, data_dir: Path | str | None
     else:
         age_h = (time.time() - latest.stat().st_mtime) / 3600.0
         add("backup_freshness", age_h <= backup_max_age_h, f"{latest.name} · {age_h:.1f} saat", "warn")
-    # 11 kalp atışı
+    # 11 kalp atışı — insan metni aynı; `code` makine-okunur ayrımı taşır (MISSING ≠ MALFORMED ≠ STALE)
     hb = read_heartbeat_age(state_dir)
     if hb is None:
-        add("heartbeat", True, "kalp atışı yok (motor henüz başlamadı?)", "warn")
+        hb_file = state_dir / "heartbeat.json"
+        hb_code = "HEARTBEAT_MALFORMED" if hb_file.exists() else "HEARTBEAT_MISSING"
+        add("heartbeat", True, "kalp atışı yok (motor henüz başlamadı?)", "warn", code=hb_code)
     else:
-        add("heartbeat", hb <= heartbeat_max_age_s, f"{hb:.0f}s (eşik {heartbeat_max_age_s:.0f}s)")
+        add("heartbeat", hb <= heartbeat_max_age_s, f"{hb:.0f}s (eşik {heartbeat_max_age_s:.0f}s)",
+            code="HEARTBEAT_OK" if hb <= heartbeat_max_age_s else "HEARTBEAT_STALE")
     # 12 mod + ALLOW_LIVE_TRADING
     mode_d = read_json(state_dir / "mode.json", default=None)
     mode = str((mode_d or {}).get("mode", _get(cfg_like, "mode", "PAPER")) if isinstance(mode_d, dict) else _get(cfg_like, "mode", "PAPER")).upper()

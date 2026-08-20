@@ -32,7 +32,9 @@ NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
 ReadOnlyPaths=/opt/tradingbot/data
-ReadWritePaths=/opt/tradingbot/data/logs
+# state: yalnız kendi instance kaydı (.dashboard_instance.json) + kooperatif stop isteğinin tüketimi için gerekli
+# en dar dizin (dosya oluşturma/silme dizin yazma izni ister); data kökü ve app READ-ONLY kalır.
+ReadWritePaths=/opt/tradingbot/data/logs /opt/tradingbot/data/state
 PrivateTmp=yes
 PrivateDevices=yes
 ProtectKernelTunables=yes

@@ -72,3 +72,8 @@ Railway'de daha önce projen olduğu için tanıdık gelecektir; ama VPS daha uc
 - **Kaç kaynak?** Tur başına ~3 dk CPU, birkaç yüz MB RAM. En küçük VPS yeter.
 - **Zaman dilimi:** Servis `TZ=Europe/Istanbul` ile çalışır; notlardaki saatler Türkiye saatidir.
 - **Güncelleme:** PC'de değişiklik yapıp `git push`; sunucuda `cd /opt/tradingbot && git pull && systemctl restart tradingbot`.
+
+## Başlangıç preflight'i ve kurulum doğrulaması (v3)
+- Worker `ExecStartPre=/opt/tradingbot/preflight.sh` (kaynak-kontrollü, `deploy/preflight.sh`'ten kurulur): doctor tamamen OK ya da **yalnız bayat heartbeat** (worker kapalıyken beklenen) ise başlar; diğer her doctor hatası, crash veya geçersiz çıktı fail-closed engeller. Normal `doctor` komutu gevşetilmedi.
+- `setup_vps_v3.sh` fazlıdır: bir aşama başarısızsa aşama adıyla non-zero çıkar ve "Kuruldu" mesajı basılmaz; `tradingbot-backup.timer` enable --now sonrası **enabled + active** doğrulanmadan kurulum başarılı sayılmaz. Betik idempotenttir.
+- Dashboard yalnız `data/logs` + `data/state`'e yazabilir (instance kaydı/kooperatif stop için); worker matplotlib cache'i systemd `CacheDirectory` altındadır (`/var/cache/tradingbot/matplotlib`).

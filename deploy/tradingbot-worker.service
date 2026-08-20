@@ -24,7 +24,12 @@ Environment=TRADINGBOT_CACHE_DIR=/opt/tradingbot/data/market
 Environment=TRADINGBOT_LOG_DIR=/opt/tradingbot/data/logs
 Environment=TRADINGBOT_BACKUPS_DIR=/opt/tradingbot/data/backups
 Environment=ALLOW_LIVE_TRADING=false
-ExecStartPre=/opt/tradingbot/venv/bin/python -m tradingbot doctor --quick
+# matplotlib config/cache: systemd'nin yönettiği dar kapsamlı dizin (service user yazabilir; world-writable değil)
+CacheDirectory=tradingbot
+CacheDirectoryMode=0750
+Environment=MPLCONFIGDIR=/var/cache/tradingbot/matplotlib
+# kaynak-kontrollü preflight (setup kurar): doctor tamamen OK ya da YALNIZ bayat-heartbeat → başla; gerisi fail-closed
+ExecStartPre=/opt/tradingbot/preflight.sh
 ExecStart=/opt/tradingbot/venv/bin/python -m tradingbot watch --interval 15 --scan-every 2
 Restart=on-failure
 RestartSec=30

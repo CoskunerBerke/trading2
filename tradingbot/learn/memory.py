@@ -22,7 +22,7 @@ def _append_line(path: Path, obj: dict) -> None:
             pass
 
 
-SOURCES = ("LIVE_PAPER", "HISTORICAL_REPLAY", "SHADOW", "TESTNET", "LIVE")
+SOURCES = ("LIVE_PAPER", "HISTORICAL_REPLAY", "SHADOW", "TESTNET", "LIVE", "SYNTHETIC_TEST")
 
 
 class TradeMemory:

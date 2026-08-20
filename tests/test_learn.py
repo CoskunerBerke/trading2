@@ -182,3 +182,33 @@ def test_learner_v2_end_to_end_prior_to_model_and_legacy_bridge(tmp_path: Path):
     imported = again.legacy_bridge(v1)
     assert imported["agents"] >= 1 and imported["setups"] >= 1 and imported["lessons"] == 6
     assert again.snapshot()["setups"].get("kırılım|LONG") is not None
+
+
+def test_memory_namespaces_do_not_cross_contaminate(tmp_path):
+    """paper_live / shadow / historical_replay / synthetic_test hafızaları birbirinin işlem sayısını,
+    kalibrasyon örneklerini ve sorgularını KİRLETMEZ: aynı dosyada bile source filtresi mutlak."""
+    from tradingbot.learn.memory import SOURCES, TradeMemory
+    p = tmp_path / "trade_memory.jsonl"
+    live = TradeMemory(p, source="LIVE_PAPER")
+    replay = TradeMemory(p, source="HISTORICAL_REPLAY")
+    shadow = TradeMemory(p, source="SHADOW")
+    synth = TradeMemory(p, source="SYNTHETIC_TEST")
+    assert "SYNTHETIC_TEST" in SOURCES
+    live.record_entry({"trade_id": "L1", "symbol": "BTC/USDT"})
+    live.record_exit("L1", {"id": "L1", "symbol": "BTC/USDT", "r_multiple": 1.0})
+    for i in range(5):
+        replay.record_entry({"trade_id": f"R{i}", "symbol": "ETH/USDT"})
+        replay.record_exit(f"R{i}", {"id": f"R{i}", "symbol": "ETH/USDT", "r_multiple": -0.5})
+    shadow.record_entry({"trade_id": "S1", "symbol": "SOL/USDT"})
+    synth.record_entry({"trade_id": "T1", "symbol": "ADA/USDT"})
+    # her namespace yalnız kendi kayıtlarını görür
+    assert {r["trade_id"] for r in live.iter_rows()} == {"L1"}
+    assert {r["trade_id"] for r in replay.iter_rows()} == {f"R{i}" for i in range(5)}
+    assert {r["trade_id"] for r in shadow.iter_rows()} == {"S1"}
+    assert {r["trade_id"] for r in synth.iter_rows()} == {"T1"}
+    assert len(live.trades(closed_only=True)) == 1          # replay'in 5 zararlı işlemi PAPER istatistiğine sızmaz
+    assert len(replay.trades(closed_only=True)) == 5
+    # bilinmeyen namespace fail-closed
+    import pytest as _pytest
+    with _pytest.raises(ValueError):
+        TradeMemory(p, source="BACKTEST_X")

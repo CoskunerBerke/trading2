@@ -2,7 +2,7 @@
 
 - **Repository:** https://github.com/CoskunerBerke/trading2.git · yerel `C:\Users\berke\Trading bot` · **branch** `feature/trading-v3-paper-testnet`
 - **HEAD:** `git rev-parse --short HEAD` (bu oturum: `docs: record historical learning session` — önceki 8 mantıksal commit aşağıda). `main` değişmedi; PR/merge/tag yok; yalnız feature branch'e normal push.
-- **Testler:** `python -m pytest tests -q` → **212 passed** (Phase 8: +10 gap-reconcile, +1 heartbeat, +1 universe-plan, +1 namespace, +1 authority) (Phase 6: +2 kapanış-notu regresyonu; `test_risk` cooldown iddiaları sabit saate bağlandı) (156 → +8 snapshot, +6 ledger restart, +9 ops/risk/stop/runtime, +6 history, +7 patterns, +4 replay/learning). Ruff E9/F63/F7/F82/F401 temiz.
+- **Testler:** `python -m pytest tests -q` → **245 passed / 7 skipped** (Phase 8: +10 gap-reconcile, +1 heartbeat, +1 universe-plan, +1 namespace, +1 authority) (Phase 6: +2 kapanış-notu regresyonu; `test_risk` cooldown iddiaları sabit saate bağlandı) (156 → +8 snapshot, +6 ledger restart, +9 ops/risk/stop/runtime, +6 history, +7 patterns, +4 replay/learning). Ruff E9/F63/F7/F82/F401 temiz.
 - **Mod:** PAPER / profil PAPER_RESEARCH · LIVE kapalı (`live_order_path_enabled: false`, `ALLOW_LIVE_TRADING` unset) · TESTNET kapalı · LLM `noop` · API anahtarı/.env yok · kill switch ARMED.
 - **Gerçek emir 0 · LIVE çağrısı 0 · TESTNET çağrısı 0 · dış LLM çağrısı 0** (bütün oturum).
 
@@ -85,6 +85,22 @@ Backup'lar: `backups/hourly/tradingbot-hourly-20260818T205349Z…20260819T072955
 - **`56bebcb` ops(vps):** `ops/authority.py` + CLI `authority --claim/--release` — `state/worker_authority.json` başka host'taysa `watch` fail-closed başlamaz (exit 4); `setup_vps_v3.sh` ufw yalnız-SSH + kurulumda otomatik claim.
 - **Kapasite/VPS (docs/VPS_PHASE8_PLAN.md):** ölçülen yoğunluklar ham ~45 B/satır, feature ~468 B/satır (×10.3), replay RAM ~3.7 KB/bar (4h evren 1.5 GB, 1h 5.9 GB → stride); 1. yıl ayak izi 12–17 GB < 45 GB → **öneri: OVH VPS-2 (4 vCore/8 GB/75 GB NVMe), Ubuntu 24.04, AB lokasyonu (~10–14 €/ay)**; satın alma sonrası-deploy öncesi salt-okunur Binance erişim testi. Satın alma YAPILMADI; kullanıcı onayı bekleniyor.
 - F00004/F00005 el sürülmedi (tek fill, aynı ID); worker bu fazda hiç başlatılmadı; gerçek emir 0 · LIVE 0 · TESTNET 0 · LLM 0.
+
+## Phase 9 — Replay araştırma hattı (kaynak; VPS'te çalıştırılmadı)
+- `tradingbot/replay/research.py` + CLI `replay-plan` / `replay-train` / `replay-evaluate` + `deploy/replay_runner.sh`.
+  Kök neden: `historical-replay` yalnız rapor üretiyordu — biriken `HISTORICAL_REPLAY` hafızasından challenger
+  EĞİTİLMİYOR, objektif OOS/kalibrasyon değerlendirmesi yapılmıyordu; `--state-dir`/run-id yol sözleşmesi de
+  yalnız "tam eşitlik" kontrolüyle korunuyordu (traversal/symlink/boş id açıktı).
+- İzolasyon: `resolve_replay_dir` traversal, symlink kaçışı, mutlak/boş/nokta-tire run-id, canlı state ile
+  çakışma ve canlı klasöre doğrudan yazımı fail-closed reddeder; eğitim/değerlendirme canlı `models.json`,
+  `learn_v2.json`, ledger ve trade memory dosyalarını AÇMAZ (testler bayt-düzeyi sha256 ile kanıtlar).
+- Determinizm: recency ağırlıkları için referans an = son kaydın zamanı (duvar saati değil) → aynı veriyle
+  bağımsız iki koşu aynı `params_hash`/`metrics_hash`. İdempotency: aynı `input_hash` → yeniden eğitim yok.
+- Terfi yok: model replay registry'sinde CANDIDATE kalır; CHAMPION işaretli model değerlendirmede reddedilir;
+  rapor en fazla "shadow adayı olabilir" (OOS beklenti %95 alt sınırı > 0 ve yeterli örnek şartıyla).
+- Kapasite: plan, ölçülen yoğunlukla (≈5.2 KB/pattern olayı) tahmin üretir ve host (1024 MB) + worker (900 MB)
+  rezervini düşer; RAM ölçülemezse `--assume-available-mb` şarttır. İlk Core-4 pilotu yalnız PLAN olarak
+  `docs/VPS_PHASE8_PLAN.md` §6b'de hazır.
 
 ## Bilinen sınırlamalar (dürüst)
 - Gerçek WebSocket veri döngüsü yok; exit monitörü REST/last fiyatla 60 sn periyotlu; intrabar yalnız bar uçları.

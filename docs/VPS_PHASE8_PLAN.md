@@ -81,6 +81,39 @@ için yeterli; 75 GB diskte %40 boş pay (30 GB) ayrıldıktan sonra bile ~2.5×
 authority'yi claim eder) → 8) PC'de `authority` markörü sayesinde yerel `watch` başlayamaz →
 9) gap-reconcile raporu + duplicate=0 → 10) ilk 24 saat yalnız PAPER/noop soak.
 
+## 6b. Replay araştırma hattı ve ilk Core-4 pilotu (yalnız PLAN — VPS'te çalıştırılmadı)
+
+Komutlar (hepsi PAPER; canlı state/model/pozisyonlara yazmaz):
+- `replay-plan` — read-only dry-run: manifestlerden satır/timeline/pattern-olay sayısı, tahmini bellek/CPU,
+  host+worker rezervi düşülmüş bütçe ve risk sınıfı (LOW/MEDIUM/HIGH/BLOCKED). Veri okumaz, dizin yaratmaz.
+  Yetersiz veri, bozuk parça, manifest hatası, bütçe aşımı ya da RAM ölçülemezliği → non-zero (fail-closed).
+- `replay-train --run-id <id>` — YALNIZ `state/replay/<id>/` altındaki `HISTORICAL_REPLAY` hafızasından
+  challenger eğitir; `train_manifest.json` (veri aralığı, seed, config, input/params/metrics hash'leri) yazar.
+  İdempotent (aynı input hash → yeniden eğitim yok), deterministik (recency referansı = son kayıt zamanı,
+  duvar saati değil). Canlı `models.json`/`learn_v2.json`/ledger/trade memory açılmaz; terfi YOK.
+- `replay-evaluate --run-id <id>` — OOS raporu: closed/train/holdout, expectancy, PF, maxDD, win rate,
+  Brier/ECE/log-loss, %95 alt sınır, veri aralığı, walk-forward pencere sayısı, determinism hash'leri,
+  survivorship uyarısı. Yetersiz örnek, bayat/bozuk artifact, bölünme tutarsızlığı, zaman-sırası ihlali ya da
+  CHAMPION işaretli model → non-zero. Çıktı en fazla "shadow adayı olabilir" der; kopyalama/terfi yapmaz.
+
+Runner: `deploy/replay_runner.sh plan|train|evaluate|full <RUN_ID> [...]` — service user + APP cwd + açık
+`TRADINGBOT_DATA`/`TRADINGBOT_STATE_DIR`, `env -i` (env dosyası yüklenmez, secret okunmaz/yazılmaz),
+PAPER + `live_order_path_enabled=false` zorunlu, kapasite planı geçmeden iş başlamaz, iş `systemd-run --scope`
+ile ayrı cgroup'ta (varsayılan `MemoryMax=2G`, `CPUQuota=60%`, `Nice=15`, `IOWeight=20`) çalışır; worker ve
+dashboard **durdurulmaz**.
+
+**İlk pilot (sunucuda ÇALIŞTIRILMADI; onay sonrası uygulanacak):**
+```
+BTC/USDT ETH/USDT SOL/USDT BNB/USDT · futures · 4h · stride=4 · seed=7 · 2022-01-01→2026-08-01 · patterns açık
+```
+1) `sudo bash /opt/tradingbot/app/deploy/replay_runner.sh plan core4_4h_s4_seed7 --symbols BTC/USDT ETH/USDT SOL/USDT BNB/USDT --market futures --tf 4h --from 2022-01-01 --to 2026-08-01 --stride 4 --seed 7`
+   → risk sınıfı LOW/MEDIUM değilse DUR (stride artır ya da sembol azalt).
+2) Replay koşusu (mevcut komut, ayrı state): `historical-replay --run-id core4_4h_s4_seed7 --symbols ... --stride 4 --seed 7 --from 2022-01-01 --to 2026-08-01`
+3) `replay_runner.sh train core4_4h_s4_seed7` → `state/replay/core4_4h_s4_seed7/train_manifest.json`
+4) `replay_runner.sh evaluate core4_4h_s4_seed7` → `evaluation.json`
+5) Doğrula: worker `NRestarts=0`, `/health/ready=true`, `futures_ledger.json` sha256 pilot öncesiyle aynı,
+   `state/models.json` ve `state/learn_v2.json` değişmemiş, BZ/XAUT/ZRO pozisyonları aynı.
+
 ## 7. Kullanıcıdan istenen TEK karar
 
 **OVH VPS-2, AB lokasyonu, Ubuntu 24.04 LTS** siparişini onaylayıp açmak (~10–14 €/ay). Sunucu bilgileri

@@ -420,6 +420,61 @@ def cmd_historical_replay(cfg: BotConfig, args) -> int:
     return 0
 
 
+def _replay_root(cfg: BotConfig, args):
+    return Path(args.state_dir) if getattr(args, "state_dir", None) else None
+
+
+def cmd_replay_plan(cfg: BotConfig, args) -> int:
+    """Read-only dry-run: satır/timeline/olay/bellek/CPU tahmini + kapasite risk sınıfı. Hiçbir şey yazmaz; fail-closed."""
+    from .history import HistoryStore
+    from .replay.research import ReplaySafetyError, plan_replay, resolve_replay_dir
+    store = HistoryStore(cfg.cache_path / cfg.v3.history.root_dir)
+    syms = list(args.symbols) if args.symbols else list(cfg.coins)
+    run_id = args.run_id or f"plan_{args.market}_{args.tf}_seed{args.seed}"
+    try:
+        resolve_replay_dir(cfg.state_path, run_id, _replay_root(cfg, args))       # yol sözleşmesi planda da doğrulanır
+    except ReplaySafetyError as exc:
+        print(f"BLOCK: {exc}")
+        return 2
+
+    def _ms(v):
+        return int(_dt.datetime.fromisoformat(v).replace(tzinfo=_dt.timezone.utc).timestamp() * 1000) if v else None
+
+    plan = plan_replay(cfg, store, run_id=run_id, symbols=syms, market=args.market, tf=args.tf, stride=args.stride,
+                       seed=args.seed, start_ms=_ms(getattr(args, "from_", None)), end_ms=_ms(args.to),
+                       patterns=not args.no_patterns, pattern_stride=int(getattr(args, "pattern_stride", 1) or 1),
+                       available_mb=getattr(args, "assume_available_mb", None),
+                       host_reserve_mb=args.host_reserve_mb, worker_reserve_mb=args.worker_reserve_mb)
+    _p(plan.to_dict())
+    return 0 if plan.ok else 1
+
+
+def cmd_replay_train(cfg: BotConfig, args) -> int:
+    """Replay state'indeki HISTORICAL_REPLAY hafızasından challenger eğitir. Canlı state/model'e DOKUNMAZ, terfi YOK."""
+    from .replay.research import ReplaySafetyError, train_replay_challenger, resolve_replay_dir
+    try:
+        rdir = resolve_replay_dir(cfg.state_path, args.run_id, _replay_root(cfg, args), must_exist=True)
+        out = train_replay_challenger(cfg, rdir, seed=args.seed, force=bool(getattr(args, "force", False)))
+    except ReplaySafetyError as exc:
+        print(f"BLOCK: {exc}")
+        return 2
+    _p(out)
+    return 0
+
+
+def cmd_replay_evaluate(cfg: BotConfig, args) -> int:
+    """Objektif OOS değerlendirmesi (walk-forward/purge/embargo + sızıntı kontrolü). Yalnız rapor; terfi YOK."""
+    from .replay.research import ReplaySafetyError, evaluate_replay, resolve_replay_dir
+    try:
+        rdir = resolve_replay_dir(cfg.state_path, args.run_id, _replay_root(cfg, args), must_exist=True)
+        rep = evaluate_replay(cfg, rdir, min_samples=getattr(args, "min_samples", None))
+    except ReplaySafetyError as exc:
+        print(f"BLOCK: {exc}")
+        return 2
+    _p(rep)
+    return 0
+
+
 def cmd_learning_status(cfg: BotConfig, args) -> int:
     """LearnerV2/registry özeti; --replay <run_id> ile replay state'i, yoksa gerçek PAPER state (kaynak namespace ayrı)."""
     from .learn import LearnConfig, LearnerV2, ModelRegistry, TradeMemory
@@ -651,6 +706,24 @@ def register(sub: argparse._SubParsersAction) -> None:
     s.add_argument("--train-days", dest="train_days", type=int, default=180); s.add_argument("--test-days", dest="test_days", type=int, default=30)
     s.add_argument("--purge", type=int, default=6); s.add_argument("--embargo", type=int, default=6); s.add_argument("--no-patterns", dest="no_patterns", action="store_true")
     s.add_argument("--min-sample", dest="min_sample", type=int, default=30); s.add_argument("--horizon", type=int, default=24); s.set_defaults(fn=cmd_historical_replay)
+    s = sub.add_parser("replay-plan", help="Replay dry-run: veri/timeline/olay/bellek/CPU tahmini + kapasite riski (read-only)")
+    s.add_argument("--symbols", nargs="*"); s.add_argument("--market", default="futures", choices=["spot", "futures"]); s.add_argument("--tf", default="4h")
+    s.add_argument("--from", dest="from_", default=None); s.add_argument("--to", default=None); s.add_argument("--stride", type=int, default=1)
+    s.add_argument("--pattern-stride", dest="pattern_stride", type=int, default=1); s.add_argument("--seed", type=int, default=0)
+    s.add_argument("--run-id", dest="run_id", default=None); s.add_argument("--state-dir", dest="state_dir", default=None)
+    s.add_argument("--no-patterns", dest="no_patterns", action="store_true")
+    s.add_argument("--assume-available-mb", dest="assume_available_mb", type=float, default=None,
+                   help="RAM ölçülemeyen ortamlarda açık kapasite girdisi (fail-closed)")
+    s.add_argument("--host-reserve-mb", dest="host_reserve_mb", type=float, default=1024.0)
+    s.add_argument("--worker-reserve-mb", dest="worker_reserve_mb", type=float, default=900.0)
+    s.set_defaults(fn=cmd_replay_plan)
+    s = sub.add_parser("replay-train", help="Replay challenger eğitimi (yalnız replay state; canlı model/terfi yok)")
+    s.add_argument("--run-id", dest="run_id", required=True); s.add_argument("--state-dir", dest="state_dir", default=None)
+    s.add_argument("--seed", type=int, default=0); s.add_argument("--force", action="store_true", help="idempotent atlamayı bilinçli olarak geç")
+    s.set_defaults(fn=cmd_replay_train)
+    s = sub.add_parser("replay-evaluate", help="Replay OOS değerlendirmesi (walk-forward + sızıntı kontrolü; yalnız rapor)")
+    s.add_argument("--run-id", dest="run_id", required=True); s.add_argument("--state-dir", dest="state_dir", default=None)
+    s.add_argument("--min-samples", dest="min_samples", type=int, default=None); s.set_defaults(fn=cmd_replay_evaluate)
     s = sub.add_parser("learning-status", help="LearnerV2/registry özeti (PAPER ya da --replay <run_id>)"); s.add_argument("--replay", default=None); s.set_defaults(fn=cmd_learning_status)
     s = sub.add_parser("authority", help="Tek yetkili worker markörü (split-brain koruması): --claim / --release / durum")
     s.add_argument("--claim", action="store_true"); s.add_argument("--release", action="store_true"); s.add_argument("--note", default="")

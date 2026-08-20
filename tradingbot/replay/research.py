@@ -87,6 +87,70 @@ def assert_live_state_untouched(state_path: Path | str) -> dict[str, str]:
     return out
 
 
+# --------------------------------------------------------------------------- semantik canlı doğrulama
+def semantic_live_snapshot(state_path: Path | str) -> dict:
+    """Canlı PAPER durumunun SEMANTİK özeti (byte hash değil): worker çalışırken MTM/heartbeat alanları
+    doğal olarak değişir; korunması gereken değişmezler bunlardır.
+    * mod PAPER + live_order_path_enabled=false
+    * gerçek emir sayısı (PAPER'da 0)
+    * açık pozisyonlar: id/symbol/side/entry/qty/stop/targets
+    * fill kimlikleri (duplicate tespiti için)
+    """
+    st = Path(state_path)
+    led = read_json(st / "futures_ledger.json", default=None) or {}
+    mode_d = read_json(st / "mode.json", default=None) or {}
+    positions, fills = {}, []
+    for sym, p in (led.get("positions") or {}).items():
+        if not isinstance(p, dict):
+            continue
+        positions[sym] = {"id": p.get("id"), "side": p.get("side"), "entry_avg": str(p.get("entry_avg")),
+                          "qty": str(p.get("qty")), "stop": str(p.get("stop")),
+                          "targets": [str(t) for t in (p.get("targets") or [])]}
+        fills += [f.get("id") for f in (p.get("fills") or []) if isinstance(f, dict)]
+    for h in (led.get("history") or []):
+        if isinstance(h, dict):
+            fills += [f.get("id") for f in (h.get("fills") or []) if isinstance(f, dict)]
+    return {"mode": str(mode_d.get("mode") or "").upper() or None,
+            "live_order_path_enabled": bool(mode_d.get("live_order_path_enabled", False)),
+            "real_orders": int(led.get("real_orders", 0) or 0),
+            "positions": positions, "closed_ids": [h.get("id") for h in (led.get("history") or []) if isinstance(h, dict)],
+            "fill_ids": sorted(x for x in fills if x),
+            "duplicate_fills": len(fills) != len(set(fills)),
+            "duplicate_position_ids": len({v["id"] for v in positions.values()}) != len(positions)}
+
+
+def compare_semantic(before: dict, after: dict, *, allow_new_closures: bool = True) -> dict:
+    """Pilot öncesi/sonrası semantik karşılaştırma. Açık pozisyonların kimlik/plan alanları DEĞİŞMEMELİ.
+    `allow_new_closures=True` iken worker'ın doğal PAPER kapanışları ihlal sayılmaz (pozisyon history'e geçer)."""
+    diffs: list[str] = []
+    if after.get("mode") != "PAPER":
+        diffs.append(f"mod PAPER değil: {after.get('mode')}")
+    if after.get("live_order_path_enabled"):
+        diffs.append("live_order_path_enabled=true")
+    if int(after.get("real_orders", 0) or 0) != 0:
+        diffs.append(f"gerçek emir sayısı 0 değil: {after.get('real_orders')}")
+    if after.get("duplicate_fills"):
+        diffs.append("duplicate fill kimliği")
+    if after.get("duplicate_position_ids"):
+        diffs.append("duplicate pozisyon kimliği")
+    b_pos, a_pos = before.get("positions") or {}, after.get("positions") or {}
+    for sym, bp in b_pos.items():
+        ap = a_pos.get(sym)
+        if ap is None:
+            if not (allow_new_closures and bp.get("id") in set(after.get("closed_ids") or [])):
+                diffs.append(f"{sym}: pozisyon kayboldu (kapanış kaydı da yok)")
+            continue
+        for k in ("id", "side", "entry_avg", "qty", "stop", "targets"):
+            if bp.get(k) != ap.get(k):
+                diffs.append(f"{sym}.{k}: {bp.get(k)} → {ap.get(k)}")
+    for fid in before.get("fill_ids") or []:
+        if fid not in set(after.get("fill_ids") or []):
+            diffs.append(f"fill kayboldu: {fid}")
+    return {"ok": not diffs, "diffs": diffs,
+            "checked": ["mode", "live_order_path_enabled", "real_orders", "position_identity", "stop_targets",
+                        "fill_ids", "duplicates"]}
+
+
 # --------------------------------------------------------------------------- plan (read-only)
 def _available_mb() -> float | None:
     """Kullanılabilir RAM (MB). Yalnız Linux /proc/meminfo; ölçülemezse None (çağıran fail-closed davranır)."""
@@ -109,6 +173,7 @@ class ReplayPlan:
     symbols: list[str]
     stride: int
     seed: int
+    pattern_stride: int = 1
     series: list[dict] = field(default_factory=list)
     total_rows: int = 0
     timeline_bars: int = 0
@@ -117,6 +182,8 @@ class ReplayPlan:
     est_cpu_minutes: float = 0.0
     available_mb: float | None = None
     budget_mb: float | None = None
+    runner_memory_max_mb: float | None = None
+    runner_budget_mb: float | None = None
     risk_class: str = "UNKNOWN"
     blockers: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
@@ -135,12 +202,17 @@ class ReplayPlan:
 
 def plan_replay(cfg: Any, store: Any, *, run_id: str, symbols: list[str], market: str = "futures", tf: str = "4h",
                 stride: int = 1, seed: int = 0, start_ms: int | None = None, end_ms: int | None = None,
-                patterns: bool = True, pattern_stride: int = 1, min_bars: int = 250,
+                patterns: bool = True, pattern_stride: int | None = None, min_bars: int = 250,
                 available_mb: float | None = None, host_reserve_mb: float = DEFAULT_HOST_RESERVE_MB,
-                worker_reserve_mb: float = DEFAULT_WORKER_RESERVE_MB) -> ReplayPlan:
+                worker_reserve_mb: float = DEFAULT_WORKER_RESERVE_MB,
+                runner_memory_max_mb: float | None = None, runner_safe_pct: float = 80.0) -> ReplayPlan:
     """Veri OKUMADAN (yalnız manifest) satır/timeline/olay/bellek/CPU tahmini + kapasite sınıfı. Hiçbir şey yazmaz."""
     stride = max(1, int(stride))
+    # PARİTE: `historical-replay --stride` hem karar kadansı hem pattern index stride'ı olarak kullanılır →
+    # plan varsayılanı da aynı stride'dır; bilinçli override için pattern_stride açıkça verilebilir.
+    pattern_stride = stride if pattern_stride is None else max(1, int(pattern_stride))
     plan = ReplayPlan(run_id=run_id, market=market, tf=tf, symbols=list(symbols), stride=stride, seed=int(seed))
+    plan.pattern_stride = pattern_stride
     aux_rows = 0
     for sym in symbols:
         rows = first = last = 0
@@ -201,12 +273,32 @@ def plan_replay(cfg: Any, store: Any, *, run_id: str, symbols: list[str], market
                                      f"(host {host_reserve_mb:.0f} + worker {worker_reserve_mb:.0f} rezerv) — stride artırın ya da sembol azaltın")
             elif ratio >= 0.8:
                 plan.warnings.append(f"bellek bütçesinin %{ratio * 100:.0f}'i — worker ile aynı anda riskli")
+    # Runner cgroup sınırıyla uyum: tahmini bellek, MemoryMax'ın güvenli yüzdesini aşmamalı (fail-closed)
+    if runner_memory_max_mb:
+        plan.runner_memory_max_mb = round(float(runner_memory_max_mb), 1)
+        cap = float(runner_memory_max_mb) * max(1.0, float(runner_safe_pct)) / 100.0
+        plan.runner_budget_mb = round(cap, 1)
+        if plan.est_memory_mb > cap:
+            plan.blockers.append(f"tahmini bellek {plan.est_memory_mb:.0f} MB > runner sınırı %{runner_safe_pct:.0f} "
+                                 f"× {runner_memory_max_mb:.0f} MB = {cap:.0f} MB — stride artırın, sembol azaltın ya da REPLAY_MEM_MAX yükseltin")
     if plan.blockers:
         plan.risk_class = "BLOCKED"
     return plan
 
 
 # --------------------------------------------------------------------------- eğitim
+_VOLATILE_PARAM_KEYS = ("trained_at", "created_at", "fitted_at", "updated_at")
+
+
+def _stable_params(params: dict) -> dict:
+    """Zaman damgalarını (duvar saati) ayıklanmış model parametreleri — determinizm karşılaştırması için."""
+    out = {k: v for k, v in (params or {}).items() if k not in _VOLATILE_PARAM_KEYS}
+    cal = out.get("calibrator")
+    if isinstance(cal, dict):
+        out["calibrator"] = {k: v for k, v in cal.items() if k not in _VOLATILE_PARAM_KEYS}
+    return out
+
+
 def _artifact_hash(obj: Any) -> str:
     return hashlib.sha256(json.dumps(obj, sort_keys=True, default=str, ensure_ascii=False).encode("utf-8")).hexdigest()
 
@@ -265,8 +357,9 @@ def train_replay_challenger(cfg: Any, replay_dir: Path, *, seed: int = 0, force:
         "data_range": {"first_recorded_at": inputs["first"], "last_recorded_at": inputs["last"]},
         "reference_now": iso(ref_now),        # recency ağırlıklarının referansı (duvar saati DEĞİL)
         "metrics": out["metrics"],
-        # model kimliği/created_at zaman-bağımlı olduğundan determinism hash yalnız AĞIRLIK+KALİBRASYON üzerinden
-        "params_hash": _artifact_hash({k: v for k, v in params.items() if k != "created_at"}),
+        # Determinism hash yalnız AĞIRLIK+KALİBRASYON üzerinden: model id ve zaman damgaları
+        # (`trained_at`, `created_at`) duvar saatine bağlıdır, karşılaştırmaya girmez.
+        "params_hash": _artifact_hash(_stable_params(params)),
         "metrics_hash": _artifact_hash(out["metrics"]),
         "promotion": {"live_promotion": False, "note": "replay registry'sinde CANDIDATE; canlı champion'a kopyalanmaz"},
         "idempotent_skip": False,
@@ -290,9 +383,141 @@ def _r_metrics(rs: list[float]) -> dict:
             "max_dd_r": round(dd, 4), "profit_factor": round(wins / losses, 4) if losses > 0 else None}
 
 
-def evaluate_replay(cfg: Any, replay_dir: Path, *, min_samples: int | None = None) -> dict:
-    """Objektif OOS değerlendirmesi. Walk-forward/purge/embargo sözleşmesi + sızıntı kontrolü.
-    Yalnız RAPOR üretir: canlı modele kopyalama/terfi YOK. Sorun varsa ReplaySafetyError (çağıran non-zero döner)."""
+def _ms_or_none(v):
+    if not v:
+        return None
+    try:
+        return int(from_iso(str(v)).timestamp() * 1000)
+    except (ValueError, TypeError):
+        return None
+
+
+def iso_ms(ms: int) -> str:
+    import datetime as _d
+    return iso(_d.datetime.fromtimestamp(int(ms) / 1000, tz=_d.timezone.utc))
+
+
+def _fold_rows(rows: list[dict], b: dict) -> tuple[list[dict], list[dict], list[dict]]:
+    """(train, test, excluded) — sızıntı kuralları:
+    * train: giriş >= train_start VE ÇIKIŞ (etiketin bilindiği an) < train_end
+    * excluded: etiketi purge/embargo bölgesinde biten ya da pencerelere düşmeyen kayıtlar
+    * test: giriş [test_start, test_end) — fold test pencereleri örtüşmez, işlem tek fold'da sayılır
+    """
+    tr, te, ex = [], [], []
+    for r in rows:
+        o, c = r.get("_open_ms"), r.get("_close_ms")
+        if o is None or c is None:
+            ex.append(r)
+        elif b["test_start_ms"] <= o < b["test_end_ms"]:
+            te.append(r)
+        elif o >= b["train_start_ms"] and c < b["train_end_ms"]:
+            tr.append(r)
+        else:
+            ex.append(r)
+    return tr, te, ex
+
+
+def _fit_fold(cfg, train_rows: list[dict], test_rows: list[dict], ref_ms: int):
+    """Fold modeli: YALNIZ train satırlarıyla eğitilir; kalibrasyon train'in son diliminden; test'e bakılmaz."""
+    import numpy as np
+
+    from ..learn import (Calibrator, LogisticModel, build_features, calibration_metrics, feature_names,
+                         recency_weights, to_vector)
+    from ..learn.features import FEATURE_VERSION
+    lc = cfg.v3.learning_v3
+    names = feature_names(FEATURE_VERSION, True)
+
+    def _xy(rs):
+        X = np.array([to_vector(build_features(r.get("features") or r, include_time_features=True), names) for r in rs], float)
+        y = np.array([1.0 if float((r.get("outcome") or {}).get("r_multiple", 0) or 0) > 0.25 else 0.0 for r in rs])
+        return X, y
+
+    Xtr, ytr = _xy(train_rows)
+    ages = np.array([max(0.0, (ref_ms - float(r["_close_ms"])) / 86_400_000.0) for r in train_rows])
+    w = recency_weights(ages, lc.half_life_days)
+    inner = max(1, int(len(train_rows) * (1 - lc.holdout_frac)))
+    model = LogisticModel(feature_names=names).fit(Xtr[:inner], ytr[:inner], w[:inner])
+    cal = Calibrator(lc.calibrator)
+    if len(train_rows) - inner >= 10:
+        cal.fit(model.predict_proba(Xtr[inner:]), ytr[inner:])
+    Xte, yte = _xy(test_rows)
+    p = model.predict_proba(Xte)
+    p = cal.apply(p) if cal.n_fit else p
+    met = calibration_metrics(p, yte)
+    met.pop("reliability", None)
+    return p, yte, met
+
+
+def _ms_or_none(v):
+    if not v:
+        return None
+    try:
+        return int(from_iso(str(v)).timestamp() * 1000)
+    except (ValueError, TypeError):
+        return None
+
+
+def iso_ms(ms: int) -> str:
+    import datetime as _d
+    return iso(_d.datetime.fromtimestamp(int(ms) / 1000, tz=_d.timezone.utc))
+
+
+def _fold_rows(rows: list[dict], b: dict) -> tuple[list[dict], list[dict], list[dict]]:
+    """(train, test, excluded) — sızıntı kuralları:
+    * train: giriş >= train_start VE ÇIKIŞ (etiketin bilindiği an) < train_end
+    * excluded: etiketi purge/embargo bölgesinde biten ya da pencerelere düşmeyen kayıtlar
+    * test: giriş [test_start, test_end) — fold test pencereleri örtüşmez, işlem tek fold'da sayılır
+    """
+    tr, te, ex = [], [], []
+    for r in rows:
+        o, c = r.get("_open_ms"), r.get("_close_ms")
+        if o is None or c is None:
+            ex.append(r)
+        elif b["test_start_ms"] <= o < b["test_end_ms"]:
+            te.append(r)
+        elif o >= b["train_start_ms"] and c < b["train_end_ms"]:
+            tr.append(r)
+        else:
+            ex.append(r)
+    return tr, te, ex
+
+
+def _fit_fold(cfg, train_rows: list[dict], test_rows: list[dict], ref_ms: int):
+    """Fold modeli: YALNIZ train satırlarıyla eğitilir; kalibrasyon train'in son diliminden; test'e bakılmaz."""
+    import numpy as np
+
+    from ..learn import (Calibrator, LogisticModel, build_features, calibration_metrics, feature_names,
+                         recency_weights, to_vector)
+    from ..learn.features import FEATURE_VERSION
+    lc = cfg.v3.learning_v3
+    names = feature_names(FEATURE_VERSION, True)
+
+    def _xy(rs):
+        X = np.array([to_vector(build_features(r.get("features") or r, include_time_features=True), names) for r in rs], float)
+        y = np.array([1.0 if float((r.get("outcome") or {}).get("r_multiple", 0) or 0) > 0.25 else 0.0 for r in rs])
+        return X, y
+
+    Xtr, ytr = _xy(train_rows)
+    ages = np.array([max(0.0, (ref_ms - float(r["_close_ms"])) / 86_400_000.0) for r in train_rows])
+    w = recency_weights(ages, lc.half_life_days)
+    inner = max(1, int(len(train_rows) * (1 - lc.holdout_frac)))
+    model = LogisticModel(feature_names=names).fit(Xtr[:inner], ytr[:inner], w[:inner])
+    cal = Calibrator(lc.calibrator)
+    if len(train_rows) - inner >= 10:
+        cal.fit(model.predict_proba(Xtr[inner:]), ytr[inner:])
+    Xte, yte = _xy(test_rows)
+    p = model.predict_proba(Xte)
+    p = cal.apply(p) if cal.n_fit else p
+    met = calibration_metrics(p, yte)
+    met.pop("reliability", None)
+    return p, yte, met
+
+
+def evaluate_replay(cfg, replay_dir: Path, *, min_samples: int | None = None, min_folds: int = 2,
+                    max_ece: float = 0.15, max_brier: float = 0.30) -> dict:
+    """GERÇEK anchored walk-forward OOS değerlendirmesi: her fold'da YALNIZ geçmiş train verisiyle challenger
+    üretilir; purge/embargo kayıtları hem eğitimden hem OOS metriğinden çıkarılır; her işlem en fazla bir test
+    fold'unda sayılır. Yalnız RAPOR üretir; canlı modele kopyalama/terfi YOK. Sorunlarda ReplaySafetyError."""
     replay_dir = Path(replay_dir)
     if not replay_dir.is_dir():
         raise ReplaySafetyError(f"replay dizini yok: {replay_dir}")
@@ -315,44 +540,92 @@ def evaluate_replay(cfg: Any, replay_dir: Path, *, min_samples: int | None = Non
     stamps = [str(r.get("recorded_at") or "") for r in rows]
     if any(stamps[i] > stamps[i + 1] for i in range(len(stamps) - 1)):
         raise ReplaySafetyError("hafıza zaman sırasında değil — walk-forward sözleşmesi ihlali")
-    n_train = int(manifest.get("n_train", 0))
-    n_hold = int(manifest.get("n_holdout", 0))
-    if n_train <= 0 or n_hold <= 0 or n_train + n_hold != n:
-        raise ReplaySafetyError(f"train/holdout bölünmesi tutarsız: {n_train}+{n_hold} != {n}")
-    if stamps[n_train - 1] > stamps[n_train]:
-        raise ReplaySafetyError("train/test sızıntısı: holdout örneği train penceresinden önce kaydedilmiş")
-    r_all = [float((r.get("outcome") or {}).get("r_multiple", 0) or 0) for r in rows]
-    oos = _r_metrics(r_all[n_train:])
-    ins = _r_metrics(r_all[:n_train])
-    met = dict(manifest.get("metrics") or {})
-    calib = {k: met.get(k) for k in ("brier", "log_loss", "ece", "n_holdout", "hit_rate", "expectancy_r") if k in met}
+    n_train_m, n_hold_m = int(manifest.get("n_train", 0)), int(manifest.get("n_holdout", 0))
+    if n_train_m <= 0 or n_hold_m <= 0 or n_train_m + n_hold_m != n:
+        raise ReplaySafetyError(f"eğitim manifesti tutarsız: n_train {n_train_m} + n_holdout {n_hold_m} != {n}")
+    for r in rows:
+        out = r.get("outcome") or {}
+        r["_open_ms"] = _ms_or_none(out.get("opened_at") or r.get("recorded_at"))
+        r["_close_ms"] = _ms_or_none(out.get("closed_at") or r.get("recorded_at"))
     replay_res = read_json(replay_dir / "replay_result.json", default=None)
-    wf = (replay_res or {}).get("windows") or []
+    windows = (replay_res or {}).get("windows") or []
+    bounds = [w.get("bounds") for w in windows if isinstance(w, dict) and isinstance(w.get("bounds"), dict)]
+    if not windows or len(bounds) != len(windows):
+        raise ReplaySafetyError("replay_result.json içinde kesin pencere sınırları (bounds) yok — replay'i güncel kodla yeniden koşun (fail-closed)")
+    bounds.sort(key=lambda b: b["train_end_ms"])
+    for b in bounds:
+        if not (b["train_start_ms"] < b["train_end_ms"] <= b["purge_end_ms"] <= b["embargo_end_ms"] <= b["test_start_ms"] < b["test_end_ms"]):
+            raise ReplaySafetyError(f"fold {b.get('idx')}: train/purge/embargo/test sınırları geçersiz ya da kesişiyor")
+    for a, b in zip(bounds, bounds[1:]):
+        if b["test_start_ms"] < a["test_end_ms"]:
+            raise ReplaySafetyError(f"fold {a.get('idx')}/{b.get('idx')}: test pencereleri örtüşüyor (çift sayım riski)")
+    folds, pooled_p, pooled_y, pooled_r, seen_ids = [], [], [], [], set()
+    for b in bounds:
+        tr, te, ex = _fold_rows(rows, b)
+        if not te:
+            continue
+        ids = {str(r.get("trade_id")) for r in te}
+        dup = ids & seen_ids
+        if dup:
+            raise ReplaySafetyError(f"aynı işlem birden fazla test fold'unda sayılıyor: {sorted(dup)[:3]}")
+        seen_ids |= ids
+        common = {"idx": b["idx"], "n_train": len(tr), "n_test": len(te),
+                  "train_range": [iso_ms(b["train_start_ms"]), iso_ms(b["train_end_ms"])],
+                  "test_range": [iso_ms(b["test_start_ms"]), iso_ms(b["test_end_ms"])],
+                  "purge_range": [iso_ms(b["purge_start_ms"]), iso_ms(b["purge_end_ms"])],
+                  "embargo_range": [iso_ms(b["embargo_start_ms"]), iso_ms(b["embargo_end_ms"])],
+                  "excluded_purge_embargo": len(ex)}
+        if len(tr) < max(10, need // 4):
+            folds.append(common | {"skipped": "yetersiz train örneği"})
+            continue
+        p, y, met = _fit_fold(cfg, tr, te, b["train_end_ms"])
+        r_test = [float((r.get("outcome") or {}).get("r_multiple", 0) or 0) for r in te]
+        pooled_p += [float(v) for v in p]
+        pooled_y += [float(v) for v in y]
+        pooled_r += r_test
+        folds.append(common | _r_metrics(r_test) | {"calibration": met})
+    scored = [f for f in folds if "calibration" in f]
+    if len(scored) < min_folds:
+        raise ReplaySafetyError(f"yeterli walk-forward fold'u yok: {len(scored)} < {min_folds} (aralığı/pencereleri büyütün)")
+    agg = _r_metrics(pooled_r)
+    from ..learn import calibration_metrics as _cm
+    agg_cal = _cm(pooled_p, pooled_y)
+    agg_cal.pop("reliability", None)
     lower_ci = None
-    if oos["n"] >= 2:                      # beklentinin normal-yaklaşık %95 alt sınırı (kenar iddiası için)
+    if agg["n"] >= 2:
         import statistics
-        sd = statistics.pstdev(r_all[n_train:]) or 0.0
-        lower_ci = round(oos["expectancy_r"] - 1.96 * sd / (oos["n"] ** 0.5), 4)
-    edge_claim = bool(lower_ci is not None and lower_ci > 0 and oos["n"] >= need)
+        sd = statistics.pstdev(pooled_r) or 0.0
+        lower_ci = round(agg["expectancy_r"] - 1.96 * sd / (agg["n"] ** 0.5), 4)
+    pos = sum(1 for f in scored if (f.get("expectancy_r") or 0) > 0)
+    consistency = round(pos / len(scored), 4)
+    gates = {"enough_oos": bool(agg["n"] >= need),
+             "positive_expectancy": bool(agg["expectancy_r"] is not None and agg["expectancy_r"] > 0),
+             "ci95_lower_above_zero": bool(lower_ci is not None and lower_ci > 0),
+             "calibration_ok": bool(agg_cal.get("ece", 1.0) <= max_ece and agg_cal.get("brier", 1.0) <= max_brier),
+             "fold_consistency": bool(consistency >= 0.6), "enough_folds": bool(len(scored) >= min_folds)}
+    shadow = all(gates.values())
     report = {
         "version": RESEARCH_VERSION, "generated_at": iso(utc_now()), "run_dir": str(replay_dir),
         "source": "HISTORICAL_REPLAY", "model_id": manifest["model_id"], "model_status": model.get("status"),
-        "samples": {"closed": n, "train": n_train, "holdout": n_hold},
-        "out_of_sample": oos, "in_sample": ins, "calibration": calib,
-        "oos_expectancy_lower_ci95": lower_ci,
+        "samples": {"closed": n, "train": int(manifest.get("n_train", 0)), "holdout": int(manifest.get("n_holdout", 0)),
+                    "oos_pooled": agg["n"],
+                    "excluded_purge_embargo": sum(f.get("excluded_purge_embargo", 0) for f in scored)},
+        "walk_forward": {"folds": len(folds), "scored_folds": len(scored), "purge_embargo_enforced": True,
+                         "fold_consistency": consistency,
+                         "note": "anchored-forward; purge+embargo kayıtları eğitim ve OOS dışında; test pencereleri örtüşmez"},
+        "folds": folds,
+        "out_of_sample": agg, "oos_expectancy_lower_ci95": lower_ci, "calibration": agg_cal, "gates": gates,
         "data_range": manifest.get("data_range"),
-        "walk_forward": {"windows": len(wf), "purge_embargo_enforced": bool(wf),
-                         "note": "pencereler replay_result.json'dan; anchored-forward, shuffle yok"},
         "determinism": {"params_hash": manifest.get("params_hash"), "metrics_hash": manifest.get("metrics_hash"),
                         "replay_hash": (replay_res or {}).get("determinism_hash")},
         "survivorship_bias": {"present": True, "note": "bugün listeli evren; delisted semboller kapsam dışı — kenar tahmini yukarı yanlı olabilir"},
-        "shadow_candidate": edge_claim,
-        "verdict": ("SHADOW ADAYI OLABİLİR" if edge_claim else "KENAR İDDİASI YOK (CI alt sınırı ≤ 0 ya da örnek az)"),
+        "shadow_candidate": shadow,
+        "verdict": ("SHADOW ADAYI OLABİLİR" if shadow else "KENAR İDDİASI YOK (kapılardan en az biri geçmedi)"),
         "promotion": {"live_promotion": False, "note": "bu rapor canlı modele kopyalama/terfi İÇERMEZ"},
     }
     atomic_write_json(replay_dir / EVAL_REPORT, report, indent=1)
     return report
 
 
-__all__ = ["ReplayPlan", "ReplaySafetyError", "assert_live_state_untouched", "evaluate_replay", "plan_replay",
+__all__ = ["ReplayPlan", "ReplaySafetyError", "compare_semantic", "iso_ms", "semantic_live_snapshot", "iso_ms", "assert_live_state_untouched", "evaluate_replay", "plan_replay",
            "resolve_replay_dir", "train_replay_challenger", "EVAL_REPORT", "TRAIN_MANIFEST", "RESEARCH_VERSION"]

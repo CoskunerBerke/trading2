@@ -36,6 +36,19 @@ class WFWindow:
     test_start: int
     test_end: int
     idx: int
+    purge_bars: int = 0
+    embargo_bars: int = 0
+    bar_ms: int = 0
+
+    def bounds(self) -> dict:
+        """Kesin sınırlar (ms) — purge/embargo bölgesi [train_end, test_start) olarak açıkça kaydedilir."""
+        gap = (self.purge_bars + self.embargo_bars) * self.bar_ms
+        purge_ms = self.purge_bars * self.bar_ms
+        return {"idx": self.idx, "train_start_ms": self.train_start, "train_end_ms": self.train_end,
+                "purge_start_ms": self.train_end, "purge_end_ms": self.train_end + purge_ms,
+                "embargo_start_ms": self.train_end + purge_ms, "embargo_end_ms": self.train_end + gap,
+                "test_start_ms": self.test_start, "test_end_ms": self.test_end,
+                "purge_bars": self.purge_bars, "embargo_bars": self.embargo_bars, "bar_ms": self.bar_ms}
 
 
 def walk_forward_windows(start_ms: int, end_ms: int, *, train_days: int, test_days: int, purge_bars: int = 6, embargo_bars: int = 6, bar_ms: int = 4 * 3_600_000) -> list[WFWindow]:
@@ -44,7 +57,8 @@ def walk_forward_windows(start_ms: int, end_ms: int, *, train_days: int, test_da
     ts = start_ms + train_days * DAY_MS
     gap = (purge_bars + embargo_bars) * bar_ms
     while ts + gap + test_days * DAY_MS <= end_ms:
-        out.append(WFWindow(start_ms, ts, ts + gap, ts + gap + test_days * DAY_MS, i))
+        out.append(WFWindow(start_ms, ts, ts + gap, ts + gap + test_days * DAY_MS, i,
+                            purge_bars=purge_bars, embargo_bars=embargo_bars, bar_ms=bar_ms))
         ts += test_days * DAY_MS
         i += 1
     return out
@@ -81,10 +95,12 @@ class HistoricalReplay:
         self.start_ms, self.end_ms = start_ms, end_ms
         self.lookback_bars, self.min_bars, self.stride = lookback_bars, min_bars, max(1, decision_stride)
         root = Path(state_root) if state_root else (Path(cfg.state_path) / "replay")
-        self.state_dir = root / run_id
-        if self.state_dir.resolve() == Path(cfg.state_path).resolve():
-            raise ValueError("replay state dizini gerçek state ile aynı olamaz")
+        # DEFENSE-IN-DEPTH: CLI doğrulamış olsa da motor kanonik kontrolü tekrar uygular
+        # (traversal, symlink kaçışı, boş/tehlikeli run-id, canlı state çakışması, live-state symlink'leri).
+        from .research import resolve_replay_dir
+        self.state_dir = resolve_replay_dir(cfg.state_path, run_id, root)
         self.state_dir.mkdir(parents=True, exist_ok=True)
+        resolve_replay_dir(cfg.state_path, run_id, root)      # mkdir SONRASI tekrar (symlink ile değiştirilmediğini doğrula)
         v3 = cfg.v3
         ch = v3.coin_heads
         self.profile = resolve_profile(v3.risk_profiles.profile, v3.risk_profiles.overrides, i_understand=v3.risk_profiles.i_understand)
@@ -271,7 +287,8 @@ class HistoricalReplay:
         for w in wf:
             ts = [x for x in tr if w.test_start <= int(datetime.fromisoformat(x["opened_at"]).timestamp() * 1000) < w.test_end]
             self.result.windows.append({"idx": w.idx, "train": [iso(datetime.fromtimestamp(w.train_start / 1000, tz=timezone.utc)), iso(datetime.fromtimestamp(w.train_end / 1000, tz=timezone.utc))],
-                                        "test": [iso(datetime.fromtimestamp(w.test_start / 1000, tz=timezone.utc)), iso(datetime.fromtimestamp(w.test_end / 1000, tz=timezone.utc))], **_m(ts)})
+                                        "test": [iso(datetime.fromtimestamp(w.test_start / 1000, tz=timezone.utc)), iso(datetime.fromtimestamp(w.test_end / 1000, tz=timezone.utc))],
+                                        "bounds": w.bounds(), **_m(ts)})
         canon = json.dumps([[x["symbol"], x["side"], round(x["entry"], 8), round(x["exit"] or 0, 8), x["exit_reason"], round(x["net_r"], 6)] for x in tr], sort_keys=True)
         self.result.determinism_hash = hashlib.sha256(canon.encode()).hexdigest()
         self.ledger2.save(self.state_dir / "futures_ledger.json")

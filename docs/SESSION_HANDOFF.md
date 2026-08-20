@@ -2,7 +2,7 @@
 
 - **Repository:** https://github.com/CoskunerBerke/trading2.git · yerel `C:\Users\berke\Trading bot` · **branch** `feature/trading-v3-paper-testnet`
 - **HEAD:** `git rev-parse --short HEAD` (bu oturum: `docs: record historical learning session` — önceki 8 mantıksal commit aşağıda). `main` değişmedi; PR/merge/tag yok; yalnız feature branch'e normal push.
-- **Testler:** `python -m pytest tests -q` → **245 passed / 7 skipped** (Phase 8: +10 gap-reconcile, +1 heartbeat, +1 universe-plan, +1 namespace, +1 authority) (Phase 6: +2 kapanış-notu regresyonu; `test_risk` cooldown iddiaları sabit saate bağlandı) (156 → +8 snapshot, +6 ledger restart, +9 ops/risk/stop/runtime, +6 history, +7 patterns, +4 replay/learning). Ruff E9/F63/F7/F82/F401 temiz.
+- **Testler:** `python -m pytest tests -q` → **261 passed / 7 skipped** (Phase 8: +10 gap-reconcile, +1 heartbeat, +1 universe-plan, +1 namespace, +1 authority) (Phase 6: +2 kapanış-notu regresyonu; `test_risk` cooldown iddiaları sabit saate bağlandı) (156 → +8 snapshot, +6 ledger restart, +9 ops/risk/stop/runtime, +6 history, +7 patterns, +4 replay/learning). Ruff E9/F63/F7/F82/F401 temiz.
 - **Mod:** PAPER / profil PAPER_RESEARCH · LIVE kapalı (`live_order_path_enabled: false`, `ALLOW_LIVE_TRADING` unset) · TESTNET kapalı · LLM `noop` · API anahtarı/.env yok · kill switch ARMED.
 - **Gerçek emir 0 · LIVE çağrısı 0 · TESTNET çağrısı 0 · dış LLM çağrısı 0** (bütün oturum).
 
@@ -85,6 +85,29 @@ Backup'lar: `backups/hourly/tradingbot-hourly-20260818T205349Z…20260819T072955
 - **`56bebcb` ops(vps):** `ops/authority.py` + CLI `authority --claim/--release` — `state/worker_authority.json` başka host'taysa `watch` fail-closed başlamaz (exit 4); `setup_vps_v3.sh` ufw yalnız-SSH + kurulumda otomatik claim.
 - **Kapasite/VPS (docs/VPS_PHASE8_PLAN.md):** ölçülen yoğunluklar ham ~45 B/satır, feature ~468 B/satır (×10.3), replay RAM ~3.7 KB/bar (4h evren 1.5 GB, 1h 5.9 GB → stride); 1. yıl ayak izi 12–17 GB < 45 GB → **öneri: OVH VPS-2 (4 vCore/8 GB/75 GB NVMe), Ubuntu 24.04, AB lokasyonu (~10–14 €/ay)**; satın alma sonrası-deploy öncesi salt-okunur Binance erişim testi. Satın alma YAPILMADI; kullanıcı onayı bekleniyor.
 - F00004/F00005 el sürülmedi (tek fill, aynı ID); worker bu fazda hiç başlatılmadı; gerçek emir 0 · LIVE 0 · TESTNET 0 · LLM 0.
+
+## Phase 9b — Replay hattı sertleştirme (kaynak; VPS'te çalıştırılmadı)
+- **Runner gerçek replay'i yönetir:** eylemler `plan|replay|train|evaluate|full|status`; `full` = plan →
+  historical-replay → train → evaluate. En ağır iş dahil hepsi kaynak sınırlı **transient systemd service**
+  içinde (`--service-type=exec --wait`) → SSH kopsa da sürer; `systemd-run` yoksa BLOCK (sınırsız `nice`
+  fallback kaldırıldı). Eşzamanlı aynı run-id engeli, `--resume/--force` sözleşmesi, `status` (unit
+  state/result/exit + son loglar + artifact'ler), RUN_ID/cgroup regex doğrulaması (injection engeli).
+- **historical-replay izolasyonu:** artık kanonik `resolve_replay_dir` doğrulamasından geçer (CLI exit 2) ve
+  `HistoricalReplay.__init__` içinde defense-in-depth tekrar doğrulanır; CLI çözülmüş kökü `state_root` olarak
+  verir → double-run-id/TOCTOU yok; hedef kesin `state/replay/<run_id>`.
+- **Plan ↔ runner uyumu:** `--runner-memory-max-mb`/`--runner-safe-pct` (vars. %80) ile tahmin cgroup sınırını
+  aşarsa plan bloklar; `--pattern-stride` varsayılanı artık `--stride` (parite).
+- **Gerçek walk-forward OOS:** `replay_result.json` pencerelerine kesin `bounds` (train/purge/embargo/test ms)
+  yazılır; değerlendirme her fold'da yalnız geçmiş train ile model üretir, purge/embargo kayıtlarını hem
+  eğitimden hem OOS'tan çıkarır, örtüşen test penceresi/çift sayım/sınır ihlali/eksik fold → fail-closed.
+  Fold bazlı + toplu metrikler (expectancy/PF/maxDD/win rate/Brier/ECE/log-loss/CI95) ve 6 kapılı SHADOW
+  ADAYI kararı. `purge_embargo_enforced` yalnız doğrulama geçtiyse true.
+- **Determinizm düzeltmesi:** `LogisticModel` params'ındaki `trained_at` (duvar saati) hash'ten ayıklandı →
+  bağımsız iki koşu aynı `params_hash`.
+- **Semantik operasyonel doğrulama:** `semantic_live_snapshot`/`compare_semantic` — byte hash yerine mod,
+  live-path, gerçek emir, pozisyon kimlik/plan alanları, fill kimlikleri ve duplicate kontrolü; MTM/updated_at
+  değişimi ihlal sayılmaz. Ayrıca test, replay hattının canlı state dosyalarını HİÇ açmadığını dosya erişimi
+  izleyerek kanıtlar.
 
 ## Phase 9 — Replay araştırma hattı (kaynak; VPS'te çalıştırılmadı)
 - `tradingbot/replay/research.py` + CLI `replay-plan` / `replay-train` / `replay-evaluate` + `deploy/replay_runner.sh`.

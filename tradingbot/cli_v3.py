@@ -399,9 +399,17 @@ def cmd_historical_replay(cfg: BotConfig, args) -> int:
     """Event-time replay: state/replay/<run_id>/ (gerçek state'e dokunmaz), HISTORICAL_REPLAY namespace, walk-forward, determinism hash."""
     from .history import HistoryStore
     from .replay import HistoricalReplay, walk_forward_windows
+    from .replay.research import ReplaySafetyError, resolve_replay_dir
     store = HistoryStore(cfg.cache_path / cfg.v3.history.root_dir)
     syms = list(args.symbols) if args.symbols else list(cfg.coins)
     run_id = args.run_id or f"replay_{args.market}_{args.tf}_seed{args.seed}_{utc_now():%Y%m%dT%H%M%SZ}"
+    # İZOLASYON: replay-plan/train/evaluate ile AYNI kanonik doğrulama (traversal/symlink/canlı çakışma).
+    # Çözülen mutlak dizin doğrudan HistoricalReplay'e verilir; run_id ikinci kez eklenmez (double-run-id/TOCTOU yok).
+    try:
+        rdir = resolve_replay_dir(cfg.state_path, run_id, Path(args.state_dir) if args.state_dir else None)
+    except ReplaySafetyError as exc:
+        print(f"BLOCK: {exc}")
+        return 2
     def _ms(v):
         return int(_dt.datetime.fromisoformat(v).replace(tzinfo=_dt.timezone.utc).timestamp() * 1000) if v else None
     eng = None
@@ -409,7 +417,7 @@ def cmd_historical_replay(cfg: BotConfig, args) -> int:
         _, eng, n_ev = _pattern_engine(cfg, args, market=args.market, tf=args.tf, symbols=syms)
         print(f"pattern index: {n_ev} olay")
     rp = HistoricalReplay(cfg, run_id=run_id, store=store, symbols=syms, market=args.market, tf=args.tf, seed=args.seed,
-                          state_root=Path(args.state_dir) if args.state_dir else None, pattern_engine=eng, start_ms=_ms(getattr(args, "from_", None)),
+                          state_root=rdir.parent, pattern_engine=eng, start_ms=_ms(getattr(args, "from_", None)),
                           end_ms=_ms(args.to), decision_stride=args.stride)
     rp.load()
     ws = walk_forward_windows(rp.result.start_ms, rp.result.end_ms, train_days=args.train_days, test_days=args.test_days, purge_bars=args.purge, embargo_bars=args.embargo)
@@ -442,9 +450,12 @@ def cmd_replay_plan(cfg: BotConfig, args) -> int:
 
     plan = plan_replay(cfg, store, run_id=run_id, symbols=syms, market=args.market, tf=args.tf, stride=args.stride,
                        seed=args.seed, start_ms=_ms(getattr(args, "from_", None)), end_ms=_ms(args.to),
-                       patterns=not args.no_patterns, pattern_stride=int(getattr(args, "pattern_stride", 1) or 1),
+                       patterns=not args.no_patterns,
+                       pattern_stride=getattr(args, "pattern_stride", None),      # None → stride ile parite
                        available_mb=getattr(args, "assume_available_mb", None),
-                       host_reserve_mb=args.host_reserve_mb, worker_reserve_mb=args.worker_reserve_mb)
+                       host_reserve_mb=args.host_reserve_mb, worker_reserve_mb=args.worker_reserve_mb,
+                       runner_memory_max_mb=getattr(args, "runner_memory_max_mb", None),
+                       runner_safe_pct=float(getattr(args, "runner_safe_pct", 80.0) or 80.0))
     _p(plan.to_dict())
     return 0 if plan.ok else 1
 
@@ -709,13 +720,18 @@ def register(sub: argparse._SubParsersAction) -> None:
     s = sub.add_parser("replay-plan", help="Replay dry-run: veri/timeline/olay/bellek/CPU tahmini + kapasite riski (read-only)")
     s.add_argument("--symbols", nargs="*"); s.add_argument("--market", default="futures", choices=["spot", "futures"]); s.add_argument("--tf", default="4h")
     s.add_argument("--from", dest="from_", default=None); s.add_argument("--to", default=None); s.add_argument("--stride", type=int, default=1)
-    s.add_argument("--pattern-stride", dest="pattern_stride", type=int, default=1); s.add_argument("--seed", type=int, default=0)
+    s.add_argument("--pattern-stride", dest="pattern_stride", type=int, default=None,
+                   help="varsayılan: --stride ile aynı (historical-replay stride'ı pattern index'te de kullanır)")
+    s.add_argument("--seed", type=int, default=0)
     s.add_argument("--run-id", dest="run_id", default=None); s.add_argument("--state-dir", dest="state_dir", default=None)
     s.add_argument("--no-patterns", dest="no_patterns", action="store_true")
     s.add_argument("--assume-available-mb", dest="assume_available_mb", type=float, default=None,
                    help="RAM ölçülemeyen ortamlarda açık kapasite girdisi (fail-closed)")
     s.add_argument("--host-reserve-mb", dest="host_reserve_mb", type=float, default=1024.0)
     s.add_argument("--worker-reserve-mb", dest="worker_reserve_mb", type=float, default=900.0)
+    s.add_argument("--runner-memory-max-mb", dest="runner_memory_max_mb", type=float, default=None,
+                   help="runner cgroup MemoryMax (MB) — tahmin bu sınırın güvenli yüzdesini aşarsa plan bloklar")
+    s.add_argument("--runner-safe-pct", dest="runner_safe_pct", type=float, default=80.0)
     s.set_defaults(fn=cmd_replay_plan)
     s = sub.add_parser("replay-train", help="Replay challenger eğitimi (yalnız replay state; canlı model/terfi yok)")
     s.add_argument("--run-id", dest="run_id", required=True); s.add_argument("--state-dir", dest="state_dir", default=None)

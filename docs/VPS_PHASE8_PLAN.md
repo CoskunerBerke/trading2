@@ -83,36 +83,50 @@ authority'yi claim eder) → 8) PC'de `authority` markörü sayesinde yerel `wat
 
 ## 6b. Replay araştırma hattı ve ilk Core-4 pilotu (yalnız PLAN — VPS'te çalıştırılmadı)
 
-Komutlar (hepsi PAPER; canlı state/model/pozisyonlara yazmaz):
-- `replay-plan` — read-only dry-run: manifestlerden satır/timeline/pattern-olay sayısı, tahmini bellek/CPU,
-  host+worker rezervi düşülmüş bütçe ve risk sınıfı (LOW/MEDIUM/HIGH/BLOCKED). Veri okumaz, dizin yaratmaz.
-  Yetersiz veri, bozuk parça, manifest hatası, bütçe aşımı ya da RAM ölçülemezliği → non-zero (fail-closed).
-- `replay-train --run-id <id>` — YALNIZ `state/replay/<id>/` altındaki `HISTORICAL_REPLAY` hafızasından
-  challenger eğitir; `train_manifest.json` (veri aralığı, seed, config, input/params/metrics hash'leri) yazar.
-  İdempotent (aynı input hash → yeniden eğitim yok), deterministik (recency referansı = son kayıt zamanı,
-  duvar saati değil). Canlı `models.json`/`learn_v2.json`/ledger/trade memory açılmaz; terfi YOK.
-- `replay-evaluate --run-id <id>` — OOS raporu: closed/train/holdout, expectancy, PF, maxDD, win rate,
-  Brier/ECE/log-loss, %95 alt sınır, veri aralığı, walk-forward pencere sayısı, determinism hash'leri,
-  survivorship uyarısı. Yetersiz örnek, bayat/bozuk artifact, bölünme tutarsızlığı, zaman-sırası ihlali ya da
-  CHAMPION işaretli model → non-zero. Çıktı en fazla "shadow adayı olabilir" der; kopyalama/terfi yapmaz.
+Komutlar (hepsi PAPER; canlı state/model/pozisyonlara yazmaz, canlı state dosyalarını AÇMAZ):
+- `replay-plan` — read-only dry-run: yalnız manifestlerden satır/timeline/pattern-olay, tahmini bellek/CPU,
+  host+worker rezervi düşülmüş bütçe, **runner cgroup MemoryMax uyumu** (`--runner-memory-max-mb`,
+  `--runner-safe-pct`, vars. %80) ve risk sınıfı. `--pattern-stride` verilmezse **`--stride` ile aynıdır**
+  (historical-replay stride'ı pattern index'te de kullanır). Yetersiz veri, bozuk parça, bütçe/limit aşımı,
+  RAM ölçülemezliği → non-zero.
+- `historical-replay` — event-time replay; **artık `replay-plan/train/evaluate` ile aynı kanonik
+  `resolve_replay_dir` doğrulamasından geçer** (traversal/symlink/boş id/canlı çakışma → exit 2) ve motor
+  içinde defense-in-depth ikinci kez doğrulanır. Hedef kesin olarak `state/replay/<run_id>`.
+- `replay-train --run-id <id>` — yalnız replay state'inde challenger; manifest (aralık, seed, config,
+  input/params/metrics hash, `reference_now`); idempotent + deterministik; terfi YOK.
+- `replay-evaluate --run-id <id>` — **gerçek çoklu-fold anchored walk-forward**: her fold'da yalnız geçmiş
+  train verisiyle model üretilir; etiketi purge/embargo bölgesinde kapanan kayıtlar hem eğitimden hem OOS'tan
+  çıkarılır; test pencereleri örtüşmez (bir işlem tek fold'da sayılır). Fold bazında ve toplu:
+  n_train/n_test, tarih aralıkları, expectancy, PF, maxDD, win rate, Brier/ECE/log-loss + CI95 alt sınır ve
+  fold tutarlılığı. `purge_embargo_enforced` yalnız sınır doğrulaması geçtiyse `true`. SHADOW ADAYI kapıları:
+  yeterli OOS örnek + pozitif expectancy + CI95 alt sınır > 0 + kalibrasyon (ECE ≤ 0.15, Brier ≤ 0.30) +
+  fold tutarlılığı ≥ %60 + ≥ 2 fold. Eski format `replay_result.json` (kesin `bounds` yok) → fail-closed.
 
-Runner: `deploy/replay_runner.sh plan|train|evaluate|full <RUN_ID> [...]` — service user + APP cwd + açık
-`TRADINGBOT_DATA`/`TRADINGBOT_STATE_DIR`, `env -i` (env dosyası yüklenmez, secret okunmaz/yazılmaz),
-PAPER + `live_order_path_enabled=false` zorunlu, kapasite planı geçmeden iş başlamaz, iş `systemd-run --scope`
-ile ayrı cgroup'ta (varsayılan `MemoryMax=2G`, `CPUQuota=60%`, `Nice=15`, `IOWeight=20`) çalışır; worker ve
-dashboard **durdurulmaz**.
+Runner `deploy/replay_runner.sh <plan|replay|train|evaluate|full|status> <RUN_ID> [...]`:
+service user + APP cwd + açık DATA/state, `env -i` (env dosyası yüklenmez, secret okunmaz/yazılmaz),
+PAPER + `live_order_path=false` zorunlu, kapasite planı geçmeden iş başlamaz. **En ağır iş (historical-replay)
+dahil her şey kaynak sınırlı transient systemd SERVICE içinde** çalışır (`--service-type=exec --wait`,
+`MemoryMax`/`CPUQuota`/`Nice`/`IOWeight`) → **SSH kopsa da sürer**; `systemd-run` yoksa **BLOCK** (sınırsız
+fallback yok). Unit adı + `journalctl` takip komutu raporlanır; `status` unit durumu/exit kodu/son logları ve
+artifact'leri gösterir. Aynı run-id için eşzamanlı ikinci koşu engellenir; tamamlanmış replay yalnız
+`--resume`/`--force` ile tekrarlanır. RUN_ID ve cgroup değerleri regex ile doğrulanır (unit adı / property
+injection engeli). Worker/dashboard durdurulmaz.
 
-**İlk pilot (sunucuda ÇALIŞTIRILMADI; onay sonrası uygulanacak):**
+**İlk pilot (sunucuda ÇALIŞTIRILMADI; onay sonrası):**
 ```
 BTC/USDT ETH/USDT SOL/USDT BNB/USDT · futures · 4h · stride=4 · seed=7 · 2022-01-01→2026-08-01 · patterns açık
 ```
-1) `sudo bash /opt/tradingbot/app/deploy/replay_runner.sh plan core4_4h_s4_seed7 --symbols BTC/USDT ETH/USDT SOL/USDT BNB/USDT --market futures --tf 4h --from 2022-01-01 --to 2026-08-01 --stride 4 --seed 7`
-   → risk sınıfı LOW/MEDIUM değilse DUR (stride artır ya da sembol azalt).
-2) Replay koşusu (mevcut komut, ayrı state): `historical-replay --run-id core4_4h_s4_seed7 --symbols ... --stride 4 --seed 7 --from 2022-01-01 --to 2026-08-01`
-3) `replay_runner.sh train core4_4h_s4_seed7` → `state/replay/core4_4h_s4_seed7/train_manifest.json`
-4) `replay_runner.sh evaluate core4_4h_s4_seed7` → `evaluation.json`
-5) Doğrula: worker `NRestarts=0`, `/health/ready=true`, `futures_ledger.json` sha256 pilot öncesiyle aynı,
-   `state/models.json` ve `state/learn_v2.json` değişmemiş, BZ/XAUT/ZRO pozisyonları aynı.
+1) Yalnız plan:
+   `sudo bash /opt/tradingbot/app/deploy/replay_runner.sh plan core4_4h_s4_seed7 --symbols BTC/USDT ETH/USDT SOL/USDT BNB/USDT --market futures --tf 4h --from 2022-01-01 --to 2026-08-01 --stride 4 --seed 7`
+   → `ok: true` ve risk sınıfı LOW/MEDIUM değilse DUR (stride artır / sembol azalt / `REPLAY_MEM_MAX` yükselt).
+2) Plan geçerse tam hat (tek komut, sıralı ve cgroup içinde):
+   `sudo bash /opt/tradingbot/app/deploy/replay_runner.sh full core4_4h_s4_seed7 --symbols BTC/USDT ETH/USDT SOL/USDT BNB/USDT --market futures --tf 4h --from 2022-01-01 --to 2026-08-01 --stride 4 --seed 7`
+3) İzleme: `sudo bash .../replay_runner.sh status core4_4h_s4_seed7` (+ `journalctl -u tradingbot-replay-core4_4h_s4_seed7-replay -f`).
+
+**Pilot öncesi/sonrası SEMANTİK doğrulama** (byte hash değil — worker çalışırken MTM/heartbeat doğal değişir;
+`semantic_live_snapshot` + `compare_semantic`): mod PAPER · `live_order_path_enabled=false` · gerçek emir 0 ·
+açık pozisyonların id/symbol/side/entry/qty/stop/targets değerleri aynı · duplicate ID/fill yok ·
+worker `NRestarts=0` · `/health/ready=true` · artifact'ler yalnız `state/replay/<run-id>` altında.
 
 ## 7. Kullanıcıdan istenen TEK karar
 

@@ -40,7 +40,10 @@ KillMode=mixed
 SendSIGKILL=yes
 Nice=5
 OOMScoreAdjust=200
-MemoryMax=1500M
+# Tam Tier A futures pattern index (≈578k olay / 89 seri) hedef VPS'te ≈3.1 GB worker belleği ölçüldü;
+# önceki 1.5G cgroup sınırı yükleme sırasında OOM-kill üretiyordu. 4G doğrulanmış çalışma sınırıdır
+# (ölçüm; sabit tüketim garantisi değil — 8 GB sınıfı VPS önerilir).
+MemoryMax=4G
 CPUQuota=150%
 
 # --- sertleştirme

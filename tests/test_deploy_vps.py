@@ -228,6 +228,11 @@ def test_systemd_unit_contracts():
     assert "CacheDirectory=tradingbot" in worker and "CacheDirectoryMode=0750" in worker
     assert "MPLCONFIGDIR=/var/cache/tradingbot/matplotlib" in worker
     assert "ProtectSystem=strict" in worker and "NoNewPrivileges=yes" in worker      # hardening korunuyor
+    # bellek sınırı: tam Tier A pattern index ≈3.1 GB ölçüldü → 4G; eski 1500M sınırı OOM-kill üretiyordu
+    mem_lines = [ln for ln in worker.splitlines() if ln.startswith("MemoryMax=")]
+    assert mem_lines == ["MemoryMax=4G"], mem_lines
+    assert "1500M" not in worker
+    assert "CPUQuota=150%" in worker and "Restart=on-failure" in worker              # diğer kaynak/restart ayarları aynı
     # dashboard: yalnız logs + state yazılabilir; data kökü read-only, app writable DEĞİL
     assert "ReadWritePaths=/opt/tradingbot/data/logs /opt/tradingbot/data/state" in dash
     assert "ReadOnlyPaths=/opt/tradingbot/data" in dash
@@ -341,9 +346,11 @@ def test_setup_from_foreign_cwd_succeeds_and_is_idempotent(tmp_path):
     r1 = _run_setup(sb, foreign)
     assert r1.returncode == 0, r1.stdout + r1.stderr
     assert "Kuruldu (bütün aşamalar tamamlandı)" in r1.stdout
-    # unit'ler + preflight kuruldu
+    # unit'ler + preflight kuruldu; kurulan içerik repo'daki dosyayla birebir (MemoryMax=4G dahil)
     for u in ("tradingbot-worker.service", "tradingbot-dashboard.service", "tradingbot-backup.service", "tradingbot-backup.timer"):
         assert (sb["sd"] / u).exists(), u
+        assert (sb["sd"] / u).read_text(encoding="utf-8") == (REPO_ROOT / "deploy" / u).read_text(encoding="utf-8"), u
+    assert "MemoryMax=4G" in (sb["sd"] / "tradingbot-worker.service").read_text(encoding="utf-8")
     pf = sb["base"] / "preflight.sh"
     assert pf.exists() and os.access(pf, os.X_OK)
     # authority claim yabancı cwd'den ÇALIŞTI (import hatası regresyonu) → marker state'te
@@ -377,6 +384,9 @@ def test_setup_from_foreign_cwd_succeeds_and_is_idempotent(tmp_path):
                           capture_output=True, text=True).stdout.strip()
     assert cur3 == branch
     assert not list(sb["base"].glob(".preflight.sh.*"))
+    # idempotent kurulum: unit içeriği tekrarlı koşulardan sonra da repo ile birebir aynı
+    assert (sb["sd"] / "tradingbot-worker.service").read_text(encoding="utf-8") == \
+           (REPO_ROOT / "deploy" / "tradingbot-worker.service").read_text(encoding="utf-8")
 
 
 @needs_linux

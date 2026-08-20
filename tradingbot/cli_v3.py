@@ -415,6 +415,21 @@ def cmd_learning_status(cfg: BotConfig, args) -> int:
     return 0
 
 
+def cmd_authority(cfg: BotConfig, args) -> int:
+    """Tek yetkili worker markörü: --claim bu makineye alır, --release kaldırır, varsayılan durumu basar."""
+    from .ops.authority import check, claim, current_host, read_authority, release
+    if getattr(args, "claim", False):
+        d = claim(cfg.state_path, note=getattr(args, "note", "") or "")
+        _p({"claimed": d})
+        return 0
+    if getattr(args, "release", False):
+        _p({"released": release(cfg.state_path)})
+        return 0
+    ok, why = check(cfg.state_path)
+    _p({"host": current_host(), "authority": read_authority(cfg.state_path), "allowed_here": ok, "reason": why})
+    return 0
+
+
 def cmd_stop(cfg: BotConfig, args) -> int:
     """Kooperatif durdurma: canlı worker/dashboard instance'ını doğrula, atomik stop isteği yaz, timeout'a kadar bekle.
     Force yok (varsayılan); --force yalnız kesin PID'ye normal sonlandırma uygular ve graceful sayılmaz."""
@@ -615,6 +630,9 @@ def register(sub: argparse._SubParsersAction) -> None:
     s.add_argument("--purge", type=int, default=6); s.add_argument("--embargo", type=int, default=6); s.add_argument("--no-patterns", dest="no_patterns", action="store_true")
     s.add_argument("--min-sample", dest="min_sample", type=int, default=30); s.add_argument("--horizon", type=int, default=24); s.set_defaults(fn=cmd_historical_replay)
     s = sub.add_parser("learning-status", help="LearnerV2/registry özeti (PAPER ya da --replay <run_id>)"); s.add_argument("--replay", default=None); s.set_defaults(fn=cmd_learning_status)
+    s = sub.add_parser("authority", help="Tek yetkili worker markörü (split-brain koruması): --claim / --release / durum")
+    s.add_argument("--claim", action="store_true"); s.add_argument("--release", action="store_true"); s.add_argument("--note", default="")
+    s.set_defaults(fn=cmd_authority)
     s = sub.add_parser("stop", help="Kooperatif durdurma (worker/dashboard/all); force yok, timeout'ta dürüst rapor")
     s.add_argument("--target", choices=["worker", "dashboard", "all"], default="all"); s.add_argument("--timeout", type=float, default=120)
     s.add_argument("--force", action="store_true", help="timeout sonrası kesin PID'ye normal sonlandırma (graceful sayılmaz)"); s.set_defaults(fn=cmd_stop)

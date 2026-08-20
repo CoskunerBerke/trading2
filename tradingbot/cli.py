@@ -261,6 +261,14 @@ def cmd_watch(cfg: BotConfig, args) -> int:
             return 3
     except ImportError:
         pass
+    from .ops.authority import check as authority_check
+    ok, why = authority_check(cfg.state_path)
+    if not ok:                       # split-brain koruması: yetki başka makinede → bu worker başlamaz (fail-closed)
+        print(f"⛔ {why}. Devralmak için: python -m tradingbot authority --claim")
+        if lock is not None:
+            lock.release(remove_file=True)
+        return 4
+    log.info("worker yetkisi: %s", why)
     eng = _make_engine(cfg, getattr(args, "legacy", False))
     tf_ms = TIMEFRAME_MS[cfg.exchange.timeframe]
     last_full_bar = -1

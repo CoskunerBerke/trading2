@@ -195,3 +195,17 @@ def test_heartbeat_engine_key_and_dual_schema(tmp_path: Path):
     d = json.loads(p.read_text(encoding="utf-8"))
     assert d["ts"] == d["at"] and d["source"] == "watch"
     assert read_heartbeat_age(tmp_path) < 5
+
+
+def test_worker_authority_split_brain_guard(tmp_path: Path):
+    """Yetki markörü: dosya yok → serbest; bu makine claim → izin; başka host claim → fail-closed red."""
+    from tradingbot.ops.authority import check, claim, current_host, read_authority, release
+    ok, why = check(tmp_path)
+    assert ok and "yok" in why
+    claim(tmp_path, note="test")
+    ok, _ = check(tmp_path)
+    assert ok and read_authority(tmp_path)["host"] == current_host()
+    claim(tmp_path, host="vps-uzak-01", note="migrasyon")
+    ok, why = check(tmp_path)
+    assert not ok and "vps-uzak-01" in why
+    assert release(tmp_path) is True and check(tmp_path)[0] is True

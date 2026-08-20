@@ -74,6 +74,19 @@ done
 systemctl daemon-reload
 systemctl enable tradingbot-worker.service tradingbot-dashboard.service tradingbot-backup.timer >/dev/null
 
+echo "== güvenlik duvarı (yalnız SSH; dashboard 127.0.0.1'de kalır, erişim SSH tüneliyle)"
+if command -v ufw >/dev/null 2>&1; then
+  ufw allow OpenSSH >/dev/null
+  ufw --force enable >/dev/null
+  ufw status | head -5
+else
+  echo "  (ufw yok — sağlayıcı güvenlik grubunda yalnız 22/tcp açık bırakın)"
+fi
+
+echo "== tek yetkili worker (split-brain koruması)"
+sudo -u "$SVC_USER" env TRADINGBOT_DATA="$DATA" TRADINGBOT_STATE_DIR="$DATA/state" "$VENV/bin/python" -m tradingbot authority --claim --note "vps kurulum" \
+  || echo "  (yetki markörü yazılamadı — kurulumdan sonra elle: python -m tradingbot authority --claim)"
+
 echo "== doktor"
 sudo -u "$SVC_USER" env TRADINGBOT_DATA="$DATA" TRADINGBOT_STATE_DIR="$DATA/state" "$VENV/bin/python" -m tradingbot doctor --quick \
   || echo "  (doktor uyarı verdi — env dosyasını doldurup tekrar deneyin)"

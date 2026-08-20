@@ -49,9 +49,11 @@ class HealthReport:
 
 
 def heartbeat(state_dir: Path | str, run_id: str | None = None, extra: dict[str, Any] | None = None) -> Path:
-    """state/heartbeat.json yazar: {ts, pid, run_id, ...extra}."""
+    """state/heartbeat.json yazar: {ts, at, pid, run_id, ...extra}. `at` = engine'in tur-başı şemasıyla uyum;
+    okuyucular iki anahtarı da kabul eder."""
     p = Path(state_dir) / HEARTBEAT_FILE
-    d: dict[str, Any] = {"ts": iso(), "pid": os.getpid()}
+    now = iso()
+    d: dict[str, Any] = {"ts": now, "at": now, "pid": os.getpid()}
     if run_id:
         d["run_id"] = run_id
     if extra:
@@ -61,12 +63,14 @@ def heartbeat(state_dir: Path | str, run_id: str | None = None, extra: dict[str,
 
 
 def read_heartbeat_age(state_dir: Path | str) -> float | None:
-    """Saniye cinsinden kalp atışı yaşı; dosya yok/bozuksa None."""
+    """Saniye cinsinden kalp atışı yaşı; dosya yok/bozuksa None. `ts` (ops) ve `at` (engine turu) anahtarlarının
+    ikisini de okur — anahtar uyuşmazlığı yüzünden canlı worker 'ölü' sayılmaz."""
     d = read_json(Path(state_dir) / HEARTBEAT_FILE, default=None)
-    if not isinstance(d, dict) or not d.get("ts"):
+    stamp = (d.get("ts") or d.get("at")) if isinstance(d, dict) else None
+    if not stamp:
         return None
     try:
-        return max(0.0, (utc_now() - from_iso(str(d["ts"]))).total_seconds())
+        return max(0.0, (utc_now() - from_iso(str(stamp))).total_seconds())
     except (ValueError, TypeError):
         return None
 

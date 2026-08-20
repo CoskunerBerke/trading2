@@ -312,10 +312,19 @@ def cmd_watch(cfg: BotConfig, args) -> int:
         remaining = max(1, args.interval) * 60
         exit_every = max(10, int(getattr(args, "exit_every", 60) or 60))
         since_exit = 0
+        since_hb = 0
+        from .ops.health import heartbeat as write_heartbeat
         while remaining > 0 and not stop_flag["stop"]:
             time.sleep(min(2, remaining))
             remaining -= 2
             since_exit += 2
+            since_hb += 2
+            if since_hb >= 30:          # canlılık kalp atışı tur süresinden BAĞIMSIZ (interval ne olursa olsun ~30 sn'de bir)
+                since_hb = 0
+                try:
+                    write_heartbeat(cfg.state_path, getattr(eng, "run_id", None) or None, {"source": "watch"})
+                except Exception:  # noqa: BLE001 — heartbeat hatası izlemeyi durdurmaz
+                    pass
             if watcher.requested():
                 stop_flag["stop"] = True
             if since_exit >= exit_every and hasattr(eng, "exit_check"):       # hızlı çıkış monitörü: tur/taramayı beklemez

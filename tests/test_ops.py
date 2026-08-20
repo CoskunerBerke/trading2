@@ -180,3 +180,18 @@ def test_notifier_only_sends_when_env_set():
     assert n3.send("t") == []
     n4 = Notifier.from_env(enabled=True, http=http, env={"DISCORD_WEBHOOK_URL": "https://discord.com/api/webhooks/x"}, include_log=False, min_level="error")
     assert n4.send("t", "x", "info") == []
+
+
+def test_heartbeat_engine_key_and_dual_schema(tmp_path: Path):
+    """Engine turu yalnız `at` yazar; ops heartbeat `ts`+`at` yazar — okuyucu ikisini de yaş olarak görmeli
+    (anahtar uyuşmazlığı canlı worker'ı 'ölü' göstermemeli)."""
+    from tradingbot.core import atomic_write_json, iso
+    # 1) engine tur şeması: yalnız "at"
+    atomic_write_json(tmp_path / "heartbeat.json", {"at": iso(), "run_id": "run_e", "pid": 1})
+    age = read_heartbeat_age(tmp_path)
+    assert age is not None and age < 5
+    # 2) ops şeması: ts + at birlikte (watch döngüsünün bağımsız kalp atışı)
+    p = heartbeat(tmp_path, run_id="run_w", extra={"source": "watch"})
+    d = json.loads(p.read_text(encoding="utf-8"))
+    assert d["ts"] == d["at"] and d["source"] == "watch"
+    assert read_heartbeat_age(tmp_path) < 5

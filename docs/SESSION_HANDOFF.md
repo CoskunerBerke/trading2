@@ -2,7 +2,7 @@
 
 - **Repository:** https://github.com/CoskunerBerke/trading2.git · yerel `C:\Users\berke\Trading bot` · **branch** `feature/trading-v3-paper-testnet`
 - **HEAD:** `git rev-parse --short HEAD` (bu oturum: `docs: record historical learning session` — önceki 8 mantıksal commit aşağıda). `main` değişmedi; PR/merge/tag yok; yalnız feature branch'e normal push.
-- **Testler:** `python -m pytest tests -q` → **261 passed / 7 skipped** (Phase 8: +10 gap-reconcile, +1 heartbeat, +1 universe-plan, +1 namespace, +1 authority) (Phase 6: +2 kapanış-notu regresyonu; `test_risk` cooldown iddiaları sabit saate bağlandı) (156 → +8 snapshot, +6 ledger restart, +9 ops/risk/stop/runtime, +6 history, +7 patterns, +4 replay/learning). Ruff E9/F63/F7/F82/F401 temiz.
+- **Testler:** `python -m pytest tests -q` → **303 passed / 19 skipped** (Phase 8: +10 gap-reconcile, +1 heartbeat, +1 universe-plan, +1 namespace, +1 authority) (Phase 6: +2 kapanış-notu regresyonu; `test_risk` cooldown iddiaları sabit saate bağlandı) (156 → +8 snapshot, +6 ledger restart, +9 ops/risk/stop/runtime, +6 history, +7 patterns, +4 replay/learning). Ruff E9/F63/F7/F82/F401 temiz.
 - **Mod:** PAPER / profil PAPER_RESEARCH · LIVE kapalı (`live_order_path_enabled: false`, `ALLOW_LIVE_TRADING` unset) · TESTNET kapalı · LLM `noop` · API anahtarı/.env yok · kill switch ARMED.
 - **Gerçek emir 0 · LIVE çağrısı 0 · TESTNET çağrısı 0 · dış LLM çağrısı 0** (bütün oturum).
 
@@ -85,6 +85,30 @@ Backup'lar: `backups/hourly/tradingbot-hourly-20260818T205349Z…20260819T072955
 - **`56bebcb` ops(vps):** `ops/authority.py` + CLI `authority --claim/--release` — `state/worker_authority.json` başka host'taysa `watch` fail-closed başlamaz (exit 4); `setup_vps_v3.sh` ufw yalnız-SSH + kurulumda otomatik claim.
 - **Kapasite/VPS (docs/VPS_PHASE8_PLAN.md):** ölçülen yoğunluklar ham ~45 B/satır, feature ~468 B/satır (×10.3), replay RAM ~3.7 KB/bar (4h evren 1.5 GB, 1h 5.9 GB → stride); 1. yıl ayak izi 12–17 GB < 45 GB → **öneri: OVH VPS-2 (4 vCore/8 GB/75 GB NVMe), Ubuntu 24.04, AB lokasyonu (~10–14 €/ay)**; satın alma sonrası-deploy öncesi salt-okunur Binance erişim testi. Satın alma YAPILMADI; kullanıcı onayı bekleniyor.
 - F00004/F00005 el sürülmedi (tek fill, aynı ID); worker bu fazda hiç başlatılmadı; gerçek emir 0 · LIVE 0 · TESTNET 0 · LLM 0.
+
+## Phase 10 — Bağlamsal öğrenme: FeatureSnapshotV3 (kaynak; VPS'te çalıştırılmadı)
+- **Kök neden:** replay entry hafızası pratikte yalnız `expected_r`/`p_win` yazıyordu; canlı yol ayrı
+  `features_from_brief` kullanıyordu. Core-4 `train_manifest`'inde MA/volatilite/funding/spread/korelasyon/
+  ajan/konsensüs alanlarının neredeyse tamamı 0 idi → model bağlam öğrenmedi, expected_r kalibrasyonu yaptı.
+- **`learn/snapshot.py` FeatureSnapshotV3:** 117 alan + `miss_*` göstergeleri; kimlik/provenance, trend/MA/
+  cross, momentum, volatilite/rejim, hacim, funding/OI/basis/spread/depth/slippage/tazelik, BTC bağlamı/
+  korelasyon/beta/portföy, ajan bias-confidence + consensus/dissent/veto + pattern kanıtı, plan/risk.
+  **Paylaşılan builder**: replay ve canlı PAPER aynı fonksiyonu çağırır → aynı girdi, aynı vektör ve hash.
+  Nedensellik: `decision_ts` sonrası bar → `LeakageError`; gelecek bar mutasyonu geçmiş hash'i değiştirmez;
+  eksik alan sessizce 0 sayılmaz.
+- **`learn/coverage.py` gate:** alan bazında available/missing/mean/std/unique/constant + join/timestamp/
+  namespace/sembol/taraf kontrolü. Yetersizse **FEATURE_COVERAGE_INVALID** → `replay-train` durur.
+  Eski Core-4 hafızası bu kapıdan GEÇEMEZ (snapshot yok → açık blok).
+- **`learn/policy.py`:** sınırlandırılmış aday politika (deterministik ızgara, `POLICY_BOUNDS`); risk limiti
+  yükseltme / LIVE / pozisyon / kaynak kodu değişikliği kod düzeyinde imkânsız; politika yalnız filtreler ya
+  da boyutu küçültür. Baseline = mevcut bot davranışı (passthrough).
+- **`replay/policy_eval.py`:** gerçek baseline↔candidate walk-forward (aday yalnız train'in iç validation
+  diliminde seçilir, test fold'unda uygulanır; çoklu-test cezası, bootstrap CI, fold tutarlılığı).
+  Verdict en fazla SHADOW_CANDIDATE; PIT=false/survivorship varsa RESEARCH_ONLY/REJECTED. Terfi yok.
+- **`learn/attribution.py` + CLI:** `feature-coverage`, `loss-attribution`, `policy-candidates`,
+  `policy-evaluate` — deterministik, secretsız JSON; yalnız `state/replay/<run_id>` altına yazar.
+- Canlı PAPER davranışı varsayılan olarak DEĞİŞMEDİ (snapshot hatası akışı durdurmaz); eski Core-4
+  artifact'lerine yazılmadı; yeni deneme için ayrı run-id kullanılacak.
 
 ## Phase 9b — Replay hattı sertleştirme (kaynak; VPS'te çalıştırılmadı)
 - **Runner gerçek replay'i yönetir:** eylemler `plan|replay|train|evaluate|full|status`; `full` = plan →

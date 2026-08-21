@@ -2,11 +2,15 @@
 
 Tur akışı:
   kill-switch/health kontrolü → TARA (legacy tarayıcı, tier-1) → legacy ajanlar (uzman raporları + brief)
-  → veri kalitesi kapısı → COIN HEAD (faktör grupları, red team, spot/futures planı) → BAŞ YÖNETİCİ
-  → GLOBAL RISK ENGINE → tetik (4h kapanış / geri çekilme) → PAPER EXECUTION (FuturesLedgerV2 / SpotLedger)
+  → veri kalitesi kapısı → COIN HEAD (faktör grupları, red team, spot/futures planı) → BAŞ YÖNETİCİ (yalnız
+  SIRALAMA/açıklama/yumuşak ceza) → tetik (4h kapanış / geri çekilme) → maliyet sonrası ekonomi → duplicate
+  → araştırma politikası → BÜTÜN boyut çarpanları → NİHAİ notional/risk → GLOBAL RISK ENGINE (yetkili
+  kapasite, nihai değerlerle) → PAPER EXECUTION (FuturesLedgerV2 / SpotLedger)
   → tick (stop/TP/liq/funding; bar_advance) → ÖĞRENME (v1 uyumlu + v2 hafıza/postmortem) → gölge işlemler
   → durum dosyaları (atomik: ledger → learner → triggers) → Obsidian (legacy + Coin Heads) → health/heartbeat.
 Öncelik: veri doğru mu → maliyet sonrası edge → risk → red team → portföy → uygulanabilirlik → kayıt → ancak o zaman aç.
+RİSK YALNIZ GERÇEKTEN AÇILAN POZİSYONLARLA TÜKENİR: tetiklenmeyen, duplicate, politika-eleyen ya da
+emir reddi alan aday hiçbir kapasite tüketmez (bkz. `_execute_locked` sözleşmesi).
 """
 from __future__ import annotations
 
@@ -29,19 +33,50 @@ from .risk import KillSwitch, ModeState, RiskEngine, build_state, resolve_profil
 
 log = logging.getLogger(__name__)
 
+
+def _as_multiplier(value) -> float:
+    """Boyut çarpanını güvenle oku: ``None`` = "verilmedi" → 1.0, açıkça verilen ``0.0`` → 0.0.
+
+    Eski `float(value or 1.0)` ifadesi açıkça verilen `0.0`'ı `1.0`'a çeviriyordu: "hiç açma"
+    talimatı sessizce "tam boyut aç"a dönüşüyordu. `None` ile `0.0` artık AYRI ele alınır.
+    Çarpanlar yalnız küçültür: [0.0, 1.0] aralığına kırpılır.
+    """
+    if value is None:
+        return 1.0
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return 0.0                      # okunamayan çarpan fail-closed: emir açma
+    if v != v:                          # NaN
+        return 0.0
+    return max(0.0, min(1.0, v))
+
 # Yumusak kanit -> muhafazakar edge'den dusulecek R cezasi. Hicbiri TEK BASINA reddetmez; toplam ceza
 # `GateLedger.soft_penalty_r()` icinde ust sinirlidir (cok sayida orta zayiflik otomatik vetoya donmez).
 # Karar hunisi: her turda ve kayan 24 saatte tutulur. `trades_opened_24h` YALNIZ gozlem metrigidir,
 # karar kapisi DEGILDIR. `daily_trade_cap`/`per_run_trade_cap` her zaman null olarak raporlanir.
-_FUNNEL_KEYS = ("actionable", "hard_safety_blocked", "risk_capacity_blocked", "positive_point_edge",
-                "positive_conservative_edge", "negative_edge_blocked", "research_small",
-                "duplicate_blocked", "trigger_fired", "exchange_rejected", "opened")
+_FUNNEL_KEYS = ("actionable", "ranked", "chief_blocked", "hard_safety_blocked", "no_trigger",
+                "trigger_fired", "positive_point_edge", "positive_conservative_edge",
+                "negative_edge_blocked", "research_small", "duplicate_blocked",
+                "research_policy_blocked", "size_multiplier_zero", "risk_capacity_blocked",
+                "capacity_approved", "exchange_rejected", "opened")
 
 _SOFT_PENALTY_R = {"LOW_CONSENSUS": 0.06, "LOW_CONFIDENCE": 0.06, "HIGH_DISSENT": 0.05,
                    "RR_BELOW_PREFERRED": 0.05, "PATTERN_WEAK": 0.05, "SPREAD_WIDE": 0.04,
                    "VOL_REGIME_HIGH": 0.04, "FUNDING_ADVERSE": 0.04, "MARKET_REGIME_MISMATCH": 0.10,
                    "SAME_DIRECTION_CROWDED": 0.08, "CLUSTER_CROWDED": 0.08,
-                   "RED_TEAM_SOFT_PENALTY": 0.04, "SMALL_SAMPLE": 0.05}
+                   "RED_TEAM_SOFT_PENALTY": 0.04, "SMALL_SAMPLE": 0.05,
+                   # --- RED TEAM'in EKONOMIK/ISTATISTIKSEL kodlari: artik SERT VETO DEGIL ---
+                   "WEAK_OOS_EDGE": 0.08, "LOW_TRADE_COUNT": 0.05, "HIGH_CORRELATION_EXPOSURE": 0.08,
+                   "CROWDED_SAME_DIRECTION": 0.08, "AGAINST_BTC_REGIME": 0.08, "STOP_TOO_FAR": 0.05,
+                   "STOP_TOO_CLOSE": 0.05, "FUNDING_EXTREME": 0.06, "FUNDING_CROWDED": 0.04,
+                   "NEW_LISTING": 0.06, "WIDE_SPREAD": 0.05, "LOW_LIQUIDITY": 0.05,
+                   "LIQ_BUFFER_THIN": 0.05}
+
+# YETKILI risk kapasitesi kodlari: `RiskEngine.evaluate()` bunlardan birini reddettiginde karar
+# gercek kapasite doldugu icin verilmistir (KOTA DEGIL).
+_CAPACITY_CODES = ("TOTAL_OPEN_RISK", "MARGIN_UTILIZATION", "MAX_POSITIONS", "MAX_POSITIONS_MARKET",
+                   "CLUSTER_CAP", "ALTCOIN_EXPOSURE", "MAX_POSITION_PCT")
 
 
 class TradingEngineV3(TradingEngine):
@@ -615,10 +650,34 @@ class TradingEngineV3(TradingEngine):
             return self._execute_locked(decisions, chief, briefs, state, marks, now)
 
     def _execute_locked(self, decisions, chief, briefs: list[CoinBrief], state, marks: dict[str, TickData], now: datetime) -> tuple[list[str], list[dict]]:
+        """GERCEK KARAR SIRASI (denetim sonrasi):
+
+            degerlendirme -> siralama -> TETIK -> ekonomi -> DUPLICATE -> arastirma politikasi
+            -> BUTUN boyut carpanlari -> NIHAI notional/risk -> YETKILI risk kapasitesi
+            -> ledger/borsa acilisi
+
+        Iki mimari hata bilincli olarak kapatildi:
+
+        1. **Chief risk REZERVE ETMIYOR.** Eskiden `ChiefPortfolioManager.decide()` siralamadaki
+           her adayin riskini hemen dusuyordu; tetik/duplicate/politika/emir kontrolleri ise burada
+           daha sonra yapiliyordu. Tetiklenmeyen en guclu aday kapasiteyi yiyor, gercekten tetiklenen
+           sonraki aday `RISK_CAPACITY_BLOCKED` aliyordu. Artik kapasite YALNIZ `RiskEngine.evaluate()`
+           icinde ve YALNIZ gercekten acilmis pozisyonlarin riskine karsi zorlanir; acilis
+           basarisizsa hicbir sey tuketilmez, sonraki aday degerlendirilmeye devam eder.
+        2. **RiskEngine NIHAI boyutu goruyor.** Eskiden `risk.evaluate()` ham `plan.notional` ile
+           cagriliyor, notional daha SONRA kucultuluyordu; nihai riski %0.5 olan dort islem risk
+           motorunda dort adet %2 islem gibi gorunuyor ve kaldirilan islem kotasi yapay risk
+           kitligi olarak geri geliyordu. Artik butun carpanlar (firsat x chief yumusak cezasi x
+           arastirma politikasi) once uygulanir, `final_notional`/`final_risk_*` uretilir ve risk
+           motoru TAM OLARAK bu degerleri degerlendirir.
+
+        Ayni turda daha once basariyla acilmis pozisyonlarin riski `_refresh_after_fill()` ile
+        yetkili defterlerden yeniden okunur; boylece sonraki adayin kapasite hesabina girer.
+        """
         opened: list[str] = []
         risk_log: list[dict] = []
         bmap = {b.symbol: b for b in briefs}
-        # kritik bölge başında durumu YETKİLİ defterlerden yenile (çağıranın state'i bayat olabilir: retry/eşzamanlı yol)
+        # kritik bolge basinda durumu YETKILI defterlerden yenile (caginin state'i bayat olabilir: retry/eszamanli yol)
         state = self._portfolio_state({k: float(v.last) for k, v in marks.items()})
         entries_allowed = True
         funnel = self._funnel = {k: 0 for k in _FUNNEL_KEYS}
@@ -635,13 +694,13 @@ class TradingEngineV3(TradingEngine):
             b = bmap.get(sym)
             if d is None or b is None or not d.is_actionable:
                 continue
-            if not entries_allowed:     # önceki fill sonrası risk durumu yazılamadı → yeni giriş yok (fail-closed); çıkışlar tick'te sürer
+            if not entries_allowed:     # onceki fill sonrasi risk durumu yazilamadi -> yeni giris yok (fail-closed); cikislar tick'te surer
                 risk_log.append({"symbol": sym, "verdict": d.verdict.value, "risk_allowed": False, "risk_reasons": ["RISK_STATE_PERSIST_FAILED"], "at": iso(now)})
                 continue
-            if self._stopping():        # kooperatif durdurma istendi → yeni giriş kabul edilmez
+            if self._stopping():        # kooperatif durdurma istendi -> yeni giris kabul edilmez
                 risk_log.append({"symbol": sym, "verdict": d.verdict.value, "risk_allowed": False, "risk_reasons": ["SHUTDOWN_REQUESTED"], "at": iso(now)})
                 continue
-            if self._gap_blocked:       # kesinti penceresi uzlaştırılamadı (GAP_AMBIGUOUS) → yeni giriş yok (çıkışlar sürer)
+            if self._gap_blocked:       # kesinti penceresi uzlastirilamadi (GAP_AMBIGUOUS) -> yeni giris yok (cikislar surer)
                 risk_log.append({"symbol": sym, "verdict": d.verdict.value, "risk_allowed": False, "risk_reasons": ["GAP_RECONCILE_PENDING"], "at": iso(now)})
                 continue
             perm = chief.permission.get(sym, {})
@@ -649,35 +708,37 @@ class TradingEngineV3(TradingEngine):
             if plan is None or not plan.valid:
                 continue
             market = "SPOT" if d.verdict == Verdict.SPOT_LONG else "USDM_PERP"
-            plan_dict = {"symbol": sym, "market_type": market, "direction": d.direction, "entry": plan.entry, "stop": plan.stop, "targets": plan.targets,
-                         "notional": plan.notional, "margin": plan.margin, "leverage": plan.size.leverage, "amount_type": "NOTIONAL", "expected_r": plan.expected_r,
-                         "spread_pct": next((r.metrics.get("spread_pct") for r in d.specialist_reports if r.agent_name == "orderbook_liquidity" and r.usable), None),
-                         "min_notional": float(self.filters.get(sym, MarketType.SPOT if market == "SPOT" else MarketType.USDM_PERP).min_notional)}
-            rd = self.risk.evaluate(plan_dict, state, {"now_utc": now})
+            funnel["ranked"] += 1
             entry = {"symbol": sym, "verdict": d.verdict.value, "chief_allow": bool(perm.get("allow")), "chief_reason": perm.get("reason"),
-                     "risk_allowed": rd.allowed, "risk_reasons": rd.reasons, "risk_warnings": rd.warnings, "adjusted_notional": rd.adjusted_notional,
-                     "adjusted_leverage": rd.adjusted_leverage, "at": iso(now)}
+                     "chief_capacity_projection": perm.get("capacity_projection"),
+                     "plan_notional": round(float(plan.notional or 0.0), 6),
+                     "risk_allowed": None, "risk_reasons": [], "risk_warnings": [], "adjusted_notional": None,
+                     "adjusted_leverage": None, "at": iso(now)}
             risk_log.append(entry)
-            if perm.get("block_code") == "RISK_CAPACITY_BLOCKED":
-                funnel["risk_capacity_blocked"] += 1
-                self._opportunity_cost.append({"symbol": sym, "side": d.direction,
-                                               "conservative_net_edge_r": (getattr(d, "opportunity", None) or {}).get("conservative_net_edge_r"),
-                                               "reason": "RISK_CAPACITY_BLOCKED", "at": iso(now)})
-            if not perm.get("allow") or not rd.allowed:
-                # güçlü aday reddedildi → gölge işlem (karşı-olgusal)
+            # ---------------------------------------------------------------- 1) CHIEF (siralama + SERT red-team)
+            # Chief kapasite REZERVE ETMEZ; buradaki tek sert kaynagi gercek red-team hard veto'sudur.
+            if not perm.get("allow"):
+                funnel["chief_blocked"] += 1
+                if perm.get("block_code"):
+                    funnel["hard_safety_blocked"] += 1
+                entry["block_code"] = perm.get("block_code") or "CHIEF_BLOCKED"
                 if self.cfg.v3.learning_v3.shadow_trades and plan.expected_r >= self.head_cfg.min_expected_r:
                     self.shadow.add({"plan_id": stable_id("plan", self.run_id, sym), "symbol": sym, "market_type": market, "direction": d.direction, "entry": plan.entry,
                                      "stop": plan.stop, "targets": plan.targets, "horizon_bars": plan.time_horizon_bars, "leverage": plan.size.leverage},
-                                    (["CHIEF:" + str(perm.get("reason"))] if not perm.get("allow") else []) + rd.reasons, now=now)
+                                    ["CHIEF:" + str(perm.get("reason"))], now=now)
                 continue
-            # tetik: legacy mantık (kırılım: 4h kapanış seviyenin ötesinde; geri çekilme: fiyat seviyeye değdi)
+            # ---------------------------------------------------------------- 2) TETIK (kapasite TUKETMEZ)
+            # tetik: legacy mantik (kirilim: 4h kapanis seviyenin otesinde; geri cekilme: fiyat seviyeye degdi)
             if not self._trigger_fired(b, d.direction, plan.entry, plan.entry_type):
+                funnel["no_trigger"] += 1
+                entry["block_code"] = "NO_TRIGGER"
                 continue
             funnel["trigger_fired"] += 1
             feats = features_from_brief(b, self.runner.chief.decide(briefs), b.scan_score or None)
             feats.update({"initial_stop": plan.stop, "p_win": b.p_win, "regime": d.regime, "consensus_score": d.consensus_score, "consensus_conf": d.consensus_confidence,
                           "n_dissent": len(d.dissent), "n_vetoes": len(d.vetoes), "expected_r": d.expected_r, "expected_cost_pct": d.expected_cost, "market_type": market,
-                          "spread_pct": plan_dict.get("spread_pct")})
+                          "spread_pct": next((r.metrics.get("spread_pct") for r in d.specialist_reports if r.agent_name == "orderbook_liquidity" and r.usable), None)})
+            # ---------------------------------------------------------------- 3) EKONOMI (kapasite TUKETMEZ)
             # --- HARD: maliyet ve belirsizlik sonrasi ekonomi ---
             _opp = getattr(d, "opportunity", None) or {}
             if _opp:
@@ -700,15 +761,17 @@ class TradingEngineV3(TradingEngine):
                     continue
                 if _opp.get("net_expectancy_r", 0) > 0:
                     funnel["positive_point_edge"] += 1
+            # ---------------------------------------------------------------- 4) DUPLICATE (kapasite TUKETMEZ)
             # --- HARD: ayni benzersiz sinyalin tekrari (yeni bar/yeni setup ENGELLENMEZ) ---
             _sig = self._signal_id(sym, market, d, plan, b)
             if _sig in self._seen_signals:
                 funnel["duplicate_blocked"] += 1
                 entry["block_code"] = "DUPLICATE_SIGNAL"
                 continue
-            # ARAŞTIRMA POLİTİKASI: risk/chief onayından SONRA çalışır ve yalnız daraltabilir.
-            # Aktif aday yoksa `allow=True, size_multiplier=1.0` döner → davranış birebir aynı kalır.
-            snap_v3 = self._pred_snapshots.get(sym)     # predict anında üretildi; yeniden hesaplanmaz
+            # ---------------------------------------------------------------- 5) ARASTIRMA POLITIKASI (kapasite TUKETMEZ)
+            # ARASTIRMA POLITIKASI: chief siralamasindan SONRA calisir ve yalniz daraltabilir.
+            # Aktif aday yoksa `allow=True, size_multiplier=1.0` doner -> davranis birebir ayni kalir.
+            snap_v3 = self._pred_snapshots.get(sym)     # predict aninda uretildi; yeniden hesaplanmaz
             _rd2 = self._research_entry(sym, d, plan, snap_v3)
             res, shadow_res = _rd2["active"], _rd2["shadow"]
             entry["research_policy_id"] = res["policy_id"]
@@ -719,8 +782,10 @@ class TradingEngineV3(TradingEngine):
                                         "size_multiplier": shadow_res["size_multiplier"],
                                         "reasons": shadow_res["reasons"]}
             if not res["allow"]:
-                # Pozisyon AÇILMAZ. Baseline'ın ne yapacağı karşı-olgusal gölge işlemle izlenir;
-                # gölge etiketlendiğinde eşleşmiş gözlem olarak adaya yazılır.
+                # Pozisyon ACILMAZ. Baseline'in ne yapacagi karsi-olgusal golge islemle izlenir;
+                # golge etiketlendiginde eslesmis gozlem olarak adaya yazilir.
+                funnel["research_policy_blocked"] += 1
+                entry["block_code"] = "RESEARCH_POLICY_BLOCK"
                 shs = self.shadow.add({"plan_id": stable_id("plan", self.run_id, sym), "symbol": sym, "market_type": market,
                                        "direction": d.direction, "entry": plan.entry, "stop": plan.stop,
                                        "targets": plan.targets, "horizon_bars": plan.time_horizon_bars,
@@ -733,16 +798,70 @@ class TradingEngineV3(TradingEngine):
                                                "source": "counterfactual_shadow_trade",
                                                "symbol": sym, "side": d.direction})
                 continue
-            # DINAMIK BOYUT: firsat gucu (muhafazakar edge) x arastirma politikasi carpani.
-            # Ikisi de yalnizca KUCULTUR; risk profili tavani ve toplam acik risk risk motorunda
-            # ayrica zorlanir (HARD). Kucuk boyut min-notional'a uymuyorsa risk BUYUTULMEZ.
-            _opp_mult = float(_opp.get("size_multiplier", 1.0) or 1.0) if _opp else 1.0
-            _chief_pen = float(perm.get("size_penalty_r", 0.0) or 0.0)
-            if _chief_pen > 0:                    # yigilma/rejim cezasi: veto degil, kucultme
-                _opp_mult *= max(0.25, 1.0 - min(0.5, _chief_pen * 2.0))
+            # ---------------------------------------------------------------- 6) BUTUN BOYUT CARPANLARI -> NIHAI BOYUT
+            # DINAMIK BOYUT: firsat gucu (muhafazakar edge) x chief yumusak cezasi x arastirma politikasi.
+            # Hepsi yalnizca KUCULTUR. Kucuk boyut min-notional'a uymuyorsa risk BUYUTULMEZ (risk
+            # motorunda MIN_ORDER_CONFLICT ile reddedilir).
+            _opp_mult = _as_multiplier(_opp.get("size_multiplier") if _opp else None)
+            _res_mult = _as_multiplier(res.get("size_multiplier"))
+            _chief_pen = float(perm.get("size_penalty_r") or 0.0)
+            _chief_mult = max(0.25, 1.0 - min(0.5, _chief_pen * 2.0)) if _chief_pen > 0 else 1.0
+            final_size_multiplier = round(_opp_mult * _chief_mult * _res_mult, 6)
             entry["opportunity"] = _opp or None
-            entry["size_multiplier_total"] = round(_opp_mult * float(res["size_multiplier"]), 6)
-            notional = float(rd.adjusted_notional or plan.notional) * float(res["size_multiplier"]) * _opp_mult
+            entry["size_multiplier_parts"] = {"opportunity": _opp_mult, "chief_soft": round(_chief_mult, 6),
+                                              "research": _res_mult}
+            entry["size_multiplier_total"] = final_size_multiplier
+            # SIFIR CARPAN ASLA EMIR ACMAZ (acikca verilen 0.0 artik 1.0'a yuvarlanmiyor).
+            if final_size_multiplier <= 0.0:
+                funnel["size_multiplier_zero"] += 1
+                entry["block_code"] = "SIZE_MULTIPLIER_ZERO"
+                continue
+            final_notional = round(float(plan.notional or 0.0) * final_size_multiplier, 6)
+            # UYGULAMA FIYATI: emir `plan.entry`den DEGIL, defterin referans fiyatindan (`b.price`)
+            # ve aleyhte kaymayla dolar; stop ise plandan gelir. Risk kontrolu `plan.entry` ile
+            # yapilirsa TASINAN risk ile OLCULEN risk farkli olur ve toplam acik risk fill sonrasi
+            # profil tavanini ASABILIR. Bu yuzden risk motoru emrin gercekten dolacagi fiyati gorur
+            # -> Chief telemetrisi, RiskEngine ve defter AYNI nihai risk degerini kullanir.
+            exec_entry = self._execution_entry(b.price or plan.entry, d.direction)
+            _stop_frac = abs(exec_entry - plan.stop) / exec_entry if (exec_entry and plan.stop) else 0.0
+            final_risk_usdt = round(final_notional * _stop_frac, 6)
+            _eq = state.equity if self.profile.size_on_live_equity else state.starting_equity
+            final_risk_pct = round(final_risk_usdt / _eq * 100.0, 6) if _eq else 0.0
+            entry["final_notional"] = final_notional
+            entry["final_risk_usdt"] = final_risk_usdt
+            entry["final_risk_pct"] = final_risk_pct
+            entry["execution_entry"] = round(exec_entry, 10)
+            # ---------------------------------------------------------------- 7) YETKILI RISK KAPASITESI (NIHAI degerlerle)
+            plan_dict = {"symbol": sym, "market_type": market, "direction": d.direction, "entry": exec_entry, "stop": plan.stop, "targets": plan.targets,
+                         "notional": final_notional, "margin": round(final_notional / max(int(plan.size.leverage or 1), 1), 6),
+                         "leverage": plan.size.leverage, "amount_type": "NOTIONAL", "expected_r": plan.expected_r,
+                         "spread_pct": feats.get("spread_pct"),
+                         "min_notional": float(self.filters.get(sym, MarketType.SPOT if market == "SPOT" else MarketType.USDM_PERP).min_notional)}
+            rd = self.risk.evaluate(plan_dict, state, {"now_utc": now})
+            entry.update({"risk_allowed": rd.allowed, "risk_reasons": rd.reasons, "risk_warnings": rd.warnings,
+                          "adjusted_notional": rd.adjusted_notional, "adjusted_leverage": rd.adjusted_leverage,
+                          "risk_usdt": rd.risk_usdt})
+            if not rd.allowed:
+                if any(c in _CAPACITY_CODES for c in rd.reasons):
+                    funnel["risk_capacity_blocked"] += 1
+                    entry["block_code"] = "RISK_CAPACITY_BLOCKED"
+                    self._opportunity_cost.append({"symbol": sym, "side": d.direction,
+                                                   "conservative_net_edge_r": _opp.get("conservative_net_edge_r"),
+                                                   "final_risk_usdt": final_risk_usdt,
+                                                   "reason": "RISK_CAPACITY_BLOCKED", "at": iso(now)})
+                else:
+                    entry["block_code"] = "RISK_ENGINE_BLOCKED"
+                # guclu aday reddedildi -> golge islem (karsi-olgusal)
+                if self.cfg.v3.learning_v3.shadow_trades and plan.expected_r >= self.head_cfg.min_expected_r:
+                    self.shadow.add({"plan_id": stable_id("plan", self.run_id, sym), "symbol": sym, "market_type": market, "direction": d.direction, "entry": plan.entry,
+                                     "stop": plan.stop, "targets": plan.targets, "horizon_bars": plan.time_horizon_bars, "leverage": plan.size.leverage},
+                                    list(rd.reasons), now=now)
+                continue
+            funnel["capacity_approved"] += 1
+            # Risk motoru yalnizca KUCULTUR: nihai boyutu asla buyutme.
+            notional = min(final_notional, float(rd.adjusted_notional if rd.adjusted_notional is not None else final_notional))
+            entry["executed_notional"] = round(notional, 6)
+            # ---------------------------------------------------------------- 8) LEDGER / BORSA ACILISI
             if market == "USDM_PERP":
                 pos = self.ledger2.open(sym, d.direction, b.price, SizeSpec(Decimal(str(notional)), AmountType.NOTIONAL, int(rd.adjusted_leverage or 1)),
                                         stop=plan.stop, targets=plan.targets, filters=self.filters.get(sym, MarketType.USDM_PERP), setup_type=plan.entry_type,
@@ -750,6 +869,7 @@ class TradingEngineV3(TradingEngine):
                                         meta={"coin_head_id": d.coin_head_id, "run_id": self.run_id, "decision_snapshot": d.to_dict(include_reports=False)})
                 if pos is None:
                     entry["exec_reject"] = self.ledger2.last_reject_reason
+                    entry["block_code"] = "EXCHANGE_REJECTED"
                     funnel["exchange_rejected"] += 1
                     continue
                 trade_id = pos.id
@@ -758,11 +878,13 @@ class TradingEngineV3(TradingEngine):
                 order = self.spot2.market_buy(sym, quote_amount=Decimal(str(notional)), ref_price=Decimal(str(b.price)), tick=marks.get(sym), strategy=plan.entry_type, now=now)
                 if order is None or str(getattr(order, "status", "")).upper() not in ("FILLED", "PARTIALLY_FILLED"):
                     entry["exec_reject"] = getattr(self.spot2, "last_reject_reason", "spot reject")
+                    entry["block_code"] = "EXCHANGE_REJECTED"
+                    funnel["exchange_rejected"] += 1
                     continue
                 trade_id = getattr(order, "id", new_id("spot"))
                 desc = f"{sym} SPOT LONG @ {b.price:.6g} · {notional:.2f} USDT · stop {plan.stop:.6g}"
-            # Eşleşmiş gözlem beklemede: ACTIVE gerçek işlemi daralttı, SHADOW ise yalnız
-            # KARŞI-OLGUSAL değerlendirildi (gerçek giriş ondan ETKİLENMEDİ).
+            # Eslesmis gozlem beklemede: ACTIVE gercek islemi daraltti, SHADOW ise yalniz
+            # KARSI-OLGUSAL degerlendirildi (gercek giris ondan ETKILENMEDI).
             for _pol in (res, shadow_res):
                 if _pol["policy_id"]:
                     self.research.add_pending(_pol["policy_id"], trade_id,
@@ -773,6 +895,11 @@ class TradingEngineV3(TradingEngine):
                                                "symbol": sym, "side": d.direction})
             funnel["opened"] += 1
             self._seen_signals = (self._seen_signals + [_sig])[-5000:]
+            # TETIK KAYDI ACILIS ANINDA islenir: tetiklenip acilmamis (kapasite/emir reddi) bir aday
+            # barini YAKMAZ, kapasite serbest kaldiginda yeniden degerlendirilebilir. Ayni bar/taraf/
+            # setup'in ikinci kez ACILMASINI `_seen_signals` (DUPLICATE_SIGNAL) engeller.
+            if plan.entry_type == "breakout" and b.last_bar_4h:
+                self.triggers[b.symbol] = b.last_bar_4h
             self.memory.record_entry({"trade_id": trade_id, "symbol": sym, "direction": d.direction, "market_type": market, "setup_type": plan.entry_type,
                                       "regime": d.regime, "features": ((snap_v3.vector() | feats) if snap_v3 else feats),
                                       "snapshot": (snap_v3.to_dict() if snap_v3 else None),
@@ -781,7 +908,7 @@ class TradingEngineV3(TradingEngine):
                                       "model_versions": d.model_versions | {"p_win_model": self.learner2.snapshot().get("champion")}})
             self.last_decisions[sym] = d.to_dict(include_reports=False)
             opened.append(desc)
-            # fill sonrası: yetkili defterlerden durum yenile → aynı turdaki sonraki adaylar bu pozisyonu/marjı/exposure'ı görür
+            # fill sonrasi: yetkili defterlerden durum yenile -> ayni turdaki sonraki adaylar bu pozisyonu/marji/exposure'i gorur
             state, entries_allowed = self._refresh_after_fill(marks, risk_log, now)
             entry["state_after_fill"] = {"open_positions": len(state.open_positions), "used_margin": round(state.used_margin, 6),
                                          "total_open_risk_usdt": round(state.total_open_risk_usdt, 6), "persisted": entries_allowed}
@@ -789,19 +916,39 @@ class TradingEngineV3(TradingEngine):
         atomic_write_json(self.trig_path, self.triggers, indent=None)
         return opened, risk_log
 
+    def _execution_entry(self, entry: float, direction: str) -> float:
+        """Plan girişinin ALEYHTE kayma uygulanmış hâli — risk kapasitesi bunu görmelidir.
+
+        LONG daha yukarıdan, SHORT daha aşağıdan dolar; her iki durumda da stop mesafesi (dolayısıyla
+        taşınan risk) plan varsayımından büyüktür. Kayma oranı defterle AYNI kaynaktan gelir
+        (`fees.slippage_bps`), böylece kontrol ile gerçekleşme aynı varsayımı kullanır.
+        """
+        e = float(entry or 0.0)
+        if e <= 0:
+            return e
+        slip = max(0.0, float(self.head_cfg.slippage_pct)) / 100.0
+        return e * (1.0 + slip) if direction == "LONG" else e * (1.0 - slip)
+
     def _trigger_fired(self, b: CoinBrief, direction: str, entry: float, entry_type: str) -> bool:
+        """SAF sorgu: durum DEĞİŞTİRMEZ.
+
+        Eskiden bu metot değerlendirme sırasında `self.triggers[symbol] = last_bar_4h` yazıyordu.
+        Tetik artık risk kapısından ÖNCE çalıştığı için bu yazım, kapasite/emir yüzünden hiç
+        açılmamış bir adayın barını yakardı. Kayıt artık YALNIZ gerçek açılışta işlenir
+        (`_execute_locked`); aynı bar/taraf/setup'ın ikinci kez AÇILMASINI `_seen_signals`
+        (DUPLICATE_SIGNAL) engeller.
+        """
         if not b.price or not entry:
             return False
         if entry_type == "breakout":
             if not b.last_bar_4h or not b.last_close_4h:      # 4h çerçeve yoksa asla tetiklenmez (audit: last_close_4h=0 bug'ı)
                 return False
-            if self.triggers.get(b.symbol) == b.last_bar_4h:
+            if self.triggers.get(b.symbol) == b.last_bar_4h:  # bu barda zaten giriş yapıldı
                 return False
             lvl = entry / 1.001 if direction == "LONG" else entry / 0.999
             fired = (b.last_close_4h > lvl) if direction == "LONG" else (b.last_close_4h < lvl)
-            if fired and abs(b.price / entry - 1) > 0.015:
+            if fired and abs(b.price / entry - 1) > 0.015:    # kovalama yasak
                 fired = False
-            self.triggers[b.symbol] = b.last_bar_4h
             return fired
         return abs(b.price / entry - 1) <= 0.0025
 
@@ -900,7 +1047,7 @@ class TradingEngineV3(TradingEngine):
         belirsizlik + yumusak kanit -> muhafazakar net edge. Maliyet CIFT SAYILMAZ (bkz.
         `opportunity.assess` ve `expectancy_basis`).
         """
-        from .decision_gates import GateLedger
+        from .decision_gates import GateLedger, UnknownGateCode
         from .opportunity import assess, hierarchical_expectancy
         bmap = {b.symbol: b for b in briefs}
         for sym, d in decisions.items():
@@ -910,12 +1057,22 @@ class TradingEngineV3(TradingEngine):
             if plan is None or not getattr(plan, "valid", False):
                 continue
             gates = GateLedger()
+            # FAIL-CLOSED: kayıtsız bir kapı kodu sessizce yumuşak KABUL EDİLMEZ. Kod bir yazım
+            # hatasıysa (ör. `KILL_SWITCH_ACTIV`) aday `UNKNOWN_GATE_CODE` ile SERT reddedilir ve
+            # kod telemetriye yazılır; motor çalışmaya devam eder ama işlem AÇILMAZ.
+            _unknown: list[str] = []
             for code in list(getattr(d, "soft_flags", []) or []) + list(getattr(plan, "soft_flags", []) or []):
-                gates.penalise(code, _SOFT_PENALTY_R.get(code, 0.05), detail="coin head kanıtı")
+                try:
+                    gates.penalise(code, _SOFT_PENALTY_R.get(code, 0.05), detail="coin head kanıtı")
+                except UnknownGateCode as exc:
+                    _unknown.append(exc.code)
+                    log.error("kayıtsız kapı kodu %s (%s) — aday fail-closed reddedildi", exc.code, sym)
             b = bmap.get(sym)
             if b is not None and getattr(b, "dont_list", None):
                 for _w in list(b.dont_list)[:4]:
                     gates.penalise("RED_TEAM_SOFT_PENALTY", 0.04, detail=str(_w)[:80])
+            if _unknown:
+                gates.block("UNKNOWN_GATE_CODE", detail=",".join(sorted(set(_unknown))[:5]))
             stop_pct = plan.stop_pct
             if stop_pct <= 0:
                 gates.block("ZERO_STOP_DISTANCE")

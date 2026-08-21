@@ -1,6 +1,22 @@
-"""BAŞ YÖNETİCİ (Chief Portfolio Manager) — Coin Head kararlarını portföy bağlamında birleştirir ve önceliklendirir.
+"""BAŞ YÖNETİCİ (Chief Portfolio Manager) — Coin Head kararlarını portföy bağlamında SIRALAR ve AÇIKLAR.
 
-Tek başına risk limitlerini geçemez. Final onay üç bayrak gerektirir:
+GÖREVİ ÜÇ ŞEYLE SINIRLIDIR: (1) sıralama, (2) açıklama, (3) üst sınırlı yığılma/rejim yumuşak cezası.
+
+CHIEF AUTHORITATIVE RİSK REZERVASYONU YAPMAZ.
+Eski davranış hatalıydı: `decide()` sıralamadaki her adayı gezerken `risk_used` değerini HEMEN
+artırıyordu. Oysa tetik (trigger), duplicate, araştırma politikası ve gerçek emir/ledger kabulü
+DAHA SONRA `engine_v3.py` içinde kontrol ediliyordu. Sonuç: tetiklenmeyen ya da duplicate olan en
+güçlü aday kapasiteyi tüketiyor, gerçekten tetiklenen sonraki aday `RISK_CAPACITY_BLOCKED` alıyordu.
+
+Yeni sözleşme:
+  * Chief `permission[sym]["allow"]` yalnız (a) aday işlenebilir mi ve (b) SERT red-team vetosu var mı
+    sorularını yanıtlar.
+  * `capacity_projection` YALNIZ RAPORLAMA amaçlıdır (`advisory: True`). Hiçbir adayı engellemez.
+  * Risk kapasitesi YETKİLİ olarak `RiskEngine.evaluate()` içinde, NİHAİ boyut/risk üzerinden ve
+    yalnız gerçekten açılmış pozisyonların riskine karşı zorlanır. Risk yalnız başarılı açılıştan
+    sonra tüketilir; açılış reddedilirse rezervasyon diye bir şey olmadığı için serbest kalır.
+
+Final onay üç bayrak gerektirir:
   1) coin_head_valid  2) no_red_team_veto  3) risk_engine_allowed  (LLM onayı tek başına yeterli DEĞİLDİR)
 """
 from __future__ import annotations
@@ -20,7 +36,8 @@ class ChiefConfig:
     Eski `max_new_positions_per_run = 2`, gunluk degil TUR BASINA sert bir tavandi ve kullanicinin
     gordugu "2 islem" davranisinin gercek kaynagiydi. Kaldirildi. Ayni yon / ayni kume yigilmasi ve
     RISK-ON/RISK-OFF yon uyumsuzlugu artik SERT VETO degil, boyut kucultuculeridir. Yeni girisi
-    yalnizca GERCEK risk kapasitesi (toplam acik risk / margin) durdurur -> `RISK_CAPACITY_BLOCKED`.
+    yalnizca GERCEK risk kapasitesi (toplam acik risk / margin) durdurur; bu kapi CHIEF'te DEGIL,
+    `RiskEngine.evaluate()` icinde NIHAI boyut uzerinden zorlanir.
     """
     # Raporlama sozlesmesi: bu alanlar HER ZAMAN None'dir ve kapi olarak KULLANILMAZ.
     max_new_positions_per_run: None = None
@@ -113,29 +130,35 @@ class ChiefPortfolioManager:
                             "size_multiplier": opp.get("size_multiplier"),
                             "cluster": cluster_of(d.symbol, self.clusters)})
         ranking.sort(key=lambda r: (-r["score"], r["symbol"], r["direction"]))     # deterministik
-        # izinler + çakışmalar
+        # izinler + çakışmalar — SIRALAMA/ACIKLAMA/YUMUSAK CEZA. RISK REZERVASYONU YOK.
         conflicts: list[str] = []
         permission: dict[str, dict[str, Any]] = {}
-        granted = 0
+        permitted = 0
+        # Yigilma sayaclari YALNIZ GERCEK acik pozisyonlardan gelir. Sirasi gelmis fakat henuz
+        # tetiklenmemis adaylar sayaci ARTIRMAZ; aksi halde hic acilmayacak bir aday, sonraki
+        # gercek adayin boyutunu kucultur (risk rezervasyonuyla ayni sinifta hayalet etki).
         dir_count = {"LONG": sum(1 for p in open_pos if p.get("side") == "LONG"), "SHORT": sum(1 for p in open_pos if p.get("side") == "SHORT")}
         cl_count: dict[tuple[str, str], int] = {}
         for p in open_pos:
             k = (cluster_of(p.get("symbol", ""), self.clusters), p.get("side", "LONG"))
             cl_count[k] = cl_count.get(k, 0) + 1
         equity = max(float(ps.get("equity", 0) or 0), 1e-9)
-        risk_used = float(ps.get("total_open_risk_usdt", 0.0) or 0.0)
+        risk_open_now = float(ps.get("total_open_risk_usdt", 0.0) or 0.0)     # GERCEK acik risk
         risk_budget = equity * float(cfg.max_total_open_risk_pct) / 100.0
+        projected = risk_open_now          # YALNIZ RAPORLAMA: hicbir adayi engellemez
+        advisory_fit = 0
         for r in ranking:
             sym, dr = r["symbol"], r["direction"]
             if r["verdict"] not in ("SPOT_LONG", "FUTURES_LONG", "FUTURES_SHORT"):
                 permission[sym] = {"allow": False, "reason": r["no_trade_reason"] or r["verdict"],
                                    "block_code": "NOT_ACTIONABLE", "requires": [], "size_penalty_r": 0.0,
-                                   "soft_codes": []}
+                                   "soft_codes": [], "capacity_projection": None}
                 continue
-            # --- SERT: yalnizca gercek guvenlik/kapasite ---
+            # --- SERT: yalnizca GERCEK red-team sert vetosu (ekonomik zayifliklar burada DEGIL) ---
             if r["vetoes"]:
-                permission[sym] = {"allow": False, "reason": "red team veto", "block_code": "RED_TEAM_HARD_VETO",
-                                   "requires": [], "size_penalty_r": 0.0, "soft_codes": []}
+                permission[sym] = {"allow": False, "reason": "red team hard veto", "block_code": "RED_TEAM_HARD_VETO",
+                                   "requires": [], "size_penalty_r": 0.0, "soft_codes": [],
+                                   "capacity_projection": None}
                 continue
             # --- YUMUSAK: yigilma ve rejim uyumsuzlugu boyutu KUCULTUR, veto VERMEZ ---
             penalty, soft_codes = 0.0, []
@@ -151,36 +174,44 @@ class ChiefPortfolioManager:
                     and r["confidence"] < cfg.regime_confidence_pref:
                 penalty += cfg.regime_mismatch_penalty_r
                 soft_codes.append("MARKET_REGIME_MISMATCH")
-            # --- SERT: GERCEK risk kapasitesi (KOTA DEGIL) ---
+            # --- ADVISORY kapasite projeksiyonu: KAPI DEGIL, yalnizca raporlama ---
             req_pct = r.get("risk_pct_requested")
             req = equity * float(req_pct if req_pct is not None else cfg.risk_per_trade_pct) / 100.0
-            if risk_used + req > risk_budget + 1e-9:
-                permission[sym] = {"allow": False,
-                                   "reason": f"portföy risk kapasitesi doldu ({risk_used:.4f}+{req:.4f} > {risk_budget:.4f})",
-                                   "block_code": "RISK_CAPACITY_BLOCKED", "requires": [],
-                                   "size_penalty_r": round(penalty, 6), "soft_codes": soft_codes}
-                continue
-            risk_used += req
-            granted += 1
-            dir_count[dr] = dir_count.get(dr, 0) + 1
-            cl_count[(r["cluster"], dr)] = cl_count.get((r["cluster"], dr), 0) + 1
-            permission[sym] = {"allow": True, "reason": "chief onayı (nihai değil)",
+            fits = (projected + req) <= risk_budget + 1e-9
+            if fits:
+                projected += req
+                advisory_fit += 1
+            permitted += 1
+            permission[sym] = {"allow": True, "reason": "chief sıralaması (NİHAİ DEĞİL)",
                                "block_code": None, "size_penalty_r": round(penalty, 6),
                                "soft_codes": soft_codes,
+                               # ADVISORY: yetkili kapasite kontrolu RiskEngine'de NIHAI boyutla yapilir.
+                               "capacity_projection": {"advisory": True, "would_fit": bool(fits),
+                                                       "requested_risk_usdt": round(req, 6),
+                                                       "projected_used_usdt": round(projected, 6),
+                                                       "budget_usdt": round(risk_budget, 6)},
                                "requires": ["coin_head_valid", "no_red_team_veto", "risk_engine_allowed"]}
         priority = [r["symbol"] for r in ranking if permission.get(r["symbol"], {}).get("allow")]
         rules = [f"Piyasa modu {mode}: " + {"RISK-ON": "long planlarına öncelik, short'larda güven ≥ 0.6", "RISK-OFF": "short planlarına öncelik, long'larda güven ≥ 0.6",
                                           "NÖTR": "her iki yönde de yalnız güçlü konsensüs, küçük boyut"}[mode],
                  "Sabit işlem sayısı kotası YOK (tur başına / günlük): yeni girişi yalnız GERÇEK risk "
-                 f"kapasitesi durdurur (toplam açık risk ≤ %{cfg.max_total_open_risk_pct}). "
+                 f"kapasitesi durdurur (toplam açık risk ≤ %{cfg.max_total_open_risk_pct}) ve bu kapı "
+                 "CHIEF'te değil, nihai boyut üzerinden Global Risk Engine'de zorlanır. Chief risk "
+                 "REZERVE ETMEZ: tetiklenmeyen/duplicate/reddedilen aday kapasite tüketmez",
                  f"Aynı yönde ≥{cfg.crowded_same_direction_at} veya aynı kümede ≥{cfg.crowded_same_cluster_at} "
-                 "pozisyon: boyut küçültülür, işlem reddedilmez",
+                 "AÇIK pozisyon: boyut küçültülür, işlem reddedilmez",
                  "Nihai onay = Coin Head geçerli plan + Red Team veto yok + Global Risk Engine izni (LLM tek başına yetersiz)",
                  "Aynı coin için spot long + futures long toplam net exposure'a dahil; spot long ↔ futures short çakışması yasak",
                  f"Funding > %{cfg.prefer_spot_when_funding_pct_above} iken long için spot tercih edilir"]
-        exposure |= {"risk_budget_usdt": round(risk_budget, 6), "risk_used_after_usdt": round(risk_used, 6),
-                     "risk_capacity_left_usdt": round(max(0.0, risk_budget - risk_used), 6),
-                     "granted_this_run": granted,
+        exposure |= {"risk_budget_usdt": round(risk_budget, 6),
+                     # GERCEK acik risk (rezervasyon DEGIL) ve ondan kalan gercek kapasite.
+                     "risk_used_usdt": round(risk_open_now, 6),
+                     "risk_capacity_left_usdt": round(max(0.0, risk_budget - risk_open_now), 6),
+                     # ADVISORY projeksiyon: hicbir adayi engellemedi, yalnizca raporlanir.
+                     "risk_projected_if_all_open_usdt": round(projected, 6),
+                     "advisory_capacity_fit": advisory_fit,
+                     "authoritative_risk_reservation": False,
+                     "ranked": permitted, "granted_this_run": permitted,
                      "daily_trade_cap": None, "per_run_trade_cap": None}
         return ChiefDecision(generated_at=iso(utc_now()), market_risk_mode=mode, btc_eth_regime={"btc": btc_r, "eth": eth_regime or "UNKNOWN"},
                              breadth=breadth, clusters=clusters, allocation=allocation, exposure=exposure, ranking=ranking, priority=priority,

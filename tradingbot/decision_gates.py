@@ -13,7 +13,9 @@ rejim uyumu, sabit R/R, aynı yön adedi) tıpkı gerçek güvenlik ihlalleri gi
   karşı-olgusal gölge. Negatif beklentili işlem SIRF veri toplamak için AÇILMAZ.
 
 Bu dosya davranışın kaynağıdır: yeni bir kontrol eklendiğinde buraya sınıfıyla kaydedilmelidir.
-`tests/test_decision_gates.py` kayıtsız kod üretilmesini engeller.
+KAYITSIZ KOD FAIL-CLOSED'dır: `gate_class()`/`block()`/`penalise()` `UnknownGateCode` fırlatır.
+Sessizce ``SOFT_EVIDENCE`` varsayılmaz — aksi hâlde bir güvenlik kodundaki yazım hatası yumuşak
+cezaya dönüşür ve işlem açılırdı.
 """
 from __future__ import annotations
 
@@ -66,6 +68,21 @@ _HARD: tuple[Gate, ...] = (
     _g("RED_TEAM_HARD_VETO", HARD_SAFETY, "red_team", "gerçek güvenlik/veri ihlali vetosu"),
     _g("MAX_POSITIONS", HARD_SAFETY, "risk", "profil pozisyon adedi tavanı (yalnız TESTNET/LIVE)"),
     _g("MAX_POSITIONS_MARKET", HARD_SAFETY, "risk", "profil piyasa başına adet tavanı (yalnız TESTNET/LIVE)"),
+    # --- RED TEAM'in GERCEK sert kodlari (ekonomik/istatistiksel zayifliklar asagida SOFT'tur) ---
+    _g("STALE_DATA", HARD_SAFETY, "red_team", "bayat veri"),
+    _g("MISSING_4H_FRAME", HARD_SAFETY, "red_team", "karar çerçevesi (4h) yok"),
+    _g("CLOCK_OR_API_ISSUE", HARD_SAFETY, "red_team", "saat/API bütünlüğü bozuk"),
+    _g("SOURCES_CONFLICT", HARD_SAFETY, "red_team", "veri kaynakları çelişkili"),
+    _g("LLM_SCHEMA_INVALID", HARD_SAFETY, "red_team", "advisory şeması bozuk"),
+    _g("COSTS_EXCEED_EDGE", HARD_SAFETY, "red_team", "maliyet beklenen getiriyi yiyor"),
+    _g("LIQ_BEFORE_STOP", HARD_SAFETY, "red_team", "likidasyon stop'tan önce — geometri geçersiz"),
+    _g("MIN_ORDER_CONFLICT", HARD_SAFETY, "red_team", "min-notional/step-size uyumsuz"),
+    _g("RISK_LIMIT", HARD_SAFETY, "red_team", "risk/marjin kapasitesi ihlali"),
+    _g("MODEL_DRIFT", HARD_SAFETY, "red_team", "model geçerliliği bozuldu"),
+    _g("DELIST_RISK", HARD_SAFETY, "red_team", "delist riski — market kullanılamaz"),
+    # --- karar yolu bütünlüğü (fail-closed) ---
+    _g("UNKNOWN_GATE_CODE", HARD_SAFETY, "risk", "kayıtsız kapı kodu — fail-closed reddi"),
+    _g("SIZE_MULTIPLIER_ZERO", HARD_SAFETY, "risk", "nihai boyut çarpanı sıfır — emir gönderilemez"),
 )
 
 # --------------------------------------------------------------------------- SOFT_EVIDENCE
@@ -92,6 +109,20 @@ _SOFT: tuple[Gate, ...] = (
     _g("RED_TEAM_SOFT_PENALTY", SOFT_EVIDENCE, "red_team", "red-team kanıt zayıflığı cezası"),
     _g("RESEARCH_POLICY_PENALTY", SOFT_EVIDENCE, "research", "araştırma politikası boyut küçültmesi"),
     _g("SMALL_SAMPLE", SOFT_EVIDENCE, "coin_head", "geçmiş örnek sayısı düşük"),
+    # --- RED TEAM: ekonomik/istatistiksel zayifliklar TEK BASINA REDDETMEZ, boyutu kucultur ---
+    _g("WEAK_OOS_EDGE", SOFT_EVIDENCE, "red_team", "OOS edge zayıf/ölçülemedi"),
+    _g("LOW_TRADE_COUNT", SOFT_EVIDENCE, "red_team", "OOS işlem sayısı düşük"),
+    _g("HIGH_CORRELATION_EXPOSURE", SOFT_EVIDENCE, "red_team", "yüksek korelasyonlu yığılma"),
+    _g("CROWDED_SAME_DIRECTION", SOFT_EVIDENCE, "red_team", "aynı yönde kalabalık"),
+    _g("AGAINST_BTC_REGIME", SOFT_EVIDENCE, "red_team", "BTC/piyasa rejimiyle uyumsuz"),
+    _g("STOP_TOO_FAR", SOFT_EVIDENCE, "red_team", "stop tercih edilenden uzak (fakat geçerli)"),
+    _g("STOP_TOO_CLOSE", SOFT_EVIDENCE, "red_team", "stop tercih edilenden yakın (fakat geçerli)"),
+    _g("FUNDING_EXTREME", SOFT_EVIDENCE, "red_team", "funding aleyhte ve uç"),
+    _g("FUNDING_CROWDED", SOFT_EVIDENCE, "red_team", "funding kalabalığı"),
+    _g("NEW_LISTING", SOFT_EVIDENCE, "red_team", "yeni listelenmiş — geçmiş kısa"),
+    _g("WIDE_SPREAD", SOFT_EVIDENCE, "red_team", "spread geniş ama işlem yapılabilir"),
+    _g("LOW_LIQUIDITY", SOFT_EVIDENCE, "red_team", "derinlik düşük ama işlem yapılabilir"),
+    _g("LIQ_BUFFER_THIN", SOFT_EVIDENCE, "red_team", "likidasyon tamponu ince (stop'tan sonra)"),
 )
 
 # --------------------------------------------------------------------------- RESEARCH_ONLY
@@ -109,9 +140,31 @@ FORBIDDEN_QUOTA_CODES = ("DAILY_LIMIT", "PER_RUN_LIMIT", "DAILY_TRADE_CAP", "PER
                          "MAX_NEW_POSITIONS_PER_RUN", "MAX_TRADES_PER_DAY", "TRADE_QUOTA")
 
 
+class UnknownGateCode(ValueError):
+    """Kayıtsız kapı kodu. FAIL-CLOSED: karar yolu bunu ASLA yumuşak kabul etmez.
+
+    Eski davranış (`return SOFT_EVIDENCE`) fail-open'dı: bir güvenlik kodundaki yazım hatası
+    (`KILL_SWITCH_ACTIV`) sessizce yumuşak cezaya dönüşür ve işlem açılırdı. Artık kayıtsız kod
+    istisna üretir; çağıran taraf adayı `UNKNOWN_GATE_CODE` sert engeliyle reddeder ve kodu
+    telemetriye yazar.
+    """
+
+    def __init__(self, code: str):
+        self.code = str(code)
+        super().__init__(f"kayıtsız kapı kodu (fail-closed): {self.code!r} — decision_gates.GATES'e eklenmeli")
+
+
 def gate_class(code: str) -> str:
+    """Kodun sınıfı. Kayıtsız kod → `UnknownGateCode` (varsayılan yumuşak kabul YOKTUR)."""
     g = GATES.get(str(code))
-    return g.cls if g else SOFT_EVIDENCE          # bilinmeyen kod ASLA sert olamaz (fail-open değil: yalnız puan düşürür)
+    if g is None:
+        raise UnknownGateCode(code)
+    return g.cls
+
+
+def is_known(code: str) -> bool:
+    """Kod kayıtlı mı? Telemetri/raporlama için — karar kapısı olarak KULLANILMAZ."""
+    return str(code) in GATES
 
 
 def is_hard(code: str) -> bool:
@@ -135,7 +188,7 @@ class SoftSignal:
     value: float | None = None
 
     def __post_init__(self) -> None:
-        if is_hard(self.code):
+        if is_hard(self.code):                      # kayıtsız kod burada UnknownGateCode fırlatır (fail-closed)
             raise ValueError(f"{self.code} HARD_SAFETY — yumuşak kanıt olarak kullanılamaz")
         self.penalty_r = max(0.0, float(self.penalty_r))
 
@@ -151,13 +204,14 @@ class GateLedger:
     soft: list[SoftSignal] = field(default_factory=list)
 
     def block(self, code: str, detail: str = "") -> "GateLedger":
-        if not is_hard(code):
+        if not is_hard(code):                       # kayıtsız kod → UnknownGateCode (fail-closed)
             raise ValueError(f"{code} HARD_SAFETY değil — sert engel olarak kullanılamaz")
         if code not in self.hard:
             self.hard.append(code)
         return self
 
     def penalise(self, code: str, penalty_r: float, detail: str = "", value: float | None = None) -> "GateLedger":
+        """Yumuşak ceza ekler. Kayıtsız kod `UnknownGateCode` fırlatır — sessiz soft kabul YOKTUR."""
         self.soft.append(SoftSignal(code, penalty_r, detail, value))
         return self
 
@@ -175,5 +229,5 @@ class GateLedger:
 
 
 __all__ = ["CLASSES", "FORBIDDEN_QUOTA_CODES", "GATES", "Gate", "GateLedger", "HARD_SAFETY",
-           "RESEARCH_ONLY", "SOFT_EVIDENCE", "SoftSignal", "gate_class", "hard_codes", "is_hard",
-           "soft_codes"]
+           "RESEARCH_ONLY", "SOFT_EVIDENCE", "SoftSignal", "UnknownGateCode", "gate_class",
+           "hard_codes", "is_hard", "is_known", "soft_codes"]

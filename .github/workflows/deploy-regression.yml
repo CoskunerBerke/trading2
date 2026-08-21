@@ -110,6 +110,18 @@ jobs:
         run: |
           /tmp/run.sh "decision-gates" tests/test_opportunity_and_limits.py -v --tb=short \
             -k "gate_contract or zero_stop or paper_uses_risk_budget or conservative_profiles or llm_budget"
+      - name: RİSK KAPASİTESİ SIRASI — gerçek motor davranışı (statik arama DEĞİL)
+        # Zorunlu adım. Tetiklenmeyen/duplicate/reddedilen adayların kapasite tüketmediğini,
+        # RiskEngine'in NİHAİ boyutu gördüğünü, red-team sert/yumuşak ayrımını ve kayıtsız kapı
+        # kodunun fail-closed olduğunu GERÇEK tur sürerek kanıtlar. continue-on-error YOK.
+        run: /tmp/run.sh "test_risk_capacity_and_gates" tests/test_risk_capacity_and_gates.py -v --tb=short -rs
+      - name: Risk kapasitesi testleri gerçekten toplanıyor mu (boş seçim reddi)
+        run: |
+          n=$(python -m pytest tests/test_risk_capacity_and_gates.py --collect-only -q 2>/dev/null | grep -c "::")
+          echo "toplanan test: $n"
+          if [ "$n" -lt 20 ]; then echo "::error::risk kapasite davranis testleri toplanmadi ($n)"; exit 1; fi
+          /tmp/run.sh "capacity-order" tests/test_risk_capacity_and_gates.py -v --tb=short \
+            -k "untriggered or duplicate or rejected_fill or half_percent or final_size or soft_penalty or ceiling or fail_closed or zero_size or counter_blocked or telemetry or funnel"
       - name: GERÇEK RUNTIME araştırma döngüsü (boş defterden motor turlarıyla)
         # Zorunlu adım. Boş test seçimi pytest exit-5 ile adımı DÜŞÜRÜR; continue-on-error yok.
         run: /tmp/run.sh "test_research_runtime_e2e" tests/test_research_runtime_e2e.py -v --tb=short -rs

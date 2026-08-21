@@ -94,17 +94,46 @@ def test_data_integrity_veto_and_regime_and_sizing():
     assert rs.veto and rs.veto_reason == "NO_TRADE_MIN_ORDER_CONFLICT"     # 0.125 USDT risk / %10 stop = 1.25 notional < 5
 
 
-def test_red_team_codes():
-    v, w = review(RedTeamContext(direction="LONG", data_stale=True, spread_pct=0.5, depth_usdt=1000, expected_cost_pct=1.0, expected_return_gross_pct=0.5,
-                                 has_edge=False, oos_trades=5, corr_btc=0.9, same_direction_open=3, btc_regime="TREND_DOWN", stop_pct=10, atr_pct=1,
-                                 liq_distance_pct=5, funding_pct=0.08, kill_switch_active=True, listing_age_days=10, min_order_conflict=True))
-    for code in ("STALE_DATA", "WIDE_SPREAD", "LOW_LIQUIDITY", "COSTS_EXCEED_EDGE", "WEAK_OOS_EDGE", "HIGH_CORRELATION_EXPOSURE",
-                 "CROWDED_SAME_DIRECTION", "STOP_TOO_FAR", "LIQ_BEFORE_STOP", "FUNDING_EXTREME", "KILL_SWITCH_ACTIVE", "NEW_LISTING", "MIN_ORDER_CONFLICT"):
-        assert code in v, code
-    assert "AGAINST_BTC_REGIME" in w and "LOW_TRADE_COUNT" in w
-    v2, _ = review(RedTeamContext(direction="SHORT", funding_pct=0.08, stop_pct=0.5, atr_pct=1.0))
-    assert "FUNDING_EXTREME" not in v2 and "STOP_TOO_CLOSE" in v2
-    assert review(RedTeamContext())[0] == []
+def test_red_team_separates_hard_veto_from_soft_penalty():
+    """`review()` → (hard_veto_codes, soft_penalty_codes).
+
+    Ekonomik/istatistiksel zayıflıklar (zayıf OOS edge, korelasyon/yığılma, funding, yeni
+    listelenme, rejim uyumsuzluğu, orta seviye spread/derinlik, tercih dışı fakat geçerli stop)
+    TEK BAŞINA REDDETMEZ. Sert liste yalnız gerçek güvenlik/geçerlilik/ekonomi ihlalidir.
+    """
+    from tradingbot.coinhead.redteam import (HARD_VETO_CODES, SOFT_PENALTY_CODES,
+                                             assert_classification_matches_registry)
+    assert_classification_matches_registry()                       # decision_gates ile birebir
+    assert not (set(HARD_VETO_CODES) & set(SOFT_PENALTY_CODES))
+    hard, soft = review(RedTeamContext(direction="LONG", data_stale=True, spread_pct=0.5, depth_usdt=10_000,
+                                       expected_cost_pct=1.0, expected_return_gross_pct=0.5,
+                                       has_edge=False, oos_trades=5, corr_btc=0.9, same_direction_open=3,
+                                       btc_regime="TREND_DOWN", stop_pct=10, atr_pct=1,
+                                       liq_distance_pct=5, funding_pct=0.08, kill_switch_active=True,
+                                       listing_age_days=10, min_order_conflict=True))
+    for code in ("STALE_DATA", "COSTS_EXCEED_EDGE", "LIQ_BEFORE_STOP", "KILL_SWITCH_ACTIVE", "MIN_ORDER_CONFLICT"):
+        assert code in hard, code                                  # gerçek güvenlik/ekonomi → SERT
+    for code in ("WIDE_SPREAD", "LOW_LIQUIDITY", "WEAK_OOS_EDGE", "LOW_TRADE_COUNT", "AGAINST_BTC_REGIME",
+                 "HIGH_CORRELATION_EXPOSURE", "CROWDED_SAME_DIRECTION", "STOP_TOO_FAR",
+                 "FUNDING_EXTREME", "NEW_LISTING"):
+        assert code in soft, code                                  # ekonomik zayıflık → YUMUŞAK
+        assert code not in hard, f"{code} tek başına REDDETMEMELİ"
+    # Yalnız ekonomik zayıflıklar varsa SERT VETO YOKTUR (eski "10 ayrı engel" davranışı kalktı).
+    only_soft_hard, only_soft = review(RedTeamContext(direction="LONG", has_edge=False, oos_trades=5,
+                                                      corr_btc=0.9, same_direction_open=3,
+                                                      btc_regime="TREND_DOWN", stop_pct=10, atr_pct=1,
+                                                      funding_pct=0.08, listing_age_days=10,
+                                                      spread_pct=0.5, depth_usdt=10_000))
+    assert only_soft_hard == [], only_soft_hard
+    assert len(only_soft) >= 8
+    # Gerçekten işlem yapılamayacak likidite/spread SERT kalır.
+    h2, _ = review(RedTeamContext(direction="LONG", spread_pct=2.0))
+    assert "LIQUIDITY_UNTRADEABLE" in h2
+    h3, _ = review(RedTeamContext(direction="LONG", depth_usdt=100))
+    assert "LIQUIDITY_UNTRADEABLE" in h3
+    h4, s4 = review(RedTeamContext(direction="SHORT", funding_pct=0.08, stop_pct=0.5, atr_pct=1.0))
+    assert "FUNDING_EXTREME" not in s4 and "STOP_TOO_CLOSE" in s4 and h4 == []
+    assert review(RedTeamContext()) == ([], [])
 
 
 def _inputs(fr, reports, brief, **kw):
@@ -153,18 +182,26 @@ def test_coin_head_decision_paths():
     assert not d6.is_actionable
 
 
-def test_futures_rejected_spot_allowed_when_funding_extreme():
+def test_spot_preferred_over_futures_when_funding_extreme_without_hard_veto():
+    """Aşırı funding artık VETO DEĞİL: futures planı GEÇERLİ kalır, yumuşak kanıt taşır ve
+    maliyet sonrası R üzerinden spot tercih edilir. (Funding zaten `expected_cost_pct`e girer.)"""
     cfg = CoinHeadConfig(consensus_threshold=0.05, min_confidence=0.05)
     fr = frames(seed=5, drift=0.0015)
     live = live_for(fr, funding={"rate": 0.0009, "mark": float(fr["4h"]["close"].iloc[-1])})   # %0.09 / 8s → long için aşırı
     reports, brief = legacy(fr, live)
     d = CoinHead("ETH/USDT", cfg).decide(_inputs(fr, reports, brief, live=live))
     assert d.direction == "LONG" and d.verdict == Verdict.SPOT_LONG and d.market_type == "spot"
-    assert d.futures_plan is not None and not d.futures_plan.valid and "FUNDING_EXTREME" in d.futures_plan.invalid_reason
+    # SERT VETO YOK: plan geçerli, yalnız yumuşak kanıt (boyut küçültücü) taşıyor.
+    assert d.futures_plan is not None and d.futures_plan.valid
+    assert "FUNDING_EXTREME" in d.futures_plan.soft_flags
+    assert not d.vetoes, d.vetoes
     assert d.spot_plan is not None and d.spot_plan.valid and d.leverage == 1 and d.notional > 0
+    # Seçim ekonomiktir: funding maliyeti futures'ın maliyet sonrası R'sini düşürür.
+    assert d.futures_plan.expected_r < d.spot_plan.expected_r or d.spot_plan.expected_cost_pct < d.futures_plan.expected_cost_pct
     # aynı veri, normal funding → futures da geçerli; maliyet sonrası R'ye göre seçim yapılır
     d2 = CoinHead("ETH/USDT", cfg).decide(_inputs(fr, reports, brief))
     assert d2.is_actionable and d2.futures_plan is not None and d2.futures_plan.valid
+    assert "FUNDING_EXTREME" not in d2.futures_plan.soft_flags
 
 
 def test_registry_lock_stale_and_save(tmp_path: Path):
@@ -304,8 +341,8 @@ def test_chief_ranks_blocks_crowding_and_requires_three_flags():
         assert all(p["size_penalty_r"] > 0 for p in crowded)
         for p in d["permission"].values():
             if not p["allow"]:
-                assert p.get("block_code") in ("NOT_ACTIONABLE", "RED_TEAM_HARD_VETO",
-                                               "RISK_CAPACITY_BLOCKED"), p
+                # Chief RISK REZERVE ETMEZ: kapasite kodu artık burada üretilemez.
+                assert p.get("block_code") in ("NOT_ACTIONABLE", "RED_TEAM_HARD_VETO"), p
     # SABİT İŞLEM SAYISI KOTASI YOK — raporlama sözleşmesi her zaman null
     assert d["exposure"]["daily_trade_cap"] is None and d["exposure"]["per_run_trade_cap"] is None
     assert "risk_budget_usdt" in d["exposure"] and "risk_capacity_left_usdt" in d["exposure"]
@@ -340,11 +377,15 @@ def test_chief_grants_all_affordable_opportunities_in_one_run():
     actionable = [d.symbol for d in decs if d.is_actionable]
     assert set(allowed) == set(actionable), (allowed, actionable)
     assert len(allowed) >= 3 or len(actionable) < 3
-    assert ch.exposure["granted_this_run"] == len(allowed)
+    assert ch.exposure["ranked"] == len(allowed) == ch.exposure["granted_this_run"]
 
 
-def test_chief_blocks_with_risk_capacity_not_a_quota():
-    """Risk kapasitesi dolduğunda kod RISK_CAPACITY_BLOCKED olmalı — DAILY/PER_RUN_LIMIT DEĞİL."""
+def test_chief_does_not_reserve_risk_and_reports_capacity_as_advisory_only():
+    """Chief kapasite REZERVE ETMEZ: projeksiyon yalnız raporlamadır, hiçbir adayı engellemez.
+
+    Yetkili kapasite kararı `RiskEngine.evaluate()` içinde, NİHAİ boyut üzerinden ve yalnız
+    gerçekten açılmış pozisyonların riskine karşı verilir.
+    """
     from tradingbot.coinhead.chief import ChiefConfig
     cfg = CoinHeadConfig(consensus_threshold=0.05, min_confidence=0.05)
     fr = frames(seed=3, drift=0.0015)
@@ -352,11 +393,19 @@ def test_chief_blocks_with_risk_capacity_not_a_quota():
     decs = [CoinHead(s, cfg).decide(_inputs(fr, reports, brief)) for s in ("SOL/USDT", "AVAX/USDT", "ADA/USDT")]
     for d in decs:
         d.opportunity = {"conservative_net_edge_r": 0.5, "risk_pct_requested": 2.0, "size_multiplier": 1.0}
-    ch = ChiefPortfolioManager(ChiefConfig(max_total_open_risk_pct=2.0)).decide(   # yalnız 1 işleme yeter
+    ch = ChiefPortfolioManager(ChiefConfig(max_total_open_risk_pct=2.0)).decide(   # projeksiyon 1 işleme yeter
         decs, {"equity": 1000.0, "open_positions": [], "total_open_risk_usdt": 0.0})
-    blocked = [p for p in ch.permission.values() if p.get("block_code") == "RISK_CAPACITY_BLOCKED"]
-    actionable = [d for d in decs if d.is_actionable]
-    if len(actionable) > 1:
-        assert blocked, "kapasite dolunca RISK_CAPACITY_BLOCKED bekleniyor"
+    actionable = [d.symbol for d in decs if d.is_actionable]
+    # Kapasite projeksiyonu dolsa bile HİÇBİR aday chief tarafından engellenmez.
+    assert all(ch.permission[s]["allow"] for s in actionable), ch.permission
+    assert not any(p.get("block_code") == "RISK_CAPACITY_BLOCKED" for p in ch.permission.values())
     for p in ch.permission.values():
         assert p.get("block_code") not in ("DAILY_LIMIT", "PER_RUN_LIMIT")
+    assert ch.exposure["authoritative_risk_reservation"] is False
+    # `risk_used_usdt` GERÇEK açık risktir (rezervasyon değil): açık pozisyon yok → 0.
+    assert ch.exposure["risk_used_usdt"] == 0.0
+    assert ch.exposure["risk_capacity_left_usdt"] == ch.exposure["risk_budget_usdt"]
+    if len(actionable) > 1:                        # projeksiyon bunu "sığmaz" olarak RAPORLAR
+        fits = [ch.permission[s]["capacity_projection"]["would_fit"] for s in actionable]
+        assert fits.count(False) >= 1 and all(
+            ch.permission[s]["capacity_projection"]["advisory"] for s in actionable)

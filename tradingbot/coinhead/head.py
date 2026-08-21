@@ -2,6 +2,11 @@
 
 Öncelik: veri doğru mu → maliyet sonrası edge var mı → risk kabul edilebilir mi → red team veto var mı → plan.
 Şüphe varsa NO_TRADE. LLM burada çalışmaz; yalnızca yapılandırılmış öneri (advisory) girdi olarak alınabilir.
+
+RED TEAM SÖZLEŞMESİ: yalnız `hard_veto_codes` planı geçersiz yapar. `soft_penalty_codes`
+(zayıf OOS edge, korelasyon/yığılma, funding, yeni listelenme, rejim uyumsuzluğu, orta seviye
+spread/derinlik, tercih dışı fakat geçerli stop) `plan.soft_flags`'e yazılır ve yalnızca boyutu
+küçültür — "10 ayrı engelden geçemezse hiç işlem açma" davranışı bilinçli olarak kaldırılmıştır.
 """
 from __future__ import annotations
 
@@ -295,6 +300,12 @@ class CoinHead:
             if inp.llm_advice and inp.llm_advice.get("veto"):
                 rep.veto = True
                 rep.veto_reason = (rep.veto_reason + "; " if rep.veto_reason else "") + "LLM_VETO: " + ", ".join(inp.llm_advice.get("veto_reasons", [])[:3])
+            # YUMUSAK red-team kodlari plani GECERSIZ YAPMAZ: `plan.soft_flags` uzerinden
+            # `opportunity.assess()` icinde ust sinirli ceza olarak boyutu kucultur.
+            _soft = list((rep.metrics or {}).get("soft_penalty_codes") or [])
+            if _soft:
+                plan.soft_flags = list(plan.soft_flags) + [c for c in _soft if c not in plan.soft_flags]
+            # SERT: yalnizca `hard_veto_codes` (gercek guvenlik/gecerlilik/ekonomi ihlali) reddeder.
             if rep.veto:
                 plan.valid = False
                 plan.invalid_reason = rep.veto_reason

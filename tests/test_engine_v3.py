@@ -29,16 +29,40 @@ class FakeLive:
         return lv
 
 
+# Sentetik evren: her sembol farkli seed/drift alir -> bagimsiz, benzersiz firsatlar.
+_UNIVERSE: tuple[tuple[str, int, float], ...] = (
+    ("ETH/USDT", 5, 0.0015), ("SOL/USDT", 13, 0.003), ("AVAX/USDT", 21, 0.0022),
+    ("LINK/USDT", 29, 0.0026), ("ADA/USDT", 37, 0.0019), ("DOT/USDT", 43, 0.0024),
+)
+
+
 def _engine(tmp_path: Path, monkeypatch, v3_overrides: dict | None = None,
-            *, before_build=None) -> TradingEngineV3:
+            *, before_build=None, symbols: int | list[str] | None = None,
+            equity: float | None = None, ledger_max_positions: int | None = None) -> TradingEngineV3:
     """Agsiz V3 motoru. `v3_overrides` v3 config bolumlerini derinlemesine gunceller;
-    `before_build(cfg)` motor kurulmadan ONCE state dizinine dokunmak icin cagrilir."""
+    `before_build(cfg)` motor kurulmadan ONCE state dizinine dokunmak icin cagrilir.
+
+    `symbols` bir sayi ise `_UNIVERSE`'in ilk N sembolu kullanilir (varsayilan 2). `equity` ve
+    `ledger_max_positions` davranis testlerinin kapasite senaryolarini kurabilmesi icindir; her
+    ikisi de YALNIZ test yapilandirmasidir, uretim varsayilanlarini degistirmez."""
+    if symbols is None:
+        picks = list(_UNIVERSE[:2])
+    elif isinstance(symbols, int):
+        picks = list(_UNIVERSE[:symbols])
+    else:
+        picks = [u for u in _UNIVERSE if u[0] in symbols]
+    syms = [s for s, _, _ in picks]
     cfg = BotConfig()
-    cfg.coins = ["ETH/USDT", "SOL/USDT"]
+    cfg.coins = list(syms)
     cfg.scanner.enabled = False
-    cfg.scanner.core_coins = ["ETH/USDT", "SOL/USDT"]
+    cfg.scanner.core_coins = list(syms)
     cfg.project_root = tmp_path
     cfg.obsidian.vault_path = str(tmp_path / "vault")
+    if equity is not None:
+        cfg.futures.starting_equity_usdt = float(equity)
+        cfg.risk.starting_equity_usdt = float(equity)
+    if ledger_max_positions is not None:
+        cfg.futures.max_positions = int(ledger_max_positions)
     raw = {"coin_heads": {"consensus_threshold": 0.05, "min_confidence": 0.05},
            "learning_v3": {"min_samples_train": 5}}
     for sec, vals in (v3_overrides or {}).items():
@@ -48,7 +72,7 @@ def _engine(tmp_path: Path, monkeypatch, v3_overrides: dict | None = None,
         cfg.state_path.mkdir(parents=True, exist_ok=True)
         before_build(cfg)
     eng = TradingEngineV3(cfg)
-    frames = {"ETH/USDT": T.frames(seed=5, drift=0.0015), "SOL/USDT": T.frames(seed=13, drift=0.003)}
+    frames = {s: T.frames(seed=sd, drift=dr) for s, sd, dr in picks}
     # sentetik mumları "şimdi"ye kaydır (veri kalitesi kapısı bayat mum görmesin): son 4h bar bir bar önce kapandı
     import pandas as pd
     from tradingbot.core import utc_now
@@ -72,7 +96,9 @@ def _engine(tmp_path: Path, monkeypatch, v3_overrides: dict | None = None,
         from tradingbot.agents.manager import CoinManagerAgent
         from tradingbot.agents.market import MarketDataAgent
         from tradingbot.agents.technical import TECHNICAL_AGENTS
-        ctx = CoinContext(symbol=symbol, frames=fr, live=live, equity_usdt=50, risk_pct=2.0, atr_stop_mult=2.5)
+        # legacy plan boyutu motor equity'siyle ayni tabani kullansin (varsayilan 50 -> davranis degismez)
+        ctx = CoinContext(symbol=symbol, frames=fr, live=live, equity_usdt=cfg.futures.starting_equity_usdt,
+                          risk_pct=2.0, atr_stop_mult=2.5)
         reports = [a.run(ctx) for a in TECHNICAL_AGENTS + [MarketDataAgent()]]
         b = CoinManagerAgent().decide(ctx, reports)
         b.generated_at = "2026-08-18T00:00:00+00:00"

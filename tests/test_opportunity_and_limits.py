@@ -79,7 +79,7 @@ def test_three_strong_opportunities_in_one_run_all_get_permission():
     ch = ChiefPortfolioManager(ChiefConfig(max_total_open_risk_pct=6.0)).decide(
         decs, {"equity": 1000.0, "open_positions": [], "total_open_risk_usdt": 0.0})
     assert all(ch.permission[d.symbol]["allow"] for d in decs), ch.permission
-    assert ch.exposure["granted_this_run"] == 3
+    assert ch.exposure["ranked"] == 3 and ch.exposure["granted_this_run"] == 3
     assert ch.exposure["daily_trade_cap"] is None and ch.exposure["per_run_trade_cap"] is None
 
 
@@ -93,22 +93,32 @@ def test_all_candidates_are_ranked_before_processing():
     assert order == ["C/USDT", "E/USDT", "D/USDT", "B/USDT", "A/USDT"], order
     assert ch.priority[0] == "C/USDT"
     assert all(ch.permission[s]["allow"] for s in order)          # bütçe yetiyor → hepsi
-    # kapasite yalnız 2 işleme yetiyorsa: EN GÜÇLÜ ikisi geçer, zayıflar kapasiteden düşer
+    # Kapasite projeksiyonu yalnız 2 işleme yetse bile CHIEF ENGELLEMEZ (rezervasyon yok):
+    # sıra korunur, yetkili karar nihai boyutla RiskEngine'de verilir.
     ch2 = ChiefPortfolioManager(ChiefConfig(max_total_open_risk_pct=2.0)).decide(
         decs, {"equity": 1000.0, "open_positions": [], "total_open_risk_usdt": 0.0})
-    allowed = [s for s in order if ch2.permission[s]["allow"]]
-    assert allowed == ["C/USDT", "E/USDT"], allowed
+    assert [r["symbol"] for r in ch2.ranking] == order
+    assert all(ch2.permission[s]["allow"] for s in order), ch2.permission
+    fit = [s for s in order if ch2.permission[s]["capacity_projection"]["would_fit"]]
+    assert fit == ["C/USDT", "E/USDT"], fit          # projeksiyon (ADVISORY) en güçlü ikisini işaretler
+    assert ch2.exposure["advisory_capacity_fit"] == 2
+    assert ch2.exposure["authoritative_risk_reservation"] is False
 
 
-def test_capacity_full_reports_risk_capacity_not_a_quota():
+def test_capacity_projection_is_advisory_and_never_blocks_in_chief():
+    """Kapasite dolu görünse bile CHIEF engellemez; kod hiçbir zaman kota kodu olamaz."""
     decs = [_Dec("A/USDT", 0.9, risk_pct=2.0), _Dec("B/USDT", 0.8, risk_pct=2.0)]
     ch = ChiefPortfolioManager(ChiefConfig(max_total_open_risk_pct=2.0)).decide(
         decs, {"equity": 1000.0, "open_positions": [], "total_open_risk_usdt": 0.0})
-    assert ch.permission["A/USDT"]["allow"]
-    b = ch.permission["B/USDT"]
-    assert not b["allow"] and b["block_code"] == "RISK_CAPACITY_BLOCKED"
-    assert b["block_code"] not in FORBIDDEN_QUOTA_CODES
+    assert ch.permission["A/USDT"]["allow"] and ch.permission["B/USDT"]["allow"]
+    assert ch.permission["A/USDT"]["capacity_projection"]["would_fit"] is True
+    assert ch.permission["B/USDT"]["capacity_projection"]["would_fit"] is False   # yalnız RAPOR
+    for perm in ch.permission.values():
+        assert perm.get("block_code") is None
+        assert perm.get("block_code") not in FORBIDDEN_QUOTA_CODES
+        assert perm["capacity_projection"]["advisory"] is True
     assert ch.exposure["risk_capacity_left_usdt"] >= 0
+    assert ch.exposure["risk_used_usdt"] == 0.0        # GERÇEK açık risk; rezervasyon yok
 
 
 def test_hundred_sequential_unique_opportunities_are_never_counter_blocked():

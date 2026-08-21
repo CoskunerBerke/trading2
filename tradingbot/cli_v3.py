@@ -420,9 +420,11 @@ def cmd_historical_replay(cfg: BotConfig, args) -> int:
                           state_root=rdir.parent, pattern_engine=eng, start_ms=_ms(getattr(args, "from_", None)),
                           end_ms=_ms(args.to), decision_stride=args.stride)
     rp.load()
-    ws = walk_forward_windows(rp.result.start_ms, rp.result.end_ms, train_days=args.train_days, test_days=args.test_days, purge_bars=args.purge, embargo_bars=args.embargo)
+    ws = walk_forward_windows(rp.result.start_ms, rp.result.end_ms, train_days=args.train_days, test_days=args.test_days,
+                              purge_bars=args.purge, embargo_bars=args.embargo, tf=args.tf)   # bar süresi tf'den
     res = rp.run(windows=ws, on_progress=lambda d: print(f"  {d['t']} kararlar={d['decisions']} açılış={d['opened']} kapanış={d['closed']}"))
     out = res.to_dict(); out["trades"] = f"{len(res.trades)} işlem (replay_result.json)"
+    out["rejections"] = res.rejections
     out["metrics"] = {k: v for k, v in res.metrics.items() if k != "learner"}
     _p(out)
     return 0
@@ -483,6 +485,64 @@ def cmd_replay_evaluate(cfg: BotConfig, args) -> int:
         print(f"BLOCK: {exc}")
         return 2
     _p(rep)
+    return 0
+
+
+def cmd_replay_pipeline(cfg: BotConfig, args) -> int:
+    """Tek süreçte sıralı aşamalar (replay→train→evaluate) + kalıcı `run_status.json`.
+    Runner bunu TEK transient systemd service olarak başlatır → SSH kopsa da pipeline devam eder."""
+    from .replay.pipeline import run_pipeline
+    from .replay.research import ReplaySafetyError
+    stages = [x.strip() for x in str(args.stages or "replay,train,evaluate").split(",") if x.strip()]
+    if getattr(args, "resume", False):
+        # SAHTE RESUME YOK: gerçek devam için checkpoint/RNG/karar-zaman-çizelgesi kalıcılığı gerekir; yok.
+        print("BLOCK: --resume UNSUPPORTED — güvenli gerçek devam (checkpoint + RNG + karar zaman çizelgesi) "
+              "bu sürümde uygulanmadı; sahte resume yapılmaz. Yeni bir --run-id ile baştan koşun.")
+        return 2
+    replay_args = {"symbols": args.symbols, "market": args.market, "tf": args.tf, "seed": args.seed,
+                   "run_id": args.run_id, "state_dir": args.state_dir, "from_": getattr(args, "from_", None),
+                   "to": args.to, "stride": args.stride, "train_days": args.train_days, "test_days": args.test_days,
+                   "purge": args.purge, "embargo": args.embargo, "no_patterns": args.no_patterns,
+                   "min_sample": args.min_sample, "horizon": args.horizon}
+    limits = {k: v for k, v in (("memory_max", getattr(args, "limit_memory", None)),
+                                ("cpu_quota", getattr(args, "limit_cpu", None)),
+                                ("nice", getattr(args, "limit_nice", None)),
+                                ("io_weight", getattr(args, "limit_io", None))) if v}
+    try:
+        return run_pipeline(cfg, args.run_id, stages, state_root=Path(args.state_dir) if args.state_dir else None,
+                            unit=getattr(args, "unit", "") or "", limits=limits, replay_args=replay_args,
+                            seed=args.seed, min_samples=getattr(args, "min_samples", None))
+    except ReplaySafetyError as exc:
+        print(f"BLOCK: {exc}")
+        return 2
+
+
+def cmd_replay_status(cfg: BotConfig, args) -> int:
+    """Kalıcı manifest + artifact'lerden GERÇEK durum. Aktif unit SUCCESS gösterilmez; hiç başlamamış
+    aşama NOT_STARTED; manifest/artifact çelişkisi INCONSISTENT (non-zero)."""
+    from .replay.pipeline import status_verdict
+    from .replay.research import ReplaySafetyError, resolve_replay_dir
+    try:
+        rdir = resolve_replay_dir(cfg.state_path, args.run_id, Path(args.state_dir) if args.state_dir else None)
+    except ReplaySafetyError as exc:
+        print(f"BLOCK: {exc}")
+        return 2
+    v = status_verdict(rdir, unit_active=bool(getattr(args, "unit_active", False)))
+    _p(v)
+    return 0 if v["state"] in ("SUCCESS", "RUNNING", "NOT_STARTED") else 1
+
+
+def cmd_replay_verify(cfg: BotConfig, args) -> int:
+    """Tamamlanmış bir replay'in artifact'lerini DEĞİŞTİRMEDEN doğrula (train-only akışının ön koşulu)."""
+    from .replay.pipeline import verify_existing_replay
+    from .replay.research import ReplaySafetyError, resolve_replay_dir
+    try:
+        rdir = resolve_replay_dir(cfg.state_path, args.run_id, Path(args.state_dir) if args.state_dir else None,
+                                  must_exist=True)
+        _p(verify_existing_replay(cfg, rdir, expect_seed=getattr(args, "seed", None)))
+    except ReplaySafetyError as exc:
+        print(f"BLOCK: {exc}")
+        return 2
     return 0
 
 
@@ -735,11 +795,35 @@ def register(sub: argparse._SubParsersAction) -> None:
     s.set_defaults(fn=cmd_replay_plan)
     s = sub.add_parser("replay-train", help="Replay challenger eğitimi (yalnız replay state; canlı model/terfi yok)")
     s.add_argument("--run-id", dest="run_id", required=True); s.add_argument("--state-dir", dest="state_dir", default=None)
-    s.add_argument("--seed", type=int, default=0); s.add_argument("--force", action="store_true", help="idempotent atlamayı bilinçli olarak geç")
+    s.add_argument("--seed", type=int, default=None, help="varsayılan: replay_result.json içindeki seed (uyuşmazlık = hata)")
+    s.add_argument("--force", action="store_true", help="idempotent atlamayı bilinçli olarak geç")
     s.set_defaults(fn=cmd_replay_train)
     s = sub.add_parser("replay-evaluate", help="Replay OOS değerlendirmesi (walk-forward + sızıntı kontrolü; yalnız rapor)")
     s.add_argument("--run-id", dest="run_id", required=True); s.add_argument("--state-dir", dest="state_dir", default=None)
     s.add_argument("--min-samples", dest="min_samples", type=int, default=None); s.set_defaults(fn=cmd_replay_evaluate)
+    s = sub.add_parser("replay-pipeline", help="Sıralı replay→train→evaluate + kalıcı run_status.json (tek unit)")
+    s.add_argument("--run-id", dest="run_id", required=True); s.add_argument("--state-dir", dest="state_dir", default=None)
+    s.add_argument("--stages", default="replay,train,evaluate")
+    s.add_argument("--symbols", nargs="*", default=None); s.add_argument("--market", choices=["spot", "futures"], default="futures")
+    s.add_argument("--tf", default="4h"); s.add_argument("--seed", type=int, default=None)
+    s.add_argument("--from", dest="from_", default=None); s.add_argument("--to", default=None)
+    s.add_argument("--stride", type=int, default=1); s.add_argument("--train-days", dest="train_days", type=int, default=180)
+    s.add_argument("--test-days", dest="test_days", type=int, default=30); s.add_argument("--purge", type=int, default=6)
+    s.add_argument("--embargo", type=int, default=6); s.add_argument("--no-patterns", dest="no_patterns", action="store_true")
+    s.add_argument("--min-sample", dest="min_sample", type=int, default=30); s.add_argument("--horizon", type=int, default=24)
+    s.add_argument("--min-samples", dest="min_samples", type=int, default=None)
+    s.add_argument("--unit", default=""); s.add_argument("--limit-memory", dest="limit_memory", default="")
+    s.add_argument("--limit-cpu", dest="limit_cpu", default=""); s.add_argument("--limit-nice", dest="limit_nice", default="")
+    s.add_argument("--limit-io", dest="limit_io", default="")
+    s.add_argument("--resume", action="store_true", help="UNSUPPORTED — sahte resume yerine fail-closed")
+    s.set_defaults(fn=cmd_replay_pipeline)
+    s = sub.add_parser("replay-status", help="Kalıcı run_status.json + artifact'lerden gerçek durum")
+    s.add_argument("--run-id", dest="run_id", required=True); s.add_argument("--state-dir", dest="state_dir", default=None)
+    s.add_argument("--unit-active", dest="unit_active", action="store_true", help="çağıran unit'in aktif olduğunu bildirir")
+    s.set_defaults(fn=cmd_replay_status)
+    s = sub.add_parser("replay-verify", help="Tamamlanmış replay artifact'lerini değiştirmeden doğrula")
+    s.add_argument("--run-id", dest="run_id", required=True); s.add_argument("--state-dir", dest="state_dir", default=None)
+    s.add_argument("--seed", type=int, default=None); s.set_defaults(fn=cmd_replay_verify)
     s = sub.add_parser("learning-status", help="LearnerV2/registry özeti (PAPER ya da --replay <run_id>)"); s.add_argument("--replay", default=None); s.set_defaults(fn=cmd_learning_status)
     s = sub.add_parser("authority", help="Tek yetkili worker markörü (split-brain koruması): --claim / --release / durum")
     s.add_argument("--claim", action="store_true"); s.add_argument("--release", action="store_true"); s.add_argument("--note", default="")

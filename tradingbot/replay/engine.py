@@ -51,8 +51,15 @@ class WFWindow:
                 "purge_bars": self.purge_bars, "embargo_bars": self.embargo_bars, "bar_ms": self.bar_ms}
 
 
-def walk_forward_windows(start_ms: int, end_ms: int, *, train_days: int, test_days: int, purge_bars: int = 6, embargo_bars: int = 6, bar_ms: int = 4 * 3_600_000) -> list[WFWindow]:
-    """Anchored-forward pencereler: [train) purge [test) → sonraki pencere test kadar ileri kayar. Random shuffle YOK."""
+def walk_forward_windows(start_ms: int, end_ms: int, *, train_days: int, test_days: int, purge_bars: int = 6,
+                         embargo_bars: int = 6, bar_ms: int | None = None, tf: str | None = None) -> list[WFWindow]:
+    """Anchored-forward pencereler: [train) purge [test) → sonraki pencere test kadar ileri kayar. Random shuffle YOK.
+    purge/embargo BAR cinsindendir → `tf` verilirse bar süresi `tf_ms(tf)` ile hesaplanır (4h varsayımı YOK);
+    ikisi de verilmezse fail-closed."""
+    if bar_ms is None:
+        if not tf:
+            raise ValueError("walk_forward_windows: `tf` ya da `bar_ms` zorunlu (sabit 4h varsayımı kaldırıldı)")
+        bar_ms = tf_ms(tf)
     out, i = [], 0
     ts = start_ms + train_days * DAY_MS
     gap = (purge_bars + embargo_bars) * bar_ms
@@ -81,6 +88,10 @@ class ReplayResult:
     windows: list[dict] = field(default_factory=list)
     determinism_hash: str = ""
     state_dir: str = ""
+    rejections: dict = field(default_factory=lambda: {"total": 0, "by_reason": {}, "by_symbol": {}})
+    point_in_time: bool = False
+    survivorship_bias: dict = field(default_factory=lambda: {"present": True, "note": "bugün listeli evren; delisted kapsam dışı"})
+    telemetry: dict = field(default_factory=dict)      # wall/cpu/memory — determinism hash'ine GİRMEZ
 
     def to_dict(self) -> dict:
         return self.__dict__.copy()
@@ -225,9 +236,11 @@ class HistoricalReplay:
                              "min_notional": 5.0}
                 rd = self.risk.evaluate(plan_dict, state, {"now_utc": now})
                 if not rd.allowed:
+                    self._reject(sym, (rd.reasons or ["RISK_DENIED"])[0])
                     continue
                 notional = float(rd.adjusted_notional or plan.notional or 0)
                 if notional <= 0:
+                    self._reject(sym, "ZERO_NOTIONAL")
                     continue
                 if mkt == "USDM_PERP":
                     pos = self.ledger2.open(sym, d.direction, marks_f[sym], SizeSpec(Decimal(str(notional)), AmountType.NOTIONAL, int(rd.adjusted_leverage or 1)),
@@ -235,6 +248,9 @@ class HistoricalReplay:
                                             features={"regime": d.regime, "expected_r": d.expected_r, "p_win": d.p_win, "market_type": mkt},
                                             tick=marks[sym], now=now, meta={"run_id": self.run_id, "replay": True, "in_test": in_test})
                     if pos is None:
+                        # gerçek borsa filtresi (ör. STEP_ZERO_QTY): minimumlar GEVŞETİLMEZ, sahte fill üretilmez;
+                        # yalnız sayılır ve raporda sembol bazında görünür.
+                        self._reject(sym, self.ledger2.last_reject_reason or "LEDGER_REJECT")
                         continue
                     self._entry_meta[pos.id] = {"symbol": sym, "in_test": in_test, "regime": d.regime, "decision": d.to_dict(include_reports=False), "opened_ts": t}
                     self.memory.record_entry({"trade_id": pos.id, "symbol": sym, "direction": d.direction, "market_type": mkt, "setup_type": plan.entry_type, "regime": d.regime,
@@ -269,6 +285,15 @@ class HistoricalReplay:
                                        "exit_reason": rec.exit_reason, "net_r": float(rec.r_multiple), "net_pnl": float(rec.net_pnl), "fees": float(rec.fees),
                                        "funding": float(rec.funding), "bars_held": rec.bars_held, "mae_pct": float(rec.mae_pct), "mfe_pct": float(rec.mfe_pct),
                                        "opened_at": rec.opened_at, "closed_at": rec.closed_at, "in_test": bool(meta.get("in_test", True)), "regime": meta.get("regime")})
+
+    def _reject(self, symbol: str, reason: str) -> None:
+        """Red nedenlerini sembol/neden kırılımıyla say (sessiz yutma yok)."""
+        r = self.result.rejections
+        reason = str(reason or "UNKNOWN")
+        r["total"] = int(r.get("total", 0)) + 1
+        r["by_reason"][reason] = int(r["by_reason"].get(reason, 0)) + 1
+        r["by_symbol"].setdefault(symbol, {})
+        r["by_symbol"][symbol][reason] = int(r["by_symbol"][symbol].get(reason, 0)) + 1
 
     def _finish(self, wf: list[WFWindow]) -> None:
         tr = self.result.trades

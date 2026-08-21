@@ -1,19 +1,20 @@
 #!/usr/bin/env bash
-# Trading Bot v3 — düşük öncelikli replay ARAŞTIRMA koşucusu (kaynak-kontrollü, fail-closed).
-#   sudo bash deploy/replay_runner.sh plan|replay|train|evaluate|full|status <RUN_ID> [ek argümanlar...]
+# Trading Bot v3 — replay ARAŞTIRMA koşucusu (kaynak-kontrollü, durable, fail-closed).
+#   sudo bash deploy/replay_runner.sh plan|replay|train|evaluate|full|status|verify <RUN_ID> [ek argümanlar...]
 #
 # Sözleşme:
 #   * Service user (`tradingbot`) + APP cwd + açık DATA/replay state; `env -i` (env dosyası YÜKLENMEZ,
 #     secret okunmaz/yazdırılmaz).
-#   * PAPER + live_order_path=false zorunlu; değilse fail-closed.
-#   * Kapasite `replay-plan` ile doğrulanır (host + worker rezervi ve runner MemoryMax'ı düşülerek);
-#     plan bloklarsa hiçbir iş BAŞLAMAZ.
-#   * EN AĞIR iş dahil (historical-replay) her şey transient systemd SERVICE içinde, kaynak sınırlı
-#     cgroup'ta çalışır (MemoryMax/CPUQuota/Nice/IOWeight). `systemd-run` yoksa BLOCK — sınırsız
-#     fallback YOKTUR.
-#   * Transient service SSH oturumundan bağımsızdır (scope değil, service tipi): bağlantı kopsa da sürer.
+#   * PAPER + live_order_path=false zorunlu (runner'da bir kez, pipeline içinde HER AŞAMADAN ÖNCE tekrar).
+#   * Kapasite `replay-plan` ile doğrulanır; plan bloklarsa hiçbir iş BAŞLAMAZ.
+#   * İş TEK transient systemd SERVICE içinde `replay-pipeline` olarak çalışır: aşama sırasını systemd'nin
+#     yönettiği süreç kendi yürütür → SSH/çağıran shell ölse bile pipeline DEVAM EDER. Kaynak sınırları
+#     (MemoryMax/CPUQuota/Nice/IOWeight) cgroup'ta uygulanır. `systemd-run` yoksa BLOCK (sınırsız fallback yok).
+#   * Her aşama geçişi `state/replay/<RUN_ID>/run_status.json` dosyasına ATOMİK yazılır; `status` gerçek
+#     sonucu unit silinmiş olsa bile buradan okur.
 #   * Worker/dashboard DURDURULMAZ, yeniden başlatılmaz.
-#   * Aynı run-id için eşzamanlı ikinci koşu engellenir; tamamlanmış replay yalnız --resume/--force ile.
+#   * Aynı run-id için eşzamanlı pipeline engellenir. `--resume` UNSUPPORTED (sahte resume yok);
+#     `--force` mevcut çıktıları SİLMEZ/üzerine yazmaz → yeni --run-id ister.
 set -Eeuo pipefail
 
 BASE="${TRADINGBOT_BASE:-/opt/tradingbot}"
@@ -27,14 +28,14 @@ REPLAY_MEM_MAX="${REPLAY_MEM_MAX:-2G}"
 REPLAY_CPU_QUOTA="${REPLAY_CPU_QUOTA:-60%}"
 REPLAY_NICE="${REPLAY_NICE:-15}"
 REPLAY_IO_WEIGHT="${REPLAY_IO_WEIGHT:-20}"
-REPLAY_SAFE_PCT="${REPLAY_SAFE_PCT:-80}"          # plan tahmini, MemoryMax'ın en fazla %X'i olabilir
+REPLAY_SAFE_PCT="${REPLAY_SAFE_PCT:-80}"
 
-usage() { echo "kullanım: $0 plan|replay|train|evaluate|full|status <RUN_ID> [ek argümanlar...]" >&2; exit 2; }
+usage() { echo "kullanım: $0 plan|replay|train|evaluate|full|status|verify <RUN_ID> [ek argümanlar...]" >&2; exit 2; }
 
 ACTION="${1:-}"
 RUN_ID="${2:-}"
 shift 2 2>/dev/null || true
-case "$ACTION" in plan|replay|train|evaluate|full|status) ;; *) usage ;; esac
+case "$ACTION" in plan|replay|train|evaluate|full|status|verify) ;; *) usage ;; esac
 [[ -n "$RUN_ID" ]] || usage
 
 # --- girdi doğrulama: unit adı / property injection engeli ---------------------------------------
@@ -63,7 +64,6 @@ set -- ${ARGS[@]+"${ARGS[@]}"}
 UNIT="tradingbot-replay-$RUN_ID"
 RUN_DIR="$STATE/replay/$RUN_ID"
 
-# MemoryMax'ı MB'ye çevir (plan uyumu için)
 mem_mb() {
   local v="$1" num unit
   num="${v//[!0-9]/}"; unit="${v//[0-9]/}"
@@ -84,42 +84,40 @@ tb() {
       "$VENV_PY" -m tradingbot "$@" )
 }
 
-# Kaynak sınırlı TRANSIENT SERVICE (SSH'den bağımsız; scope DEĞİL, service). systemd-run yoksa fail-closed.
-tb_unit() {
-  local suffix="$1"; shift
-  command -v systemd-run >/dev/null 2>&1 || {
-    echo "BLOCK: systemd-run yok — kaynak sınırı olmadan replay çalıştırılmaz (fail-closed)" >&2; exit 1; }
-  local unit="$UNIT-$suffix"
-  if systemctl is-active --quiet "$unit.service" 2>/dev/null; then
-    echo "BLOCK: $unit.service zaten çalışıyor — aynı run-id ikinci kez başlatılamaz" >&2; exit 1
-  fi
-  systemctl reset-failed "$unit.service" >/dev/null 2>&1 || true
-  echo "  unit: $unit.service · takip: journalctl -u $unit.service -f · durum: $0 status $RUN_ID"
-  systemd-run --quiet --unit="$unit" --service-type=exec --wait --collect \
-    --property="MemoryMax=$REPLAY_MEM_MAX" --property="CPUQuota=$REPLAY_CPU_QUOTA" \
-    --property="Nice=$REPLAY_NICE" --property="IOWeight=$REPLAY_IO_WEIGHT" \
-    --property="WorkingDirectory=$APP" --property="User=$SVC_USER" \
-    --setenv=PYTHONUNBUFFERED=1 --setenv=PYTHONIOENCODING=utf-8 --setenv=TZ=Europe/Istanbul \
-    --setenv=MPLCONFIGDIR="$MPLDIR" --setenv=TRADINGBOT_DATA="$DATA" --setenv=TRADINGBOT_STATE_DIR="$STATE" \
-    -- "$VENV_PY" -m tradingbot "$@"
-}
+unit_active() { systemctl is-active --quiet "$UNIT.service" 2>/dev/null; }
 
-# --- status --------------------------------------------------------------------------------------
+# --- status: kalıcı manifest + unit durumu -------------------------------------------------------
 if [[ "$ACTION" == "status" ]]; then
-  echo "== transient unit durumları"
-  for suffix in replay train evaluate; do
-    u="$UNIT-$suffix.service"
-    st="$(systemctl show "$u" -p ActiveState --value 2>/dev/null || echo "yok")"
-    rs="$(systemctl show "$u" -p Result --value 2>/dev/null || echo "-")"
-    ec="$(systemctl show "$u" -p ExecMainStatus --value 2>/dev/null || echo "-")"
-    printf '  %-42s state=%s result=%s exit=%s\n' "$u" "${st:-yok}" "${rs:--}" "${ec:--}"
-    journalctl -u "$u" -n 5 --no-pager 2>/dev/null | sed 's/^/      /' || true
-  done
-  echo "== replay artifact'leri ($RUN_DIR)"
-  for f in replay_result.json train_manifest.json evaluation.json trade_memory.jsonl models.json; do
-    if [[ -f "$RUN_DIR/$f" ]]; then printf '  %-22s %s bayt\n' "$f" "$(stat -c %s "$RUN_DIR/$f")"; else printf '  %-22s YOK\n' "$f"; fi
-  done
-  exit 0
+  ACT_FLAG=()
+  if unit_active; then ACT_FLAG=(--unit-active); fi
+  echo "== pipeline unit"
+  st="$(systemctl show "$UNIT.service" -p ActiveState --value 2>/dev/null || true)"
+  rs="$(systemctl show "$UNIT.service" -p Result --value 2>/dev/null || true)"
+  ec="$(systemctl show "$UNIT.service" -p ExecMainStatus --value 2>/dev/null || true)"
+  printf '  %-44s state=%s result=%s exit=%s\n' "$UNIT.service" "${st:-YOK(silinmiş/collect)}" "${rs:--}" "${ec:--}"
+  journalctl -u "$UNIT.service" -n 8 --no-pager 2>/dev/null | sed 's/^/      /' || true
+  echo "== kalıcı durum (run_status.json + artifact'ler)"
+  tb replay-status --run-id "$RUN_ID" ${ACT_FLAG[@]+"${ACT_FLAG[@]}"}
+  exit $?
+fi
+
+if [[ "$ACTION" == "verify" ]]; then
+  echo "== tamamlanmış replay doğrulaması (artifact'ler DEĞİŞTİRİLMEZ)"
+  tb replay-verify --run-id "$RUN_ID" "$@"
+  exit $?
+fi
+
+# --- resume/force sözleşmesi (fail-closed) -------------------------------------------------------
+if [[ "$RESUME" -eq 1 ]]; then
+  echo "BLOCK: --resume UNSUPPORTED — güvenli gerçek devam (input/config hash + atomik event checkpoint +" >&2
+  echo "       ledger/learner/memory/RNG durumu + karar zaman çizelgesi) uygulanmadı; sahte resume yapılmaz." >&2
+  echo "       Yeni bir --run-id ile baştan koşun ya da yalnız train/evaluate aşamalarını çalıştırın." >&2
+  exit 2
+fi
+if [[ "$FORCE" -eq 1 ]]; then
+  echo "BLOCK: --force mevcut run klasörünü SİLMEZ/üzerine yazmaz (artifact bozulmasın)." >&2
+  echo "       Yeniden koşmak için YENİ bir RUN_ID kullanın; mevcut çıktılar korunur." >&2
+  exit 2
 fi
 
 echo "== mod güvenliği (PAPER zorunlu)"
@@ -142,21 +140,44 @@ if [[ "$ACTION" == "plan" ]]; then
   exit 0
 fi
 
-if [[ "$ACTION" == "replay" || "$ACTION" == "full" ]]; then
-  if [[ -f "$RUN_DIR/replay_result.json" && "$RESUME" -eq 0 && "$FORCE" -eq 0 ]]; then
-    echo "BLOCK: $RUN_ID zaten tamamlanmış (replay_result.json var) — yeniden koşmak için --resume ya da --force verin" >&2
-    exit 1
-  fi
-  echo "== historical-replay (kaynak sınırlı transient service; en ağır iş)"
-  tb_unit replay historical-replay --run-id "$RUN_ID" "$@"
+# --- aşama seçimi --------------------------------------------------------------------------------
+case "$ACTION" in
+  replay)   STAGES="replay" ;;
+  train)    STAGES="train" ;;
+  evaluate) STAGES="evaluate" ;;
+  full)     STAGES="replay,train,evaluate" ;;
+esac
+
+# Tamamlanmış replay'i ASLA yeniden koşturma: train/evaluate için önce artifact doğrula.
+if [[ "$STAGES" == *replay* && -f "$RUN_DIR/replay_result.json" ]]; then
+  echo "BLOCK: $RUN_ID zaten tamamlanmış (replay_result.json var) — mevcut replay yeniden KOŞULMAZ." >&2
+  echo "       Yalnız eğitim/değerlendirme için: $0 train $RUN_ID   ve   $0 evaluate $RUN_ID" >&2
+  exit 1
 fi
-if [[ "$ACTION" == "train" || "$ACTION" == "full" ]]; then
-  echo "== challenger eğitimi (yalnız replay state; canlı model/terfi yok)"
-  tb_unit train replay-train --run-id "$RUN_ID"
-fi
-if [[ "$ACTION" == "evaluate" || "$ACTION" == "full" ]]; then
-  echo "== walk-forward OOS değerlendirmesi (yalnız rapor)"
-  tb_unit evaluate replay-evaluate --run-id "$RUN_ID"
+if [[ "$STAGES" != *replay* ]]; then
+  echo "== mevcut replay artifact doğrulaması (değiştirilmez)"
+  tb replay-verify --run-id "$RUN_ID" || { echo "BLOCK: replay artifact'leri doğrulanamadı" >&2; exit 1; }
 fi
 
-echo "REPLAY_RUNNER_OK action=$ACTION run_id=$RUN_ID"
+command -v systemd-run >/dev/null 2>&1 || {
+  echo "BLOCK: systemd-run yok — kaynak sınırı olmadan replay çalıştırılmaz (fail-closed)" >&2; exit 1; }
+if unit_active; then
+  echo "BLOCK: $UNIT.service zaten çalışıyor — aynı run-id için ikinci pipeline başlatılamaz" >&2; exit 1
+fi
+systemctl reset-failed "$UNIT.service" >/dev/null 2>&1 || true
+
+echo "== pipeline (TEK transient service; aşamalar: $STAGES)"
+echo "  unit: $UNIT.service · takip: journalctl -u $UNIT.service -f · durum: $0 status $RUN_ID"
+echo "  not: SSH kopsa da pipeline systemd altında devam eder; ilerleme run_status.json'a yazılır."
+systemd-run --quiet --unit="$UNIT" --service-type=exec --collect \
+  --property="MemoryMax=$REPLAY_MEM_MAX" --property="CPUQuota=$REPLAY_CPU_QUOTA" \
+  --property="Nice=$REPLAY_NICE" --property="IOWeight=$REPLAY_IO_WEIGHT" \
+  --property="WorkingDirectory=$APP" --property="User=$SVC_USER" \
+  --setenv=PYTHONUNBUFFERED=1 --setenv=PYTHONIOENCODING=utf-8 --setenv=TZ=Europe/Istanbul \
+  --setenv=MPLCONFIGDIR="$MPLDIR" --setenv=TRADINGBOT_DATA="$DATA" --setenv=TRADINGBOT_STATE_DIR="$STATE" \
+  -- "$VENV_PY" -m tradingbot replay-pipeline --run-id "$RUN_ID" --stages "$STAGES" --unit "$UNIT" \
+     --limit-memory "$REPLAY_MEM_MAX" --limit-cpu "$REPLAY_CPU_QUOTA" --limit-nice "$REPLAY_NICE" \
+     --limit-io "$REPLAY_IO_WEIGHT" "$@"
+
+echo "REPLAY_PIPELINE_STARTED action=$ACTION run_id=$RUN_ID unit=$UNIT.service"
+echo "  (başlatıldı; SONUÇ için: $0 status $RUN_ID — 'başarılı' demeden önce state=SUCCESS görün)"

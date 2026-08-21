@@ -10,6 +10,8 @@ on:
       - "tradingbot/ops/**"
       - "tradingbot/cli*.py"
       - "tests/test_deploy_vps.py"
+      - "tests/test_replay_runner.py"
+      - "tradingbot/replay/**"
       - ".github/workflows/deploy-regression.yml"
   workflow_dispatch:
 
@@ -37,6 +39,6 @@ jobs:
       - name: ShellCheck (deploy scripts)
         run: |
           sudo apt-get update -y && sudo apt-get install -y shellcheck
-          shellcheck -S warning deploy/setup_vps_v3.sh deploy/preflight.sh
+          shellcheck -S warning deploy/setup_vps_v3.sh deploy/preflight.sh deploy/replay_runner.sh
       - name: Deploy regression tests
-        run: python -m pytest tests/test_deploy_vps.py -v
+        run: python -m pytest tests/test_deploy_vps.py tests/test_replay_runner.py -v

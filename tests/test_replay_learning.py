@@ -66,7 +66,7 @@ def test_hierarchical_shrinkage_market_cluster_and_recency():
 
 
 def test_walk_forward_windows_forward_only_with_purge():
-    ws = walk_forward_windows(0, 400 * 86_400_000, train_days=180, test_days=30, purge_bars=6, embargo_bars=6)
+    ws = walk_forward_windows(0, 400 * 86_400_000, train_days=180, test_days=30, purge_bars=6, embargo_bars=6, tf="4h")
     assert len(ws) >= 5
     for a, b in zip(ws, ws[1:]):
         assert a.test_end <= b.test_end and b.test_start > a.test_start        # ileri yönlü
@@ -101,7 +101,7 @@ def test_replay_deterministic_isolated_and_resumable(tmp_path: Path):
     def run(run_id):
         r = HistoricalReplay(cfg, run_id=run_id, store=st, symbols=["BTC/USDT", "AAA/USDT"], market="futures", tf="4h", seed=7, decision_stride=2, min_bars=250)
         from test_patterns import T0
-        return r.run(windows=walk_forward_windows(T0, T0 + 1200 * H4, train_days=60, test_days=20))
+        return r.run(windows=walk_forward_windows(T0, T0 + 1200 * H4, train_days=60, test_days=20, tf="4h"))
     r1 = run("rep_a")
     r2 = run("rep_b")
     assert r1.n_decisions > 100 and r1.determinism_hash == r2.determinism_hash and len(r1.trades) == len(r2.trades)

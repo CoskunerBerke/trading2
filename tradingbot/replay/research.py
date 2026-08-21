@@ -31,12 +31,38 @@ BYTES_PER_PATTERN_EVENT = 5_200
 BYTES_PER_FRAME_ROW = 1_100          # replay frames (indikatörlü çoklu tf) + primary kopyası
 DEFAULT_HOST_RESERVE_MB = 1024       # OS + dashboard + backup için ayrılan pay
 DEFAULT_WORKER_RESERVE_MB = 900      # çalışan worker'ın 4G tavanına kalan büyüme payı
+
+# --- CPU modeli (ÖLÇÜM tabanlı; provenance run_status/plan çıktısında taşınır) ---------------------
+# Core-4 pilotu (VPS, 2026-08: 4 sembol · futures 4h · stride 4 · 2022-01→2026-08):
+#   10.032 karar → 12 sa 50 dk CPU = 46.200 s  →  4.606 CPU-s / karar (CPUQuota=%60 ile ölçüldü).
+# Eski model 55 karar/s (0.018 s/karar) varsayıyordu → ~250× hatalıydı. Aralık, tek nokta yerine
+# ±%40 ile verilir (rejim/sembol sayısı/pattern yoğunluğu kadansı değiştirir).
+CPU_SECONDS_PER_DECISION = 4.6
+CPU_ESTIMATE_LOW_MULT = 0.6
+CPU_ESTIMATE_HIGH_MULT = 1.4
+CPU_MODEL_PROVENANCE = ("ölçüm: Core-4 pilot (run core4_4h_s4_seed7) 10.032 karar / 46.200 s CPU "
+                        "= 4.6 CPU-s/karar; aralık ±%40")
+LONG_RUN_WARN_HOURS = 6.0            # bu sürenin üstü MEDIUM, 24 sa üstü HIGH süre riski
+LONG_RUN_HIGH_HOURS = 24.0
 _LIVE_STATE_FILES = ("futures_ledger.json", "spot_ledger.json", "trade_memory.jsonl", "learn_v2.json",
                      "models.json", "risk.json", "portfolio.json", "mode.json")
 
 
 class ReplaySafetyError(ValueError):
     """İzolasyon ya da kapasite sözleşmesi ihlali (fail-closed)."""
+
+
+def _assert_no_symlink_component(path: Path, live: Path) -> None:
+    """`path` ve canlı state köküne kadar olan bütün üst bileşenleri symlink olmamalı."""
+    cur = path.absolute()
+    seen = 0
+    while True:
+        if cur.is_symlink():
+            raise ReplaySafetyError(f"replay kökü/üst dizini symlink olamaz: {cur}")
+        if cur == cur.parent or cur.resolve() == live or seen > 64:
+            return
+        cur = cur.parent
+        seen += 1
 
 
 # --------------------------------------------------------------------------- izolasyon
@@ -50,7 +76,11 @@ def resolve_replay_dir(state_path: Path | str, run_id: str, state_root: Path | s
     if rid.startswith(("-", ".")):
         raise ReplaySafetyError(f"geçersiz run-id (nokta/tire ile başlayamaz): {rid!r}")
     live = Path(state_path).resolve()
-    root = Path(state_root).resolve() if state_root else (live / "replay")
+    raw_root = Path(state_root) if state_root else (Path(state_path) / "replay")
+    # Kök ve bütün üst bileşenleri symlink OLAMAZ: `resolve()` symlink'i takip edeceği için
+    # kaçış ancak takip ETMEDEN kontrol edilerek yakalanır (fail-closed).
+    _assert_no_symlink_component(raw_root, live)
+    root = raw_root.resolve()
     if root == live:
         raise ReplaySafetyError("replay kökü canlı state dizini olamaz")
     target = (root / rid)
@@ -74,6 +104,11 @@ def resolve_replay_dir(state_path: Path | str, run_id: str, state_root: Path | s
     if must_exist and not resolved.is_dir():
         raise ReplaySafetyError(f"replay dizini yok: {resolved}")
     return resolved
+
+
+def assert_replay_dir_still_safe(state_path: Path | str, run_id: str, state_root: Path | str | None = None) -> Path:
+    """mkdir/işlem SONRASI tekrar doğrulama — dizin araya symlink ile değiştirilmediyse aynı yolu döndürür."""
+    return resolve_replay_dir(state_path, run_id, state_root, must_exist=True)
 
 
 def assert_live_state_untouched(state_path: Path | str) -> dict[str, str]:
@@ -179,7 +214,13 @@ class ReplayPlan:
     timeline_bars: int = 0
     pattern_events: int = 0
     est_memory_mb: float = 0.0
+    est_decisions: int = 0
     est_cpu_minutes: float = 0.0
+    est_cpu_minutes_low: float = 0.0
+    est_cpu_minutes_high: float = 0.0
+    cpu_model: dict = field(default_factory=dict)
+    memory_risk: str = "UNKNOWN"
+    duration_risk: str = "UNKNOWN"
     available_mb: float | None = None
     budget_mb: float | None = None
     runner_memory_max_mb: float | None = None
@@ -254,8 +295,21 @@ def plan_replay(cfg: Any, store: Any, *, run_id: str, symbols: list[str], market
     plan.pattern_events = int(in_range_rows / max(1, pattern_stride)) if patterns else 0
     plan.est_memory_mb = round((plan.pattern_events * BYTES_PER_PATTERN_EVENT
                                 + (in_range_rows + aux_rows) * BYTES_PER_FRAME_ROW) / 1e6, 1)
-    # CPU: ölçülen replay kadansı ≈ 55 karar/s (4h, pattern açık, tek çekirdek) → dakikaya çevir
-    plan.est_cpu_minutes = round(plan.timeline_bars * max(1, len(plan.series)) / 55.0 / 60.0, 1)
+    # CPU: Core-4 ölçümünden kalibre (4.6 CPU-s/karar); karar sayısı = timeline barı × sembol
+    decisions = plan.timeline_bars * max(1, len(plan.series))
+    plan.est_decisions = decisions
+    cpu_s = decisions * CPU_SECONDS_PER_DECISION
+    plan.est_cpu_minutes = round(cpu_s / 60.0, 1)
+    plan.est_cpu_minutes_low = round(cpu_s * CPU_ESTIMATE_LOW_MULT / 60.0, 1)
+    plan.est_cpu_minutes_high = round(cpu_s * CPU_ESTIMATE_HIGH_MULT / 60.0, 1)
+    plan.cpu_model = {"seconds_per_decision": CPU_SECONDS_PER_DECISION, "provenance": CPU_MODEL_PROVENANCE,
+                      "range_mult": [CPU_ESTIMATE_LOW_MULT, CPU_ESTIMATE_HIGH_MULT]}
+    hours_high = plan.est_cpu_minutes_high / 60.0
+    plan.duration_risk = ("LOW" if hours_high < LONG_RUN_WARN_HOURS
+                          else ("MEDIUM" if hours_high < LONG_RUN_HIGH_HOURS else "HIGH"))
+    if plan.duration_risk != "LOW":
+        plan.warnings.append(f"tahmini süre {plan.est_cpu_minutes_low / 60:.1f}–{hours_high:.1f} CPU-saat "
+                             f"({decisions:,} karar) — uzun koşu; transient service ve `status` ile izleyin")
     avail = available_mb if available_mb is not None else _available_mb()
     plan.available_mb = round(avail, 1) if avail is not None else None
     if avail is None:
@@ -267,7 +321,7 @@ def plan_replay(cfg: Any, store: Any, *, run_id: str, symbols: list[str], market
             plan.blockers.append(f"rezervler sonrası bütçe yok ({budget:.0f} MB)")
         else:
             ratio = plan.est_memory_mb / budget
-            plan.risk_class = "LOW" if ratio < 0.5 else ("MEDIUM" if ratio < 0.8 else ("HIGH" if ratio < 1.0 else "BLOCKED"))
+            plan.memory_risk = "LOW" if ratio < 0.5 else ("MEDIUM" if ratio < 0.8 else ("HIGH" if ratio < 1.0 else "BLOCKED"))
             if ratio >= 1.0:
                 plan.blockers.append(f"tahmini bellek {plan.est_memory_mb:.0f} MB > bütçe {budget:.0f} MB "
                                      f"(host {host_reserve_mb:.0f} + worker {worker_reserve_mb:.0f} rezerv) — stride artırın ya da sembol azaltın")
@@ -281,6 +335,9 @@ def plan_replay(cfg: Any, store: Any, *, run_id: str, symbols: list[str], market
         if plan.est_memory_mb > cap:
             plan.blockers.append(f"tahmini bellek {plan.est_memory_mb:.0f} MB > runner sınırı %{runner_safe_pct:.0f} "
                                  f"× {runner_memory_max_mb:.0f} MB = {cap:.0f} MB — stride artırın, sembol azaltın ya da REPLAY_MEM_MAX yükseltin")
+    # Nihai sınıf: bellek VE süre riskinin en kötüsü (Core-4 gibi 12 sa'lik iş artık "LOW" görünmez)
+    order = {"LOW": 0, "MEDIUM": 1, "HIGH": 2, "BLOCKED": 3, "UNKNOWN": 3}
+    plan.risk_class = max((plan.memory_risk, plan.duration_risk), key=lambda x: order.get(x, 3))
     if plan.blockers:
         plan.risk_class = "BLOCKED"
     return plan
@@ -314,19 +371,43 @@ def _replay_learner(cfg: Any, replay_dir: Path):
     return mem, reg, learner
 
 
-def train_replay_challenger(cfg: Any, replay_dir: Path, *, seed: int = 0, force: bool = False) -> dict:
+def resolve_run_seed(replay_dir: Path, seed: int | None = None) -> tuple[int, str]:
+    """SEED SÖZLEŞMESİ: kaynak `replay_result.json`'daki seed'dir. Kullanıcı seed verirse birebir eşleşmeli;
+    uyuşmazlık fail-closed. Sessiz 0 fallback YASAK — replay sonucu yoksa açık seed zorunludur."""
+    res = read_json(Path(replay_dir) / "replay_result.json", default=None)
+    run_seed = None
+    if isinstance(res, dict) and res.get("seed") is not None:
+        try:
+            run_seed = int(res["seed"])
+        except (TypeError, ValueError):
+            raise ReplaySafetyError("replay_result.json içindeki seed sayısal değil (fail-closed)") from None
+    if run_seed is None:
+        if seed is None:
+            raise ReplaySafetyError("seed belirlenemedi: replay_result.json yok/seed'siz ve --seed verilmedi "
+                                    "(sessiz 0 fallback yasak)")
+        return int(seed), "explicit"
+    if seed is not None and int(seed) != run_seed:
+        raise ReplaySafetyError(f"seed uyuşmazlığı: --seed {seed} ≠ replay_result seed {run_seed} (fail-closed)")
+    return run_seed, "replay_result"
+
+
+def train_replay_challenger(cfg: Any, replay_dir: Path, *, seed: int | None = None, force: bool = False) -> dict:
     """Replay hafızasından challenger eğitir (YALNIZ replay state'i). İdempotent: aynı girdi hash'i → yeniden eğitim yok.
-    Canlı model/registry/ledger dosyalarına dokunulmaz; hiçbir terfi yapılmaz."""
+    Canlı model/registry/ledger dosyalarına dokunulmaz; hiçbir terfi yapılmaz.
+    Seed `replay_result.json`'dan gelir (bkz. `resolve_run_seed`)."""
     replay_dir = Path(replay_dir)
     if not replay_dir.is_dir():
         raise ReplaySafetyError(f"replay dizini yok: {replay_dir}")
+    seed, seed_source = resolve_run_seed(replay_dir, seed)
+    replay_res_pre = read_json(replay_dir / "replay_result.json", default=None) or {}
     mem, reg, learner = _replay_learner(cfg, replay_dir)
     rows = mem.trades(closed_only=True)
     n = len(rows)
     min_n = cfg.v3.learning_v3.min_samples_train
     stamps = [str(r.get("recorded_at") or "") for r in rows]
     inputs = {"n_closed": n, "first": stamps[0] if stamps else "", "last": stamps[-1] if stamps else "",
-              "seed": int(seed), "min_samples_train": min_n, "holdout_frac": cfg.v3.learning_v3.holdout_frac,
+              "seed": int(seed), "replay_determinism_hash": str(replay_res_pre.get("determinism_hash") or ""),
+              "min_samples_train": min_n, "holdout_frac": cfg.v3.learning_v3.holdout_frac,
               "half_life_days": cfg.v3.learning_v3.half_life_days, "calibrator": cfg.v3.learning_v3.calibrator,
               "version": RESEARCH_VERSION,
               "memory_sha256": hashlib.sha256((replay_dir / "trade_memory.jsonl").read_bytes()).hexdigest()
@@ -353,6 +434,7 @@ def train_replay_challenger(cfg: Any, replay_dir: Path, *, seed: int = 0, force:
     manifest = {
         "version": RESEARCH_VERSION, "created_at": iso(utc_now()), "run_dir": str(replay_dir), "seed": int(seed),
         "source": "HISTORICAL_REPLAY", "input_hash": input_hash, "inputs": inputs,
+        "seed_source": seed_source, "replay_determinism_hash": str(replay_res_pre.get("determinism_hash") or ""),
         "model_id": out["model_id"], "n_train": out["n_train"], "n_holdout": out["n_holdout"],
         "data_range": {"first_recorded_at": inputs["first"], "last_recorded_at": inputs["last"]},
         "reference_now": iso(ref_now),        # recency ağırlıklarının referansı (duvar saati DEĞİL)
@@ -383,70 +465,6 @@ def _r_metrics(rs: list[float]) -> dict:
             "max_dd_r": round(dd, 4), "profit_factor": round(wins / losses, 4) if losses > 0 else None}
 
 
-def _ms_or_none(v):
-    if not v:
-        return None
-    try:
-        return int(from_iso(str(v)).timestamp() * 1000)
-    except (ValueError, TypeError):
-        return None
-
-
-def iso_ms(ms: int) -> str:
-    import datetime as _d
-    return iso(_d.datetime.fromtimestamp(int(ms) / 1000, tz=_d.timezone.utc))
-
-
-def _fold_rows(rows: list[dict], b: dict) -> tuple[list[dict], list[dict], list[dict]]:
-    """(train, test, excluded) — sızıntı kuralları:
-    * train: giriş >= train_start VE ÇIKIŞ (etiketin bilindiği an) < train_end
-    * excluded: etiketi purge/embargo bölgesinde biten ya da pencerelere düşmeyen kayıtlar
-    * test: giriş [test_start, test_end) — fold test pencereleri örtüşmez, işlem tek fold'da sayılır
-    """
-    tr, te, ex = [], [], []
-    for r in rows:
-        o, c = r.get("_open_ms"), r.get("_close_ms")
-        if o is None or c is None:
-            ex.append(r)
-        elif b["test_start_ms"] <= o < b["test_end_ms"]:
-            te.append(r)
-        elif o >= b["train_start_ms"] and c < b["train_end_ms"]:
-            tr.append(r)
-        else:
-            ex.append(r)
-    return tr, te, ex
-
-
-def _fit_fold(cfg, train_rows: list[dict], test_rows: list[dict], ref_ms: int):
-    """Fold modeli: YALNIZ train satırlarıyla eğitilir; kalibrasyon train'in son diliminden; test'e bakılmaz."""
-    import numpy as np
-
-    from ..learn import (Calibrator, LogisticModel, build_features, calibration_metrics, feature_names,
-                         recency_weights, to_vector)
-    from ..learn.features import FEATURE_VERSION
-    lc = cfg.v3.learning_v3
-    names = feature_names(FEATURE_VERSION, True)
-
-    def _xy(rs):
-        X = np.array([to_vector(build_features(r.get("features") or r, include_time_features=True), names) for r in rs], float)
-        y = np.array([1.0 if float((r.get("outcome") or {}).get("r_multiple", 0) or 0) > 0.25 else 0.0 for r in rs])
-        return X, y
-
-    Xtr, ytr = _xy(train_rows)
-    ages = np.array([max(0.0, (ref_ms - float(r["_close_ms"])) / 86_400_000.0) for r in train_rows])
-    w = recency_weights(ages, lc.half_life_days)
-    inner = max(1, int(len(train_rows) * (1 - lc.holdout_frac)))
-    model = LogisticModel(feature_names=names).fit(Xtr[:inner], ytr[:inner], w[:inner])
-    cal = Calibrator(lc.calibrator)
-    if len(train_rows) - inner >= 10:
-        cal.fit(model.predict_proba(Xtr[inner:]), ytr[inner:])
-    Xte, yte = _xy(test_rows)
-    p = model.predict_proba(Xte)
-    p = cal.apply(p) if cal.n_fit else p
-    met = calibration_metrics(p, yte)
-    met.pop("reliability", None)
-    return p, yte, met
-
 
 def _ms_or_none(v):
     if not v:
@@ -511,6 +529,37 @@ def _fit_fold(cfg, train_rows: list[dict], test_rows: list[dict], ref_ms: int):
     met = calibration_metrics(p, yte)
     met.pop("reliability", None)
     return p, yte, met
+
+
+def coverage_report(rows: list[dict], replay_res: dict | None) -> dict:
+    """Sembol/side kırılımı + red nedenleri. BTC gibi STEP_ZERO_QTY yüzünden işlem üretemeyen semboller
+    genel ortalamaya sessizce karışmaz; raporda açıkça görünür."""
+    res = replay_res or {}
+    by_symbol: dict[str, dict] = {}
+    for r in rows:
+        out = r.get("outcome") or {}
+        sym = str(out.get("symbol") or r.get("symbol") or "?")
+        d = by_symbol.setdefault(sym, {"closed": 0, "r": []})
+        d["closed"] += 1
+        d["r"].append(float(out.get("r_multiple", 0) or 0))
+    rejections = res.get("rejections") or {}
+    planned = [str(x) for x in (res.get("symbols") or [])]
+    covered = sorted(by_symbol)
+    zero = sorted(set(planned) - set(covered))
+    warnings: list[str] = []
+    for sym in zero:
+        why = (rejections.get("by_symbol") or {}).get(sym) or {}
+        top = max(why.items(), key=lambda kv: kv[1])[0] if why else "bilinmiyor"
+        warnings.append(f"{sym}: hiç kapanmış işlem yok (baskın red nedeni: {top}) — ortalamalara KATILMIYOR")
+    for sym, d in by_symbol.items():
+        if d["closed"] < 10:
+            warnings.append(f"{sym}: yalnız {d['closed']} kapanış — sembol bazlı metrik güvenilmez")
+    return {"planned_symbols": planned, "covered_symbols": covered, "zero_trade_symbols": zero,
+            "by_symbol": {k: {"closed": v["closed"], **_r_metrics(v["r"])} for k, v in sorted(by_symbol.items())},
+            "rejections": {"by_reason": rejections.get("by_reason") or {}, "by_symbol": rejections.get("by_symbol") or {},
+                           "total": int(rejections.get("total", 0) or 0)},
+            "actionable": res.get("n_actionable"), "opened": res.get("n_opened"), "closed": len(rows),
+            "warnings": warnings}
 
 
 def evaluate_replay(cfg, replay_dir: Path, *, min_samples: int | None = None, min_folds: int = 2,
@@ -537,6 +586,13 @@ def evaluate_replay(cfg, replay_dir: Path, *, min_samples: int | None = None, mi
         raise ReplaySafetyError(f"yetersiz örnek: {n} < {need}")
     if n != int(manifest.get("inputs", {}).get("n_closed", -1)):
         raise ReplaySafetyError("artifact bayat: hafıza eğitimden sonra değişmiş — `replay-train` tekrar çalıştırın")
+    replay_pre = read_json(replay_dir / "replay_result.json", default=None) or {}
+    run_seed, _src = resolve_run_seed(replay_dir, None)
+    if int(manifest.get("inputs", {}).get("seed", -1)) != run_seed:
+        raise ReplaySafetyError(f"seed uyuşmazlığı: manifest {manifest.get('inputs', {}).get('seed')} ≠ "
+                                f"replay_result {run_seed} — `replay-train` tekrar çalıştırın")
+    if str(manifest.get("replay_determinism_hash") or "") != str(replay_pre.get("determinism_hash") or ""):
+        raise ReplaySafetyError("replay determinism hash değişmiş — eğitim artifact'i bu replay'e ait değil (fail-closed)")
     stamps = [str(r.get("recorded_at") or "") for r in rows]
     if any(stamps[i] > stamps[i + 1] for i in range(len(stamps) - 1)):
         raise ReplaySafetyError("hafıza zaman sırasında değil — walk-forward sözleşmesi ihlali")
@@ -556,6 +612,13 @@ def evaluate_replay(cfg, replay_dir: Path, *, min_samples: int | None = None, mi
     for b in bounds:
         if not (b["train_start_ms"] < b["train_end_ms"] <= b["purge_end_ms"] <= b["embargo_end_ms"] <= b["test_start_ms"] < b["test_end_ms"]):
             raise ReplaySafetyError(f"fold {b.get('idx')}: train/purge/embargo/test sınırları geçersiz ya da kesişiyor")
+        # TIMEFRAME TUTARLILIĞI: purge/embargo genişliği bar_ms × bar sayısı olmalı (4h varsayımı yok)
+        bar = int(b.get("bar_ms") or 0)
+        if bar <= 0:
+            raise ReplaySafetyError(f"fold {b.get('idx')}: bar_ms yok — timeframe doğrulanamıyor (fail-closed)")
+        if (b["purge_end_ms"] - b["purge_start_ms"]) != int(b.get("purge_bars", 0)) * bar or            (b["embargo_end_ms"] - b["embargo_start_ms"]) != int(b.get("embargo_bars", 0)) * bar:
+            raise ReplaySafetyError(f"fold {b.get('idx')}: purge/embargo genişliği bar_ms ({bar}) ile tutarsız "
+                                    "— replay'i doğru timeframe ile yeniden koşun")
     for a, b in zip(bounds, bounds[1:]):
         if b["test_start_ms"] < a["test_end_ms"]:
             raise ReplaySafetyError(f"fold {a.get('idx')}/{b.get('idx')}: test pencereleri örtüşüyor (çift sayım riski)")
@@ -598,12 +661,34 @@ def evaluate_replay(cfg, replay_dir: Path, *, min_samples: int | None = None, mi
         lower_ci = round(agg["expectancy_r"] - 1.96 * sd / (agg["n"] ** 0.5), 4)
     pos = sum(1 for f in scored if (f.get("expectancy_r") or 0) > 0)
     consistency = round(pos / len(scored), 4)
+    cov = coverage_report(rows, replay_res)
+    oos_by_side: dict[str, dict] = {}
+    oos_by_symbol: dict[str, dict] = {}
+    for b in bounds:
+        _tr, te, _ex = _fold_rows(rows, b)
+        for r in te:
+            out = r.get("outcome") or {}
+            rr = float(out.get("r_multiple", 0) or 0)
+            oos_by_side.setdefault(str(out.get("side") or "?"), {"r": []})["r"].append(rr)
+            oos_by_symbol.setdefault(str(out.get("symbol") or "?"), {"r": []})["r"].append(rr)
+    oos_by_side = {k: _r_metrics(v["r"]) for k, v in sorted(oos_by_side.items())}
+    oos_by_symbol = {k: _r_metrics(v["r"]) for k, v in sorted(oos_by_symbol.items())}
+    pf = agg.get("profit_factor")
+    max_dd_limit = float(max(10.0, abs(agg["n"]) * 0.5))       # OOS örnek başına 0.5R'den fazla DD kabul edilmez
     gates = {"enough_oos": bool(agg["n"] >= need),
              "positive_expectancy": bool(agg["expectancy_r"] is not None and agg["expectancy_r"] > 0),
+             "profit_factor_above_one": bool(pf is not None and pf > 1.0),
              "ci95_lower_above_zero": bool(lower_ci is not None and lower_ci > 0),
              "calibration_ok": bool(agg_cal.get("ece", 1.0) <= max_ece and agg_cal.get("brier", 1.0) <= max_brier),
-             "fold_consistency": bool(consistency >= 0.6), "enough_folds": bool(len(scored) >= min_folds)}
+             "drawdown_ok": bool((agg.get("max_dd_r") or 0.0) <= max_dd_limit),
+             "fold_consistency": bool(consistency >= 0.6), "enough_folds": bool(len(scored) >= min_folds),
+             "symbol_coverage": bool(not cov["zero_trade_symbols"] and len(cov["covered_symbols"]) >= 2),
+             "side_coverage": bool(len([k for k, v in oos_by_side.items() if v["n"] >= 5]) >= 2),
+             # Kenar iddiası için point-in-time evren şart; survivorship bias varken TERFİ ADAYI olunamaz.
+             "point_in_time": bool((replay_res or {}).get("point_in_time") is True),
+             "survivorship_clean": bool((replay_res or {}).get("survivorship_bias", {}).get("present") is False)}
     shadow = all(gates.values())
+    failed = sorted(k for k, v in gates.items() if not v)
     report = {
         "version": RESEARCH_VERSION, "generated_at": iso(utc_now()), "run_dir": str(replay_dir),
         "source": "HISTORICAL_REPLAY", "model_id": manifest["model_id"], "model_status": model.get("status"),
@@ -615,17 +700,26 @@ def evaluate_replay(cfg, replay_dir: Path, *, min_samples: int | None = None, mi
                          "note": "anchored-forward; purge+embargo kayıtları eğitim ve OOS dışında; test pencereleri örtüşmez"},
         "folds": folds,
         "out_of_sample": agg, "oos_expectancy_lower_ci95": lower_ci, "calibration": agg_cal, "gates": gates,
+        "failed_gates": failed, "oos_by_side": oos_by_side, "oos_by_symbol": oos_by_symbol, "coverage": cov,
         "data_range": manifest.get("data_range"),
         "determinism": {"params_hash": manifest.get("params_hash"), "metrics_hash": manifest.get("metrics_hash"),
                         "replay_hash": (replay_res or {}).get("determinism_hash")},
         "survivorship_bias": {"present": True, "note": "bugün listeli evren; delisted semboller kapsam dışı — kenar tahmini yukarı yanlı olabilir"},
         "shadow_candidate": shadow,
-        "verdict": ("SHADOW ADAYI OLABİLİR" if shadow else "KENAR İDDİASI YOK (kapılardan en az biri geçmedi)"),
-        "promotion": {"live_promotion": False, "note": "bu rapor canlı modele kopyalama/terfi İÇERMEZ"},
+        # Kapılardan biri bile geçmezse SHADOW_CANDIDATE ÜRETİLMEZ: en fazla RESEARCH_ONLY/REJECTED.
+        # (Negatif expectancy / PF ≤ 1 / CI alt sınırı ≤ 0 / aşırı DD → REJECTED.)
+        "verdict": ("SHADOW_CANDIDATE" if shadow else
+                    ("REJECTED" if not (gates["positive_expectancy"] and gates["profit_factor_above_one"]
+                                        and gates["ci95_lower_above_zero"] and gates["drawdown_ok"])
+                     else "RESEARCH_ONLY")),
+        "verdict_reason": ("bütün kapılar geçti" if shadow else f"geçmeyen kapılar: {', '.join(failed)}"),
+        "promotion": {"live_promotion": False, "promote_called": False,
+                      "note": "bu rapor canlı modele kopyalama/terfi İÇERMEZ; maybe_promote hiçbir araştırma yolunda çağrılmaz"},
     }
     atomic_write_json(replay_dir / EVAL_REPORT, report, indent=1)
     return report
 
 
-__all__ = ["ReplayPlan", "ReplaySafetyError", "compare_semantic", "iso_ms", "semantic_live_snapshot", "iso_ms", "assert_live_state_untouched", "evaluate_replay", "plan_replay",
+__all__ = ["ReplayPlan", "ReplaySafetyError", "compare_semantic", "coverage_report", "iso_ms",
+           "resolve_run_seed", "semantic_live_snapshot", "assert_replay_dir_still_safe", "iso_ms", "assert_live_state_untouched", "evaluate_replay", "plan_replay",
            "resolve_replay_dir", "train_replay_challenger", "EVAL_REPORT", "TRAIN_MANIFEST", "RESEARCH_VERSION"]

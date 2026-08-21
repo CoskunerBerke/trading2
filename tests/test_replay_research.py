@@ -97,7 +97,8 @@ def _bounds(idx: int, train_start_d: int, train_end_d: int, purge_d: int, embarg
             "purge_bars": purge_d, "embargo_bars": embargo_d, "bar_ms": DAY_MS}
 
 
-def _seed_replay_result(rdir: Path, bounds: list[dict] | None = None) -> list[dict]:
+def _seed_replay_result(rdir: Path, bounds: list[dict] | None = None, *, seed: int = 7,
+                        symbols: list[str] | None = None, rejections: dict | None = None) -> list[dict]:
     """Gerçek `historical-replay` çıktısının şeması: pencerelerin KESİN sınırlarıyla (bounds)."""
     b = bounds if bounds is not None else [
         _bounds(0, 0, 30, 1, 1, 32, 47),
@@ -105,7 +106,13 @@ def _seed_replay_result(rdir: Path, bounds: list[dict] | None = None) -> list[di
         _bounds(2, 0, 60, 1, 1, 62, 77),
     ]
     (rdir / "replay_result.json").write_text(json.dumps({
-        "run_id": rdir.name, "seed": 7, "determinism_hash": "deadbeef",
+        "run_id": rdir.name, "seed": seed, "determinism_hash": "deadbeef",
+        "symbols": symbols if symbols is not None else ["ETH/USDT", "SOL/USDT"],
+        "n_actionable": 100, "n_opened": 90, "point_in_time": False,
+        "survivorship_bias": {"present": True},
+        "rejections": rejections if rejections is not None else {
+            "total": 12, "by_reason": {"STEP_ZERO_QTY": 12},
+            "by_symbol": {"SOL/USDT": {"STEP_ZERO_QTY": 12}}},
         "windows": [{"idx": x["idx"], "train": ["", ""], "test": ["", ""], "bounds": x} for x in b]}), encoding="utf-8")
     return b
 
@@ -228,6 +235,7 @@ def test_train_isolated_deterministic_idempotent_and_no_live_touch(tmp_path):
     before = _live_state(cfg)
     rdir = resolve_replay_dir(cfg.state_path, "run_a")
     _seed_replay_memory(rdir)
+    _seed_replay_result(rdir)
     m1 = train_replay_challenger(cfg, rdir, seed=7)
     assert m1["source"] == "HISTORICAL_REPLAY" and m1["model_id"] and m1["idempotent_skip"] is False
     assert m1["n_train"] + m1["n_holdout"] == m1["inputs"]["n_closed"] == 60
@@ -246,6 +254,7 @@ def test_train_isolated_deterministic_idempotent_and_no_live_touch(tmp_path):
     # determinizm: aynı veriyle bağımsız ikinci run aynı ağırlık hash'ini üretir
     rdir_b = resolve_replay_dir(cfg.state_path, "run_b")
     _seed_replay_memory(rdir_b)
+    _seed_replay_result(rdir_b)
     m3 = train_replay_challenger(cfg, rdir_b, seed=7)
     assert m3["params_hash"] == m1["params_hash"] and m3["metrics_hash"] == m1["metrics_hash"]
 
@@ -254,6 +263,7 @@ def test_train_fail_closed_on_insufficient_samples_and_missing_dir(tmp_path):
     cfg = _cfg(tmp_path)
     rdir = resolve_replay_dir(cfg.state_path, "small")
     _seed_replay_memory(rdir, n=5)
+    _seed_replay_result(rdir)
     with pytest.raises(ReplaySafetyError, match="yetersiz"):
         train_replay_challenger(cfg, rdir)
     with pytest.raises(ReplaySafetyError):
@@ -284,9 +294,13 @@ def test_evaluate_real_multi_fold_walk_forward(tmp_path):
     assert [f["n_train"] for f in scored] == sorted(f["n_train"] for f in scored)
     agg = rep["out_of_sample"]
     assert agg["n"] == sum(f["n_test"] for f in scored) == rep["samples"]["oos_pooled"]
-    assert set(rep["gates"]) == {"enough_oos", "positive_expectancy", "ci95_lower_above_zero",
-                                 "calibration_ok", "fold_consistency", "enough_folds"}
+    assert set(rep["gates"]) == {"enough_oos", "positive_expectancy", "profit_factor_above_one",
+                                 "ci95_lower_above_zero", "calibration_ok", "drawdown_ok",
+                                 "fold_consistency", "enough_folds", "symbol_coverage", "side_coverage",
+                                 "point_in_time", "survivorship_clean"}
     assert rep["shadow_candidate"] == all(rep["gates"].values())
+    assert rep["verdict"] in ("SHADOW_CANDIDATE", "RESEARCH_ONLY", "REJECTED")
+    assert rep["promotion"]["promote_called"] is False
     assert rep["promotion"]["live_promotion"] is False and rep["model_status"] == "CANDIDATE"
     assert (rdir / EVAL_REPORT).exists() and assert_live_state_untouched(cfg.state_path) == before
     rep2 = evaluate_replay(cfg, rdir, min_samples=10)   # deterministik
@@ -323,8 +337,10 @@ def test_evaluate_blocks_overlapping_folds_and_missing_bounds(tmp_path):
     cfg = _cfg(tmp_path)
     rdir = resolve_replay_dir(cfg.state_path, "run_ov")
     _seed_replay_memory(rdir, n=90)
-    # eski format (bounds yok) → fail-closed
-    (rdir / "replay_result.json").write_text(json.dumps({"windows": [{"idx": 0, "train": ["a", "b"], "test": ["c", "d"]}]}), encoding="utf-8")
+    # eski format (seed/hash var ama kesin `bounds` YOK) → fail-closed
+    (rdir / "replay_result.json").write_text(json.dumps(
+        {"seed": 7, "determinism_hash": "deadbeef",
+         "windows": [{"idx": 0, "train": ["a", "b"], "test": ["c", "d"]}]}), encoding="utf-8")
     train_replay_challenger(cfg, rdir, seed=7)
     with pytest.raises(ReplaySafetyError, match="bounds"):
         evaluate_replay(cfg, rdir, min_samples=10)
@@ -546,74 +562,6 @@ def test_cli_plan_defaults_pattern_stride_to_stride(tmp_path, capsys, monkeypatc
     assert out["stride"] == 4 and out["pattern_stride"] == 4
 
 
-# --------------------------------------------------------------------------- 9) runner sözleşmeleri
-RUNNER = (REPO_ROOT / "deploy" / "replay_runner.sh").read_text(encoding="utf-8")
-
-
-def test_runner_actions_and_full_ordering():
-    """Eylemler plan|replay|train|evaluate|full|status; `full` = plan → historical-replay → train → evaluate."""
-    assert "plan|replay|train|evaluate|full|status" in RUNNER
-    i_plan = RUNNER.index("replay-plan --run-id")
-    i_replay = RUNNER.index("tb_unit replay historical-replay")
-    i_train = RUNNER.index("tb_unit train replay-train")
-    i_eval = RUNNER.index("tb_unit evaluate replay-evaluate")
-    assert i_plan < i_replay < i_train < i_eval
-    for act in ('== "replay" || "$ACTION" == "full"', '== "train" || "$ACTION" == "full"',
-                '== "evaluate" || "$ACTION" == "full"'):
-        assert act in RUNNER
-
-
-def test_runner_heaviest_job_inside_cgroup_and_no_unlimited_fallback():
-    """historical-replay cgroup DIŞINDA çalışamaz; systemd-run yoksa BLOCK (sınırsız fallback yok)."""
-    assert "tb_unit replay historical-replay" in RUNNER
-    assert "tb historical-replay" not in RUNNER
-    assert "BLOCK: systemd-run yok" in RUNNER
-    assert "nice -n" not in RUNNER and "ionice" not in RUNNER
-    for prop in ("MemoryMax=$REPLAY_MEM_MAX", "CPUQuota=$REPLAY_CPU_QUOTA", "Nice=$REPLAY_NICE", "IOWeight=$REPLAY_IO_WEIGHT"):
-        assert '--property="' + prop + '"' in RUNNER
-
-
-def test_runner_transient_service_survives_ssh_and_reports_unit():
-    """`--scope` değil transient SERVICE (SSH kopsa da sürer); unit adı ve takip komutu raporlanır."""
-    assert "--service-type=exec" in RUNNER and "--scope" not in RUNNER
-    assert '--unit="$unit"' in RUNNER
-    assert "journalctl -u $unit.service -f" in RUNNER
-
-
-def test_runner_concurrency_and_resume_force_contract():
-    assert 'systemctl is-active --quiet "$unit.service"' in RUNNER
-    assert "aynı run-id ikinci kez başlatılamaz" in RUNNER
-    assert "--resume" in RUNNER and "--force" in RUNNER and "replay_result.json var" in RUNNER
-
-
-def test_runner_status_action_reports_units_and_artifacts():
-    assert 'if [[ "$ACTION" == "status" ]]' in RUNNER
-    for k in ("ActiveState", "Result", "ExecMainStatus", "journalctl -u"):
-        assert k in RUNNER
-    for f in ("replay_result.json", "train_manifest.json", "evaluation.json"):
-        assert f in RUNNER
-
-
-def test_runner_validates_inputs_against_injection():
-    assert "[A-Za-z0-9._-]" in RUNNER and "geçersiz RUN_ID" in RUNNER
-    assert "geçersiz REPLAY_MEM_MAX" in RUNNER and "geçersiz REPLAY_CPU_QUOTA" in RUNNER
-    assert "--runner-memory-max-mb" in RUNNER and "--runner-safe-pct" in RUNNER
-
-
-def test_runner_does_not_stop_services_or_read_secrets():
-    for forbidden in ("systemctl stop", "systemctl restart", "EnvironmentFile", "ANTHROPIC", "API_KEY"):
-        assert forbidden not in RUNNER, forbidden
-    assert "env -i" in RUNNER and "set -Eeuo pipefail" in RUNNER
-
-
-def test_runner_propagates_failure_not_success():
-    """`--wait` ile sonuç beklenir; OOM/non-zero `set -e` ile yayılır, REPLAY_RUNNER_OK basılmaz."""
-    assert "--wait" in RUNNER
-    assert RUNNER.index("tb_unit evaluate replay-evaluate") < RUNNER.index("REPLAY_RUNNER_OK")
-    body = RUNNER.split("tb_unit() {")[1].split("\n}")[0]
-    assert "|| true" not in body.replace("reset-failed \"$unit.service\" >/dev/null 2>&1 || true", "")
-
-
 # --------------------------------------------------------------------------- 10) semantik operasyonel doğrulama
 def test_semantic_snapshot_tolerates_mtm_but_catches_plan_changes(tmp_path):
     """Worker çalışırken MTM/updated_at değişir (byte hash bozulur) — semantik değişmezler korunmalı."""
@@ -712,3 +660,203 @@ def test_replay_pipeline_never_opens_live_state_files(tmp_path, monkeypatch):
     produced = {p.name for p in rdir.iterdir()}
     assert {"train_manifest.json", "evaluation.json", "models.json", "learn_v2.json"} <= produced
     assert not (live_dir / "train_manifest.json").exists() and not (live_dir / "evaluation.json").exists()
+
+
+# --------------------------------------------------------------------------- 11) tf-duyarlı bounds
+@pytest.mark.parametrize("tf,bar_ms", [("15m", 900_000), ("1h", 3_600_000), ("4h", 14_400_000), ("1d", 86_400_000)])
+def test_walk_forward_bounds_follow_timeframe(tf, bar_ms):
+    """purge/embargo BAR cinsindendir: sınırlar `tf_ms(tf)` ile hesaplanır (sabit 4h varsayımı yok)."""
+    from tradingbot.replay import walk_forward_windows
+    ws = walk_forward_windows(0, 400 * 86_400_000, train_days=180, test_days=30, purge_bars=6, embargo_bars=6, tf=tf)
+    assert ws
+    b = ws[0].bounds()
+    assert b["bar_ms"] == bar_ms
+    assert b["purge_end_ms"] - b["purge_start_ms"] == 6 * bar_ms
+    assert b["embargo_end_ms"] - b["embargo_start_ms"] == 6 * bar_ms
+    assert b["test_start_ms"] == b["embargo_end_ms"] and b["train_end_ms"] == b["purge_start_ms"]
+
+
+def test_walk_forward_requires_explicit_timeframe():
+    from tradingbot.replay import walk_forward_windows
+    with pytest.raises(ValueError, match="tf"):
+        walk_forward_windows(0, 400 * 86_400_000, train_days=180, test_days=30)
+
+
+def test_evaluate_rejects_bounds_inconsistent_with_timeframe(tmp_path):
+    """Bounds içindeki purge/embargo genişliği bar_ms ile uyumsuzsa fail-closed."""
+    cfg = _cfg(tmp_path)
+    rdir = resolve_replay_dir(cfg.state_path, "tf_bad")
+    _seed_replay_memory(rdir, n=90)
+    b0 = _bounds(0, 0, 30, 1, 1, 32, 47)
+    b0["bar_ms"] = 3_600_000                      # 1h iddiası ama sınırlar gün cinsinden
+    _seed_replay_result(rdir, [b0, _bounds(1, 0, 45, 1, 1, 47, 62)])
+    train_replay_challenger(cfg, rdir, seed=7)
+    with pytest.raises(ReplaySafetyError, match="bar_ms|tutars|geçersiz"):
+        evaluate_replay(cfg, rdir, min_samples=10)
+
+
+# --------------------------------------------------------------------------- 12) root/parent symlink
+@pytest.mark.skipif(sys.platform == "win32" and not os.environ.get("CI"), reason="symlink Windows'ta yönetici ister")
+def test_resolve_rejects_symlinked_replay_root_and_parent(tmp_path):
+    live = tmp_path / "state"
+    live.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    try:
+        (live / "replay").symlink_to(outside, target_is_directory=True)      # varsayılan kök symlink
+    except (OSError, NotImplementedError):
+        pytest.skip("symlink oluşturulamadı")
+    with pytest.raises(ReplaySafetyError, match="symlink"):
+        resolve_replay_dir(live, "run1")
+    # özel kök: üst bileşeni symlink olan yol
+    real = tmp_path / "real_root"
+    (real / "deep").mkdir(parents=True)
+    link_parent = tmp_path / "link_parent"
+    try:
+        link_parent.symlink_to(real, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlink oluşturulamadı")
+    with pytest.raises(ReplaySafetyError, match="symlink"):
+        resolve_replay_dir(live, "run1", state_root=link_parent / "deep")
+
+
+# --------------------------------------------------------------------------- 13) duplikasyon temizliği
+def test_no_duplicate_helper_definitions_in_research_module():
+    """Yinelenen yardımcı/fold fonksiyonu KALMAMALI (tek canonical implementasyon)."""
+    import ast
+    src = (REPO_ROOT / "tradingbot" / "replay" / "research.py").read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    names = [n.name for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
+    dupes = sorted({n for n in names if names.count(n) > 1})
+    assert not dupes, f"yinelenen tanımlar: {dupes}"
+    for fn in ("_ms_or_none", "iso_ms", "_fold_rows", "_fit_fold", "_r_metrics", "evaluate_replay"):
+        assert names.count(fn) == 1, fn
+
+
+# --------------------------------------------------------------------------- 14) negatif OOS kapısı
+def _negative_oos_dir(tmp_path, cfg, name="neg"):
+    rdir = resolve_replay_dir(cfg.state_path, name)
+    rdir.mkdir(parents=True, exist_ok=True)
+    mem = TradeMemory(rdir / "trade_memory.jsonl", source="HISTORICAL_REPLAY")
+    for i in range(90):
+        won = i % 5 == 0                                   # çoğunluk zarar → negatif OOS
+        opened = BASE + timedelta(days=i)
+        rec = _rec(i, won) | {"opened_at": opened.isoformat(), "closed_at": (opened + timedelta(days=1)).isoformat(),
+                              "r_multiple": 1.0 if won else -0.6}
+        mem.record_entry({"trade_id": rec["id"], "symbol": rec["symbol"], "direction": "LONG",
+                          "setup_type": "kırılım", "regime": "TREND_UP", "features": rec["features"],
+                          "recorded_at": opened.isoformat()})
+        mem.record_exit(rec["id"], rec | {"recorded_at": opened.isoformat()}, [], {})
+    _seed_replay_result(rdir)
+    return rdir
+
+
+def test_negative_oos_never_yields_shadow_candidate(tmp_path):
+    """Negatif expectancy / PF ≤ 1 / CI alt sınırı ≤ 0 → en fazla REJECTED; SHADOW_CANDIDATE ASLA."""
+    cfg = _cfg(tmp_path)
+    rdir = _negative_oos_dir(tmp_path, cfg)
+    train_replay_challenger(cfg, rdir, seed=7)
+    rep = evaluate_replay(cfg, rdir, min_samples=10)
+    assert rep["out_of_sample"]["expectancy_r"] < 0
+    assert rep["shadow_candidate"] is False
+    assert rep["verdict"] == "REJECTED"
+    assert rep["gates"]["positive_expectancy"] is False and rep["gates"]["profit_factor_above_one"] is False
+    assert rep["failed_gates"] and rep["promotion"]["live_promotion"] is False
+    assert "SHADOW" not in rep["verdict"] or rep["verdict"] == "SHADOW_CANDIDATE" and False
+
+
+def test_point_in_time_and_survivorship_gates_block_promotion_claim(tmp_path):
+    """PIT false / survivorship present iken (pozitif OOS olsa bile) SHADOW_CANDIDATE üretilemez."""
+    cfg = _cfg(tmp_path)
+    rdir = resolve_replay_dir(cfg.state_path, "pit")
+    _seed_replay_memory(rdir, n=90)                        # bu fixture kazançlı (2R/-1R, 2/3 kazanç)
+    _seed_replay_result(rdir)                              # point_in_time=False, survivorship present
+    train_replay_challenger(cfg, rdir, seed=7)
+    rep = evaluate_replay(cfg, rdir, min_samples=10)
+    assert rep["gates"]["point_in_time"] is False and rep["gates"]["survivorship_clean"] is False
+    assert rep["shadow_candidate"] is False
+    assert rep["verdict"] in ("RESEARCH_ONLY", "REJECTED")
+    assert "point_in_time" in rep["failed_gates"] and "survivorship_clean" in rep["failed_gates"]
+
+
+def test_evaluate_never_calls_maybe_promote(tmp_path, monkeypatch):
+    """Davranış kanıtı: hiçbir araştırma yolunda LearnerV2.maybe_promote çağrılmaz."""
+    from tradingbot.learn import LearnerV2
+    cfg = _cfg(tmp_path)
+    rdir = resolve_replay_dir(cfg.state_path, "nopromo")
+    _seed_replay_memory(rdir, n=90)
+    _seed_replay_result(rdir)
+    calls = []
+    monkeypatch.setattr(LearnerV2, "maybe_promote", lambda self, *a, **k: calls.append(a) or (True, []))
+    train_replay_challenger(cfg, rdir, seed=7)
+    rep = evaluate_replay(cfg, rdir, min_samples=10)
+    assert calls == [] and rep["promotion"]["promote_called"] is False
+
+
+# --------------------------------------------------------------------------- 15) kapsam raporu
+def test_coverage_reports_symbols_sides_and_rejections(tmp_path):
+    """BTC gibi STEP_ZERO_QTY yüzünden işlem üretemeyen sembol raporda AÇIKÇA görünür."""
+    cfg = _cfg(tmp_path)
+    rdir = resolve_replay_dir(cfg.state_path, "cov")
+    _seed_replay_memory(rdir, n=90)
+    _seed_replay_result(rdir, symbols=["ETH/USDT", "BTC/USDT"],
+                        rejections={"total": 41, "by_reason": {"STEP_ZERO_QTY": 41},
+                                    "by_symbol": {"BTC/USDT": {"STEP_ZERO_QTY": 41}}})
+    train_replay_challenger(cfg, rdir, seed=7)
+    rep = evaluate_replay(cfg, rdir, min_samples=10)
+    cov = rep["coverage"]
+    assert "BTC/USDT" in cov["zero_trade_symbols"]
+    assert any("BTC/USDT" in w and "STEP_ZERO_QTY" in w for w in cov["warnings"])
+    assert cov["rejections"]["by_reason"]["STEP_ZERO_QTY"] == 41
+    assert cov["rejections"]["by_symbol"]["BTC/USDT"]["STEP_ZERO_QTY"] == 41
+    assert rep["gates"]["symbol_coverage"] is False           # sıfır-işlem sembolü kapıyı düşürür
+    assert set(rep["oos_by_symbol"]) and set(rep["oos_by_side"])
+    for m in rep["oos_by_symbol"].values():
+        assert {"n", "expectancy_r", "profit_factor", "max_dd_r", "win_rate"} <= set(m)
+
+
+# --------------------------------------------------------------------------- 16) CPU modeli + telemetri
+def test_cpu_model_matches_core4_measurement(tmp_path):
+    """Yeni model Core-4 ölçümüne (10.032 karar → 12 sa 50 dk CPU) makul yakın olmalı; eski 3 dk değil."""
+    from tradingbot.replay.research import CPU_SECONDS_PER_DECISION, CPU_MODEL_PROVENANCE
+    measured_hours = 46_200 / 3600.0
+    est_hours = 10_032 * CPU_SECONDS_PER_DECISION / 3600.0
+    assert 0.7 * measured_hours <= est_hours <= 1.3 * measured_hours
+    assert "Core-4" in CPU_MODEL_PROVENANCE and "CPU-s/karar" in CPU_MODEL_PROVENANCE
+
+
+def test_plan_reports_duration_risk_and_combined_class(tmp_path):
+    cfg = _cfg(tmp_path)
+    big = _store_4h(["BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT"], rows=10_000)
+    plan = plan_replay(cfg, big, run_id="core4like", symbols=["BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT"],
+                       stride=4, seed=7, available_mb=6600)
+    d = plan.to_dict()
+    assert d["est_cpu_minutes_low"] < d["est_cpu_minutes"] < d["est_cpu_minutes_high"]
+    assert d["cpu_model"]["seconds_per_decision"] > 1.0 and d["cpu_model"]["provenance"]
+    assert d["duration_risk"] in ("MEDIUM", "HIGH")            # saatler süren iş "LOW" görünmez
+    assert d["risk_class"] == d["duration_risk"] or d["risk_class"] == d["memory_risk"]
+    assert d["risk_class"] != "LOW"
+    assert any("uzun koşu" in w for w in d["warnings"])
+
+
+def test_telemetry_does_not_affect_determinism_hashes(tmp_path):
+    """Ölçülen wall/CPU/bellek run_status'a yazılır ama determinism hash'lerini DEĞİŞTİRMEZ."""
+    from tradingbot.replay.pipeline import read_run_status, run_pipeline
+    cfg = _cfg(tmp_path)
+    a = resolve_replay_dir(cfg.state_path, "tel_a")
+    b = resolve_replay_dir(cfg.state_path, "tel_b")
+    for d in (a, b):
+        _seed_replay_memory(d, n=90)
+        _seed_replay_result(d)
+    (cfg.state_path / "mode.json").write_text(json.dumps({"mode": "PAPER"}), encoding="utf-8")
+    assert run_pipeline(cfg, "tel_a", ["train", "evaluate"], min_samples=10) == 0
+    assert run_pipeline(cfg, "tel_b", ["train", "evaluate"], min_samples=10) == 0
+    ma = json.loads((a / TRAIN_MANIFEST).read_text(encoding="utf-8"))
+    mb = json.loads((b / TRAIN_MANIFEST).read_text(encoding="utf-8"))
+    assert ma["params_hash"] == mb["params_hash"] and ma["metrics_hash"] == mb["metrics_hash"]
+    ea = json.loads((a / EVAL_REPORT).read_text(encoding="utf-8"))
+    eb = json.loads((b / EVAL_REPORT).read_text(encoding="utf-8"))
+    assert ea["determinism"] == eb["determinism"] and ea["out_of_sample"] == eb["out_of_sample"]
+    ta, tb = read_run_status(a)["telemetry"], read_run_status(b)["telemetry"]
+    assert "wall_seconds" in ta and "wall_seconds" in tb
+    assert "telemetry" not in ma and "telemetry" not in ea      # hash girdilerine karışmaz

@@ -232,7 +232,12 @@ def generate_candidates(*, seed: int = 7, max_candidates: int = 24, risk_profile
 
 
 # --------------------------------------------------------------------------- bulgudan aday üretimi
-MAX_CHANGES_PER_CANDIDATE = 2
+# Aday basina TEK aciklanabilir degisiklik: hangi degisikligin ise yaradigi ancak boyle olculur.
+MAX_CHANGES_PER_CANDIDATE = 1
+# Bir aday HARD VETO (side/symbol/rejim tamamen kapatma) uretebilmek icin kanit esikleri.
+# Sadece "ortalama negatif" yetmez.
+HARD_VETO_MIN_SAMPLES = 30
+HARD_VETO_MAX_PROFIT_FACTOR = 1.0
 MIN_FINDING_SAMPLES = 8
 
 
@@ -269,9 +274,20 @@ def candidates_from_attribution(report: dict, *, seed: int = 7, max_candidates: 
         p.policy_id = f"attr_{seed}_{h[:10]}"
         out.append(p)
 
+    def _hard_veto_allowed(f: dict) -> bool:
+        """Kalici veto (taraf/sembol/rejim kapatma) ancak TAM kanitla uretilebilir."""
+        return (int(f.get("n") or 0) >= HARD_VETO_MIN_SAMPLES
+                and f.get("ci95_high") is not None and float(f["ci95_high"]) < 0
+                and f.get("profit_factor") is not None
+                and float(f["profit_factor"]) < HARD_VETO_MAX_PROFIT_FACTOR)
+
     for f in neg:
         cut, lab = str(f.get("cut")), str(f.get("label"))
         txt = f.get("text") or f"{cut}={lab}"
+        # Veto uretmeyen (yalnizca daraltan/kucultücü) adaylar her zaman uretilebilir; VETO adaylari
+        # yalnizca kanit esikleri gecildiginde.
+        if cut in ("side", "symbol", "side_x_regime") and not _hard_veto_allowed(f):
+            continue
         if cut == "side" and lab in ("LONG", "SHORT"):
             emit(f"{lab} tarafı OOS'ta negatif → taraf vetosu · {txt}", f, side_veto=[lab])
         elif cut == "symbol" and lab != "?":

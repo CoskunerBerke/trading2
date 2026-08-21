@@ -185,6 +185,9 @@ class TradePlanV3:
     expected_r: float = 0.0
     valid: bool = False
     invalid_reason: str = ""
+    # ASAMA-1 (geometri) gecerliyse `valid=True` kalir; asagidakiler EKONOMIK degerlendirmeye giren
+    # YUMUSAK kanitlardir (bkz. tradingbot/decision_gates.py) -- tek baslarina islemi REDDETMEZ.
+    soft_flags: list[str] = field(default_factory=list)
 
     @property
     def entry(self) -> float:
@@ -265,6 +268,10 @@ class CoinHeadDecision:
     net_exposure_after: dict[str, float] = field(default_factory=dict)
     generated_at: str = ""
     latency_ms: float = 0.0
+    # Ekonomik firsat degerlendirmesi (tradingbot/opportunity.py). Motor doldurur; Chief siralama ve
+    # boyutlandirma icin kullanir. None = henuz degerlendirilmedi.
+    opportunity: dict | None = None
+    soft_flags: list[str] = field(default_factory=list)
 
     def to_dict(self, *, include_reports: bool = True) -> dict:
         d = {k: v for k, v in self.__dict__.items()

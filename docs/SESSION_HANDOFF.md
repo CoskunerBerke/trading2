@@ -86,6 +86,49 @@ Backup'lar: `backups/hourly/tradingbot-hourly-20260818T205349Z…20260819T072955
 - **Kapasite/VPS (docs/VPS_PHASE8_PLAN.md):** ölçülen yoğunluklar ham ~45 B/satır, feature ~468 B/satır (×10.3), replay RAM ~3.7 KB/bar (4h evren 1.5 GB, 1h 5.9 GB → stride); 1. yıl ayak izi 12–17 GB < 45 GB → **öneri: OVH VPS-2 (4 vCore/8 GB/75 GB NVMe), Ubuntu 24.04, AB lokasyonu (~10–14 €/ay)**; satın alma sonrası-deploy öncesi salt-okunur Binance erişim testi. Satın alma YAPILMADI; kullanıcı onayı bekleniyor.
 - F00004/F00005 el sürülmedi (tek fill, aynı ID); worker bu fazda hiç başlatılmadı; gerçek emir 0 · LIVE 0 · TESTNET 0 · LLM 0.
 
+## Phase 11 — Sabit işlem kotası kaldırıldı: karar ekonomiyle veriliyor (kaynak; VPS'te çalıştırılmadı)
+Kullanıcının gördüğü "2 işlem" davranışının gerçek kaynağı `ChiefConfig.max_new_positions_per_run = 2`
+idi — günlük değil, **her tarama turunda** en fazla iki yeni pozisyona izin veren sabit bir hard-cap.
+Buna ek olarak zayıf kanıtlar (MA konumu, RSI, konsensüs, güven, sabit R/R, rejim uyumu, aynı yön/küme
+adedi) ard arda dizilmiş **sert veto** zinciri oluşturuyor ve maliyet sonrası pozitif fırsatları
+sistematik olarak öldürüyordu.
+
+- **`decision_gates.py` (yeni).** Giriş yolundaki her kontrolün TEK merkezi sözleşmesi:
+  `HARD_SAFETY` (25 kod — yalnız gerçek güvenlik/veri/ekonomi ihlalleri), `SOFT_EVIDENCE` (21 kod —
+  tek başına ASLA reddetmez, puanı/boyutu düşürür), `RESEARCH_ONLY` (3 kod). `GateLedger.block()`
+  yumuşak kodu reddeder, `penalise()` sert kodu reddeder; toplam yumuşak ceza **üst sınırlıdır**
+  (çok sayıda orta zayıflık otomatik vetoya dönüşemez). `FORBIDDEN_QUOTA_CODES` kota kodlarının
+  kaynağa geri sızmasını engeller.
+- **`opportunity.py` (yeni).** `OpportunityAssessment` + `conservative_net_edge_r` +
+  **dinamik boyut**. Maliyet ÇİFT SAYILMAZ: `expectancy_basis = NET_OUTCOME` ise `cost_r = 0`
+  (geçmiş R'ler zaten net), `GROSS_MINUS_COSTS` ise maliyet bir kez düşülür. Belirsizlik cezası
+  `k/√(n+1)`. **Soğuk başlangıç**: geçmiş yokken plan geometrisine yaslanır, veri biriktikçe
+  gerçekleşmiş dağılıma kayar — aksi halde taze bir bot yalnız "veri yok" diye hiç işlem açamazdı.
+- **Chief.** `max_new_positions_per_run` **kaldırıldı** (artık `None` ve yalnız raporlama sözleşmesi).
+  Aynı yön/küme yığılması ve RISK-ON/RISK-OFF uyumsuzluğu artık **boyut küçültür**, veto vermez.
+  Adaylar işlenmeden ÖNCE `conservative_net_edge_r`'ye göre sıralanır. Tek sert kapı **gerçek risk
+  kapasitesidir** → `RISK_CAPACITY_BLOCKED` (kota DEĞİL).
+- **Coin Head iki aşamaya ayrıldı.** Aşama 1 yalnız GEOMETRİ (entry/stop/target, stop mesafesi > 0);
+  `min_expected_r = 1.5`, `consensus_threshold = 0.22`, `min_confidence = 0.25` artık YUMUŞAK kanıt.
+  Yön için yalnız küçük bir `direction_epsilon = 0.05` kaldı. R/R 1.2 ama yüksek kalibre p_win'li işlem
+  yaşayabilir; R/R 2.0 ama düşük p_win'li işlem elenir.
+- **Risk profilleri.** `max_open_positions` / `max_positions_per_market` artık **nullable**;
+  PAPER_RESEARCH'te `None` → karar toplam açık risk (%6), işlem başına tavan (%2), margin, liq buffer
+  ve same-symbol kapılarıyla verilir. **TESTNET/SHADOW_LIVE/LIVE/LIVE_LIMITED muhafazakâr adet ve
+  risk limitleri DEĞİŞMEDİ.**
+- **Benzersiz sinyal.** `symbol|market|timeframe|closed_bar_ts|side|setup_type` → aynı sinyal iki kez
+  açılamaz; YENİ kapanmış bar / yeni setup engellenmez.
+- **Karar hunisi.** `state/decision_funnel.json` + kayan 24 saat; `/metrics`, `/api/overview`,
+  `/health`. `trades_opened_24h` yalnız gözlem metriğidir. `daily_trade_cap` ve `per_run_trade_cap`
+  **her zaman null**.
+- **Araştırma adayı** artık aday başına **tek** parametre değiştirir
+  (`MAX_CHANGES_PER_CANDIDATE = 1`); kalıcı veto (taraf/sembol/rejim) yalnız yeterli örnek +
+  `CI95_high < 0` + `profit_factor < 1` kanıtıyla üretilebilir.
+- **`tests/test_opportunity_and_limits.py` (yeni, 28 test)** + genişletilen chief testleri:
+  kota yokluğu, ön-sıralama, kapasite bloğu, 100 ardışık benzersiz fırsat, duplicate, tek/çok zayıf
+  kanıt, maliyet-sonrası negatif, çift-sayım koruması, sıfır stop, PAPER vs TESTNET/LIVE profilleri,
+  LLM bütçesinin karar yoluna ulaşmadığı, starvation ve negatif-edge sıfır-işlem regresyonları.
+
 ## Phase 10d — Eksik halka kapatıldı: döngü gerçekten kendi kendine yürüyor (kaynak; VPS'te çalıştırılmadı)
 Phase 10c'de analitik modüller vardı ama **çalışma yolunda bağlı değildi**: motor yalnız
 `evaluate_active()`/`maybe_activate()` çağırıyordu; `propose`/`record_offline`/`start_shadow` hiçbir

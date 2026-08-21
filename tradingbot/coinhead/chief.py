@@ -15,11 +15,27 @@ from .schema import CoinHeadDecision, Verdict
 
 @dataclass
 class ChiefConfig:
-    max_new_positions_per_run: int = 2
-    max_same_direction: int = 3
-    max_same_cluster_same_direction: int = 2
+    """SABIT ISLEM SAYISI KOTASI YOKTUR.
+
+    Eski `max_new_positions_per_run = 2`, gunluk degil TUR BASINA sert bir tavandi ve kullanicinin
+    gordugu "2 islem" davranisinin gercek kaynagiydi. Kaldirildi. Ayni yon / ayni kume yigilmasi ve
+    RISK-ON/RISK-OFF yon uyumsuzlugu artik SERT VETO degil, boyut kucultuculeridir. Yeni girisi
+    yalnizca GERCEK risk kapasitesi (toplam acik risk / margin) durdurur -> `RISK_CAPACITY_BLOCKED`.
+    """
+    # Raporlama sozlesmesi: bu alanlar HER ZAMAN None'dir ve kapi olarak KULLANILMAZ.
+    max_new_positions_per_run: None = None
+    daily_trade_cap: None = None
+    # Yigilma ESIKLERI: asildiginda ceza uygulanir, veto verilmez.
+    crowded_same_direction_at: int = 3
+    crowded_same_cluster_at: int = 2
+    crowding_penalty_r: float = 0.08
+    regime_mismatch_penalty_r: float = 0.10
+    regime_confidence_pref: float = 0.6
     dissent_penalty: float = 0.15
     prefer_spot_when_funding_pct_above: float = 0.03
+    # Gercek risk butcesi (motor risk profilinden doldurur).
+    max_total_open_risk_pct: float = 6.0
+    risk_per_trade_pct: float = 2.0
 
 
 @dataclass
@@ -80,15 +96,23 @@ class ChiefPortfolioManager:
                     "daily_pnl": float(ps.get("pnl_today", 0.0)), "drawdown_pct": float(ps.get("drawdown_pct", 0.0))}
         allocation = {"spot_notional": round(sum(float(p.get("notional", 0)) for p in open_pos if p.get("market_type") == "SPOT"), 4),
                       "futures_notional": round(sum(float(p.get("notional", 0)) for p in open_pos if p.get("market_type") != "SPOT"), 4)}
-        # sıralama: beklenen R × güven − dissent cezası
+        # SIRALAMA: adaylarin TAMAMI islenmeden once maliyet-sonrasi muhafazakar edge'e gore siralanir.
+        # Boylece daha guclu ucuncu firsat, daha zayif iki firsat yuzunden keyfi bicimde disarida kalmaz.
         ranking = []
         for d in decisions:
-            sc = (d.expected_r * d.confidence_calibrated - cfg.dissent_penalty * len(d.dissent)) if d.is_actionable else -1.0
+            opp = getattr(d, "opportunity", None) or {}
+            edge = opp.get("conservative_net_edge_r")
+            if edge is None:                       # degerlendirme yoksa eski yaklasim (geriye uyum)
+                edge = (d.expected_r * d.confidence_calibrated - cfg.dissent_penalty * len(d.dissent)) if d.is_actionable else -1.0
             ranking.append({"symbol": d.symbol, "verdict": d.verdict.value, "direction": d.direction, "market_type": d.market_type,
                             "expected_r": d.expected_r, "confidence": d.confidence_calibrated, "p_win": d.p_win, "dissent": list(d.dissent),
-                            "vetoes": list(d.vetoes), "score": round(sc, 4), "no_trade_reason": d.no_trade_reason,
+                            "vetoes": list(d.vetoes), "score": round(float(edge), 6), "no_trade_reason": d.no_trade_reason,
+                            "conservative_net_edge_r": opp.get("conservative_net_edge_r"),
+                            "opportunity_score": opp.get("opportunity_score"),
+                            "risk_pct_requested": opp.get("risk_pct_requested"),
+                            "size_multiplier": opp.get("size_multiplier"),
                             "cluster": cluster_of(d.symbol, self.clusters)})
-        ranking.sort(key=lambda r: r["score"], reverse=True)
+        ranking.sort(key=lambda r: (-r["score"], r["symbol"], r["direction"]))     # deterministik
         # izinler + çakışmalar
         conflicts: list[str] = []
         permission: dict[str, dict[str, Any]] = {}
@@ -98,40 +122,66 @@ class ChiefPortfolioManager:
         for p in open_pos:
             k = (cluster_of(p.get("symbol", ""), self.clusters), p.get("side", "LONG"))
             cl_count[k] = cl_count.get(k, 0) + 1
+        equity = max(float(ps.get("equity", 0) or 0), 1e-9)
+        risk_used = float(ps.get("total_open_risk_usdt", 0.0) or 0.0)
+        risk_budget = equity * float(cfg.max_total_open_risk_pct) / 100.0
         for r in ranking:
             sym, dr = r["symbol"], r["direction"]
             if r["verdict"] not in ("SPOT_LONG", "FUTURES_LONG", "FUTURES_SHORT"):
-                permission[sym] = {"allow": False, "reason": r["no_trade_reason"] or r["verdict"], "requires": []}
+                permission[sym] = {"allow": False, "reason": r["no_trade_reason"] or r["verdict"],
+                                   "block_code": "NOT_ACTIONABLE", "requires": [], "size_penalty_r": 0.0,
+                                   "soft_codes": []}
                 continue
-            reason = ""
+            # --- SERT: yalnizca gercek guvenlik/kapasite ---
             if r["vetoes"]:
-                reason = "red team veto"
-            elif granted >= cfg.max_new_positions_per_run:
-                reason = f"tur başına yeni pozisyon limiti ({cfg.max_new_positions_per_run})"
-            elif dir_count.get(dr, 0) >= cfg.max_same_direction:
-                reason = f"aynı yönde yığılma ({dr} {dir_count[dr]})"
-                conflicts.append(f"{sym}: {reason}")
-            elif cl_count.get((r["cluster"], dr), 0) >= cfg.max_same_cluster_same_direction:
-                reason = f"küme kalabalık ({r['cluster']} {dr})"
-                conflicts.append(f"{sym}: {reason}")
-            elif mode == "RISK-OFF" and dr == "LONG" and r["confidence"] < 0.6:
-                reason = "RISK-OFF modunda zayıf long"
-            elif mode == "RISK-ON" and dr == "SHORT" and r["confidence"] < 0.6:
-                reason = "RISK-ON modunda zayıf short"
-            if reason:
-                permission[sym] = {"allow": False, "reason": reason, "requires": []}
+                permission[sym] = {"allow": False, "reason": "red team veto", "block_code": "RED_TEAM_HARD_VETO",
+                                   "requires": [], "size_penalty_r": 0.0, "soft_codes": []}
                 continue
+            # --- YUMUSAK: yigilma ve rejim uyumsuzlugu boyutu KUCULTUR, veto VERMEZ ---
+            penalty, soft_codes = 0.0, []
+            if dir_count.get(dr, 0) >= cfg.crowded_same_direction_at:
+                penalty += cfg.crowding_penalty_r
+                soft_codes.append("SAME_DIRECTION_CROWDED")
+                conflicts.append(f"{sym}: aynı yönde yığılma ({dr} {dir_count[dr]}) → boyut küçültüldü")
+            if cl_count.get((r["cluster"], dr), 0) >= cfg.crowded_same_cluster_at:
+                penalty += cfg.crowding_penalty_r
+                soft_codes.append("CLUSTER_CROWDED")
+                conflicts.append(f"{sym}: küme kalabalık ({r['cluster']} {dr}) → boyut küçültüldü")
+            if ((mode == "RISK-OFF" and dr == "LONG") or (mode == "RISK-ON" and dr == "SHORT")) \
+                    and r["confidence"] < cfg.regime_confidence_pref:
+                penalty += cfg.regime_mismatch_penalty_r
+                soft_codes.append("MARKET_REGIME_MISMATCH")
+            # --- SERT: GERCEK risk kapasitesi (KOTA DEGIL) ---
+            req_pct = r.get("risk_pct_requested")
+            req = equity * float(req_pct if req_pct is not None else cfg.risk_per_trade_pct) / 100.0
+            if risk_used + req > risk_budget + 1e-9:
+                permission[sym] = {"allow": False,
+                                   "reason": f"portföy risk kapasitesi doldu ({risk_used:.4f}+{req:.4f} > {risk_budget:.4f})",
+                                   "block_code": "RISK_CAPACITY_BLOCKED", "requires": [],
+                                   "size_penalty_r": round(penalty, 6), "soft_codes": soft_codes}
+                continue
+            risk_used += req
             granted += 1
             dir_count[dr] = dir_count.get(dr, 0) + 1
             cl_count[(r["cluster"], dr)] = cl_count.get((r["cluster"], dr), 0) + 1
-            permission[sym] = {"allow": True, "reason": "chief onayı (nihai değil)", "requires": ["coin_head_valid", "no_red_team_veto", "risk_engine_allowed"]}
+            permission[sym] = {"allow": True, "reason": "chief onayı (nihai değil)",
+                               "block_code": None, "size_penalty_r": round(penalty, 6),
+                               "soft_codes": soft_codes,
+                               "requires": ["coin_head_valid", "no_red_team_veto", "risk_engine_allowed"]}
         priority = [r["symbol"] for r in ranking if permission.get(r["symbol"], {}).get("allow")]
         rules = [f"Piyasa modu {mode}: " + {"RISK-ON": "long planlarına öncelik, short'larda güven ≥ 0.6", "RISK-OFF": "short planlarına öncelik, long'larda güven ≥ 0.6",
                                           "NÖTR": "her iki yönde de yalnız güçlü konsensüs, küçük boyut"}[mode],
-                 f"Tur başına en fazla {cfg.max_new_positions_per_run} yeni pozisyon; aynı yönde ≤ {cfg.max_same_direction}; aynı kümede aynı yönde ≤ {cfg.max_same_cluster_same_direction}",
+                 "Sabit işlem sayısı kotası YOK (tur başına / günlük): yeni girişi yalnız GERÇEK risk "
+                 f"kapasitesi durdurur (toplam açık risk ≤ %{cfg.max_total_open_risk_pct}). "
+                 f"Aynı yönde ≥{cfg.crowded_same_direction_at} veya aynı kümede ≥{cfg.crowded_same_cluster_at} "
+                 "pozisyon: boyut küçültülür, işlem reddedilmez",
                  "Nihai onay = Coin Head geçerli plan + Red Team veto yok + Global Risk Engine izni (LLM tek başına yetersiz)",
                  "Aynı coin için spot long + futures long toplam net exposure'a dahil; spot long ↔ futures short çakışması yasak",
                  f"Funding > %{cfg.prefer_spot_when_funding_pct_above} iken long için spot tercih edilir"]
+        exposure |= {"risk_budget_usdt": round(risk_budget, 6), "risk_used_after_usdt": round(risk_used, 6),
+                     "risk_capacity_left_usdt": round(max(0.0, risk_budget - risk_used), 6),
+                     "granted_this_run": granted,
+                     "daily_trade_cap": None, "per_run_trade_cap": None}
         return ChiefDecision(generated_at=iso(utc_now()), market_risk_mode=mode, btc_eth_regime={"btc": btc_r, "eth": eth_regime or "UNKNOWN"},
                              breadth=breadth, clusters=clusters, allocation=allocation, exposure=exposure, ranking=ranking, priority=priority,
                              conflicts=conflicts, permission=permission, rules=rules)

@@ -74,7 +74,10 @@ def test_intratour_refresh_blocks_fourth_position_and_second_sees_first(tmp_path
     assert len(opened) == 3 and len(eng.ledger2.positions) == 3
     assert seen == [0, 1, 2, 3]                                          # her aday önceki fill'leri gördü
     rej = [r for r in risk_log if not r["risk_allowed"]]
-    assert len(rej) == 1 and rej[0]["risk_reasons"] == ["MAX_POSITIONS"] and rej[0]["symbol"] == SYMS[3]
+    # Adaylar artık maliyet-sonrası muhafazakâr edge'e göre SIRALI işlenir; hangi sembolün dördüncü
+    # sırada kaldığı sıralamaya bağlıdır. Sabit kota yoktur — reddin sebebi gerçek risk kapısıdır.
+    assert len(rej) == 1 and rej[0]["risk_reasons"] == ["MAX_POSITIONS"] and rej[0]["symbol"] in SYMS
+    assert rej[0]["symbol"] not in [o.split(" ")[0] for o in opened]
     fills = [r for r in risk_log if r.get("state_after_fill")]
     assert [f["state_after_fill"]["open_positions"] for f in fills] == [1, 2, 3] and all(f["state_after_fill"]["persisted"] for f in fills)
     assert fills[1]["state_after_fill"]["used_margin"] > fills[0]["state_after_fill"]["used_margin"] > 0

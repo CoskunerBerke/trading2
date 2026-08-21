@@ -70,15 +70,55 @@ def seed_live_memory(cfg, *, n: int = 120, bad_side: str = "LONG", sparse: bool 
                                       "closed_at": (o + timedelta(days=1)).isoformat()})
 
 
+class _Clock:
+    """Motor saati — barlarla BİRLİKTE ilerler ki veri ne bayat ne de geleceğe dönük olsun."""
+
+    def __init__(self, start):
+        self.t = start
+
+    def __call__(self):
+        return self.t
+
+    def advance_ms(self, ms: float) -> None:
+        self.t = self.t + timedelta(milliseconds=ms)
+
+
 def build(tmp_path, monkeypatch, *, overrides: dict | None = None, **seed_kw):
+    from tradingbot.core import utc_now
     ov = {k: dict(v) for k, v in RESEARCH_CFG.items()}
     for sec, vals in (overrides or {}).items():
         ov[sec] = {**ov.get(sec, {}), **vals}
-    return _engine(tmp_path, monkeypatch, ov, before_build=lambda cfg: seed_live_memory(cfg, **seed_kw))
+    eng = _engine(tmp_path, monkeypatch, ov, before_build=lambda cfg: seed_live_memory(cfg, **seed_kw))
+    eng._clock = _Clock(utc_now())
+    monkeypatch.setattr("tradingbot.engine_v3.utc_now", eng._clock)
+    return eng
 
 
-def tour(eng, *, close_symbols: tuple[str, ...] = ()):
+def advance_bars(eng, n: int = 1) -> None:
+    """Sentetik piyasayı `n` bar ileri alır → YENİ kapanmış bar → YENİ benzersiz sinyal.
+
+    Aynı bar üzerinde tekrar giriş `DUPLICATE_SIGNAL` ile engellenir (doğru davranış); gerçek botta da
+    aynı 4h barı içinde iki tur aynı sinyali üretir. Yeni fırsat için barın ilerlemesi gerekir.
+    """
+    moved = False
+    for _sym, fr in eng.runner.last_frames.items():
+        for tf, ms in (("1d", 86_400_000), ("4h", H4), ("1h", 3_600_000)):
+            df = fr.get(tf)
+            if df is None:
+                continue
+            df["timestamp"] = df["timestamp"] + n * ms
+            df.index = df.index + pd.Timedelta(milliseconds=n * ms)
+            moved = True
+    if not moved:                          # ilk tur: henüz frame yok → saati de ilerletme (senkron korunur)
+        return
+    eng._fake_live._now_s += n * H4 / 1000
+    eng._clock.advance_ms(n * H4)          # motorun saati barlarla BİRLİKTE ilerler
+
+
+def tour(eng, *, close_symbols: tuple[str, ...] = (), advance: int = 1):
     """Bir motor turu. `close_symbols` verilen sembollerin fiyatını stop'un ötesine taşır (ZARAR)."""
+    if advance:
+        advance_bars(eng, advance)
     for sym in close_symbols:
         pos = eng.ledger2.positions.get(sym)
         if pos is not None:
@@ -173,7 +213,7 @@ def test_lifecycle_from_empty_book_with_real_engine(tmp_path, monkeypatch):
     assert eng.research.shadow_policy() is None
 
     # (1) boş defterden aday KENDİLİĞİNDEN üretiliyor + (2) offline sonucu SHADOW
-    s1 = tour(eng)
+    s1 = tour(eng, advance=0)
     rec = eng.research.shadow()
     assert rec is not None and rec.state == SHADOW
     assert rec.offline["verdict"] == "SHADOW_CANDIDATE" and not rec.offline["failed_gates"]

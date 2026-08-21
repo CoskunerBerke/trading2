@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 
 from .accounting import (AmountType, FeeSchedule, FiltersCache, FuturesLedgerV2, LiquidationParams, MarketType, SizeSpec, SlippageModel,
@@ -28,6 +28,20 @@ from .market.quality import DataQualityConfig, DataQualityGate
 from .risk import KillSwitch, ModeState, RiskEngine, build_state, resolve_profile, warn_if_below_recommended
 
 log = logging.getLogger(__name__)
+
+# Yumusak kanit -> muhafazakar edge'den dusulecek R cezasi. Hicbiri TEK BASINA reddetmez; toplam ceza
+# `GateLedger.soft_penalty_r()` icinde ust sinirlidir (cok sayida orta zayiflik otomatik vetoya donmez).
+# Karar hunisi: her turda ve kayan 24 saatte tutulur. `trades_opened_24h` YALNIZ gozlem metrigidir,
+# karar kapisi DEGILDIR. `daily_trade_cap`/`per_run_trade_cap` her zaman null olarak raporlanir.
+_FUNNEL_KEYS = ("actionable", "hard_safety_blocked", "risk_capacity_blocked", "positive_point_edge",
+                "positive_conservative_edge", "negative_edge_blocked", "research_small",
+                "duplicate_blocked", "trigger_fired", "exchange_rejected", "opened")
+
+_SOFT_PENALTY_R = {"LOW_CONSENSUS": 0.06, "LOW_CONFIDENCE": 0.06, "HIGH_DISSENT": 0.05,
+                   "RR_BELOW_PREFERRED": 0.05, "PATTERN_WEAK": 0.05, "SPREAD_WIDE": 0.04,
+                   "VOL_REGIME_HIGH": 0.04, "FUNDING_ADVERSE": 0.04, "MARKET_REGIME_MISMATCH": 0.10,
+                   "SAME_DIRECTION_CROWDED": 0.08, "CLUSTER_CROWDED": 0.08,
+                   "RED_TEAM_SOFT_PENALTY": 0.04, "SMALL_SAMPLE": 0.05}
 
 
 class TradingEngineV3(TradingEngine):
@@ -97,10 +111,20 @@ class TradingEngineV3(TradingEngine):
                                   min_rows=_lv.research_min_rows, seed=_lv.research_seed))
         self._last_train_at = None                      # online ogrenme temposu (cooldown)
         self._closes_since_train = 0
+        # Benzersiz sinyal tekrar korumasi (SABIT SAYI KOTASI DEGIL): ayni
+        # symbol|market|timeframe|closed_bar_ts|side|setup ikinci kez acilamaz.
+        self._sig_path = st / "signals_seen.json"
+        self._seen_signals = list((read_json(self._sig_path, default=None) or {}).get("ids") or [])
+        self._funnel_path = st / "decision_funnel.json"
         self.registry = CoinHeadRegistry(self.head_cfg, max_workers=ch.max_workers)
         self.registry.load(st)          # snapshot olay-zaman sırası (legacy hash-only state güvenli geçer)
         self._tour_no = 0               # aynı ms için deterministik tie-breaker
-        self.chief_mgr = ChiefPortfolioManager(clusters=v3.risk_profiles.clusters or None)
+        from .coinhead.chief import ChiefConfig as _ChiefCfg
+        # Chief'in SERT kapisi artik yalnizca GERCEK risk butcesidir (sabit islem sayisi kotasi YOK).
+        self.chief_mgr = ChiefPortfolioManager(
+            _ChiefCfg(max_total_open_risk_pct=self.profile.max_total_open_risk_pct,
+                      risk_per_trade_pct=self.profile.risk_per_trade_pct),
+            clusters=v3.risk_profiles.clusters or None)
         self.quality = DataQualityGate(DataQualityConfig(max_candle_age_bars=v3.data.max_candle_age_bars, max_ticker_age_s=v3.data.max_ticker_age_s,
                                                          max_clock_drift_ms=v3.data.max_clock_drift_ms, max_price_divergence_pct=v3.data.max_price_divergence_pct))
         # --- öğrenme v2 (v1 `self.learner` korunur)
@@ -442,6 +466,9 @@ class TradingEngineV3(TradingEngine):
                                               snapshot_at_ms=now_ms, snapshot_seq=self._tour_no,
                                               pattern_evidence=self._pattern_evidence(b.symbol, now_ms))
         decisions = self.registry.run_many(inputs)
+        # ASAMA 2 -- EKONOMIK FIRSAT DEGERLENDIRMESI. Coin head yalnizca GEOMETRIK olarak gecerli plan
+        # uretti; kabul/red karari burada tek bir buyuklukle verilir: conservative_net_edge_r.
+        self._assess_opportunities(decisions, briefs)
         btc_dec = decisions.get("BTC/USDT")
         chief = self.chief_mgr.decide(list(decisions.values()), {"equity": state.equity, "open_positions": [o.to_dict() for o in state.open_positions],
                                                                  "total_open_risk_usdt": state.total_open_risk_usdt, "pnl_today": state.realized_pnl_today,
@@ -571,6 +598,7 @@ class TradingEngineV3(TradingEngine):
                   "symbols": len(symbols), "decisions": len(decisions), "opened": len(opened), "closed": len(records), "kill_trips": trips,
                   "mode": self.mode_state.mode.value, "profile": self.profile.name}
         atomic_write_json(st / "health.json", health)
+        self._persist_funnel(now, len(records))
         self.snap_telemetry.save()          # snapshot/sema sayaclari dashboard ve /metrics icin
         summary = {"at": iso(now), "run_id": self.run_id, "symbols": symbols,
                    "scan": {"universe": scan.universe, "scanned": scan.scanned, "flagged": scan.flagged, "setups": len(scan.setups)} if scan else None,
@@ -593,7 +621,16 @@ class TradingEngineV3(TradingEngine):
         # kritik bölge başında durumu YETKİLİ defterlerden yenile (çağıranın state'i bayat olabilir: retry/eşzamanlı yol)
         state = self._portfolio_state({k: float(v.last) for k, v in marks.items()})
         entries_allowed = True
-        for sym in chief.priority + [s for s, d in decisions.items() if d.is_actionable and s not in chief.priority]:
+        funnel = self._funnel = {k: 0 for k in _FUNNEL_KEYS}
+        funnel["actionable"] = sum(1 for d in decisions.values() if d.is_actionable)
+        self._opportunity_cost = []
+        # SIRALAMA: adaylarin TAMAMI islenmeden once muhafazakar edge'e gore sirali islenir; boylece
+        # daha guclu ucuncu firsat, daha zayif iki firsat yuzunden disarida kalmaz. Sabit kota YOK.
+        _order = list(chief.priority) + [s for s, d in decisions.items()
+                                         if d.is_actionable and s not in chief.priority]
+        _order.sort(key=lambda s: (-((getattr(decisions.get(s), "opportunity", None) or {})
+                                     .get("conservative_net_edge_r") or -9.0), s))
+        for sym in _order:
             d = decisions.get(sym)
             b = bmap.get(sym)
             if d is None or b is None or not d.is_actionable:
@@ -621,6 +658,11 @@ class TradingEngineV3(TradingEngine):
                      "risk_allowed": rd.allowed, "risk_reasons": rd.reasons, "risk_warnings": rd.warnings, "adjusted_notional": rd.adjusted_notional,
                      "adjusted_leverage": rd.adjusted_leverage, "at": iso(now)}
             risk_log.append(entry)
+            if perm.get("block_code") == "RISK_CAPACITY_BLOCKED":
+                funnel["risk_capacity_blocked"] += 1
+                self._opportunity_cost.append({"symbol": sym, "side": d.direction,
+                                               "conservative_net_edge_r": (getattr(d, "opportunity", None) or {}).get("conservative_net_edge_r"),
+                                               "reason": "RISK_CAPACITY_BLOCKED", "at": iso(now)})
             if not perm.get("allow") or not rd.allowed:
                 # güçlü aday reddedildi → gölge işlem (karşı-olgusal)
                 if self.cfg.v3.learning_v3.shadow_trades and plan.expected_r >= self.head_cfg.min_expected_r:
@@ -631,10 +673,39 @@ class TradingEngineV3(TradingEngine):
             # tetik: legacy mantık (kırılım: 4h kapanış seviyenin ötesinde; geri çekilme: fiyat seviyeye değdi)
             if not self._trigger_fired(b, d.direction, plan.entry, plan.entry_type):
                 continue
+            funnel["trigger_fired"] += 1
             feats = features_from_brief(b, self.runner.chief.decide(briefs), b.scan_score or None)
             feats.update({"initial_stop": plan.stop, "p_win": b.p_win, "regime": d.regime, "consensus_score": d.consensus_score, "consensus_conf": d.consensus_confidence,
                           "n_dissent": len(d.dissent), "n_vetoes": len(d.vetoes), "expected_r": d.expected_r, "expected_cost_pct": d.expected_cost, "market_type": market,
                           "spread_pct": plan_dict.get("spread_pct")})
+            # --- HARD: maliyet ve belirsizlik sonrasi ekonomi ---
+            _opp = getattr(d, "opportunity", None) or {}
+            if _opp:
+                if _opp.get("tradeable"):
+                    funnel["positive_conservative_edge"] += 1
+                elif _opp.get("research_only"):
+                    # Point-estimate pozitif ama belirsizlik yutuyor -> gercek giris YOK, karsi-olgusal izle.
+                    funnel["research_small"] += 1
+                    entry["block_code"] = "RESEARCH_SIZE_ONLY"
+                    if self.cfg.v3.learning_v3.shadow_trades:
+                        self.shadow.add({"plan_id": stable_id("plan", self.run_id, sym), "symbol": sym,
+                                         "market_type": market, "direction": d.direction, "entry": plan.entry,
+                                         "stop": plan.stop, "targets": plan.targets,
+                                         "horizon_bars": plan.time_horizon_bars, "leverage": plan.size.leverage},
+                                        ["RESEARCH_SIZE_ONLY"], now=now)
+                    continue
+                else:
+                    funnel["negative_edge_blocked"] += 1
+                    entry["block_code"] = "NEGATIVE_NET_EDGE"
+                    continue
+                if _opp.get("net_expectancy_r", 0) > 0:
+                    funnel["positive_point_edge"] += 1
+            # --- HARD: ayni benzersiz sinyalin tekrari (yeni bar/yeni setup ENGELLENMEZ) ---
+            _sig = self._signal_id(sym, market, d, plan, b)
+            if _sig in self._seen_signals:
+                funnel["duplicate_blocked"] += 1
+                entry["block_code"] = "DUPLICATE_SIGNAL"
+                continue
             # ARAŞTIRMA POLİTİKASI: risk/chief onayından SONRA çalışır ve yalnız daraltabilir.
             # Aktif aday yoksa `allow=True, size_multiplier=1.0` döner → davranış birebir aynı kalır.
             snap_v3 = self._pred_snapshots.get(sym)     # predict anında üretildi; yeniden hesaplanmaz
@@ -662,7 +733,16 @@ class TradingEngineV3(TradingEngine):
                                                "source": "counterfactual_shadow_trade",
                                                "symbol": sym, "side": d.direction})
                 continue
-            notional = float(rd.adjusted_notional or plan.notional) * float(res["size_multiplier"])
+            # DINAMIK BOYUT: firsat gucu (muhafazakar edge) x arastirma politikasi carpani.
+            # Ikisi de yalnizca KUCULTUR; risk profili tavani ve toplam acik risk risk motorunda
+            # ayrica zorlanir (HARD). Kucuk boyut min-notional'a uymuyorsa risk BUYUTULMEZ.
+            _opp_mult = float(_opp.get("size_multiplier", 1.0) or 1.0) if _opp else 1.0
+            _chief_pen = float(perm.get("size_penalty_r", 0.0) or 0.0)
+            if _chief_pen > 0:                    # yigilma/rejim cezasi: veto degil, kucultme
+                _opp_mult *= max(0.25, 1.0 - min(0.5, _chief_pen * 2.0))
+            entry["opportunity"] = _opp or None
+            entry["size_multiplier_total"] = round(_opp_mult * float(res["size_multiplier"]), 6)
+            notional = float(rd.adjusted_notional or plan.notional) * float(res["size_multiplier"]) * _opp_mult
             if market == "USDM_PERP":
                 pos = self.ledger2.open(sym, d.direction, b.price, SizeSpec(Decimal(str(notional)), AmountType.NOTIONAL, int(rd.adjusted_leverage or 1)),
                                         stop=plan.stop, targets=plan.targets, filters=self.filters.get(sym, MarketType.USDM_PERP), setup_type=plan.entry_type,
@@ -670,6 +750,7 @@ class TradingEngineV3(TradingEngine):
                                         meta={"coin_head_id": d.coin_head_id, "run_id": self.run_id, "decision_snapshot": d.to_dict(include_reports=False)})
                 if pos is None:
                     entry["exec_reject"] = self.ledger2.last_reject_reason
+                    funnel["exchange_rejected"] += 1
                     continue
                 trade_id = pos.id
                 desc = f"{sym} {d.direction} FUTURES @ {float(pos.entry_avg):.6g} · notional {float(pos.qty * pos.entry_avg):.2f} · {pos.leverage}x · stop {plan.stop:.6g} · TP {', '.join(f'{t:.6g}' for t in plan.targets)} · P(win) %{(b.p_win or 0.5)*100:.0f}"
@@ -690,6 +771,8 @@ class TradingEngineV3(TradingEngine):
                                                             "reasons": _pol["reasons"]},
                                                "source": ("applied" if _pol is res else "counterfactual"),
                                                "symbol": sym, "side": d.direction})
+            funnel["opened"] += 1
+            self._seen_signals = (self._seen_signals + [_sig])[-5000:]
             self.memory.record_entry({"trade_id": trade_id, "symbol": sym, "direction": d.direction, "market_type": market, "setup_type": plan.entry_type,
                                       "regime": d.regime, "features": ((snap_v3.vector() | feats) if snap_v3 else feats),
                                       "snapshot": (snap_v3.to_dict() if snap_v3 else None),
@@ -809,6 +892,78 @@ class TradingEngineV3(TradingEngine):
             if (now - self._last_train_at).total_seconds() < lc.retrain_cooldown_hours * 3600:
                 return False
         return True
+
+    def _assess_opportunities(self, decisions: dict, briefs) -> None:
+        """Her islenebilir karar icin `OpportunityAssessment` uretir ve karara baglar.
+
+        Sabit esik zinciri yerine: kalibre p_win + gerceklesmis kazanc/kayip dagilimi + maliyet +
+        belirsizlik + yumusak kanit -> muhafazakar net edge. Maliyet CIFT SAYILMAZ (bkz.
+        `opportunity.assess` ve `expectancy_basis`).
+        """
+        from .decision_gates import GateLedger
+        from .opportunity import assess, hierarchical_expectancy
+        bmap = {b.symbol: b for b in briefs}
+        for sym, d in decisions.items():
+            if not getattr(d, "is_actionable", False):
+                continue
+            plan = getattr(d, "active_plan", None)
+            if plan is None or not getattr(plan, "valid", False):
+                continue
+            gates = GateLedger()
+            for code in list(getattr(d, "soft_flags", []) or []) + list(getattr(plan, "soft_flags", []) or []):
+                gates.penalise(code, _SOFT_PENALTY_R.get(code, 0.05), detail="coin head kanıtı")
+            b = bmap.get(sym)
+            if b is not None and getattr(b, "dont_list", None):
+                for _w in list(b.dont_list)[:4]:
+                    gates.penalise("RED_TEAM_SOFT_PENALTY", 0.04, detail=str(_w)[:80])
+            stop_pct = plan.stop_pct
+            if stop_pct <= 0:
+                gates.block("ZERO_STOP_DISTANCE")
+            stats = hierarchical_expectancy(learner=self.learner2, symbol=sym, side=d.direction,
+                                            setup=plan.entry_type or "-", regime=d.regime,
+                                            fallback_win_r=plan.expected_r)
+            if d.p_win:                                   # kalibre model tahmini onceliklidir
+                stats["p_win"] = max(0.05, min(0.95, float(d.p_win)))
+            a = assess(symbol=sym, side=d.direction, setup=plan.entry_type or "-", gates=gates,
+                       p_win=stats["p_win"], avg_win_r=stats["avg_win_r"], avg_loss_r=stats["avg_loss_r"],
+                       sample_size=stats["sample_size"], cost_pct_notional=plan.expected_cost_pct,
+                       stop_dist_pct=stop_pct, expectancy_basis=stats["expectancy_basis"],
+                       risk_per_trade_pct=self.profile.risk_per_trade_pct,
+                       provenance=stats["provenance"] | {"expected_r_geometry": plan.expected_r})
+            d.opportunity = a.to_dict()
+
+    def _persist_funnel(self, now, n_closed: int) -> None:
+        """Karar hunisi + kayan 24 saat. `trades_opened_24h` YALNIZ gozlem metrigidir, kapi degildir."""
+        f = dict(getattr(self, "_funnel", None) or {k: 0 for k in _FUNNEL_KEYS})
+        f["closed"] = int(n_closed)
+        prev = read_json(self._funnel_path, default=None) or {}
+        hist = [h for h in (prev.get("history") or []) if h.get("at")][-500:]
+        hist.append({"at": iso(now), **f})
+        cutoff = (now - timedelta(hours=24)).isoformat()
+        recent = [h for h in hist if str(h.get("at", "")) >= cutoff]
+        roll = {k: sum(int(h.get(k, 0) or 0) for h in recent) for k in list(_FUNNEL_KEYS) + ["closed"]}
+        denom = max(1, f.get("actionable", 0))
+        atomic_write_json(self._funnel_path, {
+            "schema": "decision_funnel_v1", "at": iso(now), "run": f,
+            "rolling_24h": roll, "trades_opened_24h": roll.get("opened", 0),
+            "hard_block_rate": round((f.get("negative_edge_blocked", 0) + f.get("risk_capacity_blocked", 0)
+                                      + f.get("duplicate_blocked", 0) + f.get("exchange_rejected", 0)) / denom, 4),
+            "no_trade_rate": round(1.0 - f.get("opened", 0) / denom, 4),
+            "opportunity_cost_count": len(getattr(self, "_opportunity_cost", []) or []),
+            "opportunity_cost": list(getattr(self, "_opportunity_cost", []) or [])[-20:],
+            # RAPORLAMA SOZLESMESI: sabit islem sayisi kotasi YOKTUR.
+            "daily_trade_cap": None, "per_run_trade_cap": None,
+            "history": hist[-500:]})
+        atomic_write_json(self._sig_path, {"ids": self._seen_signals[-5000:]})
+
+    def _signal_id(self, sym: str, market: str, d, plan, b) -> str:
+        """Benzersiz sinyal kimligi: symbol|market|timeframe|closed_bar_ts|side|setup_type.
+
+        Ayni benzersiz sinyal iki kez acilamaz. Fakat YENI kapanmis bar / yeni setup / onceki islem
+        kapandiktan sonraki yeni sinyal "limit" gerekcesiyle engellenemez.
+        """
+        bar = str(getattr(b, "last_bar_4h", "") or "")
+        return stable_id("signal", sym, market, "4h", bar, d.direction, plan.entry_type or "-")
 
     def _research_mode_ok(self) -> tuple[bool, str]:
         """MUTLAK MOD KAPISI — araştırma yalnız saf PAPER kâğıt yolunda çalışır."""

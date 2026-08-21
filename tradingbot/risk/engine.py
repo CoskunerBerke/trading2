@@ -106,8 +106,13 @@ class RiskEngine:
 
         add("KILL_SWITCH_ACTIVE", self.ks.allows_entry(), self.ks.state, "ARMED")
         add("STOP_PRESENT", stop is not None and float(stop) > 0 and entry > 0, stop, "stop zorunlu")
-        add("MAX_POSITIONS", len(state.open_positions) < p.max_open_positions, len(state.open_positions), p.max_open_positions)
-        add("MAX_POSITIONS_MARKET", len(state.positions_in(mtype)) < p.max_positions_per_market, len(state.positions_in(mtype)), p.max_positions_per_market)
+        # ADET limitleri OPSIYONEL: None ise kapi HIC uygulanmaz ve karar gercek risk butcesine kalir
+        # (toplam acik risk / margin / liq buffer / same-symbol). TESTNET/LIVE profilleri adet
+        # tavanlarini KORUR; yalnizca PAPER_RESEARCH None kullanir.
+        if p.max_open_positions is not None:
+            add("MAX_POSITIONS", len(state.open_positions) < p.max_open_positions, len(state.open_positions), p.max_open_positions)
+        if p.max_positions_per_market is not None:
+            add("MAX_POSITIONS_MARKET", len(state.positions_in(mtype)) < p.max_positions_per_market, len(state.positions_in(mtype)), p.max_positions_per_market)
         add("ALREADY_OPEN_SAME_SYMBOL", not any(o.symbol == symbol and o.market_type == mtype for o in state.open_positions), symbol)
         net = state.net_exposure(symbol)
         opposite = (net > 0 and side == "SHORT") or (net < 0 and side == "LONG")

@@ -296,6 +296,67 @@ def test_chief_ranks_blocks_crowding_and_requires_three_flags():
         if perm["allow"]:
             assert perm["requires"] == ["coin_head_valid", "no_red_team_veto", "risk_engine_allowed"]
     actionable = [x for x in decs if x.is_actionable and x.direction == "LONG" and x.symbol != "BTC/USDT"]
-    if actionable:   # l1 kümesinde 2 long açıkken üçüncü l1 long'a izin yok
-        assert any("küme kalabalık" in p["reason"] or "yığılma" in p["reason"] or "limiti" in p["reason"] for p in d["permission"].values() if not p["allow"])
+    if actionable:
+        # YIĞILMA ARTIK VETO DEĞİL: aynı yön / aynı küme kalabalıksa boyut KÜÇÜLTÜLÜR, işlem
+        # reddedilmez. Sert engel yalnız gerçek güvenlik/kapasite kodlarından gelebilir.
+        crowded = [p for p in d["permission"].values() if p.get("soft_codes")]
+        assert crowded, "yığılma yumuşak kanıt olarak kaydedilmeli"
+        assert all(p["size_penalty_r"] > 0 for p in crowded)
+        for p in d["permission"].values():
+            if not p["allow"]:
+                assert p.get("block_code") in ("NOT_ACTIONABLE", "RED_TEAM_HARD_VETO",
+                                               "RISK_CAPACITY_BLOCKED"), p
+    # SABİT İŞLEM SAYISI KOTASI YOK — raporlama sözleşmesi her zaman null
+    assert d["exposure"]["daily_trade_cap"] is None and d["exposure"]["per_run_trade_cap"] is None
+    assert "risk_budget_usdt" in d["exposure"] and "risk_capacity_left_usdt" in d["exposure"]
     assert d["exposure"]["long_notional"] == 20 and d["allocation"]["futures_notional"] == 20
+
+
+def test_chief_has_no_fixed_trade_count_cap():
+    """Tur başına / günlük sabit yeni pozisyon tavanı KALDIRILDI (gerçek sorunun kaynağıydı)."""
+    from tradingbot.coinhead.chief import ChiefConfig
+    c = ChiefConfig()
+    assert c.max_new_positions_per_run is None and c.daily_trade_cap is None
+    src = Path(__file__).resolve().parents[1] / "tradingbot" / "coinhead" / "chief.py"
+    text = src.read_text(encoding="utf-8")
+    assert "granted >= cfg.max_new_positions_per_run" not in text
+    assert "tur başına yeni pozisyon limiti" not in text
+
+
+def test_chief_grants_all_affordable_opportunities_in_one_run():
+    """Aynı turda 3 güçlü ve farklı sembollü fırsat: risk bütçesi yetiyorsa ÜÇÜ DE izin almalı."""
+    from tradingbot.coinhead.chief import ChiefConfig
+    cfg = CoinHeadConfig(consensus_threshold=0.05, min_confidence=0.05)
+    fr = frames(seed=3, drift=0.0015)
+    reports, brief = legacy(fr)
+    syms = ("SOL/USDT", "AVAX/USDT", "ADA/USDT")
+    decs = [CoinHead(s, cfg).decide(_inputs(fr, reports, brief)) for s in syms]
+    for d in decs:                                   # her biri güçlü, ucuz ve maliyet sonrası pozitif
+        d.opportunity = {"conservative_net_edge_r": 0.5, "opportunity_score": 1.0,
+                         "risk_pct_requested": 1.0, "size_multiplier": 1.0}
+    ch = ChiefPortfolioManager(ChiefConfig(max_total_open_risk_pct=6.0)).decide(
+        decs, {"equity": 1000.0, "open_positions": [], "total_open_risk_usdt": 0.0})
+    allowed = [s for s in syms if ch.permission.get(s, {}).get("allow")]
+    actionable = [d.symbol for d in decs if d.is_actionable]
+    assert set(allowed) == set(actionable), (allowed, actionable)
+    assert len(allowed) >= 3 or len(actionable) < 3
+    assert ch.exposure["granted_this_run"] == len(allowed)
+
+
+def test_chief_blocks_with_risk_capacity_not_a_quota():
+    """Risk kapasitesi dolduğunda kod RISK_CAPACITY_BLOCKED olmalı — DAILY/PER_RUN_LIMIT DEĞİL."""
+    from tradingbot.coinhead.chief import ChiefConfig
+    cfg = CoinHeadConfig(consensus_threshold=0.05, min_confidence=0.05)
+    fr = frames(seed=3, drift=0.0015)
+    reports, brief = legacy(fr)
+    decs = [CoinHead(s, cfg).decide(_inputs(fr, reports, brief)) for s in ("SOL/USDT", "AVAX/USDT", "ADA/USDT")]
+    for d in decs:
+        d.opportunity = {"conservative_net_edge_r": 0.5, "risk_pct_requested": 2.0, "size_multiplier": 1.0}
+    ch = ChiefPortfolioManager(ChiefConfig(max_total_open_risk_pct=2.0)).decide(   # yalnız 1 işleme yeter
+        decs, {"equity": 1000.0, "open_positions": [], "total_open_risk_usdt": 0.0})
+    blocked = [p for p in ch.permission.values() if p.get("block_code") == "RISK_CAPACITY_BLOCKED"]
+    actionable = [d for d in decs if d.is_actionable]
+    if len(actionable) > 1:
+        assert blocked, "kapasite dolunca RISK_CAPACITY_BLOCKED bekleniyor"
+    for p in ch.permission.values():
+        assert p.get("block_code") not in ("DAILY_LIMIT", "PER_RUN_LIMIT")

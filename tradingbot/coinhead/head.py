@@ -22,9 +22,14 @@ from .specialists import NEW_SPECIALISTS, SpecialistContext, adapt_legacy_report
 
 @dataclass
 class CoinHeadConfig:
-    consensus_threshold: float = 0.22          # legacy LONG_T ile aynı
-    min_confidence: float = 0.25
-    min_expected_r: float = 1.5                # legacy R/R ≥ 1.5
+    # ASAGIDAKI UC ESIK ARTIK SERT VETO DEGILDIR. Ard arda dizilen "hepsi gecmeli" zinciri, maliyet
+    # sonrasi pozitif firsatlari sistematik olarak olduruyordu. Bunlar artik YUMUSAK KANIT uretir ve
+    # `opportunity.conservative_net_edge_r` uzerinden puani/boyutu dusurur.
+    consensus_threshold: float = 0.22          # tercih edilen konsensus (SOFT: LOW_CONSENSUS)
+    min_confidence: float = 0.25               # tercih edilen guven      (SOFT: LOW_CONFIDENCE)
+    min_expected_r: float = 1.5                # tercih edilen R/R        (SOFT: RR_BELOW_PREFERRED)
+    # Yon belirlemek icin gereken asgari sinyal: bunun altinda "anlamli yon yok" demektir.
+    direction_epsilon: float = 0.05
     fee_taker_pct: float = 0.05                # futures
     spot_fee_pct: float = 0.10
     slippage_pct: float = 0.03
@@ -134,12 +139,17 @@ class CoinHead:
         risk = abs(e - plan.stop) / e * 100
         reward = abs(plan.targets[0] - e) / e * 100
         plan.expected_r = round((reward - plan.expected_cost_pct) / risk, 3) if risk else 0.0
+        # ASAMA 1 -- YALNIZ GEOMETRI: entry/stop/target var mi, stop mesafesi pozitif mi.
+        # ASAMA 2 (ekonomi) motorda `opportunity.assess()` ile yapilir; sabit R/R esigi orada
+        # YUMUSAK kanit olarak yer alir. Boylece R/R 1.2 ama yuksek kalibre p_win'li bir islem
+        # maliyet sonrasi pozitifse yasayabilir; R/R 2.0 ama dusuk p_win'li islem elenir.
         if risk <= 0:
-            plan.valid, plan.invalid_reason = False, "stop mesafesi sıfır"
-        elif plan.expected_r < self.cfg.min_expected_r:
-            plan.valid, plan.invalid_reason = False, f"maliyet sonrası R {plan.expected_r} < {self.cfg.min_expected_r}"
+            plan.valid, plan.invalid_reason = False, "stop mesafesi sıfır"      # HARD: ZERO_STOP_DISTANCE
         else:
             plan.valid, plan.invalid_reason = True, ""
+            plan.soft_flags = list(plan.soft_flags)
+            if plan.expected_r < self.cfg.min_expected_r:
+                plan.soft_flags.append("RR_BELOW_PREFERRED")
 
     def _size(self, plan: TradePlanV3, market: str, inp: CoinHeadInputs) -> None:
         from ..risk.engine import size_position
@@ -198,7 +208,10 @@ class CoinHead:
         d.confidence_raw = round(min(1.0, abs(score) / 0.6), 4)
         d.confidence_calibrated = round(conf, 4)
         d.evidence = [{"agent": r.agent_name, "for": r.evidence_for[:3], "against": r.evidence_against[:3]} for r in reports if r.usable]
-        direction = "LONG" if score >= self.cfg.consensus_threshold else ("SHORT" if score <= -self.cfg.consensus_threshold else "")
+        # Yon: anlamsiz derecede kucuk sinyal islem uretmez; fakat 0.22'lik eski esik artik SERT
+        # degil YUMUSAK kanittir (yon gucu p_win/belirsizlik/edge hesabina girer).
+        eps = self.cfg.direction_epsilon
+        direction = "LONG" if score >= eps else ("SHORT" if score <= -eps else "")
         # açık pozisyon varsa: yön korunuyorsa HOLD, ters dönerse EXIT, zayıflarsa REDUCE
         opos = (inp.portfolio or {}).get("open_position")
         if opos:
@@ -212,11 +225,19 @@ class CoinHead:
             d.latency_ms = round((time.time() - t0) * 1000, 1)
             self.last_decision = d
             return d
-        if not direction or conf < self.cfg.min_confidence:
+        if not direction:
             d.verdict, d.no_trade_reason = Verdict.NO_TRADE, NO_TRADE_LOW_CONSENSUS
             d.latency_ms = round((time.time() - t0) * 1000, 1)
             self.last_decision = d
             return d
+        # Zayif konsensus/guven artik REDDETMEZ; yumusak kanit olarak tasinir ve ekonomik
+        # degerlendirmede puani ve pozisyon boyutunu dusurur.
+        if abs(score) < self.cfg.consensus_threshold:
+            d.soft_flags.append("LOW_CONSENSUS")
+        if conf < self.cfg.min_confidence:
+            d.soft_flags.append("LOW_CONFIDENCE")
+        if len(dissent) >= 3:
+            d.soft_flags.append("HIGH_DISSENT")
         d.direction = direction
         # 4) planlar
         der = rep_by.get("derivatives")

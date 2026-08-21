@@ -346,6 +346,18 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
                  + card("Otomatik terfi", "KAPALI" if not _rp.get("auto_promotion_possible") else "AÇIK",
                         "CHAMPION yalnız manuel operatör onayıyla")
                  + '</div>')
+        _df = state.decision_funnel()
+        _fr = _df.get("run") or {}
+        body += ('<div class="grid">'
+                 + card("Karar hunisi", f"{_fr.get('opened', 0)} / {_fr.get('actionable', 0)}",
+                        f"pozitif edge {_fr.get('positive_conservative_edge', 0)} · "
+                        f"negatif {_fr.get('negative_edge_blocked', 0)} · "
+                        f"kapasite {_fr.get('risk_capacity_blocked', 0)} · "
+                        f"duplicate {_fr.get('duplicate_blocked', 0)}")
+                 + card("24s açılan işlem", str(_df.get("trades_opened_24h", 0)),
+                        "yalnız gözlem — karar kapısı DEĞİL")
+                 + card("İşlem kotası", "YOK", "günlük/tur başına sabit sayı limiti yok")
+                 + '</div>')
         body += '<p class="small mut">Uçlar: <a href="/health/live">/health/live</a> · <a href="/health/ready">/health/ready</a> · <a href="/metrics">/metrics</a> · <a href="/api/overview">/api/overview</a></p>'
         return _page("Sağlık", body, "/health")
 
@@ -486,6 +498,24 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
                   "# HELP tradingbot_auto_promotion_enabled 1 if automatic CHAMPION promotion is possible",
                   "# TYPE tradingbot_auto_promotion_enabled gauge",
                   f"tradingbot_auto_promotion_enabled {1 if _rp.get('auto_promotion_possible') else 0}"]
+        # Karar hunisi: sabit islem sayisi kotasi YOK -> cap gauge'lari her zaman 0 (null anlaminda)
+        _df = ov.get("decision_funnel") or {}
+        _fr = _df.get("run") or {}
+        for _k in ("actionable", "positive_conservative_edge", "negative_edge_blocked",
+                   "risk_capacity_blocked", "duplicate_blocked", "research_small", "opened"):
+            lines += [f"# HELP tradingbot_funnel_{_k} decision funnel stage count (this run)",
+                      f"# TYPE tradingbot_funnel_{_k} gauge",
+                      f"tradingbot_funnel_{_k} {int(_fr.get(_k, 0) or 0)}"]
+        lines += ["# HELP tradingbot_trades_opened_24h observation only, NOT a decision gate",
+                  "# TYPE tradingbot_trades_opened_24h gauge",
+                  f"tradingbot_trades_opened_24h {int(_df.get('trades_opened_24h', 0) or 0)}",
+                  "# HELP tradingbot_opportunity_cost_count strong opportunities blocked by risk capacity",
+                  "# TYPE tradingbot_opportunity_cost_count gauge",
+                  f"tradingbot_opportunity_cost_count {int(_df.get('opportunity_cost_count', 0) or 0)}",
+                  "# HELP tradingbot_daily_trade_cap 0 = no fixed daily trade quota exists",
+                  "# TYPE tradingbot_daily_trade_cap gauge", "tradingbot_daily_trade_cap 0",
+                  "# HELP tradingbot_per_run_trade_cap 0 = no fixed per-run trade quota exists",
+                  "# TYPE tradingbot_per_run_trade_cap gauge", "tradingbot_per_run_trade_cap 0"]
         return PlainTextResponse("\n".join(lines) + "\n", media_type="text/plain; version=0.0.4; charset=utf-8")
 
     # ------------------------------------------------------------------ SSE

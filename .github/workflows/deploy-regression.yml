@@ -97,6 +97,19 @@ jobs:
         run: /tmp/run.sh "test_prediction_parity" tests/test_prediction_parity.py -v --tb=short -rs
       - name: UÇTAN UCA öğrenme döngüsü (senaryo → attribution → aday → OOS → araştırma → dashboard)
         run: /tmp/run.sh "test_end_to_end_learning" tests/test_end_to_end_learning.py -v --tb=short -rs
+      - name: Fırsat puanı + sabit işlem kotasının kaldırılması
+        run: /tmp/run.sh "test_opportunity_and_limits" tests/test_opportunity_and_limits.py -v --tb=short -rs
+      - name: Kota/starvation regresyonu (boş seçim reddi)
+        run: |
+          n=$(python -m pytest tests/test_opportunity_and_limits.py --collect-only -q 2>/dev/null | grep -c "::")
+          echo "toplanan test: $n"
+          if [ "$n" -lt 20 ]; then echo "::error::kota/firsat testleri toplanmadi ($n)"; exit 1; fi
+          /tmp/run.sh "quota-starvation" tests/test_opportunity_and_limits.py -v --tb=short \
+            -k "starve or starvation or quota or counter_blocked or capacity or ranked or duplicate"
+      - name: Karar kapıları sözleşmesi (HARD/SOFT sınıflandırması)
+        run: |
+          /tmp/run.sh "decision-gates" tests/test_opportunity_and_limits.py -v --tb=short \
+            -k "gate_contract or zero_stop or paper_uses_risk_budget or conservative_profiles or llm_budget"
       - name: GERÇEK RUNTIME araştırma döngüsü (boş defterden motor turlarıyla)
         # Zorunlu adım. Boş test seçimi pytest exit-5 ile adımı DÜŞÜRÜR; continue-on-error yok.
         run: /tmp/run.sh "test_research_runtime_e2e" tests/test_research_runtime_e2e.py -v --tb=short -rs

@@ -16,6 +16,7 @@ STATE_FILES: dict[str, str] = {
     "models": "models.json", "universe": "universe.json", "shadow_book": "shadow_book.json", "heartbeat": "heartbeat.json",
     "orders": "orders.json", "triggers": "triggers.json",
     "snapshot_telemetry": "snapshot_telemetry.json", "research_policy": "research_policy.json",
+    "decision_funnel": "decision_funnel.json",
 }
 JSONL_FILES: dict[str, str] = {"llm_calls": "llm_calls.jsonl", "trade_memory": "trade_memory.jsonl", "signals_log": "signals_log.jsonl"}
 
@@ -238,6 +239,19 @@ class StateReader:
                             for r in recs if r.get("state") == "RETIRED" and r.get("retired_reason")][-5:],
                 "gates": d.get("gates") or {}}
 
+    def decision_funnel(self) -> dict[str, Any]:
+        """Karar hunisi + kayan 24 saat. `trades_opened_24h` YALNIZ gözlem metriğidir, kapı değildir.
+
+        `daily_trade_cap`/`per_run_trade_cap` her zaman None: sistemde sabit işlem sayısı kotası YOK.
+        """
+        d = self.get("decision_funnel") or {}
+        return {"run": d.get("run") or {}, "rolling_24h": d.get("rolling_24h") or {},
+                "trades_opened_24h": int(d.get("trades_opened_24h", 0) or 0),
+                "hard_block_rate": d.get("hard_block_rate"), "no_trade_rate": d.get("no_trade_rate"),
+                "opportunity_cost_count": int(d.get("opportunity_cost_count", 0) or 0),
+                "opportunity_cost": d.get("opportunity_cost") or [],
+                "daily_trade_cap": None, "per_run_trade_cap": None, "at": d.get("at")}
+
     def overview(self) -> dict[str, Any]:
         health = self.get("health") or {}
         llm = self.get("llm_budget") or {}
@@ -256,6 +270,7 @@ class StateReader:
             "llm_spent_usd_today": llm.get("spent_usd"),
             "snapshot_telemetry": self.snapshot_telemetry(),
             "learning_research": self.learning_research(),
+            "decision_funnel": self.decision_funnel(),
             "chief": (self.get("coin_heads") or {}).get("chief") or (self.get("agents") or {}).get("chief") or {},
             "top_heads": sorted(heads, key=lambda h: -float(h.get("confidence_calibrated") or 0))[:10],
         }

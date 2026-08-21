@@ -17,8 +17,8 @@ class RiskProfile:
     risk_per_trade_pct: float                 # işlem başına riske atılan equity %
     max_total_open_risk_pct: float            # açık pozisyonların toplam riski %
     futures_max_leverage: int
-    max_open_positions: int                   # spot + futures toplam
-    max_positions_per_market: int
+    max_open_positions: int | None             # spot + futures toplam; None = ADET limiti YOK
+    max_positions_per_market: int | None       # None = ADET limiti YOK (risk butcesi karar verir)
     max_position_pct: float = 30.0            # tek coine max notional/equity %
     daily_loss_stop_pct: float | None = None  # None = kapalı
     weekly_loss_stop_pct: float | None = None
@@ -40,7 +40,10 @@ class RiskProfile:
 
 
 PROFILES: dict[str, RiskProfile] = {
-    "PAPER_RESEARCH": RiskProfile("PAPER_RESEARCH", 2.0, 6.0, 5, 6, 3, 30.0),
+    # PAPER_RESEARCH: pozisyon ADEDI ana risk mekanizmasi DEGILDIR -> None. Karar toplam acik risk
+    # (%6), islem basina risk tavani (%2), margin, liq buffer ve same-symbol kapilariyla verilir.
+    # `risk_per_trade_pct` bir TAVAN'dir; her islemde zorunlu kullanilan miktar degildir.
+    "PAPER_RESEARCH": RiskProfile("PAPER_RESEARCH", 2.0, 6.0, 5, None, None, 30.0),
     "TESTNET": RiskProfile("TESTNET", 0.5, 2.0, 2, 3, 3, 30.0, 2.0, 4.0, 8.0, 2, 50.0, 60.0, 3.0, 3, 24.0, 24.0, 0.3, 1.0, True),
     "SHADOW_LIVE": RiskProfile("SHADOW_LIVE", 0.5, 2.0, 2, 3, 3, 30.0, 2.0, 4.0, 8.0, 2, 50.0, 60.0, 3.0, 3, 24.0, 24.0, 0.3, 1.0, True),
     "LIVE_LIMITED": RiskProfile("LIVE_LIMITED", 0.25, 1.0, 1, 2, 2, 20.0, 1.0, 2.0, 5.0, 1, 30.0, 40.0, 3.0, 3, 48.0, 48.0, 0.2, 1.5, True),
@@ -64,8 +67,10 @@ def resolve_profile(name: str | None = None, overrides: dict[str, Any] | None = 
         raise ConfigError("risk_per_trade_pct > 10 — bilinçli kabul (i_understand=true) olmadan başlatılmaz")
     if not (1 <= p.futures_max_leverage <= 125):
         raise ConfigError("futures_max_leverage 1..125 aralığında olmalı")
-    if p.max_open_positions < 1 or p.max_positions_per_market < 1:
-        raise ConfigError("pozisyon limitleri ≥ 1 olmalı")
+    for _k in ("max_open_positions", "max_positions_per_market"):
+        _v = getattr(p, _k)
+        if _v is not None and _v < 1:
+            raise ConfigError("pozisyon limitleri ≥ 1 olmalı (ya da None = adet limiti yok)")
     for k in ("daily_loss_stop_pct", "weekly_loss_stop_pct", "max_drawdown_kill_pct"):
         v = getattr(p, k)
         if v is not None and not (0 < v <= 100):

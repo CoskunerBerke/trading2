@@ -11,6 +11,7 @@ on:
       - "tradingbot/**"
       - "tests/**"
       - "requirements.txt"
+      - "ruff.toml"
       - ".github/workflows/deploy-regression.yml"
   workflow_dispatch:
 
@@ -54,7 +55,7 @@ jobs:
 
   learning-tests:
     # Öğrenme hattı CI'da GERÇEKTEN koşar. Her dosya ayrı step: hangi testin çalıştığı log'a
-    # bakmadan da görünür (yerel "303 passed" tek başına kanıt sayılmaz).
+    # bakmadan da görünür (yerel "331 passed" tek başına kanıt sayılmaz).
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -66,31 +67,47 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pytest ruff
+          # httpx requirements'ta yok ama starlette TestClient onu ister; kurulmazsa dashboard/telemetri
+          # doğrulamaları sessizce SKIP olurdu — CI'da gerçekten koşmaları için açıkça kuruluyor.
+          pip install pytest ruff httpx
+      - name: Prepare annotating test runner
+        run: |
+          cat > /tmp/run.sh <<'EOS'
+          #!/usr/bin/env bash
+          # Her adımın hatasını GitHub annotation'ı olarak yayınlar; log erişimi olmadan da okunur.
+          title="$1"; shift
+          set +e
+          python -m pytest "$@" > /tmp/out.txt 2>&1
+          rc=$?
+          cat /tmp/out.txt
+          if [ "$rc" -ne 0 ]; then
+            summary=$(tail -n 80 /tmp/out.txt | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
+            echo "::error title=${title}::${summary}"
+          fi
+          exit $rc
+          EOS
+          chmod +x /tmp/run.sh
+      - name: Environment report (skip'lerin sessizce gizlenmediğini görmek için)
+        run: |
+          python -c "import sys, numpy, pandas; print('python', sys.version); print('numpy', numpy.__version__, 'pandas', pandas.__version__)"
+          python -c "import fastapi, httpx; print('fastapi', fastapi.__version__, 'httpx', httpx.__version__)"
       - name: FeatureSnapshotV3 şema + leakage + coverage gate
-        run: python -m pytest tests/test_feature_snapshot.py -v --tb=short
+        run: /tmp/run.sh "test_feature_snapshot" tests/test_feature_snapshot.py -v --tb=short -rs
       - name: Train/serve paritesi + ajan eşlemesi + gerçek replay-call coverage
-        run: python -m pytest tests/test_prediction_parity.py -v --tb=short
+        run: /tmp/run.sh "test_prediction_parity" tests/test_prediction_parity.py -v --tb=short -rs
       - name: Otomatik PAPER terfisi kapalı (regresyon kapısı)
         run: |
-          python -m pytest tests/test_prediction_parity.py -v --tb=short \
+          /tmp/run.sh "auto-promotion-disabled" tests/test_prediction_parity.py -v --tb=short \
             -k "auto_promote or candidate_never_enters or sparse_memory or flag_before_calling"
       - name: Model şeması uyuşmazlığı fail-closed (LearnerV2)
-        run: python -m pytest tests/test_learn.py -v --tb=short
+        run: /tmp/run.sh "test_learn" tests/test_learn.py -v --tb=short -rs
       - name: Politika walk-forward (fold-seçilmiş aday, OOS kırılımı)
-        run: python -m pytest tests/test_policy_eval.py -v --tb=short
+        run: /tmp/run.sh "test_policy_eval" tests/test_policy_eval.py -v --tb=short -rs
       - name: Replay araştırma hattı
-        run: python -m pytest tests/test_replay_research.py tests/test_replay_learning.py -v --tb=short
+        run: /tmp/run.sh "replay-research" tests/test_replay_research.py tests/test_replay_learning.py -v --tb=short -rs
+      - name: Dashboard (telemetri uçları)
+        run: /tmp/run.sh "test_dashboard" tests/test_dashboard.py -v --tb=short -rs
       - name: Lint (ruff)
         run: ruff check tradingbot tests
       - name: Tam test paketi
-        run: |
-          set +e
-          python -m pytest tests/ -q > full.out 2>&1
-          rc=$?
-          tail -n 40 full.out
-          if [ "$rc" -ne 0 ]; then
-            summary=$(tail -n 60 full.out | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
-            echo "::error title=full suite failure::${summary}"
-          fi
-          exit $rc
+        run: /tmp/run.sh "full-suite" tests/ -q -rs

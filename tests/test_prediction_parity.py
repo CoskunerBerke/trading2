@@ -327,6 +327,22 @@ def test_leakage_failure_is_counted_separately():
     assert tel.counters["leakage_failure_total"] == 1 and tel.counters["snapshot_failure_total"] == 1
 
 
+def test_two_writers_do_not_clobber_each_others_counters(tmp_path):
+    """Motor ve LearnerV2 AYNI dosyaya yazar; düz üstüne yazma diğerinin sayacını silerdi."""
+    engine = SnapshotTelemetry.load(tmp_path)          # motor: snapshot/leakage sayaçları
+    learner = SnapshotTelemetry.load(tmp_path)         # LearnerV2: schema_mismatch sayacı
+    engine.success(); engine.success(); engine.success()
+    learner.schema_mismatch("p_win_lr: sema uyusmadi")
+    learner.save()                                     # önce learner yazar
+    engine.save()                                      # sonra motor yazar (eskiden mismatch kaybolurdu)
+    merged = SnapshotTelemetry.load(tmp_path)
+    assert merged.counters["snapshot_success_total"] == 3
+    assert merged.counters["schema_mismatch_total"] == 1
+    assert merged.last_failure_code.startswith("p_win_lr")
+    merged.save()                                      # idempotent: tekrar yazmak sayacı artırmaz
+    assert SnapshotTelemetry.load(tmp_path).counters["snapshot_success_total"] == 3
+
+
 def test_failure_code_is_sanitized_and_bounded():
     assert sanitize_code("a\nb\r\nc") == "a b c"
     assert len(sanitize_code("x" * 500)) <= 120
@@ -335,6 +351,7 @@ def test_failure_code_is_sanitized_and_bounded():
 
 def test_telemetry_is_readable_through_dashboard_state_and_metrics(tmp_path):
     pytest.importorskip("fastapi")
+    pytest.importorskip("httpx")            # starlette TestClient httpx ister; requirements'ta yok
     import json
     from fastapi.testclient import TestClient
     from tradingbot.dashboard.app import DashboardConfig, create_app

@@ -78,8 +78,24 @@ class SnapshotTelemetry:
                 "last_failure_at": self.last_failure_at}
 
     def save(self) -> None:
-        if self.path is not None:
-            atomic_write_json(self.path, self.to_dict())
+        """Diskteki sayaclarla BIRLESTIREREK yazar (her sayac icin max).
+
+        Ayni surecte iki yazar var: motor (`snapshot_*`/`leakage_*`) ve LearnerV2 (`schema_mismatch_*`).
+        Duz ustune yazma, digerinin artisini sessizce silerdi. Sayaclar monoton oldugu icin `max`
+        birlestirmesi dogru sonucu verir; `last_failure_*` daha YENI olan kaydi korur.
+        """
+        if self.path is None:
+            return
+        prev = read_json(self.path, default=None)
+        if isinstance(prev, dict):
+            pc = prev.get("counters") or {}
+            for k in COUNTER_NAMES:
+                self.counters[k] = max(int(self.counters.get(k, 0) or 0), int(pc.get(k, 0) or 0))
+            prev_at = str(prev.get("last_failure_at") or "")
+            if prev_at > self.last_failure_at:                  # ISO-8601: sozluk sirasi = zaman sirasi
+                self.last_failure_at = prev_at
+                self.last_failure_code = str(prev.get("last_failure_code") or "")
+        atomic_write_json(self.path, self.to_dict())
 
 
 def read_telemetry(state_path: Path | str | None) -> dict:

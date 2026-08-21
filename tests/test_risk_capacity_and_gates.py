@@ -179,7 +179,7 @@ def _four_small_trades(tmp_path, monkeypatch, spy: list | None = None):
     # tavanı override EDİLMEZ (`cfg.futures.max_positions` üretimdeki 3 değerinde kalır).
     eng = _engine(tmp_path, monkeypatch, symbols=4, equity=EQUITY)
     assert eng.profile.name == "PAPER_RESEARCH" and eng.cfg.futures.max_positions == 3
-    assert eng.ledger2.max_positions is None, "PAPER'da defter adet tavanı olmamalı"
+    assert eng.ledger2.enforce_position_cap is False, "PAPER'da defter adet kapısı uygulanmamalı"
     edges = {"ETH/USDT": 0.9, "SOL/USDT": 0.8, "AVAX/USDT": 0.7, "LINK/USDT": 0.6}
     # Ham plan riski işlem başına %2 tavanındadır; NİHAİ risk çarpanla tam %0.5'e çekilir.
     _force_final_risk_pct(monkeypatch, 0.5, edges)
@@ -505,23 +505,24 @@ def test_18_paper_ledger_has_no_position_count_cap_on_production_defaults(tmp_pa
     eng = _engine(tmp_path, monkeypatch, symbols=2, equity=EQUITY)
     assert eng.cfg.futures.max_positions == 3, "üretim config değeri değişmemeli"
     assert eng.profile.max_open_positions is None
-    assert eng.ledger2.max_positions is None, "PAPER defterinde adet kapısı olmamalı"
+    # Yapılandırılmış değer KORUNUR (JSON'a integer yazılır); UYGULANMAZ olması profilden gelir.
+    assert eng.ledger2.max_positions == 3 and eng.ledger2.enforce_position_cap is False
     ok, why = eng.ledger2.can_open("ZZZ/USDT")
     assert ok and why == "OK"
 
 
-def test_19_ledger_none_cap_survives_json_roundtrip_and_runtime_override():
-    """`None` kaydedilebilir/okunabilir; kayıtlı sayı runtime profil `None`'ı ile güvenle ezilir."""
+def test_19_cap_behaviour_round_trips_as_an_integer_plus_flag():
+    """Davranış `null` ile KODLANMAZ: JSON'da integer + ayrı bayrak; round-trip kararlı."""
     import json
     from tradingbot.accounting import FuturesLedgerV2
-    led = FuturesLedgerV2(1_000, max_positions=None)
+    led = FuturesLedgerV2(1_000, max_positions=3, enforce_position_cap=False)
     d = led.to_dict()
-    assert d["max_positions"] is None and json.loads(json.dumps(d))["max_positions"] is None
-    assert FuturesLedgerV2.from_dict(json.loads(json.dumps(d))).max_positions is None
-    # Diskte 3 yazıyor olsa bile runtime profili None override eder (migration güvenli).
-    legacy = dict(d, max_positions=3)
-    assert FuturesLedgerV2.from_dict(legacy).max_positions == 3
-    assert FuturesLedgerV2.from_dict(legacy, max_positions=None).max_positions is None
+    assert d["max_positions"] == 3 and isinstance(d["max_positions"], int)
+    assert d["enforce_position_cap"] is False
+    back = FuturesLedgerV2.from_dict(json.loads(json.dumps(d)))
+    assert back.max_positions == 3 and back.enforce_position_cap is False
+    # Runtime profil bayrağı ezer (canlı motor ve replay bunu ortak yardımcıdan geçirir).
+    assert FuturesLedgerV2.from_dict(d, enforce_position_cap=True).enforce_position_cap is True
     # Sayısal tavan davranışı BİREBİR korunur.
     capped = FuturesLedgerV2(1_000, max_positions=1)
     capped.positions["A/USDT"] = object()
@@ -537,16 +538,16 @@ def test_20_conservative_profiles_still_get_a_ledger_count_cap(tmp_path, monkeyp
     assert p.max_open_positions is not None and p.max_positions_per_market is not None
     # Motorun defter tavanı türetmesi: profil adet tanımlıyorsa üretim değeri AYNEN geçer.
     eng = _engine(tmp_path, monkeypatch, symbols=2, equity=EQUITY)
-    derived = None if p.max_open_positions is None else eng.cfg.futures.max_positions
-    assert derived == 3, (name, derived)
-    assert derived is not None, f"{name} defter adet tavanını KAYBETMEMELİ"
+    from tradingbot.risk import enforces_position_cap
+    assert enforces_position_cap(p) is True, f"{name} defter adet tavanını KAYBETMEMELİ"
+    assert eng.cfg.futures.max_positions == 3
 
 
 def test_21_twelve_half_percent_trades_fill_six_percent_and_the_thirteenth_is_risk_blocked(tmp_path, monkeypatch):
     """12 bağımsız %0.5 fırsat %6 kapasiteyi doldurur; 13. aday ADET değil RİSK nedeniyle reddedilir."""
     equity = 200_000.0                       # min-notional/marjin senaryoyu kısıtlamasın
     eng = _engine(tmp_path, monkeypatch, symbols=13, equity=equity)
-    assert eng.profile.name == "PAPER_RESEARCH" and eng.ledger2.max_positions is None
+    assert eng.profile.name == "PAPER_RESEARCH" and eng.ledger2.enforce_position_cap is False
     assert eng.profile.max_total_open_risk_pct == 6.0 and eng.profile.risk_per_trade_pct == 2.0
     _force_final_risk_pct(monkeypatch, 0.5, {s: 0.9 - i * 0.01 for i, s in enumerate(eng.cfg.coins)})
     _force_triggers(monkeypatch, True)

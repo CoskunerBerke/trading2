@@ -53,6 +53,24 @@ DEFAULT_PROFILE = "PAPER_RESEARCH"
 _RECOMMENDED = PROFILES["TESTNET"]
 
 
+def enforces_position_cap(profile: RiskProfile) -> bool:
+    """Bu profil pozisyon ADEDİ tavanı uygular mı? — TEK ORTAK SÖZLEŞME.
+
+    Canlı `TradingEngineV3` ve `HistoricalReplay` defterlerini AYNI bu yardımcıdan kurar; iki
+    motorun ayrı formül üretmesi yasaktır. Aksi hâlde replay en fazla `cfg.futures.max_positions`
+    (=3) eşzamanlı pozisyon açarken canlı PAPER sınırsız açar ve trade memory / outcome / loss
+    attribution / walk-forward / araştırma politikaları YANLIŞ dağılımdan öğrenir.
+
+    Sözleşme: profil `max_open_positions` tanımlamıyorsa (``None``) adet tavanı UYGULANMAZ; karar
+    yalnız gerçek risk/marjin/likidite kapasitesine kalır. `PAPER_RESEARCH` böyledir.
+    TESTNET/SHADOW_LIVE/LIVE/LIVE_LIMITED adet tavanlarını KORUR.
+
+    Yapılandırılmış `futures.max_positions` değeri (3) korunur ve JSON'a integer olarak yazılmaya
+    devam eder; "uygula/uygulama" davranışı ayrı bir bayrakla taşınır (`null` ile KODLANMAZ).
+    """
+    return profile.max_open_positions is not None
+
+
 def resolve_profile(name: str | None = None, overrides: dict[str, Any] | None = None, *, i_understand: bool = False) -> RiskProfile:
     """İsim + kullanıcı ezmeleri → doğrulanmış profil. Saçma değerlerde ConfigError (program başlamamalı)."""
     name = (name or DEFAULT_PROFILE).upper()

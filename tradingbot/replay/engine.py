@@ -23,7 +23,7 @@ from ..core import atomic_write_json, iso, stable_id
 from ..indicators import add_snapshot_indicators
 from ..learn import LearnConfig, LearnerV2, ModelRegistry, TradeMemory
 from ..market.providers import tf_ms
-from ..risk import KillSwitch, RiskEngine, build_state, resolve_profile
+from ..risk import KillSwitch, RiskEngine, build_state, enforces_position_cap, resolve_profile
 
 log = logging.getLogger(__name__)
 DAY_MS = 86_400_000
@@ -125,7 +125,13 @@ class HistoricalReplay:
         self.risk = RiskEngine(self.profile, self.killswitch, v3.risk_profiles.clusters or None)
         fees = FeeSchedule(maker_pct=Decimal(str(v3.fees.futures_maker_pct)), taker_pct=Decimal(str(v3.fees.futures_taker_pct)), source=v3.fees.source)
         slip = SlippageModel(fixed_bps=Decimal(str(v3.fees.slippage_bps)))
-        self.ledger2 = FuturesLedgerV2(cfg.futures.starting_equity_usdt, max_positions=cfg.futures.max_positions, fees=fees, slippage=slip, brackets=default_brackets(),
+        # REPLAY <-> CANLI PAPER PARITESI: defter adet tavani canli motorla AYNI ortak sozlesmeden
+        # turer (`risk.enforces_position_cap`). Eskiden replay sabit `max_positions=3` uyguluyor,
+        # canli PAPER ise uygulamiyordu; replay daha az islem actigi icin trade memory / outcome /
+        # loss attribution / walk-forward / arastirma politikalari YANLIS dagilimdan ogreniyordu.
+        self.ledger2 = FuturesLedgerV2(cfg.futures.starting_equity_usdt, max_positions=cfg.futures.max_positions,
+                                       enforce_position_cap=enforces_position_cap(self.profile),
+                                       fees=fees, slippage=slip, brackets=default_brackets(),
                                        liq_params=LiquidationParams(liq_fee_pct=Decimal(str(v3.futures_v3.liq_fee_pct))), tp1_fraction=Decimal(str(v3.futures_v3.tp1_fraction)),
                                        tax_policy=TaxPolicy.disabled())
         self.spot2 = SpotLedger.load(self.state_dir / "spot_ledger.json", starting_cash=cfg.risk.starting_equity_usdt)

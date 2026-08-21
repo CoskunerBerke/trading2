@@ -57,9 +57,11 @@ jobs:
     # Öğrenme hattı CI'da GERÇEKTEN koşar. Her dosya ayrı step: hangi testin çalıştığı log'a
     # bakmadan da görünür (yerel "331 passed" tek başına kanıt sayılmaz).
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0        # rollback kanıtı pre-68b63f4 commit'ini worktree'ye çıkarır
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -138,6 +140,23 @@ jobs:
         # doldurur, 13. aday ADET değil TOTAL_OPEN_RISK nedeniyle reddedilir.
         run: |
           /tmp/run.sh "paper-no-count-cap" tests/test_risk_capacity_and_gates.py -v --tb=short             -k "production_defaults or no_position_count_cap or none_cap_survives or conservative_profiles_still or twelve_half_percent"
+      - name: REPLAY ↔ CANLI PAPER cap paritesi + state/rollback geriye uyumluluğu
+        # Zorunlu adım. (1) Canlı motor ve HistoricalReplay defterlerinin adet-kotası davranışının
+        # TEK ortak sözleşmeden (`risk.enforces_position_cap`) geldiğini, (2) ledger JSON'unun
+        # DAİMA integer kaldığını ve pre-68b63f4 kodunun onu okuyabildiğini (geçici worktree +
+        # sentetik temp state ile dört CLI komutu) kanıtlar. continue-on-error YOK.
+        run: /tmp/run.sh "test_cap_parity_and_rollback" tests/test_cap_parity_and_rollback.py -v --tb=short -rs
+      - name: Cap-parite/rollback testleri gerçekten toplanıyor ve KOŞUYOR mu (boş seçim + skip reddi)
+        run: |
+          n=$(python -m pytest tests/test_cap_parity_and_rollback.py --collect-only -q 2>/dev/null | grep -c "::")
+          echo "toplanan test: $n"
+          if [ "$n" -lt 12 ]; then echo "::error::cap-parite/rollback testleri toplanmadi ($n)"; exit 1; fi
+          # Rollback kanıtı SKIP edilirse adım düşer: shallow clone'da worktree kurulamaz.
+          python -m pytest tests/test_cap_parity_and_rollback.py -q -rs             -k "pre_fix_cli_commands" > /tmp/rb.txt 2>&1 || { cat /tmp/rb.txt; exit 1; }
+          cat /tmp/rb.txt
+          if grep -qE "^SKIPPED|1 skipped" /tmp/rb.txt; then
+            echo "::error::rollback CLI kaniti SKIP edildi — gecerli sayilmaz"; exit 1
+          fi
       - name: GERÇEK RUNTIME araştırma döngüsü (boş defterden motor turlarıyla)
         # Zorunlu adım. Boş test seçimi pytest exit-5 ile adımı DÜŞÜRÜR; continue-on-error yok.
         run: /tmp/run.sh "test_research_runtime_e2e" tests/test_research_runtime_e2e.py -v --tb=short -rs

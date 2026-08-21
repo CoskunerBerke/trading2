@@ -29,7 +29,8 @@ from .engine import TradingEngine
 from .learn import LearnConfig, LearnerV2, ModelRegistry, ShadowBook, TradeMemory
 from .learning import features_from_brief
 from .market.quality import DataQualityConfig, DataQualityGate
-from .risk import KillSwitch, ModeState, RiskEngine, build_state, resolve_profile, warn_if_below_recommended
+from .risk import (KillSwitch, ModeState, RiskEngine, build_state, enforces_position_cap, resolve_profile,
+                   warn_if_below_recommended)
 
 log = logging.getLogger(__name__)
 
@@ -98,14 +99,12 @@ class TradingEngineV3(TradingEngine):
         # --- muhasebe v2 (legacy dosya otomatik içe aktarılır; legacy defter nesnesi de kalır)
         fees = FeeSchedule(maker_pct=Decimal(str(v3.fees.futures_maker_pct)), taker_pct=Decimal(str(v3.fees.futures_taker_pct)), source=v3.fees.source)
         slip = SlippageModel(fixed_bps=Decimal(str(v3.fees.slippage_bps)))
-        # DEFTER ADET TAVANI RUNTIME RİSK PROFİLİNDEN GELİR.
-        # `PAPER_RESEARCH.max_open_positions is None` iken defter hâlâ `cfg.futures.max_positions`
-        # (=3) ile kuruluyordu: profil "adet limiti yok" dese bile 4. eşzamanlı pozisyon defterde
-        # `MAX_POSITIONS` ile reddediliyordu — gizli bir adet kotası. Profil adet limiti
-        # tanımlıyorsa (TESTNET/SHADOW_LIVE/LIVE/LIVE_LIMITED) eski değer AYNEN korunur.
-        _ledger_max_positions = None if self.profile.max_open_positions is None else cfg.futures.max_positions
+        # DEFTER ADET TAVANI: yapılandırılmış değer (3) KORUNUR ve JSON'a integer yazılır; tavanın
+        # UYGULANIP UYGULANMADIĞINI risk profili belirler. Canlı motor ve `HistoricalReplay` AYNI
+        # ortak sözleşmeyi (`risk.enforces_position_cap`) kullanır — iki motor ayrı formül üretmez.
         self.ledger2 = FuturesLedgerV2.load(self.ledger_path, starting_equity=cfg.futures.starting_equity_usdt,
-                                            max_positions=_ledger_max_positions,
+                                            max_positions=cfg.futures.max_positions,
+                                            enforce_position_cap=enforces_position_cap(self.profile),
                                             fees=fees, slippage=slip, brackets=default_brackets(),
                                             liq_params=LiquidationParams(liq_fee_pct=Decimal(str(v3.futures_v3.liq_fee_pct))),
                                             tp1_fraction=Decimal(str(v3.futures_v3.tp1_fraction)), tax_policy=TaxPolicy.disabled())

@@ -82,22 +82,33 @@ def _side(x) -> PositionSide:
     raise ValueError(f"geçersiz yön: {x}")
 
 
+DEFAULT_MAX_POSITIONS = 3          # JSON'a yazılan geriye uyumlu varsayılan (asla `null` değil)
+
+
 class FuturesLedgerV2:
     """İzole marj, tek yön kağıt futures defteri (Decimal). Sembol başına en fazla bir pozisyon."""
 
     schema_version = SCHEMA_VERSION
 
-    def __init__(self, starting_equity, *, max_positions: int | None = 3, fees: FeeSchedule | None = None,
+    def __init__(self, starting_equity, *, max_positions: int | None = DEFAULT_MAX_POSITIONS,
+                 enforce_position_cap: bool | None = None, fees: FeeSchedule | None = None,
                  slippage: SlippageModel | None = None, brackets: list[LeverageBracket] | None = None,
                  liq_params: LiquidationParams | None = None, funding: FundingSchedule | None = None,
                  tax_policy: TaxPolicy | None = None, tp1_fraction=Decimal("0.5"), allow_shrink: bool = False,
                  worst_case: bool = True, tp_maker: bool = False, entries_keep: int = 2000, history_keep: int = 5000):
         self.starting_equity: Decimal = D(starting_equity)
         self.wallet_balance: Decimal = D(starting_equity)
-        # None = ADET limiti YOK. Karar toplam açık risk / işlem başına risk / marjin / likidite ve
-        # gerçek hard-safety kapılarına kalır (PAPER_RESEARCH profili böyle çalışır). Sayısal değer
-        # verildiğinde eski davranış birebir korunur (TESTNET/SHADOW_LIVE/LIVE/LIVE_LIMITED).
-        self.max_positions: int | None = None if max_positions is None else int(max_positions)
+        # `max_positions` DAİMA integer'dır (JSON'a integer yazılır; `null` YAZILMAZ — eski sürüm
+        # `int(None)` ile çökerdi). "Adet tavanını uygula/uygulama" davranışı AYRI bayrakta durur:
+        # `enforce_position_cap`. Bayrağı çalışma zamanında risk profili belirler
+        # (`risk.enforces_position_cap`) ve canlı motor ile replay AYNI değeri alır.
+        # GERİYE UYUMLULUK: `max_positions=None` eskiden "tavan uygulanmaz" demekti → (3, False).
+        if max_positions is None:
+            self.max_positions: int = DEFAULT_MAX_POSITIONS
+            self.enforce_position_cap: bool = False if enforce_position_cap is None else bool(enforce_position_cap)
+        else:
+            self.max_positions = int(max_positions)
+            self.enforce_position_cap = True if enforce_position_cap is None else bool(enforce_position_cap)
         self.fees = fees or FeeSchedule.futures_default()
         self.slippage = slippage or SlippageModel.zero()
         self.brackets = brackets
@@ -147,8 +158,10 @@ class FuturesLedgerV2:
     def can_open(self, symbol: str) -> tuple[bool, str]:
         if symbol in self.positions:
             return False, R_ALREADY_OPEN
-        # `max_positions is None` -> ADET kapısı HİÇ uygulanmaz (kota değil: risk bütçesi karar verir).
-        if self.max_positions is not None and len(self.positions) >= self.max_positions:
+        # ADET kapısı YALNIZ `enforce_position_cap=True` iken uygulanır (kota değil: PAPER'da karar
+        # gerçek risk/marjin/likidite bütçesine kalır). Bayrak profilden gelir; replay ve canlı
+        # motor aynı ortak yardımcıyı kullanır.
+        if self.enforce_position_cap and len(self.positions) >= self.max_positions:
             return False, R_MAX_POSITIONS
         return True, R_OK
 
@@ -533,7 +546,12 @@ class FuturesLedgerV2:
         return {"schema_version": self.schema_version, "kind": "futures", "updated_at": self.updated_at or iso(),
                 "starting_equity": ser(self.starting_equity), "wallet_balance": ser(self.wallet_balance),
                 "equity": ser(self.wallet_balance),
-                "max_positions": self.max_positions, "fees": self.fees.to_dict(), "slippage": self.slippage.to_dict(),
+                # DAİMA integer: pre-68b63f4 loader `int(d["max_positions"])` yapar ve `null` görürse çöker.
+                "max_positions": int(self.max_positions),
+                # Eski sürümler bu anahtarı OKUMAZ (from_dict yalnız bildiği anahtarları `d.get` ile
+                # alır) → rollback'te güvenle yok sayılır.
+                "enforce_position_cap": bool(self.enforce_position_cap),
+                "fees": self.fees.to_dict(), "slippage": self.slippage.to_dict(),
                 "liq_params": self.liq_params.to_dict(), "tax_policy": self.tax_policy.to_dict(),
                 "tp1_fraction": ser(self.tp1_fraction), "allow_shrink": self.allow_shrink, "worst_case": self.worst_case,
                 "tp_maker": self.tp_maker, "positions": {k: v.to_dict() for k, v in self.positions.items()},
@@ -550,11 +568,19 @@ class FuturesLedgerV2:
             raise StorageError(f"desteklenmeyen defter şeması (schema_version={sv}, kind={d.get('kind')!r}) — fail-closed, dosya korunuyor")
         if sv < 2 or "wallet_balance" not in d:
             return cls.import_legacy_ledger(d, **overrides)
-        # JSON'da `null` yazabilir; ayrıca çağıran taraf (runtime risk profili) `None` geçebilir.
-        # Kayıtlı sayı, runtime profilin `None`'ı tarafından güvenle ezilir.
-        _mp = overrides.pop("max_positions", d.get("max_positions", 3))
-        max_pos = None if _mp is None else int(_mp)
-        led = cls(d.get("starting_equity", 0), max_positions=max_pos,
+        # ADET TAVANI: değer DAİMA integer'a normalize edilir; davranış ayrı bayrakta taşınır.
+        # `68b63f4`..`HEAD` arası bir çalışma `"max_positions": null` yazmış olabilir. O gösterim
+        # "tavan uygulanmaz" anlamına geliyordu → fail-safe olarak (3, enforce=False)'a çevrilir ve
+        # bir sonraki `save()` integer yazar (eski sürüm artık `int(None)` ile çökmez).
+        _mp = overrides.pop("max_positions", d.get("max_positions", DEFAULT_MAX_POSITIONS))
+        _enf = overrides.pop("enforce_position_cap", None)
+        if _mp is None:
+            _mp = DEFAULT_MAX_POSITIONS
+            if _enf is None:
+                _enf = False
+        if _enf is None:                       # kayıtlı bayrak; yoksa eski/muhafazakâr davranış (uygula)
+            _enf = bool(d.get("enforce_position_cap", True))
+        led = cls(d.get("starting_equity", 0), max_positions=int(_mp), enforce_position_cap=bool(_enf),
                   fees=FeeSchedule.from_dict(d["fees"]) if d.get("fees") else None,
                   slippage=SlippageModel.from_dict(d["slippage"]) if d.get("slippage") else None,
                   liq_params=LiquidationParams(**{k: v for k, v in (d.get("liq_params") or {}).items()
@@ -579,7 +605,7 @@ class FuturesLedgerV2:
     def import_legacy_ledger(cls, d: dict, **overrides) -> "FuturesLedgerV2":
         """paper_futures.FuturesLedger JSON'u (v1) → V2. Equity ve geçmiş aynen korunur."""
         starting = D(d.get("starting_equity", d.get("equity", 0)))
-        led = cls(starting, **{k: v for k, v in overrides.items() if k in ("max_positions", "fees", "slippage", "brackets",
+        led = cls(starting, **{k: v for k, v in overrides.items() if k in ("max_positions", "enforce_position_cap", "fees", "slippage", "brackets",
                                                                           "liq_params", "funding", "tax_policy", "tp1_fraction",
                                                                           "allow_shrink", "worst_case", "tp_maker")})
         led.wallet_balance = D(d.get("equity", starting))
@@ -634,6 +660,6 @@ class FuturesLedgerV2:
         return cls.from_dict(d, **kwargs)
 
 
-__all__ = ["FuturesLedgerV2", "R_OK", "R_ALREADY_OPEN", "R_MAX_POSITIONS", "R_ZERO_QTY", "R_MIN_QTY", "R_MAX_QTY", "R_MIN_NOTIONAL",
+__all__ = ["DEFAULT_MAX_POSITIONS", "FuturesLedgerV2", "R_OK", "R_ALREADY_OPEN", "R_MAX_POSITIONS", "R_ZERO_QTY", "R_MIN_QTY", "R_MAX_QTY", "R_MIN_NOTIONAL",
            "R_INSUFFICIENT_MARGIN", "R_LEVERAGE", "R_BAD_PRICE", "R_BAD_STOP", "EXIT_STOP", "EXIT_BE_STOP", "EXIT_TP1", "EXIT_TP2",
            "EXIT_LIQ", "EXIT_MANUAL"]

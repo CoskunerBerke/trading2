@@ -155,3 +155,53 @@ def test_v3_closed_trade_writes_frozen_obsidian_trade_note_once(tmp_path: Path, 
     eng.tour(do_scan=False, obsidian=True, charts=False)
     assert note.stat().st_mtime_ns == mtime
     assert eng.learner2.n_closed == 1
+
+
+def test_active_research_policy_blocks_new_entries_without_touching_open_positions(tmp_path: Path, monkeypatch):
+    """Aktif araştırma adayı YENİ girişi eler; açık pozisyonun stop/TP'sine ve çıkış yönetimine DOKUNMAZ."""
+    from datetime import timedelta
+
+    from tradingbot.core import utc_now
+    from tradingbot.learn.policy import CandidatePolicy
+    from tradingbot.learn.research_policy import ResearchGates, ResearchPolicyBook
+
+    eng = _engine(tmp_path, monkeypatch)
+    s0 = eng.tour(do_scan=False, obsidian=False, charts=False)     # baseline tur: aktif aday YOK
+    assert eng.research.active_policy() is None
+    assert s0["opened"] and eng.ledger2.positions, "test boş geçmemeli: baseline turda pozisyon açılmalı"
+    risk0 = json.loads((eng.cfg.state_path / "risk.json").read_text(encoding="utf-8"))["last_decisions"]
+    assert all(e.get("research_policy_id") is None and e.get("research_size_multiplier") == 1.0
+               for e in risk0), "aktif aday yokken davranış birebir aynı kalmalı"
+    before = {s: (p.stop, tuple(p.targets), p.qty, p.entry_avg) for s, p in eng.ledger2.positions.items()}
+    n_shadow_before = len(eng.shadow.trades)
+
+    # her girişi eleyen bir aday aktifleştir (yalnız FİLTRE; risk/kaldıraç/stop değişmez)
+    now = utc_now()
+    block_all = CandidatePolicy(policy_id="block_all", seed=7, min_p_win=0.90,
+                                rationale="test: bütün girişleri ele")
+    gates = ResearchGates(min_shadow_obs=1, min_active_obs=999, cooldown_hours=0.0)
+    book = ResearchPolicyBook(eng.cfg.state_path / "research_policy.json", gates)
+    book.propose(block_all, now=now)
+    book.record_offline("block_all", {"verdict": "SHADOW_CANDIDATE"}, now=now)
+    book.start_shadow("block_all", now=now)
+    book.observe("block_all", trade_id="seed", baseline_r=-1.0, candidate_r=0.0, allowed=False,
+                 size_multiplier=0.0, at=now)
+    assert book.maybe_activate(now=now + timedelta(hours=1)) == "block_all"
+    eng.research = book                                            # motor bu defteri kullansın
+
+    s = eng.tour(do_scan=False, obsidian=False, charts=False)
+    assert s["opened"] == [], "aktif araştırma adayı varken yeni pozisyon açılmamalı"
+    # AÇIK POZİSYONLAR AYNEN DURUYOR: stop, TP, miktar, giriş fiyatı değişmedi
+    after = {sym: (p.stop, tuple(p.targets), p.qty, p.entry_avg) for sym, p in eng.ledger2.positions.items()}
+    for sym, vals in before.items():
+        if sym in after:
+            assert after[sym] == vals, f"{sym}: açık pozisyon araştırma politikasından etkilendi"
+    # elenen girişler karşı-olgusal gölge olarak izleniyor
+    blocked = [t for t in eng.shadow.trades[n_shadow_before:]
+               if any("RESEARCH_POLICY_BLOCK" in r for r in t.reason_not_opened)]
+    if blocked:
+        assert all(t.id in book.pending for t in blocked)           # eşleşmiş gözlem beklemede
+        assert all(book.pending[t.id]["policy_id"] == "block_all" for t in blocked)
+    # risk günlüğüne aday kararı yazıldı; mod ve kill switch değişmedi
+    assert s["risk"]["killswitch"] == "ARMED"
+    assert eng.mode_state.mode.value == "PAPER"

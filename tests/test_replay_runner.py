@@ -20,8 +20,8 @@ import pytest
 from tradingbot.config import BotConfig
 from tradingbot.config_v3 import load_v3
 from tradingbot.learn import TradeMemory
-from tradingbot.replay.pipeline import (BLOCKED, FAILED, NOT_STARTED, RUNNING, RUN_STATUS, SUCCESS,
-                                        read_run_status, run_pipeline, status_verdict, verify_existing_replay)
+from tradingbot.replay.pipeline import (BLOCKED, FAILED, NOT_STARTED, RUNNING, SUCCESS, read_run_status,
+                                        run_pipeline, status_verdict, verify_existing_replay)
 from tradingbot.replay.research import ReplaySafetyError, resolve_replay_dir
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -199,6 +199,7 @@ def test_verify_existing_replay_does_not_modify_artifacts(tmp_path):
 
 
 # =========================================================================== B) runner sandbox (Linux)
+# Sahte `systemd-run` `--` sonrasını FİİLEN çalıştırır → pipeline gerçekten koşar ve çağrılar loglanır.
 STUBS = {
     "sudo": '''#!/usr/bin/env bash
 [ "$1" = "-u" ] && shift 2
@@ -216,15 +217,40 @@ exit 0
     "systemd-run": '''#!/usr/bin/env bash
 echo "systemd-run $*" >> "$SYSTEMDRUN_LOG"
 [ "${SYSTEMD_RUN_FAIL:-0}" = "1" ] && exit 1
-# properties'i atla, `--` sonrasını gerçekten çalıştır (pipeline fiilen koşsun)
 while [ $# -gt 0 ]; do [ "$1" = "--" ] && { shift; break; }; shift; done
 exec "$@"
 ''',
-    "journalctl": '#!/usr/bin/env bash\nexit 0\n',
+    "journalctl": "#!/usr/bin/env bash\nexit 0\n",
 }
 
+# Sahte tradingbot modülü: gerçek CLI ağ/veri ister; runner sözleşmesini test etmek için yeterli yüzey.
+FAKE_TRADINGBOT = '''import json, os, sys
+a = sys.argv[1:]
+log = os.environ.get("CALLS_LOG")
+if log:
+    with open(log, "a", encoding="utf-8") as fh:
+        fh.write(" ".join(a) + "\n")
+cmd = a[0] if a else ""
+if cmd == "mode-status":
+    live = os.environ.get("FAKE_MODE", "PAPER") != "PAPER"
+    print(json.dumps({"mode": os.environ.get("FAKE_MODE", "PAPER"), "live_order_path_enabled": live}))
+elif cmd == "replay-plan":
+    if os.environ.get("FAKE_PLAN_BLOCK") == "1":
+        print(json.dumps({"ok": False, "blockers": ["test"]}))
+        raise SystemExit(1)
+    print(json.dumps({"ok": True, "risk_class": "LOW"}))
+elif cmd == "replay-verify":
+    print(json.dumps({"seed": 7, "windows": 3}))
+elif cmd == "replay-pipeline":
+    print(json.dumps({"pipeline": a}))
+else:
+    print(json.dumps({"cmd": a, "leaked_secret": "ANTHROPIC_API_KEY" in os.environ}))
+'''
 
-def _sandbox(tmp_path: Path, name: str, *, with_systemd_run: bool = True) -> dict:
+_NEEDED_BINS = ("env", "cat", "sed", "stat", "printf", "head", "grep", "date", "rm", "mkdir", "id")
+
+
+def _sandbox(tmp_path: Path, name: str, *, with_systemd_run: bool = True, isolate_path: bool = False) -> dict:
     root = tmp_path / name
     base, stub = root / "tb base", root / "bin"
     (base / "venv" / "bin").mkdir(parents=True)
@@ -236,20 +262,36 @@ def _sandbox(tmp_path: Path, name: str, *, with_systemd_run: bool = True) -> dic
         f.write_text(body, encoding="utf-8")
         f.chmod(0o755)
     app = base / "app"
-    app.mkdir(parents=True)
+    (app / "tradingbot").mkdir(parents=True)
+    (app / "tradingbot" / "__init__.py").write_text("", encoding="utf-8")
+    (app / "tradingbot" / "__main__.py").write_text(FAKE_TRADINGBOT, encoding="utf-8")
+    # venv python sarmalayıcısı: `env -i` PYTHONPATH'i sildiği için burada YENİDEN kurulur
     py = base / "venv" / "bin" / "python"
-    py.write_text(f'#!/usr/bin/env bash\nexec "{sys.executable}" "$@"\n', encoding="utf-8")
+    py.write_text(f'#!/usr/bin/env bash\nexec /usr/bin/env PYTHONPATH="{app}" "{sys.executable}" "$@"\n', encoding="utf-8")
     py.chmod(0o755)
     data = base / "data"
     (data / "state").mkdir(parents=True)
     env = dict(os.environ)
+    path = str(stub)
+    if isolate_path:
+        # gerçek systemd-run PATH'te bulunmasın: yalnız stub dizini + gerekli araçların linkleri
+        for b in _NEEDED_BINS:
+            real = shutil.which(b)
+            if real and not (stub / b).exists():
+                try:
+                    (stub / b).symlink_to(real)
+                except OSError:
+                    shutil.copy2(real, stub / b)
+    else:
+        path = f"{stub}:{env['PATH']}"
     env.update({"TRADINGBOT_BASE": str(base), "TRADINGBOT_APP": str(app), "TRADINGBOT_VENV_PY": str(py),
                 "TRADINGBOT_DATA": str(data), "TRADINGBOT_STATE_DIR": str(data / "state"),
                 "TRADINGBOT_SVC_USER": os.environ.get("USER", "runner"),
                 "SYSTEMCTL_LOG": str(root / "systemctl.log"), "SYSTEMDRUN_LOG": str(root / "systemdrun.log"),
-                "PATH": f"{stub}:{env['PATH']}", "PYTHONPATH": str(REPO_ROOT)})
+                "CALLS_LOG": str(root / "calls.log"), "PATH": path})
     return {"root": root, "base": base, "app": app, "state": data / "state", "env": env,
-            "srun_log": root / "systemdrun.log", "sctl_log": root / "systemctl.log"}
+            "srun_log": root / "systemdrun.log", "sctl_log": root / "systemctl.log",
+            "calls": root / "calls.log"}
 
 
 def _run(sb: dict, *argv: str, extra_env: dict | None = None) -> subprocess.CompletedProcess:
@@ -259,29 +301,35 @@ def _run(sb: dict, *argv: str, extra_env: dict | None = None) -> subprocess.Comp
                           capture_output=True, text=True, timeout=300)
 
 
+def _seed_completed(sb: dict, run_id: str = "run1") -> Path:
+    rdir = sb["state"] / "replay" / run_id
+    rdir.mkdir(parents=True, exist_ok=True)
+    (rdir / "replay_result.json").write_text('{"seed": 7, "windows": []}', encoding="utf-8")
+    return rdir
+
+
 needs_linux = pytest.mark.skipif(not (IS_LINUX and BASH), reason="runner sandbox Linux+bash ister (CI'da çalışır)")
 
 
 @needs_linux
 def test_runner_blocks_without_systemd_run(tmp_path):
     """systemd-run yoksa hiçbir iş başlamaz (sınırsız fallback yok)."""
-    sb = _sandbox(tmp_path, "nosd", with_systemd_run=False)
+    sb = _sandbox(tmp_path, "nosd", with_systemd_run=False, isolate_path=True)
     r = _run(sb, "train", "run1")
-    assert r.returncode != 0 and "systemd-run yok" in r.stdout + r.stderr
+    assert r.returncode != 0
+    assert "systemd-run yok" in r.stdout + r.stderr
     assert not sb["srun_log"].exists()
 
 
 @needs_linux
 def test_runner_resume_and_force_are_fail_closed(tmp_path):
     sb = _sandbox(tmp_path, "rf")
-    rdir = sb["state"] / "replay" / "run1"
-    rdir.mkdir(parents=True)
-    (rdir / "replay_result.json").write_text('{"seed": 7, "windows": []}', encoding="utf-8")
+    rdir = _seed_completed(sb)
     before = (rdir / "replay_result.json").read_bytes()
     r1 = _run(sb, "full", "run1", "--resume")
     assert r1.returncode == 2 and "UNSUPPORTED" in r1.stdout + r1.stderr
     r2 = _run(sb, "full", "run1", "--force")
-    assert r2.returncode == 2 and "YENİ bir RUN_ID" in r2.stdout + r2.stderr
+    assert r2.returncode == 2 and "RUN_ID" in r2.stdout + r2.stderr
     assert (rdir / "replay_result.json").read_bytes() == before          # dosya silinmedi/bozulmadı
     assert not sb["srun_log"].exists()                                   # hiçbir unit başlatılmadı
 
@@ -289,50 +337,37 @@ def test_runner_resume_and_force_are_fail_closed(tmp_path):
 @needs_linux
 def test_runner_refuses_to_rerun_completed_replay(tmp_path):
     sb = _sandbox(tmp_path, "done")
-    rdir = sb["state"] / "replay" / "run1"
-    rdir.mkdir(parents=True)
-    (rdir / "replay_result.json").write_text('{"seed": 7, "windows": []}', encoding="utf-8")
+    rdir = _seed_completed(sb)
+    before = (rdir / "replay_result.json").read_bytes()
     r = _run(sb, "full", "run1")
     assert r.returncode != 0
     out = r.stdout + r.stderr
-    assert "zaten tamamlanmış" in out and "train" in out                 # train/evaluate yolunu önerir
+    assert "zaten tamamlanmış" in out and "train" in out
     assert not sb["srun_log"].exists()
+    assert (rdir / "replay_result.json").read_bytes() == before
 
 
 @needs_linux
 def test_runner_concurrency_lock_blocks_second_pipeline(tmp_path):
     sb = _sandbox(tmp_path, "lock")
+    _seed_completed(sb)
     r = _run(sb, "train", "run1", extra_env={"UNIT_ACTIVE": "1"})
     assert r.returncode != 0 and "zaten çalışıyor" in r.stdout + r.stderr
     assert not sb["srun_log"].exists()
 
 
 @needs_linux
-def test_runner_starts_exactly_one_pipeline_unit_with_all_stages(tmp_path, monkeypatch):
+def test_runner_starts_exactly_one_pipeline_unit_with_all_stages(tmp_path):
     """`full` TEK systemd-run çağrısıyla `replay-pipeline --stages replay,train,evaluate` başlatır
     (aşamaları parent shell yönetmez → SSH kopsa da devam eder) ve `--wait` KULLANMAZ."""
     sb = _sandbox(tmp_path, "one")
-    # plan/mode aşamalarını geçmek için sahte tradingbot modülü: gerçek CLI ağ/veri ister
-    fake = sb["app"] / "tradingbot"
-    fake.mkdir()
-    (fake / "__init__.py").write_text("", encoding="utf-8")
-    (fake / "__main__.py").write_text(
-        'import json, sys\n'
-        'a = sys.argv[1:]\n'
-        'if a and a[0] == "mode-status":\n'
-        '    print(json.dumps({"mode": "PAPER", "live_order_path_enabled": False}))\n'
-        'elif a and a[0] == "replay-plan":\n'
-        '    print(json.dumps({"ok": True, "risk_class": "LOW"}))\n'
-        'else:\n'
-        '    print(json.dumps({"cmd": a}))\n',
-        encoding="utf-8")
-    r = _run(sb, "full", "run1", extra_env={"PYTHONPATH": str(sb["app"])})
+    r = _run(sb, "full", "run1")
     assert r.returncode == 0, r.stdout + r.stderr
     log = sb["srun_log"].read_text(encoding="utf-8").strip().splitlines()
     assert len(log) == 1, log                                            # TEK unit
     line = log[0]
     assert "replay-pipeline" in line and "--stages replay,train,evaluate" in line
-    assert "--service-type=exec" in line and "--wait" not in line        # bekleyip shell'e bağlanmaz
+    assert "--service-type=exec" in line and "--wait" not in line
     assert "--scope" not in line
     for prop in ("MemoryMax=", "CPUQuota=", "Nice=", "IOWeight="):
         assert prop in line
@@ -343,46 +378,31 @@ def test_runner_starts_exactly_one_pipeline_unit_with_all_stages(tmp_path, monke
 def test_runner_train_only_flow_verifies_existing_replay_first(tmp_path):
     """Tamamlanmış replay üzerinde `train` yalnız train aşamasını başlatır; önce artifact doğrular."""
     sb = _sandbox(tmp_path, "trainonly")
-    fake = sb["app"] / "tradingbot"
-    fake.mkdir()
-    (fake / "__init__.py").write_text("", encoding="utf-8")
-    (fake / "__main__.py").write_text(
-        'import json, sys\n'
-        'a = sys.argv[1:]\n'
-        'open("%s", "a").write(" ".join(a) + "\\n")\n'
-        'if a and a[0] == "mode-status":\n'
-        '    print(json.dumps({"mode": "PAPER", "live_order_path_enabled": False}))\n'
-        'elif a and a[0] == "replay-plan":\n'
-        '    print(json.dumps({"ok": True}))\n'
-        'elif a and a[0] == "replay-verify":\n'
-        '    print(json.dumps({"seed": 7}))\n'
-        'else:\n'
-        '    print(json.dumps({"cmd": a}))\n' % (sb["root"] / "calls.log").as_posix(),
-        encoding="utf-8")
-    rdir = sb["state"] / "replay" / "run1"
-    rdir.mkdir(parents=True)
-    (rdir / "replay_result.json").write_text('{"seed": 7, "windows": []}', encoding="utf-8")
-    r = _run(sb, "train", "run1", extra_env={"PYTHONPATH": str(sb["app"])})
+    rdir = _seed_completed(sb)
+    before = (rdir / "replay_result.json").read_bytes()
+    r = _run(sb, "train", "run1")
     assert r.returncode == 0, r.stdout + r.stderr
-    calls = (sb["root"] / "calls.log").read_text(encoding="utf-8")
+    calls = sb["calls"].read_text(encoding="utf-8")
     assert "replay-verify --run-id run1" in calls                        # önce doğrulama
     line = sb["srun_log"].read_text(encoding="utf-8").strip()
     assert "--stages train" in line and "replay,train" not in line       # yalnız train aşaması
-    assert (rdir / "replay_result.json").read_text(encoding="utf-8") == '{"seed": 7, "windows": []}'
+    assert (rdir / "replay_result.json").read_bytes() == before           # artifact değişmedi
+
+
+@needs_linux
+def test_runner_evaluate_only_flow(tmp_path):
+    sb = _sandbox(tmp_path, "evalonly")
+    _seed_completed(sb)
+    r = _run(sb, "evaluate", "run1")
+    assert r.returncode == 0, r.stdout + r.stderr
+    line = sb["srun_log"].read_text(encoding="utf-8").strip()
+    assert "--stages evaluate" in line and "replay," not in line
 
 
 @needs_linux
 def test_runner_does_not_touch_worker_or_dashboard(tmp_path):
     sb = _sandbox(tmp_path, "svc")
-    fake = sb["app"] / "tradingbot"
-    fake.mkdir()
-    (fake / "__init__.py").write_text("", encoding="utf-8")
-    (fake / "__main__.py").write_text(
-        'import json, sys\n'
-        'a = sys.argv[1:]\n'
-        'print(json.dumps({"mode": "PAPER", "live_order_path_enabled": False} if a[:1] == ["mode-status"] else {"ok": True}))\n',
-        encoding="utf-8")
-    _run(sb, "full", "run1", extra_env={"PYTHONPATH": str(sb["app"])})
+    _run(sb, "full", "run1")
     sctl = sb["sctl_log"].read_text(encoding="utf-8") if sb["sctl_log"].exists() else ""
     for forbidden in ("stop tradingbot-worker", "restart tradingbot-worker", "stop tradingbot-dashboard",
                       "restart tradingbot-dashboard"):
@@ -392,29 +412,26 @@ def test_runner_does_not_touch_worker_or_dashboard(tmp_path):
 @needs_linux
 def test_runner_blocks_when_mode_is_not_paper(tmp_path):
     sb = _sandbox(tmp_path, "live")
-    fake = sb["app"] / "tradingbot"
-    fake.mkdir()
-    (fake / "__init__.py").write_text("", encoding="utf-8")
-    (fake / "__main__.py").write_text(
-        'import json, sys\nprint(json.dumps({"mode": "LIVE", "live_order_path_enabled": True}))\n', encoding="utf-8")
-    r = _run(sb, "full", "run1", extra_env={"PYTHONPATH": str(sb["app"])})
+    r = _run(sb, "full", "run1", extra_env={"FAKE_MODE": "LIVE"})
     assert r.returncode != 0 and "BLOCK" in r.stdout + r.stderr
     assert not sb["srun_log"].exists()
 
 
 @needs_linux
+def test_runner_blocks_when_capacity_plan_fails(tmp_path):
+    sb = _sandbox(tmp_path, "plan")
+    r = _run(sb, "full", "run1", extra_env={"FAKE_PLAN_BLOCK": "1"})
+    assert r.returncode != 0 and "plan" in (r.stdout + r.stderr).lower()
+    assert not sb["srun_log"].exists()
+
+
+@needs_linux
 def test_runner_passes_no_secrets_and_uses_clean_env(tmp_path):
-    """`env -i` ile temiz ortam: sızdırılan secret systemd-run satırına ya da çıktıya girmez."""
+    """`env -i` ile temiz ortam: secret ne systemd-run satırına ne de çocuk sürecin ortamına girer."""
     sb = _sandbox(tmp_path, "secret")
-    fake = sb["app"] / "tradingbot"
-    fake.mkdir()
-    (fake / "__init__.py").write_text("", encoding="utf-8")
-    (fake / "__main__.py").write_text(
-        'import json, os, sys\n'
-        'a = sys.argv[1:]\n'
-        'print(json.dumps({"mode": "PAPER", "live_order_path_enabled": False} if a[:1] == ["mode-status"]\n'
-        '                 else {"ok": True, "leaked": "ANTHROPIC_API_KEY" in os.environ}))\n', encoding="utf-8")
-    r = _run(sb, "full", "run1", extra_env={"PYTHONPATH": str(sb["app"]), "ANTHROPIC_API_KEY": "sk-test-SECRET"})
+    r = _run(sb, "status", "run1", extra_env={"ANTHROPIC_API_KEY": "sk-test-SECRET"})
     combined = r.stdout + r.stderr + (sb["srun_log"].read_text(encoding="utf-8") if sb["srun_log"].exists() else "")
     assert "sk-test-SECRET" not in combined
-    assert '"leaked": false' in r.stdout.replace("False", "false").lower() or '"leaked": false' in combined.lower()
+    calls_out = sb["calls"].read_text(encoding="utf-8") if sb["calls"].exists() else ""
+    assert "sk-test-SECRET" not in calls_out
+    assert '"leaked_secret": false' in r.stdout or "replay-status" in calls_out

@@ -292,8 +292,11 @@ def candidates_from_attribution(report: dict, *, seed: int = 7, max_candidates: 
                  max_n_dissent=(2.0 if lab == "DISSENT_ÇOK" else 0.0))
         elif cut == "consensus" and lab == "KONSENSÜS_ZAYIF":
             emit(f"Zayıf konsensüste negatif → konsensüs tabanı · {txt}", f, min_consensus=0.2)
+    # Genel beklenti eşik yükseltmesi de aynı istatistiksel kapıdan geçer: CI95 üst sınırı sıfırın
+    # altında olmalı. Gürültülü küçük örnekten eşik değiştirilmez.
     base = (report or {}).get("baseline") or {}
-    if base.get("expectancy_r") is not None and base["expectancy_r"] < 0 and int(base.get("n") or 0) >= min_samples:
+    if (base.get("ci95_high") is not None and base["ci95_high"] < 0
+            and int(base.get("n") or 0) >= min_samples):
         f = {"cut": "baseline", "label": "ALL", "n": base.get("n"), "expectancy_r": base.get("expectancy_r"),
              "ci95_low": base.get("ci95_low"), "delta_vs_baseline_r": 0.0}
         emit("Genel beklenti negatif → minimum beklenen net R eşiği yükseltiliyor", f, min_expected_net_r=0.10)

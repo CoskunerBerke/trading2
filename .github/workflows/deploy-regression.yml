@@ -95,14 +95,38 @@ jobs:
         run: /tmp/run.sh "test_feature_snapshot" tests/test_feature_snapshot.py -v --tb=short -rs
       - name: Train/serve paritesi + ajan eşlemesi + gerçek replay-call coverage
         run: /tmp/run.sh "test_prediction_parity" tests/test_prediction_parity.py -v --tb=short -rs
+      - name: UÇTAN UCA öğrenme döngüsü (senaryo → attribution → aday → OOS → araştırma → dashboard)
+        run: /tmp/run.sh "test_end_to_end_learning" tests/test_end_to_end_learning.py -v --tb=short -rs
       - name: Otomatik PAPER terfisi kapalı (regresyon kapısı)
         run: |
-          /tmp/run.sh "auto-promotion-disabled" tests/test_prediction_parity.py -v --tb=short \
-            -k "auto_promote or candidate_never_enters or sparse_memory or flag_before_calling"
+          /tmp/run.sh "auto-promotion-disabled" \
+            tests/test_prediction_parity.py tests/test_end_to_end_learning.py -v --tb=short \
+            -k "auto_promot or candidate_never_enters or sparse_memory or worker_loop_never or shipped_config or manual_promotion"
       - name: Model şeması uyuşmazlığı fail-closed (LearnerV2)
         run: /tmp/run.sh "test_learn" tests/test_learn.py -v --tb=short -rs
       - name: Politika walk-forward (fold-seçilmiş aday, OOS kırılımı)
         run: /tmp/run.sh "test_policy_eval" tests/test_policy_eval.py -v --tb=short -rs
+      - name: Araştırma katmanı güvenlik sözleşmesi (risk artıramaz, CHAMPION üretemez)
+        run: |
+          /tmp/run.sh "research-safety" tests/test_end_to_end_learning.py -v --tb=short \
+            -k "research_layer_cannot or rejected_offline or research_only_verdict or degrading or never_counted_twice"
+      - name: Config fail-closed + otomatik terfi yasağı
+        run: |
+          python - <<'EOS'
+          import io, sys, yaml
+          from tradingbot.config_v3 import ConfigError, load_v3
+          raw = yaml.safe_load(io.open("config.yaml", encoding="utf-8"))
+          assert raw["learning_v3"]["auto_promote_in_paper"] is False, "config.yaml otomatik terfiye izin veriyor"
+          assert load_v3(raw).learning_v3.auto_promote_in_paper is False
+          try:
+              load_v3(dict(raw, learning_v3=dict(raw["learning_v3"], auto_promote_in_paper=True)))
+          except ConfigError as exc:
+              assert "PAPER_AUTO_PROMOTION_FORBIDDEN" in str(exc), exc
+              print("OK: PAPER_AUTO_PROMOTION_FORBIDDEN fail-closed")
+              sys.exit(0)
+          print("HATA: auto_promote_in_paper=true reddedilmedi", file=sys.stderr)
+          sys.exit(1)
+          EOS
       - name: Replay araştırma hattı
         run: /tmp/run.sh "replay-research" tests/test_replay_research.py tests/test_replay_learning.py -v --tb=short -rs
       - name: Dashboard (telemetri uçları)

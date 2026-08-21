@@ -12,7 +12,7 @@ import statistics
 from pathlib import Path
 from typing import Any
 
-from ..core import atomic_write_json, iso, utc_now
+from ..core import atomic_write_json, iso, read_json, utc_now
 from ..learn.policy import CandidatePolicy, baseline_policy, generate_candidates, validate_policy
 from .research import ReplaySafetyError, _fold_rows, _r_metrics, iso_ms
 
@@ -119,8 +119,13 @@ def _paired_diff(rows: list[dict], base: CandidatePolicy, pick: CandidatePolicy)
 
 def evaluate_policies(cfg: Any, replay_dir: Path, rows: list[dict], bounds: list[dict], *,
                       seed: int = 7, max_candidates: int = 24, point_in_time: bool = False,
-                      survivorship_present: bool = True, min_test_trades: int = MIN_TEST_TRADES) -> dict:
-    """Fold bazlı: train+validation'da aday seç → test fold'unda uygula → baseline ile karşılaştır."""
+                      survivorship_present: bool = True, min_test_trades: int = MIN_TEST_TRADES,
+                      candidates: list[CandidatePolicy] | None = None) -> dict:
+    """Fold bazlı: train+validation'da aday seç → test fold'unda uygula → baseline ile karşılaştır.
+
+    `candidates` verilirse deterministik ızgara yerine BU liste değerlendirilir (kayıp analizinden
+    türetilmiş açıklanabilir adaylar için). Verilen adayların da sınırları yeniden doğrulanır.
+    """
     if len(bounds) < 2:
         raise ReplaySafetyError(f"politika değerlendirmesi için en az 2 fold gerekir: {len(bounds)}")
     prof = getattr(getattr(cfg, "v3", None), "risk_profiles", None)
@@ -131,7 +136,10 @@ def evaluate_policies(cfg: Any, replay_dir: Path, rows: list[dict], bounds: list
         max_lev = float(min(1.0, rp.futures_max_leverage))
     except Exception:  # noqa: BLE001 — profil okunamazsa en muhafazakâr tavan
         max_lev = 1.0
-    cands = generate_candidates(seed=seed, max_candidates=max_candidates, risk_profile_max_leverage=max_lev)
+    cands = (list(candidates) if candidates else
+             generate_candidates(seed=seed, max_candidates=max_candidates, risk_profile_max_leverage=max_lev))
+    if not cands:
+        raise ReplaySafetyError("değerlendirilecek aday politika yok")
     for c in cands:
         validate_policy(c, risk_profile_max_leverage=max_lev)
     base = baseline_policy(seed)
@@ -186,7 +194,27 @@ def evaluate_policies(cfg: Any, replay_dir: Path, rows: list[dict], bounds: list
     improved = sum(1 for f in scored_folds
                    if (f["candidate"]["expectancy_r"] or -9) > (f["baseline"]["expectancy_r"] or -9))
     consistency = round(improved / len(scored_folds), 4)
+    # --- veri bütünlüğü kapıları: gerçek satırlardan ölçülür (çağırana güvenilmez) ---
+    from ..learn.coverage import coverage_report as _coverage
+    cov = _coverage(rows, source="HISTORICAL_REPLAY")
+    # --- drawdown: aday baseline'dan belirgin şekilde daha derin çekilme üretemez ---
+    b_dd, c_dd = (b_m.get("max_dd_r") or 0.0), (c_m.get("max_dd_r") or 0.0)
+    dd_ok = bool(c_dd <= max(1.0, b_dd * 1.25 + 0.5))
+    # --- model kalibrasyonu (Brier/ECE/log loss) p_win modelinin yolunda ölçülür; varsa okunur ---
+    model_cal = None
+    try:
+        ev = read_json(Path(replay_dir) / "evaluation.json", default=None)
+        if isinstance(ev, dict):
+            agg = ev.get("aggregate_calibration") or ev.get("calibration") or {}
+            model_cal = {k: agg.get(k) for k in ("brier", "ece", "log_loss", "n") if k in agg} or None
+    except Exception:  # noqa: BLE001 — kalibrasyon raporu yoksa politika değerlendirmesi durmaz
+        model_cal = None
     gates = {
+        "feature_coverage_valid": bool(cov["ok"]),
+        "no_timestamp_leakage": bool(cov["invalid_timestamps"] == 0),
+        "join_intact": bool(cov["join"]["broken"] == 0),
+        "policy_bounds_valid": True,          # yukarıda her aday için validate_policy çağrıldı
+        "drawdown_acceptable": dd_ok,
         "enough_oos": bool(c_m["n"] >= min_test_trades),
         "candidate_positive": bool(c_m["expectancy_r"] is not None and c_m["expectancy_r"] > 0),
         "beats_baseline": bool(c_m["expectancy_r"] is not None and b_m["expectancy_r"] is not None
@@ -220,6 +248,12 @@ def evaluate_policies(cfg: Any, replay_dir: Path, rows: list[dict], bounds: list
         "breakdown_scope": ("yalniz OOS test fold'lari; aday = her fold'un kendi validation'inda sectigi "
                             "politika (train/validation ve izgara ilk adayi rapora girmez)"),
         "oos_test_rows": len(test_ids), "duplicate_test_rows": duplicate_test_rows,
+        "coverage": {k: cov[k] for k in ("ok", "code", "required_available_pct", "overall_available_pct",
+                                         "prediction_available_pct", "nonconstant_ratio_pct",
+                                         "invalid_timestamps", "join")},
+        "model_calibration": model_cal,
+        "model_calibration_note": ("Brier/ECE/log_loss p_win MODELİNİN yolunda ölçülür "
+                                   "(`replay-evaluate` → evaluation.json); politika yolu R tabanlıdır."),
         "gates": gates, "failed_gates": sorted(k for k, v in gates.items() if not v),
         "verdict": verdict,
         "method": {"selection": "yalnız train'in son %30'u (iç validation); test fold'u seçime GİRMEZ",

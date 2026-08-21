@@ -86,6 +86,52 @@ Backup'lar: `backups/hourly/tradingbot-hourly-20260818T205349Z…20260819T072955
 - **Kapasite/VPS (docs/VPS_PHASE8_PLAN.md):** ölçülen yoğunluklar ham ~45 B/satır, feature ~468 B/satır (×10.3), replay RAM ~3.7 KB/bar (4h evren 1.5 GB, 1h 5.9 GB → stride); 1. yıl ayak izi 12–17 GB < 45 GB → **öneri: OVH VPS-2 (4 vCore/8 GB/75 GB NVMe), Ubuntu 24.04, AB lokasyonu (~10–14 €/ay)**; satın alma sonrası-deploy öncesi salt-okunur Binance erişim testi. Satın alma YAPILMADI; kullanıcı onayı bekleniyor.
 - F00004/F00005 el sürülmedi (tek fill, aynı ID); worker bu fazda hiç başlatılmadı; gerçek emir 0 · LIVE 0 · TESTNET 0 · LLM 0.
 
+## Phase 10c — Öğrenme döngüsü uçtan uca (kaynak; VPS'te çalıştırılmadı)
+Kararın nedensel bağlamını dondur → sonucu aynı kayda bağla → neden kaybedildiğini yapılandırılmış
+biçimde çıkar → sınırlı ve açıklanabilir aday üret → OOS'ta doğrula → PAPER'da karşı-olgusal karşılaştır
+→ kötüleşirse geri dön. Her adım çalışan koddur ve `tests/test_end_to_end_learning.py` bu zinciri
+gerçek modüllerle uçtan uca sürer.
+
+- **Otomatik terfi kapatıldı (blocker).** `config.yaml` `auto_promote_in_paper: false`; `validate_v3`
+  `true` değerini **`PAPER_AUTO_PROMOTION_FORBIDDEN`** ile fail-closed reddediyor. `TradingEngineV3`
+  döngüsünden otomatik `maybe_promote()` çağrısı **tamamen kaldırıldı** — eğitim sürüyor, yeni model
+  yalnız CANDIDATE kalıyor. `maybe_promote` yalnız açık manuel CLI yolunda (`--promote --operator <ad>`).
+- **`learn/attribution.py` (v2).** 13 kayıp sınıfı (`WRONG_DIRECTION`, `LATE_ENTRY`,
+  `VOLATILITY_MISMATCH`, `TREND_MISMATCH`, `WEAK_MOMENTUM`, `LOW_LIQUIDITY`, `COST_DRAG`,
+  `FUNDING_DRAG`, `PATTERN_NEGATIVE`, `AGENT_DISAGREEMENT`, `STOP_TOO_CLOSE_ASSOCIATION`,
+  `TIME_EXIT_NO_EDGE`, `INSUFFICIENT_EVIDENCE`) + her kayıp işlem için kanıt, koşullu istatistik ve
+  baseline farkı; 16 kesitte toplu rapor. **Yön ancak CI95 sıfırı kesmiyorsa** verilir — gürültüden
+  aday üretilmesini engelleyen kapı budur.
+- **`learn/policy.py`.** Kayıptan türeyen sınırlı filtreler: `max_vol_regime`, `max_spread_pct`,
+  `min_pattern_ci_low`, `max_n_dissent`, `high_vol_size_multiplier`, `side_regime_veto`.
+  `candidates_from_attribution()` her adayı **en fazla 2 parametre** değiştirerek, gerekçesi ve kaynak
+  bulgusuyla üretir. Politika kimliği = davranış (köken alanları hash'e girmez).
+- **`learn/research_policy.py` (yeni).** `PROPOSED → OFFLINE_VALIDATED → SHADOW →
+  PAPER_RESEARCH_ACTIVE → RETIRED / MANUAL_REVIEW_READY`. `REJECTED` doğrudan RETIRED;
+  `RESEARCH_ONLY` asla aktifleşemez; `CHAMPION/LIVE/TESTNET/PROMOTED` durumları kod düzeyinde
+  üretilemez. Aktifleşme: yeterli eşleşmiş gözlem + cooldown + pozitif fark + tek aktif aday.
+  Kötüleşirse otomatik baseline'a dönülür. Gözlemler `trade_id` ile tekil (çift sayım yok).
+- **`engine_v3` entegrasyonu.** Araştırma politikası risk/chief onayından **sonra** çalışır ve yalnız
+  daraltır. Elediği giriş karşı-olgusal gölge işlemle izlenir; gölge etiketlenince eşleşmiş gözlem
+  yazılır. İzin verdiği işlem kapanınca baseline (tam boyut) ve candidate (çarpanlı) birlikte
+  kaydedilir. **Aktif aday yoksa davranış birebir aynı.** Online öğrenme temposu: asgari yeni kapanış
+  (`retrain_min_new_closed`) + cooldown (`retrain_cooldown_hours`).
+- **Walk-forward kapıları** madde 9'un tam listesine tamamlandı: `feature_coverage_valid`,
+  `no_timestamp_leakage`, `join_intact`, `policy_bounds_valid`, `drawdown_acceptable`,
+  `no_duplicate_test_rows` + mevcutlar. Model kalibrasyonu (Brier/ECE/log loss) `replay-evaluate`
+  yolunda ölçülür; politika raporu varsa okur, yoksa nerede ölçüldüğünü açıkça yazar.
+- **Gözlemlenebilirlik.** `/metrics`: `tradingbot_research_policy_active`,
+  `tradingbot_research_observations`, `tradingbot_research_delta_r`,
+  `tradingbot_auto_promotion_enabled` (her zaman 0). `/health` ve `/api/overview` aktif adayı,
+  gerekçesini, değiştirdiği parametreleri, eşleşmiş gözlem sayısını ve emeklilik nedenini gösterir.
+- **Yeni CLI:** `research-status` (salt-okunur durum), `policy-from-losses` (kayıp analizinden
+  açıklanabilir aday üretimi; yalnız replay klasörüne yazar).
+- **Uçtan uca test senaryosu.** `SHORT + HIGH_VOL + negatif pattern` sistematik zarar, `LONG +
+  NORMAL_VOL + pozitif pattern` kâr. Yüksek volatilite **gerçekten oynak barlardan** gelir (alan elle
+  yazılmaz), pattern güveni gerçek `patterns/engine.py::query` şeklinden okunur. Gürültü kasten
+  bırakılmıştır (~%11 tesadüfi kazanç / ~%14 tesadüfi kayıp). Sistem kombinasyonu veriden bulur,
+  `side_regime_veto=["SHORT|HIGH_VOL"]` adayını üretir ve aday OOS'ta baseline'ı geçer.
+
 ## Phase 10b — Denetim düzeltmeleri: gerçek eşleme + train/serve paritesi (kaynak; VPS'te çalıştırılmadı)
 `ecc532b` üzerinde yapılan bağımsız kaynak denetimi dört blocker buldu. Hepsi düzeltildi; her biri
 gerçek çağrı yolunu süren bir testle korunuyor (`tests/test_prediction_parity.py`).

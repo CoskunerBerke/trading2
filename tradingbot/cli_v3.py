@@ -591,8 +591,61 @@ def cmd_loss_attribution(cfg: BotConfig, args) -> int:
         return 2
     rep = attribution_report(rows, min_bucket=int(getattr(args, "min_bucket", 8) or 8))
     atomic_write_json(rdir / "loss_attribution.json", rep, indent=1)
-    _p({k: v for k, v in rep.items() if k != "cuts"} | {"cuts": {k: len(v) for k, v in rep["cuts"].items()}})
+    # Konsola SINIRLI özet: tam rapor (işlem bazlı analiz dahil) dosyada.
+    _p({k: v for k, v in rep.items() if k not in ("cuts", "trades", "findings", "negative_findings")}
+       | {"cuts": {k: len(v) for k, v in rep["cuts"].items()},
+          "n_losing_trades": len(rep["trades"]),
+          "top_negative_findings": [f["text"] for f in rep["negative_findings"][:8]],
+          "written": str(rdir / "loss_attribution.json")})
     return 0
+
+
+def cmd_research_status(cfg: BotConfig, args) -> int:
+    """PAPER araştırma politikası durumu (salt-okunur). Otomatik terfi HER ZAMAN kapalıdır."""
+    from .learn.research_policy import ResearchPolicyBook
+    book = ResearchPolicyBook(cfg.state_path / "research_policy.json")
+    d = book.to_dict()
+    if getattr(args, "full", False):
+        _p(d)
+    else:
+        _p({k: v for k, v in d.items() if k not in ("records", "pending")}
+           | {"records": [{"policy_id": r["policy_id"], "state": r["state"],
+                           "changed_params": r["changed_params"], "rationale": r["rationale"][:120],
+                           "offline_verdict": r["offline_verdict"], "n_obs": r["stats"]["n_obs"],
+                           "delta_r": r["stats"]["delta_r"], "retired_reason": r["retired_reason"][:120]}
+                          for r in d["records"]]})
+    return 0
+
+
+def cmd_policy_from_losses(cfg: BotConfig, args) -> int:
+    """Kayıp analizinden AÇIKLANABİLİR aday politikalar üretir (yalnız replay klasörüne yazar)."""
+    from .core import atomic_write_json
+    from .learn.attribution import attribution_report
+    from .learn.policy import candidates_from_attribution, validate_policy
+    from .replay.research import ReplaySafetyError
+    from .risk import resolve_profile
+    try:
+        rdir, rows = _replay_rows(cfg, args.run_id, getattr(args, "state_dir", None))
+    except ReplaySafetyError as exc:
+        print(f"BLOCK: {exc}")
+        return 2
+    rp = resolve_profile(cfg.v3.risk_profiles.profile, cfg.v3.risk_profiles.overrides,
+                         i_understand=cfg.v3.risk_profiles.i_understand)
+    max_lev = float(min(1.0, rp.futures_max_leverage))
+    rep = attribution_report(rows, min_bucket=int(getattr(args, "min_bucket", 8) or 8))
+    cands = candidates_from_attribution(rep, seed=int(args.seed), max_candidates=int(args.max_candidates),
+                                        risk_profile_max_leverage=max_lev)
+    for c in cands:
+        validate_policy(c, risk_profile_max_leverage=max_lev, risk_profile_risk_pct=rp.risk_per_trade_pct)
+    doc = {"schema": "policy_candidates_from_losses_v1", "seed": int(args.seed), "n": len(cands),
+           "risk_profile_max_leverage": max_lev,
+           "source_negative_findings": [f["text"] for f in rep["negative_findings"][:20]],
+           "candidates": [c.to_dict() for c in cands]}
+    atomic_write_json(rdir / "policy_candidates_from_losses.json", doc, indent=1)
+    _p({"n": len(cands), "written": str(rdir / "policy_candidates_from_losses.json"),
+        "candidates": [{"policy_id": c.policy_id, "changed_params": c.changed_params(),
+                        "rationale": c.rationale} for c in cands]})
+    return 0 if cands else 1
 
 
 def cmd_policy_candidates(cfg: BotConfig, args) -> int:
@@ -939,6 +992,12 @@ def register(sub: argparse._SubParsersAction) -> None:
     s = sub.add_parser("loss-attribution", help="Zarar/kâr bağlamı raporu (ilişki; nedensellik iddiası yok)")
     s.add_argument("--run-id", dest="run_id", required=True); s.add_argument("--state-dir", dest="state_dir", default=None)
     s.add_argument("--min-bucket", dest="min_bucket", type=int, default=8); s.set_defaults(fn=cmd_loss_attribution)
+    s = sub.add_parser("research-status", help="PAPER araştırma politikası durumu (salt-okunur; terfi her zaman manuel)")
+    s.add_argument("--full", action="store_true"); s.set_defaults(fn=cmd_research_status)
+    s = sub.add_parser("policy-from-losses", help="Kayıp analizinden açıklanabilir aday politikalar üret")
+    s.add_argument("--run-id", dest="run_id", required=True); s.add_argument("--state-dir", dest="state_dir", default=None)
+    s.add_argument("--seed", type=int, default=7); s.add_argument("--max-candidates", dest="max_candidates", type=int, default=12)
+    s.add_argument("--min-bucket", dest="min_bucket", type=int, default=8); s.set_defaults(fn=cmd_policy_from_losses)
     s = sub.add_parser("policy-candidates", help="Sınırlandırılmış aday politika üretimi (deterministik)")
     s.add_argument("--run-id", dest="run_id", required=True); s.add_argument("--state-dir", dest="state_dir", default=None)
     s.add_argument("--seed", type=int, default=7); s.add_argument("--max-candidates", dest="max_candidates", type=int, default=24)

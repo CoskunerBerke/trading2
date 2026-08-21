@@ -32,14 +32,16 @@ VOL_LABELS = ("LOW_VOL", "NORMAL", "HIGH_VOL", "EXTREME")
 def _stats(rs: list[float], *, min_bucket: int = MIN_BUCKET) -> dict:
     n = len(rs)
     if not n:
-        return {"n": 0, "expectancy_r": None, "ci95_low": None, "win_rate": None,
+        return {"n": 0, "expectancy_r": None, "ci95_low": None, "ci95_high": None, "win_rate": None,
                 "profit_factor": None, "sufficient": False}
     m = sum(rs) / n
     sd = math.sqrt(sum((x - m) ** 2 for x in rs) / n) if n > 1 else 0.0
-    ci = m - 1.96 * sd / math.sqrt(n) if n > 1 else None
+    half = 1.96 * sd / math.sqrt(n) if n > 1 else None
     wins = sum(x for x in rs if x > 0)
     losses = abs(sum(x for x in rs if x < 0))
-    return {"n": n, "expectancy_r": round(m, 4), "ci95_low": (round(ci, 4) if ci is not None else None),
+    return {"n": n, "expectancy_r": round(m, 4),
+            "ci95_low": (round(m - half, 4) if half is not None else None),
+            "ci95_high": (round(m + half, 4) if half is not None else None),
             "win_rate": round(sum(1 for x in rs if x > 0) / n, 4),
             "profit_factor": (round(wins / losses, 4) if losses > 0 else None),
             "sufficient": n >= min_bucket}
@@ -215,8 +217,12 @@ def attribution_report(rows: list[dict], *, min_bucket: int = MIN_BUCKET) -> dic
             if not st["sufficient"] or st["expectancy_r"] is None:
                 continue
             delta = round(st["expectancy_r"] - base_m, 4)
-            direction = ("NEGATIF" if (st["ci95_low"] is not None and st["ci95_low"] < 0 and st["expectancy_r"] < 0)
-                         else ("POZITIF" if (st["ci95_low"] is not None and st["ci95_low"] > 0) else "BELIRSIZ"))
+            # SİMETRİK ve İSTATİSTİKSEL tanım: yön ancak güven aralığı SIFIRI KESMİYORSA verilir.
+            # Aksi halde (ör. n=10, geniş CI) bulgu "BELİRSİZ" kalır ve politika üretimine GİRMEZ —
+            # gürültüden aday üretilmesini engelleyen kapı budur.
+            lo, hi = st["ci95_low"], st["ci95_high"]
+            direction = ("NEGATIF" if (hi is not None and hi < 0)
+                         else ("POZITIF" if (lo is not None and lo > 0) else "BELIRSIZ"))
             findings.append({"cut": cut, "label": lab, "direction": direction, **st,
                              "delta_vs_baseline_r": delta,
                              "text": (f"{cut}={lab}: beklenti {st['expectancy_r']:+.3f}R "

@@ -14,13 +14,19 @@ from tradingbot.learn.snapshot import build_snapshot
 BAR_MS = 86_400_000
 
 
-def synth_bars(n: int = 160, *, end_ms: int, seed: int = 3, drift: float = 0.05, bar_ms: int = BAR_MS) -> pd.DataFrame:
-    """Deterministik sentetik mumlar (rastgelelik yok; sinüs + drift)."""
+def synth_bars(n: int = 160, *, end_ms: int, seed: int = 3, drift: float = 0.05, bar_ms: int = BAR_MS,
+               hl_pct: float = 0.012) -> pd.DataFrame:
+    """Deterministik sentetik mumlar (rastgelelik yok; sinüs + drift).
+
+    `hl_pct`: bar içi yüksek/düşük genişliği. ATR% ve dolayısıyla `vol_regime_code` bunun üzerinden
+    kontrol edilir — uçtan uca testte "yüksek volatilite" senaryosu böyle kurulur (sahte alan değil,
+    gerçekten oynak barlar).
+    """
     ts = [end_ms - (n - 1 - i) * bar_ms for i in range(n)]
     close = [100.0 + drift * i + 6.0 * math.sin((i + seed) / 9.0) + 2.0 * math.sin((i + seed) / 3.3) for i in range(n)]
     return pd.DataFrame({
-        "timestamp": ts, "open": [c * 0.999 for c in close],
-        "high": [c * 1.012 for c in close], "low": [c * 0.988 for c in close], "close": close,
+        "timestamp": ts, "open": [c * (1 - hl_pct / 12) for c in close],
+        "high": [c * (1 + hl_pct) for c in close], "low": [c * (1 - hl_pct) for c in close], "close": close,
         "volume": [1000.0 + 40.0 * math.sin((i + seed) / 5.0) + i for i in range(n)],
     })
 

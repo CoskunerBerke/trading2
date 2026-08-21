@@ -196,11 +196,24 @@ class TradePlanV3:
         e = self.entry
         return abs(e - self.stop) / e * 100.0 if e and self.stop else 0.0
 
+    @property
+    def rr(self) -> float | None:
+        """Risk/odul: |tp1 - entry| / |entry - stop|. Entry/stop/hedef yoksa None -- sahte 0 URETMEZ
+        (FeatureSnapshotV3 `rr` zorunlu alani buradan beslenir; eksikse `miss_` ile isaretlenir)."""
+        e = self.entry
+        if not e or not self.stop or not self.targets:
+            return None
+        risk = abs(e - self.stop)
+        if risk <= 0:
+            return None
+        return round(abs(float(self.targets[0]) - e) / risk, 4)
+
     def to_dict(self) -> dict:
         d = asdict(self)
         d["entry_zone"] = list(self.entry_zone)
         d["entry"] = self.entry
         d["stop_pct"] = round(self.stop_pct, 4)
+        d["rr"] = self.rr
         return d
 
 
@@ -246,12 +259,16 @@ class CoinHeadDecision:
     specialist_reports: list[SpecialistReport] = field(default_factory=list)
     consensus_score: float = 0.0
     consensus_confidence: float = 0.0
+    # Karar akisinda ZATEN hesaplanmis benzer-olay kaniti: {"LONG": query_result, "SHORT": query_result}.
+    # Snapshot bunu tekrar sorgulamadan kullanir. `to_dict()` disinda tutulur (buyuk payload).
+    pattern_evidence: dict[str, Any] | None = None
     net_exposure_after: dict[str, float] = field(default_factory=dict)
     generated_at: str = ""
     latency_ms: float = 0.0
 
     def to_dict(self, *, include_reports: bool = True) -> dict:
-        d = {k: v for k, v in self.__dict__.items() if k not in ("spot_plan", "futures_plan", "factor_scores", "specialist_reports")}
+        d = {k: v for k, v in self.__dict__.items()
+             if k not in ("spot_plan", "futures_plan", "factor_scores", "specialist_reports", "pattern_evidence")}
         d = _clean(d)
         d["entry_zone"] = list(self.entry_zone)
         d["spot_plan"] = self.spot_plan.to_dict() if self.spot_plan else None

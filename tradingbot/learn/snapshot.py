@@ -50,8 +50,12 @@ MARKET_FIELDS = [("btc_ret_short", False), ("btc_ret_mid", False), ("btc_regime_
                  ("corr_btc", False), ("beta_btc", False), ("breadth", False), ("risk_on", False),
                  ("cluster_exposure", False), ("portfolio_dir", False), ("portfolio_notional", False),
                  ("portfolio_risk_pct", False)]
+# GERCEK kaynak: `tradingbot/coinhead/factors.py::FACTOR_GROUPS`. `CoinHeadDecision.factor_scores`
+# tam olarak bu adlarla gelir. Onceden burada legacy ajan adlari (market/candles/levels/analog/edge)
+# vardi; hicbiri factor_group olarak uretilmedigi icin ajan alanlari kalici bos kaliyordu.
+# `test_agent_names_match_real_factor_groups` bu esitligi kalici olarak korur.
 AGENT_NAMES = ("trend", "momentum", "volatility", "volume_flow", "structure_levels", "liquidity",
-               "market", "candles", "levels", "analog", "edge", "historical_edge")
+               "derivatives", "correlation", "historical_edge", "catalyst", "risk")
 DECISION_FIELDS = ([(f"agent_bias_{a}", False) for a in AGENT_NAMES] +
                    [(f"agent_conf_{a}", False) for a in AGENT_NAMES] +
                    [("consensus_score", True), ("consensus_conf", True), ("n_dissent", True), ("n_vetoes", True),
@@ -71,6 +75,67 @@ ALL_FIELDS: list[tuple[str, bool]] = (TREND_FIELDS + MOMENTUM_FIELDS + VOL_FIELD
 FIELD_NAMES: list[str] = [n for n, _ in ALL_FIELDS]
 REQUIRED_FIELDS: list[str] = [n for n, req in ALL_FIELDS if req]
 MISS_PREFIX = "miss_"
+
+# --------------------------------------------------------------------------- prediction / audit ayrimi
+# `prediction_features_v3`: p_win modelinin HEM egitim HEM cikarim yolunda kullandigi alanlar.
+# Kabul kosullari (ucu birden):
+#   1) `LearnerV2.predict` cagrisindan ONCE mevcut (nedensel),
+#   2) replay ve canli PAPER yollarinda AYNI anlamda uretilebilir,
+#   3) prediction ciktisina bagli DEGIL (dairesel sizinti yok).
+# Asagidaki alanlar bu kosullari saglamadigi icin modele GIRMEZ; yalniz attribution/policy/rapor icin
+# saklanir. Gerekceler tek tek yazilidir - bu liste sessizce buyutulmemelidir.
+AUDIT_ONLY_FIELDS: dict[str, str] = {
+    # (1) olcek bagimli ham seviyeler: sembol/donem arasi karsilastirilamaz, normalize turevleri modelde
+    "close": "ham fiyat seviyesi - px_vs_ma*/ret_* normalize turevleri kullanilir",
+    "ma25": "ham seviye - px_vs_ma25_pct/ma25_slope_pct kullanilir",
+    "ma99": "ham seviye - px_vs_ma99_pct/ma99_slope_pct kullanilir",
+    "atr": "ham seviye - atr_pct kullanilir",
+    "volume": "ham hacim - volume_z/volume_sma_ratio kullanilir",
+    "macd": "ham fiyat olceginde - momentum_dir/roc_* kullanilir",
+    "macd_signal": "builder tarafindan uretilmiyor (sema-only)",
+    "macd_hist": "builder tarafindan uretilmiyor (sema-only)",
+    "entry": "ham fiyat seviyesi - stop_dist_pct/tp*_dist_pct kullanilir",
+    "notional": "hesap buyuklugune bagli - replay/canli arasinda kiyaslanamaz",
+    "margin": "hesap buyuklugune bagli - replay/canli arasinda kiyaslanamaz",
+    # (2) DAIRESEL: prediction ciktisinin kendisi
+    "p_win_prior": "DAIRESEL - canli yolda `d.p_win` model ciktisiyla ezilir; girdi olamaz",
+    # (3) prediction anindan SONRA olusur
+    "risk_allowed": "risk degerlendirmesi p_win'den SONRA calisir",
+    # (4) hicbir yol tarafindan doldurulmuyor: sabit-eksik gurultu olarak modele sokulmaz
+    "btc_regime_code": "hicbir cagri yeri doldurmuyor - sabit eksik",
+    "breadth": "hicbir cagri yeri doldurmuyor - sabit eksik",
+    "risk_on": "hicbir cagri yeri doldurmuyor - sabit eksik",
+    "cluster_exposure": "hicbir cagri yeri doldurmuyor - sabit eksik",
+    "portfolio_dir": "hicbir cagri yeri doldurmuyor - sabit eksik",
+    "portfolio_notional": "hicbir cagri yeri doldurmuyor - sabit eksik",
+    "portfolio_risk_pct": "hicbir cagri yeri doldurmuyor - sabit eksik",
+    "open_risk_pct": "hicbir cagri yeri doldurmuyor - sabit eksik",
+    "drawdown_pct": "hicbir cagri yeri doldurmuyor - sabit eksik",
+    "pnl_today_r": "hicbir cagri yeri doldurmuyor - sabit eksik",
+    "pnl_week_r": "hicbir cagri yeri doldurmuyor - sabit eksik",
+    "long_exposure": "hicbir cagri yeri doldurmuyor - sabit eksik",
+    "short_exposure": "hicbir cagri yeri doldurmuyor - sabit eksik",
+}
+PREDICTION_FIELDS: list[tuple[str, bool]] = [(n, r) for n, r in ALL_FIELDS if n not in AUDIT_ONLY_FIELDS]
+PREDICTION_FIELD_NAMES: list[str] = [n for n, _ in PREDICTION_FIELDS]
+
+PREDICTION_SCHEMA_ID = "prediction_features_v3"
+# Eksik alan sozlesmesi: sayisal vektorde notr 0.0 ile doldurulur ve `miss_<ad>` gostergesi 1.0 olur.
+# Model bu gostergeyi GORUR; "eksik" ile "gercek 0" ayrimi boylece egitime tasinir.
+IMPUTATION_CONTRACT = "missing -> 0.0 (neutral) + miss_<field> = 1.0"
+
+
+def prediction_feature_names() -> list[str]:
+    """p_win modelinin girdi sirasi (KESIN, deterministik): alanlar + opsiyonel alanlarin miss_ gostergeleri."""
+    return PREDICTION_FIELD_NAMES + [MISS_PREFIX + n for n, req in PREDICTION_FIELDS if not req]
+
+
+def prediction_schema_hash() -> str:
+    """Sema parmak izi: ad sirasi + surum + imputasyon sozlesmesi. Serve tarafinda model artifact'iyle
+    karsilastirilir; uyusmazsa model KULLANILMAZ (fail-closed, baseline/prior'a donulur)."""
+    payload = {"schema_id": PREDICTION_SCHEMA_ID, "feature_version": SNAPSHOT_VERSION,
+               "names": prediction_feature_names(), "imputation": IMPUTATION_CONTRACT}
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
 VOL_REGIMES = ("LOW_VOL", "NORMAL", "HIGH_VOL", "EXTREME")
 BTC_REGIMES = ("RISK_OFF", "NEUTRAL", "RISK_ON")
@@ -138,12 +203,29 @@ class FeatureSnapshotV3:
                 "ratio": round((total - len(self.missing)) / total, 4) if total else 0.0}
 
     def vector(self) -> dict[str, float]:
-        """Model girdisi: alanlar + eksiklik göstergeleri (eksik = nötr imputasyon + gösterge 1)."""
+        """TAM vektor (prediction + audit): alanlar + eksiklik gostergeleri. Rapor/attribution icindir;
+        p_win modeli bunu DEGIL `prediction_vector()`'u kullanir."""
         out = {n: float(self.values.get(n, 0.0)) for n in FIELD_NAMES}
         for n, req in ALL_FIELDS:
             if not req:
                 out[MISS_PREFIX + n] = 1.0 if n in self.missing else 0.0
         return out
+
+    def prediction_vector(self) -> dict[str, float]:
+        """p_win modelinin girdisi - egitim ve cikarim yollari BU fonksiyonu cagirir (train/serve paritesi).
+        Audit-only ve dairesel alanlar (bkz. `AUDIT_ONLY_FIELDS`) disarida kalir."""
+        out = {n: float(self.values.get(n, 0.0)) for n in PREDICTION_FIELD_NAMES}
+        for n, req in PREDICTION_FIELDS:
+            if not req:
+                out[MISS_PREFIX + n] = 1.0 if n in self.missing else 0.0
+        return out
+
+    @property
+    def prediction_availability(self) -> dict[str, float]:
+        total = len(PREDICTION_FIELD_NAMES)
+        miss = sum(1 for n in PREDICTION_FIELD_NAMES if n in self.missing)
+        return {"present": total - miss, "total": total,
+                "ratio": round((total - miss) / total, 4) if total else 0.0}
 
     def payload(self) -> dict:
         """Hash'e giren kanonik gövde (telemetri/zaman damgası dışı alanlar hariç tutulmaz: karar anı sabittir)."""
@@ -457,11 +539,79 @@ def build_snapshot(*, symbol: str, market_type: str, timeframe: str, side: str, 
         model_version=model_version, pattern_version=pattern_version, values=v, missing=miss)
 
 
+def prediction_vector_from_row(row: dict) -> dict[str, float] | None:
+    """Kayitli hafiza satirindan p_win egitim vektoru. v3 snapshot yoksa None (satir egitime GIRMEZ).
+
+    Egitim yolu bunu, canli cikarim yolu `FeatureSnapshotV3.prediction_vector()`'u cagirir; ikisi de
+    ayni alan listesini ve ayni imputasyon sozlesmesini kullanir (train/serve paritesi).
+    """
+    snap = (row or {}).get("snapshot")
+    if not isinstance(snap, dict) or not isinstance(snap.get("values"), dict):
+        return None
+    if int(snap.get("feature_version") or 0) != SNAPSHOT_VERSION:
+        return None
+    if str(snap.get("schema_id") or "") != SCHEMA_ID:
+        return None
+    return FeatureSnapshotV3.from_dict(snap).prediction_vector()
+
+
+# --------------------------------------------------------------------------- PAYLASILAN esleme yardimcilari
+# Replay ve canli PAPER bu iki fonksiyonu AYNEN cagirir. Esleme mantigi tek yerde durur ki iki yol
+# birbirinden sessizce ayrilmasin (eski hata: iki cagri yeri de var olmayan `agent_reports` okuyordu).
+_LEVEL_CODE = {"same_coin": 0.0, "cluster": 1.0, "universe": 2.0}
+
+
+def agents_from_factor_scores(factor_scores: Any) -> dict[str, dict]:
+    """`CoinHeadDecision.factor_scores` -> {grup: {bias, confidence}}. Nesne ya da dict kabul eder.
+
+    Kaynak sozlesmesi (tradingbot/coinhead/schema.py::FactorGroupScore): `group`, `score` (-1..1),
+    `confidence` (0..1). Grup adlari `FACTOR_GROUPS` ile birebir; bkz. `AGENT_NAMES`.
+    """
+    out: dict[str, dict] = {}
+    for fs in (factor_scores or []):
+        rec = fs if isinstance(fs, dict) else getattr(fs, "__dict__", {})
+        name = str(rec.get("group") or "")
+        if not name:
+            continue
+        out[name] = {"bias": rec.get("score"), "confidence": rec.get("confidence")}
+    return out
+
+
+def pattern_fields_from_evidence(evidence: Any, side: str) -> dict:
+    """Karar akisinda ZATEN hesaplanmis pattern kanitindan snapshot alanlari (ikinci sorgu YOK).
+
+    `evidence` sekli: {"LONG": query_result, "SHORT": query_result} (bkz. patterns/engine.py::query).
+    Anahtarlar kaynaktan dogrulanmistir: n, stats.p_win_posterior, stats.mean_net_r,
+    stats.profit_factor, stats.expectancy_ci[0], neighbors[0].distance, levels.
+    """
+    if not isinstance(evidence, dict):
+        return {}
+    res = evidence.get(str(side or "").upper())
+    if not isinstance(res, dict):
+        return {}
+    st = res.get("stats") or {}
+    ci = st.get("expectancy_ci") or []
+    neigh = res.get("neighbors") or []
+    levels = res.get("levels") or {}
+    used = [_LEVEL_CODE[k] for k in levels if k in _LEVEL_CODE]
+    return {"n": res.get("n"),
+            "p_win": st.get("p_win_posterior"),
+            "expectancy_r": st.get("mean_net_r"),
+            "profit_factor": st.get("profit_factor"),
+            "ci_low": (ci[0] if len(ci) > 0 else None),
+            "distance": (neigh[0].get("distance") if neigh and isinstance(neigh[0], dict) else None),
+            "fallback_level": (max(used) if used else None)}
+
+
 def attach_outcome(snapshot_row: dict, outcome: dict) -> dict:
     """Kapanış sonucunu snapshot'a EKLER (giriş alanlarına asla karıştırmaz)."""
     return {**snapshot_row, "outcome": dict(outcome or {})}
 
 
-__all__ = ["ALL_FIELDS", "AGENT_NAMES", "FIELD_NAMES", "FeatureSnapshotV3", "LeakageError", "MISS_PREFIX",
-           "REQUIRED_FIELDS", "SCHEMA_ID", "SNAPSHOT_VERSION", "attach_outcome", "build_snapshot",
+__all__ = ["ALL_FIELDS", "AGENT_NAMES", "AUDIT_ONLY_FIELDS", "FIELD_NAMES", "FeatureSnapshotV3",
+           "IMPUTATION_CONTRACT", "LeakageError", "MISS_PREFIX", "PREDICTION_FIELDS",
+           "PREDICTION_FIELD_NAMES", "PREDICTION_SCHEMA_ID", "REQUIRED_FIELDS", "SCHEMA_ID",
+           "SNAPSHOT_VERSION", "agents_from_factor_scores", "attach_outcome", "build_snapshot",
+           "pattern_fields_from_evidence", "prediction_feature_names", "prediction_schema_hash",
+           "prediction_vector_from_row",
            "snapshot_feature_names"]

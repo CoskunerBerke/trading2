@@ -86,16 +86,78 @@ Backup'lar: `backups/hourly/tradingbot-hourly-20260818T205349Z…20260819T072955
 - **Kapasite/VPS (docs/VPS_PHASE8_PLAN.md):** ölçülen yoğunluklar ham ~45 B/satır, feature ~468 B/satır (×10.3), replay RAM ~3.7 KB/bar (4h evren 1.5 GB, 1h 5.9 GB → stride); 1. yıl ayak izi 12–17 GB < 45 GB → **öneri: OVH VPS-2 (4 vCore/8 GB/75 GB NVMe), Ubuntu 24.04, AB lokasyonu (~10–14 €/ay)**; satın alma sonrası-deploy öncesi salt-okunur Binance erişim testi. Satın alma YAPILMADI; kullanıcı onayı bekleniyor.
 - F00004/F00005 el sürülmedi (tek fill, aynı ID); worker bu fazda hiç başlatılmadı; gerçek emir 0 · LIVE 0 · TESTNET 0 · LLM 0.
 
+## Phase 10b — Denetim düzeltmeleri: gerçek eşleme + train/serve paritesi (kaynak; VPS'te çalıştırılmadı)
+`ecc532b` üzerinde yapılan bağımsız kaynak denetimi dört blocker buldu. Hepsi düzeltildi; her biri
+gerçek çağrı yolunu süren bir testle korunuyor (`tests/test_prediction_parity.py`).
+
+- **B1 — ajan alanları kalıcı boştu.** İki çağrı yeri de `d.to_dict().get("agent_reports")` okuyordu;
+  `CoinHeadDecision.to_dict()` bu anahtarı üretmiyor (gerçek anahtar `specialist_reports`). Ayrıca
+  `AGENT_NAMES` legacy ajan adları içeriyordu (`market/candles/levels/analog/edge`), bunlar hiçbir zaman
+  `factor_group` olarak üretilmiyor. → Artık `d.factor_scores` okunuyor ve `AGENT_NAMES` gerçek
+  `FACTOR_GROUPS` (11 grup) ile birebir; eşitlik testle kalıcı olarak korunuyor.
+- **B2 — yeni replay çıktısı kendi coverage gate'ini geçemiyordu** (%48.4 < %55). Eşikler
+  DEĞİŞTİRİLMEDEN, gerçek alanlar dolduğu için artık geçiyor. Gerçek replay çağrı yolundan ölçülen:
+  **required %97.30** (eşik 90) · **overall %66.96** (eşik 55) · **prediction %75.28** ·
+  **nonconstant %69.57** · timestamp ihlali 0 · join bozuk 0.
+- **B3 — `rr` hiç hesaplanmıyordu.** `TradePlanV3`'te `rr` yoktu, `getattr(plan, "rr", None)` daima
+  `None` dönüyordu (üstelik `rr` zorunlu alan). → Salt-okunur `TradePlanV3.rr` property'si eklendi
+  (`|tp1−entry| / |entry−stop|`); hedef/stop yoksa `None`, sahte 0 üretmez.
+- **B4 — pattern kanıtı karara hiç ulaşmıyordu.** `pattern_evidence` yalnız `CoinHeadInputs`'taydı ve
+  şekli taraf kırılımlı (`{"LONG": ..., "SHORT": ...}`). → `CoinHeadDecision.pattern_evidence` alanı
+  eklendi (karar akışında zaten hesaplanan kanıt taşınır, **ikinci sorgu yok**; `to_dict()` dışında
+  tutulur), snapshot tarafa göre seçim yapar. Anahtarlar `patterns/engine.py::query`'den doğrulandı.
+
+- **`prediction_features_v3` (train/serve paritesi).** 115 alan iki gruba ayrıldı: **89 prediction**
+  alanı (predict'ten önce mevcut, replay ve canlıda aynı anlamda üretilebilen, prediction çıktısına
+  bağlı olmayan) ve **26 audit-only** alan (ölçek bağımlı ham seviyeler, hiçbir yolun doldurmadığı
+  portföy alanları, karardan sonra oluşan `risk_allowed` ve **dairesel** `p_win_prior`). Model girdisi
+  150 boyut (89 alan + 61 `miss_*` göstergesi) — eksiklik göstergeleri artık modele ULAŞIYOR.
+  Eğitim (`LearnerV2.train_challenger`, `replay/research._fit_fold`) ve çıkarım (`engine_v3`) aynı
+  `prediction_vector()` fonksiyonunu çağırır. Canlı yolda snapshot artık `learner2.predict`'ten **önce**
+  üretilir ve **aynı nesne** giriş kaydında yeniden kullanılır.
+- **Model artifact'i kendi şemasını taşır**: `feature_schema_id`, `feature_version`, `feature_names`
+  (tam sıra), `prediction_schema_hash`, `imputation_contract`. Serve tarafında **simetrik** doğrulama:
+  model şeması ile girdi şeması birebir eşleşmezse model KULLANILMAZ, prior'a dönülür ve
+  `schema_mismatch_total` artar. Bu iki yönü de kapatır — v3 modele legacy sözlük ve deploy öncesinden
+  kalan legacy şampiyona v3 vektörü gitmesi.
+- **Otomatik PAPER terfisi KAPATILDI**: `auto_promote_in_paper` varsayılanı `False` (eski config'te alan
+  yoksa da False). Feature-rich model yalnız CANDIDATE kalır; kendiliğinden tahmin yoluna giremez.
+  LIVE/TESTNET davranışı değişmedi (manuel onay olmadan terfi yok). Açık manuel shadow onayı ayrı görev.
+- **Snapshot telemetrisi** (`learn/telemetry.py`): `snapshot_success_total`, `snapshot_failure_total`,
+  `leakage_failure_total`, `schema_mismatch_total`, `last_failure_code`, `last_failure_at`.
+  `state/snapshot_telemetry.json`'a atomik yazılır; `/metrics`, `/api/overview` ve `/health` üzerinden
+  okunur. Hata kodu tek satır ve ≤120 karakter (secret/payload/stack trace yazılmaz). Canlı işlem akışı
+  snapshot hatasından etkilenmez ama hata SESSİZ kalmaz.
+- **Timeframe doğruluğu**: canlı yol artık gerçekte kullandığı frame anahtarını yazıyor; "4h" yokken
+  başka bir frame'i alıp yine `timeframe="4h"` yazmıyor. Frame seçimi deterministik (`sorted`), ve her
+  iki yolda `last_bar_ts ≤ decision_ts` ikinci savunma hattı olarak doğrulanıyor.
+- **Politika OOS kırılımı düzeltildi**: eskiden `rows` (train+validation+test, in-sample) ve ızgaranın
+  İLK adayı kullanılıyordu. Artık yalnız her fold'un OOS test satırları ve o fold'un kendi
+  validation'ında seçtiği aday. Eşleşmiş fark aynı kayıtlar üzerinde (bloke işlem 0 R), fold test
+  kümelerinin ayrık olduğu `no_duplicate_test_rows` kapısıyla doğrulanıyor.
+- **Totolojik test kaldırıldı**: eski `test_replay_and_paper_produce_identical_vector_and_hash`
+  `build_snapshot`'ı aynı argümanlarla iki kez çağırıyordu. Yerine `TradingEngineV3._snapshot_v3` ve
+  `HistoricalReplay._snapshot` metotlarının **gerçek gövdelerini** çalıştıran parite testi geldi.
+- **Eski sparse hafızada model üretilmez**: v3 snapshot'ı olmayan satırlar eğitime girmez (sahte 0 ile
+  doldurma yok); yeterli satır yoksa `train_challenger` `None` döner.
+- **CI**: yeni `learning-tests` job'ı `test_feature_snapshot.py`, `test_prediction_parity.py`,
+  `test_learn.py`, `test_policy_eval.py`, replay araştırma testleri, ruff ve tam paketi Ubuntu'da
+  ayrı adımlar hâlinde koşar (yerel "303 passed" tek başına kanıt sayılmaz). `ruff.toml` doğruluk
+  kurallarını (E9/F821/F811/F632/F702/F706/F707) kapı yapar; biçim kuralları ayrı temizlik konusudur.
+
 ## Phase 10 — Bağlamsal öğrenme: FeatureSnapshotV3 (kaynak; VPS'te çalıştırılmadı)
 - **Kök neden:** replay entry hafızası pratikte yalnız `expected_r`/`p_win` yazıyordu; canlı yol ayrı
   `features_from_brief` kullanıyordu. Core-4 `train_manifest`'inde MA/volatilite/funding/spread/korelasyon/
   ajan/konsensüs alanlarının neredeyse tamamı 0 idi → model bağlam öğrenmedi, expected_r kalibrasyonu yaptı.
-- **`learn/snapshot.py` FeatureSnapshotV3:** 117 alan + `miss_*` göstergeleri; kimlik/provenance, trend/MA/
+- **`learn/snapshot.py` FeatureSnapshotV3:** 115 alan + `miss_*` göstergeleri; kimlik/provenance, trend/MA/
   cross, momentum, volatilite/rejim, hacim, funding/OI/basis/spread/depth/slippage/tazelik, BTC bağlamı/
-  korelasyon/beta/portföy, ajan bias-confidence + consensus/dissent/veto + pattern kanıtı, plan/risk.
-  **Paylaşılan builder**: replay ve canlı PAPER aynı fonksiyonu çağırır → aynı girdi, aynı vektör ve hash.
+  korelasyon/beta, ajan bias-confidence + consensus/dissent/veto + pattern kanıtı, plan/risk.
+  **Paylaşılan builder**: replay ve canlı PAPER aynı fonksiyonu çağırır.
   Nedensellik: `decision_ts` sonrası bar → `LeakageError`; gelecek bar mutasyonu geçmiş hash'i değiştirmez;
   eksik alan sessizce 0 sayılmaz.
+  > Bu bölümün ilk hâli (commit `330aab5`/`ecc532b`) alan sayısını 117 olarak veriyordu ve alanların
+  > dolduğunu varsayıyordu. Bağımsız kaynak denetimi bunun doğru olmadığını gösterdi; düzeltmeler ve
+  > ölçülen gerçek değerler **Phase 10b**'de.
 - **`learn/coverage.py` gate:** alan bazında available/missing/mean/std/unique/constant + join/timestamp/
   namespace/sembol/taraf kontrolü. Yetersizse **FEATURE_COVERAGE_INVALID** → `replay-train` durur.
   Eski Core-4 hafızası bu kapıdan GEÇEMEZ (snapshot yok → açık blok).
@@ -107,8 +169,11 @@ Backup'lar: `backups/hourly/tradingbot-hourly-20260818T205349Z…20260819T072955
   Verdict en fazla SHADOW_CANDIDATE; PIT=false/survivorship varsa RESEARCH_ONLY/REJECTED. Terfi yok.
 - **`learn/attribution.py` + CLI:** `feature-coverage`, `loss-attribution`, `policy-candidates`,
   `policy-evaluate` — deterministik, secretsız JSON; yalnız `state/replay/<run_id>` altına yazar.
-- Canlı PAPER davranışı varsayılan olarak DEĞİŞMEDİ (snapshot hatası akışı durdurmaz); eski Core-4
-  artifact'lerine yazılmadı; yeni deneme için ayrı run-id kullanılacak.
+- Canlı PAPER emir akışı DEĞİŞMEDİ (snapshot hatası akışı durdurmaz); eski Core-4 artifact'lerine
+  yazılmadı; yeni deneme için ayrı run-id kullanılacak.
+  > Düzeltme (Phase 10b): p_win modelinin girdisi bu fazda gerçekten değişti. Otomatik PAPER terfisi
+  > kapatıldığı ve şema doğrulaması fail-closed olduğu için mevcut worker baseline davranışını korur —
+  > şampiyon yoksa hiyerarşik prior, legacy şampiyon varsa legacy köprü kullanılır.
 
 ## Phase 9b — Replay hattı sertleştirme (kaynak; VPS'te çalıştırılmadı)
 - **Runner gerçek replay'i yönetir:** eylemler `plan|replay|train|evaluate|full|status`; `full` = plan →

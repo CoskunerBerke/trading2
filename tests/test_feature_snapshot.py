@@ -101,8 +101,14 @@ def test_bar_after_decision_ts_is_blocked():
                        plan=_plan(100.0))
 
 
-def test_replay_and_paper_produce_identical_vector_and_hash():
-    """Aynı girdi → replay ve canlı yol aynı builder'ı kullandığı için AYNI vektör ve hash."""
+def test_source_namespace_does_not_change_the_market_view():
+    """`source` yalnız namespace'tir: aynı piyasa görüntüsünde vektörü/hash'i DEĞİŞTİRMEZ.
+
+    DİKKAT: bu test replay ve canlı yolların birbiriyle tutarlı olduğunu KANITLAMAZ — aynı fonksiyonu
+    aynı argümanlarla iki kez çağırır. İki gerçek çağrı yerinin paritesi
+    `tests/test_prediction_parity.py::test_replay_and_live_prediction_vectors_are_identical_on_same_context`
+    içinde, metotların gerçek gövdeleri çalıştırılarak doğrulanır.
+    """
     end = int(NOW.timestamp() * 1000)
     common = dict(symbol="ETH/USDT", market_type="USDM_PERP", timeframe="4h", side="SHORT",
                   decision_ts_ms=end, bars=synth_bars(end_ms=end), plan=_plan(120.0),

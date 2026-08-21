@@ -160,7 +160,10 @@ class LearningV3Section:
     half_life_days: float = 60.0
     calibrator: str = "platt"
     shadow_trades: bool = True
-    auto_promote_in_paper: bool = True
+    # GUVENLI VARSAYILAN: PAPER'da otomatik CHAMPION terfisi KAPALI. Feature-rich model yalniz
+    # CANDIDATE olarak kalir; canli tahmin yoluna kendiliginden giremez. Acik manuel onay gerekir.
+    # Eski configlerde alan yoksa dataclass varsayilani (False) gecerlidir -- geriye donuk uyumlu.
+    auto_promote_in_paper: bool = False
 
 
 @dataclass

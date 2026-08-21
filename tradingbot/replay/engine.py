@@ -132,6 +132,8 @@ class HistoricalReplay:
         self.memory = TradeMemory(self.state_dir / "trade_memory.jsonl", source="HISTORICAL_REPLAY")
         self.model_registry = ModelRegistry(self.state_dir / "models.json")
         self.learner2 = LearnerV2(self.memory, self.model_registry, LearnConfig(min_samples_train=v3.learning_v3.min_samples_train), state_path=self.state_dir / "learn_v2.json")
+        from ..learn.telemetry import SnapshotTelemetry
+        self.snap_telemetry = SnapshotTelemetry.load(self.state_dir)     # snapshot hatalari sessiz kalmaz
         self.frames: dict[str, dict[str, pd.DataFrame]] = {}
         self.primary: dict[str, pd.DataFrame] = {}
         self._entry_meta: dict[str, dict] = {}
@@ -293,8 +295,14 @@ class HistoricalReplay:
                                        "opened_at": rec.opened_at, "closed_at": rec.closed_at, "in_test": bool(meta.get("in_test", True)), "regime": meta.get("regime")})
 
     def _snapshot(self, sym: str, t: int, d, plan, market_type: str, marks_f: dict):
-        """Karar anı FeatureSnapshotV3 — yalnız t'de KAPANMIŞ barlardan (replay ve canlı aynı builder)."""
-        from ..learn.snapshot import LeakageError, build_snapshot
+        """Karar ani FeatureSnapshotV3 -- yalniz t'de KAPANMIS barlardan.
+
+        Canli PAPER yolu (`TradingEngineV3._snapshot_v3`) ile AYNI builder ve AYNI esleme yardimcilarini
+        (`agents_from_factor_scores`, `pattern_fields_from_evidence`) kullanir; iki yol birbirinden
+        sessizce ayrilamaz (`test_replay_and_live_prediction_vectors_match` bunu dogrular).
+        """
+        from ..learn.snapshot import (LeakageError, agents_from_factor_scores, build_snapshot,
+                                      pattern_fields_from_evidence)
         try:
             fr = self._slice(sym, t)
             bars = fr.get(self.tf)
@@ -302,35 +310,34 @@ class HistoricalReplay:
                 return None
             btc = None
             if "BTC/USDT" in self.frames and sym != "BTC/USDT":
-                bfr = self._slice("BTC/USDT", t)
-                btc = bfr.get(self.tf)
-            agents = {}
-            for rep in (d.to_dict(include_reports=True).get("agent_reports") or []):
-                name = str(rep.get("factor_group") or rep.get("agent_name") or "")
-                if name:
-                    agents[name] = {"bias": rep.get("bias"), "confidence": (rep.get("confidence_raw") or 0) / 100.0}
+                btc = self._slice("BTC/USDT", t).get(self.tf)
             cons = d.consensus if isinstance(getattr(d, "consensus", None), dict) else {}
-            pattern = getattr(d, "pattern_evidence", None) or {}
-            return build_snapshot(
+            snap = build_snapshot(
                 symbol=sym, market_type=market_type, timeframe=self.tf, side=d.direction,
                 decision_ts_ms=int(t), bars=bars, source="HISTORICAL_REPLAY", btc_bars=btc,
                 decision={"consensus_score": (sum(cons.values()) / len(cons)) if cons else None,
-                          "consensus_conf": getattr(d, "confidence_calibrated", None),
+                          "consensus_conf": getattr(d, "consensus_confidence", None),
                           "n_dissent": len(getattr(d, "dissent", []) or []),
                           "n_vetoes": len(getattr(d, "vetoes", []) or []),
-                          "head_confidence": getattr(d, "confidence_calibrated", None), "risk_allowed": True},
-                plan={"setup_type": plan.entry_type, "expected_r": d.expected_r, "p_win": d.p_win,
-                      "expected_cost_pct": getattr(plan, "expected_cost_pct", None), "entry": marks_f.get(sym),
-                      "stop": plan.stop, "targets": list(plan.targets or []), "rr": getattr(plan, "rr", None),
-                      "leverage": getattr(getattr(plan, "size", None), "leverage", 1), "notional": plan.notional,
-                      "margin": getattr(plan, "margin", None)},
-                portfolio={"open_risk_pct": None, "drawdown_pct": None},
-                pattern={"n": (pattern or {}).get("n"), "p_win": (pattern or {}).get("p_win")},
-                agents=agents, run_id=self.run_id, seed=self.seed, strict=True)
-        except LeakageError:
+                          "head_confidence": getattr(d, "confidence_calibrated", None)},
+                plan={"setup_type": plan.entry_type, "expected_r": plan.expected_r,
+                      "expected_cost_pct": plan.expected_cost_pct, "p_win": d.p_win,
+                      "entry": marks_f.get(sym), "stop": plan.stop, "targets": list(plan.targets or []),
+                      "rr": plan.rr, "leverage": plan.size.leverage,
+                      "notional": plan.notional, "margin": plan.margin},
+                pattern=pattern_fields_from_evidence(getattr(d, "pattern_evidence", None), d.direction),
+                agents=agents_from_factor_scores(getattr(d, "factor_scores", None)),
+                run_id=self.run_id, seed=self.seed, strict=True)
+            if snap.last_bar_ts > snap.decision_ts:      # ikinci savunma hatti (fail-closed)
+                raise LeakageError(f"last_bar_ts {snap.last_bar_ts} > decision_ts {snap.decision_ts}")
+            self.snap_telemetry.success()
+            return snap
+        except LeakageError as exc:
+            self.snap_telemetry.failure(exc, leakage=True)
             raise
-        except Exception as exc:  # noqa: BLE001 — snapshot üretilemezse replay durmaz, kayıt "eksik" işaretlenir
-            log.warning("%s snapshot üretilemedi: %s", sym, exc)
+        except Exception as exc:  # noqa: BLE001 -- snapshot uretilemezse replay durmaz, kayit "eksik" isaretlenir
+            self.snap_telemetry.failure(exc)
+            log.warning("%s snapshot uretilemedi: %s", sym, exc)
             return None
 
     def _reject(self, symbol: str, reason: str) -> None:
@@ -366,6 +373,7 @@ class HistoricalReplay:
         self.ledger2.save(self.state_dir / "futures_ledger.json")
         self.spot2.save(self.state_dir / "spot_ledger.json")
         self.learner2.save()
+        self.snap_telemetry.save()
         atomic_write_json(self.state_dir / "replay_result.json", self.result.to_dict(), indent=1)
 
 

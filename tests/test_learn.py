@@ -148,33 +148,58 @@ def _rec(i, won, symbol="ETH/USDT"):
                                                    "rr": 2.5, "atr_pct": 0.3, "n_warnings": 1 if won else 5, "leverage": 2}}
 
 
+def _v3_snapshot(i: int, won: bool, symbol: str = "ETH/USDT") -> dict:
+    """Kayıt satırının v3 snapshot'ı — model artık YALNIZ `prediction_features_v3` ile eğitilir."""
+    from conftest import make_snapshot
+    ts = int((NOW - timedelta(days=60 - i)).timestamp() * 1000)
+    return make_snapshot(symbol=symbol, side="LONG", decision_ts_ms=ts, seed=3 + (i % 7),
+                         source="LIVE_PAPER", strength=(0.6 if won else -0.45))
+
+
 def test_learner_v2_end_to_end_prior_to_model_and_legacy_bridge(tmp_path: Path):
+    from tradingbot.learn import PromotionThresholds, prediction_schema_hash
+    from tradingbot.learn.snapshot import FeatureSnapshotV3
     mem = TradeMemory(tmp_path / "mem.jsonl")
-    from tradingbot.learn import PromotionThresholds
     reg = ModelRegistry(tmp_path / "models.json", thresholds=PromotionThresholds(min_holdout=10))
     lr = LearnerV2(mem, reg, LearnConfig(min_samples_train=40, holdout_frac=0.25), tmp_path / "learn_v2.json")
-    p0 = lr.predict({"bias_trend": 0.6}, regime="TREND_UP", symbol="ETH/USDT", setup="kırılım")
+    good = FeatureSnapshotV3.from_dict(_v3_snapshot(59, True)).prediction_vector()
+    bad = FeatureSnapshotV3.from_dict(_v3_snapshot(58, False)).prediction_vector()
+    sh = prediction_schema_hash()
+    p0 = lr.predict(good, regime="TREND_UP", symbol="ETH/USDT", setup="kırılım", schema_hash=sh)
     assert not p0.ready and p0.p_win_calibrated == pytest.approx(0.5)
     for i in range(60):
         won = (i % 3 != 0)
         rec = _rec(i, won)
-        mem.record_entry({"trade_id": rec["id"], "symbol": rec["symbol"], "direction": "LONG", "setup_type": "kırılım", "regime": "TREND_UP", "features": rec["features"],
+        mem.record_entry({"trade_id": rec["id"], "symbol": rec["symbol"], "direction": "LONG", "setup_type": "kırılım",
+                          "regime": "TREND_UP", "features": rec["features"], "snapshot": _v3_snapshot(i, won),
                           "recorded_at": (NOW - timedelta(days=60 - i)).isoformat()})
         lesson = lr.on_trade_closed(rec, {"regime": "TREND_UP", "consensus_score": 0.4, "dissent": []})
         assert lesson["why"]
     assert lr.n_closed == 60 and lr.snapshot()["agents"]["trend"]["hit_rate_shrunk"] > 0.7
-    p1 = lr.predict({"bias_trend": 0.6, "conviction": 0.6, "n_warnings": 1}, regime="TREND_UP", symbol="ETH/USDT", setup="kırılım")
+    p1 = lr.predict(good, regime="TREND_UP", symbol="ETH/USDT", setup="kırılım", schema_hash=sh)
     assert not p1.ready and p1.prior_used > 0.55                    # hiyerarşik önsel öğrenmiş, model henüz yok
     out = lr.train_challenger(now=NOW)
     assert out and out["metrics"]["n_holdout"] >= 10 and reg.challenger("p_win_lr")
+    # model artifact'i kendi şema sözleşmesini taşır (serve tarafı bunu doğrular)
+    params = reg.challenger("p_win_lr")["params"]
+    assert params["feature_schema_id"] == "prediction_features_v3" and params["prediction_schema_hash"] == sh
+    assert params["feature_names"] == list(good) and params["imputation_contract"]
     ok, reasons = lr.maybe_promote("PAPER")
     assert ok, reasons
-    p2 = lr.predict({"bias_trend": 0.6, "conviction": 0.6, "n_warnings": 1}, regime="TREND_UP", symbol="ETH/USDT", setup="kırılım")
-    p3 = lr.predict({"bias_trend": -0.6, "conviction": 0.3, "n_warnings": 5}, regime="TREND_UP", symbol="ETH/USDT", setup="kırılım")
+    p2 = lr.predict(good, regime="TREND_UP", symbol="ETH/USDT", setup="kırılım", schema_hash=sh)
+    p3 = lr.predict(bad, regime="TREND_UP", symbol="ETH/USDT", setup="kırılım", schema_hash=sh)
     assert p2.ready and p2.model_id and p2.p_win_calibrated > p3.p_win_calibrated
     assert 0.5 * (p2.prior_used) < p2.p_win_calibrated            # harman: model + önsel
+    # ŞEMA UYUŞMAZLIĞI: model KULLANILMAZ, prior'a dönülür, sayaç artar (fail-closed)
+    before = lr.telemetry.counters["schema_mismatch_total"]
+    pm = lr.predict(good, regime="TREND_UP", symbol="ETH/USDT", setup="kırılım", schema_hash="bozuk-hash")
+    assert not pm.ready and not pm.schema_ok and pm.model_id is None
+    assert pm.p_win_calibrated == pytest.approx(pm.prior_used)
+    assert lr.telemetry.counters["schema_mismatch_total"] == before + 1
+    pn = lr.predict(good, regime="TREND_UP", symbol="ETH/USDT", setup="kırılım")   # hash hiç verilmedi
+    assert not pn.ready and not pn.schema_ok
     again = LearnerV2(mem, ModelRegistry(tmp_path / "models.json"), LearnConfig(), tmp_path / "learn_v2.json")
-    assert again.n_closed == 60 and again.predict({"bias_trend": 0.6}, regime="TREND_UP").ready
+    assert again.n_closed == 60 and again.predict(good, regime="TREND_UP", schema_hash=sh).ready
     # legacy köprü
     v1 = Learner(tmp_path / "learn_v1.json", min_trades=5)
     for i in range(6):

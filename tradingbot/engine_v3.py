@@ -74,6 +74,9 @@ class TradingEngineV3(TradingEngine):
         if self.ledger2.positions:
             log.info("resume: %d açık futures pozisyonu (%s) · defter güncelleme %s",
                      len(self.ledger2.positions), ", ".join(sorted(self.ledger2.positions)), self.ledger2.updated_at or "-")
+        from .learn.telemetry import SnapshotTelemetry
+        self.snap_telemetry = SnapshotTelemetry.load(cfg.state_path)
+        self._pred_snapshots = {}                       # sembol -> karar ani snapshot (predict + kayit ayni nesne)
         self.registry = CoinHeadRegistry(self.head_cfg, max_workers=ch.max_workers)
         self.registry.load(st)          # snapshot olay-zaman sırası (legacy hash-only state güvenli geçer)
         self._tour_no = 0               # aynı ms için deterministik tie-breaker
@@ -429,10 +432,24 @@ class TradingEngineV3(TradingEngine):
         legacy_chief.generated_at = iso(now)
         legacy_chief.risk_mode = chief.market_risk_mode
         # p_win (v2 model + hiyerarşik önsel; v1 tahmini yedek)
+        from .learn.snapshot import prediction_schema_hash
+        self._pred_snapshots = {}
         for b in briefs:
             f = features_from_brief(b, legacy_chief, b.scan_score or None)
             d = decisions.get(b.symbol)
-            pr = self.learner2.predict(f, regime=d.regime if d else None, symbol=b.symbol, setup=b.plan.entry_type or None)
+            # TRAIN/SERVE PARITESI: karar ani snapshot'i tahminden ONCE uretilir; ayni nesne giris
+            # kaydinda yeniden kullanilir. Boylece modelin egitildigi vektor ile serve edilen vektor
+            # ayni builder'dan cikar. (`d.p_win` burada hala HEAD on tahmini -- model henuz ezmedi.)
+            snap = self._snapshot_v3(b.symbol, d)
+            if snap is not None:
+                self._pred_snapshots[b.symbol] = snap
+                pr = self.learner2.predict(snap.prediction_vector(), regime=d.regime if d else None, symbol=b.symbol,
+                                           setup=b.plan.entry_type or None, schema_hash=prediction_schema_hash())
+            elif d is not None and d.active_plan is not None:
+                # plan var ama snapshot uretilemedi -> legacy koprü; v3 sampiyon varsa sema uyusmazligi sayilir
+                pr = self.learner2.predict(f, regime=d.regime, symbol=b.symbol, setup=b.plan.entry_type or None)
+            else:
+                pr = self.learner2.prior_only(regime=d.regime if d else None, symbol=b.symbol, setup=b.plan.entry_type or None)
             b.p_win = round(pr.p_win_calibrated if pr.ready else (0.5 * pr.prior_used + 0.5 * self.learner.predict(f)), 3)
             if d:
                 d.p_win = b.p_win
@@ -510,6 +527,7 @@ class TradingEngineV3(TradingEngine):
                   "symbols": len(symbols), "decisions": len(decisions), "opened": len(opened), "closed": len(records), "kill_trips": trips,
                   "mode": self.mode_state.mode.value, "profile": self.profile.name}
         atomic_write_json(st / "health.json", health)
+        self.snap_telemetry.save()          # snapshot/sema sayaclari dashboard ve /metrics icin
         summary = {"at": iso(now), "run_id": self.run_id, "symbols": symbols,
                    "scan": {"universe": scan.universe, "scanned": scan.scanned, "flagged": scan.flagged, "setups": len(scan.setups)} if scan else None,
                    "chief": f"{chief.market_risk_mode} · BTC {chief.btc_eth_regime.get('btc')} · {chief.breadth['long']} LONG / {chief.breadth['short']} SHORT / "
@@ -591,7 +609,7 @@ class TradingEngineV3(TradingEngine):
                     continue
                 trade_id = getattr(order, "id", new_id("spot"))
                 desc = f"{sym} SPOT LONG @ {b.price:.6g} · {notional:.2f} USDT · stop {plan.stop:.6g}"
-            snap_v3 = self._snapshot_v3(sym, b, d, plan, market, rd)
+            snap_v3 = self._pred_snapshots.get(sym)     # predict aninda uretildi; yeniden hesaplanmaz
             self.memory.record_entry({"trade_id": trade_id, "symbol": sym, "direction": d.direction, "market_type": market, "setup_type": plan.entry_type,
                                       "regime": d.regime, "features": ((snap_v3.vector() | feats) if snap_v3 else feats),
                                       "snapshot": (snap_v3.to_dict() if snap_v3 else None),
@@ -690,48 +708,66 @@ class TradingEngineV3(TradingEngine):
                 "", "[[Learning/Öğrenme]] · [[Learning/Dersler]] · [[Scanner]] · [[Dashboard]] · [[Risk/Limits]]"]
         return "\n".join(out)
 
-    def _snapshot_v3(self, sym: str, b, d, plan, market: str, rd):
-        """Canlı PAPER karar anı FeatureSnapshotV3 — replay ile AYNI builder (aynı girdi → aynı vektör/hash)."""
-        from .learn.snapshot import build_snapshot
+    def _snapshot_v3(self, sym: str, d):
+        """Canli PAPER karar ani FeatureSnapshotV3 -- replay ile AYNI builder ve AYNI esleme yardimcilari.
+
+        `learner2.predict`ten ONCE cagrilir; donen nesne hem model girdisi hem de giris kaydi icin
+        kullanilir. Hata halinde islem akisi DEGISMEZ ama sessiz kalmaz: sayaclar artar (telemetry).
+        """
+        from .learn.snapshot import (LeakageError, agents_from_factor_scores, build_snapshot,
+                                     pattern_fields_from_evidence)
+        plan = d.active_plan if d is not None else None
+        if plan is None:
+            return None
         try:
             frames = self.runner.last_frames.get(sym) or {}
-            bars = frames.get("4h") if "4h" in frames else next(iter(frames.values()), None)
+            # DETERMINISTIK frame secimi ve GERCEK timeframe etiketi: "4h" yokken baska bir frame'i
+            # alip yine "4h" yazmak yasak (namespace bozulur).
+            tf = "4h" if "4h" in frames else (sorted(frames)[0] if frames else None)
+            bars = frames.get(tf) if tf else None
             if bars is None or len(bars) < 30:
                 return None
             decision_ts = int(bars["timestamp"].iloc[-1])
-            btc_frames = self.runner.last_frames.get("BTC/USDT") or {}
-            btc = btc_frames.get("4h") if sym != "BTC/USDT" else None
-            if btc is not None:
-                btc = btc[btc["timestamp"] <= decision_ts]
-            agents = {}
-            for rep in (d.to_dict(include_reports=True).get("agent_reports") or []):
-                name = str(rep.get("factor_group") or rep.get("agent_name") or "")
-                if name:
-                    agents[name] = {"bias": rep.get("bias"), "confidence": (rep.get("confidence_raw") or 0) / 100.0}
+            btc = None
+            if sym != "BTC/USDT":
+                btc = (self.runner.last_frames.get("BTC/USDT") or {}).get(tf)
+                if btc is not None:
+                    btc = btc[btc["timestamp"] <= decision_ts]
             live = dict(self.runner.live.snapshot(sym) or {})
             tick = live.get("ticker") or {}
             cons = d.consensus if isinstance(getattr(d, "consensus", None), dict) else {}
-            return build_snapshot(
-                symbol=sym, market_type=market, timeframe="4h", side=d.direction,
+            market = "SPOT" if d.verdict == Verdict.SPOT_LONG else "USDM_PERP"
+            snap = build_snapshot(
+                symbol=sym, market_type=market, timeframe=str(tf), side=d.direction,
                 decision_ts_ms=decision_ts, bars=bars[bars["timestamp"] <= decision_ts], source="LIVE_PAPER",
                 btc_bars=btc,
                 micro={"spread_pct": tick.get("spread_pct"), "depth_ratio": tick.get("depth_ratio"),
                        "data_freshness_s": tick.get("age_s")},
                 funding={"rate": (live.get("funding") or {}).get("rate")},
                 decision={"consensus_score": (sum(cons.values()) / len(cons)) if cons else None,
-                          "consensus_conf": getattr(d, "confidence_calibrated", None),
+                          "consensus_conf": getattr(d, "consensus_confidence", None),
                           "n_dissent": len(getattr(d, "dissent", []) or []),
                           "n_vetoes": len(getattr(d, "vetoes", []) or []),
-                          "head_confidence": getattr(d, "confidence_calibrated", None),
-                          "risk_allowed": bool(getattr(rd, "allowed", True))},
-                plan={"setup_type": plan.entry_type, "expected_r": d.expected_r, "p_win": d.p_win,
+                          "head_confidence": getattr(d, "confidence_calibrated", None)},
+                plan={"setup_type": plan.entry_type, "expected_r": plan.expected_r,
+                      "expected_cost_pct": plan.expected_cost_pct, "p_win": d.p_win,
                       "entry": plan.entry, "stop": plan.stop, "targets": list(plan.targets or []),
-                      "rr": getattr(plan, "rr", None), "leverage": getattr(plan.size, "leverage", 1),
+                      "rr": plan.rr, "leverage": plan.size.leverage,
                       "notional": plan.notional, "margin": plan.margin},
-                portfolio={"open_risk_pct": None, "drawdown_pct": None},
-                agents=agents, run_id=self.run_id, strict=True)
-        except Exception as exc:  # noqa: BLE001 — snapshot hatası işlem akışını DEĞİŞTİRMEZ (geriye uyumlu)
-            log.warning("%s FeatureSnapshotV3 üretilemedi: %s", sym, exc)
+                pattern=pattern_fields_from_evidence(getattr(d, "pattern_evidence", None), d.direction),
+                agents=agents_from_factor_scores(getattr(d, "factor_scores", None)),
+                run_id=self.run_id, strict=True)
+            if snap.last_bar_ts > snap.decision_ts:      # ikinci savunma hatti (fail-closed)
+                raise LeakageError(f"last_bar_ts {snap.last_bar_ts} > decision_ts {snap.decision_ts}")
+            self.snap_telemetry.success()
+            return snap
+        except LeakageError as exc:
+            self.snap_telemetry.failure(exc, leakage=True)
+            log.warning("%s FeatureSnapshotV3 nedensellik ihlali: %s", sym, exc)
+            return None
+        except Exception as exc:  # noqa: BLE001 -- snapshot hatasi islem akisini DEGISTIRMEZ, ama sessiz kalmaz
+            self.snap_telemetry.failure(exc)
+            log.warning("%s FeatureSnapshotV3 uretilemedi: %s", sym, exc)
             return None
 
     def _write_trade_notes(self) -> None:

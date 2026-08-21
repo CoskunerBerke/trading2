@@ -180,6 +180,7 @@ class CoinHead:
         regime = str((rep_by.get("market_regime").metrics if rep_by.get("market_regime") else {}).get("regime", "UNKNOWN"))
         d.regime = regime
         d.specialist_reports = reports
+        d.pattern_evidence = inp.pattern_evidence      # karar akisinda hesaplanan kanit; snapshot yeniden sorgulamaz
         d.data_freshness = {"ticker_age_s": integrity.data_freshness_seconds if integrity else None, "issues": (integrity.metrics or {}).get("issues", []) if integrity else []}
         d.model_versions = {"coin_head": "v3.0", "factor_groups": "v3.0", "legacy_agents": "1"}
         d.expires_at = iso(from_ms((inp.now_ms or int(utc_now().timestamp() * 1000)) + self.cfg.decision_ttl_minutes * 60_000))

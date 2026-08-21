@@ -16,12 +16,15 @@ import numpy as np
 
 from ..core import atomic_write_json, from_iso, iso, read_json, utc_now
 from .calibration import Calibrator, calibration_metrics
-from .features import FEATURE_VERSION, build_features, feature_names, to_vector
+from .features import FEATURE_VERSION, build_features, to_vector
 from .labels import label_outcome
 from .memory import TradeMemory
 from .model import HierarchicalRate, LogisticModel, recency_weights
 from .postmortem import structured_postmortem
 from .registry import ModelRegistry, drift_check
+from .snapshot import (IMPUTATION_CONTRACT, PREDICTION_SCHEMA_ID, SNAPSHOT_VERSION,
+                       prediction_feature_names, prediction_schema_hash, prediction_vector_from_row)
+from .telemetry import SnapshotTelemetry
 
 
 @dataclass
@@ -45,6 +48,7 @@ class PredictionResult:
     ready: bool
     prior_used: float
     prior_n_eff: float
+    schema_ok: bool = True               # False -> model semasi uyusmadi, prior'a donuldu (fail-closed)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -64,6 +68,8 @@ class LearnerV2:
         self.calibrator = Calibrator(self.cfg.calibrator)
         self.last_metrics: dict = {}
         self.baseline_metrics: dict = {}
+        # sema uyusmazligi sessiz kalmasin: sayac state dizinine yazilir (bkz. learn/telemetry.py)
+        self.telemetry = SnapshotTelemetry.load(self.state_path.parent if self.state_path else None)
         if self.state_path:
             self._load()
 
@@ -89,19 +95,45 @@ class LearnerV2:
                                                 "baseline_metrics": self.baseline_metrics}, keep_backup=True)
 
     # ------------------------------------------------------------ tahmin
-    def _champion_model(self) -> tuple[LogisticModel | None, str | None]:
+    def _champion_model(self) -> tuple[LogisticModel | None, str | None, dict]:
         ch = self.registry.champion("p_win_lr")
         if not ch:
-            return None, None
-        return LogisticModel.from_dict(ch["params"]), ch["id"]
+            return None, None, {}
+        params = ch.get("params") or {}
+        return LogisticModel.from_dict(params), ch["id"], params
 
-    def predict(self, features: dict[str, Any], *, regime: str | None = None, symbol: str | None = None, setup: str | None = None) -> PredictionResult:
+    def prior_only(self, *, regime: str | None = None, symbol: str | None = None,
+                   setup: str | None = None) -> PredictionResult:
+        """Modeli HIC kullanmadan hiyerarsik onsel. Islenebilir plani olmayan sembollerde cagrilir;
+        boylece sema uyusmazligi sayaci gereksiz yere artmaz."""
         leaf = f"{symbol}|{setup}" if symbol and setup else (symbol or setup)
         prior, n_eff = self.win.estimate(regime=regime, leaf=leaf)
-        model, mid = self._champion_model()
+        return PredictionResult(round(prior, 4), round(prior, 4), None, 0, False, round(prior, 4), n_eff)
+
+    def predict(self, features: dict[str, Any], *, regime: str | None = None, symbol: str | None = None,
+                setup: str | None = None, schema_hash: str | None = None) -> PredictionResult:
+        """`features`: v3 sampiyon icin `prediction_vector()` ciktisi (+ `schema_hash`); legacy sampiyon
+        icin eski duz ozellik sozlugu. Sema uyusmazsa model KULLANILMAZ; prior'a donulur ve
+        `schema_mismatch_total` artar (fail-closed, sessiz yanlis tahmin yok)."""
+        leaf = f"{symbol}|{setup}" if symbol and setup else (symbol or setup)
+        prior, n_eff = self.win.estimate(regime=regime, leaf=leaf)
+        model, mid, params = self._champion_model()
         if model is None:
             return PredictionResult(round(prior, 4), round(prior, 4), None, 0, False, round(prior, 4), n_eff)
-        x = np.array(to_vector(build_features(features, include_time_features=self.cfg.include_time_features), model.feature_names), float)
+        # SIMETRIK kontrol: modelin semasi ile cagiranin bildirdigi sema BIREBIR ayni olmali.
+        # Bu, iki yonu de kapatir: (a) v3 sampiyona legacy sozluk gitmesi, (b) deploy oncesinden kalan
+        # LEGACY sampiyona v3 prediction vektoru gitmesi. Ikisi de sessizce yanlis tahmin uretirdi.
+        want, got = str(params.get("prediction_schema_hash") or ""), str(schema_hash or "")
+        if want != got:
+            self.telemetry.schema_mismatch(
+                f"p_win_lr {mid}: model semasi {want[:12] or 'LEGACY'} != girdi semasi {got[:12] or 'LEGACY'}")
+            self.telemetry.save()
+            return PredictionResult(round(prior, 4), round(prior, 4), None, 0, False, round(prior, 4),
+                                    n_eff, schema_ok=False)
+        if want:                                        # v3 model: girdi zaten prediction_vector()
+            x = np.array(to_vector(features, model.feature_names), float)
+        else:                                           # legacy sampiyon + legacy sozluk: eski koprü korunur
+            x = np.array(to_vector(build_features(features, include_time_features=self.cfg.include_time_features), model.feature_names), float)
         p_model = float(model.predict_proba(x)[0])
         p_cal = float(self.calibrator.apply([p_model])[0]) if self.calibrator.n_fit else p_model
         w = model.n_train / (model.n_train + self.cfg.prior_blend_n)   # veri arttıkça model ağırlığı artar
@@ -139,8 +171,16 @@ class LearnerV2:
         n = len(rows)
         if n < self.cfg.min_samples_train:
             return None
-        names = feature_names(FEATURE_VERSION, self.cfg.include_time_features)
-        X = np.array([to_vector(build_features(r.get("features") or r, include_time_features=self.cfg.include_time_features), names) for r in rows], float)
+        # TRAIN/SERVE PARITESI: egitim de cikarim da `prediction_features_v3` kullanir.
+        # v3 snapshot'i olmayan (eski sparse) satirlar egitime GIRMEZ -- sahte 0 ile doldurulmaz.
+        names = prediction_feature_names()
+        vecs = [(r, prediction_vector_from_row(r)) for r in rows]
+        rows = [r for r, v in vecs if v is not None]
+        mats = [v for _, v in vecs if v is not None]
+        n = len(rows)
+        if n < self.cfg.min_samples_train:
+            return None
+        X = np.array([to_vector(v, names) for v in mats], float)
         y = np.array([1.0 if float((r.get("outcome") or {}).get("r_multiple", 0) or 0) > 0.25 else 0.0 for r in rows])
         now = now or utc_now()
         ages = []
@@ -165,7 +205,13 @@ class LearnerV2:
         met.update({"n_holdout": int(len(p_hold)), "expectancy_r": round(float(np.mean(gated)), 4) if gated else 0.0,
                     "hit_rate": round(float(np.mean([(p >= 0.5) == (yy > 0.5) for p, yy in zip(p_hold_c, y[cut:])])), 4) if len(p_hold) else 0.0,
                     "feature_means": {k: round(float(v), 4) for k, v in zip(names, X.mean(axis=0))}})
-        params = model.to_dict() | {"calibrator": cal.to_dict()}
+        # Model artifact'i kendi sema sozlesmesini TASIR; serve tarafi bunu dogrular (bkz. predict).
+        params = model.to_dict() | {"calibrator": cal.to_dict(),
+                                    "feature_schema_id": PREDICTION_SCHEMA_ID,
+                                    "feature_version": SNAPSHOT_VERSION,
+                                    "feature_names": list(names),
+                                    "prediction_schema_hash": prediction_schema_hash(),
+                                    "imputation_contract": IMPUTATION_CONTRACT}
         mid = self.registry.register("p_win_lr", params, met, "CANDIDATE", note=f"train {cut} / holdout {n - cut}")
         self.last_metrics = met
         if not self.baseline_metrics:

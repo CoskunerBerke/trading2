@@ -26,8 +26,13 @@ def synth_bars(n: int = 160, *, end_ms: int, seed: int = 3, drift: float = 0.05,
 
 
 def make_snapshot(*, symbol: str, side: str, decision_ts_ms: int, seed: int = 3, source: str = "HISTORICAL_REPLAY",
-                  bar_ms: int = BAR_MS, entry: float | None = None) -> dict:
-    """Gerçekçi, dolu FeatureSnapshotV3 (coverage gate'i geçecek kadar kapsamlı)."""
+                  bar_ms: int = BAR_MS, entry: float | None = None, strength: float = 0.35) -> dict:
+    """Gerçekçi, dolu FeatureSnapshotV3 (coverage gate'i geçecek kadar kapsamlı).
+
+    `strength`: kurulumun gücü (-1..1). Ajan bias'ı, konsensüs ve beklenen R'yi birlikte hareket ettirir;
+    model testlerinin ayrıştırılabilir iki sınıf üretebilmesi için gerekir (sabit fixture'da öğrenilecek
+    sinyal olmaz). Yalnız `prediction_features_v3` alanlarını etkiler.
+    """
     bars = synth_bars(end_ms=decision_ts_ms, seed=seed, bar_ms=bar_ms)
     btc = synth_bars(end_ms=decision_ts_ms, seed=seed + 11, drift=0.03, bar_ms=bar_ms)
     px = float(bars["close"].iloc[-1]) if entry is None else float(entry)
@@ -35,12 +40,14 @@ def make_snapshot(*, symbol: str, side: str, decision_ts_ms: int, seed: int = 3,
     snap = build_snapshot(
         symbol=symbol, market_type="USDM_PERP", timeframe="4h", side=side, decision_ts_ms=decision_ts_ms,
         bars=bars, source=source, btc_bars=btc,
-        funding={"rate": 0.0001 * sgn, "z": 0.4 * sgn},
+        funding={"rate": 0.0001 * sgn, "z": strength * sgn},
         micro={"oi_change_pct": 1.2, "spread_pct": 0.02, "depth_ratio": 1.1, "est_slippage_pct": 0.03,
                "data_freshness_s": 12.0, "liquidity_ok": True, "basis_pct": 0.05},
-        decision={"consensus_score": 0.35 * sgn, "consensus_conf": 0.62, "n_dissent": 1, "n_vetoes": 0,
-                  "head_confidence": 0.58, "risk_allowed": True, "adx": 24.0, "trend_strength": 0.4},
-        plan={"setup_type": "pullback", "expected_r": 1.8, "p_win": 0.54, "expected_cost_pct": 0.18,
+        decision={"consensus_score": strength * sgn, "consensus_conf": 0.5 + 0.3 * abs(strength),
+                  "n_dissent": 1 if strength > 0 else 4, "n_vetoes": 0,
+                  "head_confidence": 0.5 + 0.3 * abs(strength), "risk_allowed": True,
+                  "adx": 20.0 + 20.0 * strength, "trend_strength": strength},
+        plan={"setup_type": "pullback", "expected_r": 1.2 + strength, "p_win": 0.54, "expected_cost_pct": 0.18,
               "entry": px, "stop": px * (0.97 if side.upper() == "LONG" else 1.03),
               "targets": [px * (1.05 if side.upper() == "LONG" else 0.95),
                           px * (1.09 if side.upper() == "LONG" else 0.91)],
@@ -50,8 +57,8 @@ def make_snapshot(*, symbol: str, side: str, decision_ts_ms: int, seed: int = 3,
                    "pnl_today_r": 0.1, "pnl_week_r": -0.2, "long_exposure": 15.0, "short_exposure": 15.0},
         pattern={"n": 40, "p_win": 0.52, "expectancy_r": 0.1, "profit_factor": 1.05, "ci_low": -0.05,
                  "distance": 0.4, "fallback_level": 1},
-        agents={a: {"bias": 0.3 * sgn, "confidence": 0.6} for a in
-                ("trend", "momentum", "volatility", "volume_flow", "market", "liquidity")},
+        agents={a: {"bias": strength * sgn, "confidence": 0.5 + 0.3 * abs(strength)} for a in
+                ("trend", "momentum", "volatility", "volume_flow", "liquidity", "derivatives")},
         run_id="fixture", seed=seed, strict=True)
     return snap.to_dict()
 

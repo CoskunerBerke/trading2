@@ -511,31 +511,43 @@ def _fit_fold(cfg, train_rows: list[dict], test_rows: list[dict], ref_ms: int):
     """Fold modeli: YALNIZ train satırlarıyla eğitilir; kalibrasyon train'in son diliminden; test'e bakılmaz."""
     import numpy as np
 
-    from ..learn import (Calibrator, LogisticModel, build_features, calibration_metrics, feature_names,
-                         recency_weights, to_vector)
-    from ..learn.features import FEATURE_VERSION
+    from ..learn import (Calibrator, LogisticModel, calibration_metrics, recency_weights, to_vector)
+    from ..learn.snapshot import prediction_feature_names, prediction_vector_from_row
     lc = cfg.v3.learning_v3
-    names = feature_names(FEATURE_VERSION, True)
+    # TRAIN/SERVE PARITESI: fold modeli de canli cikarim yolu da `prediction_features_v3` kullanir.
+    # v3 snapshot'i olmayan satirlar egitime/teste GIRMEZ (sahte 0 ile doldurulmaz); dislananlar
+    # cagirana geri dondurulur ki metrikler ayni satir kumesinde hesaplansin.
+    names = prediction_feature_names()
 
-    def _xy(rs):
-        X = np.array([to_vector(build_features(r.get("features") or r, include_time_features=True), names) for r in rs], float)
-        y = np.array([1.0 if float((r.get("outcome") or {}).get("r_multiple", 0) or 0) > 0.25 else 0.0 for r in rs])
+    def _keep(rs):
+        pairs = [(r, prediction_vector_from_row(r)) for r in rs]
+        return [(r, v) for r, v in pairs if v is not None]
+
+    def _xy(pairs):
+        X = np.array([to_vector(v, names) for _, v in pairs], float)
+        y = np.array([1.0 if float((r.get("outcome") or {}).get("r_multiple", 0) or 0) > 0.25 else 0.0 for r, _ in pairs])
         return X, y
 
-    Xtr, ytr = _xy(train_rows)
-    ages = np.array([max(0.0, (ref_ms - float(r["_close_ms"])) / 86_400_000.0) for r in train_rows])
+    tr_pairs, te_pairs = _keep(train_rows), _keep(test_rows)
+    kept_test = [r for r, _ in te_pairs]
+    if len(tr_pairs) < 10 or not te_pairs:
+        raise ReplaySafetyError(
+            f"v3 snapshot iceren yetersiz ornek (train={len(tr_pairs)}, test={len(te_pairs)}) -- "
+            "eski sparse hafizayla p_win modeli egitilmez")
+    Xtr, ytr = _xy(tr_pairs)
+    ages = np.array([max(0.0, (ref_ms - float(r["_close_ms"])) / 86_400_000.0) for r, _ in tr_pairs])
     w = recency_weights(ages, lc.half_life_days)
-    inner = max(1, int(len(train_rows) * (1 - lc.holdout_frac)))
+    inner = max(1, int(len(tr_pairs) * (1 - lc.holdout_frac)))
     model = LogisticModel(feature_names=names).fit(Xtr[:inner], ytr[:inner], w[:inner])
     cal = Calibrator(lc.calibrator)
-    if len(train_rows) - inner >= 10:
+    if len(tr_pairs) - inner >= 10:
         cal.fit(model.predict_proba(Xtr[inner:]), ytr[inner:])
-    Xte, yte = _xy(test_rows)
+    Xte, yte = _xy(te_pairs)
     p = model.predict_proba(Xte)
     p = cal.apply(p) if cal.n_fit else p
     met = calibration_metrics(p, yte)
     met.pop("reliability", None)
-    return p, yte, met
+    return p, yte, met, kept_test
 
 
 def coverage_report(rows: list[dict], replay_res: dict | None) -> dict:
@@ -648,7 +660,7 @@ def evaluate_replay(cfg, replay_dir: Path, *, min_samples: int | None = None, mi
         if len(tr) < max(10, need // 4):
             folds.append(common | {"skipped": "yetersiz train örneği"})
             continue
-        p, y, met = _fit_fold(cfg, tr, te, b["train_end_ms"])
+        p, y, met, te = _fit_fold(cfg, tr, te, b["train_end_ms"])   # te = yalniz v3 snapshot'i olan test satirlari
         r_test = [float((r.get("outcome") or {}).get("r_multiple", 0) or 0) for r in te]
         pooled_p += [float(v) for v in p]
         pooled_y += [float(v) for v in y]

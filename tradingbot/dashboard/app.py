@@ -328,6 +328,14 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
         chk = h.get("checks") or []
         body += "<h2>Kontroller</h2>" + table(["Kontrol", "Durum", "Detay", "Önem"], [[esc(c.get("name")), badge("ok", "ok") if c.get("ok") else badge("HATA", "bad"), esc(json.dumps(c.get("detail"), ensure_ascii=False) if isinstance(c.get("detail"), (dict, list)) else c.get("detail")), esc(c.get("severity"))] for c in chk], empty="health.json yok")
         body += "<h2>State dosyaları</h2>" + table(["Dosya", "Yaş"], [[esc(STATE_FILES.get(k, k)), age_text(time.time() - m)] for k, m in sorted(state.mtimes().items())])
+        _st = state.snapshot_telemetry()
+        _c = _st["counters"]
+        body += ('<div class="grid">'
+                 + card("Snapshot üretimi", f"{_c['snapshot_success_total']} başarılı",
+                        f"{_c['snapshot_failure_total']} hata · {_c['leakage_failure_total']} nedensellik")
+                 + card("Model şeması", f"{_c['schema_mismatch_total']} uyuşmazlık",
+                        esc(_st["last_failure_code"] or "-"))
+                 + '</div>')
         body += '<p class="small mut">Uçlar: <a href="/health/live">/health/live</a> · <a href="/health/ready">/health/ready</a> · <a href="/metrics">/metrics</a> · <a href="/api/overview">/api/overview</a></p>'
         return _page("Sağlık", body, "/health")
 
@@ -445,6 +453,14 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
             "# HELP tradingbot_llm_spent_usd_today LLM spend today USD", "# TYPE tradingbot_llm_spent_usd_today gauge",
             f"tradingbot_llm_spent_usd_today {ov['llm_spent_usd_today'] if ov['llm_spent_usd_today'] is not None else 0}",
         ]
+        # FeatureSnapshotV3 telemetrisi: arastirma snapshot'i sessizce kaybolamaz
+        _st = (ov.get("snapshot_telemetry") or {}).get("counters") or {}
+        for _name, _help in (("snapshot_success_total", "FeatureSnapshotV3 produced"),
+                             ("snapshot_failure_total", "FeatureSnapshotV3 failures"),
+                             ("leakage_failure_total", "FeatureSnapshotV3 causality violations"),
+                             ("schema_mismatch_total", "p_win model schema mismatches (model not used)")):
+            lines += [f"# HELP tradingbot_{_name} {_help}", f"# TYPE tradingbot_{_name} counter",
+                      f"tradingbot_{_name} {int(_st.get(_name, 0) or 0)}"]
         return PlainTextResponse("\n".join(lines) + "\n", media_type="text/plain; version=0.0.4; charset=utf-8")
 
     # ------------------------------------------------------------------ SSE

@@ -7,7 +7,7 @@ ile durdurur (sessiz kötü model yerine dürüst blok).
 from __future__ import annotations
 
 import math
-from .snapshot import ALL_FIELDS, FIELD_NAMES, SCHEMA_ID, SNAPSHOT_VERSION
+from .snapshot import ALL_FIELDS, FIELD_NAMES, PREDICTION_FIELD_NAMES, SCHEMA_ID, SNAPSHOT_VERSION
 
 COVERAGE_INVALID = "FEATURE_COVERAGE_INVALID"
 MIN_REQUIRED_AVAILABLE = 0.90        # zorunlu alanların en az %90'ı dolu olmalı
@@ -15,6 +15,7 @@ MIN_OVERALL_AVAILABLE = 0.55         # bütün alanların en az %55'i
 MAX_CONSTANT_RATIO = 0.60            # alanların en fazla %60'ı sabit/near-constant olabilir
 MIN_SYMBOLS = 2
 MIN_PER_SIDE = 5
+_PRED = frozenset(PREDICTION_FIELD_NAMES)
 
 
 def _stats(vals: list[float]) -> dict:
@@ -67,7 +68,7 @@ def coverage_report(rows: list[dict], *, source: str | None = None) -> dict:
     if ts_bad:
         problems.append(f"timestamp leakage: {ts_bad} kayıtta son bar karar anından sonra")
     fields: dict[str, dict] = {}
-    avail_req, avail_all, constants = [], [], 0
+    avail_req, avail_all, avail_pred, constants = [], [], [], 0
     for name, required in ALL_FIELDS:
         present = [float(s.get("values", {}).get(name)) for s in snaps
                    if isinstance(s.get("values"), dict) and s["values"].get(name) is not None]
@@ -78,10 +79,13 @@ def coverage_report(rows: list[dict], *, source: str | None = None) -> dict:
         avail_all.append(ratio)
         if required:
             avail_req.append(ratio)
+        if name in _PRED:
+            avail_pred.append(ratio)
         if st["constant"] and present:
             constants += 1
     req_avg = sum(avail_req) / len(avail_req) if avail_req else 0.0
     all_avg = sum(avail_all) / len(avail_all) if avail_all else 0.0
+    pred_avg = sum(avail_pred) / len(avail_pred) if avail_pred else 0.0
     const_ratio = constants / max(1, len(FIELD_NAMES))
     if req_avg < MIN_REQUIRED_AVAILABLE:
         problems.append(f"zorunlu alan kapsamı yetersiz: %{req_avg * 100:.1f} < %{MIN_REQUIRED_AVAILABLE * 100:.0f}")
@@ -103,7 +107,13 @@ def coverage_report(rows: list[dict], *, source: str | None = None) -> dict:
             "schema_id": SCHEMA_ID, "feature_version": SNAPSHOT_VERSION,
             "join": {"ok": join_ok, "broken": join_bad}, "invalid_timestamps": ts_bad,
             "required_available_pct": round(100.0 * req_avg, 2), "overall_available_pct": round(100.0 * all_avg, 2),
+            # p_win modeline GERCEKTEN giren alanlarin kapsami (audit-only alanlar haric) -- raporlanir,
+            # mevcut esikler DEGISTIRILMEZ; yeni bir kapi eklenmez.
+            "prediction_available_pct": round(100.0 * pred_avg, 2),
+            "prediction_fields": len(PREDICTION_FIELD_NAMES),
             "constant_fields": constants, "constant_ratio_pct": round(100.0 * const_ratio, 2),
+            "nonconstant_ratio_pct": round(100.0 * (1.0 - const_ratio), 2),
+            "missing_field_rate": {n: round(f["missing_pct"] / 100.0, 4) for n, f in fields.items() if f["missing_pct"] > 0},
             "symbols": dict(sorted(symbols.items())), "sides": dict(sorted(sides.items())),
             "sources": sorted(sources), "fields": fields,
             "thresholds": {"required_available": MIN_REQUIRED_AVAILABLE, "overall_available": MIN_OVERALL_AVAILABLE,

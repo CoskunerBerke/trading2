@@ -73,23 +73,48 @@ class _Rng:
         return self.s % max(1, n)
 
 
-def _side_symbol_breakdown(rows: list[dict], policy: CandidatePolicy) -> dict:
+def _row_ctx(r: dict) -> tuple[dict, str, str, float, float, float]:
+    """Bir kaydin politika girdileri (tek yerde) -> (snap_values, side, symbol, p_win, expected_r, raw_r)."""
+    out = r.get("outcome") or {}
+    snap = (r.get("snapshot") or {}).get("values") or {}
+    side = str(out.get("side") or ("LONG" if snap.get("is_long") else "SHORT"))
+    symbol = str(out.get("symbol") or (r.get("snapshot") or {}).get("symbol") or "?")
+    p_win = float(snap.get("pattern_p_win") or snap.get("p_win_prior") or 0.5)
+    exp_r = float(snap.get("expected_r") or 0.0)
+    return snap, side, symbol, p_win, exp_r, float(out.get("r_multiple", 0) or 0)
+
+
+def _side_symbol_lists(rows: list[dict], policy: CandidatePolicy) -> tuple[dict, dict]:
+    """Politikanin IZIN VERDIGI kayitlarin R listeleri (metrik degil ham liste: fold'lar birlestirilebilsin)."""
     by_side: dict[str, list[float]] = {}
     by_symbol: dict[str, list[float]] = {}
     for r in rows:
-        out = r.get("outcome") or {}
-        snap = (r.get("snapshot") or {}).get("values") or {}
-        side = str(out.get("side") or ("LONG" if snap.get("is_long") else "SHORT"))
-        symbol = str(out.get("symbol") or (r.get("snapshot") or {}).get("symbol") or "?")
-        d = policy.decide(snap, side=side, symbol=symbol,
-                          p_win=float(snap.get("pattern_p_win") or snap.get("p_win_prior") or 0.5),
-                          expected_net_r=float(snap.get("expected_r") or 0.0))
+        snap, side, symbol, p_win, exp_r, raw_r = _row_ctx(r)
+        d = policy.decide(snap, side=side, symbol=symbol, p_win=p_win, expected_net_r=exp_r)
         if d["allow"]:
-            v = float(out.get("r_multiple", 0) or 0) * float(d["size_multiplier"])
+            v = raw_r * float(d["size_multiplier"])
             by_side.setdefault(side, []).append(v)
             by_symbol.setdefault(symbol, []).append(v)
-    return {"by_side": {k: _r_metrics(v) for k, v in sorted(by_side.items())},
-            "by_symbol": {k: _r_metrics(v) for k, v in sorted(by_symbol.items())}}
+    return by_side, by_symbol
+
+
+def _merge_lists(dst: dict, src: dict) -> None:
+    for k, v in src.items():
+        dst.setdefault(k, []).extend(v)
+
+
+def _paired_diff(rows: list[dict], base: CandidatePolicy, pick: CandidatePolicy) -> list[float]:
+    """AYNI OOS kayitlari uzerinde eslesmis fark. Politikanin bloke ettigi islem 0 R katkisi yapar
+    (islem acilmaz), boylece baseline ile ayni uzunlukta gercek bir esleme olusur."""
+    out: list[float] = []
+    for r in rows:
+        snap, side, symbol, p_win, exp_r, raw_r = _row_ctx(r)
+        b = base.decide(snap, side=side, symbol=symbol, p_win=p_win, expected_net_r=exp_r)
+        c = pick.decide(snap, side=side, symbol=symbol, p_win=p_win, expected_net_r=exp_r)
+        bv = raw_r * float(b["size_multiplier"]) if b["allow"] else 0.0
+        cv = raw_r * float(c["size_multiplier"]) if c["allow"] else 0.0
+        out.append(cv - bv)
+    return out
 
 
 def evaluate_policies(cfg: Any, replay_dir: Path, rows: list[dict], bounds: list[dict], *,
@@ -111,6 +136,9 @@ def evaluate_policies(cfg: Any, replay_dir: Path, rows: list[dict], bounds: list
         validate_policy(c, risk_profile_max_leverage=max_lev)
     base = baseline_policy(seed)
     folds, base_all, cand_all, picks = [], [], [], []
+    oos = {scope: {"by_side": {}, "by_symbol": {}} for scope in ("baseline", "candidate")}
+    paired: list[float] = []
+    test_ids: list[str] = []
     for b in sorted(bounds, key=lambda x: x["train_end_ms"]):
         train, test, _ex = _fold_rows(rows, b)
         if len(test) < min_test_trades or len(train) < 10:
@@ -131,6 +159,16 @@ def evaluate_policies(cfg: Any, replay_dir: Path, rows: list[dict], bounds: list
         c_rs, c_dec = _apply(pick, test)
         base_all += b_rs
         cand_all += c_rs
+        # KIRILIM: yalniz BU fold'un OOS test satirlari + BU fold'da secilen aday. Train/validation ve
+        # izgaranin ilk adayi final rapora KARISMAZ (her fold farkli aday secebilir).
+        bs_b, by_b = _side_symbol_lists(test, base)
+        bs_c, by_c = _side_symbol_lists(test, pick)
+        _merge_lists(oos["baseline"]["by_side"], bs_b); _merge_lists(oos["baseline"]["by_symbol"], by_b)
+        _merge_lists(oos["candidate"]["by_side"], bs_c); _merge_lists(oos["candidate"]["by_symbol"], by_c)
+        paired += _paired_diff(test, base, pick)
+        for r in test:                                  # cift sayim denetimi (fold test kumeleri ayrik olmali)
+            tid = str(r.get("trade_id") or id(r))
+            test_ids.append(tid)
         blocked = sum(1 for d in c_dec if not d["allow"])
         folds.append({"idx": b["idx"], "n_train": len(train), "n_test": len(test),
                       "train_range": [iso_ms(b["train_start_ms"]), iso_ms(b["train_end_ms"])],
@@ -143,7 +181,8 @@ def evaluate_policies(cfg: Any, replay_dir: Path, rows: list[dict], bounds: list
         raise ReplaySafetyError(f"yeterli skorlanan fold yok: {len(scored_folds)} < 2")
     b_m, c_m = _r_metrics(base_all), _r_metrics(cand_all)
     b_ci, c_ci = _bootstrap_ci(base_all, seed=seed), _bootstrap_ci(cand_all, seed=seed)
-    diff = [c - b for c, b in zip(cand_all, base_all)] if len(cand_all) == len(base_all) else []
+    diff = paired                       # ayni OOS kayitlari uzerinde gercek eslesmis fark
+    duplicate_test_rows = len(test_ids) - len(set(test_ids))
     improved = sum(1 for f in scored_folds
                    if (f["candidate"]["expectancy_r"] or -9) > (f["baseline"]["expectancy_r"] or -9))
     consistency = round(improved / len(scored_folds), 4)
@@ -156,6 +195,7 @@ def evaluate_policies(cfg: Any, replay_dir: Path, rows: list[dict], bounds: list
         "profit_factor_above_one": bool(c_m.get("profit_factor") is not None and c_m["profit_factor"] > 1.0),
         "fold_consistency": bool(consistency >= 0.6),
         "enough_folds": bool(len(scored_folds) >= 2),
+        "no_duplicate_test_rows": bool(duplicate_test_rows == 0),
         "point_in_time": bool(point_in_time),
         "survivorship_clean": bool(not survivorship_present),
     }
@@ -163,17 +203,23 @@ def evaluate_policies(cfg: Any, replay_dir: Path, rows: list[dict], bounds: list
     verdict = "SHADOW_CANDIDATE" if all_ok else ("RESEARCH_ONLY" if gates["candidate_positive"] and gates["beats_baseline"]
                                                  else "REJECTED")
     winner = max(set(picks), key=picks.count) if picks else None
+    winner_policy = next((c.to_dict() for c in cands if c.policy_id == winner), None)
     report = {
         "schema": "policy_walk_forward_v1", "generated_at": iso(utc_now()), "run_dir": str(replay_dir),
         "seed": seed, "n_candidates": len(cands), "selection_penalty_per_candidate": SELECTION_PENALTY_PER_CANDIDATE,
-        "selected_policies": picks, "most_selected": winner,
+        "selected_policies": picks, "most_selected": winner, "most_selected_policy": winner_policy,
         "folds": folds, "scored_folds": len(scored_folds),
         "baseline": {**b_m, "ci95": list(b_ci)}, "candidate": {**c_m, "ci95": list(c_ci)},
         "delta_expectancy_r": (round((c_m["expectancy_r"] or 0) - (b_m["expectancy_r"] or 0), 4)
                                if c_m["expectancy_r"] is not None and b_m["expectancy_r"] is not None else None),
         "paired_diff_mean": round(statistics.fmean(diff), 4) if diff else None,
         "fold_consistency": consistency,
-        "breakdown": {"baseline": _side_symbol_breakdown(rows, base), "candidate": _side_symbol_breakdown(rows, cands[0])},
+        "breakdown": {scope: {"by_side": {k: _r_metrics(v) for k, v in sorted(g["by_side"].items())},
+                              "by_symbol": {k: _r_metrics(v) for k, v in sorted(g["by_symbol"].items())}}
+                      for scope, g in oos.items()},
+        "breakdown_scope": ("yalniz OOS test fold'lari; aday = her fold'un kendi validation'inda sectigi "
+                            "politika (train/validation ve izgara ilk adayi rapora girmez)"),
+        "oos_test_rows": len(test_ids), "duplicate_test_rows": duplicate_test_rows,
         "gates": gates, "failed_gates": sorted(k for k, v in gates.items() if not v),
         "verdict": verdict,
         "method": {"selection": "yalnız train'in son %30'u (iç validation); test fold'u seçime GİRMEZ",

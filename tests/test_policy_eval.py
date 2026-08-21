@@ -169,6 +169,46 @@ def test_no_promotion_call_in_policy_path(tmp_path, monkeypatch):
     assert calls == []
 
 
+def test_breakdown_uses_only_oos_rows_and_the_fold_selected_candidate(tmp_path):
+    """Kırılım raporu: YALNIZ OOS test satırları + o fold'un seçtiği aday.
+
+    Eskiden `rows` (train+validation+test, in-sample) ve ızgaranın İLK adayı kullanılıyordu; bu,
+    taraf/sembol kırılımını sistematik olarak yanıltıyordu.
+    """
+    cfg = _cfg(tmp_path)
+    rdir = resolve_replay_dir(cfg.state_path, "pol_bd")
+    rdir.mkdir(parents=True, exist_ok=True)
+    rows = _rows()
+    rep = evaluate_policies(cfg, rdir, rows, BOUNDS, seed=7, min_test_trades=5)
+    bd = rep["breakdown"]
+    assert set(bd) == {"baseline", "candidate"}
+    # kırılımdaki toplam örnek OOS test satırlarını AŞAMAZ (in-sample sızıntısı olsaydı aşardı)
+    oos_n = rep["oos_test_rows"]
+    assert 0 < oos_n < len(rows)
+    base_n = sum(m["n"] for m in bd["baseline"]["by_side"].values())
+    cand_n = sum(m["n"] for m in bd["candidate"]["by_side"].values())
+    assert base_n == oos_n                                       # baseline passthrough: her OOS satırı
+    assert cand_n <= base_n                                      # aday yalnız eler/küçültür
+    assert sum(m["n"] for m in bd["baseline"]["by_symbol"].values()) == oos_n
+    # seçilen aday SHORT'u veto ettiyse kırılımda SHORT kalmamalı
+    if "SHORT" in ((rep["most_selected_policy"] or {}).get("side_veto") or []):
+        assert "SHORT" not in bd["candidate"]["by_side"]
+    assert rep["duplicate_test_rows"] == 0                       # fold test kümeleri ayrık
+    assert rep["gates"]["no_duplicate_test_rows"] is True
+    assert "OOS" in rep["breakdown_scope"]
+
+
+def test_paired_diff_is_computed_on_the_same_oos_rows(tmp_path):
+    """Eşleşmiş fark aynı kayıtlar üzerinde hesaplanır; bloke edilen işlem 0 R katkısı yapar."""
+    cfg = _cfg(tmp_path)
+    rdir = resolve_replay_dir(cfg.state_path, "pol_pd")
+    rdir.mkdir(parents=True, exist_ok=True)
+    rep = evaluate_policies(cfg, rdir, _rows(), BOUNDS, seed=7, min_test_trades=5)
+    assert rep["paired_diff_mean"] is not None                   # eskiden uzunluk uyuşmazlığında None kalıyordu
+    # SHORT zararlı olduğu için SHORT'u eleyen aday baseline'dan iyi olmalı
+    assert rep["paired_diff_mean"] > 0
+
+
 def test_report_written_only_inside_run_dir(tmp_path):
     cfg = _cfg(tmp_path)
     rdir = resolve_replay_dir(cfg.state_path, "pol8")

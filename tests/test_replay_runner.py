@@ -229,7 +229,7 @@ a = sys.argv[1:]
 log = os.environ.get("CALLS_LOG")
 if log:
     with open(log, "a", encoding="utf-8") as fh:
-        fh.write(" ".join(a) + "\n")
+        fh.write(" ".join(a) + chr(10))
 cmd = a[0] if a else ""
 if cmd == "mode-status":
     live = os.environ.get("FAKE_MODE", "PAPER") != "PAPER"
@@ -247,7 +247,8 @@ else:
     print(json.dumps({"cmd": a, "leaked_secret": "ANTHROPIC_API_KEY" in os.environ}))
 '''
 
-_NEEDED_BINS = ("env", "cat", "sed", "stat", "printf", "head", "grep", "date", "rm", "mkdir", "id")
+_NEEDED_BINS = ("bash", "sh", "env", "cat", "sed", "stat", "printf", "head", "grep",
+                "date", "rm", "mkdir", "id", "tail", "awk")
 
 
 def _sandbox(tmp_path: Path, name: str, *, with_systemd_run: bool = True, isolate_path: bool = False) -> dict:

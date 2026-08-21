@@ -336,6 +336,16 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
                  + card("Model şeması", f"{_c['schema_mismatch_total']} uyuşmazlık",
                         esc(_st["last_failure_code"] or "-"))
                  + '</div>')
+        _rp = state.learning_research()
+        _rs = _rp.get("active_stats") or {}
+        body += ('<div class="grid">'
+                 + card("Araştırma politikası", esc(_rp.get("active_policy_id") or "yok (baseline)"),
+                        esc(_rp.get("active_rationale") or "aktif aday yok — bot baseline davranışında"))
+                 + card("Eşleşmiş gözlem", f"{int(_rs.get('n_obs', 0) or 0)}",
+                        f"fark {_rs.get('delta_r')} R · {int(_rs.get('blocked', 0) or 0)} elenen")
+                 + card("Otomatik terfi", "KAPALI" if not _rp.get("auto_promotion_possible") else "AÇIK",
+                        "CHAMPION yalnız manuel operatör onayıyla")
+                 + '</div>')
         body += '<p class="small mut">Uçlar: <a href="/health/live">/health/live</a> · <a href="/health/ready">/health/ready</a> · <a href="/metrics">/metrics</a> · <a href="/api/overview">/api/overview</a></p>'
         return _page("Sağlık", body, "/health")
 
@@ -461,6 +471,21 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
                              ("schema_mismatch_total", "p_win model schema mismatches (model not used)")):
             lines += [f"# HELP tradingbot_{_name} {_help}", f"# TYPE tradingbot_{_name} counter",
                       f"tradingbot_{_name} {int(_st.get(_name, 0) or 0)}"]
+        # PAPER araştırma politikası: aktif mi, kaç eşleşmiş gözlem, baseline'a göre fark
+        _rp = ov.get("learning_research") or {}
+        _rs = _rp.get("active_stats") or {}
+        lines += ["# HELP tradingbot_research_policy_active 1 if a PAPER research policy is active",
+                  "# TYPE tradingbot_research_policy_active gauge",
+                  f"tradingbot_research_policy_active {1 if _rp.get('active_policy_id') else 0}",
+                  "# HELP tradingbot_research_observations paired baseline/candidate observations",
+                  "# TYPE tradingbot_research_observations gauge",
+                  f"tradingbot_research_observations {int(_rs.get('n_obs', 0) or 0)}",
+                  "# HELP tradingbot_research_delta_r candidate minus baseline expectancy (R)",
+                  "# TYPE tradingbot_research_delta_r gauge",
+                  f"tradingbot_research_delta_r {_rs.get('delta_r') if _rs.get('delta_r') is not None else 'NaN'}",
+                  "# HELP tradingbot_auto_promotion_enabled 1 if automatic CHAMPION promotion is possible",
+                  "# TYPE tradingbot_auto_promotion_enabled gauge",
+                  f"tradingbot_auto_promotion_enabled {1 if _rp.get('auto_promotion_possible') else 0}"]
         return PlainTextResponse("\n".join(lines) + "\n", media_type="text/plain; version=0.0.4; charset=utf-8")
 
     # ------------------------------------------------------------------ SSE

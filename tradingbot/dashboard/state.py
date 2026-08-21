@@ -15,7 +15,7 @@ STATE_FILES: dict[str, str] = {
     "killswitch": "killswitch.json", "mode": "mode.json", "health": "health.json", "llm_budget": "llm_budget.json",
     "models": "models.json", "universe": "universe.json", "shadow_book": "shadow_book.json", "heartbeat": "heartbeat.json",
     "orders": "orders.json", "triggers": "triggers.json",
-    "snapshot_telemetry": "snapshot_telemetry.json",
+    "snapshot_telemetry": "snapshot_telemetry.json", "research_policy": "research_policy.json",
 }
 JSONL_FILES: dict[str, str] = {"llm_calls": "llm_calls.jsonl", "trade_memory": "trade_memory.jsonl", "signals_log": "signals_log.jsonl"}
 
@@ -218,6 +218,23 @@ class StateReader:
                 "last_failure_code": str(d.get("last_failure_code") or ""),
                 "last_failure_at": str(d.get("last_failure_at") or "")}
 
+    def learning_research(self) -> dict[str, Any]:
+        """PAPER araştırma politikası özeti — hangi aday aktif, neyi değiştirdi, sonucu ne.
+
+        `auto_promotion_possible` her zaman False: bu katman CHAMPION/LIVE üretemez.
+        """
+        d = self.get("research_policy") or {}
+        recs = d.get("records") or []
+        return {"active_policy_id": d.get("active_policy_id"),
+                "active_rationale": d.get("active_rationale"),
+                "active_changed_params": d.get("active_changed_params") or [],
+                "active_stats": d.get("active_stats"),
+                "counts": d.get("counts") or {},
+                "auto_promotion_possible": bool(d.get("auto_promotion_possible", False)),
+                "retired": [{"policy_id": r.get("policy_id"), "reason": r.get("retired_reason")}
+                            for r in recs if r.get("state") == "RETIRED" and r.get("retired_reason")][-5:],
+                "gates": d.get("gates") or {}}
+
     def overview(self) -> dict[str, Any]:
         health = self.get("health") or {}
         llm = self.get("llm_budget") or {}
@@ -235,6 +252,7 @@ class StateReader:
             "last_run_age_s": self.last_run_age(),
             "llm_spent_usd_today": llm.get("spent_usd"),
             "snapshot_telemetry": self.snapshot_telemetry(),
+            "learning_research": self.learning_research(),
             "chief": (self.get("coin_heads") or {}).get("chief") or (self.get("agents") or {}).get("chief") or {},
             "top_heads": sorted(heads, key=lambda h: -float(h.get("confidence_calibrated") or 0))[:10],
         }

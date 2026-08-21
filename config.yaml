@@ -172,7 +172,9 @@ learning_v3:
   half_life_days: 60
   calibrator: platt
   shadow_trades: true
-  auto_promote_in_paper: true  # TESTNET/LIVE'da terfi her zaman manuel
+  # GUVENLIK: otomatik CHAMPION terfisi HICBIR modda yapilmaz. true verilirse config
+  # PAPER_AUTO_PROMOTION_FORBIDDEN ile fail-closed reddedilir (bkz. config_v3.validate_v3).
+  auto_promote_in_paper: false  # terfi her zaman acik manuel operator onayiyla
 
 storage:
   sqlite_enabled: true

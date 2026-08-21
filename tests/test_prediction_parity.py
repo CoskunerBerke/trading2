@@ -377,22 +377,43 @@ def test_telemetry_is_readable_through_dashboard_state_and_metrics(tmp_path):
 
 
 # =========================================================================== 8) otomatik terfi KAPALI
-def test_auto_promote_in_paper_defaults_to_false():
-    from tradingbot.config_v3 import LearningV3Section, load_v3
+def test_auto_promote_in_paper_defaults_to_false_and_true_is_rejected():
+    from tradingbot.config_v3 import ConfigError, LearningV3Section, load_v3
     assert LearningV3Section().auto_promote_in_paper is False
     # eski config'te alan yoksa güvenli varsayılan (geriye dönük uyumluluk)
     cfg = load_v3({"mode": "PAPER", "learning_v3": {"enabled": True, "min_samples_train": 40}})
     assert cfg.learning_v3.auto_promote_in_paper is False
     assert cfg.learning_v3.min_samples_train == 40                       # verilen alanlar korunur
-    assert load_v3({"mode": "PAPER", "learning_v3": {"auto_promote_in_paper": True}}).learning_v3.auto_promote_in_paper is True
+    # true FAIL-CLOSED reddedilir: sessizce false'a düşürülmez
+    with pytest.raises(ConfigError, match="PAPER_AUTO_PROMOTION_FORBIDDEN"):
+        load_v3({"mode": "PAPER", "learning_v3": {"auto_promote_in_paper": True}})
 
 
-def test_engine_checks_the_flag_before_calling_maybe_promote():
+def test_shipped_config_has_auto_promotion_disabled():
+    """Depodaki GERÇEK config.yaml — varsayılan dosya otomatik terfiye izin veremez."""
+    import io as _io
+    from pathlib import Path as _P
+    import yaml
+    from tradingbot.config_v3 import load_v3
+    raw = yaml.safe_load(_io.open(_P(__file__).resolve().parents[1] / "config.yaml", encoding="utf-8"))
+    assert (raw.get("learning_v3") or {}).get("auto_promote_in_paper") is False
+    assert load_v3(raw).learning_v3.auto_promote_in_paper is False
+
+
+def test_worker_loop_never_calls_maybe_promote():
+    """PAPER worker döngüsünde otomatik terfi çağrısı KALMAMALI (tamamen kaldırıldı)."""
     src = inspect.getsource(TradingEngineV3)
-    assert "maybe_promote" in src and "auto_promote_in_paper" in src
-    call = src.index("maybe_promote(")
-    flag = src.rindex("auto_promote_in_paper", 0, call)
-    assert 0 < flag < call, "terfi çağrısı bayrak kontrolünden önce gelemez"
+    assert "maybe_promote" not in src, "motor otomatik terfi çağıramaz"
+    assert "train_challenger" in src and "CANDIDATE" in src               # eğitim sürüyor, terfi yok
+
+
+def test_manual_promotion_entry_point_still_exists():
+    """`maybe_promote` yalnız açık manuel kullanım için durur (CLI operator onayı)."""
+    from tradingbot.learn import LearnerV2
+    import tradingbot.cli_v3 as cli
+    assert hasattr(LearnerV2, "maybe_promote")
+    src = inspect.getsource(cli.cmd_validate_model)
+    assert "maybe_promote" in src and "operator" in src and "manual=bool(args.operator)" in src
 
 
 def test_candidate_never_enters_prediction_path_without_explicit_promotion(tmp_path):

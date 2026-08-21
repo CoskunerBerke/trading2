@@ -74,9 +74,18 @@ class TradingEngineV3(TradingEngine):
         if self.ledger2.positions:
             log.info("resume: %d açık futures pozisyonu (%s) · defter güncelleme %s",
                      len(self.ledger2.positions), ", ".join(sorted(self.ledger2.positions)), self.ledger2.updated_at or "-")
+        from .learn.research_policy import ResearchGates, ResearchPolicyBook
         from .learn.telemetry import SnapshotTelemetry
         self.snap_telemetry = SnapshotTelemetry.load(cfg.state_path)
         self._pred_snapshots = {}                       # sembol -> karar ani snapshot (predict + kayit ayni nesne)
+        _lv = cfg.v3.learning_v3
+        # PAPER arastirma politikasi: aktif aday YOKSA bot baseline davranisini AYNEN surdurur.
+        self.research = ResearchPolicyBook(st / "research_policy.json", ResearchGates(
+            min_shadow_obs=_lv.research_min_shadow_obs, min_active_obs=_lv.research_min_active_obs,
+            min_review_obs=_lv.research_min_review_obs, cooldown_hours=_lv.research_cooldown_hours,
+            retire_delta_r=_lv.research_retire_delta_r))
+        self._last_train_at = None                      # online ogrenme temposu (cooldown)
+        self._closes_since_train = 0
         self.registry = CoinHeadRegistry(self.head_cfg, max_workers=ch.max_workers)
         self.registry.load(st)          # snapshot olay-zaman sırası (legacy hash-only state güvenli geçer)
         self._tour_no = 0               # aynı ms için deterministik tie-breaker
@@ -487,15 +496,30 @@ class TradingEngineV3(TradingEngine):
             lessons.append(self.learner.learn(legacy))
             self.learner2.on_trade_closed(legacy | {"features": legacy.get("features") or {}}, {"regime": snap.get("regime"), "consensus_score": snap.get("consensus_score"),
                                                                                                 "dissent": snap.get("dissent"), "vetoes": snap.get("vetoes")})
-        # gölge işlemleri etiketle
+        # gölge işlemleri etiketle (araştırma politikasının elediği girişlerin karşı-olgusal sonucu burada oluşur)
         self._label_shadows()
-        # challenger eğitimi (yeterli veri varsa; PAPER'da otomatik terfi kapı geçerse)
-        if records and self.cfg.v3.learning_v3.enabled:
+        # kapanan gerçek işlemleri araştırma adayına eşleşmiş gözlem olarak yaz
+        for rec in records:
+            self._observe_research_close(rec)
+        # ÖĞRENME TEMPOSU: her kapanışta yeniden eğitim YOK — asgari yeni kapanış + cooldown kapısı.
+        # OTOMATİK TERFİ YOK: yeni model yalnız CANDIDATE olarak kaydedilir; CHAMPION'a geçiş açık
+        # manuel operatör onayı ister (`python -m tradingbot learning-promote --operator <ad>`).
+        self._closes_since_train += len(records)
+        if self.cfg.v3.learning_v3.enabled and self._training_due(now):
             try:
-                if self.learner2.train_challenger(now=now) and self.cfg.v3.learning_v3.auto_promote_in_paper:
-                    self.learner2.maybe_promote(self.mode_state.mode.value)
+                out = self.learner2.train_challenger(now=now)
+                if out:
+                    self._last_train_at, self._closes_since_train = now, 0
+                    log.info("challenger eğitildi → CANDIDATE %s (terfi YOK, manuel onay gerekir)", out.get("model_id"))
             except (ValueError, TypeError) as exc:
                 log.warning("challenger eğitimi atlandı: %s", exc)
+        # araştırma adayı: kapılar geçilirse aktifleşir, kötüleşirse baseline'a dönülür
+        if self.cfg.v3.learning_v3.research_enabled:
+            try:
+                self.research.evaluate_active(now=now)
+                self.research.maybe_activate(now=now)
+            except Exception as exc:  # noqa: BLE001 — araştırma katmanı işlem akışını DURDURAMAZ
+                log.warning("araştırma politikası değerlendirmesi atlandı: %s", exc)
         # 7) görseller (legacy)
         chart_paths = {}
         if charts:
@@ -591,7 +615,27 @@ class TradingEngineV3(TradingEngine):
             feats.update({"initial_stop": plan.stop, "p_win": b.p_win, "regime": d.regime, "consensus_score": d.consensus_score, "consensus_conf": d.consensus_confidence,
                           "n_dissent": len(d.dissent), "n_vetoes": len(d.vetoes), "expected_r": d.expected_r, "expected_cost_pct": d.expected_cost, "market_type": market,
                           "spread_pct": plan_dict.get("spread_pct")})
-            notional = float(rd.adjusted_notional or plan.notional)
+            # ARAŞTIRMA POLİTİKASI: risk/chief onayından SONRA çalışır ve yalnız daraltabilir.
+            # Aktif aday yoksa `allow=True, size_multiplier=1.0` döner → davranış birebir aynı kalır.
+            snap_v3 = self._pred_snapshots.get(sym)     # predict anında üretildi; yeniden hesaplanmaz
+            res = self._research_decision(sym, d, plan, snap_v3)
+            entry["research_policy_id"] = res["policy_id"]
+            entry["research_reasons"] = res["reasons"]
+            entry["research_size_multiplier"] = res["size_multiplier"]
+            if not res["allow"]:
+                # Pozisyon AÇILMAZ. Baseline'ın ne yapacağı karşı-olgusal gölge işlemle izlenir;
+                # gölge etiketlendiğinde eşleşmiş gözlem olarak adaya yazılır.
+                shs = self.shadow.add({"plan_id": stable_id("plan", self.run_id, sym), "symbol": sym, "market_type": market,
+                                       "direction": d.direction, "entry": plan.entry, "stop": plan.stop,
+                                       "targets": plan.targets, "horizon_bars": plan.time_horizon_bars,
+                                       "leverage": plan.size.leverage},
+                                      ["RESEARCH_POLICY_BLOCK"] + list(res["reasons"]), now=now)
+                if shs and res["policy_id"]:
+                    self.research.add_pending(shs[0].id, {"policy_id": res["policy_id"], "kind": "blocked",
+                                                          "size_multiplier": 0.0, "reasons": res["reasons"],
+                                                          "symbol": sym, "side": d.direction})
+                continue
+            notional = float(rd.adjusted_notional or plan.notional) * float(res["size_multiplier"])
             if market == "USDM_PERP":
                 pos = self.ledger2.open(sym, d.direction, b.price, SizeSpec(Decimal(str(notional)), AmountType.NOTIONAL, int(rd.adjusted_leverage or 1)),
                                         stop=plan.stop, targets=plan.targets, filters=self.filters.get(sym, MarketType.USDM_PERP), setup_type=plan.entry_type,
@@ -609,7 +653,10 @@ class TradingEngineV3(TradingEngine):
                     continue
                 trade_id = getattr(order, "id", new_id("spot"))
                 desc = f"{sym} SPOT LONG @ {b.price:.6g} · {notional:.2f} USDT · stop {plan.stop:.6g}"
-            snap_v3 = self._pred_snapshots.get(sym)     # predict aninda uretildi; yeniden hesaplanmaz
+            if res["policy_id"]:                        # aday izin verdi (belki küçülterek) → eşleşmiş gözlem beklemede
+                self.research.add_pending(trade_id, {"policy_id": res["policy_id"], "kind": "allowed",
+                                                     "size_multiplier": float(res["size_multiplier"]),
+                                                     "reasons": res["reasons"], "symbol": sym, "side": d.direction})
             self.memory.record_entry({"trade_id": trade_id, "symbol": sym, "direction": d.direction, "market_type": market, "setup_type": plan.entry_type,
                                       "regime": d.regime, "features": ((snap_v3.vector() | feats) if snap_v3 else feats),
                                       "snapshot": (snap_v3.to_dict() if snap_v3 else None),
@@ -650,9 +697,20 @@ class TradingEngineV3(TradingEngine):
             if h4 is None:
                 continue
             try:
-                self.shadow.label(sh, h4.reset_index(drop=True) if "timestamp" in h4 else h4)
+                out = self.shadow.label(sh, h4.reset_index(drop=True) if "timestamp" in h4 else h4)
             except (KeyError, ValueError, TypeError) as exc:
                 log.warning("gölge işlem etiketlenemedi %s: %s", sh.id, exc)
+                continue
+            if out is None:
+                continue
+            # Araştırma adayının ELEDİĞİ giriş: baseline'ın karşı-olgusal sonucu artık biliniyor →
+            # eşleşmiş gözlem (candidate_r = 0, işlem hiç açılmadı).
+            pending = self.research.pop_pending(sh.id)
+            if pending and pending.get("policy_id"):
+                self.research.observe(pending["policy_id"], trade_id=sh.id,
+                                      baseline_r=float(out.get("r_multiple", 0) or 0), candidate_r=0.0,
+                                      allowed=False, size_multiplier=0.0,
+                                      reasons=list(pending.get("reasons") or []))
 
     # ------------------------------------------------------------------ görsel / Obsidian (v2 defterle uyumlu)
     def _chart(self, b: CoinBrief) -> str:
@@ -707,6 +765,47 @@ class TradingEngineV3(TradingEngine):
                 "aynı tikte stop+hedef → stop (worst-case) · komisyon fill notional üzerinden · vergi ayrı ve doğrulanana kadar 0",
                 "", "[[Learning/Öğrenme]] · [[Learning/Dersler]] · [[Scanner]] · [[Dashboard]] · [[Risk/Limits]]"]
         return "\n".join(out)
+
+    def _training_due(self, now) -> bool:
+        """Her kapanışta yeniden eğitme YOK: asgari yeni kapanış + cooldown kapısı birlikte geçilmeli."""
+        lc = self.cfg.v3.learning_v3
+        if self._closes_since_train < lc.retrain_min_new_closed:
+            return False
+        if self._last_train_at is not None:
+            if (now - self._last_train_at).total_seconds() < lc.retrain_cooldown_hours * 3600:
+                return False
+        return True
+
+    def _research_decision(self, sym: str, d, plan, snap) -> dict:
+        """Aktif araştırma adayının bu giriş için kararı. Aday yoksa baseline (değişiklik yok).
+
+        Aday YALNIZ reddedebilir ya da boyutu küçültebilir; risk limiti, kaldıraç, stop/TP ve mod
+        bu yoldan DEĞİŞTİRİLEMEZ (bkz. learn/research_policy.py).
+        """
+        from .learn.research_policy import apply_research_policy
+        if not self.cfg.v3.learning_v3.research_enabled:
+            return {"allow": True, "size_multiplier": 1.0, "reasons": ["RESEARCH_DISABLED"], "policy_id": None}
+        try:
+            vals = (snap.values if snap is not None else {}) or {}
+            return apply_research_policy(self.research.active_policy(), vals, side=d.direction, symbol=sym,
+                                         p_win=float(d.p_win or 0.5), expected_net_r=float(plan.expected_r or 0.0))
+        except Exception as exc:  # noqa: BLE001 — araştırma katmanı hatası girişi ENGELLEMEZ, baseline'a düşer
+            log.warning("%s araştırma politikası uygulanamadı: %s", sym, exc)
+            return {"allow": True, "size_multiplier": 1.0, "reasons": [f"RESEARCH_ERROR:{exc}"], "policy_id": None}
+
+    def _observe_research_close(self, rec) -> None:
+        """Kapanan gerçek işlemi eşleşmiş gözleme çevirir: baseline = tam boyut, candidate = çarpanlı."""
+        try:
+            pend = self.research.pop_pending(str(getattr(rec, "id", "") or ""))
+            if not pend or not pend.get("policy_id"):
+                return
+            r = float((rec.to_legacy_dict() or {}).get("r_multiple", 0) or 0)
+            mult = float(pend.get("size_multiplier", 1.0))
+            self.research.observe(pend["policy_id"], trade_id=str(rec.id), baseline_r=r,
+                                  candidate_r=r * mult, allowed=True, size_multiplier=mult,
+                                  reasons=list(pend.get("reasons") or []))
+        except Exception as exc:  # noqa: BLE001
+            log.warning("araştırma gözlemi yazılamadı: %s", exc)
 
     def _snapshot_v3(self, sym: str, d):
         """Canli PAPER karar ani FeatureSnapshotV3 -- replay ile AYNI builder ve AYNI esleme yardimcilari.

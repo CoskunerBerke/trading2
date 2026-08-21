@@ -271,7 +271,9 @@ def test_attribution_reports_context_relations_with_disclaimer():
             r["outcome"]["r_multiple"] = -0.8
     rep = attribution_report(rows, min_bucket=5)
     assert rep["cuts"]["side"]["SHORT"]["expectancy_r"] < 0
-    assert any("side=SHORT" in f for f in rep["findings"])
+    assert any(f["cut"] == "side" and f["label"] == "SHORT" for f in rep["findings"])
+    assert any("side=SHORT" in f["text"] for f in rep["findings"])
     assert "nedensellik" in rep["disclaimer"].lower()
     assert rep["cuts"]["vol_regime"] and rep["cuts"]["side_x_regime"]
     assert isinstance(rep["missing_field_rate"], dict)
+    assert rep["schema"] == "loss_attribution_v2" and rep["trades"]         # işlem bazlı yapılandırılmış analiz

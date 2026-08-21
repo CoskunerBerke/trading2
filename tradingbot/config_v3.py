@@ -160,10 +160,20 @@ class LearningV3Section:
     half_life_days: float = 60.0
     calibrator: str = "platt"
     shadow_trades: bool = True
-    # GUVENLI VARSAYILAN: PAPER'da otomatik CHAMPION terfisi KAPALI. Feature-rich model yalniz
-    # CANDIDATE olarak kalir; canli tahmin yoluna kendiliginden giremez. Acik manuel onay gerekir.
-    # Eski configlerde alan yoksa dataclass varsayilani (False) gecerlidir -- geriye donuk uyumlu.
+    # GUVENLI VARSAYILAN: otomatik CHAMPION terfisi KAPALI. Feature-rich model yalniz CANDIDATE
+    # olarak kalir; canli tahmin yoluna kendiliginden giremez. `true` verilmesi
+    # PAPER_AUTO_PROMOTION_FORBIDDEN ile fail-closed reddedilir (bkz. validate_v3).
     auto_promote_in_paper: bool = False
+    # --- online ogrenme temposu: her kapanista yeniden egitim YOK ---
+    retrain_min_new_closed: int = 10        # egitim icin gereken asgari YENI kapanmis islem
+    retrain_cooldown_hours: float = 6.0     # iki egitim arasindaki asgari sure
+    # --- PAPER arastirma politikasi (CHAMPION DEGIL; yalniz filtreler ya da kucultur) ---
+    research_enabled: bool = True
+    research_min_shadow_obs: int = 20       # aktiflesmeden once gereken eslesmis golge gozlemi
+    research_min_active_obs: int = 20       # emeklilik karari icin gereken gozlem
+    research_min_review_obs: int = 60       # manuel inceleme isareti icin gereken gozlem
+    research_cooldown_hours: float = 24.0   # iki durum degisikligi arasindaki asgari sure
+    research_retire_delta_r: float = -0.10  # bu kadar kotulesirse otomatik baseline'a donulur
 
 
 @dataclass
@@ -298,6 +308,11 @@ def validate_v3(cfg: V3Config) -> None:
     cfg.llm.mode = lm
     if cfg.llm.daily_usd_budget < 0 or cfg.llm.daily_token_budget < 0:
         raise ConfigError("llm bütçeleri negatif olamaz")
+    if cfg.learning_v3.auto_promote_in_paper:
+        # Otomatik CHAMPION terfisi hiçbir modda kabul edilmez: araştırma adayı ile canlı tahmin modeli
+        # arasındaki sınır operatör onayıyla geçilir. Sessiz varsayılana düşme YOK.
+        raise ConfigError("PAPER_AUTO_PROMOTION_FORBIDDEN: learning_v3.auto_promote_in_paper=true "
+                          "desteklenmiyor — terfi yalnız açık manuel operatör onayıyla yapılır")
     if cfg.futures_v3.margin_mode.lower() != "isolated":
         raise ConfigError("futures_v3.margin_mode paper'da bile yalnız 'isolated' desteklenir")
     if not (1 <= cfg.futures_v3.leverage_default <= cfg.futures_v3.leverage_max_paper_research <= 125):

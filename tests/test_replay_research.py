@@ -67,21 +67,29 @@ def _ms(dt) -> int:
 def _seed_replay_memory(rdir: Path, n: int = 60, *, hold_days: int = 1, extra: list[dict] | None = None) -> None:
     """HISTORICAL_REPLAY namespace'inde n kapanmış işlem: günde bir giriş, `hold_days` sonra kapanış.
     `opened_at`/`closed_at` gerçek olay zamanlarıdır → walk-forward fold'ları bunlara göre bölünür."""
+    from conftest import make_snapshot
     rdir.mkdir(parents=True, exist_ok=True)
     mem = TradeMemory(rdir / "trade_memory.jsonl", source="HISTORICAL_REPLAY")
     for i in range(n):
         rec = _rec(i, i % 3 != 0)
         opened = BASE + timedelta(days=i)
         closed = opened + timedelta(days=hold_days)
-        rec = rec | {"opened_at": opened.isoformat(), "closed_at": closed.isoformat()}
-        mem.record_entry({"trade_id": rec["id"], "symbol": rec["symbol"], "direction": "LONG", "setup_type": "kırılım",
-                          "regime": "TREND_UP", "features": rec["features"], "recorded_at": opened.isoformat()})
+        sym = "ETH/USDT" if i % 2 else "SOL/USDT"
+        side = "LONG" if i % 2 else "SHORT"
+        rec = rec | {"opened_at": opened.isoformat(), "closed_at": closed.isoformat(), "symbol": sym, "side": side}
+        snap = make_snapshot(symbol=sym, side=side, decision_ts_ms=int(opened.timestamp() * 1000), seed=3 + i % 5)
+        mem.record_entry({"trade_id": rec["id"], "symbol": sym, "direction": side, "setup_type": "kırılım",
+                          "regime": "TREND_UP", "features": rec["features"], "snapshot": snap,
+                          "recorded_at": opened.isoformat()})
         mem.record_exit(rec["id"], rec | {"recorded_at": opened.isoformat()}, [], {"lesson_text_tr": ["ders"]})
     for e in extra or []:
         opened, closed = e["opened"], e["closed"]
-        rec = _rec(e.get("idx", 900), e.get("won", True)) | {"id": e["id"], "opened_at": opened.isoformat(), "closed_at": closed.isoformat()}
+        rec = _rec(e.get("idx", 900), e.get("won", True)) | {"id": e["id"], "opened_at": opened.isoformat(),
+                                                             "closed_at": closed.isoformat(), "side": "LONG"}
+        snap = make_snapshot(symbol=rec["symbol"], side="LONG", decision_ts_ms=int(opened.timestamp() * 1000))
         mem.record_entry({"trade_id": e["id"], "symbol": rec["symbol"], "direction": "LONG", "setup_type": "kırılım",
-                          "regime": "TREND_UP", "features": rec["features"], "recorded_at": opened.isoformat()})
+                          "regime": "TREND_UP", "features": rec["features"], "snapshot": snap,
+                          "recorded_at": opened.isoformat()})
         mem.record_exit(e["id"], rec | {"recorded_at": opened.isoformat()}, [], {})
 
 
@@ -368,9 +376,13 @@ def test_evaluate_fail_closed_paths(tmp_path):
     train_replay_challenger(cfg, rdir, seed=7)
     with pytest.raises(ReplaySafetyError, match="yetersiz örnek"):
         evaluate_replay(cfg, rdir, min_samples=999)
+    from conftest import make_snapshot
     mem = TradeMemory(rdir / "trade_memory.jsonl", source="HISTORICAL_REPLAY")
     rec = _rec(99, True)
-    mem.record_entry({"trade_id": rec["id"], "symbol": rec["symbol"], "features": rec["features"], "recorded_at": NOW.isoformat()})
+    mem.record_entry({"trade_id": rec["id"], "symbol": rec["symbol"], "features": rec["features"],
+                      "snapshot": make_snapshot(symbol=rec["symbol"], side="LONG",
+                                                decision_ts_ms=int(NOW.timestamp() * 1000)),
+                      "recorded_at": NOW.isoformat()})
     mem.record_exit(rec["id"], rec | {"recorded_at": NOW.isoformat()}, [], {})
     with pytest.raises(ReplaySafetyError, match="bayat"):
         evaluate_replay(cfg, rdir, min_samples=10)
@@ -738,14 +750,18 @@ def _negative_oos_dir(tmp_path, cfg, name="neg"):
     rdir = resolve_replay_dir(cfg.state_path, name)
     rdir.mkdir(parents=True, exist_ok=True)
     mem = TradeMemory(rdir / "trade_memory.jsonl", source="HISTORICAL_REPLAY")
+    from conftest import make_snapshot
     for i in range(90):
         won = i % 5 == 0                                   # çoğunluk zarar → negatif OOS
         opened = BASE + timedelta(days=i)
+        sym = "ETH/USDT" if i % 2 else "SOL/USDT"
+        side = "LONG" if i % 2 else "SHORT"
         rec = _rec(i, won) | {"opened_at": opened.isoformat(), "closed_at": (opened + timedelta(days=1)).isoformat(),
-                              "r_multiple": 1.0 if won else -0.6}
-        mem.record_entry({"trade_id": rec["id"], "symbol": rec["symbol"], "direction": "LONG",
+                              "r_multiple": 1.0 if won else -0.6, "symbol": sym, "side": side}
+        snap = make_snapshot(symbol=sym, side=side, decision_ts_ms=int(opened.timestamp() * 1000), seed=3 + i % 5)
+        mem.record_entry({"trade_id": rec["id"], "symbol": sym, "direction": side,
                           "setup_type": "kırılım", "regime": "TREND_UP", "features": rec["features"],
-                          "recorded_at": opened.isoformat()})
+                          "snapshot": snap, "recorded_at": opened.isoformat()})
         mem.record_exit(rec["id"], rec | {"recorded_at": opened.isoformat()}, [], {})
     _seed_replay_result(rdir)
     return rdir

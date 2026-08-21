@@ -591,8 +591,11 @@ class TradingEngineV3(TradingEngine):
                     continue
                 trade_id = getattr(order, "id", new_id("spot"))
                 desc = f"{sym} SPOT LONG @ {b.price:.6g} · {notional:.2f} USDT · stop {plan.stop:.6g}"
+            snap_v3 = self._snapshot_v3(sym, b, d, plan, market, rd)
             self.memory.record_entry({"trade_id": trade_id, "symbol": sym, "direction": d.direction, "market_type": market, "setup_type": plan.entry_type,
-                                      "regime": d.regime, "features": feats, "decision": d.to_dict(include_reports=True), "chief": chief.to_dict(),
+                                      "regime": d.regime, "features": ((snap_v3.vector() | feats) if snap_v3 else feats),
+                                      "snapshot": (snap_v3.to_dict() if snap_v3 else None),
+                                      "decision": d.to_dict(include_reports=True), "chief": chief.to_dict(),
                                       "risk_decision": rd.to_dict(), "run_id": self.run_id, "mode": self.mode_state.mode.value,
                                       "model_versions": d.model_versions | {"p_win_model": self.learner2.snapshot().get("champion")}})
             self.last_decisions[sym] = d.to_dict(include_reports=False)
@@ -686,6 +689,50 @@ class TradingEngineV3(TradingEngine):
                 "aynı tikte stop+hedef → stop (worst-case) · komisyon fill notional üzerinden · vergi ayrı ve doğrulanana kadar 0",
                 "", "[[Learning/Öğrenme]] · [[Learning/Dersler]] · [[Scanner]] · [[Dashboard]] · [[Risk/Limits]]"]
         return "\n".join(out)
+
+    def _snapshot_v3(self, sym: str, b, d, plan, market: str, rd):
+        """Canlı PAPER karar anı FeatureSnapshotV3 — replay ile AYNI builder (aynı girdi → aynı vektör/hash)."""
+        from .learn.snapshot import build_snapshot
+        try:
+            frames = self.runner.last_frames.get(sym) or {}
+            bars = frames.get("4h") if "4h" in frames else next(iter(frames.values()), None)
+            if bars is None or len(bars) < 30:
+                return None
+            decision_ts = int(bars["timestamp"].iloc[-1])
+            btc_frames = self.runner.last_frames.get("BTC/USDT") or {}
+            btc = btc_frames.get("4h") if sym != "BTC/USDT" else None
+            if btc is not None:
+                btc = btc[btc["timestamp"] <= decision_ts]
+            agents = {}
+            for rep in (d.to_dict(include_reports=True).get("agent_reports") or []):
+                name = str(rep.get("factor_group") or rep.get("agent_name") or "")
+                if name:
+                    agents[name] = {"bias": rep.get("bias"), "confidence": (rep.get("confidence_raw") or 0) / 100.0}
+            live = dict(self.runner.live.snapshot(sym) or {})
+            tick = live.get("ticker") or {}
+            cons = d.consensus if isinstance(getattr(d, "consensus", None), dict) else {}
+            return build_snapshot(
+                symbol=sym, market_type=market, timeframe="4h", side=d.direction,
+                decision_ts_ms=decision_ts, bars=bars[bars["timestamp"] <= decision_ts], source="LIVE_PAPER",
+                btc_bars=btc,
+                micro={"spread_pct": tick.get("spread_pct"), "depth_ratio": tick.get("depth_ratio"),
+                       "data_freshness_s": tick.get("age_s")},
+                funding={"rate": (live.get("funding") or {}).get("rate")},
+                decision={"consensus_score": (sum(cons.values()) / len(cons)) if cons else None,
+                          "consensus_conf": getattr(d, "confidence_calibrated", None),
+                          "n_dissent": len(getattr(d, "dissent", []) or []),
+                          "n_vetoes": len(getattr(d, "vetoes", []) or []),
+                          "head_confidence": getattr(d, "confidence_calibrated", None),
+                          "risk_allowed": bool(getattr(rd, "allowed", True))},
+                plan={"setup_type": plan.entry_type, "expected_r": d.expected_r, "p_win": d.p_win,
+                      "entry": plan.entry, "stop": plan.stop, "targets": list(plan.targets or []),
+                      "rr": getattr(plan, "rr", None), "leverage": getattr(plan.size, "leverage", 1),
+                      "notional": plan.notional, "margin": plan.margin},
+                portfolio={"open_risk_pct": None, "drawdown_pct": None},
+                agents=agents, run_id=self.run_id, strict=True)
+        except Exception as exc:  # noqa: BLE001 — snapshot hatası işlem akışını DEĞİŞTİRMEZ (geriye uyumlu)
+            log.warning("%s FeatureSnapshotV3 üretilemedi: %s", sym, exc)
+            return None
 
     def _write_trade_notes(self) -> None:
         """Kapanan her işlem için `Trades/<id>.md` notu (post-mortem ile) — dondurulmuş not varsa atlanır."""

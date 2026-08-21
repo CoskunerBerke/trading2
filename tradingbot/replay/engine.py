@@ -253,8 +253,14 @@ class HistoricalReplay:
                         self._reject(sym, self.ledger2.last_reject_reason or "LEDGER_REJECT")
                         continue
                     self._entry_meta[pos.id] = {"symbol": sym, "in_test": in_test, "regime": d.regime, "decision": d.to_dict(include_reports=False), "opened_ts": t}
-                    self.memory.record_entry({"trade_id": pos.id, "symbol": sym, "direction": d.direction, "market_type": mkt, "setup_type": plan.entry_type, "regime": d.regime,
-                                              "features": {"expected_r": d.expected_r, "p_win": d.p_win}, "decision": d.to_dict(include_reports=False), "run_id": self.run_id, "in_test": in_test})
+                    # KÖK NEDEN DÜZELTMESİ: yalnız expected_r/p_win değil, PAYLAŞILAN FeatureSnapshotV3
+                    # (MA/volatilite/hacim/funding/mikroyapı/ajan/plan bağlamı) — canlı yolla aynı builder.
+                    snap = self._snapshot(sym, t, d, plan, mkt, marks_f)
+                    self.memory.record_entry({"trade_id": pos.id, "symbol": sym, "direction": d.direction, "market_type": mkt,
+                                              "setup_type": plan.entry_type, "regime": d.regime,
+                                              "features": (snap.vector() if snap else {"expected_r": d.expected_r, "p_win": d.p_win}),
+                                              "snapshot": (snap.to_dict() if snap else None),
+                                              "decision": d.to_dict(include_reports=False), "run_id": self.run_id, "in_test": in_test})
                     self.result.n_opened += 1
                     state = self._portfolio_state(marks_f, now)                       # aynı adımda sonraki aday güncel durumu görür
             # sonraki barın uçlarıyla tick (bir sonraki karar anına kadar olan bar) — event-time ilerleme
@@ -285,6 +291,47 @@ class HistoricalReplay:
                                        "exit_reason": rec.exit_reason, "net_r": float(rec.r_multiple), "net_pnl": float(rec.net_pnl), "fees": float(rec.fees),
                                        "funding": float(rec.funding), "bars_held": rec.bars_held, "mae_pct": float(rec.mae_pct), "mfe_pct": float(rec.mfe_pct),
                                        "opened_at": rec.opened_at, "closed_at": rec.closed_at, "in_test": bool(meta.get("in_test", True)), "regime": meta.get("regime")})
+
+    def _snapshot(self, sym: str, t: int, d, plan, market_type: str, marks_f: dict):
+        """Karar anı FeatureSnapshotV3 — yalnız t'de KAPANMIŞ barlardan (replay ve canlı aynı builder)."""
+        from ..learn.snapshot import LeakageError, build_snapshot
+        try:
+            fr = self._slice(sym, t)
+            bars = fr.get(self.tf)
+            if bars is None or len(bars) < 30:
+                return None
+            btc = None
+            if "BTC/USDT" in self.frames and sym != "BTC/USDT":
+                bfr = self._slice("BTC/USDT", t)
+                btc = bfr.get(self.tf)
+            agents = {}
+            for rep in (d.to_dict(include_reports=True).get("agent_reports") or []):
+                name = str(rep.get("factor_group") or rep.get("agent_name") or "")
+                if name:
+                    agents[name] = {"bias": rep.get("bias"), "confidence": (rep.get("confidence_raw") or 0) / 100.0}
+            cons = d.consensus if isinstance(getattr(d, "consensus", None), dict) else {}
+            pattern = getattr(d, "pattern_evidence", None) or {}
+            return build_snapshot(
+                symbol=sym, market_type=market_type, timeframe=self.tf, side=d.direction,
+                decision_ts_ms=int(t), bars=bars, source="HISTORICAL_REPLAY", btc_bars=btc,
+                decision={"consensus_score": (sum(cons.values()) / len(cons)) if cons else None,
+                          "consensus_conf": getattr(d, "confidence_calibrated", None),
+                          "n_dissent": len(getattr(d, "dissent", []) or []),
+                          "n_vetoes": len(getattr(d, "vetoes", []) or []),
+                          "head_confidence": getattr(d, "confidence_calibrated", None), "risk_allowed": True},
+                plan={"setup_type": plan.entry_type, "expected_r": d.expected_r, "p_win": d.p_win,
+                      "expected_cost_pct": getattr(plan, "expected_cost_pct", None), "entry": marks_f.get(sym),
+                      "stop": plan.stop, "targets": list(plan.targets or []), "rr": getattr(plan, "rr", None),
+                      "leverage": getattr(getattr(plan, "size", None), "leverage", 1), "notional": plan.notional,
+                      "margin": getattr(plan, "margin", None)},
+                portfolio={"open_risk_pct": None, "drawdown_pct": None},
+                pattern={"n": (pattern or {}).get("n"), "p_win": (pattern or {}).get("p_win")},
+                agents=agents, run_id=self.run_id, seed=self.seed, strict=True)
+        except LeakageError:
+            raise
+        except Exception as exc:  # noqa: BLE001 — snapshot üretilemezse replay durmaz, kayıt "eksik" işaretlenir
+            log.warning("%s snapshot üretilemedi: %s", sym, exc)
+            return None
 
     def _reject(self, symbol: str, reason: str) -> None:
         """Red nedenlerini sembol/neden kırılımıyla say (sessiz yutma yok)."""

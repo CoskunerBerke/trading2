@@ -54,14 +54,17 @@ def _rec(i, won):
 
 
 def _seed_run(rdir: Path, n: int = 90, *, seed: int = 7, with_result: bool = True) -> None:
+    from conftest import make_snapshot
     rdir.mkdir(parents=True, exist_ok=True)
     mem = TradeMemory(rdir / "trade_memory.jsonl", source="HISTORICAL_REPLAY")
     for i in range(n):
         opened = BASE_T + timedelta(days=i)
         rec = _rec(i, i % 3 != 0) | {"opened_at": opened.isoformat(), "closed_at": (opened + timedelta(days=1)).isoformat()}
+        snap = make_snapshot(symbol=rec["symbol"], side=rec["side"],
+                             decision_ts_ms=int(opened.timestamp() * 1000), seed=3 + i % 5)
         mem.record_entry({"trade_id": rec["id"], "symbol": rec["symbol"], "direction": rec["side"],
                           "setup_type": "kırılım", "regime": "TREND_UP", "features": rec["features"],
-                          "recorded_at": opened.isoformat()})
+                          "snapshot": snap, "recorded_at": opened.isoformat()})
         mem.record_exit(rec["id"], rec | {"recorded_at": opened.isoformat()}, [], {})
     if with_result:
         def _b(idx, tr_s, tr_e, ts_s, ts_e):

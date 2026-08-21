@@ -391,7 +391,8 @@ def resolve_run_seed(replay_dir: Path, seed: int | None = None) -> tuple[int, st
     return run_seed, "replay_result"
 
 
-def train_replay_challenger(cfg: Any, replay_dir: Path, *, seed: int | None = None, force: bool = False) -> dict:
+def train_replay_challenger(cfg: Any, replay_dir: Path, *, seed: int | None = None, force: bool = False,
+                            skip_coverage_gate: bool = False) -> dict:
     """Replay hafızasından challenger eğitir (YALNIZ replay state'i). İdempotent: aynı girdi hash'i → yeniden eğitim yok.
     Canlı model/registry/ledger dosyalarına dokunulmaz; hiçbir terfi yapılmaz.
     Seed `replay_result.json`'dan gelir (bkz. `resolve_run_seed`)."""
@@ -418,6 +419,12 @@ def train_replay_challenger(cfg: Any, replay_dir: Path, *, seed: int | None = No
         return prev | {"idempotent_skip": True}
     if n < min_n:
         raise ReplaySafetyError(f"yetersiz kapanmış replay örneği: {n} < {min_n}")
+    # FEATURE COVERAGE GATE: yalnız expected_r'ı dolu (Core-4 gibi) sparse hafızada model ÜRETİLMEZ.
+    if not skip_coverage_gate:
+        from ..learn.coverage import COVERAGE_INVALID, coverage_report as _cov
+        cov = _cov(rows, source="HISTORICAL_REPLAY")
+        if not cov["ok"]:
+            raise ReplaySafetyError(f"{COVERAGE_INVALID}: " + "; ".join(cov["problems"][:4]))
     # DETERMİNİZM: recency ağırlıkları duvar saatine bağlı olmasın → referans an = son kaydın zamanı.
     # (Canlı LearnerV2 davranışı değişmez; bu yalnız araştırma hattının çağrı sözleşmesidir.)
     try:

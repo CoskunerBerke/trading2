@@ -546,6 +546,115 @@ def cmd_replay_verify(cfg: BotConfig, args) -> int:
     return 0
 
 
+def _replay_rows(cfg: BotConfig, run_id: str, state_dir: str | None):
+    from .learn import TradeMemory
+    from .replay.research import resolve_replay_dir
+    rdir = resolve_replay_dir(cfg.state_path, run_id, Path(state_dir) if state_dir else None, must_exist=True)
+    mem = TradeMemory(rdir / "trade_memory.jsonl", source="HISTORICAL_REPLAY")
+    return rdir, mem.trades(closed_only=True)
+
+
+def cmd_feature_coverage(cfg: BotConfig, args) -> int:
+    """Eğitim öncesi feature kalite raporu; kapsam yetersizse FEATURE_COVERAGE_INVALID (non-zero)."""
+    from .learn.coverage import coverage_report
+    from .replay.research import ReplaySafetyError
+    try:
+        if getattr(args, "run_id", None):
+            rdir, rows = _replay_rows(cfg, args.run_id, getattr(args, "state_dir", None))
+            src = "HISTORICAL_REPLAY"
+        else:
+            from .learn import TradeMemory
+            rdir, src = cfg.state_path, "LIVE_PAPER"
+            rows = TradeMemory(cfg.state_path / "trade_memory.jsonl", source=src).trades(closed_only=True)
+    except ReplaySafetyError as exc:
+        print(f"BLOCK: {exc}")
+        return 2
+    rep = coverage_report(rows, source=src)
+    if getattr(args, "full", False):
+        _p(rep)
+    else:
+        _p({k: v for k, v in rep.items() if k != "fields"} |
+           {"worst_fields": sorted(({"name": k} | v for k, v in rep["fields"].items()),
+                                   key=lambda x: x["available_pct"])[:12]})
+    return 0 if rep["ok"] else 1
+
+
+def cmd_loss_attribution(cfg: BotConfig, args) -> int:
+    """Zarar/kâr bağlamı raporu (ilişki; nedensellik iddiası yok). Yalnız replay klasörüne yazar."""
+    from .core import atomic_write_json
+    from .learn.attribution import attribution_report
+    from .replay.research import ReplaySafetyError
+    try:
+        rdir, rows = _replay_rows(cfg, args.run_id, getattr(args, "state_dir", None))
+    except ReplaySafetyError as exc:
+        print(f"BLOCK: {exc}")
+        return 2
+    rep = attribution_report(rows, min_bucket=int(getattr(args, "min_bucket", 8) or 8))
+    atomic_write_json(rdir / "loss_attribution.json", rep, indent=1)
+    _p({k: v for k, v in rep.items() if k != "cuts"} | {"cuts": {k: len(v) for k, v in rep["cuts"].items()}})
+    return 0
+
+
+def cmd_policy_candidates(cfg: BotConfig, args) -> int:
+    """Deterministik, sınırlandırılmış aday politika listesi üretir (yalnız replay klasörüne yazar)."""
+    from .core import atomic_write_json
+    from .learn.policy import generate_candidates, validate_policy
+    from .replay.research import ReplaySafetyError, resolve_replay_dir
+    from .risk import resolve_profile
+    try:
+        rdir = resolve_replay_dir(cfg.state_path, args.run_id, Path(args.state_dir) if args.state_dir else None,
+                                  must_exist=True)
+    except ReplaySafetyError as exc:
+        print(f"BLOCK: {exc}")
+        return 2
+    rp = resolve_profile(cfg.v3.risk_profiles.profile, cfg.v3.risk_profiles.overrides,
+                         i_understand=cfg.v3.risk_profiles.i_understand)
+    max_lev = float(min(1.0, rp.futures_max_leverage))
+    cands = generate_candidates(seed=int(args.seed), max_candidates=int(args.max_candidates),
+                                risk_profile_max_leverage=max_lev)
+    for c in cands:
+        validate_policy(c, risk_profile_max_leverage=max_lev, risk_profile_risk_pct=rp.risk_per_trade_pct)
+    doc = {"schema": "policy_candidates_v1", "seed": int(args.seed), "n": len(cands),
+           "risk_profile_max_leverage": max_lev, "candidates": [c.to_dict() for c in cands]}
+    atomic_write_json(rdir / "policy_candidates.json", doc, indent=1)
+    _p({"n": len(cands), "seed": int(args.seed), "first": cands[0].policy_id if cands else None,
+        "written": str(rdir / "policy_candidates.json")})
+    return 0
+
+
+def cmd_policy_evaluate(cfg: BotConfig, args) -> int:
+    """Baseline ↔ candidate walk-forward: aday YALNIZ geçmiş train/validation'da seçilir, test fold'unda uygulanır."""
+    from .core import read_json as _rj
+    from .replay.policy_eval import evaluate_policies
+    from .replay.research import ReplaySafetyError
+    try:
+        rdir, rows = _replay_rows(cfg, args.run_id, getattr(args, "state_dir", None))
+        res = _rj(rdir / "replay_result.json", default=None) or {}
+        bounds = [w.get("bounds") for w in (res.get("windows") or []) if isinstance(w, dict) and w.get("bounds")]
+        if not bounds:
+            print("BLOCK: replay_result.json kesin pencere sınırları (bounds) içermiyor")
+            return 2
+        for r in rows:
+            out = r.get("outcome") or {}
+            r["_open_ms"] = _ms_or_none_cli(out.get("opened_at") or r.get("recorded_at"))
+            r["_close_ms"] = _ms_or_none_cli(out.get("closed_at") or r.get("recorded_at"))
+        rep = evaluate_policies(cfg, rdir, rows, bounds, seed=int(args.seed),
+                                max_candidates=int(args.max_candidates),
+                                point_in_time=bool(res.get("point_in_time")),
+                                survivorship_present=bool((res.get("survivorship_bias") or {}).get("present", True)))
+    except ReplaySafetyError as exc:
+        print(f"BLOCK: {exc}")
+        return 2
+    _p({k: v for k, v in rep.items() if k not in ("folds", "breakdown")} |
+       {"folds": len(rep["folds"])})
+    return 0 if rep["verdict"] != "REJECTED" else 1
+
+
+def _ms_or_none_cli(v):
+    from .replay.research import _ms_or_none
+    return _ms_or_none(v)
+
+
 def cmd_learning_status(cfg: BotConfig, args) -> int:
     """LearnerV2/registry özeti; --replay <run_id> ile replay state'i, yoksa gerçek PAPER state (kaynak namespace ayrı)."""
     from .learn import LearnConfig, LearnerV2, ModelRegistry, TradeMemory
@@ -824,6 +933,20 @@ def register(sub: argparse._SubParsersAction) -> None:
     s = sub.add_parser("replay-verify", help="Tamamlanmış replay artifact'lerini değiştirmeden doğrula")
     s.add_argument("--run-id", dest="run_id", required=True); s.add_argument("--state-dir", dest="state_dir", default=None)
     s.add_argument("--seed", type=int, default=None); s.set_defaults(fn=cmd_replay_verify)
+    s = sub.add_parser("feature-coverage", help="Feature kalite/kapsam raporu (yetersizse FEATURE_COVERAGE_INVALID)")
+    s.add_argument("--run-id", dest="run_id", default=None); s.add_argument("--state-dir", dest="state_dir", default=None)
+    s.add_argument("--full", action="store_true"); s.set_defaults(fn=cmd_feature_coverage)
+    s = sub.add_parser("loss-attribution", help="Zarar/kâr bağlamı raporu (ilişki; nedensellik iddiası yok)")
+    s.add_argument("--run-id", dest="run_id", required=True); s.add_argument("--state-dir", dest="state_dir", default=None)
+    s.add_argument("--min-bucket", dest="min_bucket", type=int, default=8); s.set_defaults(fn=cmd_loss_attribution)
+    s = sub.add_parser("policy-candidates", help="Sınırlandırılmış aday politika üretimi (deterministik)")
+    s.add_argument("--run-id", dest="run_id", required=True); s.add_argument("--state-dir", dest="state_dir", default=None)
+    s.add_argument("--seed", type=int, default=7); s.add_argument("--max-candidates", dest="max_candidates", type=int, default=24)
+    s.set_defaults(fn=cmd_policy_candidates)
+    s = sub.add_parser("policy-evaluate", help="Baseline↔candidate walk-forward (terfi YOK; en fazla SHADOW_CANDIDATE)")
+    s.add_argument("--run-id", dest="run_id", required=True); s.add_argument("--state-dir", dest="state_dir", default=None)
+    s.add_argument("--seed", type=int, default=7); s.add_argument("--max-candidates", dest="max_candidates", type=int, default=24)
+    s.set_defaults(fn=cmd_policy_evaluate)
     s = sub.add_parser("learning-status", help="LearnerV2/registry özeti (PAPER ya da --replay <run_id>)"); s.add_argument("--replay", default=None); s.set_defaults(fn=cmd_learning_status)
     s = sub.add_parser("authority", help="Tek yetkili worker markörü (split-brain koruması): --claim / --release / durum")
     s.add_argument("--claim", action="store_true"); s.add_argument("--release", action="store_true"); s.add_argument("--note", default="")

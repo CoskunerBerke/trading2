@@ -7,6 +7,12 @@ RED TEAM SÖZLEŞMESİ: yalnız `hard_veto_codes` planı geçersiz yapar. `soft_
 (zayıf OOS edge, korelasyon/yığılma, funding, yeni listelenme, rejim uyumsuzluğu, orta seviye
 spread/derinlik, tercih dışı fakat geçerli stop) `plan.soft_flags`'e yazılır ve yalnızca boyutu
 küçültür — "10 ayrı engelden geçemezse hiç işlem açma" davranışı bilinçli olarak kaldırılmıştır.
+
+LLM SÖZLEŞMESİ: advisory çıktı TEK BAŞINA hard veto ÜRETEMEZ. `llm_advice["veto"]` yalnız kayıtlı
+`RED_TEAM_SOFT_PENALTY` yumuşak cezasına ve telemetriye dönüşür. Bir hard gate ancak kaynak kod
+tarafından ölçülmüş ve `decision_gates.GATES`'te kayıtlı gerçek güvenlik koşuluyla üretilebilir;
+model metnindeki serbest bir kod/reason asla kapı olarak kabul edilmez. Deterministik şema hatası
+(`LLM_SCHEMA_INVALID`) bunun dışındadır ve fail-closed kalır.
 """
 from __future__ import annotations
 
@@ -297,15 +303,30 @@ class CoinHead:
             rep.market_type = market
             reports.append(rep)
             rt_reports[market] = rep
+            # LLM ADVISORY TEK BASINA HARD VETO URETEMEZ.
+            # Eskiden `llm_advice["veto"]` dogrudan `rep.veto = True` yapiyor ve plani gecersiz
+            # kiliyordu: merkezi `decision_gates.GATES` siniflandirmasi ATLANIYORDU. Model, kayitli
+            # ve deterministik bir guvenlik kanitı olmadan islemi oldurebiliyordu. Artik LLM'in
+            # `veto`/`veto_reasons` ciktisi YALNIZ kayitli `RED_TEAM_SOFT_PENALTY` yumusak cezasina
+            # ve telemetriye donusur. LLM metnindeki serbest kod/reason ASLA kapi olarak kabul
+            # edilmez (kayitli olmayan kod registry'ye sizamaz).
+            # Deterministik `LLM_SCHEMA_INVALID` bunun DISINDADIR: onu sema dogrulayici uretir,
+            # model metni degil; `review()` icinde SERT kalir (fail-closed).
+            _llm_soft: list[str] = []
             if inp.llm_advice and inp.llm_advice.get("veto"):
-                rep.veto = True
-                rep.veto_reason = (rep.veto_reason + "; " if rep.veto_reason else "") + "LLM_VETO: " + ", ".join(inp.llm_advice.get("veto_reasons", [])[:3])
+                _reasons = [str(x)[:120] for x in (inp.llm_advice.get("veto_reasons") or [])[:3]]
+                rep.warnings = list(rep.warnings) + ["LLM_ADVISORY_VETO(soft): " + ", ".join(_reasons)]
+                rep.metrics = dict(rep.metrics or {}) | {
+                    "llm_advisory": {"veto": True, "reasons": _reasons, "applied_as": "RED_TEAM_SOFT_PENALTY",
+                                     "can_hard_veto": False}}
+                _llm_soft = ["RED_TEAM_SOFT_PENALTY"]        # KAYITLI kod; ham LLM metni kod DEĞİLDİR
             # YUMUSAK red-team kodlari plani GECERSIZ YAPMAZ: `plan.soft_flags` uzerinden
             # `opportunity.assess()` icinde ust sinirli ceza olarak boyutu kucultur.
-            _soft = list((rep.metrics or {}).get("soft_penalty_codes") or [])
+            _soft = list((rep.metrics or {}).get("soft_penalty_codes") or []) + _llm_soft
             if _soft:
                 plan.soft_flags = list(plan.soft_flags) + [c for c in _soft if c not in plan.soft_flags]
-            # SERT: yalnizca `hard_veto_codes` (gercek guvenlik/gecerlilik/ekonomi ihlali) reddeder.
+            # SERT: yalnizca `hard_veto_codes` (kaynak kodda OLCULMUS, registry'de KAYITLI gercek
+            # guvenlik kosulu) reddeder. `rep.veto` yalnizca `review()`in sert listesinden gelir.
             if rep.veto:
                 plan.valid = False
                 plan.invalid_reason = rep.veto_reason

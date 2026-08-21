@@ -30,21 +30,29 @@ class FakeLive:
 
 
 # Sentetik evren: her sembol farkli seed/drift alir -> bagimsiz, benzersiz firsatlar.
-_UNIVERSE: tuple[tuple[str, int, float], ...] = (
-    ("ETH/USDT", 5, 0.0015), ("SOL/USDT", 13, 0.003), ("AVAX/USDT", 21, 0.0022),
-    ("LINK/USDT", 29, 0.0026), ("ADA/USDT", 37, 0.0019), ("DOT/USDT", 43, 0.0024),
-)
+# 16 sembol: "12 firsat %6 kapasiteyi doldurur, 13.'su RISK yuzunden reddedilir" senaryosu icin yeterli.
+_UNIVERSE: tuple[tuple[str, int, float], ...] = tuple(
+    (f"{base}/USDT", seed, drift) for base, seed, drift in (
+        ("ETH", 5, 0.0015), ("SOL", 13, 0.003), ("AVAX", 21, 0.0022), ("LINK", 29, 0.0026),
+        ("ADA", 37, 0.0019), ("DOT", 43, 0.0024), ("ATOM", 51, 0.0021), ("NEAR", 57, 0.0027),
+        ("APT", 63, 0.0018), ("ARB", 71, 0.0025), ("OP", 79, 0.0020), ("INJ", 83, 0.0028),
+        ("SUI", 91, 0.0023), ("SEI", 97, 0.0017), ("TIA", 103, 0.0029), ("RUNE", 109, 0.0016),
+    ))
 
 
 def _engine(tmp_path: Path, monkeypatch, v3_overrides: dict | None = None,
             *, before_build=None, symbols: int | list[str] | None = None,
-            equity: float | None = None, ledger_max_positions: int | None = None) -> TradingEngineV3:
+            equity: float | None = None) -> TradingEngineV3:
     """Agsiz V3 motoru. `v3_overrides` v3 config bolumlerini derinlemesine gunceller;
     `before_build(cfg)` motor kurulmadan ONCE state dizinine dokunmak icin cagrilir.
 
-    `symbols` bir sayi ise `_UNIVERSE`'in ilk N sembolu kullanilir (varsayilan 2). `equity` ve
-    `ledger_max_positions` davranis testlerinin kapasite senaryolarini kurabilmesi icindir; her
-    ikisi de YALNIZ test yapilandirmasidir, uretim varsayilanlarini degistirmez."""
+    `symbols` bir sayi ise `_UNIVERSE`'in ilk N sembolu kullanilir (varsayilan 2). `equity` senaryo
+    kurulumu icindir ve bir ADET kotasi degildir.
+
+    DEFTER ADET TAVANI OVERRIDE EDILEMEZ (bilincli): `cfg.futures.max_positions` uretim
+    varsayilaninda (3) birakilir. Motor bu tavani runtime risk profilinden turetir; PAPER_RESEARCH
+    adet limiti tanimlamadigi icin defter `None` ile kurulur. Eskiden testler bunu `4`/`8` ile
+    eziyordu ve "4/4 acildi" sonucu uretimi KANITLAMIYORDU."""
     if symbols is None:
         picks = list(_UNIVERSE[:2])
     elif isinstance(symbols, int):
@@ -61,8 +69,6 @@ def _engine(tmp_path: Path, monkeypatch, v3_overrides: dict | None = None,
     if equity is not None:
         cfg.futures.starting_equity_usdt = float(equity)
         cfg.risk.starting_equity_usdt = float(equity)
-    if ledger_max_positions is not None:
-        cfg.futures.max_positions = int(ledger_max_positions)
     raw = {"coin_heads": {"consensus_threshold": 0.05, "min_confidence": 0.05},
            "learning_v3": {"min_samples_train": 5}}
     for sec, vals in (v3_overrides or {}).items():

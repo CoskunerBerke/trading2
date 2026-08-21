@@ -303,7 +303,8 @@ class SpotLedger:
         last, hi, lo = td.last, td.hi, td.lo
         if ot is OrderType.MARKET:
             ref = (td.ask if sd is Side.BUY else td.bid) or last
-            px = self.slippage.fill_price(ref, sd, td, is_market=True)
+            # ÖNİZLEME İLE AYNI KOD YOLU (engine risk kontrolü de `market_fill_price` çağırır).
+            px = self.market_fill_price(order.symbol, sd, tick=td)
             self._fill(order, px, order.remaining, ts, kind="market", ref_price=ref, is_maker=False)
             return True
         if ot is OrderType.LIMIT:
@@ -487,6 +488,23 @@ class SpotLedger:
         return filled
 
     # ------------------------------------------------------------------ kolaylık
+    def market_fill_price(self, symbol: str, side=Side.BUY, *, tick=None, ref_price=None) -> Decimal:
+        """Bir SPOT MARKET emrinin GERÇEKLEŞECEĞİ fiyat — durum DEĞİŞTİRMEZ.
+
+        `_try_fill_inner` de tam olarak bunu çağırır: BUY için `ask`, SELL için `bid`, yoksa `last`
+        seçimi ve spot kayma modeli birebir aynıdır. `tick` verildiyse `ref_price` kullanılmaz —
+        `place_order` da aynı önceliği uygular. Böylece ask/last farkı 3 bps'yi aşsa bile risk
+        önizlemesi gerçekleşecek girişi doğru görür.
+        """
+        sd = side if isinstance(side, Side) else Side(str(side).upper())
+        td = TickData.coerce(tick) if tick is not None else (TickData(last=D(ref_price)) if ref_price is not None else None)
+        if td is None:
+            return ZERO
+        ref = (td.ask if sd is Side.BUY else td.bid) or td.last
+        if ref is None or D(ref) <= 0:
+            return ZERO
+        return self.slippage.fill_price(ref, sd, td, is_market=True)
+
     def market_buy(self, symbol: str, *, qty=None, quote_amount=None, tick=None, ref_price=None, strategy: str = "",
                    filters=None, now=None) -> Order:
         return self.place_order(symbol, Side.BUY, OrderType.MARKET, qty=qty, quote_amount=quote_amount, tick=tick, ref_price=ref_price,

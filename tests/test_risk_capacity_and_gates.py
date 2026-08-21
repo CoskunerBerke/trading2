@@ -72,7 +72,9 @@ def _force_final_risk_pct(monkeypatch, target_pct: float, edges: dict[str, float
             if not getattr(d, "is_actionable", False):
                 continue
             plan, b = d.active_plan, bmap.get(sym)
-            exec_entry = self._execution_entry((b.price if b else 0) or plan.entry, d.direction)
+            market = "SPOT" if d.verdict.value == "SPOT_LONG" else "USDM_PERP"
+            exec_entry = self._execution_entry(sym, market, d.direction,
+                                               (b.price if b else 0) or plan.entry, None)
             stop_frac = abs(exec_entry - plan.stop) / exec_entry
             plan_risk = float(plan.notional) * stop_frac
             mult = min(1.0, target / plan_risk) if plan_risk > 0 else 0.0
@@ -171,10 +173,13 @@ def test_3_rejected_fill_releases_capacity_for_next_candidate(tmp_path, monkeypa
     assert _open_risk(eng) <= EQUITY * 3.0 / 100.0 + EPS
 
 
-# ============================================================================= 4-5) 4 × %0.5 / %2 kapasite
+# ============================================================================= 4-5) 4 × %0.5 / PAPER varsayılanları
 def _four_small_trades(tmp_path, monkeypatch, spy: list | None = None):
-    eng = _engine(tmp_path, monkeypatch, _profile(2.0), symbols=4, equity=EQUITY,
-                  ledger_max_positions=8)
+    # ÜRETİM VARSAYILANLARI: PAPER_RESEARCH profili (%2 işlem başına, %6 toplam) ve defter adet
+    # tavanı override EDİLMEZ (`cfg.futures.max_positions` üretimdeki 3 değerinde kalır).
+    eng = _engine(tmp_path, monkeypatch, symbols=4, equity=EQUITY)
+    assert eng.profile.name == "PAPER_RESEARCH" and eng.cfg.futures.max_positions == 3
+    assert eng.ledger2.max_positions is None, "PAPER'da defter adet tavanı olmamalı"
     edges = {"ETH/USDT": 0.9, "SOL/USDT": 0.8, "AVAX/USDT": 0.7, "LINK/USDT": 0.6}
     # Ham plan riski işlem başına %2 tavanındadır; NİHAİ risk çarpanla tam %0.5'e çekilir.
     _force_final_risk_pct(monkeypatch, 0.5, edges)
@@ -189,18 +194,23 @@ def _four_small_trades(tmp_path, monkeypatch, spy: list | None = None):
     return eng, eng.tour(do_scan=False, obsidian=False, charts=False)
 
 
-def test_4_four_half_percent_trades_fit_a_two_percent_budget(tmp_path, monkeypatch):
-    """Nihai riski %0.5 olan dört aday, toplam %2 kapasiteye SIĞAR → 4/4 açılır."""
+def test_4_four_half_percent_trades_open_on_production_defaults(tmp_path, monkeypatch):
+    """ÜRETİM PAPER_RESEARCH varsayılanlarıyla nihai riski %0.5 olan dört aday → 4/4 açılır.
+
+    Defter adet tavanı test tarafından ezilmez: eskiden gizli `max_positions=3` dördüncü
+    eşzamanlı futures pozisyonunu `MAX_POSITIONS` ile reddediyordu.
+    """
     eng, s = _four_small_trades(tmp_path, monkeypatch)
     f = _funnel(eng)["run"]
     assert f["opened"] == 4, (f, s["opened"])
     assert f["risk_capacity_blocked"] == 0 and f["capacity_approved"] == 4
     assert len(eng.ledger2.positions) == 4
-    budget = EQUITY * 2.0 / 100.0
+    assert "MAX_POSITIONS" not in " ".join(str(r.get("exec_reject") or "") for r in _risk_log(eng))
+    budget = EQUITY * 6.0 / 100.0
     assert _open_risk(eng) <= budget + EPS, "gerçek toplam açık risk tavanı aşmamalı"
     per = [r["final_risk_pct"] for r in _risk_log(eng) if r.get("final_risk_pct") is not None]
     assert len(per) == 4 and all(x == pytest.approx(0.5, abs=1e-4) for x in per), per
-    assert sum(per) <= 2.0 + 1e-4, sum(per)
+    assert sum(per) == pytest.approx(2.0, abs=1e-3), sum(per)
     # Ham plan riski gerçekten %2 tavanındaydı: küçültme olmasa 4 işlem ASLA sığmazdı.
     raw = [r["plan_notional"] / r["final_notional"] for r in _risk_log(eng)
            if r.get("final_notional")]
@@ -254,8 +264,7 @@ def test_6_soft_penalty_shrinks_the_risk_used_for_capacity(tmp_path, monkeypatch
 # ============================================================================= 7) gerçek toplam risk tavanı
 @pytest.mark.parametrize("cap_pct", [1.0, 2.0, 6.0])
 def test_7_real_total_open_risk_never_exceeds_the_profile_ceiling(tmp_path, monkeypatch, cap_pct):
-    eng = _engine(tmp_path, monkeypatch, _profile(cap_pct), symbols=4, equity=EQUITY,
-                  ledger_max_positions=8)
+    eng = _engine(tmp_path, monkeypatch, _profile(cap_pct), symbols=4, equity=EQUITY)
     _force_opportunities(monkeypatch, {s: _opp(0.9 - i * 0.1, mult=0.3)
                                        for i, s in enumerate(eng.cfg.coins)})
     _force_triggers(monkeypatch, True)
@@ -406,8 +415,7 @@ def test_14_hundred_sequential_unique_trades_are_never_counter_blocked():
 
 # ============================================================================= 15) negatif edge → 0 doğru
 def test_15_all_negative_edge_means_zero_trades_and_no_minimum_quota(tmp_path, monkeypatch):
-    eng = _engine(tmp_path, monkeypatch, _profile(6.0), symbols=4, equity=EQUITY,
-                  ledger_max_positions=8)
+    eng = _engine(tmp_path, monkeypatch, _profile(6.0), symbols=4, equity=EQUITY)
     _force_opportunities(monkeypatch, {s: _opp(-0.5, mult=0.0, tradeable=False)
                                        for s in eng.cfg.coins})
     _force_triggers(monkeypatch, True)
@@ -460,8 +468,7 @@ def test_16_eliminated_candidates_never_touch_capacity_telemetry(tmp_path, monke
 # ============================================================================= 17) huni tutarlılığı
 def test_17_funnel_stages_are_consistent_after_opens(tmp_path, monkeypatch):
     """ranked ≥ trigger_fired ≥ … ≥ capacity_approved = opened + exchange_rejected."""
-    eng = _engine(tmp_path, monkeypatch, _profile(6.0), symbols=4, equity=EQUITY,
-                  ledger_max_positions=8)
+    eng = _engine(tmp_path, monkeypatch, _profile(6.0), symbols=4, equity=EQUITY)
     edges = {s: 0.9 - i * 0.1 for i, s in enumerate(eng.cfg.coins)}
     _force_opportunities(monkeypatch, {s: _opp(e, mult=0.3) for s, e in edges.items()})
     _force_triggers(monkeypatch, {s: (i != 0) for i, s in enumerate(eng.cfg.coins)})
@@ -485,3 +492,78 @@ def test_17_funnel_stages_are_consistent_after_opens(tmp_path, monkeypatch):
     assert f["ranked"] >= f["trigger_fired"] >= f["capacity_approved"] >= f["opened"]
     assert len(eng.ledger2.positions) == f["opened"]
     assert _open_risk(eng) <= EQUITY * 6.0 / 100.0 + EPS
+
+
+# ============================================================================= 18-21) gizli defter adet tavanı
+def test_18_paper_ledger_has_no_position_count_cap_on_production_defaults(tmp_path, monkeypatch):
+    """PAPER_RESEARCH adet limiti tanımlamaz → defter de tanımlamamalı (üretim config'i değişmeden).
+
+    Eskiden `FuturesLedgerV2.load(..., max_positions=cfg.futures.max_positions)` sabit 3 geçiyordu:
+    profil "adet limiti yok" dese bile 4. eşzamanlı futures pozisyonu `MAX_POSITIONS` ile
+    reddediliyordu — kaynakta hiçbir kota kodu görünmeden çalışan gizli bir adet kotası.
+    """
+    eng = _engine(tmp_path, monkeypatch, symbols=2, equity=EQUITY)
+    assert eng.cfg.futures.max_positions == 3, "üretim config değeri değişmemeli"
+    assert eng.profile.max_open_positions is None
+    assert eng.ledger2.max_positions is None, "PAPER defterinde adet kapısı olmamalı"
+    ok, why = eng.ledger2.can_open("ZZZ/USDT")
+    assert ok and why == "OK"
+
+
+def test_19_ledger_none_cap_survives_json_roundtrip_and_runtime_override():
+    """`None` kaydedilebilir/okunabilir; kayıtlı sayı runtime profil `None`'ı ile güvenle ezilir."""
+    import json
+    from tradingbot.accounting import FuturesLedgerV2
+    led = FuturesLedgerV2(1_000, max_positions=None)
+    d = led.to_dict()
+    assert d["max_positions"] is None and json.loads(json.dumps(d))["max_positions"] is None
+    assert FuturesLedgerV2.from_dict(json.loads(json.dumps(d))).max_positions is None
+    # Diskte 3 yazıyor olsa bile runtime profili None override eder (migration güvenli).
+    legacy = dict(d, max_positions=3)
+    assert FuturesLedgerV2.from_dict(legacy).max_positions == 3
+    assert FuturesLedgerV2.from_dict(legacy, max_positions=None).max_positions is None
+    # Sayısal tavan davranışı BİREBİR korunur.
+    capped = FuturesLedgerV2(1_000, max_positions=1)
+    capped.positions["A/USDT"] = object()
+    ok, why = capped.can_open("B/USDT")
+    assert not ok and why == "MAX_POSITIONS"
+
+
+@pytest.mark.parametrize("name", ["TESTNET", "SHADOW_LIVE", "LIVE", "LIVE_LIMITED"])
+def test_20_conservative_profiles_still_get_a_ledger_count_cap(tmp_path, monkeypatch, name):
+    """TESTNET/SHADOW_LIVE/LIVE/LIVE_LIMITED adet sınırları KESİNLİKLE değişmedi."""
+    from tradingbot.risk.profiles import resolve_profile
+    p = resolve_profile(name)
+    assert p.max_open_positions is not None and p.max_positions_per_market is not None
+    # Motorun defter tavanı türetmesi: profil adet tanımlıyorsa üretim değeri AYNEN geçer.
+    eng = _engine(tmp_path, monkeypatch, symbols=2, equity=EQUITY)
+    derived = None if p.max_open_positions is None else eng.cfg.futures.max_positions
+    assert derived == 3, (name, derived)
+    assert derived is not None, f"{name} defter adet tavanını KAYBETMEMELİ"
+
+
+def test_21_twelve_half_percent_trades_fill_six_percent_and_the_thirteenth_is_risk_blocked(tmp_path, monkeypatch):
+    """12 bağımsız %0.5 fırsat %6 kapasiteyi doldurur; 13. aday ADET değil RİSK nedeniyle reddedilir."""
+    equity = 200_000.0                       # min-notional/marjin senaryoyu kısıtlamasın
+    eng = _engine(tmp_path, monkeypatch, symbols=13, equity=equity)
+    assert eng.profile.name == "PAPER_RESEARCH" and eng.ledger2.max_positions is None
+    assert eng.profile.max_total_open_risk_pct == 6.0 and eng.profile.risk_per_trade_pct == 2.0
+    _force_final_risk_pct(monkeypatch, 0.5, {s: 0.9 - i * 0.01 for i, s in enumerate(eng.cfg.coins)})
+    _force_triggers(monkeypatch, True)
+    eng.tour(do_scan=False, obsidian=False, charts=False)
+    f = _funnel(eng)["run"]
+    assert f["ranked"] == 13 and f["trigger_fired"] == 13
+    assert f["opened"] == 12, f
+    assert len(eng.ledger2.positions) == 12
+    assert f["risk_capacity_blocked"] == 1 and f["exchange_rejected"] == 0
+    # 13. adayın reddi RİSK kaynaklı: TOTAL_OPEN_RISK. ADET kodu HİÇBİR yerde geçmemeli.
+    blocked = [r for r in _risk_log(eng) if r.get("block_code") == "RISK_CAPACITY_BLOCKED"]
+    assert len(blocked) == 1, blocked
+    assert blocked[0]["risk_reasons"] == ["TOTAL_OPEN_RISK"], blocked[0]
+    for r in _risk_log(eng):
+        assert "MAX_POSITIONS" not in (r.get("risk_reasons") or [])
+        assert "MAX_POSITIONS" not in str(r.get("exec_reject") or "")
+        assert (r.get("block_code") or "") not in FORBIDDEN_QUOTA_CODES
+    budget = equity * 6.0 / 100.0
+    assert _open_risk(eng) <= budget + EPS
+    assert _open_risk(eng) > budget * 0.95, "kapasite gerçekten dolmuş olmalı"

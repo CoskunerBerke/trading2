@@ -177,9 +177,15 @@ def test_coin_head_decision_paths():
     # açık pozisyon → HOLD/EXIT/REDUCE
     d5 = head.decide(_inputs(fr, reports, brief, portfolio={"open_position": {"side": "LONG"}}))
     assert d5.verdict in (Verdict.HOLD, Verdict.EXIT, Verdict.REDUCE)
-    # LLM veto yalnızca veto edebilir, işlem açtıramaz
+    # LLM ADVISORY: ne işlem açtırabilir NE DE tek başına hard veto verebilir (registry'yi atlayamaz).
     d6 = head.decide(_inputs(fr, reports, brief, llm_advice={"veto": True, "veto_reasons": ["contradiction"]}))
-    assert not d6.is_actionable
+    assert not d6.vetoes, "LLM sert veto üretemez"
+    if d.is_actionable:
+        assert d6.is_actionable, "LLM advisory planı geçersiz YAPAMAZ"
+        assert "RED_TEAM_SOFT_PENALTY" in d6.active_plan.soft_flags   # yalnız yumuşak ceza
+    llm_rep = next((r for r in d6.specialist_reports if r.agent_name.startswith("red_team_veto")), None)
+    assert llm_rep is not None and not llm_rep.veto
+    assert (llm_rep.metrics or {}).get("llm_advisory", {}).get("can_hard_veto") is False
 
 
 def test_spot_preferred_over_futures_when_funding_extreme_without_hard_veto():

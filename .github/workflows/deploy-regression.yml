@@ -122,6 +122,22 @@ jobs:
           if [ "$n" -lt 20 ]; then echo "::error::risk kapasite davranis testleri toplanmadi ($n)"; exit 1; fi
           /tmp/run.sh "capacity-order" tests/test_risk_capacity_and_gates.py -v --tb=short \
             -k "untriggered or duplicate or rejected_fill or half_percent or final_size or soft_penalty or ceiling or fail_closed or zero_size or counter_blocked or telemetry or funnel"
+      - name: ÜRETİM EŞDEĞERLİĞİ — fill önizlemesi = gerçek fill + LLM advisory hard veto veremez
+        # Zorunlu adım. Futures LONG/SHORT ve spot BUY için önizleme fiyatının defterde gerçekleşen
+        # fill'e (bid/ask spread, price-tick, qty-step dahil) birebir eşit olduğunu ve LLM
+        # advisory'nin merkezi gate registry'sini atlayarak hard veto ÜRETEMEDİĞİNİ kanıtlar.
+        run: /tmp/run.sh "test_fill_preview_and_llm_advisory" tests/test_fill_preview_and_llm_advisory.py -v --tb=short -rs
+      - name: Önizleme/LLM testleri gerçekten toplanıyor mu (boş seçim reddi)
+        run: |
+          n=$(python -m pytest tests/test_fill_preview_and_llm_advisory.py --collect-only -q 2>/dev/null | grep -c "::")
+          echo "toplanan test: $n"
+          if [ "$n" -lt 12 ]; then echo "::error::onizleme/LLM testleri toplanmadi ($n)"; exit 1; fi
+      - name: PAPER'da gizli adet kotası yok (üretim varsayılanlarıyla)
+        # `cfg.futures.max_positions` üretimdeki 3 değerinde kalır; PAPER_RESEARCH profili adet
+        # limiti tanımlamadığı için defter `None` ile kurulur. 12 × %0.5 fırsat %6 kapasiteyi
+        # doldurur, 13. aday ADET değil TOTAL_OPEN_RISK nedeniyle reddedilir.
+        run: |
+          /tmp/run.sh "paper-no-count-cap" tests/test_risk_capacity_and_gates.py -v --tb=short             -k "production_defaults or no_position_count_cap or none_cap_survives or conservative_profiles_still or twelve_half_percent"
       - name: GERÇEK RUNTIME araştırma döngüsü (boş defterden motor turlarıyla)
         # Zorunlu adım. Boş test seçimi pytest exit-5 ile adımı DÜŞÜRÜR; continue-on-error yok.
         run: /tmp/run.sh "test_research_runtime_e2e" tests/test_research_runtime_e2e.py -v --tb=short -rs

@@ -87,14 +87,17 @@ class FuturesLedgerV2:
 
     schema_version = SCHEMA_VERSION
 
-    def __init__(self, starting_equity, *, max_positions: int = 3, fees: FeeSchedule | None = None,
+    def __init__(self, starting_equity, *, max_positions: int | None = 3, fees: FeeSchedule | None = None,
                  slippage: SlippageModel | None = None, brackets: list[LeverageBracket] | None = None,
                  liq_params: LiquidationParams | None = None, funding: FundingSchedule | None = None,
                  tax_policy: TaxPolicy | None = None, tp1_fraction=Decimal("0.5"), allow_shrink: bool = False,
                  worst_case: bool = True, tp_maker: bool = False, entries_keep: int = 2000, history_keep: int = 5000):
         self.starting_equity: Decimal = D(starting_equity)
         self.wallet_balance: Decimal = D(starting_equity)
-        self.max_positions = int(max_positions)
+        # None = ADET limiti YOK. Karar toplam açık risk / işlem başına risk / marjin / likidite ve
+        # gerçek hard-safety kapılarına kalır (PAPER_RESEARCH profili böyle çalışır). Sayısal değer
+        # verildiğinde eski davranış birebir korunur (TESTNET/SHADOW_LIVE/LIVE/LIVE_LIMITED).
+        self.max_positions: int | None = None if max_positions is None else int(max_positions)
         self.fees = fees or FeeSchedule.futures_default()
         self.slippage = slippage or SlippageModel.zero()
         self.brackets = brackets
@@ -144,9 +147,30 @@ class FuturesLedgerV2:
     def can_open(self, symbol: str) -> tuple[bool, str]:
         if symbol in self.positions:
             return False, R_ALREADY_OPEN
-        if len(self.positions) >= self.max_positions:
+        # `max_positions is None` -> ADET kapısı HİÇ uygulanmaz (kota değil: risk bütçesi karar verir).
+        if self.max_positions is not None and len(self.positions) >= self.max_positions:
             return False, R_MAX_POSITIONS
         return True, R_OK
+
+    # ------------------------------------------------------------------ fill önizlemesi (yan etkisiz)
+    def market_fill_price(self, symbol: str, side, price, *, filters: SymbolFilters | None = None,
+                          slippage: SlippageModel | None = None, tick: TickData | None = None) -> Decimal:
+        """Bir MARKET giriş emrinin GERÇEKLEŞECEĞİ fiyat — durum DEĞİŞTİRMEZ.
+
+        `open()` de tam olarak bunu çağırır, dolayısıyla risk önizlemesi ile gerçek fill arasında
+        ikinci bir yaklaşık formül YOKTUR: yön, sabit kayma, yarım-spread bileşeni ve price-tick
+        kuantizasyonu birebir aynıdır. Motorun kendi yaklaşımını üretmesi bu yüzden yasaktır.
+        """
+        pside = _side(side)
+        filters = filters or default_filters(symbol, MarketType.USDM_PERP)
+        slip = slippage or self.slippage
+        ref = D(price)
+        if ref <= 0:
+            return ZERO
+        fill = slip.fill_price(ref, pside.open_side, tick, is_market=True)
+        if filters.price_tick > 0:
+            fill = quantize_price(fill, filters.price_tick, pside.open_side.value, aggressive=True)
+        return fill
 
     # ------------------------------------------------------------------ açılış
     def open(self, symbol: str, side, price, size: SizeSpec, stop=None, targets: Iterable | None = None, *,
@@ -170,8 +194,8 @@ class FuturesLedgerV2:
         lev = max(1, int(size.leverage))
         if lev > filters.max_leverage:
             return self._reject(R_LEVERAGE, f"{lev}>{filters.max_leverage}")
-        fill = slip.fill_price(ref, pside.open_side, tick, is_market=True)
-        fill = quantize_price(fill, filters.price_tick, pside.open_side.value, aggressive=True) if filters.price_tick > 0 else fill
+        # ÖNİZLEME İLE AYNI KOD YOLU (engine risk kontrolü de `market_fill_price` çağırır).
+        fill = self.market_fill_price(symbol, pside, ref, filters=filters, slippage=slip, tick=tick)
         # miktar
         if size.amount_type is AmountType.QUANTITY:
             raw_qty = size.amount
@@ -526,7 +550,10 @@ class FuturesLedgerV2:
             raise StorageError(f"desteklenmeyen defter şeması (schema_version={sv}, kind={d.get('kind')!r}) — fail-closed, dosya korunuyor")
         if sv < 2 or "wallet_balance" not in d:
             return cls.import_legacy_ledger(d, **overrides)
-        max_pos = int(overrides.pop("max_positions", d.get("max_positions", 3)))
+        # JSON'da `null` yazabilir; ayrıca çağıran taraf (runtime risk profili) `None` geçebilir.
+        # Kayıtlı sayı, runtime profilin `None`'ı tarafından güvenle ezilir.
+        _mp = overrides.pop("max_positions", d.get("max_positions", 3))
+        max_pos = None if _mp is None else int(_mp)
         led = cls(d.get("starting_equity", 0), max_positions=max_pos,
                   fees=FeeSchedule.from_dict(d["fees"]) if d.get("fees") else None,
                   slippage=SlippageModel.from_dict(d["slippage"]) if d.get("slippage") else None,

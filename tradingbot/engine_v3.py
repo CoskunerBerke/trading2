@@ -19,8 +19,8 @@ import time
 from datetime import datetime, timedelta
 from decimal import Decimal
 
-from .accounting import (AmountType, FeeSchedule, FiltersCache, FuturesLedgerV2, LiquidationParams, MarketType, SizeSpec, SlippageModel,
-                         SpotLedger, TaxPolicy, TickData, default_brackets, static_rates)
+from .accounting import (AmountType, FeeSchedule, FiltersCache, FuturesLedgerV2, LiquidationParams, MarketType, Side, SizeSpec,
+                         SlippageModel, SpotLedger, TaxPolicy, TickData, default_brackets, static_rates)
 from .agents.manager import CoinBrief
 from .coinhead import ChiefPortfolioManager, CoinHeadConfig, CoinHeadInputs, CoinHeadRegistry, Verdict
 from .config import BotConfig
@@ -98,7 +98,14 @@ class TradingEngineV3(TradingEngine):
         # --- muhasebe v2 (legacy dosya otomatik içe aktarılır; legacy defter nesnesi de kalır)
         fees = FeeSchedule(maker_pct=Decimal(str(v3.fees.futures_maker_pct)), taker_pct=Decimal(str(v3.fees.futures_taker_pct)), source=v3.fees.source)
         slip = SlippageModel(fixed_bps=Decimal(str(v3.fees.slippage_bps)))
-        self.ledger2 = FuturesLedgerV2.load(self.ledger_path, starting_equity=cfg.futures.starting_equity_usdt, max_positions=cfg.futures.max_positions,
+        # DEFTER ADET TAVANI RUNTIME RİSK PROFİLİNDEN GELİR.
+        # `PAPER_RESEARCH.max_open_positions is None` iken defter hâlâ `cfg.futures.max_positions`
+        # (=3) ile kuruluyordu: profil "adet limiti yok" dese bile 4. eşzamanlı pozisyon defterde
+        # `MAX_POSITIONS` ile reddediliyordu — gizli bir adet kotası. Profil adet limiti
+        # tanımlıyorsa (TESTNET/SHADOW_LIVE/LIVE/LIVE_LIMITED) eski değer AYNEN korunur.
+        _ledger_max_positions = None if self.profile.max_open_positions is None else cfg.futures.max_positions
+        self.ledger2 = FuturesLedgerV2.load(self.ledger_path, starting_equity=cfg.futures.starting_equity_usdt,
+                                            max_positions=_ledger_max_positions,
                                             fees=fees, slippage=slip, brackets=default_brackets(),
                                             liq_params=LiquidationParams(liq_fee_pct=Decimal(str(v3.futures_v3.liq_fee_pct))),
                                             tp1_fraction=Decimal(str(v3.futures_v3.tp1_fraction)), tax_policy=TaxPolicy.disabled())
@@ -822,7 +829,7 @@ class TradingEngineV3(TradingEngine):
             # yapilirsa TASINAN risk ile OLCULEN risk farkli olur ve toplam acik risk fill sonrasi
             # profil tavanini ASABILIR. Bu yuzden risk motoru emrin gercekten dolacagi fiyati gorur
             # -> Chief telemetrisi, RiskEngine ve defter AYNI nihai risk degerini kullanir.
-            exec_entry = self._execution_entry(b.price or plan.entry, d.direction)
+            exec_entry = self._execution_entry(sym, market, d.direction, b.price or plan.entry, marks.get(sym))
             _stop_frac = abs(exec_entry - plan.stop) / exec_entry if (exec_entry and plan.stop) else 0.0
             final_risk_usdt = round(final_notional * _stop_frac, 6)
             _eq = state.equity if self.profile.size_on_live_equity else state.starting_equity
@@ -916,18 +923,25 @@ class TradingEngineV3(TradingEngine):
         atomic_write_json(self.trig_path, self.triggers, indent=None)
         return opened, risk_log
 
-    def _execution_entry(self, entry: float, direction: str) -> float:
-        """Plan girişinin ALEYHTE kayma uygulanmış hâli — risk kapasitesi bunu görmelidir.
+    def _execution_entry(self, symbol: str, market: str, direction: str, ref_price: float,
+                         tick: TickData | None = None) -> float:
+        """Emrin GERÇEKTEN dolacağı fiyat — defterin KENDİ fill yolundan sorulur, yan etkisiz.
 
-        LONG daha yukarıdan, SHORT daha aşağıdan dolar; her iki durumda da stop mesafesi (dolayısıyla
-        taşınan risk) plan varsayımından büyüktür. Kayma oranı defterle AYNI kaynaktan gelir
-        (`fees.slippage_bps`), böylece kontrol ile gerçekleşme aynı varsayımı kullanır.
+        Motor kendi yaklaşık kayma formülünü ÜRETMEZ. Futures tarafında yön, sabit kayma,
+        yarım-spread ve price-tick kuantizasyonu `FuturesLedgerV2.market_fill_price` ile; spot
+        tarafında ask/bid/last seçimi ve spot kayma modeli `SpotLedger.market_fill_price` ile
+        birebir aynıdır — açılışta da aynı fonksiyon çağrılır. Böylece RiskEngine'e verilen entry
+        defterde gerçekleşen entry ile eşleşir; özellikle ask-last farkı sabit kaymadan büyük
+        olduğunda eski yaklaşık formül yanlış giriş fiyatı gösteriyordu.
         """
-        e = float(entry or 0.0)
-        if e <= 0:
-            return e
-        slip = max(0.0, float(self.head_cfg.slippage_pct)) / 100.0
-        return e * (1.0 + slip) if direction == "LONG" else e * (1.0 - slip)
+        ref = float(ref_price or 0.0)
+        if ref <= 0:
+            return ref
+        if market == "SPOT":
+            return float(self.spot2.market_fill_price(symbol, Side.BUY, tick=tick, ref_price=ref))
+        return float(self.ledger2.market_fill_price(symbol, direction, Decimal(str(ref)),
+                                                    filters=self.filters.get(symbol, MarketType.USDM_PERP),
+                                                    tick=tick))
 
     def _trigger_fired(self, b: CoinBrief, direction: str, entry: float, entry_type: str) -> bool:
         """SAF sorgu: durum DEĞİŞTİRMEZ.

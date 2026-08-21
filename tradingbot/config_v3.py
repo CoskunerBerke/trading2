@@ -174,6 +174,12 @@ class LearningV3Section:
     research_min_review_obs: int = 60       # manuel inceleme isareti icin gereken gozlem
     research_cooldown_hours: float = 24.0   # iki durum degisikligi arasindaki asgari sure
     research_retire_delta_r: float = -0.10  # bu kadar kotulesirse otomatik baseline'a donulur
+    research_min_fold_consistency: float = 0.6   # offline fold tutarliligi tabani (aktivasyon kapisi)
+    # --- ResearchCoordinator: aday uretim turu temposu (her turda agir is YOK) ---
+    research_min_new_closed: int = 20       # arastirma turunu tetikleyen asgari YENI kapanis
+    research_run_cooldown_hours: float = 12.0    # iki arastirma turu arasindaki asgari sure
+    research_min_rows: int = 40             # walk-forward icin gereken asgari kronolojik kapanis
+    research_seed: int = 7                  # deterministik aday uretimi/degerlendirmesi
 
 
 @dataclass

@@ -86,6 +86,43 @@ Backup'lar: `backups/hourly/tradingbot-hourly-20260818T205349Z…20260819T072955
 - **Kapasite/VPS (docs/VPS_PHASE8_PLAN.md):** ölçülen yoğunluklar ham ~45 B/satır, feature ~468 B/satır (×10.3), replay RAM ~3.7 KB/bar (4h evren 1.5 GB, 1h 5.9 GB → stride); 1. yıl ayak izi 12–17 GB < 45 GB → **öneri: OVH VPS-2 (4 vCore/8 GB/75 GB NVMe), Ubuntu 24.04, AB lokasyonu (~10–14 €/ay)**; satın alma sonrası-deploy öncesi salt-okunur Binance erişim testi. Satın alma YAPILMADI; kullanıcı onayı bekleniyor.
 - F00004/F00005 el sürülmedi (tek fill, aynı ID); worker bu fazda hiç başlatılmadı; gerçek emir 0 · LIVE 0 · TESTNET 0 · LLM 0.
 
+## Phase 10d — Eksik halka kapatıldı: döngü gerçekten kendi kendine yürüyor (kaynak; VPS'te çalıştırılmadı)
+Phase 10c'de analitik modüller vardı ama **çalışma yolunda bağlı değildi**: motor yalnız
+`evaluate_active()`/`maybe_activate()` çağırıyordu; `propose`/`record_offline`/`start_shadow` hiçbir
+runtime yolunda yoktu, SHADOW politika giriş anında değerlendirilmediği için gözlem birikmiyordu ve
+durum makinesi kilitleniyordu. Lifecycle testleri de geçişleri elle sürüyordu.
+
+- **`learn/research_coordinator.py` (yeni).** Tek orkestrasyon noktası: canlı `LIVE_PAPER` hafızasını
+  `trade_id` ile birleştirir → coverage + leakage + join kapıları → loss attribution → sınırlı aday →
+  **anchored walk-forward** (train < purge < embargo < test, test pencereleri ayrık) → offline verdict →
+  SHADOW. Her turda ağır iş yok: asgari yeni kapanış + cooldown birlikte geçilmeli. Durum
+  `state/research_coordinator.json`'da atomik ve restart'a dayanıklı.
+- **MUTLAK MOD KAPISI.** Üretim, gözlem, aktivasyon ve uygulama yalnız `mode == PAPER` **ve**
+  `execution.gateway == paper` **ve** `live_order_path_enabled == false` bileşiminde mümkün. Diğer
+  modlarda katman salt-okunur; durum geçişi yapılmaz, hiçbir giriş etkilenmez.
+- **SHADOW gözlem yolu motora bağlandı.** Baseline'ın kabul ettiği her yeni giriş için SHADOW adayı
+  **karşı-olgusal** değerlendirilir; gerçek giriş DEĞİŞMEZ. İşlem kapanınca eşleşmiş gözlem yazılır.
+  Metrik adı açıkça `risk_budget_contribution_r`: eleme → 0.0, küçültme → gerçekleşen R × çarpan.
+  Pozisyon küçültmesi "trade R değişti" diye RAPORLANMAZ. `pending` kayıtları `policy_id|trade_id`
+  ile anahtarlanır → restart'a dayanıklı ve idempotent.
+- **Aktivasyon kapıları sıkılaştırıldı.** SHADOW → ACTIVE için hepsi gerekli: `min_shadow_obs`,
+  cooldown, eşleşmiş `delta > 0`, **eşleşmiş `delta` CI95 alt sınırı > 0**, candidate beklentisi
+  baseline'dan yüksek, offline `fold_consistency >= 0.6`, offline verdict `SHADOW_CANDIDATE`,
+  başka aktif aday yok. `RESEARCH_ONLY` asla aktifleşemez (ve döngüyü kilitlememesi için
+  yeterli gözlemden sonra emekli edilir).
+- **Karantina.** Diskten yüklenen politika artık sınırları geçmiyorsa (kurcalanmış `size_multiplier`,
+  yasak anahtar, çözümlenemeyen alan) **uygulanmadan RETIRED** edilir ve `quarantined` altında
+  raporlanır.
+- **Gerçek bug:** `evaluate_policies` coverage kapısında kaynağı `HISTORICAL_REPLAY` olarak
+  sabitliyordu; canlı `LIVE_PAPER` satırlarında namespace kontrolü her zaman düşüyordu. Kaynak artık
+  satırlardan çıkarılıyor, karışık namespace `single_source_namespace` kapısıyla reddediliyor.
+  Bu hatayı runtime testi ortaya çıkardı.
+- **`tests/test_research_runtime_e2e.py` (yeni, 16 test).** Temiz state ve **boş
+  `research_policy.json`** ile gerçek `TradingEngineV3` turları; test kodunda `propose`/
+  `record_offline`/`start_shadow`/`observe`/`maybe_activate`/`_set_state` çağrısı YOK — bir **AST**
+  testi bunu zorluyor. Ayrıca AST testi motorun runtime yolunda koordinatör çağrısının gerçekten
+  bulunduğunu ve `maybe_promote`'un bulunmadığını doğruluyor.
+
 ## Phase 10c — Öğrenme döngüsü uçtan uca (kaynak; VPS'te çalıştırılmadı)
 Kararın nedensel bağlamını dondur → sonucu aynı kayda bağla → neden kaybedildiğini yapılandırılmış
 biçimde çıkar → sınırlı ve açıklanabilir aday üret → OOS'ta doğrula → PAPER'da karşı-olgusal karşılaştır

@@ -29,14 +29,24 @@ class FakeLive:
         return lv
 
 
-def _engine(tmp_path: Path, monkeypatch) -> TradingEngineV3:
+def _engine(tmp_path: Path, monkeypatch, v3_overrides: dict | None = None,
+            *, before_build=None) -> TradingEngineV3:
+    """Agsiz V3 motoru. `v3_overrides` v3 config bolumlerini derinlemesine gunceller;
+    `before_build(cfg)` motor kurulmadan ONCE state dizinine dokunmak icin cagrilir."""
     cfg = BotConfig()
     cfg.coins = ["ETH/USDT", "SOL/USDT"]
     cfg.scanner.enabled = False
     cfg.scanner.core_coins = ["ETH/USDT", "SOL/USDT"]
     cfg.project_root = tmp_path
     cfg.obsidian.vault_path = str(tmp_path / "vault")
-    cfg.v3 = load_v3({"coin_heads": {"consensus_threshold": 0.05, "min_confidence": 0.05}, "learning_v3": {"min_samples_train": 5}})
+    raw = {"coin_heads": {"consensus_threshold": 0.05, "min_confidence": 0.05},
+           "learning_v3": {"min_samples_train": 5}}
+    for sec, vals in (v3_overrides or {}).items():
+        raw[sec] = {**raw.get(sec, {}), **vals}
+    cfg.v3 = load_v3(raw)
+    if before_build is not None:
+        cfg.state_path.mkdir(parents=True, exist_ok=True)
+        before_build(cfg)
     eng = TradingEngineV3(cfg)
     frames = {"ETH/USDT": T.frames(seed=5, drift=0.0015), "SOL/USDT": T.frames(seed=13, drift=0.003)}
     # sentetik mumları "şimdi"ye kaydır (veri kalitesi kapısı bayat mum görmesin): son 4h bar bir bar önce kapandı
@@ -163,7 +173,7 @@ def test_active_research_policy_blocks_new_entries_without_touching_open_positio
 
     from tradingbot.core import utc_now
     from tradingbot.learn.policy import CandidatePolicy
-    from tradingbot.learn.research_policy import ResearchGates, ResearchPolicyBook
+    from tradingbot.learn.research_policy import BLOCKED, ResearchGates, ResearchPolicyBook
 
     eng = _engine(tmp_path, monkeypatch)
     s0 = eng.tour(do_scan=False, obsidian=False, charts=False)     # baseline tur: aktif aday YOK
@@ -179,13 +189,14 @@ def test_active_research_policy_blocks_new_entries_without_touching_open_positio
     now = utc_now()
     block_all = CandidatePolicy(policy_id="block_all", seed=7, min_p_win=0.90,
                                 rationale="test: bütün girişleri ele")
-    gates = ResearchGates(min_shadow_obs=1, min_active_obs=999, cooldown_hours=0.0)
+    gates = ResearchGates(min_shadow_obs=3, min_active_obs=999, cooldown_hours=0.0,
+                          min_fold_consistency=0.6)
     book = ResearchPolicyBook(eng.cfg.state_path / "research_policy.json", gates)
     book.propose(block_all, now=now)
-    book.record_offline("block_all", {"verdict": "SHADOW_CANDIDATE"}, now=now)
-    book.start_shadow("block_all", now=now)
-    book.observe("block_all", trade_id="seed", baseline_r=-1.0, candidate_r=0.0, allowed=False,
-                 size_multiplier=0.0, at=now)
+    book.record_offline("block_all", {"verdict": "SHADOW_CANDIDATE", "fold_consistency": 1.0}, now=now)
+    for i in range(3):          # aktivasyon kapisi CI95 alt siniri > 0 arar -> birden fazla gozlem
+        book.observe("block_all", trade_id=f"seed{i}", baseline_r=-1.0,
+                     risk_budget_contribution_r=0.0, kind=BLOCKED, size_multiplier=0.0, at=now)
     assert book.maybe_activate(now=now + timedelta(hours=1)) == "block_all"
     eng.research = book                                            # motor bu defteri kullansın
 

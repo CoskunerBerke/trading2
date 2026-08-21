@@ -229,6 +229,9 @@ class StateReader:
                 "active_rationale": d.get("active_rationale"),
                 "active_changed_params": d.get("active_changed_params") or [],
                 "active_stats": d.get("active_stats"),
+                "shadow_policy_id": d.get("shadow_policy_id"),
+                "shadow_stats": d.get("shadow_stats"),
+                "quarantined": d.get("quarantined") or [],
                 "counts": d.get("counts") or {},
                 "auto_promotion_possible": bool(d.get("auto_promotion_possible", False)),
                 "retired": [{"policy_id": r.get("policy_id"), "reason": r.get("retired_reason")}

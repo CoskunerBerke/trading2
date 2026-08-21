@@ -30,8 +30,8 @@ from tradingbot.learn.attribution import LOSS_CLASSES, attribution_report
 from tradingbot.learn.coverage import coverage_report
 from tradingbot.learn.policy import (MAX_CHANGES_PER_CANDIDATE, CandidatePolicy, baseline_policy,
                                      candidates_from_attribution, validate_policy)
-from tradingbot.learn.research_policy import (ACTIVE, OFFLINE_VALIDATED, PROPOSED, RETIRED, REVIEW,
-                                              SHADOW, ResearchGates, ResearchPolicyBook,
+from tradingbot.learn.research_policy import (ACTIVE, BLOCKED, PROPOSED, RETIRED, REVIEW, SHADOW,
+                                              UNCHANGED, ResearchGates, ResearchPolicyBook,
                                               ResearchSafetyError, apply_research_policy)
 from tradingbot.learn.telemetry import SnapshotTelemetry
 from tradingbot.replay.engine import HistoricalReplay
@@ -296,9 +296,15 @@ def test_selection_never_sees_its_own_test_fold(tmp_path):
 
 
 # =========================================================================== 5) araştırma durum makinesi
+def _offline_ok(verdict: str = "SHADOW_CANDIDATE") -> dict:
+    """Aktivasyon kapilari offline raporda fold tutarliligi da arar."""
+    return {"verdict": verdict, "fold_consistency": 1.0, "scored_folds": 4}
+
+
 def _gates() -> ResearchGates:
     return ResearchGates(min_shadow_obs=6, min_active_obs=6, min_review_obs=10, cooldown_hours=0.0,
-                         retire_delta_r=-0.10, activate_delta_r=0.0, review_delta_r=0.05)
+                         retire_delta_r=-0.10, activate_delta_r=0.0, review_delta_r=0.05,
+                         min_fold_consistency=0.6)
 
 
 def _best_candidate(rows) -> CandidatePolicy:
@@ -314,18 +320,17 @@ def test_research_state_machine_full_lifecycle(tmp_path):
     book = ResearchPolicyBook(tmp_path / "research_policy.json", _gates())
     rec = book.propose(cand, now=now)
     assert rec.state == PROPOSED
-    assert book.record_offline(cand.policy_id, report, now=now) == OFFLINE_VALIDATED
-    assert book.start_shadow(cand.policy_id, now=now) == SHADOW
+    assert book.record_offline(cand.policy_id, report, now=now) == SHADOW
     assert book.active_policy() is None                                   # SHADOW canlı davranışı DEĞİŞTİRMEZ
     for i in range(8):                                                    # aday kötü işlemleri eliyor
-        book.observe(cand.policy_id, trade_id=f"O{i}", baseline_r=-1.2, candidate_r=0.0,
-                     allowed=False, size_multiplier=0.0, at=now)
+        book.observe(cand.policy_id, trade_id=f"O{i}", baseline_r=-1.2, risk_budget_contribution_r=0.0,
+                     kind=BLOCKED, size_multiplier=0.0, at=now)
     assert book.maybe_activate(now=now + timedelta(hours=1)) == cand.policy_id
     assert book.active_policy().policy_id == cand.policy_id
     # sürdürülen iyileşme → yalnız MANUEL İNCELEME işareti (CHAMPION/LIVE DEĞİL)
     for i in range(8, 14):
-        book.observe(cand.policy_id, trade_id=f"O{i}", baseline_r=-1.2, candidate_r=0.0,
-                     allowed=False, size_multiplier=0.0, at=now)
+        book.observe(cand.policy_id, trade_id=f"O{i}", baseline_r=-1.2, risk_budget_contribution_r=0.0,
+                     kind=BLOCKED, size_multiplier=0.0, at=now)
     assert book.evaluate_active(now=now + timedelta(hours=2)) == REVIEW
     assert book.to_dict()["auto_promotion_possible"] is False
     reloaded = ResearchPolicyBook(tmp_path / "research_policy.json", _gates())   # kalıcı
@@ -338,15 +343,14 @@ def test_degrading_candidate_is_retired_and_rolls_back_to_baseline(tmp_path):
     cand = _best_candidate(rows)
     book = ResearchPolicyBook(tmp_path / "rp.json", _gates())
     book.propose(cand, now=now)
-    book.record_offline(cand.policy_id, {"verdict": "SHADOW_CANDIDATE"}, now=now)
-    book.start_shadow(cand.policy_id, now=now)
+    book.record_offline(cand.policy_id, _offline_ok(), now=now)
     for i in range(7):
-        book.observe(cand.policy_id, trade_id=f"G{i}", baseline_r=-1.0, candidate_r=0.0,
-                     allowed=False, size_multiplier=0.0, at=now)
+        book.observe(cand.policy_id, trade_id=f"G{i}", baseline_r=-1.0, risk_budget_contribution_r=0.0,
+                     kind=BLOCKED, size_multiplier=0.0, at=now)
     assert book.maybe_activate(now=now + timedelta(hours=1)) == cand.policy_id
     for i in range(7, 20):                                                # aday artık KAZANANLARI eliyor
-        book.observe(cand.policy_id, trade_id=f"G{i}", baseline_r=1.0, candidate_r=0.0,
-                     allowed=False, size_multiplier=0.0, at=now)
+        book.observe(cand.policy_id, trade_id=f"G{i}", baseline_r=1.0, risk_budget_contribution_r=0.0,
+                     kind=BLOCKED, size_multiplier=0.0, at=now)
     assert book.evaluate_active(now=now + timedelta(hours=2)) == RETIRED
     assert book.active() is None and book.active_policy() is None          # baseline'a dönüldü
     assert "kötüleşme" in book.get(cand.policy_id).retired_reason
@@ -364,8 +368,9 @@ def test_rejected_offline_verdict_never_enters_research(tmp_path):
     book.propose(cand, now=now)
     assert book.record_offline(cand.policy_id, {"verdict": "REJECTED", "failed_gates": ["candidate_positive"]},
                                now=now) == RETIRED
-    with pytest.raises(ResearchSafetyError):
-        book.start_shadow(cand.policy_id, now=now)
+    assert book.shadow() is None and book.get(cand.policy_id).state == RETIRED
+    assert book.observe(cand.policy_id, trade_id="X", baseline_r=-1.0,
+                        risk_budget_contribution_r=0.0, kind=BLOCKED, at=now) is False
     assert book.maybe_activate(now=now + timedelta(days=1)) is None
 
 
@@ -375,11 +380,10 @@ def test_research_only_verdict_can_never_activate(tmp_path):
     cand = _best_candidate(rows)
     book = ResearchPolicyBook(tmp_path / "rp.json", _gates())
     book.propose(cand, now=now)
-    book.record_offline(cand.policy_id, {"verdict": "RESEARCH_ONLY"}, now=now)
-    book.start_shadow(cand.policy_id, now=now)
+    book.record_offline(cand.policy_id, _offline_ok("RESEARCH_ONLY"), now=now)
     for i in range(20):
-        book.observe(cand.policy_id, trade_id=f"R{i}", baseline_r=-1.0, candidate_r=0.0,
-                     allowed=False, size_multiplier=0.0, at=now)
+        book.observe(cand.policy_id, trade_id=f"R{i}", baseline_r=-1.0, risk_budget_contribution_r=0.0,
+                     kind=BLOCKED, size_multiplier=0.0, at=now)
     assert book.maybe_activate(now=now + timedelta(days=1)) is None
     assert book.get(cand.policy_id).state == SHADOW
 
@@ -391,15 +395,14 @@ def test_insufficient_samples_and_cooldown_block_policy_change(tmp_path):
     gates = ResearchGates(min_shadow_obs=10, min_active_obs=10, cooldown_hours=48.0)
     book = ResearchPolicyBook(tmp_path / "rp.json", gates)
     book.propose(cand, now=now)
-    book.record_offline(cand.policy_id, {"verdict": "SHADOW_CANDIDATE"}, now=now)
-    book.start_shadow(cand.policy_id, now=now)
+    book.record_offline(cand.policy_id, _offline_ok(), now=now)
     for i in range(4):                                                    # yetersiz örnek
-        book.observe(cand.policy_id, trade_id=f"C{i}", baseline_r=-1.0, candidate_r=0.0,
-                     allowed=False, size_multiplier=0.0, at=now)
+        book.observe(cand.policy_id, trade_id=f"C{i}", baseline_r=-1.0, risk_budget_contribution_r=0.0,
+                     kind=BLOCKED, size_multiplier=0.0, at=now)
     assert book.maybe_activate(now=now + timedelta(days=10)) is None
     for i in range(4, 12):
-        book.observe(cand.policy_id, trade_id=f"C{i}", baseline_r=-1.0, candidate_r=0.0,
-                     allowed=False, size_multiplier=0.0, at=now)
+        book.observe(cand.policy_id, trade_id=f"C{i}", baseline_r=-1.0, risk_budget_contribution_r=0.0,
+                     kind=BLOCKED, size_multiplier=0.0, at=now)
     assert book.maybe_activate(now=now + timedelta(hours=1)) is None      # cooldown dolmadı
     assert book.maybe_activate(now=now + timedelta(hours=49)) == cand.policy_id
 
@@ -410,10 +413,10 @@ def test_same_trade_is_never_counted_twice(tmp_path):
     cand = _best_candidate(rows)
     book = ResearchPolicyBook(tmp_path / "rp.json", _gates())
     book.propose(cand, now=now)
-    assert book.observe(cand.policy_id, trade_id="X1", baseline_r=-1.0, candidate_r=0.0,
-                        allowed=False, size_multiplier=0.0, at=now) is True
-    assert book.observe(cand.policy_id, trade_id="X1", baseline_r=5.0, candidate_r=5.0,
-                        allowed=True, size_multiplier=1.0, at=now) is False
+    assert book.observe(cand.policy_id, trade_id="X1", baseline_r=-1.0, risk_budget_contribution_r=0.0,
+                        kind=BLOCKED, size_multiplier=0.0, at=now) is True
+    assert book.observe(cand.policy_id, trade_id="X1", baseline_r=5.0, risk_budget_contribution_r=5.0,
+                        kind=UNCHANGED, size_multiplier=1.0, at=now) is False
     assert book.get(cand.policy_id).stats()["n_obs"] == 1
 
 
@@ -505,11 +508,10 @@ def test_dashboard_exposes_the_learning_state(tmp_path):
     cand = _best_candidate(rows)
     book = ResearchPolicyBook(st / "research_policy.json", _gates())
     book.propose(cand, now=now)
-    book.record_offline(cand.policy_id, {"verdict": "SHADOW_CANDIDATE"}, now=now)
-    book.start_shadow(cand.policy_id, now=now)
+    book.record_offline(cand.policy_id, _offline_ok(), now=now)
     for i in range(8):
-        book.observe(cand.policy_id, trade_id=f"D{i}", baseline_r=-1.2, candidate_r=0.0,
-                     allowed=False, size_multiplier=0.0, at=now)
+        book.observe(cand.policy_id, trade_id=f"D{i}", baseline_r=-1.2, risk_budget_contribution_r=0.0,
+                     kind=BLOCKED, size_multiplier=0.0, at=now)
     book.maybe_activate(now=now + timedelta(hours=1))
     SnapshotTelemetry(path=st / "snapshot_telemetry.json",
                       counters={"snapshot_success_total": 160, "snapshot_failure_total": 0,

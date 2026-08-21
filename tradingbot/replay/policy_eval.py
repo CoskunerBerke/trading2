@@ -196,7 +196,12 @@ def evaluate_policies(cfg: Any, replay_dir: Path, rows: list[dict], bounds: list
     consistency = round(improved / len(scored_folds), 4)
     # --- veri bütünlüğü kapıları: gerçek satırlardan ölçülür (çağırana güvenilmez) ---
     from ..learn.coverage import coverage_report as _coverage
-    cov = _coverage(rows, source="HISTORICAL_REPLAY")
+    # Kaynak namespace'i SATIRLARDAN çıkarılır: bu değerlendirme hem HISTORICAL_REPLAY hem LIVE_PAPER
+    # hafızası için çalışır. Karışık namespace fail-closed reddedilir (replay ile canlı karışamaz).
+    _srcs = {str(r.get("source") or "") for r in rows} - {""}
+    _single_source = (next(iter(_srcs)) if len(_srcs) == 1 else None)
+    cov = _coverage(rows, source=_single_source)
+    _namespace_ok = len(_srcs) <= 1
     # --- drawdown: aday baseline'dan belirgin şekilde daha derin çekilme üretemez ---
     b_dd, c_dd = (b_m.get("max_dd_r") or 0.0), (c_m.get("max_dd_r") or 0.0)
     dd_ok = bool(c_dd <= max(1.0, b_dd * 1.25 + 0.5))
@@ -211,6 +216,7 @@ def evaluate_policies(cfg: Any, replay_dir: Path, rows: list[dict], bounds: list
         model_cal = None
     gates = {
         "feature_coverage_valid": bool(cov["ok"]),
+        "single_source_namespace": bool(_namespace_ok),
         "no_timestamp_leakage": bool(cov["invalid_timestamps"] == 0),
         "join_intact": bool(cov["join"]["broken"] == 0),
         "policy_bounds_valid": True,          # yukarıda her aday için validate_policy çağrıldı

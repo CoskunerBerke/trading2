@@ -41,4 +41,14 @@ jobs:
           sudo apt-get update -y && sudo apt-get install -y shellcheck
           shellcheck -S warning deploy/setup_vps_v3.sh deploy/preflight.sh deploy/replay_runner.sh
       - name: Deploy regression tests
-        run: python -m pytest tests/test_deploy_vps.py tests/test_replay_runner.py -v
+        run: |
+          set +e
+          python -m pytest tests/test_deploy_vps.py tests/test_replay_runner.py -v --tb=short > pytest.out 2>&1
+          rc=$?
+          cat pytest.out
+          if [ "$rc" -ne 0 ]; then
+            # Hata özetini GitHub annotation olarak yayınla (log erişimi olmadan da görünür)
+            summary=$(tail -n 60 pytest.out | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
+            echo "::error title=pytest failure::${summary}"
+          fi
+          exit $rc

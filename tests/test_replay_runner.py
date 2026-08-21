@@ -267,7 +267,15 @@ def _sandbox(tmp_path: Path, name: str, *, with_systemd_run: bool = True, isolat
     (app / "tradingbot" / "__main__.py").write_text(FAKE_TRADINGBOT, encoding="utf-8")
     # venv python sarmalayıcısı: `env -i` PYTHONPATH'i sildiği için burada YENİDEN kurulur
     py = base / "venv" / "bin" / "python"
-    py.write_text(f'#!/usr/bin/env bash\nexec /usr/bin/env PYTHONPATH="{app}" "{sys.executable}" "$@"\n', encoding="utf-8")
+    envfile = root / "fake.env"
+    envfile.write_text("", encoding="utf-8")
+    # `env -i` bütün ortamı siler; sarmalayıcı PYTHONPATH'i ve sandbox test değişkenlerini GERİ yükler
+    # (secret'lar bu dosyaya YAZILMAZ → sızıntı testi anlamlı kalır).
+    py.write_text(
+        "#!/usr/bin/env bash\n"
+        f'set -a; [ -f "{envfile}" ] && . "{envfile}"; set +a\n'
+        f'exec /usr/bin/env PYTHONPATH="{app}" CALLS_LOG="{root / "calls.log"}" "{sys.executable}" "$@"\n',
+        encoding="utf-8")
     py.chmod(0o755)
     data = base / "data"
     (data / "state").mkdir(parents=True)
@@ -294,9 +302,15 @@ def _sandbox(tmp_path: Path, name: str, *, with_systemd_run: bool = True, isolat
             "calls": root / "calls.log"}
 
 
+_FAKE_KEYS = ("FAKE_MODE", "FAKE_PLAN_BLOCK")
+
+
 def _run(sb: dict, *argv: str, extra_env: dict | None = None) -> subprocess.CompletedProcess:
     env = dict(sb["env"])
     env.update(extra_env or {})
+    # sahte CLI'nin davranış anahtarları `env -i`'yi aşabilmek için dosyaya yazılır; secret'lar YAZILMAZ
+    vals = [f"{k}={env[k]}" for k in _FAKE_KEYS if k in env]
+    (sb["root"] / "fake.env").write_text("\n".join(vals) + ("\n" if vals else ""), encoding="utf-8")
     return subprocess.run([BASH, str(RUNNER), *argv], cwd=str(sb["root"]), env=env,
                           capture_output=True, text=True, timeout=300)
 

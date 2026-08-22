@@ -40,7 +40,8 @@ Futures LONG   brüt = qty × (mark − entry)
 Futures SHORT  brüt = qty × (entry − mark)
 
 net gerçekleşmemiş = brüt − açılış ücreti − tahmini kapanış ücreti ± funding
-net gerçekleşen    = ledger realized_pnl (ücret ZATEN dahil) ± funding
+net gerçekleşen    = kapanış kaydının net_pnl alanı
+                   = gross − giriş ücreti − çıkış ücreti ± funding   (ledger _finalize)
 ```
 
 Yüzde paydası: **FUTURES → kullanılan başlangıç teminatı**, **SPOT → yatırılan tutar**. Panelde
@@ -140,7 +141,8 @@ yazılmaz. Config yalnız **ortam değişkeni adını** tutar; değer VPS'teki g
 `config_v3` bir token değerini env adı yerine yazma girişimini **reddeder**.
 
 ```bash
-# /opt/tradingbot/env/telegram.env   (chmod 600, repoya GİRMEZ)
+# /opt/tradingbot/env.d/telegram.env   (chmod 600, repoya GİRMEZ)
+# Aynı dosya hem worker hem `tradingbot-alert@.service` tarafından EnvironmentFile ile okunur.
 TRADINGBOT_TELEGRAM_ENABLED=false
 TRADINGBOT_TELEGRAM_BOT_TOKEN=
 TRADINGBOT_TELEGRAM_CHAT_ID=
@@ -165,6 +167,64 @@ etiketlenir), worker sağlığı bozuldu / düzeldi, günlük PAPER performans �
 
 Her mesaj `PAPER` etiketiyle başlar; zarar `🔴` ve negatif işaretle gösterilir.
 
+### Olay kapıları ve zamanlama (hepsi GERÇEKTEN tüketilir)
+
+| Ayar | Etki |
+|---|---|
+| `notify_open: false` | Açılış olayı **üretilmez** (outbox'a bile yazılmaz) |
+| `notify_close: false` | Kapanış/stop/TP olayı üretilmez |
+| `notify_health: false` | Sağlık, worker-failure ve worker-recovery olayları üretilmez |
+| `daily_summary_enabled: false` | Günlük özet üretilmez |
+| `daily_summary_hour_utc` | `0–23`; bu UTC saatinden itibaren o gün **tam bir kez** özet |
+| `retry_backoff_s` | Başarısız olayın bir sonraki denemesine kadar bekleme tabanı |
+| `retry_batch` | Bir worker turunda en çok kaç başarısız olay yeniden denenir |
+
+Günlük özet event id'si gün bazlıdır (`daily_summary:portfolio:YYYY-MM-DD`): worker aynı gün
+yeniden başlasa da ikinci özet gitmez. Özet saatinde worker kapalıysa **sonraki uygun turda** aynı
+günün özeti bir kez gönderilir; geçmiş günler için toplu mesaj üretilmez.
+
+### Otomatik yeniden deneme
+
+Her worker turu sonunda `retry_pending()` çalışır: **yalnız zamanı gelmiş** (`next_attempt_at`)
+olaylar, **en çok `retry_batch`** tanesi denenir. Backoff üsteldir ve üst sınırlıdır
+(`retry_backoff_s × 2^(deneme−1)`, en çok 1 saat). `max_retries` dolan olay bir daha denenmez —
+sonsuz retry yoktur ve tur bloklanmaz. `sent`/`suppressed` olaylar asla yeniden gönderilmez.
+Yeniden deneme, outbox'ta saklanan **orijinal mesajı** gönderir (uydurma metin yok).
+
+### Gönderim, giriş kilidinin DIŞINDA
+
+Kritik bölgede (`_entry_lock`) yalnız defter kaydı ve **hızlı, yerel** outbox yazımı yapılır.
+Telegram HTTP'si kilit bırakıldıktan sonra `flush()` ile denenir. Böylece yavaş/asılı bir taşıma
+giriş kilidini tutmaz; gönderim başarısız olsa bile **açılmış işlem geri alınmaz** ve olay retry
+kuyruğunda kalır.
+
+### Worker SÜRECİ öldüğünde (harici uyarı)
+
+Süreç içi notifier kendi ölümünü bildiremez. Bunun için kaynak-kontrollü bir systemd hook'u vardır:
+
+* `deploy/tradingbot-worker.service` → `OnFailure=tradingbot-alert@%n.service`
+* `deploy/tradingbot-alert@.service` → `Type=oneshot`, `tradingbot worker-alert --event failure`
+
+Özellikler ve sınırları:
+
+* Token **komut satırına yazılmaz**; yalnız `EnvironmentFile` ile gelir → `systemctl status`,
+  process list ve journal'a sızmaz. Kabuk interpolasyonu yoktur.
+* `systemctl stop` `OnFailure=` **tetiklemez** → operatörün kontrollü durdurması yanlış "çöktü"
+  bildirimi üretmez (systemd sözleşmesi).
+* Worker `Restart=on-failure` + `StartLimitBurst=5` ile önce kendi kendine dener; unit ancak
+  yeniden başlatma bütçesi tükendiğinde `failed` olur → hook restart döngüsünde **mesaj yağmuru
+  üretmez**. Ek olarak aynı `--ref` ile ikinci çalıştırma outbox tarafından yutulur.
+* Telegram kapalıysa komut **temiz no-op** (çıkış 0, ağ çağrısı yok).
+* Kurtarma mesajı worker **gerçekten ready/healthy** olduğunda gönderilir, failure olayına
+  bağlanır ve iki kez gönderilmez.
+
+**Kurulum** (bu görevde yapılmadı):
+```bash
+sudo cp deploy/tradingbot-alert@.service /etc/systemd/system/
+sudo cp deploy/tradingbot-worker.service /etc/systemd/system/
+sudo systemctl daemon-reload
+```
+
 ### İdempotency
 Olay kimliği: `işlem ID + yaşam döngüsü olayı + fill/close referansı`. Kalıcı, atomik outbox
 (`state/notify_outbox.json`) her olayı `pending/sent/failed/suppressed` olarak işaretler.
@@ -173,6 +233,18 @@ Olay kimliği: `işlem ID + yaşam döngüsü olayı + fill/close referansı`. K
   (`suppress`); bu pozisyonlar **kapandığında gerçek kapanış bildirimi yine gönderilir**.
 * Aynı olay iki kez gönderilmez (yeni süreçte de, çünkü outbox kalıcıdır).
 * Telegram hatası trade döngüsünü **durdurmaz** ve pozisyon kaydını **geri almaz**.
+
+### Bozuk outbox: kurtarma ve kalan risk
+
+Outbox atomik **ve yedekli** yazılır (`keep_backup=True`). Ana dosya bozulursa `read_json`
+otomatik olarak `.bak` kopyasından kurtarır ve bozuk dosyayı `<ad>.corrupt-N` olarak kenara alır
+(silmez). Bozuk veri **asla "gönderildi" sayılmaz**.
+
+**Kalan risk:** hem ana dosya hem `.bak` aynı anda okunamaz hâle gelirse idempotency geçmişi
+kaybolur (fail-open). Bu durumda bir kapanış/özet bildirimi ikinci kez gidebilir. Açılış tarafında
+`bootstrap_open_positions()` mevcut açık pozisyonları yeniden bastırdığı için sahte "yeni işlem"
+bildirimi oluşmaz. Olasılık düşüktür (iki dosyanın birlikte bozulması gerekir) ve etkisi yalnız
+tekrarlanan bir bilgilendirme mesajıdır — işlem/defter etkilenmez.
 
 ---
 

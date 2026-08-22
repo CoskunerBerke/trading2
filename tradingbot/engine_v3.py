@@ -664,6 +664,7 @@ class TradingEngineV3(TradingEngine):
                   "mode": self.mode_state.mode.value, "profile": self.profile.name}
         atomic_write_json(st / "health.json", health)
         self._notify_health(str(health.get("state") or "UNKNOWN"), str(health.get("summary") or ""), now)
+        self._notify_maintenance(health, now)
         self._persist_funnel(now, len(records))
         self.snap_telemetry.save()          # snapshot/sema sayaclari dashboard ve /metrics icin
         summary = {"at": iso(now), "run_id": self.run_id, "symbols": symbols,
@@ -678,7 +679,12 @@ class TradingEngineV3(TradingEngine):
     # ------------------------------------------------------------------ uygulama
     def _execute(self, decisions, chief, briefs: list[CoinBrief], state, marks: dict[str, TickData], now: datetime) -> tuple[list[str], list[dict]]:
         with self._entry_lock:          # aday değerlendirme→fill→durum yenileme tek seri kritik bölge (reservation/commit)
-            return self._execute_locked(decisions, chief, briefs, state, marks, now)
+            out = self._execute_locked(decisions, chief, briefs, state, marks, now)
+        # O-4: TELEGRAM HTTP'si KİLİT DIŞINDA. Kritik bölgede yalnız defter kaydı ve hızlı/yerel
+        # outbox yazımı yapılır; yavaş bir taşıma giriş kilidini TUTMAZ ve açılmış işlemi geri almaz.
+        if getattr(self, "notifier", None) and self.notifier.enabled:
+            self.notifier.flush()
+        return out
 
     def _execute_locked(self, decisions, chief, briefs: list[CoinBrief], state, marks: dict[str, TickData], now: datetime) -> tuple[list[str], list[dict]]:
         """GERCEK KARAR SIRASI (denetim sonrasi):
@@ -980,8 +986,12 @@ class TradingEngineV3(TradingEngine):
 
     # ------------------------------------------------------------------ bildirimler
     def _notify_opened(self, sym, market, plan, notional, leverage, max_loss, trade_id, now) -> None:
-        """Acilis bildirimi. Hata trade dongusune SIZMAZ (`TradeNotifier.notify` yutar)."""
-        if not getattr(self, "notifier", None) or not self.notifier.enabled:
+        """Açılış olayını YALNIZ outbox'a yazar — AĞ ÇAĞRISI YAPMAZ (bkz. O-4).
+
+        `_entry_lock` içinde çağrılır; gerçek gönderim kilit bırakıldıktan sonra `_execute()`
+        içindeki `notifier.flush()` ile yapılır. Gönderim başarısız olsa bile pozisyon geri alınmaz.
+        """
+        if not getattr(self, "notifier", None) or not self.notifier.wants("trade_opened"):
             return
         from .notify import build_opened
         from .pnl import position_view
@@ -992,24 +1002,28 @@ class TradingEngineV3(TradingEngine):
             "opened_at": iso(now), "market_type": "SPOT" if market == "SPOT" else "USDM_PERP"}
         view = position_view(raw, mark_price=raw.get("entry_avg"), fees=self.ledger2.fees,
                              market="SPOT" if market == "SPOT" else "FUTURES")
-        self.notifier.notify(build_opened(view, max_loss_at_stop=max_loss,
-                                          reason=str(plan.entry_trigger or "")[:160], created_at=iso(now)))
+        self.notifier.enqueue(build_opened(view, max_loss_at_stop=max_loss,
+                                           reason=str(plan.entry_trigger or "")[:160], created_at=iso(now)))
 
     def _notify_closed(self, records, now) -> None:
-        """Kapanis bildirimleri. Restart'ta bastirilan ACILISLAR bunu ENGELLEMEZ: eski pozisyon
-        kapandiginda GERCEK kapanis bildirimi gonderilir."""
-        if not getattr(self, "notifier", None) or not self.notifier.enabled:
+        """Kapanış bildirimleri. Önce kuyruğa yazılır, sonra TEK seferde gönderilir (kilit dışı).
+
+        Restart'ta bastırılan AÇILIŞLAR bunu ENGELLEMEZ: eski pozisyon kapandığında GERÇEK kapanış
+        bildirimi gönderilir.
+        """
+        if not getattr(self, "notifier", None) or not self.notifier.wants("trade_closed"):
             return
         from .notify import build_closed
         for rec in records or []:
             d = rec.to_dict() if hasattr(rec, "to_dict") else dict(rec)
-            self.notifier.notify(build_closed(
+            self.notifier.enqueue(build_closed(
                 d, net_pnl=d.get("net_pnl", d.get("realized_pnl", d.get("pnl"))),
                 gross_pnl=d.get("gross_pnl"), fees=d.get("fees"), funding=d.get("funding"),
                 margin=d.get("isolated_margin", d.get("margin")), created_at=iso(now)))
+        self.notifier.flush()                 # `_entry_lock` DIŞINDA (tick yolu kilidi tutmaz)
 
     def _notify_health(self, state_name: str, summary: str, now) -> None:
-        if not getattr(self, "notifier", None) or not self.notifier.enabled:
+        if not getattr(self, "notifier", None) or not self.notifier.wants("health_degraded"):
             return
         from .notify import build_health
         prev = getattr(self, "_last_health_state", None)
@@ -1021,6 +1035,43 @@ class TradingEngineV3(TradingEngine):
             return                                   # ilk turda "iyilesti" spam'i yok
         self.notifier.notify(build_health(state_name, summary=summary, recovered=not bad,
                                           ref=iso(now)[:16], created_at=iso(now)))
+
+    def _notify_maintenance(self, health: dict, now) -> None:
+        """Tur sonu bildirim bakımı — HEPSİ kilit DIŞINDA ve sınırlı süreli.
+
+        1. Zamanı gelmiş başarısız olayları sınırlı sayıda yeniden dener (`retry_backoff_s`).
+        2. Worker gerçekten ready/healthy ise bekleyen bir `worker_failure` için KURTARMA gönderir.
+        3. Yapılandırılan UTC saatinde günde TAM BİR KEZ günlük özet üretir.
+        """
+        n = getattr(self, "notifier", None)
+        if not n or not n.enabled:
+            return
+        try:
+            n.retry_pending()                         # bounded: `retry_batch` kadar, due olanlar
+            state_name = str(health.get("state") or "UNKNOWN").upper()
+            hb_age = health.get("heartbeat_age_s")
+            healthy = state_name in ("HEALTHY", "OK")
+            if healthy and n.wants("worker_recovered"):
+                ref = n.pending_worker_failure()
+                if ref:                               # KURTARMA yalnız gerçekten sağlıklıyken
+                    from .notify import build_worker_recovered
+                    n.enqueue(build_worker_recovered("tradingbot-worker.service", ref=ref,
+                                                     heartbeat_age_s=hb_age, ready=True,
+                                                     created_at=iso(now)))
+            day = now.date().isoformat()
+            if n.daily_summary_due(day, now.hour):
+                from .notify import build_daily_summary
+                from .pnl import portfolio_view
+                marks = {s: float(p.last_price or p.entry_avg) for s, p in self.ledger2.positions.items()}
+                pv = portfolio_view([p.to_dict() for p in self.ledger2.positions.values()],
+                                    self.ledger2.history_dicts(), marks=marks, fees=self.ledger2.fees,
+                                    today=day)
+                n.enqueue(build_daily_summary(pv, day=day, opened=int(self._funnel.get("opened", 0)) if getattr(self, "_funnel", None) else 0,
+                                              closed=int(health.get("closed") or 0), health=state_name,
+                                              created_at=iso(now)))
+            n.flush()
+        except Exception as exc:                      # noqa: BLE001 — bildirim ASLA turu düşürmez
+            log.warning("bildirim bakımı başarısız (tur etkilenmedi): %s", type(exc).__name__)
 
     def _leverage_context(self, sym, d, plan, exec_entry: float, state, chief, opp: dict) -> LeverageContext:
         """Kaldıraç girdilerini TEK yerde topla. Bilinmeyen alan `None` kalır → yükseltme verilmez."""

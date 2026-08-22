@@ -164,6 +164,7 @@ class TelegramSection:
     retry_backoff_s: float = 2.0
     outbox_file: str = "notify_outbox.json"   # state_path altinda; atomik yazilir
     outbox_keep: int = 2000
+    retry_batch: int = 5                      # tur başına en çok bu kadar başarısız olay yeniden denenir
     daily_summary_enabled: bool = True
     daily_summary_hour_utc: int = 21
     notify_open: bool = True
@@ -394,6 +395,13 @@ def validate_v3(cfg: V3Config) -> None:
     tg = cfg.telegram
     if tg.max_retries < 0 or tg.timeout_s <= 0:
         raise ConfigError("telegram.max_retries ≥ 0 ve timeout_s > 0 olmalı")
+    if not (0 <= int(tg.daily_summary_hour_utc) <= 23):
+        raise ConfigError(f"telegram.daily_summary_hour_utc 0..23 aralığında olmalı "
+                          f"(verilen: {tg.daily_summary_hour_utc})")
+    if tg.retry_backoff_s < 0:
+        raise ConfigError("telegram.retry_backoff_s negatif olamaz")
+    if tg.retry_batch < 1:
+        raise ConfigError("telegram.retry_batch en az 1 olmalı")
     for _f in ("bot_token_env", "chat_id_env"):
         _v = str(getattr(tg, _f) or "")
         if _v and (":" in _v or len(_v) > 100):

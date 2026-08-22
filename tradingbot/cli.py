@@ -473,6 +473,8 @@ def build_parser() -> argparse.ArgumentParser:
         sub.choices[name].add_argument("--legacy", action="store_true", help="v2 motoru (Coin Heads/Risk Engine olmadan)")
     from .cli_v3 import register as _register_v3
     _register_v3(sub)
+    from .notify.cli import register as _register_alert
+    _register_alert(sub)
     return p
 
 

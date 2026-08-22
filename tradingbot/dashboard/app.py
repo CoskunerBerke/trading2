@@ -122,7 +122,7 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
     def _positions_table(vm) -> str:
         """`vm` ya hazır görünüm modeli ya da ham pozisyon listesidir (coin/futures sayfaları)."""
         if isinstance(vm, list):
-            from ..dashboard.views import build as _build
+            from .views import build as _build
             vm = _build(vm, [], None, marks=state.marks(), fees=state.fee_schedule())
         rows = []
         for v, r in zip(vm["portfolio"].positions, vm["rows"]):

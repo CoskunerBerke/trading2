@@ -18,6 +18,11 @@ EVENT_CLOSED = "trade_closed"
 EVENT_HEALTH_DEGRADED = "health_degraded"
 EVENT_HEALTH_RECOVERED = "health_recovered"
 EVENT_DAILY_SUMMARY = "daily_summary"
+# Worker SÜRECİ ÖLDÜĞÜNDE süreç içi notifier mesaj gönderemez; bu iki olayı systemd `OnFailure=`
+# hook'u (deploy/tradingbot-alert@.service → `tradingbot worker-alert`) ve iyileşme turunda
+# worker'ın kendisi üretir.
+EVENT_WORKER_FAILURE = "worker_failure"
+EVENT_WORKER_RECOVERED = "worker_recovered"
 
 # Kapanış nedeni → okunur etiket + simge
 CLOSE_REASONS = {
@@ -151,6 +156,38 @@ def build_health(state: str, *, summary: str = "", recovered: bool = False, ref:
                        level="info" if recovered else "warning", created_at=created_at)
 
 
+def build_worker_failure(unit: str, *, result: str = "", when: str = "", will_restart: bool = True,
+                         ref: str = "", created_at: str = "") -> NotifyEvent:
+    """`🔴 PAPER WORKER DURDU` — systemd `OnFailure=` hook'undan üretilir.
+
+    `ref` idempotency anahtarıdır (systemd invocation id ya da dakika hassasiyetli zaman): aynı
+    başarısızlık döngüsü mesaj yağmuruna dönüşmez.
+    """
+    lines = [f"Servis: {unit}", f"Sonuç: {result or 'bilinmiyor'}",
+             f"Zaman: {when or '—'}", "Mod: PAPER",
+             f"Durum: {'systemd yeniden başlatmayı deneyecek' if will_restart else 'otomatik yeniden başlatma YOK'}"]
+    return NotifyEvent(id=event_id(EVENT_WORKER_FAILURE, "worker", ref or when or unit),
+                       kind=EVENT_WORKER_FAILURE, title="🔴 PAPER WORKER DURDU",
+                       text="\n".join(lines), level="error", created_at=created_at,
+                       meta={"unit": unit, "result": result})
+
+
+def build_worker_recovered(unit: str, *, ref: str, heartbeat_age_s: float | None = None,
+                           ready: bool = True, created_at: str = "") -> NotifyEvent:
+    """`🟢 PAPER WORKER TEKRAR SAĞLIKLI` — YALNIZ worker gerçekten ready/healthy olduğunda.
+
+    `ref` ilişkili failure olayının referansıdır: kurtarma mesajı bir başarısızlığa bağlanır ve
+    aynı kurtarma iki kez gönderilmez.
+    """
+    hb = "güncel" if (heartbeat_age_s is not None and heartbeat_age_s < 900) else (
+        f"{int(heartbeat_age_s)}s" if heartbeat_age_s is not None else "bilinmiyor")
+    lines = [f"Servis: {unit}", f"Heartbeat: {hb}", f"Ready: {'true' if ready else 'false'}",
+             "Mod: PAPER"]
+    return NotifyEvent(id=event_id(EVENT_WORKER_RECOVERED, "worker", ref),
+                       kind=EVENT_WORKER_RECOVERED, title="🟢 PAPER WORKER TEKRAR SAĞLIKLI",
+                       text="\n".join(lines), created_at=created_at, meta={"unit": unit, "ref": ref})
+
+
 def build_daily_summary(pv: PortfolioView, *, day: str, opened: int = 0, closed: int = 0,
                         health: str = "UNKNOWN", tz_label: str = "UTC",
                         created_at: str = "") -> NotifyEvent:
@@ -168,5 +205,6 @@ def build_daily_summary(pv: PortfolioView, *, day: str, opened: int = 0, closed:
 
 
 __all__ = ["CLOSE_REASONS", "EVENT_CLOSED", "EVENT_DAILY_SUMMARY", "EVENT_HEALTH_DEGRADED",
-           "EVENT_HEALTH_RECOVERED", "EVENT_OPENED", "NotifyEvent", "build_closed",
-           "build_daily_summary", "build_health", "build_opened", "close_reason_label", "event_id"]
+           "EVENT_HEALTH_RECOVERED", "EVENT_OPENED", "EVENT_WORKER_FAILURE", "EVENT_WORKER_RECOVERED",
+           "NotifyEvent", "build_closed", "build_daily_summary", "build_health", "build_opened",
+           "build_worker_failure", "build_worker_recovered", "close_reason_label", "event_id"]

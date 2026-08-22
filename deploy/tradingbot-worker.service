@@ -7,6 +7,11 @@ After=network-online.target
 Wants=network-online.target
 StartLimitIntervalSec=600
 StartLimitBurst=5
+# Worker SÜRECİ ÖLDÜĞÜNDE süreç içi notifier mesaj gönderemez → harici oneshot hook.
+# `systemctl stop` bunu TETİKLEMEZ (systemd sözleşmesi): kontrollü durdurma yanlış "çöktü" üretmez.
+# `Restart=on-failure` + StartLimitBurst nedeniyle unit ancak yeniden başlatma bütçesi tükendiğinde
+# `failed` olur → hook restart döngüsünde mesaj yağmuru üretmez.
+OnFailure=tradingbot-alert@%n.service
 
 [Service]
 Type=simple

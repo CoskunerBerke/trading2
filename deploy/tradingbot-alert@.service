@@ -1,0 +1,67 @@
+# Trading Bot v3 — worker ÖLDÜĞÜNDE harici uyarı (systemd OnFailure hook).
+#
+# NEDEN: `TradeNotifier` worker sürecinin İÇİNDE yaşar; süreç çökerse/OOM ile öldürülürse kendi
+# ölümünü bildiremez. Bu şablon unit AYRI ve KISA ÖMÜRLÜ (`Type=oneshot`) bir süreç olarak çalışır;
+# sürekli çalışan yeni bir daemon YOKTUR.
+#
+# Kurulum:
+#   sudo cp deploy/tradingbot-alert@.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+# Worker unit'i `OnFailure=tradingbot-alert@%n.service` satırını içerir; `%i` = başarısız unit adı.
+#
+# TOKEN GÜVENLİĞİ: token komut satırına YAZILMAZ (process list / `systemctl status` / journal'a
+# sızmaz). Yalnız `EnvironmentFile` ile ortam değişkeni olarak verilir; kabuk interpolasyonu yoktur.
+# Telegram kapalıysa komut temiz no-op yapar (çıkış 0, ağ çağrısı yok).
+#
+# systemd sözleşmesi gereği `OnFailure=` NORMAL `systemctl stop` sonrasında TETİKLENMEZ →
+# operatörün kontrollü durdurması yanlış "çöktü" bildirimi ÜRETMEZ.
+# Worker `Restart=on-failure` + `StartLimitBurst` ile önce kendi kendine yeniden dener; unit ancak
+# yeniden başlatma bütçesi tükendiğinde `failed` durumuna geçer → bu hook o zaman çalışır (rate limit).
+[Unit]
+Description=Trading Bot v3 failure alert for %i
+Documentation=file:///opt/tradingbot/app/docs/observability-leverage-telegram.md
+
+[Service]
+Type=oneshot
+User=tradingbot
+Group=tradingbot
+WorkingDirectory=/opt/tradingbot/app
+# Token/chat id YALNIZ buradan gelir (0600, tradingbot:tradingbot). Dosya yoksa `-` sayesinde
+# servis yine çalışır ve komut no-op yapar.
+EnvironmentFile=-/opt/tradingbot/env
+EnvironmentFile=-/opt/tradingbot/env.d/telegram.env
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONIOENCODING=utf-8
+Environment=TRADINGBOT_DATA=/opt/tradingbot/data
+Environment=TRADINGBOT_STATE_DIR=/opt/tradingbot/data/state
+Environment=ALLOW_LIVE_TRADING=false
+# `%i` başarısız unit adıdır; `$MONITOR_*` değişkenlerini systemd sağlar (v250+). Token ARGÜMAN DEĞİL.
+ExecStart=/opt/tradingbot/venv/bin/python -m tradingbot worker-alert --event failure --unit %i
+TimeoutStartSec=30
+# Uyarı gönderilemezse sessizce vazgeç: alert hatası hiçbir şeyi yeniden tetiklemez.
+SuccessExitStatus=0 1
+
+# --- sertleştirme (worker ile aynı politika; yalnız state'e yazar)
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/opt/tradingbot/data
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+AmbientCapabilities=
+UMask=0027

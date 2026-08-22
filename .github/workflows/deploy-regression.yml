@@ -171,6 +171,21 @@ jobs:
       - name: Kaldıraç risk bütçesini büyütmüyor + PAPER güvenliği
         run: |
           /tmp/run.sh "leverage-risk-invariant" tests/test_leverage_and_notify.py             tests/test_observability_safety.py -v --tb=short             -k "never_increases or margin_equals or max_loss_at_stop or risk_at_stop or paper_mode or live_order or risk_ceilings or secret"
+      - name: TELEGRAM SERTLEŞTİRME — config bağları, otomatik retry, kilit dışı gönderim, harici alarm
+        # Zorunlu adım. Y-1/Y-2/O-3/O-4/O-5 regresyonları. Gerçek Telegram ağı KULLANILMAZ.
+        run: /tmp/run.sh "notify-hardening" tests/test_notify_hardening.py -v --tb=short -rs
+      - name: Sertleştirme testleri gerçekten toplanıyor mu (boş seçim reddi)
+        run: |
+          n=$(python -m pytest tests/test_notify_hardening.py --collect-only -q 2>/dev/null | grep -c "::")
+          echo "toplanan test: $n"
+          if [ "$n" -lt 30 ]; then echo "::error::sertlestirme testleri toplanmadi ($n)"; exit 1; fi
+      - name: systemd unit doğrulaması (OnFailure hook + oneshot alert)
+        run: |
+          systemd-analyze verify deploy/tradingbot-alert@.service 2>&1 | tee /tmp/sa.txt || true
+          if grep -qiE "(not found|invalid|failed to)" /tmp/sa.txt; then
+            echo "::error::alert unit dogrulanamadi"; cat /tmp/sa.txt; exit 1
+          fi
+          grep -q "OnFailure=tradingbot-alert@%n.service" deploy/tradingbot-worker.service             || { echo "::error::worker unit OnFailure hook icermiyor"; exit 1; }
       - name: GERÇEK RUNTIME araştırma döngüsü (boş defterden motor turlarıyla)
         # Zorunlu adım. Boş test seçimi pytest exit-5 ile adımı DÜŞÜRÜR; continue-on-error yok.
         run: /tmp/run.sh "test_research_runtime_e2e" tests/test_research_runtime_e2e.py -v --tb=short -rs

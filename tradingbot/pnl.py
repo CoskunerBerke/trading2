@@ -9,10 +9,13 @@ funding ASLA iki kez düşülmez:
 
 * ``gross_unrealized``  = qty × (mark − entry) × yön   (ücret/funding YOK)
 * ``net_unrealized``    = gross − giriş ücreti − tahmini kapanış ücreti + net funding
-* ``realized_net``      = defterin `realized_pnl`'i (giriş+çıkış ücreti İÇİNDE) + net funding
+* ``realized_net``      = kapanmış işlemin `net_pnl` alanı (ÜCRET VE FUNDING ZATEN İÇİNDE)
 
-`realized_pnl` alanı `FuturesLedgerV2` sözleşmesinde "net (ücret dahil, funding hariç)" demektir;
-bu yüzden burada ücret TEKRAR düşülmez, yalnız funding eklenir.
+GERÇEK LEDGER SÖZLEŞMESİ (`accounting/futures_ledger.py`):
+`_finalize()` → ``net = gross − (entry_fee + exit_fee) + funding_net`` ve bunu `TradeRecord`'a hem
+`pnl` hem `net_pnl` olarak yazar; `to_dict()` DAİMA `net_pnl` içerir → `realized_net()` kanonik dalı
+kullanır, ücret/funding ASLA iki kez sayılmaz. `Position.realized_pnl` (`_close_part()`:
+``gross − exit_fee``) YALNIZ çıkış ücretini içerir ve kapanış KAYITLARINDA bulunmaz.
 
 Yüzde paydası (UI'da açıkça yazılır):
 * FUTURES → kullanılan başlangıç teminatı (`initial_margin`)
@@ -207,10 +210,16 @@ def position_view(pos: dict, *, mark_price: Any = None, fees: Any = None,
 
 # ============================================================================ kapanmış işlem
 def realized_net(trade: dict) -> Decimal:
-    """Kapanmış işlemin NET gerçekleşen K/Z'si.
+    """Kapanmış işlemin NET gerçekleşen K/Z'si — ücret ve funding ÇİFT SAYILMAZ.
 
-    `FuturesLedgerV2` sözleşmesi: `realized_pnl` giriş+çıkış ücretini ZATEN içerir, funding'i
-    içermez. Bu yüzden ücret TEKRAR düşülmez; yalnız net funding eklenir (çift sayım yok).
+    KANONİK DAL: kayıtta `net_pnl` varsa doğrudan o döner. `FuturesLedgerV2._finalize()` ve
+    `SpotLedger` kapanış kayıtlarının ikisi de `net_pnl = gross − entry_fee − exit_fee ± funding`
+    yazar; `TradeRecord.to_dict()` bu alanı HER ZAMAN içerir → üretimde daima bu dal çalışır.
+
+    GERİ DÖNÜŞ DALI: yalnız `net_pnl` taşımayan eski/dış kayıtlar için. Orada `realized_pnl`
+    (ya da `pnl`) ücret tarafını zaten içerdiği varsayılır ve YALNIZ net funding eklenir; ücret
+    ikinci kez düşülmez. Not: `Position.realized_pnl` (`_close_part`: `gross − exit_fee`) yalnız
+    ÇIKIŞ ücretini içerir, giriş ücretini içermez — fakat o alan kapanış KAYITLARINDA bulunmaz.
     """
     base = trade.get("net_pnl")
     if base is not None:                       # defter net alanı verdiyse o KANONİKTİR

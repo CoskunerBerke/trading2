@@ -6,16 +6,25 @@ Neden gerekli: worker restart sonrası açık pozisyonlar yeniden okunur. Naif b
 "gönderilmiş" sayar (sahte bildirim yok) — bu pozisyonlar KAPANDIĞINDA gerçek kapanış bildirimi
 yine de gönderilir.
 
-Dosya atomik yazılır (`atomic_write_json`): kısmen yazılmış JSON okunmaz. Telegram hatası ledger
-işlemini GERİ ALMAZ; outbox yalnızca `failed` işaretler ve sınırlı sayıda yeniden dener.
+Dosya atomik ve YEDEKLİ yazılır (`atomic_write_json(..., keep_backup=True)`): kısmen yazılmış JSON
+okunmaz ve ana dosya bozulursa `read_json` otomatik olarak `.bak` kopyasından kurtarır (bozuk dosya
+`<ad>.corrupt-N` olarak kenara alınır, silinmez). Her iki kopya da okunamazsa idempotency geçmişi
+kaybolur (fail-open) — bu kalan risk `docs/observability-leverage-telegram.md` içinde belgelenmiştir.
+Bozuk veri ASLA "gönderildi" varsayılmaz.
+
+Telegram hatası ledger işlemini GERİ ALMAZ; outbox yalnızca `failed` işaretler ve `next_attempt_at`
+zamanı geldiğinde sınırlı sayıda yeniden dener (üstel, üst sınırlı backoff).
 """
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from ..core import atomic_write_json, iso, read_json, utc_now
+
+MAX_BACKOFF_S = 3600.0                     # üst sınır: backoff sonsuza büyümez
 
 STATUS_PENDING = "pending"
 STATUS_SENT = "sent"
@@ -33,9 +42,14 @@ class OutboxEntry:
     created_at: str = ""
     updated_at: str = ""
     last_error: str = ""                   # tür adı; ASLA token/gizli içerik değil
+    next_attempt_at: str = ""              # bu zamandan ÖNCE yeniden denenmez (backoff)
+    payload: dict = field(default_factory=dict)   # yeniden gönderim için mesaj (token İÇERMEZ)
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+    def due(self, now_iso: str) -> bool:
+        return (not self.next_attempt_at) or self.next_attempt_at <= now_iso
 
 
 class NotifyOutbox:
@@ -62,7 +76,9 @@ class NotifyOutbox:
                             attempts=int(row.get("attempts") or 0),
                             created_at=str(row.get("created_at") or ""),
                             updated_at=str(row.get("updated_at") or ""),
-                            last_error=str(row.get("last_error") or ""))
+                            last_error=str(row.get("last_error") or ""),
+                            next_attempt_at=str(row.get("next_attempt_at") or ""),
+                            payload=dict(row.get("payload") or {}))
             self.entries[e.id] = e
             self._order.append(e.id)
         return self
@@ -71,8 +87,10 @@ class NotifyOutbox:
         keep_ids = self._order[-self.keep:]
         self._order = keep_ids
         self.entries = {k: v for k, v in self.entries.items() if k in set(keep_ids)}
+        # `keep_backup=True`: ana dosya bozulursa `read_json` `.bak` kopyasından KURTARIR.
         atomic_write_json(self.path, {"schema": SCHEMA, "updated_at": iso(utc_now()),
-                                      "entries": [self.entries[i].to_dict() for i in keep_ids]})
+                                      "entries": [self.entries[i].to_dict() for i in keep_ids]},
+                          keep_backup=True)
 
     # ------------------------------------------------------------------ sorgu
     def known(self, event_id: str) -> bool:
@@ -88,9 +106,15 @@ class NotifyOutbox:
         return e.status if e else None
 
     def pending(self) -> list[OutboxEntry]:
+        """Deneme bütçesi kalan bekleyen/başarısız olaylar (zaman filtresi UYGULANMAZ)."""
         return [self.entries[i] for i in self._order
                 if self.entries[i].status in (STATUS_PENDING, STATUS_FAILED)
                 and self.entries[i].attempts < self.max_attempts]
+
+    def due(self, now: datetime | None = None) -> list[OutboxEntry]:
+        """Yeniden deneme ZAMANI GELMİŞ olaylar. `sent`/`suppressed` ASLA dönmez."""
+        now_iso = iso(now or utc_now())
+        return [e for e in self.pending() if e.due(now_iso)]
 
     def counts(self) -> dict[str, int]:
         out: dict[str, int] = {}
@@ -107,8 +131,12 @@ class NotifyOutbox:
             self._order.append(event_id)
         return e
 
-    def enqueue(self, event_id: str, kind: str = "") -> bool:
-        """Yeni olayı kuyruğa al. Zaten teslim edilmişse `False` döner (duplicate engeli)."""
+    def enqueue(self, event_id: str, kind: str = "", payload: dict | None = None) -> bool:
+        """Yeni olayı kuyruğa al. Zaten teslim edilmişse `False` döner (duplicate engeli).
+
+        `payload` (başlık/metin) saklanır; böylece yeniden deneme ORİJİNAL mesajı gönderir.
+        Token/chat id ASLA payload'a yazılmaz — onlar yalnız taşıma katmanında bulunur.
+        """
         if self.delivered(event_id):
             return False
         e = self._touch(event_id, kind)
@@ -116,18 +144,30 @@ class NotifyOutbox:
             return False
         e.status = STATUS_PENDING
         e.updated_at = iso(utc_now())
+        if payload:
+            e.payload = dict(payload)
         return True
 
     def mark_sent(self, event_id: str) -> None:
         e = self._touch(event_id, "")
         e.status, e.updated_at, e.last_error = STATUS_SENT, iso(utc_now()), ""
 
-    def mark_failed(self, event_id: str, error: str = "") -> None:
+    def mark_failed(self, event_id: str, error: str = "", *, backoff_s: float = 0.0,
+                    now: datetime | None = None) -> None:
+        """Başarısız işaretle ve ÜSTEL, ÜST SINIRLI backoff ile bir sonraki deneme zamanını kur.
+
+        `next_attempt_at = now + backoff_s * 2**(attempts-1)` (en çok `MAX_BACKOFF_S`). Böylece
+        aynı olay her turda yeniden denenmez; worker turu bloklanmaz.
+        """
+        now = now or utc_now()
         e = self._touch(event_id, "")
         e.status = STATUS_FAILED
         e.attempts += 1
-        e.updated_at = iso(utc_now())
+        e.updated_at = iso(now)
         e.last_error = str(error)[:80]      # yalnız tür adı; gizli içerik yazılmaz
+        if backoff_s > 0:
+            delay = min(float(backoff_s) * (2 ** max(0, e.attempts - 1)), MAX_BACKOFF_S)
+            e.next_attempt_at = iso(now + timedelta(seconds=delay))
 
     def suppress(self, event_id: str, kind: str = "") -> None:
         """Bilinçli olarak gönderme (restart backlog'u). Kapanış bildirimi bundan ETKİLENMEZ."""
@@ -140,5 +180,5 @@ class NotifyOutbox:
         return {"schema": SCHEMA, "counts": self.counts(), "size": len(self.entries)}
 
 
-__all__ = ["NotifyOutbox", "OutboxEntry", "SCHEMA", "STATUS_FAILED", "STATUS_PENDING",
-           "STATUS_SENT", "STATUS_SUPPRESSED"]
+__all__ = ["MAX_BACKOFF_S", "NotifyOutbox", "OutboxEntry", "SCHEMA", "STATUS_FAILED",
+           "STATUS_PENDING", "STATUS_SENT", "STATUS_SUPPRESSED"]

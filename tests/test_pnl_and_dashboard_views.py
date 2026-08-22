@@ -215,12 +215,18 @@ def test_freshness_separates_price_age_from_strategy_run_age():
 
 
 def test_summary_cards_say_no_data_instead_of_fake_zero():
+    # Kartlar artık `SummaryCard` nesnesidir: `value` makine için ham sayı, `display` insan için
+    # biçimlenmiş metin. (Eski `(başlık, metin, altyazı)` demeti, biçimlenmiş metnin ikinci kez
+    # para biçimine sokulup sessizce `$0.00`'a düşmesine yol açıyordu.)
     vm = build([], [], None)                                # hiç işlem yok
-    cards = {k: v for k, v, _ in vm["cards"]}
+    cards = {c.title: c.display for c in vm["cards"]}
     assert cards["Kazanma oranı"] == "Veri yok"
     assert cards["Profit factor"] == "Veri yok"
     assert cards["Maks. drawdown"] == "Veri yok"
     assert cards["Bugün gerçekleşen net K/Z"] == "$0.00"     # gerçekten sıfır
+    by_key = {c.key: c for c in vm["cards"]}
+    assert by_key["win_rate_pct"].value is None             # hesaplanamadı → null
+    assert by_key["today_realized_net_usdt"].value == 0.0   # gerçek sıfır → 0
 
 
 def test_summary_counts_wins_losses_and_rates():

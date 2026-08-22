@@ -20,9 +20,10 @@ from .candles import CandleSource, build_candle_payload
 from .config import DashboardConfig
 from ..pnl import position_view, realized_net
 from .state import STATE_FILES, StateReader
-from .templates import (age_text, badge, card, chart_block, chief_block, esc, fmt, health_badge,
-                        ks_badge, kv_table, live_bar, live_script, money_html, page, pct,
-                        pnl_cell, render_any, table, verdict_badge)
+from .templates import (age_text, badge, card, card_value, chart_block, chief_block, esc, fmt,
+                        fmt_utc, health_badge, ks_badge, kv_table, lessons_table, live_bar,
+                        live_script, money_html, page, pct, pnl_cell, render_any, sample_banner,
+                        table, verdict_badge, weight_table)
 
 log = logging.getLogger(__name__)
 _PLOTLY_CACHE: dict[str, bytes] = {}
@@ -96,8 +97,10 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
         for issue in vm["inconsistencies"]:
             body += f'<div class="card warn-box">⚠ Veri tutarsızlığı tespit edildi — {esc(issue["message"])}</div>'
         # --- genel kar/zarar ozeti (en ustte) ---
-        body += "<h2>Kâr / Zarar özeti</h2><div class=\"grid\">" + "".join(
-            card(k, money_html(v), s) for k, v, s in vm["cards"]) + "</div>"
+        # `c.display` ZATEN biçimlenmiş metindir; ikinci kez para biçimlendirmesine SOKULMAZ.
+        # (Eski kod `money_html("+$2.86")` çağırıyor, `Decimal` çözemediği için `$0.00` basıyordu.)
+        body += "<h2>Kâr / Zarar özeti</h2><div class=\"grid\" id=\"sumgrid\">" + "".join(
+            card(c.title, card_value(c), c.sub, cid="sc-" + c.key) for c in vm["cards"]) + "</div>"
         body += f'<div class="grid">{"".join([
             card("Futures özkaynak", fmt(ov["equity_futures"], 2) + " USDT"),
             card("Spot özkaynak", fmt(ov["equity_spot"], 2) + " USDT"),
@@ -134,7 +137,8 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
             rows.append(cells)
         note = ('<p class="mut small">Yüzde paydası: FUTURES → kullanılan başlangıç teminatı, '
                 'SPOT → yatırılan tutar. «Coin adedi» USDT değil, coin/kontrat adedidir.</p>')
-        return table(vm["columns"], rows, num_cols=set(range(3, 18)), empty="açık pozisyon yok") + note
+        return table(vm["columns"], rows, num_cols=set(range(3, 18)), empty="açık pozisyon yok",
+                     cls="pos") + note
 
     def _heads_table(heads: list[dict], st) -> str:
         """`Net E[r]` → `Beklenen Net Getiri`: bu bir MODEL TAHMİNİDİR, gerçekleşen PnL DEĞİLDİR."""
@@ -308,25 +312,65 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
 
     @app.get("/learning", response_class=HTMLResponse)
     def learning():
+        """Öğrenme ekranı — YALNIZ SUNUM. Ağırlık matematiği ve öğrenme algoritması burada
+        HESAPLANMAZ; `learning.json` okunur ve operatör için okunur biçimde gösterilir."""
         ln = state.get("learning") or {}
-        body = ""
-        if ln:
-            body += f'<div class="grid">{card("İşlem", fmt(ln.get("n_trades"), 0))}{card("Kazanan", fmt(ln.get("n_wins"), 0))}{card("Σ R", fmt(ln.get("sum_r"), 2))}{card("Güncelleme", esc(ln.get("updated_at")))}</div>'
-            if ln.get("weights"):
-                body += "<h2>Özellik ağırlıkları</h2>" + kv_table({k: round(float(v), 4) for k, v in ln["weights"].items()})
-            if ln.get("agent_weights"):
-                body += "<h2>Ajan ağırlıkları</h2>" + kv_table(ln["agent_weights"])
-            if ln.get("agent_hits"):
-                body += "<h2>Ajan isabet</h2>" + table(["Ajan", "Doğru", "Toplam", "%"], [[esc(a), fmt(h[0], 0), fmt(h[1], 0), fmt(h[0] / h[1] * 100 if h[1] else 0, 0)] for a, h in ln["agent_hits"].items() if isinstance(h, (list, tuple)) and len(h) == 2], num_cols={1, 2, 3})
-            for key, title in (("setup_stats", "Setup istatistikleri"), ("symbol_stats", "Sembol istatistikleri"), ("exit_stats", "Çıkış nedenleri")):
-                if ln.get(key):
-                    body += f"<h2>{title}</h2>" + render_any(ln[key])
-            if ln.get("lessons"):
-                body += "<h2>Dersler</h2>" + render_any(ln["lessons"][-30:][::-1])
-            if ln.get("blacklist"):
-                body += "<h2>Kara liste</h2><ul>" + "".join(f"<li>{esc(x)}</li>" for x in ln["blacklist"]) + "</ul>"
-        else:
-            body = '<div class="card mut">learning.json yok</div>'
+        if not ln:
+            return _page("Öğrenme", '<div class="card mut">learning.json yok</div>', "/learning")
+        pv = _view()["portfolio"]
+        lessons = [x for x in (ln.get("lessons") or []) if isinstance(x, dict)]
+        wins = sum(1 for x in lessons if x.get("won") is True)
+        losses = sum(1 for x in lessons if x.get("won") is False)
+        n = int(ln.get("n_trades") or len(lessons) or 0)
+        sum_r = ln.get("sum_r")
+        avg_r = (float(sum_r) / n) if (sum_r is not None and n) else None
+        decided = wins + losses
+        wr = (wins / decided * 100.0) if decided else None
+
+        def _r(x, nd=3):
+            return "Veri yok" if x is None else f"{float(x):+.{nd}f}R"
+
+        body = sample_banner(n)
+        body += ('<div class="grid">'
+                 + card("Kapanmış işlem", str(n), "learning.json → n_trades")
+                 + card("Kazanan", str(wins), "ders kaydında won=true")
+                 + card("Kaybeden", str(losses), "ders kaydında won=false")
+                 + card("Kazanma oranı", "Veri yok" if wr is None else f"%{wr:.1f}", "kazanan / karara bağlanan")
+                 + card("Toplam R", _r(sum_r), "sum_r — risk katı cinsinden sonuç")
+                 + card("Ortalama R", _r(avg_r), "toplam R / işlem")
+                 + card("Net gerçekleşen K/Z", money_html(pv.realized_total).replace("<td", "<span").replace("</td>", "</span>"),
+                        "defterden (kanonik) — ücret + funding dahil")
+                 + card("Son güncelleme", f'<span title="{esc(ln.get("updated_at") or "")}">{esc(fmt_utc(ln.get("updated_at")))}</span>')
+                 + "</div>")
+
+        if ln.get("weights"):
+            body += ("<h2>Özellik ağırlıkları</h2>" + weight_table(ln["weights"], "Özellik")
+                     + '<p class="mut small">Bu ağırlık TEK BAŞINA işlem kararı değildir; karar '
+                       'motoru kapılar, risk bütçesi ve veto katmanlarıyla birlikte çalışır.</p>')
+        if ln.get("agent_weights"):
+            body += ("<h2>Ajan ağırlıkları</h2>" + weight_table(ln["agent_weights"], "Ajan")
+                     + '<p class="mut small">Bu ağırlık TEK BAŞINA işlem kararı değildir.</p>')
+        if ln.get("agent_hits"):
+            rows = []
+            for a, h in ln["agent_hits"].items():
+                if not (isinstance(h, (list, tuple)) and len(h) == 2):
+                    continue
+                hit, tot = int(h[0] or 0), int(h[1] or 0)
+                # 0/0 → «%0» YANILTICIDIR (isabetsiz değil, ÖLÇÜLMEMİŞ). «Veri yok» yazılır.
+                rate = f"%{hit / tot * 100:.0f}" if tot > 0 else '<span class="mut">Veri yok</span>'
+                rows.append([esc(a), str(hit), str(tot), rate])
+            body += ("<h2>Ajan isabet</h2>"
+                     + table(["Ajan", "Doğru", "Toplam", "İsabet"], rows, num_cols={1, 2, 3})
+                     + '<p class="mut small">Hiç ölçüm yoksa (0/0) oran «Veri yok» yazılır; «%0» '
+                       'gösterilmez çünkü bu ajanın yanıldığı anlamına gelmez.</p>')
+        for key, title in (("setup_stats", "Setup istatistikleri"), ("symbol_stats", "Sembol istatistikleri"),
+                           ("exit_stats", "Çıkış nedenleri")):
+            if ln.get(key):
+                body += f"<h2>{title}</h2>" + render_any(ln[key])
+        if lessons:
+            body += "<h2>Dersler</h2>" + lessons_table(lessons[-30:][::-1])
+        if ln.get("blacklist"):
+            body += "<h2>Kara liste</h2><ul>" + "".join(f"<li>{esc(x)}</li>" for x in ln["blacklist"]) + "</ul>"
         return _page("Öğrenme", body, "/learning")
 
     @app.get("/backtest", response_class=HTMLResponse)
@@ -485,12 +529,18 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
 
     @app.get("/api/live/summary")
     def api_live_summary():
-        """Bakiye/teminat/açık risk + K/Z özeti (daha uzun aralıkla çekilir)."""
+        """Bakiye/teminat/risk + K/Z özeti (daha uzun aralıkla çekilir).
+
+        `summary` KANONİK sözlüktür ve HTML sayfası da AYNI sözlükten üretilir → iki yüzey
+        farklı sayı gösteremez. `cards[].value` makine için ham sayı (hesaplanamıyorsa `null`),
+        `cards[].display` insan için biçimlenmiş metindir.
+        """
         vm = _view()
         pv = vm["portfolio"]
         return {"generated_at": utc_now().isoformat(timespec="seconds"),
                 "freshness": vm["freshness"], "chief": vm["chief"].to_dict(),
-                "cards": [{"title": k, "value": v, "sub": s} for k, v, s in vm["cards"]],
+                "summary": vm["summary"],
+                "cards": [c.to_dict() for c in vm["cards"]],
                 "portfolio": {k: val for k, val in pv.to_dict().items() if k != "positions"}}
 
     @app.get("/api/live/health")

@@ -234,11 +234,17 @@ class StateReader:
         return out
 
     def max_drawdown_pct(self) -> Any:
+        """`risk.json` içindeki drawdown. Risk motoru bunu `exposure` ALTINA yazar
+        (`RiskEngine.snapshot()` → `{"exposure": {"drawdown_pct": ...}}`); eski kod yalnız kök
+        seviyeye baktığı için değer bulunamıyor ve panelde «Veri yok» görünüyordu."""
         r = self.get("risk") or {}
-        for key in ("drawdown_pct", "max_drawdown_pct"):
-            v = (r.get("state") or r).get(key) if isinstance(r.get("state"), dict) else r.get(key)
-            if v is not None:
-                return v
+        for scope in (r.get("exposure"), r.get("state"), r):
+            if not isinstance(scope, dict):
+                continue
+            for key in ("drawdown_pct", "max_drawdown_pct"):
+                v = scope.get(key)
+                if v is not None:
+                    return v
         return None
 
     def last_run_age(self) -> float | None:
@@ -330,7 +336,9 @@ class StateReader:
                      (self.get("coin_heads") or {}).get("chief") or (self.get("agents") or {}).get("chief") or {},
                      marks=self.marks(), fees=self.fee_schedule(),
                      today=utc_now().date().isoformat(), max_drawdown_pct=self.max_drawdown_pct(),
-                     freshness=fresh)
+                     freshness=fresh,
+                     futures_equity=self.futures_equity(), spot_equity=self.spot_equity(),
+                     risk_state=self.get("risk"), as_of=utc_now().isoformat(timespec="seconds"))
 
 
 def _evidence(self, base: str) -> dict | None:

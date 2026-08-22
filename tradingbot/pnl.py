@@ -118,6 +118,7 @@ class PositionView:
     opened_at: str
     price_is_stale: bool = False      # mark yok → PnL güvenilir değil
     meta: dict = field(default_factory=dict)
+    stop_risk: Decimal | None = None  # stop'a kadar BRÜT tahmini kayıp (ücret HARİÇ); stop yoksa None
 
     @property
     def has_mark(self) -> bool:
@@ -194,6 +195,16 @@ def position_view(pos: dict, *, mark_price: Any = None, fees: Any = None,
     targets = pos.get("targets") or []
     tp = dec(targets[0]) if targets else None
 
+    # Stop'a kadar BRÜT tahmini kayıp — yön duyarlı, negatife düşmez.
+    #   LONG  : qty × (entry − stop)      SHORT : qty × (stop − entry)
+    # Ücret HARİÇ: `risk/engine.py` rezervasyonu da brüt hesaplar (bkz. risk.json → positions[].risk_usdt),
+    # iki büyüklüğün karşılaştırılabilir kalması için aynı sözleşme kullanılır.
+    stop_d = dec(pos["stop"]) if pos.get("stop") not in (None, "") else None
+    stop_risk = None
+    if stop_d is not None and qty > 0:
+        raw = (entry - stop_d) if side == "LONG" else (stop_d - entry)
+        stop_risk = qty * raw if raw > 0 else ZERO
+
     return PositionView(
         trade_id=str(pos.get("id") or pos.get("trade_id") or ""),
         symbol=str(pos.get("symbol") or ""), market=mkt, side=side, qty=qty, entry_price=entry,
@@ -205,7 +216,8 @@ def position_view(pos: dict, *, mark_price: Any = None, fees: Any = None,
         gross_unrealized=gross, net_unrealized=net, net_unrealized_pct=pct,
         pct_basis=PCT_BASIS_MARGIN if mkt == "FUTURES" else PCT_BASIS_COST,
         opened_at=str(pos.get("opened_at") or ""), price_is_stale=stale,
-        meta={"leverage_reasons": (pos.get("meta") or {}).get("leverage_reasons")} if isinstance(pos.get("meta"), dict) else {})
+        meta={"leverage_reasons": (pos.get("meta") or {}).get("leverage_reasons")} if isinstance(pos.get("meta"), dict) else {},
+        stop_risk=stop_risk)
 
 
 # ============================================================================ kapanmış işlem
@@ -254,6 +266,15 @@ class PortfolioView:
     total_fees: Decimal
     total_funding: Decimal
     any_stale_price: bool
+    # Stop'u OLAN futures pozisyonların stop'a kadar BRÜT tahmini kaybı (ücret hariç).
+    # `positions_without_stop` > 0 iken bu toplam EKSİKTİR ve UI'da öyle etiketlenir.
+    open_stop_risk: Decimal = ZERO
+    positions_without_stop: int = 0
+
+    @property
+    def closed_trades(self) -> int:
+        """Kapanmış işlem sayısı = kazanan + kaybeden + başa baş."""
+        return self.wins + self.losses + self.breakeven
 
     def to_dict(self) -> dict:
         d = {}
@@ -320,7 +341,107 @@ def portfolio_view(positions: list[dict], trades: list[dict], *, marks: dict[str
         profit_factor=(gross_win / gross_loss) if gross_loss > 0 else None,
         max_drawdown=dec(max_drawdown_pct) if max_drawdown_pct is not None else None,
         total_fees=total_fees, total_funding=total_funding,
-        any_stale_price=any(v.price_is_stale for v in views))
+        any_stale_price=any(v.price_is_stale for v in views),
+        open_stop_risk=sum((v.stop_risk for v in views if v.stop_risk is not None), ZERO),
+        positions_without_stop=sum(1 for v in views if v.stop_risk is None))
+
+
+# ============================================================================ kanonik özet
+def _f(x: Any) -> float | None:
+    """Decimal → float (JSON için). None korunur; uydurma sıfır ÜRETİLMEZ."""
+    if x is None:
+        return None
+    d = dec(x, Decimal("NaN"))
+    return None if d != d else float(d)
+
+
+def canonical_summary(pv: PortfolioView, *, futures_equity: Any = None, spot_equity: Any = None,
+                      risk_state: dict | None = None, as_of: str | None = None,
+                      source_freshness: dict | None = None) -> dict:
+    """Panel HTML'i ve `/api/live/summary` için TEK kanonik portföy özeti.
+
+    Sözleşme: alan HESAPLANAMIYORSA `None` döner ve `unavailable_reason` nedeni yazar.
+    Sessizce `0` ÜRETİLMEZ — gerçek sıfır ile "veri yok" birbirine karıştırılamaz.
+
+    KAVRAM AYRIMI (aynı kartta karıştırılmaz):
+      * `open_stop_risk_usdt`      — açık pozisyonların STOP seviyesine kadar brüt tahmini kaybı
+                                     (bu katmanda defterden hesaplanır)
+      * `risk_engine_reserved_usdt`— RİSK MOTORUNUN rezerve ettiği toplam açık risk
+                                     (`risk.json → exposure.total_open_risk_usdt`)
+      * `risk_budget_max_usdt`     — azami toplam risk bütçesi (profil × özkaynak)
+      * `open_risk_budget_utilization_pct` — rezervasyon / bütçe
+    """
+    rs = (risk_state or {}).get("exposure") if isinstance((risk_state or {}).get("exposure"), dict) else (risk_state or {})
+    why: dict[str, str] = {}
+
+    fe, se = _f(futures_equity), _f(spot_equity)
+    if fe is None:
+        why["futures_equity_usdt"] = "futures_ledger.json içinde equity/wallet_balance yok"
+    if se is None:
+        why["spot_equity_usdt"] = "portfolio.json okunamadı"
+
+    margin = _f(pv.open_margin)
+    margin_util = None
+    if fe is None:
+        why["margin_utilization_pct"] = "futures özkaynak bilinmiyor"
+    elif fe <= 0:
+        why["margin_utilization_pct"] = "futures özkaynak sıfır/negatif — oran tanımsız"
+    elif margin is not None:
+        margin_util = margin / fe * 100.0
+
+    reserved = _f(rs.get("total_open_risk_usdt")) if isinstance(rs, dict) else None
+    if reserved is None:
+        why["risk_engine_reserved_usdt"] = "risk.json → exposure.total_open_risk_usdt yok"
+    # Azami risk bütçesi: risk motorunun KENDİ yayınladığı profil yüzdesi × özkaynak.
+    # (`risk.json → profile.max_total_open_risk_pct` ve `exposure.equity`; uydurma sabit YOK.)
+    prof = (risk_state or {}).get("profile") if isinstance((risk_state or {}).get("profile"), dict) else {}
+    risk_equity = _f(rs.get("equity")) if isinstance(rs, dict) else None
+    max_pct = _f(prof.get("max_total_open_risk_pct"))
+    budget_max = None
+    if max_pct is not None and risk_equity is not None and risk_equity > 0:
+        budget_max = risk_equity * max_pct / 100.0
+    budget_util = None
+    if budget_max is None:
+        why["risk_budget_max_usdt"] = "risk.json içinde profile.max_total_open_risk_pct veya exposure.equity yok"
+        why["open_risk_budget_utilization_pct"] = "azami risk bütçesi bilinmiyor"
+    elif budget_max > 0 and reserved is not None:
+        budget_util = reserved / budget_max * 100.0
+
+    dd = _f(pv.max_drawdown)
+    if dd is None:
+        why["max_drawdown_pct"] = "risk.json içinde drawdown_pct yok"
+    if pv.win_rate is None:
+        why["win_rate_pct"] = "karara bağlanan (kazanan+kaybeden) işlem yok"
+    pf = _f(pv.profit_factor)
+    if pv.closed_trades == 0:
+        why["profit_factor"] = "kapanmış işlem yok"
+    elif pv.profit_factor is None:
+        pf = float("inf")            # brüt zarar 0, kâr var → tanımlı ve sonsuz
+
+    return {
+        "today_realized_net_usdt": _f(pv.realized_today),
+        "all_time_realized_net_usdt": _f(pv.realized_total),
+        "open_net_usdt": _f(pv.open_net_unrealized),
+        "total_net_usdt": _f(pv.total_net),
+        "winning_trades": pv.wins, "losing_trades": pv.losses, "breakeven_trades": pv.breakeven,
+        "closed_trades": pv.closed_trades,
+        "win_rate_pct": _f(pv.win_rate), "profit_factor": pf,
+        "max_drawdown_pct": dd,
+        "futures_equity_usdt": fe, "spot_equity_usdt": se,
+        "open_futures_notional_usdt": _f(pv.long_notional + pv.short_notional),
+        "open_futures_margin_usdt": margin,
+        "margin_utilization_pct": margin_util,
+        "open_stop_risk_usdt": _f(pv.open_stop_risk),
+        "open_stop_risk_is_partial": pv.positions_without_stop > 0,
+        "positions_without_stop": pv.positions_without_stop,
+        "risk_engine_reserved_usdt": reserved,
+        "risk_budget_max_usdt": budget_max,
+        "open_risk_budget_utilization_pct": budget_util,
+        "open_positions": pv.open_total, "open_long": pv.open_long, "open_short": pv.open_short,
+        "any_stale_price": pv.any_stale_price,
+        "as_of": as_of, "source_freshness": source_freshness,
+        "unavailable_reason": why,
+    }
 
 
 # ============================================================================ tutarlılık kontrolü
@@ -351,5 +472,5 @@ def check_invariants(pv: PortfolioView, *, table_rows: int | None = None,
 
 
 __all__ = ["DEFAULT_TAKER_PCT", "Inconsistency", "PCT_BASIS_COST", "PCT_BASIS_MARGIN", "PortfolioView",
-           "PositionView", "check_invariants", "dec", "fmt_money", "fmt_pct", "fmt_qty", "pnl_class",
-           "portfolio_view", "position_view", "realized_net"]
+           "PositionView", "canonical_summary", "check_invariants", "dec", "fmt_money", "fmt_pct",
+           "fmt_qty", "pnl_class", "portfolio_view", "position_view", "realized_net"]

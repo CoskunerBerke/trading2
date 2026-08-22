@@ -46,7 +46,20 @@ label.chk{display:inline-flex;align-items:center;gap:4px;font-size:12px;color:va
 pre{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:8px;overflow-x:auto;font-size:12px}
 footer{color:var(--mut);font-size:11px;text-align:center;padding:14px}
 .kv td:first-child{color:var(--mut);width:34%}
-@media(max-width:600px){main{padding:6px}h1{font-size:17px}.card .v{font-size:17px}table{font-size:12px}}
+/* Yatay taşma SAYFAYA değil, tablonun KENDİ kapsayıcısına aittir. */
+html,body{max-width:100%;overflow-x:hidden}
+main{max-width:100%}
+.tw{max-width:100%}
+/* Geniş açık-pozisyon tablosunda ilk üç sütun (Sembol · Piyasa · Yön) sabit kalır. */
+.tw table.pos td:nth-child(-n+3),.tw table.pos th:nth-child(-n+3){position:sticky;background:var(--panel);z-index:1}
+.tw table.pos td:nth-child(1),.tw table.pos th:nth-child(1){left:0}
+.tw table.pos td:nth-child(2),.tw table.pos th:nth-child(2){left:96px}
+.tw table.pos td:nth-child(3),.tw table.pos th:nth-child(3){left:176px}
+.tw table.pos th:nth-child(-n+3){z-index:2}
+.card .v{overflow-wrap:anywhere}          /* uzun damga/etiket kartı taşırmaz */
+@media(max-width:900px){.tw table.pos td:nth-child(-n+3),.tw table.pos th:nth-child(-n+3){position:static}}
+@media(max-width:600px){main{padding:6px}h1{font-size:17px}.card .v{font-size:17px}table{font-size:12px}
+  .grid{grid-template-columns:1fr}}      /* mobilde kartlar okunabilir sırayla alt alta */
 """
 
 
@@ -135,6 +148,72 @@ def money_html(x, *, pct: bool = False, nd: int = 2) -> str:
     return f'<td class="num {pnl_class(x)}">{esc(txt)}</td>'
 
 
+SAMPLE_BANDS = ((30, "Yetersiz örneklem — performans sonucu kesin değildir", "warn-box"),
+                (50, "Sınırlı örneklem — sonuçlar yönlendirici, kesin değil", "warn-box"),
+                (None, "Değerlendirilebilir örneklem", ""))
+
+
+def sample_banner(n_closed: int) -> str:
+    """Örneklem durumu — YALNIZ UI açıklamasıdır; algoritmayı ve işlem kararını DEĞİŞTİRMEZ."""
+    for limit, text, cls in SAMPLE_BANDS:
+        if limit is None or n_closed < limit:
+            return f'<div class="card {cls}">Kapanmış işlem: <b>{int(n_closed)}</b> — {esc(text)}</div>'
+    return ""
+
+
+def weight_table(weights: dict, label: str = "Alan") -> str:
+    """Ağırlık tablosu: pozitif/negatif RENKLE ayrılır, anlamlı ondalıkla gösterilir.
+
+    4–6 haneli ham ondalık yerine büyüklüğe göre 2–4 hane; işaret her zaman yazılır.
+    """
+    def _w(v: Any) -> str:
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            return f'<td>{esc(v)}</td>'
+        nd = 2 if abs(f) >= 1 else (3 if abs(f) >= 0.1 else 4)
+        cls = "up" if f > 0 else ("dn" if f < 0 else "flat")
+        return f'<td class="num {cls}">{f:+.{nd}f}</td>'
+
+    rows = [[esc(TR_FIELDS.get(k, k)), _w(v)] for k, v in weights.items()]
+    return table([label, "Ağırlık"], rows, num_cols={1}, empty="ağırlık yok")
+
+
+# Ham iç alan adı → operatörün anlayacağı Türkçe karşılık.
+TR_FIELDS = {"n": "İşlem", "n_trades": "İşlem", "wins": "Kazanan", "n_wins": "Kazanan",
+             "losses": "Kaybeden", "sum_r": "Toplam R", "avg_r": "Ortalama R",
+             "mae": "Maksimum ters hareket", "mfe": "Maksimum olumlu hareket",
+             "exit": "Çıkış nedeni", "bars": "Süre (bar)", "pnl": "Net K/Z", "r": "R sonucu",
+             "won": "Sonuç", "why": "Öğrenilen ders", "at": "Tarih", "setup": "Setup",
+             "side": "Yön", "symbol": "Sembol", "id": "İşlem ID"}
+
+
+def lessons_table(lessons: list[dict]) -> str:
+    """Dersler — okunur sütunlar. Uzun «why» metni hücreyi büyütmez: kısaltılmış önizleme +
+    tam metin `title` (tooltip) ve `<details>` içinde korunur."""
+    from ..pnl import fmt_money
+    rows = []
+    for x in lessons:
+        why = x.get("why")
+        why_txt = " ".join(why) if isinstance(why, list) else str(why or "")
+        preview = (why_txt[:90] + "…") if len(why_txt) > 90 else why_txt
+        why_cell = (f'<details><summary title="{esc(why_txt)}">{esc(preview) or "—"}</summary>'
+                    f'<div class="small mut">{esc(why_txt)}</div></details>') if why_txt else "—"
+        won = x.get("won")
+        res = badge("KAZANDI", "ok") if won is True else (badge("KAYBETTİ", "bad") if won is False else "—")
+        r = x.get("r")
+        rows.append([esc(x.get("id") or "—"), esc(x.get("symbol") or "—"), esc(x.get("side") or "—"),
+                     money_html(x.get("pnl")),
+                     f'<td class="num">{float(r):+.3f}R</td>' if isinstance(r, (int, float)) else "<td>—</td>",
+                     res, esc(x.get("exit") or "—"), fmt(x.get("bars"), 0),
+                     pct(x.get("mae")), pct(x.get("mfe")), why_cell,
+                     f'<span title="{esc(x.get("at") or "")}">{esc(fmt_utc(x.get("at")))}</span>',
+                     esc(x.get("setup") or "—")])
+    return table(["İşlem ID", "Sembol", "Yön", "Net K/Z", "R sonucu", "Sonuç", "Çıkış nedeni",
+                  "Süre (bar)", "MAE", "MFE", "Öğrenilen ders", "Tarih", "Setup"],
+                 rows, num_cols={3, 4, 7, 8, 9}, empty="ders kaydı yok")
+
+
 def live_bar(fr: dict | None) -> str:
     """CANLI/BAYAT göstergesi. Fiyat yaşı ile STRATEJİ TURU yaşı AYRI gösterilir."""
     if not fr:
@@ -144,12 +223,17 @@ def live_bar(fr: dict | None) -> str:
     dot = {"live": "🟢", "stale": "🔴"}.get(pstate, "⚪")
     label = {"live": "CANLI", "stale": "FİYAT VERİSİ GÜNCEL DEĞİL"}.get(pstate, "FİYAT DURUMU BİLİNMİYOR")
     warn = ' warn-box' if pstate != "live" else ""
+    # Fiyat tazeliği ile worker sağlığı AYRI kavramlardır: strateji turu taze olsa bile fiyat
+    # bayatsa gösterge KIRMIZI kalır. Eşik yükseltilerek sorun gizlenmez.
+    note = ('<div class="small" id="stalenote">Strateji çalışıyor; ancak pozisyon fiyatları '
+            'belirtilen süredir güncellenmedi.</div>') if pstate == "stale" else \
+           '<div class="small" id="stalenote" style="display:none">Strateji çalışıyor; ancak pozisyon fiyatları belirtilen süredir güncellenmedi.</div>'
     return (f'<div class="card live{warn}" id="livebar" data-tz="{tz}">'
             f'<span id="livedot">{dot}</span> <b id="livelabel">{esc(label)}</b> — '
             f'Son fiyat güncellemesi: <span id="priceage">{esc(age_text(fr.get("price_age_s")))}</span> önce · '
             f'Son strateji turu: <span id="runage">{esc(age_text(fr.get("run_age_s")))}</span> önce · '
             f'Son coin-head kararı: <span id="headsage">{esc(age_text(fr.get("heads_age_s")))}</span> önce · '
-            f'saat dilimi {tz}</div>')
+            f'saat dilimi {tz}{note}</div>')
 
 
 def chief_block(cv) -> str:
@@ -159,7 +243,16 @@ def chief_block(cv) -> str:
     LONG *aday* sayısıdır, açık LONG *pozisyon* sayısı defterden gelir.
     """
     from ..pnl import fmt_money
-    c = [card("Karar üretim zamanı", esc(cv.generated_at or "—")),
+
+    def _pct(x, nd=1):
+        return f"%{float(x):.{nd}f}" if x is not None else "Veri yok"
+
+    def _usdt(x):
+        return (fmt_money(x, signed=False, currency="") + " USDT") if x is not None else "Veri yok"
+
+    # Uzun ISO damgası kartı taşırıyordu; insan okunur biçim + ham değer tooltip'te.
+    gen = f'<span title="{esc(cv.generated_at or "")}">{esc(fmt_utc(cv.generated_at))}</span>'
+    c = [card("Karar üretim zamanı", gen),
          card("Piyasa risk modu", badge(cv.market_risk_mode, "info")),
          card("LONG işlem adayı", str(cv.long_candidates), "karar — açık pozisyon DEĞİL"),
          card("SHORT işlem adayı", str(cv.short_candidates), "karar — açık pozisyon DEĞİL"),
@@ -171,11 +264,18 @@ def chief_block(cv) -> str:
          card("Toplam açık pozisyon", str(cv.open_total), "defterden (gerçek)"),
          card("Long notional", fmt_money(cv.long_notional, signed=False, currency="") + " USDT"),
          card("Short notional", fmt_money(cv.short_notional, signed=False, currency="") + " USDT"),
-         card("Açık risk", (fmt_money(cv.open_risk_usdt, signed=False, currency="") + " USDT") if cv.open_risk_usdt is not None else "Veri yok"),
-         card("Teminat kullanımı", (f"%{float(cv.margin_util_pct):.1f}") if cv.margin_util_pct is not None else "Veri yok"),
+         # AÇIK RİSK ARTIK İKİ AYRI KAVRAM — aynı kartta karıştırılmaz:
+         card("Açık stop riski", _usdt(cv.open_stop_risk_usdt),
+              "pozisyonların stop'a kadar BRÜT tahmini kaybı (ücret hariç)"),
+         card("Risk motoru rezervasyonu", _usdt(cv.open_risk_usdt),
+              "risk.json → total_open_risk_usdt"),
+         card("Risk bütçesi kullanımı", _pct(cv.risk_budget_util_pct),
+              ("azami " + fmt_money(cv.risk_budget_max_usdt, signed=False, currency="") + " USDT")
+              if cv.risk_budget_max_usdt is not None else "azami bütçe bilinmiyor"),
+         card("Teminat kullanımı", _pct(cv.margin_util_pct), "açık teminat / futures özkaynak"),
          card("Günlük gerçekleşen net K/Z", fmt_money(cv.realized_today)),
          card("Günlük gerçekleşmemiş net K/Z", fmt_money(cv.unrealized_open)),
-         card("Drawdown", (f"%{float(cv.drawdown_pct):.2f}") if cv.drawdown_pct is not None else "Veri yok")]
+         card("Drawdown", _pct(cv.drawdown_pct, 2), "risk motoru (risk.json)")]
     return "<h2>Baş yönetici</h2>" + f'<div class="grid">{"".join(c)}</div>'
 
 
@@ -204,6 +304,8 @@ def live_script(cfg) -> str:
   d.textContent=st==='live'?'\uD83D\uDFE2':(st==='stale'?'\uD83D\uDD34':'\u26AA');
   l.textContent=st==='live'?'CANLI':(st==='stale'?'F\u0130YAT VER\u0130S\u0130 G\u00dcNCEL DE\u011e\u0130L':'F\u0130YAT DURUMU B\u0130L\u0130NM\u0130YOR');
   b.classList.toggle('warn-box',st!=='live');
+  /* Yeni fiyat gelince sayfa YENİLENMEDEN tekrar yeşile döner; açıklama notu da gizlenir. */
+  var n=document.getElementById('stalenote');if(n){n.style.display=(st==='stale')?'':'none';}
   var p=document.getElementById('priceage');if(p&&fr)p.textContent=agetxt(fr.price_age_s);
   var r=document.getElementById('runage');if(r&&fr)r.textContent=agetxt(fr.run_age_s);
   var h=document.getElementById('headsage');if(h&&fr)h.textContent=agetxt(fr.heads_age_s);
@@ -236,10 +338,25 @@ def live_script(cfg) -> str:
        var s=String(c==null?'\u2014':c);var cls='';
        if(i>=3){cls=' class="num'+(s.charAt(0)==='+'?' up':(s.charAt(0)==='-'?' dn':''))+'"';}
        return '<td'+cls+'>'+s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</td>';}).join('')+'</tr>';});
-     el.innerHTML=h+'</tbody></table>';
+     /* `.tw` sarmalayıcısı ZORUNLU: sunucu tarafı `table()` bunu ekler, polling eklemeyince
+        tablo kendi kapsayıcısında değil SAYFADA yatay taşma yapıyordu. */
+     el.innerHTML='<div class="tw">'+h+'</tbody></table></div>';
    }
  },__POS__);
- poll('sum','/api/live/summary',function(){},__SUM__);
+ poll('sum','/api/live/summary',function(d){
+   /* Kartlar polling sonrası GERÇEKTEN güncellenir (eski kod boş callback kullanıyordu). */
+   if(!d||!d.cards)return;
+   d.cards.forEach(function(c){
+     var el=document.getElementById('sc-'+c.key);if(!el)return;
+     var v=el.querySelector('.v');if(!v)return;
+     var signed=(c.kind==='money'||c.kind==='pct_signed');
+     var cls='flat';
+     if(signed&&c.value!=null){cls=(c.value>0)?'up':((c.value<0)?'dn':'flat');}
+     v.innerHTML='<span class="'+cls+'">'+String(c.display).replace(/&/g,'&amp;')
+       .replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</span>';
+     var s=el.querySelector('.small');if(s&&c.sub!=null){s.textContent=c.sub;}
+   });
+ },__SUM__);
  poll('hp','/api/live/health',function(d){
    if(d&&d.price_age_s!=null&&d.price_age_s>__STALE__){setLive('on',{price_state:'stale',price_age_s:d.price_age_s,
      run_age_s:d.last_run_age_s,heads_age_s:null});}
@@ -248,11 +365,41 @@ def live_script(cfg) -> str:
 </script>""".replace("__POS__", str(pos)).replace("__SUM__", str(summ)).replace("__HEAL__", str(heal))             .replace("__MULT__", str(mult)).replace("__STALE__", str(stale))
 
 
-def card(k: str, v: str, sub: str = "") -> str:
-    return f'<div class="card"><div class="k">{esc(k)}</div><div class="v">{v}</div>' + (f'<div class="small mut">{sub}</div>' if sub else "") + "</div>"
+def card(k: str, v: str, sub: str = "", cid: str = "") -> str:
+    i = f' id="{esc(cid)}"' if cid else ""
+    return (f'<div class="card"{i}><div class="k">{esc(k)}</div><div class="v">{v}</div>'
+            + (f'<div class="small mut">{sub}</div>' if sub else "") + "</div>")
 
 
-def table(headers: list[str], rows: Iterable[Iterable[str]], *, num_cols: set[int] | None = None, empty: str = "kayıt yok") -> str:
+def card_value(c) -> str:
+    """Kart değeri — `SummaryCard.display` OLDUĞU GİBİ basılır, yeniden biçimlendirilmez.
+
+    Renk yalnız işaretli (para) kartlarda uygulanır; oran/sayaç kartları nötrdür. Renk TEK BAŞINA
+    anlam taşımaz: `+/-` işareti zaten `display` içindedir.
+    """
+    from ..pnl import pnl_class
+    cls = pnl_class(c.value) if (c.signed and c.value is not None) else "flat"
+    return f'<span class="{cls}">{esc(c.display)}</span>'
+
+
+def fmt_utc(iso_ts: Any, *, fallback: str = "—") -> str:
+    """ISO zaman damgası → `22.08.2026 22:31:41 UTC` (insan okunur, karttan taşmaz).
+
+    Ham ISO değeri `title` özniteliğinde korunur (tooltip); veri kaybı yoktur.
+    """
+    s = str(iso_ts or "").strip()
+    if not s:
+        return fallback
+    try:
+        from ..core import from_iso
+        d = from_iso(s)
+    except Exception:  # noqa: BLE001 — biçim bilinmiyorsa ham metin gösterilir
+        return esc(s)
+    return d.strftime("%d.%m.%Y %H:%M:%S UTC")
+
+
+def table(headers: list[str], rows: Iterable[Iterable[str]], *, num_cols: set[int] | None = None,
+          empty: str = "kayıt yok", cls: str = "") -> str:
     """Hücreler önceden HTML olarak hazırlanmış kabul edilir (esc çağıranın sorumluluğu) — `<td` ile başlıyorsa olduğu gibi konur."""
     num_cols = num_cols or set()
     rows = list(rows)
@@ -266,7 +413,8 @@ def table(headers: list[str], rows: Iterable[Iterable[str]], *, num_cols: set[in
             c = "" if c is None else str(c)
             cells.append(c if c.startswith("<td") else f'<td class="{"num" if i in num_cols else ""}">{c}</td>')
         body.append("<tr>" + "".join(cells) + "</tr>")
-    return f'<div class="tw"><table><thead><tr>{th}</tr></thead><tbody>{"".join(body)}</tbody></table></div>'
+    c = f' class="{esc(cls)}"' if cls else ""
+    return f'<div class="tw"><table{c}><thead><tr>{th}</tr></thead><tbody>{"".join(body)}</tbody></table></div>'
 
 
 def kv_table(d: dict[str, Any], *, skip: set[str] | None = None) -> str:

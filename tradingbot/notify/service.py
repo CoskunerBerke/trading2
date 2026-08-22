@@ -1,0 +1,197 @@
+"""Bildirim servisi — outbox + Telegram taşıması. Trade döngüsünü ASLA durdurmaz.
+
+Güvenlik sözleşmesi:
+* Telegram KAPALIYSA hiçbir ağ çağrısı yapılmaz (transport bile kurulmaz).
+* Token yalnız ortam değişkeninden okunur; log'a, exception'a, outbox'a, panel API'sine YAZILMAZ.
+  Dışarı sızabilecek her metin `redact()` süzgecinden geçer.
+* Timeout + sınırlı retry vardır; sonsuz retry YOKTUR.
+* Gönderim hatası pozisyon açma/kapatma kaydını GERİ ALMAZ — yalnız outbox `failed` işaretlenir.
+"""
+from __future__ import annotations
+
+import logging
+import os
+import re
+from pathlib import Path
+from typing import Any, Callable
+
+from ..core import iso, utc_now
+from .events import EVENT_OPENED, NotifyEvent, event_id
+from .outbox import NotifyOutbox
+
+log = logging.getLogger(__name__)
+
+HttpFn = Callable[[str, dict[str, Any], float], int]
+_TOKEN_RE = re.compile(r"\b\d{6,}:[A-Za-z0-9_\-]{20,}\b")       # Telegram bot token biçimi
+
+
+def redact(text: Any, *secrets: str) -> str:
+    """Token/gizli değerleri maskele. Log ve hata mesajlarında ZORUNLU."""
+    s = str(text)
+    for sec in secrets:
+        if sec:
+            s = s.replace(sec, "***")
+    return _TOKEN_RE.sub("***", s)
+
+
+def _default_http(url: str, body: dict[str, Any], timeout: float) -> int:
+    import json
+    import urllib.request
+    data = json.dumps(body, ensure_ascii=False).encode("utf-8")
+    req = urllib.request.Request(url, data=data,
+                                 headers={"Content-Type": "application/json", "User-Agent": "tradingbot-notify"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
+        return int(resp.status)
+
+
+class TelegramTransport:
+    """`sendMessage` taşıması. `http` enjekte edilebilir → testler ağ KULLANMAZ."""
+    name = "telegram"
+
+    def __init__(self, token: str, chat_id: str, *, http: HttpFn | None = None, timeout: float = 8.0) -> None:
+        self._token, self._chat_id = token, chat_id
+        self._http = http or _default_http
+        self._timeout = float(timeout)
+
+    @property
+    def configured(self) -> bool:
+        return bool(self._token and self._chat_id)
+
+    def send(self, event: NotifyEvent) -> tuple[bool, str]:
+        if not self.configured:
+            return False, "NOT_CONFIGURED"           # fail-safe: eksik token/chat → ağ çağrısı yok
+        url = f"https://api.telegram.org/bot{self._token}/sendMessage"
+        body = {"chat_id": self._chat_id, "text": f"{event.title}\n\n{event.text}"[:4000],
+                "disable_web_page_preview": True}
+        try:
+            status = self._http(url, body, self._timeout)
+        except Exception as exc:                     # noqa: BLE001 — dış servis; hata türü çeşitli
+            kind = type(exc).__name__
+            log.warning("telegram gönderimi başarısız: %s", redact(kind, self._token))
+            return False, kind
+        return (200 <= int(status) < 300), f"HTTP_{status}"
+
+
+class TradeNotifier:
+    """Olay → outbox → taşıma. Kapalıyken tamamen sessiz ve ağsızdır."""
+
+    def __init__(self, *, enabled: bool = False, outbox_path: Path | str | None = None,
+                 transport: Any | None = None, max_retries: int = 3, outbox_keep: int = 2000,
+                 suppress_backlog_on_start: bool = True) -> None:
+        self.enabled = bool(enabled)
+        self.transport = transport
+        self.suppress_backlog_on_start = bool(suppress_backlog_on_start)
+        self.outbox = NotifyOutbox(outbox_path or Path("notify_outbox.json"),
+                                   keep=outbox_keep, max_attempts=max_retries)
+        self._bootstrapped = False
+        self.last_error: str = ""
+
+    # ------------------------------------------------------------------ kurulum
+    @classmethod
+    def from_config(cls, tg_cfg: Any, state_dir: Path | str, *, http: HttpFn | None = None,
+                    env: dict[str, str] | None = None) -> "TradeNotifier":
+        """Config + ortam değişkeninden kur. KAPALIYSA taşıma HİÇ oluşturulmaz."""
+        env = os.environ if env is None else env
+        enabled = bool(getattr(tg_cfg, "enabled", False))
+        transport = None
+        if enabled:
+            token = str(env.get(getattr(tg_cfg, "bot_token_env", ""), "") or "").strip()
+            chat = str(env.get(getattr(tg_cfg, "chat_id_env", ""), "") or "").strip()
+            if token and chat:
+                transport = TelegramTransport(token, chat, http=http,
+                                              timeout=float(getattr(tg_cfg, "timeout_s", 8.0)))
+            else:
+                log.warning("telegram etkin fakat token/chat id ortamda yok — bildirim gönderilmeyecek "
+                            "(fail-safe; ağ çağrısı yapılmaz)")
+        return cls(enabled=enabled,
+                   outbox_path=Path(state_dir) / str(getattr(tg_cfg, "outbox_file", "notify_outbox.json")),
+                   transport=transport, max_retries=int(getattr(tg_cfg, "max_retries", 3)),
+                   outbox_keep=int(getattr(tg_cfg, "outbox_keep", 2000)),
+                   suppress_backlog_on_start=bool(getattr(tg_cfg, "suppress_backlog_on_start", True)))
+
+    def bootstrap_open_positions(self, positions: list[dict]) -> int:
+        """Restart/ilk etkinleştirme: MEVCUT açık pozisyonlar için sahte "açıldı" bildirimi GÖNDERME.
+
+        Yalnız AÇILIŞ olayı bastırılır; bu pozisyonlar kapandığında GERÇEK kapanış bildirimi
+        normal biçimde gönderilir. Bir kez çalışır (idempotent).
+        """
+        if self._bootstrapped or not self.suppress_backlog_on_start:
+            self._bootstrapped = True
+            return 0
+        n = 0
+        for p in positions or []:
+            tid = str(p.get("id") or p.get("trade_id") or "")
+            if not tid:
+                continue
+            eid = event_id(EVENT_OPENED, tid, str(p.get("opened_at") or ""))
+            if not self.outbox.delivered(eid):
+                self.outbox.suppress(eid, EVENT_OPENED)
+                n += 1
+        self._bootstrapped = True
+        if n:
+            self.outbox.save()
+            log.info("telegram: %d mevcut açık pozisyonun açılış bildirimi bastırıldı (restart backlog)", n)
+        return n
+
+    # ------------------------------------------------------------------ gönderim
+    def notify(self, event: NotifyEvent) -> bool:
+        """Olayı gönder. `True` = bu çağrıda teslim edildi.
+
+        Duplicate (aynı `event.id`) sessizce atlanır. Hata trade döngüsüne SIZMAZ.
+        """
+        if not self.enabled:
+            return False
+        try:
+            if self.outbox.delivered(event.id):
+                return False                                   # duplicate engeli
+            if not self.outbox.enqueue(event.id, event.kind):
+                return False                                   # retry bütçesi bitti
+            if self.transport is None:
+                self.outbox.mark_failed(event.id, "NO_TRANSPORT")
+                self.outbox.save()
+                return False
+            ok, info = self.transport.send(event)
+            if ok:
+                self.outbox.mark_sent(event.id)
+            else:
+                self.outbox.mark_failed(event.id, info)
+                self.last_error = info
+            self.outbox.save()
+            return ok
+        except Exception as exc:                               # noqa: BLE001 — bildirim ASLA trade'i düşürmez
+            self.last_error = type(exc).__name__
+            log.warning("bildirim gönderilemedi (trade döngüsü etkilenmedi): %s", redact(exc))
+            try:
+                self.outbox.mark_failed(event.id, type(exc).__name__)
+                self.outbox.save()
+            except Exception:                                  # noqa: BLE001
+                pass
+            return False
+
+    def notify_all(self, events: list[NotifyEvent]) -> int:
+        return sum(1 for e in events if self.notify(e))
+
+    def retry_pending(self, limit: int = 20) -> int:
+        """Kalıcı kuyruktaki başarısızları sınırlı sayıda yeniden dener (sonsuz retry yok)."""
+        if not self.enabled or self.transport is None:
+            return 0
+        sent = 0
+        for e in self.outbox.pending()[:limit]:
+            ev = NotifyEvent(id=e.id, kind=e.kind, title="🔁 PAPER BİLDİRİM (yeniden deneme)",
+                             text=f"olay: {e.kind}\nid: {e.id}", created_at=iso(utc_now()))
+            ok, info = self.transport.send(ev)
+            if ok:
+                self.outbox.mark_sent(e.id)
+                sent += 1
+            else:
+                self.outbox.mark_failed(e.id, info)
+        self.outbox.save()
+        return sent
+
+    def status(self) -> dict[str, Any]:
+        """Panel/tanılama için GÜVENLİ durum — token ve chat id ASLA yer almaz."""
+        return {"enabled": self.enabled, "transport": bool(self.transport),
+                "outbox": self.outbox.to_dict(), "last_error": redact(self.last_error)}
+
+
+__all__ = ["HttpFn", "TelegramTransport", "TradeNotifier", "redact"]

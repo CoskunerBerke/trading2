@@ -212,7 +212,12 @@ def cmd_dashboard(cfg: BotConfig, args) -> int:
     from .dashboard.app import DashboardConfig, run_dashboard
     d = cfg.v3.dashboard
     token = os.environ.get(d.auth_token_env)
-    dc = DashboardConfig(host=args.host or d.host, port=args.port or d.port, auth_token=token, allow_insecure_public=d.allow_insecure_public, max_bars=d.max_bars)
+    dc = DashboardConfig(host=args.host or d.host, port=args.port or d.port, auth_token=token,
+                         allow_insecure_public=d.allow_insecure_public, max_bars=d.max_bars,
+                         poll_positions_s=d.poll_positions_s, poll_portfolio_s=d.poll_portfolio_s,
+                         poll_health_s=d.poll_health_s, stale_price_s=d.stale_price_s,
+                         stale_run_s=d.stale_run_s, background_backoff_mult=d.background_backoff_mult,
+                         timezone_label=d.timezone_label)
     print(f"Dashboard http://{dc.host}:{dc.port}  (varsayılan yalnız 127.0.0.1; uzaktan erişim için SSH tüneli/Tailscale)")
     run_dashboard(cfg.state_path, cfg.cache_path, cfg.obsidian.root, dc)
     return 0

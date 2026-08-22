@@ -157,6 +157,20 @@ jobs:
           if grep -qE "^SKIPPED|1 skipped" /tmp/rb.txt; then
             echo "::error::rollback CLI kaniti SKIP edildi — gecerli sayilmaz"; exit 1
           fi
+      - name: GÖZLEMLENEBİLİRLİK — kanonik PnL, panel görünümü, 2x–5x kaldıraç, Telegram
+        # Zorunlu adım. Panel/Telegram PnL eşitliği, aday↔açık pozisyon ayrımı, canlı/bayat veri
+        # davranışı, kaldıracın risk bütçesini büyütmemesi ve token sızıntısı olmaması kanıtlanır.
+        # Gerçek Telegram ağı KULLANILMAZ (fake transport). continue-on-error YOK.
+        run: |
+          /tmp/run.sh "observability" tests/test_pnl_and_dashboard_views.py             tests/test_leverage_and_notify.py tests/test_dashboard_live.py             tests/test_observability_safety.py -v --tb=short -rs
+      - name: Gözlemlenebilirlik testleri gerçekten toplanıyor mu (boş seçim reddi)
+        run: |
+          n=$(python -m pytest tests/test_pnl_and_dashboard_views.py tests/test_leverage_and_notify.py                 tests/test_dashboard_live.py tests/test_observability_safety.py                 --collect-only -q 2>/dev/null | grep -c "::")
+          echo "toplanan test: $n"
+          if [ "$n" -lt 70 ]; then echo "::error::gozlemlenebilirlik testleri toplanmadi ($n)"; exit 1; fi
+      - name: Kaldıraç risk bütçesini büyütmüyor + PAPER güvenliği
+        run: |
+          /tmp/run.sh "leverage-risk-invariant" tests/test_leverage_and_notify.py             tests/test_observability_safety.py -v --tb=short             -k "never_increases or margin_equals or max_loss_at_stop or risk_at_stop or paper_mode or live_order or risk_ceilings or secret"
       - name: GERÇEK RUNTIME araştırma döngüsü (boş defterden motor turlarıyla)
         # Zorunlu adım. Boş test seçimi pytest exit-5 ile adımı DÜŞÜRÜR; continue-on-error yok.
         run: /tmp/run.sh "test_research_runtime_e2e" tests/test_research_runtime_e2e.py -v --tb=short -rs

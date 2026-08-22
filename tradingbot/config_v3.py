@@ -111,6 +111,68 @@ class FuturesV3Section:
 
 
 @dataclass
+class LeverageSection:
+    """PAPER futures icin dinamik 2x-5x kaldirac. VARSAYILAN KAPALI.
+
+    Kaldirac RISKI ARTIRMAZ: notional risk butcesi + stop mesafesinden gelir, kaldirac yalnizca
+    `initial_margin = notional / leverage` degerini belirler. `max_leverage` 5 MUTLAK ust sinirdir.
+    Zayif sinyal `min_leverage` ile ACILMAZ; NO_TRADE/HOLD/veto uretilir.
+    """
+    enabled: bool = False                     # yalniz PAPER arastirma profilinde acilir
+    paper_only: bool = True                   # LIVE/TESTNET icin varsayilan KAPALI
+    min_leverage: int = 2
+    max_leverage: int = 5
+    min_confidence: float = 0.30
+    max_stop_atr_mult: float = 4.0
+    min_stop_atr_mult: float = 0.5
+    min_depth_usdt: float = 25_000.0
+    max_spread_pct: float = 0.30
+    min_liq_buffer_mult: float = 3.0
+    conf_3x: float = 0.45
+    conf_4x: float = 0.58
+    conf_5x: float = 0.70
+    edge_3x: float = 0.15
+    edge_4x: float = 0.30
+    edge_5x: float = 0.45
+    max_atr_pct_3x: float = 8.0
+    max_atr_pct_4x: float = 6.0
+    max_atr_pct_5x: float = 4.0
+    min_depth_4x: float = 100_000.0
+    min_depth_5x: float = 250_000.0
+    max_spread_4x: float = 0.12
+    max_spread_5x: float = 0.06
+    max_funding_4x: float = 0.03
+    max_funding_5x: float = 0.015
+    max_open_risk_frac_4x: float = 0.70
+    max_open_risk_frac_5x: float = 0.50
+    max_same_dir_4x: int = 3
+    max_same_dir_5x: int = 2
+    max_corr_5x: float = 0.80
+    liq_buffer_4x: float = 3.5
+    liq_buffer_5x: float = 4.5
+    require_regime_alignment_5x: bool = True
+
+
+@dataclass
+class TelegramSection:
+    """Telegram bildirimleri. TOKEN ASLA CONFIG'E YAZILMAZ — yalniz env degisken ADI tutulur."""
+    enabled: bool = False
+    bot_token_env: str = "TRADINGBOT_TELEGRAM_BOT_TOKEN"
+    chat_id_env: str = "TRADINGBOT_TELEGRAM_CHAT_ID"
+    timeout_s: float = 8.0
+    max_retries: int = 3                      # sonsuz retry YOK
+    retry_backoff_s: float = 2.0
+    outbox_file: str = "notify_outbox.json"   # state_path altinda; atomik yazilir
+    outbox_keep: int = 2000
+    daily_summary_enabled: bool = True
+    daily_summary_hour_utc: int = 21
+    notify_open: bool = True
+    notify_close: bool = True
+    notify_health: bool = True
+    suppress_backlog_on_start: bool = True    # restart'ta eski aciklar icin sahte bildirim YOK
+
+
+@dataclass
 class ExecutionSection:
     gateway: str = "paper"                    # paper | binance_spot_testnet | binance_futures_testnet | live(disabled)
     testnet_enabled: bool = False
@@ -210,6 +272,14 @@ class DashboardSection:
     auth_token_env: str = "TRADINGBOT_DASHBOARD_TOKEN"
     allow_insecure_public: bool = False
     max_bars: int = 600
+    # --- canli yenileme (tarayici polling; Binance'a DOGRUDAN baglanti YOK) ---
+    poll_positions_s: int = 7                 # acik pozisyon mark/PnL
+    poll_portfolio_s: int = 20                # bakiye/teminat/acik risk
+    poll_health_s: int = 12                   # saglik + heartbeat
+    stale_price_s: int = 90                   # bu yasin uzerinde "FIYAT VERISI GUNCEL DEGIL"
+    stale_run_s: int = 2400                   # strateji turu yasi uyarisi
+    background_backoff_mult: int = 4          # arka plan sekmesinde aralik carpani
+    timezone_label: str = "UTC"
 
 
 @dataclass
@@ -262,6 +332,8 @@ class V3Config:
     fees: FeesSection = field(default_factory=FeesSection)
     tax_policy: TaxPolicySection = field(default_factory=TaxPolicySection)
     risk_profiles: RiskProfilesSection = field(default_factory=RiskProfilesSection)
+    leverage: LeverageSection = field(default_factory=LeverageSection)
+    telegram: TelegramSection = field(default_factory=TelegramSection)
     learning_v3: LearningV3Section = field(default_factory=LearningV3Section)
     storage: StorageSection = field(default_factory=StorageSection)
     obsidian_v3: ObsidianV3Section = field(default_factory=ObsidianV3Section)
@@ -274,7 +346,8 @@ class V3Config:
 
 _SECTIONS = {"app": AppConfig, "mode": ModeConfig, "markets": MarketsConfig, "universe": UniverseSection, "data": DataConfig,
              "coin_heads": CoinHeadsSection, "llm": LLMSection, "futures_v3": FuturesV3Section, "execution": ExecutionSection, "fees": FeesSection,
-             "tax_policy": TaxPolicySection, "risk_profiles": RiskProfilesSection, "learning_v3": LearningV3Section, "storage": StorageSection,
+             "tax_policy": TaxPolicySection, "risk_profiles": RiskProfilesSection, "leverage": LeverageSection,
+             "telegram": TelegramSection, "learning_v3": LearningV3Section, "storage": StorageSection,
              "obsidian_v3": ObsidianV3Section, "dashboard": DashboardSection, "monitoring": MonitoringSection, "security": SecuritySection,
              "history": HistorySection}
 
@@ -308,6 +381,23 @@ def validate_v3(cfg: V3Config) -> None:
         raise ConfigError("LIVE/LIVE_LIMITED bu sürümde kapalı; config ile açılamaz")
     if cfg.mode.live_trading and os.environ.get("ALLOW_LIVE_TRADING", "").lower() != "true":
         raise ConfigError("mode.live_trading=true fakat ALLOW_LIVE_TRADING env yok — tutarsız (gerçek emir bu sürümde kapalı)")
+    lev = cfg.leverage
+    if lev.max_leverage > 5:
+        raise ConfigError(f"leverage.max_leverage {lev.max_leverage} > 5 — mutlak üst sınır aşılamaz")
+    if lev.enabled and lev.min_leverage < 2:
+        raise ConfigError("leverage.min_leverage < 2 — yeni futures işlemleri 1x açılamaz")
+    if lev.min_leverage > lev.max_leverage:
+        raise ConfigError("leverage.min_leverage > leverage.max_leverage")
+    if lev.enabled and lev.paper_only and m != "PAPER":
+        raise ConfigError(f"leverage.enabled=true fakat mod {m} — dinamik kaldıraç yalnız PAPER'da açılabilir "
+                          "(LIVE/TESTNET için paper_only=false bilinçli olarak verilmelidir)")
+    tg = cfg.telegram
+    if tg.max_retries < 0 or tg.timeout_s <= 0:
+        raise ConfigError("telegram.max_retries ≥ 0 ve timeout_s > 0 olmalı")
+    for _f in ("bot_token_env", "chat_id_env"):
+        _v = str(getattr(tg, _f) or "")
+        if _v and (":" in _v or len(_v) > 100):
+            raise ConfigError(f"telegram.{_f} bir ORTAM DEĞİŞKENİ ADI olmalı — token değeri config'e yazılamaz")
     lm = cfg.llm.mode.upper()
     if lm not in VALID_LLM_MODES:
         raise ConfigError(f"llm.mode geçersiz: {cfg.llm.mode}")

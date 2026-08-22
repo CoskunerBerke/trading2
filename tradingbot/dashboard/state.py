@@ -203,6 +203,44 @@ class StateReader:
         m = self.get("mode")
         return str(m.get("mode")) if isinstance(m, dict) and m.get("mode") else "PAPER"
 
+    # ---- canlılık / tazelik
+    def file_age(self, name: str) -> float | None:
+        """State dosyasının disk yaşı (sn). Fiyat tazeliği bundan gelir — tarayıcı Binance'a GİTMEZ."""
+        fn = {**STATE_FILES, **JSONL_FILES}.get(name)
+        if not fn:
+            return None
+        try:
+            return max(0.0, utc_now().timestamp() - os.stat(self.state_dir / fn).st_mtime)
+        except OSError:
+            return None
+
+    def price_age_s(self) -> float | None:
+        """Mark fiyatlarının yaşı = defterin son yazılma yaşı (worker'ın güvenli/önbellekli kaynağı).
+
+        STRATEJİ TURU yaşıyla KARIŞTIRILMAZ: tur 4 saatte bir, tick/defter yazımı çok daha sık olur.
+        """
+        return self.file_age("futures_ledger")
+
+    def heads_age_s(self) -> float | None:
+        return _age((self.get("coin_heads") or {}).get("generated_at"))
+
+    def marks(self) -> dict[str, Any]:
+        """Sembol → worker'ın kaydettiği son fiyat. Panel ASLA borsaya doğrudan bağlanmaz."""
+        out: dict[str, Any] = {}
+        for p in self.futures_positions():
+            lp = p.get("last_price")
+            if lp not in (None, "", 0, "0"):
+                out[str(p.get("symbol") or "")] = lp
+        return out
+
+    def max_drawdown_pct(self) -> Any:
+        r = self.get("risk") or {}
+        for key in ("drawdown_pct", "max_drawdown_pct"):
+            v = (r.get("state") or r).get(key) if isinstance(r.get("state"), dict) else r.get(key)
+            if v is not None:
+                return v
+        return None
+
     def last_run_age(self) -> float | None:
         ages = [a for a in (
             _age((self.get("coin_heads") or {}).get("generated_at")),
@@ -273,7 +311,26 @@ class StateReader:
             "decision_funnel": self.decision_funnel(),
             "chief": (self.get("coin_heads") or {}).get("chief") or (self.get("agents") or {}).get("chief") or {},
             "top_heads": sorted(heads, key=lambda h: -float(h.get("confidence_calibrated") or 0))[:10],
+            "price_age_s": self.price_age_s(),
+            "heads_age_s": self.heads_age_s(),
         }
+
+    def fee_schedule(self) -> Any:
+        """Defterin ücret tarifesi — tahmini kapanış ücreti bundan hesaplanır."""
+        return (self.get("futures_ledger") or {}).get("fees")
+
+    def view_model(self, *, stale_price_s: int = 90, stale_run_s: int = 2400,
+                   tz_label: str = "UTC") -> dict[str, Any]:
+        """Panel + Telegram için TEK kanonik görünüm (bkz. `dashboard.views.build`)."""
+        from .views import Freshness, build
+        fresh = Freshness(price_age_s=self.price_age_s(), run_age_s=self.last_run_age(),
+                          heads_age_s=self.heads_age_s(), heartbeat_age_s=self.heartbeat_age(),
+                          stale_price_s=stale_price_s, stale_run_s=stale_run_s, tz_label=tz_label)
+        return build(self.futures_positions(), self.trades(),
+                     (self.get("coin_heads") or {}).get("chief") or (self.get("agents") or {}).get("chief") or {},
+                     marks=self.marks(), fees=self.fee_schedule(),
+                     today=utc_now().date().isoformat(), max_drawdown_pct=self.max_drawdown_pct(),
+                     freshness=fresh)
 
 
 def _evidence(self, base: str) -> dict | None:

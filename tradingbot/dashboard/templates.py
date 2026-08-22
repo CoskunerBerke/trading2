@@ -11,6 +11,13 @@ NAV: list[tuple[str, str]] = [
     ("/models", "Modeller"), ("/llm", "LLM"), ("/health", "Sağlık"),
 ]
 
+CSS_EXTRA = """
+.live{display:flex;flex-wrap:wrap;gap:.4rem;align-items:center;font-size:.86rem}
+.warn-box{border-left:3px solid #ef5350;background:rgba(239,83,80,.08)}
+.num.flat{color:#9aa4b2}
+.small{font-size:.8rem}
+"""
+
 CSS = """
 :root{--bg:#0e1116;--panel:#161b22;--line:#242c37;--fg:#d7dde5;--mut:#8b98a8;--acc:#4da3ff;--up:#26a69a;--dn:#ef5350;--warn:#f5c542}
 *{box-sizing:border-box}html{-webkit-text-size-adjust:100%}
@@ -116,6 +123,131 @@ def pnl_cell(x: Any, nd: int = 2) -> str:
     return f'<td class="num {cls}">{f:+,.{nd}f}</td>'
 
 
+def money_html(x, *, pct: bool = False, nd: int = 2) -> str:
+    """Para/yüzde hücresi. Renk TEK BAŞINA anlam taşımaz — `+/-` işareti HER ZAMAN yazılır.
+
+    |x| < 0.01 iken `+0.00`'a yuvarlanmaz (gerçek küçük K/Z sıfır gibi görünmez).
+    """
+    from ..pnl import fmt_money, fmt_pct, pnl_class
+    if x is None or x == "":
+        return "<td class=num>—</td>"
+    txt = fmt_pct(x, nd) if pct else fmt_money(x)
+    return f'<td class="num {pnl_class(x)}">{esc(txt)}</td>'
+
+
+def live_bar(fr: dict | None) -> str:
+    """CANLI/BAYAT göstergesi. Fiyat yaşı ile STRATEJİ TURU yaşı AYRI gösterilir."""
+    if not fr:
+        return ""
+    tz = esc(fr.get("tz_label") or "UTC")
+    pstate = fr.get("price_state")
+    dot = {"live": "🟢", "stale": "🔴"}.get(pstate, "⚪")
+    label = {"live": "CANLI", "stale": "FİYAT VERİSİ GÜNCEL DEĞİL"}.get(pstate, "FİYAT DURUMU BİLİNMİYOR")
+    warn = ' warn-box' if pstate != "live" else ""
+    return (f'<div class="card live{warn}" id="livebar" data-tz="{tz}">'
+            f'<span id="livedot">{dot}</span> <b id="livelabel">{esc(label)}</b> — '
+            f'Son fiyat güncellemesi: <span id="priceage">{esc(age_text(fr.get("price_age_s")))}</span> önce · '
+            f'Son strateji turu: <span id="runage">{esc(age_text(fr.get("run_age_s")))}</span> önce · '
+            f'Son coin-head kararı: <span id="headsage">{esc(age_text(fr.get("heads_age_s")))}</span> önce · '
+            f'saat dilimi {tz}</div>')
+
+
+def chief_block(cv) -> str:
+    """Baş yönetici — UZUN HAM JSON YERİNE etiketli kartlar.
+
+    «İşlem adayı» ile «açık pozisyon» KASITLI olarak ayrı kartlardadır: `breadth.long` son turdaki
+    LONG *aday* sayısıdır, açık LONG *pozisyon* sayısı defterden gelir.
+    """
+    from ..pnl import fmt_money
+    c = [card("Karar üretim zamanı", esc(cv.generated_at or "—")),
+         card("Piyasa risk modu", badge(cv.market_risk_mode, "info")),
+         card("LONG işlem adayı", str(cv.long_candidates), "karar — açık pozisyon DEĞİL"),
+         card("SHORT işlem adayı", str(cv.short_candidates), "karar — açık pozisyon DEĞİL"),
+         card("NO TRADE", str(cv.no_trade)),
+         card("HOLD", str(cv.hold), "açık pozisyonu korunan semboller"),
+         card("Veri geçersiz", str(cv.data_invalid)),
+         card("Açık LONG pozisyon", str(cv.open_long), "defterden (gerçek)"),
+         card("Açık SHORT pozisyon", str(cv.open_short), "defterden (gerçek)"),
+         card("Toplam açık pozisyon", str(cv.open_total), "defterden (gerçek)"),
+         card("Long notional", fmt_money(cv.long_notional, signed=False, currency="") + " USDT"),
+         card("Short notional", fmt_money(cv.short_notional, signed=False, currency="") + " USDT"),
+         card("Açık risk", (fmt_money(cv.open_risk_usdt, signed=False, currency="") + " USDT") if cv.open_risk_usdt is not None else "Veri yok"),
+         card("Teminat kullanımı", (f"%{float(cv.margin_util_pct):.1f}") if cv.margin_util_pct is not None else "Veri yok"),
+         card("Günlük gerçekleşen net K/Z", fmt_money(cv.realized_today)),
+         card("Günlük gerçekleşmemiş net K/Z", fmt_money(cv.unrealized_open)),
+         card("Drawdown", (f"%{float(cv.drawdown_pct):.2f}") if cv.drawdown_pct is not None else "Veri yok")]
+    return "<h2>Baş yönetici</h2>" + f'<div class="grid">{"".join(c)}</div>'
+
+
+def live_script(cfg) -> str:
+    """Hafif POLLING. WebSocket yok; tarayıcı borsaya bağlanmaz; istek fırtınası engellenir.
+
+    * Aynı anda tek istek (overlap koruması), `AbortController` ile zaman aşımı.
+    * Arka plan sekmesinde aralık `background_backoff_mult` katına çıkar.
+    * Bağlantı koparsa CANLI etiketi YEŞİL KALMAZ.
+    """
+    pos = int(getattr(cfg, "poll_positions_s", 7)) * 1000
+    summ = int(getattr(cfg, "poll_portfolio_s", 20)) * 1000
+    heal = int(getattr(cfg, "poll_health_s", 12)) * 1000
+    mult = int(getattr(cfg, "background_backoff_mult", 4))
+    stale = int(getattr(cfg, "stale_price_s", 90))
+    return r"""<script>
+(function(){
+ var busy={},fails=0;
+ function agetxt(s){if(s==null)return '-';s=Math.floor(s);if(s<90)return s+'s';if(s<5400)return Math.floor(s/60)+'dk';
+   if(s<172800)return Math.floor(s/3600)+'sa '+Math.floor((s%3600)/60)+'dk';return Math.floor(s/86400)+'g';}
+ function setLive(state,fr){
+  var d=document.getElementById('livedot'),l=document.getElementById('livelabel'),b=document.getElementById('livebar');
+  if(!d||!l||!b)return;
+  if(state==='off'){d.textContent='\u26AB';l.textContent='BA\u011eLANTI YOK';b.classList.add('warn-box');return;}
+  var st=fr&&fr.price_state;
+  d.textContent=st==='live'?'\uD83D\uDFE2':(st==='stale'?'\uD83D\uDD34':'\u26AA');
+  l.textContent=st==='live'?'CANLI':(st==='stale'?'F\u0130YAT VER\u0130S\u0130 G\u00dcNCEL DE\u011e\u0130L':'F\u0130YAT DURUMU B\u0130L\u0130NM\u0130YOR');
+  b.classList.toggle('warn-box',st!=='live');
+  var p=document.getElementById('priceage');if(p&&fr)p.textContent=agetxt(fr.price_age_s);
+  var r=document.getElementById('runage');if(r&&fr)r.textContent=agetxt(fr.run_age_s);
+  var h=document.getElementById('headsage');if(h&&fr)h.textContent=agetxt(fr.heads_age_s);
+ }
+ function poll(key,url,cb,base){
+  function tick(){
+   if(busy[key])return;                                   /* overlap koruması: istek fırtınası yok */
+   busy[key]=1;
+   var ac=('AbortController' in window)?new AbortController():null;
+   var to=setTimeout(function(){if(ac)ac.abort();},Math.max(5000,base));
+   fetch(url,{headers:window.__authHeaders||{},signal:ac?ac.signal:undefined})
+    .then(function(r){return r.ok?r.json():Promise.reject(r.status);})
+    .then(function(d){fails=0;cb(d);})
+    .catch(function(){fails++;if(fails>2)setLive('off',null);})
+    .then(function(){clearTimeout(to);busy[key]=0;});
+  }
+  function iv(){return document.hidden?base*BG:base;}   /* arka plan sekmesinde backoff */
+  var timer=setInterval(function(){tick();},base);
+  document.addEventListener('visibilitychange',function(){clearInterval(timer);timer=setInterval(function(){tick();},iv());});
+  tick();
+ }
+ var BG=__MULT__;
+ poll('pos','/api/live/positions'+(window.__tokenQs||'').replace('?','?'),function(d){
+   setLive('on',d.freshness);
+   var el=document.getElementById('postbl');
+   if(el&&d.rows){
+     var h='<table><thead><tr>'+d.columns.map(function(c){return '<th>'+c+'</th>';}).join('')+'</tr></thead><tbody>';
+     if(!d.rows.length){h+='<tr><td colspan="'+d.columns.length+'" class="mut">a\u00e7\u0131k pozisyon yok</td></tr>';}
+     d.rows.forEach(function(r){h+='<tr>'+r.map(function(c,i){
+       var s=String(c==null?'\u2014':c);var cls='';
+       if(i>=3){cls=' class="num'+(s.charAt(0)==='+'?' up':(s.charAt(0)==='-'?' dn':''))+'"';}
+       return '<td'+cls+'>'+s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</td>';}).join('')+'</tr>';});
+     el.innerHTML=h+'</tbody></table>';
+   }
+ },__POS__);
+ poll('sum','/api/live/summary',function(){},__SUM__);
+ poll('hp','/api/live/health',function(d){
+   if(d&&d.price_age_s!=null&&d.price_age_s>__STALE__){setLive('on',{price_state:'stale',price_age_s:d.price_age_s,
+     run_age_s:d.last_run_age_s,heads_age_s:null});}
+ },__HEAL__);
+})();
+</script>""".replace("__POS__", str(pos)).replace("__SUM__", str(summ)).replace("__HEAL__", str(heal))             .replace("__MULT__", str(mult)).replace("__STALE__", str(stale))
+
+
 def card(k: str, v: str, sub: str = "") -> str:
     return f'<div class="card"><div class="k">{esc(k)}</div><div class="v">{v}</div>' + (f'<div class="small mut">{sub}</div>' if sub else "") + "</div>"
 
@@ -181,7 +313,7 @@ def render_any(obj: Any, depth: int = 0) -> str:
 def page(title: str, body: str, active: str = "/", *, brand: str = "Trading Bot", extra_head: str = "", token_qs: str = "") -> str:
     nav = "".join(f'<a href="{href}{token_qs}" class="{"on" if href == active else ""}">{esc(label)}</a>' for href, label in NAV)
     return f"""<!doctype html><html lang="tr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{esc(title)} · {esc(brand)}</title><style>{CSS}</style>{extra_head}</head><body>
+<title>{esc(title)} · {esc(brand)}</title><style>{CSS}{CSS_EXTRA}</style>{extra_head}</head><body>
 <header><span class="brand">📈 {esc(brand)}</span><nav>{nav}</nav></header>
 <main><h1>{esc(title)}</h1>{body}</main>
 <footer>salt-okunur panel · PAPER · yatırım tavsiyesi değildir · <span id="sse" class="mut">canlı: bağlanıyor…</span></footer>

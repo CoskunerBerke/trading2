@@ -30,6 +30,14 @@ class DashboardConfig:
     heartbeat_max_age_s: float = 900.0     # /health/ready eşiği
     sse_heartbeat_s: float = 15.0
     title: str = "Trading Bot"
+    # --- canli yenileme (tarayici polling; borsaya DOGRUDAN baglanti YOK) ---
+    poll_positions_s: int = 7
+    poll_portfolio_s: int = 20
+    poll_health_s: int = 12
+    stale_price_s: int = 90
+    stale_run_s: int = 2400
+    background_backoff_mult: int = 4
+    timezone_label: str = "UTC"
 
     def validate(self) -> None:
         if not is_loopback(self.host) and not self.auth_token and not self.allow_insecure_public:
@@ -40,6 +48,11 @@ class DashboardConfig:
             raise ConfigError(f"geçersiz port: {self.port}")
         if int(self.max_bars) < 50:
             raise ConfigError("max_bars en az 50 olmalı")
+        for _f in ("poll_positions_s", "poll_portfolio_s", "poll_health_s"):
+            if int(getattr(self, _f)) < 2:
+                raise ConfigError(f"{_f} en az 2 saniye olmalı (istek fırtınası koruması)")
+        if int(self.stale_price_s) < int(self.poll_positions_s):
+            raise ConfigError("stale_price_s, poll_positions_s'ten küçük olamaz")
 
     def to_dict(self) -> dict:
         d = asdict(self)

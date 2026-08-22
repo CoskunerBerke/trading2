@@ -18,9 +18,11 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Res
 from ..core import ConfigError, utc_now
 from .candles import CandleSource, build_candle_payload
 from .config import DashboardConfig
+from ..pnl import position_view, realized_net
 from .state import STATE_FILES, StateReader
-from .templates import (age_text, badge, card, chart_block, esc, fmt, health_badge, ks_badge, kv_table, page, pct, pnl_cell,
-                        render_any, table, verdict_badge)
+from .templates import (age_text, badge, card, chart_block, chief_block, esc, fmt, health_badge,
+                        ks_badge, kv_table, live_bar, live_script, money_html, page, pct,
+                        pnl_cell, render_any, table, verdict_badge)
 
 log = logging.getLogger(__name__)
 _PLOTLY_CACHE: dict[str, bytes] = {}
@@ -80,56 +82,98 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
         return Response(js, media_type="application/javascript", headers={"Cache-Control": "public, max-age=86400"})
 
     # ------------------------------------------------------------------ sayfalar
+    def _view():
+        return state.view_model(stale_price_s=cfg.stale_price_s, stale_run_s=cfg.stale_run_s,
+                                tz_label=cfg.timezone_label)
+
     @app.get("/", response_class=HTMLResponse)
     def overview():
         ov = state.overview()
-        cards = [
+        vm = _view()
+        pv, cv, fr = vm["portfolio"], vm["chief"], vm["freshness"]
+        body = live_bar(fr)
+        # --- TUTARSIZLIK: sessizce yanlis sayi GOSTERME ---
+        for issue in vm["inconsistencies"]:
+            body += f'<div class="card warn-box">⚠ Veri tutarsızlığı tespit edildi — {esc(issue["message"])}</div>'
+        # --- genel kar/zarar ozeti (en ustte) ---
+        body += "<h2>Kâr / Zarar özeti</h2><div class=\"grid\">" + "".join(
+            card(k, money_html(v), s) for k, v, s in vm["cards"]) + "</div>"
+        body += f'<div class="grid">{"".join([
             card("Futures özkaynak", fmt(ov["equity_futures"], 2) + " USDT"),
             card("Spot özkaynak", fmt(ov["equity_spot"], 2) + " USDT"),
-            card("Açık pozisyon", str(len(ov["open_positions"]))),
+            card("Açık pozisyon", str(pv.open_total), f"LONG {pv.open_long} · SHORT {pv.open_short}"),
             card("Kill switch", ks_badge(ov["killswitch"])),
             card("Mod", badge(ov["mode"], "info" if ov["mode"] in ("PAPER", "OBSERVE", "TESTNET") else "bad")),
             card("Sağlık", health_badge(ov["health"]), esc(ov["health_summary"])),
-            card("Son tur", age_text(ov["last_run_age_s"]) + " önce", "kalp atışı " + age_text(ov["heartbeat_age_s"])),
-            card("LLM bugün", fmt(ov["llm_spent_usd_today"], 3) + " $"),
-        ]
-        chief = ov.get("chief") or {}
-        body = f'<div class="grid">{"".join(cards)}</div>'
-        if chief:
-            body += "<h2>Baş yönetici</h2>" + kv_table({k: v for k, v in chief.items() if k in ("market_risk_mode", "risk_mode", "headline", "breadth", "exposure", "generated_at")})
-            if chief.get("rules"):
-                body += "<ul>" + "".join(f"<li>{esc(r)}</li>" for r in chief["rules"][:8]) + "</ul>"
-        body += "<h2>Açık pozisyonlar</h2>" + _positions_table(ov["open_positions"])
-        body += "<h2>Coin head'ler</h2>" + _heads_table(ov["top_heads"])
+            card("Son strateji turu", age_text(ov["last_run_age_s"]) + " önce", "kalp atışı " + age_text(ov["heartbeat_age_s"])),
+            card("LLM bugün", (fmt(ov["llm_spent_usd_today"], 3) + " $") if ov["llm_spent_usd_today"] is not None else "Veri yok"),
+        ])}</div>'
+        body += chief_block(cv)
+        body += '<h2>Açık pozisyonlar</h2><div id="postbl">' + _positions_table(vm) + "</div>"
+        body += "<h2>Coin head'ler</h2>" + _heads_table(ov["top_heads"], state)
         if not ov["top_heads"]:
             ag = state.get("agents") or {}
             briefs = ag.get("briefs") or []
             if briefs:
                 body += "<h3>Eski ajan brifingleri</h3>" + table(["Coin", "Karar", "Kanaat", "Fiyat", "Manşet"],
                                                                  [[f'<a href="/coin/{esc(b.get("symbol", "").split("/")[0])}">{esc(b.get("symbol"))}</a>', verdict_badge(b.get("verdict")), fmt(b.get("conviction"), 0), fmt(b.get("price")), esc(b.get("headline"))] for b in briefs])
-        return _page("Genel Bakış", body, "/")
+        return _page("Genel Bakış", body, "/", extra_head=live_script(cfg))
 
-    def _positions_table(pos: list[dict]) -> str:
+    def _positions_table(vm) -> str:
+        """`vm` ya hazır görünüm modeli ya da ham pozisyon listesidir (coin/futures sayfaları)."""
+        if isinstance(vm, list):
+            from ..dashboard.views import build as _build
+            vm = _build(vm, [], None, marks=state.marks(), fees=state.fee_schedule())
         rows = []
-        for p in pos:
-            sym = str(p.get("symbol", ""))
-            rows.append([f'<a href="/coin/{esc(sym.split("/")[0])}">{esc(sym)}</a>', verdict_badge(p.get("side")), fmt(p.get("qty")), esc(p.get("amount_type")),
-                         fmt(p.get("entry_avg")), fmt(p.get("last_price")), f"{p.get('leverage', 1)}x", fmt(p.get("isolated_margin"), 2), fmt(p.get("notional"), 2),
-                         fmt(p.get("stop")), fmt(p.get("liquidation_price")), fmt(p.get("fees_paid"), 4), fmt(p.get("funding_net"), 4), pnl_cell(p.get("unrealized", p.get("realized_pnl", p.get("realized")))), esc(p.get("opened_at"))])
-        return table(["Sembol", "Yön", "Miktar", "Tip", "Giriş", "Son", "Kald.", "Marj", "Notional", "Stop", "Liq", "Ücret", "Funding", "PnL", "Açılış"],
-                     rows, num_cols={2, 4, 5, 7, 8, 9, 10, 11, 12, 13}, empty="açık pozisyon yok")
+        for v, r in zip(vm["portfolio"].positions, vm["rows"]):
+            cells = [f'<a href="/coin/{esc(v.symbol.split("/")[0])}">{esc(v.symbol)}</a>',
+                     badge(r[1], "info"), verdict_badge(r[2])] + [esc(x) for x in r[3:16]]
+            cells.append(money_html(v.net_unrealized))
+            cells.append(money_html(v.net_unrealized_pct, pct=True))
+            cells += [esc(r[18]), esc(r[19])]
+            rows.append(cells)
+        note = ('<p class="mut small">Yüzde paydası: FUTURES → kullanılan başlangıç teminatı, '
+                'SPOT → yatırılan tutar. «Coin adedi» USDT değil, coin/kontrat adedidir.</p>')
+        return table(vm["columns"], rows, num_cols=set(range(3, 18)), empty="açık pozisyon yok") + note
 
-    def _heads_table(heads: list[dict]) -> str:
+    def _heads_table(heads: list[dict], st) -> str:
+        """`Net E[r]` → `Beklenen Net Getiri`: bu bir MODEL TAHMİNİDİR, gerçekleşen PnL DEĞİLDİR."""
+        open_by = {str(p.get("symbol") or ""): p for p in st.futures_positions()}
+        last_closed: dict[str, dict] = {}
+        for tr in st.trades():
+            s = str(tr.get("symbol") or "")
+            if s not in last_closed:
+                last_closed[s] = tr
         rows = []
         for h in heads:
             sym = str(h.get("symbol", ""))
             fp, sp = h.get("futures_plan") or {}, h.get("spot_plan") or {}
-            rows.append([f'<a href="/coin/{esc(sym.split("/")[0])}">{esc(sym)}</a>', verdict_badge(h.get("verdict")), esc(h.get("direction") or "-"),
-                         fmt(float(h.get("confidence_calibrated") or 0) * 100, 0) + "%", fmt(float(h.get("p_win") or 0) * 100, 0) + "%", pct(h.get("expected_return_net")),
-                         fmt(h.get("expected_r"), 2), esc(h.get("regime")), "✅" if sp.get("valid") else "—", "✅" if fp.get("valid") else "—",
+            pos, closed = open_by.get(sym), last_closed.get(sym)
+            if pos is not None:
+                status, tid = "AÇIK", str(pos.get("id") or "")
+                pnl_html = money_html(position_view(pos, mark_price=pos.get("last_price"),
+                                                    fees=st.fee_schedule()).net_unrealized)
+            elif closed is not None:
+                status, tid = "KAPANDI", str(closed.get("id") or "")
+                pnl_html = money_html(realized_net(closed))
+            elif str(h.get("verdict") or "") in ("SPOT_LONG", "FUTURES_LONG", "FUTURES_SHORT"):
+                status, tid, pnl_html = "ADAY", "—", "<td class=num>—</td>"
+            else:
+                status, tid, pnl_html = ("REDDEDİLDİ" if h.get("vetoes") else "İŞLEM YOK"), "—", "<td class=num>—</td>"
+            rows.append([f'<a href="/coin/{esc(sym.split("/")[0])}">{esc(sym)}</a>', verdict_badge(h.get("verdict")),
+                         badge(status, "ok" if status == "AÇIK" else ("bad" if status == "REDDEDİLDİ" else "info")),
+                         esc(h.get("direction") or "-"),
+                         fmt(float(h.get("confidence_calibrated") or 0) * 100, 0) + "%", fmt(float(h.get("p_win") or 0) * 100, 0) + "%",
+                         pct(h.get("expected_return_net")), fmt(h.get("expected_r"), 2), esc(h.get("regime")),
+                         "✅" if sp.get("valid") else "—", "✅" if fp.get("valid") else "—",
+                         pnl_html, esc(tid), esc(h.get("generated_at") or ""),
                          esc(h.get("no_trade_reason") or ""), esc(", ".join(h.get("vetoes") or [])[:80])])
-        return table(["Sembol", "Karar", "Yön", "Güven", "P(kazanç)", "Net E[r]", "E[R]", "Rejim", "Spot", "Fut", "Gerekçe", "Veto"], rows,
-                     num_cols={3, 4, 5, 6}, empty="coin head kararı yok (coin_heads.json)")
+        note = ('<p class="mut small">«Beklenen Net Getiri» işlem öncesi model tahminidir; gerçekleşen sonuç '
+                'değildir. «Net K/Z» sütunu açık pozisyonda anlık, kapanmışta SON KAPANAN işlemin net '
+                'sonucudur; işlem açılmamış adaylarda «—» gösterilir.</p>')
+        return table(["Sembol", "Karar", "Durum", "Yön", "Güven", "P(kazanç)", "Beklenen Net Getiri", "E[R]",
+                      "Rejim", "Spot", "Fut", "Net K/Z", "İşlem ID", "Karar zamanı", "Gerekçe", "Veto"], rows,
+                     num_cols={4, 5, 6, 7, 11}, empty="coin head kararı yok (coin_heads.json)") + note
 
     @app.get("/scanner", response_class=HTMLResponse)
     def scanner():
@@ -426,6 +470,36 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
         if d is None:
             raise HTTPException(404, "kanıt yok")
         return JSONResponse(d)
+
+    @app.get("/api/live/positions")
+    def api_live_positions():
+        """Açık pozisyon + PnL — tarayıcı bunu kısa aralıkla çeker. Binance'a DOĞRUDAN gidilmez;
+        veri worker'ın yazdığı defterden okunur, bu yüzden tarayıcı isteği yeni API çağrısı ÜRETMEZ."""
+        vm = _view()
+        pv = vm["portfolio"]
+        return {"generated_at": utc_now().isoformat(timespec="seconds"),
+                "freshness": vm["freshness"], "inconsistencies": vm["inconsistencies"],
+                "open_total": pv.open_total, "open_long": pv.open_long, "open_short": pv.open_short,
+                "positions": [p.to_dict() for p in pv.positions],
+                "rows": vm["rows"], "columns": vm["columns"]}
+
+    @app.get("/api/live/summary")
+    def api_live_summary():
+        """Bakiye/teminat/açık risk + K/Z özeti (daha uzun aralıkla çekilir)."""
+        vm = _view()
+        pv = vm["portfolio"]
+        return {"generated_at": utc_now().isoformat(timespec="seconds"),
+                "freshness": vm["freshness"], "chief": vm["chief"].to_dict(),
+                "cards": [{"title": k, "value": v, "sub": s} for k, v, s in vm["cards"]],
+                "portfolio": {k: val for k, val in pv.to_dict().items() if k != "positions"}}
+
+    @app.get("/api/live/health")
+    def api_live_health():
+        ov = state.overview()
+        return {"generated_at": utc_now().isoformat(timespec="seconds"),
+                "health": ov["health"], "summary": ov["health_summary"],
+                "heartbeat_age_s": ov["heartbeat_age_s"], "last_run_age_s": ov["last_run_age_s"],
+                "price_age_s": ov["price_age_s"], "killswitch": ov["killswitch"], "mode": ov["mode"]}
 
     @app.get("/api/overview")
     def api_overview():

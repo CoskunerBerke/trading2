@@ -31,6 +31,7 @@ from .learning import features_from_brief
 from .market.quality import DataQualityConfig, DataQualityGate
 from .risk import (KillSwitch, ModeState, RiskEngine, build_state, enforces_position_cap, resolve_profile,
                    warn_if_below_recommended)
+from .risk.leverage import LeverageConfig, LeverageContext, select_leverage
 
 log = logging.getLogger(__name__)
 
@@ -59,8 +60,8 @@ def _as_multiplier(value) -> float:
 _FUNNEL_KEYS = ("actionable", "ranked", "chief_blocked", "hard_safety_blocked", "no_trigger",
                 "trigger_fired", "positive_point_edge", "positive_conservative_edge",
                 "negative_edge_blocked", "research_small", "duplicate_blocked",
-                "research_policy_blocked", "size_multiplier_zero", "risk_capacity_blocked",
-                "capacity_approved", "exchange_rejected", "opened")
+                "research_policy_blocked", "size_multiplier_zero", "leverage_gate_blocked",
+                "risk_capacity_blocked", "capacity_approved", "exchange_rejected", "opened")
 
 _SOFT_PENALTY_R = {"LOW_CONSENSUS": 0.06, "LOW_CONFIDENCE": 0.06, "HIGH_DISSENT": 0.05,
                    "RR_BELOW_PREFERRED": 0.05, "PATTERN_WEAK": 0.05, "SPREAD_WIDE": 0.04,
@@ -90,6 +91,28 @@ class TradingEngineV3(TradingEngine):
         self.profile = resolve_profile(v3.risk_profiles.profile, v3.risk_profiles.overrides, i_understand=v3.risk_profiles.i_understand)
         self.killswitch = KillSwitch.load(st / "killswitch.json")
         self.risk = RiskEngine(self.profile, self.killswitch, v3.risk_profiles.clusters or None)
+        # --- dinamik futures kaldıracı (2x–5x). VARSAYILAN KAPALI; yalnız PAPER'da açılabilir.
+        _lv = v3.leverage
+        self.leverage_cfg = LeverageConfig(
+            enabled=bool(_lv.enabled) and (cfg.mode == "PAPER" or not _lv.paper_only),
+            min_leverage=int(_lv.min_leverage),
+            max_leverage=min(int(_lv.max_leverage), int(self.profile.futures_max_leverage)),
+            min_confidence=_lv.min_confidence, max_stop_atr_mult=_lv.max_stop_atr_mult,
+            min_stop_atr_mult=_lv.min_stop_atr_mult, min_depth_usdt=_lv.min_depth_usdt,
+            max_spread_pct=_lv.max_spread_pct, min_liq_buffer_mult=_lv.min_liq_buffer_mult,
+            conf_3x=_lv.conf_3x, conf_4x=_lv.conf_4x, conf_5x=_lv.conf_5x,
+            edge_3x=_lv.edge_3x, edge_4x=_lv.edge_4x, edge_5x=_lv.edge_5x,
+            max_atr_pct_3x=_lv.max_atr_pct_3x, max_atr_pct_4x=_lv.max_atr_pct_4x, max_atr_pct_5x=_lv.max_atr_pct_5x,
+            min_depth_4x=_lv.min_depth_4x, min_depth_5x=_lv.min_depth_5x,
+            max_spread_4x=_lv.max_spread_4x, max_spread_5x=_lv.max_spread_5x,
+            max_funding_4x=_lv.max_funding_4x, max_funding_5x=_lv.max_funding_5x,
+            max_open_risk_frac_4x=_lv.max_open_risk_frac_4x, max_open_risk_frac_5x=_lv.max_open_risk_frac_5x,
+            max_same_dir_4x=_lv.max_same_dir_4x, max_same_dir_5x=_lv.max_same_dir_5x,
+            max_corr_5x=_lv.max_corr_5x, liq_buffer_4x=_lv.liq_buffer_4x, liq_buffer_5x=_lv.liq_buffer_5x,
+            require_regime_alignment_5x=_lv.require_regime_alignment_5x)
+        # --- PAPER bildirimleri (Telegram). KAPALIYKEN hicbir ag cagrisi yapilmaz. ---
+        from .notify import TradeNotifier
+        self.notifier = TradeNotifier.from_config(v3.telegram, st)
         self.mode_state = ModeState(st / "mode.json")
         if self.mode_state.mode.value != cfg.mode:
             log.warning("mode.json (%s) ile config mode (%s) farklı — mode.json esas (geçişler yalnız manuel)", self.mode_state.mode.value, cfg.mode)
@@ -568,6 +591,7 @@ class TradingEngineV3(TradingEngine):
         write_watermark(st, now, self.run_id or None)
         self.spot2.tick(marks_f, now)
         self.spot2.save(st / "spot_ledger.json")
+        self._notify_closed(records, now)
         lessons = []
         for rec in records:
             legacy = rec.to_legacy_dict()
@@ -639,6 +663,7 @@ class TradingEngineV3(TradingEngine):
                   "symbols": len(symbols), "decisions": len(decisions), "opened": len(opened), "closed": len(records), "kill_trips": trips,
                   "mode": self.mode_state.mode.value, "profile": self.profile.name}
         atomic_write_json(st / "health.json", health)
+        self._notify_health(str(health.get("state") or "UNKNOWN"), str(health.get("summary") or ""), now)
         self._persist_funnel(now, len(records))
         self.snap_telemetry.save()          # snapshot/sema sayaclari dashboard ve /metrics icin
         summary = {"at": iso(now), "run_id": self.run_id, "symbols": symbols,
@@ -685,6 +710,10 @@ class TradingEngineV3(TradingEngine):
         bmap = {b.symbol: b for b in briefs}
         # kritik bolge basinda durumu YETKILI defterlerden yenile (caginin state'i bayat olabilir: retry/eszamanli yol)
         state = self._portfolio_state({k: float(v.last) for k, v in marks.items()})
+        # RESTART BACKLOG: mevcut acik pozisyonlar icin SAHTE "yeni islem acildi" bildirimi YOK.
+        # (Bir kez calisir; bu pozisyonlar KAPANDIGINDA gercek kapanis bildirimi yine gonderilir.)
+        if getattr(self, "notifier", None):
+            self.notifier.bootstrap_open_positions([p.to_dict() for p in self.ledger2.positions.values()])
         entries_allowed = True
         funnel = self._funnel = {k: 0 for k in _FUNNEL_KEYS}
         funnel["actionable"] = sum(1 for d in decisions.values() if d.is_actionable)
@@ -837,10 +866,26 @@ class TradingEngineV3(TradingEngine):
             entry["final_risk_usdt"] = final_risk_usdt
             entry["final_risk_pct"] = final_risk_pct
             entry["execution_entry"] = round(exec_entry, 10)
+            # ---------------------------------------------------------------- 6b) DINAMIK KALDIRAC (2x-5x)
+            # Kaldirac notional'i DEGISTIRMEZ (notional risk butcesinden geldi); yalnizca
+            # `initial_margin = notional / leverage` degerini belirler. Zayif sinyal `min_leverage`
+            # ile ACILMAZ: taban kapilari gecilemezse aday NO_TRADE olur.
+            lev_dec = None
+            plan_leverage = int(plan.size.leverage or 1)
+            if market == "USDM_PERP" and self.leverage_cfg.enabled:
+                lev_dec = select_leverage(self._leverage_context(sym, d, plan, exec_entry, state, chief, _opp),
+                                          self.leverage_cfg)
+                entry["leverage_decision"] = lev_dec.to_dict()
+                if not lev_dec.tradeable:
+                    funnel["leverage_gate_blocked"] += 1
+                    entry["block_code"] = "LEVERAGE_GATE_BLOCKED"
+                    continue
+                plan_leverage = lev_dec.leverage
+            entry["leverage"] = plan_leverage
             # ---------------------------------------------------------------- 7) YETKILI RISK KAPASITESI (NIHAI degerlerle)
             plan_dict = {"symbol": sym, "market_type": market, "direction": d.direction, "entry": exec_entry, "stop": plan.stop, "targets": plan.targets,
-                         "notional": final_notional, "margin": round(final_notional / max(int(plan.size.leverage or 1), 1), 6),
-                         "leverage": plan.size.leverage, "amount_type": "NOTIONAL", "expected_r": plan.expected_r,
+                         "notional": final_notional, "margin": round(final_notional / max(plan_leverage, 1), 6),
+                         "leverage": plan_leverage, "amount_type": "NOTIONAL", "expected_r": plan.expected_r,
                          "spread_pct": feats.get("spread_pct"),
                          "min_notional": float(self.filters.get(sym, MarketType.SPOT if market == "SPOT" else MarketType.USDM_PERP).min_notional)}
             rd = self.risk.evaluate(plan_dict, state, {"now_utc": now})
@@ -872,7 +917,17 @@ class TradingEngineV3(TradingEngine):
                 pos = self.ledger2.open(sym, d.direction, b.price, SizeSpec(Decimal(str(notional)), AmountType.NOTIONAL, int(rd.adjusted_leverage or 1)),
                                         stop=plan.stop, targets=plan.targets, filters=self.filters.get(sym, MarketType.USDM_PERP), setup_type=plan.entry_type,
                                         trigger_text=plan.entry_trigger, features=feats, tick=marks.get(sym), now=now,
-                                        meta={"coin_head_id": d.coin_head_id, "run_id": self.run_id, "decision_snapshot": d.to_dict(include_reports=False)})
+                                        meta={"coin_head_id": d.coin_head_id, "run_id": self.run_id,
+                                              "decision_snapshot": d.to_dict(include_reports=False),
+                                              # KALDIRAC SNAPSHOT'I: pozisyon omru boyunca DEGISMEZ (restart dahil).
+                                              "leverage_decision": (lev_dec.to_dict() if lev_dec else
+                                                                    {"leverage": plan_leverage, "reasons": ["STATIC_PLAN_LEVERAGE"],
+                                                                     "blocked_higher": ["DYNAMIC_LEVERAGE_DISABLED"]}),
+                                              "risk_snapshot": {"final_notional": final_notional,
+                                                                "initial_margin": round(final_notional / max(plan_leverage, 1), 6),
+                                                                "stop_frac": round(_stop_frac, 8),
+                                                                "max_loss_at_stop_usdt": final_risk_usdt,
+                                                                "execution_entry": round(exec_entry, 10)}})
                 if pos is None:
                     entry["exec_reject"] = self.ledger2.last_reject_reason
                     entry["block_code"] = "EXCHANGE_REJECTED"
@@ -900,6 +955,7 @@ class TradingEngineV3(TradingEngine):
                                                "source": ("applied" if _pol is res else "counterfactual"),
                                                "symbol": sym, "side": d.direction})
             funnel["opened"] += 1
+            self._notify_opened(sym, market, plan, notional, plan_leverage, final_risk_usdt, trade_id, now)
             self._seen_signals = (self._seen_signals + [_sig])[-5000:]
             # TETIK KAYDI ACILIS ANINDA islenir: tetiklenip acilmamis (kapasite/emir reddi) bir aday
             # barini YAKMAZ, kapasite serbest kaldiginda yeniden degerlendirilebilir. Ayni bar/taraf/
@@ -921,6 +977,95 @@ class TradingEngineV3(TradingEngine):
         self.trig_path.parent.mkdir(parents=True, exist_ok=True)
         atomic_write_json(self.trig_path, self.triggers, indent=None)
         return opened, risk_log
+
+    # ------------------------------------------------------------------ bildirimler
+    def _notify_opened(self, sym, market, plan, notional, leverage, max_loss, trade_id, now) -> None:
+        """Acilis bildirimi. Hata trade dongusune SIZMAZ (`TradeNotifier.notify` yutar)."""
+        if not getattr(self, "notifier", None) or not self.notifier.enabled:
+            return
+        from .notify import build_opened
+        from .pnl import position_view
+        pos = self.ledger2.positions.get(sym)
+        raw = pos.to_dict() if pos is not None else {
+            "id": trade_id, "symbol": sym, "side": "LONG", "qty": 0, "entry_avg": plan.entry,
+            "leverage": leverage, "notional": notional, "stop": plan.stop, "targets": plan.targets,
+            "opened_at": iso(now), "market_type": "SPOT" if market == "SPOT" else "USDM_PERP"}
+        view = position_view(raw, mark_price=raw.get("entry_avg"), fees=self.ledger2.fees,
+                             market="SPOT" if market == "SPOT" else "FUTURES")
+        self.notifier.notify(build_opened(view, max_loss_at_stop=max_loss,
+                                          reason=str(plan.entry_trigger or "")[:160], created_at=iso(now)))
+
+    def _notify_closed(self, records, now) -> None:
+        """Kapanis bildirimleri. Restart'ta bastirilan ACILISLAR bunu ENGELLEMEZ: eski pozisyon
+        kapandiginda GERCEK kapanis bildirimi gonderilir."""
+        if not getattr(self, "notifier", None) or not self.notifier.enabled:
+            return
+        from .notify import build_closed
+        for rec in records or []:
+            d = rec.to_dict() if hasattr(rec, "to_dict") else dict(rec)
+            self.notifier.notify(build_closed(
+                d, net_pnl=d.get("net_pnl", d.get("realized_pnl", d.get("pnl"))),
+                gross_pnl=d.get("gross_pnl"), fees=d.get("fees"), funding=d.get("funding"),
+                margin=d.get("isolated_margin", d.get("margin")), created_at=iso(now)))
+
+    def _notify_health(self, state_name: str, summary: str, now) -> None:
+        if not getattr(self, "notifier", None) or not self.notifier.enabled:
+            return
+        from .notify import build_health
+        prev = getattr(self, "_last_health_state", None)
+        if prev == state_name:
+            return
+        self._last_health_state = state_name
+        bad = str(state_name).upper() not in ("HEALTHY", "OK")
+        if prev is None and not bad:
+            return                                   # ilk turda "iyilesti" spam'i yok
+        self.notifier.notify(build_health(state_name, summary=summary, recovered=not bad,
+                                          ref=iso(now)[:16], created_at=iso(now)))
+
+    def _leverage_context(self, sym, d, plan, exec_entry: float, state, chief, opp: dict) -> LeverageContext:
+        """Kaldıraç girdilerini TEK yerde topla. Bilinmeyen alan `None` kalır → yükseltme verilmez."""
+        def _metric(agent: str, key: str):
+            for r in d.specialist_reports:
+                if r.agent_name == agent and r.usable:
+                    v = (r.metrics or {}).get(key)
+                    return None if v is None else float(v)
+            return None
+
+        atr_pct = None
+        fr = (self.runner.last_frames.get(sym) or {}).get("4h")
+        if fr is not None and len(fr) and "atr_pct" in fr:
+            try:
+                atr_pct = float(fr["atr_pct"].iloc[-1])
+            except (TypeError, ValueError, IndexError):
+                atr_pct = None
+        stop_frac = abs(exec_entry - plan.stop) / exec_entry if (exec_entry and plan.stop) else None
+        eq = max(state.equity if self.profile.size_on_live_equity else state.starting_equity, 1e-9)
+        budget = eq * self.profile.max_total_open_risk_pct / 100.0
+        same_dir = sum(1 for o in state.open_positions if o.side == d.direction)
+        mode = str(getattr(chief, "market_risk_mode", "") or "")
+        aligned = None
+        if mode in ("RISK-ON", "RISK-OFF"):
+            aligned = (mode == "RISK-ON" and d.direction == "LONG") or (mode == "RISK-OFF" and d.direction == "SHORT")
+        elif mode:
+            aligned = False                       # NÖTR: 5x için hizalanma sayılmaz
+        funding = _metric("derivatives", "funding_pct")
+        if funding is not None:                   # aleyhte funding pozitif olsun
+            funding = funding if d.direction == "LONG" else -funding
+        issues = (d.data_freshness or {}).get("issues") or []
+        age = (d.data_freshness or {}).get("ticker_age_s")
+        return LeverageContext(
+            stop_frac=stop_frac, atr_pct=atr_pct,
+            confidence=float(d.confidence_calibrated) if d.confidence_calibrated is not None else None,
+            conservative_net_edge_r=(opp or {}).get("conservative_net_edge_r"),
+            depth_usdt=_metric("orderbook_liquidity", "depth_top20_usdt"),
+            spread_pct=_metric("orderbook_liquidity", "spread_pct"),
+            funding_pct=funding, regime_aligned=aligned,
+            open_risk_frac=(state.total_open_risk_usdt / budget) if budget > 0 else None,
+            same_direction_open=same_dir,
+            portfolio_corr=_metric("correlation_beta", "corr_btc_120b"),
+            data_stale=bool(age is not None and age > 300) or bool(issues),
+            data_conflict=bool(d.vetoes),
+            profile_max_leverage=int(self.profile.futures_max_leverage))
 
     def _execution_entry(self, symbol: str, market: str, direction: str, ref_price: float,
                          tick: TickData | None = None) -> float:

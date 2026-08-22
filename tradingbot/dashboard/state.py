@@ -224,6 +224,15 @@ class StateReader:
     def heads_age_s(self) -> float | None:
         return _age((self.get("coin_heads") or {}).get("generated_at"))
 
+    def risk_age_s(self) -> float | None:
+        """`risk.json` anlık görüntüsünün yaşı (sn). Fiyat yaşından AYRI kavramdır.
+
+        `risk.json` STRATEJİ TURUNDA yazılır (`engine_v3._persist_risk_state` → kök `generated_at`),
+        fiyatlar ise her tickte tazelenir; ikisi dakikalarca ayrışabilir. Damga yoksa `None` döner
+        ve panel «Veri yaşı bilinmiyor» yazar — taze GİBİ gösterilmez.
+        """
+        return _age((self.get("risk") or {}).get("generated_at"))
+
     def marks(self) -> dict[str, Any]:
         """Sembol → worker'ın kaydettiği son fiyat. Panel ASLA borsaya doğrudan bağlanmaz."""
         out: dict[str, Any] = {}
@@ -338,7 +347,10 @@ class StateReader:
                      today=utc_now().date().isoformat(), max_drawdown_pct=self.max_drawdown_pct(),
                      freshness=fresh,
                      futures_equity=self.futures_equity(), spot_equity=self.spot_equity(),
-                     risk_state=self.get("risk"), as_of=utc_now().isoformat(timespec="seconds"))
+                     risk_state=self.get("risk"), as_of=utc_now().isoformat(timespec="seconds"),
+                     # Risk anlık görüntüsü de strateji turunda yazılır → AYNI tazelik eşiği
+                     # (`stale_run_s`) kullanılır; yeni/keyfî bir eşik UYDURULMAZ.
+                     risk_age_s=self.risk_age_s(), risk_stale_s=stale_run_s)
 
 
 def _evidence(self, base: str) -> dict | None:

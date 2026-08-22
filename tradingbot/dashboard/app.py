@@ -11,6 +11,7 @@ import logging
 import secrets
 import time
 from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response, StreamingResponse
@@ -20,14 +21,27 @@ from .candles import CandleSource, build_candle_payload
 from .config import DashboardConfig
 from ..pnl import position_view, realized_net
 from .state import STATE_FILES, StateReader
-from .templates import (age_text, badge, card, card_value, chart_block, chief_block, esc, fmt,
-                        fmt_utc, health_badge, ks_badge, kv_table, lessons_table, live_bar,
-                        live_script, money_html, page, pct, pnl_cell, render_any, sample_banner,
-                        table, verdict_badge, weight_table)
+from .templates import (POS_TABLE_CLS, age_text, badge, card, card_value, chart_block, chief_block,
+                        esc, fmt, fmt_utc, health_badge, ks_badge, kv_table, lessons_table,
+                        live_bar, live_script, money_html, page, pct, pnl_cell, render_any,
+                        sample_banner, table, verdict_badge, weight_table)
 
 log = logging.getLogger(__name__)
 _PLOTLY_CACHE: dict[str, bytes] = {}
 _PUBLIC_PATHS = ("/health/live",)
+
+
+def _int_or_none(x: Any) -> int | None:
+    """Sayaç alanı → int; alan yok/bozuksa `None` («Veri yok»), sessiz `0` DEĞİL.
+
+    `int(x or 0)` kullanılsaydı «alan hiç yok» ile «gerçekten 0 işlem» ayırt edilemezdi.
+    """
+    if x is None or isinstance(x, bool):
+        return None
+    try:
+        return int(x)
+    except (TypeError, ValueError):
+        return None
 
 
 def _plotly_js() -> bytes | None:
@@ -129,7 +143,9 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
             vm = _build(vm, [], None, marks=state.marks(), fees=state.fee_schedule())
         rows = []
         for v, r in zip(vm["portfolio"].positions, vm["rows"]):
-            cells = [f'<a href="/coin/{esc(v.symbol.split("/")[0])}">{esc(v.symbol)}</a>',
+            # Sembol sütunu sabit genişliktedir ve uzun sembolde ellipsis'lenir → tam değer
+            # `title` içinde kalır (polling JS'i de ilk üç sütuna aynı `title`'ı koyar).
+            cells = [f'<a href="/coin/{esc(v.symbol.split("/")[0])}" title="{esc(v.symbol)}">{esc(v.symbol)}</a>',
                      badge(r[1], "info"), verdict_badge(r[2])] + [esc(x) for x in r[3:16]]
             cells.append(money_html(v.net_unrealized))
             cells.append(money_html(v.net_unrealized_pct, pct=True))
@@ -138,7 +154,7 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
         note = ('<p class="mut small">Yüzde paydası: FUTURES → kullanılan başlangıç teminatı, '
                 'SPOT → yatırılan tutar. «Coin adedi» USDT değil, coin/kontrat adedidir.</p>')
         return table(vm["columns"], rows, num_cols=set(range(3, 18)), empty="açık pozisyon yok",
-                     cls="pos") + note
+                     cls=POS_TABLE_CLS) + note        # polling JS'i AYNI sabiti kullanır
 
     def _heads_table(heads: list[dict], st) -> str:
         """`Net E[r]` → `Beklenen Net Getiri`: bu bir MODEL TAHMİNİDİR, gerçekleşen PnL DEĞİLDİR."""
@@ -319,25 +335,39 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
             return _page("Öğrenme", '<div class="card mut">learning.json yok</div>', "/learning")
         pv = _view()["portfolio"]
         lessons = [x for x in (ln.get("lessons") or []) if isinstance(x, dict)]
-        wins = sum(1 for x in lessons if x.get("won") is True)
-        losses = sum(1 for x in lessons if x.get("won") is False)
-        n = int(ln.get("n_trades") or len(lessons) or 0)
+        # ZAMAN PENCERESİ — üst kartların TAMAMI «tüm zaman» sayaçlarından okunur.
+        # `LearningState` (learn: `learning.py`) sözleşmesi: `n_trades` her kapanışta artar,
+        # `n_wins` yalnız `pnl > 0` olduğunda artar, `lessons` ise `[-200:]` ile BUDANIR.
+        # Kazanan/kaybeden daha önce `lessons`'tan sayılıyordu → 200. işlemden sonra "toplam
+        # işlem tüm zaman, kazanan son 200" gibi kalıcı bir tutarsızlık oluşuyordu (commit'in
+        # kendi fixture'ında n_trades=5 / n_wins=2 iken panel 1/1 · %50 gösteriyordu).
+        n = _int_or_none(ln.get("n_trades"))
+        n_wins = _int_or_none(ln.get("n_wins"))
+        # `n_losses`/`n_breakeven` learning state'te YOKTUR; `n_trades - n_wins` başa baş
+        # işlemleri de içerir. Bu yüzden «Kaybeden» diye SAYILMAZ — kart açıkça birleşik yazılır.
+        n_notwin = (n - n_wins) if (n is not None and n_wins is not None) else None
+        # Kazanma oranı = `n_wins / n_trades` — öğrenme motorunun KENDİ tanımı
+        # (`LearnerV1.snapshot()`: `100 * n_wins / n_trades`), başa baş DAHİL paydada.
+        wr = (n_wins / n * 100.0) if (n and n_wins is not None) else None
         sum_r = ln.get("sum_r")
         avg_r = (float(sum_r) / n) if (sum_r is not None and n) else None
-        decided = wins + losses
-        wr = (wins / decided * 100.0) if decided else None
 
         def _r(x, nd=3):
             return "Veri yok" if x is None else f"{float(x):+.{nd}f}R"
 
-        body = sample_banner(n)
+        def _c(x):
+            return "Veri yok" if x is None else str(x)
+
+        body = sample_banner(n if n is not None else len(lessons))
         body += ('<div class="grid">'
-                 + card("Kapanmış işlem", str(n), "learning.json → n_trades")
-                 + card("Kazanan", str(wins), "ders kaydında won=true")
-                 + card("Kaybeden", str(losses), "ders kaydında won=false")
-                 + card("Kazanma oranı", "Veri yok" if wr is None else f"%{wr:.1f}", "kazanan / karara bağlanan")
-                 + card("Toplam R", _r(sum_r), "sum_r — risk katı cinsinden sonuç")
-                 + card("Ortalama R", _r(avg_r), "toplam R / işlem")
+                 + card("Kapanmış işlem", _c(n), "learning.json → n_trades · TÜM ZAMAN")
+                 + card("Kazanan", _c(n_wins), "learning.json → n_wins · TÜM ZAMAN")
+                 + card("Kazanmayan", _c(n_notwin),
+                        "n_trades − n_wins · kaybeden + başa baş BİRLİKTE (ayrı sayaç yok)")
+                 + card("Kazanma oranı", "Veri yok" if wr is None else f"%{wr:.1f}",
+                        "n_wins / n_trades · başa baş paydaya DÂHİL")
+                 + card("Toplam R", _r(sum_r), "sum_r — risk katı cinsinden sonuç · TÜM ZAMAN")
+                 + card("Ortalama R", _r(avg_r), "toplam R / n_trades · TÜM ZAMAN")
                  + card("Net gerçekleşen K/Z", money_html(pv.realized_total).replace("<td", "<span").replace("</td>", "</span>"),
                         "defterden (kanonik) — ücret + funding dahil")
                  + card("Son güncelleme", f'<span title="{esc(ln.get("updated_at") or "")}">{esc(fmt_utc(ln.get("updated_at")))}</span>')
@@ -368,7 +398,10 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
             if ln.get(key):
                 body += f"<h2>{title}</h2>" + render_any(ln[key])
         if lessons:
-            body += "<h2>Dersler</h2>" + lessons_table(lessons[-30:][::-1])
+            # `lessons` YALNIZ bu tablo içindir — üst kartlar bu listeden HESAPLANMAZ.
+            body += (f"<h2>Dersler</h2><p class=\"mut small\">Veri penceresi: son {len(lessons)} ders "
+                     f"(kayıt defteri en fazla 200 ders tutar). Üstteki özet kartları TÜM ZAMAN "
+                     f"sayaçlarındandır.</p>" + lessons_table(lessons[-30:][::-1]))
         if ln.get("blacklist"):
             body += "<h2>Kara liste</h2><ul>" + "".join(f"<li>{esc(x)}</li>" for x in ln["blacklist"]) + "</ul>"
         return _page("Öğrenme", body, "/learning")

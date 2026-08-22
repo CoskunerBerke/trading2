@@ -11,13 +11,17 @@ kart sessizce `$0.00` oluyordu; sayısal görünen `1.03` ise `+$1.03` gibi PARA
 from __future__ import annotations
 
 import json
+import math
 import re
 from decimal import Decimal
 
 import pytest
 
 from tradingbot.dashboard.views import (NO_DATA, build, profit_factor_value, summary_cards)
-from tradingbot.pnl import canonical_summary, portfolio_view, position_view
+from tradingbot.pnl import (PF_FINITE, PF_NO_CLOSED_TRADES, PF_POSITIVE_INFINITY, PF_UNDEFINED,
+                            STOP_RISK_INVALID_ENTRY, STOP_RISK_INVALID_QTY, STOP_RISK_MALFORMED,
+                            STOP_RISK_NO_STOP, STOP_RISK_OK, canonical_summary, portfolio_view,
+                            position_view, profit_factor_state)
 
 ZERO_FEES = {"taker_pct": 0.0}          # ücret etkisini fixture'dan çıkar: net = brüt − açılış ücreti
 
@@ -67,9 +71,33 @@ def trades_2w_3l():
 
 @pytest.fixture
 def risk_state():
-    """Risk motoru durumu — `RiskEngine.snapshot()` biçimi (exposure + profile)."""
+    """SENTETİK risk durumu — `RiskEngine.snapshot()` BİÇİMİ, ÜRETİM DEĞERİ DEĞİL.
+
+    ⚠ Buradaki `8.83` / `50.09` / `%293.8` UYDURMA test sayılarıdır; gerçek `state/risk.json`
+    ile ilgisi yoktur ve bütçe aşımı yolunu (>%100) zorlamak için seçilmiştir. Gerçeğe yakın
+    değerler için `risk_state_realistic` fixture'ına bakın — üretim raporlarında O kullanılmalıdır.
+    """
     return {"exposure": {"equity": 50.09, "drawdown_pct": 2.13, "total_open_risk_usdt": 8.83,
-                         "open_positions": 2, "used_margin": 28.38861},
+                         "open_positions": 2, "used_margin": 28.38861,
+                         # motorun YAYIMLADIĞI taban — panel bunu tahmin etmez, okur
+                         "starting_equity": 50.09, "equity_basis": 50.09,
+                         "equity_basis_kind": "starting_equity",
+                         "max_total_open_risk_usdt": 3.0054},
+            "profile": {"max_total_open_risk_pct": 6.0, "risk_per_trade_pct": 2.0}}
+
+
+@pytest.fixture
+def risk_state_realistic():
+    """GERÇEĞE YAKIN risk durumu — üretimdeki `state/risk.json` şekliyle aynı büyüklükler.
+
+    PAPER_RESEARCH `size_on_live_equity=False` → kabul tabanı `starting_equity`(50.0), canlı
+    equity (47.1159) DEĞİL. Bütçe 3.0 USDT, kullanım ≈ %20.3.
+    """
+    return {"exposure": {"equity": 47.1159, "drawdown_pct": 6.005, "total_open_risk_usdt": 0.6089,
+                         "open_positions": 2, "used_margin": 28.38861,
+                         "starting_equity": 50.0, "equity_basis": 50.0,
+                         "equity_basis_kind": "starting_equity",
+                         "max_total_open_risk_usdt": 3.0},
             "profile": {"max_total_open_risk_pct": 6.0, "risk_per_trade_pct": 2.0}}
 
 
@@ -182,17 +210,35 @@ def test_missing_data_is_null_with_reason_not_silent_zero(two_positions, trades_
     assert _cards(vm)["risk_engine_reserved_usdt"].display == NO_DATA
 
 
-def test_profit_factor_special_cases():
-    """7b · Zararsız kâr → `∞`; kapanmış işlem yok → `Veri yok`; gerçek 0 → `0.00`."""
-    only_wins = portfolio_view([], [{"net_pnl": "5"}, {"net_pnl": "3"}])
-    assert profit_factor_value(only_wins) == float("inf")
-    assert _card_display(only_wins, "profit_factor") == "∞"
-    none_closed = portfolio_view([], [])
-    assert profit_factor_value(none_closed) is None
-    assert _card_display(none_closed, "profit_factor") == NO_DATA
-    only_losses = portfolio_view([], [{"net_pnl": "-5"}])
-    assert profit_factor_value(only_losses) == 0.0
-    assert _card_display(only_losses, "profit_factor") == "0.00"
+@pytest.mark.parametrize("name,trades,num,state,display", [
+    # zarar 0 + kâr var → matematiksel ∞. SAYISAL alan `None` (JSON'a `inf` GİREMEZ), UI `∞`.
+    ("yalnız kazanç", [{"net_pnl": "5"}, {"net_pnl": "3"}], None, PF_POSITIVE_INFINITY, "∞"),
+    ("kazanç + başa baş", [{"net_pnl": "5"}, {"net_pnl": "0"}], None, PF_POSITIVE_INFINITY, "∞"),
+    # 0/0 TANIMSIZ — `∞` DEĞİL. Hiç kâr etmemiş bot "sonsuz iyi" görünemez.
+    ("yalnız başa baş", [{"net_pnl": "0"}, {"net_pnl": "0"}], None, PF_UNDEFINED, NO_DATA),
+    ("kapanmış işlem yok", [], None, PF_NO_CLOSED_TRADES, NO_DATA),
+    ("yalnız kayıp", [{"net_pnl": "-5"}], 0.0, PF_FINITE, "0.00"),
+    ("karışık", [{"net_pnl": "60"}, {"net_pnl": "-30"}], 2.0, PF_FINITE, "2.00"),
+])
+def test_profit_factor_contract(name, trades, num, state, display):
+    """7b · Profit factor SÖZLEŞMESİ: sayısal alan asla `inf`/`NaN`; anlam `*_state`te taşınır."""
+    pv = portfolio_view([], trades)
+    assert profit_factor_state(pv) == (num, state), name
+    assert profit_factor_value(pv) == num, name
+    assert _card_display(pv, "profit_factor") == display, name
+    s = canonical_summary(pv)
+    assert s["profit_factor"] == num and s["profit_factor_state"] == state, name
+    if num is None:
+        assert "profit_factor" in s["unavailable_reason"], name
+
+
+def test_canonical_summary_is_always_rfc_json():
+    """JSON SINIRI: hiçbir senaryoda `NaN`/`Infinity` üretilmez (aksi hâlde uç nokta 500 verir)."""
+    for trades in ([], [{"net_pnl": "5"}], [{"net_pnl": "0"}], [{"net_pnl": "5"}, {"net_pnl": "-1"}]):
+        s = canonical_summary(portfolio_view([], trades))
+        json.dumps(s, allow_nan=False)                     # allow_nan=False → inf/NaN'da ValueError
+        for k, v in s.items():
+            assert not (isinstance(v, float) and not math.isfinite(v)), k
 
 
 def _card_display(pv, key):
@@ -224,6 +270,72 @@ def test_position_without_stop_reports_none_and_partial_flag():
     assert s["open_stop_risk_is_partial"] is True
 
 
+@pytest.mark.parametrize("name,kw,risk,status", [
+    ("geçerli LONG",      {},                                  Decimal("10"), STOP_RISK_OK),
+    ("geçerli SHORT",     {"side": "SHORT", "stop": "110"},     Decimal("10"), STOP_RISK_OK),
+    ("ters stop LONG",    {"stop": "110"},                      Decimal("0"),  STOP_RISK_OK),
+    ("ters stop SHORT",   {"side": "SHORT", "stop": "90"},      Decimal("0"),  STOP_RISK_OK),
+    ("stop yok",          {"stop": None},                       None, STOP_RISK_NO_STOP),
+    ("stop boş metin",    {"stop": ""},                         None, STOP_RISK_NO_STOP),
+    ("stop bozuk",        {"stop": "abc"},                      None, STOP_RISK_MALFORMED),
+    ("stop NaN",          {"stop": "NaN"},                      None, STOP_RISK_MALFORMED),
+    ("qty sıfır",         {"qty": "0"},                         None, STOP_RISK_INVALID_QTY),
+    ("qty negatif",       {"qty": "-1"},                        None, STOP_RISK_INVALID_QTY),
+    ("entry bozuk",       {"entry": "abc", "margin": "100"},    None, STOP_RISK_INVALID_ENTRY),
+    ("çok küçük Decimal", {"qty": "0.00000001", "entry": "100", "stop": "90"},
+                          Decimal("0.00000010"), STOP_RISK_OK),
+])
+def test_stop_risk_edge_cases(name, kw, risk, status):
+    """6 · Bozuk stop `0` KABUL EDİLMEZ — sahte tam-notional risk üretilmez."""
+    base = {"sym": "X/USDT", "side": "LONG", "qty": "1", "entry": "100", "stop": "90", "margin": None}
+    base.update(kw)
+    p = _pos(base["sym"], base["side"], base["qty"], base["entry"], base["stop"], margin=base["margin"])
+    if kw.get("stop", "…") is None:
+        p["stop"] = None
+    v = position_view(p, fees=ZERO_FEES)
+    assert v.stop_risk == risk, name
+    assert v.stop_risk_status == status, name
+
+
+def test_malformed_stop_never_produces_full_notional():
+    """REGRESYON: `stop="abc"` → `dec()` 0 döndüğü için risk `qty × entry` (tam notional) oluyordu."""
+    p = _pos("X/USDT", "LONG", "1", "100", "abc")
+    v = position_view(p, fees=ZERO_FEES)
+    assert v.stop_risk is None                       # 100 (tam notional) DEĞİL
+    assert v.stop != Decimal("0") and v.stop is None  # sahte `0` stop GÖSTERİLMEZ
+    pv = portfolio_view([p, _pos("Y/USDT", "LONG", "1", "100", "90")], [], fees=ZERO_FEES)
+    assert pv.open_stop_risk == Decimal("10")        # yalnız geçerli pozisyon toplanır
+    assert (pv.positions_stop_malformed, pv.positions_without_stop) == (1, 0)
+
+
+def test_stop_risk_counters_are_labelled_separately():
+    """Eksik / bozuk / geçersiz miktar AYRI sayılır — hepsi «stop'suz» sayılmaz."""
+    no_stop = _pos("A/USDT", "LONG", "1", "100", "90"); no_stop["stop"] = None
+    bad = _pos("B/USDT", "LONG", "1", "100", "abc")
+    zero_qty = _pos("C/USDT", "LONG", "0", "100", "90")
+    pv = portfolio_view([no_stop, bad, zero_qty], [], fees=ZERO_FEES)
+    assert (pv.positions_without_stop, pv.positions_stop_malformed, pv.positions_invalid_qty) == (1, 1, 1)
+    assert pv.stop_risk_incomplete == 3
+    s = canonical_summary(pv)
+    assert s["open_stop_risk_is_partial"] is True
+    sub = {c.key: c for c in summary_cards(pv, s)}["open_stop_risk_usdt"].sub
+    for marker in ("1 stop'suz", "1 stop değeri bozuk", "1 miktar/giriş geçersiz"):
+        assert marker in sub, marker
+
+
+def test_stop_risk_parity_with_real_engine_reservation():
+    """Geçerli pozisyonda panel stop riski = risk motorunun `risk_usdt` formülü (birebir).
+
+    Motor: `|entry−stop|/entry × notional`; panel: `qty × (entry−stop)`; `notional = qty × entry`
+    olduğu için ikisi ÖZDEŞ. Değerler gerçek `state/risk.json` kaydından alınmıştır.
+    """
+    qty, entry, stop = Decimal("0.165"), Decimal("90.61"), Decimal("88.34075519777275")
+    v = position_view(_pos("BZ/USDT", "LONG", qty, entry, stop), fees=ZERO_FEES)
+    engine_risk = abs(entry - stop) / entry * (qty * entry)      # risk/state.py:build_state
+    assert v.stop_risk == pytest.approx(engine_risk)
+    assert v.stop_risk == pytest.approx(Decimal("0.37442539236749606"))
+
+
 def test_summary_stop_risk_equals_row_sum(two_positions, trades_2w_3l, risk_state):
     """13 · Özet stop riski = satırların stop riski toplamı."""
     vm = _vm(two_positions, trades_2w_3l, risk_state)
@@ -234,19 +346,68 @@ def test_summary_stop_risk_equals_row_sum(two_positions, trades_2w_3l, risk_stat
 
 
 def test_reservation_and_stop_risk_are_separate_fields(two_positions, trades_2w_3l, risk_state):
-    """14 · Risk motoru rezervasyonu (8.83) ile stop riski (1.50) AYRI alanlardır."""
+    """14 · Risk motoru rezervasyonu ile stop riski AYRI alanlardır (SENTETİK fixture)."""
     vm = _vm(two_positions, trades_2w_3l, risk_state)
     s = vm["summary"]
     assert s["risk_engine_reserved_usdt"] == pytest.approx(8.83)   # risk.json → total_open_risk_usdt
     assert s["open_stop_risk_usdt"] == pytest.approx(1.50)         # defterden hesaplanan
     assert s["risk_engine_reserved_usdt"] != s["open_stop_risk_usdt"]
-    # bütçe = %6 × 50.09 = 3.0054 ; kullanım = 8.83 / 3.0054
+    # Bütçe motorun YAYIMLADIĞI `max_total_open_risk_usdt`tir — panel equity'den TÜRETMEZ.
     assert s["risk_budget_max_usdt"] == pytest.approx(3.0054)
     assert s["open_risk_budget_utilization_pct"] == pytest.approx(293.8, abs=0.5)
     c = _cards(vm)
     assert c["open_stop_risk_usdt"].key != c["risk_engine_reserved_usdt"].key
     assert "stop" in c["open_stop_risk_usdt"].sub.lower()
     assert "total_open_risk_usdt" in c["risk_engine_reserved_usdt"].sub
+
+
+def test_risk_budget_uses_engine_published_basis(two_positions, trades_2w_3l, risk_state_realistic):
+    """14b · GERÇEĞE YAKIN: taban `starting_equity`(50.0) → bütçe 3.0 → kullanım ≈ %20.3.
+
+    Panel canlı equity'yi (47.1159) kullansaydı %21.5 çıkardı; motorun kabul kapısı ise
+    `starting_equity` tabanını uygular. Panel motorun yayımladığı tabanı okumak ZORUNDADIR.
+    """
+    vm = _vm(two_positions, trades_2w_3l, risk_state_realistic)
+    s = vm["summary"]
+    assert s["risk_equity_basis_usdt"] == pytest.approx(50.0)
+    assert s["risk_equity_basis_kind"] == "starting_equity"
+    assert s["risk_budget_max_usdt"] == pytest.approx(3.0)
+    assert s["open_risk_budget_utilization_pct"] == pytest.approx(20.297, abs=0.01)
+    # canlı equity tabanıyla çıkacak YANLIŞ değere DÜŞMEMELİ
+    assert s["open_risk_budget_utilization_pct"] != pytest.approx(21.539, abs=0.01)
+    sub = _cards(vm)["open_risk_budget_utilization_pct"].sub
+    assert "Başlangıç özkaynağı tabanı" in sub and "50.00" in sub
+
+
+def test_old_snapshot_without_basis_reports_no_data_not_a_guess(two_positions, trades_2w_3l):
+    """14c · ESKİ snapshot'ta `max_total_open_risk_usdt` yok → TAHMİN ÜRETİLMEZ, `Veri yok`."""
+    old = {"exposure": {"equity": 47.1159, "total_open_risk_usdt": 0.6089},   # taban alanı YOK
+           "profile": {"max_total_open_risk_pct": 6.0}}
+    vm = _vm(two_positions, trades_2w_3l, old)
+    s = vm["summary"]
+    assert s["risk_budget_max_usdt"] is None
+    assert s["open_risk_budget_utilization_pct"] is None
+    assert "risk_budget_max_usdt" in s["unavailable_reason"]
+    assert _cards(vm)["open_risk_budget_utilization_pct"].display == NO_DATA
+    # eski davranışa (equity × pct) SESSİZCE dönmemeli
+    assert s["risk_budget_max_usdt"] != pytest.approx(47.1159 * 0.06)
+
+
+@pytest.mark.parametrize("age,limit,state,marker", [
+    (30, 2400, "live", "risk verisi"),
+    (3600, 2400, "stale", "Risk verisi güncel değil"),
+    (None, 2400, "unknown", "Risk verisi yaşı bilinmiyor"),
+])
+def test_risk_snapshot_freshness_is_separate_from_price(two_positions, trades_2w_3l,
+                                                        risk_state_realistic, age, limit, state, marker):
+    """Risk anlık görüntüsü yaşı AYRI kavramdır; bayatsa değer gösterilir ama ETİKETLENİR."""
+    vm = _vm(two_positions, trades_2w_3l, risk_state_realistic, risk_age_s=age, risk_stale_s=limit)
+    s = vm["summary"]
+    assert s["risk_snapshot_state"] == state
+    assert s["risk_snapshot_age_s"] == age
+    # bayat olsa bile değer GİZLENMEZ — operatör son bilinen rezervasyonu görmeye devam eder
+    assert s["open_risk_budget_utilization_pct"] == pytest.approx(20.297, abs=0.01)
+    assert marker in _cards(vm)["open_risk_budget_utilization_pct"].sub
 
 
 def test_chief_and_summary_never_disagree(two_positions, trades_2w_3l, risk_state):

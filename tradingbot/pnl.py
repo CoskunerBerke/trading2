@@ -34,6 +34,24 @@ DEFAULT_TAKER_PCT = Decimal("0.05")          # %0.05 — FeeSchedule.taker_pct v
 PCT_BASIS_MARGIN = "initial_margin"          # futures
 PCT_BASIS_COST = "cost_basis"                # spot
 
+# --- stop riski hesaplanabilirlik durumları (UI ve sayaçlar bunları AYRI raporlar) ---
+STOP_RISK_OK = "ok"                          # hesaplandı (ters stop dâhil — o durumda 0)
+STOP_RISK_NO_STOP = "no_stop"                # stop alanı YOK/boş
+STOP_RISK_MALFORMED = "malformed_stop"       # stop alanı var ama sayıya çevrilemiyor
+STOP_RISK_INVALID_QTY = "invalid_qty"        # qty <= 0 / ayrıştırılamıyor
+STOP_RISK_INVALID_ENTRY = "invalid_entry"    # entry <= 0 / ayrıştırılamıyor
+
+# --- tazelik durumları — TEK KAYNAK; `dashboard.views` bu adları yeniden dışa verir ---
+FRESH_OK = "live"
+FRESH_STALE = "stale"
+FRESH_UNKNOWN = "unknown"
+
+# --- profit factor durumları: sayısal alan ASLA inf/NaN taşımaz, durum bu alanda taşınır ---
+PF_FINITE = "finite"                         # brüt zarar > 0 → sonlu oran
+PF_POSITIVE_INFINITY = "positive_infinity"   # brüt zarar 0, brüt kâr > 0 → matematiksel ∞
+PF_UNDEFINED = "undefined"                   # brüt zarar 0 VE brüt kâr 0 → 0/0 tanımsız
+PF_NO_CLOSED_TRADES = "no_closed_trades"     # hiç kapanmış işlem yok
+
 
 def dec(x: Any, default: Decimal = ZERO) -> Decimal:
     """Her türlü girdiyi güvenle Decimal'e çevir (None/boş/bozuk → default)."""
@@ -46,6 +64,19 @@ def dec(x: Any, default: Decimal = ZERO) -> Decimal:
     except (InvalidOperation, ValueError, TypeError):
         return default
     return default if d != d else d          # NaN koruması
+
+
+def dec_or_none(x: Any) -> Decimal | None:
+    """Ayrıştırılabiliyorsa Decimal, aksi hâlde ``None`` — sessiz `0` ÜRETMEZ.
+
+    `dec()` bozuk girdide `0` döner; bu bir FİYAT alanı için tehlikelidir: `stop="abc"` → `0`
+    olunca `qty × (entry − 0)` tam notional kadar sahte "risk" üretir. Fiyat/eşik alanları bu
+    yardımcıyı kullanır; "veri yok" ile "gerçekten sıfır" birbirine karışmaz.
+    """
+    if x is None or x == "":
+        return None
+    d = dec(x, Decimal("NaN"))
+    return None if d != d else d
 
 
 # ============================================================================ sunum yardımcıları
@@ -119,6 +150,7 @@ class PositionView:
     price_is_stale: bool = False      # mark yok → PnL güvenilir değil
     meta: dict = field(default_factory=dict)
     stop_risk: Decimal | None = None  # stop'a kadar BRÜT tahmini kayıp (ücret HARİÇ); stop yoksa None
+    stop_risk_status: str = STOP_RISK_OK   # neden hesaplanamadı — `STOP_RISK_*` (UI ayrı ayrı etiketler)
 
     @property
     def has_mark(self) -> bool:
@@ -199,25 +231,38 @@ def position_view(pos: dict, *, mark_price: Any = None, fees: Any = None,
     #   LONG  : qty × (entry − stop)      SHORT : qty × (stop − entry)
     # Ücret HARİÇ: `risk/engine.py` rezervasyonu da brüt hesaplar (bkz. risk.json → positions[].risk_usdt),
     # iki büyüklüğün karşılaştırılabilir kalması için aynı sözleşme kullanılır.
-    stop_d = dec(pos["stop"]) if pos.get("stop") not in (None, "") else None
-    stop_risk = None
-    if stop_d is not None and qty > 0:
+    #
+    # BOZUK STOP ≠ SIFIR STOP: `dec()` varsayılanı kullanılsaydı `stop="abc"` → `0` olur ve LONG'da
+    # `qty × (entry − 0)` = TAM NOTIONAL kadar sahte risk üretirdi. Eksik / bozuk / geçersiz miktar
+    # durumları AYRI etiketlenir ve toplama HİÇ katılmaz.
+    raw_stop = pos.get("stop")
+    stop_d = dec_or_none(raw_stop)
+    stop_risk, stop_status = None, STOP_RISK_OK
+    if raw_stop in (None, ""):
+        stop_status = STOP_RISK_NO_STOP
+    elif stop_d is None:
+        stop_status = STOP_RISK_MALFORMED
+    elif qty <= 0:
+        stop_status = STOP_RISK_INVALID_QTY
+    elif entry <= 0:
+        stop_status = STOP_RISK_INVALID_ENTRY
+    else:
         raw = (entry - stop_d) if side == "LONG" else (stop_d - entry)
-        stop_risk = qty * raw if raw > 0 else ZERO
+        stop_risk = qty * raw if raw > 0 else ZERO      # ters stop → 0 (negatif risk YOK)
 
     return PositionView(
         trade_id=str(pos.get("id") or pos.get("trade_id") or ""),
         symbol=str(pos.get("symbol") or ""), market=mkt, side=side, qty=qty, entry_price=entry,
         mark_price=None if stale else mark, leverage=lev, notional=notional, initial_margin=margin,
-        stop=dec(pos["stop"]) if pos.get("stop") not in (None, "") else None,
+        stop=stop_d,                                   # bozuk stop → None (sahte `0` GÖSTERİLMEZ)
         take_profit=tp,
-        liquidation_price=dec(pos["liquidation_price"]) if pos.get("liquidation_price") not in (None, "") else None,
+        liquidation_price=dec_or_none(pos.get("liquidation_price")),
         entry_fee=entry_fee, exit_fee_est=exit_fee_est, funding_net=funding_net,
         gross_unrealized=gross, net_unrealized=net, net_unrealized_pct=pct,
         pct_basis=PCT_BASIS_MARGIN if mkt == "FUTURES" else PCT_BASIS_COST,
         opened_at=str(pos.get("opened_at") or ""), price_is_stale=stale,
         meta={"leverage_reasons": (pos.get("meta") or {}).get("leverage_reasons")} if isinstance(pos.get("meta"), dict) else {},
-        stop_risk=stop_risk)
+        stop_risk=stop_risk, stop_risk_status=stop_status)
 
 
 # ============================================================================ kapanmış işlem
@@ -266,15 +311,22 @@ class PortfolioView:
     total_fees: Decimal
     total_funding: Decimal
     any_stale_price: bool
-    # Stop'u OLAN futures pozisyonların stop'a kadar BRÜT tahmini kaybı (ücret hariç).
-    # `positions_without_stop` > 0 iken bu toplam EKSİKTİR ve UI'da öyle etiketlenir.
+    # Stop riski HESAPLANABİLEN pozisyonların stop'a kadar BRÜT tahmini kaybı (ücret hariç).
+    # Aşağıdaki sayaçlardan herhangi biri > 0 iken bu toplam EKSİKTİR ve UI'da öyle etiketlenir.
     open_stop_risk: Decimal = ZERO
-    positions_without_stop: int = 0
+    positions_without_stop: int = 0        # stop alanı YOK/boş
+    positions_stop_malformed: int = 0      # stop alanı var ama sayıya çevrilemiyor
+    positions_invalid_qty: int = 0         # qty veya entry <= 0 / ayrıştırılamıyor
 
     @property
     def closed_trades(self) -> int:
         """Kapanmış işlem sayısı = kazanan + kaybeden + başa baş."""
         return self.wins + self.losses + self.breakeven
+
+    @property
+    def stop_risk_incomplete(self) -> int:
+        """Stop riski toplamına GİREMEYEN pozisyon sayısı (eksik + bozuk + geçersiz)."""
+        return self.positions_without_stop + self.positions_stop_malformed + self.positions_invalid_qty
 
     def to_dict(self) -> dict:
         d = {}
@@ -343,21 +395,53 @@ def portfolio_view(positions: list[dict], trades: list[dict], *, marks: dict[str
         total_fees=total_fees, total_funding=total_funding,
         any_stale_price=any(v.price_is_stale for v in views),
         open_stop_risk=sum((v.stop_risk for v in views if v.stop_risk is not None), ZERO),
-        positions_without_stop=sum(1 for v in views if v.stop_risk is None))
+        positions_without_stop=sum(1 for v in views if v.stop_risk_status == STOP_RISK_NO_STOP),
+        positions_stop_malformed=sum(1 for v in views if v.stop_risk_status == STOP_RISK_MALFORMED),
+        positions_invalid_qty=sum(1 for v in views
+                                  if v.stop_risk_status in (STOP_RISK_INVALID_QTY, STOP_RISK_INVALID_ENTRY)))
 
 
 # ============================================================================ kanonik özet
 def _f(x: Any) -> float | None:
-    """Decimal → float (JSON için). None korunur; uydurma sıfır ÜRETİLMEZ."""
+    """Decimal → SONLU float (JSON için). None korunur; uydurma sıfır ÜRETİLMEZ.
+
+    JSON SINIRI: `NaN`, `Infinity`, `-Infinity` RFC 8259 uyumlu JSON değildir ve Starlette
+    `allow_nan=False` ile serileştirdiği için uç noktayı HTTP 500'e düşürür. Sonlu olmayan her
+    değer burada `None`'a çevrilir — anlam (`∞` mı, tanımsız mı) ayrı bir `*_state` alanında
+    taşınır, sayısal alanda DEĞİL.
+    """
     if x is None:
         return None
     d = dec(x, Decimal("NaN"))
-    return None if d != d else float(d)
+    if d != d or d.is_infinite():             # NaN veya ±Infinity → sayısal alan `null`
+        return None
+    return float(d)
+
+
+def profit_factor_state(pv: PortfolioView) -> tuple[float | None, str]:
+    """KANONİK profit factor sözleşmesi — `(sayısal, durum)`.
+
+    Sayısal alan ASLA `inf`/`NaN` taşımaz; sonsuzluk `PF_POSITIVE_INFINITY` durumuyla bildirilir.
+    Panel HTML'i, `/api/live/summary` ve Telegram bu TEK yardımcıyı kullanır; ikinci bir kopya
+    karar üretmez (iki kopya farklı sonuç verirse aynı işlem iki farklı oran gösterirdi).
+
+        brüt zarar > 0             → (kâr/zarar, `finite`)
+        brüt zarar 0, brüt kâr > 0 → (None, `positive_infinity`)   → UI `∞`
+        brüt zarar 0, brüt kâr 0   → (None, `undefined`)           → UI `Veri yok` (`∞` DEĞİL)
+        kapanmış işlem yok         → (None, `no_closed_trades`)    → UI `Veri yok`
+    """
+    if pv.closed_trades == 0:
+        return None, PF_NO_CLOSED_TRADES
+    if pv.profit_factor is not None:                 # brüt zarar > 0 → sonlu
+        return _f(pv.profit_factor), PF_FINITE
+    # `profit_factor is None` ⇔ brüt zarar == 0. Kâr var mı? `wins` > 0 ⇔ brüt kâr > 0.
+    return None, (PF_POSITIVE_INFINITY if pv.wins > 0 else PF_UNDEFINED)
 
 
 def canonical_summary(pv: PortfolioView, *, futures_equity: Any = None, spot_equity: Any = None,
                       risk_state: dict | None = None, as_of: str | None = None,
-                      source_freshness: dict | None = None) -> dict:
+                      source_freshness: dict | None = None, risk_age_s: Any = None,
+                      risk_stale_s: Any = None) -> dict:
     """Panel HTML'i ve `/api/live/summary` için TEK kanonik portföy özeti.
 
     Sözleşme: alan HESAPLANAMIYORSA `None` döner ve `unavailable_reason` nedeni yazar.
@@ -368,8 +452,12 @@ def canonical_summary(pv: PortfolioView, *, futures_equity: Any = None, spot_equ
                                      (bu katmanda defterden hesaplanır)
       * `risk_engine_reserved_usdt`— RİSK MOTORUNUN rezerve ettiği toplam açık risk
                                      (`risk.json → exposure.total_open_risk_usdt`)
-      * `risk_budget_max_usdt`     — azami toplam risk bütçesi (profil × özkaynak)
+      * `risk_budget_max_usdt`     — azami toplam risk bütçesi; YALNIZ risk motorunun yayımladığı
+                                     `exposure.max_total_open_risk_usdt` okunur (tahmin YOK)
       * `open_risk_budget_utilization_pct` — rezervasyon / bütçe
+
+    `risk_age_s` / `risk_stale_s`: risk anlık görüntüsünün yaşı ve eşiği. Fiyat tazeliğinden AYRI
+    kavramdır; `risk.json` strateji turunda yazılır, fiyat her tickte güncellenir.
     """
     rs = (risk_state or {}).get("exposure") if isinstance((risk_state or {}).get("exposure"), dict) else (risk_state or {})
     why: dict[str, str] = {}
@@ -392,31 +480,47 @@ def canonical_summary(pv: PortfolioView, *, futures_equity: Any = None, spot_equ
     reserved = _f(rs.get("total_open_risk_usdt")) if isinstance(rs, dict) else None
     if reserved is None:
         why["risk_engine_reserved_usdt"] = "risk.json → exposure.total_open_risk_usdt yok"
-    # Azami risk bütçesi: risk motorunun KENDİ yayınladığı profil yüzdesi × özkaynak.
-    # (`risk.json → profile.max_total_open_risk_pct` ve `exposure.equity`; uydurma sabit YOK.)
-    prof = (risk_state or {}).get("profile") if isinstance((risk_state or {}).get("profile"), dict) else {}
-    risk_equity = _f(rs.get("equity")) if isinstance(rs, dict) else None
-    max_pct = _f(prof.get("max_total_open_risk_pct"))
-    budget_max = None
-    if max_pct is not None and risk_equity is not None and risk_equity > 0:
-        budget_max = risk_equity * max_pct / 100.0
+
+    # AZAMİ RİSK BÜTÇESİ — panel KENDİ tabanını SEÇMEZ.
+    # Risk motoru kabul kararını `equity_basis × max_total_open_risk_pct` ile verir ve
+    # `size_on_live_equity=False` (PAPER_RESEARCH) iken taban `starting_equity`'dir, canlı equity
+    # DEĞİL. Panel daha önce `exposure.equity` kullanıyordu → gösterilen oran motorun gerçekten
+    # uyguladığı orandan farklıydı. Artık YALNIZ motorun yayımladığı değer okunur; alan yoksa
+    # başka bir equity alanından TAHMİN ÜRETİLMEZ.
+    budget_max = _f(rs.get("max_total_open_risk_usdt")) if isinstance(rs, dict) else None
+    basis = _f(rs.get("equity_basis")) if isinstance(rs, dict) else None
+    basis_kind = rs.get("equity_basis_kind") if isinstance(rs, dict) else None
     budget_util = None
     if budget_max is None:
-        why["risk_budget_max_usdt"] = "risk.json içinde profile.max_total_open_risk_pct veya exposure.equity yok"
+        why["risk_budget_max_usdt"] = ("risk.json → exposure.max_total_open_risk_usdt yok "
+                                       "(eski snapshot) — equity tabanı bilinmediği için tahmin üretilmez")
         why["open_risk_budget_utilization_pct"] = "azami risk bütçesi bilinmiyor"
     elif budget_max > 0 and reserved is not None:
         budget_util = reserved / budget_max * 100.0
+
+    # Risk anlık görüntüsünün YAŞI — fiyat tazeliğinden AYRI kavramdır (ayrı eşik, ayrı etiket).
+    r_age = _f(risk_age_s)
+    r_stale_lim = _f(risk_stale_s)
+    if r_age is None:
+        risk_state_label = FRESH_UNKNOWN
+        why["risk_snapshot_age_s"] = "risk.json → generated_at yok/çözülemedi — veri yaşı bilinmiyor"
+    elif r_stale_lim is not None and r_age > r_stale_lim:
+        risk_state_label = FRESH_STALE
+    else:
+        risk_state_label = FRESH_OK
 
     dd = _f(pv.max_drawdown)
     if dd is None:
         why["max_drawdown_pct"] = "risk.json içinde drawdown_pct yok"
     if pv.win_rate is None:
         why["win_rate_pct"] = "karara bağlanan (kazanan+kaybeden) işlem yok"
-    pf = _f(pv.profit_factor)
-    if pv.closed_trades == 0:
-        why["profit_factor"] = "kapanmış işlem yok"
-    elif pv.profit_factor is None:
-        pf = float("inf")            # brüt zarar 0, kâr var → tanımlı ve sonsuz
+    pf, pf_state = profit_factor_state(pv)
+    if pf is None:
+        why["profit_factor"] = {
+            PF_NO_CLOSED_TRADES: "kapanmış işlem yok",
+            PF_POSITIVE_INFINITY: "brüt zarar 0, brüt kâr > 0 → oran matematiksel olarak sonsuz",
+            PF_UNDEFINED: "brüt kâr ve brüt zarar 0 → oran tanımsız",
+        }.get(pf_state, "hesaplanamadı")
 
     return {
         "today_realized_net_usdt": _f(pv.realized_today),
@@ -425,18 +529,24 @@ def canonical_summary(pv: PortfolioView, *, futures_equity: Any = None, spot_equ
         "total_net_usdt": _f(pv.total_net),
         "winning_trades": pv.wins, "losing_trades": pv.losses, "breakeven_trades": pv.breakeven,
         "closed_trades": pv.closed_trades,
-        "win_rate_pct": _f(pv.win_rate), "profit_factor": pf,
+        "win_rate_pct": _f(pv.win_rate),
+        # `profit_factor` DAİMA sonlu sayı ya da `null`; sonsuzluk `profit_factor_state`'te taşınır.
+        "profit_factor": pf, "profit_factor_state": pf_state,
         "max_drawdown_pct": dd,
         "futures_equity_usdt": fe, "spot_equity_usdt": se,
         "open_futures_notional_usdt": _f(pv.long_notional + pv.short_notional),
         "open_futures_margin_usdt": margin,
         "margin_utilization_pct": margin_util,
         "open_stop_risk_usdt": _f(pv.open_stop_risk),
-        "open_stop_risk_is_partial": pv.positions_without_stop > 0,
+        "open_stop_risk_is_partial": pv.stop_risk_incomplete > 0,
         "positions_without_stop": pv.positions_without_stop,
+        "positions_stop_malformed": pv.positions_stop_malformed,
+        "positions_invalid_qty": pv.positions_invalid_qty,
         "risk_engine_reserved_usdt": reserved,
         "risk_budget_max_usdt": budget_max,
+        "risk_equity_basis_usdt": basis, "risk_equity_basis_kind": basis_kind,
         "open_risk_budget_utilization_pct": budget_util,
+        "risk_snapshot_age_s": r_age, "risk_snapshot_state": risk_state_label,
         "open_positions": pv.open_total, "open_long": pv.open_long, "open_short": pv.open_short,
         "any_stale_price": pv.any_stale_price,
         "as_of": as_of, "source_freshness": source_freshness,
@@ -471,6 +581,10 @@ def check_invariants(pv: PortfolioView, *, table_rows: int | None = None,
     return out
 
 
-__all__ = ["DEFAULT_TAKER_PCT", "Inconsistency", "PCT_BASIS_COST", "PCT_BASIS_MARGIN", "PortfolioView",
-           "PositionView", "canonical_summary", "check_invariants", "dec", "fmt_money", "fmt_pct",
-           "fmt_qty", "pnl_class", "portfolio_view", "position_view", "realized_net"]
+__all__ = ["DEFAULT_TAKER_PCT", "FRESH_OK", "FRESH_STALE", "FRESH_UNKNOWN", "Inconsistency",
+           "PCT_BASIS_COST", "PCT_BASIS_MARGIN", "PF_FINITE", "PF_NO_CLOSED_TRADES",
+           "PF_POSITIVE_INFINITY", "PF_UNDEFINED", "PortfolioView", "PositionView",
+           "STOP_RISK_INVALID_ENTRY", "STOP_RISK_INVALID_QTY", "STOP_RISK_MALFORMED",
+           "STOP_RISK_NO_STOP", "STOP_RISK_OK", "canonical_summary", "check_invariants", "dec",
+           "dec_or_none", "fmt_money", "fmt_pct", "fmt_qty", "pnl_class", "portfolio_view",
+           "position_view", "profit_factor_state", "realized_net"]

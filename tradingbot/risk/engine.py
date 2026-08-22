@@ -87,6 +87,19 @@ class RiskEngine:
         self.ks = killswitch or KillSwitch()
         self.clusters = clusters
 
+    # ------------------------------------------------------------ boyutlandırma tabanı (TEK KAYNAK)
+    def equity_basis(self, state: PortfolioState) -> float:
+        """Risk yüzdelerinin uygulandığı özkaynak tabanı.
+
+        `size_on_live_equity=False` (PAPER_RESEARCH) iken taban `starting_equity`'dir, CANLI equity
+        DEĞİL. `evaluate()` kabul kararını ve `snapshot()` gözlem çıktısını AYNI bu fonksiyondan
+        alır; panel bu tabanı tahmin ETMEZ, motorun yayımladığını okur.
+        """
+        return state.equity if self.profile.size_on_live_equity else state.starting_equity
+
+    def equity_basis_kind(self) -> str:
+        return "live_equity" if self.profile.size_on_live_equity else "starting_equity"
+
     # ------------------------------------------------------------ ana değerlendirme
     def evaluate(self, plan: dict, state: PortfolioState, market_ctx: dict | None = None) -> RiskDecision:
         """plan: {symbol, market_type, direction(LONG/SHORT), entry, stop, targets, notional, margin, leverage, amount_type,
@@ -99,7 +112,7 @@ class RiskEngine:
         entry, stop = float(plan.get("entry") or 0), plan.get("stop")
         notional = float(plan.get("notional") or 0)
         lev = int(plan.get("leverage") or 1)
-        equity_basis = state.equity if p.size_on_live_equity else state.starting_equity
+        equity_basis = self.equity_basis(state)        # DAVRANIŞ AYNI — ifade tek kaynağa taşındı
 
         def add(code, ok, value=None, limit=None, note=""):
             checks.append(Check(code, bool(ok), value, limit, note))
@@ -217,9 +230,21 @@ class RiskEngine:
         return trips
 
     def snapshot(self, state: PortfolioState) -> dict:
+        """SALT-OKUNUR gözlem çıktısı. Kabul kararını ETKİLEMEZ; yalnız motorun ZATEN kullandığı
+        değerleri yayımlar.
+
+        `equity_basis` / `max_total_open_risk_usdt`: `evaluate()` içindeki `TOTAL_OPEN_RISK` kapısı
+        tam olarak bu iki değeri kullanır (bkz. `equity_basis()` ve aşağıdaki `add("TOTAL_OPEN_RISK"…)`).
+        Panel bunları okumadığında bütçeyi `exposure.equity`'den TAHMİN ediyordu ve motorun gerçekte
+        uyguladığı orandan farklı bir yüzde gösteriyordu.
+        """
         p = self.profile
+        basis = self.equity_basis(state)
         return {"profile": p.to_dict(), "killswitch": self.ks.to_dict(),
                 "exposure": {"equity": state.equity, "hwm": state.high_water_mark, "drawdown_pct": round(state.drawdown_pct, 3),
+                             "starting_equity": state.starting_equity,
+                             "equity_basis": basis, "equity_basis_kind": self.equity_basis_kind(),
+                             "max_total_open_risk_usdt": round(basis * p.max_total_open_risk_pct / 100.0, 6),
                              "open_positions": len(state.open_positions), "total_open_risk_usdt": round(state.total_open_risk_usdt, 4),
                              "used_margin": state.used_margin, "altcoin_notional": round(state.altcoin_notional(), 4),
                              "pnl_today": round(state.realized_pnl_today, 4), "pnl_week": round(state.realized_pnl_week, 4),

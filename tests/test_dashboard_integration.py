@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from pathlib import Path
 
@@ -18,7 +19,8 @@ from fastapi.testclient import TestClient          # noqa: E402
 
 from tradingbot.dashboard.app import create_app    # noqa: E402
 from tradingbot.dashboard.config import DashboardConfig  # noqa: E402
-from tradingbot.dashboard.views import Freshness   # noqa: E402
+from tradingbot.dashboard.templates import POS_TABLE_CLS  # noqa: E402
+from tradingbot.dashboard.views import POSITION_COLUMNS, Freshness   # noqa: E402
 
 POS = [{"id": "F00004", "symbol": "BZ/USDT", "market_type": "USDM_PERP", "side": "LONG",
         "qty": "0.5", "entry_avg": "90.61", "leverage": 1, "isolated_margin": "14.95065",
@@ -45,12 +47,16 @@ def state_dir(tmp_path: Path) -> Path:
         "schema_version": 2, "kind": "futures", "equity": "50.09", "wallet_balance": "50.09",
         "fees": {"taker_pct": 0.0, "maker_pct": 0.0},
         "positions": {p["symbol"]: p for p in POS}, "history": TRADES}), encoding="utf-8")
+    # ⚠ SENTETİK değerler — üretim `state/risk.json` verisi DEĞİLDİR (bkz. test_dashboard_accuracy).
     (d / "risk.json").write_text(json.dumps({
         "generated_at": "2026-08-22T22:31:41+00:00", "mode": "PAPER",
         "profile": {"max_total_open_risk_pct": 6.0, "risk_per_trade_pct": 2.0},
         "killswitch": {"state": "ARMED"},
         "exposure": {"equity": 50.09, "drawdown_pct": 2.13, "total_open_risk_usdt": 8.83,
-                     "open_positions": 2, "used_margin": 28.38861}}), encoding="utf-8")
+                     "open_positions": 2, "used_margin": 28.38861,
+                     "starting_equity": 50.09, "equity_basis": 50.09,
+                     "equity_basis_kind": "starting_equity",
+                     "max_total_open_risk_usdt": 3.0054}}), encoding="utf-8")
     (d / "mode.json").write_text(json.dumps(
         {"mode": "PAPER", "live_order_path_enabled": False, "history": []}), encoding="utf-8")
     (d / "learning.json").write_text(json.dumps({
@@ -119,6 +125,69 @@ def test_api_cards_carry_machine_value_and_display(client):
             "open_stop_risk_usdt", "risk_engine_reserved_usdt"} <= keys
     pf = next(c for c in cards if c["key"] == "profit_factor")
     assert pf["display"] == "1.03" and "$" not in pf["display"]
+
+
+# --------------------------------------------------------------------- 15b · JSON sonluluk sınırı
+def _client_with_trades(tmp_path, trades):
+    d = tmp_path / "state"
+    d.mkdir()
+    (d / "futures_ledger.json").write_text(json.dumps({
+        "schema_version": 2, "kind": "futures", "equity": "50.09",
+        "fees": {"taker_pct": 0.0}, "positions": {}, "history": trades}), encoding="utf-8")
+    (d / "mode.json").write_text(json.dumps({"mode": "PAPER", "live_order_path_enabled": False}), encoding="utf-8")
+    return TestClient(create_app(d, tmp_path / "market", None, DashboardConfig()))
+
+
+@pytest.mark.parametrize("name,trades,pf_state,display", [
+    ("yalnız kazanan", [{"net_pnl": "1", "closed_at": "2026-08-22T10:00:00+00:00"},
+                        {"net_pnl": "2", "closed_at": "2026-08-22T11:00:00+00:00"}],
+     "positive_infinity", "∞"),
+    ("kazanan + başa baş", [{"net_pnl": "1", "closed_at": "2026-08-22T10:00:00+00:00"},
+                            {"net_pnl": "0", "closed_at": "2026-08-22T11:00:00+00:00"}],
+     "positive_infinity", "∞"),
+    ("yalnız başa baş", [{"net_pnl": "0", "closed_at": "2026-08-22T10:00:00+00:00"}],
+     "undefined", "Veri yok"),
+    ("kazanan + kaybeden", [{"net_pnl": "60", "closed_at": "2026-08-22T10:00:00+00:00"},
+                            {"net_pnl": "-30", "closed_at": "2026-08-22T11:00:00+00:00"}],
+     "finite", "2.00"),
+    ("hiç kapanmış işlem yok", [], "no_closed_trades", "Veri yok"),
+])
+def test_api_summary_is_http200_and_rfc_json_in_all_pf_cases(tmp_path, name, trades, pf_state, display):
+    """3 · GERÇEK uç nokta: profit factor ne olursa olsun HTTP 200 + RFC uyumlu JSON.
+
+    REGRESYON: `float("inf")` üretiliyordu; Starlette `allow_nan=False` ile serileştirdiği için
+    `/api/live/summary` HTTP 500 veriyor, summary polling duruyor ve kartlar donuyordu.
+    """
+    c = _client_with_trades(tmp_path, trades)
+    r = c.get("/api/live/summary")
+    assert r.status_code == 200, f"{name}: HTTP {r.status_code}"
+    json.loads(r.text, parse_constant=_reject_constant)        # Infinity/NaN literali REDDEDİLİR
+    body = r.json()
+    assert body["summary"]["profit_factor_state"] == pf_state, name
+    assert next(x for x in body["cards"] if x["key"] == "profit_factor")["display"] == display, name
+
+
+def _reject_constant(tok):
+    raise AssertionError(f"JSON'da RFC dışı sabit: {tok}")
+
+
+def test_all_live_endpoints_carry_only_finite_numbers(client):
+    """2 · Bütün canlı uçlarda sonlu olmayan sayı YOK (savunma kontrolü)."""
+    def walk(x, path=""):
+        if isinstance(x, float):
+            assert math.isfinite(x), f"sonlu değil: {path} = {x}"
+        elif isinstance(x, dict):
+            for k, v in x.items():
+                walk(v, f"{path}.{k}")
+        elif isinstance(x, list):
+            for i, v in enumerate(x):
+                walk(v, f"{path}[{i}]")
+
+    for path in ("/api/live/summary", "/api/live/positions", "/api/live/health"):
+        r = c_get = client.get(path)
+        assert r.status_code == 200, path
+        json.loads(c_get.text, parse_constant=_reject_constant)
+        walk(r.json(), path)
 
 
 # --------------------------------------------------------------------------- 16 · polling
@@ -236,7 +305,14 @@ def test_layout_contracts_prevent_page_level_overflow(client):
     assert "white-space:nowrap" in css                       # sayısal sütunlar bölünmez
     assert ".tw table.pos td:nth-child(-n+3)" in css          # Sembol · Piyasa · Yön sticky
     assert "@media(max-width:600px)" in css and ".grid{grid-template-columns:1fr}" in css
-    assert ".card .v{overflow-wrap:anywhere}" in css          # uzun damga kartı taşırmaz
+    assert ".card .v,.card .small{overflow-wrap:anywhere}" in css   # uzun damga/alan adı taşırmaz
+    # Sticky sütunlar SABİT genişlikte olmalı: `left` ofsetleri ancak o zaman doğrudur.
+    assert "text-overflow:ellipsis" in css
+    widths = [int(m) for m in re.findall(r"\.tw table\.pos td:nth-child\(\d\).*?width:(\d+)px", css)]
+    lefts = [int(m) for m in re.findall(r"\.tw table\.pos td:nth-child\(\d\),[^{]*\{left:(\d+)(?:px)?[;}]", css)]
+    assert len(widths) >= 3 and len(lefts) == 3, (widths, lefts)
+    # her sütunun `left`i, kendinden öncekilerin genişlik toplamına EŞİT olmalı (çakışma yok)
+    assert lefts == [0, widths[0], widths[0] + widths[1]], (lefts, widths)
 
 
 def test_decision_time_is_human_readable_and_keeps_raw_in_tooltip(client):
@@ -250,7 +326,54 @@ def test_decision_time_is_human_readable_and_keeps_raw_in_tooltip(client):
 
 def test_positions_table_has_sticky_class(client):
     """Açık pozisyon tablosu sticky sütun sınıfını taşır."""
-    assert '<table class="pos">' in client.get("/").text
+    assert f'<table class="{POS_TABLE_CLS}">' in client.get("/").text
+
+
+def _polling_table_html(client) -> str:
+    """Polling JS'inin ÜRETECEĞİ tabloyu gerçek `/api/live/positions` verisiyle kur.
+
+    JS metninde string aramak yetmez (denetimde `class="pos"` tam da böyle kaçmıştı): burada
+    tarayıcının çalıştıracağı şablon aynı girdilerle yeniden üretilir ve ÇIKTI doğrulanır.
+    """
+    js = client.get("/").text.split("poll('pos'", 1)[1].split("},__POS__)", 1)[0]
+    open_tag = re.search(r"var h='(<table[^']*)'", js).group(1)      # '<table class="pos"><thead><tr>'
+    close_head = re.search(r"\+'(</tr></thead><tbody>)'", js).group(1)
+    d = client.get("/api/live/positions").json()
+    head = "".join(f"<th>{c}</th>" for c in d["columns"])
+    body = ""
+    for r in d["rows"]:
+        cells = []
+        for i, c in enumerate(r):
+            s = "—" if c is None else str(c)
+            cls = ""
+            if i >= 3:
+                cls = ' class="num' + (" up" if s[:1] == "+" else (" dn" if s[:1] == "-" else "")) + '"'
+            attr = f' title="{s}"' if i < 3 else ""
+            cells.append(f"<td{cls}{attr}>{s}</td>")
+        body += "<tr>" + "".join(cells) + "</tr>"
+    return '<div class="tw">' + open_tag + head + close_head + body + "</tbody></table></div>"
+
+
+def test_first_render_and_polling_table_markup_are_identical(client):
+    """7 · İlk render ile polling render'ı AYNI markup sözleşmesini taşır.
+
+    REGRESYON: polling `<table>` kuruyordu (sınıfsız); ilk yüklemede sabit kalan Sembol · Piyasa ·
+    Yön sütunları 7 saniye sonra SESSİZCE normale dönüyordu.
+    """
+    server = client.get("/").text
+    polled = _polling_table_html(client)
+    assert f'<table class="{POS_TABLE_CLS}">' in polled, "polling tablosu sticky sınıfını taşımıyor"
+    assert '<div class="tw">' in polled, "polling `.tw` sarmalayıcısını kaybetmiş"
+    # kolon sırası aynı  (`<th(?: …)?>` — `<thead>` ile karışmasın diye boşluk zorunlu)
+    _TH = r"<th(?: [^>]*)?>(.*?)</th>"
+    cols = re.findall(_TH, polled)
+    assert cols == POSITION_COLUMNS
+    server_tbl = server.split('<div id="postbl">', 1)[1].split("</table>", 1)[0]
+    assert cols == re.findall(_TH, server_tbl)
+    # 4. sütundan itibaren sayısal hizalama sınıfı her iki tarafta da var
+    assert 'class="num' in polled
+    # ilk üç sütun tooltip taşır (sabit genişlik + ellipsis nedeniyle)
+    assert polled.count(" title=") >= 3 * len(client.get("/api/live/positions").json()["rows"])
 
 
 # --------------------------------------------------------------------------- 22-24 · öğrenme
@@ -284,7 +407,7 @@ def test_agent_zero_over_zero_is_no_data_not_zero_pct(client):
 def test_learning_labels_are_turkish_and_weights_signed(client):
     """Ham iç alan adları Türkçeleştirilir; ağırlıklar işaretli ve anlamlı ondalıkla gösterilir."""
     html = client.get("/learning").text
-    for t in ("Kapanmış işlem", "Kazanan", "Kaybeden", "Toplam R", "Ortalama R", "Son güncelleme"):
+    for t in ("Kapanmış işlem", "Kazanan", "Kazanmayan", "Toplam R", "Ortalama R", "Son güncelleme"):
         assert t in html, t
     assert "+0.123" in html and "-0.0457" in html            # 0.123456 → 3 hane, -0.045678 → 4 hane
     assert "Bu ağırlık TEK BAŞINA işlem kararı değildir" in html
@@ -298,17 +421,58 @@ def test_learning_long_why_is_truncated_with_details(client):
     assert "…" in sec, "uzun gerekçe kısaltılmamış"
 
 
-def test_learning_totals_match_state(client, state_dir):
-    """24 · Öğrenme sayfası hesapları mevcut state ile paritededir."""
-    ln = json.loads((state_dir / "learning.json").read_text(encoding="utf-8"))
+def _learning_cards(client) -> dict[str, str]:
     html = client.get("/learning").text
     cards = dict(re.findall(r'<div class="k">(.*?)</div><div class="v">(.*?)</div>', html, re.S))
-    clean = {re.sub(r"<[^>]+>", "", k).strip(): re.sub(r"<[^>]+>", "", v).strip() for k, v in cards.items()}
-    assert clean["Kapanmış işlem"] == str(ln["n_trades"])
-    assert clean["Toplam R"] == f"{float(ln['sum_r']):+.3f}R"
-    wins = sum(1 for x in ln["lessons"] if x.get("won") is True)
-    losses = sum(1 for x in ln["lessons"] if x.get("won") is False)
-    assert clean["Kazanan"] == str(wins) and clean["Kaybeden"] == str(losses)
+    return {re.sub(r"<[^>]+>", "", k).strip(): re.sub(r"<[^>]+>", "", v).strip() for k, v in cards.items()}
+
+
+def test_learning_totals_match_all_time_counters(client, state_dir):
+    """24 · Öğrenme kartları TÜM ZAMAN sayaçlarından gelir — `lessons` uzunluğundan DEĞİL.
+
+    Fixture: `n_trades=5`, `n_wins=2`, fakat `lessons` YALNIZ 2 kayıt. Eski kod kazanan/kaybeden'i
+    `lessons`tan sayıp `1 / 1 · %50.0` gösteriyordu; doğrusu `2 kazanan / 3 kazanmayan · %40.0`.
+    """
+    ln = json.loads((state_dir / "learning.json").read_text(encoding="utf-8"))
+    assert (ln["n_trades"], ln["n_wins"], len(ln["lessons"])) == (5, 2, 2)   # kurulum kontrolü
+    c = _learning_cards(client)
+    assert c["Kapanmış işlem"] == "5"          # n_trades (lessons=2 DEĞİL)
+    assert c["Kazanan"] == "2"                 # n_wins   (lessons'tan sayılan 1 DEĞİL)
+    assert c["Kazanmayan"] == "3"              # n_trades − n_wins (kaybeden + başa baş)
+    assert c["Kazanma oranı"] == "%40.0"       # n_wins / n_trades — %50.0 DEĞİL
+    assert c["Toplam R"] == f"{float(ln['sum_r']):+.3f}R"
+
+
+def test_learning_window_holds_when_lessons_are_truncated(tmp_path):
+    """`lessons` 200 ile budandığında bile üst kartlar TÜM ZAMAN sayaçlarını gösterir."""
+    d = tmp_path / "state"
+    d.mkdir()
+    (d / "learning.json").write_text(json.dumps({
+        "n_trades": 250, "n_wins": 100, "sum_r": 12.5, "updated_at": "2026-08-22T22:00:00+00:00",
+        "lessons": [{"id": f"T{i}", "won": i % 2 == 0, "r": 0.1} for i in range(200)]}), encoding="utf-8")
+    (d / "mode.json").write_text(json.dumps({"mode": "PAPER", "live_order_path_enabled": False}), encoding="utf-8")
+    c = TestClient(create_app(d, tmp_path / "market", None, DashboardConfig()))
+    cards = _learning_cards(c)
+    assert cards["Kapanmış işlem"] == "250"    # budanmış 200 DEĞİL
+    assert cards["Kazanan"] == "100"           # lessons'taki 100 won=True ile ÇAKIŞMASIN diye 250/100 seçildi
+    assert cards["Kazanmayan"] == "150"
+    assert cards["Kazanma oranı"] == "%40.0"   # 100/250 — lessons'tan gelseydi %50.0 olurdu
+    assert cards["Ortalama R"] == f"{12.5 / 250:+.3f}R"
+    assert "Veri penceresi: son 200 ders" in c.get("/learning").text
+
+
+def test_learning_missing_counters_report_no_data(tmp_path):
+    """Sayaç alanı yoksa `Veri yok` — `lessons`tan TÜRETİLMEZ, sessiz `0` da gösterilmez."""
+    d = tmp_path / "state"
+    d.mkdir()
+    (d / "learning.json").write_text(json.dumps({
+        "updated_at": "2026-08-22T22:00:00+00:00",
+        "lessons": [{"id": "T1", "won": True, "r": 1.0}, {"id": "T2", "won": False, "r": -1.0}]}),
+        encoding="utf-8")
+    (d / "mode.json").write_text(json.dumps({"mode": "PAPER", "live_order_path_enabled": False}), encoding="utf-8")
+    cards = _learning_cards(TestClient(create_app(d, tmp_path / "market", None, DashboardConfig())))
+    for k in ("Kapanmış işlem", "Kazanan", "Kazanmayan", "Kazanma oranı"):
+        assert cards[k] == "Veri yok", k
 
 
 # --------------------------------------------------------------------------- 25-27 · güvenlik / algoritma

@@ -13,12 +13,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from ..pnl import (PortfolioView, PositionView, canonical_summary, check_invariants, fmt_money,
-                   fmt_pct, fmt_qty, portfolio_view)
+from ..pnl import (FRESH_OK, FRESH_STALE, FRESH_UNKNOWN, PF_POSITIVE_INFINITY, PortfolioView,
+                   PositionView, canonical_summary, check_invariants, fmt_money, fmt_pct, fmt_qty,
+                   portfolio_view, profit_factor_state)
 
-LIVE_OK = "live"
-LIVE_STALE = "stale"
-LIVE_UNKNOWN = "unknown"
+# Tazelik adları `pnl` katmanında TEK yerde tanımlıdır; burada yalnız yeniden dışa verilir
+# (iki ayrı string listesi zamanla ayrışır ve `stale` sessizce `live` gibi görünürdü).
+LIVE_OK = FRESH_OK
+LIVE_STALE = FRESH_STALE
+LIVE_UNKNOWN = FRESH_UNKNOWN
 
 
 @dataclass(frozen=True)
@@ -75,6 +78,10 @@ class ChiefView:
     open_stop_risk_usdt: Any = None   # stop'a kadar BRÜT tahmini kayıp (defterden hesaplanır)
     risk_budget_max_usdt: Any = None
     risk_budget_util_pct: Any = None
+    risk_equity_basis_usdt: Any = None    # motorun KABUL kararında kullandığı taban
+    risk_equity_basis_kind: Any = None    # starting_equity | live_equity
+    risk_snapshot_age_s: Any = None       # risk.json yaşı (fiyat yaşından AYRI)
+    risk_snapshot_state: Any = None       # live | stale | unknown
 
     def to_dict(self) -> dict:
         return {k: (format(v, "f") if hasattr(v, "quantize") else v) for k, v in self.__dict__.items()}
@@ -109,7 +116,11 @@ def chief_view(chief: dict | None, pv: PortfolioView, summary: dict | None = Non
         drawdown_pct=s.get("max_drawdown_pct", _num(pv.max_drawdown)),
         open_stop_risk_usdt=s.get("open_stop_risk_usdt"),
         risk_budget_max_usdt=s.get("risk_budget_max_usdt"),
-        risk_budget_util_pct=s.get("open_risk_budget_utilization_pct"))
+        risk_budget_util_pct=s.get("open_risk_budget_utilization_pct"),
+        risk_equity_basis_usdt=s.get("risk_equity_basis_usdt"),
+        risk_equity_basis_kind=s.get("risk_equity_basis_kind"),
+        risk_snapshot_age_s=s.get("risk_snapshot_age_s"),
+        risk_snapshot_state=s.get("risk_snapshot_state"))
 
 
 # --------------------------------------------------------------------------- tablo satırları
@@ -169,24 +180,22 @@ class SummaryCard:
 
 
 def profit_factor_value(pv: PortfolioView) -> float | None:
-    """Kanonik profit factor değeri.
+    """Profit factor'ün SAYISAL değeri — `inf`/`NaN` ASLA döndürmez (JSON sınırı için).
 
-      brüt zarar > 0            → gross_profit / abs(gross_loss)
-      zarar yok, kâr var        → `inf`
-      kapanmış işlem yok        → None  («Veri yok»)
-      gerçekten 0               → 0.0
+    Sonsuzluk bilgisi sayıda değil, `pnl.profit_factor_state()`'in ikinci alanında taşınır.
     """
-    if pv.closed_trades == 0:
-        return None
-    v = _num(pv.profit_factor)
-    return float("inf") if v is None else v
+    return profit_factor_state(pv)[0]
 
 
-def _pf_display(pf: float | None) -> str:
-    """Profit factor gösterimi: `$` YOK, `+` YOK — bu bir ORANDIR."""
-    if pf is None:
-        return NO_DATA
-    return "∞" if pf == float("inf") else f"{pf:.2f}"
+def _pf_display(pf_state: str, pf: float | None) -> str:
+    """Profit factor gösterimi: `$` YOK, `+` YOK — bu bir ORANDIR.
+
+    `∞` YALNIZ gerçekten sonsuz olduğunda (zarar 0, kâr > 0) yazılır. `0/0` tanımsızdır ve
+    `∞` DEĞİL `Veri yok` gösterilir — aksi hâlde hiç kâr etmemiş bir bot "sonsuz iyi" görünürdü.
+    """
+    if pf_state == PF_POSITIVE_INFINITY:
+        return "∞"
+    return NO_DATA if pf is None else f"{pf:.2f}"
 
 
 def summary_cards(pv: PortfolioView, summary: dict | None = None) -> list[SummaryCard]:
@@ -196,7 +205,7 @@ def summary_cards(pv: PortfolioView, summary: dict | None = None) -> list[Summar
     def pct1(x, nd=1):
         return NO_DATA if x is None else f"%{float(x):.{nd}f}"
 
-    _pf = profit_factor_value(pv)
+    _pf, _pf_state = profit_factor_state(pv)
     cards = [
         SummaryCard("today_realized_net_usdt", "Bugün gerçekleşen net K/Z", _num(pv.realized_today),
                     fmt_money(pv.realized_today), "money", "kapanan işlemler (UTC gün)"),
@@ -211,14 +220,15 @@ def summary_cards(pv: PortfolioView, summary: dict | None = None) -> list[Summar
                     f"başa baş {pv.breakeven} · kapanmış {pv.closed_trades}"),
         SummaryCard("win_rate_pct", "Kazanma oranı", _num(pv.win_rate), pct1(_num(pv.win_rate)), "pct",
                     "kazanan / (kazanan + kaybeden) — başa baş HARİÇ"),
-        SummaryCard("profit_factor", "Profit factor", _pf, _pf_display(_pf),
+        SummaryCard("profit_factor", "Profit factor", _pf, _pf_display(_pf_state, _pf),
                     "ratio", "brüt kâr / brüt zarar — oran, para birimi değil"),
         SummaryCard("max_drawdown_pct", "Maks. drawdown", _num(pv.max_drawdown),
                     pct1(_num(pv.max_drawdown), 2), "pct", "risk motoru (risk.json)"),
     ]
     if summary is not None:
         mu, sr = s.get("margin_utilization_pct"), s.get("open_stop_risk_usdt")
-        partial = " · ⚠ stop'suz pozisyon var" if s.get("open_stop_risk_is_partial") else ""
+        partial = stop_risk_note(s)
+        stale_note = risk_stale_note(s)
         cards += [
             SummaryCard("open_futures_margin_usdt", "Açık futures teminatı", s.get("open_futures_margin_usdt"),
                         NO_DATA if s.get("open_futures_margin_usdt") is None
@@ -233,14 +243,72 @@ def summary_cards(pv: PortfolioView, summary: dict | None = None) -> list[Summar
                         s.get("risk_engine_reserved_usdt"),
                         NO_DATA if s.get("risk_engine_reserved_usdt") is None
                         else fmt_money(s["risk_engine_reserved_usdt"], signed=False, currency="") + " USDT",
-                        "money_plain", "risk.json → total_open_risk_usdt (stop riskinden AYRI kavram)"),
+                        "money_plain",
+                        "risk.json → total_open_risk_usdt (stop riskinden AYRI kavram)" + stale_note),
             SummaryCard("open_risk_budget_utilization_pct", "Risk bütçesi kullanımı",
                         s.get("open_risk_budget_utilization_pct"),
                         pct1(s.get("open_risk_budget_utilization_pct")), "pct",
-                        NO_DATA if s.get("risk_budget_max_usdt") is None
-                        else "azami %s USDT" % fmt_money(s["risk_budget_max_usdt"], signed=False, currency="")),
+                        risk_budget_sub(s) + stale_note),
         ]
     return cards
+
+
+def risk_budget_sub(s: dict) -> str:
+    """Risk bütçesi kartının altyazısı — TABAN AÇIKÇA YAZILIR.
+
+    Operatör `%20.3` ile `%21.5` arasındaki farkın nereden geldiğini kartta görebilmelidir:
+    motor `starting_equity` tabanını kullanırken panel canlı equity'yi gösterirse aynı büyüklük
+    iki farklı sayı olur. Taban bilinmiyorsa oran zaten `Veri yok`tur.
+    """
+    if s.get("risk_budget_max_usdt") is None:
+        return s.get("unavailable_reason", {}).get("risk_budget_max_usdt", NO_DATA)
+    label = {"starting_equity": "Başlangıç özkaynağı tabanı",
+             "live_equity": "Canlı özkaynak tabanı"}.get(str(s.get("risk_equity_basis_kind") or ""),
+                                                         "Özkaynak tabanı")
+    out = "azami %s USDT" % fmt_money(s["risk_budget_max_usdt"], signed=False, currency="")
+    basis = s.get("risk_equity_basis_usdt")
+    if basis is not None:
+        out += " · %s: %s USDT" % (label, fmt_money(basis, signed=False, currency=""))
+    return out
+
+
+def risk_stale_note(s: dict) -> str:
+    """Risk anlık görüntüsü bayatsa/zamanı bilinmiyorsa kartın altyazısına eklenen uyarı.
+
+    Değer GİZLENMEZ (operatör son bilinen rezervasyonu görmeye devam eder) fakat «bayat» etiketi
+    ZORUNLUDUR — bayat risk verisi taze gibi sunulamaz.
+    """
+    st = s.get("risk_snapshot_state")
+    if st == LIVE_STALE:
+        return " · ⚠ Risk verisi güncel değil (%s)" % _age_text(s.get("risk_snapshot_age_s"))
+    if st == LIVE_UNKNOWN:
+        return " · ⚠ Risk verisi yaşı bilinmiyor"
+    return " · risk verisi %s önce" % _age_text(s.get("risk_snapshot_age_s"))
+
+
+def stop_risk_note(s: dict) -> str:
+    """Stop riski toplamına giremeyen pozisyonları AYRI AYRI etiketler (eksik/bozuk/geçersiz)."""
+    parts = []
+    for key, label in (("positions_without_stop", "stop'suz"),
+                       ("positions_stop_malformed", "stop değeri bozuk"),
+                       ("positions_invalid_qty", "miktar/giriş geçersiz")):
+        n = int(s.get(key) or 0)
+        if n:
+            parts.append(f"{n} {label}")
+    return (" · ⚠ toplama girmeyen: " + ", ".join(parts)) if parts else ""
+
+
+def _age_text(sec: Any) -> str:
+    if sec is None:
+        return "bilinmiyor"
+    sec = int(sec)
+    if sec < 90:
+        return f"{sec}sn"
+    if sec < 5400:
+        return f"{sec // 60}dk"
+    if sec < 172800:
+        return f"{sec // 3600}sa"
+    return f"{sec // 86400}g"
 
 
 def _num(x: Any) -> float | None:
@@ -257,7 +325,7 @@ def build(state_positions: list[dict], trades: list[dict], chief: dict | None, *
           marks: dict[str, Any] | None = None, fees: Any = None, today: str | None = None,
           max_drawdown_pct: Any = None, freshness: Freshness | None = None,
           futures_equity: Any = None, spot_equity: Any = None, risk_state: dict | None = None,
-          as_of: str | None = None) -> dict:
+          as_of: str | None = None, risk_age_s: Any = None, risk_stale_s: Any = None) -> dict:
     """Panelin TEK giriş noktası: her bölüm için hazır, tutarlılığı denetlenmiş model.
 
     `summary` KANONİK özettir; HTML sayfası da `/api/live/summary` de AYNI sözlüğü kullanır,
@@ -267,7 +335,8 @@ def build(state_positions: list[dict], trades: list[dict], chief: dict | None, *
                         max_drawdown_pct=max_drawdown_pct)
     fr = freshness.to_dict() if freshness else None
     summary = canonical_summary(pv, futures_equity=futures_equity, spot_equity=spot_equity,
-                                risk_state=risk_state, as_of=as_of, source_freshness=fr)
+                                risk_state=risk_state, as_of=as_of, source_freshness=fr,
+                                risk_age_s=risk_age_s, risk_stale_s=risk_stale_s)
     rows = [position_row(v) for v in pv.positions]
     issues = check_invariants(pv, table_rows=len(rows))
     return {"portfolio": pv, "chief": chief_view(chief, pv, summary), "rows": rows,
@@ -276,4 +345,6 @@ def build(state_positions: list[dict], trades: list[dict], chief: dict | None, *
 
 
 __all__ = ["ChiefView", "Freshness", "LIVE_OK", "LIVE_STALE", "LIVE_UNKNOWN", "NO_DATA",
-           "POSITION_COLUMNS", "SummaryCard", "build", "chief_view", "position_row", "summary_cards"]
+           "POSITION_COLUMNS", "SummaryCard", "build", "chief_view", "position_row",
+           "profit_factor_value", "risk_budget_sub", "risk_stale_note", "stop_risk_note",
+           "summary_cards"]

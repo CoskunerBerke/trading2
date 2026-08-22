@@ -11,6 +11,11 @@ NAV: list[tuple[str, str]] = [
     ("/models", "Modeller"), ("/llm", "LLM"), ("/health", "Sağlık"),
 ]
 
+# Açık pozisyon tablosunun sticky sütun sınıfı — TEK KAYNAK.
+# Sunucu render'ı (`table(..., cls=POS_TABLE_CLS)`) ve polling JS'i AYNI sabiti kullanır; ikisi
+# ayrı yazıldığında polling tabloyu sınıfsız kuruyor ve sticky sütunlar sessizce kayboluyordu.
+POS_TABLE_CLS = "pos"
+
 CSS_EXTRA = """
 .live{display:flex;flex-wrap:wrap;gap:.4rem;align-items:center;font-size:.86rem}
 .warn-box{border-left:3px solid #ef5350;background:rgba(239,83,80,.08)}
@@ -50,13 +55,20 @@ footer{color:var(--mut);font-size:11px;text-align:center;padding:14px}
 html,body{max-width:100%;overflow-x:hidden}
 main{max-width:100%}
 .tw{max-width:100%}
-/* Geniş açık-pozisyon tablosunda ilk üç sütun (Sembol · Piyasa · Yön) sabit kalır. */
-.tw table.pos td:nth-child(-n+3),.tw table.pos th:nth-child(-n+3){position:sticky;background:var(--panel);z-index:1}
-.tw table.pos td:nth-child(1),.tw table.pos th:nth-child(1){left:0}
-.tw table.pos td:nth-child(2),.tw table.pos th:nth-child(2){left:96px}
-.tw table.pos td:nth-child(3),.tw table.pos th:nth-child(3){left:176px}
+/* Geniş açık-pozisyon tablosunda ilk üç sütun (Sembol · Piyasa · Yön) sabit kalır.
+   SÜTUN GENİŞLİKLERİ SABİTLENİR: `left` değerleri ancak genişlikler kesin olduğunda doğrudur.
+   Önce genişlik serbestti; `1000000BONKDOWN/USDT` gibi uzun sembolde 1. sütun 192px'e çıkıyor,
+   `left:96px`e sabitlenmiş 2. sütun onun ÜZERİNE biniyordu. Uzun sembol artık ellipsis ile
+   kısaltılır; tam değer `title` içinde korunur. Toplam: 130 + 96 + 76 = 302px.
+   (2. ve 3. sütun genişlikleri en uzun rozetlere göre seçildi: «FUTURES» ve «SHORT».) */
+.tw table.pos td:nth-child(-n+3),.tw table.pos th:nth-child(-n+3){position:sticky;background:var(--panel);z-index:1;overflow:hidden;text-overflow:ellipsis}
+.tw table.pos td:nth-child(1),.tw table.pos th:nth-child(1){left:0;width:130px;min-width:130px;max-width:130px}
+.tw table.pos td:nth-child(2),.tw table.pos th:nth-child(2){left:130px;width:96px;min-width:96px;max-width:96px}
+.tw table.pos td:nth-child(3),.tw table.pos th:nth-child(3){left:226px;width:76px;min-width:76px;max-width:76px}
 .tw table.pos th:nth-child(-n+3){z-index:2}
-.card .v{overflow-wrap:anywhere}          /* uzun damga/etiket kartı taşırmaz */
+/* Uzun damga/etiket/alan adı kartı taşırmaz. Altyazılar `exposure.max_total_open_risk_usdt`
+   gibi bölünemeyen uzun tanımlayıcılar içerebilir → `anywhere` altyazıya da gerekli. */
+.card .v,.card .small{overflow-wrap:anywhere}
 @media(max-width:900px){.tw table.pos td:nth-child(-n+3),.tw table.pos th:nth-child(-n+3){position:static}}
 @media(max-width:600px){main{padding:6px}h1{font-size:17px}.card .v{font-size:17px}table{font-size:12px}
   .grid{grid-template-columns:1fr}}      /* mobilde kartlar okunabilir sırayla alt alta */
@@ -250,6 +262,25 @@ def chief_block(cv) -> str:
     def _usdt(x):
         return (fmt_money(x, signed=False, currency="") + " USDT") if x is not None else "Veri yok"
 
+    def _basis(c):
+        """Risk bütçesinin EQUITY TABANI — kartta açıkça yazılır (motor `starting_equity`
+        kullanırken panel canlı equity gösterirse aynı büyüklük iki farklı sayı olur)."""
+        if getattr(c, "risk_equity_basis_usdt", None) is None:
+            return ""
+        label = {"starting_equity": "Başlangıç özkaynağı tabanı",
+                 "live_equity": "Canlı özkaynak tabanı"}.get(
+                     str(getattr(c, "risk_equity_basis_kind", "") or ""), "Özkaynak tabanı")
+        return " · %s: %s USDT" % (label, fmt_money(c.risk_equity_basis_usdt, signed=False, currency=""))
+
+    def _risk_age(c):
+        """Risk anlık görüntüsünün yaşı — fiyat tazeliğinden AYRI etiketlenir."""
+        st = getattr(c, "risk_snapshot_state", None)
+        if st == "stale":
+            return " · ⚠ Risk verisi güncel değil (%s önce)" % age_text(c.risk_snapshot_age_s)
+        if st == "unknown" or st is None:
+            return " · ⚠ Risk verisi yaşı bilinmiyor"
+        return " · risk verisi %s önce" % age_text(c.risk_snapshot_age_s)
+
     # Uzun ISO damgası kartı taşırıyordu; insan okunur biçim + ham değer tooltip'te.
     gen = f'<span title="{esc(cv.generated_at or "")}">{esc(fmt_utc(cv.generated_at))}</span>'
     c = [card("Karar üretim zamanı", gen),
@@ -268,10 +299,11 @@ def chief_block(cv) -> str:
          card("Açık stop riski", _usdt(cv.open_stop_risk_usdt),
               "pozisyonların stop'a kadar BRÜT tahmini kaybı (ücret hariç)"),
          card("Risk motoru rezervasyonu", _usdt(cv.open_risk_usdt),
-              "risk.json → total_open_risk_usdt"),
+              "risk.json → total_open_risk_usdt" + _risk_age(cv)),
          card("Risk bütçesi kullanımı", _pct(cv.risk_budget_util_pct),
-              ("azami " + fmt_money(cv.risk_budget_max_usdt, signed=False, currency="") + " USDT")
-              if cv.risk_budget_max_usdt is not None else "azami bütçe bilinmiyor"),
+              (("azami " + fmt_money(cv.risk_budget_max_usdt, signed=False, currency="") + " USDT"
+                + _basis(cv)) if cv.risk_budget_max_usdt is not None
+               else "azami bütçe bilinmiyor — equity tabanı yayımlanmamış") + _risk_age(cv)),
          card("Teminat kullanımı", _pct(cv.margin_util_pct), "açık teminat / futures özkaynak"),
          card("Günlük gerçekleşen net K/Z", fmt_money(cv.realized_today)),
          card("Günlük gerçekleşmemiş net K/Z", fmt_money(cv.unrealized_open)),
@@ -332,12 +364,19 @@ def live_script(cfg) -> str:
    setLive('on',d.freshness);
    var el=document.getElementById('postbl');
    if(el&&d.rows){
-     var h='<table><thead><tr>'+d.columns.map(function(c){return '<th>'+c+'</th>';}).join('')+'</tr></thead><tbody>';
+     /* TABLO MARKUP SOZLESMESI - sunucu render'i ile AYNI olmak ZORUNDA: `.tw` sarmalayici,
+        `<table class="__TCLS__">` ve 3. sutundan sonra num/up/dn hizalamasi. Bu tablo daha
+        once `class` TASIMIYORDU: ilk yuklemede sabit (sticky) kalan Sembol/Piyasa/Yon
+        sutunlari 7 saniyelik ilk polling'den sonra SESSIZCE normale donuyordu. */
+     function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+     var h='<table class="__TCLS__"><thead><tr>'+d.columns.map(function(c){return '<th>'+esc(String(c))+'</th>';}).join('')+'</tr></thead><tbody>';
      if(!d.rows.length){h+='<tr><td colspan="'+d.columns.length+'" class="mut">a\u00e7\u0131k pozisyon yok</td></tr>';}
      d.rows.forEach(function(r){h+='<tr>'+r.map(function(c,i){
-       var s=String(c==null?'\u2014':c);var cls='';
+       var s=String(c==null?'\u2014':c);var cls='',attr='';
        if(i>=3){cls=' class="num'+(s.charAt(0)==='+'?' up':(s.charAt(0)==='-'?' dn':''))+'"';}
-       return '<td'+cls+'>'+s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</td>';}).join('')+'</tr>';});
+       /* Ilk uc sutun sabit genislikte + ellipsis -> tam deger tooltip'te korunur. */
+       if(i<3){attr=' title="'+esc(s)+'"';}
+       return '<td'+cls+attr+'>'+esc(s)+'</td>';}).join('')+'</tr>';});
      /* `.tw` sarmalayıcısı ZORUNLU: sunucu tarafı `table()` bunu ekler, polling eklemeyince
         tablo kendi kapsayıcısında değil SAYFADA yatay taşma yapıyordu. */
      el.innerHTML='<div class="tw">'+h+'</tbody></table></div>';
@@ -362,7 +401,7 @@ def live_script(cfg) -> str:
      run_age_s:d.last_run_age_s,heads_age_s:null});}
  },__HEAL__);
 })();
-</script>""".replace("__POS__", str(pos)).replace("__SUM__", str(summ)).replace("__HEAL__", str(heal))             .replace("__MULT__", str(mult)).replace("__STALE__", str(stale))
+</script>""".replace("__POS__", str(pos)).replace("__SUM__", str(summ)).replace("__HEAL__", str(heal))             .replace("__MULT__", str(mult)).replace("__STALE__", str(stale)).replace("__TCLS__", POS_TABLE_CLS)
 
 
 def card(k: str, v: str, sub: str = "", cid: str = "") -> str:

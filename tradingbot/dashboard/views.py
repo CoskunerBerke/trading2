@@ -11,6 +11,7 @@ KAVRAM AYRIMI (kullanıcı şikâyetinin kaynağı):
 from __future__ import annotations
 
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Any
 
 from ..pnl import (FRESH_OK, FRESH_STALE, FRESH_UNKNOWN, PF_POSITIVE_INFINITY, PortfolioView,
@@ -72,11 +73,84 @@ NO_DECISION_REASON = "Pozisyon defterde açık; son coin-head seçkisinde yer al
 COIN_HEAD_CANDIDATE_LIMIT = 10          # aday KOTASI — açık pozisyonlara UYGULANMAZ
 
 
-def _head_confidence(h: dict) -> float:
-    try:
-        return float(h.get("confidence_calibrated") or 0.0)
-    except (TypeError, ValueError):
-        return 0.0
+def _head_confidence(h: dict) -> float | None:
+    """Sonlu kalibre güven; NaN/±Infinity/bozuk/eksik -> None. KANONİK guard kullanılır."""
+    return finite_float_or_none(h.get("confidence_calibrated"))
+
+
+def coin_head_sort_key(h: dict) -> tuple:
+    """DETERMİNİSTİK aday sıralaması: güven azalan; güveni ÖLÇÜLEMEYEN aday EN SONA.
+
+    Çıplak `float()` ile NaN sıralama anahtarına girerse karşılaştırmalar `False` döner ve sıra
+    girdi sırasına göre KARARSIZ olur. Bu yüzden önce sonluluk bayrağı, sonra `-güven`, sonra
+    sembol (eşitlikte tam determinizm) karşılaştırılır.
+    """
+    c = _head_confidence(h)
+    sym = str(h.get("symbol") or "")
+    return (1, sym) if c is None else (0, -c, sym)
+
+
+def json_safe(obj: Any, *, path: str = "", reasons: dict | None = None) -> tuple[Any, dict]:
+    """RFC-uyumlu JSON'a çevrilebilir kopya + `unavailable_reason` haritası.
+
+    * Sonlu olmayan sayı (`NaN`/`±Infinity`, `Decimal("NaN")` dâhil) -> `None` + gerekçe.
+      SAHTE `0` / `%0` / `$0.00` ÜRETİLMEZ.
+    * JSON'a çevrilemeyen tip -> `None` + gerekçe. Ham nesne KÖRLEMESİNE `str()`e ÇEVRİLMEZ.
+    * str/bool/int/None ve dict/list yapıları olduğu gibi korunur.
+    Kanonik sonluluk guard'ı `pnl.finite_float_or_none`dur; ikinci bir kopya YOKTUR.
+    """
+    reasons = {} if reasons is None else reasons
+    if obj is None or isinstance(obj, (str, bool, int)):
+        return obj, reasons
+    if isinstance(obj, float):
+        v = finite_float_or_none(obj)
+        if v is None:
+            reasons[path or "<root>"] = "sonlu olmayan sayı (NaN/Infinity) — değer ölçülemedi"
+        return v, reasons
+    if isinstance(obj, Decimal):
+        v = finite_float_or_none(obj)
+        if v is None:
+            reasons[path or "<root>"] = "sonlu olmayan Decimal — değer ölçülemedi"
+        return v, reasons
+    if isinstance(obj, dict):
+        out = {}
+        for k, val in obj.items():
+            key = str(k)
+            out[key], reasons = json_safe(val, path=(path + "." + key if path else key), reasons=reasons)
+        return out, reasons
+    if isinstance(obj, (list, tuple)):
+        out_l = []
+        for i, val in enumerate(obj):
+            v, reasons = json_safe(val, path="%s[%d]" % (path, i), reasons=reasons)
+            out_l.append(v)
+        return out_l, reasons
+    reasons[path or "<root>"] = "JSON'a çevrilemeyen tip: %s" % type(obj).__name__
+    return None, reasons
+
+
+def coin_head_api_rows(payload: dict) -> list[dict]:
+    """`/api/overview` icin NORMALIZE edilmis coin-head ozeti — HAM model ciktisi DEGIL.
+
+    Ham `heads` sozlugu `specialist_reports[].levels.ema*_1d` gibi ic ic gecmis model alanlari
+    tasir ve bunlarin icinde CIPLAK NaN bulunabilir; ham sozluk JSON'a verildiginde uc 500 doner.
+    Burada yalniz sunum sozlesmesindeki alanlar, kanonik sonluluk guard'indan gecirilerek yayimlanir.
+    """
+    out = []
+    for h, m in zip(payload.get("heads") or [], payload.get("meta") or []):
+        out.append({"symbol": str(h.get("symbol") or ""),
+                    "verdict": (None if h.get("verdict") is None else str(h.get("verdict"))),
+                    "direction": (None if h.get("direction") is None else str(h.get("direction"))),
+                    "regime": (None if h.get("regime") is None else str(h.get("regime"))),
+                    "status": m.get("status"), "status_kind": m.get("status_kind"),
+                    "no_decision": bool(m.get("no_decision")), "is_open": bool(m.get("is_open")),
+                    "position_id": m.get("position_id"), "side": m.get("side"),
+                    "confidence_calibrated": finite_float_or_none(h.get("confidence_calibrated")),
+                    "p_win": finite_float_or_none(h.get("p_win")),
+                    "expected_return_net": finite_float_or_none(h.get("expected_return_net")),
+                    "expected_r": finite_float_or_none(h.get("expected_r")),
+                    "net_unrealized": finite_float_or_none(m.get("pnl")),
+                    "no_trade_reason": str(h.get("no_trade_reason") or "") or None})
+    return out
 
 
 def no_decision_head(symbol: str, position: dict | None = None) -> dict:
@@ -147,7 +221,7 @@ def coin_head_scope(heads: list[dict] | None, open_positions: list[dict] | None,
             h = no_decision_head(sym, pos_by_symbol.get(sym))
         rows.append(h)
     used = set(open_symbols)
-    for h in sorted(heads, key=lambda x: -_head_confidence(x)):   # 2) kalan kapasiteye adaylar
+    for h in sorted(heads, key=coin_head_sort_key):               # 2) kalan kapasiteye adaylar
         sym = str(h.get("symbol") or "")
         if not sym or sym in used:                       # 3) sembolsuz/bozuk kayit ve duplicate YOK
             continue

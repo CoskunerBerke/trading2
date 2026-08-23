@@ -21,7 +21,8 @@ from .candles import CandleSource, build_candle_payload
 from .config import DashboardConfig
 from ..pnl import finite_float_or_none, position_view, realized_net
 from .state import STATE_FILES, StateReader
-from .views import NO_DECISION_VERDICT, POSITION_NUM_COLS, coin_head_table, open_coverage
+from .views import (NO_DECISION_VERDICT, POSITION_NUM_COLS, coin_head_api_rows,
+                    coin_head_table, json_safe, open_coverage)
 from .templates import (HEADS_TABLE_CLS, POS_TABLE_CLS, age_text, badge, card, card_value,
                         chart_block, chief_block, esc, fmt, fmt_utc, health_badge, ks_badge,
                         kv_table, lessons_table, live_bar, live_script, money_html,
@@ -667,7 +668,39 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
 
     @app.get("/api/overview")
     def api_overview():
-        return JSONResponse(state.overview())
+        """Genel bakis — HER ZAMAN RFC-uyumlu JSON.
+
+        KOK NEDEN (gercek state'te dogrulandi): `state.overview()` HAM coin-head sozluklerini
+        (`top_heads`, cf284ce'den beri ayrica `coin_head_scope.heads`) dogrudan JSON'a veriyordu.
+        Ham sozluk `specialist_reports[].levels.ema100_1d / ema200_1d` altinda CIPLAK `NaN`
+        tasiyabilir (worker `coin_heads.json`a `NaN` literali yazar) -> `JSONResponse`in
+        `allow_nan=False` serilestirmesi `ValueError` firlatir -> HTTP 500. `/api/live/coin-heads`
+        yalniz NORMALIZE edilmis satir/meta sozlesmesini dondurdugu icin etkilenmiyordu.
+
+        Cozum SUNUM SINIRINDA: ham model ciktisi JSON'a KONTROLSUZ verilmez; normalize edilmis
+        coin-head sozlesmesi yayimlanir ve kalan yuk kanonik sonluluk guard'indan gecirilir.
+        Olculemeyen sayi SAHTE `0` degil `null` olur, gerekcesi `unavailable_reason`a yazilir.
+        """
+        ov = dict(state.overview())
+        chp = _coin_head_payload()
+        cov = open_coverage(chp["heads"], state.futures_positions())
+        ov["top_heads"] = coin_head_api_rows(chp)          # HAM sozluk DEGIL — normalize sozlesme
+        ov["coin_head_table"] = {"columns": chp["columns"], "rows": chp["rows"], "meta": chp["meta"],
+                                 "num_cols": chp["num_cols"], "pnl_cols": chp["pnl_cols"],
+                                 "badge_cols": chp["badge_cols"], "symbol_col": chp["symbol_col"]}
+        ov["coin_head_scope"] = {k: chp[k] for k in
+                                 ("open_positions_total", "open_positions_shown",
+                                  "missing_open_symbols", "no_decision_symbols",
+                                  "coverage_complete", "candidate_limit")}
+        # Kapsam sayaclari `/api/live/coin-heads` ile AYNI kaynaktan ve AYNI olcumden gelir.
+        ov["open_positions_total"] = cov["open_positions_total"]
+        ov["open_positions_shown"] = cov["open_positions_shown"]
+        ov["missing_open_symbols"] = cov["missing_open_symbols"]
+        ov["coverage_complete"] = cov["coverage_complete"]
+        safe, reasons = json_safe(ov)
+        if reasons:
+            safe["unavailable_reason"] = dict(reasons)
+        return JSONResponse(safe)
 
     # ------------------------------------------------------------------ sağlık / metrik
     @app.get("/health/live")

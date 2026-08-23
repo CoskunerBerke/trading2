@@ -278,10 +278,15 @@ def chief_block(cv) -> str:
 
     def _spot_no_stop(c):
         """Stopsuz spot AÇIKÇA yazılır — stop alanı boşken 'risk azaldı' izlenimi verilmez."""
+        out = ""
+        if getattr(c, "spot_exposure_unknown", False):
+            bad = list(getattr(c, "spot_symbols_unknown_price", None) or [])
+            out += (" · ⚠ fiyat geçersiz (" + esc(", ".join(str(x) for x in bad[:3]))
+                    + ") — maruziyet ölçülemedi, yeni spot giriş reddedilir")
         syms = list(getattr(c, "spot_symbols_without_stop", None) or [])
-        if not syms:
-            return ""
-        return " · stopsuz (stopla sınırlanmamış): " + esc(", ".join(str(x) for x in syms[:4]))
+        if syms:
+            out += " · stopsuz (stopla sınırlanmamış): " + esc(", ".join(str(x) for x in syms[:4]))
+        return out
 
     def _risk_age(c):
         """Risk anlık görüntüsünün yaşı — fiyat tazeliğinden AYRI etiketlenir."""

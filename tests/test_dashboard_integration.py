@@ -888,16 +888,23 @@ def test_paper_and_safety_invariants_unchanged(client):
     assert ModeState.is_live_order_path_enabled() is False
 
 
-def test_telegram_and_leverage_still_disabled():
-    """25 · Shipped config'te Telegram ve dinamik kaldıraç HÂLÂ kapalı."""
+def test_telegram_off_and_leverage_bounded_paper_only():
+    """25 · Shipped config: Telegram KAPALI; dinamik kaldıraç AÇIK ama 2x–5x ve YALNIZ PAPER.
+
+    Kaldıraç bilinçli olarak etkinleştirildi (bkz. `config.yaml → leverage:`). Değişmez sözleşme
+    artık "kapalı" değil, "SINIRLI ve PAPER'a kilitli"dir: 1x yeni giriş yasak, 5x mutlak tavan,
+    `paper_only=true` ile LIVE/TESTNET'te açılamaz. Telegram ve gerçek emir yolu KAPALI kalır.
+    """
     from tradingbot.config import load_config
     cfg = load_config()
     assert cfg.v3.telegram.enabled is False
     assert cfg.v3.monitoring.telegram_enabled is False
-    assert cfg.v3.leverage.enabled is False
+    assert cfg.v3.leverage.enabled is True
     assert cfg.v3.leverage.paper_only is True
-    assert cfg.v3.leverage.max_leverage <= 5
+    assert cfg.v3.leverage.min_leverage == 2          # 1x yeni futures girişi YASAK
+    assert cfg.v3.leverage.max_leverage == 5          # MUTLAK tavan
     assert cfg.mode == "PAPER" and cfg.v3.mode.live_trading is False
+    assert cfg.v3.execution.gateway == "paper" and cfg.v3.execution.testnet_enabled is False
 
 
 def test_algorithm_layer_does_not_import_dashboard():

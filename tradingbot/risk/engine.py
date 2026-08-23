@@ -175,10 +175,17 @@ class RiskEngine:
             # Spot pozisyonun stop'u olmayabilir; bu durumda "risk" olcusu yoktur ve tek dogru
             # sinir maruziyetin kendisidir. Profil alani None ise kapi UYGULANMAZ (davranis eski).
             if p.max_spot_allocation_pct is not None:
-                spot_after = state.spot_exposure_usdt + adj_notional
-                add("SPOT_ALLOCATION", spot_after <= equity_basis * p.max_spot_allocation_pct / 100.0 + 1e-9,
-                    round(spot_after, 4), round(equity_basis * p.max_spot_allocation_pct / 100.0, 4),
-                    "spot notional maruziyeti (stop riski DEĞİL)")
+                _cap = round(equity_basis * p.max_spot_allocation_pct / 100.0, 4)
+                if state.spot_exposure_unknown:
+                    # FAIL-CLOSED: mevcut spot maruziyeti geçersiz fiyat yüzünden ÖLÇÜLEMEDİ.
+                    # Bilinmeyen maruziyet "0" sayılıp yeni spot giriş açılamaz.
+                    add("SPOT_ALLOCATION", False, None, _cap,
+                        "spot maruziyeti BİLİNMİYOR (geçersiz fiyat: "
+                        + ", ".join(state.spot_symbols_unknown_price[:3]) + ") — fail-closed")
+                else:
+                    spot_after = state.spot_exposure_usdt + adj_notional
+                    add("SPOT_ALLOCATION", spot_after <= equity_basis * p.max_spot_allocation_pct / 100.0 + 1e-9,
+                        round(spot_after, 4), _cap, "spot notional maruziyeti (stop riski DEĞİL)")
         # tek coin cap
         add("MAX_POSITION_PCT", adj_notional <= equity_basis * p.max_position_pct / 100.0 * max(adj_lev, 1) + 1e-9, round(adj_notional, 2),
             round(equity_basis * p.max_position_pct / 100.0 * max(adj_lev, 1), 2))
@@ -269,7 +276,11 @@ class RiskEngine:
                              "open_positions": len(state.open_positions), "total_open_risk_usdt": round(state.total_open_risk_usdt, 4),
                              # UC AYRI KAVRAM — tek kartta TOPLANMAZ:
                              "futures_stop_risk_usdt": round(state.futures_stop_risk_usdt, 6),
-                             "spot_exposure_usdt": round(state.spot_exposure_usdt, 6),
+                             # Geçersiz fiyat → maruziyet BİLİNMİYOR: sessiz 0 yerine None + bayrak.
+                             "spot_exposure_usdt": (None if state.spot_exposure_unknown
+                                                    else round(state.spot_exposure_usdt, 6)),
+                             "spot_exposure_unknown": state.spot_exposure_unknown,
+                             "spot_symbols_unknown_price": list(state.spot_symbols_unknown_price),
                              "spot_stop_risk_usdt": round(state.spot_stop_risk_usdt, 6),
                              "spot_unbounded_notional_usdt": round(state.spot_unbounded_notional_usdt, 6),
                              "spot_symbols_without_stop": list(state.spot_symbols_without_stop),

@@ -8,6 +8,8 @@ from typing import Any
 
 import yaml
 
+from .core import ConfigError
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config.yaml"
 
@@ -144,12 +146,40 @@ def _build(cls, data: dict[str, Any] | None):
     return cls(**allowed)
 
 
+class _NoDuplicateKeyLoader(yaml.SafeLoader):
+    """YAML yinelenen anahtarlarda FAIL-CLOSED.
+
+    `yaml.safe_load` yinelenen bir eslemede SESSIZCE SONUNCUYU kabul eder. Bu, guvenlik anlami
+    tasiyan bir bolumun (or. ikinci bir `leverage:`) ilkini gorunmez bicimde ezmesine izin verir:
+    dosyada `enabled: false` yazarken calisan deger `true` olabilir. Program baslamamalidir.
+    """
+
+    def construct_mapping(self, node, deep=False):  # noqa: D102
+        seen: set = set()
+        for key_node, _ in node.value:
+            key = self.construct_object(key_node, deep=deep)
+            try:
+                dup = key in seen
+            except TypeError:                       # hashlenemeyen anahtar — PyYAML zaten hata verir
+                dup = False
+            if dup:
+                raise ConfigError(f"config.yaml yinelenen anahtar: {key!r} "
+                                  f"(satir {key_node.start_mark.line + 1}) — sessiz ezme yasak")
+            seen.add(key)
+        return super().construct_mapping(node, deep=deep)
+
+
+def load_yaml_strict(text: str) -> dict[str, Any]:
+    """Yinelenen anahtari reddeden YAML yukleyici — TEK kanonik giris noktasi."""
+    return yaml.load(text, Loader=_NoDuplicateKeyLoader) or {}      # noqa: S506 — SafeLoader turevi
+
+
 def load_config(path: str | os.PathLike | None = None) -> BotConfig:
     cfg_path = Path(path) if path else DEFAULT_CONFIG_PATH
     raw: dict[str, Any] = {}
     if cfg_path.exists():
         with open(cfg_path, "r", encoding="utf-8") as fh:
-            raw = yaml.safe_load(fh) or {}
+            raw = load_yaml_strict(fh.read())
     cfg = BotConfig(
         exchange=_build(ExchangeConfig, raw.get("exchange")),
         coins=list(raw.get("coins") or []),

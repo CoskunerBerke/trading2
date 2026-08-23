@@ -187,13 +187,29 @@ def test_no_unintended_difference_when_there_is_no_spot_position(profile, market
         assert "SPOT_ALLOCATION" not in produced
 
 
-def test_only_the_spot_bucket_changes_when_spot_exists():
-    """Spot varken futures adayı için HİÇBİR kapının sonucu değişmez."""
-    eng = _engine()
+@pytest.mark.parametrize("profile,expected_differing", [
+    # PAPER_RESEARCH adet/altcoin tavanı TANIMLAMAZ (`max_open_positions=None`,
+    # `altcoin_net_exposure_cap_pct=None`) → spot pozisyon hiçbir kapıyı değiştirmez.
+    ("PAPER_RESEARCH", set()),
+    # TESTNET adet tavanı UYGULAR: spot pozisyon `MAX_POSITIONS` sayacına BİLİNÇLİ olarak girer.
+    # Bu bir hata değildir — adet tavanı spot+futures TOPLAMI üzerindedir (profiles.py sözleşmesi).
+    ("TESTNET", {"MAX_POSITIONS"}),
+])
+def test_spot_position_effect_on_futures_gates_is_profile_specific(profile, expected_differing):
+    """Spot pozisyonun futures adayına etkisi PROFİLE BAĞLIDIR — evrensel "hiçbir kapı" iddiası YOK.
+
+    Değişmeyen tek evrensel sözleşme: `TOTAL_OPEN_RISK` (futures stop-risk kovası) spot pozisyondan
+    ETKİLENMEZ. Adet/altcoin tavanları profil tanımlıyorsa spot onları etkilemeye DEVAM eder.
+    """
+    eng = _engine(profile)
     with_spot = {c.code: c.ok for c in eng.evaluate(_plan(), _state()).checks}
     no_spot = {c.code: c.ok for c in eng.evaluate(_plan(), _state(positions=(BZ, XAUT))).checks}
     differing = {k for k in set(with_spot) | set(no_spot) if with_spot.get(k) != no_spot.get(k)}
-    assert differing == set()
+    assert differing == expected_differing
+    # her profilde: risk kovası spot'tan bağımsız
+    a = next(c for c in eng.evaluate(_plan(), _state()).checks if c.code == "TOTAL_OPEN_RISK")
+    b = next(c for c in eng.evaluate(_plan(), _state(positions=(BZ, XAUT))).checks if c.code == "TOTAL_OPEN_RISK")
+    assert (a.value, a.limit, a.ok) == (b.value, b.limit, b.ok)
 
 
 def test_hard_gates_are_untouched():

@@ -25,12 +25,35 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 NO_TRADE = 0
+ABSOLUTE_MAX_LEVERAGE = 5                 # MUTLAK üst sınır — config ile aşılamaz
+ABSOLUTE_MIN_LEVERAGE = 2                 # 1x yeni futures girişi YASAK
+
+
+def validate_leverage_settings(*, enabled: bool, paper_only: bool, min_leverage: int,
+                               max_leverage: int, mode: str | None = None) -> None:
+    """TEK KANONİK KALDIRAÇ DOĞRULAMASI — config yükleyici VE motor kurulumu bunu çağırır.
+
+    Aynı kuralın iki ayrı yerde kopyalanması denetimde boşluk üretti: `LeverageConfig.validate()`
+    üretimde HİÇ çağrılmıyordu ve kütüphane varsayılanı 1x/6x'e mutasyona uğradığında hiçbir test
+    düşmüyordu. Kurallar artık burada TEK yerde durur.
+    """
+    from ..core import ConfigError
+    if max_leverage > ABSOLUTE_MAX_LEVERAGE:
+        raise ConfigError(f"leverage.max_leverage {max_leverage} > {ABSOLUTE_MAX_LEVERAGE} — mutlak üst sınır aşılamaz")
+    if min_leverage < ABSOLUTE_MIN_LEVERAGE:
+        raise ConfigError(f"leverage.min_leverage {min_leverage} < {ABSOLUTE_MIN_LEVERAGE} — yeni futures işlemleri 1x açılamaz")
+    if min_leverage > max_leverage:
+        raise ConfigError(f"leverage.min_leverage {min_leverage} > leverage.max_leverage {max_leverage}")
+    if enabled and paper_only and mode is not None and str(mode).upper() != "PAPER":
+        raise ConfigError(f"leverage.enabled=true fakat mod {mode} — dinamik kaldıraç yalnız PAPER'da "
+                          "açılabilir (LIVE/TESTNET için paper_only=false bilinçli olarak verilmelidir)")
 
 
 @dataclass(frozen=True)
 class LeverageConfig:
     """Deterministik eşikler. `enabled=False` iken davranış eskisi gibidir (1x plan kaldıracı)."""
     enabled: bool = False                     # feature flag — yalnız PAPER araştırma profilinde açılır
+    paper_only: bool = True                   # LIVE/TESTNET'te açılamaz (bilinçli olarak false verilmeli)
     min_leverage: int = 2                     # taban: bunun altına DÜŞÜLMEZ, işlem açılmaz
     max_leverage: int = 5                     # MUTLAK üst sınır
     # --- taban (2x) kapıları: bunlar sağlanmazsa NO_TRADE ---
@@ -66,12 +89,11 @@ class LeverageConfig:
     require_regime_alignment_5x: bool = True
     mmr: float = 0.004
 
-    def validate(self) -> None:
-        from ..core import ConfigError
-        if not (1 <= self.min_leverage <= self.max_leverage <= 5):
-            raise ConfigError(f"kaldıraç aralığı geçersiz: {self.min_leverage}..{self.max_leverage} (üst sınır 5)")
-        if self.min_leverage < 2:
-            raise ConfigError("min_leverage < 2 — yeni futures işlemleri 1x açılamaz")
+    def validate(self, *, mode: str | None = None) -> None:
+        """KANONİK doğrulama — `validate_leverage_settings`'e delege eder (tek kural kümesi)."""
+        validate_leverage_settings(enabled=self.enabled, paper_only=self.paper_only,
+                                   min_leverage=self.min_leverage, max_leverage=self.max_leverage,
+                                   mode=mode)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -227,4 +249,5 @@ def select_leverage(ctx: LeverageContext, cfg: LeverageConfig | None = None) -> 
                             tier_checks=checks)
 
 
-__all__ = ["LeverageConfig", "LeverageContext", "LeverageDecision", "NO_TRADE", "select_leverage"]
+__all__ = ["ABSOLUTE_MAX_LEVERAGE", "ABSOLUTE_MIN_LEVERAGE", "LeverageConfig", "LeverageContext",
+           "LeverageDecision", "NO_TRADE", "select_leverage", "validate_leverage_settings"]

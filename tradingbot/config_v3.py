@@ -12,6 +12,7 @@ from dataclasses import dataclass, field, fields
 from typing import Any
 
 from .core import ConfigError
+from .risk.leverage import validate_leverage_settings
 
 log = logging.getLogger(__name__)
 
@@ -382,16 +383,11 @@ def validate_v3(cfg: V3Config) -> None:
         raise ConfigError("LIVE/LIVE_LIMITED bu sürümde kapalı; config ile açılamaz")
     if cfg.mode.live_trading and os.environ.get("ALLOW_LIVE_TRADING", "").lower() != "true":
         raise ConfigError("mode.live_trading=true fakat ALLOW_LIVE_TRADING env yok — tutarsız (gerçek emir bu sürümde kapalı)")
+    # KALDIRAÇ: kural kümesi TEK kanonik yerde (`risk.leverage.validate_leverage_settings`).
+    # Motor kurulumu (`TradingEngineV3.__init__`) AYNI fonksiyonu çağırır; iki kopya kural yok.
     lev = cfg.leverage
-    if lev.max_leverage > 5:
-        raise ConfigError(f"leverage.max_leverage {lev.max_leverage} > 5 — mutlak üst sınır aşılamaz")
-    if lev.enabled and lev.min_leverage < 2:
-        raise ConfigError("leverage.min_leverage < 2 — yeni futures işlemleri 1x açılamaz")
-    if lev.min_leverage > lev.max_leverage:
-        raise ConfigError("leverage.min_leverage > leverage.max_leverage")
-    if lev.enabled and lev.paper_only and m != "PAPER":
-        raise ConfigError(f"leverage.enabled=true fakat mod {m} — dinamik kaldıraç yalnız PAPER'da açılabilir "
-                          "(LIVE/TESTNET için paper_only=false bilinçli olarak verilmelidir)")
+    validate_leverage_settings(enabled=bool(lev.enabled), paper_only=bool(lev.paper_only),
+                               min_leverage=int(lev.min_leverage), max_leverage=int(lev.max_leverage), mode=m)
     tg = cfg.telegram
     if tg.max_retries < 0 or tg.timeout_s <= 0:
         raise ConfigError("telegram.max_retries ≥ 0 ve timeout_s > 0 olmalı")

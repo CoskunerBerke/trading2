@@ -90,6 +90,8 @@ class ChiefView:
     spot_stop_risk_usdt: Any = None       # yalnız gerçek duran stop emri olan spot
     spot_symbols_without_stop: Any = None
     spot_allocation_util_pct: Any = None
+    spot_exposure_unknown: Any = None      # geçersiz fiyat → maruziyet ölçülemedi (fail-closed)
+    spot_symbols_unknown_price: Any = None
 
     def to_dict(self) -> dict:
         return {k: (format(v, "f") if hasattr(v, "quantize") else v) for k, v in self.__dict__.items()}
@@ -134,7 +136,9 @@ def chief_view(chief: dict | None, pv: PortfolioView, summary: dict | None = Non
         spot_exposure_usdt=s.get("spot_exposure_usdt"),
         spot_stop_risk_usdt=s.get("spot_stop_risk_usdt"),
         spot_symbols_without_stop=list(s.get("spot_symbols_without_stop") or []),
-        spot_allocation_util_pct=s.get("spot_allocation_utilization_pct"))
+        spot_allocation_util_pct=s.get("spot_allocation_utilization_pct"),
+        spot_exposure_unknown=bool(s.get("spot_exposure_unknown")),
+        spot_symbols_unknown_price=list(s.get("spot_symbols_unknown_price") or []))
 
 
 # --------------------------------------------------------------------------- tablo satırları
@@ -308,11 +312,16 @@ def _usdt_or_no_data(v: Any) -> str:
 
 
 def spot_stop_note(s: dict) -> str:
-    """Stopsuz spot pozisyonlar AÇIKÇA yazılır — 'riski azaldı' izlenimi verilmez."""
+    """Stopsuz spot ve GEÇERSİZ FİYAT durumu AÇIKÇA yazılır — 'riski azaldı' izlenimi verilmez."""
+    out = ""
+    bad = list(s.get("spot_symbols_unknown_price") or [])
+    if s.get("spot_exposure_unknown"):
+        out += (" · ⚠ fiyat geçersiz (" + ", ".join(str(x) for x in bad[:3])
+                + ") — maruziyet ölçülemedi, yeni spot giriş reddedilir")
     syms = list(s.get("spot_symbols_without_stop") or [])
-    if not syms:
-        return ""
-    return " · stopsuz (stopla sınırlanmamış): " + ", ".join(str(x) for x in syms[:4])
+    if syms:
+        out += " · stopsuz (stopla sınırlanmamış): " + ", ".join(str(x) for x in syms[:4])
+    return out
 
 
 def _spot_cap_sub(s: dict) -> str:

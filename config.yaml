@@ -165,6 +165,17 @@ risk_profiles:
   overrides: {}                # ör. {daily_loss_stop_pct: 2.0, max_drawdown_kill_pct: 8.0}
   i_understand: false
 
+# Dinamik futures kaldıracı — YALNIZ PAPER. Bu dosyada TEK `leverage:` bölümü olmalıdır
+# (yinelenen anahtar `load_config` içinde fail-closed reddedilir).
+# KALDIRAÇ RİSKİ ARTIRMAZ: notional risk bütçesi + stop mesafesinden gelir; kaldıraç yalnızca
+# `initial_margin = notional / leverage` değerini belirler. Stopta beklenen azami USDT zararı
+# 2x–5x arasında AYNIDIR. Zayıf aday `min_leverage` ile AÇILMAZ → NO_TRADE.
+leverage:
+  enabled: true                # PAPER araştırma profilinde açık
+  paper_only: true             # LIVE/TESTNET'te açılamaz; `mode != PAPER` iken config FAIL verir
+  min_leverage: 2              # 1x yeni futures girişi YASAK (min < 2 → ConfigError)
+  max_leverage: 5              # MUTLAK üst sınır (max > 5 → ConfigError)
+
 learning_v3:
   enabled: true
   min_samples_train: 40

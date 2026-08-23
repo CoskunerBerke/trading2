@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta
+from math import isfinite
 
 from ..core import from_iso, utc_now
 
@@ -15,6 +16,33 @@ CLUSTERS_DEFAULT: dict[str, str] = {
     "PEPE": "meme", "WIF": "meme", "BONK": "meme", "FLOKI": "meme", "LINK": "oracle", "FET": "ai", "RENDER": "ai", "TAO": "ai", "ARB": "l2",
     "OP": "l2", "MATIC": "l2", "POL": "l2", "UNI": "defi", "AAVE": "defi", "MKR": "defi", "PAXG": "gold", "XAUT": "gold",
 }
+
+
+def _finite_positive(x) -> float | None:
+    """Sonlu ve pozitif ise float, degilse None. NaN/Inf/0/negatif/None/bozuk -> None."""
+    try:
+        v = float(x)
+    except (TypeError, ValueError):
+        return None
+    if not isfinite(v) or v <= 0:
+        return None
+    return v
+
+
+def spot_notional_from_prices(qty, mark, cost_basis) -> tuple[float, bool]:
+    """(notional, unknown) — SPOT maruziyeti icin FAIL-CLOSED fiyat secimi.
+
+    Bozuk/eksik/NaN/Inf/sifir/negatif mark fiyati maruziyeti SIFIR gostermemelidir; aksi halde
+    spot allocation kapisi fiyat hatasi yuzunden kendiliginden acilir (fail-open). Sirasiyla:
+    gecerli mark -> gecerli cost basis (muhafazakar) -> ikisi de gecersizse `unknown=True`.
+    """
+    q = _finite_positive(qty)
+    if q is None:
+        return 0.0, False                       # pozisyon yok
+    px = _finite_positive(mark) or _finite_positive(cost_basis)
+    if px is None:
+        return 0.0, True                        # maruziyet BILINMIYOR
+    return q * px, False
 
 
 def cluster_of(symbol: str, clusters: dict[str, str] | None = None) -> str:
@@ -39,6 +67,7 @@ class OpenPosition:
     liq_price: float | None = None
     cluster: str = "alt_other"
     opened_at: str = ""
+    notional_unknown: bool = False   # fiyat GECERSIZ -> maruziyet olculemedi (sessiz 0 DEGIL)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -90,8 +119,22 @@ class PortfolioState:
 
     @property
     def spot_exposure_usdt(self) -> float:
-        """Acik SPOT pozisyonlarinin notional toplami (maliyet/piyasa degeri) — RISK DEGIL."""
-        return sum(p.notional for p in self.open_positions if p.market_type == SPOT)
+        """Acik SPOT pozisyonlarinin notional toplami (maliyet/piyasa degeri) — RISK DEGIL.
+
+        Fiyati OLCULEMEYEN pozisyonlar bu toplamda YOKTUR; onlarin varligi
+        `spot_exposure_unknown` ile bildirilir ve kabul kapisi fail-closed davranir.
+        """
+        return sum(p.notional for p in self.open_positions
+                   if p.market_type == SPOT and not p.notional_unknown)
+
+    @property
+    def spot_exposure_unknown(self) -> bool:
+        """En az bir spot pozisyonun maruziyeti GECERSIZ FIYAT nedeniyle olculemedi."""
+        return any(p.market_type == SPOT and p.notional_unknown for p in self.open_positions)
+
+    @property
+    def spot_symbols_unknown_price(self) -> list[str]:
+        return [p.symbol for p in self.open_positions if p.market_type == SPOT and p.notional_unknown]
 
     @property
     def spot_stop_risk_usdt(self) -> float:
@@ -159,7 +202,8 @@ def build_state(*, equity: float, starting_equity: float, available: float, used
         ops.append(OpenPosition(symbol=p["symbol"], market_type=p.get("market_type", "USDM_PERP"), side=p.get("side", "LONG"),
                                 notional=notional, margin=float(p.get("margin") or notional), risk_usdt=risk, entry=entry,
                                 stop=float(stop) if stop is not None else None, leverage=float(p.get("leverage") or 1),
-                                liq_price=p.get("liq_price"), cluster=cluster_of(p["symbol"], clusters), opened_at=str(p.get("opened_at", ""))))
+                                liq_price=p.get("liq_price"), cluster=cluster_of(p["symbol"], clusters), opened_at=str(p.get("opened_at", "")),
+                                notional_unknown=bool(p.get("notional_unknown", False))))
     # ardışık zarar sayacı (en son kapananlardan geriye)
     consec, last_loss = 0, None
     for h in sorted(history, key=lambda x: str(x.get("closed_at") or x.get("exit_time") or ""), reverse=True):

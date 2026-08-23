@@ -30,8 +30,9 @@ from .learn import LearnConfig, LearnerV2, ModelRegistry, ShadowBook, TradeMemor
 from .learning import features_from_brief
 from .market.quality import DataQualityConfig, DataQualityGate
 from .risk import (KillSwitch, ModeState, RiskEngine, build_state, enforces_position_cap, resolve_profile,
+                   spot_notional_from_prices,
                    warn_if_below_recommended)
-from .risk.leverage import LeverageConfig, LeverageContext, select_leverage
+from .risk.leverage import LeverageConfig, LeverageContext, select_leverage, validate_leverage_settings
 
 log = logging.getLogger(__name__)
 
@@ -93,8 +94,14 @@ class TradingEngineV3(TradingEngine):
         self.risk = RiskEngine(self.profile, self.killswitch, v3.risk_profiles.clusters or None)
         # --- dinamik futures kaldıracı (2x–5x). VARSAYILAN KAPALI; yalnız PAPER'da açılabilir.
         _lv = v3.leverage
+        # KANONIK DOGRULAMA URETIM ZINCIRINDE: ham config degerleri (kelepceleme ONCESI) tek kural
+        # kumesinden gecer. min<2 / max>5 / min>max / paper_only ihlali -> BASLATMA YOK.
+        validate_leverage_settings(enabled=bool(_lv.enabled), paper_only=bool(_lv.paper_only),
+                                   min_leverage=int(_lv.min_leverage), max_leverage=int(_lv.max_leverage),
+                                   mode=cfg.mode)
         self.leverage_cfg = LeverageConfig(
             enabled=bool(_lv.enabled) and (cfg.mode == "PAPER" or not _lv.paper_only),
+            paper_only=bool(_lv.paper_only),
             min_leverage=int(_lv.min_leverage),
             max_leverage=min(int(_lv.max_leverage), int(self.profile.futures_max_leverage)),
             min_confidence=_lv.min_confidence, max_stop_atr_mult=_lv.max_stop_atr_mult,
@@ -110,6 +117,10 @@ class TradingEngineV3(TradingEngine):
             max_same_dir_4x=_lv.max_same_dir_4x, max_same_dir_5x=_lv.max_same_dir_5x,
             max_corr_5x=_lv.max_corr_5x, liq_buffer_4x=_lv.liq_buffer_4x, liq_buffer_5x=_lv.liq_buffer_5x,
             require_regime_alignment_5x=_lv.require_regime_alignment_5x)
+        # Profil tavani (`futures_max_leverage`) tabani asagi kelepceliyorsa SESSIZCE 1x'e dusulmez:
+        # etkin config yeniden dogrulanir ve motor baslamaz.
+        if self.leverage_cfg.enabled:
+            self.leverage_cfg.validate(mode=cfg.mode)
         # --- PAPER bildirimleri (Telegram). KAPALIYKEN hicbir ag cagrisi yapilmaz. ---
         from .notify import TradeNotifier
         self.notifier = TradeNotifier.from_config(v3.telegram, st)
@@ -230,7 +241,11 @@ class TradingEngineV3(TradingEngine):
         for sym, sp in self.spot2.positions().items():
             q, ac = float(sp.get("qty", 0) or 0), float(sp.get("avg_cost", 0) or 0)
             if q > 0:
-                pos.append({"symbol": sym, "market_type": "SPOT", "side": "LONG", "notional": q * marks.get(sym, ac), "margin": q * ac, "entry": ac,
+                # FAIL-CLOSED FIYAT: bozuk/NaN/Inf/sifir mark maruziyeti SIFIR gostermez;
+                # once gecerli mark, sonra gecerli maliyet tabani, ikisi de yoksa BILINMIYOR.
+                _notional, _unknown = spot_notional_from_prices(q, marks.get(sym), ac)
+                pos.append({"symbol": sym, "market_type": "SPOT", "side": "LONG", "notional": _notional,
+                            "margin": q * ac, "entry": ac, "notional_unknown": _unknown,
                             "stop": sp.get("stop") or None, "leverage": 1, "opened_at": str(sp.get("entry_time", ""))})
         fs = self.ledger2.summary(marks)
         ss = self.spot2.summary(marks)
@@ -932,6 +947,12 @@ class TradingEngineV3(TradingEngine):
             # Risk motoru yalnizca KUCULTUR: nihai boyutu asla buyutme.
             notional = min(final_notional, float(rd.adjusted_notional if rd.adjusted_notional is not None else final_notional))
             entry["executed_notional"] = round(notional, 6)
+            # GOZLEM SOZLESMESI: stoptaki azami zarar UYGULANAN notional'dan hesaplanir.
+            # Onceden `final_risk_usdt` (RISK_PER_TRADE kucultmesi ONCESI istenen notional) yaziliyordu;
+            # kucultme devreye girdiginde metadata gercekte acilan pozisyondan DAHA BUYUK bir zarar
+            # bildiriyordu (or. 1.1738 yazilirken gercek risk 0.9919). Kabul/red karari DEGISMEZ.
+            applied_risk_usdt = round(notional * _stop_frac, 6)
+            entry["applied_risk_usdt"] = applied_risk_usdt
             # ---------------------------------------------------------------- 8) LEDGER / BORSA ACILISI
             if market == "USDM_PERP":
                 pos = self.ledger2.open(sym, d.direction, b.price, SizeSpec(Decimal(str(notional)), AmountType.NOTIONAL, int(rd.adjusted_leverage or 1)),
@@ -944,15 +965,34 @@ class TradingEngineV3(TradingEngine):
                                                                     {"leverage": plan_leverage, "reasons": ["STATIC_PLAN_LEVERAGE"],
                                                                      "blocked_higher": ["DYNAMIC_LEVERAGE_DISABLED"]}),
                                               "risk_snapshot": {"final_notional": final_notional,
-                                                                "initial_margin": round(final_notional / max(plan_leverage, 1), 6),
+                                                                # UYGULANAN degerler (deftere giden):
+                                                                "applied_notional": round(notional, 6),
+                                                                "initial_margin": round(notional / max(plan_leverage, 1), 6),
                                                                 "stop_frac": round(_stop_frac, 8),
-                                                                "max_loss_at_stop_usdt": final_risk_usdt,
+                                                                # dolum sonrasi GERCEKLESEN degerle guncellenir (asagi bkz.)
+                                                                "max_loss_at_stop_usdt": applied_risk_usdt,
+                                                                "applied_risk_usdt": applied_risk_usdt,
+                                                                # istenen (kucultme oncesi) — seffaflik icin AYRI alan
+                                                                "requested_notional": final_notional,
+                                                                "requested_risk_usdt": final_risk_usdt,
+                                                                "risk_engine_risk_usdt": rd.risk_usdt,
                                                                 "execution_entry": round(exec_entry, 10)}})
                 if pos is None:
                     entry["exec_reject"] = self.ledger2.last_reject_reason
                     entry["block_code"] = "EXCHANGE_REJECTED"
                     funnel["exchange_rejected"] += 1
                     continue
+                # GERCEKLESEN DOLUM: defter qty'yi lot adimina yuvarlar, bu yuzden dolan notional
+                # istenen/uygulanan notional'dan KUCUK olabilir. Gozlem metadata'si defterin
+                # GERCEKTEN actigi pozisyonu bildirir; kabul karari (rd) DEGISMEZ.
+                _rs = (pos.meta or {}).get("risk_snapshot")
+                if isinstance(_rs, dict) and pos.stop is not None:
+                    _filled_notional = float(pos.qty) * float(pos.entry_avg)
+                    _filled_risk = abs(float(pos.entry_avg) - float(pos.stop)) * float(pos.qty)
+                    _rs.update({"filled_notional": round(_filled_notional, 6),
+                                "max_loss_at_stop_usdt": round(_filled_risk, 6),
+                                "initial_margin": round(_filled_notional / max(pos.leverage, 1), 6)})
+                    entry["filled_risk_usdt"] = round(_filled_risk, 6)
                 trade_id = pos.id
                 desc = f"{sym} {d.direction} FUTURES @ {float(pos.entry_avg):.6g} · notional {float(pos.qty * pos.entry_avg):.2f} · {pos.leverage}x · stop {plan.stop:.6g} · TP {', '.join(f'{t:.6g}' for t in plan.targets)} · P(win) %{(b.p_win or 0.5)*100:.0f}"
             else:

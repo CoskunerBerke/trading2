@@ -562,6 +562,10 @@ def canonical_summary(pv: PortfolioView, *, futures_equity: Any = None, spot_equ
     # GECMEZ (birlesik toplamdir ve stopsuz spotu tam notional sayar).
     fut_risk = _f(rs.get("futures_stop_risk_usdt")) if isinstance(rs, dict) else None
     spot_exp = _f(rs.get("spot_exposure_usdt")) if isinstance(rs, dict) else None
+    spot_unknown = bool(rs.get("spot_exposure_unknown")) if isinstance(rs, dict) else False
+    spot_bad_price = list(rs.get("spot_symbols_unknown_price") or []) if isinstance(rs, dict) else []
+    if spot_unknown:
+        spot_exp = None                       # geçersiz fiyat → sessiz 0 ÜRETİLMEZ
     spot_risk = _f(rs.get("spot_stop_risk_usdt")) if isinstance(rs, dict) else None
     spot_unbounded = _f(rs.get("spot_unbounded_notional_usdt")) if isinstance(rs, dict) else None
     spot_no_stop = list(rs.get("spot_symbols_without_stop") or []) if isinstance(rs, dict) else []
@@ -570,7 +574,10 @@ def canonical_summary(pv: PortfolioView, *, futures_equity: Any = None, spot_equ
     if fut_risk is None:
         why["futures_stop_risk_usdt"] = "risk.json → exposure.futures_stop_risk_usdt yok (" + _old_snap + ")"
     if spot_exp is None:
-        why["spot_exposure_usdt"] = "risk.json → exposure.spot_exposure_usdt yok (" + _old_snap + ")"
+        why["spot_exposure_usdt"] = (
+            ("spot fiyatı geçersiz (" + ", ".join(str(x) for x in spot_bad_price[:3])
+             + ") — maruziyet ölçülemedi, yeni spot giriş fail-closed reddedilir")
+            if spot_unknown else "risk.json → exposure.spot_exposure_usdt yok (" + _old_snap + ")")
     if spot_risk is None:
         why["spot_stop_risk_usdt"] = "risk.json → exposure.spot_stop_risk_usdt yok (" + _old_snap + ")"
     if spot_cap is None:
@@ -655,6 +662,8 @@ def canonical_summary(pv: PortfolioView, *, futures_equity: Any = None, spot_equ
         "futures_stop_risk_usdt": fut_risk,
         "futures_risk_budget_utilization_pct": futures_budget_util,
         "spot_exposure_usdt": spot_exp,
+        "spot_exposure_unknown": spot_unknown,
+        "spot_symbols_unknown_price": spot_bad_price,
         "spot_stop_risk_usdt": spot_risk,
         "spot_unbounded_notional_usdt": spot_unbounded,
         "spot_symbols_without_stop": spot_no_stop,

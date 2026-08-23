@@ -21,7 +21,7 @@ from .candles import CandleSource, build_candle_payload
 from .config import DashboardConfig
 from ..pnl import finite_float_or_none, position_view, realized_net
 from .state import STATE_FILES, StateReader
-from .views import POSITION_NUM_COLS
+from .views import NO_DECISION_VERDICT, POSITION_NUM_COLS, open_coverage
 from .templates import (POS_TABLE_CLS, age_text, badge, card, card_value, chart_block, chief_block,
                         esc, fmt, fmt_utc, health_badge, ks_badge, kv_table, lessons_table,
                         live_bar, live_script, money_html, page, pct, pnl_cell, render_any,
@@ -153,7 +153,7 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
         ])}</div>'
         body += chief_block(cv)
         body += '<h2>Açık pozisyonlar</h2><div id="postbl">' + _positions_table(vm) + "</div>"
-        body += "<h2>Coin head'ler</h2>" + _heads_table(ov["top_heads"], state)
+        body += _coin_heads_heading(ov["top_heads"], state) + _heads_table(ov["top_heads"], state)
         if not ov["top_heads"]:
             ag = state.get("agents") or {}
             briefs = ag.get("briefs") or []
@@ -182,6 +182,28 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
         return table(vm["columns"], rows, num_cols=set(POSITION_NUM_COLS), empty="açık pozisyon yok",
                      cls=POS_TABLE_CLS) + note        # polling JS'i AYNI sabiti kullanır
 
+    def _coin_heads_heading(heads: list[dict], st) -> str:
+        """Başlık + AÇIK POZİSYON KAPSAMI sayacı.
+
+        Bu tablo bir açık pozisyon listesi DEĞİLDİR (coin head seçkisidir); fakat bütün açık
+        pozisyonların yer aldığı ÖLÇÜLEREK gösterilir. Eksik varsa kırmızı uyarı çıkar.
+        """
+        # Sayaç RENDER EDİLEN satırlardan ÖLÇÜLÜR — `overview()`in iddiasına güvenilmez.
+        cov = open_coverage(heads, st.futures_positions())
+        total, shown = int(cov["open_positions_total"]), int(cov["open_positions_shown"])
+        missing = list(cov["missing_open_symbols"])
+        cls = "b-ok" if not missing else "b-bad"
+        out = ("<h2>Coin head'ler <span class=\"badge %s\">Açık pozisyon kapsamı: %d / %d</span></h2>"
+               % (cls, shown, total))
+        out += ("<p class=\"mut small\">Bu tablo AÇIK POZİSYON LİSTESİ DEĞİLDİR — coin head'lerin son "
+                "seçkisidir. Açık pozisyonların TAMAMI zorunlu olarak en üstte listelenir; altında "
+                "kalan kapasiteye göre sıralanmış adaylar/son kararlar gelir. "
+                "Açık pozisyonların yetkili listesi «Açık pozisyonlar» tablosudur.</p>")
+        if missing:
+            out += ('<div class="warn-box">⚠ Açık pozisyon tabloda GÖRÜNMÜYOR: %s — panel eksik kapsam '
+                    'bildiriyor, defter yetkilidir.</div>' % esc(", ".join(missing)))
+        return out
+
     def _heads_table(heads: list[dict], st) -> str:
         """`Net E[r]` → `Beklenen Net Getiri`: bu bir MODEL TAHMİNİDİR, gerçekleşen PnL DEĞİLDİR."""
         open_by = {str(p.get("symbol") or ""): p for p in st.futures_positions()}
@@ -206,7 +228,11 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
                 status, tid, pnl_html = "ADAY", "—", "<td class=num>—</td>"
             else:
                 status, tid, pnl_html = ("REDDEDİLDİ" if h.get("vetoes") else "İŞLEM YOK"), "—", "<td class=num>—</td>"
-            rows.append([f'<a href="/coin/{esc(sym.split("/")[0])}">{esc(sym)}</a>', verdict_badge(h.get("verdict")),
+            # KARAR UYDURULMAZ: açık pozisyonun güncel coin-head kaydı yoksa satır açıkça
+            # «KARAR VERİSİ YOK» der ve gerekçesini yazar (bkz. views.no_decision_head).
+            decision_html = (badge(NO_DECISION_VERDICT, "warn") if h.get("no_decision")
+                             else verdict_badge(h.get("verdict")))
+            rows.append([f'<a href="/coin/{esc(sym.split("/")[0])}">{esc(sym)}</a>', decision_html,
                          badge(status, "ok" if status == "AÇIK" else ("bad" if status == "REDDEDİLDİ" else "info")),
                          esc(h.get("direction") or "-"),
                          fmt(float(h.get("confidence_calibrated") or 0) * 100, 0) + "%", fmt(float(h.get("p_win") or 0) * 100, 0) + "%",
@@ -216,7 +242,8 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
                          esc(h.get("no_trade_reason") or ""), esc(", ".join(h.get("vetoes") or [])[:80])])
         note = ('<p class="mut small">«Beklenen Net Getiri» işlem öncesi model tahminidir; gerçekleşen sonuç '
                 'değildir. «Net K/Z» sütunu açık pozisyonda anlık, kapanmışta SON KAPANAN işlemin net '
-                'sonucudur; işlem açılmamış adaylarda «—» gösterilir.</p>')
+                'sonucudur; işlem açılmamış adaylarda «—» gösterilir. «KARAR VERİSİ YOK» satırları '
+                'defterde AÇIK olan fakat son coin-head seçkisinde yer almayan pozisyonlardır.</p>')
         return table(["Sembol", "Karar", "Durum", "Yön", "Güven", "P(kazanç)", "Beklenen Net Getiri", "E[R]",
                       "Rejim", "Spot", "Fut", "Net K/Z", "İşlem ID", "Karar zamanı", "Gerekçe", "Veto"], rows,
                      num_cols={4, 5, 6, 7, 11}, empty="coin head kararı yok (coin_heads.json)") + note

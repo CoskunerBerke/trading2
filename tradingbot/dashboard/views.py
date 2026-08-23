@@ -56,6 +56,112 @@ class Freshness:
                 "tz_label": self.tz_label}
 
 
+# ============================================================ COIN HEAD TABLOSU — KAPSAM SÖZLEŞMESİ
+# «Coin head'ler» tablosu bir AÇIK POZİSYON LİSTESİ DEĞİLDİR: coin head'lerin son seçkisidir.
+# Fakat GERÇEK açık pozisyonların tabloda görünmemesi operatöre "pozisyon yok" izlenimi verir.
+# Eski davranış `sorted(heads, key=-confidence)[:10]` idi -> top-N kesimi dışında kalan açık
+# pozisyon (ve seçkide hiç yer almayan sembol) tablodan DÜŞÜYORDU. Bu bir SUNUM sorunudur;
+# defterde veri kaybı yoktur. Yeni sözleşme:
+#   1) BÜTÜN açık pozisyonlar ZORUNLU olarak tabloda yer alır (aday limiti onları düşüremez),
+#   2) önce açık pozisyonlar, sonra kalan kapasiteye güvene göre sıralı adaylar,
+#   3) aynı sembol İKİ KEZ gösterilmez,
+#   4) güncel coin-head kararı olmayan açık pozisyon için karar UYDURULMAZ; açık bir
+#      «KARAR VERİSİ YOK» satırı üretilir.
+NO_DECISION_VERDICT = "KARAR VERİSİ YOK"
+NO_DECISION_REASON = "Pozisyon defterde açık; son coin-head seçkisinde yer almıyor."
+COIN_HEAD_CANDIDATE_LIMIT = 10          # aday KOTASI — açık pozisyonlara UYGULANMAZ
+
+
+def _head_confidence(h: dict) -> float:
+    try:
+        return float(h.get("confidence_calibrated") or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def no_decision_head(symbol: str, position: dict | None = None) -> dict:
+    """Açık pozisyon için KARAR UYDURMAYAN yer tutucu satır.
+
+    `verdict` bilinçli olarak boştur; `no_decision` bayrağı panelin bu satırı ayrı etiketlemesini
+    sağlar. Yön defterden alınır — model tahmini DEĞİL, defterin gerçeğidir.
+    """
+    p = position or {}
+    return {"symbol": str(symbol), "verdict": None, "no_decision": True,
+            "direction": str(p.get("side") or "") or None,
+            "no_trade_reason": NO_DECISION_REASON,
+            "position_id": str(p.get("id") or "") or None,
+            "confidence_calibrated": None, "p_win": None, "expected_return_net": None,
+            "expected_r": None, "regime": None, "generated_at": None, "vetoes": []}
+
+
+def open_coverage(rows: list[dict] | None, open_positions: list[dict] | None) -> dict[str, Any]:
+    """AÇIK POZİSYON KAPSAMINI ÖLÇER — varsaymaz.
+
+    Sayaç, GERÇEKTEN üretilen satır kümesinden hesaplanır. Aksi hâlde (sabit "hepsi gösterildi"
+    varsayımı) ileride bir satır düştüğünde panel «5 / 5» yazmaya devam eder ve YALAN SÖYLER.
+    Panel başlığı da bunu render ettiği satırlar üzerinden yeniden çağırır.
+    """
+    row_symbols = {str(r.get("symbol") or "") for r in (rows or []) if isinstance(r, dict)}
+    open_symbols: list[str] = []
+    for p in (open_positions or []):
+        if not isinstance(p, dict):
+            continue
+        sym = str(p.get("symbol") or "")
+        if sym and sym not in open_symbols:
+            open_symbols.append(sym)
+    shown = [s for s in open_symbols if s in row_symbols]
+    missing = [s for s in open_symbols if s not in row_symbols]
+    return {"open_positions_total": len(open_symbols), "open_positions_shown": len(shown),
+            "missing_open_symbols": missing, "coverage_complete": not missing}
+
+
+def coin_head_scope(heads: list[dict] | None, open_positions: list[dict] | None, *,
+                    candidate_limit: int = COIN_HEAD_CANDIDATE_LIMIT) -> dict[str, Any]:
+    """Coin head satırları + AÇIK POZİSYON KAPSAMI ölçümü.
+
+    HTML render'ı ve API AYNI bu fonksiyondan beslenir; iki yüzey farklı satır kümesi gösteremez.
+    Toplam satır sayısı = açık pozisyon adedi + `candidate_limit` (aday kotası açıkları düşürmez).
+    """
+    heads = [h for h in (heads or []) if isinstance(h, dict)]
+    positions = [p for p in (open_positions or []) if isinstance(p, dict)]
+
+    by_symbol: dict[str, dict] = {}
+    for h in heads:
+        sym = str(h.get("symbol") or "")
+        if sym and sym not in by_symbol:                 # aynı sembolün ilk (en taze) kaydı
+            by_symbol[sym] = h
+    pos_by_symbol: dict[str, dict] = {}
+    open_symbols: list[str] = []
+    for p in positions:
+        sym = str(p.get("symbol") or "")
+        if sym and sym not in pos_by_symbol:
+            pos_by_symbol[sym] = p
+            open_symbols.append(sym)
+
+    rows: list[dict] = []
+    no_decision: list[str] = []
+    for sym in open_symbols:                             # 1) ZORUNLU: bütün açık pozisyonlar
+        h = by_symbol.get(sym)
+        if h is None:
+            no_decision.append(sym)
+            h = no_decision_head(sym, pos_by_symbol.get(sym))
+        rows.append(h)
+    used = set(open_symbols)
+    for h in sorted(heads, key=lambda x: -_head_confidence(x)):   # 2) kalan kapasiteye adaylar
+        sym = str(h.get("symbol") or "")
+        if not sym or sym in used:                       # 3) sembolsuz/bozuk kayit ve duplicate YOK
+            continue
+        if len(rows) - len(open_symbols) >= max(0, int(candidate_limit)):
+            break
+        used.add(sym)
+        rows.append(h)
+
+    # Kapsam ÖLÇÜLÜR (varsayılmaz): GERÇEKTEN üretilen satırlar sayılır.
+    return dict(open_coverage(rows, positions), heads=rows,
+                no_decision_symbols=no_decision,
+                candidate_limit=max(0, int(candidate_limit)))
+
+
 @dataclass(frozen=True)
 class ChiefView:
     """Baş yönetici bölümünün OKUNUR modeli — uzun ham JSON gösterilmez."""

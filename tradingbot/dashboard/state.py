@@ -309,11 +309,17 @@ class StateReader:
         health = self.get("health") or {}
         llm = self.get("llm_budget") or {}
         heads = self.coin_heads()
+        positions = self.futures_positions()
+        # «Coin head'ler» tablosu AÇIK POZİSYON LİSTESİ DEĞİLDİR; fakat açık pozisyonların hepsi
+        # ZORUNLU olarak yer alır. Eski `sorted(heads)[:10]` top-N kesimi açık pozisyonları
+        # düşürüyordu (bkz. views.coin_head_scope). HTML ve API AYNI kaynaktan beslenir.
+        from .views import coin_head_scope
+        scope = coin_head_scope(heads, positions)
         return {
             "generated_at": utc_now().isoformat(timespec="seconds"),
             "equity_futures": self.futures_equity(),
             "equity_spot": self.spot_equity(),
-            "open_positions": self.futures_positions(),
+            "open_positions": positions,
             "killswitch": self.killswitch_state(),
             "mode": self.mode(),
             "health": health.get("state") or "UNKNOWN",
@@ -325,7 +331,12 @@ class StateReader:
             "learning_research": self.learning_research(),
             "decision_funnel": self.decision_funnel(),
             "chief": (self.get("coin_heads") or {}).get("chief") or (self.get("agents") or {}).get("chief") or {},
-            "top_heads": sorted(heads, key=lambda h: -float(h.get("confidence_calibrated") or 0))[:10],
+            "top_heads": scope["heads"],
+            "coin_head_scope": scope,
+            "open_positions_total": scope["open_positions_total"],
+            "open_positions_shown": scope["open_positions_shown"],
+            "missing_open_symbols": scope["missing_open_symbols"],
+            "coverage_complete": scope["coverage_complete"],
             "price_age_s": self.price_age_s(),
             "heads_age_s": self.heads_age_s(),
         }

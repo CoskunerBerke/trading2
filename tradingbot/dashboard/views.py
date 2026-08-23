@@ -14,8 +14,9 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..pnl import (FRESH_OK, FRESH_STALE, FRESH_UNKNOWN, PF_POSITIVE_INFINITY, PortfolioView,
-                   PositionView, canonical_summary, check_invariants, fmt_money, fmt_pct, fmt_qty,
-                   portfolio_view, profit_factor_state)
+                   PositionView, canonical_summary, check_invariants, finite_float_or_none,
+                   fmt_money, fmt_pct, fmt_qty, money_totals_unavailable_reason, portfolio_view,
+                   profit_factor_state)
 
 # Tazelik adları `pnl` katmanında TEK yerde tanımlıdır; burada yalnız yeniden dışa verilir
 # (iki ayrı string listesi zamanla ayrışır ve `stale` sessizce `live` gibi görünürdü).
@@ -113,7 +114,7 @@ def chief_view(chief: dict | None, pv: PortfolioView, summary: dict | None = Non
         open_risk_usdt=s.get("risk_engine_reserved_usdt"),
         margin_util_pct=s.get("margin_utilization_pct"),
         realized_today=pv.realized_today, unrealized_open=pv.open_net_unrealized,
-        drawdown_pct=s.get("max_drawdown_pct", _num(pv.max_drawdown)),
+        drawdown_pct=s.get("max_drawdown_pct", finite_float_or_none(pv.max_drawdown)),
         open_stop_risk_usdt=s.get("open_stop_risk_usdt"),
         risk_budget_max_usdt=s.get("risk_budget_max_usdt"),
         risk_budget_util_pct=s.get("open_risk_budget_utilization_pct"),
@@ -128,6 +129,12 @@ POSITION_COLUMNS = ["Sembol", "Piyasa", "Yön", "Coin adedi", "Giriş", "Mark/So
                     "Notional (USDT)", "Teminat (USDT)", "Stop", "TP", "Likidasyon",
                     "Açılış ücreti", "Funding", "Brüt K/Z", "Tah. kapanış ücreti",
                     "Net K/Z (USDT)", "Net K/Z (%)", "Açılış", "İşlem ID"]
+
+# HİZALAMA SÖZLEŞMESİ — sunucu render'ı (`app._positions_table`) ve polling JS'i AYNI listeyi
+# kullanır. Önce sunucu `range(3, 18)`, JS ise `i >= 3` diyordu → «Açılış» ve «İşlem ID» metin
+# sütunları 7 saniyelik ilk polling'den sonra sağa hizalanıyordu (ölçülen: 60 vs 68 `td.num`).
+POSITION_NUM_COLS = tuple(range(3, 18))      # sayısal hizalama (sağa yaslı, tabular-nums)
+POSITION_PNL_COLS = (16, 17)                 # YALNIZ net K/Z alanları `up/dn/flat` renk alır
 
 
 def position_row(v: PositionView) -> list[Any]:
@@ -206,24 +213,37 @@ def summary_cards(pv: PortfolioView, summary: dict | None = None) -> list[Summar
         return NO_DATA if x is None else f"%{float(x):.{nd}f}"
 
     _pf, _pf_state = profit_factor_state(pv)
+    # Bozuk kayıt varsa toplam kartı `canonical_summary` ile AYNI kuralla «Veri yok» olur —
+    # dışlanmış kayıtlarla hesaplanmış sayı (sahte `$0.00` / eksik toplam) GÖSTERİLMEZ.
+    bad = money_totals_unavailable_reason(pv)
+
+    def money(x, *blocked_by: str):
+        """(value, display, ek-altyazı) — `blocked_by` anahtarlarından biri `bad`ta ise Veri yok."""
+        reasons = [bad[k] for k in blocked_by if k in bad]
+        if reasons:
+            return None, NO_DATA, " · ⚠ " + " · ".join(reasons)
+        return finite_float_or_none(x), fmt_money(x), ""
+
+    rt_v, rt_d, rt_n = money(pv.realized_today, "realized")
+    ra_v, ra_d, ra_n = money(pv.realized_total, "realized")
+    op_v, op_d, op_n = money(pv.open_net_unrealized, "unrealized")
+    tn_v, tn_d, tn_n = money(pv.total_net, "realized", "unrealized")
     cards = [
-        SummaryCard("today_realized_net_usdt", "Bugün gerçekleşen net K/Z", _num(pv.realized_today),
-                    fmt_money(pv.realized_today), "money", "kapanan işlemler (UTC gün)"),
-        SummaryCard("all_time_realized_net_usdt", "Toplam gerçekleşen net K/Z", _num(pv.realized_total),
-                    fmt_money(pv.realized_total), "money", "ücret + funding dahil"),
-        SummaryCard("open_net_usdt", "Açık pozisyon net K/Z", _num(pv.open_net_unrealized),
-                    fmt_money(pv.open_net_unrealized), "money",
-                    "tahmini kapanış ücreti düşülmüş" + (" · ⚠ fiyat yok" if pv.any_stale_price else "")),
-        SummaryCard("total_net_usdt", "Toplam net K/Z", _num(pv.total_net), fmt_money(pv.total_net),
-                    "money", "gerçekleşen + açık"),
+        SummaryCard("today_realized_net_usdt", "Bugün gerçekleşen net K/Z", rt_v, rt_d, "money",
+                    "kapanan işlemler (UTC gün)" + rt_n),
+        SummaryCard("all_time_realized_net_usdt", "Toplam gerçekleşen net K/Z", ra_v, ra_d, "money",
+                    "ücret + funding dahil" + ra_n),
+        SummaryCard("open_net_usdt", "Açık pozisyon net K/Z", op_v, op_d, "money",
+                    "tahmini kapanış ücreti düşülmüş" + (" · ⚠ fiyat yok" if pv.any_stale_price else "") + op_n),
+        SummaryCard("total_net_usdt", "Toplam net K/Z", tn_v, tn_d, "money", "gerçekleşen + açık" + tn_n),
         SummaryCard("win_loss", "Kazanan / Kaybeden", None, f"{pv.wins} / {pv.losses}", "pair",
                     f"başa baş {pv.breakeven} · kapanmış {pv.closed_trades}"),
-        SummaryCard("win_rate_pct", "Kazanma oranı", _num(pv.win_rate), pct1(_num(pv.win_rate)), "pct",
+        SummaryCard("win_rate_pct", "Kazanma oranı", finite_float_or_none(pv.win_rate), pct1(finite_float_or_none(pv.win_rate)), "pct",
                     "kazanan / (kazanan + kaybeden) — başa baş HARİÇ"),
         SummaryCard("profit_factor", "Profit factor", _pf, _pf_display(_pf_state, _pf),
                     "ratio", "brüt kâr / brüt zarar — oran, para birimi değil"),
-        SummaryCard("max_drawdown_pct", "Maks. drawdown", _num(pv.max_drawdown),
-                    pct1(_num(pv.max_drawdown), 2), "pct", "risk motoru (risk.json)"),
+        SummaryCard("max_drawdown_pct", "Maks. drawdown", finite_float_or_none(pv.max_drawdown),
+                    pct1(finite_float_or_none(pv.max_drawdown), 2), "pct", "risk motoru (risk.json)"),
     ]
     if summary is not None:
         mu, sr = s.get("margin_utilization_pct"), s.get("open_stop_risk_usdt")
@@ -311,14 +331,6 @@ def _age_text(sec: Any) -> str:
     return f"{sec // 86400}g"
 
 
-def _num(x: Any) -> float | None:
-    if x is None:
-        return None
-    try:
-        f = float(x)
-    except (TypeError, ValueError):
-        return None
-    return None if f != f else f
 
 
 def build(state_positions: list[dict], trades: list[dict], chief: dict | None, *,
@@ -345,6 +357,6 @@ def build(state_positions: list[dict], trades: list[dict], chief: dict | None, *
 
 
 __all__ = ["ChiefView", "Freshness", "LIVE_OK", "LIVE_STALE", "LIVE_UNKNOWN", "NO_DATA",
-           "POSITION_COLUMNS", "SummaryCard", "build", "chief_view", "position_row",
-           "profit_factor_value", "risk_budget_sub", "risk_stale_note", "stop_risk_note",
-           "summary_cards"]
+           "POSITION_COLUMNS", "POSITION_NUM_COLS", "POSITION_PNL_COLS", "SummaryCard", "build",
+           "chief_view", "position_row", "profit_factor_value", "risk_budget_sub",
+           "risk_stale_note", "stop_risk_note", "summary_cards"]

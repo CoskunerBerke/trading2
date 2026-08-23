@@ -232,6 +232,27 @@ def test_profit_factor_contract(name, trades, num, state, display):
         assert "profit_factor" in s["unavailable_reason"], name
 
 
+def test_summary_cards_guard_non_finite_even_if_ingest_is_bypassed():
+    """JSON SINIRI (views katmanı): `PortfolioView` doğrudan `Decimal("Infinity")` ile kurulsa bile
+    hiçbir kart `value`su sonlu-olmayan float taşımaz — `views` kendi `float()`unu DEĞİL, kanonik
+    `pnl.finite_float_or_none`u kullanır (ikinci kopya `_num` artık yok)."""
+    import dataclasses
+    from tradingbot.dashboard import views as V
+    from tradingbot import pnl as P
+    assert not hasattr(V, "_num"), "views._num geri gelmiş — ikinci kopya yasak"
+    assert V.finite_float_or_none is P.finite_float_or_none
+    base = portfolio_view([], [{"net_pnl": "60"}, {"net_pnl": "-30"}])
+    pv = dataclasses.replace(base, realized_today=Decimal("Infinity"), realized_total=Decimal("-Infinity"),
+                             open_net_unrealized=Decimal("NaN"), total_net=Decimal("Infinity"),
+                             max_drawdown=Decimal("Infinity"))
+    for c in summary_cards(pv):
+        assert c.value is None or (isinstance(c.value, (int, float)) and math.isfinite(c.value)), c.key
+    for k in ("today_realized_net_usdt", "all_time_realized_net_usdt", "open_net_usdt",
+              "total_net_usdt", "max_drawdown_pct"):
+        assert {c.key: c for c in summary_cards(pv)}[k].value is None, k
+    json.dumps([c.to_dict() for c in summary_cards(pv)], allow_nan=False)
+
+
 def test_canonical_summary_is_always_rfc_json():
     """JSON SINIRI: hiçbir senaryoda `NaN`/`Infinity` üretilmez (aksi hâlde uç nokta 500 verir)."""
     for trades in ([], [{"net_pnl": "5"}], [{"net_pnl": "0"}], [{"net_pnl": "5"}, {"net_pnl": "-1"}]):
@@ -279,6 +300,10 @@ def test_position_without_stop_reports_none_and_partial_flag():
     ("stop boş metin",    {"stop": ""},                         None, STOP_RISK_NO_STOP),
     ("stop bozuk",        {"stop": "abc"},                      None, STOP_RISK_MALFORMED),
     ("stop NaN",          {"stop": "NaN"},                      None, STOP_RISK_MALFORMED),
+    ("stop Infinity",     {"stop": "Infinity"},                 None, STOP_RISK_MALFORMED),
+    ("stop -Infinity",    {"stop": "-Infinity"},                None, STOP_RISK_MALFORMED),
+    ("qty Infinity",      {"qty": "Infinity"},                  None, STOP_RISK_INVALID_QTY),
+    ("entry Infinity",    {"entry": "Infinity", "margin": "100"}, None, STOP_RISK_INVALID_ENTRY),
     ("qty sıfır",         {"qty": "0"},                         None, STOP_RISK_INVALID_QTY),
     ("qty negatif",       {"qty": "-1"},                        None, STOP_RISK_INVALID_QTY),
     ("entry bozuk",       {"entry": "abc", "margin": "100"},    None, STOP_RISK_INVALID_ENTRY),
@@ -298,7 +323,11 @@ def test_stop_risk_edge_cases(name, kw, risk, status):
 
 
 def test_malformed_stop_never_produces_full_notional():
-    """REGRESYON: `stop="abc"` → `dec()` 0 döndüğü için risk `qty × entry` (tam notional) oluyordu."""
+    """REGRESYON: `stop="abc"` → `dec()` 0 döndüğü için risk `qty × entry` (tam notional) oluyordu;
+    `stop="-Infinity"` ise `Decimal("-Infinity")` olarak KABUL ediliyor ve risk «sonsuz» çıkıyordu."""
+    for bad in ("abc", "-Infinity", "Infinity", "NaN"):
+        v = position_view(_pos("X/USDT", "LONG", "1", "100", bad), fees=ZERO_FEES)
+        assert v.stop_risk is None and v.stop is None and v.stop_risk_status == STOP_RISK_MALFORMED, bad
     p = _pos("X/USDT", "LONG", "1", "100", "abc")
     v = position_view(p, fees=ZERO_FEES)
     assert v.stop_risk is None                       # 100 (tam notional) DEĞİL
@@ -306,6 +335,21 @@ def test_malformed_stop_never_produces_full_notional():
     pv = portfolio_view([p, _pos("Y/USDT", "LONG", "1", "100", "90")], [], fees=ZERO_FEES)
     assert pv.open_stop_risk == Decimal("10")        # yalnız geçerli pozisyon toplanır
     assert (pv.positions_stop_malformed, pv.positions_without_stop) == (1, 0)
+
+
+@pytest.mark.parametrize("field,value", [("last_price", "Infinity"), ("entry_fee", "Infinity"),
+                                         ("funding_net", "-Infinity"), ("isolated_margin", "Infinity"),
+                                         ("qty", "Infinity"), ("entry_avg", "Infinity")])
+def test_position_view_never_crashes_on_infinite_fields(field, value):
+    """5 · Infinity içeren pozisyon alanı `Inf×0`/`Inf−Inf` ile `InvalidOperation` FIRLATMAZ;
+    sonuç sonludur ve (mark için) «fiyat yok» bayrağı kalkar."""
+    p = _pos("X/USDT", "LONG", "1", "100", "90")
+    p[field] = value
+    v = position_view(p, fees={"taker_pct": 0.05})
+    assert v.net_unrealized.is_finite() and v.gross_unrealized.is_finite()
+    assert v.stop_risk is None or v.stop_risk.is_finite()
+    if field == "last_price":
+        assert v.price_is_stale is True and v.mark_price is None
 
 
 def test_stop_risk_counters_are_labelled_separately():

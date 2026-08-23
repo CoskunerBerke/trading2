@@ -23,6 +23,7 @@ Yüzde paydası (UI'da açıkça yazılır):
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -53,30 +54,65 @@ PF_UNDEFINED = "undefined"                   # brüt zarar 0 VE brüt kâr 0 →
 PF_NO_CLOSED_TRADES = "no_closed_trades"     # hiç kapanmış işlem yok
 
 
-def dec(x: Any, default: Decimal = ZERO) -> Decimal:
-    """Her türlü girdiyi güvenle Decimal'e çevir (None/boş/bozuk → default)."""
-    if x is None or x == "":
-        return default
+def _parse_dec(x: Any) -> Decimal | None:
+    """Ham girdi → Decimal; ayrıştırılamıyorsa None. SONLULUK KONTROLÜ YAPMAZ (çağıran yapar)."""
+    if x is None or x == "" or isinstance(x, bool):
+        return None
     if isinstance(x, Decimal):
         return x
     try:
-        d = Decimal(str(x))
+        return Decimal(str(x))
     except (InvalidOperation, ValueError, TypeError):
-        return default
-    return default if d != d else d          # NaN koruması
+        return None
+
+
+def dec(x: Any, default: Decimal = ZERO) -> Decimal:
+    """Her türlü girdiyi güvenle SONLU Decimal'e çevir (None/boş/bozuk/NaN/±Infinity → default).
+
+    GİRİŞ SINIRI: `Decimal("Infinity")` aritmetiğe girerse `Inf × 0` / `Inf − Inf` varsayılan
+    bağlamda `InvalidOperation` fırlatır ve `position_view()`/`portfolio_view()` düşer → TÜM
+    sayfalar 500 olur. Bu yüzden sonlu olmayan her değer NaN ile AYNI muameleyi görür. Eskiden
+    `isinstance(x, Decimal)` kısa devresi NaN/Inf Decimal nesnelerini de geçiriyordu.
+    """
+    d = _parse_dec(x)
+    return d if (d is not None and d.is_finite()) else default
+
+
+def _non_finite(x: Any) -> bool:
+    """Girdi ayrıştırılıyor AMA NaN/sNaN/±Infinity ise True — bozuk kayıt tespiti.
+
+    `dec()` böyle bir değeri sessizce `default`a çevirir; toplamların «bilinmiyor» olarak
+    işaretlenebilmesi için bozukluk `dec()` ÇAĞRILMADAN ÖNCE burada yakalanır.
+    """
+    d = _parse_dec(x)
+    return d is not None and not d.is_finite()
 
 
 def dec_or_none(x: Any) -> Decimal | None:
-    """Ayrıştırılabiliyorsa Decimal, aksi hâlde ``None`` — sessiz `0` ÜRETMEZ.
+    """Ayrıştırılabiliyorsa SONLU Decimal, aksi hâlde ``None`` — sessiz `0` ÜRETMEZ.
 
     `dec()` bozuk girdide `0` döner; bu bir FİYAT alanı için tehlikelidir: `stop="abc"` → `0`
     olunca `qty × (entry − 0)` tam notional kadar sahte "risk" üretir. Fiyat/eşik alanları bu
     yardımcıyı kullanır; "veri yok" ile "gerçekten sıfır" birbirine karışmaz.
+    NaN, sNaN, Infinity ve -Infinity de `None`dur: `stop="-Infinity"` «geçerli stop» DEĞİLDİR.
     """
-    if x is None or x == "":
+    d = _parse_dec(x)
+    return d if (d is not None and d.is_finite()) else None
+
+
+def finite_float_or_none(x: Any) -> float | None:
+    """KANONİK JSON SINIRI: sonlu float ya da `None` — ASLA `inf`/`nan` döndürmez.
+
+    Panel (`views`), kanonik özet (`canonical_summary`) ve API payload'ına giden HER sayısal
+    alan bu tek yardımcıdan geçer. Daha önce `views._num()` yalnız NaN'ı eliyordu; `Infinity`
+    kart `value`sundan JSON'a sızıyor ve Starlette (`allow_nan=False`) HTTP 500 veriyordu.
+    Çok büyük Decimal'in `float()`ta `inf`e taşması da yakalanır.
+    """
+    d = _parse_dec(x)
+    if d is None or not d.is_finite():
         return None
-    d = dec(x, Decimal("NaN"))
-    return None if d != d else d
+    f = float(d)
+    return f if math.isfinite(f) else None
 
 
 # ============================================================================ sunum yardımcıları
@@ -86,7 +122,8 @@ def fmt_money(x: Any, *, signed: bool = True, currency: str = "$") -> str:
     |x| < 0.01 ve x != 0 → 6 anlamlı ondalık (ör. `+$0.004213`), böylece gerçek küçük kâr/zarar
     kullanıcıya sıfır gibi görünmez. Hesap hassasiyeti bu fonksiyondan bağımsızdır.
     """
-    v = dec(x, Decimal("NaN") if x is None else ZERO)
+    # None VEYA sonlu olmayan girdi (NaN/±Infinity) → "—"; sahte `$0.00`/`+$Infinity` YOK.
+    v = dec(x, Decimal("NaN") if (x is None or _non_finite(x)) else ZERO)
     if v != v:
         return "—"
     sign = "+" if (signed and v > 0) else ("-" if v < 0 else ("" if not signed else ""))
@@ -99,7 +136,8 @@ def fmt_money(x: Any, *, signed: bool = True, currency: str = "$") -> str:
 
 
 def fmt_pct(x: Any, nd: int = 2) -> str:
-    v = dec(x, Decimal("NaN") if x is None else ZERO)
+    # None VEYA sonlu olmayan girdi (NaN/±Infinity) → "—"; sahte `$0.00`/`+$Infinity` YOK.
+    v = dec(x, Decimal("NaN") if (x is None or _non_finite(x)) else ZERO)
     if v != v:
         return "—"
     if v == 0:
@@ -109,7 +147,8 @@ def fmt_pct(x: Any, nd: int = 2) -> str:
 
 def fmt_qty(x: Any, nd: int = 8) -> str:
     """Coin/kontrat ADEDİ — USDT DEĞİL. Gereksiz sıfırlar kırpılır."""
-    v = dec(x, Decimal("NaN") if x is None else ZERO)
+    # None VEYA sonlu olmayan girdi (NaN/±Infinity) → "—"; sahte `$0.00`/`+$Infinity` YOK.
+    v = dec(x, Decimal("NaN") if (x is None or _non_finite(x)) else ZERO)
     if v != v:
         return "—"
     s = f"{v:,.{nd}f}".rstrip("0").rstrip(".")
@@ -118,7 +157,7 @@ def fmt_qty(x: Any, nd: int = 8) -> str:
 
 def pnl_class(x: Any) -> str:
     """CSS sınıfı — renk TEK BAŞINA anlam taşımaz, `+/-` işareti her zaman yazılır."""
-    v = dec(x)
+    v = dec(x)                                   # NaN/±Inf → 0 → "flat" (karşılaştırma güvenli)
     return "up" if v > 0 else ("dn" if v < 0 else "flat")
 
 
@@ -317,6 +356,9 @@ class PortfolioView:
     positions_without_stop: int = 0        # stop alanı YOK/boş
     positions_stop_malformed: int = 0      # stop alanı var ama sayıya çevrilemiyor
     positions_invalid_qty: int = 0         # qty veya entry <= 0 / ayrıştırılamıyor
+    # Parasal alanı NaN/±Infinity olan KAPANIŞ kayıtları: toplamlara GİRMEZ ve sessizce `0`
+    # sayılmaz; bu sayaç > 0 iken gerçekleşen/toplam net K/Z «bilinmiyor» olarak raporlanır.
+    trades_non_finite: int = 0
 
     @property
     def closed_trades(self) -> int:
@@ -344,6 +386,11 @@ def _day_of(ts: Any) -> str:
     return str(ts or "")[:10]
 
 
+# Kapanış kaydında toplamlara giren parasal alanlar — herhangi biri sonlu değilse kayıt bozuktur.
+_TRADE_MONEY_KEYS = ("net_pnl", "realized_pnl", "pnl", "fees", "fees_paid",
+                     "funding_received", "funding_paid", "funding_net", "funding")
+
+
 def portfolio_view(positions: list[dict], trades: list[dict], *, marks: dict[str, Any] | None = None,
                    fees: Any = None, today: str | None = None,
                    max_drawdown_pct: Any = None) -> PortfolioView:
@@ -362,7 +409,13 @@ def portfolio_view(positions: list[dict], trades: list[dict], *, marks: dict[str
     gross_win = gross_loss = ZERO
     total_fees = ZERO
     total_funding = ZERO
+    non_finite_trades = 0
     for t in trades:
+        # Bozuk kayıt (NaN/±Infinity): `dec()` bunu `0`a çevirirdi ve işlem «başa baş» gibi
+        # toplama girerdi → sahte `$0.00`. Kayıt DIŞLANIR ve sayılır; özet «bilinmiyor» yazar.
+        if any(_non_finite(t.get(k)) for k in _TRADE_MONEY_KEYS):
+            non_finite_trades += 1
+            continue
         r = realized_net(t)
         realized_total += r
         if today and _day_of(t.get("closed_at") or t.get("exit_time") or t.get("ts")) == today:
@@ -398,24 +451,32 @@ def portfolio_view(positions: list[dict], trades: list[dict], *, marks: dict[str
         positions_without_stop=sum(1 for v in views if v.stop_risk_status == STOP_RISK_NO_STOP),
         positions_stop_malformed=sum(1 for v in views if v.stop_risk_status == STOP_RISK_MALFORMED),
         positions_invalid_qty=sum(1 for v in views
-                                  if v.stop_risk_status in (STOP_RISK_INVALID_QTY, STOP_RISK_INVALID_ENTRY)))
+                                  if v.stop_risk_status in (STOP_RISK_INVALID_QTY, STOP_RISK_INVALID_ENTRY)),
+        trades_non_finite=non_finite_trades)
 
 
 # ============================================================================ kanonik özet
-def _f(x: Any) -> float | None:
-    """Decimal → SONLU float (JSON için). None korunur; uydurma sıfır ÜRETİLMEZ.
+# Modül içi kısa ad — TEK uygulama `finite_float_or_none`tır; `views` de aynısını kullanır.
+# (İki ayrı kopya — `pnl._f` ve `views._num` — zamanla ayrıştı: biri Infinity'yi eliyor,
+# diğeri elemiyordu. Artık ikinci kopya YOK.)
+_f = finite_float_or_none
 
-    JSON SINIRI: `NaN`, `Infinity`, `-Infinity` RFC 8259 uyumlu JSON değildir ve Starlette
-    `allow_nan=False` ile serileştirdiği için uç noktayı HTTP 500'e düşürür. Sonlu olmayan her
-    değer burada `None`'a çevrilir — anlam (`∞` mı, tanımsız mı) ayrı bir `*_state` alanında
-    taşınır, sayısal alanda DEĞİL.
+
+def money_totals_unavailable_reason(pv: PortfolioView) -> dict[str, str]:
+    """Toplam K/Z alanlarının hangi sebeple «bilinmiyor» olduğu — kart ve özet AYNI kuralı okur.
+
+    Boş sözlük → bütün toplamlar hesaplanabilir. Aksi hâlde anahtar → neden:
+      * `realized`   → bozuk kapanış kaydı (NaN/±Inf) var; gerçekleşen toplam bilinemez
+      * `unrealized` → miktar/giriş fiyatı geçersiz açık pozisyon var; açık toplam bilinemez
     """
-    if x is None:
-        return None
-    d = dec(x, Decimal("NaN"))
-    if d != d or d.is_infinite():             # NaN veya ±Infinity → sayısal alan `null`
-        return None
-    return float(d)
+    why: dict[str, str] = {}
+    if pv.trades_non_finite > 0:
+        why["realized"] = (f"{pv.trades_non_finite} kapanış kaydında sonlu olmayan tutar "
+                           "(bozuk ledger) — toplam hesaplanamaz")
+    if pv.positions_invalid_qty > 0:
+        why["unrealized"] = (f"{pv.positions_invalid_qty} açık pozisyonda miktar/giriş geçersiz "
+                             "— açık K/Z toplamı hesaplanamaz")
+    return why
 
 
 def profit_factor_state(pv: PortfolioView) -> tuple[float | None, str]:
@@ -522,11 +583,22 @@ def canonical_summary(pv: PortfolioView, *, futures_equity: Any = None, spot_equ
             PF_UNDEFINED: "brüt kâr ve brüt zarar 0 → oran tanımsız",
         }.get(pf_state, "hesaplanamadı")
 
+    # Bozuk kayıt varsa toplam «bilinmiyor»dur — dışlanmış kayıtlarla hesaplanan sayı GÖSTERİLMEZ.
+    bad = money_totals_unavailable_reason(pv)
+    realized_ok, unreal_ok = "realized" not in bad, "unrealized" not in bad
+    if not realized_ok:
+        why["today_realized_net_usdt"] = why["all_time_realized_net_usdt"] = bad["realized"]
+    if not unreal_ok:
+        why["open_net_usdt"] = bad["unrealized"]
+    if bad:
+        why["total_net_usdt"] = " · ".join(bad.values())
+
     return {
-        "today_realized_net_usdt": _f(pv.realized_today),
-        "all_time_realized_net_usdt": _f(pv.realized_total),
-        "open_net_usdt": _f(pv.open_net_unrealized),
-        "total_net_usdt": _f(pv.total_net),
+        "today_realized_net_usdt": _f(pv.realized_today) if realized_ok else None,
+        "all_time_realized_net_usdt": _f(pv.realized_total) if realized_ok else None,
+        "open_net_usdt": _f(pv.open_net_unrealized) if unreal_ok else None,
+        "total_net_usdt": _f(pv.total_net) if not bad else None,
+        "trades_non_finite": pv.trades_non_finite,
         "winning_trades": pv.wins, "losing_trades": pv.losses, "breakeven_trades": pv.breakeven,
         "closed_trades": pv.closed_trades,
         "win_rate_pct": _f(pv.win_rate),
@@ -586,5 +658,6 @@ __all__ = ["DEFAULT_TAKER_PCT", "FRESH_OK", "FRESH_STALE", "FRESH_UNKNOWN", "Inc
            "PF_POSITIVE_INFINITY", "PF_UNDEFINED", "PortfolioView", "PositionView",
            "STOP_RISK_INVALID_ENTRY", "STOP_RISK_INVALID_QTY", "STOP_RISK_MALFORMED",
            "STOP_RISK_NO_STOP", "STOP_RISK_OK", "canonical_summary", "check_invariants", "dec",
-           "dec_or_none", "fmt_money", "fmt_pct", "fmt_qty", "pnl_class", "portfolio_view",
-           "position_view", "profit_factor_state", "realized_net"]
+           "dec_or_none", "finite_float_or_none", "fmt_money", "fmt_pct", "fmt_qty",
+           "money_totals_unavailable_reason", "pnl_class", "portfolio_view", "position_view",
+           "profit_factor_state", "realized_net"]

@@ -19,8 +19,9 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Res
 from ..core import ConfigError, utc_now
 from .candles import CandleSource, build_candle_payload
 from .config import DashboardConfig
-from ..pnl import position_view, realized_net
+from ..pnl import finite_float_or_none, position_view, realized_net
 from .state import STATE_FILES, StateReader
+from .views import POSITION_NUM_COLS
 from .templates import (POS_TABLE_CLS, age_text, badge, card, card_value, chart_block, chief_block,
                         esc, fmt, fmt_utc, health_badge, ks_badge, kv_table, lessons_table,
                         live_bar, live_script, money_html, page, pct, pnl_cell, render_any,
@@ -42,6 +43,31 @@ def _int_or_none(x: Any) -> int | None:
         return int(x)
     except (TypeError, ValueError):
         return None
+
+
+def _learning_counters(ln: dict) -> tuple[int | None, int | None, int | None, float | None, str]:
+    """`learning.json` sayaçları → (n_trades, n_wins, kazanmayan, oran%, bozukluk-nedeni).
+
+    Geçersiz/çelişkili state'te DÖRT değer de `None` döner ve neden metni dolu gelir:
+      * negatif sayaç           → `n_trades=-5` / `n_wins=-2`
+      * n_wins > n_trades       → `3 / 7` → «Kazanmayan = -4», «%233.3» gibi uydurma sayı ÜRETİLMEZ
+    Değerler KIRPILMAZ (7→3, -5→0 yapılmaz): state bozukluğu kullanıcıdan gizlenmez.
+    Geçerli sözleşme (0/0, 5/2, 250/100) ve «n_wins yok → yalnız ilgili kartlar Veri yok» aynen korunur.
+    """
+    n = _int_or_none(ln.get("n_trades"))
+    w = _int_or_none(ln.get("n_wins"))
+    bad = ""
+    if n is not None and n < 0:
+        bad = f"bozuk sayaç: n_trades negatif ({n})"
+    elif w is not None and w < 0:
+        bad = f"bozuk sayaç: n_wins negatif ({w})"
+    elif n is not None and w is not None and w > n:
+        bad = f"çelişkili sayaç: n_wins ({w}) > n_trades ({n})"
+    if bad:
+        return None, None, None, None, bad
+    notwin = (n - w) if (n is not None and w is not None) else None
+    wr = (w / n * 100.0) if (n and w is not None) else None
+    return n, w, notwin, wr, ""
 
 
 def _plotly_js() -> bytes | None:
@@ -153,7 +179,7 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
             rows.append(cells)
         note = ('<p class="mut small">Yüzde paydası: FUTURES → kullanılan başlangıç teminatı, '
                 'SPOT → yatırılan tutar. «Coin adedi» USDT değil, coin/kontrat adedidir.</p>')
-        return table(vm["columns"], rows, num_cols=set(range(3, 18)), empty="açık pozisyon yok",
+        return table(vm["columns"], rows, num_cols=set(POSITION_NUM_COLS), empty="açık pozisyon yok",
                      cls=POS_TABLE_CLS) + note        # polling JS'i AYNI sabiti kullanır
 
     def _heads_table(heads: list[dict], st) -> str:
@@ -341,31 +367,33 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
         # Kazanan/kaybeden daha önce `lessons`'tan sayılıyordu → 200. işlemden sonra "toplam
         # işlem tüm zaman, kazanan son 200" gibi kalıcı bir tutarsızlık oluşuyordu (commit'in
         # kendi fixture'ında n_trades=5 / n_wins=2 iken panel 1/1 · %50 gösteriyordu).
-        n = _int_or_none(ln.get("n_trades"))
-        n_wins = _int_or_none(ln.get("n_wins"))
+        n, n_wins, n_notwin, wr, bad = _learning_counters(ln)
         # `n_losses`/`n_breakeven` learning state'te YOKTUR; `n_trades - n_wins` başa baş
         # işlemleri de içerir. Bu yüzden «Kaybeden» diye SAYILMAZ — kart açıkça birleşik yazılır.
-        n_notwin = (n - n_wins) if (n is not None and n_wins is not None) else None
         # Kazanma oranı = `n_wins / n_trades` — öğrenme motorunun KENDİ tanımı
         # (`LearnerV1.snapshot()`: `100 * n_wins / n_trades`), başa baş DAHİL paydada.
-        wr = (n_wins / n * 100.0) if (n and n_wins is not None) else None
-        sum_r = ln.get("sum_r")
-        avg_r = (float(sum_r) / n) if (sum_r is not None and n) else None
+        # Bozuk/çelişkili sayaçlar (negatif, n_wins > n_trades) SESSİZCE KIRPILMAZ — dört kart da
+        # «Veri yok» olur ve neden altyazıda yazılır (negatif «Kazanmayan» / %100 üstü oran YOK).
+        warn = (" · ⚠ " + bad) if bad else ""
+        # sum_r bozuk/NaN/±Inf ise `float()` ValueError → HTTP 500 veriyordu; sonlu değilse Veri yok.
+        sum_r = finite_float_or_none(ln.get("sum_r"))
+        avg_r = (sum_r / n) if (sum_r is not None and n) else None
 
         def _r(x, nd=3):
-            return "Veri yok" if x is None else f"{float(x):+.{nd}f}R"
+            v = finite_float_or_none(x)
+            return "Veri yok" if v is None else f"{v:+.{nd}f}R"
 
         def _c(x):
             return "Veri yok" if x is None else str(x)
 
         body = sample_banner(n if n is not None else len(lessons))
         body += ('<div class="grid">'
-                 + card("Kapanmış işlem", _c(n), "learning.json → n_trades · TÜM ZAMAN")
-                 + card("Kazanan", _c(n_wins), "learning.json → n_wins · TÜM ZAMAN")
+                 + card("Kapanmış işlem", _c(n), "learning.json → n_trades · TÜM ZAMAN" + warn)
+                 + card("Kazanan", _c(n_wins), "learning.json → n_wins · TÜM ZAMAN" + warn)
                  + card("Kazanmayan", _c(n_notwin),
-                        "n_trades − n_wins · kaybeden + başa baş BİRLİKTE (ayrı sayaç yok)")
+                        "n_trades − n_wins · kaybeden + başa baş BİRLİKTE (ayrı sayaç yok)" + warn)
                  + card("Kazanma oranı", "Veri yok" if wr is None else f"%{wr:.1f}",
-                        "n_wins / n_trades · başa baş paydaya DÂHİL")
+                        "n_wins / n_trades · başa baş paydaya DÂHİL" + warn)
                  + card("Toplam R", _r(sum_r), "sum_r — risk katı cinsinden sonuç · TÜM ZAMAN")
                  + card("Ortalama R", _r(avg_r), "toplam R / n_trades · TÜM ZAMAN")
                  + card("Net gerçekleşen K/Z", money_html(pv.realized_total).replace("<td", "<span").replace("</td>", "</span>"),

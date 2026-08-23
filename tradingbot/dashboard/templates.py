@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import html
 import json
+import math
 from typing import Any, Iterable
 
 NAV: list[tuple[str, str]] = [
@@ -88,7 +89,7 @@ def fmt(x: Any, nd: int = 4) -> str:
         f = float(x)
     except (TypeError, ValueError):
         return esc(x)
-    if f != f:
+    if not math.isfinite(f):                    # NaN / ±inf → "-" (sahte sayı yok)
         return "-"
     if abs(f) >= 1000:
         return f"{f:,.2f}"
@@ -99,9 +100,10 @@ def fmt(x: Any, nd: int = 4) -> str:
 
 def pct(x: Any, nd: int = 2) -> str:
     try:
-        return f"{float(x):+.{nd}f}%"
+        f = float(x)
     except (TypeError, ValueError):
         return "-"
+    return f"{f:+.{nd}f}%" if math.isfinite(f) else "-"   # "+inf%" / "+nan%" YAZILMAZ
 
 
 def age_text(seconds: float | None) -> str:
@@ -216,7 +218,9 @@ def lessons_table(lessons: list[dict]) -> str:
         r = x.get("r")
         rows.append([esc(x.get("id") or "—"), esc(x.get("symbol") or "—"), esc(x.get("side") or "—"),
                      money_html(x.get("pnl")),
-                     f'<td class="num">{float(r):+.3f}R</td>' if isinstance(r, (int, float)) else "<td>—</td>",
+                     f'<td class="num">{float(r):+.3f}R</td>'
+                     if isinstance(r, (int, float)) and not isinstance(r, bool) and math.isfinite(float(r))
+                     else "<td>—</td>",
                      res, esc(x.get("exit") or "—"), fmt(x.get("bars"), 0),
                      pct(x.get("mae")), pct(x.get("mfe")), why_cell,
                      f'<span title="{esc(x.get("at") or "")}">{esc(fmt_utc(x.get("at")))}</span>',
@@ -318,12 +322,33 @@ def live_script(cfg) -> str:
     * Arka plan sekmesinde aralık `background_backoff_mult` katına çıkar.
     * Bağlantı koparsa CANLI etiketi YEŞİL KALMAZ.
     """
+    from .views import POSITION_NUM_COLS, POSITION_PNL_COLS   # hizalama sözleşmesi TEK kaynak
     pos = int(getattr(cfg, "poll_positions_s", 7)) * 1000
     summ = int(getattr(cfg, "poll_portfolio_s", 20)) * 1000
     heal = int(getattr(cfg, "poll_health_s", 12)) * 1000
     mult = int(getattr(cfg, "background_backoff_mult", 4))
     stale = int(getattr(cfg, "stale_price_s", 90))
     return r"""<script>
+/* TABLO MARKUP SÖZLEŞMESİ — sunucu render'ı (`templates.table` + `app._positions_table`) ile
+   AYNI olmak ZORUNDA: `.tw` sarmalayıcı, `<table class="__TCLS__">`, `NUM` sütunlarında sağa
+   hizalama, YALNIZ `PNL` sütunlarında up/dn/flat rengi, ilk üç sütunda tam değer `title`'da.
+   Sütun listeleri Python'daki `views.POSITION_NUM_COLS / POSITION_PNL_COLS`tan ENJEKTE edilir;
+   burada `i>=3` gibi ayrı bir kural YOKTUR (önce vardı: «Açılış» ve «İşlem ID» metin sütunları
+   polling'den sonra sağa yaslanıyordu). Fonksiyon `document`a dokunmaz → testte node ile çalışır. */
+function buildPosTable(d,NUM,PNL){
+  function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+  var h='<table class="__TCLS__"><thead><tr>'+d.columns.map(function(c,i){
+    return '<th class="'+(NUM.indexOf(i)>=0?'num':'')+'">'+esc(String(c))+'</th>';}).join('')+'</tr></thead><tbody>';
+  if(!d.rows.length){h+='<tr><td colspan="'+d.columns.length+'" class="mut">açık pozisyon yok</td></tr>';}
+  d.rows.forEach(function(r){h+='<tr>'+r.map(function(c,i){
+    var s=String(c==null?'—':c);var cls=(NUM.indexOf(i)>=0)?'num':'';
+    if(PNL.indexOf(i)>=0){var ch=s.charAt(0);
+      cls+=(ch==='+')?' up':(ch==='-')?' dn':(s==='—'?'':' flat');}   /* sunucu `money_html` ile aynı */
+    var attr=(i<3)?' title="'+esc(s)+'"':'';                                 /* sabit genişlik + ellipsis */
+    return '<td class="'+cls+'"'+attr+'>'+esc(s)+'</td>';}).join('')+'</tr>';});
+  return '<div class="tw">'+h+'</tbody></table></div>';
+}
+var NUMCOLS=__NUMCOLS__,PNLCOLS=__PNLCOLS__;
 (function(){
  var busy={},fails=0;
  function agetxt(s){if(s==null)return '-';s=Math.floor(s);if(s<90)return s+'s';if(s<5400)return Math.floor(s/60)+'dk';
@@ -364,22 +389,7 @@ def live_script(cfg) -> str:
    setLive('on',d.freshness);
    var el=document.getElementById('postbl');
    if(el&&d.rows){
-     /* TABLO MARKUP SOZLESMESI - sunucu render'i ile AYNI olmak ZORUNDA: `.tw` sarmalayici,
-        `<table class="__TCLS__">` ve 3. sutundan sonra num/up/dn hizalamasi. Bu tablo daha
-        once `class` TASIMIYORDU: ilk yuklemede sabit (sticky) kalan Sembol/Piyasa/Yon
-        sutunlari 7 saniyelik ilk polling'den sonra SESSIZCE normale donuyordu. */
-     function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
-     var h='<table class="__TCLS__"><thead><tr>'+d.columns.map(function(c){return '<th>'+esc(String(c))+'</th>';}).join('')+'</tr></thead><tbody>';
-     if(!d.rows.length){h+='<tr><td colspan="'+d.columns.length+'" class="mut">a\u00e7\u0131k pozisyon yok</td></tr>';}
-     d.rows.forEach(function(r){h+='<tr>'+r.map(function(c,i){
-       var s=String(c==null?'\u2014':c);var cls='',attr='';
-       if(i>=3){cls=' class="num'+(s.charAt(0)==='+'?' up':(s.charAt(0)==='-'?' dn':''))+'"';}
-       /* Ilk uc sutun sabit genislikte + ellipsis -> tam deger tooltip'te korunur. */
-       if(i<3){attr=' title="'+esc(s)+'"';}
-       return '<td'+cls+attr+'>'+esc(s)+'</td>';}).join('')+'</tr>';});
-     /* `.tw` sarmalayıcısı ZORUNLU: sunucu tarafı `table()` bunu ekler, polling eklemeyince
-        tablo kendi kapsayıcısında değil SAYFADA yatay taşma yapıyordu. */
-     el.innerHTML='<div class="tw">'+h+'</tbody></table></div>';
+     el.innerHTML=buildPosTable(d,NUMCOLS,PNLCOLS);
    }
  },__POS__);
  poll('sum','/api/live/summary',function(d){
@@ -401,7 +411,7 @@ def live_script(cfg) -> str:
      run_age_s:d.last_run_age_s,heads_age_s:null});}
  },__HEAL__);
 })();
-</script>""".replace("__POS__", str(pos)).replace("__SUM__", str(summ)).replace("__HEAL__", str(heal))             .replace("__MULT__", str(mult)).replace("__STALE__", str(stale)).replace("__TCLS__", POS_TABLE_CLS)
+</script>""".replace("__POS__", str(pos)).replace("__SUM__", str(summ)).replace("__HEAL__", str(heal))             .replace("__MULT__", str(mult)).replace("__STALE__", str(stale)).replace("__TCLS__", POS_TABLE_CLS)             .replace("__NUMCOLS__", json.dumps(list(POSITION_NUM_COLS))).replace("__PNLCOLS__", json.dumps(list(POSITION_PNL_COLS)))
 
 
 def card(k: str, v: str, sub: str = "", cid: str = "") -> str:

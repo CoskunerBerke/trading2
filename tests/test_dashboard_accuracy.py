@@ -253,6 +253,53 @@ def test_summary_cards_guard_non_finite_even_if_ingest_is_bypassed():
     json.dumps([c.to_dict() for c in summary_cards(pv)], allow_nan=False)
 
 
+@pytest.mark.parametrize("raw", ["Infinity", "-Infinity", "NaN", "sNaN"])
+def test_dec_rejects_non_finite_decimal_objects(raw):
+    """`dec()` GİRİŞ SINIRI — Decimal NESNESİ olarak verilen NaN/sNaN/±Infinity de `default`a düşer.
+
+    Eski `isinstance(x, Decimal): return x` kısa devresi bu nesneleri olduğu gibi geçiriyordu;
+    string/float girdiler `Decimal(str(x))` yolundan filtrelenirken nesne yolu açık kalıyordu.
+    Bu dal aritmetiğe girdiğinde `Inf × 0` / `NaN > 0` `InvalidOperation` fırlatır.
+    """
+    from decimal import Decimal as D
+    from tradingbot.pnl import ZERO, dec, pnl_class
+    x = D(raw)
+    assert not x.is_finite()                                  # kurulum kontrolü
+    assert dec(x) == ZERO                                     # varsayılan default
+    fallback = D("123.45")
+    assert dec(x, fallback) == fallback                       # özel default aynen döner
+    assert dec(x, fallback) is fallback or dec(x, fallback) == fallback
+    assert pnl_class(x) == "flat"                             # karşılaştırma güvenli: istisna YOK
+
+
+@pytest.mark.parametrize("raw", ["0", "-12.34", "1E+400", "0.00000001", "1e-30"])
+def test_dec_keeps_finite_decimal_objects_unchanged(raw):
+    """Sonlu Decimal nesnesi DEĞİŞMEDEN döner — `Decimal("1E+400")` Decimal için SONLUDUR (keyfi üs);
+    yalnız float'a çevrildiğinde taşar, `dec()` bunu sonsuz diye REDDETMEMELİDİR."""
+    from decimal import Decimal as D
+    from tradingbot.pnl import dec
+    x = D(raw)
+    assert x.is_finite()
+    assert dec(x) == x and dec(x, D("9")) == x
+    assert dec(x) is x                                        # kopya değil, aynı nesne
+
+
+@pytest.mark.parametrize("raw,expect", [
+    ("Infinity", None), ("-Infinity", None), ("NaN", None), ("sNaN", None),
+    ("1E+400", None),                       # Decimal-sonlu, float'ta inf → JSON sınırında None
+    ("-12.34", -12.34), ("0", 0.0), ("1E+300", 1e300),
+])
+def test_finite_float_or_none_on_decimal_objects(raw, expect):
+    """JSON sınırı: Decimal nesnesi doğrudan verildiğinde de `inf`/`nan` ASLA çıkmaz."""
+    from decimal import Decimal as D
+    from tradingbot.pnl import finite_float_or_none
+    got = finite_float_or_none(D(raw))
+    if expect is None:
+        assert got is None, raw
+    else:
+        assert got == pytest.approx(expect) and math.isfinite(got), raw
+
+
 def test_canonical_summary_is_always_rfc_json():
     """JSON SINIRI: hiçbir senaryoda `NaN`/`Infinity` üretilmez (aksi hâlde uç nokta 500 verir)."""
     for trades in ([], [{"net_pnl": "5"}], [{"net_pnl": "0"}], [{"net_pnl": "5"}, {"net_pnl": "-1"}]):

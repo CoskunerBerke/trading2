@@ -106,23 +106,46 @@ class ShadowBook:
         d = read_json(self.path, default={"trades": []})
         self.trades: list[ShadowTrade] = [ShadowTrade(**{k: v for k, v in t.items() if k in ShadowTrade.__dataclass_fields__}) for t in d.get("trades", [])]
 
+    MAX_TRADES = 5000                       # SINIRLI saklama — dosya sinirsiz buyumez
+
     def save(self) -> None:
-        atomic_write_json(self.path, {"trades": [t.to_dict() for t in self.trades[-5000:]]})
+        # Bellek ve dosya AYNI siniri uygular; aksi halde surec omru boyunca liste sinirsiz buyur.
+        if len(self.trades) > self.MAX_TRADES:
+            self.trades = self.trades[-self.MAX_TRADES:]
+        atomic_write_json(self.path, {"trades": [t.to_dict() for t in self.trades]})
+
+    def _event_key(self, plan_id: str, symbol: str, direction: str, variant: str) -> tuple:
+        return (str(plan_id), str(symbol), str(direction), str(variant))
+
+    def _open_event_keys(self) -> set[tuple]:
+        """ETIKETLENMEMIS (sonucu henuz olcumemis) golge kayitlarin kimlikleri."""
+        return {self._event_key(t.plan_id, t.symbol, t.direction, t.variant)
+                for t in self.trades if t.outcome is None}
 
     def add(self, plan: dict[str, Any], reason_not_opened: list[str], *, variants: tuple[str, ...] = ("as_planned",), tf_minutes: int = 240,
             now: datetime | None = None) -> list[ShadowTrade]:
         now = now or utc_now()
         h = int(plan.get("horizon_bars", plan.get("time_horizon", 12)) or 12)
         out = []
+        # DUPLICATE OLAY KORUMASI: ayni plan/sembol/yon/varyant icin acik (etiketlenmemis) bir golge
+        # kayit varsa IKINCISI YAZILMAZ. Ayni tur icinde iki kapiya birden takilan aday, istatistigi
+        # iki kez besleyemez. Etiketlenmis eski kayit yeni bir olayi ENGELLEMEZ.
+        seen = self._open_event_keys()
+        plan_id = str(plan.get("plan_id", plan.get("id", "")))
+        symbol, direction = plan["symbol"], plan.get("direction", "LONG")
         for v in variants:
+            if self._event_key(plan_id, symbol, direction, v) in seen:
+                continue
             st = ShadowTrade(id=new_id("shadow"), plan_id=str(plan.get("plan_id", plan.get("id", ""))), symbol=plan["symbol"],
                              market_type=str(plan.get("market_type", "futures")), direction=plan.get("direction", "LONG"), created_at=iso(now),
                              entry=float(plan["entry"]), stop=float(plan["stop"]), targets=[float(x) for x in plan.get("targets", [])], horizon_bars=h,
                              variant=v, reason_not_opened=list(reason_not_opened), label_ts=iso(now + timedelta(minutes=tf_minutes * h)),
                              tf_minutes=tf_minutes, leverage=float(plan.get("leverage", 1) or 1))
             self.trades.append(st)
+            seen.add(self._event_key(plan_id, symbol, direction, v))
             out.append(st)
-        self.save()
+        if out:
+            self.save()
         return out
 
     def pending(self, now: datetime | None = None) -> list[ShadowTrade]:

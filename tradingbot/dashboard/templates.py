@@ -276,6 +276,13 @@ def chief_block(cv) -> str:
                      str(getattr(c, "risk_equity_basis_kind", "") or ""), "Özkaynak tabanı")
         return " · %s: %s USDT" % (label, fmt_money(c.risk_equity_basis_usdt, signed=False, currency=""))
 
+    def _spot_no_stop(c):
+        """Stopsuz spot AÇIKÇA yazılır — stop alanı boşken 'risk azaldı' izlenimi verilmez."""
+        syms = list(getattr(c, "spot_symbols_without_stop", None) or [])
+        if not syms:
+            return ""
+        return " · stopsuz (stopla sınırlanmamış): " + esc(", ".join(str(x) for x in syms[:4]))
+
     def _risk_age(c):
         """Risk anlık görüntüsünün yaşı — fiyat tazeliğinden AYRI etiketlenir."""
         st = getattr(c, "risk_snapshot_state", None)
@@ -303,7 +310,17 @@ def chief_block(cv) -> str:
          card("Açık stop riski", _usdt(cv.open_stop_risk_usdt),
               "pozisyonların stop'a kadar BRÜT tahmini kaybı (ücret hariç)"),
          card("Risk motoru rezervasyonu", _usdt(cv.open_risk_usdt),
-              "risk.json → total_open_risk_usdt" + _risk_age(cv)),
+              "risk.json → total_open_risk_usdt (spot+futures BİRLEŞİK toplam)" + _risk_age(cv)),
+         # SPOT NOTIONAL ile FUTURES STOP RISKI AYNI KARTTA TOPLANMAZ — kabul kapısı futures
+         # kovasını kullanır; spot kendi allocation kapısıyla korunur.
+         card("Futures stop riski", _usdt(cv.futures_stop_risk_usdt),
+              "yalnız futures pozisyonları — kabul kapısının kovası" + _risk_age(cv)),
+         card("Futures bütçe kullanımı", _pct(cv.futures_risk_budget_util_pct),
+              "futures stop riski / azami risk bütçesi" + _risk_age(cv)),
+         card("Spot maruziyeti", _usdt(cv.spot_exposure_usdt),
+              "açık spot notional — RİSK DEĞİL" + _spot_no_stop(cv) + _risk_age(cv)),
+         card("Spot allocation kullanımı", _pct(cv.spot_allocation_util_pct),
+              "spot notional / spot tavanı (ayrı kapı)" + _risk_age(cv)),
          card("Risk bütçesi kullanımı", _pct(cv.risk_budget_util_pct),
               (("azami " + fmt_money(cv.risk_budget_max_usdt, signed=False, currency="") + " USDT"
                 + _basis(cv)) if cv.risk_budget_max_usdt is not None

@@ -33,6 +33,9 @@ class RiskProfile:
     max_spread_pct: float | None = None
     min_expected_r: float | None = None
     size_on_live_equity: bool = False         # False: eski davranış (starting_equity), True: canlı equity
+    # SPOT AYRI KAPI: spot notional'ı futures stop-risk bütçesine EKLEMEK yerine kendi tavanıyla
+    # sınırlanır. AÇIK alan — kaynaktan türetilmez. None = spot allocation kapısı UYGULANMAZ.
+    max_spot_allocation_pct: float | None = None
     extra: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
@@ -43,11 +46,14 @@ PROFILES: dict[str, RiskProfile] = {
     # PAPER_RESEARCH: pozisyon ADEDI ana risk mekanizmasi DEGILDIR -> None. Karar toplam acik risk
     # (%6), islem basina risk tavani (%2), margin, liq buffer ve same-symbol kapilariyla verilir.
     # `risk_per_trade_pct` bir TAVAN'dir; her islemde zorunlu kullanilan miktar degildir.
-    "PAPER_RESEARCH": RiskProfile("PAPER_RESEARCH", 2.0, 6.0, 5, None, None, 30.0),
-    "TESTNET": RiskProfile("TESTNET", 0.5, 2.0, 2, 3, 3, 30.0, 2.0, 4.0, 8.0, 2, 50.0, 60.0, 3.0, 3, 24.0, 24.0, 0.3, 1.0, True),
-    "SHADOW_LIVE": RiskProfile("SHADOW_LIVE", 0.5, 2.0, 2, 3, 3, 30.0, 2.0, 4.0, 8.0, 2, 50.0, 60.0, 3.0, 3, 24.0, 24.0, 0.3, 1.0, True),
-    "LIVE_LIMITED": RiskProfile("LIVE_LIMITED", 0.25, 1.0, 1, 2, 2, 20.0, 1.0, 2.0, 5.0, 1, 30.0, 40.0, 3.0, 3, 48.0, 48.0, 0.2, 1.5, True),
-    "LIVE": RiskProfile("LIVE", 0.5, 2.0, 2, 3, 3, 30.0, 2.0, 4.0, 8.0, 2, 50.0, 60.0, 3.0, 3, 24.0, 24.0, 0.3, 1.0, True),
+    # `max_spot_allocation_pct`: spot maruziyeti artık futures stop-risk bütçesinden AYRI kapıyla
+    # sınırlanır. Değer, her profilin KENDİ `max_position_pct` tavanıyla aynı seçildi: spot
+    # kaldıraçsızdır, bu yüzden tek coin tavanı portföy geneli için de güvenli üst sınırdır.
+    "PAPER_RESEARCH": RiskProfile("PAPER_RESEARCH", 2.0, 6.0, 5, None, None, 30.0, max_spot_allocation_pct=30.0),
+    "TESTNET": RiskProfile("TESTNET", 0.5, 2.0, 2, 3, 3, 30.0, 2.0, 4.0, 8.0, 2, 50.0, 60.0, 3.0, 3, 24.0, 24.0, 0.3, 1.0, True, max_spot_allocation_pct=30.0),
+    "SHADOW_LIVE": RiskProfile("SHADOW_LIVE", 0.5, 2.0, 2, 3, 3, 30.0, 2.0, 4.0, 8.0, 2, 50.0, 60.0, 3.0, 3, 24.0, 24.0, 0.3, 1.0, True, max_spot_allocation_pct=30.0),
+    "LIVE_LIMITED": RiskProfile("LIVE_LIMITED", 0.25, 1.0, 1, 2, 2, 20.0, 1.0, 2.0, 5.0, 1, 30.0, 40.0, 3.0, 3, 48.0, 48.0, 0.2, 1.5, True, max_spot_allocation_pct=20.0),
+    "LIVE": RiskProfile("LIVE", 0.5, 2.0, 2, 3, 3, 30.0, 2.0, 4.0, 8.0, 2, 50.0, 60.0, 3.0, 3, 24.0, 24.0, 0.3, 1.0, True, max_spot_allocation_pct=30.0),
 }
 DEFAULT_PROFILE = "PAPER_RESEARCH"
 _RECOMMENDED = PROFILES["TESTNET"]
@@ -89,7 +95,7 @@ def resolve_profile(name: str | None = None, overrides: dict[str, Any] | None = 
         _v = getattr(p, _k)
         if _v is not None and _v < 1:
             raise ConfigError("pozisyon limitleri ≥ 1 olmalı (ya da None = adet limiti yok)")
-    for k in ("daily_loss_stop_pct", "weekly_loss_stop_pct", "max_drawdown_kill_pct"):
+    for k in ("daily_loss_stop_pct", "weekly_loss_stop_pct", "max_drawdown_kill_pct", "max_spot_allocation_pct"):
         v = getattr(p, k)
         if v is not None and not (0 < v <= 100):
             raise ConfigError(f"{k} 0..100 aralığında olmalı")

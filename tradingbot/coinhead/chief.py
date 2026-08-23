@@ -112,7 +112,10 @@ class ChiefPortfolioManager:
                     "open_risk_usdt": float(ps.get("total_open_risk_usdt", 0.0)), "margin_util_pct": float(ps.get("margin_util_pct", 0.0)),
                     "daily_pnl": float(ps.get("pnl_today", 0.0)), "drawdown_pct": float(ps.get("drawdown_pct", 0.0))}
         allocation = {"spot_notional": round(sum(float(p.get("notional", 0)) for p in open_pos if p.get("market_type") == "SPOT"), 4),
-                      "futures_notional": round(sum(float(p.get("notional", 0)) for p in open_pos if p.get("market_type") != "SPOT"), 4)}
+                      "futures_notional": round(sum(float(p.get("notional", 0)) for p in open_pos if p.get("market_type") != "SPOT"), 4),
+                      # UC AYRI KAVRAM — spot notional ile futures stop riski TOPLANMAZ
+                      "futures_stop_risk_usdt": ps.get("futures_stop_risk_usdt"),
+                      "spot_exposure_usdt": ps.get("spot_exposure_usdt")}
         # SIRALAMA: adaylarin TAMAMI islenmeden once maliyet-sonrasi muhafazakar edge'e gore siralanir.
         # Boylece daha guclu ucuncu firsat, daha zayif iki firsat yuzunden keyfi bicimde disarida kalmaz.
         ranking = []
@@ -143,7 +146,10 @@ class ChiefPortfolioManager:
             k = (cluster_of(p.get("symbol", ""), self.clusters), p.get("side", "LONG"))
             cl_count[k] = cl_count.get(k, 0) + 1
         equity = max(float(ps.get("equity", 0) or 0), 1e-9)
-        risk_open_now = float(ps.get("total_open_risk_usdt", 0.0) or 0.0)     # GERCEK acik risk
+        # YETKILI kapiyla AYNI kova: futures stop riski. Spot notional bu projeksiyona KARISMAZ
+        # (kendi `SPOT_ALLOCATION` kapisi vardir). Alan yoksa eski birlesik toplam kullanilir.
+        _fut = ps.get("futures_stop_risk_usdt")
+        risk_open_now = float((_fut if _fut is not None else ps.get("total_open_risk_usdt", 0.0)) or 0.0)
         risk_budget = equity * float(cfg.max_total_open_risk_pct) / 100.0
         projected = risk_open_now          # YALNIZ RAPORLAMA: hicbir adayi engellemez
         advisory_fit = 0

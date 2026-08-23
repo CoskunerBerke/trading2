@@ -225,7 +225,12 @@ class HistoricalReplay:
             state = self._portfolio_state(marks_f, now)
             btc_dec = decisions.get("BTC/USDT")
             chief = self.chief.decide(list(decisions.values()), {"equity": state.equity, "open_positions": [o.to_dict() for o in state.open_positions],
-                                                                 "total_open_risk_usdt": state.total_open_risk_usdt, "pnl_today": state.realized_pnl_today,
+                                                                 "total_open_risk_usdt": state.total_open_risk_usdt,
+                                                                 # ADVISORY projeksiyon YETKILI kapiyla ayni kovayi olcsun:
+                                                                 # birlesik toplam kullanilirsa panel "sigmaz" derken motor kabul eder.
+                                                                 "futures_stop_risk_usdt": state.futures_stop_risk_usdt,
+                                                                 "spot_exposure_usdt": state.spot_exposure_usdt,
+                                                                 "pnl_today": state.realized_pnl_today,
                                                                  "drawdown_pct": state.drawdown_pct}, btc_regime=btc_dec.regime if btc_dec else None)
             in_test = any(w.test_start <= t < w.test_end for w in wf) if wf else True
             for sym in chief.priority + [s for s, d in decisions.items() if d.is_actionable and s not in chief.priority]:

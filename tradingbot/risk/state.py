@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 from ..core import from_iso, utc_now
 
 MAJORS = {"BTC", "ETH"}
+SPOT = "SPOT"
 CLUSTERS_DEFAULT: dict[str, str] = {
     "BTC": "major", "ETH": "major", "BNB": "exchange", "SOL": "l1", "AVAX": "l1", "ADA": "l1", "DOT": "l1", "NEAR": "l1", "APT": "l1", "SUI": "l1",
     "TRX": "l1", "TON": "l1", "XRP": "payments", "XLM": "payments", "LTC": "payments", "BCH": "payments", "DOGE": "meme", "SHIB": "meme",
@@ -72,7 +73,48 @@ class PortfolioState:
 
     @property
     def total_open_risk_usdt(self) -> float:
+        """BIRLESIK toplam (spot + futures) — YALNIZ RAPORLAMA. Kabul kapisi bunu KULLANMAZ.
+
+        Stopsuz bir spot pozisyonu `build_state` icinde TAM notional risk sayilir; bu deger futures
+        stop-risk butcesiyle ayni kovaya konursa 8 USDT'lik stopsuz spot, 3 USDT'lik futures
+        butcesini tek basina bloke eder. Kabul karari icin market kovasi kullanilir:
+        `futures_stop_risk_usdt` / `spot_stop_risk_usdt` (bkz. `open_stop_risk_in`).
+        """
         return sum(p.risk_usdt for p in self.open_positions)
+
+    # --- MARKET KOVALARI: spot notional'i futures stop-risk butcesine KARISTIRMAZ ---
+    @property
+    def futures_stop_risk_usdt(self) -> float:
+        """Yalniz acik FUTURES pozisyonlarinin gecerli stop riski."""
+        return sum(p.risk_usdt for p in self.open_positions if p.market_type != SPOT)
+
+    @property
+    def spot_exposure_usdt(self) -> float:
+        """Acik SPOT pozisyonlarinin notional toplami (maliyet/piyasa degeri) — RISK DEGIL."""
+        return sum(p.notional for p in self.open_positions if p.market_type == SPOT)
+
+    @property
+    def spot_stop_risk_usdt(self) -> float:
+        """YALNIZ gercek/uygulanan stop'u olan spot pozisyonlarinin risk toplami.
+
+        Spot stop'u `SpotLedger.positions()` icinde duran GERCEK STOP_MARKET/STOP_LIMIT/OCO
+        emrinden turetilir (`stop_orders()`); yalnizca state'e yazilmis bir alan degildir. Stop yoksa
+        pozisyon burada SAYILMAZ; `spot_unbounded_notional_usdt` altinda AYRI raporlanir.
+        """
+        return sum(p.risk_usdt for p in self.open_positions if p.market_type == SPOT and p.stop is not None)
+
+    @property
+    def spot_unbounded_notional_usdt(self) -> float:
+        """Stop'u OLMAYAN spot pozisyonlarinin notional toplami — stopla SINIRLANMAMIS maruziyet."""
+        return sum(p.notional for p in self.open_positions if p.market_type == SPOT and p.stop is None)
+
+    @property
+    def spot_symbols_without_stop(self) -> list[str]:
+        return [p.symbol for p in self.open_positions if p.market_type == SPOT and p.stop is None]
+
+    def open_stop_risk_in(self, market_type: str) -> float:
+        """Adayin KENDI marketindeki acik stop riski — kabul kapisinin tek dogru tabani."""
+        return self.spot_stop_risk_usdt if market_type == SPOT else self.futures_stop_risk_usdt
 
     def positions_in(self, market_type: str) -> list[OpenPosition]:
         return [p for p in self.open_positions if p.market_type == market_type]

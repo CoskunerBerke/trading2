@@ -142,9 +142,16 @@ class RiskEngine:
                 warns.append(f"RISK_PER_TRADE: notional {notional:.2f} → {adj_notional:.2f}")
                 risk_usdt = allowed_risk
             add("RISK_PER_TRADE", True, round(risk_usdt, 4), round(allowed_risk, 4))
-            total_after = state.total_open_risk_usdt + risk_usdt
+            # TOPLAM ACIK RISK — ADAYIN KENDI MARKET KOVASINDA olculur.
+            # Spot notional (stopsuz spotta = tam notional) futures stop-risk butcesine EKLENMEZ;
+            # aksi halde 8.226 USDT'lik stopsuz BNB spot, 3.0 USDT'lik futures butcesini tek basina
+            # %294 doldurup her yeni futures adayini bloke ediyordu. Spot guvenligi kaldirilmadi,
+            # AYRI kapiya tasindi (asagida SPOT_ALLOCATION). Kovanin ADI ve limiti degismez.
+            bucket_before = state.open_stop_risk_in(mtype)
+            total_after = bucket_before + risk_usdt
             add("TOTAL_OPEN_RISK", total_after <= equity_basis * p.max_total_open_risk_pct / 100.0 + 1e-9, round(total_after, 4),
-                round(equity_basis * p.max_total_open_risk_pct / 100.0, 4))
+                round(equity_basis * p.max_total_open_risk_pct / 100.0, 4),
+                f"{'SPOT' if mtype == 'SPOT' else 'FUTURES'} stop-risk kovası")
         # kaldıraç
         adj_lev = lev
         if mtype != "SPOT":
@@ -164,6 +171,14 @@ class RiskEngine:
         else:
             adj_lev = 1
             add("SPOT_NO_SHORT", side != "SHORT", side)
+            # SPOT GUVENLIGI: stop-risk kovasi degil, ALLOCATION (notional) tavani korur.
+            # Spot pozisyonun stop'u olmayabilir; bu durumda "risk" olcusu yoktur ve tek dogru
+            # sinir maruziyetin kendisidir. Profil alani None ise kapi UYGULANMAZ (davranis eski).
+            if p.max_spot_allocation_pct is not None:
+                spot_after = state.spot_exposure_usdt + adj_notional
+                add("SPOT_ALLOCATION", spot_after <= equity_basis * p.max_spot_allocation_pct / 100.0 + 1e-9,
+                    round(spot_after, 4), round(equity_basis * p.max_spot_allocation_pct / 100.0, 4),
+                    "spot notional maruziyeti (stop riski DEĞİL)")
         # tek coin cap
         add("MAX_POSITION_PCT", adj_notional <= equity_basis * p.max_position_pct / 100.0 * max(adj_lev, 1) + 1e-9, round(adj_notional, 2),
             round(equity_basis * p.max_position_pct / 100.0 * max(adj_lev, 1), 2))
@@ -233,6 +248,12 @@ class RiskEngine:
         """SALT-OKUNUR gözlem çıktısı. Kabul kararını ETKİLEMEZ; yalnız motorun ZATEN kullandığı
         değerleri yayımlar.
 
+        `futures_stop_risk_usdt` / `spot_exposure_usdt` / `spot_stop_risk_usdt` ÜÇ AYRI KAVRAMDIR.
+        `TOTAL_OPEN_RISK` kapısı adayın KENDİ market kovasını kullanır (futures adayı → futures stop
+        riski). `spot_stop_risk_usdt` YALNIZ gerçek duran stop emri olan spot pozisyonlardan gelir;
+        stopsuz spot `spot_unbounded_notional_usdt` altında AYRI yayımlanır ve "riski azaldı" gibi
+        gösterilmez. Panel bu üç değeri toplamaz.
+
         `equity_basis` / `max_total_open_risk_usdt`: `evaluate()` içindeki `TOTAL_OPEN_RISK` kapısı
         tam olarak bu iki değeri kullanır (bkz. `equity_basis()` ve aşağıdaki `add("TOTAL_OPEN_RISK"…)`).
         Panel bunları okumadığında bütçeyi `exposure.equity`'den TAHMİN ediyordu ve motorun gerçekte
@@ -246,6 +267,14 @@ class RiskEngine:
                              "equity_basis": basis, "equity_basis_kind": self.equity_basis_kind(),
                              "max_total_open_risk_usdt": round(basis * p.max_total_open_risk_pct / 100.0, 6),
                              "open_positions": len(state.open_positions), "total_open_risk_usdt": round(state.total_open_risk_usdt, 4),
+                             # UC AYRI KAVRAM — tek kartta TOPLANMAZ:
+                             "futures_stop_risk_usdt": round(state.futures_stop_risk_usdt, 6),
+                             "spot_exposure_usdt": round(state.spot_exposure_usdt, 6),
+                             "spot_stop_risk_usdt": round(state.spot_stop_risk_usdt, 6),
+                             "spot_unbounded_notional_usdt": round(state.spot_unbounded_notional_usdt, 6),
+                             "spot_symbols_without_stop": list(state.spot_symbols_without_stop),
+                             "max_spot_allocation_usdt": (round(basis * p.max_spot_allocation_pct / 100.0, 6)
+                                                          if p.max_spot_allocation_pct is not None else None),
                              "used_margin": state.used_margin, "altcoin_notional": round(state.altcoin_notional(), 4),
                              "pnl_today": round(state.realized_pnl_today, 4), "pnl_week": round(state.realized_pnl_week, 4),
                              "consecutive_losses": state.consecutive_losses,

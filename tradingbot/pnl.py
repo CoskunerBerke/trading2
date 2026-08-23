@@ -516,6 +516,11 @@ def canonical_summary(pv: PortfolioView, *, futures_equity: Any = None, spot_equ
       * `risk_budget_max_usdt`     — azami toplam risk bütçesi; YALNIZ risk motorunun yayımladığı
                                      `exposure.max_total_open_risk_usdt` okunur (tahmin YOK)
       * `open_risk_budget_utilization_pct` — rezervasyon / bütçe
+      * `futures_stop_risk_usdt`   — YALNIZ futures pozisyonlarının stop riski (kabul kapısının kovası)
+      * `spot_exposure_usdt`       — açık spot notional maruziyeti (RİSK DEĞİL, stopla sınırlı değil)
+      * `spot_stop_risk_usdt`      — YALNIZ gerçek duran stop emri olan spot pozisyonların riski;
+                                     stopsuz spot `spot_unbounded_notional_usdt` altında AYRI durur
+    Bu üç büyüklük aynı kartta TOPLANMAZ; eski snapshot'larda alan yoksa `None` + neden yazılır.
 
     `risk_age_s` / `risk_stale_s`: risk anlık görüntüsünün yaşı ve eşiği. Fiyat tazeliğinden AYRI
     kavramdır; `risk.json` strateji turunda yazılır, fiyat her tickte güncellenir.
@@ -551,6 +556,26 @@ def canonical_summary(pv: PortfolioView, *, futures_equity: Any = None, spot_equ
     budget_max = _f(rs.get("max_total_open_risk_usdt")) if isinstance(rs, dict) else None
     basis = _f(rs.get("equity_basis")) if isinstance(rs, dict) else None
     basis_kind = rs.get("equity_basis_kind") if isinstance(rs, dict) else None
+    # --- UC AYRI KAVRAM (TOPLANMAZ): futures stop riski / spot maruziyeti / stopsuz spot ---
+    # Eski snapshot'larda bu alanlar YOKTUR -> `None` + `unavailable_reason` (FAIL-SAFE "Veri yok").
+    # Baska bir alandan TAHMIN URETILMEZ; ozellikle `total_open_risk_usdt` bu uc kavramin yerine
+    # GECMEZ (birlesik toplamdir ve stopsuz spotu tam notional sayar).
+    fut_risk = _f(rs.get("futures_stop_risk_usdt")) if isinstance(rs, dict) else None
+    spot_exp = _f(rs.get("spot_exposure_usdt")) if isinstance(rs, dict) else None
+    spot_risk = _f(rs.get("spot_stop_risk_usdt")) if isinstance(rs, dict) else None
+    spot_unbounded = _f(rs.get("spot_unbounded_notional_usdt")) if isinstance(rs, dict) else None
+    spot_no_stop = list(rs.get("spot_symbols_without_stop") or []) if isinstance(rs, dict) else []
+    spot_cap = _f(rs.get("max_spot_allocation_usdt")) if isinstance(rs, dict) else None
+    _old_snap = "risk.json eski şema — motor bu alanı henüz yayımlamıyor"
+    if fut_risk is None:
+        why["futures_stop_risk_usdt"] = "risk.json → exposure.futures_stop_risk_usdt yok (" + _old_snap + ")"
+    if spot_exp is None:
+        why["spot_exposure_usdt"] = "risk.json → exposure.spot_exposure_usdt yok (" + _old_snap + ")"
+    if spot_risk is None:
+        why["spot_stop_risk_usdt"] = "risk.json → exposure.spot_stop_risk_usdt yok (" + _old_snap + ")"
+    if spot_cap is None:
+        why["spot_allocation_utilization_pct"] = "spot allocation tavanı yayımlanmamış"
+
     budget_util = None
     if budget_max is None:
         why["risk_budget_max_usdt"] = ("risk.json → exposure.max_total_open_risk_usdt yok "
@@ -558,6 +583,17 @@ def canonical_summary(pv: PortfolioView, *, futures_equity: Any = None, spot_equ
         why["open_risk_budget_utilization_pct"] = "azami risk bütçesi bilinmiyor"
     elif budget_max > 0 and reserved is not None:
         budget_util = reserved / budget_max * 100.0
+
+    # FUTURES butce kullanimi: kabul kapisinin GERCEKTEN olctugu kova (spot maruziyeti HARIC).
+    futures_budget_util = None
+    if budget_max is None or fut_risk is None:
+        why["futures_risk_budget_utilization_pct"] = ("futures stop riski ya da azami bütçe "
+                                                      "bilinmiyor — tahmin üretilmez")
+    elif budget_max > 0:
+        futures_budget_util = fut_risk / budget_max * 100.0
+    spot_alloc_util = None
+    if spot_cap is not None and spot_cap > 0 and spot_exp is not None:
+        spot_alloc_util = spot_exp / spot_cap * 100.0
 
     # Risk anlık görüntüsünün YAŞI — fiyat tazeliğinden AYRI kavramdır (ayrı eşik, ayrı etiket).
     r_age = _f(risk_age_s)
@@ -615,6 +651,15 @@ def canonical_summary(pv: PortfolioView, *, futures_equity: Any = None, spot_equ
         "positions_stop_malformed": pv.positions_stop_malformed,
         "positions_invalid_qty": pv.positions_invalid_qty,
         "risk_engine_reserved_usdt": reserved,
+        # UC AYRI KAVRAM — panel bunlari TEK KARTTA TOPLAMAZ.
+        "futures_stop_risk_usdt": fut_risk,
+        "futures_risk_budget_utilization_pct": futures_budget_util,
+        "spot_exposure_usdt": spot_exp,
+        "spot_stop_risk_usdt": spot_risk,
+        "spot_unbounded_notional_usdt": spot_unbounded,
+        "spot_symbols_without_stop": spot_no_stop,
+        "spot_allocation_max_usdt": spot_cap,
+        "spot_allocation_utilization_pct": spot_alloc_util,
         "risk_budget_max_usdt": budget_max,
         "risk_equity_basis_usdt": basis, "risk_equity_basis_kind": basis_kind,
         "open_risk_budget_utilization_pct": budget_util,

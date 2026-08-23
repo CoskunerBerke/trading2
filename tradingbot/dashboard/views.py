@@ -83,6 +83,13 @@ class ChiefView:
     risk_equity_basis_kind: Any = None    # starting_equity | live_equity
     risk_snapshot_age_s: Any = None       # risk.json yaşı (fiyat yaşından AYRI)
     risk_snapshot_state: Any = None       # live | stale | unknown
+    # --- ÜÇ AYRI KAVRAM: tek kartta TOPLANMAZ (eski snapshot'ta None → «Veri yok») ---
+    futures_stop_risk_usdt: Any = None    # kabul kapısının GERÇEK kovası
+    futures_risk_budget_util_pct: Any = None
+    spot_exposure_usdt: Any = None        # spot notional maruziyeti — RİSK DEĞİL
+    spot_stop_risk_usdt: Any = None       # yalnız gerçek duran stop emri olan spot
+    spot_symbols_without_stop: Any = None
+    spot_allocation_util_pct: Any = None
 
     def to_dict(self) -> dict:
         return {k: (format(v, "f") if hasattr(v, "quantize") else v) for k, v in self.__dict__.items()}
@@ -121,7 +128,13 @@ def chief_view(chief: dict | None, pv: PortfolioView, summary: dict | None = Non
         risk_equity_basis_usdt=s.get("risk_equity_basis_usdt"),
         risk_equity_basis_kind=s.get("risk_equity_basis_kind"),
         risk_snapshot_age_s=s.get("risk_snapshot_age_s"),
-        risk_snapshot_state=s.get("risk_snapshot_state"))
+        risk_snapshot_state=s.get("risk_snapshot_state"),
+        futures_stop_risk_usdt=s.get("futures_stop_risk_usdt"),
+        futures_risk_budget_util_pct=s.get("futures_risk_budget_utilization_pct"),
+        spot_exposure_usdt=s.get("spot_exposure_usdt"),
+        spot_stop_risk_usdt=s.get("spot_stop_risk_usdt"),
+        spot_symbols_without_stop=list(s.get("spot_symbols_without_stop") or []),
+        spot_allocation_util_pct=s.get("spot_allocation_utilization_pct"))
 
 
 # --------------------------------------------------------------------------- tablo satırları
@@ -269,8 +282,44 @@ def summary_cards(pv: PortfolioView, summary: dict | None = None) -> list[Summar
                         s.get("open_risk_budget_utilization_pct"),
                         pct1(s.get("open_risk_budget_utilization_pct")), "pct",
                         risk_budget_sub(s) + stale_note),
+            # --- ÜÇ AYRI KAVRAM: spot notional ile futures stop riski AYNI KARTTA TOPLANMAZ ---
+            SummaryCard("futures_stop_risk_usdt", "Futures stop riski", s.get("futures_stop_risk_usdt"),
+                        _usdt_or_no_data(s.get("futures_stop_risk_usdt")), "money_plain",
+                        "yalnız futures pozisyonları — kabul kapısının kovası" + stale_note),
+            SummaryCard("futures_risk_budget_utilization_pct", "Futures bütçe kullanımı",
+                        s.get("futures_risk_budget_utilization_pct"),
+                        pct1(s.get("futures_risk_budget_utilization_pct")), "pct",
+                        "futures stop riski / azami risk bütçesi" + stale_note),
+            SummaryCard("spot_exposure_usdt", "Spot maruziyeti", s.get("spot_exposure_usdt"),
+                        _usdt_or_no_data(s.get("spot_exposure_usdt")), "money_plain",
+                        "açık spot notional — RİSK DEĞİL" + spot_stop_note(s) + stale_note),
+            SummaryCard("spot_allocation_utilization_pct", "Spot allocation kullanımı",
+                        s.get("spot_allocation_utilization_pct"),
+                        pct1(s.get("spot_allocation_utilization_pct")), "pct",
+                        _spot_cap_sub(s) + stale_note),
         ]
     return cards
+
+
+def _usdt_or_no_data(v: Any) -> str:
+    """Sonlu sayı → «x USDT»; None/NaN → «Veri yok». Sessiz 0 ÜRETİLMEZ."""
+    f = finite_float_or_none(v)
+    return NO_DATA if f is None else fmt_money(f, signed=False, currency="") + " USDT"
+
+
+def spot_stop_note(s: dict) -> str:
+    """Stopsuz spot pozisyonlar AÇIKÇA yazılır — 'riski azaldı' izlenimi verilmez."""
+    syms = list(s.get("spot_symbols_without_stop") or [])
+    if not syms:
+        return ""
+    return " · stopsuz (stopla sınırlanmamış): " + ", ".join(str(x) for x in syms[:4])
+
+
+def _spot_cap_sub(s: dict) -> str:
+    cap = finite_float_or_none(s.get("spot_allocation_max_usdt"))
+    if cap is None:
+        return s.get("unavailable_reason", {}).get("spot_allocation_utilization_pct", NO_DATA)
+    return "azami %s USDT — spot notional tavanı (stop riskinden AYRI kapı)" % fmt_money(cap, signed=False, currency="")
 
 
 def risk_budget_sub(s: dict) -> str:

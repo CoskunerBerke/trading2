@@ -78,7 +78,7 @@ _SOFT_PENALTY_R = {"LOW_CONSENSUS": 0.06, "LOW_CONFIDENCE": 0.06, "HIGH_DISSENT"
 # YETKILI risk kapasitesi kodlari: `RiskEngine.evaluate()` bunlardan birini reddettiginde karar
 # gercek kapasite doldugu icin verilmistir (KOTA DEGIL).
 _CAPACITY_CODES = ("TOTAL_OPEN_RISK", "MARGIN_UTILIZATION", "MAX_POSITIONS", "MAX_POSITIONS_MARKET",
-                   "CLUSTER_CAP", "ALTCOIN_EXPOSURE", "MAX_POSITION_PCT")
+                   "CLUSTER_CAP", "ALTCOIN_EXPOSURE", "MAX_POSITION_PCT", "SPOT_ALLOCATION")
 
 
 class TradingEngineV3(TradingEngine):
@@ -535,7 +535,12 @@ class TradingEngineV3(TradingEngine):
         self._assess_opportunities(decisions, briefs)
         btc_dec = decisions.get("BTC/USDT")
         chief = self.chief_mgr.decide(list(decisions.values()), {"equity": state.equity, "open_positions": [o.to_dict() for o in state.open_positions],
-                                                                 "total_open_risk_usdt": state.total_open_risk_usdt, "pnl_today": state.realized_pnl_today,
+                                                                 "total_open_risk_usdt": state.total_open_risk_usdt,
+                                                                 # ADVISORY projeksiyon YETKILI kapiyla ayni kovayi olcsun:
+                                                                 # birlesik toplam kullanilirsa panel "sigmaz" derken motor kabul eder.
+                                                                 "futures_stop_risk_usdt": state.futures_stop_risk_usdt,
+                                                                 "spot_exposure_usdt": state.spot_exposure_usdt,
+                                                                 "pnl_today": state.realized_pnl_today,
                                                                  "drawdown_pct": state.drawdown_pct}, btc_regime=btc_dec.regime if btc_dec else None)
         self.registry.chief = chief.to_dict()
         # legacy chief (obsidian/alerts için) — v3 chief modunu yansıt
@@ -885,6 +890,15 @@ class TradingEngineV3(TradingEngine):
                 if not lev_dec.tradeable:
                     funnel["leverage_gate_blocked"] += 1
                     entry["block_code"] = "LEVERAGE_GATE_BLOCKED"
+                    # REDDEDILEN AMA VERI/STOP ACISINDAN GECERLI ADAY -> salt GOZLEMSEL golge kayit.
+                    # Gercek fill/ledger/emir URETMEZ; `is_counterfactual=True` ile ayri dosyada durur.
+                    # Veri bayat/celiskili ya da stop bilinmiyorsa aday "gecerli" degildir: kayit YOK.
+                    if (self.cfg.v3.learning_v3.shadow_trades
+                            and not {"DATA_STALE", "DATA_CONFLICT", "STOP_UNKNOWN"} & set(lev_dec.blocked_higher)):
+                        self.shadow.add({"plan_id": stable_id("plan", self.run_id, sym), "symbol": sym, "market_type": market,
+                                         "direction": d.direction, "entry": plan.entry, "stop": plan.stop, "targets": plan.targets,
+                                         "horizon_bars": plan.time_horizon_bars, "leverage": plan.size.leverage},
+                                        ["LEVERAGE_GATE_BLOCKED"] + list(lev_dec.blocked_higher)[:6], now=now)
                     continue
                 plan_leverage = lev_dec.leverage
             entry["leverage"] = plan_leverage

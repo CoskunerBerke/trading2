@@ -30,7 +30,13 @@ BASES = (NET_OUTCOME, GROSS_MINUS_COSTS)
 FULL_SIZE_EDGE_R = 0.35
 MIN_TRADE_MULTIPLIER = 0.20                    # gerçek giriş için taban çarpan
 RESEARCH_MULTIPLIER = 0.25                     # point-estimate pozitif ama belirsiz
-UNCERTAINTY_K = 0.25                           # belirsizlik cezası ölçeği (SINIRLI)
+# TEK GEVŞETİLEN SEÇİCİLİK DEĞİŞKENİ — 0.25 → 0.20 (bir kademe).
+# `conservative_net_edge_r = net − k/sqrt(n+1) − soft` olduğundan küçük örneklemde ceza tek başına
+# kararı belirliyor ve pozitif net beklentili aday `research_only` (gerçek giriş YOK) kalıyordu.
+# SERT güvenlik kapılarının HİÇBİRİ gevşetilmedi (stale data, stop zorunluluğu, duplicate, kill
+# switch, drawdown, risk bütçesi, likidasyon tamponu aynen korunur); bu yalnızca istatistiksel
+# muhafazakârlık ölçeğidir ve `k` parametresi ile her an geri alınabilir.
+UNCERTAINTY_K = 0.20                           # belirsizlik cezası ölçeği (SINIRLI) — eski değer 0.25
 BLEND_N = 20.0                                 # gerçekleşmiş istatistiğe kayış hızı
 
 

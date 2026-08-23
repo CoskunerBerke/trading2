@@ -135,10 +135,31 @@ def ks_badge(state: str) -> str:
     return badge(st, "ok" if st == "ARMED" else "bad")
 
 
-def verdict_badge(v: str) -> str:
+def verdict_kind(v: Any) -> str:
+    """Karar rozetinin RENK SINIFI — TEK KAYNAK (sunucu render'ı ve polling JS'i aynı haritayı kullanır)."""
     v = str(v or "")
-    kind = "ok" if v in ("SPOT_LONG", "FUTURES_LONG", "LONG") else ("bad" if v in ("FUTURES_SHORT", "SHORT", "EXIT", "RISK_BLOCKED") else "info")
-    return badge(v or "-", kind)
+    if v in ("SPOT_LONG", "FUTURES_LONG", "LONG"):
+        return "ok"
+    if v in ("FUTURES_SHORT", "SHORT", "EXIT", "RISK_BLOCKED"):
+        return "bad"
+    return "info"
+
+
+def verdict_badge(v: str) -> str:
+    return badge(str(v or "") or "-", verdict_kind(v))
+
+
+def money_html_text(txt: Any) -> str:
+    """ZATEN BİÇİMLENMİŞ para metnini `<td>`ye sarar; renk `+/-` işaretinden gelir.
+
+    Polling JS'i `buildHeadsTable` içinde AYNI kuralı uygular → iki yüzey aynı sınıfı üretir.
+    """
+    t = "" if txt is None else str(txt)
+    cls = "up" if t.startswith("+") else ("dn" if t.startswith("-") else ("" if t in ("—", "", "-") else "flat"))
+    return f'<td class="num {cls}">{esc(t)}</td>'
+
+
+HEADS_TABLE_CLS = "heads"        # polling JS'i AYNI sabiti ENJEKTE ederek kullanır
 
 
 def pnl_cell(x: Any, nd: int = 2) -> str:
@@ -350,6 +371,8 @@ def live_script(cfg) -> str:
     heal = int(getattr(cfg, "poll_health_s", 12)) * 1000
     mult = int(getattr(cfg, "background_backoff_mult", 4))
     stale = int(getattr(cfg, "stale_price_s", 90))
+    # Coin head tablosu portfoy karti temposuyla yenilenir (pozisyon acilis/kapanisini yakalar).
+    heads_ms = int(getattr(cfg, "poll_heads_s", getattr(cfg, "poll_portfolio_s", 20))) * 1000
     return r"""<script>
 /* TABLO MARKUP SÖZLEŞMESİ — sunucu render'ı (`templates.table` + `app._positions_table`) ile
    AYNI olmak ZORUNDA: `.tw` sarmalayıcı, `<table class="__TCLS__">`, `NUM` sütunlarında sağa
@@ -368,6 +391,38 @@ function buildPosTable(d,NUM,PNL){
       cls+=(ch==='+')?' up':(ch==='-')?' dn':(s==='—'?'':' flat');}   /* sunucu `money_html` ile aynı */
     var attr=(i<3)?' title="'+esc(s)+'"':'';                                 /* sabit genişlik + ellipsis */
     return '<td class="'+cls+'"'+attr+'>'+esc(s)+'</td>';}).join('')+'</tr>';});
+  return '<div class="tw">'+h+'</tbody></table></div>';
+}
+/* COIN HEAD TABLOSU — sunucu render'i (`app._heads_table`) ile AYNI markup sozlesmesi:
+   `.tw` sarmalayici, `<table class="__HCLS__">`, NUM sutunlarinda sag hizalama, PNL sutunlarinda
+   +/- rengi, BADGE sutunlarinda `<span class="badge b-KIND">`, sembol sutununda `/coin/<base>`
+   baglantisi. IS KURALI BURADA YOK: satirlar/meta sunucudaki `views.coin_head_table`tan gelir. */
+function buildHeadsTable(d){
+  function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
+  var NUM=d.num_cols||[],PNL=d.pnl_cols||[],BADGE=d.badge_cols||[],SC=(d.symbol_col==null?0:d.symbol_col);
+  var h='<table class="__HCLS__"><thead><tr>'+d.columns.map(function(c,i){
+    return '<th class="'+(NUM.indexOf(i)>=0?'num':'')+'">'+esc(c)+'</th>';}).join('')+'</tr></thead><tbody>';
+  if(!d.rows.length){return '<div class="card mut">'+esc(d.empty_text||'kayit yok')+'</div>';}
+  d.rows.forEach(function(r,ri){
+    var m=(d.meta&&d.meta[ri])||{};
+    h+='<tr>'+r.map(function(c,i){
+      var s=String(c==null?'':c);
+      if(i===SC){return '<td class="">'+'<a href="/coin/'+esc(s.split('/')[0])+'">'+esc(s)+'</a>'+'</td>';}
+      if(BADGE.indexOf(i)>=0){
+        var kind;
+        if(i===2){kind=m.status_kind||'info';}
+        else if(m.no_decision){kind='warn';}
+        else{kind=(s==='SPOT_LONG'||s==='FUTURES_LONG'||s==='LONG')?'ok':
+                  ((s==='FUTURES_SHORT'||s==='SHORT'||s==='EXIT'||s==='RISK_BLOCKED')?'bad':'info');}
+        return '<td class="">'+'<span class="badge b-'+esc(kind)+'">'+esc(s||'-')+'</span>'+'</td>';
+      }
+      if(PNL.indexOf(i)>=0){
+        var cls=(s.charAt(0)==='+')?'up':((s.charAt(0)==='-')?'dn':((s==='—'||s===''||s==='-')?'':'flat'));
+        return '<td class="num '+cls+'">'+esc(s)+'</td>';
+      }
+      return '<td class="'+(NUM.indexOf(i)>=0?'num':'')+'">'+esc(s)+'</td>';
+    }).join('')+'</tr>';});
   return '<div class="tw">'+h+'</tbody></table></div>';
 }
 var NUMCOLS=__NUMCOLS__,PNLCOLS=__PNLCOLS__;
@@ -389,7 +444,7 @@ var NUMCOLS=__NUMCOLS__,PNLCOLS=__PNLCOLS__;
   var r=document.getElementById('runage');if(r&&fr)r.textContent=agetxt(fr.run_age_s);
   var h=document.getElementById('headsage');if(h&&fr)h.textContent=agetxt(fr.heads_age_s);
  }
- function poll(key,url,cb,base){
+ function poll(key,url,cb,base,onerr){
   function tick(){
    if(busy[key])return;                                   /* overlap koruması: istek fırtınası yok */
    busy[key]=1;
@@ -398,7 +453,7 @@ var NUMCOLS=__NUMCOLS__,PNLCOLS=__PNLCOLS__;
    fetch(url,{headers:window.__authHeaders||{},signal:ac?ac.signal:undefined})
     .then(function(r){return r.ok?r.json():Promise.reject(r.status);})
     .then(function(d){fails=0;cb(d);})
-    .catch(function(){fails++;if(fails>2)setLive('off',null);})
+    .catch(function(){fails++;if(fails>2)setLive('off',null);if(onerr){try{onerr();}catch(e){}}})
     .then(function(){clearTimeout(to);busy[key]=0;});
   }
   function iv(){return document.hidden?base*BG:base;}   /* arka plan sekmesinde backoff */
@@ -428,12 +483,35 @@ var NUMCOLS=__NUMCOLS__,PNLCOLS=__PNLCOLS__;
      var s=el.querySelector('.small');if(s&&c.sub!=null){s.textContent=c.sub;}
    });
  },__SUM__);
+ /* COIN HEAD tablosu + kapsam sayaci CANLI guncellenir. Endpoint hata verirse MEVCUT TABLO
+    SILINMEZ; yalniz stale uyarisi acilir ve bir sonraki basarili poll'da temizlenir. */
+ poll('heads','/api/live/coin-heads',function(d){
+   if(!d||!d.rows)return;
+   var t=document.getElementById('headstbl');
+   if(t){t.innerHTML=buildHeadsTable(d);}
+   var cov=document.getElementById('headscov');
+   if(cov){
+     cov.textContent='Açık pozisyon kapsamı: '+d.open_positions_shown+' / '+d.open_positions_total;
+     cov.className='badge '+(d.coverage_complete?'b-ok':'b-bad');
+   }
+   var ms=document.getElementById('headsmiss');
+   if(ms){
+     var miss=d.missing_open_symbols||[];
+     ms.textContent=miss.length?(d.missing_text||('⚠ '+miss.join(', '))):'';
+     ms.style.display=miss.length?'':'none';
+   }
+   var sn=document.getElementById('headsstale');
+   if(sn){sn.style.display='none';}                      /* basarili poll stale uyarisini temizler */
+ },__HEADS__,function(){
+   var sn=document.getElementById('headsstale');
+   if(sn){sn.style.display='';}                          /* tablo KORUNUR, yalniz uyari acilir */
+ });
  poll('hp','/api/live/health',function(d){
    if(d&&d.price_age_s!=null&&d.price_age_s>__STALE__){setLive('on',{price_state:'stale',price_age_s:d.price_age_s,
      run_age_s:d.last_run_age_s,heads_age_s:null});}
  },__HEAL__);
 })();
-</script>""".replace("__POS__", str(pos)).replace("__SUM__", str(summ)).replace("__HEAL__", str(heal))             .replace("__MULT__", str(mult)).replace("__STALE__", str(stale)).replace("__TCLS__", POS_TABLE_CLS)             .replace("__NUMCOLS__", json.dumps(list(POSITION_NUM_COLS))).replace("__PNLCOLS__", json.dumps(list(POSITION_PNL_COLS)))
+</script>""".replace("__POS__", str(pos)).replace("__SUM__", str(summ)).replace("__HEAL__", str(heal))             .replace("__MULT__", str(mult)).replace("__STALE__", str(stale)).replace("__TCLS__", POS_TABLE_CLS)             .replace("__HEADS__", str(heads_ms)).replace("__HCLS__", HEADS_TABLE_CLS)             .replace("__NUMCOLS__", json.dumps(list(POSITION_NUM_COLS))).replace("__PNLCOLS__", json.dumps(list(POSITION_PNL_COLS)))
 
 
 def card(k: str, v: str, sub: str = "", cid: str = "") -> str:

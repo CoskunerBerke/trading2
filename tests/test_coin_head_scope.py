@@ -263,16 +263,26 @@ def test_open_coverage_measures_the_rows_it_is_given():
 
 
 def test_heading_reports_missing_coverage_in_red_when_a_row_is_dropped(client, monkeypatch):
-    """Başlık RENDER EDİLEN satırlardan ölçer: bir açık satır düşerse 4/5 + kırmızı uyarı."""
-    from tradingbot.dashboard.state import StateReader as _SR
-    real = _SR.overview
+    """Başlık RENDER EDİLEN satırlardan ölçer: bir açık satır düşerse 4/5 + kırmızı uyarı.
 
-    def dropped(self):
-        ov = real(self)
-        ov["top_heads"] = [h for h in ov["top_heads"] if str(h.get("symbol")) != "LDO/USDT"]
-        return ov                                              # sayaçlar HÂLÂ 5/5 iddia ediyor
+    Yük, kapsam alanlarında HÂLÂ 5/5 iddia ederken satırlardan biri düşürülür; başlık iddiaya
+    değil satırlara bakmalıdır.
+    """
+    import tradingbot.dashboard.app as app_mod
+    real = app_mod.coin_head_table
 
-    monkeypatch.setattr(_SR, "overview", dropped)
+    def dropped(heads, positions, trades=None, **kw):
+        p = real(heads, positions, trades, **kw)
+        keep = [i for i, h in enumerate(p["heads"]) if str(h.get("symbol")) != "LDO/USDT"]
+        p["heads"] = [p["heads"][i] for i in keep]
+        p["rows"] = [p["rows"][i] for i in keep]
+        p["meta"] = [p["meta"][i] for i in keep]
+        return p                                               # kapsam alanlari HALA 5/5 diyor
+
+    monkeypatch.setattr(app_mod, "coin_head_table", dropped)
     html = client.get("/").text
     assert "Açık pozisyon kapsamı: 4 / 5" in html               # iddiaya DEĞİL satıra bakar
     assert "LDO/USDT" in html and "warn-box" in html
+    api = client.get("/api/live/coin-heads").json()
+    assert api["open_positions_shown"] == 4 and api["coverage_complete"] is False
+    assert api["missing_open_symbols"] == ["LDO/USDT"]

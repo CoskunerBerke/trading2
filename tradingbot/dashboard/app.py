@@ -21,11 +21,12 @@ from .candles import CandleSource, build_candle_payload
 from .config import DashboardConfig
 from ..pnl import finite_float_or_none, position_view, realized_net
 from .state import STATE_FILES, StateReader
-from .views import NO_DECISION_VERDICT, POSITION_NUM_COLS, open_coverage
-from .templates import (POS_TABLE_CLS, age_text, badge, card, card_value, chart_block, chief_block,
-                        esc, fmt, fmt_utc, health_badge, ks_badge, kv_table, lessons_table,
-                        live_bar, live_script, money_html, page, pct, pnl_cell, render_any,
-                        sample_banner, table, verdict_badge, weight_table)
+from .views import NO_DECISION_VERDICT, POSITION_NUM_COLS, coin_head_table, open_coverage
+from .templates import (HEADS_TABLE_CLS, POS_TABLE_CLS, age_text, badge, card, card_value,
+                        chart_block, chief_block, esc, fmt, fmt_utc, health_badge, ks_badge,
+                        kv_table, lessons_table, live_bar, live_script, money_html,
+                        money_html_text, page, pct, pnl_cell, render_any, sample_banner, table,
+                        verdict_badge, verdict_kind, weight_table)
 
 log = logging.getLogger(__name__)
 _PLOTLY_CACHE: dict[str, bytes] = {}
@@ -153,7 +154,10 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
         ])}</div>'
         body += chief_block(cv)
         body += '<h2>Açık pozisyonlar</h2><div id="postbl">' + _positions_table(vm) + "</div>"
-        body += _coin_heads_heading(ov["top_heads"], state) + _heads_table(ov["top_heads"], state)
+        chp = _coin_head_payload()
+        body += (_coin_heads_heading(chp) + '<div id="headstbl">' + _heads_table(chp) + "</div>"
+                 + '<div id="headsstale" class="warn-box" style="display:none">'
+                   '⚠ Coin head verisi yenilenemedi — tablo SON BAŞARILI çekimi gösteriyor.</div>')
         if not ov["top_heads"]:
             ag = state.get("agents") or {}
             briefs = ag.get("briefs") or []
@@ -182,71 +186,68 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
         return table(vm["columns"], rows, num_cols=set(POSITION_NUM_COLS), empty="açık pozisyon yok",
                      cls=POS_TABLE_CLS) + note        # polling JS'i AYNI sabiti kullanır
 
-    def _coin_heads_heading(heads: list[dict], st) -> str:
-        """Başlık + AÇIK POZİSYON KAPSAMI sayacı.
+    def _coin_head_payload() -> dict:
+        """Coin head tablosunun KANONİK yükü — HTML render'ı ve `/api/live/coin-heads` AYNI çağrı."""
+        return coin_head_table(state.coin_heads(), state.futures_positions(), state.trades(),
+                               fees=state.fee_schedule())
+
+    def _coin_heads_heading(chp: dict) -> str:
+        """Başlık + AÇIK POZİSYON KAPSAMI sayacı (polling bu düğümleri yerinde günceller).
 
         Bu tablo bir açık pozisyon listesi DEĞİLDİR (coin head seçkisidir); fakat bütün açık
         pozisyonların yer aldığı ÖLÇÜLEREK gösterilir. Eksik varsa kırmızı uyarı çıkar.
         """
-        # Sayaç RENDER EDİLEN satırlardan ÖLÇÜLÜR — `overview()`in iddiasına güvenilmez.
-        cov = open_coverage(heads, st.futures_positions())
+        # Sayaç RENDER EDİLEN satırlardan ÖLÇÜLÜR — iddiaya güvenilmez.
+        cov = open_coverage(chp["heads"], state.futures_positions())
         total, shown = int(cov["open_positions_total"]), int(cov["open_positions_shown"])
         missing = list(cov["missing_open_symbols"])
         cls = "b-ok" if not missing else "b-bad"
-        out = ("<h2>Coin head'ler <span class=\"badge %s\">Açık pozisyon kapsamı: %d / %d</span></h2>"
-               % (cls, shown, total))
+        out = ("<h2>Coin head'ler <span id=\"headscov\" class=\"badge %s\">"
+               "Açık pozisyon kapsamı: %d / %d</span></h2>" % (cls, shown, total))
         out += ("<p class=\"mut small\">Bu tablo AÇIK POZİSYON LİSTESİ DEĞİLDİR — coin head'lerin son "
                 "seçkisidir. Açık pozisyonların TAMAMI zorunlu olarak en üstte listelenir; altında "
                 "kalan kapasiteye göre sıralanmış adaylar/son kararlar gelir. "
                 "Açık pozisyonların yetkili listesi «Açık pozisyonlar» tablosudur.</p>")
-        if missing:
-            out += ('<div class="warn-box">⚠ Açık pozisyon tabloda GÖRÜNMÜYOR: %s — panel eksik kapsam '
-                    'bildiriyor, defter yetkilidir.</div>' % esc(", ".join(missing)))
+        out += ('<div id="headsmiss" class="warn-box"%s>%s</div>'
+                % ("" if missing else ' style="display:none"', _missing_text(missing)))
         return out
 
-    def _heads_table(heads: list[dict], st) -> str:
-        """`Net E[r]` → `Beklenen Net Getiri`: bu bir MODEL TAHMİNİDİR, gerçekleşen PnL DEĞİLDİR."""
-        open_by = {str(p.get("symbol") or ""): p for p in st.futures_positions()}
-        last_closed: dict[str, dict] = {}
-        for tr in st.trades():
-            s = str(tr.get("symbol") or "")
-            if s not in last_closed:
-                last_closed[s] = tr
+    def _missing_text(missing: list) -> str:
+        if not missing:
+            return ""
+        return ('⚠ Açık pozisyon tabloda GÖRÜNMÜYOR: %s — panel eksik kapsam bildiriyor, '
+                'defter yetkilidir.' % esc(", ".join(str(m) for m in missing)))
+
+    def _heads_table(chp: dict) -> str:
+        """Satırları KANONİK yükten çizer — iş kuralı burada YOK (bkz. views.coin_head_table).
+
+        Aynı yük `/api/live/coin-heads` ile tarayıcıya gider; polling `buildHeadsTable` ile
+        BU markup'ın aynısını üretir (kolon/sınıf/sıra sözleşmesi tek kaynaktan).
+        """
+        num, pnlc, badges = set(chp["num_cols"]), set(chp["pnl_cols"]), set(chp["badge_cols"])
+        sym_col = int(chp["symbol_col"])
         rows = []
-        for h in heads:
-            sym = str(h.get("symbol", ""))
-            fp, sp = h.get("futures_plan") or {}, h.get("spot_plan") or {}
-            pos, closed = open_by.get(sym), last_closed.get(sym)
-            if pos is not None:
-                status, tid = "AÇIK", str(pos.get("id") or "")
-                pnl_html = money_html(position_view(pos, mark_price=pos.get("last_price"),
-                                                    fees=st.fee_schedule()).net_unrealized)
-            elif closed is not None:
-                status, tid = "KAPANDI", str(closed.get("id") or "")
-                pnl_html = money_html(realized_net(closed))
-            elif str(h.get("verdict") or "") in ("SPOT_LONG", "FUTURES_LONG", "FUTURES_SHORT"):
-                status, tid, pnl_html = "ADAY", "—", "<td class=num>—</td>"
-            else:
-                status, tid, pnl_html = ("REDDEDİLDİ" if h.get("vetoes") else "İŞLEM YOK"), "—", "<td class=num>—</td>"
-            # KARAR UYDURULMAZ: açık pozisyonun güncel coin-head kaydı yoksa satır açıkça
-            # «KARAR VERİSİ YOK» der ve gerekçesini yazar (bkz. views.no_decision_head).
-            decision_html = (badge(NO_DECISION_VERDICT, "warn") if h.get("no_decision")
-                             else verdict_badge(h.get("verdict")))
-            rows.append([f'<a href="/coin/{esc(sym.split("/")[0])}">{esc(sym)}</a>', decision_html,
-                         badge(status, "ok" if status == "AÇIK" else ("bad" if status == "REDDEDİLDİ" else "info")),
-                         esc(h.get("direction") or "-"),
-                         fmt(float(h.get("confidence_calibrated") or 0) * 100, 0) + "%", fmt(float(h.get("p_win") or 0) * 100, 0) + "%",
-                         pct(h.get("expected_return_net")), fmt(h.get("expected_r"), 2), esc(h.get("regime")),
-                         "✅" if sp.get("valid") else "—", "✅" if fp.get("valid") else "—",
-                         pnl_html, esc(tid), esc(h.get("generated_at") or ""),
-                         esc(h.get("no_trade_reason") or ""), esc(", ".join(h.get("vetoes") or [])[:80])])
+        for r, m in zip(chp["rows"], chp["meta"]):
+            cells = []
+            for i, raw in enumerate(r):
+                txt = "" if raw is None else str(raw)
+                if i == sym_col:
+                    cells.append('<a href="/coin/%s">%s</a>' % (esc(txt.split("/")[0]), esc(txt)))
+                elif i in badges:
+                    kind = ("warn" if (i == 1 and m.get("no_decision")) else
+                            (m.get("status_kind", "info") if i == 2 else verdict_kind(txt)))
+                    cells.append(badge(txt, kind))
+                elif i in pnlc:
+                    cells.append(money_html_text(txt))
+                else:
+                    cells.append(esc(txt))
+            rows.append(cells)
         note = ('<p class="mut small">«Beklenen Net Getiri» işlem öncesi model tahminidir; gerçekleşen sonuç '
                 'değildir. «Net K/Z» sütunu açık pozisyonda anlık, kapanmışta SON KAPANAN işlemin net '
                 'sonucudur; işlem açılmamış adaylarda «—» gösterilir. «KARAR VERİSİ YOK» satırları '
                 'defterde AÇIK olan fakat son coin-head seçkisinde yer almayan pozisyonlardır.</p>')
-        return table(["Sembol", "Karar", "Durum", "Yön", "Güven", "P(kazanç)", "Beklenen Net Getiri", "E[R]",
-                      "Rejim", "Spot", "Fut", "Net K/Z", "İşlem ID", "Karar zamanı", "Gerekçe", "Veto"], rows,
-                     num_cols={4, 5, 6, 7, 11}, empty="coin head kararı yok (coin_heads.json)") + note
+        return table(chp["columns"], rows, num_cols=num,
+                     empty="coin head kararı yok (coin_heads.json)", cls=HEADS_TABLE_CLS) + note
 
     @app.get("/scanner", response_class=HTMLResponse)
     def scanner():
@@ -630,6 +631,31 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
                 "summary": vm["summary"],
                 "cards": [c.to_dict() for c in vm["cards"]],
                 "portfolio": {k: val for k, val in pv.to_dict().items() if k != "positions"}}
+
+    @app.get("/api/live/coin-heads")
+    def api_live_coin_heads():
+        """Coin head tablosu + AÇIK POZİSYON KAPSAMI — SALT-OKUNUR (state'e YAZMAZ).
+
+        İlk HTML render'ı ile AYNI `views.coin_head_table` çağrısından beslenir; tarayıcı bu yükü
+        `buildHeadsTable` ile çizer. Böylece sayfa açıkken bot pozisyon açar/kapatırsa tablo ve
+        «Açık pozisyon kapsamı X / Y» sayacı sayfa YENİLENMEDEN güncellenir.
+        """
+        chp = _coin_head_payload()
+        cov = open_coverage(chp["heads"], state.futures_positions())
+        return {"generated_at": utc_now().isoformat(timespec="seconds"),
+                "coin_head_scope": {k: chp[k] for k in
+                                    ("open_positions_total", "open_positions_shown",
+                                     "missing_open_symbols", "no_decision_symbols",
+                                     "coverage_complete", "candidate_limit")},
+                "open_positions_total": cov["open_positions_total"],
+                "open_positions_shown": cov["open_positions_shown"],
+                "missing_open_symbols": cov["missing_open_symbols"],
+                "coverage_complete": cov["coverage_complete"],
+                "columns": chp["columns"], "rows": chp["rows"], "meta": chp["meta"],
+                "num_cols": chp["num_cols"], "pnl_cols": chp["pnl_cols"],
+                "badge_cols": chp["badge_cols"], "symbol_col": chp["symbol_col"],
+                "missing_text": _missing_text(cov["missing_open_symbols"]),
+                "empty_text": "coin head kararı yok (coin_heads.json)"}
 
     @app.get("/api/live/health")
     def api_live_health():

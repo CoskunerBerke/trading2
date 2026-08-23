@@ -162,6 +162,105 @@ def coin_head_scope(heads: list[dict] | None, open_positions: list[dict] | None,
                 candidate_limit=max(0, int(candidate_limit)))
 
 
+# ---------------------------------------------------------------- COIN HEAD TABLOSU — TEK BUILDER
+# İlk sunucu render'ı VE canlı polling AYNI bu çıktıyı tüketir. İş kuralı (durum sınıflandırması,
+# sıra, fallback, kapsam) HİÇBİR YERDE KOPYALANMAZ; JS yalnızca hücreleri çizer.
+COIN_HEAD_COLUMNS = ("Sembol", "Karar", "Durum", "Yön", "Güven", "P(kazanç)", "Beklenen Net Getiri",
+                     "E[R]", "Rejim", "Spot", "Fut", "Net K/Z", "İşlem ID", "Karar zamanı",
+                     "Gerekçe", "Veto")
+COIN_HEAD_NUM_COLS = (4, 5, 6, 7, 11)
+COIN_HEAD_PNL_COLS = (11,)
+COIN_HEAD_BADGE_COLS = (1, 2)
+COIN_HEAD_SYMBOL_COL = 0
+
+STATUS_OPEN = "AÇIK"
+STATUS_CLOSED = "KAPANDI"
+STATUS_CANDIDATE = "ADAY"
+STATUS_REJECTED = "REDDEDİLDİ"
+STATUS_NO_TRADE = "İŞLEM YOK"
+_ACTIONABLE = ("SPOT_LONG", "FUTURES_LONG", "FUTURES_SHORT")
+
+
+def _cell_num(x, nd: int = 2) -> str:
+    """Hücre metni — SONLU olmayan değer (`inf`/`nan`) asla yazılmaz (kanonik guard)."""
+    v = finite_float_or_none(x)
+    return "—" if v is None else f"{v:,.{nd}f}"
+
+
+def _cell_pct(x, nd: int = 2) -> str:
+    v = finite_float_or_none(x)
+    return "—" if v is None else f"%{v * 100:.{nd}f}"
+
+
+def coin_head_table(heads: list[dict] | None, positions: list[dict] | None,
+                    trades: list[dict] | None = None, *, fees: Any = None,
+                    candidate_limit: int = COIN_HEAD_CANDIDATE_LIMIT) -> dict[str, Any]:
+    """Coin head tablosunun KANONİK yükü: kapsam + kolonlar + DÜZ METİN hücreler + satır meta'sı.
+
+    Hücreler düz metindir: sunucu `badge()`/`money_html()` ile, tarayıcı da AYNI meta'dan CSS
+    sınıflarıyla çizer. HTML JSON'da TAŞINMAZ → polling yolunda XSS yüzeyi yoktur.
+    """
+    from ..pnl import fmt_money, position_view, realized_net
+    scope = coin_head_scope(heads, positions, candidate_limit=candidate_limit)
+    open_by = {str(p.get("symbol") or ""): p for p in (positions or []) if isinstance(p, dict)}
+    last_closed: dict[str, dict] = {}
+    for tr in (trades or []):
+        if not isinstance(tr, dict):
+            continue
+        sym = str(tr.get("symbol") or "")
+        if sym and sym not in last_closed:
+            last_closed[sym] = tr
+
+    rows, meta = [], []
+    for h in scope["heads"]:
+        sym = str(h.get("symbol") or "")
+        pos, closed = open_by.get(sym), last_closed.get(sym)
+        pnl_val, trade_id = None, "—"
+        if pos is not None:
+            status, kind = STATUS_OPEN, "ok"
+            trade_id = str(pos.get("id") or "") or "—"
+            pnl_val = position_view(pos, mark_price=pos.get("last_price"), fees=fees).net_unrealized
+        elif closed is not None:
+            # Pozisyon KAPANDIYSA satır AÇIK gibi gösterilmez; son kapanan işlemin sonucu yazılır.
+            status, kind = STATUS_CLOSED, "info"
+            trade_id = str(closed.get("id") or "") or "—"
+            pnl_val = realized_net(closed)
+        elif str(h.get("verdict") or "") in _ACTIONABLE:
+            status, kind = STATUS_CANDIDATE, "info"
+        elif h.get("vetoes"):
+            status, kind = STATUS_REJECTED, "bad"
+        else:
+            status, kind = STATUS_NO_TRADE, "info"
+        no_dec = bool(h.get("no_decision"))
+        fp, sp = h.get("futures_plan") or {}, h.get("spot_plan") or {}
+        rows.append([sym,
+                     NO_DECISION_VERDICT if no_dec else (str(h.get("verdict") or "") or "-"),
+                     status,
+                     str(h.get("direction") or "") or "-",
+                     "—" if h.get("confidence_calibrated") is None else _cell_pct(h.get("confidence_calibrated"), 0),
+                     "—" if h.get("p_win") is None else _cell_pct(h.get("p_win"), 0),
+                     _cell_pct(h.get("expected_return_net")),
+                     _cell_num(h.get("expected_r")),
+                     str(h.get("regime") or "") or "—",
+                     "✅" if sp.get("valid") else "—",
+                     "✅" if fp.get("valid") else "—",
+                     "—" if pnl_val is None else fmt_money(pnl_val),
+                     trade_id,
+                     str(h.get("generated_at") or "") or "—",
+                     str(h.get("no_trade_reason") or ""),
+                     ", ".join(str(v) for v in (h.get("vetoes") or []))[:80]])
+        meta.append({"symbol": sym, "status": status, "status_kind": kind, "no_decision": no_dec,
+                     "verdict": h.get("verdict"), "is_open": pos is not None,
+                     "position_id": None if pos is None else str(pos.get("id") or ""),
+                     "side": None if pos is None else str(pos.get("side") or ""),
+                     "pnl": None if pnl_val is None else float(pnl_val)})
+    return {
+        **scope,
+        "columns": list(COIN_HEAD_COLUMNS), "rows": rows, "meta": meta,
+        "num_cols": list(COIN_HEAD_NUM_COLS), "pnl_cols": list(COIN_HEAD_PNL_COLS),
+        "badge_cols": list(COIN_HEAD_BADGE_COLS), "symbol_col": COIN_HEAD_SYMBOL_COL}
+
+
 @dataclass(frozen=True)
 class ChiefView:
     """Baş yönetici bölümünün OKUNUR modeli — uzun ham JSON gösterilmez."""

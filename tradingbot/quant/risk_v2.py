@@ -224,3 +224,144 @@ def advise(ctx: AdviceContext, cfg: RiskV2Config | None = None) -> dict[str, Any
             "stand_aside": stand_aside, "reasons": reasons,
             "outer_limits": {"min": ABS_MIN_LEVERAGE, "max": ABS_MAX_LEVERAGE,
                              "note": "mevcut RiskEngine/KillSwitch/LeverageConfig dış sınırdır"}}
+
+
+# ------------------------------------------------------------------ offline rapor
+
+ADVISORY_BANNER = "ADVISORY ONLY — ACTIVE RISK ENGINE UNCHANGED"
+
+
+def positions_from_ledger(ledger_doc: Mapping[str, Any] | None) -> list[dict[str, Any]]:
+    """ÜRETİM `futures_ledger.json` şemasından SALT OKUNUR pozisyon çıkarımı.
+
+    Yalnız açık (`status == "OPEN"`) pozisyonlar alınır; sayısal alanlar Decimal string olabilir.
+    Ledger'a hiçbir şey yazılmaz.
+    """
+    out: list[dict[str, Any]] = []
+    for p in ((ledger_doc or {}).get("positions") or {}).values():
+        if not isinstance(p, dict):
+            continue
+        if str(p.get("status", "OPEN")).upper() not in ("OPEN", ""):
+            continue
+        qty, entry = _num(p.get("qty")), _num(p.get("entry_avg"))
+        stop = _num(p.get("stop"))
+        notional = qty * entry if (qty is not None and entry is not None) else None
+        risk = abs((entry - stop) * qty) if (None not in (qty, entry, stop)) else None
+        out.append({"symbol": str(p.get("symbol") or ""),
+                    "direction": str(p.get("side") or "LONG").upper(),
+                    "notional_usdt": notional,
+                    "risk_usdt": risk,
+                    "leverage": int(_num(p.get("leverage")) or 1),
+                    "margin_usdt": _num(p.get("isolated_margin")),
+                    "opened_at": p.get("opened_at")})
+    return sorted(out, key=lambda d: d["symbol"])
+
+
+def _num(x: Any) -> float | None:
+    if x is None or isinstance(x, bool):
+        return None
+    try:
+        v = float(x)
+    except (TypeError, ValueError):
+        return None
+    return v if math.isfinite(v) else None
+
+
+def offline_risk_report(positions: Iterable[Mapping[str, Any]],
+                        returns_by_symbol: Mapping[str, list[float]] | None = None,
+                        *, cfg: RiskV2Config | None = None,
+                        vol_by_symbol: Mapping[str, float] | None = None,
+                        portfolio_drawdown_pct: float | None = None,
+                        data_as_of_ms: int | None = None,
+                        now_ms: int | None = None,
+                        data_quality_ok: bool = True,
+                        max_data_age_ms: int | None = None) -> dict[str, Any]:
+    """Offline (salt okunur) Risk V2 raporu — küme, maruziyet, risk katkısı ve advisory kaldıraç.
+
+    AKTİF KARAR YOLUNA BAĞLI DEĞİLDİR: dönen sözlük yalnız rapordur, hiçbir emir/limit/ledger
+    davranışını değiştirmez (`applies_to_active_engine=False`). Veri eksik/eski ise risk ARTIRAN
+    öneri üretilmez; tersine konservatif tarafa sapılır.
+    """
+    cfg = cfg or RiskV2Config()
+    cfg.validate()
+    pos = [dict(p) for p in positions]
+    rets = {k: list(v) for k, v in (returns_by_symbol or {}).items()}
+    warnings: list[str] = []
+
+    stale = False
+    data_age_ms = None
+    if data_as_of_ms is not None and now_ms is not None:
+        data_age_ms = max(0, int(now_ms) - int(data_as_of_ms))
+        if max_data_age_ms is not None and data_age_ms > max_data_age_ms:
+            stale = True
+            warnings.append("STALE_MARKET_DATA — konservatif tarafa sapıldı")
+    quality_ok = bool(data_quality_ok) and not stale
+    if not data_quality_ok:
+        warnings.append("DATA_QUALITY_DEGRADED — risk artırıcı öneri üretilmez")
+
+    symbols = sorted({str(p.get("symbol")) for p in pos if p.get("symbol")})
+    missing_returns = [s for s in symbols if len(rets.get(s, [])) < cfg.corr_min_obs]
+    if missing_returns:
+        warnings.append(f"KORELASYON VERİSİ YETERSİZ: {', '.join(missing_returns)} — "
+                        "bu semboller tek başına küme sayıldı (bağımsız bahis VARSAYILMADI)")
+    corr = rolling_correlation(rets, window=cfg.corr_window, min_obs=cfg.corr_min_obs) if rets else {}
+    clusters = correlation_clusters(corr, symbols, threshold=cfg.cluster_threshold) if symbols else []
+    exposure = cluster_exposure(pos, clusters)
+
+    total = exposure.get("total_usdt") or 0.0
+    sym_cluster = {s: i for i, grp in enumerate(clusters) for s in grp}
+    contributions = []
+    advisories = []
+    for p in pos:
+        sym = str(p.get("symbol") or "")
+        amt = _num(p.get("risk_usdt"))
+        if amt is None:
+            amt = _num(p.get("notional_usdt"))
+        share = (abs(amt) / total) if (amt is not None and total > 0) else None
+        ci = sym_cluster.get(sym, -1)
+        cluster_row = next((c for c in exposure["clusters"] if c["cluster"] == ci), None)
+        cluster_share = cluster_row.get("share_of_total") if cluster_row else None
+        contributions.append({"symbol": sym, "direction": p.get("direction"),
+                              "cluster": ci, "risk_usdt": amt,
+                              "risk_share_of_total": round(share, 6) if share is not None else None,
+                              "cluster_share_of_total": cluster_share,
+                              "leverage": p.get("leverage")})
+        vol = None
+        if vol_by_symbol and sym in vol_by_symbol:
+            vol = _num(vol_by_symbol.get(sym))
+        elif rets.get(sym):
+            vol = realized_vol_pct(rets[sym], window=cfg.vol_window, min_obs=cfg.vol_min_obs)
+        adv = advise(AdviceContext(symbol=sym, direction=str(p.get("direction") or "LONG"),
+                                   proposed_leverage=int(p.get("leverage") or ABS_MIN_LEVERAGE),
+                                   symbol_vol_pct=vol, cluster_share=cluster_share,
+                                   portfolio_drawdown_pct=portfolio_drawdown_pct,
+                                   data_quality_ok=quality_ok), cfg)
+        advisories.append({"symbol": sym, "direction": adv["direction"],
+                           "current_leverage": int(p.get("leverage") or 1),
+                           "advised_leverage": adv["advised_leverage"],
+                           "risk_scale": adv["risk_scale"],
+                           "stand_aside": adv["stand_aside"],
+                           "derisk_reasons": adv["reasons"],
+                           "realized_vol_pct": round(vol, 6) if vol is not None else None})
+    # Değişmez: hiçbir advisory mevcut kaldıracı ARTIRMAZ.
+    increases = [a for a in advisories if a["advised_leverage"] > max(a["current_leverage"], ABS_MIN_LEVERAGE)]
+    biggest = max(exposure["clusters"], key=lambda c: (c.get("share_of_total") or 0.0),
+                  default=None) if exposure["clusters"] else None
+    return {"schema_version": SCHEMA_VERSION,
+            "advisory_only": True, "enabled": cfg.enabled,
+            "applies_to_active_engine": False,
+            "banner": ADVISORY_BANNER,
+            "n_positions": len(pos), "n_clusters": len(clusters),
+            "clusters": clusters,
+            "exposure": exposure,
+            "largest_cluster": biggest,
+            "risk_contributions": contributions,
+            "advisories": advisories,
+            "leverage_bounds": {"min": ABS_MIN_LEVERAGE, "max": ABS_MAX_LEVERAGE,
+                                "paper_only": True},
+            "data_age_ms": data_age_ms, "data_stale": stale,
+            "data_quality_ok": quality_ok,
+            "warnings": warnings,
+            "increases_risk": bool(increases),
+            "note": "mevcut RiskEngine/KillSwitch/leverage sınırları DIŞ SINIRDIR; "
+                    "bu rapor hiçbir aktif kararı değiştirmez"}

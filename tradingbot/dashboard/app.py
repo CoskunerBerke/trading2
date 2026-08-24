@@ -577,18 +577,75 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
                 + card("Shadow etiket kapsamı",
                        f"{q.get('journal', {}).get('n_labeled', 0)} / {q.get('journal', {}).get('n_records', 0)}",
                        "etiketli / toplam karar kaydı")
+                + card("Backtest durumu", esc(q.get("backtest_status") or "PARTIAL"),
+                       esc(q.get("data_kind") or "") or "veri türü belirtilmedi")
                 + '</div>')
         costs = {k: ov.get(k) for k in ("fees_usdt", "funding_usdt", "slippage_usdt",
                                         "gross_pnl_usdt", "net_pnl_usdt")}
         body += "<h2>Maliyet dökümü</h2>" + kv_table(costs)
         cal = ov.get("calibration") or {}
         body += "<h2>Kalibrasyon</h2>" + kv_table(cal)
+        cov = q.get("coverage") or {}
+        if cov:
+            body += ("<h2>Journal kapsaması</h2>"
+                     + f'<div class="grid">{card("Kapsama kapıları", badge("GEÇTİ", "ok") if cov.get("gates_passed") else badge("DÜŞÜK", "warn"), esc(cov.get("verdict") or ""))}'
+                     + card("Kayıt", f"{cov.get('n_records', 0)}",
+                            f"{cov.get('n_accepted', 0)} kabul · {cov.get('n_rejected_shadow', 0)} red/gölge")
+                     + card("Veri yaşı (gün)", fmt(cov.get("data_age_days"), 2))
+                     + "</div>"
+                     + kv_table(cov.get("coverage") or {}))
+        sc = q.get("execution_scenarios") or {}
+        if sc:
+            res = sc.get("results") or {}
+            body += "<h2>Execution senaryoları (base / adverse / stress)</h2>" + table(
+                ["Senaryo", "n", "exp_R", "net USDT", "dd_R", "exec maliyet USDT"],
+                [[esc(name), fmt((res.get(name) or {}).get("n"), 0),
+                  fmt((res.get(name) or {}).get("expectancy_r"), 4),
+                  fmt((res.get(name) or {}).get("net_pnl_usdt"), 2),
+                  fmt((res.get(name) or {}).get("max_drawdown_r"), 2),
+                  fmt((res.get(name) or {}).get("total_exec_cost_usdt"), 2)]
+                 for name in ("base", "adverse", "stress") if name in res],
+                num_cols={1, 2, 3, 4, 5}, empty="senaryo sonucu yok")
+            body += ('<div class="grid">'
+                     + card("Senaryo dayanıklılığı",
+                            badge("DAYANIKLI", "ok") if sc.get("robust_across_scenarios") is True
+                            else (badge("KIRILGAN", "warn") if sc.get("robust_across_scenarios") is False
+                                  else badge("BİLİNMİYOR", "info")),
+                            esc(sc.get("verdict") or ""))
+                     + card("Maliyet hassasiyeti", fmt(sc.get("cost_sensitivity_base_to_stress"), 3),
+                            "base → stress expectancy düşüşü")
+                     + '</div>')
+            prov = (res.get("base") or {}).get("provenance") or {}
+            if prov:
+                body += "<h3>Maliyet veri kaynağı (provenance)</h3>" + kv_table(prov)
         wf = q.get("walk_forward") or {}
         if wf:
             body += "<h2>Walk-forward</h2>" + kv_table(
-                {k: wf.get(k) for k in ("mode", "n_folds", "oos_sign_consistency",
+                {k: wf.get(k) for k in ("mode", "layout", "n_folds", "oos_sign_consistency",
                                         "oos_expectancy_r_by_fold", "pbo", "pbo_state",
                                         "holdout_locked", "purged_rows", "unassigned_rows")})
+            folds = wf.get("folds") or []
+            if folds and isinstance(folds[0], dict) and folds[0].get("windows"):
+                body += "<h3>Fold pencereleri (train / validation / test)</h3>" + table(
+                    ["Fold", "n_train", "n_validation", "n_test", "test exp_R"],
+                    [[fmt(f.get("idx"), 0), fmt(f.get("n_train"), 0),
+                      fmt(f.get("n_validation"), 0), fmt(f.get("n_test"), 0),
+                      fmt((f.get("test") or {}).get("expectancy_r"), 4)] for f in folds],
+                    num_cols={0, 1, 2, 3, 4})
+        evd = (q.get("champion_challenger") or {}).get("evidence_summary") or {}
+        if evd:
+            body += "<h2>Champion/challenger kanıtı</h2>" + kv_table(evd)
+            missing = (q.get("champion_challenger") or {}).get("missing_critical") or []
+            if missing:
+                body += ('<div class="card mut">eksik kritik kanıt: '
+                         + esc(", ".join(str(m) for m in missing)) + "</div>")
+        elig = q.get("eligibility")
+        if elig:
+            body += "<h2>Point-in-time uygunluk</h2>" + kv_table(elig)
+        else:
+            body += ('<div class="card mut">point-in-time eligibility artifact yok — '
+                     'backtest geçerliliği PARTIAL kabul edilir (bugünkü metadata geçmiş '
+                     'gerçeği sayılmaz).</div>')
         attr = q.get("attribution_summary") or {}
         for dim, groups in list(attr.items())[:6]:
             if isinstance(groups, dict) and groups:
@@ -598,8 +655,39 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
                       fmt(v.get("net_pnl_usdt"), 2), fmt(v.get("max_drawdown_r"), 2),
                       badge("YETERSİZ", "warn") if v.get("insufficient_sample") else badge("ok", "ok")]
                      for k, v in groups.items()], num_cols={1, 2, 3, 4})
+        rv2 = q.get("risk_v2") or {}
+        if rv2:
+            big = rv2.get("largest_cluster") or {}
+            exp = rv2.get("exposure") or {}
+            body += ("<h2>Risk V2 (advisory)</h2>"
+                     + f'<div class="card">{esc(rv2.get("banner") or "ADVISORY ONLY — ACTIVE RISK ENGINE UNCHANGED")}</div>'
+                     + '<div class="grid">'
+                     + card("Küme sayısı", fmt(rv2.get("n_clusters"), 0),
+                            f"{rv2.get('n_positions', 0)} pozisyon")
+                     + card("En yoğun küme",
+                            esc(", ".join(big.get("symbols") or []) or "-"),
+                            f"pay {fmt(big.get('share_of_total'), 3)}")
+                     + card("Yönlü maruziyet",
+                            f"L {fmt(exp.get('total_long_usdt'), 2)} / S {fmt(exp.get('total_short_usdt'), 2)}",
+                            "USDT")
+                     + card("Veri yaşı",
+                            age_text((rv2.get("data_age_ms") or 0) / 1000) + " önce"
+                            if rv2.get("data_age_ms") is not None else "bilinmiyor",
+                            "ESKİ VERİ" if rv2.get("data_stale") else "")
+                     + "</div>")
+            advs = rv2.get("advisories") or []
+            if advs:
+                body += table(["Sembol", "Yön", "Mevcut kaldıraç", "Advisory kaldıraç",
+                               "Risk ölçeği", "Gerekçe"],
+                              [[esc(a.get("symbol")), esc(a.get("direction")),
+                                fmt(a.get("current_leverage"), 0), fmt(a.get("advised_leverage"), 0),
+                                fmt(a.get("risk_scale"), 2),
+                                esc(", ".join(a.get("derisk_reasons") or []))] for a in advs],
+                              num_cols={2, 3, 4})
+            if rv2.get("warnings"):
+                body += "<h3>Advisory uyarıları</h3>" + render_any(rv2["warnings"])
         risk = q.get("risk_clusters") or {}
-        if risk:
+        if risk and not rv2:
             body += "<h2>Risk kümeleri (advisory)</h2>" + render_any(risk)
         man = q.get("manifest") or {}
         if man:
@@ -782,14 +870,23 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
         if not q:
             return JSONResponse({"available": False, "schema_version": None,
                                  "reason": "quant_eval.json yok — offline rapor üretilmedi"})
+        age = state.file_age("quant_eval")
         payload = {"available": True, "schema_version": q.get("schema_version"),
-                   "report_age_s": state.file_age("quant_eval"),
+                   "report_age_s": age,
+                   "report_stale": bool(isinstance(age, (int, float)) and age > 86400),
+                   "backtest_status": q.get("backtest_status") or "PARTIAL",
+                   "data_kind": q.get("data_kind"),
                    "generated_run_id": (q.get("manifest") or {}).get("run_id"),
                    "champion_challenger": q.get("champion_challenger"),
                    "overall": q.get("overall"),
                    "journal": q.get("journal"),
+                   "coverage": q.get("coverage"),
+                   "execution_scenarios": q.get("execution_scenarios"),
                    "walk_forward": q.get("walk_forward"),
                    "attribution_summary": q.get("attribution_summary"),
+                   "risk_v2": q.get("risk_v2"),
+                   "eligibility": q.get("eligibility"),
+                   "evidence": q.get("evidence"),
                    "risk_clusters": q.get("risk_clusters"),
                    "manifest": q.get("manifest"),
                    "warnings": q.get("warnings")}

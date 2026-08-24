@@ -55,8 +55,15 @@ def evaluate_challenger(champion: dict[str, Any], challenger: dict[str, Any], *,
                         isolation_verified: bool | None = None,
                         same_cost_model: bool | None = None,
                         fold_consistency: float | None = None,
-                        pbo_state: str | None = None) -> dict[str, Any]:
-    """Kapı değerlendirmesi. Bilinmeyen/verilmemiş güvenlik kanıtı GEÇMİŞ sayılmaz (fail-closed)."""
+                        pbo_state: str | None = None,
+                        extra_hard_gates: dict[str, Any] | None = None,
+                        extra_soft_gates: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Kapı değerlendirmesi. Bilinmeyen/verilmemiş güvenlik kanıtı GEÇMİŞ sayılmaz (fail-closed).
+
+    `extra_hard_gates` / `extra_soft_gates`: `{KOD: (passed, detay)}` ya da `{KOD: passed}`.
+    Evidence bridge bunlarla senaryo dayanıklılığı, journal kapsaması gibi ek kapıları enjekte eder.
+    VERİLMEYEN kapı hiç eklenmez → mevcut çağıranların sonucu değişmez (geriye uyumlu).
+    """
     g = gates or PromotionGates()
     checks: list[dict[str, Any]] = []
     hard_fail = False
@@ -68,6 +75,11 @@ def evaluate_challenger(champion: dict[str, Any], challenger: dict[str, Any], *,
         if hard and ok is False:
             hard_fail = True
 
+    def _unpack(v: Any) -> tuple[Any, str]:
+        if isinstance(v, tuple) and len(v) == 2:
+            return v[0], str(v[1])
+        return v, ""
+
     # --- sert kapılar: başarısızlık = REJECT
     gate("LEAKAGE", leakage_passed, "walk-forward leakage denetimi", hard=True)
     gate("DATA_QUALITY", data_quality_passed, "veri kalitesi kapısı", hard=True)
@@ -75,6 +87,9 @@ def evaluate_challenger(champion: dict[str, Any], challenger: dict[str, Any], *,
          "challenger ana ledger/outbox/gateway'e dokunmadı kanıtı", hard=True)
     gate("SAME_COST_MODEL", same_cost_model,
          "champion ile aynı maliyet varsayımları (manifest uyumu)", hard=True)
+    for code, raw in sorted((extra_hard_gates or {}).items()):
+        ok, detail = _unpack(raw)
+        gate(str(code), ok, detail or "ek sert kapı", hard=True)
     if hard_fail:
         return _result(REJECT_CHALLENGER, checks,
                        "sert kapı başarısız — challenger reddedildi")
@@ -111,6 +126,9 @@ def evaluate_challenger(champion: dict[str, Any], challenger: dict[str, Any], *,
          f"top_symbol_share={sym_share}")
     gate("TRADE_CONCENTRATION", trade_share is not None and trade_share <= g.max_trade_share,
          f"top_trade_share={trade_share}")
+    for code, raw in sorted((extra_soft_gates or {}).items()):
+        ok, detail = _unpack(raw)
+        gate(str(code), ok, detail or "ek yumuşak kapı")
     if pbo_state not in ("ok",):
         checks.append({"code": "PBO_WARNING", "passed": True,
                        "detail": f"multiple-testing ölçüsü: {pbo_state or 'hesaplanamadı'} — "

@@ -5,7 +5,9 @@ name: deploy-regression
 
 on:
   push:
-    branches: [feature/trading-v3-paper-testnet]
+    branches:
+      - feature/trading-v3-paper-testnet
+      - feature/quant-evaluation-v1
     paths:
       - "deploy/**"
       - "tradingbot/**"

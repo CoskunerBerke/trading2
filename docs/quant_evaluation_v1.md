@@ -71,6 +71,25 @@ Dashboard: `/quant` (HTML, boş-veri güvenli) + `/api/quant/summary` (read-only
 Config: `quant_eval` bölümü — bütün flag'ler kapalı/read-only varsayılan, `auto_promotion=true`
 → ConfigError (fail-closed).
 
+## V1 durumu ve kullanım
+
+Bütün modüller offline'dır ve worker'a bağlanmaz. Rapor üretimi (yalnız operatör, elle):
+
+```
+python -m tradingbot.quant.run --memory state/trade_memory.jsonl \
+    --shadow state/shadow_book.json --out reports/quant_eval.json
+```
+
+* Girdiler salt okunur açılır; tek yazım `--out` yoludur (atomic). `--out` bir `state/` dizinini
+  gösteriyorsa açık `--allow-state-out` bayrağı gerekir (fail-closed).
+* Dashboard `/quant` sayfası ve `GET /api/quant/summary`, state dizinindeki `quant_eval.json`
+  dosyasını okur; dosya yoksa boş-veri güvenli davranır.
+* `quant_eval` config bölümü: bütün flag'ler güvenli varsayılanda;
+  `auto_promotion=true` → ConfigError.
+* Walk-forward/risk-V2/champion bileşenleri kütüphane olarak kullanılır (testler örnektir);
+  challenger kanıtları `replay/policy_eval` akışından gelir, `quant/run.py` tek başına asla
+  `PROMOTE_CANDIDATE` üretmez.
+
 ## Güvenlik değişmezleri
 
 * PAPER dışı hiçbir yol açılmaz; challenger ana ledger'a/outbox'a/gateway'e dokunamaz.

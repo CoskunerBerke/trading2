@@ -89,11 +89,25 @@ def test_advisory_never_increases_risk_even_in_calm_market():
 
 
 def test_missing_returns_are_warned_not_assumed_independent():
+    """Korelasyon kanıtı yokken pozisyonlar BAĞIMSIZ SAYILMAZ.
+
+    Bu test eskiden `n_clusters == 3` (her sembol tek başına) bekliyordu; bu, "bağımsız
+    varsayılmadı" uyarısıyla ÇELİŞİYOR ve konsantrasyonu olduğundan düşük gösteriyordu.
+    Beklenti artık daha KATIDIR: aynı yöndeki üç pozisyon tek konservatif kümede toplanır.
+    """
     rep = offline_risk_report(positions_from_ledger(_ledger_doc()), {})
-    assert any("KORELASYON VERİSİ YETERSİZ" in w for w in rep["warnings"])
-    assert rep["n_clusters"] == 3                              # veri yok → tek tek küme
+    assert rep["correlation_quality"] == "UNAVAILABLE"
+    assert rep["cluster_basis"] == "conservative_direction_fallback"
+    assert any("BAĞIMSIZ SAYILMADI" in w for w in rep["warnings"])
+    assert rep["n_clusters"] == 1                              # üç LONG → TEK küme
+    assert rep["cluster_labels"] == ["UNKNOWN_CORRELATION_LONG"]
+    c0 = rep["exposure"]["clusters"][0]
+    assert sorted(c0["symbols"]) == ["AAVE/USDT", "ETH/USDT", "LDO/USDT"]
+    assert c0["share_of_total"] == pytest.approx(1.0)          # gerçek konsantrasyon görünür
     for a in rep["advisories"]:
         assert "VOL_UNKNOWN_CONSERVATIVE" in a["derisk_reasons"]
+        assert a["advised_leverage"] <= a["current_leverage"]  # risk ARTMAZ
+    assert rep["increases_risk"] is False
 
 
 def test_stale_and_degraded_data_flags_are_conservative():

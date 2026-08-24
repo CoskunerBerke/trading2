@@ -666,7 +666,11 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
                             f"{rv2.get('n_positions', 0)} pozisyon")
                      + card("En yoğun küme",
                             esc(", ".join(big.get("symbols") or []) or "-"),
-                            f"pay {fmt(big.get('share_of_total'), 3)}")
+                            f"pay {fmt(big.get('share_of_total'), 3)}"
+                            + (f" · {esc(big.get('label'))}" if big.get("label") else ""))
+                     + card("Korelasyon kanıtı",
+                            esc(rv2.get("correlation_quality") or "bilinmiyor"),
+                            esc(rv2.get("cluster_basis") or ""))
                      + card("Yönlü maruziyet",
                             f"L {fmt(exp.get('total_long_usdt'), 2)} / S {fmt(exp.get('total_short_usdt'), 2)}",
                             "USDT")

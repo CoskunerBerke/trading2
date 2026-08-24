@@ -249,15 +249,53 @@ def shadow_experiences(trades: Iterable[dict[str, Any]], *, as_of_ms: int | None
     return out
 
 
+def merge_sources(*groups: list[Experience]) -> list[Experience]:
+    """Birden çok kaynağı TEK deneyim kümesine indirger — `outcome_id` bazında tekilleştirir.
+
+    Öncelik: **gerçek fill (`REAL_PAPER`) DAİMA kazanır**, hangi grupta göründüğünden bağımsız.
+    Aynı kaynak sınıfında ilk görülen kalır; gruplar öncelik sırasına göre verilmelidir
+    (gerçek → aktif gölge → indekslenmiş arşiv geçmişi). Aynı outcome iki kez SAYILMAZ.
+    """
+    by_id: dict[str, Experience] = {}
+    for group in groups:
+        for e in group or []:
+            cur = by_id.get(e.outcome_id)
+            if cur is None:
+                by_id[e.outcome_id] = e
+            elif cur.source != REAL_PAPER and e.source == REAL_PAPER:
+                by_id[e.outcome_id] = e
+    return [by_id[k] for k in sorted(by_id)]
+
+
 def merge_experiences(real: list[Experience], shadow: list[Experience]) -> list[Experience]:
     """Aynı adayın gerçek ve gölge kaydını TEK deneyime indirger — gerçek olan kazanır."""
-    by_id: dict[str, Experience] = {}
-    for e in real:
-        by_id.setdefault(e.outcome_id, e)
-    for e in shadow:
-        if e.outcome_id not in by_id:
-            by_id[e.outcome_id] = e
-    return [by_id[k] for k in sorted(by_id)]
+    return merge_sources(real, shadow)
+
+
+def experience_vector(e: Experience, rows_by_id: dict[str, dict[str, Any]],
+                      names: list[str]) -> tuple[list[float], float]:
+    """Deneyimin özellik vektörü + normu — **TEK uygulama**.
+
+    Aktif havuz ve arşiv indeksi AYNI fonksiyonu kullanır; bir kaydın arşive taşınması
+    benzerlik skorunu DEĞİŞTİREMEZ (aksi halde rotasyon kararı etkilerdi).
+    """
+    row = rows_by_id.get(e.outcome_id) or {}
+    feats = row.get("features") or row or {}
+    try:
+        v = to_vector(build_features(feats), names)
+    except Exception:  # noqa: BLE001
+        v = [0.0] * len(names)
+    return v, (math.sqrt(sum(x * x for x in v)) or 1.0)
+
+
+def rows_by_identity(memory_rows: Iterable[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """`outcome_id` → ham `TradeMemory` satırı (vektörleme için)."""
+    out: dict[str, dict[str, Any]] = {}
+    for r in memory_rows:
+        o = r.get("outcome") or {}
+        out[_identity(r.get("symbol"), r.get("direction"), r.get("setup_type"),
+                      o.get("opened_at") or r.get("opened_at"))] = r
+    return out
 
 
 def score_similarity(pool: list[Experience], rows_by_id: dict[str, dict[str, Any]],
@@ -311,63 +349,150 @@ def build_pool(*, memory_rows: list[dict[str, Any]], shadow_trades: list[dict[st
 
 # ---------------------------------------------------------------- ölçeklenebilir havuz
 
+#: Aday başına taranacak deneyim ÜST SINIRI. Havuz bu sınırın altındaysa TAMAMI taranır
+#: (davranış birebir eskisi gibidir); üstündeyse tarama sembol/yön kovaları + en yeni
+#: kullanılabilir kuyruk ile SINIRLANIR. Böylece maliyet arşiv toplamıyla doğrusal büyümez.
+DEFAULT_MAX_SCAN = 5_000
+
+
 @dataclass
 class PreparedPool:
-    """Tur başına BİR KEZ hazırlanan deneyim havuzu.
+    """Tur başına BİR KEZ hazırlanan deneyim havuzu + SINIRLI sorgu için erişim yapıları.
 
     Ölçüm (bu makinede, `build_pool` ile aday başına yeniden vektörleme): 100 deneyimde ~4 ms,
     1.000'de ~45 ms, 10.000'de ~455 ms. 20 adaylı bir turda 10k deneyim ~9 sn ederdi — worker
-    15 sn aralıkla çalıştığı için kabul edilemez. Bu yüzden deneyim VEKTÖRLERİ burada bir kez
-    hesaplanır; aday başına yalnız nokta çarpımı kalır.
+    15 dk aralıkla çalışsa da bu maliyet arşiv büyüdükçe doğrusal artardı. Bu yüzden deneyim
+    VEKTÖRLERİ burada bir kez hesaplanır ve ek olarak `label_ts_ms`'e göre SIRALI erişim
+    listeleri kurulur: aday başına yalnız sınırlı bir alt küme taranır.
+
+    `order`/`by_symbol`/`by_symdir` listeleri `label_ts_ms` ARTAN sıradadır; sorgu `as_of`
+    konumunu ikili aramayla bulup en yeni kullanılabilir kayıtlardan geriye doğru okur.
     """
     experiences: list[Experience] = field(default_factory=list)
     vectors: list[list[float]] = field(default_factory=list)
     norms: list[float] = field(default_factory=list)
     names: list[str] = field(default_factory=list)
     signature: tuple | None = None
+    order: list[int] = field(default_factory=list)              # label_ts artan indeksler
+    label_ts: list[int] = field(default_factory=list)            # `order` ile hizalı zamanlar
+    by_symbol: dict[str, list[int]] = field(default_factory=dict)
+    by_symdir: dict[tuple, list[int]] = field(default_factory=dict)
 
     def __len__(self) -> int:
         return len(self.experiences)
 
+    def build_access(self) -> None:
+        """Sıralı erişim yapılarını kurar (hazırlık aşamasında BİR KEZ)."""
+        idx = [i for i, e in enumerate(self.experiences) if e.label_ts_ms is not None]
+        idx.sort(key=lambda i: (int(self.experiences[i].label_ts_ms), self.experiences[i].outcome_id))
+        self.order = idx
+        self.label_ts = [int(self.experiences[i].label_ts_ms) for i in idx]
+        by_sym: dict[str, list[int]] = {}
+        by_sd: dict[tuple, list[int]] = {}
+        for i in idx:
+            e = self.experiences[i]
+            by_sym.setdefault(str(e.symbol or ""), []).append(i)
+            by_sd.setdefault((str(e.symbol or ""), str(e.direction or "")), []).append(i)
+        self.by_symbol = by_sym
+        self.by_symdir = by_sd
+
 
 def prepare_pool(*, memory_rows: list[dict[str, Any]], shadow_trades: list[dict[str, Any]],
+                 indexed_history: list[tuple[Experience, list[float], float]] | None = None,
                  shadow_weight: float = 0.25,
                  shadow_fidelity: float = DEFAULT_SHADOW_FIDELITY,
                  names: list[str] | None = None) -> PreparedPool:
-    """Deneyimleri VE vektörlerini bir kez hazırlar. `as_of` filtresi sorgu anında uygulanır."""
+    """Deneyimleri VE vektörlerini bir kez hazırlar. `as_of` filtresi sorgu anında uygulanır.
+
+    `indexed_history`: arşivden BİR KEZ normalize edilmiş uzun vadeli geçmiş
+    (deneyim, vektör, norm). Aktif dosyalardan çıkmış gölge sonuçlar buradan gelir; aynı
+    `outcome_id` aktifte de varsa TEK kez sayılır ve gerçek fill daima kazanır.
+    """
     names = names or feature_names()
     real = real_experiences(memory_rows, as_of_ms=None)
     shad = shadow_experiences(shadow_trades, as_of_ms=None,
                               weight=shadow_weight, fidelity=shadow_fidelity)
-    pool = merge_experiences(real, shad)
-    rows_by_id: dict[str, dict[str, Any]] = {}
-    for r in memory_rows:
-        o = r.get("outcome") or {}
-        rows_by_id[_identity(r.get("symbol"), r.get("direction"), r.get("setup_type"),
-                             o.get("opened_at") or r.get("opened_at"))] = r
+    hist = list(indexed_history or [])
+    stored = {id(e): (v, n) for e, v, n in hist}
+    pool = merge_sources(real, shad, [e for e, _, _ in hist])
+    rows_by_id = rows_by_identity(memory_rows)
     vecs: list[list[float]] = []
     norms: list[float] = []
     for e in pool:
-        row = rows_by_id.get(e.outcome_id) or {}
-        feats = row.get("features") or row or {}
-        try:
-            v = to_vector(build_features(feats), names)
-        except Exception:  # noqa: BLE001
-            v = [0.0] * len(names)
-        vecs.append(v)
-        norms.append(math.sqrt(sum(x * x for x in v)) or 1.0)
-    return PreparedPool(experiences=pool, vectors=vecs, norms=norms, names=names)
+        hit = stored.get(id(e))
+        if hit is None:
+            hit = experience_vector(e, rows_by_id, names)
+        vecs.append(hit[0])
+        norms.append(hit[1])
+    prepared = PreparedPool(experiences=pool, vectors=vecs, norms=norms, names=names)
+    prepared.build_access()
+    return prepared
+
+
+def _scan_indices(prepared: PreparedPool, *, symbol: Any, direction: Any,
+                  as_of_ms: int | None, max_scan: int) -> list[int]:
+    """Taranacak deneyim indeksleri — SINIRLI ve deterministik.
+
+    Havuz `max_scan`'in altındaysa TAMAMI döner: davranış eski (tam tarama) haliyle BİREBİR
+    aynıdır. Üstündeyse bütçe şu sırayla dağıtılır ve her kaynaktan `as_of`'a göre EN YENİ
+    kullanılabilir kayıtlar alınır (ikili arama + geriye okuma):
+
+    1. aynı sembol + aynı yön  (en güçlü benzerlik sinyali)
+    2. aynı sembol, yön farketmez
+    3. genel en yeni kuyruk    (sembol ötesi analoglar kaybolmasın)
+
+    Maliyet O(log N + max_scan)'dir; arşiv toplamıyla DOĞRUSAL BÜYÜMEZ.
+    """
+    # Sınırın altında TAM tarama: etiket zamanı olmayan kayıtlar dahil, eski davranış birebir.
+    if len(prepared.experiences) <= max_scan:
+        return list(range(len(prepared.experiences)))
+
+    def _tail(idx_list: list[int], budget: int) -> list[int]:
+        if budget <= 0 or not idx_list:
+            return []
+        if as_of_ms is None:
+            return idx_list[-budget:]
+        # `idx_list` label_ts artan sıralı → as_of'tan sonrası kesilir (no-lookahead ucuz)
+        lo, hi = 0, len(idx_list)
+        while lo < hi:
+            mid = (lo + hi) // 2
+            t = prepared.experiences[idx_list[mid]].label_ts_ms
+            if t is not None and int(t) <= int(as_of_ms):
+                lo = mid + 1
+            else:
+                hi = mid
+        return idx_list[max(0, lo - budget):lo]
+
+    sym, dirn = str(symbol or ""), str(direction or "")
+    picked: list[int] = []
+    seen: set[int] = set()
+    for source, budget in ((prepared.by_symdir.get((sym, dirn)), max_scan // 2),
+                           (prepared.by_symbol.get(sym), max_scan // 4),
+                           (prepared.order, max_scan)):
+        for i in _tail(source or [], budget):
+            if i not in seen:
+                seen.add(i)
+                picked.append(i)
+            if len(picked) >= max_scan:
+                return picked
+    return picked
 
 
 def query_pool(prepared: PreparedPool, query: dict[str, Any], *, as_of_ms: int | None,
-               top_k: int = 5) -> list[Experience]:
+               top_k: int = 5, max_scan: int | None = DEFAULT_MAX_SCAN) -> list[Experience]:
     """Hazır havuzdan top-K — `as_of_ms` filtresi burada uygulanır (ucuz tamsayı karşılaştırması).
 
     NO-LOOKAHEAD: etiket/kapanış zamanı `as_of_ms`'ten sonra olan deneyim ELENİR; zamanı
     bilinmeyen de elenir (fail-closed).
+
+    SINIRLI TARAMA: `max_scan` aday başına taranan deneyim üst sınırıdır (bkz. `_scan_indices`).
+    `None` verilirse tam tarama yapılır (offline analiz için). Havuz sınırın altındaysa iki yol
+    AYNI sonucu verir.
     """
     if not prepared.experiences:
         return []
+    if not prepared.order and len(prepared.experiences) > (max_scan or 0):
+        prepared.build_access()                      # elle kurulmuş havuzlar için (tembel)
     try:
         q = to_vector(build_features(query), prepared.names)
     except Exception:  # noqa: BLE001
@@ -376,8 +501,15 @@ def query_pool(prepared: PreparedPool, query: dict[str, Any], *, as_of_ms: int |
     q_dir, q_setup, q_reg, q_sym = (query.get("direction"), query.get("setup_type"),
                                     query.get("regime"), query.get("symbol"))
     q_prof = feature_profile(query)
+    if max_scan is None:
+        indices = range(len(prepared.experiences))
+    else:
+        indices = _scan_indices(prepared, symbol=q_sym, direction=q_dir,
+                                as_of_ms=as_of_ms, max_scan=max(1, int(max_scan)))
     out: list[Experience] = []
-    for e, vec, xn in zip(prepared.experiences, prepared.vectors, prepared.norms):
+    for i in indices:
+        e = prepared.experiences[i]
+        vec, xn = prepared.vectors[i], prepared.norms[i]
         if as_of_ms is not None:
             t = e.label_ts_ms
             if t is None or t > int(as_of_ms):

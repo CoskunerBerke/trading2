@@ -228,6 +228,7 @@ class TradingEngineV3(TradingEngine):
         from .learn.decision_journal import DecisionJournal
         from .learn.influence import InfluenceConfig
         self.decision_journal = None
+        self.exp_index_store = None
         self._journal_errors = 0
         self._influence_log: list[dict] = []
         try:
@@ -252,11 +253,21 @@ class TradingEngineV3(TradingEngine):
                     max_lines=v3.learning_v3.decision_journal_max_lines,
                     archive=archive)
                 self.decision_journal.load_seen()
+            # UZUN VADELİ RETRIEVAL: aktif pencereden çıkmış gölge sonuçlar canlı havuzda kalır.
+            # İndeks TÜREV veridir (silinirse kayıpsız arşivden yeniden kurulur) ve aday başına
+            # arşiv TARAMAZ. Karar günlüğü arşivi BURAYA GİRMEZ — çift sayım olurdu.
+            if self.shadow_archive is not None and v3.learning_v3.experience_index_enabled:
+                from .learn.experience_index import ExperienceIndexStore
+                self.exp_index_store = ExperienceIndexStore(
+                    st / v3.learning_v3.experience_index_dirname, self.shadow_archive,
+                    shadow_weight=self.influence_cfg.shadow_weight,
+                    shadow_fidelity=self.influence_cfg.shadow_fidelity)
         except Exception as exc:  # noqa: BLE001 — öğrenme altyapısı karar yolunu bloke edemez
             log.warning("outcome-learning başlatılamadı, baseline sürüyor: %s", exc)
             from .learn.influence import InfluenceConfig as _IC
             self.influence_cfg = _IC(mode="OFF")
             self.decision_journal = None
+            self.exp_index_store = None
         self.universe = read_json(st / "universe.json", default=None)
         self.last_bar_seen: str = ""
         self.run_id = ""
@@ -1574,13 +1585,28 @@ class TradingEngineV3(TradingEngine):
                        lambda: self.memory.trades(closed_only=True))
         shad = idx.rows("shadow", st / "shadow_book.json",
                         lambda: [t.to_dict() for t in self.shadow.trades])
+        # UZUN VADELİ GEÇMİŞ: aktif dosyadan çıkmış gölge sonuçlar arşiv indeksinden gelir.
+        # `refresh()` TUR BAŞINA bir kez çağrılır ve yalnız YENİ segmenti okur; aday başına
+        # arşiv taraması YOKTUR. Arıza baseline'ı bozmaz (boş geçmiş → eski davranış).
+        hist: list = []
+        store = getattr(self, "exp_index_store", None)
+        if store is not None:
+            try:
+                self._exp_index_refresh = store.refresh()
+                hist = store.rows()
+            except Exception as exc:  # noqa: BLE001
+                self._journal_errors += 1
+                log.warning("deneyim indeksi okunamadı (baseline sürüyor): %s", exc)
+                hist = []
         sig = (idx._sig.get("memory"), idx._sig.get("shadow"),
-               cfg.shadow_weight, cfg.shadow_fidelity)
+               cfg.shadow_weight, cfg.shadow_fidelity,
+               store.signature() if store is not None else None)
         cached = getattr(self, "_exp_pool", None)
         if cached is not None and getattr(cached, "signature", None) == sig:
             return cached
         try:
             pool = prepare_pool(memory_rows=mem, shadow_trades=shad,
+                                indexed_history=hist,
                                 shadow_weight=cfg.shadow_weight,
                                 shadow_fidelity=cfg.shadow_fidelity)
         except Exception as exc:  # noqa: BLE001 — hazırlama hatası baseline'ı bozamaz
@@ -1632,7 +1658,9 @@ class TradingEngineV3(TradingEngine):
                           "setup_type": (b.plan.entry_type if b.plan else None),
                           "regime": (d.regime if d else None)})
             prepared = self._prepared_experience_pool(cfg)
-            pool = query_pool(prepared, query, as_of_ms=as_of_ms, top_k=cfg.top_k)
+            # SINIRLI TARAMA: aday basina maliyet arsiv buyuklugunden BAGIMSIZ kalir.
+            pool = query_pool(prepared, query, as_of_ms=as_of_ms, top_k=cfg.top_k,
+                              max_scan=self.cfg.v3.learning_v3.retrieval_max_scan)
             # ÇİFT SAYIM KORUMASI: hiyerarşik prior aynı kapanışları zaten kullandı; similarity
             # yalnız RESIDUAL payı uygular. `prior_leaf_n` = bu sembol/setup yaprağının örnek sayısı.
             leaf_n = self._prior_leaf_n(b.symbol, b.plan.entry_type if b.plan else None)

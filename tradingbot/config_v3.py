@@ -245,6 +245,15 @@ class LearningV3Section:
     # 0 = SINIRSIZ saklama, hicbir segment silinmez. Silme yalniz burasi acikca pozitif
     # yapilirsa mumkundur (varsayilan davranis: asla silme).
     decision_archive_max_segments: int = 0
+    # --- UZUN VADELI RETRIEVAL: arsivlenmis golge sonuclar canli havuzda kalir ---
+    # Indeks TUREV veridir: silinirse kayipsiz arsivden deterministik yeniden kurulur.
+    # Kapatilirsa retrieval yalniz aktif pencereyi gorur (HOT_ONLY) — kayip degil, kapsam daralmasi.
+    experience_index_enabled: bool = True
+    experience_index_dirname: str = "experience_index"
+    # Aday basina taranan deneyim UST SINIRI. Havuz bunun altindaysa TAM tarama yapilir
+    # (davranis birebir eski haliyle ayni); ustundeyse sembol/yon kovalari + en yeni
+    # kullanilabilir kuyruk taranir. Maliyet arsiv toplamiyla DOGRUSAL BUYUMEZ.
+    retrieval_max_scan: int = 5_000
     influence_mode: str = "SHADOW"
     influence_prior_strength: float = 20.0  # w = n/(n+prior_strength); >= 20 zorunlu
     influence_max_fraction: float = 0.05    # etkinin mutlak tavani (baseline orani)

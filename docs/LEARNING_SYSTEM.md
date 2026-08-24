@@ -21,3 +21,25 @@ Aktif dosyalar performans için sınırlıdır; **öğrenme kayıtları sessizce
 - `segment_id` ve dosya adı tamamen içerikten türer; aynı blok ikinci kez mühürlenirse aynı sha256 çıkar → retry idempotenttir. Çökme sonrası `pending_trim` ile devam edilir (ne kayıp ne çift kayıt), manifeste düşmemiş segmentler `recover()` ile geri alınır.
 - Sıcak döngü arşivi **taramaz**: deneyim havuzu yalnız aktif `trade_memory.jsonl` + `shadow_book.json` okur, `retention_stats()` yalnız manifestten O(1) özet verir. Arşiv okuması offline/rapor yolundadır (`DecisionJournal.iter_all_rows`, `ShadowBook.iter_all_trades`, `quant.run --shadow-archive`) ve kimliğe göre tekilleştirir.
 - Checksum'ı tutmayan segment öğrenmeye katılmaz; `SegmentArchive.verify()` ve dashboard `Saklama` bloğu durumu görünür kılar.
+
+## Uzun vadeli retrieval (deneyim indeksi)
+
+Kayıpsız saklama tek başına yetmez: arşive taşınan bir gölge sonuç, retrieval yalnız aktif dosyaları okuduğu sürece karar etkisinden düşer. Ölçülen tempoda (~82 gölge/gün, `MAX_TRADES=5000`) bu ~61 günde gerçekleşiyordu — kapsam `HOT_ONLY` idi.
+
+`learn/experience_index.py::ExperienceIndexStore` bu boşluğu kapatır:
+
+```
+mühürlenmiş segment (.jsonl.gz) → checksum → BİR KEZ normalize → kompakt shard
+→ aktif + indekslenmiş geçmiş = hazır havuz → aday başına SINIRLI benzerlik sorgusu
+```
+
+- **Artımlı:** segment yalnız YENİ göründüğünde okunur; `refresh()` tur başına bir kez çağrılır ve kararlı durumda tek manifest okumasıdır (ölçülen: 1–9 ms). Aday başına arşiv **taranmaz**.
+- **Türev veri:** indeks silinebilir; `rebuild()` kayıpsız arşivden deterministik olarak yeniden kurar (aynı satırlar, aynı vektörler, aynı parmak izi). Segment `segment_id` + `sha256` + `block_sha256` manifeste yazılır; aynı segment ikinci kez işlenmez.
+- **Atomik:** shard yazımı tmp + fsync + `os.replace`, manifest `atomic_write_json`.
+- **Fail-closed:** checksum'ı tutmayan segment ve etiket zamanı çözülemeyen kayıt indekse **girmez**; durum `corrupt_segments` / `skipped_rows` olarak görünür.
+- **Tek kimlik, tek deneyim:** aktif ve arşiv aynı `outcome_id`'yi taşısa da bir kez sayılır; gerçek fill (`REAL_PAPER`) aynı kimlikteki gölgeyi daima yener (`merge_sources`). Hiyerarşik prior'ın residual çift sayım koruması aynen sürer.
+- **No-lookahead:** `as_of` filtresi arşivden gelen satırlara da uygulanır ve zamanı bilinmeyen kayıt elenir (fail-closed).
+- **Vektörleme tek uygulama:** `experience.experience_vector` hem aktif havuz hem indeks tarafından kullanılır — bir kaydın arşive taşınması benzerlik skorunu değiştirmez.
+- **Sınırlı sorgu:** `query_pool(..., max_scan=learning_v3.retrieval_max_scan)` (varsayılan 5.000). Havuz sınırın altındaysa **tam tarama** yapılır ve sonuç eski davranışla birebir aynıdır; üstündeyse tarama sembol+yön kovası → sembol kovası → en yeni kullanılabilir kuyruk sırasıyla bütçelenir (ikili arama, `label_ts` sıralı listeler). Ölçülen: 10k havuzda 37.4 ms, 100k'da 37.7 ms, 1M'de 40.6 ms → **arşiv boyutuyla doğrusal büyümez**.
+- **Dürüst raporlama:** `retrieval_scope` indeksin gerçek durumundan türer — indeks yok/boşsa `HOT_ONLY`, bozuksa `DEGRADED`, yalnız gerçekten indekslenmiş satır varsa `HOT_PLUS_INDEXED_HISTORY`.
+- **Karar günlüğü arşivi bir deneyim kaynağı DEĞİLDİR.** Gerçek sonuç için `TradeMemory`, karşı-olgusal sonuç için `ShadowBook`/arşivi canonical kaynaktır; karar günlüğü audit/link kanıtı olarak kalır. Aksi halde aynı outcome üçüncü kez sayılırdı.

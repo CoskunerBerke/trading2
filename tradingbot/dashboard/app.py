@@ -703,6 +703,42 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
                                  "Silinen segment": rt.get("deleted_segments", 0),
                                  "Retrieval kapsamı": rt.get("retrieval_scope") or "—",
                                  "Sessiz silme": "HAYIR" if rt.get("silent_deletion") is False else "?"}))
+        xi = ll.get("experience_index") or {}
+        if xi:
+            ih = str(xi.get("index_health") or "ABSENT")
+            scope = str(xi.get("retrieval_scope") or "HOT_ONLY")
+            itone = "ok" if ih == "OK" else ("info" if ih in ("ABSENT", "EMPTY") else "warn")
+            stone = "ok" if scope == "HOT_PLUS_INDEXED_HISTORY" else "warn"
+
+            def _ms(v):
+                if not isinstance(v, (int, float)):
+                    return "—"
+                from datetime import datetime, timezone
+                return datetime.fromtimestamp(v / 1000, timezone.utc).isoformat(timespec="seconds")
+
+            body += ("<h2>Uzun vadeli retrieval (deneyim indeksi)</h2>"
+                     + '<div class="card">Arşivlenmiş sonuçlar canlı retrieval\'da kalır. '
+                       'İndeks TÜREV veridir; silinirse kayıpsız arşivden yeniden kurulur. '
+                       'Aday başına arşiv TARANMAZ.</div>'
+                     + '<div class="grid">'
+                     + card("Retrieval kapsamı", badge(scope, stone),
+                            f"no-lookahead: {esc(xi.get('no_lookahead') or '—')}")
+                     + card("İndekslenmiş deneyim", f"{xi.get('indexed_experiences', 0)}",
+                            f"{xi.get('indexed_real', 0)} gerçek · "
+                            f"{xi.get('indexed_shadow', 0)} gölge")
+                     + card("İşlenmiş segment", f"{xi.get('processed_segments', 0)}",
+                            f"gecikme {xi.get('index_lag_segments', 0)} · bozuk "
+                            f"{xi.get('corrupt_segments', 0)}")
+                     + card("İndeks sağlığı", badge(ih, itone),
+                            esc(xi.get("last_index_error") or "hata yok"))
+                     + "</div>"
+                     + kv_table({"En eski kullanılabilir outcome": _ms(xi.get("oldest_label_ms")),
+                                 "En yeni kullanılabilir outcome": _ms(xi.get("newest_label_ms")),
+                                 "Son refresh": xi.get("last_refresh_at") or "—",
+                                 "Son rebuild": xi.get("last_rebuild_at") or "—",
+                                 "Atlanan satır": xi.get("skipped_rows", 0),
+                                 "Arşivden yeniden kurulabilir":
+                                     "EVET" if xi.get("rebuildable_from_archive") else "?"}))
         rv2 = q.get("risk_v2") or {}
         if rv2:
             big = rv2.get("largest_cluster") or {}
@@ -764,11 +800,17 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
             retention = state.decision_retention()
         except Exception:  # noqa: BLE001 — bozuk/eksik arşiv metadatası 500 ÜRETMEZ
             retention = {"archive_health": "UNREADABLE", "silent_deletion": False,
-                         "archive_available": False}
+                         "archive_available": False, "retrieval_scope": "HOT_ONLY"}
+        try:
+            exp_index = state.experience_index()
+        except Exception:  # noqa: BLE001 — bozuk/eksik indeks metadatası 500 ÜRETMEZ
+            exp_index = {"available": False, "index_health": "UNREADABLE",
+                         "retrieval_scope": "DEGRADED"}
         if not rows:
             return {"available": False,
                     "reason": "decision_journal.jsonl yok — henüz karar kaydı üretilmedi",
-                    "retention": retention}
+                    "retention": retention, "experience_index": exp_index,
+                    "retrieval_scope": exp_index.get("retrieval_scope", "HOT_ONLY")}
         dec = [r for r in rows if r.get("kind") == KIND_DECISION]
         outs = [r for r in rows if r.get("kind") == KIND_OUTCOME]
         n = len(dec)
@@ -806,6 +848,8 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
                               "n_applied": sum(1 for x in infl if x.get("applied"))},
                 "lesson_codes": dict(sorted(lesson_codes.items(), key=lambda kv: -kv[1])[:12]),
                 "retention": retention,
+                "experience_index": exp_index,
+                "retrieval_scope": exp_index.get("retrieval_scope", "HOT_ONLY"),
                 "guardrail": "LEARNING CANNOT OVERRIDE RISK GATES"}
 
     @app.get("/api/learning-loop")

@@ -483,6 +483,43 @@ class SegmentArchive:
                 if isinstance(row, dict):
                     yield row
 
+    def read_segment(self, seg: dict[str, Any]) -> list[dict[str, Any]] | None:
+        """TEK segmenti checksum doğrulayarak okur. Doğrulama düşerse `None` (fail-closed).
+
+        Indeksleyici bunu kullanır: segment BİR KEZ okunur, normalize edilir ve bir daha
+        açılmaz. Bozuk segment sessizce kullanılmaz — `None` çağırana bildirilir.
+        """
+        if not isinstance(seg, dict):
+            return None
+        path = self._segment_path(seg)
+        if not path.exists():
+            return None
+        try:
+            if _sha256_file(path) != str(seg.get("sha256") or ""):
+                return None
+            with gzip.open(path, "rb") as gz:
+                payload = gz.read()
+        except (OSError, EOFError, gzip.BadGzipFile):
+            return None
+        if _sha256_bytes(payload) != str(seg.get("block_sha256") or ""):
+            return None
+        out: list[dict[str, Any]] = []
+        for ln in payload.decode("utf-8", errors="replace").splitlines():
+            ln = ln.strip()
+            if not ln:
+                continue
+            try:
+                row = json.loads(ln)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(row, dict):
+                out.append(row)
+        return out
+
+    def segments(self) -> list[dict[str, Any]]:
+        """Manifestteki segmentler, ARŞİVLEME sırasıyla (salt okunur kopya)."""
+        return [dict(s) for s in (self.manifest().get("segments") or []) if isinstance(s, dict)]
+
     def stats(self) -> dict[str, Any]:
         """Manifestten O(1) özet — sıcak döngü ve dashboard için. Segment AÇMAZ."""
         doc = self.manifest()

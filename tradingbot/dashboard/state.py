@@ -288,6 +288,75 @@ class StateReader:
         except OSError:
             return 0
 
+    def experience_index(self, dirname: str = "experience_index",
+                         shadow_archive_dirname: str = "shadow_archive") -> dict[str, Any]:
+        """Uzun vadeli deneyim indeksinin SALT OKUNUR durumu — shard/segment AÇMAZ.
+
+        `retrieval_scope` DÜRÜSTTÜR: indeks yoksa/boşsa `HOT_ONLY`, bozuksa `DEGRADED`;
+        yalnız gerçekten indekslenmiş satır varsa `HOT_PLUS_INDEXED_HISTORY`. Eksik/bozuk
+        manifest 500 ÜRETMEZ.
+        """
+        base: dict[str, Any] = {"available": False, "indexed_experiences": 0,
+                                "indexed_real": 0, "indexed_shadow": 0,
+                                "processed_segments": 0, "corrupt_segments": 0,
+                                "skipped_rows": 0, "oldest_label_ms": None,
+                                "newest_label_ms": None, "index_lag_segments": 0,
+                                "last_refresh_at": None, "last_rebuild_at": None,
+                                "index_health": "ABSENT", "last_index_error": None,
+                                "retrieval_scope": "HOT_ONLY",
+                                "no_lookahead": "AS_OF_ENFORCED_FAIL_CLOSED",
+                                "rebuildable_from_archive": True}
+        mpath = self.state_dir / dirname / "manifest.json"
+        if not mpath.exists():
+            return base
+        try:
+            doc = read_json(mpath, default=None)
+        except Exception:  # noqa: BLE001
+            doc = None
+        if not isinstance(doc, dict):
+            base.update({"index_health": "DEGRADED", "retrieval_scope": "DEGRADED",
+                         "last_index_error": "INDEX_MANIFEST_UNREADABLE"})
+            return base
+
+        def _i(v: Any) -> int:
+            return int(v) if isinstance(v, (int, float)) else 0
+
+        t = doc.get("totals") if isinstance(doc.get("totals"), dict) else {}
+        processed = [s for s in (doc.get("processed") or []) if isinstance(s, dict)]
+        corrupt = [s for s in (doc.get("corrupt_segments") or [])]
+        health = str(doc.get("health") or "EMPTY")
+        # Gecikme: arşivde olup indekste olmayan segment sayısı (iki manifest, segment açılmaz).
+        lag = 0
+        try:
+            adoc = read_json(self.state_dir / shadow_archive_dirname / "manifest.json",
+                             default=None)
+            if isinstance(adoc, dict):
+                n_arc = len([s for s in (adoc.get("segments") or []) if isinstance(s, dict)])
+                lag = max(0, n_arc - len(processed))
+        except Exception:  # noqa: BLE001
+            lag = 0
+        if lag > 0 and health == "OK":
+            health = "STALE"
+        rows = _i(t.get("rows"))
+        if health in ("OK", "STALE") and rows > 0:
+            scope = "HOT_PLUS_INDEXED_HISTORY"
+        elif health in ("DEGRADED", "FAILED"):
+            scope = "DEGRADED"
+        else:
+            scope = "HOT_ONLY"
+        base.update({"available": True, "indexed_experiences": rows,
+                     "indexed_real": _i(t.get("real")), "indexed_shadow": _i(t.get("shadow")),
+                     "processed_segments": len(processed), "corrupt_segments": len(corrupt),
+                     "skipped_rows": sum(_i(s.get("n_skipped")) for s in processed),
+                     "oldest_label_ms": t.get("oldest_label_ms"),
+                     "newest_label_ms": t.get("newest_label_ms"),
+                     "index_lag_segments": lag,
+                     "last_refresh_at": doc.get("last_refresh_at"),
+                     "last_rebuild_at": doc.get("last_rebuild_at"),
+                     "index_health": health, "last_index_error": doc.get("last_error"),
+                     "retrieval_scope": scope})
+        return base
+
     def decision_retention(self, dirname: str = "decision_archive") -> dict[str, Any]:
         """Aktif günlük + kayıpsız arşivin SALT OKUNUR saklama özeti.
 
@@ -301,8 +370,10 @@ class StateReader:
                                 "last_rotation_at": None, "archive_health": "ABSENT",
                                 "last_archive_error": None,
                                 "retention_policy": "UNKNOWN", "deleted_segments": 0,
-                                "silent_deletion": False, "archive_available": False,
-                                "retrieval_scope": "HOT_ONLY"}
+                                "silent_deletion": False, "archive_available": False}
+        # Retrieval kapsamı KARAR ARŞİVİNİN varlığından TÜRETİLEMEZ: canlı retrieval'ın kaynağı
+        # deneyim indeksidir. Kapsam gerçek indeks durumundan okunur (dürüst raporlama).
+        base["retrieval_scope"] = self.experience_index().get("retrieval_scope", "HOT_ONLY")
         mpath = self.state_dir / dirname / "manifest.json"
         if not mpath.exists():
             return base
@@ -332,8 +403,7 @@ class StateReader:
                      "retention_policy": doc.get("retention_policy") or "UNKNOWN",
                      "deleted_segments": _i(doc.get("deleted_segments")),
                      "pending_trim": bool(doc.get("pending_trim")),
-                     "archive_available": True,
-                     "retrieval_scope": "HOT_PLUS_INDEXED_HISTORY"})
+                     "archive_available": True})
         return base
 
     def learning_research(self) -> dict[str, Any]:

@@ -19,7 +19,8 @@ STATE_FILES: dict[str, str] = {
     "decision_funnel": "decision_funnel.json",
     "quant_eval": "quant_eval.json",
 }
-JSONL_FILES: dict[str, str] = {"llm_calls": "llm_calls.jsonl", "trade_memory": "trade_memory.jsonl", "signals_log": "signals_log.jsonl"}
+JSONL_FILES: dict[str, str] = {"llm_calls": "llm_calls.jsonl", "trade_memory": "trade_memory.jsonl", "signals_log": "signals_log.jsonl",
+                               "decision_journal": "decision_journal.jsonl"}
 
 
 def _age(ts: Any) -> float | None:

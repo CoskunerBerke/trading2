@@ -655,6 +655,29 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
                       fmt(v.get("net_pnl_usdt"), 2), fmt(v.get("max_drawdown_r"), 2),
                       badge("YETERSİZ", "warn") if v.get("insufficient_sample") else badge("ok", "ok")]
                      for k, v in groups.items()], num_cols={1, 2, 3, 4})
+        ll = _learning_loop_view()
+        if ll.get("available"):
+            cov = ll.get("coverage") or {}
+            ret = ll.get("retrieval") or {}
+            infl = ll.get("influence") or {}
+            body += ("<h2>Outcome Learning Loop</h2>"
+                     + f'<div class="card">{esc(ll.get("guardrail"))}</div>'
+                     + '<div class="grid">'
+                     + card("Karar kaydı", f"{ll.get('n_decisions', 0)}",
+                            f"{ll.get('n_accepted', 0)} kabul · {ll.get('n_rejected', 0)} red")
+                     + card("Outcome bağlantısı", f"{ll.get('n_outcome_linked', 0)}",
+                            f"{ll.get('n_outcome_links', 0)} kapanış kaydı")
+                     + card("Retrieval isabet", fmt(ret.get("hit_rate"), 3),
+                            f"ort. benzerlik {fmt(ret.get('avg_similarity'), 3)}")
+                     + card("Öğrenme etkisi",
+                            esc(", ".join(infl.get("modes") or []) or "yok"),
+                            f"ort {fmt(infl.get('avg_abs_fraction'), 5)} · maks "
+                            f"{fmt(infl.get('max_abs_fraction'), 5)} · uygulanan "
+                            f"{infl.get('n_applied', 0)}")
+                     + "</div>"
+                     + "<h3>Snapshot kapsaması</h3>" + kv_table(cov))
+            if ll.get("lesson_codes"):
+                body += "<h3>Ders kodu dağılımı</h3>" + kv_table(ll["lesson_codes"])
         rv2 = q.get("risk_v2") or {}
         if rv2:
             big = rv2.get("largest_cluster") or {}
@@ -704,6 +727,61 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
         body += ('<p class="small mut">Bu görünüm salt okunurdur; sonuçlar araştırma çıktısıdır ve '
                  'kârlılık kanıtı DEĞİLDİR. Counterfactual/shadow satırlar gerçek fill değildir.</p>')
         return _page("Quant", body, "/quant")
+
+    def _learning_loop_view() -> dict:
+        """Outcome Learning Loop özeti — SALT OKUNUR, bozuk/eksik günlükte crash etmez."""
+        try:
+            from ..learn.decision_journal import ACCEPTED, KIND_DECISION, KIND_OUTCOME, REJECTED
+            rows = state.tail_jsonl("decision_journal", 4000)
+        except Exception:  # noqa: BLE001
+            return {"available": False, "reason": "decision_journal.jsonl okunamadı"}
+        if not rows:
+            return {"available": False, "reason": "decision_journal.jsonl yok — henüz karar kaydı üretilmedi"}
+        dec = [r for r in rows if r.get("kind") == KIND_DECISION]
+        outs = [r for r in rows if r.get("kind") == KIND_OUTCOME]
+        n = len(dec)
+
+        def ratio(pred) -> float | None:
+            return round(sum(1 for r in dec if pred(r)) / n, 4) if n else None
+
+        linked = {str(r.get("trade_id")) for r in outs if r.get("trade_id")}
+        infl = [r.get("learning_influence") or {} for r in dec if r.get("learning_influence")]
+        fracs = [abs(float(x["fraction"])) for x in infl
+                 if isinstance(x.get("fraction"), (int, float))]
+        sims = [float(x["top_similarity"]) for x in infl
+                if isinstance(x.get("top_similarity"), (int, float))]
+        hits = sum(1 for x in infl if (x.get("n_experience") or 0) > 0)
+        modes = {str(x.get("mode")) for x in infl if x.get("mode")}
+        lesson_codes: dict[str, int] = {}
+        for r in outs:
+            for c in (r.get("lesson_codes") or []):
+                lesson_codes[str(c)] = lesson_codes.get(str(c), 0) + 1
+        return {"available": True,
+                "n_decisions": n, "n_outcome_links": len(outs),
+                "n_accepted": sum(1 for r in dec if r.get("outcome_kind") == ACCEPTED),
+                "n_rejected": sum(1 for r in dec if r.get("outcome_kind") == REJECTED),
+                "n_outcome_linked": sum(1 for r in dec if str(r.get("trade_id") or "") in linked),
+                "coverage": {"features": ratio(lambda r: bool(r.get("features"))),
+                             "specialist_scores": ratio(lambda r: bool(r.get("specialist_scores"))),
+                             "regime": ratio(lambda r: bool(r.get("regime"))),
+                             "trade_id": ratio(lambda r: bool(r.get("trade_id")))},
+                "retrieval": {"n_with_influence": len(infl),
+                              "hit_rate": round(hits / len(infl), 4) if infl else None,
+                              "avg_similarity": round(sum(sims) / len(sims), 4) if sims else None},
+                "influence": {"modes": sorted(modes) or None,
+                              "avg_abs_fraction": round(sum(fracs) / len(fracs), 6) if fracs else None,
+                              "max_abs_fraction": round(max(fracs), 6) if fracs else None,
+                              "n_applied": sum(1 for x in infl if x.get("applied"))},
+                "lesson_codes": dict(sorted(lesson_codes.items(), key=lambda kv: -kv[1])[:12]),
+                "guardrail": "LEARNING CANNOT OVERRIDE RISK GATES"}
+
+    @app.get("/api/learning-loop")
+    def api_learning_loop():
+        """Outcome Learning Loop özeti — read-only, RFC-safe, boş/bozuk veride 500 YOK."""
+        safe, reasons = json_safe(_learning_loop_view())
+        if reasons:
+            safe["unavailable_reason"] = dict(reasons)
+        return JSONResponse(safe)
 
     @app.get("/models", response_class=HTMLResponse)
     def models():

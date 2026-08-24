@@ -228,6 +228,17 @@ class LearningV3Section:
     # olarak kalir; canli tahmin yoluna kendiliginden giremez. `true` verilmesi
     # PAPER_AUTO_PROMOTION_FORBIDDEN ile fail-closed reddedilir (bkz. validate_v3).
     auto_promote_in_paper: bool = False
+    # --- Outcome Learning Loop V1 (karar gunlugu + sinirli ogrenme etkisi) ---
+    # `decision_journal`: DEGERLENDIRILEN HER aday (kabul/red/veto/golge) icin kalici snapshot.
+    # `influence_mode`: OFF | SHADOW | PAPER_BOUNDED. Varsayilan SHADOW -> ayarlama HESAPLANIR ve
+    # kaydedilir ama baseline karar BIREBIR korunur. PAPER_BOUNDED yalniz PAPER modunda kabul
+    # edilir (bkz. validate_v3) ve etki `influence_max_fraction` ile sinirlidir.
+    decision_journal_enabled: bool = True
+    decision_journal_max_lines: int = 20_000
+    influence_mode: str = "SHADOW"
+    influence_prior_strength: float = 20.0  # w = n/(n+prior_strength); >= 20 zorunlu
+    influence_max_fraction: float = 0.05    # etkinin mutlak tavani (baseline orani)
+    influence_top_k: int = 5
     # --- online ogrenme temposu: her kapanista yeniden egitim YOK ---
     retrain_min_new_closed: int = 10        # egitim icin gereken asgari YENI kapanmis islem
     retrain_cooldown_hours: float = 6.0     # iki egitim arasindaki asgari sure
@@ -429,6 +440,20 @@ def validate_v3(cfg: V3Config) -> None:
         # arasındaki sınır operatör onayıyla geçilir. Sessiz varsayılana düşme YOK.
         raise ConfigError("PAPER_AUTO_PROMOTION_FORBIDDEN: learning_v3.auto_promote_in_paper=true "
                           "desteklenmiyor — terfi yalnız açık manuel operatör onayıyla yapılır")
+    # Outcome Learning Loop: etki sözleşmesi fail-closed doğrulanır.
+    from .learn.influence import MODES as _INFLUENCE_MODES, PAPER_BOUNDED as _PB
+    _lv3 = cfg.learning_v3
+    if _lv3.influence_mode not in _INFLUENCE_MODES:
+        raise ConfigError(f"learning_v3.influence_mode geçersiz: {_lv3.influence_mode} "
+                          f"(geçerli: {', '.join(_INFLUENCE_MODES)})")
+    if _lv3.influence_mode == _PB and m != "PAPER":
+        raise ConfigError("LEARNING_INFLUENCE_PAPER_ONLY: learning_v3.influence_mode=PAPER_BOUNDED "
+                          f"yalnız PAPER modunda kullanılabilir (mevcut mode={m})")
+    if _lv3.influence_prior_strength < 20.0:
+        raise ConfigError("learning_v3.influence_prior_strength >= 20 olmalı "
+                          "(öğrenme etkisinin küçük kalması için)")
+    if not (0.0 < _lv3.influence_max_fraction <= 0.20):
+        raise ConfigError("learning_v3.influence_max_fraction (0, 0.20] aralığında olmalı")
     if cfg.quant_eval.auto_promotion:
         # `learning_v3.auto_promote_in_paper` ile AYNI ilke: challenger'dan CHAMPION'a geçiş
         # yalnız açık manuel operatör onayıyla olur — config bunu otomatikleştiremez.

@@ -209,6 +209,30 @@ class TradingEngineV3(TradingEngine):
                                   holdout_frac=v3.learning_v3.holdout_frac, half_life_days=v3.learning_v3.half_life_days, calibrator=v3.learning_v3.calibrator),
                                   st / "learn_v2.json")
         self.shadow = ShadowBook(st / "shadow_book.json")
+        # --- Outcome Learning Loop V1: karar günlüğü + sınırlı öğrenme etkisi ---
+        # Arıza worker'ı ÇÖKERTMEZ: journal/influence başlatılamazsa baseline davranış sürer.
+        from .learn.decision_journal import DecisionJournal
+        from .learn.influence import InfluenceConfig
+        self.decision_journal = None
+        self._journal_errors = 0
+        self._influence_log: list[dict] = []
+        try:
+            self.influence_cfg = InfluenceConfig(
+                mode=v3.learning_v3.influence_mode,
+                prior_strength=v3.learning_v3.influence_prior_strength,
+                max_fraction=v3.learning_v3.influence_max_fraction,
+                top_k=v3.learning_v3.influence_top_k)
+            self.influence_cfg.validate()
+            if v3.learning_v3.decision_journal_enabled:
+                self.decision_journal = DecisionJournal(
+                    st / "decision_journal.jsonl",
+                    max_lines=v3.learning_v3.decision_journal_max_lines)
+                self.decision_journal.load_seen()
+        except Exception as exc:  # noqa: BLE001 — öğrenme altyapısı karar yolunu bloke edemez
+            log.warning("outcome-learning başlatılamadı, baseline sürüyor: %s", exc)
+            from .learn.influence import InfluenceConfig as _IC
+            self.influence_cfg = _IC(mode="OFF")
+            self.decision_journal = None
         self.universe = read_json(st / "universe.json", default=None)
         self.last_bar_seen: str = ""
         self.run_id = ""
@@ -376,6 +400,7 @@ class TradingEngineV3(TradingEngine):
                     self.learner2.on_trade_closed(legacy | {"features": legacy.get("features") or {}},
                                                   {"regime": snap.get("regime"), "consensus_score": snap.get("consensus_score"),
                                                    "dissent": snap.get("dissent"), "vetoes": snap.get("vetoes")})
+                    self._journal_outcome(legacy)
                 except Exception as exc:  # noqa: BLE001
                     log.exception("gap-reconcile öğrenme hatası: %s", exc)
 
@@ -411,6 +436,7 @@ class TradingEngineV3(TradingEngine):
                     self.learner.learn(legacy)
                     self.learner2.on_trade_closed(legacy | {"features": legacy.get("features") or {}}, {"regime": snap.get("regime"), "consensus_score": snap.get("consensus_score"),
                                                                                                         "dissent": snap.get("dissent"), "vetoes": snap.get("vetoes")})
+                    self._journal_outcome(legacy)
                 except Exception as exc:  # noqa: BLE001 — öğrenme hatası defteri geri almaz
                     log.exception("exit-monitor öğrenme hatası: %s", exc)
                 out.append(legacy)
@@ -565,6 +591,7 @@ class TradingEngineV3(TradingEngine):
         # p_win (v2 model + hiyerarşik önsel; v1 tahmini yedek)
         from .learn.snapshot import prediction_schema_hash
         self._pred_snapshots = {}
+        self._influence_log = []
         for b in briefs:
             f = features_from_brief(b, legacy_chief, b.scan_score or None)
             d = decisions.get(b.symbol)
@@ -581,12 +608,23 @@ class TradingEngineV3(TradingEngine):
                 pr = self.learner2.predict(f, regime=d.regime, symbol=b.symbol, setup=b.plan.entry_type or None)
             else:
                 pr = self.learner2.prior_only(regime=d.regime if d else None, symbol=b.symbol, setup=b.plan.entry_type or None)
-            b.p_win = round(pr.p_win_calibrated if pr.ready else (0.5 * pr.prior_used + 0.5 * self.learner.predict(f)), 3)
+            baseline_p_win = round(pr.p_win_calibrated if pr.ready else (0.5 * pr.prior_used + 0.5 * self.learner.predict(f)), 3)
+            # --- Outcome Learning Loop: geçmiş deneyimden SINIRLI ayarlama ---------------
+            # SHADOW (varsayılan): hesaplanır ve kaydedilir, baseline BİREBİR korunur.
+            # PAPER_BOUNDED: yalnız PAPER'da, yalnız p_win üzerinde, `max_fraction` tavanıyla.
+            # Hard veto / risk kapısı / kill switch bu değerden BAĞIMSIZDIR ve geçilemez.
+            b.p_win = baseline_p_win
+            inf = self._learning_influence(b, d, snap, baseline_p_win, f)
+            if inf is not None:
+                self._influence_log.append(inf)
+                if inf.get("applied") and inf.get("effective") is not None:
+                    b.p_win = round(float(inf["effective"]), 3)
             if d:
                 d.p_win = b.p_win
         # 4) RİSK + TETİK + PAPER EXECUTION
         opened: list[str] = []
         risk_log: list[dict] = []
+        self._journal_cycle = getattr(self, "_tour_no", 0)
         if self.cfg.futures.enabled and self.mode_state.mode.value in ("PAPER", "TESTNET", "SHADOW_LIVE"):
             opened, risk_log = self._execute(decisions, chief, briefs, state, marks, now)
             # bu turda açılan pozisyonlar için önceki barın uçları geçerli değil → yalnız son fiyat
@@ -619,6 +657,7 @@ class TradingEngineV3(TradingEngine):
             lessons.append(self.learner.learn(legacy))
             self.learner2.on_trade_closed(legacy | {"features": legacy.get("features") or {}}, {"regime": snap.get("regime"), "consensus_score": snap.get("consensus_score"),
                                                                                                 "dissent": snap.get("dissent"), "vetoes": snap.get("vetoes")})
+            self._journal_outcome(legacy, lessons[-1] if lessons else None)
         # gölge işlemleri etiketle (araştırma politikasının elediği girişlerin karşı-olgusal sonucu burada oluşur)
         self._label_shadows()
         # kapanan gerçek işlemleri araştırma adayına eşleşmiş gözlem olarak yaz
@@ -663,6 +702,9 @@ class TradingEngineV3(TradingEngine):
         self.registry.save(st, self.run_id)
         state = self._portfolio_state(marks_f)      # tur sonu: fill/çıkış sonrası güncel birleşik durum
         self._persist_risk_state(state, risk_log, now)
+        # Karar günlüğü: DEĞERLENDİRİLEN HER aday (kabul/red/veto) tek seferde yazılır.
+        # Hot loop'un DIŞINDA, tur sonunda ve fail-safe: arıza turu bozmaz.
+        self._journal_decisions(risk_log, decisions, now)
         self.mode_state.save()
         from .agents import persist_agents
         _, alerts = persist_agents(briefs, legacy_chief, st)
@@ -994,6 +1036,7 @@ class TradingEngineV3(TradingEngine):
                                 "initial_margin": round(_filled_notional / max(pos.leverage, 1), 6)})
                     entry["filled_risk_usdt"] = round(_filled_risk, 6)
                 trade_id = pos.id
+                entry["trade_id"] = trade_id
                 desc = f"{sym} {d.direction} FUTURES @ {float(pos.entry_avg):.6g} · notional {float(pos.qty * pos.entry_avg):.2f} · {pos.leverage}x · stop {plan.stop:.6g} · TP {', '.join(f'{t:.6g}' for t in plan.targets)} · P(win) %{(b.p_win or 0.5)*100:.0f}"
             else:
                 order = self.spot2.market_buy(sym, quote_amount=Decimal(str(notional)), ref_price=Decimal(str(b.price)), tick=marks.get(sym), strategy=plan.entry_type, now=now)
@@ -1442,6 +1485,95 @@ class TradingEngineV3(TradingEngine):
                                       reasons=list(dec.get("reasons") or []))
         except Exception as exc:  # noqa: BLE001 -- gozlem hatasi islem akisini DURDURAMAZ
             log.warning("arastirma gozlemi yazilamadi: %s", exc)
+
+    # ------------------------------------------------------------------ Outcome Learning Loop V1
+    def _learning_influence(self, b, d, snap, baseline_p_win: float, legacy_feats: dict) -> dict | None:
+        """Geçmiş deneyimden sınırlı öğrenme ayarlaması. ASLA istisna sızdırmaz.
+
+        Retrieval yalnız KARAR ANINDAN ÖNCE kapanmış işlemleri görür (no-lookahead).
+        `applied=False` iken baseline birebir korunur; hard veto/risk/kill switch bu değerden
+        BAĞIMSIZDIR ve bu fonksiyon tarafından geçilemez.
+        """
+        cfg = getattr(self, "influence_cfg", None)
+        if cfg is None or cfg.mode == "OFF":
+            return None
+        try:
+            from .learn.influence import apply_influence, learning_adjustment, retrieve_experience
+            as_of_ms = None
+            if snap is not None and getattr(snap, "last_bar_ts", None):
+                try:
+                    from .core import from_iso as _from_iso
+                    as_of_ms = int(_from_iso(snap.last_bar_ts).timestamp() * 1000)
+                except (ValueError, TypeError):
+                    as_of_ms = None
+            query = dict(legacy_feats or {})
+            query.update({"symbol": b.symbol, "direction": (d.direction if d else None),
+                          "setup_type": (b.plan.entry_type if b.plan else None),
+                          "regime": (d.regime if d else None)})
+            hits = retrieve_experience(self.memory, query, as_of_ms=as_of_ms, cfg=cfg)
+            adj = learning_adjustment(hits, baseline=baseline_p_win, cfg=cfg)
+            applied = apply_influence(adj, cfg=cfg, mode_value=self.mode_state.mode.value,
+                                      live_order_path=bool(getattr(self.cfg.v3.mode, "live_order_path", False)))
+            return {"symbol": b.symbol, "direction": (d.direction if d else None),
+                    "as_of_ms": as_of_ms, "n_experience": adj.get("n_experience"),
+                    "top_similarity": (hits[0].get("similarity") if hits else None),
+                    "fraction": adj.get("fraction"), "reasons": adj.get("reasons"),
+                    "baseline": adj.get("baseline"), "learned": adj.get("learned"),
+                    "applied": applied.get("applied"), "blockers": applied.get("blockers"),
+                    "effective": applied.get("effective"), "mode": cfg.mode}
+        except Exception as exc:  # noqa: BLE001 — öğrenme arızası baseline kararı bozamaz
+            self._journal_errors += 1
+            log.warning("learning influence atlandı (baseline korunur): %s", exc)
+            return None
+
+    def _journal_decisions(self, risk_log: list[dict], decisions: dict, now) -> None:
+        """Her aday için karar snapshot'ı yazar. Arıza turu ÇÖKERTMEZ."""
+        j = getattr(self, "decision_journal", None)
+        if j is None or not risk_log:
+            return
+        try:
+            from .learn.decision_journal import ACCEPTED, REJECTED, build_decision_record
+            infl = {i["symbol"]: i for i in getattr(self, "_influence_log", []) if i.get("symbol")}
+            for e in risk_log:
+                sym = str(e.get("symbol") or "")
+                if not sym:
+                    continue
+                d = decisions.get(sym)
+                direction = str(getattr(d, "direction", "") or e.get("direction") or "")
+                kind = ACCEPTED if e.get("executed_notional") is not None else REJECTED
+                rec = build_decision_record(
+                    run_id=self.run_id, cycle_id=getattr(self, "_journal_cycle", 0),
+                    symbol=sym, direction=direction, market_type=e.get("market_type"),
+                    decision_ts=iso(now), entry=e,
+                    snapshot=self._pred_snapshots.get(sym), decision=d,
+                    outcome_kind=kind, trade_id=e.get("trade_id"),
+                    code_sha=getattr(self.cfg, "code_sha", None),
+                    policy_id=e.get("research_policy_id"))
+                if sym in infl:
+                    rec["learning_influence"] = {k: infl[sym].get(k) for k in
+                                                 ("mode", "n_experience", "top_similarity",
+                                                  "fraction", "baseline", "learned", "applied",
+                                                  "blockers")}
+                j.append_decision(rec)
+            j.prune()
+        except Exception as exc:  # noqa: BLE001
+            self._journal_errors += 1
+            log.warning("karar günlüğü yazılamadı (tur etkilenmedi): %s", exc)
+
+    def _journal_outcome(self, rec_legacy: dict, lesson: dict | None = None) -> None:
+        """Kapanan işlemi aynı `trade_id` üzerinden karar snapshot'ına bağlar (idempotent)."""
+        j = getattr(self, "decision_journal", None)
+        if j is None:
+            return
+        try:
+            from .learn.decision_journal import build_outcome_link
+            tid = str(rec_legacy.get("id") or rec_legacy.get("trade_id") or "")
+            if not tid:
+                return
+            j.append_outcome(build_outcome_link(trade_id=tid, outcome=rec_legacy, lesson=lesson))
+        except Exception as exc:  # noqa: BLE001
+            self._journal_errors += 1
+            log.warning("outcome bağlantısı yazılamadı: %s", exc)
 
     def _snapshot_v3(self, sym: str, d):
         """Canli PAPER karar ani FeatureSnapshotV3 -- replay ile AYNI builder ve AYNI esleme yardimcilari.

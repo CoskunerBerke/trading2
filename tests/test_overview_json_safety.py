@@ -114,8 +114,10 @@ def _assert_contract(c: TestClient, *, open_syms=(), healthy_symbol=None):
     for s in open_syms:
         assert s in shown, s
     if healthy_symbol:                                                # 7
-        hh = next(h for h in ov["top_heads"] if h["symbol"] == healthy_symbol)
+        hh = next(h for h in ov["coin_head_rows"] if h["symbol"] == healthy_symbol)
         assert hh["confidence_calibrated"] == 0.7 and hh["p_win"] == 0.55
+        raw = next(h for h in ov["top_heads"] if h["symbol"] == healthy_symbol)
+        assert raw["verdict"] == "FUTURES_LONG" and "specialist_reports" in raw
     html = c.get("/")                                                 # 10
     assert html.status_code == 200
     body = re.sub(r"<script.*?</script>", "", html.text, flags=re.S)
@@ -151,7 +153,7 @@ def test_overview_survives_every_corrupt_head_field(label, over, tmp_path):
     heads = [_head("BZ/USDT", **over), _head("SAGLAM/USDT")]
     c = _client(_write(tmp_path, "s", heads), tmp_path)
     ov, _ = _assert_contract(c, open_syms=[o[0] for o in OPEN5], healthy_symbol="SAGLAM/USDT")
-    bad = next(h for h in ov["top_heads"] if h["symbol"] == "BZ/USDT")
+    bad = next(h for h in ov["coin_head_rows"] if h["symbol"] == "BZ/USDT")
     for k in ("confidence_calibrated", "p_win", "expected_return_net", "expected_r"):
         v = bad[k]
         assert v is None or math.isfinite(v), (k, v)
@@ -174,7 +176,7 @@ def test_all_heads_corrupt(tmp_path):
              _head("B/USDT", confidence_calibrated="NaN", p_win="", expected_r="abc")]
     c = _client(_write(tmp_path, "s", heads), tmp_path)
     ov, _ = _assert_contract(c, open_syms=[o[0] for o in OPEN5])
-    for h in ov["top_heads"]:
+    for h in ov["coin_head_rows"]:
         for k in ("confidence_calibrated", "p_win", "expected_r", "expected_return_net"):
             assert h[k] is None or math.isfinite(h[k])
 
@@ -225,16 +227,58 @@ def test_confidence_sort_key_is_deterministic_with_non_finite():
     assert [h["symbol"] for h in sorted(hs[::-1], key=coin_head_sort_key)] == order   # kararli
 
 
-def test_overview_never_publishes_raw_model_output(tmp_path):
-    """HAM `specialist_reports` bloğu API'ye SIZMAZ (normalize sözleşme yayımlanır)."""
+def test_top_heads_keeps_its_public_schema_and_only_bad_leaves_become_null(tmp_path):
+    """GERİYE DÖNÜK UYUMLULUK: `top_heads` ham şemasını KORUR; yalnız bozuk LEAF `null` olur.
+
+    Sessiz schema kırılması yasaktır: `specialist_reports`, `spot_plan`, `futures_plan`,
+    `vetoes`, `generated_at` gibi alanlar yerinde kalır; sağlam `ema50_1d` korunur.
+    """
     c = _client(_write(tmp_path, "s", [_head("A/USDT", specialist_reports=[
-        {"agent_name": "levels", "levels": {"ema200_1d": NAN}}])]), tmp_path)
-    ov = c.get("/api/overview").json()
-    assert "specialist_reports" not in json.dumps(ov)
-    assert "coin_head_table" in ov and "coin_head_scope" in ov
-    assert isinstance(ov["top_heads"], list)
-    if ov["top_heads"]:
-        assert set(ov["top_heads"][0]) >= {"symbol", "status", "confidence_calibrated"}
+        {"agent_name": "levels", "usable": True,
+         "levels": {"ema50_1d": 1.25, "ema100_1d": NAN, "ema200_1d": INF}}])]), tmp_path)
+    ov = json.loads(c.get("/api/overview").text, parse_constant=_reject)
+    h = next(x for x in ov["top_heads"] if x["symbol"] == "A/USDT")
+    for k in ("verdict", "direction", "regime", "vetoes", "generated_at",
+              "spot_plan", "futures_plan", "specialist_reports"):
+        assert k in h, k                                   # ham şema KORUNDU
+    lv = h["specialist_reports"][0]["levels"]
+    assert lv["ema50_1d"] == 1.25                          # SAĞLAM kardeş alan korunur
+    assert lv["ema100_1d"] is None and lv["ema200_1d"] is None   # yalnız bozuk leaf null
+    assert lv["ema100_1d"] != 0                            # SAHTE SIFIR DEĞİL
+    ur = ov["unavailable_reason"]
+    assert any(p.endswith("levels.ema100_1d") for p in ur), sorted(ur)[:3]
+    assert not any(re.search(r"NaN|Infinity", str(v)) for v in ur.values())
+    # `coin_head_scope` cf284ce/b5e907c şemasını korur (heads + sayaçlar)
+    assert set(ov["coin_head_scope"]) >= {"heads", "open_positions_total", "open_positions_shown",
+                                          "missing_open_symbols", "no_decision_symbols",
+                                          "coverage_complete", "candidate_limit"}
+    # EK normalize sözleşmeler additive
+    assert "coin_head_rows" in ov and "coin_head_table" in ov
+    assert set(ov["coin_head_rows"][0]) >= {"symbol", "status", "confidence_calibrated"}
+
+
+def test_json_safe_survives_a_cyclic_object():
+    a = {"ok": 1}
+    a["self"] = a
+    out, reasons = json_safe(a)
+    assert out["ok"] == 1 and out["self"] is None      # döngü noktası kesilir, uç DÜŞMEZ
+    assert "döngüsel" in reasons["self"]
+    json.dumps(out, allow_nan=False)
+
+
+def test_json_safe_handles_signalling_and_overflowing_decimals():
+    out, reasons = json_safe({"snan": Decimal("sNaN"), "big": Decimal("1E+400"),
+                              "neg": Decimal("-1E+400"), "ok": Decimal("2.5")})
+    assert out == {"snan": None, "big": None, "neg": None, "ok": 2.5}
+    assert set(reasons) == {"snan", "big", "neg"}
+    json.dumps(out, allow_nan=False)
+
+
+def test_json_safe_does_not_mutate_its_input():
+    src = {"a": NAN, "l": [1.0, INF], "d": {"x": Decimal("NaN")}}
+    before = (repr(src["a"]), list(src["l"]), repr(src["d"]["x"]))
+    json_safe(src)
+    assert (repr(src["a"]), list(src["l"]), repr(src["d"]["x"])) == before
 
 
 # ===================================================================== 3) salt-okunurluk

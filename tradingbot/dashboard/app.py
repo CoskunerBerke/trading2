@@ -683,15 +683,20 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
         """
         ov = dict(state.overview())
         chp = _coin_head_payload()
+        chp_scope = {k: chp[k] for k in ("heads", "open_positions_total", "open_positions_shown",
+                                         "missing_open_symbols", "no_decision_symbols",
+                                         "coverage_complete", "candidate_limit")}
         cov = open_coverage(chp["heads"], state.futures_positions())
-        ov["top_heads"] = coin_head_api_rows(chp)          # HAM sozluk DEGIL — normalize sozlesme
+        # GERIYE DONUK UYUMLULUK: `top_heads` ve `coin_head_scope` ONCEKI SEMALARIYLA KALIR.
+        # Sessiz schema kirilmasi YAPILMAZ; yalniz `json_safe` ile RFC-safe hale getirilir —
+        # sonlu olmayan degerler SADECE ilgili leaf'te `null` olur, saglam specialist report
+        # alanlari (or. `ema50_1d`) KORUNUR. Normalize sunum sozlesmesi EK alanlarda yayimlanir.
+        ov["top_heads"] = chp["heads"]
+        ov["coin_head_scope"] = dict(chp_scope)
+        ov["coin_head_rows"] = coin_head_api_rows(chp)      # EK: normalize, sayisal alanlar sonlu
         ov["coin_head_table"] = {"columns": chp["columns"], "rows": chp["rows"], "meta": chp["meta"],
                                  "num_cols": chp["num_cols"], "pnl_cols": chp["pnl_cols"],
                                  "badge_cols": chp["badge_cols"], "symbol_col": chp["symbol_col"]}
-        ov["coin_head_scope"] = {k: chp[k] for k in
-                                 ("open_positions_total", "open_positions_shown",
-                                  "missing_open_symbols", "no_decision_symbols",
-                                  "coverage_complete", "candidate_limit")}
         # Kapsam sayaclari `/api/live/coin-heads` ile AYNI kaynaktan ve AYNI olcumden gelir.
         ov["open_positions_total"] = cov["open_positions_total"]
         ov["open_positions_shown"] = cov["open_positions_shown"]

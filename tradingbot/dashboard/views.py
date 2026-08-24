@@ -90,14 +90,19 @@ def coin_head_sort_key(h: dict) -> tuple:
     return (1, sym) if c is None else (0, -c, sym)
 
 
-def json_safe(obj: Any, *, path: str = "", reasons: dict | None = None) -> tuple[Any, dict]:
+def json_safe(obj: Any, *, path: str = "", reasons: dict | None = None,
+              _seen: frozenset = frozenset()) -> tuple[Any, dict]:
     """RFC-uyumlu JSON'a çevrilebilir kopya + `unavailable_reason` haritası.
 
-    * Sonlu olmayan sayı (`NaN`/`±Infinity`, `Decimal("NaN")` dâhil) -> `None` + gerekçe.
+    * Sonlu olmayan sayı (RFC dışı float/ondalık dâhil) -> `None` + gerekçe.
       SAHTE `0` / `%0` / `$0.00` ÜRETİLMEZ.
     * JSON'a çevrilemeyen tip -> `None` + gerekçe. Ham nesne KÖRLEMESİNE `str()`e ÇEVRİLMEZ.
     * str/bool/int/None ve dict/list yapıları olduğu gibi korunur.
     Kanonik sonluluk guard'ı `pnl.finite_float_or_none`dur; ikinci bir kopya YOKTUR.
+
+    Girdi YERİNDE DEĞİŞTİRİLMEZ (yeni dict/list üretilir). Döngüsel referans state JSON'undan
+    gelemez (dosyadan `json.load` ile okunur) fakat yine de `_seen` ile korunur: uç
+    `RecursionError` ile DÜŞMEZ, döngü noktası `null` + gerekçe olur.
     """
     reasons = {} if reasons is None else reasons
     if obj is None or isinstance(obj, (str, bool, int)):
@@ -105,23 +110,28 @@ def json_safe(obj: Any, *, path: str = "", reasons: dict | None = None) -> tuple
     if isinstance(obj, float):
         v = finite_float_or_none(obj)
         if v is None:
-            reasons[path or "<root>"] = "sonlu olmayan sayı (NaN/Infinity) — değer ölçülemedi"
+            reasons[path or "<root>"] = "sonlu olmayan sayı — değer ölçülemedi"
         return v, reasons
     if isinstance(obj, Decimal):
         v = finite_float_or_none(obj)
         if v is None:
-            reasons[path or "<root>"] = "sonlu olmayan Decimal — değer ölçülemedi"
+            reasons[path or "<root>"] = "sonlu olmayan ondalık — değer ölçülemedi"
         return v, reasons
-    if isinstance(obj, dict):
-        out = {}
-        for k, val in obj.items():
-            key = str(k)
-            out[key], reasons = json_safe(val, path=(path + "." + key if path else key), reasons=reasons)
-        return out, reasons
-    if isinstance(obj, (list, tuple)):
+    if isinstance(obj, (dict, list, tuple)):
+        if id(obj) in _seen:
+            reasons[path or "<root>"] = "döngüsel referans — çözümlenemedi"
+            return None, reasons
+        seen = _seen | {id(obj)}
+        if isinstance(obj, dict):
+            out = {}
+            for k, val in obj.items():
+                key = str(k)
+                out[key], reasons = json_safe(val, path=(path + "." + key if path else key),
+                                              reasons=reasons, _seen=seen)
+            return out, reasons
         out_l = []
         for i, val in enumerate(obj):
-            v, reasons = json_safe(val, path="%s[%d]" % (path, i), reasons=reasons)
+            v, reasons = json_safe(val, path="%s[%d]" % (path, i), reasons=reasons, _seen=seen)
             out_l.append(v)
         return out_l, reasons
     reasons[path or "<root>"] = "JSON'a çevrilemeyen tip: %s" % type(obj).__name__

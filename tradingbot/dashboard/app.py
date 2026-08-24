@@ -559,9 +559,13 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
                                   'rapor üretimi worker\'dan bağımsızdır.</div>', "/quant")
         cc = q.get("champion_challenger") or {}
         ov = q.get("overall") or {}
+        age = state.file_age("quant_eval")
+        stale_note = " · ESKİ RAPOR (>24s)" if isinstance(age, (int, float)) and age > 86400 else ""
         pf_state = ov.get("profit_factor_state")
         pf_txt = "∞ (kayıpsız)" if pf_state == "no_losses" else fmt(ov.get("profit_factor"), 2)
         body = ('<div class="grid">'
+                + card("Rapor yaşı", age_text(age) + " önce" if age is not None else "bilinmiyor",
+                       esc((q.get("manifest") or {}).get("run_id") or "") + stale_note)
                 + card("Karar", esc(cc.get("decision") or "KEEP_CHAMPION"),
                        esc(cc.get("note") or "değerlendirme yok — varsayılan champion"))
                 + card("Net expectancy (R)", fmt(ov.get("expectancy_r"), 4),
@@ -779,6 +783,7 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
             return JSONResponse({"available": False, "schema_version": None,
                                  "reason": "quant_eval.json yok — offline rapor üretilmedi"})
         payload = {"available": True, "schema_version": q.get("schema_version"),
+                   "report_age_s": state.file_age("quant_eval"),
                    "generated_run_id": (q.get("manifest") or {}).get("run_id"),
                    "champion_challenger": q.get("champion_challenger"),
                    "overall": q.get("overall"),

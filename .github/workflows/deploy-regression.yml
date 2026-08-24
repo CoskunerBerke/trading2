@@ -12,6 +12,7 @@ on:
       - "deploy/**"
       - "tradingbot/**"
       - "tests/**"
+      - "scripts/**"
       - "requirements.txt"
       - "ruff.toml"
       - ".github/workflows/deploy-regression.yml"
@@ -234,3 +235,48 @@ jobs:
         run: ruff check tradingbot tests
       - name: Tam test paketi
         run: /tmp/run.sh "full-suite" tests/ -q -rs
+
+  quant-evaluation-tests:
+    # Quant Evaluation V1 kapsam kapısı — YALNIZ `feature/quant-evaluation-v1` dalında koşar.
+    # Mevcut iki job'ın kapsamadığı üç boşluğu kapatır: (1) `ruff check .` (eski adım yalnız
+    # `tradingbot tests` bakıyordu, `scripts/` linte girmiyordu), (2) `compileall` hiç yoktu,
+    # (3) tam suite sayıları log erişimi olmadan görünmüyordu → özet satırı `::notice`
+    # annotation'ı olarak yayımlanır ve API'den okunabilir.
+    # Public-data smoke CI'da ÇALIŞTIRILMAZ (ağ gerektirir); suite ağsızdır.
+    if: github.ref == 'refs/heads/feature/quant-evaluation-v1'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          # httpx requirements'ta yok; kurulmazsa dashboard testleri sessizce SKIP olurdu.
+          pip install pytest ruff httpx
+      - name: Lint (ruff check .)
+        run: ruff check .
+      - name: Compile check (compileall)
+        run: python -m compileall -q tradingbot tests scripts
+      - name: Quant testleri gerçekten toplanıyor mu (boş seçim reddi)
+        run: |
+          n=$(python -m pytest tests -q --collect-only 2>/dev/null | grep -c "test_quant_")
+          echo "toplanan quant testi: $n"
+          echo "::notice title=quant-collected::${n} quant testi toplandi"
+          if [ "$n" -lt 150 ]; then echo "::error::quant testleri toplanmadi ($n)"; exit 1; fi
+      - name: Tam test paketi (özet annotation olarak yayımlanır)
+        run: |
+          set +e
+          python -m pytest -q tests -rs > /tmp/full.txt 2>&1
+          rc=$?
+          cat /tmp/full.txt
+          summary=$(grep -aE "[0-9]+ (passed|failed|error)" /tmp/full.txt | tail -n 1)
+          echo "::notice title=full-suite-summary::${summary}"
+          if [ "$rc" -ne 0 ]; then
+            detail=$(tail -n 60 /tmp/full.txt | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
+            echo "::error title=full-suite failure::${detail}"
+          fi
+          exit $rc

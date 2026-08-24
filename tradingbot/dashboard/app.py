@@ -548,6 +548,67 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
                                                  [[esc(c.get("ts") or c.get("created_at")), esc(c.get("model")), esc(c.get("purpose") or c.get("kind")), fmt(c.get("input_tokens"), 0), fmt(c.get("output_tokens"), 0), fmt(c.get("cost_usd"), 5), fmt(c.get("latency_ms"), 0), "✅" if c.get("schema_ok", True) else "❌", esc(c.get("error") or "")] for c in calls], num_cols={3, 4, 5, 6}) if calls else '<div class="card mut">llm_calls.jsonl yok</div>')
         return _page("LLM", body, "/llm")
 
+    @app.get("/quant", response_class=HTMLResponse)
+    def quant_page():
+        """Quant Evaluation V1 — SALT OKUNUR araştırma görünümü. `state/quant_eval.json` offline
+        araç tarafından üretilir; dosya yoksa sayfa crash olmadan «Veri yok» gösterir."""
+        q = state.get("quant_eval") or {}
+        if not q:
+            return _page("Quant", '<div class="card mut">quant_eval.json yok — offline quant '
+                                  'raporu henüz üretilmedi. Bu görünüm salt okunurdur; '
+                                  'rapor üretimi worker\'dan bağımsızdır.</div>', "/quant")
+        cc = q.get("champion_challenger") or {}
+        ov = q.get("overall") or {}
+        pf_state = ov.get("profit_factor_state")
+        pf_txt = "∞ (kayıpsız)" if pf_state == "no_losses" else fmt(ov.get("profit_factor"), 2)
+        body = ('<div class="grid">'
+                + card("Karar", esc(cc.get("decision") or "KEEP_CHAMPION"),
+                       esc(cc.get("note") or "değerlendirme yok — varsayılan champion"))
+                + card("Net expectancy (R)", fmt(ov.get("expectancy_r"), 4),
+                       f"n={ov.get('n', 0)}" + (" · YETERSİZ ÖRNEK" if ov.get("insufficient_sample") else ""))
+                + card("Net expectancy (USDT)", fmt(ov.get("expectancy_usdt"), 4))
+                + card("Profit factor", pf_txt, esc(pf_state or ""))
+                + card("Max drawdown (R)", fmt(ov.get("max_drawdown_r"), 2), "trade-bazlı seri")
+                + card("Tail CVaR5 (R)", fmt(ov.get("tail_loss_r_cvar5"), 2))
+                + card("Shadow etiket kapsamı",
+                       f"{q.get('journal', {}).get('n_labeled', 0)} / {q.get('journal', {}).get('n_records', 0)}",
+                       "etiketli / toplam karar kaydı")
+                + '</div>')
+        costs = {k: ov.get(k) for k in ("fees_usdt", "funding_usdt", "slippage_usdt",
+                                        "gross_pnl_usdt", "net_pnl_usdt")}
+        body += "<h2>Maliyet dökümü</h2>" + kv_table(costs)
+        cal = ov.get("calibration") or {}
+        body += "<h2>Kalibrasyon</h2>" + kv_table(cal)
+        wf = q.get("walk_forward") or {}
+        if wf:
+            body += "<h2>Walk-forward</h2>" + kv_table(
+                {k: wf.get(k) for k in ("mode", "n_folds", "oos_sign_consistency",
+                                        "oos_expectancy_r_by_fold", "pbo", "pbo_state",
+                                        "holdout_locked", "purged_rows", "unassigned_rows")})
+        attr = q.get("attribution_summary") or {}
+        for dim, groups in list(attr.items())[:6]:
+            if isinstance(groups, dict) and groups:
+                body += f"<h3>Attribution — {esc(dim)}</h3>" + table(
+                    ["Grup", "n", "exp_R", "net USDT", "dd_R", "Örnek"],
+                    [[esc(k), fmt(v.get("n"), 0), fmt(v.get("expectancy_r"), 4),
+                      fmt(v.get("net_pnl_usdt"), 2), fmt(v.get("max_drawdown_r"), 2),
+                      badge("YETERSİZ", "warn") if v.get("insufficient_sample") else badge("ok", "ok")]
+                     for k, v in groups.items()], num_cols={1, 2, 3, 4})
+        risk = q.get("risk_clusters") or {}
+        if risk:
+            body += "<h2>Risk kümeleri (advisory)</h2>" + render_any(risk)
+        man = q.get("manifest") or {}
+        if man:
+            body += "<h2>Son rapor manifesti</h2>" + kv_table(
+                {k: man.get(k) for k in ("run_id", "code_sha", "config_hash", "seed",
+                                         "valid_backtest", "manifest_hash", "label")})
+        warns = q.get("warnings") or []
+        if warns:
+            body += "<h2>Uyarılar</h2>" + render_any(warns)
+        body += ('<p class="small mut">Bu görünüm salt okunurdur; sonuçlar araştırma çıktısıdır ve '
+                 'kârlılık kanıtı DEĞİLDİR. Counterfactual/shadow satırlar gerçek fill değildir.</p>')
+        return _page("Quant", body, "/quant")
+
     @app.get("/models", response_class=HTMLResponse)
     def models():
         m = state.get("models") or {}
@@ -703,6 +764,31 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
         ov["missing_open_symbols"] = cov["missing_open_symbols"]
         ov["coverage_complete"] = cov["coverage_complete"]
         safe, reasons = json_safe(ov)
+        if reasons:
+            safe["unavailable_reason"] = dict(reasons)
+        return JSONResponse(safe)
+
+    @app.get("/api/quant/summary")
+    def api_quant_summary():
+        """Quant Evaluation özeti — HER ZAMAN RFC-uyumlu JSON, salt okunur.
+
+        Dosya yoksa 200 + `available=false` döner (500 değil); sonlu olmayan değerler `json_safe`
+        ile yalnız ilgili leaf'te `null` olur ve nedeni `unavailable_reason`a yazılır."""
+        q = state.get("quant_eval")
+        if not q:
+            return JSONResponse({"available": False, "schema_version": None,
+                                 "reason": "quant_eval.json yok — offline rapor üretilmedi"})
+        payload = {"available": True, "schema_version": q.get("schema_version"),
+                   "generated_run_id": (q.get("manifest") or {}).get("run_id"),
+                   "champion_challenger": q.get("champion_challenger"),
+                   "overall": q.get("overall"),
+                   "journal": q.get("journal"),
+                   "walk_forward": q.get("walk_forward"),
+                   "attribution_summary": q.get("attribution_summary"),
+                   "risk_clusters": q.get("risk_clusters"),
+                   "manifest": q.get("manifest"),
+                   "warnings": q.get("warnings")}
+        safe, reasons = json_safe(payload)
         if reasons:
             safe["unavailable_reason"] = dict(reasons)
         return JSONResponse(safe)

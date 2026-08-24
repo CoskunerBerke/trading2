@@ -8,7 +8,7 @@ from typing import Any, Iterable
 
 NAV: list[tuple[str, str]] = [
     ("/", "Genel"), ("/scanner", "Tarayıcı"), ("/portfolio/futures", "Futures"), ("/portfolio/spot", "Spot"),
-    ("/orders", "Emirler"), ("/trades", "İşlemler"), ("/risk", "Risk"), ("/learning", "Öğrenme"), ("/backtest", "Backtest"),
+    ("/orders", "Emirler"), ("/trades", "İşlemler"), ("/risk", "Risk"), ("/learning", "Öğrenme"), ("/quant", "Quant"), ("/backtest", "Backtest"),
     ("/models", "Modeller"), ("/llm", "LLM"), ("/health", "Sağlık"),
 ]
 

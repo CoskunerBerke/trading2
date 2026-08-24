@@ -321,6 +321,21 @@ class HistorySection:
 
 
 @dataclass
+class QuantEvalSection:
+    """Quant Evaluation V1 — offline/salt-okunur araştırma bileşenleri. GÜVENLİ VARSAYILANLAR:
+    her şey kapalı ya da read-only; `auto_promotion=true` hiçbir koşulda kabul edilmez
+    (fail-closed, `learning_v3.auto_promote_in_paper` ile aynı ilke)."""
+    journal_enabled: bool = False              # birleşik karar→sonuç günlüğü (offline üretim)
+    attribution_enabled: bool = False          # çok boyutlu attribution raporu (offline)
+    replay_cost_manifest: bool = True          # manifest yalnız metadata — güvenli, default açık
+    walk_forward_enabled: bool = False         # fold üretimi/raporu (offline)
+    risk_v2_advisory: bool = False             # Risk V2 önerileri — YALNIZ tavsiye, emir yolu yok
+    challenger_shadow: bool = False            # challenger shadow karşılaştırması (ayrı book)
+    dashboard_view: bool = True                # /quant read-only görünümü — state'i yalnız okur
+    auto_promotion: bool = False               # true → ConfigError; terfi yalnız manuel
+
+
+@dataclass
 class V3Config:
     app: AppConfig = field(default_factory=AppConfig)
     mode: ModeConfig = field(default_factory=ModeConfig)
@@ -343,6 +358,7 @@ class V3Config:
     monitoring: MonitoringSection = field(default_factory=MonitoringSection)
     security: SecuritySection = field(default_factory=SecuritySection)
     history: HistorySection = field(default_factory=HistorySection)
+    quant_eval: QuantEvalSection = field(default_factory=QuantEvalSection)
     warnings: list[str] = field(default_factory=list)
 
 
@@ -351,7 +367,7 @@ _SECTIONS = {"app": AppConfig, "mode": ModeConfig, "markets": MarketsConfig, "un
              "tax_policy": TaxPolicySection, "risk_profiles": RiskProfilesSection, "leverage": LeverageSection,
              "telegram": TelegramSection, "learning_v3": LearningV3Section, "storage": StorageSection,
              "obsidian_v3": ObsidianV3Section, "dashboard": DashboardSection, "monitoring": MonitoringSection, "security": SecuritySection,
-             "history": HistorySection}
+             "history": HistorySection, "quant_eval": QuantEvalSection}
 
 VALID_MODES = ("OBSERVE", "PAPER", "TESTNET", "SHADOW_LIVE", "LIVE_LIMITED", "LIVE")
 VALID_LLM_MODES = ("OFF", "POSTMORTEM_ONLY", "ADVISORY", "VETO_ONLY", "RESEARCH_COUNCIL")
@@ -413,6 +429,11 @@ def validate_v3(cfg: V3Config) -> None:
         # arasındaki sınır operatör onayıyla geçilir. Sessiz varsayılana düşme YOK.
         raise ConfigError("PAPER_AUTO_PROMOTION_FORBIDDEN: learning_v3.auto_promote_in_paper=true "
                           "desteklenmiyor — terfi yalnız açık manuel operatör onayıyla yapılır")
+    if cfg.quant_eval.auto_promotion:
+        # `learning_v3.auto_promote_in_paper` ile AYNI ilke: challenger'dan CHAMPION'a geçiş
+        # yalnız açık manuel operatör onayıyla olur — config bunu otomatikleştiremez.
+        raise ConfigError("QUANT_AUTO_PROMOTION_FORBIDDEN: quant_eval.auto_promotion=true "
+                          "desteklenmiyor — terfi yalnız manuel operatör onayıyla yapılır")
     if cfg.futures_v3.margin_mode.lower() != "isolated":
         raise ConfigError("futures_v3.margin_mode paper'da bile yalnız 'isolated' desteklenir")
     if not (1 <= cfg.futures_v3.leverage_default <= cfg.futures_v3.leverage_max_paper_research <= 125):

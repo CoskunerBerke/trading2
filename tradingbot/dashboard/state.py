@@ -17,6 +17,7 @@ STATE_FILES: dict[str, str] = {
     "orders": "orders.json", "triggers": "triggers.json",
     "snapshot_telemetry": "snapshot_telemetry.json", "research_policy": "research_policy.json",
     "decision_funnel": "decision_funnel.json",
+    "quant_eval": "quant_eval.json",
 }
 JSONL_FILES: dict[str, str] = {"llm_calls": "llm_calls.jsonl", "trade_memory": "trade_memory.jsonl", "signals_log": "signals_log.jsonl"}
 

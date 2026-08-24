@@ -90,6 +90,35 @@ python -m tradingbot.quant.run --memory state/trade_memory.jsonl \
   challenger kanıtları `replay/policy_eval` akışından gelir, `quant/run.py` tek başına asla
   `PROMOTE_CANDIDATE` üretmez.
 
+## Completion Iteration 2 — tamamlanan zincirler
+
+| Zincir | Durum | Kanıt |
+| ------ | ----- | ----- |
+| Gerçek `HistoricalReplay` E2E | `IMPLEMENTED_AND_INTEGRATED` | `tests/test_quant_replay_e2e.py` (offline) + `scripts/quant_public_smoke.py` (bounded public data) |
+| Üç yollu walk-forward | `IMPLEMENTED_OFFLINE` | `quant/walkforward.py:run_three_way`, `tests/test_quant_walkforward_threeway.py` |
+| Evidence bridge | `IMPLEMENTED_AND_INTEGRATED` | `quant/evidence.py`, `quant.run` içinde kullanılıyor |
+| Execution senaryoları | `IMPLEMENTED_AND_INTEGRATED` | `quant/execution_scenarios.py`, rapor + dashboard |
+| Risk V2 offline entegrasyon | `IMPLEMENTED_OFFLINE` (advisory) | `quant/risk_v2.py:offline_risk_report`, rapor + dashboard |
+| Point-in-time eligibility | `PARTIAL_DATA` | `quant/eligibility.py` — sözleşme hazır, tarihsel arşiv henüz yok |
+| Journal coverage kapıları | `IMPLEMENTED_AND_INTEGRATED` | `quant/coverage.py` → terfi kapısı |
+
+### Ayrı komut: bounded public-data smoke
+
+```
+python scripts/quant_public_smoke.py --workdir <gecici_dizin>
+```
+
+Normal test suite AĞSIZDIR; bu betik ayrı çalıştırılır. Tek sembol, birkaç public istek, API
+anahtarı yok, çıktı yalnız geçici dizine yazılır.
+
+### Maliyet senaryoları ve provenance
+
+Her maliyet bileşeni `OBSERVED` / `MODELED` / `FALLBACK` / `UNAVAILABLE` olarak sınıflandırılır.
+Historical bid/ask ve order-book verisi **UNAVAILABLE**'dır; spread ve etki OHLCV'den türetilen
+`MODELED` bileşenlerdir, latency ise bar-kesri `FALLBACK` yaklaşıklığıdır (milisaniye iddiası
+yoktur). Senaryo şiddeti arttıkça maliyetler monoton artar; challenger yalnız `base`'te iyiyse
+terfi önerilmez.
+
 ## Güvenlik değişmezleri
 
 * PAPER dışı hiçbir yol açılmaz; challenger ana ledger'a/outbox'a/gateway'e dokunamaz.

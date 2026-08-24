@@ -44,6 +44,8 @@ class InfluenceConfig:
     top_k: int = 5
     min_similarity: float = -1.0       # kosinüs benzerliği tabanı (-1 = filtre yok)
     r_scale: float = 1.0               # sinyal normalizasyonu
+    shadow_weight: float = 0.25        # gölge sonucun gerçek fill'e göre ağırlığı (<1 zorunlu)
+    shadow_fidelity: float = 0.5       # yürütme sadakati çarpanı
 
     def validate(self) -> None:
         if self.mode not in MODES:
@@ -54,11 +56,16 @@ class InfluenceConfig:
             raise ValueError("max_fraction (0, 0.20] aralığında olmalı")
         if self.top_k < 1:
             raise ValueError("top_k >= 1 olmalı")
+        if not (0.0 <= self.shadow_weight < 1.0):
+            raise ValueError("shadow_weight [0, 1) olmalı — gölge gerçek fill'e eşit sayılamaz")
+        if not (0.0 <= self.shadow_fidelity <= 1.0):
+            raise ValueError("shadow_fidelity [0, 1] olmalı")
 
     def to_dict(self) -> dict[str, Any]:
         return {"mode": self.mode, "prior_strength": self.prior_strength,
                 "max_fraction": self.max_fraction, "top_k": self.top_k,
-                "min_similarity": self.min_similarity, "r_scale": self.r_scale}
+                "min_similarity": self.min_similarity, "r_scale": self.r_scale,
+                "shadow_weight": self.shadow_weight, "shadow_fidelity": self.shadow_fidelity}
 
 
 def _f(x: Any) -> float | None:
@@ -209,4 +216,125 @@ def apply_influence(adjustment: dict[str, Any], *, cfg: InfluenceConfig | None =
             "blockers": blockers, "baseline": base, "learned": learned,
             "effective": effective if effective is not None else base,
             "max_fraction": cfg.max_fraction,
+            "note": "LEARNING CANNOT OVERRIDE RISK GATES"}
+
+
+# ---------------------------------------------------------------- çift sayım koruması
+
+def weighted_adjustment(experiences: list[Any], *, baseline: float | None,
+                        cfg: InfluenceConfig | None = None,
+                        prior_leaf_n: float | None = None) -> dict[str, Any]:
+    """Ağırlıklı ayarlama — kaynak ağırlığı + ÇİFT SAYIM koruması.
+
+    **Residual yöntemi (seçilen ve gerekçelendirilen çözüm):** hiyerarşik prior aynı kapanışlardan
+    zaten `w_prior = n_leaf / (n_leaf + prior_strength)` kadar kanıt çekmiştir. Bu yüzden similarity
+    kanalı, prior'da TEMSİL EDİLEN deneyimlere yalnız KALAN payı (`1 - w_prior`) uygular. Böylece
+    tek bir `outcome_id` toplamda birden fazla TAM ağırlık alamaz.
+
+    `outcome_id` tekrarları (aynı sonucun iki kez verilmesi, gerçek+gölge kopyası) tekilleştirilir.
+    """
+    cfg = cfg or InfluenceConfig()
+    cfg.validate()
+    base = _f(baseline)
+    w_prior = 0.0
+    if prior_leaf_n is not None:
+        n_leaf = max(0.0, _f(prior_leaf_n) or 0.0)
+        w_prior = n_leaf / (n_leaf + cfg.prior_strength) if (n_leaf + cfg.prior_strength) else 0.0
+    residual = max(0.0, 1.0 - w_prior)
+
+    seen: set[str] = set()
+    items: list[tuple[float, float, str]] = []          # (weight, r, source)
+    dropped_dupes = 0
+    for e in experiences or []:
+        get = (lambda k: e.get(k)) if isinstance(e, dict) else (lambda k: getattr(e, k, None))
+        oid = str(get("outcome_id") or "")
+        r = _f(get("r_multiple"))
+        if r is None:
+            continue
+        if oid and oid in seen:
+            dropped_dupes += 1
+            continue                                    # AYNI outcome ikinci kez sayılmaz
+        if oid:
+            seen.add(oid)
+        w = _f(get("weight"))
+        w = 1.0 if w is None else max(0.0, w)
+        # prior'da temsil edilen deneyim yalnız RESIDUAL payı kadar katkı verir
+        w_eff = w * residual
+        items.append((w_eff, r, str(get("source") or "REAL_PAPER")))
+
+    total_w = sum(w for w, _, _ in items)
+    if not items or total_w <= 0.0:
+        return {"schema_version": SCHEMA_VERSION, "n_experience": len(items),
+                "effective_n": 0.0, "weight": 0.0, "consistency": None, "signal": None,
+                "fraction": 0.0, "baseline": base, "learned": base, "delta": 0.0,
+                "prior_weight": round(w_prior, 6), "residual_share": round(residual, 6),
+                "dropped_duplicates": dropped_dupes,
+                "reasons": ["NO_USABLE_EXPERIENCE"], "bounded_by": cfg.max_fraction,
+                "counted_outcome_ids": sorted(seen)}
+
+    mean_r = sum(w * r for w, r, _ in items) / total_w
+    signal = max(-1.0, min(1.0, mean_r / cfg.r_scale if cfg.r_scale else 0.0))
+    agree_w = sum(w for w, r, _ in items if (r > 0) == (mean_r > 0)) / total_w if mean_r != 0 else 0.5
+    consistency = max(0.0, 2.0 * agree_w - 1.0)
+    weight = total_w / (total_w + cfg.prior_strength)
+    fraction = weight * consistency * signal * cfg.max_fraction
+    fraction = max(-cfg.max_fraction, min(cfg.max_fraction, fraction))
+    learned = base * (1.0 + fraction) if base is not None else None
+    reasons = ["POSITIVE_PRIOR_EXPERIENCE" if signal > 0 else
+               ("NEGATIVE_PRIOR_EXPERIENCE" if signal < 0 else "NEUTRAL_PRIOR_EXPERIENCE")]
+    if consistency <= 0.0:
+        reasons.append("CONFLICTING_EXPERIENCE_CONFIDENCE_LOW")
+    if total_w < 5:
+        reasons.append("SMALL_SAMPLE_SHRUNK")
+    if w_prior > 0:
+        reasons.append("RESIDUAL_ONLY_PRIOR_ALREADY_COUNTED")
+    if dropped_dupes:
+        reasons.append(f"DEDUPED_{dropped_dupes}")
+    if any(s == "SHADOW" for _, _, s in items):
+        reasons.append("INCLUDES_SHADOW_EVIDENCE")
+    return {"schema_version": SCHEMA_VERSION, "n_experience": len(items),
+            "effective_n": round(total_w, 6), "weight": round(weight, 6),
+            "consistency": round(consistency, 6), "signal": round(signal, 6),
+            "mean_r": round(mean_r, 6), "fraction": round(fraction, 8),
+            "baseline": base, "learned": round(learned, 8) if learned is not None else None,
+            "delta": round(learned - base, 8) if (learned is not None and base is not None) else 0.0,
+            "prior_weight": round(w_prior, 6), "residual_share": round(residual, 6),
+            "dropped_duplicates": dropped_dupes,
+            "reasons": reasons, "bounded_by": cfg.max_fraction,
+            "counted_outcome_ids": sorted(seen)}
+
+
+def combine_components(*, raw_model_p: float | None, hierarchical_p: float | None,
+                       adjustment: dict[str, Any] | None,
+                       cfg: InfluenceConfig | None = None) -> dict[str, Any]:
+    """Bileşen katkılarını AYRI raporlar ve nihai sınırlı sonucu verir.
+
+    `raw model` → `hierarchical prior` → `similarity residual` → `final bounded`.
+    Nihai sonuç baseline'dan `max_fraction`dan fazla sapamaz.
+    """
+    cfg = cfg or InfluenceConfig()
+    cfg.validate()
+    raw = _f(raw_model_p)
+    hier = _f(hierarchical_p)
+    base = hier if hier is not None else raw
+    adj = adjustment or {}
+    frac = _f(adj.get("fraction")) or 0.0
+    final = base * (1.0 + frac) if base is not None else None
+    if final is not None and base:
+        lo, hi = base * (1.0 - cfg.max_fraction), base * (1.0 + cfg.max_fraction)
+        final = max(min(final, max(lo, hi)), min(lo, hi))
+    return {"schema_version": SCHEMA_VERSION,
+            "raw_model": raw,
+            "hierarchical_prior": hier,
+            "hierarchical_contribution": (round(hier - raw, 8)
+                                          if (hier is not None and raw is not None) else None),
+            "similarity_fraction": round(frac, 8),
+            "similarity_contribution": (round(final - base, 8)
+                                        if (final is not None and base is not None) else None),
+            "final": round(final, 8) if final is not None else None,
+            "counted_outcome_ids": adj.get("counted_outcome_ids") or [],
+            "prior_weight": adj.get("prior_weight"),
+            "residual_share": adj.get("residual_share"),
+            "dropped_duplicates": adj.get("dropped_duplicates", 0),
+            "bounded_by": cfg.max_fraction,
             "note": "LEARNING CANNOT OVERRIDE RISK GATES"}

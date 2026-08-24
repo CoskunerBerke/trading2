@@ -46,10 +46,12 @@ def test_production_tour_journals_every_candidate(tmp_path: Path, monkeypatch):
     rows = [json.loads(x) for x in jp.read_text(encoding="utf-8").splitlines() if x.strip()]
     decisions = [r for r in rows if r.get("kind") == KIND_DECISION]
     assert decisions, "en az bir aday kaydı olmalı"
+    from tradingbot.learn.decision_journal import OUTCOME_CLASSES
     for r in decisions:
         assert r["schema_version"] == "decision_journal_v1"
         assert r["decision_id"] and r["symbol"] and r["decision_ts"]
-        assert r["outcome_kind"] in (ACCEPTED, REJECTED)
+        assert r["outcome_kind"] in OUTCOME_CLASSES, r["outcome_kind"]
+        assert r["outcome_stage"], "her sonucun üreten AŞAMASI olmalı"
         assert "availability" in r
         # BOUNDED: ham mum dizisi YOK
         assert "candles" not in r and "frames" not in r
@@ -562,3 +564,110 @@ def test_dashboard_learning_loop_empty_and_corrupt_are_safe(tmp_path: Path):
     r2 = c.get("/api/learning-loop")
     assert r2.status_code == 200                      # bozuk satır 500 ÜRETMEZ
     assert c.get("/quant").status_code == 200
+
+
+# ============================================================ Completion Audit: tam kapsama
+
+def _journal_rows(eng) -> list[dict]:
+    p = Path(eng.cfg.state_path) / "decision_journal.jsonl"
+    if not p.exists():
+        return []
+    return [json.loads(x) for x in p.read_text(encoding="utf-8").splitlines() if x.strip()]
+
+
+def test_candidate_coverage_is_exactly_one(tmp_path: Path, monkeypatch):
+    """Kapsama = journaled_evaluated_candidates / total_evaluated_candidates = 1.0
+
+    `evaluated candidate` = bu turda Coin Head kararı üretilmiş HER sembol (`decisions`).
+    Motor bu iki sayacı turda kendisi yayımlar; ayrıca dosyadan bağımsız olarak doğrulanır.
+    """
+    eng = _engine(tmp_path, monkeypatch, symbols=3)
+    seen_ids: set[str] = set()
+    for _ in range(3):
+        _tour(eng)
+        assert eng._evaluated_last_tour > 0, "değerlendirilen aday sayısı sıfır olamaz"
+        # bu turun kayıtları: yeni decision_id'ler
+        rows = [r for r in _journal_rows(eng) if r.get("kind") == KIND_DECISION]
+        new = {r["decision_id"] for r in rows} - seen_ids
+        assert len(new) == eng._evaluated_last_tour, (
+            f"kapsama eksik: {len(new)} / {eng._evaluated_last_tour}")
+        seen_ids |= new
+        assert eng._journaled_last_tour == eng._evaluated_last_tour
+        coverage = eng._journaled_last_tour / eng._evaluated_last_tour
+        assert coverage == 1.0
+
+
+def test_non_actionable_and_no_valid_plan_are_journaled(tmp_path: Path, monkeypatch):
+    """Sıralamaya HİÇ girmeyen adaylar da kesin sonuçla kaydedilir."""
+    from tradingbot.learn.decision_journal import NO_VALID_PLAN, NON_ACTIONABLE
+    eng = _engine(tmp_path, monkeypatch, symbols=3)
+    kinds: set[str] = set()
+    for _ in range(4):
+        _tour(eng)
+        kinds |= {r["outcome_kind"] for r in _journal_rows(eng) if r.get("kind") == KIND_DECISION}
+    # sıralamaya girmemiş en az bir aday sınıfı görülmeli
+    assert kinds & {NON_ACTIONABLE, NO_VALID_PLAN}, kinds
+    rows = [r for r in _journal_rows(eng) if r.get("kind") == KIND_DECISION]
+    for r in rows:
+        if r["outcome_kind"] == NON_ACTIONABLE:
+            assert r["is_actionable"] is False
+            assert r["outcome_reason"], "non-actionable NEDENİ açık olmalı"
+            assert r["entered_ranking"] is False
+        if r["outcome_kind"] == NO_VALID_PLAN:
+            assert r["has_valid_plan"] is False
+            assert r["outcome_reason"] == "PLAN_MISSING_OR_INVALID"
+        # plan yoksa plan alanları UYDURULMAZ
+        if r["has_valid_plan"] is False:
+            assert r["planned_notional"] is None
+        assert r["availability"] is not None
+
+
+def test_no_duplicate_final_record_per_candidate_per_cycle(tmp_path: Path, monkeypatch):
+    eng = _engine(tmp_path, monkeypatch, symbols=3)
+    for _ in range(3):
+        _tour(eng)
+    rows = [r for r in _journal_rows(eng) if r.get("kind") == KIND_DECISION]
+    ids = [r["decision_id"] for r in rows]
+    assert len(ids) == len(set(ids)), "aday başına tek nihai kayıt olmalı"
+    keys = [(r["run_id"], r["cycle_id"], r["symbol"], r["direction"]) for r in rows]
+    assert len(keys) == len(set(keys))
+
+
+def test_outcome_classification_covers_full_funnel():
+    """Motorun GERÇEK huni kodlarının tamamı bir sonuç sınıfına eşlenir."""
+    from tradingbot.engine_v3 import _FUNNEL_KEYS
+    from tradingbot.learn.decision_journal import (CHIEF_REJECTED, DATA_INVALID, DUPLICATE_SKIPPED,
+                                                   GATE_HALTED, LEVERAGE_BLOCKED, NEGATIVE_EDGE,
+                                                   NO_TRIGGER, OPEN_FAILED, RESEARCH_BLOCKED,
+                                                   RISK_REJECTED, SIZE_ZERO, VETOED,
+                                                   classify_outcome)
+    cases = {
+        "CHIEF_BLOCKED": CHIEF_REJECTED, "NO_TRIGGER": NO_TRIGGER,
+        "NEGATIVE_NET_EDGE": NEGATIVE_EDGE, "RESEARCH_SIZE_ONLY": RESEARCH_BLOCKED,
+        "DUPLICATE_SIGNAL": DUPLICATE_SKIPPED, "RESEARCH_POLICY_BLOCK": RESEARCH_BLOCKED,
+        "SIZE_MULTIPLIER_ZERO": SIZE_ZERO, "LEVERAGE_GATE_BLOCKED": LEVERAGE_BLOCKED,
+        "RISK_CAPACITY_BLOCKED": RISK_REJECTED, "RISK_ENGINE_BLOCKED": RISK_REJECTED,
+        "EXCHANGE_REJECTED": OPEN_FAILED,
+    }
+    for code, expected in cases.items():
+        cls, stage, reason = classify_outcome({"block_code": code}, is_actionable=True,
+                                              has_valid_plan=True)
+        assert cls == expected, (code, cls)
+        assert stage and reason == code
+    # hard veto ayrı sınıf
+    cls, stage, _ = classify_outcome({"block_code": "CHIEF_BLOCKED", "hard_veto": True},
+                                     is_actionable=True, has_valid_plan=True)
+    assert cls == VETOED and stage == "chief_red_team"
+    # tur geneli kapılar aday reddi DEĞİL
+    cls, _, reason = classify_outcome({"risk_reasons": ["SHUTDOWN_REQUESTED"]},
+                                      is_actionable=True, has_valid_plan=True)
+    assert cls == GATE_HALTED and reason == "SHUTDOWN_REQUESTED"
+    # geçersiz veri, gerçek redden AYRI
+    cls, stage, _ = classify_outcome(None, is_actionable=False, has_valid_plan=False,
+                                     verdict="DATA_INVALID")
+    assert cls == DATA_INVALID and stage == "data_quality"
+    # kabul
+    cls, _, _ = classify_outcome({"executed_notional": 10.0}, is_actionable=True,
+                                 has_valid_plan=True)
+    assert cls == ACCEPTED
+    assert isinstance(_FUNNEL_KEYS, tuple) and len(_FUNNEL_KEYS) > 10

@@ -33,6 +33,75 @@ KIND_OUTCOME = "outcome_link"
 
 #: Sonuç sınıfları — her aday bunlardan biriyle etiketlenir.
 ACCEPTED, REJECTED, SHADOW = "ACCEPTED", "REJECTED", "SHADOW"
+NON_ACTIONABLE = "NON_ACTIONABLE"
+NO_VALID_PLAN = "NO_VALID_PLAN"
+CHIEF_REJECTED = "CHIEF_REJECTED"
+VETOED = "VETOED"
+NO_TRIGGER = "NO_TRIGGER"
+NEGATIVE_EDGE = "NEGATIVE_EDGE"
+DUPLICATE_SKIPPED = "DUPLICATE_SKIPPED"
+RESEARCH_BLOCKED = "RESEARCH_BLOCKED"
+LEVERAGE_BLOCKED = "LEVERAGE_BLOCKED"
+SIZE_ZERO = "SIZE_ZERO"
+RISK_REJECTED = "RISK_REJECTED"
+OPEN_FAILED = "OPEN_FAILED"
+DATA_INVALID = "DATA_INVALID"
+GATE_HALTED = "GATE_HALTED"
+
+OUTCOME_CLASSES = (ACCEPTED, OPEN_FAILED, RISK_REJECTED, LEVERAGE_BLOCKED, SIZE_ZERO,
+                   RESEARCH_BLOCKED, DUPLICATE_SKIPPED, NEGATIVE_EDGE, NO_TRIGGER, VETOED,
+                   CHIEF_REJECTED, NO_VALID_PLAN, NON_ACTIONABLE, DATA_INVALID, GATE_HALTED,
+                   SHADOW, REJECTED)
+
+#: `block_code` → (sonuç sınıfı, üreten aşama). Motorun GERÇEK huni kodlarıyla birebir eşlenir.
+_BLOCK_MAP: dict[str, tuple[str, str]] = {
+    "CHIEF_BLOCKED": (CHIEF_REJECTED, "chief_ranking"),
+    "NO_TRIGGER": (NO_TRIGGER, "trigger"),
+    "NEGATIVE_NET_EDGE": (NEGATIVE_EDGE, "economics"),
+    "RESEARCH_SIZE_ONLY": (RESEARCH_BLOCKED, "economics_research_only"),
+    "DUPLICATE_SIGNAL": (DUPLICATE_SKIPPED, "duplicate_guard"),
+    "RESEARCH_POLICY_BLOCK": (RESEARCH_BLOCKED, "research_policy"),
+    "SIZE_MULTIPLIER_ZERO": (SIZE_ZERO, "sizing"),
+    "LEVERAGE_GATE_BLOCKED": (LEVERAGE_BLOCKED, "leverage_gate"),
+    "RISK_CAPACITY_BLOCKED": (RISK_REJECTED, "risk_engine_capacity"),
+    "RISK_ENGINE_BLOCKED": (RISK_REJECTED, "risk_engine"),
+    "EXCHANGE_REJECTED": (OPEN_FAILED, "ledger_open"),
+}
+#: Tur genelinde girişleri durduran kapılar (aday bazlı red DEĞİL).
+_HALT_REASONS = {"RISK_STATE_PERSIST_FAILED", "SHUTDOWN_REQUESTED", "GAP_RECONCILE_PENDING"}
+
+
+def classify_outcome(entry: dict[str, Any] | None, *, is_actionable: bool | None,
+                     has_valid_plan: bool | None, verdict: str | None = None,
+                     shadowed: bool = False) -> tuple[str, str, str | None]:
+    """(sonuç sınıfı, aşama, kesin neden) — tek adayın NİHAİ sonucu.
+
+    Sıralama motorun gerçek huni sırasını izler; ilk eşleşen kesin nedendir. Aynı aday için
+    yalnız TEK nihai sınıf üretilir (aşama geçmişi ayrı alanda tutulur).
+    """
+    e = entry or {}
+    if e.get("executed_notional") is not None:
+        return ACCEPTED, "ledger_open", None
+    code = str(e.get("block_code") or "")
+    if code in _BLOCK_MAP:
+        cls, stage = _BLOCK_MAP[code]
+        # Chief'in SERT red-team veto'su ayrı sınıftır (yumuşak sıralama reddinden farklı).
+        if cls is CHIEF_REJECTED and code == "CHIEF_BLOCKED" and e.get("hard_veto"):
+            return VETOED, "chief_red_team", code
+        return cls, stage, code
+    for r in (e.get("risk_reasons") or []):
+        if str(r) in _HALT_REASONS:
+            return GATE_HALTED, "cycle_gate", str(r)
+    if str(verdict or "").upper() in ("DATA_INVALID", "NO_DATA"):
+        # Geçersiz veri: HENÜZ değerlendirilebilir bir aday değil — gerçek redden AYRIDIR.
+        return DATA_INVALID, "data_quality", str(verdict)
+    if is_actionable is False:
+        return NON_ACTIONABLE, "coin_head", (str(verdict) if verdict else "NOT_ACTIONABLE")
+    if has_valid_plan is False:
+        return NO_VALID_PLAN, "plan_builder", "PLAN_MISSING_OR_INVALID"
+    if shadowed:
+        return SHADOW, "shadow_book", None
+    return REJECTED, "unclassified", code or None
 
 MAX_FEATURES = 64          # snapshot değerlerinden en fazla bu kadar sayısal alan
 MAX_SPECIALISTS = 24

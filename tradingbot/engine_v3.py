@@ -592,6 +592,7 @@ class TradingEngineV3(TradingEngine):
         from .learn.snapshot import prediction_schema_hash
         self._pred_snapshots = {}
         self._influence_log = []
+        self._shadow_syms = set()
         for b in briefs:
             f = features_from_brief(b, legacy_chief, b.scan_score or None)
             d = decisions.get(b.symbol)
@@ -825,8 +826,9 @@ class TradingEngineV3(TradingEngine):
                 if perm.get("block_code"):
                     funnel["hard_safety_blocked"] += 1
                 entry["block_code"] = perm.get("block_code") or "CHIEF_BLOCKED"
+                entry["hard_veto"] = bool(perm.get("block_code"))
                 if self.cfg.v3.learning_v3.shadow_trades and plan.expected_r >= self.head_cfg.min_expected_r:
-                    self.shadow.add({"plan_id": stable_id("plan", self.run_id, sym), "symbol": sym, "market_type": market, "direction": d.direction, "entry": plan.entry,
+                    self._shadow_add({"plan_id": stable_id("plan", self.run_id, sym), "symbol": sym, "market_type": market, "direction": d.direction, "entry": plan.entry,
                                      "stop": plan.stop, "targets": plan.targets, "horizon_bars": plan.time_horizon_bars, "leverage": plan.size.leverage},
                                     ["CHIEF:" + str(perm.get("reason"))], now=now)
                 continue
@@ -852,7 +854,7 @@ class TradingEngineV3(TradingEngine):
                     funnel["research_small"] += 1
                     entry["block_code"] = "RESEARCH_SIZE_ONLY"
                     if self.cfg.v3.learning_v3.shadow_trades:
-                        self.shadow.add({"plan_id": stable_id("plan", self.run_id, sym), "symbol": sym,
+                        self._shadow_add({"plan_id": stable_id("plan", self.run_id, sym), "symbol": sym,
                                          "market_type": market, "direction": d.direction, "entry": plan.entry,
                                          "stop": plan.stop, "targets": plan.targets,
                                          "horizon_bars": plan.time_horizon_bars, "leverage": plan.size.leverage},
@@ -889,7 +891,7 @@ class TradingEngineV3(TradingEngine):
                 # golge etiketlendiginde eslesmis gozlem olarak adaya yazilir.
                 funnel["research_policy_blocked"] += 1
                 entry["block_code"] = "RESEARCH_POLICY_BLOCK"
-                shs = self.shadow.add({"plan_id": stable_id("plan", self.run_id, sym), "symbol": sym, "market_type": market,
+                shs = self._shadow_add({"plan_id": stable_id("plan", self.run_id, sym), "symbol": sym, "market_type": market,
                                        "direction": d.direction, "entry": plan.entry, "stop": plan.stop,
                                        "targets": plan.targets, "horizon_bars": plan.time_horizon_bars,
                                        "leverage": plan.size.leverage},
@@ -952,7 +954,7 @@ class TradingEngineV3(TradingEngine):
                     # Veri bayat/celiskili ya da stop bilinmiyorsa aday "gecerli" degildir: kayit YOK.
                     if (self.cfg.v3.learning_v3.shadow_trades
                             and not {"DATA_STALE", "DATA_CONFLICT", "STOP_UNKNOWN"} & set(lev_dec.blocked_higher)):
-                        self.shadow.add({"plan_id": stable_id("plan", self.run_id, sym), "symbol": sym, "market_type": market,
+                        self._shadow_add({"plan_id": stable_id("plan", self.run_id, sym), "symbol": sym, "market_type": market,
                                          "direction": d.direction, "entry": plan.entry, "stop": plan.stop, "targets": plan.targets,
                                          "horizon_bars": plan.time_horizon_bars, "leverage": plan.size.leverage},
                                         ["LEVERAGE_GATE_BLOCKED"] + list(lev_dec.blocked_higher)[:6], now=now)
@@ -981,7 +983,7 @@ class TradingEngineV3(TradingEngine):
                     entry["block_code"] = "RISK_ENGINE_BLOCKED"
                 # guclu aday reddedildi -> golge islem (karsi-olgusal)
                 if self.cfg.v3.learning_v3.shadow_trades and plan.expected_r >= self.head_cfg.min_expected_r:
-                    self.shadow.add({"plan_id": stable_id("plan", self.run_id, sym), "symbol": sym, "market_type": market, "direction": d.direction, "entry": plan.entry,
+                    self._shadow_add({"plan_id": stable_id("plan", self.run_id, sym), "symbol": sym, "market_type": market, "direction": d.direction, "entry": plan.entry,
                                      "stop": plan.stop, "targets": plan.targets, "horizon_bars": plan.time_horizon_bars, "leverage": plan.size.leverage},
                                     list(rd.reasons), now=now)
                 continue
@@ -1487,6 +1489,73 @@ class TradingEngineV3(TradingEngine):
             log.warning("arastirma gozlemi yazilamadi: %s", exc)
 
     # ------------------------------------------------------------------ Outcome Learning Loop V1
+    def _shadow_add(self, plan: dict, reasons, **kw):
+        """`ShadowBook.add` sarmalayıcısı — hangi adayın gölge kaydı aldığını izler.
+
+        Davranış birebir aynıdır; yalnız sembol `_shadow_syms` kümesine eklenir ki karar günlüğü
+        `SHADOW` sonucunu doğru sınıflandırabilsin.
+        """
+        try:
+            sym = str(plan.get("symbol") or "")
+            if sym:
+                if not hasattr(self, "_shadow_syms") or self._shadow_syms is None:
+                    self._shadow_syms = set()
+                self._shadow_syms.add(sym)
+        except Exception:  # noqa: BLE001 — izleme, gölge kaydını ASLA engellemez
+            pass
+        return self.shadow.add(plan, reasons, **kw)
+
+    def _prepared_experience_pool(self, cfg):
+        """Deneyim havuzunu TUR BAŞINA BİR KEZ hazırlar (dosya okuma + vektörleme).
+
+        Ölçüm: aday başına yeniden vektörleme 10.000 deneyimde ~455 ms sürüyordu; 20 adaylı
+        turda ~9 sn ederdi (worker 15 sn aralıkla çalışır). Hazır havuzla aday başına maliyet
+        ~55 ms'ye indi, hazırlık ise tur başına tek sefer ~420 ms.
+        Dosya imzası (mtime, size) değişmediyse havuz yeniden kurulmaz. Hata → boş havuz
+        (baseline fail-safe).
+        """
+        from .learn.experience import ExperienceIndex, PreparedPool, prepare_pool
+        idx = getattr(self, "_exp_index", None)
+        if idx is None:
+            idx = self._exp_index = ExperienceIndex()
+        st = self.cfg.state_path
+        mem = idx.rows("memory", st / "trade_memory.jsonl",
+                       lambda: self.memory.trades(closed_only=True))
+        shad = idx.rows("shadow", st / "shadow_book.json",
+                        lambda: [t.to_dict() for t in self.shadow.trades])
+        sig = (idx._sig.get("memory"), idx._sig.get("shadow"),
+               cfg.shadow_weight, cfg.shadow_fidelity)
+        cached = getattr(self, "_exp_pool", None)
+        if cached is not None and getattr(cached, "signature", None) == sig:
+            return cached
+        try:
+            pool = prepare_pool(memory_rows=mem, shadow_trades=shad,
+                                shadow_weight=cfg.shadow_weight,
+                                shadow_fidelity=cfg.shadow_fidelity)
+        except Exception as exc:  # noqa: BLE001 — hazırlama hatası baseline'ı bozamaz
+            self._journal_errors += 1
+            log.warning("deneyim havuzu hazırlanamadı (baseline sürüyor): %s", exc)
+            pool = PreparedPool()
+        pool.signature = sig
+        self._exp_pool = pool
+        return pool
+
+    def _prior_leaf_n(self, symbol: str, setup: str | None) -> float:
+        """Hiyerarşik prior'ın bu yaprakta KAÇ örnek kullandığı (çift sayım payını hesaplamak için)."""
+        try:
+            stats = getattr(self.learner2, "win", None)
+            if stats is None:
+                return 0.0
+            leaf = f"{symbol}|{setup or '-'}"
+            for key in (leaf, str(symbol)):
+                s = getattr(stats, "stats", {}).get(f"leaf:{key}")
+                n = getattr(s, "n", None) if s is not None else None
+                if isinstance(n, (int, float)) and n > 0:
+                    return float(n)
+        except Exception:  # noqa: BLE001
+            return 0.0
+        return 0.0
+
     def _learning_influence(self, b, d, snap, baseline_p_win: float, legacy_feats: dict) -> dict | None:
         """Geçmiş deneyimden sınırlı öğrenme ayarlaması. ASLA istisna sızdırmaz.
 
@@ -1498,7 +1567,8 @@ class TradingEngineV3(TradingEngine):
         if cfg is None or cfg.mode == "OFF":
             return None
         try:
-            from .learn.influence import apply_influence, learning_adjustment, retrieve_experience
+            from .learn.experience import query_pool
+            from .learn.influence import apply_influence, combine_components, weighted_adjustment
             as_of_ms = None
             if snap is not None and getattr(snap, "last_bar_ts", None):
                 try:
@@ -1510,15 +1580,28 @@ class TradingEngineV3(TradingEngine):
             query.update({"symbol": b.symbol, "direction": (d.direction if d else None),
                           "setup_type": (b.plan.entry_type if b.plan else None),
                           "regime": (d.regime if d else None)})
-            hits = retrieve_experience(self.memory, query, as_of_ms=as_of_ms, cfg=cfg)
-            adj = learning_adjustment(hits, baseline=baseline_p_win, cfg=cfg)
+            prepared = self._prepared_experience_pool(cfg)
+            pool = query_pool(prepared, query, as_of_ms=as_of_ms, top_k=cfg.top_k)
+            # ÇİFT SAYIM KORUMASI: hiyerarşik prior aynı kapanışları zaten kullandı; similarity
+            # yalnız RESIDUAL payı uygular. `prior_leaf_n` = bu sembol/setup yaprağının örnek sayısı.
+            leaf_n = self._prior_leaf_n(b.symbol, b.plan.entry_type if b.plan else None)
+            adj = weighted_adjustment(pool, baseline=baseline_p_win, cfg=cfg, prior_leaf_n=leaf_n)
+            comp = combine_components(raw_model_p=baseline_p_win, hierarchical_p=baseline_p_win,
+                                      adjustment=adj, cfg=cfg)
             applied = apply_influence(adj, cfg=cfg, mode_value=self.mode_state.mode.value,
                                       live_order_path=bool(getattr(self.cfg.v3.mode, "live_order_path", False)))
+            n_real = sum(1 for e in pool if e.source == "REAL_PAPER")
             return {"symbol": b.symbol, "direction": (d.direction if d else None),
                     "as_of_ms": as_of_ms, "n_experience": adj.get("n_experience"),
-                    "top_similarity": (hits[0].get("similarity") if hits else None),
+                    "n_real": n_real, "n_shadow": len(pool) - n_real,
+                    "effective_n": adj.get("effective_n"),
+                    "prior_leaf_n": leaf_n, "prior_weight": adj.get("prior_weight"),
+                    "residual_share": adj.get("residual_share"),
+                    "dropped_duplicates": adj.get("dropped_duplicates"),
+                    "top_similarity": (pool[0].similarity if pool else None),
                     "fraction": adj.get("fraction"), "reasons": adj.get("reasons"),
                     "baseline": adj.get("baseline"), "learned": adj.get("learned"),
+                    "components": comp,
                     "applied": applied.get("applied"), "blockers": applied.get("blockers"),
                     "effective": applied.get("effective"), "mode": cfg.mode}
         except Exception as exc:  # noqa: BLE001 — öğrenme arızası baseline kararı bozamaz
@@ -1527,34 +1610,61 @@ class TradingEngineV3(TradingEngine):
             return None
 
     def _journal_decisions(self, risk_log: list[dict], decisions: dict, now) -> None:
-        """Her aday için karar snapshot'ı yazar. Arıza turu ÇÖKERTMEZ."""
+        """DEĞERLENDİRİLEN HER aday için karar snapshot'ı yazar. Arıza turu ÇÖKERTMEZ.
+
+        **Evaluated candidate tanımı:** bu turda Coin Head kararı üretilmiş HER sembol
+        (`decisions` sözlüğünün tamamı) — yani yeterli piyasa verisiyle değerlendirmeye giren
+        ilk noktadan itibaren. Payda budur; `risk_log` yalnız sıralamaya giren alt kümedir ve
+        varsa birleştirilir. Böylece NON_ACTIONABLE ve NO_VALID_PLAN adayları da kaydedilir.
+        Aday başına TEK nihai kayıt üretilir (aşama geçmişi `stage_history` alanındadır).
+        """
         j = getattr(self, "decision_journal", None)
-        if j is None or not risk_log:
+        if j is None or not decisions:
             return
         try:
-            from .learn.decision_journal import ACCEPTED, REJECTED, build_decision_record
+            from .learn.decision_journal import build_decision_record, classify_outcome
             infl = {i["symbol"]: i for i in getattr(self, "_influence_log", []) if i.get("symbol")}
-            for e in risk_log:
-                sym = str(e.get("symbol") or "")
-                if not sym:
-                    continue
-                d = decisions.get(sym)
-                direction = str(getattr(d, "direction", "") or e.get("direction") or "")
-                kind = ACCEPTED if e.get("executed_notional") is not None else REJECTED
+            by_sym: dict[str, dict] = {}
+            for e in risk_log:                       # aynı sembolün SON kaydı nihai durumdur
+                s = str(e.get("symbol") or "")
+                if s:
+                    by_sym[s] = e
+            shadowed = set(getattr(self, "_shadow_syms", ()) or ())
+            n = 0
+            for sym, d in decisions.items():
+                e = by_sym.get(sym)
+                plan = getattr(d, "active_plan", None)
+                is_act = bool(getattr(d, "is_actionable", False))
+                has_plan = bool(plan is not None and getattr(plan, "valid", False))
+                v = getattr(d, "verdict", None)
+                verdict = str(getattr(v, "value", v) or "")
+                kind, stage, reason = classify_outcome(
+                    e, is_actionable=is_act, has_valid_plan=has_plan,
+                    verdict=verdict, shadowed=sym in shadowed)
                 rec = build_decision_record(
                     run_id=self.run_id, cycle_id=getattr(self, "_journal_cycle", 0),
-                    symbol=sym, direction=direction, market_type=e.get("market_type"),
+                    symbol=sym, direction=str(getattr(d, "direction", "") or ""),
+                    market_type=(e or {}).get("market_type"),
                     decision_ts=iso(now), entry=e,
                     snapshot=self._pred_snapshots.get(sym), decision=d,
-                    outcome_kind=kind, trade_id=e.get("trade_id"),
+                    outcome_kind=kind, trade_id=(e or {}).get("trade_id"),
                     code_sha=getattr(self.cfg, "code_sha", None),
-                    policy_id=e.get("research_policy_id"))
+                    policy_id=(e or {}).get("research_policy_id"))
+                rec.update({"outcome_stage": stage, "outcome_reason": reason,
+                            "is_actionable": is_act, "has_valid_plan": has_plan,
+                            "entered_ranking": e is not None,
+                            "shadow_recorded": sym in shadowed,
+                            "stage_history": [k for k, val in (self._funnel or {}).items() if val]
+                            if getattr(self, "_funnel", None) else None})
                 if sym in infl:
                     rec["learning_influence"] = {k: infl[sym].get(k) for k in
                                                  ("mode", "n_experience", "top_similarity",
                                                   "fraction", "baseline", "learned", "applied",
                                                   "blockers")}
-                j.append_decision(rec)
+                if j.append_decision(rec):
+                    n += 1
+            self._journaled_last_tour = n
+            self._evaluated_last_tour = len(decisions)
             j.prune()
         except Exception as exc:  # noqa: BLE001
             self._journal_errors += 1

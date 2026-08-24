@@ -75,7 +75,9 @@ def trades_for_scenarios(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             continue
         gross, net = _f(r.get("gross_pnl")), _f(r.get("net_pnl"))
         rm = _f(r.get("r_multiple"))
-        notional = _f(r.get("planned_notional"))
+        # Gerçekleşen notional önceliklidir; yoksa planlanan kullanılır. (Replay TradeMemory
+        # girişlerinde `plan.notional` bulunmaz — yalnız plana bakmak bütün işlemleri atlıyordu.)
+        notional = _f(r.get("effective_notional")) or _f(r.get("planned_notional"))
         if gross is None and net is not None:
             gross = net + (_f(r.get("fees")) or 0.0) - (_f(r.get("funding")) or 0.0)
         if gross is None or notional is None or notional <= 0:

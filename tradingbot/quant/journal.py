@@ -64,14 +64,19 @@ def row_from_memory(entry: dict[str, Any], exit_row: dict[str, Any] | None = Non
     rec = _base_record(source_kind=src, flags=flags)
     plan = entry.get("plan") if isinstance(entry.get("plan"), dict) else {}
     decision = entry.get("decision") if isinstance(entry.get("decision"), dict) else {}
+    snap = entry.get("snapshot") if isinstance(entry.get("snapshot"), dict) else {}
     trade_id = _s(entry.get("trade_id"))
     symbol = _s(entry.get("symbol") or plan.get("symbol"))
     direction = _s(entry.get("side") or entry.get("direction") or plan.get("direction"))
     rec.update({
         "decision_id": stable_id("qj", src, "memory", trade_id, symbol, direction),
         "candidate_id": _s(plan.get("plan_id") or plan.get("id") or entry.get("plan_id")),
-        "event_ts_utc": _s(entry.get("decision_ts") or entry.get("recorded_at")),
-        "as_of_ts_utc": _s(entry.get("last_bar_ts") or entry.get("as_of")),
+        # KARAR ZAMANI, kayıt zamanı DEĞİL: `recorded_at` wall-clock'tur ve replay'de aynı girdiden
+        # iki farklı çalıştırmada farklı değer üretir. Snapshot'ın `decision_ts`'i deterministiktir.
+        "event_ts_utc": _s(entry.get("decision_ts") or snap.get("decision_ts")
+                           or entry.get("recorded_at")),
+        "as_of_ts_utc": _s(entry.get("last_bar_ts") or snap.get("last_bar_ts")
+                           or entry.get("as_of")),
         "symbol": symbol,
         "market_type": _s(entry.get("market_type") or plan.get("market_type")),
         "direction": direction,
@@ -100,6 +105,15 @@ def row_from_memory(entry: dict[str, Any], exit_row: dict[str, Any] | None = Non
     outcome = (exit_row or {}).get("outcome") if isinstance((exit_row or {}).get("outcome"), dict) else None
     if outcome is not None:
         lab = label_outcome(outcome)
+        # GERÇEKLEŞEN notional: ledger kaydından türetilir. Plan'da `notional` bulunmayan yollar
+        # (ör. `HistoricalReplay` TradeMemory girişleri) aksi halde maliyet senaryolarında sessizce
+        # atlanıyordu. Ölçülemezse alan `None` kalır — uydurulmaz.
+        eff = _finite(outcome.get("effective_notional"), "effective_notional", flags)
+        if eff is None:
+            qty = _finite(outcome.get("quantity"), "quantity", flags)
+            entry_px = _finite(outcome.get("entry"), "entry", flags)
+            eff = abs(qty * entry_px) if (qty is not None and entry_px is not None) else None
+        rec["effective_notional"] = eff
         rec.update({
             "exit_reason": _s(outcome.get("exit_reason")),
             "gross_pnl": _finite(outcome.get("gross_pnl"), "gross_pnl", flags),
@@ -114,6 +128,7 @@ def row_from_memory(entry: dict[str, Any], exit_row: dict[str, Any] | None = Non
             "outcome_labeled": True,
         })
     else:
+        rec["effective_notional"] = None
         rec.update({"exit_reason": None, "gross_pnl": None, "net_pnl": None, "fees": None,
                     "funding": None, "r_multiple": None, "mae_pct": None, "mfe_pct": None,
                     "bars_held": None, "outcome_class": None, "outcome_labeled": False})
@@ -157,6 +172,7 @@ def row_from_shadow(t: dict[str, Any]) -> dict[str, Any]:
         "outcome_ref": _s(t.get("id")),
         "variant": variant,
         "is_counterfactual": True,
+        "effective_notional": None,        # gölge kayıt gerçekten doldurulmadı → notional yok
     })
     out = t.get("outcome") if isinstance(t.get("outcome"), dict) else None
     if out is not None:

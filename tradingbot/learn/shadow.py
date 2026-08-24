@@ -2,6 +2,7 @@
 (`is_counterfactual=True`). Etiketleme yalnızca `label_ts` geçtikten sonra ve o ana kadarki kapalı mumlarla yapılır."""
 from __future__ import annotations
 
+import json
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -101,17 +102,48 @@ def label_with_candles(sh: ShadowTrade, df: pd.DataFrame, *, tp1_fraction: float
 
 
 class ShadowBook:
-    def __init__(self, path: Path | str):
+    """Gölge defteri — aktif dosya SINIRLI, taşan kayıtlar KAYIPSIZ arşive mühürlenir.
+
+    `archive` verilmezse taşan kayıtlar SİLİNMEZ (dosya büyür); sessiz veri kaybı yerine
+    sınırsız büyüme tercih edilir. Arşiv yazımı başarısızsa da budama YAPILMAZ.
+    """
+
+    def __init__(self, path: Path | str, *, archive: Any | None = None):
         self.path = Path(path)
+        self.archive = archive
+        self.archive_errors = 0
+        self.last_archive_error: str | None = None
+        self.archived_total = 0
         d = read_json(self.path, default={"trades": []})
         self.trades: list[ShadowTrade] = [ShadowTrade(**{k: v for k, v in t.items() if k in ShadowTrade.__dataclass_fields__}) for t in d.get("trades", [])]
 
-    MAX_TRADES = 5000                       # SINIRLI saklama — dosya sinirsiz buyumez
+    MAX_TRADES = 5000                       # aktif dosya siniri (arsiv bunun DISINDA, sinirsiz)
+
+    def _archive_overflow(self) -> int:
+        """Tasan EN ESKI kayitlari once arsive muhurler. Basarisizsa 0 doner → budama YOK."""
+        overflow = len(self.trades) - self.MAX_TRADES
+        if overflow <= 0:
+            return 0
+        if self.archive is None:
+            return 0                        # arsiv yok → SILME YOK (sinirsiz buyume kabul)
+        block = [json.dumps(t.to_dict(), ensure_ascii=False, default=str)
+                 for t in self.trades[:overflow]]
+        try:
+            self.archive.recover()
+            meta = self.archive.seal(block)
+            self.archive.commit(meta)
+        except Exception as exc:  # noqa: BLE001 — arsiv arizasi golge kaydini engellemez
+            self.archive_errors += 1
+            self.last_archive_error = f"{type(exc).__name__}: {exc}"[:300]
+            return 0
+        self.archived_total += overflow
+        return overflow
 
     def save(self) -> None:
-        # Bellek ve dosya AYNI siniri uygular; aksi halde surec omru boyunca liste sinirsiz buyur.
-        if len(self.trades) > self.MAX_TRADES:
-            self.trades = self.trades[-self.MAX_TRADES:]
+        # Aktif dosya sinirlidir; ama budama YALNIZ arsivleme dogrulandiktan SONRA yapilir.
+        moved = self._archive_overflow()
+        if moved > 0:
+            self.trades = self.trades[moved:]
         atomic_write_json(self.path, {"trades": [t.to_dict() for t in self.trades]})
 
     def _event_key(self, plan_id: str, symbol: str, direction: str, variant: str) -> tuple:
@@ -162,5 +194,40 @@ class ShadowBook:
     def stats(self) -> dict:
         done = [t for t in self.trades if t.outcome]
         vr = [t for t in done if t.outcome.get("veto_was_right")]
+        arc = None
+        if self.archive is not None:
+            try:
+                arc = self.archive.stats()
+            except Exception:  # noqa: BLE001 — istatistik arizasi golge defterini bozamaz
+                arc = None
+        n_arch = int((arc or {}).get("n_archived_records") or 0)
         return {"total": len(self.trades), "labeled": len(done), "veto_right_rate": round(len(vr) / len(done), 3) if done else None,
-                "avg_r": round(sum(t.outcome["r_multiple"] for t in done) / len(done), 3) if done else None, "is_counterfactual": True}
+                "avg_r": round(sum(t.outcome["r_multiple"] for t in done) / len(done), 3) if done else None, "is_counterfactual": True,
+                "archived": n_arch, "lifetime": len(self.trades) + n_arch,
+                "archive_health": (arc or {}).get("health") or ("NO_ARCHIVE" if self.archive is None else None),
+                "archive_segments": int((arc or {}).get("n_segments") or 0),
+                "last_archive_error": self.last_archive_error or (arc or {}).get("last_error"),
+                "silent_deletion": False}
+
+    def iter_all_trades(self, *, verify_checksums: bool = True):
+        """ARŞİV + AKTİF birleşik gölge akışı (offline/rapor yolu); `id` ile tekilleştirilmiş.
+
+        Sıcak döngü bunu ÇAĞIRMAZ — deneyim havuzu yalnız aktif listeyi kullanır.
+        """
+        seen: set[str] = set()
+        if self.archive is not None:
+            for row in self.archive.iter_rows(verify_checksums=verify_checksums):
+                sid = str(row.get("id") or "")
+                if sid and sid in seen:
+                    continue
+                if sid:
+                    seen.add(sid)
+                yield row
+        for t in self.trades:
+            d = t.to_dict()
+            sid = str(d.get("id") or "")
+            if sid and sid in seen:
+                continue
+            if sid:
+                seen.add(sid)
+            yield d

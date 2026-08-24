@@ -208,7 +208,21 @@ class TradingEngineV3(TradingEngine):
         self.learner2 = LearnerV2(self.memory, self.model_registry, LearnConfig(min_samples_train=v3.learning_v3.min_samples_train,
                                   holdout_frac=v3.learning_v3.holdout_frac, half_life_days=v3.learning_v3.half_life_days, calibrator=v3.learning_v3.calibrator),
                                   st / "learn_v2.json")
-        self.shadow = ShadowBook(st / "shadow_book.json")
+        # KAYIPSIZ SAKLAMA: gölge defteri de taşan kayıtları önce arşive mühürler.
+        # Yol state kökünden türer; arşiv kalıcı state altındadır (yedeklemeye dahil).
+        self.shadow_archive = None
+        try:
+            if v3.learning_v3.decision_archive_enabled:
+                from .learn.journal_archive import SegmentArchive
+                self.shadow_archive = SegmentArchive(
+                    st / v3.learning_v3.shadow_archive_dirname, stream_id="shadow_book",
+                    record_schema_version="shadow_trade_v1",
+                    code_sha=getattr(cfg, "code_sha", None),
+                    max_segments=v3.learning_v3.decision_archive_max_segments)
+        except Exception as exc:  # noqa: BLE001 — arşiv kurulamazsa SİLME de yapılmaz
+            log.warning("gölge arşivi başlatılamadı (budama devre dışı, kayıp yok): %s", exc)
+            self.shadow_archive = None
+        self.shadow = ShadowBook(st / "shadow_book.json", archive=self.shadow_archive)
         # --- Outcome Learning Loop V1: karar günlüğü + sınırlı öğrenme etkisi ---
         # Arıza worker'ı ÇÖKERTMEZ: journal/influence başlatılamazsa baseline davranış sürer.
         from .learn.decision_journal import DecisionJournal
@@ -224,9 +238,19 @@ class TradingEngineV3(TradingEngine):
                 top_k=v3.learning_v3.influence_top_k)
             self.influence_cfg.validate()
             if v3.learning_v3.decision_journal_enabled:
+                archive = None
+                if v3.learning_v3.decision_archive_enabled:
+                    from .learn.journal_archive import SegmentArchive
+                    archive = SegmentArchive(
+                        st / v3.learning_v3.decision_archive_dirname,
+                        stream_id="decision_journal",
+                        record_schema_version="decision_journal_v1",
+                        code_sha=getattr(cfg, "code_sha", None),
+                        max_segments=v3.learning_v3.decision_archive_max_segments)
                 self.decision_journal = DecisionJournal(
                     st / "decision_journal.jsonl",
-                    max_lines=v3.learning_v3.decision_journal_max_lines)
+                    max_lines=v3.learning_v3.decision_journal_max_lines,
+                    archive=archive)
                 self.decision_journal.load_seen()
         except Exception as exc:  # noqa: BLE001 — öğrenme altyapısı karar yolunu bloke edemez
             log.warning("outcome-learning başlatılamadı, baseline sürüyor: %s", exc)
@@ -1397,6 +1421,30 @@ class TradingEngineV3(TradingEngine):
                        provenance=stats["provenance"] | {"expected_r_geometry": plan.expected_r})
             d.opportunity = a.to_dict()
 
+    def _retention_alarm(self) -> dict:
+        """Son rotasyonun SALT OKUNUR durumu — arıza halinde açık alarm, asla istisna sızdırmaz.
+
+        `silent_deletion` DAİMA False'tur: bu hattın sözleşmesi gereği bir kayıt ancak arşive
+        mühürlendikten sonra aktif dosyadan çıkarılır.
+        """
+        try:
+            j = getattr(self, "decision_journal", None)
+            rot = getattr(self, "_journal_rotation", None) or {}
+            base = {"silent_deletion": False, "last_rotation_health": rot.get("health"),
+                    "last_rotation_error": rot.get("error"),
+                    "archived_last_rotation": int(rot.get("archived") or 0),
+                    "shadow_archive_errors": int(getattr(self.shadow, "archive_errors", 0) or 0),
+                    "shadow_last_archive_error": getattr(self.shadow, "last_archive_error", None)}
+            if j is not None and hasattr(j, "retention_stats"):
+                st = j.retention_stats()
+                base.update({k: st.get(k) for k in
+                             ("hot_records", "archived_records", "lifetime_records", "n_segments",
+                              "oldest_ts", "newest_ts", "archive_health", "last_archive_error",
+                              "retention_policy", "deleted_segments")})
+            return base
+        except Exception:  # noqa: BLE001 — telemetri arızası turu ETKİLEMEZ
+            return {"silent_deletion": False, "archive_health": "UNKNOWN"}
+
     def _persist_funnel(self, now, n_closed: int) -> None:
         """Karar hunisi + kayan 24 saat. `trades_opened_24h` YALNIZ gozlem metrigidir, kapi degildir."""
         f = dict(getattr(self, "_funnel", None) or {k: 0 for k in _FUNNEL_KEYS})
@@ -1418,6 +1466,9 @@ class TradingEngineV3(TradingEngine):
             "opportunity_cost": list(getattr(self, "_opportunity_cost", []) or [])[-20:],
             # RAPORLAMA SOZLESMESI: sabit islem sayisi kotasi YOKTUR.
             "daily_trade_cap": None, "per_run_trade_cap": None,
+            # SAKLAMA ALARMI: arsiv manifesti hic yazilamasa bile (disk dolu vb.) son rotasyon
+            # sonucu BURADA gorunur; sessiz kayip yerine acik durum.
+            "retention": self._retention_alarm(),
             "history": hist[-500:]})
         atomic_write_json(self._sig_path, {"ids": self._seen_signals[-5000:]})
 
@@ -1665,7 +1716,14 @@ class TradingEngineV3(TradingEngine):
                     n += 1
             self._journaled_last_tour = n
             self._evaluated_last_tour = len(decisions)
-            j.prune()
+            # KAYIPSIZ rotasyon: taşan kayıtlar önce arşive mühürlenir, sonra çıkarılır.
+            # Arşiv başarısızsa budama YAPILMAZ ve durum açık alarma dönüşür (sessiz kayıp yok).
+            rot = j.rotate()
+            self._journal_rotation = rot
+            if rot.get("error"):
+                self._journal_errors += 1
+                log.warning("karar günlüğü arşivi başarısız — BUDAMA YAPILMADI (kayıp yok): %s",
+                            rot.get("error"))
         except Exception as exc:  # noqa: BLE001
             self._journal_errors += 1
             log.warning("karar günlüğü yazılamadı (tur etkilenmedi): %s", exc)

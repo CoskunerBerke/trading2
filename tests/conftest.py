@@ -72,3 +72,12 @@ def make_snapshot(*, symbol: str, side: str, decision_ts_ms: int, seed: int = 3,
 def sparse_features() -> dict:
     """Core-4 öncesi hafızanın şekli: pratikte yalnız expected_r/p_win dolu."""
     return {"expected_r": 1.97, "p_win": 0.5, "leverage": 1}
+
+
+def pytest_configure(config):
+    """`slow` işareti kayıtlı olsun — 100k saklama benchmark'ı bununla etiketlenir.
+
+    VARSAYILAN OLARAK DESELECT EDİLMEZ: kayıpsız saklama garantisi her regresyonda ölçülür;
+    yerelde hızlı bir tur isteyen `-m "not slow"` verebilir.
+    """
+    config.addinivalue_line("markers", "slow: uzun süren ölçüm/benchmark testi")

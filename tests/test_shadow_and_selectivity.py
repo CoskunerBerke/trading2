@@ -65,14 +65,33 @@ def test_labelled_shadow_does_not_block_a_new_event(tmp_path):
     assert len(sb.add(_plan(), ["A"])) == 1                # eski olay kapandı → yeni olay serbest
 
 
-def test_retention_is_bounded_in_memory_and_on_disk(tmp_path):
+def test_retention_is_bounded_on_disk_but_lossless(tmp_path):
+    """Aktif dosya SINIRLI kalir; tasan golge kayitlar SILINMEZ, arsive muhurlenir."""
+    from tradingbot.learn.journal_archive import SegmentArchive
     path = tmp_path / "s.json"
-    sb = ShadowBook(path)
+    arc = SegmentArchive(tmp_path / "shadow_archive", stream_id="shadow_book",
+                         record_schema_version="shadow_trade_v1")
+    sb = ShadowBook(path, archive=arc)
     sb.MAX_TRADES = 10
     for i in range(25):
         sb.add(_plan(plan_id=f"p{i}"), ["A"])
     assert len(sb.trades) <= 10
     assert len(json.loads(path.read_text(encoding="utf-8"))["trades"]) <= 10
+    # KAYIPSIZ: aktif + arsiv birlesimi 25 adayin TAMAMI
+    ids = [t["plan_id"] for t in sb.iter_all_trades()]
+    assert sorted(ids) == sorted(f"p{i}" for i in range(25))
+    assert sb.stats()["lifetime"] == 25 and sb.stats()["silent_deletion"] is False
+
+
+def test_shadow_without_archive_never_deletes(tmp_path):
+    """Arsiv YOKSA budama da YOK — sessiz veri kaybi yerine sinirsiz buyume."""
+    path = tmp_path / "s.json"
+    sb = ShadowBook(path)                                  # archive=None
+    sb.MAX_TRADES = 10
+    for i in range(25):
+        sb.add(_plan(plan_id=f"p{i}"), ["A"])
+    assert len(sb.trades) == 25
+    assert len(json.loads(path.read_text(encoding="utf-8"))["trades"]) == 25
 
 
 def test_shadow_stats_are_marked_counterfactual(tmp_path):

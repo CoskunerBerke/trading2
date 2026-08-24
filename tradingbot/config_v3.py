@@ -235,6 +235,16 @@ class LearningV3Section:
     # edilir (bkz. validate_v3) ve etki `influence_max_fraction` ile sinirlidir.
     decision_journal_enabled: bool = True
     decision_journal_max_lines: int = 20_000
+    # --- KAYIPSIZ SAKLAMA: aktif gunluk sinirli kalir, tasan kayitlar SILINMEZ ---
+    # Aktif dosyadan cikarilan her kayit once sikistirilmis + checksum'li bir segmente
+    # muhurlenir (bkz. learn/journal_archive). Arsiv yoksa/yazilamazsa budama YAPILMAZ.
+    # Yol state kokunden turer (`state_path/<dirname>`); mutlak yol hard-code EDILMEZ.
+    decision_archive_enabled: bool = True
+    decision_archive_dirname: str = "decision_archive"
+    shadow_archive_dirname: str = "shadow_archive"
+    # 0 = SINIRSIZ saklama, hicbir segment silinmez. Silme yalniz burasi acikca pozitif
+    # yapilirsa mumkundur (varsayilan davranis: asla silme).
+    decision_archive_max_segments: int = 0
     influence_mode: str = "SHADOW"
     influence_prior_strength: float = 20.0  # w = n/(n+prior_strength); >= 20 zorunlu
     influence_max_fraction: float = 0.05    # etkinin mutlak tavani (baseline orani)

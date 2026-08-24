@@ -678,6 +678,31 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
                      + "<h3>Snapshot kapsaması</h3>" + kv_table(cov))
             if ll.get("lesson_codes"):
                 body += "<h3>Ders kodu dağılımı</h3>" + kv_table(ll["lesson_codes"])
+        rt = ll.get("retention") or {}
+        if rt:
+            health = str(rt.get("archive_health") or "ABSENT")
+            tone = "ok" if health in ("OK", "EMPTY") else ("info" if health == "ABSENT" else "warn")
+            body += ("<h2>Saklama (kayıpsız arşiv)</h2>"
+                     + '<div class="card">Aktif günlük sınırlıdır; taşan kayıtlar ÖNCE arşive '
+                       'mühürlenir. Sessiz silme YOKTUR.</div>'
+                     + '<div class="grid">'
+                     + card("Ömür boyu kayıt", f"{rt.get('lifetime_records', 0)}",
+                            f"{rt.get('hot_records', 0)} aktif · "
+                            f"{rt.get('archived_records', 0)} arşiv")
+                     + card("Değerlendirilen aday (ömür)",
+                            f"{int(rt.get('archived_decisions') or 0) + int(ll.get('n_decisions') or 0)}",
+                            f"outcome bağlı {int(rt.get('archived_outcomes') or 0) + int(ll.get('n_outcome_linked') or 0)}")
+                     + card("Segment", f"{rt.get('n_segments', 0)}",
+                            f"son rotasyon {esc(rt.get('last_rotation_at') or '—')}")
+                     + card("Arşiv sağlığı", badge(health, tone),
+                            esc(rt.get("last_archive_error") or "hata yok"))
+                     + "</div>"
+                     + kv_table({"En eski kayıt": rt.get("oldest_ts") or "—",
+                                 "En yeni kayıt": rt.get("newest_ts") or "—",
+                                 "Saklama politikası": rt.get("retention_policy") or "—",
+                                 "Silinen segment": rt.get("deleted_segments", 0),
+                                 "Retrieval kapsamı": rt.get("retrieval_scope") or "—",
+                                 "Sessiz silme": "HAYIR" if rt.get("silent_deletion") is False else "?"}))
         rv2 = q.get("risk_v2") or {}
         if rv2:
             big = rv2.get("largest_cluster") or {}
@@ -735,8 +760,15 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
             rows = state.tail_jsonl("decision_journal", 4000)
         except Exception:  # noqa: BLE001
             return {"available": False, "reason": "decision_journal.jsonl okunamadı"}
+        try:
+            retention = state.decision_retention()
+        except Exception:  # noqa: BLE001 — bozuk/eksik arşiv metadatası 500 ÜRETMEZ
+            retention = {"archive_health": "UNREADABLE", "silent_deletion": False,
+                         "archive_available": False}
         if not rows:
-            return {"available": False, "reason": "decision_journal.jsonl yok — henüz karar kaydı üretilmedi"}
+            return {"available": False,
+                    "reason": "decision_journal.jsonl yok — henüz karar kaydı üretilmedi",
+                    "retention": retention}
         dec = [r for r in rows if r.get("kind") == KIND_DECISION]
         outs = [r for r in rows if r.get("kind") == KIND_OUTCOME]
         n = len(dec)
@@ -773,6 +805,7 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
                               "max_abs_fraction": round(max(fracs), 6) if fracs else None,
                               "n_applied": sum(1 for x in infl if x.get("applied"))},
                 "lesson_codes": dict(sorted(lesson_codes.items(), key=lambda kv: -kv[1])[:12]),
+                "retention": retention,
                 "guardrail": "LEARNING CANNOT OVERRIDE RISK GATES"}
 
     @app.get("/api/learning-loop")

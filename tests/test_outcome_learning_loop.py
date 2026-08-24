@@ -95,6 +95,9 @@ def test_journal_failure_does_not_break_tour(tmp_path: Path, monkeypatch):
         def prune(self):
             raise OSError("disk full")
 
+        def rotate(self):
+            raise OSError("disk full")
+
     eng.decision_journal = Boom()
     s = _tour(eng)                                   # istisna sızmamalı
     assert s is not None
@@ -185,17 +188,34 @@ def test_nonfinite_values_never_reach_journal(tmp_path: Path):
     assert rec["features"] == {"c": 1.5}
 
 
-def test_journal_prunes_and_survives_corrupt_lines(tmp_path: Path):
+def test_journal_rotation_is_lossless_and_survives_corrupt_lines(tmp_path: Path):
+    """Aktif dosya SINIRLI kalir ama hicbir kayit KAYBOLMAZ (once arsive muhurlenir)."""
+    from tradingbot.learn.journal_archive import SegmentArchive
     p = tmp_path / "dj.jsonl"
-    j = DecisionJournal(p, max_lines=5)
+    arc = SegmentArchive(tmp_path / "arch", stream_id="dj",
+                         record_schema_version="decision_journal_v1")
+    j = DecisionJournal(p, max_lines=5, archive=arc)
     for i in range(12):
         j.append_decision(_rec(sym=f"S{i}/USDT", cycle=i))
-    dropped = j.prune()
-    assert dropped > 0
+    moved = j.prune()
+    assert moved > 0
     assert len(p.read_text(encoding="utf-8").splitlines()) == 5
+    ids = [r["decision_id"] for r in j.iter_all_rows()]
+    assert len(ids) == 12 and len(set(ids)) == 12      # KAYIPSIZ: aktif + arsiv = girdinin TAMAMI
     with open(p, "a", encoding="utf-8") as fh:
-        fh.write("{bozuk json\n")
-    assert len(list(j.iter_rows())) == 5               # bozuk satır atlanır, dosya bozulmaz
+        fh.write("{bozuk json" + chr(10))
+    assert len(list(j.iter_rows())) == 5               # bozuk satir atlanir, dosya bozulmaz
+
+
+def test_journal_without_archive_never_deletes(tmp_path: Path):
+    """Arsiv YOKSA budama da YOK — sessiz veri kaybi yerine sinirsiz buyume tercih edilir."""
+    p = tmp_path / "dj.jsonl"
+    j = DecisionJournal(p, max_lines=5)                # archive=None
+    for i in range(12):
+        j.append_decision(_rec(sym=f"S{i}/USDT", cycle=i))
+    assert j.prune() == 0
+    assert len(p.read_text(encoding="utf-8").splitlines()) == 12
+    assert j.rotate()["health"] == "NO_ARCHIVE_NO_DELETION"
 
 
 def test_legacy_schema_rows_are_tolerated(tmp_path: Path):

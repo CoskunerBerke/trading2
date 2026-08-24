@@ -10,3 +10,14 @@
 6. **Retrieval** (`retrieval.py`): yapılandırılmış filtreler + standardize kosinüs benzerliği; harici vektör DB yok (SQLite FTS5 opsiyonel).
 
 `LearnerV2.predict` önsel ile modeli n_eff'e göre harmanlar (ani geçiş yok). Legacy `learning.py` korunur; `legacy_bridge` v1 durumunu kayıpsız alır. Etiket: R bazlı WIN/LOSS/SCRATCH (|R|<0.25 scratch), pnl>0 değil.
+
+## Kayıpsız saklama (retention)
+
+Aktif dosyalar performans için sınırlıdır; **öğrenme kayıtları sessizce silinmez**. Taşan kayıtlar önce sıkıştırılmış, checksum'lı, değişmez bir segmente mühürlenir; ancak ondan sonra aktif dosyadan çıkarılır (`learn/journal_archive.py::SegmentArchive`).
+
+- Zincir: `hot journal → atomic sealed segment (.jsonl.gz) → sha256 + manifest → hot journal budanır`. Sıra bozulamaz: arşiv yazımı ya da checksum doğrulaması düşerse **budama yapılmaz** ve `ARCHIVE_FAILED` alarmı üretilir (tur fail-safe sürer).
+- Yollar state kökünden türer: `state/decision_archive/` (karar günlüğü, `decision_journal_max_lines` varsayılan 20.000) ve `state/shadow_archive/` (gölge defteri, `MAX_TRADES` 5.000). Mutlak yol hard-code edilmez; arşiv kalıcı state altındadır, dolayısıyla mevcut yedeklemeye (`ops/backup.py`) otomatik dahildir.
+- Varsayılan saklama **sınırsızdır** (`decision_archive_max_segments: 0` → `UNLIMITED_NO_DELETION`). Silme yalnız bu değer açıkça pozitif yapılırsa mümkündür.
+- `segment_id` ve dosya adı tamamen içerikten türer; aynı blok ikinci kez mühürlenirse aynı sha256 çıkar → retry idempotenttir. Çökme sonrası `pending_trim` ile devam edilir (ne kayıp ne çift kayıt), manifeste düşmemiş segmentler `recover()` ile geri alınır.
+- Sıcak döngü arşivi **taramaz**: deneyim havuzu yalnız aktif `trade_memory.jsonl` + `shadow_book.json` okur, `retention_stats()` yalnız manifestten O(1) özet verir. Arşiv okuması offline/rapor yolundadır (`DecisionJournal.iter_all_rows`, `ShadowBook.iter_all_trades`, `quant.run --shadow-archive`) ve kimliğe göre tekilleştirir.
+- Checksum'ı tutmayan segment öğrenmeye katılmaz; `SegmentArchive.verify()` ve dashboard `Saklama` bloğu durumu görünür kılar.

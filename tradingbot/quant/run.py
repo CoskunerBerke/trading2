@@ -92,6 +92,39 @@ def trades_for_scenarios(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
+def _with_shadow_archive(shadow_path: Path, active: list[dict], *,
+                         archive_dir: str | None, enabled: bool) -> list[dict]:
+    """Aktif gölge kayıtlarına ARŞİVLENMİŞ geçmişi ekler (`id` ile tekilleştirilmiş).
+
+    Offline rapor ömür boyu kaydı görmelidir; aktif dosya sınırlıdır. Arşiv yoksa ya da
+    okunamıyorsa rapor AKTİF kayıtlarla üretilir (sessizce boş dönmez, sayı raporlanır).
+    """
+    if not enabled:
+        return list(active)
+    root = Path(archive_dir) if archive_dir else shadow_path.parent / "shadow_archive"
+    if not (root / "manifest.json").exists():
+        return list(active)
+    try:
+        from ..learn.journal_archive import SegmentArchive
+        arc = SegmentArchive(root, stream_id="shadow_book",
+                             record_schema_version="shadow_trade_v1")
+        seen = {str(t.get("id")) for t in active if t.get("id")}
+        merged: list[dict] = []
+        for row in arc.iter_rows():
+            sid = str(row.get("id") or "")
+            if sid and sid in seen:
+                continue
+            if sid:
+                seen.add(sid)
+            merged.append(row)
+        merged.extend(active)
+        return merged
+    except Exception as exc:  # noqa: BLE001 — arşiv arızası raporu ÇÖKERTMEZ
+        print(f"UYARI: gölge arşivi okunamadı ({exc}); rapor yalnız aktif kayıtlarla üretildi.",
+              file=sys.stderr)
+        return list(active)
+
+
 def build_report(*, memory_rows: list[dict], shadow_trades: list[dict], run_id: str,
                  code_sha: str, seed: int = 7, min_sample: int = 10,
                  config_obj: object | None = None,
@@ -191,6 +224,10 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Quant Evaluation V1 offline rapor üretici (read-only)")
     ap.add_argument("--memory", required=True, help="TradeMemory JSONL yolu (salt okunur)")
     ap.add_argument("--shadow", required=True, help="shadow_book.json yolu (salt okunur)")
+    ap.add_argument("--shadow-archive", default=None,
+                    help="gölge arşiv kökü (varsayılan: shadow_book.json yanındaki shadow_archive/)")
+    ap.add_argument("--no-archive", action="store_true",
+                    help="arşivlenmiş geçmişi rapora KATMA (yalnız aktif dosya)")
     ap.add_argument("--out", required=True, help="çıktı JSON yolu (atomic yazılır)")
     ap.add_argument("--ledger", default=None, help="futures_ledger.json (Risk V2 offline raporu)")
     ap.add_argument("--returns", default=None, help='{"SYM": [getiri,...]} JSON yolu')
@@ -211,11 +248,14 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     memory_rows = _read_memory_jsonl(Path(args.memory))
     shadow_doc = read_json(Path(args.shadow), default={"trades": []}) or {"trades": []}
+    shadow_trades = _with_shadow_archive(Path(args.shadow), list(shadow_doc.get("trades", [])),
+                                         archive_dir=args.shadow_archive,
+                                         enabled=not args.no_archive)
     ledger_doc = read_json(Path(args.ledger), default=None) if args.ledger else None
     returns = read_json(Path(args.returns), default=None) if args.returns else None
     evidence_input = read_json(Path(args.evidence), default=None) if args.evidence else None
     elig = [Path(p) for p in (args.eligibility or [])]
-    report = build_report(memory_rows=memory_rows, shadow_trades=list(shadow_doc.get("trades", [])),
+    report = build_report(memory_rows=memory_rows, shadow_trades=shadow_trades,
                           run_id=args.run_id, code_sha=args.code_sha, seed=args.seed,
                           min_sample=args.min_sample, ledger_doc=ledger_doc,
                           returns_by_symbol=returns, evidence_input=evidence_input,

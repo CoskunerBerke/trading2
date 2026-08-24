@@ -10,12 +10,15 @@ Sözleşme:
   ikinci kez yazılmaz (retry/duplicate koruması).
 * Kayıt BOUNDED: ham mum dizisi yazılmaz, feature/specialist alanları sayı sınırına kırpılır.
 * Olmayan alan uydurulmaz → `null` + `availability`/`provenance`.
-* Dosya satır sınırını aşınca en eskiler atılır (atomik yeniden yazım) — sınırsız büyüme yok.
+* Aktif dosya satır sınırını aşınca taşan kayıtlar ÖNCE kayıpsız arşive mühürlenir, ANCAK
+  ondan sonra aktif dosyadan çıkarılır (`rotate`). Arşiv yoksa ya da yazımı başarısızsa
+  hiçbir kayıt silinmez — sessiz veri kaybı YASAK (bkz. `journal_archive`).
 * Ledger/outbox/gateway'e DOKUNMAZ; yalnız kendi dosyasına yazar.
 * Yazım hatası çağıranı ÇÖKERTMEZ (`append` False döner); worker baseline davranışını sürdürür.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
@@ -24,6 +27,7 @@ from pathlib import Path
 from typing import Any, Iterable, Iterator
 
 from ..core import atomic_write_text, iso, stable_id, utc_now
+from .journal_archive import ArchiveError, SegmentArchive
 
 SCHEMA_VERSION = "decision_journal_v1"
 
@@ -286,14 +290,20 @@ class DecisionJournal:
                 lk = cls._locks[key] = threading.Lock()
             return lk
 
-    def __init__(self, path: Path | str, *, max_lines: int = DEFAULT_MAX_LINES):
+    def __init__(self, path: Path | str, *, max_lines: int = DEFAULT_MAX_LINES,
+                 archive: SegmentArchive | None = None):
         self.path = Path(path)
         self.max_lines = int(max_lines)
+        #: Kayıpsız arşiv. `None` ise ROTASYON YAPILMAZ ve hiçbir kayıt silinmez.
+        self.archive = archive
         self._lock = self._lock_for(self.path)
         self._seen: set[str] = set()
         self._seen_outcomes: set[str] = set()
         self.errors = 0
         self.appended = 0
+        self.archive_errors = 0
+        self.last_archive_error: str | None = None
+        self._line_count = self._count_lines()
 
     # -------------------------------------------------------------- yazım
     def _write_line(self, obj: dict[str, Any]) -> bool:
@@ -309,11 +319,25 @@ class DecisionJournal:
                     fh.write(line + "\n")
                     fh.flush()
                     os.fsync(fh.fileno())
+                # Sayaçlar da KİLİT ALTINDA: rotasyon `_line_count`'a bakarak karar verir;
+                # kilit dışında artırmak eşzamanlı yazımda sayacı geriye düşürebilirdi.
+                self.appended += 1
+                self._line_count += 1
         except OSError:
             self.errors += 1
             return False
-        self.appended += 1
         return True
+
+    def _count_lines(self) -> int:
+        """Fiziksel (boş olmayan) satır sayısı — rotasyonun UCUZ erken çıkışı için sayaç temeli."""
+        if not self.path.exists():
+            return 0
+        try:
+            with open(self.path, "r", encoding="utf-8", errors="replace") as fh:
+                return sum(1 for ln in fh if ln.strip())
+        except OSError:
+            self.errors += 1
+            return 0
 
     def append_decision(self, rec: dict[str, Any]) -> bool:
         """Idempotent: aynı `decision_id` ikinci kez yazılmaz."""
@@ -365,33 +389,169 @@ class DecisionJournal:
                         continue          # yarım/bozuk satır sessizce atlanır, dosya bozulmaz
         return gen()
 
+    def iter_all_rows(self, *, verify_checksums: bool = True) -> Iterator[dict[str, Any]]:
+        """ARŞİV + AKTİF birleşik akış, kimliğe göre TEKİLLEŞTİRİLMİŞ (offline/rapor yolu).
+
+        Sıcak döngü bunu ÇAĞIRMAZ — maliyeti O(toplam arşiv)'dir. Aynı kayıt hem arşivde hem
+        aktif dosyada görünse bile (çökme sonrası yeniden mühürleme) TEK kez verilir; checksum'ı
+        bozuk segment atlanır ve öğrenmeye katılmaz.
+        """
+        seen_dec: set[str] = set()
+        seen_out: set[str] = set()
+
+        def _emit(row: dict[str, Any]) -> bool:
+            if row.get("kind") == KIND_OUTCOME:
+                tid = str(row.get("trade_id") or "")
+                if not tid or tid in seen_out:
+                    return False
+                seen_out.add(tid)
+                return True
+            did = str(row.get("decision_id") or "")
+            if did:
+                if did in seen_dec:
+                    return False
+                seen_dec.add(did)
+            return True
+
+        if self.archive is not None:
+            for row in self.archive.iter_rows(verify_checksums=verify_checksums):
+                if _emit(row):
+                    yield row
+        for row in self.iter_rows():
+            if _emit(row):
+                yield row
+
     def load_seen(self) -> None:
-        """Yeniden başlatma sonrası duplicate koruması için mevcut kimlikleri belleğe alır."""
+        """Yeniden başlatma sonrası duplicate koruması için mevcut kimlikleri belleğe alır.
+
+        Yalnız AKTİF dosya taranır ve bu YETERLİDİR: `decision_id` her süreçte yeni olan
+        `run_id`'yi içerir (arşivdeki eski turlarla çakışamaz), `trade_id` ise ancak açık bir
+        pozisyon kapanırken yazılır — aktif pencere (varsayılan 20.000 satır ≈ 5-6 gün) bu
+        ufku daima kapsar. Arşivin tamamını her açılışta taramak O(toplam arşiv) maliyet
+        getirirdi; okuma yolundaki tekilleştirme `iter_all_rows` içindedir.
+        """
         for r in self.iter_rows():
             if r.get("kind") == KIND_OUTCOME:
                 if r.get("trade_id"):
                     self._seen_outcomes.add(str(r["trade_id"]))
             elif r.get("decision_id"):
                 self._seen.add(str(r["decision_id"]))
+        self._line_count = self._count_lines()
 
-    def prune(self) -> int:
-        """Satır sınırını aşan en eski kayıtları atar (atomik yeniden yazım). Dönen: atılan satır."""
-        if not self.path.exists():
-            return 0
+    # ------------------------------------------------------------ kayıpsız rotasyon
+    def _read_lines(self) -> list[str]:
         try:
-            lines = self.path.read_text(encoding="utf-8", errors="replace").splitlines()
+            text = self.path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             self.errors += 1
+            return []
+        return [ln for ln in text.splitlines() if ln.strip()]
+
+    @staticmethod
+    def _block_sha(lines: list[str]) -> str:
+        return hashlib.sha256(("\n".join(lines) + "\n").encode("utf-8")).hexdigest()
+
+    def _apply_trim(self, pending: dict[str, Any]) -> int:
+        """Arşive alınmış baş bloğu aktif dosyadan çıkarır. ÇÖKME SONRASI IDEMPOTENT.
+
+        Kayıtlar arşive mühürlenip manifest işlendikten SONRA çağrılır. Baş blok beklenen
+        sha256'yı taşımıyorsa budama ZATEN yapılmıştır (ya da dosya dışarıdan değişmiştir):
+        bu durumda segment doğrulanır ve kayıt temizlenir; veri asla iki kez silinmez.
+        """
+        n = int(pending.get("n_lines") or 0)
+        want = str(pending.get("block_sha256") or "")
+        if n <= 0 or not want:
             return 0
-        if len(lines) <= self.max_lines:
-            return 0
-        keep = lines[-self.max_lines:]
-        try:
-            atomic_write_text(self.path, "\n".join(keep) + "\n")
-        except Exception:  # noqa: BLE001 — bakım hatası çağıranı çökertmez
-            self.errors += 1
-            return 0
-        return len(lines) - len(keep)
+        lines = self._read_lines()
+        if len(lines) >= n and self._block_sha(lines[:n]) == want:
+            rest = lines[n:]
+            atomic_write_text(self.path, ("\n".join(rest) + "\n") if rest else "")
+            self._line_count = len(rest)
+            return n
+        return 0
+
+    def rotate(self) -> dict[str, Any]:
+        """Aktif dosyayı sınırda tutar — TAŞAN KAYITLARI ÖNCE ARŞİVLER, sonra çıkarır.
+
+        Sıra: kurtarma → bekleyen budama → mühürleme → manifest → budama. Arşiv yoksa ya da
+        yazım/checksum başarısızsa AKTİF DOSYA BUDANMAZ; kayıt tutulur ve alarm üretilir.
+        """
+        res: dict[str, Any] = {"archived": 0, "trimmed": 0, "segment_id": None,
+                               "health": "OK", "error": None, "recovered": None}
+        if self.archive is None:
+            # Fail-safe: arşiv yoksa SİLME YOK. Dosya sınırsız büyür ama kayıp olmaz.
+            res["health"] = "NO_ARCHIVE_NO_DELETION"
+            return res
+        with self._lock:
+            try:
+                res["recovered"] = self.archive.recover()
+                pending = self.archive.pending_trim()
+                if pending:
+                    res["trimmed"] += self._apply_trim(pending)
+                    seg = self.archive.segment_for(str(pending.get("segment_id") or ""))
+                    if seg is not None:
+                        self.archive.clear_pending_trim()
+                if self._line_count <= self.max_lines:
+                    res["health"] = self.archive.manifest().get("health") or "OK"
+                    return res
+                lines = self._read_lines()
+                self._line_count = len(lines)
+                if len(lines) <= self.max_lines:
+                    return res
+                cut = len(lines) - self.max_lines
+                block = lines[:cut]
+                meta = self.archive.seal(block)
+                self.archive.commit(meta, pending_trim={
+                    "segment_id": meta["segment_id"], "n_lines": cut,
+                    "block_sha256": meta["block_sha256"]})
+                res["archived"] = cut
+                res["segment_id"] = meta["segment_id"]
+                res["trimmed"] += self._apply_trim({"n_lines": cut,
+                                                    "block_sha256": meta["block_sha256"]})
+                self.archive.clear_pending_trim()
+            except (ArchiveError, OSError, ValueError) as exc:
+                # Arşiv başarısız → BUDAMA YOK. Sessiz kayıp yerine açık alarm.
+                self.archive_errors += 1
+                self.last_archive_error = f"{type(exc).__name__}: {exc}"[:300]
+                res["health"] = "ARCHIVE_FAILED"
+                res["error"] = self.last_archive_error
+        return res
+
+    def prune(self) -> int:
+        """Geriye uyumluluk sarmalayıcısı — artık KAYIPSIZ. Dönen: arşive taşınan satır sayısı.
+
+        Eski davranış (en eskileri doğrudan atmak) KALDIRILDI; kayıtlar `rotate()` ile önce
+        arşive mühürlenir. Arşiv yoksa 0 döner ve hiçbir şey silinmez.
+        """
+        return int(self.rotate().get("archived") or 0)
+
+    def retention_stats(self) -> dict[str, Any]:
+        """Aktif + arşiv birleşik saklama özeti — O(1) (manifest okur, segment AÇMAZ)."""
+        arc = self.archive.stats() if self.archive is not None else None
+        hot = int(self._line_count)
+        lifetime = hot + int((arc or {}).get("n_archived_records") or 0)
+        health = (arc or {}).get("health") if arc else "NO_ARCHIVE"
+        if self.last_archive_error:
+            health = "ARCHIVE_FAILED"
+        return {"schema_version": SCHEMA_VERSION,
+                "hot_records": hot, "hot_max_lines": self.max_lines,
+                "archived_records": int((arc or {}).get("n_archived_records") or 0),
+                "archived_decisions": int((arc or {}).get("n_archived_decisions") or 0),
+                "archived_outcomes": int((arc or {}).get("n_archived_outcomes") or 0),
+                "archive_bytes_compressed": int((arc or {}).get("bytes_compressed") or 0),
+                "archive_bytes_raw": int((arc or {}).get("bytes_raw") or 0),
+                "lifetime_records": lifetime,
+                "n_segments": int((arc or {}).get("n_segments") or 0),
+                "oldest_ts": (arc or {}).get("oldest_ts"),
+                "newest_ts": (arc or {}).get("newest_ts"),
+                "last_rotation_at": (arc or {}).get("last_rotation_at"),
+                "archive_health": health,
+                "last_archive_error": self.last_archive_error or (arc or {}).get("last_error"),
+                "retention_policy": (arc or {}).get("retention_policy") or "NO_ARCHIVE",
+                "deleted_segments": int((arc or {}).get("deleted_segments") or 0),
+                "archive_root": (arc or {}).get("root"),
+                "silent_deletion": False,
+                "archive_errors": self.archive_errors}
 
     def stats(self) -> dict[str, Any]:
         """Kapsama sayaçları — dashboard ve quant raporu için (deterministik, salt okunur)."""

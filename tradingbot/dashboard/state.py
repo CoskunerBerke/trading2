@@ -274,6 +274,68 @@ class StateReader:
                 "last_failure_code": str(d.get("last_failure_code") or ""),
                 "last_failure_at": str(d.get("last_failure_at") or "")}
 
+    def count_jsonl_lines(self, name: str) -> int:
+        """Boş olmayan fiziksel satır sayısı — JSON AYRIŞTIRMAZ (ucuz akış sayımı)."""
+        fn = JSONL_FILES.get(name)
+        if not fn:
+            return 0
+        p = self.state_dir / fn
+        if not p.exists():
+            return 0
+        try:
+            with open(p, "r", encoding="utf-8", errors="replace") as fh:
+                return sum(1 for ln in fh if ln.strip())
+        except OSError:
+            return 0
+
+    def decision_retention(self, dirname: str = "decision_archive") -> dict[str, Any]:
+        """Aktif günlük + kayıpsız arşivin SALT OKUNUR saklama özeti.
+
+        Manifest eksik/eski/bozuk olsa bile `available=False` ile döner; ASLA istisna sızdırmaz
+        (dashboard 500 üretmemelidir). Segment dosyaları AÇILMAZ — maliyet O(1).
+        """
+        hot = self.count_jsonl_lines("decision_journal")
+        base: dict[str, Any] = {"hot_records": hot, "archived_records": 0,
+                                "lifetime_records": hot, "n_segments": 0,
+                                "oldest_ts": None, "newest_ts": None,
+                                "last_rotation_at": None, "archive_health": "ABSENT",
+                                "last_archive_error": None,
+                                "retention_policy": "UNKNOWN", "deleted_segments": 0,
+                                "silent_deletion": False, "archive_available": False,
+                                "retrieval_scope": "HOT_ONLY"}
+        mpath = self.state_dir / dirname / "manifest.json"
+        if not mpath.exists():
+            return base
+        try:
+            doc = read_json(mpath, default=None)
+        except Exception:  # noqa: BLE001 — bozuk manifest 500 ÜRETMEZ
+            doc = None
+        if not isinstance(doc, dict):
+            base["archive_health"] = "DEGRADED"
+            base["last_archive_error"] = "MANIFEST_UNREADABLE"
+            return base
+        t = doc.get("totals") if isinstance(doc.get("totals"), dict) else {}
+
+        def _i(v: Any) -> int:
+            return int(v) if isinstance(v, (int, float)) else 0
+
+        archived = _i(t.get("records"))
+        base.update({"archived_records": archived, "lifetime_records": hot + archived,
+                     "archived_decisions": _i(t.get("decisions")),
+                     "archived_outcomes": _i(t.get("outcomes")),
+                     "archive_bytes_compressed": _i(t.get("bytes_compressed")),
+                     "n_segments": _i(t.get("segments")),
+                     "oldest_ts": t.get("first_ts"), "newest_ts": t.get("last_ts"),
+                     "last_rotation_at": doc.get("last_rotation_at"),
+                     "archive_health": doc.get("health") or "EMPTY",
+                     "last_archive_error": doc.get("last_error"),
+                     "retention_policy": doc.get("retention_policy") or "UNKNOWN",
+                     "deleted_segments": _i(doc.get("deleted_segments")),
+                     "pending_trim": bool(doc.get("pending_trim")),
+                     "archive_available": True,
+                     "retrieval_scope": "HOT_PLUS_INDEXED_HISTORY"})
+        return base
+
     def learning_research(self) -> dict[str, Any]:
         """PAPER araştırma politikası özeti — hangi aday aktif, neyi değiştirdi, sonucu ne.
 

@@ -377,6 +377,9 @@ class PreparedPool:
     label_ts: list[int] = field(default_factory=list)            # `order` ile hizalı zamanlar
     by_symbol: dict[str, list[int]] = field(default_factory=dict)
     by_symdir: dict[tuple, list[int]] = field(default_factory=dict)
+    #: Arşiv geçmişinin sınırlı toplam defteri (bkz. aggregate_memory) — exemplar penceresi
+    #: dışında kalan eski sonuçların kanıtı buradan gelir. None = yalnız exemplar kanalı.
+    aggregate_book: Any = None
 
     def __len__(self) -> int:
         return len(self.experiences)
@@ -399,6 +402,7 @@ class PreparedPool:
 
 def prepare_pool(*, memory_rows: list[dict[str, Any]], shadow_trades: list[dict[str, Any]],
                  indexed_history: list[tuple[Experience, list[float], float]] | None = None,
+                 aggregate_base: Any = None,
                  shadow_weight: float = 0.25,
                  shadow_fidelity: float = DEFAULT_SHADOW_FIDELITY,
                  names: list[str] | None = None) -> PreparedPool:
@@ -425,6 +429,7 @@ def prepare_pool(*, memory_rows: list[dict[str, Any]], shadow_trades: list[dict[
         vecs.append(hit[0])
         norms.append(hit[1])
     prepared = PreparedPool(experiences=pool, vectors=vecs, norms=norms, names=names)
+    prepared.aggregate_book = aggregate_base
     prepared.build_access()
     return prepared
 

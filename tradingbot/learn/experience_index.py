@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import Any
 
 from ..core import atomic_write_json, iso, read_json, utc_now
+from .aggregate_memory import AggregateBook
 from .experience import (DEFAULT_SHADOW_FIDELITY, Experience, experience_vector,
                          shadow_experiences)
 from .features import FEATURE_VERSION, build_features, feature_names, to_vector
@@ -54,9 +55,13 @@ HEALTH_STALE = "STALE"
 HEALTH_FAILED = "FAILED"
 
 #: Retrieval kapsamı — DÜRÜST raporlama: indeks hazır değilse asla genişletilmiş kapsam yazılmaz.
+#: `FULL_HISTORY_BOUNDED` yalnız her arşiv sonucunun exemplar YA DA aggregate kanalından
+#: erişilebilir olduğu kanıtlanabilir durumda yazılır (indeks + aggregate sağlıklı, gecikme 0).
 SCOPE_HOT_ONLY = "HOT_ONLY"
-SCOPE_HOT_PLUS_INDEXED = "HOT_PLUS_INDEXED_HISTORY"
+SCOPE_HOT_PLUS_INDEXED = "HOT_PLUS_RECENT_INDEX"
+SCOPE_FULL_HISTORY = "FULL_HISTORY_BOUNDED"
 SCOPE_DEGRADED = "DEGRADED"
+AGGREGATES_NAME = "aggregates.json"
 
 #: Kompakt satır anahtarları (indeks boyutu için kısaltıldı).
 _K = {"outcome_id": "i", "source": "s", "symbol": "y", "direction": "d", "setup": "u",
@@ -105,6 +110,9 @@ class ExperienceIndexStore:
             Experience(outcome_id="", source="SHADOW"), {}, self.names)[1]
         self._rows: list[tuple[Experience, list[float], float]] = []
         self._loaded_shards: set[str] = set()
+        self.aggregates_path = self.root / AGGREGATES_NAME
+        self._agg: AggregateBook | None = None
+        self._agg_applied: set[str] = set()
 
     # ------------------------------------------------------------------ manifest
     def _empty_manifest(self) -> dict[str, Any]:
@@ -253,6 +261,54 @@ class ExperienceIndexStore:
                 out.append(dec)
         return out
 
+    # ------------------------------------------------------------------ toplam hafıza
+    def _agg_load(self) -> AggregateBook:
+        """Kalıcı aggregate defterini yükler; işlenmiş segment kümesiyle senkron değilse
+        shard'lardan DETERMİNİSTİK olarak yeniden kurar (self-heal, arşive dokunmaz)."""
+        if self._agg is not None:
+            return self._agg
+        doc = read_json(self.aggregates_path, default=None)
+        applied: set[str] = set()
+        book = AggregateBook()
+        if (isinstance(doc, dict) and str(doc.get("names_signature") or "") == self.names_sig
+                and float(doc.get("shadow_weight", self.shadow_weight)) == self.shadow_weight
+                and float(doc.get("shadow_fidelity", self.shadow_fidelity)) == self.shadow_fidelity):
+            book = AggregateBook.from_dict(doc.get("book"))
+            applied = {str(x) for x in (doc.get("applied_segments") or [])}
+        processed = {str(s.get("segment_id")): s for s in (self.manifest().get("processed") or [])
+                     if isinstance(s, dict)}
+        if applied != set(processed):
+            # Uyumsuz/eksik → shard'lardan tam yeniden kurulum (segment AÇILMAZ, arşiv okunmaz).
+            book = AggregateBook()
+            applied = set()
+            for sid, seg in sorted(processed.items(), key=lambda kv: int(kv[1].get("seq") or 0)):
+                for e, _, _ in self._read_shard(str(seg.get("shard") or "")):
+                    book.add(e)
+                applied.add(sid)
+            self._agg, self._agg_applied = book, applied
+            self._agg_save()
+        else:
+            self._agg, self._agg_applied = book, applied
+        return self._agg
+
+    def _agg_save(self) -> None:
+        if self._agg is None:
+            return
+        atomic_write_json(self.aggregates_path, {
+            "schema_version": INDEX_SCHEMA_VERSION, "names_signature": self.names_sig,
+            "shadow_weight": self.shadow_weight, "shadow_fidelity": self.shadow_fidelity,
+            "applied_segments": sorted(self._agg_applied),
+            "updated_at": iso(utc_now()), "book": self._agg.to_dict()}, indent=None)
+
+    def aggregates(self) -> AggregateBook | None:
+        """Arşivlenmiş gölge geçmişinin sınırlı toplam defteri — bozuksa None (fail-safe)."""
+        try:
+            return self._agg_load()
+        except Exception as exc:  # noqa: BLE001 — aggregate arızası baseline'ı bozamaz
+            self.errors += 1
+            self.last_error = f"{type(exc).__name__}: {exc}"[:300]
+            return None
+
     # ------------------------------------------------------------------ senkronizasyon
     def pending_segments(self) -> list[dict[str, Any]]:
         """Henüz indekslenmemiş arşiv segmentleri (O(manifest), segment AÇMAZ)."""
@@ -305,6 +361,14 @@ class ExperienceIndexStore:
                 norm = self._normalize_segment(rows)
                 name = self._shard_name(seg)
                 nbytes = self._write_shard(name, norm)
+                try:
+                    book = self._agg_load()
+                    book.add_many(e for e, _, _ in norm)
+                    self._agg_applied.add(sid)
+                    self._agg_save()
+                except Exception as exc:  # noqa: BLE001 — aggregate arızası indekslemeyi durdurmaz
+                    self.errors += 1
+                    self.last_error = f"AGG:{type(exc).__name__}: {exc}"[:300]
                 labels = [e.label_ts_ms for e, _, _ in norm if e.label_ts_ms is not None]
                 processed.append({
                     "segment_id": sid, "sha256": seg.get("sha256"),
@@ -345,10 +409,12 @@ class ExperienceIndexStore:
         try:
             shutil.rmtree(self.shards_dir, ignore_errors=True)
             self.manifest_path.unlink(missing_ok=True)
+            self.aggregates_path.unlink(missing_ok=True)
         except OSError:
             self.errors += 1
         self._rows = []
         self._loaded_shards = set()
+        self._agg, self._agg_applied = None, set()
         doc = self._empty_manifest()
         doc["last_rebuild_at"] = iso(utc_now())
         self._write_manifest(doc)
@@ -392,10 +458,23 @@ class ExperienceIndexStore:
         lag = len(self.pending_segments())
         if lag > 0 and health == HEALTH_OK:
             health = HEALTH_STALE
-        if health in (HEALTH_OK, HEALTH_STALE) and n_rows > 0:
-            scope = SCOPE_HOT_PLUS_INDEXED
-        elif health in (HEALTH_DEGRADED, HEALTH_FAILED):
+        agg = None
+        try:
+            book = self.aggregates()
+            agg = book.stats() if book is not None else None
+            agg_synced = (book is not None and self._agg_applied ==
+                          {str(x.get("segment_id")) for x in (doc.get("processed") or [])
+                           if isinstance(x, dict)})
+        except Exception:  # noqa: BLE001
+            agg, agg_synced = None, False
+        # DÜRÜST kapsam: FULL_HISTORY_BOUNDED yalnız her arşiv sonucunun exemplar YA DA
+        # aggregate kanalından erişilebildiği kanıtlanabilir durumda (sağlıklı + gecikme 0).
+        if health in (HEALTH_DEGRADED, HEALTH_FAILED):
             scope = SCOPE_DEGRADED
+        elif n_rows > 0 and health == HEALTH_OK and lag == 0 and agg is not None and agg_synced:
+            scope = SCOPE_FULL_HISTORY
+        elif n_rows > 0 and health in (HEALTH_OK, HEALTH_STALE):
+            scope = SCOPE_HOT_PLUS_INDEXED
         else:
             scope = SCOPE_HOT_ONLY
         return {"schema_version": INDEX_SCHEMA_VERSION, "root": str(self.root),
@@ -416,9 +495,10 @@ class ExperienceIndexStore:
                 "retrieval_scope": scope,
                 "no_lookahead": "AS_OF_ENFORCED_FAIL_CLOSED",
                 "rebuildable_from_archive": True,
+                "aggregate": agg,
                 "names_signature": doc.get("names_signature") or self.names_sig}
 
 
 __all__ = ["ExperienceIndexStore", "HEALTH_DEGRADED", "HEALTH_EMPTY", "HEALTH_FAILED",
            "HEALTH_OK", "HEALTH_STALE", "INDEX_SCHEMA_VERSION", "SCOPE_DEGRADED",
-           "SCOPE_HOT_ONLY", "SCOPE_HOT_PLUS_INDEXED"]
+           "SCOPE_FULL_HISTORY", "SCOPE_HOT_ONLY", "SCOPE_HOT_PLUS_INDEXED"]

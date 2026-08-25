@@ -22,8 +22,9 @@ import pytest
 from test_engine_v3 import _engine
 
 from tradingbot.learn.experience import (REAL_PAPER, SHADOW, prepare_pool, query_pool)
-from tradingbot.learn.experience_index import (SCOPE_DEGRADED, SCOPE_HOT_ONLY,
-                                               SCOPE_HOT_PLUS_INDEXED, ExperienceIndexStore)
+from tradingbot.learn.experience_index import (SCOPE_DEGRADED, SCOPE_FULL_HISTORY,
+                                               SCOPE_HOT_ONLY, SCOPE_HOT_PLUS_INDEXED,
+                                               ExperienceIndexStore)
 from tradingbot.learn.influence import InfluenceConfig, apply_influence, weighted_adjustment
 from tradingbot.learn.journal_archive import SegmentArchive
 from tradingbot.learn.shadow import ShadowBook, ShadowTrade
@@ -99,7 +100,7 @@ def test_1_2_3_archived_shadow_outcome_returns_to_live_retrieval(tmp_path: Path)
                                "setup_type": "as_planned"},
                       as_of_ms=_ms(d=3), top_k=20)
     assert len(hits) == 9, "arşivlenmiş sonuçlar benzer kararda görünmeli"
-    assert store.stats()["retrieval_scope"] == SCOPE_HOT_PLUS_INDEXED
+    assert store.stats()["retrieval_scope"] == SCOPE_FULL_HISTORY
 
 
 # ================================================================== 4) SHADOW baseline
@@ -454,7 +455,7 @@ def test_16_dashboard_reports_scope_honestly_and_never_500s(tmp_path: Path, scen
     view = StateReader(st).experience_index()
     assert isinstance(view, dict)
     assert view["retrieval_scope"] in (SCOPE_HOT_ONLY, SCOPE_DEGRADED)
-    assert view["retrieval_scope"] != SCOPE_HOT_PLUS_INDEXED, "hazır olmayan indeks yalan söyleyemez"
+    assert view["retrieval_scope"] not in (SCOPE_HOT_PLUS_INDEXED, SCOPE_FULL_HISTORY), "hazır olmayan indeks yalan söyleyemez"
     # saklama görünümü de aynı dürüst kapsamı taşır
     assert StateReader(st).decision_retention()["retrieval_scope"] == view["retrieval_scope"]
 
@@ -480,14 +481,14 @@ def test_16b_dashboard_shows_real_counts_when_index_ready(tmp_path: Path, monkey
     assert view["indexed_shadow"] == 9 and view["indexed_real"] == 0
     assert view["processed_segments"] >= 1 and view["corrupt_segments"] == 0
     assert view["index_lag_segments"] == 0
-    assert view["retrieval_scope"] == SCOPE_HOT_PLUS_INDEXED
+    assert view["retrieval_scope"] == SCOPE_FULL_HISTORY
     assert view["oldest_label_ms"] and view["newest_label_ms"]
 
     client = TestClient(create_app(st, Path(eng.cfg.cache_path), None, DashboardConfig()))
     r = client.get("/api/learning-loop")
     assert r.status_code == 200
     body = r.json()
-    assert body.get("retrieval_scope") == SCOPE_HOT_PLUS_INDEXED
+    assert body.get("retrieval_scope") == SCOPE_FULL_HISTORY
     assert (body.get("experience_index") or {}).get("indexed_experiences") == 9
     assert client.get("/quant").status_code == 200
 
@@ -598,7 +599,7 @@ def test_20_e2e_archived_outcome_reaches_next_similar_decision(tmp_path: Path, m
 
     st = eng.exp_index_store.stats()
     assert st["indexed_experiences"] == 10
-    assert st["retrieval_scope"] == SCOPE_HOT_PLUS_INDEXED
+    assert st["retrieval_scope"] == SCOPE_FULL_HISTORY
 
     pool = eng._prepared_experience_pool(eng.influence_cfg)
     ids = [e.outcome_id for e in pool.experiences]

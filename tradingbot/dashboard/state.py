@@ -338,10 +338,24 @@ class StateReader:
         if lag > 0 and health == "OK":
             health = "STALE"
         rows = _i(t.get("rows"))
-        if health in ("OK", "STALE") and rows > 0:
-            scope = "HOT_PLUS_INDEXED_HISTORY"
-        elif health in ("DEGRADED", "FAILED"):
+        # Aggregate senkronu: aggregates.json'daki uygulanmış segment kümesi, manifestteki
+        # işlenmiş kümeyle birebir aynıysa tam-geçmiş toplam hafızası SAĞLIKLIDIR.
+        agg_synced = False
+        agg_outcomes = 0
+        try:
+            adoc2 = read_json(self.state_dir / dirname / "aggregates.json", default=None)
+            if isinstance(adoc2, dict):
+                applied = {str(x) for x in (adoc2.get("applied_segments") or [])}
+                agg_synced = applied == {str(x.get("segment_id")) for x in processed}
+                agg_outcomes = _i((adoc2.get("book") or {}).get("total_added"))
+        except Exception:  # noqa: BLE001
+            agg_synced = False
+        if health in ("DEGRADED", "FAILED"):
             scope = "DEGRADED"
+        elif rows > 0 and health == "OK" and lag == 0 and agg_synced:
+            scope = "FULL_HISTORY_BOUNDED"
+        elif rows > 0 and health in ("OK", "STALE"):
+            scope = "HOT_PLUS_RECENT_INDEX"
         else:
             scope = "HOT_ONLY"
         base.update({"available": True, "indexed_experiences": rows,
@@ -354,6 +368,7 @@ class StateReader:
                      "last_refresh_at": doc.get("last_refresh_at"),
                      "last_rebuild_at": doc.get("last_rebuild_at"),
                      "index_health": health, "last_index_error": doc.get("last_error"),
+                     "aggregate_synced": agg_synced, "aggregate_outcomes": agg_outcomes,
                      "retrieval_scope": scope})
         return base
 

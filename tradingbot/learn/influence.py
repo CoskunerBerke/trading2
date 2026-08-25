@@ -223,7 +223,8 @@ def apply_influence(adjustment: dict[str, Any], *, cfg: InfluenceConfig | None =
 
 def weighted_adjustment(experiences: list[Any], *, baseline: float | None,
                         cfg: InfluenceConfig | None = None,
-                        prior_leaf_n: float | None = None) -> dict[str, Any]:
+                        prior_leaf_n: float | None = None,
+                        aggregate: dict[str, Any] | None = None) -> dict[str, Any]:
     """Ağırlıklı ayarlama — kaynak ağırlığı + ÇİFT SAYIM koruması.
 
     **Residual yöntemi (seçilen ve gerekçelendirilen çözüm):** hiyerarşik prior aynı kapanışlardan
@@ -232,6 +233,11 @@ def weighted_adjustment(experiences: list[Any], *, baseline: float | None,
     tek bir `outcome_id` toplamda birden fazla TAM ağırlık alamaz.
 
     `outcome_id` tekrarları (aynı sonucun iki kez verilmesi, gerçek+gölge kopyası) tekilleştirilir.
+
+    `aggregate`: exemplar penceresi DIŞINDA kalan arşiv geçmişinin sınırlı toplam kanıtı
+    (bkz. `aggregate_memory.AggregateBook.query`; sayılan exemplar'lar zaten düşülmüştür).
+    Tek bir ek kanıt kovası olarak aynı residual payıyla harmanlanır; toplam etki yine
+    `max_fraction` ile sınırlıdır ve exemplar/aggregate katkıları AYRI raporlanır.
     """
     cfg = cfg or InfluenceConfig()
     cfg.validate()
@@ -262,6 +268,15 @@ def weighted_adjustment(experiences: list[Any], *, baseline: float | None,
         w_eff = w * residual
         items.append((w_eff, r, str(get("source") or "REAL_PAPER")))
 
+    exemplar_w = sum(w for w, _, _ in items)
+    agg_w = 0.0
+    agg_r = None
+    if isinstance(aggregate, dict):
+        agg_w_raw = _f(aggregate.get("w_total")) or 0.0
+        agg_r = _f(aggregate.get("mean_r"))
+        if agg_w_raw > 0.0 and agg_r is not None:
+            agg_w = agg_w_raw * residual              # prior payı aggregate için de düşülür
+            items.append((agg_w, agg_r, "AGGREGATE_HISTORY"))
     total_w = sum(w for w, _, _ in items)
     if not items or total_w <= 0.0:
         return {"schema_version": SCHEMA_VERSION, "n_experience": len(items),
@@ -269,6 +284,8 @@ def weighted_adjustment(experiences: list[Any], *, baseline: float | None,
                 "fraction": 0.0, "baseline": base, "learned": base, "delta": 0.0,
                 "prior_weight": round(w_prior, 6), "residual_share": round(residual, 6),
                 "dropped_duplicates": dropped_dupes,
+                "exemplar_weight": 0.0, "aggregate_weight": 0.0,
+                "aggregate": (dict(aggregate) if isinstance(aggregate, dict) else None),
                 "reasons": ["NO_USABLE_EXPERIENCE"], "bounded_by": cfg.max_fraction,
                 "counted_outcome_ids": sorted(seen)}
 
@@ -292,8 +309,14 @@ def weighted_adjustment(experiences: list[Any], *, baseline: float | None,
         reasons.append(f"DEDUPED_{dropped_dupes}")
     if any(s == "SHADOW" for _, _, s in items):
         reasons.append("INCLUDES_SHADOW_EVIDENCE")
-    return {"schema_version": SCHEMA_VERSION, "n_experience": len(items),
+    if agg_w > 0.0:
+        reasons.append("INCLUDES_FULL_HISTORY_AGGREGATE")
+    return {"schema_version": SCHEMA_VERSION,
+            "n_experience": len(items) - (1 if agg_w > 0.0 else 0),
             "effective_n": round(total_w, 6), "weight": round(weight, 6),
+            "exemplar_weight": round(exemplar_w, 6), "aggregate_weight": round(agg_w, 6),
+            "aggregate": (dict(aggregate) if isinstance(aggregate, dict) else None),
+            "aggregate_mean_r": (round(agg_r, 6) if agg_r is not None else None),
             "consistency": round(consistency, 6), "signal": round(signal, 6),
             "mean_r": round(mean_r, 6), "fraction": round(fraction, 8),
             "baseline": base, "learned": round(learned, 8) if learned is not None else None,

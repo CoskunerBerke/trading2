@@ -1431,6 +1431,31 @@ class TradingEngineV3(TradingEngine):
                        risk_per_trade_pct=self.profile.risk_per_trade_pct,
                        provenance=stats["provenance"] | {"expected_r_geometry": plan.expected_r})
             d.opportunity = a.to_dict()
+            # ÖĞRENME KARARI DEĞİŞTİRDİ Mİ? — PAPER_BOUNDED'ta etkin p_win baseline'dan
+            # farklıysa AYNI ekonomi kapısı baseline ile de değerlendirilir; `tradeable`
+            # sonucu farklıysa açıkça işaretlenir. SHADOW'da p_win zaten baseline'dır.
+            try:
+                inf = next((i for i in reversed(getattr(self, "_influence_log", []) or [])
+                            if i.get("symbol") == sym), None)
+                changed = False
+                if (inf and inf.get("applied") and inf.get("baseline") is not None
+                        and float(inf.get("effective") or 0) != float(inf["baseline"])):
+                    base_a = assess(symbol=sym, side=d.direction, setup=plan.entry_type or "-",
+                                    gates=gates,
+                                    p_win=max(0.05, min(0.95, float(inf["baseline"]))),
+                                    avg_win_r=stats["avg_win_r"], avg_loss_r=stats["avg_loss_r"],
+                                    sample_size=stats["sample_size"],
+                                    cost_pct_notional=plan.expected_cost_pct,
+                                    stop_dist_pct=stop_pct,
+                                    expectancy_basis=stats["expectancy_basis"],
+                                    risk_per_trade_pct=self.profile.risk_per_trade_pct,
+                                    provenance={"counterfactual": "baseline_p_win"})
+                    changed = bool(a.tradeable) != bool(base_a.tradeable)
+                d.opportunity["decision_changed_by_learning"] = changed
+                if inf is not None:
+                    inf["decision_changed_by_learning"] = changed
+            except Exception:  # noqa: BLE001 — işaretleme arızası ekonomi kararını bozamaz
+                d.opportunity["decision_changed_by_learning"] = None
 
     def _retention_alarm(self) -> dict:
         """Son rotasyonun SALT OKUNUR durumu — arıza halinde açık alarm, asla istisna sızdırmaz.
@@ -1607,6 +1632,7 @@ class TradingEngineV3(TradingEngine):
         try:
             pool = prepare_pool(memory_rows=mem, shadow_trades=shad,
                                 indexed_history=hist,
+                                aggregate_base=(store.aggregates() if store is not None else None),
                                 shadow_weight=cfg.shadow_weight,
                                 shadow_fidelity=cfg.shadow_fidelity)
         except Exception as exc:  # noqa: BLE001 — hazırlama hatası baseline'ı bozamaz
@@ -1661,10 +1687,26 @@ class TradingEngineV3(TradingEngine):
             # SINIRLI TARAMA: aday basina maliyet arsiv buyuklugunden BAGIMSIZ kalir.
             pool = query_pool(prepared, query, as_of_ms=as_of_ms, top_k=cfg.top_k,
                               max_scan=self.cfg.v3.learning_v3.retrieval_max_scan)
+            # TAM-GECMIS TOPLAM KANITI: exemplar penceresi disinda kalan arsiv sonuclari
+            # sinirli toplam hucrelerinden gelir; sayilan exemplar'lar DUSULUR (cift sayim yok).
+            agg_view = None
+            book = getattr(prepared, "aggregate_book", None)
+            if book is not None:
+                try:
+                    from .learn.experience import feature_profile as _fp
+                    agg_view = book.query(symbol=b.symbol,
+                                          direction=(d.direction if d else None),
+                                          regime=(d.regime if d else None),
+                                          setup=(b.plan.entry_type if b.plan else None),
+                                          profile=_fp(query),
+                                          as_of_ms=as_of_ms, subtract=pool)
+                except Exception:  # noqa: BLE001 — toplam kanit arizasi exemplar yolunu bozamaz
+                    agg_view = None
             # ÇİFT SAYIM KORUMASI: hiyerarşik prior aynı kapanışları zaten kullandı; similarity
             # yalnız RESIDUAL payı uygular. `prior_leaf_n` = bu sembol/setup yaprağının örnek sayısı.
             leaf_n = self._prior_leaf_n(b.symbol, b.plan.entry_type if b.plan else None)
-            adj = weighted_adjustment(pool, baseline=baseline_p_win, cfg=cfg, prior_leaf_n=leaf_n)
+            adj = weighted_adjustment(pool, baseline=baseline_p_win, cfg=cfg,
+                                      prior_leaf_n=leaf_n, aggregate=agg_view)
             comp = combine_components(raw_model_p=baseline_p_win, hierarchical_p=baseline_p_win,
                                       adjustment=adj, cfg=cfg)
             applied = apply_influence(adj, cfg=cfg, mode_value=self.mode_state.mode.value,
@@ -1677,6 +1719,12 @@ class TradingEngineV3(TradingEngine):
                     "prior_leaf_n": leaf_n, "prior_weight": adj.get("prior_weight"),
                     "residual_share": adj.get("residual_share"),
                     "dropped_duplicates": adj.get("dropped_duplicates"),
+                    "exemplar_weight": adj.get("exemplar_weight"),
+                    "aggregate_weight": adj.get("aggregate_weight"),
+                    "aggregate_level": (agg_view or {}).get("level"),
+                    "aggregate_n": (agg_view or {}).get("n"),
+                    "aggregate_mean_r": (agg_view or {}).get("mean_r"),
+                    "aggregate_months": (agg_view or {}).get("months"),
                     "top_similarity": (pool[0].similarity if pool else None),
                     "fraction": adj.get("fraction"), "reasons": adj.get("reasons"),
                     "baseline": adj.get("baseline"), "learned": adj.get("learned"),
@@ -1739,7 +1787,11 @@ class TradingEngineV3(TradingEngine):
                     rec["learning_influence"] = {k: infl[sym].get(k) for k in
                                                  ("mode", "n_experience", "top_similarity",
                                                   "fraction", "baseline", "learned", "applied",
-                                                  "blockers")}
+                                                  "blockers", "effective",
+                                                  "exemplar_weight", "aggregate_weight",
+                                                  "aggregate_level", "aggregate_n",
+                                                  "aggregate_mean_r", "aggregate_months",
+                                                  "decision_changed_by_learning")}
                 if j.append_decision(rec):
                     n += 1
             self._journaled_last_tour = n

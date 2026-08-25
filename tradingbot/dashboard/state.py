@@ -422,6 +422,118 @@ class StateReader:
                      "archive_available": True})
         return base
 
+    def coin_memory(self, base: str) -> dict[str, Any]:
+        """Coin'e özel hiyerarşik bellek özeti — SALT OKUNUR, eksik veride 500 YOK.
+
+        Gerçek kapanışlar (TradeMemory) + gölge sonuçlar (aktif defter) + tam-geçmiş
+        toplamları (experience_index/aggregates.json L2/L3 hücreleri) + son karar etkisi.
+        """
+        b = str(base).upper().split("/")[0]
+        sym = f"{b}/USDT"
+        out: dict[str, Any] = {"symbol": sym, "available": False,
+                               "real": {"n": 0}, "shadow": {"n": 0},
+                               "aggregate": None, "by_direction": {},
+                               "last_influence": None, "date_range": {},
+                               "consistency": None}
+
+        def _num(x: Any) -> float | None:
+            try:
+                v = float(x)
+                return v if v == v else None
+            except (TypeError, ValueError):
+                return None
+
+        # --- gerçek kapanışlar
+        rs: list[float] = []
+        maes: list[float] = []
+        mfes: list[float] = []
+        exits: dict[str, int] = {}
+        first = last = None
+        for row in self.tail_jsonl("trade_memory", 4000):
+            if str(row.get("symbol") or "") != sym:
+                continue
+            if row.get("kind") == "exit":
+                o = row.get("outcome") or {}
+                r = _num(o.get("r_multiple"))
+                if r is not None:
+                    rs.append(r)
+                if _num(o.get("mae_pct")) is not None:
+                    maes.append(float(o["mae_pct"]))
+                if _num(o.get("mfe_pct")) is not None:
+                    mfes.append(float(o["mfe_pct"]))
+                er = str(o.get("exit_reason") or "?")
+                exits[er] = exits.get(er, 0) + 1
+            ts = str(row.get("recorded_at") or "")
+            if ts:
+                first = ts if first is None or ts < first else first
+                last = ts if last is None or ts > last else last
+        out["real"] = {"n": len(rs),
+                       "avg_r": round(sum(rs) / len(rs), 4) if rs else None,
+                       "wins": sum(1 for r in rs if r > 0),
+                       "losses": sum(1 for r in rs if r < 0),
+                       "avg_mae_pct": round(sum(maes) / len(maes), 3) if maes else None,
+                       "avg_mfe_pct": round(sum(mfes) / len(mfes), 3) if mfes else None,
+                       "exit_reasons": exits, "weight": 1.0}
+        # --- aktif gölge
+        sh = self.get("shadow_book") or {}
+        sh_rows = [t for t in (sh.get("trades") or [])
+                   if isinstance(t, dict) and str(t.get("symbol")) == sym]
+        sh_lab = [t for t in sh_rows if isinstance(t.get("outcome"), dict)]
+        sh_rs = [_num((t.get("outcome") or {}).get("r_multiple")) for t in sh_lab]
+        sh_rs = [r for r in sh_rs if r is not None]
+        out["shadow"] = {"n": len(sh_rows), "labeled": len(sh_lab),
+                         "avg_r": round(sum(sh_rs) / len(sh_rs), 4) if sh_rs else None,
+                         "weight": "shadow_weight×fidelity (gerçekten DAİMA düşük)"}
+        # --- tam-geçmiş toplamları (aggregates.json — L3 sembol, L2 sembol|yön|setup)
+        try:
+            adoc = read_json(self.state_dir / "experience_index" / "aggregates.json",
+                             default=None)
+            cells = ((adoc or {}).get("book") or {}).get("cells") or {}
+            l3 = cells.get(f"3|{sym.replace('|', '_')}") or {}
+            n = w = wr = 0.0
+            months = sorted(l3)
+            for st_ in l3.values():
+                n += float(st_.get("n") or 0)
+                w += float(st_.get("w") or 0)
+                wr += float(st_.get("wr") or 0)
+            if n:
+                out["aggregate"] = {"n": int(n), "mean_r": round(wr / w, 4) if w else None,
+                                    "months": len(months),
+                                    "first_month": months[0] if months else None,
+                                    "last_month": months[-1] if months else None}
+            by_dir: dict[str, Any] = {}
+            for key, mrows in cells.items():
+                if not key.startswith("2|"):
+                    continue
+                parts = key.split("|")
+                if len(parts) >= 4 and parts[1] == sym.replace("|", "_"):
+                    dn, wn, wrn = 0.0, 0.0, 0.0
+                    for st_ in mrows.values():
+                        dn += float(st_.get("n") or 0)
+                        wn += float(st_.get("w") or 0)
+                        wrn += float(st_.get("wr") or 0)
+                    d = by_dir.setdefault(parts[2], {"n": 0, "setups": {}})
+                    d["n"] += int(dn)
+                    d["setups"][parts[3]] = {"n": int(dn),
+                                             "mean_r": round(wrn / wn, 4) if wn else None}
+            out["by_direction"] = by_dir
+        except Exception:  # noqa: BLE001
+            pass
+        # --- son karar etkisi + tarih aralığı + tutarlılık
+        for row in reversed(self.tail_jsonl("decision_journal", 2000)):
+            if row.get("symbol") == sym and row.get("learning_influence"):
+                out["last_influence"] = row["learning_influence"]
+                out["last_decision_ts"] = row.get("decision_ts")
+                out["last_why_tr"] = row.get("why_summary_tr")
+                break
+        out["date_range"] = {"first": first, "last": last}
+        all_rs = rs + sh_rs
+        if all_rs:
+            pos = sum(1 for r in all_rs if r > 0)
+            out["consistency"] = round(abs(2 * pos / len(all_rs) - 1), 4)
+        out["available"] = bool(rs or sh_rows or out["aggregate"])
+        return out
+
     def learning_research(self) -> dict[str, Any]:
         """PAPER araştırma politikası özeti — hangi aday aktif, neyi değiştirdi, sonucu ne.
 

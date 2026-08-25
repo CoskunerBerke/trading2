@@ -272,6 +272,64 @@ def build_outcome_link(*, trade_id: str, outcome: dict[str, Any],
     }
 
 
+_KIND_TR = {ACCEPTED: "işlem AÇILDI", REJECTED: "reddedildi", SHADOW: "gölge olarak izlendi",
+            NON_ACTIONABLE: "işlenebilir değil", NO_VALID_PLAN: "geçerli plan yok",
+            CHIEF_REJECTED: "chief sıralamasında elendi", VETOED: "red-team vetosu",
+            NO_TRIGGER: "tetik oluşmadı", NEGATIVE_EDGE: "maliyet sonrası edge negatif",
+            DUPLICATE_SKIPPED: "aynı sinyal tekrarı", RESEARCH_BLOCKED: "araştırma politikası",
+            LEVERAGE_BLOCKED: "kaldıraç kapısı", SIZE_ZERO: "boyut çarpanı sıfır",
+            RISK_REJECTED: "risk motoru reddetti", OPEN_FAILED: "emir açılamadı",
+            DATA_INVALID: "veri geçersiz", GATE_HALTED: "tur kapısı durdurdu",
+            SCREENED_OUT: "ucuz taramada elendi"}
+
+
+def why_summary_tr(rec: dict[str, Any]) -> str:
+    """Kanıttan türetilmiş doğal dil özeti — LLM YOK, uydurma sebep YOK.
+
+    Neden değerlendirildi / neden ilerledi-elendi / geçmiş ne dedi / öğrenme p_win'i nasıl
+    oynattı / öğrenme olmasa karar değişir miydi / risk kapısı ne dedi.
+    """
+    parts: list[str] = []
+    tier = rec.get("tier")
+    if tier == "A":
+        parts.append(f"Tier-A taramasında değerlendirildi (skor {rec.get('scan_score')}, "
+                     f"sıra {rec.get('scan_rank')}).")
+    else:
+        parts.append("Derin analize (Tier-B) seçildi.")
+    kind = str(rec.get("outcome_kind") or "")
+    stage = rec.get("outcome_stage")
+    reason = rec.get("outcome_reason")
+    desc = _KIND_TR.get(kind, kind or "sonuç yok")
+    parts.append(f"Sonuç: {desc}" + (f" [{stage}]" if stage else "")
+                 + (f" — {reason}." if reason else "."))
+    li = rec.get("learning_influence") or {}
+    n_exp = li.get("n_experience")
+    if n_exp:
+        agg_n = li.get("aggregate_n") or 0
+        sim = li.get("top_similarity")
+        parts.append(f"Geçmişte {n_exp} benzer sonuç bulundu"
+                     + (f" (+{agg_n} arşiv toplamı)" if agg_n else "")
+                     + (f", en yüksek benzerlik {sim}" if sim is not None else "") + ".")
+        base, learned, eff = li.get("baseline"), li.get("learned"), li.get("effective")
+        if base is not None and learned is not None:
+            arrow = "yükseltti" if learned > base else ("düşürdü" if learned < base else "değiştirmedi")
+            applied = bool(li.get("applied"))
+            parts.append(f"Deneyim p_win'i {base}→{learned} yönünde {arrow}; "
+                         + (f"uygulanan değer {eff} (PAPER_BOUNDED)." if applied
+                            else "SHADOW modunda baseline birebir korundu."))
+        if li.get("decision_changed_by_learning"):
+            parts.append("Öğrenme olmasaydı ekonomi kapısı FARKLI sonuç verirdi "
+                         "(decision_changed_by_learning=true).")
+    elif li:
+        parts.append("Kullanılabilir geçmiş deneyim bulunamadı (n=0, etki yok).")
+    rr = rec.get("risk_reasons")
+    if rr:
+        parts.append("Risk kapısı: " + ", ".join(str(x) for x in rr[:3]) + ".")
+    elif rec.get("risk_allowed") is True:
+        parts.append("Risk kapısı izin verdi.")
+    return " ".join(parts)[:900]
+
+
 class DecisionJournal:
     """Append-only karar günlüğü. Arızası çağıranı çökertmez.
 

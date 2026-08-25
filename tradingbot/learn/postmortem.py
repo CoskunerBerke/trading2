@@ -36,6 +36,9 @@ class Postmortem:
     lesson_codes: list[str] = field(default_factory=list)
     lesson_text_tr: list[str] = field(default_factory=list)
     labels: dict[str, Any] = field(default_factory=dict)
+    #: SINIRLI ileri politika — deterministik gelecek iddiası DEĞİL: aynı koşul tekrarında
+    #: güvenin hangi yönde ve ne kadar (bounded) oynayacağı + sert kapıların yine geçmesi şartı.
+    next_time_policy: dict[str, Any] = field(default_factory=dict)
     postmortem_version: str = POSTMORTEM_VERSION
 
     def to_dict(self) -> dict:
@@ -122,4 +125,25 @@ def structured_postmortem(rec: dict[str, Any], decision_snapshot: dict[str, Any]
     if p_before is not None:
         text.append(f"Giriş öncesi P(kazanç)=%{float(p_before)*100:.0f} → {'isabetli' if (float(p_before) >= 0.5) == won else 'yanıldı'}.")
     pm.lesson_codes, pm.lesson_text_tr = list(dict.fromkeys(codes)), text
+    # SINIRLI ileri politika — "bir dahaki sefere kesin LONG/SHORT gir" YOK. Yalnız:
+    # aynı koşullar tekrar oluşursa güvenin yönü (increase/decrease/hold), etkinin sınırı
+    # (mevcut max_fraction sözleşmesi) ve sert kapıların YİNE geçmesi şartı.
+    cost_dominated = bool(fd and fd > 0.25) or bool(fund is not None and fund > 0.2) or pm.slippage_killed_edge
+    if won and not cost_dominated and not pm.should_not_have_opened:
+        bias = "increase"
+        why_tr = "kazanç maliyete yenilmedi ve giriş kanıtı doğrulandı"
+    elif (not won) or cost_dominated or pm.should_not_have_opened:
+        bias = "decrease"
+        why_tr = ("maliyet kârı yuttu" if cost_dominated else
+                  ("giriş kanıtı yanlışlandı" if not won else "açılmaması gereken kanıt vardı"))
+    else:
+        bias = "hold"
+        why_tr = "kanıt çelişkili — güven değişmez"
+    pm.next_time_policy = {
+        "confidence_bias": bias,
+        "why_tr": why_tr,
+        "expected_bounded_effect": "p_win ayarı mevcut max_fraction sınırında kalır; "
+                                   "tek sonuç büyük sıçrama YAPAMAZ",
+        "hard_gates_still_required": True,
+        "deterministic_future_claim": False}
     return pm

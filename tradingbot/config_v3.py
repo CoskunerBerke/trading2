@@ -423,6 +423,21 @@ def load_v3(raw: dict[str, Any]) -> V3Config:
         kw[name] = _build(cls, val if isinstance(val, dict) else None, warnings, name)
     cfg = V3Config(**kw)
     cfg.warnings = warnings
+    # GUVENLI RUNTIME OVERRIDE (VPS drop-in icin): yalniz OGRENME modu, typed ve fail-closed.
+    # Kaynak agacini kirletmeden (config.yaml repo'da) PAPER_BOUNDED acip kapatmayi saglar.
+    # Gecersiz deger ConfigError ile REDDEDILIR; PAPER-disi modda PAPER_BOUNDED yine yasak
+    # (asagidaki validate_v3 kurali env yolu icin de gecerlidir).
+    env_mode = os.environ.get("TRADINGBOT_LEARNING_INFLUENCE_MODE", "").strip().upper()
+    if env_mode:
+        from .learn.influence import MODES as _ENV_MODES
+        if env_mode not in _ENV_MODES:
+            raise ConfigError(
+                f"TRADINGBOT_LEARNING_INFLUENCE_MODE geçersiz: {env_mode!r} "
+                f"(geçerli: {', '.join(_ENV_MODES)})")
+        if env_mode != cfg.learning_v3.influence_mode:
+            log.warning("learning_v3.influence_mode env override: %s -> %s",
+                        cfg.learning_v3.influence_mode, env_mode)
+        cfg.learning_v3.influence_mode = env_mode
     validate_v3(cfg)
     return cfg
 

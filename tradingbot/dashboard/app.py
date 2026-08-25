@@ -817,6 +817,16 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
                  'kârlılık kanıtı DEĞİLDİR. Counterfactual/shadow satırlar gerçek fill değildir.</p>')
         return _page("Quant", body, "/quant")
 
+    def _registry_counts() -> dict:
+        try:
+            from ..learn.feature_registry import summary as reg_summary
+            r = reg_summary()
+            return {"n_active": r.get("n_active"), "n_families": len(r.get("families") or []),
+                    "by_class": r.get("by_class"),
+                    "n_redundancy_groups": len(r.get("redundancy_groups") or {})}
+        except Exception:  # noqa: BLE001
+            return {"available": False}
+
     def _learning_loop_view() -> dict:
         """Outcome Learning Loop özeti — SALT OKUNUR, bozuk/eksik günlükte crash etmez."""
         try:
@@ -877,8 +887,28 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
                 "lesson_codes": dict(sorted(lesson_codes.items(), key=lambda kv: -kv[1])[:12]),
                 "retention": retention,
                 "experience_index": exp_index,
+                "feature_registry": _registry_counts(),
                 "retrieval_scope": exp_index.get("retrieval_scope", "HOT_ONLY"),
                 "guardrail": "LEARNING CANNOT OVERRIDE RISK GATES"}
+
+    @app.get("/api/coin-memory/{base}")
+    def api_coin_memory(base: str):
+        """Coin'e özel bellek özeti — SALT OKUNUR; eksik/bozuk veride 500 YOK."""
+        safe, reasons = json_safe(state.coin_memory(base))
+        if reasons:
+            safe["unavailable_reason"] = dict(reasons)
+        return JSONResponse(safe)
+
+    @app.get("/api/feature-registry")
+    def api_feature_registry():
+        """Feature envanteri — aktif/araştırma sınıfları, aileler, yedek gruplar, tavanlar."""
+        try:
+            from ..learn.feature_registry import summary as reg_summary
+            doc = reg_summary()
+        except Exception:  # noqa: BLE001
+            doc = {"available": False}
+        safe, _ = json_safe(doc)
+        return JSONResponse(safe)
 
     @app.get("/api/universe")
     def api_universe():

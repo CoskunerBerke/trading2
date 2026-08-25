@@ -1827,6 +1827,11 @@ class TradingEngineV3(TradingEngine):
                                                   "aggregate_level", "aggregate_n",
                                                   "aggregate_mean_r", "aggregate_months",
                                                   "decision_changed_by_learning")}
+                try:
+                    from .learn.decision_journal import why_summary_tr
+                    rec["why_summary_tr"] = why_summary_tr(rec)
+                except Exception:  # noqa: BLE001
+                    pass
                 if j.append_decision(rec):
                     n += 1
             # --- TIER-A STAGE-1: derin analize girmeyen evren sembolleri de KAYIT ALIR ---
@@ -1855,6 +1860,11 @@ class TradingEngineV3(TradingEngine):
                         "is_actionable": None, "has_valid_plan": None,
                         "entered_ranking": False, "shadow_recorded": False,
                         "code_sha": getattr(self.cfg, "code_sha", None)}
+                try:
+                    from .learn.decision_journal import why_summary_tr
+                    srec["why_summary_tr"] = why_summary_tr(srec)
+                except Exception:  # noqa: BLE001
+                    pass
                 if j.append_decision(srec):
                     n_screen += 1
             self._journaled_last_tour = n + n_screen

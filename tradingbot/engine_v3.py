@@ -1783,6 +1783,21 @@ class TradingEngineV3(TradingEngine):
                             "shadow_recorded": sym in shadowed,
                             "stage_history": [k for k, val in (self._funnel or {}).items() if val]
                             if getattr(self, "_funnel", None) else None})
+                # AÇIKLANABİLİRLİK: şampiyon model hazırsa aile bazlı logit katkıları
+                # (top± feature). Model hazır değilse alan YOK — uydurma yok.
+                try:
+                    from .learn.feature_registry import feature_contributions
+                    model, _mid, _params = self.learner2._champion_model()
+                    snap_v = self._pred_snapshots.get(sym)
+                    vals = getattr(snap_v, "values", None) if snap_v is not None else None
+                    if model is not None and isinstance(vals, dict) and vals:
+                        vec = [float(vals.get(n, 0.0) or 0.0)
+                               for n in (getattr(model, "feature_names", None) or [])]
+                        contrib = feature_contributions(model, vec)
+                        if contrib:
+                            rec["feature_contributions"] = contrib
+                except Exception:  # noqa: BLE001 — açıklama arızası kaydı engellemez
+                    pass
                 if sym in infl:
                     rec["learning_influence"] = {k: infl[sym].get(k) for k in
                                                  ("mode", "n_experience", "top_similarity",

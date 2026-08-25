@@ -254,6 +254,11 @@ class LearningV3Section:
     # (davranis birebir eski haliyle ayni); ustundeyse sembol/yon kovalari + en yeni
     # kullanilabilir kuyruk taranir. Maliyet arsiv toplamiyla DOGRUSAL BUYUMEZ.
     retrieval_max_scan: int = 5_000
+    # --- FEATURE YONETISIMI: genis olc, dar karar ver ---
+    # Aktif bagimsiz bilgi ailesi tavani ve karar duzeyi yumusak girdi tavani. Kayit
+    # `learn/feature_registry.py`dedir; ihlal config'i FAIL-CLOSED reddeder.
+    max_active_families: int = 8
+    max_active_soft_features: int = 12
     influence_mode: str = "SHADOW"
     influence_prior_strength: float = 20.0  # w = n/(n+prior_strength); >= 20 zorunlu
     influence_max_fraction: float = 0.05    # etkinin mutlak tavani (baseline orani)
@@ -460,6 +465,13 @@ def validate_v3(cfg: V3Config) -> None:
         raise ConfigError("PAPER_AUTO_PROMOTION_FORBIDDEN: learning_v3.auto_promote_in_paper=true "
                           "desteklenmiyor — terfi yalnız açık manuel operatör onayıyla yapılır")
     # Outcome Learning Loop: etki sözleşmesi fail-closed doğrulanır.
+    # FEATURE YONETISIMI: tavan ihlali fail-closed (indikator enflasyonu ONLENIR).
+    try:
+        from .learn.feature_registry import FeatureGovernanceError, validate_registry
+        validate_registry(max_families=cfg.learning_v3.max_active_families,
+                          max_soft_inputs=cfg.learning_v3.max_active_soft_features)
+    except FeatureGovernanceError as exc:
+        raise ConfigError(f"FEATURE_GOVERNANCE: {exc}") from exc
     from .learn.influence import MODES as _INFLUENCE_MODES, PAPER_BOUNDED as _PB
     _lv3 = cfg.learning_v3
     if _lv3.influence_mode not in _INFLUENCE_MODES:

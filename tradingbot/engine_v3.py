@@ -546,6 +546,22 @@ class TradingEngineV3(TradingEngine):
                 from .scanner import persist_scan
                 persist_scan(scan, st)
                 self.last_scan, self.last_scan_at = scan, time.time()
+                # DEGERLENDIRME EVRENI: taramanin ZATEN cektigi veriden turetilir (ek API
+                # cagrisi YOK, rate-limit guvenli). Yalniz YENI taramada yenilenir (cadence
+                # = scan_every). Ariza turu durdurmaz.
+                try:
+                    from .universe_eval import build_eval_universe
+                    _u = self.cfg.v3.universe
+                    prev_u = read_json(st / "universe_eval.json", default=None)
+                    doc = build_eval_universe(
+                        scan, target_min=_u.eval_target_min, target=_u.eval_target,
+                        target_max=_u.eval_target_max, prev=prev_u, run_id=self.run_id,
+                        now_iso=iso(now), flag_score=float(getattr(self.scanner, "flag_score", 0)),
+                        deep_symbols=tuple(r.symbol for r in scan.setups))
+                    atomic_write_json(st / "universe_eval.json", doc)
+                    self._eval_universe = doc
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("değerlendirme evreni üretilemedi (tur sürer): %s", exc)
             except Exception as exc:  # noqa: BLE001 — tarama hatası turu durdurmaz; kayıt altına alınır
                 log.exception("Tarama hatası: %s", exc)
                 scan = self.last_scan
@@ -1505,6 +1521,9 @@ class TradingEngineV3(TradingEngine):
             # SAKLAMA ALARMI: arsiv manifesti hic yazilamasa bile (disk dolu vb.) son rotasyon
             # sonucu BURADA gorunur; sessiz kayip yerine acik durum.
             "retention": self._retention_alarm(),
+            "tiers": dict(getattr(self, "_tier_counts", None) or {}),
+            "coverage": {"evaluated": int(getattr(self, "_evaluated_last_tour", 0) or 0),
+                         "journaled": int(getattr(self, "_journaled_last_tour", 0) or 0)},
             "history": hist[-500:]})
         atomic_write_json(self._sig_path, {"ids": self._seen_signals[-5000:]})
 
@@ -1749,7 +1768,8 @@ class TradingEngineV3(TradingEngine):
         if j is None or not decisions:
             return
         try:
-            from .learn.decision_journal import build_decision_record, classify_outcome
+            from .learn.decision_journal import (build_decision_record, classify_outcome,
+                                                 decision_id_for)
             infl = {i["symbol"]: i for i in getattr(self, "_influence_log", []) if i.get("symbol")}
             by_sym: dict[str, dict] = {}
             for e in risk_log:                       # aynı sembolün SON kaydı nihai durumdur
@@ -1809,8 +1829,45 @@ class TradingEngineV3(TradingEngine):
                                                   "decision_changed_by_learning")}
                 if j.append_decision(rec):
                     n += 1
-            self._journaled_last_tour = n
-            self._evaluated_last_tour = len(decisions)
+            # --- TIER-A STAGE-1: derin analize girmeyen evren sembolleri de KAYIT ALIR ---
+            # Kayıt küçüktür (ham mum/feature yok): hangi aşamada, neden elendi, skoru neydi.
+            # Payda = Tier A evreni; "değerlendirilen her aday" sözleşmesi burada tamamlanır.
+            uni = getattr(self, "_eval_universe", None) or {}
+            n_screen = 0
+            deep_syms = set(decisions)
+            for row in (uni.get("symbols") or []):
+                sym = str(row.get("symbol") or "")
+                if not sym or sym in deep_syms:
+                    continue
+                srec = {"schema_version": "decision_journal_v1", "kind": "decision",
+                        "decision_id": decision_id_for(self.run_id,
+                                                       getattr(self, "_journal_cycle", 0),
+                                                       sym, "SCREEN"),
+                        "run_id": self.run_id,
+                        "cycle_id": str(getattr(self, "_journal_cycle", 0)),
+                        "decision_ts": iso(now), "symbol": sym, "direction": None,
+                        "market_type": "USDM_PERP", "tier": "A",
+                        "outcome_kind": "SCREENED_OUT", "outcome_stage": "tier_a_screen",
+                        "outcome_reason": row.get("screen_reason") or "NOT_DEEP_ANALYZED",
+                        "scan_score": row.get("scan_score"), "scan_rank": row.get("rank"),
+                        "vol24_usdt": row.get("vol24_usdt"), "atr_pct": row.get("atr_pct"),
+                        "universe_artifact_sha": uni.get("artifact_sha"),
+                        "is_actionable": None, "has_valid_plan": None,
+                        "entered_ranking": False, "shadow_recorded": False,
+                        "code_sha": getattr(self.cfg, "code_sha", None)}
+                if j.append_decision(srec):
+                    n_screen += 1
+            self._journaled_last_tour = n + n_screen
+            n_tier_a_universe = len(uni.get("symbols") or [])
+            self._tier_counts = {
+                "tier_a_universe": n_tier_a_universe or len(decisions),
+                "tier_b_deep": len(decisions),
+                "tier_c_ranked": len({str(e.get("symbol") or "") for e in risk_log
+                                      if e.get("symbol")}),
+                "screened_journaled": n_screen,
+                "universe_artifact_sha": uni.get("artifact_sha"),
+                "universe_as_of": uni.get("as_of")}
+            self._evaluated_last_tour = len(decisions) + n_screen
             # KAYIPSIZ rotasyon: taşan kayıtlar önce arşive mühürlenir, sonra çıkarılır.
             # Arşiv başarısızsa budama YAPILMAZ ve durum açık alarma dönüşür (sessiz kayıp yok).
             rot = j.rotate()

@@ -60,6 +60,11 @@ class UniverseSection:
     refresh_minutes: int = 360
     tier2_top: int = 30
     tier3_top: int = 10
+    # --- DEGERLENDIRME EVRENI: panel top-listesi degil, botun analiz kapsami ---
+    # Uygun sembol 40'in altindaysa sayi YAPAY doldurulmaz (below_target_reason raporlanir).
+    eval_target_min: int = 40
+    eval_target: int = 50
+    eval_target_max: int = 60
 
 
 @dataclass

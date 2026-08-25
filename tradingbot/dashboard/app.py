@@ -739,6 +739,34 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
                                  "Atlanan satır": xi.get("skipped_rows", 0),
                                  "Arşivden yeniden kurulabilir":
                                      "EVET" if xi.get("rebuildable_from_archive") else "?"}))
+        uni = state.get("universe_eval") or {}
+        fun_t = (state.get("decision_funnel") or {})
+        if uni or fun_t.get("tiers"):
+            uc = uni.get("counts") or {}
+            tiers = fun_t.get("tiers") or {}
+            cov = fun_t.get("coverage") or {}
+            n_disp = min(15, len(state.coin_heads()))
+            cov_ratio = (round(cov["journaled"] / cov["evaluated"], 4)
+                         if cov.get("evaluated") else None)
+            body += ("<h2>Değerlendirme evreni ve huni</h2>"
+                     + '<div class="card">Panelde görünen liste analiz kapsamı DEĞİLDİR; '
+                       'bot bütün uygun evreni tarar ve HER adayı kaydeder.</div>'
+                     + '<div class="grid">'
+                     + card("Evren (değerlendirilen)", f"{uc.get('eligible', 0)}",
+                            f"hedef {((uni.get('targets') or {}).get('min', '—'))}-"
+                            f"{((uni.get('targets') or {}).get('max', '—'))} · panelde {n_disp}")
+                     + card("Tier A / B / C",
+                            f"{tiers.get('tier_a_universe', '—')} / "
+                            f"{tiers.get('tier_b_deep', '—')} / "
+                            f"{tiers.get('tier_c_ranked', '—')}",
+                            f"stage-1 kayıt {tiers.get('screened_journaled', 0)}")
+                     + card("Journal kapsaması", fmt(cov_ratio, 4),
+                            f"{cov.get('journaled', 0)} / {cov.get('evaluated', 0)} aday")
+                     + card("Evren snapshot", esc(str(uni.get("artifact_sha") or "—")),
+                            f"as-of {esc(str(uni.get('as_of') or '—'))}")
+                     + "</div>")
+            if uni.get("below_target_reason"):
+                body += f'<div class="card warn">{esc(uni["below_target_reason"])}</div>'
         rv2 = q.get("risk_v2") or {}
         if rv2:
             big = rv2.get("largest_cluster") or {}
@@ -851,6 +879,29 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
                 "experience_index": exp_index,
                 "retrieval_scope": exp_index.get("retrieval_scope", "HOT_ONLY"),
                 "guardrail": "LEARNING CANNOT OVERRIDE RISK GATES"}
+
+    @app.get("/api/universe")
+    def api_universe():
+        """Değerlendirme evreni — SALT OKUNUR: panelde görünen top liste ile botun analiz
+        kapsamı AYRI sayılardır. Tüm semboller aranabilir/filtrelenebilir (istemci tarafı).
+        Eksik/bozuk snapshot 500 ÜRETMEZ."""
+        doc = state.get("universe_eval") or {}
+        heads = state.coin_heads()
+        fun = state.get("decision_funnel") or {}
+        safe, reasons = json_safe({
+            "available": bool(doc),
+            "displayed_top": min(15, len(heads)),
+            "evaluated_universe": (doc.get("counts") or {}).get("eligible", 0),
+            "targets": doc.get("targets"),
+            "counts": doc.get("counts"),
+            "below_target_reason": doc.get("below_target_reason"),
+            "as_of": doc.get("as_of"), "artifact_sha": doc.get("artifact_sha"),
+            "changes": doc.get("changes"), "provenance": doc.get("provenance"),
+            "tiers": fun.get("tiers"), "coverage": fun.get("coverage"),
+            "symbols": doc.get("symbols") or [], "excluded": doc.get("excluded") or []})
+        if reasons:
+            safe["unavailable_reason"] = dict(reasons)
+        return JSONResponse(safe)
 
     @app.get("/api/learning-loop")
     def api_learning_loop():

@@ -51,11 +51,13 @@ RISK_REJECTED = "RISK_REJECTED"
 OPEN_FAILED = "OPEN_FAILED"
 DATA_INVALID = "DATA_INVALID"
 GATE_HALTED = "GATE_HALTED"
+#: Tier-A ucuz tarama elemesi — derin analize SEÇİLMEDİ (veri geçerli, skor/sıra yetmedi).
+SCREENED_OUT = "SCREENED_OUT"
 
 OUTCOME_CLASSES = (ACCEPTED, OPEN_FAILED, RISK_REJECTED, LEVERAGE_BLOCKED, SIZE_ZERO,
                    RESEARCH_BLOCKED, DUPLICATE_SKIPPED, NEGATIVE_EDGE, NO_TRIGGER, VETOED,
                    CHIEF_REJECTED, NO_VALID_PLAN, NON_ACTIONABLE, DATA_INVALID, GATE_HALTED,
-                   SHADOW, REJECTED)
+                   SCREENED_OUT, SHADOW, REJECTED)
 
 #: `block_code` → (sonuç sınıfı, üreten aşama). Motorun GERÇEK huni kodlarıyla birebir eşlenir.
 _BLOCK_MAP: dict[str, tuple[str, str]] = {

@@ -13,9 +13,12 @@ from tradingbot.quant.champion import (KEEP_CHAMPION, PROMOTE_CANDIDATE, REJECT_
 
 
 def _metrics(n=200, exp=0.15, dd=-3.0, tail=-1.2, sym_share=0.2, trade_share=0.1,
-             ci=(0.05, 0.3), insufficient=False):
+             ci=(0.05, 0.3), insufficient=False, payoff=1.5, win_rate=0.5,
+             calibration=None):
     return {"n": n, "insufficient_sample": insufficient, "expectancy_r": exp,
             "max_drawdown_r": dd, "tail_loss_r_cvar5": tail,
+            "payoff_ratio": payoff, "win_rate": win_rate,
+            "calibration": calibration if calibration is not None else {"brier": 0.2, "n": 200, "state": "ok"},
             "bootstrap_ci_mean_r": {"state": "ok", "low": ci[0], "high": ci[1]},
             "concentration": {"top_symbol_share": sym_share, "top_trade_share": trade_share}}
 

@@ -36,6 +36,15 @@ class PromotionGates:
     max_symbol_share: float = 0.5
     max_trade_share: float = 0.3
     max_tail_worse_ratio: float = 1.5          # CVaR5 champion'dan en fazla 1.5 kat kötü
+    #: PAYOFF KAPISI — yüksek win-rate + küçük kazanç / büyük kayıp profili terfi EDEMEZ.
+    #: Örnek: %75 win-rate, avg_win +0.40R, avg_loss −1.00R → expectancy +0.05R ama payoff 0.40.
+    #: Tek kötü kayıp serisi bu profili siler; bu yüzden payoff < 1.0 terfi önerisi alamaz.
+    min_payoff_ratio: float = 1.0
+    #: MUTLAK TAIL TABANI — champion'ın tail'i ölçülememiş olsa bile challenger'ın CVaR5'i
+    #: bu değerden kötüyse terfi edemez (göreli oran kapısı tek başına yetmez).
+    min_tail_loss_r_cvar5: float = -3.0
+    #: ÖlÇÜLMÜŞ kalibrasyon için azami Brier. Ölçülememişse UYARI olur, sahte blokaj değil.
+    max_brier: float = 0.30
 
 
 def _f(x: Any) -> float | None:
@@ -126,6 +135,23 @@ def evaluate_challenger(champion: dict[str, Any], challenger: dict[str, Any], *,
          f"top_symbol_share={sym_share}")
     gate("TRADE_CONCENTRATION", trade_share is not None and trade_share <= g.max_trade_share,
          f"top_trade_share={trade_share}")
+    # --- kalite kapıları: yüksek win-rate TEK BAŞINA başarı DEĞİLDİR
+    payoff = _f(challenger.get("payoff_ratio"))
+    wr = _f(challenger.get("win_rate"))
+    gate("PAYOFF_RATIO", payoff is not None and payoff >= g.min_payoff_ratio,
+         f"payoff_ratio={payoff} (eşik {g.min_payoff_ratio}) win_rate={wr} — "
+         "yüksek win-rate düşük payoff'u telafi ETMEZ")
+    gate("TAIL_LOSS_ABSOLUTE", ch_tail is not None and ch_tail >= g.min_tail_loss_r_cvar5,
+         f"challenger_cvar5={ch_tail} (mutlak taban {g.min_tail_loss_r_cvar5})")
+    cal = challenger.get("calibration") or {}
+    cal_state, brier = str(cal.get("state") or "missing"), _f(cal.get("brier"))
+    if cal_state == "ok":
+        gate("CALIBRATION", brier is not None and brier <= g.max_brier,
+             f"brier={brier} (azami {g.max_brier}) n={cal.get('n')}")
+    else:
+        checks.append({"code": "CALIBRATION_WARNING", "passed": True,
+                       "detail": f"kalibrasyon ölçülemedi (state={cal_state}, n={cal.get('n')}) "
+                                 "— uyarı olarak kaydedildi, sahte blokaj değil"})
     for code, raw in sorted((extra_soft_gates or {}).items()):
         ok, detail = _unpack(raw)
         gate(str(code), ok, detail or "ek yumuşak kapı")

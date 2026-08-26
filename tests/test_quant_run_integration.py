@@ -111,10 +111,14 @@ def _wf_evidence(tmp_path: Path, *, complete=True) -> Path:
     doc = {"walk_forward": wf,
            "challenger_metrics": {"n": 250, "insufficient_sample": False, "expectancy_r": 0.30,
                                   "max_drawdown_r": -2.0, "tail_loss_r_cvar5": -1.0,
+                                  "payoff_ratio": 1.6, "win_rate": 0.5,
+                                  "calibration": {"brier": 0.2, "n": 250, "state": "ok"},
                                   "bootstrap_ci_mean_r": {"state": "ok", "low": 0.1, "high": 0.5},
                                   "concentration": {"top_symbol_share": 0.3, "top_trade_share": 0.1}},
            "champion_metrics": {"n": 250, "insufficient_sample": False, "expectancy_r": 0.05,
                                 "max_drawdown_r": -3.0, "tail_loss_r_cvar5": -1.5,
+                                "payoff_ratio": 1.2, "win_rate": 0.45,
+                                "calibration": {"brier": 0.24, "n": 250, "state": "ok"},
                                 "bootstrap_ci_mean_r": {"state": "ok", "low": 0.0, "high": 0.2},
                                 "concentration": {"top_symbol_share": 0.3, "top_trade_share": 0.1}}}
     if complete:

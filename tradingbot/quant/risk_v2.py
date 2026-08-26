@@ -458,3 +458,116 @@ def offline_risk_report(positions: Iterable[Mapping[str, Any]],
             "increases_risk": bool(increases),
             "note": "mevcut RiskEngine/KillSwitch/leverage sınırları DIŞ SINIRDIR; "
                     "bu rapor hiçbir aktif kararı değiştirmez"}
+
+
+# --------------------------------------------------------------- portföy ısısı challenger
+#: Bu challenger'ın üretebileceği TEK karar kümesi. Emir/limit/stop/TP/ledger DEĞİŞMEZ.
+ADVISORY = "ADVISORY"
+COUNTERFACTUAL_BLOCK = "COUNTERFACTUAL_BLOCK"
+COUNTERFACTUAL_SIZE_REDUCTION = "COUNTERFACTUAL_SIZE_REDUCTION"
+HEAT_VERDICTS = (ADVISORY, COUNTERFACTUAL_BLOCK, COUNTERFACTUAL_SIZE_REDUCTION)
+
+#: Tek kümenin toplam riskteki payı bunu aşarsa karşı-olgusal BLOK önerilir.
+CLUSTER_BLOCK_SHARE = 0.60
+#: Bunu aşarsa karşı-olgusal BOYUT AZALTMA önerilir.
+CLUSTER_REDUCE_SHARE = 0.40
+#: Tek sembolün toplam riskteki payı tavanı.
+SYMBOL_REDUCE_SHARE = 0.35
+#: Yönsel net maruziyetin toplam riske oranı tavanı (tek yöne yığılma).
+DIRECTIONAL_REDUCE_SHARE = 0.80
+
+
+def _theme_of(p: Mapping[str, Any]) -> str:
+    """Tema etiketi POZİSYON KAYDINDAN gelir; sembol adından TÜRETİLMEZ (hard-code yok)."""
+    return str(p.get("theme") or p.get("sector") or p.get("cluster_theme") or "UNKNOWN_THEME")
+
+
+def portfolio_heat_challenger(report: Mapping[str, Any],
+                              positions: Iterable[Mapping[str, Any]], *,
+                              funding_stress: bool | None = None,
+                              liquidity_stress: bool | None = None) -> dict[str, Any]:
+    """Portföy ısısı / korelasyon challenger — YALNIZ offline karşı-olgusal.
+
+    `offline_risk_report()` çıktısını alır ve üç karardan birini üretir. Aktif `RiskEngine`,
+    kaldıraç, stop, TP, ledger veya emir yolu HİÇBİR koşulda DEĞİŞMEZ
+    (`applies_to_active_engine=False`).
+
+    Eksik korelasyon verisinde BAĞIMSIZLIK VARSAYILMAZ: `offline_risk_report` zaten aynı
+    yöndekileri konservatif tek kümede toplar ve buradaki paylar o kümelerden okunur.
+    """
+    pos = [dict(p) for p in positions]
+    exposure = dict(report.get("exposure") or {})
+    total = _num(exposure.get("total_usdt")) or 0.0
+    clusters = [c for c in (exposure.get("clusters") or []) if isinstance(c, dict)]
+    top_cluster = max((_num(c.get("share_of_total")) or 0.0 for c in clusters), default=0.0)
+
+    by_sym: dict[str, float] = {}
+    by_dir: dict[str, float] = {}
+    by_theme: dict[str, float] = {}
+    stop_risk = 0.0
+    for p in pos:
+        amt = _num(p.get("risk_usdt"))
+        if amt is None:
+            amt = _num(p.get("notional_usdt"))
+        amt = abs(amt) if amt is not None else None
+        if amt is None:
+            continue
+        stop_risk += amt
+        by_sym[str(p.get("symbol"))] = by_sym.get(str(p.get("symbol")), 0.0) + amt
+        by_dir[str(p.get("direction") or "?")] = by_dir.get(str(p.get("direction") or "?"), 0.0) + amt
+        by_theme[_theme_of(p)] = by_theme.get(_theme_of(p), 0.0) + amt
+    denom = total if total > 0 else stop_risk
+    top_sym = (max(by_sym.values()) / denom) if (by_sym and denom > 0) else None
+    top_dir = (max(by_dir.values()) / denom) if (by_dir and denom > 0) else None
+    top_theme = (max(by_theme.values()) / denom) if (by_theme and denom > 0) else None
+
+    # Kâr yoğunlaşması: kapanmış K/Z pozisyon kaydında varsa ölçülür; yoksa None (0 DEĞİL).
+    pnls = [v for v in (_num(p.get("realized_pnl")) for p in pos) if v is not None and v > 0]
+    profit_conc = (round(max(pnls) / sum(pnls), 4) if pnls and sum(pnls) > 0 else None)
+
+    corr_q = str(report.get("correlation_quality") or CORR_UNAVAILABLE)
+    stale = bool(report.get("data_stale"))
+    reasons: list[str] = []
+    verdict = ADVISORY
+    if top_cluster >= CLUSTER_BLOCK_SHARE:
+        verdict = COUNTERFACTUAL_BLOCK
+        reasons.append(f"CLUSTER_SHARE={round(top_cluster, 4)} \u2265 {CLUSTER_BLOCK_SHARE}")
+    elif top_cluster >= CLUSTER_REDUCE_SHARE:
+        verdict = COUNTERFACTUAL_SIZE_REDUCTION
+        reasons.append(f"CLUSTER_SHARE={round(top_cluster, 4)} \u2265 {CLUSTER_REDUCE_SHARE}")
+    if top_sym is not None and top_sym >= SYMBOL_REDUCE_SHARE and verdict == ADVISORY:
+        verdict = COUNTERFACTUAL_SIZE_REDUCTION
+        reasons.append(f"SYMBOL_SHARE={round(top_sym, 4)} \u2265 {SYMBOL_REDUCE_SHARE}")
+    if top_dir is not None and top_dir >= DIRECTIONAL_REDUCE_SHARE and verdict == ADVISORY:
+        verdict = COUNTERFACTUAL_SIZE_REDUCTION
+        reasons.append(f"DIRECTIONAL_SHARE={round(top_dir, 4)} \u2265 {DIRECTIONAL_REDUCE_SHARE}")
+    if corr_q != CORR_OK:
+        reasons.append(f"CORRELATION_QUALITY={corr_q} \u2014 ba\u011f\u0131ms\u0131zl\u0131k VARSAYILMADI")
+    if stale:
+        reasons.append("STALE_RETURNS \u2014 konservatif tarafa sap\u0131ld\u0131")
+    if funding_stress:
+        reasons.append("FUNDING_STRESS")
+    if liquidity_stress:
+        reasons.append("LIQUIDITY_STRESS")
+    if (funding_stress or liquidity_stress) and verdict == ADVISORY:
+        verdict = COUNTERFACTUAL_SIZE_REDUCTION
+    return {"schema_version": SCHEMA_VERSION, "component": "portfolio_heat_challenger",
+            "verdict": verdict, "allowed_verdicts": list(HEAT_VERDICTS),
+            "reasons": reasons,
+            "total_stop_risk_usdt": round(stop_risk, 6),
+            "directional_exposure_usdt": {k: round(v, 6) for k, v in sorted(by_dir.items())},
+            "symbol_exposure_usdt": {k: round(v, 6) for k, v in sorted(by_sym.items())},
+            "theme_exposure_usdt": {k: round(v, 6) for k, v in sorted(by_theme.items())},
+            "top_cluster_share": round(top_cluster, 4),
+            "top_symbol_share": (round(top_sym, 4) if top_sym is not None else None),
+            "top_direction_share": (round(top_dir, 4) if top_dir is not None else None),
+            "top_theme_share": (round(top_theme, 4) if top_theme is not None else None),
+            "profit_concentration": profit_conc,
+            "correlation_quality": corr_q,
+            "independence_assumed": False,
+            "data_stale": stale,
+            "funding_stress": bool(funding_stress),
+            "liquidity_stress": bool(liquidity_stress),
+            "applies_to_active_engine": False,
+            "changes_leverage_stop_tp_or_orders": False,
+            "banner": ADVISORY_BANNER}

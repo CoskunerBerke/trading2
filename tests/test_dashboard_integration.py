@@ -754,7 +754,10 @@ def test_learning_window_holds_when_lessons_are_truncated(tmp_path):
     assert cards["Kazanmayan"] == "150"
     assert cards["Kazanma oranı"] == "%40.0"   # 100/250 — lessons'tan gelseydi %50.0 olurdu
     assert cards["Ortalama R"] == f"{12.5 / 250:+.3f}R"
-    assert "Veri penceresi: son 200 ders" in c.get("/learning").text
+    # 200 SAKLAMA SINIRI DEĞİLDİR — metin artık «en fazla 200 ders tutar» İDDİA ETMEZ.
+    html = c.get("/learning").text
+    assert "Ekranda son 200 ders gösteriliyor" in html
+    assert "en fazla 200 ders tutar" not in html
 
 
 def test_learning_missing_counters_report_no_data(tmp_path):

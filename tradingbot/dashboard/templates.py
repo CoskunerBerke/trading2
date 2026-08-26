@@ -695,5 +695,185 @@ def chart_block(base: str, tf: str = "4h", market: str = "spot", *, token_qs: st
 <script>{CHART_JS}</script>"""
 
 
+# --------------------------------------------------------------- öğrenme kalite blokları
+#
+# Bu dört blok SALT SUNUMDUR: hiçbir öğrenme/risk matematiği burada hesaplanmaz. Hepsi
+# eksik/bozuk/stale/null/non-finite girdiye dayanıklıdır — hiçbir koşulda exception atmaz,
+# çünkü `/learning` ve `/quant` sayfaları eski şemalı `learning.json` ile de 200 dönmelidir.
+
+NOT_ENOUGH_DATA = "NOT ENOUGH DATA"
+RESEARCH_ONLY = "RESEARCH ONLY"
+ACTIVE_POLICY_UNCHANGED = "ACTIVE POLICY UNCHANGED"
+
+#: Kanıt seviyesi → rozet türü. Bilinmeyen seviye nötr gösterilir.
+_EVIDENCE_KIND = {"OBSERVATION": "", "RESEARCH_HYPOTHESIS": "warn",
+                  "VALIDATED_POLICY_CANDIDATE": "ok", "APPLIED_BOUNDED": "ok",
+                  "REJECTED": "bad", "RETIRED": ""}
+
+
+def _d(x: Any) -> dict:
+    return x if isinstance(x, dict) else {}
+
+
+def _num(x: Any, nd: int = 3, suffix: str = "") -> str:
+    """Sonlu sayı → biçimli metin; değilse «Veri yok» (sessiz 0 YOK)."""
+    from ..pnl import finite_float_or_none
+    v = finite_float_or_none(x)
+    return "Veri yok" if v is None else f"{v:.{nd}f}{suffix}"
+
+
+def evidence_badge(level: Any) -> str:
+    lv = str(level or "").upper()
+    return badge(lv or "—", _EVIDENCE_KIND.get(lv, "")) if lv else "—"
+
+
+def retention_block(ln: dict) -> str:
+    """Ders saklama zinciri — 200'ün SAKLAMA SINIRI OLMADIĞINI açıkça yazar."""
+    ret = _d(_d(ln).get("lesson_retention"))
+    if not ret:
+        return ""
+    health = str(ret.get("archive_health") or "—")
+    kind = {"OK": "ok", "EMPTY": "", "DEGRADED": "warn", "ARCHIVE_FAILED": "bad",
+            "DISABLED": "warn"}.get(health, "")
+    scopes = ", ".join(str(x) for x in (ret.get("retrieval_scopes") or [])) or "HOT"
+    rows = [
+        ["Sıcak pencere (ekran)", _num(ret.get("hot_window"), 0)],
+        ["Sıcak dersler", _num(ret.get("hot_lessons"), 0)],
+        ["Arşivlenmiş dersler", _num(ret.get("archived_lessons"), 0)],
+        ["Ömür boyu ders", _num(ret.get("lifetime_lessons"), 0)],
+        ["Segment", _num(ret.get("segments"), 0)],
+        ["İndekslenmiş", _num(ret.get("indexed_lessons"), 0)],
+        ["Toplam (aggregate) hücre", _num(ret.get("aggregate_cells"), 0)],
+        ["Saklama politikası", esc(str(ret.get("retention_policy") or "—"))],
+        ["Arşiv sağlığı", badge(health, kind)],
+        ["Retrieval kapsamı", esc(scopes)],
+        ["Taşmada ayrıntı siliniyor mu?",
+         badge("HAYIR", "ok") if ret.get("deletes_detail_on_overflow") is False else badge("BİLİNMİYOR", "warn")],
+    ]
+    err = ret.get("last_archive_error") or ret.get("last_rotation_error")
+    if err:
+        rows.append(["Son arşiv hatası", f'<span class="bad">{esc(str(err)[:200])}</span>'])
+    note = str(ret.get("note_tr") or "")
+    return ("<h2>Ders saklama (kayıpsız)</h2>"
+            + table(["Alan", "Değer"], rows, empty="saklama bilgisi yok")
+            + f'<p class="mut small">{esc(note)} Arşiv yazılamazsa sıcak pencere BUDANMAZ — '
+              'arşivsiz silme yasaktır.</p>')
+
+
+def calibration_block(ln: dict) -> str:
+    """Güvenilirlik kovaları — tek sonuç «model haklıydı/yanıldı» DEMEK DEĞİLDİR."""
+    cal = _d(_d(ln).get("calibration"))
+    if not cal:
+        return ""
+    buckets = [b for b in (cal.get("buckets") or []) if isinstance(b, dict)]
+    rows = []
+    for b in buckets:
+        suf = badge("YETERLİ", "ok") if b.get("sufficient") else badge(NOT_ENOUGH_DATA, "warn")
+        rows.append([esc(str(b.get("bucket") or "—")), _num(b.get("real_n"), 0),
+                     _num(b.get("mean_predicted_p"), 3), _num(b.get("observed_win_rate"), 3),
+                     _num(b.get("shrunk_observed_rate"), 3),
+                     f"{_num(b.get('ci95_low'), 3)} – {_num(b.get('ci95_high'), 3)}", suf])
+    head = ('<div class="grid">'
+            + card("Kalibrasyon örneği (gerçek)", _num(cal.get("n_real"), 0), "yalnız GERÇEK PAPER sonuçları")
+            + card("ECE", _num(cal.get("ece"), 4), "expected calibration error — düşük daha iyi")
+            + card("Yeterli kova", _num(cal.get("n_sufficient_buckets"), 0),
+                   f"kova başına asgari örnek: {esc(str(cal.get('min_bucket_sample') or '—'))}")
+            + card("Reddedilen (gelecek/çift)",
+                   f"{_num(cal.get('rejected_future'), 0)} / {_num(cal.get('rejected_duplicate'), 0)}",
+                   "no-lookahead + duplicate koruması")
+            + "</div>")
+    return ("<h2>Olasılık kalibrasyonu</h2>" + head
+            + table(["Kova", "n (gerçek)", "Ortalama tahmin", "Gözlenen", "Büzülmüş", "%95 GA", "Durum"],
+                    rows, num_cols={1, 2, 3, 4}, empty="kalibrasyon örneği yok")
+            + '<p class="mut small">TEK sonuç bir olasılık tahminini doğrulamaz da yanlışlamaz da: '
+              '%29 olasılıklı olay da gerçekleşir. Bu tablo çok sayıda tahminin TOPLU davranışını '
+              'ölçer. Kova örneği yetersizse hüküm YOKTUR (' + NOT_ENOUGH_DATA + '). Kalibrasyon '
+              'aktif RiskEngine\'e DOKUNMAZ — ' + ACTIVE_POLICY_UNCHANGED + '.</p>')
+
+
+def quality_block(ln: dict, *, win_rate: Any = None, expectancy_r: Any = None,
+                  counters_bad: str = "") -> str:
+    """Win rate TEK BAŞINA gösterilmez: payoff ve net beklenti ile BİRLİKTE okunur.
+
+    `win_rate`/`expectancy_r` ÇAĞIRANDAN gelir — bu blok sayacı KENDİ TÜRETMEZ. Çelişkili
+    sayaçta (`counters_bad`) birleşik kart «Veri yok» olur; %100 üstü oran UYDURULMAZ.
+    """
+    from ..pnl import finite_float_or_none
+    d = _d(ln)
+    q = _d(d.get("quality_metrics"))
+    wr = finite_float_or_none(win_rate)
+    exp_r = finite_float_or_none(expectancy_r)
+    if counters_bad:
+        wr = exp_r = None
+    if wr is None:
+        wr = finite_float_or_none(q.get("win_rate"))
+    if exp_r is None:
+        exp_r = finite_float_or_none(q.get("expectancy_r"))
+    payoff = finite_float_or_none(q.get("payoff_ratio"))
+    avg_w, avg_l = finite_float_or_none(q.get("avg_win_r")), finite_float_or_none(q.get("avg_loss_r"))
+    if payoff is None and avg_w is not None and avg_l:
+        payoff = avg_w / abs(avg_l)
+    combined = ("Veri yok" if (wr is None or payoff is None or exp_r is None)
+                else f"%{wr * 100:.1f} · {payoff:.2f} · {exp_r:+.3f}R")
+    cards = ('<div class="grid">'
+             + card("Oran × payoff × beklenti", combined,
+                    "üçü BİRLİKTE okunur — tek başına oran başarı ölçüsü DEĞİLDİR")
+             + card("Payoff", _num(payoff, 3), "ortalama kazanç R / ortalama kayıp R")
+             + card("Net beklenti", _num(exp_r, 4, "R"), "işlem başına maliyet sonrası R")
+             + card("Ortalama kazanç / kayıp",
+                    f"{_num(avg_w, 3, 'R')} / {_num(avg_l, 3, 'R')}", "R cinsinden")
+             + card("Profit factor", _num(q.get("profit_factor"), 3), "brüt kâr / brüt zarar")
+             + card("Maks. drawdown", _num(q.get("max_drawdown_r"), 3, "R"), "R cinsinden")
+             + card("Tail (CVaR5)", _num(q.get("tail_loss_r_cvar5"), 3, "R"), "en kötü %5 ortalaması")
+             + card("En uzun kayıp serisi", _num(q.get("longest_loss_streak"), 0))
+             + card("Maliyet sürüklemesi", _num(q.get("cost_drag_r"), 4, "R"), "ücret + funding + kayma")
+             + card("Capture ratio", _num(q.get("capture_ratio_mean"), 3), "gerçekleşen R / MFE R")
+             + "</div>")
+    warn = ('<p class="mut small">YÜKSEK KAZANMA ORANI TEK BAŞINA BAŞARI DEĞİLDİR. Örnek: '
+            "4 işlemin 3'ü kazanç (oran 0.75) ama ortalama kazanç +0.40R / ortalama kayıp "
+            '−1.00R → beklenti yalnız +0.05R (maliyet öncesi) ve tek kötü seri bunu siler. '
+            "Buna karşılık 2 işlemin 1'i kazanç (oran 0.50), +1.50R / −1.00R → beklenti "
+            '+0.25R. Terfi kapıları payoff, tail ve yoğunlaşmayı BİRLİKTE arar.</p>')
+    return "<h2>Kalite metrikleri (birlikte okunur)</h2>" + cards + warn
+
+
+def observation_block(lessons: list) -> str:
+    """Gözlem ↔ hipotez ayrımı + edge/execution sınıfları. Politika iddiası YOKTUR."""
+    rows = []
+    for x in (lessons or [])[-30:][::-1]:
+        if not isinstance(x, dict):
+            continue
+        obs = _d(x.get("observation"))
+        raw_h = x.get("hypotheses")
+        hyps = [h for h in raw_h if isinstance(h, dict)] if isinstance(raw_h, list) else []
+        if not obs and not hyps:
+            continue
+        raw_c = obs.get("observation_codes")
+        codes = ", ".join(str(c) for c in raw_c) if isinstance(raw_c, list) else "—"
+        codes = codes or "—"
+        hcodes = ", ".join(str(h.get("code")) for h in hyps) or "—"
+        cap = obs.get("capture_ratio")
+        cap_txt = _num(cap, 3) if cap is not None else esc(str(obs.get("capture_ratio_state") or "—"))
+        rows.append([esc(str(x.get("id") or "—")), esc(str(x.get("symbol") or "—")),
+                     esc(codes), esc(hcodes),
+                     _num(obs.get("mfe_r"), 3), _num(obs.get("mae_r"), 3),
+                     _num(obs.get("realized_r"), 3), cap_txt,
+                     _num(obs.get("cost_drag_total_r"), 4),
+                     esc(str(obs.get("data_quality") or "—")),
+                     evidence_badge(x.get("evidence_level"))])
+    if not rows:
+        return ""
+    return ("<h3>Gözlem ↔ hipotez (edge vs execution)</h3>"
+            + table(["İşlem", "Sembol", "GÖZLEM kodları", "HİPOTEZ kodları", "MFE R", "MAE R",
+                     "Gerçekleşen R", "Capture", "Maliyet R", "Veri", "Kanıt"],
+                    rows, num_cols={4, 5, 6, 7, 8}, empty="gözlem kaydı yok")
+            + f'<p class="mut small">Soldaki kodlar GÖZLEMDİR (ne oldu), sağdakiler '
+              f'ARAŞTIRMA HİPOTEZİDİR (ne sorulmalı) — {RESEARCH_ONLY}. Tek işlem '
+              f'`OBSERVATION` seviyesini AŞAMAZ ve politika değiştiremez: '
+              f'{ACTIVE_POLICY_UNCHANGED}. Nedensellik iddiası yoktur.</p>')
+
+
 __all__ = ["page", "table", "kv_table", "render_any", "card", "badge", "health_badge", "ks_badge", "verdict_badge", "pnl_cell",
-           "fmt", "pct", "esc", "age_text", "chart_block", "CSS", "NAV", "CHART_JS"]
+           "fmt", "pct", "esc", "age_text", "chart_block", "CSS", "NAV", "CHART_JS",
+           "retention_block", "calibration_block", "quality_block", "observation_block",
+           "evidence_badge", "NOT_ENOUGH_DATA", "RESEARCH_ONLY", "ACTIVE_POLICY_UNCHANGED"]

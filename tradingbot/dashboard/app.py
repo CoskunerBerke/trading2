@@ -27,7 +27,8 @@ from .templates import (HEADS_TABLE_CLS, POS_TABLE_CLS, age_text, badge, card, c
                         chart_block, chief_block, esc, fmt, fmt_utc, health_badge, ks_badge,
                         kv_table, lessons_table, live_bar, live_script, money_html,
                         money_html_text, page, pct, pnl_cell, render_any, sample_banner, table,
-                        verdict_badge, verdict_kind, weight_table)
+                        observation_block, quality_block, retention_block,
+                        calibration_block, verdict_badge, verdict_kind, weight_table)
 
 log = logging.getLogger(__name__)
 _PLOTLY_CACHE: dict[str, bytes] = {}
@@ -454,11 +455,26 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
                            ("exit_stats", "Çıkış nedenleri")):
             if ln.get(key):
                 body += f"<h2>{title}</h2>" + render_any(ln[key])
+        body += retention_block(ln)
+        body += calibration_block(ln)
+        body += quality_block(ln, win_rate=(None if wr is None else wr / 100.0),
+                              expectancy_r=avg_r, counters_bad=bad)
         if lessons:
             # `lessons` YALNIZ bu tablo içindir — üst kartlar bu listeden HESAPLANMAZ.
-            body += (f"<h2>Dersler</h2><p class=\"mut small\">Veri penceresi: son {len(lessons)} ders "
-                     f"(kayıt defteri en fazla 200 ders tutar). Üstteki özet kartları TÜM ZAMAN "
-                     f"sayaçlarındandır.</p>" + lessons_table(lessons[-30:][::-1]))
+            ret = ln.get("lesson_retention") if isinstance(ln.get("lesson_retention"), dict) else {}
+            hot_w = ret.get("hot_window")
+            arch = ret.get("archived_lessons")
+            # 200 SAKLAMA SINIRI DEĞİLDİR: yalnız ekranda/sıcak dosyada tutulan penceredir.
+            win_txt = (f"Ekranda son {len(lessons)} ders gösteriliyor"
+                       + (f" (sıcak pencere {hot_w})." if hot_w else "."))
+            arch_txt = (f" Ömür boyu ayrıntılı dersler kayıpsız arşivleniyor "
+                        f"(arşivde {arch} ders). Retrieval kapsamı: "
+                        f"{', '.join(str(x) for x in (ret.get('retrieval_scopes') or ['HOT']))}."
+                        if isinstance(arch, int) else
+                        " Ders arşivi durumu bilinmiyor — arşivsiz budama YAPILMAZ.")
+            body += (f"<h2>Dersler</h2><p class=\"mut small\">{esc(win_txt)}{esc(arch_txt)} "
+                     f"Üstteki özet kartları TÜM ZAMAN sayaçlarındandır.</p>"
+                     + observation_block(lessons) + lessons_table(lessons[-30:][::-1]))
         if ln.get("blacklist"):
             body += "<h2>Kara liste</h2><ul>" + "".join(f"<li>{esc(x)}</li>" for x in ln["blacklist"]) + "</ul>"
         return _page("Öğrenme", body, "/learning")

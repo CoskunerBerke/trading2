@@ -39,6 +39,8 @@ class Postmortem:
     #: SINIRLI ileri politika — deterministik gelecek iddiası DEĞİL: aynı koşul tekrarında
     #: güvenin hangi yönde ve ne kadar (bounded) oynayacağı + sert kapıların yine geçmesi şartı.
     next_time_policy: dict[str, Any] = field(default_factory=dict)
+    #: Tek sonucun kalibrasyon KATKISI (Brier/log-loss/sürpriz) — model hükmü DEĞİL.
+    probability_evidence: dict[str, Any] = field(default_factory=dict)
     postmortem_version: str = POSTMORTEM_VERSION
 
     def to_dict(self) -> dict:
@@ -81,7 +83,9 @@ def structured_postmortem(rec: dict[str, Any], decision_snapshot: dict[str, Any]
         if reason == "TP1_THEN_BE":
             codes.append("TP2_NOT_REACHED"); text.append("Hedef2'ye ulaşılamadı; TP1 + gerçek başa-baş sermayeyi korudu.")
         if mfe > 0 and abs(mae) > mfe * 0.8:
-            codes.append("LATE_ENTRY"); text.append(f"Önce %{abs(mae):.1f} aleyhte gitti (MAE) — giriş geç; geri çekilme girişleri tercih et.")
+            codes.append("LATE_ENTRY")
+            text.append(f"Önce %{abs(mae):.1f} aleyhte gitti (MAE) — GÖZLEM. "
+                        "HİPOTEZ: geri çekilme girişi bu koşulda daha iyi mi? — ölçülmeli.")
             pm.better_entry_possible = True
     else:
         text.append(f"ZARAR ({r:.2f}R): {rec.get('exit_reason')}. Yanılan: {', '.join(NAMES[a] for a in wrong) or '-'}.")
@@ -94,10 +98,15 @@ def structured_postmortem(rec: dict[str, Any], decision_snapshot: dict[str, Any]
             codes.append("STOP_TOO_FAST"); text.append("Stop ≤2 barda geldi: giriş gürültüye denk geldi ya da stop ATR'ye göre dar.")
             pm.stop_ok = False
         elif mfe >= 1.0 and reason == "STOP":
-            codes.append("PROFIT_NOT_TAKEN"); text.append(f"Önce %{mfe:.1f} lehte gitti ama kâr alınmadı → TP1 daha yakın / erken başa-baş.")
+            codes.append("PROFIT_NOT_TAKEN")
+            text.append(f"Önce %{mfe:.1f} lehte gitti, sonuç stop oldu (GÖZLEM). "
+                        "HİPOTEZ: daha erken kısmi kâr / başa-baş net beklentiyi artırır mı? "
+                        "— tek işlem politika DEĞİŞTİRMEZ; OOS'ta ölçülmeli.")
             pm.target_ok = False
         if int(f.get("n_warnings", 0) or 0) >= 5:
-            codes.append("TOO_MANY_WARNINGS"); text.append("Girişte ≥5 uyarı vardı — boyut yarıya inmeli / atlanmalı.")
+            codes.append("TOO_MANY_WARNINGS")
+            text.append("Girişte ≥5 uyarı vardı (GÖZLEM). HİPOTEZ: uyarı yoğunluğu seçicilik "
+                        "eşiği olmalı mı? — selectivity challenger konusu.")
             pm.should_not_have_opened = True; pm.should_not_reasons.append("n_warnings>=5")
         if float(f.get("btc_align", 0) or 0) < 0:
             codes.append("AGAINST_BTC_MODE"); text.append("BTC risk moduna ters yönde işlemdi.")
@@ -121,9 +130,15 @@ def structured_postmortem(rec: dict[str, Any], decision_snapshot: dict[str, Any]
         pm.alternative_exit = {"trail_at_mfe_half": round(mfe / 2, 3)}
     if snap.get("vetoes"):
         pm.should_not_have_opened = True; pm.should_not_reasons.append("had_vetoes")
+    # OLASILIK SEMANTIĞI: tek sonuç bir olasılık tahminini DOĞRULAMAZ da YANLIŞLAMAZ da.
+    # Eskiden burada "→ isabetli / yanıldı" yazıyordu; artık Brier/log-loss katkısı ve sürpriz
+    # ölçüsü kaydedilir (bkz. `learn/prob_semantics.py`).
     p_before = f.get("p_win")
     if p_before is not None:
-        text.append(f"Giriş öncesi P(kazanç)=%{float(p_before)*100:.0f} → {'isabetli' if (float(p_before) >= 0.5) == won else 'yanıldı'}.")
+        from .prob_semantics import outcome_probability_evidence, probability_note_tr
+        pm.probability_evidence = outcome_probability_evidence(
+            p_before, won, trade_id=rec.get("id"), as_of=rec.get("closed_at"))
+        text.append(probability_note_tr(pm.probability_evidence))
     pm.lesson_codes, pm.lesson_text_tr = list(dict.fromkeys(codes)), text
     # SINIRLI ileri politika — "bir dahaki sefere kesin LONG/SHORT gir" YOK. Yalnız:
     # aynı koşullar tekrar oluşursa güvenin yönü (increase/decrease/hold), etkinin sınırı

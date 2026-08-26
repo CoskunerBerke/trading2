@@ -21,6 +21,8 @@ Aktif dosyalar performans için sınırlıdır; **öğrenme kayıtları sessizce
 - `segment_id` ve dosya adı tamamen içerikten türer; aynı blok ikinci kez mühürlenirse aynı sha256 çıkar → retry idempotenttir. Çökme sonrası `pending_trim` ile devam edilir (ne kayıp ne çift kayıt), manifeste düşmemiş segmentler `recover()` ile geri alınır.
 - Sıcak döngü arşivi **taramaz**: deneyim havuzu yalnız aktif `trade_memory.jsonl` + `shadow_book.json` okur, `retention_stats()` yalnız manifestten O(1) özet verir. Arşiv okuması offline/rapor yolundadır (`DecisionJournal.iter_all_rows`, `ShadowBook.iter_all_trades`, `quant.run --shadow-archive`) ve kimliğe göre tekilleştirir.
 - Checksum'ı tutmayan segment öğrenmeye katılmaz; `SegmentArchive.verify()` ve dashboard `Saklama` bloğu durumu görünür kılar.
+- **Dersler de aynı sözleşmededir** (`learn/lesson_store.py`, EDGE & LEARNING QUALITY V2). Eskiden `learning.py` `lessons[-200:]` ile taşan dersleri KALICI olarak siliyordu; artık 200 yalnız **sıcak/dashboard penceresidir**. Taşan dersler `state/lesson_archive/` altında mühürlenir, ders indeksi (bağlam anahtarı → segment) ve sınırlı aggregate sayacları yazılır; retrieval kapsamı `HOT / INDEXED / AGGREGATE` olarak dashboard'da görünür. Arşiv yazılamazsa budama da yapılmaz.
+- `lesson_min_rotate_block` (varsayılan 50): `SegmentArchive.commit()` manifesti bastan yazdığı için çok sayıda küçük segment maliyeti O(segment²)'ye taşır. Taşma bu eşiğe ulaşana kadar mühürleme ERTELENİR — ders silinmez, sıcak liste geçici olarak pencereyi aşar.
 
 ## Uzun vadeli retrieval (deneyim indeksi)
 

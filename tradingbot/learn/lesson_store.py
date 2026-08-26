@@ -40,7 +40,7 @@ from .edge_execution import (APPLIED_BOUNDED, EVIDENCE_LEVELS, OBSERVATION, REJE
 from .journal_archive import ArchiveError, SegmentArchive
 
 LESSON_SCHEMA_VERSION = "lesson_v2"
-INDEX_SCHEMA_VERSION = "lesson_index_v1"
+INDEX_SCHEMA_VERSION = "lesson_index_v2"
 STREAM_ID = "lesson_book"
 
 #: Sıcak pencere — dashboard ve hızlı erişim içindir, SAKLAMA SINIRI DEĞİLDİR.
@@ -66,6 +66,10 @@ ALLOWED_TRANSITIONS: dict[str, tuple[str, ...]] = {
 DEFAULT_MAX_CELLS = 20_000
 #: Bir sorguda okunacak azami segment — O(total archive) tarama yasak.
 DEFAULT_MAX_SEGMENTS_SCANNED = 4
+#: Bir bağlam anahtarı için indekste TUTULAN azami segment kimliği. İndeks boyutu böylece
+#: `hücre × fanout` ile SINIRLANIR; arşiv büyüdükçe indeks büyümez (v1'de segment başına anahtar
+#: listesi tutuluyordu ve indeks 100k derste ~11 MB'a çıkıp sorgu p50'sini 129 ms'ye taşıyordu).
+DEFAULT_INDEX_FANOUT = 8
 #: Asgari mühürleme bloğu. `SegmentArchive.commit()` her çağrıda manifesti BAŞTAN yazar
 #: (maliyet O(segment sayısı)); tek tek mühürlemek segment sayısını gereksiz şişirir.
 #: Taşma bu eşiğe ulaşana kadar sıcak liste `hot_window`u geçici olarak AŞAR — hiçbir ders
@@ -169,12 +173,14 @@ class LessonStore:
                  max_segments: int = 0, code_sha: str | None = None,
                  max_cells: int = DEFAULT_MAX_CELLS,
                  max_segments_scanned: int = DEFAULT_MAX_SEGMENTS_SCANNED,
-                 min_rotate_block: int = DEFAULT_MIN_ROTATE_BLOCK) -> None:
+                 min_rotate_block: int = DEFAULT_MIN_ROTATE_BLOCK,
+                 index_fanout: int = DEFAULT_INDEX_FANOUT) -> None:
         self.root = Path(root)
         self.hot_window = max(1, int(hot_window))
         self.min_rotate_block = max(1, int(min_rotate_block))
         self.max_cells = int(max_cells)
         self.max_segments_scanned = max(1, int(max_segments_scanned))
+        self.index_fanout = max(self.max_segments_scanned, int(index_fanout))
         self.archive = SegmentArchive(self.root, stream_id=STREAM_ID,
                                       record_schema_version=LESSON_SCHEMA_VERSION,
                                       code_sha=code_sha, max_segments=max_segments)
@@ -184,14 +190,15 @@ class LessonStore:
 
     # ------------------------------------------------------------------ indeks
     def _empty_index(self) -> dict[str, Any]:
-        return {"schema_version": INDEX_SCHEMA_VERSION, "aggregate": {}, "segments": {},
-                "n_indexed": 0, "cells_dropped": 0, "updated_at": None, "health": "EMPTY"}
+        return {"schema_version": INDEX_SCHEMA_VERSION, "aggregate": {}, "by_key": {},
+                "n_indexed": 0, "n_segments_indexed": 0, "cells_dropped": 0,
+                "updated_at": None, "health": "EMPTY"}
 
     def index(self) -> dict[str, Any]:
         doc = read_json(self.index_path, default=None)
         if not isinstance(doc, dict) or doc.get("schema_version") != INDEX_SCHEMA_VERSION:
             return self._empty_index()
-        for k in ("aggregate", "segments"):
+        for k in ("aggregate", "by_key"):
             if not isinstance(doc.get(k), dict):
                 doc[k] = {}
         return doc
@@ -204,6 +211,7 @@ class LessonStore:
     def _index_block(self, doc: dict[str, Any], rows: list[dict[str, Any]], segment_id: str) -> None:
         """Yalnız YENİ mühürlenen bloğu işler — O(block), O(total archive) DEĞİL."""
         agg: dict[str, Any] = doc["aggregate"]
+        by_key: dict[str, Any] = doc["by_key"]
         seg_keys: set[str] = set()
         for r in rows:
             keys = context_keys(symbol=r.get("symbol"), direction=r.get("direction"),
@@ -225,8 +233,15 @@ class LessonStore:
                 cell["sum_r"] = round(float(cell["sum_r"]) + r_val, 6)
                 for c in codes[:6]:
                     cell["codes"][c] = int(cell["codes"].get(c, 0)) + 1
-        doc["segments"][segment_id] = {"keys": sorted(seg_keys), "n": len(rows)}
+        # TERS İNDEKS: anahtar → EN YENİ `index_fanout` segment. Segment başına anahtar listesi
+        # tutmak indeksi arşivle DOĞRUSAL büyütüyordu; bu yapıda indeks boyutu SABİT kalır.
+        for k in seg_keys:
+            ids = [x for x in (by_key.get(k) or []) if isinstance(x, str)]
+            if segment_id not in ids:
+                ids.append(segment_id)
+            by_key[k] = ids[-self.index_fanout:]
         doc["n_indexed"] = int(doc.get("n_indexed") or 0) + len(rows)
+        doc["n_segments_indexed"] = int(doc.get("n_segments_indexed") or 0) + 1
         doc["health"] = "OK"
 
     # ------------------------------------------------------------------ döndürme
@@ -291,9 +306,8 @@ class LessonStore:
         exemplars: list[dict[str, Any]] = []
         segs_scanned = 0
         if len(out_hot) < k:
-            cand = [sid for sid, meta in (doc.get("segments") or {}).items()
-                    if isinstance(meta, dict) and target in (meta.get("keys") or [])]
-            for sid in sorted(cand, reverse=True)[:self.max_segments_scanned]:
+            cand = [x for x in ((doc.get("by_key") or {}).get(target) or []) if isinstance(x, str)]
+            for sid in list(reversed(cand))[:self.max_segments_scanned]:
                 seg = self.archive.segment_for(sid)
                 if seg is None:
                     continue
@@ -349,6 +363,8 @@ class LessonStore:
                 "lifetime_lessons": int(hot_count) + archived,
                 "segments": int(arc.get("n_segments") or 0),
                 "indexed_lessons": int(doc.get("n_indexed") or 0),
+                "indexed_segments": int(doc.get("n_segments_indexed") or 0),
+                "index_fanout": self.index_fanout,
                 "aggregate_cells": len(doc.get("aggregate") or {}),
                 "aggregate_cells_dropped": int(doc.get("cells_dropped") or 0),
                 "max_cells": self.max_cells,

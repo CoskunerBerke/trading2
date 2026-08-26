@@ -255,6 +255,19 @@ class LearningV3Section:
     # Kapatilirsa retrieval yalniz aktif pencereyi gorur (HOT_ONLY) — kayip degil, kapsam daralmasi.
     experience_index_enabled: bool = True
     experience_index_dirname: str = "experience_index"
+    # --- DERS SAKLAMA: 200 yalniz SICAK/dashboard penceresidir, saklama siniri DEGILDIR ---
+    # Eskiden `learning.py` `lessons[-200:]` ile tasan dersleri KALICI olarak siliyordu.
+    # Artik tasan dersler once muhurlenmis segmente arsivlenir, sonra sicak pencere kisalir.
+    # Arsiv kapaliysa ya da yazilamiyorsa BUDAMA DA YAPILMAZ (arsivsiz silme yasak).
+    lesson_archive_enabled: bool = True
+    lesson_archive_dirname: str = "lesson_archive"
+    lesson_hot_window: int = 200
+    # Aday basina taranan AZAMI segment — retrieval O(total archive) OLAMAZ.
+    lesson_max_segments_scanned: int = 4
+    # Asgari muhurleme blogu: tasma bu kadar birikmeden segment muhurlenmez (ders SILINMEZ,
+    # yalniz muhurleme ertelenir). SegmentArchive.commit() manifesti bastan yazdigi icin
+    # cok sayida kucuk segment maliyeti O(segment^2)'ye tasir.
+    lesson_min_rotate_block: int = 50
     # Aday basina taranan deneyim UST SINIRI. Havuz bunun altindaysa TAM tarama yapilir
     # (davranis birebir eski haliyle ayni); ustundeyse sembol/yon kovalari + en yeni
     # kullanilabilir kuyruk taranir. Maliyet arsiv toplamiyla DOGRUSAL BUYUMEZ.

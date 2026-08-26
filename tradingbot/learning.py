@@ -18,6 +18,7 @@ import math
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 AGENTS = ["trend", "momentum", "candles", "volume", "levels", "market", "analog", "edge"]
 BASE_W = {"trend": 0.22, "momentum": 0.13, "candles": 0.10, "volume": 0.09, "levels": 0.12, "market": 0.11, "analog": 0.15, "edge": 0.18}
@@ -83,15 +84,29 @@ class LearningState:
     updated_at: str = ""
     lr: float = 0.05
     l2: float = 0.001
+    #: Ömür boyu ders sayacı — sıcak `lessons` penceresi budansa bile ARTMAYA devam eder.
+    #: Arşivdeki ders sayısı `lesson_retention` altında ayrıca raporlanır.
+    n_lessons_lifetime: int = 0
+    #: Kayıpsız saklama durumu (LessonStore.stats) — dashboard bunu olduğu gibi gösterir.
+    lesson_retention: dict = field(default_factory=dict)
+    #: No-lookahead kalibrasyon kovaları (prob_semantics.CalibrationBook.stats).
+    calibration: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return asdict(self)
 
 
 class Learner:
-    def __init__(self, path: Path, min_trades: int = 20):
+    def __init__(self, path: Path, min_trades: int = 20, *, lesson_store: Any = None,
+                 hot_window: int = 200):
         self.path = Path(path)
         self.min_trades = min_trades
+        #: Kayıpsız ders arşivi. `None` ise BUDAMA DA YAPILMAZ — arşivsiz silme yasaktır.
+        self.lesson_store = lesson_store
+        self.hot_window = max(1, int(hot_window))
+        #: No-lookahead kalibrasyon havuzu — `learn()` sırasında SONUÇTAN ÖNCEKİ kova okunur.
+        from .learn.prob_semantics import CalibrationBook
+        self.calibration = CalibrationBook()
         self.state = LearningState()
         if self.path.exists():
             import logging
@@ -168,15 +183,35 @@ class Learner:
             (right if hit else wrong).append(a)
             if (not supported) and (not won):
                 warned.append(a)
-        # uyarlanır ajan ağırlıkları
+        # uyarlanır ajan ağırlıkları — ÖNCE/DELTA/SONRA açıkça kaydedilir.
+        # "Trend yanıldı, ağırlığı düştü" TEK BAŞINA yetersizdir: hangi örnek sayısıyla, ne kadar
+        # büzülmeyle ve kaç birim değiştiği görünmeden ağırlık değişimi denetlenemez.
+        before = {a: float(s.agent_weights.get(a, BASE_W[a]) or 0.0) for a in AGENTS}
         tot = 0.0
         new_w = {}
         for a in AGENTS:
             h, n = s.agent_hits.get(a, [0, 0])
-            rate = (h + 2) / (n + 4)          # Laplace düzeltmeli isabet oranı
+            rate = (h + 2) / (n + 4)          # Laplace düzeltmeli isabet oranı (prior kütlesi 4)
             new_w[a] = BASE_W[a] * (0.4 + 1.2 * rate)
             tot += new_w[a]
         s.agent_weights = {a: round(w / tot, 4) for a, w in new_w.items()}
+        agent_contributions = []
+        for a in AGENTS:
+            h, n = s.agent_hits.get(a, [0, 0])
+            after = float(s.agent_weights.get(a, 0.0))
+            # Tek sonuç büyük sıçrama YARATAMAZ: n büyüdükçe Laplace priorunun etkisi azalır ama
+            # tek adımın delta'sı da 1/(n+4) mertebesinde kalır. Bu satır bunu görünür kılar.
+            agent_contributions.append({
+                "agent": a, "supported": a in right or a in wrong,
+                "outcome_contribution": ("HIT" if a in right else ("MISS" if a in wrong else "NEUTRAL")),
+                "sample_count": int(n), "hits": int(h),
+                "laplace_rate": round((h + 2) / (n + 4), 4),
+                "shrinkage_prior": 4,
+                "weight_before": round(before[a], 4),
+                "applied_delta": round(after - before[a], 5),
+                "weight_after": round(after, 4),
+                "context_key": "GLOBAL",
+                "evidence_quality": ("SUFFICIENT" if n >= 20 else "LOW_SAMPLE")})
         # 3) setup / sembol / çıkış istatistikleri
         key = f"{f.get('setup_type', '-')}|{rec.get('side', '-')}"
         st = s.setup_stats.setdefault(key, {"n": 0, "wins": 0, "sum_r": 0.0})
@@ -189,47 +224,131 @@ class Learner:
         s.blacklist = [k for k, v in s.setup_stats.items() if v["n"] >= 10 and v["sum_r"] / v["n"] < -0.1]
         # 4) teşhis / dersler
         lesson = self._diagnose(rec, f, won, r, right, wrong, warned, p)
+        lesson["agent_contributions"] = agent_contributions
         s.lessons.append(lesson)
-        s.lessons = s.lessons[-200:]
+        s.n_lessons_lifetime = int(s.n_lessons_lifetime or 0) + 1
+        self._retain_lessons()
         self.save()
         return lesson
 
+    # ------------------------------------------------------------ kayıpsız saklama
+    def _retain_lessons(self) -> None:
+        """Sıcak pencereyi sınırlı tutar ama HİÇBİR dersi arşivlemeden SİLMEZ.
+
+        Arşiv yoksa ya da mühürleme başarısızsa sıcak liste OLDUĞU GİBİ kalır (fail-closed).
+        Eskiden burada `s.lessons = s.lessons[-200:]` vardı ve 200. dersten sonra her yeni
+        ders bir eskisini kalıcı olarak yok ediyordu.
+        """
+        s = self.state
+        if self.lesson_store is None:
+            s.lesson_retention = {
+                "hot_window": self.hot_window, "hot_lessons": len(s.lessons),
+                "archived_lessons": 0, "lifetime_lessons": int(s.n_lessons_lifetime or 0),
+                "archive_health": "DISABLED", "deletes_detail_on_overflow": False,
+                "retrieval_scopes": ["HOT"],
+                "note_tr": ("Ders arşivi kapalı — budama da YAPILMAZ; hiçbir ders silinmez. "
+                            "Sıcak liste sınırsız büyür.")}
+            return
+        res = self.lesson_store.rotate(s.lessons)
+        s.lessons = res.get("hot") or s.lessons
+        s.lesson_retention = self.lesson_store.stats(hot_count=len(s.lessons))
+        s.lesson_retention["lifetime_lessons"] = max(
+            int(s.lesson_retention.get("lifetime_lessons") or 0), int(s.n_lessons_lifetime or 0))
+        if res.get("error"):
+            s.lesson_retention["last_rotation_error"] = res["error"]
+
     def _diagnose(self, rec, f, won, r, right, wrong, warned, p_before) -> dict:
+        """GÖZLEM + araştırma HİPOTEZİ üretir; TEK işlemden politika ÇIKARMAZ.
+
+        Önceki sürüm iki hata yapıyordu:
+        1. "P(kazanç)=%29 demişti → yanıldı" — tek sonuç bir olasılık tahminini yanlışlayamaz;
+           bunun yerine Brier/log-loss katkısı ve sürpriz ölçüsü yazılır (`prob_semantics`).
+        2. "TP1 daha yakına çekilmeli", "boyut yarıya inmeli" gibi buyruklar — tek işlemden
+           çıkarılan politika kararlarıydı. Artık bunlar `hypotheses` altında ve YALNIZ
+           `OBSERVATION` kanıt seviyesinde; politika olabilmeleri için OOS doğrulaması şart.
+        """
+        from .learn.edge_execution import (COST_FILTER_CANDIDATE, ENTRY_QUALITY_CANDIDATE,
+                                           EXIT_POLICY_CANDIDATE, NO_POLICY_CHANGE, OBSERVATION,
+                                           REGIME_FILTER_CANDIDATE, classify_edge_execution)
+        from .learn.prob_semantics import outcome_probability_evidence, probability_note_tr
         why: list[str] = []
+        hyps: list[dict] = []
         reason = rec.get("exit_reason", "")
         mae, mfe, bars = float(rec.get("mae_pct", 0)), float(rec.get("mfe_pct", 0)), int(rec.get("bars_held", 0))
         names = {"trend": "Trend", "momentum": "Momentum", "candles": "Mum yapısı", "volume": "Hacim", "levels": "Seviye", "market": "Canlı piyasa", "analog": "Geçmiş benzerlik", "edge": "Backtest"}
+
+        def hyp(code: str, text: str) -> None:
+            """Araştırılabilir soru — POLİTİKA DEĞİL. Tek işlem `OBSERVATION`ı aşamaz."""
+            hyps.append({"code": code, "text_tr": text, "evidence_level": OBSERVATION,
+                         "n_supporting": 1, "causal_claim": False,
+                         "requires": "walk-forward OOS + execution senaryoları"})
+
         if won:
             why.append(f"KÂR (+{r:.2f}R): {reason}. Destekleyen ve haklı çıkan ajanlar: {', '.join(names[a] for a in right) or '-'}.")
             if wrong:
-                why.append(f"Yanılan ajanlar: {', '.join(names[a] for a in wrong)} — bunların uyarısına rağmen işlem çalıştı; ağırlıkları hafifçe düştü.")
+                why.append(f"Karşı taraftaki ajanlar: {', '.join(names[a] for a in wrong)} — bu sonuçta yön destekçileriyle uyuşmadılar; ağırlık etkisi örnek sayısıyla büzülür.")
             if reason == "hedef1" or (rec.get("tp1_done") and reason == "başa-baş stop"):
                 why.append("Hedef2'ye ulaşılamadı; TP1'de yarı kapatma + başa-baş stop sermayeyi korudu.")
             if mfe > 0 and abs(mae) > mfe * 0.8:
-                why.append(f"Giriş sonrası önce %{abs(mae):.1f} aleyhte gitti (MAE) — giriş zamanlaması geç; geri çekilme girişleri tercih et.")
+                why.append(f"Giriş sonrası önce %{abs(mae):.1f} aleyhte gitti (MAE), sonra %{mfe:.1f} lehte (MFE).")
+                hyp(ENTRY_QUALITY_CANDIDATE, "Geri çekilme girişi bu koşulda daha iyi olabilir mi? — ölçülmeli.")
         else:
-            why.append(f"ZARAR ({r:.2f}R): {reason}. Yön destekçisi olup yanılan ajanlar: {', '.join(names[a] for a in wrong) or '-'}.")
+            why.append(f"ZARAR ({r:.2f}R): {reason}. Yön destekçisi olup sonuçla uyuşmayan ajanlar: {', '.join(names[a] for a in wrong) or '-'}.")
             if warned:
-                why.append(f"Karşı görüş bildiren ve haklı çıkan ajanlar: {', '.join(names[a] for a in warned)} — bunların ağırlığı arttı.")
+                why.append(f"Karşı görüş bildiren ve sonuçla uyuşan ajanlar: {', '.join(names[a] for a in warned)}.")
             if reason == "likidasyon":
-                why.append(f"LİKİDASYON: kaldıraç ({rec.get('leverage')}x) stop mesafesine göre fazlaydı; kaldıraç tavanı düşürülmeli.")
+                why.append(f"LİKİDASYON: kaldıraç ({rec.get('leverage')}x) stop mesafesine göre fazlaydı.")
+                hyp(EXIT_POLICY_CANDIDATE, "Bu stop mesafesinde kaldıraç tavanı düşük olmalı mı? — ölçülmeli.")
             elif reason == "stop" and bars <= 2:
-                why.append("Stop çok hızlı geldi (≤2 bar): giriş gürültüye denk geldi ya da stop ATR'ye göre dar; kırılım girişlerinde kapanış teyidi bekle.")
+                why.append("Stop ≤2 barda geldi: giriş gürültüye denk gelmiş ya da stop ATR'ye göre dar olabilir.")
+                hyp(ENTRY_QUALITY_CANDIDATE, "Kırılım girişinde kapanış teyidi beklemek bu koşulda ölçülebilir fayda sağlar mı?")
             elif mfe >= 1.0 and reason == "stop":
-                why.append(f"İşlem önce %{mfe:.1f} lehte gitti (MFE) ama kâr alınmadı → TP1 daha yakına çekilmeli / stop lehte hareketle daha erken başa-baş'a alınmalı.")
+                why.append(f"İşlem önce %{mfe:.1f} lehte gitti (MFE) ama sonuç stop oldu.")
+                hyp(EXIT_POLICY_CANDIDATE, "Daha erken kısmi kâr / başa-baş bu koşulda net beklentiyi artırır mı? — büyük kazananları da kesmediği OOS'ta gösterilmeli.")
             nw = int(f.get("n_warnings", 0))
             if nw >= 5:
-                why.append(f"Girişte {nw} uyarı vardı (YAPMA listesi kalabalık) — uyarı sayısı ≥5 iken boyut yarıya inmeli / işlem atlanmalı.")
+                why.append(f"Girişte {nw} uyarı vardı (YAPMA listesi kalabalık).")
+                hyp(ENTRY_QUALITY_CANDIDATE, "Uyarı yoğunluğu eşiğiyle seçicilik artmalı mı? — selectivity challenger konusu.")
             if float(f.get("btc_align", 0)) < 0:
-                why.append("BTC risk moduna ters yönde işlemdi (baş yöneticiye karşı) — bu tür işlemler filtrelenmeli.")
+                why.append("BTC risk moduna ters yönde işlemdi (baş yöneticiye karşı).")
+                hyp(REGIME_FILTER_CANDIDATE, "BTC moduna ters işlemler filtrelenmeli mi? — rejim kesitinde OOS ölçülmeli.")
             if float(f.get("funding_dir", 0)) < -0.3:
-                why.append("Funding aleyhteydi (kalabalık taraftaydık) — funding aşırılığında aynı yöne girme.")
+                why.append("Funding aleyhteydi (kalabalık taraftaydık).")
+                hyp(COST_FILTER_CANDIDATE, "Funding aşırılığı bir maliyet filtresi olmalı mı? — ölçülmeli.")
             if float(f.get("rr", 0)) < 2:
-                why.append(f"R/R {f.get('rr')} düşüktü; hedef daha uzak seviyeye konmalı ya da işlem atlanmalı.")
-        why.append(f"Model giriş öncesi P(kazanç)=%{p_before*100:.0f} demişti → {'isabetli' if (p_before >= 0.5) == won else 'yanıldı'}; model güncellendi.")
+                why.append(f"R/R {f.get('rr')} düşüktü.")
+                hyp(ENTRY_QUALITY_CANDIDATE, "Asgari R/R eşiği yükseltilmeli mi? — işlem sıklığı kapısıyla birlikte ölçülmeli.")
+        if not hyps:
+            hyps.append({"code": NO_POLICY_CHANGE, "text_tr": "Bu işlem politika değişikliği gerektirmiyor.",
+                         "evidence_level": OBSERVATION, "n_supporting": 1, "causal_claim": False,
+                         "requires": None})
+
+        # --- olasılık semantiği: kova ÖNCE okunur (no-lookahead), sonuç SONRA eklenir
+        bucket_before = self.calibration.bucket_stats(p_before)
+        prob_ev = outcome_probability_evidence(p_before, won, book=self.calibration,
+                                               trade_id=rec.get("id"), as_of=rec.get("closed_at"))
+        prob_ev["bucket_before_outcome"] = bucket_before
+        self.calibration.add(trade_id=rec.get("id"), p=p_before, won=won,
+                             label_ts=rec.get("closed_at"))
+        self.state.calibration = self.calibration.stats()
+        why.append(probability_note_tr(prob_ev))
+
+        # --- edge ↔ execution gözlemi (R cinsinden MFE/MAE + capture ratio)
+        edge = classify_edge_execution(rec | {"features": f},
+                                       regime_at_entry=f.get("regime") or rec.get("regime"),
+                                       regime_at_exit=rec.get("regime_at_exit"))
+        for code in edge["hypothesis_codes"]:
+            if code != NO_POLICY_CHANGE and not any(h["code"] == code for h in hyps):
+                hyp(code, f"{code} — edge/execution sınıflandırmasından türedi; OOS'ta ölçülmeli.")
+
         return {"id": rec.get("id"), "symbol": rec["symbol"], "side": rec.get("side"), "r": r, "pnl": rec["pnl"], "won": won,
                 "exit": reason, "bars": bars, "mae": mae, "mfe": mfe, "why": why, "at": rec.get("closed_at"),
-                "setup": f.get("setup_type", "-"), "right": right, "wrong": wrong}
+                "setup": f.get("setup_type", "-"), "right": right, "wrong": wrong,
+                "direction": rec.get("side"), "regime": f.get("regime") or rec.get("regime"),
+                "observation": edge, "hypotheses": hyps,
+                "evidence_level": OBSERVATION, "policy_status": OBSERVATION,
+                "calibration": prob_ev, "causal_claim": False,
+                "as_of": rec.get("closed_at")}
 
     # ------------------------------------------------------------ özet
     def snapshot(self) -> dict:

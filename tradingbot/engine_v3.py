@@ -202,6 +202,24 @@ class TradingEngineV3(TradingEngine):
             clusters=v3.risk_profiles.clusters or None)
         self.quality = DataQualityGate(DataQualityConfig(max_candle_age_bars=v3.data.max_candle_age_bars, max_ticker_age_s=v3.data.max_ticker_age_s,
                                                          max_clock_drift_ms=v3.data.max_clock_drift_ms, max_price_divergence_pct=v3.data.max_price_divergence_pct))
+        # --- KAYIPSIZ DERS SAKLAMA: `learning.json` içindeki `lessons` artık budanırken SİLİNMEZ.
+        # Taşan dersler önce mühürlenmiş segmente arşivlenir; arşiv yazılamazsa budama da yapılmaz.
+        self.lesson_store = None
+        try:
+            if v3.learning_v3.lesson_archive_enabled:
+                from .learn.lesson_store import LessonStore
+                self.lesson_store = LessonStore(
+                    st / v3.learning_v3.lesson_archive_dirname,
+                    hot_window=v3.learning_v3.lesson_hot_window,
+                    max_segments=v3.learning_v3.decision_archive_max_segments,
+                    code_sha=getattr(cfg, "code_sha", None),
+                    max_segments_scanned=v3.learning_v3.lesson_max_segments_scanned,
+                    min_rotate_block=v3.learning_v3.lesson_min_rotate_block)
+        except Exception as exc:  # noqa: BLE001 — arşiv kurulamazsa SİLME de yapılmaz
+            log.warning("ders arşivi başlatılamadı (budama devre dışı, kayıp yok): %s", exc)
+            self.lesson_store = None
+        self.learner.lesson_store = self.lesson_store
+        self.learner.hot_window = max(1, int(v3.learning_v3.lesson_hot_window))
         # --- öğrenme v2 (v1 `self.learner` korunur)
         self.memory = TradeMemory(st / "trade_memory.jsonl")
         self.model_registry = ModelRegistry(st / "models.json")

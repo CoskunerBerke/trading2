@@ -727,3 +727,73 @@ def test_exit_challenger_offline_bridge_slices_bars_correctly():
     rep = compare_exit_policies([{"id": "NOPATH", "symbol": "A/USDT", "entry_price": 100.0,
                                   "initial_stop": 98.0, "direction": "LONG", "price_path": []}])
     assert rep["skipped_no_data"] == 1 and rep["champion"]["n"] == 0
+
+
+def _quant_state(tmp_path: Path, doc: dict) -> Path:
+    d = tmp_path / "state"
+    d.mkdir(exist_ok=True)
+    (d / "quant_eval.json").write_text(json.dumps(doc, ensure_ascii=False, default=str),
+                                       encoding="utf-8")
+    (d / "mode.json").write_text(json.dumps({"mode": "PAPER", "live_order_path_enabled": False}),
+                                 encoding="utf-8")
+    return d
+
+
+def test_quant_report_states_are_honest_when_data_is_missing():
+    """Veri yokken challenger bölümleri UYDURMAZ; durumu AÇIKÇA yazar."""
+    from tradingbot.quant.run import _exit_challenger_section, _selectivity_section
+    ex = _exit_challenger_section([{"id": "A", "price_path": []}, {"id": "B"}])
+    assert ex["state"] == "NO_BAR_PATH" and ex["active_policy_changed"] is False
+    assert "bars_from_frame" in ex["note"]
+    se = _selectivity_section(_rows(50), None)
+    assert se["state"] == "NOT_RUN_NEEDS_FOLD_PLAN" and se["active_policy_changed"] is False
+    # iki yollu (train/test) plan da YETMEZ — validation olmadan aday secilemez
+    assert _selectivity_section(_rows(50), {"layout": "two_way", "folds": []})["state"] == \
+        "NOT_RUN_NEEDS_FOLD_PLAN"
+
+
+def test_quant_selectivity_uses_folds_and_never_sees_holdout():
+    """Fold planı verilince seçim train+validation'dan yapılır; holdout ASLA girmez."""
+    from tradingbot.quant.run import _selectivity_section
+    from tradingbot.quant.walkforward import assign_rows, make_folds
+    day = 86_400_000
+    start = 1_700_000_000_000
+    plan = make_folds(start, start + 400 * day, mode="anchored", train_days=120,
+                      validation_days=60, test_days=60, holdout_days=60, tf="4h")
+    rows = []
+    for i in range(400):
+        r = dict(_rows(1, start=i)[0])
+        r["ts_ms"] = start + i * day + day // 2
+        r["as_of_ms"] = r["ts_ms"] - 1000
+        rows.append(r)
+    out = _selectivity_section(rows, plan)
+    assert out["state"] == "RUN" and out["active_policy_changed"] is False
+    assert out["selection"]["saw_test_rows"] is False
+    assert out["selection"]["saw_holdout_rows"] is False
+    assert out["evaluation"]["selection_unchanged"] is True
+    asg = assign_rows(rows, plan)
+    assert asg["holdout"]                              # holdout satırı GERÇEKTEN vardı
+    assert out["evaluation"].get("holdout_metrics") is None   # ve rapora GİRMEDİ
+
+
+@pytest.mark.parametrize("q", [
+    {},
+    {"portfolio_heat": None, "exit_challenger": None, "selectivity_challenger": None},
+    {"portfolio_heat": "bozuk", "exit_challenger": 7, "selectivity_challenger": []},
+    {"exit_challenger": {"state": "NO_BAR_PATH", "note": "yok"}},
+    {"exit_challenger": {"state": "RUN", "champion": {"policy": "C", "n": 2, "metrics": {}},
+                         "challengers": [{"policy": "X", "n": 2, "metrics": {},
+                                          "high_mfe_stop_rescue": {}, "big_winner_truncation": {}},
+                                         "bozuk satır"]}},
+    {"selectivity_challenger": {"state": "RUN", "selection": {"candidates": [None, {}]},
+                                "evaluation": {}}},
+    {"portfolio_heat": {"verdict": None, "reasons": [1, "ok"], "top_cluster_share": float("nan")}},
+])
+def test_quant_dashboard_survives_broken_challenger_sections(tmp_path: Path, q):
+    """/quant eksik/bozuk/non-finite challenger bölümlerinde 500 ÜRETMEZ."""
+    c = TestClient(create_app(_quant_state(tmp_path, q), tmp_path / "market", None,
+                              DashboardConfig()))
+    r = c.get("/quant")
+    assert r.status_code == 200, q
+    for verb in ("post", "put", "patch", "delete"):
+        assert getattr(c, verb)("/quant").status_code == 405

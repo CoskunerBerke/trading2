@@ -873,7 +873,108 @@ def observation_block(lessons: list) -> str:
               f'{ACTIVE_POLICY_UNCHANGED}. Nedensellik iddiası yoktur.</p>')
 
 
+def challenger_blocks(q: dict) -> str:
+    """Offline challenger bölümleri — hepsi ARAŞTIRMA; aktif politika DEĞİŞMEZ.
+
+    Eksik/bozuk/`None` bölümde sessizce atlanır; hiçbir koşulda exception atmaz.
+    """
+    out = ""
+    heat = _d(q.get("portfolio_heat"))
+    if heat:
+        v = str(heat.get("verdict") or "—")
+        kind = {"ADVISORY": "", "COUNTERFACTUAL_SIZE_REDUCTION": "warn",
+                "COUNTERFACTUAL_BLOCK": "bad"}.get(v, "")
+        out += ("<h2>Portföy ısısı (advisory)</h2>"
+                + '<div class="grid">'
+                + card("Karar", badge(v, kind), "yalnız karşı-olgusal — emir/limit DEĞİŞMEZ")
+                + card("Toplam stop riski", _num(heat.get("total_stop_risk_usdt"), 2, " USDT"))
+                + card("En büyük küme payı", _num(heat.get("top_cluster_share"), 3))
+                + card("En büyük sembol payı", _num(heat.get("top_symbol_share"), 3))
+                + card("En büyük tema payı", _num(heat.get("top_theme_share"), 3))
+                + card("Kâr yoğunlaşması", _num(heat.get("profit_concentration"), 3))
+                + card("Korelasyon kalitesi", esc(str(heat.get("correlation_quality") or "—")),
+                       "eksikse bağımsızlık VARSAYILMAZ")
+                + card("Aktif motora etki",
+                       badge("YOK", "ok") if heat.get("applies_to_active_engine") is False
+                       else badge("BİLİNMİYOR", "warn"), ACTIVE_POLICY_UNCHANGED)
+                + "</div>")
+        reasons = [r for r in (heat.get("reasons") or []) if isinstance(r, str)]
+        if reasons:
+            out += "<ul>" + "".join(f"<li>{esc(r)}</li>" for r in reasons) + "</ul>"
+
+    ex = _d(q.get("exit_challenger"))
+    if ex:
+        state = str(ex.get("state") or "—")
+        if state != "RUN":
+            out += (f"<h2>Çıkış challenger'ı</h2><div class=\"card mut\">{esc(state)} — "
+                    f"{esc(str(ex.get('note') or NOT_ENOUGH_DATA))}</div>")
+        else:
+            rows = []
+            champ = _d(ex.get("champion"))
+            cm = _d(champ.get("metrics"))
+            rows.append([esc(str(champ.get("policy") or "CHAMPION")), _num(champ.get("n"), 0),
+                         _num(cm.get("expectancy_r"), 4), _num(cm.get("payoff_ratio"), 3),
+                         _num(cm.get("max_drawdown_r"), 3), _num(cm.get("tail_loss_r_cvar5"), 3),
+                         "—", "—", "—"])
+            for c in (ex.get("challengers") or []):
+                if not isinstance(c, dict):
+                    continue
+                m, r_, t = _d(c.get("metrics")), _d(c.get("high_mfe_stop_rescue")), _d(c.get("big_winner_truncation"))
+                rows.append([esc(str(c.get("policy") or "—")), _num(c.get("n"), 0),
+                             _num(m.get("expectancy_r"), 4), _num(m.get("payoff_ratio"), 3),
+                             _num(m.get("max_drawdown_r"), 3), _num(m.get("tail_loss_r_cvar5"), 3),
+                             _num(c.get("delta_expectancy_r"), 4),
+                             f"{_num(r_.get('mean_delta_r'), 3)} (n={_num(r_.get('n'), 0)})",
+                             (badge("KESİYOR", "bad") if t.get("truncates_winners")
+                              else badge("HAYIR", "ok"))])
+            out += ("<h2>Çıkış challenger'ı (offline)</h2>"
+                    + table(["Politika", "n", "Beklenti R", "Payoff", "Maks DD", "Tail CVaR5",
+                             "Δ beklenti", "Yüksek MFE kurtarma", "Büyük kazananı kesiyor mu?"],
+                            rows, num_cols={1, 2, 3, 4, 5, 6}, empty="karşılaştırma yok")
+                    + f'<p class="mut small">Aynı giriş, aynı barlar, aynı maliyet modeli '
+                      f'(anahtar {esc(str(ex.get("cost_model_key") or "—"))}). {RESEARCH_ONLY} — '
+                      f'{ACTIVE_POLICY_UNCHANGED}.</p>')
+
+    se = _d(q.get("selectivity_challenger"))
+    if se:
+        state = str(se.get("state") or "—")
+        if state != "RUN":
+            out += (f"<h2>Seçicilik challenger'ı</h2><div class=\"card mut\">{esc(state)} — "
+                    f"{esc(str(se.get('note') or NOT_ENOUGH_DATA))}</div>")
+        else:
+            sel, ev = _d(se.get("selection")), _d(se.get("evaluation"))
+            rows = []
+            for c in (sel.get("candidates") or []):
+                if not isinstance(c, dict):
+                    continue
+                m, g = _d(c.get("validation_metrics")), _d(c.get("coverage_gate"))
+                rows.append([esc(str(c.get("rule") or "—")), _num(c.get("threshold"), 4),
+                             _num(m.get("n"), 0), _num(m.get("expectancy_r"), 4),
+                             _num(m.get("win_rate"), 3), _num(m.get("payoff_ratio"), 3),
+                             _num(g.get("trade_fraction"), 3),
+                             badge("GEÇTİ", "ok") if g.get("passed") else badge("DÜŞTÜ", "warn")])
+            out += ("<h2>Seçicilik challenger'ı (offline)</h2>"
+                    + table(["Kural", "Eşik", "n (val)", "Beklenti R", "Kazanma oranı", "Payoff",
+                             "Kalan oran", "Kapsam kapısı"], rows, num_cols={1, 2, 3, 4, 5, 6},
+                            empty="aday yok")
+                    + '<div class="grid">'
+                    + card("Seçilen", esc(str(sel.get("selected") or "—")),
+                           "eşik train'de fit, aday validation'da seçildi")
+                    + card("Test beklentisi",
+                           _num(_d(ev.get("selected_test_metrics")).get("expectancy_r"), 4, "R"),
+                           "test yalnız ÖLÇER, seçimi değiştirmez")
+                    + card("Champion test beklentisi",
+                           _num(_d(ev.get("champion_test_metrics")).get("expectancy_r"), 4, "R"))
+                    + card("Test seçimi değiştirdi mi?",
+                           badge("HAYIR", "ok") if ev.get("selection_unchanged") else badge("BİLİNMİYOR", "warn"))
+                    + "</div>"
+                    + f'<p class="mut small">{RESEARCH_ONLY} — işlem sayısını düşürmek TEK BAŞINA '
+                      f'başarı değildir; kapsam kapısı fail-closed. {ACTIVE_POLICY_UNCHANGED}.</p>')
+    return out
+
+
 __all__ = ["page", "table", "kv_table", "render_any", "card", "badge", "health_badge", "ks_badge", "verdict_badge", "pnl_cell",
            "fmt", "pct", "esc", "age_text", "chart_block", "CSS", "NAV", "CHART_JS",
            "retention_block", "calibration_block", "quality_block", "observation_block",
-           "evidence_badge", "NOT_ENOUGH_DATA", "RESEARCH_ONLY", "ACTIVE_POLICY_UNCHANGED"]
+           "evidence_badge", "NOT_ENOUGH_DATA", "RESEARCH_ONLY", "ACTIVE_POLICY_UNCHANGED",
+           "challenger_blocks"]

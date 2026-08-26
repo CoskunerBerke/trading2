@@ -27,7 +27,8 @@ from .templates import (HEADS_TABLE_CLS, POS_TABLE_CLS, age_text, badge, card, c
                         chart_block, chief_block, esc, fmt, fmt_utc, health_badge, ks_badge,
                         kv_table, lessons_table, live_bar, live_script, money_html,
                         money_html_text, page, pct, pnl_cell, render_any, sample_banner, table,
-                        observation_block, quality_block, retention_block,
+                        challenger_blocks, observation_block, quality_block,
+                        retention_block,
                         calibration_block, verdict_badge, verdict_kind, weight_table)
 
 log = logging.getLogger(__name__)
@@ -634,6 +635,7 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
             prov = (res.get("base") or {}).get("provenance") or {}
             if prov:
                 body += "<h3>Maliyet veri kaynağı (provenance)</h3>" + kv_table(prov)
+        body += challenger_blocks(q)
         wf = q.get("walk_forward") or {}
         if wf:
             body += "<h2>Walk-forward</h2>" + kv_table(

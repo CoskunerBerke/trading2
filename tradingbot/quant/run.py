@@ -160,6 +160,14 @@ def build_report(*, memory_rows: list[dict], shadow_trades: list[dict], run_id: 
                        "status": "OK" if len(store) else "UNAVAILABLE",
                        "note": "point-in-time artifact yüklendi; replay kapsaması ayrı ölçülür"}
 
+    # --- OFFLINE challenger'lar: yalnız rapor. Aktif RiskEngine/emir yolu DEĞİŞMEZ.
+    heat = None
+    if risk_report is not None:
+        from .risk_v2 import portfolio_heat_challenger
+        heat = portfolio_heat_challenger(risk_report, positions_from_ledger(ledger_doc))
+    exit_cmp = _exit_challenger_section(labeled)
+    selectivity = _selectivity_section(labeled, (evidence_input or {}).get("fold_plan"))
+
     ev_in = dict(evidence_input or {})
     evidence = build_evidence(
         champion_metrics=ev_in.get("champion_metrics", overall),
@@ -211,6 +219,9 @@ def build_report(*, memory_rows: list[dict], shadow_trades: list[dict], run_id: 
                                     if dim in ("symbol", "direction", "regime", "exit_reason")},
             "execution_scenarios": scenarios,
             "risk_v2": risk_report,
+            "portfolio_heat": heat,
+            "exit_challenger": exit_cmp,
+            "selectivity_challenger": selectivity,
             "eligibility": eligibility,
             "evidence": evidence,
             "champion_challenger": cc,
@@ -218,6 +229,50 @@ def build_report(*, memory_rows: list[dict], shadow_trades: list[dict], run_id: 
             "risk_clusters": (risk_report or {}).get("exposure"),
             "manifest": manifest,
             "warnings": warnings}
+
+
+def _exit_challenger_section(labeled: list[dict]) -> dict:
+    """Çıkış challenger karşılaştırması — bar yolu OLMADAN çalışamaz, bunu AÇIKÇA yazar.
+
+    Canlı worker kapanışta `price_path` kaydetmez (sıcak döngüye mum çekme eklenmedi); bu bölüm
+    yolu olan kayıtlarla çalışır, yoksa `NO_BAR_PATH` durumu döner. Uydurma sonuç ÜRETİLMEZ.
+    """
+    from .exit_challenger import compare_exit_policies
+    with_path = [r for r in labeled if (r.get("price_path") or r.get("bars"))]
+    if not with_path:
+        return {"state": "NO_BAR_PATH", "n_candidates": len(labeled),
+                "note": ("kapanışlarda bar yolu kaydedilmiyor — challenger offline replay "
+                         "veri setinden beslenmeli (exit_challenger.bars_from_frame)"),
+                "active_policy_changed": False}
+    rep = compare_exit_policies(with_path)
+    return {"state": "RUN", **rep}
+
+
+def _selectivity_section(labeled: list[dict], fold_plan: dict | None) -> dict:
+    """Seçicilik challenger'ı — fold planı OLMADAN çalıştırılmaz (sızıntı riski).
+
+    Eşik train'de fit edilir, aday validation'da seçilir, test yalnız ölçer. Plan yoksa
+    `NOT_RUN_NEEDS_FOLD_PLAN` döner; tek bir havuzdan eşik uydurulmaz.
+    """
+    from .selectivity import evaluate_selected, select_candidate
+    from .walkforward import assign_rows, is_three_way
+    if not fold_plan or not is_three_way(fold_plan):
+        return {"state": "NOT_RUN_NEEDS_FOLD_PLAN", "n_candidates": len(labeled),
+                "note": ("üç yönlü (train/validation/test) fold planı verilmedi — eşik tek "
+                         "havuzdan fit EDİLMEZ"),
+                "active_policy_changed": False}
+    asg = assign_rows(labeled, fold_plan)
+    folds = asg.get("folds") or []
+    train = [r for f in folds for r in (f.get("train") or [])]
+    valid = [r for f in folds for r in (f.get("validation") or [])]
+    test = [r for f in folds for r in (f.get("test") or [])]
+    if not train or not valid:
+        return {"state": "INSUFFICIENT_FOLD_ROWS", "n_train": len(train),
+                "n_validation": len(valid), "active_policy_changed": False}
+    sel = select_candidate(train, valid)
+    return {"state": "RUN", "selection": sel,
+            "evaluation": evaluate_selected(sel, test),
+            "active_policy_changed": False}
 
 
 def main(argv: list[str] | None = None) -> int:

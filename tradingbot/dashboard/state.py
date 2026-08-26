@@ -14,6 +14,7 @@ STATE_FILES: dict[str, str] = {
     "learning": "learning.json", "signals": "signals.json", "coin_heads": "coin_heads.json", "risk": "risk.json",
     "killswitch": "killswitch.json", "mode": "mode.json", "health": "health.json", "llm_budget": "llm_budget.json",
     "models": "models.json", "universe": "universe.json", "shadow_book": "shadow_book.json", "heartbeat": "heartbeat.json",
+    "spot_ledger": "spot_ledger.json",
     "orders": "orders.json", "triggers": "triggers.json",
     "snapshot_telemetry": "snapshot_telemetry.json", "research_policy": "research_policy.json",
     "decision_funnel": "decision_funnel.json",
@@ -620,6 +621,8 @@ class StateReader:
                      today=utc_now().date().isoformat(), max_drawdown_pct=self.max_drawdown_pct(),
                      freshness=fresh,
                      futures_equity=self.futures_equity(), spot_equity=self.spot_equity(),
+                     futures_ledger_doc=self.get("futures_ledger"),
+                     spot_ledger_doc=self.get("spot_ledger"),
                      risk_state=self.get("risk"), as_of=utc_now().isoformat(timespec="seconds"),
                      # Risk anlık görüntüsü de strateji turunda yazılır → AYNI tazelik eşiği
                      # (`stale_run_s`) kullanılır; yeni/keyfî bir eşik UYDURULMAZ.

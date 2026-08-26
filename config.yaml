@@ -38,7 +38,7 @@ backtest:
   min_oos_trades: 8
 
 risk:
-  starting_equity_usdt: 50      # 50 USDT ile başla
+  starting_equity_usdt: 100     # PAPER katkı sermayesi (2026-08-26: 50→100; mevcut defter dosyaları kendi tabanını taşır)
   risk_per_trade_pct: 2.0       # işlem başına risk (%) — küçük hesap için 2
   atr_stop_mult: 2.5
   max_position_pct: 30          # tek coine max sermaye (%) → 15 USDT
@@ -56,7 +56,7 @@ scanner:
 
 futures:
   enabled: true                 # yönetici planlarını kağıt futures defterinde simüle et
-  starting_equity_usdt: 50
+  starting_equity_usdt: 100     # PAPER katkı sermayesi (2026-08-26: 50→100; risk oranları AYNI, %6 bütçe tabana ölçeklenir)
   max_positions: 3
   min_pwin: 0.45                # öğrenen model hazırsa: P(kazanç) bunun altındaysa işlem açma
 

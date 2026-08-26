@@ -177,6 +177,21 @@ def cmd_preflight(cfg: BotConfig, args) -> int:
     return 0 if allow else 1
 
 
+def cmd_paper_capital(cfg: BotConfig, args) -> int:
+    """PAPER sermaye katkısı — idempotent, denetlenebilir; PnL'ye DOKUNMAZ. Worker DURMUŞKEN çalıştırılır."""
+    from .ops.capital import CapitalError, contribute_paper_capital
+    try:
+        rec = contribute_paper_capital(cfg.state_path, futures_add=args.futures_add,
+                                       spot_add=args.spot_add, adjustment_id=args.adjustment_id,
+                                       operator=args.operator,
+                                       code_sha=getattr(cfg, "code_sha", None))
+    except CapitalError as exc:
+        _p({"error": str(exc), "applied": False})
+        return 2
+    _p(rec)
+    return 0
+
+
 def cmd_backup(cfg: BotConfig, args) -> int:
     from .ops.backup import run_backup
     kind = "daily" if args.daily else "hourly"
@@ -1025,6 +1040,12 @@ def register(sub: argparse._SubParsersAction) -> None:
     s = sub.add_parser("mode-status", help="Çalışma modu (PAPER varsayılan)"); s.set_defaults(fn=cmd_mode_status)
     s = sub.add_parser("mode-transition", help="Manuel mod geçişi talebi"); s.add_argument("--to", required=True); s.add_argument("--operator", required=True)
     s.add_argument("--check", nargs="*", help="k=v kapı bayrakları"); s.add_argument("--token", default=None); s.set_defaults(fn=cmd_mode_transition)
+    s = sub.add_parser("paper-capital", help="PAPER sermaye katkısı (idempotent; PnL korunur; worker durmuşken)")
+    s.add_argument("--futures-add", type=float, required=True)
+    s.add_argument("--spot-add", type=float, required=True)
+    s.add_argument("--adjustment-id", required=True, help="idempotency anahtarı (ör. cap_200_2026q3)")
+    s.add_argument("--operator", default="operator")
+    s.set_defaults(fn=cmd_paper_capital)
     s = sub.add_parser("backup", help="Yedek al (saatlik/günlük)"); s.add_argument("--daily", action="store_true"); s.add_argument("--hourly", action="store_true"); s.set_defaults(fn=cmd_backup)
     s = sub.add_parser("restore", help="Yedekten geri yükle"); s.add_argument("archive"); s.add_argument("--yes", action="store_true"); s.set_defaults(fn=cmd_restore)
     s = sub.add_parser("universe", help="Dinamik spot+futures evrenini yenile → state/universe.json"); s.set_defaults(fn=cmd_universe)

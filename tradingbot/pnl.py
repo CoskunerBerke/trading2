@@ -502,7 +502,9 @@ def profit_factor_state(pv: PortfolioView) -> tuple[float | None, str]:
 def canonical_summary(pv: PortfolioView, *, futures_equity: Any = None, spot_equity: Any = None,
                       risk_state: dict | None = None, as_of: str | None = None,
                       source_freshness: dict | None = None, risk_age_s: Any = None,
-                      risk_stale_s: Any = None) -> dict:
+                      risk_stale_s: Any = None,
+                      futures_ledger_doc: dict | None = None,
+                      spot_ledger_doc: dict | None = None) -> dict:
     """Panel HTML'i ve `/api/live/summary` için TEK kanonik portföy özeti.
 
     Sözleşme: alan HESAPLANAMIYORSA `None` döner ve `unavailable_reason` nedeni yazar.
@@ -570,6 +572,12 @@ def canonical_summary(pv: PortfolioView, *, futures_equity: Any = None, spot_equ
     spot_unbounded = _f(rs.get("spot_unbounded_notional_usdt")) if isinstance(rs, dict) else None
     spot_no_stop = list(rs.get("spot_symbols_without_stop") or []) if isinstance(rs, dict) else []
     spot_cap = _f(rs.get("max_spot_allocation_usdt")) if isinstance(rs, dict) else None
+    _fut_contrib = _f((futures_ledger_doc or {}).get("starting_equity"))
+    _spot_contrib = _f((spot_ledger_doc or {}).get("starting_equity"))
+    if _fut_contrib is None:
+        why["futures_contributed_capital_usdt"] = "futures defteri okunamadı — katkı tabanı bilinmiyor"
+    if _spot_contrib is None:
+        why["spot_contributed_capital_usdt"] = "spot defteri okunamadı — katkı tabanı bilinmiyor"
     _old_snap = "risk.json eski şema — motor bu alanı henüz yayımlamıyor"
     if fut_risk is None:
         why["futures_stop_risk_usdt"] = "risk.json → exposure.futures_stop_risk_usdt yok (" + _old_snap + ")"
@@ -671,7 +679,26 @@ def canonical_summary(pv: PortfolioView, *, futures_equity: Any = None, spot_equ
         "spot_allocation_utilization_pct": spot_alloc_util,
         "risk_budget_max_usdt": budget_max,
         "risk_equity_basis_usdt": basis, "risk_equity_basis_kind": basis_kind,
+        # GERIYE UYUMLULUK: eski alan adi KORUNUR; fakat pay (birlesik gozlem) ile payda
+        # (futures stop-risk butcesi) AYNI kavram degildir -> TANISAL, UYGULANMAZ.
+        # Gercek kapasite kapisi `futures_risk_budget_utilization_pct`tir.
         "open_risk_budget_utilization_pct": budget_util,
+        "open_risk_budget_utilization_semantics": "diagnostic_ratio_not_enforced",
+        "combined_conservative_observation_usdt": reserved,
+        "combined_observation_semantics": "futures_stop_risk_plus_unbounded_spot_notional",
+        "unbounded_spot_warning": (
+            ("STOPSUZ SPOT — %.2f USDT MARUZİYET (%s)" % (spot_unbounded, ", ".join(spot_no_stop)))
+            if (spot_unbounded and spot_no_stop) else None),
+        # SERMAYE MUHASEBESI: katki != kar. contributed = starting_equity (katkilarla artar);
+        # net PnL = guncel MTM - contributed. Alanlar ledger ozetlerinden birebir okunur.
+        "futures_contributed_capital_usdt": _fut_contrib,
+        "spot_contributed_capital_usdt": _spot_contrib,
+        "total_contributed_capital_usdt": (
+            round(_fut_contrib + _spot_contrib, 4)
+            if (_fut_contrib is not None and _spot_contrib is not None) else None),
+        "futures_total_net_pnl_usdt": (
+            round(fe - _fut_contrib, 4)
+            if (fe is not None and _fut_contrib is not None) else None),
         "risk_snapshot_age_s": r_age, "risk_snapshot_state": risk_state_label,
         "open_positions": pv.open_total, "open_long": pv.open_long, "open_short": pv.open_short,
         "any_stale_price": pv.any_stale_price,

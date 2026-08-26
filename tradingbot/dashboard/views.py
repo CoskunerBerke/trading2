@@ -565,16 +565,23 @@ def summary_cards(pv: PortfolioView, summary: dict | None = None) -> list[Summar
             SummaryCard("open_stop_risk_usdt", "Açık stop riski", sr,
                         NO_DATA if sr is None else fmt_money(sr, signed=False, currency="") + " USDT",
                         "money_plain", "stop'a kadar BRÜT tahmini kayıp (ücret hariç)" + partial),
-            SummaryCard("risk_engine_reserved_usdt", "Risk motoru rezervasyonu",
+            # BIRLESIK KONSERVATIF GOZLEM — pay: futures stop riski + STOPSUZ spot TAM notional.
+            # Stop-riski DEGILDIR ve hicbir kapi tarafindan UYGULANMAZ; asagidaki oran TANISALDIR.
+            # Gercek kapasite kapisi: `futures_risk_budget_utilization_pct` (futures stop riski / butce).
+            SummaryCard("risk_engine_reserved_usdt", "Birleşik konservatif gözlem",
                         s.get("risk_engine_reserved_usdt"),
                         NO_DATA if s.get("risk_engine_reserved_usdt") is None
                         else fmt_money(s["risk_engine_reserved_usdt"], signed=False, currency="") + " USDT",
                         "money_plain",
-                        "risk.json → total_open_risk_usdt (stop riskinden AYRI kavram)" + stale_note),
-            SummaryCard("open_risk_budget_utilization_pct", "Risk bütçesi kullanımı",
+                        "futures stop riski + STOPSUZ spot notional — stop riski DEĞİL, "
+                        "limit olarak UYGULANMAZ (risk.json → total_open_risk_usdt)" + stale_note),
+            SummaryCard("open_risk_budget_utilization_pct",
+                        "Birleşik gözlem / futures bütçesi (tanısal)",
                         s.get("open_risk_budget_utilization_pct"),
                         pct1(s.get("open_risk_budget_utilization_pct")), "pct",
-                        risk_budget_sub(s) + stale_note),
+                        "TANISAL ORAN — LİMİT İHLALİ DEĞİL: pay stopsuz spot notional içerir; "
+                        "uygulanan kapı «Futures bütçe kullanımı» kartıdır "
+                        "(diagnostic_ratio_not_enforced) · " + risk_budget_sub(s) + stale_note),
             # --- ÜÇ AYRI KAVRAM: spot notional ile futures stop riski AYNI KARTTA TOPLANMAZ ---
             SummaryCard("futures_stop_risk_usdt", "Futures stop riski", s.get("futures_stop_risk_usdt"),
                         _usdt_or_no_data(s.get("futures_stop_risk_usdt")), "money_plain",
@@ -586,6 +593,25 @@ def summary_cards(pv: PortfolioView, summary: dict | None = None) -> list[Summar
             SummaryCard("spot_exposure_usdt", "Spot maruziyeti", s.get("spot_exposure_usdt"),
                         _usdt_or_no_data(s.get("spot_exposure_usdt")), "money_plain",
                         "açık spot notional — RİSK DEĞİL" + spot_stop_note(s) + stale_note),
+            SummaryCard("unbounded_spot_warning", "Stopsuz spot maruziyeti",
+                        s.get("spot_unbounded_notional_usdt"),
+                        (s.get("unbounded_spot_warning")
+                         or ("yok" if s.get("spot_unbounded_notional_usdt") in (None, 0)
+                             else _usdt_or_no_data(s.get("spot_unbounded_notional_usdt")))),
+                        "warn" if s.get("unbounded_spot_warning") else "money_plain",
+                        "stop ile SINIRLANMAMIŞ maruziyet — tam notional fail-safe görünürlüğü"),
+            SummaryCard("futures_contributed_capital_usdt", "Futures katkı sermayesi",
+                        s.get("futures_contributed_capital_usdt"),
+                        _usdt_or_no_data(s.get("futures_contributed_capital_usdt")), "money_plain",
+                        "PAPER katkı tabanı — KÂR DEĞİL; güncel equity = katkı + toplam PnL"),
+            SummaryCard("spot_contributed_capital_usdt", "Spot katkı sermayesi",
+                        s.get("spot_contributed_capital_usdt"),
+                        _usdt_or_no_data(s.get("spot_contributed_capital_usdt")), "money_plain",
+                        "PAPER katkı tabanı — KÂR DEĞİL"),
+            SummaryCard("total_contributed_capital_usdt", "Toplam katkı sermayesi",
+                        s.get("total_contributed_capital_usdt"),
+                        _usdt_or_no_data(s.get("total_contributed_capital_usdt")), "money_plain",
+                        "futures + spot PAPER katkısı; net PnL ve güncel equity AYRI alanlardır"),
             SummaryCard("spot_allocation_utilization_pct", "Spot allocation kullanımı",
                         s.get("spot_allocation_utilization_pct"),
                         pct1(s.get("spot_allocation_utilization_pct")), "pct",
@@ -684,7 +710,8 @@ def build(state_positions: list[dict], trades: list[dict], chief: dict | None, *
           marks: dict[str, Any] | None = None, fees: Any = None, today: str | None = None,
           max_drawdown_pct: Any = None, freshness: Freshness | None = None,
           futures_equity: Any = None, spot_equity: Any = None, risk_state: dict | None = None,
-          as_of: str | None = None, risk_age_s: Any = None, risk_stale_s: Any = None) -> dict:
+          as_of: str | None = None, risk_age_s: Any = None, risk_stale_s: Any = None,
+          futures_ledger_doc: dict | None = None, spot_ledger_doc: dict | None = None) -> dict:
     """Panelin TEK giriş noktası: her bölüm için hazır, tutarlılığı denetlenmiş model.
 
     `summary` KANONİK özettir; HTML sayfası da `/api/live/summary` de AYNI sözlüğü kullanır,
@@ -694,6 +721,8 @@ def build(state_positions: list[dict], trades: list[dict], chief: dict | None, *
                         max_drawdown_pct=max_drawdown_pct)
     fr = freshness.to_dict() if freshness else None
     summary = canonical_summary(pv, futures_equity=futures_equity, spot_equity=spot_equity,
+                                futures_ledger_doc=futures_ledger_doc,
+                                spot_ledger_doc=spot_ledger_doc,
                                 risk_state=risk_state, as_of=as_of, source_freshness=fr,
                                 risk_age_s=risk_age_s, risk_stale_s=risk_stale_s)
     rows = [position_row(v) for v in pv.positions]

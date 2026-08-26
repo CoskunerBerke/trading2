@@ -289,6 +289,37 @@ def compare_exit_policies(trades: Iterable[dict[str, Any]], *,
             "label": "OFFLINE RESEARCH — aktif çıkış politikası DEĞİŞMEDİ"}
 
 
+def bars_from_frame(frame: Any, opened_at_ms: Any, closed_at_ms: Any) -> list[dict[str, float]]:
+    """OHLCV çerçevesinden bir işlemin bar yolunu keser — OFFLINE köprü.
+
+    Neden gerekli: canlı worker kapanışta bar yolunu KAYDETMEZ
+    (`LearnerV2.on_trade_closed(..., price_path=None)`) ve kaydetmesi için tur başına yeni
+    mum çekmesi gerekirdi — sıcak döngüye tarama EKLENMEZ. Bunun yerine challenger, aynı
+    mumlara zaten sahip olan offline replay yolundan (`replay/engine.py::HistoricalReplay`)
+    beslenir.
+
+    `frame`: `timestamp` (ms) + `open/high/low/close` sütunları olan bir pandas DataFrame ya da
+    aynı anahtarlara sahip sözlük listesi. Aralık YARI AÇIKtır: `(opened_at, closed_at]`.
+    """
+    lo, hi = _f(opened_at_ms), _f(closed_at_ms)
+    if lo is None or hi is None or hi <= lo:
+        return []
+    rows: Iterable[Any]
+    if hasattr(frame, "to_dict"):
+        rows = frame.to_dict("records")
+    else:
+        rows = frame or []
+    out: list[dict[str, float]] = []
+    for r in rows:
+        ts = _f((r or {}).get("timestamp"))
+        h, lw, c = _f(r.get("high")), _f(r.get("low")), _f(r.get("close"))
+        if ts is None or h is None or lw is None or c is None:
+            continue
+        if lo < ts <= hi:
+            out.append({"high": h, "low": lw, "close": c})
+    return out
+
+
 def assert_same_cost_model(*reports: dict[str, Any]) -> None:
     """Farklı maliyet varsayımıyla üretilmiş raporlar KARŞILAŞTIRILAMAZ."""
     keys = {str(r.get("cost_model_key")) for r in reports if isinstance(r, dict)}

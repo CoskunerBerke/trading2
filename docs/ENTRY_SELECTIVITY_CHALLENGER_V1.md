@@ -215,3 +215,126 @@ YOKTUR**; boş sözlük üzerinden hash almak vacuous kanıt üretir).
 
 Elle pozisyon açma/kapatma/değiştirme YOK. Giriş filtresi ya da çıkış politikası aktive etme YOK.
 Sermaye, risk bütçesi, kaldıraç değiştirme YOK.
+
+---
+
+## 11. Üretim deployment kaydı (2026-09-02, PAPER SHADOW)
+
+| Alan | Değer |
+| --- | --- |
+| Başlangıç VPS SHA | `8fc75030c4fd6fc92b02e2326c0e3aa65da81f45` |
+| Ara SHA (canary 1) | `619386994ec548870e55a9849ea36c26f0e25ab8` — CI run 33666234372, 3/3 yeşil |
+| **Nihai VPS SHA** | **`dda788cffbfabc790224c2274183a4356d5fe30a`** — CI run 33673523741, 3/3 yeşil |
+| Branch | `feature/quant-evaluation-v1`, çalışma ağacı temiz |
+| Yedek | `data/backups/daily/tradingbot-daily-20260902T190108Z.tar.gz` |
+| Yedek sha256 | `ad6411b067fc18362613586141d1b33cdc59fd3494c3988904d2a43b9fb7a84c` |
+| Yedek içeriği | 374 dosya / 382 tar üyesi, **hepsi `state/` altında**, `sha256sum -c` OK, `tar -tzf` OK |
+| Rollback (özellik öncesi) | tag `backup/vps-pre-entry-selectivity-8fc7503` |
+| Rollback (asgari) | `.last_good_commit` = `6193869` |
+
+### 11.1 Transfer yolu — bundle
+
+GitHub anonim git-RPC'si bu VPS IP'sinden **401** dönüyor (protokol v0 ile de). Depo herkese
+açık olmasına rağmen (`info/refs` 200) `fetch` başarısız. Deployment bu yüzden **doğrulanmış
+git bundle** ile yapıldı: bundle yerelde üretildi, sha256'sı iki uçta karşılaştırıldı, VPS'te
+`git bundle verify` ile doğrulandı ve `merge --ff-only` sonrası HEAD SHA'sı hedefle birebir
+eşleştirildi. `reset --hard`, `clean`, `rebase`, force push YOK.
+
+> İlk `fetch` denemesi 401 aldığında betiğin SHA kapısı devreye girdi ve **bayat bir
+> `origin/...` ref'iyle yanlış deployment yapılmasını engelledi** (HEAD `8fc7503`te kaldı).
+
+### 11.2 Config değişikliği YAPILMADI
+
+`config.yaml` içinde `entry_selectivity:` bölümü **yoktur ve eklenmemiştir**. Dataclass
+varsayılanları zaten `mode=SHADOW`, `snapshot_enabled=true`, `auto_promotion=false` üretir.
+Restart'tan ÖNCE gerçek `config.yaml` ile yüklenip doğrulandı; ayrıca `PAPER_BOUNDED`/`ACTIVE`/
+`auto_promotion=true` üçü de üretimde canlı olarak `ConfigError` üretti. Fail-closed tasarımın
+karşılığı budur: kodu deploy etmek SHADOW'dan başka bir şey üretemez.
+
+### 11.3 Değişmezlik kanıtı — altı fingerprint
+
+Deploy öncesi (18:56:49Z), deploy sonrası (19:06:12Z) ve iki deploy + üç restart + dört doğal
+turdan sonra (20:08:20Z) **birebir aynı**:
+
+| Fingerprint | Değer |
+| --- | --- |
+| futures (9 pozisyon × 11 alan) | `195d0506c017744acc178357632084b8277fe4f4942751b585ed990282aa1e5f` |
+| spot (`assets/lots/locked_assets/position_meta/cash/open_orders`) | `ff3b6a3df374c96dfd98b00da70559f1dc6a14bcc09897a254ef8706b9c720e8` |
+| katkı sermayesi | `c51a9db2ad9a504fa5b04c82ab71b1ae5e9e9fc06b93061a415caa88369cf5ae` |
+| risk profili | `de5c141317fadc8d008ba8cb13626dd24074bd9fdedb82ea685f1f4d62588e7b` |
+| pozisyon ekonomisi | `57f1c493e012802f07d0cc8619917aed8e5203b4a683fd64d0c1dcbfa057616d` |
+| kapanışlar | `2d1f74e927a11d0f848369345b498a65c70d4c7fa440f9fd29f6bc93204f21ef` |
+
+> **`take_profit` fingerprint alan kümesinden ÇIKARILMALI:** üretimdeki pozisyon nesnelerinde
+> böyle bir alan YOKTUR (11/12 alan mevcut). TP bilgisi `targets` + `targets_hit` içindedir.
+> Olmayan bir anahtar üzerinden hash almak, spot defterindeki `positions` anahtarıyla aynı
+> vacuous-kanıt hatasıdır.
+
+### 11.4 Canary — dört doğal tur
+
+| Tur | SHA | Başlangıç (UTC) | `seconds` | Sembol | Aday | Yazılan | Dup | Hata |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | `6193869` | 19:06:26 | 637,7 | 19 | 10 | 10 | 0 | 0 |
+| 2 | `6193869` | 19:34:56 | 19,1 | 10 | 1 | 1 | 0 | 0 |
+| 3 | `dda788c` | 19:38:48 | 626,8 | 19 | 10 | 10 | 0 | 0 |
+| 4 | `dda788c` | 20:07:31 | 18,0 | 10 | 1 | 1 | 0 | 0 |
+
+**İlk-tur maliyeti kodla ilgili DEĞİLDİR.** İki ayrı SHA'da iki ayrı restart, 637,7 s ve
+626,8 s verdi — sabit bir restart maliyeti. Nedeni loglanmış: pattern index yüklemesi
+(577.796 olay / 89 seri). Kararlı durum turları 19,1 s ve 18,0 s; log span 12,3 s ve
+deploy öncesi 10 sembollü tur aralığı 10,9–12,9 s.
+
+**Katmanın kendi maliyeti VPS'te doğrudan ölçüldü: 0,53 s/tur** (snapshot deposu 1,9 ms,
+kanonik kapanışlar 4,9 ms, `trade_memory` 30,5 ms, `decision_journal` tam tarama 403,3 ms,
+`build_report` 88,2 ms, `replay_audit` 1,5 ms). Toplamın %76'sı karar günlüğü taramasıdır.
+
+### 11.5 Toplanan kanıt (4 tur sonunda)
+
+* 22 snapshot, 22 benzersiz `candidate_id`, **0 duplicate, 0 hata**, `ts_ms` monoton (append-only).
+* `code_sha` / `config_hash` / `policy_version` / `portfolio_open_risk_usdt` /
+  `same_direction_open` → **22/22 dolu**. Bu beş alan eskiden HER kaynakta boştu;
+  `empty_in_every_source` artık **boş liste**.
+* Yasak sonuç alanı: **YOK**. `written_at_stage=RANKING`, `sees_outcome=false`.
+* Alan kaynağı: ortalama 13,8 MEASURED + 12,0 MODELED + 5,2 MISSING.
+* Baseline kararları dürüstçe kaydedildi: 12 `NO_TRIGGER`, 4 `RISK_CAPACITY_BLOCKED`,
+  4 `RESEARCH_SIZE_ONLY`, 2 `LEVERAGE_GATE_BLOCKED`, 0 kabul.
+* `applied_total = 0`, `auto_promotion = false`, `verdict = INSUFFICIENT_ENTRY_SAMPLE`,
+  beş ailenin her biri 0/15 kapı.
+* Worker log: 0 Traceback, 0 CRITICAL, 0 ERROR, 1 WARNING (önceden var olan spot gap-reconcile).
+
+### 11.6 Depolama — DÜRÜST UYARI
+
+`entry_snapshot.jsonl` ölçülen büyüme: **~4,85 KB/snapshot**, gün başına yaklaşık **1,97 MB**
+(74 tur × ort. 5,5 aday). 30 günlük terfi penceresi ≈ 60 MB; disk 71,4 GB boş.
+
+**Bu dosya için yapılandırılmış rotasyon YOKTUR.** `max_snapshots_per_cycle=200` yalnız TUR
+BAŞI sınırdır, ömür boyu büyümeyi sınırlamaz. Bugün hiçbir kanıt silinmiyor (append-only,
+budama yok) — fakat kalıcı çözüm gerektiğinde `journal_archive` kalıbı gibi **arşiv-önce**
+bir rotasyon eklenmeli; sessiz silme bu hattın sözleşmesine aykırıdır.
+
+### 11.7 İlk gerçek bağ — `PENDING_FIRST_REAL_LINK`
+
+Dört doğal turun tamamında `opened = 0` olduğu için **hiçbir yeni pozisyon açılmadı** ve
+`link` satırı üretilmedi (0 link). Bu beklenen ve dürüst durumdur; bağ üretmek için işlem
+UYDURULMADI. Sıradaki doğal açılışta `trade_id → candidate_id` bağı yazılacaktır.
+
+İzleme komutu:
+
+```bash
+sudo -n grep -c '"kind": "link"' /opt/tradingbot/data/state/entry_snapshot.jsonl
+```
+
+### 11.8 Rollback
+
+```bash
+sudo -n -u tradingbot git -C /opt/tradingbot/app merge --ff-only 6193869 || \
+  sudo -n -u tradingbot git -C /opt/tradingbot/app checkout backup/vps-pre-entry-selectivity-8fc7503
+sudo -n systemctl restart tradingbot-worker.service tradingbot-dashboard.service
+```
+
+State'e dokunmaz. Yedekten dönmek gerekirse: `deploy/restore.sh` +
+`tradingbot-daily-20260902T190108Z.tar.gz`.
+
+> `deploy/update.sh` KULLANILMAZ: 13. satırda `deploy/backup.sh manual` çağırıyor, CLI ise
+> yalnız `--daily`/`--hourly` kabul ediyor → `set -euo pipefail` altında git adımına
+> varmadan durur.

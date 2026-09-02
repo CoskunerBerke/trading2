@@ -2430,6 +2430,11 @@ class TradingEngineV3(TradingEngine):
             doc["run_id"] = self.run_id
             doc["entry_mode"] = self.entry_mode
             doc["applied_total"] = 0
+            # KIMLIK: raporun HANGI kodla ve HANGI config'le üretildiği raporun KENDİSİNDE
+            # durmalı. Kimliğini söylemeyen bir kanıt belgesi, sonradan hangi sürümün ürettiği
+            # bilinemediği için denetlenemez.
+            doc["code_sha"] = self.code_sha()
+            doc["config_hash"] = self.config_hash()
             doc["snapshot_store"] = store.stats()
             doc["snapshot_cycle"] = {k: v for k, v in
                                      (getattr(self, "_entry_cycle", None) or {}).items()

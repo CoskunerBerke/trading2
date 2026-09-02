@@ -537,6 +537,19 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
                       if verdict != "ELIGIBLE_FOR_PAPER_BOUNDED" else badge("KAPILAR GEÇTİ", "ok"),
                       "otomatik terfi KAPALI")
                + '</div>')
+        # KİMLİK: bu raporu hangi politika / config / kod üretti. Kimliksiz kanıt denetlenemez.
+        _sha = str(ev.get("code_sha") or "")
+        _cfgh = str(ev.get("config_hash") or "")
+        out += ('<h3>Politika / config / kod kimliği</h3>' + table(
+            ["Alan", "Değer"],
+            [["policy_version", esc(ev.get("policy_version") or "—")],
+             ["config_id", esc(ev.get("config_id") or "—")],
+             ["code_sha", esc(_sha[:12] + "…" if len(_sha) > 12 else (_sha or "—"))],
+             ["config_hash", esc(_cfgh[:12] + "…" if len(_cfgh) > 12 else (_cfgh or "—"))],
+             ["run_id", esc(ev.get("run_id") or "—")],
+             ["rapor üretimi", esc(ev.get("generated_at") or "—")],
+             ["şema", esc(ev.get("schema_version") or "—")]],
+            empty="kimlik yok"))
         fams = ev.get("families")
         if isinstance(fams, dict) and fams:
             rows = []

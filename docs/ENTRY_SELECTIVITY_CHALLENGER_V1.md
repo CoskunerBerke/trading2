@@ -182,9 +182,13 @@ o adın tanımlı olup olmadığı (bool) raporlanır. Bu uç LLM'i etkinleştir
 
 | Uç | İçerik |
 | --- | --- |
-| `/learning` → "Giriş seçiciliği" | aile tablosu, kapılar, replay denetimi, işlem bazlı karar |
+| `/learning` → "Giriş seçiciliği" | aile tablosu, kapılar, replay denetimi, işlem bazlı karar, **politika/config/kod kimliği** |
 | `/api/entry-selectivity` | aynı rapor + snapshot kapsamı; dosya yoksa 200 + `available=false` |
 | `/api/llm-status` | LLM gerçek durumu; sır içermez |
+
+Rapor kendi kimliğini taşır (`policy_version`, `config_id`, `code_sha`, `config_hash`, `run_id`)
+ve panel bunu gösterir: kimliğini söylemeyen bir kanıt belgesi, sonradan hangi sürümün ürettiği
+bilinemediği için denetlenemez.
 
 Hepsi salt okunurdur ve bozuk/eksik şemada **500 vermez** (`test_28`).
 

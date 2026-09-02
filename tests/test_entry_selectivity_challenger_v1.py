@@ -632,6 +632,30 @@ def test_29_dashboard_separates_promotion_evidence_from_observation(tmp_path):
     assert js["snapshot_coverage"]["rows_tail"] == 0
 
 
+def test_29b_dashboard_and_report_carry_policy_config_code_identity(tmp_path):
+    """Kimliğini söylemeyen bir kanıt belgesi denetlenemez."""
+    st, data = _dirs(tmp_path)
+    st.joinpath("entry_selectivity.json").write_text(json.dumps({
+        "schema_version": "entry_eval_v1", "entry_mode": "SHADOW", "applied_total": 0,
+        "auto_promotion": False, "verdict": "INSUFFICIENT_ENTRY_SAMPLE",
+        "policy_version": "entry_v1.0.0", "config_id": "09a3f31c837e3012",
+        "code_sha": "619386994ec548870e55a9849ea36c26f0e25ab8",
+        "config_hash": "3114444fb6cd2cda6ad54105aaaaaaaa",
+        "run_id": "run_TEST", "generated_at": "2026-09-02T19:06:26+00:00",
+        "n_linked": 0, "n_legacy_memory": 0, "families": {}, "promotion_gates": {},
+    }), encoding="utf-8")
+    c = TestClient(create_app(st, data, cfg=DashboardConfig(read_only=True)))
+    html = c.get("/learning").text
+    assert "Politika / config / kod kimliği" in html
+    for token in ("entry_v1.0.0", "09a3f31c837e3012", "619386994ec5", "run_TEST"):
+        assert token in html, token
+    js = c.get("/api/entry-selectivity").json()
+    assert js["policy_version"] == "entry_v1.0.0"
+    assert js["config_id"] == "09a3f31c837e3012"
+    assert js["code_sha"].startswith("6193869")
+    assert js["config_hash"]
+
+
 @pytest.mark.parametrize("status,expect", [
     ("DISABLED", "DISABLED"), ("NOT_CONFIGURED", "NOT_CONFIGURED"), ("NO_CALLS", "NO_CALLS"),
 ])

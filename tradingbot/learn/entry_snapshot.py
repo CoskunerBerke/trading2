@@ -18,6 +18,7 @@ Bu snapshot o boşlukları kapatır ve her alanın **kaynağını** (`MEASURED` 
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import math
@@ -26,11 +27,14 @@ import threading
 from pathlib import Path
 from typing import Any, Iterable
 
-from ..core import iso, stable_id, utc_now
+from ..core import atomic_write_text, iso, stable_id, utc_now
 
 log = logging.getLogger(__name__)
 
 SCHEMA_VERSION = "entry_snapshot_v1"
+
+#: Arşiv akış kimliği — `journal_archive.SegmentArchive(stream_id=...)`.
+ENTRY_ARCHIVE_STREAM_ID = "entry_snapshot"
 
 #: Alan kaynağı — "ölçüldü" ile "varsayılan kondu" KARIŞTIRILMAZ.
 MEASURED = "MEASURED"        # gerçek piyasa/hesap verisinden ölçüldü
@@ -256,17 +260,29 @@ class EntrySnapshotStore:
                 lk = cls._locks[key] = threading.Lock()
             return lk
 
-    def __init__(self, path: Path | str, *, max_per_cycle: int = 200):
+    def __init__(self, path: Path | str, *, max_per_cycle: int = 200,
+                 archive: Any = None, max_lines: int = 0):
         self.path = Path(path)
         self._lock = self._lock_for(self.path)
         #: Tek turda yazılacak azami snapshot — patolojik bir tur diski şişiremez.
         self.max_per_cycle = int(max_per_cycle)
+        #: Sıcak dosyada tutulacak azami satır. 0 → rotasyon YOK (sınırsız büyür, kayıp yok).
+        self.max_lines = max(0, int(max_lines))
+        #: `journal_archive.SegmentArchive` ya da None. Arşiv YOKSA BUDAMA DA YOK.
+        self.archive = archive
         self.appended = 0
         self.errors = 0
         self.duplicates = 0
+        self.archive_errors = 0
+        self.last_archive_error: str | None = None
         self._ids: set[str] | None = None
+        #: Arşiv indeksi önbelleği — segment kümesi değişmedikçe arşiv YENİDEN AÇILMAZ.
+        self._arc_key: tuple[str, ...] | None = None
+        self._arc_snaps: dict[str, dict[str, Any]] | None = None
+        self._arc_links: dict[str, str] | None = None
 
-    def iter_rows(self) -> Iterable[dict[str, Any]]:
+    def iter_hot_rows(self) -> Iterable[dict[str, Any]]:
+        """YALNIZ sıcak dosya. Rotasyondan sonra burada olmayan satırlar arşivdedir."""
         if not self.path.exists():
             return
         try:
@@ -285,16 +301,115 @@ class EntrySnapshotStore:
             if isinstance(d, dict) and d.get("candidate_id"):
                 yield d
 
-    def by_candidate(self) -> dict[str, dict[str, Any]]:
-        """`candidate_id → snapshot`. İlk kayıt otoritedir (karar anı sonradan değişmez)."""
+    def iter_archived_rows(self) -> Iterable[dict[str, Any]]:
+        """Arşivlenmiş satırlar — YALNIZ açık talep üzerine. Arıza istisna SIZDIRMAZ.
+
+        **SICAK DÖNGÜ BUNU ÇAĞIRMAZ.** Her turda arşiv açmak, arşivin var olma sebebini
+        (sıcak yolu küçük tutmak) ortadan kaldırırdı; bu, karar günlüğü hattında zaten
+        korunan bir değişmezdir.
+        """
+        arc = self.archive
+        if arc is None:
+            return
+        try:
+            for r in arc.iter_rows():
+                if isinstance(r, dict) and (r.get("candidate_id") or r.get("kind") == "link"):
+                    yield r
+        except Exception as exc:  # noqa: BLE001 — arşiv arızası okumayı ÇÖKERTMEZ
+            self.archive_errors += 1
+            self.last_archive_error = f"{type(exc).__name__}: {exc}"[:300]
+
+    def _archive_index(self) -> tuple[dict[str, dict[str, Any]], dict[str, str]]:
+        """Arşiv BİR KEZ okunur ve indekslenir; segment kümesi değişmedikçe yeniden açılmaz."""
+        arc = self.archive
+        if arc is None:
+            return {}, {}
+        try:
+            key = tuple(sorted(str(s.get("segment_id")) for s in arc.segments()))
+        except Exception:  # noqa: BLE001
+            return {}, {}
+        if self._arc_key == key and self._arc_snaps is not None:
+            return self._arc_snaps, self._arc_links or {}
+        snaps: dict[str, dict[str, Any]] = {}
+        links: dict[str, str] = {}
+        for r in self.iter_archived_rows():
+            if r.get("kind") == "link":
+                if r.get("trade_id"):
+                    links.setdefault(str(r["trade_id"]), str(r.get("candidate_id")))
+                continue
+            cid = r.get("candidate_id")
+            if cid and str(cid) not in snaps:
+                snaps[str(cid)] = r
+        self._arc_key, self._arc_snaps, self._arc_links = key, snaps, links
+        return snaps, links
+
+    def iter_rows(self) -> Iterable[dict[str, Any]]:
+        """SICAK akış. Geriye uyumlu ad; arşiv için `iter_all_rows` açıkça çağrılır."""
+        yield from self.iter_hot_rows()
+
+    def iter_all_rows(self) -> Iterable[dict[str, Any]]:
+        """ARŞİV + SICAK birleşik akış — ÇEVRİMDIŞI/rapor yolu. Sıcak döngü ÇAĞIRMAZ."""
+        yield from self.iter_archived_rows()
+        yield from self.iter_hot_rows()
+
+    def by_candidate(self, *, include_archive: bool = False) -> dict[str, dict[str, Any]]:
+        """`candidate_id → snapshot`. İlk kayıt otoritedir (karar anı sonradan değişmez).
+
+        `include_archive=False` (varsayılan) SICAK yolu korur. Arşivlenmiş kanıt gerektiğinde
+        çağıran açıkça ister; bkz. `resolve_missing`.
+        """
         out: dict[str, dict[str, Any]] = {}
-        for r in self.iter_rows():
-            cid = str(r["candidate_id"])
+        if include_archive:
+            out.update(self._archive_index()[0])
+        for r in self.iter_hot_rows():
+            cid = r.get("candidate_id")
+            if not cid or r.get("kind") == "link":
+                continue
+            cid = str(cid)
             if cid not in out:
                 out[cid] = r
         return out
 
-    def known_ids(self) -> set[str]:
+    def resolve_missing(self, snaps: dict[str, dict[str, Any]], links: dict[str, str],
+                        wanted_trade_ids: Iterable[str]) -> dict[str, Any]:
+        """Sıcakta bulunamayan bağlar için arşive TALEP ÜZERİNE bakar.
+
+        Normal işletimde sıcak dosya terfi penceresinin tamamını taşır ve bu fonksiyon
+        arşivi HİÇ AÇMAZ (`archive_scanned=False`). Yalnız gerçekten eksik bir bağ varsa
+        arşiv bir kez okunur ve indekslenir — kanıt kaybolmaz, sıcak yol da yavaşlamaz.
+        """
+        want = [str(t) for t in wanted_trade_ids if t]
+        missing = [t for t in want if t not in links or links.get(t) not in snaps]
+        out = {"requested": len(want), "missing_before": len(missing),
+               "archive_scanned": False, "recovered": 0, "missing_after": len(missing)}
+        if not missing or self.archive is None:
+            return out
+        a_snaps, a_links = self._archive_index()
+        out["archive_scanned"] = True
+        for tid in missing:
+            cid = links.get(tid) or a_links.get(tid)
+            if not cid:
+                continue
+            snap = snaps.get(cid) or a_snaps.get(cid)
+            if snap is None:
+                continue
+            links[tid] = cid
+            snaps.setdefault(cid, snap)
+            out["recovered"] += 1
+        out["missing_after"] = sum(1 for t in want
+                                   if t not in links or links.get(t) not in snaps)
+        return out
+
+    def known_ids(self, *, include_archive: bool = False) -> set[str]:
+        """Tekilleştirme kümesi — VARSAYILAN SICAK.
+
+        Arşivi tekilleştirme için taramak sıcak döngüyü arşiv boyutuna bağlardı; bu, karar
+        günlüğü hattında da korunan bir değişmezdir. Üretimde çakışma riski yoktur:
+        `candidate_id` `run_id`+`cycle_id`+sembol+yönden türetilir ve arşivdeki adaylar
+        geçmiş turlara aittir. Çevrimdışı araçlar `include_archive=True` verebilir.
+        """
+        if include_archive:
+            return set(self.by_candidate(include_archive=True).keys())
         if self._ids is None:
             self._ids = set(self.by_candidate().keys())
         return self._ids
@@ -354,13 +469,114 @@ class EntrySnapshotStore:
             log.warning("entry_snapshot link yazılamadı: %s", exc)
             return False
 
-    def trade_links(self) -> dict[str, str]:
-        """`trade_id → candidate_id`."""
+    def trade_links(self, *, include_archive: bool = False) -> dict[str, str]:
+        """`trade_id → candidate_id`. Varsayılan SICAK; arşiv açıkça istenir."""
         out: dict[str, str] = {}
-        for r in self.iter_rows():
+        if include_archive:
+            out.update(self._archive_index()[1])
+        for r in self.iter_hot_rows():
             if r.get("kind") == "link" and r.get("trade_id"):
                 out.setdefault(str(r["trade_id"]), str(r["candidate_id"]))
         return out
+
+    # ------------------------------------------------------------------ rotasyon
+    def _hot_lines(self) -> list[str]:
+        try:
+            text = self.path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            self.errors += 1
+            return []
+        return [ln for ln in text.splitlines() if ln.strip()]
+
+    @staticmethod
+    def _block_sha(lines: list[str]) -> str:
+        blob = ("\n".join(lines) + "\n").encode("utf-8")
+        return hashlib.sha256(blob).hexdigest()
+
+    def _apply_trim(self, pending: dict[str, Any]) -> int:
+        """Arşive mühürlenmiş baş bloğu sıcak dosyadan çıkarır. ÇÖKME SONRASI IDEMPOTENT.
+
+        Baş blok beklenen sha256'yı taşımıyorsa budama ZATEN yapılmıştır (ya da dosya
+        dışarıdan değişmiştir): veri iki kez SİLİNMEZ.
+        """
+        n = int(pending.get("n_lines") or 0)
+        want = str(pending.get("block_sha256") or "")
+        if n <= 0 or not want:
+            return 0
+        lines = self._hot_lines()
+        if len(lines) >= n and self._block_sha(lines[:n]) == want:
+            rest = lines[n:]
+            atomic_write_text(self.path, ("\n".join(rest) + "\n") if rest else "")
+            self._ids = None
+            return n
+        return 0
+
+    def rotate(self) -> dict[str, Any]:
+        """ARŞİV-ÖNCE rotasyon: önce mühürle, sonra buda. Arşiv düşerse BUDAMA YOK.
+
+        Sıra: kurtarma → bekleyen budama → mühürleme → manifest → budama → işaret temizliği.
+        `DecisionJournal.rotate` ile AYNI sözleşme; sessiz silme yoktur.
+        """
+        res: dict[str, Any] = {"archived": 0, "trimmed": 0, "segment_id": None,
+                               "health": "OK", "error": None, "recovered": None,
+                               "hot_lines": 0}
+        if self.archive is None or self.max_lines <= 0:
+            res["health"] = "NO_ARCHIVE_NO_DELETION" if self.archive is None else "DISABLED"
+            res["hot_lines"] = len(self._hot_lines())
+            return res
+        from .journal_archive import ArchiveError
+        with self._lock:
+            try:
+                res["recovered"] = self.archive.recover()
+                pending = self.archive.pending_trim()
+                if pending:
+                    res["trimmed"] += self._apply_trim(pending)
+                    if self.archive.segment_for(str(pending.get("segment_id") or "")) is not None:
+                        self.archive.clear_pending_trim()
+                lines = self._hot_lines()
+                res["hot_lines"] = len(lines)
+                if len(lines) <= self.max_lines:
+                    return res
+                cut = len(lines) - self.max_lines
+                meta = self.archive.seal(lines[:cut])
+                self.archive.commit(meta, pending_trim={
+                    "segment_id": meta["segment_id"], "n_lines": cut,
+                    "block_sha256": meta["block_sha256"]})
+                res["archived"] = cut
+                res["segment_id"] = meta["segment_id"]
+                res["trimmed"] += self._apply_trim({"n_lines": cut,
+                                                    "block_sha256": meta["block_sha256"]})
+                self.archive.clear_pending_trim()
+                res["hot_lines"] = len(self._hot_lines())
+                self._arc_key = None      # segment kümesi değişti → indeks yenilenecek
+                self._ids = None
+            except (ArchiveError, OSError, ValueError) as exc:
+                # Arşiv başarısız → BUDAMA YOK. Sessiz kayıp yerine açık alarm.
+                self.archive_errors += 1
+                self.last_archive_error = f"{type(exc).__name__}: {exc}"[:300]
+                res["health"] = "ARCHIVE_FAILED"
+                res["error"] = self.last_archive_error
+        return res
+
+    def retention_stats(self) -> dict[str, Any]:
+        """Sıcak + arşiv birleşik saklama özeti — manifest okur, segment AÇMAZ."""
+        arc = self.archive.stats() if self.archive is not None else None
+        hot = len(self._hot_lines())
+        archived = int((arc or {}).get("n_archived_records") or 0)
+        return {"hot_rows": hot, "archived_rows": archived, "lifetime_rows": hot + archived,
+                "max_lines": self.max_lines,
+                "retention_policy": ("ARCHIVE_FIRST_LOSSLESS" if self.archive is not None
+                                     else "NO_ARCHIVE_NO_DELETION"),
+                # Bu hattın sözleşmesi: bir satır ancak arşive mühürlendikten SONRA sıcak
+                # dosyadan çıkar. `deleted_segments` yalnız açık bir segment tavanı
+                # verildiğinde artabilir; varsayılan 0'dır (sınırsız saklama).
+                "silent_deletion": False,
+                "deleted_segments": int((arc or {}).get("deleted_segments") or 0),
+                "archive_health": (arc or {}).get("health"),
+                "archive_errors": self.archive_errors,
+                "last_archive_error": self.last_archive_error,
+                "pending_trim": bool((arc or {}).get("pending_trim")),
+                "n_segments": int((arc or {}).get("n_segments") or 0)}
 
     def stats(self) -> dict[str, Any]:
         snaps = self.by_candidate()
@@ -368,7 +584,7 @@ class EntrySnapshotStore:
         return {"schema_version": SCHEMA_VERSION, "path": str(self.path),
                 "snapshots": len(snaps), "links": len(links),
                 "appended": self.appended, "duplicates": self.duplicates,
-                "errors": self.errors}
+                "errors": self.errors, "retention": self.retention_stats()}
 
 
 def snapshot_from_memory_entry(row: dict[str, Any]) -> dict[str, Any] | None:
@@ -409,5 +625,5 @@ def snapshot_from_memory_entry(row: dict[str, Any]) -> dict[str, Any] | None:
 
 __all__ = ["SCHEMA_VERSION", "MEASURED", "MODELED", "DEFAULTED", "MISSING", "SOURCES",
            "LINKED", "LEGACY_MEMORY", "LEGACY_UNLINKED", "EntrySnapshotStore",
-           "build_entry_snapshot", "candidate_id", "decision_id",
+           "build_entry_snapshot", "candidate_id", "decision_id", "ENTRY_ARCHIVE_STREAM_ID",
            "snapshot_from_memory_entry"]

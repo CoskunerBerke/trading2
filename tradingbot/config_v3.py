@@ -437,6 +437,11 @@ class EntrySelectivitySection:
     #: `trade_memory` giriş kayıtlarından türetilen gözlem snapshot'ları rapora eklensin mi.
     #: Bunlar `LEGACY_MEMORY` işaretlidir ve TERFİ KANITI SAYILMAZ (yalnız görünürlük).
     include_legacy_memory: bool = True
+    #: Sıcak `entry_snapshot.jsonl` satır tavanı. Aşan satırlar ÖNCE arşive mühürlenir,
+    #: SONRA sıcak dosyadan çıkarılır (arşiv-önce, kayıpsız). Arşiv yazılamazsa budama YOK.
+    snapshot_max_lines: int = 20_000
+    #: Arşivde tutulacak azami segment. 0 → SINIRSIZ (hiçbir segment silinmez, varsayılan).
+    snapshot_archive_max_segments: int = 0
     auto_promotion: bool = False              # true → ConfigError; terfi yalnız manuel
 
 
@@ -625,6 +630,14 @@ def validate_v3(cfg: V3Config) -> None:
                           "desteklenmiyor — terfi yalnız manuel operatör onayıyla yapılır")
     if _en.max_snapshots_per_cycle < 1:
         raise ConfigError("entry_selectivity.max_snapshots_per_cycle >= 1 olmalı")
+    if _en.snapshot_max_lines < 0 or _en.snapshot_archive_max_segments < 0:
+        raise ConfigError("entry_selectivity saklama alanları negatif olamaz "
+                          "(snapshot_max_lines=0 → rotasyon kapalı, silme YOK)")
+    if 0 < _en.snapshot_max_lines < _en.max_snapshots_per_cycle:
+        # Tavan tek turun yazabileceğinden küçükse her tur rotasyon tetiklenir ve sıcak
+        # dosya asla bir turu bile taşıyamaz — sessiz kanıt kaybı riski.
+        raise ConfigError("entry_selectivity.snapshot_max_lines, max_snapshots_per_cycle'dan "
+                          "küçük olamaz")
     try:
         from .learn.entry_challenger import EntryChallengerConfig as _ECC
         _ECC.from_dict({"policy_version": _en.policy_version} | dict(_en.policy or {}))

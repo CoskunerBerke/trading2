@@ -340,6 +340,7 @@ class TradingEngineV3(TradingEngine):
         try:
             from .learn.entry_challenger import EntryChallengerConfig
             from .learn.entry_eval import ALLOWED_MODES as _EN_MODES
+            from .learn.entry_snapshot import SCHEMA_VERSION as ENTRY_SNAPSHOT_SCHEMA
             from .learn.entry_snapshot import EntrySnapshotStore
             _en = v3.entry_selectivity
             self.entry_cfg = EntryChallengerConfig.from_dict(
@@ -350,9 +351,25 @@ class TradingEngineV3(TradingEngine):
             if self.entry_mode not in _EN_MODES:
                 raise ValueError(f"entry_selectivity.mode={self.entry_mode} bu sürümde kapalı")
             if _en.snapshot_enabled:
+                # ARŞİV-ÖNCE saklama: sıcak dosya tavanı aşınca satırlar önce sıkıştırılmış,
+                # checksum'lı bir segmente mühürlenir; ancak ondan sonra sıcak dosyadan
+                # çıkarılır. Arşiv kurulamazsa `archive=None` kalır → BUDAMA DA OLMAZ.
+                _arc = None
+                try:
+                    from .learn.entry_snapshot import ENTRY_ARCHIVE_STREAM_ID
+                    from .learn.journal_archive import SegmentArchive
+                    _arc = SegmentArchive(
+                        st / "entry_snapshot_archive", stream_id=ENTRY_ARCHIVE_STREAM_ID,
+                        record_schema_version=ENTRY_SNAPSHOT_SCHEMA,
+                        code_sha=getattr(cfg, "code_sha", None),
+                        max_segments=int(_en.snapshot_archive_max_segments))
+                except Exception as exc:  # noqa: BLE001 — arşivsiz çalışır, SİLMEZ
+                    log.warning("giriş snapshot arşivi kurulamadı (budama kapalı): %s", exc)
+                    _arc = None
                 self.entry_snapshot_store = EntrySnapshotStore(
                     st / "entry_snapshot.jsonl",
-                    max_per_cycle=int(_en.max_snapshots_per_cycle))
+                    max_per_cycle=int(_en.max_snapshots_per_cycle),
+                    archive=_arc, max_lines=int(_en.snapshot_max_lines))
         except Exception as exc:  # noqa: BLE001 — giriş gözlemi karar yolunu bloke EDEMEZ
             log.warning("giriş seçiciliği gözlemi kurulamadı (baseline sürüyor): %s", exc)
             self.entry_snapshot_store = None
@@ -2374,9 +2391,13 @@ class TradingEngineV3(TradingEngine):
                     # AÇILAN pozisyon adaya AYRI bir satırla bağlanır; snapshot değişmez.
                     store.link_trade(snap["candidate_id"], str(el["trade_id"]))
                 written += 1
+            rot = store.rotate()          # ARŞİV-ÖNCE; arşiv düşerse budama YOK
             self._entry_cycle = {"at": iso(now), "candidates": len(buf), "written": written,
                                  "appended": store.appended, "duplicates": store.duplicates,
-                                 "errors": store.errors, "mode": self.entry_mode}
+                                 "errors": store.errors, "mode": self.entry_mode,
+                                 "rotation": {k: rot.get(k) for k in
+                                              ("archived", "trimmed", "health", "error",
+                                               "hot_lines", "segment_id")}}
             return self._entry_cycle
         except Exception as exc:  # noqa: BLE001 — gözlem arızası turu DURDURAMAZ
             log.warning("giriş snapshot'ı yazılamadı: %s", exc)
@@ -2399,6 +2420,8 @@ class TradingEngineV3(TradingEngine):
             from .learn.entry_eval import build_report
             from .learn.entry_snapshot import snapshot_from_memory_entry
             _en = self.cfg.v3.entry_selectivity
+            # SICAK yol: arşiv HER TURDA taranmaz. Varsayılan saklama penceresi terfi
+            # penceresinden geniştir, dolayısıyla gereken kanıt sıcakta bulunur.
             snaps = store.by_candidate()
             links = store.trade_links()
             if _en.include_legacy_memory:
@@ -2424,6 +2447,14 @@ class TradingEngineV3(TradingEngine):
             except Exception:  # noqa: BLE001 — bütçe ölçülemezse E ailesi MISSING_DATA der
                 budget = None
             closes_for_audit = canonical_closes(self.ledger2.history)
+            # SICAK DÖNGÜ ARŞİVİ AÇMAZ. Bu, karar günlüğü hattında da korunan bir
+            # değişmezdir: tur maliyeti arşiv boyutuna bağlanamaz. Varsayılan saklama
+            # penceresi (20.000 satır ≈ 50 gün) 30 günlük terfi penceresinden geniştir,
+            # dolayısıyla terfi için gereken kanıt DAİMA sıcaktadır. Arşivlenmiş kanıt
+            # çevrimdışı araçlarla `store.resolve_missing(...)` üzerinden erişilebilir.
+            resolve = {"archive_scanned": False, "reason": "DISABLED_IN_HOT_LOOP",
+                       "archive_segments": int((store.retention_stats() or {})
+                                               .get("n_segments") or 0)}
             doc = build_report(closes=closes_for_audit, snapshots=snaps,
                                links=links, cfg=self.entry_cfg, risk_budget_usdt=budget,
                                now=now)
@@ -2436,6 +2467,7 @@ class TradingEngineV3(TradingEngine):
             doc["code_sha"] = self.code_sha()
             doc["config_hash"] = self.config_hash()
             doc["snapshot_store"] = store.stats()
+            doc["archive_resolution"] = resolve
             doc["snapshot_cycle"] = {k: v for k, v in
                                      (getattr(self, "_entry_cycle", None) or {}).items()
                                      if k in ("at", "candidates", "written", "appended",

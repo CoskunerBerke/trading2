@@ -876,3 +876,34 @@ def test_e2e_chain_layer_failure_does_not_stop_the_tour(tmp_path, monkeypatch):
     assert (eng.cfg.state_path / "health.json").exists()
     h = json.loads((eng.cfg.state_path / "health.json").read_text(encoding="utf-8"))
     assert h["state"] in ("HEALTHY", "KILL_SWITCH")
+
+
+def test_08e_complete_but_unindexed_close_is_backfilled(env):
+    """Zinciri TAM ama indekste olmayan kapanış GERİ DOLDURULUR.
+
+    Üretimde ölçüldü (2026-09-02): F00014 `exit_check` üzerinden kapandı, o yol o sürümde
+    `note_learned` çağırmıyordu ve 19 kapanışın 18'i indeksliydi. Ders sıcak pencereden
+    (200) arşive döndüğü an o kapanış "eksik" görünüp İKİNCİ kez öğrenilirdi.
+    """
+    from tradingbot.learn.reconcile import BACKFILL
+    hist = [_close("F1"), _close("F2", symbol="SOL/USDT")]
+    _run_chain(env, hist)                                   # ikisi de tam + indeksli
+    assert len(env["index"].load()) == 2
+    # F2'nin indeks kaydını sil (exit_check yolunun bıraktığı durumu taklit et)
+    rows = [r for r in env["index"].load().values() if r["trade_id"] != "F2"]
+    env["index"].path.write_text(
+        "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows), encoding="utf-8")
+    assert set(env["index"].trade_ids()) == {"F1"}
+    plan = build_plan(history=hist, memory=env["memory"], learner=env["learner"],
+                      index=env["index"], provenance_store=env["prov"])
+    assert plan["pending"] == [], "zincir TAM, eksik adım yok"
+    assert plan["will_index"] == 1, "indekssiz kapanış görülmeli"
+    res = _run_chain(env, hist)
+    assert res["ran"] is True and res["indexed"] == 1
+    assert res["lessons_added"] == 0 and res["outcomes_added"] == 0, "yeniden ÖĞRENME olmamalı"
+    idx = env["index"].load()
+    assert set(env["index"].trade_ids()) == {"F1", "F2"}
+    assert [v for v in idx.values() if v["trade_id"] == "F2"][0]["source"] == BACKFILL
+    assert _lesson_ids(env).count("F2") == 1
+    # üçüncü geçiş sıfır değişiklik
+    assert _run_chain(env, hist)["ran"] is False

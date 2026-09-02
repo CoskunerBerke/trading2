@@ -50,6 +50,8 @@ DEFAULT_MAX_APPLY = 200
 BOOTSTRAP = "BOOTSTRAP_FROM_EXISTING_LESSONS"
 LIVE_TOUR = "LIVE_TOUR"
 RECONCILE = "RECONCILE"
+#: Zinciri TAM olan ama indekste bulunmayan kapanislarin geri doldurma kaynagi.
+BACKFILL = "BACKFILL_COMPLETE_CHAIN"
 
 
 class LearnedIndex:
@@ -290,12 +292,27 @@ def apply_plan(plan: dict[str, Any], *, history: Any, memory: Any, learner: Any,
                             "steps": steps, "r_multiple": close.get("r_multiple"),
                             "net_pnl": close.get("net_pnl")})
     # Kalan kapanışlar için dürüst legacy işareti ve indeks kaydı bırak (bağlantı UYDURULMAZ).
+    #
+    # İNDEKS GERİ DOLDURMA: zinciri TAM olan ama indekste bulunmayan kapanışlar da işaretlenir.
+    # Bunlar `pending` DEĞİLDİR (outcome ve dersleri var), bu yüzden yukarıdaki döngüye girmezler
+    # ve eskiden indekssiz kalırlardı. Üretimde ölçüldü: F00014 `exit_check` üzerinden kapandı,
+    # o yol `note_learned` çağırmıyordu ve kapanış 19/18 farkı olarak kaldı. Ders sıcak
+    # pencereden (200) arşive döndüğü an o kapanış "eksik" görünüp İKİNCİ kez öğrenilirdi.
+    out_ids = _memory_exit_ids(memory)
+    hot = set(_hot_lesson_counts(learner))
     for tid, close in by_tid.items():
         if provenance_store is not None and tid not in provenance_store.known_ids():
             if provenance_store.record(legacy_provenance(
                     trade_id=tid, symbol=close.get("symbol"), direction=close.get("side"),
                     opened_at=close.get("opened_at"))):
                 added_prov += 1
+        if index is None or close["close_event_id"] in index.event_ids():
+            continue
+        if tid in hot and tid in out_ids:          # zincir TAM ama kayıt yok → geri doldur
+            if index.record(close_ev=close["close_event_id"], trade_id=tid,
+                            steps=["outcome", "lesson"], source=BACKFILL,
+                            r_multiple=close.get("r_multiple")):
+                added_idx += 1
     return {
         "schema_version": SCHEMA_VERSION,
         "applied_at": iso(utc_now()),
@@ -326,7 +343,7 @@ def complete_missing_chain(*, history: Any, memory: Any, learner: Any,
                         memory_exit_ids=_memory_exit_ids(memory))
     plan = build_plan(history=history, memory=memory, learner=learner, index=index,
                       provenance_store=provenance_store)
-    if not plan.get("pending") and not plan.get("will_mark_legacy"):
+    if not plan.get("pending") and not plan.get("will_mark_legacy") and not plan.get("will_index"):
         return {"schema_version": SCHEMA_VERSION, "ran": False, "outcomes_added": 0,
                 "lessons_added": 0, "legacy_provenance_added": 0, "indexed": 0,
                 "report": plan.get("report"), "trades": [], "errors": []}
@@ -361,5 +378,5 @@ def note_learned(index: LearnedIndex | None, close: Any, lesson: dict | None,
 
 
 __all__ = ["SCHEMA_VERSION", "INDEX_SCHEMA_VERSION", "DEFAULT_MAX_APPLY", "BOOTSTRAP",
-           "LIVE_TOUR", "RECONCILE", "LearnedIndex", "bootstrap_index", "build_plan",
+           "LIVE_TOUR", "RECONCILE", "BACKFILL", "LearnedIndex", "bootstrap_index", "build_plan",
            "apply_plan", "complete_missing_chain", "note_learned"]

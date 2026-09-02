@@ -1,8 +1,11 @@
 # WIP HANDOFF — ENTRY_SELECTIVITY_CHALLENGER_V1
 
-> **Durum: YARIM.** Bu doküman plansız bir PC kapanmasından sonra alınan kurtarma denetiminin
-> kalıcı kaydıdır. Faz 1'in sayısal bulguları başka HİÇBİR yerde yoktur; kaybolursa yeniden
-> ölçülmesi gerekir.
+> **DURUM: TAMAMLANDI (2026-09-02, ikinci oturum).** Bütün fazlar kapandı; nihai belge
+> [`ENTRY_SELECTIVITY_CHALLENGER_V1.md`](ENTRY_SELECTIVITY_CHALLENGER_V1.md). Bu dosya kurtarma
+> denetiminin tarihsel kaydı olarak KORUNUR — Faz 1'in ölçüm anı bir daha üretilemez.
+>
+> **Bu dosyadaki dinamik sayılar KESİTTİR, güncel değildir.** Bot çalışmaya devam etti;
+> yeniden ölçülmüş güncel değerler için bölüm 12'ye ve nihai belgeye bakın.
 
 Tarih: 2026-09-02. Denetim sonucu: `SAFE_TO_RESUME_FROM_EXISTING_WIP`.
 
@@ -167,13 +170,13 @@ spot defterinde YOKTUR** — boş sözlük üzerinden hash almak vacuous kanıt 
 | 1 | Kanonik denetim, alan kaynağı/erişilebilirliği | **TAMAM** (bulgular bölüm 3'te) |
 | 2 | Giriş adayı point-in-time snapshot | **MODÜL TAMAM**, motora bağlı DEĞİL |
 | 3 | Beş SHADOW challenger ailesi | **MODÜL TAMAM**, bağlı DEĞİL |
-| 4 | Sonuç atıfı (blocked loser, missed winner, CVaR5, konsantrasyon) | **YAPILMADI** |
-| 5 | Offline replay + üç yönlü walk-forward denetimi | **YAPILMADI** |
-| 6 | Panel bölümü + LLM sayfası dürüstlüğü | **YAPILMADI** |
-| 7 | Terfi kapıları | **YAPILMADI** |
-| 8 | Testler + deployment | **YAPILMADI** |
-| — | `config_v3.EntrySelectivitySection` | **YAPILMADI** |
-| — | Motor bağlantısı (`engine_v3`) | **YAPILMADI** |
+| 4 | Sonuç atıfı (blocked loser, missed winner, CVaR5, konsantrasyon) | **TAMAM** (`learn/entry_eval.py`) |
+| 5 | Offline replay + üç yönlü walk-forward denetimi | **TAMAM** (`learn/entry_replay.py`; sonuç `NOT_REPLAYABLE` — beklenen) |
+| 6 | Panel bölümü + LLM sayfası dürüstlüğü | **TAMAM** (`/learning`, `/api/entry-selectivity`, `/api/llm-status`) |
+| 7 | Terfi kapıları | **TAMAM** (aile başına 14 kapı, fail-closed) |
+| 8 | Testler + deployment | **TESTLER TAMAM** (37 senaryo / 56 test); deployment BEKLİYOR |
+| — | `config_v3.EntrySelectivitySection` | **TAMAM** (fail-closed) |
+| — | Motor bağlantısı (`engine_v3`) | **TAMAM** (SHADOW, arıza turu durdurmaz) |
 
 ### Değişmez kısıtlar (görev metninden)
 
@@ -242,3 +245,75 @@ durumdur.
 Bugünkü veriyle terfi **imkânsızdır**: 0 gerçekten bağlı kapanış (yeni snapshot deposu boş),
 19 kapanış yalnız `LEGACY_MEMORY`. Aktivasyondan önce en az 50 bağlı kapanış ve 30 takvim günü
 birikmeli.
+
+
+---
+
+## 12. İkinci oturum — yeniden ölçüm ve tamamlanan iş (2026-09-02)
+
+Aşağıdaki değerler bu oturumda VPS üzerinde **salt okunur** olarak yeniden ölçüldü. Bölüm 1-6'daki
+sayılar ilk denetim anına aittir ve tarihsel kayıt olarak bırakılmıştır.
+
+### 12.1 Depo
+
+| Alan | İlk denetim | Bu oturum |
+| --- | --- | --- |
+| WIP HEAD | — | `b64f648` (origin ile eşit) |
+| Ana branch | `2707294` | `2707294` (değişmedi) |
+| VPS HEAD | `8fc7503` | `8fc7503` (değişmedi) |
+| VPS tree | temiz | temiz |
+| Kısmi deployment | yok | **yok** (`entry_*.py` ve `entry_*` state dosyası yok; yalnız ilgisiz `entry_provenance.jsonl` var) |
+
+### 12.2 Üretim durumu (kesit farkı)
+
+| Büyüklük | İlk denetim | Bu oturum |
+| --- | --- | --- |
+| Kapanmış işlem | 19 | **20** |
+| Kazanan / kaybeden | 5 / 14 | **5 / 15** |
+| Beklenti | −0,3350R | **−0,3745R** |
+| Ortalama kaybeden | −1,0644R | **−1,0685R** |
+| Profit factor | 0,5729 | **0,5327** |
+| Toplam | −6,3653R / −4,4029 USDT | **−7,4901R / −4,828 USDT** |
+| Yön | 15 LONG / 4 SHORT | **16 LONG / 4 SHORT** |
+| Çıkış nedeni | 14 stop / 3 hedef2 / 2 b-b | **15 stop / 3 hedef2 / 2 b-b** |
+| Karar günlüğü ACCEPTED | 52 | **50** (20.000 satır tavanı; eski kayıtlar arşive döndü) |
+| `p_win` kazanan / kaybeden | 0,3430 / 0,4342 | **0,3430 / 0,4209** (TERS — DEĞİŞMEDİ) |
+| `edge` kazanan / kaybeden | 0,4879 / 0,5787 | **0,4879 / 0,5509** (TERS — DEĞİŞMEDİ) |
+| Açık pozisyon | 9 | 9 (aynı semboller) |
+| Özkaynak / açık risk | — | 95,8414 / 14,1906 USDT |
+| Futures fingerprint | `18b70fbf1985aacf` | **`e6fbb85097c32188`** (pozisyonlar hareket etti — beklenen) |
+| Spot fingerprint | `ff3b6a3df374c96d` | `ff3b6a3df374c96d` (değişmedi) |
+| MODE / kill switch / live path | PAPER / ARMED / False | PAPER / ARMED / False |
+| worker / dashboard PID | 240097 / 240099 | 240097 / 240099 (NRestarts 0) |
+| exit_eval | SHADOW, applied 0 | SHADOW, applied 0, `n_path_complete` **0/20** |
+
+**Ters kalibrasyon bulgusu 20. kapanışla da doğrulandı.** Bu, tasarımın en kritik kısıtıdır.
+
+### 12.3 Handoff'un düzeltilen bir bulgusu
+
+Bölüm 3.3, likidite alanlarının **her yerde** boş olduğunu bildiriyordu. Bu yalnız
+`decision_journal` için doğrudur. `trade_memory` ölçümü: `spread_pct` 29/29, `est_slippage_pct`
+23/29, `depth_ratio` 23/29, `liquidity_ok` 23/29, `conservative_net_edge_r` 23/29.
+
+Veri **vardı**, karar günlüğüne yazılmıyordu. Bu yüzden `_entry_attach_features` karar anı
+`FeatureSnapshotV3`ini de snapshot'a bağlar ve D ailesi artık üretimde karar verebilir
+(e2e ölçümü: kabul edilen adayda 19 MEASURED + 12 MODELED, **0 MISSING**).
+
+Her üç kaynakta birden boş olan zorunlu alanlar: `code_sha`, `config_hash`, `policy_version`,
+`portfolio_open_risk_usdt`, `same_direction_open` — beşi de yeni snapshot tarafından doldurulur.
+
+### 12.4 Eklenen dosyalar
+
+`learn/entry_eval.py`, `learn/entry_replay.py`,
+`tests/test_entry_selectivity_challenger_v1.py`, `docs/ENTRY_SELECTIVITY_CHALLENGER_V1.md`;
+değişenler: `config_v3.py`, `engine_v3.py`, `dashboard/app.py`, `dashboard/state.py`.
+Bölüm 5'teki iki modül **yeniden yazılmadı**.
+
+### 12.5 Doğrulama
+
+Tam suite **1524 passed / 21 skipped** (öncesi 1468/21 → +56 yeni test, regresyon yok).
+`ruff check .` temiz, `compileall` temiz, sır taraması temiz.
+
+### 12.6 Kalan
+
+Yalnız deployment. Bölüm 10'daki kısıtlar aynen geçerlidir.

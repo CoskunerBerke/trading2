@@ -17,6 +17,7 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response, StreamingResponse
 
 from ..core import ConfigError, utc_now
+from ..learn.entry_eval import GATE_MIN_DAYS, GATE_MIN_LINKED_CLOSES as GATE_MIN_LINKED
 from .candles import CandleSource, build_candle_payload
 from .config import DashboardConfig
 from ..pnl import finite_float_or_none, position_view, realized_net
@@ -478,8 +479,145 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
                      + observation_block(lessons) + lessons_table(lessons[-30:][::-1]))
         if ln.get("blacklist"):
             body += "<h2>Kara liste</h2><ul>" + "".join(f"<li>{esc(x)}</li>" for x in ln["blacklist"]) + "</ul>"
-        body += _chain_block() + _position_mgmt_block() + _exit_block()
+        body += _chain_block() + _position_mgmt_block() + _exit_block() + _entry_block()
         return _page("Öğrenme", body, "/learning")
+
+    def _entry_block() -> str:
+        """Giriş seçiciliği paneli — beş challenger ailesi, SALT OKUNUR.
+
+        Ölçülemeyen değer `0` gösterilmez: `—` ya da durum kodu yazılır. `LEGACY_MEMORY`
+        kapanışları AYRI sayılır ve terfi kanıtı olmadığı ekranda açıkça yazar.
+        """
+        ev = state.get("entry_selectivity")
+        if not isinstance(ev, dict) or not ev:
+            return ('<h2>Giriş seçiciliği</h2><div class="card mut">entry_selectivity.json yok — '
+                    'worker bu sürümle henüz tam bir tur tamamlamadı. Bu görünüm salt '
+                    'okunurdur.</div>')
+
+        def _i(d, key):
+            v = finite_float_or_none((d or {}).get(key))
+            return int(v) if v is not None else None
+
+        def _n(x):
+            return "—" if x is None else str(x)
+
+        mode = str(ev.get("entry_mode") or "SHADOW")
+        verdict = str(ev.get("verdict") or "INSUFFICIENT_ENTRY_SAMPLE")
+        store = ev.get("snapshot_store") if isinstance(ev.get("snapshot_store"), dict) else {}
+        cyc = ev.get("snapshot_cycle") if isinstance(ev.get("snapshot_cycle"), dict) else {}
+        n_linked, n_legacy = _i(ev, "n_linked"), _i(ev, "n_legacy_memory")
+        leak = ev.get("leakage") if isinstance(ev.get("leakage"), dict) else {}
+        out = ('<h2>Giriş seçiciliği</h2>'
+               '<p class="mut small">Beş challenger ailesi AYRI AYRI ölçülür; birleşik bir '
+               'süper filtre bilinçli olarak üretilmez — birleştirmek hangi gerekçenin işe '
+               'yaradığını ölçülemez kılar. Eksik veri VETO gerekçesi değildir.</p>'
+               '<div class="grid">'
+               + card("Giriş modu",
+                      badge("SHADOW", "warn") if mode == "SHADOW" else badge(esc(mode), "ok"),
+                      "karşı-olgusal karar, UYGULANMAZ" if mode == "SHADOW" else "uygulanır")
+               + card("Uygulanan filtre", str(int(ev.get("applied_total") or 0)),
+                      "SHADOW'da daima 0")
+               + card("Terfiye sayılan kapanış", _n(n_linked),
+                      f"kapı {GATE_MIN_LINKED} · yalnız LINKED snapshot")
+               + card("Yalnız gözlem (LEGACY)", _n(n_legacy),
+                      "terfi kanıtı SAYILMAZ")
+               + card("Snapshot deposu",
+                      f"{_n(_i(store, 'snapshots'))} / {_n(_i(store, 'links'))}",
+                      "aday snapshot / açılışa bağlanan")
+               + card("Bu turda yazılan", _n(_i(cyc, "written")),
+                      f"{_n(_i(cyc, 'candidates'))} aday · {_n(_i(cyc, 'errors'))} hata")
+               + card("Gözlem süresi (gün)", fmt(ev.get("observation_days"), 2),
+                      f"kapı {GATE_MIN_DAYS}")
+               + card("Sızıntı denetimi",
+                      badge("TEMİZ", "ok") if leak.get("clean")
+                      else badge(esc(str(leak.get("state") or "ölçülemedi")), "warn"),
+                      f"denetlenen {_n(_i(leak, 'checked'))}")
+               + card("Terfi durumu",
+                      badge("YETERSİZ ÖRNEK", "warn")
+                      if verdict != "ELIGIBLE_FOR_PAPER_BOUNDED" else badge("KAPILAR GEÇTİ", "ok"),
+                      "otomatik terfi KAPALI")
+               + '</div>')
+        fams = ev.get("families")
+        if isinstance(fams, dict) and fams:
+            rows = []
+            for fam, f in sorted(fams.items()):
+                if not isinstance(f, dict):
+                    continue
+                b = f.get("baseline") or {}
+                c = f.get("counterfactual") or {}
+                rows.append([
+                    esc(fam), _n(_i(f, "n_evaluated")), _n(_i(f, "n_blocked")),
+                    _n(_i(f, "n_blocked_loser")), _n(_i(f, "n_blocked_winner")),
+                    fmt(f.get("avoided_loss_r"), 3), fmt(f.get("missed_gain_r"), 3),
+                    fmt(f.get("discrimination_youden_j"), 4),
+                    fmt(b.get("expectancy_r"), 4), fmt(c.get("expectancy_r"), 4),
+                    fmt(f.get("delta_expectancy_r"), 4),
+                    fmt(c.get("max_drawdown_r"), 3), fmt(c.get("tail_loss_r_cvar5"), 3),
+                    f'{_n(_i(f, "gates_passed"))}/{_n(_i(f, "gates_total"))}',
+                ])
+            out += ("<h3>Aile bazlı karşı-olgusal sonuç (yalnız LINKED kapanışlar)</h3>"
+                    + table(["Aile", "n", "Engellenen", "Kaybeden", "Kazanan",
+                             "Kaçınılan R", "Kaçırılan R", "Ayrım (J)", "Baseline bekl.",
+                             "Karşı-olgusal bekl.", "Δ beklenti", "maxDD R", "CVaR5 R", "Kapı"],
+                            rows, num_cols={1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12},
+                            empty="aile sonucu yok"))
+        gates = ev.get("promotion_gates")
+        if isinstance(gates, dict) and gates:
+            for fam, gl in sorted(gates.items()):
+                if not isinstance(gl, list) or not gl:
+                    continue
+                out += (f"<h3>Terfi kapıları — {esc(fam)}</h3>" + table(
+                    ["Kapı", "Durum", "Ayrıntı"],
+                    [[esc(g.get("code")),
+                      badge("GEÇTİ", "ok") if g.get("passed") else badge("DÜŞTÜ", "warn"),
+                      esc(g.get("detail"))] for g in gl if isinstance(g, dict)],
+                    empty="kapı yok"))
+        ra = ev.get("replay_audit") if isinstance(ev.get("replay_audit"), dict) else {}
+        if ra:
+            srcs = ra.get("sources") if isinstance(ra.get("sources"), dict) else {}
+            v = str(ra.get("verdict") or "NO_DATA")
+            out += ('<h3>Replay sadakati (geçmiş veriyle karar anı yeniden üretilebilir mi?)</h3>'
+                    '<div class="grid">'
+                    + card("Hüküm",
+                           badge("YENİDEN ÜRETİLEBİLİR", "ok") if v == "REPLAYABLE"
+                           else badge(esc(v), "warn"), esc(str(ra.get("reason_tr") or "")[:160]))
+                    + card("Sentetik kârlılık", badge("ÜRETİLMEDİ", "ok"),
+                           "eksik alan varsayılanla doldurulmaz")
+                    + card("Kapanış bağı",
+                           f'{_n(_i(ra.get("closes") or {}, "linked_to_decision"))} / '
+                           f'{_n(_i(ra.get("closes") or {}, "total"))}',
+                           "karar anına bağlanabilen kapanış")
+                    + '</div>')
+            if srcs:
+                out += table(
+                    ["Kaynak", "Kayıt", "Tam mı", "Eksik alan", "Tamamen boş alan"],
+                    [[esc(k), _n(_i(d, "n_rows")),
+                      badge("TAM", "ok") if d.get("complete") else badge("EKSİK", "warn"),
+                      str(len(d.get("missing_fields") or [])),
+                      esc(", ".join((d.get("completely_empty_fields") or [])[:8]) or "—")]
+                     for k, d in sorted(srcs.items()) if isinstance(d, dict)],
+                    num_cols={1, 3}, empty="kaynak yok")
+            ee_ = ra.get("empty_in_every_source")
+            if isinstance(ee_, list) and ee_:
+                out += ('<div class="card mut"><b>Her kaynakta boş olan zorunlu alanlar '
+                        f'({len(ee_)}):</b> {esc(", ".join(str(x) for x in ee_))}</div>')
+        trades = ev.get("trades")
+        if isinstance(trades, list) and trades:
+            fam_ids = sorted({f for t in trades if isinstance(t, dict)
+                              for f in (t.get("families") or {})})
+            head = (["İşlem", "Sembol", "Yön", "Gerçek R", "Kanıt"]
+                    + [f.split("_")[0] for f in fam_ids])
+            out += "<h3>İşlem bazlı giriş kararı</h3>" + table(
+                head,
+                [[esc(t.get("trade_id")), esc(t.get("symbol")), esc(t.get("direction")),
+                  fmt(t.get("actual_r"), 3),
+                  badge("TERFİ", "ok") if t.get("evidence_grade") == "PROMOTION"
+                  else badge("GÖZLEM", "info")]
+                 + [((t.get("families") or {}).get(f) or {}).get("decision") or "—"
+                    for f in fam_ids]
+                 for t in trades[-40:][::-1] if isinstance(t, dict)],
+                num_cols={3}, empty="işlem yok")
+        return out
 
     def _exit_block() -> str:
         """Çıkış politikası paneli — champion / challenger karşılaştırması, SALT OKUNUR.
@@ -760,6 +898,59 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
             safe["unavailable_reason"] = dict(reasons)
         return JSONResponse(safe)
 
+    @app.get("/api/entry-selectivity")
+    def api_entry_selectivity():
+        """Giriş seçiciliği karşı-olgusal özeti — HER ZAMAN RFC-uyumlu JSON, salt okunur.
+
+        Dosya yoksa 200 + `available=false` (500 değil). Snapshot kapsamı burada da ölçülür ki
+        panel ile API aynı sayıyı versin; bozuk şema tek bir leaf'i `null` yapar, ucu düşürmez.
+        """
+        ev = state.get("entry_selectivity")
+        if not isinstance(ev, dict) or not ev:
+            return JSONResponse({"available": False,
+                                 "reason": ("entry_selectivity.json yok — worker bu sürümle "
+                                            "tur tamamlamadı")})
+        rows = state.tail_jsonl("entry_snapshot", 4000)
+        cand = {str(r.get("candidate_id")) for r in rows
+                if r.get("candidate_id") and r.get("kind") != "link"}
+        linked = {str(r.get("trade_id")) for r in rows
+                  if r.get("kind") == "link" and r.get("trade_id")}
+        payload = dict(ev)
+        payload.update({
+            "available": True,
+            "report_age_s": state.file_age("entry_selectivity"),
+            "applied_total": int(ev.get("applied_total") or 0),
+            "auto_promotion": bool(ev.get("auto_promotion") or False),
+            "snapshot_coverage": {
+                "candidates_tail": len(cand),
+                "trade_links_tail": len(linked),
+                "rows_tail": len(rows),
+            },
+        })
+        safe, reasons = json_safe(payload)
+        if reasons:
+            safe["unavailable_reason"] = dict(reasons)
+        return JSONResponse(safe)
+
+    @app.get("/api/llm-status")
+    def api_llm_status():
+        """LLM alt sisteminin gerçek durumu — salt okunur, sır İÇERMEZ.
+
+        `api_key_present` yalnız bir booldur; anahtarın kendisi ne okunur ne yazılır. Bu uç
+        LLM'i etkinleştirmez ve sağlayıcı eklemez.
+        """
+        st_ = state.get("llm_status")
+        if not isinstance(st_, dict) or not st_:
+            return JSONResponse({"available": False, "status": "UNKNOWN",
+                                 "reason": ("llm_status.json yok — worker bu sürümle tur "
+                                            "tamamlamadı; durum ölçülemedi")})
+        payload = {k: v for k, v in st_.items() if k != "api_key_value"}
+        payload.update({"available": True, "report_age_s": state.file_age("llm_status")})
+        safe, reasons = json_safe(payload)
+        if reasons:
+            safe["unavailable_reason"] = dict(reasons)
+        return JSONResponse(safe)
+
     @app.get("/backtest", response_class=HTMLResponse)
     def backtest():
         sg = state.get("signals") or {}
@@ -840,7 +1031,36 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
     def llm():
         b = state.get("llm_budget") or {}
         calls = state.tail_jsonl("llm_calls", 200)[::-1]
-        body = f'<div class="grid">{card("Gün", esc(b.get("day")))}{card("Harcanan $", fmt(b.get("spent_usd"), 4))}{card("Token", fmt(b.get("spent_tokens"), 0))}{card("Çağrı", fmt(b.get("calls"), 0))}{card("Limit $", fmt(b.get("limit_usd"), 2))}</div>'
+        # DÜRÜSTLÜK: boş bütçe kartları "bütçe henüz harcanmadı" gibi okunuyordu. Gerçek durum
+        # (DISABLED / NOT_CONFIGURED / NO_CALLS / ACTIVE) worker tarafından ÖLÇÜLÜP yazılır;
+        # panel onu gösterir. Bu sayfa LLM'i etkinleştirmez, sağlayıcı eklemez, sır basmaz.
+        st_ = state.get("llm_status") if isinstance(state.get("llm_status"), dict) else {}
+        status = str(st_.get("status") or "UNKNOWN")
+        _tone = {"ACTIVE": "ok", "NO_CALLS": "info", "DISABLED": "warn",
+                 "NOT_CONFIGURED": "warn"}.get(status, "warn")
+        _why = str(st_.get("reason_tr") or
+                   ("llm_status.json yok — durum ÖLÇÜLEMEDİ; boş bütçe 'kullanılmıyor' "
+                    "anlamına GELMEZ"))
+        body = ('<div class="grid">'
+                + card("LLM durumu", badge(esc(status), _tone), esc(_why[:120]))
+                + card("Mod", esc(st_.get("mode") or "—"),
+                       f"sağlayıcı {esc(st_.get('provider') or '—')}")
+                + card("Servis bağlı mı",
+                       badge("HAYIR", "warn") if st_.get("service_wired") is False
+                       else (badge("EVET", "ok") if st_.get("service_wired") else
+                             badge("BİLİNMİYOR", "warn")),
+                       "motorda kurulu LLM istemcisi")
+                + card("Anahtar tanımlı mı",
+                       badge("EVET", "ok") if st_.get("api_key_present")
+                       else badge("HAYIR", "warn"),
+                       f"env adı {esc(st_.get('api_key_env') or '—')} · değer GÖSTERİLMEZ")
+                + card("Kayıtlı çağrı", fmt(st_.get("calls_recorded"), 0),
+                       "bu ortamda toplam")
+                + '</div>')
+        body += f'<div class="grid">{card("Gün", esc(b.get("day")))}{card("Harcanan $", fmt(b.get("spent_usd"), 4))}{card("Token", fmt(b.get("spent_tokens"), 0))}{card("Çağrı", fmt(b.get("calls"), 0))}{card("Limit $", fmt(b.get("limit_usd"), 2))}</div>'
+        if not b:
+            body += ('<div class="card mut">llm_budget.json yok. Bu, bütçenin sıfırlandığı '
+                     'anlamına gelmez: yukarıdaki durum kartı gerçek nedeni gösterir.</div>')
         body += "<h2>Son çağrılar</h2>" + (table(["Zaman", "Model", "Amaç", "Girdi tok", "Çıktı tok", "$", "Süre ms", "Şema ok", "Hata"],
                                                  [[esc(c.get("ts") or c.get("created_at")), esc(c.get("model")), esc(c.get("purpose") or c.get("kind")), fmt(c.get("input_tokens"), 0), fmt(c.get("output_tokens"), 0), fmt(c.get("cost_usd"), 5), fmt(c.get("latency_ms"), 0), "✅" if c.get("schema_ok", True) else "❌", esc(c.get("error") or "")] for c in calls], num_cols={3, 4, 5, 6}) if calls else '<div class="card mut">llm_calls.jsonl yok</div>')
         return _page("LLM", body, "/llm")

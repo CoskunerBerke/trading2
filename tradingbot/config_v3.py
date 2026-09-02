@@ -415,6 +415,32 @@ class ExitPolicySection:
 
 
 @dataclass
+class EntrySelectivitySection:
+    """Giriş seçiciliği (`ENTRY_SELECTIVITY_CHALLENGER_V1`) — GÜVENLİ VARSAYILANLAR.
+
+    `mode` yalnız `SHADOW` olabilir. `PAPER_BOUNDED` bu sürümde config ile AÇILAMAZ: bir
+    challenger ailesinin gerçek giriş kararını daraltması ancak `entry_eval` terfi kapıları
+    geçildikten sonra ve ayrı bir operatör kararıyla olur
+    (bkz. `learn/entry_eval.ALLOWED_MODES`).
+
+    `snapshot_enabled=false` yalnız aday snapshot KAYDINI durdurur; mevcut sıralama, kabul
+    kararı, boyut, kaldıraç, stop/TP ve RiskEngine davranışı hiçbir koşulda bu bölümden
+    etkilenmez.
+    """
+    snapshot_enabled: bool = True             # sıralamaya giren aday snapshot'ı (salt gözlem)
+    mode: str = "SHADOW"                      # SHADOW | (PAPER_BOUNDED bu sürümde YASAK)
+    policy_version: str = "entry_v1.0.0"
+    #: `learn.entry_challenger.EntryChallengerConfig` alanları; verilmeyenler güvenli varsayılanda.
+    policy: dict[str, Any] = field(default_factory=dict)
+    #: Tek turda yazılacak azami snapshot — patolojik bir tur diski şişiremez.
+    max_snapshots_per_cycle: int = 200
+    #: `trade_memory` giriş kayıtlarından türetilen gözlem snapshot'ları rapora eklensin mi.
+    #: Bunlar `LEGACY_MEMORY` işaretlidir ve TERFİ KANITI SAYILMAZ (yalnız görünürlük).
+    include_legacy_memory: bool = True
+    auto_promotion: bool = False              # true → ConfigError; terfi yalnız manuel
+
+
+@dataclass
 class V3Config:
     app: AppConfig = field(default_factory=AppConfig)
     mode: ModeConfig = field(default_factory=ModeConfig)
@@ -439,6 +465,7 @@ class V3Config:
     history: HistorySection = field(default_factory=HistorySection)
     quant_eval: QuantEvalSection = field(default_factory=QuantEvalSection)
     exit_policy: ExitPolicySection = field(default_factory=ExitPolicySection)
+    entry_selectivity: EntrySelectivitySection = field(default_factory=EntrySelectivitySection)
     warnings: list[str] = field(default_factory=list)
 
 
@@ -448,7 +475,8 @@ _SECTIONS = {"app": AppConfig, "mode": ModeConfig, "markets": MarketsConfig, "un
              "telegram": TelegramSection, "learning_v3": LearningV3Section, "storage": StorageSection,
              "obsidian_v3": ObsidianV3Section, "dashboard": DashboardSection, "monitoring": MonitoringSection, "security": SecuritySection,
              "history": HistorySection, "quant_eval": QuantEvalSection,
-             "exit_policy": ExitPolicySection}
+             "exit_policy": ExitPolicySection,
+             "entry_selectivity": EntrySelectivitySection}
 
 VALID_MODES = ("OBSERVE", "PAPER", "TESTNET", "SHADOW_LIVE", "LIVE_LIMITED", "LIVE")
 VALID_LLM_MODES = ("OFF", "POSTMORTEM_ONLY", "ADVISORY", "VETO_ONLY", "RESEARCH_COUNCIL")
@@ -578,6 +606,30 @@ def validate_v3(cfg: V3Config) -> None:
         _EPC.from_dict({"policy_version": _ex.policy_version} | dict(_ex.policy or {}))
     except (ValueError, TypeError) as exc:
         raise ConfigError(f"exit_policy.policy geçersiz: {exc}") from exc
+    # GİRİŞ SEÇİCİLİĞİ: gerçek giriş filtresi bu sürümde config ile AÇILAMAZ.
+    _en = cfg.entry_selectivity
+    from .learn.entry_eval import ALLOWED_MODES as _EN_MODES, KNOWN_MODES as _EN_KNOWN
+    _enm = str(_en.mode or "").upper()
+    if _enm not in _EN_KNOWN:
+        raise ConfigError(f"entry_selectivity.mode geçersiz: {_en.mode!r} "
+                          f"(bilinen: {', '.join(_EN_KNOWN)})")
+    if _enm not in _EN_MODES:
+        raise ConfigError(
+            f"ENTRY_SELECTIVITY_NOT_ACTIVATED: entry_selectivity.mode={_enm} bu sürümde kapalı "
+            f"(izinli: {', '.join(_EN_MODES)}). Gerçek giriş filtresi ancak terfi kapıları "
+            "geçilip açık operatör onayı verildikten sonra açılır.")
+    _en.mode = _enm
+    if _en.auto_promotion:
+        # `exit_policy.auto_promotion` ve `quant_eval.auto_promotion` ile AYNI ilke.
+        raise ConfigError("ENTRY_AUTO_PROMOTION_FORBIDDEN: entry_selectivity.auto_promotion=true "
+                          "desteklenmiyor — terfi yalnız manuel operatör onayıyla yapılır")
+    if _en.max_snapshots_per_cycle < 1:
+        raise ConfigError("entry_selectivity.max_snapshots_per_cycle >= 1 olmalı")
+    try:
+        from .learn.entry_challenger import EntryChallengerConfig as _ECC
+        _ECC.from_dict({"policy_version": _en.policy_version} | dict(_en.policy or {}))
+    except (ValueError, TypeError) as exc:
+        raise ConfigError(f"entry_selectivity.policy geçersiz: {exc}") from exc
     if cfg.futures_v3.margin_mode.lower() != "isolated":
         raise ConfigError("futures_v3.margin_mode paper'da bile yalnız 'isolated' desteklenir")
     if not (1 <= cfg.futures_v3.leverage_default <= cfg.futures_v3.leverage_max_paper_research <= 125):

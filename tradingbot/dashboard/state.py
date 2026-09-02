@@ -25,10 +25,15 @@ STATE_FILES: dict[str, str] = {
     "position_management": "position_management.json",
     # EXIT GIVEBACK & PROFIT PROTECTION V1 — salt okunur karşı-olgusal rapor.
     "exit_eval": "exit_eval.json",
+    # ENTRY SELECTIVITY CHALLENGER V1 — salt okunur karşı-olgusal giriş raporu.
+    "entry_selectivity": "entry_selectivity.json",
+    # LLM alt sisteminin GERÇEK durumu (DISABLED / NOT_CONFIGURED / NO_CALLS / ACTIVE).
+    "llm_status": "llm_status.json",
 }
 JSONL_FILES: dict[str, str] = {"llm_calls": "llm_calls.jsonl", "trade_memory": "trade_memory.jsonl", "signals_log": "signals_log.jsonl",
                                "decision_journal": "decision_journal.jsonl",
-                               "position_path": "position_path.jsonl"}
+                               "position_path": "position_path.jsonl",
+                               "entry_snapshot": "entry_snapshot.jsonl"}
 
 
 def _age(ts: Any) -> float | None:

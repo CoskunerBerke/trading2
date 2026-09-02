@@ -15,6 +15,7 @@ emir reddi alan aday hiçbir kapasite tüketmez (bkz. `_execute_locked` sözleş
 from __future__ import annotations
 
 import logging
+import os
 import time
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -329,6 +330,34 @@ class TradingEngineV3(TradingEngine):
             log.warning("çıkış yolu gözlemi kurulamadı (baseline sürüyor): %s", exc)
             self.path_store = None
             self.exit_executor = None
+        # --- ENTRY SELECTIVITY CHALLENGER V1: aday snapshot'ı (SALT GÖZLEM) ------------------
+        # Snapshot yeni bir veri kaynağı EKLEMEZ: sıralama anında zaten elde olan karar/plan/
+        # chief nesnelerini yazar. Challenger'lar YALNIZ karşı-olgusal değerlendirilir; hiçbir
+        # aile aktif giriş kararını, boyutu, kaldıracı, stop/TP'yi ya da RiskEngine'i ETKİLEMEZ.
+        self.entry_snapshot_store = None
+        self.entry_cfg = None
+        self.entry_mode = "SHADOW"
+        try:
+            from .learn.entry_challenger import EntryChallengerConfig
+            from .learn.entry_eval import ALLOWED_MODES as _EN_MODES
+            from .learn.entry_snapshot import EntrySnapshotStore
+            _en = v3.entry_selectivity
+            self.entry_cfg = EntryChallengerConfig.from_dict(
+                {"policy_version": _en.policy_version} | dict(_en.policy or {}))
+            # Mod doğrulaması `validate_v3`te fail-closed yapıldı; burada İKİNCİ kez zorlanır:
+            # bir config yolu atlanmış olsa bile motor SHADOW dışına ÇIKAMAZ.
+            self.entry_mode = str(_en.mode or "SHADOW").upper()
+            if self.entry_mode not in _EN_MODES:
+                raise ValueError(f"entry_selectivity.mode={self.entry_mode} bu sürümde kapalı")
+            if _en.snapshot_enabled:
+                self.entry_snapshot_store = EntrySnapshotStore(
+                    st / "entry_snapshot.jsonl",
+                    max_per_cycle=int(_en.max_snapshots_per_cycle))
+        except Exception as exc:  # noqa: BLE001 — giriş gözlemi karar yolunu bloke EDEMEZ
+            log.warning("giriş seçiciliği gözlemi kurulamadı (baseline sürüyor): %s", exc)
+            self.entry_snapshot_store = None
+            self.entry_cfg = None
+            self.entry_mode = "SHADOW"
         self.universe = read_json(st / "universe.json", default=None)
         self.last_bar_seen: str = ""
         self.run_id = ""
@@ -852,6 +881,8 @@ class TradingEngineV3(TradingEngine):
         from .learn.position_path import TICK_BAR_EXTREMES
         self._record_position_path(marks, decisions, now, tick_kind=TICK_BAR_EXTREMES)
         self._write_exit_eval(now)
+        self._write_entry_eval(now)
+        self._write_llm_status(now)
         self._learning_chain = self._write_learning_chain(chain_res, now)
         self.mode_state.save()
         from .agents import persist_agents
@@ -934,6 +965,9 @@ class TradingEngineV3(TradingEngine):
         funnel = self._funnel = {k: 0 for k in _FUNNEL_KEYS}
         funnel["actionable"] = sum(1 for d in decisions.values() if d.is_actionable)
         self._opportunity_cost = []
+        # GİRİŞ SEÇİCİLİĞİ: sıralamaya giren adayların KARAR ANI girdileri. Snapshot tur SONUNDA
+        # (baseline kararı belli olunca) tek seferde yazılır; hiçbir sonuç alanı GİRMEZ.
+        self._entry_pending = []
         # SIRALAMA: adaylarin TAMAMI islenmeden once muhafazakar edge'e gore sirali islenir; boylece
         # daha guclu ucuncu firsat, daha zayif iki firsat yuzunden disarida kalmaz. Sabit kota YOK.
         _order = list(chief.priority) + [s for s, d in decisions.items()
@@ -966,6 +1000,7 @@ class TradingEngineV3(TradingEngine):
                      "risk_allowed": None, "risk_reasons": [], "risk_warnings": [], "adjusted_notional": None,
                      "adjusted_leverage": None, "at": iso(now)}
             risk_log.append(entry)
+            self._entry_capture(sym, d, plan, perm, state, entry, market, now)
             # ---------------------------------------------------------------- 1) CHIEF (siralama + SERT red-team)
             # Chief kapasite REZERVE ETMEZ; buradaki tek sert kaynagi gercek red-team hard veto'sudur.
             if not perm.get("allow"):
@@ -990,6 +1025,7 @@ class TradingEngineV3(TradingEngine):
             feats.update({"initial_stop": plan.stop, "p_win": b.p_win, "regime": d.regime, "consensus_score": d.consensus_score, "consensus_conf": d.consensus_confidence,
                           "n_dissent": len(d.dissent), "n_vetoes": len(d.vetoes), "expected_r": d.expected_r, "expected_cost_pct": d.expected_cost, "market_type": market,
                           "spread_pct": next((r.metrics.get("spread_pct") for r in d.specialist_reports if r.agent_name == "orderbook_liquidity" and r.usable), None)})
+            self._entry_attach_features(sym, feats)
             # ---------------------------------------------------------------- 3) EKONOMI (kapasite TUKETMEZ)
             # --- HARD: maliyet ve belirsizlik sonrasi ekonomi ---
             _opp = getattr(d, "opportunity", None) or {}
@@ -1233,6 +1269,7 @@ class TradingEngineV3(TradingEngine):
             state, entries_allowed = self._refresh_after_fill(marks, risk_log, now)
             entry["state_after_fill"] = {"open_positions": len(state.open_positions), "used_margin": round(state.used_margin, 6),
                                          "total_open_risk_usdt": round(state.total_open_risk_usdt, 6), "persisted": entries_allowed}
+        self._entry_flush(now)
         self.trig_path.parent.mkdir(parents=True, exist_ok=True)
         atomic_write_json(self.trig_path, self.triggers, indent=None)
         return opened, risk_log
@@ -2233,6 +2270,273 @@ class TradingEngineV3(TradingEngine):
             return doc
         except Exception as exc:  # noqa: BLE001
             log.warning("çıkış değerlendirmesi yazılamadı: %s", exc)
+            return {}
+
+    # ------------------------------------------------------------------ giriş seçiciliği (SHADOW)
+    def _entry_capture(self, sym, decision, plan, perm, state, entry_log, market, now) -> None:
+        """Sıralamaya giren adayın KARAR ANI girdilerini tampona alır.
+
+        Hiçbir şey yazmaz ve hiçbir karar vermez: yalnız o anda görülebilen nesnelere referans
+        tutar. Sonuç (R, kazandı/kaybetti) bu tampona GİREMEZ; snapshot tur sonunda, işlem
+        kapanmadan çok önce yazılır.
+        """
+        if getattr(self, "entry_snapshot_store", None) is None:
+            return
+        try:
+            buf = getattr(self, "_entry_pending", None)
+            if buf is None or len(buf) >= int(self.entry_snapshot_store.max_per_cycle):
+                return
+            spec = None
+            try:
+                spec = {r.agent_name: float(r.bias)
+                        for r in (decision.specialist_reports or []) if getattr(r, "usable", True)}
+            except Exception:  # noqa: BLE001 — kanıt paketi eksikse snapshot yine yazılır
+                spec = None
+            dirn = str(getattr(decision, "direction", "") or "")
+            # Portföy ısısı KARAR ANINDAKİ yetkili durumdan okunur (her fill sonrası yenilenir).
+            same_dir = sum(1 for p in getattr(state, "open_positions", []) or []
+                           if str(getattr(p, "side", "")).upper().endswith(dirn.upper()))
+            ctx = dict(perm or {}) | {
+                "open_positions": len(getattr(state, "open_positions", []) or []),
+                "total_open_risk_usdt": float(getattr(state, "total_open_risk_usdt", 0.0) or 0.0),
+                "same_direction_open": same_dir,
+            }
+            buf.append({"symbol": sym, "direction": dirn, "decision": decision, "plan": plan,
+                        "chief": ctx, "entry_log": entry_log, "market": market,
+                        "rank": len(buf), "specialists": spec, "features": None,
+                        "ts": now})
+        except Exception as exc:  # noqa: BLE001 — gözlem arızası girişi ETKİLEMEZ
+            log.warning("giriş adayı yakalanamadı (%s): %s", sym, exc)
+
+    def _entry_attach_features(self, sym, feats: dict) -> None:
+        """Tetik sonrası hesaplanan özellik vektörünü adaya bağlar (hâlâ karar anı verisi).
+
+        Karar anı `FeatureSnapshotV3`i de eklenir çünkü likidite alanları (`spread_pct`,
+        `est_slippage_pct`, `depth_ratio`, `liquidity_ok`) YALNIZ orada ölçülür — karar
+        günlüğünde 0/49 boş, `trade_memory`de 23/29 dolu olmasının nedeni budur (2026-09-02
+        üretim ölçümü). Bu alanlar olmadan D ailesi üretimde HİÇ karar veremez.
+
+        `snapshot.vector()` KULLANILMAZ: o, eksik alanı `0.0` ile doldurur ve "ölçülmedi" ile
+        "ölçüldü ve sıfır" ayrımını yok ederdi. Yalnız `values` içindeki, `missing` listesinde
+        BULUNMAYAN alanlar alınır; gerçekten eksik olan alan snapshot'ta `MISSING` kalır.
+        """
+        try:
+            snap_v3 = (getattr(self, "_pred_snapshots", None) or {}).get(sym)
+            measured: dict = {}
+            if snap_v3 is not None:
+                miss = set(getattr(snap_v3, "missing", None) or ())
+                measured = {k: v for k, v in (getattr(snap_v3, "values", None) or {}).items()
+                            if k not in miss}
+            for rec in reversed(getattr(self, "_entry_pending", None) or []):
+                if rec.get("symbol") == sym and rec.get("features") is None:
+                    # `None` bir ÖLÇÜM DEĞİLDİR: eksik bir alanın ölçülmüş bir alanı
+                    # ezmesine izin verilmez.
+                    rec["features"] = measured | {k: v for k, v in (feats or {}).items()
+                                                  if v is not None}
+                    return
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _entry_flush(self, now) -> dict:
+        """Tampondaki adaylar için append-only snapshot yazar. Arıza turu DURDURMAZ.
+
+        Baseline kararı (`accepted` / `reject_reason`) risk günlüğünden okunur: bu, motorun
+        GERÇEKTEN verdiği karardır ve challenger'ın karşılaştırma tabanıdır.
+        """
+        store = getattr(self, "entry_snapshot_store", None)
+        buf = getattr(self, "_entry_pending", None) or []
+        if store is None or not buf:
+            self._entry_pending = []
+            return {}
+        written = 0
+        try:
+            from .learn.entry_snapshot import build_entry_snapshot
+            for rec in buf:
+                el = rec.get("entry_log") or {}
+                snap = build_entry_snapshot(
+                    run_id=self.run_id,
+                    cycle_id=getattr(self, "_journal_cycle", self._tour_no),
+                    symbol=rec.get("symbol"), direction=rec.get("direction"),
+                    decision=rec.get("decision"), plan=rec.get("plan"),
+                    opportunity=(getattr(rec.get("decision"), "opportunity", None) or {}),
+                    chief_permission=rec.get("chief"),
+                    risk_decision={"allowed": el.get("risk_allowed"),
+                                   "reasons": el.get("risk_reasons") or []},
+                    baseline_rank=rec.get("rank"),
+                    baseline_accepted=bool(el.get("trade_id")),
+                    baseline_reject_reason=el.get("block_code"),
+                    features=rec.get("features"), specialist_scores=rec.get("specialists"),
+                    code_sha=self.code_sha(), config_hash=self.config_hash(),
+                    policy_version=getattr(self.entry_cfg, "policy_version", None),
+                    now=rec.get("ts") or now)
+                snap["market_type"] = snap.get("market_type") or rec.get("market")
+                if store.append(snap) and el.get("trade_id"):
+                    # AÇILAN pozisyon adaya AYRI bir satırla bağlanır; snapshot değişmez.
+                    store.link_trade(snap["candidate_id"], str(el["trade_id"]))
+                written += 1
+            self._entry_cycle = {"at": iso(now), "candidates": len(buf), "written": written,
+                                 "appended": store.appended, "duplicates": store.duplicates,
+                                 "errors": store.errors, "mode": self.entry_mode}
+            return self._entry_cycle
+        except Exception as exc:  # noqa: BLE001 — gözlem arızası turu DURDURAMAZ
+            log.warning("giriş snapshot'ı yazılamadı: %s", exc)
+            return {}
+        finally:
+            self._entry_pending = []
+
+    def _write_entry_eval(self, now) -> dict:
+        """Kapanmış işlemler için giriş challenger'larının karşı-olgusal raporunu yazar.
+
+        Snapshot'ı olmayan kapanış `NO_SNAPSHOT` ile geçilir; `trade_memory` kayıtlarından
+        türetilen gözlem snapshot'ları `LEGACY_MEMORY` işaretiyle rapora girer ve TERFİ KANITI
+        SAYILMAZ (`entry_eval.finalize` kapıları yalnız `LINKED` üzerinden hesaplar).
+        """
+        store = getattr(self, "entry_snapshot_store", None)
+        if store is None or getattr(self, "entry_cfg", None) is None:
+            return {}
+        try:
+            from .learn.close_chain import canonical_closes
+            from .learn.entry_eval import build_report
+            from .learn.entry_snapshot import snapshot_from_memory_entry
+            _en = self.cfg.v3.entry_selectivity
+            snaps = store.by_candidate()
+            links = store.trade_links()
+            if _en.include_legacy_memory:
+                # GÖZLEM KÖPRÜSÜ: yeni depo boşken panel "hiç veri yok" göstermesin diye eski
+                # giriş kayıtları da değerlendirilir — ama ayrı sınıfta ve kapı dışında.
+                # YALNIZ `entry` satırları okunur: `trades()` giriş ile çıkışı birleştirir ve
+                # sonucu taşıyan bir satır snapshot köprüsüne GİREMEZ.
+                for row in [r for r in self.memory.iter_rows()
+                            if isinstance(r, dict) and r.get("kind") == "entry"][-400:]:
+                    if not row.get("trade_id"):
+                        continue
+                    tid = str(row["trade_id"])
+                    if tid in links:
+                        continue
+                    ls = snapshot_from_memory_entry(row)
+                    if ls and ls["candidate_id"] not in snaps:
+                        snaps[ls["candidate_id"]] = ls
+                        links[tid] = ls["candidate_id"]
+            budget = None
+            try:
+                budget = (float(self.ledger2.summary({})["equity"])
+                          * float(self.profile.max_total_open_risk_pct) / 100.0)
+            except Exception:  # noqa: BLE001 — bütçe ölçülemezse E ailesi MISSING_DATA der
+                budget = None
+            closes_for_audit = canonical_closes(self.ledger2.history)
+            doc = build_report(closes=closes_for_audit, snapshots=snaps,
+                               links=links, cfg=self.entry_cfg, risk_budget_usdt=budget,
+                               now=now)
+            doc["run_id"] = self.run_id
+            doc["entry_mode"] = self.entry_mode
+            doc["applied_total"] = 0
+            doc["snapshot_store"] = store.stats()
+            doc["snapshot_cycle"] = {k: v for k, v in
+                                     (getattr(self, "_entry_cycle", None) or {}).items()
+                                     if k in ("at", "candidates", "written", "appended",
+                                              "duplicates", "errors", "mode")}
+            doc["risk_budget_usdt"] = (round(budget, 6) if budget is not None else None)
+            doc["replay_audit"] = self._entry_replay_audit(snaps, links, closes_for_audit)
+            # Panelin okuyacağı özet: tam değerlendirme listesi diski şişirmesin.
+            doc["trades"] = [{k: e.get(k) for k in
+                              ("trade_id", "candidate_id", "symbol", "direction", "regime",
+                               "closed_at", "exit_reason", "actual_r", "actual_net_pnl",
+                               "status", "link_status", "evidence_grade", "cost_r")}
+                             | {"families": {f: {kk: v.get(kk) for kk in
+                                                 ("decision", "blocked_loser", "blocked_winner",
+                                                  "avoided_loss_r", "missed_gain_r", "delta_r",
+                                                  "reason_codes")}
+                                             for f, v in (e.get("families") or {}).items()}}
+                             for e in (doc.get("evaluations") or [])][-200:]
+            doc.pop("evaluations", None)
+            atomic_write_json(self.cfg.state_path / "entry_selectivity.json", doc)
+            return doc
+        except Exception as exc:  # noqa: BLE001
+            log.warning("giriş seçiciliği değerlendirmesi yazılamadı: %s", exc)
+            return {}
+
+    def _entry_replay_audit(self, snaps: dict, links: dict, closes: list) -> dict:
+        """FAZ 5 — geçmiş veriyle karar anını sadakatle yeniden üretebiliyor muyuz?
+
+        Beklenen sonuç FAIL-CLOSED'dır (`NOT_REPLAYABLE`): karar günlüğünde `opportunity` yok,
+        likidite alanları boş, `code_sha`/`config_hash` boş. Eksikler tam listeyle raporlanır;
+        yerlerine varsayılan konup sentetik kârlılık ÜRETİLMEZ.
+        """
+        try:
+            from .learn.entry_replay import replay_audit
+            jr: list[dict] = []
+            j = getattr(self, "decision_journal", None)
+            if j is not None:
+                for row in j.iter_rows():
+                    if isinstance(row, dict) and str(row.get("outcome_kind")) == "ACCEPTED":
+                        jr.append(row)
+                jr = jr[-500:]
+            mr = [r for r in self.memory.iter_rows()
+                  if isinstance(r, dict) and r.get("kind") == "entry"][-500:]
+            return replay_audit(journal_rows=jr, memory_rows=mr,
+                                snapshots=list(snaps.values()), closes=closes, links=links)
+        except Exception as exc:  # noqa: BLE001 — denetim arızası turu ETKİLEMEZ
+            log.warning("giriş replay denetimi yapılamadı: %s", exc)
+            return {}
+
+    def _write_llm_status(self, now) -> dict:
+        """LLM alt sisteminin GERÇEK durumunu yazar — salt gözlem, sır BASILMAZ.
+
+        Panel bugüne kadar yalnız boş bütçe kartları gösteriyordu; bu "bütçe henüz harcanmadı"
+        gibi okunuyordu. Oysa üretimdeki gerçek şudur: motor hiçbir yerde bir LLM servisi
+        KURMUYOR, dolayısıyla hiç çağrı yapılamaz. Durum bu dosyada açıkça bildirilir.
+
+        Anahtarın KENDİSİ hiçbir koşulda okunmaz/yazılmaz: yalnız env değişkeni ADI ve o adın
+        tanımlı olup olmadığı (bool) raporlanır. Bu uç LLM'i ETKİNLEŞTİRMEZ.
+        """
+        try:
+            _l = self.cfg.v3.llm
+            mode = str(_l.mode or "OFF").upper()
+            provider = str(_l.provider or "noop").lower()
+            # Motorda kurulu bir servis var mı? (Bu sürümde YOK — uydurulmaz, ölçülür.)
+            wired = any(getattr(self, a, None) is not None
+                        for a in ("llm", "llm_service", "llm_client"))
+            key_env = str(_l.api_key_env or "")
+            key_present = bool(os.environ.get(key_env)) if key_env else False
+            calls = 0
+            budget = read_json(self.cfg.state_path / "llm_budget.json", default=None)
+            if isinstance(budget, dict):
+                try:
+                    calls = int(budget.get("calls") or 0)
+                except (TypeError, ValueError):
+                    calls = 0
+            log_path = self.cfg.state_path / "llm_calls.jsonl"
+            if log_path.exists():
+                try:
+                    calls = max(calls, sum(1 for ln in
+                                           log_path.read_text(encoding="utf-8",
+                                                              errors="replace").splitlines()
+                                           if ln.strip()))
+                except OSError:
+                    pass
+            if mode == "OFF" or provider == "noop":
+                status, why = "DISABLED", "config: llm kapalı (mode=OFF ya da provider=noop)"
+            elif not wired:
+                status, why = ("NOT_CONFIGURED",
+                               "motorda kurulu LLM servisi yok — çağrı yolu HİÇ BAĞLI DEĞİL")
+            elif not key_present:
+                status, why = "NOT_CONFIGURED", f"{key_env} ortam değişkeni tanımlı değil"
+            elif calls <= 0:
+                status, why = "NO_CALLS", "yapılandırıldı fakat bu ortamda hiç çağrı kaydı yok"
+            else:
+                status, why = "ACTIVE", f"{calls} çağrı kaydı var"
+            doc = {"schema_version": "llm_status_v1", "at": iso(now), "run_id": self.run_id,
+                   "status": status, "reason_tr": why, "mode": mode, "provider": provider,
+                   "service_wired": bool(wired), "api_key_env": key_env or None,
+                   "api_key_present": key_present, "calls_recorded": calls,
+                   "budget_file_present": isinstance(budget, dict),
+                   "cannot_execute": True,
+                   "note_tr": ("Bu belge yalnız GÖZLEMDİR: LLM'i etkinleştirmez, sağlayıcı "
+                               "eklemez ve hiçbir sır değeri taşımaz (yalnız env değişkeni ADI).")}
+            atomic_write_json(self.cfg.state_path / "llm_status.json", doc)
+            return doc
+        except Exception as exc:  # noqa: BLE001 — telemetri arızası turu ETKİLEMEZ
+            log.warning("llm durumu yazılamadı: %s", exc)
             return {}
 
     def _write_position_management(self, marks: dict, decisions: dict, now) -> dict:

@@ -337,6 +337,9 @@ class TradingEngineV3(TradingEngine):
         self.entry_snapshot_store = None
         self.entry_cfg = None
         self.entry_mode = "SHADOW"
+        self.weekly_cfg = None
+        self.candle_cfg = None
+        self.weekly_challenger_cfg = None
         try:
             from .learn.entry_challenger import EntryChallengerConfig
             from .learn.entry_eval import ALLOWED_MODES as _EN_MODES
@@ -370,11 +373,24 @@ class TradingEngineV3(TradingEngine):
                     st / "entry_snapshot.jsonl",
                     max_per_cycle=int(_en.max_snapshots_per_cycle),
                     archive=_arc, max_lines=int(_en.snapshot_max_lines))
+            # HAFTALIK BAĞLAM (F/G): saf, salt gözlem. Kurulamazsa baseline aynen sürer.
+            if _en.weekly_context_enabled:
+                from .learn.candle_context import CandleContextConfig
+                from .learn.entry_challenger_v2 import WeeklyChallengerConfig
+                from .learn.weekly_structure import WeeklyStructureConfig
+                self.weekly_cfg = WeeklyStructureConfig.from_dict(
+                    dict(_en.weekly_structure_policy or {}))
+                self.candle_cfg = CandleContextConfig.from_dict(dict(_en.candle_policy or {}))
+                self.weekly_challenger_cfg = WeeklyChallengerConfig.from_dict(
+                    dict(_en.weekly_challenger_policy or {}))
         except Exception as exc:  # noqa: BLE001 — giriş gözlemi karar yolunu bloke EDEMEZ
             log.warning("giriş seçiciliği gözlemi kurulamadı (baseline sürüyor): %s", exc)
             self.entry_snapshot_store = None
             self.entry_cfg = None
             self.entry_mode = "SHADOW"
+            self.weekly_cfg = None
+            self.candle_cfg = None
+            self.weekly_challenger_cfg = None
         self.universe = read_json(st / "universe.json", default=None)
         self.last_bar_seen: str = ""
         self.run_id = ""
@@ -2318,9 +2334,13 @@ class TradingEngineV3(TradingEngine):
                 "total_open_risk_usdt": float(getattr(state, "total_open_risk_usdt", 0.0) or 0.0),
                 "same_direction_open": same_dir,
             }
+            # KARAR ANI ÇERÇEVELERİ: motorun ZATEN çektiği, yalnız KAPANMIŞ barları taşıyan
+            # kareler (`drop_unclosed_last_bar` veri hattında uygulanır). Yeni API çağrısı YOK.
+            frames = (getattr(self.runner, "last_frames", None) or {}).get(sym) or {}
             buf.append({"symbol": sym, "direction": dirn, "decision": decision, "plan": plan,
                         "chief": ctx, "entry_log": entry_log, "market": market,
                         "rank": len(buf), "specialists": spec, "features": None,
+                        "daily_frame": frames.get("1d"), "intraweek_frame": frames.get("4h"),
                         "ts": now})
         except Exception as exc:  # noqa: BLE001 — gözlem arızası girişi ETKİLEMEZ
             log.warning("giriş adayı yakalanamadı (%s): %s", sym, exc)
@@ -2387,6 +2407,7 @@ class TradingEngineV3(TradingEngine):
                     policy_version=getattr(self.entry_cfg, "policy_version", None),
                     now=rec.get("ts") or now)
                 snap["market_type"] = snap.get("market_type") or rec.get("market")
+                self._attach_weekly_context(snap, rec)
                 if store.append(snap) and el.get("trade_id"):
                     # AÇILAN pozisyon adaya AYRI bir satırla bağlanır; snapshot değişmez.
                     store.link_trade(snap["candidate_id"], str(el["trade_id"]))
@@ -2404,6 +2425,60 @@ class TradingEngineV3(TradingEngine):
             return {}
         finally:
             self._entry_pending = []
+
+    @staticmethod
+    def _atr_from_frame(frame) -> float | None:
+        """Çerçevenin SON KAPANMIŞ barındaki `atr14`. Ölçülemezse `None` (sıfır değil)."""
+        try:
+            if frame is None or not len(frame) or "atr14" not in getattr(frame, "columns", ()):
+                return None
+            v = float(frame["atr14"].iloc[-1])
+            return v if v > 0 and v == v else None
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _attach_weekly_context(self, snap: dict, rec: dict) -> None:
+        """Snapshot'a haftalık yapı + bağlamsal mum kaydını ekler. Arıza turu DURDURMAZ.
+
+        Eski satırlar bu alanlar olmadan da geçerlidir: okuyucular `.get()` kullanır ve
+        eksiklik `UNKNOWN` olarak görünür — geriye dönük şema kırılmaz.
+        """
+        if getattr(self, "weekly_cfg", None) is None:
+            return
+        try:
+            from .learn.candle_context import build_candle_context
+            from .learn.weekly_structure import build_weekly_structure, rows_from_frame
+            px = snap.get("entry_price")
+            atr_pct = snap.get("atr_pct")
+            # Haftalık modül MUTLAK ATR ister; snapshot yüzde taşır.
+            atr_abs = ((float(atr_pct) / 100.0 * float(px))
+                       if (atr_pct is not None and px) else None)
+            if atr_abs is None:
+                # Yedek: karar anı çerçevesinin SON KAPANMIŞ barındaki `atr14`. Bu, motorun
+                # zaten hesapladığı point-in-time bir göstergedir; yeni veri çekilmez ve
+                # gelecekten hiçbir şey okunmaz. Yoksa `None` kalır — sıfır SAYILMAZ.
+                atr_abs = self._atr_from_frame(rec.get("intraweek_frame"))
+            weekly = build_weekly_structure(
+                symbol=snap.get("symbol"), direction=snap.get("direction"),
+                now=rec.get("ts") or utc_now(), daily_frame=rec.get("daily_frame"),
+                intraweek_frame=rec.get("intraweek_frame"), current_price=px,
+                atr=atr_abs, cfg=self.weekly_cfg)
+            snap["weekly_structure"] = weekly
+            bars = rows_from_frame(rec.get("intraweek_frame"))
+            # Karar anından SONRAKİ hiçbir bar kullanılmaz.
+            cutoff = weekly.get("as_of_ms")
+            if cutoff is not None:
+                bars = [b for b in bars if b["timestamp"] <= cutoff]
+            snap["candle_context"] = build_candle_context(
+                bars=bars[-40:], atr=atr_abs,
+                week_high=weekly.get("previous_completed_week_high"),
+                week_low=weekly.get("previous_completed_week_low"),
+                current_price=px, cfg=self.candle_cfg)
+        except Exception as exc:  # noqa: BLE001 — bağlam arızası snapshot'ı ENGELLEMEZ
+            log.warning("haftalık bağlam eklenemedi (%s): %s", snap.get("symbol"), exc)
+            snap["weekly_structure"] = {"week_available": False,
+                                        "data_quality": "UNAVAILABLE",
+                                        "unavailable_reason": f"BUILD_FAILED:{type(exc).__name__}"}
 
     def _write_entry_eval(self, now) -> dict:
         """Kapanmış işlemler için giriş challenger'larının karşı-olgusal raporunu yazar.
@@ -2474,6 +2549,8 @@ class TradingEngineV3(TradingEngine):
                                               "duplicates", "errors", "mode")}
             doc["risk_budget_usdt"] = (round(budget, 6) if budget is not None else None)
             doc["replay_audit"] = self._entry_replay_audit(snaps, links, closes_for_audit)
+            # F/G AİLELERİ (haftalık yapı + yapısal R:R) — ayrı bölüm, V1 çıktısı BOZULMAZ.
+            doc["weekly_context"] = self._entry_eval_v2(closes_for_audit, snaps, links)
             # Panelin okuyacağı özet: tam değerlendirme listesi diski şişirmesin.
             doc["trades"] = [{k: e.get(k) for k in
                               ("trade_id", "candidate_id", "symbol", "direction", "regime",
@@ -2491,6 +2568,23 @@ class TradingEngineV3(TradingEngine):
         except Exception as exc:  # noqa: BLE001
             log.warning("giriş seçiciliği değerlendirmesi yazılamadı: %s", exc)
             return {}
+
+    def _entry_eval_v2(self, closes: list, snaps: dict, links: dict) -> dict:
+        """F/G ailelerinin karşı-olgusal raporu. Arıza turu DURDURMAZ; V1 raporu bozulmaz."""
+        if getattr(self, "weekly_challenger_cfg", None) is None:
+            return {"enabled": False, "reason": "WEEKLY_CONTEXT_DISABLED"}
+        try:
+            from .learn.entry_eval_v2 import build_report_v2
+            doc = build_report_v2(closes=closes, snapshots=snaps, links=links,
+                                  base_policy=self.weekly_challenger_cfg.to_dict())
+            doc["enabled"] = True
+            doc["weekly_config_id"] = getattr(self.weekly_cfg, "config_id", None)
+            doc["candle_config_id"] = getattr(self.candle_cfg, "config_id", None)
+            doc["applied_total"] = 0
+            return doc
+        except Exception as exc:  # noqa: BLE001
+            log.warning("haftalık bağlam değerlendirmesi yazılamadı: %s", exc)
+            return {"enabled": True, "error": f"{type(exc).__name__}", "applied_total": 0}
 
     def _entry_replay_audit(self, snaps: dict, links: dict, closes: list) -> dict:
         """FAZ 5 — geçmiş veriyle karar anını sadakatle yeniden üretebiliyor muyuz?

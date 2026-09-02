@@ -443,6 +443,15 @@ class EntrySelectivitySection:
     #: Arşivde tutulacak azami segment. 0 → SINIRSIZ (hiçbir segment silinmez, varsayılan).
     snapshot_archive_max_segments: int = 0
     auto_promotion: bool = False              # true → ConfigError; terfi yalnız manuel
+    #: WEEKLY_MARKET_STRUCTURE_AND_CONTEXTUAL_PRICE_ACTION_V1 — F ve G aileleri.
+    #: `enabled=false` yalnız GÖZLEMİ durdurur; hiçbir aktif karar bu bölümden etkilenmez.
+    weekly_context_enabled: bool = True
+    #: `learn.weekly_structure.WeeklyStructureConfig` alanları.
+    weekly_structure_policy: dict[str, Any] = field(default_factory=dict)
+    #: `learn.candle_context.CandleContextConfig` alanları.
+    candle_policy: dict[str, Any] = field(default_factory=dict)
+    #: `learn.entry_challenger_v2.WeeklyChallengerConfig` taban alanları (varyantlar üstüne biner).
+    weekly_challenger_policy: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -643,6 +652,17 @@ def validate_v3(cfg: V3Config) -> None:
         _ECC.from_dict({"policy_version": _en.policy_version} | dict(_en.policy or {}))
     except (ValueError, TypeError) as exc:
         raise ConfigError(f"entry_selectivity.policy geçersiz: {exc}") from exc
+    # HAFTALIK BAĞLAM (F/G aileleri): SHADOW dışına çıkış yolu YOKTUR — `entry_selectivity.mode`
+    # zaten yukarıda `SHADOW`a kilitlendi ve bu aileler o modun altında çalışır.
+    try:
+        from .learn.candle_context import CandleContextConfig as _CCC
+        from .learn.entry_challenger_v2 import WeeklyChallengerConfig as _WCC
+        from .learn.weekly_structure import WeeklyStructureConfig as _WSC
+        _WSC.from_dict(dict(_en.weekly_structure_policy or {}))
+        _CCC.from_dict(dict(_en.candle_policy or {}))
+        _WCC.from_dict(dict(_en.weekly_challenger_policy or {}))
+    except (ValueError, TypeError) as exc:
+        raise ConfigError(f"entry_selectivity haftalık bağlam politikası geçersiz: {exc}") from exc
     if cfg.futures_v3.margin_mode.lower() != "isolated":
         raise ConfigError("futures_v3.margin_mode paper'da bile yalnız 'isolated' desteklenir")
     if not (1 <= cfg.futures_v3.leverage_default <= cfg.futures_v3.leverage_max_paper_research <= 125):

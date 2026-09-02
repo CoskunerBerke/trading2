@@ -57,19 +57,45 @@ def _age_hours(opened_at: Any, now=None) -> float | None:
     return round(max(0.0, ((now or utc_now()) - t).total_seconds()) / 3600.0, 3)
 
 
-def economics_available(decision: Any) -> bool:
-    """Ekonomi GERÇEKTEN değerlendirildi mi.
+def is_management_verdict(decision: Any) -> bool:
+    """Karar bir POZİSYON YÖNETİMİ kararı mı (giriş adayı değil).
 
-    `_assess_opportunities` yalnız `is_actionable` adaylar için `opportunity` doldurur; açık
-    pozisyonların kararı oraya hiç girmez. Dolayısıyla `opportunity` yoksa ekonomi
-    DEĞERLENDİRİLMEMİŞTİR ve alanlar `UNKNOWN` olmalıdır.
+    `head.decide()` açık pozisyonlu sembol için `HOLD/REDUCE/EXIT` döndürüp erken çıkar
+    (`head.py:226-236`). Giriş adayları ise `FUTURES_LONG/FUTURES_SHORT/SPOT_LONG` olur.
+    """
+    v = _get(decision, "verdict")
+    return str(getattr(v, "value", v) or "").upper() in ACTIONS
+
+
+def economics_available(decision: Any) -> bool:
+    """Açık pozisyonun ekonomisi GERÇEKTEN değerlendirildi mi.
+
+    İki koşul birlikte aranır ve ikincisi kritiktir:
+
+    1. Kararda `opportunity` dolu olmalı. `_assess_opportunities` bunu yalnız
+       `is_actionable` adaylar için doldurur; açık pozisyon kararı oraya hiç girmez.
+    2. Karar bir YÖNETİM kararı olmalı. Pozisyonun AÇILDIĞI turda aynı sembolün kararı bir
+       GİRİŞ adayıdır ve `opportunity` doludur — fakat o sayı girişin beklenen değeridir,
+       açık pozisyonun KALAN avantajı değildir. Bu ayrım yapılmazsa açılış turunda giriş
+       ekonomisi pozisyon ekonomisi gibi raporlanır; tam da yasaklanan sahte sayı budur.
     """
     if decision is None:
         return False
     opp = getattr(decision, "opportunity", None)
     if opp is None and isinstance(decision, dict):
         opp = decision.get("opportunity")
-    return isinstance(opp, dict) and bool(opp)
+    return isinstance(opp, dict) and bool(opp) and is_management_verdict(decision)
+
+
+def _economics_reason(decision: Any) -> str:
+    """Ekonominin neden ölçülmemiş sayıldığı. İki durum KARIŞTIRILMAZ."""
+    if decision is None:
+        return "NO_DECISION"
+    if not is_management_verdict(decision):
+        # Pozisyonun açıldığı tur: karar bir GİRİŞ adayıydı. `opportunity` dolu olabilir ama
+        # o sayı girişin beklenen değeridir, açık pozisyonun kalan avantajı DEĞİLDİR.
+        return "ENTRY_CANDIDATE_ECONOMICS_NOT_POSITION_ECONOMICS"
+    return "OPEN_POSITION_NOT_ECONOMICALLY_EVALUATED"
 
 
 def _opp_value(decision: Any, key: str) -> Any:
@@ -187,8 +213,7 @@ def management_snapshot(*, position: Any, mark: Any, decision: Any = None,
         "expected_net_return": (_f(_opp_value(decision, "conservative_net_edge_r"))
                                 if evaluated else UNKNOWN),
         "remaining_edge": (_f(_opp_value(decision, "net_edge_r")) if evaluated else UNKNOWN),
-        "economics_reason": (None if evaluated else
-                             "OPEN_POSITION_NOT_ECONOMICALLY_EVALUATED"),
+        "economics_reason": (None if evaluated else _economics_reason(decision)),
         # --- ÖNERİ: bugün YALNIZ tavsiye. Motor bu alanı okumaz. ---
         "proposed_action": action,
         "action_reason": reason,
@@ -270,5 +295,5 @@ class ManagementExecutor:
 
 
 __all__ = ["SCHEMA_VERSION", "UNKNOWN", "ADVISORY_ONLY", "EXECUTABLE", "HOLD", "REDUCE", "EXIT",
-           "ACTIONS", "economics_available", "r_metrics", "proposed_action",
+           "ACTIONS", "economics_available", "is_management_verdict", "r_metrics", "proposed_action",
            "management_snapshot", "build_snapshot_doc", "ManagementExecutor"]

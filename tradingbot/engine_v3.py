@@ -304,6 +304,31 @@ class TradingEngineV3(TradingEngine):
             self.mgmt_executor = ManagementExecutor()
         except Exception as exc:  # noqa: BLE001
             log.warning("kapanış zinciri altyapısı kurulamadı (baseline sürüyor): %s", exc)
+        # --- EXIT GIVEBACK & PROFIT PROTECTION V1: açık pozisyon fiyat yolu (SALT GÖZLEM) ---
+        # Yol kaydı yeni bir veri kaynağı EKLEMEZ: motorun zaten aldığı mark güncellemelerini
+        # kullanır. Çıkış politikaları yalnız karşı-olgusal olarak değerlendirilir; yürütücü
+        # `SHADOW`dur ve deftere DOKUNMAZ. Mevcut stop/TP davranışı DEĞİŞMEZ.
+        self.path_store = None
+        self.exit_policy_cfg = None
+        self.exit_executor = None
+        try:
+            from .learn.exit_executor import ExitExecutor
+            from .learn.exit_policy import ExitPolicyConfig
+            from .learn.position_path import PositionPathStore
+            _ex = v3.exit_policy
+            self.exit_policy_cfg = ExitPolicyConfig.from_dict(
+                {"policy_version": _ex.policy_version} | dict(_ex.policy or {}))
+            # Mod doğrulaması `validate_v3`te fail-closed yapıldı; burada ikinci kez zorlanır.
+            self.exit_executor = ExitExecutor(self.exit_policy_cfg, mode=_ex.action_mode)
+            if _ex.path_enabled:
+                self.path_store = PositionPathStore(
+                    st / "position_path.jsonl",
+                    min_interval_s=_ex.min_snapshot_interval_s,
+                    min_r_change=_ex.min_r_change)
+        except Exception as exc:  # noqa: BLE001 — çıkış gözlemi karar yolunu bloke EDEMEZ
+            log.warning("çıkış yolu gözlemi kurulamadı (baseline sürüyor): %s", exc)
+            self.path_store = None
+            self.exit_executor = None
         self.universe = read_json(st / "universe.json", default=None)
         self.last_bar_seen: str = ""
         self.run_id = ""
@@ -467,11 +492,15 @@ class TradingEngineV3(TradingEngine):
                 legacy = rec.to_legacy_dict()
                 snap = self.last_decisions.get(rec.symbol) or {}
                 try:
-                    self.learner.learn(legacy)
+                    lesson = self.learner.learn(legacy)
                     self.learner2.on_trade_closed(legacy | {"features": legacy.get("features") or {}},
                                                   {"regime": snap.get("regime"), "consensus_score": snap.get("consensus_score"),
                                                    "dissent": snap.get("dissent"), "vetoes": snap.get("vetoes")})
-                    self._journal_outcome(legacy)
+                    self._journal_outcome(legacy, lesson)
+                    # `exit_check` ile AYNI boşluk: gap-reconcile kapanışları da indekse yazılmalı.
+                    from .learn.reconcile import note_learned
+                    note_learned(getattr(self, "learned_index", None), legacy, lesson,
+                                 source="GAP_RECONCILE")
                 except Exception as exc:  # noqa: BLE001
                     log.exception("gap-reconcile öğrenme hatası: %s", exc)
 
@@ -499,15 +528,26 @@ class TradingEngineV3(TradingEngine):
             self.ledger2.save(self.ledger_path)
             from .ops.gap import write_watermark
             write_watermark(self.cfg.state_path, now, self.run_id or None)
+            # FİYAT YOLU: bu yol yalnız SON FİYATI bilir (bar uçları YOK) ve bunu açıkça
+            # `last_only` olarak işaretler. Kapanış kontrolünden SONRA çağrılır ki kapanan
+            # pozisyon için yanıltıcı bir "açık pozisyon" snapshot'ı yazılmasın.
+            from .learn.position_path import TICK_LAST_ONLY
+            self._record_position_path(marks, None, now, tick_kind=TICK_LAST_ONLY)
             out = []
             for rec in records:
                 legacy = rec.to_legacy_dict()
                 snap = self.last_decisions.get(rec.symbol) or {}
                 try:
-                    self.learner.learn(legacy)
+                    lesson = self.learner.learn(legacy)
                     self.learner2.on_trade_closed(legacy | {"features": legacy.get("features") or {}}, {"regime": snap.get("regime"), "consensus_score": snap.get("consensus_score"),
                                                                                                         "dissent": snap.get("dissent"), "vetoes": snap.get("vetoes")})
-                    self._journal_outcome(legacy)
+                    self._journal_outcome(legacy, lesson)
+                    # ÖĞRENİLDİ KAYDI — bu yol eskiden indekse HİÇ yazmıyordu. Ders sıcak
+                    # pencereden (200) arşive döndükten sonra kapanış "eksik" görünüp İKİNCİ
+                    # kez öğrenilebilirdi; kapanışların çoğu bu 60 sn'lik monitörden geçer.
+                    from .learn.reconcile import note_learned
+                    note_learned(getattr(self, "learned_index", None), legacy, lesson,
+                                 source="EXIT_MONITOR")
                 except Exception as exc:  # noqa: BLE001 — öğrenme hatası defteri geri almaz
                     log.exception("exit-monitor öğrenme hatası: %s", exc)
                 out.append(legacy)
@@ -808,6 +848,10 @@ class TradingEngineV3(TradingEngine):
         # Açık pozisyon yönetim gözlemi + kapanış zinciri özeti. İKİSİ DE SALT OKUNURDUR:
         # motor bu dosyaları okumaz, yalnız yazar. `REDUCE/EXIT` bugün ADVISORY_ONLY'dir.
         self._write_position_management(marks, decisions, now)
+        # Fiyat yolu: TUR tick'i 1h bar uçlarını da taşır (`_marks`), bu yüzden `bar_extremes`.
+        from .learn.position_path import TICK_BAR_EXTREMES
+        self._record_position_path(marks, decisions, now, tick_kind=TICK_BAR_EXTREMES)
+        self._write_exit_eval(now)
         self._learning_chain = self._write_learning_chain(chain_res, now)
         self.mode_state.save()
         from .agents import persist_agents
@@ -2072,6 +2116,104 @@ class TradingEngineV3(TradingEngine):
         except Exception as exc:  # noqa: BLE001 — onarım arızası turu DURDURMAZ
             log.warning("kapanış zinciri onarımı atlandı: %s", exc)
             return {"ran": False, "error": str(exc)[:200]}
+
+    def _record_position_path(self, marks: dict, decisions: dict | None, now,
+                              *, tick_kind: str) -> dict:
+        """Açık pozisyonların fiyat yolunu kaydeder ve politika niyetlerini değerlendirir.
+
+        SALT GÖZLEM: hiçbir emir üretilmez, defter değişmez, stop/TP'ye dokunulmaz. Yürütücü
+        `SHADOW` olduğu için bütün niyetler `applied=False` + `blocker` ile döner.
+
+        `tick_kind` bilinçli olarak taşınır: `exit_check` yalnız son fiyatı bilir (bar uçları
+        YOK), tur ise 1h bar uçlarını da verir. Bar uçları olmadan hesaplanan MFE gerçek en iyi
+        noktayı kaçırabilir; değerlendirme bunu bilmek zorundadır.
+        """
+        store = getattr(self, "path_store", None)
+        if store is None or not self.ledger2.positions:
+            return {}
+        try:
+            from .learn.exit_policy import HOLD, evaluate_all
+            from .learn.position_path import build_snapshot
+            decs = decisions or {}
+            written = 0
+            intents: list[dict] = []
+            rejected: dict[str, int] = {}
+            for sym, pos in sorted(self.ledger2.positions.items()):
+                tick = marks.get(sym)
+                if tick is None:
+                    continue
+                mark = float(tick.ref)
+                rec, rej = build_snapshot(
+                    position=pos, mark=mark, now=now, tick_kind=tick_kind,
+                    decision=decs.get(sym), run_id=self.run_id,
+                    code_sha=self.code_sha(), config_hash=self.config_hash(),
+                    mark_ts=getattr(tick, "ts", None) or None)
+                if rec is None:
+                    rejected[rej or "UNKNOWN"] = rejected.get(rej or "UNKNOWN", 0) + 1
+                    continue
+                if store.append(rec):
+                    written += 1
+                # Politika niyetleri HER snapshot için değerlendirilir (yazılmasa bile),
+                # böylece panel güncel kalır; fakat hiçbiri uygulanmaz.
+                for d in evaluate_all(rec, self.exit_policy_cfg,
+                                      reduces_done=0).values():
+                    if d["action"] != HOLD:
+                        intents.append(d)
+            ex = getattr(self, "exit_executor", None)
+            res = {}
+            if ex is not None and intents:
+                res = ex.execute_many(
+                    intents, mode_value=self.mode_state.mode.value,
+                    live_order_path=self.mode_state.is_live_order_path_enabled(),
+                    killswitch_state=self.killswitch.state,
+                    position_open=True, mark_stale=False, actions_this_tour=0)
+            out = {"schema_version": "exit_path_cycle_v1", "at": iso(now),
+                   "tick_kind": tick_kind, "snapshots_written": written,
+                   "rejected": rejected, "n_intents": len(intents),
+                   "applied": int(res.get("applied", 0)), "execution": res or None,
+                   "store": store.stats()}
+            self._exit_cycle = out
+            return out
+        except Exception as exc:  # noqa: BLE001 — gözlem arızası turu DURDURAMAZ
+            log.warning("pozisyon yolu kaydedilemedi: %s", exc)
+            return {}
+
+    def _write_exit_eval(self, now) -> dict:
+        """Kapanmış işlemler için champion/challenger karşı-olgusal raporunu yazar.
+
+        Tam yol olmayan işlemler `NO_COMPLETE_PATH` ile geçilir; sahte karşılaştırma YAPILMAZ.
+        """
+        store = getattr(self, "path_store", None)
+        if store is None or self.exit_policy_cfg is None:
+            return {}
+        try:
+            from .learn.close_chain import canonical_closes
+            from .learn.exit_eval import aggregate, evaluate_trade
+            _ex = self.cfg.v3.exit_policy
+            paths = store.paths_by_trade()
+            evals = [evaluate_trade(trade_id=c["trade_id"], path=paths.get(c["trade_id"]) or [],
+                                    close=c, cfg=self.exit_policy_cfg,
+                                    fee_rate=_ex.eval_fee_rate,
+                                    slip_rate=_ex.eval_slippage_rate)
+                     for c in canonical_closes(self.ledger2.history)]
+            doc = aggregate(evals, cfg=self.exit_policy_cfg, now=now)
+            doc["run_id"] = self.run_id
+            doc["exit_action_mode"] = getattr(self.exit_executor, "mode", "SHADOW")
+            doc["applied_total"] = 0
+            doc["trades"] = [{k: e.get(k) for k in
+                              ("trade_id", "symbol", "side", "closed_at", "exit_reason",
+                               "actual_r", "status", "path")}
+                             | {"results": {p: {kk: r.get(kk) for kk in
+                                                ("net_r", "gross_r", "exit_cost_r", "n_actions",
+                                                 "exit_reason", "delta_vs_champion_r",
+                                                 "missed_gain_r", "avoided_loss_r", "capture_ratio")}
+                                            for p, r in (e.get("results") or {}).items()}}
+                             for e in evals]
+            atomic_write_json(self.cfg.state_path / "exit_eval.json", doc)
+            return doc
+        except Exception as exc:  # noqa: BLE001
+            log.warning("çıkış değerlendirmesi yazılamadı: %s", exc)
+            return {}
 
     def _write_position_management(self, marks: dict, decisions: dict, now) -> dict:
         """Açık pozisyonlar için SALT OKUNUR yönetim gözlemi yazar.

@@ -478,8 +478,94 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
                      + observation_block(lessons) + lessons_table(lessons[-30:][::-1]))
         if ln.get("blacklist"):
             body += "<h2>Kara liste</h2><ul>" + "".join(f"<li>{esc(x)}</li>" for x in ln["blacklist"]) + "</ul>"
-        body += _chain_block() + _position_mgmt_block()
+        body += _chain_block() + _position_mgmt_block() + _exit_block()
         return _page("Öğrenme", body, "/learning")
+
+    def _exit_block() -> str:
+        """Çıkış politikası paneli — champion / challenger karşılaştırması, SALT OKUNUR.
+
+        Boş ya da ölçülemeyen değer `0` gösterilmez: `—` ya da durum kodu yazılır.
+        """
+        ev = state.get("exit_eval")
+        if not isinstance(ev, dict) or not ev:
+            return ('<h2>Çıkış politikası</h2><div class="card mut">exit_eval.json yok — '
+                    'worker bu sürümle henüz tam bir tur tamamlamadı. Bu görünüm salt okunurdur.</div>')
+
+        def _i(d, key):
+            v = finite_float_or_none((d or {}).get(key))
+            return int(v) if v is not None else None
+
+        def _n(x):
+            return "—" if x is None else str(x)
+
+        mode = str(ev.get("exit_action_mode") or "SHADOW")
+        n_complete = _i(ev, "n_path_complete")
+        n_missing = _i(ev, "n_no_complete_path")
+        verdict = str(ev.get("verdict") or "INSUFFICIENT_EXIT_SAMPLE")
+        pm = state.get("position_management") or {}
+        pm_n = _i(pm, "n_positions")
+        # Yol kapsamı: kaç açık pozisyonun yolu kaydediliyor.
+        rows_path = state.tail_jsonl("position_path", 4000)
+        covered = len({str(r.get("trade_id")) for r in rows_path if r.get("trade_id")})
+        open_ids = {str(p.get("id")) for p in state.futures_positions() if p.get("id")}
+        open_covered = len(open_ids & {str(r.get("trade_id")) for r in rows_path})
+        out = ('<h2>Çıkış politikası</h2><div class="grid">'
+               + card("Çıkış modu",
+                      badge("SHADOW", "warn") if mode == "SHADOW" else badge(esc(mode), "ok"),
+                      "niyetler kaydedilir, UYGULANMAZ" if mode == "SHADOW" else "uygulanır")
+               + card("Uygulanan aksiyon", str(int(ev.get("applied_total") or 0)),
+                      "SHADOW'da daima 0")
+               + card("Açık pozisyon yol kapsamı",
+                      f"{open_covered} / {_n(pm_n)}" if pm_n is not None else _n(None),
+                      f"toplam {covered} işlemin yolu kayıtlı")
+               + card("Yol tam kapanış", _n(n_complete),
+                      f"{_n(n_missing)} işlemde NO_COMPLETE_PATH")
+               + card("Gözlem süresi (gün)", fmt(ev.get("observation_days"), 2),
+                      f"kapı {ev.get('policy_version') or '—'}")
+               + card("Terfi durumu",
+                      badge("YETERSİZ ÖRNEK", "warn") if verdict != "ELIGIBLE_FOR_PAPER_BOUNDED"
+                      else badge("KAPILAR GEÇTİ", "ok"),
+                      "otomatik terfi KAPALI")
+               + '</div>')
+        gates = ev.get("promotion_gates")
+        if isinstance(gates, list) and gates:
+            out += "<h3>Terfi kapıları</h3>" + table(
+                ["Kapı", "Durum", "Ayrıntı"],
+                [[esc(g.get("code")), badge("GEÇTİ", "ok") if g.get("passed") else badge("DÜŞTÜ", "warn"),
+                  esc(g.get("detail"))] for g in gates if isinstance(g, dict)],
+                empty="kapı yok")
+        by = ev.get("by_policy")
+        if isinstance(by, dict) and by:
+            out += "<h3>Politika karşılaştırması (aynı gerçek fiyat yolu)</h3>" + table(
+                ["Politika", "n", "Beklenti R", "Δ champion", "PF", "maxDD R", "CVaR5 R",
+                 "Payoff", "Kazanma", "Çıkış maliyeti R", "Δ maliyet"],
+                [[esc(p), _n(_i(s, "n")), fmt(s.get("expectancy_r"), 4),
+                  (fmt(s.get("delta_expectancy_r"), 4) if p != "champion" else "—"),
+                  (fmt(s.get("profit_factor"), 3) if s.get("profit_factor") is not None
+                   else badge(esc(s.get("profit_factor_state") or "—"), "info")),
+                  fmt(s.get("max_drawdown_r"), 3), fmt(s.get("tail_loss_r_cvar5"), 3),
+                  fmt(s.get("payoff_ratio"), 3), pct(s.get("win_rate")),
+                  fmt(s.get("total_exit_cost_r"), 4),
+                  (fmt(s.get("fee_delta_r"), 4) if p != "champion" else "—")]
+                 for p, s in sorted(by.items()) if isinstance(s, dict)],
+                num_cols={1, 2, 3, 5, 6, 7, 8, 9, 10}, empty="politika sonucu yok")
+        trades = ev.get("trades")
+        if isinstance(trades, list) and trades:
+            out += "<h3>İşlem bazlı çıkış sonucu</h3>" + table(
+                ["İşlem", "Sembol", "Gerçek R", "Yol", "champion R", "A R", "B R", "C R"],
+                [[esc(t.get("trade_id")), esc(t.get("symbol")), fmt(t.get("actual_r"), 3),
+                  (badge("TAM", "ok") if t.get("status") == "OK"
+                   else badge("YOL YOK", "info")),
+                  fmt(((t.get("results") or {}).get("champion") or {}).get("net_r"), 3),
+                  fmt(((t.get("results") or {}).get("challenger_a_profit_lock") or {}).get("net_r"), 3),
+                  fmt(((t.get("results") or {}).get("challenger_b_giveback_reduce") or {}).get("net_r"), 3),
+                  fmt(((t.get("results") or {}).get("challenger_c_time_carry") or {}).get("net_r"), 3)]
+                 for t in trades[::-1] if isinstance(t, dict)],
+                num_cols={2, 4, 5, 6, 7}, empty="kapanış yok")
+        out += ('<p class="mut small">Bu tablo bir kârlılık iddiası DEĞİLDİR. Challenger '
+                'sonuçları aynı gerçek fiyat yolu üzerinde karşı-olgusal olarak hesaplanır; '
+                'hiçbiri uygulanmamıştır.</p>')
+        return out
 
     def _chain_block() -> str:
         """Kapanış zinciri bütünlüğü paneli — defterle uzlaştırılmış SAYILAR.
@@ -637,6 +723,36 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
                 "n_economics_unknown": pm.get("n_economics_unknown"),
                 "by_action": pm.get("by_action"),
                 "positions": pm.get("positions"),
+            },
+        })
+        safe, reasons = json_safe(payload)
+        if reasons:
+            safe["unavailable_reason"] = dict(reasons)
+        return JSONResponse(safe)
+
+    @app.get("/api/exit-eval")
+    def api_exit_eval():
+        """Çıkış politikası karşı-olgusal özeti — HER ZAMAN RFC-uyumlu JSON, salt okunur.
+
+        Dosya yoksa 200 + `available=false`. Yol kapsamı burada da ölçülür ki panel ile API
+        aynı sayıyı versin.
+        """
+        ev = state.get("exit_eval")
+        if not isinstance(ev, dict) or not ev:
+            return JSONResponse({"available": False,
+                                 "reason": "exit_eval.json yok — worker bu sürümle tur tamamlamadı"})
+        rows = state.tail_jsonl("position_path", 4000)
+        path_ids = {str(r.get("trade_id")) for r in rows if r.get("trade_id")}
+        open_ids = {str(p.get("id")) for p in state.futures_positions() if p.get("id")}
+        payload = dict(ev)
+        payload.update({
+            "available": True,
+            "report_age_s": state.file_age("exit_eval"),
+            "path_coverage": {
+                "open_positions": len(open_ids),
+                "open_positions_with_path": len(open_ids & path_ids),
+                "trades_with_path": len(path_ids),
+                "snapshots_tail": len(rows),
             },
         })
         safe, reasons = json_safe(payload)

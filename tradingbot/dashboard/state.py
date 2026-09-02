@@ -23,9 +23,12 @@ STATE_FILES: dict[str, str] = {
     # PAPER LEARNING LOOP INTEGRITY V3 — ikisi de SALT OKUNUR gözlem belgesidir.
     "learning_chain": "learning_chain.json",
     "position_management": "position_management.json",
+    # EXIT GIVEBACK & PROFIT PROTECTION V1 — salt okunur karşı-olgusal rapor.
+    "exit_eval": "exit_eval.json",
 }
 JSONL_FILES: dict[str, str] = {"llm_calls": "llm_calls.jsonl", "trade_memory": "trade_memory.jsonl", "signals_log": "signals_log.jsonl",
-                               "decision_journal": "decision_journal.jsonl"}
+                               "decision_journal": "decision_journal.jsonl",
+                               "position_path": "position_path.jsonl"}
 
 
 def _age(ts: Any) -> float | None:

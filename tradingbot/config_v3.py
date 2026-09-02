@@ -389,6 +389,32 @@ class QuantEvalSection:
 
 
 @dataclass
+class ExitPolicySection:
+    """Çıkış politikası (`EXIT_GIVEBACK_AND_PROFIT_PROTECTION_V1`) — GÜVENLİ VARSAYILANLAR.
+
+    `action_mode` yalnız `SHADOW` olabilir. `PAPER_BOUNDED` bu sürümde config ile AÇILAMAZ:
+    gerçek azaltma/çıkış yolu ancak `exit_eval` terfi kapıları geçildikten sonra ve ayrı bir
+    operatör kararıyla açılır (bkz. `learn/exit_executor.ALLOWED_MODES`).
+
+    `path_enabled=false` yalnız yol KAYDINI durdurur; mevcut stop/TP davranışı hiçbir koşulda
+    bu bölümden etkilenmez.
+    """
+    path_enabled: bool = True                 # açık pozisyon fiyat yolu kaydı (salt gözlem)
+    action_mode: str = "SHADOW"               # SHADOW | (PAPER_BOUNDED bu sürümde YASAK)
+    policy_version: str = "exit_v1.0.0"
+    #: `learn.exit_policy.ExitPolicyConfig` alanları; verilmeyenler güvenli varsayılanda kalır.
+    policy: dict[str, Any] = field(default_factory=dict)
+    #: Yol deposu ayarları — 60 sn'lik exit-monitor'ün diski şişirmesini engeller.
+    min_snapshot_interval_s: float = 55.0
+    min_r_change: float = 0.02
+    max_mark_age_s: float = 900.0
+    #: Karşı-olgusal değerlendirme maliyet modeli (champion ile AYNI tarife kullanılır).
+    eval_fee_rate: float = 0.0005
+    eval_slippage_rate: float = 0.0003
+    auto_promotion: bool = False              # true → ConfigError; terfi yalnız manuel
+
+
+@dataclass
 class V3Config:
     app: AppConfig = field(default_factory=AppConfig)
     mode: ModeConfig = field(default_factory=ModeConfig)
@@ -412,6 +438,7 @@ class V3Config:
     security: SecuritySection = field(default_factory=SecuritySection)
     history: HistorySection = field(default_factory=HistorySection)
     quant_eval: QuantEvalSection = field(default_factory=QuantEvalSection)
+    exit_policy: ExitPolicySection = field(default_factory=ExitPolicySection)
     warnings: list[str] = field(default_factory=list)
 
 
@@ -420,7 +447,8 @@ _SECTIONS = {"app": AppConfig, "mode": ModeConfig, "markets": MarketsConfig, "un
              "tax_policy": TaxPolicySection, "risk_profiles": RiskProfilesSection, "leverage": LeverageSection,
              "telegram": TelegramSection, "learning_v3": LearningV3Section, "storage": StorageSection,
              "obsidian_v3": ObsidianV3Section, "dashboard": DashboardSection, "monitoring": MonitoringSection, "security": SecuritySection,
-             "history": HistorySection, "quant_eval": QuantEvalSection}
+             "history": HistorySection, "quant_eval": QuantEvalSection,
+             "exit_policy": ExitPolicySection}
 
 VALID_MODES = ("OBSERVE", "PAPER", "TESTNET", "SHADOW_LIVE", "LIVE_LIMITED", "LIVE")
 VALID_LLM_MODES = ("OFF", "POSTMORTEM_ONLY", "ADVISORY", "VETO_ONLY", "RESEARCH_COUNCIL")
@@ -523,6 +551,33 @@ def validate_v3(cfg: V3Config) -> None:
         # yalnız açık manuel operatör onayıyla olur — config bunu otomatikleştiremez.
         raise ConfigError("QUANT_AUTO_PROMOTION_FORBIDDEN: quant_eval.auto_promotion=true "
                           "desteklenmiyor — terfi yalnız manuel operatör onayıyla yapılır")
+    # ÇIKIŞ POLİTİKASI: gerçek azaltma/çıkış yolu bu sürümde config ile AÇILAMAZ.
+    _ex = cfg.exit_policy
+    from .learn.exit_executor import ALLOWED_MODES as _EX_MODES, KNOWN_MODES as _EX_KNOWN
+    _am = str(_ex.action_mode or "").upper()
+    if _am not in _EX_KNOWN:
+        raise ConfigError(f"exit_policy.action_mode geçersiz: {_ex.action_mode!r} "
+                          f"(bilinen: {', '.join(_EX_KNOWN)})")
+    if _am not in _EX_MODES:
+        raise ConfigError(
+            f"EXIT_EXECUTION_NOT_ACTIVATED: exit_policy.action_mode={_am} bu sürümde kapalı "
+            f"(izinli: {', '.join(_EX_MODES)}). Gerçek çıkış yolu ancak terfi kapıları geçilip "
+            "açık operatör onayı verildikten sonra açılır.")
+    _ex.action_mode = _am
+    if _ex.auto_promotion:
+        # `learning_v3.auto_promote_in_paper` ve `quant_eval.auto_promotion` ile AYNI ilke.
+        raise ConfigError("EXIT_AUTO_PROMOTION_FORBIDDEN: exit_policy.auto_promotion=true "
+                          "desteklenmiyor — terfi yalnız manuel operatör onayıyla yapılır")
+    if _ex.min_snapshot_interval_s < 0 or _ex.min_r_change < 0 or _ex.max_mark_age_s <= 0:
+        raise ConfigError("exit_policy zamanlama/eşik alanları negatif olamaz "
+                          "(max_mark_age_s pozitif olmalı)")
+    if _ex.eval_fee_rate < 0 or _ex.eval_slippage_rate < 0:
+        raise ConfigError("exit_policy maliyet oranları negatif olamaz")
+    try:
+        from .learn.exit_policy import ExitPolicyConfig as _EPC
+        _EPC.from_dict({"policy_version": _ex.policy_version} | dict(_ex.policy or {}))
+    except (ValueError, TypeError) as exc:
+        raise ConfigError(f"exit_policy.policy geçersiz: {exc}") from exc
     if cfg.futures_v3.margin_mode.lower() != "isolated":
         raise ConfigError("futures_v3.margin_mode paper'da bile yalnız 'isolated' desteklenir")
     if not (1 <= cfg.futures_v3.leverage_default <= cfg.futures_v3.leverage_max_paper_research <= 125):

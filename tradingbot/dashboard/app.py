@@ -482,6 +482,98 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
         body += _chain_block() + _position_mgmt_block() + _exit_block() + _entry_block()
         return _page("Öğrenme", body, "/learning")
 
+    def _weekly_block(ev: dict) -> str:
+        """Haftalık yapı + bağlamsal formasyon + F/G aileleri — SALT OKUNUR, SHADOW.
+
+        Hiçbir mum formasyonu AL/SAT talimatı olarak gösterilmez; her satır bağlam,
+        teyit durumu ve veri kalitesiyle birlikte verilir.
+        """
+        w = ev.get("weekly_context") if isinstance(ev.get("weekly_context"), dict) else None
+        if not w:
+            return ""
+        if w.get("enabled") is False:
+            return ('<h3>Haftalık bağlam</h3><div class="card mut">Kapalı '
+                    f'({esc(w.get("reason") or "—")}). Yalnız SHADOW gözlem katmanıdır; '
+                    'aktif karara etkisi yok.</div>')
+        if w.get("error"):
+            return ('<h3>Haftalık bağlam</h3><div class="card mut">Rapor üretilemedi: '
+                    f'{esc(w.get("error"))} — aktif karara etkisi yok.</div>')
+
+        def _i(d, k):
+            v = finite_float_or_none((d or {}).get(k))
+            return int(v) if v is not None else None
+
+        def _n(x):
+            return "—" if x is None else str(x)
+
+        verdict = str(w.get("verdict") or "INSUFFICIENT_ENTRY_SAMPLE")
+        out = ('<h3>Haftalık yapı ve bağlamsal fiyat hareketi (F / G)</h3>'
+               '<p class="mut small">Yalnız SHADOW gözlem — aktif karara etkisi yok. '
+               'Mum formasyonları <b>bağlamsal</b>dır: şekil tek başına yön iddiası '
+               'taşımaz, AL/SAT talimatı değildir.</p><div class="grid">'
+               + card("Aileler", str(len(w.get("families") or [])),
+                      esc(", ".join(str(x).split("_")[0] for x in (w.get("families") or []))))
+               + card("Yapılandırma varyantı", _n(_i(w, "n_variants")),
+                      "hepsi ayrı ölçülür, seçilmez")
+               + card("Terfiye sayılan kapanış", _n(_i(w, "n_linked")),
+                      f"kapı {GATE_MIN_LINKED}")
+               + card("Uygulanan filtre", str(int(w.get("applied_total") or 0)),
+                      "SHADOW'da daima 0")
+               + card("Terfi durumu",
+                      badge("YETERSİZ ÖRNEK", "warn")
+                      if verdict != "ELIGIBLE_FOR_PAPER_BOUNDED" else badge("KAPILAR GEÇTİ", "ok"),
+                      "otomatik terfi KAPALI")
+               + '</div>')
+        variants = w.get("variants") if isinstance(w.get("variants"), dict) else {}
+        rows = []
+        for vname, v in sorted(variants.items()):
+            if not isinstance(v, dict):
+                continue
+            for fam, rep in sorted((v.get("families") or {}).items()):
+                if not isinstance(rep, dict):
+                    continue
+                b = rep.get("baseline") or {}
+                c = rep.get("counterfactual") or {}
+                ci = rep.get("delta_ci") or {}
+                wf = rep.get("walk_forward_folds") or {}
+                rows.append([
+                    esc(vname), esc(fam), _n(_i(rep, "n_evaluated")),
+                    _n(_i(rep, "n_allow")), _n(_i(rep, "n_block")), _n(_i(rep, "n_abstain")),
+                    pct(rep.get("weekly_coverage")), pct(rep.get("abstain_rate")),
+                    _n(_i(rep, "n_blocked_loser")), _n(_i(rep, "n_blocked_winner")),
+                    fmt(rep.get("avoided_loss_r"), 3), fmt(rep.get("missed_gain_r"), 3),
+                    fmt(rep.get("delta_expectancy_r"), 4),
+                    fmt(b.get("profit_factor"), 3), fmt(c.get("max_drawdown_r"), 3),
+                    fmt(c.get("tail_loss_r_cvar5"), 3),
+                    (f"[{fmt(ci.get('lo'), 3)}, {fmt(ci.get('hi'), 3)}]"
+                     if ci.get("state") == "ok" else esc(str(ci.get("state") or "—"))),
+                    esc(str(wf.get("state") or "—")),
+                    f'{_n(_i(rep, "gates_passed"))}/{_n(_i(rep, "gates_total"))}',
+                ])
+        out += table(["Varyant", "Aile", "n", "ALLOW", "BLOCK", "ABSTAIN", "Haftalık kapsam",
+                      "Kararsızlık", "Eng. kaybeden", "Kaç. kazanan", "Kaçınılan R",
+                      "Kaçırılan R", "Δ beklenti", "PF", "maxDD R", "CVaR5 R",
+                      "Güven aralığı", "Walk-forward", "Kapı"], rows,
+                     num_cols={2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15},
+                     empty="varyant sonucu yok")
+        base = (variants.get("base") or {})
+        for fam, rep in sorted((base.get("families") or {}).items()):
+            gl = (rep or {}).get("gates")
+            if not isinstance(gl, list) or not gl:
+                continue
+            out += (f"<h4>Terfi kapıları — {esc(fam)} (varyant base)</h4>" + table(
+                ["Kapı", "Durum", "Ayrıntı"],
+                [[esc(g.get("code")),
+                  badge("GEÇTİ", "ok") if g.get("passed") else badge("DÜŞTÜ", "warn"),
+                  esc(g.get("detail"))] for g in gl if isinstance(g, dict)],
+                empty="kapı yok"))
+        eg = w.get("extra_gates")
+        if isinstance(eg, dict) and eg:
+            out += ('<div class="card mut">V2 ailelerine özgü EK kapılar (V1 eşikleri '
+                    'gevşetilmedi): ' + esc(", ".join(f"{k}={v}" for k, v in sorted(eg.items())))
+                    + '</div>')
+        return out
+
     def _entry_block() -> str:
         """Giriş seçiciliği paneli — beş challenger ailesi, SALT OKUNUR.
 
@@ -614,6 +706,7 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
             if isinstance(ee_, list) and ee_:
                 out += ('<div class="card mut"><b>Her kaynakta boş olan zorunlu alanlar '
                         f'({len(ee_)}):</b> {esc(", ".join(str(x) for x in ee_))}</div>')
+        out += _weekly_block(ev)
         trades = ev.get("trades")
         if isinstance(trades, list) and trades:
             fam_ids = sorted({f for t in trades if isinstance(t, dict)

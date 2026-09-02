@@ -5,6 +5,7 @@ getirmek ve alternatif çıkış politikalarını aynı gerçek fiyat yolu üzer
 karşılaştırmak. Bu sürümde hiçbir çıkış politikası **aktive edilmez**.
 
 Taban: `feature/quant-evaluation-v1` @ `b49e3dc`. Ölçüm tarihi 2026-09-02.
+Üretimdeki sürüm: `8fc7503` (`ed7b6c1` + iki üretim düzeltmesi, bkz. bölüm 8 ve 9).
 
 ## 1. Mevcut pozisyon yönetimi çağrı zinciri (ölçüldü)
 
@@ -116,14 +117,43 @@ düşmüş, o stop **anında tetiklenirdi**. Yani kâr kilidi geriye dönük uyg
 eşiğinin aşıldığı **anda** kayıtlı bir yol üzerinde işe yarar. Yol kaydının önkoşul olmasının
 sebebi tam olarak budur.
 
-## 8. Yan bulgu: exit-monitor öğrenme indeksine yazmıyordu
+## 8. İlk deploy yol kaydını sessizce yapmadı (düzeltildi)
+
+`ed7b6c1` üretime çıktığında `position_path.jsonl` **hiç oluşmadı**, fakat `exit_eval.json`
+yazıldı ve `n_path_complete: 0` dedi. Yani alt sistem kendi raporunda "sıfır" gösterdi ve hata
+görünmez kaldı.
+
+Kök neden: `tour()` içindeki `now` turun **en başında** alınır; `_marks()` ise turun ortasında
+çalışıp tick'leri o anki saatle damgalar. Tur yaklaşık 600 saniye sürdüğü için tur-başı `now`a
+göre her mark **gelecekten** gelmiş görünüyordu ve `build_snapshot` hepsini `FUTURE_TIMESTAMP`
+ile reddediyordu. Canlı defterle doğrulandı: tur-başı `now` ile 9 pozisyonun 9'u reddedildi,
+taze `now` ile 9'u da kabul edildi.
+
+`8fc7503` ile düzeltildi:
+
+- Snapshot zamanı artık **kayıt anıdır**, tur başlangıcı değil.
+- Sessizlik kapatıldı: dikkate alınan pozisyon sayısı ile yazılan snapshot sayısı ayrı
+  raporlanır ve hepsi reddedilirse loga uyarı çıkar. Önemsiz ara adım atlaması reddetme
+  **değildir** ve uyarı üretmez.
+- `exit_eval.json` artık `path_cycle` ve `path_store` taşır; böylece "0 yol-tam kapanış" ile
+  "yol hiç yazılmıyor" panelde ayrı görünür.
+
+Ders: bir gözlem katmanı eklerken alt sistemin kendi raporunun sıfır göstermesi onun çalıştığı
+anlamına gelmez. Dosyanın gerçekten oluştuğu da kontrol edilmelidir.
+
+## 9. Yan bulgu: exit-monitor öğrenme indeksine yazmıyordu
 
 Bu görevde `exit_check()` ve gap-reconcile yolları incelenirken, ikisinin de `Learner.learn()`
 çağırıp **öğrenildi indeksine yazmadığı** görüldü. Kapanışların çoğu 60 saniyelik bu monitörden
 geçer. Ders sıcak pencereden (200) arşive döndükten sonra o kapanış "eksik" görünüp **ikinci kez**
 öğrenilebilirdi. İki çağrı yerine de `note_learned(...)` eklendi ve regresyonla kilitlendi.
 
-## 9. Bilinen sınırlamalar
+Üretimde de ölçüldü: 19 kanonik kapanışın 18'i indeksliydi. Eksik olan F00014 tam bu yoldan
+kapanmıştı. Böyle bir kapanış `pending` değildir (outcome ve dersi vardır), bu yüzden eski
+`apply_plan` onu hiç görmüyordu; `5676756` ile `BACKFILL_COMPLETE_CHAIN` kaynağıyla geri
+doldurulur ve yeniden öğrenme yapılmaz.
+
+## 10. Bilinen sınırlamalar
 
 - Mevcut 18 kapanışta yol yok; hepsi `NO_COMPLETE_PATH`. Karşılaştırma ancak bu sürümden sonra
   açılıp kapanan işlemlerde mümkün.

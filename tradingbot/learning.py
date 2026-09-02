@@ -270,6 +270,7 @@ class Learner:
         from .learn.edge_execution import (COST_FILTER_CANDIDATE, ENTRY_QUALITY_CANDIDATE,
                                            EXIT_POLICY_CANDIDATE, NO_POLICY_CHANGE, OBSERVATION,
                                            REGIME_FILTER_CANDIDATE, classify_edge_execution)
+        from .learn.labels import label_outcome
         from .learn.prob_semantics import outcome_probability_evidence, probability_note_tr
         why: list[str] = []
         hyps: list[dict] = []
@@ -334,7 +335,12 @@ class Learner:
         why.append(probability_note_tr(prob_ev))
 
         # --- edge ↔ execution gözlemi (R cinsinden MFE/MAE + capture ratio)
-        edge = classify_edge_execution(rec | {"features": f},
+        # MALİYET ALANLARI `label_outcome`tan GELİR: `Learner.learn()`e gelen legacy sözlükte
+        # `fee_drag_r`/`funding_drag_r`/`slippage_drag_r` YOKTUR (bunları `labels.py` hesaplar).
+        # `labels` geçilmezse üç alan da None kalır ve `COST_DOMINATED` üretimde ASLA tetiklenemez
+        # — 2026-08-28 VPS auditinde F00012/F00005 derslerinde bu boşluk ölçüldü.
+        labels = label_outcome(rec)
+        edge = classify_edge_execution(rec | {"features": f}, labels=labels,
                                        regime_at_entry=f.get("regime") or rec.get("regime"),
                                        regime_at_exit=rec.get("regime_at_exit"))
         for code in edge["hypothesis_codes"]:

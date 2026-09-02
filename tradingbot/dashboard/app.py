@@ -478,7 +478,171 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
                      + observation_block(lessons) + lessons_table(lessons[-30:][::-1]))
         if ln.get("blacklist"):
             body += "<h2>Kara liste</h2><ul>" + "".join(f"<li>{esc(x)}</li>" for x in ln["blacklist"]) + "</ul>"
+        body += _chain_block() + _position_mgmt_block()
         return _page("Öğrenme", body, "/learning")
+
+    def _chain_block() -> str:
+        """Kapanış zinciri bütünlüğü paneli — defterle uzlaştırılmış SAYILAR.
+
+        Panel ders dosyasındaki satır sayısını «öğrenilmiş işlem» saymaz: kanonik kaynak
+        defterdir ve zincir durumu `learning_chain.json` içinde işlem başına yazılıdır.
+        """
+        ch = state.get("learning_chain")
+        if not isinstance(ch, dict) or not ch:
+            return ('<h2>Kapanış zinciri</h2><div class="card mut">learning_chain.json yok — '
+                    'worker bu sürümle henüz tam bir tur tamamlamadı. Bu görünüm salt okunurdur.</div>')
+        age = state.file_age("learning_chain")
+
+        def _i(key, default=None):
+            """Şema bozuksa 500 YOK: sayı değilse `default`. Panel dayanıklıdır, iddialı değil."""
+            v = finite_float_or_none(ch.get(key))
+            return int(v) if v is not None else default
+
+        n = _i("canonical_final_closes", 0)
+        miss_o, miss_l = _i("missing_outcome"), _i("missing_lesson")
+        dup = _i("duplicate_lessons")
+        # Ölçülemeyen bir alan «sorun yok» sayılmaz: hepsi bilinmiyorsa durum BİLİNMİYOR olur.
+        known = [x for x in (miss_o, miss_l, dup) if x is not None]
+        ok = bool(known) and all(x == 0 for x in known) and len(known) == 3
+        def _n(x):
+            return "—" if x is None else str(x)
+
+        chain_badge = (badge("EKSİKSİZ", "ok") if ok else
+                       (badge("EKSİK", "warn") if known else badge("BİLİNMİYOR", "info")))
+        out = ('<h2>Kapanış zinciri</h2><div class="grid">'
+               + card("Kanonik final kapanış", _n(n), "defter geçmişi (kısmi TP hariç)")
+               + card("Zincir", chain_badge,
+                      f"eksik outcome {_n(miss_o)} · eksik ders {_n(miss_l)} · duplicate {_n(dup)}")
+               + card("Outcome", _n(_i("outcomes")), f"/ {_n(n)} kapanış")
+               + card("Ders", _n(_i("lessons")), f"/ {_n(n)} kapanış")
+               + card("Giriş kararına bağlı", _n(_i("entry_linked")),
+                      f"{_n(_i('legacy_unlinked'))} LEGACY_UNLINKED (kimlik uydurulmaz)")
+               + card("Son öğrenilen", esc(ch.get("last_learned_trade") or "—"),
+                      fmt_utc(ch.get("last_learned_at")))
+               + card("Öğrenme etkisi", esc(ch.get("influence_mode") or "OFF"),
+                      f"bu turda applied={ch.get('influence_applied', 0)}")
+               + card("Özet yaşı", age_text(age) + " önce" if age is not None else "bilinmiyor",
+                      esc(str(ch.get("code_sha") or "code_sha yok")[:12]))
+               + '</div>')
+        qn, gap = _i("quant_sample_count"), _i("quant_sample_gap")
+        qage = state.file_age("quant_eval")
+        if qn is None:
+            qbadge, qsub = badge("RAPOR YOK", "info"), "offline quant raporu üretilmedi"
+        elif gap:
+            qbadge = badge(f"ESKİ (n={qn}/{n})", "warn")
+            qsub = f"{gap} kapanış rapora GİRMEDİ — offline rapor yeniden üretilmeli"
+        else:
+            qbadge, qsub = badge(f"GÜNCEL (n={qn})", "ok"), "kanonik kapanış sayısıyla eşleşiyor"
+        out += ('<div class="grid">'
+                + card("Quant örneklemi", qbadge, qsub)
+                + card("Quant rapor yaşı",
+                       age_text(qage) + " önce" if qage is not None else "bilinmiyor",
+                       esc(ch.get("quant_run_id") or "—"))
+                + '</div>')
+        lr = ch.get("last_reconcile")
+        lr = lr if isinstance(lr, dict) else {}
+        if lr.get("ran"):
+            out += (f'<p class="mut small">Son uzlaştırma: +{esc(lr.get("outcomes_added", 0))} outcome, '
+                    f'+{esc(lr.get("lessons_added", 0))} ders. Defter DEĞİŞTİRİLMEDİ.</p>')
+        orph = ch.get("orphan_lessons")
+        orph = orph if isinstance(orph, list) else []
+        if orph:
+            out += (f'<p class="mut small">⚠ Deftere karşılık gelmeyen ders: '
+                    f'{esc(", ".join(str(x) for x in orph[:10]))}</p>')
+        raw_rows = ch.get("rows")
+        rows = [r for r in raw_rows if isinstance(r, dict)] if isinstance(raw_rows, list) else []
+        if rows:
+            out += table(
+                ["İşlem", "Sembol", "Yön", "Kapanış", "Çıkış", "Net", "R", "MFE_R", "MAE_R",
+                 "fee_R", "funding_R", "Zincir", "Bağlantı"],
+                [[esc(r.get("trade_id")), esc(r.get("symbol")), esc(r.get("side")),
+                  fmt_utc(r.get("closed_at")), esc(r.get("exit_reason")),
+                  pnl_cell(r.get("net_pnl")), fmt(r.get("r_multiple"), 3),
+                  fmt(r.get("mfe_r"), 3), fmt(r.get("mae_r"), 3),
+                  fmt(r.get("fee_drag_r"), 4), fmt(r.get("funding_drag_r"), 4),
+                  badge("TAM", "ok") if r.get("chain_state") == "COMPLETE"
+                  else badge(esc(r.get("chain_state")), "warn"),
+                  badge("BAĞLI", "ok") if r.get("link_status") == "LINKED"
+                  else badge("LEGACY", "info")]
+                 for r in rows[::-1]],
+                num_cols={5, 6, 7, 8, 9, 10}, empty="kapanış yok")
+        return out
+
+    def _position_mgmt_block() -> str:
+        """Açık pozisyon yönetim gözlemi — ADVISORY_ONLY ve UNKNOWN AÇIKÇA gösterilir."""
+        pm = state.get("position_management")
+        if not isinstance(pm, dict) or not pm:
+            return ""
+        # FAIL-CLOSED: `executable` açıkça True değilse öneri TAVSİYEDİR. Bozuk/eksik şema
+        # kazara "uygulanabilir" göstermemeli.
+        advisory = pm.get("executable") is not True
+        by_act = pm.get("by_action")
+        by_act = by_act if isinstance(by_act, dict) else {}
+        out = ('<h2>Açık pozisyon yönetimi</h2><div class="grid">'
+               + card("Öneri modu",
+                      badge("YALNIZ TAVSİYE", "warn") if advisory else badge("UYGULANABİLİR", "ok"),
+                      "motor bu önerileri UYGULAMAZ" if advisory else "öneriler uygulanır")
+               + card("Pozisyon", esc(pm.get("n_positions", "—")),
+                      " · ".join(f"{esc(k)} {esc(v)}" for k, v in sorted(by_act.items(), key=lambda kv: str(kv[0]))) or "—")
+               + card("Ekonomi ölçülmemiş", esc(pm.get("n_economics_unknown", "—")),
+                      "bu pozisyonlarda p_win/beklenen getiri UNKNOWN")
+               + '</div>')
+        if advisory:
+            out += ('<p class="mut small">⚠ <b>ADVISORY_ONLY</b>: CoinHead REDUCE/EXIT görüşü '
+                    'üretir fakat motor açık pozisyonları yalnız stop, TP ve likidasyon ile '
+                    'kapatır. Bu tablo bir yönetim eylemi DEĞİL, gözlemdir.</p>')
+
+        def _e(v):
+            return badge("UNKNOWN", "info") if v == "UNKNOWN" else fmt(v, 4)
+
+        out += table(
+            ["İşlem", "Sembol", "Yön", "Mark", "Net R", "MFE_R", "MAE_R", "Geri verilen R",
+             "Capture", "Yaş (s)", "Stop", "TP vuruş", "Öneri", "p_win", "Beklenen net"],
+            [[esc(r.get("trade_id")), esc(r.get("symbol")), esc(r.get("side")),
+              fmt(r.get("mark"), 6), fmt(r.get("current_net_r"), 3), fmt(r.get("mfe_r"), 3),
+              fmt(r.get("mae_r"), 3), fmt(r.get("giveback_r"), 3),
+              (fmt(r.get("capture_ratio"), 3) if r.get("capture_ratio") is not None
+               else badge(esc(r.get("capture_ratio_state") or "—"), "info")),
+              fmt(r.get("position_age_hours"), 1), fmt(r.get("stop"), 6),
+              esc(r.get("targets_hit")),
+              badge(esc(r.get("proposed_action")),
+                    "warn" if r.get("proposed_action") in ("REDUCE", "EXIT") else "info")
+              + ('<span class="mut small"> ADVISORY</span>' if advisory else ""),
+              _e(r.get("p_win")), _e(r.get("expected_net_return"))]
+             for r in (pm.get("positions") if isinstance(pm.get("positions"), list) else [])
+             if isinstance(r, dict)],
+            num_cols={3, 4, 5, 6, 7, 8, 9, 10}, empty="açık pozisyon yok")
+        return out
+
+    @app.get("/api/learning-chain")
+    def api_learning_chain():
+        """Kapanış zinciri özeti — HER ZAMAN RFC-uyumlu JSON, salt okunur.
+
+        Dosya yoksa 200 + `available=false` döner (500 değil). Sonlu olmayan değer yalnız
+        ilgili leaf'te `null` olur ve nedeni `unavailable_reason`a yazılır.
+        """
+        ch = state.get("learning_chain")
+        if not ch:
+            return JSONResponse({"available": False,
+                                 "reason": "learning_chain.json yok — worker bu sürümle tur tamamlamadı"})
+        pm = state.get("position_management") or {}
+        payload = dict(ch)
+        payload.update({
+            "available": True,
+            "report_age_s": state.file_age("learning_chain"),
+            "position_management": {
+                "action_mode": pm.get("action_mode"),
+                "executable": pm.get("executable"),
+                "n_positions": pm.get("n_positions"),
+                "n_economics_unknown": pm.get("n_economics_unknown"),
+                "by_action": pm.get("by_action"),
+                "positions": pm.get("positions"),
+            },
+        })
+        safe, reasons = json_safe(payload)
+        if reasons:
+            safe["unavailable_reason"] = dict(reasons)
+        return JSONResponse(safe)
 
     @app.get("/backtest", response_class=HTMLResponse)
     def backtest():

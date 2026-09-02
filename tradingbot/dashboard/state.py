@@ -20,6 +20,9 @@ STATE_FILES: dict[str, str] = {
     "decision_funnel": "decision_funnel.json",
     "quant_eval": "quant_eval.json",
     "universe_eval": "universe_eval.json",
+    # PAPER LEARNING LOOP INTEGRITY V3 — ikisi de SALT OKUNUR gözlem belgesidir.
+    "learning_chain": "learning_chain.json",
+    "position_management": "position_management.json",
 }
 JSONL_FILES: dict[str, str] = {"llm_calls": "llm_calls.jsonl", "trade_memory": "trade_memory.jsonl", "signals_log": "signals_log.jsonl",
                                "decision_journal": "decision_journal.jsonl"}

@@ -797,3 +797,34 @@ def test_quant_dashboard_survives_broken_challenger_sections(tmp_path: Path, q):
     assert r.status_code == 200, q
     for verb in ("post", "put", "patch", "delete"):
         assert getattr(c, verb)("/quant").status_code == 405
+
+
+def test_cost_drags_reach_the_lesson_from_labels(tmp_path: Path):
+    """Maliyet sürüklemesi derse ULAŞIR — `COST_DOMINATED` üretimde tetiklenebilmeli.
+
+    2026-08-28 VPS auditinde F00012/F00005 derslerinde `fee/funding/slippage_drag_r` hep `None`
+    çıktı: `Learner.learn()`e gelen legacy sözlükte bu alanlar YOK (onları `labels.py` hesaplar)
+    ve `_diagnose` `classify_edge_execution`a `labels` geçmiyordu. Bu test o regresyonu kilitler.
+    """
+    lr = Learner(tmp_path / "learning.json", min_trades=2)
+    les = lr.learn({"id": "T1", "symbol": "PAXG/USDT", "side": "LONG", "pnl": -0.49,
+                    "r_multiple": -1.12, "exit_reason": "stop", "mae_pct": -1.97,
+                    "mfe_pct": 0.92, "bars_held": 24, "closed_at": "2026-08-28T14:28:18+00:00",
+                    "entry_price": 100.0, "initial_stop": 98.1,
+                    # ledger'ın gerçekten verdiği alanlar (drag DEĞİL, ham maliyet):
+                    "fees": 0.0229, "funding": -0.0077, "net_pnl": -0.49,
+                    "features": {"setup_type": "geri çekilme", "rr": 2.0, "p_win": 0.45}})
+    obs = les["observation"]
+    assert obs["fee_drag_r"] is not None, "fee_drag_r derse ulaşmadı"
+    assert obs["fee_drag_r"] > 0
+    assert obs["funding_drag_r"] is not None
+    assert obs["cost_drag_total_r"] is not None
+    # maliyet baskın bir kayıpta sınıf GERÇEKTEN tetiklenebilmeli
+    heavy = lr.learn({"id": "T2", "symbol": "X/USDT", "side": "LONG", "pnl": -0.1,
+                      "r_multiple": -0.2, "exit_reason": "stop", "mae_pct": -0.5,
+                      "mfe_pct": 2.0, "bars_held": 5, "closed_at": "2026-08-28T15:00:00+00:00",
+                      "entry_price": 100.0, "initial_stop": 98.0,
+                      "fees": 0.30, "funding": -0.10, "net_pnl": -0.1,
+                      "features": {"setup_type": "kırılım", "rr": 2.0, "p_win": 0.5}})
+    assert COST_DOMINATED in heavy["observation"]["observation_codes"]
+    assert "COST_FILTER_CANDIDATE" in heavy["observation"]["hypothesis_codes"]

@@ -286,6 +286,24 @@ class TradingEngineV3(TradingEngine):
             self.influence_cfg = _IC(mode="OFF")
             self.decision_journal = None
             self.exp_index_store = None
+        # --- PAPER LEARNING LOOP INTEGRITY V3: kapanış zinciri bütünlüğü -------------------
+        # `provenance`: açılan pozisyonun KARAR ANI kimliği (defter bunu taşımaz).
+        # `learned_index`: hangi kapanışın öğrenildiğinin AÇIK kaydı — idempotency çıkarım değil.
+        # İkisi de append-only ve defterin DIŞINDADIR; `futures_ledger.json` etkilenmez.
+        # Arıza turu ÇÖKERTMEZ: depolar `None` kalır ve baseline öğrenme aynen sürer.
+        self.provenance = None
+        self.learned_index = None
+        self.mgmt_executor = None
+        try:
+            from .learn.position_mgmt import ManagementExecutor
+            from .learn.provenance import ProvenanceStore
+            from .learn.reconcile import LearnedIndex
+            self.provenance = ProvenanceStore(st / "entry_provenance.jsonl")
+            self.learned_index = LearnedIndex(st / "learned_closes.jsonl")
+            # Çıkış politikası bu sürümde AKTİF DEĞİL: yalnız SHADOW sözleşmesi kurulur.
+            self.mgmt_executor = ManagementExecutor()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("kapanış zinciri altyapısı kurulamadı (baseline sürüyor): %s", exc)
         self.universe = read_json(st / "universe.json", default=None)
         self.last_bar_seen: str = ""
         self.run_id = ""
@@ -728,6 +746,18 @@ class TradingEngineV3(TradingEngine):
             self.learner2.on_trade_closed(legacy | {"features": legacy.get("features") or {}}, {"regime": snap.get("regime"), "consensus_score": snap.get("consensus_score"),
                                                                                                 "dissent": snap.get("dissent"), "vetoes": snap.get("vetoes")})
             self._journal_outcome(legacy, lessons[-1] if lessons else None)
+            # ÖĞRENİLDİ KAYDI: bu kapanış bir daha öğrenilmeyecek. Kimlik deterministiktir
+            # (`trade_id` + `closed_at` + `exit_reason`), bu yüzden restart/retry duplicate ÜRETMEZ.
+            try:
+                from .learn.reconcile import note_learned
+                note_learned(getattr(self, "learned_index", None), legacy,
+                             lessons[-1] if lessons else None)
+            except Exception as exc:  # noqa: BLE001 — indeks arızası öğrenmeyi geçersiz KILMAZ
+                log.warning("öğrenildi kaydı yazılamadı: %s", exc)
+        # CRASH PENCERESİ ONARIMI: defter `ledger2.save()` ile ÖNCE kalıcı olur, öğrenme SONRA
+        # çalışır. Arada süreç ölürse `ledger2.tick()` o kapanışı bir daha DÖNDÜRMEZ ve işlem
+        # kalıcı olarak öğrenilmemiş kalırdı. Bu çağrı eksik adımı tamamlar; normalde no-op'tur.
+        chain_res = self._complete_close_chain()
         # gölge işlemleri etiketle (araştırma politikasının elediği girişlerin karşı-olgusal sonucu burada oluşur)
         self._label_shadows()
         # kapanan gerçek işlemleri araştırma adayına eşleşmiş gözlem olarak yaz
@@ -775,6 +805,10 @@ class TradingEngineV3(TradingEngine):
         # Karar günlüğü: DEĞERLENDİRİLEN HER aday (kabul/red/veto) tek seferde yazılır.
         # Hot loop'un DIŞINDA, tur sonunda ve fail-safe: arıza turu bozmaz.
         self._journal_decisions(risk_log, decisions, now)
+        # Açık pozisyon yönetim gözlemi + kapanış zinciri özeti. İKİSİ DE SALT OKUNURDUR:
+        # motor bu dosyaları okumaz, yalnız yazar. `REDUCE/EXIT` bugün ADVISORY_ONLY'dir.
+        self._write_position_management(marks, decisions, now)
+        self._learning_chain = self._write_learning_chain(chain_res, now)
         self.mode_state.save()
         from .agents import persist_agents
         _, alerts = persist_agents(briefs, legacy_chief, st)
@@ -1142,6 +1176,13 @@ class TradingEngineV3(TradingEngine):
                                       "decision": d.to_dict(include_reports=True), "chief": chief.to_dict(),
                                       "risk_decision": rd.to_dict(), "run_id": self.run_id, "mode": self.mode_state.mode.value,
                                       "model_versions": d.model_versions | {"p_win_model": self.learner2.snapshot().get("champion")}})
+            # GİRİŞ PROVENANCE'I: kapanışta outcome'u KARAR ANINA bağlayan tek köprü.
+            # Defter `TradeRecord` içinde `decision_id` alanı YOKTUR ve karar günlüğü 20.000
+            # satır tavanında arşive döndüğü için geçmişe dönük arama güvenilir değildir
+            # (2026-09-02: 18 kapanışın yalnız 2'si bağlanabildi). Kimlik AÇILIŞ ANINDA yazılır.
+            self._record_entry_provenance(trade_id=trade_id, symbol=sym, direction=d.direction,
+                                          decision=d, plan=plan, risk_decision=rd, brief=b,
+                                          notional=notional, leverage=plan_leverage, now=now)
             self.last_decisions[sym] = d.to_dict(include_reports=False)
             opened.append(desc)
             # fill sonrasi: yetkili defterlerden durum yenile -> ayni turdaki sonraki adaylar bu pozisyonu/marji/exposure'i gorur
@@ -1918,10 +1959,199 @@ class TradingEngineV3(TradingEngine):
             tid = str(rec_legacy.get("id") or rec_legacy.get("trade_id") or "")
             if not tid:
                 return
-            j.append_outcome(build_outcome_link(trade_id=tid, outcome=rec_legacy, lesson=lesson))
+            # KARAR KİMLİĞİ provenance'tan gelir. Eskiden bu alan HİÇ geçilmiyordu ve üretimdeki
+            # bütün outcome bağlantı kayıtları `decision_id: null` ile yazılıyordu (2026-09-02'de
+            # 6/6 ölçüldü) — yani "bağlantı kaydı" aslında hiçbir karara bağlanmıyordu.
+            did = None
+            store = getattr(self, "provenance", None)
+            if store is not None:
+                try:
+                    did = (store.get(tid) or {}).get("entry_decision_id")
+                except Exception:  # noqa: BLE001
+                    did = None
+            j.append_outcome(build_outcome_link(trade_id=tid, outcome=rec_legacy,
+                                                decision_id=did, lesson=lesson))
         except Exception as exc:  # noqa: BLE001
             self._journal_errors += 1
             log.warning("outcome bağlantısı yazılamadı: %s", exc)
+
+    # ------------------------------------------------- kapanış zinciri bütünlüğü (V3)
+    def code_sha(self) -> str | None:
+        """Çalışan kod sürümü. `cfg.code_sha` yoksa git HEAD'den BİR KEZ türetilir.
+
+        Üretimde bu alan boştu (2026-09-02: karar günlüğünde 0/20000 dolu) çünkü kimse
+        `cfg.code_sha` set etmiyordu. Git yoksa/başarısızsa `None` döner ve UYDURULMAZ.
+        """
+        cached = getattr(self, "_code_sha_cache", ...)
+        if cached is not ...:
+            return cached
+        sha = getattr(self.cfg, "code_sha", None)
+        if not sha:
+            try:
+                import subprocess
+                r = subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(self.cfg.project_root),
+                                   capture_output=True, text=True, timeout=5)
+                sha = r.stdout.strip() or None if r.returncode == 0 else None
+            except Exception:  # noqa: BLE001 — sürüm bilgisi eksikliği turu DURDURMAZ
+                sha = None
+        self._code_sha_cache = sha
+        return sha
+
+    def config_hash(self) -> str | None:
+        """Etkin v3 yapılandırmasının deterministik özeti (quant manifest ile AYNI yöntem)."""
+        cached = getattr(self, "_config_hash_cache", ...)
+        if cached is not ...:
+            return cached
+        h = None
+        try:
+            from dataclasses import asdict
+            from .core import payload_hash
+            h = payload_hash(asdict(self.cfg.v3)) if self.cfg.v3 is not None else None
+        except Exception:  # noqa: BLE001
+            h = None
+        self._config_hash_cache = h
+        return h
+
+    def _record_entry_provenance(self, *, trade_id, symbol, direction, decision, plan,
+                                 risk_decision, brief, notional, leverage, now) -> None:
+        """Açılış anında karar kimliğini kalıcı yapar. Arıza AÇILIŞI GEÇERSİZ KILMAZ."""
+        store = getattr(self, "provenance", None)
+        if store is None or not trade_id:
+            return
+        try:
+            from .learn.decision_journal import decision_id_for
+            from .learn.provenance import build_entry_provenance
+            snap = (getattr(self, "_pred_snapshots", None) or {}).get(symbol)
+            spec = None
+            try:
+                spec = {r.agent_name: float(r.bias) for r in (decision.specialist_reports or [])
+                        if getattr(r, "usable", True)}
+            except Exception:  # noqa: BLE001
+                spec = None
+            opp = getattr(decision, "opportunity", None) or {}
+            rd = risk_decision.to_dict() if hasattr(risk_decision, "to_dict") else {}
+            store.record(build_entry_provenance(
+                trade_id=trade_id, symbol=symbol, direction=direction,
+                decision_id=decision_id_for(self.run_id, getattr(self, "_journal_cycle", self._tour_no),
+                                            symbol, direction),
+                journal_id=getattr(snap, "snapshot_id", None),
+                run_id=self.run_id, cycle_id=getattr(self, "_journal_cycle", self._tour_no),
+                code_sha=self.code_sha(), config_hash=self.config_hash(),
+                policy_id=(decision.model_versions or {}).get("policy_id") or "champion",
+                p_win=getattr(brief, "p_win", None),
+                expected_r=getattr(decision, "expected_r", None),
+                expected_net_return=opp.get("conservative_net_edge_r"),
+                features=(snap.vector() if snap is not None else None),
+                specialist_scores=spec, regime=getattr(decision, "regime", None),
+                risk_decision={k: v for k, v in rd.items() if isinstance(v, (int, float))},
+                stop=getattr(plan, "stop", None), targets=getattr(plan, "targets", None),
+                size_usdt=notional, leverage=leverage, opened_at=iso(now)))
+        except Exception as exc:  # noqa: BLE001 — provenance arızası pozisyonu ETKİLEMEZ
+            log.warning("giriş provenance yazılamadı (%s): %s", trade_id, exc)
+
+    def _complete_close_chain(self) -> dict:
+        """Eksik kalmış outcome/ders adımlarını tamamlar (crash penceresi onarımı).
+
+        Normal işleyişte hiçbir şey yapmaz: plan boştur ve maliyeti birkaç küme
+        karşılaştırmasıdır. Yalnız `ledger2.save()` ile öğrenme arasında süreç öldüyse iş yapar.
+        """
+        idx = getattr(self, "learned_index", None)
+        if idx is None:
+            return {"ran": False, "reason": "NO_INDEX"}
+        try:
+            from .learn.reconcile import complete_missing_chain
+            res = complete_missing_chain(
+                history=self.ledger2.history, memory=self.memory, learner=self.learner,
+                index=idx, provenance_store=getattr(self, "provenance", None),
+                journal_outcome=self._journal_outcome)
+            if res.get("lessons_added") or res.get("outcomes_added"):
+                log.warning("kapanış zinciri onarıldı: +%s outcome, +%s ders (%s)",
+                            res.get("outcomes_added"), res.get("lessons_added"),
+                            [t["trade_id"] for t in (res.get("trades") or [])][:10])
+            return res
+        except Exception as exc:  # noqa: BLE001 — onarım arızası turu DURDURMAZ
+            log.warning("kapanış zinciri onarımı atlandı: %s", exc)
+            return {"ran": False, "error": str(exc)[:200]}
+
+    def _write_position_management(self, marks: dict, decisions: dict, now) -> dict:
+        """Açık pozisyonlar için SALT OKUNUR yönetim gözlemi yazar.
+
+        Bu bir yürütme yolu DEĞİLDİR: `ADVISORY_ONLY` olarak işaretlenir ve motor bu dosyayı
+        okumaz. Amaç, bugün ekrana yazılan `HOLD/REDUCE/EXIT` görüşünün ölçülebilir hale
+        gelmesi ve ekonominin değerlendirilmediği yerde `UNKNOWN` görünmesidir.
+        """
+        try:
+            from .learn.position_mgmt import ADVISORY_ONLY, build_snapshot_doc, management_snapshot
+            rows = []
+            for sym, pos in sorted(self.ledger2.positions.items()):
+                tick = marks.get(sym)
+                mark = float(tick.ref) if tick is not None else None
+                rows.append(management_snapshot(position=pos, mark=mark,
+                                                decision=decisions.get(sym),
+                                                trade_id=str(pos.id), now=now,
+                                                executor_mode=ADVISORY_ONLY))
+            doc = build_snapshot_doc(rows, run_id=self.run_id, executor_mode=ADVISORY_ONLY, now=now)
+            ex = getattr(self, "mgmt_executor", None)
+            if ex is not None:
+                intents = ex.plan(rows)
+                doc["shadow_intents"] = intents
+                doc["shadow_execution"] = ex.execute(intents)
+            atomic_write_json(self.cfg.state_path / "position_management.json", doc)
+            return doc
+        except Exception as exc:  # noqa: BLE001 — gözlem arızası turu DURDURMAZ
+            log.warning("pozisyon yönetim gözlemi yazılamadı: %s", exc)
+            return {}
+
+    def _write_learning_chain(self, chain_res: dict, now) -> dict:
+        """Zincir özetini state'e atomik yazar — panel ve quant AYNI sayıyı okur."""
+        try:
+            from .learn.provenance import ProvenanceStore  # noqa: F401  (tip belgeleme)
+            from .learn.reconcile import build_plan
+            plan = build_plan(history=self.ledger2.history, memory=self.memory,
+                              learner=self.learner, index=getattr(self, "learned_index", None),
+                              provenance_store=getattr(self, "provenance", None))
+            rep = plan.get("report") or {}
+            last = None
+            idx = getattr(self, "learned_index", None)
+            if idx is not None:
+                recs = sorted(idx.load().values(), key=lambda r: str(r.get("learned_at") or ""))
+                last = recs[-1] if recs else None
+            doc = {
+                "schema_version": rep.get("schema_version"),
+                "generated_at": iso(now), "run_id": self.run_id,
+                "canonical_final_closes": rep.get("canonical_final_closes", 0),
+                "outcomes": rep.get("outcomes", 0), "lessons": rep.get("lessons", 0),
+                "entry_linked": rep.get("entry_linked", 0),
+                "legacy_unlinked": rep.get("legacy_unlinked", 0),
+                "missing_outcome": rep.get("missing_outcome", 0),
+                "missing_lesson": rep.get("missing_lesson", 0),
+                "duplicate_lessons": rep.get("duplicate_lesson_count", 0),
+                "orphan_lessons": rep.get("orphan_lessons") or [],
+                "last_learned_trade": (last or {}).get("trade_id"),
+                "last_learned_at": (last or {}).get("learned_at"),
+                "last_reconcile": {k: chain_res.get(k) for k in
+                                   ("ran", "outcomes_added", "lessons_added", "indexed")},
+                "influence_mode": getattr(getattr(self, "influence_cfg", None), "mode", "OFF"),
+                "influence_applied": sum(1 for i in (getattr(self, "_influence_log", None) or [])
+                                         if i.get("applied")),
+                "code_sha": self.code_sha(), "config_hash": self.config_hash(),
+                "rows": rep.get("rows") or [],
+            }
+            # QUANT TAZELİĞİ: rapor offline üretilir (worker'dan bağımsız, bilinçli). O yüzden
+            # burada YENİDEN ÜRETİLMEZ; fakat kanonik kapanış sayısıyla karşılaştırılır. Eski bir
+            # n=9 raporu, 18 kapanış varken "güncel" görünemez.
+            q = read_json(self.cfg.state_path / "quant_eval.json", default=None) or {}
+            qn = (q.get("overall") or {}).get("n")
+            qn = int(qn) if isinstance(qn, (int, float)) else None
+            doc["quant_sample_count"] = qn
+            doc["quant_run_id"] = (q.get("manifest") or {}).get("run_id")
+            doc["quant_covers_all_closes"] = (qn == doc["canonical_final_closes"]) if qn is not None else None
+            doc["quant_sample_gap"] = ((doc["canonical_final_closes"] - qn) if qn is not None else None)
+            atomic_write_json(self.cfg.state_path / "learning_chain.json", doc)
+            return doc
+        except Exception as exc:  # noqa: BLE001
+            log.warning("öğrenme zinciri özeti yazılamadı: %s", exc)
+            return {}
 
     def _snapshot_v3(self, sym: str, d):
         """Canli PAPER karar ani FeatureSnapshotV3 -- replay ile AYNI builder ve AYNI esleme yardimcilari.

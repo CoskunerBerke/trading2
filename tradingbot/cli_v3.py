@@ -742,6 +742,80 @@ def cmd_learning_status(cfg: BotConfig, args) -> int:
     return 0
 
 
+def cmd_learning_reconcile(cfg: BotConfig, args) -> int:
+    """Kapanış zinciri uzlaştırması: her final kapanış için outcome + TAM BİR ders.
+
+    `--dry-run` (varsayılan) hiçbir dosyaya yazmaz. `--apply` yalnız EKSİK adımı ekler; defteri
+    DEĞİŞTİRMEZ ve mevcut tarihçeyi yeniden yazmaz. İkinci `--apply` sıfır değişiklik üretmelidir.
+
+    Gerçek state üzerinde `--apply` yalnız doğrulanmış yedek sonrasında çalıştırılmalıdır
+    (`bash deploy/backup.sh daily`).
+    """
+    import json as _json
+    from .accounting import FuturesLedgerV2
+    from .learn import TradeMemory
+    from .learn.provenance import ProvenanceStore
+    from .learn.reconcile import LearnedIndex, apply_plan, bootstrap_index, build_plan
+    from .learning import Learner
+
+    st = Path(args.state_dir) if getattr(args, "state_dir", None) else cfg.state_path
+    led = FuturesLedgerV2.load(st / "futures_ledger.json")
+    mem = TradeMemory(st / "trade_memory.jsonl", source="LIVE_PAPER")
+    learner = Learner(st / "learning.json", min_trades=cfg.learning.min_trades)
+    idx = LearnedIndex(st / "learned_closes.jsonl")
+    prov = ProvenanceStore(st / "entry_provenance.jsonl")
+    # İlk çalıştırmada mevcut dersleri indekse taşı — aksi halde hepsi "eksik" görünür ve
+    # İKİNCİ kez öğrenilirdi. Bootstrap yalnız GERÇEKTEN dersi olan kapanışları işaretler.
+    boot = 0
+    if not idx.event_ids():
+        exits = {str(r["trade_id"]) for r in mem.iter_rows()
+                 if r.get("kind") == "exit" and r.get("trade_id")}
+        if args.apply:
+            boot = bootstrap_index(history=led.history, learner=learner, index=idx,
+                                   memory_exit_ids=exits)
+        else:
+            print("NOT: `learned_closes.jsonl` yok — --apply ilk çalıştırmada mevcut dersleri "
+                  "indekse taşıyacak (bootstrap), yeniden ÖĞRENMEYECEK.")
+    plan = build_plan(history=led.history, memory=mem, learner=learner, index=idx,
+                      provenance_store=prov)
+    rep = plan["report"]
+    head = {"mode": "APPLY" if args.apply else "DRY_RUN", "state_dir": str(st),
+            "canonical_final_closes": rep["canonical_final_closes"],
+            "existing_outcomes": rep["outcomes"], "existing_lessons": rep["lessons"],
+            "will_add_outcomes": plan["will_add_outcomes"],
+            "will_add_lessons": plan["will_add_lessons"],
+            "will_index": plan["will_index"], "will_mark_legacy": plan["will_mark_legacy"],
+            "duplicates": rep["duplicate_lesson_count"],
+            "entry_linked": rep["entry_linked"], "legacy_unlinked": rep["legacy_unlinked"],
+            "orphan_lessons": rep["orphan_lessons"], "orphan_outcomes": rep["orphan_outcomes"],
+            "bootstrapped": boot, "files_to_change": plan["files_to_change"],
+            "ledger_written": False}
+    if not args.apply:
+        _p(head | {"pending": plan["pending"]})
+        if getattr(args, "table", False):
+            for r in rep["rows"]:
+                print("|".join(str(x) for x in [
+                    r["trade_id"], r["symbol"], r["side"], str(r["closed_at"])[:16],
+                    r["exit_reason"], r["net_pnl"], r["r_multiple"], r["mfe_r"], r["mae_r"],
+                    r["fee_drag_r"], r["funding_drag_r"], r["chain_state"], r["link_status"],
+                    ",".join(r["missing_steps"]) or "-"]))
+        return 0
+    res = apply_plan(plan, history=led.history, memory=mem, learner=learner, index=idx,
+                     provenance_store=prov)
+    # İdempotency KANITI: uygulamadan sonra plan boş olmalı.
+    after = build_plan(history=led.history, memory=mem, learner=learner, index=idx,
+                       provenance_store=prov)
+    manifest = head | {"result": res, "residual_pending": after["pending"],
+                       "idempotent": not after["pending"] and not after["will_mark_legacy"]}
+    out = getattr(args, "manifest_out", None)
+    if out:
+        Path(out).parent.mkdir(parents=True, exist_ok=True)
+        Path(out).write_text(_json.dumps(manifest, ensure_ascii=False, indent=1), encoding="utf-8")
+        manifest["manifest_path"] = str(out)
+    _p(manifest)
+    return 0 if manifest["idempotent"] else 1
+
+
 def cmd_authority(cfg: BotConfig, args) -> int:
     """Tek yetkili worker markörü: --claim bu makineye alır, --release kaldırır, varsayılan durumu basar."""
     from .ops.authority import check, claim, current_host, read_authority, release
@@ -1027,6 +1101,15 @@ def register(sub: argparse._SubParsersAction) -> None:
     s.add_argument("--seed", type=int, default=7); s.add_argument("--max-candidates", dest="max_candidates", type=int, default=24)
     s.set_defaults(fn=cmd_policy_evaluate)
     s = sub.add_parser("learning-status", help="LearnerV2/registry özeti (PAPER ya da --replay <run_id>)"); s.add_argument("--replay", default=None); s.set_defaults(fn=cmd_learning_status)
+    s = sub.add_parser("learning-reconcile",
+                       help="Kapanış zinciri: her final kapanış için outcome + TAM BİR ders (defter SALT OKUNUR)")
+    s.add_argument("--dry-run", dest="dry_run", action="store_true", default=True,
+                   help="varsayılan: hiçbir dosyaya yazma, yalnız planı göster")
+    s.add_argument("--apply", action="store_true", help="eksik adımları ekle (yedek sonrası çalıştırın)")
+    s.add_argument("--table", action="store_true", help="dry-run'da işlem başına satır tablosu bas")
+    s.add_argument("--state-dir", dest="state_dir", default=None)
+    s.add_argument("--manifest-out", dest="manifest_out", default=None, help="audit manifest JSON yolu")
+    s.set_defaults(fn=cmd_learning_reconcile)
     s = sub.add_parser("authority", help="Tek yetkili worker markörü (split-brain koruması): --claim / --release / durum")
     s.add_argument("--claim", action="store_true"); s.add_argument("--release", action="store_true"); s.add_argument("--note", default="")
     s.set_defaults(fn=cmd_authority)

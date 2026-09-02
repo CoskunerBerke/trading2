@@ -193,11 +193,31 @@ def cmd_paper_capital(cfg: BotConfig, args) -> int:
 
 
 def cmd_backup(cfg: BotConfig, args) -> int:
-    from .ops.backup import run_backup
-    kind = "daily" if args.daily else "hourly"
-    out = run_backup(cfg.state_path, cfg.backups_path, kind=kind, keep_hourly=cfg.v3.storage.keep_hourly, keep_daily=cfg.v3.storage.keep_daily,
-                     keep_weekly=cfg.v3.storage.keep_weekly, vault_dir=cfg.obsidian.root if args.daily else None)
-    _p(out if isinstance(out, dict) else {"result": str(out)})
+    """Yedek al ve DOĞRULA. Doğrulama düşerse çıkış kodu 1 — çağıran deployment DURUR.
+
+    `ops.backup.KINDS` dört tür tanımlar (`hourly/daily/weekly/manual`) fakat CLI yalnız
+    ikisini açıyordu; `deploy/update.sh` `--manual` çağırdığı için deployment daha git
+    adımına varmadan `unrecognized arguments` ile ölüyordu. Dört tür de burada açılır.
+
+    Yedek ALINDI demek YETMEZ: arşiv okunabilir ve sha256'sı tutuyor olmalı. Doğrulanmamış
+    bir yedek, rollback anında var olmayan bir güvenlik ağıdır.
+    """
+    from .ops.backup import KINDS, run_backup, verify_backup
+    chosen = [k for k in KINDS if getattr(args, k, False)]
+    if len(chosen) > 1:
+        _p({"error": f"tek bir yedek türü verin: {', '.join(chosen)}"})
+        return 2
+    kind = chosen[0] if chosen else "hourly"
+    out = run_backup(cfg.state_path, cfg.backups_path, kind=kind,
+                     keep_hourly=cfg.v3.storage.keep_hourly, keep_daily=cfg.v3.storage.keep_daily,
+                     keep_weekly=cfg.v3.storage.keep_weekly,
+                     vault_dir=cfg.obsidian.root if kind == "daily" else None)
+    archive = getattr(out, "archive", None) or (out.get("archive") if isinstance(out, dict) else None)
+    ver = verify_backup(archive) if archive else {"ok": False, "error": "arşiv yolu yok"}
+    doc = (out if isinstance(out, dict) else {"result": str(out)}) | {"kind": kind, "verify": ver}
+    _p(doc)
+    if not ver.get("ok"):
+        return 1
     return 0
 
 
@@ -1129,6 +1149,9 @@ def register(sub: argparse._SubParsersAction) -> None:
     s.add_argument("--adjustment-id", required=True, help="idempotency anahtarı (ör. cap_200_2026q3)")
     s.add_argument("--operator", default="operator")
     s.set_defaults(fn=cmd_paper_capital)
-    s = sub.add_parser("backup", help="Yedek al (saatlik/günlük)"); s.add_argument("--daily", action="store_true"); s.add_argument("--hourly", action="store_true"); s.set_defaults(fn=cmd_backup)
+    s = sub.add_parser("backup", help="Yedek al ve doğrula (hourly/daily/weekly/manual)")
+    for _k in ("hourly", "daily", "weekly", "manual"):
+        s.add_argument(f"--{_k}", action="store_true", help=f"{_k} yedeği")
+    s.set_defaults(fn=cmd_backup)
     s = sub.add_parser("restore", help="Yedekten geri yükle"); s.add_argument("archive"); s.add_argument("--yes", action="store_true"); s.set_defaults(fn=cmd_restore)
     s = sub.add_parser("universe", help="Dinamik spot+futures evrenini yenile → state/universe.json"); s.set_defaults(fn=cmd_universe)

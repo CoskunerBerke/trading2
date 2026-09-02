@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Elle yedek: bash deploy/backup.sh [hourly|daily|weekly|manual]  (varsayılan manual)
+# CLI dört türü de tanır ve arşivi DOĞRULAR; doğrulama düşerse çıkış kodu 1 olur.
 set -euo pipefail
 KIND="${1:-manual}"
 BASE="${TRADINGBOT_BASE:-/opt/tradingbot}"

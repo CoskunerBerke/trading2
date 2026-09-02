@@ -2134,17 +2134,25 @@ class TradingEngineV3(TradingEngine):
         try:
             from .learn.exit_policy import HOLD, evaluate_all
             from .learn.position_path import build_snapshot
+            # SNAPSHOT ZAMANI = KAYIT ANI, tur başlangıcı DEĞİL. `tour()` içindeki `now` turun
+            # EN BAŞINDA alınır; `_marks()` ise turun ortasında çalışır ve tick'leri o anki
+            # saatle damgalar. Tur ~600 sn sürdüğü için tur-başı `now`a göre her mark
+            # GELECEKTEN gelmiş görünüyor ve `FUTURE_TIMESTAMP` ile reddediliyordu — ilk
+            # üretim turunda 9 pozisyonun 9'u da sessizce atlandı (dosya hiç oluşmadı).
+            snap_now = utc_now()
             decs = decisions or {}
             written = 0
             intents: list[dict] = []
             rejected: dict[str, int] = {}
+            considered = 0
             for sym, pos in sorted(self.ledger2.positions.items()):
                 tick = marks.get(sym)
                 if tick is None:
                     continue
+                considered += 1
                 mark = float(tick.ref)
                 rec, rej = build_snapshot(
-                    position=pos, mark=mark, now=now, tick_kind=tick_kind,
+                    position=pos, mark=mark, now=snap_now, tick_kind=tick_kind,
                     decision=decs.get(sym), run_id=self.run_id,
                     code_sha=self.code_sha(), config_hash=self.config_hash(),
                     mark_ts=getattr(tick, "ts", None) or None)
@@ -2167,8 +2175,14 @@ class TradingEngineV3(TradingEngine):
                     live_order_path=self.mode_state.is_live_order_path_enabled(),
                     killswitch_state=self.killswitch.state,
                     position_open=True, mark_stale=False, actions_this_tour=0)
-            out = {"schema_version": "exit_path_cycle_v1", "at": iso(now),
-                   "tick_kind": tick_kind, "snapshots_written": written,
+            # SESSİZ BAŞARISIZLIK YASAK: hiçbir snapshot yazılmadıysa ve sebebi REDDEDİLME ise
+            # bu bir gözlem boşluğudur ve loga çıkar. (Önemsiz ara adım atlaması red DEĞİLDİR.)
+            if considered and not written and rejected:
+                log.warning("pozisyon yolu YAZILMADI — %d pozisyonun hepsi reddedildi: %s",
+                            considered, rejected)
+            out = {"schema_version": "exit_path_cycle_v1", "at": iso(snap_now),
+                   "tick_kind": tick_kind, "positions_considered": considered,
+                   "snapshots_written": written,
                    "rejected": rejected, "n_intents": len(intents),
                    "applied": int(res.get("applied", 0)), "execution": res or None,
                    "store": store.stats()}
@@ -2200,6 +2214,12 @@ class TradingEngineV3(TradingEngine):
             doc["run_id"] = self.run_id
             doc["exit_action_mode"] = getattr(self.exit_executor, "mode", "SHADOW")
             doc["applied_total"] = 0
+            # YOL KAYDININ SAĞLIĞI raporun İÇİNDE görünür: "0 yol-tam kapanış" ile "yol hiç
+            # yazılmıyor" iki AYRI durumdur ve panelde karışmamalıdır.
+            doc["path_cycle"] = {k: v for k, v in (getattr(self, "_exit_cycle", None) or {}).items()
+                                 if k in ("at", "tick_kind", "positions_considered",
+                                          "snapshots_written", "rejected", "n_intents", "applied")}
+            doc["path_store"] = (store.stats() if store is not None else None)
             doc["trades"] = [{k: e.get(k) for k in
                               ("trade_id", "symbol", "side", "closed_at", "exit_reason",
                                "actual_r", "status", "path")}

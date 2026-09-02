@@ -939,3 +939,64 @@ def test_evaluate_all_returns_champion_and_three_challengers_separately():
     for r in res.values():
         assert r["applied"] is False, "politika modülü hiçbir şey UYGULAMAZ"
         assert r["trade_id"] and r["snapshot_id"]
+
+
+def test_e2e_tour_start_now_does_not_reject_mid_tour_marks(tmp_path, monkeypatch):
+    """Yol snapshot'i KAYIT ANI ile damgalanir — tur baslangici `now` ile DEGIL.
+
+    Uretimde olculdu (2026-09-02): `tour()` icindeki `now` turun EN BASINDA alinir, `_marks()`
+    ise turun ortasinda calisip tick'leri o anki saatle damgalar. Tur ~600 sn surdugu icin
+    tur-basi `now`a gore her mark GELECEKTEN gelmis gorunuyor ve `FUTURE_TIMESTAMP` ile
+    reddediliyordu; 9 pozisyonun 9'u da sessizce atlandi ve dosya HIC olusmadi.
+    """
+    from datetime import timedelta
+    from tradingbot.accounting.models import TickData as _TD
+    from tradingbot.core import iso, utc_now
+    from tradingbot.learn.position_path import TICK_BAR_EXTREMES
+
+    eng = E._engine(tmp_path, monkeypatch, symbols=6)
+    s1 = eng.tour(do_scan=False, obsidian=False, charts=False)
+    assert s1["opened"] and eng.ledger2.positions
+    p = eng.cfg.state_path / "position_path.jsonl"
+    assert p.exists(), "ilk turda yol dosyasi olusmali"
+    n_before = len(p.read_text(encoding="utf-8").splitlines())
+
+    # Tur basi `now` (600 sn eski) + tick ts = SIMDI  -> eski kodda hepsi reddedilirdi.
+    stale_now = utc_now() - timedelta(seconds=600)
+    marks = {s: _TD(last=pos.entry_avg * Decimal("1.05"),
+                    mark=pos.entry_avg * Decimal("1.05"), ts=iso(utc_now()))
+             for s, pos in eng.ledger2.positions.items()}
+    before_skipped = eng.path_store.skipped_unchanged
+    res = eng._record_position_path(marks, None, stale_now, tick_kind=TICK_BAR_EXTREMES)
+    assert res, "cikti bos olmamali"
+    assert res["positions_considered"] == len(eng.ledger2.positions)
+    # ASIL IDDIA: hicbiri REDDEDILMEDI. Eski kodda hepsi `FUTURE_TIMESTAMP` aliyordu.
+    assert res["rejected"] == {}, f"hicbir snapshot reddedilmemeli: {res['rejected']}"
+    # Snapshot uretildi ve append asamasina ULASTI; bu turda yazilmamasinin sebebi 55 sn'lik
+    # aralik kisidir (bilincli disk korumasi), REDDEDILME degil.
+    assert eng.path_store.skipped_unchanged > before_skipped
+
+    # Aralik gecince AYNI cagri gercekten yazmali (throttle kalici bir engel DEGIL).
+    later = {s: _TD(last=pos.entry_avg * Decimal("1.09"),
+                    mark=pos.entry_avg * Decimal("1.09"), ts=iso(utc_now()))
+             for s, pos in eng.ledger2.positions.items()}
+    eng.path_store.min_interval_s = 0.0
+    res2 = eng._record_position_path(later, None, stale_now, tick_kind=TICK_BAR_EXTREMES)
+    assert res2["rejected"] == {} and res2["snapshots_written"] > 0
+    assert len(p.read_text(encoding="utf-8").splitlines()) > n_before
+
+
+def test_exit_eval_surfaces_path_health_so_failures_are_not_silent(tmp_path, monkeypatch):
+    """`0 yol-tam kapanis` ile `yol hic yazilmiyor` AYRI durumlardir; rapor ikisini ayirir."""
+    eng = E._engine(tmp_path, monkeypatch, symbols=4)
+    eng.tour(do_scan=False, obsidian=False, charts=False)
+    ev = json.loads((eng.cfg.state_path / "exit_eval.json").read_text(encoding="utf-8"))
+    pc = ev.get("path_cycle") or {}
+    assert pc, "exit_eval yol kaydinin sagligini TASIMALI"
+    assert pc["positions_considered"] == len(eng.ledger2.positions)
+    assert pc["snapshots_written"] > 0
+    assert pc["rejected"] == {}
+    assert pc["applied"] == 0
+    ps = ev.get("path_store") or {}
+    assert ps.get("total_snapshots", 0) > 0
+    json.dumps(ev, allow_nan=False)

@@ -482,11 +482,15 @@ import test_engine_v3 as E  # noqa: E402
 
 
 def _fut_fingerprint(led) -> str:
-    canon = {s: {k: str(getattr(p, k, None)) for k in
-                 ("side", "qty", "entry_avg", "stop", "take_profit", "targets", "targets_hit",
-                  "leverage", "isolated_margin", "tp1_done", "initial_stop", "initial_qty")}
-             for s, p in sorted(led.positions.items())}
-    return hashlib.sha256(json.dumps(canon, sort_keys=True, default=str).encode()).hexdigest()[:16]
+    """Kanonik parmak izi — alan kümesi `ops.fingerprint` OTORİTESİNDEN gelir.
+
+    Elle kopyalanan liste `take_profit` içeriyordu; öyle bir alan yok, dolayısıyla her
+    pozisyon için sabit `None` hash'leniyordu (vacuous kanıt).
+    """
+    from tradingbot.ops.fingerprint import futures_fingerprint
+    out = futures_fingerprint(led.positions)
+    assert "take_profit" not in out["fields_used"]
+    return out["fingerprint"][:16]
 
 
 def test_25_engine_writes_entry_snapshots_and_a_shadow_report(tmp_path, monkeypatch):

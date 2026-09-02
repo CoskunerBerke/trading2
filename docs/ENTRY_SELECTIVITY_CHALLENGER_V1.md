@@ -208,10 +208,13 @@ futures + spot fingerprint, `merge --ff-only`, yalnız SHADOW config, restart, i
 canary, `applied = 0` kanıtı, açık pozisyon/stop/TP/boyut/kaldıraç/sermaye/risk bütçesinin
 değişmediğinin kanıtı, endpoint smoke.
 
-Fingerprint alan kümesi — futures: `side, qty, entry_avg, stop, take_profit, targets,
-targets_hit, leverage, isolated_margin, tp1_done, initial_stop, initial_qty`; spot: `assets,
-lots, locked_assets, position_meta, cash, open_orders` (**`positions` anahtarı spot defterinde
-YOKTUR**; boş sözlük üzerinden hash almak vacuous kanıt üretir).
+Fingerprint alan kümesinin TEK OTORİTESİ `tradingbot/ops/fingerprint.py`'dir; elle liste
+kopyalamayın. Futures: `side, qty, entry_avg, stop, targets, targets_hit, leverage,
+isolated_margin, tp1_done, initial_stop, initial_qty` (**`take_profit` YOKTUR** — böyle bir
+pozisyon alanı yok, TP `targets`/`targets_hit`/`tp1_done` içindedir). Spot: `assets, lots,
+locked_assets, position_meta, cash, open_orders` (**`positions` anahtarı spot defterinde
+YOKTUR**). Modül zorunlu alan eksikse `FingerprintError` yükseltir ve boş projeksiyonu
+`vacuous=True` ile işaretler.
 
 Elle pozisyon açma/kapatma/değiştirme YOK. Giriş filtresi ya da çıkış politikası aktive etme YOK.
 Sermaye, risk bütçesi, kaldıraç değiştirme YOK.

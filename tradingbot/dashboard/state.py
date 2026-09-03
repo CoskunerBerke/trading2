@@ -27,6 +27,7 @@ STATE_FILES: dict[str, str] = {
     "exit_eval": "exit_eval.json",
     # ENTRY SELECTIVITY CHALLENGER V1 — salt okunur karşı-olgusal giriş raporu.
     "entry_selectivity": "entry_selectivity.json",
+    "mtf_eval": "mtf_eval.json",
     # LLM alt sisteminin GERÇEK durumu (DISABLED / NOT_CONFIGURED / NO_CALLS / ACTIVE).
     "llm_status": "llm_status.json",
 }

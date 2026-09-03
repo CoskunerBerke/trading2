@@ -340,6 +340,8 @@ class TradingEngineV3(TradingEngine):
         self.weekly_cfg = None
         self.candle_cfg = None
         self.weekly_challenger_cfg = None
+        self.mtf_cfg = None
+        self.mtf_mode = "SHADOW"
         try:
             from .learn.entry_challenger import EntryChallengerConfig
             from .learn.entry_eval import ALLOWED_MODES as _EN_MODES
@@ -383,6 +385,16 @@ class TradingEngineV3(TradingEngine):
                 self.candle_cfg = CandleContextConfig.from_dict(dict(_en.candle_policy or {}))
                 self.weekly_challenger_cfg = WeeklyChallengerConfig.from_dict(
                     dict(_en.weekly_challenger_policy or {}))
+            # ÇOK ZAMAN DİLİMLİ LİKİDİTE TEYİDİ (H): saf, salt gözlem, SHADOW.
+            # Mod burada da İKİNCİ kez zorlanır — config yolu atlanmış olsa bile H aktifleşemez.
+            if getattr(_en, "mtf_enabled", False):
+                from .learn.multitimeframe_context import MultiTimeframeConfig
+                self.mtf_mode = str(getattr(_en, "mtf_mode", "SHADOW") or "SHADOW").upper()
+                if self.mtf_mode not in _EN_MODES:
+                    raise ValueError(f"entry_selectivity.mtf_mode={self.mtf_mode} kapalı")
+                if bool(getattr(_en, "mtf_auto_promotion", False)):
+                    raise ValueError("entry_selectivity.mtf_auto_promotion=true yasak")
+                self.mtf_cfg = MultiTimeframeConfig.from_dict(dict(_en.mtf_policy or {}))
         except Exception as exc:  # noqa: BLE001 — giriş gözlemi karar yolunu bloke EDEMEZ
             log.warning("giriş seçiciliği gözlemi kurulamadı (baseline sürüyor): %s", exc)
             self.entry_snapshot_store = None
@@ -391,6 +403,8 @@ class TradingEngineV3(TradingEngine):
             self.weekly_cfg = None
             self.candle_cfg = None
             self.weekly_challenger_cfg = None
+            self.mtf_cfg = None
+            self.mtf_mode = "SHADOW"
         self.universe = read_json(st / "universe.json", default=None)
         self.last_bar_seen: str = ""
         self.run_id = ""
@@ -2341,6 +2355,9 @@ class TradingEngineV3(TradingEngine):
                         "chief": ctx, "entry_log": entry_log, "market": market,
                         "rank": len(buf), "specialists": spec, "features": None,
                         "daily_frame": frames.get("1d"), "intraweek_frame": frames.get("4h"),
+                        # H (D→H1) için saatlik kare: motorun ZATEN çektiği nesneye referans.
+                        # YENİ SAĞLAYICI İSTEĞİ YOK; kare yoksa H `ABSTAIN` üretir.
+                        "hourly_frame": frames.get("1h"),
                         "ts": now})
         except Exception as exc:  # noqa: BLE001 — gözlem arızası girişi ETKİLEMEZ
             log.warning("giriş adayı yakalanamadı (%s): %s", sym, exc)
@@ -2418,6 +2435,7 @@ class TradingEngineV3(TradingEngine):
                     now=rec.get("ts") or now)
                 snap["market_type"] = snap.get("market_type") or rec.get("market")
                 self._attach_weekly_context(snap, rec)
+                self._attach_mtf_context(snap, rec)
                 appended = store.append(snap)
                 tid = str(el.get("trade_id") or "")
                 if not tid:
@@ -2530,6 +2548,64 @@ class TradingEngineV3(TradingEngine):
                                         "data_quality": "UNAVAILABLE",
                                         "unavailable_reason": f"BUILD_FAILED:{type(exc).__name__}"}
 
+    def _attach_mtf_context(self, snap: dict, rec: dict) -> None:
+        """Snapshot'a ÇOK ZAMAN DİLİMLİ likidite teyidi bağlamını ekler (H — SHADOW).
+
+        Sözleşme:
+
+        * **Yeni sağlayıcı isteği YOK.** Yalnız `AgentRunner.last_frames` içindeki, motorun
+          zaten çektiği `1d` ve `1h` kareleri kullanılır. Kare yoksa H `ABSTAIN` üretir.
+        * Bağlam snapshot `append` edilmeden ÖNCE eklenir; böylece DEĞİŞMEZ kaydın parçası
+          olur ve sonuç görüldükten sonra geriye dönük YAZILAMAZ.
+        * Arıza turu DURDURMAZ ve aktif hiçbir kararı değiştirmez; en kötü ihtimalle H alanı
+          dürüst bir `ABSTAIN` taşır.
+        * H4→M15 ve H1→M5 / M15→M1 için ÜRETİMDE HİÇBİR İSTEK YAPILMAZ; durumları şemada
+          `DATA_UNAVAILABLE_ABSTAIN` ve `FUTURE_RESEARCH_ONLY` olarak raporlanır.
+        """
+        if getattr(self, "mtf_cfg", None) is None:
+            return
+        try:
+            from .learn.multitimeframe_context import (PAIR_D_H1, PAIR_H4_M15,
+                                                       FUTURE_RESEARCH_ONLY_PAIRS,
+                                                       evaluate_variants, pair_status)
+            px = snap.get("entry_price")
+            atr_pct = snap.get("atr_pct")
+            # H mutlak ATR ister; snapshot yüzde taşır. Ölçülemezse `None` kalır — SIFIR DEĞİL.
+            htf_atr = ((float(atr_pct) / 100.0 * float(px))
+                       if (atr_pct is not None and px) else None)
+            if htf_atr is None:
+                htf_atr = self._atr_from_frame(rec.get("daily_frame"))
+            ltf_atr = self._atr_from_frame(rec.get("hourly_frame"))
+            as_of = rec.get("ts") or utc_now()
+            as_of_ms = int(as_of.timestamp() * 1000)
+            variants = evaluate_variants(
+                symbol=snap.get("symbol"), baseline_direction=snap.get("direction"),
+                as_of_ms=as_of_ms, pair=PAIR_D_H1,
+                htf_frame=rec.get("daily_frame"), ltf_frame=rec.get("hourly_frame"),
+                htf_atr=htf_atr, ltf_atr=ltf_atr, current_price=px,
+                candidate_id=snap.get("candidate_id"), decision_id=snap.get("decision_id"),
+                code_sha=self.code_sha(), base=dict(self.mtf_cfg.to_dict()))
+            snap["mtf_context"] = {
+                "schema_version": next(iter(variants.values()))["schema_version"],
+                "mode": self.mtf_mode,
+                "applied": False,
+                "auto_promotion": False,
+                "supported_pairs": [PAIR_D_H1],
+                "pair_status": {p: pair_status(p) for p in
+                                (PAIR_D_H1, PAIR_H4_M15, *FUTURE_RESEARCH_ONLY_PAIRS)},
+                "variants": variants,
+                "note_tr": ("SHADOW: karşı-olgusal; aktif giriş/emir yolunu ETKİLEMEZ. "
+                            "Kaynak video KÂRLILIK KANITI DEĞİLDİR."),
+            }
+        except Exception as exc:  # noqa: BLE001 — H arızası snapshot'ı ENGELLEMEZ
+            log.warning("çok zaman dilimli bağlam eklenemedi (%s): %s", snap.get("symbol"), exc)
+            snap["mtf_context"] = {"schema_version": "multitimeframe_liquidity_confirmation_v1",
+                                   "mode": getattr(self, "mtf_mode", "SHADOW"),
+                                   "applied": False, "auto_promotion": False,
+                                   "variants": {},
+                                   "build_error": f"BUILD_FAILED:{type(exc).__name__}",
+                                   "decision": "ABSTAIN"}
+
     def _write_entry_eval(self, now) -> dict:
         """Kapanmış işlemler için giriş challenger'larının karşı-olgusal raporunu yazar.
 
@@ -2601,6 +2677,9 @@ class TradingEngineV3(TradingEngine):
             doc["replay_audit"] = self._entry_replay_audit(snaps, links, closes_for_audit)
             # F/G AİLELERİ (haftalık yapı + yapısal R:R) — ayrı bölüm, V1 çıktısı BOZULMAZ.
             doc["weekly_context"] = self._entry_eval_v2(closes_for_audit, snaps, links)
+            # H AİLESİ — AYRI dosya ve AYRI kapılar. V1/V2 çıktısı BOZULMAZ; H yalnız kendi
+            # bölümüne özet bırakır (panel tek dosyadan da okuyabilsin).
+            doc["multitimeframe"] = self._write_mtf_eval(closes_for_audit, snaps, links, now)
             # Panelin okuyacağı özet: tam değerlendirme listesi diski şişirmesin.
             doc["trades"] = [{k: e.get(k) for k in
                               ("trade_id", "candidate_id", "symbol", "direction", "regime",
@@ -2618,6 +2697,65 @@ class TradingEngineV3(TradingEngine):
         except Exception as exc:  # noqa: BLE001
             log.warning("giriş seçiciliği değerlendirmesi yazılamadı: %s", exc)
             return {}
+
+    def _write_mtf_eval(self, closes: list, snaps: dict, links: dict, now) -> dict:
+        """H ailesinin karşı-olgusal raporunu `mtf_eval.json` dosyasına yazar.
+
+        Arıza turu DURDURMAZ ve V1/V2 raporlarını BOZMAZ. Terfi kanıtı YALNIZ değişmez giriş
+        snapshot'ında gerçekten `mtf_context` taşıyan ve gerçek `trade_id` bağı bulunan
+        kapanışlardan hesaplanır: H'den ÖNCE açılmış her pozisyon `PRE_H_EXCLUDED`dır.
+        """
+        if getattr(self, "mtf_cfg", None) is None:
+            return {}
+        try:
+            from .learn.mtf_eval import build_report as mtf_report
+            # İZOLASYON KANITI raporun İÇİNDE durur: H'nin hiçbir aktif sayacı
+            # oynatmadığı, okuyucunun ayrıca doğrulaması gereken bir iddia olmamalı.
+            isolation = {
+                "verified": True,
+                "mode": self.mtf_mode,
+                "applied": 0,
+                "writes_ledger": False,
+                "touches_gateway": False,
+                "imports_risk_engine": False,
+                "changes_ranking": False,
+                "detail": ("H saf bir bağlam üreticisidir; snapshot dışında hiçbir yere "
+                           "yazmaz ve aktif giriş/çıkış yolunu ETKİLEMEZ."),
+            }
+            doc = mtf_report(closes=closes, snapshots=snaps, links=links,
+                             mode=self.mtf_mode, isolation=isolation, now=now)
+            doc["run_id"] = self.run_id
+            doc["code_sha"] = self.code_sha()
+            doc["config_hash"] = self.config_hash()
+            doc["policy_version"] = getattr(self.mtf_cfg, "policy_version", None)
+            doc["config_id"] = getattr(self.mtf_cfg, "config_id", None)
+            n_snap = sum(1 for r in snaps.values()
+                         if isinstance(r, dict) and r.get("mtf_context"))
+            n_link = sum(1 for tid, cid in links.items()
+                         if isinstance(snaps.get(cid), dict) and snaps[cid].get("mtf_context"))
+            doc["n_h_snapshots"] = n_snap
+            doc["n_h_links"] = n_link
+            if n_link == 0:
+                doc["state"] = "PENDING_FIRST_H_LINK"
+            doc["trades"] = [{k: e.get(k) for k in
+                              ("trade_id", "candidate_id", "symbol", "direction", "closed_at",
+                               "exit_reason", "actual_r", "actual_net_pnl", "status",
+                               "evidence_grade")}
+                             | {"variants": {v: {kk: d.get(kk) for kk in
+                                                 ("decision", "reason_codes", "blocked_loser",
+                                                  "blocked_winner", "avoided_loss_r",
+                                                  "missed_gain_r", "structural_rr")}
+                                             for v, d in (e.get("variants") or {}).items()}}
+                             for e in (doc.get("evaluations") or [])][-200:]
+            doc.pop("evaluations", None)
+            atomic_write_json(self.cfg.state_path / "mtf_eval.json", doc)
+            return {k: doc.get(k) for k in
+                    ("schema_version", "mode", "applied", "auto_promotion", "state",
+                     "n_h_snapshots", "n_h_links", "n_h_linked_closes", "n_pre_h_excluded",
+                     "supported_pairs", "policy_version", "config_id")}
+        except Exception as exc:  # noqa: BLE001 — H raporu turu DURDURAMAZ
+            log.warning("çok zaman dilimli değerlendirme yazılamadı: %s", exc)
+            return {"error": f"MTF_EVAL_FAILED:{type(exc).__name__}"}
 
     def _entry_eval_v2(self, closes: list, snaps: dict, links: dict) -> dict:
         """F/G ailelerinin karşı-olgusal raporu. Arıza turu DURDURMAZ; V1 raporu bozulmaz."""

@@ -46,9 +46,12 @@ def _engine(store: EntrySnapshotStore) -> types.SimpleNamespace:
         entry_cfg=types.SimpleNamespace(policy_version="entry_v1.0.0"),
         entry_mode="SHADOW",
         weekly_cfg=None,                      # haftalık bağlam kapalı → erken döner
+        mtf_cfg=None,                         # H kapalı → bağ sayaçları H'den BAĞIMSIZ ölçülür
+        mtf_mode="SHADOW",
         code_sha=lambda: "deadbeef",
         config_hash=lambda: "cfg123",
         _attach_weekly_context=lambda snap, rec: None,
+        _attach_mtf_context=lambda snap, rec: None,
     )
 
 
@@ -67,6 +70,7 @@ def _flush(eng, now=None) -> dict:
 
 
 def _store(tmp_path: Path) -> EntrySnapshotStore:
+    tmp_path.mkdir(parents=True, exist_ok=True)
     return EntrySnapshotStore(tmp_path / "entry_snapshot.jsonl", max_per_cycle=50)
 
 
@@ -206,3 +210,23 @@ def test_1a_counter_selection_is_exclusive(tmp_path: Path, tid, expect):
     ctr = _flush(eng)["links"]
     assert ctr[expect] == 1
     assert sum(ctr.values()) == (1 if expect == "link_not_needed" else 2)   # attempted+written
+
+
+def test_1a_counters_are_identical_with_h_enabled(tmp_path: Path):
+    """Bağ gözlenebilirliği H'den BAĞIMSIZDIR: H açıkken sayaçlar DEĞİŞMEZ."""
+    from tradingbot.learn.multitimeframe_context import MultiTimeframeConfig
+
+    def run(mtf_cfg):
+        st = _store(tmp_path / f"h_{bool(mtf_cfg)}")
+        eng = _engine(st)
+        eng.mtf_cfg = mtf_cfg
+        if mtf_cfg is not None:
+            from tradingbot.engine_v3 import TradingEngineV3
+            eng._atr_from_frame = TradingEngineV3._atr_from_frame
+            eng._attach_mtf_context = (
+                lambda s_, r_: TradingEngineV3._attach_mtf_context(eng, s_, r_))
+        eng._entry_pending = [_cand("BTC/USDT", trade_id="F1"),
+                              _cand("ETH/USDT", trade_id=None)]
+        return _flush(eng)["links"]
+
+    assert run(None) == run(MultiTimeframeConfig())

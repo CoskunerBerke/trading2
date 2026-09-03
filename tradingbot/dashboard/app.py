@@ -477,10 +477,210 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
             body += (f"<h2>Dersler</h2><p class=\"mut small\">{esc(win_txt)}{esc(arch_txt)} "
                      f"Üstteki özet kartları TÜM ZAMAN sayaçlarındandır.</p>"
                      + observation_block(lessons) + lessons_table(lessons[-30:][::-1]))
-        if ln.get("blacklist"):
-            body += "<h2>Kara liste</h2><ul>" + "".join(f"<li>{esc(x)}</li>" for x in ln["blacklist"]) + "</ul>"
-        body += _chain_block() + _position_mgmt_block() + _exit_block() + _entry_block()
+        # KARA LİSTE — geçersiz miras anahtarları (`-|LONG` gibi) AÇIKÇA işaretlenir.
+        # Bunlar "kurulum ölçülemedi" durumunun bir kurulum ADI gibi kaydedilmesinden doğdu;
+        # silinmezler, hiçbir kararı ENGELLEYEMEZLER ve burada dürüstçe görünürler.
+        if ln.get("blacklist") or ln.get("setup_stats"):
+            from ..learning import LEGACY_INVALID_SETUP_KEY, legacy_invalid_setup_keys
+            bad = {r["key"] for r in legacy_invalid_setup_keys(ln.get("setup_stats"),
+                                                              ln.get("blacklist"))}
+            items = []
+            for x in (ln.get("blacklist") or []):
+                if x in bad:
+                    items.append(f"<li>{esc(x)} {badge(LEGACY_INVALID_SETUP_KEY, 'warn')} "
+                                 "<span class=\"mut\">kararı engelleyemez</span></li>")
+                else:
+                    items.append(f"<li>{esc(x)}</li>")
+            if items:
+                body += "<h2>Kara liste</h2><ul>" + "".join(items) + "</ul>"
+            orphan = sorted(bad - set(ln.get("blacklist") or []))
+            if orphan:
+                body += ('<div class="card mut">Geçersiz miras istatistik anahtarı ('
+                         + esc(", ".join(orphan)) + f') — {esc(LEGACY_INVALID_SETUP_KEY)}. '
+                         'Geçmiş yeniden yazılmaz; bu anahtarlar hiçbir kararı '
+                         'engelleyemez ve ileriye dönük olarak artık üretilmezler.</div>')
+        body += (_chain_block() + _position_mgmt_block() + _exit_block() + _entry_block()
+                 + _mtf_block())
         return _page("Öğrenme", body, "/learning")
+
+    def _mtf_block() -> str:
+        """H — Çok Zaman Dilimli Likidite Teyidi. SALT OKUNUR, SHADOW.
+
+        Hiçbir satır «AL/SAT», «garantili sinyal» ya da «kârlı strateji» dili KULLANMAZ.
+        Ölçülemeyen değer `0` gösterilmez; `—` ya da durum kodu yazılır.
+        """
+        ev = state.get("mtf_eval")
+        if not isinstance(ev, dict) or not ev:
+            return ("<h2>H — Çok Zaman Dilimli Likidite Teyidi</h2>"
+                    '<div class="card mut">mtf_eval.json yok — worker bu sürümle henüz tam '
+                    "bir tur tamamlamadı. Bu görünüm salt okunurdur ve aktif karara etkisi "
+                    "yoktur.</div>")
+
+        def _i(d, k):
+            v = finite_float_or_none((d or {}).get(k))
+            return int(v) if v is not None else None
+
+        def _n(x):
+            return "—" if x is None else str(x)
+
+        mode = str(ev.get("mode") or "SHADOW")
+        st_ = str(ev.get("state") or "—")
+        n_snap, n_link = _i(ev, "n_h_snapshots"), _i(ev, "n_h_links")
+        n_close, n_pre = _i(ev, "n_h_linked_closes"), _i(ev, "n_pre_h_excluded")
+        out = ("<h2>H — Çok Zaman Dilimli Likidite Teyidi</h2>"
+               '<div class="card mut">Bir eğitim videosundan alınan hipotez: üst zaman dilimi '
+               "bağlam/likidite/hedef, alt zaman dilimi teyit verir. <b>Video kârlılık kanıtı "
+               "değildir</b>; burada yalnız yanlışlanabilir bir araştırma hipotezi olarak "
+               "ölçülür. Bu katman hiçbir emir üretmez; sıralamayı, yönü, miktarı, kaldıracı, "
+               "stop/TP değerlerini ya da RiskEngine sonucunu DEĞİŞTİRMEZ.</div>")
+        out += ('<div class="grid">'
+                + card("Mod", badge(esc(mode), "ok" if mode == "SHADOW" else "warn"),
+                       "yalnız SHADOW; PAPER_BOUNDED/ACTIVE config ile açılamaz")
+                + card("Uygulanan karar", badge("0", "ok"),
+                       "applied=false — aktif karar DEĞİŞMEDİ")
+                + card("Otomatik terfi",
+                       badge("KAPALI", "ok") if ev.get("auto_promotion") is False
+                       else badge("AÇIK", "warn"), "terfi yalnız manuel operatör onayıyla")
+                + card("Durum", badge(esc(st_), "warn" if st_.startswith("PENDING") else "info"),
+                       "kanıt birikimi")
+                + card("H snapshot", _n(n_snap), "H bağlamı taşıyan aday kaydı")
+                + card("H bağı", _n(n_link), "gerçek trade_id ile bağlanmış H adayı")
+                + card("H-tam kapanış", _n(n_close), "terfi kapılarına sayılan tek küme")
+                + card("Ön-H dışlanan", _n(n_pre), "H'den ÖNCE açıldı — kanıt SAYILMAZ")
+                + "</div>")
+        out += ('<div class="card mut">Kimlik: politika '
+                f'<code>{esc(ev.get("policy_version") or "—")}</code>, config '
+                f'<code>{esc(str(ev.get("config_id") or "—")[:16])}</code>, kod '
+                f'<code>{esc(str(ev.get("code_sha") or "—")[:12])}</code>. '
+                "F00030 ve H yayımından önce açılmış her pozisyon terfi kanıtından "
+                "<b>açıkça dışlanır</b>; eski kayıtlara H alanı geriye dönük yazılmaz.</div>")
+
+        # --- çift durumları ---------------------------------------------------------------
+        ps = ev.get("pair_status") if isinstance(ev.get("pair_status"), dict) else {}
+        if not ps:
+            try:
+                from ..learn.multitimeframe_context import ALL_PAIRS, pair_status
+                ps = {p_: pair_status(p_) for p_ in ALL_PAIRS}
+            except Exception:  # noqa: BLE001
+                ps = {}
+        if ps:
+            rows = []
+            for name, d in ps.items():
+                stt = str((d or {}).get("state") or "—")
+                fr = (d or {}).get("frames")
+                rows.append([esc(name), badge(esc(stt), "ok" if stt == "SUPPORTED" else "warn"),
+                             esc(" → ".join(fr) if fr else "—"),
+                             _n(_i(d, "new_provider_calls")),
+                             esc(str((d or {}).get("reason") or "")[:200])])
+            out += ("<h3>Zaman dilimi çiftleri</h3>" + table(
+                ["Çift", "Durum", "Kareler", "Yeni API isteği", "Gerekçe (ölçülmüş)"],
+                rows, num_cols={3}, empty="çift yok"))
+
+        # --- varyant sonuçları -------------------------------------------------------------
+        vs = ev.get("variants") if isinstance(ev.get("variants"), dict) else {}
+        gates = ev.get("promotion_gates") if isinstance(ev.get("promotion_gates"), dict) else {}
+        if vs:
+            rows = []
+            for name, r in sorted(vs.items()):
+                g = gates.get(name) or {}
+                rr = (r or {}).get("structural_rr") or {}
+                rows.append([
+                    esc(name), _n(_i(r, "n")),
+                    _n(_i(r, "allow_count")), _n(_i(r, "veto_count")),
+                    _n(_i(r, "abstain_count")),
+                    fmt((r or {}).get("coverage"), 3), fmt((r or {}).get("abstain_rate"), 3),
+                    _n(_i(r, "blocked_losers")), _n(_i(r, "blocked_winners")),
+                    fmt((r or {}).get("avoided_loss_r"), 3),
+                    fmt((r or {}).get("missed_gain_r"), 3),
+                    fmt((r or {}).get("allowed_net_r"), 3),
+                    fmt((r or {}).get("expectancy_delta_r"), 4),
+                    fmt((r or {}).get("max_drawdown_r"), 3),
+                    fmt((r or {}).get("cvar5_r"), 3),
+                    fmt(rr.get("mean"), 2),
+                    f'{_n(_i(g, "n_passed"))}/{_n(_i(g, "n_total"))}',
+                ])
+            out += ("<h3>Varyant bazlı karşı-olgusal sonuç (yalnız H-tam kapanışlar)</h3>"
+                    + table(["Varyant", "n", "ALLOW", "VETO", "ABSTAIN", "Kapsam",
+                             "Çekimser oran", "Eng. kaybeden", "Eng. kazanan", "Kaçınılan R",
+                             "Kaçırılan R", "İzin verilen net R", "Δ beklenti", "maxDD R",
+                             "CVaR5 R", "Yapısal R:R", "Kapı"],
+                            rows, num_cols=set(range(1, 17)), empty="varyant sonucu yok"))
+            crows = [[esc(name),
+                      fmt((r or {}).get("fee_drag_r"), 4),
+                      fmt((r or {}).get("funding_drag_r"), 4),
+                      fmt((r or {}).get("slippage_drag_r"), 4),
+                      fmt((r or {}).get("total_measured_friction_r"), 4),
+                      esc(str((r or {}).get("cost_measured_counts") or "—"))]
+                     for name, r in sorted(vs.items())]
+            out += ("<h3>Maliyet dökümü (bileşenler AYRI — çift sayım yok)</h3>" + table(
+                ["Varyant", "Komisyon R", "Funding R", "Kayma R", "Ölçülen toplam R",
+                 "Ölçülen bileşen sayısı"], crows, num_cols={1, 2, 3, 4},
+                empty="maliyet ölçülmedi"))
+            for key, title in (("reason_distribution", "Gerekçe kodu dağılımı"),
+                               ("htf_interaction_distribution", "Üst dilim etkileşim dağılımı"),
+                               ("ltf_confirmation_distribution", "Alt dilim teyit dağılımı")):
+                drows = []
+                for name, r in sorted(vs.items()):
+                    for k, v in list(((r or {}).get(key) or {}).items())[:12]:
+                        drows.append([esc(name), esc(k), _n(int(v))])
+                if drows:
+                    out += (f"<h3>{title}</h3>" + table(["Varyant", "Kod", "Adet"], drows,
+                                                        num_cols={2}, empty="veri yok"))
+            wrows = []
+            for name, r in sorted(vs.items()):
+                ci = (r or {}).get("delta_ci") or {}
+                wf = (r or {}).get("walk_forward") or {}
+                wrows.append([esc(name),
+                              esc(f'[{ci.get("lo")}, {ci.get("hi")}]'),
+                              esc(str(ci.get("state") or "—")),
+                              badge("SIFIRI DIŞLIYOR", "ok") if ci.get("excludes_zero")
+                              else badge("DIŞLAMIYOR", "warn"),
+                              esc(str(wf.get("state") or "—")),
+                              f'{_n(_i(wf, "n_positive"))}/{_n(_i(wf, "k"))}'])
+            out += ("<h3>Güven aralığı ve ileriye dönük tutarlılık</h3>" + table(
+                ["Varyant", "Bootstrap GA", "Durum", "Sıfır", "Walk-forward", "Pozitif kat"],
+                wrows, num_cols={5}, empty="veri yok"))
+
+        # --- terfi kapıları -----------------------------------------------------------------
+        for name, g in sorted(gates.items()):
+            gl = (g or {}).get("gates")
+            if not isinstance(gl, list) or not gl:
+                continue
+            rows = []
+            for x in gl:
+                if not isinstance(x, dict):
+                    continue
+                if str(x.get("status") or "EVALUATED") == "NOT_EVALUABLE_LOW_SAMPLE":
+                    b = badge("DEĞERLENDİRİLEMEZ", "warn")
+                elif x.get("passed"):
+                    b = badge("GEÇTİ", "ok")
+                else:
+                    b = badge("DÜŞTÜ", "warn")
+                rows.append([esc(x.get("code")), b, esc(x.get("detail"))])
+            out += (f"<h3>Terfi kapıları — {esc(name)}</h3>"
+                    + table(["Kapı", "Durum", "Ayrıntı"], rows, empty="kapı yok")
+                    + '<div class="card mut">Örneklem ön koşulu düşerken bağımlı başarım '
+                      "kapıları «GEÇTİ» değil, <b>DEĞERLENDİRİLEMEZ (düşük örneklem)</b> "
+                      "olarak raporlanır. En az 50 H-tam bağlı kapanış ve 30 takvim günü "
+                      "gerekir; otomatik terfi hiçbir koşulda yapılmaz.</div>")
+
+        iso = ev.get("isolation") if isinstance(ev.get("isolation"), dict) else {}
+        if iso:
+            out += ('<h3>İzolasyon kanıtı</h3><div class="grid">'
+                    + card("Doğrulandı",
+                           badge("EVET", "ok") if iso.get("verified") else badge("HAYIR", "warn"),
+                           esc(str(iso.get("detail") or "")[:160]))
+                    + card("Deftere yazım",
+                           badge("YOK", "ok") if iso.get("writes_ledger") is False
+                           else badge("VAR", "warn"), "H defter yazmaz")
+                    + card("Gateway erişimi",
+                           badge("YOK", "ok") if iso.get("touches_gateway") is False
+                           else badge("VAR", "warn"), "H gateway'e dokunmaz")
+                    + card("Sıralama etkisi",
+                           badge("YOK", "ok") if iso.get("changes_ranking") is False
+                           else badge("VAR", "warn"), "coin-head çıktısı değişmez")
+                    + "</div>")
+        return out
 
     def _weekly_block(ev: dict) -> str:
         """Haftalık yapı + bağlamsal formasyon + F/G aileleri — SALT OKUNUR, SHADOW.

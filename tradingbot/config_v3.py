@@ -452,6 +452,14 @@ class EntrySelectivitySection:
     candle_policy: dict[str, Any] = field(default_factory=dict)
     #: `learn.entry_challenger_v2.WeeklyChallengerConfig` taban alanları (varyantlar üstüne biner).
     weekly_challenger_policy: dict[str, Any] = field(default_factory=dict)
+    #: MULTI_TIMEFRAME_LIQUIDITY_CONFIRMATION_V1 — H ailesi (SHADOW).
+    #: `enabled=false` yalnız GÖZLEMİ durdurur; hiçbir aktif karar bu bölümden etkilenmez.
+    #: `mtf_mode` yalnız `SHADOW` olabilir: `PAPER_BOUNDED` ve `ACTIVE` config ile AÇILAMAZ.
+    mtf_enabled: bool = True
+    mtf_mode: str = "SHADOW"                  # SHADOW | (PAPER_BOUNDED/ACTIVE YASAK)
+    mtf_auto_promotion: bool = False          # true → ConfigError; terfi yalnız manuel
+    #: `learn.multitimeframe_context.MultiTimeframeConfig` taban alanları.
+    mtf_policy: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -663,6 +671,29 @@ def validate_v3(cfg: V3Config) -> None:
         _WCC.from_dict(dict(_en.weekly_challenger_policy or {}))
     except (ValueError, TypeError) as exc:
         raise ConfigError(f"entry_selectivity haftalık bağlam politikası geçersiz: {exc}") from exc
+    # ÇOK ZAMAN DİLİMLİ LİKİDİTE TEYİDİ (H ailesi): SHADOW dışına çıkış yolu YOKTUR.
+    # `entry_selectivity.mode` zaten SHADOW'a kilitli; H ayrıca KENDİ kapısını da taşır ki
+    # ileride giriş bölümü gevşetilse bile H tek başına aktifleşemesin (fail-closed).
+    _hm = str(_en.mtf_mode or "").upper()
+    if _hm not in _EN_KNOWN:
+        raise ConfigError(f"entry_selectivity.mtf_mode geçersiz: {_en.mtf_mode!r} "
+                          f"(bilinen: {', '.join(_EN_KNOWN)})")
+    if _hm not in _EN_MODES:
+        raise ConfigError(
+            f"MULTITIMEFRAME_NOT_ACTIVATED: entry_selectivity.mtf_mode={_hm} bu sürümde "
+            f"kapalı (izinli: {', '.join(_EN_MODES)}). H ailesi yalnız SHADOW'da çalışır; "
+            "gerçek giriş kararını ancak terfi kapıları geçilip açık operatör onayı "
+            "verildikten sonra ETKİLEYEBİLİR.")
+    _en.mtf_mode = _hm
+    if _en.mtf_auto_promotion:
+        raise ConfigError("MULTITIMEFRAME_AUTO_PROMOTION_FORBIDDEN: "
+                          "entry_selectivity.mtf_auto_promotion=true desteklenmiyor — "
+                          "terfi yalnız manuel operatör onayıyla yapılır")
+    try:
+        from .learn.multitimeframe_context import MultiTimeframeConfig as _MTC
+        _MTC.from_dict(dict(_en.mtf_policy or {}))
+    except (ValueError, TypeError) as exc:
+        raise ConfigError(f"entry_selectivity.mtf_policy geçersiz: {exc}") from exc
     if cfg.futures_v3.margin_mode.lower() != "isolated":
         raise ConfigError("futures_v3.margin_mode paper'da bile yalnız 'isolated' desteklenir")
     if not (1 <= cfg.futures_v3.leverage_default <= cfg.futures_v3.leverage_max_paper_research <= 125):

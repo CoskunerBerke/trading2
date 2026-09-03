@@ -248,3 +248,28 @@ def test_1d_promotion_requirements_are_not_weakened():
     assert GATE_MIN_DAYS == 30
     gates = _run_gates(1)
     assert not all(g["passed"] for g in gates.values())
+
+
+# ------------------------------------------------- 1B: panoda görünürlük (LEGACY_INVALID)
+
+def test_1b_dashboard_surfaces_legacy_invalid_keys(tmp_path: Path):
+    """Geçersiz miras anahtarı ekranda AÇIKÇA işaretlenir; sessizce silinmez."""
+    import json
+
+    from fastapi.testclient import TestClient
+
+    from tradingbot.dashboard.app import create_app
+    sd, dd = tmp_path / "state", tmp_path / "data"
+    sd.mkdir(), dd.mkdir()
+    (sd / "learning.json").write_text(json.dumps({
+        "n_trades": 12, "n_wins": 4, "sum_r": -1.0, "lessons": [],
+        "blacklist": ["-|LONG", "kirilim|SHORT"],
+        "setup_stats": {"-|LONG": {"n": 40, "wins": 2, "sum_r": -30.0},
+                        "kirilim|SHORT": {"n": 12, "wins": 3, "sum_r": -2.0},
+                        "NONE|LONG": {"n": 5, "wins": 1, "sum_r": -1.0}},
+        "agent_weights": {}}), encoding="utf-8")
+    r = TestClient(create_app(sd, dd)).get("/learning")
+    assert r.status_code == 200
+    assert LEGACY_INVALID_SETUP_KEY in r.text
+    assert "kirilim|SHORT" in r.text            # geçerli anahtar normal görünür
+    assert "NONE|LONG" in r.text                # kara listede olmayan geçersiz anahtar da

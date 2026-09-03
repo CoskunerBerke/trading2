@@ -47,6 +47,27 @@ OK = "OK"
 #: `exit_eval.GATE_MIN_CLOSED` ile AYNI eşik: iki hattın kanıt çıtası ayrışmamalı.
 GATE_MIN_LINKED_CLOSES = 50
 GATE_MIN_DAYS = 30
+
+#: --- 1D: DÜŞÜK ÖRNEKLEMDE DÜRÜSTLÜK ------------------------------------------------
+#: n=1'de karşı-olgusal seri baseline ile AYNI olduğu için `dd_c >= dd_b` gibi kapılar
+#: TRIVIAL olarak sağlanıyordu: hiçbir şey ölçülmemişken "geçti" görünüyorlardı. Asgari
+#: örneklem ön koşulu düşerse bağımlı başarım kapıları artık AÇIKÇA değerlendirilemez sayılır.
+GATE_STATUS_EVALUATED = "EVALUATED"
+GATE_STATUS_LOW_SAMPLE = "NOT_EVALUABLE_LOW_SAMPLE"
+
+#: Asgari örneklem ön koşuluna BAĞLI başarım kapıları. Kapsam/sızıntı kapıları yapısaldır
+#: ve örneklemden bağımsız ölçülebilir; onlar bu listede DEĞİLDİR.
+SAMPLE_DEPENDENT_GATES = (
+    "POSITIVE_EXPECTANCY_IMPROVEMENT",
+    "OUT_OF_SAMPLE_IMPROVEMENT",
+    "WALK_FORWARD_CONSISTENCY",
+    "CONFIDENCE_INTERVAL_EXCLUDES_ZERO",
+    "PROFIT_FACTOR_IMPROVEMENT",
+    "DRAWDOWN_NOT_WORSE",
+    "TAIL_RISK_NOT_WORSE",
+    "DISCRIMINATION_POSITIVE",
+    "SURVIVORS_ABOVE_BREAKEVEN",
+)
 #: Bir katmanın (yön/rejim) kapsam sayılabilmesi için asgari kapanış. 10'un altında gözlenen
 #: oranın %95 güven aralığının yarı genişliği ±0,31'i aşar; o katman hiçbir gerçekçi etkiyi
 #: ayırt edemez, dolayısıyla "kapsandı" sayılamaz.
@@ -119,13 +140,80 @@ def _risk_usdt(close: dict[str, Any]) -> float | None:
 
 
 def _cost_r(close: dict[str, Any], risk: float | None) -> float | None:
-    """Komisyon + funding toplamının R cinsinden değeri. Risk bilinmiyorsa `None`."""
+    """**MİRAS ANLAMI (değiştirilmedi):** yalnız komisyon + funding, R cinsinden.
+
+    Bu alan ÖLÇÜLMÜŞ KAYMAYI (slippage) İÇERMEZ ve hiçbir zaman içermemiştir. Geriye dönük
+    uyumluluk için anlamı korunur; tam sürtünme dökümü `cost_decomposition()` ile AYRI
+    raporlanır. İki alanı toplamak maliyeti İKİ KEZ saymak olur.
+    """
     if not risk:
         return None
     fees, funding = _f(close.get("fees")), _f(close.get("funding"))
     if fees is None and funding is None:
         return None
     return (abs(fees or 0.0) + abs(funding or 0.0)) / risk
+
+
+#: Kayma zaten GERÇEKLEŞEN dolum fiyatının içindedir; brüt/net PnL'den bir kez daha
+#: DÜŞÜLMEZ. Burada yalnız GÖRÜNÜR kılınır.
+SLIPPAGE_EMBEDDED_IN_FILL = True
+
+MEASURED, MISSING = "MEASURED", "MISSING"
+
+
+def cost_decomposition(close: dict[str, Any], risk: float | None) -> dict[str, Any]:
+    """Sürtünmenin BİLEŞENLERE AYRILMIŞ dökümü. Ölçülmeyen bileşen `None`, sıfır DEĞİL.
+
+    Ölçülmüş bir sıfır (`0.0`) ile hiç ölçülmemiş bir alan (`None`) burada AYRI şeylerdir:
+    F00030'un `funding_drag_r` değeri ölçülmüş 0,0'dır; `impact_drag_r` ise ölçülmemiştir.
+
+    `reported_cost_r` miras `cost_r` ile AYNI sayıdır (komisyon+funding) ve PnL'i
+    DEĞİŞTİRMEZ; `total_measured_friction_r` ölçülen bileşenlerin toplamıdır.
+    """
+    raw = close.get("raw") if isinstance(close.get("raw"), dict) else {}
+    fees, funding = _f(close.get("fees")), _f(close.get("funding"))
+    slip_cost, spread_cost = _f(raw.get("slippage_cost")), _f(raw.get("spread_cost"))
+    impact_cost = _f(raw.get("impact_cost"))
+    slip_total = (None if (slip_cost is None and spread_cost is None)
+                  else abs(slip_cost or 0.0) + abs(spread_cost or 0.0))
+
+    def drag(v: float | None) -> float | None:
+        if v is None or not risk:
+            return None
+        return round(abs(v) / risk, 6)
+
+    fee_r, fund_r = drag(fees), drag(funding)
+    slip_r, imp_r = drag(slip_total), drag(impact_cost)
+    measured = [v for v in (fee_r, fund_r, slip_r, imp_r) if v is not None]
+    prov = {
+        "risk_usdt": (round(risk, 6) if risk else None),
+        "fees": MEASURED if fees is not None else MISSING,
+        "funding": MEASURED if funding is not None else MISSING,
+        "slippage_cost": MEASURED if slip_cost is not None else MISSING,
+        "spread_cost": MEASURED if spread_cost is not None else MISSING,
+        "impact_cost": MEASURED if impact_cost is not None else MISSING,
+        "slippage_embedded_in_fill": SLIPPAGE_EMBEDDED_IN_FILL,
+        "legacy_cost_r_meaning": "FEE_PLUS_FUNDING_ONLY_EXCLUDES_SLIPPAGE",
+        "double_counting_guard": ("reported_cost_r ve slippage_drag_r AYRI alanlardır; "
+                                  "toplamları total_measured_friction_r'dir ve PnL'e "
+                                  "TEKRAR uygulanmaz."),
+    }
+    if not risk:
+        prov["unavailable_reason"] = "RISK_USDT_UNKNOWN"
+    return {
+        "fee_drag_r": fee_r,
+        "funding_drag_r": fund_r,
+        "slippage_drag_r": slip_r,
+        "impact_drag_r": imp_r,
+        "reported_cost_r": _round(_cost_r(close, risk)),
+        "total_measured_friction_r": (round(sum(measured), 6) if measured else None),
+        "n_measured_components": len(measured),
+        "cost_provenance": prov,
+    }
+
+
+def _round(v: float | None, nd: int = 6) -> float | None:
+    return None if v is None else round(v, nd)
 
 
 def expanding_payoff(prior_r: list[float]) -> float | None:
@@ -184,6 +272,9 @@ def evaluate_trade(*, snapshot: dict[str, Any], close: dict[str, Any],
     }
     cr = _cost_r(close, risk)
     base["cost_r"] = (round(cr, 6) if cr is not None else None)
+    # 1C — DÜRÜST MALİYET ATFI: miras `cost_r` (komisyon+funding) korunur; ölçülen kayma
+    # AYRI alanlarda görünür kılınır ve PnL'den İKİNCİ KEZ düşülmez.
+    base["cost_decomposition"] = cost_decomposition(close, risk)
     if not cand:
         base.update({"status": NO_SNAPSHOT, "families": {},
                      "note_tr": "Giriş snapshot'ı yok — karşı-olgusal sonuç ÜRETİLMEDİ."})
@@ -582,9 +673,10 @@ def _gates(fam_rep: dict[str, Any], *, n_linked: int, days: float | None,
     j = fam_rep.get("discrimination_youden_j")
 
     def gate(code: str, passed: Any, detail: str) -> dict[str, Any]:
-        return {"code": code, "passed": bool(passed), "detail": detail}
+        return {"code": code, "passed": bool(passed), "detail": detail,
+                "status": GATE_STATUS_EVALUATED}
 
-    return [
+    gates = [
         gate("MIN_LINKED_CLOSES", n_linked >= GATE_MIN_LINKED_CLOSES,
              f"{n_linked}/{GATE_MIN_LINKED_CLOSES} (yalnız {LINKED}; {LEGACY_MEMORY} sayılmaz)"),
         gate("MIN_OBSERVATION_DAYS", days is not None and days >= GATE_MIN_DAYS,
@@ -621,6 +713,18 @@ def _gates(fam_rep: dict[str, Any], *, n_linked: int, days: float | None,
         gate("NO_LEAKAGE_POINT_IN_TIME", leakage.get("clean"),
              f"{leakage.get('state')}; denetlenen {leakage.get('checked')}"),
     ]
+    # --- 1D: ön koşul düşmüşse bağımlı başarım kapıları "geçti" GÖRÜNEMEZ ---------------
+    # Ham metrik `detail` içinde AYNEN kalır; yalnız "geçti" iddiası geri çekilir. Bu bir
+    # gevşetme DEĞİLDİR: `passed` yalnız True'dan False'a dönebilir.
+    if n_linked < GATE_MIN_LINKED_CLOSES:
+        for g in gates:
+            if g["code"] in SAMPLE_DEPENDENT_GATES:
+                g["status"] = GATE_STATUS_LOW_SAMPLE
+                g["raw_passed"] = g["passed"]
+                g["passed"] = False
+                g["detail"] = (f"{g['detail']} — {GATE_STATUS_LOW_SAMPLE} "
+                               f"({n_linked}/{GATE_MIN_LINKED_CLOSES} bağlı kapanış)")
+    return gates
 
 
 def aggregate(evaluations: Iterable[dict[str, Any]], *, cfg: EntryChallengerConfig,
@@ -730,6 +834,8 @@ __all__ = ["SCHEMA_VERSION", "INSUFFICIENT_ENTRY_SAMPLE", "ELIGIBLE_FOR_PAPER_BO
            "MODE_SHADOW", "MODE_PAPER_BOUNDED", "MODE_ACTIVE", "ALLOWED_MODES", "KNOWN_MODES",
            "NO_SNAPSHOT", "NO_OUTCOME", "OK", "GATE_MIN_LINKED_CLOSES", "GATE_MIN_DAYS",
            "GATE_MIN_PER_STRATUM", "GATE_MAX_SYMBOL_SHARE", "FORBIDDEN_OUTCOME_FIELDS",
+           "cost_decomposition", "SLIPPAGE_EMBEDDED_IN_FILL",
+           "GATE_STATUS_EVALUATED", "GATE_STATUS_LOW_SAMPLE", "SAMPLE_DEPENDENT_GATES",
            "outcome_id", "expanding_payoff", "evaluate_trade", "evaluate_closes",
            "bootstrap_ci", "leakage_report", "walk_forward_folds", "aggregate", "finalize",
            "build_report"]

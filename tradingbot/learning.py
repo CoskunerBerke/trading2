@@ -18,7 +18,7 @@ import math
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 AGENTS = ["trend", "momentum", "candles", "volume", "levels", "market", "analog", "edge"]
 BASE_W = {"trend": 0.22, "momentum": 0.13, "candles": 0.10, "volume": 0.09, "levels": 0.12, "market": 0.11, "analog": 0.15, "edge": 0.18}
@@ -64,6 +64,69 @@ def features_from_brief(brief, chief=None, scan_score: float | None = None) -> d
     f["warnings"] = list(brief.dont_list[:8])
     f["agent_stances"] = {a: (rep[a].stance if a in rep else "-") for a in AGENTS}
     return f
+
+
+# ---------------------------------------------------------- setup anahtarı (İLERİYE DÖNÜK)
+#: "Kurulum yok" durumunun bir kurulum ADI gibi davranmasına izin veren token'lar. Üretimde
+#: `setup_type` eksik olduğunda anahtar `"-"` ile kurulur ve `-|LONG` gibi ANLAMSIZ bir kara
+#: liste anahtarı doğardı: "kurulumu bilmiyoruz" ile "şu kurulum kötü" aynı şeye dönüşürdü.
+INVALID_SETUP_TOKENS = frozenset({"", "-", "--", "?", "NONE", "NULL", "N/A", "NA", "UNKNOWN"})
+
+#: Geçmişte üretilmiş geçersiz anahtarlar SESSİZCE SİLİNMEZ; bu kodla RAPORLANIR.
+LEGACY_INVALID_SETUP_KEY = "LEGACY_INVALID_SETUP_KEY"
+
+
+def normalize_setup_token(x: Any) -> str | None:
+    """Bir setup/yön parçasını normalize eder. Ölçülemeyen parça `None` döner — `"-"` DEĞİL."""
+    if x is None or isinstance(x, bool):
+        return None
+    t = str(x).strip()
+    if t.upper() in INVALID_SETUP_TOKENS:
+        return None
+    return t
+
+
+def setup_stat_key(setup: Any, side: Any) -> str | None:
+    """`setup|yön` anahtarı. İki parçadan biri bile ölçülemediyse anahtar ÜRETİLMEZ.
+
+    İleriye dönük düzeltme: eksik kurulum artık `"-"` ile temsil edilmez, hiç anahtar
+    kurulmaz. Eski satırlar OLDUĞU GİBİ kalır (geçmiş yeniden yazılmaz).
+    """
+    a, b = normalize_setup_token(setup), normalize_setup_token(side)
+    if a is None or b is None:
+        return None
+    return f"{a}|{b}"
+
+
+def is_valid_setup_key(key: Any) -> bool:
+    """Bir kara liste/istatistik anahtarının GERÇEK bir kurulum+yön taşıyıp taşımadığı."""
+    if not isinstance(key, str) or "|" not in key:
+        return False
+    setup, _, side = key.partition("|")
+    return (normalize_setup_token(setup) is not None
+            and normalize_setup_token(side) is not None)
+
+
+def legacy_invalid_setup_keys(stats: dict | None, blacklist: Iterable[str] | None = None
+                              ) -> list[dict]:
+    """Durumda ZATEN bulunan geçersiz anahtarları görünür kılar. Hiçbir şeyi değiştirmez."""
+    bl = set(blacklist or ())
+    out: list[dict] = []
+    for k, v in (stats or {}).items():
+        if is_valid_setup_key(k):
+            continue
+        out.append({"key": k, "code": LEGACY_INVALID_SETUP_KEY,
+                    "n": int((v or {}).get("n", 0) or 0) if isinstance(v, dict) else 0,
+                    "in_blacklist": k in bl,
+                    "blocks_decisions": False,
+                    "note_tr": ("Geçersiz anahtar: kurulum ölçülemediği için üretilmişti. "
+                                "Silinmez; hiçbir kararı ENGELLEYEMEZ.")})
+    for k in bl:
+        if not is_valid_setup_key(k) and not any(o["key"] == k for o in out):
+            out.append({"key": k, "code": LEGACY_INVALID_SETUP_KEY, "n": 0,
+                        "in_blacklist": True, "blocks_decisions": False,
+                        "note_tr": "Geçersiz kara liste anahtarı; hiçbir kararı ENGELLEYEMEZ."})
+    return sorted(out, key=lambda o: str(o["key"]))
 
 
 # ---------------------------------------------------------------- model
@@ -151,7 +214,19 @@ class Learner:
         return self.state.agent_weights if self.ready else None
 
     def is_blacklisted(self, setup_type: str, direction: str) -> bool:
-        return f"{setup_type}|{direction}" in self.state.blacklist
+        """Geçersiz anahtar HİÇBİR KARARI ENGELLEYEMEZ.
+
+        Kurulum ya da yön ölçülemediyse anahtar kurulmaz ve `False` döner: "ölçemedik"
+        gerekçesiyle işlem elemek, ölçtüğümüzü iddia etmenin başka biçimidir.
+        """
+        key = setup_stat_key(setup_type, direction)
+        if key is None:
+            return False
+        return key in self.state.blacklist
+
+    def legacy_invalid_setup_keys(self) -> list[dict]:
+        """Durumdaki geçersiz anahtarların denetim listesi (salt gözlem)."""
+        return legacy_invalid_setup_keys(self.state.setup_stats, self.state.blacklist)
 
     # ------------------------------------------------------------ öğrenme
     def learn(self, rec: dict) -> dict:
@@ -213,15 +288,27 @@ class Learner:
                 "context_key": "GLOBAL",
                 "evidence_quality": ("SUFFICIENT" if n >= 20 else "LOW_SAMPLE")})
         # 3) setup / sembol / çıkış istatistikleri
-        key = f"{f.get('setup_type', '-')}|{rec.get('side', '-')}"
-        st = s.setup_stats.setdefault(key, {"n": 0, "wins": 0, "sum_r": 0.0})
-        st["n"] += 1; st["wins"] += int(won); st["sum_r"] += r
+        # İLERİYE DÖNÜK: kurulum ya da yön ölçülemediyse anahtar KURULMAZ. Eski `-|LONG`
+        # benzeri satırlar durumda kalır ve `legacy_invalid_setup_keys()` ile raporlanır.
+        #
+        # `setup_type` ÖLÇÜLMÜŞ bir alandır ama kaydın KÖKÜNDE durur (`TradeRecord.setup_type`),
+        # `features` içinde değil. Eskiden yalnız `features` okunduğu için üretimde HER kayıt
+        # `"-"` görüyor ve `-|LONG` doğuyordu. Doğru yerden okumak bir UYDURMA DEĞİL, ölçülmüş
+        # bir alanın doğru adresten alınmasıdır; ölçülemezse yine anahtar kurulmaz.
+        key = setup_stat_key(f.get("setup_type", rec.get("setup_type")), rec.get("side"))
+        if key is not None:
+            st = s.setup_stats.setdefault(key, {"n": 0, "wins": 0, "sum_r": 0.0})
+            st["n"] += 1; st["wins"] += int(won); st["sum_r"] += r
         sy = s.symbol_stats.setdefault(rec["symbol"], {"n": 0, "wins": 0, "sum_r": 0.0})
         sy["n"] += 1; sy["wins"] += int(won); sy["sum_r"] += r
         s.exit_stats[rec.get("exit_reason", "?")] = s.exit_stats.get(rec.get("exit_reason", "?"), 0) + 1
         s.n_trades += 1; s.n_wins += int(won); s.sum_r += r
         # kara liste: n≥10 ve beklenti < -0.1R
-        s.blacklist = [k for k, v in s.setup_stats.items() if v["n"] >= 10 and v["sum_r"] / v["n"] < -0.1]
+        # Geçersiz anahtar kara listeye GİREMEZ (mevcut geçersiz satırlar da temizlenir:
+        # kara liste türetilmiş bir görünümdür, tarihsel kayıt DEĞİLDİR — `setup_stats`
+        # dokunulmadan kalır).
+        s.blacklist = [k for k, v in s.setup_stats.items()
+                       if is_valid_setup_key(k) and v["n"] >= 10 and v["sum_r"] / v["n"] < -0.1]
         # 4) teşhis / dersler
         lesson = self._diagnose(rec, f, won, r, right, wrong, warned, p)
         lesson["agent_contributions"] = agent_contributions

@@ -2386,8 +2386,18 @@ class TradingEngineV3(TradingEngine):
             self._entry_pending = []
             return {}
         written = 0
+        # --- BAĞ YAZIMI GÖZLENEBİLİRLİĞİ (1A) ------------------------------------------
+        # `link_trade` dönüşü ARTIK YUTULMUYOR. "İşlem açılmadı" ile "bağ yazılamadı" iki
+        # AYRI olaydır ve aynı görünemez; bir bağ arızası turu DURDURMAZ ama SESSİZ KALMAZ.
+        link_ctr = {"link_attempted": 0, "link_written": 0, "link_failed": 0,
+                    "link_duplicate": 0, "link_not_needed": 0, "link_skipped_no_snapshot": 0}
+        link_reasons: list[dict] = []
         try:
             from .learn.entry_snapshot import build_entry_snapshot
+            try:
+                existing_links = set(store.trade_links().keys())
+            except Exception:  # noqa: BLE001 — indeks okunamazsa yinelenen tespiti kapanır
+                existing_links = set()
             for rec in buf:
                 el = rec.get("entry_log") or {}
                 snap = build_entry_snapshot(
@@ -2408,9 +2418,45 @@ class TradingEngineV3(TradingEngine):
                     now=rec.get("ts") or now)
                 snap["market_type"] = snap.get("market_type") or rec.get("market")
                 self._attach_weekly_context(snap, rec)
-                if store.append(snap) and el.get("trade_id"):
+                appended = store.append(snap)
+                tid = str(el.get("trade_id") or "")
+                if not tid:
+                    link_ctr["link_not_needed"] += 1        # işlem AÇILMADI — arıza DEĞİL
+                elif not appended:
+                    # Snapshot yazılmadı (yineleme ya da hata): mevcut sözleşme gereği bağ da
+                    # yazılmaz. Bu ÜÇÜNCÜ bir durumdur ve artık görünürdür.
+                    link_ctr["link_skipped_no_snapshot"] += 1
+                    link_reasons.append({"trade_id": tid, "candidate_id": snap["candidate_id"],
+                                         "code": "LINK_SKIPPED_SNAPSHOT_NOT_WRITTEN"})
+                    log.warning("giriş bağı ATLANDI (snapshot yazılmadı): trade=%s candidate=%s",
+                                tid, snap["candidate_id"])
+                elif tid in existing_links:
+                    link_ctr["link_duplicate"] += 1
+                    link_reasons.append({"trade_id": tid, "candidate_id": snap["candidate_id"],
+                                         "code": "LINK_ALREADY_PRESENT"})
+                else:
                     # AÇILAN pozisyon adaya AYRI bir satırla bağlanır; snapshot değişmez.
-                    store.link_trade(snap["candidate_id"], str(el["trade_id"]))
+                    link_ctr["link_attempted"] += 1
+                    ok = False
+                    try:
+                        ok = bool(store.link_trade(snap["candidate_id"], tid))
+                    except Exception as lexc:  # noqa: BLE001 — bağ arızası turu DURDURMAZ
+                        log.warning("giriş bağı yazılamadı (istisna) trade=%s: %s", tid, lexc)
+                    if ok:
+                        link_ctr["link_written"] += 1
+                        existing_links.add(tid)
+                        link_reasons.append({"trade_id": tid,
+                                             "candidate_id": snap["candidate_id"],
+                                             "code": "LINK_OK"})
+                    else:
+                        link_ctr["link_failed"] += 1
+                        link_reasons.append({"trade_id": tid,
+                                             "candidate_id": snap["candidate_id"],
+                                             "code": "LINK_WRITE_FAILED"})
+                        # Eksik bağ UYDURULMAZ; yalnız açıkça raporlanır.
+                        log.warning("GİRİŞ BAĞI YAZILAMADI: trade=%s candidate=%s — kanıt "
+                                    "zinciri bu işlem için EKSİK kalacak", tid,
+                                    snap["candidate_id"])
                 written += 1
             rot = store.rotate()          # ARŞİV-ÖNCE; arşiv düşerse budama YOK
             self._entry_cycle = {"at": iso(now), "candidates": len(buf), "written": written,
@@ -2418,7 +2464,11 @@ class TradingEngineV3(TradingEngine):
                                  "errors": store.errors, "mode": self.entry_mode,
                                  "rotation": {k: rot.get(k) for k in
                                               ("archived", "trimmed", "health", "error",
-                                               "hot_lines", "segment_id")}}
+                                               "hot_lines", "segment_id")},
+                                 "links": dict(link_ctr),
+                                 "link_events": link_reasons[-50:],
+                                 "link_health": ("OK" if not link_ctr["link_failed"]
+                                                 else "LINK_WRITE_FAILED")}
             return self._entry_cycle
         except Exception as exc:  # noqa: BLE001 — gözlem arızası turu DURDURAMAZ
             log.warning("giriş snapshot'ı yazılamadı: %s", exc)

@@ -1,5 +1,14 @@
 # PROFITABILITY_EXPERIMENT_V1 — beş donmuş politikanın izole PAPER yarışması
 
+> **2026-09-06 — `pfexp_v1` SUPERSEDED_INCOMPLETE_ENTRY_INPUT.** Bu sürümde P1/P4 A/E kararını
+> kapanmış işlem atıf raporundan (`entry_selectivity.json.trades`) okuyordu; yeni açılan
+> pozisyonun orada satırı olmadığı için P1/P4 canlı girişte karar anı A/E'yi hiç göremedi ve
+> yapısal olarak ABSTAIN etti (F00035: P0/P2/P3 ACCEPT, P1/P4 ABSTAIN). Deney pratikte yalnız
+> P0/P2/P3'ü ölçtü; **beş politika arasında karşılaştırılabilir değildir** ve bu sürüm için
+> kârlılık sonucu **yoktur**. Kanıtı (olaylar, kitap, rapor) **değiştirilmedi, geriye dönük
+> doldurulmadı, yeni sürüme taşınmadı**; motor bu sürümü yeniden çalıştırmayı reddeder.
+> Düzeltilmiş sürüm: `docs/PROFITABILITY_EXPERIMENT_V1_1.md`.
+
 **Durum:** SHADOW PAPER ONLY · `applied_to_canonical = false` · `auto_promotion = false` ·
 terfi bugün **imkânsız**.
 

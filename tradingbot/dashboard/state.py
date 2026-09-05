@@ -28,7 +28,10 @@ STATE_FILES: dict[str, str] = {
     # ENTRY SELECTIVITY CHALLENGER V1 — salt okunur karşı-olgusal giriş raporu.
     "entry_selectivity": "entry_selectivity.json",
     "mtf_eval": "mtf_eval.json",
+    # PROFITABILITY EXPERIMENT — iki sürüm AYRI dosyada: v1 tarihsel/salt okunur
+    # (SUPERSEDED_INCOMPLETE_ENTRY_INPUT), v1.1 düzeltilmiş ve canlı (SHADOW PAPER ONLY).
     "profitability_experiment": "profitability_experiment.json",
+    "profitability_experiment_v1_1": "profitability_experiment_v1_1.json",
     # LLM alt sisteminin GERÇEK durumu (DISABLED / NOT_CONFIGURED / NO_CALLS / ACTIVE).
     "llm_status": "llm_status.json",
 }

@@ -220,6 +220,12 @@ def build_entry_snapshot(*, run_id: Any, cycle_id: Any, symbol: Any, direction: 
                                           _get(chief_permission, "total_open_risk_usdt"), MEASURED)
     rec["same_direction_open"] = put("same_direction_open",
                                      _get(chief_permission, "same_direction_open"), MEASURED)
+    # Karar anı risk bütçesi — şampiyonun KENDİ türetmesi (equity × max_total_open_risk_pct).
+    # E ailesinin ısı oranı yalnız bununla ölçülebilir; kayıt sonradan "o anki equity"
+    # ile yeniden hesaplanamaz. Yoksa `MISSING` kalır — sıfır DEĞİL. Eski satırlar bu alanı
+    # taşımaz ve okuyucular `.get()` ile eksikliği açıkça görür (şema geriye uyumlu, eklemeli).
+    rec["risk_budget_usdt"] = put("risk_budget_usdt",
+                                  _get(chief_permission, "risk_budget_usdt"), MEASURED)
     # --- baseline karar (KARŞILAŞTIRMA TABANI) -----------------------------------------
     rec["baseline_rank"] = baseline_rank
     rec["baseline_accepted"] = (None if baseline_accepted is None else bool(baseline_accepted))

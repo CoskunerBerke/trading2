@@ -50,6 +50,19 @@ DECISIONS = (ACCEPT, FILTER, ABSTAIN)
 PRE_EXPERIMENT = "PRE_EXPERIMENT_OBSERVATION_ONLY"
 IN_EXPERIMENT = "IN_EXPERIMENT"
 
+# --- A/E girdi kaynağı (politika sürümüne KİLİTLİ) ------------------------------------------
+#: `pfexp_v1.0.0`: A/E kararı kapanmış işlem atıf raporundan (`entry_selectivity.json.trades`)
+#: okunuyordu. Yeni açılan pozisyonun orada satırı OLMADIĞI için P1/P4 canlı girişte yapısal
+#: olarak ATILDI (doğrulanmış kusur, 2026-09-06). Bu sürümün anlamı DEĞİŞTİRİLMEZ; yalnız
+#: tarihsel/eksik olarak okunur.
+LEGACY_POLICY_VERSION = "pfexp_v1.0.0"
+AE_SOURCE_LEGACY = "CLOSED_TRADE_ATTRIBUTION"
+#: `pfexp_v1.1.0+`: A/E kararı değişmez giriş snapshot'ından, karar anında
+#: (`learn.profitability_ae.point_in_time_ae`).
+AE_SOURCE_POINT_IN_TIME = "ENTRY_SNAPSHOT_POINT_IN_TIME"
+#: Eski sürümün dürüst statüsü.
+STATUS_SUPERSEDED = "SUPERSEDED_INCOMPLETE_ENTRY_INPUT"
+
 # --- gerekçe kodları -----------------------------------------------------------------------
 R_MIRROR = "MIRRORS_CHAMPION"
 R_AE_VETO = "ENTRY_FAMILY_A_OR_E_VETO"
@@ -182,12 +195,26 @@ class ExperimentConfig:
         d = {k: v for k, v in self.to_dict().items() if k not in ("frozen_at", "code_sha")}
         return stable_id("pfexpcfg", self.policy_version, d)
 
+    @property
+    def uses_point_in_time_ae(self) -> bool:
+        """A/E girdisi snapshot'tan mı (v1.1+) yoksa kapanış atıfından mı (v1.0.0)?"""
+        return self.policy_version != LEGACY_POLICY_VERSION
+
+    @property
+    def ae_source(self) -> str:
+        return AE_SOURCE_POINT_IN_TIME if self.uses_point_in_time_ae else AE_SOURCE_LEGACY
+
     def identity(self) -> dict[str, Any]:
         return {"schema_version": SCHEMA_VERSION, "experiment_id": self.experiment_id,
                 "policy_version": self.policy_version, "config_id": self.config_id,
                 "code_sha": self.code_sha, "frozen_at": self.frozen_at,
                 "evaluation_start_at": self.evaluation_start_at,
-                "number_of_trials": N_TRIALS, "policies": list(POLICIES)}
+                "number_of_trials": N_TRIALS, "policies": list(POLICIES),
+                "ae_source": self.ae_source}
+
+    def identity_key(self) -> tuple[str, str, str]:
+        """Olay/kitap eşlemesinde kullanılan ÜÇLÜ kimlik. Biri uyuşmazsa kayıt YABANCIDIR."""
+        return (self.experiment_id, self.policy_version, self.config_id)
 
 
 # =========================================================================== korelasyon
@@ -249,6 +276,13 @@ class SimPosition:
     mfe_r: float = 0.0
     mae_r: float = 0.0
     reduces_done: int = 0
+    #: Deney kimliği pozisyonun ÜZERİNDE durur (eski v1 kayıtlarında yoktur → None).
+    experiment_id: str | None = None
+    policy_version: str | None = None
+    config_id: str | None = None
+    code_sha: str | None = None
+    #: Snapshot'ın donmuş as-of anı (karar anı). Eski kayıtlarda yoktur.
+    as_of: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {f.name: getattr(self, f.name) for f in fields(self)}
@@ -273,6 +307,11 @@ class SimClose:
     mfe_r: float | None
     mae_r: float | None
     risk_usdt: float
+    #: Kimlik pozisyondan AYNEN taşınır.
+    experiment_id: str | None = None
+    policy_version: str | None = None
+    config_id: str | None = None
+    code_sha: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {f.name: getattr(self, f.name) for f in fields(self)}
@@ -309,6 +348,47 @@ def decide_p1(candidate: dict[str, Any], cfg: ExperimentConfig) -> dict[str, Any
         return {"decision": FILTER, "reason_codes": [R_AE_VETO],
                 "evidence": {"A": a, "E": e, "vetoed_by": vetoed}}
     return {"decision": ACCEPT, "reason_codes": [R_OK], "evidence": {"A": a, "E": e}}
+
+
+def decide_p1_point_in_time(candidate: dict[str, Any], cfg: ExperimentConfig
+                            ) -> dict[str, Any]:
+    """P1 (v1.1+) — KARAR ANI A/E bacakları (`candidate["entry_ae"]`, snapshot kaynaklı).
+
+    Üç değerli ve açık: bir bacak `FILTER` ise FILTER; hiçbiri FILTER değil ama bir bacak
+    `ABSTAIN` ise ABSTAIN; ancak İKİ bacak da ölçülmüş `ACCEPT` ise ACCEPT. ABSTAIN asla
+    sessizce FILTER ya da ACCEPT olmaz. Kapanış atıf raporu (`entry_selectivity.json.trades`)
+    BU YOLDA OKUNMAZ.
+    """
+    ae = candidate.get("entry_ae")
+    if not isinstance(ae, dict) or not isinstance(ae.get("families"), dict):
+        return {"decision": ABSTAIN, "reason_codes": [R_AE_UNKNOWN],
+                "evidence": {"source": None, "why": "ENTRY_AE_NOT_SUPPLIED"}}
+    legs = {k: (ae["families"].get(k) or {}) for k in ("A", "E")}
+    prov = ae.get("provenance") if isinstance(ae.get("provenance"), dict) else {}
+    ev: dict[str, Any] = {
+        "A": legs["A"].get("decision"), "E": legs["E"].get("decision"),
+        "as_of": ae.get("as_of"), "source": prov.get("source"), "stage": prov.get("stage"),
+        "sees_outcome": prov.get("sees_outcome"),
+        "close_history_read": prov.get("close_history_read"),
+        "entry_policy_version": ae.get("entry_policy_version"),
+        "entry_config_id": ae.get("entry_config_id"),
+        "legs": {k: {kk: v.get(kk) for kk in ("decision", "reason_codes", "missing",
+                                               "raw_decision", "raw_reason_codes", "evidence")}
+                 for k, v in legs.items()},
+    }
+
+    def codes(names: list[str]) -> list[str]:
+        return sorted({str(c) for k in names for c in (legs[k].get("reason_codes") or [])})
+
+    vetoed = [k for k, v in legs.items() if v.get("decision") == FILTER]
+    if vetoed:
+        return {"decision": FILTER, "reason_codes": [R_AE_VETO, *codes(vetoed)],
+                "evidence": ev | {"vetoed_by": vetoed}}
+    abstained = [k for k, v in legs.items() if v.get("decision") != ACCEPT]
+    if abstained:
+        return {"decision": ABSTAIN, "reason_codes": [R_AE_UNKNOWN, *codes(abstained)],
+                "evidence": ev | {"abstained_on": abstained}}
+    return {"decision": ACCEPT, "reason_codes": [R_OK], "evidence": ev}
 
 
 def decide_p2(candidate: dict[str, Any], book: "PolicyBook", cfg: ExperimentConfig
@@ -376,10 +456,14 @@ def decide_p2(candidate: dict[str, Any], book: "PolicyBook", cfg: ExperimentConf
 def decide_entry(policy: str, candidate: dict[str, Any], book: "PolicyBook",
                  cfg: ExperimentConfig) -> dict[str, Any]:
     """Bir politikanın giriş kararı. **Yalnız şampiyonun kabul ettiği aday** girdi olabilir."""
+    # BEŞ politika AYNI aday kimliğini ve AYNI as-of anını alır. as-of, snapshot'ın donmuş
+    # `ts` alanıdır (v1.1+; motor `candidate["as_of"]` olarak taşır); yoksa açılış anı.
     base = {"policy": policy, "trade_id": candidate.get("trade_id"),
             "candidate_id": candidate.get("candidate_id"),
             "symbol": candidate.get("symbol"), "side": candidate.get("side"),
-            "as_of": candidate.get("opened_at"), "applied": False}
+            "as_of": candidate.get("as_of") or candidate.get("opened_at"),
+            "opened_at": candidate.get("opened_at"),
+            "ae_source": cfg.ae_source, "applied": False}
     if not candidate.get("champion_accepted"):
         return base | {"decision": FILTER, "reason_codes": [R_NOT_CHAMPION_ACCEPTED],
                        "evidence": {}}
@@ -388,14 +472,17 @@ def decide_entry(policy: str, candidate: dict[str, Any], book: "PolicyBook",
     if _f(candidate.get("risk_usdt")) is None:
         return base | {"decision": ABSTAIN, "reason_codes": [R_NO_RISK], "evidence": {}}
 
+    # A/E kaynağı politika SÜRÜMÜNE kilitlidir: v1.0.0 kapanış atıfı (tarihsel), v1.1+ snapshot.
+    p1 = decide_p1_point_in_time if cfg.uses_point_in_time_ae else decide_p1
+
     if policy in (P0, P3):
         return base | {"decision": ACCEPT, "reason_codes": [R_MIRROR], "evidence": {}}
     if policy == P1:
-        return base | decide_p1(candidate, cfg)
+        return base | p1(candidate, cfg)
     if policy == P2:
         return base | decide_p2(candidate, book, cfg)
     if policy == P4:
-        d1 = decide_p1(candidate, cfg)
+        d1 = p1(candidate, cfg)
         if d1["decision"] == FILTER:
             return base | d1
         d2 = decide_p2(candidate, book, cfg)
@@ -444,8 +531,16 @@ class PolicyBook:
         return b
 
 
-def open_simulated(book: PolicyBook, candidate: dict[str, Any]) -> SimPosition:
-    """Şampiyon girişini AYNEN aynalar: fiyat, miktar, stop, hedef ve maliyet modeli aynıdır."""
+def open_simulated(book: PolicyBook, candidate: dict[str, Any],
+                   cfg: ExperimentConfig | None = None) -> SimPosition:
+    """Şampiyon girişini AYNEN aynalar: fiyat, miktar, stop, hedef ve maliyet modeli aynıdır.
+
+    Aynı `trade_id` için İKİNCİ pozisyon açılmaz (idempotent): mevcut pozisyon aynen döner.
+    `cfg` verilirse deney kimliği pozisyonun üzerine yazılır.
+    """
+    tid = str(candidate.get("trade_id"))
+    if tid in book.positions:
+        return book.positions[tid]
     slip = _f(candidate.get("slippage_cost"))
     prov = SLIP_MEASURED if slip is not None else SLIP_MISSING
     p = SimPosition(
@@ -461,7 +556,12 @@ def open_simulated(book: PolicyBook, candidate: dict[str, Any]) -> SimPosition:
         opened_at=str(candidate.get("opened_at")),
         entry_fee=float(_f(candidate.get("entry_fee")) or 0.0),
         slippage_cost=slip, slippage_provenance=prov,
-        candidate_id=_s(candidate.get("candidate_id")))
+        candidate_id=_s(candidate.get("candidate_id")),
+        experiment_id=(cfg.experiment_id if cfg else None),
+        policy_version=(cfg.policy_version if cfg else None),
+        config_id=(cfg.config_id if cfg else None),
+        code_sha=(cfg.code_sha if cfg else None),
+        as_of=_s(candidate.get("as_of") or candidate.get("opened_at")))
     book.positions[p.trade_id] = p
     if isinstance(candidate.get("returns_1h"), list):
         book.returns[p.symbol] = list(candidate["returns_1h"])
@@ -486,7 +586,9 @@ def close_simulated(book: PolicyBook, trade_id: str, *, exit_price: float, close
                  slippage_cost=p.slippage_cost, slippage_provenance=p.slippage_provenance,
                  mfe_r=(round(mfe_r, 6) if mfe_r is not None else p.mfe_r),
                  mae_r=(round(mae_r, 6) if mae_r is not None else p.mae_r),
-                 risk_usdt=p.risk_usdt)
+                 risk_usdt=p.risk_usdt,
+                 experiment_id=p.experiment_id, policy_version=p.policy_version,
+                 config_id=p.config_id, code_sha=p.code_sha)
     book.closes.append(c)
     return c
 
@@ -815,10 +917,13 @@ __all__ = [
     "SCHEMA_VERSION", "P0", "P1", "P2", "P3", "P4", "POLICIES", "N_TRIALS",
     "root_cause_summary",
     "ACCEPT", "FILTER", "ABSTAIN", "DECISIONS", "PRE_EXPERIMENT", "IN_EXPERIMENT",
+    "LEGACY_POLICY_VERSION", "AE_SOURCE_LEGACY", "AE_SOURCE_POINT_IN_TIME",
+    "STATUS_SUPERSEDED",
     "SLIP_MEASURED", "SLIP_MODELED", "SLIP_MISSING",
     "X_CANONICAL", "X_POLICY_EXIT", "X_POLICY_STOP", "X_OPEN",
     "ExperimentConfig", "SimPosition", "SimClose", "PolicyBook",
-    "closed_returns", "correlation", "decide_p1", "decide_p2", "decide_entry",
+    "closed_returns", "correlation", "decide_p1", "decide_p1_point_in_time", "decide_p2",
+    "decide_entry",
     "open_simulated", "close_simulated", "apply_mark",
     "event_id", "make_event", "bootstrap_ci", "sidak_alpha",
     "policy_report", "compare",

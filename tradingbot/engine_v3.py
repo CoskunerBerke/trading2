@@ -2386,6 +2386,10 @@ class TradingEngineV3(TradingEngine):
                 "open_positions": len(getattr(state, "open_positions", []) or []),
                 "total_open_risk_usdt": float(getattr(state, "total_open_risk_usdt", 0.0) or 0.0),
                 "same_direction_open": same_dir,
+                # KARAR ANI risk bütçesi: şampiyonun kendi türetmesiyle AYNI formül. Snapshot'a
+                # ölçülmüş alan olarak girer; E ailesi ısı oranını sonradan "o anki equity" ile
+                # değil, bu donmuş değerle hesaplar. Ölçülemezse `None` (MISSING), sıfır değil.
+                "risk_budget_usdt": self._decision_time_risk_budget(state),
             }
             # KARAR ANI ÇERÇEVELERİ: motorun ZATEN çektiği, yalnız KAPANMIŞ barları taşıyan
             # kareler (`drop_unclosed_last_bar` veri hattında uygulanır). Yeni API çağrısı YOK.
@@ -2400,6 +2404,27 @@ class TradingEngineV3(TradingEngine):
                         "ts": now})
         except Exception as exc:  # noqa: BLE001 — gözlem arızası girişi ETKİLEMEZ
             log.warning("giriş adayı yakalanamadı (%s): %s", sym, exc)
+
+    def _decision_time_risk_budget(self, state) -> float | None:
+        """Karar anı toplam açık risk bütçesi (USDT) — `_size_plan` ile AYNI türetme.
+
+        `equity × max_total_open_risk_pct / 100` (profil `size_on_live_equity=false` derse
+        `starting_equity`). Salt okunur; hiçbir kanonik nesneyi değiştirmez. Ölçülemezse
+        `None` döner — sıfır DEĞİL.
+        """
+        try:
+            prof = getattr(self, "profile", None)
+            if prof is None or state is None:
+                return None
+            live = bool(getattr(prof, "size_on_live_equity", True))
+            eq = _f_num(getattr(state, "equity", None) if live
+                        else getattr(state, "starting_equity", None))
+            pct = _f_num(getattr(prof, "max_total_open_risk_pct", None))
+            if eq is None or pct is None or eq <= 0 or pct <= 0:
+                return None
+            return eq * pct / 100.0
+        except Exception:  # noqa: BLE001 — bütçe ölçülemezse snapshot alanı MISSING kalır
+            return None
 
     def _entry_attach_features(self, sym, feats: dict) -> None:
         """Tetik sonrası hesaplanan özellik vektörünü adaya bağlar (hâlâ karar anı verisi).
@@ -2675,6 +2700,7 @@ class TradingEngineV3(TradingEngine):
         snapshot bağları ve motorun zaten çektiği 1s kareleri. Hiçbir yeni sağlayıcı isteği
         yapılmaz ve hiçbir kanonik nesne DEĞİŞTİRİLMEZ.
         """
+        from .learn.profitability_ae import point_in_time_ae
         from .learn.profitability_experiment import closed_returns
         start = from_iso(str(cfg.evaluation_start_at)) if cfg.evaluation_start_at else None
         # SICAK YOL: arşiv HER TURDA TARANMAZ (mevcut değişmez; bkz. retention testleri).
@@ -2683,14 +2709,11 @@ class TradingEngineV3(TradingEngine):
         links = (store.trade_links() if store else {})
         snaps = (store.by_candidate() if store else {})
         cand_by_trade = {t: snaps.get(c) for t, c in links.items()}
-        ent_fams = {}
-        try:
-            ev = read_json(self.cfg.state_path / "entry_selectivity.json", default=None) or {}
-            for t in (ev.get("trades") or []):
-                if t.get("trade_id"):
-                    ent_fams[str(t["trade_id"])] = t.get("families") or {}
-        except Exception:  # noqa: BLE001
-            ent_fams = {}
+        # A/E KARARI TEK KANONİK YOLDAN: değişmez giriş snapshot'ı + mevcut challenger
+        # değerlendiricisi, snapshot'ın donmuş as-of anında. `entry_selectivity.json.trades`
+        # (kapanmış işlem atıfı) canlı giriş kararının kaynağı OLAMAZ: yeni açılan pozisyonun
+        # orada satırı yoktur (doğrulanmış kusur). Kapanış geçmişi/öğrenilmiş sonuç OKUNMAZ.
+        pit_cfg = getattr(self, "entry_cfg", None)
         out = []
         for pos in list(self.ledger2.positions.values()):
             d = pos.to_dict() if hasattr(pos, "to_dict") else dict(pos)
@@ -2714,7 +2737,9 @@ class TradingEngineV3(TradingEngine):
                                       lookback=cfg.correlation_lookback_bars)
             except Exception:  # noqa: BLE001 — korelasyon ölçülemezse UNKNOWN kalır
                 rets = None
-            snap = cand_by_trade.get(tid) or {}
+            snap = cand_by_trade.get(tid)
+            snap = snap if isinstance(snap, dict) else None
+            entry_ae = (point_in_time_ae(snap, pit_cfg) if pit_cfg is not None else None)
             out.append({
                 "trade_id": tid, "symbol": sym, "side": str(d.get("side") or ""),
                 "entry": entry, "qty": qty, "initial_stop": stop0,
@@ -2723,9 +2748,12 @@ class TradingEngineV3(TradingEngine):
                 "entry_fee": _f_num(d.get("entry_fee")),
                 "slippage_cost": _f_num(d.get("slippage_cost")),
                 "opened_at": str(d.get("opened_at")),
+                # BEŞ politikanın ortak as-of anı: snapshot'ın donmuş `ts`i; yoksa açılış anı.
+                "as_of": str((snap or {}).get("ts") or d.get("opened_at")),
                 "champion_accepted": True,
-                "candidate_id": (snap.get("candidate_id") if isinstance(snap, dict) else None),
-                "entry_families": ent_fams.get(tid),
+                "candidate_id": ((snap or {}).get("candidate_id") if snap else None),
+                "decision_id": ((snap or {}).get("decision_id") if snap else None),
+                "entry_ae": entry_ae,
                 "returns_1h": rets,
             })
         return sorted(out, key=lambda r: str(r["opened_at"]))
@@ -2774,7 +2802,7 @@ class TradingEngineV3(TradingEngine):
                     events.append(PX.make_event(cfg, pol, EV_DECISION, d, tid, now=now))
                     if d["decision"] == PX.ACCEPT:
                         b.n_accept += 1
-                        pos = PX.open_simulated(b, cand)
+                        pos = PX.open_simulated(b, cand, cfg)
                         events.append(PX.make_event(
                             cfg, pol, EV_OPEN,
                             {"position": pos.to_dict(), "returns_1h": cand.get("returns_1h")},

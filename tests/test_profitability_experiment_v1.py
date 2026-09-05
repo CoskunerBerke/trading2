@@ -33,6 +33,17 @@ def cfg(**kw) -> ExperimentConfig:
     return ExperimentConfig.from_dict(base)
 
 
+def legacy_cfg(**kw) -> ExperimentConfig:
+    """`pfexp_v1.0.0` — TARİHSEL anlam: A/E kapanış atıfından (`entry_families`). Bu sürümün
+    anlamı DEĞİŞTİRİLMEZ; motor onu artık çalıştırmaz, yalnız salt okunur okur."""
+    return cfg(experiment_id="pfexp_v1", policy_version=PX.LEGACY_POLICY_VERSION, **kw)
+
+
+def store(tmp_path: Path, c: ExperimentConfig | None = None, **kw) -> ExperimentStore:
+    """Depo dosyaları deney KİMLİĞİNE göre adlanır; config ile aynı kimlik verilir."""
+    return ExperimentStore(tmp_path, experiment_id=(c or cfg()).experiment_id, **kw)
+
+
 def cand(tid="T1", *, side="LONG", a="ACCEPT", e="ACCEPT", entry=100.0, stop=95.0,
          qty=1.0, sym="X/USDT", rets=None, accepted=True, risk=5.0):
     return {"trade_id": tid, "symbol": sym, "side": side, "entry": entry, "qty": qty,
@@ -123,7 +134,7 @@ def _stub_engine(tmp_path: Path, *, enabled: bool):
     from tradingbot.learn.profitability_store import ExperimentStore
     eng = types.SimpleNamespace(
         experiment_cfg=(cfg() if enabled else None),
-        experiment_store=(ExperimentStore(tmp_path) if enabled else None),
+        experiment_store=(store(tmp_path) if enabled else None),
         experiment_mode="SHADOW", exit_policy_cfg=None, path_store=None,
         entry_snapshot_store=None, run_id="r",
         code_sha=lambda: "deadbeef", config_hash=lambda: "cfg",
@@ -231,9 +242,15 @@ def test_09b_missing_ae_decision_abstains_not_filters():
 
 
 def test_09c_abstain_is_never_converted_to_veto():
-    c, b = cfg(), books()
+    # TARİHSEL v1.0.0 anlamı (değiştirilmedi): aile ABSTAIN derse P1 VETO ÜRETMEZ.
+    c, b = legacy_cfg(), books()
     d = decide_entry(P1, cand(a="ABSTAIN", e="ABSTAIN"), b[P1], c)
     assert d["decision"] == ACCEPT, "ABSTAIN VETO'ya çevrilemez"
+    assert d["ae_source"] == PX.AE_SOURCE_LEGACY
+    # v1.1+: kapanış-atıf girdisi (`entry_families`) OKUNMAZ; snapshot A/E yoksa ABSTAIN kalır —
+    # ne FILTER'a ne ACCEPT'e dönüşür.
+    d2 = decide_entry(P1, cand(a="ABSTAIN", e="ABSTAIN"), books()[P1], cfg())
+    assert d2["decision"] == ABSTAIN and d2["ae_source"] == PX.AE_SOURCE_POINT_IN_TIME
 
 
 def test_09d_unknown_correlation_is_reported_not_zeroed():
@@ -251,7 +268,7 @@ def test_09d_unknown_correlation_is_reported_not_zeroed():
 
 def test_10_no_duplicate_events_after_repeated_processing(tmp_path: Path):
     c = cfg()
-    st = ExperimentStore(tmp_path)
+    st = store(tmp_path, c)
     ev = PX.make_event(c, P0, EV_DECISION, {"decision": ACCEPT}, "T1")
     assert st.append(ev) is True
     assert st.append(ev) is False                     # aynı event_id İKİNCİ KEZ yazılmaz
@@ -262,7 +279,7 @@ def test_10_no_duplicate_events_after_repeated_processing(tmp_path: Path):
 
 def test_10b_replay_is_deterministic_and_idempotent(tmp_path: Path):
     c = cfg()
-    st = ExperimentStore(tmp_path)
+    st = store(tmp_path, c)
     b = PolicyBook(P0)
     pos = open_simulated(b, cand("T1"))
     st.append(PX.make_event(c, P0, EV_DECISION, {"decision": ACCEPT}, "T1"))
@@ -276,7 +293,7 @@ def test_10b_replay_is_deterministic_and_idempotent(tmp_path: Path):
 
 def test_11_crash_between_journal_and_book_repairs_from_journal(tmp_path: Path):
     c = cfg()
-    st = ExperimentStore(tmp_path)
+    st = store(tmp_path, c)
     b = PolicyBook(P0)
     pos = open_simulated(b, cand("T1"))
     st.append(PX.make_event(c, P0, EV_DECISION, {"decision": ACCEPT}, "T1"))
@@ -292,7 +309,7 @@ def test_11_crash_between_journal_and_book_repairs_from_journal(tmp_path: Path):
 
 def test_11b_valid_snapshot_is_used_and_checksum_verified(tmp_path: Path):
     c = cfg()
-    st = ExperimentStore(tmp_path)
+    st = store(tmp_path, c)
     b = PolicyBook(P0)
     open_simulated(b, cand("T1"))
     res = st.save_books({p: (b if p == P0 else PolicyBook(p)) for p in POLICIES}, c)
@@ -369,10 +386,11 @@ def test_14_all_five_policies_receive_identical_inputs():
 
 
 def test_15_filtered_trades_cannot_produce_fabricated_fills():
-    c, b = cfg(), books()
+    c, b = legacy_cfg(), books()            # tarihsel A/E girdisi (`entry_families`)
     d = decide_entry(P1, cand(a="VETO"), b[P1], c)
     assert d["decision"] == FILTER
     assert not b[P1].positions, "elenen işlem için pozisyon UYDURULDU"
+    c = cfg()
     # Şampiyonun kabul etmediği aday hiçbir politikada açılamaz.
     for p in POLICIES:
         d2 = decide_entry(p, cand("T9", accepted=False), b[p], c)
@@ -518,9 +536,9 @@ def test_20b_no_prohibited_marketing_language(tmp_path: Path):
 # ============================================================ 21: rotasyon
 
 def test_21_rotation_is_archive_first_and_lossless(tmp_path: Path):
-    st = ExperimentStore(tmp_path, max_lines=2, archive=None)
-    st.dir.mkdir(parents=True, exist_ok=True)
     c = cfg()
+    st = store(tmp_path, c, max_lines=2, archive=None)
+    st.dir.mkdir(parents=True, exist_ok=True)
     for i in range(6):
         st.append(PX.make_event(c, P0, EV_DECISION, {"decision": ACCEPT}, f"T{i}"))
     res = st.rotate()
@@ -533,7 +551,7 @@ def test_21_rotation_is_archive_first_and_lossless(tmp_path: Path):
         def seal(self, lines):
             raise OSError("disk full")
 
-    st2 = ExperimentStore(tmp_path / "b", max_lines=2, archive=FailingArchive())
+    st2 = store(tmp_path / "b", c, max_lines=2, archive=FailingArchive())
     st2.dir.mkdir(parents=True, exist_ok=True)
     for i in range(6):
         st2.append(PX.make_event(c, P0, EV_DECISION, {"decision": ACCEPT}, f"U{i}"))
@@ -555,10 +573,13 @@ def test_exactly_five_frozen_policies_with_stable_identity():
 
 
 def test_p0_mirrors_and_p4_is_exactly_p1_plus_p2():
-    c, b = cfg(), books()
+    c, b = legacy_cfg(), books()            # tarihsel A/E girdisi (`entry_families`)
     assert decide_entry(P0, cand(), b[P0], c)["decision"] == ACCEPT
     assert decide_entry(P4, cand(a="VETO"), b[P4], c)["decision"] == FILTER
     assert decide_entry(P4, cand(a="ACCEPT", e="ACCEPT"), b[P4], c)["decision"] == ACCEPT
+    # v1.1: P0 yine aynalar; P4, `entry_families` görmez → P1 bacağı ABSTAIN → P4 ABSTAIN.
+    assert decide_entry(P0, cand(), books()[P0], cfg())["decision"] == ACCEPT
+    assert decide_entry(P4, cand(a="ACCEPT", e="ACCEPT"), books()[P4], cfg())["decision"] == ABSTAIN
 
 
 def test_p2_limits_are_frozen_and_documented():

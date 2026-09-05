@@ -62,6 +62,17 @@ AE_SOURCE_LEGACY = "CLOSED_TRADE_ATTRIBUTION"
 AE_SOURCE_POINT_IN_TIME = "ENTRY_SNAPSHOT_POINT_IN_TIME"
 #: Eski sürümün dürüst statüsü.
 STATUS_SUPERSEDED = "SUPERSEDED_INCOMPLETE_ENTRY_INPUT"
+#: Raporda ve panelde AYNEN görünen dürüstlük beyanları (anlamı değiştirilemez).
+HONESTY_STATEMENTS_TR: tuple[str, ...] = (
+    "Tarihsel v1 kanıtı YENİDEN YAZILMADI; pfexp_v1 dosyaları salt okunur ve değişmezdir.",
+    "Düzeltilmiş deney (pfexp_v1_1) SIFIRDAN başlar; eski örneklem yeni kitaba karışmaz.",
+    "Eksik girdi ABSTAIN demektir; sıfır ya da kabul sayılmaz.",
+    "SHADOW PAPER ONLY: hiçbir simülasyon kanonik deftere, riske, sermayeye ya da emir yoluna "
+    "dokunmaz.",
+    "Hiçbir politika kârlı KANITLANMADI.",
+    "Kazanan strateji SEÇİLMEDİ.",
+    "Bugün otomatik terfi MÜMKÜN DEĞİLDİR.",
+)
 
 # --- gerekçe kodları -----------------------------------------------------------------------
 R_MIRROR = "MIRRORS_CHAMPION"
@@ -131,8 +142,10 @@ class ExperimentConfig:
     `config_id` içine girer. Değerler risk profilinin KENDİ bütçesinden türetilmiştir;
     23 tarihsel kapanışa göre optimize EDİLMEMİŞTİR (bkz. `docs/PROFITABILITY_EXPERIMENT_V1.md`).
     """
-    experiment_id: str = "pfexp_v1"
-    policy_version: str = "pfexp_v1.0.0"
+    #: v1.1: A/E karar anı snapshot'tan (bkz. `LEGACY_POLICY_VERSION`). `pfexp_v1` tarihsel
+    #: ve SALT OKUNURDUR; motor onu yeniden ÇALIŞTIRAMAZ.
+    experiment_id: str = "pfexp_v1_1"
+    policy_version: str = "pfexp_v1.1.0"
     #: Bu andan ÖNCE açılmış her pozisyon `PRE_EXPERIMENT_OBSERVATION_ONLY`dir.
     evaluation_start_at: str = ""
     frozen_at: str = ""
@@ -918,7 +931,7 @@ __all__ = [
     "root_cause_summary",
     "ACCEPT", "FILTER", "ABSTAIN", "DECISIONS", "PRE_EXPERIMENT", "IN_EXPERIMENT",
     "LEGACY_POLICY_VERSION", "AE_SOURCE_LEGACY", "AE_SOURCE_POINT_IN_TIME",
-    "STATUS_SUPERSEDED",
+    "STATUS_SUPERSEDED", "HONESTY_STATEMENTS_TR",
     "SLIP_MEASURED", "SLIP_MODELED", "SLIP_MISSING",
     "X_CANONICAL", "X_POLICY_EXIT", "X_POLICY_STOP", "X_OPEN",
     "ExperimentConfig", "SimPosition", "SimClose", "PolicyBook",

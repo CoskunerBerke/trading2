@@ -421,14 +421,19 @@ class TradingEngineV3(TradingEngine):
                     raise ValueError(f"experiment_mode={self.experiment_mode} kapalı")
                 if bool(getattr(_en, "experiment_auto_promotion", False)):
                     raise ValueError("experiment_auto_promotion=true yasak")
-                _xp = dict(getattr(_en, "experiment_policy", None) or {})
-                # `evaluation_start_at` DONDURULUR: ilk kurulumda simdi, sonra state'ten.
-                self.experiment_store = ExperimentStore(st)
-                _frozen = self._experiment_frozen_identity(st)
-                _xp.setdefault("evaluation_start_at", _frozen["evaluation_start_at"])
-                _xp.setdefault("frozen_at", _frozen["frozen_at"])
+                _xp = self._experiment_identity_policy(
+                    dict(getattr(_en, "experiment_policy", None) or {}))
+                _eid = str(_xp.get("experiment_id") or ExperimentConfig().experiment_id)
+                # Dosyalar deney KİMLİĞİNE göre adlanır: pfexp_v1 dosyaları asla yazılmaz.
+                self.experiment_store = ExperimentStore(st, experiment_id=_eid)
+                # `evaluation_start_at` BİR KEZ dondurulur (kimlik dosyası); config'den ALINMAZ,
+                # başka bir deneyin başlangıcı DEVRALINMAZ, geriye/ileriye çekilemez.
+                _frozen = self.experiment_store.freeze_identity(code_sha=self.code_sha())
+                _xp["evaluation_start_at"] = _frozen["evaluation_start_at"]
+                _xp["frozen_at"] = _frozen["frozen_at"]
                 _xp["code_sha"] = self.code_sha()
                 self.experiment_cfg = ExperimentConfig.from_dict(_xp)
+                self._experiment_identity_source = str(_frozen.get("source") or "")
         except Exception as exc:  # noqa: BLE001 — giriş gözlemi karar yolunu bloke EDEMEZ
             log.warning("giriş seçiciliği gözlemi kurulamadı (baseline sürüyor): %s", exc)
             self.entry_snapshot_store = None
@@ -2672,26 +2677,39 @@ class TradingEngineV3(TradingEngine):
 
     # ------------------------------------------------------------------ kârlılık deneyi
     @staticmethod
-    def _experiment_frozen_identity(state_dir) -> dict:
-        """`evaluation_start_at` BİR KEZ dondurulur ve bir daha DEĞİŞMEZ.
+    def _experiment_identity_policy(xp: dict) -> dict:
+        """Config'ten gelen deney politikasının KİMLİK kurallarını uygular (fail-closed).
 
-        İlk kurulumda "şimdi" yazılır; sonraki turlarda mevcut kitaptan okunur. Böylece
-        deneyin başlangıç anı sonuçlara bakılarak geriye çekilemez.
+        * Tarihsel `pfexp_v1` / `pfexp_v1.0.0` motor tarafından YENİDEN ÇALIŞTIRILAMAZ:
+          kanıtı salt okunurdur (`ValueError` → deney kurulmaz, aktif yol etkilenmez).
+        * `evaluation_start_at` / `frozen_at` config ile VERİLEMEZ: başlangıç yalnız kimlik
+          dosyasından okunur ya da ilk kurulumda "şimdi" dondurulur. Böylece başlangıç ne
+          geriye ne ileriye çekilebilir.
         """
-        import json as _json
-        from .core import iso, utc_now
+        from .learn.profitability_experiment import LEGACY_POLICY_VERSION
+        from .learn.profitability_store import LEGACY_EXPERIMENT_ID
+        xp = dict(xp or {})
+        if (str(xp.get("experiment_id") or "") == LEGACY_EXPERIMENT_ID
+                or str(xp.get("policy_version") or "") == LEGACY_POLICY_VERSION):
+            raise ValueError("pfexp_v1 / pfexp_v1.0.0 SUPERSEDED_INCOMPLETE_ENTRY_INPUT: "
+                             "tarihsel deney salt okunurdur, yeniden çalıştırılamaz")
+        for k in ("evaluation_start_at", "frozen_at"):
+            if k in xp:
+                log.warning("experiment_policy.%s config ile VERİLEMEZ; yok sayıldı "
+                            "(başlangıç yalnız kimlik dosyasından dondurulur)", k)
+                xp.pop(k, None)
+        return xp
+
+    def _experiment_superseded_versions(self, store) -> list:
+        """Tarihsel `pfexp_v1` kanıtının SALT OKUNUR özeti (dosya sha256'larıyla)."""
         try:
-            from .learn.profitability_store import BOOKS_FILE
-            pth = state_dir / BOOKS_FILE
-            if pth.exists():
-                d = _json.loads(pth.read_text(encoding="utf-8"))
-                if d.get("evaluation_start_at"):
-                    return {"evaluation_start_at": str(d["evaluation_start_at"]),
-                            "frozen_at": str(d.get("frozen_at") or d["evaluation_start_at"])}
-        except Exception:  # noqa: BLE001 — okunamazsa yeni kimlik dondurulur
-            pass
-        n = iso(utc_now())
-        return {"evaluation_start_at": n, "frozen_at": n}
+            from .learn.profitability_store import legacy_v1_summary
+            if getattr(store, "is_legacy", False):
+                return []
+            s = legacy_v1_summary(self.cfg.state_path)
+            return [s] if s else []
+        except Exception as exc:  # noqa: BLE001 — özet okunamazsa açıkça raporlanır
+            return [{"status": "UNREADABLE", "error": type(exc).__name__}]
 
     def _experiment_candidates(self, cfg) -> list[dict]:
         """Deney penceresinde açılmış ŞAMPİYON girişleri — SALT OKUNUR türetme.
@@ -2911,6 +2929,17 @@ class TradingEngineV3(TradingEngine):
             doc["books_source"] = meta
             doc["cycle"] = wrote | {"books_saved": saved.get("ok")}
             doc["pre_experiment_excluded"] = self._experiment_pre_count(cfg)
+            # KİMLİK ve DÜRÜSTLÜK: başlangıcın nereden dondurulduğu, tarihsel sürümün salt
+            # okunur özeti ve panelde AYNEN görünen beyanlar raporun KENDİSİNDE durur.
+            doc["identity_source"] = getattr(self, "_experiment_identity_source", None)
+            doc["identity_file"] = str(getattr(store, "identity_path", ""))
+            doc["report_file"] = str(getattr(store, "report_path", ""))
+            doc["superseded_versions"] = self._experiment_superseded_versions(store)
+            doc["statements_tr"] = list(PX.HONESTY_STATEMENTS_TR)
+            doc["missing_means"] = "ABSTAIN"
+            doc["profitability_proven"] = False
+            doc["winning_policy_selected"] = None
+            doc["auto_promotion_possible_today"] = False
             # KÖK NEDEN GÖZLEMİ — kanonik kapanışların TAMAMI (deney penceresi DEĞİL).
             try:
                 from .learn.close_chain import canonical_closes as _cc
@@ -2918,7 +2947,9 @@ class TradingEngineV3(TradingEngine):
             except Exception as exc:  # noqa: BLE001
                 doc["root_cause"] = {"state": "UNAVAILABLE",
                                      "error": type(exc).__name__}
-            atomic_write_json(self.cfg.state_path / "profitability_experiment.json", doc)
+            # Rapor DENEY KİMLİĞİNE göre adlanır (`profitability_experiment_v1_1.json`);
+            # tarihsel `profitability_experiment.json` (pfexp_v1) bir daha YAZILMAZ.
+            atomic_write_json(store.report_path, doc)
             return {k: doc.get(k) for k in ("experiment_id", "config_id", "mode",
                                             "n_comparable_closes", "applied_to_canonical")}
         except Exception as exc:  # noqa: BLE001 — deney arızası turu DURDURAMAZ
@@ -2931,18 +2962,30 @@ class TradingEngineV3(TradingEngine):
         if start is None:
             return {"open": None, "closed": None, "state": "UNKNOWN"}
         n_open = 0
+        open_rows = []
         for pos in list(self.ledger2.positions.values()):
             d = pos.to_dict() if hasattr(pos, "to_dict") else dict(pos)
             o = from_iso(str(d.get("opened_at") or "")) if d.get("opened_at") else None
             if o is not None and o < start:
                 n_open += 1
+                open_rows.append({"trade_id": str(d.get("id") or ""),
+                                  "symbol": str(d.get("symbol") or ""),
+                                  "opened_at": str(d.get("opened_at") or ""),
+                                  "label": "PRE_EXPERIMENT_OBSERVATION_ONLY"})
         from .learn.close_chain import canonical_closes
         n_cl = 0
+        n_cl_after_start = 0
         for c in canonical_closes(self.ledger2.history):
             o = from_iso(str(c.get("opened_at") or "")) if c.get("opened_at") else None
             if o is not None and o < start:
                 n_cl += 1
-        return {"open": n_open, "closed": n_cl, "label": "PRE_EXPERIMENT_OBSERVATION_ONLY"}
+                cl = from_iso(str(c.get("closed_at") or "")) if c.get("closed_at") else None
+                if cl is not None and cl >= start:
+                    n_cl_after_start += 1     # başlangıçtan SONRA kapanan ön-deney pozisyonu
+        return {"open": n_open, "closed": n_cl,
+                "closed_after_start_still_excluded": n_cl_after_start,
+                "open_ids": sorted(open_rows, key=lambda r: r["opened_at"])[:50],
+                "label": "PRE_EXPERIMENT_OBSERVATION_ONLY"}
 
     #: `entry_selectivity.json.snapshot_cycle` içine GEÇEN `_entry_cycle` anahtarları.
     #: 1A bağ gözlenebilirliği (`links`, `link_events`, `link_health`) `_entry_flush`te

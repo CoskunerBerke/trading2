@@ -411,7 +411,8 @@ def _engine(tmp_path: Path, *, snap: dict | None, tid="F1", opened=OPENED, histo
         "entry_fee": 0.01, "slippage_cost": 0.02, "opened_at": opened})
     eng = types.SimpleNamespace(
         entry_snapshot_store=st, entry_cfg=ECFG, runner=types.SimpleNamespace(last_frames={}),
-        experiment_cfg=xcfg(), experiment_store=ExperimentStore(tmp_path),
+        experiment_cfg=xcfg(), experiment_store=ExperimentStore(tmp_path,
+                                                                experiment_id="pfexp_test"),
         experiment_mode="SHADOW", exit_policy_cfg=None, path_store=None, run_id="r",
         code_sha=lambda: "deadbeef", config_hash=lambda: "cfg",
         cfg=types.SimpleNamespace(state_path=tmp_path),

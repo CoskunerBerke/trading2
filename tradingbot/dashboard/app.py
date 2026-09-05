@@ -94,6 +94,13 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
     cfg.validate()
     if not cfg.read_only:
         raise ConfigError("panel yalnızca salt-okunur çalışır (read_only=True)")
+    def json_dumps_safe(o) -> str:
+        import json as _j
+        try:
+            return _j.dumps(o, ensure_ascii=False)[:400]
+        except Exception:  # noqa: BLE001
+            return "—"
+
     state = StateReader(state_dir)
     candles = CandleSource(data_dir)
     vault = Path(vault_dir) if vault_dir else None
@@ -500,8 +507,232 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
                          'Geçmiş yeniden yazılmaz; bu anahtarlar hiçbir kararı '
                          'engelleyemez ve ileriye dönük olarak artık üretilmezler.</div>')
         body += (_chain_block() + _position_mgmt_block() + _exit_block() + _entry_block()
-                 + _mtf_block())
+                 + _mtf_block() + _why_losing_block() + _experiment_block())
         return _page("Öğrenme", body, "/learning")
+
+    def _px_state():
+        d = state.get("profitability_experiment")
+        return d if isinstance(d, dict) and d else None
+
+    def _why_losing_block() -> str:
+        """«Neden Zarar Ediyoruz?» — TEMKİNLİ dil. Nedensellik iddia ETMEZ."""
+        ev = _px_state()
+        rc = (ev or {}).get("root_cause") if ev else None
+        if not isinstance(rc, dict) or not rc:
+            return ("<h2>Neden Zarar Ediyoruz?</h2>"
+                    '<div class="card mut">Kök-neden özeti henüz üretilmedi '
+                    "(worker bu sürümle tam bir tur tamamlamadı). Bu görünüm salt "
+                    "okunurdur.</div>")
+
+        def _n(x, nd=4):
+            v = finite_float_or_none(x)
+            return "—" if v is None else f"{v:.{nd}f}"
+
+        n = int(finite_float_or_none(rc.get("n")) or 0)
+        ci = rc.get("expectancy_ci95") or {}
+        low = str(rc.get("state") or "") == "LOW_SAMPLE"
+        out = ("<h2>Neden Zarar Ediyoruz?</h2>"
+               '<div class="card mut"><b>Bu bölüm GÖZLEMDİR, NEDENSELLİK DEĞİLDİR.</b> '
+               "Ölçülen ilişkiler bir nedeni kanıtlamaz. Örneklem küçükken "
+               "«sistem zarar ediyor» iddiası bile istatistiksel olarak "
+               "KANITLANMAMIŞ olabilir. Ölçülemeyen alan <code>UNKNOWN</code> kalır, "
+               "sıfır sayılmaz.</div>")
+        out += ('<div class="grid />'.replace("/>", ">")
+                + card("Kapanış", str(n), "kanonik kapanmış işlem")
+                + card("Kazanma oranı", _n(rc.get("win_rate")),
+                       f"{rc.get('wins')} kazanan / {rc.get('losses')} kaybeden")
+                + card("Beklenti (R)", _n(rc.get("expectancy_r")),
+                       badge("DÜŞÜK ÖRNEKLEM", "warn") if low else "ölçülen")
+                + card("Net PnL (USDT)", _n(rc.get("net_pnl_usdt"), 4), "kanonik defter")
+                + card("Profit factor", _n(rc.get("profit_factor")),
+                       str(rc.get("profit_factor_state") or ""))
+                + card("Ödeme oranı", _n(rc.get("payoff_ratio")),
+                       "ort. kazanan / ort. kaybeden")
+                + card("Başabaş kazanma oranı", _n(rc.get("breakeven_win_rate")),
+                       "bu ödeme oranında gereken")
+                + card("Gereken ödeme oranı", _n(rc.get("required_payoff_at_measured_wr")),
+                       "bu kazanma oranında gereken")
+                + card("Beklenti %95 GA",
+                       f"[{_n(ci.get('lo'))}, {_n(ci.get('hi'))}]",
+                       badge("SIFIRI DIŞLIYOR", "ok") if ci.get("excludes_zero")
+                       else badge("SIFIRI İÇERİYOR — SONUÇ YOK", "warn"))
+                + card("maxDD (R)", _n(rc.get("max_drawdown_r")), "ölçülen")
+                + card("CVaR5 (R)", _n(rc.get("cvar5_r")), "kuyruk riski")
+                + "</div>")
+        ex = rc.get("exit_reason_distribution") or {}
+        if ex:
+            out += ("<h3>Çıkış nedeni dağılımı (GÖZLEM)</h3>" + table(
+                ["Çıkış nedeni", "Adet"],
+                [[esc(k), str(int(v))] for k, v in sorted(ex.items(),
+                                                          key=lambda kv: (-kv[1], kv[0]))],
+                num_cols={1}, empty="veri yok"))
+        obs = rc.get("observations") or []
+        if obs:
+            rows = []
+            for o in obs:
+                if not isinstance(o, dict):
+                    continue
+                rows.append([esc(o.get("code")),
+                             badge(esc(o.get("kind") or "OBSERVATION"), "info"),
+                             badge("NEDENSEL DEĞİL", "warn") if not o.get("causal")
+                             else badge("NEDENSEL", "ok"),
+                             str(o.get("n") or "—"),
+                             esc(o.get("evidence_grade") or "UNKNOWN"),
+                             esc(str(o.get("claim_tr") or "")[:300])])
+            out += ("<h3>Ölçülen gözlemler</h3>" + table(
+                ["Kod", "Tür", "Nedensellik", "n", "Kanıt sınıfı", "Açıklama"],
+                rows, num_cols={3}, empty="gözlem yok"))
+        out += ('<div class="card mut">Ayrıntılı, yeniden üretilebilir kök-neden denetimi: '
+                "<code>docs/PROFITABILITY_ROOT_CAUSE_V1.md</code>. Tek bir alt grubun kârlı "
+                "görünmesi kârlılık kanıtı SAYILMAZ.</div>")
+        return out
+
+    def _experiment_block() -> str:
+        """«Kârlılık Deneyi» — SALT OKUNUR, izole SHADOW PAPER."""
+        ev = _px_state()
+        if not ev:
+            return ("<h2>Kârlılık Deneyi</h2>"
+                    '<div class="card mut">profitability_experiment.json yok — worker bu '
+                    "sürümle henüz tam bir tur tamamlamadı. Bu görünüm salt okunurdur ve "
+                    "aktif karara etkisi yoktur.</div>")
+
+        def _i(d, k):
+            v = finite_float_or_none((d or {}).get(k))
+            return "—" if v is None else str(int(v))
+
+        def _n(d, k, nd=4):
+            v = finite_float_or_none((d or {}).get(k))
+            return "—" if v is None else f"{v:.{nd}f}"
+
+        mode = str(ev.get("mode") or "SHADOW")
+        pre = ev.get("pre_experiment_excluded") or {}
+        mt = ev.get("multiple_testing") or {}
+        out = ("<h2>Kârlılık Deneyi</h2>"
+               '<div class="card mut">Beş DONMUŞ politikanın aynı doğal adaylar üzerinde, '
+               "aynı maliyet modeliyle izole PAPER karşılaştırması. <b>Bu deney kâr vaat "
+               "etmez ve kârı kanıtlamaz.</b> Bir politikanın tek bir kaybedeni elemesi "
+               "başarı sayılmaz. Hiçbir simülasyon kanonik defteri, RiskEngine'i, "
+               "sermayeyi ya da emir yolunu ETKİLEMEZ.</div>")
+        out += ('<div class="grid">'
+                + card("Deney", esc(ev.get("experiment_id") or "—"),
+                       f"politika {esc(ev.get('policy_version') or '—')}")
+                + card("Durum", badge(esc(mode), "ok" if mode == "SHADOW" else "warn"),
+                       "SHADOW PAPER ONLY")
+                + card("Kanonik etki",
+                       badge("YOK", "ok") if ev.get("applied_to_canonical") is False
+                       else badge("VAR", "warn"), "applied_to_canonical=false")
+                + card("Başlangıç", esc(str(ev.get("evaluation_start_at") or "—"))[:19],
+                       "bu andan önce açılanlar HARİÇ")
+                + card("Politika sayısı", _i(ev, "number_of_trials"),
+                       f"çoklu test α={mt.get('per_trial_alpha_sidak')}")
+                + card("Karşılaştırılabilir kapanış", _i(ev, "n_comparable_closes"),
+                       "P0 tabanına göre")
+                + card("PRE_EXPERIMENT hariç",
+                       f"{pre.get('open')} açık / {pre.get('closed')} kapalı",
+                       "kanıt DIŞI")
+                + card("config_id", esc(str(ev.get("config_id") or "—"))[:16],
+                       f"kod {esc(str(ev.get('code_sha') or '—'))[:12]}")
+                + "</div>")
+
+        pols = ev.get("policies") if isinstance(ev.get("policies"), dict) else {}
+        if pols:
+            rows = []
+            for name, r in sorted(pols.items()):
+                ci = (r or {}).get("delta_ci95") or {}
+                rows.append([
+                    esc(name), _i(r, "opened"), _i(r, "closed"), _i(r, "filtered"),
+                    _i(r, "abstained"), _n(r, "coverage", 3), _n(r, "abstain_rate", 3),
+                    _n(r, "net_pnl_usdt"), _n(r, "total_r", 3), _n(r, "win_rate", 3),
+                    _n(r, "avg_winner_r", 3), _n(r, "avg_loser_r", 3),
+                    _n(r, "profit_factor", 3), _n(r, "expectancy_r"),
+                    _n(r, "max_drawdown_r", 3), _n(r, "cvar5_r", 3),
+                    _n(r, "avoided_loss_r", 3), _n(r, "missed_gain_r", 3),
+                    _n(r, "avg_mfe_r", 3), _n(r, "mfe_retained", 3),
+                    _n(r, "avg_giveback_r", 3),
+                    _n(r, "same_direction_risk_share", 3),
+                    esc(f"[{ci.get('lo')}, {ci.get('hi')}]"),
+                ])
+            out += ("<h3>Politika karşılaştırması (aynı marklar, aynı maliyet)</h3>" + table(
+                ["Politika", "Açılan", "Kapanan", "Elenen", "Çekimser", "Kapsam",
+                 "Çekimser oran", "Net USDT", "Toplam R", "Kazanma", "Ort. kazanan",
+                 "Ort. kaybeden", "PF", "Beklenti R", "maxDD R", "CVaR5 R",
+                 "Kaçınılan R", "Kaçırılan R", "Ort. MFE R", "MFE tutma", "Giveback R",
+                 "Aynı yön risk payı", "GA %95"],
+                rows, num_cols=set(range(1, 22)), empty="politika verisi yok"))
+            crows = [[esc(k), _n(v, "fees_usdt", 6), _n(v, "funding_usdt", 6),
+                      _n(v, "slippage_cost_usdt", 6), _i(v, "n_slippage_measured"),
+                      _i(v, "n_slippage_missing")] for k, v in sorted(pols.items())]
+            out += ("<h3>Maliyet (bileşenler AYRI — çift sayım yok)</h3>" + table(
+                ["Politika", "Komisyon USDT", "Funding USDT", "Kayma USDT",
+                 "Kayma ÖLÇÜLDÜ", "Kayma EKSİK"], crows, num_cols={1, 2, 3, 4, 5},
+                empty="maliyet yok"))
+
+        early = ev.get("early_directionality") or {}
+        st_e = str(early.get("state") or "—")
+        out += ("<h3>Erken yön göstergesi</h3>"
+                + '<div class="grid">'
+                + card("Durum",
+                       badge(esc(st_e), "warn" if "NOT_EVALUABLE" in st_e else "info"),
+                       f"n={early.get('n')} / gerekli {early.get('required')}")
+                + card("Bir şeyi aktive eder mi",
+                       badge("HAYIR", "ok") if early.get("activates_anything") is False
+                       else badge("EVET", "warn"), "yalnız bilgilendirme")
+                + "</div>")
+        rk = early.get("ranking_by_expectancy_r")
+        if rk:
+            out += table(["Sıra", "Politika", "Beklenti R"],
+                         [[str(i + 1), esc(p), f"{finite_float_or_none(v):.4f}"
+                           if finite_float_or_none(v) is not None else "—"]
+                          for i, (p, v) in enumerate(rk)], num_cols={0, 2},
+                         empty="sıralama yok")
+        if early.get("low_sample_warning_tr"):
+            out += ('<div class="card mut">'
+                    + esc(str(early["low_sample_warning_tr"])) + "</div>")
+
+        gates = ev.get("promotion_eligibility") if isinstance(
+            ev.get("promotion_eligibility"), dict) else {}
+        for name, g in sorted(gates.items()):
+            gl = (g or {}).get("gates")
+            if not isinstance(gl, list) or not gl:
+                continue
+            rows = []
+            for x in gl:
+                if not isinstance(x, dict):
+                    continue
+                if str(x.get("status")) == "NOT_EVALUABLE_LOW_SAMPLE":
+                    b = badge("DEĞERLENDİRİLEMEZ", "warn")
+                elif x.get("passed"):
+                    b = badge("GEÇTİ", "ok")
+                else:
+                    b = badge("DÜŞTÜ", "warn")
+                rows.append([esc(x.get("code")), b, esc(x.get("detail"))])
+            out += (f"<h3>Terfi kapıları — {esc(name)}</h3>"
+                    + table(["Kapı", "Durum", "Ayrıntı"], rows, empty="kapı yok")
+                    + '<div class="card mut">Mevcut kapılar KORUNDU: en az 50 '
+                      "karşılaştırılabilir kapanış ve 30 takvim günü. Örneklem ön koşulu "
+                      "düşerken bağımlı kapılar «GEÇTİ» değil, <b>DEĞERLENDİRİLEMEZ "
+                      "(düşük örneklem)</b> olarak raporlanır. Beş politika aynı anda test "
+                      "edildiği için çoklu karşılaştırma düzeltmesi uygulanır. "
+                      "Otomatik terfi hiçbir koşulda yapılmaz.</div>")
+
+        store = ev.get("store") or {}
+        cyc = ev.get("cycle") or {}
+        bs = ev.get("books_source") or {}
+        out += ('<h3>Durum bütünlüğü</h3><div class="grid">'
+                + card("Olay", _i(store, "events"), "ekle-yalnız defter")
+                + card("Yinelenen", _i(store, "duplicates"), "idempotent replay")
+                + card("Bozuk satır", _i(store, "malformed"),
+                       badge("RAPORLANIR", "ok"))
+                + card("Hata", _i(store, "errors"), "sessizce yutulmaz")
+                + card("Kitap kaynağı", esc(str(bs.get("source") or "—")),
+                       f"checksum {bs.get('checksum_ok')}")
+                + card("Saklama", esc(str(store.get("retention_policy") or "—")),
+                       "sessiz silme yok")
+                + "</div>")
+        if cyc:
+            out += ('<div class="card mut">Son tur: '
+                    + esc(json_dumps_safe(cyc)) + "</div>")
+        return out
 
     def _mtf_block() -> str:
         """H — Çok Zaman Dilimli Likidite Teyidi. SALT OKUNUR, SHADOW.

@@ -25,7 +25,8 @@ from .accounting import (AmountType, FeeSchedule, FiltersCache, FuturesLedgerV2,
 from .agents.manager import CoinBrief
 from .coinhead import ChiefPortfolioManager, CoinHeadConfig, CoinHeadInputs, CoinHeadRegistry, Verdict
 from .config import BotConfig
-from .core import atomic_write_json, iso, new_id, read_json, run_id_now, stable_id, utc_now
+from .core import (atomic_write_json, from_iso, iso, new_id, read_json, run_id_now,
+                   stable_id, utc_now)
 from .engine import TradingEngine
 from .learn import LearnConfig, LearnerV2, ModelRegistry, ShadowBook, TradeMemory
 from .learning import features_from_brief
@@ -36,6 +37,17 @@ from .risk import (KillSwitch, ModeState, RiskEngine, build_state, enforces_posi
 from .risk.leverage import LeverageConfig, LeverageContext, select_leverage, validate_leverage_settings
 
 log = logging.getLogger(__name__)
+
+
+def _f_num(x):
+    """Sayıya çevir; olamıyorsa `None` (SIFIR DEĞİL)."""
+    if x is None or isinstance(x, bool):
+        return None
+    try:
+        v = float(x)
+    except (TypeError, ValueError):
+        return None
+    return v if v == v and v not in (float("inf"), float("-inf")) else None
 
 
 def _as_multiplier(value) -> float:
@@ -342,6 +354,9 @@ class TradingEngineV3(TradingEngine):
         self.weekly_challenger_cfg = None
         self.mtf_cfg = None
         self.mtf_mode = "SHADOW"
+        self.experiment_cfg = None
+        self.experiment_store = None
+        self.experiment_mode = "SHADOW"
         try:
             from .learn.entry_challenger import EntryChallengerConfig
             from .learn.entry_eval import ALLOWED_MODES as _EN_MODES
@@ -395,6 +410,25 @@ class TradingEngineV3(TradingEngine):
                 if bool(getattr(_en, "mtf_auto_promotion", False)):
                     raise ValueError("entry_selectivity.mtf_auto_promotion=true yasak")
                 self.mtf_cfg = MultiTimeframeConfig.from_dict(dict(_en.mtf_policy or {}))
+            # KARLILIK DENEYI (P0-P4): tamamen izole PAPER simulasyonu. Kanonik defter,
+            # RiskEngine, muhasebe, gateway ve sermaye durumu ASLA yazilmaz.
+            if getattr(_en, "experiment_enabled", False):
+                from .learn.profitability_experiment import ExperimentConfig
+                from .learn.profitability_store import ExperimentStore
+                self.experiment_mode = str(
+                    getattr(_en, "experiment_mode", "SHADOW") or "SHADOW").upper()
+                if self.experiment_mode not in _EN_MODES:
+                    raise ValueError(f"experiment_mode={self.experiment_mode} kapalı")
+                if bool(getattr(_en, "experiment_auto_promotion", False)):
+                    raise ValueError("experiment_auto_promotion=true yasak")
+                _xp = dict(getattr(_en, "experiment_policy", None) or {})
+                # `evaluation_start_at` DONDURULUR: ilk kurulumda simdi, sonra state'ten.
+                self.experiment_store = ExperimentStore(st)
+                _frozen = self._experiment_frozen_identity(st)
+                _xp.setdefault("evaluation_start_at", _frozen["evaluation_start_at"])
+                _xp.setdefault("frozen_at", _frozen["frozen_at"])
+                _xp["code_sha"] = self.code_sha()
+                self.experiment_cfg = ExperimentConfig.from_dict(_xp)
         except Exception as exc:  # noqa: BLE001 — giriş gözlemi karar yolunu bloke EDEMEZ
             log.warning("giriş seçiciliği gözlemi kurulamadı (baseline sürüyor): %s", exc)
             self.entry_snapshot_store = None
@@ -405,6 +439,8 @@ class TradingEngineV3(TradingEngine):
             self.weekly_challenger_cfg = None
             self.mtf_cfg = None
             self.mtf_mode = "SHADOW"
+            self.experiment_cfg = None
+            self.experiment_store = None
         self.universe = read_json(st / "universe.json", default=None)
         self.last_bar_seen: str = ""
         self.run_id = ""
@@ -929,6 +965,9 @@ class TradingEngineV3(TradingEngine):
         self._record_position_path(marks, decisions, now, tick_kind=TICK_BAR_EXTREMES)
         self._write_exit_eval(now)
         self._write_entry_eval(now)
+        # KARLILIK DENEYI — IZOLE PAPER. Kanonik hicbir seyi degistirmez; yalnizca kendi
+        # olay defterine ve kitabina yazar. Ariza turu DURDURMAZ.
+        self._run_profitability_experiment(now)
         self._write_llm_status(now)
         self._learning_chain = self._write_learning_chain(chain_res, now)
         self.mode_state.save()
@@ -2605,6 +2644,277 @@ class TradingEngineV3(TradingEngine):
                                    "variants": {},
                                    "build_error": f"BUILD_FAILED:{type(exc).__name__}",
                                    "decision": "ABSTAIN"}
+
+    # ------------------------------------------------------------------ kârlılık deneyi
+    @staticmethod
+    def _experiment_frozen_identity(state_dir) -> dict:
+        """`evaluation_start_at` BİR KEZ dondurulur ve bir daha DEĞİŞMEZ.
+
+        İlk kurulumda "şimdi" yazılır; sonraki turlarda mevcut kitaptan okunur. Böylece
+        deneyin başlangıç anı sonuçlara bakılarak geriye çekilemez.
+        """
+        import json as _json
+        from .core import iso, utc_now
+        try:
+            from .learn.profitability_store import BOOKS_FILE
+            pth = state_dir / BOOKS_FILE
+            if pth.exists():
+                d = _json.loads(pth.read_text(encoding="utf-8"))
+                if d.get("evaluation_start_at"):
+                    return {"evaluation_start_at": str(d["evaluation_start_at"]),
+                            "frozen_at": str(d.get("frozen_at") or d["evaluation_start_at"])}
+        except Exception:  # noqa: BLE001 — okunamazsa yeni kimlik dondurulur
+            pass
+        n = iso(utc_now())
+        return {"evaluation_start_at": n, "frozen_at": n}
+
+    def _experiment_candidates(self, cfg) -> list[dict]:
+        """Deney penceresinde açılmış ŞAMPİYON girişleri — SALT OKUNUR türetme.
+
+        Kaynaklar yalnız KOPYA olarak okunur: kanonik defter pozisyonları/geçmişi, giriş
+        snapshot bağları ve motorun zaten çektiği 1s kareleri. Hiçbir yeni sağlayıcı isteği
+        yapılmaz ve hiçbir kanonik nesne DEĞİŞTİRİLMEZ.
+        """
+        from .learn.profitability_experiment import closed_returns
+        start = from_iso(str(cfg.evaluation_start_at)) if cfg.evaluation_start_at else None
+        # SICAK YOL: arşiv HER TURDA TARANMAZ (mevcut değişmez; bkz. retention testleri).
+        # Deney penceresi saklama penceresinden çok dardır, gereken kanıt daima sıcaktadır.
+        store = getattr(self, "entry_snapshot_store", None)
+        links = (store.trade_links() if store else {})
+        snaps = (store.by_candidate() if store else {})
+        cand_by_trade = {t: snaps.get(c) for t, c in links.items()}
+        ent_fams = {}
+        try:
+            ev = read_json(self.cfg.state_path / "entry_selectivity.json", default=None) or {}
+            for t in (ev.get("trades") or []):
+                if t.get("trade_id"):
+                    ent_fams[str(t["trade_id"])] = t.get("families") or {}
+        except Exception:  # noqa: BLE001
+            ent_fams = {}
+        out = []
+        for pos in list(self.ledger2.positions.values()):
+            d = pos.to_dict() if hasattr(pos, "to_dict") else dict(pos)
+            tid = str(d.get("id") or "")
+            opened = from_iso(str(d.get("opened_at") or "")) if d.get("opened_at") else None
+            if not tid or opened is None:
+                continue
+            if start is not None and opened < start:
+                continue                      # PRE_EXPERIMENT_OBSERVATION_ONLY
+            entry = _f_num(d.get("entry_avg"))
+            stop0 = _f_num(d.get("initial_stop"))
+            qty = _f_num(d.get("qty"))
+            risk = (abs(entry - stop0) * qty
+                    if (entry is not None and stop0 is not None and qty) else None)
+            sym = str(d.get("symbol") or "")
+            frames = (getattr(self.runner, "last_frames", None) or {}).get(sym) or {}
+            rets = None
+            try:
+                rets = closed_returns(frames.get("1h"),
+                                      as_of_ms=int(opened.timestamp() * 1000),
+                                      lookback=cfg.correlation_lookback_bars)
+            except Exception:  # noqa: BLE001 — korelasyon ölçülemezse UNKNOWN kalır
+                rets = None
+            snap = cand_by_trade.get(tid) or {}
+            out.append({
+                "trade_id": tid, "symbol": sym, "side": str(d.get("side") or ""),
+                "entry": entry, "qty": qty, "initial_stop": stop0,
+                "targets": [t for t in (d.get("targets") or [])],
+                "leverage": _f_num(d.get("leverage")), "risk_usdt": risk,
+                "entry_fee": _f_num(d.get("entry_fee")),
+                "slippage_cost": _f_num(d.get("slippage_cost")),
+                "opened_at": str(d.get("opened_at")),
+                "champion_accepted": True,
+                "candidate_id": (snap.get("candidate_id") if isinstance(snap, dict) else None),
+                "entry_families": ent_fams.get(tid),
+                "returns_1h": rets,
+            })
+        return sorted(out, key=lambda r: str(r["opened_at"]))
+
+    def _experiment_closes(self, cfg) -> dict:
+        """Deney penceresinde KAPANMIŞ kanonik işlemler — kopya okuma."""
+        from .learn.close_chain import canonical_closes
+        start = from_iso(str(cfg.evaluation_start_at)) if cfg.evaluation_start_at else None
+        out = {}
+        for c in canonical_closes(self.ledger2.history):
+            o = from_iso(str(c.get("opened_at") or "")) if c.get("opened_at") else None
+            if o is None or (start is not None and o < start):
+                continue                      # PRE_EXPERIMENT: deneye GİRMEZ
+            out[str(c.get("trade_id"))] = c
+        return out
+
+    def _run_profitability_experiment(self, now) -> dict:
+        """Beş donmuş politikayı aynı doğal adaylar üzerinde ilerletir. TAMAMEN İZOLE.
+
+        Sözleşme: kanonik defter/RiskEngine/muhasebe/gateway/sermaye DEĞİŞMEZ, hiçbir emir
+        üretilmez, `applied` daima `False`tur. Arıza turu DURDURMAZ.
+        """
+        cfg = getattr(self, "experiment_cfg", None)
+        store = getattr(self, "experiment_store", None)
+        if cfg is None or store is None:
+            return {}
+        try:
+            from .learn import profitability_experiment as PX
+            from .learn.profitability_store import (EV_CLOSE, EV_DECISION, EV_MARK, EV_OPEN)
+            books, meta = store.load_books(cfg)
+            events = []
+            seen_decided = {p: {c.trade_id for c in books[p].closes} |
+                               set(books[p].positions) for p in PX.POLICIES}
+
+            # --- 1) YENİ ŞAMPİYON GİRİŞLERİ (filtre-only) --------------------------------
+            for cand in self._experiment_candidates(cfg):
+                tid = cand["trade_id"]
+                for pol in PX.POLICIES:
+                    b = books[pol]
+                    if tid in seen_decided[pol]:
+                        continue
+                    ev_id = PX.event_id(cfg, pol, EV_DECISION, tid)
+                    if ev_id in store.known_event_ids():
+                        continue
+                    d = PX.decide_entry(pol, cand, b, cfg)
+                    events.append(PX.make_event(cfg, pol, EV_DECISION, d, tid, now=now))
+                    if d["decision"] == PX.ACCEPT:
+                        b.n_accept += 1
+                        pos = PX.open_simulated(b, cand)
+                        events.append(PX.make_event(
+                            cfg, pol, EV_OPEN,
+                            {"position": pos.to_dict(), "returns_1h": cand.get("returns_1h")},
+                            tid, now=now))
+                    elif d["decision"] == PX.FILTER:
+                        b.n_filter += 1
+                    else:
+                        b.n_abstain += 1
+
+            # --- 2) MARKLAR (kanonik yol; fiyat UYDURULMAZ) -------------------------------
+            path_rows = []
+            try:
+                ps = getattr(self, "path_store", None)
+                if ps is not None:
+                    path_rows = [r for r in ps.iter_rows()] if hasattr(ps, "iter_rows") else []
+            except Exception:  # noqa: BLE001
+                path_rows = []
+            for r in path_rows[-2000:]:
+                tid = str(r.get("trade_id") or "")
+                mark = r.get("mark")
+                if not tid or mark is None:
+                    continue
+                for pol in PX.POLICIES:
+                    b = books[pol]
+                    if tid not in b.positions:
+                        continue
+                    key = (tid, r.get("snapshot_id") or r.get("ts"))
+                    ev_id = PX.event_id(cfg, pol, EV_MARK, *key)
+                    if ev_id in store.known_event_ids():
+                        continue
+                    PX.apply_mark(b, tid, mark)
+                    events.append(PX.make_event(cfg, pol, EV_MARK,
+                                                {"trade_id": tid, "mark": mark,
+                                                 "ts": r.get("ts")}, *key, now=now))
+                    # --- P3/P4: KENDİ çıkış yönetimi (kanonik stop/TP'ye DOKUNMAZ) -------
+                    # Eşikler `exit_policy` sürümünden gelir ve YENİDEN AYARLANMAZ.
+                    if pol not in (PX.P3, PX.P4) or self.exit_policy_cfg is None:
+                        continue
+                    sp = b.positions.get(tid)
+                    if sp is None:
+                        continue
+                    snap_x = dict(r) | {"mark": mark, "current_stop": sp.stop,
+                                        "entry": sp.entry, "initial_stop": sp.initial_stop,
+                                        "side": sp.side, "qty": sp.qty,
+                                        "mfe_r": sp.mfe_r, "trade_id": tid}
+                    try:
+                        from .learn.exit_policy import (CHALLENGER_A, TIGHTEN_STOP,
+                                                        challenger_a)
+                        act = challenger_a(snap_x, self.exit_policy_cfg)
+                    except Exception:  # noqa: BLE001 — politika arızası kapanış UYDURMAZ
+                        continue
+                    if act.get("action") == TIGHTEN_STOP and act.get("stop_after") is not None:
+                        ns = _f_num(act["stop_after"])
+                        if ns is not None:
+                            sp.stop = ns
+                    # Sıkıştırılmış stop bu markta ihlal edildiyse SİMÜLE çıkış.
+                    sgn = 1.0 if str(sp.side).upper().endswith("LONG") else -1.0
+                    if sp.stop and ((mark - sp.stop) * sgn) <= 0:
+                        ck = (tid, "policy_stop")
+                        if PX.event_id(cfg, pol, EV_CLOSE, *ck) in store.known_event_ids():
+                            continue
+                        fee_rt = abs(sp.entry_fee) * 2.0 if sp.entry_fee else 0.0
+                        sc = PX.close_simulated(
+                            b, tid, exit_price=sp.stop, closed_at=str(r.get("ts") or iso(now)),
+                            exit_kind=PX.X_POLICY_STOP, fees=fee_rt, funding=0.0)
+                        if sc is not None:
+                            events.append(PX.make_event(
+                                cfg, pol, EV_CLOSE,
+                                {"close": sc.to_dict(), "policy_action": CHALLENGER_A},
+                                *ck, now=now))
+
+            # --- 3) KANONİK KAPANIŞLARIN AYNALANMASI --------------------------------------
+            for tid, c in self._experiment_closes(cfg).items():
+                for pol in PX.POLICIES:
+                    b = books[pol]
+                    if tid not in b.positions:
+                        continue
+                    ev_id = PX.event_id(cfg, pol, EV_CLOSE, tid)
+                    if ev_id in store.known_event_ids():
+                        continue
+                    px = _f_num((c.get("raw") or {}).get("exit_avg"))
+                    if px is None:
+                        p0 = b.positions[tid]
+                        sign = 1.0 if str(p0.side).upper().endswith("LONG") else -1.0
+                        pnl = _f_num(c.get("net_pnl"))
+                        px = ((p0.entry + (pnl / (p0.qty * sign)))
+                              if (pnl is not None and p0.qty) else None)
+                    if px is None:
+                        continue              # fiyat ölçülemedi → UYDURMA YOK, açık kalır
+                    sc = PX.close_simulated(
+                        b, tid, exit_price=px, closed_at=str(c.get("closed_at")),
+                        exit_kind=PX.X_CANONICAL,
+                        fees=abs(_f_num(c.get("fees")) or 0.0),
+                        funding=(_f_num(c.get("funding")) or 0.0))
+                    if sc is not None:
+                        events.append(PX.make_event(cfg, pol, EV_CLOSE,
+                                                    {"close": sc.to_dict()}, tid, now=now))
+
+            wrote = store.append_many(events)
+            saved = store.save_books(books, cfg)
+            doc = PX.compare(books, cfg, now=now)
+            doc["run_id"] = self.run_id
+            doc["config_hash"] = self.config_hash()
+            doc["mode"] = self.experiment_mode
+            doc["store"] = store.stats()
+            doc["books_source"] = meta
+            doc["cycle"] = wrote | {"books_saved": saved.get("ok")}
+            doc["pre_experiment_excluded"] = self._experiment_pre_count(cfg)
+            # KÖK NEDEN GÖZLEMİ — kanonik kapanışların TAMAMI (deney penceresi DEĞİL).
+            try:
+                from .learn.close_chain import canonical_closes as _cc
+                doc["root_cause"] = PX.root_cause_summary(_cc(self.ledger2.history))
+            except Exception as exc:  # noqa: BLE001
+                doc["root_cause"] = {"state": "UNAVAILABLE",
+                                     "error": type(exc).__name__}
+            atomic_write_json(self.cfg.state_path / "profitability_experiment.json", doc)
+            return {k: doc.get(k) for k in ("experiment_id", "config_id", "mode",
+                                            "n_comparable_closes", "applied_to_canonical")}
+        except Exception as exc:  # noqa: BLE001 — deney arızası turu DURDURAMAZ
+            log.warning("kârlılık deneyi çalıştırılamadı: %s", exc)
+            return {"error": f"EXPERIMENT_FAILED:{type(exc).__name__}"}
+
+    def _experiment_pre_count(self, cfg) -> dict:
+        """Deney başlangıcından ÖNCE açılmış pozisyon/kapanış sayısı — kanıt DIŞI."""
+        start = from_iso(str(cfg.evaluation_start_at)) if cfg.evaluation_start_at else None
+        if start is None:
+            return {"open": None, "closed": None, "state": "UNKNOWN"}
+        n_open = 0
+        for pos in list(self.ledger2.positions.values()):
+            d = pos.to_dict() if hasattr(pos, "to_dict") else dict(pos)
+            o = from_iso(str(d.get("opened_at") or "")) if d.get("opened_at") else None
+            if o is not None and o < start:
+                n_open += 1
+        from .learn.close_chain import canonical_closes
+        n_cl = 0
+        for c in canonical_closes(self.ledger2.history):
+            o = from_iso(str(c.get("opened_at") or "")) if c.get("opened_at") else None
+            if o is not None and o < start:
+                n_cl += 1
+        return {"open": n_open, "closed": n_cl, "label": "PRE_EXPERIMENT_OBSERVATION_ONLY"}
 
     def _write_entry_eval(self, now) -> dict:
         """Kapanmış işlemler için giriş challenger'larının karşı-olgusal raporunu yazar.

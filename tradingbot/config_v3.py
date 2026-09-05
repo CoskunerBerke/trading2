@@ -460,6 +460,14 @@ class EntrySelectivitySection:
     mtf_auto_promotion: bool = False          # true → ConfigError; terfi yalnız manuel
     #: `learn.multitimeframe_context.MultiTimeframeConfig` taban alanları.
     mtf_policy: dict[str, Any] = field(default_factory=dict)
+    #: PROFITABILITY_EXPERIMENT_V1 — beş donmuş politikanın izole PAPER yarışması.
+    #: `enabled=false` yalnız GÖZLEMİ durdurur; hiçbir aktif karar bu bölümden etkilenmez.
+    #: `mode` yalnız `SHADOW` olabilir; deney kanonik deftere ASLA yazmaz.
+    experiment_enabled: bool = True
+    experiment_mode: str = "SHADOW"           # SHADOW | (baska deger -> ConfigError)
+    experiment_auto_promotion: bool = False   # true -> ConfigError
+    #: `learn.profitability_experiment.ExperimentConfig` alanları.
+    experiment_policy: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -694,6 +702,26 @@ def validate_v3(cfg: V3Config) -> None:
         _MTC.from_dict(dict(_en.mtf_policy or {}))
     except (ValueError, TypeError) as exc:
         raise ConfigError(f"entry_selectivity.mtf_policy geçersiz: {exc}") from exc
+    # KARLILIK DENEYI: SHADOW disina cikis yolu YOKTUR ve kanonik deftere yazmaz.
+    _xm = str(getattr(_en, "experiment_mode", "SHADOW") or "").upper()
+    if _xm not in _EN_KNOWN:
+        raise ConfigError(f"entry_selectivity.experiment_mode geçersiz: {_xm!r} "
+                          f"(bilinen: {', '.join(_EN_KNOWN)})")
+    if _xm not in _EN_MODES:
+        raise ConfigError(
+            f"PROFITABILITY_EXPERIMENT_NOT_ACTIVATED: experiment_mode={_xm} bu sürümde "
+            f"kapalı (izinli: {', '.join(_EN_MODES)}). Deney yalnız izole SHADOW PAPER "
+            "simülasyonudur; kanonik defteri hiçbir koşulda etkileyemez.")
+    _en.experiment_mode = _xm
+    if getattr(_en, "experiment_auto_promotion", False):
+        raise ConfigError("PROFITABILITY_EXPERIMENT_AUTO_PROMOTION_FORBIDDEN: "
+                          "entry_selectivity.experiment_auto_promotion=true desteklenmiyor "
+                          "— terfi yalnız manuel operatör onayıyla yapılır")
+    try:
+        from .learn.profitability_experiment import ExperimentConfig as _PXC
+        _PXC.from_dict(dict(getattr(_en, "experiment_policy", None) or {}))
+    except (ValueError, TypeError) as exc:
+        raise ConfigError(f"entry_selectivity.experiment_policy geçersiz: {exc}") from exc
     if cfg.futures_v3.margin_mode.lower() != "isolated":
         raise ConfigError("futures_v3.margin_mode paper'da bile yalnız 'isolated' desteklenir")
     if not (1 <= cfg.futures_v3.leverage_default <= cfg.futures_v3.leverage_max_paper_research <= 125):

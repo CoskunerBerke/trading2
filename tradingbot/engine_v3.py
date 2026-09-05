@@ -2916,6 +2916,23 @@ class TradingEngineV3(TradingEngine):
                 n_cl += 1
         return {"open": n_open, "closed": n_cl, "label": "PRE_EXPERIMENT_OBSERVATION_ONLY"}
 
+    #: `entry_selectivity.json.snapshot_cycle` içine GEÇEN `_entry_cycle` anahtarları.
+    #: 1A bağ gözlenebilirliği (`links`, `link_events`, `link_health`) `_entry_flush`te
+    #: ölçülüyordu ama bu beyaz listede OLMADIĞI için rapora hiç ulaşmıyordu; kanonik JSONL
+    #: bağı doğru yazılırken panel "bağ yok" görüyordu. Anahtar kümesi burada tek yerde durur.
+    ENTRY_CYCLE_REPORT_KEYS = ("at", "candidates", "written", "appended", "duplicates",
+                               "errors", "mode", "links", "link_events", "link_health")
+
+    @classmethod
+    def _entry_cycle_summary(cls, cycle) -> dict:
+        """`_entry_cycle` → rapor özeti. YALNIZ mevcut alanları geçirir; hiçbir şey uydurmaz.
+
+        Bağ alanları ölçülmemişse (eski tur, arıza) anahtar rapora GİRMEZ: "ölçülmedi" ile
+        "ölçüldü ve sıfır" ayrımı korunur. Kanonik kaynak `entry_snapshot.jsonl`dir; bu özet
+        yalnız görünürlük sağlar.
+        """
+        return {k: v for k, v in (cycle or {}).items() if k in cls.ENTRY_CYCLE_REPORT_KEYS}
+
     def _write_entry_eval(self, now) -> dict:
         """Kapanmış işlemler için giriş challenger'larının karşı-olgusal raporunu yazar.
 
@@ -2979,10 +2996,8 @@ class TradingEngineV3(TradingEngine):
             doc["config_hash"] = self.config_hash()
             doc["snapshot_store"] = store.stats()
             doc["archive_resolution"] = resolve
-            doc["snapshot_cycle"] = {k: v for k, v in
-                                     (getattr(self, "_entry_cycle", None) or {}).items()
-                                     if k in ("at", "candidates", "written", "appended",
-                                              "duplicates", "errors", "mode")}
+            doc["snapshot_cycle"] = self._entry_cycle_summary(
+                getattr(self, "_entry_cycle", None))
             doc["risk_budget_usdt"] = (round(budget, 6) if budget is not None else None)
             doc["replay_audit"] = self._entry_replay_audit(snaps, links, closes_for_audit)
             # F/G AİLELERİ (haftalık yapı + yapısal R:R) — ayrı bölüm, V1 çıktısı BOZULMAZ.

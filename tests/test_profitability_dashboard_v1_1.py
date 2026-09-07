@@ -71,7 +71,7 @@ def test_both_versions_render_separately_with_required_content(tmp_path: Path):
     assert "Tarihsel sürüm — pfexp_v1 (pfexp_v1.0.0)" in seg
     assert "SUPERSEDED_INCOMPLETE_ENTRY_INPUT" in seg
     assert V1_START[:19] in seg
-    assert "Gerçek katılım (tarihsel, işlem başına)" in seg
+    assert "Gerçek katılım" in seg
     assert "ENTRY_FAMILY_DECISION_UNAVAILABLE" in seg
     assert "Kapsam kusuru" in seg and "P1_SELECTIVE_AE, P4_COMBINED" in seg
     assert "kârlılık sonucu" in seg.lower() and "YOKTUR" in seg
@@ -98,7 +98,7 @@ def test_legacy_only_state_renders_without_500_and_marks_it_superseded(tmp_path:
     assert r.status_code == 200
     seg = _segment(r.text)
     assert "SUPERSEDED_INCOMPLETE_ENTRY_INPUT" in seg
-    assert "Düzeltilmiş deney (pfexp_v1_1) raporu henüz yok" in seg
+    assert "raporu henüz yok" in seg
     assert "Tarihsel sürüm — pfexp_v1" in seg
     for s in HONESTY_STATEMENTS_TR:
         assert s in seg

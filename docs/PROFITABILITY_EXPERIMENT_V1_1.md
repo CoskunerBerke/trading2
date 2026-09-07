@@ -1,5 +1,14 @@
 # PROFITABILITY_EXPERIMENT_V1_1 — karar anı A/E ile düzeltilmiş beş kollu deney
 
+> **2026-09-07 — `pfexp_v1_1` SUPERSEDED_E_SCOPE_MISMATCH (kabul kapalı, takip sürüyor).**
+> Bu sürümün P1/P4'ü entry_v1.0.0 E ailesini kullandı: pay `portfolio_open_risk_usdt`
+> (futures stop riski + STOPSUZ spot tam notional — panelde `diagnostic_ratio_not_enforced`
+> etiketli birleşik tanı değeri), payda futures-only uygulanan bütçe; aynı birim, farklı kapsam
+> (F00036: 13.076588 / 6.0 = 2.179; kapsam-eşli 4.850588 / 6.0 = 0.808). Kayıtlı kararlar
+> **değiştirilmedi** (F00036 P1/P4 FILTER her makul kapsamda aynıdır). v1.1 **yeni kabul
+> almaz**; yalnız mevcut simüle pozisyonlarını (F00036 P0/P2/P3) donmuş kurallarıyla doğal
+> kapanışa kadar izler. Düzeltilmiş sürüm: `docs/PROFITABILITY_EXPERIMENT_V1_2.md`.
+
 **Durum:** SHADOW PAPER ONLY · `applied_to_canonical = false` · `auto_promotion = false` ·
 terfi bugün **imkânsız** · `pfexp_v1` **SUPERSEDED_INCOMPLETE_ENTRY_INPUT** (salt okunur).
 

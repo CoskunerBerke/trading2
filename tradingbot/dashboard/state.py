@@ -32,6 +32,8 @@ STATE_FILES: dict[str, str] = {
     # (SUPERSEDED_INCOMPLETE_ENTRY_INPUT), v1.1 düzeltilmiş ve canlı (SHADOW PAPER ONLY).
     "profitability_experiment": "profitability_experiment.json",
     "profitability_experiment_v1_1": "profitability_experiment_v1_1.json",
+    # v1.2: kapsam-eşli E (entry_v1.1.0), aktif SHADOW deney; v1.1 kabul kapalı (drain).
+    "profitability_experiment_v1_2": "profitability_experiment_v1_2.json",
     # LLM alt sisteminin GERÇEK durumu (DISABLED / NOT_CONFIGURED / NO_CALLS / ACTIVE).
     "llm_status": "llm_status.json",
 }

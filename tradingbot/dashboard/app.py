@@ -511,9 +511,9 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
         return _page("Öğrenme", body, "/learning")
 
     def _px_state():
-        """Kök-neden bloğu için: düzeltilmiş rapor varsa o, yoksa tarihsel rapor."""
-        cur, old = _px_docs()
-        return cur or old
+        """Kök-neden bloğu için: aktif rapor varsa o, yoksa en yeni eski sürüm raporu."""
+        cur, olds = _px_docs()
+        return cur or (olds[0] if olds else None)
 
     def _why_losing_block() -> str:
         """«Neden Zarar Ediyoruz?» — TEMKİNLİ dil. Nedensellik iddia ETMEZ."""
@@ -589,46 +589,60 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
         return out
 
     def _experiment_block() -> str:
-        """«Kârlılık Deneyi» — SALT OKUNUR, izole SHADOW PAPER. İKİ sürüm AYRI gösterilir:
-        düzeltilmiş `pfexp_v1_1` (canlı) ve tarihsel `pfexp_v1` (SUPERSEDED, salt okunur)."""
-        from ..learn.profitability_experiment import (HONESTY_STATEMENTS_TR,
-                                                      LEGACY_POLICY_VERSION,
-                                                      STATUS_SUPERSEDED)
-        cur, old = _px_docs()
+        """«Kârlılık Deneyi» — SALT OKUNUR, izole SHADOW PAPER. Sürümler AYRI gösterilir:
+        aktif `pfexp_v1_2`, kabul-kapalı `pfexp_v1_1` (drain) ve tarihsel `pfexp_v1`."""
+        from ..learn.profitability_experiment import HONESTY_STATEMENTS_TR
+        cur, olds = _px_docs()
         out = "<h2>Kârlılık Deneyi</h2>"
         out += ('<div class="card mut"><b>Dürüstlük beyanları</b><ul>'
                 + "".join(f"<li>{esc(s)}</li>" for s in HONESTY_STATEMENTS_TR)
                 + "</ul></div>")
-        if not cur and not old:
-            return out + ('<div class="card mut">profitability_experiment_v1_1.json yok — '
+        if not cur and not olds:
+            return out + ('<div class="card mut">profitability_experiment_v1_2.json yok — '
                           "worker bu sürümle henüz tam bir tur tamamlamadı. Bu görünüm salt "
                           "okunurdur ve aktif karara etkisi yoktur.</div>")
         if cur:
             out += _experiment_version_block(cur)
         else:
-            out += ('<div class="card mut">Düzeltilmiş deney (pfexp_v1_1) raporu henüz yok — '
-                    "worker bu sürümle tam bir tur tamamlamadı. Aşağıdaki tarihsel sürüm "
-                    "salt okunurdur.</div>")
-        leg_sum = None
+            out += ('<div class="card mut">Düzeltilmiş deney (pfexp_v1_2) raporu henüz yok — '
+                    "worker bu sürümle tam bir tur tamamlamadı. Aşağıdaki sürümler salt "
+                    "okunurdur.</div>")
+        summaries = {}
         sv = (cur or {}).get("superseded_versions")
-        if isinstance(sv, list) and sv and isinstance(sv[0], dict):
-            leg_sum = sv[0]
-        if old is not None or leg_sum is not None:
-            out += _legacy_version_block(old, leg_sum, LEGACY_POLICY_VERSION, STATUS_SUPERSEDED)
+        if isinstance(sv, list):
+            for s in sv:
+                if isinstance(s, dict) and s.get("experiment_id"):
+                    summaries[str(s["experiment_id"])] = s
+        seen = set()
+        for old in olds:
+            eid = str(old.get("experiment_id") or "")
+            seen.add(eid)
+            out += _legacy_version_block(old, summaries.get(eid))
+        for eid, s in summaries.items():
+            if eid not in seen:                       # rapor dosyası yok ama özet var
+                out += _legacy_version_block(None, s)
         return out
 
     def _px_docs() -> tuple:
-        """(düzeltilmiş, tarihsel). Sınıflandırma POLİTİKA SÜRÜMÜNE göre yapılır, dosya adına
-        değil: `pfexp_v1.0.0` tarihseldir, gerisi düzeltilmiş sürümdür."""
+        """(aktif, [eski sürümler...]). Sınıflandırma STATÜ + politika sürümüne göredir, dosya
+        adına değil: `status` ACTIVE_* olan aktiftir; statüsüz ve tarihsel olmayan doküman
+        (eski kod) aktif sayılır; `pfexp_v1.0.0` ve SUPERSEDED_* statülüler eskidir."""
         from ..learn.profitability_experiment import LEGACY_POLICY_VERSION
-        docs = [d for d in (state.get("profitability_experiment_v1_1"),
+        docs = [d for d in (state.get("profitability_experiment_v1_2"),
+                            state.get("profitability_experiment_v1_1"),
                             state.get("profitability_experiment"))
                 if isinstance(d, dict) and d]
-        cur = next((d for d in docs
-                    if str(d.get("policy_version") or "") != LEGACY_POLICY_VERSION), None)
-        old = next((d for d in docs
-                    if str(d.get("policy_version") or "") == LEGACY_POLICY_VERSION), None)
-        return cur, old
+        cur = None
+        olds = []
+        for d in docs:
+            st = str(d.get("status") or "")
+            pv = str(d.get("policy_version") or "")
+            is_legacy = (pv == LEGACY_POLICY_VERSION or st.startswith("SUPERSEDED"))
+            if cur is None and not is_legacy and (st.startswith("ACTIVE") or not st):
+                cur = d
+            else:
+                olds.append(d)
+        return cur, olds
 
     def _px_i(d, k):
         v = finite_float_or_none((d or {}).get(k))
@@ -638,9 +652,48 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
         v = finite_float_or_none((d or {}).get(k))
         return "—" if v is None else f"{v:.{nd}f}"
 
+    def _scope_fields_table(rows: list, *, title: str) -> str:
+        """Son giriş kararlarının KAPSAM alanları — futures kovası ile birleşik tanı AYRI."""
+        _n = _px_n
+        trs = []
+        for r in rows:
+            if not isinstance(r, dict):
+                continue
+            f = r.get("e_scope_fields") if isinstance(r.get("e_scope_fields"), dict) else {}
+            dec = r.get("decisions") if isinstance(r.get("decisions"), dict) else {}
+            p1 = (dec.get("P1_SELECTIVE_AE") or {}).get("decision") or "—"
+            p4 = (dec.get("P4_COMBINED") or {}).get("decision") or "—"
+            a = r.get("a_leg") if isinstance(r.get("a_leg"), dict) else {}
+            trs.append([esc(r.get("trade_id")), esc(r.get("symbol")), esc(r.get("side")),
+                        esc(str(r.get("as_of") or ""))[:19],
+                        esc(str(f.get("scope") or "—")),
+                        _n(f, "futures_stop_risk_usdt"), _n(f, "futures_risk_budget_usdt"),
+                        _n(f, "futures_heat_fraction"),
+                        _n(f, "combined_diagnostic_exposure_usdt"),
+                        _n(f, "non_futures_component_usdt"),
+                        _n(f, "combined_heat_fraction_diagnostic"),
+                        _px_i(f, "same_direction_open_futures"),
+                        _px_i(f, "same_direction_open_combined"),
+                        esc(str(f.get("decision") or "—")),
+                        esc(str((a or {}).get("decision") or "—")),
+                        esc(p1), esc(p4)])
+        if not trs:
+            return ""
+        return (f"<h4>{esc(title)}</h4>" + table(
+            ["İşlem", "Sembol", "Yön", "as-of", "E kapsamı", "Futures stop riski",
+             "Futures risk bütçesi", "Futures ısı oranı", "Birleşik tanı maruziyeti",
+             "Futures-dışı bileşen (stopsuz spot)", "Birleşik ısı (tanı)",
+             "Aynı yön (futures)", "Aynı yön (birleşik)", "E", "A", "P1", "P4"],
+            trs, num_cols={5, 6, 7, 8, 9, 10, 11, 12}, empty="karar yok")
+            + '<div class="card mut">«Birleşik tanı maruziyeti» futures stop riski + STOPSUZ spot '
+              "tam notional toplamıdır; panelin risk sayfasındaki "
+              "<code>diagnostic_ratio_not_enforced</code> değeriyle aynı kapsamdadır ve "
+              "<b>futures limit ihlali DEĞİLDİR</b>. Kararı veren yalnız futures kovasıdır "
+              "(futures stop riski / futures risk bütçesi, aynı yön futures sayımı).</div>")
+
     def _experiment_version_block(ev: dict) -> str:
-        """Düzeltilmiş sürümün tam görünümü: kimlik, kararlar, kapsam, kapanışlar, metrikler,
-        GA, kapılar, düşük örneklem durumu, bütünlük/checksum."""
+        """Aktif sürümün tam görünümü: kimlik, kararlar, kapsam alanları, metrikler, GA, kapılar,
+        düşük örneklem, bütünlük/checksum."""
         _i, _n = _px_i, _px_n
         mode = str(ev.get("mode") or "SHADOW")
         pre = ev.get("pre_experiment_excluded") or {}
@@ -652,11 +705,13 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
                "etmez ve kârı kanıtlamaz.</b> Bir politikanın tek bir kaybedeni elemesi "
                "başarı sayılmaz. Hiçbir simülasyon kanonik defteri, RiskEngine'i, "
                "sermayeyi ya da emir yolunu ETKİLEMEZ. A/E kararı KARAR ANINDA değişmez giriş "
-               "snapshot'ından türetilir; eksik girdi <b>ABSTAIN</b>dir.</div>")
+               "snapshot'ından türetilir; E ailesi futures stop riskini snapshot'ta donmuş "
+               "futures bütçesine böler (kapsam eşli); eksik girdi <b>ABSTAIN</b>dir.</div>")
         out += ('<div class="grid">'
                 + card("Deney", esc(ev.get("experiment_id") or "—"),
                        f"politika {esc(ev.get('policy_version') or '—')}")
-                + card("Durum", badge(esc(mode), "ok" if mode == "SHADOW" else "warn"),
+                + card("Durum", badge(esc(str(ev.get("status") or mode)),
+                                      "ok" if mode == "SHADOW" else "warn"),
                        "SHADOW PAPER ONLY")
                 + card("Kanonik etki",
                        badge("YOK", "ok") if ev.get("applied_to_canonical") is False
@@ -666,6 +721,8 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
                        "bu andan önce açılanlar HARİÇ")
                 + card("A/E kaynağı", esc(str(ev.get("ae_source") or "—")),
                        "karar anı snapshot; sees_outcome=false")
+                + card("Giriş politikası", esc(str(ev.get("entry_policy_version") or "—")),
+                       f"E kapsamı {esc(str(ev.get('e_scope') or '—'))}")
                 + card("Politika sayısı", _i(ev, "number_of_trials"),
                        f"çoklu test α={mt.get('per_trial_alpha_sidak')}")
                 + card("Karşılaştırılabilir kapanış", _i(ev, "n_comparable_closes"),
@@ -677,6 +734,11 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
                 + card("config_id", esc(str(ev.get("config_id") or "—"))[:16],
                        f"kod {esc(str(ev.get('code_sha') or '—'))[:12]}")
                 + "</div>")
+        out += ('<div class="card mut"><b>P2 hakkında:</b> P2 yoğunlaşmayı YALNIZ kendi '
+                "başlangıç-sonrası izole simüle defterinde ölçer; kanonik defterdeki mevcut "
+                "pozisyonları devralmaz. Yeni bir deneyin başında P2, P0 ile aynı kararı "
+                "verebilir. Bu, amaçlanan izole-defter semantiğidir; kanonik portföyün "
+                "çeşitlendiğinin kanıtı DEĞİLDİR.</div>")
         pre_ids = pre.get("open_ids") if isinstance(pre.get("open_ids"), list) else []
         if pre_ids:
             out += ("<h4>Başlangıçtan ÖNCE açılmış pozisyonlar (kanıt DIŞI)</h4>" + table(
@@ -685,6 +747,9 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
                   esc(str(r.get("opened_at") or ""))[:19],
                   badge(esc(r.get("label") or "PRE_EXPERIMENT_OBSERVATION_ONLY"), "warn")]
                  for r in pre_ids if isinstance(r, dict)], empty="yok"))
+        rd = ev.get("recent_entry_decisions")
+        if isinstance(rd, list) and rd:
+            out += _scope_fields_table(rd, title="Son giriş kararları — E kapsam alanları")
 
         pols = ev.get("policies") if isinstance(ev.get("policies"), dict) else {}
         if pols:
@@ -788,45 +853,80 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
                     + esc(json_dumps_safe(cyc)) + "</div>")
         return out
 
-    def _legacy_version_block(old, summ, legacy_version: str, status: str) -> str:
-        """Tarihsel `pfexp_v1`: SUPERSEDED, salt okunur, KÂRLILIK SONUCU YOK."""
+    def _legacy_version_block(old, summ) -> str:
+        """Eski sürümler: `pfexp_v1` (SUPERSEDED_INCOMPLETE_ENTRY_INPUT) ve `pfexp_v1_1`
+        (SUPERSEDED_E_SCOPE_MISMATCH_DRAINING / _COMPLETE / _READ_ONLY). Salt okunur,
+        KÂRLILIK SONUCU YOK."""
+        from ..learn.profitability_experiment import (LEGACY_POLICY_VERSION, STATUS_SUPERSEDED,
+                                                      V11_EXPERIMENT_ID)
         _i, _n = _px_i, _px_n
         s = summ if isinstance(summ, dict) else {}
         o = old if isinstance(old, dict) else {}
-        st = str(s.get("status") or status)
-        out = (f"<h3>Tarihsel sürüm — {esc(s.get('experiment_id') or o.get('experiment_id') or 'pfexp_v1')} "
-               f"({esc(s.get('policy_version') or o.get('policy_version') or legacy_version)})</h3>"
-               '<div class="card mut"><b>' + badge(esc(st), "warn") + "</b> Bu koşuda P1/P4, "
-               "karar anı A/E girdisinden yoksundu (kapanmış işlem atıfından okunuyordu; yeni "
-               "açılan pozisyonun orada satırı yoktu) ve yapısal olarak ABSTAIN etti. Deney "
-               "pratikte yalnız P0/P2/P3'ü ölçtü; <b>beş politika arasında karşılaştırılabilir "
-               "DEĞİLDİR</b>. Olaylar ve kitaplar <b>değiştirilmedi</b>, geriye dönük "
-               "doldurulmadı, yeni sürüme taşınmadı. <b>Bu sürüm için kârlılık sonucu "
-               "YOKTUR.</b></div>")
+        eid = str(s.get("experiment_id") or o.get("experiment_id") or "pfexp_v1")
+        pv = str(s.get("policy_version") or o.get("policy_version") or LEGACY_POLICY_VERSION)
+        st = str(o.get("status") or s.get("status")
+                 or ("SUPERSEDED_E_SCOPE_MISMATCH_READ_ONLY" if eid == V11_EXPERIMENT_ID
+                     else STATUS_SUPERSEDED))
+        is_v11 = (eid == V11_EXPERIMENT_ID)
+        if is_v11:
+            expl = ("Bu koşuda P1/P4 entry_v1.0.0 E ailesini kullandı: pay <b>birleşik tanı "
+                    "değeri</b> (futures stop riski + STOPSUZ spot tam notional; risk sayfasında "
+                    "<code>diagnostic_ratio_not_enforced</code>), payda <b>futures-only "
+                    "uygulanan bütçe</b> — aynı birim, farklı kapsam. Kayıtlı kararlar "
+                    "<b>değiştirilmedi</b>; F00036 P1/P4 FILTER her makul kapsamda değişmez. "
+                    "Bu sürüm <b>yeni kabul almaz</b>; yalnız mevcut simüle pozisyonları donmuş "
+                    "v1.1 kurallarıyla doğal kapanışa kadar izler. <b>Bu sürüm için kârlılık "
+                    "sonucu YOKTUR.</b>")
+        else:
+            expl = ("Bu koşuda P1/P4, karar anı A/E girdisinden yoksundu (kapanmış işlem "
+                    "atıfından okunuyordu; yeni açılan pozisyonun orada satırı yoktu) ve yapısal "
+                    "olarak ABSTAIN etti. Deney pratikte yalnız P0/P2/P3'ü ölçtü; <b>beş politika "
+                    "arasında karşılaştırılabilir DEĞİLDİR</b>. Olaylar ve kitaplar "
+                    "<b>değiştirilmedi</b>, geriye dönük doldurulmadı, yeni sürüme taşınmadı. "
+                    "<b>Bu sürüm için kârlılık sonucu YOKTUR.</b>")
+        out = (f"<h3>{'Kabul-kapalı sürüm' if is_v11 else 'Tarihsel sürüm'} — {esc(eid)} "
+               f"({esc(pv)})</h3>"
+               '<div class="card mut"><b>' + badge(esc(st), "warn") + "</b> " + expl + "</div>")
         files = s.get("files_sha256") if isinstance(s.get("files_sha256"), dict) else {}
         cd = s.get("coverage_defect") if isinstance(s.get("coverage_defect"), dict) else {}
+        dr = (o.get("drain") if isinstance(o.get("drain"), dict) else
+              (s.get("drain") if isinstance(s.get("drain"), dict) else {}))
         out += ('<div class="grid">'
-                + card("Durum", badge(esc(st), "warn"), "tarihsel · salt okunur")
+                + card("Durum", badge(esc(st), "warn"),
+                       "kabul kapalı · takip" if is_v11 else "tarihsel · salt okunur")
                 + card("Orijinal başlangıç",
                        esc(str(s.get("evaluation_start_at") or o.get("evaluation_start_at")
                                or "—"))[:19], "DEĞİŞTİRİLMEDİ")
                 + card("config_id", esc(str(s.get("config_id") or o.get("config_id") or "—"))[:16],
                        f"kod {esc(str(s.get('code_sha') or o.get('code_sha') or '—'))[:12]}")
-                + card("Olay", _i(s, "event_count"),
-                       f"yinelenen {s.get('duplicate_event_ids', '—')} · bozuk "
-                       f"{s.get('malformed', '—')}")
+                + card("Olay", _i(s, "event_count") if s else _i(o.get("store") or {}, "events"),
+                       f"karar olayı {s.get('n_decision_events', '—')} · yinelenen "
+                       f"{s.get('duplicate_event_ids', '—')} · bozuk {s.get('malformed', '—')}")
                 + card("Kitap checksum",
                        badge("DOĞRU", "ok") if s.get("books_checksum_ok") is True
                        else badge(esc(str(s.get("books_checksum_ok"))), "warn"),
                        "orijinal kitap")
-                + card("Kapsam kusuru",
-                       esc(", ".join(cd.get("inert_policies") or ["P1", "P4"])),
-                       esc(str(cd.get("reason_code") or "ENTRY_FAMILY_DECISION_UNAVAILABLE")))
-                + card("Kanıt yeniden yazıldı mı",
+                + (card("Kapsam kusuru",
+                        esc(f"{cd.get('numerator_scope') or 'COMBINED'} / "
+                            f"{cd.get('denominator_scope') or 'FUTURES_BUCKET'}"),
+                        "pay birleşik tanı · payda futures bütçesi") if is_v11 else
+                   card("Kapsam kusuru",
+                        esc(", ".join(cd.get("inert_policies") or ["P1", "P4"])),
+                        esc(str(cd.get("reason_code") or "ENTRY_FAMILY_DECISION_UNAVAILABLE"))))
+                + card("Karar olayları değişti mi",
                        badge("HAYIR", "ok") if s.get("evidence_rewritten") is False
                        else badge("BİLİNMİYOR", "warn"),
-                       f"olay sha256 {esc(str(files.get('events') or '—'))[:12]}…")
+                       f"karar sha256 {esc(str(s.get('decision_events_sha256') or files.get('events') or '—'))[:12]}…")
                 + card("Kârlılık sonucu", badge("YOK", "warn"), "sonuç çıkarılmaz")
+                + (card("Kabul", badge("KAPALI", "warn"),
+                        f"kapanış {esc(str(o.get('admissions_closed_at') or s.get('admissions_closed_at') or '—'))[:19]}"
+                        f" · yerine {esc(str(o.get('superseded_by') or s.get('superseded_by') or '—'))}")
+                   if is_v11 else "")
+                + (card("Takip", badge("TAMAMLANDI" if dr.get("complete") else "SÜRÜYOR",
+                                       "ok" if dr.get("complete") else "info"),
+                        "açık simüle pozisyon: " + esc(", ".join(
+                            f"{p}:{','.join(v)}" for p, v in (dr.get("open_sim_positions") or {}).items() if v) or "yok"))
+                   if is_v11 else "")
                 + "</div>")
         pols = o.get("policies") if isinstance(o.get("policies"), dict) else {}
         pp = s.get("per_policy") if isinstance(s.get("per_policy"), dict) else {}
@@ -844,7 +944,7 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
                              (_i(r, "abstained") if r else str(d.get("ABSTAIN", "—"))),
                              (_n(r, "coverage", 3) if r else "—"),
                              esc(", ".join(so.get(name) or []) or "—")])
-            out += ("<h4>Tarihsel sayımlar (SONUÇ DEĞİL)</h4>" + table(
+            out += ("<h4>Sayımlar (SONUÇ DEĞİL)</h4>" + table(
                 ["Politika", "Açılan", "Kapanan", "Elenen", "Çekimser", "Kapsam",
                  "Simüle açık pozisyon"], rows, num_cols={1, 2, 3, 4, 5},
                 empty="politika verisi yok"))
@@ -863,13 +963,17 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
                     cells.append(badge(esc(dec), kind) + " "
                                  + esc(", ".join(d.get("reason_codes") or [])))
                 rows.append(cells)
-            out += ("<h4>Gerçek katılım (tarihsel, işlem başına)</h4>" + table(
+            out += ("<h4>Gerçek katılım (işlem başına, DEĞİŞTİRİLMEDİ)</h4>" + table(
                 ["İşlem", "Sembol", "Yön", "P0", "P1", "P2", "P3", "P4"], rows,
                 empty="katılım kaydı yok"))
-        elif old is not None and summ is None:
-            out += ('<div class="card mut">İşlem başına katılım özeti yalnız düzeltilmiş '
-                    "sürümün raporunda üretilir; worker düzeltilmiş sürümle tur "
-                    "tamamlayınca burada görünür.</div>")
+        rd = o.get("recent_entry_decisions")
+        if is_v11 and isinstance(rd, list) and rd:
+            out += _scope_fields_table(rd, title="v1.1 kararları — E kanıtı (birleşik kapsam, "
+                                                 "değiştirilmedi)")
+        if not trades and old is not None and summ is None and not rd:
+            out += ('<div class="card mut">İşlem başına katılım özeti yalnız aktif sürümün '
+                    "raporunda üretilir; worker aktif sürümle tur tamamlayınca burada "
+                    "görünür.</div>")
         return out
 
     def _mtf_block() -> str:

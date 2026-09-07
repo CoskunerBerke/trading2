@@ -145,6 +145,14 @@ def _stub_engine(tmp_path: Path, *, enabled: bool):
     eng._experiment_pre_count = lambda c: {"open": 0, "closed": 0}
     eng._run_profitability_experiment = (
         lambda now: TradingEngineV3._run_profitability_experiment(eng, now))
+    eng._run_experiment_cycle = (
+        lambda *a, **k: TradingEngineV3._run_experiment_cycle(eng, *a, **k))
+    eng._run_experiment_drain = lambda now: TradingEngineV3._run_experiment_drain(eng, now)
+    eng._experiment_superseded_versions = (
+        lambda store: TradingEngineV3._experiment_superseded_versions(eng, store))
+    eng._experiment_recent_decisions = TradingEngineV3._experiment_recent_decisions
+    eng.experiment_drain = None
+    eng._experiment_drain_state = {"status": None, "reason": "TEST"}
     return eng
 
 

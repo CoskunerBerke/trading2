@@ -357,6 +357,9 @@ class TradingEngineV3(TradingEngine):
         self.experiment_cfg = None
         self.experiment_store = None
         self.experiment_mode = "SHADOW"
+        #: pfexp_v1_1 DRAIN (kabul kapalı, yalnız mevcut simülasyonların takibi) — kurulamazsa None.
+        self.experiment_drain = None
+        self._experiment_drain_state = {"status": None, "reason": "NOT_CONFIGURED"}
         try:
             from .learn.entry_challenger import EntryChallengerConfig
             from .learn.entry_eval import ALLOWED_MODES as _EN_MODES
@@ -434,6 +437,9 @@ class TradingEngineV3(TradingEngine):
                 _xp["code_sha"] = self.code_sha()
                 self.experiment_cfg = ExperimentConfig.from_dict(_xp)
                 self._experiment_identity_source = str(_frozen.get("source") or "")
+                # pfexp_v1_1: kabul KAPALI, yalnız mevcut simülasyonlar doğal kapanışa kadar
+                # izlenir. Kimlik birebir yeniden kurulamazsa drain KURULMAZ (salt okunur).
+                self._setup_experiment_drain(st, self.experiment_cfg)
         except Exception as exc:  # noqa: BLE001 — giriş gözlemi karar yolunu bloke EDEMEZ
             log.warning("giriş seçiciliği gözlemi kurulamadı (baseline sürüyor): %s", exc)
             self.entry_snapshot_store = None
@@ -446,6 +452,7 @@ class TradingEngineV3(TradingEngine):
             self.mtf_mode = "SHADOW"
             self.experiment_cfg = None
             self.experiment_store = None
+            self.experiment_drain = None
         self.universe = read_json(st / "universe.json", default=None)
         self.last_bar_seen: str = ""
         self.run_id = ""
@@ -2726,13 +2733,19 @@ class TradingEngineV3(TradingEngine):
           dosyasından okunur ya da ilk kurulumda "şimdi" dondurulur. Böylece başlangıç ne
           geriye ne ileriye çekilebilir.
         """
-        from .learn.profitability_experiment import LEGACY_POLICY_VERSION
+        from .learn.profitability_experiment import (LEGACY_POLICY_VERSION, V11_EXPERIMENT_ID,
+                                                     V11_POLICY_VERSION)
         from .learn.profitability_store import LEGACY_EXPERIMENT_ID
         xp = dict(xp or {})
         if (str(xp.get("experiment_id") or "") == LEGACY_EXPERIMENT_ID
                 or str(xp.get("policy_version") or "") == LEGACY_POLICY_VERSION):
             raise ValueError("pfexp_v1 / pfexp_v1.0.0 SUPERSEDED_INCOMPLETE_ENTRY_INPUT: "
                              "tarihsel deney salt okunurdur, yeniden çalıştırılamaz")
+        if (str(xp.get("experiment_id") or "") == V11_EXPERIMENT_ID
+                or str(xp.get("policy_version") or "") == V11_POLICY_VERSION):
+            raise ValueError("pfexp_v1_1 / pfexp_v1.1.0 SUPERSEDED_E_SCOPE_MISMATCH: kabul "
+                             "kapalı; yalnız drain ile izlenir, aktif deney olarak "
+                             "yeniden başlatılamaz")
         for k in ("evaluation_start_at", "frozen_at"):
             if k in xp:
                 log.warning("experiment_policy.%s config ile VERİLEMEZ; yok sayıldı "
@@ -2740,16 +2753,139 @@ class TradingEngineV3(TradingEngine):
                 xp.pop(k, None)
         return xp
 
-    def _experiment_superseded_versions(self, store) -> list:
-        """Tarihsel `pfexp_v1` kanıtının SALT OKUNUR özeti (dosya sha256'larıyla)."""
+    def _setup_experiment_drain(self, st, current_cfg) -> None:
+        """pfexp_v1_1 için KABUL-KAPALI takip (drain) kurulumu — kimlik birebir değilse KURULMAZ.
+
+        Sözleşme: v1.1 kimliği (`experiment_id`, `policy_version`, `config_id`) kimlik
+        dosyasındaki donmuş başlangıçtan BİREBİR yeniden kurulur ve v1.1 kitabının kimliğiyle
+        karşılaştırılır. Uyuşmazlık, eksik kimlik dosyası ya da yabancı olay → drain YOK
+        (`SUPERSEDED_E_SCOPE_MISMATCH_READ_ONLY`): izolasyon, F00036'nın kapanışını almak
+        uğruna gevşetilmez.
+        """
+        from .learn.profitability_experiment import (STATUS_V11_DRAINING, STATUS_V11_READ_ONLY,
+                                                     V11_EXPERIMENT_ID, V11_POLICY_VERSION,
+                                                     ExperimentConfig)
+        from .learn.profitability_store import ExperimentStore
+        self.experiment_drain = None
+        self._experiment_drain_state = {"status": None, "reason": "NOT_CONFIGURED"}
         try:
-            from .learn.profitability_store import legacy_v1_summary
-            if getattr(store, "is_legacy", False):
-                return []
-            s = legacy_v1_summary(self.cfg.state_path)
-            return [s] if s else []
+            if current_cfg is None or current_cfg.experiment_id == V11_EXPERIMENT_ID:
+                return
+            dstore = ExperimentStore(st, experiment_id=V11_EXPERIMENT_ID)
+            if not dstore.events_path.exists() and not dstore.books_path.exists():
+                self._experiment_drain_state = {"status": None, "reason": "NO_V11_STATE"}
+                return
+            ident = dstore.read_identity()
+            if not ident:
+                self._experiment_drain_state = {"status": STATUS_V11_READ_ONLY,
+                                                "reason": "NO_V11_IDENTITY_FILE"}
+                return
+            dcfg = ExperimentConfig.from_dict({
+                "experiment_id": V11_EXPERIMENT_ID, "policy_version": V11_POLICY_VERSION,
+                "evaluation_start_at": ident["evaluation_start_at"],
+                "frozen_at": ident["frozen_at"], "code_sha": self.code_sha()})
+            bid = dstore.read_books_identity()
+            if bid is not None and bid != dcfg.identity_key():
+                self._experiment_drain_state = {"status": STATUS_V11_READ_ONLY,
+                                                "reason": f"CONFIG_ID_MISMATCH:{bid[2]}"}
+                return
+            want = dcfg.identity_key()
+            foreign = sum(1 for e in dstore.iter_events()
+                          if (str(e.get("experiment_id")), str(e.get("policy_version")),
+                              str(e.get("config_id"))) != want)
+            if foreign:
+                self._experiment_drain_state = {"status": STATUS_V11_READ_ONLY,
+                                                "reason": f"FOREIGN_EVENTS:{foreign}"}
+                return
+            self.experiment_drain = {"cfg": dcfg, "store": dstore,
+                                     "closed_at": str(current_cfg.evaluation_start_at),
+                                     "superseded_by": current_cfg.experiment_id}
+            self._experiment_drain_state = {"status": STATUS_V11_DRAINING, "reason": "OK"}
+        except Exception as exc:  # noqa: BLE001 — drain kurulamazsa salt okunur kalır
+            self.experiment_drain = None
+            self._experiment_drain_state = {"status": STATUS_V11_READ_ONLY,
+                                            "reason": f"SETUP_FAILED:{type(exc).__name__}"}
+
+    def _experiment_superseded_versions(self, store) -> list:
+        """Tarihsel `pfexp_v1` ve kabul-kapalı `pfexp_v1_1` kanıtlarının SALT OKUNUR özetleri."""
+        out: list = []
+        if getattr(store, "is_legacy", False):
+            return out
+        try:
+            from .learn.profitability_store import legacy_v1_summary, legacy_v11_summary
+            s1 = legacy_v1_summary(self.cfg.state_path)
+            if s1:
+                out.append(s1)
+            if str(getattr(store, "experiment_id", "")) != "pfexp_v1_1":
+                d = getattr(self, "experiment_drain", None) or {}
+                ds = getattr(self, "_experiment_drain_state", None) or {}
+                s11 = legacy_v11_summary(
+                    self.cfg.state_path, drain_enabled=bool(d),
+                    superseded_by=(d.get("superseded_by") if d else
+                                   getattr(getattr(self, "experiment_cfg", None), "experiment_id", None)),
+                    admissions_closed_at=(d.get("closed_at") if d else
+                                          getattr(getattr(self, "experiment_cfg", None),
+                                                  "evaluation_start_at", None)),
+                    drain_reason=ds.get("reason"))
+                if s11:
+                    out.append(s11)
         except Exception as exc:  # noqa: BLE001 — özet okunamazsa açıkça raporlanır
-            return [{"status": "UNREADABLE", "error": type(exc).__name__}]
+            out.append({"status": "UNREADABLE", "error": type(exc).__name__})
+        return out
+
+    @staticmethod
+    def _experiment_recent_decisions(store, n: int = 10) -> list:
+        """Son giriş kararlarının panel özeti: politika kararları + P1'in E kapsam alanları."""
+        try:
+            from .learn.profitability_store import EV_DECISION
+            by_trade: dict = {}
+            order: list = []
+            for e in store.iter_events():
+                if e.get("kind") != EV_DECISION:
+                    continue
+                pl = e.get("payload") or {}
+                tid = str(pl.get("trade_id") or "")
+                if not tid:
+                    continue
+                if tid not in by_trade:
+                    by_trade[tid] = {"trade_id": tid, "symbol": pl.get("symbol"),
+                                     "side": pl.get("side"), "as_of": pl.get("as_of"),
+                                     "decisions": {}, "e_scope_fields": None, "a_leg": None}
+                    order.append(tid)
+                row = by_trade[tid]
+                row["decisions"][str(e.get("policy"))] = {
+                    "decision": pl.get("decision"), "reason_codes": list(pl.get("reason_codes") or [])}
+                if str(e.get("policy")) == "P1_SELECTIVE_AE":
+                    legs = ((pl.get("evidence") or {}).get("legs") or {})
+                    ev_e = ((legs.get("E") or {}).get("evidence") or {})
+                    ev_a = ((legs.get("A") or {}).get("evidence") or {})
+                    diag = ev_e.get("diagnostics") or {}
+                    row["e_scope_fields"] = {
+                        "scope": ev_e.get("scope"),
+                        "futures_stop_risk_usdt": ev_e.get("portfolio_futures_stop_risk_usdt"),
+                        "futures_risk_budget_usdt": ev_e.get("risk_budget_usdt"),
+                        "futures_heat_fraction": ev_e.get("futures_heat_fraction"),
+                        "combined_diagnostic_exposure_usdt": (
+                            diag.get("portfolio_open_risk_usdt_combined")
+                            if diag else ev_e.get("portfolio_open_risk_usdt")),
+                        "non_futures_component_usdt": diag.get("non_futures_component_usdt"),
+                        "combined_heat_fraction_diagnostic": (
+                            diag.get("combined_heat_fraction_diagnostic")
+                            if diag else ev_e.get("open_risk_fraction")),
+                        "same_direction_open_futures": ev_e.get("same_direction_open_futures"),
+                        "same_direction_open_combined": (
+                            diag.get("same_direction_open_combined")
+                            if diag else ev_e.get("same_direction_open")),
+                        "decision": (legs.get("E") or {}).get("decision"),
+                        "reason_codes": (legs.get("E") or {}).get("reason_codes"),
+                    }
+                    row["a_leg"] = {"decision": (legs.get("A") or {}).get("decision"),
+                                    "p_win": ev_a.get("p_win"),
+                                    "breakeven_p": ev_a.get("breakeven_p"),
+                                    "conservative_net_edge_r": ev_a.get("conservative_net_edge_r")}
+            return [by_trade[t] for t in order[-int(n):]]
+        except Exception as exc:  # noqa: BLE001
+            return [{"error": type(exc).__name__}]
 
     def _experiment_candidates(self, cfg) -> list[dict]:
         """Deney penceresinde açılmış ŞAMPİYON girişleri — SALT OKUNUR türetme.
@@ -2771,7 +2907,16 @@ class TradingEngineV3(TradingEngine):
         # değerlendiricisi, snapshot'ın donmuş as-of anında. `entry_selectivity.json.trades`
         # (kapanmış işlem atıfı) canlı giriş kararının kaynağı OLAMAZ: yeni açılan pozisyonun
         # orada satırı yoktur (doğrulanmış kusur). Kapanış geçmişi/öğrenilmiş sonuç OKUNMAZ.
-        pit_cfg = getattr(self, "entry_cfg", None)
+        # Giriş politikası sürümü DENEY sürümüne kilitlidir (v1.2 → entry_v1.1.0). Motorun
+        # kanonik eşikleri aynen kullanılır; yalnız sürüm etiketi deneyin istediğine sabitlenir.
+        # Farklı sürümle yazılmış snapshot yeniden yorumlanmaz (adaptör ABSTAIN eder).
+        from dataclasses import replace as _dc_replace
+        base_cfg = getattr(self, "entry_cfg", None)
+        want_pv = cfg.entry_policy_version
+        pit_cfg = None
+        if base_cfg is not None:
+            pit_cfg = (base_cfg if getattr(base_cfg, "policy_version", None) == want_pv
+                       else _dc_replace(base_cfg, policy_version=want_pv))
         out = []
         for pos in list(self.ledger2.positions.values()):
             d = pos.to_dict() if hasattr(pos, "to_dict") else dict(pos)
@@ -2797,7 +2942,8 @@ class TradingEngineV3(TradingEngine):
                 rets = None
             snap = cand_by_trade.get(tid)
             snap = snap if isinstance(snap, dict) else None
-            entry_ae = (point_in_time_ae(snap, pit_cfg) if pit_cfg is not None else None)
+            entry_ae = (point_in_time_ae(snap, pit_cfg, required_entry_policy_version=want_pv)
+                        if pit_cfg is not None else None)
             out.append({
                 "trade_id": tid, "symbol": sym, "side": str(d.get("side") or ""),
                 "entry": entry, "qty": qty, "initial_stop": stop0,
@@ -2829,15 +2975,36 @@ class TradingEngineV3(TradingEngine):
         return out
 
     def _run_profitability_experiment(self, now) -> dict:
-        """Beş donmuş politikayı aynı doğal adaylar üzerinde ilerletir. TAMAMEN İZOLE.
+        """Aktif deney (pfexp_v1_2) + pfexp_v1_1 DRAIN'i. İkisi de TAMAMEN İZOLE.
 
         Sözleşme: kanonik defter/RiskEngine/muhasebe/gateway/sermaye DEĞİŞMEZ, hiçbir emir
-        üretilmez, `applied` daima `False`tur. Arıza turu DURDURMAZ.
+        üretilmez, `applied` daima `False`tur. Arıza turu DURDURMAZ. Drain, aktif deneyden
+        AYRI depo ve AYRI kimlikle çalışır; yeni kabul ÜRETEMEZ.
         """
         cfg = getattr(self, "experiment_cfg", None)
         store = getattr(self, "experiment_store", None)
         if cfg is None or store is None:
             return {}
+        out = self._run_experiment_cycle(cfg, store, now, admissions_open=True)
+        try:
+            self._run_experiment_drain(now)
+        except Exception as exc:  # noqa: BLE001 — drain arızası aktif deneyi/turu DURDURMAZ
+            log.warning("pfexp_v1_1 drain çalıştırılamadı: %s", exc)
+        return out
+
+    def _run_experiment_drain(self, now) -> dict:
+        """pfexp_v1_1: KABUL KAPALI — yalnız mevcut simüle pozisyonlar için mark/çıkış."""
+        d = getattr(self, "experiment_drain", None) or {}
+        if not d.get("cfg") or not d.get("store"):
+            return {}
+        return self._run_experiment_cycle(d["cfg"], d["store"], now, admissions_open=False,
+                                          drain={"closed_at": d.get("closed_at"),
+                                                 "superseded_by": d.get("superseded_by")})
+
+    def _run_experiment_cycle(self, cfg, store, now, *, admissions_open: bool,
+                              drain: dict | None = None) -> dict:
+        """Tek deney kimliği için bir tur: (1) yeni kabuller [yalnız admissions_open], (2) marklar
+        + P3/P4 çıkış yönetimi, (3) kanonik kapanış aynalama, (4) kitap + rapor."""
         try:
             from .learn import profitability_experiment as PX
             from .learn.profitability_store import (EV_CLOSE, EV_DECISION, EV_MARK, EV_OPEN)
@@ -2846,8 +3013,8 @@ class TradingEngineV3(TradingEngine):
             seen_decided = {p: {c.trade_id for c in books[p].closes} |
                                set(books[p].positions) for p in PX.POLICIES}
 
-            # --- 1) YENİ ŞAMPİYON GİRİŞLERİ (filtre-only) --------------------------------
-            for cand in self._experiment_candidates(cfg):
+            # --- 1) YENİ ŞAMPİYON GİRİŞLERİ (filtre-only) — DRAIN'DE HİÇ ÇALIŞMAZ ------------
+            for cand in (self._experiment_candidates(cfg) if admissions_open else []):
                 tid = cand["trade_id"]
                 for pol in PX.POLICIES:
                     b = books[pol]
@@ -2959,6 +3126,13 @@ class TradingEngineV3(TradingEngine):
                         events.append(PX.make_event(cfg, pol, EV_CLOSE,
                                                     {"close": sc.to_dict()}, tid, now=now))
 
+            # DRAIN GÜVENCESİ: kabul kapalıyken karar/dolum olayı YAPISAL olarak üretilemez;
+            # yine de ikinci bir kilit — böyle bir olay oluşsa bile deftere GİREMEZ ve sayılır.
+            drain_rejected = 0
+            if not admissions_open:
+                keep = [e for e in events if e.get("kind") not in (EV_DECISION, EV_OPEN)]
+                drain_rejected = len(events) - len(keep)
+                events = keep
             wrote = store.append_many(events)
             saved = store.save_books(books, cfg)
             doc = PX.compare(books, cfg, now=now)
@@ -2974,7 +3148,26 @@ class TradingEngineV3(TradingEngine):
             doc["identity_source"] = getattr(self, "_experiment_identity_source", None)
             doc["identity_file"] = str(getattr(store, "identity_path", ""))
             doc["report_file"] = str(getattr(store, "report_path", ""))
-            doc["superseded_versions"] = self._experiment_superseded_versions(store)
+            doc["entry_policy_version"] = cfg.entry_policy_version
+            doc["e_scope"] = cfg.e_scope
+            doc["recent_entry_decisions"] = self._experiment_recent_decisions(store)
+            if admissions_open:
+                doc["status"] = PX.STATUS_ACTIVE
+                doc["admissions_open"] = True
+                doc["superseded_versions"] = self._experiment_superseded_versions(store)
+            else:
+                open_sim = {p: sorted(b.positions) for p, b in books.items()}
+                complete = not any(open_sim.values())
+                doc["status"] = (PX.STATUS_V11_COMPLETE if complete else PX.STATUS_V11_DRAINING)
+                doc["admissions_open"] = False
+                doc["admissions_closed_at"] = (drain or {}).get("closed_at")
+                doc["superseded_by"] = (drain or {}).get("superseded_by")
+                doc["superseded_reason_tr"] = PX.V11_SUPERSEDED_REASON_TR
+                doc["drain"] = {"follow_up_only": True, "complete": complete,
+                                "open_sim_positions": open_sim,
+                                "rejected_admission_events": drain_rejected}
+                doc["superseded_versions"] = []
+                doc["profitability_conclusion"] = None
             doc["statements_tr"] = list(PX.HONESTY_STATEMENTS_TR)
             doc["missing_means"] = "ABSTAIN"
             doc["profitability_proven"] = False
@@ -2993,7 +3186,7 @@ class TradingEngineV3(TradingEngine):
             return {k: doc.get(k) for k in ("experiment_id", "config_id", "mode",
                                             "n_comparable_closes", "applied_to_canonical")}
         except Exception as exc:  # noqa: BLE001 — deney arızası turu DURDURAMAZ
-            log.warning("kârlılık deneyi çalıştırılamadı: %s", exc)
+            log.warning("kârlılık deneyi çalıştırılamadı (%s): %s", getattr(cfg, "experiment_id", "?"), exc)
             return {"error": f"EXPERIMENT_FAILED:{type(exc).__name__}"}
 
     def _experiment_pre_count(self, cfg) -> dict:

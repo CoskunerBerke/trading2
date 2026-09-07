@@ -62,13 +62,35 @@ AE_SOURCE_LEGACY = "CLOSED_TRADE_ATTRIBUTION"
 AE_SOURCE_POINT_IN_TIME = "ENTRY_SNAPSHOT_POINT_IN_TIME"
 #: Eski sürümün dürüst statüsü.
 STATUS_SUPERSEDED = "SUPERSEDED_INCOMPLETE_ENTRY_INPUT"
+
+# --- pfexp_v1_1 (E kapsam uyuşmazlığı; doğrulandı 2026-09-07, F00036) ---------------------
+#: v1.1 P1/P4, entry_v1.0.0 E'sini kullanıyordu: pay birleşik tanı değeri (futures stop riski +
+#: stopsuz spot tam notional), payda futures-only uygulanan bütçe. Karar/kanıt DEĞİŞTİRİLMEZ;
+#: v1.1 yeni kabul almaz, yalnız mevcut simülasyonlarını doğal kapanışa kadar izler (drain).
+V11_EXPERIMENT_ID = "pfexp_v1_1"
+V11_POLICY_VERSION = "pfexp_v1.1.0"
+STATUS_ACTIVE = "ACTIVE_SHADOW"
+STATUS_V11_DRAINING = "SUPERSEDED_E_SCOPE_MISMATCH_DRAINING"
+STATUS_V11_COMPLETE = "SUPERSEDED_E_SCOPE_MISMATCH_COMPLETE"
+STATUS_V11_READ_ONLY = "SUPERSEDED_E_SCOPE_MISMATCH_READ_ONLY"
+V11_SUPERSEDED_REASON_TR = (
+    "pfexp_v1_1 P1/P4 politikaları entry_v1.0.0 E ailesini kullanıyordu: pay `portfolio_open_"
+    "risk_usdt` (futures stop riski + STOPSUZ spot tam notional — panelde diagnostic_ratio_not_"
+    "enforced etiketli BİRLEŞİK tanı değeri), payda futures-only uygulanan bütçe (aynı birim, farklı "
+    "kapsam). Kayıtlı kararlar DEĞİŞTİRİLMEDİ (F00036 P1/P4 FILTER her makul kapsamda değişmez). "
+    "Bu sürüm yeni kabul ALMAZ; yalnız mevcut simüle pozisyonları donmuş v1.1 kurallarıyla doğal "
+    "kapanışa kadar izler. Beş politika arasında bu sürümde kârlılık sonucu YOKTUR.")
 #: Raporda ve panelde AYNEN görünen dürüstlük beyanları (anlamı değiştirilemez).
 HONESTY_STATEMENTS_TR: tuple[str, ...] = (
     "Tarihsel v1 kanıtı YENİDEN YAZILMADI; pfexp_v1 dosyaları salt okunur ve değişmezdir.",
-    "Düzeltilmiş deney (pfexp_v1_1) SIFIRDAN başlar; eski örneklem yeni kitaba karışmaz.",
+    "pfexp_v1_1 kararları YENİDEN YAZILMADI; v1.1 yeni kabul almaz, yalnız mevcut simülasyonlarını "
+    "doğal kapanışa kadar izler (SUPERSEDED_E_SCOPE_MISMATCH).",
+    "Düzeltilmiş deney (pfexp_v1_2) SIFIRDAN başlar; eski örneklemler yeni kitaba karışmaz.",
     "Eksik girdi ABSTAIN demektir; sıfır ya da kabul sayılmaz.",
     "SHADOW PAPER ONLY: hiçbir simülasyon kanonik deftere, riske, sermayeye ya da emir yoluna "
     "dokunmaz.",
+    "P2 yalnız kendi başlangıç-sonrası simüle defterindeki yoğunlaşmayı ölçer; kanonik portföyün "
+    "çeşitlendiğinin kanıtı DEĞİLDİR ve yeni deneyin başında P0 ile aynı kararı verebilir.",
     "Hiçbir politika kârlı KANITLANMADI.",
     "Kazanan strateji SEÇİLMEDİ.",
     "Bugün otomatik terfi MÜMKÜN DEĞİLDİR.",
@@ -142,10 +164,11 @@ class ExperimentConfig:
     `config_id` içine girer. Değerler risk profilinin KENDİ bütçesinden türetilmiştir;
     23 tarihsel kapanışa göre optimize EDİLMEMİŞTİR (bkz. `docs/PROFITABILITY_EXPERIMENT_V1.md`).
     """
-    #: v1.1: A/E karar anı snapshot'tan (bkz. `LEGACY_POLICY_VERSION`). `pfexp_v1` tarihsel
-    #: ve SALT OKUNURDUR; motor onu yeniden ÇALIŞTIRAMAZ.
-    experiment_id: str = "pfexp_v1_1"
-    policy_version: str = "pfexp_v1.1.0"
+    #: v1.2: A/E karar anı snapshot'tan, E ailesi KAPSAM-EŞLİ (entry_v1.1.0). `pfexp_v1`
+    #: tarihsel/salt okunur; `pfexp_v1_1` yeni kabul almaz (drain). Motor ikisini de yeniden
+    #: BAŞLATAMAZ.
+    experiment_id: str = "pfexp_v1_2"
+    policy_version: str = "pfexp_v1.2.0"
     #: Bu andan ÖNCE açılmış her pozisyon `PRE_EXPERIMENT_OBSERVATION_ONLY`dir.
     evaluation_start_at: str = ""
     frozen_at: str = ""
@@ -217,13 +240,31 @@ class ExperimentConfig:
     def ae_source(self) -> str:
         return AE_SOURCE_POINT_IN_TIME if self.uses_point_in_time_ae else AE_SOURCE_LEGACY
 
+    @property
+    def entry_policy_version(self) -> str:
+        """Deney sürümünün kullandığı giriş politikası (A/E) sürümü — deney SÜRÜMÜNE kilitli.
+
+        v1.0.0 / v1.1.0 → entry_v1.0.0 (tarihsel, birleşik-kapsam E); v1.2.0+ → entry_v1.1.0
+        (kapsam-eşli E). Kimliğe alan EKLENMEZ (v1/v1.1 config_id'leri değişmez), türetilir.
+        """
+        from .entry_challenger import ENTRY_POLICY_V1_0, ENTRY_POLICY_V1_1
+        if self.policy_version in (LEGACY_POLICY_VERSION, V11_POLICY_VERSION):
+            return ENTRY_POLICY_V1_0
+        return ENTRY_POLICY_V1_1
+
+    @property
+    def e_scope(self) -> str:
+        from .entry_challenger import e_scope_for
+        return e_scope_for(self.entry_policy_version)
+
     def identity(self) -> dict[str, Any]:
         return {"schema_version": SCHEMA_VERSION, "experiment_id": self.experiment_id,
                 "policy_version": self.policy_version, "config_id": self.config_id,
                 "code_sha": self.code_sha, "frozen_at": self.frozen_at,
                 "evaluation_start_at": self.evaluation_start_at,
                 "number_of_trials": N_TRIALS, "policies": list(POLICIES),
-                "ae_source": self.ae_source}
+                "ae_source": self.ae_source,
+                "entry_policy_version": self.entry_policy_version, "e_scope": self.e_scope}
 
     def identity_key(self) -> tuple[str, str, str]:
         """Olay/kitap eşlemesinde kullanılan ÜÇLÜ kimlik. Biri uyuşmazsa kayıt YABANCIDIR."""
@@ -932,6 +973,8 @@ __all__ = [
     "ACCEPT", "FILTER", "ABSTAIN", "DECISIONS", "PRE_EXPERIMENT", "IN_EXPERIMENT",
     "LEGACY_POLICY_VERSION", "AE_SOURCE_LEGACY", "AE_SOURCE_POINT_IN_TIME",
     "STATUS_SUPERSEDED", "HONESTY_STATEMENTS_TR",
+    "V11_EXPERIMENT_ID", "V11_POLICY_VERSION", "STATUS_ACTIVE", "STATUS_V11_DRAINING",
+    "STATUS_V11_COMPLETE", "STATUS_V11_READ_ONLY", "V11_SUPERSEDED_REASON_TR",
     "SLIP_MEASURED", "SLIP_MODELED", "SLIP_MISSING",
     "X_CANONICAL", "X_POLICY_EXIT", "X_POLICY_STOP", "X_OPEN",
     "ExperimentConfig", "SimPosition", "SimClose", "PolicyBook",

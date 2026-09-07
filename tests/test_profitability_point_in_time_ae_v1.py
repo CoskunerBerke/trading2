@@ -422,8 +422,12 @@ def _engine(tmp_path: Path, *, snap: dict | None, tid="F1", opened=OPENED, histo
         cfg=types.SimpleNamespace(state_path=tmp_path),
         ledger2=types.SimpleNamespace(positions={"ZEN/USDT": pos}, history=list(history or [])))
     for name in ("_experiment_candidates", "_experiment_closes", "_experiment_pre_count",
-                 "_run_profitability_experiment"):
-        setattr(eng, name, (lambda n: (lambda *a: getattr(TradingEngineV3, n)(eng, *a)))(name))
+                 "_run_profitability_experiment", "_run_experiment_cycle", "_run_experiment_drain",
+                 "_experiment_superseded_versions"):
+        setattr(eng, name, (lambda n: (lambda *a, **k: getattr(TradingEngineV3, n)(eng, *a, **k)))(name))
+    eng._experiment_recent_decisions = TradingEngineV3._experiment_recent_decisions
+    eng.experiment_drain = None
+    eng._experiment_drain_state = {"status": None, "reason": "TEST"}
     return eng
 
 

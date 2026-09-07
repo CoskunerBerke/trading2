@@ -41,7 +41,9 @@ F35_OPENED = "2026-09-05T18:01:32+00:00"       # v1.1 başlangıcından ÖNCE
 
 
 def v11(**kw) -> ExperimentConfig:
-    base = dict(evaluation_start_at=V11_START, frozen_at=V11_START, code_sha="newsha")
+    """pfexp_v1_1 — AÇIKÇA sabitlenir (varsayılan artık pfexp_v1_2)."""
+    base = dict(experiment_id="pfexp_v1_1", policy_version="pfexp_v1.1.0",
+                evaluation_start_at=V11_START, frozen_at=V11_START, code_sha="newsha")
     base.update(kw)
     return ExperimentConfig.from_dict(base)
 
@@ -88,14 +90,17 @@ def _engine(state: Path, *, cfg: ExperimentConfig, positions: dict, history: lis
         est.link_trade(snap["candidate_id"], link_tid)
     eng = types.SimpleNamespace(
         entry_snapshot_store=est, entry_cfg=ECFG, runner=types.SimpleNamespace(last_frames={}),
+        experiment_drain=None, _experiment_drain_state={"status": None, "reason": "TEST"},
+        _experiment_recent_decisions=TradingEngineV3._experiment_recent_decisions,
         experiment_cfg=cfg, experiment_store=ExperimentStore(state, experiment_id=cfg.experiment_id),
         experiment_mode="SHADOW", exit_policy_cfg=None, path_store=None, run_id="r",
         code_sha=lambda: cfg.code_sha, config_hash=lambda: "cfg",
         cfg=types.SimpleNamespace(state_path=state),
         ledger2=types.SimpleNamespace(positions=dict(positions), history=list(history)))
     for name in ("_experiment_candidates", "_experiment_closes", "_experiment_pre_count",
-                 "_run_profitability_experiment", "_experiment_superseded_versions"):
-        setattr(eng, name, (lambda n: (lambda *a: getattr(TradingEngineV3, n)(eng, *a)))(name))
+                 "_run_profitability_experiment", "_experiment_superseded_versions",
+                 "_run_experiment_cycle", "_run_experiment_drain"):
+        setattr(eng, name, (lambda n: (lambda *a, **k: getattr(TradingEngineV3, n)(eng, *a, **k)))(name))
     return eng
 
 
@@ -119,9 +124,9 @@ def test_versioned_state_layout_keeps_v1_names_and_separates_v1_1():
                    "identity": "profitability_experiment_v1_1_identity.json"}
     assert not set(old.values()) & set(new.values()), "v1 ve v1.1 dosyaları ÇAKIŞIYOR"
     assert all(v.startswith("profitability_experiment") for v in new.values())
-    assert ExperimentConfig().experiment_id == "pfexp_v1_1"
-    assert ExperimentConfig().policy_version == "pfexp_v1.1.0"
-    assert ExperimentConfig().config_id != v1().config_id
+    assert ExperimentConfig().experiment_id == "pfexp_v1_2"
+    assert ExperimentConfig().policy_version == "pfexp_v1.2.0"
+    assert ExperimentConfig().config_id != v1().config_id != v11().config_id
     assert ExperimentConfig().ae_source == PX.AE_SOURCE_POINT_IN_TIME
     assert v1().ae_source == PX.AE_SOURCE_LEGACY
 
@@ -416,7 +421,7 @@ def test_25_active_paper_bounded_auto_promotion_and_legacy_identity_fail_validat
     assert en.experiment_mode == "SHADOW" and en.experiment_auto_promotion is False
     assert en.experiment_enabled is True
     xp = TradingEngineV3._experiment_identity_policy(dict(en.experiment_policy or {}))
-    assert ExperimentConfig.from_dict(xp).experiment_id == "pfexp_v1_1"
+    assert ExperimentConfig.from_dict(xp).experiment_id == "pfexp_v1_2"
 
 
 def test_entry_challenger_thresholds_are_unchanged_by_this_repair():

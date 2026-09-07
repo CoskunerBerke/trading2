@@ -38,9 +38,12 @@ from typing import Any, Iterable
 
 from ..core import atomic_write_json, iso, utc_now
 from .profitability_experiment import (ABSTAIN, ACCEPT, AE_SOURCE_LEGACY, FILTER,
-                                       LEGACY_POLICY_VERSION, P1, P4, POLICIES,
-                                       R_AE_UNKNOWN, STATUS_SUPERSEDED, ExperimentConfig,
-                                       PolicyBook, SimClose, SimPosition)
+                                       LEGACY_POLICY_VERSION, P1, P4, POLICIES, R_AE_UNKNOWN,
+                                       STATUS_SUPERSEDED, STATUS_V11_COMPLETE,
+                                       STATUS_V11_DRAINING, STATUS_V11_READ_ONLY,
+                                       V11_EXPERIMENT_ID, V11_POLICY_VERSION,
+                                       V11_SUPERSEDED_REASON_TR, ExperimentConfig, PolicyBook,
+                                       SimClose, SimPosition)
 
 log = logging.getLogger(__name__)
 
@@ -165,6 +168,33 @@ class ExperimentStore:
             self._ids = {str(e.get("event_id")) for e in self.iter_events()
                          if e.get("event_id")}
         return self._ids
+
+    # ------------------------------------------------------------------ salt okunur kimlik
+    def read_identity(self) -> dict[str, Any] | None:
+        """Kimlik dosyasını YALNIZ OKUR (yoksa None). Hiçbir şey yazmaz, dondurmaz."""
+        try:
+            if not self.identity_path.exists():
+                return None
+            d = json.loads(self.identity_path.read_text(encoding="utf-8"))
+            if (isinstance(d, dict) and str(d.get("experiment_id")) == self.experiment_id
+                    and d.get("evaluation_start_at")):
+                return {"experiment_id": self.experiment_id,
+                        "evaluation_start_at": str(d["evaluation_start_at"]),
+                        "frozen_at": str(d.get("frozen_at") or d["evaluation_start_at"]),
+                        "frozen_by_code_sha": d.get("frozen_by_code_sha")}
+        except (OSError, ValueError, TypeError):
+            return None
+        return None
+
+    def read_books_identity(self) -> tuple[str, str, str] | None:
+        """Kitap anlık görüntüsünün kimlik üçlüsünü YALNIZ OKUR (yoksa/bozuksa None)."""
+        try:
+            if not self.books_path.exists():
+                return None
+            d = json.loads(self.books_path.read_text(encoding="utf-8"))
+            return _identity_of(d) if isinstance(d, dict) else None
+        except (OSError, ValueError, TypeError):
+            return None
 
     # ------------------------------------------------------------------ kimlik dondurma
     def freeze_identity(self, *, now=None, code_sha: str | None = None) -> dict[str, Any]:
@@ -448,12 +478,63 @@ LEGACY_SUPERSEDED_REASON_TR = (
 
 
 def legacy_v1_summary(state_dir: Path | str) -> dict[str, Any] | None:
-    """`pfexp_v1` kanıtının SALT OKUNUR özeti. Hiçbir v1 dosyasına YAZMAZ.
+    """`pfexp_v1` kanıtının SALT OKUNUR özeti (statü SUPERSEDED_INCOMPLETE_ENTRY_INPUT)."""
+    return legacy_summary(state_dir, LEGACY_EXPERIMENT_ID, status=STATUS_SUPERSEDED,
+                          policy_version_default=LEGACY_POLICY_VERSION,
+                          reason_tr=LEGACY_SUPERSEDED_REASON_TR,
+                          coverage_defect_detail_tr=("P1/P4 karar anı A/E girdisinden yoksundu; "
+                                                     "ABSTAIN güvenli ama yapısal. Beş politika "
+                                                     "arasında karşılaştırılabilirlik YOKTUR."),
+                          ae_source=AE_SOURCE_LEGACY)
 
-    Statü dürüstçe `SUPERSEDED_INCOMPLETE_ENTRY_INPUT`tır: P1/P4 karar anı A/E'den yoksundu.
-    Dosya sha256'ları özetle birlikte döner ki "dosya değişmedi" iddiası tur tur doğrulanabilsin.
+
+def legacy_v11_summary(state_dir: Path | str, *, drain_enabled: bool, superseded_by: str | None,
+                       admissions_closed_at: str | None, drain_reason: str | None = None
+                       ) -> dict[str, Any] | None:
+    """`pfexp_v1_1` kanıtının SALT OKUNUR özeti — kabul kapalı (drain) ya da salt okunur.
+
+    Statü: drain açık ve simüle pozisyon kalmadı → COMPLETE; drain açık ve pozisyon var →
+    DRAINING; drain kurulamadı → READ_ONLY (F00036 simülasyonları dondurulmuş açık kalır).
     """
-    st = ExperimentStore(state_dir, experiment_id=LEGACY_EXPERIMENT_ID)
+    from .profitability_experiment import AE_SOURCE_POINT_IN_TIME
+    base = legacy_summary(state_dir, V11_EXPERIMENT_ID, status=STATUS_V11_READ_ONLY,
+                          policy_version_default=V11_POLICY_VERSION,
+                          reason_tr=V11_SUPERSEDED_REASON_TR,
+                          coverage_defect_detail_tr=(
+                              "E ailesi birleşik tanı payını (stopsuz spot dahil) futures-only "
+                              "bütçeye böldü (entry_v1.0.0 kapsam uyuşmazlığı). Kararlar "
+                              "değiştirilmedi; yeni kabul yok."),
+                          ae_source=AE_SOURCE_POINT_IN_TIME)
+    if base is None:
+        return None
+    open_sim = base.get("sim_open_by_policy") or {}
+    complete = not any(open_sim.values())
+    if drain_enabled:
+        base["status"] = STATUS_V11_COMPLETE if complete else STATUS_V11_DRAINING
+    else:
+        base["status"] = STATUS_V11_READ_ONLY
+    base["coverage_defect"]["reason_code"] = "E_SCOPE_MISMATCH_COMBINED_VS_FUTURES_BUDGET"
+    base["coverage_defect"]["inert_policies"] = []
+    base["coverage_defect"]["numerator_scope"] = "COMBINED_SPOT_FUTURES_DIAGNOSTIC"
+    base["coverage_defect"]["denominator_scope"] = "FUTURES_STOP_RISK_BUCKET"
+    base["admissions_open"] = False
+    base["admissions_closed_at"] = admissions_closed_at
+    base["superseded_by"] = superseded_by
+    base["drain"] = {"enabled": bool(drain_enabled), "complete": complete,
+                     "reason": drain_reason, "follow_up_only": True,
+                     "open_sim_positions": open_sim}
+    return base
+
+
+def legacy_summary(state_dir: Path | str, experiment_id: str, *, status: str,
+                   policy_version_default: str, reason_tr: str,
+                   coverage_defect_detail_tr: str, ae_source: str) -> dict[str, Any] | None:
+    """Herhangi bir GEÇMİŞ deney sürümünün SALT OKUNUR özeti. Hiçbir dosyaya YAZMAZ.
+
+    Dosya sha256'ları ve KARAR olaylarının ayrı sha256'sı özetle döner: drain'de mark/kapanış
+    olayları eklense de karar olaylarının değişmediği tur tur doğrulanabilir.
+    """
+    st = ExperimentStore(state_dir, experiment_id=experiment_id)
     if not st.events_path.exists() and not st.books_path.exists():
         return None
     books_doc: dict[str, Any] | None = None
@@ -506,30 +587,35 @@ def legacy_v1_summary(state_dir: Path | str) -> dict[str, Any] | None:
     closes = {p: len((bd.get(p) or {}).get("closes") or []) for p in POLICIES}
     inert = sorted({pol for t in trades.values() for pol, d in t["policies"].items()
                     if d["decision"] == ABSTAIN and R_AE_UNKNOWN in d["reason_codes"]})
+    dec_events = [e for e in events if str(e.get("kind") or "") == EV_DECISION]
+    dec_sha = hashlib.sha256("\n".join(json.dumps(e, sort_keys=True, ensure_ascii=False,
+                                                  default=str)
+                                       for e in dec_events).encode("utf-8")).hexdigest()
     head = books_doc or {}
     return {
-        "status": STATUS_SUPERSEDED,
+        "status": status,
         "read_only": True,
         "evidence_rewritten": False,
         "backfilled": False,
-        "experiment_id": str(head.get("experiment_id") or LEGACY_EXPERIMENT_ID),
-        "policy_version": str(head.get("policy_version") or LEGACY_POLICY_VERSION),
+        "experiment_id": str(head.get("experiment_id") or experiment_id),
+        "policy_version": str(head.get("policy_version") or policy_version_default),
         "config_id": head.get("config_id"),
         "code_sha": head.get("code_sha"),
         "evaluation_start_at": head.get("evaluation_start_at"),
         "frozen_at": head.get("frozen_at"),
         "books_written_at": head.get("written_at"),
-        "ae_source": AE_SOURCE_LEGACY,
-        "superseded_reason_tr": LEGACY_SUPERSEDED_REASON_TR,
+        "ae_source": ae_source,
+        "superseded_reason_tr": reason_tr,
         "coverage_defect": {
-            "inert_policies": (inert or [P1, P4]),
+            "inert_policies": (inert or ([P1, P4] if experiment_id == LEGACY_EXPERIMENT_ID else [])),
             "reason_code": R_AE_UNKNOWN,
-            "detail_tr": ("P1/P4 karar anı A/E girdisinden yoksundu; ABSTAIN güvenli ama "
-                          "yapısal. Beş politika arasında karşılaştırılabilirlik YOKTUR."),
+            "detail_tr": coverage_defect_detail_tr,
         },
         "comparable_across_all_policies": False,
         "profitability_conclusion": None,
         "event_count": len(events),
+        "n_decision_events": len(dec_events),
+        "decision_events_sha256": dec_sha,
         "malformed": st.malformed,
         "duplicate_event_ids": len(ids) - len(set(ids)),
         "identities": identities,
@@ -549,4 +635,4 @@ def legacy_v1_summary(state_dir: Path | str) -> dict[str, Any] | None:
 __all__ = ["SCHEMA_VERSION", "EVENTS_FILE", "BOOKS_FILE", "REPORT_FILE", "IDENTITY_FILE",
            "LEGACY_EXPERIMENT_ID", "LEGACY_SUPERSEDED_REASON_TR", "state_file_names",
            "EV_DECISION", "EV_OPEN", "EV_MARK", "EV_CLOSE", "EV_KINDS", "ExperimentStore",
-           "legacy_v1_summary"]
+           "legacy_summary", "legacy_v1_summary", "legacy_v11_summary"]

@@ -274,7 +274,11 @@ def test_06c_module_reads_no_close_history_or_learned_state():
                     "realized_payoff_source": "SNAPSHOT_AVG_WIN_LOSS_OR_ASSUMED",
                     "close_history_read": False, "learned_results_read": False,
                     "network": False,
-                    "evaluator": "entry_challenger.challenger_a/challenger_e"}
+                    "evaluator": "entry_challenger.challenger_a/challenger_e",
+                    # ECFG = entry_v1.0.0 → tarihsel birleşik kapsam (bu dosyanın fixture'ları)
+                    "entry_policy_version": "entry_v1.0.0",
+                    "e_scope": "COMBINED_SPOT_FUTURES_DIAGNOSTIC",
+                    "risk_budget_source": "ENTRY_SNAPSHOT_FROZEN"}
 
 
 # ============================================================ 7-8: donmuşluk / determinizm

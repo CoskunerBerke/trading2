@@ -33,8 +33,9 @@ from __future__ import annotations
 import math
 from typing import Any
 
-from .entry_challenger import (VETO, EntryChallengerConfig, R_MISSING, challenger_a,
-                               challenger_e)
+from .entry_challenger import (ABSTAIN as E_ABSTAIN, E_FIELDS_COMBINED, E_FIELDS_FUTURES,
+                               E_SCOPE_FUTURES_BUCKET, KNOWN_ENTRY_POLICY_VERSIONS, VETO,
+                               EntryChallengerConfig, R_MISSING, challenger_a, challenger_e)
 from .entry_eval import FORBIDDEN_OUTCOME_FIELDS
 
 SCHEMA_VERSION = "profitability_ae_v1"
@@ -57,25 +58,36 @@ R_NO_SNAPSHOT = "ENTRY_SNAPSHOT_UNAVAILABLE"
 R_NOT_POINT_IN_TIME = "ENTRY_SNAPSHOT_NOT_POINT_IN_TIME"
 R_OUTCOME_LEAK = "ENTRY_SNAPSHOT_CONTAINS_OUTCOME_FIELD"
 R_AS_OF_MISSING = "ENTRY_SNAPSHOT_AS_OF_MISSING"
+R_ENTRY_POLICY_MISMATCH = "ENTRY_SNAPSHOT_POLICY_VERSION_MISMATCH"
 R_OK = "PASSES_ENTRY_FAMILY"
 
 #: A ve E ailelerinin karar verebilmesi için GEREKLİ snapshot alanları.
 REQUIRED_A: tuple[str, ...] = ("p_win", "conservative_net_edge_r")
-REQUIRED_E: tuple[str, ...] = ("portfolio_open_risk_usdt", "same_direction_open",
-                               "risk_budget_usdt")
+#: E — entry_v1.0.0 (tarihsel, birleşik tanı kapsamı) ve entry_v1.1.0+ (futures kovası).
+REQUIRED_E_COMBINED_LEGACY: tuple[str, ...] = (*E_FIELDS_COMBINED, "risk_budget_usdt")
+REQUIRED_E_FUTURES: tuple[str, ...] = E_FIELDS_FUTURES
+#: Geriye uyumlu ad (tarihsel kapsam).
+REQUIRED_E: tuple[str, ...] = REQUIRED_E_COMBINED_LEGACY
 #: Ödeme oranı yedeği (A) — karar anı `opportunity.assess` istatistiği; kapanış geçmişi DEĞİL.
 OPTIONAL_A: tuple[str, ...] = ("avg_win_r", "avg_loss_r")
+
+
+def required_e_for(cfg: EntryChallengerConfig) -> tuple[str, ...]:
+    """E'nin gerekli alanları politika SÜRÜMÜNE kilitlidir; yeni sürüm eski alana DÜŞMEZ."""
+    return (REQUIRED_E_FUTURES if cfg.e_scope == E_SCOPE_FUTURES_BUCKET
+            else REQUIRED_E_COMBINED_LEGACY)
+
 
 #: Challenger'ların GÖREBİLECEĞİ snapshot alanları. Bunun dışındaki hiçbir alan okunmaz.
 ALLOWED_SNAPSHOT_KEYS: frozenset[str] = frozenset({
     # kimlik
     "candidate_id", "decision_id", "ts", "ts_ms", "symbol", "direction", "baseline_accepted",
     "link_status", "policy_version", "code_sha", "config_hash", "schema_version", "provenance",
-    "sources",
+    "sources", "portfolio_scope",
     # A
     *REQUIRED_A, *OPTIONAL_A,
-    # E
-    *REQUIRED_E, "portfolio_open_positions",
+    # E (her iki kapsam; hangisinin KARAR verdiği `cfg.e_scope` ile sabittir)
+    *REQUIRED_E_COMBINED_LEGACY, *REQUIRED_E_FUTURES, "portfolio_open_positions",
 })
 
 
@@ -120,6 +132,9 @@ def _envelope(snapshot: dict[str, Any] | None, cfg: EntryChallengerConfig | None
             "learned_results_read": False,
             "network": False,
             "evaluator": "entry_challenger.challenger_a/challenger_e",
+            "entry_policy_version": (cfg.policy_version if cfg is not None else None),
+            "e_scope": (cfg.e_scope if cfg is not None else None),
+            "risk_budget_source": "ENTRY_SNAPSHOT_FROZEN",
         },
         "applied": False,
     }
@@ -141,7 +156,7 @@ def _leg(verdict: dict[str, Any], *, veto_code: str, missing_code: str,
         return {"decision": FILTER, "reason_codes": [veto_code, *raw_codes],
                 "missing": missing, "raw_decision": raw, "raw_reason_codes": raw_codes,
                 "blockers": blockers, "evidence": ev}
-    if missing or R_MISSING in raw_codes:
+    if missing or R_MISSING in raw_codes or raw == E_ABSTAIN:
         return {"decision": ABSTAIN, "reason_codes": [missing_code], "missing": missing,
                 "raw_decision": raw, "raw_reason_codes": raw_codes, "blockers": blockers,
                 "evidence": ev}
@@ -149,18 +164,35 @@ def _leg(verdict: dict[str, Any], *, veto_code: str, missing_code: str,
             "raw_reason_codes": raw_codes, "blockers": blockers, "evidence": ev}
 
 
-def point_in_time_ae(snapshot: dict[str, Any] | None, cfg: EntryChallengerConfig | None
-                     ) -> dict[str, Any]:
+def point_in_time_ae(snapshot: dict[str, Any] | None, cfg: EntryChallengerConfig | None, *,
+                     required_entry_policy_version: str | None = None) -> dict[str, Any]:
     """Değişmez giriş snapshot'ından A ve E bacakları. SAF ve DETERMİNİSTİK.
 
     Girdi snapshot'ın kendisidir; sonuç/kapanış/ders/indeks/yol OKUNMAZ. Aynı snapshot + aynı
     `cfg` → bayt bayt aynı çıktı. Gerekli alan yoksa bacak açık gerekçe koduyla `ABSTAIN` olur.
+
+    `required_entry_policy_version` verilirse hem `cfg` hem snapshot bu sürümü taşımak
+    ZORUNDADIR (ör. pfexp_v1.2 → entry_v1.1.0): farklı sürümle yazılmış bir snapshot yeni
+    anlamla YENİDEN YORUMLANMAZ, açık gerekçeyle ABSTAIN edilir.
     """
     if cfg is None:
         return _abstain_all(R_NO_SNAPSHOT, detail={"why": "ENTRY_POLICY_CONFIG_UNAVAILABLE"},
                             snapshot=snapshot)
     if not isinstance(snapshot, dict) or not snapshot.get("candidate_id"):
         return _abstain_all(R_NO_SNAPSHOT, detail={"why": "NO_LINKED_ENTRY_SNAPSHOT"}, cfg=cfg)
+    if required_entry_policy_version is not None:
+        want = str(required_entry_policy_version)
+        have = str(snapshot.get("policy_version") or "")
+        if cfg.policy_version != want or have != want:
+            return _abstain_all(R_ENTRY_POLICY_MISMATCH,
+                                detail={"required": want, "snapshot": have or None,
+                                        "config": cfg.policy_version},
+                                snapshot=snapshot, cfg=cfg)
+    if str(snapshot.get("policy_version") or "") not in (*KNOWN_ENTRY_POLICY_VERSIONS, ""):
+        return _abstain_all(R_ENTRY_POLICY_MISMATCH,
+                            detail={"snapshot": snapshot.get("policy_version"),
+                                    "known": list(KNOWN_ENTRY_POLICY_VERSIONS)},
+                            snapshot=snapshot, cfg=cfg)
     prov = snapshot.get("provenance") if isinstance(snapshot.get("provenance"), dict) else {}
     if prov.get("sees_outcome") or str(prov.get("written_at_stage") or "") != STAGE_RANKING:
         return _abstain_all(R_NOT_POINT_IN_TIME,
@@ -179,12 +211,14 @@ def point_in_time_ae(snapshot: dict[str, Any] | None, cfg: EntryChallengerConfig
     budget = _f(view.get("risk_budget_usdt"))
     # `realized_payoff` BİLEREK verilmez (kapanış geçmişi okunmaz).
     a_raw = challenger_a(view, cfg, realized_payoff=None)
+    # E: bütçe DAİMA snapshot'ın donmuş değeridir (entry_v1.1.0 zaten çağıranınkini yok sayar).
     e_raw = challenger_e(view, cfg, risk_budget_usdt=budget)
     leg_a = _leg(a_raw, veto_code=R_A_VETO, missing_code=R_A_INPUT_MISSING,
                  required=REQUIRED_A, view=view)
-    # E: bütçe ölçülmemişse ısı oranı hiç hesaplanmadı; VETO yoksa bu bir ACCEPT DEĞİL, ABSTAIN'dir.
+    # E: gerekli alanlar politika sürümüne kilitli; bütçe ölçülmemişse ısı oranı hiç
+    # hesaplanmadı — VETO yoksa bu bir ACCEPT DEĞİL, ABSTAIN'dir.
     leg_e = _leg(e_raw, veto_code=R_E_VETO, missing_code=R_E_INPUT_MISSING,
-                 required=REQUIRED_E, view=view,
+                 required=required_e_for(cfg), view=view,
                  extra_missing=(["risk_budget_usdt"] if budget is None else None))
     fams = {"A": leg_a | {"family": a_raw.get("family")},
             "E": leg_e | {"family": e_raw.get("family")}}
@@ -194,6 +228,6 @@ def point_in_time_ae(snapshot: dict[str, Any] | None, cfg: EntryChallengerConfig
 __all__ = ["SCHEMA_VERSION", "SOURCE_ENTRY_SNAPSHOT", "STAGE_RANKING",
            "ACCEPT", "FILTER", "ABSTAIN",
            "R_A_VETO", "R_E_VETO", "R_A_INPUT_MISSING", "R_E_INPUT_MISSING", "R_NO_SNAPSHOT",
-           "R_NOT_POINT_IN_TIME", "R_OUTCOME_LEAK", "R_AS_OF_MISSING", "R_OK",
-           "REQUIRED_A", "REQUIRED_E", "OPTIONAL_A", "ALLOWED_SNAPSHOT_KEYS",
-           "point_in_time_ae"]
+           "R_NOT_POINT_IN_TIME", "R_OUTCOME_LEAK", "R_AS_OF_MISSING", "R_ENTRY_POLICY_MISMATCH",
+           "R_OK", "REQUIRED_A", "REQUIRED_E", "REQUIRED_E_COMBINED_LEGACY", "REQUIRED_E_FUTURES",
+           "OPTIONAL_A", "ALLOWED_SNAPSHOT_KEYS", "required_e_for", "point_in_time_ae"]

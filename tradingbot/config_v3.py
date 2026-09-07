@@ -429,7 +429,10 @@ class EntrySelectivitySection:
     """
     snapshot_enabled: bool = True             # sıralamaya giren aday snapshot'ı (salt gözlem)
     mode: str = "SHADOW"                      # SHADOW | (PAPER_BOUNDED bu sürümde YASAK)
-    policy_version: str = "entry_v1.0.0"
+    #: entry_v1.1.0: E ailesi kapsam-eşli (futures stop riski / snapshot'ta donmuş futures
+    #: bütçesi; futures-only yön sayımı). Eşikler v1.0.0 ile AYNI. Yeni snapshot'lar bu sürümle
+    #: yazılır; eski satırlar kendi sürümleriyle (entry_v1.0.0) okunmaya devam eder.
+    policy_version: str = "entry_v1.1.0"
     #: `learn.entry_challenger.EntryChallengerConfig` alanları; verilmeyenler güvenli varsayılanda.
     policy: dict[str, Any] = field(default_factory=dict)
     #: Tek turda yazılacak azami snapshot — patolojik bir tur diski şişiremez.

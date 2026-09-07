@@ -25,7 +25,7 @@ istatistiksel sonuç için çok azdır ve bu, raporun açık uyarısıdır.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field, fields, replace
 from typing import Any
 
 from ..core import stable_id
@@ -33,6 +33,31 @@ from ..core import stable_id
 SCHEMA_VERSION = "entry_challenger_v1"
 
 ACCEPT, VETO = "ACCEPT", "VETO"
+#: Yalnız entry_v1.1.0+ E ailesi: gerekli KAPSAM-EŞLİ alan yoksa üçüncü değer. Eski alana
+#: DÜŞÜLMEZ, VETO'ya da ACCEPT'e de çevrilmez.
+ABSTAIN = "ABSTAIN"
+
+#: Politika sürümleri. E ailesinin KAPSAMI sürüme kilitlidir:
+#: * entry_v1.0.0 (tarihsel): `portfolio_open_risk_usdt` (futures stop riski + STOPSUZ spot
+#:   tam notional — birleşik TANI değeri) / çağıranın verdiği bütçe; `same_direction_open`
+#:   (spot dahil). Doğrulanmış kapsam uyuşmazlığı (F00036, 2026-09-07). Bu okuma YENİDEN
+#:   YORUMLANMAZ; eski satırlar eski E ile okunur.
+#: * entry_v1.1.0+: `portfolio_futures_stop_risk_usdt` / snapshot'ta DONMUŞ `risk_budget_usdt`
+#:   (ikisi de futures stop-risk kovası) ve `same_direction_open_futures`. Eşikler AYNI.
+ENTRY_POLICY_V1_0 = "entry_v1.0.0"
+ENTRY_POLICY_V1_1 = "entry_v1.1.0"
+KNOWN_ENTRY_POLICY_VERSIONS = (ENTRY_POLICY_V1_0, ENTRY_POLICY_V1_1)
+E_SCOPE_COMBINED_DIAGNOSTIC = "COMBINED_SPOT_FUTURES_DIAGNOSTIC"
+E_SCOPE_FUTURES_BUCKET = "FUTURES_STOP_RISK_BUCKET"
+E_FIELDS_COMBINED: tuple[str, ...] = ("portfolio_open_risk_usdt", "same_direction_open")
+E_FIELDS_FUTURES: tuple[str, ...] = ("portfolio_futures_stop_risk_usdt",
+                                     "same_direction_open_futures", "risk_budget_usdt")
+
+
+def e_scope_for(policy_version: Any) -> str:
+    """E kapsamı politika SÜRÜMÜNE kilitlidir (tarihsel v1.0.0 → birleşik tanı; sonrası → futures)."""
+    return (E_SCOPE_COMBINED_DIAGNOSTIC if str(policy_version or "") == ENTRY_POLICY_V1_0
+            else E_SCOPE_FUTURES_BUCKET)
 
 #: Challenger aileleri.
 FAM_PROB = "A_calibrated_probability_edge"
@@ -148,6 +173,22 @@ class EntryChallengerConfig:
     def config_id(self) -> str:
         return stable_id("entrycfg", self.policy_version, self.to_dict())
 
+    @property
+    def e_scope(self) -> str:
+        return e_scope_for(self.policy_version)
+
+    def for_snapshot(self, snap: Any) -> "EntryChallengerConfig":
+        """Snapshot'ın KENDİ politika sürümüyle değerlendirme yapılandırması.
+
+        Tarihsel satır (entry_v1.0.0) tarihsel E ile, yeni satır (entry_v1.1.0) yeni E ile
+        okunur; eşikler AYNEN kalır, yalnız sürüm/kapsam etiketi değişir. Sürümü bilinmeyen ya da
+        sürümsüz satır bu yapılandırmanın kendi sürümüyle değerlendirilir.
+        """
+        pv = str((snap or {}).get("policy_version") or "") if isinstance(snap, dict) else ""
+        if pv in KNOWN_ENTRY_POLICY_VERSIONS and pv != self.policy_version:
+            return replace(self, policy_version=pv)
+        return self
+
     def breakeven_p(self, payoff: float | None = None) -> float:
         """Kırılma noktası kazanma oranı: p* = 1 / (1 + payoff)."""
         r = _f(payoff) or self.assumed_payoff_ratio
@@ -157,10 +198,10 @@ class EntryChallengerConfig:
 
 def _verdict(family: str, decision: str, snap: dict[str, Any], cfg: EntryChallengerConfig, *,
              reasons: list[str], evidence: dict[str, Any],
-             blockers: list[str] | None = None) -> dict[str, Any]:
+             blockers: list[str] | None = None, scope: str | None = None) -> dict[str, Any]:
     """Ortak sonuç zarfı. `applied` DAİMA False; bu modül hiçbir şey uygulamaz."""
     base_acc = snap.get("baseline_accepted")
-    return {
+    return ({"e_scope": scope} if scope else {}) | {
         "schema_version": SCHEMA_VERSION,
         "family": family,
         "policy_version": cfg.policy_version,
@@ -314,9 +355,25 @@ def challenger_d(snap: dict[str, Any], cfg: EntryChallengerConfig) -> dict[str, 
 
 def challenger_e(snap: dict[str, Any], cfg: EntryChallengerConfig, *,
                  risk_budget_usdt: float | None = None) -> dict[str, Any]:
-    """Portföy ısısı ve yön yoğunlaşması.
+    """Portföy ısısı ve yön yoğunlaşması — kapsam politika SÜRÜMÜNE kilitli.
 
-    Tavan risk profilinin KENDİ bütçesinden türetilir; ayrı bir sayı uydurulmaz.
+    * entry_v1.0.0 → `_challenger_e_combined_legacy` (tarihsel anlam, yeniden yorumlanmaz).
+    * entry_v1.1.0+ → `_challenger_e_futures_bucket` (kabul kapısıyla AYNI kova; bütçe
+      snapshot'ta DONMUŞ; eksik alanda açık ABSTAIN; eski alana DÜŞMEZ).
+
+    Eşikler (`max_open_risk_fraction` 0.80, `max_same_direction` 6) iki sürümde AYNIDIR.
+    """
+    if cfg.e_scope == E_SCOPE_FUTURES_BUCKET:
+        return _challenger_e_futures_bucket(snap, cfg, caller_risk_budget_usdt=risk_budget_usdt)
+    return _challenger_e_combined_legacy(snap, cfg, risk_budget_usdt=risk_budget_usdt)
+
+
+def _challenger_e_combined_legacy(snap: dict[str, Any], cfg: EntryChallengerConfig, *,
+                                  risk_budget_usdt: float | None = None) -> dict[str, Any]:
+    """entry_v1.0.0 E — TARİHSEL. Pay birleşik tanı değeri (`portfolio_open_risk_usdt`: futures
+    stop riski + stopsuz spot tam notional), payda çağıranın verdiği futures bütçesi. Bu bir
+    kapsam uyuşmazlığıdır (doğrulandı: F00036) ve BURADA DÜZELTİLMEZ: eski satırların anlamı
+    değişmemelidir. Karar/gerekçe/kanıt sözlüğü bayt bayt korunur; yalnız zarf `e_scope` taşır.
     """
     open_risk = _f(snap.get("portfolio_open_risk_usdt"))
     same_dir = _f(snap.get("same_direction_open"))
@@ -331,14 +388,67 @@ def challenger_e(snap: dict[str, Any], cfg: EntryChallengerConfig, *,
                  ("same_direction_open", same_dir)) if v is None]
     if frac is None and same_dir is None and MISSING_MEANS_ACCEPT:
         return _verdict(FAM_HEAT, ACCEPT, snap, cfg, reasons=[R_MISSING], evidence=ev,
-                        blockers=blockers)
+                        blockers=blockers, scope=E_SCOPE_COMBINED_DIAGNOSTIC)
     reasons = []
     if frac is not None and frac > cfg.max_open_risk_fraction:
         reasons.append(R_HEAT)
     if same_dir is not None and same_dir >= cfg.max_same_direction:
         reasons.append(R_CONCENTRATION)
     return _verdict(FAM_HEAT, VETO if reasons else ACCEPT, snap, cfg,
-                    reasons=reasons or [R_OK], evidence=ev, blockers=blockers)
+                    reasons=reasons or [R_OK], evidence=ev, blockers=blockers,
+                    scope=E_SCOPE_COMBINED_DIAGNOSTIC)
+
+
+def _challenger_e_futures_bucket(snap: dict[str, Any], cfg: EntryChallengerConfig, *,
+                                 caller_risk_budget_usdt: float | None = None) -> dict[str, Any]:
+    """entry_v1.1.0 E — KAPSAM EŞLİ: futures stop riski / snapshot'ta DONMUŞ futures bütçesi.
+
+    Yalnız `portfolio_futures_stop_risk_usdt`, `same_direction_open_futures` ve snapshot'ın
+    kendi `risk_budget_usdt` alanını okur. Çağıranın verdiği bütçe (rapor anındaki canlı equity
+    olabilir) KULLANILMAZ, yalnız kayda geçer: giriş anı E ile kapanış-atıf E aynı snapshot için
+    bayt bayt aynıdır. Gerekli alan eksikse `ABSTAIN` — birleşik eski alanlara DÜŞÜLMEZ. Birleşik
+    değerler yalnız TANI bölümünde, `used_for_decision=False` etiketiyle görünür.
+    """
+    fut_risk = _f(snap.get("portfolio_futures_stop_risk_usdt"))
+    same_fut = _f(snap.get("same_direction_open_futures"))
+    budget = _f(snap.get("risk_budget_usdt"))
+    combined = _f(snap.get("portfolio_open_risk_usdt"))
+    same_comb = _f(snap.get("same_direction_open"))
+    frac = (fut_risk / budget) if (fut_risk is not None and budget is not None and budget > 0) else None
+    non_fut = ((combined - fut_risk) if (combined is not None and fut_risk is not None) else None)
+    ev = {"scope": E_SCOPE_FUTURES_BUCKET, "entry_policy_version": cfg.policy_version,
+          "portfolio_futures_stop_risk_usdt": fut_risk,
+          "risk_budget_usdt": budget, "risk_budget_source": "ENTRY_SNAPSHOT_FROZEN",
+          "caller_risk_budget_usdt": _f(caller_risk_budget_usdt), "caller_budget_used": False,
+          "futures_heat_fraction": (round(frac, 6) if frac is not None else None),
+          "max_open_risk_fraction": cfg.max_open_risk_fraction,
+          "same_direction_open_futures": same_fut, "max_same_direction": cfg.max_same_direction,
+          "open_positions": _f(snap.get("portfolio_open_positions")),
+          "diagnostics": {
+              "portfolio_open_risk_usdt_combined": combined,
+              "non_futures_component_usdt": (round(non_fut, 6) if non_fut is not None else None),
+              "same_direction_open_combined": same_comb,
+              "combined_heat_fraction_diagnostic": (round(combined / budget, 6)
+                                                    if (combined is not None and budget) else None),
+              "combined_is_diagnostic_not_enforced": True,
+              "used_for_decision": False}}
+    blockers = [f"{R_MISSING}:{k}" for k, v in
+                (("portfolio_futures_stop_risk_usdt", fut_risk),
+                 ("same_direction_open_futures", same_fut),
+                 ("risk_budget_usdt", (budget if (budget is not None and budget > 0) else None)))
+                if v is None]
+    if blockers:
+        # AÇIK ABSTAIN: ölçülemeyen kova için ne VETO ne ACCEPT; eski alana DÜŞME YOK.
+        return _verdict(FAM_HEAT, ABSTAIN, snap, cfg, reasons=[R_MISSING], evidence=ev,
+                        blockers=blockers, scope=E_SCOPE_FUTURES_BUCKET)
+    reasons = []
+    if frac is not None and frac > cfg.max_open_risk_fraction:
+        reasons.append(R_HEAT)
+    if same_fut >= cfg.max_same_direction:
+        reasons.append(R_CONCENTRATION)
+    return _verdict(FAM_HEAT, VETO if reasons else ACCEPT, snap, cfg,
+                    reasons=reasons or [R_OK], evidence=ev, blockers=[],
+                    scope=E_SCOPE_FUTURES_BUCKET)
 
 
 def evaluate_all(snap: dict[str, Any], cfg: EntryChallengerConfig, *,
@@ -355,8 +465,11 @@ def evaluate_all(snap: dict[str, Any], cfg: EntryChallengerConfig, *,
     }
 
 
-__all__ = ["SCHEMA_VERSION", "ACCEPT", "VETO", "FAMILIES", "FAM_PROB", "FAM_REGIME",
+__all__ = ["SCHEMA_VERSION", "ACCEPT", "VETO", "ABSTAIN", "FAMILIES", "FAM_PROB", "FAM_REGIME",
            "FAM_DISPERSION", "FAM_LIQUIDITY", "FAM_HEAT", "MISSING_MEANS_ACCEPT",
+           "ENTRY_POLICY_V1_0", "ENTRY_POLICY_V1_1", "KNOWN_ENTRY_POLICY_VERSIONS",
+           "E_SCOPE_COMBINED_DIAGNOSTIC", "E_SCOPE_FUTURES_BUCKET", "E_FIELDS_COMBINED",
+           "E_FIELDS_FUTURES", "e_scope_for",
            "EntryChallengerConfig", "challenger_a", "challenger_b", "challenger_c",
            "challenger_d", "challenger_e", "evaluate_all",
            "R_OK", "R_MISSING", "R_BELOW_BREAKEVEN", "R_EDGE_NEGATIVE", "R_EDGE_UNCERTAIN",

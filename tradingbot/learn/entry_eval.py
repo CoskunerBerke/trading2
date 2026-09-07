@@ -32,7 +32,8 @@ import random
 from typing import Any, Iterable
 
 from ..core import from_iso, iso, stable_id, utc_now
-from .entry_challenger import ACCEPT, FAMILIES, VETO, EntryChallengerConfig, evaluate_all
+from .entry_challenger import (ABSTAIN, ACCEPT, FAMILIES, VETO, EntryChallengerConfig,
+                               evaluate_all)
 from .entry_snapshot import LEGACY_MEMORY, LINKED
 
 SCHEMA_VERSION = "entry_eval_v1"
@@ -246,9 +247,16 @@ def evaluate_trade(*, snapshot: dict[str, Any], close: dict[str, Any],
     r = _f(close.get("r_multiple"))
     pnl = _f(close.get("net_pnl"))
     risk = _risk_usdt(close)
+    # Snapshot KENDİ politika sürümüyle değerlendirilir: tarihsel satır (entry_v1.0.0)
+    # tarihsel E ile, yeni satır yeni E ile. Eski satır yeni anlamla YENİDEN YORUMLANMAZ,
+    # yeni satır için de kapanış anındaki canlı bütçe DEĞİL snapshot'taki donmuş bütçe kullanılır
+    # (bkz. `entry_challenger._challenger_e_futures_bucket`).
+    cfg_eff = cfg.for_snapshot(snap)
     base = {
         "schema_version": SCHEMA_VERSION,
         "outcome_id": outcome_id(cev, cand),
+        "entry_policy_version_evaluated": cfg_eff.policy_version,
+        "e_scope": cfg_eff.e_scope,
         "close_event_id": cev or None,
         "trade_id": _s(close.get("trade_id")),
         "candidate_id": cand or None,
@@ -284,7 +292,7 @@ def evaluate_trade(*, snapshot: dict[str, Any], close: dict[str, Any],
                      "note_tr": ("Kapanış R'si ölçülemedi — atıf yapılamaz. Sıfır R "
                                  "VARSAYILMAZ.")})
         return base
-    verdicts = evaluate_all(snap, cfg, realized_payoff=realized_payoff,
+    verdicts = evaluate_all(snap, cfg_eff, realized_payoff=realized_payoff,
                             risk_budget_usdt=risk_budget_usdt)
     fams: dict[str, dict[str, Any]] = {}
     for fam, v in verdicts.items():
@@ -478,10 +486,13 @@ def _family_report(evs: list[dict[str, Any]], fam: str) -> dict[str, Any]:
     avoided_r = missed_r = avoided_usdt = missed_usdt = avoided_cost_r = 0.0
     kept: list[float] = []
     missing_only = 0
+    n_abstain = 0
     for e in evs:
         f = (e.get("families") or {}).get(fam) or {}
         r = _f(e.get("actual_r")) or 0.0
         cf_r.append(_f(f.get("counterfactual_r")) or 0.0)
+        if f.get("decision") == ABSTAIN:
+            n_abstain += 1
         if f.get("blocked"):
             blocked += 1
             blocked_loser += int(bool(f.get("blocked_loser")))
@@ -533,6 +544,7 @@ def _family_report(evs: list[dict[str, Any]], fam: str) -> dict[str, Any]:
         "missed_gain_usdt": round(missed_usdt, 6),
         "avoided_cost_r": round(avoided_cost_r, 6),
         "n_accept_by_missing_data": missing_only,
+        "n_abstain": n_abstain,
         "baseline": b_stats,
         "counterfactual": c_stats,
         "survivors": k_stats,

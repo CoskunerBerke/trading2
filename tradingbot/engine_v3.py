@@ -2385,12 +2385,23 @@ class TradingEngineV3(TradingEngine):
                 spec = None
             dirn = str(getattr(decision, "direction", "") or "")
             # Portföy ısısı KARAR ANINDAKİ yetkili durumdan okunur (her fill sonrası yenilenir).
-            same_dir = sum(1 for p in getattr(state, "open_positions", []) or []
+            # `open_positions` SPOT holdinglerini de içerir (spot yönü daima LONG) ve
+            # `total_open_risk_usdt` stopsuz spotu TAM notional ile toplar: bunlar BİRLEŞİK
+            # portföy TANI alanlarıdır (panel: diagnostic_ratio_not_enforced). Kabul kapısının
+            # GERÇEK kovası futures stop riskidir; o AYRICA ve aynı anda dondurulur (aşağıda).
+            open_all = list(getattr(state, "open_positions", None) or [])
+            same_dir = sum(1 for p in open_all
                            if str(getattr(p, "side", "")).upper().endswith(dirn.upper()))
+            fut_ctx = self._futures_bucket_context(open_all, dirn) if state is not None else {}
             ctx = dict(perm or {}) | {
-                "open_positions": len(getattr(state, "open_positions", []) or []),
+                "open_positions": len(open_all),
                 "total_open_risk_usdt": float(getattr(state, "total_open_risk_usdt", 0.0) or 0.0),
                 "same_direction_open": same_dir,
+                # FUTURES KOVASI — kabul kapısının kovası (`risk/engine.py` TOTAL_OPEN_RISK ile
+                # AYNI kapsam): yalnız futures pozisyonları, stopsuz spot notional HARİÇ, aday
+                # HARİÇ (giriş öncesi). Karar anında ölçülür ve buffer'da DONAR.
+                "futures_stop_risk_usdt": fut_ctx.get("futures_stop_risk_usdt"),
+                "same_direction_open_futures": fut_ctx.get("same_direction_open_futures"),
                 # KARAR ANI risk bütçesi: şampiyonun kendi türetmesiyle AYNI formül. Snapshot'a
                 # ölçülmüş alan olarak girer; E ailesi ısı oranını sonradan "o anki equity" ile
                 # değil, bu donmuş değerle hesaplar. Ölçülemezse `None` (MISSING), sıfır değil.
@@ -2409,6 +2420,35 @@ class TradingEngineV3(TradingEngine):
                         "ts": now})
         except Exception as exc:  # noqa: BLE001 — gözlem arızası girişi ETKİLEMEZ
             log.warning("giriş adayı yakalanamadı (%s): %s", sym, exc)
+
+    @staticmethod
+    def _futures_bucket_context(open_positions, direction) -> dict:
+        """Giriş ÖNCESİ futures kovası: `risk/state.PortfolioState.futures_stop_risk_usdt` ile
+        AYNI tanım (market_type != SPOT olan pozisyonların `risk_usdt` toplamı) ve yalnız
+        futures pozisyonlarının yön sayımı.
+
+        SPOT holdingleri (yönü daima LONG, stopsuzsa TAM notional risk sayılır) bu kovaya
+        GİRMEZ; mevcut aday da girmez (liste fill'den ÖNCEKİ durumdur). Pozisyon yoksa
+        ölçülmüş SIFIR döner; liste okunamazsa `None` (MISSING) — sıfır uydurulmaz.
+        """
+        try:
+            rows = list(open_positions or [])
+        except TypeError:
+            return {"futures_stop_risk_usdt": None, "same_direction_open_futures": None}
+        d = str(direction or "").upper()
+        fut = [p for p in rows
+               if str(getattr(p, "market_type", "USDM_PERP") or "USDM_PERP").upper() != "SPOT"]
+        risk = 0.0
+        for p in fut:
+            v = _f_num(getattr(p, "risk_usdt", None))
+            if v is None:
+                return {"futures_stop_risk_usdt": None,      # bir pozisyonun riski ölçülemedi
+                        "same_direction_open_futures": sum(
+                            1 for q in fut if str(getattr(q, "side", "")).upper().endswith(d))}
+            risk += v
+        return {"futures_stop_risk_usdt": risk,
+                "same_direction_open_futures": sum(
+                    1 for q in fut if str(getattr(q, "side", "")).upper().endswith(d))}
 
     def _decision_time_risk_budget(self, state) -> float | None:
         """Karar anı toplam açık risk bütçesi (USDT) — `_size_plan` ile AYNI türetme.

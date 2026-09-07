@@ -214,12 +214,41 @@ def build_entry_snapshot(*, run_id: Any, cycle_id: Any, symbol: Any, direction: 
     rec["atr_pct"] = put("atr_pct", feat("atr_pct"), MEASURED)
     rec["bb_width"] = put("bb_width", feat("bb_width"), MEASURED)
     # --- portföy durumu (karar ANINDA) --------------------------------------------------
+    # BİRLEŞİK PORTFÖY TANI ALANLARI (anlamı DEĞİŞTİRİLMEDİ, geriye uyumlu):
+    #   `portfolio_open_positions`  → futures + SPOT holdingleri (aday hariç)
+    #   `portfolio_open_risk_usdt`  → futures stop riski + STOPSUZ spot TAM notional
+    #                                 (`PortfolioState.total_open_risk_usdt`: YALNIZ RAPORLAMA,
+    #                                 kabul kapısı bunu KULLANMAZ; panelde "diagnostic_ratio_
+    #                                 not_enforced")
+    #   `same_direction_open`       → aynı yöndeki futures + spot (spot yönü daima LONG)
+    # Bu üçü futures risk bütçesiyle AYNI kapsamda DEĞİLDİR; `entry_v1.0.0` E ailesi
+    # tarihsel olarak bunları okur ve o okuma yeniden yorumlanmaz.
     rec["portfolio_open_positions"] = put("portfolio_open_positions",
                                           _get(chief_permission, "open_positions"), MEASURED)
     rec["portfolio_open_risk_usdt"] = put("portfolio_open_risk_usdt",
                                           _get(chief_permission, "total_open_risk_usdt"), MEASURED)
     rec["same_direction_open"] = put("same_direction_open",
                                      _get(chief_permission, "same_direction_open"), MEASURED)
+    # --- FUTURES KOVASI — kabul kapısının GERÇEK kovasıyla AYNI kapsam (entry_v1.1.0 E) -----
+    # Giriş ÖNCESİ (aday HARİÇ), yalnız futures pozisyonları, stopsuz spot notional HARİÇ;
+    # `risk_budget_usdt` ile aynı kova ve aynı birimdir. Eski satırlar bu alanları taşımaz →
+    # `MISSING` (sıfır DEĞİL); yeni sürüm E eksik alanda ABSTAIN eder, eski alana DÜŞMEZ.
+    rec["portfolio_futures_stop_risk_usdt"] = put(
+        "portfolio_futures_stop_risk_usdt", _get(chief_permission, "futures_stop_risk_usdt"),
+        MEASURED)
+    rec["same_direction_open_futures"] = put(
+        "same_direction_open_futures", _get(chief_permission, "same_direction_open_futures"),
+        MEASURED)
+    rec["portfolio_scope"] = {
+        "portfolio_open_risk_usdt": "COMBINED_SPOT_FUTURES_DIAGNOSTIC",
+        "portfolio_open_positions": "COMBINED_SPOT_FUTURES",
+        "same_direction_open": "COMBINED_SPOT_FUTURES",
+        "portfolio_futures_stop_risk_usdt": "FUTURES_STOP_RISK_BUCKET",
+        "same_direction_open_futures": "FUTURES_ONLY",
+        "risk_budget_usdt": "FUTURES_STOP_RISK_BUCKET",
+        "candidate_included": False,
+        "measured_at": "RANKING_PRE_ENTRY",
+    }
     # Karar anı risk bütçesi — şampiyonun KENDİ türetmesi (equity × max_total_open_risk_pct).
     # E ailesinin ısı oranı yalnız bununla ölçülebilir; kayıt sonradan "o anki equity"
     # ile yeniden hesaplanamaz. Yoksa `MISSING` kalır — sıfır DEĞİL. Eski satırlar bu alanı

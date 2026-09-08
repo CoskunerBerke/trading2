@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -163,12 +164,39 @@ class HierarchicalRate:
             keys.append(f"regime:{regime}|leaf:{leaf}")
         return keys
 
-    def add(self, x: float, *, regime: str | None = None, leaf: str | None = None, market: str | None = None, cluster: str | None = None,
+    @classmethod
+    def _keys_multi(cls, *, regime=None, leaves=(), market=None, cluster=None) -> list[str]:
+        """TEK gozlem icin anahtar kumesi — ATA dugumler BIR KEZ, her yaprak BIR KEZ.
+
+        Bir gozlem birden cok yaprak granulerliginde (`SYM|setup` ve `SYM`) sayilabilir; bu
+        MESRUdur. Fakat her `add` cagrisi ortak atalari (`""`, `regime:X`) da yazdigi icin,
+        ayni gozlem icin iki ayri cagri atalari IKI KEZ sayardi. Bu yardimci, atalari tek
+        sefer uretir ve anahtarlari SIRA KORUYARAK tekillestirir.
+        """
+        seen: dict[str, None] = {}
+        for k in cls._keys(regime=regime, leaf=None, market=market, cluster=cluster):
+            seen.setdefault(k, None)
+        for leaf in leaves:
+            if not leaf:
+                continue
+            seen.setdefault(f"leaf:{leaf}", None)
+            if regime:
+                seen.setdefault(f"regime:{regime}|leaf:{leaf}", None)
+        return list(seen)
+
+    def add(self, x: float, *, regime: str | None = None, leaf: str | None = None,
+            leaves: Iterable[str] | None = None, market: str | None = None, cluster: str | None = None,
             age_days: float = 0.0) -> None:
+        """Tek gozlemi hiyerarsiye ekler.
+
+        `leaf` tek yaprak (geriye uyumlu); `leaves` AYNI gozlemin birden cok yaprak
+        granulerligi — atalar yine YALNIZ BIR KEZ sayilir. Ikisi birlikte verilebilir.
+        """
         w = 1.0
         if self.half_life_days and age_days > 0:
             w = 0.5 ** (float(age_days) / float(self.half_life_days))
-        for k in self._keys(regime=regime, leaf=leaf, market=market, cluster=cluster):
+        allleaves = ([leaf] if leaf else []) + [str(v) for v in (leaves or []) if v]
+        for k in self._keys_multi(regime=regime, leaves=allleaves, market=market, cluster=cluster):
             self.stats.setdefault(k, RateStat()).add_weighted(x, w)
 
     def _post(self, key: str, parent_mean: float) -> tuple[float, float]:

@@ -249,9 +249,61 @@ def coin_head_scope(heads: list[dict] | None, open_positions: list[dict] | None,
 # ---------------------------------------------------------------- COIN HEAD TABLOSU — TEK BUILDER
 # İlk sunucu render'ı VE canlı polling AYNI bu çıktıyı tüketir. İş kuralı (durum sınıflandırması,
 # sıra, fallback, kapsam) HİÇBİR YERDE KOPYALANMAZ; JS yalnızca hücreleri çizer.
-COIN_HEAD_COLUMNS = ("Sembol", "Karar", "Durum", "Yön", "Güven", "P(kazanç)", "Beklenen Net Getiri",
-                     "E[R]", "Rejim", "Spot", "Fut", "Net K/Z", "İşlem ID", "Karar zamanı",
-                     "Gerekçe", "Veto")
+# Kolon adlari ALANIN GERCEK KAYNAGINI soyler: "Guven" bir OLASILIK DEGILDIR (konsensus
+# sinyal gucu), "P(kazanc)" ise hiyerarsik/legacy harmanidir. Bkz. COIN_HEAD_COLUMN_NOTES.
+COIN_HEAD_COLUMNS = ("Sembol", "Karar", "Durum", "Yön", "Konsensüs gücü", "P(kazanç) — istatistiksel tahmin",
+                     "Beklenen Net Getiri", "E[R]", "Rejim", "Spot", "Fut", "Net K/Z",
+                     "İşlem ID", "Karar zamanı", "Gerekçe", "Veto")
+
+#: Alan anlamlari — SUNUM metnidir; hicbir model calistirmaz, hicbir eksik alani tahmin etmez.
+#: Olasilik notu KANITA baglidir (`learning_status`); kalici sabit bir iddia DEGILDIR.
+COIN_HEAD_COLUMN_NOTES_BASE = {
+    "Konsensüs gücü": ("uzman ajan konsensüsünün kalibre edilmiş GÜCÜ (`confidence_calibrated`) "
+                       "— bir olasılık DEĞİLDİR"),
+    "P(kazanç) — istatistiksel tahmin": (
+        "hiyerarşik Beta önseli + eski tahmin harmanı (`p_win`); hedefi «kapanışta "
+        "r_multiple > +0.25R», ufku işlem ÖMRÜ"),
+    "Beklenen Net Getiri": ("plan geometrisinden hesaplanır; giriş planı ÜRETİLMEYEN satırlarda "
+                            "(REDUCE/HOLD/NO_TRADE) bu alan HİÇ hesaplanmaz"),
+    "E[R]": "plan geometrisinin R katsayısı (hedef/stop) — gerçekleşmiş sonuç DEĞİL",
+    "Karar zamanı": ("bu satır EN SON değerlendirmedir; açık pozisyonun GİRİŞ anındaki "
+                     "kanıtı değildir (giriş kanıtı `entry_snapshot` kaydındadır)"),
+}
+
+#: Kalibrasyon durumu bilinmiyorsa KESIN bir sey iddia edilmez.
+CALIBRATION_UNKNOWN = "kalibrasyon durumu bu panelden DOĞRULANAMADI"
+
+
+def calibration_note(learning_status: dict | None) -> str:
+    """Kalibrasyon/model durumunu KANITTAN türetir; sabit bir iddia yazmaz.
+
+    `learning_status` beklenen alanlar: `calibrator_n_fit` (int) ve `champion_model`
+    (kimlik ya da None). Alan yoksa durum BİLİNMİYOR olarak raporlanır.
+    """
+    st = learning_status if isinstance(learning_status, dict) else None
+    if not st:
+        return CALIBRATION_UNKNOWN
+    parts = []
+    n_fit = st.get("calibrator_n_fit")
+    if isinstance(n_fit, (int, float)):
+        parts.append("kalibratör fit edilmiş (n_fit=%d)" % int(n_fit) if int(n_fit) > 0
+                     else "kalibratör FIT EDİLMEMİŞ (n_fit=0)")
+    champ = st.get("champion_model")
+    if "champion_model" in st:
+        parts.append("champion sınıflandırıcı: %s" % (str(champ) if champ else "YOK"))
+    return " · ".join(parts) if parts else CALIBRATION_UNKNOWN
+
+
+def coin_head_column_notes(learning_status: dict | None = None) -> dict[str, str]:
+    notes = dict(COIN_HEAD_COLUMN_NOTES_BASE)
+    key = "P(kazanç) — istatistiksel tahmin"
+    notes[key] = notes[key] + " · " + calibration_note(learning_status)
+    return notes
+
+
+#: Geriye uyumluluk: kanıt verilmediğinde durum BİLİNMİYOR olarak görünür.
+COIN_HEAD_COLUMN_NOTES = coin_head_column_notes(None)
+
 COIN_HEAD_NUM_COLS = (4, 5, 6, 7, 11)
 COIN_HEAD_PNL_COLS = (11,)
 COIN_HEAD_BADGE_COLS = (1, 2)
@@ -271,13 +323,50 @@ def _cell_num(x, nd: int = 2) -> str:
     return "—" if v is None else f"{v:,.{nd}f}"
 
 
+#: Giris plani URETILMEYEN satirda beklenti alanlari HIC hesaplanmaz (bkz. coinhead/head.py:
+#: `expected_return_net`/`expected_r` yalnizca gecerli plan yolunda atanir; aksi halde
+#: dataclass VARSAYILANI 0.0 kalir). Bu bir OLCULMUS sifir DEGILDIR.
+NOT_APPLICABLE = "yok (plan üretilmedi)"
+
+
+def _has_entry_plan(h: dict) -> bool:
+    """Bu karar gercekten bir GIRIS PLANI uretti mi? Sozlesme: en az bir gecerli plan."""
+    for key in ("futures_plan", "spot_plan"):
+        p = h.get(key)
+        if isinstance(p, dict) and p.get("valid"):
+            return True
+    return False
+
+
 def _cell_pct(x, nd: int = 2) -> str:
     v = finite_float_or_none(x)
     return "—" if v is None else f"%{v * 100:.{nd}f}"
 
 
+def _cell_pct_signal(x, nd: int = 0) -> str:
+    """Yuzde hucresi — SIFIR OLMAYAN kucuk deger asla "%0" gibi gosterilmez.
+
+    OLCULMUS sifir aynen "%0" kalir; eksik deger "—" olur. Kucuk ama sifir olmayan bir deger
+    (or. 0.0019 -> %0.19) yuvarlanip sifira DUSURULMEZ: gosterim hassasiyeti, degeri
+    gorunur kilacak kadar artirilir. Gercek sayisal deger DEGISTIRILMEZ.
+    """
+    v = finite_float_or_none(x)
+    if v is None:
+        return "—"
+    pct = v * 100.0
+    if pct == 0.0:
+        return f"%{pct:.{nd}f}"
+    step = nd
+    while step < 4 and abs(round(pct, step)) < 10 ** -step:
+        step += 1
+    if abs(round(pct, step)) == 0.0:            # 4 hanede bile gorunmuyor -> esik ifadesi
+        return "%<0.0001" if pct > 0 else "%>-0.0001"
+    return f"%{pct:.{step}f}"
+
+
 def coin_head_table(heads: list[dict] | None, positions: list[dict] | None,
                     trades: list[dict] | None = None, *, fees: Any = None,
+                    learning_status: dict | None = None,
                     candidate_limit: int = COIN_HEAD_CANDIDATE_LIMIT) -> dict[str, Any]:
     """Coin head tablosunun KANONİK yükü: kapsam + kolonlar + DÜZ METİN hücreler + satır meta'sı.
 
@@ -321,10 +410,10 @@ def coin_head_table(heads: list[dict] | None, positions: list[dict] | None,
                      NO_DECISION_VERDICT if no_dec else (str(h.get("verdict") or "") or "-"),
                      status,
                      str(h.get("direction") or "") or "-",
-                     "—" if h.get("confidence_calibrated") is None else _cell_pct(h.get("confidence_calibrated"), 0),
-                     "—" if h.get("p_win") is None else _cell_pct(h.get("p_win"), 0),
-                     _cell_pct(h.get("expected_return_net")),
-                     _cell_num(h.get("expected_r")),
+                     _cell_pct_signal(h.get("confidence_calibrated"), 0),
+                     _cell_pct_signal(h.get("p_win"), 0),
+                     _cell_pct(h.get("expected_return_net")) if _has_entry_plan(h) else NOT_APPLICABLE,
+                     _cell_num(h.get("expected_r")) if _has_entry_plan(h) else NOT_APPLICABLE,
                      str(h.get("regime") or "") or "—",
                      "✅" if sp.get("valid") else "—",
                      "✅" if fp.get("valid") else "—",
@@ -341,6 +430,7 @@ def coin_head_table(heads: list[dict] | None, positions: list[dict] | None,
     return {
         **scope,
         "columns": list(COIN_HEAD_COLUMNS), "rows": rows, "meta": meta,
+        "column_notes": coin_head_column_notes(learning_status),
         "num_cols": list(COIN_HEAD_NUM_COLS), "pnl_cols": list(COIN_HEAD_PNL_COLS),
         "badge_cols": list(COIN_HEAD_BADGE_COLS), "symbol_col": COIN_HEAD_SYMBOL_COL}
 

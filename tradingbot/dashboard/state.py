@@ -22,6 +22,8 @@ STATE_FILES: dict[str, str] = {
     "universe_eval": "universe_eval.json",
     # PAPER LEARNING LOOP INTEGRITY V3 — ikisi de SALT OKUNUR gözlem belgesidir.
     "learning_chain": "learning_chain.json",
+    # Kalibrasyon/model durumunu KANITA bağlamak için (salt okunur gösterim).
+    "learn_v2": "learn_v2.json",
     "position_management": "position_management.json",
     # EXIT GIVEBACK & PROFIT PROTECTION V1 — salt okunur karşı-olgusal rapor.
     "exit_eval": "exit_eval.json",

@@ -110,8 +110,16 @@ class LearnedIndex:
 
     def record(self, *, close_ev: str, trade_id: str, steps: Iterable[str],
                source: str, lesson_id: str | None = None,
-               r_multiple: float | None = None) -> bool:
-        """Kaydı ekler. Aynı olay zaten varsa hiçbir şey yapmaz ve False döner."""
+               r_multiple: float | None = None,
+               learning_keys: dict | None = None) -> bool:
+        """Kaydı ekler. Aynı olay zaten varsa hiçbir şey yapmaz ve False döner.
+
+        `learning_keys` EK ve OPSİYONELdir: bu kapanışın hiyerarşide gerçekten yazdığı düğüm
+        anahtarlarını (kapanış anı rejimi, yapraklar), ağırlığı ve semantik sürümünü taşır.
+        Böylece öğrenilmiş durum, dersler penceresi (son 500) taşsa bile append-only indeksten
+        yeniden üretilebilir. İKİNCİ bir öğrenme defteri DEĞİLDİR — mevcut idempotency
+        otoritesine eklenen bir alandır ve idempotency anahtarını DEĞİŞTİRMEZ.
+        """
         if not close_ev:
             return False
         with self._lock:
@@ -121,6 +129,8 @@ class LearnedIndex:
                    "trade_id": str(trade_id), "learned_at": iso(utc_now()),
                    "steps": [str(s) for s in steps], "source": str(source),
                    "lesson_id": lesson_id, "r_multiple": r_multiple}
+            if learning_keys:
+                row["learning_keys"] = learning_keys
             try:
                 line = json.dumps(row, ensure_ascii=False, allow_nan=False)
             except (TypeError, ValueError) as exc:
@@ -374,7 +384,8 @@ def note_learned(index: LearnedIndex | None, close: Any, lesson: dict | None,
     except (TypeError, ValueError):
         r = None
     return index.record(close_ev=ev, trade_id=tid, steps=["outcome", "lesson"], source=source,
-                        lesson_id=(lesson or {}).get("id"), r_multiple=r)
+                        lesson_id=(lesson or {}).get("id"), r_multiple=r,
+                        learning_keys=(lesson or {}).get("learning_keys"))
 
 
 __all__ = ["SCHEMA_VERSION", "INDEX_SCHEMA_VERSION", "DEFAULT_MAX_APPLY", "BOOTSTRAP",

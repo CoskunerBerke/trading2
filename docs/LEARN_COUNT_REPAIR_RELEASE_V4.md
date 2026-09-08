@@ -1,11 +1,20 @@
 # LEARN_COUNT_REPAIR_RELEASE_V4 — sürüm paketi, durum stratejisi ve ödeme karşılaştırması
 
-**Durum:** HAZIRLIK TAMAM · **DAĞITILMADI** · push/deploy/restart/state göçü YOK ·
-üretim modeli fit edilmedi · kapı kaynağı/eşik/risk değişmedi · pfexp v1/v1.1/v1.2
-dokunulmadı · v1.3 oluşturulmadı.
+> ### ✅ GÜNCELLEME (2026-09-08) — bu belgenin planı YÜRÜTÜLDÜ
+>
+> §7'deki sürüm/geri alma planı uygulandı: `feature/quant-evaluation-v1` `12db804` → `9bafb57`
+> ileri sarıldı, CI tam SHA üzerinde yeşil, `learn_v2.json` `f3cd29cd…` → `ec481a3d…`
+> dönüştürüldü, kesinti 238 saniye, iki doğal tur geçti.
+> **Yürütme kaydı: `docs/LEARN_COUNT_REPAIR_DEPLOYMENT_V4.md`.**
+> Aşağıdaki "DAĞITILMADI" ifadeleri o tarihe (2026-09-08 öncesi) aittir ve TARİHSELDİR.
 
-> **Çalışan bot ONARILMADI.** Aşağıdaki düzeltmeler yereldir. Yeşil test paketi, üretim
-> öğrenmesinin değiştiği anlamına GELMEZ. Dağıtım kararı ayrıca alınacaktır.
+**Durum (hazırlık anında):** HAZIRLIK TAMAM · **O ANDA DAĞITILMAMIŞTI** · push/deploy/restart/
+state göçü YOK · üretim modeli fit edilmedi · kapı kaynağı/eşik/risk değişmedi ·
+pfexp v1/v1.1/v1.2 dokunulmadı · v1.3 oluşturulmadı.
+
+> **O tarihte çalışan bot ONARILMAMIŞTI.** Aşağıdaki düzeltmeler yereldi. Yeşil test paketi,
+> üretim öğrenmesinin değiştiği anlamına GELMEZ. Dağıtım kararı ayrıca alındı ve 2026-09-08'de
+> uygulandı.
 
 ---
 
@@ -300,8 +309,9 @@ tam regresyon (1940/22/0) · durum onarımının kanıtı ve iki bağımsız do�
 kuru çalıştırma farkı · A/B karşılaştırması · provenans eki · ödeme modeli karşılaştırması ·
 sunum düzeltmeleri · araştırma dalı tam regresyonu (2014/22/0).
 
-**Bekleyen (yürütme — bu görevin KAPSAMI DIŞINDA):** operatör onayı · bundle dağıtımı ·
-`learn_v2.json` dönüşümünün üretime yüklenmesi · restart + canary · dağıtım sonrası doğrulama.
+**[TAMAMLANDI 2026-09-08]** operatör onayı · dağıtım (bundle gerekmedi, GitHub erişimi geri
+gelmişti) · `learn_v2.json` dönüşümünün üretime yüklenmesi · restart + iki doğal tur canary ·
+dağıtım sonrası doğrulama. Ayrıntı: `docs/LEARN_COUNT_REPAIR_DEPLOYMENT_V4.md`.
 
 ---
 

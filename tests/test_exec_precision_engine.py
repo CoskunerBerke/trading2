@@ -325,3 +325,36 @@ def test_existing_position_exits_survive_gate_and_refresh(tmp_path):
     assert pos.meta["filters"]["price_tick"] == "0.01"                     # eski pozisyon YENİDEN YAZILMADI
     closed = e.ledger2.tick({"TRX/USDT": TickData(last=D("0.33"), mark=D("0.33"))})
     assert [c.exit_reason for c in closed] == ["stop"]                      # koruyucu çıkış çalıştı
+
+
+# ------------------------------------------------------------------ config → defter (runtime)
+def test_config_key_reaches_the_ledger_through_the_real_loader(tmp_path):
+    """`execution.require_verified_precision` GERÇEK yükleyiciden geçip defter bayrağına ulaşır."""
+    from tradingbot.config_v3 import load_v3
+
+    base = {"mode": {"mode": "PAPER"}}
+    off = load_v3(dict(base, execution={"gateway": "paper"}))
+    on = load_v3(dict(base, execution={"gateway": "paper", "require_verified_precision": True,
+                                       "filters_max_age_hours": 6}))
+    assert off.execution.require_verified_precision is False        # varsayılan KAPALI
+    assert on.execution.require_verified_precision is True and on.execution.filters_max_age_hours == 6
+    assert on.execution.gateway == "paper"                          # ilgisiz alanlar korunur
+    assert not [w for w in on.warnings if "execution" in w]         # anahtar TANINDI (yok sayılmadı)
+
+    # motorun kurduğu ifade: defter bayrağı config'ten gelir ve KAPI GERÇEKTEN uygular
+    led = FuturesLedgerV2(D("100"),
+                          require_verified_precision=bool(on.execution.require_verified_precision))
+    assert led.require_verified_precision is True
+    assert led.open("TRX/USDT", "LONG", D("0.3386"), __import__("tradingbot.accounting", fromlist=["SizeSpec"]).SizeSpec(D("20.4"), __import__("tradingbot.accounting", fromlist=["AmountType"]).AmountType.NOTIONAL, 3),
+                    stop=D("0.3341872085677379")) is None
+    assert led.last_reject_reason == R_UNVERIFIED_PRECISION
+
+
+def test_engine_reads_the_flag_from_config_not_a_hardcoded_default(tmp_path):
+    """Kısmi motor: `_resolve_entry_filters` kapı davranışı config'ten okunur (runtime)."""
+    e_off = _engine(tmp_path, gate=False)
+    f_off, p_off = e_off._resolve_entry_filters("TRX/USDT", "USDM_PERP")
+    assert f_off is not None and f_off.source == "default"           # kapalı → eski davranış
+    e_on = _engine(tmp_path, gate=True)
+    f_on, p_on = e_on._resolve_entry_filters("TRX/USDT", "USDM_PERP")
+    assert f_on is None and p_on.rule_class == "UNRESOLVED"          # açık → varsayılana DÜŞMEZ

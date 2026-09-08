@@ -141,6 +141,15 @@ execution:
   gateway: paper               # paper | binance_spot_testnet | binance_futures_testnet (testnet_enabled + env anahtarları gerekir); live KAPALI
   testnet_enabled: false
   reconcile_on_start: true
+  # YÜRÜTME HASSASİYETİ (bkz. tradingbot/execspec.py, deploy/config.paper-precision.example.yaml)
+  # true: DOĞRULANMIŞ fiyat/miktar adımı olmayan sembolde YENİ GİRİŞ açılmaz (UNRESOLVED_PRECISION).
+  # Açık pozisyonların koruyucu çıkışları ETKİLENMEZ (`tick()` kural çözümü çağırmaz).
+  # Ölçüm 2026-09-08: varsayılan 0.01 tick TRX'te plan geometrisini 2.0000R → 1.2775R'ye düşürüyordu;
+  # resmi USDⓈ-M kuralıyla (tick 0.00001) aynı kayma altında 1.9270R. 11/11 açık pozisyon ve
+  # 40/40 güncel aday resmi kurala çözülüyor, yani bu bayrak hiçbir mevcut adayı engellemiyor.
+  require_verified_precision: true
+  filters_max_age_hours: 24    # symbol_filters.json bundan eskiyse tur başında exchangeInfo (ağırlık 1)
+  filters_refresh_on_start: true
 
 fees:                          # PAPER'da versiyonlu tarife; API bağlanınca gerçek hesap komisyonu alınabilir (FeeSource)
   spot_maker_pct: 0.10

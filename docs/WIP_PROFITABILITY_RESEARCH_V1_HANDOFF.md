@@ -5,7 +5,9 @@ Ayrıntılı sonuç: `docs/PROFITABILITY_RESEARCH_ACCELERATION_V1.md`.
 
 ## 0. Verdict
 
-`PROFITABILITY_DUAL_EDGE_V2_COMPLETE_LOCAL_NO_DEPLOY`
+`LEARNING_COUNT_INTEGRITY_V3_REPAIRED_LOCAL_NO_DEPLOY`
+
+(önceki: `PROFITABILITY_DUAL_EDGE_V2_COMPLETE_LOCAL_NO_DEPLOY`)
 
 (önceki: `PROFITABILITY_RESEARCH_ACCELERATION_V1_COMPLETE_LOCAL_NO_DEPLOY`)
 
@@ -221,3 +223,100 @@ Testler: **1969 passed / 22 skipped / 0 failed**, ruff temiz.
 3. `avg_loss_r = −1.0` sabit varsayımı (ölçülen −1.0323) — ayrı ve ölçülmemiş konu.
 4. `win.add` global düğüme işlem başına iki kez yazıyor (n=50 vs n_closed=25); oran
    etkilenmez, shrinkage gücü etkilenir. Ölçüldü, düzeltme ÖNERİLMEDİ.
+
+
+---
+
+# EK 2 — ÖĞRENME SAYAÇ ONARIMI + DÜZELTİLMİŞ KIYASLAMA (V3, 2026-09-08)
+
+Ayrıntı: `docs/LEARNING_COUNT_INTEGRITY_V3.md`. v1/v2 çıktıları KORUNDU.
+Yeni çıktı: `integrity_report.json` / `.md`.
+
+## F1. Kök neden (kanıtlandı)
+
+`LearnerV2.on_trade_closed` bir nihai kapanış için `win.add`'i İKİ KEZ çağırıyordu
+(`leaf=SYM|setup` ve `leaf=SYM`). `HierarchicalRate.add` her çağrıda ORTAK ATALARI da
+(`""` ve `regime:X`) yazdığı için bu iki düğüm kapanış başına iki kez sayılıyordu.
+Yaprak düğümler (44 + 46) etkilenmiyordu — onlar meşru ayrı granülerliklerdir.
+`exp_r` (tek çağrı) hiç yinelenmemişti (global n=25).
+
+Üç büyüklük ayrı: benzersiz gözlem **25** · güncelleme çağrısı **50 → 25** ·
+global ağırlıklı kütle **50.0 → 25.0**. Yinelenen düğüm **9**, değişmeyen **90**.
+
+## F2. Onarım
+
+`learn/model.py`: `add(..., leaves=(...))` + `_keys_multi` — atalar BİR KEZ, her yaprak bir kez,
+anahtarlar tekilleştirilir. `leaf=` imzası geriye uyumlu. `learn/learner_v2.py`: tek çağrı.
+`n`'yi bölen / sayaç silen / çocuk güncellemesi bastıran çözüm KULLANILMADI.
+Tekrarlı teslim koruması MEVCUT `LearnedIndex`tedir — ikinci defter eklenmedi.
+
+## F3. Bileşen etkisi (point-in-time, sızıntısız)
+
+Sadece metadata DEĞİL: `sample_size` yarıya iner → `uncertainty_penalty_r` BÜYÜR.
+Ortalama Δceza **+0.018828 R** (azami +0.026027), ortalama Δ`p_hier` **+0.028670**.
+Etkilenmeyen: `p_win_prior`, `avg_win_r`, plan geometrisi.
+
+F00036 birebir doğrulandı: kayıtlı `sample_size=22` / ceza `0.041703` eski semantikle
+aynen çıkıyor; düzeltilmişte `11` / `0.057735`.
+
+Kenar duyarlılığı: **2 / 404** satırda ekonomik kapı verdikti değişiyor —
+`fed44d90cddc48d1` (AVAX, **F00033: gerçekleşen işlem**, +0.006236 → −0.019715) ve
+`a1592626729ca2c4` (BTC, +0.018185 → −0.007842).
+
+**Yeniden kurulum sınırı:** kayıtlı `sample_size` 202/404 satırda birebir üretiliyor; üretimde
+düğüm anahtarı KAPANIŞ ANI rejimiyle kuruluyor ve bu değer saklanmıyor. Global düğüm ölçümü
+rejimden bağımsız ve üretimle birebir aynı.
+
+## F4. Hedef sözleşmesi (kaynaktan)
+
+SCRATCH **paydada**, kazanç sayılmaz, üçüncü sınıf değil. `p_win` **koşulsuz**
+`P(r > +0.25R)`, ufuk işlem **ömrü**. v2'deki kalibrasyon SCRATCH'i dışlıyordu → düzeltildi.
+`avg_loss_r = -1.0` sabit varsayımı kayıp tarafını ABARTIR (kayda geçirildi).
+
+## F5. Eşleşmiş kıyaslama (AYNI kimlik kümesi)
+
+"39 satır" nedeni: v2 yalnız DOĞRUDAN kayıtlı `features.p_win_prior` satırlarını alıyordu.
+Artık kimlik tersinden DERIVED provenansıyla geri kazanılıyor.
+
+**Hedef A (yaşam boyu, sansür 305/404):** n=99, hash `655226d1b9b1316b`.
+Brier: taban çizgisi **0.216986** < harman 0.230404 < ön tahmin 0.344555.
+Eşleşmiş fark **`p_win_prior` − taban çizgisi = +0.127569, GA95 [+0.0066, +0.2417] → SIFIRI
+DIŞLIYOR** (tek kurulmuş sonuç). Diğerleri sıfırı içeriyor.
+
+**Hedef B (sabit 72 sa MTM):** n=165, hash `aa737f2aaa0e2bcb`, 24 SCRATCH.
+Brier: ön tahmin **0.287864** < harman 0.322477 < taban çizgisi 0.325084.
+Bütün eşleşmiş farklar sıfırı içeriyor.
+
+**Sıralama hedefe göre TERSİNE DÖNÜYOR** → A ve B birbirinin yerine geçemez; 72 sa MTM,
+yaşam boyu olasılığın kalibrasyonu DEĞİLDİR.
+
+## F6. Panel
+
+`Güven` → `Konsensüs gücü`, `P(kazanç)` → `P(kazanç) — model` (+ hedef ve
+"kalibratör FIT EDİLMEMİŞ" notu, + "son değerlendirme ≠ giriş kanıtı").
+SOL'daki "%0 güven" bir fallback DEĞİL: `confidence_calibrated = 0.0019`'un yuvarlanmasıydı;
+38 head'in hiçbirinde tam sıfır yok. `expected_return_net = 0.0` / `expected_r = 0.0`
+ÖLÇÜLMÜŞ sıfırdır ve korunur. `_cell_pct_signal` ölçülmüş sıfırı `%0`, eksiği `—`, küçük
+sıfır-olmayanı `%0.2` gösterir. **Yönetim tablosu zaten doğruydu** (11/11 `UNKNOWN` rozeti,
+`n_economics_unknown=11`) — değişiklik gerekmedi.
+
+## F7. Durum onarım planı
+
+`PREPARED_NOT_EXECUTED`, `execution_authorized: false`. Kapsam yalnız `learn_v2.json` →
+`win.stats` ata düğümleri (9 kirlenmiş). **Öneri R1 = DOKUNMA**: kod düzeltildi, kazanç küçük
+(0.0188 R), R2 kapanış-anı-rejimi saklanmadığı için birebir doğrulanamaz.
+
+## F8. Testler ve komut
+
+**1990 passed / 22 skipped / 0 failed** (1969 + 21 yeni), ruff temiz.
+Yeni: `tests/test_learning_count_integrity.py`.
+
+```bash
+python -m tradingbot.research.run --export "C:/Users/berke/research/pfres_v1" --out "C:/Users/berke/research/pfres_v1/out" --stage integrity
+```
+
+## F9. Sonraki adım
+
+Ödeme modelini etikete uydur: `avg_loss_r`'yi ölçülmüş koşullu ortalamayla
+(`E[R | r ≤ 0.25R]`) değiştiren bir SHADOW hesabı kaydet — karar değişmez. Hedef ile ödeme
+modelini AYNI olay üzerinde tanımlamak, yeni bir tahmin edici tasarlamadan ÖNCEKİ adımdır.

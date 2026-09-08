@@ -22,7 +22,8 @@ from .candles import CandleSource, build_candle_payload
 from .config import DashboardConfig
 from ..pnl import finite_float_or_none, position_view, realized_net
 from .state import STATE_FILES, StateReader
-from .views import (NO_DECISION_VERDICT, POSITION_NUM_COLS, coin_head_api_rows,
+from .views import (NO_DECISION_VERDICT, POSITION_NUM_COLS, _cell_pct_signal,
+                    coin_head_api_rows,
                     coin_head_table, json_safe, open_coverage)
 from .templates import (HEADS_TABLE_CLS, POS_TABLE_CLS, age_text, badge, card, card_value,
                         chart_block, chief_block, esc, fmt, fmt_utc, health_badge, ks_badge,
@@ -197,6 +198,10 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
         return table(vm["columns"], rows, num_cols=set(POSITION_NUM_COLS), empty="açık pozisyon yok",
                      cls=POS_TABLE_CLS) + note        # polling JS'i AYNI sabiti kullanır
 
+    def _pct_signal(x) -> str:
+        """Yuzde gosterimi — OLCULMUS sifir korunur, sifir olmayan kucuk deger gizlenmez."""
+        return _cell_pct_signal(x, 0)
+
     def _coin_head_payload() -> dict:
         """Coin head tablosunun KANONİK yükü — HTML render'ı ve `/api/live/coin-heads` AYNI çağrı."""
         return coin_head_table(state.coin_heads(), state.futures_positions(), state.trades(),
@@ -221,7 +226,21 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
                 "Açık pozisyonların yetkili listesi «Açık pozisyonlar» tablosudur.</p>")
         out += ('<div id="headsmiss" class="warn-box"%s>%s</div>'
                 % ("" if missing else ' style="display:none"', _missing_text(missing)))
+        out += _coin_head_legend(chp)
         return out
+
+    def _coin_head_legend(chp: dict) -> str:
+        """Alan anlamlarını AÇIKÇA yazar — yalnız SUNUM; model çalıştırmaz, değer türetmez.
+
+        Kaynak `views.COIN_HEAD_COLUMN_NOTES`; metin kolon adlarıyla tek yerden hizalıdır.
+        """
+        notes = chp.get("column_notes") or {}
+        if not notes:
+            return ""
+        items = "".join("<li><b>%s</b>: %s</li>" % (esc(k), esc(v))
+                        for k, v in notes.items())
+        return ('<details class="mut small"><summary>Alan anlamları '
+                '(konsensüs gücü ≠ olasılık)</summary><ul>%s</ul></details>' % items)
 
     def _missing_text(missing: list) -> str:
         if not missing:
@@ -284,9 +303,9 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
         body = ""
         if h:
             fp, sp = h.get("futures_plan") or {}, h.get("spot_plan") or {}
-            body += f'<div class="grid">{card("Karar", verdict_badge(h.get("verdict")), esc(h.get("no_trade_reason") or ""))}{card("Yön", esc(h.get("direction") or "-"))}{card("Güven", fmt(float(h.get("confidence_calibrated") or 0) * 100, 0) + "%")}{card("P(kazanç)", fmt(float(h.get("p_win") or 0) * 100, 0) + "%")}{card("Net E[r]", pct(h.get("expected_return_net")))}{card("E[R]", fmt(h.get("expected_r"), 2))}{card("Rejim", esc(h.get("regime")))}{card("Piyasa", esc(h.get("market_type")))}</div>'
+            body += f'<div class="grid">{card("Karar", verdict_badge(h.get("verdict")), esc(h.get("no_trade_reason") or ""))}{card("Yön", esc(h.get("direction") or "-"))}{card("Konsensüs gücü", _pct_signal(h.get("confidence_calibrated")), "olasılık DEĞİL — konsensüs sinyal gücü")}{card("P(kazanç) — model", _pct_signal(h.get("p_win")), "hiyerarşik+legacy harman; hedef r>+0.25R, ufuk işlem ömrü; kalibratör FIT EDİLMEMİŞ")}{card("Net E[r]", pct(h.get("expected_return_net")))}{card("E[R]", fmt(h.get("expected_r"), 2))}{card("Rejim", esc(h.get("regime")))}{card("Piyasa", esc(h.get("market_type")))}</div>'
         elif b:
-            body += f'<div class="grid">{card("Karar (eski ajan)", verdict_badge(b.get("verdict")))}{card("Kanaat", fmt(b.get("conviction"), 0) + "%")}{card("Fiyat", fmt(b.get("price")))}{card("P(kazanç)", fmt(float(b.get("p_win") or 0) * 100, 0) + "%")}</div><p class="mut">{esc(b.get("headline"))}</p>'
+            body += f'<div class="grid">{card("Karar (eski ajan)", verdict_badge(b.get("verdict")))}{card("Kanaat", fmt(b.get("conviction"), 0) + "%")}{card("Fiyat", fmt(b.get("price")))}{card("P(kazanç) — eski ajan", _pct_signal(b.get("p_win")))}</div><p class="mut">{esc(b.get("headline"))}</p>'
         else:
             body += '<div class="card mut">Bu coin için karar yok; yalnızca grafik.</div>'
         body += "<h2>Grafik</h2>" + chart_block(base, tf, market, token_qs=token_qs, max_bars=cfg.max_bars)

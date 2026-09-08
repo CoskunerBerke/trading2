@@ -545,8 +545,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--n-null", type=int, default=200)
     ap.add_argument("--offline", action="store_true", help="ağ isteği YAPMA (yalnız önbellek)")
     ap.add_argument("--force", action="store_true", help="önbelleği yok say, yeniden hesapla")
-    ap.add_argument("--stage", choices=("v1", "dual_edge", "all"), default="v1",
-                    help="v1: özgün rapor · dual_edge: doğrulama+çift kapı (AYRI çıktı) · all")
+    ap.add_argument("--stage", choices=("v1", "dual_edge", "integrity", "all"), default="v1",
+                    help=("v1: özgün rapor · dual_edge: doğrulama+çift kapı · "
+                          "integrity: sayaç bütünlüğü + düzeltilmiş kıyaslama · all"))
     args = ap.parse_args(argv)
 
     export_dir, out_dir = Path(args.export), Path(args.out)
@@ -555,6 +556,28 @@ def main(argv: list[str] | None = None) -> int:
         print(f"HATA: export dizini bulunamadı: {export_dir}/state", file=sys.stderr)
         return 2
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    if args.stage in ("integrity", "all"):
+        from .integrity_run import (INTEGRITY_JSON, INTEGRITY_MD, build_integrity_report,
+                                    render_integrity_markdown)
+        ip = out_dir / INTEGRITY_JSON
+        if ip.exists() and not args.force:
+            print(f"INTEGRITY_CACHE_HIT {ip} (yeniden hesaplanmadı; --force ile zorla)")
+        else:
+            rep = _finite(build_integrity_report(export_dir, out_dir, seed=args.seed,
+                                                 offline=args.offline))
+            ip.write_text(json.dumps(rep, ensure_ascii=False, indent=1, allow_nan=False),
+                          encoding="utf-8")
+            (out_dir / INTEGRITY_MD).write_text(render_integrity_markdown(rep), encoding="utf-8")
+            ci = rep["count_integrity"]
+            print(f"INTEGRITY_OK closes={ci['n_final_closes']} "
+                  f"win_global_old={ci['weighted_mass_global_old']} "
+                  f"new={ci['weighted_mass_global_new']} "
+                  f"dup_nodes={ci['n_duplicated_nodes']} verdict={ci['verdict']} "
+                  f"flips={rep['edge_sensitivity']['n_gate_verdict_flips']} "
+                  f"elapsed={rep['runtime']['elapsed_s']}s -> {ip}")
+        if args.stage == "integrity":
+            return 0
 
     if args.stage in ("dual_edge", "all"):
         from .dual_edge_run import (CORRECTIONS_JSON, DUAL_JSON, DUAL_MD,

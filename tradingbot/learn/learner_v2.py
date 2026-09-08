@@ -151,8 +151,10 @@ class LearnerV2:
         regime = str((decision_snapshot or {}).get("regime") or f.get("regime") or "")
         symbol, setup, side = str(rec.get("symbol", "")), str(rec.get("setup_type", f.get("setup_type", "-"))), str(rec.get("side", f.get("direction", "")))
         won = 1.0 if lab["won"] else 0.0
-        self.win.add(won, regime=regime or None, leaf=f"{symbol}|{setup}")
-        self.win.add(won, regime=regime or None, leaf=symbol)
+        # TEK gozlem, IKI yaprak granulerligi (`SYM|setup` ve `SYM`). Tek cagri kullanilir:
+        # aksi halde ortak atalar (`""` global ve `regime:X`) ayni kapanis icin IKI KEZ
+        # sayilirdi (bkz. HierarchicalRate._keys_multi).
+        self.win.add(won, regime=regime or None, leaves=(f"{symbol}|{setup}", symbol))
         self.exp_r.add(lab["r_multiple"], regime=regime or None, leaf=f"{setup}|{side}")
         for a in pm.agents_right:
             self.agent_hit.add(1.0, regime=regime or None, leaf=a)

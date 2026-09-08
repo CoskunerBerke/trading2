@@ -61,6 +61,11 @@ R_MIN_NOTIONAL = "MIN_NOTIONAL"
 R_INSUFFICIENT_MARGIN = "INSUFFICIENT_MARGIN"
 R_LEVERAGE = "LEVERAGE_TOO_HIGH"
 R_BAD_PRICE = "BAD_PRICE"
+#: Sembolun fiyat/miktar adimi DOGRULANMAMIS (varsayilan filtreye dusulmus). YALNIZ
+#: `require_verified_precision=True` iken uygulanir; kapali iken davranis DEGISMEZ.
+#: Bkz. `tradingbot/execspec.py` — varsayilan 0.01 tick dusuk fiyatli sembollerde
+#: plan geometrisini sessizce bozar (olculdu: TRX 2.0000R -> 1.2775R).
+R_UNVERIFIED_PRECISION = "UNVERIFIED_PRECISION"
 R_BAD_STOP = "BAD_STOP"
 
 EXIT_STOP = "stop"
@@ -95,7 +100,12 @@ class FuturesLedgerV2:
                  slippage: SlippageModel | None = None, brackets: list[LeverageBracket] | None = None,
                  liq_params: LiquidationParams | None = None, funding: FundingSchedule | None = None,
                  tax_policy: TaxPolicy | None = None, tp1_fraction=Decimal("0.5"), allow_shrink: bool = False,
-                 worst_case: bool = True, tp_maker: bool = False, entries_keep: int = 2000, history_keep: int = 5000):
+                 worst_case: bool = True, tp_maker: bool = False, entries_keep: int = 2000, history_keep: int = 5000,
+                 require_verified_precision: bool = False):
+        #: Doğrulanmamış fiyat/miktar adımıyla YENİ GİRİŞ açılmasın mı? VARSAYILAN KAPALI —
+        #: açmak davranış değiştirir (ölçüldü: karar evreninin %88'i yeni giriş açamaz hâle
+        #: gelir) ve ayrı bir operatör kararıdır. Açık pozisyonların çıkışlarını ETKİLEMEZ.
+        self.require_verified_precision: bool = bool(require_verified_precision)
         self.starting_equity: Decimal = D(starting_equity)
         self.wallet_balance: Decimal = D(starting_equity)
         # `max_positions` DAİMA integer'dır (JSON'a integer yazılır; `null` YAZILMAZ — eski sürüm
@@ -198,6 +208,13 @@ class FuturesLedgerV2:
         if not ok:
             return self._reject(why, symbol)
         filters = filters or default_filters(symbol, MarketType.USDM_PERP)
+        # HASSASIYET KAPISI (opt-in): dogrulanmamis filtreyle YENI GIRIS acilmaz. Kapali iken
+        # (varsayilan) hicbir sey degismez; acmak ayri bir operator kararidir. Bu kontrol
+        # YALNIZ `open()` yolundadir — `tick()` (stop/TP/likidasyon) etkilenmez, dolayisiyla
+        # acik pozisyonlarin koruyucu cikislari CALISMAYA DEVAM EDER.
+        if getattr(self, "require_verified_precision", False) and \
+                str(getattr(filters, "source", "") or "") in ("", "default"):
+            return self._reject(R_UNVERIFIED_PRECISION, symbol)
         fees = fees or self.fees
         slip = slippage or self.slippage
         brackets = brackets or self.brackets

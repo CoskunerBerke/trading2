@@ -366,10 +366,16 @@ def complete_missing_chain(*, history: Any, memory: Any, learner: Any,
 
 
 def note_learned(index: LearnedIndex | None, close: Any, lesson: dict | None,
-                 *, source: str = LIVE_TOUR) -> bool:
+                 *, source: str = LIVE_TOUR, learning_keys: dict | None = None) -> bool:
     """Canlı tur öğrenmesini indekse yazar — sonraki turda AYNI kapanış tekrar öğrenilmesin.
 
     `close` ham kapanış sözlüğü ya da `TradeRecord` olabilir.
+
+    `learning_keys` AÇIKÇA geçilebilir. Bunun sebebi motorun İKİ ayrı ders üretmesidir:
+    `lesson` LEGACY öğreniciden gelir (`self.learner.learn`) ve provenans taşımaz; düğüm
+    anahtarlarını YALNIZ `LearnerV2.on_trade_closed` üretir ve DÖNDÜRÜR. Açık parametre
+    verilmezse eski davranış korunur ve `lesson` içinden okunur — böylece `lesson` olarak
+    doğrudan v2 dersini geçen çağıranlar (ve testleri) bozulmaz.
     """
     if index is None:
         return False
@@ -383,9 +389,10 @@ def note_learned(index: LearnedIndex | None, close: Any, lesson: dict | None,
         r = float(r) if r is not None else None
     except (TypeError, ValueError):
         r = None
+    keys = learning_keys if learning_keys is not None else (lesson or {}).get("learning_keys")
     return index.record(close_ev=ev, trade_id=tid, steps=["outcome", "lesson"], source=source,
                         lesson_id=(lesson or {}).get("id"), r_multiple=r,
-                        learning_keys=(lesson or {}).get("learning_keys"))
+                        learning_keys=keys)
 
 
 __all__ = ["SCHEMA_VERSION", "INDEX_SCHEMA_VERSION", "DEFAULT_MAX_APPLY", "BOOTSTRAP",

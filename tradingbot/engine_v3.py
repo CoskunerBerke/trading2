@@ -617,14 +617,17 @@ class TradingEngineV3(TradingEngine):
                 snap = self.last_decisions.get(rec.symbol) or {}
                 try:
                     lesson = self.learner.learn(legacy)
-                    self.learner2.on_trade_closed(legacy | {"features": legacy.get("features") or {}},
-                                                  {"regime": snap.get("regime"), "consensus_score": snap.get("consensus_score"),
-                                                   "dissent": snap.get("dissent"), "vetoes": snap.get("vetoes")})
+                    # PROVENANS: düğüm anahtarlarını YALNIZ v2 öğrenici üretir ve DÖNDÜRÜR.
+                    # Dönüş atılırsa indekse `learning_keys` HİÇ yazılmaz (bkz. note_learned).
+                    v2_lesson = self.learner2.on_trade_closed(legacy | {"features": legacy.get("features") or {}},
+                                                              {"regime": snap.get("regime"), "consensus_score": snap.get("consensus_score"),
+                                                               "dissent": snap.get("dissent"), "vetoes": snap.get("vetoes")})
                     self._journal_outcome(legacy, lesson)
                     # `exit_check` ile AYNI boşluk: gap-reconcile kapanışları da indekse yazılmalı.
                     from .learn.reconcile import note_learned
                     note_learned(getattr(self, "learned_index", None), legacy, lesson,
-                                 source="GAP_RECONCILE")
+                                 source="GAP_RECONCILE",
+                                 learning_keys=(v2_lesson or {}).get("learning_keys"))
                 except Exception as exc:  # noqa: BLE001
                     log.exception("gap-reconcile öğrenme hatası: %s", exc)
 
@@ -663,15 +666,18 @@ class TradingEngineV3(TradingEngine):
                 snap = self.last_decisions.get(rec.symbol) or {}
                 try:
                     lesson = self.learner.learn(legacy)
-                    self.learner2.on_trade_closed(legacy | {"features": legacy.get("features") or {}}, {"regime": snap.get("regime"), "consensus_score": snap.get("consensus_score"),
-                                                                                                        "dissent": snap.get("dissent"), "vetoes": snap.get("vetoes")})
+                    # PROVENANS: v2 dersinin DÖNÜŞÜ tutulur; `lesson` legacy öğreniciden gelir
+                    # ve `learning_keys` İÇERMEZ (bkz. note_learned sözleşmesi).
+                    v2_lesson = self.learner2.on_trade_closed(legacy | {"features": legacy.get("features") or {}}, {"regime": snap.get("regime"), "consensus_score": snap.get("consensus_score"),
+                                                                                                                    "dissent": snap.get("dissent"), "vetoes": snap.get("vetoes")})
                     self._journal_outcome(legacy, lesson)
                     # ÖĞRENİLDİ KAYDI — bu yol eskiden indekse HİÇ yazmıyordu. Ders sıcak
                     # pencereden (200) arşive döndükten sonra kapanış "eksik" görünüp İKİNCİ
                     # kez öğrenilebilirdi; kapanışların çoğu bu 60 sn'lik monitörden geçer.
                     from .learn.reconcile import note_learned
                     note_learned(getattr(self, "learned_index", None), legacy, lesson,
-                                 source="EXIT_MONITOR")
+                                 source="EXIT_MONITOR",
+                                 learning_keys=(v2_lesson or {}).get("learning_keys"))
                 except Exception as exc:  # noqa: BLE001 — öğrenme hatası defteri geri almaz
                     log.exception("exit-monitor öğrenme hatası: %s", exc)
                 out.append(legacy)
@@ -907,15 +913,18 @@ class TradingEngineV3(TradingEngine):
             legacy = rec.to_legacy_dict()
             snap = self.last_decisions.get(rec.symbol) or {}
             lessons.append(self.learner.learn(legacy))
-            self.learner2.on_trade_closed(legacy | {"features": legacy.get("features") or {}}, {"regime": snap.get("regime"), "consensus_score": snap.get("consensus_score"),
-                                                                                                "dissent": snap.get("dissent"), "vetoes": snap.get("vetoes")})
+            # PROVENANS: v2 dersinin DÖNÜŞÜ tutulur. `lessons[-1]` LEGACY öğrenicinindir ve
+            # `learning_keys` İÇERMEZ; düğüm anahtarlarını yalnız v2 üretir.
+            v2_lesson = self.learner2.on_trade_closed(legacy | {"features": legacy.get("features") or {}}, {"regime": snap.get("regime"), "consensus_score": snap.get("consensus_score"),
+                                                                                                            "dissent": snap.get("dissent"), "vetoes": snap.get("vetoes")})
             self._journal_outcome(legacy, lessons[-1] if lessons else None)
             # ÖĞRENİLDİ KAYDI: bu kapanış bir daha öğrenilmeyecek. Kimlik deterministiktir
             # (`trade_id` + `closed_at` + `exit_reason`), bu yüzden restart/retry duplicate ÜRETMEZ.
             try:
                 from .learn.reconcile import note_learned
                 note_learned(getattr(self, "learned_index", None), legacy,
-                             lessons[-1] if lessons else None)
+                             lessons[-1] if lessons else None,
+                             learning_keys=(v2_lesson or {}).get("learning_keys"))
             except Exception as exc:  # noqa: BLE001 — indeks arızası öğrenmeyi geçersiz KILMAZ
                 log.warning("öğrenildi kaydı yazılamadı: %s", exc)
         # CRASH PENCERESİ ONARIMI: defter `ledger2.save()` ile ÖNCE kalıcı olur, öğrenme SONRA

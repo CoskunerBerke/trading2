@@ -65,16 +65,30 @@ def _f(x: Any) -> float | None:
 
 
 # --------------------------------------------------------------------------- 1) fırsat havuzu
+#: Bar temsilcisi seçim politikaları.
+REP_FIRST = "first"
+REP_LINKED_ELSE_FIRST = "linked_or_accepted_else_first"
+
+
 def build_opportunities(entry_rows: list[dict[str, Any]],
-                        links: dict[str, str]) -> dict[str, Any]:
+                        links: dict[str, str] | None = None, *,
+                        representative: str = REP_FIRST) -> dict[str, Any]:
     """Aynı sinyalin tur tur tekrarlarını TEKİLLEŞTİRİR.
 
     Motorun kendi benzersiz-sinyal kuralıyla hizalı anahtar:
-    `symbol|direction|timeframe|kapanmış bar|setup`. Aynı bar içindeki ilk kayıt temsilcidir
-    (en erken karar anı); "hiç kabul edildi mi" bilgisi bar boyunca birleştirilir.
+    `symbol|direction|timeframe|kapanmış bar|setup`. Aynı barın tekrarları BAĞIMSIZ örnek
+    DEĞİLDİR — tekilleştirme bunu düzeltir.
 
-    Aynı barın tekrarları BAĞIMSIZ örnek DEĞİLDİR — tekilleştirme bunu düzeltir.
+    Temsilci politikası:
+    * ``first`` (VARSAYILAN, geriye uyumlu) — bardaki EN ERKEN karar anı. Sonuç çalışmaları
+      bunu kullanır; ileriye bakış yoktur.
+    * ``linked_or_accepted_else_first`` — barda kanonik işleme BAĞLANMIŞ ya da kabul edilmiş
+      bir kayıt varsa O temsilcidir. Ekonomik kapının GERÇEKTEN uygulandığı kaydı incelemek
+      için gerekir (ör. F00036). Yine karar anı verisidir; sonuç alanı taşımaz.
     """
+    links = links or {}
+    if representative not in (REP_FIRST, REP_LINKED_ELSE_FIRST):
+        raise ValueError(f"bilinmeyen temsilci politikası: {representative}")
     groups: "OrderedDict[tuple, dict[str, Any]]" = OrderedDict()
     for r in entry_rows:
         ts = _f(r.get("ts_ms"))
@@ -93,6 +107,10 @@ def build_opportunities(entry_rows: list[dict[str, Any]],
             g["n_repeats"] += 1
             g["ever_accepted"] = g["ever_accepted"] or bool(r.get("baseline_accepted"))
             g["reject_reasons"].add(str(r.get("baseline_reject_reason") or "-"))
+            if representative == REP_LINKED_ELSE_FIRST and not g.get("locked"):
+                if links.get(str(r.get("candidate_id") or "")) or r.get("baseline_accepted"):
+                    g["row"] = r
+                    g["locked"] = True
 
     out: list[dict[str, Any]] = []
     for key, g in groups.items():
@@ -135,7 +153,9 @@ def build_opportunities(entry_rows: list[dict[str, Any]],
         })
     return {"schema_version": SCHEMA_VERSION, "opportunities": out,
             "n_raw_rows": len(entry_rows), "n_unique": len(out),
-            "dedup_rule": "symbol|direction|timeframe|closed_bar|setup — ilk kayıt temsilci",
+            "dedup_rule": ("symbol|direction|timeframe|closed_bar|setup — temsilci politikası: "
+                           f"{representative}"),
+            "representative_policy": representative,
             "note": ("aynı barın tur tekrarları BAĞIMSIZ kanıt değildir; ham satır sayısı "
                      "örneklem büyüklüğü olarak KULLANILAMAZ")}
 

@@ -545,6 +545,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--n-null", type=int, default=200)
     ap.add_argument("--offline", action="store_true", help="ağ isteği YAPMA (yalnız önbellek)")
     ap.add_argument("--force", action="store_true", help="önbelleği yok say, yeniden hesapla")
+    ap.add_argument("--stage", choices=("v1", "dual_edge", "all"), default="v1",
+                    help="v1: özgün rapor · dual_edge: doğrulama+çift kapı (AYRI çıktı) · all")
     args = ap.parse_args(argv)
 
     export_dir, out_dir = Path(args.export), Path(args.out)
@@ -553,6 +555,32 @@ def main(argv: list[str] | None = None) -> int:
         print(f"HATA: export dizini bulunamadı: {export_dir}/state", file=sys.stderr)
         return 2
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    if args.stage in ("dual_edge", "all"):
+        from .dual_edge_run import (CORRECTIONS_JSON, DUAL_JSON, DUAL_MD,
+                                    build_dual_edge_report, render_dual_markdown)
+        dp = out_dir / DUAL_JSON
+        if dp.exists() and not args.force:
+            print(f"DUAL_EDGE_CACHE_HIT {dp} (yeniden hesaplanmadı; --force ile zorla)")
+        else:
+            dual = _finite(build_dual_edge_report(export_dir, out_dir, seed=args.seed,
+                                                  offline=args.offline))
+            dp.write_text(json.dumps(dual, ensure_ascii=False, indent=1, allow_nan=False),
+                          encoding="utf-8")
+            (out_dir / DUAL_MD).write_text(render_dual_markdown(dual), encoding="utf-8")
+            (out_dir / CORRECTIONS_JSON).write_text(
+                json.dumps({"schema_version": "research_corrections_v1",
+                            "corrections": dual["corrections"]},
+                           ensure_ascii=False, indent=1), encoding="utf-8")
+            gc = dual["dual_gate_counts"]["counts"]
+            print(f"DUAL_EDGE_OK gates(prior/model) YY={gc['prior_YES_model_YES']} "
+                  f"YN={gc['prior_YES_model_NO']} NY={gc['prior_NO_model_YES']} "
+                  f"NN={gc['prior_NO_model_NO']} "
+                  f"class={dual['separation_classification']['classification']} "
+                  f"f00036={dual['f00036_reconciliation']['gap_resolution']['state']} "
+                  f"elapsed={dual['runtime']['elapsed_s']}s -> {dp}")
+        if args.stage == "dual_edge":
+            return 0
 
     rp = out_dir / REPORT_JSON
     if rp.exists() and not args.force:

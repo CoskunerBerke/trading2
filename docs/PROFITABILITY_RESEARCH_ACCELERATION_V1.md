@@ -9,6 +9,28 @@
 > ARİTMETİK KİMLİK (kesin), bir kısmı GÖZLEM (belirsiz), bir kısmı RETROSPEKTİF SİMÜLASYONdur
 > (ileri kanıt DEĞİL).
 
+> ### ⚠ DÜZELTME UYARISI (2026-09-08)
+>
+> Bu belgenin bazı ifadeleri `docs/PROFITABILITY_DUAL_EDGE_V2.md` §9 ile **düzeltilmiştir**.
+> Gövde, eski kanıtı korumak için OLDUĞU GİBİ bırakılmıştır. Kısaca:
+>
+> * §2/§5.1 — `p_win` "model/kalibre çıktı" DEĞİLDİR: champion `p_win_lr` modeli yok,
+>   Platt kalibratörü fit edilmemiş (`n_fit=0`); değer 0.5·hiyerarşik önsel + 0.5·legacy
+>   tahmin harmanıdır (C-03).
+> * §5.1 — kimlik testi `gross_expectancy_r` üzerindedir; `conservative_net_edge_r` ondan
+>   belirsizlik + yumuşak ceza düşülerek TÜRETİLİR. Basit ağırlıklı beklenti "conservative
+>   NET edge" değildir (C-01). "256/256 ve 0/404" farklı paydalardı; kapı olasılığı artık
+>   404/404 için geri kazanıldı (C-02).
+> * §5.2/RL-02 — kalibrasyon hedef-uyumsuz bir etiketle ölçülmüştü; hedef-uyumlu etiketle
+>   ve geçmiş-yalnız taban çizgisiyle yeniden koşuldu (C-04).
+> * §5.3/RL-03 — "sadakat 1.0" KATEGORİK uyumdur; ekonomik büyüklük karşılaştırmasında
+>   0 EXACT / 18 WITHIN_TOLERANCE / 7 MISMATCH (C-05).
+> * §5.4/RL-04 — "düzeltilmiş sıralama" nitelemesi kaldırıldı (C-06).
+> * Gerçekleşen zarar bir OLGUdur; güven aralığı yalnız popülasyon beklentisi hakkındadır (C-07).
+>
+> v1 sayısal sonuçları yeniden koşuldu ve **birebir aynı** çıktı (yalnız `research_id`
+> kod SHA'sına bağlı olduğu için `d0cf2a0ca55860ad` → `10297e21231b9e1d`).
+
 Koşu kimliği: `research_id = d0cf2a0ca55860ad` · kod `12db804` · export cutoff
 `2026-09-07T21:16:41Z`.
 

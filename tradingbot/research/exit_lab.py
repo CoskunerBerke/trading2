@@ -279,3 +279,123 @@ def run_exit_comparison(closed_rows: list[dict[str, Any]], cache: BarCache, *,
 __all__ = ["AMBIGUITY_FLAG_RATIO", "MAX_EXTENSION_DAYS", "SCHEMA_VERSION", "build_exit_trades",
            "champion_fidelity", "intrabar_ambiguity", "measured_cost_per_fill_r",
            "run_exit_comparison"]
+
+
+# --------------------------------------------------------------- ekonomik sadakat (v2, ayrıntılı)
+#: Zamanlama toleransı = bar cadence'i (15dk). Bar içi an ÖLÇÜLEMEZ.
+TIMING_TOLERANCE_MS = 900_000.0
+
+
+def economic_fidelity(closed_rows: list[dict[str, Any]], cache: BarCache, *,
+                      interval: str = "15m", cutoff_ms: float | None = None,
+                      cost_per_fill_r: float = 0.0, fetch: bool = True) -> dict[str, Any]:
+    """Simülasyonun kanonik gerçeği EKONOMİK olarak ne kadar yeniden ürettiği.
+
+    İşaret ve çıkış-nedeni uyumu KATEGORİK uyumdur; bu bölüm asıl büyüklükleri karşılaştırır:
+    çıkış zamanı, dolum sayısı, R, net USDT. Toleranslar VERİDEN türetilir:
+    * zaman: bir bar (15 dk) — bar içi an ölçülemez,
+    * R: o işlemin gerçek bar aralığının riske oranı (ortalama |high-low| / risk) — yani
+      15dk çözünürlüğünün o enstrümanda ne kadar belirsizlik ürettiği.
+
+    Kanonik kapanış zamanı, nedeni ya da PnL'i simülasyona GİRDİ OLARAK VERİLMEZ; kapanış
+    zamanı yalnız gözlem penceresinin ÜST SINIRINI belirler (uzatmayla birlikte) ve bu
+    uzatma bütün politikalar için aynıdır.
+    """
+    built = build_exit_trades(closed_rows, cache, interval=interval, cutoff_ms=cutoff_ms,
+                              fetch=fetch)
+    by_id = {str(r.get("trade_id")): r for r in closed_rows}
+    rows: list[dict[str, Any]] = []
+    for t in built["trades"]:
+        tid = str(t["trade_id"])
+        can = by_id.get(tid, {})
+        sim = simulate_exit(t, CHAMPION_POLICY, cost_per_fill_r=cost_per_fill_r)
+        if sim is None:
+            rows.append({"trade_id": tid, "state": "UNMEASURABLE",
+                         "reason": "simülasyon sonuç üretemedi"})
+            continue
+        path = t.get("price_path") or []
+        entry, stop = _f(t.get("entry_price")), _f(t.get("initial_stop"))
+        risk_px = abs((entry or 0.0) - (stop or 0.0))
+        ranges = [abs(b["high"] - b["low"]) for b in path] if path else []
+        r_tol = ((sum(ranges) / len(ranges)) / risk_px) if (ranges and risk_px > 0) else None
+        held = int(sim.get("bars_held") or 0)
+        sim_exit_ms = None
+        if held and t.get("horizon_end_ms") is not None:
+            o_ms = _f(can.get("opened_at_ms"))
+            if o_ms is not None:
+                sim_exit_ms = o_ms + held * 900_000.0
+        can_ms = _f(can.get("closed_at_ms"))
+        dt_ms = (sim_exit_ms - can_ms) if (sim_exit_ms is not None and can_ms is not None) else None
+        can_r, sim_r = _f(can.get("r_multiple")), _f(sim.get("net_r"))
+        d_r = (sim_r - can_r) if (can_r is not None and sim_r is not None) else None
+        risk_usdt = (abs((_f(can.get("net_pnl")) or 0.0) / can_r)
+                     if can_r not in (None, 0.0) else None)
+        d_usdt = (d_r * risk_usdt) if (d_r is not None and risk_usdt is not None) else None
+        can_reason = str(can.get("exit_reason") or "").lower()
+        sim_reason = str(sim.get("exit_reason") or "")
+        reason_match = (("stop" in can_reason and "stop" in sim_reason)
+                        or ("hedef" in can_reason and sim_reason == "target")
+                        or (can_reason == sim_reason))
+        # Sınıflandırma: R farkı bar çözünürlüğünün ürettiği belirsizlik içinde mi?
+        if d_r is None or r_tol is None:
+            state = "UNMEASURABLE"
+        elif abs(d_r) <= 1e-9:
+            state = "EXACT"
+        elif abs(d_r) <= r_tol:
+            state = "WITHIN_TOLERANCE"
+        else:
+            state = "MISMATCH"
+        rows.append({
+            "trade_id": tid, "symbol": can.get("symbol"), "state": state,
+            "canonical": {"exit_reason": can.get("exit_reason"), "closed_at": can.get("closed_at"),
+                          "r_multiple": can_r, "net_pnl_usdt": _f(can.get("net_pnl")),
+                          "fees_usdt": _f(can.get("fees")), "funding_usdt": _f(can.get("funding")),
+                          "n_fills": int(can.get("n_fills") or 0),
+                          "tp1_done": bool(can.get("tp1_done")),
+                          "quantity": _f(can.get("quantity")),
+                          "risk_usdt_derived": risk_usdt},
+            "simulated": {"exit_reason": sim_reason, "exit_ms_estimated": sim_exit_ms,
+                          "net_r": sim_r, "gross_r": _f(sim.get("gross_r")),
+                          "fills": int(sim.get("fills") or 0),
+                          "cost_r_assumed": _f(sim.get("cost_r")),
+                          "bars_held": held},
+            "delta": {"r": (round(d_r, 6) if d_r is not None else None),
+                      "net_usdt_estimated": (round(d_usdt, 6) if d_usdt is not None else None),
+                      "exit_time_ms": (round(dt_ms, 1) if dt_ms is not None else None),
+                      "exit_time_within_one_bar": (bool(abs(dt_ms) <= TIMING_TOLERANCE_MS)
+                                                   if dt_ms is not None else None),
+                      "fills": (int(sim.get("fills") or 0) - int(can.get("n_fills") or 0)),
+                      "exit_reason_match": reason_match},
+            "tolerance": {"r_tolerance_from_bar_range": (round(r_tol, 6)
+                                                         if r_tol is not None else None),
+                          "timing_tolerance_ms": TIMING_TOLERANCE_MS,
+                          "basis": "ortalama 15dk bar aralığı / işlem riski; zaman: bar cadence"},
+            "unmeasurable_fields": ["partial_exit_quantities", "intrabar_fill_price",
+                                    "actual_fee_and_funding_per_fill"],
+        })
+    states: dict[str, int] = {}
+    for r in rows:
+        states[r["state"]] = states.get(r["state"], 0) + 1
+    d_r = [abs(r["delta"]["r"]) for r in rows if r.get("delta", {}).get("r") is not None]
+    d_t = [abs(r["delta"]["exit_time_ms"]) for r in rows
+           if r.get("delta", {}).get("exit_time_ms") is not None]
+    d_u = [abs(r["delta"]["net_usdt_estimated"]) for r in rows
+           if r.get("delta", {}).get("net_usdt_estimated") is not None]
+    within_bar = sum(1 for r in rows if r.get("delta", {}).get("exit_time_within_one_bar"))
+    return {
+        "schema_version": SCHEMA_VERSION + "/economic_fidelity",
+        "n": len(rows), "states": states,
+        "exit_time_within_one_bar": within_bar,
+        "max_abs_r_error": (round(max(d_r), 6) if d_r else None),
+        "mean_abs_r_error": (round(sum(d_r) / len(d_r), 6) if d_r else None),
+        "max_abs_net_usdt_error": (round(max(d_u), 6) if d_u else None),
+        "max_exit_time_error_ms": (round(max(d_t), 1) if d_t else None),
+        "fills_mismatch": sum(1 for r in rows if r.get("delta", {}).get("fills") not in (0, None)),
+        "rows": rows,
+        "inputs_not_used_to_force_exits": ["canonical closed_at (yalnız pencere ÜST SINIRI)",
+                                           "canonical exit_reason", "canonical net_pnl",
+                                           "gelecek bilgisiyle ayarlanmış stop"],
+        "note": ("kategori uyumu (işaret/çıkış nedeni) EKONOMİK denklik DEĞİLDİR; bu bölüm "
+                 "büyüklük hatalarını verir. Kısmi çıkış miktarları, bar içi dolum fiyatı ve "
+                 "dolum başına gerçek ücret/funding ÖLÇÜLEMEZ"),
+    }

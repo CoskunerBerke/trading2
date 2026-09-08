@@ -118,11 +118,17 @@ def test_03_values_are_frozen_before_ledger_open(tmp_path: Path):
     assert json.dumps(eng._entry_pending[-1]["chief"], sort_keys=True, default=str) == before
     assert ctx["futures_stop_risk_usdt"] == pytest.approx(4.850588)
     assert ctx["same_direction_open_futures"] == 10
-    # Motor kaynak sırası: capture → ledger.open → flush (aynı giriş döngüsünde).
+    # Motor kaynak sırası: capture → defter açılışı → flush (aynı giriş döngüsünde). Defter açılışı
+    # artık `_execute_futures_entry(...)` yardımcısı üzerinden yapılır (yürütme hassasiyeti: kural
+    # nesnesi önizleme→risk→dolum boyunca aynı kalır); sıra sözleşmesi ÇAĞRI YERİ ile ölçülür.
     src = Path("tradingbot/engine_v3.py").read_text(encoding="utf-8")
-    i_cap, i_open, i_flush = (src.index("self._entry_capture(sym"), src.index("self.ledger2.open("),
+    i_cap, i_open, i_flush = (src.index("self._entry_capture(sym"), src.index("self._execute_futures_entry("),
                               src.index("self._entry_flush(now)"))
     assert i_cap < i_open < i_flush
+    # Yardımcı gerçekten defteri açar (ikinci bir açılış yolu yok).
+    helper = src[src.index("def _execute_futures_entry("):]
+    assert "self.ledger2.open(" in helper[:helper.index("def _trigger_fired(")]
+    assert src.count("self.ledger2.open(") == 1
 
 
 # --------------------------------------------------------------- 4-5: SPOT ve aday HARİÇ

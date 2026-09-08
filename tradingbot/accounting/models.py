@@ -191,6 +191,9 @@ class SymbolFilters:
     max_leverage: int = 20
     verified_at: str = ""
     source: str = "default"
+    #: exchangeInfo `contractType` (PERPETUAL / TRADIFI_PERPETUAL / SPOT). Provenans içindir;
+    #: eski JSON'larda yoktur → "" (geriye uyumlu).
+    contract_type: str = ""
 
     def to_dict(self) -> dict:
         return ser(self)

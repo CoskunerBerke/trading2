@@ -75,6 +75,7 @@ _FUNNEL_KEYS = ("actionable", "ranked", "chief_blocked", "hard_safety_blocked", 
                 "trigger_fired", "positive_point_edge", "positive_conservative_edge",
                 "negative_edge_blocked", "research_small", "duplicate_blocked",
                 "research_policy_blocked", "size_multiplier_zero", "leverage_gate_blocked",
+                "precision_unresolved",
                 "risk_capacity_blocked", "capacity_approved", "exchange_rejected", "opened")
 
 _SOFT_PENALTY_R = {"LOW_CONSENSUS": 0.06, "LOW_CONFIDENCE": 0.06, "HIGH_DISSENT": 0.05,
@@ -158,6 +159,10 @@ class TradingEngineV3(TradingEngine):
         self.spot2 = SpotLedger.load(st / "spot_ledger.json", starting_cash=cfg.risk.starting_equity_usdt)
         self.ledger = self.ledger2          # legacy yardımcılar (learning_notes/summary) v2 defteri görsün
         self.filters = FiltersCache(cfg.cache_path / "symbol_filters.json")
+        # YÜRÜTME HASSASİYETİ: yapılandırma defterin kapısını belirler (varsayılan KAPALI → davranış
+        # birebir eski). Açıkken doğrulanmamış adımla yeni giriş açılmaz; çıkışlar etkilenmez.
+        self.ledger2.require_verified_precision = bool(getattr(v3.execution, "require_verified_precision", False))
+        self._filters_refresh_result: dict | None = None
         # --- coin heads
         ch = v3.coin_heads
         self.head_cfg = CoinHeadConfig(consensus_threshold=ch.consensus_threshold, min_confidence=ch.min_confidence, min_expected_r=ch.min_expected_r,
@@ -744,6 +749,9 @@ class TradingEngineV3(TradingEngine):
         atomic_write_json(st / "heartbeat.json", {"at": iso(now), "run_id": self.run_id, "pid": __import__("os").getpid()})
         # 0.5) restart sonrası kesinti penceresi uzlaştırması (süreç başına bir kez; belirsizse giriş kilidi)
         self.ensure_gap_reconciled()
+        # 0.6) yürütme hassasiyeti: kapı AÇIKSA bayat/eksik sembol filtrelerini resmi kaynaktan yenile
+        #      (ağırlık 1). Kapalıyken hiçbir istek atılmaz — eski davranış birebir korunur.
+        self.ensure_symbol_filters()
         # 1) TARA (legacy tier-1)
         scan = None
         if self.scanner and do_scan and symbols_override is None:
@@ -1217,7 +1225,15 @@ class TradingEngineV3(TradingEngine):
             # yapilirsa TASINAN risk ile OLCULEN risk farkli olur ve toplam acik risk fill sonrasi
             # profil tavanini ASABILIR. Bu yuzden risk motoru emrin gercekten dolacagi fiyati gorur
             # -> Chief telemetrisi, RiskEngine ve defter AYNI nihai risk degerini kullanir.
-            exec_entry = self._execution_entry(sym, market, d.direction, b.price or plan.entry, marks.get(sym))
+            # YÜRÜTME KURALI BİR KEZ ÇÖZÜLÜR ve AYNI nesne önizleme → risk → defter boyunca kullanılır.
+            f_sym, prec_prov = self._resolve_entry_filters(sym, market)
+            entry["precision"] = prec_prov.to_dict()
+            if f_sym is None:
+                # Doğrulanmamış adım: YENİ GİRİŞ AÇILMAZ; sahte dolum/ACCEPT üretilmez, gölge kaydı yok.
+                funnel["precision_unresolved"] += 1
+                entry["block_code"] = "UNRESOLVED_PRECISION"
+                continue
+            exec_entry = self._execution_entry(sym, market, d.direction, b.price or plan.entry, marks.get(sym), filters=f_sym)
             _stop_frac = abs(exec_entry - plan.stop) / exec_entry if (exec_entry and plan.stop) else 0.0
             final_risk_usdt = round(final_notional * _stop_frac, 6)
             _eq = state.equity if self.profile.size_on_live_equity else state.starting_equity
@@ -1256,7 +1272,7 @@ class TradingEngineV3(TradingEngine):
                          "notional": final_notional, "margin": round(final_notional / max(plan_leverage, 1), 6),
                          "leverage": plan_leverage, "amount_type": "NOTIONAL", "expected_r": plan.expected_r,
                          "spread_pct": feats.get("spread_pct"),
-                         "min_notional": float(self.filters.get(sym, MarketType.SPOT if market == "SPOT" else MarketType.USDM_PERP).min_notional)}
+                         "min_notional": float(f_sym.min_notional)}
             rd = self.risk.evaluate(plan_dict, state, {"now_utc": now})
             entry.update({"risk_allowed": rd.allowed, "risk_reasons": rd.reasons, "risk_warnings": rd.warnings,
                           "adjusted_notional": rd.adjusted_notional, "adjusted_leverage": rd.adjusted_leverage,
@@ -1289,10 +1305,12 @@ class TradingEngineV3(TradingEngine):
             entry["applied_risk_usdt"] = applied_risk_usdt
             # ---------------------------------------------------------------- 8) LEDGER / BORSA ACILISI
             if market == "USDM_PERP":
-                pos = self.ledger2.open(sym, d.direction, b.price, SizeSpec(Decimal(str(notional)), AmountType.NOTIONAL, int(rd.adjusted_leverage or 1)),
-                                        stop=plan.stop, targets=plan.targets, filters=self.filters.get(sym, MarketType.USDM_PERP), setup_type=plan.entry_type,
-                                        trigger_text=plan.entry_trigger, features=feats, tick=marks.get(sym), now=now,
-                                        meta={"coin_head_id": d.coin_head_id, "run_id": self.run_id,
+                pos = self._execute_futures_entry(
+                    symbol=sym, direction=d.direction, ref_price=b.price, notional=notional,
+                    leverage=int(rd.adjusted_leverage or 1), stop=plan.stop, targets=plan.targets,
+                    filters=f_sym, provenance=prec_prov, setup_type=plan.entry_type,
+                    trigger_text=plan.entry_trigger, features=feats, tick=marks.get(sym), now=now,
+                    meta={"coin_head_id": d.coin_head_id, "run_id": self.run_id,
                                               "decision_snapshot": d.to_dict(include_reports=False),
                                               # KALDIRAC SNAPSHOT'I: pozisyon omru boyunca DEGISMEZ (restart dahil).
                                               "leverage_decision": (lev_dec.to_dict() if lev_dec else
@@ -1516,7 +1534,7 @@ class TradingEngineV3(TradingEngine):
             profile_max_leverage=int(self.profile.futures_max_leverage))
 
     def _execution_entry(self, symbol: str, market: str, direction: str, ref_price: float,
-                         tick: TickData | None = None) -> float:
+                         tick: TickData | None = None, filters=None) -> float:
         """Emrin GERÇEKTEN dolacağı fiyat — defterin KENDİ fill yolundan sorulur, yan etkisiz.
 
         Motor kendi yaklaşık kayma formülünü ÜRETMEZ. Futures tarafında yön, sabit kayma,
@@ -1532,8 +1550,82 @@ class TradingEngineV3(TradingEngine):
         if market == "SPOT":
             return float(self.spot2.market_fill_price(symbol, Side.BUY, tick=tick, ref_price=ref))
         return float(self.ledger2.market_fill_price(symbol, direction, Decimal(str(ref)),
-                                                    filters=self.filters.get(symbol, MarketType.USDM_PERP),
+                                                    filters=(filters if filters is not None
+                                                             else self.filters.get(symbol, MarketType.USDM_PERP)),
                                                     tick=tick))
+
+    # ------------------------------------------------------------------ yürütme hassasiyeti (execspec)
+    def _futures_provider_factory(self):
+        """Resmi USDⓈ-M public sağlayıcı (gap-reconcile ile AYNI kalıp; test enjeksiyonu `_gap_provider_factory`)."""
+        factory = self._gap_provider_factory
+        if factory is not None:
+            return factory()
+        from .market.http import HttpClient
+        from .market.providers import BinanceFuturesProvider
+        from .market.ratelimit import BudgetPool
+        pool = BudgetPool(safety=self.cfg.v3.data.rate_budget_safety)
+        return BinanceFuturesProvider(HttpClient(BinanceFuturesProvider.base_url, pool.get("fapi.binance.com")))
+
+    def ensure_symbol_filters(self, *, force: bool = False) -> dict:
+        """`symbol_filters.json` bayatsa resmi exchangeInfo'dan (ağırlık 1) STRICT yenile.
+
+        YALNIZ `require_verified_precision=True` iken ağa çıkar; kapalıyken eski davranış (hiç
+        istek yok). Sağlayıcı hatası eski önbelleği KORUR ve sonuç `_filters_refresh_result`
+        içinde açıkça durur — sessiz 0.01 varsayılanı YOKTUR.
+        """
+        ex = self.cfg.v3.execution
+        if not getattr(ex, "require_verified_precision", False) and not force:
+            return {"ok": True, "skipped": "gate_off"}
+        max_age = float(getattr(ex, "filters_max_age_hours", 24.0)) * 3600.0
+        if not force and not self.filters.is_stale(max_age):
+            return {"ok": True, "skipped": "fresh", "verified_at": self.filters.verified_at}
+        from .accounting.filters import refresh_futures_filters
+        try:
+            provider = self._futures_provider_factory()
+            res = refresh_futures_filters(self.filters, provider)
+        except Exception as exc:  # noqa: BLE001 — yenileme arızası turu düşürmez, kapı açıkken giriş zaten kapanır
+            res = {"ok": False, "error": f"{type(exc).__name__}: {exc}", "n_ok": 0}
+        self._filters_refresh_result = res
+        if not res.get("ok"):
+            log.warning("sembol filtreleri yenilenemedi: %s — eski önbellek korunuyor (verified_at=%s)",
+                        res.get("error"), self.filters.verified_at or "yok")
+        else:
+            log.info("sembol filtreleri yenilendi: %d doğrulandı, %d atlandı, %d hatalı",
+                     res.get("n_ok", 0), len(res.get("skipped") or {}), len(res.get("errors") or {}))
+        return res
+
+    def _resolve_entry_filters(self, symbol: str, market: str):
+        """Yeni giriş için kuralı BİR KEZ, provenansıyla çözer → (filters | None, provenance).
+
+        Kapı KAPALI: çözülemese de eski davranış (`FiltersCache.get` → varsayılan) korunur, yalnız
+        provenans kaydedilir. Kapı AÇIK: çözülemezse `None` döner ve giriş `UNRESOLVED_PRECISION`
+        ile bloke olur. Dönen nesne önizleme → risk → defter boyunca AYNI nesnedir (kimlik sabit).
+        """
+        from .execspec import resolve_rule
+        mt = MarketType.SPOT if market == "SPOT" else MarketType.USDM_PERP
+        ex = self.cfg.v3.execution
+        gate = bool(getattr(ex, "require_verified_precision", False))
+        max_age = float(getattr(ex, "filters_max_age_hours", 24.0)) * 3600.0 if gate else None
+        f, prov = resolve_rule(symbol, cache=self.filters, market_type=mt, max_age_seconds=max_age)
+        if f is None and not gate:
+            f = self.filters.get(symbol, mt)                 # eski davranış: varsayılan filtre
+        return f, prov
+
+    def _execute_futures_entry(self, *, symbol: str, direction: str, ref_price, notional, leverage: int,
+                               stop, targets, filters, provenance, setup_type: str = "", trigger_text: str = "",
+                               features: dict | None = None, tick: TickData | None = None, now=None,
+                               meta: dict | None = None):
+        """Doğrulanmış teklifi AYNI filtre nesnesiyle deftere işler. Reddedilirse None döner.
+
+        Kural provenansı pozisyon meta'sına yazılır (`meta.precision`); böylece dolumda hangi
+        tick/step'in ve hangi kaynağın kullanıldığı pozisyonla birlikte kalıcıdır.
+        """
+        meta = dict(meta or {})
+        meta["precision"] = provenance.to_dict() if hasattr(provenance, "to_dict") else (provenance or None)
+        return self.ledger2.open(symbol, direction, ref_price,
+                                 SizeSpec(Decimal(str(notional)), AmountType.NOTIONAL, int(leverage or 1)),
+                                 stop=stop, targets=targets, filters=filters, setup_type=setup_type,
+                                 trigger_text=trigger_text, features=features, tick=tick, now=now, meta=meta)
 
     def _trigger_fired(self, b: CoinBrief, direction: str, entry: float, entry_type: str) -> bool:
         """SAF sorgu: durum DEĞİŞTİRMEZ.

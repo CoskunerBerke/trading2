@@ -185,6 +185,14 @@ class ExecutionSection:
     testnet_enabled: bool = False
     client_order_prefix: str = "tb"
     reconcile_on_start: bool = True
+    # --- YÜRÜTME HASSASİYETİ (bkz. tradingbot/execspec.py) ---------------------------------
+    # `require_verified_precision`: True ise DOĞRULANMIŞ fiyat/miktar adımı olmayan sembolde YENİ
+    # GİRİŞ açılmaz (çıkışlar etkilenmez). VARSAYILAN KAPALI: açmak ayrı bir operatör kararıdır.
+    require_verified_precision: bool = False
+    # Filtre önbelleği (`symbol_filters.json`) bu yaştan eskiyse resmi USD-M exchangeInfo'dan
+    # yenilenir (ağırlık 1). Yenileme başarısızsa ESKİ önbellek KORUNUR ve sonuç açıkça loglanır.
+    filters_max_age_hours: float = 24.0
+    filters_refresh_on_start: bool = True
 
 
 @dataclass

@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
 
 from ..core import D, ZERO, atomic_write_json, iso, quantize_price, quantize_qty, read_json
 from .models import MarketType, Side, SymbolFilters, ser
@@ -16,12 +16,28 @@ def _filters_by_type(sym: dict) -> dict[str, dict]:
     return {f.get("filterType", ""): f for f in sym.get("filters", []) or []}
 
 
-def _parse(sym: dict, market_type: MarketType) -> SymbolFilters:
+#: Yeni giriş için kabul edilen USDⓈ-M sözleşme türleri. `TRADIFI_PERPETUAL` Binance'in hisse/emtia
+#: perpetual'larıdır (NATGAS, MSFT, CL…): quote USDT, çarpan 1, PRICE_FILTER/LOT_SIZE aynı şemada.
+#: Vadeli (CURRENT_QUARTER/NEXT_QUARTER) sözleşmeler perpetual DEĞİLDİR ve buradan geçmez.
+USDM_ENTRY_CONTRACT_TYPES = ("PERPETUAL", "TRADIFI_PERPETUAL")
+
+
+def _parse(sym: dict, market_type: MarketType, *, strict: bool = False) -> SymbolFilters:
+    """exchangeInfo `symbols[i]` → SymbolFilters.
+
+    `strict=True`: `PRICE_FILTER.tickSize` ve `LOT_SIZE.stepSize` YOKSA istisna fırlatır — eksik
+    metadata sessizce 0.01/0.001 varsayılanına DÜŞMEZ (ölçüldü: varsayılan tick TRX'te plan
+    geometrisini 2.00R→1.28R'ye düşürdü). `pricePrecision`/`quantityPrecision` KULLANILMAZ.
+    """
     ft = _filters_by_type(sym)
     lot = ft.get("LOT_SIZE", {})
     mlot = ft.get("MARKET_LOT_SIZE", {})
     pf = ft.get("PRICE_FILTER", {})
     mn = ft.get("MIN_NOTIONAL") or ft.get("NOTIONAL") or {}
+    if strict and (not pf.get("tickSize") or not lot.get("stepSize")):
+        raise ValueError(f"{sym.get('symbol')}: PRICE_FILTER.tickSize / LOT_SIZE.stepSize eksik — kural DOĞRULANAMAZ")
+    if strict and (D(pf["tickSize"]) <= 0 or D(lot["stepSize"]) <= 0):
+        raise ValueError(f"{sym.get('symbol')}: tickSize/stepSize pozitif değil")
     min_notional = mn.get("minNotional") or mn.get("notional") or DEFAULT_MIN_NOTIONAL[market_type]
     return SymbolFilters(
         symbol=str(sym.get("symbol", "")), market_type=market_type,
@@ -29,17 +45,65 @@ def _parse(sym: dict, market_type: MarketType) -> SymbolFilters:
         min_qty=D(lot.get("minQty", lot.get("stepSize", "0.001"))), max_qty=D(lot.get("maxQty", "1000000")),
         market_max_qty=D(mlot.get("maxQty", lot.get("maxQty", "1000000"))), min_notional=D(min_notional),
         max_leverage=int(sym.get("maxLeverage", 20 if market_type is MarketType.USDM_PERP else 1)),
-        verified_at=iso(), source="binance_api")
+        verified_at=iso(), source="binance_api",
+        contract_type=str(sym.get("contractType") or ("SPOT" if market_type is MarketType.SPOT else "")))
 
 
-def from_binance_spot(sym: dict) -> SymbolFilters:
+def from_binance_spot(sym: dict, *, strict: bool = False) -> SymbolFilters:
     """`GET /api/v3/exchangeInfo` → symbols[i] sözlüğünden."""
-    return _parse(sym, MarketType.SPOT)
+    return _parse(sym, MarketType.SPOT, strict=strict)
 
 
-def from_binance_futures(sym: dict) -> SymbolFilters:
+def from_binance_futures(sym: dict, *, strict: bool = False) -> SymbolFilters:
     """`GET /fapi/v1/exchangeInfo` → symbols[i] sözlüğünden."""
-    return _parse(sym, MarketType.USDM_PERP)
+    return _parse(sym, MarketType.USDM_PERP, strict=strict)
+
+
+def refresh_futures_filters(cache: "FiltersCache", provider: Any, symbols: Iterable[str] | None = None,
+                            *, save: bool = True) -> dict:
+    """Resmi USDⓈ-M exchangeInfo'dan (ağırlık 1) filtreleri STRICT ayrıştırıp önbelleğe yazar.
+
+    Sağlayıcı hatası → önbellek DOKUNULMAZ, `ok=False` + hata metni döner (sessiz varsayılan yok).
+    Yalnız `status=TRADING`, quote USDT ve `USDM_ENTRY_CONTRACT_TYPES` sözleşmeleri kabul edilir;
+    diğerleri `skipped` içinde gerekçesiyle listelenir. Bot sembolü `BASE/QUOTE` biçimine çevrilir.
+    """
+    want = {str(s).replace("/", "") for s in symbols} if symbols else None
+    try:
+        rows = provider.exchange_info() or []
+    except Exception as exc:  # noqa: BLE001 — ağ/limit hatası önbelleği BOZMAZ
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}", "n_ok": 0, "skipped": {}, "errors": {}}
+    ok_items: list[SymbolFilters] = []
+    skipped: dict[str, str] = {}
+    errors: dict[str, str] = {}
+    for s in rows:
+        raw = str(s.get("symbol") or "")
+        if not raw or (want is not None and raw not in want):
+            continue
+        base, quote = str(s.get("baseAsset") or ""), str(s.get("quoteAsset") or "")
+        bot_sym = f"{base}/{quote}" if base and quote else raw
+        ct = str(s.get("contractType") or "")
+        if quote != "USDT":
+            skipped[bot_sym] = f"QUOTE_{quote}"
+            continue
+        if str(s.get("status")) != "TRADING":
+            skipped[bot_sym] = f"STATUS_{s.get('status')}"
+            continue
+        if ct not in USDM_ENTRY_CONTRACT_TYPES:
+            skipped[bot_sym] = f"CONTRACT_{ct or 'UNKNOWN'}"
+            continue
+        try:
+            f = _parse(s, MarketType.USDM_PERP, strict=True)
+        except (ValueError, ArithmeticError) as exc:
+            errors[bot_sym] = str(exc)
+            continue
+        f.symbol = bot_sym
+        ok_items.append(f)
+    if ok_items:
+        cache.put(ok_items)
+        if save:
+            cache.save()
+    return {"ok": True, "n_ok": len(ok_items), "skipped": skipped, "errors": errors,
+            "verified_at": cache.verified_at}
 
 
 # sınıf metodları olarak da erişilebilsin
@@ -68,6 +132,21 @@ class FiltersCache:
 
     def get(self, symbol: str, market_type: MarketType = MarketType.USDM_PERP) -> SymbolFilters:
         return self._data[market_type].get(symbol) or default_filters(symbol, market_type)
+
+    def age_seconds(self, now=None) -> float | None:
+        """Son doğrulamadan bu yana geçen süre; hiç doğrulanmadıysa None."""
+        if not self.verified_at:
+            return None
+        try:
+            from ..core import from_iso, utc_now
+            return max(0.0, ((now or utc_now()) - from_iso(self.verified_at)).total_seconds())
+        except (ValueError, TypeError):
+            return None
+
+    def is_stale(self, max_age_seconds: float, now=None) -> bool:
+        """Doğrulanmamış ya da `max_age_seconds`'tan eski önbellek bayattır."""
+        age = self.age_seconds(now)
+        return age is None or age > float(max_age_seconds)
 
     def has(self, symbol: str, market_type: MarketType) -> bool:
         return symbol in self._data[market_type]
@@ -149,5 +228,6 @@ def bracket_for(notional, brackets: list[LeverageBracket] | None = None) -> Leve
     return bl[-1]
 
 
-__all__ = ["from_binance_spot", "from_binance_futures", "default_filters", "FiltersCache", "quantize_order",
+__all__ = ["from_binance_spot", "from_binance_futures", "refresh_futures_filters", "USDM_ENTRY_CONTRACT_TYPES",
+           "default_filters", "FiltersCache", "quantize_order",
            "LeverageBracket", "default_brackets", "bracket_for", "DEFAULT_MIN_NOTIONAL"]

@@ -101,12 +101,15 @@ def _synthetic_filters(symbol: str, market_type: MarketType, spec: dict) -> Symb
 def resolve_rule(symbol: str, *, cache: Any = None,
                  market_type: MarketType = MarketType.USDM_PERP,
                  synthetic_specs: dict[str, dict] | None = None,
+                 max_age_seconds: float | None = None, now=None,
                  ) -> tuple[SymbolFilters | None, RuleProvenance]:
     """Sembolun yurutme kuralini PROVENANSIYLA cozer. Varsayilana DUSMEZ.
 
-    Sirayla: (1) dogrulanmis borsa metadata'si (`FiltersCache` icinde gercekten VAR ve
-    `source != "default"`), (2) operatorun surumlenmis sentetik spesifikasyonu,
-    (3) UNRESOLVED. Ucuncu durumda `filters` None doner ve cagiran YENI GIRIS ACAMAZ.
+    Sirayla: (1) dogrulanmis borsa metadata'si (`FiltersCache` icinde gercekten VAR, AYNI market
+    tipi icin, `source != "default"`, `max_age_seconds` verilmisse SURESI DOLMAMIS), (2) operatorun
+    surumlenmis sentetik spesifikasyonu, (3) UNRESOLVED. Ucuncu durumda `filters` None doner ve
+    cagiran YENI GIRIS ACAMAZ. Spot kurali bir turev istegine ASLA kopyalanmaz (cache market tipine
+    gore ayri tutar).
     """
     specs = SYNTHETIC_SPECS if synthetic_specs is None else synthetic_specs
     mt = market_type.value if hasattr(market_type, "value") else str(market_type)
@@ -115,9 +118,26 @@ def resolve_rule(symbol: str, *, cache: Any = None,
     if cache is not None and getattr(cache, "has", None) and cache.has(symbol, market_type):
         f = cache.get(symbol, market_type)
     if f is not None and str(getattr(f, "source", "")) not in ("", "default") and f.price_tick > 0:
+        f_mt = getattr(getattr(f, "market_type", None), "value", getattr(f, "market_type", None))
+        if f_mt is not None and str(f_mt) != mt:
+            return None, RuleProvenance(symbol, mt, UNRESOLVED, source=str(f.source),
+                                        reason=f"MARKET_TYPE_MISMATCH:{f_mt}")
+        vat = str(getattr(f, "verified_at", "") or "")
+        if max_age_seconds is not None:
+            try:
+                from .core import from_iso, utc_now
+                age = ((now or utc_now()) - from_iso(vat)).total_seconds() if vat else None
+            except (ValueError, TypeError):
+                age = None
+            if age is None or age > float(max_age_seconds):
+                return None, RuleProvenance(symbol, mt, UNRESOLVED, source=str(f.source),
+                                            verified_at=vat,
+                                            reason=("METADATA_UNDATED" if age is None else
+                                                    f"METADATA_EXPIRED:{int(age)}s"))
         return f, RuleProvenance(symbol, mt, VERIFIED_VENUE, source=str(f.source),
-                                 verified_at=str(getattr(f, "verified_at", "") or ""),
-                                 contract=mt, instrument_id=symbol)
+                                 verified_at=vat,
+                                 contract=str(getattr(f, "contract_type", "") or mt),
+                                 instrument_id=symbol.replace("/", ""), multiplier="1")
 
     spec = (specs or {}).get(symbol)
     if spec:

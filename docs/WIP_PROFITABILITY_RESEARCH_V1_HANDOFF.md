@@ -5,7 +5,9 @@ Ayrıntılı sonuç: `docs/PROFITABILITY_RESEARCH_ACCELERATION_V1.md`.
 
 ## 0. Verdict
 
-`LEARNING_COUNT_INTEGRITY_V3_REPAIRED_LOCAL_NO_DEPLOY`
+`LEARN_COUNT_REPAIR_RELEASE_V4_PREPARED_NOT_DEPLOYED`
+
+(önceki: `LEARNING_COUNT_INTEGRITY_V3_REPAIRED_LOCAL_NO_DEPLOY`)
 
 (önceki: `PROFITABILITY_DUAL_EDGE_V2_COMPLETE_LOCAL_NO_DEPLOY`)
 
@@ -320,3 +322,86 @@ python -m tradingbot.research.run --export "C:/Users/berke/research/pfres_v1" --
 Ödeme modelini etikete uydur: `avg_loss_r`'yi ölçülmüş koşullu ortalamayla
 (`E[R | r ≤ 0.25R]`) değiştiren bir SHADOW hesabı kaydet — karar değişmez. Hedef ile ödeme
 modelini AYNI olay üzerinde tanımlamak, yeni bir tahmin edici tasarlamadan ÖNCEKİ adımdır.
+
+
+---
+
+# EK 3 — SÜRÜM PAKETİ + ÖDEME KARŞILAŞTIRMASI (V4, 2026-09-08)
+
+Ayrıntı: `docs/LEARN_COUNT_REPAIR_RELEASE_V4.md`. **DAĞITILMADI.**
+
+## G1. Üretim ≠ yerel
+
+VPS HEAD `12db804…` (temiz, NRestarts 0). **Sayaç düzeltmesi ÜRETİMDE DEĞİL**
+(`learner_v2.py:154-155` hâlâ iki `win.add`); **sunum düzeltmesi de DEĞİL**.
+Üretim `learn_v2.json`: global `win` n=50/s=14, `exp_r` n=25, `n_closed`=25.
+
+## G2. Sürüm adayı
+
+Dal `release/learn-count-integrity` (taban `12db804`), worktree `C:/Users/berke/release-lci`.
+6 üretim dosyası + 2 test dosyası, +207/−19. `tradingbot/research/*` **DAHİL DEĞİL**.
+**Sürüm ağacı: 1940 passed / 22 skipped / 0 failed** (araştırma dalı ayrı: 2014/22/0).
+
+## G3. Durum kararı: **B (onar)** — V3'teki R1 önerisi DEĞİŞTİ
+
+V3'ün blocker'ı YANLIŞTI: `lessons` kapanış anı rejimini taşıyor (giriş rejiminden 14/25
+kapanışta farklı) ve derslerden yeniden kurulum saklanan durumu **100/100 düğümde birebir**
+üretiyor. Onarım iki bağımsız yolla doğrulandı → `verify_conversion` = **VERIFIED**.
+
+13/13 değişmez geçti: şema 2 · çürüme YOK (`half_life_days=None`) · `s==ss` 100/100 ·
+legacy import ÇALIŞMAMIŞ · ata parite çift 8/8 · Σregime = global · global n = 2×n_closed =
+2×kanonik kapanış · global s = 2×kanonik kazanç. Karışık kod sürümü yok (iki çağrılı biçim
+`84bfc74`, ilk kapanıştan ÖNCE).
+
+Kuru çalıştırma: **8 ata düğüm**, `n`/`s`/`ss` BİRLİKTE yarılanır; yaprak/`exp_r`/`agent_hit`/
+dersler/`n_closed`/`alpha`/`prior_mean` DEĞİŞMEZ; girdi mutasyona uğramaz; işaretli ve ikinci
+dönüşüm reddedilir.
+
+A vs B: `half_life_days=None` → fazla kütle **kalıcı 25** (k=0,10,25,50,100'de aynı).
+Δposterior 0.0262 → 0.0025. B seçildi (kanıt bütünlüğü + kalıcılık + düşük risk).
+
+**Kapı değişimleri ayrıştırıldı:** BTC `a1592626729ca2c4` **TAM yeniden üretim** (kanonik işleme
+bağlı DEĞİL); AVAX `fed44d90cddc48d1`/**F00033** **YAKLAŞIK** (kayıtlı n=4, yeniden kurulan 2)
+→ verdikt değişimi KANITLANMIŞ değil. **F00033 hâlâ AÇIK** — hiçbir kâr/zarar atfedilemez.
+
+## G4. Provenans (asgari ek)
+
+`on_trade_closed` derse `learning_keys` ekler (`semantics`, `regime_at_close`, `win_leaves`,
+`exp_r_leaf`, `weight`, `feature_version`); `note_learned` bunu MEVCUT `LearnedIndex`e yazar.
+Opsiyonel alan, idempotency anahtarı DEĞİŞMEDİ, ikinci defter YOK, giriş/kapanış rejimi ayrı.
+
+## G5. Ödeme modeli
+
+R: payda |entry−initial_stop|×**initial_qty**, pay NET (kısmi çıkışlar dâhil) → **maliyet
+tekrar düşülmedi** (muhasebe artığı 0.0). `avg_win_r` = **BLEND** (ampirik koşullu ortalama
+değil). E[R|kazanç değil] = **−1.069052**, SCRATCH 0 → −1R **kaybı KÜÇÜK gösterir**
+(72sa kohortunun 24 SCRATCH'i taşınmadı).
+
+Kapsam %100 (404), μ_W 1.707–1.908, μ_N −1.0696…−1.0685:
+
+| Panel (olasılık SABİT) | ort. Δgross | EVET→HAYIR | HAYIR→EVET |
+| --- | --- | --- | --- |
+| `p_win_prior` | −0.137581 | **5** | **0** |
+| `p_win_blend` | −0.094536 | **3** | **0** |
+
+Hedefe hizalama her iki panelde ekonomiyi DAHA TEMKİNLİ yapar. Kârlılık sonucu DEĞİLDİR.
+
+## G6. Sunum
+
+`P(kazanç) — istatistiksel tahmin`; kalibrasyon durumu artık **kanıttan** (`calibrator.n_fit`,
+champion kaydı), sabit iddia YOK. Coin head satırlarındaki `0.0`, giriş planı üretilmediğinde
+**dataclass varsayılanıdır** → «yok (plan üretilmedi)». Plan varken hesaplanan 0.0 aynen
+korunur. Yönetim tablosu zaten doğruydu (11/11 UNKNOWN) — değişmedi.
+
+## G7. Komut
+
+```bash
+python -m tradingbot.research.run --export "C:/Users/berke/research/pfres_v1" --out "C:/Users/berke/research/pfres_v1/out" --stage readiness
+```
+
+## G8. BEKLEYEN yürütme (kapsam dışı)
+
+Operatör onayı · bundle dağıtımı · `learn_v2.json` dönüşümünün yüklenmesi · restart + canary.
+Geri alma kapsamı: kod `.last_good_commit`=`12db804`; durum YALNIZ `learn_v2.json` —
+kanonik defter/hafıza/pfexp/`learned_closes` GERİ ALINMAZ (sonraki doğal dolum ve kapanışlar
+korunmalı).

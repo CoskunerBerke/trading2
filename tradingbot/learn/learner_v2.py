@@ -54,6 +54,12 @@ class PredictionResult:
         return asdict(self)
 
 
+#: Ogrenme guncelleme semantigi surumu. `v2-multileaf`: tek nihai kapanis -> ata dugumler BIR
+#: KEZ, iki yaprak granulerligi bir kez (bkz. HierarchicalRate.add(leaves=...)).
+#: Eski `v2-two-calls` semantiginde ortak atalar IKI KEZ sayiliyordu.
+LEARNING_SEMANTICS = "v2-multileaf"
+
+
 class LearnerV2:
     def __init__(self, memory: TradeMemory, registry: ModelRegistry, cfg: LearnConfig | None = None, state_path: Path | str | None = None):
         self.memory = memory
@@ -162,7 +168,14 @@ class LearnerV2:
             self.agent_hit.add(0.0, regime=regime or None, leaf=a)
         self.n_closed += 1
         lesson = {"id": rec.get("id"), "symbol": symbol, "side": side, "r": lab["r_multiple"], "won": lab["won"], "exit": rec.get("exit_reason"),
-                  "at": rec.get("closed_at"), "codes": pm.lesson_codes, "why": pm.lesson_text_tr, "setup": setup, "regime": regime}
+                  "at": rec.get("closed_at"), "codes": pm.lesson_codes, "why": pm.lesson_text_tr, "setup": setup, "regime": regime,
+                  # PROVENANS: bu kapanisin GERCEKTEN yazdigi dugum anahtarlari ve agirlik.
+                  # `regime` KAPANIS ANI rejimidir (giris ani rejimi DEGIL) ve zaten yukarida
+                  # `decision_snapshot`tan gelir; burada yalnizca ACIKCA kayda gecirilir.
+                  "learning_keys": {"semantics": LEARNING_SEMANTICS, "regime_at_close": regime or None,
+                                    "win_leaves": [f"{symbol}|{setup}", symbol],
+                                    "exp_r_leaf": f"{setup}|{side}", "weight": 1.0,
+                                    "feature_version": FEATURE_VERSION}}
         self.lessons.append(lesson)
         self.memory.record_exit(str(rec.get("id")), {**rec, **lab}, price_path, pm.to_dict())
         self.save()

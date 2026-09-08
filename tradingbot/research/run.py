@@ -545,9 +545,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--n-null", type=int, default=200)
     ap.add_argument("--offline", action="store_true", help="ağ isteği YAPMA (yalnız önbellek)")
     ap.add_argument("--force", action="store_true", help="önbelleği yok say, yeniden hesapla")
-    ap.add_argument("--stage", choices=("v1", "dual_edge", "integrity", "all"), default="v1",
+    ap.add_argument("--stage",
+                    choices=("v1", "dual_edge", "integrity", "readiness", "all"), default="v1",
                     help=("v1: özgün rapor · dual_edge: doğrulama+çift kapı · "
-                          "integrity: sayaç bütünlüğü + düzeltilmiş kıyaslama · all"))
+                          "integrity: sayaç bütünlüğü · readiness: onarım paketi + ödeme "
+                          "modeli · all"))
     args = ap.parse_args(argv)
 
     export_dir, out_dir = Path(args.export), Path(args.out)
@@ -556,6 +558,31 @@ def main(argv: list[str] | None = None) -> int:
         print(f"HATA: export dizini bulunamadı: {export_dir}/state", file=sys.stderr)
         return 2
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    if args.stage in ("readiness", "all"):
+        from .readiness_run import (READINESS_JSON, READINESS_MD, build_readiness_report,
+                                    render_readiness_markdown)
+        rp = out_dir / READINESS_JSON
+        if rp.exists() and not args.force:
+            print(f"READINESS_CACHE_HIT {rp} (yeniden hesaplanmadı; --force ile zorla)")
+        else:
+            rep = _finite(build_readiness_report(export_dir, out_dir))
+            rp.write_text(json.dumps(rep, ensure_ascii=False, indent=1, allow_nan=False),
+                          encoding="utf-8")
+            (out_dir / READINESS_MD).write_text(render_readiness_markdown(rep), encoding="utf-8")
+            an = rep["repair_analysis"]
+            ver = rep["repair_verification"]
+            pan = rep["payoff"]["panels"]
+            print(f"READINESS_OK repair={an.get('state')} verify={ver.get('state')} "
+                  f"nodes={len(rep.get('repair_diff') or [])} "
+                  f"deployed(count/pres)="
+                  f"{rep['deployment_status']['count_fix_deployed']}/"
+                  f"{rep['deployment_status']['presentation_fix_deployed']} "
+                  f"payoff_flips_prior="
+                  f"{list(pan.values())[0]['gate_disagreement']['old_YES_new_NO']} "
+                  f"elapsed={rep['runtime']['elapsed_s']}s -> {rp}")
+        if args.stage == "readiness":
+            return 0
 
     if args.stage in ("integrity", "all"):
         from .integrity_run import (INTEGRITY_JSON, INTEGRITY_MD, build_integrity_report,

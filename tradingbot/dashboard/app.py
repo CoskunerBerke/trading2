@@ -202,10 +202,33 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
         """Yuzde gosterimi — OLCULMUS sifir korunur, sifir olmayan kucuk deger gizlenmez."""
         return _cell_pct_signal(x, 0)
 
+    def _learning_status() -> dict | None:
+        """Kalibrasyon/model durumu KANITTAN okunur — sabit iddia yazılmaz.
+
+        Dosya yoksa ya da okunamıyorsa `None` döner ve panel «doğrulanamadı» der.
+        Bu fonksiyon MODEL ÇALIŞTIRMAZ, yalnız kayıtlı durumu okur.
+        """
+        try:
+            lv2 = state.get("learn_v2") or {}
+            models = state.get("models") or {}
+        except Exception:  # noqa: BLE001 — panel okuma arızası tabloyu düşürmez
+            return None
+        if not isinstance(lv2, dict) or not lv2:
+            return None
+        cal = lv2.get("calibrator") or {}
+        champ = None
+        if isinstance(models, dict):
+            entry = (models.get("champion") or {})
+            champ = (entry.get("p_win_lr") if isinstance(entry, dict) else None) or None
+        return {"calibrator_n_fit": int(cal.get("n_fit") or 0),
+                "champion_model": champ,
+                "n_closed": lv2.get("n_closed")}
+
     def _coin_head_payload() -> dict:
         """Coin head tablosunun KANONİK yükü — HTML render'ı ve `/api/live/coin-heads` AYNI çağrı."""
         return coin_head_table(state.coin_heads(), state.futures_positions(), state.trades(),
-                               fees=state.fee_schedule())
+                               fees=state.fee_schedule(),
+                               learning_status=_learning_status())
 
     def _coin_heads_heading(chp: dict) -> str:
         """Başlık + AÇIK POZİSYON KAPSAMI sayacı (polling bu düğümleri yerinde günceller).

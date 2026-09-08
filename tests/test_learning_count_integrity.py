@@ -14,8 +14,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from tradingbot.dashboard.views import (COIN_HEAD_COLUMN_NOTES, COIN_HEAD_COLUMNS,
-                                        _cell_pct_signal, coin_head_table)
+from tradingbot.dashboard.views import (CALIBRATION_UNKNOWN, COIN_HEAD_COLUMN_NOTES_BASE,
+                                        COIN_HEAD_COLUMNS, NOT_APPLICABLE, _cell_pct_signal,
+                                        calibration_note, coin_head_column_notes,
+                                        coin_head_table)
 from tradingbot.learn.labels import label_outcome
 from tradingbot.learn.learner_v2 import LearnerV2
 from tradingbot.learn.memory import TradeMemory
@@ -213,31 +215,62 @@ def test_measured_zero_is_preserved_and_small_nonzero_is_not_hidden():
 
 def test_coin_head_columns_distinguish_confidence_from_probability():
     assert "Konsensüs gücü" in COIN_HEAD_COLUMNS
-    assert "P(kazanç) — model" in COIN_HEAD_COLUMNS
+    assert "P(kazanç) — istatistiksel tahmin" in COIN_HEAD_COLUMNS
     assert "Güven" not in COIN_HEAD_COLUMNS
-    note = COIN_HEAD_COLUMN_NOTES["P(kazanç) — model"]
-    assert "0.25R" in note and "FIT EDİLMEMİŞ" in note
-    assert "olasılık DEĞİLDİR" in COIN_HEAD_COLUMN_NOTES["Konsensüs gücü"]
+    base = COIN_HEAD_COLUMN_NOTES_BASE["P(kazanç) — istatistiksel tahmin"]
+    assert "0.25R" in base and "ÖMRÜ" in base
+    assert "olasılık DEĞİLDİR" in COIN_HEAD_COLUMN_NOTES_BASE["Konsensüs gücü"]
 
 
-def test_coin_head_table_carries_notes_and_preserves_values():
-    heads = [{"symbol": "SOL/USDT", "verdict": "REDUCE", "direction": "LONG",
-              "confidence_calibrated": 0.0019, "p_win": 0.329,
-              "expected_return_net": 0.0, "expected_r": 0.0, "regime": "RANGE"}]
-    out = coin_head_table(heads, [], [])
-    assert out["column_notes"] == COIN_HEAD_COLUMN_NOTES
-    row = out["rows"][0]
-    assert row[4] == "%0.2"      # konsensüs gücü — gizlenmedi
-    assert row[5] == "%33"       # p_win
-    assert row[6] == "%0.00"     # ÖLÇÜLMÜŞ sıfır beklenen net getiri korunur
-    assert row[7] == "0.00"      # ÖLÇÜLMÜŞ sıfır E[R]
+def test_calibration_status_comes_from_evidence_not_a_fixed_claim():
+    """Kalibrasyon iddiası KANITA bağlı olmalı; kalıcı sabit bir cümle YANLIŞ olabilir."""
+    assert calibration_note(None) == CALIBRATION_UNKNOWN
+    unfit = calibration_note({"calibrator_n_fit": 0, "champion_model": None})
+    assert "FIT EDİLMEMİŞ" in unfit and "YOK" in unfit
+    fitted = calibration_note({"calibrator_n_fit": 40, "champion_model": "m1"})
+    assert "fit edilmiş" in fitted and "m1" in fitted
+    assert "FIT EDİLMEMİŞ" not in fitted          # durum değişince metin de değişir
+    notes = coin_head_column_notes({"calibrator_n_fit": 40, "champion_model": "m1"})
+    assert "fit edilmiş" in notes["P(kazanç) — istatistiksel tahmin"]
+
+
+def test_expectancy_is_not_applicable_when_no_entry_plan_was_produced():
+    """Giriş planı üretilmeyen satırdaki 0.0 dataclass VARSAYILANIdır, ölçülmüş sıfır DEĞİL."""
+    reduce_row = {"symbol": "SOL/USDT", "verdict": "REDUCE", "direction": "LONG",
+                  "confidence_calibrated": 0.0019, "p_win": 0.329,
+                  "expected_return_net": 0.0, "expected_r": 0.0, "regime": "RANGE"}
+    row = coin_head_table([reduce_row], [], [])["rows"][0]
+    assert row[4] == "%0.2"                 # konsensüs gücü: küçük ama ölçülmüş
+    assert row[5] == "%33"                  # olasılık tahmini
+    assert row[6] == NOT_APPLICABLE         # beklenti HİÇ hesaplanmadı
+    assert row[7] == NOT_APPLICABLE
+
+
+def test_measured_zero_is_preserved_when_a_plan_exists():
+    """Plan varken hesaplanmış 0.0 ÖLÇÜLMÜŞ sıfırdır ve aynen gösterilir."""
+    planned = {"symbol": "BTC/USDT", "verdict": "FUTURES_LONG", "direction": "LONG",
+               "confidence_calibrated": 0.6, "p_win": 0.3,
+               "expected_return_net": 0.0, "expected_r": 0.0,
+               "futures_plan": {"valid": True}}
+    row = coin_head_table([planned], [], [])["rows"][0]
+    assert row[6] == "%0.00"
+    assert row[7] == "0.00"
 
 
 def test_missing_head_fields_render_as_unavailable():
     heads = [{"symbol": "X/USDT", "verdict": "NO_TRADE", "confidence_calibrated": None,
-              "p_win": None, "expected_return_net": None, "expected_r": None}]
+              "p_win": None, "expected_return_net": None, "expected_r": None,
+              "futures_plan": {"valid": True}}]
     row = coin_head_table(heads, [], [])["rows"][0]
     assert row[4] == "—" and row[5] == "—" and row[6] == "—" and row[7] == "—"
+
+
+def test_coin_head_table_carries_notes_and_preserves_values():
+    out = coin_head_table([{"symbol": "SOL/USDT", "verdict": "REDUCE",
+                            "confidence_calibrated": 0.0019, "p_win": 0.329}], [], [],
+                          learning_status={"calibrator_n_fit": 0, "champion_model": None})
+    assert set(out["column_notes"]) == set(COIN_HEAD_COLUMN_NOTES_BASE)
+    assert "FIT EDİLMEMİŞ" in out["column_notes"]["P(kazanç) — istatistiksel tahmin"]
 
 
 # ------------------------------------------------------- 7) aşama yazma sınırı

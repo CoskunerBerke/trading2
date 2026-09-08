@@ -1,5 +1,22 @@
 # LEARNING_COUNT_INTEGRITY_V3 — sayaç onarımı, hedef doğrulaması ve düzeltilmiş kıyaslama
 
+> ### ⚠ DÜZELTME (2026-09-08) — `docs/LEARN_COUNT_REPAIR_RELEASE_V4.md`
+>
+> * **§3 "kapanış anı rejimi kalıcı saklanmaz" İDDİASI YANLIŞTI.**
+>   `learn_v2.json["lessons"]` her kapanış için `regime` alanını taşır ve bu, `on_trade_closed`'ın
+>   düğüm anahtarını kurarken kullandığı KAPANIŞ ANI rejimidir (giriş rejiminden 14/25 kapanışta
+>   farklı). Derslerden yeniden kurulum saklanan durumu **100/100 düğümde birebir** üretir.
+>   Gerçek sınır farklıdır: `save()` dersleri **son 500** ile sınırlar.
+> * **§7 önerisi R1 (dokunma) → B (onar) olarak DEĞİŞTİ.** R2'nin blocker'ı geçersizdi; onarım
+>   iki bağımsız yolla doğrulanır (`VERIFIED`).
+> * **§5 yaşam boyu Brier ifadesi sınırlandırıldı:** sonuç 99 ÇÖZÜLMÜŞ FIRSATA aittir (kanonik
+>   kapanış değil); 305/404 çözülmemiş fırsat sonucun dışındadır; nominal GA seçilim yanlılığını
+>   ve ortak zaman bağımlılığını kaldırmaz; A/B sıralamalarının farklı olması aralarındaki farkın
+>   testi DEĞİLDİR.
+> * **§6'daki `expected_return_net = 0.0` "ölçülmüş sıfır" nitelemesi DÜZELTİLDİ:** giriş planı
+>   üretilmeyen satırda bu değer dataclass VARSAYILANIdır; panel artık «yok (plan üretilmedi)»
+>   gösterir.
+
 **Durum:** YEREL onarım + test · push/deploy/restart YOK · üretim `learn_v2.json`,
 kanonik defter, pfexp dosyaları ve öğrenilmiş indeks **DEĞİŞMEDİ** · model fit edilmedi ·
 state göçü yapılmadı · PAPER / SHADOW / live-kapalı korundu · pfexp v1.3 **oluşturulmadı**.

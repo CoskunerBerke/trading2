@@ -120,11 +120,36 @@ Tam değerlendirme (elle, ağ gerektirir):
 `scripts/counterfactual_run.py` → `scripts/challenger_eval.py` → `scripts/challenger_verdict.py`.
 Kabul ölçütleri `docs/CHALLENGERS_V1.md` içinde **önceden** yazılıdır.
 
+## 5b. BAĞIMSIZ İNCELEME SONUCU — İKİ YÜKSEK ÖNCELİKLİ KUSUR AÇIK
+
+Adversaryal inceleme `2ed0fa0` üzerinde **tamamlandı**. Bar provenansı ve kayıp büyüklüğü
+onarımları doğrulandı; **funding onarımı canlı yolda iddia ettiğini YAPMIYOR.**
+
+| # | Kusur | Ölçüm |
+|---|---|---|
+| **D1** | **Funding onarımı canlı yolun ~%93'ünde ETKİSİZ.** `exit_check` 60 sn'de bir çalışır ve `funding_rates.lookup` ile tick eder ama `ensure_funding_rates` **çağırmaz** (bilerek: ağa çıkmasın). Tur 15 dk'da bir çalışır ve `ensure_funding_rates`'in TEK çağıranıdır. Çıkış monitörü settlement sınırına önce varır, `meta.last_funding_rate`'e (`estimated=True`) düşer, **watermark'ı ilerletir** ve kaydeder. Tur sonra `settlements_due == []` bulur, hiç çekim yapmaz. | Gerçek defter+önbellekle yeniden üretildi: çıkış monitörü önce → 0.00500000 tahakkuk, gerçek 0.00013860 → **36,1× hata**, doğru oran hiç çekilmedi. Turun kazandığı pencere ≈ 60/900 sn = **%6,7**. |
+| **D2** | **4 saatlik funding aralıkları hâlâ işlenmiyor** ve açıkta bıraktığı hata, kapattığından **BÜYÜK**. | Açık 14 pozisyonda tahakkuk etmemiş funding **0,223121 USDT**; kapatılan hata 29 kapanışta 0,209232 USDT. CL/BZ/NATGAS/GPS 4 saatte bir, settlement başına %0,25–0,34. |
+| D4 | Fail-closed, `meta.last_funding_rate == "0.0"` olduğunda **sızıyor**: olay yazılmadan watermark ilerliyor. **Canlı 3 pozisyonda** (CRCL, META, CRWV) bu durum var. Önceden var olan kusur, bu sürümde eklenmedi — ama `2506c99` mesajı koşulsuz "fail-closed değişmedi" diyor; ikinci yarısı **yanlış**. | 2 settlement sessizce atlandı. |
+| D3 | İki mutasyon **tüm 2103 testi yeşil bırakıyor**: `_marks`'ta `bar_open=""` (özellik sessizce ölür) ve turdan `ensure_funding_rates` kaldırma (önbellek hiç dolmaz). Üretici tarafta test koruması yok. | M2 ve M9. |
+| D6 | `test_09`'un ilk iddiası boş: `last=3000, high=3200` ile başa-baş zaten mark kontrolüyle bloklanıyor; guard geri alınsa da geçiyor. | `last=3010` yapılırsa gerçek olur. |
+| D7 | `test_10` metin tarıyor: `bar_open=""` (boş değer) testi **geçiriyor**. Anahtar kelimeyi zorunlu kılıyor, provenansı değil. | M10. |
+| D8 | `bar_extremes_skipped` üretimde **görünmez**: hiçbir log/rapor/`health.json` alanına yazılmıyor. Sessiz mark-only moduna karşı erken uyarı yok. | — |
+| D9 | Bar provenansı gereği her girişten sonra ~1,5 saat stop/TP/likidasyon **yalnız mark** ile değerlendirilir. Guard yalnız uç *esirger*, asla vermez; yeni yanlış tetik üretemez. | 29 kapanışta 2125 saatin **45,5 saati** (%2,1); **0/29** işlem tamamen kör değil. |
+
+**Sonuç:** funding değişikliği `1c4cba1`'e göre **gerileme değildir** (en kötü durumda bugünle
+birebir aynı davranır), ama commit mesajı ve bu belgenin önceki hâli **fazlasını iddia ediyordu**.
+D1 kapatılmadan "her settlement kendi gerçek oranını alır" **denemez**.
+
+Doğrulanan: bar provenansı kanıtı bağımsız olarak yeniden üretildi (7 pozisyonda şişme birebir);
+kayıp büyüklüğü 2797 adayda **kesinlikle muhafazakâr** (2797'sinde kenar düştü, 0'ında yükseldi;
+111 aday `tradeable → blocked`, 0 aday tersi); mutasyon M1 → 7 test düşüyor; defter/öğrenme
+kayıtları yeniden yazılmıyor; hiçbir koruyucu stop gevşemiyor.
+
 ## 6. BAĞIMSIZ İNCELEMENİN KAPSAMI — dürüst durum
 
-* Değişiklikleri yazmayan ayrı bir adversaryal Claude ajanı **`2ed0fa0`** üzerinde başlatıldı.
-* **İnceleme bu belge yazılırken TAMAMLANMADI.** Tamamlanmamış inceleme **onay sayılmaz** ve bu
-  sürüm "bağımsız olarak doğrulandı" diye sunulmamaktadır.
+* Değişiklikleri yazmayan ayrı bir adversaryal Claude ajanı **`2ed0fa0`** üzerinde çalıştı ve
+  **tamamlandı**; sonucu §5b'de. Testler orada da 2103 passed / 22 skipped, ruff temiz.
+* İnceleme **onay vermedi**: iki yüksek öncelikli kusur açık (D1, D2).
 * `2ed0fa0 → 4d666db` arası fark bağımsız incelemenin **görmediği** kısımdır. Bu farkın üretim
   yolunda olmadığı **mekanik olarak** gösterildi: worker'ın gerçek import grafiği 84 `tradingbot`
   modülü yüklüyor ve eklenen beş modülün (`replay/{fidelity,challengers,counterfactual,shadow,stats}`)

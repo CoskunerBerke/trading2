@@ -244,3 +244,53 @@ class HierarchicalRate:
         h = cls(float(d.get("alpha", 10.0)), float(d.get("prior_mean", 0.5)), d.get("half_life_days"))
         h.stats = {k: RateStat.from_dict(v) for k, v in (d.get("stats") or {}).items()}
         return h
+
+
+# ---------------------------------------------------------------- kayıp büyüklüğü (|R|) kestirimi
+#: Plan geometrisi: stop TAM 1R'dir. Veri yokken kestirim BUDUR (bugünkü davranışın aynısı).
+LOSS_PRIOR_R = 1.0
+#: Gerçek ortalama kayıp büyüklüğünün 1.0 etrafındaki ÖNSEL standart sapması. Sapmanın kaynağı
+#: yalnız uygulamadır (gap-through, stop kayması, fee/funding sürüklemesi), dolayısıyla küçüktür:
+#: 2σ ≈ ±0.10R. Bu sayı ne kadar KÜÇÜKse kestirim 1.0'a o kadar yapışır (muhafazakâr yön).
+LOSS_PRIOR_SD_R = 0.05
+#: Gözlem başına standart sapmanın TABANI. Küçük örneklemde ölçülen s.s. tesadüfen 0'a yakın
+#: çıkabilir (n=1'de tanımı gereği 0'dır); taban olmadan tek bir kapanış kestirimi ele geçirirdi.
+MIN_LOSS_SD_R = 0.10
+#: Bozuk/absürt duruma karşı üst sınır (fail-safe). Kestirim ASLA 1.0'ın ALTINA inmez: NET R zaten
+#: fee/funding sürüklemesini içerdiği için beklenen kayıp büyüklüğü yapısal olarak ≥ 1R'dir; 1.0'ın
+#: altındaki bir örneklem ortalaması küçük örneklem artefaktıdır ve edge'i ŞİŞİRİRDİ.
+MAX_LOSS_R = 2.0
+
+
+def loss_magnitude_estimate(n: float, mean_abs_r: float, sd_abs_r: float, *,
+                            prior_r: float = LOSS_PRIOR_R, prior_sd_r: float = LOSS_PRIOR_SD_R,
+                            min_sd_r: float = MIN_LOSS_SD_R, max_r: float = MAX_LOSS_R) -> tuple[float, dict]:
+    """Gerçekleşmiş kayıp büyüklüklerinden belirsizlik-ayarlı |avg_loss_r| kestirimi.
+
+    Ampirik Bayes daralması — `BLEND_N` kazanç harmanıyla AYNI biçim (`w = n / (n + k)`), ama `k`
+    elle seçilmiş bir sabit değil, ÖLÇÜLEN belirsizlikten türetilir::
+
+        k = max(sd, min_sd)² / prior_sd²          (gözlem gürültüsü / önsel yayılım)
+        w = n / (n + k)                           (= prior_sd² / (prior_sd² + sd²/n))
+        L = prior_r + w · max(0, mean − prior_r)
+
+    Böylece: (a) veri yokken `n = 0 → w = 0 → L = prior_r` yani BUGÜNKÜ davranış birebir korunur;
+    (b) örneklem büyüdükçe `w` tekdüze artar; (c) kayıplar gerçekten dağınıksa (`sd` büyük) `k`
+    büyür ve kestirim 1.0'a daha çok yapışır — yani belirsizlik kestirimi ŞİŞİRMEZ, kırpar.
+
+    `max(0, ...)` tek yönlüdür: kestirim 1.0'ın altına DÜŞEMEZ (bkz. `MAX_LOSS_R` notu).
+    Dönüş: `(L, meta)` — `meta` denetim için ara terimleri taşır.
+    """
+    n = max(0.0, float(n or 0.0))
+    m = float(mean_abs_r or 0.0)
+    sd = max(0.0, float(sd_abs_r or 0.0))
+    sd_eff = max(sd, float(min_sd_r))
+    tau = max(1e-9, float(prior_sd_r))
+    k = (sd_eff * sd_eff) / (tau * tau)
+    w = n / (n + k) if n > 0 else 0.0
+    raw = float(prior_r) + w * max(0.0, m - float(prior_r))
+    est = min(float(max_r), max(float(prior_r), raw))
+    return round(est, 6), {"n": round(n, 6), "mean_abs_r": round(m, 6), "sd_abs_r": round(sd, 6),
+                           "sd_eff_r": round(sd_eff, 6), "shrink_k": round(k, 6),
+                           "shrink_w": round(w, 6), "prior_r": float(prior_r),
+                           "clamped": bool(abs(raw - est) > 1e-12)}

@@ -178,3 +178,33 @@ def test_12_marks_attaches_bar_open_from_frame():
     idx = pd.DataFrame({"high": [1.0, 2.0]}, index=pd.to_datetime([ms - 3600000, ms], unit="ms", utc=True))
     assert TradingEngineV3._frame_bar_open(idx).endswith("+00:00")
     assert TradingEngineV3._frame_bar_open(pd.DataFrame({"high": [1.0]})) == ""
+
+
+def test_13_real_frame_pipeline_yields_provenance():
+    """GERCEK cerceve boru hatti (`prepare` -> `drop_unclosed_last_bar` -> gostergeler) provenans verir.
+
+    `_frame_bar_open` bos donerse defter fail-closed davranir ve BUTUN bar uclari sessizce
+    yok sayilir — stop/hedef tetikleri yalniz mark ile calisir. Bu, onarimin degil bir
+    GERILEMENIN belirtisi olurdu; bu test o yolu kilitler.
+    """
+    import pandas as pd
+
+    from tradingbot.data import drop_unclosed_last_bar, prepare
+    from tradingbot.engine_v3 import TradingEngineV3
+    from tradingbot.indicators import add_snapshot_indicators
+
+    base = 1_788_000_000_000
+    raw = pd.DataFrame({
+        "timestamp": [base + i * 3_600_000 for i in range(300)],
+        "open": [100.0 + i * 0.1 for i in range(300)],
+        "high": [101.0 + i * 0.1 for i in range(300)],
+        "low": [99.0 + i * 0.1 for i in range(300)],
+        "close": [100.5 + i * 0.1 for i in range(300)],
+        "volume": [10.0] * 300,
+    })
+    f = prepare(raw)
+    f = drop_unclosed_last_bar(f, "1h", now_ms=base + 300 * 3_600_000)
+    f = add_snapshot_indicators(f)
+    got = TradingEngineV3._frame_bar_open(f)
+    assert got, "gercek boru hattinda provenans cozulemedi -> butun uclar sessizce dusurulur"
+    assert got == _iso(pd.Timestamp(f.index[-1]).to_pydatetime())

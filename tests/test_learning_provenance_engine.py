@@ -122,6 +122,10 @@ def _engine(tmp_path, records):
 
     e = object.__new__(TradingEngineV3)
     e._exit_lock = threading.RLock()
+    # FUNDING SETTLEMENT V1: `exit_check` funding oranlarini onbellekten okur (AG YOK). Bos onbellek
+    # eski davranisi verir; alan gercek sinifta __init__'te kuruldugu icin burada da kurulur.
+    from tradingbot.market.funding_rates import FundingRateCache
+    e.funding_rates = FundingRateCache(tmp_path / "funding_rates.json")
     e.ledger2 = _Ledger(records)
     e.ledger_path = tmp_path / "ledger.json"
     e.run_id = "run_test"

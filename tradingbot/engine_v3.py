@@ -21,7 +21,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 from .accounting import (AmountType, FeeSchedule, FiltersCache, FuturesLedgerV2, LiquidationParams, MarketType, Side, SizeSpec,
-                         SlippageModel, SpotLedger, TaxPolicy, TickData, default_brackets, static_rates)
+                         SlippageModel, SpotLedger, TaxPolicy, TickData, chained_rates, default_brackets, static_rates)
 from .agents.manager import CoinBrief
 from .coinhead import ChiefPortfolioManager, CoinHeadConfig, CoinHeadInputs, CoinHeadRegistry, Verdict
 from .config import BotConfig
@@ -110,6 +110,11 @@ class TradingEngineV3(TradingEngine):
         self.spot_listing = SpotListing(st / "spot_listing.json",
                                         ttl_minutes=int(getattr(self.cfg.v3.universe, "spot_listing_ttl_minutes", 1440)))
         self._spot_provider_factory_override = None
+        # FUNDING SETTLEMENT V1: settlement BAŞINA gerçek oran/mark önbelleği. Canlı tur yolu eskiden
+        # TEK bir anlık oranı bütün kaçırılan dönemlere uyguluyordu (bkz. accounting/funding.py başlığı).
+        from .market.funding_rates import FundingRateCache
+        self.funding_rates = FundingRateCache(st / "funding_rates.json")
+        self._funding_provider_factory_override = None
         self.risk = RiskEngine(self.profile, self.killswitch, v3.risk_profiles.clusters or None)
         # --- dinamik futures kaldıracı (2x–5x). VARSAYILAN KAPALI; yalnız PAPER'da açılabilir.
         _lv = v3.leverage
@@ -663,7 +668,10 @@ class TradingEngineV3(TradingEngine):
             if not marks:
                 return []
             now = utc_now()
-            records = self.ledger2.tick(marks, now_utc=now, bar_advance=False)
+            # FUNDING SETTLEMENT V1: hızlı çıkış monitörü AĞA ÇIKMAZ; yalnız önbellekteki gerçek
+            # settlement oranını okur. Önbellek boşsa `accrue` eskisi gibi son bilinen orana
+            # (estimated) düşer — davranış kötüleşmez, kapsandığında iyileşir.
+            records = self.ledger2.tick(marks, now_utc=now, funding_rate_lookup=self.funding_rates.lookup, bar_advance=False)
             self.ledger2.save(self.ledger_path)
             from .ops.gap import write_watermark
             write_watermark(self.cfg.state_path, now, self.run_id or None)
@@ -964,7 +972,13 @@ class TradingEngineV3(TradingEngine):
         bar_advance = bool(cur_bar and cur_bar != self.last_bar_seen)
         if cur_bar:
             self.last_bar_seen = cur_bar
-        records = self.ledger2.tick(marks, now_utc=now, funding_rate_lookup=static_rates(funding), bar_advance=bar_advance)
+        # FUNDING SETTLEMENT V1: önce settlement'ın GERÇEK oranı/mark'ı (önbellek; ağ yalnız eksik
+        # dönem varsa ve arıza turu düşürmez), o çözülemezse eski yedek = anlık snapshot oranı.
+        # Böylece venue erişilemezken davranış eskisiyle birebir aynı, erişilebilirken doğru kalır.
+        self.ensure_funding_rates(now)
+        records = self.ledger2.tick(marks, now_utc=now,
+                                    funding_rate_lookup=chained_rates(self.funding_rates.lookup, static_rates(funding)),
+                                    bar_advance=bar_advance)
         # 6) KAYIT SIRASI: önce defter, sonra öğrenme (crash penceresinde çift öğrenme olmasın)
         self.ledger2.save(self.ledger_path)
         from .ops.gap import write_watermark
@@ -1640,6 +1654,49 @@ class TradingEngineV3(TradingEngine):
         from .market.ratelimit import BudgetPool
         pool = BudgetPool(safety=self.cfg.v3.data.rate_budget_safety)
         return BinanceSpotProvider(HttpClient(BinanceSpotProvider.base_url, pool.get("api.binance.com")))
+
+    def _funding_provider_factory(self):
+        """USDⓈ-M public sağlayıcı — KISA zaman aşımı, tekrar deneme YOK (tur yolu bloklanmasın).
+
+        Test enjeksiyonu: `_funding_provider_factory_override`, yoksa `_gap_provider_factory`.
+        """
+        factory = getattr(self, "_funding_provider_factory_override", None) or self._gap_provider_factory
+        if factory is not None:
+            return factory()
+        from .market.http import HttpClient
+        from .market.providers import BinanceFuturesProvider
+        from .market.ratelimit import BudgetPool
+        pool = BudgetPool(safety=self.cfg.v3.data.rate_budget_safety)
+        return BinanceFuturesProvider(HttpClient(BinanceFuturesProvider.base_url, pool.get("fapi.binance.com"),
+                                                 timeout=5.0, max_retries=0))
+
+    def ensure_funding_rates(self, now: datetime) -> dict:
+        """Açık perp pozisyonlarının VADESİ GELMİŞ ve önbellekte OLMAYAN settlement'ları için gerçek oranları çeker.
+
+        Settlement'lar 8 saatte bir olduğu için normal işleyişte açık pozisyon başına ~8 saatte 1
+        istek (ağırlık 1) demektir; kapsanan turlarda HİÇBİR istek atılmaz. Arıza turu DÜŞÜRMEZ:
+        önbellek korunur, `lookup` None döner ve zincir anlık orana (eski davranış) düşer.
+        """
+        led = self.ledger2
+        if not led.positions:
+            return {"ok": True, "skipped": "açık pozisyon yok"}
+        needs: dict[str, list] = {}
+        for sym, pos in led.positions.items():
+            if getattr(pos, "market_type", None) is not None and "PERP" not in str(getattr(pos, "market_type", "")):
+                continue
+            due = led.funding.settlements_due(pos, now)
+            if due:
+                needs[sym] = due
+        if not needs:
+            return {"ok": True, "skipped": "vadesi gelen settlement yok"}
+        try:
+            res = self.funding_rates.ensure(self._funding_provider_factory, needs, now=now.timestamp())
+        except Exception as exc:  # noqa: BLE001 — funding oranı yenileme arızası turu düşürmez
+            log.warning("funding oranları yenilenemedi: %s: %s", type(exc).__name__, exc)
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        if not res.get("ok"):
+            log.warning("funding oranları yenilenemedi: %s — önbellek korunuyor (n=%s)", res.get("error"), res.get("n"))
+        return res
 
     def ensure_spot_listing(self, *, force: bool = False) -> dict:
         """`spot_listing.json` bayatsa resmi spot exchangeInfo'dan yenile.

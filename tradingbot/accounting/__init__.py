@@ -18,7 +18,7 @@ from .filters import (
     from_binance_spot,
     quantize_order,
 )
-from .funding import FundingEvent, FundingSchedule, RateLookup, static_rates
+from .funding import FundingEvent, FundingQuote, FundingSchedule, RateLookup, chained_rates, static_rates
 from .futures_ledger import (
     EXIT_BE_STOP,
     EXIT_LIQ,
@@ -88,7 +88,7 @@ __all__ = [
     "SCHEMA_VERSION", "LEGACY_TRADE_KEYS", "MarketType", "Side", "PositionSide", "OrderType", "TimeInForce", "OrderStatus",
     "AmountType", "MarginMode", "LedgerKind", "TickData", "SymbolFilters", "SizeSpec", "Fill", "Order", "Lot", "Position",
     "LedgerEntry", "TradeRecord", "ser", "dec_or_none",
-    "FeeSchedule", "FundingEvent", "FundingSchedule", "RateLookup", "static_rates",
+    "FeeSchedule", "FundingEvent", "FundingQuote", "FundingSchedule", "RateLookup", "chained_rates", "static_rates",
     "LiquidationParams", "liquidation_price", "simple_liq", "liquidation_price_for", "liquidation_buffer_pct", "is_liquidated",
     "liquidation_outcome", "SlippageModel", "vwap_estimate",
     "TaxPolicy", "TaxLedgerRow", "tax_row", "tax_rows", "export_tax_csv", "TAX_STATUS_UNVERIFIED", "TAX_STATUS_CONFIRMED",

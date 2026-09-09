@@ -83,6 +83,9 @@ _HARD: tuple[Gate, ...] = (
     # --- karar yolu bütünlüğü (fail-closed) ---
     _g("UNKNOWN_GATE_CODE", HARD_SAFETY, "risk", "kayıtsız kapı kodu — fail-closed reddi"),
     _g("SIZE_MULTIPLIER_ZERO", HARD_SAFETY, "risk", "nihai boyut çarpanı sıfır — emir gönderilemez"),
+    # --- KANIT ONARIMI V1 (2026-09-09): ölçülmüş kaybeden kesitler ---
+    _g("SHORT_DISABLED", HARD_SAFETY, "risk", "SHORT yönü config ile kapalı (futures_v3.allow_short=false)"),
+    _g("NOT_SPOT_LISTED", HARD_SAFETY, "risk", "sembol Binance spot'ta listeli değil / listeleme verisi yok (fail-closed)"),
 )
 
 # --------------------------------------------------------------------------- SOFT_EVIDENCE

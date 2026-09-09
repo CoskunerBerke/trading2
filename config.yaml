@@ -98,6 +98,10 @@ universe:                      # dinamik Binance spot + USDⓈ-M perpetual evren
   min_listing_age_days: 60
   max_symbols: 200
   refresh_minutes: 360
+  # KANIT ONARIMI V1 (2026-09-09): yalniz vadelide listelenen tokenize hisse/emtia kesiti 87 kurulumda -0.24R
+  # (%95 ust sinir -0.035). Yeni giris yalniz Binance SPOT'ta listeli sembollerde; acik pozisyon cikislari surer.
+  require_spot_listing: true
+  spot_listing_ttl_minutes: 1440
   tier2_top: 30
   tier3_top: 10
 
@@ -136,6 +140,10 @@ futures_v3:
   tp1_fraction: 0.5
   ambiguity_policy: worst_case # aynı tikte stop+hedef → stop
   liq_fee_pct: 0.5
+  # KANIT ONARIMI V1 (2026-09-09): SHORT kesiti %95 guvenle negatif (defterde 5/5 kayip) -> kapali.
+  allow_short: false
+  # MFE +1.0R'ye ulasinca stop gercek basa-basa tasinir (TP1 beklenmez). 12 acik pozisyonun 9'unda stop hic tasinmamisti.
+  breakeven_at_mfe_r: 1.0
 
 execution:
   gateway: paper               # paper | binance_spot_testnet | binance_futures_testnet (testnet_enabled + env anahtarları gerekir); live KAPALI

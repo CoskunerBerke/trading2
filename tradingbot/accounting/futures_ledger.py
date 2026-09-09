@@ -99,7 +99,7 @@ class FuturesLedgerV2:
                  enforce_position_cap: bool | None = None, fees: FeeSchedule | None = None,
                  slippage: SlippageModel | None = None, brackets: list[LeverageBracket] | None = None,
                  liq_params: LiquidationParams | None = None, funding: FundingSchedule | None = None,
-                 tax_policy: TaxPolicy | None = None, tp1_fraction=Decimal("0.5"), allow_shrink: bool = False,
+                 tax_policy: TaxPolicy | None = None, tp1_fraction=Decimal("0.5"), breakeven_at_mfe_r=Decimal("0"), allow_shrink: bool = False,
                  worst_case: bool = True, tp_maker: bool = False, entries_keep: int = 2000, history_keep: int = 5000,
                  require_verified_precision: bool = False):
         #: Doğrulanmamış fiyat/miktar adımıyla YENİ GİRİŞ açılmasın mı? VARSAYILAN KAPALI —
@@ -126,6 +126,8 @@ class FuturesLedgerV2:
         self.funding = funding or FundingSchedule()
         self.tax_policy = tax_policy or TaxPolicy.disabled()
         self.tp1_fraction = D(tp1_fraction)
+        #: MFE tabanli basa-bas esigi (R). 0 = kapali. Bkz. tick().
+        self.breakeven_at_mfe_r = D(breakeven_at_mfe_r)
         self.allow_shrink = bool(allow_shrink)
         self.worst_case = bool(worst_case)
         self.tp_maker = bool(tp_maker)
@@ -419,6 +421,21 @@ class FuturesLedgerV2:
             move_best = (best / pos.entry_avg - _ONE) * _HUNDRED * pos.side.sign
             pos.mae_pct = min(pos.mae_pct, move_worst)
             pos.mfe_pct = max(pos.mfe_pct, move_best)
+            # KANIT ONARIMI V1 — MFE tabanli basa-bas: en yuksek kar `breakeven_at_mfe_r` R'ye ulasinca stop
+            # gercek basa-basa TASINIR; TP1 dokunusu beklenmez. Yalniz sikilastirir, mark'in yanlis tarafina
+            # koymaz, pozisyon basina BIR kez calisir ve `meta.be_by_mfe` ile kalici izlenir.
+            if self.breakeven_at_mfe_r > 0 and not pos.tp1_done and not pos.meta.get("be_by_mfe"):
+                _ist = pos.initial_stop if pos.initial_stop is not None else pos.stop
+                _risk_pct = (abs(pos.entry_avg - _ist) / pos.entry_avg * _HUNDRED) if (_ist is not None and pos.entry_avg > 0) else ZERO
+                if _risk_pct > 0:
+                    _mfe_r = D(pos.mfe_pct) / _risk_pct
+                    if _mfe_r >= self.breakeven_at_mfe_r:
+                        _be = self.break_even_price(pos)
+                        _right_side = (_be < mark) if pos.side is PositionSide.LONG else (_be > mark)
+                        _tighter = pos.stop is None or (pos.side is PositionSide.LONG and _be > pos.stop) or (pos.side is PositionSide.SHORT and _be < pos.stop)
+                        if _right_side and _tighter:
+                            pos.stop = _be
+                            pos.meta["be_by_mfe"] = {"at": ts, "mfe_pct": float(pos.mfe_pct), "mfe_r": float(_mfe_r), "stop": str(_be)}
             # trailing stop (opsiyonel)
             if pos.trailing_pct is not None and pos.trailing_pct > 0:
                 trail = best * (_ONE - pos.trailing_pct / _HUNDRED) if pos.side is PositionSide.LONG else best * (_ONE + pos.trailing_pct / _HUNDRED)
@@ -442,7 +459,7 @@ class FuturesLedgerV2:
                 if (pos.side is PositionSide.LONG and mark < trig) or (pos.side is PositionSide.SHORT and mark > trig):
                     trig = mark
                 fill = self.slippage.fill_price(trig, pos.side.close_side, td, is_market=True)
-                reason = EXIT_BE_STOP if pos.tp1_done else EXIT_STOP
+                reason = EXIT_BE_STOP if (pos.tp1_done or bool(pos.meta.get("be_by_mfe"))) else EXIT_STOP
                 self._close_part(pos, fill, pos.qty, reason, ts, ref_price=trig)
                 closed.append(self._finalize(pos, reason, ts))
                 continue
@@ -570,7 +587,7 @@ class FuturesLedgerV2:
                 "enforce_position_cap": bool(self.enforce_position_cap),
                 "fees": self.fees.to_dict(), "slippage": self.slippage.to_dict(),
                 "liq_params": self.liq_params.to_dict(), "tax_policy": self.tax_policy.to_dict(),
-                "tp1_fraction": ser(self.tp1_fraction), "allow_shrink": self.allow_shrink, "worst_case": self.worst_case,
+                "tp1_fraction": ser(self.tp1_fraction), "breakeven_at_mfe_r": ser(self.breakeven_at_mfe_r), "allow_shrink": self.allow_shrink, "worst_case": self.worst_case,
                 "tp_maker": self.tp_maker, "positions": {k: v.to_dict() for k, v in self.positions.items()},
                 "history": [h.to_dict() for h in self.history], "entries": [e.to_dict() for e in self.entries],
                 "total_fees": ser(self.total_fees), "total_funding": ser(self.total_funding), "seq": self.seq, "meta": self.meta}
@@ -603,7 +620,7 @@ class FuturesLedgerV2:
                   liq_params=LiquidationParams(**{k: v for k, v in (d.get("liq_params") or {}).items()
                                                 if k in ("liq_fee_pct", "fee_cushion_pct", "use_brackets")}) if d.get("liq_params") else None,
                   tax_policy=TaxPolicy.from_dict(d["tax_policy"]) if d.get("tax_policy") else None,
-                  tp1_fraction=d.get("tp1_fraction", "0.5"), allow_shrink=bool(d.get("allow_shrink", False)),
+                  tp1_fraction=d.get("tp1_fraction", "0.5"), breakeven_at_mfe_r=d.get("breakeven_at_mfe_r", "0"), allow_shrink=bool(d.get("allow_shrink", False)),
                   worst_case=bool(d.get("worst_case", True)), tp_maker=bool(d.get("tp_maker", False)))
         for k, v in overrides.items():
             setattr(led, k, v)
@@ -623,7 +640,7 @@ class FuturesLedgerV2:
         """paper_futures.FuturesLedger JSON'u (v1) → V2. Equity ve geçmiş aynen korunur."""
         starting = D(d.get("starting_equity", d.get("equity", 0)))
         led = cls(starting, **{k: v for k, v in overrides.items() if k in ("max_positions", "enforce_position_cap", "fees", "slippage", "brackets",
-                                                                          "liq_params", "funding", "tax_policy", "tp1_fraction",
+                                                                          "liq_params", "funding", "tax_policy", "tp1_fraction", "breakeven_at_mfe_r",
                                                                           "allow_shrink", "worst_case", "tp_maker")})
         led.wallet_balance = D(d.get("equity", starting))
         led.total_fees = D(d.get("total_fees", 0))

@@ -65,6 +65,13 @@ class UniverseSection:
     eval_target_min: int = 40
     eval_target: int = 50
     eval_target_max: int = 60
+    # --- KANIT ONARIMI V1: yalniz Binance SPOT'ta listeli semboller YENI giris acabilir ---
+    # Yalniz vadelide listelenen (tokenize hisse/emtia agirlikli) kesit 87 kurulumda -0.24R
+    # (%95 ust sinir -0.035). Kod varsayilani KAPALI (eski davranis); config.yaml ile acilir.
+    # Liste `state/spot_listing.json`da onbelleklenir; veri YOKSA kapi fail-closed (NOT_SPOT_LISTED).
+    # Acik pozisyonlarin cikislari etkilenmez; kapi yalniz yeni girisi durdurur.
+    require_spot_listing: bool = False
+    spot_listing_ttl_minutes: int = 1440
 
 
 @dataclass
@@ -114,6 +121,15 @@ class FuturesV3Section:
     ambiguity_policy: str = "worst_case"
     liq_fee_pct: float = 0.5
     intrabar_source: str = "1m_or_high_low"   # bilgi
+    # --- KANIT ONARIMI V1 (2026-09-09 olcumu, 239 kurulum, vadeli fiyat, maliyet dahil) ---
+    # allow_short=False: SHORT yonu %95 guvenle negatif (kripto -0.75R n=4, hisse/emtia -0.58R n=9;
+    # defterde 5/5 kayip). Kod varsayilani ESKI davranisi korur; kapatma config.yaml ile yapilir ve
+    # `SHORT_DISABLED` SERT kapisiyla gunluge duser (sessiz atlama yok).
+    allow_short: bool = True
+    # breakeven_at_mfe_r>0: en yuksek kar (MFE) bu R esigine ulasinca stop gercek basa-basa TASINIR,
+    # TP1 dokunusu BEKLENMEZ. 0 = kapali (eski davranis). Yalniz sikilastirir, asla gevsetmez.
+    # Olcum: 12 acik pozisyonun 9'unda stop hic tasinmamisti (ZEN +%12,3 MFE, stop girisin %13 altinda).
+    breakeven_at_mfe_r: float = 0.0
 
 
 @dataclass
@@ -237,6 +253,14 @@ class LearningV3Section:
     half_life_days: float = 60.0
     calibrator: str = "platt"
     shadow_trades: bool = True
+    # --- KANIT ONARIMI V1 (2026-09-09): aday sonuc etiketleme ---
+    # entry_snapshot.jsonl 2.677 adayi tam ozellik setiyle tutuyor ama sonuclari islenmiyordu. Acikken her
+    # tur, ufku dolan adaylar Binance vadeli 1h barlariyla uclu bariyerle etiketlenir ve AYRI dosyaya
+    # (`entry_outcomes.jsonl`) eklenir. Islem davranisina dokunmaz; yalniz veri uretir. Kod varsayilani KAPALI.
+    outcome_labeling_enabled: bool = False
+    outcome_horizon_hours: int = 168            # olcumde kenarin doydugu ufuk (7 gun)
+    outcome_cost_r: float = 0.16                # gidis-donus maliyet, R cinsinden (olcumdeki deger)
+    outcome_max_symbols_per_tour: int = 15      # oran butcesi: tur basina en fazla bu kadar sembol cekilir
     # GUVENLI VARSAYILAN: otomatik CHAMPION terfisi KAPALI. Feature-rich model yalniz CANDIDATE
     # olarak kalir; canli tahmin yoluna kendiliginden giremez. `true` verilmesi
     # PAPER_AUTO_PROMOTION_FORBIDDEN ile fail-closed reddedilir (bkz. validate_v3).

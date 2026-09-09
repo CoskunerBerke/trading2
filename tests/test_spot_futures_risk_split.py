@@ -289,7 +289,9 @@ def _spot_burdened_engine(tmp_path, monkeypatch):
     from test_risk_capacity_and_gates import _force_triggers
     from tradingbot.risk.state import OpenPosition
 
-    eng = _build(tmp_path, monkeypatch, {"leverage": {"enabled": True}}, symbols=6, equity=50.0)
+    # Ozne RISK KOVASI ayrimidir: iki kolun da AYNI olasiligi gormesi sart, yoksa huni
+    # karsilastirmasi olasilik gurultusuyle kirilir. Kalibre p_win acikca sabitlenir.
+    eng = _build(tmp_path, monkeypatch, {"leverage": {"enabled": True}}, symbols=6, equity=50.0, p_win=0.65)
     _force_triggers(monkeypatch, True)
     orig = eng._portfolio_state
 

@@ -332,7 +332,9 @@ def test_decision_funnel_is_persisted_with_required_fields(tmp_path, monkeypatch
 
 def test_duplicate_signal_is_blocked_but_a_new_bar_is_not(tmp_path, monkeypatch):
     import pandas as pd
-    eng = _engine(tmp_path, monkeypatch)
+    # Ozne YINELENEN SINYAL engellemesidir, olasilik modeli DEGIL: kalibre p_win sabitlenir ki
+    # aday kapiyi gecip duplicate kontrolune ULASSIN (bkz. TE._engine `p_win`).
+    eng = _engine(tmp_path, monkeypatch, p_win=0.65)
     s1 = eng.tour(do_scan=False, obsidian=False, charts=False)
     assert s1["opened"], "ilk turda giriş bekleniyor"
     for sym, pos in list(eng.ledger2.positions.items()):      # pozisyonları kapat → sinyal serbest

@@ -42,7 +42,7 @@ _UNIVERSE: tuple[tuple[str, int, float], ...] = tuple(
 
 def _engine(tmp_path: Path, monkeypatch, v3_overrides: dict | None = None,
             *, before_build=None, symbols: int | list[str] | None = None,
-            equity: float | None = None) -> TradingEngineV3:
+            equity: float | None = None, p_win: float | None = None) -> TradingEngineV3:
     """Agsiz V3 motoru. `v3_overrides` v3 config bolumlerini derinlemesine gunceller;
     `before_build(cfg)` motor kurulmadan ONCE state dizinine dokunmak icin cagrilir.
 
@@ -116,6 +116,20 @@ def _engine(tmp_path: Path, monkeypatch, v3_overrides: dict | None = None,
 
     monkeypatch.setattr(eng.runner, "run_symbol", run_symbol)
     monkeypatch.setattr(eng, "_chart", lambda b: "")
+    if p_win is not None:
+        # KALIBRE OLASILIK SABITLENIR. 2026-09-09 onarimindan sonra ekonomik kapi HEAD onselini
+        # (`head.py:354`, daima >= 0.5) DEGIL, ogrenicinin kalibre degerini kullanir. Egitilmemis
+        # ogrenici test ortaminda ~0.5 uretir ve aday boyutu min-notional altina duser; bu, ozne
+        # olarak olasiligi ALMAYAN testleri (yinelenen sinyal, arastirma yasam dongusu, risk kovasi)
+        # tesadufen kirar. Deger burada ACIKCA verilir -> test kendi oznesini sinar ve olasilik
+        # modelinden YALITILIR. Uretim yolu DEGISMEZ.
+        class _FixedPred:
+            ready = True
+            p_win_calibrated = float(p_win)
+            prior_used = float(p_win)
+
+        monkeypatch.setattr(eng.learner2, "predict", lambda *a, **k: _FixedPred())
+        monkeypatch.setattr(eng.learner2, "prior_only", lambda *a, **k: _FixedPred())
     eng._fake_live = fake_live
     return eng
 

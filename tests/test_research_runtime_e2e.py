@@ -88,7 +88,10 @@ def build(tmp_path, monkeypatch, *, overrides: dict | None = None, **seed_kw):
     ov = {k: dict(v) for k, v in RESEARCH_CFG.items()}
     for sec, vals in (overrides or {}).items():
         ov[sec] = {**ov.get(sec, {}), **vals}
-    eng = _engine(tmp_path, monkeypatch, ov, before_build=lambda cfg: seed_live_memory(cfg, **seed_kw))
+    # Ozne ARASTIRMA YASAM DONGUSUDUR (aday uretimi/terfi/emeklilik), olasilik modeli DEGIL.
+    # 2026-09-09 kapi sirasi onarimindan sonra kalibre p_win kullanildigi icin egitilmemis
+    # ogrenici ~0.5 uretir ve baseline girisler olusmaz; deger acikca sabitlenir (TE._engine).
+    eng = _engine(tmp_path, monkeypatch, ov, before_build=lambda cfg: seed_live_memory(cfg, **seed_kw), p_win=0.65)
     eng._clock = _Clock(utc_now())
     monkeypatch.setattr("tradingbot.engine_v3.utc_now", eng._clock)
     return eng
@@ -299,7 +302,7 @@ def test_state_pending_and_dedupe_survive_restart(tmp_path, monkeypatch):
     assert dict(reloaded.pending) == pending_before     # pending restart'a dayanıklı
     obs_before = len(reloaded.get(pid).observations)
 
-    eng2 = _engine(tmp_path / "reuse", monkeypatch, RESEARCH_CFG)     # yeni motor örneği
+    eng2 = _engine(tmp_path / "reuse", monkeypatch, RESEARCH_CFG, p_win=0.65)   # yeni motor örneği
     eng2.cfg.state_path.mkdir(parents=True, exist_ok=True)
     for name in ("research_policy.json", "research_coordinator.json"):
         (eng2.cfg.state_path / name).write_bytes((st / name).read_bytes())

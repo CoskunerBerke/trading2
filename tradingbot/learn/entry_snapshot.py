@@ -314,27 +314,40 @@ class EntrySnapshotStore:
         #: Arşiv indeksi önbelleği — segment kümesi değişmedikçe arşiv YENİDEN AÇILMAZ.
         self._arc_key: tuple[str, ...] | None = None
         self._arc_snaps: dict[str, dict[str, Any]] | None = None
+        #: SICAK `by_candidate` memosu — (mtime_ns, size) imzasiyla gecerli. Motor tur basina
+        #: iki kez cagiriyordu; iki tam ayristirma 889 MB tepe yapiyordu (olculdu). Memo ile
+        #: tur basina TEK ayristirma kalir. Cagirana SIG KOPYA verilir: bir cagiran donen
+        #: sozluge eski bellek kayitlarini EKLIYOR ve memoyu kirletmemeli.
+        self._bc_sig: tuple[int, int] | None = None
+        self._bc_cache: dict[str, dict[str, Any]] | None = None
         self._arc_links: dict[str, str] | None = None
 
     def iter_hot_rows(self) -> Iterable[dict[str, Any]]:
-        """YALNIZ sıcak dosya. Rotasyondan sonra burada olmayan satırlar arşivdedir."""
+        """YALNIZ sıcak dosya. Rotasyondan sonra burada olmayan satırlar arşivdedir.
+
+        AKIŞ: dosya satır satır okunur. Eski uygulama `read_text()` + `splitlines()` ile
+        önce dosyanın TAMAMINI tek string, sonra TÜM satırları ayrı liste olarak tutuyordu;
+        93 MB'lık üretim dosyasında bu, çağrı başına ölçülen 631 MB tepe bellekten 373 MB'ını
+        tek başına üretiyordu (worker 4 GiB cgroup sınırında OOM ile öldü, 2026-09-09).
+        """
         if not self.path.exists():
             return
         try:
-            text = self.path.read_text(encoding="utf-8", errors="replace")
+            fh = open(self.path, encoding="utf-8", errors="replace")
         except OSError as exc:
             log.warning("entry_snapshot okunamadı: %s", exc)
             return
-        for line in text.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                d = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(d, dict) and d.get("candidate_id"):
-                yield d
+        with fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    d = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(d, dict) and d.get("candidate_id"):
+                    yield d
 
     def iter_archived_rows(self) -> Iterable[dict[str, Any]]:
         """Arşivlenmiş satırlar — YALNIZ açık talep üzerine. Arıza istisna SIZDIRMAZ.
@@ -395,7 +408,16 @@ class EntrySnapshotStore:
         """
         out: dict[str, dict[str, Any]] = {}
         if include_archive:
+            # Arşiv yolu memolanmaz: çevrimdışı/talep üzerine çalışır ve sıcak imzayla korunmaz.
             out.update(self._archive_index()[0])
+            for r in self.iter_hot_rows():
+                cid = r.get("candidate_id")
+                if cid and r.get("kind") != "link" and str(cid) not in out:
+                    out[str(cid)] = r
+            return out
+        sig = self._hot_signature()
+        if sig is not None and sig == self._bc_sig and self._bc_cache is not None:
+            return dict(self._bc_cache)          # SIĞ KOPYA: çağıran mutasyonu memoyu bozmaz
         for r in self.iter_hot_rows():
             cid = r.get("candidate_id")
             if not cid or r.get("kind") == "link":
@@ -403,7 +425,24 @@ class EntrySnapshotStore:
             cid = str(cid)
             if cid not in out:
                 out[cid] = r
+        if sig is not None:
+            self._bc_sig, self._bc_cache = sig, out
+            return dict(out)
         return out
+
+    def _hot_signature(self) -> tuple[int, int] | None:
+        """Sıcak dosyanın (mtime_ns, size) imzası. Dosya yoksa/okunamazsa None (memo kapalı)."""
+        try:
+            st = self.path.stat()
+        except OSError:
+            return None
+        return (int(st.st_mtime_ns), int(st.st_size))
+
+    def drop_hot_cache(self) -> None:
+        """`by_candidate` memosunu bırakır. Motor bunu TUR SONUNDA çağırır: turlar arasında
+        ~258 MB'lık ayrıştırılmış nesne grafiği bellekte TUTULMAZ."""
+        self._bc_sig = None
+        self._bc_cache = None
 
     def resolve_missing(self, snaps: dict[str, dict[str, Any]], links: dict[str, str],
                         wanted_trade_ids: Iterable[str]) -> dict[str, Any]:
@@ -515,6 +554,25 @@ class EntrySnapshotStore:
         return out
 
     # ------------------------------------------------------------------ rotasyon
+    def _hot_line_count(self) -> int:
+        """Sıcak satır SAYISI — akışla, dosyayı belleğe ALMADAN.
+
+        `retention_stats()` ve rotasyonun kapalı dalı yalnız SAYIYA ihtiyaç duyar. Eski yol
+        `len(self._hot_lines())` idi ve üretim dosyasında (93.6 MB) her turda ölçülen 374 MB
+        tepe üretiyordu — bağımsız doğrulamada saptandı.
+        """
+        try:
+            fh = open(self.path, encoding="utf-8", errors="replace")
+        except OSError:
+            self.errors += 1
+            return 0
+        n = 0
+        with fh:
+            for line in fh:
+                if line.strip():
+                    n += 1
+        return n
+
     def _hot_lines(self) -> list[str]:
         try:
             text = self.path.read_text(encoding="utf-8", errors="replace")
@@ -557,7 +615,7 @@ class EntrySnapshotStore:
                                "hot_lines": 0}
         if self.archive is None or self.max_lines <= 0:
             res["health"] = "NO_ARCHIVE_NO_DELETION" if self.archive is None else "DISABLED"
-            res["hot_lines"] = len(self._hot_lines())
+            res["hot_lines"] = self._hot_line_count()   # AKIŞ (rotasyon KAPALI dalı)
             return res
         from .journal_archive import ArchiveError
         with self._lock:
@@ -596,7 +654,7 @@ class EntrySnapshotStore:
     def retention_stats(self) -> dict[str, Any]:
         """Sıcak + arşiv birleşik saklama özeti — manifest okur, segment AÇMAZ."""
         arc = self.archive.stats() if self.archive is not None else None
-        hot = len(self._hot_lines())
+        hot = self._hot_line_count()          # AKIŞ: tur başına 374 MB tepe kaldırıldı
         archived = int((arc or {}).get("n_archived_records") or 0)
         return {"hot_rows": hot, "archived_rows": archived, "lifetime_rows": hot + archived,
                 "max_lines": self.max_lines,

@@ -249,21 +249,24 @@ class PositionPathStore:
     def iter_rows(self) -> Iterable[dict[str, Any]]:
         if not self.path.exists():
             return
+        # AKIŞ: `read_text()` + `splitlines()` dosyanın tamamını iki kez belleğe alıyordu
+        # (üretimde 29 MB). Satır satır okuma aynı sonucu sabit bellekle üretir.
         try:
-            text = self.path.read_text(encoding="utf-8", errors="replace")
+            fh = open(self.path, encoding="utf-8", errors="replace")
         except OSError as exc:
             log.warning("position_path okunamadı: %s", exc)
             return
-        for line in text.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                d = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(d, dict) and d.get("trade_id"):
-                yield d
+        with fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    d = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(d, dict) and d.get("trade_id"):
+                    yield d
 
     def paths_by_trade(self) -> dict[str, list[dict[str, Any]]]:
         """`trade_id → kronolojik snapshot listesi`. Duplicate kimlikler tekilleştirilir."""

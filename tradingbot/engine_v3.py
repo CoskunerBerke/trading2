@@ -754,6 +754,9 @@ class TradingEngineV3(TradingEngine):
         st = self.cfg.state_path
         # 0) heartbeat + kill switch tetikleri
         atomic_write_json(st / "heartbeat.json", {"at": iso(now), "run_id": self.run_id, "pid": __import__("os").getpid()})
+        # 0.4) BELLEK: onceki tur istisna ile bittiyse aday memosu asili kalabilir; tur basinda
+        #      savunmaci olarak birakilir (`tour()` genelinde try/finally YOK).
+        self._drop_entry_snapshot_cache()
         # 0.5) restart sonrası kesinti penceresi uzlaştırması (süreç başına bir kez; belirsizse giriş kilidi)
         self.ensure_gap_reconciled()
         # 0.6) yürütme hassasiyeti: kapı AÇIKSA bayat/eksik sembol filtrelerini resmi kaynaktan yenile
@@ -845,23 +848,24 @@ class TradingEngineV3(TradingEngine):
                                               snapshot_at_ms=now_ms, snapshot_seq=self._tour_no,
                                               pattern_evidence=self._pattern_evidence(b.symbol, now_ms))
         decisions = self.registry.run_many(inputs)
-        # ASAMA 2 -- EKONOMIK FIRSAT DEGERLENDIRMESI. Coin head yalnizca GEOMETRIK olarak gecerli plan
-        # uretti; kabul/red karari burada tek bir buyuklukle verilir: conservative_net_edge_r.
-        self._assess_opportunities(decisions, briefs)
         btc_dec = decisions.get("BTC/USDT")
-        chief = self.chief_mgr.decide(list(decisions.values()), {"equity": state.equity, "open_positions": [o.to_dict() for o in state.open_positions],
-                                                                 "total_open_risk_usdt": state.total_open_risk_usdt,
-                                                                 # ADVISORY projeksiyon YETKILI kapiyla ayni kovayi olcsun:
-                                                                 # birlesik toplam kullanilirsa panel "sigmaz" derken motor kabul eder.
-                                                                 "futures_stop_risk_usdt": state.futures_stop_risk_usdt,
-                                                                 "spot_exposure_usdt": state.spot_exposure_usdt,
-                                                                 "pnl_today": state.realized_pnl_today,
-                                                                 "drawdown_pct": state.drawdown_pct}, btc_regime=btc_dec.regime if btc_dec else None)
-        self.registry.chief = chief.to_dict()
-        # legacy chief (obsidian/alerts için) — v3 chief modunu yansıt
+        _chief_state = {"equity": state.equity, "open_positions": [o.to_dict() for o in state.open_positions],
+                        "total_open_risk_usdt": state.total_open_risk_usdt,
+                        # ADVISORY projeksiyon YETKILI kapiyla ayni kovayi olcsun:
+                        # birlesik toplam kullanilirsa panel "sigmaz" derken motor kabul eder.
+                        "futures_stop_risk_usdt": state.futures_stop_risk_usdt,
+                        "spot_exposure_usdt": state.spot_exposure_usdt,
+                        "pnl_today": state.realized_pnl_today,
+                        "drawdown_pct": state.drawdown_pct}
+        _btc_reg = btc_dec.regime if btc_dec else None
+        # legacy chief (obsidian/alerts için) — v3 chief modunu yansıt.
+        # `market_risk_mode` YALNIZ BTC rejimi + verdict sayilarindan turer (chief.py:93-99);
+        # `d.opportunity`ye BAGIMLI DEGILDIR, bu yuzden ekonomik kapidan ONCE guvenle alinir.
+        # `ChiefPortfolioManager.decide` SAFTIR: kararlari mutasyona ugratmaz, iki kez cagrilabilir.
         legacy_chief = self.runner.chief.decide(briefs)
         legacy_chief.generated_at = iso(now)
-        legacy_chief.risk_mode = chief.market_risk_mode
+        legacy_chief.risk_mode = self.chief_mgr.decide(list(decisions.values()), _chief_state,
+                                                       btc_regime=_btc_reg).market_risk_mode
         # p_win (v2 model + hiyerarşik önsel; v1 tahmini yedek)
         from .learn.snapshot import prediction_schema_hash
         self._pred_snapshots = {}
@@ -896,6 +900,22 @@ class TradingEngineV3(TradingEngine):
                     b.p_win = round(float(inf["effective"]), 3)
             if d:
                 d.p_win = b.p_win
+        # ASAMA 2 -- EKONOMIK FIRSAT DEGERLENDIRMESI. Coin head yalnizca GEOMETRIK olarak gecerli plan
+        # uretti; kabul/red karari burada tek bir buyuklukle verilir: conservative_net_edge_r.
+        #
+        # SIRA KRITIKTIR (2026-09-09 onarimi). Bu cagri eskiden `d.p_win` KALIBRE EDILMEDEN ONCE,
+        # yukaridaki ogrenici dongusunden 48 satir once yapiliyordu. `_assess_opportunities` icindeki
+        # `if d.p_win:` dali o anda HEAD onselini (`head.py:354`: 0.5 + 0.25*confidence, daima >= 0.5,
+        # yani hicbir zaman falsy) okuyor ve hiyerarsik ogrenicinin olasiligini EZIYORDU. Uretim
+        # verisinde olculdu: 2797 adayin 2797'sinde (%100) kapinin kullandigi olasilik HEAD onseliydi;
+        # kayitli istatistiksel p_win HICBIR adayda kullanilmamisti. Ortalama sisme +0.988R/aday.
+        # Ornek (NATGAS, 2026-09-08T13:51Z, KABUL EDILDI): kapi p=0.625 kullandi, istatistiksel
+        # tahmin 0.342'ydi; gercek olasilikla brut beklenti -0.136R, yani islem ACILMAMALIYDI.
+        # Kod kendi yorumunun ("kalibre model tahmini onceliklidir") tersini yapiyordu.
+        self._assess_opportunities(decisions, briefs)
+        # Yetkili chief karari: `d.opportunity` artik dolu, siralama/izinler dogru edge ile kurulur.
+        chief = self.chief_mgr.decide(list(decisions.values()), _chief_state, btc_regime=_btc_reg)
+        self.registry.chief = chief.to_dict()
         # 4) RİSK + TETİK + PAPER EXECUTION
         opened: list[str] = []
         risk_log: list[dict] = []
@@ -1008,6 +1028,12 @@ class TradingEngineV3(TradingEngine):
         # KARLILIK DENEYI — IZOLE PAPER. Kanonik hicbir seyi degistirmez; yalnizca kendi
         # olay defterine ve kitabina yazar. Ariza turu DURDURMAZ.
         self._run_profitability_experiment(now)
+        # BELLEK: aday snapshot memosu SON TUKETICIDEN SONRA birakilir.
+        # `_write_entry_eval` (yukarida) ve `_run_profitability_experiment` (hemen ustte)
+        # ayni turda `by_candidate()` cagirir. Birakma bu ikisinin ARASINA konursa son
+        # tuketici yeniden ayristirir VE memo turlar arasi kalici olur (~258 MB) — bagimsiz
+        # dogrulamada olculdu. Dogru yer: her ikisinden de sonra.
+        self._drop_entry_snapshot_cache()
         self._write_llm_status(now)
         self._learning_chain = self._write_learning_chain(chain_res, now)
         self.mode_state.save()
@@ -3397,6 +3423,17 @@ class TradingEngineV3(TradingEngine):
         yalnız görünürlük sağlar.
         """
         return {k: v for k, v in (cycle or {}).items() if k in cls.ENTRY_CYCLE_REPORT_KEYS}
+
+    def _drop_entry_snapshot_cache(self) -> None:
+        """Aday snapshot `by_candidate` memosunu bırakır. ASLA istisna sızdırmaz."""
+        store = getattr(self, "entry_snapshot_store", None)
+        drop = getattr(store, "drop_hot_cache", None)
+        if drop is None:
+            return
+        try:
+            drop()
+        except Exception:  # noqa: BLE001 — bellek temizliği turu bozamaz
+            pass
 
     def _label_entry_outcomes(self, now) -> dict:
         """KANIT ONARIMI V1: ufku dolan aday snapshot'larını ileri fiyatla etiketler (tur sonu, fail-safe).

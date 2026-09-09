@@ -17,8 +17,25 @@ kanonik defter ve öğrenme kayıtları yeniden yazılmadı, açık pozisyonlara
 | 5 | **Bellek kanıtı toplayıcı** — cgroup + RSS + restart + tur süresi, 5 dakikada bir, systemd timer | kurulum ve okuma yordamı | `docs/MEMORY_VERIFICATION_V1.md` |
 | 6 | **Haftalık değerlendirme hazırlığı** — "yeterli veri birikti mi?" raporu, systemd timer | dondurulmuş anlık görüntüde araştırma ölçümünü bağımsız yeniden üretti | `scripts/evaluation_readiness.py` |
 
-Hiçbiri koruyucu stop gevşetmez. Bar provenansı yalnız iki yönde etki eder: MAE/MFE daha az uç,
-tetikler daha **geç**. Kayıp büyüklüğü onarımı her adayın kenarını **düşürür**, hiçbirini yükseltmez.
+Hiçbiri koruyucu stop **gevşetmez**; mevcut stoplar olduğu gibi bırakıldı. Kayıp büyüklüğü onarımı
+her adayın kenarını düşürür, hiçbirini yükseltmez.
+
+### UYARI — bar provenansı onarımı iki açık pozisyondaki ESKİ şişmeyi GERİ ALMAZ
+
+`mfe_pct` koşan bir maksimumdur ve defter yeniden yazılmadı. Yeni kod sahte **yeni** katkıyı
+engeller ama **birikmiş sapma kalıcıdır**. Sonuç: bu iki pozisyonda başa-baş kuralı **hâlâ erken
+tetikleyebilir** ve stop, amaçlanandan önce taşınabilir.
+
+| Pozisyon | Kayıtlı MFE | Gerçek MFE | Kalıcı sapma | Kural tetiklendiğinde GERÇEK MFE |
+|---|---:|---:|---:|---:|
+| F00038 NATGAS | 0.65R | 0.12R | 0.53R | **0.47R** (hedef 1.00R) |
+| F00043 GPS | 0.67R | 0.21R | 0.46R | **0.54R** (hedef 1.00R) |
+
+Bu **risksiz değildir**: erken başa-baş taşıması, hâlâ lehte gidebilecek bir pozisyonu gürültüyle
+kapatabilir ve kazananın başını keser — C1 ölçümünün gösterdiği zararın aynı türü. Etki yalnız bu
+iki pozisyonla sınırlıdır; sonraki her pozisyon temiz başlar. **Stop gevşetilmedi ve
+gevşetilmeyecek**; düzeltme isteniyorsa bu, defteri değiştiren AYRI ve açıkça onaylanmış bir
+işlemdir.
 
 ## 2. SHADOW ÇALIŞIYOR
 
@@ -41,8 +58,9 @@ tetikler daha **geç**. Kayıp büyüklüğü onarımı her adayın kenarını *
 | Çıkış geri verme — en iyi uygulanabilir onarım (MFE 1R'de başa-baş) | **+0.1073 R/işlem** | 29 | [0.000, +0.227] |
 | Giriş seçimi — sıralama sinyali (`conservative_net_edge_r` ↔ ileri R, Spearman) | **+0.032** | 1334 aday / 144 küme | [−0.136, +0.197] |
 
-Çıkış onarımı **zaten canlı**. Kalan sorun giriş seçimidir ve giriş seçiminde **ölçülebilir sinyal
-yoktur**.
+Çıkış onarımı **zaten canlı**. Bu örneklemde giriş seçiminde **ölçülebilir sinyal bulunamadı**.
+Bu, sinyalin olmadığının kanıtı değil, bu 1334 aday / 5 günlük örneklemle **saptanamadığıdır**;
+güç hesabı yapılmadı, dolayısıyla küçük bir etkiyi saptamak için gereken örneklem bilinmiyor.
 
 ### 3b. Temel/rakip karşılaştırması — üçü de DÜŞTÜ
 
@@ -75,7 +93,7 @@ tavanı üretmez).
 |---|---|
 | **`p_win` / `avg_win_r` tutarsızlığı** | Ölçüldü (%24 aday kararı değişiyor; tutarlı kullanımda 32 yerine 698 aday işlem yapılabilir). Saf çözüm `1c4cba1`'i geri açar; doğru çözüm kazanç büyüklüğünü de doğrudan ölçmektir ve kendi ön-kayıtlı ölçütünü hak eder. `docs/PWIN_WIN_MAGNITUDE_INCONSISTENCY.md` |
 | **Uzun süreli OOM doğrulaması** | Ölçüm altyapısı kuruldu, veri HENÜZ YOK. Kabul ölçütü sonuçlara bakılmadan yazıldı: ≥7 gün, `oom_kill` artışı 0, `NRestarts` artışı 0, `memory.peak` < tavanın %90'ı. |
-| İki açık pozisyonun şişik MFE'si | `mfe_pct` koşan maksimum; defter yeniden yazılmaz. Değer **büyüyemez**, etkisi tek yönlü (stop erken sıkışabilir, asla gevşemez). |
+| İki açık pozisyonun şişik MFE'si | **Hâlâ erken stop taşıması TETİKLEYEBİLİR** — F00038 gerçek 0.47R'de, F00043 gerçek 0.54R'de (hedef 1.00R). Defter yeniden yazılmadı; düzeltmek ayrı ve onay gerektiren bir işlem. Bkz. §1 uyarısı. |
 | MFE eksik ölçümü (`last_only` tikler) | Muhafazakâr yönde hata; ayrı iş. |
 | Funding takvimi 8 saate sabit kodlu | 4h/1h funding aralıklı sembollerde eksik tahakkuk; onarılan hatadan büyük olabilir. |
 | Funding önbellek ıskası anlık orana düşer | Tek-settlement durumunda bugünkünden kötü olmama koşulunun bilinçli bedeli. |
@@ -102,8 +120,26 @@ Tam değerlendirme (elle, ağ gerektirir):
 `scripts/counterfactual_run.py` → `scripts/challenger_eval.py` → `scripts/challenger_verdict.py`.
 Kabul ölçütleri `docs/CHALLENGERS_V1.md` içinde **önceden** yazılıdır.
 
-## 6. GPT‑6 Astra
+## 6. BAĞIMSIZ İNCELEMENİN KAPSAMI — dürüst durum
+
+* Değişiklikleri yazmayan ayrı bir adversaryal Claude ajanı **`2ed0fa0`** üzerinde başlatıldı.
+* **İnceleme bu belge yazılırken TAMAMLANMADI.** Tamamlanmamış inceleme **onay sayılmaz** ve bu
+  sürüm "bağımsız olarak doğrulandı" diye sunulmamaktadır.
+* `2ed0fa0 → 4d666db` arası fark bağımsız incelemenin **görmediği** kısımdır. Bu farkın üretim
+  yolunda olmadığı **mekanik olarak** gösterildi: worker'ın gerçek import grafiği 84 `tradingbot`
+  modülü yüklüyor ve eklenen beş modülün (`replay/{fidelity,challengers,counterfactual,shadow,stats}`)
+  **hiçbiri** bu grafikte yok (`replay/__init__.py` yalnız `engine`'i import eder). Farkın geri
+  kalanı belge, betik, systemd birimi ve test dosyasıdır.
+* Bu **kendi** kontrolümdür, bağımsız değildir.
+
+## 7. GPT‑6 Astra
 
 Bu oturumda yetkili bir GPT‑6 Astra bağlantısı **YOKTUR** (yüklü connector listesi boş).
-**Astra incelemesi yapılmadı.** Bağımsız denetim, değişiklikleri yazmayan ayrı bir adversaryal
-Claude ajanıyla yürütüldü.
+**Astra incelemesi yapılmadı.**
+
+## 8. DAĞITIM DURUMU
+
+**Bu sürüm VPS'e DAĞITILMADI.** Oturumdan SSH mümkün değil (anahtar parola korumalı).
+`4d666db` yalnız origin'e push edildi ve CI bu commit üzerinde çalıştırıldı. VPS'te
+`1c4cba1` çalışmaya devam ediyor. Dağıtım paketi (`bundle` + betik) teslim edildi; betik
+çalıştırılana kadar dağıtım **yapılmamıştır**.

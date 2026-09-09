@@ -95,7 +95,9 @@ rate, using only geometry already in the system.
 
 *Why this attacks the measured problem:* it is the direct, falsifiable test of the assumption the
 whole entry architecture rests on — that `conservative_net_edge_r` orders candidates by quality. If
-raising this bar to the median does not improve the pool, then no threshold on this variable will.
+raising this bar to the median does not improve the pool, that is evidence against this variable
+carrying usable rank information IN THIS SAMPLE. It does not license the claim that no threshold on
+this variable can ever work: this design has 5 market days, 144 clusters and no power calculation.
 
 *Pre-registered prediction:* **ΔR ≈ 0** — a pre-registered null. **Fails.**
 
@@ -132,7 +134,9 @@ is stated as such rather than dressed up as an interval.
 | A7 | *C3 only*: a **portfolio-constrained** replay (one shared 100 USDT ledger, position cap 3, chronological arrival, real margin competition) reproduces the same sign. The isolated per-candidate harness **cannot** settle a selection change; without A7, C3 is at most "per-candidate effect, portfolio effect unknown". |
 
 **Underpowered rule.** Any cut with fewer than 15 observations **or** fewer than 15 clusters is
-labelled UNDERPOWERED. An underpowered cut may not support acceptance and its point estimate is not
+labelled UNDERPOWERED. This is a crude minimum-size screen, **not a power calculation**: a cut
+that passes it is NOT thereby shown to be adequately powered, and `underpowered: false` in
+`verdict_v1.json` means only that the cut cleared this screen. An underpowered cut may not support acceptance and its point estimate is not
 reported as a finding.
 
 **+0.10 R floor, justified.** Measured cost drag is 0.0795 R/trade and the fidelity harness's own

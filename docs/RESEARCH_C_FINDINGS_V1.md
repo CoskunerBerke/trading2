@@ -224,7 +224,10 @@ price. Same negative sign at 48 h and on the realised 29.
 **C3 is the pre-registered null that matters most.** Raising the production economic gate to the
 median of its own decision variable moves the pool by +0.060 R with a CI of [−0.275, +0.380] — and
 the sign flips when the single dominant day is removed. **The variable the entry architecture is
-built on does not separate good candidates from bad ones.** A7 (portfolio-constrained confirmation)
+built on did not separate good candidates from bad ones IN THIS 1334-candidate, 5-day sample.**
+That is a failure to detect separation, not a demonstration that no threshold on this variable can
+work; no power calculation was performed, so the sample size needed to detect a small effect is
+unknown. A7 (portfolio-constrained confirmation)
 was **not reached**: C3 failed A1–A4 on the per-candidate metric, and no portfolio simulation can
 rescue a filter whose per-candidate effect is indistinguishable from zero. I did not run one and I
 am not going to present one as if it added information.

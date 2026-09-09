@@ -159,10 +159,19 @@ sadakat başarısızlığı değildir ve buradaki değişiklikten kaynaklanmaz.
 
 ## 6. Kalan iş (bu onarımda kapanmadı)
 
-1. **İki açık pozisyonun kayıtlı MFE'si şişik kalır.** `mfe_pct` bir koşan maksimumdur; onarım onu
-   geriye doğru düzeltmez ve defter yeniden yazılmaz. Değer artık **büyüyemez**: bundan sonraki
-   bütün katkılar gerçek barlardan gelir. Etkisi tek yönlüdür (stop erken sıkışabilir, asla
-   gevşemez).
+1. **İki açık pozisyonun kayıtlı MFE'si şişik kalır — kalıntı SAYILDI.** `mfe_pct` koşan bir
+   maksimumdur; onarım onu geriye düzeltmez ve defter yeniden yazılmaz. Değer artık sahte biçimde
+   **büyüyemez** (bundan sonraki katkılar gerçek barlardan gelir), ama mevcut sapma **kalıcı bir
+   ofset** olarak kalır:
+
+   | Pozisyon | Kayıtlı | Gerçek | Kalıcı ofset | Kayıtlı 1.00R olduğunda gerçek |
+   |---|---:|---:|---:|---:|
+   | F00038 NATGAS | 0.65R | 0.12R | 0.53R | **0.47R** |
+   | F00043 GPS | 0.67R | 0.21R | 0.46R | **0.54R** |
+
+   Yani bu iki pozisyonda başa-baş kuralı, amaçlanan eşiğin kabaca **yarısında** ateşleyebilir.
+   Etki tek yönlüdür — stop erken sıkışır, asla gevşemez — ve yalnız bu iki pozisyonla sınırlıdır;
+   bundan sonra açılan her pozisyon temiz başlar.
 2. **Eksik ölçüm (`last_only` tikler) açık.** Pozisyon o turun brief'lerinde yoksa `_marks()` yalnız
    `last_price` verir ve o pencerenin uçları hiç görülmez. Bu, MFE'yi **eksik** ölçer; başa-baş
    kuralını geç tetikler, yani muhafazakârdır. Ayrı iş.

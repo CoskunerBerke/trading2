@@ -147,7 +147,11 @@ def test_round_trip_reproduces_a_ledger_written_record_exactly(side, rows):
     assert pos is not None
     closed = []
     for b in bars:
-        closed += led.tick({SYM: {"last": b.close, "mark": b.close, "high": b.high, "low": b.low}}, now_utc=b.close_dt)
+        # `bar_open`: defter, bar uclarini yalnizca bar pozisyonun omru icinde acilmissa kullanir.
+        # REFERANS defter de uretimdeki gibi provenans vermelidir; aksi halde referans mark-only
+        # calisir, replay uclari kullanir ve gidis-donus esitligi TANIM GEREGI bozulur.
+        closed += led.tick({SYM: {"last": b.close, "mark": b.close, "high": b.high, "low": b.low,
+                                  "bar_open": b.open_dt.isoformat()}}, now_utc=b.close_dt)
     assert closed, "kurulum kapanmadi"
     rec = closed[-1].to_dict()
 

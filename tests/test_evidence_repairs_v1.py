@@ -1,6 +1,7 @@
-"""KANIT ONARIMI V1 — 2026-09-09 ölçümünden türeyen üç onarımın sözleşme testleri.
+"""KANIT ONARIMI V1 / V1.1 — 2026-09-09 ölçümünden türeyen onarımların sözleşme testleri.
 
-  1) SHORT_DISABLED / NOT_SPOT_LISTED sert kapıları (kayıtlı, fail-closed, günlüğe düşer)
+  1) SHORT_SEGMENT_PENALTY / FUTURES_ONLY_SEGMENT_PENALTY: YUMUŞAK kanıt (kayıtlı, asla sert engel,
+     net beklentisi pozitif adayı sıfırlamaz, günlüğe kod+miktar+gerekçe ile düşer)
   2) SpotListing önbelleği (üç değerli cevap, bayat-ama-kullanılabilir, boş sonuç ezmez, atomik)
   3) Defterde MFE tabanlı başa-baş (TP1 beklemez, yalnız sıkılaştırır, bir kez, kalıcı, etiketi doğru)
   4) Config varsayılanları ESKİ davranışı korur; yaml anahtarları yüklenir
@@ -22,37 +23,37 @@ import test_engine_v3 as TE  # noqa: E402
 from tradingbot.accounting import EXIT_BE_STOP, AmountType, FuturesLedgerV2, SizeSpec, TickData  # noqa: E402
 from tradingbot.coinhead.schema import TradePlanV3, Verdict, new_decision  # noqa: E402
 from tradingbot.config_v3 import load_v3  # noqa: E402
-from tradingbot.decision_gates import HARD_SAFETY, GateLedger, gate_class  # noqa: E402
+from tradingbot.decision_gates import SOFT_EVIDENCE, GateLedger, gate_class, is_hard  # noqa: E402
 from tradingbot.market.spot_listing import SpotListing  # noqa: E402
 
 D = Decimal
 
 
 # ----------------------------------------------------------------------------- 1) kapı kodları
-def test_01_new_gate_codes_are_registered_hard():
-    assert gate_class("SHORT_DISABLED") == HARD_SAFETY
-    assert gate_class("NOT_SPOT_LISTED") == HARD_SAFETY
-    g = GateLedger().block("SHORT_DISABLED", detail="test")
-    assert g.blocked
-    assert "SHORT_DISABLED" in g.hard
+def test_01_segment_codes_are_soft_evidence_never_hard():
+    for code in ("SHORT_SEGMENT_PENALTY", "FUTURES_ONLY_SEGMENT_PENALTY"):
+        assert gate_class(code) == SOFT_EVIDENCE and not is_hard(code)
+        g = GateLedger().penalise(code, 0.35, detail="test")
+        assert not g.blocked and g.soft_penalty_r() == pytest.approx(0.35)
+        with pytest.raises(ValueError):                              # sert engel olarak KULLANILAMAZ
+            GateLedger().block(code)
 
 
 # ----------------------------------------------------------------------------- 4) config
 def test_02_config_defaults_preserve_old_behaviour():
     v3 = load_v3({})
-    assert v3.futures_v3.allow_short is True
+    assert v3.futures_v3.short_penalty_r == 0.0
     assert v3.futures_v3.breakeven_at_mfe_r == 0.0
-    assert v3.universe.require_spot_listing is False
+    assert v3.universe.futures_only_penalty_r == 0.0
     assert v3.universe.spot_listing_ttl_minutes == 1440
+    assert not hasattr(v3.futures_v3, "allow_short") and not hasattr(v3.universe, "require_spot_listing")
 
 
 def test_02b_config_keys_load_from_yaml_dict():
-    v3 = load_v3({"futures_v3": {"allow_short": False, "breakeven_at_mfe_r": 1.0},
-                  "universe": {"require_spot_listing": True, "spot_listing_ttl_minutes": 60}})
-    assert v3.futures_v3.allow_short is False
-    assert v3.futures_v3.breakeven_at_mfe_r == 1.0
-    assert v3.universe.require_spot_listing is True
-    assert v3.universe.spot_listing_ttl_minutes == 60
+    v3 = load_v3({"futures_v3": {"short_penalty_r": 0.5, "breakeven_at_mfe_r": 1.0},
+                  "universe": {"futures_only_penalty_r": 0.35, "spot_listing_ttl_minutes": 60}})
+    assert v3.futures_v3.short_penalty_r == 0.5 and v3.futures_v3.breakeven_at_mfe_r == 1.0
+    assert v3.universe.futures_only_penalty_r == 0.35 and v3.universe.spot_listing_ttl_minutes == 60
 
 
 # ----------------------------------------------------------------------------- 2) SpotListing
@@ -104,13 +105,13 @@ def test_03b_refresh_failure_keeps_old_cache_and_empty_does_not_overwrite(tmp_pa
     assert not r["ok"] and sl.is_listed("ETH/USDT") is True
 
 
-# ----------------------------------------------------------------------------- 1) motor kapısı
-def _decision(symbol: str, direction: str):
+# ----------------------------------------------------------------------------- 1) motor: yumuşak ceza
+def _decision(symbol: str, direction: str, *, p_win: float = 0.6):
     d = new_decision("head", "run", "snap", symbol)
     d.verdict = Verdict.FUTURES_SHORT if direction == "SHORT" else Verdict.FUTURES_LONG
     d.direction = direction
     d.regime = "TREND_DOWN" if direction == "SHORT" else "TREND_UP"
-    d.p_win = 0.4
+    d.p_win = p_win
     if direction == "SHORT":
         plan = TradePlanV3(market_type="futures", direction="SHORT", entry_type="pullback", entry_zone=(100.0, 100.0),
                            stop=102.5, targets=[95.0, 92.5], valid=True, expected_cost_pct=0.18, expected_r=1.9)
@@ -122,45 +123,73 @@ def _decision(symbol: str, direction: str):
     return d
 
 
-def _codes(d) -> list[str]:
-    return list((d.opportunity or {}).get("hard_block_codes") or [])
+def _soft(d) -> dict[str, dict]:
+    return {s["code"]: s for s in ((d.opportunity or {}).get("soft_evidence") or [])}
 
 
-def test_04_short_disabled_blocks_only_when_configured(tmp_path, monkeypatch):
-    eng = TE._engine(tmp_path / "a", monkeypatch, v3_overrides={"futures_v3": {"allow_short": False}})
+def _mult(d) -> float:
+    return float((d.opportunity or {}).get("size_multiplier") or 0.0)
+
+
+def test_04_short_penalty_reduces_size_but_never_blocks(tmp_path, monkeypatch):
+    base = TE._engine(tmp_path / "base", monkeypatch)
+    d0 = _decision("ETH/USDT", "SHORT")
+    base._assess_opportunities({"ETH/USDT": d0}, briefs=[])
+    assert "SHORT_SEGMENT_PENALTY" not in _soft(d0)                # varsayılan 0 → eski davranış
+    m0 = _mult(d0)
+    assert m0 > 0
+    eng = TE._engine(tmp_path / "pen", monkeypatch, v3_overrides={"futures_v3": {"short_penalty_r": 0.5}})
     d = _decision("ETH/USDT", "SHORT")
     eng._assess_opportunities({"ETH/USDT": d}, briefs=[])
-    assert "SHORT_DISABLED" in _codes(d)
-    assert float(d.opportunity["size_multiplier"]) == 0.0           # SIZE_MULTIPLIER_ZERO → emir yok
+    s = _soft(d)["SHORT_SEGMENT_PENALTY"]
+    assert s["penalty_r"] == pytest.approx(0.5) and "2026-09-09" in (s.get("detail") or "")
+    assert not d.opportunity["hard_block_codes"]                   # yasak YOK
+    assert 0 < _mult(d) < m0                                      # küçültür, sıfırlamaz
     dl = _decision("ETH/USDT", "LONG")
     eng._assess_opportunities({"ETH/USDT": dl}, briefs=[])
-    assert "SHORT_DISABLED" not in _codes(dl)                      # LONG etkilenmez
-    eng2 = TE._engine(tmp_path / "b", monkeypatch)                  # varsayılan: eski davranış
-    d2 = _decision("ETH/USDT", "SHORT")
-    eng2._assess_opportunities({"ETH/USDT": d2}, briefs=[])
-    assert "SHORT_DISABLED" not in _codes(d2)
+    assert "SHORT_SEGMENT_PENALTY" not in _soft(dl)                # LONG etkilenmez
 
 
-def test_05_not_spot_listed_gate_is_fail_closed(tmp_path, monkeypatch):
-    eng = TE._engine(tmp_path / "a", monkeypatch, v3_overrides={"universe": {"require_spot_listing": True}})
-    # veri YOK → fail-closed
-    d = _decision("ETH/USDT", "LONG")
-    eng._assess_opportunities({"ETH/USDT": d}, briefs=[])
-    assert "NOT_SPOT_LISTED" in _codes(d)
-    # veri var: ETH listeli, NVDA değil
+def test_05_futures_only_penalty_is_evidence_not_a_ban(tmp_path, monkeypatch):
+    eng = TE._engine(tmp_path / "a", monkeypatch, v3_overrides={"universe": {"futures_only_penalty_r": 0.35}})
+    # veri YOK → ceza fail-safe uygulanır ama aday yine açılabilir
+    d = _decision("NVDA/USDT", "LONG")
+    eng._assess_opportunities({"NVDA/USDT": d}, briefs=[])
+    s = _soft(d)["FUTURES_ONLY_SEGMENT_PENALTY"]
+    assert s["penalty_r"] == pytest.approx(0.35) and "verisi yok" in (s.get("detail") or "")
+    assert not d.opportunity["hard_block_codes"] and _mult(d) > 0
+    # veri var: ETH listeli (ceza yok), NVDA değil (ceza var, boyut küçük ama > 0)
     eng.spot_listing.refresh(_Prov(_rows("ETHUSDT")), now=1.0)
     d_ok, d_no = _decision("ETH/USDT", "LONG"), _decision("NVDA/USDT", "LONG")
     eng._assess_opportunities({"ETH/USDT": d_ok, "NVDA/USDT": d_no}, briefs=[])
-    assert "NOT_SPOT_LISTED" not in _codes(d_ok)
-    assert "NOT_SPOT_LISTED" in _codes(d_no) and float(d_no.opportunity["size_multiplier"]) == 0.0
-    # kapı kapalı → veri olmasa bile engel yok (eski davranış)
+    assert "FUTURES_ONLY_SEGMENT_PENALTY" not in _soft(d_ok)
+    assert _soft(d_no)["FUTURES_ONLY_SEGMENT_PENALTY"]["penalty_r"] == pytest.approx(0.35)
+    assert not d_no.opportunity["hard_block_codes"]
+    assert 0 < _mult(d_no) < _mult(d_ok)
+    # düşük kanıtlı (p_win 0.4) yalnız-vadeli aday: net beklenti pozitifse ARAŞTIRMA boyutu, sıfır değil
+    d_weak = _decision("NVDA/USDT", "LONG", p_win=0.4)
+    eng._assess_opportunities({"NVDA/USDT": d_weak}, briefs=[])
+    assert d_weak.opportunity["net_expectancy_r"] > 0 and _mult(d_weak) > 0
+    # ceza kapalı → veri olmasa bile hiçbir iz yok (eski davranış)
     eng2 = TE._engine(tmp_path / "b", monkeypatch)
     d3 = _decision("NVDA/USDT", "LONG")
     eng2._assess_opportunities({"NVDA/USDT": d3}, briefs=[])
-    assert "NOT_SPOT_LISTED" not in _codes(d3)
+    assert "FUTURES_ONLY_SEGMENT_PENALTY" not in _soft(d3)
 
 
-def test_05b_ensure_spot_listing_only_hits_network_when_gate_on(tmp_path, monkeypatch):
+def test_05b_soft_cap_bounds_combined_segment_penalties(tmp_path, monkeypatch):
+    eng = TE._engine(tmp_path / "a", monkeypatch, v3_overrides={"futures_v3": {"short_penalty_r": 0.5},
+                                                                "universe": {"futures_only_penalty_r": 0.35}})
+    eng.spot_listing.refresh(_Prov(_rows("ETHUSDT")), now=1.0)
+    d = _decision("NVDA/USDT", "SHORT")                            # her iki ceza birden: 0.85 → tavan 0.60
+    eng._assess_opportunities({"NVDA/USDT": d}, briefs=[])
+    soft = _soft(d)
+    assert set(soft) >= {"SHORT_SEGMENT_PENALTY", "FUTURES_ONLY_SEGMENT_PENALTY"}
+    assert d.opportunity["provenance"]["soft_penalty_r"] == pytest.approx(0.60)
+    assert not d.opportunity["hard_block_codes"] and _mult(d) > 0  # yine de yasak değil
+
+
+def test_05c_ensure_spot_listing_only_hits_network_when_penalty_on(tmp_path, monkeypatch):
     calls = {"n": 0}
 
     def factory():
@@ -170,12 +199,20 @@ def test_05b_ensure_spot_listing_only_hits_network_when_gate_on(tmp_path, monkey
     eng = TE._engine(tmp_path / "off", monkeypatch)
     eng._spot_provider_factory_override = factory
     assert eng.ensure_spot_listing()["skipped"] == "gate_off" and calls["n"] == 0
-    eng = TE._engine(tmp_path / "on", monkeypatch, v3_overrides={"universe": {"require_spot_listing": True}})
+    eng = TE._engine(tmp_path / "on", monkeypatch, v3_overrides={"universe": {"futures_only_penalty_r": 0.35}})
     eng._spot_provider_factory_override = factory
     r = eng.ensure_spot_listing()
     assert r["ok"] and r["n"] == 2 and calls["n"] == 1
     assert eng.ensure_spot_listing()["skipped"] == "fresh" and calls["n"] == 1   # TTL içinde tekrar istek yok
     assert (eng.cfg.state_path / "spot_listing.json").exists()
+
+
+def test_05d_scan_candidates_are_not_pruned_by_listing(monkeypatch):
+    """Tarama önü eleme KALDIRILDI: yalnız-vadeli semboller değerlendirmeye girer, karar cezayla verilir."""
+    import inspect
+    from tradingbot import engine_v3 as E
+    src = inspect.getsource(E.TradingEngineV3)
+    assert "derin analize alınmadı" not in src and "_scan_syms" not in src
 
 
 # ----------------------------------------------------------------------------- 3) MFE başa-baş
@@ -197,17 +234,15 @@ def test_06_breakeven_moves_at_mfe_threshold_without_tp1(tmp_path):
     assert D("3000") < be < D("3005")                              # gerçek başa-baş: giriş + komisyon + kayma
     meta = pos.meta["be_by_mfe"]
     assert meta["mfe_r"] >= 1.0 and D(meta["stop"]) == be
-    # daha yüksek MFE stop'u yeniden HESAPLAMAZ (bir kez), asla gevşetmez
     led.tick({ETH: TickData(last=3200, high=3250)}, now_utc=T0 + timedelta(hours=3), bar_advance=True)
-    assert pos.stop == be
-    # BE'ye dönüş → EXIT_BE_STOP etiketi ve net ≥ 0
+    assert pos.stop == be                                          # bir kez; asla gevşetmez
     closed = led.tick({ETH: TickData(last=be, low=be - 1)}, now_utc=T0 + timedelta(hours=4), bar_advance=True)
     assert len(closed) == 1 and closed[0].exit_reason == EXIT_BE_STOP
     assert closed[0].net_pnl >= 0 and not closed[0].tp1_done
 
 
 def test_06b_breakeven_is_off_by_default_and_short_is_symmetric():
-    led = TA._led()                                                # varsayılan 0 → eski davranış
+    led = TA._led()
     pos = _open_long(led)
     led.tick({ETH: TickData(last=3150, high=3200)}, now_utc=T0 + timedelta(hours=1), bar_advance=True)   # 2R
     assert pos.stop == D("2900") and not pos.meta.get("be_by_mfe")
@@ -225,9 +260,8 @@ def test_06c_breakeven_never_loosens_and_never_crosses_mark():
     assert pos.stop == D("3010") and not pos.meta.get("be_by_mfe")
     led = TA._led(breakeven_at_mfe_r=D("1.0"))
     pos = _open_long(led)
-    # MFE eşiği geçildi ama mark BE'nin ALTINA düştü: stop mark'ın yanlış tarafına konmaz, tetiklenmez
     led.tick({ETH: TickData(last=2990, high=3101, low=2985)}, now_utc=T0 + timedelta(hours=1), bar_advance=True)
-    assert pos.stop == D("2900") and not pos.meta.get("be_by_mfe")
+    assert pos.stop == D("2900") and not pos.meta.get("be_by_mfe")  # mark BE'nin altında: konmaz
 
 
 def test_06d_breakeven_knob_and_meta_round_trip(tmp_path):
@@ -243,7 +277,6 @@ def test_06d_breakeven_knob_and_meta_round_trip(tmp_path):
     assert l2.breakeven_at_mfe_r == D("1.0")
     p2 = l2.positions[ETH]
     assert p2.stop == be and p2.meta.get("be_by_mfe")
-    # yüklenen defterde tekrar tetiklenmez, stop korunur
     l2.tick({ETH: TickData(last=3150, high=3200)}, now_utc=T0 + timedelta(hours=2), bar_advance=True)
     assert p2.stop == be
 

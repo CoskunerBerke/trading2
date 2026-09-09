@@ -105,7 +105,7 @@ class TradingEngineV3(TradingEngine):
         # --- risk / mod / kill switch
         self.profile = resolve_profile(v3.risk_profiles.profile, v3.risk_profiles.overrides, i_understand=v3.risk_profiles.i_understand)
         self.killswitch = KillSwitch.load(st / "killswitch.json")
-        # KANIT ONARIMI V1: spot listeleme onbellegi (`universe.require_spot_listing` kapisinin verisi).
+        # KANIT ONARIMI V1.1: spot listeleme onbellegi (`universe.futures_only_penalty_r` cezasinin verisi).
         from .market.spot_listing import SpotListing
         self.spot_listing = SpotListing(st / "spot_listing.json",
                                         ttl_minutes=int(getattr(self.cfg.v3.universe, "spot_listing_ttl_minutes", 1440)))
@@ -759,7 +759,7 @@ class TradingEngineV3(TradingEngine):
         # 0.6) yürütme hassasiyeti: kapı AÇIKSA bayat/eksik sembol filtrelerini resmi kaynaktan yenile
         #      (ağırlık 1). Kapalıyken hiçbir istek atılmaz — eski davranış birebir korunur.
         self.ensure_symbol_filters()
-        # 0.7) KANIT ONARIMI V1: spot listeleme onbellegi (kapi acikken, gunde ~1 istek)
+        # 0.7) KANIT ONARIMI V1.1: spot listeleme onbellegi (ceza acikken, gunde ~1 istek)
         self.ensure_spot_listing()
         # 1) TARA (legacy tier-1)
         scan = None
@@ -790,13 +790,7 @@ class TradingEngineV3(TradingEngine):
                 scan = self.last_scan
         scan_map = {r.symbol: r for r in (scan.setups if scan else [])}
         core = list(self.cfg.scanner.core_coins) if self.scanner else list(self.cfg.coins)
-        _scan_syms = [r.symbol for r in (scan.setups if scan else [])]
-        if bool(getattr(self.cfg.v3.universe, "require_spot_listing", False)) and self.spot_listing.available:
-            _kept = [s for s in _scan_syms if self.spot_listing.is_listed(s)]
-            if len(_kept) != len(_scan_syms):
-                log.info("spot listeleme kapısı: %d tarama adayı derin analize alınmadı (yalnız vadeli)", len(_scan_syms) - len(_kept))
-            _scan_syms = _kept
-        symbols = symbols_override or list(dict.fromkeys(core + _scan_syms + list(self.ledger2.positions)))
+        symbols = symbols_override or list(dict.fromkeys(core + [r.symbol for r in (scan.setups if scan else [])] + list(self.ledger2.positions)))
         core_set = set(self.cfg.coins) | set(core)
         # 2) legacy ajanlar → brief + raporlar
         self.runner.set_weights(self.learner.learned_agent_weights())
@@ -1597,11 +1591,11 @@ class TradingEngineV3(TradingEngine):
     def ensure_spot_listing(self, *, force: bool = False) -> dict:
         """`spot_listing.json` bayatsa resmi spot exchangeInfo'dan yenile.
 
-        YALNIZ `universe.require_spot_listing=True` iken ağa çıkar. Sağlayıcı hatası eski önbelleği
-        KORUR (bayat ama kullanılabilir); hiç önbellek yoksa kapı fail-closed kalır (NOT_SPOT_LISTED).
+        YALNIZ `universe.futures_only_penalty_r > 0` iken ağa çıkar. Sağlayıcı hatası eski önbelleği
+        KORUR (bayat ama kullanılabilir); hiç önbellek yoksa ceza fail-safe uygulanır (yasak değil).
         """
         u = self.cfg.v3.universe
-        if not getattr(u, "require_spot_listing", False) and not force:
+        if float(getattr(u, "futures_only_penalty_r", 0.0) or 0.0) <= 0 and not force:
             return {"ok": True, "skipped": "gate_off"}
         sl = self.spot_listing
         if not force and not sl.is_stale():
@@ -1820,18 +1814,21 @@ class TradingEngineV3(TradingEngine):
             if b is not None and getattr(b, "dont_list", None):
                 for _w in list(b.dont_list)[:4]:
                     gates.penalise("RED_TEAM_SOFT_PENALTY", 0.04, detail=str(_w)[:80])
-            # --- KANIT ONARIMI V1: olculmus kaybeden kesitler SERT kapiyla kapanir --------------
-            # 239 kurulumluk vadeli-fiyat olcumu (2026-09-09): SHORT ve yalniz-vadeli (tokenize hisse/
-            # emtia) kesitleri %95 guvenle negatif. Kod `opportunity.hard_block_codes`e yazilir, huni
-            # `size_multiplier_zero` sayar, karar gunluge DUSER (sessiz atlama yok).
-            if str(getattr(d, "direction", "") or "").upper() == "SHORT" and not bool(getattr(self.cfg.v3.futures_v3, "allow_short", True)):
-                gates.block("SHORT_DISABLED", detail="futures_v3.allow_short=false")
-            if bool(getattr(self.cfg.v3.universe, "require_spot_listing", False)) and str(getattr(plan, "market_type", "")) != "spot":
+            # --- KANIT ONARIMI V1.1: olculmus kesit aciklari YUMUSAK kanit olarak eklenir -------------
+            # 239 kurulumluk vadeli-fiyat olcumu (2026-09-09): SHORT ve yalniz-vadeli kesitleri negatif.
+            # Operator karari: yasak YOK. Ceza `conservative_net_edge_r`den duser; net beklentisi pozitif
+            # aday en kotu arastirma boyutunda (RESEARCH_MULTIPLIER) acilir, hicbir zaman sifirlanmaz.
+            # Ceza `opportunity.soft_evidence` icinde kod+miktar+gerekce ile gunluge duser.
+            _sp = float(getattr(self.cfg.v3.futures_v3, "short_penalty_r", 0.0) or 0.0)
+            if _sp > 0 and str(getattr(d, "direction", "") or "").upper() == "SHORT":
+                gates.penalise("SHORT_SEGMENT_PENALTY", _sp, detail="olculen SHORT kesiti acigi (2026-09-09, n=13)")
+            _fp = float(getattr(self.cfg.v3.universe, "futures_only_penalty_r", 0.0) or 0.0)
+            if _fp > 0 and str(getattr(plan, "market_type", "")) != "spot":
                 _listed = self.spot_listing.is_listed(sym)
                 if _listed is None:
-                    gates.block("NOT_SPOT_LISTED", detail="spot listeleme verisi yok (fail-closed)")
+                    gates.penalise("FUTURES_ONLY_SEGMENT_PENALTY", _fp, detail="spot listeleme verisi yok — ceza fail-safe uygulandi")
                 elif not _listed:
-                    gates.block("NOT_SPOT_LISTED", detail="Binance spot'ta listeli değil")
+                    gates.penalise("FUTURES_ONLY_SEGMENT_PENALTY", _fp, detail="Binance spot'ta listeli degil (olculen acik ~0.37R)")
             if _unknown:
                 gates.block("UNKNOWN_GATE_CODE", detail=",".join(sorted(set(_unknown))[:5]))
             stop_pct = plan.stop_pct

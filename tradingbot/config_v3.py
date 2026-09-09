@@ -65,12 +65,12 @@ class UniverseSection:
     eval_target_min: int = 40
     eval_target: int = 50
     eval_target_max: int = 60
-    # --- KANIT ONARIMI V1: yalniz Binance SPOT'ta listeli semboller YENI giris acabilir ---
-    # Yalniz vadelide listelenen (tokenize hisse/emtia agirlikli) kesit 87 kurulumda -0.24R
-    # (%95 ust sinir -0.035). Kod varsayilani KAPALI (eski davranis); config.yaml ile acilir.
-    # Liste `state/spot_listing.json`da onbelleklenir; veri YOKSA kapi fail-closed (NOT_SPOT_LISTED).
-    # Acik pozisyonlarin cikislari etkilenmez; kapi yalniz yeni girisi durdurur.
-    require_spot_listing: bool = False
+    # --- KANIT ONARIMI V1.1: yalniz-vadeli (Binance spot'ta listesiz) adaylara YUMUSAK ceza ---
+    # Olcum: yalniz-vadeli kesit 87 kurulumda -0.24R, spot'ta listeli kripto LONG +0.155R -> acik ~0.37R.
+    # futures_only_penalty_r bu acigi muhafazakar beklentiden duser; aday DEGERLENDIRILIR, kaniti guclu ise
+    # acilir, zayifsa arastirma boyutunda acilir. Yasak yoktur. 0 = kapali (eski davranis).
+    # Liste `state/spot_listing.json`da onbelleklenir; veri YOKSA ceza fail-safe uygulanir (yasak degil).
+    futures_only_penalty_r: float = 0.0
     spot_listing_ttl_minutes: int = 1440
 
 
@@ -121,11 +121,11 @@ class FuturesV3Section:
     ambiguity_policy: str = "worst_case"
     liq_fee_pct: float = 0.5
     intrabar_source: str = "1m_or_high_low"   # bilgi
-    # --- KANIT ONARIMI V1 (2026-09-09 olcumu, 239 kurulum, vadeli fiyat, maliyet dahil) ---
-    # allow_short=False: SHORT yonu %95 guvenle negatif (kripto -0.75R n=4, hisse/emtia -0.58R n=9;
-    # defterde 5/5 kayip). Kod varsayilani ESKI davranisi korur; kapatma config.yaml ile yapilir ve
-    # `SHORT_DISABLED` SERT kapisiyla gunluge duser (sessiz atlama yok).
-    allow_short: bool = True
+    # --- KANIT ONARIMI V1.1 (2026-09-09 olcumu, 239 kurulum, vadeli fiyat, maliyet dahil) ---
+    # short_penalty_r: SHORT adaylara eklenen YUMUSAK ceza (R). Olcum: SHORT kesiti LONG'a gore ~0.6R geride
+    # (n=13, ince). Ceza yalniz muhafazakar beklentiyi dusurur: net beklentisi pozitif aday en kotu arastirma
+    # boyutuna (RESEARCH_MULTIPLIER) iner, ASLA sifirlanmaz. Yasak yoktur. 0 = kapali (eski davranis).
+    short_penalty_r: float = 0.0
     # breakeven_at_mfe_r>0: en yuksek kar (MFE) bu R esigine ulasinca stop gercek basa-basa TASINIR,
     # TP1 dokunusu BEKLENMEZ. 0 = kapali (eski davranis). Yalniz sikilastirir, asla gevsetmez.
     # Olcum: 12 acik pozisyonun 9'unda stop hic tasinmamisti (ZEN +%12,3 MFE, stop girisin %13 altinda).

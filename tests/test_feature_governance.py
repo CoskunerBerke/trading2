@@ -60,10 +60,6 @@ _ALLOWED_HARD = {
     "LIQUIDITY_UNTRADEABLE",
     # maliyet sonrası negatif edge
     "NEGATIVE_NET_EDGE", "COSTS_EXCEED_EDGE",
-    # ölçülmüş kaybeden kesitler — Kanıt Onarımı V1 (2026-09-09, 239 kurulum, vadeli fiyat, maliyet dahil):
-    # SHORT ve yalnız-vadeli (tokenize hisse/emtia) kesitleri %95 güvenle negatif; NEGATIVE_NET_EDGE ile
-    # aynı sınıf (ekonomi), yumuşak ceza yerine SERT çünkü amaç boyut küçültmek değil kesiti kapatmak.
-    "SHORT_DISABLED", "NOT_SPOT_LISTED",
     # duplicate / açık pozisyon
     "DUPLICATE_SIGNAL", "ALREADY_OPEN_SAME_SYMBOL", "OPPOSITE_EXPOSURE_CONFLICT",
     # portföy & aktif RiskEngine sınırları

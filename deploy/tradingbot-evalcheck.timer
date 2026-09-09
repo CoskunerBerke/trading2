@@ -1,0 +1,14 @@
+# Haftalik: "yeterli veri birikti mi?" Rapor `data/logs/evaluation_readiness.{log,json}`.
+# Arastirma bulgusu: baglayici kisit yeni bir kural degil, TAKVIM ZAMANIDIR (bkz. RESEARCH_C_FINDINGS_V1).
+[Unit]
+Description=Trading Bot v3 weekly evaluation readiness timer
+Documentation=file:///opt/tradingbot/app/docs/RESEARCH_C_FINDINGS_V1.md
+
+[Timer]
+OnCalendar=Mon 07:00
+AccuracySec=5min
+Persistent=true
+Unit=tradingbot-evalcheck.service
+
+[Install]
+WantedBy=timers.target

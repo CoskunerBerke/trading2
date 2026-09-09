@@ -1,0 +1,42 @@
+# Trading Bot v3 — haftalik DEGERLENDIRME HAZIRLIGI raporu (oneshot; timer tetikler).
+# AG KULLANMAZ, uretim durumunu YALNIZ OKUR, yalniz kendi rapor dizinine yazar.
+[Unit]
+Description=Trading Bot v3 evaluation readiness report
+Documentation=file:///opt/tradingbot/app/docs/RESEARCH_C_FINDINGS_V1.md
+
+[Service]
+Type=oneshot
+User=tradingbot
+Group=tradingbot
+WorkingDirectory=/opt/tradingbot/app
+Environment=PYTHONIOENCODING=utf-8
+Environment=TRADINGBOT_STATE_DIR=/opt/tradingbot/data/state
+ExecStart=/bin/sh -c '/opt/tradingbot/venv/bin/python /opt/tradingbot/app/scripts/evaluation_readiness.py \
+  --state /opt/tradingbot/data/state \
+  --json /opt/tradingbot/data/logs/evaluation_readiness.json \
+  >> /opt/tradingbot/data/logs/evaluation_readiness.log 2>&1'
+TimeoutStartSec=300
+SuccessExitStatus=0 2
+
+# --- sertlestirme: yalniz okur; yalniz log dizinine yazar
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/opt/tradingbot/data/logs
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX
+CapabilityBoundingSet=
+AmbientCapabilities=
+UMask=0027

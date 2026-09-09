@@ -117,7 +117,8 @@ def run_plan(*, symbol: str, side: str, ref_entry: Decimal, stop: Decimal, targe
         tgt_now = pos.targets[pos.targets_hit] if pos.targets_hit < len(pos.targets) else None
         if stop_now is not None and tgt_now is not None and b.low <= stop_now <= b.high and b.low <= tgt_now <= b.high:
             out.ambiguous_bars += 1
-        td = TickData(last=b.close, mark=b.close, high=b.high, low=b.low, ts=b.close_dt.isoformat())
+        td = TickData(last=b.close, mark=b.close, high=b.high, low=b.low, ts=b.close_dt.isoformat(),
+                      bar_open=b.open_dt.isoformat())
         recs = led.tick({symbol: td}, now_utc=b.close_dt, funding_rate_lookup=funding_lookup, bar_advance=advance)
         if recs:
             rec = recs[-1]

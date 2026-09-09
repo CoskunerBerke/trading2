@@ -68,6 +68,13 @@ class Bar:
     def close_dt(self) -> datetime:
         return datetime.fromtimestamp((self.close_ms + 1) / 1000, tz=timezone.utc)
 
+    @property
+    def open_dt(self) -> datetime:
+        """Barin ACILIS ani. Defter, bar uclarini yalnizca bar pozisyonun omru icinde acilmissa
+        kullanir (bar provenansi); bu deger olmadan uclar SESSIZCE dusurulur ve harness kendi
+        29/29 cikis yeniden uretimini kaybeder — olculdu: 26/29'a duser."""
+        return datetime.fromtimestamp(self.open_ms / 1000, tz=timezone.utc)
+
 
 BarFetch = Callable[[str, str, int, int], Sequence[Bar]]
 
@@ -445,7 +452,8 @@ def replay_trade(plan: TradePlan, source: Any, cfg: ReplayConfig, *, interval: s
             mark = b.low if str(plan.side).upper() in ("LONG", "BUY") else b.high
         else:
             mark = b.close
-        td = TickData(last=b.close, mark=mark, high=b.high, low=b.low, ts=iso(b.close_dt))
+        td = TickData(last=b.close, mark=mark, high=b.high, low=b.low, ts=iso(b.close_dt),
+                      bar_open=iso(b.open_dt))
         recs = led.tick({plan.symbol: td}, now_utc=b.close_dt, funding_rate_lookup=lookup, bar_advance=advance)
         if recs:
             r = recs[-1]

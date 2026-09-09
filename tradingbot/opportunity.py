@@ -11,6 +11,12 @@ MALİYETİN ÇİFT SAYILMAMASI: geçmiş `outcome.r_multiple` değerleri zaten f
 NET ise `expectancy_basis = NET_OUTCOME` olur ve `cost_r = 0` alınır. Maliyet yalnız beklenti brüt
 plan geometrisinden türetildiğinde (`GROSS_MINUS_COSTS`) düşülür. Bu ayrım testle korunur.
 
+`avg_loss_r` SABİT DEĞİLDİR: `hierarchical_expectancy` onu learner'ın gerçekleşmiş kayıplarından
+alır (`LearnerV2.loss_magnitude_r`, belirsizlik daraltmalı; veri yoksa tam 1.0). Plan geometrisi
+stop'u 1R sayar ama gerçekleşen NET kayıp gap-through/slippage + fee sürüklemesiyle daha büyüktür.
+Aynı büyüklük HEM kazanç ters çözümünde HEM brüt formülde kullanılır; aksi halde cebir tutmaz
+(bkz. `tests/test_loss_magnitude_v1.py`).
+
 Boyut: güçlü ve belirsizliği düşük edge → tavana kadar; orta edge → küçük; point-estimate pozitif ama
 belirsiz → araştırma boyutu/gölge; negatif → gerçek giriş yok. Boyut hiçbir koşulda risk profili
 tavanını, toplam açık riski ya da margin kapasitesini aşamaz (bunlar risk motorunun HARD kapılarıdır).
@@ -188,21 +194,38 @@ def hierarchical_expectancy(*, learner, symbol: str, side: str, setup: str, regi
         exp_r, exp_n = learner.exp_r.estimate(regime=regime or None, leaf=f"{setup}|{side}")
     except Exception:  # noqa: BLE001
         exp_r, exp_n = 0.0, 0.0
+    # KAYIP BÜYÜKLÜĞÜ ARTIK SABİT DEĞİL. Plan geometrisi stop'u tam 1R sayar; gerçekleşen NET kayıp
+    # gap-through/slippage ve fee/funding sürüklemesi yüzünden daha büyüktür. Kestirim learner'ın
+    # KENDİ kapanışlarından gelir ve örneklem küçükken 1.0'a daralır (bkz. `loss_magnitude_estimate`).
+    # Veri yoksa `default_loss_r` — yani eski davranış — birebir korunur.
+    loss_r, loss_meta = float(default_loss_r), {"source": "default"}
+    _loss_fn = getattr(learner, "loss_magnitude_r", None)          # eski learner yüzeyi → "default"
+    if _loss_fn is not None:
+        try:
+            _est, _meta = _loss_fn()
+            if _est and float(_est) > 0:
+                loss_r, loss_meta = float(_est), dict(_meta) | {"source": "learner"}
+        except Exception:  # noqa: BLE001 — istatistik BOZUKSA sabit varsayılan; ayrıca işaretlenir
+            loss_r, loss_meta = float(default_loss_r), {"source": "default_fallback"}
     p = max(0.05, min(0.95, float(p_win)))
-    # Gerçekleşmiş beklentiyi kazanç/kayıp büyüklüğüne çevir: p·W − (1−p)·L = exp_r, L sabit kabul.
-    realised_win_r = max(0.1, (float(exp_r) + (1.0 - p) * default_loss_r) / p) if p > 0 else default_win_r
+    # Gerçekleşmiş beklentiyi kazanç/kayıp büyüklüğüne çevir: p·W − (1−p)·L = exp_r.
+    # `loss_r` HEM burada HEM de `assess`in brüt formülünde kullanılır (aşağıda döndürülür); aksi
+    # halde cebir tutmaz. w=1'de L cebirsel olarak SADELEŞİR ve `gross == exp_r` olur; sabit yalnız
+    # soğuk başlangıç harmanının `(1−w)` payından ısırır.
+    realised_win_r = max(0.1, (float(exp_r) + (1.0 - p) * loss_r) / p) if p > 0 else default_win_r
     # SOĞUK BAŞLANGIÇ: geçmiş yokken plan GEOMETRİSİ esas alınır; veri biriktikçe gerçekleşmiş
     # dağılıma kayılır. Aksi halde taze bir bot, yalnız "veri yok" diye hiç işlem açamazdı (starvation).
     n = max(float(n_eff or 0), float(exp_n or 0))
     w = n / (n + max(1e-9, float(blend_n)))
     base_win_r = float(fallback_win_r) if fallback_win_r else default_win_r
     win_r = w * realised_win_r + (1.0 - w) * max(0.1, base_win_r)
-    return {"p_win": p, "avg_win_r": round(win_r, 6), "avg_loss_r": default_loss_r,
+    return {"p_win": p, "avg_win_r": round(win_r, 6), "avg_loss_r": loss_r,
             "sample_size": int(n),
             "expectancy_basis": NET_OUTCOME,
             "provenance": {"leaf": leaf, "regime": regime, "n_eff_win": float(n_eff or 0),
                            "n_eff_exp_r": float(exp_n or 0), "realised_expectancy_r": round(float(exp_r), 6),
-                           "geometry_blend_w": round(w, 4), "fallback_win_r": base_win_r}}
+                           "geometry_blend_w": round(w, 4), "fallback_win_r": base_win_r,
+                           "loss_magnitude": loss_meta}}
 
 
 __all__ = ["BASES", "BLEND_N", "FULL_SIZE_EDGE_R", "GROSS_MINUS_COSTS", "MIN_TRADE_MULTIPLIER", "NET_OUTCOME",

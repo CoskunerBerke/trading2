@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+import math
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -19,7 +20,8 @@ from .calibration import Calibrator, calibration_metrics
 from .features import FEATURE_VERSION, build_features, to_vector
 from .labels import label_outcome
 from .memory import TradeMemory
-from .model import HierarchicalRate, LogisticModel, recency_weights
+from .model import (HierarchicalRate, LogisticModel, LOSS_PRIOR_R, loss_magnitude_estimate,
+                    recency_weights)
 from .postmortem import structured_postmortem
 from .registry import ModelRegistry, drift_check
 from .snapshot import (IMPUTATION_CONTRACT, PREDICTION_SCHEMA_ID, SNAPSHOT_VERSION,
@@ -69,6 +71,10 @@ class LearnerV2:
         self.win = HierarchicalRate(self.cfg.alpha_shrink, 0.5)       # kazanma oranı
         self.exp_r = HierarchicalRate(self.cfg.alpha_shrink, 0.0)     # beklenti R
         self.agent_hit = HierarchicalRate(self.cfg.alpha_shrink, 0.5)  # leaf = ajan
+        # KAYIP BÜYÜKLÜĞÜ (|R|) — YALNIZ kaybeden kapanışlar. Plan geometrisi stop'u 1R kabul eder;
+        # gerçekleşen NET kayıp gap-through/slippage/fee yüzünden 1R'den BÜYÜK olabilir. Bu düğüm
+        # olmadan `opportunity.hierarchical_expectancy` sabit 1.0 kullanmak zorundaydı.
+        self.loss_r = HierarchicalRate(self.cfg.alpha_shrink, LOSS_PRIOR_R)
         self.n_closed = 0
         self.lessons: list[dict] = []
         self.calibrator = Calibrator(self.cfg.calibrator)
@@ -92,13 +98,54 @@ class LearnerV2:
         self.calibrator = Calibrator.from_dict(d.get("calibrator", {})) if d.get("calibrator") else self.calibrator
         self.last_metrics = dict(d.get("last_metrics", {}))
         self.baseline_metrics = dict(d.get("baseline_metrics", {}))
+        # GERİYE UYUMLULUK: `loss_r` düğümü bu sürümle geldi. Eski durum dosyasında YOKTUR; o
+        # durumda kaybolmuş veri diye kabul edilmez — learner'ın KENDİ ders kaydından (`lessons`,
+        # her kapanışın `r`'si) bir kereye mahsus geri doldurulur. Kayıt varsa dokunulmaz, yani
+        # işlem TEKRAR sayılmaz. Ders listesi son 500 ile sınırlı olduğundan geri doldurma da o
+        # pencereyle sınırlıdır; sonraki kapanışlar `on_trade_closed` ile canlı yazılır.
+        if d.get("loss_r"):
+            self.loss_r = HierarchicalRate.from_dict(d["loss_r"])
+        else:
+            self._backfill_loss_r_from_lessons()
+
+    def _backfill_loss_r_from_lessons(self, lessons: list[dict] | None = None) -> int:
+        """Eski durum dosyası için tek seferlik göç: kaybeden derslerden `loss_r` düğümünü kur."""
+        added = 0
+        for l in (self.lessons if lessons is None else lessons):
+            try:
+                r = float(l.get("r"))
+            except (TypeError, ValueError):
+                continue
+            if not (r < 0):
+                continue
+            sym, setup = str(l.get("symbol") or ""), str(l.get("setup") or "-")
+            self.loss_r.add(abs(r), regime=str(l.get("regime") or "") or None,
+                            leaves=(f"{sym}|{setup}", sym))
+            added += 1
+        return added
 
     def save(self) -> None:
         if self.state_path:
             atomic_write_json(self.state_path, {"schema_version": 2, "updated_at": iso(), "win": self.win.to_dict(), "exp_r": self.exp_r.to_dict(),
-                                                "agent_hit": self.agent_hit.to_dict(), "n_closed": self.n_closed, "lessons": self.lessons[-500:],
+                                                "agent_hit": self.agent_hit.to_dict(), "loss_r": self.loss_r.to_dict(),
+                                                "n_closed": self.n_closed, "lessons": self.lessons[-500:],
                                                 "calibrator": self.calibrator.to_dict(), "last_metrics": self.last_metrics,
                                                 "baseline_metrics": self.baseline_metrics}, keep_backup=True)
+
+    # ------------------------------------------------------------ kayıp büyüklüğü
+    def loss_magnitude_r(self) -> tuple[float, dict]:
+        """Gerçekleşmiş kayıplardan belirsizlik-ayarlı |avg_loss_r| (+ denetim meta'sı).
+
+        Küresel düğüm kullanılır: 2026-09 itibarıyla toplam kaybeden kapanış sayısı 20'li
+        seviyededir; sembol/setup kırılımı GÜRÜLTÜ olurdu. Veri hiyerarşik olarak KAYDEDİLİR
+        (`self.loss_r`), böylece örneklem büyüdüğünde kırılım eklemek durum göçü gerektirmez.
+
+        Veri yoksa `(LOSS_PRIOR_R, ...)` döner — yani bugünkü sabit davranışın birebir aynısı.
+        """
+        st = self.loss_r.stats.get("")
+        if st is None or st.n <= 0:
+            return loss_magnitude_estimate(0.0, LOSS_PRIOR_R, 0.0)
+        return loss_magnitude_estimate(st.n, st.mean, math.sqrt(max(0.0, st.var)))
 
     # ------------------------------------------------------------ tahmin
     def _champion_model(self) -> tuple[LogisticModel | None, str | None, dict]:
@@ -162,6 +209,11 @@ class LearnerV2:
         # sayilirdi (bkz. HierarchicalRate._keys_multi).
         self.win.add(won, regime=regime or None, leaves=(f"{symbol}|{setup}", symbol))
         self.exp_r.add(lab["r_multiple"], regime=regime or None, leaf=f"{setup}|{side}")
+        # KAYIP BÜYÜKLÜĞÜ: yalnız NEGATİF R yazılır. `r_multiple` zaten fee/funding/slippage
+        # SONRASI NET'tir; maliyet burada TEKRAR eklenmez (bkz. `opportunity` çift sayım notu).
+        _r = float(lab["r_multiple"] or 0.0)
+        if _r < 0:
+            self.loss_r.add(abs(_r), regime=regime or None, leaves=(f"{symbol}|{setup}", symbol))
         for a in pm.agents_right:
             self.agent_hit.add(1.0, regime=regime or None, leaf=a)
         for a in pm.agents_wrong:
@@ -266,7 +318,9 @@ class LearnerV2:
                 m, n = self.exp_r.estimate(leaf=leaf)
                 setups[leaf] = {"n": int(st.n), "exp_r_shrunk": round(m, 3), "blacklisted": self.exp_r.is_negative_with_evidence(leaf=leaf)}
         g = self.win.stats.get("")
+        _loss_r, _loss_meta = self.loss_magnitude_r()
         return {"n_closed": self.n_closed, "win_rate_global": round(g.mean, 3) if g and g.n else None, "agents": agents, "setups": setups,
+                "loss_magnitude_r": _loss_r, "loss_magnitude_meta": _loss_meta,
                 "champion": champ["id"] if champ else None, "challenger": chal["id"] if chal else None,
                 "champion_metrics": (champ or {}).get("metrics"), "last_metrics": self.last_metrics, "drift": self.drift(),
                 "calibrator": self.calibrator.kind if self.calibrator.n_fit else "none", "feature_version": FEATURE_VERSION,
@@ -292,10 +346,14 @@ class LearnerV2:
             for _ in range(n - wins):
                 self.win.add(0.0, leaf=key)
             imported["setups"] += 1
+        _new_lessons: list[dict] = []
         for l in (s.lessons or []):
-            self.lessons.append({"id": l.get("id"), "symbol": l.get("symbol"), "side": l.get("side"), "r": l.get("r"), "won": l.get("won"),
+            _new_lessons.append({"id": l.get("id"), "symbol": l.get("symbol"), "side": l.get("side"), "r": l.get("r"), "won": l.get("won"),
                                  "exit": l.get("exit"), "at": l.get("at"), "codes": ["LEGACY"], "why": l.get("why", []), "setup": l.get("setup"), "regime": ""})
             imported["lessons"] += 1
+        self.lessons.extend(_new_lessons)
+        # v1'in `setup_stats` toplamlarında kayıp BÜYÜKLÜĞÜ yok; tek kayıp kaynağı ders kayıtlarıdır.
+        imported["loss_obs"] = self._backfill_loss_r_from_lessons(_new_lessons)
         self.n_closed = max(self.n_closed, int(s.n_trades or 0))
         self.save()
         return imported

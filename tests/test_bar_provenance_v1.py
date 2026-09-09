@@ -143,18 +143,34 @@ def test_09_breakeven_cannot_fire_on_a_pre_entry_extreme():
 def test_10_every_extreme_producing_site_declares_provenance():
     """Uclarla TickData ureten her URETIM cagrisi `bar_open` vermek ZORUNDA.
 
-    Bu test olmadan yeni bir cagri yeri sessizce provenanssiz uc uretebilir; fail-closed sayesinde
-    zarar vermez ama uclar sessizce YOK SAYILIR ve tetikler bozulur. Ikisi de istenmez.
+    Tarama TUM `tradingbot` paketini gezer, elle sayilmis birkac modulu degil. Neden: defter
+    provenanssiz uclari FAIL-CLOSED olarak yok sayar, yani boyle bir cagri yeri hata vermez —
+    sessizce butun bar uclarini dusurur ve stop/hedef tetikleri yalniz mark'a kalir. Bu, gurultusuz
+    bir GERILEMEDIR. Bilinen ornek: `research/replay-fidelity-v1` dalindaki `replay/fidelity.py`
+    (satir ~448) uclu TickData'yi provenanssiz uretir; o dal birlestirilirse bu test DUSER ve
+    birlestiren kisi tek satirlik provenansi eklemek zorunda kalir.
     """
-    from tradingbot import engine_v3
-    from tradingbot.ops import gap
-    from tradingbot.replay import engine as replay_engine
-    for mod in (engine_v3, gap, replay_engine):
-        src = inspect.getsource(mod)
-        for chunk in src.split("TickData(")[1:]:
-            head = chunk[:400]
-            if "high=" in head or "low=" in head:
-                assert "bar_open=" in head, f"{mod.__name__}: uclu TickData provenanssiz uretiliyor"
+    import ast
+
+    root = Path(inspect.getfile(__import__("tradingbot"))).parent
+    offenders: list[str] = []
+    for path in sorted(root.rglob("*.py")):
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except (SyntaxError, UnicodeDecodeError):                      # pragma: no cover
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            fn = node.func
+            name = fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, "id", "")
+            if name != "TickData":
+                continue
+            kw = {k.arg for k in node.keywords if k.arg}
+            if ({"high", "low"} & kw) and "bar_open" not in kw:
+                offenders.append(f"{path.relative_to(root.parent)}:{node.lineno}")
+    assert not offenders, (
+        "uclu TickData provenanssiz uretiliyor -> bu uclar SESSIZCE yok sayilir: " + ", ".join(offenders))
 
 
 def test_11_ledger_consults_provenance_before_using_extremes():

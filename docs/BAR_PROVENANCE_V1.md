@@ -129,6 +129,20 @@ kural gevşetilmedi. `test_gap_reconcile._mk_ledger` artık pozisyonu kesinti pe
 açar — gerçek senaryo budur; `now` verilmediğinde açılış duvar saatine kayıyor ve bütün tarihsel
 barlar "giriş öncesi" sayılıyordu.
 
+## 5b. Bilinen BİRLEŞTİRME TEHLİKESİ — `research/replay-fidelity-v1`
+
+Fail-closed kuralın bedeli şudur: provenans vermeyen bir çağrı yeri **hata vermez**, sessizce
+bütün bar uçlarını düşürür ve tetikler yalnız mark'a kalır. Bu, gürültüsüz bir gerilemedir.
+
+`research/replay-fidelity-v1` dalındaki `tradingbot/replay/fidelity.py` (satır ~448) tam olarak
+böyle bir çağrıdır: `TickData(last=..., mark=..., high=b.high, low=b.low, ts=...)` — `bar_open`
+yok. O dal bugün **birleştirilmemiştir**, dolayısıyla dağıtılan hiçbir şey bozuk değildir. Ama
+birleştirilirse harness'in "29/29 çıkış nedeni yeniden üretildi" sonucu sessizce bozulurdu.
+
+Bu yüzden `test_10` elle sayılmış üç modülü değil **bütün `tradingbot` paketini** AST ile tarar.
+Dosya paketin içine kopyalanarak sınandı: test o satırı yakalayıp **düşüyor**. Yani dal
+birleştirilmek istendiğinde tek satırlık provenans eklemek zorunlu olur.
+
 ## 6. Kalan iş (bu onarımda kapanmadı)
 
 1. **İki açık pozisyonun kayıtlı MFE'si şişik kalır.** `mfe_pct` bir koşan maksimumdur; onarım onu

@@ -228,7 +228,9 @@ def test_short_liquidation_mirror():
 def test_same_tick_stop_and_target_prefers_stop():
     led = _led()
     led.open(ETH, "LONG", 3000, SizeSpec(48, AmountType.NOTIONAL, 2), stop=2950, targets=[3050, 3100], filters=_f(), now=T0)
-    closed = led.tick({ETH: TickData(last=3000, high=3120, low=2940)}, now_utc=T0 + timedelta(hours=1))
+    # bar uclari pozisyonun omru icinde acilan bir bardan gelmelidir (bkz. test_bar_provenance_v1)
+    closed = led.tick({ETH: TickData(last=3000, high=3120, low=2940, bar_open=T0.isoformat())},
+                      now_utc=T0 + timedelta(hours=1))
     assert len(closed) == 1 and closed[0].exit_reason == EXIT_STOP
     assert closed[0].exit_price == D("2950")
 

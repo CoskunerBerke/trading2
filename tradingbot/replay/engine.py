@@ -289,7 +289,9 @@ class HistoricalReplay:
             nxt = df[df["timestamp"] > t].head(1)
             if len(nxt):
                 r = nxt.iloc[0]
-                marks[sym] = TickData(last=Decimal(str(float(r["close"]))), mark=Decimal(str(float(r["close"]))), high=Decimal(str(float(r["high"]))), low=Decimal(str(float(r["low"]))))
+                marks[sym] = TickData(last=Decimal(str(float(r["close"]))), mark=Decimal(str(float(r["close"]))),
+                                      high=Decimal(str(float(r["high"]))), low=Decimal(str(float(r["low"]))),
+                                      bar_open=iso(datetime.fromtimestamp(int(r["timestamp"]) / 1000, tz=timezone.utc)))
         if not marks:
             return
         nxt_now = datetime.fromtimestamp((t + 2 * tf_ms(self.tf)) / 1000, tz=timezone.utc)

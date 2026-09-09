@@ -138,6 +138,9 @@ class FuturesLedgerV2:
         self.entries: list[LedgerEntry] = []
         self.total_fees: Decimal = ZERO
         self.total_funding: Decimal = ZERO       # net cüzdan etkisi (+ alındı)
+        # Provenansi yetersiz oldugu icin yok sayilan bar-ucu sayisi. YALNIZ gozlemlenebilirlik:
+        # sureç ömrü boyunca sayar, dosyaya YAZILMAZ, hicbir karara girmez.
+        self.bar_extremes_skipped: int = 0
         self.seq: int = 0
         self.updated_at: str = ""
         self.last_reject_reason: str = ""
@@ -415,8 +418,21 @@ class FuturesLedgerV2:
             pos.last_price = mark
             if bar_advance:
                 pos.bars_held += 1
-            worst = td.lo if pos.side is PositionSide.LONG else td.hi
-            best = td.hi if pos.side is PositionSide.LONG else td.lo
+            # BAR PROVENANSI (2026-09-09 onarimi) — bar uclari yalnizca bar TAMAMEN pozisyonun
+            # omru icindeyse kullanilir. `engine_v3._marks()` cerceveden SON KAPANMIS 1h barin
+            # uclarini tasir; pozisyon 10:15'te acildiysa 10:25 turunda o bar 09:00-10:00'dir ve
+            # uclari pozisyon HENUZ YOKKEN olusmustur. Bu uclar hem MAE/MFE'ye yaziliyor hem de
+            # stop/hedef tetikleyebiliyordu. Uretimde olculdu: kapanmis 29 islemin 5'inde kayitli
+            # MFE, pozisyon omrundeki hicbir 1m barin ulasmadigi bir degerdi (F00015 +1.61 puan,
+            # F00022 +1.04, F00025 +1.05, F00034 +0.40, F00020 +0.09) ve her birinde deger,
+            # giristen ONCE kapanmis bir 1h barin ucuyle kurusuna kadar esitti. Provenans yoksa
+            # fail-closed: uclar kullanilmaz, yalniz mark ile calisilir (tetik GECIKEBILIR, ama
+            # olmamis bir fiyattan ASLA tetiklenmez).
+            _use_bar = td.extremes_usable_from(pos.opened_at)
+            if not _use_bar and td.has_extremes:
+                self.bar_extremes_skipped += 1
+            worst = (td.lo if pos.side is PositionSide.LONG else td.hi) if _use_bar else mark
+            best = (td.hi if pos.side is PositionSide.LONG else td.lo) if _use_bar else mark
             move_worst = (worst / pos.entry_avg - _ONE) * _HUNDRED * pos.side.sign
             move_best = (best / pos.entry_avg - _ONE) * _HUNDRED * pos.side.sign
             pos.mae_pct = min(pos.mae_pct, move_worst)

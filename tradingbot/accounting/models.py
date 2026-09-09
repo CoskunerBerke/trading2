@@ -10,7 +10,7 @@ from decimal import Decimal
 from enum import Enum
 from typing import Any
 
-from ..core import D, ZERO, iso
+from ..core import D, ZERO, from_iso, iso
 
 SCHEMA_VERSION = 2
 
@@ -137,7 +137,12 @@ def _pick(cls, d: dict) -> dict:
 # ----------------------------------------------------------------------------- market tick
 @dataclass
 class TickData:
-    """Bir tik/bar özeti. `mark` yoksa `last` kullanılır; `high/low` varsa stop/TP tetikleri bar içi uçlarla kontrol edilir."""
+    """Bir tik/bar özeti. `mark` yoksa `last` kullanılır; `high/low` varsa stop/TP tetikleri bar içi uçlarla kontrol edilir.
+
+    `bar_open`: `high`/`low` hangi BARIN açılış zamanından geldiğini söyler (ISO-8601 UTC).
+    Bar uçları yalnız bu bar TAMAMEN pozisyonun ömrü içindeyse kullanılabilir — bkz.
+    `extremes_usable_from()`. Boş string "bilinmiyor" demektir ve fail-closed sayılır.
+    """
     last: Decimal
     mark: Decimal | None = None
     high: Decimal | None = None
@@ -145,6 +150,7 @@ class TickData:
     bid: Decimal | None = None
     ask: Decimal | None = None
     ts: str = ""
+    bar_open: str = ""
 
     def __post_init__(self):
         self.last = D(self.last)
@@ -164,6 +170,27 @@ class TickData:
     @property
     def lo(self) -> Decimal:
         return self.low if self.low is not None else self.ref
+
+    @property
+    def has_extremes(self) -> bool:
+        return self.high is not None or self.low is not None
+
+    def extremes_usable_from(self, opened_at: str | None) -> bool:
+        """Bar uçları yalnız barın açılışı pozisyonun açılışında ya da SONRASINDA ise kullanılabilir.
+
+        Çerçeveler kapanmış barları tutar; son kapanmış barın penceresi `[bar_open, bar_open + tf)`
+        olduğundan, `bar_open >= opened_at` ise barın TAMAMI pozisyonun ömrü içindedir. Aksi hâlde
+        bar, pozisyon açılmadan ÖNCEKİ fiyat hareketini taşır: bu uçlar ne MAE/MFE'ye yazılabilir ne
+        de stop/hedef tetikleyebilir. Provenans yoksa (`bar_open == ""`) fail-closed: kullanılmaz.
+        """
+        if not self.has_extremes:
+            return False
+        if not self.bar_open or not opened_at:
+            return False
+        try:
+            return from_iso(self.bar_open) >= from_iso(opened_at)
+        except Exception:  # noqa: BLE001 — çözümlenemeyen zaman damgası fail-closed
+            return False
 
     def to_dict(self) -> dict:
         return ser(self)

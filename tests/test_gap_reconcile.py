@@ -19,12 +19,18 @@ T0 = datetime(2026, 8, 20, 6, 0, tzinfo=UTC)          # kesinti başlangıcı (w
 
 def _mk_ledger(tmp_path: Path, *, short: bool = True) -> tuple[FuturesLedgerV2, Path]:
     led = FuturesLedgerV2(50)
+    # Pozisyon kesinti penceresinden ONCE acilmis olmalidir — gercek senaryo budur ve defter,
+    # pozisyon acilmadan once kapanmis barlarin uclarini artik YOK SAYAR (bar provenansi).
+    # `now` verilmezse acilis duvar saatine kayar ve butun tarihsel barlar giris-oncesi sayilir.
+    opened = T0 - timedelta(hours=1)
     if short:
         pos = led.open("SUI/USDT", "SHORT", Decimal("0.65"), SizeSpec(Decimal("15"), AmountType.NOTIONAL, 1),
-                       stop=Decimal("0.6777"), targets=[Decimal("0.6053"), Decimal("0.5812")], setup_type="pullback")
+                       stop=Decimal("0.6777"), targets=[Decimal("0.6053"), Decimal("0.5812")],
+                       setup_type="pullback", now=opened)
     else:
         pos = led.open("BZ/USDT", "LONG", Decimal("90.61"), SizeSpec(Decimal("15"), AmountType.NOTIONAL, 1),
-                       stop=Decimal("88.3408"), targets=[Decimal("95.0585"), Decimal("97.2977")], setup_type="pullback")
+                       stop=Decimal("88.3408"), targets=[Decimal("95.0585"), Decimal("97.2977")],
+                       setup_type="pullback", now=opened)
     assert pos is not None
     p = tmp_path / "futures_ledger.json"
     led.save(p)

@@ -117,6 +117,29 @@ class PortfolioState:
         """Yalniz acik FUTURES pozisyonlarinin gecerli stop riski."""
         return sum(p.risk_usdt for p in self.open_positions if p.market_type != SPOT)
 
+    # --- GOZLEM: stop-risk butcesi ile BRUT maruziyet ayni sey DEGILDIR ---------------------
+    # Stop basa-basa tasindiginda `risk_usdt` ~0 olur ve butce serbest kalir; pozisyonun nominali
+    # ve marji DURUR. Olculdu (2026-09-09, 14 acik pozisyon): mevcut stoplardan risk %5.83 (tavan
+    # %6, yani baglayici) iken brut nominal 177.45 USDT = ozkaynagin 1.85 kati, marj %66.4.
+    # Bu alanlar YALNIZ RAPORLAMADIR; hicbir kapiya girmez, hicbir kararı degistirmez.
+    @property
+    def futures_notional_usdt(self) -> float:
+        """Acik FUTURES pozisyonlarinin brut nominali (olculemeyenler HARIC; bkz. `..._unknown`)."""
+        return sum(p.notional for p in self.open_positions
+                   if p.market_type != SPOT and not p.notional_unknown)
+
+    @property
+    def futures_notional_unknown(self) -> bool:
+        return any(p.notional_unknown for p in self.open_positions if p.market_type != SPOT)
+
+    @property
+    def futures_zero_stop_risk(self) -> list[OpenPosition]:
+        """Stop riski kalmamis (stop giriste ya da otesinde) acik futures pozisyonlari.
+
+        Bunlar risk butcesinden yer KAPLAMAZ ama nominal, marj ve ortak piyasa riski tasirlar.
+        """
+        return [p for p in self.open_positions if p.market_type != SPOT and p.risk_usdt <= 1e-9]
+
     @property
     def spot_exposure_usdt(self) -> float:
         """Acik SPOT pozisyonlarinin notional toplami (maliyet/piyasa degeri) — RISK DEGIL.

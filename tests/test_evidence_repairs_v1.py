@@ -223,20 +223,26 @@ def _open_long(led, targets=(3300, 3500)):
     return led.open(ETH, "LONG", 3000, SizeSpec(48, AmountType.NOTIONAL, 2), stop=2900, targets=list(targets), filters=_f(), now=T0)
 
 
+def _bar(**kw) -> TickData:
+    """Pozisyonun omru ICINDE acilan bir bar. Defter, provenansi olmayan uclari YOK SAYAR
+    (bkz. `tests/test_bar_provenance_v1.py`): bu testlerin konusu basa-bas kurali, provenans degil."""
+    return TickData(bar_open=T0.isoformat(), **kw)
+
+
 def test_06_breakeven_moves_at_mfe_threshold_without_tp1(tmp_path):
     led = TA._led(breakeven_at_mfe_r=D("1.0"))
     pos = _open_long(led)                                          # risk = 100 / 3000 = %3,333 = 1R
-    closed = led.tick({ETH: TickData(last=3050, high=3080)}, now_utc=T0 + timedelta(hours=1), bar_advance=True)   # 0,8R
+    closed = led.tick({ETH: _bar(last=3050, high=3080)}, now_utc=T0 + timedelta(hours=1), bar_advance=True)   # 0,8R
     assert not closed and pos.stop == D("2900") and not pos.meta.get("be_by_mfe")
-    closed = led.tick({ETH: TickData(last=3090, high=3101)}, now_utc=T0 + timedelta(hours=2), bar_advance=True)   # 1,01R
+    closed = led.tick({ETH: _bar(last=3090, high=3101)}, now_utc=T0 + timedelta(hours=2), bar_advance=True)   # 1,01R
     assert not closed and not pos.tp1_done and pos.targets_hit == 0
     be = pos.stop
     assert D("3000") < be < D("3005")                              # gerçek başa-baş: giriş + komisyon + kayma
     meta = pos.meta["be_by_mfe"]
     assert meta["mfe_r"] >= 1.0 and D(meta["stop"]) == be
-    led.tick({ETH: TickData(last=3200, high=3250)}, now_utc=T0 + timedelta(hours=3), bar_advance=True)
+    led.tick({ETH: _bar(last=3200, high=3250)}, now_utc=T0 + timedelta(hours=3), bar_advance=True)
     assert pos.stop == be                                          # bir kez; asla gevşetmez
-    closed = led.tick({ETH: TickData(last=be, low=be - 1)}, now_utc=T0 + timedelta(hours=4), bar_advance=True)
+    closed = led.tick({ETH: _bar(last=be, low=be - 1)}, now_utc=T0 + timedelta(hours=4), bar_advance=True)
     assert len(closed) == 1 and closed[0].exit_reason == EXIT_BE_STOP
     assert closed[0].net_pnl >= 0 and not closed[0].tp1_done
 
@@ -244,11 +250,11 @@ def test_06_breakeven_moves_at_mfe_threshold_without_tp1(tmp_path):
 def test_06b_breakeven_is_off_by_default_and_short_is_symmetric():
     led = TA._led()
     pos = _open_long(led)
-    led.tick({ETH: TickData(last=3150, high=3200)}, now_utc=T0 + timedelta(hours=1), bar_advance=True)   # 2R
+    led.tick({ETH: _bar(last=3150, high=3200)}, now_utc=T0 + timedelta(hours=1), bar_advance=True)   # 2R
     assert pos.stop == D("2900") and not pos.meta.get("be_by_mfe")
     led = TA._led(breakeven_at_mfe_r=D("1.0"))
     pos = led.open(ETH, "SHORT", 3000, SizeSpec(48, AmountType.NOTIONAL, 2), stop=3100, targets=[2700, 2500], filters=_f(), now=T0)
-    led.tick({ETH: TickData(last=2910, low=2899)}, now_utc=T0 + timedelta(hours=1), bar_advance=True)    # 1,01R
+    led.tick({ETH: _bar(last=2910, low=2899)}, now_utc=T0 + timedelta(hours=1), bar_advance=True)    # 1,01R
     assert D("2995") < pos.stop < D("3000") and pos.meta.get("be_by_mfe")
 
 
@@ -256,18 +262,18 @@ def test_06c_breakeven_never_loosens_and_never_crosses_mark():
     led = TA._led(breakeven_at_mfe_r=D("1.0"))
     pos = _open_long(led)
     pos.stop = D("3010")                                           # stop zaten BE'nin üstünde
-    led.tick({ETH: TickData(last=3090, high=3101)}, now_utc=T0 + timedelta(hours=1), bar_advance=True)
+    led.tick({ETH: _bar(last=3090, high=3101)}, now_utc=T0 + timedelta(hours=1), bar_advance=True)
     assert pos.stop == D("3010") and not pos.meta.get("be_by_mfe")
     led = TA._led(breakeven_at_mfe_r=D("1.0"))
     pos = _open_long(led)
-    led.tick({ETH: TickData(last=2990, high=3101, low=2985)}, now_utc=T0 + timedelta(hours=1), bar_advance=True)
+    led.tick({ETH: _bar(last=2990, high=3101, low=2985)}, now_utc=T0 + timedelta(hours=1), bar_advance=True)
     assert pos.stop == D("2900") and not pos.meta.get("be_by_mfe")  # mark BE'nin altında: konmaz
 
 
 def test_06d_breakeven_knob_and_meta_round_trip(tmp_path):
     led = TA._led(breakeven_at_mfe_r=D("1.0"))
     pos = _open_long(led)
-    led.tick({ETH: TickData(last=3090, high=3101)}, now_utc=T0 + timedelta(hours=1), bar_advance=True)
+    led.tick({ETH: _bar(last=3090, high=3101)}, now_utc=T0 + timedelta(hours=1), bar_advance=True)
     be = pos.stop
     p = tmp_path / "fut.json"
     led.save(p)
@@ -277,7 +283,7 @@ def test_06d_breakeven_knob_and_meta_round_trip(tmp_path):
     assert l2.breakeven_at_mfe_r == D("1.0")
     p2 = l2.positions[ETH]
     assert p2.stop == be and p2.meta.get("be_by_mfe")
-    l2.tick({ETH: TickData(last=3150, high=3200)}, now_utc=T0 + timedelta(hours=2), bar_advance=True)
+    l2.tick({ETH: _bar(last=3150, high=3200)}, now_utc=T0 + timedelta(hours=2), bar_advance=True)
     assert p2.stop == be
 
 

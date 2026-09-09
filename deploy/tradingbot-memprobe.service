@@ -1,0 +1,40 @@
+# Trading Bot v3 — bellek kanıtı örnekleyicisi (oneshot; timer tetikler).
+# Sürekli çalışan yeni bir daemon YOKTUR ve hiçbir oturuma bağlı değildir.
+[Unit]
+Description=Trading Bot v3 memory probe (cgroup + RSS + tour evidence)
+Documentation=file:///opt/tradingbot/app/docs/MEMORY_VERIFICATION_V1.md
+
+[Service]
+Type=oneshot
+User=tradingbot
+Group=tradingbot
+WorkingDirectory=/opt/tradingbot/app
+Environment=TRADINGBOT_DATA=/opt/tradingbot/data
+Environment=TRADINGBOT_STATE_DIR=/opt/tradingbot/data/state
+Environment=TRADINGBOT_LOG_DIR=/opt/tradingbot/data/logs
+ExecStart=/opt/tradingbot/memory_probe.sh
+TimeoutStartSec=30
+# Örnekleme hatası hiçbir şeyi tetiklemez; worker'ı asla etkilemez.
+SuccessExitStatus=0 1
+
+# --- sertleştirme: yalnız OKUR (cgroup, /proc) ve YALNIZ log dizinine yazar
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/opt/tradingbot/data/logs
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX
+CapabilityBoundingSet=
+AmbientCapabilities=
+UMask=0027

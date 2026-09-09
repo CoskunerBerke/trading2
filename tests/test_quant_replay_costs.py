@@ -34,7 +34,7 @@ def test_same_bar_stop_and_tp_conservative_stop_wins():
     led = FuturesLedgerV2(1000, slippage=SlippageModel.zero())
     _open_long(led)
     # Aynı barda hem stop (low=94) hem TP (high=125) görülür → STOP seçilmeli.
-    closed = led.tick({ETH: TickData(last=D(100), high=D(125), low=D(94))}, now_utc=T0)
+    closed = led.tick({ETH: TickData(last=D(100), high=D(125), low=D(94), bar_open=T0.isoformat())}, now_utc=T0)
     assert len(closed) == 1
     rec = closed[0]
     assert rec.exit_reason == EXIT_STOP

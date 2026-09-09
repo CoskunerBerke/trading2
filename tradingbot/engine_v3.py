@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 import os
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 from .accounting import (AmountType, FeeSchedule, FiltersCache, FuturesLedgerV2, LiquidationParams, MarketType, Side, SizeSpec,
@@ -702,6 +702,25 @@ class TradingEngineV3(TradingEngine):
                     log.warning("exit-monitor risk durumu yazılamadı: %s", exc)
             return out
 
+    @staticmethod
+    def _frame_bar_open(frame) -> str:
+        """Çerçevenin SON barının açılış zamanı (ISO-8601 UTC); çözülemezse boş string.
+
+        Boş string defter tarafında fail-closed sayılır: bar uçları kullanılmaz. Bu yüzden burada
+        tahmin YOK — `timestamp` sütunu (ms) ya da zaman indeksinden okunur, ikisi de yoksa "".
+        """
+        try:
+            if "timestamp" in getattr(frame, "columns", []):
+                return iso(datetime.fromtimestamp(int(frame["timestamp"].iloc[-1]) / 1000, tz=timezone.utc))
+            idx = frame.index[-1]
+            ts = getattr(idx, "to_pydatetime", None)
+            if ts is None:
+                return ""
+            dt = ts()
+            return iso(dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc))
+        except Exception:  # noqa: BLE001 — provenans çözülemedi → fail-closed
+            return ""
+
     def _marks(self, briefs: list[CoinBrief]) -> dict[str, TickData]:
         out: dict[str, TickData] = {}
         for b in briefs:
@@ -710,11 +729,18 @@ class TradingEngineV3(TradingEngine):
             frames = self.runner.last_frames.get(b.symbol) or {}
             h1 = frames.get("1h")
             hi = lo = None
+            bar_open = ""
             if h1 is not None and len(h1):
                 hi, lo = float(h1["high"].iloc[-1]), float(h1["low"].iloc[-1])
+                # BAR PROVENANSI: bu uçlar SON KAPANMIŞ 1h barından gelir (`drop_unclosed_last_bar`),
+                # yani pencereleri [bar_open, bar_open + 1h). Defter, barın tamamı pozisyonun ömrü
+                # içinde değilse uçları YOK SAYAR; karar verebilmesi için barın açılış zamanı
+                # buradan taşınmalıdır. Zaman damgası çözülemezse provenans boş kalır → fail-closed.
+                bar_open = self._frame_bar_open(h1)
                 # sağlamlık: 1h uçları canlı fiyatla tutarsızsa (ölçek/veri farkı) kullanma
                 if not (0.8 * b.price <= lo <= hi <= 1.2 * b.price):
                     hi = lo = None
+                    bar_open = ""
                 else:
                     hi, lo = max(hi, b.price), min(lo, b.price)
             mk = next((r for r in b.reports if r.agent == "market"), None)
@@ -722,7 +748,8 @@ class TradingEngineV3(TradingEngine):
             if mk and mk.metrics.get("mark"):
                 mark = mk.metrics["mark"]
             out[b.symbol] = TickData(last=Decimal(str(b.price)), mark=Decimal(str(mark)) if mark else None,
-                                     high=Decimal(str(hi)) if hi else None, low=Decimal(str(lo)) if lo else None, ts=iso())
+                                     high=Decimal(str(hi)) if hi else None, low=Decimal(str(lo)) if lo else None,
+                                     ts=iso(), bar_open=bar_open)
         for sym, p in self.ledger2.positions.items():
             if sym not in out and p.last_price:
                 out[sym] = TickData(last=p.last_price, ts=iso())

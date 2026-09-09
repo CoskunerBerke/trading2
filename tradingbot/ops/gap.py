@@ -222,9 +222,13 @@ class GapReconciler:
                 c = table.get(ts)
                 if c is None or sym not in self.ledger.positions:
                     continue
+                # `ts` barin KAPANISI, `bar_open` barin ACILISI. Defter, barin tamami pozisyonun
+                # omru icinde degilse uclari yok sayar; kesinti penceresinde giristen ONCE kapanmis
+                # bir bar acik pozisyonun MAE/MFE'sine ya da stop'una karisamaz.
                 marks[sym] = TickData(last=Decimal(str(c["close"])), mark=Decimal(str(c["close"])),
                                       high=Decimal(str(c["high"])), low=Decimal(str(c["low"])),
-                                      ts=iso(datetime.fromtimestamp(c["close_time"] / 1000, tz=start.tzinfo)))
+                                      ts=iso(datetime.fromtimestamp(c["close_time"] / 1000, tz=start.tzinfo)),
+                                      bar_open=iso(datetime.fromtimestamp(c["ts"] / 1000, tz=start.tzinfo)))
                 close_dt = datetime.fromtimestamp(c["close_time"] / 1000, tz=start.tzinfo)
             if not marks or close_dt is None:
                 continue

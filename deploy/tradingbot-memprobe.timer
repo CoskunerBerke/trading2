@@ -1,0 +1,15 @@
+# Her 5 dakikada bir bellek örneği. `Persistent=true` yeniden başlatmadan sonra da sürer.
+# Tur aralığı 15 dk olduğundan 5 dk, tur içi sıçramayı ve turlar arası tabanı ayırt eder.
+[Unit]
+Description=Trading Bot v3 memory probe timer
+Documentation=file:///opt/tradingbot/app/docs/MEMORY_VERIFICATION_V1.md
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+AccuracySec=15s
+Persistent=true
+Unit=tradingbot-memprobe.service
+
+[Install]
+WantedBy=timers.target

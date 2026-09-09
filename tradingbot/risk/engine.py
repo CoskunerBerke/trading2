@@ -286,6 +286,18 @@ class RiskEngine:
                              "spot_symbols_without_stop": list(state.spot_symbols_without_stop),
                              "max_spot_allocation_usdt": (round(basis * p.max_spot_allocation_pct / 100.0, 6)
                                                           if p.max_spot_allocation_pct is not None else None),
+                             # BRUT MARUZIYET (yalniz gozlem, hicbir kapiya girmez): stop basa-basa
+                             # tasindiginda stop-riski ~0 olur ve butce serbest kalir; nominal ve marj
+                             # kalir. Bu iki buyuklugun ayrimi risk.json'dan artik GORULEBILIR.
+                             "futures_notional_usdt": (None if state.futures_notional_unknown
+                                                       else round(state.futures_notional_usdt, 6)),
+                             "futures_notional_unknown": state.futures_notional_unknown,
+                             "futures_notional_to_equity": (
+                                 None if (state.futures_notional_unknown or state.equity <= 0)
+                                 else round(state.futures_notional_usdt / state.equity, 4)),
+                             "futures_zero_stop_risk_positions": len(state.futures_zero_stop_risk),
+                             "futures_zero_stop_risk_notional_usdt": round(
+                                 sum(o.notional for o in state.futures_zero_stop_risk if not o.notional_unknown), 6),
                              "used_margin": state.used_margin, "altcoin_notional": round(state.altcoin_notional(), 4),
                              "pnl_today": round(state.realized_pnl_today, 4), "pnl_week": round(state.realized_pnl_week, 4),
                              "consecutive_losses": state.consecutive_losses,

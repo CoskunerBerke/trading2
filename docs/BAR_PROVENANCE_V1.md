@@ -130,19 +130,32 @@ kural gevşetilmedi. `test_gap_reconcile._mk_ledger` artık pozisyonu kesinti pe
 açar — gerçek senaryo budur; `now` verilmediğinde açılış duvar saatine kayıyor ve bütün tarihsel
 barlar "giriş öncesi" sayılıyordu.
 
-## 5b. Bilinen BİRLEŞTİRME TEHLİKESİ — `research/replay-fidelity-v1`
+## 5b. Sözleşme testi gerçek bir sessiz gerilemeyi yakaladı
 
 Fail-closed kuralın bedeli şudur: provenans vermeyen bir çağrı yeri **hata vermez**, sessizce
-bütün bar uçlarını düşürür ve tetikler yalnız mark'a kalır. Bu, gürültüsüz bir gerilemedir.
+bütün bar uçlarını düşürür ve tetikler yalnız mark'a kalır.
 
-`research/replay-fidelity-v1` dalındaki `tradingbot/replay/fidelity.py` (satır ~448) tam olarak
-böyle bir çağrıdır: `TickData(last=..., mark=..., high=b.high, low=b.low, ts=...)` — `bar_open`
-yok. O dal bugün **birleştirilmemiştir**, dolayısıyla dağıtılan hiçbir şey bozuk değildir. Ama
-birleştirilirse harness'in "29/29 çıkış nedeni yeniden üretildi" sonucu sessizce bozulurdu.
+Araştırma dalı (`work/research-c-v1`) birleştirildiğinde `test_10` **üç** çağrı yerini birden
+yakaladı: `replay/fidelity.py:448`, `replay/challengers.py:120`, `replay/counterfactual.py:232`.
+Üçü de `high`/`low` veriyordu, `bar_open` vermiyordu.
 
-Bu yüzden `test_10` elle sayılmış üç modülü değil **bütün `tradingbot` paketini** AST ile tarar.
-Dosya paketin içine kopyalanarak sınandı: test o satırı yakalayıp **düşüyor**. Yani dal
-birleştirilmek istendiğinde tek satırlık provenans eklemek zorunlu olur.
+Etkisi ölçüldü — 29 kapanmış işlem, gerçek 1m barlar, sadakat koşumunun üç durumu:
+
+| Karşılaştırma | Farklı alan |
+|---|---:|
+| taban (`1c4cba1`, guard YOK) ↔ guard var + **provenans YOK** | **78** |
+| taban ↔ guard var + **provenans VAR** | **0** |
+
+En kötü tekil vaka ZEC F00007: replay R'si **+0.909 → −0.138**, çıkış fiyatı **790 → 723**.
+Yani eksiklik kozmetik değildi; onarım ise **tam olarak nötr** — harness kendi tabanını bit birebir
+yeniden üretiyor.
+
+**Devralınan bir rakam doğrulamayı geçmedi.** Harness'in "29/29 çıkış nedeni yeniden üretildi"
+dendiği kayıtlıydı; bu anlık görüntüye karşı 1m'de **dokunulmamış taban commit'te 26/29** üretiyor
+ve bu sayı bu onarımdan önce ve sonra **aynı**. Üç ıska BZ, BMNR ve MSFT: defterde düz `stop`,
+replay'de `başa-baş stop`. Sebebi `be_mfe_from = None` olduğu için harness'in **bugünkü** başa-baş
+kuralını, o kural henüz yokken kapanmış işlemlere de uygulaması. Bu harness'in modelleme tercihidir,
+sadakat başarısızlığı değildir ve buradaki değişiklikten kaynaklanmaz.
 
 ## 6. Kalan iş (bu onarımda kapanmadı)
 

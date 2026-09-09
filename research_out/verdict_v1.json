@@ -1,0 +1,1207 @@
+{
+ "population": {
+  "n": 1334,
+  "clusters": 144,
+  "symbols": 95,
+  "days": [
+   "2026-09-02",
+   "2026-09-03",
+   "2026-09-04",
+   "2026-09-05",
+   "2026-09-06"
+  ],
+  "baseline_mean_r": 0.2626923980736494
+ },
+ "min_effect_R": 0.1,
+ "challengers": {
+  "C1_time_box_24h_mfe1R": {
+   "n": 1334,
+   "n_clusters": 144,
+   "point": -0.16413944044159964,
+   "lo": -0.2639026184993842,
+   "hi": -0.07211823562721052,
+   "underpowered": false,
+   "p_two_sided": 0.0,
+   "excluded": 0,
+   "loo_day": {
+    "2026-09-02": -0.1753285623841387,
+    "2026-09-03": -0.14379001818384388,
+    "2026-09-04": -0.09453054761155727,
+    "2026-09-05": -0.1918452406222048,
+    "2026-09-06": -0.2116752329601228
+   },
+   "cluster_symbol": {
+    "n": 1334,
+    "n_clusters": 95,
+    "point": -0.16413944044159964,
+    "lo": -0.25151862496114064,
+    "hi": -0.06673330790539758,
+    "underpowered": false
+   },
+   "cluster_day": {
+    "n": 1334,
+    "n_clusters": 5,
+    "point": -0.16413944044159964,
+    "lo": -0.29106170646688234,
+    "hi": -0.026778293806430358,
+    "underpowered": true
+   },
+   "mean_r_challenger": 0.09855295763204973,
+   "mean_r_baseline": 0.2626923980736494,
+   "win_rate_challenger": 0.4490254872563718,
+   "win_rate_baseline": 0.5232383808095952,
+   "criteria": {
+    "A1_effect_ge_0.10R": false,
+    "A2_CI_excludes_0": false,
+    "A3_holm_fwer": false,
+    "A4_leave_one_day_out": false,
+    "A5_horizon_48h": true,
+    "A6_realised_29": true,
+    "A7_portfolio": null
+   },
+   "verdict": "NOT ACCEPTED"
+  },
+  "C2_tp1_at_1R": {
+   "n": 1334,
+   "n_clusters": 144,
+   "point": -0.06159699636523867,
+   "lo": -0.12059435022490486,
+   "hi": -0.006929958305512146,
+   "underpowered": false,
+   "p_two_sided": 0.024399999999999977,
+   "excluded": 0,
+   "loo_day": {
+    "2026-09-02": -0.05645802972394551,
+    "2026-09-03": -0.06695497817234525,
+    "2026-09-04": -0.028640587667063896,
+    "2026-09-05": -0.08238404622827705,
+    "2026-09-06": -0.07399428160542357
+   },
+   "cluster_symbol": {
+    "n": 1334,
+    "n_clusters": 95,
+    "point": -0.06159699636523867,
+    "lo": -0.11857517424581288,
+    "hi": -0.009994249054529909,
+    "underpowered": false
+   },
+   "cluster_day": {
+    "n": 1334,
+    "n_clusters": 5,
+    "point": -0.06159699636523867,
+    "lo": -0.1288728967879013,
+    "hi": -0.009744405207536996,
+    "underpowered": true
+   },
+   "mean_r_challenger": 0.20109540170841073,
+   "mean_r_baseline": 0.2626923980736494,
+   "win_rate_challenger": 0.5764617691154422,
+   "win_rate_baseline": 0.5232383808095952,
+   "criteria": {
+    "A1_effect_ge_0.10R": false,
+    "A2_CI_excludes_0": false,
+    "A3_holm_fwer": false,
+    "A4_leave_one_day_out": false,
+    "A5_horizon_48h": true,
+    "A6_realised_29": true,
+    "A7_portfolio": null
+   },
+   "verdict": "NOT ACCEPTED"
+  },
+  "C3_gate_median": {
+   "n": 1334,
+   "n_pass": 667,
+   "n_fail": 667,
+   "n_clusters": 144,
+   "point": 0.060022503033120816,
+   "lo": -0.2750786360994414,
+   "hi": 0.38005846540118193,
+   "p_two_sided": 0.7436,
+   "underpowered": false,
+   "mean_pass": 0.03001125151656039,
+   "mean_fail": -0.030011251516560426,
+   "loo_day": {
+    "2026-09-02": 0.08142023009367896,
+    "2026-09-03": 0.20899233235280332,
+    "2026-09-04": -0.1469262464802435,
+    "2026-09-05": 0.02039676683107914,
+    "2026-09-06": 0.12749939133083776
+   },
+   "criteria": {
+    "A1_effect_ge_0.10R": false,
+    "A2_CI_excludes_0": false,
+    "A3_holm_fwer": false,
+    "A4_leave_one_day_out": false,
+    "A5_horizon_48h": true,
+    "A6_realised_29": null,
+    "A7_portfolio": "NOT_REACHED"
+   },
+   "verdict": "NOT ACCEPTED"
+  }
+ },
+ "horizon_48h": {
+  "C1_time_box_24h_mfe1R": {
+   "n": 1710,
+   "n_clusters": 181,
+   "point": -0.049262938835762056,
+   "lo": -0.12131202590151964,
+   "hi": 0.01332625547917066,
+   "underpowered": false,
+   "p_two_sided": 0.1459999999999999,
+   "excluded": 0
+  },
+  "C2_tp1_at_1R": {
+   "n": 1710,
+   "n_clusters": 181,
+   "point": -0.027239288355123622,
+   "lo": -0.07390010020181159,
+   "hi": 0.013373578745079846,
+   "underpowered": false,
+   "p_two_sided": 0.22199999999999998,
+   "excluded": 0
+  },
+  "C3_gate_median": {
+   "n": 1710,
+   "n_pass": 845,
+   "n_fail": 865,
+   "n_clusters": 181,
+   "point": 0.07865141574924239,
+   "lo": -0.16495458781489564,
+   "hi": 0.3128678178443509,
+   "p_two_sided": 0.548,
+   "underpowered": false,
+   "mean_pass": 0.03978565767432436,
+   "mean_fail": -0.03886575807491804
+  }
+ },
+ "realised_29": {
+  "n": 29,
+  "rows": [
+   {
+    "trade_id": "F00001",
+    "symbol": "SUI/USDT",
+    "side": "SHORT",
+    "opened_at": "2026-08-18T16:48:57+00:00",
+    "hold_h": 22.29,
+    "recorded_r": -1.2182572117681933,
+    "recorded_exit": "stop",
+    "baseline": {
+     "pool72_r": -1.125550710483613,
+     "pool72_exit": "STOP",
+     "natural_r": -1.125550710483613,
+     "natural_exit": "STOP",
+     "time_boxed": false,
+     "excluded": ""
+    },
+    "C1_time_box_24h_mfe1R": {
+     "pool72_r": -1.125550710483613,
+     "pool72_exit": "STOP",
+     "natural_r": -1.125550710483613,
+     "natural_exit": "STOP",
+     "time_boxed": false,
+     "excluded": ""
+    },
+    "C2_tp1_at_1R": {
+     "pool72_r": -1.125550710483613,
+     "pool72_exit": "STOP",
+     "natural_r": -1.125550710483613,
+     "natural_exit": "STOP",
+     "time_boxed": false,
+     "excluded": ""
+    }
+   },
+   {
+    "trade_id": "F00003",
+    "symbol": "FIL/USDT",
+    "side": "SHORT",
+    "opened_at": "2026-08-18T20:15:16+00:00",
+    "hold_h": 20.01,
+    "recorded_r": -1.0172165842437246,
+    "recorded_exit": "stop",
+    "baseline": {
+     "pool72_r": -1.0704288959388826,
+     "pool72_exit": "STOP",
+     "natural_r": -1.0704288959388826,
+     "natural_exit": "STOP",
+     "time_boxed": false,
+     "excluded": ""
+    },
+    "C1_time_box_24h_mfe1R": {
+     "pool72_r": -1.0704288959388826,
+     "pool72_exit": "STOP",
+     "natural_r": -1.0704288959388826,
+     "natural_exit": "STOP",
+     "time_boxed": false,
+     "excluded": ""
+    },
+    "C2_tp1_at_1R": {
+     "pool72_r": -1.0704288959388826,
+     "pool72_exit": "STOP",
+     "natural_r": -1.0704288959388826,
+     "natural_exit": "STOP",
+     "time_boxed": false,
+     "excluded": ""
+    }
+   },
+   {
+    "trade_id": "F00002",
+    "symbol": "KORU/USDT",
+    "side": "SHORT",
+    "opened_at": "2026-08-18T19:41:10+00:00",
+    "hold_h": 30.02,
+    "recorded_r": -1.044457157116684,
+    "recorded_exit": "stop",
+    "baseline": {
+     "pool72_r": -1.026949949245731,
+     "pool72_exit": "STOP",
+     "natural_r": -1.026949949245731,
+     "natural_exit": "STOP",
+     "time_boxed": false,
+     "excluded": ""
+    },
+    "C1_time_box_24h_mfe1R": {
+     "pool72_r": -0.2969928741325254,
+     "pool72_exit": "TIME_BOX",
+     "natural_r": -0.2969928741325254,
+     "natural_exit": "TIME_BOX",
+     "time_boxed": true,
+     "excluded": ""
+    },
+    "C2_tp1_at_1R": {
+     "pool72_r": -1.026949949245731,
+     "pool72_exit": "STOP",
+     "natural_r": -1.026949949245731,
+     "natural_exit": "STOP",
+     "time_boxed": false,
+     "excluded": ""
+    }
+   },
+   {
+    "trade_id": "F00006",
+    "symbol": "ZRO/USDT",
+    "side": "LONG",
+    "opened_at": "2026-08-20T10:15:52+00:00",
+    "hold_h": 42.65,
+    "recorded_r": 2.3657961095718774,
+    "recorded_exit": "hedef2",
+    "baseline": {
+     "pool72_r": 2.365793479111785,
+     "pool72_exit": "TP2",
+     "natural_r": 2.365793479111785,
+     "natural_exit": "TP2",
+     "time_boxed": false,
+     "excluded": ""
+    },
+    "C1_time_box_24h_mfe1R": {
+     "pool72_r": 0.3907111205117545,
+     "pool72_exit": "TIME_BOX",
+     "natural_r": 0.3907111205117545,
+     "natural_exit": "TIME_BOX",
+     "time_boxed": true,
+     "excluded": ""
+    },
+    "C2_tp1_at_1R": {
+     "pool72_r": 1.8825049878503413,
+     "pool72_exit": "TP2",
+     "natural_r": 1.8825049878503413,
+     "natural_exit": "TP2",
+     "time_boxed": false,
+     "excluded": ""
+    }
+   },
+   {
+    "trade_id": "F00007",
+    "symbol": "ZEC/USDT",
+    "side": "LONG",
+    "opened_at": "2026-08-21T23:18:48+00:00",
+    "hold_h": 5.87,
+    "recorded_r": 0.7603141876913359,
+    "recorded_exit": "ba\u015fa-ba\u015f stop",
+    "baseline": {
+     "pool72_r": 0.9089213885636207,
+     "pool72_exit": "BE_STOP",
+     "natural_r": 0.9089213885636207,
+     "natural_exit": "BE_STOP",
+     "time_boxed": false,
+     "excluded": ""
+    },
+    "C1_time_box_24h_mfe1R": {
+     "pool72_r": 0.9089213885636207,
+     "pool72_exit": "BE_STOP",
+     "natural_r": 0.9089213885636207,
+     "natural_exit": "BE_STOP",
+     "time_boxed": false,
+     "excluded": ""
+    },
+    "C2_tp1_at_1R": {
+     "pool72_r": 0.421169106908551,
+     "pool72_exit": "BE_STOP",
+     "natural_r": 0.421169106908551,
+     "natural_exit": "BE_STOP",
+     "time_boxed": false,
+     "excluded": ""
+    }
+   },
+   {
+    "trade_id": "F00004",
+    "symbol": "BZ/USDT",
+    "side": "LONG",
+    "opened_at": "2026-08-19T15:39:46+00:00",
+    "hold_h": 137.62,
+    "recorded_r": -0.9831653764328313,
+    "recorded_exit": "stop",
+    "baseline": {
+     "pool72_r": 0.5349343667587417,
+     "pool72_exit": "HORIZON",
+     "natural_r": 0.01535350186361732,
+     "natural_exit": "BE_STOP",
+     "time_boxed": false,
+     "excluded": ""
+    },
+    "C1_time_box_24h_mfe1R": {
+     "pool72_r": 0.47245886739399645,
+     "pool72_exit": "TIME_BOX",
+     "natural_r": 0.47245886739399645,
+     "natural_exit": "TIME_BOX",
+     "time_boxed": true,
+     "excluded": ""
+    },
+    "C2_tp1_at_1R": {
+     "pool72_r": 0.739996982216679,
+     "pool72_exit": "HORIZON",
+     "natural_r": 0.47863206229973765,
+     "natural_exit": "BE_STOP",
+     "time_boxed": false,
+     "excluded": ""
+    }
+   },
+   {
+    "trade_id": "F00008",
+    "symbol": "LDO/USDT",
+    "side": "LONG",
+    "opened_at": "2026-08-23T18:09:32+00:00",
+    "hold_h": 51.95,
+    "recorded_r": -1.0156933879101657,
+    "recorded_exit": "stop",
+    "baseline": {
+     "pool72_r": -1.015700878527546,
+     "pool72_exit": "STOP",
+     "natural_r": -1.015700878527546,
+     "natural_exit": "STOP",
+     "time_boxed": false,
+     "excluded": ""
+    },
+    "C1_time_box_24h_mfe1R": {
+     "pool72_r": -0.5687822687610734,
+     "pool72_exit": "TIME_BOX",
+     "natural_r": -0.5687822687610734,
+     "natural_exit": "TIME_BOX",
+     "time_boxed": true,
+     "excluded": ""
+    },
+    "C2_tp1_at_1R": {
+     "pool72_r": -1.015700878527546,
+     "pool72_exit": "STOP",
+     "natural_r": -1.015700878527546,
+     "natural_exit": "STOP",
+     "time_boxed": false,
+     "excluded": ""
+    }
+   },
+   {
+    "trade_id": "F00009",
+    "symbol": "AAVE/USDT",
+    "side": "LONG",
+    "opened_at": "2026-08-23T18:09:32+00:00",
+    "hold_h": 51.95,
+    "recorded_r": -1.0163349101003296,
+    "recorded_exit": "stop",
+    "baseline": {
+     "pool72_r": -1.0163419499885298,
+     "pool72_exit": "STOP",
+     "natural_r": -1.0163419499885298,
+     "natural_exit": "STOP",
+     "time_boxed": false,
+     "excluded": ""
+    },
+    "C1_time_box_24h_mfe1R": {
+     "pool72_r": -0.4320866922115676,
+     "pool72_exit": "TIME_BOX",
+     "natural_r": -0.4320866922115676,
+     "natural_exit": "TIME_BOX",
+     "time_boxed": true,
+     "excluded": ""
+    },
+    "C2_tp1_at_1R": {
+     "pool72_r": -1.0163419499885298,
+     "pool72_exit": "STOP",
+     "natural_r": -1.0163419499885298,
+     "natural_exit": "STOP",
+     "time_boxed": false,
+     "excluded": ""
+    }
+   },
+   {
+    "trade_id": "F00011",
+    "symbol": "QQQ/USDT",
+    "side": "SHORT",
+    "opened_at": "2026-08-24T08:27:40+00:00",
+    "hold_h": 60.68,
+    "recorded_r": -1.015188536413857,
+    "recorded_exit": "stop",
+    "baseline": {
+     "pool72_r": -1.0674677455988353,
+     "pool72_exit": "STOP",
+     "natural_r": -1.0674677455988353,
+     "natural_exit": "STOP",
+     "time_boxed": false,
+     "excluded": ""
+    },
+    "C1_time_box_24h_mfe1R": {
+     "pool72_r": -0.44408526886220534,
+     "pool72_exit": "TIME_BOX",
+     "natural_r": -0.44408526886220534,
+     "natural_exit": "TIME_BOX",
+     "time_boxed": true,
+     "excluded": ""
+    },
+    "C2_tp1_at_1R": {
+     "pool72_r": -1.0674677455988353,
+     "pool72_exit": "STOP",
+     "natural_r": -1.0674677455988353,
+     "natural_exit": "STOP",
+     "time_boxed": false,
+     "excluded": ""
+    }
+   },
+   {
+    "trade_id": "F00012",
+    "symbol": "PAXG/USDT",
+    "side": "LONG",
+    "opened_at": "2026-08-25T13:05:44+00:00",
+    "hold_h": 73.38,
+    "recorded_r": -1.1231740888071957,
+    "recorded_exit": "stop",
+    "baseline": {
+     "pool72_r": -0.4434388565886718,
+     "pool72_exit": "HORIZON",
+     "natural_r": -1.1313532914317408,
+     "natural_exit": "STOP",
+     "time_boxed": false,
+     "excluded": ""
+    },
+    "C1_time_box_24h_mfe1R": {
+     "pool72_r": -0.261502564522494,
+     "pool72_exit": "TIME_BOX",
+     "natural_r": -0.261502564522494,
+     "natural_exit": "TIME_BOX",
+     "time_boxed": true,
+     "excluded": ""
+    },
+    "C2_tp1_at_1R": {
+     "pool72_r": -0.4434388565886718,
+     "pool72_exit": "HORIZON",
+     "natural_r": -1.1313532914317408,
+     "natural_exit": "STOP",
+     "time_boxed": false,
+     "excluded": ""
+    }
+   },
+   {
+    "trade_id": "F00005",
+    "symbol": "XAUT/USDT",
+    "side": "LONG",
+    "opened_at": "2026-08-19T16:51:05+00:00",
+    "hold_h": 215.47,
+    "recorded_r": 0.5666109729916358,
+    "recorded_exit": "ba\u015fa-ba\u015f stop",
+    "baseline": {
+     "pool72_r": 1.1978279295994725,
+     "pool72_exit": "HORIZON",
+     "natural_r": 0.5216353841064855,
+     "natural_exit": "BE_STOP",
+     "time_boxed": false,
+     "excluded": ""
+    },
+    "C1_time_box_24h_mfe1R": {
+     "pool72_r": 0.06622610179436313,
+     "pool72_exit": "TIME_BOX",
+     "natural_r": 0.06622610179436313,
+     "natural_exit": "TIME_BOX",
+     "time_boxed": true,
+     "excluded": ""
+    },
+    "C2_tp1_at_1R": {
+     "pool72_r": 1.0969161808512322,
+     "pool72_exit": "HORIZON",
+     "natural_r": 0.20103868799834493,
+     "natural_exit": "BE_STOP",
+     "time_boxed": false,
+     "excluded": ""
+    }
+   },
+   {
+    "trade_id": "F00018",
+    "symbol": "NVDA/USDT",
+    "side": "LONG",
+    "opened_at": "2026-08-27T22:46:52+00:00",
+    "hold_h": 20.1,
+    "recorded_r": -1.037429320356987,
+    "recorded_exit": "stop",
+    "baseline": {
+     "pool72_r": -1.037429320356987,
+     "pool72_exit": "STOP",
+     "natural_r": -1.037429320356987,
+     "natural_exit": "STOP",
+     "time_boxed": false,
+     "excluded": ""
+    },
+    "C1_time_box_24h_mfe1R": {
+     "pool72_r": -1.037429320356987,
+     "pool72_exit": "STOP",
+     "natural_r": -1.037429320356987,
+     "natural_exit": "STOP",
+     "time_boxed": false,
+     "excluded": ""
+    },
+    "C2_tp1_at_1R": {
+     "pool72_r": -1.037429320356987,
+     "pool72_exit": "STOP",
+     "natural_r": -1.037429320356987,
+     "natural_exit": "STOP",
+     "time_boxed": false,
+     "excluded": ""
+    }
+   },
+   {
+    "trade_id": "F00015",
+    "symbol": "STX/USDT",
+    "side": "LONG",
+    "opened_at": "2026-08-26T07:06:14+00:00",
+    "hold_h": 113.11,
+    "recorded_r": -0.9095293609618432,
+    "recorded_exit": "stop",
+    "baseline": {
+     "pool72_r": -0.6013513516230466,
+     "pool72_exit": "HORIZON",
+     "natural_r": -0.9800351490842895,
+     "natural_exit": "STOP",
+     "time_boxed": false,
+     "excluded": ""
+    },
+    "C1_time_box_24h_mfe1R": {
+     "pool72_r": -0.529076149416882,
+     "pool72_exit": "TIME_BOX",
+     "natural_r": -0.529076149416882,
+     "natural_exit": "TIME_BOX",
+     "time_boxed": true,
+     "excluded": ""
+    },
+    "C2_tp1_at_1R": {
+     "pool72_r": -0.6013513516230466,
+     "pool72_exit": "HORIZON",
+     "natural_r": -0.9800351490842895,
+     "natural_exit": "STOP",
+     "time_boxed": false,
+     "excluded": ""
+    }
+   },
+   {
+    "trade_id": "F00021",
+    "symbol": "XPD/USDT",
+    "side": "LONG",
+    "opened_at": "2026-08-29T04:25:36+00:00",
+    "hold_h": 56.37,
+    "recorded_r": -1.05294108429229,
+    "recorded_exit": "stop",
+    "baseline": {
+     "pool72_r": -1.078116906068055,
+     "pool72_exit": "STOP",
+     "natural_r": -1.078116906068055,
+     "natural_exit": "STOP",
+     "time_boxed": false,
+     "excluded": ""
+    },
+    "C1_time_box_24h_mfe1R": {
+     "pool72_r": 0.015204063790778176,
+     "pool72_exit": "TIME_BOX",
+     "natural_r": 0.015204063790778176,
+     "natural_exit": "TIME_BOX",
+     "time_boxed": true,
+     "excluded": ""
+    },
+    "C2_tp1_at_1R": {
+     "pool72_r": -1.078116906068055,
+     "pool72_exit": "STOP",
+     "natural_r": -1.078116906068055,
+     "natural_exit": "STOP",
+     "time_boxed": false,
+     "excluded": ""
+    }
+   },
+   {
+    "trade_id": "F00020",
+    "symbol": "AAPL/USDT",
+    "side": "LONG",
+    "opened_at": "2026-08-28T16:24:15+00:00",
+    "hold_h": 70.15,
+    "recorded_r": -1.1176661830457664,
+    "recorded_exit": "stop",
+    "baseline": {
+     "pool72_r": -1.0695680510382266,
+     "pool72_exit": "STOP",
+     "natural_r": -1.0695680510382266,
+     "natural_exit": "STOP",
+     "time_boxed": false,
+     "excluded": ""
+    },
+    "C1_time_box_24h_mfe1R": {
+     "pool72_r": -0.17266107377714454,
+     "pool72_exit": "TIME_BOX",
+     "natural_r": -0.17266107377714454,
+     "natural_exit": "TIME_BOX",
+     "time_boxed": true,
+     "excluded": ""
+    },
+    "C2_tp1_at_1R": {
+     "pool72_r": -1.0695680510382266,
+     "pool72_exit": "STOP",
+     "natural_r": -1.0695680510382266,
+     "natural_exit": "STOP",
+     "time_boxed": false,
+     "excluded": ""
+    }
+   },
+   {
+    "trade_id": "F00017",
+    "symbol": "SPY/USDT",
+    "side": "LONG",
+    "opened_at": "2026-08-27T00:37:21+00:00",
+    "hold_h": 128.03,
+    "recorded_r": -1.3248225618380403,
+    "recorded_exit": "stop",
+    "baseline": {
+     "pool72_r": -0.039550879114655636,
+     "pool72_exit": "HORIZON",
+     "natural_r": -1.2961637544704026,
+     "natural_exit": "STOP",
+     "time_boxed": false,
+     "excluded": ""
+    },
+    "C1_time_box_24h_mfe1R": {
+     "pool72_r": -0.07702206874047032,
+     "pool72_exit": "TIME_BOX",
+     "natural_r": -0.07702206874047032,
+     "natural_exit": "TIME_BOX",
+     "time_boxed": true,
+     "excluded": ""
+    },
+    "C2_tp1_at_1R": {
+     "pool72_r": 0.3164896357632473,
+     "pool72_exit": "BE_STOP",
+     "natural_r": 0.3164896357632473,
+     "natural_exit": "BE_STOP",
+     "time_boxed": false,
+     "excluded": ""
+    }
+   },
+   {
+    "trade_id": "F00024",
+    "symbol": "CL/USDT",
+    "side": "LONG",
+    "opened_at": "2026-08-31T15:11:12+00:00",
+    "hold_h": 33.68,
+    "recorded_r": 2.414627263241592,
+    "recorded_exit": "hedef2",
+    "baseline": {
+     "pool72_r": 2.4399309876647473,
+     "pool72_exit": "TP2",
+     "natural_r": 2.4399309876647473,
+     "natural_exit": "TP2",
+     "time_boxed": false,
+     "excluded": ""
+    },
+    "C1_time_box_24h_mfe1R": {
+     "pool72_r": 2.4399309876647473,
+     "pool72_exit": "TP2",
+     "natural_r": 2.4399309876647473,
+     "natural_exit": "TP2",
+     "time_boxed": false,
+     "excluded": ""
+    },
+    "C2_tp1_at_1R": {
+     "pool72_r": 1.9461212790575273,
+     "pool72_exit": "TP2",
+     "natural_r": 1.9461212790575273,
+     "natural_exit": "TP2",
+     "time_boxed": false,
+     "excluded": ""
+    }
+   },
+   {
+    "trade_id": "F00023",
+    "symbol": "BZ/USDT",
+    "side": "LONG",
+    "opened_at": "2026-08-31T13:16:17+00:00",
+    "hold_h": 35.73,
+    "recorded_r": 2.429471480779265,
+    "recorded_exit": "hedef2",
+    "baseline": {
+     "pool72_r": 2.4412481412770184,
+     "pool72_exit": "TP2",
+     "natural_r": 2.4412481412770184,
+     "natural_exit": "TP2",
+     "time_boxed": false,
+     "excluded": ""
+    },
+    "C1_time_box_24h_mfe1R": {
+     "pool72_r": 2.4412481412770184,
+     "pool72_exit": "TP2",
+     "natural_r": 2.4412481412770184,
+     "natural_exit": "TP2",
+     "time_boxed": false,
+     "excluded": ""
+    },
+    "C2_tp1_at_1R": {
+     "pool72_r": 1.9473316444184339,
+     "pool72_exit": "TP2",
+     "natural_r": 1.9473316444184339,
+     "natural_exit": "TP2",
+     "time_boxed": false,
+     "excluded": ""
+    }
+   },
+   {
+    "trade_id": "F00014",
+    "symbol": "BMNR/USDT",
+    "side": "LONG",
+    "opened_at": "2026-08-25T22:15:29+00:00",
+    "hold_h": 179.8,
+    "recorded_r": -1.0262510976952632,
+    "recorded_exit": "stop",
+    "baseline": {
+     "pool72_r": 0.0035864857150226725,
+     "pool72_exit": "BE_STOP",
+     "natural_r": 0.0035864857150226725,
+     "natural_exit": "BE_STOP",
+     "time_boxed": false,
+     "excluded": ""
+    },
+    "C1_time_box_24h_mfe1R": {
+     "pool72_r": 0.24511603669016743,
+     "pool72_exit": "TIME_BOX",
+     "natural_r": 0.24511603669016743,
+     "natural_exit": "TIME_BOX",
+     "time_boxed": true,
+     "excluded": ""
+    },
+    "C2_tp1_at_1R": {
+     "pool72_r": 0.490287917571136,
+     "pool72_exit": "BE_STOP",
+     "natural_r": 0.490287917571136,
+     "natural_exit": "BE_STOP",
+     "time_boxed": false,
+     "excluded": ""
+    }
+   },
+   {
+    "trade_id": "F00025",
+    "symbol": "SPCX/USDT",
+    "side": "LONG",
+    "opened_at": "2026-09-01T16:34:37+00:00",
+    "hold_h": 21.35,
+    "recorded_r": -1.124782180151824,
+    "recorded_exit": "stop",
+    "baseline": {
+     "pool72_r": -1.1000357459774075,
+     "pool72_exit": "STOP",
+     "natural_r": -1.1000357459774075,
+     "natural_exit": "STOP",
+     "time_boxed": false,
+     "excluded": ""
+    },
+    "C1_time_box_24h_mfe1R": {
+     "pool72_r": -1.1000357459774075,
+     "pool72_exit": "STOP",
+     "natural_r": -1.1000357459774075,
+     "natural_exit": "STOP",
+     "time_boxed": false,
+     "excluded": ""
+    },
+    "C2_tp1_at_1R": {
+     "pool72_r": -1.1000357459774075,
+     "pool72_exit": "STOP",
+     "natural_r": -1.1000357459774075,
+     "natural_exit": "STOP",
+     "time_boxed": false,
+     "excluded": ""
+    }
+   },
+   {
+    "trade_id": "F00022",
+    "symbol": "SUI/USDT",
+    "side": "SHORT",
+    "opened_at": "2026-08-31T00:30:45+00:00",
+    "hold_h": 73.87,
+    "recorded_r": -1.0862432476558002,
+    "recorded_exit": "stop",
+    "baseline": {
+     "pool72_r": -0.5055890846134331,
+     "pool72_exit": "HORIZON",
+     "natural_r": -1.0215777539424995,
+     "natural_exit": "STOP",
+     "time_boxed": false,
+     "excluded": ""
+    },
+    "C1_time_box_24h_mfe1R": {
+     "pool72_r": -0.39881006367667626,
+     "pool72_exit": "TIME_BOX",
+     "natural_r": -0.39881006367667626,
+     "natural_exit": "TIME_BOX",
+     "time_boxed": true,
+     "excluded": ""
+    },
+    "C2_tp1_at_1R": {
+     "pool72_r": -0.5055890846134331,
+     "pool72_exit": "HORIZON",
+     "natural_r": -1.0215777539424995,
+     "natural_exit": "STOP",
+     "time_boxed": false,
+     "excluded": ""
+    }
+   },
+   {
+    "trade_id": "F00030",
+    "symbol": "NATGAS/USDT",
+    "side": "LONG",
+    "opened_at": "2026-09-03T02:30:12+00:00",
+    "hold_h": 12.58,
+    "recorded_r": -1.059863009565567,
+    "recorded_exit": "stop",
+    "baseline": {
+     "pool72_r": -1.059863009565567,
+     "pool72_exit": "STOP",
+     "natural_r": -1.059863009565567,
+     "natural_exit": "STOP",
+     "time_boxed": false,
+     "excluded": ""
+    },
+    "C1_time_box_24h_mfe1R": {
+     "pool72_r": -1.059863009565567,
+     "pool72_exit": "STOP",
+     "natural_r": -1.059863009565567,
+     "natural_exit": "STOP",
+     "time_boxed": false,
+     "excluded": ""
+    },
+    "C2_tp1_at_1R": {
+     "pool72_r": -1.059863009565567,
+     "pool72_exit": "STOP",
+     "natural_r": -1.059863009565567,
+     "natural_exit": "STOP",
+     "time_boxed": false,
+     "excluded": ""
+    }
+   },
+   {
+    "trade_id": "F00026",
+    "symbol": "AAPL/USDT",
+    "side": "LONG",
+    "opened_at": "2026-09-01T17:51:52+00:00",
+    "hold_h": 69.15,
+    "recorded_r": -1.0699222802556068,
+    "recorded_exit": "stop",
+    "baseline": {
+     "pool72_r": -1.0695799739635043,
+     "pool72_exit": "STOP",
+     "natural_r": -1.0695799739635043,
+     "natural_exit": "STOP",
+     "time_boxed": false,
+     "excluded": ""
+    },
+    "C1_time_box_24h_mfe1R": {
+     "pool72_r": 0.04443185186655842,
+     "pool72_exit": "TIME_BOX",
+     "natural_r": 0.04443185186655842,
+     "natural_exit": "TIME_BOX",
+     "time_boxed": true,
+     "excluded": ""
+    },
+    "C2_tp1_at_1R": {
+     "pool72_r": -1.0695799739635043,
+     "pool72_exit": "STOP",
+     "natural_r": -1.0695799739635043,
+     "natural_exit": "STOP",
+     "time_boxed": false,
+     "excluded": ""
+    }
+   },
+   {
+    "trade_id": "F00032",
+    "symbol": "BNB/USDT",
+    "side": "LONG",
+    "opened_at": "2026-09-03T15:25:33+00:00",
+    "hold_h": 49.63,
+    "recorded_r": 2.411104693171517,
+    "recorded_exit": "hedef2",
+    "baseline": {
+     "pool72_r": 2.41791484951911,
+     "pool72_exit": "TP2",
+     "natural_r": 2.41791484951911,
+     "natural_exit": "TP2",
+     "time_boxed": false,
+     "excluded": ""
+    },
+    "C1_time_box_24h_mfe1R": {
+     "pool72_r": -0.18457630823512208,
+     "pool72_exit": "TIME_BOX",
+     "natural_r": -0.18457630823512208,
+     "natural_exit": "TIME_BOX",
+     "time_boxed": true,
+     "excluded": ""
+    },
+    "C2_tp1_at_1R": {
+     "pool72_r": 1.9382564803947728,
+     "pool72_exit": "TP2",
+     "natural_r": 1.9382564803947728,
+     "natural_exit": "TP2",
+     "time_boxed": false,
+     "excluded": ""
+    }
+   },
+   {
+    "trade_id": "F00031",
+    "symbol": "LTC/USDT",
+    "side": "LONG",
+    "opened_at": "2026-09-03T12:08:09+00:00",
+    "hold_h": 96.33,
+    "recorded_r": 2.4100785166312355,
+    "recorded_exit": "hedef2",
+    "baseline": {
+     "pool72_r": 1.8481489430979543,
+     "pool72_exit": "HORIZON",
+     "natural_r": 2.415286386950868,
+     "natural_exit": "TP2",
+     "time_boxed": false,
+     "excluded": ""
+    },
+    "C1_time_box_24h_mfe1R": {
+     "pool72_r": 0.13022566901237392,
+     "pool72_exit": "TIME_BOX",
+     "natural_r": 0.13022566901237392,
+     "natural_exit": "TIME_BOX",
+     "time_boxed": true,
+     "excluded": ""
+    },
+    "C2_tp1_at_1R": {
+     "pool72_r": 1.356373309148709,
+     "pool72_exit": "HORIZON",
+     "natural_r": 1.9235107530016227,
+     "natural_exit": "TP2",
+     "time_boxed": false,
+     "excluded": ""
+    }
+   },
+   {
+    "trade_id": "F00019",
+    "symbol": "MSFT/USDT",
+    "side": "LONG",
+    "opened_at": "2026-08-27T23:26:08+00:00",
+    "hold_h": 278.34,
+    "recorded_r": -1.0936022535345444,
+    "recorded_exit": "stop",
+    "baseline": {
+     "pool72_r": 0.881400226829071,
+     "pool72_exit": "HORIZON",
+     "natural_r": -0.014857157295883267,
+     "natural_exit": "BE_STOP",
+     "time_boxed": false,
+     "excluded": ""
+    },
+    "C1_time_box_24h_mfe1R": {
+     "pool72_r": 0.881400226829071,
+     "pool72_exit": "HORIZON",
+     "natural_r": -0.014857157295883267,
+     "natural_exit": "BE_STOP",
+     "time_boxed": false,
+     "excluded": ""
+    },
+    "C2_tp1_at_1R": {
+     "pool72_r": 0.9034037934151777,
+     "pool72_exit": "HORIZON",
+     "natural_r": 0.45527510135270066,
+     "natural_exit": "BE_STOP",
+     "time_boxed": false,
+     "excluded": ""
+    }
+   },
+   {
+    "trade_id": "F00034",
+    "symbol": "NVDA/USDT",
+    "side": "LONG",
+    "opened_at": "2026-09-04T15:00:58+00:00",
+    "hold_h": 97.31,
+    "recorded_r": -1.1270299224621148,
+    "recorded_exit": "stop",
+    "baseline": {
+     "pool72_r": -0.05154053315333601,
+     "pool72_exit": "HORIZON",
+     "natural_r": -1.0938571213115904,
+     "natural_exit": "STOP",
+     "time_boxed": false,
+     "excluded": ""
+    },
+    "C1_time_box_24h_mfe1R": {
+     "pool72_r": -0.26326104780016213,
+     "pool72_exit": "TIME_BOX",
+     "natural_r": -0.26326104780016213,
+     "natural_exit": "TIME_BOX",
+     "time_boxed": true,
+     "excluded": ""
+    },
+    "C2_tp1_at_1R": {
+     "pool72_r": -0.05154053315333601,
+     "pool72_exit": "HORIZON",
+     "natural_r": -1.0938571213115904,
+     "natural_exit": "STOP",
+     "time_boxed": false,
+     "excluded": ""
+    }
+   },
+   {
+    "trade_id": "F00039",
+    "symbol": "XAUT/USDT",
+    "side": "SHORT",
+    "opened_at": "2026-09-08T20:29:15+00:00",
+    "hold_h": 16.92,
+    "recorded_r": -1.1226452024523037,
+    "recorded_exit": "stop",
+    "baseline": {
+     "pool72_r": -1.1257010326687598,
+     "pool72_exit": "STOP",
+     "natural_r": -1.1257010326687598,
+     "natural_exit": "STOP",
+     "time_boxed": false,
+     "excluded": ""
+    },
+    "C1_time_box_24h_mfe1R": {
+     "pool72_r": -1.1257010326687598,
+     "pool72_exit": "STOP",
+     "natural_r": -1.1257010326687598,
+     "natural_exit": "STOP",
+     "time_boxed": false,
+     "excluded": ""
+    },
+    "C2_tp1_at_1R": {
+     "pool72_r": -1.1257010326687598,
+     "pool72_exit": "STOP",
+     "natural_r": -1.1257010326687598,
+     "natural_exit": "STOP",
+     "time_boxed": false,
+     "excluded": ""
+    }
+   },
+   {
+    "trade_id": "F00036",
+    "symbol": "ONDO/USDT",
+    "side": "LONG",
+    "opened_at": "2026-09-07T02:43:40+00:00",
+    "hold_h": 60.64,
+    "recorded_r": -1.1172859330430673,
+    "recorded_exit": "stop",
+    "baseline": {
+     "pool72_r": -1.029859886901263,
+     "pool72_exit": "STOP",
+     "natural_r": -1.029859886901263,
+     "natural_exit": "STOP",
+     "time_boxed": false,
+     "excluded": ""
+    },
+    "C1_time_box_24h_mfe1R": {
+     "pool72_r": -0.4158821516578798,
+     "pool72_exit": "TIME_BOX",
+     "natural_r": -0.4158821516578798,
+     "natural_exit": "TIME_BOX",
+     "time_boxed": true,
+     "excluded": ""
+    },
+    "C2_tp1_at_1R": {
+     "pool72_r": -1.029859886901263,
+     "pool72_exit": "STOP",
+     "natural_r": -1.029859886901263,
+     "natural_exit": "STOP",
+     "time_boxed": false,
+     "excluded": ""
+    }
+   }
+  ],
+  "C1_time_box_24h_mfe1R": {
+   "pool72_r": {
+    "mean_delta_r": -0.035638442348671126,
+    "lo": -0.38055439147946507,
+    "hi": 0.26124096853307976,
+    "n": 29,
+    "n_clusters": 24,
+    "underpowered": false,
+    "mean_r_baseline": -0.051529584940672696,
+    "mean_r_challenger": -0.08716802728934381
+   },
+   "natural_r": {
+    "mean_delta_r": 0.11988405184727982,
+    "lo": -0.26358230180234826,
+    "hi": 0.4268950193535626,
+    "n": 29,
+    "n_clusters": 24,
+    "underpowered": false,
+    "mean_r_baseline": -0.23795750617541517,
+    "mean_r_challenger": -0.11807345432813533
+   },
+   "mean_delta_r": -0.035638442348671126
+  },
+  "C2_tp1_at_1R": {
+   "pool72_r": {
+    "mean_delta_r": -0.06763119315262346,
+    "lo": -0.1564848558480321,
+    "hi": 0.01452334099731712,
+    "n": 29,
+    "n_clusters": 24,
+    "underpowered": false,
+    "mean_r_baseline": -0.051529584940672696,
+    "mean_r_challenger": -0.11916077809329614
+   },
+   "natural_r": {
+    "mean_delta_r": -0.007518346082399079,
+    "lo": -0.13661601650359048,
+    "hi": 0.1508063118594049,
+    "n": 29,
+    "n_clusters": 24,
+    "underpowered": false,
+    "mean_r_baseline": -0.23795750617541517,
+    "mean_r_challenger": -0.24547585225781424
+   },
+   "mean_delta_r": -0.06763119315262346
+  },
+  "baseline": {
+   "mean_r_pool72": -0.051529584940672696,
+   "mean_r_natural": -0.23795750617541517,
+   "mean_r_recorded": -0.35674129882846695
+  }
+ },
+ "holm": {
+  "C1_time_box_24h_mfe1R": {
+   "p": 0.0,
+   "holm_threshold": 0.016666666666666666,
+   "reject_at_fwer": true
+  },
+  "C2_tp1_at_1R": {
+   "p": 0.024399999999999977,
+   "holm_threshold": 0.025,
+   "reject_at_fwer": true
+  },
+  "C3_gate_median": {
+   "p": 0.7436,
+   "holm_threshold": 0.05,
+   "reject_at_fwer": false
+  }
+ }
+}

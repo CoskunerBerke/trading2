@@ -60,6 +60,23 @@ edilebilir; kaçırılmış uzun pencerede hata settlement sayısıyla çarpıl�
 * **`ops/gap.py` bu kusuru TAŞIMAZ.** Kesinti uzlaştırması saat anahtarlı gerçek bir
   `rate_lookup` kullanır. Kusur yalnız normal tur yolundadır.
 
+### Onarımın doğrulanması — iki bağımsız uygulama, aynı sayı
+
+`scripts/research/funding_recon.py` defterin kuralını sıfırdan yeniden yazar.
+`scripts/research/funding_endtoend_check.py` ise **üretim kodunu** (`FundingRateCache` +
+`FundingSchedule.accrue` + `chained_rates`) gerçek venue verisiyle çalıştırır. İkisi 6 hanede
+birebir aynı sonucu verir:
+
+| İşlem | settlement | ESKİ (tek anlık oran) | **YENİ (üretim yolu)** | Bağımsız mutabakat | Deftere kayıtlı |
+|---|---:|---:|---:|---:|---:|
+| F00015 STX | 15 | +0.004620 | **+0.040753** | +0.040753 | +0.144644 |
+| F00004 BZ | 18 | +0.000000 | **+0.008606** | +0.008606 | +0.028859 |
+| F00034 NVDA | 13 | −0.041866 | **−0.022832** | −0.022832 | −0.041275 |
+
+"ESKİ" sütunu ölçüm anındaki son oranla hesaplanmıştır, yani defterin kaydettiği tarihsel değerle
+birebir aynı olması beklenmez; gösterdiği şey tek bir anlık oranın kaçırılmış dönemlere
+uygulanmasının **ne kadar oynadığıdır**.
+
 **Geçmiş etki yeniden yazılmaz.** Kanonik defter olduğu gibi kalır; yukarıdaki tablo mutabakat
 kaydıdır.
 

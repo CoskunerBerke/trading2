@@ -112,8 +112,8 @@ verir, uç hiç ulaşmaz.
 
 ## 5. Testler
 
-`tests/test_bar_provenance_v1.py` — 12 test. Guard kaldırıldığında **12'nin 7'si düşer** (tautoloji
-değil; adversaryal olarak doğrulandı):
+`tests/test_bar_provenance_v1.py` — 13 test. Guard yerine `_use_bar = td.has_extremes` konduğunda
+**13'ün 7'si düşer** (tautoloji değil; mutasyonla ölçüldü, sonra geri alındı):
 
 * giriş öncesi uç MFE'ye yazılmaz / stop tetiklemez / hedef tetiklemez,
 * **aynı** uçlar provenans pozisyonun içine alınınca **tetikler** (differential kanıt),
@@ -122,7 +122,8 @@ değil; adversaryal olarak doğrulandı):
 * başa-baş kuralı giriş öncesi uçla ateşlenemez,
 * uç üreten her üretim çağrısı `bar_open` vermek zorunda (sözleşme testi),
 * guard `tick()` içinde MAE/MFE'den **ve** stop tetiğinden **önce** çalışır (sıra testi),
-* `_frame_bar_open` iki şemayı da okur, çözemezse boş döner.
+* `_frame_bar_open` iki şemayı da okur, çözemezse boş döner,
+* GERÇEK çerçeve boru hattı (`prepare` → `drop_unclosed_last_bar` → göstergeler) provenans üretir.
 
 Mevcut testlerden 6'sı, uçlarını hangi bardan aldıklarını **açıkça** söyleyecek şekilde güncellendi;
 kural gevşetilmedi. `test_gap_reconcile._mk_ledger` artık pozisyonu kesinti penceresinden **önce**

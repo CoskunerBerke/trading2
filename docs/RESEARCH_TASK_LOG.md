@@ -265,3 +265,62 @@ memo güvenliği (4 tur boyunca 56 satır nesnesi, 0 yerinde mutasyon), imza yet
 
 **Değiştirilmeyecekler:** gerçek para modu, sermaye/kaldıraç/toplam risk limitleri, kanonik defter,
 açık pozisyonların giriş/miktar/stop/hedefleri, geçmiş dolumlar ve öğrenme sonuçları.
+
+---
+
+# OTURUM 2026-09-10 — bar provenansı, funding, kayıp modeli, maruziyet, bellek
+
+Taban: `1c4cba1` (VPS'te çalışan sürüm, doğrulandı). Bu bölüm **bu oturumda kaynaktan yeniden
+türetilmiş** bulguları taşır; önceki oturum raporları yalnız başlangıç ipucu sayıldı.
+
+## 0. Doğrulanmış zemin (yeniden ölçüldü)
+
+| Ne | Değer | Nasıl |
+|---|---|---|
+| Dağıtılmış sürüm | `1c4cba1`, `origin/feature/evidence-repairs-v1` ile aynı | `git ls-remote`, `git merge-base --is-ancestor` |
+| Zincir | `9be55d1` → `8c99b8f` → `8163a79` → `1c4cba1` (hepsi ata) | `git merge-base` |
+| **Dal ayrımı** | `research/profitability-acceleration-v1` dağıtım kodunu **İÇERMEZ**; yalnız dağıtım belgelerini taşır. Ortak ata `12db804c`. Çalışma `feature/evidence-repairs-v1` üzerinde sürdürüldü. | `git log --oneline A --not B` |
+| Test tabanı | 2032 passed / 22 skipped @ `1c4cba1` | `pytest tests -q` |
+| VPS erişimi | **Bu oturumdan SSH YOK** — `~/.ssh/trading2_ovh` parola korumalı (`aes256-ctr`), agent yok, `BatchMode` reddedildi | `ssh -o BatchMode=yes` → `Permission denied (publickey)` |
+| GPT‑6 Astra | **Yetkili bağlantı YOK** (`list_connectors` boş) → **Astra incelemesi YAPILMADI**. Bağımsız denetim Claude adversaryal ajanıyla yapıldı. | connector listesi |
+| Binance public API | erişilebilir (`fapi.binance.com`) → funding/1m/1h barlar gerçek veriyle çekildi | doğrudan istek |
+
+## 1. Kapanan bulgular
+
+| # | Bulgu | Sonuç | Kanıt |
+|---|---|---|---|
+| **N13** | `mfe_pct` güvenilir değil | **ONARILDI** — kök neden `_marks()`'ın giriş öncesi 1h barı; 5 kayıt tam olarak o barın ucuna eşit; aynı uçlar stop/hedef de tetikleyebiliyordu | `docs/BAR_PROVENANCE_V1.md` |
+| **N15** | funding "15× şişik" | **BÜYÜKLÜK DÜZELTİLDİ + ONARILDI** — oran birbirini götüren iki toplamın oranı; gerçek büyüklük 0.209 USDT mutlak hata (%3). Kök neden `static_rates`, kusur yalnız canlı tur yolunda | `docs/FUNDING_AND_EXPOSURE_MEASUREMENT_V1.md` |
+| **N14** | funding sessizce sıfır | **AÇIKLANDI** — 10 sıfırın 4'ü gerçekten 0 oranlı; kalanlarda oran hiç gelmediği için `accrue` fail-closed bekledi ve pozisyon kapandı. Onarım kapsıyor | aynı belge |
+| **N3** | `avg_loss_r` sabit −1.0 | **ONARILDI** — 22 kayıpta ortalama 1.0774, %95 GA [1.042, 1.113], 1.0 aralığın DIŞINDA. Learner'ın kendi kapanışlarından daraltmalı kestirim: **1.0655** | `docs/FUNDING_AND_EXPOSURE_MEASUREMENT_V1.md` §2 |
+| **N2** | açık risk mevcut stoptan | **AYRIŞTIRILDI** — kod kusuru DEĞİL, kapı tanımını doğru uygular; "sınırsız" da kanıtlanmadı (bütçe 5.83/6.00 ile bağlayıcı). Kanıtlı olan: profil yorumu margin/liq kapılarını sayıyor, ikisi de `None` yani hiç çalışmıyor. Gözlem eklendi, **politika değişmedi** | aynı belge §3 |
+| — | OOM | **ÖLÇÜM ALTYAPISI KURULDU, DOĞRULAMA AÇIK** — kabul ölçütü sonuçlara bakılmadan yazıldı | `docs/MEMORY_VERIFICATION_V1.md` |
+
+## 2. YENİ bulgu — kapı sırası onarımının hikâyesi eksikti
+
+`_assess_opportunities` kalibre `p_win`'i kullanıyor ama `avg_win_r`'yi **başka** bir olasılıkla
+geri çözülmüş hâliyle koruyor. Ölçüldü (2773 aday): kalibre olasılık hiyerarşiğin **%47**'si,
+edge farkı ortalama **−0.266R**, `tradeable` kararı **%24** adayda değişiyor. Tutarlı tek olasılık
+kullanılsaydı **698** aday işlem yapılabilir kalırdı, bugünkü **32** değil.
+
+Yani `1c4cba1`'in "işlem yapılabilir oran %91.7 → %1.9" sonucunun önemli kısmı doğru olasılığın
+kullanılmasından değil, **tutarsızlığın kendisinden** gelir. Onarım yanlış değildir; kaydı eksikti.
+
+**Bilerek onarılmadı:** saf çözüm (`W`'yi kalibre `p` ile geri çözmek) `w=1`'de kalibre olasılığı
+formülden sadeleştirir ve `1c4cba1`'in kapattığı kusuru geri açar. Doğru onarım kazanç büyüklüğünü
+de **doğrudan ölçmektir** — kayıp büyüklüğünde bu turda yapılanın ikizi. Ayrıntı ve öneri:
+`docs/PWIN_WIN_MAGNITUDE_INCONSISTENCY.md`.
+
+## 3. Hâlâ açık (bu turda kapanmadı)
+
+| # | Konu | Neden açık |
+|---|---|---|
+| N13-b | MFE **eksik** ölçümü (`last_only` tikler; KORU −4.50 puan) | Muhafazakâr yönde hata (kural geç tetikler). Ayrı iş. |
+| — | İki açık pozisyonun şişik MFE'si (F00038, F00043) | `mfe_pct` koşan maksimum; defter yeniden yazılmaz. Değer artık **büyüyemez**. |
+| — | Funding takvimi 8 saate sabit kodlu (`FUNDING_HOURS_UTC`) | 4h/1h funding aralıklı sembollerde eksik tahakkuk — onarılan hatadan büyük olabilir. |
+| — | Funding önbellek ıskası anlık orana düşer ve watermark ilerler | Tek-settlement durumunda bugünkünden kötü olmama koşulunun bilinçli bedeli. |
+| N16 | `worst_case` ölü config | Davranış doğru, belge/kod ayrışması duruyor. |
+| N18 | `path_rows` ~127 MB + `paths_by_trade()` ~130 MB | Akışa çevrilmedi; OOM payı hâlâ dar. |
+| N7 | `exec_reject` kalıcı değil | Risk onaylı adayların %55'i defterce reddediliyor, sebep yazılmıyor. |
+| N8 | likidite alanları %100 boş, kapılar `is not None` ile fail-OPEN | Ayrı iş. |
+| — | `p_win` / `avg_win_r` tutarsızlığı | Yukarıda; kendi ön-kayıtlı ölçütleriyle ayrı challenger. |

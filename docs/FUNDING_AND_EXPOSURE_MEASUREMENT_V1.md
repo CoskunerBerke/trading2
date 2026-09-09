@@ -77,6 +77,28 @@ birebir aynı sonucu verir:
 birebir aynı olması beklenmez; gösterdiği şey tek bir anlık oranın kaçırılmış dönemlere
 uygulanmasının **ne kadar oynadığıdır**.
 
+### Takvim boşluğu — ölçüldü, ONARILMADI
+
+`FUNDING_HOURS_UTC = (0, 8, 16)` sabit kodludur. Binance `fundingInfo`'ya göre bu botun işlem
+gördüğü/açık tuttuğu **34 sembolün 10'u 8 saatlik takvimde DEĞİL**: BZ, CL, GPS, NATGAS, ONDO,
+PAXG, XAUT, XPD, ZRO **4 saat**; NVDA **1 saat**. Bu semboller için `settlements_due()` dönemlerin
+bir kısmını hiç sormaz — settlement başına oran onarımı bu boşluğu kapatmaz.
+
+Mutabakat, venue'nun **yayımladığı HER settlement** kullanılarak yeniden yapıldı:
+
+| | 8 saat varsayımıyla | HER settlement ile |
+|---|---:|---:|
+| Kayıtlı toplam | +0.067382 | +0.067382 |
+| Gerçek toplam | +0.004014 | **+0.010610** |
+| **Mutlak hata toplamı** | 0.209232 | **0.237461 USDT** |
+| Gerçekleşmiş zarara oranı | %3.0 | **%3.4** |
+
+Takvim boşluğunun katkısı ≈ **0.028 USDT** (toplamın %12'si). En görünür örnekler: CL F00024
+kayıtlı 0.000000 / gerçek +0.030635 ve BZ F00023 +0.009482 / +0.026509 — ikisi de 4 saatlik.
+
+Bu **ayrı bir iştir**: `FundingSchedule.hours_utc` sembol başına venue takviminden okunmalıdır.
+Önbellek altyapısı bunu zaten destekleyecek biçimde (saat anahtarlı) yazıldı.
+
 **Geçmiş etki yeniden yazılmaz.** Kanonik defter olduğu gibi kalır; yukarıdaki tablo mutabakat
 kaydıdır.
 

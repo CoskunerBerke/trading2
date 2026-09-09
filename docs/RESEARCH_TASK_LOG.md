@@ -317,7 +317,7 @@ de **doğrudan ölçmektir** — kayıp büyüklüğünde bu turda yapılanın i
 |---|---|---|
 | N13-b | MFE **eksik** ölçümü (`last_only` tikler; KORU −4.50 puan) | Muhafazakâr yönde hata (kural geç tetikler). Ayrı iş. |
 | — | İki açık pozisyonun şişik MFE'si (F00038, F00043) | `mfe_pct` koşan maksimum; defter yeniden yazılmaz. Değer artık **büyüyemez**. |
-| — | Funding takvimi 8 saate sabit kodlu (`FUNDING_HOURS_UTC`) | 4h/1h funding aralıklı sembollerde eksik tahakkuk — onarılan hatadan büyük olabilir. |
+| — | Funding takvimi 8 saate sabit kodlu (`FUNDING_HOURS_UTC`) | **ÖLÇÜLDÜ:** 34 sembolün 10'u 8 saatlik değil (9 tanesi 4h, NVDA 1h). Her settlement'la yeniden mutabakat: mutlak hata 0.209 → **0.237 USDT** (zararın %3.4'ü); takvim boşluğunun payı ≈0.028 USDT. Ayrı iş: `hours_utc` sembol başına venue takviminden okunmalı. |
 | — | Funding önbellek ıskası anlık orana düşer ve watermark ilerler | Tek-settlement durumunda bugünkünden kötü olmama koşulunun bilinçli bedeli. |
 | N16 | `worst_case` ölü config | Davranış doğru, belge/kod ayrışması duruyor. |
 | N18 | `path_rows` ~127 MB + `paths_by_trade()` ~130 MB | Akışa çevrilmedi; OOM payı hâlâ dar. |

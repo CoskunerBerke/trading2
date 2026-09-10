@@ -447,6 +447,36 @@ class ExitPolicySection:
 
 
 @dataclass
+class EntryUniverseSection:
+    """SABIT GIRIS EVRENI — yeni futures girisi YALNIZ bu USDT perpetual listesinde acilabilir.
+
+    Neden ayri bir bolum: `coins` listesi analiz kapsamidir ve tarayici (scanner) turlerce
+    yuzlerce sembol getirir. Giris evreni bundan AYRI ve DARDIR: liste disinda kalan bir
+    sembolde YENI pozisyon acilmaz.
+
+    Sinirlar bilincli:
+
+    * Kapi yalnizca **giris** yolundadir. Mevcut acik pozisyonlarin fiyat takibi, stop/TP
+      yonetimi ve kapanisi liste degistiginde bile AYNEN surer (bkz. `engine_v3.exit_check`
+      ve `FuturesLedger.tick`) — liste degisti diye pozisyon kapatilmaz.
+    * `enabled=false` eski davranisa doner (tarayici adaylari giris uretebilir).
+    * `enabled=true` iken bos liste `ConfigError`'dur: sessizce "her sembol serbest"e dusmez.
+    * Semboller `BASE/QUOTE` biçimine normalize edilir; `BTCUSDT` da `BTC/USDT` de kabul edilir.
+    """
+    enabled: bool = False
+    #: Giris izinli USDⓈ-M perpetual semboller (bot biçimi `BASE/QUOTE`).
+    symbols: list[str] = field(default_factory=list)
+    #: Liste disindaki semboller de her turda ANALIZ edilsin mi (yalniz gozlem, giris yok).
+    #: false (varsayilan): tur kapsami = evren ∪ acik pozisyonlar. API/LLM tuketimini dusurur.
+    analyze_outside: bool = False
+    allow_long: bool = True
+    allow_short: bool = True
+    #: Tarayici (scanner) adaylarinin tur kapsamina eklenmesi. `enabled=true` iken varsayilan
+    #: false: 160 sembollük tarama baglam icin calismaya devam eder ama GIRIS adayi uretmez.
+    scanner_feeds_entries: bool = False
+
+
+@dataclass
 class EntrySelectivitySection:
     """Giriş seçiciliği (`ENTRY_SELECTIVITY_CHALLENGER_V1`) — GÜVENLİ VARSAYILANLAR.
 
@@ -531,6 +561,7 @@ class V3Config:
     quant_eval: QuantEvalSection = field(default_factory=QuantEvalSection)
     exit_policy: ExitPolicySection = field(default_factory=ExitPolicySection)
     entry_selectivity: EntrySelectivitySection = field(default_factory=EntrySelectivitySection)
+    entry_universe: EntryUniverseSection = field(default_factory=EntryUniverseSection)
     warnings: list[str] = field(default_factory=list)
 
 
@@ -541,7 +572,8 @@ _SECTIONS = {"app": AppConfig, "mode": ModeConfig, "markets": MarketsConfig, "un
              "obsidian_v3": ObsidianV3Section, "dashboard": DashboardSection, "monitoring": MonitoringSection, "security": SecuritySection,
              "history": HistorySection, "quant_eval": QuantEvalSection,
              "exit_policy": ExitPolicySection,
-             "entry_selectivity": EntrySelectivitySection}
+             "entry_selectivity": EntrySelectivitySection,
+             "entry_universe": EntryUniverseSection}
 
 VALID_MODES = ("OBSERVE", "PAPER", "TESTNET", "SHADOW_LIVE", "LIVE_LIMITED", "LIVE")
 VALID_LLM_MODES = ("OFF", "POSTMORTEM_ONLY", "ADVISORY", "VETO_ONLY", "RESEARCH_COUNCIL")
@@ -666,6 +698,24 @@ def validate_v3(cfg: V3Config) -> None:
                           "(max_mark_age_s pozitif olmalı)")
     if _ex.eval_fee_rate < 0 or _ex.eval_slippage_rate < 0:
         raise ConfigError("exit_policy maliyet oranları negatif olamaz")
+    # SABIT GIRIS EVRENI — fail-closed. `enabled=true` iken bos liste sessizce "hepsi serbest"e
+    # DUSMEZ; evren yoksa program baslamaz. Semboller burada normalize edilir ki kapi, tur kapsami
+    # ve rapor AYNI biçimi gorsun.
+    _eu = cfg.entry_universe
+    if _eu.enabled:
+        from .entry_universe import normalize_all as _norm_universe
+        _syms = _norm_universe(_eu.symbols)
+        if not _syms:
+            raise ConfigError("ENTRY_UNIVERSE_EMPTY: entry_universe.enabled=true fakat symbols boş — "
+                              "boş evren 'her sembol serbest' anlamına GELMEZ (fail-closed)")
+        _bad = [s for s in _syms if "/" not in s]
+        if _bad:
+            raise ConfigError(f"entry_universe.symbols çözümlenemedi: {', '.join(_bad)} "
+                              "(beklenen biçim BASE/QUOTE, ör. BTC/USDT)")
+        if not (_eu.allow_long or _eu.allow_short):
+            raise ConfigError("entry_universe: allow_long ve allow_short birlikte false olamaz — "
+                              "bu, evreni sessizce kapatmak olur (giriş istenmiyorsa enabled=false)")
+        _eu.symbols = _syms
     try:
         from .learn.exit_policy import ExitPolicyConfig as _EPC
         _EPC.from_dict({"policy_version": _ex.policy_version} | dict(_ex.policy or {}))

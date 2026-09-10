@@ -53,6 +53,9 @@ _ALLOWED_HARD = {
     "CLOCK_OR_API_ISSUE", "SOURCES_CONFLICT", "LLM_SCHEMA_INVALID", "MODEL_DRIFT",
     # uygunluk / trading status
     "MARKET_UNAVAILABLE", "DELIST_RISK",
+    # sabit giris evreni: operatorun acikca yazdigi uygunluk listesi (indikator kaniti DEGIL).
+    # Yalniz YENI girisi baglar; acik pozisyonun takibi/cikisi bu koddan etkilenmez.
+    "SYMBOL_NOT_IN_ENTRY_UNIVERSE",
     # min qty/notional & geometri
     "NO_TRADE_MIN_ORDER_CONFLICT", "STEP_ZERO_QTY", "MIN_ORDER_CONFLICT",
     "STOP_PRESENT", "ZERO_STOP_DISTANCE", "PLAN_GEOMETRY_INVALID", "LIQ_BEFORE_STOP",

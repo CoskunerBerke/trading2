@@ -56,6 +56,8 @@ _HARD: tuple[Gate, ...] = (
     _g("NO_TRADE_MIN_ORDER_CONFLICT", HARD_SAFETY, "execution", "min-notional/step-size uyumsuz"),
     _g("STEP_ZERO_QTY", HARD_SAFETY, "execution", "adım yuvarlaması sonrası miktar sıfır"),
     _g("DUPLICATE_SIGNAL", HARD_SAFETY, "trigger", "aynı benzersiz sinyal tekrarı"),
+    _g("SYMBOL_NOT_IN_ENTRY_UNIVERSE", HARD_SAFETY, "risk",
+       "sembol sabit giriş evreninde değil — YENİ giriş yok (çıkış/takip etkilenmez)"),
     _g("ALREADY_OPEN_SAME_SYMBOL", HARD_SAFETY, "risk", "aynı sembolde açık pozisyon"),
     _g("OPPOSITE_EXPOSURE_CONFLICT", HARD_SAFETY, "risk", "aynı coinde ters yönlü çakışma"),
     _g("TOTAL_OPEN_RISK", HARD_SAFETY, "risk", "toplam açık risk bütçesi doldu"),

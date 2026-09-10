@@ -28,6 +28,7 @@ from .config import BotConfig
 from .core import (atomic_write_json, from_iso, iso, new_id, read_json, run_id_now,
                    stable_id, utc_now)
 from .engine import TradingEngine
+from .entry_universe import GATE_CODE as ENTRY_UNIVERSE_GATE, entry_block_reason
 from .learn import LearnConfig, LearnerV2, ModelRegistry, ShadowBook, TradeMemory
 from .learning import features_from_brief
 from .market.quality import DataQualityConfig, DataQualityGate
@@ -166,6 +167,10 @@ class TradingEngineV3(TradingEngine):
         self.spot2 = SpotLedger.load(st / "spot_ledger.json", starting_cash=cfg.risk.starting_equity_usdt)
         self.ledger = self.ledger2          # legacy yardımcılar (learning_notes/summary) v2 defteri görsün
         self.filters = FiltersCache(cfg.cache_path / "symbol_filters.json")
+        # KARAR CERCEVESI PROVENANSI (tur basina yeniden kurulur): sembol -> hangi piyasadan
+        # geldi ve o sembolde YENI girise guvenilebilir mi.
+        self._frame_provenance: dict[str, dict] = {}
+        self._entry_data_blocked: set[str] = set()
         # YÜRÜTME HASSASİYETİ: yapılandırma defterin kapısını belirler (varsayılan KAPALI → davranış
         # birebir eski). Açıkken doğrulanmamış adımla yeni giriş açılmaz; çıkışlar etkilenmez.
         self.ledger2.require_verified_precision = bool(getattr(v3.execution, "require_verified_precision", False))
@@ -793,19 +798,56 @@ class TradingEngineV3(TradingEngine):
                 scan = self.last_scan
         scan_map = {r.symbol: r for r in (scan.setups if scan else [])}
         core = list(self.cfg.scanner.core_coins) if self.scanner else list(self.cfg.coins)
-        symbols = symbols_override or list(dict.fromkeys(core + [r.symbol for r in (scan.setups if scan else [])] + list(self.ledger2.positions)))
+        _eu = self.cfg.v3.entry_universe
+        _scan_setup_symbols = [r.symbol for r in (scan.setups if scan else [])]
+        if symbols_override:
+            symbols = list(dict.fromkeys(symbols_override))
+        elif _eu.enabled:
+            # SABIT EVREN: tur kapsami = evren ∪ ACIK POZISYONLAR. Acik pozisyon evrende
+            # olmasa bile kapsamda kalir; cikis yonetimi fiyat gerektirir ve liste degisikligi
+            # pozisyon kapatma gerekcesi DEGILDIR. Tarayici adaylari yalnizca acikca istenirse
+            # eklenir (varsayilan: hayir — API/LLM tuketimi ve giris yuzeyi dar tutulur).
+            from .entry_universe import tour_symbols
+            _extra = _scan_setup_symbols if (_eu.analyze_outside or _eu.scanner_feeds_entries) else []
+            symbols = tour_symbols(universe=_eu.symbols, open_positions=list(self.ledger2.positions), extra=_extra)
+        else:
+            symbols = list(dict.fromkeys(core + _scan_setup_symbols + list(self.ledger2.positions)))
         core_set = set(self.cfg.coins) | set(core)
+        # VERI KIMLIGI: giris evreni USDⓈ-M perpetual sozlesmelerdir; bu sembollerin karar
+        # cerceveleri de PERPETUAL mumlardan gelmelidir. `core_set` muafiyeti cerceveleri
+        # TradingView `BINANCE:<SYM>` (SPOT) akisindan aldirir — evren sembolleri icin bu
+        # muafiyet KALDIRILIR ve spot ikamesi fail-closed reddedilir.
+        futures_required = set(_eu.symbols) if _eu.enabled else set()
+        self._frame_provenance = {}
+        self._entry_data_blocked: set[str] = set()
         # 2) legacy ajanlar → brief + raporlar
         self.runner.set_weights(self.learner.learned_agent_weights())
         analyses = self._load_last_analyses()
         briefs: list[CoinBrief] = []
         for s in symbols:
             pre = None
-            if s not in core_set:
+            if s not in core_set or s in futures_required:
                 try:
                     pre = self.perp_frames(s)
                 except Exception as exc:  # noqa: BLE001
                     log.warning("%s perp verisi alınamadı: %s", s, exc)
+            _need = ("1d", "4h", "1h")
+            _perp_ok = bool(pre) and all(pre.get(tf) is not None and len(pre.get(tf)) for tf in _need)
+            if _perp_ok:
+                self._frame_provenance[s] = {"market": "USDM_PERP", "source": "binance_usdm", "entry_ok": True}
+            else:
+                # SESSIZ SPOT IKAMESI YOK — ama ANALIZ de susturulmaz. Perpetual cerceve
+                # eksikse sembol TradingView (SPOT) mumlariyla analiz edilmeye devam eder
+                # (acik pozisyonun baglami, panel, cikis degerlendirmesi bunu gerektirir) ve
+                # YENI GIRIS bu sembolde kapatilir. Iki soru ayridir: "ne gorebiliyoruz" ve
+                # "neye guvenip pozisyon acabiliriz". Cikis yolu (`exit_check`/`ledger2.tick`)
+                # zaten canli ticker'dan beslenir ve bundan ETKILENMEZ.
+                self._frame_provenance[s] = {"market": "SPOT", "source": f"tradingview:{self.cfg.exchange.tv_exchange}",
+                                             "entry_ok": not (s in futures_required),
+                                             "reason": "FUTURES_FRAMES_UNAVAILABLE" if s in futures_required else ""}
+                if s in futures_required:
+                    self._entry_data_blocked.add(s)
+                    log.warning("%s: perpetual çerçeve alınamadı — analiz SPOT ile sürer, YENİ GİRİŞ kapalı", s)
             try:
                 b = self.runner.run_symbol(s, analyses.get(s), pre)
             except Exception as exc:  # noqa: BLE001
@@ -1059,6 +1101,12 @@ class TradingEngineV3(TradingEngine):
         self._notify_health(str(health.get("state") or "UNKNOWN"), str(health.get("summary") or ""), now)
         self._notify_maintenance(health, now)
         self._persist_funnel(now, len(records))
+        atomic_write_json(st / "frame_provenance.json",
+                          {"generated_at": iso(now), "run_id": self.run_id,
+                           "entry_universe": list(_eu.symbols) if _eu.enabled else [],
+                           "universe_enabled": bool(_eu.enabled),
+                           "entry_blocked_on_data": sorted(self._entry_data_blocked),
+                           "by_symbol": self._frame_provenance})
         self.snap_telemetry.save()          # snapshot/sema sayaclari dashboard ve /metrics icin
         summary = {"at": iso(now), "run_id": self.run_id, "symbols": symbols,
                    "scan": {"universe": scan.universe, "scanned": scan.scanned, "flagged": scan.flagged, "setups": len(scan.setups)} if scan else None,
@@ -1145,6 +1193,29 @@ class TradingEngineV3(TradingEngine):
             if plan is None or not plan.valid:
                 continue
             market = "SPOT" if d.verdict == Verdict.SPOT_LONG else "USDM_PERP"
+            # ---------------------------------------------------------------- 0) SABIT GIRIS EVRENI
+            # Bu kapi YALNIZ yeni girisi baglar. Ayni sembolde ACIK bir pozisyon varsa fiyat
+            # takibi, stop/TP yonetimi ve kapanis `exit_check`/`ledger2.tick` uzerinden AYNEN
+            # surer; bu dal oralara dokunmaz. Evrenden cikarilan bir coin kapatilmaz, yalnizca
+            # yeniden ACILMAZ.
+            _eu = self.cfg.v3.entry_universe
+            _uni_block = entry_block_reason(sym, market=market, universe=_eu.symbols,
+                                            direction=d.direction, enabled=bool(_eu.enabled),
+                                            allow_long=bool(_eu.allow_long), allow_short=bool(_eu.allow_short))
+            if _uni_block:
+                funnel["hard_safety_blocked"] += 1
+                risk_log.append({"symbol": sym, "verdict": d.verdict.value, "risk_allowed": False,
+                                 "risk_reasons": [ENTRY_UNIVERSE_GATE], "block_code": ENTRY_UNIVERSE_GATE,
+                                 "block_detail": _uni_block, "hard_veto": True, "at": iso(now)})
+                continue
+            # VERI KIMLIGI KAPISI: karar cercevesi perpetual DEGILSE bu sembolde yeni giris yok.
+            # Spot mumu perpetual sozlesmenin yerine GECMEZ (baz farki, funding, ayri likidite).
+            if market == "USDM_PERP" and sym in getattr(self, "_entry_data_blocked", ()):
+                funnel["hard_safety_blocked"] += 1
+                risk_log.append({"symbol": sym, "verdict": d.verdict.value, "risk_allowed": False,
+                                 "risk_reasons": ["DATA_INVALID"], "block_code": "DATA_INVALID",
+                                 "block_detail": "FUTURES_FRAMES_UNAVAILABLE", "hard_veto": True, "at": iso(now)})
+                continue
             funnel["ranked"] += 1
             entry = {"symbol": sym, "verdict": d.verdict.value, "chief_allow": bool(perm.get("allow")), "chief_reason": perm.get("reason"),
                      "chief_capacity_projection": perm.get("capacity_projection"),

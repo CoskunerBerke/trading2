@@ -13,17 +13,18 @@ exchange:
   history_days: 730
   cache_dir: "data"
 
+# ANALIZ kapsami. GIRIS evreni ayri bolumdedir (`entry_universe`) ve bundan DARDIR.
 coins:
   - BTC/USDT
   - ETH/USDT
   - SOL/USDT
   - BNB/USDT
   - XRP/USDT
-  - ADA/USDT
+  - LINK/USDT
   - DOGE/USDT
   - AVAX/USDT
-  - LINK/USDT
-  - DOT/USDT
+  - LTC/USDT
+  - AAVE/USDT
 
 backtest:
   fee_pct: 0.10             # Binance spot taker (%)
@@ -193,6 +194,33 @@ leverage:
   paper_only: true             # LIVE/TESTNET'te açılamaz; `mode != PAPER` iken config FAIL verir
   min_leverage: 2              # 1x yeni futures girişi YASAK (min < 2 → ConfigError)
   max_leverage: 5              # MUTLAK üst sınır (max > 5 → ConfigError)
+
+# ============================================================
+#  SABIT GIRIS EVRENI (2026-09-11)
+#  Yeni USDⓈ-M perpetual girisi YALNIZ bu listede acilir. Liste disindaki ACIK
+#  pozisyonlarin fiyat takibi, stop/TP yonetimi ve kapanisi AYNEN surer — liste
+#  degisti diye pozisyon KAPATILMAZ (bkz. tradingbot/entry_universe.py).
+#  Sozlesme kimlikleri Binance USDⓈ-M exchangeInfo'dan dogrulandi (2026-09-11):
+#  hepsi status=TRADING, contractType=PERPETUAL, quote=USDT.
+#  enabled=true iken bos liste ConfigError'dur (fail-closed).
+# ============================================================
+entry_universe:
+  enabled: true
+  symbols:
+    - BTC/USDT
+    - ETH/USDT
+    - SOL/USDT
+    - BNB/USDT
+    - XRP/USDT
+    - LINK/USDT
+    - DOGE/USDT
+    - AVAX/USDT
+    - LTC/USDT
+    - AAVE/USDT
+  allow_long: true
+  allow_short: true
+  analyze_outside: false        # tur kapsami = evren ∪ acik pozisyonlar
+  scanner_feeds_entries: false  # tarama baglam icin surer, GIRIS adayi uretmez
 
 learning_v3:
   enabled: true

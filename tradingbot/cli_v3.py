@@ -333,6 +333,40 @@ def cmd_history_collect(cfg: BotConfig, args) -> int:
     return 0 if res["stats"]["bad_chunks"] == 0 else 1
 
 
+def cmd_universe_report(cfg: BotConfig, args) -> int:
+    """Sabit giris evreninin teslim raporu: sozlesme, kapsama, karar, ogrenme, kaynak.
+
+    Cikis kodu 0/1 bir KALITE kapisidir: evren acikken bir sembolun sozlesme kurali
+    dogrulanmamissa ya da karar cercevesi perpetual DEGILSE 1 doner. "Rapor uretildi"
+    ile "durum saglikli" ayri seylerdir.
+    """
+    from .universe_report import TIMEFRAMES, build, render_text
+    eu = cfg.v3.entry_universe
+    universe = list(args.symbols) if args.symbols else (list(eu.symbols) if eu.enabled else list(cfg.coins))
+    tfs = tuple(args.timeframes) if args.timeframes else TIMEFRAMES
+    rep = build(cfg.state_path, cfg.cache_path, universe=universe,
+                history_root=cfg.v3.history.root_dir, market=args.market, timeframes=tfs)
+    if args.json:
+        _p(rep)
+    else:
+        print(render_text(rep))
+    if args.out:
+        out = Path(args.out)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(rep, ensure_ascii=False, indent=1, default=str), encoding="utf-8")
+        print("")
+        print(f"rapor yazildi: {out}")
+    if not eu.enabled:
+        return 0
+    unverified = rep["contracts"]["missing"]
+    blocked = rep["provenance"].get("entry_blocked_on_data") or []
+    if unverified or blocked:
+        print("")
+        print(f"KAPI: sözleşme kuralı doğrulanmamış={unverified} · perpetual çerçeve yok={blocked}")
+        return 1
+    return 0
+
+
 def cmd_history_validate(cfg: BotConfig, args) -> int:
     from .history import HistoryStore
     store = HistoryStore(cfg.cache_path / cfg.v3.history.root_dir)
@@ -1035,6 +1069,11 @@ def register(sub: argparse._SubParsersAction) -> None:
         s.add_argument("--offline", action="store_true"); s.add_argument("--verbose", "-v", action="store_true")
     s = sub.add_parser("history-plan", help="Tarihsel veri planı (dry-run: satır/disk/istek/süre tahmini)"); _hist_args(s); s.set_defaults(fn=cmd_history_plan)
     s = sub.add_parser("history-collect", help="Tarihsel veri topla (archive-first + REST, resume, idempotent)"); _hist_args(s); s.set_defaults(fn=cmd_history_collect)
+    s = sub.add_parser("universe-report", help="Sabit giriş evreni teslim raporu (sözleşme/kapsama/karar/öğrenme/kaynak)")
+    s.add_argument("--symbols", nargs="*", default=None); s.add_argument("--timeframes", nargs="*", default=None)
+    s.add_argument("--market", choices=["spot", "futures"], default="futures")
+    s.add_argument("--json", action="store_true"); s.add_argument("--out", default=None)
+    s.set_defaults(fn=cmd_universe_report)
     s = sub.add_parser("history-validate", help="Manifest/checksum/gap doğrulaması"); s.add_argument("--symbols", nargs="*", default=None); s.add_argument("--verbose", "-v", action="store_true"); s.set_defaults(fn=cmd_history_validate)
     s = sub.add_parser("build-features", help="Tarihsel serilerden causal feature store üret"); s.add_argument("--market", choices=["spot", "futures", "both"], default="both")
     s.add_argument("--symbols", nargs="*", default=None); s.add_argument("--timeframes", nargs="*", default=None); s.add_argument("--verbose", "-v", action="store_true"); s.set_defaults(fn=cmd_build_features)

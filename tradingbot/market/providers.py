@@ -238,6 +238,16 @@ class BinanceFuturesProvider(_BinanceBase):
         return [{"symbol": r.get("symbol"), "funding_ts": int(r.get("fundingTime") or 0), "rate": _f(r.get("fundingRate")),
                  "mark": _f(r.get("markPrice"))} for r in rows]
 
+    def funding_info(self) -> list[dict]:
+        """`fundingInfo` — VARSAYILANDAN sapan sembollerin funding aralik/tavan/taban bilgisi.
+
+        Uc nokta yalnizca sapan sembolleri yayimlar: listede olmayan bir sembol "veri yok"
+        degil "varsayilan (8 saat)" demektir. Ham satirlar oldugu gibi doner; yorum
+        `market.venue_events` tarafina aittir.
+        """
+        rows = self.http.get(f"{self.prefix}/fundingInfo", weight=1)
+        return list(rows) if isinstance(rows, list) else []
+
     def open_interest(self, symbol: str) -> dict:
         d = self.http.get(f"{self.prefix}/openInterest", params={"symbol": to_raw(symbol)}, weight=1)
         return {"symbol": d.get("symbol"), "oi": _f(d.get("openInterest")), "ts": int(d.get("time") or 0)}

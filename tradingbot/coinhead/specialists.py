@@ -367,14 +367,30 @@ RiskSizingAgent = _run("risk_sizing", "risk", _risk_sizing)
 
 # ---------------------------------------------------------------- NEWS_CATALYST (stub)
 def _news(ctx: SpecialistContext, rep: SpecialistReport) -> None:
-    src = (ctx.live or {}).get("news_source")
+    """Katalizör GÖZLEMİ. `bias` ve `confidence_raw` DAİMA 0 — bu ajan karar üretmez.
+
+    Sıfır bilinçlidir ve testle sabittir: haber metni veri olarak işlenir, içindeki hiçbir
+    ifade kapıları, skoru ya da boyutu değiştiremez. Rapor yalnız "ne biliyorduk" sorusunu
+    cevaplar; olay sayıları ve durum dağılımı `market.news` kaydından OLDUĞU GİBİ taşınır.
+    """
+    live = ctx.live or {}
+    nc = live.get("news_context") or {}
     rep.bias, rep.confidence_raw = 0.0, 0.0
-    if not src:
-        rep.evidence_for = ["Haber kaynağı yapılandırılmamış — katalizör değerlendirilmedi (uydurulmadı)"]
-        rep.metrics = {"configured": False}
-    else:
-        rep.metrics = {"configured": True, "items": 0}
-        rep.evidence_for = ["Kaynak yapılandırılmış fakat bu sürümde çekim yapılmadı"]
+    if not nc:
+        rep.evidence_for = ["Haber bağlamı yok — katalizör değerlendirilmedi (uydurulmadı)"]
+        rep.metrics = {"configured": False, "items": 0}
+        return
+    by = dict(nc.get("by_status") or {})
+    n = int(nc.get("n") or 0)
+    rep.metrics = {"configured": True, "items": n,
+                   "confirmed": int(by.get("CONFIRMED", 0)), "rumor": int(by.get("RUMOR", 0)),
+                   "window_hours": nc.get("window_hours"), "influences_decision": False}
+    if not n:
+        rep.evidence_for = [f"Son {nc.get('window_hours')} saatte kayıtlı olay yok (kaynak çalışıyor)"]
+        return
+    rep.evidence_for = [f"{n} olay kayıtlı ({by.get('CONFIRMED', 0)} doğrulanmış, "
+                        f"{by.get('RUMOR', 0)} söylenti) — GÖZLEM, karara girmez"]
+    rep.evidence_for += [str(i.get("title") or "")[:160] for i in (nc.get("items") or [])[:3]]
 
 
 NewsCatalystAgent = _run("news_catalyst", "catalyst", _news)

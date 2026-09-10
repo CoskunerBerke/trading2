@@ -653,6 +653,12 @@ class TradingEngineV3(TradingEngine):
         """Açık pozisyonlar için canlı fiyatla stop/TP/likidasyon/zaman kontrolü + defter kaydı + öğrenme; tur/tarama beklemez.
         Yeni giriş AÇMAZ. Dönen: kapanan işlemlerin legacy dict'leri."""
         self.ensure_gap_reconciled()
+        # 0.6) VENUE OLAYLARI (gozlem): sozlesme/funding degisiklikleri. Ariza turu DURDURMAZ.
+        try:
+            self._venue_events = self.ensure_venue_events()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("venue olay toplama hatasi (tur surer): %s", exc)
+            self._venue_events = {"ok": False, "error": str(exc)}
         with self._exit_lock:
             if not self.ledger2.positions:
                 return []
@@ -872,6 +878,17 @@ class TradingEngineV3(TradingEngine):
         for b in briefs:
             frames = self.runner.last_frames.get(b.symbol) or {}
             live = dict(self.runner.live.snapshot(b.symbol)) if b.price else {}
+            # HABER/OLAY BAGLAMI — GOZLEM. `news_catalyst` uzmani bunu okur ve bias'ini
+            # 0'da tutar; hicbir kapiya, skora ya da boyuta girmez.
+            if self.cfg.v3.news.enabled and live:
+                try:
+                    from .market.news import NewsStore, context_for_decision
+                    live["news_context"] = context_for_decision(
+                        NewsStore(st / "news.jsonl"), b.symbol, now_iso=iso(now),
+                        window_hours=float(self.cfg.v3.news.context_window_hours),
+                        limit=int(self.cfg.v3.news.max_items_in_decision))
+                except Exception as exc:  # noqa: BLE001 — baglam arizasi turu durdurmaz
+                    log.warning("%s haber baglami okunamadi: %s", b.symbol, exc)
             edge = None
             a = analyses.get(b.symbol)
             if a is not None:
@@ -1736,6 +1753,43 @@ class TradingEngineV3(TradingEngine):
                      res.get("n_ok", 0), len(res.get("skipped") or {}), len(res.get("errors") or {}))
         return res
 
+    def ensure_venue_events(self, *, force: bool = False) -> dict:
+        """Borsanin KENDI ucundan dogrulanabilir sozlesme degisikliklerini yakala (gozlem).
+
+        Iki hafif istek (`exchangeInfo` + `fundingInfo`, agirlik 1) ve bir goruntu farki.
+        Ilk calistirmada taban yazilir, OLAY URETILMEZ — "ilk kez gordum" degisiklik degildir.
+        Saglayici hatasi onceki goruntuyu KORUR ve olay uretmez: erisilemeyen bir uc nokta
+        "her sey degisti" anlamina gelmez.
+
+        Uretilen kayitlar YALNIZ gozlemdir; hicbir kapiya, skora ya da boyuta girmez.
+        """
+        nw = self.cfg.v3.news
+        if not (nw.enabled and nw.venue_events) and not force:
+            return {"ok": True, "skipped": "gate_off"}
+        st = self.cfg.state_path
+        prev = read_json(st / "venue_snapshot.json", default=None) or {}
+        now = utc_now()
+        if not force and prev.get("observed_at"):
+            age_min = (now - from_iso(prev["observed_at"])).total_seconds() / 60.0
+            if age_min < float(nw.refresh_minutes):
+                return {"ok": True, "skipped": "fresh", "age_minutes": round(age_min, 1)}
+        eu = self.cfg.v3.entry_universe
+        watch = list(eu.symbols) if eu.enabled else list(self.cfg.coins)
+        watch = list(dict.fromkeys(watch + list(self.ledger2.positions)))
+        from .market import venue_events as VE
+        from .market.news import NewsStore
+        items, snap, res = VE.collect(self._futures_provider_factory(), symbols=watch,
+                                      prev={k: v for k, v in prev.items() if k in ("contracts", "funding")},
+                                      observed_at=iso(now))
+        if not res.get("ok"):
+            log.warning("venue olaylari alinamadi: %s — onceki goruntu korunuyor", res.get("errors"))
+            return res | {"added": 0}
+        added = NewsStore(st / "news.jsonl").add(items)
+        atomic_write_json(st / "venue_snapshot.json", snap | {"observed_at": iso(now), "symbols": watch})
+        for it in items:
+            log.info("VENUE OLAYI: %s", it.title)
+        return res | added
+
     def _resolve_entry_filters(self, symbol: str, market: str):
         """Yeni giriş için kuralı BİR KEZ, provenansıyla çözer → (filters | None, provenance).
 
@@ -2299,6 +2353,24 @@ class TradingEngineV3(TradingEngine):
                             "shadow_recorded": sym in shadowed,
                             "stage_history": [k for k, val in (self._funnel or {}).items() if val]
                             if getattr(self, "_funnel", None) else None})
+                # VERI KIMLIGI: karar cercevesi hangi piyasadan geldi ve o sembolde YENI
+                # girise guvenilebilir miydi. Sonradan "hangi mumla karar verdik" sorusu
+                # kayittan cevaplanabilsin diye kalici.
+                _prov = (getattr(self, "_frame_provenance", None) or {}).get(sym)
+                if _prov:
+                    rec["frame_provenance"] = dict(_prov)
+                # HABER/OLAY BAGLAMI — YALNIZ GOZLEM (`usable=False`). Hicbir kapiya girmez;
+                # kayitta durmasi "karar aninda ne biliyorduk" sorusunu cevaplamak icindir.
+                try:
+                    _nw = self.cfg.v3.news
+                    if _nw.enabled:
+                        from .market.news import NewsStore, context_for_decision
+                        rec["news_context"] = context_for_decision(
+                            NewsStore(self.cfg.state_path / "news.jsonl"), sym, now_iso=iso(now),
+                            window_hours=float(_nw.context_window_hours),
+                            limit=int(_nw.max_items_in_decision))
+                except Exception:  # noqa: BLE001 — baglam arizasi kaydi engellemez
+                    pass
                 # AÇIKLANABİLİRLİK: şampiyon model hazırsa aile bazlı logit katkıları
                 # (top± feature). Model hazır değilse alan YOK — uydurma yok.
                 try:

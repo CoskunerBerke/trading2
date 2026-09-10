@@ -447,6 +447,26 @@ class ExitPolicySection:
 
 
 @dataclass
+class NewsSection:
+    """HABER/OLAY BAGLAMI — yalniz GOZLEM. Hicbir alani karar kapisina, skora ya da boyuta girmez.
+
+    `venue_events` borsanin KENDI ucundan (exchangeInfo + fundingInfo) dogrulanabilir
+    sozlesme degisikliklerini yakalar: sembolun `TRADING` olmaktan cikmasi, min-notional /
+    adim / tick degisikligi, funding araligi ya da tavaninin degismesi. Tur basina iki hafif
+    istek (agirlik 1) eder ve bir vadeli bot icin en cok para kaybettiren "haber" sinifidir.
+
+    Genel basin/makro akisi VARSAYILAN OLARAK KAPALIDIR ve bu surumde hicbir ucu hazir
+    gelmez: dogrulamadigim bir kaynagi varsayilan yapmam. Operator `feeds` ile ekler.
+    """
+    enabled: bool = True
+    venue_events: bool = True
+    refresh_minutes: int = 60          # venue goruntusu bu siklikta yenilenir
+    context_window_hours: float = 48.0  # karar kaydina giren pencere
+    max_items_in_decision: int = 10
+    retention_days: int = 365          # okuma penceresi; dosyadan SILME yapilmaz
+
+
+@dataclass
 class EntryUniverseSection:
     """SABIT GIRIS EVRENI — yeni futures girisi YALNIZ bu USDT perpetual listesinde acilabilir.
 
@@ -562,6 +582,7 @@ class V3Config:
     exit_policy: ExitPolicySection = field(default_factory=ExitPolicySection)
     entry_selectivity: EntrySelectivitySection = field(default_factory=EntrySelectivitySection)
     entry_universe: EntryUniverseSection = field(default_factory=EntryUniverseSection)
+    news: NewsSection = field(default_factory=NewsSection)
     warnings: list[str] = field(default_factory=list)
 
 
@@ -573,7 +594,8 @@ _SECTIONS = {"app": AppConfig, "mode": ModeConfig, "markets": MarketsConfig, "un
              "history": HistorySection, "quant_eval": QuantEvalSection,
              "exit_policy": ExitPolicySection,
              "entry_selectivity": EntrySelectivitySection,
-             "entry_universe": EntryUniverseSection}
+             "entry_universe": EntryUniverseSection,
+             "news": NewsSection}
 
 VALID_MODES = ("OBSERVE", "PAPER", "TESTNET", "SHADOW_LIVE", "LIVE_LIMITED", "LIVE")
 VALID_LLM_MODES = ("OFF", "POSTMORTEM_ONLY", "ADVISORY", "VETO_ONLY", "RESEARCH_COUNCIL")
@@ -716,6 +738,12 @@ def validate_v3(cfg: V3Config) -> None:
             raise ConfigError("entry_universe: allow_long ve allow_short birlikte false olamaz — "
                               "bu, evreni sessizce kapatmak olur (giriş istenmiyorsa enabled=false)")
         _eu.symbols = _syms
+    # HABER/OLAY: gozlem bolumu; yine de sayisal alanlar sessiz varsayilana DUSMEZ.
+    _nw = cfg.news
+    if _nw.refresh_minutes < 1 or _nw.max_items_in_decision < 0 or _nw.retention_days < 1:
+        raise ConfigError("news.refresh_minutes >= 1, max_items_in_decision >= 0 ve retention_days >= 1 olmalı")
+    if _nw.context_window_hours <= 0:
+        raise ConfigError("news.context_window_hours pozitif olmalı")
     try:
         from .learn.exit_policy import ExitPolicyConfig as _EPC
         _EPC.from_dict({"policy_version": _ex.policy_version} | dict(_ex.policy or {}))

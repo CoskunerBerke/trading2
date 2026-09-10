@@ -255,3 +255,28 @@ def test_catalyst_specialist_says_no_data_instead_of_inventing():
     assert rep.metrics == {"configured": False, "items": 0}
     assert rep.bias == 0.0
     assert "uydurulmadı" in rep.evidence_for[0]
+
+
+# --------------------------------------------------------------------------- cikis yolu korumasi
+def test_fast_exit_monitor_never_waits_for_news():
+    """Stop/TP/likidasyon hicbir haber ya da venue istegini BEKLEMEZ.
+
+    Bu bir kaynak sozlesmesidir: `exit_check` govdesinde haber/venue toplama cagrisi
+    BULUNAMAZ. Ilk yazimda cagri yanlislikla buraya konmustu; olcum yolu (`tour`) ile
+    kapanis yolu ayni degildir ve karistirilmasi kapanisi ag gecikmesine bagimli yapar.
+    """
+    import inspect
+
+    from tradingbot.engine_v3 import TradingEngineV3
+    src = inspect.getsource(TradingEngineV3.exit_check)
+    assert "ensure_venue_events" not in src
+    assert "context_for_decision" not in src
+    assert "NewsStore" not in src
+
+
+def test_tour_collects_venue_events():
+    """Toplama tur yolunda OLMALI — aksi hâlde olay hic uretilmez."""
+    import inspect
+
+    from tradingbot.engine_v3 import TradingEngineV3
+    assert "ensure_venue_events" in inspect.getsource(TradingEngineV3.tour)

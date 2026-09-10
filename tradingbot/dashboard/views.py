@@ -897,6 +897,11 @@ def universe_table(*, universe: list[str] | None, heads: list[dict] | None,
         detail = str(blk.get("block_detail") or "")
         if why and detail:
             why = f"{why} ({detail})"
+        if not why:
+            # Siralamaya HIC girmemis aday: gerekce risk gunlugunde degil, coin head'in
+            # kendi `no_trade_reason` alanindadir. Ikisi ayri asamadir ve ikisi de
+            # gosterilmelidir — aksi halde "acilmadi ama neden belli degil" satiri kalir.
+            why = str(h.get("no_trade_reason") or "")
         targets = plan.get("targets") or h.get("targets") or []
         rows.append([
             sym,

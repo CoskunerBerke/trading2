@@ -171,3 +171,22 @@ def test_page_lists_an_outside_open_position_without_claiming_it_is_entryable(tm
 def test_universe_page_is_in_the_navigation(tmp_path: Path):
     c = _app(tmp_path, universe=TEN)
     assert '/universe' in c.get("/").text
+
+
+def test_no_trade_reason_fills_in_when_the_candidate_never_reached_ranking():
+    """Siralamaya girmemis aday da 'neden acilmadi' sorusunu cevaplamali.
+
+    Risk gunlugu yalnizca siralamaya GIREN adaylari tasir. NO_TRADE veren bir coin head
+    oraya hic ulasmaz; gerekcesi kendi `no_trade_reason` alanindadir.
+    """
+    heads = [_head("BTC/USDT", verdict="NO_TRADE", no_trade_reason="NO_TRADE_RED_TEAM_VETO")]
+    p = universe_table(universe=TEN, heads=heads, positions=[], provenance={}, risk_decisions=[])
+    assert next(r for r in p["rows"] if r[0] == "BTC/USDT")[13] == "NO_TRADE_RED_TEAM_VETO"
+
+
+def test_risk_log_reason_wins_over_the_head_reason():
+    """Aday siralamaya girdiyse NIHAI gerekce kapinin kodudur."""
+    heads = [_head("BTC/USDT", no_trade_reason="ESKI_ASAMA")]
+    rd = [{"symbol": "BTC/USDT", "block_code": "NEGATIVE_NET_EDGE"}]
+    p = universe_table(universe=TEN, heads=heads, positions=[], provenance={}, risk_decisions=rd)
+    assert next(r for r in p["rows"] if r[0] == "BTC/USDT")[13] == "NEGATIVE_NET_EDGE"

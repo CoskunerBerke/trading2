@@ -653,12 +653,6 @@ class TradingEngineV3(TradingEngine):
         """Açık pozisyonlar için canlı fiyatla stop/TP/likidasyon/zaman kontrolü + defter kaydı + öğrenme; tur/tarama beklemez.
         Yeni giriş AÇMAZ. Dönen: kapanan işlemlerin legacy dict'leri."""
         self.ensure_gap_reconciled()
-        # 0.6) VENUE OLAYLARI (gozlem): sozlesme/funding degisiklikleri. Ariza turu DURDURMAZ.
-        try:
-            self._venue_events = self.ensure_venue_events()
-        except Exception as exc:  # noqa: BLE001
-            log.warning("venue olay toplama hatasi (tur surer): %s", exc)
-            self._venue_events = {"ok": False, "error": str(exc)}
         with self._exit_lock:
             if not self.ledger2.positions:
                 return []
@@ -770,6 +764,14 @@ class TradingEngineV3(TradingEngine):
         self._drop_entry_snapshot_cache()
         # 0.5) restart sonrası kesinti penceresi uzlaştırması (süreç başına bir kez; belirsizse giriş kilidi)
         self.ensure_gap_reconciled()
+        # 0.6) VENUE OLAYLARI (gözlem): sözleşme/funding değişiklikleri.
+        # BURADA, `exit_check` içinde DEĞİL: hızlı çıkış monitörü stop/TP/likidasyon için
+        # hiçbir ağ isteğini BEKLEMEZ. Arıza turu durdurmaz, olay üretmez.
+        try:
+            self._venue_events = self.ensure_venue_events()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("venue olay toplama hatası (tur sürer): %s", exc)
+            self._venue_events = {"ok": False, "error": str(exc)}
         # 0.6) yürütme hassasiyeti: kapı AÇIKSA bayat/eksik sembol filtrelerini resmi kaynaktan yenile
         #      (ağırlık 1). Kapalıyken hiçbir istek atılmaz — eski davranış birebir korunur.
         self.ensure_symbol_filters()

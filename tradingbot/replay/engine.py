@@ -18,6 +18,7 @@ from pathlib import Path
 import pandas as pd
 
 from ..accounting import AmountType, FeeSchedule, FuturesLedgerV2, LiquidationParams, SizeSpec, SlippageModel, SpotLedger, TaxPolicy, TickData, default_brackets
+from ..accounting.funding import FundingSchedule
 from ..coinhead import ChiefPortfolioManager, CoinHeadConfig, CoinHeadInputs, CoinHeadRegistry, Verdict
 from ..core import atomic_write_json, iso, stable_id
 from ..indicators import add_snapshot_indicators
@@ -92,6 +93,9 @@ class ReplayResult:
     point_in_time: bool = False
     survivorship_bias: dict = field(default_factory=lambda: {"present": True, "note": "bugün listeli evren; delisted kapsam dışı"})
     telemetry: dict = field(default_factory=dict)      # wall/cpu/memory — determinism hash'ine GİRMEZ
+    #: Funding kapsami: kac settlement arsivden cevaplandi, kaci BILINMIYORDU. `complete=False`
+    #: iken bu sonuclar MALIYET-SONRASI degildir ve oyle raporlanmamalidir.
+    funding_coverage: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return self.__dict__.copy()
@@ -133,7 +137,16 @@ class HistoricalReplay:
                                        enforce_position_cap=enforces_position_cap(self.profile),
                                        fees=fees, slippage=slip, brackets=default_brackets(),
                                        liq_params=LiquidationParams(liq_fee_pct=Decimal(str(v3.futures_v3.liq_fee_pct))), tp1_fraction=Decimal(str(v3.futures_v3.tp1_fraction)),
-                                       tax_policy=TaxPolicy.disabled())
+                                       tax_policy=TaxPolicy.disabled(),
+                                       # FAIL-CLOSED: cevaplanamayan bir settlement EN SON BILINEN
+                                       # oranla DOLDURULMAZ. Bir gunluk boslugu son oranla doldurmak
+                                       # sessiz bir tahmindir; `funding_coverage` bunu `unknown`
+                                       # olarak sayar ve rapora yazar.
+                                       funding=FundingSchedule(fallback_to_last_known=False))
+        # FUNDING: arsivlenmis Binance `fundingRate` gecmisi. Eskiden `tick`e lookup HIC
+        # verilmiyordu ve funding maliyeti YAPISAL olarak 0 cikiyordu (23/23 kapanis).
+        from .funding_archive import ArchiveFundingRates
+        self.funding_rates = ArchiveFundingRates(store, market=market)
         self.spot2 = SpotLedger.load(self.state_dir / "spot_ledger.json", starting_cash=cfg.risk.starting_equity_usdt)
         self.memory = TradeMemory(self.state_dir / "trade_memory.jsonl", source="HISTORICAL_REPLAY")
         self.model_registry = ModelRegistry(self.state_dir / "models.json")
@@ -293,7 +306,8 @@ class HistoricalReplay:
         if not marks:
             return
         nxt_now = datetime.fromtimestamp((t + 2 * tf_ms(self.tf)) / 1000, tz=timezone.utc)
-        recs = self.ledger2.tick(marks, now_utc=nxt_now, bar_advance=True)
+        recs = self.ledger2.tick(marks, now_utc=nxt_now, bar_advance=True,
+                                 funding_rate_lookup=self.funding_rates)
         for rec in recs:
             legacy = rec.to_legacy_dict()
             meta = self._entry_meta.pop(rec.id, {})
@@ -379,6 +393,14 @@ class HistoricalReplay:
             self.result.windows.append({"idx": w.idx, "train": [iso(datetime.fromtimestamp(w.train_start / 1000, tz=timezone.utc)), iso(datetime.fromtimestamp(w.train_end / 1000, tz=timezone.utc))],
                                         "test": [iso(datetime.fromtimestamp(w.test_start / 1000, tz=timezone.utc)), iso(datetime.fromtimestamp(w.test_end / 1000, tz=timezone.utc))],
                                         "bounds": w.bounds(), **_m(ts)})
+        # FUNDING KAPSAMI — sonuclarin maliyet-sonrasi sayilip sayilamayacagini SOYLEYEN alan.
+        # Determinism hash'ine GIRMEZ: ayni girdi ayni kararlari uretir, kapsam bir olcumdur.
+        self.result.funding_coverage = self.funding_rates.coverage()
+        if not self.result.funding_coverage.get("complete"):
+            log.warning("replay funding EKSIK: %s settlement cevaplanamadi (%s eksik seri) — "
+                        "bu sonuclar maliyet-sonrasi DEGILDIR",
+                        self.result.funding_coverage.get("unknown"),
+                        len(self.result.funding_coverage.get("missing_series") or []))
         canon = json.dumps([[x["symbol"], x["side"], round(x["entry"], 8), round(x["exit"] or 0, 8), x["exit_reason"], round(x["net_r"], 6)] for x in tr], sort_keys=True)
         self.result.determinism_hash = hashlib.sha256(canon.encode()).hexdigest()
         self.ledger2.save(self.state_dir / "futures_ledger.json")

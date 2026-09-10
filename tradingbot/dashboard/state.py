@@ -20,6 +20,8 @@ STATE_FILES: dict[str, str] = {
     "decision_funnel": "decision_funnel.json",
     "quant_eval": "quant_eval.json",
     "universe_eval": "universe_eval.json",
+    # SABIT GIRIS EVRENI: her turda yazilan karar-cercevesi provenansi (salt okunur).
+    "frame_provenance": "frame_provenance.json",
     # PAPER LEARNING LOOP INTEGRITY V3 — ikisi de SALT OKUNUR gözlem belgesidir.
     "learning_chain": "learning_chain.json",
     # Kalibrasyon/model durumunu KANITA bağlamak için (salt okunur gösterim).

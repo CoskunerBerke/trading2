@@ -24,7 +24,7 @@ from ..pnl import finite_float_or_none, position_view, realized_net
 from .state import STATE_FILES, StateReader
 from .views import (NO_DECISION_VERDICT, POSITION_NUM_COLS, _cell_pct_signal,
                     coin_head_api_rows,
-                    coin_head_table, json_safe, open_coverage)
+                    coin_head_table, json_safe, open_coverage, universe_table)
 from .templates import (HEADS_TABLE_CLS, POS_TABLE_CLS, age_text, badge, card, card_value,
                         chart_block, chief_block, esc, fmt, fmt_utc, health_badge, ks_badge,
                         kv_table, lessons_table, live_bar, live_script, money_html,
@@ -301,6 +301,76 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
                 'defterde AÇIK olan fakat son coin-head seçkisinde yer almayan pozisyonlardır.</p>')
         return table(chp["columns"], rows, num_cols=num,
                      empty="coin head kararı yok (coin_heads.json)", cls=HEADS_TABLE_CLS) + note
+
+    @app.get("/universe", response_class=HTMLResponse)
+    def universe_screen():
+        """ON COINLIK ANALIZ EKRANI — sabit giris evreninin tek sayfalik gorunumu.
+
+        Sayfa hicbir sey HESAPLAMAZ: kararlari `coin_heads.json`, ret gerekcelerini
+        `risk.json`, veri kimligini `frame_provenance.json` dosyalarindan okur. Evren
+        disinda kalan ACIK pozisyonlar da listelenir — cikis yonetimi surdugu icin
+        panelden dusurulmeleri yaniltici olurdu.
+        """
+        prov = state.get("frame_provenance") or {}
+        uni = list(prov.get("entry_universe") or [])
+        risk = state.get("risk") or {}
+        payload = universe_table(universe=uni, heads=state.coin_heads(),
+                                 positions=state.futures_positions(), provenance=prov,
+                                 risk_decisions=risk.get("last_decisions") or [])
+        cov = payload["coverage"]
+        if not uni:
+            body = ('<div class="card warn-box">Sabit giriş evreni KAPALI ya da bu sürümde hiç tur '
+                    'çalışmadı (<code>state/frame_provenance.json</code> yok). Evren '
+                    '<code>config.yaml → entry_universe</code> ile açılır.</div>')
+            return _page("Evren", body, "/universe")
+        blocked = cov["entry_blocked_on_data"]
+        outside = cov["outside_universe_open"]
+        body = '<div class="grid">%s%s%s%s</div>' % (
+            card("Evren", str(cov["universe_total"]), "giriş izinli USDⓈ-M perpetual"),
+            card("Kararı olan", "%d / %d" % (cov["universe_with_decision"], cov["universe_total"]),
+                 "coin_heads.json'da satırı olan evren sembolü"),
+            card("Veri nedeniyle giriş kapalı", str(len(blocked)),
+                 "perpetual çerçeve yok — SPOT ile tamamlanmaz"),
+            card("Evren dışı açık pozisyon", str(len(outside)),
+                 "yalnız çıkış yönetimi; liste değişti diye kapatılmaz"))
+        body += ('<p class="mut small">Bu ekran YENİ GİRİŞ evrenini gösterir. Evren dışı açık '
+                 'pozisyonların fiyat takibi, stop/TP yönetimi ve kapanışı AYNEN sürer — kapı '
+                 'yalnız giriş yolundadır.</p>')
+        if blocked:
+            body += ('<div class="card warn-box">⚠ Perpetual çerçeve alınamayan semboller (analiz '
+                     'sürüyor, YENİ GİRİŞ kapalı): %s</div>' % esc(", ".join(blocked)))
+        if cov["missing_decision"]:
+            body += ('<div class="card warn-box">⚠ Evrende olup son turda kararı OLMAYAN semboller: '
+                     '%s</div>' % esc(", ".join(cov["missing_decision"])))
+        num = set(payload["num_cols"])
+        badges = set(payload["badge_cols"])
+        sym_col = int(payload["symbol_col"])
+        rows = []
+        for r, m in zip(payload["rows"], payload["meta"]):
+            cells = []
+            for i, raw in enumerate(r):
+                txt = "" if raw is None else str(raw)
+                if i == sym_col:
+                    cells.append('<a href="/coin/%s">%s</a>' % (esc(txt.split("/")[0]), esc(txt)))
+                elif i in badges:
+                    if i == 1:
+                        kind = {"AÇIK": "ok", "İZLENİYOR": "info", "EVREN DIŞI": "warn"}.get(txt, "info")
+                        cells.append(badge(txt, kind))
+                    else:
+                        cells.append(verdict_badge(txt))
+                elif i == 12:
+                    cells.append(badge(txt, "ok" if txt == "PERP" else ("warn" if txt == "SPOT" else "info")))
+                else:
+                    cells.append(esc(txt))
+            rows.append(cells)
+        body += "<h2>On coinlik analiz</h2>"
+        body += table(payload["columns"], rows, num_cols=num, empty="karar verisi yok (coin_heads.json)")
+        notes = "".join("<li><b>%s</b>: %s</li>" % (esc(k), esc(v))
+                        for k, v in payload["column_notes"].items())
+        body += ('<details class="mut small"><summary>Alan anlamları</summary><ul>%s</ul></details>'
+                 % notes)
+        body += ('<p class="mut small">Üretim zamanı: %s</p>' % esc(payload["generated_at"] or "—"))
+        return _page("Evren", body, "/universe")
 
     @app.get("/scanner", response_class=HTMLResponse)
     def scanner():

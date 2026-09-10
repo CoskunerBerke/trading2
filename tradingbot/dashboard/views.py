@@ -822,7 +822,119 @@ def build(state_positions: list[dict], trades: list[dict], chief: dict | None, *
             "inconsistencies": [i.__dict__ for i in issues], "freshness": fr}
 
 
+# ============================================================================ SABIT GIRIS EVRENI
+#: On coinlik analiz ekraninin kolonlari. Her kolon TEK bir soruya cevap verir.
+UNIVERSE_COLUMNS = ("Sembol", "Durum", "Karar", "Yön", "Rejim", "Kurulum", "Giriş tetiği",
+                    "Fikri geçersiz kılan", "Stop", "Hedefler", "Net E[R]", "P(kazanç)",
+                    "Veri", "Açılmama nedeni")
+UNIVERSE_NUM_COLS = (8, 10, 11)
+UNIVERSE_BADGE_COLS = (1, 2)
+UNIVERSE_SYMBOL_COL = 0
+
+UNIVERSE_COLUMN_NOTES = {
+    "Durum": "AÇIK = defterde pozisyon var · İZLENİYOR = evrende, pozisyon yok · "
+             "EVREN DIŞI = yalnız çıkış yönetimi (yeni giriş kapalı)",
+    "Karar": "Coin head kararı. AL/SAT gerçek pozisyon anlamına GELMEZ; risk ve ekonomi "
+             "kapıları sonrasında açılıp açılmadığı «Açılmama nedeni» kolonundadır.",
+    "P(kazanç)": "İstatistiksel tahmin (kalibre); konsensüs gücü DEĞİLDİR.",
+    "Net E[R]": "Maliyet sonrası beklenen R — işlem öncesi tahmindir, gerçekleşen sonuç değildir.",
+    "Veri": "Karar çerçevesinin geldiği piyasa. PERP = USDⓈ-M perpetual (doğru kaynak). "
+            "SPOT = perpetual çerçeve alınamadı; analiz sürer, YENİ GİRİŞ kapalıdır.",
+    "Açılmama nedeni": "Bu turda pozisyon açılmadıysa kapının kodu. Boş = kapı reddi kaydedilmedi.",
+}
+
+_UNIVERSE_STATUS = {"OPEN": "AÇIK", "WATCHED": "İZLENİYOR", "OUTSIDE": "EVREN DIŞI"}
+
+
+def _plan_of(head: dict) -> dict:
+    """Karar hangi piyasadaysa o planı ver; yoksa boş sözlük (uydurma alan YOK)."""
+    if not isinstance(head, dict):
+        return {}
+    mt = str(head.get("market_type") or "").lower()
+    if mt.startswith("spot"):
+        return head.get("spot_plan") or {}
+    return head.get("futures_plan") or head.get("spot_plan") or {}
+
+
+def universe_table(*, universe: list[str] | None, heads: list[dict] | None,
+                   positions: list[dict] | None, provenance: dict | None,
+                   risk_decisions: list[dict] | None) -> dict[str, Any]:
+    """On coinlik analiz ekraninin KANONIK yuku.
+
+    Satir kumesi = `universe` ∪ acik pozisyon sembolleri. Evren disinda kalan acik pozisyon
+    EVREN DISI olarak isaretlenir ve satiri DUSURULMEZ: cikis yonetimi surdugu icin panelde
+    gorunmesi gerekir.
+
+    Hicbir deger burada TURETILMEZ: kararlar `coin_heads.json`, ret gerekceleri `risk.json`,
+    veri kimligi `frame_provenance.json` dosyalarindan OLDUGU GIBI okunur. Bir alan yoksa
+    bos birakilir — panel eksik veriyi doldurmaz.
+    """
+    uni = [str(s) for s in (universe or [])]
+    uni_set = set(uni)
+    open_by = {str(p.get("symbol") or ""): p for p in (positions or []) if isinstance(p, dict)}
+    head_by = {str(h.get("symbol") or ""): h for h in (heads or []) if isinstance(h, dict)}
+    prov_by = ((provenance or {}).get("by_symbol") or {}) if isinstance(provenance, dict) else {}
+    # Ayni sembolun SON kaydi nihai durumdur (tur icinde birden fazla kapi yazabilir).
+    block_by: dict[str, dict] = {}
+    for e in (risk_decisions or []):
+        if isinstance(e, dict) and e.get("symbol"):
+            block_by[str(e["symbol"])] = e
+
+    order = uni + [s for s in open_by if s not in uni_set]
+    rows, meta = [], []
+    for sym in order:
+        h = head_by.get(sym) or {}
+        plan = _plan_of(h)
+        pos = open_by.get(sym)
+        status = "OPEN" if pos else ("WATCHED" if sym in uni_set else "OUTSIDE")
+        if pos and sym not in uni_set:
+            status = "OUTSIDE"
+        pr = prov_by.get(sym) or {}
+        market = str(pr.get("market") or "")
+        data_cell = {"USDM_PERP": "PERP", "SPOT": "SPOT"}.get(market, "—")
+        blk = block_by.get(sym) or {}
+        why = str(blk.get("block_code") or "")
+        detail = str(blk.get("block_detail") or "")
+        if why and detail:
+            why = f"{why} ({detail})"
+        targets = plan.get("targets") or h.get("targets") or []
+        rows.append([
+            sym,
+            _UNIVERSE_STATUS[status],
+            str(h.get("verdict") or "—"),
+            str(h.get("direction") or "—"),
+            str(h.get("regime") or "—"),
+            str(plan.get("entry_type") or "—"),
+            str(plan.get("entry_trigger") or h.get("entry_trigger") or "—"),
+            str(plan.get("invalidation") or h.get("invalidation") or "—"),
+            _cell_num(plan.get("stop") or h.get("stop"), 6),
+            ", ".join(_cell_num(t, 6) for t in targets) if targets else "—",
+            _cell_num(h.get("expected_r"), 2),
+            _cell_pct_signal(h.get("p_win"), 0),
+            data_cell,
+            why or "—",
+        ])
+        meta.append({"symbol": sym, "status": status, "in_universe": sym in uni_set,
+                     "entry_ok": bool(pr.get("entry_ok")) if pr else None,
+                     "data_reason": str(pr.get("reason") or ""),
+                     "has_head": bool(h), "open": bool(pos)})
+
+    outside = [m["symbol"] for m in meta if m["status"] == "OUTSIDE"]
+    no_head = [m["symbol"] for m in meta if m["in_universe"] and not m["has_head"]]
+    spot_framed = [m["symbol"] for m in meta if m["in_universe"] and m["entry_ok"] is False]
+    return {"columns": list(UNIVERSE_COLUMNS), "rows": rows, "meta": meta,
+            "num_cols": list(UNIVERSE_NUM_COLS), "badge_cols": list(UNIVERSE_BADGE_COLS),
+            "symbol_col": UNIVERSE_SYMBOL_COL, "column_notes": dict(UNIVERSE_COLUMN_NOTES),
+            "universe": uni, "universe_size": len(uni),
+            "coverage": {"universe_with_decision": len(uni) - len(no_head),
+                         "universe_total": len(uni), "missing_decision": no_head,
+                         "outside_universe_open": outside,
+                         "entry_blocked_on_data": spot_framed},
+            "generated_at": str((provenance or {}).get("generated_at") or "") if isinstance(provenance, dict) else ""}
+
+
 __all__ = ["ChiefView", "Freshness", "LIVE_OK", "LIVE_STALE", "LIVE_UNKNOWN", "NO_DATA",
            "POSITION_COLUMNS", "POSITION_NUM_COLS", "POSITION_PNL_COLS", "SummaryCard", "build",
            "chief_view", "position_row", "profit_factor_value", "risk_budget_sub",
-           "risk_stale_note", "stop_risk_note", "summary_cards"]
+           "risk_stale_note", "stop_risk_note", "summary_cards",
+           "UNIVERSE_COLUMNS", "UNIVERSE_COLUMN_NOTES", "universe_table"]

@@ -1882,7 +1882,11 @@ class TradingEngineV3(TradingEngine):
         out = ["---", "tags: [trading, paper, futures]", "schema: v2", "---",
                "# 📈 Kağıt Futures Defteri v2 (Decimal · izole marj · gerçek para YOK)",
                f"> {local} (Europe/Istanbul) · Cüzdan **{s['wallet_balance']:.4f}** · Equity(MTM) **{s['equity_mtm']:.4f} USDT** (başlangıç {s['starting_equity']}) · getiri {s['return_pct']:+.2f}% · "
-               f"açık {s['open']} · kapanan {s['closed']} · kazanma %{s['win_rate']} · ort. {s['avg_r']:+.2f}R · komisyon {s['total_fees']:.4f} · funding {s['total_funding']:+.4f}",
+               f"açık {s['open']} · kapanan {s['closed']} · kazanma %{s['win_rate']} · ort. {s['avg_r']:+.2f}R · komisyon {s['total_fees']:.4f} · funding {s['total_funding']:+.4f}"
+               # Başlıktaki kazanma/ort.R BÜTÜN kapanışları kapsar. Eksik funding taşıyanların `R`si
+               # kesinleşmiş değildir; sayıyı gizlemek yerine kaçının öyle olduğu AYNI satırda durur.
+               + (f" · ⚠ funding EKSİK {s['closed_funding_incomplete']} kapanış (bu ikisi kesinleşmiş DEĞİL)"
+                  if s.get("closed_funding_incomplete") else ""),
                f"> Mod **{self.mode_state.mode.value}** · risk profili **{self.profile.name}** · kill switch **{self.killswitch.state}**", "",
                "## Açık pozisyonlar", "| ID | Sembol | Yön | Giriş | Şimdi | Miktar | Notional | Marj | Kaldıraç | Stop | Hedefler | Liq | MAE/MFE % | Funding | Amount type | Görsel |",
                "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
@@ -2124,7 +2128,15 @@ class TradingEngineV3(TradingEngine):
             pendings = self.research.pop_pending_for_trade(trade_id)
             if not pendings:
                 return
-            r = float((rec.to_legacy_dict() or {}).get("r_multiple", 0) or 0)
+            legacy = rec.to_legacy_dict() or {}
+            if funding_incomplete(legacy):
+                # Aktivasyon kapilari `baseline_r` uzerinden SHADOW -> ACTIVE karari verir.
+                # Eksik funding tasiyan R kesinlesmis degildir; bir politikayi onunla
+                # canlandirmak, ogrenicilerde kapatilan kapiyi arka kapidan acmaktir.
+                log.warning("%s arastirma gozlemi ATLANDI: kapanisin funding muhasebesi EKSIK",
+                            getattr(rec, "symbol", "?"))
+                return
+            r = float(legacy.get("r_multiple", 0) or 0)
             for pend in pendings:
                 dec = dict(pend.get("decision") or {})
                 contribution, kind = contribution_of(dec, r)

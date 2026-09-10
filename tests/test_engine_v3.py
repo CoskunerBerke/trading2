@@ -52,13 +52,19 @@ class _ZeroFundingVenue:
                 and (end_ms is None or r["funding_ts"] <= end_ms)]
 
 
-def _seed_funding_coverage(eng, symbols, now_ms: int, *, days_back: int = 3) -> None:
-    """Sembollerin funding penceresini BILINIR yapar (bkz. `_engine` icindeki gerekce)."""
+def _seed_funding_coverage(eng, symbols, now_ms: int, *, days_back: int = 3, days_fwd: int = 30) -> None:
+    """Sahte piyasaya funding tarafini ekler (bkz. `_engine` icindeki gerekce).
+
+    Iki sey yapar: (1) saglayiciyi baglar, boylece turun kendi `ensure_funding_rates` cagrisi
+    URETIMDEKI gibi pencereyi kapsar ve saati ilerleten testler kapsamayi kaybetmez;
+    (2) ilk kapsamayi pesin kurar, boylece ilk tur bile SOGUK baslamaz.
+    """
     from datetime import datetime, timedelta, timezone
     hour_ms = 3_600_000
     start_ms = (now_ms - days_back * 86_400_000) // hour_ms * hour_ms
-    rows = [{"funding_ts": start_ms + i * 8 * hour_ms, "rate": "0.0", "mark": "1"}
-            for i in range(days_back * 3 + 1)]
+    n = (days_back + days_fwd) * 3 + 1
+    rows = [{"funding_ts": start_ms + i * 8 * hour_ms, "rate": "0.0", "mark": "1"} for i in range(n)]
+    eng._funding_provider_factory_override = lambda: _ZeroFundingVenue(rows)
     start = datetime.fromtimestamp(start_ms / 1000, tz=timezone.utc)
     end = datetime.fromtimestamp(now_ms / 1000, tz=timezone.utc) + timedelta(hours=2)
     for sym in symbols:

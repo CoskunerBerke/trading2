@@ -247,6 +247,10 @@ class LearnerV2:
 
     def train_challenger(self, *, now: Any | None = None) -> dict | None:
         rows = self.memory.trades(closed_only=True)
+        # FUNDING TAMAMLANMA KAPISI. Hafiza kaydi denetim icin TAM tutulur, ama etiket
+        # (`r_multiple > 0.25`) eksik funding tasiyan bir kapanistan URETILEMEZ: `on_trade_closed`
+        # o kapanisi hiyerarsik oranlara yazmazken ayni sayinin modeli egitmesi celiskidir.
+        rows = [r for r in rows if not funding_incomplete(r.get("outcome") or {})]
         n = len(rows)
         if n < self.cfg.min_samples_train:
             return None

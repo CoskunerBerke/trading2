@@ -27,6 +27,7 @@ import test_accounting as TA  # noqa: E402
 import test_engine_v3 as TE  # noqa: E402
 
 from tradingbot.accounting import AmountType, SizeSpec, TickData  # noqa: E402
+from tradingbot.accounting.funding import FundingSchedule  # noqa: E402
 from tradingbot.accounting.models import (FUNDING_COMPLETE, FUNDING_INCOMPLETE, MarketType,  # noqa: E402
                                           SymbolFilters, funding_incomplete, funding_status)
 from tradingbot.learn.learner_v2 import LearnerV2  # noqa: E402
@@ -221,8 +222,9 @@ def test_manual_close_does_not_inherit_another_symbols_funding_state(tmp_path):
     """`close_manual` tahakkuk CAGIRMAZ: durum paylasilan sayacta dursaydi ZZZ'nin boslugu
     AAA'nin kaydina yazilirdi (ve tersi, sessiz sifir olarak)."""
     led = _two_symbol_ledger(tmp_path)
-    covered = led.close_manual("AAA/USDT", 3000, now=T_CLOSE + timedelta(minutes=1))
-    uncovered = led.close_manual("ZZZ/USDT", 3000, now=T_CLOSE + timedelta(minutes=2))
+    # Tick ile AYNI an: tazelik kurali devrede olmasin, olculen sey YALNIZ capraz sizinti olsun.
+    covered = led.close_manual("AAA/USDT", 3000, now=T_CLOSE)
+    uncovered = led.close_manual("ZZZ/USDT", 3000, now=T_CLOSE)
     assert covered is not None and uncovered is not None
     assert covered.funding_coverage_gap is False, "kapsanan sembol baska sembolun boslugunu DEVRALDI"
     assert covered.funding_incomplete is False
@@ -306,3 +308,244 @@ def test_quant_journal_flags_an_incomplete_outcome():
     assert row["funding_complete"] is False and "FUNDING_INCOMPLETE" in row["quality_flags"]
     ok = row_from_memory(entry, {"outcome": _legacy_close(incomplete=False, tid="T2")})
     assert ok["funding_complete"] is True and "FUNDING_INCOMPLETE" not in ok["quality_flags"]
+
+
+# ==================================================== takvim ISPATI (bagimsiz inceleme F1/F7)
+def _sparse_cache(tmp_path):
+    """Iki KOPUK dar cekim: 4 saatlik sembolde onbellekte yalniz 00:00 ve 08:00 kalir."""
+    rows = [_row(datetime(2026, 9, 8, h, tzinfo=UTC), "0.0003") for h in range(0, 24, 4)]
+    cache = FundingRateCache(tmp_path / "fr.json")
+    cache.refresh(_Venue(rows), ETH, datetime(2026, 9, 8, 0, tzinfo=UTC), datetime(2026, 9, 8, 1, tzinfo=UTC))
+    cache.refresh(_Venue(rows), ETH, datetime(2026, 9, 8, 7, tzinfo=UTC), datetime(2026, 9, 8, 9, tzinfo=UTC))
+    return cache
+
+
+def test_disjoint_fetch_windows_do_not_prove_a_schedule(tmp_path):
+    """KOPUK pencerelerden gelen iki kayit KOMSU DEGILDIR; aralarindaki fark araligi kanitlamaz.
+
+    4 saatlik bir sembolde 00:00 ve 08:00 kayitlari "8 saat" gosterir. Eskiden bu, aradaki
+    12:00 settlement'ini hem yenilemeden hem de kapsama ispatindan dusuruyor ve kapanisa
+    SESSIZ SIFIR yaziyordu (bagimsiz inceleme F1).
+    """
+    cache = _sparse_cache(tmp_path)
+    w_open = datetime(2026, 9, 8, 10, 40, tzinfo=UTC)
+    w_close = datetime(2026, 9, 8, 13, 5, tzinfo=UTC)              # 12:00 ARADA
+    assert cache.observed_interval_ms(ETH) is None, "kopuk kayitlardan aralik CIKARILMAMALI"
+    assert cache.covers(ETH, w_open, w_close) is False, "SESSIZ SIFIR: kapsama TAM sayildi"
+    assert cache.needs_window(ETH, w_open, w_close) is True, "yenileme de dusmus — kendini onaramaz"
+    rec = _open_then_stop(_wired_ledger(cache), cache, t_open=w_open, t_close=w_close)
+    assert rec.funding_coverage_gap is True and rec.funding_incomplete is True
+
+
+def test_a_contiguous_window_does_prove_the_schedule(tmp_path):
+    """Ayirt edici es: TEK ve kesintisiz cekimde ayni kayitlar takvimi KANITLAR ve kapsama tamdir."""
+    rows = [_row(datetime(2026, 9, 8, h, tzinfo=UTC), "0.0003") for h in range(0, 24, 4)]
+    cache = FundingRateCache(tmp_path / "fr.json")
+    cache.refresh(_Venue(rows), ETH, datetime(2026, 9, 8, 0, tzinfo=UTC), datetime(2026, 9, 8, 13, tzinfo=UTC))
+    assert cache.observed_interval_ms(ETH) == 4 * 3_600_000
+    # 13:00 kapsandi; kuyruk 13:00 -> 13:05 icinde tam saat YOK.
+    assert cache.covers(ETH, datetime(2026, 9, 8, 12, 30, tzinfo=UTC),
+                        datetime(2026, 9, 8, 13, 5, tzinfo=UTC)) is True
+
+
+def test_the_uncovered_tail_is_cleared_only_when_no_whole_hour_falls_in_it(tmp_path):
+    """(b') kurali: on kisim cekilmis, kuyrukta tam saat yoksa kapanis TAM sayilir.
+
+    Bu kural olmadan turlar arasi her kapanis EKSIK damgalanirdi (olculdu: 8 saatlik sembolde
+    kapanislarin %23'u, hicbir sey kacmadigi halde).
+    """
+    rows = [_row(datetime(2026, 9, 8, h, tzinfo=UTC), "0.0001") for h in (0, 8, 16)]
+    cache = FundingRateCache(tmp_path / "fr.json")
+    cache.refresh(_Venue(rows), ETH, datetime(2026, 9, 8, 0, tzinfo=UTC), datetime(2026, 9, 8, 18, 30, tzinfo=UTC))
+    lo = datetime(2026, 9, 8, 17, tzinfo=UTC)
+    assert cache.covers(ETH, lo, datetime(2026, 9, 8, 18, 50, tzinfo=UTC)) is True    # kuyrukta tam saat yok
+    assert cache.covers(ETH, lo, datetime(2026, 9, 8, 19, 10, tzinfo=UTC)) is True    # 19:00 var ama takvim ELER
+    # Takvim bilinmiyorsa (kapsama icinde tek anahtar) ayni kuyruk artik KANITLANAMAZ.
+    tbl = cache._rates[list(cache._rates)[0]]
+    for k in sorted(tbl)[:-1]:
+        tbl.pop(k)
+    assert cache.observed_interval_ms(ETH) is None
+    assert cache.covers(ETH, lo, datetime(2026, 9, 8, 19, 10, tzinfo=UTC)) is False
+
+
+def test_the_clock_skew_band_keeps_a_settlement_on_the_hour_visible(tmp_path):
+    """Band sifirlanirsa tam saatin hemen ardindaki pencere "settlement OLAMAZ" sayilirdi."""
+    cache = FundingRateCache(tmp_path / "fr.json")                 # ONBELLEK BOS
+    lo = datetime(2026, 9, 8, 13, 0, 20, tzinfo=UTC)               # 13:00'in 20 sn SONRASI
+    assert cache.covers(ETH, lo, lo + timedelta(seconds=30)) is False
+
+
+class _Pos:
+    """Defter kurmadan `coverage_complete` sinamak icin en kucuk pozisyon yuzeyi."""
+    symbol, qty = ETH, D("1")
+    opened_at = T_OPEN.isoformat()
+    last_funding_settlement_utc = T_OPEN.isoformat()
+
+    def __init__(self):
+        self.meta = {}
+
+
+def test_a_failing_coverage_source_fails_closed():
+    """Kapsama kaynagi patlarsa kapsama BILINMIYOR sayilir — fail-open sessiz sifir olurdu."""
+    def boom(_s, _a, _b):
+        raise RuntimeError("venue")
+    sched = FundingSchedule(coverage_source=boom)
+    pos = _Pos()
+    assert sched.coverage_complete(pos, T_CLOSE) is False
+
+
+# ==================================================== tazelik (bagimsiz inceleme F3)
+def test_a_stale_funding_evaluation_cannot_certify_a_later_manual_close(tmp_path):
+    """`close_manual` tahakkuk cagirmaz: ESKI bir degerlendirme sonraki kapanisi TAM ilan edemez."""
+    rows = [_row(datetime(2026, 9, 8, h, tzinfo=UTC), "0.0001") for h in (0, 8)]
+    cache = FundingRateCache(tmp_path / "fr.json")
+    cache.refresh(_Venue(rows), ETH, datetime(2026, 9, 8, 0, tzinfo=UTC), datetime(2026, 9, 8, 9, 20, tzinfo=UTC))
+    led = _wired_ledger(cache)
+    t_tick = datetime(2026, 9, 8, 9, 20, tzinfo=UTC)
+    assert led.open(ETH, "LONG", 3000, SizeSpec(48, AmountType.NOTIONAL, 2), stop=1000,
+                    filters=_filters(), now=datetime(2026, 9, 8, 9, tzinfo=UTC)) is not None
+    led.tick({ETH: TickData(last=3000, bar_open=t_tick.isoformat())}, now_utc=t_tick,
+             funding_rate_lookup=cache.lookup)
+    assert led.positions[ETH].meta["funding_eval"]["coverage_gap"] is False      # o AN tamdi
+    rec = led.close_manual(ETH, 3000, now=datetime(2026, 9, 8, 18, tzinfo=UTC))  # 16:00 ARADA
+    assert rec is not None and rec.funding_coverage_gap is True, "eski degerlendirme devralindi"
+
+
+# ==================================================== kalicilik ve rapor
+def test_the_two_facts_survive_the_ledger_json_round_trip(tmp_path):
+    cache = FundingRateCache(tmp_path / "fr.json")
+    led = _wired_ledger(cache)
+    rec = _open_then_stop(led, cache)
+    assert rec.funding_coverage_gap is True
+    led.save(tmp_path / "led.json")
+    from tradingbot.accounting.futures_ledger import FuturesLedgerV2
+    back = FuturesLedgerV2.load(tmp_path / "led.json")
+    h = back.history[-1]
+    assert h.funding_coverage_gap is True and isinstance(h.funding_pending_settlements, int)
+    assert h.funding_incomplete is True
+    legacy = h.to_legacy_dict()
+    assert legacy["funding_coverage_gap"] is True and legacy["funding_pending_settlements"] == 0
+
+
+def test_the_summary_and_the_report_headline_count_incomplete_closes(tmp_path):
+    cache = FundingRateCache(tmp_path / "fr.json")
+    led = _wired_ledger(cache)
+    _open_then_stop(led, cache)
+    assert led.summary()["closed_funding_incomplete"] == 1
+
+
+def test_training_labels_exclude_incomplete_closes(tmp_path):
+    """Hiyerarsik oranlara girmeyen bir sonuc, modeli de EGITEMEZ.
+
+    Hafiza kaydi denetim icin TAM tutulur; elenen sey yalniz ETIKETTIR.
+    """
+    import test_learn as TL
+    from tradingbot.learn.learner_v2 import LearnConfig
+
+    def feed(lrn, n, *, incomplete):
+        for i in range(n):
+            won = i % 3 != 0
+            rec = TL._rec(i, won)
+            rec.update({"funding_coverage_gap": incomplete, "funding_incomplete": incomplete,
+                        "funding_status": FUNDING_INCOMPLETE if incomplete else FUNDING_COMPLETE})
+            lrn.memory.record_entry({"trade_id": rec["id"], "symbol": rec["symbol"], "direction": "LONG",
+                                     "setup_type": "kirilim", "regime": "TREND_UP",
+                                     "features": rec["features"], "snapshot": TL._v3_snapshot(i, won),
+                                     "recorded_at": rec["closed_at"]})
+            lrn.on_trade_closed(rec, {"regime": "TREND_UP"})
+
+    def learner(name):
+        return LearnerV2(TradeMemory(tmp_path / f"{name}.jsonl"), ModelRegistry(tmp_path / f"{name}md.json"),
+                         LearnConfig(min_samples_train=20, holdout_frac=0.25), tmp_path / f"{name}st.json")
+
+    bad = learner("bad")
+    feed(bad, 24, incomplete=True)
+    assert len(bad.memory.trades(closed_only=True)) == 24     # hafiza TAM kalir
+    assert bad.train_challenger() is None, "eksik kapanislar modeli EGITTI"
+
+    good = learner("good")                                    # AYIRT EDICI ES
+    feed(good, 24, incomplete=False)
+    assert good.train_challenger() is not None
+
+
+def test_the_performance_report_shows_the_incompleteness(tmp_path, monkeypatch):
+    """Operatorun gordugu rapor hem SATIRI isaretler hem de baslikta kac tane oldugunu soyler."""
+    eng = TE._engine(tmp_path, monkeypatch, symbols=[ETH], equity=1000, seed_funding=False)
+    eng.ledger2.funding.coverage_source = eng.funding_rates.covers
+    pos = eng.ledger2.open(ETH, "LONG", 3000, SizeSpec(48, AmountType.NOTIONAL, 2), stop=2900,
+                           filters=_filters(), now=T_OPEN)
+    assert pos is not None
+    closed = eng.ledger2.tick({ETH: TickData(last=2890, low=2880, high=2895, bar_open=T_CLOSE.isoformat())},
+                              now_utc=T_CLOSE, funding_rate_lookup=eng.funding_rates.lookup)
+    assert closed and closed[0].funding_incomplete is True
+    note = eng._futures_note([])
+    assert "⚠EKSİK" in note, "kapanan islem satiri EKSIK isaretini tasimiyor"
+    assert "funding EKSİK 1 kapanış" in note, "baslik eksik kapanis sayisini SOYLEMIYOR"
+    assert "öğrenme istatistiklerine" in note, "aciklama satiri yok"
+
+
+def test_an_incomplete_close_does_not_feed_the_research_activation_gates(tmp_path, monkeypatch):
+    """Aktivasyon kapilari `baseline_r` ile SHADOW -> ACTIVE karari verir; eksik R oraya giremez."""
+    eng = TE._engine(tmp_path, monkeypatch, symbols=[ETH], equity=1000, seed_funding=False)
+    eng.ledger2.funding.coverage_source = eng.funding_rates.covers
+    seen: list = []
+    monkeypatch.setattr(eng.research, "observe", lambda *a, **k: seen.append(k) or True)
+
+    def close_one(t_open, t_close):
+        assert eng.ledger2.open(ETH, "LONG", 3000, SizeSpec(48, AmountType.NOTIONAL, 2), stop=2900,
+                                filters=_filters(), now=t_open) is not None
+        rec = eng.ledger2.tick({ETH: TickData(last=2890, low=2880, high=2895, bar_open=t_close.isoformat())},
+                               now_utc=t_close, funding_rate_lookup=eng.funding_rates.lookup)[0]
+        eng.research.add_pending("P1", rec.id, {"decision": {"reasons": [], "size_multiplier": 1.0}})
+        eng._observe_research_close(rec)
+        return rec
+
+    bad = close_one(T_OPEN, T_CLOSE)                       # kapsama BILINMIYOR -> eksik
+    assert bad.funding_incomplete is True and seen == [], "eksik kapanis arastirma gozlemine GIRDI"
+
+    # AYIRT EDICI ES: kapsama kurulunca ayni yol gozlemi YAZAR.
+    eng.funding_rates.refresh(_Venue([_row(T_SETTLE, "0.0001")]), ETH,
+                              datetime(2026, 9, 8, 6, tzinfo=UTC), datetime(2026, 9, 8, 10, tzinfo=UTC))
+    ok = close_one(datetime(2026, 9, 8, 8, 30, tzinfo=UTC), datetime(2026, 9, 8, 9, tzinfo=UTC))
+    assert ok.funding_incomplete is False and len(seen) == 1
+
+
+def test_the_single_read_point_accepts_every_carrier_shape(tmp_path):
+    """`funding_incomplete` tek okuma noktasidir; her tasiyici bicimi AYNI cevabi vermeli.
+
+    Tuketiciler bazen tam legacy sozlugu, bazen yalniz durum metnini, bazen de iki ham olguyu
+    tasir. Bir dal sessizce "TAM" derse, o yoldan gecen kapanis ogrenmeye kesinlesmis girer.
+    """
+    assert funding_incomplete({"funding_incomplete": True}) is True
+    assert funding_incomplete({"funding_status": FUNDING_INCOMPLETE}) is True
+    assert funding_incomplete({"funding_status": FUNDING_COMPLETE}) is False
+    assert funding_incomplete({"funding_coverage_gap": True}) is True
+    assert funding_incomplete({"funding_pending_settlements": 2}) is True
+    assert funding_incomplete({"funding_pending_settlements": 0, "funding_coverage_gap": False}) is False
+    assert funding_incomplete({}) is False and funding_incomplete(None) is False
+    assert funding_status({"funding_coverage_gap": True}) == FUNDING_INCOMPLETE
+
+
+def test_quant_journal_marks_an_unlabelled_row_as_not_applicable():
+    """Kapanmamis/karsi-olgusal satirda soru GECERSIZDIR: `True` demek eksigi gizlerdi."""
+    from tradingbot.quant.journal import row_from_memory
+    entry = {"trade_id": "T9", "symbol": "AAA/USDT", "side": "LONG", "source": "LIVE_PAPER",
+             "plan": {"entry": 3000.0, "stop": 2900.0, "notional": 100.0}}
+    assert row_from_memory(entry, None)["funding_complete"] is None
+
+
+def test_the_tail_rule_works_before_the_schedule_is_even_known(tmp_path):
+    """(b') kuralinin YALNIZ BASINA tasidigi durum: takvim henuz cikarilamiyor.
+
+    Isinma doneminde kapsama icinde tek settlement vardir, dolayisiyla aralik BILINMEZ ve
+    takvim ispati (c) konusamaz. Onu cekilmis, kuyrugunda tam saat olmayan pencere yine de
+    TAM'dir. Bu kural olmadan isinmadaki her kapanis gereksiz yere EKSIK damgalanir
+    (olculdu: 8 saatlik sozlesmede isinma dakikalarinin %35'i).
+    """
+    cache = FundingRateCache(tmp_path / "fr.json")
+    cache.refresh(_Venue([_row(T_SETTLE, "0.0001")]), ETH,
+                  datetime(2026, 9, 8, 6, tzinfo=UTC), datetime(2026, 9, 8, 9, 20, tzinfo=UTC))
+    assert cache.observed_interval_ms(ETH) is None, "takvim BILINMEMELI — tek kayit"
+    lo = datetime(2026, 9, 8, 9, tzinfo=UTC)
+    assert cache.covers(ETH, lo, datetime(2026, 9, 8, 9, 50, tzinfo=UTC)) is True    # kuyrukta tam saat yok
+    assert cache.covers(ETH, lo, datetime(2026, 9, 8, 10, 30, tzinfo=UTC)) is False  # 10:00 kuyrukta -> BILINMIYOR

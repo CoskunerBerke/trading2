@@ -368,13 +368,24 @@ class FuturesLedgerV2:
         #   `coverage_gap` — pencerenin kapsamasi BILINMIYOR, kac donem kacirildigi da bilinmez.
         # Durum POZISYONDAN okunur, paylasilan `self.funding` ornegindan DEGIL: `close_manual` /
         # `close_partial` gibi tahakkuk cagirmayan yollar baska bir sembolun sayacini devralamaz.
+        _wired = self.funding.coverage_source is not None
         _eval = pos.meta.get(FUNDING_EVAL_KEY)
         if isinstance(_eval, Mapping):
-            _pending, _gap = int(_eval.get("pending") or 0), bool(_eval.get("coverage_gap"))
+            try:
+                _pending = int(_eval.get("pending") or 0)
+            except (TypeError, ValueError):     # bozuk/elle duzenlenmis kayit KAPANISI DUSURMEZ
+                _pending = 0
+                _eval = {"coverage_gap": True}
+            _gap = bool(_eval.get("coverage_gap"))
+            # TAZELIK: degerlendirme KAPANIS ANINA ait olmali. Tur tick'inde `at` ile `ts` ayni
+            # `now`dan uretilir; `close_manual` / `close_partial` ise tahakkuk CAGIRMAZ, yani
+            # eski bir degerlendirme devralinir ve aradaki settlement sessizce kaybolurdu.
+            if _wired and str(_eval.get("at") or "") != ts:
+                _gap = True
         else:
             # Bu pozisyon icin funding HIC degerlendirilmedi. Kapsama kaynagi bagliyken bu bir
             # BILGI EKSIKLIGIDIR: "sorun yok" demek, onarilan sessiz sifirin ta kendisi olurdu.
-            _pending, _gap = 0, self.funding.coverage_source is not None
+            _pending, _gap = 0, _wired
         if _pending or _gap:
             log.warning("%s kapanirken funding EKSIK (cozulemeyen donem=%d, kapsama_boslugu=%s, "
                         "watermark %s) — kayittaki `funding` KESINLESMIS DEGIL",
@@ -614,9 +625,14 @@ class FuturesLedgerV2:
         mtm = self.wallet_balance + unreal
         ret = (mtm / self.starting_equity * _HUNDRED - _HUNDRED) if self.starting_equity > 0 else ZERO
         avg_r = (sum((h.r_multiple for h in closed), ZERO) / len(closed)) if closed else ZERO
+        # `win_rate`/`avg_r` BUTUN kapanislari kapsar; funding muhasebesi eksik olanlarin `r`si
+        # KESINLESMIS degildir. Sayiyi gizlemek yerine kac tanesinin oyle oldugunu ACIKCA
+        # bildiririz — rapor bu alani okur ve basligin yaninda gosterir.
+        n_incomplete = sum(1 for h in closed if h.funding_incomplete)
         return {"equity": round(float(self.wallet_balance), 4), "unrealized": round(float(unreal), 4),
                 "equity_mtm": round(float(mtm), 4), "starting_equity": float(self.starting_equity),
                 "return_pct": round(float(ret), 2), "open": len(self.positions), "closed": len(closed),
+                "closed_funding_incomplete": n_incomplete,
                 "win_rate": round(100 * len(wins) / len(closed), 1) if closed else 0.0, "avg_r": round(float(avg_r), 3),
                 "total_fees": round(float(self.total_fees), 4), "used_margin": round(float(self.used_margin), 4),
                 "wallet_balance": round(float(self.wallet_balance), 4), "available": round(float(self.available), 4),

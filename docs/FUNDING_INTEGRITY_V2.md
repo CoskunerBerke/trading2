@@ -262,3 +262,66 @@ karar günlüğü). Tam paket **2163 passed / 22 skipped, exit 0**; `ruff check 
 * `futures_backtest.py` hâlâ sabit 00/08/16 grid'inde (üretim yolu değil).
 * D5 ölü venue'da tur başına ~40 sn gecikme, D6/D7 test boşlukları, D8 sayaç görünürlüğü,
   D9 girişten sonraki mark-only pencere — hepsi açık ve bu onarımın kapsamı dışında.
+
+## Bağımsız kontrolün açtığı ikinci tur (aynı gün)
+
+`f9a2807` bağımsız incelemeye verildi ve **onaylanmadı**. İki bulgu kendi reprodüksiyonumla
+doğrulandı; ikisi de bu bölümde kapatıldı.
+
+### F1 — kopuk çekim pencerelerinden takvim çıkarmak sessiz sıfırı geri getiriyordu
+
+`covers` takvimi `observed_interval_ms` ile çıkarıyordu: **bütün** önbellek anahtarları arasındaki
+en kısa fark. Önbellek yapısı gereği seyrektir — yalnız gerçekten çekilmiş pencerelerdeki
+settlement'ları taşır. Ölçülen üretim senaryosu: 4 saatlik bir sözleşmede iki **kopuk** dar
+çekimden geriye 00:00 ve 08:00 kalır, "aralık 8 saat" sanılır, aradaki 12:00 settlement'i hem
+`covers`'tan hem de `needs_window`'dan düşer. Kapanış kaydı yine `funding=0`, bayrak `0`, uyarı
+yok — engellenen sürümün durumunun aynısı.
+
+**Onarım.** Takvim yalnız **kesintisiz kapsama içindeki** kayıtlardan çıkarılır (`covered_keys`).
+`refresh` bir pencereyi çektiğinde venue'nun orada yayımladığı her kaydı yazdığı için kapsama
+içindeki anahtarlar ardışıktır; dışarıdakiler komşuluk bildirmez. Ölçüldü: aynı senaryoda
+`covers` artık `False`, `needs_window` `True` — yani sistem hem eksikliği bildiriyor hem de onu
+kapatacak çekimi geri kazanıyor.
+
+### F2 — gereksiz "EKSİK" damgası ölçüldü ve ısınmaya indirildi
+
+Yanlış "eksik" de bir maliyettir: kapanış kalıcı olarak öğrenmeden düşer. Üretim ritmiyle
+ölçüldü (15 dk tur + dakikalık çıkış monitörü, sağlıklı venue, 72 saat):
+
+| sözleşme | ısınma (ilk iki settlement) | kararlı durum | sessiz sıfır |
+|---|---|---|---|
+| 8 saat | %34,9 yanlış EKSİK | **%0** | 0 |
+| 4 saat | %55,6 yanlış EKSİK | **%0** | 0 |
+
+Ölçüm sonrası eklenen **(b') kuyruk kuralı** — önü çekilmiş, çekilmeyen kuyruğunda tam saat
+olmayan pencere tamdır — 8 saatlik sözleşmede toplam yanlış oranı %23,2'den %10,3'e indirdi ve
+kalanın tamamı ısınmadır. Kararlı durumda yanlış "eksik" **yok**; hatanın yönü her ölçümde
+temkinli tarafta kaldı ve **sessiz sıfır hiçbir kesitte görülmedi**.
+
+### Aynı turda kapatılan diğer bulgular
+
+* **F3 — tazelik.** `close_manual` / `close_partial` tahakkuk çağırmaz; eski bir değerlendirme
+  sonraki kapanışı TAM ilan edebiliyordu. Değerlendirme artık kapanış anına ait değilse
+  fail-closed.
+* **F4 — challenger eğitimi.** `train_challenger` etiketleri (`r_multiple > 0.25`) eksik funding
+  taşıyan kapanışlardan üretilemez. Hafıza kaydı denetim için TAM kalır; elenen yalnız etikettir.
+* **F5 — araştırma kapıları.** `_observe_research_close` eksik R'yi `baseline_r` olarak yazmaz;
+  SHADOW → ACTIVE kararı eksik bir sayıyla verilemez.
+* **F6 — rapor başlığı.** `summary()` artık `closed_funding_incomplete` taşır ve başlık satırı
+  kaç kapanışın kesinleşmemiş olduğunu satır işaretlerinin yanında ayrıca söyler.
+* **F10 — kapanışı düşürebilecek tek yeni yol.** Bozuk `pending` değeri artık `_finalize`'ı
+  düşürmez; fail-closed okunur.
+
+**Mutasyon kapısı: 27 mutasyonun 27'si yakalandı.** Bağımsız kontrolün "kapısız" saydığı
+üretim satırlarının hepsi (`covers`'ın takvim dalı, saat kayması bandı, kuyruk kuralı,
+`from_dict` dönüşümü, `to_legacy_dict` anahtarları, tek okuma noktasının iki yedek dalı, quant
+günlüğü varsayılanı) artık bir testle bağlı.
+
+### Kabul edilen sınırlar
+
+* Isınma döneminde (sembol başına, bir kez) kapanışlar EKSİK damgalanabilir ve öğrenmeye
+  girmez. Ölçüldü, kararlı duruma geçince sıfırlanıyor.
+* Venue bir sembolün funding **aralığını kısaltırsa** ilk settlement gecikmeli görünür.
+* `replay/challengers.py` ve `replay/counterfactual.py` yalnız `settlement_source` bağlar,
+  `coverage_source` bağlamaz: o yollar tarihsel veriyle çalışır ve üretim defterini yazmaz.
+* `futures_backtest.py` sabit grid'de kalmaya devam ediyor.

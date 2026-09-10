@@ -53,6 +53,15 @@ def _iso(ts: float) -> str:
     return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(timespec="seconds")
 
 
+def _no_whole_hour(lo_ms: int, hi_ms: int) -> bool:
+    """(lo, hi] araligina — saat kaymasi bandiyla — hicbir TAM SAAT dusmuyor mu?
+
+    Venue settlement'lari tam saatte yayimlar (bkz. `hour_key`) ve en kisa aralik bir saattir,
+    dolayisiyla boyle bir aralikta settlement OLAMAZ.
+    """
+    return (lo_ms - _SETTLE_BAND_MS) // _HOUR_MS == (hi_ms + _SETTLE_BAND_MS) // _HOUR_MS
+
+
 def hour_key(when: datetime | int | float) -> int:
     """Settlement zamanı → EN YAKIN saate yuvarlanmış epoch-saat anahtarı."""
     if isinstance(when, datetime):
@@ -160,12 +169,12 @@ class FundingRateCache:
     def _projected_settlements(self, symbol: str, lo: int, hi: int) -> "list[int] | None":
         """(lo, hi] araligina dusen settlement anlari (ms) — GOZLENEN takvimden turetilir.
 
-        `None` = sembolun takvimi BILINMIYOR (aralik iki kayit birikmeden cikarilamaz); bu
-        "settlement yok" ile ayni sey DEGILDIR.
+        Takvim YALNIZ kesintisiz kapsama ICINDEKI kayitlardan cikarilir (bkz. `covered_keys`);
+        kopuk pencerelerden kalan kayitlar komsuluk bildirmez. `None` = takvim BILINMIYOR; bu
+        "settlement yok" ile ayni sey DEGILDIR ve `covers` orada FAIL-CLOSED davranir.
         """
-        raw = to_raw(symbol)
         interval = self.observed_interval_ms(symbol)
-        keys = sorted(self._rates.get(raw) or {})
+        keys = self.covered_keys(symbol)
         if interval is None or not keys:
             return None
         anchor = keys[-1] * _HOUR_MS
@@ -190,8 +199,12 @@ class FundingRateCache:
               boyle bir pencerede settlement OLAMAZ. Saniyelik saat kaymasina karsi dar bir
               guvenlik bandi birakilir.
           (b) basariyla cekilmis pencere araligi TAMAMEN ortuyor;
-          (c) kapsama kismi ama GOZLENEN takvim geregi araliga settlement DUSMUYOR — ya da
-              dusenlerin hepsi cekilmis kapsamanin icinde.
+          (b') pencerenin ONU cekilmis ve cekilmeyen KUYRUGA tam saat dusmuyor. Turlar arasi
+              kuyruk en fazla bir tur suresidir; onu (a) ile ayni gerekceyle eleriz. Bu kural
+              olmadan tur ile tur arasindaki her kapanis, hicbir sey kacmasa da EKSIK damgalanir
+              (olculdu: 8 saatlik sembolde kapanislarin %23'u);
+          (c) kapsama kismi ve kuyrukta tam saat var, ama GOZLENEN takvim geregi araliga
+              settlement DUSMUYOR — ya da dusenlerin hepsi cekilmis kapsamanin icinde.
 
         BILINEN SINIR: (c) venue'nun gozlenen takvimine guvenir. Venue bir sembolun funding
         araligini KISALTIRSA, yeni takvimdeki ilk settlement onbellek yeni araligi ogrenene
@@ -202,11 +215,14 @@ class FundingRateCache:
         lo, hi = int(start.timestamp() * 1000), int(end.timestamp() * 1000)
         if hi <= lo:
             return True
-        if (lo - _SETTLE_BAND_MS) // _HOUR_MS == (hi + _SETTLE_BAND_MS) // _HOUR_MS:
+        if _no_whole_hour(lo, hi):
             return True                       # (a) pencerede TAM SAAT yok -> settlement OLAMAZ
         cov_from, cov_to = self._covered_from.get(raw), int(self._covered_to.get(raw, 0))
-        if cov_from is not None and cov_from <= lo and cov_to >= hi:
+        has_prefix = cov_from is not None and cov_from <= lo and cov_to > lo
+        if has_prefix and cov_to >= hi:
             return True                       # (b) pencere tamamen cekilmis
+        if has_prefix and _no_whole_hour(cov_to, hi):
+            return True                       # (b') on kisim cekilmis, kuyrukta settlement OLAMAZ
         due = self._projected_settlements(symbol, lo, hi)
         if due is None:
             return False                      # takvim BILINMIYOR -> konusamayiz
@@ -214,13 +230,31 @@ class FundingRateCache:
             return True                       # (c) takvimde bu araliga settlement dusmuyor
         return cov_from is not None and cov_from <= min(due) and cov_to >= max(due)
 
+    def covered_keys(self, symbol: str) -> list[int]:
+        """Kesintisiz cekilmis kapsama penceresi ICINDEKI settlement anahtarlari.
+
+        `refresh` bir pencereyi cektiginde venue'nun o pencerede yayimladigi HER kaydi yazar,
+        dolayisiyla kapsama icindeki anahtarlar EKSIKSIZ ve ardisiktir. Kapsama disindaki
+        anahtarlar baska (kopuk) bir cekimden kalmadir ve komsuluk BILDIRMEZ.
+        """
+        raw = to_raw(symbol)
+        cov_from, cov_to = self._covered_from.get(raw), int(self._covered_to.get(raw, 0))
+        if cov_from is None or cov_to <= 0:
+            return []
+        return [k for k in sorted(self._rates.get(raw) or {}) if cov_from <= k * _HOUR_MS <= cov_to]
+
     def observed_interval_ms(self, symbol: str) -> int | None:
         """Sembolun GOZLENEN funding araligi (ms) — venue kayitlarindan turetilir, VARSAYILMAZ.
 
-        Ardisik settlement'lar arasindaki EN KISA fark alinir: venue arali­gi kisaltmissa erken
+        Ardisik settlement'lar arasindaki EN KISA fark alinir: venue araligi kisaltmissa erken
         yeniden sorulur, uzatmissa gereksiz istek atilmaz.
+
+        YALNIZ kapsama icindeki anahtarlar kullanilir. KOPUK pencerelerden gelen iki kayit
+        komsu DEGILDIR ve aralarindaki fark araligi KANITLAMAZ: 4 saatlik bir sembolde iki dar
+        cekimden kalan 00:00 ve 08:00 kayitlari "8 saat" gosterir, aradaki 04:00/12:00
+        settlement'lari hem yenilemeden hem de kapsama ispatindan DUSERDI (bagimsiz inceleme F1).
         """
-        keys = sorted(self._rates.get(to_raw(symbol)) or {})
+        keys = self.covered_keys(symbol)
         if len(keys) < 2:
             return None
         return min(b - a for a, b in zip(keys, keys[1:])) * _HOUR_MS

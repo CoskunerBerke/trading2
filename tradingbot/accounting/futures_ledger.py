@@ -372,11 +372,11 @@ class FuturesLedgerV2:
         _eval = pos.meta.get(FUNDING_EVAL_KEY)
         if isinstance(_eval, Mapping):
             try:
-                _pending = int(_eval.get("pending") or 0)
+                _pending, _corrupt = int(_eval.get("pending") or 0), False
             except (TypeError, ValueError):     # bozuk/elle duzenlenmis kayit KAPANISI DUSURMEZ
-                _pending = 0
-                _eval = {"coverage_gap": True}
-            _gap = bool(_eval.get("coverage_gap"))
+                _pending, _corrupt = 0, True
+            # Okunamayan degerlendirme "sorun yok" DEMEK DEGILDIR: fail-closed.
+            _gap = _corrupt or bool(_eval.get("coverage_gap"))
             # TAZELIK: degerlendirme KAPANIS ANINA ait olmali. Tur tick'inde `at` ile `ts` ayni
             # `now`dan uretilir; `close_manual` / `close_partial` ise tahakkuk CAGIRMAZ, yani
             # eski bir degerlendirme devralinir ve aradaki settlement sessizce kaybolurdu.

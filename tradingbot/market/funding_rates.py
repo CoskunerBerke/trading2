@@ -218,7 +218,10 @@ class FundingRateCache:
         if _no_whole_hour(lo, hi):
             return True                       # (a) pencerede TAM SAAT yok -> settlement OLAMAZ
         cov_from, cov_to = self._covered_from.get(raw), int(self._covered_to.get(raw, 0))
-        has_prefix = cov_from is not None and cov_from <= lo and cov_to > lo
+        # `cov_to > lo` AYRICA ARANMAZ: kapsama pencere baslamadan bitmisse kuyruk (cov_to, hi]
+        # butun pencereyi kapsar, dolayisiyla kuyrukta tam saat yoksa PENCEREDE de yoktur ve (a)
+        # zaten donmustur. Test edilemeyen savunma satiri birakmak, olculmemis guven demektir.
+        has_prefix = cov_from is not None and cov_from <= lo
         if has_prefix and cov_to >= hi:
             return True                       # (b) pencere tamamen cekilmis
         if has_prefix and _no_whole_hour(cov_to, hi):
@@ -263,14 +266,21 @@ class FundingRateCache:
                      *, min_interval_h: int = 1, grace_s: int = 60) -> bool:
         """Bu pencere icin ag cagrisi GEREKLI mi?
 
-        Sirasiyla: (a) pencere en kisa venue araligindan (1 saat) kisaysa icinde settlement
-        OLAMAZ -> hayir; (b) kapsama `start`ten once baslamiyorsa mutlaka cekilmeli -> evet;
-        (c) aksi halde GOZLENEN araliktan sonraki beklenen settlement zamani gecmediyse -> hayir.
-        (c) olmadan her tur yeniden istek atiliyordu (olculdu: 24 saatte 96 tur = 96 istek).
+        Sirasiyla: (a) pencereye hicbir TAM SAAT dusmuyorsa icinde settlement OLAMAZ -> hayir;
+        (b) kapsama `start`ten once baslamiyorsa mutlaka cekilmeli -> evet; (c) aksi halde
+        GOZLENEN araliktan sonraki beklenen settlement zamani gecmediyse -> hayir. (c) olmadan
+        her tur yeniden istek atiliyordu (olculdu: 24 saatte 96 tur = 96 istek).
+
+        (a) eskiden "pencere 1 saatten kisaysa hayir" idi. O kural CEKIM ile KAPSAMA ISPATINI
+        ayirmisti: `covers` "bu pencereye tam saat dusuyor, bilmiyorum" derken yenileme "1
+        saatten kisa, bakmaya gerek yok" diyordu. Sonuc, bir saatten kisa yasayan pozisyonlarin
+        kapanislarinin buyuk kismi EKSIK damgalanip ogrenmeden dusmesiydi (olculdu: 30 dakikalik
+        tutmada %45). Artik iki soru AYNI kurali kullanir: settlement OLABILECEK pencereye
+        BAKILIR, olamayacak pencereye istek atilmaz.
         """
         raw = to_raw(symbol)
         lo, hi = int(start.timestamp() * 1000), int(end.timestamp() * 1000)
-        if (end - start).total_seconds() < min_interval_h * 3600:
+        if _no_whole_hour(lo, hi):
             return False
         cov_from, cov_to = self._covered_from.get(raw), self._covered_to.get(raw, 0)
         if cov_from is None or cov_from > lo or cov_to <= 0:

@@ -78,6 +78,10 @@ class ResearchRecord:
     observations: list[dict] = field(default_factory=list)
     history: list[dict] = field(default_factory=list)
     retired_reason: str = ""
+    #: Kapanisin funding muhasebesi EKSIK oldugu icin gozleme ALINMAYAN eslesme sayisi.
+    #: `n_obs` bu sayiyi ICERMEZ; ikisi birlikte okunmadan "kapi neden gecmedi" sorusu
+    #: cevaplanamaz. Sessizce dusurmek, F2'nin adini koydugu kaybin ta kendisidir.
+    skipped_funding_incomplete: int = 0
 
     def stats(self) -> dict:
         """Eşleşmiş istatistik. `delta` = adayın risk bütçesi − baseline (AYNI işlemler üzerinde)."""
@@ -97,12 +101,16 @@ class ResearchRecord:
                 "delta_ci95_low": lo,
                 "metric": "risk_budget_contribution_r",
                 "blocked": sum(1 for o in self.observations if o.get("kind") == BLOCKED),
-                "size_reduced": sum(1 for o in self.observations if o.get("kind") == SIZE_SCALED)}
+                "size_reduced": sum(1 for o in self.observations if o.get("kind") == SIZE_SCALED),
+                # `n_obs` disinda kalan eslesmeler. Kapi gecmediginde "ornek yetmedi" ile
+                # "ornekler funding yuzunden dusuruldu" ayirt edilebilsin diye AYRI durur.
+                "skipped_funding_incomplete": int(self.skipped_funding_incomplete)}
 
     def to_dict(self) -> dict:
         p = self.policy or {}
         return {"policy_id": self.policy_id, "state": self.state, "created_at": self.created_at,
                 "state_changed_at": self.state_changed_at, "research_only": self.research_only,
+                "skipped_funding_incomplete": int(self.skipped_funding_incomplete),
                 "rationale": p.get("rationale", ""), "changed_params": p.get("changed_params", []),
                 "source_findings": p.get("source_findings", []),
                 "offline_verdict": (self.offline or {}).get("verdict"),
@@ -136,7 +144,8 @@ class ResearchPolicyBook:
                     state_changed_at=str(r.get("state_changed_at") or ""),
                     offline=dict(r.get("offline") or {}), research_only=bool(r.get("research_only")),
                     observations=list(r.get("observations") or []), history=list(r.get("history") or []),
-                    retired_reason=str(r.get("retired_reason") or ""))
+                    retired_reason=str(r.get("retired_reason") or ""),
+                    skipped_funding_incomplete=int(r.get("skipped_funding_incomplete") or 0))
                 self._quarantine_if_unsafe(rec)
                 self.records.append(rec)
 
@@ -242,6 +251,20 @@ class ResearchPolicyBook:
                                    + (" (RESEARCH_ONLY: aktifleşemez)" if rec.research_only else ""))
         self.save()
         return rec.state
+
+    def note_incomplete_close(self, policy_id: str) -> bool:
+        """Kapanisin funding muhasebesi EKSIK: eslesme gozleme ALINMADI, ama KAYDA GECER.
+
+        Bekleyen karar kapanisla birlikte tuketilir (islem bir daha kapanmaz), dolayisiyla
+        sessizce atmak kaniti yok etmek olurdu: kapi "ornek yetmedi" derken ornegin neden
+        yetmedigi gorunmez kalirdi.
+        """
+        rec = self.get(policy_id)
+        if rec is None:
+            return False
+        rec.skipped_funding_incomplete = int(rec.skipped_funding_incomplete or 0) + 1
+        self.save()
+        return True
 
     def observe(self, policy_id: str, *, trade_id: str, baseline_r: float,
                 risk_budget_contribution_r: float, kind: str = UNCHANGED,

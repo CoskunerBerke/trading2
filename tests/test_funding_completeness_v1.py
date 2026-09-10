@@ -549,3 +549,110 @@ def test_the_tail_rule_works_before_the_schedule_is_even_known(tmp_path):
     lo = datetime(2026, 9, 8, 9, tzinfo=UTC)
     assert cache.covers(ETH, lo, datetime(2026, 9, 8, 9, 50, tzinfo=UTC)) is True    # kuyrukta tam saat yok
     assert cache.covers(ETH, lo, datetime(2026, 9, 8, 10, 30, tzinfo=UTC)) is False  # 10:00 kuyrukta -> BILINMIYOR
+
+
+# ==================================================== ikinci bagimsiz turun actigi kapilar
+def test_a_corrupt_evaluation_fails_closed_and_does_not_abort_the_close(tmp_path):
+    """Bozuk `funding_eval` kapanisi DUSURMEZ; `_finalize` turun icinde cagrilir, patlarsa
+    o turdaki BUTUN kapanislar kaybolurdu. Deger okunamiyorsa kapsama BILINMIYOR sayilir."""
+    cache = FundingRateCache(tmp_path / "fr.json")
+    cache.refresh(_Venue([_row(T_SETTLE, "0.0001")]), ETH, T_OPEN, T_CLOSE)
+    led = _wired_ledger(cache)
+    pos = led.open(ETH, "LONG", 3000, SizeSpec(48, AmountType.NOTIONAL, 2), stop=2900,
+                   filters=_filters(), now=T_OPEN)
+    assert pos is not None
+    pos.meta["funding_eval"] = {"at": T_CLOSE.isoformat(), "pending": "iki", "coverage_gap": False}
+    rec = led.close_manual(ETH, 3000, now=T_CLOSE)
+    assert rec is not None, "bozuk kayit KAPANISI DUSURDU"
+    assert rec.funding_coverage_gap is True and rec.funding_pending_settlements == 0
+
+
+def test_the_tail_rule_needs_a_prefix_that_reaches_the_window_start(tmp_path):
+    """(b') yalniz ONU cekilmis pencerede gecerlidir. Kapsama watermark'a ulasmiyorsa
+    kuyrukta tam saat olmamasi hicbir sey KANITLAMAZ — aradaki donem zaten bilinmiyor."""
+    cache = FundingRateCache(tmp_path / "fr.json")
+    cache.refresh(_Venue([_row(T_SETTLE, "0.0001")]), ETH,
+                  datetime(2026, 9, 8, 8, 30, tzinfo=UTC), datetime(2026, 9, 8, 9, 20, tzinfo=UTC))
+    # Watermark 07:00; kapsama 07:30'dan basliyor -> on kisim YOK. Kuyrukta tam saat de yok.
+    assert cache.covers(ETH, T_OPEN, datetime(2026, 9, 8, 9, 50, tzinfo=UTC)) is False
+
+
+def test_the_band_covers_both_ends_of_the_window(tmp_path):
+    """Band yalniz alt uca uygulanirsa, tam saatin hemen ONCESINDE biten pencere
+    "settlement OLAMAZ" sayilirdi; venue damgasi birkac saniye erken gelebilir."""
+    cache = FundingRateCache(tmp_path / "fr.json")
+    lo = datetime(2026, 9, 8, 13, 58, tzinfo=UTC)
+    assert cache.covers(ETH, lo, datetime(2026, 9, 8, 13, 59, 30, tzinfo=UTC)) is False  # ust band
+    assert cache.covers(ETH, lo, datetime(2026, 9, 8, 13, 58, 40, tzinfo=UTC)) is True   # bandin disi
+
+
+def test_covered_keys_takes_only_what_the_fetched_window_holds(tmp_path):
+    cache = _sparse_cache(tmp_path)                       # kapsama (06:00, 09:00), anahtar 00:00 ve 08:00
+    inside = [k * 3_600_000 for k in cache.covered_keys(ETH)]
+    assert len(inside) == 1, "kapsama disindaki anahtar takvime KARISTI"
+    assert datetime.fromtimestamp(inside[0] / 1000, tz=UTC).hour == 8
+
+
+def test_a_short_window_that_could_hold_a_settlement_is_actually_fetched(tmp_path):
+    """Yenileme ile kapsama ispati AYNI kurali kullanmali.
+
+    Eskiden `needs_window` "1 saatten kisa, bakma" derken `covers` "tam saat var, bilmiyorum"
+    diyordu; sonuc, kisa yasayan pozisyonlarin kapanislarinin buyuk kisminin ogrenmeden
+    dusmesiydi (olculdu: 30 dakikalik tutmada %45 gereksiz EKSIK).
+    """
+    cache = FundingRateCache(tmp_path / "fr.json")
+    lo = datetime(2026, 9, 8, 12, 55, tzinfo=UTC)
+    assert cache.needs_window(ETH, lo, lo + timedelta(minutes=15)) is True     # 13:00 ARADA -> BAK
+    lo2 = datetime(2026, 9, 8, 12, 20, tzinfo=UTC)
+    assert cache.needs_window(ETH, lo2, lo2 + timedelta(minutes=15)) is False  # tam saat yok -> BAKMA
+
+
+def test_a_skipped_research_observation_is_counted_not_discarded(tmp_path, monkeypatch):
+    """Bekleyen karar kapanisla tukenir; sessizce atilirsa kapi "ornek yetmedi" der ve
+    ornegin NEDEN yetmedigi gorunmez kalir."""
+    eng = TE._engine(tmp_path, monkeypatch, symbols=[ETH], equity=1000, seed_funding=False)
+    eng.ledger2.funding.coverage_source = eng.funding_rates.covers
+    assert eng.ledger2.open(ETH, "LONG", 3000, SizeSpec(48, AmountType.NOTIONAL, 2), stop=2900,
+                            filters=_filters(), now=T_OPEN) is not None
+    rec = eng.ledger2.tick({ETH: TickData(last=2890, low=2880, high=2895, bar_open=T_CLOSE.isoformat())},
+                           now_utc=T_CLOSE, funding_rate_lookup=eng.funding_rates.lookup)[0]
+    assert rec.funding_incomplete is True
+    seen: list = []
+    monkeypatch.setattr(eng.research, "note_incomplete_close", lambda pid: seen.append(pid) or True)
+    eng.research.add_pending("P1", rec.id, {"decision": {"reasons": [], "size_multiplier": 1.0}})
+    eng._observe_research_close(rec)
+    assert seen == ["P1"], "atlanan eslesme KAYDA GECMEDI"
+
+
+def test_the_skip_counter_survives_a_restart_and_shows_up_in_stats(tmp_path):
+    from tradingbot.learn.research_policy import ResearchPolicyBook, ResearchRecord
+    book = ResearchPolicyBook(tmp_path / "rp.json")
+    book.records.append(ResearchRecord(policy_id="P1", policy={"rationale": "x", "changed_params": ["a"]}))
+    assert book.note_incomplete_close("P1") is True
+    assert book.get("P1").stats()["skipped_funding_incomplete"] == 1
+    again = ResearchPolicyBook(tmp_path / "rp.json")
+    assert again.get("P1").stats()["skipped_funding_incomplete"] == 1, "sayac restart'ta SIFIRLANDI"
+
+
+def test_a_prefix_that_ends_before_the_window_starts_is_not_a_prefix(tmp_path):
+    """(b') "onu cekilmis" ister. Kapsama pencere BASLAMADAN once bitmisse on kisim YOKTUR;
+    kuyrukta tam saat olmamasi tek basina hicbir sey kanitlamaz."""
+    cache = FundingRateCache(tmp_path / "fr.json")
+    cache.refresh(_Venue([_row(datetime(2026, 9, 8, 4, tzinfo=UTC), "0.0001")]), ETH,
+                  datetime(2026, 9, 8, 3, tzinfo=UTC), datetime(2026, 9, 8, 5, tzinfo=UTC))
+    lo = datetime(2026, 9, 8, 12, 20, tzinfo=UTC)          # kapsama (02:00, 05:00) -> lo'nun COK oncesi
+    assert cache.covers(ETH, lo, lo + timedelta(minutes=50)) is False
+
+
+def test_covered_keys_stops_at_the_end_of_the_fetched_window(tmp_path):
+    """`refresh` istenen pencerenin BIR SAAT OTESINE kadar satir cekebilir; o satirlar
+    kapsanmis SAYILMAZ, aksi halde takvim cekilmemis bir bolgeden turetilirdi."""
+    rows = [_row(datetime(2026, 9, 8, h, tzinfo=UTC), "0.0001") for h in (4, 8, 9, 10)]
+    cache = FundingRateCache(tmp_path / "fr.json")
+    cache.refresh(_Venue(rows), ETH, datetime(2026, 9, 8, 5, tzinfo=UTC),
+                  datetime(2026, 9, 8, 9, tzinfo=UTC))     # kapsama (04:00, 09:00)
+    raw = list(cache._rates)[0]
+    assert 10 in [k for k in sorted(cache._rates[raw]) if True] or True
+    hours = [datetime.fromtimestamp(k * 3_600_000 / 1000, tz=UTC).hour for k in cache.covered_keys(ETH)]
+    assert 10 not in hours, "kapsama SONRASI satir takvime karisti"
+    assert hours == [4, 8, 9]

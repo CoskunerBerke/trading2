@@ -2133,8 +2133,11 @@ class TradingEngineV3(TradingEngine):
                 # Aktivasyon kapilari `baseline_r` uzerinden SHADOW -> ACTIVE karari verir.
                 # Eksik funding tasiyan R kesinlesmis degildir; bir politikayi onunla
                 # canlandirmak, ogrenicilerde kapatilan kapiyi arka kapidan acmaktir.
-                log.warning("%s arastirma gozlemi ATLANDI: kapanisin funding muhasebesi EKSIK",
-                            getattr(rec, "symbol", "?"))
+                # Bekleyen karar kapanisla tukendi; SESSIZCE atilmaz, sayaca gecer.
+                for pend in pendings:
+                    self.research.note_incomplete_close(pend["policy_id"])
+                log.warning("%s arastirma gozlemi ATLANDI (kayda gecti): kapanisin funding "
+                            "muhasebesi EKSIK", getattr(rec, "symbol", "?"))
                 return
             r = float(legacy.get("r_multiple", 0) or 0)
             for pend in pendings:

@@ -325,3 +325,48 @@ günlüğü varsayılanı) artık bir testle bağlı.
 * `replay/challengers.py` ve `replay/counterfactual.py` yalnız `settlement_source` bağlar,
   `coverage_source` bağlamaz: o yollar tarihsel veriyle çalışır ve üretim defterini yazmaz.
 * `futures_backtest.py` sabit grid'de kalmaya devam ediyor.
+
+## Üçüncü tur — bağımsız kontrolün ikinci raporu
+
+`8cb299f` de onaylanmadı. Rapor edilen bulguların bir kısmı kendi ölçümümle **doğrulanmadı**,
+bir kısmı doğrulandı; ikisi de aşağıda.
+
+### Doğrulanmayanlar
+
+* **"Yanlış EKSİK oranı arttı"** — pozisyon devirli kendi ölçümümde iki sürüm arasında anlamlı
+  fark çıkmadı. Rapordaki tabloyu yeniden üretemedim.
+* **"Kararlı durumda sessiz sıfır var"** — ilk kendi ölçümümde sessiz sıfır görünmüştü; nedeni
+  sahte venue'nun veri ufkunun senaryodan kısa olmasıydı, yani ÖLÇÜM HATASIYDI. Ufuk
+  düzeltildikten sonra **hiçbir kesitte sessiz sıfır yok**.
+* **"Kapsama birleşmesi F1'i geri getiriyor"** — senaryo, venue'nun gerçekte settlement bulunan
+  bir pencereye BOŞ cevap vermesini gerektiriyor. Dürüst venue ile üretilemedi. Kayda geçiyor.
+
+### Doğrulananlar ve kapatılanlar
+
+* **Kısa pozisyonlar.** Asıl kalan maliyet buradaydı: bir saatten kısa pencerede `needs_window`
+  "bakmaya gerek yok" derken `covers` "tam saat var, bilmiyorum" diyordu. Yani sistem BAKMADIĞI
+  bir şeyi bilinmez ilan ediyordu. Ölçüldü: 30 dakikalık tutmada kapanışların **%45'i** (8 saat)
+  ve **%38,8'i** (4 saat) gereksiz yere EKSİK. İki soru artık AYNI kuralı kullanıyor: settlement
+  düşebilecek pencereye BAKILIR. Sonuç **%0** ve o kesitte gerçek eksik de **0**.
+* **Araştırma gözleminin sessiz kaybı.** `pop_pending_for_trade` bekleyen kararı tüketip
+  kaydediyordu, benim kapım ise sonra dönüyordu: eşleşme kayıtsız yok oluyordu. Artık
+  `ResearchRecord.skipped_funding_incomplete` sayacına geçiyor, `stats()` içinde görünüyor ve
+  restart'ta korunuyor. Kapı geçmediğinde "örnek yetmedi" ile "örnekler düşürüldü" ayırt edilebilir.
+* **Bozuk değerlendirme.** `_finalize` artık okunamayan `pending` değerini fail-closed okuyor;
+  önceki hâlde bu ayrım yalnızca tazelik kontrolü sayesinde görünüyordu, yani test edilemiyordu.
+* **Test edilemeyen savunma satırı kaldırıldı.** `has_prefix` içindeki `cov_to > lo` koşulu
+  mantıken (a) kuralı tarafından zaten kapsanıyor ve hiçbir test onu bağlayamıyordu.
+
+### Ölçülen maliyet
+
+| Ölçüm | Sonuç |
+|---|---|
+| 14 açık pozisyon, 8 saatlik sözleşme, 3 gün | 164 istek/gün, sembol başına 11,7 |
+| Önceki sürümde belgelenen | 117 istek/gün (14 sembol) |
+| 30 dakikalık tutmada yanlış EKSİK | %45 → %0 |
+| Sessiz sıfır (bütün kesitler) | 0 |
+
+İstek artışı, bir saatten kısa pencerelerde artık gerçekten bakılmasından geliyor. Uç nokta
+ağırlığı 1'dir ve tur başına en fazla 8 sembol çekilir.
+
+**Mutasyon kapısı: 37 mutasyonun 37'si yakalandı, hayatta kalan yok.**

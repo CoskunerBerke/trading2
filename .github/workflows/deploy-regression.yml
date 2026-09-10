@@ -8,6 +8,7 @@ on:
     branches:
       - feature/trading-v3-paper-testnet
       - feature/quant-evaluation-v1
+      - feature/ten-coin-focus-v1
     paths:
       - "deploy/**"
       - "tradingbot/**"

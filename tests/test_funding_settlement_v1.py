@@ -442,7 +442,7 @@ def test_engine_tour_uses_per_settlement_rates_not_the_snapshot(tmp_path, monkey
 
     from tradingbot.core import from_iso, funding_settlements_between, iso, utc_now
 
-    eng = E._engine(tmp_path, monkeypatch, symbols=["ETH/USDT"], equity=1000)
+    eng = E._engine(tmp_path, monkeypatch, symbols=["ETH/USDT"], equity=1000, seed_funding=False)  # SOGUK onbellek: konusu kapsamanin YOKLUGU
     now0 = utc_now()
     opened_at = now0 - timedelta(hours=40)
 

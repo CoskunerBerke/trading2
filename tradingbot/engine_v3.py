@@ -23,6 +23,7 @@ from decimal import Decimal
 from .accounting import (AmountType, FeeSchedule, FiltersCache, FuturesLedgerV2, LiquidationParams, MarketType, Side, SizeSpec,
                          SlippageModel, SpotLedger, TaxPolicy, TickData, default_brackets)
 from .accounting.funding import MIN_FUNDING_INTERVAL_H
+from .accounting.models import funding_incomplete
 from .agents.manager import CoinBrief
 from .coinhead import ChiefPortfolioManager, CoinHeadConfig, CoinHeadInputs, CoinHeadRegistry, Verdict
 from .config import BotConfig
@@ -173,6 +174,10 @@ class TradingEngineV3(TradingEngine):
         # gercek settlement zamanlaridir. D1: yalniz DOGRULANMIS oran donemi kapatir; boylece
         # 60 sn'lik cikis monitoru ile 15 dk'lik tur AYNI kurali uygular.
         self.ledger2.funding.settlement_source = self.funding_rates.settlements_in
+        # TAMAMLANMA: `settlements_in` bos donunce "settlement yok" ile "kapsama bilinmiyor"
+        # ayni gorunuyordu ve kapanis kaydina SESSIZ SIFIR olarak geciyordu. `covers` bu ikisini
+        # ayirir; kapanis kaydi `funding_coverage_gap` ile eksikligi ACIKCA tasir.
+        self.ledger2.funding.coverage_source = self.funding_rates.covers
         self.ledger2.funding.require_verified = True
         self.spot2 = SpotLedger.load(st / "spot_ledger.json", starting_cash=cfg.risk.starting_equity_usdt)
         self.ledger = self.ledger2          # legacy yardımcılar (learning_notes/summary) v2 defteri görsün
@@ -1890,10 +1895,21 @@ class TradingEngineV3(TradingEngine):
             out.append("| - | Açık pozisyon yok | | | | | | | | | | | | | | |")
         out += ["", "## Kapanan işlemler (son 30)", "| ID | Sembol | Yön | Giriş | Çıkış | Neden | Brüt | Komisyon | Funding | Kayma | Net | R | Bar | Kaldıraç | Setup | Kapanış |",
                 "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
+        _n_incomplete = 0
         for h in self.ledger2.history_dicts()[-30:][::-1]:
+            # EKSİK FUNDING GÖRÜNÜR: bu satırın `Funding`/`Net`/`R` değerleri KESİNLEŞMİŞ değildir.
+            _fmark = ""
+            if funding_incomplete(h):
+                _n_incomplete += 1
+                _fmark = " ⚠EKSİK"
             out.append(f"| {h['id']} | {h['symbol']} | {h['side']} | {float(h['entry']):.6g} | {float(h.get('exit_price') or 0):.6g} | {h['exit_reason']} | {float(h.get('gross_pnl', 0)):+.4f} | "
-                       f"{float(h.get('fees', 0)):.4f} | {float(h.get('funding', 0)):+.4f} | {float(h.get('slippage_cost', 0)):.4f} | {float(h.get('net_pnl', h.get('pnl', 0))):+.4f} | "
+                       f"{float(h.get('fees', 0)):.4f} | {float(h.get('funding', 0)):+.4f}{_fmark} | {float(h.get('slippage_cost', 0)):.4f} | {float(h.get('net_pnl', h.get('pnl', 0))):+.4f} | "
                        f"{float(h['r_multiple']):+.2f} | {h.get('bars_held', 0)} | {h['leverage']}x | {h.get('setup_type', '')} | {str(h.get('closed_at', ''))[:16]} |")
+        if _n_incomplete:
+            out += ["", f"> ⚠ **{_n_incomplete} kapanışta funding muhasebesi EKSİK.** Kapanış anında ya bir dönemin oranı "
+                        "doğrulanamamıştı ya da pencerenin venue kapsaması bilinmiyordu. Eksik funding UYDURULMAZ, bu yüzden "
+                        "o satırların `Funding`, `Net` ve `R` değerleri kesinleşmiş sonuç değildir ve öğrenme istatistiklerine "
+                        "YAZILMAMIŞTIR."]
         out += ["", "Kurallar: TP1'de kısmi kapama + GERÇEK başa-baş (komisyon+kayma dahil) · likidasyon bracket/MMR ile · funding: settlement zamanları venue kayıtlarından, kaçırılan dönemler toplu · "
                 "aynı tikte stop+hedef → stop (worst-case) · komisyon fill notional üzerinden · vergi ayrı ve doğrulanana kadar 0",
                 "", "[[Learning/Öğrenme]] · [[Learning/Dersler]] · [[Scanner]] · [[Dashboard]] · [[Risk/Limits]]"]

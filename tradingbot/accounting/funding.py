@@ -143,6 +143,11 @@ def chained_rates(*lookups: "RateLookup | None") -> RateLookup:
 #: settlement OLABİLİR mi?" sorusuna cevap verir; settlement zamanlarını BELİRLEMEZ.
 MIN_FUNDING_INTERVAL_H = 1
 
+#: `Position.meta` altında son funding değerlendirmesinin durduğu anahtar. Pozisyona yazılır,
+#: paylaşılan `FundingSchedule` örneğine DEĞİL: kapanış kaydı başka bir sembolün sayacını
+#: devralamasın diye (bkz. `FundingSchedule._record_eval`).
+FUNDING_EVAL_KEY = "funding_eval"
+
 
 @dataclass
 class FundingSchedule:
@@ -175,12 +180,47 @@ class FundingSchedule:
     #: `True` (varsayılan): yalnız doğrulanmış alıntı dönemi kapatır. Yalnız tarihsel/deterministik
     #: yeniden oynatma yollarında kapatılabilir.
     require_verified: bool = True
+    #: `(symbol, start, end) -> bool`. Verilirse "bu pencerenin BÜTÜN settlement'ları biliniyor mu"
+    #: sorusu KAYNAĞA sorulur. Verilmezse takvim `hours_utc`'ten HESAPLANIR, yani kapsama yapısı
+    #: gereği tamdır ve boşluk raporlanmaz.
+    coverage_source: "Callable[[str, datetime, datetime], bool] | None" = None
     #: Son `accrue()` çağrısında oran doğrulanamadığı için BEKLEYEN dönem sayısı (yalnız gözlem).
+    #: Kapanış kaydı bunu POZİSYONDAN okur, buradan DEĞİL — bkz. `_record_eval`.
     pending_settlements: int = 0
 
     def window_start(self, position: Position) -> "datetime | None":
         start_s = position.last_funding_settlement_utc or position.opened_at
         return from_iso(start_s) if start_s else None
+
+    def coverage_complete(self, position: Position, now_utc: datetime) -> bool:
+        """Bu pozisyonun kalan funding penceresindeki BÜTÜN settlement'lar biliniyor mu?
+
+        `settlements_due`'nun boş dönmesi tek başına "settlement yok" DEMEK DEĞİLDİR: kaynak
+        kapsamayı bilmiyorsa da boş döner. Bu ayrımı yapan tek yer burasıdır.
+        """
+        if self.coverage_source is None:
+            return True                  # grid: takvim hesaplanır, kapsama yapısı gereği tamdır
+        start = self.window_start(position)
+        if start is None or start >= now_utc:
+            return True                  # örtülecek pencere yok
+        try:
+            return bool(self.coverage_source(position.symbol, start, now_utc))
+        except Exception as exc:  # noqa: BLE001 — kaynak arızası FAIL-CLOSED: kapsama BİLİNMİYOR
+            log.warning("funding kapsama kaynağı hata verdi (%s): %s — kapsama EKSİK sayılıyor",
+                        position.symbol, exc)
+            return False
+
+    def _record_eval(self, position: Position, now_utc: datetime, pending: int) -> None:
+        """Bu tahakkuk denemesinin sonucunu POZİSYONA yazar.
+
+        Durum paylaşılan `FundingSchedule` örneğinde DEĞİL pozisyonda durur: `close_manual` /
+        `close_partial` gibi tahakkuk ÇAĞIRMAYAN kapanış yolları başka bir sembolün sayacını
+        devralamaz. `pending` BİLİNEN ama çözülemeyen dönem sayısıdır; `coverage_gap` ise
+        sayının BİLİNMEDİĞİNİ söyler — bu iki durum birbirinin yerine geçmez.
+        """
+        position.meta[FUNDING_EVAL_KEY] = {
+            "at": iso(now_utc), "pending": int(pending),
+            "coverage_gap": not self.coverage_complete(position, now_utc)}
 
     def settlements_due(self, position: Position, now_utc: datetime) -> list[datetime]:
         start = self.window_start(position)
@@ -202,6 +242,9 @@ class FundingSchedule:
         due = self.settlements_due(position, now_utc)
         self.pending_settlements = 0
         if not due:
+            # "Kontrol edildi, settlement yok" ile "kapsama bilinmiyor" AYNI boş listeyi üretir;
+            # ikisini `_record_eval` ayırır ve kapanış kaydı o ayrımı taşır.
+            self._record_eval(position, now_utc, 0)
             return []
         # Çağıranın verdiği ANLIK mark: yalnız settlement'a ait gerçek mark bilinmediğinde kullanılır.
         fallback_mark = D(mark_price)
@@ -261,8 +304,10 @@ class FundingSchedule:
             position.last_funding_settlement_utc = iso(settled_until)
         if last_rate is not None:
             position.meta["last_funding_rate"] = format(last_rate, "f")
+        # Watermark ilerledikten SONRA değerlendirilir: kalan pencere (settled_until, now]'dur.
+        self._record_eval(position, now_utc, self.pending_settlements)
         return events
 
 
-__all__ = ["MIN_FUNDING_INTERVAL_H", "FundingEvent", "FundingQuote", "FundingSchedule", "RateLookup",
-           "chained_rates", "static_rates"]
+__all__ = ["FUNDING_EVAL_KEY", "MIN_FUNDING_INTERVAL_H", "FundingEvent", "FundingQuote",
+           "FundingSchedule", "RateLookup", "chained_rates", "static_rates"]

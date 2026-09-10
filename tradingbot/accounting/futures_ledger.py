@@ -24,7 +24,7 @@ from typing import Any, Iterable, Mapping
 from ..core import D, ZERO, StorageError, atomic_write_json, iso, quantize_price, quantize_qty, read_json, utc_now
 from .fees import FeeSchedule
 from .filters import LeverageBracket, bracket_for, default_filters
-from .funding import FundingSchedule, RateLookup
+from .funding import FUNDING_EVAL_KEY, FundingSchedule, RateLookup
 from .liquidation import LiquidationParams, is_liquidated, liquidation_outcome, liquidation_price
 from .models import (
     SCHEMA_VERSION,
@@ -363,17 +363,22 @@ class FuturesLedgerV2:
         return gross, exit_fee
 
     def _finalize(self, pos: Position, reason: str, ts: str) -> TradeRecord:
-        # BEKLEYEN SETTLEMENT (bagimsiz inceleme DEF-2). "Donem bekler, kaybolmaz" garantisi
-        # POZISYON ACIKKEN gecerlidir: kapanista bir daha tahakkuk sansi yoktur ve bekleyen dönem
-        # kayda SESSIZ SIFIR olarak gecerdi. Artik kapanis kaydi kac donemin cozulemedigini ve
-        # watermark'in nerede kaldigini TASIR; sayi 0 degilse `funding` alani EKSIKTIR ve bunu
-        # okuyan herkes gorur. Uydurma oran YAZILMAZ — dogrulanmamis tahakkuk bu surumde yasak.
-        _pending = int(getattr(self.funding, "pending_settlements", 0) or 0)
-        if _pending:
-            pos.meta["funding_pending_at_close"] = _pending
-            pos.meta["funding_watermark_at_close"] = pos.last_funding_settlement_utc
-            log.warning("%s kapanirken %d funding donemi COZULEMEDI (watermark %s) — kayittaki "
-                        "funding EKSIK", pos.symbol, _pending, pos.last_funding_settlement_utc)
+        # FUNDING TAMAMLANMA DURUMU. Iki AYRI eksiklik vardir ve birbirinin yerine gecmez:
+        #   `pending`      — BILINEN settlement zamani, orani dogrulanamadigi icin kapanmadi.
+        #   `coverage_gap` — pencerenin kapsamasi BILINMIYOR, kac donem kacirildigi da bilinmez.
+        # Durum POZISYONDAN okunur, paylasilan `self.funding` ornegindan DEGIL: `close_manual` /
+        # `close_partial` gibi tahakkuk cagirmayan yollar baska bir sembolun sayacini devralamaz.
+        _eval = pos.meta.get(FUNDING_EVAL_KEY)
+        if isinstance(_eval, Mapping):
+            _pending, _gap = int(_eval.get("pending") or 0), bool(_eval.get("coverage_gap"))
+        else:
+            # Bu pozisyon icin funding HIC degerlendirilmedi. Kapsama kaynagi bagliyken bu bir
+            # BILGI EKSIKLIGIDIR: "sorun yok" demek, onarilan sessiz sifirin ta kendisi olurdu.
+            _pending, _gap = 0, self.funding.coverage_source is not None
+        if _pending or _gap:
+            log.warning("%s kapanirken funding EKSIK (cozulemeyen donem=%d, kapsama_boslugu=%s, "
+                        "watermark %s) — kayittaki `funding` KESINLESMIS DEGIL",
+                        pos.symbol, _pending, _gap, pos.last_funding_settlement_utc)
         self.positions.pop(pos.symbol, None)
         pos.status = "CLOSED"
         pos.closed_at = ts
@@ -400,7 +405,7 @@ class FuturesLedgerV2:
             exit_fee=exit_fee, funding_paid=pos.funding_paid, funding_received=pos.funding_received,
             slippage_cost=pos.slippage_cost, spread_cost=spread_cost, tax_estimate=tax_est, gross_pnl=gross, net_pnl=net,
             exit_price=exit_px, liquidation_price=pos.liquidation_price, fills=list(pos.fills),
-            funding_pending_settlements=_pending,
+            funding_pending_settlements=_pending, funding_coverage_gap=_gap,
             costs={"entry_fee": format(pos.entry_fee, "f"), "exit_fee": format(exit_fee, "f"),
                    "funding_paid": format(pos.funding_paid, "f"), "funding_received": format(pos.funding_received, "f"),
                    "slippage": format(pos.slippage_cost, "f"), "spread": format(spread_cost, "f"),

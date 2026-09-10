@@ -16,6 +16,7 @@ from __future__ import annotations
 import math
 from typing import Any, Iterable
 
+from ..accounting.models import funding_incomplete
 from ..core import atomic_write_json, stable_id
 from ..learn.labels import label_outcome
 
@@ -54,7 +55,11 @@ _CORE_FIELDS = ("p_win", "expected_r", "ensemble_score", "regime", "setup_id", "
 def _base_record(*, source_kind: str, flags: list[str]) -> dict[str, Any]:
     if source_kind not in SOURCE_KINDS:
         flags.append(f"UNKNOWN_SOURCE:{source_kind}")
-    return {"schema_version": SCHEMA_VERSION, "source_kind": source_kind, "quality_flags": flags}
+    # `funding_complete`: kapanısın funding muhasebesi tam mı. `None` = sorusu geçersiz/ölçülmedi
+    # (henüz kapanmamış ya da funding taşımayan karşı-olgusal kayıt). `False` olduğunda `net_pnl`
+    # ve `r_multiple` KESİNLEŞMİŞ sonuç değildir.
+    return {"schema_version": SCHEMA_VERSION, "source_kind": source_kind, "quality_flags": flags,
+            "funding_complete": None}
 
 
 def row_from_memory(entry: dict[str, Any], exit_row: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -126,7 +131,11 @@ def row_from_memory(entry: dict[str, Any], exit_row: dict[str, Any] | None = Non
             "bars_held": int(outcome.get("bars_held")) if isinstance(outcome.get("bars_held"), (int, float)) else None,
             "outcome_class": lab.get("outcome_class"),
             "outcome_labeled": True,
+            "funding_complete": not funding_incomplete(outcome),
         })
+        if funding_incomplete(outcome):
+            # Kalite bayrağı: `net_pnl`/`r_multiple` eksik funding taşıyor, kesinleşmiş DEĞİL.
+            flags.append("FUNDING_INCOMPLETE")
     else:
         rec["effective_notional"] = None
         rec.update({"exit_reason": None, "gross_pnl": None, "net_pnl": None, "fees": None,

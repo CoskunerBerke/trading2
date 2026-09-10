@@ -15,6 +15,7 @@ from typing import Any
 
 import numpy as np
 
+from ..accounting.models import funding_incomplete
 from ..core import atomic_write_json, from_iso, iso, read_json, utc_now
 from .calibration import Calibrator, calibration_metrics
 from .features import FEATURE_VERSION, build_features, to_vector
@@ -204,30 +205,41 @@ class LearnerV2:
         regime = str((decision_snapshot or {}).get("regime") or f.get("regime") or "")
         symbol, setup, side = str(rec.get("symbol", "")), str(rec.get("setup_type", f.get("setup_type", "-"))), str(rec.get("side", f.get("direction", "")))
         won = 1.0 if lab["won"] else 0.0
-        # TEK gozlem, IKI yaprak granulerligi (`SYM|setup` ve `SYM`). Tek cagri kullanilir:
-        # aksi halde ortak atalar (`""` global ve `regime:X`) ayni kapanis icin IKI KEZ
-        # sayilirdi (bkz. HierarchicalRate._keys_multi).
-        self.win.add(won, regime=regime or None, leaves=(f"{symbol}|{setup}", symbol))
-        self.exp_r.add(lab["r_multiple"], regime=regime or None, leaf=f"{setup}|{side}")
-        # KAYIP BÜYÜKLÜĞÜ: yalnız NEGATİF R yazılır. `r_multiple` zaten fee/funding/slippage
-        # SONRASI NET'tir; maliyet burada TEKRAR eklenmez (bkz. `opportunity` çift sayım notu).
-        _r = float(lab["r_multiple"] or 0.0)
-        if _r < 0:
-            self.loss_r.add(abs(_r), regime=regime or None, leaves=(f"{symbol}|{setup}", symbol))
-        for a in pm.agents_right:
-            self.agent_hit.add(1.0, regime=regime or None, leaf=a)
-        for a in pm.agents_wrong:
-            self.agent_hit.add(0.0, regime=regime or None, leaf=a)
-        self.n_closed += 1
+        # FUNDING TAMAMLANMA KAPISI. Eksik funding tasiyan kapanisin NET sonucu (`r_multiple`,
+        # `won`) KESINLESMIS DEGILDIR: cozulemeyen donem uydurulmadigi icin sayilar eksik
+        # taraftadir. Boyle bir kayit hiyerarsik oranlara, kayip buyuklugune ve ajan isabetlerine
+        # YAZILMAZ; `learning_keys` de uretilmez, cunku provenans GERCEKTEN yazilan dugumleri
+        # bildirir. Ders yine de gorunur kalir ve hafizaya cikis olarak islenir.
+        provisional = funding_incomplete(rec)
+        if not provisional:
+            # TEK gozlem, IKI yaprak granulerligi (`SYM|setup` ve `SYM`). Tek cagri kullanilir:
+            # aksi halde ortak atalar (`""` global ve `regime:X`) ayni kapanis icin IKI KEZ
+            # sayilirdi (bkz. HierarchicalRate._keys_multi).
+            self.win.add(won, regime=regime or None, leaves=(f"{symbol}|{setup}", symbol))
+            self.exp_r.add(lab["r_multiple"], regime=regime or None, leaf=f"{setup}|{side}")
+            # KAYIP BÜYÜKLÜĞÜ: yalnız NEGATİF R yazılır. `r_multiple` zaten fee/funding/slippage
+            # SONRASI NET'tir; maliyet burada TEKRAR eklenmez (bkz. `opportunity` çift sayım notu).
+            _r = float(lab["r_multiple"] or 0.0)
+            if _r < 0:
+                self.loss_r.add(abs(_r), regime=regime or None, leaves=(f"{symbol}|{setup}", symbol))
+            for a in pm.agents_right:
+                self.agent_hit.add(1.0, regime=regime or None, leaf=a)
+            for a in pm.agents_wrong:
+                self.agent_hit.add(0.0, regime=regime or None, leaf=a)
+            self.n_closed += 1
         lesson = {"id": rec.get("id"), "symbol": symbol, "side": side, "r": lab["r_multiple"], "won": lab["won"], "exit": rec.get("exit_reason"),
                   "at": rec.get("closed_at"), "codes": pm.lesson_codes, "why": pm.lesson_text_tr, "setup": setup, "regime": regime,
-                  # PROVENANS: bu kapanisin GERCEKTEN yazdigi dugum anahtarlari ve agirlik.
-                  # `regime` KAPANIS ANI rejimidir (giris ani rejimi DEGIL) ve zaten yukarida
-                  # `decision_snapshot`tan gelir; burada yalnizca ACIKCA kayda gecirilir.
-                  "learning_keys": {"semantics": LEARNING_SEMANTICS, "regime_at_close": regime or None,
-                                    "win_leaves": [f"{symbol}|{setup}", symbol],
-                                    "exp_r_leaf": f"{setup}|{side}", "weight": 1.0,
-                                    "feature_version": FEATURE_VERSION}}
+                  "provisional": provisional, "learned_into_statistics": not provisional}
+        if provisional:
+            lesson["provisional_reason"] = "FUNDING_INCOMPLETE"
+        else:
+            # PROVENANS: bu kapanisin GERCEKTEN yazdigi dugum anahtarlari ve agirlik.
+            # `regime` KAPANIS ANI rejimidir (giris ani rejimi DEGIL) ve zaten yukarida
+            # `decision_snapshot`tan gelir; burada yalnizca ACIKCA kayda gecirilir.
+            lesson["learning_keys"] = {"semantics": LEARNING_SEMANTICS, "regime_at_close": regime or None,
+                                       "win_leaves": [f"{symbol}|{setup}", symbol],
+                                       "exp_r_leaf": f"{setup}|{side}", "weight": 1.0,
+                                       "feature_version": FEATURE_VERSION}
         self.lessons.append(lesson)
         self.memory.record_exit(str(rec.get("id")), {**rec, **lab}, price_path, pm.to_dict())
         self.save()

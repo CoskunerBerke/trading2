@@ -40,14 +40,41 @@ _UNIVERSE: tuple[tuple[str, int, float], ...] = tuple(
     ))
 
 
+class _ZeroFundingVenue:
+    """Agsiz funding gecmisi: sekiz saatte bir DOGRULANMIS SIFIR oran."""
+
+    def __init__(self, rows):
+        self.rows = rows
+
+    def funding_history(self, symbol, limit=1000, start_ms=None, end_ms=None):
+        return [r for r in self.rows
+                if (start_ms is None or r["funding_ts"] >= start_ms)
+                and (end_ms is None or r["funding_ts"] <= end_ms)]
+
+
+def _seed_funding_coverage(eng, symbols, now_ms: int, *, days_back: int = 3) -> None:
+    """Sembollerin funding penceresini BILINIR yapar (bkz. `_engine` icindeki gerekce)."""
+    from datetime import datetime, timedelta, timezone
+    hour_ms = 3_600_000
+    start_ms = (now_ms - days_back * 86_400_000) // hour_ms * hour_ms
+    rows = [{"funding_ts": start_ms + i * 8 * hour_ms, "rate": "0.0", "mark": "1"}
+            for i in range(days_back * 3 + 1)]
+    start = datetime.fromtimestamp(start_ms / 1000, tz=timezone.utc)
+    end = datetime.fromtimestamp(now_ms / 1000, tz=timezone.utc) + timedelta(hours=2)
+    for sym in symbols:
+        eng.funding_rates.refresh(_ZeroFundingVenue(rows), sym, start, end)
+
+
 def _engine(tmp_path: Path, monkeypatch, v3_overrides: dict | None = None,
             *, before_build=None, symbols: int | list[str] | None = None,
-            equity: float | None = None, p_win: float | None = None) -> TradingEngineV3:
+            equity: float | None = None, p_win: float | None = None,
+            seed_funding: bool = True) -> TradingEngineV3:
     """Agsiz V3 motoru. `v3_overrides` v3 config bolumlerini derinlemesine gunceller;
     `before_build(cfg)` motor kurulmadan ONCE state dizinine dokunmak icin cagrilir.
 
     `symbols` bir sayi ise `_UNIVERSE`'in ilk N sembolu kullanilir (varsayilan 2). `equity` senaryo
-    kurulumu icindir ve bir ADET kotasi degildir.
+    kurulumu icindir ve bir ADET kotasi degildir. `seed_funding=False` funding onbellegini SOGUK
+    birakir; yalniz konusu funding kapsamasinin YOKLUGU olan testler bunu ister.
 
     DEFTER ADET TAVANI OVERRIDE EDILEMEZ (bilincli): `cfg.futures.max_positions` uretim
     varsayilaninda (3) birakilir. Motor bu tavani runtime risk profilinden turetir; PAPER_RESEARCH
@@ -89,6 +116,14 @@ def _engine(tmp_path: Path, monkeypatch, v3_overrides: dict | None = None,
             shift = (now_ms - now_ms % tf_ms) - 2 * tf_ms - int(df["timestamp"].iloc[-1])
             df["timestamp"] = df["timestamp"] + shift
             df.index = df.index + pd.Timedelta(milliseconds=shift)
+    # FUNDING KAPSAMASI — sahte piyasanin funding tarafi. Uretimde turun `ensure_funding_rates`
+    # cagrisi venue'dan cekerek pencereyi kapsar; burada venue YOK, dolayisiyla kapsama acikca
+    # kurulur. Kurulmazsa her kapanis `funding_coverage_gap` tasir ve NET SONUC ogrenilmez
+    # (bilincli sozlesme; kendisi `tests/test_funding_completeness_v1.py` icinde sinanir).
+    # Oranlar DOGRULANMIS SIFIR: kapsama gercek olur ama tahakkuk 0 kalir, pnl beklentileri
+    # degismez.
+    if seed_funding:
+        _seed_funding_coverage(eng, syms, now_ms)
     fake_live = FakeLive()
     fake_live._frames = frames
     fake_live._now_s = now_ms / 1000

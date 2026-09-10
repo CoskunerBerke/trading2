@@ -8,7 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, fields
 from decimal import Decimal
 from enum import Enum
-from typing import Any
+from typing import Any, Mapping
 
 from ..core import D, ZERO, from_iso, iso
 
@@ -470,6 +470,37 @@ class LedgerEntry:
 
 
 # ----------------------------------------------------------------------------- closed trade record
+#: Kapanis kaydinin funding muhasebesi durumu. `INCOMPLETE` -> `funding`/`net_pnl`/`r_multiple`
+#: KESINLESMIS degildir; eksik funding uydurulmadigi icin sayilar eksik taraftadir.
+FUNDING_COMPLETE = "COMPLETE"
+FUNDING_INCOMPLETE = "INCOMPLETE"
+
+
+def funding_incomplete(rec: Any) -> bool:
+    """Kapanis KAYDI (dict ya da TradeRecord) icin: funding muhasebesi eksik mi?
+
+    Tuketicilerin bu ayrimi tek tek yeniden kurmasi, birinde unutulmasi demektir; unutulan yer
+    onarilan sessiz sifira geri doner. Tek okuma noktasi burasidir.
+    """
+    if rec is None:
+        return False
+    if isinstance(rec, TradeRecord):
+        return rec.funding_incomplete
+    if not isinstance(rec, Mapping):
+        return False
+    v = rec.get("funding_incomplete")
+    if v is not None:
+        return bool(v)
+    st = rec.get("funding_status")
+    if st is not None:
+        return str(st) == FUNDING_INCOMPLETE
+    return bool(rec.get("funding_pending_settlements")) or bool(rec.get("funding_coverage_gap"))
+
+
+def funding_status(rec: Any) -> str:
+    """`FUNDING_COMPLETE` ya da `FUNDING_INCOMPLETE` — rapor ve gunluk icin metin durumu."""
+    return FUNDING_INCOMPLETE if funding_incomplete(rec) else FUNDING_COMPLETE
+
 LEGACY_TRADE_KEYS = ("id", "symbol", "side", "entry", "exit_reason", "closed_at", "opened_at", "pnl", "fees", "funding",
                      "r_multiple", "mae_pct", "mfe_pct", "bars_held", "leverage", "setup_type", "trigger_text", "features", "tp1_done")
 
@@ -490,9 +521,13 @@ class TradeRecord:
     r_multiple: Decimal = ZERO
     mae_pct: Decimal = ZERO
     mfe_pct: Decimal = ZERO
-    #: Kapanista oran DOGRULANAMADIGI icin cozulemeyen funding donemi sayisi. 0'dan buyukse
-    #: bu kaydin `funding` alani EKSIKTIR (uydurma oran yazilmaz; bkz. FundingSchedule).
+    #: Kapanista oran DOGRULANAMADIGI icin cozulemeyen BILINEN funding donemi sayisi. 0'dan
+    #: buyukse bu kaydin `funding` alani EKSIKTIR (uydurma oran yazilmaz; bkz. FundingSchedule).
     funding_pending_settlements: int = 0
+    #: Kapanista funding penceresinin kapsamasi BILINMIYORDU: kac donem kacirildigi da bilinmez.
+    #: `funding_pending_settlements` ile ayni sey DEGILDIR — o BILINEN bir sayidir, bu ise
+    #: sayinin bilinmedigini soyler. Ikisi de uydurma deger YAZMAZ.
+    funding_coverage_gap: bool = False
     bars_held: int = 0
     leverage: int = 1
     setup_type: str = ""
@@ -525,6 +560,16 @@ class TradeRecord:
     def to_dict(self) -> dict:
         return ser(self)
 
+    @property
+    def funding_incomplete(self) -> bool:
+        """Bu kaydin funding muhasebesi EKSIK mi? (bilinen cozulemeyen donem VEYA bilinmeyen kapsama)
+
+        `True` ise `funding`/`net_pnl`/`r_multiple` KESINLESMIS sonuc DEGILDIR: eksik funding
+        uydurulmadigi icin sayilar eksik tarafa sapar. Ogrenme bu kaydi net sonuc olarak
+        kullanmaz (bkz. modul duzeyindeki `funding_incomplete`).
+        """
+        return bool(self.funding_pending_settlements) or bool(self.funding_coverage_gap)
+
     def to_legacy_dict(self) -> dict:
         """learning.py / eski tüketiciler için float değerli sözlük (Decimal → float)."""
         out = {}
@@ -533,7 +578,13 @@ class TradeRecord:
             out[k] = float(v) if isinstance(v, Decimal) else v
         out.update({"net_pnl": float(self.net_pnl), "gross_pnl": float(self.gross_pnl), "quantity": float(self.quantity),
                     "exit_price": float(self.exit_price) if self.exit_price is not None else None,
-                    "market_type": self.market_type.value, "amount_type": self.amount_type.value})
+                    "market_type": self.market_type.value, "amount_type": self.amount_type.value,
+                    # FUNDING TAMAMLANMA DURUMU — `LEGACY_TRADE_KEYS`'e alan eklemek YETMEZ,
+                    # tuketicilerin okuyacagi TUREV bayrak da acikca tasinir.
+                    "funding_pending_settlements": int(self.funding_pending_settlements),
+                    "funding_coverage_gap": bool(self.funding_coverage_gap),
+                    "funding_incomplete": self.funding_incomplete,
+                    "funding_status": FUNDING_INCOMPLETE if self.funding_incomplete else FUNDING_COMPLETE})
         return out
 
     @classmethod
@@ -548,6 +599,9 @@ class TradeRecord:
         d["fills"] = [Fill.from_dict(x) for x in d.get("fills", [])]
         d["bars_held"] = int(d.get("bars_held", 0))
         d["leverage"] = int(d.get("leverage", 1))
+        # Elle duzenlenmis ya da float yazilmis JSON degeri tipini DEGISTIRMEDEN gecmesin.
+        d["funding_pending_settlements"] = int(d.get("funding_pending_settlements", 0) or 0)
+        d["funding_coverage_gap"] = bool(d.get("funding_coverage_gap", False))
         for k in ("id", "symbol", "side", "exit_reason", "closed_at", "opened_at"):
             d.setdefault(k, "")
         d.setdefault("entry", ZERO)
@@ -571,4 +625,5 @@ class TradeRecord:
 
 __all__ = ["SCHEMA_VERSION", "MarketType", "Side", "PositionSide", "OrderType", "TimeInForce", "OrderStatus", "AmountType",
            "MarginMode", "LedgerKind", "TickData", "SymbolFilters", "SizeSpec", "Fill", "Order", "Lot", "Position", "LedgerEntry",
-           "TradeRecord", "LEGACY_TRADE_KEYS", "ser", "dec_or_none"]
+           "TradeRecord", "LEGACY_TRADE_KEYS", "ser", "dec_or_none",
+           "FUNDING_COMPLETE", "FUNDING_INCOMPLETE", "funding_incomplete", "funding_status"]

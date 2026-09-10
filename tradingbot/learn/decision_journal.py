@@ -26,6 +26,7 @@ import threading
 from pathlib import Path
 from typing import Any, Iterable, Iterator
 
+from ..accounting.models import funding_status
 from ..core import atomic_write_text, iso, stable_id, utc_now
 from .journal_archive import ArchiveError, SegmentArchive
 
@@ -268,6 +269,11 @@ def build_outcome_link(*, trade_id: str, outcome: dict[str, Any],
         "targets_hit": o.get("targets_hit"),
         "opened_at": _s(o.get("opened_at")),
         "lesson_codes": [str(x)[:40] for x in ((lesson or {}).get("codes") or [])][:MAX_REASONS] or None,
+        # FUNDING TAMAMLANMA: `INCOMPLETE` ise yukarıdaki `funding`/`net_pnl`/`r_multiple`
+        # KESİNLEŞMİŞ değildir ve bu kapanış öğrenme istatistiklerine yazılmamıştır.
+        "funding_status": funding_status(o),
+        "funding_pending_settlements": int(o.get("funding_pending_settlements") or 0),
+        "funding_coverage_gap": bool(o.get("funding_coverage_gap")),
         "provenance": "paper_ledger_close",
     }
 

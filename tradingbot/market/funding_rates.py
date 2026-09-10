@@ -40,6 +40,12 @@ log = logging.getLogger(__name__)
 
 SCHEMA_VERSION = "funding_rates_v1"
 _HOUR_MS = 3_600_000
+#: Venue settlement damgasi tam saatten birkac SANIYE kayabilir. `covers` "bu pencerede tam saat
+#: yok" derken bu bandi acik birakir. Dar tutmak sessiz kayip, GENIS tutmak da zarar verir:
+#: band kadar uzunluktaki her pencere -- saniyelik bir pozisyonun omru dahil -- gereksiz yere
+#: "EKSIK" damgalanir ve ogrenmeden duser. Altmis saniye, gozlenen kaymanin cok ustunde ve en
+#: kisa funding araliginin (1 saat) altmisda biridir.
+_SETTLE_BAND_MS = 60 * 1000
 SOURCE = "funding_history"
 
 
@@ -150,6 +156,63 @@ class FundingRateCache:
     def covered_to_ms(self, symbol: str) -> int:
         """Bu sembol icin BASARIYLA cekilmis pencerenin sonu (ms). Hic cekim yoksa 0."""
         return int(self._covered_to.get(to_raw(symbol), 0))
+
+    def _projected_settlements(self, symbol: str, lo: int, hi: int) -> "list[int] | None":
+        """(lo, hi] araligina dusen settlement anlari (ms) — GOZLENEN takvimden turetilir.
+
+        `None` = sembolun takvimi BILINMIYOR (aralik iki kayit birikmeden cikarilamaz); bu
+        "settlement yok" ile ayni sey DEGILDIR.
+        """
+        raw = to_raw(symbol)
+        interval = self.observed_interval_ms(symbol)
+        keys = sorted(self._rates.get(raw) or {})
+        if interval is None or not keys:
+            return None
+        anchor = keys[-1] * _HOUR_MS
+        t = anchor + ((lo - anchor) // interval) * interval      # lo'nun soluna hizala
+        out = []
+        while t <= hi:
+            if t > lo:
+                out.append(t)
+            t += interval
+        return out
+
+    def covers(self, symbol: str, start: datetime, end: datetime) -> bool:
+        """(start, end] araligindaki BUTUN settlement'lari biliyor muyuz?
+
+        `settlements_in`'in BOS donmesi iki AYRI durumu ayni gosterir: "bu aralik tamamen
+        kontrol edildi, settlement yok" ve "araligin kapsamasi bilinmiyor". Ikincisinde eksik
+        olay sayisi BILINMEZ ve uydurulamaz; cagiran bunu ayirt edebilsin diye bu yordam var.
+
+        `True` uc durumda:
+          (a) pencereye hicbir TAM SAAT dusmuyor. Venue settlement'lari tam saatte yayimlar
+              (bkz. `hour_key`; en kisa aralik `MIN_FUNDING_INTERVAL_H` = 1 saat), dolayisiyla
+              boyle bir pencerede settlement OLAMAZ. Saniyelik saat kaymasina karsi dar bir
+              guvenlik bandi birakilir.
+          (b) basariyla cekilmis pencere araligi TAMAMEN ortuyor;
+          (c) kapsama kismi ama GOZLENEN takvim geregi araliga settlement DUSMUYOR — ya da
+              dusenlerin hepsi cekilmis kapsamanin icinde.
+
+        BILINEN SINIR: (c) venue'nun gozlenen takvimine guvenir. Venue bir sembolun funding
+        araligini KISALTIRSA, yeni takvimdeki ilk settlement onbellek yeni araligi ogrenene
+        kadar gorunmez. Bu, `needs_window`'un zaten tasidigi ayni sinirdir ve daha genis bir
+        onarim (venue takvim ucu) bu surumun kapsami disindadir.
+        """
+        raw = to_raw(symbol)
+        lo, hi = int(start.timestamp() * 1000), int(end.timestamp() * 1000)
+        if hi <= lo:
+            return True
+        if (lo - _SETTLE_BAND_MS) // _HOUR_MS == (hi + _SETTLE_BAND_MS) // _HOUR_MS:
+            return True                       # (a) pencerede TAM SAAT yok -> settlement OLAMAZ
+        cov_from, cov_to = self._covered_from.get(raw), int(self._covered_to.get(raw, 0))
+        if cov_from is not None and cov_from <= lo and cov_to >= hi:
+            return True                       # (b) pencere tamamen cekilmis
+        due = self._projected_settlements(symbol, lo, hi)
+        if due is None:
+            return False                      # takvim BILINMIYOR -> konusamayiz
+        if not due:
+            return True                       # (c) takvimde bu araliga settlement dusmuyor
+        return cov_from is not None and cov_from <= min(due) and cov_to >= max(due)
 
     def observed_interval_ms(self, symbol: str) -> int | None:
         """Sembolun GOZLENEN funding araligi (ms) — venue kayitlarindan turetilir, VARSAYILMAZ.

@@ -191,3 +191,74 @@ kapatmaya çalıştığı davranışın ta kendisidir.
 * `e8f19b6`'nın ~56 istek/gün rakamı daha düşüktür ama **yanlış takvime** (sabit 8 saat) sorduğu
   için eksik soruyordu. Doğru takvimle 14 sembolün gerçek settlement sayısı günde 42–84'tür;
   117 istek bunun üstünde ince bir paydır ve her istek ağırlık 1'dir.
+
+---
+
+# Funding tamamlanma V1 (2026-09-10) — kapanış incelemesinin bıraktığı engelin onarımı
+
+Kapanış incelemesi `0bcbcb0`'ı **bloke etti**: DEF-2 için eklenen kanıt kapısı, tam da kendi
+birincil arıza modunda `0` okuyordu. Bu bölüm onarımı ve sınırlarını kaydeder.
+
+## Kusur
+
+Üretimde `FundingSchedule.settlement_source = FundingRateCache.settlements_in` bağlıdır ve
+`ac2e3a8`'in fail-closed koruması, kapsama watermark'tan önce başlamıyorsa `settlements_in`'i
+**boş** döndürür. Boş liste `accrue`'yu erken döndürür, `pending_settlements` `0` kalır. Böylece
+**"bu aralık tamamen kontrol edildi, settlement yok"** ile **"aralığın kapsaması bilinmiyor"**
+kapanışta ayırt edilemiyordu: kayıt `funding=0`, sayaç `0`, uyarı yok.
+
+Aynı zincirde ikinci kusur: alan `LEGACY_TRADE_KEYS` dışındaydı, `to_legacy_dict()` onu düşürüyor
+ve öğrenme hattı bayrağı hiç görmüyordu.
+
+## Onarım
+
+* `FundingRateCache.covers(symbol, start, end)` — pencerenin bütün settlement'ları biliniyor mu?
+  `True` üç durumda: pencereye hiç **tam saat** düşmüyor (venue settlement'ları tam saatte
+  yayımlar, en kısa aralık 1 saattir; saat kaymasına karşı 60 sn band); çekilmiş kapsama pencereyi
+  tamamen örtüyor; ya da gözlenen takvim gereği aralığa settlement düşmüyor.
+* `FundingSchedule.coverage_source` + `coverage_complete()` — ayrımı yapan tek yer. Kaynak
+  bağlı değilse (grid) takvim **hesaplanır**, kapsama yapısı gereği tamdır ve boşluk uydurulmaz.
+* `FundingSchedule._record_eval()` — sonuç **pozisyona** yazılır (`meta.funding_eval`), paylaşılan
+  `FundingSchedule` örneğine değil. `close_manual` / `close_partial` böylece başka bir sembolün
+  sayacını devralamaz. Hiç değerlendirilmemiş pozisyon, kapsama kaynağı bağlıyken **fail-closed**.
+* `TradeRecord.funding_coverage_gap` (yeni) + `funding_pending_settlements` (var olan). İkisi
+  **ayrı olgudur**: biri BİLİNEN çözülemeyen dönem sayısı, öteki sayının BİLİNMEDİĞİ. Türev
+  `funding_incomplete` ve metin `funding_status` `to_legacy_dict()` ile taşınır.
+
+## Eksik kapanış uçtan uca nasıl ele alınır
+
+| Katman | Davranış |
+|---|---|
+| Defter kaydı | `funding_coverage_gap` / `funding_pending_settlements` yazılır, WARNING loglanır; uydurma oran YOK |
+| Legacy dönüşüm | `funding_incomplete` ve `funding_status` açıkça taşınır |
+| Öğrenici v1 | Ağırlık, ajan isabeti, kurulum/sembol/çıkış istatistiği, kara liste, `n_trades` **güncellenmez**; ders `provisional` damgasıyla yazılır |
+| Öğrenici v2 | `win` / `exp_r` / `loss_r` / `agent_hit` düğümleri ve `n_closed` **güncellenmez**; `learning_keys` **üretilmez** (provenans yalnız gerçekten yazılanı bildirir) |
+| Karar günlüğü | `funding_status` + iki olgu satırda durur |
+| Quant günlüğü | `funding_complete=False` ve `FUNDING_INCOMPLETE` kalite bayrağı |
+| Obsidian raporu | Funding hücresinde `⚠EKSİK` işareti + kaç kapanışın eksik olduğunu söyleyen uyarı satırı |
+
+**Kapanış GECİKMEZ.** Stop, hedef ve likidasyon funding verisini beklemez; muhasebe durumu ayrı
+tutulur. Tarihsel defter yeniden yazılmaz.
+
+**SONRADAN TAMAMLAMA YOKTUR.** Pozisyon kapandıktan sonra funding yeniden tahakkuk etmez;
+kayıt kalıcı olarak istatistik dışıdır ve defterde eksik olduğunu söyleyerek durur. Yeni bir
+mutabakat sistemi kurulmadı — uydurma oranla tamamlamak, onarılan sessiz sıfırın ta kendisidir.
+
+## Kanıt
+
+`tests/test_funding_completeness_v1.py` (16 test) dört durumu gerçek üretim kablolamasından
+ayırır: kapsama eksik · kapsama tam ve settlement yok · doğrulanmış sıfır oran · doğrulanmış
+sıfırdan farklı oran. İlk üçünün ikisinde `funding == 0`'dır; ayrımı kaldıran gerileme testlerden
+birini düşürür. Ayrıca öğrenme kapısı, pozisyonlar arası sızıntı ve motor kablolaması sınanır.
+
+**Mutasyon kapısı: 12 mutasyonun 12'si yakalandı** (`covers` üç varyant, motor kablolaması,
+`_finalize` iki varyant, `accrue` kapsama çağrısı, `to_legacy_dict`, iki öğrenici kapısı, quant ve
+karar günlüğü). Tam paket **2163 passed / 22 skipped, exit 0**; `ruff check .` ve `compileall` temiz.
+
+## Açık kalan sınırlar (bu turda kapsam dışı)
+
+* Venue bir sembolün funding **aralığını kısaltırsa**, yeni takvimdeki ilk settlement önbellek
+  aralığı öğrenene kadar görünmez. `needs_window`'un zaten taşıdığı aynı sınır.
+* `futures_backtest.py` hâlâ sabit 00/08/16 grid'inde (üretim yolu değil).
+* D5 ölü venue'da tur başına ~40 sn gecikme, D6/D7 test boşlukları, D8 sayaç görünürlüğü,
+  D9 girişten sonraki mark-only pencere — hepsi açık ve bu onarımın kapsamı dışında.

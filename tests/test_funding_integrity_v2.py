@@ -28,7 +28,7 @@ import test_engine_v3 as TE  # noqa: E402
 
 from tradingbot.accounting import AmountType, LedgerKind, SizeSpec, TickData  # noqa: E402
 from tradingbot.accounting.funding import FundingSchedule  # noqa: E402
-from tradingbot.accounting.models import MarketType, Position, PositionSide  # noqa: E402
+from tradingbot.accounting.models import MarketType, Position, PositionSide, TradeRecord  # noqa: E402
 from tradingbot.market.funding_rates import FundingRateCache  # noqa: E402
 
 D = Decimal
@@ -140,7 +140,7 @@ def _engine_with_position(tmp_path, monkeypatch, opened_hours_ago: float = 30.0)
 
     Aksi halde `exit_check` pozisyonu ilk cagride kapatir ve funding sozlesmesi hic sinanmaz.
     """
-    eng = TE._engine(tmp_path, monkeypatch, symbols=[ETH], equity=1000)
+    eng = TE._engine(tmp_path, monkeypatch, symbols=[ETH], equity=1000, seed_funding=False)  # SOGUK onbellek: konusu kapsamanin YOKLUGU
     px = float(((eng.runner.live.snapshot(ETH) or {}).get("ticker") or {}).get("last") or 0)
     assert px > 0, "sahte canli fiyat yok"
     now0 = datetime.now(UTC).replace(microsecond=0)
@@ -242,7 +242,7 @@ def test_marks_carries_provenance_so_in_life_bar_extremes_still_reach_the_ledger
     GERCEK `_marks` ciktisi GERCEK deftere verilir: pozisyonun omru icinde acilmis bir barin ucu
     MFE'ye ULASMALIDIR. Provenans bos olsaydi uc sessizce dusurulur ve MFE yalniz mark'tan gelirdi.
     """
-    eng = TE._engine(tmp_path, monkeypatch, symbols=[ETH], equity=1000)
+    eng = TE._engine(tmp_path, monkeypatch, symbols=[ETH], equity=1000, seed_funding=False)  # SOGUK onbellek: konusu kapsamanin YOKLUGU
     now0 = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
     bar_open = now0 - timedelta(hours=1)
     opened = bar_open - timedelta(hours=3)                   # bar TAMAMEN pozisyonun omru icinde
@@ -261,7 +261,7 @@ def test_marks_carries_provenance_so_in_life_bar_extremes_still_reach_the_ledger
 
 def test_marks_provenance_still_blocks_a_pre_entry_bar(tmp_path, monkeypatch):
     """Ayni GERCEK yol, ters yon: giristen ONCE acilmis bar MFE'ye yazamaz."""
-    eng = TE._engine(tmp_path, monkeypatch, symbols=[ETH], equity=1000)
+    eng = TE._engine(tmp_path, monkeypatch, symbols=[ETH], equity=1000, seed_funding=False)  # SOGUK onbellek: konusu kapsamanin YOKLUGU
     now0 = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
     bar_open = now0 - timedelta(hours=1)
     opened = bar_open + timedelta(minutes=20)                # bar, pozisyondan ONCE acildi
@@ -535,4 +535,9 @@ def test_pending_settlement_is_recorded_on_the_close_not_written_as_zero(tmp_pat
     rec = closed[0]
     assert rec.funding == 0                                  # uydurma oran YAZILMADI
     assert rec.funding_pending_settlements >= 1, "cozulememis donem kayitta GORUNMUYOR"
-    assert pos.meta.get("funding_watermark_at_close") == t_open.isoformat()
+    # Kapsama BOSLUGU degil: settlement zamani BILINIYORDU, kapatamayan sey orandi. Iki durum
+    # ayri kalmali, yoksa "kac donem" sorusunun cevabi bilinmiyormus gibi gorunur.
+    assert rec.funding_coverage_gap is False
+    # Kanit KALICI olmali: pozisyon `meta`si kapanista atilir, kayit ise deftere yazilir.
+    assert rec.to_legacy_dict()["funding_incomplete"] is True
+    assert TradeRecord.from_dict(rec.to_dict()).funding_pending_settlements == rec.funding_pending_settlements

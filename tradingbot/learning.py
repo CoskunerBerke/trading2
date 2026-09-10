@@ -20,6 +20,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
+from .accounting.models import funding_incomplete
+
 AGENTS = ["trend", "momentum", "candles", "volume", "levels", "market", "analog", "edge"]
 BASE_W = {"trend": 0.22, "momentum": 0.13, "candles": 0.10, "volume": 0.09, "levels": 0.12, "market": 0.11, "analog": 0.15, "edge": 0.18}
 FEATURES = ([f"bias_{a}" for a in AGENTS] + [f"conf_{a}" for a in AGENTS] +
@@ -235,6 +237,8 @@ class Learner:
         f = rec.get("features") or {}
         won = rec["pnl"] > 0
         r = float(rec.get("r_multiple", 0.0))
+        if funding_incomplete(rec):
+            return self._learn_provisional(rec, f, won, r)
         y = 1.0 if won else 0.0
         # 1) lojistik regresyon SGD adımı
         x = self._vec(f)
@@ -312,6 +316,29 @@ class Learner:
         # 4) teşhis / dersler
         lesson = self._diagnose(rec, f, won, r, right, wrong, warned, p)
         lesson["agent_contributions"] = agent_contributions
+        s.lessons.append(lesson)
+        s.n_lessons_lifetime = int(s.n_lessons_lifetime or 0) + 1
+        self._retain_lessons()
+        self.save()
+        return lesson
+
+    def _learn_provisional(self, rec: dict, f: dict, won: bool, r: float) -> dict:
+        """Funding muhasebesi EKSİK kapanış: ders YAZILIR, istatistik YAZILMAZ.
+
+        `pnl`/`r_multiple` eksik funding taşıdığı için KESİNLEŞMİŞ net sonuç değildir. Ağırlıklar,
+        ajan isabetleri, kurulum/sembol/çıkış istatistikleri, kara liste ve `n_trades` bu kayıttan
+        GÜNCELLENMEZ; aksi hâlde eksik bir net sonuç kalıcı olarak öğrenilmiş olurdu. Kayıt
+        görünmez olmaz: ders listesine `provisional` damgasıyla girer ve defterde durur.
+
+        SONRADAN TAMAMLAMA YOKTUR: pozisyon kapandıktan sonra funding yeniden tahakkuk etmez,
+        dolayısıyla bu kayıt kalıcı olarak istatistik dışıdır. Bilerek böyle: uydurma bir oranla
+        tamamlamak, onarılan sessiz sıfırın ta kendisidir.
+        """
+        s = self.state
+        p = _sigmoid(s.bias + sum(s.weights[k] * v for k, v in self._vec(f).items()))
+        lesson = self._diagnose(rec, f, won, r, [], [], [], p)
+        lesson.update({"agent_contributions": [], "provisional": True,
+                       "provisional_reason": "FUNDING_INCOMPLETE", "learned_into_statistics": False})
         s.lessons.append(lesson)
         s.n_lessons_lifetime = int(s.n_lessons_lifetime or 0) + 1
         self._retain_lessons()

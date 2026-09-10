@@ -223,11 +223,19 @@ def test_funding_unknown_rate_stays_pending_then_settles_once(tmp_path: Path):
     led.tick({"SUI/USDT": TickData(last=Decimal("0.65"))}, now_utc=t1, funding_rate_lookup=None)
     assert pos.last_funding_settlement_utc == "2026-08-20T00:00:00+00:00"      # ileri SARILMADI
     assert pos.funding_received == 0 and pos.funding_paid == 0
-    led.tick({"SUI/USDT": TickData(last=Decimal("0.65"))}, now_utc=t1 + timedelta(minutes=5),
+    # V2: DOGRULANMAMIS skaler oran dönemi KAPATAMAZ — watermark hâlâ yerinde durur.
+    led.tick({"SUI/USDT": TickData(last=Decimal("0.65"))}, now_utc=t1 + timedelta(minutes=2),
              funding_rate_lookup=lambda s, t: Decimal("0.0001"))
+    assert pos.last_funding_settlement_utc == "2026-08-20T00:00:00+00:00"
+    assert pos.funding_received == 0
+
+    # DOGRULANMIS oran gelince dönem TAM BİR KEZ kapanır
+    verified = lambda s, t: {"rate": Decimal("0.0001"), "source": "test", "verified": True}   # noqa: E731
+    led.tick({"SUI/USDT": TickData(last=Decimal("0.65"))}, now_utc=t1 + timedelta(minutes=5),
+             funding_rate_lookup=verified)
     assert pos.last_funding_settlement_utc == "2026-08-20T08:00:00+00:00"
     first = pos.funding_received
     assert first > 0
     led.tick({"SUI/USDT": TickData(last=Decimal("0.65"))}, now_utc=t1 + timedelta(minutes=10),
-             funding_rate_lookup=lambda s, t: Decimal("0.0001"))
+             funding_rate_lookup=verified)
     assert pos.funding_received == first                                        # çift uygulama yok

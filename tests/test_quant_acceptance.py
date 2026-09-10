@@ -211,9 +211,10 @@ def test_fee_reduces_net_pnl_numerically():
 
 
 def test_funding_settlement_affects_futures_pnl():
-    rate = lambda sym, t: 0.0001                              # noqa: E731  long öder
+    rate = lambda sym, t: {"rate": 0.0001, "verified": True}  # noqa: E731  long öder
     with_f = _run_win_trade(funding_lookup=rate, close_at=T0 + timedelta(hours=8, minutes=5))
-    no_f = _run_win_trade(funding_lookup=lambda s, t: 0.0, close_at=T0 + timedelta(hours=8, minutes=5))
+    no_f = _run_win_trade(funding_lookup=lambda s, t: {"rate": 0.0, "verified": True},
+                          close_at=T0 + timedelta(hours=8, minutes=5))
     assert float(with_f.funding) < 0                          # 16:00 settlement geçildi, long ödedi
     assert float(with_f.net_pnl) < float(no_f.net_pnl)
     assert float(no_f.net_pnl) - float(with_f.net_pnl) == pytest.approx(-float(with_f.funding))
@@ -228,7 +229,8 @@ def test_missing_funding_rate_waits_not_zero_cost_forever():
     assert float(pos.funding_paid) == 0.0                     # UYDURMA tahakkuk yok
     # oran sonradan gelirse KAÇAN dönem geriye dönük uygulanır (watermark ileri sarılmamıştı)
     led.tick({ETH: TickData(last=D(100), high=D(101), low=D(99.5))},
-             now_utc=T0 + timedelta(hours=5, minutes=1), funding_rate_lookup=lambda s, t: 0.0001)
+             now_utc=T0 + timedelta(hours=5, minutes=1),
+             funding_rate_lookup=lambda s, t: {"rate": 0.0001, "verified": True})
     assert float(led.positions[ETH].funding_paid) > 0         # bekleyen settlement tahsil edildi
 
 

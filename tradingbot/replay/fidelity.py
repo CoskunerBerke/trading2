@@ -176,7 +176,11 @@ class MemoryBars:
 
 
 def funding_lookup_from(rates: Sequence[tuple[int, Decimal]], *, tolerance_ms: int = 300_000):
-    """Gercek funding gecmisinden `RateLookup` uretir; settlement'a ±`tolerance_ms` icinde oran yoksa None."""
+    """Gercek funding gecmisinden `RateLookup` uretir; settlement'a ±`tolerance_ms` icinde oran yoksa None.
+
+    Kayitlar venue'nun `fundingRate` gecmisinden geldigi icin alinti DOGRULANMIS isaretlenir —
+    defterin `require_verified` kurali altinda donemi kapatabilmesi icin gereklidir.
+    """
     table = sorted(rates)
 
     def _lookup(_symbol: str, when: datetime):
@@ -187,9 +191,20 @@ def funding_lookup_from(rates: Sequence[tuple[int, Decimal]], *, tolerance_ms: i
             d = abs(t - target)
             if d <= tolerance_ms and d < best_d:
                 best, best_d = rate, d
-        return best
+        return None if best is None else {"rate": best, "source": "venue_history", "verified": True}
 
     return _lookup
+
+
+def funding_settlements_from(rates: Sequence[tuple[int, Decimal]]):
+    """Venue'nun GERCEK settlement zamanlarindan `settlement_source` uretir (sabit 8 saat YOK)."""
+    stamps = sorted(int(t) for t, _ in rates)
+
+    def _source(_symbol: str, start: datetime, end: datetime) -> list[datetime]:
+        lo, hi = int(start.timestamp() * 1000), int(end.timestamp() * 1000)
+        return [datetime.fromtimestamp(t / 1000, tz=timezone.utc) for t in stamps if lo < t <= hi]
+
+    return _source
 
 
 # --------------------------------------------------------------------------- plan cikarimi
@@ -437,6 +452,8 @@ def replay_trade(plan: TradePlan, source: Any, cfg: ReplayConfig, *, interval: s
     if use_funding and hasattr(source, "funding_rates"):
         rates = source.funding_rates(plan.symbol, open_ms - 8 * 3_600_000, end_ms)
         lookup = funding_lookup_from(rates) if rates else None
+        if rates:
+            led.funding.settlement_source = funding_settlements_from(rates)
 
     flags = _bar_advance_flags(bars, plan.opened_at)
     for b, advance in zip(bars, flags):
@@ -622,6 +639,6 @@ def load_plans(ledger: Mapping[str, Any], path_targets: Mapping[str, Sequence[fl
 __all__ = [
     "BAR_ADVANCE_MS", "Bar", "BinanceBars", "MemoryBars", "ReplayConfig", "ReplayOutcome", "TradePlan",
     "TARGET_R_MULTIPLES", "compare", "derive_targets", "exit_family", "exit_fill_diagnosis",
-    "funding_lookup_from", "load_plans",
+    "funding_lookup_from", "funding_settlements_from", "load_plans",
     "path_targets_index", "plan_from_record", "replay_config_from_ledger", "replay_trade", "summarise",
 ]

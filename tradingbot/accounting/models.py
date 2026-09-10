@@ -396,6 +396,12 @@ class Position:
     initial_stop: Decimal | None = None
     mae_pct: Decimal = ZERO
     mfe_pct: Decimal = ZERO
+    #: GUVENILIR MFE — yalnizca provenansi dogrulanmis barlardan ve YALNIZCA bu alanin
+    #: damgalandigi andan SONRA birikir. Basa-bas kurali `mfe_pct` yerine BUNU okur.
+    #: Bar provenansi onarimindan ONCE acilmis pozisyonlarda `mfe_pct` giris oncesi barlarin
+    #: uclarini tasiyabilir (olculdu: NATGAS 0.65R kayitli / 0.12R gercek, GPS 0.67R / 0.21R);
+    #: o birikmis sapma stop'u erken basa-basa TASIYABILIRDI.
+    mfe_pct_trusted: Decimal = ZERO
     bars_held: int = 0
     last_funding_settlement_utc: str = ""
     last_price: Decimal | None = None
@@ -431,7 +437,7 @@ class Position:
         d["margin_mode"] = _enum(MarginMode, d.get("margin_mode"), MarginMode.ISOLATED)
         d["amount_type"] = _enum(AmountType, d.get("amount_type"), AmountType.NOTIONAL)
         for k in ("qty", "entry_avg", "isolated_margin", "realized_pnl", "fees_paid", "funding_paid", "funding_received",
-                  "initial_qty", "mae_pct", "mfe_pct", "entry_fee", "exit_fee", "slippage_cost", "requested_notional",
+                  "initial_qty", "mae_pct", "mfe_pct", "mfe_pct_trusted", "entry_fee", "exit_fee", "slippage_cost", "requested_notional",
                   "requested_margin"):
             d[k] = D(d.get(k, 0))
         for k in ("stop", "initial_stop", "last_price", "liquidation_price", "trailing_pct"):

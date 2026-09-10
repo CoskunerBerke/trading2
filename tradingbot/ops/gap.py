@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Callable
@@ -145,6 +145,28 @@ class GapReconciler:
                 out[fts // 3_600_000] = Decimal(str(rate))
         return out
 
+    @staticmethod
+    def _funding_hooks(funding: dict[str, dict[int, Decimal]]):
+        """(rate_lookup, settlement_source) — ikisi de AYNI gercek venue tablosundan beslenir.
+
+        `rate_lookup` DOGRULANMIS alinti dondurur (kayitlar venue'nun `fundingRate` gecmisinden
+        gelir), boylece `accrue` donemi kapatabilir. `settlement_source` ise sabit 00/08/16
+        grid'i yerine venue'nun GERCEKTEN yayimladigi zamanlari verir; 4h/1h sozlesmelerde
+        kesinti penceresindeki donemlerin yarisi artik kaybolmaz.
+        """
+        def rate_lookup(symbol: str, when: datetime):
+            table = funding.get(symbol) or {}
+            rate = table.get(int(when.timestamp() * 1000) // 3_600_000)
+            return None if rate is None else {"rate": rate, "source": "binance_usdm_gap", "verified": True}
+
+        def settlement_source(symbol: str, start: datetime, end: datetime) -> list[datetime]:
+            table = funding.get(symbol) or {}
+            lo, hi = int(start.timestamp() * 1000), int(end.timestamp() * 1000)
+            return sorted(datetime.fromtimestamp(k * 3_600_000 / 1000, tz=timezone.utc)
+                          for k in table if lo < k * 3_600_000 <= hi)
+
+        return rate_lookup, settlement_source
+
     # ------------------------------------------------------------------ uzlaştırma
     def reconcile(self, run_id: str | None = None) -> GapReport:
         from ..accounting.models import TickData
@@ -207,10 +229,19 @@ class GapReconciler:
             log.error("GAP_AMBIGUOUS: %s", rep.ambiguous)
             return rep
 
-        def rate_lookup(symbol: str, when: datetime):
-            table = funding.get(symbol) or {}
-            return table.get(int(when.timestamp() * 1000) // 3_600_000)
+        rate_lookup, settlement_source = self._funding_hooks(funding)
+        _prev_src = self.ledger.funding.settlement_source
+        self.ledger.funding.settlement_source = settlement_source
 
+        try:
+            self._replay_bars(rep, candles, rate_lookup, start, now, tf, run_id)
+        finally:
+            # Canli akisin settlement kaynagi geri verilir; kesinti tablosu kalici olmaz.
+            self.ledger.funding.settlement_source = _prev_src
+        return rep
+
+    def _replay_bars(self, rep, candles, rate_lookup, start, now, tf, run_id) -> None:
+        from ..accounting.models import TickData
         # Olay-zamanı birleştirme: bütün sembollerin barları zaman damgasına göre tek akışta.
         stamps = sorted({c["ts"] for rows in candles.values() for c in rows})
         by_sym_ts = {sym: {c["ts"]: c for c in rows} for sym, rows in candles.items()}
@@ -253,7 +284,6 @@ class GapReconciler:
             log.info("gap-reconcile: %d bar / %d kapanış: %s", rep.bars_replayed, len(rep.closed), "; ".join(rep.decisions))
         else:
             log.info("gap-reconcile: %d bar, olay yok (pencere %s → %s, %s)", rep.bars_replayed, iso(start), iso(now), tf)
-        return rep
 
 
 __all__ = ["GapReconciler", "GapReport", "read_watermark", "write_watermark", "read_gap_status",

@@ -21,7 +21,8 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 from .accounting import (AmountType, FeeSchedule, FiltersCache, FuturesLedgerV2, LiquidationParams, MarketType, Side, SizeSpec,
-                         SlippageModel, SpotLedger, TaxPolicy, TickData, chained_rates, default_brackets, static_rates)
+                         SlippageModel, SpotLedger, TaxPolicy, TickData, default_brackets)
+from .accounting.funding import MIN_FUNDING_INTERVAL_H
 from .agents.manager import CoinBrief
 from .coinhead import ChiefPortfolioManager, CoinHeadConfig, CoinHeadInputs, CoinHeadRegistry, Verdict
 from .config import BotConfig
@@ -168,6 +169,11 @@ class TradingEngineV3(TradingEngine):
                                             tp1_fraction=Decimal(str(v3.futures_v3.tp1_fraction)),
                                             breakeven_at_mfe_r=Decimal(str(getattr(v3.futures_v3, "breakeven_at_mfe_r", 0.0))),
                                             tax_policy=TaxPolicy.disabled())
+        # D2: defterin settlement takvimi artik SABIT 00/08/16 degil, venue'nun yayimladigi
+        # gercek settlement zamanlaridir. D1: yalniz DOGRULANMIS oran donemi kapatir; boylece
+        # 60 sn'lik cikis monitoru ile 15 dk'lik tur AYNI kurali uygular.
+        self.ledger2.funding.settlement_source = self.funding_rates.settlements_in
+        self.ledger2.funding.require_verified = True
         self.spot2 = SpotLedger.load(st / "spot_ledger.json", starting_cash=cfg.risk.starting_equity_usdt)
         self.ledger = self.ledger2          # legacy yardımcılar (learning_notes/summary) v2 defteri görsün
         self.filters = FiltersCache(cfg.cache_path / "symbol_filters.json")
@@ -976,9 +982,13 @@ class TradingEngineV3(TradingEngine):
         # dönem varsa ve arıza turu düşürmez), o çözülemezse eski yedek = anlık snapshot oranı.
         # Böylece venue erişilemezken davranış eskisiyle birebir aynı, erişilebilirken doğru kalır.
         self.ensure_funding_rates(now)
-        records = self.ledger2.tick(marks, now_utc=now,
-                                    funding_rate_lookup=chained_rates(self.funding_rates.lookup, static_rates(funding)),
-                                    bar_advance=bar_advance)
+        # Yalnizca onbellekteki DOGRULANMIS venue orani donemi kapatabilir. `static_rates` anlik
+        # yedegi artik zincirde YOK: dogrulanmamis oldugu icin zaten watermark'i ilerletemezdi ve
+        # varligi "yedek calisiyor" yanilsamasi yaratiyordu (bagimsiz inceleme D1).
+        with self._exit_lock:                       # cikis monitoruyle ayni kilit: ic ice tahakkuk yok
+            records = self.ledger2.tick(marks, now_utc=now,
+                                        funding_rate_lookup=self.funding_rates.lookup,
+                                        bar_advance=bar_advance)
         # 6) KAYIT SIRASI: önce defter, sonra öğrenme (crash penceresinde çift öğrenme olmasın)
         self.ledger2.save(self.ledger_path)
         from .ops.gap import write_watermark
@@ -1671,31 +1681,37 @@ class TradingEngineV3(TradingEngine):
                                                  timeout=5.0, max_retries=0))
 
     def ensure_funding_rates(self, now: datetime) -> dict:
-        """Açık perp pozisyonlarının VADESİ GELMİŞ ve önbellekte OLMAYAN settlement'ları için gerçek oranları çeker.
+        """Acik perp pozisyonlarinin watermark'indan `now`'a kadarki PENCEREYI venue'dan kapsar.
 
-        Settlement'lar 8 saatte bir olduğu için normal işleyişte açık pozisyon başına ~8 saatte 1
-        istek (ağırlık 1) demektir; kapsanan turlarda HİÇBİR istek atılmaz. Arıza turu DÜŞÜRMEZ:
-        önbellek korunur, `lookup` None döner ve zincir anlık orana (eski davranış) düşer.
+        D2: settlement GRID'i varsaymaz. Venue o pencerede hangi settlement'lari yayimladiysa
+        onbellege girer; `FundingSchedule.settlement_source` de tam onlari kullanir. Boylece
+        4 saatlik (CL, BZ, NATGAS, GPS, ONDO, PAXG, XAUT, XPD, ZRO) ve 1 saatlik (NVDA)
+        sozlesmelerde donemlerin yarisi/çoğu artik kaybolmaz.
+
+        Istek sayisi: pencere en kisa funding araligindan (1 saat) kisaysa HIC istek yok; aksi
+        halde sembol basina pencere kapanana kadar tek istek (agirlik 1). Ariza turu DUSURMEZ.
         """
         led = self.ledger2
         if not led.positions:
-            return {"ok": True, "skipped": "açık pozisyon yok"}
-        needs: dict[str, list] = {}
+            return {"ok": True, "skipped": "acik pozisyon yok"}
+        needs: dict[str, tuple[datetime, datetime]] = {}
         for sym, pos in led.positions.items():
             if getattr(pos, "market_type", None) is not None and "PERP" not in str(getattr(pos, "market_type", "")):
                 continue
-            due = led.funding.settlements_due(pos, now)
-            if due:
-                needs[sym] = due
+            start = led.funding.window_start(pos)
+            if start is None or start >= now:
+                continue
+            needs[sym] = (start, now)
         if not needs:
-            return {"ok": True, "skipped": "vadesi gelen settlement yok"}
+            return {"ok": True, "skipped": "kapsanacak pencere yok"}
         try:
-            res = self.funding_rates.ensure(self._funding_provider_factory, needs, now=now.timestamp())
-        except Exception as exc:  # noqa: BLE001 — funding oranı yenileme arızası turu düşürmez
-            log.warning("funding oranları yenilenemedi: %s: %s", type(exc).__name__, exc)
+            res = self.funding_rates.ensure_window(self._funding_provider_factory, needs, now=now.timestamp(),
+                                                   min_interval_h=MIN_FUNDING_INTERVAL_H)
+        except Exception as exc:  # noqa: BLE001 — funding orani yenileme arizasi turu dusurmez
+            log.warning("funding oranlari yenilenemedi: %s: %s", type(exc).__name__, exc)
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
         if not res.get("ok"):
-            log.warning("funding oranları yenilenemedi: %s — önbellek korunuyor (n=%s)", res.get("error"), res.get("n"))
+            log.warning("funding oranlari yenilenemedi: %s — onbellek korunuyor (n=%s)", res.get("error"), res.get("n"))
         return res
 
     def ensure_spot_listing(self, *, force: bool = False) -> dict:

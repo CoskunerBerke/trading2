@@ -147,7 +147,9 @@ def test_funding_sign_and_all_missed_settlements():
     open_at = datetime(2026, 8, 18, 7, 59, tzinfo=UTC)
     tick_at = datetime(2026, 8, 19, 9, 0, tzinfo=UTC)
     rate = D("0.0001")
-    lookup = lambda sym, when: rate
+    # V2: yalniz DOGRULANMIS alinti donemi kapatir. Bu testin konusu isaret/adet mekanigi,
+    # dogrulama degil — kaynak bu yuzden acikca dogrulanmis bildirilir.
+    lookup = lambda sym, when: {"rate": rate, "verified": True}
     for side, sign in (("LONG", -1), ("SHORT", 1)):
         led = _led()
         pos = led.open(ETH, side, 3000, SizeSpec(48, AmountType.NOTIONAL, 2), stop=2000 if side == "LONG" else 4000, filters=_f(), now=open_at)
@@ -171,7 +173,13 @@ def test_funding_sign_and_all_missed_settlements():
         assert rec.net_pnl == rec.gross_pnl - rec.fees + rec.funding
 
 
-def test_funding_fallback_estimated_rate():
+def test_funding_unknown_periods_wait_instead_of_being_estimated():
+    """V2: son bilinen orandan TAHMİNİ tahakkuk YOK. Bilinmeyen dönem bekler, watermark durur.
+
+    Eski davranış ilk dönemi gerçek oranla, kalan üçünü "son bilinen oran" ile kapatıyor ve
+    watermark'ı sonuna kadar sarıyordu. Bağımsız inceleme (D1) bunun 60 sn'lik çıkış monitörüyle
+    birleşince gerçek oranın HİÇ sorulmamasına yol açtığını ölçtü.
+    """
     open_at = datetime(2026, 8, 18, 7, 59, tzinfo=UTC)
     led = _led()
     pos = led.open(ETH, "LONG", 3000, SizeSpec(48, AmountType.NOTIONAL, 2), stop=2000, filters=_f(), now=open_at)
@@ -179,11 +187,20 @@ def test_funding_fallback_estimated_rate():
 
     def lookup(sym, when):
         calls["n"] += 1
-        return D("0.0002") if calls["n"] == 1 else None      # sonrakiler bilinmiyor → son bilinen oran (tahmini)
+        return {"rate": D("0.0002"), "verified": True} if calls["n"] == 1 else None
 
-    events = FundingSchedule().accrue(pos, datetime(2026, 8, 19, 9, 0, tzinfo=UTC), D("3000"), lookup)
-    assert len(events) == 4 and events[0].estimated is False and all(e.estimated for e in events[1:])
-    assert all(e.rate == D("0.0002") for e in events)
+    sched = FundingSchedule()
+    events = sched.accrue(pos, datetime(2026, 8, 19, 9, 0, tzinfo=UTC), D("3000"), lookup)
+    assert len(events) == 1 and events[0].estimated is False and events[0].verified is True
+    assert pos.last_funding_settlement_utc == "2026-08-18T08:00:00+00:00"   # yalnız ilk dönem kapandı
+    assert sched.pending_settlements == 3                                   # kalanlar BEKLİYOR
+
+    # oran sonradan geldiğinde kaçan dönemler geriye dönük ve TAM BİR KEZ uygulanır
+    later = sched.accrue(pos, datetime(2026, 8, 19, 9, 0, tzinfo=UTC), D("3000"),
+                         lambda s, w: {"rate": D("0.0002"), "verified": True})
+    assert len(later) == 3 and pos.last_funding_settlement_utc == "2026-08-19T08:00:00+00:00"
+    assert sched.accrue(pos, datetime(2026, 8, 19, 9, 0, tzinfo=UTC), D("3000"),
+                        lambda s, w: {"rate": D("0.0002"), "verified": True}) == []
 
 
 # ----------------------------------------------------------------------------- liquidation

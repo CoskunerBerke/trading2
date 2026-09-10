@@ -78,7 +78,8 @@ def _history_lookup(with_marks: bool = True):
         row = table.get(when)
         if row is None:
             return None
-        return FundingQuote(rate=row[0], mark=row[1] if with_marks else None)
+        # Venue gecmisini temsil eder -> DOGRULANMIS (V2: yalniz dogrulanmis alinti donem kapatir)
+        return FundingQuote(rate=row[0], mark=row[1] if with_marks else None, verified=True)
     return _lookup
 
 
@@ -102,19 +103,21 @@ def test_per_settlement_rates_beat_static_snapshot():
     assert [e.ts[:16] for e in events] == [t.isoformat()[:16] for t in SETTLEMENTS]
     assert not any(e.estimated for e in events)
 
-    # aynı pozisyon eski yoldan: tek anlık oran → beş özdeş dönem
+    # V2: anlık snapshot oranı DOĞRULANMAMIŞTIR → hiçbir dönemi kapatamaz. Eskiden beş dönemin
+    # hepsini aynı oranla kapatıyor ve watermark'ı ileri sarıyordu (bağımsız inceleme D1).
     led_old = _led()
     pos_old = _open(led_old, "LONG", OPEN_AT)
     old = FundingSchedule().accrue(pos_old, NOW, D("3000"), static_rates({ETH: SNAPSHOT_RATE}))
-    assert [e.rate for e in old] == [SNAPSHOT_RATE] * 5
-    assert {e.rate for e in events} != {e.rate for e in old}     # yeni davranış eskisinden FARKLI
+    assert old == []
+    assert pos_old.last_funding_settlement_utc == OPEN_AT.isoformat()   # watermark İLERLEMEDİ
+    assert pos_old.funding_paid == 0 and pos_old.funding_received == 0
 
-    # ekonomik fark ölçülebilir: net funding işaret bile değiştirir
+    # ekonomik fark ölçülebilir: gerçek oranlar net ALACAK üretir
     qty = pos.qty
     want = sum(-(qty * D("3000") * r) for r in RATES)            # LONG: pozitif oran ÖDER
     got = sum(e.amount for e in events)
     assert got == want
-    assert got > 0 > sum(e.amount for e in old)                  # gerçek oranlar net ALACAK, snapshot net BORÇ
+    assert got > 0
 
 
 def test_per_settlement_mark_is_used_when_known():
@@ -132,27 +135,47 @@ def test_per_settlement_mark_is_used_when_known():
     assert [e.mark for e in no_mark] == [D("3000")] * 5          # mark yoksa eski davranış
 
 
-def test_scalar_lookup_still_supported():
-    """`static_rates` ve `ops/gap.py` gibi SKALER dönen çağıranlar birebir eskisi gibi çalışır."""
+def test_verified_scalar_shaped_quote_is_supported():
+    """Sözlük biçimli DOĞRULANMIŞ alıntı (ör. `ops/gap.py`) beş dönemi de kapatır."""
     led = _led()
     pos = _open(led, "LONG", OPEN_AT)
-    events = FundingSchedule().accrue(pos, NOW, D("3000"), lambda s, w: 0.0001)
+    events = FundingSchedule().accrue(pos, NOW, D("3000"), lambda s, w: {"rate": 0.0001, "verified": True})
     assert len(events) == 5 and all(e.rate == D("0.0001") and e.mark == D("3000") for e in events)
+    assert all(e.verified for e in events)
 
 
-def test_single_settlement_is_unchanged_or_more_accurate():
-    """En sık hal: TEK dönem. Zincir → gerçek oran; kaynak yoksa snapshot (eski davranış birebir)."""
+def test_unverified_scalar_settles_nothing_and_holds_the_watermark():
+    """D1 REGRESYON KAPISI: doğrulanmamış hiçbir dönüş dönemi kapatamaz.
+
+    Çıkış monitörü 60 sn'de bir, tur 15 dk'da bir çalışır. Eskiden monitör settlement sınırına
+    önce varıp `meta.last_funding_rate` ile tahmini tahakkuk yapıyor ve watermark'ı ilerletiyordu;
+    tur sonra `settlements_due == []` bulup gerçek oranı HİÇ sormuyordu (ölçülen hata 36,1×).
+    """
+    for lookup in (lambda s, w: D("0.0001"),                       # skaler
+                   lambda s, w: {"rate": 0.0001},                  # verified bayrağı YOK
+                   lambda s, w: {"rate": 0.0001, "verified": False},
+                   lambda s, w: FundingQuote(rate=D("0.0001"))):
+        led = _led()
+        pos = _open(led, "LONG", OPEN_AT)
+        pos.meta["last_funding_rate"] = "0.0001"                   # tahmini yedek ELDE olsa bile
+        assert FundingSchedule().accrue(pos, NOW, D("3000"), lookup) == []
+        assert pos.last_funding_settlement_utc == OPEN_AT.isoformat()
+        assert pos.funding_paid == 0 and pos.funding_received == 0
+
+
+def test_single_settlement_uses_the_real_rate_and_waits_without_one():
+    """En sık hal: TEK dönem. Gerçek oran varsa kapanır; yoksa BEKLER (snapshot'a DÜŞMEZ)."""
     now1 = datetime(2026, 8, 18, 8, 30, tzinfo=UTC)
     led = _led()
     pos = _open(led, "LONG", OPEN_AT)
     ev = FundingSchedule().accrue(pos, now1, D("3000"), chained_rates(_history_lookup(), static_rates({ETH: SNAPSHOT_RATE})))
-    assert len(ev) == 1 and ev[0].rate == RATES[0] and ev[0].mark == MARKS[0]
+    assert len(ev) == 1 and ev[0].rate == RATES[0] and ev[0].mark == MARKS[0] and ev[0].verified
 
     led2 = _led()
     pos2 = _open(led2, "LONG", OPEN_AT)
     ev2 = FundingSchedule().accrue(pos2, now1, D("3000"), chained_rates(lambda s, w: None, static_rates({ETH: SNAPSHOT_RATE})))
-    assert len(ev2) == 1 and ev2[0].rate == SNAPSHOT_RATE and ev2[0].mark == D("3000")
-    assert ev2[0].estimated is False
+    assert ev2 == []                                               # snapshot dönemi KAPATAMAZ
+    assert pos2.last_funding_settlement_utc == OPEN_AT.isoformat()  # ve olay KAYBOLMAZ
 
 
 # --------------------------------------------------------------------------- 2) fail-closed
@@ -183,7 +206,7 @@ def test_fail_closed_stops_at_first_gap_and_later_periods_wait():
     led = _led()
     pos = _open(led, "LONG", OPEN_AT)
     sched = FundingSchedule(fallback_to_last_known=False)        # "son bilinen oran" yedeği KAPALI
-    events = sched.accrue(pos, NOW, D("3000"), lambda s, w: table.get(w))
+    events = sched.accrue(pos, NOW, D("3000"), lambda s, w: (None if table.get(w) is None else {"rate": table[w], "verified": True}))
     assert [e.rate for e in events] == RATES[:2]
     assert pos.last_funding_settlement_utc.startswith("2026-08-18T16:00")
 
@@ -243,7 +266,7 @@ def test_sign_convention(side, rate, expect_sign):
     now = datetime(2026, 8, 18, 8, 30, tzinfo=UTC)
     led = _led()
     pos = _open(led, side, at)
-    ev = FundingSchedule().accrue(pos, now, D("3000"), lambda s, w: FundingQuote(rate=rate, mark=D("3000")))
+    ev = FundingSchedule().accrue(pos, now, D("3000"), lambda s, w: FundingQuote(rate=rate, mark=D("3000"), verified=True))
     assert len(ev) == 1
     amount = ev[0].amount
     assert (amount > 0) if expect_sign > 0 else (amount < 0)
@@ -304,8 +327,12 @@ def test_cache_is_robust_to_off_by_milliseconds_funding_time(tmp_path):
     assert hour_key(ts) == hour_key(SETTLEMENTS[0])
 
 
-def test_venue_unreachable_keeps_cache_and_falls_back_to_snapshot(tmp_path):
-    """Venue erişilemez: tur düşmez, önbellek korunur, davranış ESKİSİYLE aynı (snapshot oranı)."""
+def test_venue_unreachable_keeps_cache_and_uncovered_periods_wait(tmp_path):
+    """Venue erişilemez: tur DÜŞMEZ, önbellek korunur, kapsanmayan dönemler BEKLER.
+
+    V2 farkı: eskiden kapsanmayan dönemler anlık snapshot oranıyla kapatılıyordu. Artık yalnız
+    önbellekteki DOĞRULANMIŞ kayıt dönemi kapatır; gerisi bir sonraki tura kalır ve KAYBOLMAZ.
+    """
     c = FundingRateCache(tmp_path / "fr.json", retry_cooldown_s=3600)
     good = _Provider(_rows()[:1])                               # yalnız ilk settlement önbelleğe girer
     c.ensure(lambda: good, {ETH: SETTLEMENTS[:1]}, now=NOW.timestamp())
@@ -322,12 +349,13 @@ def test_venue_unreachable_keeps_cache_and_falls_back_to_snapshot(tmp_path):
     c.ensure(lambda: dead, {ETH: SETTLEMENTS}, now=NOW.timestamp() + 4000)
     assert len(dead.calls) == 2
 
-    # zincir: önbellekte olan gerçek oranı, olmayan snapshot'ı alır → eski davranıştan KÖTÜ değil
+    # zincir: yalnız önbellekteki GERÇEK oran kapatır; kalan dört dönem BEKLER
     led = _led()
     pos = _open(led, "LONG", OPEN_AT)
     ev = FundingSchedule().accrue(pos, NOW, D("3000"), chained_rates(c.lookup, static_rates({ETH: SNAPSHOT_RATE})))
-    assert [e.rate for e in ev] == [RATES[0]] + [SNAPSHOT_RATE] * 4
-    assert [e.mark for e in ev] == [MARKS[0]] + [D("3000")] * 4
+    assert [e.rate for e in ev] == [RATES[0]]
+    assert pos.last_funding_settlement_utc == SETTLEMENTS[0].isoformat()   # tam ilk dönemde durdu
+    assert [e.mark for e in ev] == [MARKS[0]]                          # settlement anının kendi markı
 
 
 def test_empty_or_incomplete_history_does_not_hammer_the_venue(tmp_path):

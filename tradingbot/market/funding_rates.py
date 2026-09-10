@@ -82,6 +82,8 @@ class FundingRateCache:
         self.fetch_limit = max(1, int(fetch_limit))
         self._rates: dict[str, dict[int, tuple[str, str]]] = {}
         self._retry_after: dict[str, float] = {}
+        #: sembol -> BASARIYLA cekilmis pencerenin sonu (ms). Kalici; `load`/`save` tasir.
+        self._covered_to: dict[str, int] = {}
         self.fetched_at: dict[str, str] = {}
         self.stats = {"hits": 0, "misses": 0, "fetches": 0, "fetch_errors": 0, "rows": 0}
         self.load()
@@ -106,7 +108,9 @@ class FundingRateCache:
         if rate is None:
             return None
         mark = _dec(row[1] if len(row) > 1 else None)
-        return FundingQuote(rate=rate, mark=mark if (mark is not None and mark > 0) else None, source=SOURCE)
+        # Venue kaydi: TAM O settlement zaman damgasi icin alindi -> DOGRULANMIS.
+        return FundingQuote(rate=rate, mark=mark if (mark is not None and mark > 0) else None,
+                            source=SOURCE, verified=True)
 
     def lookup(self, symbol: str, when: datetime) -> FundingQuote | None:
         """`RateLookup` uyumlu; ağ yok, istisna yok. Bilinmiyorsa None (çağıran yedeğe düşer)."""
@@ -117,6 +121,38 @@ class FundingRateCache:
     def missing(self, symbol: str, times: Iterable[datetime]) -> list[datetime]:
         return [t for t in times if self.get(symbol, t) is None]
 
+    def settlements_in(self, symbol: str, start: datetime, end: datetime) -> list[datetime]:
+        """(start, end] araligindaki GERCEK venue settlement zamanlari.
+
+        Sabit 00/08/16 grid'i YOKTUR: venue hangi zamanlarda funding yayimladiysa onlar donulur.
+        4 saatlik ve 1 saatlik sozlesmeler bu yolla dogru sayida donem uretir. Onbellekte kayit
+        yoksa BOS liste doner ve `accrue` fail-closed davranir (dönem BEKLER, kaybolmaz).
+        """
+        table = self._rates.get(to_raw(symbol))
+        if not table:
+            return []
+        # Tablo anahtari EPOCH-SAAT indeksidir (bkz. `hour_key`), ms DEGIL.
+        lo, hi = int(start.timestamp() * 1000), int(end.timestamp() * 1000)
+        return [datetime.fromtimestamp(k * _HOUR_MS / 1000, tz=timezone.utc)
+                for k in sorted(table) if lo < k * _HOUR_MS <= hi]
+
+    def covered_to_ms(self, symbol: str) -> int:
+        """Bu sembol icin BASARIYLA cekilmis pencerenin sonu (ms). Hic cekim yoksa 0."""
+        return int(self._covered_to.get(to_raw(symbol), 0))
+
+    def needs_window(self, symbol: str, start: datetime, end: datetime,
+                     *, min_interval_h: int = 1, grace_s: int = 60) -> bool:
+        """Bu pencere icin ag cagrisi GEREKLI mi?
+
+        Iki kosul birden: (a) pencere en kisa venue funding araligindan (1 saat) daha uzun —
+        yani icinde settlement OLABILIR; (b) daha once basariyla cekilmis kapsama penceresi
+        pencerenin sonunu ortmuyor. Boylece 8 saatlik bir sembol icin ~8 saatte bir, 1 saatlik
+        bir sembol icin ~saatte bir istek atilir; kapsanan turlarda HIC istek atilmaz.
+        """
+        if (end - start).total_seconds() < min_interval_h * 3600:
+            return False
+        return self.covered_to_ms(symbol) < int(end.timestamp() * 1000) - grace_s * 1000
+
     # ------------------------------------------------------------------ kalıcılık
     def load(self) -> None:
         try:
@@ -126,6 +162,13 @@ class FundingRateCache:
         except (OSError, ValueError) as exc:
             log.warning("funding_rates okunamadı (%s): %s — önbellek BOŞ sayılıyor", self.path, exc)
             return
+        cov = d.get("covered_to_ms")
+        if isinstance(cov, dict):
+            for k, v in cov.items():
+                try:
+                    self._covered_to[to_raw(str(k))] = int(v)
+                except (TypeError, ValueError):
+                    continue
         rates = d.get("rates")
         if not isinstance(rates, dict):
             return
@@ -169,6 +212,7 @@ class FundingRateCache:
         dropped = self._prune(now)
         doc = {"schema_version": SCHEMA_VERSION, "saved_at": _iso(now), "n": self.size,
                "fetched_at": dict(sorted(self.fetched_at.items())),
+               "covered_to_ms": dict(sorted(self._covered_to.items())),
                "rates": {sym: {str(k): [r, m] for k, (r, m) in sorted(table.items())}
                          for sym, table in sorted(self._rates.items())}}
         try:
@@ -227,6 +271,9 @@ class FundingRateCache:
         self.stats["rows"] += added
         if not table:
             del self._rates[raw]
+        # Basarili cekim -> pencere KAPSANDI. Bos sonuc da kapsamadir: venue o aralikta kayit
+        # yayimlamamis demektir; her turda ayni soruyu tekrar sormanin anlami yok.
+        self._covered_to[raw] = max(self._covered_to.get(raw, 0), int(end.timestamp() * 1000))
         if added == 0:
             # Boş geçmiş: kayıt henüz yayımlanmamış ya da sembolde funding yok. Her turda yeniden
             # sormamak için KISA soğuma başlatılır; bu bir HATA değildir, `ok` True kalır.
@@ -235,6 +282,46 @@ class FundingRateCache:
         self._retry_after.pop(raw, None)
         self.fetched_at[raw] = _iso(now)
         return {"ok": True, "symbol": raw, "n": added}
+
+    def ensure_window(self, provider_factory: Callable[[], Any],
+                      needs: Mapping[str, "tuple[datetime, datetime]"],
+                      *, now: float | None = None, save: bool = True,
+                      min_interval_h: int = 1) -> dict:
+        """PENCERE tabanli yenileme — settlement GRID'i varsaymaz (D2).
+
+        `needs`: sembol -> (pencere_baslangici, pencere_sonu). Yalnizca `needs_window` True olan
+        semboller icin aga cikilir; venue o pencerede hangi settlement'lari yayimladiysa onbellege
+        girer ve `settlements_in` onlari dondurur.
+        """
+        now = time.time() if now is None else now
+        todo: dict[str, tuple[datetime, datetime]] = {}
+        cooling: list[str] = []
+        for sym, win in (needs or {}).items():
+            start, end = win
+            if not self.needs_window(sym, start, end, min_interval_h=min_interval_h):
+                continue
+            if self.in_cooldown(sym, now):
+                cooling.append(to_raw(sym))
+                continue
+            todo[sym] = (start, end)
+        if not todo:
+            return {"ok": True, "skipped": "kapsaniyor", "fetched": 0, "cooldown": sorted(cooling), "n": self.size}
+        try:
+            provider = provider_factory()
+        except Exception as exc:  # noqa: BLE001 — saglayici acilamadi: tur DUSMEZ, onbellek korunur
+            self.stats["fetch_errors"] += 1
+            log.warning("funding saglayicisi acilamadi: %s: %s — onbellek korunuyor", type(exc).__name__, exc)
+            return {"ok": False, "error": f"saglayici acilamadi: {type(exc).__name__}: {exc}", "fetched": 0, "n": self.size}
+        results = []
+        for sym in sorted(todo)[:self.max_symbols_per_refresh]:
+            lo, hi = todo[sym]
+            results.append(self.refresh(provider, sym, lo, hi, now=now))
+        added = sum(int(r.get("n") or 0) for r in results)
+        out = {"ok": all(r.get("ok") for r in results), "fetched": len(results), "added": added,
+               "cooldown": sorted(cooling), "results": results, "n": self.size}
+        if save:
+            out["persist"] = self.save(now=now)
+        return out
 
     def ensure(self, provider_factory: Callable[[], Any], needs: Mapping[str, Iterable[datetime]],
                *, now: float | None = None, save: bool = True) -> dict:

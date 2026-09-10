@@ -435,8 +435,19 @@ class FuturesLedgerV2:
             best = (td.hi if pos.side is PositionSide.LONG else td.lo) if _use_bar else mark
             move_worst = (worst / pos.entry_avg - _ONE) * _HUNDRED * pos.side.sign
             move_best = (best / pos.entry_avg - _ONE) * _HUNDRED * pos.side.sign
+            # ESKI (SISIRILMIS) TEPE KORUMASI — bar provenansi onarimindan ONCE acilmis pozisyonlar
+            # `mfe_pct` icinde giris oncesi barlarin uclarini tasiyor olabilir. `mfe_pct` KAYIT
+            # alanidir ve defter yeniden yazilmaz; ama basa-bas kurali artik GUVENILIR tepeyi okur.
+            # Damga bir kez konur: o andan itibaren biriken her deger ya provenansi dogrulanmis bir
+            # bardan ya da gercek mark'tan gelir. Yeni acilan pozisyonda `mfe_pct` zaten 0'dir,
+            # dolayisiyla guvenilir tepe ile kayit tepesi BIREBIR ayni ilerler.
+            if not pos.meta.get("mfe_trusted_from"):
+                pos.meta["mfe_trusted_from"] = ts
+                pos.meta["mfe_pct_legacy_at_stamp"] = float(pos.mfe_pct)
+                pos.mfe_pct_trusted = ZERO
             pos.mae_pct = min(pos.mae_pct, move_worst)
             pos.mfe_pct = max(pos.mfe_pct, move_best)
+            pos.mfe_pct_trusted = max(pos.mfe_pct_trusted, move_best)
             # KANIT ONARIMI V1 — MFE tabanli basa-bas: en yuksek kar `breakeven_at_mfe_r` R'ye ulasinca stop
             # gercek basa-basa TASINIR; TP1 dokunusu beklenmez. Yalniz sikilastirir, mark'in yanlis tarafina
             # koymaz, pozisyon basina BIR kez calisir ve `meta.be_by_mfe` ile kalici izlenir.
@@ -444,14 +455,16 @@ class FuturesLedgerV2:
                 _ist = pos.initial_stop if pos.initial_stop is not None else pos.stop
                 _risk_pct = (abs(pos.entry_avg - _ist) / pos.entry_avg * _HUNDRED) if (_ist is not None and pos.entry_avg > 0) else ZERO
                 if _risk_pct > 0:
-                    _mfe_r = D(pos.mfe_pct) / _risk_pct
+                    _mfe_r = D(pos.mfe_pct_trusted) / _risk_pct     # KAYIT tepesi degil, GUVENILIR tepe
                     if _mfe_r >= self.breakeven_at_mfe_r:
                         _be = self.break_even_price(pos)
                         _right_side = (_be < mark) if pos.side is PositionSide.LONG else (_be > mark)
                         _tighter = pos.stop is None or (pos.side is PositionSide.LONG and _be > pos.stop) or (pos.side is PositionSide.SHORT and _be < pos.stop)
                         if _right_side and _tighter:
                             pos.stop = _be
-                            pos.meta["be_by_mfe"] = {"at": ts, "mfe_pct": float(pos.mfe_pct), "mfe_r": float(_mfe_r), "stop": str(_be)}
+                            pos.meta["be_by_mfe"] = {"at": ts, "mfe_pct": float(pos.mfe_pct_trusted), "mfe_r": float(_mfe_r),
+                                                     "stop": str(_be), "basis": "trusted",
+                                                     "mfe_pct_recorded": float(pos.mfe_pct)}
             # trailing stop (opsiyonel)
             if pos.trailing_pct is not None and pos.trailing_pct > 0:
                 trail = best * (_ONE - pos.trailing_pct / _HUNDRED) if pos.side is PositionSide.LONG else best * (_ONE + pos.trailing_pct / _HUNDRED)

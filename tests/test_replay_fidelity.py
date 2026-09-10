@@ -258,7 +258,10 @@ def test_bar_advance_flags_fire_only_on_4h_boundaries():
 def test_funding_lookup_matches_settlement_within_tolerance_only():
     t = int(datetime(2026, 8, 20, 16, tzinfo=timezone.utc).timestamp() * 1000)
     lk = funding_lookup_from([(t, Decimal("0.0001"))])
-    assert lk(SYM, datetime(2026, 8, 20, 16, tzinfo=timezone.utc)) == Decimal("0.0001")
+    hit = lk(SYM, datetime(2026, 8, 20, 16, tzinfo=timezone.utc))
+    assert hit["rate"] == Decimal("0.0001")
+    # Kayit venue gecmisinden geliyor: DOGRULANMIS olmali, aksi halde defter donemi kapatamaz.
+    assert hit["verified"] is True
     assert lk(SYM, datetime(2026, 8, 20, 8, tzinfo=timezone.utc)) is None
 
 

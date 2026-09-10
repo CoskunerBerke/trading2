@@ -154,9 +154,20 @@ class SymbolWindow:
                     d = abs(ms[k] - target)
                     if d <= tolerance_ms and d < best_d:
                         best, best_d = rates[k], d
-            return best
+            # Kayitlar venue gecmisinden: DOGRULANMIS -> defterin donemi kapatmasina izin verir.
+            return None if best is None else {"rate": best, "source": "venue_history", "verified": True}
 
         return _lookup
+
+    def settlement_source(self):
+        """Venue'nun GERCEK settlement zamanlari (sabit 00/08/16 grid'i YOK)."""
+        stamps = list(self._f_ms)
+
+        def _source(_symbol: str, start: datetime, end: datetime) -> list[datetime]:
+            lo, hi = int(start.timestamp() * 1000), int(end.timestamp() * 1000)
+            return [datetime.fromtimestamp(t / 1000, tz=timezone.utc) for t in stamps if lo < t <= hi]
+
+        return _source
 
 
 # --------------------------------------------------------------------------- tek aday replay'i
@@ -219,6 +230,8 @@ def replay_candidate(cand: Candidate, win: SymbolWindow, cfg: ReplayConfig, *, h
     risk = abs(pos.entry_avg - D(str(cand.stop_price))) * pos.qty
     out.risk_usdt = float(risk) if risk > 0 else None
     lookup = win.funding_lookup()
+    if lookup is not None:
+        led.funding.settlement_source = win.settlement_source()
 
     prev_slot = cand.ts_ms // BAR_ADVANCE_MS
     rec = None

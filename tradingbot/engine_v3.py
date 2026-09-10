@@ -171,6 +171,9 @@ class TradingEngineV3(TradingEngine):
         # geldi ve o sembolde YENI girise guvenilebilir mi.
         self._frame_provenance: dict[str, dict] = {}
         self._entry_data_blocked: set[str] = set()
+        # Pattern kaniti onbellegi: anahtar (sembol, indeks son bari). Indeks tur icinde
+        # degismedigi icin ayni cevap yeniden hesaplanmaz (olculdu: sorgu basina 12,6 sn).
+        self._pattern_cache: dict[tuple, dict] = {}
         # YÜRÜTME HASSASİYETİ: yapılandırma defterin kapısını belirler (varsayılan KAPALI → davranış
         # birebir eski). Açıkken doğrulanmamış adımla yeni giriş açılmaz; çıkışlar etkilenmez.
         self.ledger2.require_verified_precision = bool(getattr(v3.execution, "require_verified_precision", False))
@@ -583,7 +586,19 @@ class TradingEngineV3(TradingEngine):
         return self._pattern_engine
 
     def _pattern_evidence(self, symbol: str, now_ms: int) -> dict | None:
-        """Sembol için LONG/SHORT kanıtı; veri 3 bardan eskiyse (bayat) kanıt verilmez. state/evidence/<sym>.json'a paket + açıklama yazılır."""
+        """Sembol için LONG/SHORT kanıtı; veri 3 bardan eskiyse (bayat) kanıt verilmez. state/evidence/<sym>.json'a paket + açıklama yazılır.
+
+        SONUÇ ÖNBELLEKLENİR ve anahtarı indeksin SON BARIDIR. Gerekçe ölçüldü: `SimilarPatternEngine`
+        mum tablosunu `_load_pattern_engine` içinde bir kez kurar ve tur içinde GÜNCELLEMEZ; bu yüzden
+        aynı sembol/yön sorgusu süreç boyunca AYNI cevabı verir. 138.891 olaylı indekste tek sorgu
+        12,6 sn sürüyordu ve on sembol × iki yön ile tur başına 251 sn ediyordu — turun %88'i, her
+        turda yeniden hesaplanan özdeş bir sonuç için.
+
+        Anahtar indeksin son barı olduğu için önbellek YANLIŞ TAZE olamaz: indeks yeni veriyle
+        kurulursa (yeni süreç ya da yeniden yükleme) anahtar değişir ve kanıt yeniden hesaplanır.
+        Bayatlık kapısı önbellekten ÖNCE çalışır: eski bir cevap, veri bayatladıktan sonra
+        döndürülmez.
+        """
         eng = self._load_pattern_engine()
         if eng is None or (symbol, "futures", "4h") not in eng.candles:
             return None
@@ -591,12 +606,19 @@ class TradingEngineV3(TradingEngine):
             last_ts = int(eng.candles[(symbol, "futures", "4h")]["timestamp"].iloc[-1])
             if now_ms - last_ts > 3 * 14_400_000:
                 return None
+            cache = getattr(self, "_pattern_cache", None)
+            if cache is None:
+                cache = self._pattern_cache = {}
+            hit = cache.get((symbol, last_ts))
+            if hit is not None:
+                return hit
             from .patterns import explain_tr, packet_from_query
             ev = {side: eng.query(symbol, "futures", "4h", side, k=60) for side in ("LONG", "SHORT")}
             packets = {side: packet_from_query(r, decision_id=stable_id("evidence", self.run_id, symbol, side), timestamp=iso(utc_now()), timeframes=["4h"]) for side, r in ev.items()}
             atomic_write_json(self.cfg.state_path / "evidence" / f"{symbol.replace('/', '_')}.json",
                               {"symbol": symbol, "run_id": self.run_id, "generated_at": iso(utc_now()), "packets": {s: p.to_dict() for s, p in packets.items()},
                                "explanation_tr": {s: explain_tr(p) for s, p in packets.items()}, "neighbors": {s: r.get("neighbors", [])[:10] for s, r in ev.items()}}, indent=1)
+            cache[(symbol, last_ts)] = ev
             return ev
         except Exception as exc:  # noqa: BLE001
             log.warning("%s pattern kanıtı üretilemedi: %s", symbol, exc)

@@ -39,8 +39,22 @@ yayımladığı** kayıtlardan gelir. Grid varsayımı üretim yolunda kalmadı;
 kaynak verilmediğinde kullanılan bir yedektir.
 
 Önbellek yenilemesi de **pencere tabanlı** oldu (`ensure_window`): "hangi grid saatleri eksik"
-sorusu yerine "watermark'tan şimdiye kadarki pencere kapsandı mı". Pencere en kısa venue
-aralığından (1 saat) kısaysa **hiç istek atılmaz**; kapsandıysa da atılmaz.
+sorusu yerine "watermark'tan şimdiye kadarki pencere kapsandı mı".
+
+**Kendi değişikliğimde ölçerek bulduğum iki kusur, aynı turda onarıldı:**
+
+1. **Her turda yeniden istek.** İlk hâlinde `needs_window` yalnız "kapsama penceresi şimdiyi
+   örtüyor mu" diye bakıyordu; pencerenin sonu her turda ilerlediği için koşul hep sağlanıyordu.
+   Ölçüldü: 24 saatte 96 tur → **96 istek**. Artık bekleme, venue kayıtlarından **gözlenen**
+   aralıktan türetilir (varsayılmaz): ardışık settlement'lar arasındaki en kısa fark. Ölçüldü:
+   8 saatlik sembolde 96 turda **27**, 4 saatlikte **14**, 1 saatlikte **12** istek. Kalan istekler
+   ısınma aşamasındandır — iki kayıt birikene kadar aralık bilinemez ve 1 saatlik taban kullanılır.
+2. **Kapsanmayan dönemi atlayıp sonrakini kapatma.** `settlements_in` yalnız önbellekteki
+   zamanları döndürdüğü için, önbellek geç bir pencereyi taşıyorsa aradaki dönem atlanıp
+   sonraki kapatılabiliyordu — watermark ileri sarar ve dönem **sonsuza kadar kaybolurdu**.
+   Bu, onarılan D1 kusurundan **daha kötü** olurdu. Artık çekilen pencerenin başlangıcı da
+   izleniyor (`covered_from`) ve kapsama watermark'tan önce başlamıyorsa `settlements_in`
+   **boş döner** (fail-closed). İkisi de testle kilitlendi.
 
 `ops/gap.py` ve replay/counterfactual harness'leri de aynı iki değişikliği aldı: doğrulanmış alıntı
 ve gerçek settlement zamanları.
@@ -83,7 +97,7 @@ başa-baş hareketi oluşmaz**. NATGAS güvenilir 0,00 ve GPS 1,33 (= 0,14R) —
 
 ## D3 — Test boşlukları davranışla kapatıldı
 
-`tests/test_funding_integrity_v2.py` (14 test) gerçek motor/monitör/tur yollarını sınar; yardımcı
+`tests/test_funding_integrity_v2.py` (16 test) gerçek motor/monitör/tur yollarını sınar; yardımcı
 fonksiyon ya da kaynak metni kontrolü değildir.
 
 | Mutasyon | Eskiden | Şimdi |
@@ -113,9 +127,9 @@ ifade edecek biçimde yeniden yazıldı:
 
 ## Açık kalan
 
-* **D5** ölü venue'da tur gecikmesi: `max_symbols_per_refresh = 8`, zaman aşımı 5 sn. Pencere
-  tabanlı yenileme istek sayısını büyük ölçüde düşürür (8 saatlik sembolde ~8 saatte bir) ama
-  en kötü durumda tur başına ~40 sn gecikme olasılığı duruyor.
+* **D5** ölü venue'da tur gecikmesi: `max_symbols_per_refresh = 8`, zaman aşımı 5 sn, hata sonrası
+  300 sn soğuma. Pencere tabanlı yenileme istek sayısını düşürdü (yukarıdaki ölçüm) ama en kötü
+  durumda tur başına ~40 sn gecikme olasılığı **duruyor**; bu turda ele alınmadı.
 * **D6/D7** `test_09`'un ilk iddiasının boş olması ve `test_10`'un `bar_open=""` ile geçmesi.
   İkisi de bu turda **kapatılmadı**; yerlerini yeni davranış testleri fiilen doldurdu ama eski
   testler olduğu gibi duruyor.

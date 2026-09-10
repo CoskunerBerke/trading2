@@ -84,6 +84,10 @@ class FundingRateCache:
         self._retry_after: dict[str, float] = {}
         #: sembol -> BASARIYLA cekilmis pencerenin sonu (ms). Kalici; `load`/`save` tasir.
         self._covered_to: dict[str, int] = {}
+        #: sembol -> ayni pencerenin BASLANGICI (ms). `settlements_in` bunun ONCESINDEKI bir
+        #: watermark icin BOS doner: kapsanmamis bir donemi atlayip sonrakini kapatmak, onarilan
+        #: kusurdan daha kotu bir SESSIZ KAYIP olurdu.
+        self._covered_from: dict[str, int] = {}
         self.fetched_at: dict[str, str] = {}
         self.stats = {"hits": 0, "misses": 0, "fetches": 0, "fetch_errors": 0, "rows": 0}
         self.load()
@@ -128,11 +132,18 @@ class FundingRateCache:
         4 saatlik ve 1 saatlik sozlesmeler bu yolla dogru sayida donem uretir. Onbellekte kayit
         yoksa BOS liste doner ve `accrue` fail-closed davranir (dönem BEKLER, kaybolmaz).
         """
-        table = self._rates.get(to_raw(symbol))
+        raw = to_raw(symbol)
+        table = self._rates.get(raw)
         if not table:
             return []
-        # Tablo anahtari EPOCH-SAAT indeksidir (bkz. `hour_key`), ms DEGIL.
         lo, hi = int(start.timestamp() * 1000), int(end.timestamp() * 1000)
+        # FAIL-CLOSED: cekilmis pencere `start`ten ONCE baslamiyorsa aradaki donemleri bilmiyoruz.
+        # Sonrakileri kapatmak watermark'i ileri sarar ve bilinmeyen donemi KAYBEDERDI.
+        cov_from = self._covered_from.get(raw)
+        if cov_from is None or cov_from > lo:
+            return []
+        hi = min(hi, self._covered_to.get(raw, 0))
+        # Tablo anahtari EPOCH-SAAT indeksidir (bkz. `hour_key`), ms DEGIL.
         return [datetime.fromtimestamp(k * _HOUR_MS / 1000, tz=timezone.utc)
                 for k in sorted(table) if lo < k * _HOUR_MS <= hi]
 
@@ -140,18 +151,40 @@ class FundingRateCache:
         """Bu sembol icin BASARIYLA cekilmis pencerenin sonu (ms). Hic cekim yoksa 0."""
         return int(self._covered_to.get(to_raw(symbol), 0))
 
+    def observed_interval_ms(self, symbol: str) -> int | None:
+        """Sembolun GOZLENEN funding araligi (ms) — venue kayitlarindan turetilir, VARSAYILMAZ.
+
+        Ardisik settlement'lar arasindaki EN KISA fark alinir: venue arali­gi kisaltmissa erken
+        yeniden sorulur, uzatmissa gereksiz istek atilmaz.
+        """
+        keys = sorted(self._rates.get(to_raw(symbol)) or {})
+        if len(keys) < 2:
+            return None
+        return min(b - a for a, b in zip(keys, keys[1:])) * _HOUR_MS
+
     def needs_window(self, symbol: str, start: datetime, end: datetime,
                      *, min_interval_h: int = 1, grace_s: int = 60) -> bool:
         """Bu pencere icin ag cagrisi GEREKLI mi?
 
-        Iki kosul birden: (a) pencere en kisa venue funding araligindan (1 saat) daha uzun —
-        yani icinde settlement OLABILIR; (b) daha once basariyla cekilmis kapsama penceresi
-        pencerenin sonunu ortmuyor. Boylece 8 saatlik bir sembol icin ~8 saatte bir, 1 saatlik
-        bir sembol icin ~saatte bir istek atilir; kapsanan turlarda HIC istek atilmaz.
+        Sirasiyla: (a) pencere en kisa venue araligindan (1 saat) kisaysa icinde settlement
+        OLAMAZ -> hayir; (b) kapsama `start`ten once baslamiyorsa mutlaka cekilmeli -> evet;
+        (c) aksi halde GOZLENEN araliktan sonraki beklenen settlement zamani gecmediyse -> hayir.
+        (c) olmadan her tur yeniden istek atiliyordu (olculdu: 24 saatte 96 tur = 96 istek).
         """
+        raw = to_raw(symbol)
+        lo, hi = int(start.timestamp() * 1000), int(end.timestamp() * 1000)
         if (end - start).total_seconds() < min_interval_h * 3600:
             return False
-        return self.covered_to_ms(symbol) < int(end.timestamp() * 1000) - grace_s * 1000
+        cov_from, cov_to = self._covered_from.get(raw), self._covered_to.get(raw, 0)
+        if cov_from is None or cov_from > lo or cov_to <= 0:
+            return True
+        keys = sorted(self._rates.get(raw) or {})
+        interval = self.observed_interval_ms(symbol) or (min_interval_h * _HOUR_MS)
+        # `cov_to` (son cekimin sonu) BURAYA KARISTIRILMAZ: karistirilinca "her turda yeniden
+        # sor" davranisi geri geliyordu (olculdu: 24 saatte 96 tur -> 96 istek). Belirleyici olan,
+        # GOZLENEN araliga gore bir SONRAKI settlement'in gelip gelmedigidir.
+        last_settlement = keys[-1] * _HOUR_MS if keys else cov_from
+        return hi >= last_settlement + interval + grace_s * 1000
 
     # ------------------------------------------------------------------ kalıcılık
     def load(self) -> None:
@@ -162,11 +195,13 @@ class FundingRateCache:
         except (OSError, ValueError) as exc:
             log.warning("funding_rates okunamadı (%s): %s — önbellek BOŞ sayılıyor", self.path, exc)
             return
-        cov = d.get("covered_to_ms")
-        if isinstance(cov, dict):
+        for key, target in (("covered_to_ms", self._covered_to), ("covered_from_ms", self._covered_from)):
+            cov = d.get(key)
+            if not isinstance(cov, dict):
+                continue
             for k, v in cov.items():
                 try:
-                    self._covered_to[to_raw(str(k))] = int(v)
+                    target[to_raw(str(k))] = int(v)
                 except (TypeError, ValueError):
                     continue
         rates = d.get("rates")
@@ -213,6 +248,7 @@ class FundingRateCache:
         doc = {"schema_version": SCHEMA_VERSION, "saved_at": _iso(now), "n": self.size,
                "fetched_at": dict(sorted(self.fetched_at.items())),
                "covered_to_ms": dict(sorted(self._covered_to.items())),
+               "covered_from_ms": dict(sorted(self._covered_from.items())),
                "rates": {sym: {str(k): [r, m] for k, (r, m) in sorted(table.items())}
                          for sym, table in sorted(self._rates.items())}}
         try:
@@ -273,7 +309,13 @@ class FundingRateCache:
             del self._rates[raw]
         # Basarili cekim -> pencere KAPSANDI. Bos sonuc da kapsamadir: venue o aralikta kayit
         # yayimlamamis demektir; her turda ayni soruyu tekrar sormanin anlami yok.
-        self._covered_to[raw] = max(self._covered_to.get(raw, 0), int(end.timestamp() * 1000))
+        _lo, _hi = int(start.timestamp() * 1000) - _HOUR_MS, int(end.timestamp() * 1000)
+        _prev_from, _prev_to = self._covered_from.get(raw), self._covered_to.get(raw, 0)
+        if _prev_from is not None and _lo <= _prev_to and _hi >= _prev_from:
+            self._covered_from[raw] = min(_prev_from, _lo)      # bitisik/ortusen -> BIRLESTIR
+            self._covered_to[raw] = max(_prev_to, _hi)
+        else:
+            self._covered_from[raw], self._covered_to[raw] = _lo, _hi   # kopuk -> YENI pencere
         if added == 0:
             # Boş geçmiş: kayıt henüz yayımlanmamış ya da sembolde funding yok. Her turda yeniden
             # sormamak için KISA soğuma başlatılır; bu bir HATA değildir, `ok` True kalır.

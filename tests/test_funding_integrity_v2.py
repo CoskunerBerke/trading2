@@ -399,3 +399,43 @@ def test_concurrent_monitor_and_tour_accrue_each_settlement_exactly_once(tmp_pat
     stamps = [e.ts for e in fund]
     assert len(stamps) == len(set(stamps)), "ayni settlement birden fazla kez tahakkuk etti"
     assert len(fund) <= len(due)
+
+
+# ============================================================ kapsama disi = SESSIZ KAYIP OLMAZ
+def test_cache_covering_only_a_later_window_cannot_skip_earlier_settlements(tmp_path):
+    """Kendi onarimimin regresyonu: kapsanmamis bir donemi atlayip SONRAKINI kapatmak yasak.
+
+    Onbellek yalnizca gec bir pencereyi tasiyorsa, watermark'tan itibaren bitisik degildir;
+    sonraki settlement kapatilirsa watermark ileri sarar ve ARADAKI donem sonsuza kadar kaybolur.
+    Bu, onarilan D1 kusurundan daha kotu olurdu.
+    """
+    t0 = datetime(2026, 9, 8, 0, tzinfo=UTC)
+    cache = FundingRateCache(tmp_path / "fr.json")
+    # yalniz 16:00 ve sonrasi cekildi; 08:00 kapsanmadi
+    cache.refresh(_Provider(_rows(t0 + timedelta(hours=16), t0 + timedelta(hours=24), interval_h=8)),
+                  ETH, t0 + timedelta(hours=16), t0 + timedelta(hours=24))
+    assert cache.size > 0
+    sched = FundingSchedule(settlement_source=cache.settlements_in)
+    pos = _pos(t0)                                       # watermark 00:00 — kapsama disinda
+    assert sched.settlements_due(pos, t0 + timedelta(hours=24)) == []
+    assert sched.accrue(pos, t0 + timedelta(hours=24), D("3000"), cache.lookup) == []
+    assert pos.last_funding_settlement_utc == t0.isoformat()
+
+    # watermark'tan itibaren cekilince donemler SIRAYLA kapanir
+    cache.refresh(_Provider(_rows(t0, t0 + timedelta(hours=24), interval_h=8)), ETH, t0, t0 + timedelta(hours=24))
+    due = sched.settlements_due(pos, t0 + timedelta(hours=24))
+    assert [t.hour for t in due] == [8, 16, 0]
+    assert len(sched.accrue(pos, t0 + timedelta(hours=24), D("3000"), cache.lookup)) == 3
+
+
+def test_window_refresh_does_not_fetch_on_every_tour(tmp_path):
+    """Pencere tabanli yenileme her turda istek ATMAMALI (olculdu: duzeltmeden once 96/96)."""
+    t0 = datetime(2026, 9, 8, 0, tzinfo=UTC)
+    cache = FundingRateCache(tmp_path / "fr.json")
+    prov = _Provider(_rows(t0, t0 + timedelta(hours=48), interval_h=8))
+    now = t0 + timedelta(hours=1)
+    for _ in range(96):                                  # 24 saat boyunca 15 dk'lik turlar
+        cache.ensure_window(lambda: prov, {ETH: (t0, now)}, now=now.timestamp(), save=False)
+        now += timedelta(minutes=15)
+    assert len(prov.calls) < 40, f"her turda istek atiyor ({len(prov.calls)}/96)"
+    assert len(cache.settlements_in(ETH, t0, t0 + timedelta(hours=25))) == 3

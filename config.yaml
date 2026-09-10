@@ -47,8 +47,15 @@ risk:
   btc_regime_filter: true
   min_confidence_to_buy: 55
 
+# TARAYICI — sabit giriş evreni açıkken KAPALI (2026-09-11).
+# Neden: tarayıcı sembol başına İKİ REST isteği yapar (4h + 1d mumları). 160 sembolde
+# tarama başına 320 istek, 15 dk kadans + `--scan-every 2` ile günde ~15.360 istek eder.
+# `entry_universe.scanner_feeds_entries: false` olduğu için bu isteklerin ürünü artık
+# hiçbir girişe dönüşmez; yalnız panelin tarayıcı sayfasını besler.
+# Geri açmak tek satırdır: `enabled: true`. O zaman `state/universe_eval.json` yeniden
+# tazelenir ve tarama adayları panelde görünür (giriş yine yalnız evrende açılır).
 scanner:
-  enabled: true
+  enabled: false
   min_volume_usdt: 20000000     # 24s hacim ≥ 20M USDT olan Binance USDT perpetual'ları tara
   flag_score: 60                # işaretleme eşiği (0-100)
   top_n: 12                     # derin ajan analizine giden setup sayısı

@@ -469,7 +469,8 @@ def test_engine_tour_uses_per_settlement_rates_not_the_snapshot(tmp_path, monkey
         q = eng.funding_rates.lookup(ETH, t)
         assert q is not None and q.mark is not None
         e = by_hour[iso(t)[:13]]
-        assert e.note == f"funding rate={q.rate}"                 # tahmini DEĞİL (" est" yok), gerçek dönem oranı
+        # V2: kayit oranin KAYNAGINI da tasir — "verified" (venue kaydi) / "zero" / "est".
+        assert e.note == f"funding rate={q.rate} verified"
         assert e.amount == -(qty0 * q.mark * q.rate)              # LONG: rate>0 öder; mark da O settlement'ın
 
 

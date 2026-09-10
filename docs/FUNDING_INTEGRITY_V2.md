@@ -138,3 +138,53 @@ ifade edecek biçimde yeniden yazıldı:
   2125 saatin 45,5 saati; 0/29 işlem tamamen kör değil).
 * İki açık pozisyonun **kayıtlı** `mfe_pct`'i şişik kalır; düzeltmek defteri değiştiren ayrı ve
   onay gerektiren bir iştir. Başa-baş kuralı artık o değeri okumaz.
+
+---
+
+# Bağımsız inceleme (2026-09-10) ve sonrasında yapılanlar
+
+İnceleme `e5c365b` üzerinde yapıldı ve **onay vermedi**: bir YÜKSEK gerileme, üç test boşluğu ve
+beş düşük öncelikli bulgu çıkardı. Hepsi aşağıda; hangisi kapatıldı, hangisi açık kaldı.
+
+| # | Bulgu | Durum |
+|---|---|---|
+| **DEF-1** | **Yenileme her turda çalışıyor** (ölçüldü: 14 pozisyon için 714 istek/gün, `e8f19b6`'da ~56) **ve** `sorted(todo)[:8]` alfabetik ilk 8'i besleyip kuyruğu 8 saate kadar aç bırakıyor. `e8f19b6`'ya göre GERİLEME. | **KAPANDI.** Her-turda kısmı `ac2e3a8`'de zaten onarılmıştı (kendi ölçümümle bulunmuştu). Aç bırakma kısmı burada kapandı: seçim artık alfabetik değil, **en eski çekimden** başlıyor. Ölçüldü: 14 sembol / 3 gün / 288 tur → **316 istek (105/gün)**, en kötü gecikme **1,0 saat**. |
+| **DEF-2** | Bekleyen bir settlement **pozisyon kapanınca kalıcı kaybolur**; kayda sessiz sıfır yazılır. "Dönem bekler, kaybolmaz" iddiası kapanışta **yanlış**. | **KAPANDI (iddia da düzeltildi).** Çözülememiş dönem sayısı artık `TradeRecord.funding_pending_settlements` ve `meta.funding_watermark_at_close` ile taşınıyor, ayrıca WARNING loglanıyor. Uydurma oran hâlâ **yazılmıyor** — kayıt eksik olduğunu **söylüyor**. Garanti: *dönem pozisyon AÇIKKEN kaybolmaz; kapanışta çözülememişse kayıt bunu bildirir.* |
+| **DEF-3** | D2'nin **üretim kablolaması** test edilmiyor: `settlement_source = None` → 2142 test yeşil. | **KAPANDI.** `test_engine_wires_the_venue_settlement_source_into_the_ledger` motorun kendi defteri üzerinden 4 saatlik sözleşmenin dönem sayısını sayar. Mutasyonla doğrulandı: **1 test düşüyor.** |
+| **DEF-4** | Eski MFE testi 3,2 puan (=**0,96R**) ekiyordu — eşiğin altında, eski kod da ateşlemezdi: **kapı değil**. | **KAPANDI.** Ekilen tepe **4,0 puan (1,20R)** yapıldı; eski kod bunu ateşlerdi. Mutasyonla doğrulandı: **2 test düşüyor.** |
+| **DEF-5** | Turdaki `_exit_lock` test edilmiyor; kilit testi bloklamayla ölçtüğü için mutasyonda düşmüyordu (`ensure_gap_reconciled` zaten aynı kilidi alıyor). | **KAPANDI.** Test kilidi sayaç proxy'siyle sarıp `ledger2.tick` çağrıldığı **anda** tutma derinliğini okuyor. Mutasyonla doğrulandı: **1 test düşüyor.** |
+| **DEF-6** | Güvenilir tepe sıfırlaması, arm olmaya yakın üç pozisyondan (ETH 0,873R, META 0,918R, ZEN 0,952R) korumayı **geri çekiyor**; belge bunu söylemiyordu. | **BELGELENDİ** (aşağıda). Bilinçli takas. |
+| **DEF-7** | `verified` / `zero_rate` / `pending_settlements` hiçbir yere yazılmıyor; doğrulanmış sıfır ile veri yokluğu defterde ayırt edilemiyor, bekleyen dönem için **log bile yok**. | **KAPANDI.** Defter kaydı `funding rate=X verified` / `... zero verified` etiketi taşıyor; bekleyen dönem WARNING loglanıyor; kapanış kaydı sayıyı taşıyor. |
+| **DEF-8** | Altı üretim yorumu/metni artık **tersini** söylüyor (operatörün gördüğü Obsidian raporu dâhil). | **KAPANDI.** Altısı da düzeltildi. |
+| **DEF-9** | `scripts/research/funding_endtoend_check.py`'nin "ESKİ" kolonu sessizce `+0.000000` olmuş; doğrulama vakum. | **KAPANDI.** Eski semantik açıkça yeniden kuruluyor; **üretim yolu ile bağımsız mutabakat hâlâ 6 hanede aynı.** |
+| **DEF-10** | `replay/challengers.py` ve `futures_backtest.py` hâlâ sabit grid'de. | **KISMEN.** `challengers.run_plan` artık `funding_settlements` alıyor ve `challenger_realised29.py` gerçek venue zamanlarını geçiriyor. `futures_backtest.py` **açık kaldı** (üretim yolu değil). |
+| **DEF-11** | Önbellek, kilit dışında mutasyona uğruyor; monitör iterasyon hâlindeyken tur yeni anahtar ekleyebilir. | **AÇIK.** Etki sınırlı: `settlements_due` istisnayı fail-closed yakalar (dönem bekler, uyarı loglanır) ve watch döngüsü bugün tek iş parçacıklı. Kaydedildi, onarılmadı. |
+
+## İncelemenin haklı olduğu iki ifade düzeltmesi
+
+1. **"Yeni başa-baş hareketi oluşmaz" bir kanıt değildi.** Dondurulmuş defterde 1,0R üstündeki her
+   pozisyon zaten `tp1_done` ya da zaten `be_by_mfe` taşıyor; en yüksek uygun aday ZEN 0,952R.
+   Yani **onarılmamış kod da** yeni hareket üretmezdi. Doğru ifade: onarım, şişirilmiş tepeyi
+   kuralın girdisi olmaktan çıkarır; dondurulmuş anlık görüntüde bunun gözlenebilir bir farkı
+   yoktur. Ayırt edici kanıt testtedir (ekilen 1,20R tepe: eski kod ateşler, yeni kod ateşlemez).
+2. **`require_verified` üretimde canlı muhafız değil, ikinci kemerdir.** `settlement_source`
+   bağlıyken `settlements_due` yalnızca önbellekteki anahtarları döndürür, dolayısıyla `lookup`
+   garantili isabet eder ve `require_verified` pratikte devreye girmez. Asıl koruma D2'nin
+   kendisidir; `require_verified` kaynak değişirse ya da biri `settlement_source`'u kaldırırsa
+   devreye giren yedektir.
+
+## DEF-6 — bilinçli takas, açıkça
+
+Güvenilir tepe sıfırdan başladığı için, onarımdan önce açılmış ve **arm olmaya yakın** pozisyonlar
+korumayı yeniden kazanmak zorundadır. Dondurulmuş defterde bunlar ETH (0,873R), META (0,918R) ve
+ZEN (0,952R). Hiçbir stop **gevşetilmez**, var olan hiçbir `be_by_mfe` düşürülmez; geri çekilen şey
+*henüz oluşmamış* bir korumadır. Gerekçe: bu üç tepe de provenans onarımından önce birikti ve
+doğrulanabilir değil. Alternatif — doğrulanamayan bir tepeye dayanarak stop taşımak — bu sürümün
+kapatmaya çalıştığı davranışın ta kendisidir.
+
+## Sayı düzeltmeleri
+
+* Turdan `ensure_funding_rates` kaldırıldığında düşen test sayısı **3 değil 4**'tür
+  (`test_restart_does_not_reapply_settled_periods` de düşüyor).
+* Önceki commit mesajındaki "2103 test" bu ağaca ait değildir: `e5c365b`'de 2164 test toplanır,
+  2142 geçer, 22 atlanır.

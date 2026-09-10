@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """URETIM YOLU ile BAGIMSIZ MUTABAKATIN ayni sonucu verdiginin kaniti (ag gerektirir).
 
+V2 NOTU: "ESKI" kolonu eski semantigi (tek anlik oran) TEMSIL eder ve karsilastirma anlamli kalsin
+diye acikca dogrulanmis isaretlenir. Uretimde `static_rates` artik hicbir donemi kapatamaz.
+
 `scripts/research/funding_recon.py` defterin kuralini SIFIRDAN yeniden yazarak gercek Binance
 funding gecmisiyle mutabakat kurar. Bu betik ise URETIM kodunu (`FundingRateCache` +
 `FundingSchedule.accrue` + `chained_rates`) gercek venue verisiyle calistirir. Iki bagimsiz
@@ -23,7 +26,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from tradingbot.accounting.funding import FundingSchedule, chained_rates, static_rates  # noqa: E402
+from tradingbot.accounting.funding import FundingSchedule, chained_rates  # noqa: E402
 from tradingbot.accounting.models import MarketType, Position, PositionSide  # noqa: E402
 from tradingbot.market.funding_rates import FundingRateCache  # noqa: E402
 
@@ -74,9 +77,14 @@ def main() -> int:
             due = sch.settlements_due(p, c)
             cache.ensure(lambda: _P(), {t["symbol"]: due}, now=time.time())
             new = sum(e.amount for e in sch.accrue(p, c, Decimal(str(t["exit_price"])),
-                                                   chained_rates(cache.lookup, static_rates({}))))
+                                                   chained_rates(cache.lookup)))
+            # ESKI davranisi temsil eden kol: tek anlik oran, HER doneme uygulanir. V2'de
+            # `static_rates` DOGRULANMAMIS alinti uretir ve hicbir donemi kapatamaz; bu kolon
+            # sessizce +0.000000 olurdu (bagimsiz inceleme DEF-9). Karsilastirma anlamli kalsin
+            # diye eski semantik burada ACIKCA yeniden kuruluyor: ayni oran, dogrulanmis isaretle.
+            _snapshot = Decimal(str(prov_rows[-1]["rate"]))
             old = sum(e.amount for e in sch.accrue(_mk(), c, Decimal(str(t["exit_price"])),
-                                                   static_rates({t["symbol"]: Decimal(str(prov_rows[-1]["rate"]))})))
+                                                   lambda _s, _w: {"rate": _snapshot, "verified": True}))
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
         ok = abs(float(new) - EXPECTED[tid]) < 1e-6

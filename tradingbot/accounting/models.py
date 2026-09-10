@@ -490,6 +490,9 @@ class TradeRecord:
     r_multiple: Decimal = ZERO
     mae_pct: Decimal = ZERO
     mfe_pct: Decimal = ZERO
+    #: Kapanista oran DOGRULANAMADIGI icin cozulemeyen funding donemi sayisi. 0'dan buyukse
+    #: bu kaydin `funding` alani EKSIKTIR (uydurma oran yazilmaz; bkz. FundingSchedule).
+    funding_pending_settlements: int = 0
     bars_held: int = 0
     leverage: int = 1
     setup_type: str = ""

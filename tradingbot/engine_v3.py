@@ -674,9 +674,9 @@ class TradingEngineV3(TradingEngine):
             if not marks:
                 return []
             now = utc_now()
-            # FUNDING SETTLEMENT V1: hızlı çıkış monitörü AĞA ÇIKMAZ; yalnız önbellekteki gerçek
-            # settlement oranını okur. Önbellek boşsa `accrue` eskisi gibi son bilinen orana
-            # (estimated) düşer — davranış kötüleşmez, kapsandığında iyileşir.
+            # FUNDING SETTLEMENT V2: hızlı çıkış monitörü AĞA ÇIKMAZ; yalnız önbellekteki
+            # DOĞRULANMIŞ settlement oranını okur. Önbellek boşsa dönem KAPANMAZ ve watermark
+            # DURUR — monitör turun gerçek oranını çalamaz. Tur onu tam bir kez kapatır.
             records = self.ledger2.tick(marks, now_utc=now, funding_rate_lookup=self.funding_rates.lookup, bar_advance=False)
             self.ledger2.save(self.ledger_path)
             from .ops.gap import write_watermark
@@ -978,9 +978,9 @@ class TradingEngineV3(TradingEngine):
         bar_advance = bool(cur_bar and cur_bar != self.last_bar_seen)
         if cur_bar:
             self.last_bar_seen = cur_bar
-        # FUNDING SETTLEMENT V1: önce settlement'ın GERÇEK oranı/mark'ı (önbellek; ağ yalnız eksik
-        # dönem varsa ve arıza turu düşürmez), o çözülemezse eski yedek = anlık snapshot oranı.
-        # Böylece venue erişilemezken davranış eskisiyle birebir aynı, erişilebilirken doğru kalır.
+        # FUNDING SETTLEMENT V2: settlement'ın GERÇEK oranı/mark'ı yalnız önbellekten gelir
+        # (ağ yalnız kapsanmamış pencere varsa; arıza turu düşürmez). Anlık snapshot yedeği YOK:
+        # doğrulanmamış olduğu için zaten dönem kapatamıyordu.
         self.ensure_funding_rates(now)
         # Yalnizca onbellekteki DOGRULANMIS venue orani donemi kapatabilir. `static_rates` anlik
         # yedegi artik zincirde YOK: dogrulanmamis oldugu icin zaten watermark'i ilerletemezdi ve
@@ -1894,7 +1894,7 @@ class TradingEngineV3(TradingEngine):
             out.append(f"| {h['id']} | {h['symbol']} | {h['side']} | {float(h['entry']):.6g} | {float(h.get('exit_price') or 0):.6g} | {h['exit_reason']} | {float(h.get('gross_pnl', 0)):+.4f} | "
                        f"{float(h.get('fees', 0)):.4f} | {float(h.get('funding', 0)):+.4f} | {float(h.get('slippage_cost', 0)):.4f} | {float(h.get('net_pnl', h.get('pnl', 0))):+.4f} | "
                        f"{float(h['r_multiple']):+.2f} | {h.get('bars_held', 0)} | {h['leverage']}x | {h.get('setup_type', '')} | {str(h.get('closed_at', ''))[:16]} |")
-        out += ["", "Kurallar: TP1'de kısmi kapama + GERÇEK başa-baş (komisyon+kayma dahil) · likidasyon bracket/MMR ile · funding 00/08/16 UTC settlement, kaçırılan dönemler toplu · "
+        out += ["", "Kurallar: TP1'de kısmi kapama + GERÇEK başa-baş (komisyon+kayma dahil) · likidasyon bracket/MMR ile · funding: settlement zamanları venue kayıtlarından, kaçırılan dönemler toplu · "
                 "aynı tikte stop+hedef → stop (worst-case) · komisyon fill notional üzerinden · vergi ayrı ve doğrulanana kadar 0",
                 "", "[[Learning/Öğrenme]] · [[Learning/Dersler]] · [[Scanner]] · [[Dashboard]] · [[Risk/Limits]]"]
         return "\n".join(out)

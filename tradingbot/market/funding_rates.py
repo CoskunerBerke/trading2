@@ -354,8 +354,15 @@ class FundingRateCache:
             self.stats["fetch_errors"] += 1
             log.warning("funding saglayicisi acilamadi: %s: %s — onbellek korunuyor", type(exc).__name__, exc)
             return {"ok": False, "error": f"saglayici acilamadi: {type(exc).__name__}: {exc}", "fetched": 0, "n": self.size}
+        # BUTCE ADALETI: alfabetik siralama, ac semboller 8'den fazlayken hep ilk 8'i secer ve
+        # kuyruktakiler bir tam settlement araligi geride kalirdi (bagimsiz inceleme DEF-1: olculen
+        # 8 saat). Sira EN ESKI cekimden baslar; her tur farkli semboller one gelir.
+        def _staleness(sym: str) -> tuple[float, str]:
+            raw = to_raw(sym)
+            return (float(self._covered_to.get(raw, 0)), raw)      # hic cekilmemis (0) EN ONCE
+
         results = []
-        for sym in sorted(todo)[:self.max_symbols_per_refresh]:
+        for sym in sorted(todo, key=_staleness)[:self.max_symbols_per_refresh]:
             lo, hi = todo[sym]
             results.append(self.refresh(provider, sym, lo, hi, now=now))
         added = sum(int(r.get("n") or 0) for r in results)
@@ -392,7 +399,7 @@ class FundingRateCache:
             log.warning("funding sağlayıcısı açılamadı: %s: %s — önbellek korunuyor", type(exc).__name__, exc)
             return {"ok": False, "error": f"sağlayıcı açılamadı: {type(exc).__name__}: {exc}", "fetched": 0, "n": self.size}
         results = []
-        for sym in sorted(todo)[:self.max_symbols_per_refresh]:
+        for sym in sorted(todo, key=lambda x: (float(self._covered_to.get(to_raw(x), 0)), to_raw(x)))[:self.max_symbols_per_refresh]:
             lo, hi = todo[sym]
             r = self.refresh(provider, sym, lo, hi, now=now)
             # Çekim başarılı ama İSTENEN dönem hâlâ yoksa (venue o kaydı hiç vermiyor) turdan tura

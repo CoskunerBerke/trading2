@@ -1,8 +1,11 @@
-"""Funding tahakkuku (USDⓈ-M perpetual) — 00/08/16 UTC settlement'larına hizalı, kaçırılan HER dönem ayrı ayrı uygulanır.
+"""Funding tahakkuku (USDⓈ-M perpetual) — settlement zamanları VENUE'DAN gelir, kaçırılan HER dönem ayrı ayrı uygulanır.
 
 * rate > 0 → LONG öder, SHORT alır; rate < 0 → tersi.
 * tutar = qty * mark * rate  (settlement anındaki mark; elimizde yoksa verilen mark)
-* rate_lookup(symbol, settlement_dt) → oran ya da None. None dönerse son bilinen oran kullanılır ve olay `estimated=True` işaretlenir.
+* rate_lookup(symbol, settlement_dt) → alıntı ya da None. **Yalnız `verified=True` bir alıntı dönemi
+  KAPATIR** (V2, `require_verified`); doğrulanmamış değer ya da None → dönem BEKLER, watermark durur.
+* Settlement zamanları `settlement_source` ile venue kayıtlarından gelir; `hours_utc` (00/08/16)
+  yalnız o kaynak verilmediğinde kullanılan bir YEDEKTİR ve üretim yolunda kullanılmaz.
 
 FUNDING SETTLEMENT V1 (2026-09-09). Eski davranış: çağıran TEK bir anlık oran (`static_rates`,
 settlement zamanını yok sayar) ve TEK bir anlık mark veriyordu; kaçırılan 15 settlement'ın hepsine
@@ -12,11 +15,12 @@ aynı oran ve aynı mark uygulanıyordu. Üretim defterindeki 29 kapanmış işl
 LONG, 15 settlement, +0,144644 karşı +0,040753). Birim/işaret dönüşümü DOĞRUYDU, settlement eşlemesi
 1:1'di — kusur yalnızca "hangi oran" sorusundaydı.
 
-Onarım `rate_lookup`'un SÖZLEŞMESİNİ genişletir: artık dönüş değeri skaler bir oran YA DA
-`FundingQuote(rate, mark)` olabilir. Böylece her settlement kendi oranını ve o andaki mark'ını
-kullanır. Skaler dönüşler (mevcut `static_rates`, testler, `ops/gap.py`) BİREBİR eskisi gibi çalışır.
-FAIL-CLOSED semantiği değişmedi: oran gerçekten çözülemiyorsa (son bilinen oran da yoksa) o
-settlement ve SONRAKİLERİN hepsi BEKLER, watermark ilerlemez, sessiz sıfır YAZILMAZ.
+Onarım `rate_lookup`'un SÖZLEŞMESİNİ genişletir: dönüş değeri skaler bir oran YA DA
+`FundingQuote(rate, mark, verified=...)` olabilir. **V2 uyarısı:** skaler dönüşler artık
+doğrulanmamış sayılır ve hiçbir dönemi kapatamaz; `ops/gap.py` ve replay harness'leri bu yüzden
+açıkça `verified=True` bildirir. Fail-closed: çözülemeyen settlement ve SONRAKİLERİN hepsi BEKLER,
+watermark ilerlemez, sessiz sıfır YAZILMAZ — ama bu garanti pozisyon AÇIKKEN geçerlidir; kapanışta
+çözülememiş dönem `TradeRecord.funding_pending_settlements` ile KAYDA GEÇER (uydurma oran yazılmaz).
 """
 from __future__ import annotations
 
@@ -103,8 +107,8 @@ def _as_quote(raw: Any) -> "FundingQuote | None":
 def static_rates(rates: Mapping[str, "Decimal | float | str"]) -> RateLookup:
     """Sembol → sabit oran sözlüğünden lookup üretir (engine'in mevcut funding dict'i için).
 
-    Settlement zamanını YOK SAYAR: tek bir anlık oranı bütün dönemlere uygular. Doğru oran kaynağı
-    (`market.funding_rates.FundingRateCache`) elde yokken YEDEK olarak kullanılır — bkz. `chained_rates`.
+    Settlement zamanını YOK SAYAR ve DOĞRULANMAMIŞ alıntı üretir; `require_verified=True` altında
+    hiçbir dönemi KAPATAMAZ. Üretim yolunda kullanılmaz — doğru kaynak `FundingRateCache`'tir.
     """
     def _lookup(symbol: str, _when: datetime):
         v = rates.get(symbol)
@@ -213,6 +217,9 @@ class FundingSchedule:
                     # Oran bilinmiyor → bu ve SONRAKİ dönemler BEKLER. Watermark ilerlemez, sessiz
                     # sıfır yazılmaz, olay KAYBOLMAZ; bir sonraki tur gerçek oranla kapatır.
                     self.pending_settlements = len(due) - _i     # bu ve SONRAKI donemler bekliyor
+                    log.warning("%s %s icin funding orani cozulemedi — bu ve sonraki %d donem BEKLIYOR "
+                                "(watermark %s)", position.symbol, iso(t), self.pending_settlements,
+                                position.last_funding_settlement_utc)
                     break
                 rate, estimated = last_rate, True
                 mark = fallback_mark
@@ -220,6 +227,9 @@ class FundingSchedule:
                 # D1: doğrulanmamış (anlık/tahmini) oran dönemi KAPATAMAZ. Çıkış monitörünün
                 # 60 sn'lik döngüsü, turun 15 dk'da bir aldığı gerçek oranı çalamaz.
                 self.pending_settlements = len(due) - _i     # bu ve SONRAKI donemler bekliyor
+                log.warning("%s %s icin oran DOGRULANMAMIS (kaynak=%r) — bu ve sonraki %d donem "
+                            "BEKLIYOR (watermark %s)", position.symbol, iso(t), quote.source,
+                            self.pending_settlements, position.last_funding_settlement_utc)
                 break
             else:
                 rate = quote.rate

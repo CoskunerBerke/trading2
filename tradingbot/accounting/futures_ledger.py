@@ -363,6 +363,17 @@ class FuturesLedgerV2:
         return gross, exit_fee
 
     def _finalize(self, pos: Position, reason: str, ts: str) -> TradeRecord:
+        # BEKLEYEN SETTLEMENT (bagimsiz inceleme DEF-2). "Donem bekler, kaybolmaz" garantisi
+        # POZISYON ACIKKEN gecerlidir: kapanista bir daha tahakkuk sansi yoktur ve bekleyen dönem
+        # kayda SESSIZ SIFIR olarak gecerdi. Artik kapanis kaydi kac donemin cozulemedigini ve
+        # watermark'in nerede kaldigini TASIR; sayi 0 degilse `funding` alani EKSIKTIR ve bunu
+        # okuyan herkes gorur. Uydurma oran YAZILMAZ — dogrulanmamis tahakkuk bu surumde yasak.
+        _pending = int(getattr(self.funding, "pending_settlements", 0) or 0)
+        if _pending:
+            pos.meta["funding_pending_at_close"] = _pending
+            pos.meta["funding_watermark_at_close"] = pos.last_funding_settlement_utc
+            log.warning("%s kapanirken %d funding donemi COZULEMEDI (watermark %s) — kayittaki "
+                        "funding EKSIK", pos.symbol, _pending, pos.last_funding_settlement_utc)
         self.positions.pop(pos.symbol, None)
         pos.status = "CLOSED"
         pos.closed_at = ts
@@ -389,6 +400,7 @@ class FuturesLedgerV2:
             exit_fee=exit_fee, funding_paid=pos.funding_paid, funding_received=pos.funding_received,
             slippage_cost=pos.slippage_cost, spread_cost=spread_cost, tax_estimate=tax_est, gross_pnl=gross, net_pnl=net,
             exit_price=exit_px, liquidation_price=pos.liquidation_price, fills=list(pos.fills),
+            funding_pending_settlements=_pending,
             costs={"entry_fee": format(pos.entry_fee, "f"), "exit_fee": format(exit_fee, "f"),
                    "funding_paid": format(pos.funding_paid, "f"), "funding_received": format(pos.funding_received, "f"),
                    "slippage": format(pos.slippage_cost, "f"), "spread": format(spread_cost, "f"),
@@ -475,7 +487,12 @@ class FuturesLedgerV2:
             for ev in fev:
                 self.wallet_balance += ev.amount
                 self.total_funding += ev.amount
-                self._entry(LedgerKind.FUNDING, ev.amount, pos.id, f"funding rate={ev.rate}{' est' if ev.estimated else ''}", ev.ts)
+                # Kayit, oranin NEREDEN geldigini tasir: dogrulanmis venue kaydi mi, dogrulanmis SIFIR mi,
+                # yoksa (bu surumde artik olusmayan) tahmin mi. Aksi halde kaydedilmis bir `rate=0`
+                # satiri "venue sifir yayimladi" ile "veri yoktu" arasinda ayirt edilemiyordu (DEF-7).
+                _tag = " zero" if ev.zero_rate else ""
+                _tag += " verified" if ev.verified else (" est" if ev.estimated else " unverified")
+                self._entry(LedgerKind.FUNDING, ev.amount, pos.id, f"funding rate={ev.rate}{_tag}", ev.ts)
             # likidasyon
             if pos.liquidation_price is not None and is_liquidated(pos.side, worst, pos.liquidation_price):
                 closed.append(self._liquidate(pos, ts))

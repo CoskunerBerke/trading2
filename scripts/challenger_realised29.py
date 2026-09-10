@@ -17,7 +17,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from tradingbot.replay.challengers import BASELINE, C1, C2, plan_bars_window, run_trade_plan  # noqa: E402
 from tradingbot.replay.fidelity import (  # noqa: E402
-    BinanceBars, funding_lookup_from, load_plans, path_targets_index, replay_config_from_ledger,
+    BinanceBars, funding_lookup_from, funding_settlements_from, load_plans, path_targets_index,
+    replay_config_from_ledger,
 )
 from tradingbot.replay.stats import cluster_bootstrap, mean  # noqa: E402
 
@@ -50,12 +51,13 @@ def main() -> int:
         bars_nat = src.bars(p.symbol, "1m", s_ms, e_nat)
         rates = src.funding_rates(p.symbol, s_ms - 8 * 3_600_000, max(e_ms, e_nat))
         lk = funding_lookup_from(rates) if rates else None
+        fs = funding_settlements_from(rates) if rates else None   # D2: gercek settlement zamanlari
         row = {"trade_id": p.trade_id, "symbol": p.symbol, "side": p.side,
                "opened_at": p.opened_at.isoformat(), "hold_h": round(p.hold_hours, 2),
                "recorded_r": float(p.rec_r_multiple), "recorded_exit": p.rec_exit_reason}
         for pol in POLICIES:
-            a = run_trade_plan(p, bars_pool, cfg, pol, funding_lookup=lk)
-            b = run_trade_plan(p, bars_nat, cfg, pol, funding_lookup=lk)
+            a = run_trade_plan(p, bars_pool, cfg, pol, funding_lookup=lk, funding_settlements=fs)
+            b = run_trade_plan(p, bars_nat, cfg, pol, funding_lookup=lk, funding_settlements=fs)
             row[pol.name] = {"pool72_r": a.r_multiple, "pool72_exit": a.exit_reason,
                              "natural_r": b.r_multiple, "natural_exit": b.exit_reason,
                              "time_boxed": a.time_boxed, "excluded": a.excluded}

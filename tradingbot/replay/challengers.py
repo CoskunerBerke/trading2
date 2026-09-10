@@ -77,6 +77,7 @@ class RunOutcome:
 def run_plan(*, symbol: str, side: str, ref_entry: Decimal, stop: Decimal, targets: Sequence[Decimal],
              notional: Decimal, leverage: int, amount_type: str, opened_at: datetime, bars: Sequence[Bar],
              cfg: ReplayConfig, policy: Policy, funding_lookup: Any = None,
+             funding_settlements: Any = None,
              be_mfe_r: Decimal | None = None, be_mfe_active_from: datetime | None = None,
              horizon_close: bool = True) -> RunOutcome:
     """Bir plani verilen mumlarla ve verilen politikayla kos.
@@ -95,6 +96,10 @@ def run_plan(*, symbol: str, side: str, ref_entry: Decimal, stop: Decimal, targe
         out.excluded = excl
         return out
     led = cfg.new_ledger(breakeven_at_mfe_r=(ZERO if be_mfe_active_from is not None else be_mfe_r))
+    if funding_settlements is not None:
+        # D2: sabit 00/08/16 grid'i yerine venue'nun GERCEK settlement zamanlari.
+        # Verilmezse defter varsayilan grid'de kalir (bkz. DEF-10 notu).
+        led.funding.settlement_source = funding_settlements
     size = SizeSpec(amount=notional, amount_type=AmountType(amount_type), leverage=leverage)
     pos = led.open(symbol, side, ref_entry, size, stop=stop, targets=tgts, now=opened_at)
     if pos is None:

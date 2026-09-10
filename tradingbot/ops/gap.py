@@ -134,8 +134,8 @@ class GapReconciler:
         """Settlement zamanı (saat hassasiyetinde epoch-saat) → gerçek dönem oranı."""
         try:
             rows = provider.funding_history(symbol, limit=1000, start_ms=start_ms, end_ms=end_ms) or []
-        except Exception as exc:  # noqa: BLE001 — funding geçmişi alınamazsa tahmini yol (estimated) devreye girer
-            log.warning("%s funding geçmişi alınamadı (%s) — son bilinen oranla tahmin edilecek", symbol, exc)
+        except Exception as exc:  # noqa: BLE001 — funding geçmişi alınamazsa dönemler BEKLER (V2)
+            log.warning("%s funding geçmişi alınamadı (%s) — dönemler BEKLETİLECEK, tahmin YAPILMAZ", symbol, exc)
             return {}
         out: dict[int, Decimal] = {}
         for r in rows:

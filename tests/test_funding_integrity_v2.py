@@ -292,14 +292,16 @@ def test_legacy_inflated_peak_cannot_trigger_a_new_breakeven_move():
     led = _led_with_be()
     pos = led.open(TA.ETH, "LONG", 3000, SizeSpec(48, AmountType.NOTIONAL, 2), stop=2900,
                    targets=[3300], filters=TA._f(), now=TA.T0)
-    pos.mfe_pct = D("3.2")                                   # devralinan SISIRILMIS tepe (~0.96R)
+    # DEVRALINAN SISIRILMIS tepe 1.0R ESIGINI GECMELI, yoksa test kapi degildir:
+    # risk %3.3333 -> 4.0 puan = 1.20R. Eski kod bunu ATESLERDI.
+    pos.mfe_pct = D("4.0")
     assert not pos.meta.get("mfe_trusted_from")
 
     t = TA.T0 + timedelta(hours=1)
     led.tick({TA.ETH: TickData(last=3005, high=3006, low=3004, bar_open=t.isoformat())}, now_utc=t)
     assert pos.meta.get("mfe_trusted_from")                  # damga konuldu
-    assert float(pos.meta["mfe_pct_legacy_at_stamp"]) == pytest.approx(3.2)
-    assert pos.mfe_pct >= D("3.2")                           # KAYIT alani yeniden yazilmadi
+    assert float(pos.meta["mfe_pct_legacy_at_stamp"]) == pytest.approx(4.0)
+    assert pos.mfe_pct >= D("4.0")                           # KAYIT alani yeniden yazilmadi
     assert not pos.meta.get("be_by_mfe"), "sisirilmis tepe basa-bas hareketini tetikledi"
     assert pos.stop == D("2900"), "stop erken tasindi"
 
@@ -332,7 +334,7 @@ def test_trusted_peak_survives_save_and_reload(tmp_path):
     led = _led_with_be()
     pos = led.open(TA.ETH, "LONG", 3000, SizeSpec(48, AmountType.NOTIONAL, 2), stop=2900,
                    targets=[3300], filters=TA._f(), now=TA.T0)
-    pos.mfe_pct = D("3.2")
+    pos.mfe_pct = D("4.0")
     t = TA.T0 + timedelta(hours=1)
     led.tick({TA.ETH: TickData(last=3005, high=3006, low=3004, bar_open=t.isoformat())}, now_utc=t)
     p = tmp_path / "fut.json"
@@ -439,3 +441,98 @@ def test_window_refresh_does_not_fetch_on_every_tour(tmp_path):
         now += timedelta(minutes=15)
     assert len(prov.calls) < 40, f"her turda istek atiyor ({len(prov.calls)}/96)"
     assert len(cache.settlements_in(ETH, t0, t0 + timedelta(hours=25))) == 3
+
+
+# ============================================================ URETIM KABLOLAMASI KAPILARI
+def test_engine_wires_the_venue_settlement_source_into_the_ledger(tmp_path, monkeypatch):
+    """DEF-3 MUTASYON KAPISI — `settlement_source = None` yapilirsa bu test DUSER.
+
+    D2 testlerinin geri kalani `FundingSchedule(settlement_source=...)`'i ELLE kuruyordu; uretim
+    kablolamasini hicbiri sinamiyordu. Burada 4 saatlik bir sozlesmenin donemleri MOTORUN kendi
+    defteri uzerinden sayiliyor: sabit grid'e dusulurse 6 yerine 3 gorunur.
+    """
+    eng, pos, now0, _ = _engine_with_position(tmp_path, monkeypatch, opened_hours_ago=24.0)
+    assert eng.ledger2.funding.settlement_source is not None, "settlement kaynagi deftere baglanmamis"
+    assert eng.ledger2.funding.require_verified is True
+    wm = eng.ledger2.funding.window_start(pos)
+    prov = _Provider(_rows(wm, now0, interval_h=4))
+    eng.funding_rates.refresh(prov, ETH, wm, now0)
+    due = eng.ledger2.funding.settlements_due(pos, now0)
+    assert len(due) >= 5, f"4 saatlik sozlesmede yalniz {len(due)} donem gorundu -> sabit grid'e dusulmus"
+
+
+def test_tour_tick_runs_under_the_exit_monitor_lock(tmp_path, monkeypatch):
+    """DEF-5 MUTASYON KAPISI — turdaki `with self._exit_lock:` kaldirilirsa bu test DUSER.
+
+    Bloklama ile olculemez: `tour` zaten `ensure_gap_reconciled` icinde ayni kilidi aliyor, o
+    yuzden tur her hâlükârda bloklanir. Burada kilidin GERCEKTEN tick sirasinda TUTULUP tutulmadigi
+    gozlenir: kilit bir sayaç proxy'siyle sarilir ve `ledger2.tick` cagrildigi ANDA derinlik
+    okunur. Kilit kaldirilirsa gap'in `with` blogu cikmis olacagi icin derinlik 0 olur.
+    """
+    eng, pos, now0, _ = _engine_with_position(tmp_path, monkeypatch)
+    prov = _Provider(_rows(now0 - timedelta(hours=48), now0, interval_h=8, rate="0.0001"))
+    eng._funding_provider_factory_override = lambda: prov
+    eng.funding_rates.refresh(prov, ETH, now0 - timedelta(hours=48), now0)
+
+    class _CountingLock:
+        """Gercek RLock'a delege eder, yalniz TUTMA DERINLIGINI sayar."""
+
+        def __init__(self, real):
+            self._real, self.depth = real, 0
+
+        def __enter__(self):
+            self._real.acquire()
+            self.depth += 1
+            return self
+
+        def __exit__(self, *exc):
+            self.depth -= 1
+            self._real.release()
+            return False
+
+        def acquire(self, *a, **k):
+            got = self._real.acquire(*a, **k)
+            if got:
+                self.depth += 1
+            return got
+
+        def release(self):
+            self.depth -= 1
+            self._real.release()
+
+    eng._exit_lock = _CountingLock(eng._exit_lock)
+    seen: list[int] = []
+    real_tick = eng.ledger2.tick
+
+    def _spy(*a, **k):
+        seen.append(eng._exit_lock.depth)          # tick ANINDA kilit tutuluyor mu?
+        return real_tick(*a, **k)
+
+    monkeypatch.setattr(eng.ledger2, "tick", _spy)
+    eng.tour(do_scan=False, obsidian=False, charts=False)
+
+    assert seen, "tur defteri hic tick etmedi"
+    assert all(d >= 1 for d in seen), (
+        f"tur tick'i cikis monitorunun kilidini TUTMUYOR (olculen derinlikler: {seen})")
+
+
+def test_pending_settlement_is_recorded_on_the_close_not_written_as_zero(tmp_path):
+    """DEF-2 KAPISI — kapanista cozulememis donem SESSIZ SIFIR olarak yazilamaz.
+
+    "Donem bekler, kaybolmaz" garantisi yalnizca pozisyon ACIKKEN gecerlidir. Kapanista bir daha
+    tahakkuk sansi yoktur; kayit bu yuzden kac donemin cozulemedigini TASIMALIDIR.
+    """
+    import test_accounting as TA
+    led = TA._led()
+    t_open = datetime(2026, 8, 18, 7, 0, tzinfo=UTC)
+    pos = led.open(TA.ETH, "LONG", 3000, SizeSpec(48, AmountType.NOTIONAL, 2), stop=2900,
+                   filters=TA._f(), now=t_open)
+    pos.meta["last_funding_rate"] = "0.0001"                 # tahmini yedek ELDE olsa bile
+    t_stop = datetime(2026, 8, 18, 9, 0, tzinfo=UTC)         # 08:00 settlement gecildi
+    closed = led.tick({TA.ETH: TickData(last=2890, low=2880, high=2895, bar_open=t_stop.isoformat())},
+                      now_utc=t_stop, funding_rate_lookup=lambda s, w: None)
+    assert closed, "kurulum kapanmadi"
+    rec = closed[0]
+    assert rec.funding == 0                                  # uydurma oran YAZILMADI
+    assert rec.funding_pending_settlements >= 1, "cozulememis donem kayitta GORUNMUYOR"
+    assert pos.meta.get("funding_watermark_at_close") == t_open.isoformat()

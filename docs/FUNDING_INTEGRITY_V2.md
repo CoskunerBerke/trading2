@@ -370,3 +370,67 @@ bir kısmı doğrulandı; ikisi de aşağıda.
 ağırlığı 1'dir ve tur başına en fazla 8 sembol çekilir.
 
 **Mutasyon kapısı: 37 mutasyonun 37'si yakalandı, hayatta kalan yok.**
+
+## Dördüncü tur — yayım gecikmesi yarışı kapatıldı
+
+`13cc459` üzerinde bildirilen artık, kendi reprodüksiyonumla sessiz sıfır çıktı ve kapatıldı.
+
+### Kusur
+
+`refresh` kapsamayı **istenen pencereden** kuruyordu. Venue bir settlement'i yayımlamadan önce
+sorulursa satır gelmez; "satır yok" ile "settlement yok" ayrılmadığı için pencere kapsanmış
+sayılıyor, `covers` TAM diyor ve pozisyon o tikte kapanırsa kayıt sessiz sıfır oluyordu.
+
+### Onarım — üç kural, hepsi zaman aritmetiği
+
+1. **Kapsama yanıttan türetilir.** `_verified_to`: pencerenin sonundaki tam saat yayım gecikmesi
+   penceresi içindeyse ve o saate ait satır gelmediyse, kapsama o saatin öncesinde durur. Bu
+   süreden eski bir tam saat için satır gelmemesi **gerçek yokluktur** ve kapsama tam pencere
+   sonuna uzar; doğrulanmış "settlement yok" davranışı korunur.
+2. **Takvim çıkarımı tamamen kaldırıldı.** `covers` artık yalnız üç şey söyler: pencerede tam saat
+   yok, doğrulanmış kapsama pencereyi örtüyor, ya da çekilmeyen kuyrukta tam saat yok. Gözlenen
+   geçmiş takvim hiçbir saati temize çıkaramaz. `_projected_settlements`, `covered_keys` ve
+   `observed_interval_ms` üretimde artık kullanılmıyor ve **silindi** — F1 sınıfı kusur yapısal
+   olarak imkânsız hâle geldi.
+3. **Yenileme, kapsama ispatının tam tersi.** `needs_window` aynı ölçütü kullanıyor: pencerede
+   doğrulanmamış tam saat kaldıysa çekilir. İki soru ayrıldığında sistem ya bakmadığını bilinmez
+   ilan ediyor (ölçüldü: 30 dk tutmada %45) ya da bakmayı reddedip onaylamayı da reddediyordu
+   (ölçüldü: 10 saatlik tutmada %74).
+
+Belirsiz dönem `settlements_in`'e girmez, watermark onu **aşmaz**, `needs_window` onu yeniden
+ister ve kapanış o ana denk gelirse kayıt EKSİK olarak mevcut öğrenme korumasına ulaşır. Stop ve
+gerekli kapanış veri beklemez; eklenen kodun tamamı yereldir.
+
+### Ölçüm
+
+| Kesit | Yanlış EKSİK | Gerçekten kaçan | Sessiz sıfır |
+|---|---|---|---|
+| 8 saat, 30 dk tutma | %5,0 | 0 | 0 |
+| 8 saat, 10 saat tutma | %6,2 | 0 | 0 |
+| 4 saat, 30 dk tutma | %1,2 | 0 | 0 |
+| 4 saat, 10 saat tutma | %3,8 | 0 | 0 |
+
+Kalan yanlış EKSİK, tam olarak yayım gecikmesi penceresine denk gelen kapanışlardır: orada
+yokluk ile yayımlanmamışlık **ayırt edilemez** ve fail-closed davranmak tanımın gereğidir.
+Gerçekten kaçan settlement her kesitte **sıfır** — sistem artık her zaman zamanında bakıyor.
+
+### Maliyet
+
+| Ölçüm | Değer |
+|---|---|
+| 14 açık pozisyon, 8 saatlik sözleşme | 334 istek/gün (sembol başına 23,9) |
+| Bir önceki sürümde | 164 istek/gün |
+| Tur başına tavan | 8 sembol × 96 tur = 768/gün |
+
+Saat başına iki çekim olur: biri saat kuyruğa girdiğinde, biri yayım penceresi kapandıktan sonra.
+Uç nokta ağırlığı 1'dir. **Sınır:** kitap 16 sembolü aşarsa tur başına 8'lik tavan bağlar; sıra
+en eski çekimden başladığı için kayıp olmaz, yalnız EKSİK penceresi uzar.
+
+### Açık kalan sınırlamalar
+
+* Yayım gecikmesi penceresine denk gelen kapanış EKSİK damgalanır ve öğrenmeye girmez. Bu
+  ölçüldü (yukarıdaki tablo) ve tanım gereği kaçınılmazdır.
+* `_prune`, `max_age_days`'ten eski satırları silerken kapsamayı daraltmıyor.
+* `fetch_limit` kırpılması (1000 satır) kapsama iddiasını sınırlamıyor.
+* `futures_backtest.py` sabit 00/08/16 grid'inde.
+* `replay/challengers.py` ve `replay/counterfactual.py` yalnız `settlement_source` bağlar.

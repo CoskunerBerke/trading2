@@ -439,7 +439,12 @@ def test_window_refresh_does_not_fetch_on_every_tour(tmp_path):
     for _ in range(96):                                  # 24 saat boyunca 15 dk'lik turlar
         cache.ensure_window(lambda: prov, {ETH: (t0, now)}, now=now.timestamp(), save=False)
         now += timedelta(minutes=15)
-    assert len(prov.calls) < 40, f"her turda istek atiyor ({len(prov.calls)}/96)"
+    # OLCULEN: 96 turda 48 istek. Saat basina IKI cekim olur — biri saat kuyruga girdiginde,
+    # biri yayim gecikmesi penceresi kapandiktan sonra (o ana kadar satirin gelmemesi yokluk
+    # KANITI degildir). Onceki surumde 11-12 istekti; fark, gozlenen takvime dayanip cekilmemis
+    # saati temize cikarma aliskanliginin BIRAKILMASINDAN geliyor. Kapi hala "her turda degil".
+    assert len(prov.calls) <= 48, f"beklenenden fazla istek ({len(prov.calls)}/96)"
+    assert len(prov.calls) < 96, "her turda istek atiyor"
     assert len(cache.settlements_in(ETH, t0, t0 + timedelta(hours=25))) == 3
 
 

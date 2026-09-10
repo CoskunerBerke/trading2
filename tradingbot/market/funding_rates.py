@@ -46,6 +46,12 @@ _HOUR_MS = 3_600_000
 #: "EKSIK" damgalanir ve ogrenmeden duser. Altmis saniye, gozlenen kaymanin cok ustunde ve en
 #: kisa funding araliginin (1 saat) altmisda biridir.
 _SETTLE_BAND_MS = 60 * 1000
+#: Venue bir settlement'i YAYIMLAMADAN once sorarsak satir gelmez. Satirin gelmemesi, o saatte
+#: settlement OLMADIGININ kaniti DEGILDIR: bu ikisi ayrilmazsa cekim yarisi kapanis kaydinda
+#: SESSIZ SIFIR uretir. Bu sure gectikten SONRA gelmeyen satir yokluk sayilir; oncesinde
+#: BELIRSIZDIR ve donem yeniden cekilebilir kalir. Bes dakika, gozlenen yayim gecikmesinin
+#: (saniyeler) cok ustunde ve bir settlement araliginin (en az 1 saat) cok altindadir.
+_PUBLISH_LAG_MS = 5 * 60 * 1000
 SOURCE = "funding_history"
 
 
@@ -60,6 +66,25 @@ def _no_whole_hour(lo_ms: int, hi_ms: int) -> bool:
     dolayisiyla boyle bir aralikta settlement OLAMAZ.
     """
     return (lo_ms - _SETTLE_BAND_MS) // _HOUR_MS == (hi_ms + _SETTLE_BAND_MS) // _HOUR_MS
+
+
+def _verified_to(end_ms: int, newest_row_ms: int | None) -> int:
+    """Bir cekimin KANITLADIGI kapsama sonu — istenen pencere sonu DEGIL.
+
+    Pencerenin sonundaki tam saat, yayim gecikmesi penceresi icindeyse ve o saate ait satir
+    GELMEDIYSE, oradaki yoklugu dogrulanmis sayamayiz: venue henuz yayimlamamis olabilir.
+    Kapsama o saatin ONCESINDE durur. Boylece dönem `settlements_in`'e girmez (watermark onu
+    ASMAZ), `needs_window` onu yeniden ister ve kapanis o ana denk gelirse kayit EKSIK olur.
+
+    Yayim gecikmesinden ESKI bir tam saat icin satir gelmemesi ise gercek yokluktur; orada
+    kapsama tam pencere sonuna kadar uzar (dogrulanmis "settlement yok" davranisi korunur).
+    """
+    h = (end_ms // _HOUR_MS) * _HOUR_MS                  # penceredeki son tam saat
+    if h <= end_ms - _PUBLISH_LAG_MS:
+        return end_ms                                     # yayim icin yeterli sure gecti
+    if newest_row_ms is not None and newest_row_ms >= h - _SETTLE_BAND_MS:
+        return end_ms                                     # o saatin satiri GELDI
+    return min(end_ms, h - 1)
 
 
 def hour_key(when: datetime | int | float) -> int:
@@ -166,26 +191,6 @@ class FundingRateCache:
         """Bu sembol icin BASARIYLA cekilmis pencerenin sonu (ms). Hic cekim yoksa 0."""
         return int(self._covered_to.get(to_raw(symbol), 0))
 
-    def _projected_settlements(self, symbol: str, lo: int, hi: int) -> "list[int] | None":
-        """(lo, hi] araligina dusen settlement anlari (ms) — GOZLENEN takvimden turetilir.
-
-        Takvim YALNIZ kesintisiz kapsama ICINDEKI kayitlardan cikarilir (bkz. `covered_keys`);
-        kopuk pencerelerden kalan kayitlar komsuluk bildirmez. `None` = takvim BILINMIYOR; bu
-        "settlement yok" ile ayni sey DEGILDIR ve `covers` orada FAIL-CLOSED davranir.
-        """
-        interval = self.observed_interval_ms(symbol)
-        keys = self.covered_keys(symbol)
-        if interval is None or not keys:
-            return None
-        anchor = keys[-1] * _HOUR_MS
-        t = anchor + ((lo - anchor) // interval) * interval      # lo'nun soluna hizala
-        out = []
-        while t <= hi:
-            if t > lo:
-                out.append(t)
-            t += interval
-        return out
-
     def covers(self, symbol: str, start: datetime, end: datetime) -> bool:
         """(start, end] araligindaki BUTUN settlement'lari biliyor muyuz?
 
@@ -203,13 +208,11 @@ class FundingRateCache:
               kuyruk en fazla bir tur suresidir; onu (a) ile ayni gerekceyle eleriz. Bu kural
               olmadan tur ile tur arasindaki her kapanis, hicbir sey kacmasa da EKSIK damgalanir
               (olculdu: 8 saatlik sembolde kapanislarin %23'u);
-          (c) kapsama kismi ve kuyrukta tam saat var, ama GOZLENEN takvim geregi araliga
-              settlement DUSMUYOR — ya da dusenlerin hepsi cekilmis kapsamanin icinde.
-
-        BILINEN SINIR: (c) venue'nun gozlenen takvimine guvenir. Venue bir sembolun funding
-        araligini KISALTIRSA, yeni takvimdeki ilk settlement onbellek yeni araligi ogrenene
-        kadar gorunmez. Bu, `needs_window`'un zaten tasidigi ayni sinirdir ve daha genis bir
-        onarim (venue takvim ucu) bu surumun kapsami disindadir.
+        Baska hicbir yol `True` DONDURMEZ. Ozellikle GOZLENEN TAKVIM, cekilmemis bir saati
+        temize cikarmak icin KULLANILMAZ: gecmisteki aralik gelecekteki degismezligin kaniti
+        degildir (venue araligi kisaltirsa yeni takvimin ilk settlement'i tam da oradadir).
+        Kapsamanin nerede bittigini `_verified_to` belirler ve o da ISTEKTEN degil YANITTAN
+        turetilir.
         """
         raw = to_raw(symbol)
         lo, hi = int(start.timestamp() * 1000), int(end.timestamp() * 1000)
@@ -224,74 +227,36 @@ class FundingRateCache:
         has_prefix = cov_from is not None and cov_from <= lo
         if has_prefix and cov_to >= hi:
             return True                       # (b) pencere tamamen cekilmis
-        if has_prefix and _no_whole_hour(cov_to, hi):
-            return True                       # (b') on kisim cekilmis, kuyrukta settlement OLAMAZ
-        due = self._projected_settlements(symbol, lo, hi)
-        if due is None:
-            return False                      # takvim BILINMIYOR -> konusamayiz
-        if not due:
-            return True                       # (c) takvimde bu araliga settlement dusmuyor
-        return cov_from is not None and cov_from <= min(due) and cov_to >= max(due)
-
-    def covered_keys(self, symbol: str) -> list[int]:
-        """Kesintisiz cekilmis kapsama penceresi ICINDEKI settlement anahtarlari.
-
-        `refresh` bir pencereyi cektiginde venue'nun o pencerede yayimladigi HER kaydi yazar,
-        dolayisiyla kapsama icindeki anahtarlar EKSIKSIZ ve ardisiktir. Kapsama disindaki
-        anahtarlar baska (kopuk) bir cekimden kalmadir ve komsuluk BILDIRMEZ.
-        """
-        raw = to_raw(symbol)
-        cov_from, cov_to = self._covered_from.get(raw), int(self._covered_to.get(raw, 0))
-        if cov_from is None or cov_to <= 0:
-            return []
-        return [k for k in sorted(self._rates.get(raw) or {}) if cov_from <= k * _HOUR_MS <= cov_to]
-
-    def observed_interval_ms(self, symbol: str) -> int | None:
-        """Sembolun GOZLENEN funding araligi (ms) — venue kayitlarindan turetilir, VARSAYILMAZ.
-
-        Ardisik settlement'lar arasindaki EN KISA fark alinir: venue araligi kisaltmissa erken
-        yeniden sorulur, uzatmissa gereksiz istek atilmaz.
-
-        YALNIZ kapsama icindeki anahtarlar kullanilir. KOPUK pencerelerden gelen iki kayit
-        komsu DEGILDIR ve aralarindaki fark araligi KANITLAMAZ: 4 saatlik bir sembolde iki dar
-        cekimden kalan 00:00 ve 08:00 kayitlari "8 saat" gosterir, aradaki 04:00/12:00
-        settlement'lari hem yenilemeden hem de kapsama ispatindan DUSERDI (bagimsiz inceleme F1).
-        """
-        keys = self.covered_keys(symbol)
-        if len(keys) < 2:
-            return None
-        return min(b - a for a, b in zip(keys, keys[1:])) * _HOUR_MS
+        # (b') on kisim DOGRULANMIS kapsama icinde ve cekilmeyen kuyrukta tam saat yok.
+        # Bu bir ZAMAN aritmetigidir, takvim CIKARIMI degil.
+        return has_prefix and _no_whole_hour(cov_to, hi)
 
     def needs_window(self, symbol: str, start: datetime, end: datetime,
                      *, min_interval_h: int = 1, grace_s: int = 60) -> bool:
-        """Bu pencere icin ag cagrisi GEREKLI mi?
+        """Bu pencere icin ag cagrisi GEREKLI mi? — `covers`'in TAM TERSI.
 
-        Sirasiyla: (a) pencereye hicbir TAM SAAT dusmuyorsa icinde settlement OLAMAZ -> hayir;
-        (b) kapsama `start`ten once baslamiyorsa mutlaka cekilmeli -> evet; (c) aksi halde
-        GOZLENEN araliktan sonraki beklenen settlement zamani gecmediyse -> hayir. (c) olmadan
-        her tur yeniden istek atiliyordu (olculdu: 24 saatte 96 tur = 96 istek).
+        Iki soru ayni kurali kullanmak ZORUNDA. Ayrildiklarinda sistem ya bakmadigi seyi
+        "bilinmiyor" ilan eder (olculdu: 30 dakikalik tutmada kapanislarin %45'i gereksiz EKSIK),
+        ya da bakmayi reddedip ayni pencereyi onaylamayi da reddeder (olculdu: 10 saatlik tutmada
+        %74). Bu yuzden tek olcut vardir: pencerede DOGRULANMAMIS bir tam saat kaldi mi?
 
-        (a) eskiden "pencere 1 saatten kisaysa hayir" idi. O kural CEKIM ile KAPSAMA ISPATINI
-        ayirmisti: `covers` "bu pencereye tam saat dusuyor, bilmiyorum" derken yenileme "1
-        saatten kisa, bakmaya gerek yok" diyordu. Sonuc, bir saatten kisa yasayan pozisyonlarin
-        kapanislarinin buyuk kismi EKSIK damgalanip ogrenmeden dusmesiydi (olculdu: 30 dakikalik
-        tutmada %45). Artik iki soru AYNI kurali kullanir: settlement OLABILECEK pencereye
-        BAKILIR, olamayacak pencereye istek atilmaz.
+        * Pencereye hicbir tam saat dusmuyorsa settlement OLAMAZ -> istek YOK.
+        * Kapsama `start`ten once baslamiyorsa hicbir sey bilinmiyor -> istek VAR.
+        * Aksi halde: dogrulanmis kapsamanin OTESINDEKI kuyrukta tam saat varsa -> istek VAR.
+
+        GOZLENEN TAKVIM burada da KULLANILMAZ. "8 saatte bir gelirdi, demek ki 11:00'de yoktur"
+        cikarimi gecmisi gelecegin kaniti saymaktir; venue araligi kisaltirsa yeni takvimin ilk
+        settlement'i tam da orada olur. Bedeli olculdu: 14 sembollu kitapta gunluk istek
+        164 -> ~340 (agirlik 1, tur basina en fazla `max_symbols_per_refresh` sembol).
         """
         raw = to_raw(symbol)
         lo, hi = int(start.timestamp() * 1000), int(end.timestamp() * 1000)
-        if _no_whole_hour(lo, hi):
+        if hi <= lo or _no_whole_hour(lo, hi):
             return False
-        cov_from, cov_to = self._covered_from.get(raw), self._covered_to.get(raw, 0)
+        cov_from, cov_to = self._covered_from.get(raw), int(self._covered_to.get(raw, 0))
         if cov_from is None or cov_from > lo or cov_to <= 0:
             return True
-        keys = sorted(self._rates.get(raw) or {})
-        interval = self.observed_interval_ms(symbol) or (min_interval_h * _HOUR_MS)
-        # `cov_to` (son cekimin sonu) BURAYA KARISTIRILMAZ: karistirilinca "her turda yeniden
-        # sor" davranisi geri geliyordu (olculdu: 24 saatte 96 tur -> 96 istek). Belirleyici olan,
-        # GOZLENEN araliga gore bir SONRAKI settlement'in gelip gelmedigidir.
-        last_settlement = keys[-1] * _HOUR_MS if keys else cov_from
-        return hi >= last_settlement + interval + grace_s * 1000
+        return not _no_whole_hour(cov_to, hi)
 
     # ------------------------------------------------------------------ kalıcılık
     def load(self) -> None:
@@ -400,7 +365,7 @@ class FundingRateCache:
                         symbol, type(exc).__name__, exc, self.error_cooldown_s)
             return {"ok": False, "symbol": raw, "error": f"{type(exc).__name__}: {exc}", "n": 0}
         table = self._rates.setdefault(raw, {})
-        added = 0
+        added, _seen = 0, []
         for r in rows:
             if not isinstance(r, Mapping):
                 continue
@@ -410,13 +375,16 @@ class FundingRateCache:
                 continue
             mark = _dec(r.get("mark"))
             table[hour_key(fts)] = (format(rate, "f"), format(mark, "f") if (mark is not None and mark > 0) else "")
+            _seen.append(fts)
             added += 1
         self.stats["rows"] += added
         if not table:
             del self._rates[raw]
-        # Basarili cekim -> pencere KAPSANDI. Bos sonuc da kapsamadir: venue o aralikta kayit
-        # yayimlamamis demektir; her turda ayni soruyu tekrar sormanin anlami yok.
-        _lo, _hi = int(start.timestamp() * 1000) - _HOUR_MS, int(end.timestamp() * 1000)
+        # KAPSAMA, ISTENEN pencereden DEGIL YANITTAN turetilir. Bos sonuc genelde kapsamadir
+        # (venue o aralikta kayit yayimlamamis), ama pencerenin SONUNDAKI tam saat icin satir
+        # henuz yayimlanmamis olabilir; onu "kontrol edildi, yok" saymak SESSIZ SIFIR uretir.
+        _lo = int(start.timestamp() * 1000) - _HOUR_MS
+        _hi = _verified_to(int(end.timestamp() * 1000), max(_seen, default=None))
         _prev_from, _prev_to = self._covered_from.get(raw), self._covered_to.get(raw, 0)
         if _prev_from is not None and _lo <= _prev_to and _hi >= _prev_from:
             self._covered_from[raw] = min(_prev_from, _lo)      # bitisik/ortusen -> BIRLESTIR

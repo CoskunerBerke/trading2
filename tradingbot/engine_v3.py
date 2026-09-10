@@ -2343,11 +2343,17 @@ class TradingEngineV3(TradingEngine):
                 rec = build_decision_record(
                     run_id=self.run_id, cycle_id=getattr(self, "_journal_cycle", 0),
                     symbol=sym, direction=str(getattr(d, "direction", "") or ""),
-                    market_type=(e or {}).get("market_type"),
                     decision_ts=iso(now), entry=e,
                     snapshot=self._pred_snapshots.get(sym), decision=d,
                     outcome_kind=kind, trade_id=(e or {}).get("trade_id"),
-                    code_sha=getattr(self.cfg, "code_sha", None),
+                    # DENETIM KIMLIGI: `cfg.code_sha` uretimde HIC set edilmiyor; `code_sha()`
+                    # git HEAD'den bir kez turetir ve onbellekler. Bu cagri yeri hala eski
+                    # `getattr` yolunu kullaniyordu, bu yuzden karar kaydinda alan BOS kaliyordu
+                    # (olculdu: 0/30). Hangi kod ve hangi config karari uretti sorusu, kayittan
+                    # cevaplanamiyorsa denetim yapilamaz. Git yoksa yine `None` — UYDURULMAZ.
+                    code_sha=self.code_sha(), config_hash=self.config_hash(),
+                    market_type=(e or {}).get("market_type") or ("SPOT" if verdict == "SPOT_LONG"
+                                                                 else "USDM_PERP" if is_act else None),
                     policy_id=(e or {}).get("research_policy_id"))
                 rec.update({"outcome_stage": stage, "outcome_reason": reason,
                             "is_actionable": is_act, "has_valid_plan": has_plan,
@@ -2429,7 +2435,7 @@ class TradingEngineV3(TradingEngine):
                         "universe_artifact_sha": uni.get("artifact_sha"),
                         "is_actionable": None, "has_valid_plan": None,
                         "entered_ranking": False, "shadow_recorded": False,
-                        "code_sha": getattr(self.cfg, "code_sha", None)}
+                        "code_sha": self.code_sha(), "config_hash": self.config_hash()}
                 try:
                     from .learn.decision_journal import why_summary_tr
                     srec["why_summary_tr"] = why_summary_tr(srec)

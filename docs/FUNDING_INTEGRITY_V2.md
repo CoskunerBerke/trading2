@@ -148,7 +148,7 @@ beş düşük öncelikli bulgu çıkardı. Hepsi aşağıda; hangisi kapatıldı
 
 | # | Bulgu | Durum |
 |---|---|---|
-| **DEF-1** | **Yenileme her turda çalışıyor** (ölçüldü: 14 pozisyon için 714 istek/gün, `e8f19b6`'da ~56) **ve** `sorted(todo)[:8]` alfabetik ilk 8'i besleyip kuyruğu 8 saate kadar aç bırakıyor. `e8f19b6`'ya göre GERİLEME. | **KAPANDI.** Her-turda kısmı `ac2e3a8`'de zaten onarılmıştı (kendi ölçümümle bulunmuştu). Aç bırakma kısmı burada kapandı: seçim artık alfabetik değil, **en eski çekimden** başlıyor. Ölçüldü: 14 sembol / 3 gün / 288 tur → **316 istek (105/gün)**, en kötü gecikme **1,0 saat**. |
+| **DEF-1** | **Yenileme her turda çalışıyor** (ölçüldü: 14 pozisyon için 714 istek/gün, `e8f19b6`'da ~56) **ve** `sorted(todo)[:8]` alfabetik ilk 8'i besleyip kuyruğu 8 saate kadar aç bırakıyor. `e8f19b6`'ya göre GERİLEME. | **KAPANDI.** Her-turda kısmı `ac2e3a8`'de zaten onarılmıştı (kendi ölçümümle bulunmuştu). Aç bırakma kısmı burada kapandı: seçim artık alfabetik değil, **en eski çekimden** başlıyor. Ölçüldü (sembol başına doğru filtrelemeyle, 14 sembol / 3 gün / 288 tur): **350 istek (117/gün)**, sembol başına dağılım **21–33** (eskiden 9–261), her sembolün gecikmesi **1,0 saat**, hiç çekilmeyen sembol **yok**. |
 | **DEF-2** | Bekleyen bir settlement **pozisyon kapanınca kalıcı kaybolur**; kayda sessiz sıfır yazılır. "Dönem bekler, kaybolmaz" iddiası kapanışta **yanlış**. | **KAPANDI (iddia da düzeltildi).** Çözülememiş dönem sayısı artık `TradeRecord.funding_pending_settlements` ve `meta.funding_watermark_at_close` ile taşınıyor, ayrıca WARNING loglanıyor. Uydurma oran hâlâ **yazılmıyor** — kayıt eksik olduğunu **söylüyor**. Garanti: *dönem pozisyon AÇIKKEN kaybolmaz; kapanışta çözülememişse kayıt bunu bildirir.* |
 | **DEF-3** | D2'nin **üretim kablolaması** test edilmiyor: `settlement_source = None` → 2142 test yeşil. | **KAPANDI.** `test_engine_wires_the_venue_settlement_source_into_the_ledger` motorun kendi defteri üzerinden 4 saatlik sözleşmenin dönem sayısını sayar. Mutasyonla doğrulandı: **1 test düşüyor.** |
 | **DEF-4** | Eski MFE testi 3,2 puan (=**0,96R**) ekiyordu — eşiğin altında, eski kod da ateşlemezdi: **kapı değil**. | **KAPANDI.** Ekilen tepe **4,0 puan (1,20R)** yapıldı; eski kod bunu ateşlerdi. Mutasyonla doğrulandı: **2 test düşüyor.** |
@@ -188,3 +188,6 @@ kapatmaya çalıştığı davranışın ta kendisidir.
   (`test_restart_does_not_reapply_settled_periods` de düşüyor).
 * Önceki commit mesajındaki "2103 test" bu ağaca ait değildir: `e5c365b`'de 2164 test toplanır,
   2142 geçer, 22 atlanır.
+* `e8f19b6`'nın ~56 istek/gün rakamı daha düşüktür ama **yanlış takvime** (sabit 8 saat) sorduğu
+  için eksik soruyordu. Doğru takvimle 14 sembolün gerçek settlement sayısı günde 42–84'tür;
+  117 istek bunun üstünde ince bir paydır ve her istek ağırlık 1'dir.

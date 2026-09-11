@@ -167,7 +167,9 @@ def test_position_pnl_non_finite_does_not_break_the_endpoint(tmp_path):
     c = _client(_write(tmp_path, "s", [_head("SAGLAM/USDT")], positions=pos), tmp_path)
     ov, ch = _assert_contract(c, open_syms=[o[0] for o in OPEN5], healthy_symbol="SAGLAM/USDT")
     row = next(r for r in ch["rows"] if r[0] == OPEN5[0][0])
-    assert row[11] in ("—", "") or not re.search(r"nan|inf", row[11], re.I)
+    # Net K/Z sutunu 11 -> 12'ye kaydi ("Beklenen deger (R)" sutunu 8'e eklendi).
+    # Eski indeks "Fut" hucresini okuyordu ve test BOSA gecerdi.
+    assert row[12] in ("—", "") or not re.search(r"nan|inf", row[12], re.I)
 
 
 def test_all_heads_corrupt(tmp_path):

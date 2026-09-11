@@ -134,3 +134,52 @@ def test_size_multiplier_scales_with_the_conservative_edge():
     weak, strong = _base(p_win_override=0.52), _base(p_win_override=0.80)
     assert 0 < weak.size_multiplier <= strong.size_multiplier <= 1.0
     assert strong.risk_pct_requested <= 2.0               # risk profili tavani asilmaz
+
+
+# ------------------------------------------------------------------ 3) borsa kurallari
+def test_zero_fill_price_is_rejected_not_raised():
+    """Fiyat tick'e kuantize edilirken sifira duserse defter RET vermeli, CRASH etmemeli.
+
+    Olculdu: varsayilan filtreler TUM sembollerde `price_tick=0.01` verir; DOGE 2021'de
+    ~0.004 dolardi ve `raw_qty = notional / fill` `DivisionByZero` firlatiyordu — tum
+    backtest turu cokuyordu.
+    """
+    from decimal import Decimal
+
+    from tradingbot.accounting.futures_ledger import FuturesLedgerV2
+    from tradingbot.accounting.models import SizeSpec
+
+    # SHORT acilis emri SATIS yonunde agresif kuantize edilir -> 0.004 AŞAĞI, 0.00'a duser.
+    led = FuturesLedgerV2(Decimal("100"))
+    pos = led.open("DOGE/USDT", "SHORT", Decimal("0.004"), SizeSpec(Decimal("20")),
+                   stop=Decimal("0.0045"), targets=[Decimal("0.003")], mark_price=Decimal("0.004"))
+    assert pos is None
+    assert "fill=0" in led.last_reject_reason or "PRICE" in led.last_reject_reason.upper()
+    assert not led.positions
+
+
+def test_replay_loads_real_exchange_filters():
+    src = (ROOT / "replay" / "engine.py").read_text(encoding="utf-8")
+    assert "FiltersCache" in src and "symbol_filters.json" in src
+    assert "filters=self._filters_for(sym)" in src, "defter acilisi GERCEK kurallari almiyor"
+
+
+def test_real_filters_differ_from_defaults_where_it_matters():
+    """Varsayilanla gercek kural arasindaki fark olculebilir ve ONEMLI."""
+    from pathlib import Path as _P
+
+    from tradingbot.accounting.filters import FiltersCache, default_filters
+    from tradingbot.accounting.models import MarketType
+
+    path = _P(r"C:/Users/berke/wt-ten/data/symbol_filters.json")
+    if not path.exists():
+        import pytest
+        pytest.skip("arsiv filtre dosyasi bu makinede yok")
+    fc = FiltersCache(path)
+    doge = fc.get("DOGE/USDT", MarketType.USDM_PERP)
+    dflt = default_filters("DOGE/USDT", MarketType.USDM_PERP)
+    assert doge.source == "binance_api"
+    assert doge.price_tick < dflt.price_tick          # 0.00001 vs 0.01
+    assert doge.qty_step > dflt.qty_step              # 1 vs 0.001
+    btc = fc.get("BTC/USDT", MarketType.USDM_PERP)
+    assert btc.min_notional > dflt.min_notional       # 50 vs 5

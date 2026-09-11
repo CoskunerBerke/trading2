@@ -229,6 +229,11 @@ class FuturesLedgerV2:
         # ÖNİZLEME İLE AYNI KOD YOLU (engine risk kontrolü de `market_fill_price` çağırır).
         fill = self.market_fill_price(symbol, pside, ref, filters=filters, slippage=slip, tick=tick)
         # miktar
+        if fill <= 0:
+            # Fiyat tick'e kuantize edilirken SIFIRA dustu (ornek: varsayilan 0.01 tick ile
+            # DOGE 0.004). Eskiden burada `DivisionByZero` FIRLIYOR ve tur cokuyordu; artik
+            # aday reddedilir ve sebep gorunur kalir. Fiyati ya da tick'i UYDURMAYIZ.
+            return self._reject(R_BAD_PRICE, f"{symbol}: fill=0 (tick {filters.price_tick})")
         if size.amount_type is AmountType.QUANTITY:
             raw_qty = size.amount
         else:

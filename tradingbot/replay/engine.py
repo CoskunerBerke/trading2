@@ -121,6 +121,15 @@ class HistoricalReplay:
         self.entry_rule = entry_rule
         #: Spot'ta listeli oldugu BILINEN semboller (yalniz-vadeli cezasi bunlara UYGULANMAZ).
         self.spot_listed = set(spot_listed or ())
+        # GERCEK BORSA KURALLARI. Varsayilan filtreler TUM sembollerde price_tick=0.01 ve
+        # qty_step=0.001 verir; olculdu: DOGE gercekte 0.00001 / 1, XRP 0.0001 / 0.1, BTC
+        # 0.10 / 0.001 ve BTC min_notional 50 (varsayilan 5). Varsayilanla calisan bir
+        # backtest DOGE fiyatini 1 kurusa yuvarlar (~%5 hata), borsanin kabul etmeyecegi
+        # kesirli miktar acar ve BTC'de yanlis minimum kullanir. Arsiv `symbol_filters.json`
+        # tasiyorsa GERCEK kurallar yuklenir; yoksa varsayilan kalir ve durum raporlanir.
+        from ..accounting.filters import FiltersCache
+        self.filters = FiltersCache(cfg.cache_path / "symbol_filters.json")
+        self.filters_source = "binance_api" if getattr(self.filters, "verified_at", "") else "default"
         self.start_ms, self.end_ms = start_ms, end_ms
         self.lookback_bars, self.min_bars, self.stride = lookback_bars, min_bars, max(1, decision_stride)
         root = Path(state_root) if state_root else (Path(cfg.state_path) / "replay")
@@ -320,6 +329,7 @@ class HistoricalReplay:
                     continue
                 if mkt == "USDM_PERP":
                     pos = self.ledger2.open(sym, d.direction, marks_f[sym], SizeSpec(Decimal(str(notional)), AmountType.NOTIONAL, int(rd.adjusted_leverage or 1)),
+                                            filters=self._filters_for(sym),
                                             stop=plan.stop, targets=plan.targets, setup_type=plan.entry_type, trigger_text=plan.entry_trigger,
                                             features={"regime": d.regime, "expected_r": d.expected_r, "p_win": d.p_win, "market_type": mkt},
                                             tick=marks[sym], now=now, meta={"run_id": self.run_id, "replay": True, "in_test": in_test})
@@ -368,6 +378,14 @@ class HistoricalReplay:
                                        "exit_reason": rec.exit_reason, "net_r": float(rec.r_multiple), "net_pnl": float(rec.net_pnl), "fees": float(rec.fees),
                                        "funding": float(rec.funding), "bars_held": rec.bars_held, "mae_pct": float(rec.mae_pct), "mfe_pct": float(rec.mfe_pct),
                                        "opened_at": rec.opened_at, "closed_at": rec.closed_at, "in_test": bool(meta.get("in_test", True)), "regime": meta.get("regime")})
+
+    def _filters_for(self, sym: str):
+        """Sembolun GERCEK borsa kurallari; arsivde yoksa None (defter varsayilana duser)."""
+        from ..accounting.models import MarketType
+        try:
+            return self.filters.get(sym, MarketType.SPOT if self.market == "spot" else MarketType.USDM_PERP)
+        except Exception:  # noqa: BLE001 — filtre okunamazsa varsayilan; sessiz UYDURMA yok
+            return None
 
     def _economics_pass(self, decisions: dict, t: int, marks_f: dict) -> None:
         """URETIM EKONOMI KAPISI — `economics_gate.assess_one` (canli motorla AYNI fonksiyon).

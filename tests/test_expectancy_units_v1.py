@@ -133,17 +133,21 @@ def test_zero_probability_is_not_silently_dropped_by_the_economics_gate():
     import ast
     from pathlib import Path
 
-    src = (Path(__file__).resolve().parents[1] / "tradingbot" / "engine_v3.py").read_text(encoding="utf-8")
-    tree = ast.parse(src)
+    root = Path(__file__).resolve().parents[1] / "tradingbot"
     found = []
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.If):
-            continue
-        t = node.test
-        if isinstance(t, ast.Attribute) and t.attr == "p_win":
-            found.append(ast.unparse(t))                      # ciplak truthiness -> KUSUR
+    for rel in ("engine_v3.py", "economics_gate.py", "replay/engine.py"):
+        src = (root / rel).read_text(encoding="utf-8")
+        for node in ast.walk(ast.parse(src)):
+            if not isinstance(node, ast.If):
+                continue
+            t = node.test
+            if isinstance(t, ast.Attribute) and t.attr in ("p_win", "p_win_override"):
+                found.append("%s: %s" % (rel, ast.unparse(t)))        # ciplak truthiness -> KUSUR
+            if isinstance(t, ast.Name) and t.id == "p_win_override":
+                found.append("%s: %s" % (rel, ast.unparse(t)))
     assert not found, "p_win ciplak truthiness ile okunuyor (0.0 sessizce duser): %s" % found
-    assert "if d.p_win is not None:" in src
+    gate = (root / "economics_gate.py").read_text(encoding="utf-8")
+    assert "if p_win_override is not None:" in gate
 
 
 def test_economics_gate_uses_a_zero_probability_when_it_is_given():

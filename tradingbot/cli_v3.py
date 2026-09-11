@@ -492,7 +492,9 @@ def cmd_historical_replay(cfg: BotConfig, args) -> int:
         print(f"pattern index: {n_ev} olay")
     rp = HistoricalReplay(cfg, run_id=run_id, store=store, symbols=syms, market=args.market, tf=args.tf, seed=args.seed,
                           state_root=rdir.parent, pattern_engine=eng, start_ms=_ms(getattr(args, "from_", None)),
-                          end_ms=_ms(args.to), decision_stride=args.stride)
+                          end_ms=_ms(args.to), decision_stride=args.stride,
+                          economics_gate=not bool(getattr(args, "no_economics_gate", False)),
+                          spot_listed=set(syms))
     rp.load()
     ws = walk_forward_windows(rp.result.start_ms, rp.result.end_ms, train_days=args.train_days, test_days=args.test_days,
                               purge_bars=args.purge, embargo_bars=args.embargo, tf=args.tf)   # bar süresi tf'den
@@ -1091,7 +1093,10 @@ def register(sub: argparse._SubParsersAction) -> None:
     s.add_argument("--from", dest="from_", default=None); s.add_argument("--to", default=None); s.add_argument("--stride", type=int, default=1)
     s.add_argument("--train-days", dest="train_days", type=int, default=180); s.add_argument("--test-days", dest="test_days", type=int, default=30)
     s.add_argument("--purge", type=int, default=6); s.add_argument("--embargo", type=int, default=6); s.add_argument("--no-patterns", dest="no_patterns", action="store_true")
-    s.add_argument("--min-sample", dest="min_sample", type=int, default=30); s.add_argument("--horizon", type=int, default=24); s.set_defaults(fn=cmd_historical_replay)
+    s.add_argument("--min-sample", dest="min_sample", type=int, default=30); s.add_argument("--horizon", type=int, default=24)
+    s.add_argument("--no-economics-gate", dest="no_economics_gate", action="store_true",
+                   help="URETIM ekonomi kapisini KAPAT (kapisiz aday populasyonunu olcmek icin); varsayilan ACIK")
+    s.set_defaults(fn=cmd_historical_replay)
     s = sub.add_parser("replay-plan", help="Replay dry-run: veri/timeline/olay/bellek/CPU tahmini + kapasite riski (read-only)")
     s.add_argument("--symbols", nargs="*"); s.add_argument("--market", default="futures", choices=["spot", "futures"]); s.add_argument("--tf", default="4h")
     s.add_argument("--from", dest="from_", default=None); s.add_argument("--to", default=None); s.add_argument("--stride", type=int, default=1)

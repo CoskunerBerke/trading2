@@ -104,9 +104,23 @@ class ReplayResult:
 class HistoricalReplay:
     def __init__(self, cfg, *, run_id: str, store, symbols: list[str], market: str = "futures", tf: str = "4h", seed: int = 0,
                  state_root: Path | str | None = None, pattern_engine=None, start_ms: int | None = None, end_ms: int | None = None,
+                 economics_gate: bool = True, spot_listed: set[str] | None = None, entry_rule=None,
                  lookback_bars: int = 400, min_bars: int = 250, decision_stride: int = 1):
         self.cfg, self.run_id, self.store, self.symbols, self.market, self.tf, self.seed = cfg, run_id, store, list(symbols), market, tf, int(seed)
         self.pattern_engine = pattern_engine
+        # EKONOMI KAPISI: uretimde karar yolunun ZORUNLU asamasi (engine_v3._assess_opportunities).
+        # Replay bu asamayi HIC calistirmiyordu (olculdu 2026-09-12: `assess` cagrisi 0) ve bu yuzden
+        # uretimden YAPISAL olarak farkli bir sistemi olcuyordu. Varsayilan artik ACIK; kapatmak
+        # "kapisiz aday populasyonunu" olcmek icin bilincli bir arastirma secimidir.
+        self.economics_gate = bool(economics_gate)
+        # ARASTIRMA KANCASI: giris kuralini DISARIDAN takmak icin. `None` iken davranis
+        # birebir degismez. Strateji hipotezleri uretim agacinda DEGIL, arastirma paketinde
+        # tanimlanir; motor yalniz cagirir.
+        # Imza: (symbol, decision, plan, frames) -> (bool, reason). `frames` yalniz t'de
+        # KAPANMIS barlari icerir (`_slice`), yani kural gelecege BAKAMAZ.
+        self.entry_rule = entry_rule
+        #: Spot'ta listeli oldugu BILINEN semboller (yalniz-vadeli cezasi bunlara UYGULANMAZ).
+        self.spot_listed = set(spot_listed or ())
         self.start_ms, self.end_ms = start_ms, end_ms
         self.lookback_bars, self.min_bars, self.stride = lookback_bars, min_bars, max(1, decision_stride)
         root = Path(state_root) if state_root else (Path(cfg.state_path) / "replay")
@@ -243,6 +257,8 @@ class HistoricalReplay:
                 continue
             decisions = self.registry.run_many(inputs)
             self.result.n_decisions += len(decisions)
+            if self.economics_gate:
+                self._economics_pass(decisions, t, marks_f)
             state = self._portfolio_state(marks_f, now)
             btc_dec = decisions.get("BTC/USDT")
             chief = self.chief.decide(list(decisions.values()), {"equity": state.equity, "open_positions": [o.to_dict() for o in state.open_positions],
@@ -262,6 +278,32 @@ class HistoricalReplay:
                 plan = d.active_plan
                 if plan is None or not plan.valid or not chief.permission.get(sym, {}).get("allow"):
                     continue
+                if self.entry_rule is not None:
+                    try:
+                        ok, why = self.entry_rule(sym, d, plan, self._slice(sym, t))
+                    except Exception as exc:  # noqa: BLE001 — kural arizasi SESSIZ GECMEZ
+                        ok, why = False, "ENTRY_RULE_ERROR:%s" % type(exc).__name__
+                    if not ok:
+                        self._reject(sym, str(why or "ENTRY_RULE_BLOCKED"))
+                        continue
+                size_mult = 1.0
+                if self.economics_gate:
+                    opp = getattr(d, "opportunity", None) or {}
+                    if not opp:
+                        self._reject(sym, "NO_OPPORTUNITY_ASSESSMENT")
+                        continue
+                    if opp.get("hard_block_codes"):
+                        self._reject(sym, str(opp["hard_block_codes"][0]))
+                        continue
+                    if not opp.get("tradeable"):
+                        # `research_only` uretimde KUCUK boyutla acilir, `size_multiplier_zero`
+                        # ise hic acilmaz. Ikisi AYRI sayilir; tek "reddedildi" kovasina atilmaz.
+                        self._reject(sym, "RESEARCH_SIZE_ONLY" if opp.get("research_only") else "NEGATIVE_NET_EDGE")
+                        continue
+                    size_mult = float(opp.get("size_multiplier") or 0.0)
+                    if size_mult <= 0:
+                        self._reject(sym, "SIZE_MULTIPLIER_ZERO")
+                        continue
                 mkt = "SPOT" if d.verdict == Verdict.SPOT_LONG else "USDM_PERP"
                 if mkt == "SPOT" and self.market != "spot":
                     continue
@@ -272,7 +314,7 @@ class HistoricalReplay:
                 if not rd.allowed:
                     self._reject(sym, (rd.reasons or ["RISK_DENIED"])[0])
                     continue
-                notional = float(rd.adjusted_notional or plan.notional or 0)
+                notional = float(rd.adjusted_notional or plan.notional or 0) * size_mult
                 if notional <= 0:
                     self._reject(sym, "ZERO_NOTIONAL")
                     continue
@@ -326,6 +368,51 @@ class HistoricalReplay:
                                        "exit_reason": rec.exit_reason, "net_r": float(rec.r_multiple), "net_pnl": float(rec.net_pnl), "fees": float(rec.fees),
                                        "funding": float(rec.funding), "bars_held": rec.bars_held, "mae_pct": float(rec.mae_pct), "mfe_pct": float(rec.mfe_pct),
                                        "opened_at": rec.opened_at, "closed_at": rec.closed_at, "in_test": bool(meta.get("in_test", True)), "regime": meta.get("regime")})
+
+    def _economics_pass(self, decisions: dict, t: int, marks_f: dict) -> None:
+        """URETIM EKONOMI KAPISI — `economics_gate.assess_one` (canli motorla AYNI fonksiyon).
+
+        Iki asama, uretimdeki sirayla:
+          1. Ogrenilmis p_win: `learner2.predict` hazir degilse `0.5*prior + 0.5*legacy` yerine
+             SAF prior kullanilir (replay'de legacy tahminci yoktur; fark saydam biçimde
+             `p_win_source` alanina yazilir).
+          2. Kapi: kalibre p_win + gerceklesmis dagilim + maliyet + belirsizlik + yumusak kanit.
+        """
+        from ..economics_gate import assess_one
+        v3 = self.cfg.v3
+        _sp = float(getattr(v3.futures_v3, "short_penalty_r", 0.0) or 0.0)
+        _fp = float(getattr(v3.universe, "futures_only_penalty_r", 0.0) or 0.0)
+        for sym, d in decisions.items():
+            if not getattr(d, "is_actionable", False):
+                continue
+            plan = getattr(d, "active_plan", None)
+            if plan is None or not getattr(plan, "valid", False):
+                continue
+            mkt = "SPOT" if d.verdict == Verdict.SPOT_LONG else "USDM_PERP"
+            src = "head_heuristic"
+            try:
+                snap = self._snapshot(sym, t, d, plan, mkt, marks_f)
+                if snap is not None:
+                    pr = self.learner2.predict(snap.prediction_vector(), regime=d.regime,
+                                               symbol=sym, setup=plan.entry_type or None)
+                else:
+                    pr = self.learner2.prior_only(regime=d.regime, symbol=sym, setup=plan.entry_type or None)
+                if pr.ready:
+                    d.p_win, src = round(float(pr.p_win_calibrated), 3), "calibrated_model"
+                else:
+                    d.p_win, src = round(float(pr.prior_used), 3), "hierarchical_prior"
+            except Exception:  # noqa: BLE001 — tahmin arizasi kapiyi ACMAZ; head degeri kalir
+                src = "head_heuristic_fallback"
+            a, _unknown = assess_one(
+                symbol=sym, direction=d.direction, setup=plan.entry_type or "-", regime=d.regime,
+                soft_flags=list(getattr(d, "soft_flags", []) or []) + list(getattr(plan, "soft_flags", []) or []),
+                redteam_warnings=[], stop_pct=plan.stop_pct,
+                expected_cost_pct=plan.expected_cost_pct, expected_r=plan.expected_r,
+                is_spot=(mkt == "SPOT"), learner=self.learner2, p_win_override=d.p_win,
+                short_penalty_r=_sp, futures_only_penalty_r=_fp,
+                spot_listed=(True if sym in self.spot_listed else None),
+                risk_per_trade_pct=self.profile.risk_per_trade_pct)
+            d.opportunity = a.to_dict() | {"p_win_source": src}
 
     def _snapshot(self, sym: str, t: int, d, plan, market_type: str, marks_f: dict):
         """Karar ani FeatureSnapshotV3 -- yalniz t'de KAPANMIS barlardan.

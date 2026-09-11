@@ -79,17 +79,9 @@ _FUNNEL_KEYS = ("actionable", "ranked", "chief_blocked", "hard_safety_blocked", 
                 "precision_unresolved",
                 "risk_capacity_blocked", "capacity_approved", "exchange_rejected", "opened")
 
-_SOFT_PENALTY_R = {"LOW_CONSENSUS": 0.06, "LOW_CONFIDENCE": 0.06, "HIGH_DISSENT": 0.05,
-                   "RR_BELOW_PREFERRED": 0.05, "PATTERN_WEAK": 0.05, "SPREAD_WIDE": 0.04,
-                   "VOL_REGIME_HIGH": 0.04, "FUNDING_ADVERSE": 0.04, "MARKET_REGIME_MISMATCH": 0.10,
-                   "SAME_DIRECTION_CROWDED": 0.08, "CLUSTER_CROWDED": 0.08,
-                   "RED_TEAM_SOFT_PENALTY": 0.04, "SMALL_SAMPLE": 0.05,
-                   # --- RED TEAM'in EKONOMIK/ISTATISTIKSEL kodlari: artik SERT VETO DEGIL ---
-                   "WEAK_OOS_EDGE": 0.08, "LOW_TRADE_COUNT": 0.05, "HIGH_CORRELATION_EXPOSURE": 0.08,
-                   "CROWDED_SAME_DIRECTION": 0.08, "AGAINST_BTC_REGIME": 0.08, "STOP_TOO_FAR": 0.05,
-                   "STOP_TOO_CLOSE": 0.05, "FUNDING_EXTREME": 0.06, "FUNDING_CROWDED": 0.04,
-                   "NEW_LISTING": 0.06, "WIDE_SPREAD": 0.05, "LOW_LIQUIDITY": 0.05,
-                   "LIQ_BUFFER_THIN": 0.05}
+# TEK KAYNAK: `economics_gate.SOFT_PENALTY_R`. Ikinci bir tablo TUTULMAZ — canli motorla
+# replay'in farkli ceza tablosu tasimasi, bu paketin daha once yasadigi kusur sinifidir.
+from .economics_gate import SOFT_PENALTY_R as _SOFT_PENALTY_R  # noqa: E402
 
 # YETKILI risk kapasitesi kodlari: `RiskEngine.evaluate()` bunlardan birini reddettiginde karar
 # gercek kapasite doldugu icin verilmistir (KOTA DEGIL).
@@ -2093,8 +2085,7 @@ class TradingEngineV3(TradingEngine):
         belirsizlik + yumusak kanit -> muhafazakar net edge. Maliyet CIFT SAYILMAZ (bkz.
         `opportunity.assess` ve `expectancy_basis`).
         """
-        from .decision_gates import GateLedger, UnknownGateCode
-        from .opportunity import assess, hierarchical_expectancy
+        from .economics_gate import assess_one
         bmap = {b.symbol: b for b in briefs}
         for sym, d in decisions.items():
             if not getattr(d, "is_actionable", False):
@@ -2102,56 +2093,26 @@ class TradingEngineV3(TradingEngine):
             plan = getattr(d, "active_plan", None)
             if plan is None or not getattr(plan, "valid", False):
                 continue
-            gates = GateLedger()
-            # FAIL-CLOSED: kayıtsız bir kapı kodu sessizce yumuşak KABUL EDİLMEZ. Kod bir yazım
-            # hatasıysa (ör. `KILL_SWITCH_ACTIV`) aday `UNKNOWN_GATE_CODE` ile SERT reddedilir ve
-            # kod telemetriye yazılır; motor çalışmaya devam eder ama işlem AÇILMAZ.
-            _unknown: list[str] = []
-            for code in list(getattr(d, "soft_flags", []) or []) + list(getattr(plan, "soft_flags", []) or []):
-                try:
-                    gates.penalise(code, _SOFT_PENALTY_R.get(code, 0.05), detail="coin head kanıtı")
-                except UnknownGateCode as exc:
-                    _unknown.append(exc.code)
-                    log.error("kayıtsız kapı kodu %s (%s) — aday fail-closed reddedildi", exc.code, sym)
+            # EKONOMI KAPISI — TEK KAYNAK `economics_gate.assess_one`. Replay motoru da AYNI
+            # fonksiyonu cagirir; mantik ikinci kez KOPYALANMAZ (bkz. modul basligi).
             b = bmap.get(sym)
-            if b is not None and getattr(b, "dont_list", None):
-                for _w in list(b.dont_list)[:4]:
-                    gates.penalise("RED_TEAM_SOFT_PENALTY", 0.04, detail=str(_w)[:80])
-            # --- KANIT ONARIMI V1.1: olculmus kesit aciklari YUMUSAK kanit olarak eklenir -------------
-            # 239 kurulumluk vadeli-fiyat olcumu (2026-09-09): SHORT ve yalniz-vadeli kesitleri negatif.
-            # Operator karari: yasak YOK. Ceza `conservative_net_edge_r`den duser; net beklentisi pozitif
-            # aday en kotu arastirma boyutunda (RESEARCH_MULTIPLIER) acilir, hicbir zaman sifirlanmaz.
-            # Ceza `opportunity.soft_evidence` icinde kod+miktar+gerekce ile gunluge duser.
-            _sp = float(getattr(self.cfg.v3.futures_v3, "short_penalty_r", 0.0) or 0.0)
-            if _sp > 0 and str(getattr(d, "direction", "") or "").upper() == "SHORT":
-                gates.penalise("SHORT_SEGMENT_PENALTY", _sp, detail="olculen SHORT kesiti acigi (2026-09-09, n=13)")
+            _listed = None
             _fp = float(getattr(self.cfg.v3.universe, "futures_only_penalty_r", 0.0) or 0.0)
             if _fp > 0 and str(getattr(plan, "market_type", "")) != "spot":
                 _listed = self.spot_listing.is_listed(sym)
-                if _listed is None:
-                    gates.penalise("FUTURES_ONLY_SEGMENT_PENALTY", _fp, detail="spot listeleme verisi yok — ceza fail-safe uygulandi")
-                elif not _listed:
-                    gates.penalise("FUTURES_ONLY_SEGMENT_PENALTY", _fp, detail="Binance spot'ta listeli degil (olculen acik ~0.37R)")
-            if _unknown:
-                gates.block("UNKNOWN_GATE_CODE", detail=",".join(sorted(set(_unknown))[:5]))
-            stop_pct = plan.stop_pct
-            if stop_pct <= 0:
-                gates.block("ZERO_STOP_DISTANCE")
-            stats = hierarchical_expectancy(learner=self.learner2, symbol=sym, side=d.direction,
-                                            setup=plan.entry_type or "-", regime=d.regime,
-                                            fallback_win_r=plan.expected_r)
-            # KALIBRE TAHMIN ONCELIKLI. `if d.p_win:` YANLISTI: 0.0 falsy oldugu icin modelin
-            # "neredeyse kesin kayip" dedigi durumda tahmin sessizce DUSER ve kapi hiyerarsik
-            # prior'a geri donerdi (fail-OPEN). Bu alan `engine_v3:1097`de kalibre degerle
-            # EZILIR, yani head'in >= 0.5 sezgiseli burada gecerli degildir.
-            if d.p_win is not None:
-                stats["p_win"] = max(0.05, min(0.95, float(d.p_win)))
-            a = assess(symbol=sym, side=d.direction, setup=plan.entry_type or "-", gates=gates,
-                       p_win=stats["p_win"], avg_win_r=stats["avg_win_r"], avg_loss_r=stats["avg_loss_r"],
-                       sample_size=stats["sample_size"], cost_pct_notional=plan.expected_cost_pct,
-                       stop_dist_pct=stop_pct, expectancy_basis=stats["expectancy_basis"],
-                       risk_per_trade_pct=self.profile.risk_per_trade_pct,
-                       provenance=stats["provenance"] | {"expected_r_geometry": plan.expected_r})
+            a, _unknown = assess_one(
+                symbol=sym, direction=d.direction, setup=plan.entry_type or "-", regime=d.regime,
+                soft_flags=list(getattr(d, "soft_flags", []) or []) + list(getattr(plan, "soft_flags", []) or []),
+                redteam_warnings=(getattr(b, "dont_list", None) or []) if b is not None else [],
+                stop_pct=plan.stop_pct, expected_cost_pct=plan.expected_cost_pct,
+                expected_r=plan.expected_r,
+                is_spot=(str(getattr(plan, "market_type", "")) == "spot"),
+                learner=self.learner2, p_win_override=d.p_win,
+                short_penalty_r=float(getattr(self.cfg.v3.futures_v3, "short_penalty_r", 0.0) or 0.0),
+                futures_only_penalty_r=_fp, spot_listed=_listed,
+                risk_per_trade_pct=self.profile.risk_per_trade_pct)
+            for _c in _unknown:
+                log.error("kayıtsız kapı kodu %s (%s) — aday fail-closed reddedildi", _c, sym)
             d.opportunity = a.to_dict()
             # ÖĞRENME KARARI DEĞİŞTİRDİ Mİ? — PAPER_BOUNDED'ta etkin p_win baseline'dan
             # farklıysa AYNI ekonomi kapısı baseline ile de değerlendirilir; `tradeable`
@@ -2162,16 +2123,21 @@ class TradingEngineV3(TradingEngine):
                 changed = False
                 if (inf and inf.get("applied") and inf.get("baseline") is not None
                         and float(inf.get("effective") or 0) != float(inf["baseline"])):
-                    base_a = assess(symbol=sym, side=d.direction, setup=plan.entry_type or "-",
-                                    gates=gates,
-                                    p_win=max(0.05, min(0.95, float(inf["baseline"]))),
-                                    avg_win_r=stats["avg_win_r"], avg_loss_r=stats["avg_loss_r"],
-                                    sample_size=stats["sample_size"],
-                                    cost_pct_notional=plan.expected_cost_pct,
-                                    stop_dist_pct=stop_pct,
-                                    expectancy_basis=stats["expectancy_basis"],
-                                    risk_per_trade_pct=self.profile.risk_per_trade_pct,
-                                    provenance={"counterfactual": "baseline_p_win"})
+                    # KARSI-OLGU: AYNI kapi, yalniz p_win baseline. Kapinin kendisi tek
+                    # kaynaktan gelir; ceza/kod listesi burada YENIDEN KURULMAZ.
+                    base_a, _ = assess_one(
+                        symbol=sym, direction=d.direction, setup=plan.entry_type or "-",
+                        regime=d.regime,
+                        soft_flags=list(getattr(d, "soft_flags", []) or []) + list(getattr(plan, "soft_flags", []) or []),
+                        redteam_warnings=(getattr(b, "dont_list", None) or []) if b is not None else [],
+                        stop_pct=plan.stop_pct, expected_cost_pct=plan.expected_cost_pct,
+                        expected_r=plan.expected_r,
+                        is_spot=(str(getattr(plan, "market_type", "")) == "spot"),
+                        learner=self.learner2,
+                        p_win_override=float(inf["baseline"]),
+                        short_penalty_r=float(getattr(self.cfg.v3.futures_v3, "short_penalty_r", 0.0) or 0.0),
+                        futures_only_penalty_r=_fp, spot_listed=_listed,
+                        risk_per_trade_pct=self.profile.risk_per_trade_pct)
                     changed = bool(a.tradeable) != bool(base_a.tradeable)
                 d.opportunity["decision_changed_by_learning"] = changed
                 if inf is not None:

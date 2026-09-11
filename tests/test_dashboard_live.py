@@ -159,8 +159,11 @@ def test_overview_shows_labelled_cards_not_raw_json(tmp_path):
     assert "LONG işlem adayı" in html and "Açık LONG pozisyon" in html
     assert "karar — açık pozisyon DEĞİL" in html
     assert "&#x27;breadth&#x27;" not in html and '"breadth"' not in html, "ham JSON gösterilmemeli"
-    assert "Beklenen Net Getiri" in html and "Net E[r]" not in html
-    assert "model tahminidir" in html
+    # Sutun adi degisti: «Beklenen Net Getiri» -> «Plan getirisi — hedef 1». Eski ad
+    # olasilikla agirliklandirilmis bir beklenti cagristiriyordu; deger PLAN GEOMETRISIDIR.
+    assert "Plan getirisi" in html
+    assert "Beklenen Net Getiri" not in html and "Net E[r]" not in html
+    assert "PLAN GEOMETRİSİDİR" in html
     assert "Coin adedi" in html
     assert "yatırım tavsiyesi değildir" in html and "PAPER" in html
 

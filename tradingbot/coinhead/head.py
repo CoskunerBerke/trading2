@@ -51,6 +51,9 @@ class CoinHeadConfig:
     min_notional_spot: float = 5.0
     min_notional_futures: float = 5.0
     decision_ttl_minutes: int = 240
+    #: Hedef mesafesi stop mesafesinin kati olarak yeniden kurulur. None = DOKUNMA (uretim).
+    target_r_multiple: float | None = None
+    target2_r_multiple: float | None = None
     factor_weights: dict[str, float] = field(default_factory=dict)
     calibration: dict[str, float] = field(default_factory=dict)   # grup → geçmiş kalibrasyon çarpanı (öğrenmeden)
 
@@ -131,6 +134,32 @@ class CoinHead:
         return TradePlanV3(market_type=market, direction=direction, entry_type="pullback", entry_trigger=f"{price:.6g} civarı teyitli giriş",
                            entry_zone=(price * 0.9975, price * 1.0025), invalidation=f"stop {stop:.6g}", stop=stop, targets=[t1, t2],
                            time_horizon_bars=self.cfg.funding_horizon_bars, size=PlanSize(0.0, "NOTIONAL", 1))
+
+    def _retarget(self, plan: TradePlanV3) -> None:
+        """Hedefleri STOP MESAFESININ kati olarak yeniden kurar (arastirma kaldiraci).
+
+        `cfg.target_r_multiple is None` iken HICBIR SEY yapmaz: plan hangi kaynaktan geldiyse
+        (legacy ya da ATR) hedefleri aynen kalir ve uretim davranisi bit-aynidir.
+
+        Yeniden kurulurken giris, stop, yon, risk ve kaldirac DEGISMEZ; yalniz kar alma
+        mesafesi degisir. Bu, basabas icin gereken isabet oranini dogrudan belirleyen TEK
+        parametredir.
+        """
+        k = self.cfg.target_r_multiple
+        if k is None:
+            return
+        e, stop = plan.entry, plan.stop
+        if not e or not stop:
+            return
+        dist = abs(e - stop)
+        if dist <= 0:
+            return
+        k2 = self.cfg.target2_r_multiple
+        sign = 1.0 if plan.direction == "LONG" else -1.0
+        targets = [e + sign * float(k) * dist]
+        if k2:
+            targets.append(e + sign * float(k2) * dist)
+        plan.targets = targets
 
     def _cost_and_r(self, plan: TradePlanV3, market: str, funding_pct: float | None, spread_pct: float | None) -> None:
         """Beklenen maliyet (% notional, gidiş-dönüş) ve beklenen R hesabı; plan.valid belirlenir."""
@@ -266,6 +295,7 @@ class CoinHead:
             plan = plan or self._plan_from_atr(inp, market, direction, price)
             if plan is None:
                 continue
+            self._retarget(plan)
             self._cost_and_r(plan, market, funding_pct if market == "futures" else None, spread)
             if plan.valid:
                 self._size(plan, market, inp)

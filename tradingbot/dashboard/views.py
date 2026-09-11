@@ -252,7 +252,8 @@ def coin_head_scope(heads: list[dict] | None, open_positions: list[dict] | None,
 # Kolon adlari ALANIN GERCEK KAYNAGINI soyler: "Guven" bir OLASILIK DEGILDIR (konsensus
 # sinyal gucu), "P(kazanc)" ise hiyerarsik/legacy harmanidir. Bkz. COIN_HEAD_COLUMN_NOTES.
 COIN_HEAD_COLUMNS = ("Sembol", "Karar", "Durum", "Yön", "Konsensüs gücü", "P(kazanç) — istatistiksel tahmin",
-                     "Beklenen Net Getiri", "E[R]", "Rejim", "Spot", "Fut", "Net K/Z",
+                     "Plan getirisi — hedef 1 (maliyet sonrası)", "Plan R/R (maliyet sonrası)",
+                     "Beklenen değer (R)", "Rejim", "Spot", "Fut", "Net K/Z",
                      "İşlem ID", "Karar zamanı", "Gerekçe", "Veto")
 
 #: Alan anlamlari — SUNUM metnidir; hicbir model calistirmaz, hicbir eksik alani tahmin etmez.
@@ -263,9 +264,20 @@ COIN_HEAD_COLUMN_NOTES_BASE = {
     "P(kazanç) — istatistiksel tahmin": (
         "hiyerarşik Beta önseli + eski tahmin harmanı (`p_win`); hedefi «kapanışta "
         "r_multiple > +0.25R», ufku işlem ÖMRÜ"),
-    "Beklenen Net Getiri": ("plan geometrisinden hesaplanır; giriş planı ÜRETİLMEYEN satırlarda "
-                            "(REDUCE/HOLD/NO_TRADE) bu alan HİÇ hesaplanmaz"),
-    "E[R]": "plan geometrisinin R katsayısı (hedef/stop) — gerçekleşmiş sonuç DEĞİL",
+    "Plan getirisi — hedef 1 (maliyet sonrası)": (
+        "% notional; KOŞULLU bir büyüklüktür: hedef 1'e ULAŞILDIĞI varsayımıyla plan "
+        "geometrisinden hesaplanır (`|hedef1-giriş|/giriş*100 - maliyet`). Olasılıkla "
+        "AĞIRLIKLANDIRILMAMIŞTIR ve beklenen değer DEĞİLDİR. Giriş planı ÜRETİLMEYEN "
+        "satırlarda (REDUCE/HOLD/NO_TRADE) HİÇ hesaplanmaz"),
+    "Plan R/R (maliyet sonrası)": (
+        "(hedef1 - maliyet) / stop — yalnız plan GEOMETRİSİ. ATR planında hedef1 stop "
+        "mesafesinin 2 katına kurulduğu için bu sayı her adayda ~2'ye yakındır; ayırt "
+        "edici bir büyüklük DEĞİLDİR ve gerçekleşmiş sonuç DEĞİLDİR"),
+    "Beklenen değer (R)": (
+        "olasılıkla ağırlıklandırılmış beklenti: `p_win × ort_kazanç_R - (1-p_win) × "
+        "|ort_kayıp_R|` (maliyet tabana göre bir kez düşülür). Ekonomik kapının kullandığı "
+        "büyüklük budur. `p_win`in hedefi «kapanışta r_multiple > +0.25R»tir; hedefe stop'tan "
+        "önce ULAŞMA olasılığı DEĞİLDİR. Hesaplanamıyorsa «bilinmiyor» yazar — 0 YAZILMAZ"),
     "Karar zamanı": ("bu satır EN SON değerlendirmedir; açık pozisyonun GİRİŞ anındaki "
                      "kanıtı değildir (giriş kanıtı `entry_snapshot` kaydındadır)"),
 }
@@ -304,8 +316,8 @@ def coin_head_column_notes(learning_status: dict | None = None) -> dict[str, str
 #: Geriye uyumluluk: kanıt verilmediğinde durum BİLİNMİYOR olarak görünür.
 COIN_HEAD_COLUMN_NOTES = coin_head_column_notes(None)
 
-COIN_HEAD_NUM_COLS = (4, 5, 6, 7, 11)
-COIN_HEAD_PNL_COLS = (11,)
+COIN_HEAD_NUM_COLS = (4, 5, 6, 7, 8, 12)
+COIN_HEAD_PNL_COLS = (12,)
 COIN_HEAD_BADGE_COLS = (1, 2)
 COIN_HEAD_SYMBOL_COL = 0
 
@@ -328,6 +340,23 @@ def _cell_num(x, nd: int = 2) -> str:
 #: dataclass VARSAYILANI 0.0 kalir). Bu bir OLCULMUS sifir DEGILDIR.
 NOT_APPLICABLE = "yok (plan üretilmedi)"
 
+#: Ekonomik degerlendirme (`opportunity`) kaydda YOKSA beklenti BILINMIYOR'dur. Eksik bir
+#: beklenti "0" diye gosterilemez: 0, "beklenti olculdu ve sifir cikti" demektir.
+UNKNOWN_EXPECTANCY = "bilinmiyor"
+
+
+def _cell_expectancy_r(h: dict, nd: int = 3) -> str:
+    """Olasilikla agirliklandirilmis beklenti (R) — `opportunity.net_expectancy_r`.
+
+    Kayitta `opportunity` yoksa ya da alan sonlu degilse `UNKNOWN_EXPECTANCY` doner.
+    Bu alan plan geometrisinden (`expected_r`) FARKLIDIR ve onun yerine gecmez.
+    """
+    o = h.get("opportunity")
+    if not isinstance(o, dict):
+        return UNKNOWN_EXPECTANCY
+    v = finite_float_or_none(o.get("net_expectancy_r"))
+    return UNKNOWN_EXPECTANCY if v is None else f"{v:+,.{nd}f}"
+
 
 def _has_entry_plan(h: dict) -> bool:
     """Bu karar gercekten bir GIRIS PLANI uretti mi? Sozlesme: en az bir gecerli plan."""
@@ -339,8 +368,20 @@ def _has_entry_plan(h: dict) -> bool:
 
 
 def _cell_pct(x, nd: int = 2) -> str:
+    """KESIR girdiyi (0.0862) yuzdeye cevirir. Girdi ZATEN yuzde ise `_cell_pct_points` kullanin."""
     v = finite_float_or_none(x)
     return "—" if v is None else f"%{v * 100:.{nd}f}"
+
+
+def _cell_pct_points(x, nd: int = 2) -> str:
+    """Girdi ZATEN yuzde birimindedir (8.6016 -> "%8.60"); ikinci kez 100 ile CARPILMAZ.
+
+    `coinhead/head.py` `expected_return_gross/net` alanlarini yuzde olarak uretir
+    (`abs(target-entry)/entry * 100`). Bu degeri `_cell_pct` ile bicimlendirmek ekranda
+    100 kat buyuk bir sayi verir (olculdu: ham 10.8412 -> "%1084.12").
+    """
+    v = finite_float_or_none(x)
+    return "—" if v is None else f"%{v:.{nd}f}"
 
 
 def _cell_pct_signal(x, nd: int = 0) -> str:
@@ -412,8 +453,9 @@ def coin_head_table(heads: list[dict] | None, positions: list[dict] | None,
                      str(h.get("direction") or "") or "-",
                      _cell_pct_signal(h.get("confidence_calibrated"), 0),
                      _cell_pct_signal(h.get("p_win"), 0),
-                     _cell_pct(h.get("expected_return_net")) if _has_entry_plan(h) else NOT_APPLICABLE,
+                     _cell_pct_points(h.get("expected_return_net")) if _has_entry_plan(h) else NOT_APPLICABLE,
                      _cell_num(h.get("expected_r")) if _has_entry_plan(h) else NOT_APPLICABLE,
+                     _cell_expectancy_r(h),
                      str(h.get("regime") or "") or "—",
                      "✅" if sp.get("valid") else "—",
                      "✅" if fp.get("valid") else "—",
@@ -939,6 +981,7 @@ def universe_table(*, universe: list[str] | None, heads: list[dict] | None,
 
 
 __all__ = ["ChiefView", "Freshness", "LIVE_OK", "LIVE_STALE", "LIVE_UNKNOWN", "NO_DATA",
+           "NOT_APPLICABLE", "UNKNOWN_EXPECTANCY", "COIN_HEAD_COLUMNS", "coin_head_table",
            "POSITION_COLUMNS", "POSITION_NUM_COLS", "POSITION_PNL_COLS", "SummaryCard", "build",
            "chief_view", "position_row", "profit_factor_value", "risk_budget_sub",
            "risk_stale_note", "stop_risk_note", "summary_cards",

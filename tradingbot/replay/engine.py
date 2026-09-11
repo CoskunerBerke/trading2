@@ -122,7 +122,9 @@ class HistoricalReplay:
         self.head_cfg = CoinHeadConfig(consensus_threshold=ch.consensus_threshold, min_confidence=ch.min_confidence, min_expected_r=ch.min_expected_r,
                                        fee_taker_pct=v3.fees.futures_taker_pct, spot_fee_pct=v3.fees.spot_taker_pct, slippage_pct=v3.fees.slippage_bps / 100,
                                        funding_horizon_bars=ch.funding_horizon_bars, max_leverage=self.profile.futures_max_leverage,
-                                       equity_usdt=cfg.futures.starting_equity_usdt, risk_pct=self.profile.risk_per_trade_pct, decision_ttl_minutes=ch.decision_ttl_minutes)
+                                       equity_usdt=cfg.futures.starting_equity_usdt, risk_pct=self.profile.risk_per_trade_pct, decision_ttl_minutes=ch.decision_ttl_minutes,
+                                       target_r_multiple=getattr(ch, "target_r_multiple", None),
+                                       target2_r_multiple=getattr(ch, "target2_r_multiple", None))
         self.registry = CoinHeadRegistry(self.head_cfg, max_workers=1)
         self.chief = ChiefPortfolioManager(clusters=v3.risk_profiles.clusters or None)
         self.killswitch = KillSwitch.load(self.state_dir / "killswitch.json")
@@ -137,6 +139,12 @@ class HistoricalReplay:
                                        enforce_position_cap=enforces_position_cap(self.profile),
                                        fees=fees, slippage=slip, brackets=default_brackets(),
                                        liq_params=LiquidationParams(liq_fee_pct=Decimal(str(v3.futures_v3.liq_fee_pct))), tp1_fraction=Decimal(str(v3.futures_v3.tp1_fraction)),
+                                       # PARITE ONARIMI (olculdu): canli motor `breakeven_at_mfe_r`yi
+                                       # yapilandirmadan GECIRIYOR (engine_v3), replay GECIRMIYORDU ve
+                                       # varsayilan 0 ile calisiyordu. Sonuc: canli PAPER'da acik olan
+                                       # MFE tabanli basa-bas korumasi backtest'te YOKTU; ayni kurulum
+                                       # iki motorda FARKLI cikis politikasiyla olculuyordu.
+                                       breakeven_at_mfe_r=Decimal(str(getattr(v3.futures_v3, "breakeven_at_mfe_r", 0.0))),
                                        tax_policy=TaxPolicy.disabled(),
                                        # FAIL-CLOSED: cevaplanamayan bir settlement EN SON BILINEN
                                        # oranla DOLDURULMAZ. Bir gunluk boslugu son oranla doldurmak

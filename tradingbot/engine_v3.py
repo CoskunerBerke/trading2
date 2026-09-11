@@ -186,7 +186,9 @@ class TradingEngineV3(TradingEngine):
                                        fee_taker_pct=v3.fees.futures_taker_pct, spot_fee_pct=v3.fees.spot_taker_pct, slippage_pct=v3.fees.slippage_bps / 100,
                                        funding_horizon_bars=ch.funding_horizon_bars, max_leverage=self.profile.futures_max_leverage,
                                        equity_usdt=cfg.futures.starting_equity_usdt, risk_pct=self.profile.risk_per_trade_pct,
-                                       decision_ttl_minutes=ch.decision_ttl_minutes)
+                                       decision_ttl_minutes=ch.decision_ttl_minutes,
+                                       target_r_multiple=getattr(ch, "target_r_multiple", None),
+                                       target2_r_multiple=getattr(ch, "target2_r_multiple", None))
         self._entry_lock = __import__("threading").RLock()
         self._pattern_engine = None                            # SimilarPatternEngine (HistoryStore'dan tembel yüklenir)
         self._pattern_loaded = False

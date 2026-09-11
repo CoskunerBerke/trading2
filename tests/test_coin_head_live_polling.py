@@ -260,9 +260,9 @@ def test_polling_renders_fallback_row_for_a_new_unknown_symbol(dirs, tmp_path):
     row = next(r for r in shape["rows"] if r[0] == NEW6[0])
     assert row[1] == NO_DECISION_VERDICT and row[2] == "AÇIK"
     assert row[3] == NEW6[2]                              # yön DEFTERDEN
-    assert row[12] == NEW6[1]                             # position_id DEFTERDEN
-    assert NO_DECISION_REASON in row[14]
-    assert row[11].startswith("+") or row[11].startswith("-")   # anlık PnL
+    assert row[13] == NEW6[1]                             # position_id DEFTERDEN
+    assert NO_DECISION_REASON in row[15]
+    assert row[12].startswith("+") or row[12].startswith("-")   # anlık PnL
 
 
 @needs_node

@@ -95,6 +95,13 @@ class CoinHeadsSection:
     max_workers: int = 4
     decision_ttl_minutes: int = 240
     funding_horizon_bars: int = 12
+    # HEDEF MESAFESI (arastirma kaldiraci). None = DOKUNMA: plan hangi kaynaktan geldiyse
+    # hedefleri AYNEN kalir ve davranis uretimdekiyle bit-aynidir. Sayi verilirse hedefler
+    # STOP MESAFESININ katlari olarak yeniden kurulur; stop, giris, risk ve kaldirac
+    # DEGISMEZ. Bu tek degiskenin amaci basabas icin gereken isabet oranini olcmektir:
+    #     basabas p = |ort_kayip_R| / (|ort_kayip_R| + k)
+    target_r_multiple: float | None = None
+    target2_r_multiple: float | None = None
 
 
 @dataclass

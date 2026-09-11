@@ -122,6 +122,21 @@ data:
   max_price_divergence_pct: 0.5
   rate_budget_safety: 0.7
 
+# ============================================================
+#  TARIHSEL ARSIV + BENZERLIK INDEKSI — OTOMATIK ARTIMLI YENILEME (2026-09-11)
+#  Worker arka planda yalnizca YENI KAPANMIS barlari ceker ve indeksi yeniden kurup
+#  ATOMIK yayimlar. Tur bu ise blok OLMAZ, dolayisiyla stop/TP yonetimi gecikmez.
+#  Butun gecmis her seferinde indirilmez: baslangic manifestteki son bardir.
+#  Ilk kapsama AYRI bir istir: `python -m tradingbot history-collect ...` (bir kez).
+# ============================================================
+history:
+  enabled: true
+  auto_refresh: true
+  refresh_minutes: 15           # arka plan periyodu
+  refresh_timeframes: [4h, 1h, 1d]   # '4h' zorunlu: pattern indeksi bu seriden kurulur
+  refresh_max_requests: 24      # tur basina istek tavani (rate-limit korumasi)
+  refresh_max_symbols: 16       # BELLEK TAVANI: yeniden kurulumda eski+yeni indeks birlikte yasar
+
 coin_heads:
   enabled: true                # false → eski (v2) motor
   consensus_threshold: 0.22

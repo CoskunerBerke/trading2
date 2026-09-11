@@ -174,6 +174,8 @@ class TradingEngineV3(TradingEngine):
         # Pattern kaniti onbellegi: anahtar (sembol, indeks son bari). Indeks tur icinde
         # degismedigi icin ayni cevap yeniden hesaplanmaz (olculdu: sorgu basina 12,6 sn).
         self._pattern_cache: dict[tuple, dict] = {}
+        # Arka plan arsiv/indeks yenileyicisi (kapaliysa None). Ilk turda baslatilir.
+        self._refresher = None
         # YÜRÜTME HASSASİYETİ: yapılandırma defterin kapısını belirler (varsayılan KAPALI → davranış
         # birebir eski). Açıkken doğrulanmamış adımla yeni giriş açılmaz; çıkışlar etkilenmez.
         self.ledger2.require_verified_precision = bool(getattr(v3.execution, "require_verified_precision", False))
@@ -552,38 +554,129 @@ class TradingEngineV3(TradingEngine):
         return state, ok
 
     # ------------------------------------------------------------------ tarihsel pattern kanıtı
+    def _history_store(self):
+        from .history import HistoryStore
+        return HistoryStore(self.cfg.cache_path / self.cfg.v3.history.root_dir)
+
+    def _index_symbols(self) -> list[str]:
+        """İndekse alınacak semboller: giriş evreni ∪ AÇIK POZİSYONLAR.
+
+        Açık pozisyon her koşulda içeridedir — evrenden çıkarılmış bir coinin çıkış
+        değerlendirmesi de tarihsel bağlam ister. Tavan `IndexRefresher.max_symbols`tadır
+        ve bellek sınırı oradan gelir.
+        """
+        eu = self.cfg.v3.entry_universe
+        base = list(eu.symbols) if eu.enabled else list(self.cfg.coins)
+        return list(dict.fromkeys(base + list(self.ledger2.positions)))
+
+    def _build_pattern_index(self, symbols: list[str]):
+        """`symbols` için YENİ bir `SimilarPatternEngine` kur. Dönen: (engine, {seri: son_bar}).
+
+        Saf kurucudur: hiçbir şey yayımlamaz, mevcut indekse DOKUNMAZ. Yayım
+        `IndexRefresher`ın işidir; böylece yarım kurulmuş bir indeks karar yoluna sızamaz.
+        """
+        from .patterns import SimilarPatternEngine
+        store = self._history_store()
+        want = set(symbols)
+        series = [(m, s, t) for m, s, t in store.series()
+                  if m == "futures" and t == "4h" and (not want or s in want)]
+        if not series:
+            return None, {}
+        clusters = {s: name for name, syms in (self.cfg.v3.risk_profiles.clusters or {}).items() for s in (syms or [])}
+        eng = SimilarPatternEngine(min_sample=30, horizon=self.head_cfg.funding_horizon_bars * 2,
+                                   fee_pct=self.head_cfg.fee_taker_pct,
+                                   slippage_pct=self.head_cfg.slippage_pct, clusters=clusters)
+        btc = store.read("futures", "BTC/USDT", "4h")
+        n = 0
+        last_ts: dict[str, int] = {}
+        for m, s, t in series:
+            df = store.read(m, s, t)
+            if len(df) < 200:
+                continue
+            fund = store.read("futures", s, "funding")
+            n += eng.add_series(s, m, t, df, btc_df=btc if (s != "BTC/USDT" and len(btc)) else None,
+                                funding_df=fund if len(fund) else None)
+            last_ts[f"{s}|{m}|{t}"] = int(df["timestamp"].iloc[-1])
+        return (eng if n else None), last_ts
+
+    def _make_refresher(self):
+        """Arka plan yenileyicisini kur (başlatmaz). Kapalıysa `None`."""
+        hc = self.cfg.v3.history
+        if not (hc.enabled and getattr(hc, "auto_refresh", False)):
+            return None
+        from .history.incremental import IncrementalUpdater
+        from .patterns.refresher import IndexRefresher
+
+        def _update(symbols, now_ms):
+            upd = IncrementalUpdater(self._history_store(), self._futures_provider_factory(),
+                                     market="futures", max_requests=int(hc.refresh_max_requests))
+            return upd.update(symbols, tuple(hc.refresh_timeframes), now_ms=now_ms)
+
+        return IndexRefresher(build_fn=self._build_pattern_index, symbols_fn=self._index_symbols,
+                              update_fn=_update, interval_s=float(hc.refresh_minutes) * 60.0,
+                              max_symbols=int(hc.refresh_max_symbols),
+                              # Indeks YALNIZ 4h serisinden kurulur (`_build_pattern_index`),
+                              # bu yuzden yeniden kurulumu yalniz 4h ilerlemesi tetikler.
+                              index_timeframes=("4h",))
+
     def _load_pattern_engine(self):
-        """HistoryStore (cache/history) içindeki futures 4h serilerinden SimilarPatternEngine kur (bir kez, hata → None, fail-safe)."""
+        """Karar yolunun gördüğü indeks. Yenileyici açıksa YAYIMLANMIŞ paketten gelir.
+
+        Yenileyici kapalıyken eski davranış aynen korunur: süreç başına bir kez kurulur.
+        Açıkken indeks arka planda yenilenir ve tek atamayla yayımlanır; bu fonksiyon
+        yalnızca okur ve hiçbir zaman kurulum için BEKLEMEZ.
+        """
+        r = getattr(self, "_refresher", None)
+        if r is not None:
+            b = r.bundle                      # tek okuma: yarım durum görülemez
+            return None if b is None else b.engine
         if self._pattern_loaded:
             return self._pattern_engine
         self._pattern_loaded = True
         try:
-            hc = self.cfg.v3.history
-            if not hc.enabled:
+            if not self.cfg.v3.history.enabled:
                 return None
-            from .history import HistoryStore
-            from .patterns import SimilarPatternEngine
-            store = HistoryStore(self.cfg.cache_path / hc.root_dir)
-            series = [(m, s, t) for m, s, t in store.series() if m == "futures" and t == "4h"]
-            if not series:
-                return None
-            clusters = {s: name for name, syms in (self.cfg.v3.risk_profiles.clusters or {}).items() for s in (syms or [])}
-            eng = SimilarPatternEngine(min_sample=30, horizon=self.head_cfg.funding_horizon_bars * 2, fee_pct=self.head_cfg.fee_taker_pct,
-                                       slippage_pct=self.head_cfg.slippage_pct, clusters=clusters)
-            btc = store.read("futures", "BTC/USDT", "4h")
-            n = 0
-            for m, s, t in series:
-                df = store.read(m, s, t)
-                if len(df) < 200:
-                    continue
-                fund = store.read("futures", s, "funding")
-                n += eng.add_series(s, m, t, df, btc_df=btc if (s != "BTC/USDT" and len(btc)) else None, funding_df=fund if len(fund) else None)
-            self._pattern_engine = eng if n else None
-            log.info("pattern index: %d olay, %d seri", n, len(series))
+            eng, _last = self._build_pattern_index(self._index_symbols())
+            self._pattern_engine = eng
+            if eng is not None:
+                log.info("pattern index: %d olay, %d seri", len(eng.events), len(eng.candles))
         except Exception as exc:  # noqa: BLE001 — kanıt yoksa Coin Head kanıtsız çalışır (specialist usable=False)
             log.warning("pattern index kurulamadı: %s", exc)
             self._pattern_engine = None
         return self._pattern_engine
+
+    def ensure_index_refresher(self) -> dict:
+        """Yenileyiciyi kur ve arka planda baslat. HEMEN doner — kurulum beklemez.
+
+        Ilk cagride paket henuz yayimlanmamis olabilir; o turda pattern kaniti YOKTUR ve
+        bu dogru davranistir (uydurma kanit yerine kanitsiz karar). Bir sonraki turda
+        paket hazirdir.
+        """
+        if getattr(self, "_refresher", None) is not None:
+            return self._refresher.status()
+        r = self._make_refresher()
+        if r is None:
+            return {"enabled": False, "reason": "history.auto_refresh kapalı"}
+        self._refresher = r
+        r.start()
+        log.info("indeks yenileyicisi başladı: her %.0f dk, en fazla %d sembol",
+                 r.interval_s / 60.0, r.max_symbols)
+        return r.status()
+
+    def index_refresh_status(self) -> dict:
+        r = getattr(self, "_refresher", None)
+        if r is None:
+            return {"enabled": False, "reason": "history.auto_refresh kapalı",
+                    "index": None if self._pattern_engine is None else
+                    {"version": 0, "events": len(self._pattern_engine.events),
+                     "series": len(self._pattern_engine.candles)}}
+        return r.status()
+
+    def _pattern_index_version(self) -> int:
+        """Yayımlanmış indeksin sürümü; yenileyici kapalıysa 0 (tek, değişmeyen indeks)."""
+        r = getattr(self, "_refresher", None)
+        b = r.bundle if r is not None else None
+        return int(b.version) if b is not None else 0
 
     def _pattern_evidence(self, symbol: str, now_ms: int) -> dict | None:
         """Sembol için LONG/SHORT kanıtı; veri 3 bardan eskiyse (bayat) kanıt verilmez. state/evidence/<sym>.json'a paket + açıklama yazılır.
@@ -609,16 +702,26 @@ class TradingEngineV3(TradingEngine):
             cache = getattr(self, "_pattern_cache", None)
             if cache is None:
                 cache = self._pattern_cache = {}
-            hit = cache.get((symbol, last_ts))
+            # ANAHTAR = (sembol, indeks sürümü, indeksin son barı). Sürüm, arka planda yeni
+            # bir indeks YAYIMLANDIĞINDA artar; böylece yenileme önbelleği kesin olarak
+            # geçersiz kılar. Son bar ayrıca tutulur: sürüm hiç artmasa bile (yenileyici
+            # kapalı) yeni veriyle kurulmuş bir indeks eski cevabı ALAMAZ.
+            version = self._pattern_index_version()
+            key = (symbol, version, last_ts)
+            hit = cache.get(key)
             if hit is not None:
                 return hit
+            if cache and any(k[1] != version for k in cache):
+                # Eski sürüm girdileri erişilemez; bellekte de tutulmaz.
+                for k in [k for k in cache if k[1] != version]:
+                    cache.pop(k, None)
             from .patterns import explain_tr, packet_from_query
             ev = {side: eng.query(symbol, "futures", "4h", side, k=60) for side in ("LONG", "SHORT")}
             packets = {side: packet_from_query(r, decision_id=stable_id("evidence", self.run_id, symbol, side), timestamp=iso(utc_now()), timeframes=["4h"]) for side, r in ev.items()}
             atomic_write_json(self.cfg.state_path / "evidence" / f"{symbol.replace('/', '_')}.json",
                               {"symbol": symbol, "run_id": self.run_id, "generated_at": iso(utc_now()), "packets": {s: p.to_dict() for s, p in packets.items()},
                                "explanation_tr": {s: explain_tr(p) for s, p in packets.items()}, "neighbors": {s: r.get("neighbors", [])[:10] for s, r in ev.items()}}, indent=1)
-            cache[(symbol, last_ts)] = ev
+            cache[key] = ev
             return ev
         except Exception as exc:  # noqa: BLE001
             log.warning("%s pattern kanıtı üretilemedi: %s", symbol, exc)
@@ -794,6 +897,13 @@ class TradingEngineV3(TradingEngine):
         except Exception as exc:  # noqa: BLE001
             log.warning("venue olay toplama hatası (tur sürer): %s", exc)
             self._venue_events = {"ok": False, "error": str(exc)}
+        # 0.7) ARSIV/INDEKS YENILEYICISI — arka planda. `start()` is parcacigini kurar ve
+        # HEMEN doner; tur yenilemeye ASLA blok olmaz, dolayisiyla stop/TP yonetimi de
+        # gecikmez (`watch` dongusu tek is parcaciklidir, bkz. `patterns/refresher`).
+        try:
+            self.ensure_index_refresher()
+        except Exception as exc:  # noqa: BLE001 — yenileyici arizasi turu durdurmaz
+            log.warning("indeks yenileyicisi başlatılamadı (tur sürer): %s", exc)
         # 0.6) yürütme hassasiyeti: kapı AÇIKSA bayat/eksik sembol filtrelerini resmi kaynaktan yenile
         #      (ağırlık 1). Kapalıyken hiçbir istek atılmaz — eski davranış birebir korunur.
         self.ensure_symbol_filters()
@@ -1142,6 +1252,8 @@ class TradingEngineV3(TradingEngine):
         self._notify_health(str(health.get("state") or "UNKNOWN"), str(health.get("summary") or ""), now)
         self._notify_maintenance(health, now)
         self._persist_funnel(now, len(records))
+        atomic_write_json(st / "history_refresh.json",
+                          {"generated_at": iso(now), **self.index_refresh_status()})
         atomic_write_json(st / "frame_provenance.json",
                           {"generated_at": iso(now), "run_id": self.run_id,
                            "entry_universe": list(_eu.symbols) if _eu.enabled else [],
@@ -1808,11 +1920,25 @@ class TradingEngineV3(TradingEngine):
         if not res.get("ok"):
             log.warning("venue olaylari alinamadi: %s — onceki goruntu korunuyor", res.get("errors"))
             return res | {"added": 0}
+        # PROJE DUYURULARI — venue olaylarindan AYRI bir kaynak: her coinin kendi
+        # deposundan yayimlanan surumler. Erisim yoksa venue olaylari yine kaydedilir;
+        # eksiklik `project_news` durumunda GORUNUR kalir, sessizce "kaynak yok" olmaz.
+        self._project_news = {"enabled": False}
+        if nw.project_releases:
+            from .market.project_news import ProjectReleases
+            pr = ProjectReleases(per_repo=int(nw.project_per_repo))
+            try:
+                items += pr.fetch(watch, now_iso=iso(now))
+            except Exception as exc:  # noqa: BLE001 — proje kaynagi venue yolunu bozamaz
+                log.warning("proje duyuruları alınamadı: %s", exc)
+            self._project_news = pr.status() | {"enabled": True}
+            if not self._project_news.get("ok"):
+                log.warning("proje duyuru kaynağı kısmi: %s", self._project_news.get("errors"))
         added = NewsStore(st / "news.jsonl").add(items)
         atomic_write_json(st / "venue_snapshot.json", snap | {"observed_at": iso(now), "symbols": watch})
         for it in items:
-            log.info("VENUE OLAYI: %s", it.title)
-        return res | added
+            log.info("OLAY (%s): %s", it.category, it.title)
+        return res | added | {"project_news": getattr(self, "_project_news", None)}
 
     def _resolve_entry_filters(self, symbol: str, market: str):
         """Yeni giriş için kuralı BİR KEZ, provenansıyla çözer → (filters | None, provenance).

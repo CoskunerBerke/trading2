@@ -40,6 +40,16 @@ def _iso(ms: Any) -> str | None:
         return None
 
 
+def _epoch(v: Any) -> str:
+    """Unix saniyesi -> UTC ISO. Cozulemezse '-' (uydurma YOK)."""
+    if not v:
+        return "-"
+    try:
+        return datetime.fromtimestamp(float(v), tz=timezone.utc).isoformat(timespec="seconds")
+    except (OverflowError, OSError, ValueError, TypeError):
+        return "-"
+
+
 def _dir_bytes(p: Path) -> int:
     total = 0
     for root, _dirs, files in os.walk(p):
@@ -162,6 +172,72 @@ def resources_section(state_dir: Path, data_dir: Path, *, health: dict | None,
                     "calls": (llm or {}).get("calls"), "day": (llm or {}).get("day")}}
 
 
+#: Bar boyutu (sikistirilmis, olculdu: 137 MB / 2.942.914 satir ~= 46 bayt/satir).
+_BYTES_PER_ROW = 46
+_BARS_PER_DAY = {"1m": 1440, "5m": 288, "15m": 96, "1h": 24, "4h": 6, "1d": 1}
+
+
+def storage_section(state_dir: Path, cache_dir: Path, *, history_root: str = "history",
+                    universe: list[str] | None = None,
+                    timeframes: tuple[str, ...] = ("1d", "4h", "1h", "15m")) -> dict:
+    """Disk kullanimi ve BUYUME HIZI; ham arsiv ile yeniden uretilebilir onbellek AYRI.
+
+    Ayrim onemlidir cunku kurtarma yollari farklidir:
+
+    * ``raw_archive`` — `data/<history_root>`. Binance arsivinden indirilmis ham mumlar,
+      manifest'te kaynak/tarih/checksum ile. Silinirse yeniden indirmek saatler surer;
+      yedege girmelidir.
+    * ``regenerable_cache`` — `data/` altindaki diger dosyalar (TradingView/ccxt mum
+      onbellegi, sembol filtreleri). Kaybi veri kaybi DEGILDIR; bir sonraki turda yeniden
+      uretilir ve guvenle silinebilir.
+    * ``state`` — `state/`. Defter, ogrenme, karar kayitlari. YETKILI veri; asla
+      "onbellek" muamelesi gormez.
+
+    Benzerlik indeksi diske YAZILMAZ (yalniz bellekte), bu yuzden yer tutmaz; ham arsivden
+    yeniden kurulur. Onbellegi silmek veri kaybettirmez.
+    """
+    raw = cache_dir / history_root
+    raw_b = _dir_bytes(raw)
+    all_cache_b = _dir_bytes(cache_dir)
+    rows_per_day = sum(_BARS_PER_DAY.get(tf, 0) for tf in timeframes) * max(1, len(universe or []))
+    return {
+        "raw_archive": {"path": str(raw), "bytes": raw_b,
+                        "note": "ham mumlar + manifest (kaynak/tarih/checksum); yeniden indirmek saatler surer"},
+        "regenerable_cache": {"path": str(cache_dir), "bytes": max(0, all_cache_b - raw_b),
+                              "note": "TradingView/ccxt mum onbellegi ve sembol filtreleri; kaybi veri kaybi DEGILDIR"},
+        "state": {"path": str(state_dir), "bytes": _dir_bytes(state_dir),
+                  "note": "defter/ogrenme/karar kayitlari - YETKILI veri, onbellek degil"},
+        "growth": {"rows_per_day": rows_per_day,
+                   "bytes_per_day_estimate": rows_per_day * _BYTES_PER_ROW,
+                   "bytes_per_year_estimate": rows_per_day * _BYTES_PER_ROW * 365,
+                   "basis": f"{len(universe or [])} sembol x {list(timeframes)}; "
+                            f"{_BYTES_PER_ROW} bayt/satir olculen sikistirilmis ortalama - OLCUM DEGIL hesaptir"},
+        "index_on_disk": False,
+        "git": {"tracked": False,
+                "note": "data/ .gitignore'da; kod, config ve manifestler ayri yonetilir"},
+    }
+
+
+def _news_sources() -> dict:
+    """ETKIN kaynaklar ve UYGULANMAYANLAR.
+
+    "Haberler takip ediliyor" cumlesi ancak `active` listesi icin kurulabilir; `not_implemented`
+    gizlenmez ve neye bagli oldugu yazilir.
+    """
+    out: dict = {"active": ["venue_contract_and_funding (binance exchangeInfo + fundingInfo)"],
+                 "not_implemented": []}
+    try:
+        from .market.project_news import MACRO_CALENDAR_STATUS, PROJECT_REPOS
+        out["active"].append(f"project_releases (github, {len(PROJECT_REPOS)} depo, anahtarsiz)")
+        if not MACRO_CALENDAR_STATUS.get("implemented"):
+            out["not_implemented"].append(f"macro_calendar (bagli: {MACRO_CALENDAR_STATUS.get('blocked_on')})")
+        out["not_implemented"] += ["borsa listeleme duyurulari", "yonetisim oylamalari",
+                                   "genel basin akisi (RSS/JSON)"]
+    except Exception:  # noqa: BLE001
+        pass
+    return out
+
+
 def build(state_dir: Path | str, data_dir: Path | str, *, universe: list[str],
           history_root: str = "history", market: str = "futures",
           timeframes: tuple[str, ...] = TIMEFRAMES) -> dict:
@@ -190,10 +266,14 @@ def build(state_dir: Path | str, data_dir: Path | str, *, universe: list[str],
         "learning": learning_section(_read(st / "learning_chain.json", {}), _read(st / "futures_ledger.json", {})),
         "resources": resources_section(st, dd / history_root, health=_read(st / "health.json", {}),
                                        llm=_read(st / "llm_budget.json", {}), universe_size=len(universe)),
+        "storage": storage_section(st, dd, history_root=history_root, universe=universe,
+                                   timeframes=tuple(t for t in timeframes if t != "1m")),
+        "refresh": _read(st / "history_refresh.json", None),
         "provenance": {"entry_universe": prov.get("entry_universe"),
                        "entry_blocked_on_data": prov.get("entry_blocked_on_data"),
                        "by_symbol": prov.get("by_symbol")},
         "news": news_cov,
+        "news_sources": _news_sources(),
     }
 
 
@@ -245,6 +325,37 @@ def render_text(rep: dict) -> str:
     if n:
         add(f"\nOLAY KAYDI: {n['total']} kayıt · doğrulanmış={n['by_status'].get('CONFIRMED', 0)} "
             f"söylenti={n['by_status'].get('RUMOR', 0)} · yayın zamanı bilinmeyen={n['unknown_publish_time']}")
+        bc = n.get("by_category") or {}
+        add(f"  sinif: venue={bc.get('venue', 0)} proje={bc.get('project', 0)} makro={bc.get('macro', 0)}")
+        src = rep.get("news_sources") or {}
+        if src:
+            add(f"  ETKIN kaynaklar: {', '.join(src.get('active') or []) or 'yok'}")
+            add(f"  UYGULANMADI: {', '.join(src.get('not_implemented') or []) or 'yok'}")
+    rf = rep.get("refresh") or {}
+    if rf.get("enabled"):
+        ix = rf.get("index") or {}
+        add("")
+        add(f"OTOMATIK YENILEME: her {rf.get('interval_s', 0) / 60:.0f} dk - "
+            f"{rf.get('refreshes', 0)} yenileme - en fazla {rf.get('max_symbols')} sembol")
+        _age = rf.get("seconds_since_success")
+        add("  son basarili yenileme: " + _epoch(rf.get("last_success_at"))
+            + (f" ({_age:.0f} sn once)" if _age is not None else " (HIC)"))
+        add(f"  hata: {rf.get('last_error') or 'yok'} - indeks serileri: {rf.get('index_timeframes')}")
+        if ix:
+            add(f"  indeks surumu {ix.get('version')} - {ix.get('events')} olay - "
+                f"{ix.get('series')} seri - en yeni bar {_iso(ix.get('newest_bar_ms'))}")
+    elif rf is not None and rf != {}:
+        add("")
+        add(f"OTOMATIK YENILEME: KAPALI ({rf.get('reason')})")
+    sg = rep.get("storage") or {}
+    if sg:
+        add("")
+        add(f"DEPOLAMA: ham arsiv {sg['raw_archive']['bytes'] / 1e6:.1f} MB - "
+            f"yeniden uretilebilir onbellek {sg['regenerable_cache']['bytes'] / 1e6:.1f} MB - "
+            f"state {sg['state']['bytes'] / 1e6:.1f} MB")
+        g = sg["growth"]
+        add(f"  buyume: {g['rows_per_day']:,} satir/gun ~ {g['bytes_per_day_estimate'] / 1e6:.1f} MB/gun "
+            f"~ {g['bytes_per_year_estimate'] / 1e9:.2f} GB/yil - {g['basis']}")
     r = rep["resources"]
     add(f"\nKAYNAK: son tur {r['last_tour_seconds']}s / {r['last_tour_symbols']} sembol · "
         f"state {r['state_bytes'] / 1e6:.1f} MB · geçmiş {r['history_bytes'] / 1e6:.1f} MB")
@@ -255,4 +366,4 @@ def render_text(rep: dict) -> str:
 
 
 __all__ = ["TIMEFRAMES", "build", "render_text", "contracts_section", "history_section",
-           "decisions_section", "learning_section", "resources_section"]
+           "decisions_section", "learning_section", "resources_section", "storage_section"]

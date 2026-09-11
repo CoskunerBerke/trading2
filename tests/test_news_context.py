@@ -307,3 +307,95 @@ def test_news_section_has_no_feed_configuration():
     assert "feeds" not in names
     doc = NewsSection.__doc__ or ""
     assert "UYGULANMADI" in doc, "uygulanmayan kaynaklar belgede acikca yazmali"
+
+
+# --------------------------------------------------------------------------- proje duyurulari
+def _release(**kw) -> dict:
+    d = {"tag_name": "v1.2.3", "name": "Release v1.2.3", "html_url": "https://x/releases/tag/v1.2.3",
+         "published_at": "2026-09-01T10:00:00Z", "draft": False, "prerelease": False, "body": "notlar"}
+    d.update(kw)
+    return d
+
+
+def test_a_release_becomes_a_confirmed_project_event_mapped_to_its_coin():
+    from tradingbot.market.project_news import release_to_item
+    it = release_to_item("SOL/USDT", "anza-xyz/agave", _release(),
+                         ingested_at="2026-09-11T00:00:00+00:00")
+    assert it.symbols == ["SOL/USDT"]                  # olay–coin eslesmesi
+    assert it.status == CONFIRMED and it.category == PROJECT
+    assert it.published_at == "2026-09-01T10:00:00+00:00"
+    assert it.ingested_at == "2026-09-11T00:00:00+00:00"
+    assert it.lag_seconds == 828000.0                  # 9 gun 14 saat — gecikme OLCULEBILIR
+    assert it.url.endswith("/v1.2.3")
+    assert it.detail["repo"] == "anza-xyz/agave"
+
+
+def test_a_release_without_a_publish_time_is_not_recorded():
+    """Zamani bilinmeyen duyuru kaydedilmez — `ingested_at` ile DOLDURULMAZ."""
+    from tradingbot.market.project_news import release_to_item
+    assert release_to_item("SOL/USDT", "r", _release(published_at=None), ingested_at="2026-09-11T00:00:00+00:00") is None
+
+
+def test_a_draft_release_is_not_an_announcement():
+    from tradingbot.market.project_news import release_to_item
+    assert release_to_item("SOL/USDT", "r", _release(draft=True)) is None
+
+
+def test_project_source_reports_covered_and_uncovered_symbols():
+    from tradingbot.market.project_news import ProjectReleases
+    pr = ProjectReleases(get=lambda url: [_release()], repos={"SOL/USDT": "a/b"})
+    items = pr.fetch(["SOL/USDT", "FOO/USDT"], now_iso="2026-09-11T00:00:00+00:00")
+    assert len(items) == 1
+    st = pr.status()
+    assert st["covered_symbols"] == ["SOL/USDT"]
+    assert st["uncovered_symbols"] == ["FOO/USDT"]      # kapsanmayan GIZLENMEZ
+    assert st["requires_api_key"] is False
+    assert st["ok"] is True
+
+
+def test_a_source_failure_is_visible_and_does_not_stop_the_others():
+    from tradingbot.market.project_news import ProjectReleases
+    calls = {"n": 0}
+
+    def _get(url):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise TimeoutError("kaynak erişilemiyor")
+        return [_release()]
+
+    pr = ProjectReleases(get=_get, repos={"A/USDT": "a/a", "B/USDT": "b/b"})
+    items = pr.fetch(["A/USDT", "B/USDT"], now_iso="2026-09-11T00:00:00+00:00")
+    assert len(items) == 1                              # ikincisi yine geldi
+    st = pr.status()
+    assert st["ok"] is False and "A/USDT" in st["errors"]
+
+
+def test_project_source_states_what_it_does_not_cover():
+    """'Haberler takip ediliyor' demenin sinirlari kodda YAZILI."""
+    from tradingbot.market.project_news import ProjectReleases
+    st = ProjectReleases(get=lambda u: []).status()
+    assert st["kind"] == "project_release_announcements"
+    assert any("listeleme" in x for x in st["not_covered_by_this_source"])
+
+
+def test_macro_calendar_is_declared_unimplemented_not_stubbed():
+    """Sahte kaynak ya da bos calisan entegrasyon SUNULMADI."""
+    from tradingbot.market import project_news as PN
+    assert PN.MACRO_CALENDAR_STATUS["implemented"] is False
+    assert PN.MACRO_CALENDAR_STATUS["blocked_on"]
+    assert not any(n.lower().startswith("macro") and callable(getattr(PN, n))
+                   for n in dir(PN)), "boş çalışan makro çekicisi eklenmemeli"
+
+
+def test_every_universe_symbol_has_a_verified_repo():
+    from tradingbot.market.project_news import PROJECT_REPOS
+    ten = {"BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT",
+           "LINK/USDT", "DOGE/USDT", "AVAX/USDT", "LTC/USDT", "AAVE/USDT"}
+    assert ten <= set(PROJECT_REPOS)
+    assert all("/" in v for v in PROJECT_REPOS.values())
+
+
+def test_project_events_still_cannot_reach_a_backtest():
+    """Yeni kaynak eski duvari DELMEZ."""
+    from tradingbot.market.news import for_backtest
+    assert for_backtest("SOL/USDT", 1) == []

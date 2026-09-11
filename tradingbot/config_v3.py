@@ -403,6 +403,20 @@ class HistorySection:
     include_open_interest: bool = True
     archive_first: bool = True                       # data.binance.vision aylık arşiv → REST tamamlama
     request_pause_s: float = 0.0                     # ek nezaket beklemesi (rate budget zaten var)
+    # --- OTOMATIK ARTIMLI YENILEME (worker icinde, arka plan is parcaciginda) ---
+    #: `false` (varsayilan) eski davranistir: indeks surec basina bir kez kurulur ve
+    #: calisma zamaninda yenilenmez. `true` iken arsiv yalnizca YENI KAPANMIS barlarla
+    #: ilerletilir ve indeks yeniden kurulup ATOMIK yayimlanir. Tur bu ise ASLA blok olmaz.
+    auto_refresh: bool = False
+    refresh_minutes: int = 15                        # yenileme periyodu (arka plan)
+    #: Artimli guncellemenin dokundugu zaman dilimleri. Karar yolu 1d/4h/1h kullanir; pattern
+    #: indeksi 4h'tir. 15m karar formulune GIRMEZ, bu yuzden varsayilan listede yoktur.
+    refresh_timeframes: list[str] = field(default_factory=lambda: ["4h", "1h", "1d"])
+    #: Tur basina azami istek (rate-limit korumasi). Gecikmis arsiv birkac turda yakalanir.
+    refresh_max_requests: int = 24
+    #: Indekse alinacak azami sembol — BELLEK TAVANI. Onceki OOM tam Tier-A indeksindendi;
+    #: yeniden kurulum sirasinda eski ve yeni indeks birlikte yasar, bu yuzden kume baglanir.
+    refresh_max_symbols: int = 16
 
 
 @dataclass
@@ -473,6 +487,11 @@ class NewsSection:
     context_window_hours: float = 48.0  # karar kaydina giren pencere
     max_items_in_decision: int = 10
     retention_days: int = 365          # okuma penceresi; dosyadan SILME yapilmaz
+    #: PROJE DUYURULARI: her coinin kendi deposundan yayimlanan surumler (anahtarsiz,
+    #: dogrulanabilir). Surum/yazilim duyurularini kapsar; listeleme, yonetisim ve basin
+    #: bultenlerini KAPSAMAZ. Kimliksiz GitHub siniri 60 istek/saattir.
+    project_releases: bool = True
+    project_per_repo: int = 5                  # depo basina cekilecek son surum sayisi
 
 
 @dataclass
@@ -753,6 +772,22 @@ def validate_v3(cfg: V3Config) -> None:
         raise ConfigError("news.refresh_minutes >= 1, max_items_in_decision >= 0 ve retention_days >= 1 olmalı")
     if _nw.context_window_hours <= 0:
         raise ConfigError("news.context_window_hours pozitif olmalı")
+    # ARSIV/INDEKS YENILEME: sayisal alanlar sessiz varsayilana DUSMEZ.
+    _hc = cfg.history
+    if _hc.auto_refresh:
+        if _hc.refresh_minutes < 1:
+            raise ConfigError("history.refresh_minutes >= 1 olmalı")
+        if _hc.refresh_max_requests < 1:
+            raise ConfigError("history.refresh_max_requests >= 1 olmalı")
+        if not (1 <= _hc.refresh_max_symbols <= 64):
+            raise ConfigError("history.refresh_max_symbols 1..64 aralığında olmalı "
+                              "(bellek tavanı: yeniden kurulumda eski ve yeni indeks birlikte yaşar)")
+        _tfs = [str(t) for t in (_hc.refresh_timeframes or [])]
+        if not _tfs:
+            raise ConfigError("history.auto_refresh=true iken refresh_timeframes boş olamaz")
+        if "4h" not in _tfs:
+            raise ConfigError("history.refresh_timeframes '4h' içermeli — pattern indeksi bu seriden kurulur")
+        _hc.refresh_timeframes = _tfs
     try:
         from .learn.exit_policy import ExitPolicyConfig as _EPC
         _EPC.from_dict({"policy_version": _ex.policy_version} | dict(_ex.policy or {}))

@@ -105,3 +105,39 @@ def test_same_bar_stop_and_target_resolve_pessimistically():
     rec = led.history[-1]
     assert Decimal(str(rec.r_multiple)) < 0, "ayni barda stop degdigi halde hedefle kapandi"
     assert rec.exit_reason.startswith("stop")
+
+
+#: Canli motorda AYARLANAN ama replay'de AYARLANMAYAN defter alanlari. Bunlar KUSUR DEGIL,
+#: BELGELENMIS ayriliktir; burada sabitlenir ki sessizce BUYUMESIN.
+KNOWN_ENTRY_SIDE_DIVERGENCE = {
+    # Canli: `execution.require_verified_precision=true`. Kapi, filtre kaynagi "default" ise
+    # YENI GIRISI reddeder (`futures_ledger.open`). Replay'de borsadan cekilmis filtre YOKTUR;
+    # kapi acilsaydi backtest'te HICBIR giris acilamazdi. Bedeli: replay VARSAYILAN tick/step/
+    # min-notional ile calisir, uretimin resmi USDⓈ-M kurallariyla degil. Kotu yon: replay'in
+    # giris evreni uretimin giris evreni DEGILDIR ve nicelendirme farkli olabilir.
+    "require_verified_precision",
+}
+
+
+def test_entry_side_divergence_is_documented_and_has_not_grown():
+    """Replay'de AYARLANMAYAN canli defter alanlari yalniz BILINEN listede olmalidir."""
+    live_src = (ROOT / "tradingbot" / "engine_v3.py").read_text(encoding="utf-8")
+    replay_src = (ROOT / "tradingbot" / "replay" / "engine.py").read_text(encoding="utf-8")
+    live_attrs = set()
+    for node in ast.walk(ast.parse(live_src)):
+        if isinstance(node, ast.Assign):
+            for t in node.targets:
+                if (isinstance(t, ast.Attribute) and isinstance(t.value, ast.Attribute)
+                        and t.value.attr == "ledger2"):
+                    live_attrs.add(t.attr)
+    replay_attrs = set()
+    for node in ast.walk(ast.parse(replay_src)):
+        if isinstance(node, ast.Assign):
+            for t in node.targets:
+                if (isinstance(t, ast.Attribute) and isinstance(t.value, ast.Attribute)
+                        and t.value.attr == "ledger2"):
+                    replay_attrs.add(t.attr)
+    missing = live_attrs - replay_attrs
+    assert missing <= KNOWN_ENTRY_SIDE_DIVERGENCE, (
+        "replay'e baglanmamis YENI defter alani: %s" % sorted(missing - KNOWN_ENTRY_SIDE_DIVERGENCE))
+    assert "require_verified_precision" in live_attrs          # canli tarafta gercekten var

@@ -295,7 +295,7 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
                 else:
                     cells.append(esc(txt))
             rows.append(cells)
-        note = ('<p class="mut small">«Beklenen Net Getiri» işlem öncesi model tahminidir; gerçekleşen sonuç '
+        note = ('<p class="mut small">«Plan getirisi — hedef 1» işlem öncesi PLAN GEOMETRİSİDİR; gerçekleşen sonuç '
                 'değildir. «Net K/Z» sütunu açık pozisyonda anlık, kapanmışta SON KAPANAN işlemin net '
                 'sonucudur; işlem açılmamış adaylarda «—» gösterilir. «KARAR VERİSİ YOK» satırları '
                 'defterde AÇIK olan fakat son coin-head seçkisinde yer almayan pozisyonlardır.</p>')

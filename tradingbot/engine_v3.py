@@ -2140,7 +2140,11 @@ class TradingEngineV3(TradingEngine):
             stats = hierarchical_expectancy(learner=self.learner2, symbol=sym, side=d.direction,
                                             setup=plan.entry_type or "-", regime=d.regime,
                                             fallback_win_r=plan.expected_r)
-            if d.p_win:                                   # kalibre model tahmini onceliklidir
+            # KALIBRE TAHMIN ONCELIKLI. `if d.p_win:` YANLISTI: 0.0 falsy oldugu icin modelin
+            # "neredeyse kesin kayip" dedigi durumda tahmin sessizce DUSER ve kapi hiyerarsik
+            # prior'a geri donerdi (fail-OPEN). Bu alan `engine_v3:1097`de kalibre degerle
+            # EZILIR, yani head'in >= 0.5 sezgiseli burada gecerli degildir.
+            if d.p_win is not None:
                 stats["p_win"] = max(0.05, min(0.95, float(d.p_win)))
             a = assess(symbol=sym, side=d.direction, setup=plan.entry_type or "-", gates=gates,
                        p_win=stats["p_win"], avg_win_r=stats["avg_win_r"], avg_loss_r=stats["avg_loss_r"],

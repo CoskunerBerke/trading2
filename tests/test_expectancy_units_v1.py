@@ -119,3 +119,43 @@ def test_head_engine_emits_percent_units_and_constant_geometry():
     assert abs(plan.expected_r - (10.0 - 0.16) / 5.0) < 1e-9
     gross = abs(plan.targets[0] - plan.entry) / plan.entry * 100
     assert gross == 10.0                                 # yuzde birimi — kesir DEGIL
+
+
+# ---------------------------------------------------------------- 4) ekonomik kapi: fail-open
+def test_zero_probability_is_not_silently_dropped_by_the_economics_gate():
+    """`if d.p_win:` YANLISTI — 0.0 falsy oldugu icin "kesin kayip" tahmini DUSERDI.
+
+    Bu, kapinin hiyerarsik prior'a (tipik 0.5) geri donmesi demekti: fail-OPEN. Alan
+    `engine_v3:1097`de kalibre degerle EZILDIGI icin head'in ">= 0.5" sezgiseli burada
+    gecerli DEGILDIR; sifir ulasilabilir bir degerdir (`round(...,3)` kucuk tahminleri
+    0.0'a yuvarlar).
+    """
+    import ast
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parents[1] / "tradingbot" / "engine_v3.py").read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    found = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.If):
+            continue
+        t = node.test
+        if isinstance(t, ast.Attribute) and t.attr == "p_win":
+            found.append(ast.unparse(t))                      # ciplak truthiness -> KUSUR
+    assert not found, "p_win ciplak truthiness ile okunuyor (0.0 sessizce duser): %s" % found
+    assert "if d.p_win is not None:" in src
+
+
+def test_economics_gate_uses_a_zero_probability_when_it_is_given():
+    """Sifir olasilik kapiya GIRMELI ve negatif beklenti uretmelidir."""
+    from tradingbot.decision_gates import GateLedger
+    from tradingbot.opportunity import assess
+
+    a = assess(symbol="X/USDT", side="LONG", setup="pullback", gates=GateLedger(),
+               p_win=0.0, avg_win_r=1.96, avg_loss_r=1.0, sample_size=50,
+               cost_pct_notional=0.16, stop_dist_pct=4.0)
+    assert a.net_expectancy_r < 0 and not a.tradeable
+    b = assess(symbol="X/USDT", side="LONG", setup="pullback", gates=GateLedger(),
+               p_win=0.5, avg_win_r=1.96, avg_loss_r=1.0, sample_size=50,
+               cost_pct_notional=0.16, stop_dist_pct=4.0)
+    assert b.net_expectancy_r > a.net_expectancy_r          # 0.0 ile 0.5 AYNI sonucu vermez

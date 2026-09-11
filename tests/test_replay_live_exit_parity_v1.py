@@ -84,3 +84,24 @@ def test_breakeven_rule_actually_protects_a_giveback_trade():
     assert unprotected < Decimal("-0.9")                   # koruma yokken tam stop
     assert protected > unprotected                          # koruma kar geri vermeyi keser
     assert protected > Decimal("-0.2")
+
+
+def test_same_bar_stop_and_target_resolve_pessimistically():
+    """Ayni barda stop ve hedefin ikisi de degerse STOP once islenir (kotumser yurutme).
+
+    PROTOCOL.md sec. 4 bu varsayima dayanir; varsayim burada ispatlanir.
+    """
+    from decimal import Decimal
+
+    from tradingbot.accounting.futures_ledger import FuturesLedgerV2
+    from tradingbot.accounting.models import SizeSpec
+
+    led = FuturesLedgerV2(Decimal("100"), breakeven_at_mfe_r=Decimal("0"))
+    led.open("X/USDT", "LONG", Decimal("100"), SizeSpec(Decimal("30")),
+             stop=Decimal("95"), targets=[Decimal("110")], mark_price=Decimal("100"))
+    # Bar hem 95'in altina hem 110'un ustune gidiyor: ikisi de degiyor.
+    led.tick({"X/USDT": {"last": Decimal("108"), "high": Decimal("112"), "low": Decimal("94")}})
+    assert led.history, "pozisyon kapanmadi"
+    rec = led.history[-1]
+    assert Decimal(str(rec.r_multiple)) < 0, "ayni barda stop degdigi halde hedefle kapandi"
+    assert rec.exit_reason.startswith("stop")

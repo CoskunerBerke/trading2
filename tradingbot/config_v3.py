@@ -455,8 +455,17 @@ class NewsSection:
     adim / tick degisikligi, funding araligi ya da tavaninin degismesi. Tur basina iki hafif
     istek (agirlik 1) eder ve bir vadeli bot icin en cok para kaybettiren "haber" sinifidir.
 
-    Genel basin/makro akisi VARSAYILAN OLARAK KAPALIDIR ve bu surumde hicbir ucu hazir
-    gelmez: dogrulamadigim bir kaynagi varsayilan yapmam. Operator `feeds` ile ekler.
+    ETKIN KAYNAK SAYISI: BIR. Bu surumde `news.jsonl`e yazan TEK yer
+    `engine_v3.ensure_venue_events`tir. Asagidakiler UYGULANMADI ve bu bolumde onlari acan
+    bir anahtar YOKTUR (ne `feeds`, ne baska bir alan):
+
+    * proje/zincir duyurulari — cekici yok
+    * makro takvim — cekici yok
+    * genel basin akisi (RSS/JSON) — cekici yok, besleme yapilandirmasi yok
+
+    `market.news` kayit sozlesmesi (provenans, uc durum, gecmise sizinti yasagi) bu kaynaklar
+    icin HAZIRDIR, ama kaynaklarin kendisi yoktur. Dogrulamadigim bir ucu varsayilan yapmam;
+    eklenecekse ayri bir surumun isidir. Venue olaylari "butun haber analizi" DEGILDIR.
     """
     enabled: bool = True
     venue_events: bool = True

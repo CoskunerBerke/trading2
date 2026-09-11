@@ -280,3 +280,30 @@ def test_tour_collects_venue_events():
 
     from tradingbot.engine_v3 import TradingEngineV3
     assert "ensure_venue_events" in inspect.getsource(TradingEngineV3.tour)
+
+
+def test_only_one_news_source_is_actually_wired():
+    """ETKIN KAYNAK SAYISI: BIR. Venue olaylari "butun haber analizi" DEGILDIR.
+
+    `news.jsonl`e yazan tek yer `ensure_venue_events`tir. Baska bir yazici eklenirse bu test
+    duser ve `NewsSection` belgesi guncellenmek zorunda kalir — belge ile kod ayrilamaz.
+    """
+    import inspect
+
+    from tradingbot import engine_v3 as E
+    src = inspect.getsource(E.TradingEngineV3)
+    writers = [ln.strip() for ln in src.splitlines() if "NewsStore(" in ln and ".add(" in ln]
+    assert len(writers) == 1, f"beklenen tek yazici, bulunan: {writers}"
+    assert "ensure_venue_events" in inspect.getsource(E.TradingEngineV3.ensure_venue_events)
+    assert "NewsStore" in inspect.getsource(E.TradingEngineV3.ensure_venue_events)
+
+
+def test_news_section_has_no_feed_configuration():
+    """Belge ile kod ayni seyi soylemeli: besleme yapilandirmasi YOKTUR."""
+    import dataclasses
+
+    from tradingbot.config_v3 import NewsSection
+    names = {f.name for f in dataclasses.fields(NewsSection)}
+    assert "feeds" not in names
+    doc = NewsSection.__doc__ or ""
+    assert "UYGULANMADI" in doc, "uygulanmayan kaynaklar belgede acikca yazmali"

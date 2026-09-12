@@ -21,7 +21,7 @@ from dataclasses import dataclass, fields
 from typing import Any
 
 from ..core import stable_id
-from .candle_context import (BEARISH_ENGULFING_LIKE, BULLISH_ENGULFING_LIKE, CONFIRMED,
+from .candle_context import (BEAR_SIDE_SHAPES, BULL_SIDE_SHAPES, CONFIRMED,
                              EVENING_STAR_LIKE, HAMMER_LIKE, INVERTED_HAMMER_LIKE,
                              MORNING_STAR_LIKE, THREE_BLACK_CROWS_LIKE,
                              THREE_WHITE_SOLDIERS_LIKE)
@@ -177,9 +177,8 @@ def candle_confidence_delta(candle: dict[str, Any] | None, *, is_long: bool | No
     if conf != CONFIRMED:
         out["reason"] = "SHAPE_NOT_CONFIRMED_NO_WEIGHT"
         return out
-    bull = {HAMMER_LIKE, INVERTED_HAMMER_LIKE, BULLISH_ENGULFING_LIKE, MORNING_STAR_LIKE,
-            THREE_WHITE_SOLDIERS_LIKE} & set(shapes)
-    bear = {BEARISH_ENGULFING_LIKE, EVENING_STAR_LIKE, THREE_BLACK_CROWS_LIKE} & set(shapes)
+    bull = BULL_SIDE_SHAPES & set(shapes)
+    bear = BEAR_SIDE_SHAPES & set(shapes)
     if bool(bull) == bool(bear):
         out["reason"] = "SHAPE_HAS_NO_SINGLE_SIDE"
         return out

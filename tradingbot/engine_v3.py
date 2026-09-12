@@ -73,7 +73,7 @@ def _as_multiplier(value) -> float:
 # Karar hunisi: her turda ve kayan 24 saatte tutulur. `trades_opened_24h` YALNIZ gozlem metrigidir,
 # karar kapisi DEGILDIR. `daily_trade_cap`/`per_run_trade_cap` her zaman null olarak raporlanir.
 _FUNNEL_KEYS = ("actionable", "ranked", "chief_blocked", "hard_safety_blocked", "no_trigger",
-                "trigger_fired", "positive_point_edge", "positive_conservative_edge",
+                "trigger_fired", "candle_blocked", "positive_point_edge", "positive_conservative_edge",
                 "negative_edge_blocked", "research_small", "duplicate_blocked",
                 "research_policy_blocked", "size_multiplier_zero", "leverage_gate_blocked",
                 "precision_unresolved",
@@ -419,6 +419,14 @@ class TradingEngineV3(TradingEngine):
                 self.candle_cfg = CandleContextConfig.from_dict(dict(_en.candle_policy or {}))
                 self.weekly_challenger_cfg = WeeklyChallengerConfig.from_dict(
                     dict(_en.weekly_challenger_policy or {}))
+            # MUM ONAYI (V4): OFF disinda ise baslangicta bir kez, okunur sekilde loglanir.
+            _ccm = str(getattr(_en, "candle_confirmation_mode", "OFF") or "OFF").upper()
+            if _ccm != "OFF":
+                from .learn.candle_context import CandleContextConfig as _CCC
+                if getattr(self, "candle_cfg", None) is None:
+                    self.candle_cfg = _CCC.from_dict(dict(_en.candle_policy or {}))
+                log.info("MUM ONAYI: mode=%s variant=%s policy=%s", _ccm,
+                         _en.candle_confirmation_variant, self.candle_cfg.policy_version)
             # ÇOK ZAMAN DİLİMLİ LİKİDİTE TEYİDİ (H): saf, salt gözlem, SHADOW.
             # Mod burada da İKİNCİ kez zorlanır — config yolu atlanmış olsa bile H aktifleşemez.
             if getattr(_en, "mtf_enabled", False):
@@ -1391,6 +1399,17 @@ class TradingEngineV3(TradingEngine):
                 entry["block_code"] = "NO_TRIGGER"
                 continue
             funnel["trigger_fired"] += 1
+            # ---------------------------------------------------------------- 2b) MUM ONAYI (kapasite TUKETMEZ)
+            # Operator karari (V4): secili varyant ENFORCE ise gecmeyen aday ACILMAZ; tum
+            # varyantlarin golge hukmu karar kaydina yazilir. Mantik `candle_confirmation.py`
+            # icinde — replay AYNI fonksiyonu cagirir (tek kaynak).
+            cc = self._candle_confirmation(sym, d.direction, now)
+            if cc is not None:
+                entry["candle_confirmation"] = cc
+                if cc.get("blocks"):
+                    funnel["candle_blocked"] += 1
+                    entry["block_code"] = "CANDLE_VETO:" + str((cc.get("verdict") or {}).get("reason") or "?")
+                    continue
             feats = features_from_brief(b, self.runner.chief.decide(briefs), b.scan_score or None)
             feats.update({"initial_stop": plan.stop, "p_win": b.p_win, "regime": d.regime, "consensus_score": d.consensus_score, "consensus_conf": d.consensus_confidence,
                           "n_dissent": len(d.dissent), "n_vetoes": len(d.vetoes), "expected_r": d.expected_r, "expected_cost_pct": d.expected_cost, "market_type": market,
@@ -1981,6 +2000,38 @@ class TradingEngineV3(TradingEngine):
                                  last_bar=b.last_bar_4h,
                                  already_fired_bar=self.triggers.get(b.symbol))
         return ok
+
+    def _candle_confirmation(self, symbol: str, direction: str, now: datetime) -> dict | None:
+        """SAF sorgu: durum DEGISTIRMEZ. Mantik `candle_confirmation.candle_confirmation` icinde — TEK kaynak.
+
+        `OFF` iken None doner ve karar yolu birebir eskisi gibidir. Barlar motorun ZATEN
+        cektigi `runner.last_frames` karelerinden okunur (yeni API cagrisi YOK) ve karar
+        aninda KAPANMAMIS bar elenir. Degerlendirme arizasi ENFORCE modda FAIL-CLOSED
+        (aday acilmaz, sebep kayda gecer); SHADOW modda yalniz loglanir.
+        """
+        _en = self.cfg.v3.entry_selectivity
+        mode = str(getattr(_en, "candle_confirmation_mode", "OFF") or "OFF").upper()
+        if mode == "OFF":
+            return None
+        variant = str(getattr(_en, "candle_confirmation_variant", "") or "")
+        try:
+            from .candle_confirmation import candle_confirmation, closed_bars
+            from .learn.candle_context import CandleContextConfig
+            from .learn.weekly_structure import rows_from_frame
+            cfg = getattr(self, "candle_cfg", None)
+            if cfg is None:
+                cfg = self.candle_cfg = CandleContextConfig.from_dict(dict(_en.candle_policy or {}))
+            frames = (getattr(self.runner, "last_frames", None) or {}).get(symbol) or {}
+            now_ms = int(now.timestamp() * 1000)
+            b4 = closed_bars(rows_from_frame(frames.get("4h")), now_ms=now_ms, tf="4h")
+            b1 = closed_bars(rows_from_frame(frames.get("1d")), now_ms=now_ms, tf="1d")
+            return candle_confirmation(mode=mode, variant=variant, direction=direction,
+                                       bars_4h=b4, bars_1d=b1, cfg=cfg)
+        except Exception as exc:  # noqa: BLE001 — ariza SESSIZ GECMEZ
+            log.warning("mum onayi degerlendirilemedi (%s): %s", symbol, exc)
+            return {"schema_version": "candle_confirmation_v1", "mode": mode, "variant": variant,
+                    "verdict": {"ok": False, "reason": "CANDLE_ERROR:%s" % type(exc).__name__},
+                    "blocks": mode == "ENFORCE", "shadow": {}, "error": str(exc)[:200]}
 
     def _label_shadows(self) -> None:
         pend = self.shadow.pending(utc_now())

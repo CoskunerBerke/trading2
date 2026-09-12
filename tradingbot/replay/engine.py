@@ -105,7 +105,8 @@ class HistoricalReplay:
     def __init__(self, cfg, *, run_id: str, store, symbols: list[str], market: str = "futures", tf: str = "4h", seed: int = 0,
                  state_root: Path | str | None = None, pattern_engine=None, start_ms: int | None = None, end_ms: int | None = None,
                  economics_gate: bool = True, spot_listed: set[str] | None = None, entry_rule=None, legacy_agents: bool = True, entry_trigger: bool = True, legacy_veto: bool = False,
-                 lookback_bars: int = 400, min_bars: int = 250, decision_stride: int = 1):
+                 lookback_bars: int = 400, min_bars: int = 250, decision_stride: int = 1,
+                 candle_variant: str | None = "config"):
         self.cfg, self.run_id, self.store, self.symbols, self.market, self.tf, self.seed = cfg, run_id, store, list(symbols), market, tf, int(seed)
         self.pattern_engine = pattern_engine
         # EKONOMI KAPISI: uretimde karar yolunun ZORUNLU asamasi (engine_v3._assess_opportunities).
@@ -132,6 +133,17 @@ class HistoricalReplay:
         self.entry_trigger_on = bool(entry_trigger)
         #: SABIRLI MOTOR VETOSU: seviye tabanli plan uretilmeyen adayi acma.
         self.legacy_veto = bool(legacy_veto)
+        # MUM ONAYI (V4): uretim `entry_selectivity.candle_confirmation_mode == ENFORCE` ise
+        # secili varyanti uygular. Replay VARSAYILAN olarak config'i izler ("config"), boylece
+        # backtest uretimle ayni sistemi olcer; None kapatir, varyant adi zorlar (arastirma).
+        # Mantik `candle_confirmation.evaluate_variant` — canli motorla TEK kaynak.
+        from ..learn.candle_context import CandleContextConfig as _CCC
+        _en = getattr(getattr(cfg, "v3", None), "entry_selectivity", None)
+        self.candle_cfg = _CCC.from_dict(dict(getattr(_en, "candle_policy", None) or {}))
+        if candle_variant == "config":
+            _m = str(getattr(_en, "candle_confirmation_mode", "OFF") or "OFF").upper()
+            candle_variant = str(getattr(_en, "candle_confirmation_variant", "") or "") if _m == "ENFORCE" else None
+        self.candle_variant = candle_variant or None
         #: ayni barda ikinci girisi engellemek icin (uretimdeki `self.triggers` karsiligi)
         self._fired_bar: dict[str, str] = {}
         self._legacy_agents = None
@@ -336,6 +348,17 @@ class HistoricalReplay:
                         already_fired_bar=self._fired_bar.get(sym))
                     if not _ok:
                         self._reject(sym, "TRIGGER:" + (_why or "?").split(":")[0])
+                        continue
+                if self.candle_variant:
+                    from ..candle_confirmation import closed_bars, evaluate_variant
+                    from ..learn.weekly_structure import rows_from_frame
+                    _now_ms = t + tf_ms(self.tf)
+                    _b4 = closed_bars(rows_from_frame(fr.get("4h")), now_ms=_now_ms, tf="4h")
+                    _b1 = closed_bars(rows_from_frame(fr.get("1d")), now_ms=_now_ms, tf="1d")
+                    _ok, _why = evaluate_variant(self.candle_variant, direction=d.direction,
+                                                 bars_4h=_b4, bars_1d=_b1, cfg=self.candle_cfg)
+                    if not _ok:
+                        self._reject(sym, "CANDLE_VETO:" + (_why or "?"))
                         continue
                 size_mult = 1.0
                 if self.economics_gate:

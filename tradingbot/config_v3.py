@@ -588,6 +588,13 @@ class EntrySelectivitySection:
     experiment_auto_promotion: bool = False   # true -> ConfigError
     #: `learn.profitability_experiment.ExperimentConfig` alanları.
     experiment_policy: dict[str, Any] = field(default_factory=dict)
+    #: MUM ONAYI (V4, 2026-09-12): `OFF` | `SHADOW` | `ENFORCE`. `ENFORCE` giriş kararını
+    #: GERÇEKTEN daraltır (`candle_confirmation.py`, iki motorda tek kaynak). DENEY_V4'te
+    #: hiçbir varyant iki pencerede doğrulanmadı; açmak operatör kararıdır. LIVE ve
+    #: LIVE_LIMITED modda `ENFORCE` yasaktır (doğrulanmamış mantık gerçek parayla çalışmaz).
+    candle_confirmation_mode: str = "OFF"
+    #: c1_4h | c2_4h_confirm | c3_4h_veto | c4_1d — bkz. `candle_confirmation.VARIANTS`.
+    candle_confirmation_variant: str = "c3_4h_veto"
 
 
 @dataclass
@@ -843,6 +850,14 @@ def validate_v3(cfg: V3Config) -> None:
         _WCC.from_dict(dict(_en.weekly_challenger_policy or {}))
     except (ValueError, TypeError) as exc:
         raise ConfigError(f"entry_selectivity haftalık bağlam politikası geçersiz: {exc}") from exc
+    # MUM ONAYI (V4): kurallar `candle_confirmation.validate_settings` icinde (SAF, tek kaynak).
+    from .candle_confirmation import validate_settings as _cc_validate
+    try:
+        _en.candle_confirmation_mode = _cc_validate(
+            mode=_en.candle_confirmation_mode, variant=_en.candle_confirmation_variant,
+            app_mode=getattr(cfg.mode, "mode", None))
+    except ValueError as exc:
+        raise ConfigError(f"entry_selectivity.candle_confirmation: {exc}") from exc
     # ÇOK ZAMAN DİLİMLİ LİKİDİTE TEYİDİ (H ailesi): SHADOW dışına çıkış yolu YOKTUR.
     # `entry_selectivity.mode` zaten SHADOW'a kilitli; H ayrıca KENDİ kapısını da taşır ki
     # ileride giriş bölümü gevşetilse bile H tek başına aktifleşemesin (fail-closed).

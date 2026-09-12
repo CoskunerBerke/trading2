@@ -288,3 +288,13 @@ monitoring:
 security:
   live_confirmation_required: true
   redact_logs: true
+
+# ---- MUM ONAYI (V4, 2026-09-12) --------------------------------------------------------
+# Operatör kararı: klasik mum formasyonları giriş karar yolunda AKTİF. Seçili varyant karşı
+# formasyon vetosu: son KAPANMIŞ 4h barda adayın yönüne KARŞI şekil varsa giriş açılmaz.
+# Diğer üç varyant (c1_4h, c2_4h_confirm, c4_1d) her adayda gölge olarak karar kaydına yazılır.
+# Ölçüm: research/entry_v1/out/DENEY_V4.md — hiçbir varyant iki pencerede doğrulanmadı.
+# ENFORCE yalnız PAPER/TESTNET'te açılabilir; LIVE modda config reddedilir.
+entry_selectivity:
+  candle_confirmation_mode: ENFORCE          # OFF | SHADOW | ENFORCE
+  candle_confirmation_variant: c3_4h_veto    # c1_4h | c2_4h_confirm | c3_4h_veto | c4_1d

@@ -298,3 +298,8 @@ security:
 entry_selectivity:
   candle_confirmation_mode: ENFORCE          # OFF | SHADOW | ENFORCE
   candle_confirmation_variant: c3_4h_veto    # c1_4h | c2_4h_confirm | c3_4h_veto | c4_1d
+  # GRAFİK FORMASYONU ONAYI (V5): çift dip/tepe, üçlü, OBO, üçgen, bayrak; yalnız KIRILIŞLA teyitli.
+  # Önce SHADOW: her adayda dört varyantın hükmü ve taze formasyon listesi kaydedilir, karar değişmez.
+  # Ölçüm: research/entry_v1/out/DENEY_V5.md. ENFORCE açmak operatör kararıdır.
+  chart_confirmation_mode: SHADOW            # OFF | SHADOW | ENFORCE
+  chart_confirmation_variant: p2_4h_veto     # p1_4h_confirm | p2_4h_veto | p3_1d_confirm | p4_1d_veto

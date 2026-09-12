@@ -106,7 +106,7 @@ class HistoricalReplay:
                  state_root: Path | str | None = None, pattern_engine=None, start_ms: int | None = None, end_ms: int | None = None,
                  economics_gate: bool = True, spot_listed: set[str] | None = None, entry_rule=None, legacy_agents: bool = True, entry_trigger: bool = True, legacy_veto: bool = False,
                  lookback_bars: int = 400, min_bars: int = 250, decision_stride: int = 1,
-                 candle_variant: str | None = "config"):
+                 candle_variant: str | None = "config", chart_variant: str | None = "config"):
         self.cfg, self.run_id, self.store, self.symbols, self.market, self.tf, self.seed = cfg, run_id, store, list(symbols), market, tf, int(seed)
         self.pattern_engine = pattern_engine
         # EKONOMI KAPISI: uretimde karar yolunun ZORUNLU asamasi (engine_v3._assess_opportunities).
@@ -144,6 +144,13 @@ class HistoricalReplay:
             _m = str(getattr(_en, "candle_confirmation_mode", "OFF") or "OFF").upper()
             candle_variant = str(getattr(_en, "candle_confirmation_variant", "") or "") if _m == "ENFORCE" else None
         self.candle_variant = candle_variant or None
+        # GRAFIK FORMASYONU ONAYI (V5): ayni sozlesme; config'i izler, None kapatir, ad zorlar.
+        from ..chart_patterns import ChartPatternConfig as _CPC
+        self.chart_cfg = _CPC.from_dict(dict(getattr(_en, "chart_policy", None) or {}))
+        if chart_variant == "config":
+            _cm = str(getattr(_en, "chart_confirmation_mode", "OFF") or "OFF").upper()
+            chart_variant = str(getattr(_en, "chart_confirmation_variant", "") or "") if _cm == "ENFORCE" else None
+        self.chart_variant = chart_variant or None
         #: ayni barda ikinci girisi engellemek icin (uretimdeki `self.triggers` karsiligi)
         self._fired_bar: dict[str, str] = {}
         self._legacy_agents = None
@@ -359,6 +366,18 @@ class HistoricalReplay:
                                                  bars_4h=_b4, bars_1d=_b1, cfg=self.candle_cfg)
                     if not _ok:
                         self._reject(sym, "CANDLE_VETO:" + (_why or "?"))
+                        continue
+                if self.chart_variant:
+                    from ..candle_confirmation import closed_bars as _closed_bars
+                    from ..chart_confirmation import evaluate_variant as chart_evaluate_variant
+                    from ..learn.weekly_structure import rows_from_frame as _rows_cf
+                    _now_ms = t + tf_ms(self.tf)
+                    _cb4 = _closed_bars(_rows_cf(fr.get("4h")), now_ms=_now_ms, tf="4h")
+                    _cb1 = _closed_bars(_rows_cf(fr.get("1d")), now_ms=_now_ms, tf="1d")
+                    _ok, _why = chart_evaluate_variant(self.chart_variant, direction=d.direction,
+                                                       bars_4h=_cb4, bars_1d=_cb1, cfg=self.chart_cfg)
+                    if not _ok:
+                        self._reject(sym, "CHART_VETO:" + (_why or "?"))
                         continue
                 size_mult = 1.0
                 if self.economics_gate:

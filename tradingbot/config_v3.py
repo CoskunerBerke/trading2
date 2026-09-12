@@ -595,6 +595,13 @@ class EntrySelectivitySection:
     candle_confirmation_mode: str = "OFF"
     #: c1_4h | c2_4h_confirm | c3_4h_veto | c4_1d — bkz. `candle_confirmation.VARIANTS`.
     candle_confirmation_variant: str = "c3_4h_veto"
+    #: GRAFİK FORMASYONU ONAYI (V5, 2026-09-12): `OFF` | `SHADOW` | `ENFORCE`; mantık
+    #: `chart_confirmation.py` (iki motorda tek kaynak). LIVE/LIVE_LIMITED'da ENFORCE yasak.
+    chart_confirmation_mode: str = "OFF"
+    #: p1_4h_confirm | p2_4h_veto | p3_1d_confirm | p4_1d_veto — bkz. `chart_confirmation.VARIANTS`.
+    chart_confirmation_variant: str = "p2_4h_veto"
+    #: `chart_patterns.ChartPatternConfig` alanları; verilmeyenler varsayılanda.
+    chart_policy: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -858,6 +865,16 @@ def validate_v3(cfg: V3Config) -> None:
             app_mode=getattr(cfg.mode, "mode", None))
     except ValueError as exc:
         raise ConfigError(f"entry_selectivity.candle_confirmation: {exc}") from exc
+    # GRAFİK FORMASYONU ONAYI (V5): kurallar `chart_confirmation.validate_settings` içinde.
+    from .chart_confirmation import validate_settings as _ch_validate
+    from .chart_patterns import ChartPatternConfig as _CPC
+    try:
+        _en.chart_confirmation_mode = _ch_validate(
+            mode=_en.chart_confirmation_mode, variant=_en.chart_confirmation_variant,
+            app_mode=getattr(cfg.mode, "mode", None))
+        _CPC.from_dict(dict(_en.chart_policy or {}))
+    except ValueError as exc:
+        raise ConfigError(f"entry_selectivity.chart_confirmation: {exc}") from exc
     # ÇOK ZAMAN DİLİMLİ LİKİDİTE TEYİDİ (H ailesi): SHADOW dışına çıkış yolu YOKTUR.
     # `entry_selectivity.mode` zaten SHADOW'a kilitli; H ayrıca KENDİ kapısını da taşır ki
     # ileride giriş bölümü gevşetilse bile H tek başına aktifleşemesin (fail-closed).

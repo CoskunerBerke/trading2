@@ -73,7 +73,7 @@ def _as_multiplier(value) -> float:
 # Karar hunisi: her turda ve kayan 24 saatte tutulur. `trades_opened_24h` YALNIZ gozlem metrigidir,
 # karar kapisi DEGILDIR. `daily_trade_cap`/`per_run_trade_cap` her zaman null olarak raporlanir.
 _FUNNEL_KEYS = ("actionable", "ranked", "chief_blocked", "hard_safety_blocked", "no_trigger",
-                "trigger_fired", "candle_blocked", "positive_point_edge", "positive_conservative_edge",
+                "trigger_fired", "candle_blocked", "chart_blocked", "positive_point_edge", "positive_conservative_edge",
                 "negative_edge_blocked", "research_small", "duplicate_blocked",
                 "research_policy_blocked", "size_multiplier_zero", "leverage_gate_blocked",
                 "precision_unresolved",
@@ -427,6 +427,14 @@ class TradingEngineV3(TradingEngine):
                     self.candle_cfg = _CCC.from_dict(dict(_en.candle_policy or {}))
                 log.info("MUM ONAYI: mode=%s variant=%s policy=%s", _ccm,
                          _en.candle_confirmation_variant, self.candle_cfg.policy_version)
+            # GRAFIK FORMASYONU ONAYI (V5): OFF disinda ise baslangicta bir kez loglanir.
+            _chm = str(getattr(_en, "chart_confirmation_mode", "OFF") or "OFF").upper()
+            if _chm != "OFF":
+                from .chart_patterns import ChartPatternConfig as _CPC
+                if getattr(self, "chart_cfg", None) is None:
+                    self.chart_cfg = _CPC.from_dict(dict(_en.chart_policy or {}))
+                log.info("GRAFIK ONAYI: mode=%s variant=%s policy=%s", _chm,
+                         _en.chart_confirmation_variant, self.chart_cfg.policy_version)
             # ÇOK ZAMAN DİLİMLİ LİKİDİTE TEYİDİ (H): saf, salt gözlem, SHADOW.
             # Mod burada da İKİNCİ kez zorlanır — config yolu atlanmış olsa bile H aktifleşemez.
             if getattr(_en, "mtf_enabled", False):
@@ -1410,6 +1418,16 @@ class TradingEngineV3(TradingEngine):
                     funnel["candle_blocked"] += 1
                     entry["block_code"] = "CANDLE_VETO:" + str((cc.get("verdict") or {}).get("reason") or "?")
                     continue
+            # ---------------------------------------------------------------- 2c) GRAFIK FORMASYONU ONAYI (kapasite TUKETMEZ)
+            # V5: kirilisla teyitli cift dip/OBO/ucgen/bayrak. Mantik `chart_confirmation.py`
+            # icinde — replay AYNI fonksiyonu cagirir (tek kaynak). OFF iken yol degismez.
+            ch = self._chart_confirmation(sym, d.direction, now)
+            if ch is not None:
+                entry["chart_confirmation"] = ch
+                if ch.get("blocks"):
+                    funnel["chart_blocked"] += 1
+                    entry["block_code"] = "CHART_VETO:" + str((ch.get("verdict") or {}).get("reason") or "?")
+                    continue
             feats = features_from_brief(b, self.runner.chief.decide(briefs), b.scan_score or None)
             feats.update({"initial_stop": plan.stop, "p_win": b.p_win, "regime": d.regime, "consensus_score": d.consensus_score, "consensus_conf": d.consensus_confidence,
                           "n_dissent": len(d.dissent), "n_vetoes": len(d.vetoes), "expected_r": d.expected_r, "expected_cost_pct": d.expected_cost, "market_type": market,
@@ -2031,6 +2049,37 @@ class TradingEngineV3(TradingEngine):
             log.warning("mum onayi degerlendirilemedi (%s): %s", symbol, exc)
             return {"schema_version": "candle_confirmation_v1", "mode": mode, "variant": variant,
                     "verdict": {"ok": False, "reason": "CANDLE_ERROR:%s" % type(exc).__name__},
+                    "blocks": mode == "ENFORCE", "shadow": {}, "error": str(exc)[:200]}
+
+    def _chart_confirmation(self, symbol: str, direction: str, now: datetime) -> dict | None:
+        """SAF sorgu: durum DEGISTIRMEZ. Mantik `chart_confirmation.chart_confirmation` icinde — TEK kaynak.
+
+        `OFF` iken None doner. Barlar `runner.last_frames` karelerinden okunur (yeni API cagrisi
+        YOK), kapanmamis bar elenir. Ariza ENFORCE modda FAIL-CLOSED; SHADOW modda loglanir.
+        """
+        _en = self.cfg.v3.entry_selectivity
+        mode = str(getattr(_en, "chart_confirmation_mode", "OFF") or "OFF").upper()
+        if mode == "OFF":
+            return None
+        variant = str(getattr(_en, "chart_confirmation_variant", "") or "")
+        try:
+            from .candle_confirmation import closed_bars
+            from .chart_confirmation import chart_confirmation
+            from .chart_patterns import ChartPatternConfig
+            from .learn.weekly_structure import rows_from_frame
+            cfg = getattr(self, "chart_cfg", None)
+            if cfg is None:
+                cfg = self.chart_cfg = ChartPatternConfig.from_dict(dict(_en.chart_policy or {}))
+            frames = (getattr(self.runner, "last_frames", None) or {}).get(symbol) or {}
+            now_ms = int(now.timestamp() * 1000)
+            b4 = closed_bars(rows_from_frame(frames.get("4h")), now_ms=now_ms, tf="4h")
+            b1 = closed_bars(rows_from_frame(frames.get("1d")), now_ms=now_ms, tf="1d")
+            return chart_confirmation(mode=mode, variant=variant, direction=direction,
+                                      bars_4h=b4, bars_1d=b1, cfg=cfg)
+        except Exception as exc:  # noqa: BLE001 — ariza SESSIZ GECMEZ
+            log.warning("grafik onayi degerlendirilemedi (%s): %s", symbol, exc)
+            return {"schema_version": "chart_confirmation_v1", "mode": mode, "variant": variant,
+                    "verdict": {"ok": False, "reason": "CHART_ERROR:%s" % type(exc).__name__},
                     "blocks": mode == "ENFORCE", "shadow": {}, "error": str(exc)[:200]}
 
     def _label_shadows(self) -> None:

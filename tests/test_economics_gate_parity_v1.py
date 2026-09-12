@@ -183,3 +183,48 @@ def test_real_filters_differ_from_defaults_where_it_matters():
     assert doge.qty_step > dflt.qty_step              # 1 vs 0.001
     btc = fc.get("BTC/USDT", MarketType.USDM_PERP)
     assert btc.min_notional > dflt.min_notional       # 50 vs 5
+
+
+# ------------------------------------------------------------------ 4) giris tetigi
+def test_both_engines_use_the_same_entry_trigger():
+    """Olculdu: `_trigger_fired` YALNIZ canli motorda vardi; replay her adayi hemen aciyordu."""
+    assert _calls("engine_v3.py", "trigger_fired") >= 1, "canli motor ortak tetigi cagirmiyor"
+    assert _calls("replay/engine.py", "trigger_fired") >= 1, "replay ortak tetigi cagirmiyor"
+    src = (ROOT / "replay" / "engine.py").read_text(encoding="utf-8")
+    assert "entry_trigger: bool = True" in src, "replay tetigi varsayilan olarak CALISTIRMALI"
+
+
+def test_trigger_waits_for_the_planned_level():
+    from tradingbot.entry_trigger import trigger_fired
+    # ATR plani girisi ANLIK fiyata koyar -> mesafe 0 -> tetik hemen gecer
+    ok, why = trigger_fired(direction="LONG", entry_type="pullback", entry=100.0, price=100.0)
+    assert ok and why == ""
+    # seviye tabanli plan: destek %3 asagida -> fiyat oraya GELENE KADAR giris YOK
+    ok, why = trigger_fired(direction="LONG", entry_type="pullback", entry=97.0, price=100.0)
+    assert not ok and why.startswith("NOT_AT_ENTRY")
+    # fiyat seviyeye geldi (%0.25 icinde) -> tetik gecer
+    ok, _ = trigger_fired(direction="LONG", entry_type="pullback", entry=97.0, price=97.2)
+    assert ok
+
+
+def test_breakout_needs_a_closed_bar_and_forbids_chasing():
+    from tradingbot.entry_trigger import trigger_fired
+    # kapanmis bar yok -> ASLA tetiklenmez
+    ok, why = trigger_fired(direction="LONG", entry_type="breakout", entry=100.0, price=100.0)
+    assert not ok and why == "NO_CLOSED_BAR"
+    # seviyenin altinda kapanis -> tetik yok
+    ok, why = trigger_fired(direction="LONG", entry_type="breakout", entry=100.0, price=100.0,
+                            last_close=99.0, last_bar="b1")
+    assert not ok and why == "NO_BREAKOUT_CLOSE"
+    # kapanis ustunde ama fiyat %1.5'ten uzak -> KOVALAMA YASAK
+    ok, why = trigger_fired(direction="LONG", entry_type="breakout", entry=100.0, price=103.0,
+                            last_close=101.0, last_bar="b1")
+    assert not ok and why.startswith("CHASE_FORBIDDEN")
+    # kapanis ustunde ve fiyat yakin -> gecer
+    ok, _ = trigger_fired(direction="LONG", entry_type="breakout", entry=100.0, price=100.5,
+                          last_close=101.0, last_bar="b1")
+    assert ok
+    # ayni barda ikinci giris engellenir
+    ok, why = trigger_fired(direction="LONG", entry_type="breakout", entry=100.0, price=100.5,
+                            last_close=101.0, last_bar="b1", already_fired_bar="b1")
+    assert not ok and why == "ALREADY_FIRED_THIS_BAR"

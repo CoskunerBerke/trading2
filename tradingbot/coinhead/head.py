@@ -101,16 +101,36 @@ class CoinHead:
         return 0.0
 
     def _plan_from_legacy(self, brief: Any, market: str, direction: str, price: float) -> TradePlanV3 | None:
+        """Seviye tabanli plan (destege geri cekilme / direnc kirilimi).
+
+        Reddedilirse SEBEP `self._legacy_reject`e yazilir. Eskiden sessizce None donuyordu ve
+        "dusunulmus giris hesaplandi ama atildi" olayi HICBIR yere kaydedilmiyordu.
+        """
+        self._legacy_reject = ""
         p = getattr(brief, "plan", None)
-        if p is None or p.direction != direction or not p.entry or not p.stop:
+        if p is None:
+            self._legacy_reject = "NO_LEGACY_PLAN"
             return None
-        # sağlamlık: giriş fiyattan %5'ten uzaksa ya da stop/target tutarsızsa legacy planı kullanma (ATR planına düş)
-        if p.entry <= 0 or p.stop <= 0 or price <= 0 or abs(p.entry / price - 1) > 0.05:
+        if p.direction != direction:
+            self._legacy_reject = "DIRECTION_MISMATCH"
             return None
-        if p.target1 and abs(p.target1 / p.entry - 1) > 0.5:      # hedef makul değil (ölçek/veri tutarsızlığı)
+        if not p.entry or not p.stop:
+            self._legacy_reject = "NO_ENTRY_OR_STOP"
             return None
-        if (direction == "LONG" and not (p.stop < p.entry < (p.target1 or p.entry + 1))) or \
-           (direction == "SHORT" and not (p.stop > p.entry > (p.target1 or p.entry - 1))):
+        if p.entry <= 0 or p.stop <= 0 or price <= 0:
+            self._legacy_reject = "BAD_LEVELS"
+            return None
+        # saglamlik: giris fiyattan %5ten uzaksa seviye plani KULLANILMAZ (ATR planina duser)
+        if abs(p.entry / price - 1) > 0.05:
+            self._legacy_reject = "ENTRY_TOO_FAR:%.2f" % (abs(p.entry / price - 1) * 100)
+            return None
+        if p.target1 and abs(p.target1 / p.entry - 1) > 0.5:
+            self._legacy_reject = "TARGET_IMPLAUSIBLE"
+            return None
+        _bad_long = direction == "LONG" and not (p.stop < p.entry < (p.target1 or p.entry + 1))
+        _bad_short = direction == "SHORT" and not (p.stop > p.entry > (p.target1 or p.entry - 1))
+        if _bad_long or _bad_short:
+            self._legacy_reject = "ORDERING_INVALID"
             return None
         lo, hi = (p.entry * 0.999, p.entry * 1.001)
         plan = TradePlanV3(market_type=market, direction=direction, entry_type={"kırılım": "breakout", "geri çekilme": "pullback"}.get(p.entry_type, p.entry_type or "market"),
@@ -291,7 +311,12 @@ class CoinHead:
                 continue
             if market == "spot" and direction == "SHORT":
                 continue
+            self._legacy_reject = "NO_LEGACY_BRIEF"
             plan = self._plan_from_legacy(inp.legacy_brief, market, direction, price) if inp.legacy_brief is not None else None
+            if plan is not None:
+                d.plan_source, d.legacy_plan_reject = "legacy", ""
+            else:
+                d.plan_source, d.legacy_plan_reject = "atr", self._legacy_reject
             plan = plan or self._plan_from_atr(inp, market, direction, price)
             if plan is None:
                 continue

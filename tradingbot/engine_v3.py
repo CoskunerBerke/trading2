@@ -1968,27 +1968,19 @@ class TradingEngineV3(TradingEngine):
                                  trigger_text=trigger_text, features=features, tick=tick, now=now, meta=meta)
 
     def _trigger_fired(self, b: CoinBrief, direction: str, entry: float, entry_type: str) -> bool:
-        """SAF sorgu: durum DEĞİŞTİRMEZ.
+        """SAF sorgu: durum DEGISTIRMEZ. Mantik `entry_trigger.trigger_fired` icinde — TEK kaynak.
 
-        Eskiden bu metot değerlendirme sırasında `self.triggers[symbol] = last_bar_4h` yazıyordu.
-        Tetik artık risk kapısından ÖNCE çalıştığı için bu yazım, kapasite/emir yüzünden hiç
-        açılmamış bir adayın barını yakardı. Kayıt artık YALNIZ gerçek açılışta işlenir
-        (`_execute_locked`); aynı bar/taraf/setup'ın ikinci kez AÇILMASINI `_seen_signals`
+        Replay motoru AYNI fonksiyonu cagirir; "planlanan seviyeye gelmeden girme" kurali
+        iki motorda ayri formulle YASAMAZ. Kayit yalniz gercek acilista islenir
+        (`_execute_locked`); ayni bar/taraf/setup ikinci kez acilmasini `_seen_signals`
         (DUPLICATE_SIGNAL) engeller.
         """
-        if not b.price or not entry:
-            return False
-        if entry_type == "breakout":
-            if not b.last_bar_4h or not b.last_close_4h:      # 4h çerçeve yoksa asla tetiklenmez (audit: last_close_4h=0 bug'ı)
-                return False
-            if self.triggers.get(b.symbol) == b.last_bar_4h:  # bu barda zaten giriş yapıldı
-                return False
-            lvl = entry / 1.001 if direction == "LONG" else entry / 0.999
-            fired = (b.last_close_4h > lvl) if direction == "LONG" else (b.last_close_4h < lvl)
-            if fired and abs(b.price / entry - 1) > 0.015:    # kovalama yasak
-                fired = False
-            return fired
-        return abs(b.price / entry - 1) <= 0.0025
+        from .entry_trigger import trigger_fired
+        ok, _why = trigger_fired(direction=direction, entry_type=entry_type, entry=entry,
+                                 price=b.price, last_close=b.last_close_4h,
+                                 last_bar=b.last_bar_4h,
+                                 already_fired_bar=self.triggers.get(b.symbol))
+        return ok
 
     def _label_shadows(self) -> None:
         pend = self.shadow.pending(utc_now())

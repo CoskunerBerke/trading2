@@ -230,6 +230,10 @@ class CoinHeadDecision:
     regime: str = "UNKNOWN"
     verdict: Verdict = Verdict.NO_TRADE
     no_trade_reason: str = ""
+    #: GOZLEM — plan hangi yoldan geldi ("legacy" = seviye tabanli, "atr" = piyasadan giris)
+    #: ve seviye tabanli plan REDDEDILDIYSE neden. Bugune kadar hicbir yere yazilmiyordu.
+    plan_source: str = ""
+    legacy_plan_reject: str = ""
     direction: str = ""                  # LONG | SHORT | ""
     confidence_raw: float = 0.0
     confidence_calibrated: float = 0.0

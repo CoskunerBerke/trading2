@@ -104,7 +104,7 @@ class ReplayResult:
 class HistoricalReplay:
     def __init__(self, cfg, *, run_id: str, store, symbols: list[str], market: str = "futures", tf: str = "4h", seed: int = 0,
                  state_root: Path | str | None = None, pattern_engine=None, start_ms: int | None = None, end_ms: int | None = None,
-                 economics_gate: bool = True, spot_listed: set[str] | None = None, entry_rule=None,
+                 economics_gate: bool = True, spot_listed: set[str] | None = None, entry_rule=None, legacy_agents: bool = True, entry_trigger: bool = True, legacy_veto: bool = False,
                  lookback_bars: int = 400, min_bars: int = 250, decision_stride: int = 1):
         self.cfg, self.run_id, self.store, self.symbols, self.market, self.tf, self.seed = cfg, run_id, store, list(symbols), market, tf, int(seed)
         self.pattern_engine = pattern_engine
@@ -119,6 +119,30 @@ class HistoricalReplay:
         # Imza: (symbol, decision, plan, frames) -> (bool, reason). `frames` yalniz t'de
         # KAPANMIS barlari icerir (`_slice`), yani kural gelecege BAKAMAZ.
         self.entry_rule = entry_rule
+        # LEGACY TEKNIK AJANLAR (analog/momentum/candles/levels/volume/trend/volatility/edge).
+        # Olculdu: replay'de 20 degil 10 uzman calisiyordu; bu sekiz ajan canli yolda
+        # `legacy_brief` uzerinden geliyor ve replay onu HIC vermiyordu. Sonuc: backtest,
+        # uretimin giris sinyalinin YARISINI sinamadan olcuyordu. Sekizi de SAF CERCEVE
+        # hesabidir (ag/canli veri kullanmaz), bu yuzden event-time replay'de calisabilirler.
+        self.legacy_agents_on = bool(legacy_agents)
+        # GIRIS TETIGI: uretim "planlanan seviyeye gelmeden GIRME" kuralini uygular
+        # (`engine_v3:1389` -> `_trigger_fired`). Replay bunu HIC yapmiyordu ve her adayi bar
+        # kapanisinda hemen aciyordu. Varsayilan artik ACIK; kapatmak eski (tetiksiz)
+        # davranisi olcmek icin bilincli bir arastirma secimidir.
+        self.entry_trigger_on = bool(entry_trigger)
+        #: SABIRLI MOTOR VETOSU: seviye tabanli plan uretilmeyen adayi acma.
+        self.legacy_veto = bool(legacy_veto)
+        #: ayni barda ikinci girisi engellemek icin (uretimdeki `self.triggers` karsiligi)
+        self._fired_bar: dict[str, str] = {}
+        self._legacy_agents = None
+        self._legacy_manager = None
+        #: brief uretilemeyen durumlarin SAYIMI — sessiz yutma YOK.
+        self.legacy_brief_errors: dict[str, int] = {}
+        if self.legacy_agents_on:
+            from ..agents.manager import CoinManagerAgent
+            from ..agents.technical import TECHNICAL_AGENTS
+            self._legacy_agents = list(TECHNICAL_AGENTS)
+            self._legacy_manager = CoinManagerAgent()
         #: Spot'ta listeli oldugu BILINEN semboller (yalniz-vadeli cezasi bunlara UYGULANMAZ).
         self.spot_listed = set(spot_listed or ())
         # GERCEK BORSA KURALLARI. Varsayilan filtreler TUM sembollerde price_tick=0.01 ve
@@ -256,7 +280,9 @@ class HistoricalReplay:
                             ev = {side: self.pattern_engine.query(sym, self.market, self.tf, side, idx=idx, k=60) for side in (("LONG", "SHORT") if self.market == "futures" else ("LONG",))}
                 opos = self.ledger2.positions.get(sym)
                 same_dir = {"LONG": sum(1 for p in self.ledger2.positions.values() if p.side.value == "LONG"), "SHORT": sum(1 for p in self.ledger2.positions.values() if p.side.value == "SHORT")}
-                inputs[sym] = CoinHeadInputs(frames=fr, live={"ticker": {"last": price, "high": float(cur["high"]), "low": float(cur["low"])}, "ts": (t + tf_ms(self.tf)) / 1000},
+                _lb = self._legacy_brief(sym, fr, price)
+                inputs[sym] = CoinHeadInputs(legacy_brief=_lb, legacy_reports=(getattr(_lb, "reports", None) if _lb else None),
+                                             frames=fr, live={"ticker": {"last": price, "high": float(cur["high"]), "low": float(cur["low"])}, "ts": (t + tf_ms(self.tf)) / 1000},
                                              availability={"spot": self.market == "spot", "futures": self.market == "futures"}, quality={"ok": True, "verdict": "OK", "issues": []},
                                              btc_frames=self.frames.get("BTC/USDT"), portfolio={"same_direction_open": same_dir, "kill_switch_active": not self.killswitch.allows_entry(),
                                                                                                 "open_position": {"side": opos.side.value} if opos else None},
@@ -283,6 +309,7 @@ class HistoricalReplay:
                 d = decisions.get(sym)
                 if d is None or not d.is_actionable or sym in self.ledger2.positions:
                     continue
+                fr = self._slice(sym, t)
                 self.result.n_actionable += 1
                 plan = d.active_plan
                 if plan is None or not plan.valid or not chief.permission.get(sym, {}).get("allow"):
@@ -294,6 +321,21 @@ class HistoricalReplay:
                         ok, why = False, "ENTRY_RULE_ERROR:%s" % type(exc).__name__
                     if not ok:
                         self._reject(sym, str(why or "ENTRY_RULE_BLOCKED"))
+                        continue
+                if self.legacy_veto and getattr(d, "plan_source", "") != "legacy":
+                    self._reject(sym, "LEGACY_VETO:" + (getattr(d, "legacy_plan_reject", "") or "?").split(":")[0])
+                    continue
+                if self.entry_trigger_on:
+                    from ..entry_trigger import trigger_fired
+                    _bar4 = fr.get(self.tf)
+                    _ok, _why = trigger_fired(
+                        direction=d.direction, entry_type=plan.entry_type or "market",
+                        entry=plan.entry, price=marks_f[sym],
+                        last_close=float(_bar4["close"].iloc[-1]) if _bar4 is not None and len(_bar4) else None,
+                        last_bar=str(int(_bar4["timestamp"].iloc[-1])) if _bar4 is not None and len(_bar4) else None,
+                        already_fired_bar=self._fired_bar.get(sym))
+                    if not _ok:
+                        self._reject(sym, "TRIGGER:" + (_why or "?").split(":")[0])
                         continue
                 size_mult = 1.0
                 if self.economics_gate:
@@ -331,13 +373,20 @@ class HistoricalReplay:
                     pos = self.ledger2.open(sym, d.direction, marks_f[sym], SizeSpec(Decimal(str(notional)), AmountType.NOTIONAL, int(rd.adjusted_leverage or 1)),
                                             filters=self._filters_for(sym),
                                             stop=plan.stop, targets=plan.targets, setup_type=plan.entry_type, trigger_text=plan.entry_trigger,
-                                            features={"regime": d.regime, "expected_r": d.expected_r, "p_win": d.p_win, "market_type": mkt},
+                                            features={"regime": d.regime, "expected_r": d.expected_r, "p_win": d.p_win, "market_type": mkt,
+                                                      # GOZLEM: plan hangi yoldan geldi ve sabirli (legacy)
+                                                      # motor bu girise KATILIYOR muydu?
+                                                      "plan_source": getattr(d, "plan_source", ""),
+                                                      "legacy_reject": getattr(d, "legacy_plan_reject", "")},
                                             tick=marks[sym], now=now, meta={"run_id": self.run_id, "replay": True, "in_test": in_test})
                     if pos is None:
                         # gerçek borsa filtresi (ör. STEP_ZERO_QTY): minimumlar GEVŞETİLMEZ, sahte fill üretilmez;
                         # yalnız sayılır ve raporda sembol bazında görünür.
                         self._reject(sym, self.ledger2.last_reject_reason or "LEDGER_REJECT")
                         continue
+                    _b4 = fr.get(self.tf)
+                    if _b4 is not None and len(_b4):
+                        self._fired_bar[sym] = str(int(_b4["timestamp"].iloc[-1]))
                     self._entry_meta[pos.id] = {"symbol": sym, "in_test": in_test, "regime": d.regime, "decision": d.to_dict(include_reports=False), "opened_ts": t}
                     # KÖK NEDEN DÜZELTMESİ: yalnız expected_r/p_win değil, PAYLAŞILAN FeatureSnapshotV3
                     # (MA/volatilite/hacim/funding/mikroyapı/ajan/plan bağlamı) — canlı yolla aynı builder.
@@ -378,6 +427,26 @@ class HistoricalReplay:
                                        "exit_reason": rec.exit_reason, "net_r": float(rec.r_multiple), "net_pnl": float(rec.net_pnl), "fees": float(rec.fees),
                                        "funding": float(rec.funding), "bars_held": rec.bars_held, "mae_pct": float(rec.mae_pct), "mfe_pct": float(rec.mfe_pct),
                                        "opened_at": rec.opened_at, "closed_at": rec.closed_at, "in_test": bool(meta.get("in_test", True)), "regime": meta.get("regime")})
+
+    def _legacy_brief(self, sym: str, fr: dict, price: float):
+        """Karar anindaki KAPANMIS barlardan legacy CoinBrief. Ag YOK, canli veri YOK.
+
+        `ctx.live` yalniz bar kapanisini tasir; ajanlarin hicbiri orderbook/funding okumaz
+        (`TECHNICAL_AGENTS` saf cerceve hesabidir, kaynaktan dogrulandi).
+        """
+        if not self.legacy_agents_on:
+            return None
+        from ..agents.base import CoinContext
+        try:
+            ctx = CoinContext(symbol=sym, frames=fr, live={"ticker": {"last": price}},
+                              equity_usdt=float(self.cfg.risk.starting_equity_usdt),
+                              risk_pct=float(self.cfg.risk.risk_per_trade_pct),
+                              atr_stop_mult=float(self.cfg.risk.atr_stop_mult))
+            reports = [a.run(ctx) for a in self._legacy_agents]
+            return self._legacy_manager.decide(ctx, reports)
+        except Exception as exc:  # noqa: BLE001 — ajan arizasi turu COKERTMEZ ama SESSIZ de kalmaz
+            self.legacy_brief_errors[type(exc).__name__] = self.legacy_brief_errors.get(type(exc).__name__, 0) + 1
+            return None
 
     def _filters_for(self, sym: str):
         """Sembolun GERCEK borsa kurallari; arsivde yoksa None (defter varsayilana duser)."""

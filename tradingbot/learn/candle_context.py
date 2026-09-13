@@ -51,6 +51,24 @@ PIERCING_LINE_LIKE = "PIERCING_LINE_LIKE"           # önceki gövdenin orta nok
 DARK_CLOUD_COVER_LIKE = "DARK_CLOUD_COVER_LIKE"     # önceki gövdenin orta noktasını AŞAĞI geçen kapanış
 TWEEZER_BOTTOM_LIKE = "TWEEZER_BOTTOM_LIKE"         # eş dipler (tolerans: aralığın oranı)
 TWEEZER_TOP_LIKE = "TWEEZER_TOP_LIKE"               # eş tepeler
+# --- candle_v1.2.0 (Türkçe tablo): tek/iki/üç barlı ek varyantlar ---------------------------
+BULLISH_BELT_HOLD_LIKE = "BULLISH_BELT_HOLD_LIKE"     # belden tutma boğa: alt fitilsiz uzun boğa gövdesi
+BEARISH_BELT_HOLD_LIKE = "BEARISH_BELT_HOLD_LIKE"     # belden tutma ayı / kara karga
+BULLISH_HARAMI_CROSS_LIKE = "BULLISH_HARAMI_CROSS_LIKE"   # kros hamile: içerideki bar doji
+BEARISH_HARAMI_CROSS_LIKE = "BEARISH_HARAMI_CROSS_LIKE"
+HOMING_PIGEON_LIKE = "HOMING_PIGEON_LIKE"             # güvercin yuvası: iki ayı gövde, ikincisi içeride
+DESCENDING_HAWK_LIKE = "DESCENDING_HAWK_LIKE"         # inen şahin: iki boğa gövde, ikincisi içeride
+BULLISH_MEETING_LINES_LIKE = "BULLISH_MEETING_LINES_LIKE"   # değen mumlar: zıt gövdeler, aynı kapanış
+BEARISH_MEETING_LINES_LIKE = "BEARISH_MEETING_LINES_LIKE"
+BULLISH_KICKER_LIKE = "BULLISH_KICKER_LIKE"           # tepen mumlar: ayı marubozu ardından açılışı yukarıda boğa marubozu
+BEARISH_KICKER_LIKE = "BEARISH_KICKER_LIKE"
+BULLISH_DOJI_STAR_LIKE = "BULLISH_DOJI_STAR_LIKE"     # doji yıldız: uzun ayı gövde ardından aşağıda doji
+BEARISH_DOJI_STAR_LIKE = "BEARISH_DOJI_STAR_LIKE"
+MORNING_DOJI_STAR_LIKE = "MORNING_DOJI_STAR_LIKE"     # sabah/akşam yıldızının doji ortalı hâli
+EVENING_DOJI_STAR_LIKE = "EVENING_DOJI_STAR_LIKE"
+BULLISH_ABANDONED_BABY_LIKE = "BULLISH_ABANDONED_BABY_LIKE"   # terk edilmiş bebek: doji orta bar tamamen aşağıda/yukarıda
+BEARISH_ABANDONED_BABY_LIKE = "BEARISH_ABANDONED_BABY_LIKE"
+TRI_STAR_LIKE = "TRI_STAR_LIKE"                       # üç yıldız: üç doji (tarafsız; bağlam belirler)
 NO_PATTERN = "NO_PATTERN"
 
 #: Aynı şeklin bağlama göre aldığı GELENEKSEL adlar. Ad bir yön iddiası DEĞİLDİR.
@@ -82,7 +100,7 @@ DIRECTIONAL_CLAIM_NONE = "NONE"
 @dataclass
 class CandleContextConfig:
     """Versiyonlu şekil eşikleri. Tek bir örneğe uydurulmamıştır; oranlar geometriktir."""
-    policy_version: str = "candle_v1.1.0"
+    policy_version: str = "candle_v1.2.0"
     #: Gövde/aralık oranı bunun altındaysa doji benzeri (denge).
     doji_body_ratio: float = 0.10
     #: Çekiç benzeri: alt fitil >= bu oran ve üst fitil <= `hammer_opposite_wick_max`.
@@ -97,6 +115,11 @@ class CandleContextConfig:
     engulf_min_ratio: float = 1.0
     #: Cımbız: iki barın dip/tepe farkı, iki aralığın büyüğünün bu oranı içinde kalmalı.
     tweezer_tolerance_ratio: float = 0.10
+    #: v1.2.0 — belden tutma: fitilsiz taraf en fazla bu oran; gövde en az `belt_hold_body_min`.
+    belt_hold_wick_max: float = 0.05
+    belt_hold_body_min: float = 0.60
+    #: değen mumlar: iki kapanış arasındaki fark, büyük aralığın bu oranı içinde.
+    meeting_tolerance_ratio: float = 0.05
     #: Trend tespiti için bakılacak KAPANMIŞ bar sayısı ve asgari eğim (ATR katı).
     trend_lookback_bars: int = 10
     trend_min_slope_atr: float = 0.5
@@ -243,6 +266,11 @@ def _shapes(bars: list[dict[str, Any]], cfg: CandleContextConfig) -> list[str]:
     if (lw is not None and uw is not None and uw >= cfg.hammer_wick_ratio
             and lw <= cfg.hammer_opposite_wick_max):
         out.append(INVERTED_HAMMER_LIKE)
+    if (br >= cfg.belt_hold_body_min and lw is not None and uw is not None):
+        if cur["bullish_body"] and lw <= cfg.belt_hold_wick_max:
+            out.append(BULLISH_BELT_HOLD_LIKE)
+        if cur["bearish_body"] and uw <= cfg.belt_hold_wick_max:
+            out.append(BEARISH_BELT_HOLD_LIKE)
     if (br <= cfg.spinning_top_body_max and DOJI_LIKE not in out
             and uw is not None and lw is not None
             and uw >= cfg.spinning_top_min_wick and lw >= cfg.spinning_top_min_wick):
@@ -281,6 +309,37 @@ def _shapes(bars: list[dict[str, Any]], cfg: CandleContextConfig) -> list[str]:
             out.append(TWEEZER_BOTTOM_LIKE)
         if prev["bullish_body"] and c["bearish_body"] and abs(c["high"] - prev["high"]) <= tol:
             out.append(TWEEZER_TOP_LIKE)
+        # --- v1.2.0 ---------------------------------------------------------------------
+        c_br = c.get("body_to_range_ratio")
+        p_br = prev.get("body_to_range_ratio")
+        c_doji = c_br is not None and c_br <= cfg.doji_body_ratio
+        if inside and c_doji and prev["bearish_body"]:
+            out.append(BULLISH_HARAMI_CROSS_LIKE)
+        if inside and c_doji and prev["bullish_body"]:
+            out.append(BEARISH_HARAMI_CROSS_LIKE)
+        if inside and prev["bearish_body"] and c["bearish_body"]:
+            out.append(HOMING_PIGEON_LIKE)
+        if inside and prev["bullish_body"] and c["bullish_body"]:
+            out.append(DESCENDING_HAWK_LIKE)
+        mtol = cfg.meeting_tolerance_ratio * max(prev["full_range"], c["full_range"])
+        if prev["bearish_body"] and c["bullish_body"] and abs(c["close"] - prev["close"]) <= mtol \
+                and c["open"] < prev["close"]:
+            out.append(BULLISH_MEETING_LINES_LIKE)
+        if prev["bullish_body"] and c["bearish_body"] and abs(c["close"] - prev["close"]) <= mtol \
+                and c["open"] > prev["close"]:
+            out.append(BEARISH_MEETING_LINES_LIKE)
+        if (p_br is not None and c_br is not None and p_br >= cfg.marubozu_body_ratio
+                and c_br >= cfg.marubozu_body_ratio):
+            if prev["bearish_body"] and c["bullish_body"] and c["open"] >= prev["open"]:
+                out.append(BULLISH_KICKER_LIKE)
+            if prev["bullish_body"] and c["bearish_body"] and c["open"] <= prev["open"]:
+                out.append(BEARISH_KICKER_LIKE)
+        if c_doji and p_br is not None and p_br >= cfg.belt_hold_body_min:
+            c_mid = (c["open"] + c["close"]) / 2.0
+            if prev["bearish_body"] and c_mid <= prev["close"]:
+                out.append(BULLISH_DOJI_STAR_LIKE)
+            if prev["bullish_body"] and c_mid >= prev["close"]:
+                out.append(BEARISH_DOJI_STAR_LIKE)
     # --- üç barlı: yıldız / asker / karga -------------------------------------------------
     if len(m) >= 3 and all(x.get("body_to_range_ratio") is not None for x in m):
         a3, b3, c3 = m
@@ -296,6 +355,22 @@ def _shapes(bars: list[dict[str, Any]], cfg: CandleContextConfig) -> list[str]:
             out.append(THREE_WHITE_SOLDIERS_LIKE)
         if all(x["bearish_body"] for x in m) and c3["close"] < b3["close"] < a3["close"]:
             out.append(THREE_BLACK_CROWS_LIKE)
+        # --- v1.2.0 ---------------------------------------------------------------------
+        mid_doji = b3["body_to_range_ratio"] <= cfg.doji_body_ratio
+        if MORNING_STAR_LIKE in out and mid_doji:
+            out.append(MORNING_DOJI_STAR_LIKE)
+        if EVENING_STAR_LIKE in out and mid_doji:
+            out.append(EVENING_DOJI_STAR_LIKE)
+        if mid_doji and b3.get("high") is not None and b3.get("low") is not None:
+            # terk edilmiş bebek: doji orta bar, iki yanındaki barların GÖVDE/ARALIĞININ tamamen dışında
+            if (a3["bearish_body"] and c3["bullish_body"] and b3["high"] < min(a3["close"], c3["open"])
+                    and c3["close"] > (a3["open"] + a3["close"]) / 2.0):
+                out.append(BULLISH_ABANDONED_BABY_LIKE)
+            if (a3["bullish_body"] and c3["bearish_body"] and b3["low"] > max(a3["close"], c3["open"])
+                    and c3["close"] < (a3["open"] + a3["close"]) / 2.0):
+                out.append(BEARISH_ABANDONED_BABY_LIKE)
+        if all(x["body_to_range_ratio"] <= cfg.doji_body_ratio for x in m):
+            out.append(TRI_STAR_LIKE)
     return out
 
 
@@ -310,6 +385,16 @@ _BEAR_SIDE = frozenset({BEARISH_ENGULFING_LIKE, EVENING_STAR_LIKE, THREE_BLACK_C
 #: Dışa açık adlar: tüketiciler (ör. `entry_challenger_v2`) kümeyi KOPYALAMAZ, buradan alır.
 BULL_SIDE_SHAPES = _BULL_SIDE
 BEAR_SIDE_SHAPES = _BEAR_SIDE
+#: v1.2.0 GENİŞ kümeler: canlı veto (C3) ÖLÇÜLMÜŞ kümeyi kullanmaya devam eder; genişler yalnız
+#: araştırma/sinyal ölçümü içindir (PROTOCOL_V8). Tarafsızlar (doji, topaç, marubozu, üç yıldız) yok.
+BULL_SIDE_SHAPES_EXT = _BULL_SIDE | frozenset({BULLISH_BELT_HOLD_LIKE, BULLISH_HARAMI_CROSS_LIKE,
+                                              HOMING_PIGEON_LIKE, BULLISH_MEETING_LINES_LIKE,
+                                              BULLISH_KICKER_LIKE, BULLISH_DOJI_STAR_LIKE,
+                                              MORNING_DOJI_STAR_LIKE, BULLISH_ABANDONED_BABY_LIKE})
+BEAR_SIDE_SHAPES_EXT = _BEAR_SIDE | frozenset({BEARISH_BELT_HOLD_LIKE, BEARISH_HARAMI_CROSS_LIKE,
+                                              DESCENDING_HAWK_LIKE, BEARISH_MEETING_LINES_LIKE,
+                                              BEARISH_KICKER_LIKE, BEARISH_DOJI_STAR_LIKE,
+                                              EVENING_DOJI_STAR_LIKE, BEARISH_ABANDONED_BABY_LIKE})
 
 
 def evaluate_confirmation(shapes: list[str], after: list[dict[str, Any]],
@@ -415,7 +500,13 @@ __all__ = ["SCHEMA_VERSION", "DOJI_LIKE", "HAMMER_LIKE", "INVERTED_HAMMER_LIKE",
            "THREE_WHITE_SOLDIERS_LIKE", "THREE_BLACK_CROWS_LIKE", "NO_PATTERN",
            "BULLISH_HARAMI_LIKE", "BEARISH_HARAMI_LIKE", "PIERCING_LINE_LIKE",
            "DARK_CLOUD_COVER_LIKE", "TWEEZER_BOTTOM_LIKE", "TWEEZER_TOP_LIKE",
-           "BULL_SIDE_SHAPES", "BEAR_SIDE_SHAPES",
+           "BULL_SIDE_SHAPES", "BEAR_SIDE_SHAPES", "BULL_SIDE_SHAPES_EXT", "BEAR_SIDE_SHAPES_EXT",
+           "BULLISH_BELT_HOLD_LIKE", "BEARISH_BELT_HOLD_LIKE", "BULLISH_HARAMI_CROSS_LIKE",
+           "BEARISH_HARAMI_CROSS_LIKE", "HOMING_PIGEON_LIKE", "DESCENDING_HAWK_LIKE",
+           "BULLISH_MEETING_LINES_LIKE", "BEARISH_MEETING_LINES_LIKE", "BULLISH_KICKER_LIKE",
+           "BEARISH_KICKER_LIKE", "BULLISH_DOJI_STAR_LIKE", "BEARISH_DOJI_STAR_LIKE",
+           "MORNING_DOJI_STAR_LIKE", "EVENING_DOJI_STAR_LIKE", "BULLISH_ABANDONED_BABY_LIKE",
+           "BEARISH_ABANDONED_BABY_LIKE", "TRI_STAR_LIKE",
            "CONTEXTUAL_ALIASES", "TREND_UP", "TREND_DOWN", "TREND_RANGE", "TREND_UNKNOWN",
            "LOC_NEAR_WEEK_HIGH", "LOC_NEAR_WEEK_LOW", "LOC_INSIDE_WEEK_RANGE",
            "LOC_ABOVE_WEEK_RANGE", "LOC_BELOW_WEEK_RANGE", "LOC_UNKNOWN",

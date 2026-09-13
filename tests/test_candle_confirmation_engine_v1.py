@@ -102,7 +102,7 @@ def test_enforce_blocks_the_candidate_facing_an_opposite_shape(tmp_path, monkeyp
     r1 = recs[first]
     assert str(r1.get("block_code", "")).startswith("CANDLE_VETO:C3_OPPOSITE_PATTERN"), r1.get("block_code")
     cc = r1["candle_confirmation"]
-    assert cc["mode"] == "ENFORCE" and cc["blocks"] is True and cc["policy_version"] == "candle_v1.1.0"
+    assert cc["mode"] == "ENFORCE" and cc["blocks"] is True and cc["policy_version"] >= "candle_v1.1.0"
     assert set(cc["shadow"]) == {"c1_4h", "c2_4h_confirm", "c3_4h_veto", "c4_1d"}
     r2 = recs[second]
     assert r2["candle_confirmation"]["blocks"] is False

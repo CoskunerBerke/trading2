@@ -21,7 +21,7 @@ def _shapes(bars):
 
 
 def test_policy_version_bumped_and_config_validates():
-    assert CFG.policy_version == "candle_v1.1.0"
+    assert CFG.policy_version >= "candle_v1.1.0"        # v1.1.0 ile geldi; sonraki sürümler geriye uyumlu
     with pytest.raises(ValueError):
         CandleContextConfig(tweezer_tolerance_ratio=0.0).validate()
     with pytest.raises(ValueError):

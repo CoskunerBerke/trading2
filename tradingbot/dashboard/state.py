@@ -22,6 +22,8 @@ STATE_FILES: dict[str, str] = {
     "universe_eval": "universe_eval.json",
     # SABIT GIRIS EVRENI: her turda yazilan karar-cercevesi provenansi (salt okunur).
     "frame_provenance": "frame_provenance.json",
+    # STRATEJI KAGIT DEFTERI (V10): tek kuralli trend, ayri defter, ileri test (salt okunur ozet).
+    "strategy_paper": "strategy_paper.json",
     # PAPER LEARNING LOOP INTEGRITY V3 — ikisi de SALT OKUNUR gözlem belgesidir.
     "learning_chain": "learning_chain.json",
     # Kalibrasyon/model durumunu KANITA bağlamak için (salt okunur gösterim).

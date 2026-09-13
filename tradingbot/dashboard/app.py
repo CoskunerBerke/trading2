@@ -165,6 +165,7 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
             card("LLM bugün", (fmt(ov["llm_spent_usd_today"], 3) + " $") if ov["llm_spent_usd_today"] is not None else "Veri yok"),
         ])}</div>'
         body += chief_block(cv)
+        body += _strategy_paper_card()
         body += '<h2>Açık pozisyonlar</h2><div id="postbl">' + _positions_table(vm) + "</div>"
         chp = _coin_head_payload()
         body += (_coin_heads_heading(chp) + '<div id="headstbl">' + _heads_table(chp) + "</div>"
@@ -451,6 +452,45 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
         hist = pf.get("history") or []
         body += "<h2>Geçmiş</h2>" + render_any(hist[-100:][::-1]) if hist else "<h2>Geçmiş</h2>" + '<div class="card mut">kapanmış spot işlem yok</div>'
         return _page("Spot Portföy", body, "/portfolio/spot")
+
+    def _strategy_paper_card() -> str:
+        """Tek kurallı trend stratejisinin kâğıt ileri test özeti. Dosya yoksa hiçbir şey basmaz."""
+        sp = state.get("strategy_paper") or {}
+        if not sp:
+            return ""
+        sm = sp.get("summary") or {}
+        eq = sm.get("equity_mtm")
+        start = sp.get("starting_equity") or 0
+        pnl = (float(eq) - float(start)) if eq is not None else None
+        npos = len(sp.get("positions") or {})
+        c = sp.get("counters") or {}
+        sub = (f'rejim {esc(str(sp.get("regime") or "?"))} · {npos} açık · {c.get("closed", 0)} kapanış · '
+               f'<a href="/portfolio/strategy">ayrıntı</a>')
+        return ('<h2>Trend stratejisi — kâğıt ileri test</h2><div class="grid">'
+                + card("Trend defteri özkaynak", fmt(eq, 2) + " USDT", sub)
+                + card("Trend defteri kâr/zarar", pnl_cell(pnl) if pnl is not None else "Veri yok",
+                       f'başlangıç {fmt(start, 2)} USDT · kural {esc(str(sp.get("name") or ""))}')
+                + "</div>")
+
+    @app.get("/portfolio/strategy", response_class=HTMLResponse)
+    def portfolio_strategy():
+        sp = state.get("strategy_paper") or {}
+        if not sp:
+            return _page("Trend stratejisi", '<div class="card mut">strateji kâğıt defteri kapalı ya da henüz yazılmadı</div>', "/portfolio/strategy")
+        sm = sp.get("summary") or {}
+        body = f'<div class="grid">{card("Özkaynak", fmt(sm.get("equity_mtm"), 2) + " USDT")}{card("Başlangıç", fmt(sp.get("starting_equity"), 2))}'
+        body += f'{card("BTC rejimi", esc(str(sp.get("regime") or "?")))}{card("Kural", esc(str(sp.get("name") or "")), "ATR çarpanı " + esc(str(sp.get("atr_mult"))))}'
+        body += f'{card("Sayaçlar", esc(str(sp.get("counters") or {})))}</div>'
+        body += '<div class="card mut">' + esc(str(sp.get("note_tr") or "")) + "</div>"
+        pos = [{"symbol": s, **v} for s, v in (sp.get("positions") or {}).items()]
+        body += "<h2>Açık pozisyonlar</h2>" + (render_any(pos) if pos else '<div class="card mut">açık pozisyon yok</div>')
+        hist = sp.get("history_tail") or []
+        body += "<h2>Kapanan işlemler</h2>" + (_trades_table(hist[::-1]) if hist else '<div class="card mut">kapanmış işlem yok</div>')
+        la = [{"symbol": s, **v} for s, v in (sp.get("last_actions") or {}).items()]
+        body += "<h2>Son kararlar</h2>" + (render_any(la) if la else '<div class="card mut">karar yok</div>')
+        rj = sp.get("rejections") or {}
+        body += "<h2>Retler</h2>" + (render_any([{"neden": k, "adet": v} for k, v in rj.items()]) if rj else '<div class="card mut">ret yok</div>')
+        return _page("Trend stratejisi", body, "/portfolio/strategy")
 
     @app.get("/portfolio/futures", response_class=HTMLResponse)
     def portfolio_futures():

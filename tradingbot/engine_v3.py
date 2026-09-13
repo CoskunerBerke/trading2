@@ -251,6 +251,15 @@ class TradingEngineV3(TradingEngine):
         self.learner.hot_window = max(1, int(v3.learning_v3.lesson_hot_window))
         # --- öğrenme v2 (v1 `self.learner` korunur)
         self.memory = TradeMemory(st / "trade_memory.jsonl")
+        # STRATEJİ KÂĞIT DEFTERİ (V10): tek kurallı trend, AYRI defter, ileri test. Kapalıyken None.
+        self.strategy_book = None
+        if bool(getattr(v3.strategy_paper, "enabled", False)):
+            from .strategy_paper import StrategyBook
+            self.strategy_book = StrategyBook(cfg, profile=self.profile, killswitch=self.killswitch,
+                                              filters_cache=self.filters, run_id="")   # run_id turda atanir
+            log.info("STRATEJI KAGIT DEFTERI: name=%s atr_mult=%s baslangic=%s USDT state=%s",
+                     self.strategy_book.name, self.strategy_book.atr_mult,
+                     float(self.strategy_book.ledger.starting_equity), self.strategy_book.state_dir)
         self.model_registry = ModelRegistry(st / "models.json")
         self.learner2 = LearnerV2(self.memory, self.model_registry, LearnConfig(min_samples_train=v3.learning_v3.min_samples_train,
                                   holdout_frac=v3.learning_v3.holdout_frac, half_life_days=v3.learning_v3.half_life_days, calibrator=v3.learning_v3.calibrator),
@@ -793,6 +802,7 @@ class TradingEngineV3(TradingEngine):
         """Açık pozisyonlar için canlı fiyatla stop/TP/likidasyon/zaman kontrolü + defter kaydı + öğrenme; tur/tarama beklemez.
         Yeni giriş AÇMAZ. Dönen: kapanan işlemlerin legacy dict'leri."""
         self.ensure_gap_reconciled()
+        self._strategy_paper_exit_check()
         with self._exit_lock:
             if not self.ledger2.positions:
                 return []
@@ -1148,6 +1158,8 @@ class TradingEngineV3(TradingEngine):
         records = self.ledger2.tick(marks, now_utc=now, funding_rate_lookup=static_rates(funding), bar_advance=bar_advance)
         # 6) KAYIT SIRASI: önce defter, sonra öğrenme (crash penceresinde çift öğrenme olmasın)
         self.ledger2.save(self.ledger_path)
+        # 6b) STRATEJİ KÂĞIT DEFTERİ (V10): ana defterden SONRA, aynı marks/funding/bar ilerlemesiyle.
+        self._strategy_paper_tour(symbols, marks, marks_f, funding, bar_advance, now)
         from .ops.gap import write_watermark
         write_watermark(st, now, self.run_id or None)
         self.spot2.tick(marks_f, now)
@@ -2122,6 +2134,40 @@ class TradingEngineV3(TradingEngine):
             return {"schema_version": "regime_gate_v1", "mode": mode, "variant": variant, "regime": None,
                     "verdict": {"ok": False, "reason": "REGIME_ERROR:%s" % type(exc).__name__},
                     "blocks": mode == "ENFORCE", "shadow": {}, "error": str(exc)[:200]}
+
+    def _strategy_paper_tour(self, symbols, marks: dict, marks_f: dict, funding: dict, bar_advance: bool, now: datetime) -> None:
+        """Tek kurallı stratejinin turu: kural → ayrı defter → tick → özet. Arıza ana turu DURDURMAZ."""
+        book = getattr(self, "strategy_book", None)
+        if book is None:
+            return
+        try:
+            book.run_id = str(getattr(self, "run_id", "") or "")
+            syms = book.symbols or list(symbols)
+            frames = {s: (self.runner.last_frames.get(s) or {}) for s in set(syms) | {"BTC/USDT"}}
+            book.step(symbols=list(syms), frames_by_symbol=frames, marks=marks, marks_f=marks_f, now=now)
+            book.tick(marks, now=now, funding_rate_lookup=static_rates(funding), bar_advance=bar_advance)
+            book.save(marks_f, now)
+        except Exception as exc:  # noqa: BLE001 — strateji defteri arızası ana botu ETKİLEMEZ
+            log.warning("strateji kagit defteri turu basarisiz: %s", exc)
+
+    def _strategy_paper_exit_check(self) -> None:
+        """60 sn çıkış izleyicisi: strateji defterinin açık pozisyonlarını canlı fiyatla tick'ler."""
+        book = getattr(self, "strategy_book", None)
+        if book is None or not book.ledger.positions:
+            return
+        try:
+            marks: dict[str, TickData] = {}
+            for sym in list(book.ledger.positions):
+                snap = self.runner.live.snapshot(sym) or {}
+                px = float(((snap.get("ticker") or {}).get("last")) or 0)
+                if px > 0:
+                    marks[sym] = TickData(last=Decimal(str(px)), mark=Decimal(str(px)))
+            if marks:
+                now = utc_now()
+                book.tick(marks, now=now, bar_advance=False)
+                book.save({k: float(v.last) for k, v in marks.items()}, now)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("strateji kagit defteri exit-monitor basarisiz: %s", exc)
 
     def _label_shadows(self) -> None:
         pend = self.shadow.pending(utc_now())

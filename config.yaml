@@ -309,3 +309,16 @@ entry_selectivity:
   # sonrası hâlâ negatif: KAYIP AZALTICI, doğrulanmış kârlı kural değil. Operatör kararıyla ENFORCE.
   regime_gate_mode: ENFORCE                  # OFF | SHADOW | ENFORCE
   regime_gate_variant: r1_long_only_uptrend  # r1_long_only_uptrend | r2_no_trade_downtrend | r3_follow_regime
+
+# ---- TEK KURALLI TREND STRATEJİSİ — KÂĞIT İLERİ TEST (V10, 2026-09-13) ----------------------
+# Ana botun YANINDA, AYRI 100 USDT sanal defter. Kural: BTC 1d close > EMA200 iken, 1d close > EMA200
+# olan coinde LONG (piyasa); close < EMA200 → kapat; felaket stopu close − 3×ATR14(1d); kaldıraç 1.
+# Ölçüm: research/entry_v1/out/DENEY_V9.md (T2 +107% / +34% / +10%, maksDD %22). Gerçek para YOK;
+# LIVE modda config reddedilir. Ana botun defteri/öğrenicisi/kararları etkilenmez.
+strategy_paper:
+  enabled: true
+  name: t2_trend_regime
+  starting_equity_usdt: 100
+  atr_mult: 3.0
+  breakeven_at_mfe_r: 0.0
+  state_dir: strategy_paper

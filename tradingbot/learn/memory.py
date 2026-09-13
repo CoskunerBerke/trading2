@@ -22,7 +22,8 @@ def _append_line(path: Path, obj: dict) -> None:
             pass
 
 
-SOURCES = ("LIVE_PAPER", "HISTORICAL_REPLAY", "SHADOW", "TESTNET", "LIVE", "SYNTHETIC_TEST")
+SOURCES = ("LIVE_PAPER", "HISTORICAL_REPLAY", "SHADOW", "TESTNET", "LIVE", "SYNTHETIC_TEST",
+           "STRATEGY_PAPER")   # V10: tek kurallı stratejinin AYRI kâğıt defteri (ana hafızayla karışmaz)
 
 
 class TradeMemory:

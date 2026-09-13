@@ -501,13 +501,13 @@ class HistoricalReplay:
             self._on_closed(rec)
 
     def _strategy_step(self, t: int, now, marks: dict, marks_f: dict) -> None:
-        """STRATEJI MODU: dis kuralin OPEN/CLOSE kararlarini uretim defteri yolundan uygular.
+        """STRATEJI MODU: dis kuralin OPEN/CLOSE kararlarini `strategy_paper.apply_action` ile uygular.
 
-        Acilis: boyut = profil islem riski / stop mesafesi (uretimle ayni ifade), `risk.evaluate`
-        (toplam risk tavani, kaldirac, cluster) ve `ledger2.open` (gercek filtre, kayma). Kapanis:
-        `ledger2.close_manual` (kayma). Stop/hedef/funding/likidasyon/basa-bas: `ledger2.tick`.
+        Canli motorun kagit ileri testi (`StrategyBook.step`) AYNI fonksiyonu cagirir: boyut, risk
+        kapisi, filtre, kayma, kapanis tek kaynaktadir. Burada yalniz replay'e ozgu kayit (memory,
+        entry_meta, sayaclar) vardir.
         """
-        from ..accounting import AmountType, SizeSpec
+        from ..strategy_paper import apply_action
         state = self._portfolio_state(marks_f, now)
         for sym in list(self.primary):
             if sym not in marks_f:
@@ -521,53 +521,21 @@ class HistoricalReplay:
                 continue
             if not act:
                 continue
-            action = str(act.get("action") or "").upper()
-            if action == "CLOSE":
-                if pos is None:
-                    continue
-                rec = self.ledger2.close_manual(sym, marks_f[sym], reason=str(act.get("reason") or "STRATEGY_EXIT"),
-                                                now=now, tick=marks.get(sym))
-                if rec is not None:
-                    self._on_closed(rec)
-                    state = self._portfolio_state(marks_f, now)
-                continue
-            if action != "OPEN" or pos is not None:
-                continue
-            self.result.n_actionable += 1
-            direction = str(act.get("direction") or "LONG").upper()
-            entry = float(marks_f[sym])
-            stop = float(act.get("stop") or 0.0)
-            if entry <= 0 or stop <= 0 or (direction == "LONG" and stop >= entry) or (direction == "SHORT" and stop <= entry):
-                self._reject(sym, "STRATEGY_BAD_STOP")
-                continue
-            stop_frac = abs(entry - stop) / entry
-            risk_usdt = float(self.profile.risk_per_trade_pct) / 100.0 * float(state.equity)
-            notional = risk_usdt / stop_frac
-            lev = int(act.get("leverage") or 1)
-            plan_dict = {"symbol": sym, "market_type": "USDM_PERP", "direction": direction, "entry": entry, "stop": stop,
-                         "targets": list(act.get("targets") or []), "notional": notional, "margin": notional / max(1, lev),
-                         "leverage": lev, "amount_type": "NOTIONAL", "expected_r": float(act.get("expected_r") or 0.0),
-                         "min_notional": 5.0}
-            rd = self.risk.evaluate(plan_dict, state, {"now_utc": now})
-            if not rd.allowed:
-                self._reject(sym, (rd.reasons or ["RISK_DENIED"])[0])
-                continue
-            notional = float(rd.adjusted_notional or notional)
-            if notional <= 0:
-                self._reject(sym, "ZERO_NOTIONAL")
-                continue
-            pos = self.ledger2.open(sym, direction, entry, SizeSpec(Decimal(str(notional)), AmountType.NOTIONAL, int(rd.adjusted_leverage or lev)),
-                                    filters=self._filters_for(sym), stop=stop, targets=list(act.get("targets") or []),
-                                    setup_type=str(act.get("setup_type") or "strategy"), trigger_text=str(act.get("reason") or ""),
-                                    features={"regime": act.get("regime"), "market_type": "USDM_PERP", "strategy": act.get("name"),
-                                              "expected_r": float(act.get("expected_r") or 0.0), "p_win": None},
-                                    tick=marks.get(sym), now=now, meta={"run_id": self.run_id, "replay": True, "strategy": str(act.get("name") or "")})
-            if pos is None:
-                self._reject(sym, self.ledger2.last_reject_reason or "LEDGER_REJECT")
-                continue
-            self._entry_meta[pos.id] = {"symbol": sym, "in_test": True, "regime": act.get("regime"), "decision": {}, "opened_ts": t}
-            self.result.n_opened += 1
-            state = self._portfolio_state(marks_f, now)
+            if str(act.get("action") or "").upper() == "OPEN" and pos is None:
+                self.result.n_actionable += 1
+
+            def _opened(p, a, _sym=sym, _t=t):
+                self._entry_meta[p.id] = {"symbol": _sym, "in_test": True, "regime": a.get("regime"), "decision": {}, "opened_ts": _t}
+                self.memory.record_entry({"trade_id": p.id, "symbol": _sym, "direction": p.side.value, "market_type": "USDM_PERP",
+                                          "setup_type": str(a.get("setup_type") or "strategy"), "regime": a.get("regime"),
+                                          "features": {"strategy": a.get("name")}, "run_id": self.run_id, "in_test": True})
+                self.result.n_opened += 1
+            res = apply_action(act, symbol=sym, price=float(marks_f[sym]), tick=marks.get(sym), now=now,
+                               ledger=self.ledger2, risk=self.risk, profile=self.profile, state=state,
+                               filters=self._filters_for(sym), run_id=self.run_id,
+                               reject=self._reject, on_closed=self._on_closed, on_opened=_opened)
+            if res in ("OPENED", "CLOSED"):
+                state = self._portfolio_state(marks_f, now)
 
     def _on_closed(self, rec) -> None:
         """Kapanan islemi kaydet — ledger tick'inden de, strateji modunun manuel kapanisindan da AYNI yol."""

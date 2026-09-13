@@ -611,6 +611,23 @@ class EntrySelectivitySection:
 
 
 @dataclass
+class StrategyPaperSection:
+    """TEK KURALLI STRATEJİ — KÂĞIT İLERİ TEST (V10, 2026-09-13). Ana botun yanında AYRI defter.
+
+    `enabled=true` yalnız PAPER/TESTNET/OBSERVE/SHADOW_LIVE modda kabul edilir; LIVE'da ConfigError.
+    Ana botun defterine, öğrenicisine ve kararlarına DOKUNMAZ. Kural `ema200_trend.py`
+    (replay ile TEK kaynak). Ölçüm: research/entry_v1/out/DENEY_V9.md.
+    """
+    enabled: bool = False
+    name: str = "t2_trend_regime"           # t1_trend | t2_trend_regime
+    starting_equity_usdt: float = 100.0
+    atr_mult: float = 3.0                   # felaket stopu: close - atr_mult * ATR14(1d)
+    breakeven_at_mfe_r: float = 0.0         # T1/T2 ölçümü başa-baş koruması KAPALI ile yapıldı
+    state_dir: str = "strategy_paper"       # state/<state_dir>/ (defter + trade_memory)
+    symbols: list[str] = field(default_factory=list)   # boş → giriş evreni
+
+
+@dataclass
 class V3Config:
     app: AppConfig = field(default_factory=AppConfig)
     mode: ModeConfig = field(default_factory=ModeConfig)
@@ -638,6 +655,7 @@ class V3Config:
     entry_selectivity: EntrySelectivitySection = field(default_factory=EntrySelectivitySection)
     entry_universe: EntryUniverseSection = field(default_factory=EntryUniverseSection)
     news: NewsSection = field(default_factory=NewsSection)
+    strategy_paper: StrategyPaperSection = field(default_factory=StrategyPaperSection)
     warnings: list[str] = field(default_factory=list)
 
 
@@ -650,7 +668,8 @@ _SECTIONS = {"app": AppConfig, "mode": ModeConfig, "markets": MarketsConfig, "un
              "exit_policy": ExitPolicySection,
              "entry_selectivity": EntrySelectivitySection,
              "entry_universe": EntryUniverseSection,
-             "news": NewsSection}
+             "news": NewsSection,
+             "strategy_paper": StrategyPaperSection}
 
 VALID_MODES = ("OBSERVE", "PAPER", "TESTNET", "SHADOW_LIVE", "LIVE_LIMITED", "LIVE")
 VALID_LLM_MODES = ("OFF", "POSTMORTEM_ONLY", "ADVISORY", "VETO_ONLY", "RESEARCH_COUNCIL")
@@ -889,6 +908,14 @@ def validate_v3(cfg: V3Config) -> None:
             app_mode=getattr(cfg.mode, "mode", None))
     except ValueError as exc:
         raise ConfigError(f"entry_selectivity.regime_gate: {exc}") from exc
+    # STRATEJİ KÂĞIT DEFTERİ (V10): kurallar `strategy_paper.validate_settings` içinde (SAF, tek kaynak).
+    _sp = cfg.strategy_paper
+    from .strategy_paper import validate_settings as _sp_validate
+    try:
+        _sp_validate(enabled=bool(_sp.enabled), name=_sp.name, app_mode=getattr(cfg.mode, "mode", None),
+                     starting_equity=float(_sp.starting_equity_usdt), atr_mult=float(_sp.atr_mult))
+    except (ValueError, TypeError) as exc:
+        raise ConfigError(f"strategy_paper: {exc}") from exc
     # ÇOK ZAMAN DİLİMLİ LİKİDİTE TEYİDİ (H ailesi): SHADOW dışına çıkış yolu YOKTUR.
     # `entry_selectivity.mode` zaten SHADOW'a kilitli; H ayrıca KENDİ kapısını da taşır ki
     # ileride giriş bölümü gevşetilse bile H tek başına aktifleşemesin (fail-closed).

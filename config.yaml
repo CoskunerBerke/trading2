@@ -303,3 +303,9 @@ entry_selectivity:
   # Ölçüm: research/entry_v1/out/DENEY_V5.md. ENFORCE açmak operatör kararıdır.
   chart_confirmation_mode: SHADOW            # OFF | SHADOW | ENFORCE
   chart_confirmation_variant: p2_4h_veto     # p1_4h_confirm | p2_4h_veto | p3_1d_confirm | p4_1d_veto
+  # PİYASA REJİMİ KAPISI (V7, 2026-09-13): BTC günlük close > EMA200 ise UP. Seçili varyant r1: yalnız
+  # LONG ve yalnız UP rejiminde giriş; SHORT hiç açılmaz. Ölçüm: research/entry_v1/out/DENEY_V7.md —
+  # üç pencerede de temeli geçti (işlem başına +0,19R / +0,15R / +0,09R, düşüş yarıya indi) ama 2022
+  # sonrası hâlâ negatif: KAYIP AZALTICI, doğrulanmış kârlı kural değil. Operatör kararıyla ENFORCE.
+  regime_gate_mode: ENFORCE                  # OFF | SHADOW | ENFORCE
+  regime_gate_variant: r1_long_only_uptrend  # r1_long_only_uptrend | r2_no_trade_downtrend | r3_follow_regime

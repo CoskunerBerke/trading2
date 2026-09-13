@@ -106,7 +106,8 @@ class HistoricalReplay:
                  state_root: Path | str | None = None, pattern_engine=None, start_ms: int | None = None, end_ms: int | None = None,
                  economics_gate: bool = True, spot_listed: set[str] | None = None, entry_rule=None, legacy_agents: bool = True, entry_trigger: bool = True, legacy_veto: bool = False,
                  lookback_bars: int = 400, min_bars: int = 250, decision_stride: int = 1,
-                 candle_variant: str | None = "config", chart_variant: str | None = "config"):
+                 candle_variant: str | None = "config", chart_variant: str | None = "config",
+                 regime_variant: str | None = "config"):
         self.cfg, self.run_id, self.store, self.symbols, self.market, self.tf, self.seed = cfg, run_id, store, list(symbols), market, tf, int(seed)
         self.pattern_engine = pattern_engine
         # EKONOMI KAPISI: uretimde karar yolunun ZORUNLU asamasi (engine_v3._assess_opportunities).
@@ -151,6 +152,12 @@ class HistoricalReplay:
             _cm = str(getattr(_en, "chart_confirmation_mode", "OFF") or "OFF").upper()
             chart_variant = str(getattr(_en, "chart_confirmation_variant", "") or "") if _cm == "ENFORCE" else None
         self.chart_variant = chart_variant or None
+        # PIYASA REJIMI KAPISI (V7): ayni sozlesme; config'i izler, None kapatir, ad zorlar.
+        if regime_variant == "config":
+            _rm = str(getattr(_en, "regime_gate_mode", "OFF") or "OFF").upper()
+            regime_variant = str(getattr(_en, "regime_gate_variant", "") or "") if _rm == "ENFORCE" else None
+        self.regime_variant = regime_variant or None
+        self._regime_cache: dict[int, str] = {}
         #: ayni barda ikinci girisi engellemek icin (uretimdeki `self.triggers` karsiligi)
         self._fired_bar: dict[str, str] = {}
         self._legacy_agents = None
@@ -378,6 +385,23 @@ class HistoricalReplay:
                                                        bars_4h=_cb4, bars_1d=_cb1, cfg=self.chart_cfg)
                     if not _ok:
                         self._reject(sym, "CHART_VETO:" + (_why or "?"))
+                        continue
+                if self.regime_variant:
+                    from ..candle_confirmation import closed_bars as _closed_bars_rg
+                    from ..regime_gate import BTC_SYMBOL as _BTC
+                    from ..regime_gate import btc_regime as _btc_regime
+                    from ..regime_gate import evaluate_variant as regime_evaluate_variant
+                    from ..regime_gate import rows_for_regime as _rows_rg
+                    _reg = self._regime_cache.get(t)
+                    if _reg is None:
+                        _b1d = self._slice(_BTC, t).get("1d") if _BTC in self.frames else None
+                        _rows = _closed_bars_rg(_rows_rg(_b1d), now_ms=t + tf_ms(self.tf), tf="1d")
+                        _reg = _btc_regime(_rows) or "NONE"
+                        self._regime_cache[t] = _reg
+                    _ok, _why = regime_evaluate_variant(self.regime_variant, direction=d.direction,
+                                                        regime=None if _reg == "NONE" else _reg)
+                    if not _ok:
+                        self._reject(sym, "REGIME_VETO:" + (_why or "?"))
                         continue
                 size_mult = 1.0
                 if self.economics_gate:

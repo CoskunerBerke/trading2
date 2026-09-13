@@ -73,7 +73,7 @@ def _as_multiplier(value) -> float:
 # Karar hunisi: her turda ve kayan 24 saatte tutulur. `trades_opened_24h` YALNIZ gozlem metrigidir,
 # karar kapisi DEGILDIR. `daily_trade_cap`/`per_run_trade_cap` her zaman null olarak raporlanir.
 _FUNNEL_KEYS = ("actionable", "ranked", "chief_blocked", "hard_safety_blocked", "no_trigger",
-                "trigger_fired", "candle_blocked", "chart_blocked", "positive_point_edge", "positive_conservative_edge",
+                "trigger_fired", "candle_blocked", "chart_blocked", "regime_blocked", "positive_point_edge", "positive_conservative_edge",
                 "negative_edge_blocked", "research_small", "duplicate_blocked",
                 "research_policy_blocked", "size_multiplier_zero", "leverage_gate_blocked",
                 "precision_unresolved",
@@ -435,6 +435,11 @@ class TradingEngineV3(TradingEngine):
                     self.chart_cfg = _CPC.from_dict(dict(_en.chart_policy or {}))
                 log.info("GRAFIK ONAYI: mode=%s variant=%s policy=%s", _chm,
                          _en.chart_confirmation_variant, self.chart_cfg.policy_version)
+            # PIYASA REJIMI KAPISI (V7): OFF disinda ise baslangicta bir kez loglanir.
+            _rgm = str(getattr(_en, "regime_gate_mode", "OFF") or "OFF").upper()
+            if _rgm != "OFF":
+                log.info("REJIM KAPISI: mode=%s variant=%s (BTC 1d close > EMA200 -> UP)", _rgm,
+                         _en.regime_gate_variant)
             # ÇOK ZAMAN DİLİMLİ LİKİDİTE TEYİDİ (H): saf, salt gözlem, SHADOW.
             # Mod burada da İKİNCİ kez zorlanır — config yolu atlanmış olsa bile H aktifleşemez.
             if getattr(_en, "mtf_enabled", False):
@@ -1428,6 +1433,16 @@ class TradingEngineV3(TradingEngine):
                     funnel["chart_blocked"] += 1
                     entry["block_code"] = "CHART_VETO:" + str((ch.get("verdict") or {}).get("reason") or "?")
                     continue
+            # ---------------------------------------------------------------- 2d) PIYASA REJIMI (kapasite TUKETMEZ)
+            # V7: BTC gunluk close > EMA200 -> UP. Secili varyant ENFORCE ise gecmeyen aday ACILMAZ.
+            # Mantik `regime_gate.py` icinde — replay AYNI fonksiyonu cagirir (tek kaynak).
+            rg = self._regime_gate(sym, d.direction, now)
+            if rg is not None:
+                entry["regime_gate"] = rg
+                if rg.get("blocks"):
+                    funnel["regime_blocked"] += 1
+                    entry["block_code"] = "REGIME_VETO:" + str((rg.get("verdict") or {}).get("reason") or "?")
+                    continue
             feats = features_from_brief(b, self.runner.chief.decide(briefs), b.scan_score or None)
             feats.update({"initial_stop": plan.stop, "p_win": b.p_win, "regime": d.regime, "consensus_score": d.consensus_score, "consensus_conf": d.consensus_confidence,
                           "n_dissent": len(d.dissent), "n_vetoes": len(d.vetoes), "expected_r": d.expected_r, "expected_cost_pct": d.expected_cost, "market_type": market,
@@ -2080,6 +2095,32 @@ class TradingEngineV3(TradingEngine):
             log.warning("grafik onayi degerlendirilemedi (%s): %s", symbol, exc)
             return {"schema_version": "chart_confirmation_v1", "mode": mode, "variant": variant,
                     "verdict": {"ok": False, "reason": "CHART_ERROR:%s" % type(exc).__name__},
+                    "blocks": mode == "ENFORCE", "shadow": {}, "error": str(exc)[:200]}
+
+    def _regime_gate(self, symbol: str, direction: str, now: datetime) -> dict | None:
+        """SAF sorgu: durum DEGISTIRMEZ. Mantik `regime_gate.regime_confirmation` icinde — TEK kaynak.
+
+        BTC gunluk karesi `runner.last_frames["BTC/USDT"]["1d"]` (motorun ZATEN cektigi kare);
+        kapanmamis bar elenir. BTC karesi yoksa rejim BILINMIYOR ve ENFORCE modda aday ACILMAZ
+        (fail-closed). Ariza da ENFORCE modda fail-closed.
+        """
+        _en = self.cfg.v3.entry_selectivity
+        mode = str(getattr(_en, "regime_gate_mode", "OFF") or "OFF").upper()
+        if mode == "OFF":
+            return None
+        variant = str(getattr(_en, "regime_gate_variant", "") or "")
+        try:
+            from .candle_confirmation import closed_bars
+            from .regime_gate import BTC_SYMBOL, regime_confirmation, rows_for_regime
+            frames = (getattr(self.runner, "last_frames", None) or {}).get(BTC_SYMBOL) or {}
+            now_ms = int(now.timestamp() * 1000)
+            bars = closed_bars(rows_for_regime(frames.get("1d")), now_ms=now_ms, tf="1d")
+            return regime_confirmation(mode=mode, variant=variant, direction=direction,
+                                       btc_daily_bars=bars)
+        except Exception as exc:  # noqa: BLE001 — ariza SESSIZ GECMEZ
+            log.warning("rejim kapisi degerlendirilemedi (%s): %s", symbol, exc)
+            return {"schema_version": "regime_gate_v1", "mode": mode, "variant": variant, "regime": None,
+                    "verdict": {"ok": False, "reason": "REGIME_ERROR:%s" % type(exc).__name__},
                     "blocks": mode == "ENFORCE", "shadow": {}, "error": str(exc)[:200]}
 
     def _label_shadows(self) -> None:

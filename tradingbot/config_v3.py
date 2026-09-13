@@ -602,6 +602,12 @@ class EntrySelectivitySection:
     chart_confirmation_variant: str = "p2_4h_veto"
     #: `chart_patterns.ChartPatternConfig` alanları; verilmeyenler varsayılanda.
     chart_policy: dict[str, Any] = field(default_factory=dict)
+    #: PİYASA REJİMİ KAPISI (V7, 2026-09-13): `OFF` | `SHADOW` | `ENFORCE`; mantık `regime_gate.py`
+    #: (iki motorda tek kaynak). BTC günlük close > EMA200 → UP. DENEY_V7: üç pencerede de temeli
+    #: geçti ama 2022 sonrası hâlâ negatif; "kayıp azaltıcı", doğrulanmış kârlı kural DEĞİL.
+    regime_gate_mode: str = "OFF"
+    #: r1_long_only_uptrend | r2_no_trade_downtrend | r3_follow_regime
+    regime_gate_variant: str = "r1_long_only_uptrend"
 
 
 @dataclass
@@ -875,6 +881,14 @@ def validate_v3(cfg: V3Config) -> None:
         _CPC.from_dict(dict(_en.chart_policy or {}))
     except ValueError as exc:
         raise ConfigError(f"entry_selectivity.chart_confirmation: {exc}") from exc
+    # PİYASA REJİMİ KAPISI (V7): kurallar `regime_gate.validate_settings` içinde.
+    from .regime_gate import validate_settings as _rg_validate
+    try:
+        _en.regime_gate_mode = _rg_validate(
+            mode=_en.regime_gate_mode, variant=_en.regime_gate_variant,
+            app_mode=getattr(cfg.mode, "mode", None))
+    except ValueError as exc:
+        raise ConfigError(f"entry_selectivity.regime_gate: {exc}") from exc
     # ÇOK ZAMAN DİLİMLİ LİKİDİTE TEYİDİ (H ailesi): SHADOW dışına çıkış yolu YOKTUR.
     # `entry_selectivity.mode` zaten SHADOW'a kilitli; H ayrıca KENDİ kapısını da taşır ki
     # ileride giriş bölümü gevşetilse bile H tek başına aktifleşemesin (fail-closed).

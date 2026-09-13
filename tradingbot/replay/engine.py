@@ -107,7 +107,7 @@ class HistoricalReplay:
                  economics_gate: bool = True, spot_listed: set[str] | None = None, entry_rule=None, legacy_agents: bool = True, entry_trigger: bool = True, legacy_veto: bool = False,
                  lookback_bars: int = 400, min_bars: int = 250, decision_stride: int = 1,
                  candle_variant: str | None = "config", chart_variant: str | None = "config",
-                 regime_variant: str | None = "config"):
+                 regime_variant: str | None = "config", strategy=None):
         self.cfg, self.run_id, self.store, self.symbols, self.market, self.tf, self.seed = cfg, run_id, store, list(symbols), market, tf, int(seed)
         self.pattern_engine = pattern_engine
         # EKONOMI KAPISI: uretimde karar yolunun ZORUNLU asamasi (engine_v3._assess_opportunities).
@@ -158,6 +158,10 @@ class HistoricalReplay:
             regime_variant = str(getattr(_en, "regime_gate_variant", "") or "") if _rm == "ENFORCE" else None
         self.regime_variant = regime_variant or None
         self._regime_cache: dict[int, str] = {}
+        # STRATEJI MODU (V9, arastirma): verilirse uzman yigini, baş yönetici ve kapılar ATLANIR;
+        # `strategy(sym, t, frames, position, replay)` -> {"action": "OPEN"|"CLOSE", ...} | None.
+        # Acilis/kapanis AYNI defter, risk motoru, borsa filtresi, kayma ve funding yolundan gecer.
+        self.strategy = strategy
         #: ayni barda ikinci girisi engellemek icin (uretimdeki `self.triggers` karsiligi)
         self._fired_bar: dict[str, str] = {}
         self._legacy_agents = None
@@ -296,6 +300,8 @@ class HistoricalReplay:
                 bars[sym] = cur
                 marks[sym] = TickData(last=Decimal(str(price)), mark=Decimal(str(price)))
                 marks_f[sym] = price
+                if self.strategy is not None:
+                    continue                                                # strateji modu: uzman girdisi YOK
                 ev = None
                 if self.pattern_engine is not None:
                     key = (sym, self.market, self.tf)
@@ -314,6 +320,14 @@ class HistoricalReplay:
                                                                                                 "open_position": {"side": opos.side.value} if opos else None},
                                              pattern_evidence=ev, run_id=self.run_id, snapshot_id=stable_id("snap", self.run_id, t), now_ms=t + tf_ms(self.tf) - 1,
                                              snapshot_at_ms=t + tf_ms(self.tf) - 1, snapshot_seq=seq)
+            if self.strategy is not None:
+                if marks_f:
+                    self.result.n_decisions += len(marks_f)
+                    self._strategy_step(t, now, marks, marks_f)
+                    self._advance(t, now)
+                    if on_progress and seq % 50 == 0:
+                        on_progress({"t": iso(now), "decisions": self.result.n_decisions, "opened": self.result.n_opened, "closed": len(self.result.trades)})
+                continue
             if not inputs:
                 continue
             decisions = self.registry.run_many(inputs)
@@ -484,15 +498,88 @@ class HistoricalReplay:
         recs = self.ledger2.tick(marks, now_utc=nxt_now, bar_advance=True,
                                  funding_rate_lookup=self.funding_rates)
         for rec in recs:
-            legacy = rec.to_legacy_dict()
-            meta = self._entry_meta.pop(rec.id, {})
-            snap = meta.get("decision") or {}
-            self.learner2.on_trade_closed(legacy | {"features": legacy.get("features") or {}}, {"regime": snap.get("regime"), "consensus_score": snap.get("consensus_score"),
-                                                                                                "dissent": snap.get("dissent"), "vetoes": snap.get("vetoes")})
-            self.result.trades.append({"id": rec.id, "symbol": rec.symbol, "side": rec.side, "entry": float(rec.entry), "exit": float(rec.exit_price) if rec.exit_price else None,
-                                       "exit_reason": rec.exit_reason, "net_r": float(rec.r_multiple), "net_pnl": float(rec.net_pnl), "fees": float(rec.fees),
-                                       "funding": float(rec.funding), "bars_held": rec.bars_held, "mae_pct": float(rec.mae_pct), "mfe_pct": float(rec.mfe_pct),
-                                       "opened_at": rec.opened_at, "closed_at": rec.closed_at, "in_test": bool(meta.get("in_test", True)), "regime": meta.get("regime")})
+            self._on_closed(rec)
+
+    def _strategy_step(self, t: int, now, marks: dict, marks_f: dict) -> None:
+        """STRATEJI MODU: dis kuralin OPEN/CLOSE kararlarini uretim defteri yolundan uygular.
+
+        Acilis: boyut = profil islem riski / stop mesafesi (uretimle ayni ifade), `risk.evaluate`
+        (toplam risk tavani, kaldirac, cluster) ve `ledger2.open` (gercek filtre, kayma). Kapanis:
+        `ledger2.close_manual` (kayma). Stop/hedef/funding/likidasyon/basa-bas: `ledger2.tick`.
+        """
+        from ..accounting import AmountType, SizeSpec
+        state = self._portfolio_state(marks_f, now)
+        for sym in list(self.primary):
+            if sym not in marks_f:
+                continue
+            fr = self._slice(sym, t)
+            pos = self.ledger2.positions.get(sym)
+            try:
+                act = self.strategy(sym, t, fr, pos, self)
+            except Exception as exc:  # noqa: BLE001 — strateji arizasi SESSIZ GECMEZ
+                self._reject(sym, "STRATEGY_ERROR:%s" % type(exc).__name__)
+                continue
+            if not act:
+                continue
+            action = str(act.get("action") or "").upper()
+            if action == "CLOSE":
+                if pos is None:
+                    continue
+                rec = self.ledger2.close_manual(sym, marks_f[sym], reason=str(act.get("reason") or "STRATEGY_EXIT"),
+                                                now=now, tick=marks.get(sym))
+                if rec is not None:
+                    self._on_closed(rec)
+                    state = self._portfolio_state(marks_f, now)
+                continue
+            if action != "OPEN" or pos is not None:
+                continue
+            self.result.n_actionable += 1
+            direction = str(act.get("direction") or "LONG").upper()
+            entry = float(marks_f[sym])
+            stop = float(act.get("stop") or 0.0)
+            if entry <= 0 or stop <= 0 or (direction == "LONG" and stop >= entry) or (direction == "SHORT" and stop <= entry):
+                self._reject(sym, "STRATEGY_BAD_STOP")
+                continue
+            stop_frac = abs(entry - stop) / entry
+            risk_usdt = float(self.profile.risk_per_trade_pct) / 100.0 * float(state.equity)
+            notional = risk_usdt / stop_frac
+            lev = int(act.get("leverage") or 1)
+            plan_dict = {"symbol": sym, "market_type": "USDM_PERP", "direction": direction, "entry": entry, "stop": stop,
+                         "targets": list(act.get("targets") or []), "notional": notional, "margin": notional / max(1, lev),
+                         "leverage": lev, "amount_type": "NOTIONAL", "expected_r": float(act.get("expected_r") or 0.0),
+                         "min_notional": 5.0}
+            rd = self.risk.evaluate(plan_dict, state, {"now_utc": now})
+            if not rd.allowed:
+                self._reject(sym, (rd.reasons or ["RISK_DENIED"])[0])
+                continue
+            notional = float(rd.adjusted_notional or notional)
+            if notional <= 0:
+                self._reject(sym, "ZERO_NOTIONAL")
+                continue
+            pos = self.ledger2.open(sym, direction, entry, SizeSpec(Decimal(str(notional)), AmountType.NOTIONAL, int(rd.adjusted_leverage or lev)),
+                                    filters=self._filters_for(sym), stop=stop, targets=list(act.get("targets") or []),
+                                    setup_type=str(act.get("setup_type") or "strategy"), trigger_text=str(act.get("reason") or ""),
+                                    features={"regime": act.get("regime"), "market_type": "USDM_PERP", "strategy": act.get("name"),
+                                              "expected_r": float(act.get("expected_r") or 0.0), "p_win": None},
+                                    tick=marks.get(sym), now=now, meta={"run_id": self.run_id, "replay": True, "strategy": str(act.get("name") or "")})
+            if pos is None:
+                self._reject(sym, self.ledger2.last_reject_reason or "LEDGER_REJECT")
+                continue
+            self._entry_meta[pos.id] = {"symbol": sym, "in_test": True, "regime": act.get("regime"), "decision": {}, "opened_ts": t}
+            self.result.n_opened += 1
+            state = self._portfolio_state(marks_f, now)
+
+    def _on_closed(self, rec) -> None:
+        """Kapanan islemi kaydet — ledger tick'inden de, strateji modunun manuel kapanisindan da AYNI yol."""
+        legacy = rec.to_legacy_dict()
+        meta = self._entry_meta.pop(rec.id, {})
+        snap = meta.get("decision") or {}
+        self.learner2.on_trade_closed(legacy | {"features": legacy.get("features") or {}}, {"regime": snap.get("regime"), "consensus_score": snap.get("consensus_score"),
+                                                                                            "dissent": snap.get("dissent"), "vetoes": snap.get("vetoes")})
+        self.result.trades.append({"id": rec.id, "symbol": rec.symbol, "side": rec.side, "entry": float(rec.entry), "exit": float(rec.exit_price) if rec.exit_price else None,
+                                   "exit_reason": rec.exit_reason, "net_r": float(rec.r_multiple), "net_pnl": float(rec.net_pnl), "fees": float(rec.fees),
+                                   "funding": float(rec.funding), "bars_held": rec.bars_held, "mae_pct": float(rec.mae_pct), "mfe_pct": float(rec.mfe_pct),
+                                   "opened_at": rec.opened_at, "closed_at": rec.closed_at, "in_test": bool(meta.get("in_test", True)), "regime": meta.get("regime")})
 
     def _legacy_brief(self, sym: str, fr: dict, price: float):
         """Karar anindaki KAPANMIS barlardan legacy CoinBrief. Ag YOK, canli veri YOK.

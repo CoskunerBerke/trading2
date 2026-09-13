@@ -975,9 +975,10 @@ class TradingEngineV3(TradingEngine):
             # eklenir (varsayilan: hayir — API/LLM tuketimi ve giris yuzeyi dar tutulur).
             from .entry_universe import tour_symbols
             _extra = _scan_setup_symbols if (_eu.analyze_outside or _eu.scanner_feeds_entries) else []
-            symbols = tour_symbols(universe=_eu.symbols, open_positions=list(self.ledger2.positions), extra=_extra)
+            symbols = tour_symbols(universe=_eu.symbols, open_positions=list(self.ledger2.positions) + self._strategy_open_symbols(),
+                                   extra=_extra)
         else:
-            symbols = list(dict.fromkeys(core + _scan_setup_symbols + list(self.ledger2.positions)))
+            symbols = list(dict.fromkeys(core + _scan_setup_symbols + list(self.ledger2.positions) + self._strategy_open_symbols()))
         core_set = set(self.cfg.coins) | set(core)
         # VERI KIMLIGI: giris evreni USDⓈ-M perpetual sozlesmelerdir; bu sembollerin karar
         # cerceveleri de PERPETUAL mumlardan gelmelidir. `core_set` muafiyeti cerceveleri
@@ -2136,17 +2137,30 @@ class TradingEngineV3(TradingEngine):
                     "verdict": {"ok": False, "reason": "REGIME_ERROR:%s" % type(exc).__name__},
                     "blocks": mode == "ENFORCE", "shadow": {}, "error": str(exc)[:200]}
 
+    def _strategy_open_symbols(self) -> list[str]:
+        """Strateji defterlerinin acik pozisyonlari: tur kapsamina girer ki cerceve/fiyat alinsin ve kural
+        kapanisi calissin (ana bot bu sembolde pozisyonu kapatmis olsa bile)."""
+        out: list[str] = []
+        for b in (getattr(self, "strategy_books", None) or []):
+            out.extend(list(b.ledger.positions))
+        return list(dict.fromkeys(out))
+
     def _strategy_paper_tour(self, symbols, marks: dict, marks_f: dict, funding: dict, bar_advance: bool, now: datetime) -> None:
         """Tek kurallı stratejinin turu: kural → ayrı defter → tick → özet. Arıza ana turu DURDURMAZ."""
         books = list(getattr(self, "strategy_books", None) or [])
         if not books:
             return
+        # GIRIS EVRENI (V13): defterler YALNIZ olculen sabit evrende (entry_universe.symbols) yeni pozisyon
+        # acar; tur listesi ana defterin acik pozisyonlarini/tarayici adaylarini da icerir ve bunlar OLCULMEMIS
+        # bir evrendir (ZEN/USDT olayi, 2026-09-13). Defterin kendi acik pozisyonlari yine de yonetilir.
+        _eu = self.cfg.v3.entry_universe
+        universe = list(_eu.symbols) if _eu.enabled else list(symbols)
         index = []
         for book in books:
             try:
                 book.run_id = str(getattr(self, "run_id", "") or "")
-                syms = book.symbols or list(symbols)
-                frames = {s: (self.runner.last_frames.get(s) or {}) for s in set(syms) | {"BTC/USDT"}}
+                syms = book.symbols or universe
+                frames = {s: (self.runner.last_frames.get(s) or {}) for s in set(syms) | set(book.ledger.positions) | {"BTC/USDT"}}
                 book.step(symbols=list(syms), frames_by_symbol=frames, marks=marks, marks_f=marks_f, now=now)
                 book.tick(marks, now=now, funding_rate_lookup=static_rates(funding), bar_advance=bar_advance)
                 book.save(marks_f, now)

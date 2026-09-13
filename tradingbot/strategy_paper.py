@@ -10,6 +10,7 @@ Stop/hedef/funding/likidasyon/başa-baş: defterin kendi `tick`i.
 """
 from __future__ import annotations
 
+import json
 import logging
 import threading
 from datetime import datetime
@@ -158,6 +159,27 @@ class StrategyBook:
         self.rejections: dict[str, int] = {}
         self.regime: str | None = None
         self.closed_recent: list[dict[str, Any]] = []
+        self._restore_counters()
+
+    def _restore_counters(self) -> None:
+        """Yeniden baslatmada sayaclar SIFIRLANMAZ (V13). opened/closed defterin kendisinden (kalici gercek),
+        rejected/tours/retler/son kapanislar bir onceki ozet dosyasindan gelir. Ozet yoksa ya da bozuksa yalniz
+        defter gercegi kullanilir; defterin kendisine hicbir kosulda dokunulmaz."""
+        try:
+            p = Path(self.cfg.state_path) / self.summary_file
+            if p.exists():
+                prev = json.loads(p.read_text(encoding="utf-8"))
+                if isinstance(prev, dict) and prev.get("key", self.key) == self.key and prev.get("name", self.name) == self.name:
+                    pc = prev.get("counters") or {}
+                    self.counters["rejected"] = int(pc.get("rejected") or 0)
+                    self.counters["tours"] = int(pc.get("tours") or 0)
+                    self.rejections = {str(k): int(v) for k, v in (prev.get("rejections") or {}).items()}
+                    self.closed_recent = list(prev.get("closed_recent") or [])[-50:]
+        except Exception as exc:  # noqa: BLE001 -- ozet bozuksa sayac sifirdan baslar, defter ETKILENMEZ
+            log.warning("strateji defter sayaclari geri yuklenemedi (%s): %s", self.key, exc)
+        closed = len(self.ledger.history_dicts())
+        self.counters["closed"] = closed
+        self.counters["opened"] = closed + len(self.ledger.positions)
 
     # ------------------------------------------------------------------ yardımcılar
     def _state(self, marks_f: dict[str, float]):
@@ -207,7 +229,10 @@ class StrategyBook:
             from .regime_gate import btc_regime
             self.regime = btc_regime(btc)
             state = self._state(marks_f)
-            for sym in symbols:
+            # KAPSAM (V13): `symbols` = YENI giris izinli evren (olculen on coin). Defterin kendi acik
+            # pozisyonlari evren disinda kalsa bile YONETILIR (kural kapanisi + stop); `decide` acik
+            # pozisyonda hicbir zaman OPEN dondurmez, dolayisiyla evren disinda yeni giris olamaz.
+            for sym in dict.fromkeys(list(symbols) + list(self.ledger.positions)):
                 if sym not in marks_f:
                     continue
                 d1 = closed_bars(daily_rows_from_frame((frames_by_symbol.get(sym) or {}).get("1d")), now_ms=now_ms, tf="1d")

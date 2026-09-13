@@ -19,7 +19,8 @@ from typing import Any
 
 from .regime_gate import UP, btc_regime
 
-VARIANTS = ("t1_trend", "t2_trend_regime")
+VARIANTS = ("t1_trend", "t2_trend_regime", "m2_tsmom28")
+TSMOM_LOOKBACK_DAYS = 28      # m2: close > close[-28] (Liu-Tsyvinski 1-4 haftalik zaman serisi momentumu)
 DEFAULT_ATR_MULT = 3.0
 MIN_DAILY_BARS = 210
 _COLS = ("timestamp", "open", "high", "low", "close", "ema200", "atr14")
@@ -101,13 +102,21 @@ def decide(variant: str, *, daily_rows: list[dict[str, Any]], btc_daily_rows: li
     if d is None:
         return None
     close, ema, atr = d
-    above = close > ema
+    if variant == "m2_tsmom28":
+        # DENEY_V11: 28 gunluk zaman serisi momentumu; rejim kapisi ve stop T2 ile ayni.
+        ref = _f(daily_rows[-1 - TSMOM_LOOKBACK_DAYS].get("close")) if len(daily_rows) > TSMOM_LOOKBACK_DAYS else None
+        if ref is None:
+            return None
+        above = close > ref
+    else:
+        above = close > ema
     if position_open:
-        return {"action": "CLOSE", "reason": "EMA200_CROSS_DOWN", "name": variant} if not above else None
+        why = "M2_TSMOM28_CROSS_DOWN" if variant == "m2_tsmom28" else "EMA200_CROSS_DOWN"
+        return {"action": "CLOSE", "reason": why, "name": variant} if not above else None
     if not above:
         return None
     regime = None
-    if variant == "t2_trend_regime":
+    if variant in ("t2_trend_regime", "m2_tsmom28"):
         regime = btc_regime(btc_daily_rows or [])
         if regime != UP:
             return None
@@ -115,8 +124,9 @@ def decide(variant: str, *, daily_rows: list[dict[str, Any]], btc_daily_rows: li
     if stop <= 0:
         return None
     return {"action": "OPEN", "direction": "LONG", "stop": stop, "targets": [], "leverage": 1,
-            "reason": "EMA200_TREND", "name": variant, "regime": regime, "setup_type": "trend",
+            "reason": "M2_TSMOM28" if variant == "m2_tsmom28" else "EMA200_TREND", "name": variant,
+            "regime": regime, "setup_type": "trend",
             "signal_close": close, "ema200": ema, "atr14": atr}
 
 
-__all__ = ["DEFAULT_ATR_MULT", "MIN_DAILY_BARS", "VARIANTS", "daily_rows_from_frame", "decide", "read_daily"]
+__all__ = ["DEFAULT_ATR_MULT", "MIN_DAILY_BARS", "TSMOM_LOOKBACK_DAYS", "VARIANTS", "daily_rows_from_frame", "decide", "read_daily"]

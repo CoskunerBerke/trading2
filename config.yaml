@@ -322,3 +322,10 @@ strategy_paper:
   atr_mult: 3.0
   breakeven_at_mfe_r: 0.0
   state_dir: strategy_paper
+  # V12 (DENEY_V11): ikinci defter — 28 günlük zaman serisi momentumu (m2), T2 ile yan yana ileri test.
+  extra:
+    - name: m2_tsmom28
+      starting_equity_usdt: 100
+      atr_mult: 3.0
+      breakeven_at_mfe_r: 0.0
+      state_dir: strategy_paper_m2

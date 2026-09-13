@@ -28,7 +28,45 @@ from .ema200_trend import VARIANTS, daily_rows_from_frame, decide
 
 log = logging.getLogger(__name__)
 SUMMARY_FILE = "strategy_paper.json"
+INDEX_FILE = "strategy_paper_index.json"
 SCHEMA_VERSION = "strategy_paper_v1"
+
+
+class BookSpec:
+    """Bir defterin ayarları — ana bölüm ya da `extra` listesindeki sözlük, TEK biçime indirgenir."""
+
+    def __init__(self, *, name: str, starting_equity_usdt: float = 100.0, atr_mult: float = 3.0,
+                 breakeven_at_mfe_r: float = 0.0, state_dir: str = "strategy_paper", symbols=None, enabled: bool = True):
+        self.name, self.starting_equity_usdt, self.atr_mult = str(name), float(starting_equity_usdt), float(atr_mult)
+        self.breakeven_at_mfe_r, self.state_dir = float(breakeven_at_mfe_r), str(state_dir)
+        self.symbols, self.enabled = list(symbols or []), bool(enabled)
+
+    @classmethod
+    def from_section(cls, sp) -> "BookSpec":
+        return cls(name=sp.name, starting_equity_usdt=sp.starting_equity_usdt, atr_mult=sp.atr_mult,
+                   breakeven_at_mfe_r=sp.breakeven_at_mfe_r, state_dir=sp.state_dir, symbols=sp.symbols, enabled=sp.enabled)
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "BookSpec":
+        allowed = {"name", "starting_equity_usdt", "atr_mult", "breakeven_at_mfe_r", "state_dir", "symbols", "enabled"}
+        return cls(**{k: v for k, v in dict(d).items() if k in allowed})
+
+    @property
+    def summary_file(self) -> str:
+        return SUMMARY_FILE if self.state_dir == "strategy_paper" else "%s.json" % self.state_dir
+
+
+def book_specs(v3) -> list["BookSpec"]:
+    """Config'ten etkin defter listesi: ana bölüm (enabled ise) + extra (her biri enabled ise)."""
+    sp = v3.strategy_paper
+    out: list[BookSpec] = []
+    if bool(getattr(sp, "enabled", False)):
+        out.append(BookSpec.from_section(sp))
+    for ex in list(getattr(sp, "extra", None) or []):
+        b = BookSpec.from_dict(ex)
+        if b.enabled:
+            out.append(b)
+    return out
 
 
 def apply_action(act: dict[str, Any] | None, *, symbol: str, price: float, tick: TickData | None, now: datetime,
@@ -89,9 +127,12 @@ def apply_action(act: dict[str, Any] | None, *, symbol: str, price: float, tick:
 class StrategyBook:
     """Canlı motorda tek kurallı stratejinin AYRI kâğıt defteri (ileri test)."""
 
-    def __init__(self, cfg, *, profile, killswitch, filters_cache, run_id: str):
+    def __init__(self, cfg, *, profile, killswitch, filters_cache, run_id: str, spec: "BookSpec | None" = None):
         v3 = cfg.v3
-        sp = v3.strategy_paper
+        sp = spec or BookSpec.from_section(v3.strategy_paper)
+        self.spec = sp
+        self.key = sp.state_dir
+        self.summary_file = sp.summary_file
         self.cfg, self.profile, self.filters_cache, self.run_id = cfg, profile, filters_cache, run_id
         self.name = str(sp.name)
         self.atr_mult = float(sp.atr_mult)
@@ -210,7 +251,8 @@ class StrategyBook:
                    "last_actions": self.last_actions, "counters": dict(self.counters),
                    "rejections": dict(self.rejections), "closed_recent": self.closed_recent[-20:],
                    "note_tr": "KÂĞIT İLERİ TEST — gerçek para yok. Ana botun defterinden bağımsız."}
-            atomic_write_json(Path(self.cfg.state_path) / SUMMARY_FILE, doc)
+            doc["key"] = self.key
+            atomic_write_json(Path(self.cfg.state_path) / self.summary_file, doc)
 
 
 def validate_settings(*, enabled: bool, name: str | None, app_mode: str | None, starting_equity: float,
@@ -224,4 +266,5 @@ def validate_settings(*, enabled: bool, name: str | None, app_mode: str | None, 
         raise ValueError("strategy_paper.starting_equity_usdt ve atr_mult pozitif olmali")
 
 
-__all__ = ["SCHEMA_VERSION", "SUMMARY_FILE", "StrategyBook", "apply_action", "validate_settings"]
+__all__ = ["INDEX_FILE", "SCHEMA_VERSION", "SUMMARY_FILE", "BookSpec", "StrategyBook", "apply_action",
+           "book_specs", "validate_settings"]

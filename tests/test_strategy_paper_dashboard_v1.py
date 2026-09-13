@@ -29,7 +29,7 @@ def test_pages_survive_without_the_file(tmp_path):
     c = _client(tmp_path)
     assert c.get("/portfolio/strategy").status_code == 200
     r = c.get("/")
-    assert r.status_code == 200 and "Trend stratejisi" not in r.text
+    assert r.status_code == 200 and "Trend stratejileri" not in r.text
 
 
 def test_pages_render_the_summary(tmp_path):
@@ -44,6 +44,6 @@ def test_pages_render_the_summary(tmp_path):
     (tmp_path / "strategy_paper.json").write_text(json.dumps(doc), encoding="utf-8")
     c = _client(tmp_path)
     r = c.get("/")
-    assert r.status_code == 200 and "Trend stratejisi" in r.text and "104.25" in r.text
+    assert r.status_code == 200 and "Trend stratejileri" in r.text and "104.25" in r.text
     r = c.get("/portfolio/strategy")
     assert r.status_code == 200 and "ETH/USDT" in r.text and "t2_trend_regime" in r.text and "UP" in r.text

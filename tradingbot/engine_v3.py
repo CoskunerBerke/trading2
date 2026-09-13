@@ -252,14 +252,15 @@ class TradingEngineV3(TradingEngine):
         # --- öğrenme v2 (v1 `self.learner` korunur)
         self.memory = TradeMemory(st / "trade_memory.jsonl")
         # STRATEJİ KÂĞIT DEFTERİ (V10): tek kurallı trend, AYRI defter, ileri test. Kapalıyken None.
-        self.strategy_book = None
-        if bool(getattr(v3.strategy_paper, "enabled", False)):
-            from .strategy_paper import StrategyBook
-            self.strategy_book = StrategyBook(cfg, profile=self.profile, killswitch=self.killswitch,
-                                              filters_cache=self.filters, run_id="")   # run_id turda atanir
+        self.strategy_books = []
+        from .strategy_paper import StrategyBook, book_specs
+        for _spec in book_specs(v3):
+            _book = StrategyBook(cfg, profile=self.profile, killswitch=self.killswitch,
+                                 filters_cache=self.filters, run_id="", spec=_spec)   # run_id turda atanir
+            self.strategy_books.append(_book)
             log.info("STRATEJI KAGIT DEFTERI: name=%s atr_mult=%s baslangic=%s USDT state=%s",
-                     self.strategy_book.name, self.strategy_book.atr_mult,
-                     float(self.strategy_book.ledger.starting_equity), self.strategy_book.state_dir)
+                     _book.name, _book.atr_mult, float(_book.ledger.starting_equity), _book.state_dir)
+        self.strategy_book = self.strategy_books[0] if self.strategy_books else None     # geriye uyumlu ad
         self.model_registry = ModelRegistry(st / "models.json")
         self.learner2 = LearnerV2(self.memory, self.model_registry, LearnConfig(min_samples_train=v3.learning_v3.min_samples_train,
                                   holdout_frac=v3.learning_v3.holdout_frac, half_life_days=v3.learning_v3.half_life_days, calibrator=v3.learning_v3.calibrator),
@@ -2137,37 +2138,45 @@ class TradingEngineV3(TradingEngine):
 
     def _strategy_paper_tour(self, symbols, marks: dict, marks_f: dict, funding: dict, bar_advance: bool, now: datetime) -> None:
         """Tek kurallı stratejinin turu: kural → ayrı defter → tick → özet. Arıza ana turu DURDURMAZ."""
-        book = getattr(self, "strategy_book", None)
-        if book is None:
+        books = list(getattr(self, "strategy_books", None) or [])
+        if not books:
             return
+        index = []
+        for book in books:
+            try:
+                book.run_id = str(getattr(self, "run_id", "") or "")
+                syms = book.symbols or list(symbols)
+                frames = {s: (self.runner.last_frames.get(s) or {}) for s in set(syms) | {"BTC/USDT"}}
+                book.step(symbols=list(syms), frames_by_symbol=frames, marks=marks, marks_f=marks_f, now=now)
+                book.tick(marks, now=now, funding_rate_lookup=static_rates(funding), bar_advance=bar_advance)
+                book.save(marks_f, now)
+                index.append({"key": book.key, "name": book.name, "summary_file": book.summary_file})
+            except Exception as exc:  # noqa: BLE001 — bir defterin arızası ne ana botu ne diğer defteri ETKİLER
+                log.warning("strateji kagit defteri turu basarisiz (%s): %s", book.key, exc)
         try:
-            book.run_id = str(getattr(self, "run_id", "") or "")
-            syms = book.symbols or list(symbols)
-            frames = {s: (self.runner.last_frames.get(s) or {}) for s in set(syms) | {"BTC/USDT"}}
-            book.step(symbols=list(syms), frames_by_symbol=frames, marks=marks, marks_f=marks_f, now=now)
-            book.tick(marks, now=now, funding_rate_lookup=static_rates(funding), bar_advance=bar_advance)
-            book.save(marks_f, now)
-        except Exception as exc:  # noqa: BLE001 — strateji defteri arızası ana botu ETKİLEMEZ
-            log.warning("strateji kagit defteri turu basarisiz: %s", exc)
+            from .strategy_paper import INDEX_FILE
+            atomic_write_json(self.cfg.state_path / INDEX_FILE, {"generated_at": iso(now), "books": index})
+        except Exception as exc:  # noqa: BLE001
+            log.warning("strateji defter indeksi yazilamadi: %s", exc)
 
     def _strategy_paper_exit_check(self) -> None:
         """60 sn çıkış izleyicisi: strateji defterinin açık pozisyonlarını canlı fiyatla tick'ler."""
-        book = getattr(self, "strategy_book", None)
-        if book is None or not book.ledger.positions:
-            return
-        try:
-            marks: dict[str, TickData] = {}
-            for sym in list(book.ledger.positions):
-                snap = self.runner.live.snapshot(sym) or {}
-                px = float(((snap.get("ticker") or {}).get("last")) or 0)
-                if px > 0:
-                    marks[sym] = TickData(last=Decimal(str(px)), mark=Decimal(str(px)))
-            if marks:
-                now = utc_now()
-                book.tick(marks, now=now, bar_advance=False)
-                book.save({k: float(v.last) for k, v in marks.items()}, now)
-        except Exception as exc:  # noqa: BLE001
-            log.warning("strateji kagit defteri exit-monitor basarisiz: %s", exc)
+        for book in list(getattr(self, "strategy_books", None) or []):
+            if not book.ledger.positions:
+                continue
+            try:
+                marks: dict[str, TickData] = {}
+                for sym in list(book.ledger.positions):
+                    snap = self.runner.live.snapshot(sym) or {}
+                    px = float(((snap.get("ticker") or {}).get("last")) or 0)
+                    if px > 0:
+                        marks[sym] = TickData(last=Decimal(str(px)), mark=Decimal(str(px)))
+                if marks:
+                    now = utc_now()
+                    book.tick(marks, now=now, bar_advance=False)
+                    book.save({k: float(v.last) for k, v in marks.items()}, now)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("strateji kagit defteri exit-monitor basarisiz (%s): %s", book.key, exc)
 
     def _label_shadows(self) -> None:
         pend = self.shadow.pending(utc_now())

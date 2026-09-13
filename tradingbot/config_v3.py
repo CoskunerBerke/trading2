@@ -625,6 +625,9 @@ class StrategyPaperSection:
     breakeven_at_mfe_r: float = 0.0         # T1/T2 ölçümü başa-baş koruması KAPALI ile yapıldı
     state_dir: str = "strategy_paper"       # state/<state_dir>/ (defter + trade_memory)
     symbols: list[str] = field(default_factory=list)   # boş → giriş evreni
+    #: V12: EK defterler (her biri bu bölümle aynı anahtarlar; `state_dir` benzersiz ve boş olmayan).
+    #: Ana defterle AYNI motor yolundan, kendi defteri/belleği/özetiyle yan yana koşar.
+    extra: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -916,6 +919,19 @@ def validate_v3(cfg: V3Config) -> None:
                      starting_equity=float(_sp.starting_equity_usdt), atr_mult=float(_sp.atr_mult))
     except (ValueError, TypeError) as exc:
         raise ConfigError(f"strategy_paper: {exc}") from exc
+    seen_dirs = {str(_sp.state_dir)}
+    for i, ex in enumerate(list(_sp.extra or [])):
+        if not isinstance(ex, dict):
+            raise ConfigError(f"strategy_paper.extra[{i}] bir sözlük olmalı")
+        sd = str(ex.get("state_dir") or "")
+        if not sd or sd in seen_dirs or "/" in sd or "\\" in sd or ".." in sd:
+            raise ConfigError(f"strategy_paper.extra[{i}].state_dir benzersiz ve düz bir dizin adı olmalı: {sd!r}")
+        seen_dirs.add(sd)
+        try:
+            _sp_validate(enabled=bool(ex.get("enabled", True)), name=ex.get("name"), app_mode=getattr(cfg.mode, "mode", None),
+                         starting_equity=float(ex.get("starting_equity_usdt", 100.0)), atr_mult=float(ex.get("atr_mult", 3.0)))
+        except (ValueError, TypeError) as exc:
+            raise ConfigError(f"strategy_paper.extra[{i}]: {exc}") from exc
     # ÇOK ZAMAN DİLİMLİ LİKİDİTE TEYİDİ (H ailesi): SHADOW dışına çıkış yolu YOKTUR.
     # `entry_selectivity.mode` zaten SHADOW'a kilitli; H ayrıca KENDİ kapısını da taşır ki
     # ileride giriş bölümü gevşetilse bile H tek başına aktifleşemesin (fail-closed).

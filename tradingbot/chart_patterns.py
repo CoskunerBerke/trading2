@@ -109,15 +109,35 @@ def _first_break(bars, start: int, level_at, *, above: bool) -> int | None:
     return None
 
 
+def _anchor(bars, pt: dict[str, Any], role: str) -> dict[str, Any]:
+    """Dedektorun kullandigi GERCEK pivot (teyit indeksi/zamani ile). Gorsel katman icin."""
+    i = int(pt["index"])
+    ci = pt.get("confirmed_at_index")
+    ci = int(ci) if ci is not None else None
+    return {"index": i, "timestamp": bars[i]["timestamp"], "level": round(float(pt["level"]), 10),
+            "side": pt.get("side"), "role": role, "confirmed_at_index": ci,
+            "confirmed_at_ts": bars[ci]["timestamp"] if ci is not None and ci < len(bars) else None}
+
+
+def _seg(bars, i0: int, y0: float, i1: int, y1: float, kind: str) -> dict[str, Any]:
+    """Cizgi parcasi: (i0,y0)->(i1,y1); zaman uclari bar zaman damgasidir."""
+    return {"kind": kind, "i0": int(i0), "t0": bars[int(i0)]["timestamp"], "y0": round(float(y0), 10),
+            "i1": int(i1), "t1": bars[int(i1)]["timestamp"], "y1": round(float(y1), 10)}
+
+
 def _rec(bars, pattern: str, side: str, break_idx: int, last_confirm_idx: int, level: float,
-         start_idx: int, end_idx: int) -> dict[str, Any]:
+         start_idx: int, end_idx: int, *, anchors: list[dict[str, Any]] | None = None,
+         geometry: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     n = len(bars)
     rec = max(break_idx, last_confirm_idx)
     return {"pattern": pattern, "side": side, "state": CONFIRMED,
             "level": round(float(level), 10), "break_index": break_idx,
             "recognition_index": rec, "bars_since": n - 1 - rec,
             "start_ts": bars[start_idx]["timestamp"], "end_ts": bars[end_idx]["timestamp"],
-            "recognition_ts": bars[rec]["timestamp"]}
+            "recognition_ts": bars[rec]["timestamp"],
+            # CHART ANALYSIS V1: dedektorun GERCEK dayanaklari ve cizgileri (karari etkilemez)
+            "break_ts": bars[break_idx]["timestamp"], "break_close": round(float(bars[break_idx]["close"]), 10),
+            "anchors": list(anchors or []), "geometry": list(geometry or [])}
 
 
 def _clean_rows(bars) -> list[dict[str, Any]]:
@@ -170,8 +190,11 @@ def _doubles(bars, lows, highs, cfg, *, bottom: bool) -> list[dict[str, Any]]:
                 j = _first_break(bars, p2["index"] + 1, lambda _j: neck, above=False)
             if j is None:
                 continue
+            role = "dip" if bottom else "tepe"
             out.append(_rec(bars, DOUBLE_BOTTOM if bottom else DOUBLE_TOP, BULL if bottom else BEAR,
-                            j, p2["confirmed_at_index"], neck, p1["index"], j))
+                            j, p2["confirmed_at_index"], neck, p1["index"], j,
+                            anchors=[_anchor(bars, p1, role + "1"), _anchor(bars, p2, role + "2")],
+                            geometry=[_seg(bars, p1["index"], neck, j, neck, "boyun")]))
     return out
 
 
@@ -211,8 +234,11 @@ def _triples(bars, lows, highs, cfg, *, bottom: bool) -> list[dict[str, Any]]:
                     j = _first_break(bars, p3["index"] + 1, lambda _j: neck, above=False)
                 if j is None:
                     continue
+                role = "dip" if bottom else "tepe"
                 out.append(_rec(bars, TRIPLE_BOTTOM if bottom else TRIPLE_TOP, BULL if bottom else BEAR,
-                                j, p3["confirmed_at_index"], neck, p1["index"], j))
+                                j, p3["confirmed_at_index"], neck, p1["index"], j,
+                                anchors=[_anchor(bars, p1, role + "1"), _anchor(bars, p2, role + "2"), _anchor(bars, p3, role + "3")],
+                                geometry=[_seg(bars, p1["index"], neck, j, neck, "boyun")]))
     return out
 
 
@@ -254,9 +280,14 @@ def _head_shoulders(bars, lows, highs, cfg, *, inverse: bool) -> list[dict[str, 
         j = _first_break(bars, s2["index"] + 1, neck, above=inverse)
         if j is None:
             continue
+        troughs = [{"index": t1i, "level": t1, "side": "high" if inverse else "low"},
+                   {"index": t2i, "level": t2, "side": "high" if inverse else "low"}]
         out.append(_rec(bars, INVERSE_HEAD_AND_SHOULDERS if inverse else HEAD_AND_SHOULDERS,
                         BULL if inverse else BEAR, j, s2["confirmed_at_index"], neck(j),
-                        s1["index"], j))
+                        s1["index"], j,
+                        anchors=[_anchor(bars, s1, "omuz1"), _anchor(bars, h, "bas"), _anchor(bars, s2, "omuz2"),
+                                 _anchor(bars, troughs[0], "boyun1"), _anchor(bars, troughs[1], "boyun2")],
+                        geometry=[_seg(bars, t1i, t1, j, neck(j), "boyun")]))
     return out
 
 
@@ -315,7 +346,11 @@ def _triangles(bars, lows, highs, cfg, *, descending: bool) -> list[dict[str, An
             else:
                 side = BULL if which == "flat" else BEAR
             lvl = support if which == "flat" else line(j)
-            out.append(_rec(bars, name, side, j, last_conf, lvl, f1["index"], j))
+            out.append(_rec(bars, name, side, j, last_conf, lvl, f1["index"], j,
+                            anchors=[_anchor(bars, f1, "duz1"), _anchor(bars, f2, "duz2"),
+                                     _anchor(bars, q1, "egik1"), _anchor(bars, q2, "egik2")],
+                            geometry=[_seg(bars, f1["index"], support, j, support, "duz_sinir"),
+                                      _seg(bars, q1["index"], q1["level"], j, line(j), "egik_sinir")]))
     return out
 
 
@@ -346,7 +381,10 @@ def _flags(bars, cfg, *, bull: bool) -> list[dict[str, Any]]:
                     if j in seen:
                         break
                     seen.add(j)
-                    out.append(_rec(bars, BULL_FLAG, BULL, j, j, boundary, p - pb, j))
+                    out.append(_rec(bars, BULL_FLAG, BULL, j, j, boundary, p - pb, j,
+                                    anchors=[_anchor(bars, {"index": p - pb, "level": c0, "side": "close"}, "direk_basi"),
+                                             _anchor(bars, {"index": p, "level": cp, "side": "close"}, "direk_ucu")],
+                                    geometry=[_seg(bars, p - pb, c0, p, cp, "direk"), _seg(bars, p + 1, boundary, j, boundary, "bayrak_siniri")]))
                     break
             else:
                 if min(b["low"] for b in cons) < pole_ext * (1 - cfg.level_tolerance_pct / 100.0):
@@ -361,7 +399,10 @@ def _flags(bars, cfg, *, bull: bool) -> list[dict[str, Any]]:
                     if j in seen:
                         break
                     seen.add(j)
-                    out.append(_rec(bars, BEAR_FLAG, BEAR, j, j, boundary, p - pb, j))
+                    out.append(_rec(bars, BEAR_FLAG, BEAR, j, j, boundary, p - pb, j,
+                                    anchors=[_anchor(bars, {"index": p - pb, "level": c0, "side": "close"}, "direk_basi"),
+                                             _anchor(bars, {"index": p, "level": cp, "side": "close"}, "direk_ucu")],
+                                    geometry=[_seg(bars, p - pb, c0, p, cp, "direk"), _seg(bars, p + 1, boundary, j, boundary, "bayrak_siniri")]))
                     break
     return out
 

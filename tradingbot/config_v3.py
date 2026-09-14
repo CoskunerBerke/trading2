@@ -631,6 +631,22 @@ class StrategyPaperSection:
 
 
 @dataclass
+class ChartAnalysisSection:
+    """CHART ANALYSIS V1 — botun gercek hesaplarini/gerekcelerini grafikte gorunur kilan analiz kayitlari.
+
+    SALT GOSTERIM: hicbir kapiyi, defteri, ogrenme state'ini degistirmez. Motor her turda (yeni kapanmis bar
+    ya da karar degisimi varsa) analiz anini `state/chart_analysis/` altina yazar; panel yalniz okur.
+    """
+    enabled: bool = True
+    timeframe: str = "4h"                  # motor kaydinin grafik dilimi (karar dilimi)
+    keep_per_series: int = 300              # seri (defter|sembol|tf) basina saklanan analiz ani (en eski silinir)
+    swing_lookback: int = 3                 # teyitli pivot: her iki yanda N kapanmis bar (formasyon dedektoruyle AYNI)
+    cluster_tolerance_atr: float = 0.10     # esit seviye kumesi toleransi (ATR kati; MTF config ile AYNI deger)
+    trendline_touch_tolerance_pct: float = 0.3   # trend cizgisi temas/ihlal toleransi (%)
+    bars: int = 400                         # analiz penceresi (kapanmis bar)
+
+
+@dataclass
 class V3Config:
     app: AppConfig = field(default_factory=AppConfig)
     mode: ModeConfig = field(default_factory=ModeConfig)
@@ -659,6 +675,7 @@ class V3Config:
     entry_universe: EntryUniverseSection = field(default_factory=EntryUniverseSection)
     news: NewsSection = field(default_factory=NewsSection)
     strategy_paper: StrategyPaperSection = field(default_factory=StrategyPaperSection)
+    chart_analysis: ChartAnalysisSection = field(default_factory=ChartAnalysisSection)
     warnings: list[str] = field(default_factory=list)
 
 
@@ -672,7 +689,8 @@ _SECTIONS = {"app": AppConfig, "mode": ModeConfig, "markets": MarketsConfig, "un
              "entry_selectivity": EntrySelectivitySection,
              "entry_universe": EntryUniverseSection,
              "news": NewsSection,
-             "strategy_paper": StrategyPaperSection}
+             "strategy_paper": StrategyPaperSection,
+             "chart_analysis": ChartAnalysisSection}
 
 VALID_MODES = ("OBSERVE", "PAPER", "TESTNET", "SHADOW_LIVE", "LIVE_LIMITED", "LIVE")
 VALID_LLM_MODES = ("OFF", "POSTMORTEM_ONLY", "ADVISORY", "VETO_ONLY", "RESEARCH_COUNCIL")

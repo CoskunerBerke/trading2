@@ -213,7 +213,11 @@ class StrategyBook:
             self.memory.record_entry({"trade_id": pos.id, "symbol": pos.symbol, "direction": pos.side.value, "market_type": "USDM_PERP",
                                       "setup_type": "trend", "regime": act.get("regime"),
                                       "features": {"strategy": act.get("name"), "signal_close": act.get("signal_close"),
-                                                   "ema200": act.get("ema200"), "atr14": act.get("atr14")},
+                                                   "ema200": act.get("ema200"), "atr14": act.get("atr14"),
+                                                   # CHART ANALYSIS V1: giris ANINDAKI referanslar (sonradan degismez)
+                                                   "signal_ts": act.get("signal_ts"), "ref_close": act.get("ref_close"),
+                                                   "ref_ts": act.get("ref_ts"), "stop_at_entry": act.get("stop"),
+                                                   "atr_mult": self.atr_mult},
                                       "run_id": self.run_id, "in_test": True})
         except Exception as exc:  # noqa: BLE001 — bellek arızası işlemi ETKİLEMEZ
             log.warning("strateji bellek kaydı yazılamadı (%s): %s", pos.symbol, exc)

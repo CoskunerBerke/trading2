@@ -1234,6 +1234,9 @@ class TradingEngineV3(TradingEngine):
         self.registry.save(st, self.run_id)
         state = self._portfolio_state(marks_f)      # tur sonu: fill/çıkış sonrası güncel birleşik durum
         self._persist_risk_state(state, risk_log, now)
+        # 8b) GRAFIK ANALIZI (CHART ANALYSIS V1): karar kaydi (risk.json) ve planlar yazildiktan SONRA;
+        #     salt gosterim kaydi — defter/ogrenme/kapi DEGISMEZ, ariza turu durdurmaz.
+        self._chart_analysis_tour(symbols, marks_f, now)
         # Karar günlüğü: DEĞERLENDİRİLEN HER aday (kabul/red/veto) tek seferde yazılır.
         # Hot loop'un DIŞINDA, tur sonunda ve fail-safe: arıza turu bozmaz.
         self._journal_decisions(risk_log, decisions, now)
@@ -2172,6 +2175,83 @@ class TradingEngineV3(TradingEngine):
             atomic_write_json(self.cfg.state_path / INDEX_FILE, {"generated_at": iso(now), "books": index})
         except Exception as exc:  # noqa: BLE001
             log.warning("strateji defter indeksi yazilamadi: %s", exc)
+
+    # ------------------------------------------------------------------ CHART ANALYSIS V1 (salt gosterim)
+    def _chart_analysis_tour(self, symbols, marks_f: dict, now: datetime) -> None:
+        """Her turda analiz anini kaydeder: yeni kapanmis bar ya da karar degisimi -> yeni analysis_id; ayni ise
+        HIC yazmaz. Panelin okudugu kapi modlari/config ozeti `state/chart_analysis/config.json`a yazilir.
+        Ariza ana turu, cikis yonetimini ve defterleri ETKILEMEZ (try/except)."""
+        ca = getattr(self.cfg.v3, "chart_analysis", None)
+        if ca is None or not getattr(ca, "enabled", False):
+            return
+        try:
+            from .candle_confirmation import closed_bars
+            from .chart_analysis import (BOOK_MAIN, bars_from_frame, build_snapshot, closed_bars_at, code_sha, config_hash,
+                                         gates_from_v3, position_to_dict)
+            from .chart_analysis import TF_MS
+            from .chart_analysis_store import DIRNAME, ChartAnalysisStore
+            from .ema200_trend import daily_rows_from_frame
+            tf = str(getattr(ca, "timeframe", "4h") or "4h")
+            step = int(TF_MS.get(tf, 14_400_000))
+            as_of = int(now.timestamp() * 1000)
+            store = ChartAnalysisStore(self.cfg.state_path, keep_per_series=int(getattr(ca, "keep_per_series", 300)))
+            gates = gates_from_v3(self.cfg.v3)
+            chash, code = config_hash(self.cfg.v3), code_sha()
+            cfgd = {"swing_lookback": int(ca.swing_lookback), "cluster_tolerance_atr": float(ca.cluster_tolerance_atr),
+                    "trendline_touch_tolerance_pct": float(ca.trendline_touch_tolerance_pct)}
+            atomic_write_json(self.cfg.state_path / DIRNAME / "config.json",
+                              {"generated_at": iso(now), "gates": gates, "cfg": cfgd, "timeframe": tf, "code_sha": code, "config_hash": chash,
+                               "keep_per_series": int(getattr(ca, "keep_per_series", 300))})
+            risk = read_json(self.cfg.state_path / "risk.json", default=None) or {}
+            last_dec: dict[str, dict] = {}
+            for e in (risk.get("last_decisions") or []):
+                if isinstance(e, dict) and e.get("symbol"):
+                    last_dec[str(e["symbol"])] = e
+            btc_fr = (self.runner.last_frames.get("BTC/USDT") or {}).get("1d")
+            btc_rows = closed_bars(daily_rows_from_frame(btc_fr, tail=320), now_ms=as_of, tf="1d") if btc_fr is not None else []
+            books = [{"book_id": BOOK_MAIN, "name": BOOK_MAIN, "atr_mult": None, "ledger": self.ledger2, "memory": None}]
+            for b in (getattr(self, "strategy_books", None) or []):
+                books.append({"book_id": b.key, "name": b.name, "atr_mult": b.atr_mult, "ledger": b.ledger, "memory": b.memory})
+            scope = list(dict.fromkeys(list(symbols) + [s for b in books for s in list(b["ledger"].positions)]))
+            written = 0
+            for sym in scope:
+                fr = self.runner.last_frames.get(sym) or {}
+                df = fr.get(tf)
+                if df is None or len(df) < 30:
+                    continue
+                bars = closed_bars_at(bars_from_frame(df, tail=int(getattr(ca, "bars", 400))), as_of_ms=as_of, tf=tf)
+                if not bars:
+                    continue
+                d1 = fr.get("1d")
+                daily = closed_bars(daily_rows_from_frame(d1, tail=320), now_ms=as_of, tf="1d") if d1 is not None else []
+                prov = (getattr(self, "_frame_provenance", None) or {}).get(sym) or {}
+                market_type = str(prov.get("market") or "USDM_PERP")
+                head = self.last_decisions.get(sym) or {}
+                plan = head.get("spot_plan") if market_type == "SPOT" else head.get("futures_plan")   # piyasaya KESIN bagli
+                mark = float(marks_f[sym]) if sym in marks_f else None
+                for b in books:
+                    pos = b["ledger"].positions.get(sym)
+                    posd = position_to_dict(pos) if pos is not None else None
+                    hist = [h for h in b["ledger"].history_dicts() if h.get("symbol") == sym][-50:]
+                    ef = None
+                    if pos is not None and b["memory"] is not None:
+                        try:
+                            row = b["memory"].get(pos.id) or {}
+                            ef = row.get("features") or (row.get("entry") or {}).get("features")
+                        except Exception:  # noqa: BLE001
+                            ef = None
+                    is_main = b["book_id"] == BOOK_MAIN
+                    snap = build_snapshot(symbol=sym, market_type=market_type, timeframe=tf, tf_ms=step,
+                                          book={"book_id": b["book_id"], "name": b["name"], "atr_mult": b["atr_mult"]},
+                                          bars=bars, as_of_ms=as_of, daily_rows=daily, btc_daily_rows=btc_rows, gates=gates,
+                                          decision=last_dec.get(sym) if is_main else None, plan=plan if is_main else None,
+                                          position=posd, history=hist, entry_features=ef, mark_price=mark, cfg=cfgd,
+                                          code=code, cfg_hash=chash, source={"frames": "runner.last_frames", "provenance": prov})
+                    written += int(bool(store.save(snap).get("written")))
+            if written:
+                log.info("grafik analizi: %d yeni analiz ani kaydedildi", written)
+        except Exception as exc:  # noqa: BLE001 -- gosterim katmani ana turu ASLA durdurmaz
+            log.warning("grafik analizi turu basarisiz (ana tur ETKILENMEZ): %s", exc)
 
     def _strategy_paper_exit_check(self) -> None:
         """60 sn çıkış izleyicisi: strateji defterinin açık pozisyonlarını canlı fiyatla tick'ler."""

@@ -123,10 +123,56 @@ def decide(variant: str, *, daily_rows: list[dict[str, Any]], btc_daily_rows: li
     stop = close - atr_mult * atr
     if stop <= 0:
         return None
-    return {"action": "OPEN", "direction": "LONG", "stop": stop, "targets": [], "leverage": 1,
-            "reason": "M2_TSMOM28" if variant == "m2_tsmom28" else "EMA200_TREND", "name": variant,
-            "regime": regime, "setup_type": "trend",
-            "signal_close": close, "ema200": ema, "atr14": atr}
+    act = {"action": "OPEN", "direction": "LONG", "stop": stop, "targets": [], "leverage": 1,
+           "reason": "M2_TSMOM28" if variant == "m2_tsmom28" else "EMA200_TREND", "name": variant,
+           "regime": regime, "setup_type": "trend",
+           "signal_close": close, "ema200": ema, "atr14": atr,
+           # CHART ANALYSIS V1: kararda kullanilan bar ve (M2 icin) referans kapanis KAYDA girer.
+           # apply_action bu anahtarlari kullanmaz; karar/boyut/hash DEGISMEZ.
+           "signal_ts": daily_rows[-1].get("timestamp")}
+    if variant == "m2_tsmom28":
+        act["ref_close"] = ref
+        act["ref_ts"] = daily_rows[-1 - TSMOM_LOOKBACK_DAYS].get("timestamp")
+    return act
 
 
-__all__ = ["DEFAULT_ATR_MULT", "MIN_DAILY_BARS", "TSMOM_LOOKBACK_DAYS", "VARIANTS", "daily_rows_from_frame", "decide", "read_daily"]
+def rule_state(variant: str, *, daily_rows: list[dict[str, Any]], btc_daily_rows: list[dict[str, Any]] | None,
+               atr_mult: float = DEFAULT_ATR_MULT) -> dict[str, Any]:
+    """Kuralin KARSILASTIRDIGI degerler — gosterim icin, `decide` ile AYNI okuma/yol (ikinci formul yok).
+
+    Donus: close, signal_ts, ema200, atr14, ref_close/ref_ts (M2), above (kosul), regime (BTC), stop_if_open,
+    reason (neden karar yok). Veri yetersizse `ok=False` ve neden yazilir; hicbir sey uydurulmaz.
+    """
+    if variant not in VARIANTS:
+        raise ValueError("bilinmeyen strateji varyanti: %r" % (variant,))
+    out: dict[str, Any] = {"variant": variant, "ok": False, "close": None, "signal_ts": None, "ema200": None, "atr14": None,
+                           "ref_close": None, "ref_ts": None, "above": None, "regime": None, "stop_if_open": None,
+                           "min_daily_bars": MIN_DAILY_BARS, "n_daily_bars": len(daily_rows or []), "atr_mult": float(atr_mult),
+                           "lookback_days": TSMOM_LOOKBACK_DAYS if variant == "m2_tsmom28" else None}
+    d = read_daily(daily_rows or [])
+    if d is None:
+        out["reason"] = "NOT_ENOUGH_DAILY_BARS" if len(daily_rows or []) < MIN_DAILY_BARS else "DAILY_ROWS_UNREADABLE"
+        return out
+    close, ema, atr = d
+    out.update({"close": close, "ema200": ema, "atr14": atr, "signal_ts": daily_rows[-1].get("timestamp")})
+    if variant == "m2_tsmom28":
+        if len(daily_rows) <= TSMOM_LOOKBACK_DAYS:
+            out["reason"] = "NOT_ENOUGH_DAILY_BARS"
+            return out
+        ref = _f(daily_rows[-1 - TSMOM_LOOKBACK_DAYS].get("close"))
+        if ref is None:
+            out["reason"] = "REF_CLOSE_UNREADABLE"
+            return out
+        out["ref_close"], out["ref_ts"] = ref, daily_rows[-1 - TSMOM_LOOKBACK_DAYS].get("timestamp")
+        out["above"] = close > ref
+    else:
+        out["above"] = close > ema
+    if variant in ("t2_trend_regime", "m2_tsmom28"):
+        out["regime"] = btc_regime(btc_daily_rows or [])
+    stop = close - float(atr_mult) * atr
+    out["stop_if_open"] = stop if stop > 0 else None
+    out["ok"] = True
+    return out
+
+
+__all__ = ["DEFAULT_ATR_MULT", "MIN_DAILY_BARS", "TSMOM_LOOKBACK_DAYS", "VARIANTS", "daily_rows_from_frame", "decide", "read_daily", "rule_state"]

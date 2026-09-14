@@ -12,6 +12,7 @@ from ..indicators import bollinger, ema, rsi, sma
 from ..indicators_ext import macd, vwap_session
 
 TF_ALIASES = {"1h": ("1h", "60"), "4h": ("4h", "240"), "1d": ("1d", "D", "1D"), "15m": ("15m", "15"), "1w": ("1w", "W")}
+from ..chart_analysis import TF_MS  # tek kaynak (algoritma katmani panel modulunu ICE AKTARMAZ)
 
 
 def _clean(v: Any) -> Any:
@@ -35,27 +36,66 @@ class CandleSource:
         self.data_dir = Path(data_dir)
         self.quote = quote
 
+    #: Piyasaya gore IZINLI dosya onekleri. Futures istegi spot dosyasina DUSMEZ (ve tersi): eksik veri
+    #: acikca eksik doner; baska piyasa ya da baska zaman dilimiyle DOLDURULMAZ (CHART ANALYSIS V1 kusur #1).
+    PREFIXES = {"futures": ("binanceusdm", "tv-binanceusdm"),
+                "spot": ("tv-binance", "binance", "bybit", "okx", "kucoin")}
+
     def candidates(self, base: str, tf: str, market: str = "spot") -> list[Path]:
         base = base.upper()
+        market = "futures" if market == "futures" else "spot"
         tfs = TF_ALIASES.get(tf, (tf,))
         out: list[Path] = []
-        prefixes = ["tv-binance", "binance", "binanceusdm", "tv-binanceusdm", "bybit", "okx", "kucoin"]
-        if market == "futures":
-            prefixes = ["binanceusdm", "tv-binanceusdm"] + prefixes
         for t in tfs:
-            for pre in prefixes:
+            for pre in self.PREFIXES[market]:
                 out.append(self.data_dir / f"{pre}_{base}-{self.quote}_{t}.csv")
-            for sub in (self.data_dir / "candles",):
-                if sub.exists():
-                    out += sorted(sub.rglob(f"*{base}*{self.quote}*{t}*.parquet"))
-                    out += sorted(sub.rglob(f"{market}/*{base}*{t}*.parquet"))
+        sub = self.data_dir / "candles"
+        if sub.exists():
+            for p in sorted(sub.rglob("*.parquet")):
+                if self._parquet_matches(p, base, tfs, market):
+                    out.append(p)
         return out
+
+    def _parquet_matches(self, p: Path, base: str, tfs: tuple, market: str) -> bool:
+        """Parquet: sembol (BASE-QUOTE ya da BASE_QUOTE ya da BASEQUOTE), zaman dilimi ve piyasa KESIN eslesir."""
+        import re
+        stem = p.stem.upper()
+        q = self.quote.upper()
+        sym_ok = re.search(r"(^|[^A-Z0-9])%s[-_]?%s([^A-Z0-9]|$)" % (re.escape(base), re.escape(q)), stem) is not None
+        tf_ok = any(re.search(r"(^|[^A-Z0-9])%s([^A-Z0-9]|$)" % re.escape(str(t).upper()), stem) for t in tfs)
+        parts = {x.lower() for x in p.relative_to(self.data_dir).parts[:-1]}
+        other = "spot" if market == "futures" else "futures"
+        market_ok = other not in parts and (market in parts or not ({"spot", "futures"} & parts))
+        return sym_ok and tf_ok and market_ok
 
     def find(self, base: str, tf: str = "4h", market: str = "spot") -> Path | None:
         for p in self.candidates(base, tf, market):
             if p.exists():
                 return p
         return None
+
+    def source_info(self, base: str, tf: str = "4h", market: str = "spot", *, now_ms: int | None = None) -> dict[str, Any]:
+        """Grafik veri kaynagi: dosya, piyasa, dilim, son bar ve tazelik. Eksikse `missing=True` (doldurma YOK)."""
+        import time
+        p = self.find(base, tf, market)
+        info: dict[str, Any] = {"base": base.upper(), "tf": tf, "market": "futures" if market == "futures" else "spot",
+                                "file": p.name if p else None, "format": (p.suffix.lstrip(".") if p else None), "missing": p is None,
+                                "last_bar_ts": None, "age_s": None, "stale": None, "mtime": None}
+        if p is None:
+            return info
+        try:
+            info["mtime"] = int(p.stat().st_mtime * 1000)
+        except OSError:
+            pass
+        df = self.load(base, tf, market, n=2)
+        if df is not None and len(df):
+            last = int(df["timestamp"].iloc[-1])
+            info["last_bar_ts"] = last
+            now = int(now_ms if now_ms is not None else time.time() * 1000)
+            step = TF_MS.get(tf, 0)
+            info["age_s"] = max(0, (now - last) // 1000)
+            info["stale"] = bool(step and (now - last) > 2 * step + step)   # son bar + bir tam bar + tolerans
+        return info
 
     def available_bases(self) -> list[str]:
         bases: set[str] = set()
@@ -169,4 +209,4 @@ def build_candle_payload(df: pd.DataFrame, *, n: int = 600, plan: dict | None = 
     return payload
 
 
-__all__ = ["CandleSource", "build_candle_payload", "TF_ALIASES"]
+__all__ = ["CandleSource", "build_candle_payload", "TF_ALIASES", "TF_MS"]

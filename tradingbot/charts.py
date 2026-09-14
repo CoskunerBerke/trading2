@@ -91,22 +91,34 @@ def render_signal_chart(df: pd.DataFrame, out_path: Path, *, title: str, plan=No
     p = plan
     if position:
         p = type("P", (), {})()
-        p.direction, p.entry, p.stop, p.target1, p.target2, p.valid, p.trigger_text = position["side"], position["entry"], position["stop"], position["target1"], position["target2"], True, "AÇIK POZİSYON"
-    if p is not None and getattr(p, "direction", "BEKLE") != "BEKLE" and p.entry and p.stop and p.target1:
+        # CHART ANALYSIS V1: hedefsiz pozisyon (T2/M2, TP yok) da ACIK POZISYON olarak cizilir
+        p.direction, p.entry, p.stop = position.get("side"), position.get("entry"), position.get("stop")
+        p.target1, p.target2 = position.get("target1"), position.get("target2")
+        p.valid, p.trigger_text = True, "AÇIK POZİSYON" + ("" if p.target1 else " · TP YOK")
+    e = s = None
+    if p is not None and getattr(p, "direction", "BEKLE") not in (None, "BEKLE"):
+        e = float(p.entry) if getattr(p, "entry", None) else None
+        s = float(p.stop) if getattr(p, "stop", None) else None
+    if e and s:
         x0, w = n - 1, 13
-        e, s, t1 = float(p.entry), float(p.stop), float(p.target1)
-        t2 = float(p.target2) if p.target2 else t1
-        # stop kutusu
+        t1 = float(p.target1) if getattr(p, "target1", None) else None
+        t2 = float(p.target2) if getattr(p, "target2", None) else t1
+        # stop kutusu — TP olsun olmasin
         ax.add_patch(Rectangle((x0, min(e, s)), w, abs(e - s), facecolor=DN, alpha=0.22, edgecolor=DN, linewidth=0.8))
-        # hedef kutuları
-        ax.add_patch(Rectangle((x0, min(e, t1)), w, abs(t1 - e), facecolor=UP, alpha=0.20, edgecolor=UP, linewidth=0.8))
-        ax.add_patch(Rectangle((x0, min(t1, t2)), w, abs(t2 - t1), facecolor=UP, alpha=0.10, edgecolor=UP, linewidth=0.6, linestyle="--"))
-        for yv, lbl, col in ((e, f"GİRİŞ {e:.6g}", "#ffffff"), (s, f"STOP {s:.6g}", DN), (t1, f"TP1 {t1:.6g} ({(t1/e-1)*100:+.2f}%)", UP), (t2, f"TP2 {t2:.6g} ({(t2/e-1)*100:+.2f}%)", UP)):
+        rows_ = [(e, f"GİRİŞ {e:.6g}", "#ffffff"), (s, f"STOP {s:.6g}", DN)]
+        if t1:
+            # hedef kutuları yalniz hedef VARSA
+            ax.add_patch(Rectangle((x0, min(e, t1)), w, abs(t1 - e), facecolor=UP, alpha=0.20, edgecolor=UP, linewidth=0.8))
+            ax.add_patch(Rectangle((x0, min(t1, t2)), w, abs(t2 - t1), facecolor=UP, alpha=0.10, edgecolor=UP, linewidth=0.6, linestyle="--"))
+            rows_ += [(t1, f"TP1 {t1:.6g} ({(t1/e-1)*100:+.2f}%)", UP), (t2, f"TP2 {t2:.6g} ({(t2/e-1)*100:+.2f}%)", UP)]
+            ax.annotate("", xy=(x0 + w / 2, t1), xytext=(x0 + w / 2, e), arrowprops=dict(arrowstyle="->", color=UP, lw=1.6))
+        else:
+            ax.text(xr - 0.3, e, "TP YOK (kural/stop ile çıkış)", color=FG, fontsize=7, ha="right", va="top", alpha=0.8)
+        for yv, lbl, col in rows_:
             ax.axhline(yv, xmin=(x0 + 1) / (xr + 1), color=col, linewidth=0.9, linestyle=":" if lbl.startswith("TP") else "-")
             ax.text(xr - 0.3, yv, lbl, color=col, fontsize=8, ha="right", va="bottom", fontweight="bold",
                     bbox=dict(facecolor=BG, edgecolor="none", alpha=0.7, pad=1))
-        ax.annotate("", xy=(x0 + w / 2, t1), xytext=(x0 + w / 2, e), arrowprops=dict(arrowstyle="->", color=UP, lw=1.6))
-        head = _plain(f"{p.direction} · {'PLAN GEÇERLİ' if getattr(p, 'valid', False) else 'PLAN GEÇERSİZ: ' + getattr(p, 'invalid_reason', '')} · {getattr(p, 'trigger_text', '')}")
+        head = _plain(f"{p.direction} · {'PLAN GEÇERLİ' if getattr(p, 'valid', False) else 'PLAN GEÇERSİZ: ' + str(getattr(p, 'invalid_reason', ''))} · {getattr(p, 'trigger_text', '')}")
     else:
         head = "BEKLE — yön yok"
     # seviyeler

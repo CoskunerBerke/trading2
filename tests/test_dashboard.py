@@ -37,7 +37,9 @@ def _state(tmp: Path) -> tuple[Path, Path]:
     rng = np.random.default_rng(1)
     close = 60000 * np.exp(np.cumsum(rng.normal(0, 0.01, n)))
     ts = 1_700_000_000_000 + np.arange(n) * 14_400_000
-    pd.DataFrame({"timestamp": ts, "open": close, "high": close * 1.01, "low": close * 0.99, "close": close, "volume": 10.0}).to_csv(data / "tv-binance_BTC-USDT_4h.csv", index=False)
+    df = pd.DataFrame({"timestamp": ts, "open": close, "high": close * 1.01, "low": close * 0.99, "close": close, "volume": 10.0})
+    df.to_csv(data / "tv-binance_BTC-USDT_4h.csv", index=False)
+    df.to_csv(data / "binanceusdm_BTC-USDT_4h.csv", index=False)     # CHART ANALYSIS V1: futures plani yalniz futures dosyasiyla
     return st, data
 
 
@@ -55,7 +57,10 @@ def test_dashboard_pages_api_health_metrics(tmp_path: Path):
         assert r.status_code == 200, path
     assert "BTC" in c.get("/coin/BTC").text and "PAPER" in c.get("/").text
     j = c.get("/api/candles/BTC?tf=4h&n=200").json()
-    assert len(j["t"]) == 200 and "sma25" in j["overlays"] and "rsi" in j["panels"] and j["plan"]["stop"] == 60000.0
+    assert len(j["t"]) == 200 and "sma25" in j["overlays"] and "rsi" in j["panels"]
+    assert j["plan"] == {}, "spot grafigi futures planini TASIMAZ (CHART ANALYSIS V1 kusur #2)"
+    jf = c.get("/api/candles/BTC?tf=4h&n=200&market=futures").json()
+    assert jf["plan"]["stop"] == 60000.0
     m = c.get("/metrics").text
     assert "tradingbot_up" in m and "killswitch_state" in m
     assert c.get("/api/state/coin_heads").status_code == 200 and c.get("/api/state/../etc").status_code in (400, 404)

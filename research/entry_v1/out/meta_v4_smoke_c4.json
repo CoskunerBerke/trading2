@@ -1,0 +1,123 @@
+{
+ "run_id": "v4_smoke_c4",
+ "from": "2020-11-01",
+ "to": "2021-01-31",
+ "gate": false,
+ "trigger": true,
+ "veto": false,
+ "stride": 1,
+ "elapsed_s": 223.6,
+ "n_decisions": 5441,
+ "n_actionable": 3327,
+ "n_opened": 56,
+ "determinism_hash": "2af5586d1f37eb69ca364e302c21e0b3e5fc8aa54f0c131ef0bf2ecdd6bfcba2",
+ "rejections": {
+  "total": 3271,
+  "by_reason": {
+   "C1_OPPOSITE_PATTERN": 671,
+   "TRIGGER:NO_BREAKOUT_CLOSE": 91,
+   "TOTAL_OPEN_RISK": 781,
+   "TRIGGER:NOT_AT_ENTRY": 527,
+   "C1_NO_PATTERN": 984,
+   "INSUFFICIENT_MARGIN": 43,
+   "MIN_NOTIONAL": 40,
+   "C1_MISSING_BARS": 119,
+   "STEP_ZERO_QTY": 15
+  },
+  "by_symbol": {
+   "XRP/USDT": {
+    "C1_OPPOSITE_PATTERN": 45,
+    "C1_NO_PATTERN": 67,
+    "TRIGGER:NOT_AT_ENTRY": 21,
+    "TRIGGER:NO_BREAKOUT_CLOSE": 10,
+    "INSUFFICIENT_MARGIN": 8,
+    "TOTAL_OPEN_RISK": 26
+   },
+   "BTC/USDT": {
+    "TRIGGER:NO_BREAKOUT_CLOSE": 46,
+    "TRIGGER:NOT_AT_ENTRY": 123,
+    "C1_OPPOSITE_PATTERN": 115,
+    "MIN_NOTIONAL": 17,
+    "TOTAL_OPEN_RISK": 76,
+    "C1_NO_PATTERN": 134,
+    "STEP_ZERO_QTY": 7
+   },
+   "DOGE/USDT": {
+    "TRIGGER:NO_BREAKOUT_CLOSE": 7,
+    "TOTAL_OPEN_RISK": 120,
+    "C1_OPPOSITE_PATTERN": 33,
+    "TRIGGER:NOT_AT_ENTRY": 24,
+    "C1_NO_PATTERN": 84,
+    "INSUFFICIENT_MARGIN": 10
+   },
+   "SOL/USDT": {
+    "C1_OPPOSITE_PATTERN": 11,
+    "TOTAL_OPEN_RISK": 7,
+    "TRIGGER:NO_BREAKOUT_CLOSE": 1,
+    "C1_NO_PATTERN": 21,
+    "TRIGGER:NOT_AT_ENTRY": 2
+   },
+   "ETH/USDT": {
+    "TOTAL_OPEN_RISK": 66,
+    "C1_OPPOSITE_PATTERN": 82,
+    "INSUFFICIENT_MARGIN": 8,
+    "TRIGGER:NOT_AT_ENTRY": 95,
+    "TRIGGER:NO_BREAKOUT_CLOSE": 15,
+    "C1_NO_PATTERN": 102,
+    "MIN_NOTIONAL": 7
+   },
+   "LINK/USDT": {
+    "TOTAL_OPEN_RISK": 102,
+    "C1_OPPOSITE_PATTERN": 105,
+    "C1_NO_PATTERN": 146,
+    "TRIGGER:NO_BREAKOUT_CLOSE": 2,
+    "TRIGGER:NOT_AT_ENTRY": 73,
+    "MIN_NOTIONAL": 9
+   },
+   "LTC/USDT": {
+    "INSUFFICIENT_MARGIN": 5,
+    "C1_OPPOSITE_PATTERN": 81,
+    "C1_NO_PATTERN": 147,
+    "TRIGGER:NOT_AT_ENTRY": 78,
+    "TRIGGER:NO_BREAKOUT_CLOSE": 3,
+    "TOTAL_OPEN_RISK": 111,
+    "MIN_NOTIONAL": 7
+   },
+   "BNB/USDT": {
+    "TOTAL_OPEN_RISK": 53,
+    "INSUFFICIENT_MARGIN": 11,
+    "C1_OPPOSITE_PATTERN": 54,
+    "TRIGGER:NO_BREAKOUT_CLOSE": 5,
+    "C1_NO_PATTERN": 112,
+    "TRIGGER:NOT_AT_ENTRY": 40
+   },
+   "AVAX/USDT": {
+    "INSUFFICIENT_MARGIN": 1,
+    "C1_OPPOSITE_PATTERN": 92,
+    "C1_NO_PATTERN": 90,
+    "TRIGGER:NOT_AT_ENTRY": 47,
+    "TOTAL_OPEN_RISK": 111,
+    "TRIGGER:NO_BREAKOUT_CLOSE": 2,
+    "STEP_ZERO_QTY": 2
+   },
+   "AAVE/USDT": {
+    "C1_MISSING_BARS": 119,
+    "TOTAL_OPEN_RISK": 109,
+    "C1_OPPOSITE_PATTERN": 53,
+    "C1_NO_PATTERN": 81,
+    "TRIGGER:NOT_AT_ENTRY": 24,
+    "STEP_ZERO_QTY": 6
+   }
+  }
+ },
+ "funding_coverage": {
+  "queries": 913,
+  "answered": 913,
+  "unknown": 0,
+  "complete": true,
+  "answered_fraction": 1.0,
+  "missing_series": [],
+  "tolerance_ms": 120000,
+  "source": "history store: futures/<symbol>/funding (Binance fundingRate arşivi)"
+ }
+}

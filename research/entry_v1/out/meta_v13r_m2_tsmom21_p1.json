@@ -1,0 +1,102 @@
+{
+ "run_id": "v13r_m2_tsmom21_p1",
+ "from": "2020-11-01",
+ "to": "2022-08-31",
+ "gate": false,
+ "symbols": [
+  "BTC/USDT",
+  "ETH/USDT",
+  "SOL/USDT",
+  "BNB/USDT",
+  "XRP/USDT",
+  "LINK/USDT",
+  "DOGE/USDT",
+  "AVAX/USDT",
+  "LTC/USDT",
+  "AAVE/USDT"
+ ],
+ "strategy": true,
+ "no_breakeven": true,
+ "exclude": [],
+ "trigger": false,
+ "veto": false,
+ "stride": 1,
+ "elapsed_s": 575.4,
+ "n_decisions": 39971,
+ "n_actionable": 8061,
+ "n_opened": 53,
+ "determinism_hash": "fde380d5e68dba52c4f08d54f0c21ed1aaf563183c5e96824e64f59e963aed28",
+ "rejections": {
+  "total": 8008,
+  "by_reason": {
+   "MIN_NOTIONAL": 1769,
+   "STEP_ZERO_QTY": 965,
+   "TOTAL_OPEN_RISK": 4882,
+   "MIN_ORDER_CONFLICT": 378,
+   "MAX_POSITION_PCT": 13,
+   "STRATEGY_BAD_STOP": 1
+  },
+  "by_symbol": {
+   "BTC/USDT": {
+    "MIN_NOTIONAL": 46,
+    "STEP_ZERO_QTY": 719,
+    "TOTAL_OPEN_RISK": 798,
+    "MAX_POSITION_PCT": 2
+   },
+   "ETH/USDT": {
+    "MIN_NOTIONAL": 737,
+    "TOTAL_OPEN_RISK": 952,
+    "MAX_POSITION_PCT": 4,
+    "MIN_ORDER_CONFLICT": 16
+   },
+   "LINK/USDT": {
+    "MIN_NOTIONAL": 492,
+    "TOTAL_OPEN_RISK": 887,
+    "MIN_ORDER_CONFLICT": 82,
+    "MAX_POSITION_PCT": 2
+   },
+   "LTC/USDT": {
+    "MIN_NOTIONAL": 491,
+    "MAX_POSITION_PCT": 4,
+    "MIN_ORDER_CONFLICT": 97,
+    "TOTAL_OPEN_RISK": 804
+   },
+   "XRP/USDT": {
+    "MIN_ORDER_CONFLICT": 79,
+    "TOTAL_OPEN_RISK": 128,
+    "MAX_POSITION_PCT": 1,
+    "STRATEGY_BAD_STOP": 1
+   },
+   "DOGE/USDT": {
+    "MIN_ORDER_CONFLICT": 6,
+    "TOTAL_OPEN_RISK": 342
+   },
+   "BNB/USDT": {
+    "MIN_NOTIONAL": 2
+   },
+   "SOL/USDT": {
+    "TOTAL_OPEN_RISK": 37,
+    "MIN_NOTIONAL": 1
+   },
+   "AVAX/USDT": {
+    "TOTAL_OPEN_RISK": 522,
+    "MIN_ORDER_CONFLICT": 98,
+    "STEP_ZERO_QTY": 190
+   },
+   "AAVE/USDT": {
+    "STEP_ZERO_QTY": 56,
+    "TOTAL_OPEN_RISK": 412
+   }
+  }
+ },
+ "funding_coverage": {
+  "queries": 2222,
+  "answered": 2222,
+  "unknown": 0,
+  "complete": true,
+  "answered_fraction": 1.0,
+  "missing_series": [],
+  "tolerance_ms": 120000,
+  "source": "history store: futures/<symbol>/funding (Binance fundingRate arşivi)"
+ }
+}

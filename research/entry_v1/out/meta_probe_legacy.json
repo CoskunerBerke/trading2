@@ -1,0 +1,60 @@
+{
+ "run_id": "probe_legacy",
+ "from": "2026-07-01",
+ "to": "2026-07-08",
+ "gate": false,
+ "stride": 1,
+ "elapsed_s": 24.6,
+ "n_decisions": 430,
+ "n_actionable": 362,
+ "n_opened": 0,
+ "determinism_hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+ "rejections": {
+  "total": 362,
+  "by_reason": {
+   "PROBE": 362
+  },
+  "by_symbol": {
+   "BTC/USDT": {
+    "PROBE": 33
+   },
+   "LINK/USDT": {
+    "PROBE": 36
+   },
+   "BNB/USDT": {
+    "PROBE": 34
+   },
+   "DOGE/USDT": {
+    "PROBE": 38
+   },
+   "XRP/USDT": {
+    "PROBE": 35
+   },
+   "SOL/USDT": {
+    "PROBE": 38
+   },
+   "ETH/USDT": {
+    "PROBE": 40
+   },
+   "AAVE/USDT": {
+    "PROBE": 34
+   },
+   "AVAX/USDT": {
+    "PROBE": 39
+   },
+   "LTC/USDT": {
+    "PROBE": 35
+   }
+  }
+ },
+ "funding_coverage": {
+  "queries": 0,
+  "answered": 0,
+  "unknown": 0,
+  "complete": true,
+  "answered_fraction": null,
+  "missing_series": [],
+  "tolerance_ms": 120000,
+  "source": "history store: futures/<symbol>/funding (Binance fundingRate arşivi)"
+ }
+}

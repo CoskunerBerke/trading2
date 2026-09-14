@@ -1,0 +1,163 @@
+[
+ {
+  "asama": "mum/cerceve uretimi",
+  "uretim": 2,
+  "replay": 2,
+  "uretim_satir": [
+   1035,
+   1045
+  ],
+  "replay_satir": [
+   236,
+   244
+  ]
+ },
+ {
+  "asama": "uzman ajanlar (20)",
+  "uretim": 1,
+  "replay": 1,
+  "uretim_satir": [
+   1045
+  ],
+  "replay_satir": [
+   244
+  ]
+ },
+ {
+  "asama": "chief siralama/izin",
+  "uretim": 2,
+  "replay": 1,
+  "uretim_satir": [
+   1062,
+   1112
+  ],
+  "replay_satir": [
+   248
+  ]
+ },
+ {
+  "asama": "ogrenilmis p_win (predict)",
+  "uretim": 4,
+  "replay": 0,
+  "uretim_satir": [
+   1078,
+   1082,
+   1084
+  ],
+  "replay_satir": []
+ },
+ {
+  "asama": "ogrenme etkisi (influence)",
+  "uretim": 2,
+  "replay": 0,
+  "uretim_satir": [
+   1091,
+   2387
+  ],
+  "replay_satir": []
+ },
+ {
+  "asama": "EKONOMI KAPISI (assess)",
+  "uretim": 5,
+  "replay": 0,
+  "uretim_satir": [
+   1102,
+   1110,
+   2089
+  ],
+  "replay_satir": []
+ },
+ {
+  "asama": "firsat boyut carpani",
+  "uretim": 17,
+  "replay": 0,
+  "uretim_satir": [
+   78,
+   1439,
+   1445
+  ],
+  "replay_satir": []
+ },
+ {
+  "asama": "arastirma politikasi",
+  "uretim": 3,
+  "replay": 0,
+  "uretim_satir": [
+   1413,
+   1416,
+   1422
+  ],
+  "replay_satir": []
+ },
+ {
+  "asama": "giris secicilik / MTF",
+  "uretim": 23,
+  "replay": 0,
+  "uretim_satir": [
+   379,
+   380,
+   392
+  ],
+  "replay_satir": []
+ },
+ {
+  "asama": "haber baglami",
+  "uretim": 8,
+  "replay": 0,
+  "uretim_satir": [
+   1021,
+   1022,
+   1023
+  ],
+  "replay_satir": []
+ },
+ {
+  "asama": "risk motoru",
+  "uretim": 2,
+  "replay": 1,
+  "uretim_satir": [
+   1300,
+   1539
+  ],
+  "replay_satir": [
+   271
+  ]
+ },
+ {
+  "asama": "defter acilis",
+  "uretim": 1,
+  "replay": 1,
+  "uretim_satir": [
+   1973
+  ],
+  "replay_satir": [
+   280
+  ]
+ },
+ {
+  "asama": "defter tick (stop/TP/funding)",
+  "uretim": 3,
+  "replay": 1,
+  "uretim_satir": [
+   798,
+   1135,
+   1163
+  ],
+  "replay_satir": [
+   317
+  ]
+ },
+ {
+  "asama": "ogrenme zinciri (kapanis)",
+  "uretim": 3,
+  "replay": 1,
+  "uretim_satir": [
+   766,
+   815,
+   1150
+  ],
+  "replay_satir": [
+   323
+  ]
+ }
+]

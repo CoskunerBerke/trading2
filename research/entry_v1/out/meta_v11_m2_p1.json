@@ -1,0 +1,96 @@
+{
+ "run_id": "v11_m2_p1",
+ "from": "2020-11-01",
+ "to": "2022-08-31",
+ "gate": false,
+ "symbols": [
+  "BTC/USDT",
+  "ETH/USDT",
+  "SOL/USDT",
+  "BNB/USDT",
+  "XRP/USDT",
+  "LINK/USDT",
+  "DOGE/USDT",
+  "AVAX/USDT",
+  "LTC/USDT",
+  "AAVE/USDT"
+ ],
+ "strategy": true,
+ "no_breakeven": true,
+ "trigger": false,
+ "veto": false,
+ "stride": 1,
+ "elapsed_s": 419.3,
+ "n_decisions": 39971,
+ "n_actionable": 8150,
+ "n_opened": 47,
+ "determinism_hash": "470b9e6c9ab297337bb25a4e80a420636f616ae74999d2ab5b05af052ecb54c2",
+ "rejections": {
+  "total": 8103,
+  "by_reason": {
+   "MIN_NOTIONAL": 1750,
+   "STEP_ZERO_QTY": 1046,
+   "TOTAL_OPEN_RISK": 4928,
+   "MAX_POSITION_PCT": 4,
+   "MIN_ORDER_CONFLICT": 375
+  },
+  "by_symbol": {
+   "BTC/USDT": {
+    "MIN_NOTIONAL": 47,
+    "STEP_ZERO_QTY": 743,
+    "TOTAL_OPEN_RISK": 822,
+    "MAX_POSITION_PCT": 1
+   },
+   "ETH/USDT": {
+    "MIN_NOTIONAL": 804,
+    "TOTAL_OPEN_RISK": 837,
+    "MAX_POSITION_PCT": 3,
+    "MIN_ORDER_CONFLICT": 20
+   },
+   "LINK/USDT": {
+    "MIN_NOTIONAL": 533,
+    "TOTAL_OPEN_RISK": 885,
+    "MIN_ORDER_CONFLICT": 99
+   },
+   "LTC/USDT": {
+    "MIN_NOTIONAL": 358,
+    "MIN_ORDER_CONFLICT": 42,
+    "TOTAL_OPEN_RISK": 810
+   },
+   "BNB/USDT": {
+    "TOTAL_OPEN_RISK": 115,
+    "MIN_NOTIONAL": 8
+   },
+   "XRP/USDT": {
+    "MIN_ORDER_CONFLICT": 73,
+    "TOTAL_OPEN_RISK": 66
+   },
+   "DOGE/USDT": {
+    "MIN_ORDER_CONFLICT": 42,
+    "TOTAL_OPEN_RISK": 366
+   },
+   "SOL/USDT": {
+    "TOTAL_OPEN_RISK": 73
+   },
+   "AVAX/USDT": {
+    "TOTAL_OPEN_RISK": 510,
+    "MIN_ORDER_CONFLICT": 99,
+    "STEP_ZERO_QTY": 231
+   },
+   "AAVE/USDT": {
+    "STEP_ZERO_QTY": 72,
+    "TOTAL_OPEN_RISK": 444
+   }
+  }
+ },
+ "funding_coverage": {
+  "queries": 2459,
+  "answered": 2459,
+  "unknown": 0,
+  "complete": true,
+  "answered_fraction": 1.0,
+  "missing_series": [],
+  "tolerance_ms": 120000,
+  "source": "history store: futures/<symbol>/funding (Binance fundingRate arşivi)"
+ }
+}

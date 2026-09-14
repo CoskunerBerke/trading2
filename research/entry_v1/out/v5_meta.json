@@ -1,0 +1,1120 @@
+{
+ "provenance": {
+  "wt_head": "0cfe3f3de51d3e37681f87972d672f9fcfdfe91a",
+  "wt_diff_sha256": "f324cc211ce6c45a90e3fded95294ed14094741173bce9f8ce9619e3846fbd2b",
+  "chart_rules_sha256": "0ba58790af7c808480c6c37642fdb44951cc9c18455c68f886230c6f906527ec"
+ },
+ "runs": [
+  {
+   "run_id": "v5_p1_p1",
+   "from": "2020-11-01",
+   "to": "2022-08-31",
+   "gate": false,
+   "trigger": true,
+   "veto": false,
+   "stride": 1,
+   "elapsed_s": 2969.6,
+   "n_decisions": 39971,
+   "n_actionable": 27448,
+   "n_opened": 329,
+   "determinism_hash": "0509e785f0ea0a83663754f77c9ac574ea2b934f60ad7bb356520be73549b5eb",
+   "rejections": {
+    "total": 27119,
+    "by_reason": {
+     "P1_NO_PATTERN": 19410,
+     "TRIGGER:NO_BREAKOUT_CLOSE": 344,
+     "CANDLE_VETO:C3_OPPOSITE_PATTERN": 956,
+     "TOTAL_OPEN_RISK": 769,
+     "P1_OPPOSITE_PATTERN": 1843,
+     "P1_AMBIGUOUS": 290,
+     "TRIGGER:NOT_AT_ENTRY": 1889,
+     "INSUFFICIENT_MARGIN": 871,
+     "MIN_NOTIONAL": 168,
+     "STEP_ZERO_QTY": 579
+    },
+    "by_symbol": {
+     "XRP/USDT": {
+      "P1_NO_PATTERN": 1557,
+      "P1_OPPOSITE_PATTERN": 142,
+      "P1_AMBIGUOUS": 28,
+      "TRIGGER:NOT_AT_ENTRY": 155,
+      "TRIGGER:NO_BREAKOUT_CLOSE": 37,
+      "TOTAL_OPEN_RISK": 44,
+      "CANDLE_VETO:C3_OPPOSITE_PATTERN": 56,
+      "INSUFFICIENT_MARGIN": 96
+     },
+     "AVAX/USDT": {
+      "P1_NO_PATTERN": 2419,
+      "TOTAL_OPEN_RISK": 98,
+      "P1_OPPOSITE_PATTERN": 200,
+      "TRIGGER:NOT_AT_ENTRY": 205,
+      "CANDLE_VETO:C3_OPPOSITE_PATTERN": 140,
+      "INSUFFICIENT_MARGIN": 13,
+      "P1_AMBIGUOUS": 24,
+      "TRIGGER:NO_BREAKOUT_CLOSE": 16,
+      "STEP_ZERO_QTY": 192
+     },
+     "BTC/USDT": {
+      "P1_NO_PATTERN": 2375,
+      "P1_OPPOSITE_PATTERN": 329,
+      "TRIGGER:NO_BREAKOUT_CLOSE": 124,
+      "TRIGGER:NOT_AT_ENTRY": 285,
+      "MIN_NOTIONAL": 9,
+      "CANDLE_VETO:C3_OPPOSITE_PATTERN": 144,
+      "TOTAL_OPEN_RISK": 96,
+      "INSUFFICIENT_MARGIN": 44,
+      "STEP_ZERO_QTY": 223,
+      "P1_AMBIGUOUS": 50
+     },
+     "LTC/USDT": {
+      "P1_NO_PATTERN": 1942,
+      "P1_OPPOSITE_PATTERN": 193,
+      "TRIGGER:NO_BREAKOUT_CLOSE": 23,
+      "TRIGGER:NOT_AT_ENTRY": 203,
+      "TOTAL_OPEN_RISK": 112,
+      "CANDLE_VETO:C3_OPPOSITE_PATTERN": 115,
+      "MIN_NOTIONAL": 44,
+      "P1_AMBIGUOUS": 39,
+      "INSUFFICIENT_MARGIN": 100
+     },
+     "DOGE/USDT": {
+      "TRIGGER:NO_BREAKOUT_CLOSE": 24,
+      "CANDLE_VETO:C3_OPPOSITE_PATTERN": 59,
+      "P1_NO_PATTERN": 1492,
+      "TRIGGER:NOT_AT_ENTRY": 85,
+      "P1_OPPOSITE_PATTERN": 123,
+      "TOTAL_OPEN_RISK": 47,
+      "INSUFFICIENT_MARGIN": 96,
+      "P1_AMBIGUOUS": 29
+     },
+     "BNB/USDT": {
+      "P1_NO_PATTERN": 1702,
+      "P1_OPPOSITE_PATTERN": 165,
+      "TOTAL_OPEN_RISK": 41,
+      "TRIGGER:NOT_AT_ENTRY": 212,
+      "INSUFFICIENT_MARGIN": 116,
+      "TRIGGER:NO_BREAKOUT_CLOSE": 50,
+      "CANDLE_VETO:C3_OPPOSITE_PATTERN": 68,
+      "P1_AMBIGUOUS": 21,
+      "MIN_NOTIONAL": 4
+     },
+     "SOL/USDT": {
+      "P1_NO_PATTERN": 1518,
+      "TRIGGER:NOT_AT_ENTRY": 119,
+      "TRIGGER:NO_BREAKOUT_CLOSE": 9,
+      "CANDLE_VETO:C3_OPPOSITE_PATTERN": 52,
+      "P1_OPPOSITE_PATTERN": 146,
+      "P1_AMBIGUOUS": 31,
+      "TOTAL_OPEN_RISK": 40,
+      "INSUFFICIENT_MARGIN": 110
+     },
+     "ETH/USDT": {
+      "P1_NO_PATTERN": 2168,
+      "TRIGGER:NOT_AT_ENTRY": 295,
+      "CANDLE_VETO:C3_OPPOSITE_PATTERN": 95,
+      "TRIGGER:NO_BREAKOUT_CLOSE": 39,
+      "P1_OPPOSITE_PATTERN": 221,
+      "TOTAL_OPEN_RISK": 83,
+      "MIN_NOTIONAL": 49,
+      "P1_AMBIGUOUS": 25,
+      "INSUFFICIENT_MARGIN": 112
+     },
+     "LINK/USDT": {
+      "P1_NO_PATTERN": 2175,
+      "TOTAL_OPEN_RISK": 90,
+      "MIN_NOTIONAL": 62,
+      "TRIGGER:NO_BREAKOUT_CLOSE": 18,
+      "TRIGGER:NOT_AT_ENTRY": 202,
+      "P1_OPPOSITE_PATTERN": 184,
+      "CANDLE_VETO:C3_OPPOSITE_PATTERN": 95,
+      "P1_AMBIGUOUS": 24,
+      "INSUFFICIENT_MARGIN": 127
+     },
+     "AAVE/USDT": {
+      "P1_NO_PATTERN": 2062,
+      "TOTAL_OPEN_RISK": 118,
+      "CANDLE_VETO:C3_OPPOSITE_PATTERN": 132,
+      "P1_OPPOSITE_PATTERN": 140,
+      "TRIGGER:NOT_AT_ENTRY": 128,
+      "P1_AMBIGUOUS": 19,
+      "STEP_ZERO_QTY": 164,
+      "TRIGGER:NO_BREAKOUT_CLOSE": 4,
+      "INSUFFICIENT_MARGIN": 57
+     }
+    }
+   },
+   "funding_coverage": {
+    "queries": 4937,
+    "answered": 4937,
+    "unknown": 0,
+    "complete": true,
+    "answered_fraction": 1.0,
+    "missing_series": [],
+    "tolerance_ms": 120000,
+    "source": "history store: futures/<symbol>/funding (Binance fundingRate arşivi)"
+   },
+   "rc": 0,
+   "wall_s": 2977.2,
+   "rule": "p1_4h_confirm"
+  },
+  {
+   "run_id": "v5_p1_p2",
+   "from": "2022-09-01",
+   "to": "2024-08-31",
+   "gate": false,
+   "trigger": true,
+   "veto": false,
+   "stride": 1,
+   "elapsed_s": 3452.3,
+   "n_decisions": 43810,
+   "n_actionable": 35636,
+   "n_opened": 122,
+   "determinism_hash": "cc20c90f238c558e5d5adb89605b382f94ee6dc557f9d417ef07541e88320e4d",
+   "rejections": {
+    "total": 35514,
+    "by_reason": {
+     "TRIGGER:NOT_AT_ENTRY": 1920,
+     "P1_NO_PATTERN": 23990,
+     "TRIGGER:NO_BREAKOUT_CLOSE": 985,
+     "CANDLE_VETO:C3_OPPOSITE_PATTERN": 1540,
+     "P1_OPPOSITE_PATTERN": 2903,
+     "TOTAL_OPEN_RISK": 77,
+     "P1_AMBIGUOUS": 581,
+     "INSUFFICIENT_MARGIN": 3178,
+     "MIN_NOTIONAL": 45,
+     "STEP_ZERO_QTY": 295
+    },
+    "by_symbol": {
+     "DOGE/USDT": {
+      "TRIGGER:NOT_AT_ENTRY": 211,
+      "P1_NO_PATTERN": 2528,
+      "P1_OPPOSITE_PATTERN": 328,
+      "TOTAL_OPEN_RISK": 4,
+      "INSUFFICIENT_MARGIN": 389,
+      "P1_AMBIGUOUS": 55,
+      "TRIGGER:NO_BREAKOUT_CLOSE": 83,
+      "CANDLE_VETO:C3_OPPOSITE_PATTERN": 184
+     },
+     "AVAX/USDT": {
+      "TRIGGER:NOT_AT_ENTRY": 226,
+      "P1_NO_PATTERN": 2178,
+      "P1_OPPOSITE_PATTERN": 261,
+      "INSUFFICIENT_MARGIN": 154,
+      "CANDLE_VETO:C3_OPPOSITE_PATTERN": 122,
+      "TOTAL_OPEN_RISK": 7,
+      "TRIGGER:NO_BREAKOUT_CLOSE": 82,
+      "STEP_ZERO_QTY": 124,
+      "P1_AMBIGUOUS": 32
+     },
+     "BTC/USDT": {
+      "P1_NO_PATTERN": 2646,
+      "TRIGGER:NO_BREAKOUT_CLOSE": 159,
+      "P1_OPPOSITE_PATTERN": 354,
+      "P1_AMBIGUOUS": 119,
+      "INSUFFICIENT_MARGIN": 198,
+      "CANDLE_VETO:C3_OPPOSITE_PATTERN": 158,
+      "TOTAL_OPEN_RISK": 5,
+      "TRIGGER:NOT_AT_ENTRY": 144,
+      "MIN_NOTIONAL": 39,
+      "STEP_ZERO_QTY": 171
+     },
+     "BNB/USDT": {
+      "P1_NO_PATTERN": 2463,
+      "TRIGGER:NO_BREAKOUT_CLOSE": 120,
+      "TRIGGER:NOT_AT_ENTRY": 148,
+      "P1_OPPOSITE_PATTERN": 289,
+      "TOTAL_OPEN_RISK": 10,
+      "CANDLE_VETO:C3_OPPOSITE_PATTERN": 150,
+      "P1_AMBIGUOUS": 57,
+      "INSUFFICIENT_MARGIN": 354
+     },
+     "XRP/USDT": {
+      "P1_NO_PATTERN": 2538,
+      "P1_OPPOSITE_PATTERN": 305,
+      "TOTAL_OPEN_RISK": 14,
+      "CANDLE_VETO:C3_OPPOSITE_PATTERN": 159,
+      "P1_AMBIGUOUS": 59,
+      "TRIGGER:NOT_AT_ENTRY": 161,
+      "INSUFFICIENT_MARGIN": 353,
+      "TRIGGER:NO_BREAKOUT_CLOSE": 121
+     },
+     "LINK/USDT": {
+      "P1_NO_PATTERN": 2505,
+      "P1_OPPOSITE_PATTERN": 296,
+      "TOTAL_OPEN_RISK": 8,
+      "CANDLE_VETO:C3_OPPOSITE_PATTERN": 154,
+      "INSUFFICIENT_MARGIN": 343,
+      "TRIGGER:NOT_AT_ENTRY": 238,
+      "TRIGGER:NO_BREAKOUT_CLOSE": 75,
+      "P1_AMBIGUOUS": 50,
+      "MIN_NOTIONAL": 3
+     },
+     "SOL/USDT": {
+      "P1_NO_PATTERN": 2178,
+      "TRIGGER:NO_BREAKOUT_CLOSE": 69,
+      "CANDLE_VETO:C3_OPPOSITE_PATTERN": 156,
+      "TRIGGER:NOT_AT_ENTRY": 228,
+      "P1_OPPOSITE_PATTERN": 219,
+      "TOTAL_OPEN_RISK": 6,
+      "INSUFFICIENT_MARGIN": 357,
+      "P1_AMBIGUOUS": 45
+     },
+     "AAVE/USDT": {
+      "P1_NO_PATTERN": 2016,
+      "TRIGGER:NO_BREAKOUT_CLOSE": 62,
+      "CANDLE_VETO:C3_OPPOSITE_PATTERN": 131,
+      "TRIGGER:NOT_AT_ENTRY": 180,
+      "P1_OPPOSITE_PATTERN": 226,
+      "P1_AMBIGUOUS": 25,
+      "TOTAL_OPEN_RISK": 7,
+      "INSUFFICIENT_MARGIN": 254
+     },
+     "ETH/USDT": {
+      "P1_NO_PATTERN": 2559,
+      "P1_OPPOSITE_PATTERN": 320,
+      "CANDLE_VETO:C3_OPPOSITE_PATTERN": 167,
+      "TOTAL_OPEN_RISK": 8,
+      "TRIGGER:NOT_AT_ENTRY": 202,
+      "TRIGGER:NO_BREAKOUT_CLOSE": 116,
+      "INSUFFICIENT_MARGIN": 387,
+      "P1_AMBIGUOUS": 80,
+      "MIN_NOTIONAL": 1
+     },
+     "LTC/USDT": {
+      "P1_NO_PATTERN": 2379,
+      "P1_OPPOSITE_PATTERN": 305,
+      "TOTAL_OPEN_RISK": 8,
+      "P1_AMBIGUOUS": 59,
+      "INSUFFICIENT_MARGIN": 389,
+      "TRIGGER:NO_BREAKOUT_CLOSE": 98,
+      "TRIGGER:NOT_AT_ENTRY": 182,
+      "CANDLE_VETO:C3_OPPOSITE_PATTERN": 159,
+      "MIN_NOTIONAL": 2
+     }
+    }
+   },
+   "funding_coverage": {
+    "queries": 2352,
+    "answered": 2352,
+    "unknown": 0,
+    "complete": true,
+    "answered_fraction": 1.0,
+    "missing_series": [],
+    "tolerance_ms": 120000,
+    "source": "history store: futures/<symbol>/funding (Binance fundingRate arşivi)"
+   },
+   "rc": 0,
+   "wall_s": 3459.8,
+   "rule": "p1_4h_confirm"
+  },
+  {
+   "run_id": "v5_p2_p1",
+   "from": "2020-11-01",
+   "to": "2022-08-31",
+   "gate": false,
+   "trigger": true,
+   "veto": false,
+   "stride": 1,
+   "elapsed_s": 2934.8,
+   "n_decisions": 39971,
+   "n_actionable": 20178,
+   "n_opened": 513,
+   "determinism_hash": "7c1dc2d9ea1ad5b1d12be8506b3c5f7c1584df3a4853edfecee55d78a5edc23a",
+   "rejections": {
+    "total": 19665,
+    "by_reason": {
+     "TRIGGER:NOT_AT_ENTRY": 4848,
+     "TRIGGER:NO_BREAKOUT_CLOSE": 826,
+     "CANDLE_VETO:C3_OPPOSITE_PATTERN": 4166,
+     "TOTAL_OPEN_RISK": 6701,
+     "P2_OPPOSITE_PATTERN": 1400,
+     "INSUFFICIENT_MARGIN": 235,
+     "MIN_NOTIONAL": 551,
+     "STEP_ZERO_QTY": 938
+    },
+    "by_symbol": {
+     "XRP/USDT": {
+      "TRIGGER:NOT_AT_ENTRY": 324,
+      "CANDLE_VETO:C3_OPPOSITE_PATTERN": 204,
+      "TOTAL_OPEN_RISK": 353,
+      "P2_OPPOSITE_PATTERN": 90,
+      "TRIGGER:NO_BREAKOUT_CLOSE": 91,
+      "INSUFFICIENT_MARGIN": 11
+     },
+     "BTC/USDT": {
+      "TRIGGER:NO_BREAKOUT_CLOSE": 391,
+      "TRIGGER:NOT_AT_ENTRY": 985,
+      "CANDLE_VETO:C3_OPPOSITE_PATTERN": 673,
+      "P2_OPPOSITE_PATTERN": 329,
+      "TOTAL_OPEN_RISK": 867,
+      "MIN_NOTIONAL": 70,
+      "INSUFFICIENT_MARGIN": 13,
+      "STEP_ZERO_QTY": 351
+     },
+     "LTC/USDT": {
+      "CANDLE_VETO:C3_OPPOSITE_PATTERN": 469,
+      "TOTAL_OPEN_RISK": 689,
+      "INSUFFICIENT_MARGIN": 23,
+      "TRIGGER:NOT_AT_ENTRY": 539,
+      "TRIGGER:NO_BREAKOUT_CLOSE": 48,
+      "P2_OPPOSITE_PATTERN": 151,
+      "MIN_NOTIONAL": 153
+     },
+     "DOGE/USDT": {
+      "TRIGGER:NO_BREAKOUT_CLOSE": 31,
+      "CANDLE_VETO:C3_OPPOSITE_PATTERN": 144,
+      "TRIGGER:NOT_AT_ENTRY": 193,
+      "INSUFFICIENT_MARGIN": 29,
+      "P2_OPPOSITE_PATTERN": 65,
+      "TOTAL_OPEN_RISK": 255
+     },
+     "SOL/USDT": {
+      "CANDLE_VETO:C3_OPPOSITE_PATTERN": 230,
+      "TOTAL_OPEN_RISK": 525,
+      "P2_OPPOSITE_PATTERN": 79,
+      "TRIGGER:NO_BREAKOUT_CLOSE": 18,
+      "INSUFFICIENT_MARGIN": 44,
+      "TRIGGER:NOT_AT_ENTRY": 203
+     },
+     "ETH/USDT": {
+      "TOTAL_OPEN_RISK": 598,
+      "CANDLE_VETO:C3_OPPOSITE_PATTERN": 368,
+      "INSUFFICIENT_MARGIN": 12,
+      "TRIGGER:NOT_AT_ENTRY": 564,
+      "TRIGGER:NO_BREAKOUT_CLOSE": 84,
+      "P2_OPPOSITE_PATTERN": 153,
+      "MIN_NOTIONAL": 119
+     },
+     "LINK/USDT": {
+      "TOTAL_OPEN_RISK": 857,
+      "P2_OPPOSITE_PATTERN": 146,
+      "TRIGGER:NOT_AT_ENTRY": 651,
+      "TRIGGER:NO_BREAKOUT_CLOSE": 39,
+      "CANDLE_VETO:C3_OPPOSITE_PATTERN": 524,
+      "INSUFFICIENT_MARGIN": 33,
+      "MIN_NOTIONAL": 204
+     },
+     "BNB/USDT": {
+      "TOTAL_OPEN_RISK": 319,
+      "INSUFFICIENT_MARGIN": 37,
+      "CANDLE_VETO:C3_OPPOSITE_PATTERN": 187,
+      "P2_OPPOSITE_PATTERN": 47,
+      "TRIGGER:NO_BREAKOUT_CLOSE": 48,
+      "TRIGGER:NOT_AT_ENTRY": 268,
+      "MIN_NOTIONAL": 5
+     },
+     "AVAX/USDT": {
+      "TOTAL_OPEN_RISK": 1160,
+      "INSUFFICIENT_MARGIN": 19,
+      "CANDLE_VETO:C3_OPPOSITE_PATTERN": 727,
+      "P2_OPPOSITE_PATTERN": 181,
+      "TRIGGER:NOT_AT_ENTRY": 632,
+      "TRIGGER:NO_BREAKOUT_CLOSE": 41,
+      "STEP_ZERO_QTY": 314
+     },
+     "AAVE/USDT": {
+      "TOTAL_OPEN_RISK": 1078,
+      "CANDLE_VETO:C3_OPPOSITE_PATTERN": 640,
+      "INSUFFICIENT_MARGIN": 14,
+      "P2_OPPOSITE_PATTERN": 159,
+      "TRIGGER:NOT_AT_ENTRY": 489,
+      "STEP_ZERO_QTY": 273,
+      "TRIGGER:NO_BREAKOUT_CLOSE": 35
+     }
+    }
+   },
+   "funding_coverage": {
+    "queries": 9021,
+    "answered": 9021,
+    "unknown": 0,
+    "complete": true,
+    "answered_fraction": 1.0,
+    "missing_series": [],
+    "tolerance_ms": 120000,
+    "source": "history store: futures/<symbol>/funding (Binance fundingRate arşivi)"
+   },
+   "rc": 0,
+   "wall_s": 2942.2,
+   "rule": "p2_4h_veto"
+  },
+  {
+   "run_id": "v5_p2_p2",
+   "from": "2022-09-01",
+   "to": "2024-08-31",
+   "gate": false,
+   "trigger": true,
+   "veto": false,
+   "stride": 1,
+   "elapsed_s": 3483.5,
+   "n_decisions": 43810,
+   "n_actionable": 32288,
+   "n_opened": 242,
+   "determinism_hash": "1ee69feb1f6076b9eb8611784016ff4bcfdabdd950e502244d3c80fdce249bc0",
+   "rejections": {
+    "total": 32046,
+    "by_reason": {
+     "TRIGGER:NOT_AT_ENTRY": 5837,
+     "TRIGGER:NO_BREAKOUT_CLOSE": 3124,
+     "CANDLE_VETO:C3_OPPOSITE_PATTERN": 6909,
+     "TOTAL_OPEN_RISK": 594,
+     "P2_OPPOSITE_PATTERN": 2678,
+     "INSUFFICIENT_MARGIN": 11576,
+     "MIN_NOTIONAL": 123,
+     "STEP_ZERO_QTY": 1205
+    },
+    "by_symbol": {
+     "DOGE/USDT": {
+      "TRIGGER:NOT_AT_ENTRY": 618,
+      "CANDLE_VETO:C3_OPPOSITE_PATTERN": 737,
+      "TRIGGER:NO_BREAKOUT_CLOSE": 278,
+      "P2_OPPOSITE_PATTERN": 296,
+      "TOTAL_OPEN_RISK": 60,
+      "INSUFFICIENT_MARGIN": 1276
+     },
+     "AVAX/USDT": {
+      "TRIGGER:NOT_AT_ENTRY": 864,
+      "TOTAL_OPEN_RISK": 51,
+      "CANDLE_VETO:C3_OPPOSITE_PATTERN": 643,
+      "P2_OPPOSITE_PATTERN": 266,
+      "TRIGGER:NO_BREAKOUT_CLOSE": 253,
+      "INSUFFICIENT_MARGIN": 701,
+      "STEP_ZERO_QTY": 510
+     },
+     "BTC/USDT": {
+      "TRIGGER:NO_BREAKOUT_CLOSE": 612,
+      "CANDLE_VETO:C3_OPPOSITE_PATTERN": 838,
+      "TOTAL_OPEN_RISK": 59,
+      "TRIGGER:NOT_AT_ENTRY": 545,
+      "P2_OPPOSITE_PATTERN": 354,
+      "INSUFFICIENT_MARGIN": 839,
+      "MIN_NOTIONAL": 72,
+      "STEP_ZERO_QTY": 695
+     },
+     "BNB/USDT": {
+      "TRIGGER:NO_BREAKOUT_CLOSE": 422,
+      "TRIGGER:NOT_AT_ENTRY": 525,
+      "CANDLE_VETO:C3_OPPOSITE_PATTERN": 716,
+      "TOTAL_OPEN_RISK": 55,
+      "P2_OPPOSITE_PATTERN": 283,
+      "INSUFFICIENT_MARGIN": 1360
+     },
+     "LINK/USDT": {
+      "TRIGGER:NOT_AT_ENTRY": 691,
+      "CANDLE_VETO:C3_OPPOSITE_PATTERN": 800,
+      "TOTAL_OPEN_RISK": 105,
+      "P2_OPPOSITE_PATTERN": 273,
+      "INSUFFICIENT_MARGIN": 1441,
+      "TRIGGER:NO_BREAKOUT_CLOSE": 234,
+      "MIN_NOTIONAL": 19
+     },
+     "SOL/USDT": {
+      "TRIGGER:NO_BREAKOUT_CLOSE": 174,
+      "TRIGGER:NOT_AT_ENTRY": 483,
+      "TOTAL_OPEN_RISK": 33,
+      "CANDLE_VETO:C3_OPPOSITE_PATTERN": 486,
+      "P2_OPPOSITE_PATTERN": 180,
+      "INSUFFICIENT_MARGIN": 1020
+     },
+     "LTC/USDT": {
+      "CANDLE_VETO:C3_OPPOSITE_PATTERN": 742,
+      "TOTAL_OPEN_RISK": 84,
+      "INSUFFICIENT_MARGIN": 1430,
+      "TRIGGER:NOT_AT_ENTRY": 615,
+      "P2_OPPOSITE_PATTERN": 289,
+      "TRIGGER:NO_BREAKOUT_CLOSE": 296,
+      "MIN_NOTIONAL": 24
+     },
+     "AAVE/USDT": {
+      "P2_OPPOSITE_PATTERN": 178,
+      "TOTAL_OPEN_RISK": 30,
+      "TRIGGER:NOT_AT_ENTRY": 388,
+      "CANDLE_VETO:C3_OPPOSITE_PATTERN": 430,
+      "INSUFFICIENT_MARGIN": 771,
+      "TRIGGER:NO_BREAKOUT_CLOSE": 99
+     },
+     "ETH/USDT": {
+      "TOTAL_OPEN_RISK": 61,
+      "TRIGGER:NOT_AT_ENTRY": 549,
+      "CANDLE_VETO:C3_OPPOSITE_PATTERN": 745,
+      "INSUFFICIENT_MARGIN": 1322,
+      "TRIGGER:NO_BREAKOUT_CLOSE": 395,
+      "P2_OPPOSITE_PATTERN": 297,
+      "MIN_NOTIONAL": 8
+     },
+     "XRP/USDT": {
+      "P2_OPPOSITE_PATTERN": 262,
+      "TRIGGER:NO_BREAKOUT_CLOSE": 361,
+      "TRIGGER:NOT_AT_ENTRY": 559,
+      "TOTAL_OPEN_RISK": 56,
+      "CANDLE_VETO:C3_OPPOSITE_PATTERN": 772,
+      "INSUFFICIENT_MARGIN": 1416
+     }
+    }
+   },
+   "funding_coverage": {
+    "queries": 4210,
+    "answered": 4210,
+    "unknown": 0,
+    "complete": true,
+    "answered_fraction": 1.0,
+    "missing_series": [],
+    "tolerance_ms": 120000,
+    "source": "history store: futures/<symbol>/funding (Binance fundingRate arşivi)"
+   },
+   "rc": 0,
+   "wall_s": 3490.9,
+   "rule": "p2_4h_veto"
+  },
+  {
+   "run_id": "v5_p3_p1",
+   "from": "2020-11-01",
+   "to": "2022-08-31",
+   "gate": false,
+   "trigger": true,
+   "veto": false,
+   "stride": 1,
+   "elapsed_s": 2976.4,
+   "n_decisions": 39971,
+   "n_actionable": 29399,
+   "n_opened": 238,
+   "determinism_hash": "dc87c7e5357feca39a62bfc752e1aaff6dee5a3e954c8cd1b6e25dbb22cb5c8d",
+   "rejections": {
+    "total": 29161,
+    "by_reason": {
+     "P3_NO_PATTERN": 24850,
+     "TRIGGER:NO_BREAKOUT_CLOSE": 249,
+     "CANDLE_VETO:C3_OPPOSITE_PATTERN": 747,
+     "TRIGGER:NOT_AT_ENTRY": 1500,
+     "INSUFFICIENT_MARGIN": 65,
+     "TOTAL_OPEN_RISK": 218,
+     "P3_OPPOSITE_PATTERN": 630,
+     "P3_AMBIGUOUS": 150,
+     "P3_MISSING_BARS": 119,
+     "MIN_NOTIONAL": 201,
+     "STEP_ZERO_QTY": 432
+    },
+    "by_symbol": {
+     "XRP/USDT": {
+      "P3_NO_PATTERN": 1892,
+      "TRIGGER:NOT_AT_ENTRY": 81,
+      "TRIGGER:NO_BREAKOUT_CLOSE": 12,
+      "P3_OPPOSITE_PATTERN": 52,
+      "CANDLE_VETO:C3_OPPOSITE_PATTERN": 29,
+      "INSUFFICIENT_MARGIN": 6,
+      "TOTAL_OPEN_RISK": 4
+     },
+     "AVAX/USDT": {
+      "P3_NO_PATTERN": 2676,
+      "CANDLE_VETO:C3_OPPOSITE_PATTERN": 129,
+      "TOTAL_OPEN_RISK": 32,
+      "P3_OPPOSITE_PATTERN": 60,
+      "P3_AMBIGUOUS": 10,
+      "TRIGGER:NOT_AT_ENTRY": 174,
+      "STEP_ZERO_QTY": 134,
+      "TRIGGER:NO_BREAKOUT_CLOSE": 15
+     },
+     "BTC/USDT": {
+      "P3_NO_PATTERN": 2691,
+      "TRIGGER:NOT_AT_ENTRY": 333,
+      "TRIGGER:NO_BREAKOUT_CLOSE": 94,
+      "TOTAL_OPEN_RISK": 46,
+      "CANDLE_VETO:C3_OPPOSITE_PATTERN": 164,
+      "INSUFFICIENT_MARGIN": 3,
+      "MIN_NOTIONAL": 50,
+      "STEP_ZERO_QTY": 182,
+      "P3_OPPOSITE_PATTERN": 110,
+      "P3_AMBIGUOUS": 6
+     },
+     "LTC/USDT": {
+      "P3_NO_PATTERN": 2360,
+      "TRIGGER:NOT_AT_ENTRY": 164,
+      "TRIGGER:NO_BREAKOUT_CLOSE": 30,
+      "CANDLE_VETO:C3_OPPOSITE_PATTERN": 67,
+      "TOTAL_OPEN_RISK": 9,
+      "P3_OPPOSITE_PATTERN": 26,
+      "MIN_NOTIONAL": 54,
+      "P3_AMBIGUOUS": 6
+     },
+     "DOGE/USDT": {
+      "TRIGGER:NO_BREAKOUT_CLOSE": 25,
+      "CANDLE_VETO:C3_OPPOSITE_PATTERN": 56,
+      "TRIGGER:NOT_AT_ENTRY": 115,
+      "INSUFFICIENT_MARGIN": 7,
+      "TOTAL_OPEN_RISK": 37,
+      "P3_OPPOSITE_PATTERN": 79,
+      "P3_NO_PATTERN": 2363,
+      "P3_AMBIGUOUS": 38
+     },
+     "BNB/USDT": {
+      "P3_NO_PATTERN": 2097,
+      "P3_OPPOSITE_PATTERN": 77,
+      "INSUFFICIENT_MARGIN": 10,
+      "CANDLE_VETO:C3_OPPOSITE_PATTERN": 36,
+      "TRIGGER:NOT_AT_ENTRY": 146,
+      "TOTAL_OPEN_RISK": 9,
+      "TRIGGER:NO_BREAKOUT_CLOSE": 18,
+      "P3_AMBIGUOUS": 31
+     },
+     "SOL/USDT": {
+      "P3_NO_PATTERN": 2382,
+      "TRIGGER:NOT_AT_ENTRY": 101,
+      "TRIGGER:NO_BREAKOUT_CLOSE": 10,
+      "CANDLE_VETO:C3_OPPOSITE_PATTERN": 28,
+      "INSUFFICIENT_MARGIN": 17,
+      "P3_OPPOSITE_PATTERN": 53,
+      "TOTAL_OPEN_RISK": 9
+     },
+     "ETH/USDT": {
+      "P3_NO_PATTERN": 2775,
+      "TRIGGER:NO_BREAKOUT_CLOSE": 27,
+      "TRIGGER:NOT_AT_ENTRY": 110,
+      "TOTAL_OPEN_RISK": 21,
+      "CANDLE_VETO:C3_OPPOSITE_PATTERN": 43,
+      "INSUFFICIENT_MARGIN": 5,
+      "P3_OPPOSITE_PATTERN": 59,
+      "P3_AMBIGUOUS": 17,
+      "MIN_NOTIONAL": 15
+     },
+     "LINK/USDT": {
+      "P3_NO_PATTERN": 2813,
+      "P3_OPPOSITE_PATTERN": 62,
+      "P3_AMBIGUOUS": 18,
+      "CANDLE_VETO:C3_OPPOSITE_PATTERN": 104,
+      "MIN_NOTIONAL": 82,
+      "TRIGGER:NOT_AT_ENTRY": 207,
+      "TRIGGER:NO_BREAKOUT_CLOSE": 12,
+      "TOTAL_OPEN_RISK": 37,
+      "INSUFFICIENT_MARGIN": 17
+     },
+     "AAVE/USDT": {
+      "P3_MISSING_BARS": 119,
+      "P3_NO_PATTERN": 2801,
+      "STEP_ZERO_QTY": 116,
+      "CANDLE_VETO:C3_OPPOSITE_PATTERN": 91,
+      "TOTAL_OPEN_RISK": 14,
+      "TRIGGER:NOT_AT_ENTRY": 69,
+      "P3_OPPOSITE_PATTERN": 52,
+      "P3_AMBIGUOUS": 24,
+      "TRIGGER:NO_BREAKOUT_CLOSE": 6
+     }
+    }
+   },
+   "funding_coverage": {
+    "queries": 3804,
+    "answered": 3804,
+    "unknown": 0,
+    "complete": true,
+    "answered_fraction": 1.0,
+    "missing_series": [],
+    "tolerance_ms": 120000,
+    "source": "history store: futures/<symbol>/funding (Binance fundingRate arşivi)"
+   },
+   "rc": 0,
+   "wall_s": 2983.8,
+   "rule": "p3_1d_confirm"
+  },
+  {
+   "run_id": "v5_p3_p2",
+   "from": "2022-09-01",
+   "to": "2024-08-31",
+   "gate": false,
+   "trigger": true,
+   "veto": false,
+   "stride": 1,
+   "elapsed_s": 3424.1,
+   "n_decisions": 43810,
+   "n_actionable": 34554,
+   "n_opened": 161,
+   "determinism_hash": "ecd71fc12bfdad682e9f6170d664cd8db0cc38b61193535af918f1dbb8340ec3",
+   "rejections": {
+    "total": 34393,
+    "by_reason": {
+     "TRIGGER:NOT_AT_ENTRY": 2234,
+     "P3_NO_PATTERN": 25313,
+     "P3_OPPOSITE_PATTERN": 1437,
+     "P3_AMBIGUOUS": 384,
+     "TRIGGER:NO_BREAKOUT_CLOSE": 927,
+     "CANDLE_VETO:C3_OPPOSITE_PATTERN": 1671,
+     "MIN_NOTIONAL": 89,
+     "TOTAL_OPEN_RISK": 50,
+     "INSUFFICIENT_MARGIN": 2072,
+     "STEP_ZERO_QTY": 216
+    },
+    "by_symbol": {
+     "DOGE/USDT": {
+      "TRIGGER:NOT_AT_ENTRY": 160,
+      "P3_NO_PATTERN": 2770,
+      "P3_OPPOSITE_PATTERN": 112,
+      "P3_AMBIGUOUS": 48,
+      "CANDLE_VETO:C3_OPPOSITE_PATTERN": 133,
+      "INSUFFICIENT_MARGIN": 182,
+      "TRIGGER:NO_BREAKOUT_CLOSE": 61
+     },
+     "AVAX/USDT": {
+      "P3_NO_PATTERN": 2807,
+      "TRIGGER:NOT_AT_ENTRY": 285,
+      "TRIGGER:NO_BREAKOUT_CLOSE": 75,
+      "CANDLE_VETO:C3_OPPOSITE_PATTERN": 122,
+      "P3_OPPOSITE_PATTERN": 86,
+      "INSUFFICIENT_MARGIN": 94,
+      "TOTAL_OPEN_RISK": 5,
+      "STEP_ZERO_QTY": 80,
+      "P3_AMBIGUOUS": 12
+     },
+     "BTC/USDT": {
+      "P3_NO_PATTERN": 2691,
+      "TRIGGER:NO_BREAKOUT_CLOSE": 170,
+      "TRIGGER:NOT_AT_ENTRY": 233,
+      "CANDLE_VETO:C3_OPPOSITE_PATTERN": 243,
+      "MIN_NOTIONAL": 65,
+      "P3_OPPOSITE_PATTERN": 208,
+      "INSUFFICIENT_MARGIN": 193,
+      "STEP_ZERO_QTY": 136,
+      "P3_AMBIGUOUS": 75
+     },
+     "BNB/USDT": {
+      "P3_NO_PATTERN": 2391,
+      "P3_OPPOSITE_PATTERN": 179,
+      "P3_AMBIGUOUS": 48,
+      "INSUFFICIENT_MARGIN": 250,
+      "CANDLE_VETO:C3_OPPOSITE_PATTERN": 169,
+      "TRIGGER:NO_BREAKOUT_CLOSE": 106,
+      "TRIGGER:NOT_AT_ENTRY": 234
+     },
+     "LINK/USDT": {
+      "P3_NO_PATTERN": 2580,
+      "TOTAL_OPEN_RISK": 7,
+      "P3_OPPOSITE_PATTERN": 129,
+      "INSUFFICIENT_MARGIN": 222,
+      "CANDLE_VETO:C3_OPPOSITE_PATTERN": 167,
+      "P3_AMBIGUOUS": 28,
+      "TRIGGER:NOT_AT_ENTRY": 190,
+      "MIN_NOTIONAL": 4,
+      "TRIGGER:NO_BREAKOUT_CLOSE": 66
+     },
+     "SOL/USDT": {
+      "P3_NO_PATTERN": 2683,
+      "P3_OPPOSITE_PATTERN": 90,
+      "TOTAL_OPEN_RISK": 12,
+      "INSUFFICIENT_MARGIN": 191,
+      "TRIGGER:NOT_AT_ENTRY": 287,
+      "TRIGGER:NO_BREAKOUT_CLOSE": 87,
+      "CANDLE_VETO:C3_OPPOSITE_PATTERN": 133,
+      "P3_AMBIGUOUS": 2
+     },
+     "ETH/USDT": {
+      "P3_NO_PATTERN": 2332,
+      "TRIGGER:NOT_AT_ENTRY": 240,
+      "CANDLE_VETO:C3_OPPOSITE_PATTERN": 198,
+      "TRIGGER:NO_BREAKOUT_CLOSE": 124,
+      "TOTAL_OPEN_RISK": 5,
+      "INSUFFICIENT_MARGIN": 280,
+      "P3_OPPOSITE_PATTERN": 210,
+      "P3_AMBIGUOUS": 60,
+      "MIN_NOTIONAL": 13
+     },
+     "LTC/USDT": {
+      "P3_NO_PATTERN": 2393,
+      "P3_OPPOSITE_PATTERN": 179,
+      "TOTAL_OPEN_RISK": 21,
+      "CANDLE_VETO:C3_OPPOSITE_PATTERN": 241,
+      "TRIGGER:NOT_AT_ENTRY": 233,
+      "INSUFFICIENT_MARGIN": 294,
+      "MIN_NOTIONAL": 7,
+      "TRIGGER:NO_BREAKOUT_CLOSE": 77,
+      "P3_AMBIGUOUS": 54
+     },
+     "AAVE/USDT": {
+      "P3_NO_PATTERN": 2458,
+      "TRIGGER:NOT_AT_ENTRY": 117,
+      "TRIGGER:NO_BREAKOUT_CLOSE": 46,
+      "CANDLE_VETO:C3_OPPOSITE_PATTERN": 97,
+      "INSUFFICIENT_MARGIN": 112,
+      "P3_OPPOSITE_PATTERN": 98,
+      "P3_AMBIGUOUS": 12
+     },
+     "XRP/USDT": {
+      "P3_NO_PATTERN": 2208,
+      "TRIGGER:NOT_AT_ENTRY": 255,
+      "CANDLE_VETO:C3_OPPOSITE_PATTERN": 168,
+      "INSUFFICIENT_MARGIN": 254,
+      "P3_OPPOSITE_PATTERN": 146,
+      "P3_AMBIGUOUS": 45,
+      "TRIGGER:NO_BREAKOUT_CLOSE": 115
+     }
+    }
+   },
+   "funding_coverage": {
+    "queries": 2916,
+    "answered": 2916,
+    "unknown": 0,
+    "complete": true,
+    "answered_fraction": 1.0,
+    "missing_series": [],
+    "tolerance_ms": 120000,
+    "source": "history store: futures/<symbol>/funding (Binance fundingRate arşivi)"
+   },
+   "rc": 0,
+   "wall_s": 3431.5,
+   "rule": "p3_1d_confirm"
+  },
+  {
+   "run_id": "v5_p4_p1",
+   "from": "2020-11-01",
+   "to": "2022-08-31",
+   "gate": false,
+   "trigger": true,
+   "veto": false,
+   "stride": 1,
+   "elapsed_s": 2928.1,
+   "n_decisions": 39971,
+   "n_actionable": 20155,
+   "n_opened": 522,
+   "determinism_hash": "f87299ce890715b08f4a47f502a86a2a038300421147504409ac8b9dc84108b1",
+   "rejections": {
+    "total": 19633,
+    "by_reason": {
+     "TRIGGER:NOT_AT_ENTRY": 4977,
+     "TRIGGER:NO_BREAKOUT_CLOSE": 839,
+     "CANDLE_VETO:C3_OPPOSITE_PATTERN": 4500,
+     "TOTAL_OPEN_RISK": 7085,
+     "INSUFFICIENT_MARGIN": 193,
+     "MIN_NOTIONAL": 586,
+     "P4_OPPOSITE_PATTERN": 551,
+     "STEP_ZERO_QTY": 902
+    },
+    "by_symbol": {
+     "XRP/USDT": {
+      "TRIGGER:NOT_AT_ENTRY": 290,
+      "CANDLE_VETO:C3_OPPOSITE_PATTERN": 193,
+      "TOTAL_OPEN_RISK": 326,
+      "TRIGGER:NO_BREAKOUT_CLOSE": 80,
+      "INSUFFICIENT_MARGIN": 19,
+      "P4_OPPOSITE_PATTERN": 51
+     },
+     "BTC/USDT": {
+      "TRIGGER:NO_BREAKOUT_CLOSE": 403,
+      "TRIGGER:NOT_AT_ENTRY": 1004,
+      "CANDLE_VETO:C3_OPPOSITE_PATTERN": 768,
+      "TOTAL_OPEN_RISK": 988,
+      "MIN_NOTIONAL": 68,
+      "INSUFFICIENT_MARGIN": 16,
+      "STEP_ZERO_QTY": 322,
+      "P4_OPPOSITE_PATTERN": 110
+     },
+     "LTC/USDT": {
+      "CANDLE_VETO:C3_OPPOSITE_PATTERN": 544,
+      "TOTAL_OPEN_RISK": 798,
+      "INSUFFICIENT_MARGIN": 27,
+      "TRIGGER:NOT_AT_ENTRY": 634,
+      "TRIGGER:NO_BREAKOUT_CLOSE": 55,
+      "MIN_NOTIONAL": 173,
+      "P4_OPPOSITE_PATTERN": 21
+     },
+     "DOGE/USDT": {
+      "TRIGGER:NO_BREAKOUT_CLOSE": 20,
+      "CANDLE_VETO:C3_OPPOSITE_PATTERN": 159,
+      "TRIGGER:NOT_AT_ENTRY": 116,
+      "INSUFFICIENT_MARGIN": 41,
+      "P4_OPPOSITE_PATTERN": 24,
+      "TOTAL_OPEN_RISK": 272
+     },
+     "SOL/USDT": {
+      "CANDLE_VETO:C3_OPPOSITE_PATTERN": 218,
+      "TOTAL_OPEN_RISK": 423,
+      "TRIGGER:NOT_AT_ENTRY": 235,
+      "TRIGGER:NO_BREAKOUT_CLOSE": 19,
+      "P4_OPPOSITE_PATTERN": 48,
+      "INSUFFICIENT_MARGIN": 22
+     },
+     "ETH/USDT": {
+      "TOTAL_OPEN_RISK": 618,
+      "CANDLE_VETO:C3_OPPOSITE_PATTERN": 405,
+      "INSUFFICIENT_MARGIN": 12,
+      "TRIGGER:NOT_AT_ENTRY": 615,
+      "TRIGGER:NO_BREAKOUT_CLOSE": 94,
+      "MIN_NOTIONAL": 135,
+      "P4_OPPOSITE_PATTERN": 54
+     },
+     "LINK/USDT": {
+      "TOTAL_OPEN_RISK": 959,
+      "TRIGGER:NOT_AT_ENTRY": 628,
+      "TRIGGER:NO_BREAKOUT_CLOSE": 32,
+      "CANDLE_VETO:C3_OPPOSITE_PATTERN": 572,
+      "MIN_NOTIONAL": 205,
+      "INSUFFICIENT_MARGIN": 4,
+      "P4_OPPOSITE_PATTERN": 46
+     },
+     "BNB/USDT": {
+      "P4_OPPOSITE_PATTERN": 80,
+      "CANDLE_VETO:C3_OPPOSITE_PATTERN": 196,
+      "TOTAL_OPEN_RISK": 290,
+      "INSUFFICIENT_MARGIN": 46,
+      "TRIGGER:NO_BREAKOUT_CLOSE": 66,
+      "TRIGGER:NOT_AT_ENTRY": 329,
+      "MIN_NOTIONAL": 5
+     },
+     "AVAX/USDT": {
+      "P4_OPPOSITE_PATTERN": 59,
+      "TOTAL_OPEN_RISK": 1272,
+      "CANDLE_VETO:C3_OPPOSITE_PATTERN": 796,
+      "TRIGGER:NOT_AT_ENTRY": 659,
+      "TRIGGER:NO_BREAKOUT_CLOSE": 39,
+      "INSUFFICIENT_MARGIN": 2,
+      "STEP_ZERO_QTY": 322
+     },
+     "AAVE/USDT": {
+      "TOTAL_OPEN_RISK": 1139,
+      "CANDLE_VETO:C3_OPPOSITE_PATTERN": 649,
+      "TRIGGER:NOT_AT_ENTRY": 467,
+      "STEP_ZERO_QTY": 258,
+      "P4_OPPOSITE_PATTERN": 58,
+      "TRIGGER:NO_BREAKOUT_CLOSE": 31,
+      "INSUFFICIENT_MARGIN": 4
+     }
+    }
+   },
+   "funding_coverage": {
+    "queries": 9062,
+    "answered": 9062,
+    "unknown": 0,
+    "complete": true,
+    "answered_fraction": 1.0,
+    "missing_series": [],
+    "tolerance_ms": 120000,
+    "source": "history store: futures/<symbol>/funding (Binance fundingRate arşivi)"
+   },
+   "rc": 0,
+   "wall_s": 2935.7,
+   "rule": "p4_1d_veto"
+  },
+  {
+   "run_id": "v5_p4_p2",
+   "from": "2022-09-01",
+   "to": "2024-08-31",
+   "gate": false,
+   "trigger": true,
+   "veto": false,
+   "stride": 1,
+   "elapsed_s": 3494.1,
+   "n_decisions": 43810,
+   "n_actionable": 33554,
+   "n_opened": 195,
+   "determinism_hash": "84c43eb74104fd6da461fbf68fc28c113677cec9adb1ed55d7d622c73664a8d1",
+   "rejections": {
+    "total": 33359,
+    "by_reason": {
+     "TRIGGER:NOT_AT_ENTRY": 6152,
+     "TRIGGER:NO_BREAKOUT_CLOSE": 3250,
+     "CANDLE_VETO:C3_OPPOSITE_PATTERN": 7653,
+     "TOTAL_OPEN_RISK": 701,
+     "P4_OPPOSITE_PATTERN": 1533,
+     "MIN_NOTIONAL": 95,
+     "INSUFFICIENT_MARGIN": 12668,
+     "STEP_ZERO_QTY": 1307
+    },
+    "by_symbol": {
+     "DOGE/USDT": {
+      "TRIGGER:NOT_AT_ENTRY": 648,
+      "CANDLE_VETO:C3_OPPOSITE_PATTERN": 780,
+      "TRIGGER:NO_BREAKOUT_CLOSE": 270,
+      "TOTAL_OPEN_RISK": 69,
+      "P4_OPPOSITE_PATTERN": 127,
+      "INSUFFICIENT_MARGIN": 1328
+     },
+     "AVAX/USDT": {
+      "TRIGGER:NOT_AT_ENTRY": 852,
+      "TOTAL_OPEN_RISK": 62,
+      "CANDLE_VETO:C3_OPPOSITE_PATTERN": 688,
+      "TRIGGER:NO_BREAKOUT_CLOSE": 261,
+      "P4_OPPOSITE_PATTERN": 92,
+      "INSUFFICIENT_MARGIN": 701,
+      "STEP_ZERO_QTY": 549
+     },
+     "BTC/USDT": {
+      "TRIGGER:NO_BREAKOUT_CLOSE": 619,
+      "CANDLE_VETO:C3_OPPOSITE_PATTERN": 904,
+      "TOTAL_OPEN_RISK": 55,
+      "TRIGGER:NOT_AT_ENTRY": 568,
+      "MIN_NOTIONAL": 66,
+      "P4_OPPOSITE_PATTERN": 208,
+      "INSUFFICIENT_MARGIN": 836,
+      "STEP_ZERO_QTY": 758
+     },
+     "BNB/USDT": {
+      "TRIGGER:NO_BREAKOUT_CLOSE": 428,
+      "TRIGGER:NOT_AT_ENTRY": 531,
+      "CANDLE_VETO:C3_OPPOSITE_PATTERN": 780,
+      "TOTAL_OPEN_RISK": 37,
+      "P4_OPPOSITE_PATTERN": 200,
+      "INSUFFICIENT_MARGIN": 1482
+     },
+     "LINK/USDT": {
+      "TRIGGER:NOT_AT_ENTRY": 724,
+      "CANDLE_VETO:C3_OPPOSITE_PATTERN": 869,
+      "TOTAL_OPEN_RISK": 100,
+      "INSUFFICIENT_MARGIN": 1568,
+      "P4_OPPOSITE_PATTERN": 165,
+      "TRIGGER:NO_BREAKOUT_CLOSE": 267,
+      "MIN_NOTIONAL": 14
+     },
+     "SOL/USDT": {
+      "TRIGGER:NO_BREAKOUT_CLOSE": 204,
+      "TRIGGER:NOT_AT_ENTRY": 652,
+      "TOTAL_OPEN_RISK": 72,
+      "CANDLE_VETO:C3_OPPOSITE_PATTERN": 628,
+      "INSUFFICIENT_MARGIN": 1282,
+      "P4_OPPOSITE_PATTERN": 82
+     },
+     "LTC/USDT": {
+      "CANDLE_VETO:C3_OPPOSITE_PATTERN": 813,
+      "TOTAL_OPEN_RISK": 104,
+      "P4_OPPOSITE_PATTERN": 182,
+      "INSUFFICIENT_MARGIN": 1509,
+      "TRIGGER:NOT_AT_ENTRY": 556,
+      "TRIGGER:NO_BREAKOUT_CLOSE": 251,
+      "MIN_NOTIONAL": 8
+     },
+     "AAVE/USDT": {
+      "CANDLE_VETO:C3_OPPOSITE_PATTERN": 513,
+      "TOTAL_OPEN_RISK": 52,
+      "TRIGGER:NOT_AT_ENTRY": 390,
+      "INSUFFICIENT_MARGIN": 943,
+      "P4_OPPOSITE_PATTERN": 102,
+      "TRIGGER:NO_BREAKOUT_CLOSE": 120
+     },
+     "ETH/USDT": {
+      "TOTAL_OPEN_RISK": 75,
+      "TRIGGER:NOT_AT_ENTRY": 653,
+      "CANDLE_VETO:C3_OPPOSITE_PATTERN": 844,
+      "P4_OPPOSITE_PATTERN": 210,
+      "TRIGGER:NO_BREAKOUT_CLOSE": 449,
+      "INSUFFICIENT_MARGIN": 1535,
+      "MIN_NOTIONAL": 7
+     },
+     "XRP/USDT": {
+      "TOTAL_OPEN_RISK": 75,
+      "CANDLE_VETO:C3_OPPOSITE_PATTERN": 834,
+      "TRIGGER:NO_BREAKOUT_CLOSE": 381,
+      "TRIGGER:NOT_AT_ENTRY": 578,
+      "INSUFFICIENT_MARGIN": 1484,
+      "P4_OPPOSITE_PATTERN": 165
+     }
+    }
+   },
+   "funding_coverage": {
+    "queries": 3451,
+    "answered": 3451,
+    "unknown": 0,
+    "complete": true,
+    "answered_fraction": 1.0,
+    "missing_series": [],
+    "tolerance_ms": 120000,
+    "source": "history store: futures/<symbol>/funding (Binance fundingRate arşivi)"
+   },
+   "rc": 0,
+   "wall_s": 3501.6,
+   "rule": "p4_1d_veto"
+  }
+ ]
+}

@@ -1,0 +1,11 @@
+PROTOCOL_V11: 9 kosu - {"momentum_rules_sha256": "6af3337b92803648a964a2f7d174d5b2d22a42fa38fe135a478ebd6e1f24193a"}
+v11_m1_p1  rc=0   422s acilan=20
+v11_m3_p1  rc=0   426s acilan=16
+v11_m2_p1  rc=0   427s acilan=47
+v11_m1_p2  rc=0   568s acilan=71
+v11_m3_p2  rc=0   570s acilan=72
+v11_m2_p2  rc=0   571s acilan=94
+v11_m3_p3  rc=0   657s acilan=46
+v11_m1_p3  rc=0   661s acilan=52
+v11_m2_p3  rc=0   666s acilan=58
+V11 DONE

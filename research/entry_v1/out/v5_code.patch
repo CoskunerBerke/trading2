@@ -1,0 +1,899 @@
+diff --git a/config.yaml b/config.yaml
+index 595be9b..c748fdb 100644
+--- a/config.yaml
++++ b/config.yaml
+@@ -298,3 +298,8 @@ security:
+ entry_selectivity:
+   candle_confirmation_mode: ENFORCE          # OFF | SHADOW | ENFORCE
+   candle_confirmation_variant: c3_4h_veto    # c1_4h | c2_4h_confirm | c3_4h_veto | c4_1d
++  # GRAFİK FORMASYONU ONAYI (V5): çift dip/tepe, üçlü, OBO, üçgen, bayrak; yalnız KIRILIŞLA teyitli.
++  # Önce SHADOW: her adayda dört varyantın hükmü ve taze formasyon listesi kaydedilir, karar değişmez.
++  # Ölçüm: research/entry_v1/out/DENEY_V5.md. ENFORCE açmak operatör kararıdır.
++  chart_confirmation_mode: SHADOW            # OFF | SHADOW | ENFORCE
++  chart_confirmation_variant: p2_4h_veto     # p1_4h_confirm | p2_4h_veto | p3_1d_confirm | p4_1d_veto
+diff --git a/tradingbot/config_v3.py b/tradingbot/config_v3.py
+index f8a2187..8a055c1 100644
+--- a/tradingbot/config_v3.py
++++ b/tradingbot/config_v3.py
+@@ -595,6 +595,13 @@ class EntrySelectivitySection:
+     candle_confirmation_mode: str = "OFF"
+     #: c1_4h | c2_4h_confirm | c3_4h_veto | c4_1d — bkz. `candle_confirmation.VARIANTS`.
+     candle_confirmation_variant: str = "c3_4h_veto"
++    #: GRAFİK FORMASYONU ONAYI (V5, 2026-09-12): `OFF` | `SHADOW` | `ENFORCE`; mantık
++    #: `chart_confirmation.py` (iki motorda tek kaynak). LIVE/LIVE_LIMITED'da ENFORCE yasak.
++    chart_confirmation_mode: str = "OFF"
++    #: p1_4h_confirm | p2_4h_veto | p3_1d_confirm | p4_1d_veto — bkz. `chart_confirmation.VARIANTS`.
++    chart_confirmation_variant: str = "p2_4h_veto"
++    #: `chart_patterns.ChartPatternConfig` alanları; verilmeyenler varsayılanda.
++    chart_policy: dict[str, Any] = field(default_factory=dict)
+ 
+ 
+ @dataclass
+@@ -858,6 +865,16 @@ def validate_v3(cfg: V3Config) -> None:
+             app_mode=getattr(cfg.mode, "mode", None))
+     except ValueError as exc:
+         raise ConfigError(f"entry_selectivity.candle_confirmation: {exc}") from exc
++    # GRAFİK FORMASYONU ONAYI (V5): kurallar `chart_confirmation.validate_settings` içinde.
++    from .chart_confirmation import validate_settings as _ch_validate
++    from .chart_patterns import ChartPatternConfig as _CPC
++    try:
++        _en.chart_confirmation_mode = _ch_validate(
++            mode=_en.chart_confirmation_mode, variant=_en.chart_confirmation_variant,
++            app_mode=getattr(cfg.mode, "mode", None))
++        _CPC.from_dict(dict(_en.chart_policy or {}))
++    except ValueError as exc:
++        raise ConfigError(f"entry_selectivity.chart_confirmation: {exc}") from exc
+     # ÇOK ZAMAN DİLİMLİ LİKİDİTE TEYİDİ (H ailesi): SHADOW dışına çıkış yolu YOKTUR.
+     # `entry_selectivity.mode` zaten SHADOW'a kilitli; H ayrıca KENDİ kapısını da taşır ki
+     # ileride giriş bölümü gevşetilse bile H tek başına aktifleşemesin (fail-closed).
+diff --git a/tradingbot/engine_v3.py b/tradingbot/engine_v3.py
+index 4831028..3e79b0e 100644
+--- a/tradingbot/engine_v3.py
++++ b/tradingbot/engine_v3.py
+@@ -73,7 +73,7 @@ def _as_multiplier(value) -> float:
+ # Karar hunisi: her turda ve kayan 24 saatte tutulur. `trades_opened_24h` YALNIZ gozlem metrigidir,
+ # karar kapisi DEGILDIR. `daily_trade_cap`/`per_run_trade_cap` her zaman null olarak raporlanir.
+ _FUNNEL_KEYS = ("actionable", "ranked", "chief_blocked", "hard_safety_blocked", "no_trigger",
+-                "trigger_fired", "candle_blocked", "positive_point_edge", "positive_conservative_edge",
++                "trigger_fired", "candle_blocked", "chart_blocked", "positive_point_edge", "positive_conservative_edge",
+                 "negative_edge_blocked", "research_small", "duplicate_blocked",
+                 "research_policy_blocked", "size_multiplier_zero", "leverage_gate_blocked",
+                 "precision_unresolved",
+@@ -427,6 +427,14 @@ class TradingEngineV3(TradingEngine):
+                     self.candle_cfg = _CCC.from_dict(dict(_en.candle_policy or {}))
+                 log.info("MUM ONAYI: mode=%s variant=%s policy=%s", _ccm,
+                          _en.candle_confirmation_variant, self.candle_cfg.policy_version)
++            # GRAFIK FORMASYONU ONAYI (V5): OFF disinda ise baslangicta bir kez loglanir.
++            _chm = str(getattr(_en, "chart_confirmation_mode", "OFF") or "OFF").upper()
++            if _chm != "OFF":
++                from .chart_patterns import ChartPatternConfig as _CPC
++                if getattr(self, "chart_cfg", None) is None:
++                    self.chart_cfg = _CPC.from_dict(dict(_en.chart_policy or {}))
++                log.info("GRAFIK ONAYI: mode=%s variant=%s policy=%s", _chm,
++                         _en.chart_confirmation_variant, self.chart_cfg.policy_version)
+             # ÇOK ZAMAN DİLİMLİ LİKİDİTE TEYİDİ (H): saf, salt gözlem, SHADOW.
+             # Mod burada da İKİNCİ kez zorlanır — config yolu atlanmış olsa bile H aktifleşemez.
+             if getattr(_en, "mtf_enabled", False):
+@@ -1410,6 +1418,16 @@ class TradingEngineV3(TradingEngine):
+                     funnel["candle_blocked"] += 1
+                     entry["block_code"] = "CANDLE_VETO:" + str((cc.get("verdict") or {}).get("reason") or "?")
+                     continue
++            # ---------------------------------------------------------------- 2c) GRAFIK FORMASYONU ONAYI (kapasite TUKETMEZ)
++            # V5: kirilisla teyitli cift dip/OBO/ucgen/bayrak. Mantik `chart_confirmation.py`
++            # icinde — replay AYNI fonksiyonu cagirir (tek kaynak). OFF iken yol degismez.
++            ch = self._chart_confirmation(sym, d.direction, now)
++            if ch is not None:
++                entry["chart_confirmation"] = ch
++                if ch.get("blocks"):
++                    funnel["chart_blocked"] += 1
++                    entry["block_code"] = "CHART_VETO:" + str((ch.get("verdict") or {}).get("reason") or "?")
++                    continue
+             feats = features_from_brief(b, self.runner.chief.decide(briefs), b.scan_score or None)
+             feats.update({"initial_stop": plan.stop, "p_win": b.p_win, "regime": d.regime, "consensus_score": d.consensus_score, "consensus_conf": d.consensus_confidence,
+                           "n_dissent": len(d.dissent), "n_vetoes": len(d.vetoes), "expected_r": d.expected_r, "expected_cost_pct": d.expected_cost, "market_type": market,
+@@ -2033,6 +2051,37 @@ class TradingEngineV3(TradingEngine):
+                     "verdict": {"ok": False, "reason": "CANDLE_ERROR:%s" % type(exc).__name__},
+                     "blocks": mode == "ENFORCE", "shadow": {}, "error": str(exc)[:200]}
+ 
++    def _chart_confirmation(self, symbol: str, direction: str, now: datetime) -> dict | None:
++        """SAF sorgu: durum DEGISTIRMEZ. Mantik `chart_confirmation.chart_confirmation` icinde — TEK kaynak.
++
++        `OFF` iken None doner. Barlar `runner.last_frames` karelerinden okunur (yeni API cagrisi
++        YOK), kapanmamis bar elenir. Ariza ENFORCE modda FAIL-CLOSED; SHADOW modda loglanir.
++        """
++        _en = self.cfg.v3.entry_selectivity
++        mode = str(getattr(_en, "chart_confirmation_mode", "OFF") or "OFF").upper()
++        if mode == "OFF":
++            return None
++        variant = str(getattr(_en, "chart_confirmation_variant", "") or "")
++        try:
++            from .candle_confirmation import closed_bars
++            from .chart_confirmation import chart_confirmation
++            from .chart_patterns import ChartPatternConfig
++            from .learn.weekly_structure import rows_from_frame
++            cfg = getattr(self, "chart_cfg", None)
++            if cfg is None:
++                cfg = self.chart_cfg = ChartPatternConfig.from_dict(dict(_en.chart_policy or {}))
++            frames = (getattr(self.runner, "last_frames", None) or {}).get(symbol) or {}
++            now_ms = int(now.timestamp() * 1000)
++            b4 = closed_bars(rows_from_frame(frames.get("4h")), now_ms=now_ms, tf="4h")
++            b1 = closed_bars(rows_from_frame(frames.get("1d")), now_ms=now_ms, tf="1d")
++            return chart_confirmation(mode=mode, variant=variant, direction=direction,
++                                      bars_4h=b4, bars_1d=b1, cfg=cfg)
++        except Exception as exc:  # noqa: BLE001 — ariza SESSIZ GECMEZ
++            log.warning("grafik onayi degerlendirilemedi (%s): %s", symbol, exc)
++            return {"schema_version": "chart_confirmation_v1", "mode": mode, "variant": variant,
++                    "verdict": {"ok": False, "reason": "CHART_ERROR:%s" % type(exc).__name__},
++                    "blocks": mode == "ENFORCE", "shadow": {}, "error": str(exc)[:200]}
++
+     def _label_shadows(self) -> None:
+         pend = self.shadow.pending(utc_now())
+         for sh in pend[:20]:
+diff --git a/tradingbot/replay/engine.py b/tradingbot/replay/engine.py
+index 4d85877..f924571 100644
+--- a/tradingbot/replay/engine.py
++++ b/tradingbot/replay/engine.py
+@@ -106,7 +106,7 @@ class HistoricalReplay:
+                  state_root: Path | str | None = None, pattern_engine=None, start_ms: int | None = None, end_ms: int | None = None,
+                  economics_gate: bool = True, spot_listed: set[str] | None = None, entry_rule=None, legacy_agents: bool = True, entry_trigger: bool = True, legacy_veto: bool = False,
+                  lookback_bars: int = 400, min_bars: int = 250, decision_stride: int = 1,
+-                 candle_variant: str | None = "config"):
++                 candle_variant: str | None = "config", chart_variant: str | None = "config"):
+         self.cfg, self.run_id, self.store, self.symbols, self.market, self.tf, self.seed = cfg, run_id, store, list(symbols), market, tf, int(seed)
+         self.pattern_engine = pattern_engine
+         # EKONOMI KAPISI: uretimde karar yolunun ZORUNLU asamasi (engine_v3._assess_opportunities).
+@@ -144,6 +144,13 @@ class HistoricalReplay:
+             _m = str(getattr(_en, "candle_confirmation_mode", "OFF") or "OFF").upper()
+             candle_variant = str(getattr(_en, "candle_confirmation_variant", "") or "") if _m == "ENFORCE" else None
+         self.candle_variant = candle_variant or None
++        # GRAFIK FORMASYONU ONAYI (V5): ayni sozlesme; config'i izler, None kapatir, ad zorlar.
++        from ..chart_patterns import ChartPatternConfig as _CPC
++        self.chart_cfg = _CPC.from_dict(dict(getattr(_en, "chart_policy", None) or {}))
++        if chart_variant == "config":
++            _cm = str(getattr(_en, "chart_confirmation_mode", "OFF") or "OFF").upper()
++            chart_variant = str(getattr(_en, "chart_confirmation_variant", "") or "") if _cm == "ENFORCE" else None
++        self.chart_variant = chart_variant or None
+         #: ayni barda ikinci girisi engellemek icin (uretimdeki `self.triggers` karsiligi)
+         self._fired_bar: dict[str, str] = {}
+         self._legacy_agents = None
+@@ -360,6 +367,18 @@ class HistoricalReplay:
+                     if not _ok:
+                         self._reject(sym, "CANDLE_VETO:" + (_why or "?"))
+                         continue
++                if self.chart_variant:
++                    from ..candle_confirmation import closed_bars as _closed_bars
++                    from ..chart_confirmation import evaluate_variant as chart_evaluate_variant
++                    from ..learn.weekly_structure import rows_from_frame as _rows_cf
++                    _now_ms = t + tf_ms(self.tf)
++                    _cb4 = _closed_bars(_rows_cf(fr.get("4h")), now_ms=_now_ms, tf="4h")
++                    _cb1 = _closed_bars(_rows_cf(fr.get("1d")), now_ms=_now_ms, tf="1d")
++                    _ok, _why = chart_evaluate_variant(self.chart_variant, direction=d.direction,
++                                                       bars_4h=_cb4, bars_1d=_cb1, cfg=self.chart_cfg)
++                    if not _ok:
++                        self._reject(sym, "CHART_VETO:" + (_why or "?"))
++                        continue
+                 size_mult = 1.0
+                 if self.economics_gate:
+                     opp = getattr(d, "opportunity", None) or {}
+
+# UNTRACKED tests/test_chart_patterns_v1.py
+# -*- coding: utf-8 -*-
+"""GRAFIK FORMASYONLARI — sentetik seriler: her formasyon icin teyitli tespit, gelecege
+bakmama (kirilis olmadan CONFIRMED yok), tazelik ve varyant davranisi."""
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from tradingbot.chart_confirmation import VARIANTS, chart_confirmation, evaluate_variant  # noqa: E402
+from tradingbot.chart_patterns import (ASCENDING_TRIANGLE, BEAR, BEAR_FLAG, BULL, BULL_FLAG,  # noqa: E402
+                                       DESCENDING_TRIANGLE, DOUBLE_BOTTOM, DOUBLE_TOP,
+                                       HEAD_AND_SHOULDERS, INVERSE_HEAD_AND_SHOULDERS, TRIPLE_TOP,
+                                       ChartPatternConfig, detect_chart_patterns)
+
+H4 = 4 * 3_600_000
+CFG = ChartPatternConfig()
+
+
+def _bars(closes, *, wick=0.3):
+    """OHLC tutarli sentetik bar. Fitil KAPANISA gore konur: ardisik barlar ayni ucu
+    paylasmaz (fraktal salinim tekil ekstremum ister)."""
+    out = []
+    prev = closes[0]
+    for i, c in enumerate(closes):
+        o = prev
+        out.append({"timestamp": i * H4, "open": o, "high": max(o, c + wick),
+                    "low": min(o, c - wick), "close": c})
+        prev = c
+    return out
+
+
+def _ramp(a, b, n):
+    return [a + (b - a) * i / (n - 1) for i in range(n)]
+
+
+def _names(det):
+    return {p["pattern"] for p in det["patterns"]}
+
+
+def _pad(closes, n=30, level=None):
+    """Onune notr, hafif dalgali dolgu koyar (yeterli bar + gercekci salinimlar)."""
+    base = level if level is not None else closes[0]
+    filler = [base * (1 + 0.004 * ((i % 4) - 1.5)) for i in range(n)]
+    return filler + list(closes)
+
+
+# ------------------------------------------------------------------ cift dip / cift tepe
+DOUBLE_BOTTOM_PATH = _pad(_ramp(112, 100, 10) + _ramp(100.6, 110, 9) + _ramp(109.4, 100.4, 9)
+                          + _ramp(101, 109.5, 8) + [110.8, 111.5])
+
+
+def test_double_bottom_confirmed_only_after_neckline_break():
+    det = detect_chart_patterns(_bars(DOUBLE_BOTTOM_PATH), CFG)
+    assert DOUBLE_BOTTOM in _names(det)
+    p = [x for x in det["patterns"] if x["pattern"] == DOUBLE_BOTTOM][0]
+    assert p["side"] == BULL and p["state"] == "CONFIRMED" and p["bars_since"] <= 1
+    # kirilis barlari kesilirse formasyon RAPORLANMAZ (gelecege bakma yok)
+    cut = detect_chart_patterns(_bars(DOUBLE_BOTTOM_PATH[:-2]), CFG)
+    assert DOUBLE_BOTTOM not in _names(cut)
+
+
+def test_double_top_is_the_mirror():
+    path = _pad([200 - (x - 100) for x in DOUBLE_BOTTOM_PATH[30:]], level=88)
+    det = detect_chart_patterns(_bars(path), CFG)
+    assert DOUBLE_TOP in _names(det)
+    assert all(p["side"] == BEAR for p in det["patterns"] if p["pattern"] == DOUBLE_TOP)
+
+
+# ------------------------------------------------------------------ uclu tepe
+def test_triple_top_needs_three_equal_highs_and_a_break():
+    seg = (_ramp(96, 108, 7) + _ramp(107.3, 100, 6) + _ramp(100.6, 108.4, 7) + _ramp(107.5, 100.3, 6)
+           + _ramp(101, 107.9, 7) + _ramp(107, 100.5, 6) + [99.2, 98.5])
+    det = detect_chart_patterns(_bars(_pad(seg, level=96)), CFG)
+    assert TRIPLE_TOP in _names(det)
+    assert all(p["side"] == BEAR for p in det["patterns"] if p["pattern"] == TRIPLE_TOP)
+
+
+# ------------------------------------------------------------------ omuz bas omuz
+HS_PATH = _pad(_ramp(96, 105, 8) + _ramp(104.2, 101.5, 5) + _ramp(102.4, 111, 8) + _ramp(110, 102, 7)
+               + _ramp(102.9, 105.3, 5) + _ramp(104.4, 102.6, 5) + [101.2, 100.4], level=95)
+
+
+def test_head_and_shoulders_breaks_the_sloped_neckline():
+    det = detect_chart_patterns(_bars(HS_PATH), CFG)
+    assert HEAD_AND_SHOULDERS in _names(det)
+    p = [x for x in det["patterns"] if x["pattern"] == HEAD_AND_SHOULDERS][0]
+    assert p["side"] == BEAR and p["bars_since"] <= 1
+    cut = detect_chart_patterns(_bars(HS_PATH[:-2]), CFG)
+    assert HEAD_AND_SHOULDERS not in _names(cut)
+
+
+def test_inverse_head_and_shoulders_is_the_mirror():
+    path = _pad([210 - x for x in HS_PATH[30:]], level=115)
+    det = detect_chart_patterns(_bars(path), CFG)
+    assert INVERSE_HEAD_AND_SHOULDERS in _names(det)
+    assert all(p["side"] == BULL for p in det["patterns"] if p["pattern"] == INVERSE_HEAD_AND_SHOULDERS)
+
+
+# ------------------------------------------------------------------ ucgen: yon KIRILISTAN gelir
+def _desc_triangle_body():
+    return (_ramp(103, 100, 4) + _ramp(100.7, 108, 6) + _ramp(107.2, 100.2, 6) + _ramp(100.8, 105, 6)
+            + _ramp(104.3, 100.3, 6) + _ramp(100.9, 103, 4))
+
+
+def test_descending_triangle_breaking_down_is_bearish():
+    path = _pad(_desc_triangle_body() + [101.5, 99.0, 98.2], level=103)
+    det = detect_chart_patterns(_bars(path), CFG)
+    hits = [p for p in det["patterns"] if p["pattern"] == DESCENDING_TRIANGLE]
+    assert hits and hits[0]["side"] == BEAR
+
+
+def test_descending_triangle_breaking_up_is_bullish():
+    path = _pad(_desc_triangle_body() + [103.6, 105.2, 106.5], level=103)
+    det = detect_chart_patterns(_bars(path), CFG)
+    hits = [p for p in det["patterns"] if p["pattern"] == DESCENDING_TRIANGLE]
+    assert hits and hits[0]["side"] == BULL
+
+
+def test_ascending_triangle_is_the_mirror():
+    body = [206 - x for x in _desc_triangle_body()]
+    path = _pad(body + [104.6, 107.0, 108.1], level=103)
+    det = detect_chart_patterns(_bars(path), CFG)
+    hits = [p for p in det["patterns"] if p["pattern"] == ASCENDING_TRIANGLE]
+    assert hits and hits[0]["side"] == BULL
+
+
+# ------------------------------------------------------------------ bayrak
+BULL_FLAG_PATH = _pad(_ramp(100, 110, 9) + [109.2, 108.6, 108.9, 108.1, 107.8, 108.0] + [110.3, 111.0], level=100)
+
+
+def test_bull_flag_pole_consolidation_break():
+    det = detect_chart_patterns(_bars(BULL_FLAG_PATH), CFG)
+    hits = [p for p in det["patterns"] if p["pattern"] == BULL_FLAG]
+    assert hits and hits[0]["side"] == BULL and hits[0]["bars_since"] <= 1
+    cut = detect_chart_patterns(_bars(BULL_FLAG_PATH[:-2]), CFG)
+    assert BULL_FLAG not in _names(cut)
+
+
+def test_bear_flag_is_the_mirror():
+    path = _pad([220 - x for x in BULL_FLAG_PATH[30:]], level=120)
+    det = detect_chart_patterns(_bars(path), CFG)
+    hits = [p for p in det["patterns"] if p["pattern"] == BEAR_FLAG]
+    assert hits and hits[0]["side"] == BEAR
+
+
+# ------------------------------------------------------------------ genel sozlesmeler
+def test_flat_series_has_no_pattern_and_short_series_says_so():
+    flat = _bars([100 + 0.2 * ((i % 3) - 1) for i in range(80)])
+    assert detect_chart_patterns(flat, CFG)["patterns"] == []
+    short = detect_chart_patterns(_bars([100, 101, 102]), CFG)
+    assert short["patterns"] == [] and short.get("reason") == "NOT_ENOUGH_BARS"
+
+
+def test_config_validates_and_is_versioned():
+    assert CFG.policy_version == "chart_v1.0.0" and CFG.config_id
+    with pytest.raises(ValueError):
+        ChartPatternConfig(flag_max_retrace=1.5).validate()
+    with pytest.raises(ValueError):
+        ChartPatternConfig(max_pattern_bars=3).validate()
+
+
+# ------------------------------------------------------------------ varyantlar
+def test_variants_confirm_veto_and_freshness():
+    bars = _bars(DOUBLE_BOTTOM_PATH)                       # taze BOGA kirilisi
+    assert evaluate_variant("p1_4h_confirm", direction="LONG", bars_4h=bars, bars_1d=None) == (True, "")
+    assert evaluate_variant("p1_4h_confirm", direction="SHORT", bars_4h=bars, bars_1d=None) == (False, "P1_OPPOSITE_PATTERN")
+    assert evaluate_variant("p2_4h_veto", direction="SHORT", bars_4h=bars, bars_1d=None) == (False, "P2_OPPOSITE_PATTERN")
+    assert evaluate_variant("p2_4h_veto", direction="LONG", bars_4h=bars, bars_1d=None) == (True, "")
+    stale = _bars(DOUBLE_BOTTOM_PATH + [111.2 + 0.1 * (i % 2) for i in range(8)])   # kirilis 8 bar eski
+    assert evaluate_variant("p1_4h_confirm", direction="LONG", bars_4h=stale, bars_1d=None) == (False, "P1_NO_PATTERN")
+    assert evaluate_variant("p2_4h_veto", direction="SHORT", bars_4h=stale, bars_1d=None) == (True, "")
+    assert evaluate_variant("p3_1d_confirm", direction="LONG", bars_4h=bars, bars_1d=None) == (False, "P3_MISSING_BARS")
+    assert evaluate_variant("p4_1d_veto", direction="LONG", bars_4h=bars, bars_1d=None) == (True, "")
+    assert evaluate_variant("p1_4h_confirm", direction="", bars_4h=bars, bars_1d=None) == (False, "P1_SIDE")
+    with pytest.raises(ValueError):
+        evaluate_variant("p9", direction="LONG", bars_4h=bars, bars_1d=None)
+
+
+def test_record_blocks_only_in_enforce_and_lists_fresh_patterns():
+    bars = _bars(DOUBLE_BOTTOM_PATH)
+    r = chart_confirmation(mode="ENFORCE", variant="p2_4h_veto", direction="SHORT", bars_4h=bars, bars_1d=None)
+    assert r["blocks"] and r["verdict"]["reason"] == "P2_OPPOSITE_PATTERN"
+    assert set(r["shadow"]) == set(VARIANTS)
+    assert any(p["pattern"] == DOUBLE_BOTTOM for p in r["fresh_4h"])
+    s = chart_confirmation(mode="SHADOW", variant="p2_4h_veto", direction="SHORT", bars_4h=bars, bars_1d=None)
+    assert not s["blocks"] and s["verdict"]["ok"] is False
+    o = chart_confirmation(mode="OFF", variant="p2_4h_veto", direction="SHORT", bars_4h=bars, bars_1d=None)
+    assert not o["blocks"] and o["shadow"] == {}
+
+# UNTRACKED tradingbot/chart_confirmation.py
+# -*- coding: utf-8 -*-
+"""GRAFIK FORMASYONU ONAYI — canli motor ile replay'in ORTAK tek kaynagi (V5, 2026-09-12).
+
+`candle_confirmation.py` ile ayni sozlesme: OFF / SHADOW / ENFORCE, dort varyant, tum
+varyantlarin golge hukmu karar kaydina yazilir. Sekil tespiti `chart_patterns.py`.
+
+Varyantlar:
+  p1_4h_confirm  son `confirm_within_bars` 4h bar icinde adayin yonuyle AYNI tarafli TEYITLI
+                 formasyon kirilisi varsa gir; yoksa/karsiysa/iki tarafliysa girme
+  p2_4h_veto     yalniz VETO: taze KARSI tarafli kirilis varsa girme
+  p3_1d_confirm  p1'in gunluk bar surumu
+  p4_1d_veto     p2'nin gunluk bar surumu
+
+Olcum: PROTOCOL_V5 / DENEY_V5. `ENFORCE` acmak operator kararidir.
+"""
+from __future__ import annotations
+
+from typing import Any
+
+from .chart_patterns import ChartPatternConfig, detect_chart_patterns, fresh_patterns, fresh_side
+
+MODES = ("OFF", "SHADOW", "ENFORCE")
+VARIANTS = ("p1_4h_confirm", "p2_4h_veto", "p3_1d_confirm", "p4_1d_veto")
+DEFAULT_VARIANT = "p2_4h_veto"
+_TF = {"p1_4h_confirm": "4h", "p2_4h_veto": "4h", "p3_1d_confirm": "1d", "p4_1d_veto": "1d"}
+_VETO = {"p2_4h_veto", "p4_1d_veto"}
+_REAL_MONEY_MODES = ("LIVE", "LIVE_LIMITED")
+MIN_BARS = 30
+
+
+def evaluate_variant(variant: str, *, direction: str, bars_4h, bars_1d,
+                     cfg: ChartPatternConfig | None = None,
+                     det_4h: dict[str, Any] | None = None,
+                     det_1d: dict[str, Any] | None = None) -> tuple[bool, str]:
+    """Tek varyantin karari. `det_*` verilirse tespit yeniden YAPILMAZ (ayni bar seti)."""
+    if variant not in _TF:
+        raise ValueError("bilinmeyen grafik onayi varyanti: %r" % (variant,))
+    cfg = cfg or ChartPatternConfig()
+    tag = variant.split("_", 1)[0].upper()
+    side = str(direction or "").upper()
+    veto = variant in _VETO
+    if side not in ("LONG", "SHORT"):
+        return False, tag + "_SIDE"
+    bars = bars_4h if _TF[variant] == "4h" else bars_1d
+    det = det_4h if _TF[variant] == "4h" else det_1d
+    if det is None:
+        rows = list(bars or [])
+        if len(rows) < MIN_BARS:
+            return (True, "") if veto else (False, tag + "_MISSING_BARS")
+        det = detect_chart_patterns(rows, cfg)
+    elif int(det.get("n_bars", 0)) < MIN_BARS:
+        return (True, "") if veto else (False, tag + "_MISSING_BARS")
+    fresh = fresh_patterns(det, cfg.confirm_within_bars)
+    ps = fresh_side(fresh)
+    if veto:
+        if ps is not None and ps != side:
+            return False, tag + "_OPPOSITE_PATTERN"
+        return True, ""
+    if not fresh:
+        return False, tag + "_NO_PATTERN"
+    if ps is None:
+        return False, tag + "_AMBIGUOUS"
+    return (True, "") if ps == side else (False, tag + "_OPPOSITE_PATTERN")
+
+
+def chart_confirmation(*, mode: str, variant: str, direction: str, bars_4h, bars_1d,
+                       cfg: ChartPatternConfig | None = None) -> dict[str, Any]:
+    """Karar kaydi: secili varyantin hukmu + TUM varyantlarin golge hukmu + tespit ozeti."""
+    cfg = cfg or ChartPatternConfig()
+    m = str(mode or "OFF").upper()
+    out: dict[str, Any] = {"schema_version": "chart_confirmation_v1", "mode": m, "variant": variant,
+                           "policy_version": cfg.policy_version,
+                           "verdict": {"ok": True, "reason": ""}, "blocks": False, "shadow": {},
+                           "fresh_4h": [], "fresh_1d": []}
+    if m == "OFF":
+        return out
+    if variant not in VARIANTS:
+        raise ValueError("bilinmeyen grafik onayi varyanti: %r" % (variant,))
+    d4 = detect_chart_patterns(list(bars_4h or []), cfg) if len(list(bars_4h or [])) >= MIN_BARS else None
+    d1 = detect_chart_patterns(list(bars_1d or []), cfg) if len(list(bars_1d or [])) >= MIN_BARS else None
+    for key, det in (("fresh_4h", d4), ("fresh_1d", d1)):
+        if det is not None:
+            out[key] = [{"pattern": p["pattern"], "side": p["side"], "bars_since": p["bars_since"],
+                         "level": p["level"]} for p in fresh_patterns(det, cfg.confirm_within_bars)]
+    for v in VARIANTS:
+        ok, why = evaluate_variant(v, direction=direction, bars_4h=bars_4h, bars_1d=bars_1d, cfg=cfg,
+                                   det_4h=d4, det_1d=d1)
+        out["shadow"][v] = {"ok": bool(ok), "reason": why}
+    sel = out["shadow"][variant]
+    out["verdict"] = {"ok": bool(sel["ok"]), "reason": sel["reason"]}
+    out["blocks"] = bool(m == "ENFORCE" and not sel["ok"])
+    return out
+
+
+def validate_settings(*, mode: str | None, variant: str | None, app_mode: str | None) -> str:
+    """Config dogrulamasi (SAF): normalize edilmis modu dondurur; gecersizse ValueError."""
+    m = str(mode or "OFF").upper()
+    if m not in MODES:
+        raise ValueError("chart_confirmation_mode gecersiz: %r (gecerli: %s)" % (mode, ", ".join(MODES)))
+    if variant not in VARIANTS:
+        raise ValueError("chart_confirmation_variant gecersiz: %r (gecerli: %s)" % (variant, ", ".join(VARIANTS)))
+    if m == "ENFORCE" and str(app_mode or "").upper() in _REAL_MONEY_MODES:
+        raise ValueError("CHART_CONFIRMATION_NOT_VALIDATED_FOR_LIVE: chart_confirmation_mode=ENFORCE "
+                         "yalniz PAPER/TESTNET/OBSERVE/SHADOW_LIVE modda acilabilir (DENEY_V5)")
+    return m
+
+
+__all__ = ["DEFAULT_VARIANT", "MODES", "VARIANTS", "MIN_BARS", "chart_confirmation",
+           "evaluate_variant", "validate_settings"]
+
+# UNTRACKED tradingbot/chart_patterns.py
+# -*- coding: utf-8 -*-
+"""GRAFIK FORMASYONLARI — kapanmis barlardan, gelecege bakmadan, KIRILISLA teyitli (V5).
+
+Kapsam (kullanicinin tablosu): cift dip/tepe, uclu dip/tepe, omuz-bas-omuz ve tersi,
+alcalan/yukselen ucgen, boga/ayi bayragi. Wolfe dalgasi BILINCLI OLARAK YOK: tanimi oznel,
+parametre yuzeyi buyuk, olculebilir bir kural haline getirilemedi.
+
+Tasarim kurali (Bulkowski'nin olcumu): sekil yon VERMEZ, kirilis verir. Alcalan ucgen bile
+zamanin %53'unde yukari kirilir. Bu yuzden hicbir formasyon "olusuyor" diye raporlanmaz;
+yalniz boyun cizgisi / sinir KAPANISLA kirildiginda CONFIRMED olur ve yonu kirilisin yonudur.
+
+Gelecege bakmama sozlesmesi: salinimlar `confirmed_swings` ile teyit edilir (her iki yanda
+`swing_lookback` kapanmis bar). Bir formasyon en erken `recognition_index`te bilinebilir:
+max(kirilis bari, son salinimin teyit bari). `bars_since` bu indeksten olculur.
+
+Fonksiyonlar SAFTIR: `self` yok, dosya/ag yok, girdiler degistirilmez.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, fields
+from typing import Any
+
+from .core import stable_id
+from .learn.multitimeframe_context import confirmed_swings
+
+SCHEMA_VERSION = "chart_patterns_v1"
+DOUBLE_BOTTOM = "DOUBLE_BOTTOM"
+DOUBLE_TOP = "DOUBLE_TOP"
+TRIPLE_BOTTOM = "TRIPLE_BOTTOM"
+TRIPLE_TOP = "TRIPLE_TOP"
+INVERSE_HEAD_AND_SHOULDERS = "INVERSE_HEAD_AND_SHOULDERS"
+HEAD_AND_SHOULDERS = "HEAD_AND_SHOULDERS"
+DESCENDING_TRIANGLE = "DESCENDING_TRIANGLE"
+ASCENDING_TRIANGLE = "ASCENDING_TRIANGLE"
+BULL_FLAG = "BULL_FLAG"
+BEAR_FLAG = "BEAR_FLAG"
+BULL = "BULL"
+BEAR = "BEAR"
+CONFIRMED = "CONFIRMED"
+ALL_PATTERNS = (DOUBLE_BOTTOM, DOUBLE_TOP, TRIPLE_BOTTOM, TRIPLE_TOP, INVERSE_HEAD_AND_SHOULDERS,
+                HEAD_AND_SHOULDERS, DESCENDING_TRIANGLE, ASCENDING_TRIANGLE, BULL_FLAG, BEAR_FLAG)
+
+
+@dataclass
+class ChartPatternConfig:
+    """Geometrik esikler. Tek deger; bu veriye UYDURULMADI (PROTOCOL_V5 §7)."""
+    policy_version: str = "chart_v1.0.0"
+    scan_bars: int = 120                  # yalniz son N kapanmis bar taranir
+    swing_lookback: int = 3               # fraktal k
+    level_tolerance_pct: float = 1.5      # esit tepe/dip toleransi (seviyenin yuzdesi)
+    min_separation_bars: int = 5          # iki salinim arasi en az bar
+    max_pattern_bars: int = 60            # formasyon genisligi ust siniri
+    min_depth_pct: float = 3.0            # dip(ler) ile boyun cizgisi arasi en az yuzde
+    shoulder_tolerance_pct: float = 3.0   # omuzlar arasi fark
+    head_min_excess_pct: float = 2.0      # bas, omuzlari en az bu kadar asmali
+    triangle_min_step_pct: float = 0.5    # ucgende ardisik tepeler en az bu kadar alcalmali
+    flag_pole_bars: int = 8               # direk uzunlugu (bar)
+    flag_pole_min_pct: float = 6.0        # direk buyuklugu (yuzde)
+    flag_min_bars: int = 3                # konsolidasyon en az bar
+    flag_max_bars: int = 15               # konsolidasyon en fazla bar
+    flag_max_retrace: float = 0.5         # direğin en fazla bu orani geri verilir
+    confirm_within_bars: int = 3          # "taze" kirilis: son N kapanmis bar icinde
+
+    def validate(self) -> None:
+        if self.scan_bars < 30 or self.swing_lookback < 1:
+            raise ValueError("scan_bars >= 30 ve swing_lookback >= 1 olmali")
+        if not (0 < self.level_tolerance_pct < 10):
+            raise ValueError("level_tolerance_pct (0, 10) araliginda olmali")
+        if self.min_separation_bars < 2 or self.max_pattern_bars <= self.min_separation_bars:
+            raise ValueError("min_separation_bars >= 2 ve max_pattern_bars > min_separation_bars olmali")
+        if self.min_depth_pct <= 0 or self.head_min_excess_pct <= 0 or self.triangle_min_step_pct <= 0:
+            raise ValueError("derinlik/bas/ucgen esikleri pozitif olmali")
+        if self.flag_pole_bars < 2 or self.flag_min_bars < 2 or self.flag_max_bars < self.flag_min_bars:
+            raise ValueError("bayrak bar esikleri tutarsiz")
+        if not (0 < self.flag_max_retrace < 1) or self.flag_pole_min_pct <= 0:
+            raise ValueError("flag_max_retrace (0,1) ve flag_pole_min_pct > 0 olmali")
+        if self.confirm_within_bars < 0:
+            raise ValueError("confirm_within_bars >= 0 olmali")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {f.name: getattr(self, f.name) for f in fields(self)}
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any] | None) -> "ChartPatternConfig":
+        allowed = {f.name for f in fields(cls)}
+        cfg = cls(**{k: v for k, v in dict(d or {}).items() if k in allowed})
+        cfg.validate()
+        return cfg
+
+    @property
+    def config_id(self) -> str:
+        return stable_id("chartcfg", self.policy_version, self.to_dict())
+
+
+# ---------------------------------------------------------------------------- yardimcilar
+def _near(a: float, b: float, tol_pct: float) -> bool:
+    return abs(a - b) <= tol_pct / 100.0 * max(abs(a), abs(b), 1e-12)
+
+
+def _first_break(bars, start: int, level_at, *, above: bool) -> int | None:
+    """`start`tan itibaren ilk KAPANIS kirilisi. `level_at(j)` bardaki sinir degeri."""
+    for j in range(max(0, start), len(bars)):
+        c = bars[j]["close"]
+        lv = level_at(j)
+        if lv is None:
+            continue
+        if (c > lv) if above else (c < lv):
+            return j
+    return None
+
+
+def _rec(bars, pattern: str, side: str, break_idx: int, last_confirm_idx: int, level: float,
+         start_idx: int, end_idx: int) -> dict[str, Any]:
+    n = len(bars)
+    rec = max(break_idx, last_confirm_idx)
+    return {"pattern": pattern, "side": side, "state": CONFIRMED,
+            "level": round(float(level), 10), "break_index": break_idx,
+            "recognition_index": rec, "bars_since": n - 1 - rec,
+            "start_ts": bars[start_idx]["timestamp"], "end_ts": bars[end_idx]["timestamp"],
+            "recognition_ts": bars[rec]["timestamp"]}
+
+
+def _clean_rows(bars) -> list[dict[str, Any]]:
+    out = []
+    for b in bars or []:
+        try:
+            r = {"timestamp": b["timestamp"], "open": float(b["open"]), "high": float(b["high"]),
+                 "low": float(b["low"]), "close": float(b["close"])}
+        except (KeyError, TypeError, ValueError):
+            continue
+        if r["high"] < r["low"]:
+            continue
+        out.append(r)
+    return out
+
+
+# ---------------------------------------------------------------------------- dedektorler
+def _doubles(bars, lows, highs, cfg, *, bottom: bool) -> list[dict[str, Any]]:
+    pts = lows if bottom else highs
+    out = []
+    for a in range(len(pts)):
+        for b in range(a + 1, len(pts)):
+            p1, p2 = pts[a], pts[b]
+            sep = p2["index"] - p1["index"]
+            if sep < cfg.min_separation_bars:
+                continue
+            if sep > cfg.max_pattern_bars:
+                break
+            if not _near(p1["level"], p2["level"], cfg.level_tolerance_pct):
+                continue
+            # arada iki dipten/tepeden daha ileri giden ucuncu bir salinim olmamali
+            inner = [q for q in pts[a + 1:b]]
+            if bottom and any(q["level"] < min(p1["level"], p2["level"]) for q in inner):
+                continue
+            if not bottom and any(q["level"] > max(p1["level"], p2["level"]) for q in inner):
+                continue
+            mid = bars[p1["index"] + 1:p2["index"]]
+            if not mid:
+                continue
+            base = (p1["level"] + p2["level"]) / 2.0
+            if bottom:
+                neck = max(m["high"] for m in mid)
+                if (neck / base - 1.0) * 100.0 < cfg.min_depth_pct:
+                    continue
+                j = _first_break(bars, p2["index"] + 1, lambda _j: neck, above=True)
+            else:
+                neck = min(m["low"] for m in mid)
+                if (1.0 - neck / base) * 100.0 < cfg.min_depth_pct:
+                    continue
+                j = _first_break(bars, p2["index"] + 1, lambda _j: neck, above=False)
+            if j is None:
+                continue
+            out.append(_rec(bars, DOUBLE_BOTTOM if bottom else DOUBLE_TOP, BULL if bottom else BEAR,
+                            j, p2["confirmed_at_index"], neck, p1["index"], j))
+    return out
+
+
+def _triples(bars, lows, highs, cfg, *, bottom: bool) -> list[dict[str, Any]]:
+    pts = lows if bottom else highs
+    out = []
+    for a in range(len(pts)):
+        for b in range(a + 1, len(pts)):
+            for c in range(b + 1, len(pts)):
+                p1, p2, p3 = pts[a], pts[b], pts[c]
+                if p3["index"] - p1["index"] > cfg.max_pattern_bars:
+                    break
+                if (p2["index"] - p1["index"] < cfg.min_separation_bars
+                        or p3["index"] - p2["index"] < cfg.min_separation_bars):
+                    continue
+                lv = [p1["level"], p2["level"], p3["level"]]
+                if not (_near(lv[0], lv[1], cfg.level_tolerance_pct)
+                        and _near(lv[1], lv[2], cfg.level_tolerance_pct)
+                        and _near(lv[0], lv[2], cfg.level_tolerance_pct)):
+                    continue
+                inner = [q for q in pts[a + 1:c] if q is not p2]
+                if bottom and any(q["level"] < min(lv) for q in inner):
+                    continue
+                if not bottom and any(q["level"] > max(lv) for q in inner):
+                    continue
+                mid = bars[p1["index"] + 1:p3["index"]]
+                base = sum(lv) / 3.0
+                if bottom:
+                    neck = max(m["high"] for m in mid)
+                    if (neck / base - 1.0) * 100.0 < cfg.min_depth_pct:
+                        continue
+                    j = _first_break(bars, p3["index"] + 1, lambda _j: neck, above=True)
+                else:
+                    neck = min(m["low"] for m in mid)
+                    if (1.0 - neck / base) * 100.0 < cfg.min_depth_pct:
+                        continue
+                    j = _first_break(bars, p3["index"] + 1, lambda _j: neck, above=False)
+                if j is None:
+                    continue
+                out.append(_rec(bars, TRIPLE_BOTTOM if bottom else TRIPLE_TOP, BULL if bottom else BEAR,
+                                j, p3["confirmed_at_index"], neck, p1["index"], j))
+    return out
+
+
+def _head_shoulders(bars, lows, highs, cfg, *, inverse: bool) -> list[dict[str, Any]]:
+    pts = lows if inverse else highs
+    out = []
+    for a in range(len(pts) - 2):
+        s1, h, s2 = pts[a], pts[a + 1], pts[a + 2]
+        if s2["index"] - s1["index"] > cfg.max_pattern_bars:
+            continue
+        if (h["index"] - s1["index"] < cfg.min_separation_bars
+                or s2["index"] - h["index"] < cfg.min_separation_bars):
+            continue
+        ex = cfg.head_min_excess_pct / 100.0
+        if inverse:
+            if not (h["level"] < s1["level"] * (1 - ex) and h["level"] < s2["level"] * (1 - ex)):
+                continue
+        else:
+            if not (h["level"] > s1["level"] * (1 + ex) and h["level"] > s2["level"] * (1 + ex)):
+                continue
+        if not _near(s1["level"], s2["level"], cfg.shoulder_tolerance_pct):
+            continue
+        seg1 = bars[s1["index"] + 1:h["index"]]
+        seg2 = bars[h["index"] + 1:s2["index"]]
+        if not seg1 or not seg2:
+            continue
+        if inverse:
+            t1i = max(range(s1["index"] + 1, h["index"]), key=lambda i: bars[i]["high"])
+            t2i = max(range(h["index"] + 1, s2["index"]), key=lambda i: bars[i]["high"])
+            t1, t2 = bars[t1i]["high"], bars[t2i]["high"]
+        else:
+            t1i = min(range(s1["index"] + 1, h["index"]), key=lambda i: bars[i]["low"])
+            t2i = min(range(h["index"] + 1, s2["index"]), key=lambda i: bars[i]["low"])
+            t1, t2 = bars[t1i]["low"], bars[t2i]["low"]
+        slope = (t2 - t1) / float(max(1, t2i - t1i))
+
+        def neck(j, _t1=t1, _t1i=t1i, _slope=slope):
+            return _t1 + _slope * (j - _t1i)
+        j = _first_break(bars, s2["index"] + 1, neck, above=inverse)
+        if j is None:
+            continue
+        out.append(_rec(bars, INVERSE_HEAD_AND_SHOULDERS if inverse else HEAD_AND_SHOULDERS,
+                        BULL if inverse else BEAR, j, s2["confirmed_at_index"], neck(j),
+                        s1["index"], j))
+    return out
+
+
+def _triangles(bars, lows, highs, cfg, *, descending: bool) -> list[dict[str, Any]]:
+    """Alcalan: duz destek (>=2 esit dip) + alcalan tepeler (>=2). Kirilis yonu tarafi belirler."""
+    flat_pts = lows if descending else highs
+    slope_pts = highs if descending else lows
+    step = cfg.triangle_min_step_pct / 100.0
+    out = []
+    for a in range(len(flat_pts)):
+        for b in range(a + 1, len(flat_pts)):
+            f1, f2 = flat_pts[a], flat_pts[b]
+            if f2["index"] - f1["index"] > cfg.max_pattern_bars:
+                break
+            if f2["index"] - f1["index"] < cfg.min_separation_bars:
+                continue
+            if not _near(f1["level"], f2["level"], cfg.level_tolerance_pct):
+                continue
+            sl = [q for q in slope_pts if f1["index"] < q["index"] < f2["index"] + cfg.max_pattern_bars // 2
+                  and q["index"] > f1["index"]]
+            sl = [q for q in sl if q["index"] <= f2["index"] + cfg.min_separation_bars]
+            if len(sl) < 2:
+                continue
+            q1, q2 = sl[-2], sl[-1]
+            if q2["index"] - q1["index"] < cfg.min_separation_bars:
+                continue
+            if descending and not (q2["level"] < q1["level"] * (1 - step)):
+                continue
+            if not descending and not (q2["level"] > q1["level"] * (1 + step)):
+                continue
+            support = (f1["level"] + f2["level"]) / 2.0
+            slope = (q2["level"] - q1["level"]) / float(max(1, q2["index"] - q1["index"]))
+
+            def line(j, _q1=q1, _slope=slope):
+                return _q1["level"] + _slope * (j - _q1["index"])
+            last_idx = max(f2["index"], q2["index"])
+            last_conf = max(f2["confirmed_at_index"], q2["confirmed_at_index"])
+            j_flat = _first_break(bars, last_idx + 1, lambda _j: support, above=not descending)
+
+            def line_before_apex(j, _line=line, _support=support, _desc=descending):
+                # Egimli sinir destege/dirence ulastiktan (tepe noktasi) sonra formasyon GECERSIZ:
+                # sonsuza uzatilan cizgi her kapanisi "kirilis" yapardi.
+                lv = _line(j)
+                if (_desc and lv <= _support) or ((not _desc) and lv >= _support):
+                    return None
+                return lv
+            j_line = _first_break(bars, last_idx + 1, line_before_apex, above=descending)
+            cands = [(j, "flat") for j in [j_flat] if j is not None] + \
+                    [(j, "line") for j in [j_line] if j is not None]
+            if not cands:
+                continue
+            j, which = min(cands)
+            name = DESCENDING_TRIANGLE if descending else ASCENDING_TRIANGLE
+            if descending:
+                side = BEAR if which == "flat" else BULL
+            else:
+                side = BULL if which == "flat" else BEAR
+            lvl = support if which == "flat" else line(j)
+            out.append(_rec(bars, name, side, j, last_conf, lvl, f1["index"], j))
+    return out
+
+
+def _flags(bars, cfg, *, bull: bool) -> list[dict[str, Any]]:
+    out = []
+    n = len(bars)
+    pb = cfg.flag_pole_bars
+    seen: set[int] = set()
+    for p in range(pb, n - cfg.flag_min_bars - 1):
+        c0, cp = bars[p - pb]["close"], bars[p]["close"]
+        rise = (cp / c0 - 1.0) if bull else (1.0 - cp / c0)
+        if rise * 100.0 < cfg.flag_pole_min_pct:
+            continue
+        pole_h = abs(cp - c0)
+        pole_ext = max(b["high"] for b in bars[p - pb:p + 1]) if bull else min(b["low"] for b in bars[p - pb:p + 1])
+        for q in range(p + cfg.flag_min_bars, min(n - 1, p + cfg.flag_max_bars) + 1):
+            cons = bars[p + 1:q + 1]
+            if bull:
+                if max(b["high"] for b in cons) > pole_ext * (1 + cfg.level_tolerance_pct / 100.0):
+                    break
+                if min(b["low"] for b in cons) < cp - cfg.flag_max_retrace * pole_h:
+                    break
+                if cons[-1]["high"] > cons[0]["high"] * (1 + cfg.level_tolerance_pct / 100.0):
+                    continue                     # kanal yukari egimli: bayrak degil
+                boundary = max(b["high"] for b in cons)
+                j = q + 1
+                if j < n and bars[j]["close"] > boundary:
+                    if j in seen:
+                        break
+                    seen.add(j)
+                    out.append(_rec(bars, BULL_FLAG, BULL, j, j, boundary, p - pb, j))
+                    break
+            else:
+                if min(b["low"] for b in cons) < pole_ext * (1 - cfg.level_tolerance_pct / 100.0):
+                    break
+                if max(b["high"] for b in cons) > cp + cfg.flag_max_retrace * pole_h:
+                    break
+                if cons[-1]["low"] < cons[0]["low"] * (1 - cfg.level_tolerance_pct / 100.0):
+                    continue
+                boundary = min(b["low"] for b in cons)
+                j = q + 1
+                if j < n and bars[j]["close"] < boundary:
+                    if j in seen:
+                        break
+                    seen.add(j)
+                    out.append(_rec(bars, BEAR_FLAG, BEAR, j, j, boundary, p - pb, j))
+                    break
+    return out
+
+
+# ---------------------------------------------------------------------------- giris noktasi
+def detect_chart_patterns(bars: list[dict[str, Any]], cfg: ChartPatternConfig | None = None
+                          ) -> dict[str, Any]:
+    """Son `scan_bars` KAPANMIS bardaki TEYITLI formasyonlar. Olusmakta olanlar RAPORLANMAZ."""
+    cfg = cfg or ChartPatternConfig()
+    rows = _clean_rows(bars)[-cfg.scan_bars:]
+    out: dict[str, Any] = {"schema_version": SCHEMA_VERSION, "policy_version": cfg.policy_version,
+                           "config_id": cfg.config_id, "n_bars": len(rows), "patterns": []}
+    if len(rows) < 2 * cfg.swing_lookback + cfg.min_separation_bars + 2:
+        out["reason"] = "NOT_ENOUGH_BARS"
+        return out
+    sw = confirmed_swings(rows, lookback=cfg.swing_lookback)
+    lows, highs = sw["lows"], sw["highs"]
+    pats: list[dict[str, Any]] = []
+    pats += _doubles(rows, lows, highs, cfg, bottom=True)
+    pats += _doubles(rows, lows, highs, cfg, bottom=False)
+    pats += _triples(rows, lows, highs, cfg, bottom=True)
+    pats += _triples(rows, lows, highs, cfg, bottom=False)
+    pats += _head_shoulders(rows, lows, highs, cfg, inverse=True)
+    pats += _head_shoulders(rows, lows, highs, cfg, inverse=False)
+    pats += _triangles(rows, lows, highs, cfg, descending=True)
+    pats += _triangles(rows, lows, highs, cfg, descending=False)
+    pats += _flags(rows, cfg, bull=True)
+    pats += _flags(rows, cfg, bull=False)
+    pats.sort(key=lambda p: (p["bars_since"], p["pattern"]))
+    out["patterns"] = pats
+    return out
+
+
+def fresh_patterns(det: dict[str, Any], within: int) -> list[dict[str, Any]]:
+    return [p for p in (det.get("patterns") or []) if int(p.get("bars_since", 10**9)) <= within]
+
+
+def fresh_side(pats: list[dict[str, Any]]) -> str | None:
+    """Taze formasyonlarin TEK tarafli yonu: LONG / SHORT / None (yok ya da iki tarafli)."""
+    bull = any(p["side"] == BULL for p in pats)
+    bear = any(p["side"] == BEAR for p in pats)
+    if bull == bear:
+        return None
+    return "LONG" if bull else "SHORT"
+
+
+__all__ = ["SCHEMA_VERSION", "ALL_PATTERNS", "BULL", "BEAR", "CONFIRMED", "ChartPatternConfig",
+           "detect_chart_patterns", "fresh_patterns", "fresh_side",
+           "DOUBLE_BOTTOM", "DOUBLE_TOP", "TRIPLE_BOTTOM", "TRIPLE_TOP",
+           "INVERSE_HEAD_AND_SHOULDERS", "HEAD_AND_SHOULDERS", "DESCENDING_TRIANGLE",
+           "ASCENDING_TRIANGLE", "BULL_FLAG", "BEAR_FLAG"]

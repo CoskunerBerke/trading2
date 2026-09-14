@@ -1,0 +1,129 @@
+{
+ "rows": {
+  "t2_p1": {
+   "base": 107.34,
+   "new": 89.36,
+   "n": 20,
+   "symbols": 5,
+   "max_dd": 2.3193,
+   "S1": false,
+   "S2": false,
+   "S3": false,
+   "by_symbol": {
+    "BNB/USDT": 69.68,
+    "LTC/USDT": 20.74,
+    "DOT/USDT": 1.28,
+    "XRP/USDT": -0.48,
+    "BCH/USDT": -1.84
+   }
+  },
+  "t2_p2": {
+   "base": 33.74,
+   "new": -11.86,
+   "n": 48,
+   "symbols": 6,
+   "max_dd": 18.7164,
+   "S1": true,
+   "S2": false,
+   "S3": false,
+   "by_symbol": {
+    "ETH/USDT": 1.92,
+    "DOT/USDT": -1.78,
+    "YFI/USDT": -1.92,
+    "XRP/USDT": -1.98,
+    "UNI/USDT": -3.03,
+    "BNB/USDT": -5.06
+   }
+  },
+  "t2_p3": {
+   "base": 10.15,
+   "new": 35.24,
+   "n": 27,
+   "symbols": 7,
+   "max_dd": 8.4382,
+   "S1": false,
+   "S2": false,
+   "S3": false,
+   "by_symbol": {
+    "XRP/USDT": 36.27,
+    "BNB/USDT": 6.01,
+    "BCH/USDT": 0.27,
+    "YFI/USDT": -0.87,
+    "LTC/USDT": -1.51,
+    "ETH/USDT": -1.98,
+    "UNI/USDT": -2.96
+   }
+  },
+  "m2_p1": {
+   "base": 157.58,
+   "new": 101.04,
+   "n": 44,
+   "symbols": 6,
+   "max_dd": 4.7452,
+   "S1": false,
+   "S2": false,
+   "S3": false,
+   "by_symbol": {
+    "BNB/USDT": 65.72,
+    "XRP/USDT": 17.63,
+    "LTC/USDT": 14.36,
+    "ETH/USDT": 2.89,
+    "DOT/USDT": 0.69,
+    "BCH/USDT": -0.24
+   }
+  },
+  "m2_p2": {
+   "base": 45.95,
+   "new": 21.05,
+   "n": 114,
+   "symbols": 8,
+   "max_dd": 17.6469,
+   "S1": false,
+   "S2": true,
+   "S3": false,
+   "by_symbol": {
+    "BCH/USDT": 15.11,
+    "BNB/USDT": 12.42,
+    "UNI/USDT": 6.82,
+    "YFI/USDT": 3.55,
+    "DOT/USDT": -0.98,
+    "XRP/USDT": -4.63,
+    "LTC/USDT": -4.8,
+    "ETH/USDT": -6.44
+   }
+  },
+  "m2_p3": {
+   "base": 35.01,
+   "new": 9.64,
+   "n": 71,
+   "symbols": 8,
+   "max_dd": 11.3793,
+   "S1": false,
+   "S2": true,
+   "S3": false,
+   "by_symbol": {
+    "BNB/USDT": 14.18,
+    "UNI/USDT": 3.68,
+    "YFI/USDT": 0.49,
+    "ETH/USDT": -0.38,
+    "LTC/USDT": -1.11,
+    "XRP/USDT": -1.74,
+    "DOT/USDT": -2.52,
+    "BCH/USDT": -2.96
+   }
+  }
+ },
+ "flags": {
+  "t2": {
+   "S1": 1,
+   "S2": 0,
+   "GECERSIZ": false
+  },
+  "m2": {
+   "S1": 0,
+   "S2": 2,
+   "GECERSIZ": false
+  }
+ },
+ "missing": []
+}

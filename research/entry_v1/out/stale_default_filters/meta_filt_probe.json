@@ -1,0 +1,69 @@
+{
+ "run_id": "filt_probe",
+ "from": "2021-01-01",
+ "to": "2021-03-01",
+ "gate": false,
+ "stride": 1,
+ "elapsed_s": 29.8,
+ "n_decisions": 3550,
+ "n_actionable": 2022,
+ "n_opened": 50,
+ "determinism_hash": "9930393c21edbf17e1f1449cb8fc6118d7557ac4c7d241e0f0352474a113cd6c",
+ "rejections": {
+  "total": 1972,
+  "by_reason": {
+   "MIN_NOTIONAL": 84,
+   "TOTAL_OPEN_RISK": 1807,
+   "STEP_ZERO_QTY": 81
+  },
+  "by_symbol": {
+   "LTC/USDT": {
+    "MIN_NOTIONAL": 29,
+    "TOTAL_OPEN_RISK": 221
+   },
+   "BTC/USDT": {
+    "TOTAL_OPEN_RISK": 278,
+    "STEP_ZERO_QTY": 48
+   },
+   "AAVE/USDT": {
+    "TOTAL_OPEN_RISK": 284,
+    "STEP_ZERO_QTY": 17
+   },
+   "DOGE/USDT": {
+    "TOTAL_OPEN_RISK": 56
+   },
+   "LINK/USDT": {
+    "TOTAL_OPEN_RISK": 278,
+    "MIN_NOTIONAL": 37
+   },
+   "SOL/USDT": {
+    "TOTAL_OPEN_RISK": 130
+   },
+   "AVAX/USDT": {
+    "TOTAL_OPEN_RISK": 249,
+    "STEP_ZERO_QTY": 16
+   },
+   "ETH/USDT": {
+    "TOTAL_OPEN_RISK": 198,
+    "MIN_NOTIONAL": 17
+   },
+   "BNB/USDT": {
+    "TOTAL_OPEN_RISK": 84,
+    "MIN_NOTIONAL": 1
+   },
+   "XRP/USDT": {
+    "TOTAL_OPEN_RISK": 29
+   }
+  }
+ },
+ "funding_coverage": {
+  "queries": 652,
+  "answered": 652,
+  "unknown": 0,
+  "complete": true,
+  "answered_fraction": 1.0,
+  "missing_series": [],
+  "tolerance_ms": 120000,
+  "source": "history store: futures/<symbol>/funding (Binance fundingRate arşivi)"
+ }
+}

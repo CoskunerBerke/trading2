@@ -1,0 +1,242 @@
+{
+ "flags": {
+  "t2": {
+   "F1": 0,
+   "F2": 1,
+   "F3": 1,
+   "KIRILGAN": false
+  },
+  "m2": {
+   "F1": 0,
+   "F2": 0,
+   "F3": 0,
+   "KIRILGAN": false
+  }
+ },
+ "loo": {
+  "t2": {
+   "p1": {
+    "base": 107.34,
+    "min": 65.34,
+    "argmin": "BNB",
+    "F1": false,
+    "yogun": false,
+    "n": 10
+   },
+   "p2": {
+    "base": 33.74,
+    "min": 2.83,
+    "argmin": "SOL",
+    "F1": false,
+    "yogun": true,
+    "n": 10
+   },
+   "p3": {
+    "base": 10.15,
+    "min": 10.09,
+    "argmin": "ETH",
+    "F1": false,
+    "yogun": false,
+    "n": 10
+   }
+  },
+  "m2": {
+   "p1": {
+    "base": 157.58,
+    "min": 84.62,
+    "argmin": "BNB",
+    "F1": false,
+    "yogun": false,
+    "n": 10
+   },
+   "p2": {
+    "base": 45.95,
+    "min": 15.54,
+    "argmin": "SOL",
+    "F1": false,
+    "yogun": true,
+    "n": 10
+   },
+   "p3": {
+    "base": 35.01,
+    "min": 35.01,
+    "argmin": "BTC",
+    "F1": false,
+    "yogun": false,
+    "n": 10
+   }
+  }
+ },
+ "neighbors": {
+  "p1": {
+   "m2_base": 157.58,
+   "m2_21": 118.65,
+   "m2_42": 121.9,
+   "F2_m2": false,
+   "t2_prod": 107.34,
+   "t2_ctl": 107.32,
+   "ema150": 139.55,
+   "ema250": 102.67,
+   "F2_t2": false
+  },
+  "p2": {
+   "m2_base": 45.95,
+   "m2_21": 16.6,
+   "m2_42": 25.56,
+   "F2_m2": false,
+   "t2_prod": 33.74,
+   "t2_ctl": 30.05,
+   "ema150": 46.38,
+   "ema250": -14.99,
+   "F2_t2": true
+  },
+  "p3": {
+   "m2_base": 35.01,
+   "m2_21": 94.19,
+   "m2_42": 22.73,
+   "F2_m2": false,
+   "t2_prod": 10.15,
+   "t2_ctl": 11.3,
+   "ema150": 15.63,
+   "ema250": 6.01,
+   "F2_t2": false
+  }
+ },
+ "shift": {
+  "p1": {
+   "t2_base": 107.34,
+   "t2_shift": 57.18,
+   "F3_t2": false,
+   "m2_base": 157.58,
+   "m2_shift": 104.63,
+   "F3_m2": false
+  },
+  "p2": {
+   "t2_base": 33.74,
+   "t2_shift": 31.02,
+   "F3_t2": false,
+   "m2_base": 45.95,
+   "m2_shift": 42.52,
+   "F3_m2": false
+  },
+  "p3": {
+   "t2_base": 10.15,
+   "t2_shift": -4.2,
+   "F3_t2": true,
+   "m2_base": 35.01,
+   "m2_shift": 2.51,
+   "F3_m2": false
+  }
+ },
+ "concentration": {
+  "t2_p1": {
+   "n": 21,
+   "net": 107.34,
+   "top_symbol": "BNB/USDT",
+   "top_symbol_net": 69.68,
+   "top_symbol_share_of_net": 0.649,
+   "top3_share_of_gross": 0.966,
+   "F4": true,
+   "by_symbol": {
+    "BNB/USDT": 69.68,
+    "LTC/USDT": 20.57,
+    "SOL/USDT": 20.05,
+    "XRP/USDT": -0.9,
+    "DOGE/USDT": -2.05
+   }
+  },
+  "t2_p2": {
+   "n": 56,
+   "net": 33.74,
+   "top_symbol": "SOL/USDT",
+   "top_symbol_net": 40.84,
+   "top_symbol_share_of_net": 1.21,
+   "top3_share_of_gross": 0.939,
+   "F4": true,
+   "by_symbol": {
+    "SOL/USDT": 40.84,
+    "BNB/USDT": 10.01,
+    "DOGE/USDT": -0.5,
+    "LTC/USDT": -1.97,
+    "XRP/USDT": -2.66,
+    "AAVE/USDT": -3.01,
+    "ETH/USDT": -8.97
+   }
+  },
+  "t2_p3": {
+   "n": 29,
+   "net": 10.15,
+   "top_symbol": "DOGE/USDT",
+   "top_symbol_net": 12.72,
+   "top_symbol_share_of_net": 1.252,
+   "top3_share_of_gross": 0.937,
+   "F4": true,
+   "by_symbol": {
+    "DOGE/USDT": 12.72,
+    "BNB/USDT": 6.01,
+    "ETH/USDT": 0.06,
+    "SOL/USDT": -0.73,
+    "XRP/USDT": -7.9
+   }
+  },
+  "m2_p1": {
+   "n": 47,
+   "net": 157.58,
+   "top_symbol": "BNB/USDT",
+   "top_symbol_net": 65.85,
+   "top_symbol_share_of_net": 0.418,
+   "top3_share_of_gross": 0.653,
+   "F4": true,
+   "by_symbol": {
+    "BNB/USDT": 65.85,
+    "DOGE/USDT": 29.18,
+    "SOL/USDT": 20.29,
+    "XRP/USDT": 18.83,
+    "LTC/USDT": 18.32,
+    "ETH/USDT": 5.12
+   }
+  },
+  "m2_p2": {
+   "n": 94,
+   "net": 45.95,
+   "top_symbol": "SOL/USDT",
+   "top_symbol_net": 50.6,
+   "top_symbol_share_of_net": 1.101,
+   "top3_share_of_gross": 0.85,
+   "F4": true,
+   "by_symbol": {
+    "SOL/USDT": 50.6,
+    "BNB/USDT": 13.68,
+    "AVAX/USDT": -0.09,
+    "XRP/USDT": -1.83,
+    "DOGE/USDT": -2.54,
+    "LTC/USDT": -2.84,
+    "ETH/USDT": -4.83,
+    "AAVE/USDT": -6.2
+   }
+  },
+  "m2_p3": {
+   "n": 55,
+   "net": 35.01,
+   "top_symbol": "DOGE/USDT",
+   "top_symbol_net": 26.08,
+   "top_symbol_share_of_net": 0.745,
+   "top3_share_of_gross": 0.832,
+   "F4": true,
+   "by_symbol": {
+    "DOGE/USDT": 26.08,
+    "BNB/USDT": 11.06,
+    "SOL/USDT": 0.41,
+    "XRP/USDT": -0.56,
+    "ETH/USDT": -0.61,
+    "LTC/USDT": -1.37
+   }
+  }
+ },
+ "missing": [],
+ "corr_t2_m2_monthly": {
+  "p1": 0.361,
+  "p2": -0.033,
+  "p3": -0.155
+ }
+}

@@ -1,0 +1,413 @@
+{
+ "rows": {
+  "t2_p1": {
+   "run_id": "v9_t2_p1",
+   "n": 21,
+   "net_pct": 107.3371,
+   "stress_pct": 106.82919728646579,
+   "mean_r": 2.5898,
+   "win_rate": 0.381,
+   "pf": 15.4506,
+   "max_dd_pct": 4.4683,
+   "symbols": 5,
+   "mean_bars": 300.24,
+   "fees": 0.3075,
+   "funding": -66.4295,
+   "boot": [
+    2.6754,
+    -0.033,
+    6.7043
+   ],
+   "rejections": {
+    "MIN_NOTIONAL": 754,
+    "STEP_ZERO_QTY": 517,
+    "TOTAL_OPEN_RISK": 7679,
+    "MIN_ORDER_CONFLICT": 119,
+    "MAX_POSITION_PCT": 3,
+    "STRATEGY_BAD_STOP": 1
+   }
+  },
+  "t2_p2": {
+   "run_id": "v9_t2_p2",
+   "n": 56,
+   "net_pct": 33.7415,
+   "stress_pct": 32.56098998278061,
+   "mean_r": 0.3849,
+   "win_rate": 0.125,
+   "pf": 2.0776,
+   "max_dd_pct": 22.2798,
+   "symbols": 7,
+   "mean_bars": 145.46,
+   "fees": 0.714,
+   "funding": -10.052,
+   "boot": [
+    0.3941,
+    -0.3118,
+    1.6541
+   ],
+   "rejections": {
+    "MIN_NOTIONAL": 1243,
+    "STEP_ZERO_QTY": 893,
+    "TOTAL_OPEN_RISK": 9779,
+    "MAX_POSITION_PCT": 13,
+    "STRATEGY_BAD_STOP": 2
+   }
+  },
+  "t2_p3": {
+   "run_id": "v9_t2_p3",
+   "n": 29,
+   "net_pct": 10.1538,
+   "stress_pct": 9.595319938849448,
+   "mean_r": 0.1898,
+   "win_rate": 0.2069,
+   "pf": 1.7265,
+   "max_dd_pct": 9.9696,
+   "symbols": 5,
+   "mean_bars": 208.21,
+   "fees": 0.3454,
+   "funding": -2.6465,
+   "boot": [
+    0.1877,
+    -0.2632,
+    0.7703
+   ],
+   "rejections": {
+    "STEP_ZERO_QTY": 1166,
+    "TOTAL_OPEN_RISK": 8898,
+    "MIN_NOTIONAL": 518,
+    "MIN_ORDER_CONFLICT": 37,
+    "MAX_POSITION_PCT": 25
+   }
+  },
+  "m1_p1": {
+   "run_id": "v11_m1_p1",
+   "n": 20,
+   "net_pct": 140.9062,
+   "stress_pct": 140.37715227739884,
+   "mean_r": 3.5274,
+   "win_rate": 0.4,
+   "pf": 16.442,
+   "max_dd_pct": 4.4739,
+   "symbols": 5,
+   "mean_bars": 283.7,
+   "fees": 0.3215,
+   "funding": -64.6159,
+   "boot": [
+    3.6182,
+    0.0125,
+    9.144
+   ],
+   "rejections": {
+    "MIN_NOTIONAL": 796,
+    "STEP_ZERO_QTY": 550,
+    "TOTAL_OPEN_RISK": 7119,
+    "MIN_ORDER_CONFLICT": 107,
+    "MAX_POSITION_PCT": 4,
+    "STRATEGY_BAD_STOP": 1
+   }
+  },
+  "m1_p2": {
+   "run_id": "v11_m1_p2",
+   "n": 70,
+   "net_pct": 48.8779,
+   "stress_pct": 47.41386530187347,
+   "mean_r": 0.4289,
+   "win_rate": 0.1714,
+   "pf": 2.3958,
+   "max_dd_pct": 20.5732,
+   "symbols": 6,
+   "mean_bars": 114.37,
+   "fees": 0.8751,
+   "funding": -11.1313,
+   "boot": [
+    0.4215,
+    -0.2473,
+    1.5957
+   ],
+   "rejections": {
+    "MIN_NOTIONAL": 859,
+    "TOTAL_OPEN_RISK": 10931,
+    "STEP_ZERO_QTY": 725,
+    "MAX_POSITION_PCT": 18,
+    "STRATEGY_BAD_STOP": 2,
+    "MIN_ORDER_CONFLICT": 16
+   }
+  },
+  "m1_p3": {
+   "run_id": "v11_m1_p3",
+   "n": 49,
+   "net_pct": 14.2044,
+   "stress_pct": 13.236064147639699,
+   "mean_r": 0.1454,
+   "win_rate": 0.2245,
+   "pf": 1.6212,
+   "max_dd_pct": 13.0801,
+   "symbols": 6,
+   "mean_bars": 107.24,
+   "fees": 0.5965,
+   "funding": -2.9377,
+   "boot": [
+    0.1488,
+    -0.2229,
+    0.6911
+   ],
+   "rejections": {
+    "STEP_ZERO_QTY": 990,
+    "TOTAL_OPEN_RISK": 8828,
+    "MIN_NOTIONAL": 488,
+    "MIN_ORDER_CONFLICT": 5,
+    "MAX_POSITION_PCT": 14
+   }
+  },
+  "m2_p1": {
+   "run_id": "v11_m2_p1",
+   "n": 47,
+   "net_pct": 157.5796,
+   "stress_pct": 156.69163673328148,
+   "mean_r": 1.7189,
+   "win_rate": 0.4681,
+   "pf": 9.5613,
+   "max_dd_pct": 7.2410000000000005,
+   "symbols": 6,
+   "mean_bars": 104.49,
+   "fees": 0.5353,
+   "funding": -22.0956,
+   "boot": [
+    1.7164,
+    0.468,
+    3.3185
+   ],
+   "rejections": {
+    "MIN_NOTIONAL": 1750,
+    "STEP_ZERO_QTY": 1046,
+    "TOTAL_OPEN_RISK": 4928,
+    "MAX_POSITION_PCT": 4,
+    "MIN_ORDER_CONFLICT": 375
+   }
+  },
+  "m2_p2": {
+   "run_id": "v11_m2_p2",
+   "n": 94,
+   "net_pct": 45.9518,
+   "stress_pct": 43.88504524060512,
+   "mean_r": 0.2762,
+   "win_rate": 0.2766,
+   "pf": 2.2102,
+   "max_dd_pct": 16.2574,
+   "symbols": 8,
+   "mean_bars": 72.18,
+   "fees": 1.2541,
+   "funding": -6.1513,
+   "boot": [
+    0.2702,
+    -0.175,
+    0.9904
+   ],
+   "rejections": {
+    "MIN_NOTIONAL": 986,
+    "TOTAL_OPEN_RISK": 9618,
+    "STEP_ZERO_QTY": 713,
+    "MAX_POSITION_PCT": 3,
+    "STRATEGY_BAD_STOP": 2,
+    "MIN_ORDER_CONFLICT": 18
+   }
+  },
+  "m2_p3": {
+   "run_id": "v11_m2_p3",
+   "n": 55,
+   "net_pct": 35.0118,
+   "stress_pct": 33.84896893165527,
+   "mean_r": 0.3162,
+   "win_rate": 0.3273,
+   "pf": 2.3646,
+   "max_dd_pct": 13.8848,
+   "symbols": 6,
+   "mean_bars": 91.62,
+   "fees": 0.717,
+   "funding": -3.0688,
+   "boot": [
+    0.3238,
+    -0.1889,
+    1.0806
+   ],
+   "rejections": {
+    "STEP_ZERO_QTY": 806,
+    "MIN_NOTIONAL": 656,
+    "TOTAL_OPEN_RISK": 7747,
+    "MIN_ORDER_CONFLICT": 12,
+    "MAX_POSITION_PCT": 24
+   }
+  },
+  "m3_p1": {
+   "run_id": "v11_m3_p1",
+   "n": 16,
+   "net_pct": 159.5149,
+   "stress_pct": 159.0433834498819,
+   "mean_r": 5.0957,
+   "win_rate": 0.4375,
+   "pf": 15.0709,
+   "max_dd_pct": 4.0946,
+   "symbols": 6,
+   "mean_bars": 380.75,
+   "fees": 0.2892,
+   "funding": -59.1926,
+   "boot": [
+    5.1163,
+    0.2332,
+    12.1007
+   ],
+   "rejections": {
+    "MIN_NOTIONAL": 878,
+    "STEP_ZERO_QTY": 587,
+    "TOTAL_OPEN_RISK": 6006,
+    "MIN_ORDER_CONFLICT": 471,
+    "MAX_POSITION_PCT": 3
+   }
+  },
+  "m3_p2": {
+   "run_id": "v11_m3_p2",
+   "n": 71,
+   "net_pct": 43.0695,
+   "stress_pct": 41.554742638186674,
+   "mean_r": 0.4215,
+   "win_rate": 0.3239,
+   "pf": 1.9956,
+   "max_dd_pct": 26.1602,
+   "symbols": 6,
+   "mean_bars": 119.13,
+   "fees": 0.9169,
+   "funding": -6.6701,
+   "boot": [
+    0.4014,
+    -0.2828,
+    1.4114
+   ],
+   "rejections": {
+    "MIN_NOTIONAL": 701,
+    "STEP_ZERO_QTY": 761,
+    "TOTAL_OPEN_RISK": 10469,
+    "MAX_POSITION_PCT": 19,
+    "STRATEGY_BAD_STOP": 5
+   }
+  },
+  "m3_p3": {
+   "run_id": "v11_m3_p3",
+   "n": 43,
+   "net_pct": -1.0662,
+   "stress_pct": -2.0142589517665335,
+   "mean_r": -0.0038,
+   "win_rate": 0.4419,
+   "pf": 0.9586,
+   "max_dd_pct": 10.6564,
+   "symbols": 7,
+   "mean_bars": 136.51,
+   "fees": 0.5841,
+   "funding": -2.5152,
+   "boot": [
+    -0.001,
+    -0.282,
+    0.347
+   ],
+   "rejections": {
+    "STEP_ZERO_QTY": 815,
+    "TOTAL_OPEN_RISK": 9279,
+    "MIN_NOTIONAL": 567,
+    "MAX_POSITION_PCT": 16,
+    "MIN_ORDER_CONFLICT": 51
+   }
+  }
+ },
+ "verdict": {
+  "m1": {
+   "per_window": {
+    "p1": {
+     "1_pozitif": true,
+     "2_T2den_iyi": true,
+     "3_n20_coin5": true,
+     "4_stres_pozitif": true,
+     "5_dd_T2yi_asmaz": true,
+     "hepsi": true
+    },
+    "p2": {
+     "1_pozitif": true,
+     "2_T2den_iyi": true,
+     "3_n20_coin5": true,
+     "4_stres_pozitif": true,
+     "5_dd_T2yi_asmaz": true,
+     "hepsi": true
+    },
+    "p3": {
+     "1_pozitif": true,
+     "2_T2den_iyi": true,
+     "3_n20_coin5": true,
+     "4_stres_pozitif": true,
+     "5_dd_T2yi_asmaz": true,
+     "hepsi": true
+    }
+   },
+   "worst_dd": 20.5732,
+   "karar": "T2'NİN YERİNE ADAY"
+  },
+  "m2": {
+   "per_window": {
+    "p1": {
+     "1_pozitif": true,
+     "2_T2den_iyi": true,
+     "3_n20_coin5": true,
+     "4_stres_pozitif": true,
+     "5_dd_T2yi_asmaz": true,
+     "hepsi": true
+    },
+    "p2": {
+     "1_pozitif": true,
+     "2_T2den_iyi": true,
+     "3_n20_coin5": true,
+     "4_stres_pozitif": true,
+     "5_dd_T2yi_asmaz": true,
+     "hepsi": true
+    },
+    "p3": {
+     "1_pozitif": true,
+     "2_T2den_iyi": true,
+     "3_n20_coin5": true,
+     "4_stres_pozitif": true,
+     "5_dd_T2yi_asmaz": true,
+     "hepsi": true
+    }
+   },
+   "worst_dd": 16.2574,
+   "karar": "T2'NİN YERİNE ADAY"
+  },
+  "m3": {
+   "per_window": {
+    "p1": {
+     "1_pozitif": true,
+     "2_T2den_iyi": true,
+     "3_n20_coin5": false,
+     "4_stres_pozitif": true,
+     "5_dd_T2yi_asmaz": false,
+     "hepsi": false
+    },
+    "p2": {
+     "1_pozitif": true,
+     "2_T2den_iyi": true,
+     "3_n20_coin5": true,
+     "4_stres_pozitif": true,
+     "5_dd_T2yi_asmaz": false,
+     "hepsi": false
+    },
+    "p3": {
+     "1_pozitif": false,
+     "2_T2den_iyi": false,
+     "3_n20_coin5": true,
+     "4_stres_pozitif": false,
+     "5_dd_T2yi_asmaz": false,
+     "hepsi": false
+    }
+   },
+   "worst_dd": 26.1602,
+   "karar": "REDDEDİLDİ"
+  }
+ },
+ "t2_worst_dd": 22.2798
+}

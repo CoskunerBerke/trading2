@@ -1,0 +1,92 @@
+{
+ "run_id": "base_gated",
+ "k": null,
+ "k2": null,
+ "from": "2024-09-01",
+ "to": "2026-09-01",
+ "fee_mult": 1.0,
+ "slip_mult": 1.0,
+ "stride": 1,
+ "economics_gate": true,
+ "config_sha256_16": "70f6749b8c09845a",
+ "config_verified": {
+  "target_r_multiple": null,
+  "target2_r_multiple": null,
+  "futures_taker_pct": 0.05,
+  "slippage_bps": 3.0
+ },
+ "rc": 0,
+ "elapsed_s": 732.4,
+ "symbols": [
+  "BTC/USDT",
+  "ETH/USDT",
+  "SOL/USDT",
+  "BNB/USDT",
+  "XRP/USDT",
+  "LINK/USDT",
+  "DOGE/USDT",
+  "AVAX/USDT",
+  "LTC/USDT",
+  "AAVE/USDT"
+ ],
+ "n_decisions": 43810,
+ "n_actionable": 40702,
+ "n_opened": 3,
+ "determinism_hash": "ae28e1c7feb12fc27f889f10267c2b5f3759fe675c47f3c1c7ba949ea9665c13",
+ "funding_coverage": {
+  "queries": 10,
+  "answered": 10,
+  "unknown": 0,
+  "complete": true,
+  "answered_fraction": 1.0,
+  "missing_series": [],
+  "tolerance_ms": 120000,
+  "source": "history store: futures/<symbol>/funding (Binance fundingRate arşivi)"
+ },
+ "rejections": {
+  "total": 40699,
+  "by_reason": {
+   "RESEARCH_SIZE_ONLY": 29752,
+   "NEGATIVE_NET_EDGE": 10947
+  },
+  "by_symbol": {
+   "AVAX/USDT": {
+    "RESEARCH_SIZE_ONLY": 4101
+   },
+   "SOL/USDT": {
+    "RESEARCH_SIZE_ONLY": 4082,
+    "NEGATIVE_NET_EDGE": 4
+   },
+   "LINK/USDT": {
+    "RESEARCH_SIZE_ONLY": 4057
+   },
+   "DOGE/USDT": {
+    "RESEARCH_SIZE_ONLY": 4116
+   },
+   "ETH/USDT": {
+    "RESEARCH_SIZE_ONLY": 4043,
+    "NEGATIVE_NET_EDGE": 21
+   },
+   "XRP/USDT": {
+    "RESEARCH_SIZE_ONLY": 562,
+    "NEGATIVE_NET_EDGE": 3506
+   },
+   "BNB/USDT": {
+    "RESEARCH_SIZE_ONLY": 3883,
+    "NEGATIVE_NET_EDGE": 154
+   },
+   "BTC/USDT": {
+    "RESEARCH_SIZE_ONLY": 3820,
+    "NEGATIVE_NET_EDGE": 248
+   },
+   "LTC/USDT": {
+    "RESEARCH_SIZE_ONLY": 551,
+    "NEGATIVE_NET_EDGE": 3499
+   },
+   "AAVE/USDT": {
+    "RESEARCH_SIZE_ONLY": 537,
+    "NEGATIVE_NET_EDGE": 3515
+   }
+  }
+ }
+}

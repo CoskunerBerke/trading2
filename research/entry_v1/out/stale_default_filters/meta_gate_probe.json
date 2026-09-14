@@ -1,0 +1,100 @@
+{
+ "run_id": "gate_probe",
+ "k": null,
+ "k2": null,
+ "from": "2026-07-01",
+ "to": "2026-08-01",
+ "fee_mult": 1.0,
+ "slip_mult": 1.0,
+ "stride": 1,
+ "economics_gate": true,
+ "config_sha256_16": "70f6749b8c09845a",
+ "config_verified": {
+  "target_r_multiple": null,
+  "target2_r_multiple": null,
+  "futures_taker_pct": 0.05,
+  "slippage_bps": 3.0
+ },
+ "rc": 0,
+ "elapsed_s": 38.3,
+ "symbols": [
+  "BTC/USDT",
+  "ETH/USDT",
+  "SOL/USDT",
+  "BNB/USDT",
+  "XRP/USDT",
+  "LINK/USDT",
+  "DOGE/USDT",
+  "AVAX/USDT",
+  "LTC/USDT",
+  "AAVE/USDT"
+ ],
+ "n_decisions": 1870,
+ "n_actionable": 1472,
+ "n_opened": 5,
+ "determinism_hash": "dace3b07968b737ac1ce14f174d9b941c9b2c2534432a58aabd4524ecf0ff2dc",
+ "funding_coverage": {
+  "queries": 90,
+  "answered": 90,
+  "unknown": 0,
+  "complete": true,
+  "answered_fraction": 1.0,
+  "missing_series": [],
+  "tolerance_ms": 120000,
+  "source": "history store: futures/<symbol>/funding (Binance fundingRate arşivi)"
+ },
+ "rejections": {
+  "total": 1467,
+  "by_reason": {
+   "RESEARCH_SIZE_ONLY": 257,
+   "INSUFFICIENT_MARGIN": 19,
+   "STEP_ZERO_QTY": 2,
+   "NEGATIVE_NET_EDGE": 1189
+  },
+  "by_symbol": {
+   "DOGE/USDT": {
+    "RESEARCH_SIZE_ONLY": 72,
+    "NEGATIVE_NET_EDGE": 112
+   },
+   "LINK/USDT": {
+    "RESEARCH_SIZE_ONLY": 11,
+    "NEGATIVE_NET_EDGE": 122
+   },
+   "ETH/USDT": {
+    "RESEARCH_SIZE_ONLY": 13,
+    "NEGATIVE_NET_EDGE": 112
+   },
+   "XRP/USDT": {
+    "RESEARCH_SIZE_ONLY": 46,
+    "INSUFFICIENT_MARGIN": 7,
+    "NEGATIVE_NET_EDGE": 116
+   },
+   "LTC/USDT": {
+    "RESEARCH_SIZE_ONLY": 32,
+    "INSUFFICIENT_MARGIN": 9,
+    "NEGATIVE_NET_EDGE": 120
+   },
+   "BTC/USDT": {
+    "RESEARCH_SIZE_ONLY": 22,
+    "STEP_ZERO_QTY": 2,
+    "NEGATIVE_NET_EDGE": 131
+   },
+   "BNB/USDT": {
+    "RESEARCH_SIZE_ONLY": 47,
+    "INSUFFICIENT_MARGIN": 3,
+    "NEGATIVE_NET_EDGE": 104
+   },
+   "AVAX/USDT": {
+    "RESEARCH_SIZE_ONLY": 8,
+    "NEGATIVE_NET_EDGE": 138
+   },
+   "AAVE/USDT": {
+    "RESEARCH_SIZE_ONLY": 6,
+    "NEGATIVE_NET_EDGE": 121
+   },
+   "SOL/USDT": {
+    "NEGATIVE_NET_EDGE": 113
+   }
+  }
+ }
+}

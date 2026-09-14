@@ -1,0 +1,72 @@
+{
+ "run_id": "base_gated",
+ "from": "2024-09-01",
+ "to": "2026-09-01",
+ "gate": true,
+ "stride": 1,
+ "elapsed_s": 1106.7,
+ "n_decisions": 43810,
+ "n_actionable": 40706,
+ "n_opened": 3,
+ "determinism_hash": "f98ca4372154f38dea96e49913cf366abe106c1e2f08969ba4d6975761e2146f",
+ "rejections": {
+  "total": 40703,
+  "by_reason": {
+   "RESEARCH_SIZE_ONLY": 31007,
+   "MIN_NOTIONAL": 8,
+   "NEGATIVE_NET_EDGE": 9678,
+   "STEP_ZERO_QTY": 10
+  },
+  "by_symbol": {
+   "AVAX/USDT": {
+    "RESEARCH_SIZE_ONLY": 4091,
+    "STEP_ZERO_QTY": 10
+   },
+   "SOL/USDT": {
+    "RESEARCH_SIZE_ONLY": 4086
+   },
+   "LINK/USDT": {
+    "RESEARCH_SIZE_ONLY": 4057
+   },
+   "DOGE/USDT": {
+    "RESEARCH_SIZE_ONLY": 1115,
+    "NEGATIVE_NET_EDGE": 2999
+   },
+   "ETH/USDT": {
+    "RESEARCH_SIZE_ONLY": 4063,
+    "NEGATIVE_NET_EDGE": 1
+   },
+   "XRP/USDT": {
+    "RESEARCH_SIZE_ONLY": 932,
+    "NEGATIVE_NET_EDGE": 3136
+   },
+   "BNB/USDT": {
+    "RESEARCH_SIZE_ONLY": 3897,
+    "NEGATIVE_NET_EDGE": 140
+   },
+   "BTC/USDT": {
+    "RESEARCH_SIZE_ONLY": 3858,
+    "NEGATIVE_NET_EDGE": 210
+   },
+   "LTC/USDT": {
+    "RESEARCH_SIZE_ONLY": 4047,
+    "MIN_NOTIONAL": 8,
+    "NEGATIVE_NET_EDGE": 1
+   },
+   "AAVE/USDT": {
+    "RESEARCH_SIZE_ONLY": 861,
+    "NEGATIVE_NET_EDGE": 3191
+   }
+  }
+ },
+ "funding_coverage": {
+  "queries": 11,
+  "answered": 11,
+  "unknown": 0,
+  "complete": true,
+  "answered_fraction": 1.0,
+  "missing_series": [],
+  "tolerance_ms": 120000,
+  "source": "history store: futures/<symbol>/funding (Binance fundingRate arşivi)"
+ }
+}

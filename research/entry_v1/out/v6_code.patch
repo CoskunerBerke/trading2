@@ -1,0 +1,113 @@
+
+# UNTRACKED tests/test_session_gate_v1.py
+# -*- coding: utf-8 -*-
+"""SEANS KAPISI — saat/gun sinirlari ve fail-closed davranisi."""
+from __future__ import annotations
+
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from tradingbot.session_gate import VARIANTS, evaluate_variant, in_us_session, is_weekend  # noqa: E402
+
+
+def _ms(y, m, d, h):
+    return int(datetime(y, m, d, h, tzinfo=timezone.utc).timestamp() * 1000)
+
+
+def test_us_session_bounds_are_half_open():
+    assert in_us_session(_ms(2026, 9, 9, 12)) is True        # Carsamba 12:00 UTC
+    assert in_us_session(_ms(2026, 9, 9, 16)) is True
+    assert in_us_session(_ms(2026, 9, 9, 20)) is False       # 20:00 disarida
+    assert in_us_session(_ms(2026, 9, 9, 8)) is False
+
+
+def test_weekend_is_saturday_and_sunday_utc():
+    assert is_weekend(_ms(2026, 9, 12, 12)) is True          # Cumartesi
+    assert is_weekend(_ms(2026, 9, 13, 0)) is True           # Pazar
+    assert is_weekend(_ms(2026, 9, 14, 0)) is False          # Pazartesi
+
+
+def test_variants():
+    wed_noon, wed_night, sat_noon = _ms(2026, 9, 9, 12), _ms(2026, 9, 9, 0), _ms(2026, 9, 12, 12)
+    assert evaluate_variant("s1_us_session", decision_ms=wed_noon) == (True, "")
+    assert evaluate_variant("s1_us_session", decision_ms=wed_night) == (False, "S1_OUTSIDE_US_SESSION")
+    assert evaluate_variant("s1_us_session", decision_ms=sat_noon) == (True, "")
+    assert evaluate_variant("s2_no_weekend", decision_ms=sat_noon) == (False, "S2_WEEKEND")
+    assert evaluate_variant("s2_no_weekend", decision_ms=wed_night) == (True, "")
+    assert evaluate_variant("s3_both", decision_ms=wed_noon) == (True, "")
+    assert evaluate_variant("s3_both", decision_ms=sat_noon) == (False, "S3_WEEKEND")
+    assert evaluate_variant("s3_both", decision_ms=wed_night) == (False, "S3_OUTSIDE_US_SESSION")
+    assert set(VARIANTS) == {"s1_us_session", "s2_no_weekend", "s3_both"}
+
+
+def test_unreadable_time_is_fail_closed_and_unknown_variant_raises():
+    assert evaluate_variant("s1_us_session", decision_ms=None) == (False, "S1_NO_TIME")
+    assert evaluate_variant("s2_no_weekend", decision_ms="x") == (False, "S2_NO_TIME")
+    with pytest.raises(ValueError):
+        evaluate_variant("s9", decision_ms=0)
+
+# UNTRACKED tradingbot/session_gate.py
+# -*- coding: utf-8 -*-
+"""SEANS KAPISI — karar ANININ saati/gunu ile giris izni (V6, 2026-09-12). SAF, tek kaynak.
+
+Kripto vadeli sozlesmeleri hic kapanmaz; bu kapi "borsa kapali" demek DEGILDIR. Sinadigi
+hipotez: geleneksel piyasa seanslari (ABD 12-20 UTC) ve hafta sonu, kripto likiditesini ve
+dolayisiyla bu sistemin giris kalitesini degistiriyor mu?
+
+Varyantlar:
+  s1_us_session   yalniz karar saati 12:00-19:59 UTC iken giris (4h barda 12:00 ve 16:00 kapanislari)
+  s2_no_weekend   Cumartesi/Pazar (UTC) giris yok
+  s3_both         ikisi birlikte
+
+`decision_ms`: kararin verildigi an (UTC, ms) = kapanmis barin kapanis zamani.
+"""
+from __future__ import annotations
+
+from datetime import datetime, timezone
+
+VARIANTS = ("s1_us_session", "s2_no_weekend", "s3_both")
+US_SESSION_UTC = (12, 20)          # [baslangic, bitis) saat
+
+
+def _dt(decision_ms) -> datetime | None:
+    try:
+        return datetime.fromtimestamp(float(decision_ms) / 1000.0, tz=timezone.utc)
+    except (TypeError, ValueError, OverflowError, OSError):
+        return None
+
+
+def in_us_session(decision_ms) -> bool | None:
+    d = _dt(decision_ms)
+    if d is None:
+        return None
+    return US_SESSION_UTC[0] <= d.hour < US_SESSION_UTC[1]
+
+
+def is_weekend(decision_ms) -> bool | None:
+    d = _dt(decision_ms)
+    if d is None:
+        return None
+    return d.weekday() >= 5
+
+
+def evaluate_variant(variant: str, *, decision_ms) -> tuple[bool, str]:
+    """Doner: (gecti, gerekce). Zaman okunamazsa FAIL-CLOSED (giris yok, sebep kayitli)."""
+    if variant not in VARIANTS:
+        raise ValueError("bilinmeyen seans varyanti: %r" % (variant,))
+    tag = variant.split("_", 1)[0].upper()
+    us, we = in_us_session(decision_ms), is_weekend(decision_ms)
+    if us is None or we is None:
+        return False, tag + "_NO_TIME"
+    if variant in ("s1_us_session", "s3_both") and not us:
+        return False, tag + "_OUTSIDE_US_SESSION"
+    if variant in ("s2_no_weekend", "s3_both") and we:
+        return False, tag + "_WEEKEND"
+    return True, ""
+
+
+__all__ = ["US_SESSION_UTC", "VARIANTS", "evaluate_variant", "in_us_session", "is_weekend"]

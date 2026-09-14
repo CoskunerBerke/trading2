@@ -1,0 +1,60 @@
+{
+ "run_id": "smoke_h1",
+ "from": "2026-07-01",
+ "to": "2026-08-01",
+ "gate": false,
+ "stride": 1,
+ "elapsed_s": 22.1,
+ "n_decisions": 1870,
+ "n_actionable": 1620,
+ "n_opened": 0,
+ "determinism_hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+ "rejections": {
+  "total": 1620,
+  "by_reason": {
+   "H1_MISSING_FEATURE": 1620
+  },
+  "by_symbol": {
+   "DOGE/USDT": {
+    "H1_MISSING_FEATURE": 184
+   },
+   "LINK/USDT": {
+    "H1_MISSING_FEATURE": 154
+   },
+   "ETH/USDT": {
+    "H1_MISSING_FEATURE": 152
+   },
+   "BTC/USDT": {
+    "H1_MISSING_FEATURE": 155
+   },
+   "BNB/USDT": {
+    "H1_MISSING_FEATURE": 154
+   },
+   "XRP/USDT": {
+    "H1_MISSING_FEATURE": 169
+   },
+   "LTC/USDT": {
+    "H1_MISSING_FEATURE": 161
+   },
+   "SOL/USDT": {
+    "H1_MISSING_FEATURE": 178
+   },
+   "AVAX/USDT": {
+    "H1_MISSING_FEATURE": 154
+   },
+   "AAVE/USDT": {
+    "H1_MISSING_FEATURE": 159
+   }
+  }
+ },
+ "funding_coverage": {
+  "queries": 0,
+  "answered": 0,
+  "unknown": 0,
+  "complete": true,
+  "answered_fraction": null,
+  "missing_series": [],
+  "tolerance_ms": 120000,
+  "source": "history store: futures/<symbol>/funding (Binance fundingRate arşivi)"
+ }
+}

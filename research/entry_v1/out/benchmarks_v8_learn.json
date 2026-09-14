@@ -1,0 +1,390 @@
+{
+ "S-E1": {
+  "P1": {
+   "getiri_pct": 11.43,
+   "islem": 2128,
+   "sinyal": 17330,
+   "giris": 2128,
+   "ort_R": 0.033,
+   "isabet": 45.3,
+   "PF": 1.045,
+   "ucret_usdt": 12.8,
+   "funding_usdt": 10.33,
+   "coin_ort_maks_dusus_pct": 35.9,
+   "ogrenilen_tablo_pencere_sonu": [
+    {
+     "etiket": "THREE_WHITE_SOLDIERS_LIKE",
+     "n": 15203,
+     "ort_R": 0.0337
+    },
+    {
+     "etiket": "BULLISH_HARAMI_LIKE",
+     "n": 13516,
+     "ort_R": -0.0475
+    },
+    {
+     "etiket": "BULLISH_ENGULFING_LIKE",
+     "n": 12208,
+     "ort_R": -0.0017
+    },
+    {
+     "etiket": "TWEEZER_BOTTOM_LIKE",
+     "n": 11918,
+     "ort_R": -0.0267
+    },
+    {
+     "etiket": "MORNING_STAR_LIKE",
+     "n": 9535,
+     "ort_R": -0.0333
+    },
+    {
+     "etiket": "HAMMER_LIKE",
+     "n": 7152,
+     "ort_R": -0.0274
+    },
+    {
+     "etiket": "INVERTED_HAMMER_LIKE",
+     "n": 6072,
+     "ort_R": -0.0048
+    },
+    {
+     "etiket": "BULLISH_BELT_HOLD_LIKE",
+     "n": 5562,
+     "ort_R": 0.0001
+    },
+    {
+     "etiket": "PIERCING_LINE_LIKE",
+     "n": 5221,
+     "ort_R": -0.0343
+    },
+    {
+     "etiket": "BULLISH_HARAMI_CROSS_LIKE",
+     "n": 2829,
+     "ort_R": 0.0004
+    }
+   ]
+  },
+  "P2": {
+   "getiri_pct": -6.1,
+   "islem": 2105,
+   "sinyal": 19065,
+   "giris": 2105,
+   "ort_R": -0.009,
+   "isabet": 43.6,
+   "PF": 0.97,
+   "ucret_usdt": 16.99,
+   "funding_usdt": 4.46,
+   "coin_ort_maks_dusus_pct": 30.6,
+   "ogrenilen_tablo_pencere_sonu": [
+    {
+     "etiket": "THREE_WHITE_SOLDIERS_LIKE",
+     "n": 15203,
+     "ort_R": 0.0337
+    },
+    {
+     "etiket": "BULLISH_HARAMI_LIKE",
+     "n": 13516,
+     "ort_R": -0.0475
+    },
+    {
+     "etiket": "BULLISH_ENGULFING_LIKE",
+     "n": 12208,
+     "ort_R": -0.0017
+    },
+    {
+     "etiket": "TWEEZER_BOTTOM_LIKE",
+     "n": 11918,
+     "ort_R": -0.0267
+    },
+    {
+     "etiket": "MORNING_STAR_LIKE",
+     "n": 9535,
+     "ort_R": -0.0333
+    },
+    {
+     "etiket": "HAMMER_LIKE",
+     "n": 7152,
+     "ort_R": -0.0274
+    },
+    {
+     "etiket": "INVERTED_HAMMER_LIKE",
+     "n": 6072,
+     "ort_R": -0.0048
+    },
+    {
+     "etiket": "BULLISH_BELT_HOLD_LIKE",
+     "n": 5562,
+     "ort_R": 0.0001
+    },
+    {
+     "etiket": "PIERCING_LINE_LIKE",
+     "n": 5221,
+     "ort_R": -0.0343
+    },
+    {
+     "etiket": "BULLISH_HARAMI_CROSS_LIKE",
+     "n": 2829,
+     "ort_R": 0.0004
+    }
+   ]
+  },
+  "P3": {
+   "getiri_pct": -8.74,
+   "islem": 2068,
+   "sinyal": 18792,
+   "giris": 2068,
+   "ort_R": -0.0132,
+   "isabet": 43.0,
+   "PF": 0.957,
+   "ucret_usdt": 16.67,
+   "funding_usdt": 2.91,
+   "coin_ort_maks_dusus_pct": 35.1,
+   "ogrenilen_tablo_pencere_sonu": [
+    {
+     "etiket": "THREE_WHITE_SOLDIERS_LIKE",
+     "n": 15203,
+     "ort_R": 0.0337
+    },
+    {
+     "etiket": "BULLISH_HARAMI_LIKE",
+     "n": 13516,
+     "ort_R": -0.0475
+    },
+    {
+     "etiket": "BULLISH_ENGULFING_LIKE",
+     "n": 12208,
+     "ort_R": -0.0017
+    },
+    {
+     "etiket": "TWEEZER_BOTTOM_LIKE",
+     "n": 11918,
+     "ort_R": -0.0267
+    },
+    {
+     "etiket": "MORNING_STAR_LIKE",
+     "n": 9535,
+     "ort_R": -0.0333
+    },
+    {
+     "etiket": "HAMMER_LIKE",
+     "n": 7152,
+     "ort_R": -0.0274
+    },
+    {
+     "etiket": "INVERTED_HAMMER_LIKE",
+     "n": 6072,
+     "ort_R": -0.0048
+    },
+    {
+     "etiket": "BULLISH_BELT_HOLD_LIKE",
+     "n": 5562,
+     "ort_R": 0.0001
+    },
+    {
+     "etiket": "PIERCING_LINE_LIKE",
+     "n": 5221,
+     "ort_R": -0.0343
+    },
+    {
+     "etiket": "BULLISH_HARAMI_CROSS_LIKE",
+     "n": 2829,
+     "ort_R": 0.0004
+    }
+   ]
+  }
+ },
+ "S-E2": {
+  "P1": {
+   "getiri_pct": 9.18,
+   "islem": 1956,
+   "sinyal": 17330,
+   "giris": 1956,
+   "ort_R": 0.0281,
+   "isabet": 45.9,
+   "PF": 1.04,
+   "ucret_usdt": 11.5,
+   "funding_usdt": 9.93,
+   "coin_ort_maks_dusus_pct": 34.7,
+   "ogrenilen_tablo_pencere_sonu": [
+    {
+     "etiket": "THREE_WHITE_SOLDIERS_LIKE",
+     "n": 15203,
+     "ort_R": 0.0337
+    },
+    {
+     "etiket": "BULLISH_HARAMI_LIKE",
+     "n": 13516,
+     "ort_R": -0.0475
+    },
+    {
+     "etiket": "BULLISH_ENGULFING_LIKE",
+     "n": 12208,
+     "ort_R": -0.0017
+    },
+    {
+     "etiket": "TWEEZER_BOTTOM_LIKE",
+     "n": 11918,
+     "ort_R": -0.0267
+    },
+    {
+     "etiket": "MORNING_STAR_LIKE",
+     "n": 9535,
+     "ort_R": -0.0333
+    },
+    {
+     "etiket": "HAMMER_LIKE",
+     "n": 7152,
+     "ort_R": -0.0274
+    },
+    {
+     "etiket": "INVERTED_HAMMER_LIKE",
+     "n": 6072,
+     "ort_R": -0.0048
+    },
+    {
+     "etiket": "BULLISH_BELT_HOLD_LIKE",
+     "n": 5562,
+     "ort_R": 0.0001
+    },
+    {
+     "etiket": "PIERCING_LINE_LIKE",
+     "n": 5221,
+     "ort_R": -0.0343
+    },
+    {
+     "etiket": "BULLISH_HARAMI_CROSS_LIKE",
+     "n": 2829,
+     "ort_R": 0.0004
+    }
+   ]
+  },
+  "P2": {
+   "getiri_pct": 0.09,
+   "islem": 1435,
+   "sinyal": 19065,
+   "giris": 1435,
+   "ort_R": 0.0034,
+   "isabet": 43.3,
+   "PF": 1.001,
+   "ucret_usdt": 12.02,
+   "funding_usdt": 3.41,
+   "coin_ort_maks_dusus_pct": 25.7,
+   "ogrenilen_tablo_pencere_sonu": [
+    {
+     "etiket": "THREE_WHITE_SOLDIERS_LIKE",
+     "n": 15203,
+     "ort_R": 0.0337
+    },
+    {
+     "etiket": "BULLISH_HARAMI_LIKE",
+     "n": 13516,
+     "ort_R": -0.0475
+    },
+    {
+     "etiket": "BULLISH_ENGULFING_LIKE",
+     "n": 12208,
+     "ort_R": -0.0017
+    },
+    {
+     "etiket": "TWEEZER_BOTTOM_LIKE",
+     "n": 11918,
+     "ort_R": -0.0267
+    },
+    {
+     "etiket": "MORNING_STAR_LIKE",
+     "n": 9535,
+     "ort_R": -0.0333
+    },
+    {
+     "etiket": "HAMMER_LIKE",
+     "n": 7152,
+     "ort_R": -0.0274
+    },
+    {
+     "etiket": "INVERTED_HAMMER_LIKE",
+     "n": 6072,
+     "ort_R": -0.0048
+    },
+    {
+     "etiket": "BULLISH_BELT_HOLD_LIKE",
+     "n": 5562,
+     "ort_R": 0.0001
+    },
+    {
+     "etiket": "PIERCING_LINE_LIKE",
+     "n": 5221,
+     "ort_R": -0.0343
+    },
+    {
+     "etiket": "BULLISH_HARAMI_CROSS_LIKE",
+     "n": 2829,
+     "ort_R": 0.0004
+    }
+   ]
+  },
+  "P3": {
+   "getiri_pct": 4.42,
+   "islem": 1540,
+   "sinyal": 18792,
+   "giris": 1540,
+   "ort_R": 0.0222,
+   "isabet": 44.0,
+   "PF": 1.028,
+   "ucret_usdt": 13.38,
+   "funding_usdt": 2.51,
+   "coin_ort_maks_dusus_pct": 29.0,
+   "ogrenilen_tablo_pencere_sonu": [
+    {
+     "etiket": "THREE_WHITE_SOLDIERS_LIKE",
+     "n": 15203,
+     "ort_R": 0.0337
+    },
+    {
+     "etiket": "BULLISH_HARAMI_LIKE",
+     "n": 13516,
+     "ort_R": -0.0475
+    },
+    {
+     "etiket": "BULLISH_ENGULFING_LIKE",
+     "n": 12208,
+     "ort_R": -0.0017
+    },
+    {
+     "etiket": "TWEEZER_BOTTOM_LIKE",
+     "n": 11918,
+     "ort_R": -0.0267
+    },
+    {
+     "etiket": "MORNING_STAR_LIKE",
+     "n": 9535,
+     "ort_R": -0.0333
+    },
+    {
+     "etiket": "HAMMER_LIKE",
+     "n": 7152,
+     "ort_R": -0.0274
+    },
+    {
+     "etiket": "INVERTED_HAMMER_LIKE",
+     "n": 6072,
+     "ort_R": -0.0048
+    },
+    {
+     "etiket": "BULLISH_BELT_HOLD_LIKE",
+     "n": 5562,
+     "ort_R": 0.0001
+    },
+    {
+     "etiket": "PIERCING_LINE_LIKE",
+     "n": 5221,
+     "ort_R": -0.0343
+    },
+    {
+     "etiket": "BULLISH_HARAMI_CROSS_LIKE",
+     "n": 2829,
+     "ort_R": 0.0004
+    }
+   ]
+  }
+ }
+}

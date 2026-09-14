@@ -1,0 +1,143 @@
+
+# UNTRACKED tests/test_regime_gate_v1.py
+# -*- coding: utf-8 -*-
+"""REJIM KAPISI — rejim tespiti (sutun / hesap / bilinmiyor) ve uc varyantin davranisi."""
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from tradingbot.regime_gate import DOWN, UP, VARIANTS, btc_regime, ema_last, evaluate_variant  # noqa: E402
+
+
+def test_regime_uses_the_ema200_column_when_present():
+    assert btc_regime([{"close": 101.0, "ema200": 100.0}]) == UP
+    assert btc_regime([{"close": 99.0, "ema200": 100.0}]) == DOWN
+    assert btc_regime([{"close": 100.0, "ema200": 100.0}]) == DOWN      # esitlik UP degil
+
+
+def test_regime_is_computed_from_closes_when_column_missing_and_unknown_when_short():
+    rising = [{"close": 100.0 + i * 0.5} for i in range(260)]
+    assert btc_regime(rising) == UP
+    falling = [{"close": 300.0 - i * 0.5} for i in range(260)]
+    assert btc_regime(falling) == DOWN
+    assert btc_regime([{"close": 100.0} for _ in range(150)]) is None
+    assert btc_regime([]) is None and btc_regime([{"close": None}]) is None
+
+
+def test_ema_last_matches_a_direct_computation():
+    vals = [float(i) for i in range(1, 260)]
+    e = ema_last(vals, 200)
+    k = 2 / 201
+    ref = sum(vals[:200]) / 200
+    for v in vals[200:]:
+        ref = v * k + ref * (1 - k)
+    assert e == pytest.approx(ref)
+
+
+def test_variants():
+    assert evaluate_variant("r1_long_only_uptrend", direction="LONG", regime=UP) == (True, "")
+    assert evaluate_variant("r1_long_only_uptrend", direction="LONG", regime=DOWN) == (False, "R1_NOT_UPTREND")
+    assert evaluate_variant("r1_long_only_uptrend", direction="SHORT", regime=UP) == (False, "R1_SHORT_BLOCKED")
+    assert evaluate_variant("r2_no_trade_downtrend", direction="SHORT", regime=UP) == (True, "")
+    assert evaluate_variant("r2_no_trade_downtrend", direction="LONG", regime=DOWN) == (False, "R2_DOWNTREND")
+    assert evaluate_variant("r3_follow_regime", direction="SHORT", regime=DOWN) == (True, "")
+    assert evaluate_variant("r3_follow_regime", direction="SHORT", regime=UP) == (False, "R3_AGAINST_REGIME")
+    assert evaluate_variant("r3_follow_regime", direction="LONG", regime=None) == (False, "R3_NO_REGIME")
+    assert evaluate_variant("r1_long_only_uptrend", direction="", regime=UP) == (False, "R1_SIDE")
+    assert len(VARIANTS) == 3
+    with pytest.raises(ValueError):
+        evaluate_variant("r9", direction="LONG", regime=UP)
+
+# UNTRACKED tradingbot/regime_gate.py
+# -*- coding: utf-8 -*-
+"""PIYASA REJIMI KAPISI — BTC gunluk trendine gore giris izni (V7, 2026-09-13). SAF, tek kaynak.
+
+Olculen mekanizma: sistem 2021'de (BTC yukselis) kazandi, 2022'den beri her pencerede
+kaybediyor; SHORT kesiti ayrica negatif. Hipotez: giris kalitesi PIYASA rejimine bagli ve
+sistem yalniz yukselis rejiminde, yalniz LONG calismali.
+
+Rejim tanimi (tek deger, izgara yok): son KAPANMIS gunluk BTC barinda close > EMA200 → UP,
+degilse DOWN. EMA200 gunluk cercevede zaten hesaplaniyor (`add_snapshot_indicators`);
+sutun yoksa 200+ kapanistan hesaplanir; o da yoksa rejim BILINMIYOR ve kapi FAIL-CLOSED.
+
+Not: kirmizi takim zaten `AGAINST_BTC_REGIME` diye YUMUSAK ceza uygular; bu kapi SERT'tir
+ve farkli bir politikadir (aday hic acilmaz).
+
+Varyantlar:
+  r1_long_only_uptrend   yalniz LONG ve yalniz UP rejiminde; SHORT hic acilmaz
+  r2_no_trade_downtrend  DOWN rejiminde hic giris yok; UP'ta iki yon de serbest
+  r3_follow_regime       UP'ta yalniz LONG, DOWN'da yalniz SHORT
+"""
+from __future__ import annotations
+
+import math
+from typing import Any
+
+VARIANTS = ("r1_long_only_uptrend", "r2_no_trade_downtrend", "r3_follow_regime")
+EMA_LEN = 200
+UP, DOWN = "UP", "DOWN"
+
+
+def _f(x: Any) -> float | None:
+    if x is None or isinstance(x, bool):
+        return None
+    try:
+        v = float(x)
+    except (TypeError, ValueError):
+        return None
+    return v if math.isfinite(v) else None
+
+
+def ema_last(values: list[float], n: int) -> float | None:
+    if len(values) < n:
+        return None
+    k = 2.0 / (n + 1.0)
+    e = sum(values[:n]) / n
+    for v in values[n:]:
+        e = v * k + e * (1.0 - k)
+    return e
+
+
+def btc_regime(daily_bars: list[dict[str, Any]]) -> str | None:
+    """Son KAPANMIS gunluk bardan rejim. Bilinmiyorsa None (uydurulmaz)."""
+    if not daily_bars:
+        return None
+    last = daily_bars[-1]
+    c = _f(last.get("close"))
+    if c is None:
+        return None
+    e = _f(last.get("ema200"))
+    if e is None:
+        closes = [_f(b.get("close")) for b in daily_bars]
+        closes = [x for x in closes if x is not None]
+        e = ema_last(closes, EMA_LEN)
+        if e is None:
+            return None
+    return UP if c > e else DOWN
+
+
+def evaluate_variant(variant: str, *, direction: str, regime: str | None) -> tuple[bool, str]:
+    if variant not in VARIANTS:
+        raise ValueError("bilinmeyen rejim varyanti: %r" % (variant,))
+    tag = variant.split("_", 1)[0].upper()
+    side = str(direction or "").upper()
+    if side not in ("LONG", "SHORT"):
+        return False, tag + "_SIDE"
+    if regime not in (UP, DOWN):
+        return False, tag + "_NO_REGIME"
+    if variant == "r1_long_only_uptrend":
+        if side == "SHORT":
+            return False, "R1_SHORT_BLOCKED"
+        return (True, "") if regime == UP else (False, "R1_NOT_UPTREND")
+    if variant == "r2_no_trade_downtrend":
+        return (True, "") if regime == UP else (False, "R2_DOWNTREND")
+    ok = (side == "LONG" and regime == UP) or (side == "SHORT" and regime == DOWN)
+    return (True, "") if ok else (False, "R3_AGAINST_REGIME")
+
+
+__all__ = ["DOWN", "EMA_LEN", "UP", "VARIANTS", "btc_regime", "ema_last", "evaluate_variant"]

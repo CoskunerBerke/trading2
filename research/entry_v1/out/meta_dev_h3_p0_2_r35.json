@@ -1,0 +1,100 @@
+{
+ "run_id": "dev_h3_p0_2_r35",
+ "from": "2022-09-01",
+ "to": "2026-09-01",
+ "gate": false,
+ "stride": 1,
+ "elapsed_s": 1338.7,
+ "n_decisions": 87670,
+ "n_actionable": 78971,
+ "n_opened": 104,
+ "determinism_hash": "576cfd715184040337529e654653f2050e8dbc1346d574f08b693a386be133da",
+ "rejections": {
+  "total": 78867,
+  "by_reason": {
+   "H3_NOT_RANGE": 65841,
+   "H3_NOT_OVERBOUGHT": 6836,
+   "H3_NOT_OVERSOLD": 6097,
+   "MIN_NOTIONAL": 14,
+   "INSUFFICIENT_MARGIN": 54,
+   "STEP_ZERO_QTY": 25
+  },
+  "by_symbol": {
+   "AVAX/USDT": {
+    "H3_NOT_RANGE": 6816,
+    "H3_NOT_OVERBOUGHT": 815,
+    "H3_NOT_OVERSOLD": 409,
+    "INSUFFICIENT_MARGIN": 6,
+    "STEP_ZERO_QTY": 4
+   },
+   "SOL/USDT": {
+    "H3_NOT_OVERBOUGHT": 612,
+    "H3_NOT_RANGE": 6597,
+    "H3_NOT_OVERSOLD": 562,
+    "INSUFFICIENT_MARGIN": 3
+   },
+   "AAVE/USDT": {
+    "H3_NOT_OVERBOUGHT": 728,
+    "H3_NOT_RANGE": 6293,
+    "H3_NOT_OVERSOLD": 520,
+    "INSUFFICIENT_MARGIN": 6,
+    "STEP_ZERO_QTY": 2
+   },
+   "LTC/USDT": {
+    "H3_NOT_RANGE": 6670,
+    "H3_NOT_OVERSOLD": 586,
+    "H3_NOT_OVERBOUGHT": 650,
+    "INSUFFICIENT_MARGIN": 3,
+    "MIN_NOTIONAL": 1
+   },
+   "LINK/USDT": {
+    "H3_NOT_OVERBOUGHT": 648,
+    "H3_NOT_RANGE": 6699,
+    "H3_NOT_OVERSOLD": 499,
+    "MIN_NOTIONAL": 2,
+    "INSUFFICIENT_MARGIN": 9
+   },
+   "DOGE/USDT": {
+    "H3_NOT_RANGE": 6733,
+    "H3_NOT_OVERBOUGHT": 794,
+    "H3_NOT_OVERSOLD": 534,
+    "INSUFFICIENT_MARGIN": 10
+   },
+   "XRP/USDT": {
+    "H3_NOT_OVERBOUGHT": 710,
+    "H3_NOT_RANGE": 6633,
+    "H3_NOT_OVERSOLD": 592,
+    "INSUFFICIENT_MARGIN": 7
+   },
+   "BTC/USDT": {
+    "H3_NOT_RANGE": 6650,
+    "H3_NOT_OVERBOUGHT": 626,
+    "MIN_NOTIONAL": 11,
+    "H3_NOT_OVERSOLD": 791,
+    "STEP_ZERO_QTY": 19
+   },
+   "BNB/USDT": {
+    "H3_NOT_OVERBOUGHT": 575,
+    "H3_NOT_RANGE": 6368,
+    "H3_NOT_OVERSOLD": 888,
+    "INSUFFICIENT_MARGIN": 6
+   },
+   "ETH/USDT": {
+    "H3_NOT_RANGE": 6382,
+    "H3_NOT_OVERSOLD": 716,
+    "H3_NOT_OVERBOUGHT": 678,
+    "INSUFFICIENT_MARGIN": 4
+   }
+  }
+ },
+ "funding_coverage": {
+  "queries": 1513,
+  "answered": 1513,
+  "unknown": 0,
+  "complete": true,
+  "answered_fraction": 1.0,
+  "missing_series": [],
+  "tolerance_ms": 120000,
+  "source": "history store: futures/<symbol>/funding (Binance fundingRate arşivi)"
+ }
+}

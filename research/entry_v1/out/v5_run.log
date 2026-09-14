@@ -1,0 +1,10 @@
+PROTOCOL_V5: 8 kosu, 8 paralel - {"wt_head": "0cfe3f3de51d3e37681f87972d672f9fcfdfe91a", "wt_diff_sha256": "f324cc211ce6c45a90e3fded95294ed14094741173bce9f8ce9619e3846fbd2b", "chart_rules_sha256": "0ba58790af7c808480c6c37642fdb44951cc9c18455c68f886230c6f906527ec"}
+v5_p4_p1   rc=0  2936s acilan=522
+v5_p2_p1   rc=0  2942s acilan=513
+v5_p1_p1   rc=0  2977s acilan=329
+v5_p3_p1   rc=0  2984s acilan=238
+v5_p3_p2   rc=0  3432s acilan=161
+v5_p1_p2   rc=0  3460s acilan=122
+v5_p2_p2   rc=0  3491s acilan=242
+v5_p4_p2   rc=0  3502s acilan=195
+V5 DONE

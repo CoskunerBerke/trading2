@@ -1,0 +1,226 @@
+{
+ "S-A": {
+  "P1": {
+   "getiri_pct": 11.35,
+   "islem": 2277,
+   "sinyal": 2277,
+   "ort_R": 0.031,
+   "isabet": 44.5,
+   "PF": 1.049,
+   "ucret_usdt": 11.87,
+   "funding_usdt": 3.98,
+   "cikis": {
+    "stop": 927,
+    "target": 387,
+    "time": 956,
+    "eow": 7
+   },
+   "coin_ort_maks_dusus_pct": 29.3,
+   "eksik": []
+  },
+  "P2": {
+   "getiri_pct": -2.05,
+   "islem": 2536,
+   "sinyal": 2536,
+   "ort_R": 0.0033,
+   "isabet": 43.8,
+   "PF": 0.991,
+   "ucret_usdt": 20.67,
+   "funding_usdt": 2.11,
+   "cikis": {
+    "stop": 1033,
+    "target": 424,
+    "time": 1071,
+    "eow": 8
+   },
+   "coin_ort_maks_dusus_pct": 34.0,
+   "eksik": []
+  },
+  "P3": {
+   "getiri_pct": -5.96,
+   "islem": 2528,
+   "sinyal": 2528,
+   "ort_R": -0.0139,
+   "isabet": 42.2,
+   "PF": 0.976,
+   "ucret_usdt": 20.82,
+   "funding_usdt": 1.4,
+   "cikis": {
+    "stop": 1058,
+    "target": 418,
+    "time": 1042,
+    "eow": 10
+   },
+   "coin_ort_maks_dusus_pct": 41.9,
+   "eksik": []
+  }
+ },
+ "S-B": {
+  "P1": {
+   "getiri_pct": 12.49,
+   "islem": 2137,
+   "sinyal": 2137,
+   "ort_R": 0.0347,
+   "isabet": 45.5,
+   "PF": 1.049,
+   "ucret_usdt": 12.79,
+   "funding_usdt": 10.26,
+   "cikis": {
+    "stop": 873,
+    "target": 337,
+    "time": 917,
+    "eow": 10
+   },
+   "coin_ort_maks_dusus_pct": 35.3,
+   "eksik": []
+  },
+  "P2": {
+   "getiri_pct": -5.0,
+   "islem": 2373,
+   "sinyal": 2373,
+   "ort_R": -0.0064,
+   "isabet": 43.5,
+   "PF": 0.978,
+   "ucret_usdt": 19.65,
+   "funding_usdt": 5.03,
+   "cikis": {
+    "stop": 973,
+    "target": 376,
+    "time": 1014,
+    "eow": 10
+   },
+   "coin_ort_maks_dusus_pct": 32.7,
+   "eksik": []
+  },
+  "P3": {
+   "getiri_pct": -1.9,
+   "islem": 2344,
+   "sinyal": 2344,
+   "ort_R": 0.0057,
+   "isabet": 44.2,
+   "PF": 0.992,
+   "ucret_usdt": 19.82,
+   "funding_usdt": 3.18,
+   "cikis": {
+    "stop": 962,
+    "target": 365,
+    "time": 1012,
+    "eow": 5
+   },
+   "coin_ort_maks_dusus_pct": 34.2,
+   "eksik": []
+  }
+ },
+ "S-C": {
+  "P1": {
+   "getiri_pct": 38.31,
+   "islem": 1150,
+   "sinyal": 1150,
+   "ort_R": 0.1447,
+   "isabet": 48.9,
+   "PF": 1.284,
+   "ucret_usdt": 6.85,
+   "funding_usdt": 10.03,
+   "cikis": {
+    "stop": 435,
+    "target": 231,
+    "time": 484,
+    "eow": 0
+   },
+   "coin_ort_maks_dusus_pct": 17.4,
+   "eksik": []
+  },
+  "P2": {
+   "getiri_pct": -22.18,
+   "islem": 1762,
+   "sinyal": 1762,
+   "ort_R": -0.0657,
+   "isabet": 40.4,
+   "PF": 0.862,
+   "ucret_usdt": 13.16,
+   "funding_usdt": 4.37,
+   "cikis": {
+    "stop": 758,
+    "target": 267,
+    "time": 737,
+    "eow": 0
+   },
+   "coin_ort_maks_dusus_pct": 35.5,
+   "eksik": []
+  },
+  "P3": {
+   "getiri_pct": 7.11,
+   "islem": 1321,
+   "sinyal": 1321,
+   "ort_R": 0.0369,
+   "isabet": 44.2,
+   "PF": 1.053,
+   "ucret_usdt": 10.48,
+   "funding_usdt": 2.39,
+   "cikis": {
+    "stop": 555,
+    "target": 235,
+    "time": 526,
+    "eow": 5
+   },
+   "coin_ort_maks_dusus_pct": 21.9,
+   "eksik": []
+  }
+ },
+ "S-D": {
+  "P1": {
+   "getiri_pct": 13.2,
+   "islem": 1848,
+   "sinyal": 1848,
+   "ort_R": 0.0404,
+   "isabet": 46.0,
+   "PF": 1.062,
+   "ucret_usdt": 11.07,
+   "funding_usdt": 9.12,
+   "cikis": {
+    "stop": 740,
+    "target": 308,
+    "time": 790,
+    "eow": 10
+   },
+   "coin_ort_maks_dusus_pct": 29.7,
+   "eksik": []
+  },
+  "P2": {
+   "getiri_pct": -6.71,
+   "islem": 2033,
+   "sinyal": 2033,
+   "ort_R": -0.0131,
+   "isabet": 43.9,
+   "PF": 0.965,
+   "ucret_usdt": 16.71,
+   "funding_usdt": 4.45,
+   "cikis": {
+    "stop": 829,
+    "target": 313,
+    "time": 881,
+    "eow": 10
+   },
+   "coin_ort_maks_dusus_pct": 30.0,
+   "eksik": []
+  },
+  "P3": {
+   "getiri_pct": 1.22,
+   "islem": 1986,
+   "sinyal": 1986,
+   "ort_R": 0.0141,
+   "isabet": 43.6,
+   "PF": 1.006,
+   "ucret_usdt": 17.25,
+   "funding_usdt": 3.02,
+   "cikis": {
+    "stop": 784,
+    "target": 330,
+    "time": 866,
+    "eow": 6
+   },
+   "coin_ort_maks_dusus_pct": 32.3,
+   "eksik": []
+  }
+ }
+}

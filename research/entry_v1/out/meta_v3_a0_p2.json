@@ -1,0 +1,81 @@
+{
+ "run_id": "v3_a0_p2",
+ "from": "2022-09-01",
+ "to": "2024-08-31",
+ "gate": false,
+ "trigger": false,
+ "veto": false,
+ "stride": 1,
+ "elapsed_s": 2786.5,
+ "n_decisions": 43810,
+ "n_actionable": 31834,
+ "n_opened": 202,
+ "determinism_hash": "9fe738fa1b6f8ae9290fef12005722ba5891b81e0fd15d14bdacd00e630b41a8",
+ "rejections": {
+  "total": 31632,
+  "by_reason": {
+   "TOTAL_OPEN_RISK": 4326,
+   "MIN_NOTIONAL": 191,
+   "INSUFFICIENT_MARGIN": 24446,
+   "STEP_ZERO_QTY": 2669
+  },
+  "by_symbol": {
+   "BTC/USDT": {
+    "TOTAL_OPEN_RISK": 537,
+    "MIN_NOTIONAL": 162,
+    "INSUFFICIENT_MARGIN": 1792,
+    "STEP_ZERO_QTY": 1501
+   },
+   "BNB/USDT": {
+    "TOTAL_OPEN_RISK": 232,
+    "INSUFFICIENT_MARGIN": 3009
+   },
+   "XRP/USDT": {
+    "TOTAL_OPEN_RISK": 220,
+    "INSUFFICIENT_MARGIN": 2681
+   },
+   "LINK/USDT": {
+    "TOTAL_OPEN_RISK": 647,
+    "INSUFFICIENT_MARGIN": 3077,
+    "MIN_NOTIONAL": 17
+   },
+   "SOL/USDT": {
+    "TOTAL_OPEN_RISK": 380,
+    "INSUFFICIENT_MARGIN": 2210
+   },
+   "AAVE/USDT": {
+    "TOTAL_OPEN_RISK": 231,
+    "INSUFFICIENT_MARGIN": 1433
+   },
+   "ETH/USDT": {
+    "TOTAL_OPEN_RISK": 512,
+    "INSUFFICIENT_MARGIN": 2951,
+    "MIN_NOTIONAL": 6
+   },
+   "LTC/USDT": {
+    "TOTAL_OPEN_RISK": 628,
+    "INSUFFICIENT_MARGIN": 3163,
+    "MIN_NOTIONAL": 6
+   },
+   "AVAX/USDT": {
+    "TOTAL_OPEN_RISK": 502,
+    "INSUFFICIENT_MARGIN": 1190,
+    "STEP_ZERO_QTY": 1168
+   },
+   "DOGE/USDT": {
+    "TOTAL_OPEN_RISK": 437,
+    "INSUFFICIENT_MARGIN": 2940
+   }
+  }
+ },
+ "funding_coverage": {
+  "queries": 4416,
+  "answered": 4416,
+  "unknown": 0,
+  "complete": true,
+  "answered_fraction": 1.0,
+  "missing_series": [],
+  "tolerance_ms": 120000,
+  "source": "history store: futures/<symbol>/funding (Binance fundingRate arşivi)"
+ }
+}

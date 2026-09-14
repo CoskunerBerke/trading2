@@ -1,0 +1,12 @@
+PROTOCOL_V4: 10 kosu, 10 paralel - {"wt_head": "6378c254c05556d97d7e0057f3453ffe06c8ced0", "wt_diff_sha256": "bade5a5d5cfe99d7070a3ee338e9365f2d54f2644607b2744fb8a32bd7d34b78", "candle_rules_sha256": "c50f51752a33a4cf1807cd7cd647e908990a72e4860f167eb11a74395778ce06"}
+v4_c0_p1   rc=0  3036s acilan=505
+v4_c1_p1   rc=0  3120s acilan=507
+v4_c2_p1   rc=0  3129s acilan=451
+v4_c4_p1   rc=0  3130s acilan=453
+v4_c3_p1   rc=0  3140s acilan=503
+v4_c0_p2   rc=0  3432s acilan=199
+v4_c4_p2   rc=0  3569s acilan=240
+v4_c3_p2   rc=0  3570s acilan=230
+v4_c2_p2   rc=0  3584s acilan=170
+v4_c1_p2   rc=0  3585s acilan=177
+V4 DONE

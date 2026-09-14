@@ -1,0 +1,29 @@
+{
+ "P1": {
+  "pencere": "2020-11-01 → 2022-08-31",
+  "al_tut_pct": 592.19,
+  "ema200_trend_pct": 219.22,
+  "trend_switches": 202,
+  "trend_ort_coin_maks_dusus_pct": 65.75,
+  "trend_pozisyonda_gun_payi": 0.456,
+  "eksik": []
+ },
+ "P2": {
+  "pencere": "2022-09-01 → 2024-08-31",
+  "al_tut_pct": 93.95,
+  "ema200_trend_pct": 27.3,
+  "trend_switches": 329,
+  "trend_ort_coin_maks_dusus_pct": 52.94,
+  "trend_pozisyonda_gun_payi": 0.488,
+  "eksik": []
+ },
+ "P3": {
+  "pencere": "2024-09-01 → 2026-08-31",
+  "al_tut_pct": 11.37,
+  "ema200_trend_pct": 23.75,
+  "trend_switches": 199,
+  "trend_ort_coin_maks_dusus_pct": 49.72,
+  "trend_pozisyonda_gun_payi": 0.398,
+  "eksik": []
+ }
+}

@@ -1,0 +1,11 @@
+PROTOCOL_V9: 9 kosu, 9 paralel - {"wt_head": "0796c914a1a5d8f02308755418518194bb84a778", "wt_diff_sha256": "6b5716afc0edeb3576df4c7ad16b1e387745940609793a785909ee1171eb8941", "strategy_rules_sha256": "d12aa7828b05d9b8f8d48ec19f81abe82401894c95aca9447ea19bd281ce5131"}
+v9_t1_p1   rc=0   350s acilan=34
+v9_t3_p1   rc=0   353s acilan=47
+v9_t2_p1   rc=0   364s acilan=21
+v9_t1_p2   rc=0   483s acilan=76
+v9_t3_p2   rc=0   488s acilan=119
+v9_t2_p2   rc=0   500s acilan=58
+v9_t1_p3   rc=0   573s acilan=43
+v9_t3_p3   rc=0   580s acilan=75
+v9_t2_p3   rc=0   587s acilan=32
+V9 DONE

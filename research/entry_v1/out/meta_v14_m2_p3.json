@@ -1,0 +1,89 @@
+{
+ "run_id": "v14_m2_p3",
+ "from": "2024-09-01",
+ "to": "2026-08-31",
+ "gate": false,
+ "symbols": [
+  "BTC/USDT",
+  "ETH/USDT",
+  "LINK/USDT",
+  "YFI/USDT",
+  "BCH/USDT",
+  "UNI/USDT",
+  "BNB/USDT",
+  "LTC/USDT",
+  "XRP/USDT",
+  "DOT/USDT"
+ ],
+ "strategy": true,
+ "no_breakeven": true,
+ "exclude": [],
+ "history_root": "C:\\Users\\berke\\wt-2020\\data\\history",
+ "trigger": false,
+ "veto": false,
+ "stride": 1,
+ "elapsed_s": 593.3,
+ "n_decisions": 43750,
+ "n_actionable": 9016,
+ "n_opened": 74,
+ "determinism_hash": "73c66f7178d39ccc9f0fbd6660cd7da5333109e0bc64e9784a690e8295918df7",
+ "rejections": {
+  "total": 8942,
+  "by_reason": {
+   "STEP_ZERO_QTY": 497,
+   "MIN_NOTIONAL": 1371,
+   "TOTAL_OPEN_RISK": 7032,
+   "MAX_POSITION_PCT": 42
+  },
+  "by_symbol": {
+   "BTC/USDT": {
+    "STEP_ZERO_QTY": 482,
+    "TOTAL_OPEN_RISK": 1067,
+    "MAX_POSITION_PCT": 37
+   },
+   "LINK/USDT": {
+    "MIN_NOTIONAL": 255,
+    "TOTAL_OPEN_RISK": 1073
+   },
+   "DOT/USDT": {
+    "TOTAL_OPEN_RISK": 872
+   },
+   "LTC/USDT": {
+    "MIN_NOTIONAL": 417,
+    "TOTAL_OPEN_RISK": 1013
+   },
+   "ETH/USDT": {
+    "TOTAL_OPEN_RISK": 999,
+    "MIN_NOTIONAL": 206
+   },
+   "YFI/USDT": {
+    "TOTAL_OPEN_RISK": 271
+   },
+   "BCH/USDT": {
+    "TOTAL_OPEN_RISK": 1029,
+    "MIN_NOTIONAL": 493
+   },
+   "XRP/USDT": {
+    "TOTAL_OPEN_RISK": 500
+   },
+   "BNB/USDT": {
+    "TOTAL_OPEN_RISK": 48,
+    "MAX_POSITION_PCT": 5
+   },
+   "UNI/USDT": {
+    "STEP_ZERO_QTY": 15,
+    "TOTAL_OPEN_RISK": 160
+   }
+  }
+ },
+ "funding_coverage": {
+  "queries": 2447,
+  "answered": 2447,
+  "unknown": 0,
+  "complete": true,
+  "answered_fraction": 1.0,
+  "missing_series": [],
+  "tolerance_ms": 120000,
+  "source": "history store: futures/<symbol>/funding (Binance fundingRate arşivi)"
+ }
+}

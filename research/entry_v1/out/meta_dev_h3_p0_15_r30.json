@@ -1,0 +1,92 @@
+{
+ "run_id": "dev_h3_p0_15_r30",
+ "from": "2022-09-01",
+ "to": "2026-09-01",
+ "gate": false,
+ "stride": 1,
+ "elapsed_s": 1514.1,
+ "n_decisions": 87670,
+ "n_actionable": 80767,
+ "n_opened": 39,
+ "determinism_hash": "f3894c1164e4acf99910c8c337a6265bee94616a3ded584ab36157703fce3613",
+ "rejections": {
+  "total": 80728,
+  "by_reason": {
+   "H3_NOT_RANGE": 67168,
+   "H3_NOT_OVERBOUGHT": 7300,
+   "H3_NOT_OVERSOLD": 6249,
+   "MIN_NOTIONAL": 3,
+   "INSUFFICIENT_MARGIN": 6,
+   "STEP_ZERO_QTY": 2
+  },
+  "by_symbol": {
+   "AVAX/USDT": {
+    "H3_NOT_RANGE": 6830,
+    "H3_NOT_OVERBOUGHT": 875,
+    "H3_NOT_OVERSOLD": 408,
+    "STEP_ZERO_QTY": 1
+   },
+   "SOL/USDT": {
+    "H3_NOT_OVERBOUGHT": 675,
+    "H3_NOT_RANGE": 6866,
+    "H3_NOT_OVERSOLD": 591,
+    "INSUFFICIENT_MARGIN": 1
+   },
+   "AAVE/USDT": {
+    "H3_NOT_OVERBOUGHT": 845,
+    "H3_NOT_RANGE": 6653,
+    "H3_NOT_OVERSOLD": 551
+   },
+   "LTC/USDT": {
+    "H3_NOT_RANGE": 6732,
+    "H3_NOT_OVERSOLD": 600,
+    "H3_NOT_OVERBOUGHT": 684
+   },
+   "LINK/USDT": {
+    "H3_NOT_OVERBOUGHT": 703,
+    "H3_NOT_RANGE": 6857,
+    "H3_NOT_OVERSOLD": 508
+   },
+   "DOGE/USDT": {
+    "H3_NOT_RANGE": 6825,
+    "H3_NOT_OVERBOUGHT": 809,
+    "H3_NOT_OVERSOLD": 539,
+    "INSUFFICIENT_MARGIN": 1
+   },
+   "XRP/USDT": {
+    "H3_NOT_OVERBOUGHT": 711,
+    "H3_NOT_RANGE": 6639,
+    "H3_NOT_OVERSOLD": 589,
+    "INSUFFICIENT_MARGIN": 3
+   },
+   "BTC/USDT": {
+    "H3_NOT_RANGE": 6650,
+    "H3_NOT_OVERBOUGHT": 639,
+    "MIN_NOTIONAL": 3,
+    "H3_NOT_OVERSOLD": 804,
+    "STEP_ZERO_QTY": 1
+   },
+   "BNB/USDT": {
+    "H3_NOT_OVERBOUGHT": 643,
+    "H3_NOT_RANGE": 6474,
+    "H3_NOT_OVERSOLD": 907
+   },
+   "ETH/USDT": {
+    "H3_NOT_RANGE": 6642,
+    "H3_NOT_OVERSOLD": 752,
+    "H3_NOT_OVERBOUGHT": 716,
+    "INSUFFICIENT_MARGIN": 1
+   }
+  }
+ },
+ "funding_coverage": {
+  "queries": 499,
+  "answered": 499,
+  "unknown": 0,
+  "complete": true,
+  "answered_fraction": 1.0,
+  "missing_series": [],
+  "tolerance_ms": 120000,
+  "source": "history store: futures/<symbol>/funding (Binance fundingRate arşivi)"
+ }
+}

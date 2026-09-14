@@ -1,0 +1,75 @@
+{
+ "run_id": "v9_smoke_t1",
+ "from": "2020-11-01",
+ "to": "2021-02-28",
+ "gate": false,
+ "symbols": [
+  "BTC/USDT",
+  "ETH/USDT",
+  "SOL/USDT",
+  "BNB/USDT",
+  "XRP/USDT",
+  "LINK/USDT",
+  "DOGE/USDT",
+  "AVAX/USDT",
+  "LTC/USDT",
+  "AAVE/USDT"
+ ],
+ "strategy": true,
+ "no_breakeven": true,
+ "trigger": false,
+ "veto": false,
+ "stride": 1,
+ "elapsed_s": 33.2,
+ "n_decisions": 7121,
+ "n_actionable": 2223,
+ "n_opened": 6,
+ "determinism_hash": "5e7a3cbbc6f4fc239a2019c32590dc5e71e7accc757efb95e45c78fc9513ac88",
+ "rejections": {
+  "total": 2217,
+  "by_reason": {
+   "MIN_NOTIONAL": 559,
+   "STEP_ZERO_QTY": 232,
+   "TOTAL_OPEN_RISK": 1346,
+   "MIN_ORDER_CONFLICT": 78,
+   "MAX_POSITION_PCT": 2
+  },
+  "by_symbol": {
+   "BTC/USDT": {
+    "MIN_NOTIONAL": 37,
+    "STEP_ZERO_QTY": 232,
+    "TOTAL_OPEN_RISK": 446
+   },
+   "ETH/USDT": {
+    "MIN_NOTIONAL": 251,
+    "TOTAL_OPEN_RISK": 446,
+    "MAX_POSITION_PCT": 2,
+    "MIN_ORDER_CONFLICT": 16
+   },
+   "LINK/USDT": {
+    "MIN_NOTIONAL": 231,
+    "TOTAL_OPEN_RISK": 446,
+    "MIN_ORDER_CONFLICT": 38
+   },
+   "LTC/USDT": {
+    "MIN_NOTIONAL": 40
+   },
+   "XRP/USDT": {
+    "MIN_ORDER_CONFLICT": 24
+   },
+   "DOGE/USDT": {
+    "TOTAL_OPEN_RISK": 8
+   }
+  }
+ },
+ "funding_coverage": {
+  "queries": 934,
+  "answered": 934,
+  "unknown": 0,
+  "complete": true,
+  "answered_fraction": 1.0,
+  "missing_series": [],
+  "tolerance_ms": 120000,
+  "source": "history store: futures/<symbol>/funding (Binance fundingRate arşivi)"
+ }
+}

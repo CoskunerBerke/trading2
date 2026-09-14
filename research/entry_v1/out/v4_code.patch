@@ -1,0 +1,127 @@
+diff --git a/tradingbot/learn/candle_context.py b/tradingbot/learn/candle_context.py
+index 9c7a054..630283d 100644
+--- a/tradingbot/learn/candle_context.py
++++ b/tradingbot/learn/candle_context.py
+@@ -44,6 +44,13 @@ MORNING_STAR_LIKE = "MORNING_STAR_LIKE"
+ EVENING_STAR_LIKE = "EVENING_STAR_LIKE"
+ THREE_WHITE_SOLDIERS_LIKE = "THREE_WHITE_SOLDIERS_LIKE"
+ THREE_BLACK_CROWS_LIKE = "THREE_BLACK_CROWS_LIKE"
++# --- candle_v1.1.0 ile eklenen iki barlı şekiller (yön iddiası TAŞIMAZ) -------------------
++BULLISH_HARAMI_LIKE = "BULLISH_HARAMI_LIKE"         # içeri bar: gövde önceki gövdenin İÇİNDE
++BEARISH_HARAMI_LIKE = "BEARISH_HARAMI_LIKE"
++PIERCING_LINE_LIKE = "PIERCING_LINE_LIKE"           # önceki gövdenin orta noktasını YUKARI geçen kapanış
++DARK_CLOUD_COVER_LIKE = "DARK_CLOUD_COVER_LIKE"     # önceki gövdenin orta noktasını AŞAĞI geçen kapanış
++TWEEZER_BOTTOM_LIKE = "TWEEZER_BOTTOM_LIKE"         # eş dipler (tolerans: aralığın oranı)
++TWEEZER_TOP_LIKE = "TWEEZER_TOP_LIKE"               # eş tepeler
+ NO_PATTERN = "NO_PATTERN"
+ 
+ #: Aynı şeklin bağlama göre aldığı GELENEKSEL adlar. Ad bir yön iddiası DEĞİLDİR.
+@@ -75,7 +82,7 @@ DIRECTIONAL_CLAIM_NONE = "NONE"
+ @dataclass
+ class CandleContextConfig:
+     """Versiyonlu şekil eşikleri. Tek bir örneğe uydurulmamıştır; oranlar geometriktir."""
+-    policy_version: str = "candle_v1.0.0"
++    policy_version: str = "candle_v1.1.0"
+     #: Gövde/aralık oranı bunun altındaysa doji benzeri (denge).
+     doji_body_ratio: float = 0.10
+     #: Çekiç benzeri: alt fitil >= bu oran ve üst fitil <= `hammer_opposite_wick_max`.
+@@ -88,6 +95,8 @@ class CandleContextConfig:
+     spinning_top_min_wick: float = 0.25
+     #: Yutan formasyon: gövde önceki gövdeyi bu oranda aşmalı.
+     engulf_min_ratio: float = 1.0
++    #: Cımbız: iki barın dip/tepe farkı, iki aralığın büyüğünün bu oranı içinde kalmalı.
++    tweezer_tolerance_ratio: float = 0.10
+     #: Trend tespiti için bakılacak KAPANMIŞ bar sayısı ve asgari eğim (ATR katı).
+     trend_lookback_bars: int = 10
+     trend_min_slope_atr: float = 0.5
+@@ -107,6 +116,8 @@ class CandleContextConfig:
+             raise ValueError("engulf_min_ratio > 0 ve trend_lookback_bars >= 2 olmalı")
+         if self.confirm_bars < 0 or self.near_level_atr <= 0:
+             raise ValueError("confirm_bars >= 0 ve near_level_atr > 0 olmalı")
++        if not (0.0 < self.tweezer_tolerance_ratio < 0.5):
++            raise ValueError("tweezer_tolerance_ratio (0, 0.5) aralığında olmalı")
+ 
+     def to_dict(self) -> dict[str, Any]:
+         return {f.name: getattr(self, f.name) for f in fields(self)}
+@@ -246,6 +257,30 @@ def _shapes(bars: list[dict[str, Any]], cfg: CandleContextConfig) -> list[str]:
+                 out.append(BULLISH_ENGULFING_LIKE)
+             if c["bearish_body"] and prev["bullish_body"] and c_lo <= p_lo and c_hi >= p_hi:
+                 out.append(BEARISH_ENGULFING_LIKE)
++    # --- iki barlı: harami / delici / kara bulut / cımbız ---------------------------------
++    if (len(m) >= 2 and m[-2].get("full_range") and cur.get("full_range")
++            and m[-2].get("body_size") is not None and cur.get("body_size") is not None):
++        prev, c = m[-2], cur
++        p_hi, p_lo = max(prev["open"], prev["close"]), min(prev["open"], prev["close"])
++        c_hi, c_lo = max(c["open"], c["close"]), min(c["open"], c["close"])
++        p_mid = (prev["open"] + prev["close"]) / 2.0
++        inside = (prev["body_size"] > 0 and c["body_size"] < prev["body_size"]
++                  and c_hi <= p_hi and c_lo >= p_lo)
++        if inside and prev["bearish_body"] and c["bullish_body"]:
++            out.append(BULLISH_HARAMI_LIKE)
++        if inside and prev["bullish_body"] and c["bearish_body"]:
++            out.append(BEARISH_HARAMI_LIKE)
++        if (prev["bearish_body"] and c["bullish_body"] and c["open"] <= prev["close"]
++                and p_mid < c["close"] < prev["open"]):
++            out.append(PIERCING_LINE_LIKE)
++        if (prev["bullish_body"] and c["bearish_body"] and c["open"] >= prev["close"]
++                and prev["open"] < c["close"] < p_mid):
++            out.append(DARK_CLOUD_COVER_LIKE)
++        tol = cfg.tweezer_tolerance_ratio * max(prev["full_range"], c["full_range"])
++        if prev["bearish_body"] and c["bullish_body"] and abs(c["low"] - prev["low"]) <= tol:
++            out.append(TWEEZER_BOTTOM_LIKE)
++        if prev["bullish_body"] and c["bearish_body"] and abs(c["high"] - prev["high"]) <= tol:
++            out.append(TWEEZER_TOP_LIKE)
+     # --- üç barlı: yıldız / asker / karga -------------------------------------------------
+     if len(m) >= 3 and all(x.get("body_to_range_ratio") is not None for x in m):
+         a3, b3, c3 = m
+@@ -268,8 +303,13 @@ def _shapes(bars: list[dict[str, Any]], cfg: CandleContextConfig) -> list[str]:
+ #: Bu bir yön İDDİASI değildir: "sonraki kapanış hangi tarafta olursa şekil kendi geometrisiyle
+ #: tutarlı olur" sorusunun yanıtıdır; bir alım/satım talimatı DEĞİLDİR.
+ _BULL_SIDE = frozenset({HAMMER_LIKE, INVERTED_HAMMER_LIKE, BULLISH_ENGULFING_LIKE,
+-                        MORNING_STAR_LIKE, THREE_WHITE_SOLDIERS_LIKE})
+-_BEAR_SIDE = frozenset({BEARISH_ENGULFING_LIKE, EVENING_STAR_LIKE, THREE_BLACK_CROWS_LIKE})
++                        MORNING_STAR_LIKE, THREE_WHITE_SOLDIERS_LIKE,
++                        BULLISH_HARAMI_LIKE, PIERCING_LINE_LIKE, TWEEZER_BOTTOM_LIKE})
++_BEAR_SIDE = frozenset({BEARISH_ENGULFING_LIKE, EVENING_STAR_LIKE, THREE_BLACK_CROWS_LIKE,
++                        BEARISH_HARAMI_LIKE, DARK_CLOUD_COVER_LIKE, TWEEZER_TOP_LIKE})
++#: Dışa açık adlar: tüketiciler (ör. `entry_challenger_v2`) kümeyi KOPYALAMAZ, buradan alır.
++BULL_SIDE_SHAPES = _BULL_SIDE
++BEAR_SIDE_SHAPES = _BEAR_SIDE
+ 
+ 
+ def evaluate_confirmation(shapes: list[str], after: list[dict[str, Any]],
+@@ -373,6 +413,9 @@ __all__ = ["SCHEMA_VERSION", "DOJI_LIKE", "HAMMER_LIKE", "INVERTED_HAMMER_LIKE",
+            "MARUBOZU_LIKE", "SPINNING_TOP_LIKE", "BULLISH_ENGULFING_LIKE",
+            "BEARISH_ENGULFING_LIKE", "MORNING_STAR_LIKE", "EVENING_STAR_LIKE",
+            "THREE_WHITE_SOLDIERS_LIKE", "THREE_BLACK_CROWS_LIKE", "NO_PATTERN",
++           "BULLISH_HARAMI_LIKE", "BEARISH_HARAMI_LIKE", "PIERCING_LINE_LIKE",
++           "DARK_CLOUD_COVER_LIKE", "TWEEZER_BOTTOM_LIKE", "TWEEZER_TOP_LIKE",
++           "BULL_SIDE_SHAPES", "BEAR_SIDE_SHAPES",
+            "CONTEXTUAL_ALIASES", "TREND_UP", "TREND_DOWN", "TREND_RANGE", "TREND_UNKNOWN",
+            "LOC_NEAR_WEEK_HIGH", "LOC_NEAR_WEEK_LOW", "LOC_INSIDE_WEEK_RANGE",
+            "LOC_ABOVE_WEEK_RANGE", "LOC_BELOW_WEEK_RANGE", "LOC_UNKNOWN",
+diff --git a/tradingbot/learn/entry_challenger_v2.py b/tradingbot/learn/entry_challenger_v2.py
+index 094fd6d..f09531f 100644
+--- a/tradingbot/learn/entry_challenger_v2.py
++++ b/tradingbot/learn/entry_challenger_v2.py
+@@ -21,7 +21,7 @@ from dataclasses import dataclass, fields
+ from typing import Any
+ 
+ from ..core import stable_id
+-from .candle_context import (BEARISH_ENGULFING_LIKE, BULLISH_ENGULFING_LIKE, CONFIRMED,
++from .candle_context import (BEAR_SIDE_SHAPES, BULL_SIDE_SHAPES, CONFIRMED,
+                              EVENING_STAR_LIKE, HAMMER_LIKE, INVERTED_HAMMER_LIKE,
+                              MORNING_STAR_LIKE, THREE_BLACK_CROWS_LIKE,
+                              THREE_WHITE_SOLDIERS_LIKE)
+@@ -177,9 +177,8 @@ def candle_confidence_delta(candle: dict[str, Any] | None, *, is_long: bool | No
+     if conf != CONFIRMED:
+         out["reason"] = "SHAPE_NOT_CONFIRMED_NO_WEIGHT"
+         return out
+-    bull = {HAMMER_LIKE, INVERTED_HAMMER_LIKE, BULLISH_ENGULFING_LIKE, MORNING_STAR_LIKE,
+-            THREE_WHITE_SOLDIERS_LIKE} & set(shapes)
+-    bear = {BEARISH_ENGULFING_LIKE, EVENING_STAR_LIKE, THREE_BLACK_CROWS_LIKE} & set(shapes)
++    bull = BULL_SIDE_SHAPES & set(shapes)
++    bear = BEAR_SIDE_SHAPES & set(shapes)
+     if bool(bull) == bool(bear):
+         out["reason"] = "SHAPE_HAS_NO_SINGLE_SIDE"
+         return out

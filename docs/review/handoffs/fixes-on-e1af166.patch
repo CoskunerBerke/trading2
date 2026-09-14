@@ -1,0 +1,442 @@
+From 4e0b6ff5b27372072d1c97206ea4b14c581cbc09 Mon Sep 17 00:00:00 2001
+From: CoskunerBerke <coskunerberke@gmail.com>
+Date: Sat, 12 Sep 2026 02:07:34 +0300
+Subject: [PATCH] fix(gate,panel): narrow production fixes applicable to the
+ deployed e1af166
+
+VPS'te calisan surum `e1af166`. Bu paket YALNIZ uretim davranisini ya da ekrani
+etkileyen DOGRULANMIS kusurlari tasir. Arastirma araclari (replay ekonomi kapisi,
+hedef mesafesi kaldiraci, backtest parite onarimi) BU PAKETTE YOKTUR.
+
+1. EKONOMI KAPISINDA FAIL-OPEN (tek satir, karar yolunu etkiler).
+   `if d.p_win:` -> `if d.p_win is not None:`. `0.0` Python'da falsy oldugu icin modelin
+   "neredeyse kesin kayip" dedigi durumda tahmin SESSIZCE DUSUYOR ve kapi hiyerarsik
+   prior'a (tipik 0.5) geri donuyordu: en olumsuz sinyal kapiyi en gevsek haline
+   cekiyordu. Alan kapiya ulasmadan once `engine_v3:1097`de kalibre degerle EZILIR,
+   yani head'in ">= 0.5" sezgiseli burada gecerli degildir; `round(...,3)` kucuk bir
+   tahmini 0.0'a yuvarlayabilir. Sifirdan farkli her deger icin davranis AYNIDIR.
+
+2. PANEL BIRIM HATASI (yalniz gosterim). `coinhead/head.py` `expected_return_net`i YUZDE
+   biriminde uretir; panel `_cell_pct` ile ikinci kez 100 ile carpiyordu. Gercek kayitta
+   10.8412 ekranda "%1084.12" goruluyordu. Ayri bicimlendirici `_cell_pct_points` eklendi.
+
+3. YANILTICI BASLIKLAR + EKSIK GERCEK BEKLENTI (yalniz gosterim). "Beklenen Net Getiri"
+   ve "E[R]" plan GEOMETRISIDIR; ATR plani hedef1'i stop mesafesinin 2 katina kurdugu
+   icin `expected_r` her adayda ~1.96 cikar. Basliklar duzeltildi; olasilikla
+   agirliklandirilmis gercek beklenti (`opportunity.net_expectancy_r`) ayri sutun olarak
+   eklendi ve hesaplanamadiginda "bilinmiyor" yazar, 0 YAZMAZ.
+
+Kar artisi atfedilmiyor: 2 ve 3 gosterimdir, 1 ise yalniz p_win 0.0'a yuvarlandiginda
+devreye girer ve o durumda kapiyi SIKILASTIRIR.
+
+Tests: 78 gecti (birim/etiket 11, panel canli 11, overview 6, coin-head polling 30,
+ogrenme sayaci 20); `ruff check tradingbot/` temiz.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ tests/test_coin_head_live_polling.py |   6 +-
+ tests/test_dashboard_live.py         |   7 +-
+ tests/test_expectancy_units_v1.py    | 161 +++++++++++++++++++++++++++
+ tests/test_overview_json_safety.py   |   4 +-
+ tradingbot/dashboard/app.py          |  10 +-
+ tradingbot/dashboard/views.py        |  57 ++++++++--
+ tradingbot/engine_v3.py              |   8 +-
+ 7 files changed, 236 insertions(+), 17 deletions(-)
+ create mode 100644 tests/test_expectancy_units_v1.py
+
+diff --git a/tests/test_coin_head_live_polling.py b/tests/test_coin_head_live_polling.py
+index 2b42ec9..5070df4 100644
+--- a/tests/test_coin_head_live_polling.py
++++ b/tests/test_coin_head_live_polling.py
+@@ -260,9 +260,9 @@ def test_polling_renders_fallback_row_for_a_new_unknown_symbol(dirs, tmp_path):
+     row = next(r for r in shape["rows"] if r[0] == NEW6[0])
+     assert row[1] == NO_DECISION_VERDICT and row[2] == "AÇIK"
+     assert row[3] == NEW6[2]                              # yön DEFTERDEN
+-    assert row[12] == NEW6[1]                             # position_id DEFTERDEN
+-    assert NO_DECISION_REASON in row[14]
+-    assert row[11].startswith("+") or row[11].startswith("-")   # anlık PnL
++    assert row[13] == NEW6[1]                             # position_id DEFTERDEN
++    assert NO_DECISION_REASON in row[15]
++    assert row[12].startswith("+") or row[12].startswith("-")   # anlık PnL
+ 
+ 
+ @needs_node
+diff --git a/tests/test_dashboard_live.py b/tests/test_dashboard_live.py
+index 8e32fa9..58135d4 100644
+--- a/tests/test_dashboard_live.py
++++ b/tests/test_dashboard_live.py
+@@ -159,8 +159,11 @@ def test_overview_shows_labelled_cards_not_raw_json(tmp_path):
+     assert "LONG işlem adayı" in html and "Açık LONG pozisyon" in html
+     assert "karar — açık pozisyon DEĞİL" in html
+     assert "&#x27;breadth&#x27;" not in html and '"breadth"' not in html, "ham JSON gösterilmemeli"
+-    assert "Beklenen Net Getiri" in html and "Net E[r]" not in html
+-    assert "model tahminidir" in html
++    # Sutun adi degisti: «Beklenen Net Getiri» -> «Plan getirisi — hedef 1». Eski ad
++    # olasilikla agirliklandirilmis bir beklenti cagristiriyordu; deger PLAN GEOMETRISIDIR.
++    assert "Plan getirisi" in html
++    assert "Beklenen Net Getiri" not in html and "Net E[r]" not in html
++    assert "PLAN GEOMETRİSİDİR" in html
+     assert "Coin adedi" in html
+     assert "yatırım tavsiyesi değildir" in html and "PAPER" in html
+ 
+diff --git a/tests/test_expectancy_units_v1.py b/tests/test_expectancy_units_v1.py
+new file mode 100644
+index 0000000..85af133
+--- /dev/null
++++ b/tests/test_expectancy_units_v1.py
+@@ -0,0 +1,161 @@
++# -*- coding: utf-8 -*-
++"""Beklenti alanlarinin BIRIM ve ETIKET sozlesmesi.
++
++Olculmus kusur (e1af166): `coinhead/head.py` `expected_return_net` alanini YUZDE biriminde
++uretir (`abs(hedef1-giris)/giris*100 - maliyet`), panel ise ayni degeri `_cell_pct` ile bir kez
++daha 100 ile carpardi. Gercek karar kaydindaki 10.8412 ekranda "%1084.12" gorunuyordu.
++
++Bu dosya iki seyi sabitler:
++  1. Birim: yuzde birimli alan ikinci kez olceklenmez.
++  2. Anlam: "beklenen deger" adi YALNIZ olasilikla agirliklandirilmis buyukluge verilir; plan
++     geometrisi (hedef/stop) onun yerine gecmez ve eksik beklenti 0 diye gosterilmez.
++"""
++from __future__ import annotations
++
++import sys
++from pathlib import Path
++
++sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
++
++from tradingbot.coinhead.head import CoinHead                   # noqa: E402
++from tradingbot.coinhead.schema import PlanSize, TradePlanV3   # noqa: E402
++from tradingbot.dashboard.views import (COIN_HEAD_COLUMNS, UNKNOWN_EXPECTANCY,  # noqa: E402
++                                        _cell_pct, _cell_pct_points, coin_head_table)
++
++#: 2026-09-11 yerel PAPER turundan GERCEK kayitlar (state/coin_heads.json, e1af166).
++REAL_LINK_ERN = 11.8648
++REAL_SOL_ERN = 8.6016
++#: Kullanicinin ekran goruntusundeki ham deger (10.8412 -> "%1084.12" olarak gorunuyordu).
++SCREEN_RAW = 10.8412
++
++
++def _head(**kw):
++    h = {"symbol": "LINK/USDT", "verdict": "FUTURES_SHORT", "direction": "SHORT",
++         "confidence_calibrated": 0.096, "p_win": 0.5,
++         "expected_return_net": REAL_LINK_ERN, "expected_r": 1.972,
++         "futures_plan": {"valid": True}, "regime": "TREND"}
++    h.update(kw)
++    return h
++
++
++# ---------------------------------------------------------------- 1) birim
++def test_percent_valued_field_is_not_scaled_twice():
++    assert _cell_pct_points(SCREEN_RAW) == "%10.84"
++    assert _cell_pct(SCREEN_RAW) == "%1084.12"          # eski yol: kusurun kaynagi, belgelenir
++    assert _cell_pct_points(SCREEN_RAW) != _cell_pct(SCREEN_RAW)
++
++
++def test_dashboard_cell_shows_plan_return_in_percent_points():
++    row = coin_head_table([_head()], [], [])["rows"][0]
++    assert row[6] == "%11.86"                            # 11.8648 -> %11.86, "%1186.48" DEGIL
++    row_sol = coin_head_table([_head(symbol="SOL/USDT", expected_return_net=REAL_SOL_ERN)], [], [])["rows"][0]
++    assert row_sol[6] == "%8.60"
++
++
++def test_plan_return_matches_head_engine_formula():
++    """Panel hucresi motorun URETTIGI buyuklugun ta kendisidir — ikinci bir olcek YOK."""
++    entry, t1, cost = 100.0, 110.0, 0.17
++    gross = abs(t1 - entry) / entry * 100
++    net = round(gross - cost, 4)
++    row = coin_head_table([_head(expected_return_net=net)], [], [])["rows"][0]
++    assert row[6] == "%9.83"                             # 10.00 - 0.17
++
++
++# ---------------------------------------------------------------- 2) anlam
++def test_expected_r_column_is_labelled_as_geometry_not_expectation():
++    assert "E[R]" not in COIN_HEAD_COLUMNS
++    assert "Beklenen Net Getiri" not in COIN_HEAD_COLUMNS
++    assert "Plan R/R (maliyet sonrası)" in COIN_HEAD_COLUMNS
++    assert "Beklenen değer (R)" in COIN_HEAD_COLUMNS
++
++
++def test_real_expectancy_column_reads_from_opportunity():
++    h = _head(opportunity={"net_expectancy_r": 0.486, "conservative_net_edge_r": -0.314,
++                           "p_win_calibrated": 0.5})
++    row = coin_head_table([h], [], [])["rows"][0]
++    assert row[7] == "1.97"                              # plan geometrisi
++    assert row[8] == "+0.486"                            # olasilikla agirliklandirilmis beklenti
++
++
++def test_missing_expectancy_is_unknown_not_zero():
++    row = coin_head_table([_head()], [], [])["rows"][0]   # opportunity YOK
++    assert row[8] == UNKNOWN_EXPECTANCY
++    assert row[8] != "0.000"
++    row2 = coin_head_table([_head(opportunity={"net_expectancy_r": None})], [], [])["rows"][0]
++    assert row2[8] == UNKNOWN_EXPECTANCY
++
++
++def test_measured_zero_expectancy_is_shown_as_zero():
++    row = coin_head_table([_head(opportunity={"net_expectancy_r": 0.0})], [], [])["rows"][0]
++    assert row[8] == "+0.000"                            # OLCULMUS sifir gizlenmez
++
++
++def test_column_notes_state_the_probability_contract():
++    notes = coin_head_table([_head()], [], [])["column_notes"]
++    assert "r_multiple > +0.25R" in notes["Beklenen değer (R)"]
++    assert "DEĞİLDİR" in notes["Beklenen değer (R)"]
++    assert "AĞIRLIKLANDIRILMAMIŞTIR" in notes["Plan getirisi — hedef 1 (maliyet sonrası)"]
++
++
++# ---------------------------------------------------------------- 3) motor sozlesmesi
++def test_head_engine_emits_percent_units_and_constant_geometry():
++    """ATR plani hedef1'i stop mesafesinin 2 katina kurar -> `expected_r` ~2 SABITtir."""
++    eng = CoinHead.__new__(CoinHead)                     # ctor calistirilmaz: saf hesap testi
++    plan = TradePlanV3(market_type="futures", direction="LONG", entry_type="pullback",
++                       entry_trigger="", entry_zone=(99.0, 101.0), invalidation="",
++                       stop=95.0, targets=[110.0, 115.0], time_horizon_bars=24,
++                       size=PlanSize(0.0, "NOTIONAL", 1))
++    assert plan.entry == 100.0                           # entry_zone ortasi
++
++    class _Cfg:
++        spot_fee_pct = 0.1
++        fee_taker_pct = 0.05
++        slippage_pct = 0.03
++        funding_horizon_bars = 24
++        min_expected_r = 1.5
++    eng.cfg = _Cfg()
++    eng._cost_and_r(plan, "futures", None, None)
++    assert plan.expected_cost_pct == 0.16                # (0.05+0.03)*2 — YUZDE puani
++    assert abs(plan.expected_r - (10.0 - 0.16) / 5.0) < 1e-9
++    gross = abs(plan.targets[0] - plan.entry) / plan.entry * 100
++    assert gross == 10.0                                 # yuzde birimi — kesir DEGIL
++
++
++# ---------------------------------------------------------------- 4) ekonomik kapi: fail-open
++def test_zero_probability_is_not_silently_dropped_by_the_economics_gate():
++    """`if d.p_win:` YANLISTI — 0.0 falsy oldugu icin "kesin kayip" tahmini DUSERDI.
++
++    Bu, kapinin hiyerarsik prior'a (tipik 0.5) geri donmesi demekti: fail-OPEN. Alan
++    `engine_v3:1097`de kalibre degerle EZILDIGI icin head'in ">= 0.5" sezgiseli burada
++    gecerli DEGILDIR; sifir ulasilabilir bir degerdir (`round(...,3)` kucuk tahminleri
++    0.0'a yuvarlar).
++    """
++    import ast
++    from pathlib import Path
++
++    src = (Path(__file__).resolve().parents[1] / "tradingbot" / "engine_v3.py").read_text(encoding="utf-8")
++    tree = ast.parse(src)
++    found = []
++    for node in ast.walk(tree):
++        if not isinstance(node, ast.If):
++            continue
++        t = node.test
++        if isinstance(t, ast.Attribute) and t.attr == "p_win":
++            found.append(ast.unparse(t))                      # ciplak truthiness -> KUSUR
++    assert not found, "p_win ciplak truthiness ile okunuyor (0.0 sessizce duser): %s" % found
++    assert "if d.p_win is not None:" in src
++
++
++def test_economics_gate_uses_a_zero_probability_when_it_is_given():
++    """Sifir olasilik kapiya GIRMELI ve negatif beklenti uretmelidir."""
++    from tradingbot.decision_gates import GateLedger
++    from tradingbot.opportunity import assess
++
++    a = assess(symbol="X/USDT", side="LONG", setup="pullback", gates=GateLedger(),
++               p_win=0.0, avg_win_r=1.96, avg_loss_r=1.0, sample_size=50,
++               cost_pct_notional=0.16, stop_dist_pct=4.0)
++    assert a.net_expectancy_r < 0 and not a.tradeable
++    b = assess(symbol="X/USDT", side="LONG", setup="pullback", gates=GateLedger(),
++               p_win=0.5, avg_win_r=1.96, avg_loss_r=1.0, sample_size=50,
++               cost_pct_notional=0.16, stop_dist_pct=4.0)
++    assert b.net_expectancy_r > a.net_expectancy_r          # 0.0 ile 0.5 AYNI sonucu vermez
+diff --git a/tests/test_overview_json_safety.py b/tests/test_overview_json_safety.py
+index 24676b2..b4b3cdb 100644
+--- a/tests/test_overview_json_safety.py
++++ b/tests/test_overview_json_safety.py
+@@ -167,7 +167,9 @@ def test_position_pnl_non_finite_does_not_break_the_endpoint(tmp_path):
+     c = _client(_write(tmp_path, "s", [_head("SAGLAM/USDT")], positions=pos), tmp_path)
+     ov, ch = _assert_contract(c, open_syms=[o[0] for o in OPEN5], healthy_symbol="SAGLAM/USDT")
+     row = next(r for r in ch["rows"] if r[0] == OPEN5[0][0])
+-    assert row[11] in ("—", "") or not re.search(r"nan|inf", row[11], re.I)
++    # Net K/Z sutunu 11 -> 12'ye kaydi ("Beklenen deger (R)" sutunu 8'e eklendi).
++    # Eski indeks "Fut" hucresini okuyordu ve test BOSA gecerdi.
++    assert row[12] in ("—", "") or not re.search(r"nan|inf", row[12], re.I)
+ 
+ 
+ def test_all_heads_corrupt(tmp_path):
+diff --git a/tradingbot/dashboard/app.py b/tradingbot/dashboard/app.py
+index 8a4ca30..05ac9a8 100644
+--- a/tradingbot/dashboard/app.py
++++ b/tradingbot/dashboard/app.py
+@@ -22,7 +22,7 @@ from .candles import CandleSource, build_candle_payload
+ from .config import DashboardConfig
+ from ..pnl import finite_float_or_none, position_view, realized_net
+ from .state import STATE_FILES, StateReader
+-from .views import (NO_DECISION_VERDICT, POSITION_NUM_COLS, _cell_pct_signal,
++from .views import (NO_DECISION_VERDICT, POSITION_NUM_COLS, _cell_expectancy_r, _cell_pct_signal,
+                     coin_head_api_rows,
+                     coin_head_table, json_safe, open_coverage, universe_table)
+ from .templates import (HEADS_TABLE_CLS, POS_TABLE_CLS, age_text, badge, card, card_value,
+@@ -295,7 +295,7 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
+                 else:
+                     cells.append(esc(txt))
+             rows.append(cells)
+-        note = ('<p class="mut small">«Beklenen Net Getiri» işlem öncesi model tahminidir; gerçekleşen sonuç '
++        note = ('<p class="mut small">«Plan getirisi — hedef 1» işlem öncesi PLAN GEOMETRİSİDİR; gerçekleşen sonuç '
+                 'değildir. «Net K/Z» sütunu açık pozisyonda anlık, kapanmışta SON KAPANAN işlemin net '
+                 'sonucudur; işlem açılmamış adaylarda «—» gösterilir. «KARAR VERİSİ YOK» satırları '
+                 'defterde AÇIK olan fakat son coin-head seçkisinde yer almayan pozisyonlardır.</p>')
+@@ -387,6 +387,10 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
+             body += "<h2>Evren</h2>" + kv_table(uni.get("counts") or {"spot": len(uni.get("spot") or []), "futures": len(uni.get("futures") or [])})
+         return _page("Tarayıcı", body, "/scanner")
+ 
++    def _expectancy_cell(h: dict) -> str:
++        """Beklenen deger hucresi — TEK kaynak `views._cell_expectancy_r` (bilinmiyor != 0)."""
++        return esc(_cell_expectancy_r(h))
++
+     @app.get("/coin/{base}", response_class=HTMLResponse)
+     def coin(base: str, tf: str = "4h", market: str = "spot"):
+         base = base.upper()[:16]
+@@ -396,7 +400,7 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
+         body = ""
+         if h:
+             fp, sp = h.get("futures_plan") or {}, h.get("spot_plan") or {}
+-            body += f'<div class="grid">{card("Karar", verdict_badge(h.get("verdict")), esc(h.get("no_trade_reason") or ""))}{card("Yön", esc(h.get("direction") or "-"))}{card("Konsensüs gücü", _pct_signal(h.get("confidence_calibrated")), "olasılık DEĞİL — konsensüs sinyal gücü")}{card("P(kazanç) — model", _pct_signal(h.get("p_win")), "hiyerarşik+legacy harman; hedef r>+0.25R, ufuk işlem ömrü; kalibratör FIT EDİLMEMİŞ")}{card("Net E[r]", pct(h.get("expected_return_net")))}{card("E[R]", fmt(h.get("expected_r"), 2))}{card("Rejim", esc(h.get("regime")))}{card("Piyasa", esc(h.get("market_type")))}</div>'
++            body += f'<div class="grid">{card("Karar", verdict_badge(h.get("verdict")), esc(h.get("no_trade_reason") or ""))}{card("Yön", esc(h.get("direction") or "-"))}{card("Konsensüs gücü", _pct_signal(h.get("confidence_calibrated")), "olasılık DEĞİL — konsensüs sinyal gücü")}{card("P(kazanç) — model", _pct_signal(h.get("p_win")), "hiyerarşik+legacy harman; hedef r>+0.25R, ufuk işlem ömrü; kalibratör FIT EDİLMEMİŞ")}{card("Plan getirisi — hedef 1", pct(h.get("expected_return_net")), "% notional; hedefe ULAŞILDIĞI varsayımıyla, maliyet sonrası — olasılıkla ağırlıklandırılmış DEĞİL")}{card("Plan R/R", fmt(h.get("expected_r"), 2), "(hedef1 − maliyet) / stop — yalnız geometri; ATR planında ~2 sabittir")}{card("Beklenen değer (R)", _expectancy_cell(h), "p_win × ort_kazanç_R − (1−p_win) × |ort_kayıp_R|; ekonomik kapının kullandığı büyüklük")}{card("Rejim", esc(h.get("regime")))}{card("Piyasa", esc(h.get("market_type")))}</div>'
+         elif b:
+             body += f'<div class="grid">{card("Karar (eski ajan)", verdict_badge(b.get("verdict")))}{card("Kanaat", fmt(b.get("conviction"), 0) + "%")}{card("Fiyat", fmt(b.get("price")))}{card("P(kazanç) — eski ajan", _pct_signal(b.get("p_win")))}</div><p class="mut">{esc(b.get("headline"))}</p>'
+         else:
+diff --git a/tradingbot/dashboard/views.py b/tradingbot/dashboard/views.py
+index c61fcfa..e45dad7 100644
+--- a/tradingbot/dashboard/views.py
++++ b/tradingbot/dashboard/views.py
+@@ -252,7 +252,8 @@ def coin_head_scope(heads: list[dict] | None, open_positions: list[dict] | None,
+ # Kolon adlari ALANIN GERCEK KAYNAGINI soyler: "Guven" bir OLASILIK DEGILDIR (konsensus
+ # sinyal gucu), "P(kazanc)" ise hiyerarsik/legacy harmanidir. Bkz. COIN_HEAD_COLUMN_NOTES.
+ COIN_HEAD_COLUMNS = ("Sembol", "Karar", "Durum", "Yön", "Konsensüs gücü", "P(kazanç) — istatistiksel tahmin",
+-                     "Beklenen Net Getiri", "E[R]", "Rejim", "Spot", "Fut", "Net K/Z",
++                     "Plan getirisi — hedef 1 (maliyet sonrası)", "Plan R/R (maliyet sonrası)",
++                     "Beklenen değer (R)", "Rejim", "Spot", "Fut", "Net K/Z",
+                      "İşlem ID", "Karar zamanı", "Gerekçe", "Veto")
+ 
+ #: Alan anlamlari — SUNUM metnidir; hicbir model calistirmaz, hicbir eksik alani tahmin etmez.
+@@ -263,9 +264,20 @@ COIN_HEAD_COLUMN_NOTES_BASE = {
+     "P(kazanç) — istatistiksel tahmin": (
+         "hiyerarşik Beta önseli + eski tahmin harmanı (`p_win`); hedefi «kapanışta "
+         "r_multiple > +0.25R», ufku işlem ÖMRÜ"),
+-    "Beklenen Net Getiri": ("plan geometrisinden hesaplanır; giriş planı ÜRETİLMEYEN satırlarda "
+-                            "(REDUCE/HOLD/NO_TRADE) bu alan HİÇ hesaplanmaz"),
+-    "E[R]": "plan geometrisinin R katsayısı (hedef/stop) — gerçekleşmiş sonuç DEĞİL",
++    "Plan getirisi — hedef 1 (maliyet sonrası)": (
++        "% notional; KOŞULLU bir büyüklüktür: hedef 1'e ULAŞILDIĞI varsayımıyla plan "
++        "geometrisinden hesaplanır (`|hedef1-giriş|/giriş*100 - maliyet`). Olasılıkla "
++        "AĞIRLIKLANDIRILMAMIŞTIR ve beklenen değer DEĞİLDİR. Giriş planı ÜRETİLMEYEN "
++        "satırlarda (REDUCE/HOLD/NO_TRADE) HİÇ hesaplanmaz"),
++    "Plan R/R (maliyet sonrası)": (
++        "(hedef1 - maliyet) / stop — yalnız plan GEOMETRİSİ. ATR planında hedef1 stop "
++        "mesafesinin 2 katına kurulduğu için bu sayı her adayda ~2'ye yakındır; ayırt "
++        "edici bir büyüklük DEĞİLDİR ve gerçekleşmiş sonuç DEĞİLDİR"),
++    "Beklenen değer (R)": (
++        "olasılıkla ağırlıklandırılmış beklenti: `p_win × ort_kazanç_R - (1-p_win) × "
++        "|ort_kayıp_R|` (maliyet tabana göre bir kez düşülür). Ekonomik kapının kullandığı "
++        "büyüklük budur. `p_win`in hedefi «kapanışta r_multiple > +0.25R»tir; hedefe stop'tan "
++        "önce ULAŞMA olasılığı DEĞİLDİR. Hesaplanamıyorsa «bilinmiyor» yazar — 0 YAZILMAZ"),
+     "Karar zamanı": ("bu satır EN SON değerlendirmedir; açık pozisyonun GİRİŞ anındaki "
+                      "kanıtı değildir (giriş kanıtı `entry_snapshot` kaydındadır)"),
+ }
+@@ -304,8 +316,8 @@ def coin_head_column_notes(learning_status: dict | None = None) -> dict[str, str
+ #: Geriye uyumluluk: kanıt verilmediğinde durum BİLİNMİYOR olarak görünür.
+ COIN_HEAD_COLUMN_NOTES = coin_head_column_notes(None)
+ 
+-COIN_HEAD_NUM_COLS = (4, 5, 6, 7, 11)
+-COIN_HEAD_PNL_COLS = (11,)
++COIN_HEAD_NUM_COLS = (4, 5, 6, 7, 8, 12)
++COIN_HEAD_PNL_COLS = (12,)
+ COIN_HEAD_BADGE_COLS = (1, 2)
+ COIN_HEAD_SYMBOL_COL = 0
+ 
+@@ -328,6 +340,23 @@ def _cell_num(x, nd: int = 2) -> str:
+ #: dataclass VARSAYILANI 0.0 kalir). Bu bir OLCULMUS sifir DEGILDIR.
+ NOT_APPLICABLE = "yok (plan üretilmedi)"
+ 
++#: Ekonomik degerlendirme (`opportunity`) kaydda YOKSA beklenti BILINMIYOR'dur. Eksik bir
++#: beklenti "0" diye gosterilemez: 0, "beklenti olculdu ve sifir cikti" demektir.
++UNKNOWN_EXPECTANCY = "bilinmiyor"
++
++
++def _cell_expectancy_r(h: dict, nd: int = 3) -> str:
++    """Olasilikla agirliklandirilmis beklenti (R) — `opportunity.net_expectancy_r`.
++
++    Kayitta `opportunity` yoksa ya da alan sonlu degilse `UNKNOWN_EXPECTANCY` doner.
++    Bu alan plan geometrisinden (`expected_r`) FARKLIDIR ve onun yerine gecmez.
++    """
++    o = h.get("opportunity")
++    if not isinstance(o, dict):
++        return UNKNOWN_EXPECTANCY
++    v = finite_float_or_none(o.get("net_expectancy_r"))
++    return UNKNOWN_EXPECTANCY if v is None else f"{v:+,.{nd}f}"
++
+ 
+ def _has_entry_plan(h: dict) -> bool:
+     """Bu karar gercekten bir GIRIS PLANI uretti mi? Sozlesme: en az bir gecerli plan."""
+@@ -339,10 +368,22 @@ def _has_entry_plan(h: dict) -> bool:
+ 
+ 
+ def _cell_pct(x, nd: int = 2) -> str:
++    """KESIR girdiyi (0.0862) yuzdeye cevirir. Girdi ZATEN yuzde ise `_cell_pct_points` kullanin."""
+     v = finite_float_or_none(x)
+     return "—" if v is None else f"%{v * 100:.{nd}f}"
+ 
+ 
++def _cell_pct_points(x, nd: int = 2) -> str:
++    """Girdi ZATEN yuzde birimindedir (8.6016 -> "%8.60"); ikinci kez 100 ile CARPILMAZ.
++
++    `coinhead/head.py` `expected_return_gross/net` alanlarini yuzde olarak uretir
++    (`abs(target-entry)/entry * 100`). Bu degeri `_cell_pct` ile bicimlendirmek ekranda
++    100 kat buyuk bir sayi verir (olculdu: ham 10.8412 -> "%1084.12").
++    """
++    v = finite_float_or_none(x)
++    return "—" if v is None else f"%{v:.{nd}f}"
++
++
+ def _cell_pct_signal(x, nd: int = 0) -> str:
+     """Yuzde hucresi — SIFIR OLMAYAN kucuk deger asla "%0" gibi gosterilmez.
+ 
+@@ -412,8 +453,9 @@ def coin_head_table(heads: list[dict] | None, positions: list[dict] | None,
+                      str(h.get("direction") or "") or "-",
+                      _cell_pct_signal(h.get("confidence_calibrated"), 0),
+                      _cell_pct_signal(h.get("p_win"), 0),
+-                     _cell_pct(h.get("expected_return_net")) if _has_entry_plan(h) else NOT_APPLICABLE,
++                     _cell_pct_points(h.get("expected_return_net")) if _has_entry_plan(h) else NOT_APPLICABLE,
+                      _cell_num(h.get("expected_r")) if _has_entry_plan(h) else NOT_APPLICABLE,
++                     _cell_expectancy_r(h),
+                      str(h.get("regime") or "") or "—",
+                      "✅" if sp.get("valid") else "—",
+                      "✅" if fp.get("valid") else "—",
+@@ -939,6 +981,7 @@ def universe_table(*, universe: list[str] | None, heads: list[dict] | None,
+ 
+ 
+ __all__ = ["ChiefView", "Freshness", "LIVE_OK", "LIVE_STALE", "LIVE_UNKNOWN", "NO_DATA",
++           "NOT_APPLICABLE", "UNKNOWN_EXPECTANCY", "COIN_HEAD_COLUMNS", "coin_head_table",
+            "POSITION_COLUMNS", "POSITION_NUM_COLS", "POSITION_PNL_COLS", "SummaryCard", "build",
+            "chief_view", "position_row", "profit_factor_value", "risk_budget_sub",
+            "risk_stale_note", "stop_risk_note", "summary_cards",
+diff --git a/tradingbot/engine_v3.py b/tradingbot/engine_v3.py
+index eedbc7f..0544618 100644
+--- a/tradingbot/engine_v3.py
++++ b/tradingbot/engine_v3.py
+@@ -2138,7 +2138,13 @@ class TradingEngineV3(TradingEngine):
+             stats = hierarchical_expectancy(learner=self.learner2, symbol=sym, side=d.direction,
+                                             setup=plan.entry_type or "-", regime=d.regime,
+                                             fallback_win_r=plan.expected_r)
+-            if d.p_win:                                   # kalibre model tahmini onceliklidir
++            # KALIBRE TAHMIN ONCELIKLI. `if d.p_win:` YANLISTI: 0.0 falsy oldugu icin modelin
++            # "neredeyse kesin kayip" dedigi durumda tahmin sessizce DUSER ve kapi hiyerarsik
++            # prior'a (tipik 0.5) geri donerdi — en olumsuz sinyal kapiyi EN GEVSEK haline
++            # cekiyordu. Bu alan `engine_v3:1097`de kalibre degerle EZILIR, yani head'in
++            # ">= 0.5" sezgiseli burada gecerli DEGILDIR ve `round(...,3)` kucuk bir tahmini
++            # 0.0'a yuvarlayabilir.
++            if d.p_win is not None:
+                 stats["p_win"] = max(0.05, min(0.95, float(d.p_win)))
+             a = assess(symbol=sym, side=d.direction, setup=plan.entry_type or "-", gates=gates,
+                        p_win=stats["p_win"], avg_win_r=stats["avg_win_r"], avg_loss_r=stats["avg_loss_r"],
+-- 
+2.52.0.windows.1
+

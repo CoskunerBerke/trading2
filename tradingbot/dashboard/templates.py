@@ -71,6 +71,8 @@ main{max-width:100%}
    gibi bölünemeyen uzun tanımlayıcılar içerebilir → `anywhere` altyazıya da gerekli. */
 .card .v,.card .small{overflow-wrap:anywhere}
 @media(max-width:900px){.tw table.pos td:nth-child(-n+3),.tw table.pos th:nth-child(-n+3){position:static}}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:6px}.xl{margin:2px 0;font-size:13px;line-height:1.35}#chart{height:560px}.chartbar{flex-wrap:wrap;gap:6px}#detail .small{font-size:12px;margin:2px 0}
+@media(max-width:600px){.grid2{grid-template-columns:1fr}#chart{height:440px}label.chk{font-size:12px}.xl{font-size:13px}#srcline{font-size:12px}}
 @media(max-width:600px){main{padding:6px}h1{font-size:17px}.card .v{font-size:17px}table{font-size:12px}
   .grid{grid-template-columns:1fr}}      /* mobilde kartlar okunabilir sırayla alt alta */
 """
@@ -622,76 +624,28 @@ es.onerror=function(){{el.textContent='canlı: bağlantı yok';}};}}catch(e){{}}
 </script></body></html>"""
 
 
-CHART_JS = r"""
-(function(){
-  var base=window.__chartBase, tf=window.__chartTf||'4h', market=window.__chartMarket||'spot', tokenQs=window.__tokenQs||'';
-  var OV=[['sma25','SMA25','#f5c542'],['sma50','SMA50','#ffb74d'],['sma99','SMA99','#ff8a65'],['sma200','SMA200','#ba68c8'],
-          ['ema25','EMA25','#4dd0e1'],['ema50','EMA50','#4fc3f7'],['ema99','EMA99','#7986cb'],['ema200','EMA200','#ce93d8'],
-          ['vwap','VWAP','#fff176'],['bb_up','BB üst','#90a4ae'],['bb_mid','BB orta','#78909c'],['bb_lo','BB alt','#90a4ae']];
-  var DEF={ema25:1,ema99:1,ema200:1,vwap:0,sma25:0,sma50:0,sma99:0,sma200:0,bb_up:0,bb_mid:0,bb_lo:0,ema50:0};
-  var box=document.getElementById('ovbox');
-  OV.forEach(function(o){var l=document.createElement('label');l.className='chk';var c=document.createElement('input');c.type='checkbox';c.dataset.k=o[0];c.checked=!!DEF[o[0]];l.appendChild(c);l.appendChild(document.createTextNode(o[1]));box.appendChild(l);c.addEventListener('change',function(){toggle(o[0],c.checked);});});
-  var traceIdx={};
-  function toggle(k,on){if(traceIdx[k]!==undefined){Plotly.restyle('chart',{visible:on?true:'legendonly'},[traceIdx[k]]);}}
-  function line(y,dash,color,name){return {type:'scatter',mode:'lines',x:[],y:[],line:{width:1,color:color,dash:dash},name:name,hoverinfo:'skip',xaxis:'x',yaxis:'y'};}
-  function load(){
-    var sel=document.getElementById('tf');tf=sel?sel.value:tf;var ms=document.getElementById('mk');market=ms?ms.value:market;
-    var n=parseInt((document.getElementById('nbars')||{}).value||'300',10);
-    fetch('/api/candles/'+base+'?tf='+tf+'&market='+market+'&n='+n+(tokenQs?'&'+tokenQs.slice(1):''),{headers:window.__authHeaders||{}}).then(function(r){return r.json();}).then(draw).catch(function(e){document.getElementById('chart').innerHTML='<div class=card>grafik yüklenemedi: '+e+'</div>';});
-  }
-  function draw(d){
-    if(d.error){document.getElementById('chart').innerHTML='<div class=card>'+d.error+'</div>';return;}
-    var x=d.t.map(function(t){return new Date(t);});
-    var traces=[{type:'candlestick',x:x,open:d.o,high:d.h,low:d.l,close:d.c,name:base,increasing:{line:{color:'#26a69a'}},decreasing:{line:{color:'#ef5350'}},xaxis:'x',yaxis:'y'}];
-    var vcol=d.c.map(function(c,i){return c>=d.o[i]?'rgba(38,166,154,.4)':'rgba(239,83,80,.4)';});
-    traces.push({type:'bar',x:x,y:d.v,name:'Hacim',marker:{color:vcol},xaxis:'x',yaxis:'y5',hoverinfo:'skip'});
-    traceIdx={};
-    OV.forEach(function(o){var s=d.overlays[o[0]];if(!s)return;var t=line(s,o[0].indexOf('bb')===0?'dot':'solid',o[2],o[1]);t.x=x;t.y=s;t.visible=DEF[o[0]]?true:'legendonly';var cb=box.querySelector('input[data-k="'+o[0]+'"]');if(cb)t.visible=cb.checked?true:'legendonly';traceIdx[o[0]]=traces.length;traces.push(t);});
-    var p=d.panels||{};
-    traces.push({type:'scatter',mode:'lines',x:x,y:p.rsi,name:'RSI14',line:{width:1,color:'#ce93d8'},xaxis:'x',yaxis:'y2'});
-    traces.push({type:'bar',x:x,y:p.macd_hist,name:'MACD hist',marker:{color:(p.macd_hist||[]).map(function(v){return v>=0?'rgba(38,166,154,.6)':'rgba(239,83,80,.6)';})},xaxis:'x',yaxis:'y3'});
-    traces.push({type:'scatter',mode:'lines',x:x,y:p.macd_line,name:'MACD',line:{width:1,color:'#4fc3f7'},xaxis:'x',yaxis:'y3'});
-    traces.push({type:'scatter',mode:'lines',x:x,y:p.macd_signal,name:'Sinyal',line:{width:1,color:'#ffb74d'},xaxis:'x',yaxis:'y3'});
-    var hasDeriv=(p.funding&&p.funding.length)||(p.oi&&p.oi.length);
-    if(hasDeriv){
-      if(p.funding&&p.funding.length){traces.push({type:'bar',x:p.funding.map(function(f){return new Date(f.t||f[0]);}),y:p.funding.map(function(f){return f.rate!==undefined?f.rate:f[1];}),name:'Funding %',marker:{color:'#fff176'},xaxis:'x',yaxis:'y4'});}
-      if(p.oi&&p.oi.length){traces.push({type:'scatter',mode:'lines',x:p.oi.map(function(f){return new Date(f.t||f[0]);}),y:p.oi.map(function(f){return f.oi!==undefined?f.oi:f[1];}),name:'OI',line:{width:1,color:'#80cbc4'},xaxis:'x',yaxis:'y6'});}
-    }
-    var shapes=[],ann=[];var x0=x[0],x1=x[x.length-1];
-    function hl(y,color,dash,label){if(y==null)return;shapes.push({type:'line',xref:'x',yref:'y',x0:x0,x1:x1,y0:y,y1:y,line:{color:color,width:1,dash:dash}});ann.push({xref:'paper',x:1,yref:'y',y:y,text:label+' '+y,showarrow:false,font:{size:10,color:color},xanchor:'left',bgcolor:'rgba(14,17,22,.7)'});}
-    (d.levels||[]).forEach(function(l){hl(l.price,l.kind==='resistance'?'#ef9a9a':(l.kind==='support'?'#a5d6a7':'#b0bec5'),'dot',l.name);});
-    var pl=d.position&&d.position.entry?d.position:(d.plan||{});
-    if(pl.entry){hl(pl.entry,'#ffffff','solid','GİRİŞ');hl(pl.stop,'#ef5350','solid','STOP');hl(pl.tp1,'#26a69a','dash','TP1');hl(pl.tp2,'#26a69a','dot','TP2');hl(pl.liq,'#ff7043','dashdot','LIQ');
-      if(pl.stop&&pl.tp1){var xa=x[Math.max(0,x.length-15)];shapes.push({type:'rect',xref:'x',yref:'y',x0:xa,x1:x1,y0:Math.min(pl.entry,pl.stop),y1:Math.max(pl.entry,pl.stop),fillcolor:'rgba(239,83,80,.15)',line:{width:0}});shapes.push({type:'rect',xref:'x',yref:'y',x0:xa,x1:x1,y0:Math.min(pl.entry,pl.tp1),y1:Math.max(pl.entry,pl.tp1),fillcolor:'rgba(38,166,154,.15)',line:{width:0}});}}
-    var dom=hasDeriv?{y:[0.46,1],y2:[0.31,0.44],y3:[0.16,0.29],y4:[0,0.14]}:{y:[0.42,1],y2:[0.22,0.40],y3:[0,0.20]};
-    var layout={paper_bgcolor:'#0e1116',plot_bgcolor:'#0e1116',font:{color:'#d7dde5',size:11},margin:{l:48,r:70,t:10,b:30},showlegend:true,legend:{orientation:'h',y:1.02,font:{size:10}},dragmode:'pan',hovermode:'x',
-      xaxis:{rangeslider:{visible:false},gridcolor:'#1c2430',type:'date'},
-      yaxis:{domain:dom.y,gridcolor:'#1c2430',side:'right'},
-      yaxis5:{domain:dom.y,overlaying:'y',side:'left',showgrid:false,range:[0,Math.max.apply(null,d.v.filter(function(v){return v!=null;}).concat([1]))*4],showticklabels:false},
-      yaxis2:{domain:dom.y2,gridcolor:'#1c2430',range:[0,100],side:'right',tickvals:[30,50,70]},
-      yaxis3:{domain:dom.y3,gridcolor:'#1c2430',side:'right'},
-      shapes:shapes,annotations:ann};
-    if(hasDeriv){layout.yaxis4={domain:dom.y4,gridcolor:'#1c2430',side:'right'};layout.yaxis6={domain:dom.y4,overlaying:'y4',side:'left',showgrid:false};}
-    Plotly.newPlot('chart',traces,layout,{responsive:true,displaylogo:false,scrollZoom:true,modeBarButtonsToRemove:['lasso2d','select2d']});
-  }
-  document.getElementById('tf').addEventListener('change',load);var mk=document.getElementById('mk');if(mk)mk.addEventListener('change',load);
-  document.getElementById('nbars').addEventListener('change',load);document.getElementById('reload').addEventListener('click',load);
-  window.__onState=function(s){if(s&&s.changed&&(s.changed.indexOf('coin_heads')>=0||s.changed.indexOf('futures_ledger')>=0))load();};
-  if(typeof Plotly==='undefined'){document.getElementById('chart').innerHTML='<div class=card>plotly.min.js yüklenemedi (plotly paketi kurulu değil?)</div>';}else{load();}
-})();
-"""
+from .chart_js import CHART_JS  # CHART ANALYSIS V1 (salt sunum)
 
 
-def chart_block(base: str, tf: str = "4h", market: str = "spot", *, token_qs: str = "", max_bars: int = 600) -> str:
+def chart_block(base: str, tf: str = "4h", market: str = "spot", *, token_qs: str = "", max_bars: int = 600,
+                book: str = "main", books: list[dict] | None = None) -> str:
+    """Grafik bloğu: TF / piyasa / DEFTER seçimi, katmanlar, geçmiş analiz, PNG/JSON, kaynak satırı, açıklama + detay."""
     tfs = "".join(f'<option value="{t}" {"selected" if t == tf else ""}>{t}</option>' for t in ("1h", "4h", "1d"))
     mks = "".join(f'<option value="{m}" {"selected" if m == market else ""}>{m}</option>' for m in ("spot", "futures"))
-    return f"""<div class="row" style="margin:6px 0">
+    bl = books or [{"book_id": "main", "label": "Ana bot"}]
+    bks = "".join(f'<option value="{esc(str(b.get("book_id")))}" {"selected" if b.get("book_id") == book else ""}>{esc(str(b.get("label") or b.get("book_id")))}</option>' for b in bl)
+    return f"""<div class="row chartbar" style="margin:6px 0">
 <label class="chk">TF <select id="tf">{tfs}</select></label><label class="chk">Piyasa <select id="mk">{mks}</select></label>
+<label class="chk">Defter <select id="bk">{bks}</select></label>
 <label class="chk">Bar <input id="nbars" type="number" min="50" max="{max_bars}" value="300" style="width:70px"></label>
-<button id="reload">↻</button><span id="ovbox"></span></div>
+<label class="chk">Geçmiş <select id="hist"><option value="">şimdi (canlı analiz)</option></select></label>
+<button id="reload">↻</button> <button id="dl-png" title="PNG indir">PNG</button> <button id="dl-json" title="Analiz JSON indir">JSON</button></div>
+<div class="row chartbar"><span class="mut small">Katmanlar:</span> <span id="laybox"></span> <span class="mut small">Göstergeler:</span> <span id="ovbox"></span></div>
+<div id="srcline" class="mut small" style="margin:4px 0"></div>
 <div id="chart"></div>
+<div class="grid2"><div class="card" id="explain"><div class="mut">açıklama yükleniyor…</div></div><div class="card" id="detail"><div class="mut">Bir çizgi/işarete tıkla.</div></div></div>
 <script src="/static/plotly.min.js{token_qs}"></script>
-<script>window.__chartBase={json.dumps(base)};window.__chartTf={json.dumps(tf)};window.__chartMarket={json.dumps(market)};window.__tokenQs={json.dumps(token_qs)};</script>
+<script>window.__chartBase={json.dumps(base)};window.__chartTf={json.dumps(tf)};window.__chartMarket={json.dumps(market)};window.__chartBook={json.dumps(book)};window.__tokenQs={json.dumps(token_qs)};</script>
 <script>{CHART_JS}</script>"""
 
 

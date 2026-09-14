@@ -393,7 +393,7 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
         return esc(_cell_expectancy_r(h))
 
     @app.get("/coin/{base}", response_class=HTMLResponse)
-    def coin(base: str, tf: str = "4h", market: str = "spot"):
+    def coin(base: str, tf: str = "4h", market: str = "spot", book: str = "main"):
         base = base.upper()[:16]
         h = state.coin_head(base) or {}
         b = state.brief(base) or {}
@@ -406,7 +406,9 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
             body += f'<div class="grid">{card("Karar (eski ajan)", verdict_badge(b.get("verdict")))}{card("Kanaat", fmt(b.get("conviction"), 0) + "%")}{card("Fiyat", fmt(b.get("price")))}{card("P(kazanç) — eski ajan", _pct_signal(b.get("p_win")))}</div><p class="mut">{esc(b.get("headline"))}</p>'
         else:
             body += '<div class="card mut">Bu coin için karar yok; yalnızca grafik.</div>'
-        body += "<h2>Grafik</h2>" + chart_block(base, tf, market, token_qs=token_qs, max_bars=cfg.max_bars)
+        _books = state.books()
+        _book = book if any(b["book_id"] == book for b in _books) else "main"
+        body += "<h2>Grafik</h2>" + chart_block(base, tf, market, token_qs=token_qs, max_bars=cfg.max_bars, book=_book, books=_books)
         if h:
             def plan_kv(p: dict) -> str:
                 if not p:
@@ -2421,6 +2423,144 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
         body = table(["Model", "Tür", "Durum", "Oluşturma", "Metrikler"], [[esc(x.get("id")), esc(x.get("kind")), badge(x.get("status"), "ok" if x.get("status") in ("active", "champion", "ACTIVE") else "info"), esc(x.get("created_at")), esc(", ".join(f"{k}={fmt(v, 3)}" for k, v in (x.get("metrics") or {}).items()))] for x in ms], empty="models.json yok")
         return _page("Modeller", body, "/models")
 
+    # ------------------------------------------------------------------ CHART ANALYSIS V1 yardimcilari (salt okuma)
+    def _plan_for_market(h: dict, b: dict, market: str) -> dict | None:
+        """Plan PIYASAYA KESIN bagli: futures -> futures_plan, spot -> spot_plan; diger piyasanin planina GECILMEZ."""
+        ap = h.get("futures_plan") if market == "futures" else h.get("spot_plan")
+        if ap and ap.get("valid"):
+            return ap
+        bp = b.get("plan") if isinstance(b, dict) else None
+        if bp and bp.get("direction") not in (None, "BEKLE"):
+            bm = str(b.get("market_type") or bp.get("market_type") or "").upper()
+            want = "USDM_PERP" if market == "futures" else "SPOT"
+            if not bm or bm == want:
+                return bp
+        return None
+
+    def _position_for_market(base: str, market: str, book_id: str = "main") -> dict | None:
+        """Pozisyon PIYASAYA ve DEFTERE bagli: spot grafigi futures pozisyonu TASIMAZ (ve tersi)."""
+        sym_prefix = base.upper() + "/"
+        if book_id != "main":
+            if market != "futures":
+                return None                                  # kagit defterler yalniz USDM_PERP
+            bk = state.book(book_id)
+            if bk is None:
+                return None
+            for p in ((state.book_ledger(book_id) or {}).get("positions") or {}).values() if isinstance((state.book_ledger(book_id) or {}).get("positions"), dict) else []:
+                if isinstance(p, dict) and str(p.get("symbol", "")).upper().startswith(sym_prefix):
+                    q = dict(p); q.setdefault("entry_avg", q.get("entry")); q.setdefault("qty", q.get("units")); return q
+            return None
+        rows = state.futures_positions() if market == "futures" else state.spot_positions()
+        return next((p for p in rows if str(p.get("symbol", "")).upper().startswith(sym_prefix)), None)
+
+    _chart_cache: dict[tuple, dict] = {}
+
+    def _chart_analysis_for(base: str, tf: str, market: str, book_id: str, df, *, analysis_id: str | None, now_ms: int) -> tuple[dict | None, bool, str]:
+        """Analiz ani: (1) istenen analysis_id -> saklanan kayit; (2) motorun son kaydi son kapanmis barla ayniysa o;
+        (3) yoksa PANEL ICI gecici hesap (yazilmaz; bellek onbellegi). Donus: (snapshot, historical, kaynak)."""
+        from ..chart_analysis import BOOK_MAIN, build_snapshot, closed_bars_at
+        from ..chart_analysis_store import ChartAnalysisStore
+        from ..candle_confirmation import closed_bars
+        from ..ema200_trend import daily_rows_from_frame
+        from .candles import TF_MS
+        sym = base.upper() + "/USDT"
+        store = ChartAnalysisStore(state.state_dir)
+        if analysis_id:
+            snap = store.load(analysis_id)
+            if not snap:
+                raise HTTPException(404, "analiz kaydı yok")
+            ident = snap.get("identity") or {}
+            if ident.get("symbol") != sym or ident.get("timeframe") != tf or ident.get("book_id") != book_id:
+                raise HTTPException(404, "analiz kaydı bu sembol/dilim/deftere ait değil")
+            return snap, True, "store"
+        bars = closed_bars_at([{"timestamp": int(t), "open": float(o), "high": float(h), "low": float(l), "close": float(c)}
+                               for t, o, h, l, c in zip(df["timestamp"], df["open"], df["high"], df["low"], df["close"])], as_of_ms=now_ms, tf=tf) if df is not None else []
+        last_ts = int(bars[-1]["timestamp"]) if bars else None
+        latest = store.latest(book_id, sym, tf)
+        if latest and ((latest.get("identity") or {}).get("last_closed_bar") or {}).get("timestamp") == last_ts:
+            return latest, False, "store"
+        cfgj = read_json(state.state_dir / "chart_analysis" / "config.json", default=None) or {}
+        gates = cfgj.get("gates") or {"candle_mode": None, "candle_variant": None, "chart_mode": None, "chart_variant": None,
+                                       "regime_mode": None, "regime_variant": None, "chart_fresh_within": 3}
+        cfgd = cfgj.get("cfg") or {}
+        key = (book_id, base, market, tf, last_ts, cfgj.get("code_sha"), cfgj.get("config_hash"))
+        if key in _chart_cache:
+            return _chart_cache[key], False, "panel-cache"
+        if not bars:
+            return None, False, "none"
+        d1 = candles.load(base, "1d", market, n=400)
+        daily = closed_bars(daily_rows_from_frame(d1, tail=320), now_ms=now_ms, tf="1d") if d1 is not None else []
+        b1 = candles.load("BTC", "1d", market, n=400)
+        btc = closed_bars(daily_rows_from_frame(b1, tail=320), now_ms=now_ms, tf="1d") if b1 is not None else []
+        bk = state.book(book_id) or {"book_id": BOOK_MAIN, "name": BOOK_MAIN}
+        sp = state.get("strategy_paper") if book_id != BOOK_MAIN else None
+        atr_mult = (sp or {}).get("atr_mult") if sp and str(sp.get("name")) == bk.get("name") else None
+        pos = _position_for_market(base, market, book_id)
+        hist = state.book_history(book_id, sym) if market == "futures" else []
+        ef = state.book_entry_features(book_id, (pos or {}).get("id")) if pos else None
+        h = state.coin_head(base) or {}
+        plan = _plan_for_market(h, state.brief(base) or {}, market) if book_id == BOOK_MAIN else None
+        mark = float(df["close"].iloc[-1]) if df is not None and len(df) else None
+        snap = build_snapshot(symbol=sym, market_type=("USDM_PERP" if market == "futures" else "SPOT"), timeframe=tf, tf_ms=TF_MS.get(tf, 14_400_000),
+                              book={"book_id": book_id, "name": bk.get("name"), "atr_mult": atr_mult or 3.0}, bars=bars, as_of_ms=now_ms,
+                              daily_rows=daily, btc_daily_rows=btc, gates=gates, decision=state.last_decision(sym) if book_id == BOOK_MAIN else None,
+                              plan=plan, position=pos, history=hist, entry_features=ef, mark_price=mark, cfg=cfgd,
+                              code=cfgj.get("code_sha"), cfg_hash=cfgj.get("config_hash"), source={"frames": "dashboard.candles", "ephemeral": True})
+        if len(_chart_cache) > 64:
+            _chart_cache.clear()
+        _chart_cache[key] = snap
+        return snap, False, "panel-ephemeral"
+
+    @app.get("/api/chart/{base}")
+    def api_chart(base: str, tf: str = Query("4h"), market: str = Query("spot"), book: str = Query("main"), n: int = Query(300),
+                  analysis_id: str | None = Query(None), req: str | None = Query(None)):
+        """Mum + analiz katmanlari. SALT OKUMA: defter/ogrenme/analiz kaydi YAZILMAZ; veri indirmez."""
+        base = base.upper()[:16]
+        tf = tf if tf in ("1h", "4h", "1d", "15m", "1w") else "4h"
+        market = "futures" if market == "futures" else "spot"
+        n = max(50, min(int(n), cfg.max_bars))
+        if state.book(book) is None:
+            raise HTTPException(404, "bilinmeyen defter")
+        now_ms = int(time.time() * 1000)
+        src = candles.source_info(base, tf, market, now_ms=now_ms)
+        df = candles.load(base, tf, market, n=n + 250)
+        empty = {"base": base, "tf": tf, "market": market, "book": book, "req": req, "t": [], "o": [], "h": [], "l": [], "c": [], "v": [], "overlays": {},
+                 "levels": [], "plan": {}, "position": {}, "panels": {}, "source": src, "analysis": None, "historical": False}
+        if df is None:
+            return JSONResponse({**empty, "error": f"{base} {tf} {market} mum verisi yok (başka piyasa/dilimle doldurulmadı)"}, status_code=404)
+        snap, historical, origin = _chart_analysis_for(base, tf, market, book, df, analysis_id=analysis_id, now_ms=now_ms)
+        if historical and snap:
+            cut = ((snap.get("identity") or {}).get("last_closed_bar") or {}).get("timestamp")
+            if cut is not None:
+                df = df[df["timestamp"] <= int(cut)]
+                if df.empty:
+                    return JSONResponse({**empty, "error": "bu analiz anı için mum verisi arşivde yok"}, status_code=404)
+        h = state.coin_head(base) or {}
+        plan = _plan_for_market(h, state.brief(base) or {}, market) if book == "main" and not historical else ((snap or {}).get("plan") if book == "main" else None)
+        pos = (snap or {}).get("position") if historical else _position_for_market(base, market, book)
+        from .candles import TF_MS
+        payload = build_candle_payload(df, n=n, plan=plan, position=pos, levels=None, base=base, tf=tf, market=market)
+        payload.update({"book": book, "books": state.books(), "req": req, "source": src, "tf_ms": TF_MS.get(tf, 14_400_000),
+                        "analysis": snap, "historical": bool(historical), "analysis_origin": origin})
+        return JSONResponse(payload)
+
+    @app.get("/api/chart/{base}/history")
+    def api_chart_history(base: str, tf: str = Query("4h"), market: str = Query("spot"), book: str = Query("main")):
+        from ..chart_analysis_store import ChartAnalysisStore
+        if state.book(book) is None:
+            raise HTTPException(404, "bilinmeyen defter")
+        rows = ChartAnalysisStore(state.state_dir).list(book, base.upper()[:16] + "/USDT", tf if tf in ("1h", "4h", "1d", "15m", "1w") else "4h")
+        return JSONResponse({"base": base.upper(), "tf": tf, "market": market, "book": book, "rows": rows[-500:]})
+
+    @app.get("/api/chart/{base}/snapshot/{analysis_id}")
+    def api_chart_snapshot(base: str, analysis_id: str):
+        from ..chart_analysis_store import ChartAnalysisStore
+        snap = ChartAnalysisStore(state.state_dir).load(analysis_id)
+        if not snap or ((snap.get("identity") or {}).get("symbol") or "").split("/")[0] != base.upper()[:16]:
+            raise HTTPException(404, "analiz kaydı yok")
+        return Response(content=json.dumps(snap, ensure_ascii=False, indent=1), media_type="application/json",
+                        headers={"Content-Disposition": "attachment; filename=%s_%s.json" % (base.upper(), analysis_id)})
+
     # ------------------------------------------------------------------ API
     @app.get("/api/candles/{base}")
     def api_candles(base: str, tf: str = Query("4h"), market: str = Query("spot"), n: int = Query(600)):
@@ -2433,13 +2573,7 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
             return JSONResponse({"base": base, "tf": tf, "market": market, "t": [], "o": [], "h": [], "l": [], "c": [], "v": [], "overlays": {}, "levels": [], "plan": {}, "position": {}, "panels": {}, "error": f"{base} {tf} mum verisi yok"}, status_code=404)
         h = state.coin_head(base) or {}
         b = state.brief(base) or {}
-        plan = None
-        ap = (h.get("futures_plan") if market == "futures" else h.get("spot_plan")) or h.get("futures_plan") or h.get("spot_plan")
-        if ap and ap.get("valid"):
-            plan = ap
-        elif b.get("plan") and b["plan"].get("direction") not in (None, "BEKLE"):
-            plan = b["plan"]
-        pos = next((p for p in state.futures_positions() if str(p.get("symbol", "")).upper().startswith(base + "/")), None)
+        plan, pos = _plan_for_market(h, b, market), _position_for_market(base, market)
         levels = b.get("key_levels") or {}
         if not levels:
             for r in h.get("specialist_reports") or []:

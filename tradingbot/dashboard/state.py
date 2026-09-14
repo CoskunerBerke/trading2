@@ -147,6 +147,102 @@ class StateReader:
             out.append(q)
         return out
 
+    # ---- CHART ANALYSIS V1: defterler (ana + strateji), spot pozisyonlar, karar kaydi (SALT OKUMA)
+    def spot_positions(self) -> list[dict]:
+        pf = self.get("portfolio") or {}
+        out: list[dict] = []
+        pos = pf.get("positions") or {}
+        for sym, p in (pos.items() if isinstance(pos, dict) else []):
+            if not isinstance(p, dict):
+                continue
+            try:
+                units = float(p.get("units") or p.get("qty") or 0)
+            except (TypeError, ValueError):
+                units = 0.0
+            if units <= 0:
+                continue
+            out.append({"id": p.get("id") or ("SPOT:%s" % sym), "symbol": p.get("symbol") or sym, "side": "LONG", "qty": units,
+                        "entry_avg": p.get("entry_price") or p.get("avg_cost") or p.get("entry"), "stop": (p.get("stop") or None),
+                        "targets": [], "opened_at": p.get("entry_time") or p.get("opened_at"), "leverage": 1, "market_type": "SPOT"})
+        return out
+
+    def books(self) -> list[dict]:
+        """Defter kayit listesi: ana bot + strategy_paper_index.json'daki kagit defterler (kimlik = state dizini)."""
+        out = [{"book_id": "main", "name": "main", "label": "Ana bot", "state_dir": None}]
+        idx = read_json(self.state_dir / "strategy_paper_index.json", default=None) or {}
+        seen = {"main"}
+        for b in (idx.get("books") or []):
+            if not isinstance(b, dict):
+                continue
+            key = str(b.get("key") or "")
+            if not key or key in seen or not all(ch.isalnum() or ch == "_" for ch in key):
+                continue
+            seen.add(key)
+            name = str(b.get("name") or key)
+            label = {"t2_trend_regime": "T2 · EMA200 trend", "m2_tsmom28": "M2 · 28g momentum"}.get(name, name)
+            out.append({"book_id": key, "name": name, "label": label, "state_dir": key, "summary_file": b.get("summary_file")})
+        if len(out) == 1 and (self.state_dir / "strategy_paper" / "futures_ledger.json").exists():
+            sp = self.get("strategy_paper") or {}
+            out.append({"book_id": "strategy_paper", "name": str(sp.get("name") or "t2_trend_regime"), "label": "T2 · EMA200 trend", "state_dir": "strategy_paper"})
+        return out
+
+    def book(self, book_id: str) -> dict | None:
+        return next((b for b in self.books() if b["book_id"] == book_id), None)
+
+    def book_ledger(self, book_id: str) -> dict | None:
+        b = self.book(book_id)
+        if b is None:
+            return None
+        if b["book_id"] == "main":
+            return self.get("futures_ledger")
+        return read_json(self.state_dir / b["state_dir"] / "futures_ledger.json", default=None)
+
+    def book_position(self, book_id: str, symbol: str) -> dict | None:
+        led = self.book_ledger(book_id) or {}
+        pos = led.get("positions") or {}
+        items = pos.items() if isinstance(pos, dict) else [(p.get("symbol"), p) for p in pos if isinstance(p, dict)]
+        for sym, p in items:
+            if isinstance(p, dict) and str(p.get("symbol") or sym) == symbol:
+                q = dict(p)
+                q.setdefault("entry_avg", q.get("entry"))
+                q.setdefault("qty", q.get("units"))
+                return q
+        return None
+
+    def book_history(self, book_id: str, symbol: str, limit: int = 100) -> list[dict]:
+        led = self.book_ledger(book_id) or {}
+        rows = [h for h in (led.get("history") or []) if isinstance(h, dict) and h.get("symbol") == symbol]
+        return rows[-int(limit):]
+
+    def book_entry_features(self, book_id: str, trade_id: str | None) -> dict | None:
+        b = self.book(book_id)
+        if b is None or not trade_id:
+            return None
+        p = (self.state_dir / "trade_memory.jsonl") if b["book_id"] == "main" else (self.state_dir / b["state_dir"] / "trade_memory.jsonl")
+        if not p.exists():
+            return None
+        try:
+            for ln in p.read_text(encoding="utf-8", errors="replace").splitlines():
+                if trade_id not in ln:
+                    continue
+                try:
+                    d = json.loads(ln)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(d, dict) and d.get("trade_id") == trade_id:
+                    return d.get("features") or (d.get("entry") or {}).get("features") or None
+        except OSError:
+            return None
+        return None
+
+    def last_decision(self, symbol: str) -> dict | None:
+        r = self.get("risk") or {}
+        out = None
+        for e in (r.get("last_decisions") or []):
+            if isinstance(e, dict) and e.get("symbol") == symbol:
+                out = e
+        return out
+
     def futures_equity(self) -> float | None:
         led = self.get("futures_ledger") or {}
         for k in ("equity", "wallet_balance"):

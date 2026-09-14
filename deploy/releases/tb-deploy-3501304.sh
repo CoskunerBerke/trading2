@@ -1,0 +1,245 @@
+#!/usr/bin/env bash
+# =============================================================================
+#  TRADING BOT — KAGIT DEFTERLER: YALNIZ OLCULEN EVREN + KALICI SAYACLAR (V13)
+#  Taban : f25cb39ebe8b91932e3e80cef058def5f4040966 (VPS'te 2026-09-13 19:55Z dogrulandi); baskasinda betik DURUR
+#  Hedef : 35013040ce2bac31107634828dc943aa68a406e2
+#  Bundle: tb-3501304.bundle   sha256 d268fc2d77a6b04bce71b77547803518e0d239b00d7d7d13439c5fd026e58318
+#
+#  Ne degisiyor (kod: strategy_paper.py + engine_v3.py; config DEGISMEZ):
+#   * Defterler (T2, M2) YENI pozisyonu YALNIZ olculen sabit evrende acar (entry_universe.symbols, on coin).
+#     Canli bulgu: tur listesi ana defterin acik pozisyonlarini tasidigi icin T2 ZEN/USDT'de LONG acmisti
+#     (olculmemis evren). Evren disi kalan ACIK pozisyon yine yonetilir (kural kapanisi + stop); ana tur
+#     kapsami defterlerin acik pozisyonlarini da icerir (cerceve/fiyat kesilmez).
+#   * Sayaclar yeniden baslatmada sifirlanmaz: opened/closed defterden, rejected/tours onceki ozetten.
+#  Gercek para YOK; LIVE'da config reddedilir. Ana bot, T2/M2 defter dosyalari ve config DEGISMEZ.
+#
+#  ROOT ile calisir; depo islemleri servis kullanicisi adina. State'e DOKUNMAZ (yeni dizin acilir).
+#  KULLANIM (VPS'te):  sudo bash ~/tb-deploy-3501304.sh
+# =============================================================================
+set -uo pipefail
+
+BASE_SHA="f25cb39ebe8b91932e3e80cef058def5f4040966"
+TARGET_SHA="35013040ce2bac31107634828dc943aa68a406e2"
+BUNDLE_SHA="d268fc2d77a6b04bce71b77547803518e0d239b00d7d7d13439c5fd026e58318"
+BUNDLE_NAME="tb-3501304.bundle"
+
+BASE="/opt/tradingbot"
+APP="$BASE/app"
+VENV="$BASE/venv"
+STATE="$BASE/data/state"
+SVC_USER="tradingbot"
+
+say()  { printf '\n== %s\n' "$*"; }
+fail() { printf '\n!! DEPLOY_ABORTED: %s\n' "$*"; exit 1; }
+
+[[ $EUID -eq 0 ]] || fail "root gerekli: sudo bash ~/tb-deploy-3501304.sh"
+RUN="$BASE/rollback/deploy-${TARGET_SHA}-$(date -u +%Y%m%dT%H%M%SZ)"
+mkdir -p "$RUN" || fail "rollback dizini olusturulamadi: $RUN"
+LOG="$RUN/deploy.log"
+exec > >(tee -a "$LOG") 2>&1
+
+git_svc() { sudo -u "$SVC_USER" git -C "$APP" "$@"; }
+py_svc()  { sudo -u "$SVC_USER" env HOME="$BASE" "$VENV/bin/python" "$@"; }
+
+say "0) ORTAM"
+command -v git >/dev/null || fail "git yok"
+id -u "$SVC_USER" >/dev/null 2>&1 || fail "servis kullanicisi yok: $SVC_USER"
+[ -d "$APP/.git" ] || fail "$APP bir git deposu degil"
+[ -x "$VENV/bin/python" ] || fail "venv python yok"
+[ "$(stat -c '%U' "$APP")" = "$SVC_USER" ] || fail "$APP sahibi $(stat -c '%U' "$APP"), beklenen $SVC_USER"
+sudo -u "$SVC_USER" test -w "$STATE" || fail "$STATE servis kullanicisi tarafindan yazilabilir degil"
+echo "   root OK, depo sahibi $SVC_USER, state yazilabilir"
+
+say "1) KAYNAK — bundle BUTUNLUK"
+SRC_HOME="$(getent passwd "${SUDO_USER:-root}" | cut -d: -f6)"
+SRC="$SRC_HOME/$BUNDLE_NAME"
+[ -f "$SRC" ] || SRC="/home/ubuntu/$BUNDLE_NAME"
+[ -f "$SRC" ] || fail "bundle yok: $SRC_HOME/$BUNDLE_NAME (scp ile kopyalayin)"
+GOT="$(sha256sum "$SRC" | awk '{print $1}')"
+[ "$GOT" = "$BUNDLE_SHA" ] || fail "bundle sha256 uyusmuyor: beklenen $BUNDLE_SHA, bulunan $GOT"
+BUNDLE="$BASE/$BUNDLE_NAME"
+install -o "$SVC_USER" -g "$SVC_USER" -m 0644 "$SRC" "$BUNDLE" || fail "bundle kopyalanamadi"
+echo "   bundle sha256 OK -> $BUNDLE"
+
+say "2) MEVCUT DURUM"
+CUR="$(git_svc rev-parse HEAD)" || fail "HEAD okunamadi"
+CUR_SHORT="${CUR:0:7}"
+echo "   HEAD=$CUR_SHORT  dal=$(git_svc rev-parse --abbrev-ref HEAD)"
+[ -z "$(git_svc status --porcelain)" ] || fail "calisma agaci KIRLI: $(git_svc status --porcelain | head -3 | tr '\n' ' ')"
+case "$CUR" in
+  "$TARGET_SHA"*) echo "   kod ZATEN hedefte (onceki calistirma 5. adimda durmus): fetch/merge ATLANIR, degismezler + restart yapilir"; ALREADY=1 ;;
+  "$BASE_SHA"*)   echo "   taban dogru (${BASE_SHA:0:7})" ;;
+  *) fail "beklenmeyen HEAD ($CUR_SHORT). Beklenen taban ${BASE_SHA:0:7}. Hicbir seye dokunulmadi. Bu HEAD'i bildirin." ;;
+esac
+LEDGER="$STATE/futures_ledger.json"
+[ -r "$LEDGER" ] || fail "defter okunamadi: $LEDGER"
+BEFORE_LEDGER="$("$VENV/bin/python" - "$LEDGER" <<'PY'
+import json,io,sys,hashlib
+raw=io.open(sys.argv[1],encoding='utf-8').read(); d=json.loads(raw)
+print(json.dumps({"open":len(d.get("positions",{})),"history":len(d.get("history",[])),"seq":d.get("seq"),
+                  "sha256":hashlib.sha256(raw.encode()).hexdigest()[:16]},sort_keys=True))
+PY
+)"
+echo "   ana defter (once): $BEFORE_LEDGER"
+[ -e "$STATE/strategy_paper" ] && echo "   T2 defteri var: $STATE/strategy_paper (dokunulmaz)" || echo "   T2 defteri dizini yok"
+[ -e "$STATE/strategy_paper_m2" ] && echo "   NOT: $STATE/strategy_paper_m2 zaten var — dokunulmaz" || echo "   M2 defteri dizini yok (BEKLENMIYOR: f25cb39 turlari yazmis olmali)"
+
+ALREADY="${ALREADY:-0}"
+ROLLBACK_SHA="$(cat "$BASE/.last_good_commit" 2>/dev/null || echo "$CUR")"
+[ "$ALREADY" = "1" ] || ROLLBACK_SHA="$CUR"
+ROLLBACK_SHORT="${ROLLBACK_SHA:0:7}"
+say "3) DOGRULANMIS YEDEK"
+( cd "$APP" && sudo -u "$SVC_USER" env HOME="$BASE" bash "$APP/deploy/backup.sh" manual ) \
+  || fail "yedek alinamadi — hicbir seye dokunulmadi"
+if [ "$ALREADY" != "1" ]; then
+  echo "$CUR" > "$BASE/.last_good_commit"
+  git_svc tag -f "backup/vps-pre-v13-${CUR_SHORT}" "$CUR" >/dev/null 2>&1 || true
+fi
+echo "   geri alma hedefi = $ROLLBACK_SHORT"
+
+say "4) FETCH + FF-ONLY"
+if [ "$ALREADY" = "1" ]; then
+  NEW="$CUR"; echo "   atlandi (HEAD = ${NEW:0:7})"
+else
+git_svc bundle verify "$BUNDLE" >/dev/null || fail "git bundle verify basarisiz"
+git_svc fetch "$BUNDLE" '+refs/heads/*:refs/remotes/bundle/*' || fail "bundle fetch basarisiz"
+git_svc cat-file -e "${TARGET_SHA}^{commit}" 2>/dev/null || fail "hedef commit getirilemedi"
+git_svc merge-base --is-ancestor "$CUR" "$TARGET_SHA" || fail "ff-only degil"
+git_svc merge --ff-only "$TARGET_SHA" || fail "ff-only merge basarisiz"
+NEW="$(git_svc rev-parse HEAD)"
+[ "$NEW" = "$TARGET_SHA" ] || fail "HEAD hedefe esit degil: $NEW"
+echo "   HEAD = ${NEW:0:7}"
+fi
+
+say "5) DEGISMEZLER (kural tek kaynak + kagit defter + config)"
+py_svc - <<'PY' || { echo "!! degismezler DUSTU -> sudo -u tradingbot git -C $APP checkout -q $ROLLBACK_SHORT"; exit 90; }
+import inspect, sys
+sys.path.insert(0, "/opt/tradingbot/app")
+ok = True
+def chk(c, m):
+    global ok
+    print(("   OK  " if c else "   FAIL") + " " + m); ok = ok and bool(c)
+from tradingbot.ema200_trend import decide, VARIANTS
+from tradingbot.strategy_paper import apply_action, validate_settings, StrategyBook
+D = 24*3600*1000
+rows = [{"timestamp": i*D, "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0, "ema200": 95.0, "atr14": 2.0} for i in range(260)]
+a = decide("t2_trend_regime", daily_rows=rows, btc_daily_rows=[{"timestamp": 0, "close": 100.0, "ema200": 90.0}], position_open=False)
+chk(a and a["action"] == "OPEN" and a["direction"] == "LONG" and abs(a["stop"] - 94.0) < 1e-9 and a["leverage"] == 1, "kural: UP + close>EMA200 -> LONG, stop close-3*ATR")
+chk(decide("t2_trend_regime", daily_rows=rows, btc_daily_rows=[{"timestamp": 0, "close": 100.0, "ema200": 110.0}], position_open=False) is None, "kural: BTC DOWN -> giris yok")
+rows2 = [dict(r, ema200=105.0) for r in rows]
+chk(decide("t2_trend_regime", daily_rows=rows2, btc_daily_rows=None, position_open=True) == {"action": "CLOSE", "reason": "EMA200_CROSS_DOWN", "name": "t2_trend_regime"}, "kural: close<EMA200 -> kapat")
+chk(decide("t2_trend_regime", daily_rows=rows[:100], btc_daily_rows=None, position_open=False) is None, "kural: az veri -> fail-closed")
+try:
+    validate_settings(enabled=True, name="t2_trend_regime", app_mode="LIVE", starting_equity=100, atr_mult=3.0); chk(False, "LIVE'da enabled reddedilmeli")
+except ValueError:
+    chk(True, "LIVE'da enabled reddedilir (fail-closed)")
+from tradingbot import engine_v3
+src = inspect.getsource(engine_v3)
+chk("_strategy_paper_tour(" in src and "_strategy_paper_exit_check(" in src and "StrategyBook(" in src, "canli motor kancalari mevcut")
+chk("_regime_gate(" in src and "_candle_confirmation(" in src, "rejim + mum kancalari korunuyor")
+from tradingbot.replay import engine as rep
+chk("apply_action(" in inspect.getsource(rep), "replay ayni uygulayiciyi cagiriyor")
+from tradingbot.learn.memory import SOURCES
+chk("STRATEGY_PAPER" in SOURCES, "trade memory kaynagi kayitli")
+from tradingbot.dashboard.state import STATE_FILES
+chk(STATE_FILES.get("strategy_paper") == "strategy_paper.json", "dashboard ozet dosyasi kayitli")
+from tradingbot.config import load_config
+c = load_config("/opt/tradingbot/app/config.yaml"); sp = c.v3.strategy_paper; e = c.v3.entry_selectivity
+chk(sp.enabled and sp.name == "t2_trend_regime" and float(sp.starting_equity_usdt) == 100.0 and float(sp.atr_mult) == 3.0 and float(sp.breakeven_at_mfe_r) == 0.0, "config: strategy_paper t2, 100 USDT, ATR 3, basa-bas KAPALI")
+from tradingbot.strategy_paper import book_specs
+bs = book_specs(c.v3)
+chk([(b.name, b.state_dir) for b in bs] == [("t2_trend_regime", "strategy_paper"), ("m2_tsmom28", "strategy_paper_m2")], "config: iki defter (t2 + m2), ayri dizinler")
+rows_m = [{"timestamp": i*D, "open": 100.0, "high": 101.0, "low": 99.0, "close": (90.0 if i == 259 - 28 else 100.0), "ema200": 105.0, "atr14": 2.0} for i in range(260)]
+am = decide("m2_tsmom28", daily_rows=rows_m, btc_daily_rows=[{"timestamp": 0, "close": 100.0, "ema200": 90.0}], position_open=False)
+chk(am and am["action"] == "OPEN" and am["reason"] == "M2_TSMOM28", "kural m2: close > 28 gun onceki close -> LONG (EMA'dan bagimsiz)")
+chk(decide("t2_trend_regime", daily_rows=rows_m, btc_daily_rows=[{"timestamp": 0, "close": 100.0, "ema200": 90.0}], position_open=False) is None, "kural t2 degismedi (close < EMA200 -> giris yok)")
+from tradingbot import strategy_paper as _spm
+chk("strategy_books" in src and "_strategy_paper_tour(" in src and "INDEX_FILE" in src and _spm.INDEX_FILE == "strategy_paper_index.json", "canli motor coklu defter + indeks")
+chk("_strategy_open_symbols" in src and "syms = book.symbols or universe" in src and "universe = list(_eu.symbols) if _eu.enabled else list(symbols)" in src, "V13: defterler YALNIZ olculen evrende acar (entry_universe.symbols)")
+chk("self._strategy_open_symbols()" in src.split("def tour(self")[1].split("def _strategy_open_symbols")[0], "V13: ana tur kapsami defterlerin acik pozisyonlarini icerir")
+sps = inspect.getsource(_spm)
+chk("def _restore_counters" in sps and "self._restore_counters()" in sps and "dict.fromkeys(list(symbols) + list(self.ledger.positions))" in sps, "V13: sayaclar kalici + evren disi acik pozisyon yonetilir")
+eu = c.v3.entry_universe
+chk(eu.enabled and set(eu.symbols) == {"BTC/USDT","ETH/USDT","SOL/USDT","BNB/USDT","XRP/USDT","LINK/USDT","DOGE/USDT","AVAX/USDT","LTC/USDT","AAVE/USDT"} and not eu.analyze_outside and not eu.scanner_feeds_entries, "config: giris evreni = olculen on coin, tarayici beslemez")
+chk(e.regime_gate_mode == "ENFORCE" and e.candle_confirmation_mode == "ENFORCE" and e.chart_confirmation_mode == "SHADOW", "config: ana bot kapilari degismedi")
+chk(str(c.v3.mode.mode).upper() == "PAPER", "config: mode PAPER")
+sys.exit(0 if ok else 1)
+PY
+
+say "6) CONFIG SOZLESMESI - PAPER degismedi"
+py_svc - <<'PYCFG' || { echo "!! config sozlesmesi DUSTU -> sudo -u tradingbot git -C $APP checkout -q $ROLLBACK_SHORT"; exit 91; }
+import io, sys, yaml
+d = yaml.safe_load(io.open("/opt/tradingbot/app/config.yaml", encoding="utf-8")) or {}
+ok = True
+def chk(c, m):
+    global ok
+    print(("   OK  " if c else "   FAIL") + " " + m); ok = ok and bool(c)
+for sec, key in (("mode","mode"),("mode","live_trading"),("execution","gateway"),("execution","testnet_enabled"),
+                 ("risk","risk_per_trade_pct"),("risk","starting_equity_usdt"),("leverage","max_leverage"),
+                 ("leverage","paper_only"),("risk_profiles","profile"),("entry_selectivity","regime_gate_mode"),
+                 ("strategy_paper","enabled"),("strategy_paper","name"),("strategy_paper","starting_equity_usdt")):
+    chk(isinstance(d.get(sec), dict) and key in d[sec], "anahtar var: %s.%s" % (sec, key))
+if not ok: sys.exit(1)
+chk(str(d["mode"]["mode"]).upper() == "PAPER", "mode = PAPER")
+chk(d["mode"]["live_trading"] is False, "live_trading = False")
+chk(str(d["execution"]["gateway"]).lower() == "paper", "gateway = paper")
+chk(d["execution"]["testnet_enabled"] is False, "testnet_enabled = False")
+chk(float(d["risk"]["risk_per_trade_pct"]) <= 2.0, "risk_per_trade_pct <= 2.0")
+chk(float(d["risk"]["starting_equity_usdt"]) <= 100.0, "starting_equity_usdt <= 100")
+chk(int(d["leverage"]["max_leverage"]) <= 5, "max_leverage <= 5")
+chk(d["leverage"]["paper_only"] is True, "leverage.paper_only = True")
+chk(str(d["risk_profiles"]["profile"]) == "PAPER_RESEARCH", "profil = PAPER_RESEARCH")
+chk(d["strategy_paper"]["enabled"] is True and d["strategy_paper"]["name"] == "t2_trend_regime", "strategy_paper: enabled, t2_trend_regime")
+ex = d["strategy_paper"].get("extra") or []
+chk(len(ex) == 1 and ex[0].get("name") == "m2_tsmom28" and ex[0].get("state_dir") == "strategy_paper_m2" and float(ex[0].get("starting_equity_usdt", 0)) <= 100.0, "strategy_paper.extra: m2_tsmom28, strategy_paper_m2, <= 100 USDT")
+chk(float(d["strategy_paper"]["starting_equity_usdt"]) <= 100.0, "strategy_paper.starting_equity_usdt <= 100 (sanal)")
+sys.exit(0 if ok else 1)
+PYCFG
+
+say "7) BAGIMLILIKLAR + DOCTOR"
+if git_svc diff --quiet "$ROLLBACK_SHA" "$NEW" -- requirements.txt; then
+  echo "   requirements.txt degismedi -> pip atlandi"
+else
+  sudo -u "$SVC_USER" env HOME="$BASE" "$VENV/bin/pip" install -q -r "$APP/requirements.txt" \
+    || "$VENV/bin/pip" install -q -r "$APP/requirements.txt" || fail "pip install basarisiz"
+fi
+( cd "$APP" && py_svc -m tradingbot doctor --quick ) || echo "   (doktor uyari verdi — saglik kontrolu belirleyici)"
+
+say "8) YENIDEN BASLATMA"
+R0="$(systemctl show -p NRestarts --value tradingbot-worker.service)"
+systemctl restart tradingbot-worker.service tradingbot-dashboard.service
+code=""
+for i in $(seq 1 60); do
+  code="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/health/live || true)"
+  [ "$code" = "200" ] && { echo "   /health/live 200 ($i sn)"; break; }
+  sleep 1
+done
+[ "$code" = "200" ] || fail "servis ayaga kalkmadi (/health/live=$code) -> bash $APP/deploy/rollback.sh"
+systemctl is-active --quiet tradingbot-worker.service || fail "worker aktif degil -> bash $APP/deploy/rollback.sh"
+echo "   NRestarts $R0 -> $(systemctl show -p NRestarts --value tradingbot-worker.service)"
+code2="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/portfolio/strategy || true)"
+echo "   /portfolio/strategy HTTP $code2 (ilk turdan once 'kapali ya da henuz yazilmadi' gorunmesi normal)"
+
+say "9) DAGITIM SONRASI"
+AFTER_LEDGER="$("$VENV/bin/python" - "$LEDGER" <<'PY'
+import json,io,sys
+d=json.loads(io.open(sys.argv[1],encoding='utf-8').read())
+print(json.dumps({"open":len(d.get("positions",{})),"history":len(d.get("history",[])),"seq":d.get("seq")},sort_keys=True))
+PY
+)"
+echo "   ana defter (sonra): $AFTER_LEDGER   (worker calistigi icin dogal degisim MESRUDUR)"
+echo "   Ilk tur ~10-15 dk sonra: iki ozette counters.opened = acik + kapanis (SIFIRLANMADI); T2'deki ZEN/USDT evren disi -> yalniz yonetilir; evren disi YENI giris yok"
+
+say "10) IZLEME (15-30 dk sonra)"
+cat <<'EOS'
+   sudo journalctl -u tradingbot-worker -n 800 --no-pager | grep -E "STRATEJI KAGIT|REJIM KAPISI|strateji kagit|traceback|error" | head -12
+   sudo /opt/tradingbot/venv/bin/python -c "import json,io
+for f in ('strategy_paper.json','strategy_paper_m2.json'):
+    d=json.load(io.open('/opt/tradingbot/data/state/'+f,encoding='utf-8')); print(f, {k:d.get(k) for k in ('name','regime','counters','positions')}, d.get('summary',{}).get('equity_mtm'))"
+EOS
+
+say "GERI ALMA (gerekirse)"
+echo "   sudo -u $SVC_USER git -C $APP checkout -q $ROLLBACK_SHORT && sudo systemctl restart tradingbot-worker tradingbot-dashboard"
+echo
+echo "DEPLOY_OK $TARGET_SHA"
+echo "log: $LOG"

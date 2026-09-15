@@ -401,8 +401,44 @@ def pattern_elements(bars: list[dict[str, Any]], det: dict[str, Any], *, chart_m
 
 
 # ----------------------------------------------------------------------------- işlem katmanı
+def mark_element(*, book_id: str, position: dict[str, Any] | None, mark_price: float | None, at_ms: int | None,
+                 price_source: dict[str, Any] | None = None, live: bool = False) -> dict[str, Any] | None:
+    """Güncel fiyat + açık K/Z öğesi (`kind=mark`). TEK formül: BRÜT K/Z = yön × (fiyat − ortalama giriş) × miktar; ücret ve
+    fonlama GİRMEZ (gerçekleşmiş K/Z defterdedir). Motor kaydı (canlı tik) ve panelin canlı katmanı (son mum kapanışı)
+    aynı fonksiyonu kullanır; fiyatın GERÇEK kaynağı `price_source` ile etiketlenir — mum kapanışı doğrulanmış borsa
+    mark fiyatı DEĞİLDİR ve öyle sunulmaz."""
+    if not position or mark_price is None:
+        return None
+    entry = _f(position.get("entry_avg") if position.get("entry_avg") is not None else position.get("entry"))
+    qty = _f(position.get("qty") if position.get("qty") not in (None, "") else (position.get("quantity") if position.get("quantity") not in (None, "") else position.get("units")))
+    if entry is None or not qty:
+        return None
+    side = str(position.get("side") or "").upper()
+    sign = 1.0 if side == "LONG" else -1.0
+    pnl = sign * (float(mark_price) - entry) * qty
+    tid = "%s:%s" % (book_id, position.get("id") or position.get("trade_id") or "open")
+    ps = dict(price_source or {"kind": "unknown"})
+    kind = str(ps.get("kind") or "unknown")
+    if kind == "candle_close":
+        what = "Son mum kapanışı %.6g (%s; borsa mark fiyatı DEĞİL)" % (float(mark_price), "kapanmamış bar" if not ps.get("bar_closed") else "kapanmış bar")
+        why = "Panelin canlı fiyatı: %s dosyasındaki son mumun kapanışı (%s). Doğrulanmış borsa mark fiyatı değildir; açık K/Z bu fiyatla BRÜT hesaplanır." % (
+            ps.get("file") or "mum", _iso(ps.get("bar_open_ms")) or "?")
+    elif kind == "ticker_last":
+        what = "İşaret fiyatı %.6g (canlı tik)" % float(mark_price)
+        why = "Motorun tur anındaki son işlem fiyatı (ticker last); açık K/Z bu fiyatla BRÜT hesaplanır, gerçekleşmiş K/Z'den ayrıdır."
+    else:
+        what = "İşaret fiyatı %.6g (kaynak: %s)" % (float(mark_price), kind)
+        why = "Güncel fiyat; açık K/Z BRÜT (ücret/fonlama hariç), gerçekleşmiş K/Z'den ayrıdır."
+    return {"id": "pos_mark:%s" % tid, "layer": LAYER_TRADES, "kind": "mark", "trade_id": tid, "side": side, "t0": _ms(position.get("opened_at")), "t1": None,
+            "anchors": [], "confirmed_at": int(at_ms) if at_ms is not None else None, "decision_impact": USED_IN_DECISION, "invalidation_tr": "—",
+            "price": float(mark_price), "unrealized_pnl_gross": round(pnl, 10), "price_source": ps, "live": bool(live),
+            "label_tr": "%s · açık K/Z %+.4g USDT (brüt)%s" % (what, pnl, " (canlı)" if live else ""), "rationale_tr": why,
+            "source": {"module": "chart_analysis", "function": "mark_element", "params": {"trade_id": tid, "price_source": kind}, "live": bool(live),
+                       "live_at": _iso(at_ms) if live else None}}
+
+
 def trade_elements(*, book_id: str, position: dict[str, Any] | None, history: list[dict[str, Any]], plan: dict[str, Any] | None,
-                   as_of_ms: int | None, mark_price: float | None) -> list[dict[str, Any]]:
+                   as_of_ms: int | None, mark_price: float | None, mark_source: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     """Seçili defterin GERÇEK giriş/çıkış işaretleri, açık pozisyonun giriş/stop/hedefleri ve (ana botta) planı.
     Plan fiyatı, gerçekleşen fiyat ve güncel işaret fiyatı ayrı etiketlenir. TP yoksa 'TP yok' yazılır."""
     out: list[dict[str, Any]] = []
@@ -458,11 +494,9 @@ def trade_elements(*, book_id: str, position: dict[str, Any] | None, history: li
             if liq is not None:
                 out.append({**base, "id": "pos_liq:%s" % tid, "kind": "liq", "price": liq, "label_tr": "Likidasyon %.6g" % liq,
                             "rationale_tr": "İzole marj tasfiye fiyatı (defterden)."})
-            if mark_price is not None and qty:
-                sign = 1.0 if side == "LONG" else -1.0
-                out.append({**base, "id": "pos_mark:%s" % tid, "kind": "mark", "price": mark_price,
-                            "label_tr": "İşaret fiyatı %.6g · açık K/Z %+.4g USDT" % (mark_price, sign * (mark_price - entry) * qty),
-                            "rationale_tr": "Güncel işaret fiyatı; açık K/Z gerçekleşmiş K/Z'den ayrıdır."})
+            me = mark_element(book_id=book_id, position=position, mark_price=mark_price, at_ms=as_of_ms, price_source=mark_source)
+            if me is not None:
+                out.append(me)
     if plan and _f(plan.get("entry")) is not None and str(plan.get("direction") or "").upper() not in ("", "BEKLE", "NONE"):
         entry, stop = _f(plan.get("entry")), _f(plan.get("stop"))
         tg = [t for t in (plan.get("targets") or [plan.get("tp1"), plan.get("tp2")]) if _f(t) is not None]
@@ -649,8 +683,10 @@ def build_snapshot(*, symbol: str, market_type: str, timeframe: str, tf_ms: int,
                    btc_daily_rows: list[dict[str, Any]] | None, gates: dict[str, Any], decision: dict[str, Any] | None,
                    plan: dict[str, Any] | None, position: dict[str, Any] | None, history: list[dict[str, Any]] | None,
                    entry_features: dict[str, Any] | None, mark_price: float | None, cfg: dict[str, Any],
-                   code: str | None = None, cfg_hash: str | None = None, source: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Tek analiz anı. `bars` KAPANMIŞ barlardır (çağıran `closed_bars_at` ile keser)."""
+                   code: str | None = None, cfg_hash: str | None = None, source: dict[str, Any] | None = None,
+                   mark_source: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Tek analiz anı. `bars` KAPANMIŞ barlardır (çağıran `closed_bars_at` ile keser). `mark_source` işaret fiyatının
+    gerçek kaynağını etiketler (motor: canlı tik; panel: son mum kapanışı) — bkz. `mark_element`."""
     bars = list(bars or [])
     last = bars[-1] if bars else None
     last_close = _f(last.get("close")) if last else None
@@ -669,7 +705,7 @@ def build_snapshot(*, symbol: str, market_type: str, timeframe: str, tf_ms: int,
     if name in ("t2_trend_regime", "m2_tsmom28"):
         rs = rule_state(name, daily_rows=daily_rows or [], btc_daily_rows=btc_daily_rows or [], atr_mult=float(book.get("atr_mult") or 3.0))
     trades = trade_elements(book_id=str(book.get("book_id") or BOOK_MAIN), position=position, history=history or [], plan=plan if name == BOOK_MAIN else None,
-                            as_of_ms=as_of_ms, mark_price=mark_price)
+                            as_of_ms=as_of_ms, mark_price=mark_price, mark_source=mark_source)
     indicators = []
     if last:
         for key, lab in (("ema20", "EMA20 (4h)"), ("ema50", "EMA50 (4h)"), ("ema200", "EMA200 (%s)" % timeframe)):
@@ -714,5 +750,5 @@ def build_snapshot(*, symbol: str, market_type: str, timeframe: str, tf_ms: int,
 
 __all__ = ["SCHEMA_VERSION", "TF_MS", "BOOK_MAIN", "MARKET_TYPES", "TIME_CONTRACT", "HISTORY_TAIL", "USED_IN_DECISION", "OBSERVATION_ONLY", "UNCONFIRMED", "INVALID",
            "code_sha", "config_hash", "market_type_of", "plan_for_market", "bars_from_frame", "closed_bars_at", "pivots", "level_elements",
-           "trendline_elements", "pattern_elements", "trade_elements", "explain", "decision_fingerprint_payload", "build_snapshot",
+           "trendline_elements", "pattern_elements", "mark_element", "trade_elements", "explain", "decision_fingerprint_payload", "build_snapshot",
            "gates_from_v3", "position_to_dict", "spot_position_to_dict"]

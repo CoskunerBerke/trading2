@@ -2468,8 +2468,8 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
         return next((p for p in rows if str(p.get("symbol", "")).upper().startswith(sym_prefix)), None)
 
     _chart_cache: dict[tuple, dict] = {}
-    _LIVE_FILES = ("futures_ledger.json", "portfolio.json", "risk.json", "coin_heads.json", "agents.json", "trade_memory.jsonl",
-                   "strategy_paper.json", "chart_analysis/config.json", "chart_analysis/index.json")
+    _LIVE_FILES = ("futures_ledger.json", "spot_ledger.json", "portfolio.json", "risk.json", "coin_heads.json", "agents.json", "trade_memory.jsonl",
+                   "strategy_paper.json", "chart_analysis/config.json", "chart_analysis/index.json")   # spot_ledger.json: 2026-09-16 onarimi #1
 
     def _live_revision(book_id: str) -> tuple:
         """Canli katmani besleyen dosyalarin (defter, plan, karar, kayit indeksi) surum imzasi: panel onbellegi
@@ -2507,21 +2507,18 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
             out.append("defter/karar durumu farklı (pozisyon, miktar, stop, hedef, kapanış, plan ya da hüküm)")
         return out or ["kimlik farklı"]
 
-    def _with_live_mark(snap: dict, mark: float | None, now_ms: int) -> dict:
-        """Motor kaydi 'simdi' gorunumunde: isaret fiyati/acik K/Z CANLI degerden (KOPYA; kayit dosyasi degismez)."""
-        pos = snap.get("position") or {}
-        if mark is None or not pos:
-            return snap
+    def _with_live_mark(snap: dict, mark: float | None, now_ms: int, price_src: dict | None) -> dict:
+        """'Simdi' gorunumunun HER donus yolunda (panel-ephemeral, panel-cache, eslesen ve eslesmeyen motor kaydi) isaret
+        fiyati/acik K/Z ogesi GUNCEL fiyattan yeniden kurulur — KOPYA uzerinde (onbellek ve kayit dosyasi degismez).
+        2e31926/4b6c2bf yalniz eslesen motor kaydinda guncelliyordu; gecici hesapta fiyat donuyordu (2026-09-16 onarimi #2)."""
+        from ..chart_analysis import mark_element
         s = json.loads(json.dumps(snap))
-        entry = finite_float_or_none(pos.get("entry_avg") if pos.get("entry_avg") is not None else pos.get("entry"))
-        qty = finite_float_or_none(pos.get("qty") if pos.get("qty") is not None else pos.get("units"))
-        sign = 1.0 if str(pos.get("side") or "").upper() == "LONG" else -1.0
-        for e in s.get("elements") or []:
-            if e.get("kind") == "mark":
-                e["price"] = float(mark)
-                e["confirmed_at"] = int(now_ms)
-                e["label_tr"] = "İşaret fiyatı %.6g · açık K/Z %s (canlı)" % (float(mark), ("%+.4g USDT" % (sign * (float(mark) - entry) * qty)) if entry is not None and qty else "—")
-                e["source"] = dict(e.get("source") or {}, live=True, live_at=_iso_ms(now_ms))
+        els = [e for e in (s.get("elements") or []) if e.get("kind") != "mark"]
+        me = mark_element(book_id=str((s.get("identity") or {}).get("book_id") or BOOK_MAIN), position=s.get("position"), mark_price=mark,
+                          at_ms=now_ms, price_source=price_src, live=True)
+        if me is not None:
+            els.append(me)
+        s["elements"] = els
         return s
 
     def _chart_analysis_for(base: str, tf: str, market: str, book_id: str, df, *, analysis_id: str | None, now_ms: int) -> tuple[dict | None, bool, str, dict]:
@@ -2559,8 +2556,14 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
         plan = _plan_for_market(h, state.brief(base) or {}, market) if book_id == BOOK_MAIN else None
         mark = float(df["close"].iloc[-1]) if df is not None and len(df) else None
         bk = state.book(book_id) or {"book_id": BOOK_MAIN, "name": BOOK_MAIN}
-        live = {"as_of": _iso_ms(now_ms), "as_of_ms": int(now_ms), "position": pos, "plan": plan, "mark_price": mark,
-                "source": ("futures_ledger.json" if market == "futures" else "portfolio.json") if book_id == BOOK_MAIN else "%s/futures_ledger.json" % (bk.get("state_dir") or book_id)}
+        # Canli fiyatin GERCEK kaynagi: mum dosyasindaki son mumun kapanisi (cogu zaman KAPANMAMIS bar) — dogrulanmis borsa
+        # mark fiyati DEGIL; etiket bunu soyler (2026-09-16 onarimi #2).
+        src_path = candles.find(base, tf, market)
+        last_open = int(df["timestamp"].iloc[-1]) if df is not None and len(df) else None
+        price_src = {"kind": "candle_close", "file": src_path.name if src_path else None, "bar_open_ms": last_open,
+                     "bar_closed": bool(last_open is not None and last_open + TF_MS[tf] <= now_ms), "tf": tf} if mark is not None else None
+        live = {"as_of": _iso_ms(now_ms), "as_of_ms": int(now_ms), "position": pos, "plan": plan, "mark_price": mark, "mark_price_source": price_src,
+                "source": ("futures_ledger.json" if market == "futures" else state.spot_source()) if book_id == BOOK_MAIN else "%s/futures_ledger.json" % (bk.get("state_dir") or book_id)}
         if not bars:
             return None, False, "none", {"stored": False, "engine_record": None, "live": live}
         rev = _live_revision(book_id)
@@ -2595,8 +2598,19 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
                              "last_closed_bar": (li.get("last_closed_bar") or {}).get("timestamp"), "code_sha": li.get("code_sha"),
                              "matches_now": bool(same), "diff": [] if same else _record_diff(latest, snap)}
             if same:
-                return _with_live_mark(latest, mark, now_ms), False, "store", {"stored": True, "engine_record": engine_record, "live": live}
-        return snap, False, origin, {"stored": False, "engine_record": engine_record, "live": live}
+                return _with_live_mark(latest, mark, now_ms, price_src), False, "store", {"stored": True, "engine_record": engine_record, "live": live}
+        else:
+            # Motor bu seri icin kayit YAZMADI ve nedenini bildirdi (piyasa uyusmazligi / provenans yok; 2026-09-16 onarimi #3):
+            # panel bunu 'kayit yok' diye gecistirmez, durumu acikca gosterir.
+            sk = (cfgj.get("skipped") or {}).get("%s|%s|%s" % (book_id, sym, tf))
+            if isinstance(sk, dict) and sk.get("status"):
+                engine_record = {"analysis_id": None, "as_of": sk.get("at"), "as_of_ms": None, "last_closed_bar": None, "code_sha": cfgj.get("code_sha"),
+                                 "matches_now": False, "status": sk.get("status"), "bar_market": sk.get("bar_market"), "book_market": sk.get("book_market"),
+                                 "reason": sk.get("reason"),
+                                 "diff": ["motor bu seri için kayıt yazmadı: %s (mum piyasası %s, defter piyasası %s)" % (
+                                     "piyasa uyuşmazlığı" if sk.get("status") == "MARKET_MISMATCH" else "çerçeve provenansı yok",
+                                     sk.get("bar_market") or "bilinmiyor", sk.get("book_market") or "?")]}
+        return _with_live_mark(snap, mark, now_ms, price_src), False, origin, {"stored": False, "engine_record": engine_record, "live": live}
 
     @app.get("/api/chart/{base}")
     def api_chart(base: str, tf: str = Query("4h"), market: str = Query("spot"), book: str = Query("main"), n: int = Query(300),

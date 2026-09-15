@@ -169,6 +169,11 @@ class StateReader:
         rows = [h for h in (led.get("history") or []) if isinstance(h, dict) and h.get("symbol") == symbol]
         return rows[-int(limit):]
 
+    def spot_source(self) -> str:
+        """Ana botun spot pozisyon/geçmiş kaynağı: `spot_ledger.json` okunabiliyorsa o, değilse eski `portfolio.json`
+        (panel `live.source` bunu GERÇEKTEN kullanılan dosya olarak bildirir; 2026-09-16 onarımı #1)."""
+        return STATE_FILES["spot_ledger"] if self._spot_ledger_positions() is not None else STATE_FILES["portfolio"]
+
     def spot_positions(self) -> list[dict]:
         ledger_rows = self._spot_ledger_positions()
         if ledger_rows is not None:

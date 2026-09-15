@@ -1,0 +1,25 @@
+grafik analizi: 4 seri icin kayit YAZILMADI (piyasa uyusmazligi/provenans yok): strategy_paper|ETH/USDT|4h=MARKET_MISMATCH/SPOT, strategy_paper_m2|ETH/USDT|4h=MARKET_MISMATCH/SPOT, strategy_paper|SOL/USDT|4h=MARKET_MISMATCH/SPOT, strategy_paper_m2|SOL/USDT|4h=MARKET_MISMATCH/SPOT
+
+[1] spot defteri değişimi önbelleği geçersizleştirmiyor mu?
+   alış emri durumu=OrderStatus.FILLED pozisyon=2.0
+   1. istek: origin=panel-ephemeral live.source=spot_ledger.json analysis.position.qty=2.0 entry=var
+   satış sonrası StateReader.spot_positions()=[]
+   2. istek: origin=panel-ephemeral live.position=None payload.position={} analysis.position.qty=None entry=yok aynı analysis_id=False live.source=spot_ledger.json
+  BULGU_YOK  tam satış sonrası analiz hâlâ 2 birim açık pozisyon çiziyor
+  BULGU_YOK  live.source spot_ledger.json kullanılırken portfolio.json diyor
+
+[2] geçici analizde canlı fiyat/K-Z donuyor mu?
+   4h 1. istek: origin=panel-ephemeral live.mark=201.0 mark.price=201.0 label=Son mum kapanışı 201 (kapanmamış bar; borsa mark fiyatı DEĞİL) · açık K/Z +2 USDT (brüt) (canlı)
+   4h 2. istek: origin=panel-cache stored=False live.mark=240.0 son mum close=240.0 mark.price=240.0 label=Son mum kapanışı 240 (kapanmamış bar; borsa mark fiyatı DEĞİL) · açık K/Z +80 USDT (brüt) (canlı)
+  BULGU_YOK  4h: çizilen işaret fiyatı 240 değil (donmuş)
+   1h 1. istek: origin=panel-ephemeral live.mark=201.0 mark.price=201.0 label=Son mum kapanışı 201 (kapanmamış bar; borsa mark fiyatı DEĞİL) · açık K/Z +2 USDT (brüt) (canlı)
+   1h 2. istek: origin=panel-cache stored=False live.mark=240.0 son mum close=240.0 mark.price=240.0 label=Son mum kapanışı 240 (kapanmamış bar; borsa mark fiyatı DEĞİL) · açık K/Z +80 USDT (brüt) (canlı)
+  BULGU_YOK  1h: çizilen işaret fiyatı 240 değil (donmuş)
+
+[3] T2/M2 kaydı spot mumları futures olarak etiketliyor mu? (gerçek motor turu, SPOT provenans)
+   provenance={'ETH/USDT': 'SPOT', 'SOL/USDT': 'SPOT'}
+   main|SPOT|ETH/USDT|4h: identity.market_type=SPOT source.bar_market=SPOT last_close=535.1200736288996
+   main|SPOT|SOL/USDT|4h: identity.market_type=SPOT source.bar_market=SPOT last_close=2504.80326907074
+   config.json skipped={'strategy_paper|ETH/USDT|4h': {'status': 'MARKET_MISMATCH', 'bar_market': 'SPOT', 'book_market': 'USDM_PERP', 'reason': '', 'source': 'tradingview:BINANCE', 'at': '2026-09-15T21:34:30+00:00'}, 'strategy_paper_m2|ETH/USDT|4h': {'status': 'MARKET_MISMATCH', 'bar_market': 'SPOT', 'book_market': 'USDM_PERP', 'reason': '', 'source': 'tradingview:BINANCE', 'at': '2026-09-15T21:34:30+00:00'}, 'strategy_paper|SOL/USDT|4h': {'status': 'MARKET_MISMATCH', 'bar_market': 'SPOT', 'book_market': 'USDM_PERP', 'reason': '', 'source': 'tradingview:BINANCE', 'at': '2026-09-15T21:34:30+00:00'}, 'strategy_paper_m2|SOL/USDT|4h': {'status': 'MARKET_MISMATCH', 'bar_market': 'SPOT', 'book_market': 'USDM_PERP', 'reason': '', 'source': 'tradingview:BINANCE', 'at': '2026-09-15T21:34:30+00:00'}}
+   T2 pozisyonları (işlem yolu, değişmemeli)=['ETH/USDT', 'SOL/USDT']
+  BULGU_YOK  0 T2/M2 kaydı SPOT mumlarını USDM_PERP kimliğiyle taşıyor

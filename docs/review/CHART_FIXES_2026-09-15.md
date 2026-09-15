@@ -57,6 +57,51 @@ günlüğünden okundu:
   (`test_f3a_now_view_*`, `test_api_chart_missing_stale_history_and_read_only`).
 * T2/M2 defterleri, bakiyeleri, sayaçları bu değişiklikle ilgisiz; BTC rejimi DOWN'da otomatik kapatma eklenmedi.
 
+## 5. 2026-09-16 — ikinci bağımsız incelemenin üç kalan sorunu (4b6c2bf üzerine)
+
+Yeniden üretim: `evidence-2026-09-16/repro3.py` (gerçek FastAPI TestClient, gerçek `SpotLedger`, gerçek motor turu — test harness'ı);
+`r3_before.txt` (4b6c2bf: 3/3 BULGU_VAR) → `r3_after.txt` (onarım: 3/3 BULGU_YOK).
+
+| # | bulgu (4b6c2bf) | yeniden üretildi | düzeltildi | doğrulandı | test |
+|---|---|---|---|---|---|
+| 1 | Spot defteri (`spot_ledger.json`) değişimi panel önbelleğini geçersizleştirmiyor; SSE `spot_ledger` olayı yenilemiyor; `live.source` `portfolio.json` diyor | evet: 2 birim alış, aynı barda tam satış → analiz hâlâ 2 birim + giriş çizgisi, `panel-cache`, `live.source=portfolio.json` | `app._LIVE_FILES` + `chart_js.__onState` spot_ledger; `StateReader.spot_source()` gerçek dosya | gerçek SpotLedger ile kısmi satış (miktar/K-Z güncellendi), tam kapanış (giriş/stop/fiyat çizgileri kalktı), başka izlenen dosyaya dokunmadan; tarihsel kayıt kendi anını gösterdi, dosyası byte-aynı; `spot_ledger.json` yokken `portfolio.json` kaynağı korunur ve doğru yazılır | `test_f7_spot_ledger_change_*`, `test_chart_js_reloads_now_view_on_spot_ledger_state_event` |
+| 2 | Geçici analizde (panel-ephemeral/panel-cache) canlı fiyat ve K/Z öğesi donuyor: açık mum 201→240 olsa da çizilen işaret 201, "+2 USDT" | evet (4h ve 1h) | `chart_analysis.mark_element` tek formül (brüt K/Z); `_with_live_mark` "şimdi" görünümünün HER dönüş yolunda kopya üzerinde; `price_source` etiketi (son mum kapanışı, kapanmamış bar, borsa mark fiyatı DEĞİL) | 4h ve 1h'de fiyat 240, K/Z +80 USDT (brüt), aynı analysis_id, `panel-cache`; eşleşen motor kaydı yolunda 240 gösterildi ve kayıt dosyası değişmedi; eşleşmeyen kayıt yolunda da 240; tarihsel istek 201/+2 korudu; ön yüz `analysis.elements` etiketiyle doğrulandı | `test_f8_live_price_and_gross_pnl_*` |
+| 3 | T2/M2 kaydı SPOT provenanslı çerçeveyi USDM_PERP kimliğiyle yazıyor (`source.bar_market=SPOT`); provenans yoksa kaynak kanıtsız USDM_PERP | evet: SPOT provenanslı gerçek motor turunda 4 T2/M2 kaydı USDM_PERP kimlikli, spot kapanışlı | kâğıt defter kaydı yalnız doğrulanmış USDM_PERP çerçeveyle; SPOT/provenanssız → kayıt YOK + `config.json.skipped` (MARKET_MISMATCH / NO_PROVENANCE) + panel "MOTOR KAYDI YOK: piyasa uyuşmazlığı"; ana bot kaydı çerçeve piyasasında; `daily_market`, `btc_market`, `btc_market_ok` kayda girer | SPOT-only: yalnız ana bot SPOT kayıtları, 4 skipped, panel durumu; provenans yok: hiçbir kayıt yok, NO_PROVENANCE; doğrulanmış PERP çerçeve (fiyatlar spotun 2 katı, aynı zaman damgaları, `perp_frames` dolu → provenans USDM_PERP): T2/M2/ana kayıtları PERP serisinden, ikinci tur kayıt yazmadı, panel eşleşti | `test_f9_engine_writes_no_paper_book_record_*`, `test_f9_engine_records_paper_books_from_verified_perp_frames_*` |
+
+Eski `test_engine_records_are_market_strict_and_panel_now_view_matches_them` (USDM_PERP kimliği + `bar_market==SPOT` bekleyen ve
+spot çerçeveyi `binanceusdm_` adıyla yazan test) kaldırıldı; `test_engine_decisions_unchanged_and_snapshots_deduped` doğrulanmış
+perp çerçeve simülasyonuyla (evren sembolleri için `perp_frames` dolu, çerçeve fiyatları ×2, tik fiyatı çerçeveyle tutarlı)
+koşuyor ve grafik analizi açık/kapalı karar değişmezliğini korumaya devam ediyor.
+
+**Ayrı bulgu (işlem yolu, bu görevde DÜZELTİLMEDİ):** perpetual çerçeve alınamayınca motor ana bot için yeni girişi
+`_entry_data_blocked` ile kapatıyor (`engine_v3.py` ~L1398), ama `_strategy_paper_tour` / `StrategyBook.step` çerçeve
+provenansını hiç okumuyor: SPOT ikameli çerçevelerle T2/M2 kuralı değerlendirilip futures kâğıt pozisyonu açılabiliyor.
+Kanıt: `test_f9_engine_writes_no_paper_book_record_*` içinde provenans SPOT iken `eng.strategy_books[0].ledger.positions ==
+SYMS` (r3_before/r3_after: "T2 pozisyonları (işlem yolu, değişmemeli)=['ETH/USDT', 'SOL/USDT']"). Üretimde on coin
+evreninde perp çerçeve normalde alınır; koşul yalnız futures verisi kesildiğinde oluşur. Karar kullanıcıya bırakıldı
+(strateji kuralı/giriş yolu bu görevde değiştirilmedi).
+
+Tarayıcı doğrulaması (sentetik veri, gerçek motor turu, gerçek panel): bkz. §6.
+
+## 6. 2026-09-16 tarayıcı doğrulaması (sentetik veri, gerçek motor turu → panel → Claude tarayıcı bölmesi)
+
+Ortam: `test_engine_v3._engine` harness'ı ile gerçek motor turu (çerçeve provenansı SPOT; T2/M2 kayıtları YAZILMADI, ana bot SPOT
+kayıtları yazıldı); ardından gerçek `SpotLedger` ile SOL 2 birim alış ve ana bot SOL futures LONG 2 birim; uvicorn 127.0.0.1.
+Gözlemler DOM (`#srcline`, `window.__chartTest`, Plotly `layout.annotations`) ve ağ günlüğünden okundu:
+
+* **Piyasa uyuşmazlığı bildirimi** — T2 futures 4h: `engine_record.status=MARKET_MISMATCH`, kaynak satırında kırmızı
+  `MOTOR KAYDI YOK: piyasa uyuşmazlığı — mum piyasası SPOT, defter piyasası USDM_PERP (2026-09-15T21:45:26+00:00)`; analiz
+  `panel hesabı (kaydedilmedi)`.
+* **Spot kapanışı sonrası çizgi** — ana bot spot 4h: satıştan önce pozisyon 2 birim, giriş çizgisi 2504.8033, `canlı defter …
+  (spot_ledger.json)`; aynı barda tam satış (yalnız `spot_ledger.json` değişti) → SSE `spot_ledger` olayı grafiği KENDİLİĞİNDEN
+  yeniledi (ağ günlüğü `…market=spot&book=main&n=300&req=4`, elle yenileme yok): pozisyon boş, `analysis.position=null`,
+  giriş/stop/fiyat çizgileri yok, yalnız spot geçmişinin giriş/çıkış işaretleri; `live.source=spot_ledger.json`.
+* **Aynı mumda güncellenen fiyat** — ana bot futures 4h: açık mumun kapanışı 2504.80 → 3000 (yalnız mum dosyası değişti);
+  yenile sonrası `analysis_origin=panel-cache`, AYNI analysis_id, çizilen açıklama `SON MUM 3000.00 · K/Z +990.3934`
+  (2 × (3000 − 2504.8033)), öğe etiketi `Son mum kapanışı 3000 (… borsa mark fiyatı DEĞİL) · açık K/Z +990.4 USDT (brüt) (canlı)`,
+  `price_source={candle_close, binanceusdm_SOL-USDT_4h.csv, bar_open_ms, bar_closed}`; kaynak satırı `canlı fiyat: son mum
+  kapanışı 3000.00 (…; borsa mark fiyatı DEĞİL)`. Ekran kanıtı: `screens/synthetic-2026-09-16-main-futures-live-price-desktop.jpg`.
+
 ## 4. Açık kalanlar / notlar
 
 * Panelin spot pozisyon kaynağı: V3 motoru `spot_ledger.json` yazar, 2e31926 paneli `portfolio.json` okuyordu; onarımla

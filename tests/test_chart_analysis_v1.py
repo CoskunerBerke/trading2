@@ -320,13 +320,17 @@ def test_engine_decisions_unchanged_and_snapshots_deduped(tmp_path: Path, monkey
     from test_risk_capacity_and_gates import EQUITY, _force_triggers, _profile
     from test_strategy_paper_engine_v1 import SYMS, _install
 
+    from test_chart_analysis_v1_fixes import install_perp_frames
+
     def run(sub: str, enabled: bool):
         ov = _profile(6.0) | {"strategy_paper": {"enabled": True, "name": "t2_trend_regime",
                                                  "extra": [{"name": "m2_tsmom28", "state_dir": "strategy_paper_m2"}]},
-                              "chart_analysis": {"enabled": enabled, "keep_per_series": 5}}
+                              "chart_analysis": {"enabled": enabled, "keep_per_series": 5},
+                              "entry_universe": {"enabled": True, "symbols": list(SYMS)}}   # perp cerceve istenir (provenans USDM_PERP)
         eng = _engine(tmp_path / sub, monkeypatch, ov, symbols=2, equity=EQUITY)
         _force_triggers(monkeypatch, False)
         _install(eng, monkeypatch, btc_up=True, coin_above=True)
+        install_perp_frames(eng, monkeypatch)      # 2026-09-16 #3: kagit defter kaydi yalniz dogrulanmis USDM_PERP cerceveyle yazilir
         eng.tour(do_scan=False, obsidian=False, charts=False)
         st = eng.cfg.state_path
         funnel = json.loads((st / "decision_funnel.json").read_text(encoding="utf-8")).get("run")

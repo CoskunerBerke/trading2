@@ -60,7 +60,8 @@ Hangi çizgi hangi hesaptan gelir:
 | formasyon çizgileri (`pattern_line`) | `chart_patterns.detect_chart_patterns` kaydındaki `anchors` + `geometry` (boyun, düz/eğik sınır, direk, kırılış barı); `confirmed_at` = tanınma barı kapanışı | config'e göre: chart kapısı ENFORCE+taze → USED_IN_DECISION; SHADOW → OBSERVATION_ONLY (üretimde SHADOW) |
 | günlük EMA200 / 28g referans (`rule_reference`) | `ema200_trend.rule_state` | T2/M2 için USED_IN_DECISION |
 | plan giriş/stop/hedef (`plan_*`) | coin head planı — piyasaya KESİN bağlı ve yalnız geçerliyse (`chart_analysis.plan_for_market`; motor ve panel aynı kural) | ana bot |
-| gerçek giriş/çıkış/stop/hedef/LIQ/işaret (`trade_entry`, `trade_exit`, `entry`, `stop`, `target`, `no_target`, `liq`, `mark`) | seçili defterin ledger'ı (id = `book_id:trade_id`); ana bot SPOT kaydında `spot_ledger.json` | defter gerçeği |
+| gerçek giriş/çıkış/stop/hedef/LIQ (`trade_entry`, `trade_exit`, `entry`, `stop`, `target`, `no_target`, `liq`) | seçili defterin ledger'ı (id = `book_id:trade_id`); ana bot SPOT kaydında `spot_ledger.json` | defter gerçeği |
+| güncel fiyat + açık K/Z (`mark`) | `chart_analysis.mark_element` — TEK formül: BRÜT K/Z = yön × (fiyat − ortalama giriş) × miktar (ücret/fonlama yok). `price_source.kind`: motor kaydında `ticker_last` (tur anındaki canlı tik); panelin "şimdi" görünümünde `candle_close` = mum dosyasındaki SON mumun kapanışı (çoğu zaman KAPANMAMIŞ bar; `file`, `bar_open_ms`, `bar_closed`) — doğrulanmış borsa mark fiyatı DEĞİLDİR ve etiket bunu söyler. "Şimdi" görünümünün her dönüş yolunda (panel-ephemeral, panel-cache, eşleşen/eşleşmeyen motor kaydı, her dilim) bu öğe güncel fiyattan KOPYA üzerinde yeniden kurulur; tarihsel kayıt kendi fiyatını korur (2026-09-16 #2) | defter gerçeği (gösterim) |
 
 Zaman dilimleri TEK kaynaktır (`tradingbot/timeframes.py`: 15m, 1h, 4h, 1d, 1w). Mum kapısı (`candle_confirmation.closed_bars`),
 analiz (`closed_bars_at`), panel ve motor aynı tabloyu okur; bilinmeyen dilim sessizce 4h sayılmaz (panel HTTP 400,
@@ -78,6 +79,14 @@ yalnız gözlem" olarak gösterilir. ZigZag numaraları dalga analizi olarak SUN
   `market_type` vardır. **Aynı analysis_id ikinci kez yazılmaz; var olan dosya hiçbir koşulda yeniden yazılmaz**
   (sonraki mumlar geçmişi değiştiremez). Yeni kayıt yalnız yeni kapanmış bar ya da parmak izi değişiminde oluşur
   (pozisyon açılış/kapanış/kısmi kapanış, stop/hedef değişimi, kapanan işlem, plan, hüküm, kural koşulu/rejim).
+* Motor kaydının piyasa doğrulaması (2026-09-16 #3): çerçeve piyasası YALNIZ `_frame_provenance`'tan okunur; provenans
+  yoksa kaynak kanıtsız USDM_PERP sayılmaz. Kâğıt defter (T2/M2) kaydı yalnız doğrulanmış USDM_PERP çerçeveyle yazılır;
+  çerçeve SPOT ikamesiyse (perpetual mum alınamadı) spot mumlar futures diye YENİDEN ETİKETLENMEZ ve kayıt yazılmaz — neden
+  `chart_analysis/config.json` içinde `skipped["book|symbol|tf"] = {status: MARKET_MISMATCH | NO_PROVENANCE, bar_market,
+  book_market, reason, at}` olarak bildirilir; panel bunu `engine_record.status` ile "MOTOR KAYDI YOK: piyasa uyuşmazlığı"
+  diye gösterir. Ana bot kaydı çerçeve piyasasında (SPOT/USDM_PERP) yazılır; `source.daily_market` (sembolün günlük çerçevesi
+  aynı sağlayıcıdan) ve `source.btc_market` / `btc_market_ok` (BTC rejim çerçevesinin piyasası; kâğıt defterde USDM_PERP
+  değilse işaret) kayda girer. Bu kural İŞLEM yolunu (defter.step/tick) değiştirmez.
 * Uyumluluk (2e31926'nın v1 indeksi: `book|symbol|tf`, satırda piyasa yok): satır dosyasındaki
   `identity.market_type` ile serisine taşınır; piyasası okunamayan satır `?` piyasası altında kalır ve hiçbir piyasa
   isteğinde listelenmez/son kayıt sayılmaz (kimlikle `load` döner; panel kimliği isteğin piyasasıyla doğrular).
@@ -99,7 +108,11 @@ yalnız gözlem" olarak gösterilir. ZigZag numaraları dalga analizi olarak SUN
     ve açık K/Z canlı değerle KOPYA üzerinde güncellenir, dosya değişmez); değilse panelin geçici hesabı gösterilir
     (`panel-ephemeral` / `panel-cache`, `analysis_stored: false`) ve `engine_record` motorun son kaydını + farkını
     (bar / kod / config / defter-karar) bildirir. Eski bir kayıt hiçbir koşulda "şimdi" gibi gösterilmez.
-  * `live`: canlı katmanın zamanı ve kaynağı (`as_of`, `source` = ledger dosyası, `position`, `plan`, `mark_price`).
+  * `live`: canlı katmanın zamanı ve kaynağı (`as_of`, `source` = GERÇEKTEN kullanılan ledger dosyası — ana bot spot için
+    `spot_ledger.json` okunabiliyorsa o, değilse `portfolio.json`; `position`, `plan`, `mark_price`, `mark_price_source`).
+    Panel önbelleği canlı dosyaların (futures_ledger, spot_ledger, portfolio, risk, coin_heads, agents, trade_memory,
+    strategy_paper, defter ledger'ları, chart_analysis config/index) sürüm imzasıyla anahtarlanır; SSE `spot_ledger` olayı da
+    "şimdi" görünümünü yeniler (2026-09-16 #1).
   * `req` her iki uçta (grafik ve `/history`) yankılanır; geçmiş listesi `/api/chart/{base}/history?tf&market&book&req`
     PİYASA-kesindir; `/api/chart/{base}/snapshot/{id}` JSON indirme (dosya adı `SEMBOL_dilim_piyasa_defter_id.json`).
     Panel hiçbir state dosyasına yazmaz, borsa verisi indirmez.
@@ -154,3 +167,6 @@ DOWN'a dönünce açık pozisyon OTOMATİK KAPANMAZ" der (kod böyle bir kural u
 | 5 | pivot/formasyon teyit zamanı bar açılışı (bir mum erken) | `confirmed_at`/`known_at` = bar kapanışı; dedektör alanları değişmedi | `test_f5_*` |
 | 6 | arşivde olan eski mumlar için "veri yok" | `CandleSource.load(end_ts=)`; analiz anına göre seçim; dürüst 404 | `test_f6_*` |
 | K | JS `identity.analysis_id` okuyordu (kökte) | kök alan; indirme adı kimlik/piyasa/dilim/defter | `test_f4_*`, `test_chart_js_reads_*` |
+| 7 (2026-09-16) | spot defteri (`spot_ledger.json`) değişimi panel önbelleğini/SSE yenilemesini tetiklemiyor, `live.source` yanlış | `_LIVE_FILES` + `__onState` spot_ledger; `state.spot_source()` gerçek kaynak | `test_f7_*` |
+| 8 (2026-09-16) | geçici analizde fiyat/K-Z donuyor (yalnız eşleşen motor kaydında güncelleniyordu) | `mark_element` tek formül; her "şimdi" yolunda kopya üzerinde canlı fiyat; kaynak etiketi (mum kapanışı ≠ borsa mark) | `test_f8_*` |
+| 9 (2026-09-16) | T2/M2 kaydı SPOT çerçeveyi USDM_PERP kimliğiyle yazıyordu; provenans yoksa USDM_PERP varsayılıyordu | kâğıt defter kaydı yalnız doğrulanmış USDM_PERP çerçeveyle; aksi hâlde `config.json.skipped` + panel durumu | `test_f9_*` |

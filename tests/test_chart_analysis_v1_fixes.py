@@ -9,10 +9,13 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 import time
+from datetime import datetime, timezone
+from decimal import Decimal
 from pathlib import Path
 
 import numpy as np
@@ -423,50 +426,151 @@ def test_f6_historical_candles_are_selected_by_analysis_moment_not_by_newest_tai
 
 
 # ====================================================================== motor kaydı: piyasa-kesin, panelle aynı kimlik
-def test_engine_records_are_market_strict_and_panel_now_view_matches_them(tmp_path: Path, monkeypatch):
-    """Motor kaydı defterin piyasasını taşır: T2/M2 her zaman USDM_PERP (futures defteri); ana bot çerçeve piyasasında ve
-    o piyasanın pozisyonu/planı/geçmişiyle (ağsız test motorunda çerçeve SPOT → ana kayıt futures pozisyonu TAŞIMAZ).
-    Panelin 'şimdi' görünümü aynı state ile motor kaydını AYNI kimlikle bulur (analysis_stored=True); ikinci tur yeni
-    kayıt yazmaz; kararlar bu değişiklikten etkilenmez (mevcut `test_engine_decisions_unchanged_*` ile birlikte)."""
+_PRICE_COL = re.compile(r"^(open|high|low|close|ema\d+|sma\d+|atr\d+|vwap|bb_.*)$")
+
+
+def install_perp_frames(eng, monkeypatch, *, scale: float = 2.0) -> None:
+    """Perpetual çerçeve VARMIŞ gibi (ağsız): `perp_frames` dolu döner → motor provenansı USDM_PERP yazar; runner'ın son
+    çerçeveleri fiyatları `scale` ile çarpılmış PERP kopyalarıdır (spot serisinden belirgin farklı, aynı zaman damgaları).
+    `_install`ten SONRA çağrılır (en dış sarmalayıcı). Dosya adıyla spot veriyi futures kanıtı yapmaz: çerçevenin kendisi farklı."""
+    orig = eng.runner.run_symbol
+
+    def wrapped(symbol, analysis=None, prefetched=None):
+        b = orig(symbol, analysis, prefetched)
+        fr = dict(eng.runner.last_frames[symbol])
+        for tf, df in list(fr.items()):
+            d = df.copy()
+            for col in d.columns:
+                if _PRICE_COL.match(str(col)):
+                    d[col] = d[col] * scale
+            fr[tf] = d
+        eng.runner.last_frames[symbol] = fr
+        # canli fiyat da PERP olceginde (gercekte tik ve mum ayni piyasadan gelir; tutarsiz olursa defter stop>giris diye reddeder).
+        # Hedef fiyat OLCEKLENMIS cerceveden turetilir (b.price'i her turda yeniden carpmak bilesik artis yaratirdi).
+        target = float(fr["4h"]["close"].iloc[-1]) if fr.get("4h") is not None and len(fr["4h"]) else None
+        if target:
+            if getattr(b, "price", None):
+                b.price = target
+            if getattr(b, "last_close_4h", None):
+                b.last_close_4h = target
+            live = getattr(eng.runner, "live", None)
+            if live is not None and hasattr(live, "price"):
+                live.price[symbol] = target
+        return b
+    monkeypatch.setattr(eng.runner, "run_symbol", wrapped)
+    one = pd.DataFrame({"timestamp": [0], "open": [1.0], "high": [1.0], "low": [1.0], "close": [1.0], "volume": [1.0]})
+    monkeypatch.setattr(eng, "perp_frames", lambda s: {"1d": one, "4h": one, "1h": one})
+
+
+def _engine_with_books(tmp_path: Path, monkeypatch, *, perp: bool):
     from test_engine_v3 import _engine
     from test_risk_capacity_and_gates import EQUITY, _force_triggers, _profile
-    from test_strategy_paper_engine_v1 import SYMS, _install
+    from test_strategy_paper_engine_v1 import _install
     monkeypatch.setenv("TRADINGBOT_CODE_SHA", "engine-test-sha")
+    from test_strategy_paper_engine_v1 import SYMS
     ov = _profile(6.0) | {"strategy_paper": {"enabled": True, "name": "t2_trend_regime", "extra": [{"name": "m2_tsmom28", "state_dir": "strategy_paper_m2"}]},
                           "chart_analysis": {"enabled": True, "keep_per_series": 20}}
-    eng = _engine(tmp_path / "eng", monkeypatch, ov, symbols=2, equity=EQUITY)
+    if perp:
+        # evren sembolleri icin motor perpetual cerceve ISTER (futures_required) -> perp_frames cagrilir -> provenans USDM_PERP
+        ov = ov | {"entry_universe": {"enabled": True, "symbols": list(SYMS)}}
+    eng = _engine(tmp_path, monkeypatch, ov, symbols=2, equity=EQUITY)
     _force_triggers(monkeypatch, False)
     _install(eng, monkeypatch, btc_up=True, coin_above=True)
-    eng.tour(do_scan=False, obsidian=False, charts=False)
-    st = eng.cfg.state_path
-    store = ChartAnalysisStore(st)
-    idx = store.index()
-    assert idx["schema_version"] == INDEX_SCHEMA
-    for sym in SYMS:
-        for book in ("strategy_paper", "strategy_paper_m2"):
-            rec = store.latest(book, "USDM_PERP", sym, "4h")
-            assert rec and rec["identity"]["market_type"] == "USDM_PERP" and rec["position"]["entry_avg"] > 0 and rec["source"]["bar_market"] == "SPOT"
-            assert store.list(book, "SPOT", sym, "4h") == []
-        main_rec = store.latest("main", "SPOT", sym, "4h") or store.latest("main", "USDM_PERP", sym, "4h")
-        assert main_rec and main_rec["identity"]["market_type"] == main_rec["source"]["bar_market"]
-        if main_rec["identity"]["market_type"] == "SPOT":
-            assert not any(e["kind"] in ("entry", "stop", "target") and e.get("trade_id", "").startswith("main:F") for e in main_rec["elements"]), "SPOT kaydı futures defterini TAŞIMAZ"
-    n1 = store.stats()["snapshots"]
-    eng.tour(do_scan=False, obsidian=False, charts=False)
-    assert store.stats()["snapshots"] == n1, "aynı bar + aynı defter/karar → yeni kayıt YOK"
-    # panel: motorun çerçevelerinden mum dosyası → 'şimdi' görünümü motor kaydını AYNI kimlikle bulur
-    data = tmp_path / "data"; data.mkdir()
+    if perp:
+        install_perp_frames(eng, monkeypatch, scale=2.0)
+    return eng
+
+
+def _frames_to_csv(eng, data: Path, prefix: str) -> None:
+    data.mkdir(exist_ok=True)
     for sym, fr in eng.runner.last_frames.items():
         base = sym.split("/")[0]
         for tf in ("4h", "1d"):
             df = (fr or {}).get(tf)
             if df is not None:
-                df[[c for c in ("timestamp", "open", "high", "low", "close", "volume") if c in df.columns]].to_csv(data / f"binanceusdm_{base}-USDT_{tf}.csv", index=False)
+                df[[c for c in ("timestamp", "open", "high", "low", "close", "volume") if c in df.columns]].to_csv(data / f"{prefix}_{base}-USDT_{tf}.csv", index=False)
+
+
+def test_f9_engine_writes_no_paper_book_record_from_spot_frames_and_reports_why(tmp_path: Path, monkeypatch):
+    """4b6c2bf: çerçeve provenansı SPOT iken T2/M2 kaydı USDM_PERP kimliğiyle (source.bar_market=SPOT) yazılıyordu — spot
+    mumlar futures diye etiketleniyordu; provenans yoksa kaynak kanıtsız USDM_PERP sayılıyordu. Onarım: kâğıt defter kaydı
+    yalnız doğrulanmış USDM_PERP çerçeveyle yazılır; aksi hâlde kayıt YOK + `config.json.skipped` (MARKET_MISMATCH /
+    NO_PROVENANCE) ve panel 'motor kaydı yok' durumunu gösterir. İşlem yolu (defter.step/tick) bu düzeltmeyle değişmez."""
+    from test_strategy_paper_engine_v1 import SYMS
+    from tradingbot.core import utc_now
+    eng = _engine_with_books(tmp_path / "spot", monkeypatch, perp=False)
+    eng.tour(do_scan=False, obsidian=False, charts=False)
+    st = eng.cfg.state_path
+    store = ChartAnalysisStore(st)
+    assert {v.get("market") for v in eng._frame_provenance.values()} == {"SPOT"}
+    for sym in SYMS:
+        main_rec = store.latest("main", "SPOT", sym, "4h")
+        assert main_rec and main_rec["identity"]["market_type"] == "SPOT" == main_rec["source"]["bar_market"] == main_rec["source"]["daily_market"]
+        assert not any(e["kind"] in ("entry", "stop", "target") and str(e.get("trade_id", "")).startswith("main:F") for e in main_rec["elements"])
+        for book in ("strategy_paper", "strategy_paper_m2"):
+            assert store.list(book, "USDM_PERP", sym, "4h") == [] and store.list(book, "SPOT", sym, "4h") == [], "SPOT mumlarından kâğıt defter kaydı YOK"
+    cfgj = json.loads((st / "chart_analysis" / "config.json").read_text(encoding="utf-8"))
+    sk = cfgj["skipped"]
+    assert set(sk) == {"%s|%s|4h" % (b, s) for b in ("strategy_paper", "strategy_paper_m2") for s in SYMS}
+    assert all(v["status"] == "MARKET_MISMATCH" and v["bar_market"] == "SPOT" and v["book_market"] == "USDM_PERP" and v["at"] for v in sk.values())
+    assert store.stats()["snapshots"] == len(SYMS), "yalnız ana bot SPOT kayıtları"
+    # işlem yolu bu düzeltmeyle DEĞİŞMEZ (ayrı bulgu olarak raporlanır: defterler SPOT çerçeveyle açtı)
+    assert sorted(eng.strategy_books[0].ledger.positions) == sorted(SYMS)
+    # panel: futures görünümünde 'motor kaydı yok: piyasa uyuşmazlığı' (spot çerçeveler binanceusdm adıyla YAZILMAZ)
+    data = tmp_path / "spot" / "data"
+    _frames_to_csv(eng, data, "tv-binance")
+    _frames_to_csv(eng, data, "binanceusdm")                      # panelin futures dosyası: bu testte yalnız 'durum' iletimi sınanır
+    c = _client(st, data)
+    j = c.get(f"/api/chart/{SYMS[0].split('/')[0]}?tf=4h&market=futures&book=strategy_paper&n=100").json()
+    er = j["engine_record"]
+    assert j["analysis_stored"] is False and er["status"] == "MARKET_MISMATCH" and er["bar_market"] == "SPOT" and er["book_market"] == "USDM_PERP"
+    assert er["analysis_id"] is None and "piyasa uyuşmazlığı" in er["diff"][0]
+    js = c.get(f"/api/chart/{SYMS[0].split('/')[0]}?tf=4h&market=spot&book=main&n=100").json()
+    assert js["analysis_stored"] is True and js["engine_record"]["matches_now"] is True, js.get("engine_record")
+    # provenans YOK → kaynak kanıtsız USDM_PERP sayılmaz: hiçbir defter için kayıt yok, NO_PROVENANCE bildirilir
+    n0 = store.stats()["snapshots"]
+    eng._frame_provenance = {}
+    eng._chart_analysis_tour(list(SYMS), {}, utc_now())
+    cfgj = json.loads((st / "chart_analysis" / "config.json").read_text(encoding="utf-8"))
+    assert store.stats()["snapshots"] == n0 and all(v["status"] == "NO_PROVENANCE" for v in cfgj["skipped"].values()) and len(cfgj["skipped"]) == 3 * len(SYMS)
+
+
+def test_f9_engine_records_paper_books_from_verified_perp_frames_and_panel_matches(tmp_path: Path, monkeypatch):
+    """Doğrulanmış USDM_PERP çerçeve varken (provenans USDM_PERP; fiyatlar spotun 2 katı, aynı zaman damgaları) T2/M2 kayıtları
+    o seriden yazılır (kimlik = mum piyasası = defter piyasası), spot serisinden değil; ikinci tur yeni kayıt yazmaz; panel
+    'şimdi' görünümü motor kaydını aynı kimlikle bulur. Kayıt kararları/defterleri değiştirmez."""
+    from test_strategy_paper_engine_v1 import SYMS
+    spot = _engine_with_books(tmp_path / "spot", monkeypatch, perp=False)
+    spot.tour(do_scan=False, obsidian=False, charts=False)
+    spot_close = {s: float(spot.runner.last_frames[s]["4h"]["close"].iloc[-2]) for s in SYMS}
+    eng = _engine_with_books(tmp_path / "perp", monkeypatch, perp=True)
+    eng.tour(do_scan=False, obsidian=False, charts=False)
+    assert {v.get("market") for v in eng._frame_provenance.values()} == {"USDM_PERP"}
+    st = eng.cfg.state_path
+    store = ChartAnalysisStore(st)
+    for sym in SYMS:
+        for book in ("strategy_paper", "strategy_paper_m2", "main"):
+            rec = store.latest(book, "USDM_PERP", sym, "4h")
+            assert rec and rec["identity"]["market_type"] == "USDM_PERP" == rec["source"]["bar_market"] == rec["source"]["daily_market"]
+            perp_last = float(eng.runner.last_frames[sym]["4h"]["close"].iloc[-1])
+            assert abs(rec["identity"]["last_closed_bar"]["close"] - perp_last) < 1e-9 or abs(rec["identity"]["last_closed_bar"]["close"] - 2.0 * spot_close[sym]) < 1e-6
+            assert abs(rec["identity"]["last_closed_bar"]["close"] - spot_close[sym]) > 1e-6, "spot serisi DEĞİL"
+            if book != "main":
+                assert rec["position"]["entry_avg"] > 0 and rec["rule_state"]["ok"] and rec["rule_state"]["above"] is True
+                assert "btc_market_ok" in rec["source"], "BTC rejim çerçevesinin piyasası kaydedilir/işaretlenir"
+            assert store.list(book, "SPOT", sym, "4h") == []
+    assert json.loads((st / "chart_analysis" / "config.json").read_text(encoding="utf-8"))["skipped"] == {}
+    n1 = store.stats()["snapshots"]
+    eng.tour(do_scan=False, obsidian=False, charts=False)
+    assert store.stats()["snapshots"] == n1, "aynı bar + aynı defter/karar → yeni kayıt YOK"
+    data = tmp_path / "perp" / "data"
+    _frames_to_csv(eng, data, "binanceusdm")                      # gerçekten PERP çerçeveler (provenans USDM_PERP)
     c = _client(st, data)
     rec = store.latest("strategy_paper", "USDM_PERP", SYMS[0], "4h")
     j = c.get(f"/api/chart/{SYMS[0].split('/')[0]}?tf=4h&market=futures&book=strategy_paper&n=100").json()
     assert j["analysis_stored"] is True and j["analysis_origin"] == "store" and j["analysis"]["analysis_id"] == rec["analysis_id"], j.get("engine_record")
     assert j["engine_record"]["matches_now"] is True and j["position"]["entry"] == rec["position"]["entry_avg"] and "no_target" in _kinds(j)
+    assert j["analysis"]["identity"]["last_closed_bar"]["close"] == rec["identity"]["last_closed_bar"]["close"]
 
 
 # ====================================================================== kimlik / indirme adı (sunucu tarafı)
@@ -599,3 +703,111 @@ def test_f4_chart_js_scope_change_history_reset_and_late_or_reordered_responses(
 def test_chart_js_reads_analysis_id_from_root_and_never_from_identity():
     assert "identity.analysis_id" not in CHART_JS and "A.analysis_id" in CHART_JS
     assert "a.analysis_id" not in CHART_JS.replace("A.analysis_id", "")
+
+
+# ====================================================================== 2026-09-16 #1: spot defteri değişimi (gerçek SpotLedger)
+def _state_mtimes(st: Path, *skip: str) -> dict:
+    return {p.name: p.stat().st_mtime_ns for p in st.iterdir() if p.is_file() and p.name not in skip}
+
+
+def test_f7_spot_ledger_change_within_same_bar_refreshes_now_view_and_labels_the_real_source(tmp_path: Path):
+    """4b6c2bf: `spot_positions` artık spot_ledger.json okuyordu ama panel önbelleği (`_LIVE_FILES`) ve SSE yenilemesi bu dosyayı
+    izlemiyor, `live.source` portfolio.json diyordu → aynı mumda tam satış sonrası analiz 2 birim açık pozisyon çizmeye devam
+    ediyordu. Onarım: spot_ledger.json önbellek imzasında ve SSE koşulunda; kaynak etiketi gerçek dosya; kısmi satış miktar/K-Z'yi
+    günceller, tam kapanış açık pozisyon çizgilerini kaldırır; tarihsel kayıt kendi anını korur ve dosyası değişmez."""
+    from tradingbot.accounting.spot_ledger import SpotLedger
+    from tradingbot.dashboard.state import StateReader
+    st, data = _env(tmp_path)
+    led = SpotLedger(starting_cash=Decimal("1000"))
+    assert str(led.market_buy("BTC/USDT", qty=Decimal("2"), ref_price=Decimal("100"), now=datetime.now(timezone.utc)).status).endswith("FILLED")
+    led.save(st / "spot_ledger.json", keep_backup=False)
+    assert StateReader(st).spot_positions()[0]["qty"] == 2.0 and StateReader(st).spot_source() == "spot_ledger.json"
+    c = _client(st, data)
+    j1 = c.get("/api/chart/BTC?tf=4h&market=spot&book=main&n=100").json()
+    k1 = _kinds(j1)
+    assert j1["analysis"]["position"]["qty"] == 2.0 and k1["entry"]["price"] == 100.0 and j1["live"]["source"] == "spot_ledger.json" and j1["position"]["qty"] == 2.0
+    assert abs(k1["mark"]["unrealized_pnl_gross"] - (j1["c"][-1] - 100.0) * 2.0) < 1e-6 and k1["mark"]["price_source"]["kind"] == "candle_close"
+    rec = _snap(_bars(data, "spot"), as_of=NOW - 1_000, market_type="SPOT", position=StateReader(st).spot_positions()[0])
+    ChartAnalysisStore(st).save(rec)
+    rec_file = next(p for p in (st / "chart_analysis").rglob("*_%s.json" % rec["analysis_id"])); rec_bytes = rec_file.read_bytes()
+    before = _state_mtimes(st, "spot_ledger.json")
+    led = SpotLedger.load(st / "spot_ledger.json")                 # KISMİ satış, aynı bar: yalnız spot_ledger.json değişir
+    led.market_sell("BTC/USDT", qty=Decimal("1"), ref_price=Decimal("105"), now=datetime.now(timezone.utc)); led.save(st / "spot_ledger.json", keep_backup=False)
+    assert _state_mtimes(st, "spot_ledger.json") == before, "başka izlenen dosyaya dokunulmadı"
+    j2 = c.get("/api/chart/BTC?tf=4h&market=spot&book=main&n=100").json()
+    k2 = _kinds(j2)
+    assert j2["analysis_origin"] == "panel-ephemeral" and j2["analysis"]["analysis_id"] != j1["analysis"]["analysis_id"]
+    assert j2["analysis"]["position"]["qty"] == 1.0 and j2["position"]["qty"] == 1.0 and "1 adet" in k2["entry"]["label_tr"]
+    assert abs(k2["mark"]["unrealized_pnl_gross"] - (j2["c"][-1] - 100.0) * 1.0) < 1e-6 and j2["live"]["source"] == "spot_ledger.json"
+    led = SpotLedger.load(st / "spot_ledger.json")                 # TAM kapanış, aynı bar
+    led.market_sell("BTC/USDT", qty=Decimal("1"), ref_price=Decimal("106"), now=datetime.now(timezone.utc)); led.save(st / "spot_ledger.json", keep_backup=False)
+    assert StateReader(st).spot_positions() == []
+    j3 = c.get("/api/chart/BTC?tf=4h&market=spot&book=main&n=100").json()
+    k3 = _kinds(j3)
+    assert j3["position"] == {} and j3["analysis"]["position"] is None and j3["live"]["position"] is None
+    assert not ({"entry", "stop", "target", "mark"} & set(k3)), "açık pozisyon çizgileri kalktı"
+    assert j3["analysis"]["analysis_id"] not in (j1["analysis"]["analysis_id"], j2["analysis"]["analysis_id"])
+    assert c.get("/api/chart/BTC?tf=4h&market=spot&book=main&n=100").json()["analysis_origin"] == "panel-cache", "değişiklik yokken önbellek"
+    h = c.get(f"/api/chart/BTC?tf=4h&market=spot&book=main&n=100&analysis_id={rec['analysis_id']}").json()
+    assert h["historical"] is True and h["analysis"]["position"]["qty"] == 2.0 and _kinds(h)["entry"]["price"] == 100.0, "tarihsel görünüm kendi anını gösterir"
+    assert rec_file.read_bytes() == rec_bytes
+    # spot_ledger.json YOKKEN: eski portfolio.json kaynağı korunur ve kaynak doğru yazılır
+    os.remove(st / "spot_ledger.json")
+    (st / "portfolio.json").write_text(json.dumps({"cash": 50.0, "starting_equity": 50.0, "positions": {"BTC/USDT": {"units": 3, "entry_price": 90.0, "entry_time": "2026-09-14T00:00:00+00:00"}}, "history": []}), encoding="utf-8")
+    j4 = c.get("/api/chart/BTC?tf=4h&market=spot&book=main&n=100").json()
+    assert j4["live"]["source"] == "portfolio.json" and j4["analysis"]["position"]["qty"] == 3.0 and j4["position"]["qty"] == 3.0 and StateReader(st).spot_source() == "portfolio.json"
+
+
+def test_chart_js_reloads_now_view_on_spot_ledger_state_event():
+    assert "s.changed.indexOf('spot_ledger')>=0" in CHART_JS
+
+
+# ====================================================================== 2026-09-16 #2: canlı fiyat / K-Z her dönüş yolunda
+def _set_last_close(data: Path, tf: str, close: float) -> None:
+    p = data / f"binanceusdm_BTC-USDT_{tf}.csv"
+    df = pd.read_csv(p)
+    i = df.index[-1]
+    df.loc[i, "close"] = close; df.loc[i, "high"] = max(close, 202.0); df.loc[i, "low"] = min(close, 199.0); df.loc[i, "open"] = 200.5
+    df.to_csv(p, index=False)
+
+
+def test_f8_live_price_and_gross_pnl_update_on_every_now_path_but_not_in_history(tmp_path: Path):
+    """4b6c2bf: `_with_live_mark` yalnız motor kaydı kimliği eşleşince çağrılıyordu; panel-ephemeral/panel-cache dönüşlerinde açık
+    mumun kapanışı 201→240 olsa da çizilen işaret 201 ve 'açık K/Z +2' kalıyordu. Onarım: 'şimdi' görünümünün HER yolunda
+    (ephemeral, cache, eşleşen ve eşleşmeyen motor kaydı; 4h ve 1h) fiyat/K-Z öğesi güncel fiyattan KOPYA üzerinde kurulur;
+    kaynak 'son mum kapanışı (borsa mark fiyatı DEĞİL)' diye etiketlenir; tarihsel kayıt kendi fiyatını ve anını korur."""
+    st, data = _env(tmp_path)
+    led = _ledger(st); led["positions"] = {"BTC/USDT": dict(POS, id="F00007", qty="2", entry_avg="200", stop="190", targets=[], leverage=1)}
+    _write_ledger(st, led)
+    for tf in ("4h", "1h"):
+        _set_last_close(data, tf, 201.0)
+    c = _client(st, data)
+    for tf in ("4h", "1h"):
+        j1 = c.get(f"/api/chart/BTC?tf={tf}&market=futures&book=main&n=100").json()
+        m1 = _kinds(j1)["mark"]
+        assert j1["analysis_origin"] == "panel-ephemeral" and m1["price"] == 201.0 and m1["unrealized_pnl_gross"] == 2.0 and "+2 USDT" in m1["label_tr"]
+        assert m1["price_source"] == {"kind": "candle_close", "file": f"binanceusdm_BTC-USDT_{tf}.csv", "bar_open_ms": j1["t"][-1], "bar_closed": False, "tf": tf}
+        assert "borsa mark fiyatı DEĞİL" in m1["label_tr"] and m1["live"] is True and j1["live"]["mark_price_source"]["kind"] == "candle_close"
+        _set_last_close(data, tf, 240.0)                                # yalnız açık mumun kapanışı; son kapanmış bar, defter, config aynı
+        j2 = c.get(f"/api/chart/BTC?tf={tf}&market=futures&book=main&n=100").json()
+        m2 = _kinds(j2)["mark"]
+        assert j2["analysis_origin"] == "panel-cache" and j2["analysis_stored"] is False and j2["analysis"]["analysis_id"] == j1["analysis"]["analysis_id"]
+        assert j2["c"][-1] == 240.0 and j2["live"]["mark_price"] == 240.0 and m2["price"] == 240.0 and m2["unrealized_pnl_gross"] == 80.0 and "+80 USDT" in m2["label_tr"]
+        assert _kinds(j2)["entry"]["price"] == 200.0 and sum(1 for e in j2["analysis"]["elements"] if e["kind"] == "mark") == 1
+    # eşleşen motor kaydı: kayıt fiyatı 201 ile yazıldı, 'şimdi' 240 gösterir, dosya değişmez; tarihsel istek 201'i korur
+    _set_last_close(data, "4h", 201.0)
+    rec = _main_state_snapshot(st, data, as_of=NOW - 5_000)
+    assert _kinds({"analysis": rec})["mark"]["price"] == 201.0
+    ChartAnalysisStore(st).save(rec)
+    rec_file = next(p for p in (st / "chart_analysis").rglob("*_%s.json" % rec["analysis_id"])); rec_bytes = rec_file.read_bytes()
+    _set_last_close(data, "4h", 240.0)
+    j3 = c.get("/api/chart/BTC?tf=4h&market=futures&book=main&n=100").json()
+    m3 = _kinds(j3)["mark"]
+    assert j3["analysis_origin"] == "store" and j3["analysis_stored"] is True and m3["price"] == 240.0 and m3["unrealized_pnl_gross"] == 80.0 and m3["live"] is True
+    h = c.get(f"/api/chart/BTC?tf=4h&market=futures&book=main&n=100&analysis_id={rec['analysis_id']}").json()
+    mh = _kinds(h)["mark"]
+    assert h["historical"] is True and mh["price"] == 201.0 and mh["unrealized_pnl_gross"] == 2.0 and not mh.get("live") and h["live"] is None
+    assert rec_file.read_bytes() == rec_bytes
+    led = _ledger(st); led["positions"]["BTC/USDT"]["stop"] = "195"; _write_ledger(st, led)   # eşleşmeyen eski motor kaydı yolu
+    j4 = c.get("/api/chart/BTC?tf=4h&market=futures&book=main&n=100").json()
+    assert j4["analysis_origin"] == "panel-ephemeral" and j4["engine_record"]["matches_now"] is False and _kinds(j4)["mark"]["price"] == 240.0 and _kinds(j4)["stop"]["price"] == 195.0

@@ -2199,9 +2199,10 @@ class TradingEngineV3(TradingEngine):
             chash, code = config_hash(self.cfg.v3), code_sha()
             cfgd = {"swing_lookback": int(ca.swing_lookback), "cluster_tolerance_atr": float(ca.cluster_tolerance_atr),
                     "trendline_touch_tolerance_pct": float(ca.trendline_touch_tolerance_pct)}
-            atomic_write_json(self.cfg.state_path / DIRNAME / "config.json",
-                              {"generated_at": iso(now), "gates": gates, "cfg": cfgd, "timeframe": tf, "code_sha": code, "config_hash": chash,
-                               "keep_per_series": int(getattr(ca, "keep_per_series", 300))})
+            cfg_doc = {"generated_at": iso(now), "gates": gates, "cfg": cfgd, "timeframe": tf, "code_sha": code, "config_hash": chash,
+                       "keep_per_series": int(getattr(ca, "keep_per_series", 300)), "skipped": {}}
+            atomic_write_json(self.cfg.state_path / DIRNAME / "config.json", cfg_doc)
+            skipped: dict[str, dict] = {}
             risk = read_json(self.cfg.state_path / "risk.json", default=None) or {}
             last_dec: dict[str, dict] = {}
             for e in (risk.get("last_decisions") or []):
@@ -2225,7 +2226,9 @@ class TradingEngineV3(TradingEngine):
                 d1 = fr.get("1d")
                 daily = closed_bars(daily_rows_from_frame(d1, tail=320), now_ms=as_of, tf="1d") if d1 is not None else []
                 prov = (getattr(self, "_frame_provenance", None) or {}).get(sym) or {}
-                bar_market = str(prov.get("market") or "USDM_PERP")            # cerceve (mum) piyasasi; kayda ayrica yazilir
+                # Cerceve (mum) piyasasi YALNIZ provenanstan: provenans yoksa kaynak KANITSIZ USDM_PERP sayilmaz (2026-09-16 #3).
+                bar_market = str(prov.get("market")) if prov.get("market") in ("USDM_PERP", "SPOT") else None
+                btc_market = ((getattr(self, "_frame_provenance", None) or {}).get("BTC/USDT") or {}).get("market")
                 head = self.last_decisions.get(sym) or {}
                 mark = float(marks_f[sym]) if sym in marks_f else None
                 spot_book = getattr(self, "spot2", None)
@@ -2235,6 +2238,18 @@ class TradingEngineV3(TradingEngine):
                     # Kagit defterler (T2/M2) yalniz USDM_PERP; ana bot kaydi cerceve piyasasini tasir ve pozisyon/plan/
                     # gecmis YALNIZ o piyasadan gelir (SPOT kaydi futures defterini TASIMAZ, tersi de). 2e31926 ana
                     # botun SPOT kaydina futures defterinin pozisyonunu yaziyordu.
+                    # 2026-09-16 #3: kagit defter icin mumlar USDM_PERP degilse (SPOT ikamesi ya da provenans yok) spot
+                    # cerceve futures diye YENIDEN ETIKETLENMEZ ve kayit YAZILMAZ; neden config.json.skipped'a yazilir
+                    # (panel 'motor kaydi yok: piyasa uyusmazligi' gosterir). Islem yolu (defter.step/tick) bundan ETKILENMEZ.
+                    skey = "%s|%s|%s" % (b["book_id"], sym, tf)
+                    if bar_market is None:
+                        skipped[skey] = {"status": "NO_PROVENANCE", "bar_market": None, "book_market": ("?" if is_main else "USDM_PERP"),
+                                         "reason": prov.get("reason") or "FRAME_PROVENANCE_MISSING", "source": prov.get("source"), "at": iso(now)}
+                        continue
+                    if not is_main and bar_market != "USDM_PERP":
+                        skipped[skey] = {"status": "MARKET_MISMATCH", "bar_market": bar_market, "book_market": "USDM_PERP",
+                                         "reason": prov.get("reason") or "", "source": prov.get("source"), "at": iso(now)}
+                        continue
                     market_type = bar_market if is_main else "USDM_PERP"
                     pos = None
                     plan = plan_for_market(head, market_type)        # yalniz gecerli plan, panelle AYNI kural
@@ -2258,9 +2273,17 @@ class TradingEngineV3(TradingEngine):
                                           bars=bars, as_of_ms=as_of, daily_rows=daily, btc_daily_rows=btc_rows, gates=gates,
                                           decision=last_dec.get(sym) if is_main else None, plan=plan if is_main else None,
                                           position=posd, history=hist, entry_features=ef, mark_price=mark, cfg=cfgd,
-                                          code=code, cfg_hash=chash,
-                                          source={"frames": "runner.last_frames", "provenance": prov, "bar_market": bar_market})
+                                          code=code, cfg_hash=chash, mark_source={"kind": "ticker_last", "module": "engine_v3", "function": "_marks"},
+                                          # gunluk sembol cercevesi ayni saglayicidan gelir (provenans sembol basina); BTC rejim
+                                          # cercevesinin piyasasi ayrica kaydedilir ve kagit defterde USDM_PERP degilse ISARETLENIR
+                                          source={"frames": "runner.last_frames", "provenance": prov, "bar_market": bar_market, "daily_market": bar_market,
+                                                  "btc_market": btc_market, "btc_market_ok": (btc_market == "USDM_PERP") if not is_main else None})
                     written += int(bool(store.save(snap).get("written")))
+            if skipped:
+                cfg_doc["skipped"] = skipped
+                atomic_write_json(self.cfg.state_path / DIRNAME / "config.json", cfg_doc)
+                log.warning("grafik analizi: %d seri icin kayit YAZILMADI (piyasa uyusmazligi/provenans yok): %s", len(skipped),
+                            ", ".join("%s=%s/%s" % (k, v.get("status"), v.get("bar_market")) for k, v in list(skipped.items())[:6]))
             if written:
                 log.info("grafik analizi: %d yeni analiz ani kaydedildi", written)
         except Exception as exc:  # noqa: BLE001 -- gosterim katmani ana turu ASLA durdurmaz

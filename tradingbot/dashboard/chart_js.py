@@ -68,7 +68,10 @@ CHART_JS = r"""
     if(d.historical)parts.push('<span class="warn">GEÇMİŞ ANALİZ '+esc(a.as_of||'')+' — yalnız o anda kapanmış mumlar; işlem katmanı o anki defter kaydı</span>');
     else if(d.live)parts.push('canlı defter: '+esc(iso(d.live.as_of_ms))+' ('+esc(d.live.source||'defter')+')');
     if(A.analysis_id)parts.push('analiz '+esc(A.analysis_id)+' · an '+esc(iso(a.as_of_ms))+' · '+(d.analysis_stored?'motor kaydı':'panel hesabı (kaydedilmedi)')+' · kod '+esc((a.code_sha||'').slice(0,7))+' · defter '+esc(a.book_id)+' · '+esc(MKT[a.market_type]||a.market_type)+' '+esc(a.timeframe));
-    var er=d.engine_record;if(er&&!d.historical&&!er.matches_now)parts.push('<span class="mut">motorun son kaydı '+esc(er.analysis_id)+' ('+esc(iso(er.as_of_ms))+') şimdiki durumdan farklı: '+esc((er.diff||[]).join('; '))+'</span>');
+    var er=d.engine_record;
+    if(er&&!d.historical&&er.status)parts.push('<span class="bad">MOTOR KAYDI YOK: '+(er.status==='MARKET_MISMATCH'?'piyasa uyuşmazlığı':'çerçeve provenansı yok')+' — mum piyasası '+esc(er.bar_market||'bilinmiyor')+', defter piyasası '+esc(er.book_market||'?')+(er.as_of?' ('+esc(er.as_of)+')':'')+'</span>');
+    else if(er&&!d.historical&&!er.matches_now)parts.push('<span class="mut">motorun son kaydı '+esc(er.analysis_id)+' ('+esc(iso(er.as_of_ms))+') şimdiki durumdan farklı: '+esc((er.diff||[]).join('; '))+'</span>');
+    if(!d.historical&&d.live&&d.live.mark_price_source&&d.live.mark_price!=null)parts.push('canlı fiyat: son mum kapanışı '+esc(fmt(d.live.mark_price))+' ('+esc(d.live.mark_price_source.file||'mum')+(d.live.mark_price_source.bar_closed?', kapanmış bar':', kapanmamış bar')+'; borsa mark fiyatı DEĞİL)');
     if(A.synthetic)parts.push('<span class="warn">SENTETİK GÖSTERİM VERİSİ</span>');
     document.getElementById('srcline').innerHTML=parts.join(' · ');}
   function explain(d){var a=d.analysis||{};var ex=a.explanation||[];var html='';
@@ -86,6 +89,7 @@ CHART_JS = r"""
     if(e.break_known_at!=null)h+='<div class="small">kırılış barı: '+iso(e.break_at)+' açılış → '+iso(e.break_known_at)+' kapanışta bilindi</div>';
     if((e.anchors||[]).length){h+='<div class="small">dayanaklar:<ul style="margin:2px 0 2px 16px;padding:0">'+e.anchors.map(function(a){return '<li>'+esc(a.role||a.side||'')+' '+fmt(a.price)+' @ '+iso(a.timestamp)+(a.confirmed_at?' (teyit '+iso(a.confirmed_at)+')':' (teyitsiz)')+'</li>';}).join('')+'</ul></div>';}
     h+='<div class="small">gerekçe: '+esc(e.rationale_tr)+'</div>';if(e.invalidation_tr)h+='<div class="small">geçersizleşme: '+esc(e.invalidation_tr)+'</div>';
+    if(e.price_source)h+='<div class="small">fiyat kaynağı: '+esc(e.price_source.kind==='candle_close'?('son mum kapanışı · '+(e.price_source.file||'mum')+' · bar '+iso(e.price_source.bar_open_ms)+(e.price_source.bar_closed?' (kapanmış)':' (kapanmamış)')+' · borsa mark fiyatı DEĞİL'):(e.price_source.kind==='ticker_last'?'canlı tik (motor turu)':e.price_source.kind))+(e.unrealized_pnl_gross!=null?' · açık K/Z brüt '+fmt(e.unrealized_pnl_gross)+' USDT (ücret/fonlama hariç)':'')+'</div>';
     if(e.source)h+='<div class="mut small">kaynak: '+esc(e.source.module)+'.'+esc(e.source.function)+' '+esc(JSON.stringify(e.source.params||{}))+(e.source.live?' · canlı '+esc(e.source.live_at||''):'')+'</div>';
     document.getElementById('detail').innerHTML=h;}
   function draw(d){
@@ -129,7 +133,7 @@ CHART_JS = r"""
         else if(e.kind==='target'){hl(e.price,'#26a69a','dash',e.label_tr);mk(e,[x1],[e.price],'line-ew','#26a69a',8);}
         else if(e.kind==='no_target'){ann.push({xref:'paper',x:0.995,yref:'paper',y:0.985,text:'TP YOK — çıkış kural/stop',showarrow:false,font:{size:11,color:'#ffb74d'},xanchor:'right',bgcolor:'rgba(14,17,22,.8)'});elIndex.push(e);}
         else if(e.kind==='liq'){hl(e.price,'#ff7043','dashdot','LIQ '+fmt(e.price));}
-        else if(e.kind==='mark'){hl(e.price,'#e0e0e0','dot','İŞARET '+fmt(e.price),x[Math.max(0,x.length-8)]);mk(e,[x1],[e.price],'circle-open','#e0e0e0',7);}
+        else if(e.kind==='mark'){var ps=e.price_source||{};var pl=(ps.kind==='candle_close'?'SON MUM ':'İŞARET ')+fmt(e.price)+(e.unrealized_pnl_gross!=null?' · K/Z '+(e.unrealized_pnl_gross>=0?'+':'')+fmt(e.unrealized_pnl_gross):'');hl(e.price,'#e0e0e0','dot',pl,x[Math.max(0,x.length-8)]);mk(e,[x1],[e.price],'circle-open','#e0e0e0',7);}
         else if(e.kind==='plan_entry'){hl(e.price,'#b3e5fc','dash','PLAN GİRİŞ '+fmt(e.price),x[Math.max(0,x.length-30)]);mk(e,[x1],[e.price],'diamond-open','#b3e5fc',8);}
         else if(e.kind==='plan_stop'){hl(e.price,'#ef9a9a','dash','PLAN STOP '+fmt(e.price),x[Math.max(0,x.length-30)]);mk(e,[x1],[e.price],'diamond-open','#ef9a9a',8);}
         else if(e.kind==='plan_target'){hl(e.price,'#a5d6a7','dot',e.label_tr,x[Math.max(0,x.length-30)]);mk(e,[x1],[e.price],'diamond-open','#a5d6a7',8);}}
@@ -159,7 +163,7 @@ CHART_JS = r"""
   var js=document.getElementById('dl-json');if(js)js.addEventListener('click',function(){var d=last||{};var A=d.analysis||{};
     if(A.analysis_id&&(d.analysis_stored||d.historical)){window.open('/api/chart/'+base+'/snapshot/'+A.analysis_id+(tokenQs||''),'_blank');}
     else if(last){var blob=new Blob([JSON.stringify(A,null,1)],{type:'application/json'});var u=URL.createObjectURL(blob);var l=document.createElement('a');l.href=u;l.download=fileStem()+'.json';document.body.appendChild(l);l.click();setTimeout(function(){URL.revokeObjectURL(u);l.remove();},500);}});
-  window.__onState=function(s){if(s&&s.changed&&(s.changed.indexOf('coin_heads')>=0||s.changed.indexOf('futures_ledger')>=0||s.changed.indexOf('strategy_paper')>=0||s.changed.indexOf('portfolio')>=0||s.changed.indexOf('risk')>=0)){var sc=scope();if(!sc.aid)load(sc);}};
+  window.__onState=function(s){if(s&&s.changed&&(s.changed.indexOf('coin_heads')>=0||s.changed.indexOf('futures_ledger')>=0||s.changed.indexOf('spot_ledger')>=0||s.changed.indexOf('strategy_paper')>=0||s.changed.indexOf('portfolio')>=0||s.changed.indexOf('risk')>=0)){var sc=scope();if(!sc.aid)load(sc);}};
   window.__chartTest={scope:scope,fileStem:fileStem,last:function(){return last;}};
   if(typeof Plotly==='undefined'){document.getElementById('chart').innerHTML='<div class=card>plotly.min.js yüklenemedi (plotly paketi kurulu değil?)</div>';}else{var sc0=scope();loadHistory(sc0,'');load(sc0);}
 })();

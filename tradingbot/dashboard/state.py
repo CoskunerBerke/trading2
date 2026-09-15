@@ -148,7 +148,31 @@ class StateReader:
         return out
 
     # ---- CHART ANALYSIS V1: defterler (ana + strateji), spot pozisyonlar, karar kaydi (SALT OKUMA)
+    def _spot_ledger_positions(self) -> list[dict] | None:
+        """V3 motorunun spot defteri (`spot_ledger.json`, SpotLedger lot'lari) -> gosterim satirlari (motorun grafik
+        kaydiyla AYNI kaynak/sekil: `chart_analysis.spot_position_to_dict`). Dosya yoksa None (eski portfolio.json'a dusulur)."""
+        p = self.state_dir / STATE_FILES["spot_ledger"]
+        if not p.exists():
+            return None
+        try:
+            from ..accounting.spot_ledger import SpotLedger
+            from ..chart_analysis import spot_position_to_dict
+            led = SpotLedger.load(p, starting_cash=0.0)
+            rows = [spot_position_to_dict(sym, d) for sym, d in (led.positions() or {}).items()]
+            return [r for r in rows if r]
+        except Exception:  # noqa: BLE001 - bozuk/eski sema: sessizce eski kaynaga dus
+            return None
+
+    def spot_history(self, symbol: str, limit: int = 100) -> list[dict]:
+        """Ana botun spot defteri kapanmis islemleri (`spot_ledger.json` history), sembole gore, son `limit`."""
+        led = self.get("spot_ledger") or {}
+        rows = [h for h in (led.get("history") or []) if isinstance(h, dict) and h.get("symbol") == symbol]
+        return rows[-int(limit):]
+
     def spot_positions(self) -> list[dict]:
+        ledger_rows = self._spot_ledger_positions()
+        if ledger_rows is not None:
+            return ledger_rows
         pf = self.get("portfolio") or {}
         out: list[dict] = []
         pos = pf.get("positions") or {}

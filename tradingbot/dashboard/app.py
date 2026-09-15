@@ -8,15 +8,20 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import secrets
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response, StreamingResponse
 
+from ..chart_analysis import (BOOK_MAIN, HISTORY_TAIL, MARKET_TYPES, market_type_of,   # CHART ANALYSIS V1: piyasa kimligi tek kaynak
+                              plan_for_market)
 from ..core import ConfigError, read_json, utc_now
+from ..timeframes import SUPPORTED_TIMEFRAMES, TF_MS                    # dilimler tek kaynak (bulgu #1)
 from ..learn.entry_eval import GATE_MIN_DAYS, GATE_MIN_LINKED_CLOSES as GATE_MIN_LINKED
 from .candles import CandleSource, build_candle_payload
 from .config import DashboardConfig
@@ -395,6 +400,8 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
     @app.get("/coin/{base}", response_class=HTMLResponse)
     def coin(base: str, tf: str = "4h", market: str = "spot", book: str = "main"):
         base = base.upper()[:16]
+        tf = tf if tf in SUPPORTED_TIMEFRAMES else "4h"
+        market = "futures" if market == "futures" else "spot"
         h = state.coin_head(base) or {}
         b = state.brief(base) or {}
         sym = h.get("symbol") or b.get("symbol") or f"{base}/USDT"
@@ -2424,11 +2431,18 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
         return _page("Modeller", body, "/models")
 
     # ------------------------------------------------------------------ CHART ANALYSIS V1 yardimcilari (salt okuma)
+    def _tf_or_400(tf: str) -> str:
+        """Dilim tek kaynaktan (`timeframes.SUPPORTED_TIMEFRAMES`); bilinmeyen dilim SESSIZCE 4h olmaz (bulgu #1)."""
+        if tf not in SUPPORTED_TIMEFRAMES:
+            raise HTTPException(400, "desteklenmeyen zaman dilimi: %s (geçerli: %s)" % (tf, ", ".join(SUPPORTED_TIMEFRAMES)))
+        return tf
+
     def _plan_for_market(h: dict, b: dict, market: str) -> dict | None:
-        """Plan PIYASAYA KESIN bagli: futures -> futures_plan, spot -> spot_plan; diger piyasanin planina GECILMEZ."""
-        ap = h.get("futures_plan") if market == "futures" else h.get("spot_plan")
-        if ap and ap.get("valid"):
-            return ap
+        """Plan PIYASAYA KESIN bagli: futures -> futures_plan, spot -> spot_plan; diger piyasanin planina GECILMEZ.
+        Coin head varsa motorla AYNI kural (`chart_analysis.plan_for_market`: yalniz gecerli plan); eski ajan ozeti (brief)
+        yalniz coin head hic yokken okunur (parmak izi paritesi: panel ile motor ayni plani gorur)."""
+        if h:
+            return plan_for_market(h, market_type_of(market))
         bp = b.get("plan") if isinstance(b, dict) else None
         if bp and bp.get("direction") not in (None, "BEKLE"):
             bm = str(b.get("market_type") or bp.get("market_type") or "").upper()
@@ -2454,118 +2468,213 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
         return next((p for p in rows if str(p.get("symbol", "")).upper().startswith(sym_prefix)), None)
 
     _chart_cache: dict[tuple, dict] = {}
+    _LIVE_FILES = ("futures_ledger.json", "portfolio.json", "risk.json", "coin_heads.json", "agents.json", "trade_memory.jsonl",
+                   "strategy_paper.json", "chart_analysis/config.json", "chart_analysis/index.json")
 
-    def _chart_analysis_for(base: str, tf: str, market: str, book_id: str, df, *, analysis_id: str | None, now_ms: int) -> tuple[dict | None, bool, str]:
-        """Analiz ani: (1) istenen analysis_id -> saklanan kayit; (2) motorun son kaydi son kapanmis barla ayniysa o;
-        (3) yoksa PANEL ICI gecici hesap (yazilmaz; bellek onbellegi). Donus: (snapshot, historical, kaynak)."""
-        from ..chart_analysis import BOOK_MAIN, build_snapshot, closed_bars_at
+    def _live_revision(book_id: str) -> tuple:
+        """Canli katmani besleyen dosyalarin (defter, plan, karar, kayit indeksi) surum imzasi: panel onbellegi
+        defter/karar degisiminde GECERSIZLESIR (bulgu #3A; 2e31926 anahtari yalniz bar+config'ti)."""
+        names = list(_LIVE_FILES)
+        b = state.book(book_id)
+        if b and b.get("state_dir"):
+            names += ["%s/futures_ledger.json" % b["state_dir"], "%s/trade_memory.jsonl" % b["state_dir"]]
+        sig = []
+        for nm in names:
+            try:
+                s = os.stat(state.state_dir / nm)
+                sig.append((nm, int(s.st_mtime_ns), int(s.st_size)))
+            except OSError:
+                sig.append((nm, None, None))
+        return tuple(sig)
+
+    def _iso_ms(ms) -> str | None:
+        try:
+            return datetime.fromtimestamp(float(ms) / 1000.0, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+        except (TypeError, ValueError, OverflowError, OSError):
+            return None
+
+    def _record_diff(latest: dict, now_snap: dict) -> list[str]:
+        """Motorun son kaydi ile 'simdi' hesabi neden ayni analiz ani DEGIL (kullaniciya gosterilir)."""
+        li, ni = latest.get("identity") or {}, now_snap.get("identity") or {}
+        out = []
+        if (li.get("last_closed_bar") or {}).get("timestamp") != (ni.get("last_closed_bar") or {}).get("timestamp"):
+            out.append("son kapanmış bar farklı")
+        if li.get("code_sha") != ni.get("code_sha"):
+            out.append("kod farklı (%s → %s)" % (str(li.get("code_sha") or "?")[:7], str(ni.get("code_sha") or "?")[:7]))
+        if li.get("config_hash") != ni.get("config_hash"):
+            out.append("config farklı")
+        if latest.get("decision_fingerprint") != now_snap.get("decision_fingerprint"):
+            out.append("defter/karar durumu farklı (pozisyon, miktar, stop, hedef, kapanış, plan ya da hüküm)")
+        return out or ["kimlik farklı"]
+
+    def _with_live_mark(snap: dict, mark: float | None, now_ms: int) -> dict:
+        """Motor kaydi 'simdi' gorunumunde: isaret fiyati/acik K/Z CANLI degerden (KOPYA; kayit dosyasi degismez)."""
+        pos = snap.get("position") or {}
+        if mark is None or not pos:
+            return snap
+        s = json.loads(json.dumps(snap))
+        entry = finite_float_or_none(pos.get("entry_avg") if pos.get("entry_avg") is not None else pos.get("entry"))
+        qty = finite_float_or_none(pos.get("qty") if pos.get("qty") is not None else pos.get("units"))
+        sign = 1.0 if str(pos.get("side") or "").upper() == "LONG" else -1.0
+        for e in s.get("elements") or []:
+            if e.get("kind") == "mark":
+                e["price"] = float(mark)
+                e["confirmed_at"] = int(now_ms)
+                e["label_tr"] = "İşaret fiyatı %.6g · açık K/Z %s (canlı)" % (float(mark), ("%+.4g USDT" % (sign * (float(mark) - entry) * qty)) if entry is not None and qty else "—")
+                e["source"] = dict(e.get("source") or {}, live=True, live_at=_iso_ms(now_ms))
+        return s
+
+    def _chart_analysis_for(base: str, tf: str, market: str, book_id: str, df, *, analysis_id: str | None, now_ms: int) -> tuple[dict | None, bool, str, dict]:
+        """Analiz ani sozlesmesi (bulgu #2/#3):
+        (1) `analysis_id` verildi -> saklanan kayit AYNEN (tarihsel; sembol/piyasa/dilim/defter kimligi dogrulanir).
+        (2) verilmedi ('simdi') -> panel, guncel kapanmis bar + guncel defter/karar ile analiz kimligini hesaplar;
+            motorun son kaydi TAM AYNI kimlikteyse o kayit gosterilir (`analysis_stored=True`), degilse panelin
+            gecici hesabi gosterilir ve motorun son kaydi `engine_record` icinde farkiyla bildirilir. Eski kayit
+            hicbir kosulda guncelmis gibi gosterilmez. Donus: (snapshot, historical, kaynak, meta)."""
+        from ..chart_analysis import build_snapshot, closed_bars_at
         from ..chart_analysis_store import ChartAnalysisStore
         from ..candle_confirmation import closed_bars
         from ..ema200_trend import daily_rows_from_frame
-        from .candles import TF_MS
         sym = base.upper() + "/USDT"
+        mtype = market_type_of(market)
         store = ChartAnalysisStore(state.state_dir)
         if analysis_id:
             snap = store.load(analysis_id)
             if not snap:
                 raise HTTPException(404, "analiz kaydı yok")
             ident = snap.get("identity") or {}
-            if ident.get("symbol") != sym or ident.get("timeframe") != tf or ident.get("book_id") != book_id:
-                raise HTTPException(404, "analiz kaydı bu sembol/dilim/deftere ait değil")
-            return snap, True, "store"
+            got = (ident.get("symbol"), ident.get("market_type"), ident.get("timeframe"), ident.get("book_id"))
+            if got != (sym, mtype, tf, book_id):
+                raise HTTPException(404, "analiz kaydı bu sembol/piyasa/dilim/deftere ait değil (kayıt: %s %s %s %s; istek: %s %s %s %s)" % (got + (sym, mtype, tf, book_id)))
+            return snap, True, "store", {"stored": True, "engine_record": None, "live": None}
         bars = closed_bars_at([{"timestamp": int(t), "open": float(o), "high": float(h), "low": float(l), "close": float(c)}
                                for t, o, h, l, c in zip(df["timestamp"], df["open"], df["high"], df["low"], df["close"])], as_of_ms=now_ms, tf=tf) if df is not None else []
         last_ts = int(bars[-1]["timestamp"]) if bars else None
-        latest = store.latest(book_id, sym, tf)
-        if latest and ((latest.get("identity") or {}).get("last_closed_bar") or {}).get("timestamp") == last_ts:
-            return latest, False, "store"
         cfgj = read_json(state.state_dir / "chart_analysis" / "config.json", default=None) or {}
         gates = cfgj.get("gates") or {"candle_mode": None, "candle_variant": None, "chart_mode": None, "chart_variant": None,
                                        "regime_mode": None, "regime_variant": None, "chart_fresh_within": 3}
         cfgd = cfgj.get("cfg") or {}
-        key = (book_id, base, market, tf, last_ts, cfgj.get("code_sha"), cfgj.get("config_hash"))
-        if key in _chart_cache:
-            return _chart_cache[key], False, "panel-cache"
-        if not bars:
-            return None, False, "none"
-        d1 = candles.load(base, "1d", market, n=400)
-        daily = closed_bars(daily_rows_from_frame(d1, tail=320), now_ms=now_ms, tf="1d") if d1 is not None else []
-        b1 = candles.load("BTC", "1d", market, n=400)
-        btc = closed_bars(daily_rows_from_frame(b1, tail=320), now_ms=now_ms, tf="1d") if b1 is not None else []
-        bk = state.book(book_id) or {"book_id": BOOK_MAIN, "name": BOOK_MAIN}
-        sp = state.get("strategy_paper") if book_id != BOOK_MAIN else None
-        atr_mult = (sp or {}).get("atr_mult") if sp and str(sp.get("name")) == bk.get("name") else None
         pos = _position_for_market(base, market, book_id)
-        hist = state.book_history(book_id, sym) if market == "futures" else []
-        ef = state.book_entry_features(book_id, (pos or {}).get("id")) if pos else None
         h = state.coin_head(base) or {}
         plan = _plan_for_market(h, state.brief(base) or {}, market) if book_id == BOOK_MAIN else None
         mark = float(df["close"].iloc[-1]) if df is not None and len(df) else None
-        snap = build_snapshot(symbol=sym, market_type=("USDM_PERP" if market == "futures" else "SPOT"), timeframe=tf, tf_ms=TF_MS.get(tf, 14_400_000),
-                              book={"book_id": book_id, "name": bk.get("name"), "atr_mult": atr_mult or 3.0}, bars=bars, as_of_ms=now_ms,
-                              daily_rows=daily, btc_daily_rows=btc, gates=gates, decision=state.last_decision(sym) if book_id == BOOK_MAIN else None,
-                              plan=plan, position=pos, history=hist, entry_features=ef, mark_price=mark, cfg=cfgd,
-                              code=cfgj.get("code_sha"), cfg_hash=cfgj.get("config_hash"), source={"frames": "dashboard.candles", "ephemeral": True})
-        if len(_chart_cache) > 64:
-            _chart_cache.clear()
-        _chart_cache[key] = snap
-        return snap, False, "panel-ephemeral"
+        bk = state.book(book_id) or {"book_id": BOOK_MAIN, "name": BOOK_MAIN}
+        live = {"as_of": _iso_ms(now_ms), "as_of_ms": int(now_ms), "position": pos, "plan": plan, "mark_price": mark,
+                "source": ("futures_ledger.json" if market == "futures" else "portfolio.json") if book_id == BOOK_MAIN else "%s/futures_ledger.json" % (bk.get("state_dir") or book_id)}
+        if not bars:
+            return None, False, "none", {"stored": False, "engine_record": None, "live": live}
+        rev = _live_revision(book_id)
+        key = (book_id, base, market, tf, last_ts, cfgj.get("code_sha"), cfgj.get("config_hash"), rev)
+        snap = _chart_cache.get(key)
+        origin = "panel-cache"
+        if snap is None:
+            d1 = candles.load(base, "1d", market, n=400)
+            daily = closed_bars(daily_rows_from_frame(d1, tail=320), now_ms=now_ms, tf="1d") if d1 is not None else []
+            b1 = candles.load("BTC", "1d", market, n=400)
+            btc = closed_bars(daily_rows_from_frame(b1, tail=320), now_ms=now_ms, tf="1d") if b1 is not None else []
+            sp = state.get("strategy_paper") if book_id != BOOK_MAIN else None
+            atr_mult = (sp or {}).get("atr_mult") if sp and str(sp.get("name")) == bk.get("name") else None
+            # kapanmis islem kuyrugu motorla AYNI uzunlukta (parmak izi paritesi); spot yalniz ana botun spot defterinden
+            hist = state.book_history(book_id, sym, limit=HISTORY_TAIL) if market == "futures" else (state.spot_history(sym, limit=HISTORY_TAIL) if book_id == BOOK_MAIN else [])
+            ef = state.book_entry_features(book_id, (pos or {}).get("id")) if pos else None
+            snap = build_snapshot(symbol=sym, market_type=mtype, timeframe=tf, tf_ms=TF_MS[tf],
+                                  book={"book_id": book_id, "name": bk.get("name"), "atr_mult": atr_mult or 3.0}, bars=bars, as_of_ms=now_ms,
+                                  daily_rows=daily, btc_daily_rows=btc, gates=gates, decision=state.last_decision(sym) if book_id == BOOK_MAIN else None,
+                                  plan=plan, position=pos, history=hist, entry_features=ef, mark_price=mark, cfg=cfgd,
+                                  code=cfgj.get("code_sha"), cfg_hash=cfgj.get("config_hash"), source={"frames": "dashboard.candles", "ephemeral": True})
+            if len(_chart_cache) > 64:
+                _chart_cache.clear()
+            _chart_cache[key] = snap
+            origin = "panel-ephemeral"
+        engine_record = None
+        latest = store.latest(book_id, mtype, sym, tf)
+        if latest:
+            li = latest.get("identity") or {}
+            same = latest.get("analysis_id") == snap.get("analysis_id")
+            engine_record = {"analysis_id": latest.get("analysis_id"), "as_of": li.get("as_of"), "as_of_ms": li.get("as_of_ms"),
+                             "last_closed_bar": (li.get("last_closed_bar") or {}).get("timestamp"), "code_sha": li.get("code_sha"),
+                             "matches_now": bool(same), "diff": [] if same else _record_diff(latest, snap)}
+            if same:
+                return _with_live_mark(latest, mark, now_ms), False, "store", {"stored": True, "engine_record": engine_record, "live": live}
+        return snap, False, origin, {"stored": False, "engine_record": engine_record, "live": live}
 
     @app.get("/api/chart/{base}")
     def api_chart(base: str, tf: str = Query("4h"), market: str = Query("spot"), book: str = Query("main"), n: int = Query(300),
                   analysis_id: str | None = Query(None), req: str | None = Query(None)):
-        """Mum + analiz katmanlari. SALT OKUMA: defter/ogrenme/analiz kaydi YAZILMAZ; veri indirmez."""
+        """Mum + analiz katmanlari. SALT OKUMA: defter/ogrenme/analiz kaydi YAZILMAZ; veri indirmez.
+        Yanit: `analysis` (kayit ya da gecici hesap), `historical`, `analysis_origin`, `analysis_stored`, `engine_record`
+        (motorun son kaydi ve simdiki durumdan farki), `live` (canli defter katmani: zaman + kaynak + pozisyon/plan)."""
         base = base.upper()[:16]
-        tf = tf if tf in ("1h", "4h", "1d", "15m", "1w") else "4h"
+        tf = _tf_or_400(tf)
         market = "futures" if market == "futures" else "spot"
         n = max(50, min(int(n), cfg.max_bars))
         if state.book(book) is None:
             raise HTTPException(404, "bilinmeyen defter")
         now_ms = int(time.time() * 1000)
         src = candles.source_info(base, tf, market, now_ms=now_ms)
-        df = candles.load(base, tf, market, n=n + 250)
         empty = {"base": base, "tf": tf, "market": market, "book": book, "req": req, "t": [], "o": [], "h": [], "l": [], "c": [], "v": [], "overlays": {},
-                 "levels": [], "plan": {}, "position": {}, "panels": {}, "source": src, "analysis": None, "historical": False}
-        if df is None:
-            return JSONResponse({**empty, "error": f"{base} {tf} {market} mum verisi yok (başka piyasa/dilimle doldurulmadı)"}, status_code=404)
-        snap, historical, origin = _chart_analysis_for(base, tf, market, book, df, analysis_id=analysis_id, now_ms=now_ms)
-        if historical and snap:
+                 "levels": [], "plan": {}, "position": {}, "panels": {}, "source": src, "analysis": None, "historical": False,
+                 "analysis_origin": None, "analysis_stored": False, "engine_record": None, "live": None}
+        if analysis_id:
+            # GECMIS: once kayit, sonra mumlar ANALIZ ANINA GORE secilir (son n bar + isinma o tarihten geriye; bulgu #6)
+            snap, historical, origin, meta = _chart_analysis_for(base, tf, market, book, None, analysis_id=analysis_id, now_ms=now_ms)
             cut = ((snap.get("identity") or {}).get("last_closed_bar") or {}).get("timestamp")
-            if cut is not None:
-                df = df[df["timestamp"] <= int(cut)]
-                if df.empty:
-                    return JSONResponse({**empty, "error": "bu analiz anı için mum verisi arşivde yok"}, status_code=404)
-        h = state.coin_head(base) or {}
-        plan = _plan_for_market(h, state.brief(base) or {}, market) if book == "main" and not historical else ((snap or {}).get("plan") if book == "main" else None)
-        pos = (snap or {}).get("position") if historical else _position_for_market(base, market, book)
-        from .candles import TF_MS
+            df = candles.load(base, tf, market, n=n + 250, end_ts=int(cut) if cut is not None else None)
+            if df is None:
+                return JSONResponse({**empty, "error": f"{base} {tf} {market} mum verisi yok (başka piyasa/dilimle doldurulmadı)"}, status_code=404)
+            if df.empty:
+                b = candles.bounds(base, tf, market) or {}
+                return JSONResponse({**empty, "analysis": snap, "historical": True, "analysis_origin": origin, "analysis_stored": True,
+                                     "error": "bu analiz anının son barı (%s) arşivde yok: arşiv %s – %s (%s bar)" % (
+                                         _iso_ms(cut) or cut, _iso_ms(b.get("first_ts")) or "?", _iso_ms(b.get("last_ts")) or "?", b.get("rows", 0))}, status_code=404)
+        else:
+            df = candles.load(base, tf, market, n=n + 250)
+            if df is None:
+                return JSONResponse({**empty, "error": f"{base} {tf} {market} mum verisi yok (başka piyasa/dilimle doldurulmadı)"}, status_code=404)
+            snap, historical, origin, meta = _chart_analysis_for(base, tf, market, book, df, analysis_id=None, now_ms=now_ms)
+        if historical:
+            plan = (snap or {}).get("plan") if book == BOOK_MAIN else None
+            pos = (snap or {}).get("position")
+        else:
+            plan = (meta.get("live") or {}).get("plan")
+            pos = (meta.get("live") or {}).get("position")
         payload = build_candle_payload(df, n=n, plan=plan, position=pos, levels=None, base=base, tf=tf, market=market)
-        payload.update({"book": book, "books": state.books(), "req": req, "source": src, "tf_ms": TF_MS.get(tf, 14_400_000),
-                        "analysis": snap, "historical": bool(historical), "analysis_origin": origin})
+        payload.update({"book": book, "books": state.books(), "req": req, "source": src, "tf_ms": TF_MS[tf],
+                        "analysis": snap, "historical": bool(historical), "analysis_origin": origin,
+                        "analysis_stored": bool(meta.get("stored")), "engine_record": meta.get("engine_record"), "live": meta.get("live")})
         return JSONResponse(payload)
 
     @app.get("/api/chart/{base}/history")
-    def api_chart_history(base: str, tf: str = Query("4h"), market: str = Query("spot"), book: str = Query("main")):
+    def api_chart_history(base: str, tf: str = Query("4h"), market: str = Query("spot"), book: str = Query("main"), req: str | None = Query(None)):
+        """Seri gecmisi: defter + PIYASA + sembol + dilim (bulgu #2). `req` yankilanir (gec gelen yanit korumasi; bulgu #4)."""
         from ..chart_analysis_store import ChartAnalysisStore
+        base = base.upper()[:16]
+        tf = _tf_or_400(tf)
+        market = "futures" if market == "futures" else "spot"
         if state.book(book) is None:
             raise HTTPException(404, "bilinmeyen defter")
-        rows = ChartAnalysisStore(state.state_dir).list(book, base.upper()[:16] + "/USDT", tf if tf in ("1h", "4h", "1d", "15m", "1w") else "4h")
-        return JSONResponse({"base": base.upper(), "tf": tf, "market": market, "book": book, "rows": rows[-500:]})
+        rows = ChartAnalysisStore(state.state_dir).list(book, market_type_of(market), base + "/USDT", tf)
+        return JSONResponse({"base": base, "tf": tf, "market": market, "market_type": market_type_of(market), "book": book, "req": req, "rows": rows[-500:]})
 
     @app.get("/api/chart/{base}/snapshot/{analysis_id}")
     def api_chart_snapshot(base: str, analysis_id: str):
+        """Kayitli analiz JSON'u; dosya adi kimligi tasir: SEMBOL_dilim_piyasa_defter_analysis_id.json."""
         from ..chart_analysis_store import ChartAnalysisStore
         snap = ChartAnalysisStore(state.state_dir).load(analysis_id)
-        if not snap or ((snap.get("identity") or {}).get("symbol") or "").split("/")[0] != base.upper()[:16]:
+        ident = (snap or {}).get("identity") or {}
+        if not snap or (ident.get("symbol") or "").split("/")[0] != base.upper()[:16]:
             raise HTTPException(404, "analiz kaydı yok")
+        mk = next((k for k, v in MARKET_TYPES.items() if v == ident.get("market_type")), str(ident.get("market_type") or "piyasa"))
+        fname = "%s_%s_%s_%s_%s.json" % (str(ident.get("symbol") or base.upper()).replace("/", "_"), ident.get("timeframe") or "tf", mk,
+                                          ident.get("book_id") or "defter", str(snap.get("analysis_id") or analysis_id))
         return Response(content=json.dumps(snap, ensure_ascii=False, indent=1), media_type="application/json",
-                        headers={"Content-Disposition": "attachment; filename=%s_%s.json" % (base.upper(), analysis_id)})
+                        headers={"Content-Disposition": "attachment; filename=%s" % fname})
 
     # ------------------------------------------------------------------ API
     @app.get("/api/candles/{base}")
     def api_candles(base: str, tf: str = Query("4h"), market: str = Query("spot"), n: int = Query(600)):
         base = base.upper()[:16]
-        tf = tf if tf in ("1h", "4h", "1d", "15m", "1w") else "4h"
+        tf = _tf_or_400(tf)
         market = "futures" if market == "futures" else "spot"
         n = max(50, min(int(n), cfg.max_bars))
         df = candles.load(base, tf, market, n=n + 250)

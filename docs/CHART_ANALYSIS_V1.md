@@ -3,9 +3,13 @@
 Amaç: kullanıcı bir çizgiye baktığında **neden orada olduğunu** (dayanak pivotlar, teyit zamanı, gerekçe) ve
 **işlem kararını etkileyip etkilemediğini** görsün. Bu katman salt gösterimdir: hiçbir giriş/çıkış kapısı,
 defter, sermaye, risk bütçesi, evren ya da öğrenme durumu değişmez (bkz. `tests/test_chart_analysis_v1.py::
-test_engine_decisions_unchanged_and_snapshots_deduped`).
+test_engine_decisions_unchanged_and_snapshots_deduped` ve `tests/test_chart_analysis_v1_fixes.py::
+test_engine_records_are_market_strict_and_panel_now_view_matches_them`).
 
-## 1. Düzeltilen grafik kusurları
+Sürüm notu: 2e31926 sonrası bağımsız incelemenin altı davranış bulgusu ve JS kimlik hatası 2026-09-15'te onarıldı
+(§7). Bu belge onarılmış sözleşmeyi anlatır.
+
+## 1. Düzeltilen grafik kusurları (2e31926)
 
 | kusur | dosya | düzeltme | test |
 |---|---|---|---|
@@ -17,15 +21,28 @@ test_engine_decisions_unchanged_and_snapshots_deduped`).
 
 `tradingbot/chart_analysis.py::build_snapshot` → tek analiz anı:
 
-* **kimlik**: `exchange`, `market_type` (USDM_PERP/SPOT), `symbol`, `timeframe`, `book_id` (`main` |
-  `strategy_paper` | `strategy_paper_m2`), `book_name`, `as_of`, `last_closed_bar` (ts, iso, close), `code_sha`
-  (`TRADINGBOT_CODE_SHA` ya da `git rev-parse HEAD`), `config_hash` (entry_selectivity + strategy_paper +
-  entry_universe + chart_analysis bölümlerinin özeti); `analysis_id` = sha256(kimlik + son kapanmış bar +
-  kod + config + karar parmak izi)[:16].
+* **kimlik**: `exchange`, `market_type` (USDM_PERP/SPOT — **defterin** piyasası; kâğıt defterler her zaman USDM_PERP),
+  `symbol`, `timeframe`, `book_id` (`main` | `strategy_paper` | `strategy_paper_m2`), `book_name`, `as_of`,
+  `last_closed_bar` (ts, iso, close), `code_sha` (`TRADINGBOT_CODE_SHA` ya da `git rev-parse HEAD`), `config_hash`
+  (entry_selectivity + strategy_paper + entry_universe + chart_analysis bölümlerinin özeti);
+  `analysis_id` = sha256(sembol + piyasa + dilim + defter + son kapanmış bar + kod + config + karar parmak izi)[:16] —
+  **kök alan** (`snapshot.analysis_id`; kimlik sözlüğünde tekrarlanmaz). Mum provenansı (`source.bar_market`,
+  `source.provenance`) kimlikten AYRI yazılır: ana botun SPOT kaydı futures defterini taşımaz (tersi de).
+* **karar parmak izi** (`decision_fingerprint_payload`): kural koşulu/rejim/sinyal barı, karar hükmü/engel kodu/risk
+  izni, plan (giriş/stop/yön/geçerlilik/hedefler), pozisyon (id, yön, giriş, stop, **miktar, hedefler**, açılış),
+  kapanmış işlem kuyruğu (**sayı + son kapanan işlemin id/kapanış/çıkış fiyatı/nedeni**; kuyruk `HISTORY_TAIL`=50, motor
+  ve panel aynı). Sayısal alanlar normalize edilir (defter nesnesi float, defter JSON'u Decimal-string → aynı parmak
+  izi). İşaret fiyatı ve açık K/Z parmak izine GİRMEZ (her fiyat güncellemesi dosya üretmez).
 * **öğeler** (`elements[]`): `kind`, `layer`, `label_tr`, `price` / `lower`–`upper`, `t0`/`t1` (+ eğik çizgide
   `y0`/`y1`), `anchors[]` (dayanak: zaman, fiyat, taraf, rol, teyit zamanı), `confirmed_at`,
   `invalidation_tr`, `rationale_tr`, `decision_impact` ∈ {USED_IN_DECISION, OBSERVATION_ONLY, UNCONFIRMED,
   INVALID}, `source` (modül/fonksiyon/parametre), `status` (trend: INTACT/BROKEN).
+* **zaman sözleşmesi** (`time_contract`, bulgu #5): `timestamp` / `t0` / `t1` / `anchors[].timestamp` / `break_at` /
+  `recognition_at` = ilgili barın **AÇILIŞI** (çizim x koordinatı; paylaşılan dedektör alanları değişmedi).
+  `confirmed_at` / `anchors[].confirmed_at` / `break_known_at` / `recognition_known_at` / `broken_at` / `touches[].known_at`
+  = bilginin **ilk bilinebildiği an = ilgili barın KAPANIŞI** (açılış + dilim süresi). Pivot, teyit barı (i+lookback)
+  kapanmadan 1 ms önce teyitli DEĞİLDİR; kapanış anında teyitlidir. Her `confirmed_at` ≤ `as_of`. Göstergeler son
+  kapanmış barın kapanışında, günlük kural referansları (EMA200 / 28g) günlük barın kapanışında bilinir.
 * **kural durumu** (`rule_state`, T2/M2): `ema200_trend.rule_state` — `decide` ile aynı okuma; close, signal_ts,
   ema200, atr14, ref_close/ref_ts (M2), above, regime, stop_if_open.
 * **giriş anı** (`entry_features`): defter belleğinden (giriş anındaki close/EMA200/ATR14/stop, M2 için
@@ -37,13 +54,17 @@ Hangi çizgi hangi hesaptan gelir:
 
 | katman | kaynak (aynı fonksiyon, ikinci formül yok) | kararı etkiler mi |
 |---|---|---|
-| teyitli pivot (`pivot_high/low`) | `learn.multitimeframe_context.confirmed_swings` (formasyon dedektörünün pivotları; `confirmed_at` = i+lookback barı) | hayır (OBSERVATION_ONLY); son teyitsiz uç `pivot_pending` = UNCONFIRMED |
+| teyitli pivot (`pivot_high/low`) | `learn.multitimeframe_context.confirmed_swings` (formasyon dedektörünün pivotları; `confirmed_at` = i+lookback barının KAPANIŞI) | hayır (OBSERVATION_ONLY); son teyitsiz uç `pivot_pending` = UNCONFIRMED |
 | destek/direnç/fiyat bölgesi (`zone`) | `equal_level_clusters` (ATR toleransı, ≥2 dayanak); alt/üst = üyelerin gerçek min/max | hayır |
-| trend çizgisi (`trend_support/resistance`) | son iki teyitli dip/tepe; eğim, ek temas, kapanış ihlali hesaplanır | hayır; ihlal → INVALID |
-| formasyon çizgileri (`pattern_line`) | `chart_patterns.detect_chart_patterns` kaydındaki `anchors` + `geometry` (boyun, düz/eğik sınır, direk, kırılış barı) | config'e göre: chart kapısı ENFORCE+taze → USED_IN_DECISION; SHADOW → OBSERVATION_ONLY (üretimde SHADOW) |
+| trend çizgisi (`trend_support/resistance`) | son iki teyitli dip/tepe; eğim, ek temas, kapanış ihlali (`breaks[].known_at` = ihlal barı kapanışı) | hayır; ihlal → INVALID |
+| formasyon çizgileri (`pattern_line`) | `chart_patterns.detect_chart_patterns` kaydındaki `anchors` + `geometry` (boyun, düz/eğik sınır, direk, kırılış barı); `confirmed_at` = tanınma barı kapanışı | config'e göre: chart kapısı ENFORCE+taze → USED_IN_DECISION; SHADOW → OBSERVATION_ONLY (üretimde SHADOW) |
 | günlük EMA200 / 28g referans (`rule_reference`) | `ema200_trend.rule_state` | T2/M2 için USED_IN_DECISION |
-| plan giriş/stop/hedef (`plan_*`) | coin head planı (piyasaya kesin bağlı) | ana bot |
-| gerçek giriş/çıkış/stop/hedef/LIQ/işaret (`trade_entry`, `trade_exit`, `entry`, `stop`, `target`, `no_target`, `liq`, `mark`) | seçili defterin `futures_ledger.json` (id = `book_id:trade_id`) | defter gerçeği |
+| plan giriş/stop/hedef (`plan_*`) | coin head planı — piyasaya KESİN bağlı ve yalnız geçerliyse (`chart_analysis.plan_for_market`; motor ve panel aynı kural) | ana bot |
+| gerçek giriş/çıkış/stop/hedef/LIQ/işaret (`trade_entry`, `trade_exit`, `entry`, `stop`, `target`, `no_target`, `liq`, `mark`) | seçili defterin ledger'ı (id = `book_id:trade_id`); ana bot SPOT kaydında `spot_ledger.json` | defter gerçeği |
+
+Zaman dilimleri TEK kaynaktır (`tradingbot/timeframes.py`: 15m, 1h, 4h, 1d, 1w). Mum kapısı (`candle_confirmation.closed_bars`),
+analiz (`closed_bars_at`), panel ve motor aynı tabloyu okur; bilinmeyen dilim sessizce 4h sayılmaz (panel HTTP 400,
+kütüphane ValueError). Kapanmış bar: `timestamp + tf_ms <= now` (eşitlik dahil).
 
 Ana botun mum ENFORCE / grafik SHADOW / rejim ENFORCE durumları config'ten (`chart_analysis/config.json`
 motor tarafından yazılır); karar kaydındaki hüküm (`risk.json.last_decisions`) açıklamada "KARARI ETKİLEDİ /
@@ -52,26 +73,53 @@ yalnız gözlem" olarak gösterilir. ZigZag numaraları dalga analizi olarak SUN
 ## 3. Saklama ve geçmiş
 
 * Motor turu (`engine_v3._chart_analysis_tour`, `risk.json` yazıldıktan SONRA) her sembol × defter için analiz
-  anını `state/chart_analysis/<book>/<SEMBOL>_<tf>/<as_of>_<analysis_id>.json` olarak yazar; `index.json`
-  seri başına listeyi tutar. **Aynı analysis_id ikinci kez yazılmaz; var olan dosya hiçbir koşulda yeniden
-  yazılmaz** (sonraki mumlar geçmişi değiştiremez). Yeni kayıt yalnız yeni kapanmış bar ya da karar
-  değişiminde oluşur (parmak izi: kural koşulu/rejim, karar hükmü/engel kodu, plan giriş/stop, pozisyon).
-* Boyut: bir kayıt ~10–25 KB; 15 dk turda 4h barla günde ~6 kayıt/seri; `chart_analysis.keep_per_series`
-  (varsayılan 300 ≈ 50 gün) üstünde en eski silinir. On coin × 3 defter ≈ 30 seri × 300 × ~15 KB ≈ 135 MB üst
-  sınır; mevcut yedekleme `state/` altını kapsadığı için otomatik yedeğe girer.
-* Panel: `/api/chart/{base}?tf&market&book&n&analysis_id&req` — `analysis_id` verilirse saklanan kayıt ve
-  mumlar o anın son kapanmış barına kadar KESİLİR (`historical: true`); verilmezse motorun son kaydı (son
-  kapanmış barla aynıysa) ya da panel içi geçici hesap (yazılmaz; bellek önbelleği). Panel hiçbir state
-  dosyasına yazmaz, borsa verisi indirmez. `/api/chart/{base}/history` liste, `/api/chart/{base}/snapshot/{id}`
-  JSON indirme; PNG indirme istemci tarafında (`Plotly.downloadImage`).
+  anını `state/chart_analysis/<book>/<market_type>/<SEMBOL>_<tf>/<as_of>_<analysis_id>.json` olarak yazar;
+  `index.json` (şema `chart_analysis_index_v2`) seri (`book|market|symbol|tf`) başına listeyi tutar; satırda
+  `market_type` vardır. **Aynı analysis_id ikinci kez yazılmaz; var olan dosya hiçbir koşulda yeniden yazılmaz**
+  (sonraki mumlar geçmişi değiştiremez). Yeni kayıt yalnız yeni kapanmış bar ya da parmak izi değişiminde oluşur
+  (pozisyon açılış/kapanış/kısmi kapanış, stop/hedef değişimi, kapanan işlem, plan, hüküm, kural koşulu/rejim).
+* Uyumluluk (2e31926'nın v1 indeksi: `book|symbol|tf`, satırda piyasa yok): satır dosyasındaki
+  `identity.market_type` ile serisine taşınır; piyasası okunamayan satır `?` piyasası altında kalır ve hiçbir piyasa
+  isteğinde listelenmez/son kayıt sayılmaz (kimlikle `load` döner; panel kimliği isteğin piyasasıyla doğrular).
+  Kayıt dosyaları geriye dönük değiştirilmez; yalnız indeks ilk yazımda v2'ye çevrilir. Üretimde (VPS) bu paket
+  daha önce dağıtılmadığı için v1 indeks beklenmiyor.
+* Boyut: bir kayıt ~15–125 KB (bar sayısına ve formasyon/dayanak listelerine göre); saklama sınırı
+  `chart_analysis.keep_per_series` (varsayılan 300, seri başına en eski silinir). Stop değişimi de kayda değer
+  olduğu için trailing stop kullanan bir defterde tur başına bir kayıt çıkabilir (T2/M2 sabit stop kullanır);
+  mevcut yedekleme `state/` altını kapsadığı için otomatik yedeğe girer.
+* Panel: `/api/chart/{base}?tf&market&book&n&analysis_id&req` — **sözleşme**:
+  * `analysis_id` verildi (**geçmiş**): saklanan kayıt AYNEN döner (`historical: true`, `analysis_stored: true`);
+    sembol/piyasa/dilim/defter kimliği doğrulanır (uyuşmazsa 404, mesajda kayıt ve istek kimliği). Mumlar analiz
+    anına göre seçilir: `timestamp <= last_closed_bar` süzgeci **son n bar + gösterge ısınmasından ÖNCE** uygulanır
+    (bulgu #6); analiz anından sonraki mum görünmez; tarih arşivde gerçekten yoksa 404 + arşiv aralığı. İşlem katmanı
+    o anki defter kaydıdır (canlı katman YOK).
+  * `analysis_id` yok (**şimdi**): panel güncel kapanmış bar + güncel defter/karar/plan + config.json'daki kod/config ile
+    analiz kimliğini hesaplar (bellek önbelleği; anahtar: defter/karar dosyalarının sürüm imzasını içerir). Motorun son
+    kaydı **tam aynı kimlikteyse** o kayıt gösterilir (`analysis_origin: store`, `analysis_stored: true`; işaret fiyatı
+    ve açık K/Z canlı değerle KOPYA üzerinde güncellenir, dosya değişmez); değilse panelin geçici hesabı gösterilir
+    (`panel-ephemeral` / `panel-cache`, `analysis_stored: false`) ve `engine_record` motorun son kaydını + farkını
+    (bar / kod / config / defter-karar) bildirir. Eski bir kayıt hiçbir koşulda "şimdi" gibi gösterilmez.
+  * `live`: canlı katmanın zamanı ve kaynağı (`as_of`, `source` = ledger dosyası, `position`, `plan`, `mark_price`).
+  * `req` her iki uçta (grafik ve `/history`) yankılanır; geçmiş listesi `/api/chart/{base}/history?tf&market&book&req`
+    PİYASA-kesindir; `/api/chart/{base}/snapshot/{id}` JSON indirme (dosya adı `SEMBOL_dilim_piyasa_defter_id.json`).
+    Panel hiçbir state dosyasına yazmaz, borsa verisi indirmez.
 
 ## 4. Kullanıcı ekranı
 
-`/coin/{BASE}?market=&book=&tf=`: piyasa, **defter (Ana bot / T2 / M2)**, TF, bar sayısı, **geçmiş analiz**
-seçimi; katman aç/kapat (Seviyeler, Bölgeler, Trend, Formasyonlar, İşlemler, Göstergeler); veri kaynağı /
-son bar / yaş / **BAYAT VERİ** uyarısı; **GEÇMİŞ ANALİZ** uyarısı; açıklama paneli; tıklanan öğenin detayı
-(dayanak, teyit, eğim/temas/ihlal, gerekçe, geçersizleşme, kaynak). Geç gelen istek: her istek `req`
-sayacı taşır, yanıt yankılar; eski yanıt yeni seçimi ezmez. Mobilde (≤600px) tek sütun, 10–13 px yazı.
+`/coin/{BASE}?market=&book=&tf=`: piyasa, **defter (Ana bot / T2 / M2)**, TF (15m/1h/4h/1d/1w — API ile aynı liste),
+bar sayısı, **geçmiş analiz** seçimi; katman aç/kapat (Seviyeler, Bölgeler, Trend, Formasyonlar, İşlemler, Göstergeler);
+kaynak satırı: veri kaynağı / son bar / yaş / **BAYAT VERİ**; **canlı defter** zamanı ve dosyası; analiz kimliği ·
+analiz anı · **motor kaydı / panel hesabı (kaydedilmedi)** · kod · defter · piyasa dilim; **GEÇMİŞ ANALİZ** uyarısı;
+motorun son kaydı şimdiki durumdan farklıysa farkı; açıklama paneli; tıklanan öğenin detayı (dayanak, teyit = bar
+kapanışı, kırılış barı açılış → kapanışta bilindi, eğim/temas/ihlal, gerekçe, geçersizleşme, kaynak, canlı işaret).
+
+İstek sözleşmesi (`tradingbot/dashboard/chart_js.py`, bulgu #4): kapsam (dilim/piyasa/defter/bar/geçmiş) DOM'dan **bir
+kez** okunur ve istekle taşınır; dilim/piyasa/defter değişince geçmiş seçimi temizlenir (eski defterin analysis_id'si
+yeni kapsama gönderilmez), liste ve grafik isteği aynı yeni kapsamla gider; yanıtlar `req` sırası + yanıtın
+taşıdığı kapsam (tf/market/book) + analiz kimliği (identity.timeframe/book_id/market_type, analysis_id) ile
+eşleştirilir — geç gelen ya da başka kapsama ait yanıt seçenekleri/grafiği EZEMEZ. Yenile, seçili geçmişi korur.
+İndirme adı: `BASE_tf_piyasa_defter_<analysis_id>` (kayıtlı/geçmiş) ya da `..._canli-<an>` (kaydedilmemiş panel
+hesabı); JSON kayıtlıysa sunucudan, değilse tarayıcı blob'u.
 
 T2: günlük kapanış vs EMA200, BTC günlük rejimi, gerçek giriş, mevcut stop, **TP yok**, çıkış kuralı.
 M2: günlük kapanış vs 28 gün önceki referans (değer + tarih), rejim, giriş, stop, TP yok. Açıklama "BTC rejimi
@@ -82,5 +130,27 @@ DOWN'a dönünce açık pozisyon OTOMATİK KAPANMAZ" der (kod böyle bir kural u
 * Panel içi geçici hesapta ana botun kapı hükümleri `risk.json`daki son kayıttan okunur; motor kaydı yoksa
   plan/karar "kayıt yok" gösterilir.
 * Trend çizgisi ve bölge hesabı hiçbir kapı tarafından okunmaz; gösterimde OBSERVATION_ONLY olarak işaretlidir.
-* Spot piyasa için kâğıt defterler yoktur (yalnız USDM_PERP).
-* Ekran kanıtları sentetik veriyle üretildi ve dosya adı/afişle etiketlidir (`docs/review/screens/synthetic-*`).
+* Spot piyasa için kâğıt defterler yoktur (yalnız USDM_PERP). Ana botun spot pozisyon/geçmişi `spot_ledger.json`dan
+  okunur (V3 motorunun spot defteri); dosya yoksa eski `portfolio.json`.
+* Panelin geçici hesabı CSV mumlarından, motor kaydı runner çerçevelerinden kurulur; gösterge sütunları
+  (ema20/50/200) yalnız motor kaydında olabilir. Kimlik eşleşmesi bar/karar/kod/config üzerinden olduğu için ikisi
+  aynı analiz anını gösterir; küçük gösterge farkları kimliği değiştirmez.
+* Ekran kanıtları sentetik veriyle üretildi ve dosya adıyla etiketlidir (`docs/review/screens/synthetic-*`);
+  2026-09-15 kanıtları gerçek tarayıcıdan (Plotly dışa aktarımı) alındı, veri yine sentetik (test motoru).
+
+## 6. Testler
+
+`tests/test_chart_analysis_v1.py` (13) + `tests/test_chart_analysis_v1_fixes.py` (14; altı bulgu, node altında gerçek
+`CHART_JS` davranışı, motor kaydı ↔ panel kimlik paritesi). CI: `.github/workflows/chart-analysis.yml`.
+
+## 7. 2026-09-15 onarımları (bağımsız inceleme bulguları, 2e31926 üzerine)
+
+| # | bulgu (2e31926) | onarım | test |
+|---|---|---|---|
+| 1 | 15m/1h/1w isteği `closed_bars` KeyError (500) | `timeframes.py` tek kaynak; bilinmeyen dilim 400 | `test_f1_*` |
+| 2 | kayıtta spot/futures ayrımı yok (seri anahtarı, latest, history, analysis_id doğrulaması) | seri `book|market|symbol|tf`, v2 indeks + v1 uyumluluk politikası, API kimlik doğrulaması, motor kaydı defter piyasasında | `test_f2_*`, `test_engine_records_*` |
+| 3 | aynı mum içinde defter değişimi görünmüyor (önbellek anahtarı, "latest = şimdi"); miktar/hedef/kapanış parmak izinde yok | canlı sürüm imzalı önbellek; "şimdi" = kimlik eşitliği sözleşmesi + `engine_record`/`live`; parmak izi genişletildi ve normalize edildi | `test_f3a_*`, `test_f3b_*` |
+| 4 | geçmişten bakarken kapsam değişimi yanlış istek (eski analysis_id, eski defter listesi); history'de geç yanıt koruması yok | kapsam bir kez okunur, geçmiş sıfırlanır, `req` + kapsam + kimlik eşleştirmesi iki uçta | `test_f4_*` (node) |
+| 5 | pivot/formasyon teyit zamanı bar açılışı (bir mum erken) | `confirmed_at`/`known_at` = bar kapanışı; dedektör alanları değişmedi | `test_f5_*` |
+| 6 | arşivde olan eski mumlar için "veri yok" | `CandleSource.load(end_ts=)`; analiz anına göre seçim; dürüst 404 | `test_f6_*` |
+| K | JS `identity.analysis_id` okuyordu (kökte) | kök alan; indirme adı kimlik/piyasa/dilim/defter | `test_f4_*`, `test_chart_js_reads_*` |

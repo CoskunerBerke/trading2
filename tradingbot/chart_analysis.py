@@ -29,11 +29,37 @@ from .candle_confirmation import closed_bars
 from .chart_patterns import ChartPatternConfig, detect_chart_patterns
 from .ema200_trend import TSMOM_LOOKBACK_DAYS, _atr_last, rule_state
 from .learn.multitimeframe_context import MultiTimeframeConfig, confirmed_swings, equal_level_clusters
+from .timeframes import DAY_MS, TF_MS  # tek kaynak (bulgu #1): panel, mum kapısı ve motor aynı tabloyu okur
 
 SCHEMA_VERSION = "chart_analysis_v1"
-TF_MS = {"15m": 900_000, "1h": 3_600_000, "4h": 14_400_000, "1d": 86_400_000, "1w": 604_800_000}
 BOOK_MAIN = "main"
 EXCHANGE = "binance"
+#: Panel piyasa adı ↔ kayıt kimliği (`identity.market_type`). Başka eşleme yok; bilinmeyen değer eşleşmez.
+MARKET_TYPES = {"futures": "USDM_PERP", "spot": "SPOT"}
+#: Zaman alanlarının sözleşmesi (JSON okuyucular için; bulgu #5): `timestamp`/`t0`/`t1`/`break_at` barın
+#: AÇILIŞ zamanıdır (x ekseni); `confirmed_at`/`known_at` bilginin ilk bilinebildiği an = ilgili barın
+#: KAPANIŞI (açılış + dilim süresi). Bir bilgi kapanmadan "biliniyor" etiketlenmez.
+TIME_CONTRACT = {"timestamp": "bar açılışı (çizim x koordinatı)", "confirmed_at": "teyit barının KAPANIŞI (açılış + dilim süresi) = bilginin ilk bilinebildiği an",
+                 "known_at": "kırılış/tanınma barının KAPANIŞI", "as_of": "analiz anı; tüm confirmed_at/known_at <= as_of"}
+
+
+def market_type_of(market: str) -> str:
+    """Panel piyasa adından kayıt kimliği; bilinmeyen ad SPOT'a düşmez (ValueError)."""
+    try:
+        return MARKET_TYPES[str(market)]
+    except KeyError:
+        raise ValueError("bilinmeyen piyasa: %r (geçerli: %s)" % (market, ", ".join(MARKET_TYPES))) from None
+
+
+#: Kayda giren kapanmış işlem kuyruğu (motor ve panel AYNI sayıyı kullanır; parmak izi `history.n` içerir).
+HISTORY_TAIL = 50
+
+
+def plan_for_market(head: dict[str, Any] | None, market_type: str) -> dict[str, Any] | None:
+    """Coin head planı PİYASAYA KESİN bağlı ve yalnız GEÇERLİYSE (motor ve panel aynı kural; başka piyasanın planı alınmaz)."""
+    h = head or {}
+    p = h.get("spot_plan") if str(market_type) == "SPOT" else h.get("futures_plan")
+    return p if isinstance(p, dict) and p.get("valid") else None
 
 USED_IN_DECISION = "USED_IN_DECISION"      # bu öğe (ya da kaynağı) gerçek bir kapı/kuralda kullanıldı
 OBSERVATION_ONLY = "OBSERVATION_ONLY"      # yalnız gözlem: hiçbir kapı bunu okumaz (ya da mod SHADOW/OFF)
@@ -100,14 +126,26 @@ def _iso(ms: Any) -> str | None:
 
 
 def _ms(iso_or_ms: Any) -> int | None:
-    if iso_or_ms in (None, ""):
+    """ISO metni / epoch ms / datetime → epoch ms (parmak izi ve gösterim için tek normalizasyon)."""
+    if iso_or_ms in (None, "") or isinstance(iso_or_ms, bool):
         return None
     if isinstance(iso_or_ms, (int, float)):
         return int(iso_or_ms)
+    if hasattr(iso_or_ms, "timestamp") and callable(iso_or_ms.timestamp):
+        try:
+            return int(iso_or_ms.timestamp() * 1000)
+        except (TypeError, ValueError, OverflowError):
+            return None
     try:
         return int(datetime.fromisoformat(str(iso_or_ms).replace("Z", "+00:00")).timestamp() * 1000)
     except ValueError:
         return None
+
+
+def _daily_close(open_ms: Any) -> int | None:
+    """Günlük kural barının KAPANIŞI: kural değeri (EMA200 / 28g referans) ancak günlük bar kapanınca bilinir."""
+    v = _ms(open_ms)
+    return (int(v) + DAY_MS) if v is not None else None
 
 
 def bars_from_frame(frame: Any, *, tail: int = 400) -> list[dict[str, Any]]:
@@ -132,14 +170,19 @@ def closed_bars_at(bars: list[dict[str, Any]], *, as_of_ms: int, tf: str) -> lis
 
 
 # ----------------------------------------------------------------------------- pivotlar
-def pivots(bars: list[dict[str, Any]], *, lookback: int) -> dict[str, Any]:
-    """Teyitli fraktal pivotlar (formasyon dedektörüyle AYNI fonksiyon) + son TEYİTSİZ uç."""
+def pivots(bars: list[dict[str, Any]], *, lookback: int, tf_ms: int) -> dict[str, Any]:
+    """Teyitli fraktal pivotlar (formasyon dedektörüyle AYNI fonksiyon) + son TEYİTSİZ uç.
+
+    `confirmed_at_ts` = teyit barının (i+lookback) KAPANIŞI = açılış + `tf_ms`: pivot ancak o an bilinebilir.
+    2e31926 teyit barının açılışını yazıyordu (bir mum erken; bulgu #5). Açılış ayrıca `confirmed_bar_open_ts`."""
     k = max(1, int(lookback))
+    step = int(tf_ms)
     sw = confirmed_swings(bars, lookback=k)
     conf = sorted(sw["highs"] + sw["lows"], key=lambda p: p["index"])
     for p in conf:
         ci = int(p["confirmed_at_index"])
-        p["confirmed_at_ts"] = bars[ci]["timestamp"] if ci < len(bars) else None
+        p["confirmed_bar_open_ts"] = int(bars[ci]["timestamp"]) if ci < len(bars) else None
+        p["confirmed_at_ts"] = (int(bars[ci]["timestamp"]) + step) if ci < len(bars) else None
     pending = None
     if bars:
         start = (conf[-1]["index"] + 1) if conf else 0
@@ -156,15 +199,18 @@ def pivots(bars: list[dict[str, Any]], *, lookback: int) -> dict[str, Any]:
     return {"lookback": k, "confirmed": conf, "pending": pending}
 
 
-def _anchor_of(bars: list[dict[str, Any]], p: dict[str, Any]) -> dict[str, Any]:
+def _anchor_of(bars: list[dict[str, Any]], p: dict[str, Any], tf_ms: int) -> dict[str, Any]:
+    """Dayanak: `timestamp` pivot barının açılışı (x), `confirmed_at` teyit barının KAPANIŞI (bilinebilir an)."""
     ci = p.get("confirmed_at_index")
+    ok = ci is not None and int(ci) < len(bars)
     return {"index": int(p["index"]), "timestamp": int(bars[int(p["index"])]["timestamp"]), "price": round(float(p["level"]), 10),
-            "side": p.get("side"), "confirmed_at": (int(bars[int(ci)]["timestamp"]) if ci is not None and int(ci) < len(bars) else None)}
+            "side": p.get("side"), "confirmed_at": (int(bars[int(ci)]["timestamp"]) + int(tf_ms)) if ok else None,
+            "confirmed_bar_open": int(bars[int(ci)]["timestamp"]) if ok else None}
 
 
 # ----------------------------------------------------------------------------- seviyeler / bölgeler
 def level_elements(bars: list[dict[str, Any]], piv: dict[str, Any], *, atr: float | None, tolerance_atr: float,
-                   timeframe: str, last_close: float | None) -> list[dict[str, Any]]:
+                   timeframe: str, last_close: float | None, tf_ms: int) -> list[dict[str, Any]]:
     """Teyitli pivotlardan küme (≥2 dayanak → BÖLGE, alt/üst = gözlenen üyelerin gerçek min/max) ve
     tekil pivot işaretleri. Dayanak yoksa bölge ÜRETİLMEZ; ATR yoksa küme yok (tolerans uydurulmaz)."""
     out: list[dict[str, Any]] = []
@@ -180,7 +226,7 @@ def level_elements(bars: list[dict[str, Any]], piv: dict[str, Any], *, atr: floa
             used.add(int(m["timestamp"]))
         lv = [float(m["level"]) for m in members]
         lower, upper = min(lv), max(lv)
-        conf_ts = max(int(m.get("confirmed_at_ts") or 0) for m in members) or None
+        conf_ts = max(int(m.get("confirmed_at_ts") or 0) for m in members) or None   # son üyenin teyit barı KAPANIŞI
         if last_close is not None and upper < last_close:
             kind, lab = "support", "Destek bölgesi"
         elif last_close is not None and lower > last_close:
@@ -192,7 +238,7 @@ def level_elements(bars: list[dict[str, Any]], piv: dict[str, Any], *, atr: floa
             "id": "zone:%d" % n, "layer": LAYER_ZONES, "kind": kind, "label_tr": "%s %.6g–%.6g" % (lab, lower, upper),
             "price": round(float(c["level"]), 10), "lower": round(lower, 10), "upper": round(upper, 10),
             "t0": int(min(m["timestamp"] for m in members)), "t1": None,
-            "anchors": [_anchor_of(bars, m) for m in members], "confirmed_at": conf_ts,
+            "anchors": [_anchor_of(bars, m, tf_ms) for m in members], "confirmed_at": conf_ts,
             "timeframe": timeframe, "n_anchors": len(members),
             "invalidation_tr": "Bölgenin dışında iki ardışık kapanış bölgeyi kırar (gösterim kuralı; kapı değil).",
             "rationale_tr": "%d teyitli %s pivotu %.2f×ATR toleransında kümelendi; alt/üst = gözlenen pivotların gerçek min/max değeri." % (
@@ -209,7 +255,7 @@ def level_elements(bars: list[dict[str, Any]], piv: dict[str, Any], *, atr: floa
         out.append({
             "id": "pivot:%d" % n, "layer": LAYER_LEVELS, "kind": "pivot_%s" % p["side"], "label_tr": "Teyitli %s %.6g" % (side, float(p["level"])),
             "price": round(float(p["level"]), 10), "lower": None, "upper": None, "t0": int(p["timestamp"]), "t1": None,
-            "anchors": [_anchor_of(bars, p)], "confirmed_at": p.get("confirmed_at_ts"), "timeframe": timeframe, "n_anchors": 1,
+            "anchors": [_anchor_of(bars, p, tf_ms)], "confirmed_at": p.get("confirmed_at_ts"), "timeframe": timeframe, "n_anchors": 1,
             "invalidation_tr": "Tekil pivot; bölge değildir (ikinci dayanak yok).",
             "rationale_tr": "Her iki yanında %d kapanmış bar ile teyit edilmiş fraktal %s (formasyon dedektörünün kullandığı pivot)." % (int(piv.get("lookback") or 0), side),
             "decision_impact": OBSERVATION_ONLY,
@@ -263,28 +309,30 @@ def trendline_elements(bars: list[dict[str, Any]], piv: dict[str, Any], *, touch
             if j in (int(a["index"]), int(b["index"])):
                 continue
             bar = bars[j]
+            # `timestamp` = temas/ihlal barının açılışı (x); `known_at` = o barın KAPANIŞI (kapanış ihlali ancak o an bilinir)
             if side == "low":
                 if abs(float(bar["low"]) - lv) <= tol * lv:
-                    touches.append({"index": j, "timestamp": int(bar["timestamp"]), "price": round(float(bar["low"]), 10)})
+                    touches.append({"index": j, "timestamp": int(bar["timestamp"]), "known_at": int(bar["timestamp"]) + int(tf_ms), "price": round(float(bar["low"]), 10)})
                 if j > int(b["index"]) and float(bar["close"]) < lv * (1 - tol):
-                    breaks.append({"index": j, "timestamp": int(bar["timestamp"]), "close": round(float(bar["close"]), 10), "line": round(lv, 10)})
+                    breaks.append({"index": j, "timestamp": int(bar["timestamp"]), "known_at": int(bar["timestamp"]) + int(tf_ms), "close": round(float(bar["close"]), 10), "line": round(lv, 10)})
             else:
                 if abs(float(bar["high"]) - lv) <= tol * lv:
-                    touches.append({"index": j, "timestamp": int(bar["timestamp"]), "price": round(float(bar["high"]), 10)})
+                    touches.append({"index": j, "timestamp": int(bar["timestamp"]), "known_at": int(bar["timestamp"]) + int(tf_ms), "price": round(float(bar["high"]), 10)})
                 if j > int(b["index"]) and float(bar["close"]) > lv * (1 + tol):
-                    breaks.append({"index": j, "timestamp": int(bar["timestamp"]), "close": round(float(bar["close"]), 10), "line": round(lv, 10)})
+                    breaks.append({"index": j, "timestamp": int(bar["timestamp"]), "known_at": int(bar["timestamp"]) + int(tf_ms), "close": round(float(bar["close"]), 10), "line": round(lv, 10)})
         last_j = n - 1
         y1 = _line_at(a, b, last_j)
         status = "BROKEN" if breaks else "INTACT"
         direction = "yükselen" if slope_bar > 0 else ("alçalan" if slope_bar < 0 else "yatay")
         out.append({
             "id": "trend:%s" % side, "layer": LAYER_TREND, "kind": kind,
-            "label_tr": "%s (%s) — %s" % (lab, direction, "kırıldı %s" % (_iso(breaks[0]["timestamp"]) or "") if breaks else "sağlam"),
+            "label_tr": "%s (%s) — %s" % (lab, direction, "kırıldı %s" % (_iso(breaks[0]["known_at"]) or "") if breaks else "sağlam"),
             "price": round(y1, 10), "lower": None, "upper": None,
             "t0": int(bars[int(a["index"])]["timestamp"]), "y0": round(float(a["level"]), 10),
             "t1": int(bars[last_j]["timestamp"]), "y1": round(y1, 10),
             "slope_per_bar": round(slope_bar, 10), "slope_per_day": round(per_day, 10) if per_day is not None else None,
-            "anchors": [_anchor_of(bars, a), _anchor_of(bars, b)], "confirmed_at": b.get("confirmed_at_ts"),
+            "anchors": [_anchor_of(bars, a, tf_ms), _anchor_of(bars, b, tf_ms)], "confirmed_at": b.get("confirmed_at_ts"),
+            "broken_at": breaks[0]["known_at"] if breaks else None,
             "touches": touches, "breaks": breaks, "status": status, "timeframe": timeframe,
             "invalidation_tr": "Çizginin %s tarafında %.2f%% toleransla bir kapanış = ihlal." % ("altında" if side == "low" else "üstünde", touch_tolerance_pct),
             "rationale_tr": "Son iki teyitli %s pivotu (%s → %s) bağlandı; %d ek temas, %d ihlal." % (
@@ -297,10 +345,21 @@ def trendline_elements(bars: list[dict[str, Any]], piv: dict[str, Any], *, touch
 
 # ----------------------------------------------------------------------------- formasyonlar
 def pattern_elements(bars: list[dict[str, Any]], det: dict[str, Any], *, chart_mode: str, fresh_within: int | None,
-                     timeframe: str) -> list[dict[str, Any]]:
-    """Dedektörün GERÇEK pivotları/çizgileri: `anchors` + `geometry` kayıttan okunur (yeniden tahmin yok)."""
+                     timeframe: str, tf_ms: int) -> list[dict[str, Any]]:
+    """Dedektörün GERÇEK pivotları/çizgileri: `anchors` + `geometry` kayıttan okunur (yeniden tahmin yok).
+
+    Zaman sözleşmesi (bulgu #5): dedektör kaydındaki `*_ts` alanları bar AÇILIŞ zamanlarıdır (çizim x
+    koordinatı; paylaşılan dedektör DEĞİŞTİRİLMEDİ). Bilginin ilk bilinebildiği an burada, tüketicide
+    türetilir: `confirmed_at` = tanınma barının KAPANIŞI, `break_known_at` = kırılış barının KAPANIŞI,
+    dayanak `confirmed_at` = teyit barının KAPANIŞI."""
     out: list[dict[str, Any]] = []
     mode = str(chart_mode or "OFF").upper()
+    step = int(tf_ms)
+
+    def _close(ts: Any) -> int | None:
+        v = _ms(ts)
+        return (int(v) + step) if v is not None else None
+
     for n, p in enumerate(det.get("patterns") or []):
         fresh = fresh_within is not None and int(p.get("bars_since", 10**9)) <= int(fresh_within)
         if mode == "ENFORCE" and fresh:
@@ -314,11 +373,13 @@ def pattern_elements(bars: list[dict[str, Any]], det: dict[str, Any], *, chart_m
         name_tr = _PATTERN_TR.get(str(p.get("pattern")), str(p.get("pattern")))
         side_tr = "yükseliş" if str(p.get("side")).upper() == "BULL" else "düşüş"
         anchors = [{"index": a.get("index"), "timestamp": a.get("timestamp"), "price": a.get("level"), "side": a.get("side"),
-                    "role": a.get("role"), "confirmed_at": a.get("confirmed_at_ts")} for a in (p.get("anchors") or [])]
+                    "role": a.get("role"), "confirmed_at": _close(a.get("confirmed_at_ts")), "confirmed_bar_open": a.get("confirmed_at_ts")}
+                   for a in (p.get("anchors") or [])]
         base = {"pattern": p.get("pattern"), "pattern_tr": name_tr, "side": p.get("side"), "state": p.get("state"),
-                "bars_since": p.get("bars_since"), "fresh": fresh, "recognition_at": p.get("recognition_ts"),
-                "break_at": p.get("break_ts"), "break_close": p.get("break_close"), "timeframe": timeframe,
-                "anchors": anchors, "confirmed_at": p.get("recognition_ts"), "decision_impact": impact,
+                "bars_since": p.get("bars_since"), "fresh": fresh,
+                "recognition_at": p.get("recognition_ts"), "recognition_known_at": _close(p.get("recognition_ts")),
+                "break_at": p.get("break_ts"), "break_known_at": _close(p.get("break_ts")), "break_close": p.get("break_close"), "timeframe": timeframe,
+                "anchors": anchors, "confirmed_at": _close(p.get("recognition_ts")), "decision_impact": impact,
                 "decision_impact_tr": imp_tr,
                 "invalidation_tr": "Kırılış barının kapanışı sınırın gerisine dönerse formasyon gösterimde geçersiz sayılır (kapı bunu izlemez).",
                 "source": {"module": "chart_patterns", "function": "detect_chart_patterns",
@@ -329,8 +390,8 @@ def pattern_elements(bars: list[dict[str, Any]], det: dict[str, Any], *, chart_m
                         "label_tr": "%s (%s) — %s" % (name_tr, side_tr, _GEOM_TR.get(str(g.get("kind")), str(g.get("kind")))),
                         "price": g.get("y1"), "lower": None, "upper": None,
                         "t0": g.get("t0"), "y0": g.get("y0"), "t1": g.get("t1"), "y1": g.get("y1"),
-                        "rationale_tr": "%s: %d dayanak pivot; kırılış %s kapanış %.6g; tanınma %s." % (
-                            name_tr, len(anchors), _iso(p.get("break_ts")) or "?", float(p.get("break_close") or 0), _iso(p.get("recognition_ts")) or "?")})
+                        "rationale_tr": "%s: %d dayanak pivot; kırılış barı kapanışı %s (kapanış %.6g); tanınma (bar kapanışı) %s." % (
+                            name_tr, len(anchors), _iso(_close(p.get("break_ts"))) or "?", float(p.get("break_close") or 0), _iso(_close(p.get("recognition_ts"))) or "?")})
         if not geoms:
             out.append({**base, "id": "pattern:%d" % n, "layer": LAYER_PATTERNS, "kind": "pattern_level",
                         "label_tr": "%s (%s) seviye %.6g" % (name_tr, side_tr, float(p.get("level") or 0)),
@@ -533,6 +594,55 @@ def position_to_dict(pos: Any) -> dict[str, Any]:
             "liquidation_price": _d(getattr(pos, "liquidation_price", None)), "last_price": _d(getattr(pos, "last_price", None))}
 
 
+def spot_position_to_dict(symbol: str, p: dict[str, Any] | None) -> dict[str, Any] | None:
+    """`SpotLedger.positions()` satırı -> gösterim sözlüğü (panelin `spot_positions` şekliyle AYNI; bulgu #2).
+    Ana botun SPOT kaydı yalnız spot defterinin pozisyonunu taşır; futures defteri buraya GİRMEZ."""
+    if not p:
+        return None
+    units = _f(p.get("units") if p.get("units") is not None else p.get("qty"))
+    if not units or units <= 0:
+        return None
+    stop = _f(p.get("stop"))
+    return {"id": "SPOT:%s" % symbol, "symbol": symbol, "side": "LONG", "qty": units,
+            "entry_avg": _f(p.get("entry_price") if p.get("entry_price") is not None else p.get("avg_cost")),
+            "stop": stop if stop else None, "initial_stop": None, "targets": [], "opened_at": p.get("entry_time") or p.get("opened_at"),
+            "leverage": 1, "liquidation_price": None, "last_price": None, "market_type": "SPOT"}
+
+
+# ----------------------------------------------------------------------------- karar parmak izi
+def decision_fingerprint_payload(*, rs: dict[str, Any] | None, decision: dict[str, Any] | None, plan: dict[str, Any] | None,
+                                 position: dict[str, Any] | None, history: list[dict[str, Any]] | None) -> dict[str, Any]:
+    """`analysis_id`ye giren karar/defter durumu. Kayda değer her değişim (pozisyon açılış/kapanış, KISMİ kapanış =
+    miktar, stop, hedefler, son kapanan işlem ve gerekçesi, plan, karar hükmü/engel, kural koşulu/rejim) yeni bir
+    analiz anı üretir; işaret fiyatı ve açık K/Z GİRMEZ (her fiyat güncellemesi için dosya üretilmez).
+    2e31926 miktar/hedef/kapanış değişimini içermiyordu (bulgu #3B)."""
+    # Sayısal alanlar NORMALİZE edilir: motor defter nesnesinden float, panel defter JSON'undan Decimal-string okur
+    # ("2505.56" vs 2505.56); aynı gerçek durum iki yolda AYNI parmak izini vermeli (panel motor kaydını kimlikle bulur).
+    def _s(x: Any) -> str | None:
+        return None if x in (None, "") else str(x).upper()
+
+    def _pos(p: dict[str, Any] | None) -> dict[str, Any] | None:
+        if not p:
+            return None
+        return {"id": _s(p.get("id")), "side": _s(p.get("side")), "entry": _f(p.get("entry")), "entry_avg": _f(p.get("entry_avg")),
+                "stop": _f(p.get("stop")), "opened_at": _ms(p.get("opened_at")),
+                "qty": _f(p.get("qty") if p.get("qty") not in (None, "") else (p.get("quantity") if p.get("quantity") not in (None, "") else p.get("units"))),
+                "targets": [_f(t) for t in (p.get("targets") or [p.get("target1"), p.get("target2")]) if _f(t) is not None]}
+
+    rows = [h for h in (history or []) if isinstance(h, dict)]
+    last_h = rows[-1] if rows else None
+    d = decision or {}
+    return {"rs": {"above": bool(rs.get("above")) if rs.get("above") is not None else None, "regime": _s(rs.get("regime")),
+                   "ok": bool(rs.get("ok")), "signal_ts": _ms(rs.get("signal_ts"))} if rs else None,
+            "decision": {"verdict": _s(d.get("verdict")), "block_code": _s(d.get("block_code")),
+                         "risk_allowed": (bool(d.get("risk_allowed")) if d.get("risk_allowed") is not None else None)},
+            "plan": {"entry": _f(plan.get("entry")), "stop": _f(plan.get("stop")), "direction": _s(plan.get("direction")), "valid": bool(plan.get("valid", True)),
+                     "targets": [_f(t) for t in (plan.get("targets") or [plan.get("tp1"), plan.get("tp2")]) if _f(t) is not None]} if plan else None,
+            "position": _pos(position),
+            "history": {"n": len(rows), "last": ({"id": _s(last_h.get("id")), "closed_at": _ms(last_h.get("closed_at")), "exit_price": _f(last_h.get("exit_price")),
+                                                  "exit_reason": _s(last_h.get("exit_reason"))} if last_h else None)}}
+
+
 # ----------------------------------------------------------------------------- ana kurucu
 def build_snapshot(*, symbol: str, market_type: str, timeframe: str, tf_ms: int, book: dict[str, Any],
                    bars: list[dict[str, Any]], as_of_ms: int, daily_rows: list[dict[str, Any]] | None,
@@ -545,15 +655,15 @@ def build_snapshot(*, symbol: str, market_type: str, timeframe: str, tf_ms: int,
     last = bars[-1] if bars else None
     last_close = _f(last.get("close")) if last else None
     lookback = int(cfg.get("swing_lookback", ChartPatternConfig().swing_lookback))
-    piv = pivots(bars, lookback=lookback)
+    piv = pivots(bars, lookback=lookback, tf_ms=tf_ms)
     atr = _f(last.get("atr14")) if last else None
     if atr is None:
         atr = _atr_last(bars, 14) if len(bars) >= 15 else None
     zones = level_elements(bars, piv, atr=atr, tolerance_atr=float(cfg.get("cluster_tolerance_atr", MultiTimeframeConfig().equal_level_atr_tolerance)),
-                           timeframe=timeframe, last_close=last_close)
+                           timeframe=timeframe, last_close=last_close, tf_ms=tf_ms)
     trends = trendline_elements(bars, piv, touch_tolerance_pct=float(cfg.get("trendline_touch_tolerance_pct", 0.3)), timeframe=timeframe, tf_ms=tf_ms)
     det = detect_chart_patterns(bars, ChartPatternConfig()) if bars else {"patterns": []}
-    pats = pattern_elements(bars, det, chart_mode=str(gates.get("chart_mode") or "OFF"), fresh_within=gates.get("chart_fresh_within"), timeframe=timeframe)
+    pats = pattern_elements(bars, det, chart_mode=str(gates.get("chart_mode") or "OFF"), fresh_within=gates.get("chart_fresh_within"), timeframe=timeframe, tf_ms=tf_ms)
     name = str(book.get("name") or BOOK_MAIN)
     rs = None
     if name in ("t2_trend_regime", "m2_tsmom28"):
@@ -566,18 +676,18 @@ def build_snapshot(*, symbol: str, market_type: str, timeframe: str, tf_ms: int,
             v = _f(last.get(key))
             if v is not None:
                 indicators.append({"id": "ind:%s" % key, "layer": LAYER_INDICATORS, "kind": "indicator", "label_tr": "%s %.6g" % (lab, v), "price": v,
-                                   "t0": None, "t1": None, "anchors": [], "confirmed_at": int(last["timestamp"]), "decision_impact": OBSERVATION_ONLY,
+                                   "t0": None, "t1": None, "anchors": [], "confirmed_at": int(last["timestamp"]) + int(tf_ms), "decision_impact": OBSERVATION_ONLY,
                                    "rationale_tr": "Grafik dilimi göstergesi; T2/M2 kuralı GÜNLÜK EMA200 kullanır (aşağıdaki kural satırı).", "invalidation_tr": "—",
                                    "source": {"module": "indicators", "function": "add_snapshot_indicators", "params": {"tf": timeframe}}})
     if rs and rs.get("ok"):
         indicators.append({"id": "ind:daily_ema200", "layer": LAYER_INDICATORS, "kind": "rule_reference", "label_tr": "Günlük EMA200 %.6g (kural)" % rs["ema200"],
-                           "price": rs["ema200"], "t0": None, "t1": None, "anchors": [], "confirmed_at": rs.get("signal_ts"),
+                           "price": rs["ema200"], "t0": None, "t1": None, "anchors": [], "confirmed_at": _daily_close(rs.get("signal_ts")),
                            "decision_impact": USED_IN_DECISION if name == "t2_trend_regime" else OBSERVATION_ONLY,
                            "rationale_tr": "T2 kuralının karşılaştırdığı günlük EMA200 (kapanmış günlük bar %s)." % (_iso(rs.get("signal_ts")) or "?"), "invalidation_tr": "—",
                            "source": {"module": "ema200_trend", "function": "rule_state", "params": {"variant": name}}})
         if rs.get("ref_close") is not None:
             indicators.append({"id": "ind:ref28", "layer": LAYER_INDICATORS, "kind": "rule_reference", "label_tr": "28g referans kapanış %.6g (%s)" % (rs["ref_close"], (_iso(rs.get("ref_ts")) or "?")[:10]),
-                               "price": rs["ref_close"], "t0": rs.get("ref_ts"), "t1": rs.get("signal_ts"), "anchors": [], "confirmed_at": rs.get("signal_ts"),
+                               "price": rs["ref_close"], "t0": rs.get("ref_ts"), "t1": rs.get("signal_ts"), "anchors": [], "confirmed_at": _daily_close(rs.get("signal_ts")),
                                "decision_impact": USED_IN_DECISION,
                                "rationale_tr": "M2 kuralının karşılaştırdığı %d gün önceki günlük kapanış." % TSMOM_LOOKBACK_DAYS, "invalidation_tr": "—",
                                "source": {"module": "ema200_trend", "function": "rule_state", "params": {"variant": name, "lookback_days": TSMOM_LOOKBACK_DAYS}}})
@@ -585,10 +695,7 @@ def build_snapshot(*, symbol: str, market_type: str, timeframe: str, tf_ms: int,
     lines = explain(book=book, rs=rs, decision=decision, gates=gates, position=position, entry_features=entry_features,
                     patterns=pats, zones=[z for z in zones if z["layer"] == LAYER_ZONES], trends=trends)
     code = code or code_sha()
-    fp = json.dumps({"rs": {k: rs.get(k) for k in ("above", "regime", "ok")} if rs else None,
-                     "decision": {k: (decision or {}).get(k) for k in ("verdict", "block_code", "risk_allowed")},
-                     "plan": {k: (plan or {}).get(k) for k in ("entry", "stop", "direction")} if plan else None,
-                     "position": {k: (position or {}).get(k) for k in ("id", "entry", "entry_avg", "stop", "side")} if position else None},
+    fp = json.dumps(decision_fingerprint_payload(rs=rs, decision=decision, plan=plan, position=position, history=history),
                     sort_keys=True, default=str)
     ident = {"exchange": EXCHANGE, "market_type": market_type, "symbol": symbol, "timeframe": timeframe,
              "book_id": str(book.get("book_id") or BOOK_MAIN), "book_name": name,
@@ -600,12 +707,12 @@ def build_snapshot(*, symbol: str, market_type: str, timeframe: str, tf_ms: int,
     return {"schema_version": SCHEMA_VERSION, "analysis_id": aid, "identity": ident, "decision_fingerprint": hashlib.sha256(fp.encode()).hexdigest()[:12],
             "gates": gates, "rule_state": rs, "decision": decision, "plan": plan if name == BOOK_MAIN else None,
             "position": position, "entry_features": entry_features, "n_bars": len(bars),
-            "pivots": {"confirmed": [_anchor_of(bars, p) for p in piv["confirmed"]], "pending": piv["pending"], "lookback": lookback},
+            "pivots": {"confirmed": [_anchor_of(bars, p, tf_ms) for p in piv["confirmed"]], "pending": piv["pending"], "lookback": lookback},
             "patterns_detected": det.get("patterns") or [], "elements": elements, "explanation": lines,
-            "source": source or {}, "synthetic": bool(cfg.get("synthetic", False))}
+            "time_contract": TIME_CONTRACT, "source": source or {}, "synthetic": bool(cfg.get("synthetic", False))}
 
 
-__all__ = ["SCHEMA_VERSION", "TF_MS", "BOOK_MAIN", "USED_IN_DECISION", "OBSERVATION_ONLY", "UNCONFIRMED", "INVALID",
-           "code_sha", "config_hash", "bars_from_frame", "closed_bars_at", "pivots", "level_elements",
-           "trendline_elements", "pattern_elements", "trade_elements", "explain", "build_snapshot",
-           "gates_from_v3", "position_to_dict"]
+__all__ = ["SCHEMA_VERSION", "TF_MS", "BOOK_MAIN", "MARKET_TYPES", "TIME_CONTRACT", "HISTORY_TAIL", "USED_IN_DECISION", "OBSERVATION_ONLY", "UNCONFIRMED", "INVALID",
+           "code_sha", "config_hash", "market_type_of", "plan_for_market", "bars_from_frame", "closed_bars_at", "pivots", "level_elements",
+           "trendline_elements", "pattern_elements", "trade_elements", "explain", "decision_fingerprint_payload", "build_snapshot",
+           "gates_from_v3", "position_to_dict", "spot_position_to_dict"]

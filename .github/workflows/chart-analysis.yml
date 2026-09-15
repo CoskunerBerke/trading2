@@ -39,6 +39,7 @@ jobs:
           set +e
           python -m pytest \
             tests/test_chart_analysis_v1.py \
+            tests/test_chart_analysis_v1_fixes.py \
             tests/test_chart_patterns_v1.py \
             tests/test_chart_confirmation_parity_v1.py \
             tests/test_chart_confirmation_engine_v1.py \

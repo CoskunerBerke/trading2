@@ -165,25 +165,29 @@ def test_render_signal_chart_draws_targetless_position(tmp_path: Path, monkeypat
 
 # ------------------------------------------------------------------ analiz geometrisi
 def test_pivots_confirmed_before_as_of_and_pending_flagged():
+    """Teyit zamani = teyit barinin KAPANISI (bulgu #5): hicbir pivot analiz anindan (as_of) sonra 'bilinmis' olamaz;
+    2e31926'nin eski testi 'confirmed_at <= son barin ACILISI' diyerek bir mum erken tanimi sabitliyordu."""
     bars = _bars_ts()
-    s = _snap(bars)
-    last_ts = bars[-1]["timestamp"]
+    as_of = bars[-1]["timestamp"] + H4
+    s = _snap(bars, as_of=as_of)
+    assert s["pivots"]["confirmed"], "cift dip serisinde teyitli pivot beklenir"
     for p in s["pivots"]["confirmed"]:
-        assert p["confirmed_at"] is not None and p["confirmed_at"] <= last_ts and p["confirmed_at"] >= p["timestamp"]
+        assert p["confirmed_at"] is not None and p["confirmed_at"] <= as_of
+        assert p["confirmed_at"] == p["confirmed_bar_open"] + H4 and p["confirmed_at"] >= p["timestamp"] + 4 * H4   # lookback 3: i+3 kapanis
     pend = [e for e in s["elements"] if e["kind"] == "pivot_pending"]
     assert pend and pend[0]["decision_impact"] == UNCONFIRMED and pend[0]["confirmed_at"] is None
 
 
 def test_zones_come_from_real_clusters_and_need_two_anchors():
     bars = _bars_ts()
-    piv = pivots(bars, lookback=3)
-    zones = [e for e in level_elements(bars, piv, atr=1.0, tolerance_atr=0.6, timeframe="4h", last_close=bars[-1]["close"]) if e["layer"] == "zones"]
+    piv = pivots(bars, lookback=3, tf_ms=H4)
+    zones = [e for e in level_elements(bars, piv, atr=1.0, tolerance_atr=0.6, timeframe="4h", last_close=bars[-1]["close"], tf_ms=H4) if e["layer"] == "zones"]
     assert zones, "cift dip serisinde en az bir kume beklenir"
     for z in zones:
         assert z["n_anchors"] >= 2 and z["lower"] <= z["upper"]
         assert all(z["lower"] <= a["price"] <= z["upper"] for a in z["anchors"])
         assert z["decision_impact"] == OBSERVATION_ONLY and z["confirmed_at"] is not None
-    assert not [e for e in level_elements(bars, piv, atr=None, tolerance_atr=0.6, timeframe="4h", last_close=100.0) if e["layer"] == "zones"], "ATR yoksa bolge YOK"
+    assert not [e for e in level_elements(bars, piv, atr=None, tolerance_atr=0.6, timeframe="4h", last_close=100.0, tf_ms=H4) if e["layer"] == "zones"], "ATR yoksa bolge YOK"
 
 
 def test_trendline_connects_two_confirmed_pivots_and_detects_break():
@@ -191,12 +195,12 @@ def test_trendline_connects_two_confirmed_pivots_and_detects_break():
     for cyc in range(4):                       # yukselen dipler: her dongu bir oncekinden yuksek
         closes += [100 + cyc * 3 + x for x in (2, 4, 6, 4, 2, 0, 1, 3)]
     intact = _bars_ts(closes + [117, 118, 119])
-    piv = pivots(intact, lookback=3)
+    piv = pivots(intact, lookback=3, tf_ms=H4)
     tl = [e for e in trendline_elements(intact, piv, touch_tolerance_pct=0.3, timeframe="4h", tf_ms=H4) if e["kind"] == "trend_support"]
     assert tl and len(tl[0]["anchors"]) == 2 and tl[0]["slope_per_bar"] > 0 and tl[0]["status"] == "INTACT" and tl[0]["decision_impact"] == OBSERVATION_ONLY
     assert tl[0]["t0"] < tl[0]["t1"] and tl[0]["anchors"][0]["confirmed_at"] is not None
     broken = _bars_ts(closes + [117, 105, 96, 94, 93])
-    piv2 = pivots(broken, lookback=3)
+    piv2 = pivots(broken, lookback=3, tf_ms=H4)
     tl2 = [e for e in trendline_elements(broken, piv2, touch_tolerance_pct=0.3, timeframe="4h", tf_ms=H4) if e["kind"] == "trend_support"]
     assert tl2 and tl2[0]["status"] == "BROKEN" and tl2[0]["breaks"] and tl2[0]["decision_impact"] == INVALID
 
@@ -264,14 +268,14 @@ def test_store_dedups_never_rewrites_and_prunes(tmp_path: Path):
     bars = _bars_ts()
     s1 = _snap(bars)
     r = st.save(s1); assert r["written"] is True
-    f = tmp_path / "chart_analysis" / s1["identity"]["book_id"] / "SOL_USDT_4h"
+    f = tmp_path / "chart_analysis" / s1["identity"]["book_id"] / "USDM_PERP" / "SOL_USDT_4h"   # v2 yerlesim: piyasa yolda
     files = sorted(f.glob("*.json")); assert len(files) == 1
     before = files[0].read_bytes(); mt = files[0].stat().st_mtime_ns
     s1b = dict(s1); s1b["elements"] = []                      # ayni kimlikle farkli icerik -> ESKI kayit korunur
     assert st.save(s1b)["written"] is False and files[0].read_bytes() == before and files[0].stat().st_mtime_ns == mt
     for k in (1, 2):
         s = _snap(bars[: len(bars) - k]); st.save(s)
-    rows = st.list("strategy_paper", "SOL/USDT", "4h")
+    rows = st.list("strategy_paper", "USDM_PERP", "SOL/USDT", "4h")
     assert len(rows) == 2 and len(list(f.glob("*.json"))) == 2, "keep_per_series=2: en eski silinir"
     assert st.load(rows[-1]["analysis_id"])["analysis_id"] == rows[-1]["analysis_id"] and st.load("../x") is None
     assert st.stats()["snapshots"] == 2
@@ -337,7 +341,7 @@ def test_engine_decisions_unchanged_and_snapshots_deduped(tmp_path: Path, monkey
     assert stats["snapshots"] >= 3 * 2 and (e_on.cfg.state_path / "chart_analysis" / "config.json").exists()
     cfgj = json.loads((e_on.cfg.state_path / "chart_analysis" / "config.json").read_text(encoding="utf-8"))
     assert cfgj["gates"]["regime_mode"] and cfgj["timeframe"] == "4h"
-    latest = store.latest("strategy_paper", SYMS[0], "4h")
+    latest = store.latest("strategy_paper", "USDM_PERP", SYMS[0], "4h")
     assert latest["position"]["entry_avg"] > 0 and latest["entry_features"]["stop_at_entry"] is not None
     assert latest["rule_state"]["ok"] and latest["rule_state"]["above"] is True and latest["rule_state"]["regime"] == "UP"
     # ayni barlar, ayni karar -> ikinci tur HIC yeni kayit yazmaz

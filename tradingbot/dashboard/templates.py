@@ -625,12 +625,13 @@ es.onerror=function(){{el.textContent='canlı: bağlantı yok';}};}}catch(e){{}}
 
 
 from .chart_js import CHART_JS  # CHART ANALYSIS V1 (salt sunum)
+from ..timeframes import SUPPORTED_TIMEFRAMES  # dilim listesi API ile AYNI kaynaktan (bulgu #1)
 
 
 def chart_block(base: str, tf: str = "4h", market: str = "spot", *, token_qs: str = "", max_bars: int = 600,
                 book: str = "main", books: list[dict] | None = None) -> str:
     """Grafik bloğu: TF / piyasa / DEFTER seçimi, katmanlar, geçmiş analiz, PNG/JSON, kaynak satırı, açıklama + detay."""
-    tfs = "".join(f'<option value="{t}" {"selected" if t == tf else ""}>{t}</option>' for t in ("1h", "4h", "1d"))
+    tfs = "".join(f'<option value="{t}" {"selected" if t == tf else ""}>{t}</option>' for t in SUPPORTED_TIMEFRAMES)
     mks = "".join(f'<option value="{m}" {"selected" if m == market else ""}>{m}</option>' for m in ("spot", "futures"))
     bl = books or [{"book_id": "main", "label": "Ana bot"}]
     bks = "".join(f'<option value="{esc(str(b.get("book_id")))}" {"selected" if b.get("book_id") == book else ""}>{esc(str(b.get("label") or b.get("book_id")))}</option>' for b in bl)

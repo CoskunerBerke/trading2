@@ -2,45 +2,74 @@
 """CHART ANALYSIS V1 — panel grafiği (Plotly). Mevcut mum/gösterge çizimi korunur; analiz katmanları eklenir:
 seviyeler, bölgeler, trend çizgileri, formasyon çizgileri, işlemler (plan / gerçekleşen / işaret fiyatı ayrı),
 katman aç/kapat, öğe detayı (dayanak, teyit, gerekçe, karar etkisi), açıklama paneli, geçmiş analiz seçimi,
-PNG/JSON indirme, veri kaynağı/tazelik satırı, geç gelen istek koruması (req sayacı). SALT SUNUM."""
+PNG/JSON indirme, veri kaynağı/tazelik satırı, geç gelen istek koruması. SALT SUNUM.
+
+İstek sözleşmesi (bulgu #4 onarımı): istek kapsamı (dilim/piyasa/defter/bar/geçmiş) DOM'dan BİR kez okunur ve o
+istekle taşınır; kapsam değişince önceki geçmiş seçimi temizlenir (eski defterin analysis_id'si yeni kapsama
+GÖNDERİLMEZ); grafik ve geçmiş yanıtları hem `req` sırası hem de yanıtın taşıdığı kapsam ile eşleştirilir — geç
+gelen ya da başka kapsama ait yanıt yeni seçimi/grafiği EZEMEZ. Kimlik: `analysis.analysis_id` (kök alan).
+"""
 
 CHART_JS = r"""
 (function(){
-  var base=window.__chartBase, tf=window.__chartTf||'4h', market=window.__chartMarket||'spot', book=window.__chartBook||'main', tokenQs=window.__tokenQs||'';
+  var base=window.__chartBase, tokenQs=window.__tokenQs||'';
   var OV=[['sma25','SMA25','#f5c542'],['sma50','SMA50','#ffb74d'],['sma99','SMA99','#ff8a65'],['sma200','SMA200','#ba68c8'],
           ['ema25','EMA25','#4dd0e1'],['ema50','EMA50','#4fc3f7'],['ema99','EMA99','#7986cb'],['ema200','EMA200','#ce93d8'],
           ['vwap','VWAP','#fff176'],['bb_up','BB üst','#90a4ae'],['bb_mid','BB orta','#78909c'],['bb_lo','BB alt','#90a4ae']];
   var DEF={ema25:1,ema99:1,ema200:1,vwap:0,sma25:0,sma50:0,sma99:0,sma200:0,bb_up:0,bb_mid:0,bb_lo:0,ema50:0};
   var LAYERS=[['levels','Seviyeler'],['zones','Bölgeler'],['trend','Trend'],['patterns','Formasyonlar'],['trades','İşlemler'],['indicators','Göstergeler']];
   var IMPACT={USED_IN_DECISION:['kararda kullanıldı','#26a69a'],OBSERVATION_ONLY:['yalnız gözlem','#90a4ae'],UNCONFIRMED:['henüz teyitsiz','#ffb74d'],INVALID:['geçersiz / ihlal','#ef5350']};
+  var MKT={USDM_PERP:'futures',SPOT:'spot'};
   var box=document.getElementById('ovbox'), lbox=document.getElementById('laybox');
   OV.forEach(function(o){var l=document.createElement('label');l.className='chk';var c=document.createElement('input');c.type='checkbox';c.dataset.k=o[0];c.checked=!!DEF[o[0]];l.appendChild(c);l.appendChild(document.createTextNode(o[1]));box.appendChild(l);c.addEventListener('change',function(){if(last)draw(last);});});
   LAYERS.forEach(function(o){var l=document.createElement('label');l.className='chk';var c=document.createElement('input');c.type='checkbox';c.dataset.layer=o[0];c.checked=true;l.appendChild(c);l.appendChild(document.createTextNode(o[1]));lbox.appendChild(l);c.addEventListener('change',function(){if(last)draw(last);});});
   function layerOn(k){var cb=lbox.querySelector('input[data-layer="'+k+'"]');return !cb||cb.checked;}
-  var seq=0, last=null, elIndex=[];
+  var seq=0, hseq=0, last=null, elIndex=[];
   function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
+  function enc(s){return encodeURIComponent(String(s==null?'':s));}
   function iso(ms){if(ms==null)return '—';try{return new Date(ms).toISOString().replace('T',' ').slice(0,16)+'Z';}catch(e){return String(ms);}}
   function fmt(v){if(v==null||isNaN(v))return '—';var a=Math.abs(v);return a>=1000?v.toFixed(2):a>=1?v.toFixed(4):v.toPrecision(5);}
-  function qs(){var s=document.getElementById('tf');tf=s?s.value:tf;var ms=document.getElementById('mk');market=ms?ms.value:market;var bs=document.getElementById('bk');book=bs?bs.value:book;
-    var n=parseInt((document.getElementById('nbars')||{}).value||'300',10);var h=document.getElementById('hist');var aid=h&&h.value?h.value:'';
-    return 'tf='+tf+'&market='+market+'&book='+encodeURIComponent(book)+'&n='+n+(aid?'&analysis_id='+aid:'')+(tokenQs?'&'+tokenQs.slice(1):'');}
-  function load(){
-    var my=++seq;var url='/api/chart/'+base+'?'+qs()+'&req='+my;
-    fetch(url,{headers:window.__authHeaders||{}}).then(function(r){return r.json();}).then(function(d){
-      if(my!==seq||(d.req!==undefined&&parseInt(d.req,10)!==my))return;   // geç gelen eski istek: yeni seçimi EZMEZ
+  function val(id,dflt){var el=document.getElementById(id);return (el&&el.value!=null&&el.value!=='')?el.value:dflt;}
+  function scope(){   // istek kapsami DOM'dan BIR kez okunur; istekle birlikte tasinir
+    var n=parseInt(val('nbars','300'),10);
+    return {tf:val('tf',window.__chartTf||'4h'),market:val('mk',window.__chartMarket||'spot'),book:val('bk',window.__chartBook||'main'),n:isNaN(n)?300:n,aid:val('hist','')};}
+  function sameScope(a,b){return a.tf===b.tf&&a.market===b.market&&a.book===b.book;}
+  function tq(){return tokenQs?'&'+tokenQs.slice(1):'';}
+  function chartUrl(sc,my){return '/api/chart/'+base+'?tf='+enc(sc.tf)+'&market='+enc(sc.market)+'&book='+enc(sc.book)+'&n='+sc.n+(sc.aid?'&analysis_id='+enc(sc.aid):'')+tq()+'&req='+my;}
+  function historyUrl(sc,my){return '/api/chart/'+base+'/history?tf='+enc(sc.tf)+'&market='+enc(sc.market)+'&book='+enc(sc.book)+tq()+'&req='+my;}
+  function identityMatches(d,sc){var A=d.analysis||{};var a=A.identity||{};
+    if(a.timeframe&&a.timeframe!==sc.tf)return false;if(a.book_id&&a.book_id!==sc.book)return false;
+    if(a.market_type&&MKT[a.market_type]&&MKT[a.market_type]!==sc.market)return false;
+    if(sc.aid&&A.analysis_id&&A.analysis_id!==sc.aid)return false;return true;}
+  function load(sc){
+    sc=sc||scope();var my=++seq;
+    fetch(chartUrl(sc,my),{headers:window.__authHeaders||{}}).then(function(r){return r.json();}).then(function(d){
+      if(my!==seq)return;                                                    // daha yeni istek var: eski yanit cizilmez
+      if(d.req!==undefined&&d.req!==null&&parseInt(d.req,10)!==my)return;    // yanit baska istegin yankisi
+      if(!sameScope(scope(),sc))return;                                      // kullanici bu arada kapsam degistirdi
+      if(d.tf&&d.tf!==sc.tf)return;if(d.market&&d.market!==sc.market)return;if(d.book&&d.book!==sc.book)return;
+      if(!identityMatches(d,sc))return;                                      // sunucu baska kimlik dondurdu: EZME
       last=d;draw(d);}).catch(function(e){if(my===seq)document.getElementById('chart').innerHTML='<div class=card>grafik yüklenemedi: '+esc(e)+'</div>';});
   }
-  function loadHistory(){var h=document.getElementById('hist');if(!h)return;var cur=h.value;
-    fetch('/api/chart/'+base+'/history?tf='+tf+'&market='+market+'&book='+encodeURIComponent(book)+(tokenQs?'&'+tokenQs.slice(1):''),{headers:window.__authHeaders||{}}).then(function(r){return r.json();}).then(function(d){
-      var rows=(d.rows||[]).slice().reverse();h.innerHTML='<option value="">şimdi (canlı analiz)</option>'+rows.map(function(r){return '<option value="'+esc(r.analysis_id)+'">'+esc(iso(r.as_of_ms))+' · '+esc(r.analysis_id)+'</option>';}).join('');
-      if(cur&&rows.some(function(r){return r.analysis_id===cur;}))h.value=cur;}).catch(function(){});}
-  function srcLine(d){var s=d.source||{};var a=(d.analysis||{}).identity||{};var parts=[];
+  function resetHistory(){var h=document.getElementById('hist');if(!h)return;h.innerHTML='<option value="">şimdi (canlı analiz)</option>';h.value='';}
+  function loadHistory(sc,keepAid){var h=document.getElementById('hist');if(!h)return;
+    sc=sc||scope();var my=++hseq;var want=keepAid||'';
+    fetch(historyUrl(sc,my),{headers:window.__authHeaders||{}}).then(function(r){return r.json();}).then(function(d){
+      if(my!==hseq)return;if(d.req!==undefined&&d.req!==null&&parseInt(d.req,10)!==my)return;
+      if(d.tf!==sc.tf||d.market!==sc.market||d.book!==sc.book)return;        // yanit istek kapsamina ait degil
+      if(!sameScope(scope(),sc))return;
+      var rows=(d.rows||[]).slice().reverse();
+      h.innerHTML='<option value="">şimdi (canlı analiz)</option>'+rows.map(function(r){return '<option value="'+esc(r.analysis_id)+'">'+esc(iso(r.as_of_ms))+' · '+esc(r.analysis_id)+'</option>';}).join('');
+      h.value=(want&&rows.some(function(r){return r.analysis_id===want;}))?want:'';}).catch(function(){});}
+  function srcLine(d){var s=d.source||{};var A=d.analysis||{};var a=A.identity||{};var parts=[];
     if(s.missing){parts.push('<span class="bad">VERİ YOK: '+esc(s.base)+' '+esc(s.tf)+' '+esc(s.market)+' dosyası bulunamadı (başka piyasa/dilimle doldurulmadı)</span>');}
     else{parts.push('kaynak: '+esc(s.file||'?')+' ('+esc(s.market)+' '+esc(s.tf)+')');parts.push('son bar: '+esc(iso(s.last_bar_ts)));if(s.age_s!=null)parts.push('yaş: '+Math.round(s.age_s/60)+' dk');
       if(s.stale)parts.push('<span class="bad">BAYAT VERİ — güncel değil</span>');}
-    if(d.historical)parts.push('<span class="warn">GEÇMİŞ ANALİZ '+esc(a.as_of||'')+' — yalnız o anda kapanmış mumlar</span>');
-    if(a.analysis_id)parts.push('analiz '+esc(a.analysis_id)+' · kod '+esc((a.code_sha||'').slice(0,7))+' · defter '+esc(a.book_id));
-    if((d.analysis||{}).synthetic)parts.push('<span class="warn">SENTETİK GÖSTERİM VERİSİ</span>');
+    if(d.historical)parts.push('<span class="warn">GEÇMİŞ ANALİZ '+esc(a.as_of||'')+' — yalnız o anda kapanmış mumlar; işlem katmanı o anki defter kaydı</span>');
+    else if(d.live)parts.push('canlı defter: '+esc(iso(d.live.as_of_ms))+' ('+esc(d.live.source||'defter')+')');
+    if(A.analysis_id)parts.push('analiz '+esc(A.analysis_id)+' · an '+esc(iso(a.as_of_ms))+' · '+(d.analysis_stored?'motor kaydı':'panel hesabı (kaydedilmedi)')+' · kod '+esc((a.code_sha||'').slice(0,7))+' · defter '+esc(a.book_id)+' · '+esc(MKT[a.market_type]||a.market_type)+' '+esc(a.timeframe));
+    var er=d.engine_record;if(er&&!d.historical&&!er.matches_now)parts.push('<span class="mut">motorun son kaydı '+esc(er.analysis_id)+' ('+esc(iso(er.as_of_ms))+') şimdiki durumdan farklı: '+esc((er.diff||[]).join('; '))+'</span>');
+    if(A.synthetic)parts.push('<span class="warn">SENTETİK GÖSTERİM VERİSİ</span>');
     document.getElementById('srcline').innerHTML=parts.join(' · ');}
   function explain(d){var a=d.analysis||{};var ex=a.explanation||[];var html='';
     if(!ex.length)html='<div class="mut">Açıklama yok.</div>';
@@ -51,12 +80,13 @@ CHART_JS = r"""
   function detail(e){if(!e)return;var im=IMPACT[e.decision_impact]||[e.decision_impact,'#ccc'];var h='<div><b>'+esc(e.label_tr)+'</b> <span class="badge" style="border-color:'+im[1]+';color:'+im[1]+'">'+esc(im[0])+'</span></div>';
     h+='<div class="small">tür: '+esc(e.kind)+' · katman: '+esc(e.layer)+(e.timeframe?' · dilim: '+esc(e.timeframe):'')+(e.status?' · durum: '+esc(e.status):'')+'</div>';
     if(e.price!=null)h+='<div class="small">fiyat: '+fmt(e.price)+(e.lower!=null?' · aralık '+fmt(e.lower)+'–'+fmt(e.upper):'')+'</div>';
-    if(e.t0!=null||e.t1!=null)h+='<div class="small">zaman: '+iso(e.t0)+' → '+iso(e.t1)+'</div>';
-    if(e.slope_per_day!=null)h+='<div class="small">eğim: '+fmt(e.slope_per_day)+'/gün · temas '+((e.touches||[]).length)+' · ihlal '+((e.breaks||[]).length)+'</div>';
-    if(e.confirmed_at!=null)h+='<div class="small">teyit: '+iso(e.confirmed_at)+'</div>';
+    if(e.t0!=null||e.t1!=null)h+='<div class="small">bar (açılış): '+iso(e.t0)+' → '+iso(e.t1)+'</div>';
+    if(e.slope_per_day!=null)h+='<div class="small">eğim: '+fmt(e.slope_per_day)+'/gün · temas '+((e.touches||[]).length)+' · ihlal '+((e.breaks||[]).length)+(e.broken_at!=null?' (kırılış bilindi: '+iso(e.broken_at)+')':'')+'</div>';
+    if(e.confirmed_at!=null)h+='<div class="small">teyit (bar kapanışı): '+iso(e.confirmed_at)+'</div>';
+    if(e.break_known_at!=null)h+='<div class="small">kırılış barı: '+iso(e.break_at)+' açılış → '+iso(e.break_known_at)+' kapanışta bilindi</div>';
     if((e.anchors||[]).length){h+='<div class="small">dayanaklar:<ul style="margin:2px 0 2px 16px;padding:0">'+e.anchors.map(function(a){return '<li>'+esc(a.role||a.side||'')+' '+fmt(a.price)+' @ '+iso(a.timestamp)+(a.confirmed_at?' (teyit '+iso(a.confirmed_at)+')':' (teyitsiz)')+'</li>';}).join('')+'</ul></div>';}
     h+='<div class="small">gerekçe: '+esc(e.rationale_tr)+'</div>';if(e.invalidation_tr)h+='<div class="small">geçersizleşme: '+esc(e.invalidation_tr)+'</div>';
-    if(e.source)h+='<div class="mut small">kaynak: '+esc(e.source.module)+'.'+esc(e.source.function)+' '+esc(JSON.stringify(e.source.params||{}))+'</div>';
+    if(e.source)h+='<div class="mut small">kaynak: '+esc(e.source.module)+'.'+esc(e.source.function)+' '+esc(JSON.stringify(e.source.params||{}))+(e.source.live?' · canlı '+esc(e.source.live_at||''):'')+'</div>';
     document.getElementById('detail').innerHTML=h;}
   function draw(d){
     srcLine(d);explain(d);
@@ -87,7 +117,7 @@ CHART_JS = r"""
         ann.push({xref:'paper',x:0.005,yref:'y',y:e.price,text:e.label_tr,showarrow:false,font:{size:9,color:'#b0bec5'},xanchor:'left',bgcolor:'rgba(14,17,22,.6)'});}
       else if(e.layer==='levels'){var pend=e.kind==='pivot_pending';mk(e,[new Date(e.t0)],[e.price],e.kind==='pivot_high'?'triangle-down':(e.kind==='pivot_low'?'triangle-up':'circle-open'),pend?'#ffb74d':'#90caf9',pend?10:7);}
       else if(e.layer==='trend'){var col=e.status==='BROKEN'?'#ef5350':'#90caf9';segline(e,e.t0,e.y0,e.t1,e.y1,col,e.status==='BROKEN'?'dot':'solid',1.4);
-        (e.touches||[]).forEach(function(t){});(e.breaks||[]).slice(0,1).forEach(function(b){mk(e,[new Date(b.timestamp)],[b.close],'x','#ef5350',9,'ihlal');});}
+        (e.breaks||[]).slice(0,1).forEach(function(b){mk(e,[new Date(b.timestamp)],[b.close],'x','#ef5350',9,'ihlal');});}
       else if(e.layer==='patterns'){if(e.t0!=null&&e.y0!=null)segline(e,e.t0,e.y0,e.t1,e.y1,imc==='#26a69a'?'#26a69a':'#ce93d8','dash',1.4);
         mk(e,(e.anchors||[]).map(function(a){return new Date(a.timestamp);}),(e.anchors||[]).map(function(a){return a.price;}),'square','#ce93d8',7);
         if(e.break_at!=null)mk(e,[new Date(e.break_at)],[e.break_close],'star','#ffd54f',10,'kırılış');}
@@ -116,13 +146,21 @@ CHART_JS = r"""
       shapes:shapes,annotations:ann};
     Plotly.react('chart',traces,layout,{responsive:true,displaylogo:false,scrollZoom:true,modeBarButtonsToRemove:['lasso2d','select2d']});
     var gd=document.getElementById('chart');gd.removeAllListeners&&gd.removeAllListeners('plotly_click');
-    gd.on('plotly_click',function(ev){var pt=ev.points&&ev.points[0];if(pt&&pt.customdata!==undefined)detail(elIndex[pt.customdata]);});
+    gd.on&&gd.on('plotly_click',function(ev){var pt=ev.points&&ev.points[0];if(pt&&pt.customdata!==undefined)detail(elIndex[pt.customdata]);});
   }
-  ['tf','mk','bk','nbars','hist'].forEach(function(id){var el=document.getElementById(id);if(el)el.addEventListener('change',function(){if(id!=='hist'&&id!=='nbars')loadHistory();load();});});
-  document.getElementById('reload').addEventListener('click',function(){loadHistory();load();});
-  var png=document.getElementById('dl-png');if(png)png.addEventListener('click',function(){var a=(last&&last.analysis&&last.analysis.identity)||{};Plotly.downloadImage('chart',{format:'png',width:1400,height:800,filename:base+'_'+tf+'_'+(a.book_id||book)+'_'+(a.analysis_id||'canli')});});
-  var js=document.getElementById('dl-json');if(js)js.addEventListener('click',function(){var a=(last&&last.analysis&&last.analysis.identity)||{};if(a.analysis_id){window.open('/api/chart/'+base+'/snapshot/'+a.analysis_id+(tokenQs||''),'_blank');}else if(last){var blob=new Blob([JSON.stringify(last.analysis||{},null,1)],{type:'application/json'});var u=URL.createObjectURL(blob);var l=document.createElement('a');l.href=u;l.download=base+'_'+tf+'_'+book+'_canli.json';document.body.appendChild(l);l.click();setTimeout(function(){URL.revokeObjectURL(u);l.remove();},500);}});
-  window.__onState=function(s){if(s&&s.changed&&(s.changed.indexOf('coin_heads')>=0||s.changed.indexOf('futures_ledger')>=0||s.changed.indexOf('strategy_paper')>=0)){var h=document.getElementById('hist');if(!h||!h.value)load();}};
-  if(typeof Plotly==='undefined'){document.getElementById('chart').innerHTML='<div class=card>plotly.min.js yüklenemedi (plotly paketi kurulu değil?)</div>';}else{loadHistory();load();}
+  function fileStem(){var d=last||{};var A=d.analysis||{};var a=A.identity||{};var sc=scope();
+    var mk=MKT[a.market_type]||sc.market;var stored=!!(A.analysis_id&&(d.analysis_stored||d.historical));
+    var stamp=String(a.as_of||(d.live&&d.live.as_of)||'').replace(/[^0-9]/g,'').slice(0,12);
+    return base+'_'+(a.timeframe||sc.tf)+'_'+mk+'_'+(a.book_id||sc.book)+'_'+(stored?A.analysis_id:('canli-'+(stamp||'x')));}
+  ['tf','mk','bk'].forEach(function(id){var el=document.getElementById(id);if(el)el.addEventListener('change',function(){resetHistory();var sc=scope();loadHistory(sc,'');load(sc);});});
+  ['nbars','hist'].forEach(function(id){var el=document.getElementById(id);if(el)el.addEventListener('change',function(){load(scope());});});
+  document.getElementById('reload').addEventListener('click',function(){var sc=scope();loadHistory(sc,sc.aid);load(sc);});
+  var png=document.getElementById('dl-png');if(png)png.addEventListener('click',function(){Plotly.downloadImage('chart',{format:'png',width:1400,height:800,filename:fileStem()});});
+  var js=document.getElementById('dl-json');if(js)js.addEventListener('click',function(){var d=last||{};var A=d.analysis||{};
+    if(A.analysis_id&&(d.analysis_stored||d.historical)){window.open('/api/chart/'+base+'/snapshot/'+A.analysis_id+(tokenQs||''),'_blank');}
+    else if(last){var blob=new Blob([JSON.stringify(A,null,1)],{type:'application/json'});var u=URL.createObjectURL(blob);var l=document.createElement('a');l.href=u;l.download=fileStem()+'.json';document.body.appendChild(l);l.click();setTimeout(function(){URL.revokeObjectURL(u);l.remove();},500);}});
+  window.__onState=function(s){if(s&&s.changed&&(s.changed.indexOf('coin_heads')>=0||s.changed.indexOf('futures_ledger')>=0||s.changed.indexOf('strategy_paper')>=0||s.changed.indexOf('portfolio')>=0||s.changed.indexOf('risk')>=0)){var sc=scope();if(!sc.aid)load(sc);}};
+  window.__chartTest={scope:scope,fileStem:fileStem,last:function(){return last;}};
+  if(typeof Plotly==='undefined'){document.getElementById('chart').innerHTML='<div class=card>plotly.min.js yüklenemedi (plotly paketi kurulu değil?)</div>';}else{var sc0=scope();loadHistory(sc0,'');load(sc0);}
 })();
 """

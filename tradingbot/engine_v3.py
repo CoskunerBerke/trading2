@@ -2186,8 +2186,8 @@ class TradingEngineV3(TradingEngine):
             return
         try:
             from .candle_confirmation import closed_bars
-            from .chart_analysis import (BOOK_MAIN, bars_from_frame, build_snapshot, closed_bars_at, code_sha, config_hash,
-                                         gates_from_v3, position_to_dict)
+            from .chart_analysis import (BOOK_MAIN, HISTORY_TAIL, bars_from_frame, build_snapshot, closed_bars_at, code_sha, config_hash,
+                                         gates_from_v3, plan_for_market, position_to_dict, spot_position_to_dict)
             from .chart_analysis import TF_MS
             from .chart_analysis_store import DIRNAME, ChartAnalysisStore
             from .ema200_trend import daily_rows_from_frame
@@ -2225,14 +2225,27 @@ class TradingEngineV3(TradingEngine):
                 d1 = fr.get("1d")
                 daily = closed_bars(daily_rows_from_frame(d1, tail=320), now_ms=as_of, tf="1d") if d1 is not None else []
                 prov = (getattr(self, "_frame_provenance", None) or {}).get(sym) or {}
-                market_type = str(prov.get("market") or "USDM_PERP")
+                bar_market = str(prov.get("market") or "USDM_PERP")            # cerceve (mum) piyasasi; kayda ayrica yazilir
                 head = self.last_decisions.get(sym) or {}
-                plan = head.get("spot_plan") if market_type == "SPOT" else head.get("futures_plan")   # piyasaya KESIN bagli
                 mark = float(marks_f[sym]) if sym in marks_f else None
+                spot_book = getattr(self, "spot2", None)
                 for b in books:
-                    pos = b["ledger"].positions.get(sym)
-                    posd = position_to_dict(pos) if pos is not None else None
-                    hist = [h for h in b["ledger"].history_dicts() if h.get("symbol") == sym][-50:]
+                    is_main = b["book_id"] == BOOK_MAIN
+                    # PIYASA-KESIN KAYIT (CHART ANALYSIS V1 onarimi, bulgu #2): kayit kimligi DEFTERIN piyasasidir.
+                    # Kagit defterler (T2/M2) yalniz USDM_PERP; ana bot kaydi cerceve piyasasini tasir ve pozisyon/plan/
+                    # gecmis YALNIZ o piyasadan gelir (SPOT kaydi futures defterini TASIMAZ, tersi de). 2e31926 ana
+                    # botun SPOT kaydina futures defterinin pozisyonunu yaziyordu.
+                    market_type = bar_market if is_main else "USDM_PERP"
+                    pos = None
+                    plan = plan_for_market(head, market_type)        # yalniz gecerli plan, panelle AYNI kural
+                    if is_main and market_type == "SPOT":
+                        spd = (spot_book.positions() if spot_book is not None else {}).get(sym)
+                        posd = spot_position_to_dict(sym, spd) if spd else None
+                        hist = [h for h in spot_book.history_dicts() if h.get("symbol") == sym][-HISTORY_TAIL:] if spot_book is not None else []
+                    else:
+                        pos = b["ledger"].positions.get(sym)
+                        posd = position_to_dict(pos) if pos is not None else None
+                        hist = [h for h in b["ledger"].history_dicts() if h.get("symbol") == sym][-HISTORY_TAIL:]
                     ef = None
                     if pos is not None and b["memory"] is not None:
                         try:
@@ -2240,13 +2253,13 @@ class TradingEngineV3(TradingEngine):
                             ef = row.get("features") or (row.get("entry") or {}).get("features")
                         except Exception:  # noqa: BLE001
                             ef = None
-                    is_main = b["book_id"] == BOOK_MAIN
                     snap = build_snapshot(symbol=sym, market_type=market_type, timeframe=tf, tf_ms=step,
                                           book={"book_id": b["book_id"], "name": b["name"], "atr_mult": b["atr_mult"]},
                                           bars=bars, as_of_ms=as_of, daily_rows=daily, btc_daily_rows=btc_rows, gates=gates,
                                           decision=last_dec.get(sym) if is_main else None, plan=plan if is_main else None,
                                           position=posd, history=hist, entry_features=ef, mark_price=mark, cfg=cfgd,
-                                          code=code, cfg_hash=chash, source={"frames": "runner.last_frames", "provenance": prov})
+                                          code=code, cfg_hash=chash,
+                                          source={"frames": "runner.last_frames", "provenance": prov, "bar_market": bar_market})
                     written += int(bool(store.save(snap).get("written")))
             if written:
                 log.info("grafik analizi: %d yeni analiz ani kaydedildi", written)

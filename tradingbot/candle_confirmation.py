@@ -24,6 +24,7 @@ from typing import Any
 
 from .learn.candle_context import (BEAR_SIDE_SHAPES, BULL_SIDE_SHAPES, CONFIRMED,
                                    CandleContextConfig, _shapes, evaluate_confirmation)
+from .timeframes import TF_MS as _TF_MS, tf_ms
 
 MODES = ("OFF", "SHADOW", "ENFORCE")
 VARIANTS = ("c1_4h", "c2_4h_confirm", "c3_4h_veto", "c4_1d")
@@ -31,13 +32,15 @@ DEFAULT_VARIANT = "c3_4h_veto"
 #: Her varyantin okudugu zaman dilimi ve gerektirdigi KAPANMIS bar sayisi.
 _NEED = {"c1_4h": ("4h", 3), "c2_4h_confirm": ("4h", 4), "c3_4h_veto": ("4h", 3),
          "c4_1d": ("1d", 3)}
-_TF_MS = {"4h": 4 * 3_600_000, "1d": 24 * 3_600_000}
+#: Dilim tablosu TEK kaynaktan (`timeframes.TF_MS`): 2e31926'da burada yalniz 4h/1d vardi ve panelin
+#: 15m/1h/1w istekleri ayni fonksiyonda KeyError ile cokuyordu (CHART ANALYSIS V1 onarimi, bulgu #1).
 
 
 def closed_bars(rows: list[dict[str, Any]], *, now_ms: int, tf: str) -> list[dict[str, Any]]:
-    """Yalniz `now_ms` aninda KAPANMIS barlar (timestamp + tf <= now). Formasyon kapanmamis
-    bardan OKUNMAZ; replay'in `_slice` kurali ile ayni kosul."""
-    step = _TF_MS[tf]
+    """Yalniz `now_ms` aninda KAPANMIS barlar (timestamp + tf <= now; esitlik dahil, 1 ms once DEGIL).
+    Formasyon kapanmamis bardan OKUNMAZ; replay'in `_slice` kurali ile ayni kosul. Bilinmeyen dilim
+    sessizce 4h sayilmaz: ValueError."""
+    step = tf_ms(tf)
     out = []
     for r in rows or []:
         ts = r.get("timestamp")

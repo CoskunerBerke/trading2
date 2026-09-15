@@ -12,7 +12,7 @@ from ..indicators import bollinger, ema, rsi, sma
 from ..indicators_ext import macd, vwap_session
 
 TF_ALIASES = {"1h": ("1h", "60"), "4h": ("4h", "240"), "1d": ("1d", "D", "1D"), "15m": ("15m", "15"), "1w": ("1w", "W")}
-from ..chart_analysis import TF_MS  # tek kaynak (algoritma katmani panel modulunu ICE AKTARMAZ)
+from ..timeframes import TF_MS  # tek kaynak (algoritma katmani panel modulunu ICE AKTARMAZ; bulgu #1)
 
 
 def _clean(v: Any) -> Any:
@@ -107,7 +107,17 @@ class CandleSource:
                 continue
         return sorted(bases)
 
-    def load(self, base: str, tf: str = "4h", market: str = "spot", n: int | None = None) -> pd.DataFrame | None:
+    def bounds(self, base: str, tf: str = "4h", market: str = "spot") -> dict[str, Any] | None:
+        """Arşivin gerçek kapsamı (ilk/son bar, satır sayısı) — 'veri yok' bildirimi DÜRÜST olsun diye (bulgu #6)."""
+        df = self.load(base, tf, market)
+        if df is None or df.empty:
+            return None
+        return {"first_ts": int(df["timestamp"].iloc[0]), "last_ts": int(df["timestamp"].iloc[-1]), "rows": int(len(df))}
+
+    def load(self, base: str, tf: str = "4h", market: str = "spot", n: int | None = None, *, end_ts: int | None = None) -> pd.DataFrame | None:
+        """Mumlar. `end_ts` verilirse ÖNCE `timestamp <= end_ts` seçilir, SONRA son `n` bar alınır: geçmiş bir analiz anı
+        için görüntülenecek barlar ve gösterge ısınması o tarih aralığından gelir (2e31926 önce en yeni n barı kesip
+        sonra tarihe filtreliyordu; arşivde olan tarih için 'veri yok' dönüyordu — bulgu #6)."""
         p = self.find(base, tf, market)
         if p is None:
             return None
@@ -141,6 +151,8 @@ class CandleSource:
             return None
         out = out.dropna(subset=["open", "high", "low", "close", "timestamp"]).sort_values("timestamp").drop_duplicates("timestamp", keep="last")
         out = out.reset_index(drop=True)
+        if end_ts is not None:
+            out = out[out["timestamp"] <= int(end_ts)].reset_index(drop=True)   # analiz anına göre seçim, kuyruktan ÖNCE
         if n:
             out = out.iloc[-int(n):].reset_index(drop=True)
         return out

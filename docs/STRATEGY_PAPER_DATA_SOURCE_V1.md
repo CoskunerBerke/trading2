@@ -59,15 +59,19 @@ piyasa/kaynak/tur/bar zamanları/BTC hükmü yazılır (işlem kaydında kanıt)
 Önce: tur tick'i `_marks` (spot ticker `last` + spot 1h high/low), 60 sn izleyici `ticker.last` (spot) = mark. Şimdi
 (`engine_v3._paper_marks`):
 
-* Fiyat = **USDⓈ-M perpetual mark** (`funding.markPrice`, binanceusdm `fetch_funding_rate`; bu turda bağlanan
-  `perp_mark`, yoksa taze snapshot). Spot ticker kullanılmaz; yanlış fiyat etiket değiştirilerek futures yapılmaz.
-* 1h high/low (bar içi stop/TP tetiği) YALNIZ bu turda provenansı USDM_PERP olan çerçeveden; SPOT ikamesi fitili futures
-  stop'unu tetiklemez (`test_5`).
-* Doğrulanmış perp fiyatı yoksa: sembol için tick YOK (uydurma gerçekleşme yok), `data_gaps[sym] =
-  NO_VERIFIED_FUTURES_PRICE` + `PRICE_GAP` olayı (durum değişince bir kez; `PRICE_RESTORED` ile kapanır), pozisyon
-  izlenmeye devam eder, özetteki `last_price` son bilinen değerdir. Fiyat geri gelince mevcut davranış sürer (stop/hedef
-  doğrulanmış mark ile çalışır, çerçeve SPOT olsa bile).
-* Ana botun (`ledger2`) tick yolu bu turda DEĞİŞMEDİ (aynı spot ticker kaynağı; kapsam dışı, ayrıca not edildi).
+* Fiyat = **USDⓈ-M perpetual mark** (`funding.markPrice`, binanceusdm `fetch_funding_rate`), her kontrolde canlı
+  sağlayıcıdan (`runner.live.snapshot`, sembol başına paylaşılan 60 sn önbellek). Spot ticker kullanılmaz; yanlış fiyat
+  etiket değiştirilerek futures yapılmaz. Turun provenansına bağlanan `perp_mark` **kayıttır, fiyat kaynağı değil**
+  (2026-09-16 ikinci tur; bkz. §6): tur kimliği aynı diye eski fiyat yeniden kullanılmaz.
+* Tur ve izleyici tick'i **fiyat-yalnız**dır (bar ucu taşımaz). Kapanmış 1h bar uçları ayrı sözleşmeyle
+  (`StrategyBook.apply_closed_bars`, §6) YALNIZ bu turda provenansı USDM_PERP olan çerçeveden; SPOT ikamesi fitili futures
+  stop'unu tetiklemez (`test_5`), giriş öncesi/tüketilmiş fitil yeni olay üretmez (`test_strategy_paper_price_time_v1`).
+* Geçerli ve güncel perp fiyatı yoksa: sembol için tick YOK (uydurma gerçekleşme yok), `data_gaps[sym]` gerekçeli
+  (`NO_VERIFIED_FUTURES_PRICE` | `STALE_FUTURES_PRICE` | `INVALID_FUTURES_PRICE_TIME`) + `PRICE_GAP` olayı (durum/gerekçe
+  değişince bir kez; `PRICE_RESTORED` ile kapanır), pozisyon izlenmeye devam eder, özetteki `last_price` son bilinen
+  değerdir (yeni zaman damgası basılmaz). Fiyat geri gelince mevcut davranış sürer (stop/hedef doğrulanmış mark ile
+  çalışır, çerçeve SPOT olsa bile).
+* Ana botun (`ledger2`) tick yolu bu turda DEĞİŞMEDİ (aynı spot ticker kaynağı + son 1h ucu; kapsam dışı, ayrıca not edildi).
 
 ## 4. İzlenebilirlik
 
@@ -89,3 +93,23 @@ aynı zaman damgaları) ile giriş ve `data_source` kaydı; açık pozisyon + SP
 koruyucu stop; kural kapanışı BTC'siz / SPOT ikamesiyle CLOSE yok; yeniden başlatma + chart açık/kapalı; replay manifest
 bağı. Test harness'ında sağlayıcı taklit edilir (`_install(market=, btc_market=)`, `install_perp_frames`), doğrulama yolu
 gerçek koddur.
+
+## 6. Zaman sözleşmeleri (2026-09-16, ikinci tur — canlı fiyat ve zaman doğrulaması)
+
+Bağımsız inceleme 6042fcf'de üç kusur buldu; üçü de gerçek motor turuyla yeniden üretildi
+(`docs/review/evidence-2026-09-16/repro_pt.py`, `pt_before.txt` → `pt_after.txt`; kapanış: `docs/review/PAPER_PRICE_TIME_2026-09-16.md`).
+Sabitler `tradingbot/strategy_paper.py` başındadır ve özet dosyasına `data_policy.{price,bars,freshness}` olarak yazılır.
+
+| sözleşme | kural | kod |
+|---|---|---|
+| **Canlı fiyat** | Her kontrolde `runner.live.snapshot` (paylaşılan 60 sn önbellek: ana defter/T2/M2 aynı isteği tekrarlamaz). Fiyat = `funding.mark`; **kaynak zamanı** = `funding.ts` (borsanın mark zaman damgası, ms) yoksa snapshot `ts` (alınma, epoch sn); **kontrol anı** ayrı. Şart: sonlu ve pozitif; kaynak zamanı çözülebilir, `now`dan `PRICE_FUTURE_SKEW_S` (120 sn) fazla ileride değil, yaş ≤ `PRICE_MAX_AGE_S` (180 sn = önbellek 60 + izleyici 60 + pay). Aksi: tick YOK, boşluk gerekçeli. Turun bağlı `perp_mark`ı kayıttır (fiyat + zamanlar + bağlama anındaki yaş), yeniden kullanılmaz. `TickData.ts` = fiyatın kaynak zamanı (ISO, UTC). | `verified_price`, `parse_ts_ms`, `engine_v3._paper_marks(now=)` |
+| **Bar uçları (1h)** | Yalnız (1) `now` anında kapanmış (`açılış + 1h <= now`), (2) pozisyon açılışından SONRA açılmış (`açılış >= opened_at`; girişi içeren bar dahil değil — replay `_advance` ile aynı sınır), (3) tüketilmemiş (`pozisyon.meta.ohlc_cursor["1h"]`, defter dosyasında kalıcı) barlar; kronolojik, bar başına bir defter tick'i, tick zamanı = bar kapanışı (kapanış kaydı gerçek olay zamanı). Ölçek dışı bar (canlı mark ±%20 dışı ya da `low<=close<=high` değil) atlanır, imleç ilerler, `BAR_SKIPPED` olayı. İzleyici (60 sn) bar ucu uygulamaz. Tur sırası: kural → bar uçları → canlı fiyat (stop sonrası aynı turda yeniden giriş yok). | `StrategyBook.apply_closed_bars`, `engine_v3._paper_closed_bars` |
+| **Günlük sinyal güncelliği** | Değerlendirme anı `as_of` açık girdidir: canlıda turun karar saati (`_tour_now_ms`), replay'de simülasyonun karar anı (`t + tf`; duvar saati DEĞİL). Kural `as_of` anında KAPANMIŞ son barı okur; hüküm `bars["1d"]` = o bar (kapanmamış/gelecek son satır dışlanır; `step` kuralın okuduğu barla birebir eşitliği ayrıca denetler → `DATA_BAR_MISMATCH_1D`). Beklenen son kapanış = `as_of`tan önceki UTC gün sınırı; `BAR_LAG_TOLERANCE_MS["1d"]` (1 saat = 4 tur aralığı; canlı sağlayıcıya karşı ÖLÇÜLMEDİ, kod sabiti) içinde bir önceki bar da güncel sayılır; daha eskisi `DATA_FRAME_STALE_1D` (ne OPEN ne kural CLOSE; koruyucu stop canlı fiyatla sürer). Son satır `as_of + 60 sn`den ileride açılmışsa `DATA_FRAME_FUTURE_1D`; `as_of` yoksa `DATA_AS_OF_MISSING`. BTC referansı aynı kural (`DATA_BTC_FRAME_STALE_1D`), yalnız yeni girişte. `prov.tour_id == run_id` güncellik kanıtı değildir. | `frame_freshness`, `expected_last_closed_open`, `verify_paper_data(as_of_ms=)`, `replay._paper_data_verdict(sym, t, fr)` |
+
+Testler: `tests/test_strategy_paper_price_time_v1.py` (10): izleyici aynı run_id ile 105→95 stop; bayat/gelecek/kesik fiyat
+boşlukları ve toparlanma; giriş öncesi fitil (tur + izleyici) ve girişten sonraki bar ile stop; bar bir kez (tur tekrarı,
+izleyici, yeniden başlatma, kapanmamış/giriş öncesi/ölçek dışı); 46 gün eski seri (coin/BTC) ret + güncel seri giriş ve
+`data_source.bars == kuralın barı == signal_ts`; gece yarısı sınırı/tolerans/kapanmamış/gelecek saf sözleşme; önceki DATA_*
+engelleri + bayat mumda fiyat koruması; replay simülasyon zamanı (eski tarih ret değil, arşiv boşluğu ret, yalnız 4h parite);
+fiyat-yalnız tick + ISO zaman + sayaç sözlüğü. Mevcut `test_5`in kaçırdığı yol (pozitif bağlı mark, aynı run_id, fiyat
+değişimi, yeni tur yok) artık `test_1`de.

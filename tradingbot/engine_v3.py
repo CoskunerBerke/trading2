@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 import os
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 from .accounting import (AmountType, FeeSchedule, FiltersCache, FuturesLedgerV2, LiquidationParams, MarketType, Side, SizeSpec,
@@ -880,59 +880,72 @@ class TradingEngineV3(TradingEngine):
         prov["tour_id"] = str(self.run_id)
         prov["frames"] = bound
         prov["bound_at"] = iso()
+        prov["as_of_ms"] = int(getattr(self, "_tour_now_ms", 0) or 0) or int(utc_now().timestamp() * 1000)   # turun karar saati (kural bu anda kapanmis barlari okur)
+        # KAYIT (fiyat kaynagi DEGIL): tur aninda gorulen perp mark ve zamanlari. Kagit defter fiyati her kontrolde
+        # `_paper_marks` ile canli sagladan alinir; bagli fiyat sonraki 60 sn kontrollerinde YENIDEN KULLANILMAZ (2026-09-16).
         try:
+            from .strategy_paper import verified_price
             snap = self.runner.live.snapshot(symbol) or {}          # run_symbol az once cekti: onbellekten (ag yok)
-            fm = (snap.get("funding") or {}).get("mark")
-            mark = float(fm) if fm is not None else 0.0
-            prov["perp_mark"] = {"price": mark, "ts": snap.get("ts")} if mark > 0 else None
+            v = verified_price(snap, now_ms=int(utc_now().timestamp() * 1000))   # kayit: BAGLAMA aninda fiyatin yasi
+            prov["perp_mark"] = ({"price": v["mark"], "ts": snap.get("ts"), "price_ts_ms": v["price_ts_ms"], "fetched_at_ms": v["fetched_at_ms"],
+                                  "age_s": v["age_s"], "fresh": bool(v["ok"]), "reason": v["reason"]} if v["mark"] > 0 else None)
         except Exception:  # noqa: BLE001
             prov["perp_mark"] = None
 
-    def _paper_marks(self, symbols) -> tuple[dict[str, TickData], dict[str, float], dict[str, dict]]:
-        """Kagit defterler (T2/M2) icin DOGRULANMIS USDS-M perpetual fiyati — spot ticker DEGIL.
+    def _paper_marks(self, symbols, *, now: datetime | None = None) -> tuple[dict[str, TickData], dict[str, float], dict[str, dict]]:
+        """Kagit defterler (T2/M2) icin DOGRULANMIS ve GUNCEL USDS-M perpetual fiyati — spot ticker DEGIL (fiyat-yalniz tick).
 
-        Kaynak: canli snapshot `funding.mark` (binanceusdm fetch_funding_rate.markPrice; bu turda baglanmis provenanstaki
-        `perp_mark`, yoksa taze snapshot). 1h uclari (stop/TP bar ici tetik) YALNIZ bu turda provenansi USDM_PERP olan
-        cerceveden alinir: SPOT ikamesi 1h fitili futures stop'unu TETIKLEMEZ. Dogrulanmis perp fiyati yoksa sembol icin
-        tick YOK (uydurma gerceklesme yok); bosluk `gaps` ile gorunur kaydedilir, pozisyon izlenmeye devam eder."""
+        ZAMAN SOZLESMESI (2026-09-16): her kontrolde canli sagla (`runner.live.snapshot`, sembol basina paylasilan 60 sn
+        onbellek: ana defter, T2 ve M2 ayni istegi tekrarlamaz) sorulur; hukum `strategy_paper.verified_price` (sonlu/pozitif
+        mark, kaynak zamani `funding.ts` yoksa alinma zamani, `now`ya gore yas <= PRICE_MAX_AGE_S, gelecekte degil). Turun
+        provenansina bagli `perp_mark` KAYITTIR, fiyat kaynagi degil: tur kimligi ayni diye eski fiyat yeniden kullanilmaz.
+        Bar uclari (1h high/low) bu tick'e EKLENMEZ — kapanmis bar uclari ayri sozlesmede (`_paper_closed_bars` →
+        `StrategyBook.apply_closed_bars`). Gecerli fiyat yoksa/bayatsa: tick YOK (uydurma gerceklesme yok), bosluk `gaps`
+        ile gerekceli gorunur (NO_VERIFIED_FUTURES_PRICE | STALE_FUTURES_PRICE | INVALID_FUTURES_PRICE_TIME), izleme surer."""
+        from .strategy_paper import verified_price
+        now = now or utc_now()
+        now_ms = int(now.timestamp() * 1000)
         out: dict[str, TickData] = {}
         outf: dict[str, float] = {}
         gaps: dict[str, dict] = {}
         for sym in dict.fromkeys(symbols):
-            prov = (getattr(self, "_frame_provenance", None) or {}).get(sym) or {}
-            bound_now = prov.get("tour_id") == str(self.run_id)
-            pm = prov.get("perp_mark") if bound_now else None
-            mark, ts, src = 0.0, None, "provenance.perp_mark"
-            if isinstance(pm, dict) and float(pm.get("price") or 0) > 0:
-                mark, ts = float(pm["price"]), pm.get("ts")
-            else:
-                src = "live.snapshot.funding.mark"
-                try:
-                    snap = self.runner.live.snapshot(sym) or {}
-                except Exception as exc:  # noqa: BLE001
-                    snap = {"errors": ["snapshot: %s" % exc]}
-                fm = (snap.get("funding") or {}).get("mark")
-                try:
-                    mark = float(fm) if fm is not None else 0.0
-                except (TypeError, ValueError):
-                    mark = 0.0
-                ts = snap.get("ts")
-                if mark <= 0:
-                    gaps[sym] = {"reason": "NO_VERIFIED_FUTURES_PRICE", "detail": "; ".join(str(e) for e in (snap.get("errors") or []))[:200], "at": iso()}
-                    continue
-            hi = lo = None
-            if bound_now and prov.get("market") == "USDM_PERP":
-                h1 = (self.runner.last_frames.get(sym) or {}).get("1h")
-                if h1 is not None and len(h1):
-                    hi, lo = float(h1["high"].iloc[-1]), float(h1["low"].iloc[-1])
-                    if not (0.8 * mark <= lo <= hi <= 1.2 * mark):
-                        hi = lo = None
-                    else:
-                        hi, lo = max(hi, mark), min(lo, mark)
-            out[sym] = TickData(last=Decimal(str(mark)), mark=Decimal(str(mark)), high=Decimal(str(hi)) if hi else None,
-                                low=Decimal(str(lo)) if lo else None, ts=str(ts or iso()))
+            try:
+                snap = self.runner.live.snapshot(sym) or {}
+            except Exception as exc:  # noqa: BLE001
+                snap = {"errors": ["snapshot: %s" % exc]}
+            v = verified_price(snap, now_ms=now_ms)
+            if not v["ok"]:
+                gaps[sym] = {"reason": v["reason"], "detail": v["detail"], "at": iso(now),
+                             "price_ts": iso(datetime.fromtimestamp(v["price_ts_ms"] / 1000.0, tz=timezone.utc)) if v.get("price_ts_ms") else None,
+                             "age_s": v["age_s"], "last_seen_mark": v["mark"] if v["mark"] > 0 else None}
+                continue
+            mark = float(v["mark"])
+            out[sym] = TickData(last=Decimal(str(mark)), mark=Decimal(str(mark)),
+                                ts=iso(datetime.fromtimestamp(v["price_ts_ms"] / 1000.0, tz=timezone.utc)))   # fiyatin KAYNAK zamani
             outf[sym] = mark
         return out, outf, gaps
+
+    def _paper_closed_bars(self, symbols, marks_f: dict[str, float]) -> dict[str, dict]:
+        """Kagit defterler icin kapanmis 1h barlari — YALNIZ bu turda provenansi USDM_PERP olan ve bagli cerceveden
+        (SPOT ikamesi fitili futures stop'unu tetiklemez). Hangi barin uygulanacagina (kapanis, pozisyon acilisi, imlec)
+        defter karar verir (`StrategyBook.apply_closed_bars`); burada yalniz ham satirlar ve canli mark tasinir."""
+        from .strategy_paper import BAR_TIMEFRAME
+        out: dict[str, dict] = {}
+        for sym in dict.fromkeys(symbols):
+            prov = (getattr(self, "_frame_provenance", None) or {}).get(sym) or {}
+            if prov.get("tour_id") != str(self.run_id) or prov.get("market") != "USDM_PERP":
+                continue
+            h1 = (self.runner.last_frames.get(sym) or {}).get(BAR_TIMEFRAME)
+            if h1 is None or not len(h1) or "timestamp" not in h1.columns:
+                continue
+            try:
+                tail = h1.tail(48)
+                rows = [{"timestamp": int(t), "high": float(h), "low": float(lo), "close": float(c)}
+                        for t, h, lo, c in zip(tail["timestamp"], tail["high"], tail["low"], tail["close"])]
+            except (KeyError, TypeError, ValueError):
+                continue
+            out[sym] = {"tf": BAR_TIMEFRAME, "rows": rows, "mark": float(marks_f.get(sym) or 0.0)}
+        return out
 
     def _marks(self, briefs: list[CoinBrief]) -> dict[str, TickData]:
         out: dict[str, TickData] = {}
@@ -983,6 +996,7 @@ class TradingEngineV3(TradingEngine):
         self._tour_no += 1
         now = utc_now()
         now_ms = int(now.timestamp() * 1000)
+        self._tour_now_ms = now_ms          # ZAMAN SOZLESMESI: turun karar saati; provenans bagi ve kagit defter kurali bu ana gore okur
         st = self.cfg.state_path
         # 0) heartbeat + kill switch tetikleri
         atomic_write_json(st / "heartbeat.json", {"at": iso(now), "run_id": self.run_id, "pid": __import__("os").getpid()})
@@ -2240,18 +2254,30 @@ class TradingEngineV3(TradingEngine):
         # VERI KIMLIGI (2026-09-16): kagit defterler ana botun spot-ticker `marks`ini DEGIL, dogrulanmis USDS-M perpetual
         # fiyatini kullanir (`_paper_marks`); cerceve provenansi (tur kimligi + bar bagi) defter adimina tasinir.
         scope = list(dict.fromkeys([s for b in books for s in (b.symbols or universe)] + [s for b in books for s in b.ledger.positions]))
-        pmarks, pmarks_f, pgaps = self._paper_marks(scope)
+        # ZAMAN SOZLESMESI (2026-09-16): fiyat = kontrol anina gore GUNCEL dogrulanmis perp mark (fiyat-yalniz tick); kapanmis
+        # 1h bar uclari ayri sozlesmeyle defterde uygulanir (pozisyon acilisindan sonra, bir kez); kural `now` aninda
+        # kapanmis gunluk barlari okur ve ayni `as_of` ile guncellik denetlenir.
+        tick_now = utc_now()
+        pmarks, pmarks_f, pgaps = self._paper_marks(scope, now=tick_now)
+        pbars = self._paper_closed_bars(scope, pmarks_f)
         if pgaps:
-            log.warning("kagit defter: %d sembol icin dogrulanmis perp fiyati YOK (tick yok): %s", len(pgaps), ", ".join(sorted(pgaps))[:200])
+            log.warning("kagit defter: %d sembol icin gecerli/guncel perp fiyati YOK (tick yok): %s", len(pgaps),
+                        ", ".join("%s=%s" % (s, g.get("reason")) for s, g in sorted(pgaps.items()))[:300])
         for book in books:
             try:
                 book.run_id = str(getattr(self, "run_id", "") or "")
                 syms = book.symbols or universe
                 frames = {s: (self.runner.last_frames.get(s) or {}) for s in set(syms) | set(book.ledger.positions) | {"BTC/USDT"}}
+                # 1) kural (giris/kural cikisi) — veri kimligi + guncellik hukmu ile (onceki sira korunur: kural once)
                 book.step(symbols=list(syms), frames_by_symbol=frames, marks=pmarks, marks_f=pmarks_f, now=now,
                           provenance_by_symbol=self._frame_provenance, data_gaps=pgaps)
-                book.tick(pmarks, now=now, funding_rate_lookup=static_rates(funding), bar_advance=bar_advance)
-                book.save(pmarks_f, now)
+                # 2) gecmis OHLC: kapanmis 1h barlarin uclari — yalniz pozisyon acilisindan SONRA acilmis, tuketilmemis barlar
+                #    (bu adimda acilan pozisyon icin hicbir bar uygun degildir: giris oncesi fitil yeni pozisyonu stop'lamaz;
+                #    stop sonrasi ayni turda yeniden giris de olmaz — kural bir sonraki turda yeniden degerlendirir)
+                book.apply_closed_bars(pbars, now=tick_now, funding_rate_lookup=static_rates(funding))
+                # 3) canli fiyat kontrolu (fiyat-yalniz; bar_advance ana turun 4h bar ilerlemesi)
+                book.tick(pmarks, now=tick_now, funding_rate_lookup=static_rates(funding), bar_advance=bar_advance)
+                book.save(pmarks_f, tick_now)
                 index.append({"key": book.key, "name": book.name, "summary_file": book.summary_file})
             except Exception as exc:  # noqa: BLE001 — bir defterin arızası ne ana botu ne diğer defteri ETKİLER
                 log.warning("strateji kagit defteri turu basarisiz (%s): %s", book.key, exc)
@@ -2382,9 +2408,12 @@ class TradingEngineV3(TradingEngine):
             try:
                 # VERI KIMLIGI (2026-09-16): spot ticker `last` DEGIL, dogrulanmis USDS-M perpetual mark; yoksa tick YOK
                 # (uydurma gerceklesme yok), bosluk defterde gorunur, izleme surer.
-                marks, marks_f, gaps = self._paper_marks(list(book.ledger.positions))
+                # ZAMAN SOZLESMESI: her kontrolde canli sagla sorulur (paylasilan 60 sn onbellek); turun bagli fiyati
+                # yeniden kullanilmaz; fiyat yasi kontrol anina gore denetlenir (bayat → STALE_FUTURES_PRICE boslugu);
+                # bar uclari bu yola EKLENMEZ (fiyat-yalniz tick: giris oncesi/tuketilmis fitil yeni olay uretmez).
                 now = utc_now()
-                book.record_gaps(gaps, now)                  # bosluk acilis/kapanis olaylari (durum degisince bir kez)
+                marks, marks_f, gaps = self._paper_marks(list(book.ledger.positions), now=now)
+                book.record_gaps(gaps, now)                  # bosluk acilis/kapanis olaylari (durum/gerekce degisince bir kez)
                 if marks:
                     book.tick(marks, now=now, bar_advance=False)
                 book.save(marks_f, now)

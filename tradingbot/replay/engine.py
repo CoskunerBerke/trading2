@@ -500,12 +500,17 @@ class HistoricalReplay:
         for rec in recs:
             self._on_closed(rec)
 
-    def _paper_data_verdict(self, sym: str, t: int):
+    def _paper_data_verdict(self, sym: str, t: int, fr: dict | None = None):
         """Replay veri kimligi (2026-09-16): 'replay zaten futures' VARSAYIMI YOK — hukum arsiv deposunun manifest'inden
         (market/provider/row_count) turetilir. Spot arsivi ya da manifest'siz seri kagit kuralina OPEN/CLOSE veremez;
         canli motorla ayni `apply_action` sozlesmesi. BTC referansi: strateji BTC cercevesini AYNI arsiv piyasasindan
-        okur (ayri provenans yok) — bu sinir `btc.note` ile kayda gecer."""
-        from ..strategy_paper import DataVerdict
+        okur (ayri provenans yok) — bu sinir `btc.note` ile kayda gecer.
+
+        ZAMAN SOZLESMESI: guncellik SIMULASYONUN karar anina (`as_of = t + tf`, bar kapanisi) gore denetlenir — duvar saati
+        DEGIL; tarihin eski olmasi tek basina ret degildir. Dilimdeki (`fr`) kural cerceveleri (1d) icin canli motorla AYNI
+        `frame_freshness` kurali: arsivde o anda kapanmis olmasi gereken gunluk bar eksikse (bosluk) `DATA_FRAME_STALE_1D`."""
+        from ..strategy_paper import RULE_TIMEFRAMES, DataVerdict, frame_freshness
+        as_of_ms = int(t) + tf_ms(self.tf)
         cache = getattr(self, "_data_verdicts", None)
         if cache is None:
             cache = self._data_verdicts = {}
@@ -525,8 +530,20 @@ class HistoricalReplay:
                 ok, why = True, ""
             cache[key] = (ok, why, "archive:%s:%s" % ((getattr(m, "provider", None) or "?") if m is not None else "?", self.market))
         ok, why, src = cache[key]
+        bars: dict = {str(self.tf): int(t)}
+        detail: dict = {}
+        if ok:
+            for rtf in RULE_TIMEFRAMES:
+                if not isinstance(fr, dict) or fr.get(rtf) is None:
+                    continue                                          # dilimde kural cercevesi yoksa kural zaten None doner (fail-closed)
+                fwhy, used, d = frame_freshness(fr.get(rtf), rtf, as_of_ms)
+                detail[rtf] = d
+                if fwhy:
+                    ok, why = False, "DATA_" + fwhy
+                    break
+                bars[rtf] = int(used)
         return DataVerdict(ok=ok, entry_ok=ok, reason=why, market="USDM_PERP" if ok else str(self.market).upper(), source=src,
-                           tour_id=str(self.run_id), bars={str(self.tf): int(t)},
+                           tour_id=str(self.run_id), bars=bars, as_of_ms=as_of_ms, detail=detail,
                            btc={"required": False, "note": "replay: BTC cercevesi ayni arsiv piyasasindan (ayri provenans yok)"})
 
     def _strategy_step(self, t: int, now, marks: dict, marks_f: dict) -> None:
@@ -563,7 +580,7 @@ class HistoricalReplay:
                                ledger=self.ledger2, risk=self.risk, profile=self.profile, state=state,
                                filters=self._filters_for(sym), run_id=self.run_id,
                                reject=self._reject, on_closed=self._on_closed, on_opened=_opened,
-                               data=self._paper_data_verdict(sym, t))
+                               data=self._paper_data_verdict(sym, t, fr))
             if res in ("OPENED", "CLOSED"):
                 state = self._portfolio_state(marks_f, now)
 

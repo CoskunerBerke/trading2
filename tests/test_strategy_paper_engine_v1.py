@@ -9,7 +9,10 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from pathlib import Path
+
+import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -34,6 +37,14 @@ def _install(eng, monkeypatch, *, btc_up: bool, coin_above: bool, market: str | 
         b = orig(symbol, analysis, prefetched)
         fr = dict(eng.runner.last_frames[symbol])
         d1 = fr["1d"].copy()
+        # GUNCELLIK (2026-09-16): `_engine` harness'i her dilimin son barini "bir bar once kapanmis" kaydirir (1d icin son
+        # bar DUNKU gun sinirinda kapanmis = uretime gore bir gun bayat). Uretimde runner kapanmamis bari duvar saatiyle
+        # duserken son gunluk bar bugunun UTC 00:00'inda kapanmistir; kagit defter guncellik kapisi (BAR_LAG_TOLERANCE)
+        # de bunu bekler. Bu yuzden 1d serisi bir gun ileri alinir (yalniz zaman; fiyat/gostergeler ayni).
+        _day = 86_400_000
+        if int(d1["timestamp"].iloc[-1]) + 2 * _day <= int(time.time() * 1000):
+            d1["timestamp"] = d1["timestamp"] + _day
+            d1.index = d1.index + pd.Timedelta(milliseconds=_day)
         # Sentetik 1d ve 4h kareleri BAGIMSIZ uretilir; gercekte ayni fiyat serisidir. Gunluk kapanisi
         # 4h isaret fiyatina olcekle ki stop (close - 3*ATR) girisin ALTINDA kalsin (uretimdeki durum).
         scale = float(fr["4h"]["close"].iloc[-1]) / float(d1["close"].iloc[-1])

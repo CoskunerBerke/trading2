@@ -34,7 +34,8 @@ BOOKS = ("strategy_paper", "strategy_paper_m2")
 
 def _ov(chart: bool = False) -> dict:
     return _profile(6.0) | {"strategy_paper": {"enabled": True, "name": "t2_trend_regime", "extra": [{"name": "m2_tsmom28", "state_dir": "strategy_paper_m2"}]},
-                            "chart_analysis": {"enabled": chart, "keep_per_series": 20}}
+                            "chart_analysis": {"enabled": chart, "keep_per_series": 20},
+                            "news": {"enabled": False}}            # venue olayı için ağa çıkılmaz (ağsız test; yeniden deneme gecikmesi yok)
 
 
 def _eng(root: Path, mp, *, market="USDM_PERP", btc_market="USDM_PERP", coin_above=True, btc_up=True, chart=False):
@@ -132,20 +133,23 @@ def test_2_missing_stale_or_contradictory_provenance_never_authorises_an_entry(t
         for s, ov in over.items():
             p[s] = {**p[s], **ov}
         return p
-    ok = verify_paper_data(symbol=sym, frames=frames[sym], provenance=prov("NEW")[sym], run_id="NEW", btc_frames=frames[BTC], btc_provenance=prov("NEW")[BTC])
-    assert ok.ok and ok.entry_ok and ok.reason == "" and ok.bars["1d"] == _last_ts(frames[sym]["1d"]) and ok.btc["ok"] is True
-    stale = verify_paper_data(symbol=sym, frames=frames[sym], provenance=prov("OLD")[sym], run_id="NEW", btc_frames=frames[BTC], btc_provenance=prov("NEW")[BTC])
+    # ZAMAN SÖZLEŞMESİ (2026-09-16): değerlendirme anı açık girdi (`as_of_ms`); verilmezse güncellik denetlenemez → ret.
+    as_of = int(utc_now().timestamp() * 1000)
+    ok = verify_paper_data(symbol=sym, frames=frames[sym], provenance=prov("NEW")[sym], run_id="NEW", btc_frames=frames[BTC], btc_provenance=prov("NEW")[BTC], as_of_ms=as_of)
+    assert ok.ok and ok.entry_ok and ok.reason == "" and ok.bars["1d"] == _last_ts(frames[sym]["1d"]) and ok.btc["ok"] is True and ok.as_of_ms == as_of
+    assert verify_paper_data(symbol=sym, frames=frames[sym], provenance=prov("NEW")[sym], run_id="NEW", btc_frames=frames[BTC], btc_provenance=prov("NEW")[BTC]).reason == "DATA_AS_OF_MISSING"
+    stale = verify_paper_data(symbol=sym, frames=frames[sym], provenance=prov("OLD")[sym], run_id="NEW", btc_frames=frames[BTC], btc_provenance=prov("NEW")[BTC], as_of_ms=as_of)
     assert not stale.ok and stale.reason == "DATA_PROVENANCE_STALE"
     p = prov("NEW"); p[sym]["frames"]["1d"]["last_ts"] += 1
-    mism = verify_paper_data(symbol=sym, frames=frames[sym], provenance=p[sym], run_id="NEW", btc_frames=frames[BTC], btc_provenance=p[BTC])
+    mism = verify_paper_data(symbol=sym, frames=frames[sym], provenance=p[sym], run_id="NEW", btc_frames=frames[BTC], btc_provenance=p[BTC], as_of_ms=as_of)
     assert not mism.ok and mism.reason == "DATA_FRAME_MISMATCH_1D", "provenans bellekteki çerçeveyle ilişkilendirilemiyor"
     p = prov("NEW", **{sym: {"entry_ok": False, "reason": "FUTURES_FRAMES_UNAVAILABLE"}})
-    blk = verify_paper_data(symbol=sym, frames=frames[sym], provenance=p[sym], run_id="NEW", btc_frames=frames[BTC], btc_provenance=p[BTC])
+    blk = verify_paper_data(symbol=sym, frames=frames[sym], provenance=p[sym], run_id="NEW", btc_frames=frames[BTC], btc_provenance=p[BTC], as_of_ms=as_of)
     assert blk.ok and not blk.entry_ok and blk.reason == "DATA_ENTRY_BLOCKED:FUTURES_FRAMES_UNAVAILABLE"
     p = prov("NEW", **{sym: {"market": "SPOT"}})
-    assert verify_paper_data(symbol=sym, frames=frames[sym], provenance=p[sym], run_id="NEW", btc_frames=frames[BTC], btc_provenance=p[BTC]).reason == "DATA_MARKET_SPOT"
-    assert verify_paper_data(symbol=sym, frames=frames[sym], provenance=None, run_id="NEW").reason == "DATA_PROVENANCE_MISSING"
-    assert verify_paper_data(symbol=sym, frames={}, provenance=prov("NEW")[sym], run_id="NEW").reason == "DATA_FRAME_MISSING_1D"
+    assert verify_paper_data(symbol=sym, frames=frames[sym], provenance=p[sym], run_id="NEW", btc_frames=frames[BTC], btc_provenance=p[BTC], as_of_ms=as_of).reason == "DATA_MARKET_SPOT"
+    assert verify_paper_data(symbol=sym, frames=frames[sym], provenance=None, run_id="NEW", as_of_ms=as_of).reason == "DATA_PROVENANCE_MISSING"
+    assert verify_paper_data(symbol=sym, frames={}, provenance=prov("NEW")[sym], run_id="NEW", as_of_ms=as_of).reason == "DATA_FRAME_MISSING_1D"
 
 
 # ====================================================================== 3) coin USDM_PERP, BTC SPOT / eksik

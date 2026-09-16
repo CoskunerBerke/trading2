@@ -12,9 +12,10 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import threading
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Callable
@@ -22,11 +23,12 @@ from typing import Any, Callable
 from .accounting import (AmountType, FeeSchedule, FuturesLedgerV2, LiquidationParams, MarketType, SizeSpec,
                          SlippageModel, TaxPolicy, TickData, default_brackets)
 from .candle_confirmation import closed_bars
-from .core import atomic_write_json, iso, utc_now
+from .core import atomic_write_json, from_iso, iso, utc_now
 from .learn import TradeMemory
 from .regime_gate import BTC_SYMBOL
 from .risk import RiskEngine, build_state, enforces_position_cap
 from .ema200_trend import VARIANTS, daily_rows_from_frame, decide
+from .timeframes import tf_ms
 
 log = logging.getLogger(__name__)
 SUMMARY_FILE = "strategy_paper.json"
@@ -37,6 +39,129 @@ PAPER_MARKET = "USDM_PERP"
 #: `decide`/`read_daily` sözleşmesinden: kural GÜNLÜK kapanmış barları okur (T2: EMA200; M2: 28 gün önceki kapanış);
 #: BTC rejimi yalnız YENİ girişte gerekir (`decide`: position_open iken BTC'ye bakılmaz). Başka dilim zorunlu değildir.
 RULE_TIMEFRAMES = ("1d",)
+#: ZAMAN SÖZLEŞMESİ (2026-09-16, canlı fiyat): kâğıt defter fiyatı = doğrulanmış USDⓈ-M perp mark (`funding.mark`) ve
+#: onun KAYNAK zamanı (`funding.ts`: borsanın mark zaman damgası, ms; yoksa snapshot'ın alınma zamanı `ts`, epoch sn).
+#: Alınma zamanı ve karar (kontrol) zamanı ayrıca yazılır; eski bir fiyata yeni zaman damgası basılmaz. Sağlayıcı
+#: önbelleği 60 sn (`BinanceLive.ttl`) + izleyici periyodu 60 sn → sağlıklı yaş ≤ ~120 sn; üstü BAYAT: tick YOK, boşluk görünür.
+PRICE_MAX_AGE_S = 180.0
+#: Kaynak zamanı bundan daha ileri olamaz (saat kayması payı); ötesi geçersiz zaman → tick YOK.
+PRICE_FUTURE_SKEW_S = 120.0
+#: ZAMAN SÖZLEŞMESİ (günlük sinyal): kural `as_of` anında KAPANMIŞ son günlük barı okur (açılış + 1g <= as_of). Beklenen
+#: son kapanış, `as_of`tan önceki UTC gün sınırıdır; sağlayıcı gecikme toleransı içinde (4 tur aralığı; canlı sağlayıcıya
+#: karşı ÖLÇÜLMEDİ, kod sabiti) bir önceki bar da güncel sayılır. Daha eskisi BAYAT → ne OPEN ne kural CLOSE (ret gerekçeli).
+BAR_LAG_TOLERANCE_MS: dict[str, int] = {"1d": 3_600_000}
+#: Ham çerçevenin son satırı `as_of`tan bu kadar ileride açılmışsa gelecek zaman damgası (saat sorunu) → ret.
+BAR_FUTURE_SKEW_MS = 60_000
+#: Bar uçlarının (1h) pozisyona uygulanma dilimi: yalnız pozisyon açılışından SONRA açılmış, kapanmış, bir kez.
+BAR_TIMEFRAME = "1h"
+
+
+def parse_ts_ms(x: Any) -> int | None:
+    """Zaman damgası → UTC ms (tek sözleşme). Kabul: ISO-8601 metni ('Z'/'+00:00'; naive = UTC), epoch saniye
+    (sayı < 1e11, ondalıklı olabilir), epoch milisaniye (sayı >= 1e11), `datetime`. Çözülemezse None (uydurma yok)."""
+    try:
+        if x is None or isinstance(x, bool):
+            return None
+        if isinstance(x, datetime):
+            return int((x if x.tzinfo else x.replace(tzinfo=timezone.utc)).timestamp() * 1000)
+        if isinstance(x, (int, float)):
+            if not math.isfinite(float(x)) or float(x) <= 0:
+                return None
+            return int(round(float(x) * 1000)) if float(x) < 1e11 else int(round(float(x)))
+        s = str(x).strip()
+        if not s:
+            return None
+        try:
+            v = float(s)
+            return parse_ts_ms(v)
+        except ValueError:
+            return int(from_iso(s).timestamp() * 1000)
+    except (TypeError, ValueError, OverflowError, AttributeError):
+        return None
+
+
+def verified_price(snapshot: dict | None, *, now_ms: int, max_age_s: float = PRICE_MAX_AGE_S,
+                   future_skew_s: float = PRICE_FUTURE_SKEW_S) -> dict[str, Any]:
+    """Canlı snapshot'tan DOĞRULANMIŞ perp fiyatı (SAF). Döner: {ok, mark, price_ts_ms, fetched_at_ms, checked_at_ms,
+    age_s, reason, detail}. Şart: sonlu ve pozitif `funding.mark`; kaynak zamanı çözülebilir, `now`dan ileride değil ve
+    `max_age_s` içinde. Aksi hâlde ok=False ve gerekçe: NO_VERIFIED_FUTURES_PRICE | INVALID_FUTURES_PRICE_TIME |
+    STALE_FUTURES_PRICE. Hüküm yalnız BU kontrol anı içindir; eski fiyat yeni zamanla etiketlenmez."""
+    snap = snapshot if isinstance(snapshot, dict) else {}
+    out: dict[str, Any] = {"ok": False, "mark": 0.0, "price_ts_ms": None, "fetched_at_ms": None, "checked_at_ms": int(now_ms),
+                           "age_s": None, "reason": "", "detail": "", "source": "live.snapshot.funding.mark"}
+    fm = (snap.get("funding") or {}).get("mark") if isinstance(snap.get("funding"), dict) else None
+    try:
+        mark = float(fm) if fm is not None else 0.0
+    except (TypeError, ValueError):
+        mark = 0.0
+    if not math.isfinite(mark) or mark <= 0:
+        out.update(reason="NO_VERIFIED_FUTURES_PRICE", detail="; ".join(str(e) for e in (snap.get("errors") or []))[:200])
+        return out
+    fetched = parse_ts_ms(snap.get("ts"))
+    src_ts = parse_ts_ms((snap.get("funding") or {}).get("ts")) if isinstance(snap.get("funding"), dict) else None
+    price_ts = src_ts if src_ts is not None else fetched
+    out.update(mark=mark, price_ts_ms=price_ts, fetched_at_ms=fetched)
+    if price_ts is None:
+        out.update(reason="INVALID_FUTURES_PRICE_TIME", detail="fiyat zamanı yok/çözülemedi")
+        return out
+    age_s = (int(now_ms) - int(price_ts)) / 1000.0
+    out["age_s"] = round(age_s, 3)
+    if age_s < -float(future_skew_s):
+        out.update(reason="INVALID_FUTURES_PRICE_TIME", detail="fiyat zamanı gelecekte (%.0f sn)" % (-age_s))
+        return out
+    if age_s > float(max_age_s):
+        out.update(reason="STALE_FUTURES_PRICE", detail="fiyat yaşı %.0f sn > %.0f sn" % (age_s, max_age_s))
+        return out
+    out["ok"] = True
+    return out
+
+
+def expected_last_closed_open(as_of_ms: int, tf: str) -> int:
+    """`as_of` anında kapanmış olması gereken SON barın açılış ms'si: açılış + dilim <= as_of (eşitlik dahil)."""
+    step = tf_ms(tf)
+    return (int(as_of_ms) // step) * step - step
+
+
+def frame_freshness(frame, tf: str, as_of_ms: int | None, *, tolerance_ms: int | None = None) -> tuple[str, int | None, dict[str, Any]]:
+    """Çerçevenin `as_of` anında GERÇEKTEN kullanılabilir son kapanmış barı (SAF). Döner: (neden | "", kullanılan bar
+    açılış ms, ayrıntı). Nedenler: AS_OF_MISSING, FRAME_MISSING_<TF> (hiç kapanmış bar yok), FRAME_FUTURE_<TF> (son satır
+    as_of'tan ileride açılmış: saat sorunu), FRAME_STALE_<TF> (kullanılan bar beklenen son kapanıştan toleransın ötesinde eski).
+    Kapanmamış son bar hata değildir: dışlanır ve kullanılan bar bir öncekidir."""
+    tfu = str(tf).upper()
+    if as_of_ms is None:
+        return "AS_OF_MISSING", None, {}
+    step = tf_ms(tf)
+    tol = int(BAR_LAG_TOLERANCE_MS.get(str(tf), 0) if tolerance_ms is None else tolerance_ms)
+    raw_last = _last_ts(frame)
+    if raw_last is None:
+        return "FRAME_MISSING_%s" % tfu, None, {}
+    if raw_last > int(as_of_ms) + BAR_FUTURE_SKEW_MS:
+        return "FRAME_FUTURE_%s" % tfu, None, {"last_open_ms": raw_last, "as_of_ms": int(as_of_ms)}
+    used = _closed_last_ts(frame, int(as_of_ms), step)
+    if used is None:
+        return "FRAME_MISSING_%s" % tfu, None, {"last_open_ms": raw_last, "as_of_ms": int(as_of_ms), "note": "kapanmış bar yok"}
+    expected = expected_last_closed_open(int(as_of_ms) - tol, tf)
+    detail = {"used_open_ms": used, "used_close_ms": used + step, "expected_open_ms": expected, "as_of_ms": int(as_of_ms),
+              "age_s": round((int(as_of_ms) - (used + step)) / 1000.0, 1), "tolerance_ms": tol, "unclosed_last": raw_last != used}
+    if used < expected:
+        return "FRAME_STALE_%s" % tfu, used, detail
+    return "", used, detail
+
+
+def _closed_last_ts(frame, as_of_ms: int, step: int) -> int | None:
+    """Sondan geriye: `açılış + step <= as_of` olan ilk satırın açılış ms'si (kapanmamış/gelecek satırlar dışlanır)."""
+    try:
+        if frame is None or len(frame) == 0:
+            return None
+        col = frame["timestamp"] if "timestamp" in frame.columns else None
+        n = len(frame)
+        for i in range(n - 1, -1, -1):                       # sondan geriye ilk kapanmış satır (döngü orada biter)
+            ts = int(col.iloc[i]) if col is not None else int(frame.index[i].value // 1_000_000)
+            if ts + step <= as_of_ms:
+                return ts
+        return None
+    except (AttributeError, TypeError, ValueError, KeyError, IndexError):
+        return None
 
 
 # ------------------------------------------------------------------ VERİ KAYNAĞI SÖZLEŞMESİ (2026-09-16)
@@ -55,12 +180,15 @@ class DataVerdict:
     market: str | None = None
     source: str | None = None
     tour_id: str | None = None
-    bars: dict = field(default_factory=dict)      # {"1d": son kapanmış bar açılış ms, ...} — gerçekten kullanılan barlar
+    bars: dict = field(default_factory=dict)      # {"1d": as_of anında KAPANMIŞ son bar açılış ms, ...} — kuralın gerçekten okuduğu bar
     btc: dict = field(default_factory=dict)       # {"ok", "market", "reason", "bars"}
+    as_of_ms: int | None = None                   # değerlendirme (karar) anı — canlıda tur `now`, replay'de simülasyon anı
+    detail: dict = field(default_factory=dict)    # güncellik ayrıntısı: kullanılan/beklenen bar, yaş, tolerans
 
     def to_dict(self) -> dict[str, Any]:
         return {"ok": bool(self.ok), "entry_ok": bool(self.entry_ok), "reason": self.reason, "market": self.market,
-                "source": self.source, "tour_id": self.tour_id, "bars": dict(self.bars), "btc": dict(self.btc)}
+                "source": self.source, "tour_id": self.tour_id, "bars": dict(self.bars), "btc": dict(self.btc),
+                "as_of_ms": self.as_of_ms, "detail": dict(self.detail)}
 
 
 def _last_ts(frame) -> int | None:
@@ -74,52 +202,66 @@ def _last_ts(frame) -> int | None:
         return None
 
 
-def _check_frames(frames: dict | None, prov: dict | None, run_id: str, want_market: str, tfs=RULE_TIMEFRAMES) -> tuple[str, dict]:
-    """Tek sembol için kimlik kontrolü. Döner: (neden | "", kullanılan bar zamanları). Provenans defter adından ya da
-    beklenen piyasadan UYDURULMAZ: sağlayıcının bu tur için yazdığı kayıt + o kayıtta bağlanan bar zaman damgaları
-    ile bellekteki çerçeve birebir eşleşmeli (eski turun onayı / bayat önbellek / kısmi indirme eşleşmez)."""
+def _check_frames(frames: dict | None, prov: dict | None, run_id: str, want_market: str, tfs=RULE_TIMEFRAMES,
+                  *, as_of_ms: int | None = None) -> tuple[str, dict, dict]:
+    """Tek sembol için kimlik + güncellik kontrolü. Döner: (neden | "", kullanılan bar zamanları, ayrıntı).
+
+    Kimlik: provenans defter adından ya da beklenen piyasadan UYDURULMAZ; sağlayıcının bu tur için yazdığı kayıt + o kayıtta
+    bağlanan ham son bar zaman damgaları ile bellekteki çerçeve birebir eşleşmeli (eski turun onayı / bayat önbellek / kısmi
+    indirme eşleşmez). Güncellik (2026-09-16): tur kimliği eşitliği güncellik KANITI DEĞİLDİR — kuralın `as_of` anında
+    okuyacağı son KAPANMIŞ bar `frame_freshness` ile beklenen son kapanışa göre denetlenir; kayda o bar yazılır."""
     if not isinstance(prov, dict) or not prov.get("market"):
-        return "PROVENANCE_MISSING", {}
+        return "PROVENANCE_MISSING", {}, {}
     if str(prov.get("tour_id") or "") != str(run_id or "") or not run_id:
-        return "PROVENANCE_STALE", {}
+        return "PROVENANCE_STALE", {}, {}
     if str(prov.get("market")) != want_market:
-        return "MARKET_%s" % str(prov.get("market")).upper(), {}
+        return "MARKET_%s" % str(prov.get("market")).upper(), {}, {}
     bound = prov.get("frames") or {}
     used: dict[str, int] = {}
+    detail: dict[str, Any] = {}
     for tf in tfs:
-        ts = _last_ts((frames or {}).get(tf))
+        fr = (frames or {}).get(tf)
+        ts = _last_ts(fr)
         if ts is None:
-            return "FRAME_MISSING_%s" % tf.upper(), {}
+            return "FRAME_MISSING_%s" % tf.upper(), {}, {}
         b = bound.get(tf) or {}
         if b.get("last_ts") is None or int(b.get("last_ts")) != ts:
-            return "FRAME_MISMATCH_%s" % tf.upper(), {}
-        used[tf] = ts
-    return "", used
+            return "FRAME_MISMATCH_%s" % tf.upper(), {}, {}
+        why, used_ts, d = frame_freshness(fr, tf, as_of_ms)
+        detail[tf] = d
+        if why:
+            return why, ({tf: used_ts} if used_ts is not None else {}), detail
+        used[tf] = int(used_ts)
+    return "", used, detail
 
 
 def verify_paper_data(*, symbol: str, frames: dict | None, provenance: dict | None, run_id: str,
                       btc_frames: dict | None = None, btc_provenance: dict | None = None, need_btc: bool = True,
-                      want_market: str = PAPER_MARKET) -> DataVerdict:
+                      want_market: str = PAPER_MARKET, as_of_ms: int | None = None) -> DataVerdict:
     """Kural verisi doğrulaması (SAF). `need_btc`: yeni giriş yolu (rejim referansı gerekir); açık pozisyonun kural
-    kapanışı yalnız sembol verisine bağlıdır (`decide` position_open iken BTC okumaz) → BTC eksikliği kapanışı engellemez."""
-    why, used = _check_frames(frames, provenance, run_id, want_market)
+    kapanışı yalnız sembol verisine bağlıdır (`decide` position_open iken BTC okumaz) → BTC eksikliği kapanışı engellemez.
+    `as_of_ms` (2026-09-16): değerlendirme anı — canlıda turun karar saati, replay'de simülasyonun karar anı (duvar saati
+    DEĞİL). Verilmezse güncellik denetlenemez → `DATA_AS_OF_MISSING` (fail-closed). `bars`: kuralın bu anda okuduğu son
+    kapanmış bar; kapanmamış/gelecek son satır sinyalin ya da kaydın parçası olmaz."""
+    why, used, detail = _check_frames(frames, provenance, run_id, want_market, as_of_ms=as_of_ms)
     if why:
         return DataVerdict(ok=False, entry_ok=False, reason="DATA_" + why, market=(provenance or {}).get("market") if isinstance(provenance, dict) else None,
                            source=(provenance or {}).get("source") if isinstance(provenance, dict) else None,
-                           tour_id=(provenance or {}).get("tour_id") if isinstance(provenance, dict) else None)
+                           tour_id=(provenance or {}).get("tour_id") if isinstance(provenance, dict) else None,
+                           bars=used, as_of_ms=as_of_ms, detail=detail)
     prov = provenance or {}
     entry_ok, reason = True, ""
     if not bool(prov.get("entry_ok", False)):
         entry_ok, reason = False, "DATA_ENTRY_BLOCKED:%s" % (prov.get("reason") or "PROVIDER")
     btc: dict[str, Any] = {"required": bool(need_btc)}
     if need_btc:
-        bwhy, bused = _check_frames(btc_frames, btc_provenance, run_id, want_market)
+        bwhy, bused, bdetail = _check_frames(btc_frames, btc_provenance, run_id, want_market, as_of_ms=as_of_ms)
         btc.update({"ok": not bwhy, "market": (btc_provenance or {}).get("market") if isinstance(btc_provenance, dict) else None,
-                    "reason": ("DATA_BTC_" + bwhy) if bwhy else "", "bars": bused})
+                    "reason": ("DATA_BTC_" + bwhy) if bwhy else "", "bars": bused, "detail": bdetail})
         if bwhy and entry_ok:
             entry_ok, reason = False, "DATA_BTC_" + bwhy
     return DataVerdict(ok=True, entry_ok=entry_ok, reason=reason, market=str(prov.get("market")), source=prov.get("source"),
-                       tour_id=str(prov.get("tour_id")), bars=used, btc=btc)
+                       tour_id=str(prov.get("tour_id")), bars=used, btc=btc, as_of_ms=as_of_ms, detail=detail)
 
 
 class BookSpec:
@@ -395,10 +537,17 @@ class StrategyBook:
                         self.last_actions[sym] = {"action": "DATA_GAP", "reason": "DATA_NO_FUTURES_PRICE", "at": iso(now)}
                     continue
                 fr = frames_by_symbol.get(sym) or {}
+                # ZAMAN SÖZLEŞMESİ: değerlendirme anı = turun karar saati (`now`); kural da AYNI anda kapanmış barları okur.
                 verdict = verify_paper_data(symbol=sym, frames=fr, provenance=prov_all.get(sym), run_id=self.run_id,
-                                            btc_frames=btc_fr, btc_provenance=prov_all.get(BTC_SYMBOL), need_btc=not pos_open)
-                self.data_checks[sym] = verdict.to_dict()
+                                            btc_frames=btc_fr, btc_provenance=prov_all.get(BTC_SYMBOL), need_btc=not pos_open,
+                                            as_of_ms=now_ms)
                 d1 = closed_bars(daily_rows_from_frame(fr.get("1d")), now_ms=now_ms, tf="1d")
+                if verdict.ok and (not d1 or int(d1[-1].get("timestamp") or -1) != int(verdict.bars.get("1d") or -2)):
+                    # Kaydedilen bar ile kuralın okuduğu bar birebir aynı olmalı; değilse hüküm KANITSIZ (fail-closed).
+                    verdict = DataVerdict(ok=False, entry_ok=False, reason="DATA_BAR_MISMATCH_1D", market=verdict.market, source=verdict.source,
+                                          tour_id=verdict.tour_id, bars=dict(verdict.bars), btc=dict(verdict.btc), as_of_ms=now_ms,
+                                          detail=dict(verdict.detail) | {"rule_last_open_ms": int(d1[-1].get("timestamp")) if d1 else None})
+                self.data_checks[sym] = verdict.to_dict()
                 if not verdict.ok or (not pos_open and not verdict.entry_ok):
                     # Kanıtsız veriyle kural UYGULANMAZ. Yalnız bilgi için: bu veriyle kural ne derdi (uygulanmadı)?
                     try:
@@ -425,12 +574,73 @@ class StrategyBook:
                     self.last_actions[sym] = {"action": "NONE", "reason": "NO_SIGNAL", "at": iso(now)}
 
     def tick(self, marks: dict[str, TickData], *, now: datetime, funding_rate_lookup=None, bar_advance: bool) -> list:
-        """Defterin stop/hedef/funding/likidasyon kontrolü; ana defterle AYNI çağrı biçimi."""
+        """CANLI FİYAT KONTROLÜ: defterin stop/hedef/funding/likidasyon kontrolü; ana defterle AYNI çağrı biçimi.
+        `marks` yalnız doğrulanmış, güncel perp mark taşır (bar ucu YOK; uçlar `apply_closed_bars` ile ayrı sözleşmede)."""
         with self.lock:
             recs = self.ledger.tick(marks, now_utc=now, funding_rate_lookup=funding_rate_lookup, bar_advance=bar_advance)
             for rec in recs:
                 self._on_closed(rec)
             return recs
+
+    def apply_closed_bars(self, bars_by_symbol: dict[str, dict[str, Any]] | None, *, now: datetime, funding_rate_lookup=None) -> list:
+        """GEÇMİŞ OHLC BARI İŞLEME (2026-09-16): kapanmış USDM_PERP barlarının uçlarını (stop/hedef/likidasyon/MFE/MAE)
+        açık pozisyona uygular — canlı fiyat izlemesinden AYRI sözleşme.
+
+        Kural: bir bar yalnız (1) `now` anında kapanmışsa (açılış + dilim <= now), (2) pozisyon açılışından SONRA açılmışsa
+        (açılış >= opened_at; girişi içeren bar dahil değildir — o aralığı canlı fiyat kontrolü kapsar; replay `_advance`
+        ile aynı sınır), (3) daha önce tüketilmemişse (pozisyon `meta.ohlc_cursor[tf]` imleci kalıcıdır: yeniden başlatma
+        ya da tekrar tur aynı barı yeniden yaratmaz) uygulanır; kronolojik sırada, bar başına bir defter tick'i, tick
+        zamanı = barın kapanışı (kayıt zamanı gerçek olay zamanıdır). Fiyat ölçeği canlı mark'la tutarsız bar
+        (±%20 dışı ya da low<=close<=high değil) uydurulmaz: atlanır, imleç ilerler, olay kaydedilir.
+        `bars_by_symbol[sym] = {"tf": "1h", "rows": [{timestamp, high, low, close}, ...], "mark": canlı mark}`."""
+        with self.lock:
+            out: list = []
+            now_ms = int(now.timestamp() * 1000)
+            for sym, spec in (bars_by_symbol or {}).items():
+                pos = self.ledger.positions.get(sym)
+                if pos is None or not isinstance(spec, dict):
+                    continue
+                tf = str(spec.get("tf") or BAR_TIMEFRAME)
+                step = tf_ms(tf)
+                opened_ms = parse_ts_ms(pos.opened_at)
+                if opened_ms is None:
+                    self._data_event(sym, "BAR_SKIPPED", "OPENED_AT_UNREADABLE", now, tf=tf)
+                    continue
+                cur = pos.meta.get("ohlc_cursor") if isinstance(pos.meta.get("ohlc_cursor"), dict) else {}
+                cursor = int(cur.get(tf) or 0)
+                ref = float(spec.get("mark") or 0.0)
+                try:
+                    rows = sorted((r for r in (spec.get("rows") or []) if r.get("timestamp") is not None), key=lambda r: int(r["timestamp"]))
+                except (TypeError, ValueError):
+                    rows = []
+                for r in rows:
+                    o = int(r["timestamp"])
+                    if o + step > now_ms:
+                        break                                    # kapanmamış (ve sonrakiler de): uçları KULLANILMAZ
+                    if o < opened_ms or o <= cursor:
+                        continue                                 # girişten önce açılmış ya da zaten tüketilmiş
+                    try:
+                        hi, lo, cl = float(r.get("high")), float(r.get("low")), float(r.get("close"))
+                    except (TypeError, ValueError):
+                        hi = lo = cl = float("nan")
+                    sane = all(math.isfinite(v) and v > 0 for v in (hi, lo, cl)) and lo <= cl <= hi and (ref <= 0 or 0.8 * ref <= lo <= hi <= 1.2 * ref)
+                    cursor = o
+                    if not sane:
+                        self._data_event(sym, "BAR_SKIPPED", "BAR_OUT_OF_RANGE", now, tf=tf, bar_open_ms=o, mark=ref)
+                        continue
+                    close_dt = datetime.fromtimestamp((o + step) / 1000.0, tz=timezone.utc)
+                    td = TickData(last=Decimal(str(cl)), mark=Decimal(str(cl)), high=Decimal(str(hi)), low=Decimal(str(lo)), ts=iso(close_dt))
+                    recs = self.ledger.tick({sym: td}, now_utc=close_dt, funding_rate_lookup=funding_rate_lookup, bar_advance=False)
+                    if sym in self.ledger.positions:
+                        self.ledger.positions[sym].meta.setdefault("ohlc_cursor", {})[tf] = cursor
+                    for rec in recs:
+                        self._on_closed(rec)
+                        out.append(rec)
+                    if sym not in self.ledger.positions:
+                        break
+                if sym in self.ledger.positions and cursor:
+                    self.ledger.positions[sym].meta.setdefault("ohlc_cursor", {})[tf] = cursor
+            return out
 
     def save(self, marks_f: dict[str, float], now: datetime) -> None:
         with self.lock:
@@ -450,8 +660,14 @@ class StrategyBook:
                    # VERİ KAYNAĞI (2026-09-16): bu turun sembol hükümleri, fiyat boşlukları, son olaylar (yeniden başlatmada korunur)
                    "data_checks": dict(self.data_checks), "data_gaps": dict(self.data_gaps), "data_events_recent": self.data_events[-30:],
                    "data_policy": {"market": PAPER_MARKET, "rule_timeframes": list(RULE_TIMEFRAMES), "price_source": "usdm_perp_mark",
-                                   "note_tr": "Yeni giriş yalnız bu turun doğrulanmış USDⓈ-M perpetual çerçevesi (+ BTC referansı) ile; "
-                                              "kural kapanışı sembol çerçevesine bağlı; stop/hedef takibi doğrulanmış perp mark fiyatıyla."},
+                                   # ZAMAN SÖZLEŞMELERİ (2026-09-16): canlı fiyat / bar uçları / günlük sinyal güncelliği
+                                   "price": {"max_age_s": PRICE_MAX_AGE_S, "future_skew_s": PRICE_FUTURE_SKEW_S,
+                                             "time": "funding.ts (borsa mark zamanı) yoksa snapshot.ts (alınma); kontrol anı ayrı"},
+                                   "bars": {"tf": BAR_TIMEFRAME, "rule": "kapanmış, pozisyon açılışından sonra açılmış, bir kez (meta.ohlc_cursor)"},
+                                   "freshness": {"tolerance_ms": dict(BAR_LAG_TOLERANCE_MS), "future_skew_ms": BAR_FUTURE_SKEW_MS,
+                                                 "rule": "as_of anında kapanmış son bar >= beklenen son kapanış (as_of - tolerans)"},
+                                   "note_tr": "Yeni giriş yalnız bu turun doğrulanmış ve GÜNCEL USDⓈ-M perpetual çerçevesi (+ BTC referansı) ile; "
+                                              "kural kapanışı sembol çerçevesine bağlı; stop/hedef takibi güncel doğrulanmış perp mark fiyatıyla."},
                    "note_tr": "KÂĞIT İLERİ TEST — gerçek para yok. Ana botun defterinden bağımsız."}
             doc["key"] = self.key
             atomic_write_json(Path(self.cfg.state_path) / self.summary_file, doc)

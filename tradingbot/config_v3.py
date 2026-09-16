@@ -647,6 +647,37 @@ class ChartAnalysisSection:
 
 
 @dataclass
+class PatternTraderSection:
+    """FORMASYON PAPER TRADER V1 (2026-09-16) — yeni listelenen coin oncelikli, 15m/1h/4h mum formasyonu, kosullu
+    LONG/SHORT plan, AYRI PAPER defteri.
+
+    `enabled=true` yalniz PAPER/TESTNET/OBSERVE/SHADOW_LIVE modda kabul edilir (LIVE'da ConfigError). Ana botun,
+    T2/M2 defterlerinin evrenine/kuralina/sermayesine DOKUNMAZ; kendi sanal bakiyesi ve kendi state dizini vardir.
+    Evren KESFEDILIR (resmi USDM exchangeInfo): `universe.min_listing_age_days`/`max_symbols` buraya MIRAS KALMAZ.
+    """
+    enabled: bool = False
+    starting_equity_usdt: float = 100.0
+    state_dir: str = "pattern_trader"
+    max_open_positions: int = 3
+    families: list[str] = field(default_factory=lambda: ["A_TREND_PULLBACK", "B_LEVEL_REVERSAL", "C_COMPRESSION_BREAKOUT"])
+    # --- plan geometrisi (surumlu; sonuclari gorduken sonra "kar cikana kadar" degistirilmez) ---
+    stop_buffer_atr: float = 0.25
+    min_rr_after_cost: float = 1.5
+    fallback_rr: float = 2.0
+    measured_move_mult: float = 2.0
+    max_hold_bars: int = 96                  # 15m x 96 = 24 saat zaman stopu
+    cooldown_bars_after_loss: int = 8        # zarardan sonra AYNI sembolde bekleme (tersleme/martingale YOK)
+    # --- evren / islenebilirlik (yas filtresi YOK) ---
+    min_quote_volume_24h: float = 5_000_000
+    max_spread_pct: float = 0.15
+    min_depth_0_5pct_usdt: float = 20_000
+    # --- tarama butcesi ---
+    max_symbols_per_cycle: int = 40
+    scan_seconds: float = 60.0
+    universe_refresh_minutes: float = 30.0
+
+
+@dataclass
 class V3Config:
     app: AppConfig = field(default_factory=AppConfig)
     mode: ModeConfig = field(default_factory=ModeConfig)
@@ -676,6 +707,7 @@ class V3Config:
     news: NewsSection = field(default_factory=NewsSection)
     strategy_paper: StrategyPaperSection = field(default_factory=StrategyPaperSection)
     chart_analysis: ChartAnalysisSection = field(default_factory=ChartAnalysisSection)
+    pattern_trader: PatternTraderSection = field(default_factory=PatternTraderSection)
     warnings: list[str] = field(default_factory=list)
 
 
@@ -690,7 +722,8 @@ _SECTIONS = {"app": AppConfig, "mode": ModeConfig, "markets": MarketsConfig, "un
              "entry_universe": EntryUniverseSection,
              "news": NewsSection,
              "strategy_paper": StrategyPaperSection,
-             "chart_analysis": ChartAnalysisSection}
+             "chart_analysis": ChartAnalysisSection,
+             "pattern_trader": PatternTraderSection}
 
 VALID_MODES = ("OBSERVE", "PAPER", "TESTNET", "SHADOW_LIVE", "LIVE_LIMITED", "LIVE")
 VALID_LLM_MODES = ("OFF", "POSTMORTEM_ONLY", "ADVISORY", "VETO_ONLY", "RESEARCH_COUNCIL")
@@ -950,6 +983,25 @@ def validate_v3(cfg: V3Config) -> None:
                          starting_equity=float(ex.get("starting_equity_usdt", 100.0)), atr_mult=float(ex.get("atr_mult", 3.0)))
         except (ValueError, TypeError) as exc:
             raise ConfigError(f"strategy_paper.extra[{i}]: {exc}") from exc
+    # FORMASYON PAPER TRADER V1: LIVE'da acilamaz; aile adlari ve esikler protokolden dogrulanir (SAF, tek kaynak).
+    _pt = cfg.pattern_trader
+    if _pt.enabled:
+        from .pattern_trader.strategy import FAMILIES as _PT_FAMILIES
+        if str(getattr(cfg.mode, "mode", "") or "").upper() in ("LIVE", "LIVE_LIMITED"):
+            raise ConfigError("pattern_trader.enabled yalniz PAPER/TESTNET/OBSERVE/SHADOW_LIVE modda acilabilir (gercek para YOK)")
+        _bad = [f for f in (_pt.families or []) if f not in _PT_FAMILIES]
+        if _bad:
+            raise ConfigError("pattern_trader.families bilinmeyen aile: %s (gecerli: %s)" % (", ".join(_bad), ", ".join(_PT_FAMILIES)))
+        if not _pt.families:
+            raise ConfigError("pattern_trader.families bos olamaz")
+        if float(_pt.starting_equity_usdt) <= 0 or float(_pt.starting_equity_usdt) > 1000:
+            raise ConfigError("pattern_trader.starting_equity_usdt (0, 1000] araliginda olmali (sanal bakiye)")
+        if int(_pt.max_open_positions) < 1:
+            raise ConfigError("pattern_trader.max_open_positions >= 1 olmali")
+        if float(_pt.min_rr_after_cost) <= 0 or float(_pt.stop_buffer_atr) < 0:
+            raise ConfigError("pattern_trader: min_rr_after_cost > 0 ve stop_buffer_atr >= 0 olmali")
+        if str(_pt.state_dir) in ("", str(cfg.strategy_paper.state_dir)) or "/" in str(_pt.state_dir) or "\\" in str(_pt.state_dir):
+            raise ConfigError("pattern_trader.state_dir benzersiz ve duz bir dizin adi olmali: %r" % (_pt.state_dir,))
     # ÇOK ZAMAN DİLİMLİ LİKİDİTE TEYİDİ (H ailesi): SHADOW dışına çıkış yolu YOKTUR.
     # `entry_selectivity.mode` zaten SHADOW'a kilitli; H ayrıca KENDİ kapısını da taşır ki
     # ileride giriş bölümü gevşetilse bile H tek başına aktifleşemesin (fail-closed).

@@ -329,3 +329,22 @@ strategy_paper:
       atr_mult: 3.0
       breakeven_at_mfe_r: 0.0
       state_dir: strategy_paper_m2
+
+pattern_trader:                # FORMASYON PAPER TRADER V1 — yeni listeleme öncelikli mum formasyonu defteri (AYRI, sanal)
+  enabled: true                # PAPER dışında ConfigError; ana bot ve T2/M2 defterlerine DOKUNMAZ
+  starting_equity_usdt: 100    # sanal bakiye (ana portföyle TOPLANMAZ)
+  state_dir: pattern_trader
+  max_open_positions: 3
+  families: [A_TREND_PULLBACK, B_LEVEL_REVERSAL, C_COMPRESSION_BREAKOUT]
+  stop_buffer_atr: 0.25        # sürümlü plan geometrisi (sonuçlara göre AYARLANMAZ)
+  min_rr_after_cost: 1.5
+  fallback_rr: 2.0
+  measured_move_mult: 2.0
+  max_hold_bars: 96            # 15m × 96 = 24 saat zaman stopu
+  cooldown_bars_after_loss: 8
+  min_quote_volume_24h: 5000000   # yaş filtresi YOK: yeni listelenen coin de işlenebilir olmalı
+  max_spread_pct: 0.15
+  min_depth_0_5pct_usdt: 20000
+  max_symbols_per_cycle: 40    # tarama bütçesi (istek ağırlığı RateBudget ile ayrıca sınırlı)
+  scan_seconds: 60
+  universe_refresh_minutes: 30

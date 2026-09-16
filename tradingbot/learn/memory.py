@@ -23,7 +23,8 @@ def _append_line(path: Path, obj: dict) -> None:
 
 
 SOURCES = ("LIVE_PAPER", "HISTORICAL_REPLAY", "SHADOW", "TESTNET", "LIVE", "SYNTHETIC_TEST",
-           "STRATEGY_PAPER")   # V10: tek kurallı stratejinin AYRI kâğıt defteri (ana hafızayla karışmaz)
+           "STRATEGY_PAPER",   # V10: tek kurallı stratejinin AYRI kâğıt defteri (ana hafızayla karışmaz)
+           "PATTERN_PAPER")    # 2026-09-16: formasyon PAPER trader'ının AYRI defteri (T2/M2 ve ana hafızayla karışmaz)
 
 
 class TradeMemory:

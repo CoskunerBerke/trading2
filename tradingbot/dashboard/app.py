@@ -37,6 +37,7 @@ from .templates import (HEADS_TABLE_CLS, POS_TABLE_CLS, age_text, badge, card, c
                         challenger_blocks, observation_block, quality_block,
                         retention_block,
                         calibration_block, verdict_badge, verdict_kind, weight_table)
+from . import terminal as term
 
 log = logging.getLogger(__name__)
 _PLOTLY_CACHE: dict[str, bytes] = {}
@@ -145,21 +146,39 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
         return state.view_model(stale_price_s=cfg.stale_price_s, stale_run_s=cfg.stale_run_s,
                                 tz_label=cfg.timezone_label)
 
+    def _book_or_default(book) -> str:
+        """Istenen defter GERCEKTEN varsa o, yoksa ana bot. "Calisiyormus gibi" defter GOSTERILMEZ."""
+        b = state.book(str(book or "")) if book else None
+        return b["book_id"] if b else "main"
+
+    def _default_coin(book_id: str, coin) -> str:
+        """Grafikte acilacak coin: istenen -> defterin ilk acik pozisyonu -> ilk coin head -> BTC."""
+        if coin:
+            return str(coin).upper()[:16]
+        pos = state.book_positions(book_id)
+        if pos:
+            return str(sorted(str(x.get("symbol") or "") for x in pos)[0]).split("/")[0].upper()
+        heads = state.coin_heads()
+        if heads:
+            return str(heads[0].get("symbol") or "BTC/USDT").split("/")[0].upper()
+        return "BTC"
+
     @app.get("/", response_class=HTMLResponse)
-    def overview():
+    def overview(book: str | None = Query(None), market: str = Query("futures"), coin: str | None = Query(None)):
+        """TERMINAL GORUNUMU (2026-09-16): secili hesabin acik islemleri + buyuk grafik + son kapanislar.
+        Teknik kartlar, sef ozeti, tam pozisyon tablosu ve coin head'ler ACILIR bolumlerde KORUNUR."""
         ov = state.overview()
         vm = _view()
         pv, cv, fr = vm["portfolio"], vm["chief"], vm["freshness"]
-        body = live_bar(fr)
-        # --- TUTARSIZLIK: sessizce yanlis sayi GOSTERME ---
-        for issue in vm["inconsistencies"]:
-            body += f'<div class="card warn-box">⚠ Veri tutarsızlığı tespit edildi — {esc(issue["message"])}</div>'
-        # --- genel kar/zarar ozeti (en ustte) ---
-        # `c.display` ZATEN biçimlenmiş metindir; ikinci kez para biçimlendirmesine SOKULMAZ.
-        # (Eski kod `money_html("+$2.86")` çağırıyor, `Decimal` çözemediği için `$0.00` basıyordu.)
-        body += "<h2>Kâr / Zarar özeti</h2><div class=\"grid\" id=\"sumgrid\">" + "".join(
+        book_id = _book_or_default(book)
+        market = "spot" if market == "spot" else "futures"
+        base = _default_coin(book_id, coin)
+        # `c.display` ZATEN bicimlenmis metindir; ikinci kez para bicimlendirmesine SOKULMAZ.
+        # `id="sumgrid"` ve hemen ardindan gelen `<div class="grid">` sozlesmesi KORUNUR (HTML-API paritesi testi).
+        detail = '<details class="section"><summary>Kâr / zarar özeti ve teknik kartlar</summary><div>'
+        detail += '<div class="grid" id="sumgrid">' + "".join(
             card(c.title, card_value(c), c.sub, cid="sc-" + c.key) for c in vm["cards"]) + "</div>"
-        body += f'<div class="grid">{"".join([
+        detail += '<div class="grid">' + "".join([
             card("Futures özkaynak", fmt(ov["equity_futures"], 2) + " USDT"),
             card("Spot özkaynak", fmt(ov["equity_spot"], 2) + " USDT"),
             card("Açık pozisyon", str(pv.open_total), f"LONG {pv.open_long} · SHORT {pv.open_short}"),
@@ -168,21 +187,28 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
             card("Sağlık", health_badge(ov["health"]), esc(ov["health_summary"])),
             card("Son strateji turu", age_text(ov["last_run_age_s"]) + " önce", "kalp atışı " + age_text(ov["heartbeat_age_s"])),
             card("LLM bugün", (fmt(ov["llm_spent_usd_today"], 3) + " $") if ov["llm_spent_usd_today"] is not None else "Veri yok"),
-        ])}</div>'
-        body += chief_block(cv)
-        body += _strategy_paper_card()
-        body += '<h2>Açık pozisyonlar</h2><div id="postbl">' + _positions_table(vm) + "</div>"
+        ]) + "</div>"
+        detail += live_bar(fr) + chief_block(cv) + _strategy_paper_card() + "</div></details>"
+        detail += ('<details class="section"><summary>Ana defter — tam pozisyon tablosu</summary><div id="postbl">'
+                   + _positions_table(vm) + "</div></details>")
         chp = _coin_head_payload()
-        body += (_coin_heads_heading(chp) + '<div id="headstbl">' + _heads_table(chp) + "</div>"
-                 + '<div id="headsstale" class="warn-box" style="display:none">'
-                   '⚠ Coin head verisi yenilenemedi — tablo SON BAŞARILI çekimi gösteriyor.</div>')
+        detail += ('<details class="section"><summary>Coin head kararları</summary><div id="headstbl">'
+                   + _heads_table(chp) + "</div>"
+                   + '<div id="headsstale" class="warn-box" style="display:none">'
+                     "⚠ Coin head verisi yenilenemedi — tablo SON BAŞARILI çekimi gösteriyor.</div></details>")
         if not ov["top_heads"]:
             ag = state.get("agents") or {}
             briefs = ag.get("briefs") or []
             if briefs:
-                body += "<h3>Eski ajan brifingleri</h3>" + table(["Coin", "Karar", "Kanaat", "Fiyat", "Manşet"],
-                                                                 [[f'<a href="/coin/{esc(b.get("symbol", "").split("/")[0])}">{esc(b.get("symbol"))}</a>', verdict_badge(b.get("verdict")), fmt(b.get("conviction"), 0), fmt(b.get("price")), esc(b.get("headline"))] for b in briefs])
-        return _page("Genel Bakış", body, "/", extra_head=live_script(cfg))
+                detail += ('<details class="section"><summary>Eski ajan brifingleri</summary><div>'
+                           + table(["Coin", "Karar", "Kanaat", "Fiyat", "Manşet"],
+                                   [[f'<a href="/coin/{esc(b.get("symbol", "").split("/")[0])}">{esc(b.get("symbol"))}</a>',
+                                     verdict_badge(b.get("verdict")), fmt(b.get("conviction"), 0), fmt(b.get("price")),
+                                     esc(b.get("headline"))] for b in briefs]) + "</div></details>")
+        body = term.home(state, book_id=book_id, market=market, coin=base, vm=vm, fr=fr, token_qs=token_qs,
+                         max_bars=cfg.max_bars, extra_sections=detail)
+        return _page("Genel bakış", body, "/", extra_head=live_script(cfg))
+
 
     def _positions_table(vm) -> str:
         """`vm` ya hazır görünüm modeli ya da ham pozisyon listesidir (coin/futures sayfaları)."""
@@ -549,13 +575,53 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
         return _page("Emirler", body, "/orders")
 
     @app.get("/trades", response_class=HTMLResponse)
-    def trades():
-        tr = state.trades()
-        wins = [t for t in tr if float(t.get("pnl", t.get("net_pnl", 0)) or 0) > 0]
-        tot = sum(float(t.get("pnl", t.get("net_pnl", 0)) or 0) for t in tr)
-        body = f'<div class="grid">{card("Toplam işlem", str(len(tr)))}{card("Kazanan", f"{len(wins)} ({(len(wins) / len(tr) * 100 if tr else 0):.0f}%)")}{card("Toplam PnL", f"{tot:+,.2f}")}</div>'
-        body += _trades_table(tr[:300])
-        return _page("İşlemler", body, "/trades")
+    def trades(book: str | None = Query(None), market: str = Query("futures"), tab: str = Query("open"), q: str = Query("")):
+        """Acik / Kapanan sekmeleri, coin aramasi, hesap ve piyasa filtresi — YETKILI defterden."""
+        book_id = _book_or_default(book)
+        market = "spot" if market == "spot" else "futures"
+        tab = "closed" if str(tab) == "closed" else "open"
+        body = term.trades_page(state, book_id=book_id, market=market, tab=tab, q=str(q)[:24], token_qs=token_qs)
+        if book_id == "main" and tab == "closed":
+            body += ('<details class="section"><summary>Ana defter — ayrıntılı işlem tablosu (eski görünüm)</summary><div>'
+                     + _trades_table(state.trades()[:300]) + "</div></details>")
+        return _page("İşlemler", body, "/trades", extra_head=live_script(cfg))
+
+    @app.get("/patterns", response_class=HTMLResponse)
+    def patterns():
+        """Mum trader: kesif -> formasyon -> kosullu plan -> gercek PAPER islem zinciri (SALT OKUNUR)."""
+        return _page("Tarayıcı · Mum trader", term.patterns_page(state, token_qs=token_qs), "/patterns",
+                     extra_head=live_script(cfg))
+
+    @app.get("/api/book/{book_id}")
+    def api_book(book_id: str):
+        """Secili hesabin canli ozeti (kartlar + acik islemler + son kapanislar) — sayfa yenilemeden guncelleme."""
+        bid = _book_or_default(book_id)
+        acc = term.account_snapshot(state, bid, vm=_view() if bid == "main" else None)
+        return JSONResponse({"book_id": bid, "label": acc["label"], "source": acc.get("source"),
+                             "equity": acc["equity"], "starting_equity": acc["starting_equity"], "net": acc["net"],
+                             "realized": acc["realized"], "unrealized": acc["unrealized"],
+                             "open_total": acc["open_total"], "open_long": acc["open_long"],
+                             "open_short": acc["open_short"], "closed": acc["closed"], "wins": acc["wins"],
+                             "losses": acc["losses"], "warnings": acc["warnings"], "generated_at": acc.get("generated_at"),
+                             "cards_html": term.summary_cards(acc),
+                             "positions_html": term.positions_block(acc, book_id=bid, market="futures", selected=None),
+                             "closed_html": term.closed_block(acc)})
+
+    @app.get("/api/planbox/{base}")
+    def api_planbox(base: str, book: str | None = Query(None), market: str = Query("futures")):
+        """Grafik altindaki islem/plan ozeti — satir tiklanip coin degisince AYNI ekranda guncellenir (SALT OKUMA)."""
+        bid = _book_or_default(book)
+        return JSONResponse({"base": base.upper()[:16], "book": bid, "market": "spot" if market == "spot" else "futures",
+                             "html": term.plan_box(state, book_id=bid, base=base.upper()[:16],
+                                                   market="spot" if market == "spot" else "futures")})
+
+    @app.get("/api/patterns")
+    def api_patterns():
+        """Mum trader durumu (defter + tarama + evren sayilari + ekonomik rapor) tek uctan."""
+        return JSONResponse({"book": state.get("pattern_trader"), "scan": state.get("pattern_scan"),
+                             "universe_counts": ((state.get("pattern_universe") or {}).get("counts")),
+                             "report": state.get("pattern_report")})
+
 
     @app.get("/trades/{trade_id}", response_class=HTMLResponse)
     def trade_detail(trade_id: str):

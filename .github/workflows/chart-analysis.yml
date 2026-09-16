@@ -52,6 +52,8 @@ jobs:
             tests/test_strategy_paper_data_source_v1.py \
             tests/test_strategy_paper_price_time_v1.py \
             tests/test_replay_strategy_mode_v1.py \
+            tests/test_pattern_trader_v1.py \
+            tests/test_dashboard_terminal_v1.py \
             -q --tb=short > pytest.out 2>&1
           rc=$?
           cat pytest.out

@@ -261,6 +261,21 @@ class TradingEngineV3(TradingEngine):
             log.info("STRATEJI KAGIT DEFTERI: name=%s atr_mult=%s baslangic=%s USDT state=%s",
                      _book.name, _book.atr_mult, float(_book.ledger.starting_equity), _book.state_dir)
         self.strategy_book = self.strategy_books[0] if self.strategy_books else None     # geriye uyumlu ad
+        # FORMASYON PAPER TRADER V1 (2026-09-16): yeni listeleme oncelikli mum formasyonu defteri. Kapaliyken None;
+        # tarayici ARKA PLAN is parcacigindadir (`ensure_pattern_scanner`), tur ve 60 sn cikis izleyicisi BEKLEMEZ.
+        self.pattern_book = None
+        self.pattern_scanner = None
+        if getattr(v3, "pattern_trader", None) is not None and v3.pattern_trader.enabled:
+            try:
+                from .pattern_trader.book import PatternBook
+                self.pattern_book = PatternBook(cfg, profile=self.profile, killswitch=self.killswitch,
+                                                filters_cache=self.filters, section=v3.pattern_trader)
+                log.info("FORMASYON PAPER TRADER: baslangic=%s USDT azami_pozisyon=%d aileler=%s state=%s",
+                         float(self.pattern_book.ledger.starting_equity), int(v3.pattern_trader.max_open_positions),
+                         ",".join(v3.pattern_trader.families), self.pattern_book.state_dir)
+            except Exception as exc:  # noqa: BLE001 — defter kurulamazsa ana bot ETKILENMEZ
+                log.exception("formasyon defteri kurulamadi (ana bot surer): %s", exc)
+                self.pattern_book = None
         self.model_registry = ModelRegistry(st / "models.json")
         self.learner2 = LearnerV2(self.memory, self.model_registry, LearnConfig(min_samples_train=v3.learning_v3.min_samples_train,
                                   holdout_frac=v3.learning_v3.holdout_frac, half_life_days=v3.learning_v3.half_life_days, calibrator=v3.learning_v3.calibrator),
@@ -804,6 +819,7 @@ class TradingEngineV3(TradingEngine):
         Yeni giriş AÇMAZ. Dönen: kapanan işlemlerin legacy dict'leri."""
         self.ensure_gap_reconciled()
         self._strategy_paper_exit_check()
+        self._pattern_exit_check()
         with self._exit_lock:
             if not self.ledger2.positions:
                 return []
@@ -1329,6 +1345,8 @@ class TradingEngineV3(TradingEngine):
         # 8b) GRAFIK ANALIZI (CHART ANALYSIS V1): karar kaydi (risk.json) ve planlar yazildiktan SONRA;
         #     salt gosterim kaydi — defter/ogrenme/kapi DEGISMEZ, ariza turu durdurmaz.
         self._chart_analysis_tour(symbols, marks_f, now)
+        # 8c) FORMASYON PAPER TRADER: tarayici arka planda calisir; burada yalniz baslatma + ekonomik rapor yazilir.
+        self._pattern_trader_tour(now)
         # Karar günlüğü: DEĞERLENDİRİLEN HER aday (kabul/red/veto) tek seferde yazılır.
         # Hot loop'un DIŞINDA, tur sonunda ve fail-safe: arıza turu bozmaz.
         self._journal_decisions(risk_log, decisions, now)
@@ -2399,6 +2417,70 @@ class TradingEngineV3(TradingEngine):
                 log.info("grafik analizi: %d yeni analiz ani kaydedildi", written)
         except Exception as exc:  # noqa: BLE001 -- gosterim katmani ana turu ASLA durdurmaz
             log.warning("grafik analizi turu basarisiz (ana tur ETKILENMEZ): %s", exc)
+
+    # ------------------------------------------------------------------ FORMASYON PAPER TRADER V1
+    def _pattern_feed(self):
+        """MarketFeed: resmi USDM sağlayıcı + panelin okuduğu CSV önbelleği (artımlı indirme, kapanmamış bar düşer)."""
+        from .market.feed import MarketFeed
+        from .pattern_trader.data import CsvCandleCache
+        return MarketFeed([self._futures_provider_factory()], cache_store=CsvCandleCache(self.cfg.cache_path))
+
+    def ensure_pattern_scanner(self) -> dict:
+        """Formasyon tarayıcısını kur ve ARKA PLANDA başlat. HEMEN döner — tarama ana turu BEKLETMEZ.
+        Kapalıysa/`pattern_book` yoksa hiçbir şey yapmaz ve gerekçe döner."""
+        if self.pattern_book is None:
+            return {"enabled": False, "reason": "pattern_trader kapalı"}
+        if self.pattern_scanner is not None:
+            return self.pattern_scanner.status()
+        pt = self.cfg.v3.pattern_trader
+        from .pattern_trader.data import DataService, PriceService
+        from .pattern_trader.scheduler import PatternScanner
+        provider = self._futures_provider_factory()
+        feed = self._pattern_feed()
+        sc = PatternScanner(book=self.pattern_book, data=DataService(feed), price=PriceService(provider, feed),
+                            universe_provider=provider, state_path=self.cfg.state_path,
+                            min_quote_volume_24h=float(pt.min_quote_volume_24h), max_spread_pct=float(pt.max_spread_pct),
+                            max_symbols_per_cycle=int(pt.max_symbols_per_cycle), universe_refresh_minutes=float(pt.universe_refresh_minutes),
+                            cycle_seconds=float(pt.scan_seconds), run_id=lambda: str(getattr(self, "run_id", "") or ""))
+        self.pattern_scanner = sc
+        sc.start()
+        log.info("formasyon tarayıcısı başladı: her %.0f sn, tur başına en fazla %d sembol", sc.cycle_seconds, sc.max_symbols_per_cycle)
+        return sc.status()
+
+    def _pattern_trader_tour(self, now: datetime) -> None:
+        """Tur adımı: tarayıcıyı başlat (arka plan) + ekonomik raporu yaz. Arıza ana turu DURDURMAZ."""
+        if self.pattern_book is None:
+            return
+        try:
+            self.ensure_pattern_scanner()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("formasyon tarayıcısı başlatılamadı (tur sürer): %s", exc)
+        try:                                        # panel ilk turdan itibaren guncel defteri gorsun (tarama turu beklemeden)
+            self.pattern_book.save(None, now)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("formasyon defteri ozeti yazilamadi: %s", exc)
+        try:
+            from .pattern_trader.report import build_report
+            summary = read_json(self.cfg.state_path / self.pattern_book.summary_file, default=None) or {}
+            scan = read_json(self.cfg.state_path / "pattern_scan.json", default=None) or {}
+            rep = build_report(summary, history=self.pattern_book.ledger.history_dicts(), findings=self.pattern_book.findings,
+                               plans=self.pattern_book.plans, scan=scan, now=now)
+            atomic_write_json(self.cfg.state_path / "pattern_report.json", rep)
+        except Exception as exc:  # noqa: BLE001 — rapor arızası defteri/turu ETKİLEMEZ
+            log.warning("formasyon raporu yazılamadı: %s", exc)
+
+    def _pattern_exit_check(self) -> None:
+        """60 sn çıkış izleyicisi (formasyon defteri): doğrulanmış güncel perp mark ile stop/hedef/likidasyon.
+        Tarama iş parçacığından BAĞIMSIZ — kuyruk ne kadar uzun olursa olsun bu yol BEKLEMEZ."""
+        if self.pattern_book is None or not self.pattern_book.ledger.positions:
+            return
+        try:
+            if self.pattern_scanner is None:
+                self.ensure_pattern_scanner()
+            if self.pattern_scanner is not None:
+                self.pattern_scanner.exit_check()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("formasyon defteri exit-monitor basarisiz: %s", exc)
 
     def _strategy_paper_exit_check(self) -> None:
         """60 sn çıkış izleyicisi: strateji defterinin açık pozisyonlarını canlı fiyatla tick'ler."""

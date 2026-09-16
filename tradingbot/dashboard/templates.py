@@ -6,16 +6,85 @@ import json
 import math
 from typing import Any, Iterable
 
-NAV: list[tuple[str, str]] = [
-    ("/", "Genel"), ("/universe", "Evren"), ("/scanner", "Tarayıcı"), ("/portfolio/futures", "Futures"), ("/portfolio/spot", "Spot"),
-    ("/orders", "Emirler"), ("/trades", "İşlemler"), ("/risk", "Risk"), ("/learning", "Öğrenme"), ("/quant", "Quant"), ("/backtest", "Backtest"),
-    ("/models", "Modeller"), ("/llm", "LLM"), ("/health", "Sağlık"),
+#: ANA GEZINME — en fazla dort gorunur bolum (2026-09-16 panel sadelestirmesi). Teknik sayfalar KAYBOLMAZ:
+#: hepsi "Gelismis" menusunde erisilebilir kalir ve dogrudan URL'leri calismaya devam eder.
+NAV_MAIN: list[tuple[str, str]] = [
+    ("/", "Genel bakış"), ("/trades", "İşlemler"), ("/patterns", "Tarayıcı"),
 ]
+NAV_MORE: list[tuple[str, str]] = [
+    ("/portfolio/futures", "Futures defteri"), ("/portfolio/spot", "Spot defteri"), ("/portfolio/strategy", "Trend defterleri"),
+    ("/universe", "Evren"), ("/scanner", "Eski tarayıcı"), ("/orders", "Emirler"), ("/risk", "Risk"), ("/learning", "Öğrenme"),
+    ("/quant", "Quant"), ("/backtest", "Backtest"), ("/models", "Modeller"), ("/llm", "LLM"), ("/health", "Sağlık"),
+]
+#: Geriye uyumluluk: eski `NAV` adi tum baglantilarin duz listesidir.
+NAV: list[tuple[str, str]] = NAV_MAIN + NAV_MORE
 
 # Açık pozisyon tablosunun sticky sütun sınıfı — TEK KAYNAK.
 # Sunucu render'ı (`table(..., cls=POS_TABLE_CLS)`) ve polling JS'i AYNI sabiti kullanır; ikisi
 # ayrı yazıldığında polling tabloyu sınıfsız kuruyor ve sticky sütunlar sessizce kayboluyordu.
 POS_TABLE_CLS = "pos"
+
+#: TERMINAL GORUNUMU (2026-09-16): sakin koyu tema, tek vurgu rengi, az kart, buyuk grafik. Renk TEK BASINA anlam
+#: tasimaz — yon/sonuc her yerde metinle de yazilir (LONG/SHORT rozeti, +/- isaretli tutar).
+CSS_TERMINAL = """
+header nav{display:flex;gap:.15rem;align-items:center;flex-wrap:wrap}
+header nav a{padding:.35rem .6rem;border-radius:7px;white-space:nowrap}
+header nav a.on{background:rgba(77,163,255,.16);color:#cfe6ff}
+header nav a:focus-visible,.trow:focus-visible,.tab:focus-visible,select:focus-visible,input:focus-visible,summary:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+details.more{position:relative;display:inline-block}
+details.more>summary{list-style:none;cursor:pointer;padding:.35rem .6rem;border-radius:7px;color:var(--acc)}
+details.more>summary::-webkit-details-marker{display:none}
+details.more>summary::after{content:" ▾"}
+details.more.on>summary{background:rgba(77,163,255,.16);color:#cfe6ff}
+.moremenu{position:absolute;right:0;top:110%;z-index:40;background:var(--panel);border:1px solid var(--line);border-radius:10px;
+  padding:.35rem;display:flex;flex-direction:column;min-width:190px;box-shadow:0 10px 30px rgba(0,0,0,.45)}
+.acctbar{display:flex;gap:.6rem;align-items:center;flex-wrap:wrap;margin:.5rem 0 .8rem;padding:.5rem .7rem;background:var(--panel);
+  border:1px solid var(--line);border-radius:10px}
+.acctbar select{background:#0f141b;color:var(--fg);border:1px solid var(--line);border-radius:7px;padding:.3rem .45rem;min-height:32px}
+.acctsep{flex:1}
+.cards4{display:grid;grid-template-columns:repeat(4,1fr);gap:.7rem;margin:.2rem 0 1rem}
+.cards4 .card{padding:.75rem .9rem}
+.cards4 .v{font-size:1.5rem;font-weight:650;letter-spacing:-.02em}
+.mainsplit{display:grid;grid-template-columns:minmax(0,2.1fr) minmax(300px,1fr);gap:1rem;align-items:start}
+.chartcol{min-width:0}
+.chartcol #chart{height:460px;min-height:460px}
+.sidecol{min-width:0}
+.h2row{display:flex;gap:.5rem;align-items:baseline}
+.planbox{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:.6rem .8rem;margin:.5rem 0}
+.planrow{padding:.2rem 0;line-height:1.5}
+.planrow+.planrow{border-top:1px dashed var(--line);margin-top:.3rem;padding-top:.4rem}
+.tlist{display:flex;flex-direction:column;gap:.45rem}
+.trow{background:var(--panel);border:1px solid var(--line);border-left:3px solid transparent;border-radius:10px;padding:.55rem .7rem;cursor:pointer}
+.trow:hover{border-color:#2f3a49;background:#181e27}
+.trow.on{border-left-color:var(--acc);background:#182231}
+.tmain{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap}
+.tmain .sym{font-weight:650}
+.tsub{display:flex;gap:.9rem;flex-wrap:wrap;margin-top:.3rem;font-size:.85rem;color:var(--mut)}
+.tsub b{color:var(--fg);font-weight:600}
+.tsub .pnl i{font-style:normal;opacity:.75}
+.tdet{margin-top:.25rem}
+.tdet>summary{cursor:pointer;font-size:.8rem;color:var(--mut)}
+.tabs{display:flex;gap:.4rem;margin:.2rem 0 .7rem}
+.tab{padding:.4rem .8rem;border:1px solid var(--line);border-radius:999px;color:var(--mut)}
+.tab.on{background:rgba(77,163,255,.16);border-color:rgba(77,163,255,.4);color:#cfe6ff}
+.filters{display:flex;gap:.6rem;align-items:center;flex-wrap:wrap;margin-bottom:.6rem}
+.filters input{background:#0f141b;color:var(--fg);border:1px solid var(--line);border-radius:7px;padding:.4rem .6rem;min-width:180px;min-height:32px}
+.empty{background:var(--panel);border:1px dashed var(--line);border-radius:10px;padding:1.1rem;color:var(--mut);text-align:center}
+.pills{display:flex;gap:.4rem;flex-wrap:wrap;margin:.3rem 0}
+.pill{border:1px solid var(--line);border-radius:999px;padding:.15rem .55rem;font-size:.8rem;color:var(--mut)}
+.pill.ok{border-color:rgba(38,166,154,.5);color:#8fd6cd}
+.pill.warn{border-color:rgba(245,197,66,.5);color:#e6cf84}
+.pill.bad{border-color:rgba(239,83,80,.5);color:#f0a3a1}
+details.section{margin:1rem 0;border:1px solid var(--line);border-radius:10px;background:var(--panel)}
+details.section>summary{cursor:pointer;padding:.6rem .8rem;font-weight:600}
+details.section>div{padding:0 .8rem .8rem}
+details.layerbox,details.srcbox{margin:.35rem 0}
+details.layerbox>summary,details.srcbox>summary{cursor:pointer;font-size:.82rem;color:var(--mut);padding:.2rem 0}
+.sidecol table{display:block;overflow-x:auto}
+@media(max-width:1100px){.mainsplit{grid-template-columns:1fr}.cards4{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:560px){.cards4{grid-template-columns:1fr}.cards4 .v{font-size:1.3rem}.chartcol #chart{height:320px;min-height:320px}
+  .acctbar{gap:.4rem}.acctsep{flex-basis:100%;height:0}.tsub{gap:.6rem}header nav a{padding:.3rem .45rem;font-size:.9rem}}
+"""
 
 CSS_EXTRA = """
 .live{display:flex;flex-wrap:wrap;gap:.4rem;align-items:center;font-size:.86rem}
@@ -610,10 +679,14 @@ def render_any(obj: Any, depth: int = 0) -> str:
 
 
 def page(title: str, body: str, active: str = "/", *, brand: str = "Trading Bot", extra_head: str = "", token_qs: str = "") -> str:
-    nav = "".join(f'<a href="{href}{token_qs}" class="{"on" if href == active else ""}">{esc(label)}</a>' for href, label in NAV)
+    nav = "".join(f'<a href="{href}{token_qs}" class="{"on" if href == active else ""}">{esc(label)}</a>' for href, label in NAV_MAIN)
+    more = "".join(f'<a href="{href}{token_qs}" class="{"on" if href == active else ""}">{esc(label)}</a>' for href, label in NAV_MORE)
+    more_on = " on" if any(href == active for href, _ in NAV_MORE) else ""
+    nav += (f'<details class="more{more_on}"><summary aria-haspopup="true">Gelişmiş</summary>'
+            f'<div class="moremenu">{more}</div></details>')
     return f"""<!doctype html><html lang="tr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{esc(title)} · {esc(brand)}</title><style>{CSS}{CSS_EXTRA}</style>{extra_head}</head><body>
-<header><span class="brand">📈 {esc(brand)}</span><nav>{nav}</nav></header>
+<title>{esc(title)} · {esc(brand)}</title><style>{CSS}{CSS_EXTRA}{CSS_TERMINAL}</style>{extra_head}</head><body>
+<header><span class="brand">📈 {esc(brand)}</span><span class="pill ok" title="kâğıt (sanal) mod — gerçek para yok">PAPER</span><nav>{nav}</nav></header>
 <main><h1>{esc(title)}</h1>{body}</main>
 <footer>salt-okunur panel · PAPER · yatırım tavsiyesi değildir · <span id="sse" class="mut">canlı: bağlanıyor…</span></footer>
 <script>
@@ -641,8 +714,10 @@ def chart_block(base: str, tf: str = "4h", market: str = "spot", *, token_qs: st
 <label class="chk">Bar <input id="nbars" type="number" min="50" max="{max_bars}" value="300" style="width:70px"></label>
 <label class="chk">Geçmiş <select id="hist"><option value="">şimdi (canlı analiz)</option></select></label>
 <button id="reload">↻</button> <button id="dl-png" title="PNG indir">PNG</button> <button id="dl-json" title="Analiz JSON indir">JSON</button></div>
-<div class="row chartbar"><span class="mut small">Katmanlar:</span> <span id="laybox"></span> <span class="mut small">Göstergeler:</span> <span id="ovbox"></span></div>
-<div id="srcline" class="mut small" style="margin:4px 0"></div>
+<details class="layerbox"><summary>Katmanlar ve göstergeler</summary>
+<div class="row chartbar"><span class="mut small">Katmanlar:</span> <span id="laybox"></span></div>
+<div class="row chartbar"><span class="mut small">Göstergeler:</span> <span id="ovbox"></span></div></details>
+<details class="srcbox"><summary>Veri kaynağı ve analiz kimliği</summary><div id="srcline" class="mut small" style="margin:4px 0"></div></details>
 <div id="chart"></div>
 <div class="grid2"><div class="card" id="explain"><div class="mut">açıklama yükleniyor…</div></div><div class="card" id="detail"><div class="mut">Bir çizgi/işarete tıkla.</div></div></div>
 <script src="/static/plotly.min.js{token_qs}"></script>
@@ -929,7 +1004,7 @@ def challenger_blocks(q: dict) -> str:
 
 
 __all__ = ["page", "table", "kv_table", "render_any", "card", "badge", "health_badge", "ks_badge", "verdict_badge", "pnl_cell",
-           "fmt", "pct", "esc", "age_text", "chart_block", "CSS", "NAV", "CHART_JS",
+           "fmt", "pct", "esc", "age_text", "chart_block", "CSS", "NAV", "NAV_MAIN", "NAV_MORE", "CHART_JS",
            "retention_block", "calibration_block", "quality_block", "observation_block",
            "evidence_badge", "NOT_ENOUGH_DATA", "RESEARCH_ONLY", "ACTIVE_POLICY_UNCHANGED",
            "challenger_blocks"]

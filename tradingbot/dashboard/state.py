@@ -24,6 +24,11 @@ STATE_FILES: dict[str, str] = {
     "frame_provenance": "frame_provenance.json",
     # STRATEJI KAGIT DEFTERI (V10): tek kuralli trend, ayri defter, ileri test (salt okunur ozet).
     "strategy_paper": "strategy_paper.json",
+    # FORMASYON PAPER TRADER V1 (2026-09-16) — ayri defter ozeti, ekonomik rapor, tarama/evren durumu (SALT OKUNUR).
+    "pattern_trader": "pattern_trader.json",
+    "pattern_report": "pattern_report.json",
+    "pattern_scan": "pattern_scan.json",
+    "pattern_universe": "pattern_universe.json",
     # PAPER LEARNING LOOP INTEGRITY V3 — ikisi de SALT OKUNUR gözlem belgesidir.
     "learning_chain": "learning_chain.json",
     # Kalibrasyon/model durumunu KANITA bağlamak için (salt okunur gösterim).
@@ -213,7 +218,61 @@ class StateReader:
         if len(out) == 1 and (self.state_dir / "strategy_paper" / "futures_ledger.json").exists():
             sp = self.get("strategy_paper") or {}
             out.append({"book_id": "strategy_paper", "name": str(sp.get("name") or "t2_trend_regime"), "label": "T2 · EMA200 trend", "state_dir": "strategy_paper"})
+        # FORMASYON TRADER: yalniz GERCEKTEN varsa (ozet dosyasi yazilmis) listelenir — "calisiyormus gibi" gosterilmez.
+        pt = self.get("pattern_trader") or {}
+        if isinstance(pt, dict) and pt.get("key") == "pattern_trader" and "pattern_trader" not in seen:
+            out.append({"book_id": "pattern_trader", "name": str(pt.get("name") or "pattern_v1"), "label": "Mum trader",
+                        "state_dir": "pattern_trader", "summary_file": "pattern_trader.json"})
         return out
+
+    # ---- TERMINAL PANELI (2026-09-16): defter basina pozisyon/gecmis/ozkaynak — YETKILI defter dosyasindan
+    def book_summary_file(self, book_id: str) -> dict | None:
+        """Defterin kendi ozet dosyasi (strategy_paper*.json / pattern_trader.json). Ana bot icin None."""
+        b = self.book(book_id)
+        if b is None or b["book_id"] == "main":
+            return None
+        fn = str(b.get("summary_file") or ("%s.json" % b["book_id"]))
+        if "/" in fn or "\\" in fn or ".." in fn:
+            return None
+        d = read_json(self.state_dir / fn, default=None)
+        return d if isinstance(d, dict) else None
+
+    def book_positions(self, book_id: str) -> list[dict]:
+        """Defterin BUTUN acik pozisyonlari — yetkili pozisyon defterinden (aday/ret kaydi DEGIL).
+
+        Tarama evreni disinda kalmis eski pozisyonlar da GORUNUR: defterde ne varsa o listelenir.
+        """
+        if book_id == "main":
+            return self.futures_positions()
+        led = self.book_ledger(book_id) or {}
+        pos = led.get("positions") or {}
+        if not pos:
+            # Defter dosyasi okunamiyorsa defterin KENDI ozetindeki pozisyonlar (ayni yazar, ayni tick) kullanilir.
+            # Bu bir ikinci muhasebe DEGILDIR: yalniz ayni kaydin projeksiyonu. Ikisi de yoksa liste bostur.
+            pos = (self.book_summary_file(book_id) or {}).get("positions") or {}
+        items = pos.items() if isinstance(pos, dict) else [(p.get("symbol"), p) for p in pos if isinstance(p, dict)]
+        out = []
+        for sym, p in items:
+            if not isinstance(p, dict):
+                continue
+            q = dict(p)
+            q["symbol"] = str(q.get("symbol") or sym)
+            q.setdefault("entry_avg", q.get("entry"))
+            q.setdefault("qty", q.get("units"))
+            q.setdefault("isolated_margin", q.get("margin"))
+            q["book_id"] = book_id
+            out.append(q)
+        return out
+
+    def book_trades(self, book_id: str, limit: int = 500) -> list[dict]:
+        """Defterin KAPANMIS islemleri (en yeni sonda). Ana bot icin `trades.json`/defter gecmisi."""
+        if book_id == "main":
+            return self.trades()[-int(limit):]
+        led = self.book_ledger(book_id) or {}
+        rows = [dict(h, book_id=book_id) for h in (led.get("history") or []) if isinstance(h, dict)]
+        if not rows:
+            rows = [dict(h, book_id=book_id) for h in ((self.book_summary_file(book_id) or {}).get("history_tail") or []) if isinstance(h, dict)]
+        return rows[-int(limit):]
 
     def book(self, book_id: str) -> dict | None:
         return next((b for b in self.books() if b["book_id"] == book_id), None)

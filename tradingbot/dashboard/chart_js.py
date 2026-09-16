@@ -16,13 +16,17 @@ CHART_JS = r"""
   var OV=[['sma25','SMA25','#f5c542'],['sma50','SMA50','#ffb74d'],['sma99','SMA99','#ff8a65'],['sma200','SMA200','#ba68c8'],
           ['ema25','EMA25','#4dd0e1'],['ema50','EMA50','#4fc3f7'],['ema99','EMA99','#7986cb'],['ema200','EMA200','#ce93d8'],
           ['vwap','VWAP','#fff176'],['bb_up','BB üst','#90a4ae'],['bb_mid','BB orta','#78909c'],['bb_lo','BB alt','#90a4ae']];
-  var DEF={ema25:1,ema99:1,ema200:1,vwap:0,sma25:0,sma50:0,sma99:0,sma200:0,bb_up:0,bb_mid:0,bb_lo:0,ema50:0};
-  var LAYERS=[['levels','Seviyeler'],['zones','Bölgeler'],['trend','Trend'],['patterns','Formasyonlar'],['trades','İşlemler'],['indicators','Göstergeler']];
+  var DEF={ema25:0,ema99:0,ema200:0,vwap:0,sma25:0,sma50:0,sma99:0,sma200:0,bb_up:0,bb_mid:0,bb_lo:0,ema50:0};
+  // VARSAYILAN GORUNUM SADE (2026-09-16): yalniz mumlar + GERCEK islem katmani (giris/cikis/stop/hedef).
+  // Seviye/bolge/trend/formasyon/gosterge katmanlari "Katmanlar" altinda ACILIR — ekran hepsi acik gelmez.
+  var LAYER_DEF={levels:0,zones:0,trend:0,patterns:0,trades:1,volume:0,indicators:0};
+  var LAYERS=[['levels','Seviyeler'],['zones','Bölgeler'],['trend','Trend'],['patterns','Formasyonlar'],['trades','İşlemler'],
+              ['volume','Hacim'],['indicators','Göstergeler (RSI/MACD/EMA)']];
   var IMPACT={USED_IN_DECISION:['kararda kullanıldı','#26a69a'],OBSERVATION_ONLY:['yalnız gözlem','#90a4ae'],UNCONFIRMED:['henüz teyitsiz','#ffb74d'],INVALID:['geçersiz / ihlal','#ef5350']};
   var MKT={USDM_PERP:'futures',SPOT:'spot'};
   var box=document.getElementById('ovbox'), lbox=document.getElementById('laybox');
   OV.forEach(function(o){var l=document.createElement('label');l.className='chk';var c=document.createElement('input');c.type='checkbox';c.dataset.k=o[0];c.checked=!!DEF[o[0]];l.appendChild(c);l.appendChild(document.createTextNode(o[1]));box.appendChild(l);c.addEventListener('change',function(){if(last)draw(last);});});
-  LAYERS.forEach(function(o){var l=document.createElement('label');l.className='chk';var c=document.createElement('input');c.type='checkbox';c.dataset.layer=o[0];c.checked=true;l.appendChild(c);l.appendChild(document.createTextNode(o[1]));lbox.appendChild(l);c.addEventListener('change',function(){if(last)draw(last);});});
+  LAYERS.forEach(function(o){var l=document.createElement('label');l.className='chk';var c=document.createElement('input');c.type='checkbox';c.dataset.layer=o[0];c.checked=!!LAYER_DEF[o[0]];l.appendChild(c);l.appendChild(document.createTextNode(o[1]));lbox.appendChild(l);c.addEventListener('change',function(){if(last)draw(last);});});
   function layerOn(k){var cb=lbox.querySelector('input[data-layer="'+k+'"]');return !cb||cb.checked;}
   var seq=0, hseq=0, last=null, elIndex=[];
   function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
@@ -98,14 +102,16 @@ CHART_JS = r"""
     var x=d.t.map(function(t){return new Date(t);});var x0=x[0],x1=x[x.length-1];var tfms=d.tf_ms||14400000;
     var traces=[{type:'candlestick',x:x,open:d.o,high:d.h,low:d.l,close:d.c,name:base,increasing:{line:{color:'#26a69a'}},decreasing:{line:{color:'#ef5350'}},xaxis:'x',yaxis:'y'}];
     var vcol=d.c.map(function(c,i){return c>=d.o[i]?'rgba(38,166,154,.4)':'rgba(239,83,80,.4)';});
-    traces.push({type:'bar',x:x,y:d.v,name:'Hacim',marker:{color:vcol},xaxis:'x',yaxis:'y5',hoverinfo:'skip'});
-    OV.forEach(function(o){var s=d.overlays[o[0]];if(!s)return;var cb=box.querySelector('input[data-k="'+o[0]+'"]');var on=cb?cb.checked:!!DEF[o[0]];
+    var showVol=layerOn('volume'), showInd=layerOn('indicators');
+    if(showVol)traces.push({type:'bar',x:x,y:d.v,name:'Hacim',marker:{color:vcol},xaxis:'x',yaxis:'y5',hoverinfo:'skip'});
+    if(showInd)OV.forEach(function(o){var s=d.overlays[o[0]];if(!s)return;var cb=box.querySelector('input[data-k="'+o[0]+'"]');var on=cb?cb.checked:!!DEF[o[0]];
       traces.push({type:'scatter',mode:'lines',x:x,y:s,line:{width:1,color:o[2],dash:o[0].indexOf('bb')===0?'dot':'solid'},name:o[1],hoverinfo:'skip',visible:on?true:'legendonly',xaxis:'x',yaxis:'y'});});
     var p=d.panels||{};
-    traces.push({type:'scatter',mode:'lines',x:x,y:p.rsi,name:'RSI14',line:{width:1,color:'#ce93d8'},xaxis:'x',yaxis:'y2'});
-    traces.push({type:'bar',x:x,y:p.macd_hist,name:'MACD hist',marker:{color:(p.macd_hist||[]).map(function(v){return v>=0?'rgba(38,166,154,.6)':'rgba(239,83,80,.6)';})},xaxis:'x',yaxis:'y3'});
-    traces.push({type:'scatter',mode:'lines',x:x,y:p.macd_line,name:'MACD',line:{width:1,color:'#4fc3f7'},xaxis:'x',yaxis:'y3'});
-    traces.push({type:'scatter',mode:'lines',x:x,y:p.macd_signal,name:'Sinyal',line:{width:1,color:'#ffb74d'},xaxis:'x',yaxis:'y3'});
+    if(showInd){
+      traces.push({type:'scatter',mode:'lines',x:x,y:p.rsi,name:'RSI14',line:{width:1,color:'#ce93d8'},xaxis:'x',yaxis:'y2'});
+      traces.push({type:'bar',x:x,y:p.macd_hist,name:'MACD hist',marker:{color:(p.macd_hist||[]).map(function(v){return v>=0?'rgba(38,166,154,.6)':'rgba(239,83,80,.6)';})},xaxis:'x',yaxis:'y3'});
+      traces.push({type:'scatter',mode:'lines',x:x,y:p.macd_line,name:'MACD',line:{width:1,color:'#4fc3f7'},xaxis:'x',yaxis:'y3'});
+      traces.push({type:'scatter',mode:'lines',x:x,y:p.macd_signal,name:'Sinyal',line:{width:1,color:'#ffb74d'},xaxis:'x',yaxis:'y3'});}
     var shapes=[],ann=[];elIndex=[];
     function hl(y,color,dash,label,xa){if(y==null)return;shapes.push({type:'line',xref:'x',yref:'y',x0:xa||x0,x1:x1,y0:y,y1:y,line:{color:color,width:1,dash:dash}});ann.push({xref:'paper',x:0.995,yref:'y',y:y,text:label,showarrow:false,font:{size:10,color:color},xanchor:'right',bgcolor:'rgba(14,17,22,.8)',borderpad:1});}
     function mk(e,xs,ys,sym,color,size,name){var idx=elIndex.length;elIndex.push(e);traces.push({type:'scatter',mode:'markers',x:xs,y:ys,name:name||e.label_tr,marker:{symbol:sym,color:color,size:size||9,line:{width:1,color:'#0e1116'}},
@@ -140,13 +146,13 @@ CHART_JS = r"""
       else if(e.layer==='indicators'){if(e.kind==='rule_reference'){if(e.t0!=null&&e.t1!=null){segline(e,e.t0,e.price,e.t1,e.price,'#ffd54f','dashdot',1.2);ann.push({xref:'x',x:new Date(e.t1),yref:'y',y:e.price,text:e.label_tr,showarrow:false,font:{size:9,color:'#ffd54f'},yshift:10});}
         else{hl(e.price,'#ffd54f','dashdot',e.label_tr);mk(e,[x1],[e.price],'line-ew','#ffd54f',8);}}}
     });
-    var dom={y:[0.42,1],y2:[0.22,0.40],y3:[0,0.20]};var mobile=window.innerWidth<600;
+    var dom=showInd?{y:[0.42,1],y2:[0.22,0.40],y3:[0,0.20]}:{y:[0,1],y2:[0,0.001],y3:[0,0.001]};var mobile=window.innerWidth<600;
     var layout={paper_bgcolor:'#0e1116',plot_bgcolor:'#0e1116',font:{color:'#d7dde5',size:mobile?10:11},margin:{l:mobile?34:48,r:mobile?46:64,t:10,b:30},showlegend:!mobile,legend:{orientation:'h',y:1.02,font:{size:10}},dragmode:'pan',hovermode:'closest',
       xaxis:{rangeslider:{visible:false},gridcolor:'#1c2430',type:'date'},
       yaxis:{domain:dom.y,gridcolor:'#1c2430',side:'right'},
       yaxis5:{domain:dom.y,overlaying:'y',side:'left',showgrid:false,range:[0,Math.max.apply(null,d.v.filter(function(v){return v!=null;}).concat([1]))*4],showticklabels:false},
-      yaxis2:{domain:dom.y2,gridcolor:'#1c2430',range:[0,100],side:'right',tickvals:[30,50,70]},
-      yaxis3:{domain:dom.y3,gridcolor:'#1c2430',side:'right'},
+      yaxis2:{domain:dom.y2,gridcolor:'#1c2430',range:[0,100],side:'right',tickvals:[30,50,70],visible:showInd},
+      yaxis3:{domain:dom.y3,gridcolor:'#1c2430',side:'right',visible:showInd},
       shapes:shapes,annotations:ann};
     Plotly.react('chart',traces,layout,{responsive:true,displaylogo:false,scrollZoom:true,modeBarButtonsToRemove:['lasso2d','select2d']});
     var gd=document.getElementById('chart');gd.removeAllListeners&&gd.removeAllListeners('plotly_click');
@@ -163,8 +169,20 @@ CHART_JS = r"""
   var js=document.getElementById('dl-json');if(js)js.addEventListener('click',function(){var d=last||{};var A=d.analysis||{};
     if(A.analysis_id&&(d.analysis_stored||d.historical)){window.open('/api/chart/'+base+'/snapshot/'+A.analysis_id+(tokenQs||''),'_blank');}
     else if(last){var blob=new Blob([JSON.stringify(A,null,1)],{type:'application/json'});var u=URL.createObjectURL(blob);var l=document.createElement('a');l.href=u;l.download=fileStem()+'.json';document.body.appendChild(l);l.click();setTimeout(function(){URL.revokeObjectURL(u);l.remove();},500);}});
-  window.__onState=function(s){if(s&&s.changed&&(s.changed.indexOf('coin_heads')>=0||s.changed.indexOf('futures_ledger')>=0||s.changed.indexOf('spot_ledger')>=0||s.changed.indexOf('strategy_paper')>=0||s.changed.indexOf('portfolio')>=0||s.changed.indexOf('risk')>=0)){var sc=scope();if(!sc.aid)load(sc);}};
-  window.__chartTest={scope:scope,fileStem:fileStem,last:function(){return last;}};
+  window.__onState=function(s){if(s&&s.changed&&(s.changed.indexOf('coin_heads')>=0||s.changed.indexOf('futures_ledger')>=0||s.changed.indexOf('spot_ledger')>=0||s.changed.indexOf('strategy_paper')>=0||s.changed.indexOf('pattern_trader')>=0||s.changed.indexOf('portfolio')>=0||s.changed.indexOf('risk')>=0)){var sc=scope();if(!sc.aid)load(sc);}};
+  // TERMINAL PANELI (2026-09-16): acik islem satirina tiklaninca AYNI ekranda coin/defter/piyasa degistirilir.
+  // Sayfa yenilenmez, kullanicinin katman/dilim secimi KORUNUR; kapsam degistigi icin gecmis secimi sifirlanir
+  // ve gec gelen eski yanit (seq + kapsam kontrolu) yeni grafigi EZEMEZ.
+  window.__chartSelect=function(b,market,book,tf){
+    if(b){base=String(b).toUpperCase();window.__chartBase=base;}
+    if(market){var mk=document.getElementById('mk');if(mk&&mk.value!==market)mk.value=market;}
+    if(book){var bk=document.getElementById('bk');if(bk&&bk.value!==book)bk.value=book;}
+    if(tf){var tfe=document.getElementById('tf');if(tfe&&tfe.value!==tf)tfe.value=tf;}
+    var t=document.getElementById('charttitle');if(t)t.textContent=base;
+    resetHistory();var sc=scope();loadHistory(sc,'');load(sc);
+    try{var u=new URL(window.location.href);u.searchParams.set('coin',base);history.replaceState(null,'',u.toString());}catch(e){}
+  };
+  window.__chartTest={scope:scope,fileStem:fileStem,last:function(){return last;},select:window.__chartSelect};
   if(typeof Plotly==='undefined'){document.getElementById('chart').innerHTML='<div class=card>plotly.min.js yüklenemedi (plotly paketi kurulu değil?)</div>';}else{var sc0=scope();loadHistory(sc0,'');load(sc0);}
 })();
 """

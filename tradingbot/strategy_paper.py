@@ -594,53 +594,9 @@ class StrategyBook:
         (±%20 dışı ya da low<=close<=high değil) uydurulmaz: atlanır, imleç ilerler, olay kaydedilir.
         `bars_by_symbol[sym] = {"tf": "1h", "rows": [{timestamp, high, low, close}, ...], "mark": canlı mark}`."""
         with self.lock:
-            out: list = []
-            now_ms = int(now.timestamp() * 1000)
-            for sym, spec in (bars_by_symbol or {}).items():
-                pos = self.ledger.positions.get(sym)
-                if pos is None or not isinstance(spec, dict):
-                    continue
-                tf = str(spec.get("tf") or BAR_TIMEFRAME)
-                step = tf_ms(tf)
-                opened_ms = parse_ts_ms(pos.opened_at)
-                if opened_ms is None:
-                    self._data_event(sym, "BAR_SKIPPED", "OPENED_AT_UNREADABLE", now, tf=tf)
-                    continue
-                cur = pos.meta.get("ohlc_cursor") if isinstance(pos.meta.get("ohlc_cursor"), dict) else {}
-                cursor = int(cur.get(tf) or 0)
-                ref = float(spec.get("mark") or 0.0)
-                try:
-                    rows = sorted((r for r in (spec.get("rows") or []) if r.get("timestamp") is not None), key=lambda r: int(r["timestamp"]))
-                except (TypeError, ValueError):
-                    rows = []
-                for r in rows:
-                    o = int(r["timestamp"])
-                    if o + step > now_ms:
-                        break                                    # kapanmamış (ve sonrakiler de): uçları KULLANILMAZ
-                    if o < opened_ms or o <= cursor:
-                        continue                                 # girişten önce açılmış ya da zaten tüketilmiş
-                    try:
-                        hi, lo, cl = float(r.get("high")), float(r.get("low")), float(r.get("close"))
-                    except (TypeError, ValueError):
-                        hi = lo = cl = float("nan")
-                    sane = all(math.isfinite(v) and v > 0 for v in (hi, lo, cl)) and lo <= cl <= hi and (ref <= 0 or 0.8 * ref <= lo <= hi <= 1.2 * ref)
-                    cursor = o
-                    if not sane:
-                        self._data_event(sym, "BAR_SKIPPED", "BAR_OUT_OF_RANGE", now, tf=tf, bar_open_ms=o, mark=ref)
-                        continue
-                    close_dt = datetime.fromtimestamp((o + step) / 1000.0, tz=timezone.utc)
-                    td = TickData(last=Decimal(str(cl)), mark=Decimal(str(cl)), high=Decimal(str(hi)), low=Decimal(str(lo)), ts=iso(close_dt))
-                    recs = self.ledger.tick({sym: td}, now_utc=close_dt, funding_rate_lookup=funding_rate_lookup, bar_advance=False)
-                    if sym in self.ledger.positions:
-                        self.ledger.positions[sym].meta.setdefault("ohlc_cursor", {})[tf] = cursor
-                    for rec in recs:
-                        self._on_closed(rec)
-                        out.append(rec)
-                    if sym not in self.ledger.positions:
-                        break
-                if sym in self.ledger.positions and cursor:
-                    self.ledger.positions[sym].meta.setdefault("ohlc_cursor", {})[tf] = cursor
-            return out
+            return apply_closed_bars_to_ledger(self.ledger, bars_by_symbol, now=now, funding_rate_lookup=funding_rate_lookup,
+                                               on_closed=self._on_closed, on_event=self._data_event)
+
 
     def save(self, marks_f: dict[str, float], now: datetime) -> None:
         with self.lock:
@@ -672,6 +628,65 @@ class StrategyBook:
             doc["key"] = self.key
             atomic_write_json(Path(self.cfg.state_path) / self.summary_file, doc)
 
+
+def apply_closed_bars_to_ledger(ledger: FuturesLedgerV2, bars_by_symbol: dict[str, dict[str, Any]] | None, *, now: datetime,
+                                funding_rate_lookup=None, on_closed: Callable[[Any], None] | None = None,
+                                on_event: Callable[..., None] | None = None) -> list:
+    """`StrategyBook.apply_closed_bars` sözleşmesinin defter-bağımsız çekirdeği (T2/M2 ve formasyon defteri AYNI kodu kullanır).
+    `on_event(symbol, kind, reason, at, **extra)` atlanan barları raporlar; `on_closed(rec)` kapanan işlem başına çağrılır."""
+    out: list = []
+    now_ms = int(now.timestamp() * 1000)
+
+    def _ev(sym: str, kind: str, reason: str, **extra: Any) -> None:
+        if on_event is not None:
+            on_event(sym, kind, reason, now, **extra)
+
+    for sym, spec in (bars_by_symbol or {}).items():
+        pos = ledger.positions.get(sym)
+        if pos is None or not isinstance(spec, dict):
+            continue
+        tf = str(spec.get("tf") or BAR_TIMEFRAME)
+        step = tf_ms(tf)
+        opened_ms = parse_ts_ms(pos.opened_at)
+        if opened_ms is None:
+            _ev(sym, "BAR_SKIPPED", "OPENED_AT_UNREADABLE", tf=tf)
+            continue
+        cur = pos.meta.get("ohlc_cursor") if isinstance(pos.meta.get("ohlc_cursor"), dict) else {}
+        cursor = int(cur.get(tf) or 0)
+        ref = float(spec.get("mark") or 0.0)
+        try:
+            rows = sorted((r for r in (spec.get("rows") or []) if r.get("timestamp") is not None), key=lambda r: int(r["timestamp"]))
+        except (TypeError, ValueError):
+            rows = []
+        for r in rows:
+            o = int(r["timestamp"])
+            if o + step > now_ms:
+                break                                    # kapanmamış (ve sonrakiler de): uçları KULLANILMAZ
+            if o < opened_ms or o <= cursor:
+                continue                                 # girişten önce açılmış ya da zaten tüketilmiş
+            try:
+                hi, lo, cl = float(r.get("high")), float(r.get("low")), float(r.get("close"))
+            except (TypeError, ValueError):
+                hi = lo = cl = float("nan")
+            sane = all(math.isfinite(v) and v > 0 for v in (hi, lo, cl)) and lo <= cl <= hi and (ref <= 0 or 0.8 * ref <= lo <= hi <= 1.2 * ref)
+            cursor = o
+            if not sane:
+                _ev(sym, "BAR_SKIPPED", "BAR_OUT_OF_RANGE", tf=tf, bar_open_ms=o, mark=ref)
+                continue
+            close_dt = datetime.fromtimestamp((o + step) / 1000.0, tz=timezone.utc)
+            td = TickData(last=Decimal(str(cl)), mark=Decimal(str(cl)), high=Decimal(str(hi)), low=Decimal(str(lo)), ts=iso(close_dt))
+            recs = ledger.tick({sym: td}, now_utc=close_dt, funding_rate_lookup=funding_rate_lookup, bar_advance=False)
+            if sym in ledger.positions:
+                ledger.positions[sym].meta.setdefault("ohlc_cursor", {})[tf] = cursor
+            for rec in recs:
+                if on_closed is not None:
+                    on_closed(rec)
+                out.append(rec)
+            if sym not in ledger.positions:
+                break
+        if sym in ledger.positions and cursor:
+            ledger.positions[sym].meta.setdefault("ohlc_cursor", {})[tf] = cursor
+    return out
 
 def validate_settings(*, enabled: bool, name: str | None, app_mode: str | None, starting_equity: float,
                       atr_mult: float) -> None:

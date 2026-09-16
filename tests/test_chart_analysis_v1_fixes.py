@@ -434,6 +434,22 @@ def install_perp_frames(eng, monkeypatch, *, scale: float = 2.0) -> None:
     çerçeveleri fiyatları `scale` ile çarpılmış PERP kopyalarıdır (spot serisinden belirgin farklı, aynı zaman damgaları).
     `_install`ten SONRA çağrılır (en dış sarmalayıcı). Dosya adıyla spot veriyi futures kanıtı yapmaz: çerçevenin kendisi farklı."""
     orig = eng.runner.run_symbol
+    scaled: set[str] = set()
+    live = getattr(eng.runner, "live", None)
+    if live is not None:
+        orig_snap = live.snapshot
+
+        def snap(symbol):
+            # dogrulanmis perp mark (funding.mark) de PERP olceginde: kagit defter fiyat yolu bunu okur (2026-09-16)
+            d = orig_snap(symbol)
+            if symbol in scaled and isinstance(d, dict):
+                d = dict(d)
+                f = dict(d.get("funding") or {})
+                if f.get("mark"):
+                    f["mark"] = float(f["mark"]) * scale
+                d["funding"] = f
+            return d
+        monkeypatch.setattr(live, "snapshot", snap)
 
     def wrapped(symbol, analysis=None, prefetched=None):
         b = orig(symbol, analysis, prefetched)
@@ -445,6 +461,7 @@ def install_perp_frames(eng, monkeypatch, *, scale: float = 2.0) -> None:
                     d[col] = d[col] * scale
             fr[tf] = d
         eng.runner.last_frames[symbol] = fr
+        scaled.add(symbol)
         # canli fiyat da PERP olceginde (gercekte tik ve mum ayni piyasadan gelir; tutarsiz olursa defter stop>giris diye reddeder).
         # Hedef fiyat OLCEKLENMIS cerceveden turetilir (b.price'i her turda yeniden carpmak bilesik artis yaratirdi).
         target = float(fr["4h"]["close"].iloc[-1]) if fr.get("4h") is not None and len(fr["4h"]) else None
@@ -475,9 +492,11 @@ def _engine_with_books(tmp_path: Path, monkeypatch, *, perp: bool):
         ov = ov | {"entry_universe": {"enabled": True, "symbols": list(SYMS)}}
     eng = _engine(tmp_path, monkeypatch, ov, symbols=2, equity=EQUITY)
     _force_triggers(monkeypatch, False)
-    _install(eng, monkeypatch, btc_up=True, coin_above=True)
     if perp:
+        _install(eng, monkeypatch, btc_up=True, coin_above=True)          # ilan: dogrulanmis USDM_PERP (sembol + BTC)
         install_perp_frames(eng, monkeypatch, scale=2.0)
+    else:
+        _install(eng, monkeypatch, btc_up=True, coin_above=True, market=None, btc_market=None)   # motorun karari: SPOT ikamesi, BTC provenansi yok
     return eng
 
 
@@ -514,8 +533,9 @@ def test_f9_engine_writes_no_paper_book_record_from_spot_frames_and_reports_why(
     assert set(sk) == {"%s|%s|4h" % (b, s) for b in ("strategy_paper", "strategy_paper_m2") for s in SYMS}
     assert all(v["status"] == "MARKET_MISMATCH" and v["bar_market"] == "SPOT" and v["book_market"] == "USDM_PERP" and v["at"] for v in sk.values())
     assert store.stats()["snapshots"] == len(SYMS), "yalnız ana bot SPOT kayıtları"
-    # işlem yolu bu düzeltmeyle DEĞİŞMEZ (ayrı bulgu olarak raporlanır: defterler SPOT çerçeveyle açtı)
-    assert sorted(eng.strategy_books[0].ledger.positions) == sorted(SYMS)
+    # İŞLEM YOLU (2026-09-16 veri kaynağı onarımı): SPOT çerçeveyle kâğıt defter futures pozisyonu AÇMAZ; ret gerekçeli
+    for b in eng.strategy_books:
+        assert sorted(b.ledger.positions) == [] and b.rejections == {"DATA_MARKET_SPOT": len(SYMS)} and b.counters["opened"] == 0
     # panel: futures görünümünde 'motor kaydı yok: piyasa uyuşmazlığı' (spot çerçeveler binanceusdm adıyla YAZILMAZ)
     data = tmp_path / "spot" / "data"
     _frames_to_csv(eng, data, "tv-binance")

@@ -500,12 +500,41 @@ class HistoricalReplay:
         for rec in recs:
             self._on_closed(rec)
 
+    def _paper_data_verdict(self, sym: str, t: int):
+        """Replay veri kimligi (2026-09-16): 'replay zaten futures' VARSAYIMI YOK — hukum arsiv deposunun manifest'inden
+        (market/provider/row_count) turetilir. Spot arsivi ya da manifest'siz seri kagit kuralina OPEN/CLOSE veremez;
+        canli motorla ayni `apply_action` sozlesmesi. BTC referansi: strateji BTC cercevesini AYNI arsiv piyasasindan
+        okur (ayri provenans yok) — bu sinir `btc.note` ile kayda gecer."""
+        from ..strategy_paper import DataVerdict
+        cache = getattr(self, "_data_verdicts", None)
+        if cache is None:
+            cache = self._data_verdicts = {}
+        key = (sym, str(self.market), str(self.tf))
+        if key not in cache:
+            try:
+                m = self.store.manifest(self.market, sym, self.tf)
+            except Exception:  # noqa: BLE001
+                m = None
+            rows = int(getattr(m, "row_count", 0) or 0) if m is not None else 0
+            mkt = str(getattr(m, "market", "") or "")
+            if str(self.market) != "futures":
+                ok, why = False, "DATA_MARKET_%s" % str(self.market).upper()
+            elif m is None or rows <= 0 or mkt != "futures":
+                ok, why = False, "DATA_ARCHIVE_MANIFEST_MISSING"
+            else:
+                ok, why = True, ""
+            cache[key] = (ok, why, "archive:%s:%s" % ((getattr(m, "provider", None) or "?") if m is not None else "?", self.market))
+        ok, why, src = cache[key]
+        return DataVerdict(ok=ok, entry_ok=ok, reason=why, market="USDM_PERP" if ok else str(self.market).upper(), source=src,
+                           tour_id=str(self.run_id), bars={str(self.tf): int(t)},
+                           btc={"required": False, "note": "replay: BTC cercevesi ayni arsiv piyasasindan (ayri provenans yok)"})
+
     def _strategy_step(self, t: int, now, marks: dict, marks_f: dict) -> None:
         """STRATEJI MODU: dis kuralin OPEN/CLOSE kararlarini `strategy_paper.apply_action` ile uygular.
 
         Canli motorun kagit ileri testi (`StrategyBook.step`) AYNI fonksiyonu cagirir: boyut, risk
         kapisi, filtre, kayma, kapanis tek kaynaktadir. Burada yalniz replay'e ozgu kayit (memory,
-        entry_meta, sayaclar) vardir.
+        entry_meta, sayaclar) vardir. Veri kimligi hukmu (`data=`) arsiv manifest'inden gelir.
         """
         from ..strategy_paper import apply_action
         state = self._portfolio_state(marks_f, now)
@@ -533,7 +562,8 @@ class HistoricalReplay:
             res = apply_action(act, symbol=sym, price=float(marks_f[sym]), tick=marks.get(sym), now=now,
                                ledger=self.ledger2, risk=self.risk, profile=self.profile, state=state,
                                filters=self._filters_for(sym), run_id=self.run_id,
-                               reject=self._reject, on_closed=self._on_closed, on_opened=_opened)
+                               reject=self._reject, on_closed=self._on_closed, on_opened=_opened,
+                               data=self._paper_data_verdict(sym, t))
             if res in ("OPENED", "CLOSED"):
                 state = self._portfolio_state(marks_f, now)
 

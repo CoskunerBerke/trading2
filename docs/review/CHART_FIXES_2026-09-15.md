@@ -73,7 +73,8 @@ spot çerçeveyi `binanceusdm_` adıyla yazan test) kaldırıldı; `test_engine_
 perp çerçeve simülasyonuyla (evren sembolleri için `perp_frames` dolu, çerçeve fiyatları ×2, tik fiyatı çerçeveyle tutarlı)
 koşuyor ve grafik analizi açık/kapalı karar değişmezliğini korumaya devam ediyor.
 
-**Ayrı bulgu (işlem yolu, bu görevde DÜZELTİLMEDİ):** perpetual çerçeve alınamayınca motor ana bot için yeni girişi
+**Ayrı bulgu (işlem yolu; 25adb9d'de DÜZELTİLMEMİŞTİ, sonraki commit'te kapatıldı — bkz.
+`docs/review/PAPER_DATA_SOURCE_2026-09-16.md`):** perpetual çerçeve alınamayınca motor ana bot için yeni girişi
 `_entry_data_blocked` ile kapatıyor (`engine_v3.py` ~L1398), ama `_strategy_paper_tour` / `StrategyBook.step` çerçeve
 provenansını hiç okumuyor: SPOT ikameli çerçevelerle T2/M2 kuralı değerlendirilip futures kâğıt pozisyonu açılabiliyor.
 Kanıt: `test_f9_engine_writes_no_paper_book_record_*` içinde provenans SPOT iken `eng.strategy_books[0].ledger.positions ==

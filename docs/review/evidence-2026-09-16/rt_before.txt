@@ -1,0 +1,27 @@
+ETH/USDT ajan hatası: download failed
+SOL/USDT ajan hatası: download failed
+
+[S1 SPOT-only çerçeve (perp yok)] provenance={'ETH/USDT': 'SPOT', 'SOL/USDT': 'SPOT'}
+   tur1 strategy_paper: pozisyon=['ETH/USDT', 'SOL/USDT'] sayaç={'opened': 2, 'closed': 0, 'rejected': 0, 'tours': 1} ret={}
+   tur1 strategy_paper_m2: pozisyon=['ETH/USDT', 'SOL/USDT'] sayaç={'opened': 2, 'closed': 0, 'rejected': 0, 'tours': 1} ret={}
+  BULGU_VAR  SPOT çerçeveyle T2/M2 futures pozisyonu açıldı
+
+[S2 coin USDM_PERP, BTC provenansı YOK] provenance={'ETH/USDT': 'USDM_PERP', 'SOL/USDT': 'USDM_PERP'}
+   tur1 strategy_paper: pozisyon=['ETH/USDT', 'SOL/USDT'] sayaç={'opened': 2, 'closed': 0, 'rejected': 0, 'tours': 1} ret={}
+   tur1 strategy_paper_m2: pozisyon=['ETH/USDT', 'SOL/USDT'] sayaç={'opened': 2, 'closed': 0, 'rejected': 0, 'tours': 1} ret={}
+  BULGU_VAR  BTC referansı doğrulanmadan yeni giriş açıldı
+
+[S4 tur1 doğrulanmış, tur2 run_symbol başarısız (bayat çerçeve/onay)] provenance={'ETH/USDT': 'SPOT', 'SOL/USDT': 'SPOT'}
+   tur1 strategy_paper: pozisyon=['ETH/USDT', 'SOL/USDT'] sayaç={'opened': 2, 'closed': 0, 'rejected': 0, 'tours': 1} ret={}
+   tur1 strategy_paper_m2: pozisyon=['ETH/USDT', 'SOL/USDT'] sayaç={'opened': 2, 'closed': 0, 'rejected': 0, 'tours': 1} ret={}
+   tur2 strategy_paper: pozisyon=[] sayaç={'opened': 2, 'closed': 0, 'rejected': 0, 'tours': 2} ret={}
+   tur2 strategy_paper_m2: pozisyon=[] sayaç={'opened': 2, 'closed': 0, 'rejected': 0, 'tours': 2} ret={}
+  BULGU_YOK  bayat çerçeveyle (bu turda provenans yok) yeniden giriş açıldı
+
+[S5 açık pozisyon + SPOT 1h fitili stop altında (perp mark stop üstünde)] provenance={'ETH/USDT': 'SPOT', 'BTC/USDT': 'USDM_PERP', 'SOL/USDT': 'SPOT'}
+   tur1 strategy_paper: pozisyon=['ETH/USDT', 'SOL/USDT'] sayaç={'opened': 2, 'closed': 0, 'rejected': 0, 'tours': 1} ret={}
+   tur1 strategy_paper_m2: pozisyon=['ETH/USDT', 'SOL/USDT'] sayaç={'opened': 2, 'closed': 0, 'rejected': 0, 'tours': 1} ret={}
+   tur2 strategy_paper: pozisyon=[] sayaç={'opened': 2, 'closed': 2, 'rejected': 0, 'tours': 2} ret={}
+   tur2 strategy_paper_m2: pozisyon=[] sayaç={'opened': 2, 'closed': 2, 'rejected': 0, 'tours': 2} ret={}
+   tur2 kapanan={'strategy_paper': 2, 'strategy_paper_m2': 2} closed_recent=[('strategy_paper', [('ETH/USDT', 'stop'), ('SOL/USDT', 'stop')]), ('strategy_paper_m2', [('ETH/USDT', 'stop'), ('SOL/USDT', 'stop')])]
+  BULGU_VAR  SPOT fitili futures pozisyonunu stop ile kapattı

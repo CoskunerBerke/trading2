@@ -21,8 +21,13 @@ SYMS = ("ETH/USDT", "SOL/USDT")
 BTC = "BTC/USDT"
 
 
-def _install(eng, monkeypatch, *, btc_up: bool, coin_above: bool):
-    """Motorun okudugu kareleri (KOPYA) ayarlar: BTC 1d ve coin 1d ema200 konumu."""
+def _install(eng, monkeypatch, *, btc_up: bool, coin_above: bool, market: str | None = "USDM_PERP", btc_market: str | None = "USDM_PERP"):
+    """Motorun okudugu kareleri (KOPYA) ayarlar: BTC 1d ve coin 1d ema200 konumu.
+
+    `market` / `btc_market` (2026-09-16 veri kimligi): kurulan sentetik cercevelerin ILAN EDILEN piyasasi. Varsayilan
+    dogrulanmis USDS-M perpetual — motor provenansi bu turun cercevelerine `_bind_provenance` ile baglar (kagit defter
+    girisleri ancak bununla acilir). `None`: motorun kendi karari kalir (agsiz ortamda SPOT ikamesi) / BTC provenansi YOK.
+    Ilan bir simulasyondur: cercevelerin kendisi sentetiktir; dogrulama yolunun kendisi taklit EDILMEZ."""
     orig = eng.runner.run_symbol
 
     def wrapped(symbol, analysis=None, prefetched=None):
@@ -44,6 +49,15 @@ def _install(eng, monkeypatch, *, btc_up: bool, coin_above: bool):
             b1["ema200"] = b1["close"] * (0.95 if btc_up else 1.05)
             bfr["1d"] = b1
             eng.runner.last_frames[BTC] = bfr
+        prov = getattr(eng, "_frame_provenance", None)
+        if prov is not None:
+            if market:
+                prov[symbol] = {"market": market, "source": "test:%s" % market, "entry_ok": market == "USDM_PERP"}
+                # sembol bagi motor tarafinda run_symbol'dan SONRA yapilir (engine_v3._bind_provenance)
+            if btc_market and BTC not in prov:
+                prov[BTC] = {"market": btc_market, "source": "test:%s" % btc_market, "entry_ok": btc_market == "USDM_PERP"}
+                if hasattr(eng, "_bind_provenance"):
+                    eng._bind_provenance(BTC)
         return b
     monkeypatch.setattr(eng.runner, "run_symbol", wrapped)
 

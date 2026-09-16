@@ -85,11 +85,11 @@ def test_counters_survive_a_restart(tmp_path, monkeypatch):
     eng.tour(do_scan=False, obsidian=False, charts=False)
     eng.tour(do_scan=False, obsidian=False, charts=False)             # 2. tur: pozisyonlar acik, sinyal yok
     old = eng.strategy_book
-    assert old.counters == {"opened": 2, "closed": 0, "rejected": 0, "tours": 2}
+    assert old.counters == {"opened": 2, "closed": 0, "rejected": 0, "tours": 2, "data_rejected": 0}
     # yeniden baslatma: ayni config, ayni state dizini, YENI nesne
     nb = StrategyBook(eng.cfg, profile=eng.profile, killswitch=eng.killswitch, filters_cache=eng.filters,
                       run_id="", spec=book_specs(eng.cfg.v3)[0])
-    assert nb.counters == {"opened": 2, "closed": 0, "rejected": 0, "tours": 2}
+    assert nb.counters == {"opened": 2, "closed": 0, "rejected": 0, "tours": 2, "data_rejected": 0}
     assert set(nb.ledger.positions) == {ETH, SOL}
     # bozuk ozet dosyasi: defter gercegi yine ayakta, sayaclar sifirdan (istisna YOK)
     (eng.cfg.state_path / "strategy_paper.json").write_text("{not json", encoding="utf-8")

@@ -32,9 +32,14 @@ def _frame(n=40, px=2000.0):
                          "close": [px] * n, "volume": [1.0] * n})
 
 
-def _rep(tmp_path, strategy):
-    rep = HistoricalReplay(_replay_cfg(tmp_path), run_id="strategy_probe", store=HistoryStore(tmp_path / "hist"),
-                           symbols=[SYM], market="futures", tf="4h", seed=0, strategy=strategy)
+def _rep(tmp_path, strategy, *, market: str = "futures", write_archive: bool = True):
+    """Replay + arsiv: veri kimligi (2026-09-16) arsiv MANIFEST'inden turetilir; bu yuzden cerceve depoya GERCEKTEN
+    yazilir (manifest market/provider/row_count). `write_archive=False`: manifest yok -> kagit kurali giris veremez."""
+    store = HistoryStore(tmp_path / "hist")
+    if write_archive:
+        store.write(market, SYM, "4h", _frame(), source="test")
+    rep = HistoricalReplay(_replay_cfg(tmp_path), run_id="strategy_probe", store=store,
+                           symbols=[SYM], market=market, tf="4h", seed=0, strategy=strategy)
     rep.frames = {SYM: {"4h": _frame()}}
     rep.primary = {SYM: rep.frames[SYM]["4h"]}
     return rep

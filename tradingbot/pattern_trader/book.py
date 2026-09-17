@@ -444,10 +444,19 @@ class PatternBook:
 
         FAIL-CLOSED: `expires_at_ms` yoksa ya da çözülemiyorsa plan GEÇERSİZ sayılır (True). Okunamayan bir
         geçerlilik alanını "hiç dolmaz" saymak, bozuk/eski bir `plans.json` kaydına süresiz emir hakkı verirdi."""
-        v = parse_ts_ms(pl.get("expires_at_ms")) if isinstance(pl, dict) else None
+        raw = pl.get("expires_at_ms") if isinstance(pl, dict) else None
+        # Alan adı `_ms`tir: sayısal değer DOĞRUDAN milisaniyedir. `parse_ts_ms`in saniye/ms sezgisi burada
+        # UYGULANMAZ (küçük bir sayıyı saniye sanıp geçerliliği 1000 kat uzatabilirdi); metin (ISO) değer için
+        # eski kayıtlara karşı geri düşüş olarak kalır.
+        if isinstance(raw, bool) or raw is None:
+            v = None
+        elif isinstance(raw, (int, float)):
+            v = int(raw) if (raw == raw and raw > 0) else None
+        else:
+            v = parse_ts_ms(raw)
         if v is None:
             return True
-        return int(as_of_ms) > int(v)
+        return int(as_of_ms) > v
 
     @staticmethod
     def _filters_evidence(f, origin: str, age_s: float | None = None) -> dict[str, Any]:

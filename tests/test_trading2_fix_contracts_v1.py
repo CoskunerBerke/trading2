@@ -85,7 +85,9 @@ def test_pattern_book_never_estimates_an_unknown_funding_rate():
 def test_expiry_rule_is_defined_once_and_checked_before_any_entry():
     """`is_expired` tek tanımdır ve `_try_open` onu gerçekleşmeden ÖNCE çağırır."""
     src_exp = inspect.getsource(pbook.PatternBook.is_expired)
-    assert "int(as_of_ms) > int(v)" in src_exp, "sınır kuralı (kesin büyük) değişti"
+    assert "int(as_of_ms) > v" in src_exp, "sınır kuralı (kesin büyük) değişti"
+    assert "parse_ts_ms(raw)" in src_exp and "isinstance(raw, (int, float))" in src_exp, \
+        "`_ms` alani sayisalken DOGRUDAN milisaniye okunmali (saniye/ms sezgisi uygulanmamali)"
     assert "return True" in src_exp, "okunamayan geçerlilik alanı FAIL-CLOSED olmalı"
     src = inspect.getsource(pbook.PatternBook._try_open)
     i_exp, i_open = src.index("is_expired"), src.index("apply_action(")

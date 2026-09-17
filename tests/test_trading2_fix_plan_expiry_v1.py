@@ -193,7 +193,14 @@ def test_an_unreadable_expiry_field_is_treated_as_expired_not_as_never_expiring(
     assert PatternBook.is_expired({}, 0) is True, "alan hiç yoksa da geçersiz"
     # sınır ve normal davranış korunur
     assert PatternBook.is_expired({"expires_at_ms": 1_780_000_000_000}, 1_780_000_000_000) is False
+    assert PatternBook.is_expired({"expires_at_ms": 1_780_000_000_001}, 1_780_000_000_000) is False
     assert PatternBook.is_expired({"expires_at_ms": 1_780_000_000_000}, 1_780_000_000_001) is True
+    # ALAN ADI `_ms`: sayısal değer DOĞRUDAN milisaniyedir; saniye/ms sezgisi UYGULANMAZ (küçük bir sayıyı
+    # saniye sanmak geçerlilik penceresini 1000 kat uzatırdı — dağıtım betiğinin değişmez kapısı yakaladı).
+    assert PatternBook.is_expired({"expires_at_ms": 100}, 100) is False
+    assert PatternBook.is_expired({"expires_at_ms": 100}, 101) is True
+    # ISO metin eski kayıtlar için geri düşüş olarak çözülür
+    assert PatternBook.is_expired({"expires_at_ms": "2026-05-28T08:00:00+00:00"}, 1_780_000_000_000) is True
 
 
 def test_a_corrupt_persisted_plan_cannot_open_after_a_restart(tmp_path: Path):

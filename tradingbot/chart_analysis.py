@@ -749,7 +749,9 @@ def build_snapshot(*, symbol: str, market_type: str, timeframe: str, tf_ms: int,
                                    "t0": None, "t1": None, "anchors": [], "confirmed_at": int(last["timestamp"]) + int(tf_ms), "decision_impact": OBSERVATION_ONLY,
                                    "rationale_tr": "Grafik dilimi göstergesi; T2/M2 kuralı GÜNLÜK EMA200 kullanır (aşağıdaki kural satırı).", "invalidation_tr": "—",
                                    "source": {"module": "indicators", "function": "add_snapshot_indicators", "params": {"tf": timeframe}}})
-    if rs and rs.get("ok"):
+    if rs and rs.get("ok") and rs.get("ema200") is not None:
+        # TREND ailesine ait gosterim: box kural durumunda `ema200` YOKTUR ve bu blok calismamalidir
+        # (2026-09-18: korumasiz hali box defterinde KeyError -> panel 500 veriyordu).
         indicators.append({"id": "ind:daily_ema200", "layer": LAYER_INDICATORS, "kind": "rule_reference", "label_tr": "Günlük EMA200 %.6g (kural)" % rs["ema200"],
                            "price": rs["ema200"], "t0": None, "t1": None, "anchors": [], "confirmed_at": _daily_close(rs.get("signal_ts")),
                            "decision_impact": USED_IN_DECISION if name == "t2_trend_regime" else OBSERVATION_ONLY,

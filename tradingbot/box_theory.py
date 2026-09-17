@@ -60,6 +60,10 @@ class BoxParams:
     exit_kind: str = "box_opposite"     # box_opposite | box_mid | r_multiple | none
     exit_r: float = 2.0                 # exit_kind == r_multiple için R katı
     eod_close: bool = True              # gün sonunda (UTC) düzleş
+    #: BİZİM EKLEDİĞİMİZ EŞİK (videoda YOKTUR): stop mesafesi fiyatın bu yüzdesinden darsa işlem AÇILMAZ.
+    #: Neden gerekli: kural stopu bir 5m mumu kadar dar koyuyor (ölçüldü: medyan %0,25) ve gidiş-dönüş
+    #: işlem maliyeti (%0,16) riskin ~%80'ini yiyor. 0.0 = eşik yok (videonun birebir okuması).
+    min_stop_pct: float = 0.0
     allow_long: bool = True
     allow_short: bool = True
     #: Kaldirac kurala ait bir iddia DEGILDIR (video hic soylemez) ve islem basina riski DEGISTIRMEZ.
@@ -82,14 +86,17 @@ class BoxParams:
             raise ValueError("exit_r > 0 olmalı: %r" % (self.exit_r,))
         if float(self.stop_buffer_frac) < 0:
             raise ValueError("stop_buffer_frac >= 0 olmalı: %r" % (self.stop_buffer_frac,))
+        if not (0.0 <= float(self.min_stop_pct) < 100.0):
+            raise ValueError("min_stop_pct 0 ile 100 arasında olmalı: %r" % (self.min_stop_pct,))
         return self
 
     def label(self) -> str:
         """Süpürme kolunun kısa kimliği — rapor ve run_id burada TEK yerde üretilir."""
         ex = self.exit_kind if self.exit_kind != "r_multiple" else ("r%g" % float(self.exit_r))
         side = "".join(s for s, on in (("L", self.allow_long), ("S", self.allow_short)) if on) or "none"
-        return "n%g_%s_%s_%s_%s%s" % (float(self.near_frac), self.trigger, self.long_stop, ex, side,
-                                      "_eod" if self.eod_close else "")
+        ms = "_ms%g" % float(self.min_stop_pct) if float(self.min_stop_pct) > 0 else ""
+        return "n%g_%s_%s_%s_%s%s%s" % (float(self.near_frac), self.trigger, self.long_stop, ex, side,
+                                        ms, "_eod" if self.eod_close else "")
 
 
 DEFAULT_PARAMS = BoxParams()
@@ -229,8 +236,8 @@ def _stop_for(side: str, cur: dict[str, float], prev: dict[str, float], intraday
     return stop if stop > 0 else None
 
 
-def _targets_for(side: str, entry: float, stop: float, box_high: float, box_low: float,
-                 p: BoxParams) -> list[float]:
+def targets_for(side: str, entry: float, stop: float, box_high: float, box_low: float,
+                p: BoxParams) -> list[float]:
     """Çıkış hedefi — VİDEODA YOKTUR, süpürmenin konusudur. Ulaşılamaz hedef üretilmez."""
     if p.exit_kind == "none":
         return []
@@ -287,8 +294,10 @@ def decide(variant: str = "b1_box_fade", *, daily_rows: list[dict[str, Any]],
         return None
     if (side == "SHORT" and stop <= entry) or (side == "LONG" and stop >= entry):
         return None        # stop girişin yanlış tarafında: risk tanımsız, işlem yok
+    if float(p.min_stop_pct) > 0 and abs(entry - float(stop)) / entry * 100.0 < float(p.min_stop_pct):
+        return None        # stop maliyetin yanında anlamsız kalacak kadar dar (BİZİM eşiğimiz, videonun değil)
     return {"action": "OPEN", "direction": side, "stop": float(stop),
-            "targets": _targets_for(side, entry, stop, box_high, box_low, p),
+            "targets": targets_for(side, entry, stop, box_high, box_low, p),
             "leverage": int(p.leverage), "reason": "BOX_FADE_%s" % loc, "name": variant,
             "setup_type": "box_fade", "location": loc,
             "box_high": box_high, "box_low": box_low, "box_mid": (box_high + box_low) / 2.0,
@@ -339,7 +348,7 @@ def rule_state(variant: str = "b1_box_fade", *, daily_rows: list[dict[str, Any]]
         wrong = (side == "SHORT" and stop <= cur["close"]) or (side == "LONG" and stop >= cur["close"])
         out["stop_if_open"] = None if wrong else float(stop)
         if not wrong:
-            out["targets_if_open"] = _targets_for(side, cur["close"], float(stop), box_high, box_low, p)
+            out["targets_if_open"] = targets_for(side, cur["close"], float(stop), box_high, box_low, p)
     out["ok"] = True
     return out
 
@@ -370,4 +379,4 @@ def sweep_params(base: BoxParams = DEFAULT_PARAMS, **grid) -> list[BoxParams]:
 
 __all__ = ["BoxParams", "DEFAULT_NEAR_FRAC", "DEFAULT_PARAMS", "EXIT_KINDS", "LONG_STOPS", "MIN_DAILY_BARS",
            "MIN_M5_BARS", "TRIGGERS", "VARIANTS", "decide", "location", "read_box", "read_intraday",
-           "rows_from_frame", "rule_state", "sweep_params"]
+           "rows_from_frame", "rule_state", "sweep_params", "targets_for"]

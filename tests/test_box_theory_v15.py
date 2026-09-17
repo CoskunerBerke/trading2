@@ -286,3 +286,25 @@ def test_default_params_are_the_video_reading_except_the_exit_which_the_video_ne
     assert p.trigger == "break_prev" and p.long_stop == "day_low"
     assert p.allow_long and p.allow_short and p.leverage == 1
     assert p.exit_kind in ("box_opposite", "box_mid", "r_multiple", "none")
+
+
+# ------------------------------------------------------------------ min_stop_pct (BİZİM eşiğimiz)
+def test_a_stop_tighter_than_the_threshold_produces_no_trade():
+    """Ölçüldü: kuralın stopu medyanda fiyatın %0,25'i ve gidiş-dönüş maliyet (%0,16) riskin %80'ini
+    yiyor. Eşik videoda YOKTUR; bu yüzden varsayılanı 0'dır ve etkisi ayrı bir kol olarak ölçülür."""
+    kw = dict(daily_rows=_daily(110.0, 90.0), m5_rows=_short_setup())
+    # giriş 107.0, stop 110.0 → stop mesafesi %2,80
+    assert decide(**kw, params=BoxParams(min_stop_pct=0.0)) is not None
+    assert decide(**kw, params=BoxParams(min_stop_pct=2.0)) is not None
+    assert decide(**kw, params=BoxParams(min_stop_pct=3.0)) is None
+
+
+def test_the_threshold_is_off_by_default_so_the_video_reading_stays_measurable():
+    assert DEFAULT_PARAMS.min_stop_pct == 0.0
+
+
+def test_the_threshold_appears_in_the_arm_label_only_when_it_is_on():
+    assert "_ms" not in BoxParams(min_stop_pct=0.0).label()
+    assert "_ms0.5" in BoxParams(min_stop_pct=0.5).label()
+    arms = sweep_params(min_stop_pct=[0.0, 0.5])
+    assert len({a.label() for a in arms}) == 2

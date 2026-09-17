@@ -54,6 +54,15 @@ JSONL_FILES: dict[str, str] = {"llm_calls": "llm_calls.jsonl", "trade_memory": "
                                "entry_snapshot": "entry_snapshot.jsonl"}
 
 
+def _f(x: Any) -> float | None:
+    """Sayiya cevrilebiliyorsa float, aksi halde None (BILINMEYEN sifira DUSURULMEZ)."""
+    try:
+        v = float(x)
+    except (TypeError, ValueError):
+        return None
+    return v if v == v else None
+
+
 def _age(ts: Any) -> float | None:
     if not ts:
         return None
@@ -225,6 +234,12 @@ class StateReader:
                         "state_dir": "pattern_trader", "summary_file": "pattern_trader.json"})
         return out
 
+    def book_supports_market(self, book_id: str, market: str) -> bool:
+        """Defter/piyasa birlesimi DESTEKLENIYOR mu? Ana bot hem spot hem futures tutar; kagit defterler
+        (T2/M2/formasyon) yalniz USDⓈ-M perpetual'dir. Desteklenmeyen birlesimde panel BASKA HESABIN verisine
+        sessizce DONMEZ, durumu acikca soyler (2026-09-17)."""
+        return market != "spot" or book_id == "main"
+
     # ---- TERMINAL PANELI (2026-09-16): defter basina pozisyon/gecmis/ozkaynak — YETKILI defter dosyasindan
     def book_summary_file(self, book_id: str) -> dict | None:
         """Defterin kendi ozet dosyasi (strategy_paper*.json / pattern_trader.json). Ana bot icin None."""
@@ -237,17 +252,25 @@ class StateReader:
         d = read_json(self.state_dir / fn, default=None)
         return d if isinstance(d, dict) else None
 
-    def book_positions(self, book_id: str) -> list[dict]:
+    def book_positions(self, book_id: str, *, market: str = "futures") -> list[dict]:
         """Defterin BUTUN acik pozisyonlari — yetkili pozisyon defterinden (aday/ret kaydi DEGIL).
 
         Tarama evreni disinda kalmis eski pozisyonlar da GORUNUR: defterde ne varsa o listelenir.
+        `market="spot"` yalniz ana botta anlamlidir (kagit defterler USDM_PERP'tir; bkz. `book_supports_market`).
+
+        BOS DEFTER != EKSIK DOSYA (2026-09-17): yetkili defter dosyasi VARSA ve `positions` MESRU olarak bossa
+        liste bostur — eski ozetten pozisyon DIRILTILMEZ. Ozet projeksiyonuna yalniz dosya YOK/OKUNAMAZ iken
+        dusulur.
         """
+        if not self.book_supports_market(book_id, market):
+            return []                                  # DESTEKLENMEYEN birlesim: baska hesabin verisine DONULMEZ
         if book_id == "main":
-            return self.futures_positions()
-        led = self.book_ledger(book_id) or {}
-        pos = led.get("positions") or {}
-        if not pos:
-            # Defter dosyasi okunamiyorsa defterin KENDI ozetindeki pozisyonlar (ayni yazar, ayni tick) kullanilir.
+            return self.spot_positions() if market == "spot" else self.futures_positions()
+        led = self.book_ledger(book_id)
+        if isinstance(led, dict):
+            pos = led.get("positions") or {}
+        else:
+            # Defter dosyasi YOK/OKUNAMAZ: defterin KENDI ozetindeki pozisyonlar (ayni yazar, ayni tick) kullanilir.
             # Bu bir ikinci muhasebe DEGILDIR: yalniz ayni kaydin projeksiyonu. Ikisi de yoksa liste bostur.
             pos = (self.book_summary_file(book_id) or {}).get("positions") or {}
         items = pos.items() if isinstance(pos, dict) else [(p.get("symbol"), p) for p in pos if isinstance(p, dict)]
@@ -264,15 +287,44 @@ class StateReader:
             out.append(q)
         return out
 
-    def book_trades(self, book_id: str, limit: int = 500) -> list[dict]:
-        """Defterin KAPANMIS islemleri (en yeni sonda). Ana bot icin `trades.json`/defter gecmisi."""
+    def book_trades(self, book_id: str, limit: int = 500, *, market: str = "futures") -> list[dict]:
+        """Defterin KAPANMIS islemleri (en yeni SONDA), en fazla `limit` satir. BOS GECMIS != EKSIK DOSYA:
+        yetkili defter okunabiliyorsa bos gecmis BOS doner; `history_tail` projeksiyonuna yalniz dosya
+        YOK/OKUNAMAZ iken dusulur. TOPLAM sayi/`realized` icin `book_history_totals` kullanilir — son N
+        kapanistan tum gecmis toplami URETILMEZ."""
+        return self._book_history(book_id, market=market)[-int(limit):]
+
+    def _book_history(self, book_id: str, *, market: str = "futures") -> list[dict]:
+        """Defterin TAM kapanmis islem gecmisi (kesilmemis, en yeni SONDA). Kaynak: yetkili defter, yoksa ozet
+        projeksiyonu. ANA BOT icin gecmis PIYASAYA gore ayrilir (`trades()` futures + spot kayitlarini BIRLIKTE
+        tasir ve yeniden ESKIYE dogru siralidir): spot kapanisi futures kaydi gibi etiketlenmez (2026-09-17)."""
+        if not self.book_supports_market(book_id, market):
+            return []
         if book_id == "main":
-            return self.trades()[-int(limit):]
-        led = self.book_ledger(book_id) or {}
-        rows = [dict(h, book_id=book_id) for h in (led.get("history") or []) if isinstance(h, dict)]
-        if not rows:
-            rows = [dict(h, book_id=book_id) for h in ((self.book_summary_file(book_id) or {}).get("history_tail") or []) if isinstance(h, dict)]
-        return rows[-int(limit):]
+            want = "spot" if market == "spot" else "futures"
+            rows = [t for t in self.trades() if str(t.get("market_type") or "futures").lower() == want]
+            return list(reversed(rows))                # `trades()` en YENI basta doner; sozlesme: en yeni SONDA
+        led = self.book_ledger(book_id)
+        if isinstance(led, dict):
+            return [dict(h, book_id=book_id) for h in (led.get("history") or []) if isinstance(h, dict)]
+        return [dict(h, book_id=book_id, from_summary_tail=True)
+                for h in ((self.book_summary_file(book_id) or {}).get("history_tail") or []) if isinstance(h, dict)]
+
+    def book_history_totals(self, book_id: str, *, market: str = "futures") -> dict[str, Any]:
+        """KAPANMIS islemlerin TAM toplami (gorunen son N satirdan DEGIL).
+
+        `complete=False` ise yetkili defter okunamamistir ve kaynak yalnizca ozet kuyrugudur (`history_tail`):
+        toplam bir ALT SINIRDIR, panel bunu boyle gostermelidir. HIC KAPANIS OLMAYAN gecerli bir defterde
+        `realized` 0.0'dir — `None` (bilinmiyor) DEGIL: "olculdu ve sifir" ile "kaynak eksik" ayri seylerdir.
+        """
+        complete = book_id == "main" or isinstance(self.book_ledger(book_id), dict)
+        rows = self._book_history(book_id, market=market)
+        vals = [_f(t.get("net_pnl")) for t in rows]
+        known_all = all(v is not None for v in vals)
+        return {"closed": len(rows), "realized": round(sum(v for v in vals if v is not None), 6) if known_all else None,
+                "wins": sum(1 for v in vals if v is not None and v > 0) if known_all else None,
+                "losses": sum(1 for v in vals if v is not None and v <= 0) if known_all else None,
+                "complete": complete, "source": "ledger" if complete else "summary_history_tail"}
 
     def book(self, book_id: str) -> dict | None:
         return next((b for b in self.books() if b["book_id"] == book_id), None)
@@ -295,6 +347,16 @@ class StateReader:
                 q.setdefault("entry_avg", q.get("entry"))
                 q.setdefault("qty", q.get("units"))
                 return q
+        return None
+
+    def book_trade(self, book_id: str, trade_id: str, *, market: str = "futures") -> dict | None:
+        """Bir KAPANMIS islemi KENDI defterinde ve KENDI piyasasinda bulur (kimlik korunur: baska defterin ya da
+        baska piyasanin kaydina dusmez)."""
+        if not trade_id:
+            return None
+        for t in self._book_history(book_id, market=market):
+            if str(t.get("id") or t.get("trade_id") or "") == str(trade_id):
+                return t
         return None
 
     def book_history(self, book_id: str, symbol: str, limit: int = 100) -> list[dict]:

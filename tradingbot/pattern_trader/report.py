@@ -62,13 +62,41 @@ def _bootstrap_ci(rs: list[float], *, iters: int = 2000, seed: int = 20260916) -
     return [round(means[int(0.025 * iters)], 4), round(means[int(0.975 * iters)], 4)]
 
 
+def _funding_coverage(trades: list[dict[str, Any]]) -> dict[str, Any]:
+    """MALİYET KAPSAMASI (2026-09-17): kaç işlemin funding'i GERÇEKTEN mutabık. `complete` olmayan işlemin
+    `funding` alanı ölçülmüş bir değer DEĞİLDİR (bilinmeyen dönem sıfır maliyet sayılmaz); `unknown` ise kaydın
+    kapsama bilgisi hiç yoktur (onarımdan ÖNCE kapanmış eski işlemler — onlara uydurma maliyet EKLENMEZ)."""
+    out = {"trades": len(trades), "complete": 0, "incomplete": 0, "unknown": 0, "settlements_due": 0,
+           "settlements_settled": 0, "incomplete_trade_ids": []}
+    for t in trades:
+        cov = (t.get("features") or {}).get("funding_coverage")
+        if not isinstance(cov, dict):
+            out["unknown"] += 1
+            continue
+        if cov.get("due") is not None:
+            out["settlements_due"] += int(cov["due"])
+            out["settlements_settled"] += int(cov.get("settled") or 0)
+        if cov.get("complete"):
+            out["complete"] += 1
+        else:
+            out["incomplete"] += 1
+            if t.get("id"):
+                out["incomplete_trade_ids"].append(str(t["id"]))
+    out["incomplete_trade_ids"] = out["incomplete_trade_ids"][:20]
+    return out
+
+
 def _cost_stats(trades: list[dict[str, Any]]) -> dict[str, Any]:
     fees = sum(float(t.get("fees") or 0) for t in trades)
     funding = sum(float(t.get("funding") or 0) for t in trades)
     gross = sum(float(t.get("gross_pnl") or 0) for t in trades)
     net = sum(float(t.get("net_pnl") or 0) for t in trades)
+    cov = _funding_coverage(trades)
     return {"gross_pnl_usdt": round(gross, 6), "net_pnl_usdt": round(net, 6), "fees_usdt": round(fees, 6),
-            "funding_usdt": round(funding, 6), "cost_usdt": round(gross - net, 6)}
+            "funding_usdt": round(funding, 6), "cost_usdt": round(gross - net, 6),
+            # `funding_usdt` YALNIZ her işlemin funding'i mutabıksa ÖLÇÜLMÜŞ sayılır; aksi hâlde ALT SINIRDIR.
+            "funding_measured": bool(trades) and cov["incomplete"] == 0 and cov["unknown"] == 0,
+            "funding_coverage": cov}
 
 
 def _bucket(trade: dict[str, Any]) -> str:

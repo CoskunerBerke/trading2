@@ -960,7 +960,11 @@ class TradingEngineV3(TradingEngine):
                         for t, h, lo, c in zip(tail["timestamp"], tail["high"], tail["low"], tail["close"])]
             except (KeyError, TypeError, ValueError):
                 continue
-            out[sym] = {"tf": BAR_TIMEFRAME, "rows": rows, "mark": float(marks_f.get(sym) or 0.0)}
+            # PIYASA KIMLIGI (2026-09-17): cerceve provenansi barlarla BIRLIKTE tasinir — defter kimligi fiyat
+            # bandindan TAHMIN ETMEZ, bildirilen piyasayi denetler (`apply_closed_bars_to_ledger`).
+            out[sym] = {"tf": BAR_TIMEFRAME, "rows": rows, "mark": float(marks_f.get(sym) or 0.0),
+                        "market": str(prov.get("market")), "source": prov.get("source"), "tour_id": prov.get("tour_id"),
+                        "first_bar_ms": rows[0]["timestamp"] if rows else 0}
         return out
 
     def _marks(self, briefs: list[CoinBrief]) -> dict[str, TickData]:

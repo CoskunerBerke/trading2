@@ -81,6 +81,15 @@ def cost_fraction(*, taker_fee_pct: float, slippage_bps: float) -> float:
     return 2.0 * float(taker_fee_pct) / 100.0 + 2.0 * float(slippage_bps) / 10_000.0
 
 
+def cost_fraction_at_fill(*, taker_fee_pct: float, slippage_bps: float) -> float:
+    """GERÇEKLEŞME FİYATINDAN SONRA kalan maliyet oranı: 2×taker + 1×kayma.
+
+    `cost_fraction` gidiş-dönüş (2×kayma) varsayar ve PLAN fiyatı için doğrudur. Gerçekleşme fiyatı hesaplandıktan
+    sonra GİRİŞ kayması zaten o fiyata gömülüdür; oraya bir kez daha eklemek kayma ayağını İKİ KEZ saydırır ve
+    maliyet sonrası R/R'yi politikadan daha katı gösterir (karşıt doğrulama bulgusu, 2026-09-17)."""
+    return 2.0 * float(taker_fee_pct) / 100.0 + 1.0 * float(slippage_bps) / 10_000.0
+
+
 def rr_after_cost(entry: float, stop: float, target: float, *, cost_frac: float) -> tuple[float, float]:
     """(brüt R/R, maliyet sonrası R/R). Maliyet gidiş-dönüş notional oranı olarak riske eklenir, ödülden düşülür."""
     risk = abs(entry - stop)
@@ -305,6 +314,6 @@ def evaluate_trigger(plan: dict[str, Any], bar: dict[str, Any]) -> str | None:
     return None
 
 
-__all__ = ["PROTOCOL_VERSION", "ENTRY_TF", "STRUCTURE_TF", "CONTEXT_TF", "FAMILIES", "DEFAULTS", "PL_AWAITING", "PL_TRIGGERED", "PL_RISK_CHECK",
+__all__ = ["cost_fraction_at_fill", "PROTOCOL_VERSION", "ENTRY_TF", "STRUCTURE_TF", "CONTEXT_TF", "FAMILIES", "DEFAULTS", "PL_AWAITING", "PL_TRIGGERED", "PL_RISK_CHECK",
            "PL_OPENED", "PL_MANAGED", "PL_CLOSED", "PL_REJECTED", "PL_BROKEN", "PL_EXPIRED", "PL_CANCELLED", "TERMINAL", "plan_id", "cost_fraction",
            "rr_after_cost", "build_plans", "evaluate_trigger"]

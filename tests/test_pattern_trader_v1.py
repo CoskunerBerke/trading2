@@ -178,9 +178,10 @@ def _scanner(cfg, provider, book=None, **over):
     return sc, b
 
 
-def _provider(candles, exinfo, *, tickers=None, marks=None):
+def _provider(candles, exinfo, *, tickers=None, marks=None, **kw):
+    """`kw`: MockProvider'a doğrudan geçer (örn. `funding_rates`, `funding_info`, `funding_interval_hours`)."""
     raws = [e["symbol"] for e in exinfo]
-    return MockProvider(candles=candles, symbols_info=exinfo, clock_ms=_now,
+    return MockProvider(candles=candles, symbols_info=exinfo, clock_ms=_now, **kw,
                         tickers=tickers or {r: _ticker(r) for r in raws},
                         books={r: _book(r) for r in raws}, depths={r: _depth() for r in raws},
                         marks=marks or {r: {"mark": 100.0, "ts": T0, "funding_rate": 0.0} for r in raws})

@@ -390,7 +390,9 @@ class MockProvider:
     def __init__(self, candles: dict | None = None, tickers: dict | None = None, books: dict | None = None,
                  depths: dict | None = None, marks: dict | None = None, ois: dict | None = None, lsrs: dict | None = None,
                  takers: dict | None = None, symbols_info: list[dict] | None = None, market_type: str = FUTURES,
-                 name: str = "mock", clock_ms: Callable[[], int] = now_ms, fail: set | None = None):
+                 name: str = "mock", clock_ms: Callable[[], int] = now_ms, fail: set | None = None,
+                 funding_rates: dict | None = None, funding_interval_hours: int = 8,
+                 funding_info: list[dict] | None = None):
         self.name = name
         self.market_type = market_type
         self.clock_ms = clock_ms
@@ -413,6 +415,11 @@ class MockProvider:
         self.takers = {to_raw(k): v for k, v in (takers or {}).items()}
         self.symbols_info = symbols_info or []
         self.fail = fail or set()          # {'klines', 'ticker24h', ...} → RuntimeError
+        # FUNDING (2026-09-17): gerçekleşmiş settlement tablosu {raw: {ts_ms: oran}} ya da {raw: [{funding_ts, rate}]}.
+        # Verilmezse settlement saatleri `funding_interval_hours` ile üretilir; `funding_info` yalnız SAPAN semboller.
+        self.funding_rates = {to_raw(k): v for k, v in (funding_rates or {}).items()}
+        self.funding_interval_hours = int(funding_interval_hours)
+        self._funding_info = list(funding_info or [])
         self.calls: list[tuple] = []
 
     def _maybe_fail(self, what: str) -> None:
@@ -476,8 +483,30 @@ class MockProvider:
         return self.marks[to_raw(symbol)]
 
     def funding_history(self, symbol: str, limit: int = 100, start_ms=None, end_ms=None) -> list[dict]:
-        m = self.marks.get(to_raw(symbol))
-        return [{"symbol": to_raw(symbol), "funding_ts": 0, "rate": m.get("funding_rate", 0.0), "mark": m.get("mark", 0.0)}] if m else []
+        """GERÇEKLEŞMİŞ settlement satırları — gerçek uçla (`/fapi/v1/fundingRate`) AYNI şekil: her satır bir
+        settlement ANINA (`funding_ts`) bağlıdır. `funding_rates` verilmişse o tablo ({raw: {ts: rate}} ya da
+        {raw: [{funding_ts, rate}, ...]}) kullanılır; verilmemişse sözleşmenin settlement saatlerinde (varsayılan
+        8 saat, `funding_interval_hours` ile değiştirilebilir) `mark_price.funding_rate` oranı damgalanır.
+
+        NOT: eskiden bu metot `funding_ts=0` ile TEK satır dönüyordu — yani o ANIN tahminini zaman damgasız
+        veriyordu ve hiçbir settlement'la eşleşemiyordu."""
+        raw = to_raw(symbol)
+        table = (self.funding_rates or {}).get(raw)
+        end = int(end_ms if end_ms is not None else self.clock_ms())
+        start = int(start_ms if start_ms is not None else end - 7 * 86_400_000)
+        rows: list[dict] = []
+        if table is not None:
+            items = table.items() if isinstance(table, dict) else [(r.get("funding_ts"), r.get("rate")) for r in table]
+            rows = [{"symbol": raw, "funding_ts": int(t), "rate": r, "mark": (self.marks.get(raw) or {}).get("mark", 0.0)}
+                    for t, r in items if t is not None and start <= int(t) <= end]
+        # `funding_rates` VERİLMEDİYSE gerçekleşmiş satır YOKTUR. O ANIN tahmini (`mark_price.funding_rate`)
+        # geçmiş settlement'lara DAMGALANMAZ: gerçek uçta böyle bir davranış yoktur ve bu test ikilisi, onarımın
+        # baş iddiasını ("tahmin geçmişe uygulanmaz") sessizce ihlal ederdi (karşıt doğrulama bulgusu).
+        return sorted(rows, key=lambda r: r["funding_ts"])[-int(limit):]
+
+    def funding_info(self) -> list[dict]:
+        """Yalnız VARSAYILANDAN sapan sembolleri yayımlar (gerçek uçla aynı sözleşme)."""
+        return list(self._funding_info)
 
     def open_interest(self, symbol: str) -> dict:
         self._maybe_fail("open_interest")

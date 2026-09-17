@@ -42,14 +42,33 @@ def static_rates(rates: Mapping[str, "Decimal | float | str"]) -> RateLookup:
 
 @dataclass
 class FundingSchedule:
+    """Settlement takvimi. `hours_utc` VARSAYILANDIR (Binance USDⓈ-M: 8 saat); sözleşmesi sapan sembol için
+    `hours_for_symbol(symbol)` gerçek aralığı döndürür — sekiz saat varsayımı doğrulanmadan yayılmaz
+    (`/fapi/v1/fundingInfo` yalnız sapan sembolleri yayımlar; listede olmayan sembol varsayılandadır).
+    `hours_for_symbol` None dönerse varsayılan kullanılır; boş demet (`()`) dönerse aralık BİLİNMİYOR demektir
+    ve o sembol için hiçbir settlement üretilmez (uydurulmuş dönem yok)."""
+
     hours_utc: tuple[int, ...] = FUNDING_HOURS_UTC
     fallback_to_last_known: bool = True
+    hours_for_symbol: Callable[[str], "tuple[int, ...] | None"] | None = None
+
+    def hours_for(self, symbol: str) -> tuple[int, ...]:
+        if self.hours_for_symbol is None:
+            return self.hours_utc
+        try:
+            h = self.hours_for_symbol(symbol)
+        except Exception:  # noqa: BLE001 — aralık servisi arızası tahakkuku ÇÖKERTMEZ: varsayılana düşülür
+            return self.hours_utc
+        return self.hours_utc if h is None else tuple(h)
 
     def settlements_due(self, position: Position, now_utc: datetime) -> list[datetime]:
         start_s = position.last_funding_settlement_utc or position.opened_at
         if not start_s:
             return []
-        return funding_settlements_between(from_iso(start_s), now_utc, self.hours_utc)
+        hours = self.hours_for(position.symbol)
+        if not hours:
+            return []                      # aralık bilinmiyor: dönem UYDURULMAZ (kapsama eksikliği ayrıca raporlanır)
+        return funding_settlements_between(from_iso(start_s), now_utc, hours)
 
     def accrue(self, position: Position, now_utc: datetime, mark_price, rate_lookup: RateLookup | None) -> list[FundingEvent]:
         """(last_settlement, now] aralığındaki bütün settlement'ları uygular; pozisyonun funding_paid/received alanlarını günceller.

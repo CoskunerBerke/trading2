@@ -242,12 +242,23 @@ def test_4_a_closed_bar_is_consumed_once_across_tours_monitor_and_restart(tmp_pa
     assert b2.apply_closed_bars(unclosed, now=now) == [] and SYMS[0] in b2.ledger.positions and b2.ledger.positions[SYMS[0]].meta["ohlc_cursor"]["1h"] == bar_open
     pre = {SYMS[0]: {"tf": "1h", "mark": entry[SYMS[0]], "rows": [{"timestamp": bar_open - 5 * H1, "high": entry[SYMS[0]] * 1.01, "low": entry[SYMS[0]] * 0.5, "close": entry[SYMS[0]]}]}}
     assert b2.apply_closed_bars(pre, now=now) == [] and SYMS[0] in b2.ledger.positions
-    # ölçek dışı bar (canlı mark'ın %20'sinden uzak) uydurulmaz: atlanır, olay kaydedilir, imleç ilerler
+    # ÖLÇEĞİ ŞÜPHELİ bar (KAPANIŞI canlı mark'ın %20'sinden uzak) uydurulmaz: uygulanmaz, olay kaydedilir — ve
+    # 2026-09-17 onarımından beri TÜKETİLMEZ de: imleç ilerlemez, boşluk pozisyonun kaydında görünür kalır ve
+    # veri/mark düzeldiğinde aynı bar yeniden denenebilir. (ÖNCE: gerekçe BAR_OUT_OF_RANGE, imleç İLERLİYORDU.)
     b2.ledger.positions[SYMS[0]].opened_at = iso(datetime.fromtimestamp(bar_open / 1000, tz=timezone.utc) - timedelta(hours=9))
     off = {SYMS[0]: {"tf": "1h", "mark": entry[SYMS[0]], "rows": [{"timestamp": bar_open - 6 * H1, "high": entry[SYMS[0]] * 3, "low": entry[SYMS[0]] * 2.5, "close": entry[SYMS[0]] * 2.8}]}}
     b2.ledger.positions[SYMS[0]].meta["ohlc_cursor"]["1h"] = bar_open - 7 * H1
     assert b2.apply_closed_bars(off, now=now) == [] and SYMS[0] in b2.ledger.positions
-    assert b2.data_events[-1]["kind"] == "BAR_SKIPPED" and b2.data_events[-1]["reason"] == "BAR_OUT_OF_RANGE" and b2.ledger.positions[SYMS[0]].meta["ohlc_cursor"]["1h"] == bar_open - 6 * H1
+    assert b2.data_events[-1]["kind"] == "BAR_SKIPPED" and b2.data_events[-1]["reason"] == "BAR_SCALE_UNVERIFIED"
+    gaps = (b2.ledger.positions[SYMS[0]].meta.get("ohlc_gaps") or {}).get("1h") or []
+    assert [g["reason"] for g in gaps] == ["BAR_SCALE_UNVERIFIED"] and gaps[0]["bar_open_ms"] == bar_open - 6 * H1, gaps
+    # TÜKETİLMİŞ SAYILMAZ: imleç zinciri sürdürmek için ilerler ama boşluk kaydı yeniden deneme hakkını KORUR —
+    # veri/mark düzelince AYNI bar uygulanır (2026-09-17 karşıt doğrulaması: zinciri durdurmak koruyucu stop'u düşürüyordu).
+    ok_bar = {SYMS[0]: {"tf": "1h", "mark": entry[SYMS[0]], "market": "USDM_PERP",
+                        "rows": [{"timestamp": bar_open - 6 * H1, "high": entry[SYMS[0]] * 1.01,
+                                  "low": entry[SYMS[0]] * 0.99, "close": entry[SYMS[0]]}]}}
+    assert b2.apply_closed_bars(ok_bar, now=now) == [] and SYMS[0] in b2.ledger.positions
+    assert not (b2.ledger.positions[SYMS[0]].meta.get("ohlc_gaps") or {}).get("1h"), "boşluk kaydı çözülmeliydi"
 
 
 # ====================================================================== 5) haftalarca eski günlük seri (yeni tour_id) → giriş yok; güncel seri → giriş, kural aynı

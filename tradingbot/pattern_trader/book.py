@@ -18,19 +18,20 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, Callable
 
-from ..accounting import (FeeSchedule, FuturesLedgerV2, LiquidationParams, MarketType, SlippageModel, TaxPolicy, TickData,
-                          default_brackets)
+from ..accounting import (FeeSchedule, FuturesLedgerV2, LiquidationParams, MarketType, PositionSide, SlippageModel, TaxPolicy,
+                          TickData, default_brackets)
+from ..accounting.funding import FundingSchedule
 from ..core import atomic_write_json, iso, read_json, utc_now
 from ..learn import TradeMemory
 from ..learn.candle_context import CandleContextConfig, detect_trend
 from ..risk import RiskEngine, build_state
-from ..strategy_paper import DataVerdict, apply_action, apply_closed_bars_to_ledger
+from ..strategy_paper import PAPER_MARKET, DataVerdict, apply_action, apply_closed_bars_to_ledger, parse_ts_ms
 from ..timeframes import tf_ms
 from .data import REQUIREMENTS, readiness
 from .detect import ST_BROKEN, ST_CONFIRMED, ST_EXPIRED, atr14, detect_findings, levels_for, update_finding
 from .strategy import (CONTEXT_TF, ENTRY_TF, PL_AWAITING, PL_BROKEN, PL_CANCELLED, PL_CLOSED, PL_EXPIRED, PL_MANAGED, PL_OPENED,
                        PL_REJECTED, PL_RISK_CHECK, PL_TRIGGERED, PROTOCOL_VERSION, STRUCTURE_TF, TERMINAL, build_plans,
-                       cost_fraction, evaluate_trigger)
+                       cost_fraction, cost_fraction_at_fill, evaluate_trigger, rr_after_cost)
 from .universe import iso_ms
 
 log = logging.getLogger(__name__)
@@ -39,6 +40,13 @@ BOOK_NAME = "pattern_v1"
 SUMMARY_FILE = "pattern_trader.json"
 SCHEMA_VERSION = "pattern_trader_v1"
 MAX_EVENTS = 300
+#: RESMÎ FİLTRE BAYATLIK SINIRI (2026-09-17). Keşif kaydından bağlanan `exchangeInfo` filtreleri bu yaştan eskiyse
+#: giriş yapılmaz. Kural değişimi nadirdir ama SESSİZCE eski kuralla emir açmak yerine yenilemeyi beklemek
+#: tercih edilir. Config'ten TÜRETİLMEZ: tarama sıklığı 0'a çekilse bile sınır aynı kalır.
+FILTERS_MAX_AGE_MS = 2 * 3_600_000
+#: YUVARLAMA SONRASI RİSK PAYI. Gerçekleşme fiyatı tick ızgarasına oturunca giriş-stop mesafesi (dolayısıyla
+#: gerçekleşen risk) büyüyebilir. Bu orandan fazlası kabul EDİLMEZ: risk tavanı yuvarlamayla gevşemez.
+RISK_ROUNDING_TOLERANCE = 0.02
 
 
 class PatternBook:
@@ -55,10 +63,17 @@ class PatternBook:
         fees = FeeSchedule(maker_pct=Decimal(str(v3.fees.futures_maker_pct)), taker_pct=Decimal(str(v3.fees.futures_taker_pct)), source=v3.fees.source)
         slip = SlippageModel(fixed_bps=Decimal(str(v3.fees.slippage_bps)))
         self.cost_frac = cost_fraction(taker_fee_pct=float(v3.fees.futures_taker_pct), slippage_bps=float(v3.fees.slippage_bps))
+        #: Gerçekleşme fiyatı hesaplandıktan SONRA kalan maliyet (giriş kayması fiyata gömülüdür; iki kez sayılmaz).
+        self.cost_frac_at_fill = cost_fraction_at_fill(taker_fee_pct=float(v3.fees.futures_taker_pct),
+                                                       slippage_bps=float(v3.fees.slippage_bps))
         self.ledger = FuturesLedgerV2.load(self.ledger_path, starting_equity=float(section.starting_equity_usdt),
                                           max_positions=int(section.max_open_positions), enforce_position_cap=True,
                                           fees=fees, slippage=slip, brackets=default_brackets(),
                                           liq_params=LiquidationParams(liq_fee_pct=Decimal(str(v3.futures_v3.liq_fee_pct))),
+                                          # FUNDING (2026-09-17): oran bilinmiyorsa TAHMIN YOK — dönem bekler. Bu KURULUŞTA
+                                          # ayarlanır (yalnız `bind_funding`e bırakılmaz): tarayıcı hiç başlamasa bile eski
+                                          # bir `meta.last_funding_rate` tahmini kesinti ÜRETEMEZ.
+                                          funding=FundingSchedule(fallback_to_last_known=False),
                                           tp1_fraction=Decimal("1"), breakeven_at_mfe_r=Decimal("0"), tax_policy=TaxPolicy.disabled())
         self.risk = RiskEngine(profile, killswitch, v3.risk_profiles.clusters or None)
         self.memory = TradeMemory(self.state_dir / "trade_memory.jsonl", source="PATTERN_PAPER")
@@ -79,6 +94,13 @@ class PatternBook:
         self.symbol_scans: dict[str, dict[str, Any]] = {}
         self.cohort_stats: dict[str, dict[str, int]] = {}
         self.closed_recent: list[dict[str, Any]] = []
+        #: Gerçekleşmiş funding oran kaynağı (`bind_funding` ile tarayıcıdan gelir). None iken funding dönemleri
+        #: BEKLER: bilinmeyen maliyet sıfır SAYILMAZ, kapsama `funding_coverage` ile görünür kalır.
+        self.funding_rates: Any = None
+        #: Tur içi filtre belleği (sembol → (keşif anı ms, SymbolFilters)). PAYLAŞILAN önbelleğe YAZILMAZ;
+        #: bkz. `_resolve_filters` — ana botun resmî yenileme damgası kirletilmez, kilitsiz nesneye iş
+        #: parçacığından yazılmaz.
+        self._filters_memo: dict[str, tuple[int, Any]] = {}
         self._restore()
 
     # ------------------------------------------------------------------ kalıcılık
@@ -172,8 +194,65 @@ class PatternBook:
                            used_margin=float(fs["used_margin"]), positions=pos, history=self.ledger.history_dicts(), high_water_mark=0.0, now=utc_now(),
                            clusters=self.cfg.v3.risk_profiles.clusters or None)
 
+    # ------------------------------------------------------------------ funding (2026-09-17)
+    def bind_funding(self, rates: Any) -> None:
+        """Gerçekleşmiş settlement oran kaynağını deftere BAĞLAR: sözleşmenin kendi aralığı (`hours_for`) tahakkuk
+        takvimine geçer ve bilinmeyen oran TAHMİNLE doldurulmaz (`fallback_to_last_known=False`) — bilinmeyen dönem
+        BEKLER, sıfır maliyet olarak net performansa girmez."""
+        self.funding_rates = rates
+        sch = self.ledger.funding
+        sch.hours_for_symbol = rates.hours_for if hasattr(rates, "hours_for") else None
+        sch.fallback_to_last_known = False
+
+    def funding_coverage(self, *, symbol: str, opened_at: str, until: str, settled_until: str | None,
+                         hours_utc: Any = None, settled_ts: Any = None) -> dict[str, Any]:
+        """Bir pozisyon/işlem için funding KAPSAMASI. AĞ ÇAĞRISI YOKTUR: settlement saatleri ve gerçekten
+        uygulanan settlement anları defterin tick'inde KAYDA geçirilmiştir (`features.funding_hours_utc`,
+        `features.funding_settled_ts`); burada yalnız okunur. (Karşıt doğrulama bulgusu: eskiden `hours_for`
+        çağrılıyordu ve bu, kapanış yolunda kilit altında bir HTTP isteğine dönüşebiliyordu.)
+
+        `settled` GERÇEKTEN uygulanan dönemlerden sayılır; yoksa watermark'tan türetilir (eski kayıtlar için).
+        `complete=False` ise o işlemin funding maliyeti ÖLÇÜLMEMİŞTİR — sıfır sanılmamalıdır."""
+        from ..core import from_iso, funding_settlements_between
+        hours = tuple(hours_utc) if hours_utc is not None else self.ledger.funding.hours_for(symbol)
+        out: dict[str, Any] = {"interval_known": bool(hours), "hours_utc": list(hours), "settled_until": settled_until,
+                               "rate_source": "lookup" if getattr(self, "funding_rates", None) is not None else "none"}
+        if not hours:
+            return {**out, "due": None, "settled": None, "missing": None, "complete": False, "reason": "INTERVAL_UNKNOWN"}
+        try:
+            o, u = from_iso(str(opened_at)), from_iso(str(until))
+        except (ValueError, TypeError):
+            return {**out, "due": None, "settled": None, "missing": None, "complete": False, "reason": "TIME_UNREADABLE"}
+        due_ts = funding_settlements_between(o, u, hours)
+        if isinstance(settled_ts, list):
+            applied = {str(t) for t in settled_ts}
+            settled = sum(1 for t in due_ts if iso(t) in applied)
+            out["source"] = "applied_settlements"
+        else:                                             # eski kayıt: yalnız watermark var (alt sınır)
+            try:
+                w = from_iso(str(settled_until)) if settled_until else o
+            except (ValueError, TypeError):
+                return {**out, "due": len(due_ts), "settled": None, "missing": None, "complete": False, "reason": "TIME_UNREADABLE"}
+            settled = len(funding_settlements_between(o, w, hours))
+            out["source"] = "watermark"
+        missing = max(0, len(due_ts) - settled)
+        return {**out, "due": len(due_ts), "settled": settled, "missing": missing, "complete": missing == 0,
+                "reason": "" if missing == 0 else "RATES_MISSING"}
+
     def _on_closed(self, rec) -> None:
         self.counters["closed"] += 1
+        # FUNDING KAPSAMASI kaydın KENDİ `features`ına yazılır (rapor bunu okur; uydurma maliyet EKLENMEZ).
+        try:
+            f = getattr(rec, "features", None)
+            if isinstance(f, dict):
+                f["funding_coverage"] = self.funding_coverage(symbol=str(getattr(rec, "symbol", "") or ""),
+                                                              opened_at=str(getattr(rec, "opened_at", "") or ""),
+                                                              until=str(getattr(rec, "closed_at", "") or ""),
+                                                              settled_until=f.get("funding_settled_until"),
+                                                              hours_utc=f.get("funding_hours_utc"),
+                                                              settled_ts=f.get("funding_settled_ts"))
+        except Exception as exc:  # noqa: BLE001 — kapsama hesabı kapanışı ETKİLEMEZ
+            log.warning("formasyon defteri funding kapsaması yazılamadı: %s", exc)
         d = rec.to_legacy_dict() if hasattr(rec, "to_legacy_dict") else {}
         meta = getattr(rec, "meta", None) or {}
         pid = (meta.get("plan_id") if isinstance(meta, dict) else None) or (d.get("features") or {}).get("plan_id")
@@ -205,9 +284,14 @@ class PatternBook:
     # ------------------------------------------------------------------ tarama: bulgu → plan → tetik → giriş
     def process_symbol(self, symbol: str, *, bars_by_tf: dict[str, list[dict[str, Any]]], statuses: dict[str, dict[str, Any]], as_of_ms: int,
                        universe_entry: dict[str, Any] | None, price: dict[str, Any] | None, liquidity: Callable[[], dict[str, Any] | None] | None,
-                       run_id: str) -> dict[str, Any]:
+                       run_id: str, decision_ms: int | None = None) -> dict[str, Any]:
         """Bir sembolün kapalı barlarıyla tek tarama adımı. `price`: `verified_price` sözlüğü (ok/mark/price_ts_ms/...) ya da None;
-        `liquidity()`: yalnız TETİK anında çağrılır (spread/derinlik). Döner: özet (bulgu/plan/tetik/giriş sayıları, nedenler)."""
+        `liquidity()`: yalnız TETİK anında çağrılır (spread/derinlik). Döner: özet (bulgu/plan/tetik/giriş sayıları, nedenler).
+
+        `decision_ms` (2026-09-17): GEÇERLİLİK SÜRESİ bu anla denetlenir. `as_of_ms` turun REFERANS anıdır ve bar
+        kapanışı/güncellik hükümlerinde kullanılır (determinizm); uzun bir turda o an sembol sırası geldiğinde
+        dakikalarca ESKİ olabilir. Süre kontrolünde eski bir zaman kullanmak, süresi dolmuş planın açılmasına yol
+        açar — bu yüzden tarayıcı buraya sembolün taranma ANINI verir. Verilmezse `as_of_ms`e düşülür."""
         with self.lock:
             self.run_id = str(run_id or self.run_id)
             self.counters["scans"] += 1
@@ -262,6 +346,9 @@ class PatternBook:
                         self._event("FINDING_CONFIRMED", symbol, upd["shape"], now, tf=tf, finding_id=fid, confirmed_at=iso_ms(upd.get("confirmed_at_ms")))
                     self.findings[fid] = upd
             # 2) mevcut planlar: tetik/bozulma/süre (yalnız yeni kapalı 15m barlarla; idempotent)
+            # KARAR ANI: turun referansı ile sembolün gerçek tarama anının SONRAKİSİ (geriye giden bir değer
+            # geçerlilik penceresini GENİŞLETEMEZ).
+            dec_ms = max(int(as_of_ms), int(decision_ms if decision_ms is not None else as_of_ms))
             triggered: list[dict[str, Any]] = []
             for pid, pl in list(self.plans.items()):
                 if pl.get("symbol") != symbol or pl.get("status") not in (PL_AWAITING, PL_TRIGGERED):
@@ -272,7 +359,7 @@ class PatternBook:
                         ts = int(b["timestamp"])
                         if ts <= last_eval or ts + tf_ms(ENTRY_TF) > int(as_of_ms):
                             continue
-                        if ts + tf_ms(ENTRY_TF) > int(pl["expires_at_ms"]):
+                        if self.is_expired(pl, ts + tf_ms(ENTRY_TF)):
                             self._set_status(pl, PL_EXPIRED, ts + tf_ms(ENTRY_TF), "NOT_TRIGGERED_BEFORE_EXPIRY")
                             self.counters["expired"] += 1
                             break
@@ -290,14 +377,15 @@ class PatternBook:
                             self._set_status(pl, PL_BROKEN, ts + tf_ms(ENTRY_TF), "CLOSE_BEYOND_INVALIDATION")
                             self.counters["broken"] += 1
                             break
-                    if pl["status"] == PL_AWAITING and int(as_of_ms) > int(pl["expires_at_ms"]):
-                        self._set_status(pl, PL_EXPIRED, int(as_of_ms), "EXPIRED_AT_SCAN")
+                    if pl["status"] == PL_AWAITING and self.is_expired(pl, dec_ms):
+                        self._set_status(pl, PL_EXPIRED, dec_ms, "EXPIRED_AT_SCAN")
                         self.counters["expired"] += 1
                 if pl.get("status") == PL_TRIGGERED:
                     triggered.append(pl)
             # 3) tetiklenen planlar → risk kontrolü → giriş (sembol başına tek pozisyon; sıra: en erken tetik)
             for pl in sorted(triggered, key=lambda d: int(d.get("triggered_at_ms") or 0)):
-                res = self._try_open(pl, now=now, as_of_ms=as_of_ms, price=price, statuses=statuses, liquidity=liquidity, universe_entry=ue)
+                res = self._try_open(pl, now=now, as_of_ms=as_of_ms, price=price, statuses=statuses, liquidity=liquidity,
+                                     universe_entry=ue, decision_ms=dec_ms)
                 if res == "OPENED":
                     out["opened"] += 1
                     cs["opened"] += 1
@@ -348,9 +436,79 @@ class PatternBook:
             return "STATUS_%s" % ue.get("status")
         return None
 
+    @staticmethod
+    def is_expired(pl: dict[str, Any], as_of_ms: int) -> bool:
+        """GEÇERLİLİK SINIRI — TEK tanım (2026-09-17): plan `as_of_ms > expires_at_ms` ise geçersizdir; sınır anı
+        (`as_of_ms == expires_at_ms`) HÂLÂ geçerlidir. Tetik döngüsü, AWAITING süpürmesi ve giriş yolu AYNI
+        fonksiyonu çağırır; karar anı olarak her biri kendi gerçek anını verir.
+
+        FAIL-CLOSED: `expires_at_ms` yoksa ya da çözülemiyorsa plan GEÇERSİZ sayılır (True). Okunamayan bir
+        geçerlilik alanını "hiç dolmaz" saymak, bozuk/eski bir `plans.json` kaydına süresiz emir hakkı verirdi."""
+        v = parse_ts_ms(pl.get("expires_at_ms")) if isinstance(pl, dict) else None
+        if v is None:
+            return True
+        return int(as_of_ms) > int(v)
+
+    @staticmethod
+    def _filters_evidence(f, origin: str, age_s: float | None = None) -> dict[str, Any]:
+        """İşlem kanıtına giren filtre dökümü: kaynak, doğrulama zamanı ve GERÇEKTEN kullanılan değerler."""
+        return {"source": f.source, "verified_at": f.verified_at, "origin": origin, "age_s": age_s,
+                "price_tick": str(f.price_tick), "qty_step": str(f.qty_step), "min_qty": str(f.min_qty),
+                "market_max_qty": str(f.market_max_qty), "min_notional": str(f.min_notional),
+                "max_leverage": int(f.max_leverage), "contract_type": str(getattr(f, "contract_type", "") or "")}
+
+    def _resolve_filters(self, symbol: str, universe_entry: dict[str, Any], as_of_ms: int):
+        """GİRİŞTE KULLANILACAK RESMÎ EMİR KURALLARI — keşiften girişe AYNI sembol/piyasa için doğrulanmış filtre.
+
+        Sıra: (1) motorun paylaşılan önbelleğinde doğrulanmış VE GÜNCEL kayıt varsa o; (2) yoksa bu turun KENDİ
+        `exchangeInfo` keşif kaydından (`universe_entry["filters"]`) STRICT üretilir — iki yenileme arasında
+        listelenen sözleşme böylece varsayılana düşmez; (3) ikisi de yoksa `None` döner ve giriş REDDEDİLİR.
+
+        YAŞ HER İKİ KAYNAKTA da denetlenir (`FILTERS_MAX_AGE_MS`) ve zaman damgası ÇÖZÜLEMİYORSA kayıt kabul
+        EDİLMEZ (fail-closed): "bayatlık bilinmiyor" ile "bayat değil" aynı şey değildir.
+
+        PAYLAŞILAN ÖNBELLEĞE YAZILMAZ (2026-09-17, karşıt doğrulama bulgusu): `filters_cache` motorun ANA BOT ile
+        paylaştığı nesnedir ve `FiltersCache.put()` önbellek geneli `verified_at` damgasını yeniler — bu da ana
+        botun resmî `exchangeInfo` yenilemesini "taze" sanıp atlatır (`engine_v3.ensure_symbol_filters`). Ayrıca
+        tarayıcı AYRI bir iş parçacığıdır ve `FiltersCache` kilitsizdir. Bu yüzden tur içi tekrarı önlemek için
+        defterin KENDİ yerel belleği kullanılır. Döner: (filters | None, gerekçe, kanıt sözlüğü)."""
+        from ..accounting.filters import from_universe_entry
+        if self.filters_cache.has(symbol, MarketType.USDM_PERP):
+            f = self.filters_cache.get(symbol, MarketType.USDM_PERP)
+            if str(getattr(f, "source", "") or "") not in ("", "default"):
+                ts = parse_ts_ms(getattr(f, "verified_at", None))
+                if ts is None:
+                    return None, "FILTERS_UNDATED", {"origin": "filters_cache", "verified_at": str(getattr(f, "verified_at", ""))[:40]}
+                age = int(as_of_ms) - int(ts)
+                if age <= FILTERS_MAX_AGE_MS:
+                    return f, "", self._filters_evidence(f, "filters_cache", round(age / 1000.0, 1))
+        hit = self._filters_memo.get(symbol)           # tur içi tekrar: AYNI keşif kaydından ikinci ayrıştırma yok
+        if hit is not None and 0 <= int(as_of_ms) - hit[0] <= FILTERS_MAX_AGE_MS:
+            return hit[1], "", self._filters_evidence(hit[1], "book_memo", round((int(as_of_ms) - hit[0]) / 1000.0, 1))
+        seen = parse_ts_ms(universe_entry.get("as_of_ms")) or parse_ts_ms(universe_entry.get("last_seen_at"))
+        if seen is None:                               # FAIL-CLOSED: keşif anı bilinmiyorsa bayatlık DENETLENEMEZ
+            return None, "FILTERS_UNDATED", {"origin": "universe_entry",
+                                             "detail": "keşif kaydında as_of_ms/last_seen_at yok ya da çözülemedi"}
+        if int(as_of_ms) - seen > FILTERS_MAX_AGE_MS:
+            return None, "FILTERS_STALE", {"discovered_ms": seen, "age_s": round((int(as_of_ms) - seen) / 1000.0, 1),
+                                           "max_age_s": round(FILTERS_MAX_AGE_MS / 1000.0, 1)}
+        try:
+            f = from_universe_entry(symbol, universe_entry, MarketType.USDM_PERP)
+        except (ValueError, ArithmeticError, TypeError) as exc:
+            return None, "FILTERS_UNVERIFIED", {"detail": str(exc)[:160]}
+        self._filters_memo[symbol] = (int(seen), f)
+        if len(self._filters_memo) > 4000:
+            for k in list(self._filters_memo)[:500]:
+                self._filters_memo.pop(k, None)
+        return f, "", self._filters_evidence(f, "universe_entry", round((int(as_of_ms) - seen) / 1000.0, 1))
+
     def _try_open(self, pl: dict[str, Any], *, now: datetime, as_of_ms: int, price: dict[str, Any] | None, statuses: dict[str, dict[str, Any]],
-                  liquidity: Callable[[], dict[str, Any] | None] | None, universe_entry: dict[str, Any]) -> str:
+                  liquidity: Callable[[], dict[str, Any] | None] | None, universe_entry: dict[str, Any],
+                  decision_ms: int | None = None) -> str:
         symbol = pl["symbol"]
+        decision_ms = max(int(as_of_ms), int(decision_ms if decision_ms is not None else as_of_ms))
+        if pl.get("status") in TERMINAL:
+            return str(pl.get("status"))               # ZATEN terminal (örn. kardeş plan doldu → CANCELLED): dokunma
         self._set_status(pl, PL_RISK_CHECK, int(as_of_ms), "")
 
         def _reject(reason: str, **extra: Any) -> str:
@@ -360,6 +518,14 @@ class PatternBook:
             self._event("PLAN_REJECTED", symbol, reason, now, plan_id=pl["plan_id"], **{k: v for k, v in extra.items() if isinstance(v, (int, float, str))})
             return "REJECTED"
 
+        # GEÇERLİLİK SÜRESİ — HER giriş yolunda, gerçekleşmeden ÖNCE (fiyat/likidite beklemesinden dönüş DAHİL).
+        # Süresi dolan plan TERMİNAL duruma geçer: sonraki taramada ya da yeniden başlatmada DİRİLMEZ.
+        if self.is_expired(pl, decision_ms):
+            self._set_status(pl, PL_EXPIRED, decision_ms, "EXPIRED_BEFORE_ENTRY")
+            self.counters["expired"] += 1
+            self._event("PLAN_EXPIRED", symbol, "EXPIRED_BEFORE_ENTRY", now, plan_id=pl["plan_id"],
+                        expires_at=iso_ms(int(pl["expires_at_ms"])), decided_at=iso_ms(decision_ms), as_of=iso_ms(int(as_of_ms)))
+            return "EXPIRED"
         # evren/durum
         blocked = self._entry_block_reason(symbol, universe_entry, as_of_ms)
         if blocked:
@@ -374,16 +540,17 @@ class PatternBook:
             return _reject("DATA_ERROR", detail=str(st15.get("error") or "no source")[:120])
         if st15.get("is_stale"):
             return _reject("DATA_STALE_15M", age_s=st15.get("age_s"))
+        # PİYASA KİMLİĞİ (2026-09-17): giriş dilimi GERÇEKTEN USDⓈ-M perpetual çerçeveden mi geldi? Kimlik
+        # çerçevenin kendi provenansından okunur; sabit yazılmaz (SPOT ikamesi sessizce perp sayılmaz).
+        if str(st15.get("market") or "") != PAPER_MARKET:
+            return _reject("DATA_MARKET_%s" % (str(st15.get("market") or "UNKNOWN").upper()),
+                           market=str(st15.get("market") or ""), source=str(st15.get("source") or ""))
         # fiyat: doğrulanmış, güncel perp mark (aynı sözleşme: strategy_paper.verified_price)
         if not price or not price.get("ok"):
             self.data_gaps[symbol] = {"reason": (price or {}).get("reason") or "NO_VERIFIED_FUTURES_PRICE", "at": iso(now)}
             # fiyat yoksa plan TETİKLENMİŞ kalır (sonraki taramada yeniden denenir; süre dolarsa iptal)
             self._set_status(pl, PL_TRIGGERED, int(as_of_ms), "PRICE_GAP_%s" % ((price or {}).get("reason") or "NO_PRICE"))
-            if int(as_of_ms) > int(pl["expires_at_ms"]):
-                self._set_status(pl, PL_CANCELLED, int(as_of_ms), "EXPIRED_WAITING_PRICE")
-                self.counters["cancelled"] += 1
-                return "CANCELLED"
-            return "WAIT_PRICE"
+            return "WAIT_PRICE"                       # süre kontrolü yukarıda, TEK yerde (bekleme dönüşünü de kapsar)
         self.data_gaps.pop(symbol, None)
         mark = float(price["mark"])
         # kovalamama: tetik seviyesinden uzaklık
@@ -416,13 +583,43 @@ class PatternBook:
             return _reject("THIN_DEPTH", depth_0_5pct=float(depth), min_depth=float(self.section.min_depth_0_5pct_usdt))
         pl["liquidity_at_trigger"] = {k: liq.get(k) for k in ("spread_pct", "depth_0_5pct", "depth_1pct", "source", "ts")}
         # maliyet sonrası R/R gerçek giriş fiyatıyla yeniden hesaplanır (geometri değişmiş olabilir)
-        from .strategy import rr_after_cost
         g, n = rr_after_cost(mark, float(pl["stop"]), float(pl["target"]), cost_frac=self.cost_frac)
         pl["rr_at_entry"] = {"gross": g, "after_cost": n, "mark": mark}
         if n < float(pl["min_rr_after_cost"]):
             return _reject("RR_BELOW_MIN_AT_ENTRY", rr_after_cost=n)
+        # RESMÎ EMİR KURALLARI (2026-09-17): keşiften girişe bağlı, doğrulanmış filtre. Eksik/geçersiz/bayat →
+        # giriş YOK (varsayılan tick/step ile sessiz açılış KAPALI); gerekçe planda ve olayda görünür.
+        filters, fwhy, fev = self._resolve_filters(symbol, universe_entry, int(as_of_ms))
+        pl["filters_used"] = fev
+        if filters is None:
+            return _reject(fwhy, **{k: v for k, v in fev.items() if isinstance(v, (int, float, str))})
+        # YUVARLAMA SONRASI GEOMETRİ: gerçekleşme fiyatı kayma + tick kuantizasyonundan geçince stop tarafı ve
+        # maliyet sonrası R/R değişebilir; ikisi de giriş ÖNCESİ, DEFTERİN KENDİ fiyat yoluyla denetlenir
+        # (`market_fill_price` — açılışta kullanılan fonksiyonun ta kendisi, ayrı bir tahmin DEĞİL).
+        tick_pre = TickData(last=Decimal(str(mark)), mark=Decimal(str(mark)), ts=iso_ms(price.get("price_ts_ms")) or iso(now))
+        pside = PositionSide.LONG if pl["side"] == "LONG" else PositionSide.SHORT
+        qmark = float(self.ledger.market_fill_price(symbol, pside, Decimal(str(mark)), filters=filters,
+                                                    slippage=self.ledger.slippage, tick=tick_pre))
+        if qmark <= 0:
+            return _reject("PRICE_QUANTIZED_TO_ZERO", price_tick=str(filters.price_tick), mark=mark)
+        if (pl["side"] == "LONG" and qmark <= float(pl["stop"])) or (pl["side"] == "SHORT" and qmark >= float(pl["stop"])):
+            return _reject("STOP_BEYOND_QUANTIZED_ENTRY", quantized_entry=qmark, stop=float(pl["stop"]))
+        # Maliyet oranı GERÇEKLEŞME fiyatına göre: giriş kayması artık `qmark`e gömülüdür, ikinci kez sayılmaz.
+        gq, nq = rr_after_cost(qmark, float(pl["stop"]), float(pl["target"]), cost_frac=self.cost_frac_at_fill)
+        # RİSK: tick ızgarası giriş-stop mesafesini GENİŞLETEBİLİR. Boyut ham mark'la hesaplandığı için
+        # gerçekleşen risk bütçeyi aşabilir; yuvarlamanın risk üzerindeki etkisi giriş ÖNCESİ ölçülür.
+        d0, d1 = abs(mark - float(pl["stop"])), abs(qmark - float(pl["stop"]))
+        risk_ratio = (d1 / d0) * (mark / qmark) if d0 > 0 and qmark > 0 else float("inf")
+        pl["rr_at_entry"].update({"quantized_entry": qmark, "gross_quantized": gq, "after_cost_quantized": nq,
+                                  "risk_ratio_after_rounding": round(risk_ratio, 6),
+                                  "max_risk_ratio": 1.0 + RISK_ROUNDING_TOLERANCE})
+        if nq < float(pl["min_rr_after_cost"]):
+            return _reject("RR_BELOW_MIN_AFTER_ROUNDING", rr_after_cost=nq, quantized_entry=qmark)
+        if risk_ratio > 1.0 + RISK_ROUNDING_TOLERANCE:
+            return _reject("RISK_ABOVE_CAP_AFTER_ROUNDING", risk_ratio=round(risk_ratio, 6), quantized_entry=qmark,
+                           max_risk_ratio=1.0 + RISK_ROUNDING_TOLERANCE)
         # ortak uygulayıcı: risk (RiskEngine.evaluate) + defter (gerçek filtre, kayma) — fail-closed veri hükmüyle
-        verdict = DataVerdict(ok=True, entry_ok=True, market="USDM_PERP", source=str(st15.get("source")), tour_id=self.run_id,
+        verdict = DataVerdict(ok=True, entry_ok=True, market=str(st15.get("market")), source=str(st15.get("source")), tour_id=self.run_id,
                               bars={tf: (statuses.get(tf) or {}).get("last_open_ms") for tf in statuses if (statuses.get(tf) or {}).get("last_open_ms")},
                               as_of_ms=int(as_of_ms), detail={"price_ts_ms": price.get("price_ts_ms"), "price_age_s": price.get("age_s")})
         act = {"action": "OPEN", "direction": pl["side"], "stop": float(pl["stop"]), "targets": [float(pl["target"])], "leverage": int(pl.get("leverage") or 1),
@@ -436,7 +633,7 @@ class PatternBook:
             opened_pos.append(pos)
 
         res = apply_action(act, symbol=symbol, price=mark, tick=tick, now=now, ledger=self.ledger, risk=self.risk, profile=self.profile,
-                           state=self._state({symbol: mark}), filters=self.filters_cache.get(symbol, MarketType.USDM_PERP), run_id=self.run_id,
+                           state=self._state({symbol: mark}), filters=filters, run_id=self.run_id,
                            reject=lambda s, r: rejected.append(r), on_closed=self._on_closed, on_opened=_on_opened, data=verdict)
         if res != "OPENED" or not opened_pos:
             return _reject(rejected[-1] if rejected else "LEDGER_%s" % res)

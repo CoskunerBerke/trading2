@@ -16,12 +16,14 @@ from typing import Any, Callable
 import pandas as pd
 
 from ..learn.candle_context import CandleContextConfig
-from ..market.providers import FUTURES, now_ms as _now_ms
+from ..market.providers import FUTURES, SPOT, now_ms as _now_ms
 from ..timeframes import tf_ms
 
 log = logging.getLogger(__name__)
 
 TIMEFRAMES: tuple[str, ...] = ("15m", "1h", "4h")
+#: Sağlayıcı piyasa kimliği → defter piyasa kimliği. Bilinmeyen değer OLDUĞU GİBİ taşınır (uydurulmaz).
+MARKET_OF: dict[str, str] = {FUTURES: "USDM_PERP", SPOT: "SPOT"}
 #: Dilim başına indirilecek/saklanacak azami kapalı bar (analiz penceresi). Yeni listelenen coinde daha azı olabilir.
 BARS_PER_TF: dict[str, int] = {"15m": 240, "1h": 240, "4h": 240}
 #: GERÇEK ihtiyaçlar (kapalı bar): şekil = son 3 bar (`_shapes` en fazla 3 bar okur); teyit = şekil barından sonra
@@ -124,7 +126,10 @@ class DataService:
         as_of = int(as_of_ms if as_of_ms is not None else self.clock_ms())
         want = int(n or self.bars_per_tf.get(tf, 240))
         step = tf_ms(tf)
-        status: dict[str, Any] = {"symbol": symbol, "tf": tf, "market": "USDM_PERP", "as_of_ms": as_of, "source": None, "fetched_at_ms": None,
+        # PİYASA KİMLİĞİ (2026-09-17): sonucun KENDİ provenansından okunur, SABİT YAZILMAZ. `MarketFeed` istenen
+        # piyasada sağlayıcı bulamazsa elindekine düşebilir (`providers_for`: `return exact or list(self.providers)`);
+        # kimliği burada "USDM_PERP" diye damgalamak, bar uygulamasındaki piyasa kapısını ANLAMSIZ kılıyordu.
+        status: dict[str, Any] = {"symbol": symbol, "tf": tf, "market": None, "as_of_ms": as_of, "source": None, "fetched_at_ms": None,
                                   "last_close_ms": None, "last_open_ms": None, "is_stale": None, "gaps": [], "n_closed": 0, "error": None,
                                   "from_cache": 0, "dropped_unclosed": 0}
         self.stats["requests"] += 1
@@ -135,7 +140,8 @@ class DataService:
             status["error"] = f"{type(exc).__name__}: {exc}"[:200]
             return [], status
         rows = [r for r in bars_from_df(res.df) if r["timestamp"] + step <= as_of]
-        status.update({"source": res.source, "fetched_at_ms": int(res.fetched_at), "is_stale": bool(res.is_stale), "gaps": list(res.gaps or [])[:20],
+        status.update({"market": MARKET_OF.get(str(res.market_type), str(res.market_type).upper()),
+                       "source": res.source, "fetched_at_ms": int(res.fetched_at), "is_stale": bool(res.is_stale), "gaps": list(res.gaps or [])[:20],
                        "n_closed": len(rows), "from_cache": int(res.from_cache), "dropped_unclosed": int(res.dropped_unclosed),
                        "errors": list(res.errors or [])[:5]})
         if rows:
@@ -146,7 +152,7 @@ class DataService:
         return rows, status
 
 
-__all__ = ["TIMEFRAMES", "BARS_PER_TF", "REQUIREMENTS", "READY_MIN_BARS", "CsvCandleCache", "DataService", "bars_from_df", "readiness"]
+__all__ = ["TIMEFRAMES", "MARKET_OF", "BARS_PER_TF", "REQUIREMENTS", "READY_MIN_BARS", "CsvCandleCache", "DataService", "bars_from_df", "readiness"]
 
 
 class PriceService:

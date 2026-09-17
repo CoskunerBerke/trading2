@@ -423,11 +423,64 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
         """Beklenen deger hucresi — TEK kaynak `views._cell_expectancy_r` (bilinmiyor != 0)."""
         return esc(_cell_expectancy_r(h))
 
+    def _ms(ts) -> int | None:
+        """ISO / epoch → UTC ms (tek sozlesme; `strategy_paper.parse_ts_ms`)."""
+        from ..strategy_paper import parse_ts_ms
+        return parse_ts_ms(ts)
+
+    def fmt_utc_ms(ms: int) -> str:
+        from datetime import datetime, timezone
+        return datetime.fromtimestamp(int(ms) / 1000.0, tz=timezone.utc).strftime("%Y-%m-%d %H:%M")
+
+    def _closed_trade_block(book_id: str, market: str, base: str, trade_id: str, as_of: str | None,
+                            tf_page: str = "4h") -> str:
+        """Tiklanan KAPANMIS islemin kimligi ve grafik kapsami. Islem KENDI defterinde VE KENDI piyasasinda
+        aranir; bulunamazsa ya da tarihsel mum verisi o pencereyi kapsamiyorsa bu ACIKCA yazilir (bos/uydurma
+        gosterim YOK). Kapsama hukmu SAYFANIN grafik dilimiyle (`tf_page`) verilir."""
+        t = state.book_trade(book_id, trade_id, market=market)
+        if t is None:
+            return ('<h2>Seçilen işlem</h2><div class="card warn-box">⚠ «%s» kimlikli kapanmış işlem bu hesabın '
+                    '(%s / %s) kaydında BULUNAMADI. Başka bir defterin ya da başka bir piyasanın kaydı burada '
+                    'gösterilmez.</div>' % (esc(str(trade_id)), esc(book_id), esc(market)))
+        sym = str(t.get("symbol") or f"{base}/USDT")
+        rows = {"defter": book_id, "piyasa": market, "işlem kimliği": t.get("id"), "coin": sym,
+                "yön": t.get("side"), "giriş": t.get("entry"), "çıkış": t.get("exit_price") or t.get("exit"),
+                "açılış": t.get("opened_at"), "kapanış": t.get("closed_at") or as_of,
+                "net (USDT)": t.get("net_pnl"), "çıkış nedeni": term.exit_tr(t.get("exit_reason"))}
+        out = "<h2>Seçilen işlem</h2>" + kv_table(rows)
+        tf_default = tf_page if tf_page in SUPPORTED_TIMEFRAMES else "4h"
+        df = candles.load(base, tf_default, market, n=cfg.max_bars)
+        o_ms, c_ms = _ms(t.get("opened_at")), _ms(t.get("closed_at") or as_of)
+        if df is None or not len(df):
+            out += ('<div class="card warn-box">⚠ %s %s (%s) için tarihsel mum verisi YOK — giriş/çıkış noktaları '
+                    'grafikte gösterilemiyor.</div>' % (esc(base), esc(tf_default), esc(market)))
+        elif o_ms is None or c_ms is None:
+            out += '<div class="card warn-box">⚠ İşlemin açılış/kapanış zamanı okunamadı — grafikte işaretlenemiyor.</div>'
+        else:
+            lo, hi = int(df["timestamp"].iloc[0]), int(df["timestamp"].iloc[-1])
+            if lo <= o_ms and c_ms <= hi + 3_600_000:
+                out += ('<div class="small mut">Giriş/çıkış noktaları grafiğin «İşlemler» katmanında '
+                        'tarihsel mumlar üzerinde işaretlidir.</div>')
+            else:
+                out += ('<div class="card warn-box">⚠ Elimizdeki %s mum penceresi (%s … %s) bu işlemin aralığını '
+                        'KAPSAMIYOR — giriş/çıkış noktaları grafikte gösterilemiyor.</div>'
+                        % (esc(tf_default), esc(fmt_utc_ms(lo)), esc(fmt_utc_ms(hi))))
+        return out
+
     @app.get("/coin/{base}", response_class=HTMLResponse)
-    def coin(base: str, tf: str = "4h", market: str = "spot", book: str = "main"):
+    def coin(base: str, tf: str = "4h", market: str = "futures", book: str = "main",
+             trade: str | None = Query(None), as_of: str | None = Query(None)):
+        """KIMLIK KORUNUR (2026-09-17): defter + piyasa + (varsa) tiklanan islemin kimligi ve zamani. Tiklanan
+        kapanmis islemin giris/cikis noktalari GRAFIK katmanina baglanir; kaydi okunamiyorsa bu ACIKCA soylenir.
+
+        VARSAYILAN PIYASA `futures`tir (terminal panelinin varsayilaniyla AYNI): botun islem yaptigi piyasa budur
+        ve `market` tasimayan eski baglantilar bu sayfada acik futures pozisyonunu KAYBETMEZ. Gercekten spot olan
+        tek baglanti (`/portfolio/spot`) piyasayi ACIKCA tasir."""
         base = base.upper()[:16]
         tf = tf if tf in SUPPORTED_TIMEFRAMES else "4h"
         market = "futures" if market == "futures" else "spot"
+        _books = state.books()
+        _book = book if any(x["book_id"] == book for x in _books) else "main"
         h = state.coin_head(base) or {}
         b = state.brief(base) or {}
         sym = h.get("symbol") or b.get("symbol") or f"{base}/USDT"
@@ -439,8 +492,6 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
             body += f'<div class="grid">{card("Karar (eski ajan)", verdict_badge(b.get("verdict")))}{card("Kanaat", fmt(b.get("conviction"), 0) + "%")}{card("Fiyat", fmt(b.get("price")))}{card("P(kazanç) — eski ajan", _pct_signal(b.get("p_win")))}</div><p class="mut">{esc(b.get("headline"))}</p>'
         else:
             body += '<div class="card mut">Bu coin için karar yok; yalnızca grafik.</div>'
-        _books = state.books()
-        _book = book if any(b["book_id"] == book for b in _books) else "main"
         body += "<h2>Grafik</h2>" + chart_block(base, tf, market, token_qs=token_qs, max_bars=cfg.max_bars, book=_book, books=_books)
         if h:
             def plan_kv(p: dict) -> str:
@@ -471,9 +522,15 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
             body += "<h2>Plan (eski)</h2>" + kv_table(b.get("plan") or {})
             body += "<h2>YAP / YAPMA</h2><ul>" + "".join(f"<li>✅ {esc(x)}</li>" for x in b.get("do_list") or []) + "".join(f"<li>🚫 {esc(x)}</li>" for x in b.get("dont_list") or []) + "</ul>"
             body += "<h2>Ajan raporları</h2>" + render_any(b.get("reports") or [])
-        pos = [p for p in state.futures_positions() if str(p.get("symbol", "")).upper().startswith(base + "/")]
-        if pos:
-            body += "<h2>Açık pozisyon</h2>" + _positions_table(pos)
+        if not state.book_supports_market(_book, market):
+            body += ('<div class="card warn-box">⚠ «%s» defterinin %s görünümü YOKTUR (yalnız USDⓈ-M perpetual tutar). '
+                     'Başka bir hesabın pozisyonu/işlemi burada GÖSTERİLMEZ.</div>' % (esc(_book), esc(market)))
+        else:
+            pos = [p for p in state.book_positions(_book, market=market) if str(p.get("symbol", "")).upper().startswith(base + "/")]
+            if pos:
+                body += f"<h2>Açık pozisyon — {esc(_book)} / {esc(market)}</h2>" + _positions_table(pos)
+            if trade:
+                body += _closed_trade_block(_book, market, base, trade, as_of, tf)
         return _page(f"{sym}", body, "/")
 
     @app.get("/portfolio/spot", response_class=HTMLResponse)
@@ -482,7 +539,7 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
         pos = pf.get("positions") or {}
         body = f'<div class="grid">{card("Nakit", fmt(pf.get("cash"), 2) + " USDT")}{card("Başlangıç", fmt(pf.get("starting_equity"), 2))}{card("Özkaynak (tahmini)", fmt(state.spot_equity(), 2))}{card("Güncelleme", esc(pf.get("updated_at")))}</div>'
         body += "<h2>Açık pozisyonlar</h2>" + table(["Sembol", "Miktar", "Giriş", "Stop", "Strateji", "Açılış"],
-                                                    [[f'<a href="/coin/{esc(k.split("/")[0])}">{esc(k)}</a>', fmt(p.get("units")), fmt(p.get("entry_price")), fmt(p.get("stop")), esc(p.get("strategy")), esc(p.get("entry_time"))] for k, p in (pos.items() if isinstance(pos, dict) else [])],
+                                                    [[f'<a href="/coin/{esc(k.split("/")[0])}?market=spot&book=main">{esc(k)}</a>', fmt(p.get("units")), fmt(p.get("entry_price")), fmt(p.get("stop")), esc(p.get("strategy")), esc(p.get("entry_time"))] for k, p in (pos.items() if isinstance(pos, dict) else [])],
                                                     num_cols={1, 2, 3}, empty="açık spot pozisyon yok")
         hist = pf.get("history") or []
         body += "<h2>Geçmiş</h2>" + render_any(hist[-100:][::-1]) if hist else "<h2>Geçmiş</h2>" + '<div class="card mut">kapanmış spot işlem yok</div>'
@@ -593,27 +650,31 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
                      extra_head=live_script(cfg))
 
     @app.get("/api/book/{book_id}")
-    def api_book(book_id: str):
-        """Secili hesabin canli ozeti (kartlar + acik islemler + son kapanislar) — sayfa yenilemeden guncelleme."""
+    def api_book(book_id: str, market: str = Query("futures")):
+        """Secili hesabin canli ozeti (kartlar + acik islemler + son kapanislar) — sayfa yenilemeden guncelleme.
+        PIYASA KIMLIGI (2026-09-17): `market` artik uctan uca tasinir; satir baglantilari da defter+piyasa tasir."""
         bid = _book_or_default(book_id)
-        acc = term.account_snapshot(state, bid, vm=_view() if bid == "main" else None)
-        return JSONResponse({"book_id": bid, "label": acc["label"], "source": acc.get("source"),
+        mkt = "spot" if market == "spot" else "futures"
+        acc = term.account_snapshot(state, bid, market=mkt, vm=_view() if (bid == "main" and mkt == "futures") else None)
+        return JSONResponse({"book_id": bid, "market": mkt, "label": acc["label"], "source": acc.get("source"),
                              "equity": acc["equity"], "starting_equity": acc["starting_equity"], "net": acc["net"],
                              "realized": acc["realized"], "unrealized": acc["unrealized"],
+                             "unrealized_kind": acc.get("unrealized_kind"), "unsupported": acc.get("unsupported"),
+                             "history_complete": acc.get("history_complete"), "open_costs": acc.get("open_costs"),
                              "open_total": acc["open_total"], "open_long": acc["open_long"],
                              "open_short": acc["open_short"], "closed": acc["closed"], "wins": acc["wins"],
                              "losses": acc["losses"], "warnings": acc["warnings"], "generated_at": acc.get("generated_at"),
                              "cards_html": term.summary_cards(acc),
-                             "positions_html": term.positions_block(acc, book_id=bid, market="futures", selected=None),
-                             "closed_html": term.closed_block(acc)})
+                             "positions_html": term.positions_block(acc, book_id=bid, market=mkt, selected=None),
+                             "closed_html": term.closed_block(acc, book_id=bid, market=mkt)})
 
     @app.get("/api/planbox/{base}")
     def api_planbox(base: str, book: str | None = Query(None), market: str = Query("futures")):
         """Grafik altindaki islem/plan ozeti — satir tiklanip coin degisince AYNI ekranda guncellenir (SALT OKUMA)."""
         bid = _book_or_default(book)
-        return JSONResponse({"base": base.upper()[:16], "book": bid, "market": "spot" if market == "spot" else "futures",
-                             "html": term.plan_box(state, book_id=bid, base=base.upper()[:16],
-                                                   market="spot" if market == "spot" else "futures")})
+        mkt = "spot" if market == "spot" else "futures"
+        return JSONResponse({"base": base.upper()[:16], "book": bid, "market": mkt,
+                             "html": term.plan_box(state, book_id=bid, base=base.upper()[:16], market=mkt)})
 
     @app.get("/api/patterns")
     def api_patterns():
@@ -629,7 +690,10 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
         if not t:
             return _page("İşlem", '<div class="card">işlem bulunamadı</div>', "/trades")
         base = str(t.get("symbol", "")).split("/")[0]
-        body = f'<p><a href="/trades">← işlemler</a> · <a href="/coin/{esc(base)}">{esc(t.get("symbol"))}</a></p>'
+        # Baglanti O ISLEMIN piyasasini ve kimligini tasir: coin sayfasi dogru kapsamda acilir.
+        _mk = "spot" if str(t.get("market_type") or "futures").lower() == "spot" else "futures"
+        _qs = term.trade_qs(book_id="main", market=_mk, trade_id=t.get("id"), as_of=t.get("closed_at"))
+        body = f'<p><a href="/trades">← işlemler</a> · <a href="/coin/{esc(base)}?{esc(_qs)}">{esc(t.get("symbol"))}</a></p>'
         body += kv_table({k: v for k, v in t.items() if k not in ("features", "fills", "costs")})
         if t.get("costs"):
             body += "<h2>Maliyet dökümü</h2>" + kv_table(t["costs"])

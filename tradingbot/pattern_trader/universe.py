@@ -136,6 +136,9 @@ def discover(provider: Any, *, now_ms: int, min_quote_volume_24h: float, max_spr
                         "age_h": round(age_h, 3) if age_h is not None else None, "cohort": cohort_of(age_h),
                         "priority": bool(age_h is not None and age_h <= PRIORITY_MAX_AGE_H),
                         "token_birth_ms": None, "spot_listing_ms": None,        # bilinmiyor: uydurulmaz (ayrı alanlar)
+                        # KEŞİF ANI (2026-09-17): çağıranın saatiyle (`now_ms`) damgalanır. `last_seen_at` duvar saatidir;
+                        # bayatlık hükmü bu alanla verilir ki enjekte edilmiş saat ile duvar saati KARIŞMASIN.
+                        "as_of_ms": int(now_ms),
                         "quote_volume_24h": vol, "last_price": _f(t.get("lastPrice")), "spread_pct": round(spread, 5) if spread is not None else None,
                         "spread_known": spread is not None, "filters": _filters(s.get("filters")),
                         "eligible": reason == "", "reason": reason, "first_seen_at": prev.get("first_seen_at") or now_iso, "last_seen_at": now_iso}

@@ -36,9 +36,19 @@ class PatternScanner:
     def __init__(self, *, book: Any, data: Any, price: Any, universe_provider: Any, state_path: Any,
                  min_quote_volume_24h: float, max_spread_pct: float, max_symbols_per_cycle: int = 40,
                  universe_refresh_minutes: float = 30.0, cycle_seconds: float = DEFAULT_CYCLE_S,
-                 clock: Callable[[], float] = time.time, run_id: Callable[[], str] | None = None) -> None:
+                 clock: Callable[[], float] = time.time, run_id: Callable[[], str] | None = None,
+                 funding: Any = None) -> None:
         self.book, self.data, self.price = book, data, price
         self.universe_provider = universe_provider
+        # FUNDING (2026-09-17): gerçekleşmiş settlement oranları hem bar uygulamasına hem çıkış izleyicisine
+        # BAĞLANIR. Verilmezse evren sağlayıcısından kurulur; o da veremiyorsa None kalır ve defter dönemleri
+        # BEKLETİR (bilinmeyen funding sıfır maliyet SAYILMAZ). Defter de aynı nesneyi kullanır (tek kaynak).
+        if funding is None and universe_provider is not None and hasattr(universe_provider, "funding_history"):
+            from .funding import FundingRates
+            funding = FundingRates(universe_provider, clock_ms=lambda: int(clock() * 1000))
+        self.funding = funding
+        if funding is not None and hasattr(book, "bind_funding"):
+            book.bind_funding(funding)
         self.state_path = state_path
         self.min_quote_volume_24h = float(min_quote_volume_24h)
         self.max_spread_pct = float(max_spread_pct)
@@ -203,11 +213,23 @@ class PatternScanner:
             rows, st = self.data.bars(symbol, tf, as_of_ms=now_ms)
             bars[tf], statuses[tf] = rows, st
         price = self.price.mark(symbol, now_ms=now_ms)
+        # KARAR ANI: `now_ms` turun REFERANSIDIR (bar kapanışı/güncellik); uzun bir turda sembol sırası geldiğinde
+        # dakikalarca eski olabilir. Geçerlilik süresi bu sembolün GERÇEK tarama anıyla denetlenir.
         res = self.book.process_symbol(symbol, bars_by_tf=bars, statuses=statuses, as_of_ms=now_ms, universe_entry=entry,
-                                       price=price if price.get("ok") else price, liquidity=lambda: self.price.liquidity(symbol), run_id=run_id)
-        # açık pozisyon: kapanmış 15m bar uçları (girişten sonra, bir kez) — T2/M2 ile AYNI sözleşme
+                                       price=price if price.get("ok") else price, liquidity=lambda: self.price.liquidity(symbol),
+                                       run_id=run_id, decision_ms=int(self.clock() * 1000))
+        # açık pozisyon: kapanmış 15m bar uçları (girişten sonra, bir kez) — T2/M2 ile AYNI sözleşme.
+        # Piyasa kimliği ve funding oranları bar uygulamasına BAĞLANIR (fiyat bandından tahmin YOK, funding=0 varsayımı YOK).
         if symbol in self.book.ledger.positions and bars.get("15m"):
-            self.book.apply_closed_bars({symbol: {"tf": "15m", "rows": bars["15m"][-48:], "mark": float(price.get("mark") or 0.0)}}, now=self._now_dt())
+            rows = bars["15m"][-48:]
+            # Piyasa kimliği çerçevenin KENDİ provenansından gelir; yoksa `""` taşınır ve bar kapısı REDDEDER
+            # (varsayılan "USDM_PERP" damgalamak kapıyı anlamsız kılardı — karşıt doğrulama bulgusu).
+            spec = {"tf": "15m", "rows": rows, "mark": float(price.get("mark") or 0.0),
+                    "market": str((statuses.get("15m") or {}).get("market") or ""),
+                    "source": (statuses.get("15m") or {}).get("source"),
+                    "first_bar_ms": int(rows[0]["timestamp"]) if rows else 0}
+            self.book.apply_closed_bars({symbol: spec}, now=self._now_dt(),
+                                        funding_rate_lookup=self.funding.lookup if self.funding is not None else None)
         return res
 
     # ------------------------------------------------------------------ açık pozisyon izleyicisi (tarama dışı)
@@ -221,7 +243,10 @@ class PatternScanner:
         now_ms = int(now.timestamp() * 1000)
         marks, marks_f, gaps = self.price.marks(list(book.ledger.positions), now_ms=now_ms)
         book.record_gaps(gaps, now)
-        recs = book.tick(marks, now=now, bar_advance=False) if marks else []
+        # Funding oranı BULUNAMAZSA lookup None döner ve defter o dönemi bekletir; koruyucu stop/hedef kontrolü
+        # bundan ETKİLENMEZ (tick yine çalışır).
+        recs = book.tick(marks, now=now, funding_rate_lookup=(self.funding.lookup if self.funding is not None else None),
+                         bar_advance=False) if marks else []
         book.save(marks_f, now)
         return recs
 

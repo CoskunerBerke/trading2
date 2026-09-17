@@ -12,6 +12,7 @@ sanal sermayesiyle ayrı okunur ("Tüm hesaplar" yalnız işlem LİSTESİ kapsam
 from __future__ import annotations
 
 from typing import Any
+from urllib.parse import quote_plus
 
 from .templates import age_text, badge, card, chart_block, esc, fmt, fmt_utc, money_html, pnl_cell, table
 
@@ -32,6 +33,13 @@ REJECT_TR = {"TOTAL_OPEN_RISK": "Toplam risk sınırı dolu", "MAX_POSITIONS": "
 FINDING_STATE_TR = {"FOUND": "Bulundu", "AWAITING_CONFIRMATION": "Teyit bekliyor", "CONFIRMED": "Teyit edildi",
                     "UNCONFIRMED": "Teyitlenmedi", "BROKEN": "Bozuldu", "EXPIRED": "Süresi doldu"}
 NO_DATA = '<span class="mut">Veri yok</span>'
+
+
+def _js(v: Any) -> str:
+    """Değeri GÜVENLİ bir JavaScript sabitine çevirir (tırnak/`<` kaçışlı). Betiğe ham `%s` ile değer gömmek,
+    kaynağı state dosyası olan bir defter kimliğinde dizgiden çıkışa izin verirdi (savunma derinliği)."""
+    import json as _json
+    return _json.dumps(str(v)).replace(chr(60), chr(92) + "u003c").replace("/", chr(92) + "/")
 
 
 def _f(x: Any) -> float | None:
@@ -63,29 +71,47 @@ def usdt(v: Any, nd: int = 2) -> str:
 
 
 # --------------------------------------------------------------------------- hesap (defter) görünümü
-def account_snapshot(state, book_id: str, *, vm: dict | None = None) -> dict[str, Any]:
+def account_snapshot(state, book_id: str, *, market: str = "futures", vm: dict | None = None) -> dict[str, Any]:
     """Seçili hesabın YETKİLİ muhasebe kaydından özet. Ana bot: `views.build` görünüm modeli (paneldeki tek
     muhasebe kaynağı). Kâğıt defterler: defterin KENDİ özet dosyası (`FuturesLedgerV2.summary`). Karışık kaynak YOK.
 
     Bilinmeyen alanlar `None` kalır → ekranda `Veri yok`. Farklı defterlerin özkaynakları TOPLANMAZ.
+
+    PİYASA KİMLİĞİ (2026-09-17): `market` artık gerçekten okunur. Ana botta Spot seçimi SPOT defterini gösterir;
+    kâğıt defterler yalnız USDⓈ-M perpetual tutar ve Spot seçildiğinde başka hesabın verisine SESSİZCE DÖNÜLMEZ —
+    `unsupported=True` ile durum açıkça bildirilir.
+
+    NET SONUÇ: `realized` defterin TAM geçmişinden gelir (ekrandaki son N satırdan değil, `book_history_totals`);
+    `unrealized` BRÜT ise `net` üretilmez ve `unrealized_kind` bunu söyler — brüt açık K/Z "net" diye etiketlenmez.
     """
+    market = "spot" if market == "spot" else "futures"
     b = state.book(book_id) or {"book_id": "main", "label": "Ana bot"}
     out: dict[str, Any] = {"book_id": b["book_id"], "label": b.get("label") or b["book_id"], "name": b.get("name"),
                            "equity": None, "starting_equity": None, "realized": None, "unrealized": None, "net": None,
                            "open_long": 0, "open_short": 0, "open_total": 0, "closed": 0, "wins": None, "losses": None,
-                           "source": None, "generated_at": None, "market": "futures", "warnings": []}
-    positions = state.book_positions(b["book_id"])
-    trades = state.book_trades(b["book_id"], limit=2000)
+                           "source": None, "generated_at": None, "market": market, "warnings": [],
+                           "unsupported": False, "unrealized_kind": None, "history_complete": True,
+                           "open_costs": None, "positions": [], "trades": []}
+    if not state.book_supports_market(b["book_id"], market):
+        out["unsupported"] = True
+        out["source"] = None
+        out["warnings"].append("«%s» defteri yalnız USDⓈ-M perpetual tutar; Spot görünümü bu hesap için YOKTUR. "
+                               "Gösterilen sayılar başka bir hesaba ait DEĞİLDİR: bu kapsamda kayıt yok." % (out["label"],))
+        return out
+    positions = state.book_positions(b["book_id"], market=market)
+    tot = state.book_history_totals(b["book_id"], market=market)
+    trades = state.book_trades(b["book_id"], limit=2000, market=market)
     out["open_total"] = len(positions)
     out["open_long"] = sum(1 for p in positions if str(p.get("side", "")).upper() == "LONG")
     out["open_short"] = sum(1 for p in positions if str(p.get("side", "")).upper() == "SHORT")
-    out["closed"] = len(trades)
-    pnls = [_f(t.get("net_pnl")) for t in trades]
-    if trades and all(v is not None for v in pnls):
-        out["realized"] = round(sum(v for v in pnls if v is not None), 4)
-        out["wins"] = sum(1 for v in pnls if (v or 0) > 0)
-        out["losses"] = sum(1 for v in pnls if (v or 0) <= 0)
-    if b["book_id"] == "main":
+    out["closed"], out["realized"] = int(tot["closed"]), tot["realized"]
+    out["wins"], out["losses"], out["history_complete"] = tot["wins"], tot["losses"], bool(tot["complete"])
+    if not out["history_complete"]:
+        out["warnings"].append("Kapanmış işlem geçmişi yalnız özet kuyruğundan okunabildi — gerçekleşen toplam bir ALT SINIRDIR.")
+    if b["book_id"] == "main" and market == "spot":
+        out["source"] = state.spot_source()
+        out["equity"] = state.spot_equity()
+    elif b["book_id"] == "main":
         out["source"] = "futures_ledger.json"
         out["equity"] = state.futures_equity()
         led = state.book_ledger("main") or {}
@@ -93,9 +119,12 @@ def account_snapshot(state, book_id: str, *, vm: dict | None = None) -> dict[str
         if vm is not None:
             pv = vm.get("portfolio")
             out["unrealized"] = _f(getattr(pv, "net_unrealized_total", None))
+            out["unrealized_kind"] = "net" if out["unrealized"] is not None else None
             if out["unrealized"] is None:
                 vals = [_f(getattr(p, "net_unrealized", None)) for p in (getattr(pv, "positions", None) or [])]
-                out["unrealized"] = round(sum(v for v in vals if v is not None), 4) if vals and all(v is not None for v in vals) else None
+                if vals and all(v is not None for v in vals):
+                    out["unrealized"] = round(sum(v for v in vals if v is not None), 4)
+                    out["unrealized_kind"] = "net"
     else:
         doc = state.book_summary_file(b["book_id"]) or {}
         out["source"] = "%s (defterin kendi özeti)" % (b.get("summary_file") or b["book_id"])
@@ -103,15 +132,24 @@ def account_snapshot(state, book_id: str, *, vm: dict | None = None) -> dict[str
         sm = doc.get("summary") or {}
         out["equity"] = _f(sm.get("equity_mtm"))
         out["starting_equity"] = _f(sm.get("starting_equity")) or _f(doc.get("starting_equity"))
-        out["unrealized"] = _f(sm.get("unrealized"))
+        # AÇIK POZİSYON YOKSA açık K/Z tanımı gereği 0'dır: özet dosyası bir önceki turdan kalmış olabilir
+        # (tarayıcıda görüldü: 0 açık işlemle "açık (brüt) 0,5 USDT" yazıyordu).
+        out["unrealized"] = 0.0 if not positions else _f(sm.get("unrealized"))
+        out["unrealized_kind"] = "gross" if out["unrealized"] is not None else None
         if doc.get("data_gaps"):
             out["warnings"].append("%d sembolde doğrulanmış güncel fiyat yok — son bilinen fiyat gösteriliyor." % len(doc["data_gaps"]))
         if doc.get("mode"):
             out["mode"] = doc.get("mode")
-    if out["realized"] is not None and out["unrealized"] is not None:
+    # AÇIK POZİSYONUN GERÇEKLEŞMİŞ MALİYETİ: giriş ücreti + tahakkuk etmiş funding kaybolmaz (brüt K/Z'ye gömülü değildir).
+    fees = [_f(p.get("fees_paid")) if p.get("fees_paid") is not None else _f(p.get("fees")) for p in positions]
+    fund = [_f(p.get("funding_net")) if p.get("funding_net") is not None else _f(p.get("funding")) for p in positions]
+    if positions and all(v is not None for v in fees) and all(v is not None for v in fund):
+        out["open_costs"] = {"fees": round(sum(v for v in fees if v is not None), 6),
+                             "funding": round(sum(v for v in fund if v is not None), 6)}
+    if out["realized"] is not None and out["unrealized"] is not None and out["unrealized_kind"] == "net":
         out["net"] = round(out["realized"] + out["unrealized"], 4)
     elif out["realized"] is not None and not positions:
-        out["net"] = out["realized"]
+        out["net"] = out["realized"]                       # açık pozisyon yok: gerçekleşen TOPLAM sonuçtur
     out["positions"] = positions
     out["trades"] = trades
     return out
@@ -142,15 +180,33 @@ def account_bar(state, *, book_id: str, market: str, coin: str | None, fr: dict 
 
 
 def summary_cards(acc: dict[str, Any]) -> str:
-    """EN FAZLA DÖRT kart. Bilinmeyen değer `Veri yok`; sermaye hareketi kâr sayılmaz (net = gerçekleşen + açık)."""
+    """EN FAZLA DÖRT kart. Bilinmeyen değer `Veri yok`; sermaye hareketi kâr sayılmaz (net = gerçekleşen + açık).
+
+    2026-09-17: açık K/Z BRÜT ise toplam «net» diye SUNULMAZ — kart bunu açıkça söyler; açık pozisyonun
+    gerçekleşmiş maliyeti (giriş ücreti + tahakkuk etmiş funding) alt satırda görünür; gerçekleşen toplam
+    defterin TAM geçmişinden gelir (ekrandaki son N satırdan değil) ve eksikse ALT SINIR olduğu yazılır.
+    """
+    if acc.get("unsupported"):
+        return '<div class="cards4">' + card("Bu kapsamda kayıt yok", NO_DATA, "defter/piyasa birleşimi desteklenmiyor") + "</div>"
     eq = usdt(acc.get("equity"))
     start = acc.get("starting_equity")
     sub_eq = ("başlangıç %s" % usdt(start)) if start is not None else "başlangıç bilinmiyor"
-    net = acc.get("net")
+    net, r, u, kind = acc.get("net"), acc.get("realized"), acc.get("unrealized"), acc.get("unrealized_kind")
     net_html = money_html(net) if net is not None else NO_DATA
-    r, u = acc.get("realized"), acc.get("unrealized")
-    sub_net = "gerçekleşen %s · açık %s" % (usdt(r) if r is not None else "Veri yok", usdt(u) if u is not None else "Veri yok")
+    open_lbl = "açık (brüt)" if kind == "gross" else "açık"
+    sub_net = "gerçekleşen %s · %s %s" % (usdt(r) if r is not None else "Veri yok", open_lbl,
+                                          usdt(u) if u is not None else "Veri yok")
+    if net is None and kind == "gross":
+        sub_net += " · brüt açık K/Z net sonuca EKLENMEZ"
+    if acc.get("history_complete") is False:
+        sub_net += " · gerçekleşen ALT SINIR (geçmiş eksik)"
+    oc = acc.get("open_costs")
     open_sub = "LONG %d · SHORT %d" % (int(acc.get("open_long") or 0), int(acc.get("open_short") or 0))
+    if oc:
+        # Açık pozisyonun ŞİMDİYE KADAR GERÇEKLEŞMİŞ maliyeti. Açık K/Z brütse bu tutar ORAYA DAHİL DEĞİLDİR
+        # (kaybolmasın diye ayrı gösterilir); netse zaten içindedir ve burada yalnız dökümdür.
+        open_sub += " · ücret %s · funding %s%s" % (usdt(oc["fees"]), usdt(oc["funding"]),
+                                                    " (açık K/Z'ye dâhil)" if kind == "net" else " (brüt K/Z'ye dâhil DEĞİL)")
     wins, losses = acc.get("wins"), acc.get("losses")
     closed_sub = ("kazanan %d · kaybeden %d" % (wins, losses)) if wins is not None else "kazanan/kaybeden bilinmiyor"
     return ('<div class="cards4">'
@@ -179,6 +235,9 @@ def _pos_unreal(p: dict[str, Any]) -> tuple[float | None, str]:
 
 def positions_block(acc: dict[str, Any], *, book_id: str, market: str, selected: str | None, token_qs: str = "") -> str:
     """Açık işlemler — yetkili defterden. Satır tıklanınca aynı ekranda o coinin grafiği açılır."""
+    if acc.get("unsupported"):
+        return ('<div class="empty">Bu hesabın %s görünümü YOKTUR (defter yalnız USDⓈ-M perpetual tutar). '
+                'Başka bir hesabın pozisyonları burada gösterilmez.</div>' % esc(market))
     pos = acc.get("positions") or []
     if not pos:
         return '<div class="empty">Bu hesapta açık işlem yok.</div>'
@@ -234,24 +293,34 @@ ROW_DELEGATE_JS = """<script>(function(){
 })();</script>"""
 
 
-def live_refresh_js(book_id: str, token_qs: str = "", every_ms: int = 20000) -> str:
+def live_refresh_js(book_id: str, token_qs: str = "", every_ms: int = 20000, market: str = "futures") -> str:
     """Sayfa YENILENMEDEN kart/pozisyon/kapanis guncellemesi. Grafik SIFIRLANMAZ, secim KAYBOLMAZ.
 
     SSE `state` olayina baglanir (onceki `__onState` zinciri korunur: grafik kendi yenilemesini yapar) ve ayrica
     periyodik yoklar. Istek basarisiz olursa SON DOGRULANMIS icerik ekranda KALIR ve yasi gorunur olur — bos
     pozisyon listesi gibi GORUNMEZ.
     """
-    qs = ("?" + token_qs.lstrip("?")) if token_qs else ""
+    qs = ("?market=%s" % quote_plus(market)) + (("&" + token_qs.lstrip("?&")) if token_qs else "")
     return ("""<script>(function(){
-  var book=%s, url='/api/book/'+encodeURIComponent(book)+%s, busy=false, failed=0;
+  var book=%s, market=%s, url='/api/book/'+encodeURIComponent(book)+'%s', busy=false, failed=0;
   function put(id,html){var el=document.getElementById(id);if(el&&html!=null&&el.innerHTML!==html)el.innerHTML=html;}
   function stamp(ok,at){var el=document.getElementById('accage');if(!el)return;
-    el.textContent=ok?('veri '+(at?String(at).replace('T',' ').slice(0,19):'güncel')):('\u26a0 bağlantı yok \u00b7 son doğrulanmış veri gösteriliyor');
+    el.textContent=ok?('veri '+(at?String(at).replace('T',' ').slice(0,19):'güncel')):('⚠ bağlantı yok · son doğrulanmış veri gösteriliyor');
     el.className=ok?'small mut':'small bad';}
+  // PLAN KUTUSU da tazelenir (2026-09-17): kapanistan sonra ekranda BAYAT "Acik islem" satiri KALMAZ. Secili
+  // coin + SECILI DEFTER/PIYASA ile istenir; yanit ayni coin ve ayni deftere aitse yazilir (yaris yok).
+  function refreshPlan(){var pb=document.getElementById('planhost');if(!pb)return;
+    var b=(window.__chartBase||'').toUpperCase();if(!b)return;
+    var q='/api/planbox/'+encodeURIComponent(b)+'?book='+encodeURIComponent(book)+'&market='+encodeURIComponent(market)
+          +(window.__tokenQs?'&'+window.__tokenQs.slice(1):'');
+    fetch(q,{headers:window.__authHeaders||{}}).then(function(r){return r.json();}).then(function(d){
+      if((window.__chartBase||'').toUpperCase()===String(d.base).toUpperCase()&&String(d.book)===book)pb.innerHTML=d.html;
+    }).catch(function(){});}
   function refresh(){if(busy)return;busy=true;
     fetch(url,{headers:window.__authHeaders||{}}).then(function(r){if(!r.ok)throw new Error(r.status);return r.json();})
     .then(function(d){busy=false;failed=0;
       put('cardshost',d.cards_html);put('poshost',d.positions_html);put('closedhost',d.closed_html);
+      refreshPlan();
       if(window.__markSelected)window.__markSelected();stamp(true,d.generated_at);})
     .catch(function(){busy=false;failed++;stamp(false);});}
   var prev=window.__onState;
@@ -259,23 +328,44 @@ def live_refresh_js(book_id: str, token_qs: str = "", every_ms: int = 20000) -> 
     if(s&&s.changed&&(s.changed.indexOf('futures_ledger')>=0||s.changed.indexOf('strategy_paper')>=0
       ||s.changed.indexOf('pattern_trader')>=0||s.changed.indexOf('portfolio')>=0||s.changed.indexOf('spot_ledger')>=0))refresh();};
   setInterval(refresh,%d);
-})();</script>""" % ('"%s"' % book_id, ("'%s'" % qs) if qs else "''", int(every_ms)))
+})();</script>""" % (_js(book_id), _js(market), qs, int(every_ms)))
 
 
-def closed_block(acc: dict[str, Any], *, limit: int = 8) -> str:
+def trade_qs(*, book_id: str, market: str, trade_id: Any = None, as_of: Any = None, token_qs: str = "") -> str:
+    """Satır bağlantılarının KİMLİK sorgusu: defter + piyasa (+ işlem kimliği/zamanı). 2026-09-17: bu bağ olmadan
+    T2'den tıklayan kullanıcı ANA defterin sayfasına düşüyordu."""
+    parts = ["book=%s" % quote_plus(str(book_id)), "market=%s" % quote_plus(str(market))]
+    if trade_id:
+        parts.append("trade=%s" % quote_plus(str(trade_id)))
+    if as_of:
+        parts.append("as_of=%s" % quote_plus(str(as_of)))
+    if token_qs:
+        parts.append(token_qs.lstrip("?&"))
+    return "&".join(p for p in parts if p)
+
+
+def closed_block(acc: dict[str, Any], *, limit: int = 8, book_id: str | None = None, market: str | None = None,
+                 token_qs: str = "") -> str:
+    """Son kapanışlar — her satır KENDİ işlemine (defter + piyasa + trade_id + kapanış anı) bağlanır."""
+    if acc.get("unsupported"):
+        return '<div class="empty">Bu hesabın bu piyasada kaydı yoktur.</div>'
+    bid = str(book_id or acc.get("book_id") or "main")
+    mkt = str(market or acc.get("market") or "futures")
     tr = list(acc.get("trades") or [])[-int(limit):][::-1]
     if not tr:
         return '<div class="empty">Bu hesapta henüz kapanan işlem yok.</div>'
     rows = []
     for t in tr:
         sym = str(t.get("symbol") or "")
-        rows.append([('<a href="/coin/%s">%s</a>' % (esc(sym.split("/")[0]), esc(sym))),
+        qs = trade_qs(book_id=bid, market=mkt, trade_id=t.get("id"), as_of=t.get("closed_at"), token_qs=token_qs)
+        rows.append([('<a href="/coin/%s?%s">%s</a>' % (esc(sym.split("/")[0]), esc(qs), esc(sym))),
                      badge(str(t.get("side", "")).upper() or "—", "ok" if str(t.get("side", "")).upper() == "LONG" else "bad"),
                      fmt(t.get("entry"), 6), fmt(t.get("exit_price") or t.get("exit"), 6),
                      pnl_cell(t.get("net_pnl")), esc(exit_tr(t.get("exit_reason"))), fmt_utc(t.get("closed_at"))])
     # Kenar sutununda DAR gorunum: coin / yon / net / neden. Giris-cikis fiyati ve zamanlar `/trades` sayfasindadir.
+    all_qs = trade_qs(book_id=bid, market=mkt, token_qs=token_qs)
     return table(["Coin", "Yön", "Net (USDT)", "Neden"], [[r[0], r[1], r[4], r[5]] for r in rows], num_cols={2},
-                 empty="kapanmış işlem yok") + '<div class="small mut"><a href="/trades?tab=closed">tüm kapanışlar →</a></div>' 
+                 empty="kapanmış işlem yok") + ('<div class="small mut"><a href="/trades?tab=closed&%s">tüm kapanışlar →</a></div>' % esc(all_qs))
 
 
 # --------------------------------------------------------------------------- plan / işlem kutusu (grafik altı)
@@ -283,7 +373,14 @@ def plan_box(state, *, book_id: str, base: str, market: str) -> str:
     """Grafiğin altındaki kısa özet: açık işlem → yön/giriş/stop/çıkış kuralı; bekleyen GERÇEK plan → koşullu
     LONG/SHORT metni; ikisi de yoksa nedeni KAYITTAN okunur (tahmin edilmez)."""
     sym = "%s/USDT" % base.upper()
-    pos = state.book_position(book_id, sym)
+    if not state.book_supports_market(book_id, market):
+        return ('<div class="planbox"><div class="planrow mut">Bu hesabın Spot görünümü YOKTUR (defter yalnız '
+                'USDⓈ-M perpetual tutar). Başka bir hesabın planı burada gösterilmez.</div></div>')
+    # SPOT: ana botun açık spot pozisyonu da KENDİ kaynağından okunur (aynı ekrandaki liste ile çelişmesin).
+    if market == "spot":
+        pos = next((p for p in state.book_positions(book_id, market="spot") if str(p.get("symbol") or "") == sym), None)
+    else:
+        pos = state.book_position(book_id, sym)
     out = ['<div class="planbox">']
     if pos:
         tg = [t for t in (pos.get("targets") or []) if _f(t) is not None]
@@ -292,7 +389,7 @@ def plan_box(state, *, book_id: str, base: str, market: str) -> str:
                    % (badge(str(pos.get("side", "")).upper(), "ok" if str(pos.get("side", "")).upper() == "LONG" else "bad"),
                       fmt(pos.get("entry_avg") or pos.get("entry"), 6),
                       fmt(pos.get("stop"), 6) if _f(pos.get("stop")) is not None else "—", esc(rule)))
-    plans = pattern_plans_for(state, sym)
+    plans = pattern_plans_for(state, sym, book_id, market)
     live = [p for p in plans if str(p.get("status")) in ("AWAITING_TRIGGER", "TRIGGERED")]
     if live:
         for p in sorted(live, key=lambda d: str(d.get("side") or "")):
@@ -302,6 +399,10 @@ def plan_box(state, *, book_id: str, base: str, market: str) -> str:
                           fmt(p.get("stop"), 6), fmt(p.get("target"), 6), esc(PLAN_STATE_TR.get(str(p.get("status")), str(p.get("status")))),
                           esc((p.get("trigger") or {}).get("tf") or "—"), fmt_utc(p.get("expires_at")),
                           fmt((p.get("invalidation") or {}).get("level"), 6)))
+    elif not pos and book_id != PATTERN_BOOK_ID:
+        # Formasyon planları BAŞKA defterin ekranında gösterilmez; o hesapta gerçekten plan kaydı yoktur.
+        out.append('<div class="planrow mut">Bu hesapta (%s) bu coin için plan kaydı yok. '
+                   'Mum trader planları yalnız «Mum trader» hesabında görünür.</div>' % esc(book_id))
     elif not pos:
         pt = state.get("pattern_trader") or {}
         if not pt:
@@ -326,12 +427,27 @@ def plan_box(state, *, book_id: str, base: str, market: str) -> str:
     return "".join(out)
 
 
-def pattern_plans_for(state, symbol: str) -> list[dict]:
+#: Formasyon planlarının AİT OLDUĞU kapsam: bu defter ve bu piyasa. Plan başka bir hesabın ekranında GÖSTERİLMEZ.
+PATTERN_BOOK_ID = "pattern_trader"
+PATTERN_MARKET = "futures"
+
+
+def pattern_plans_for(state, symbol: str, book_id: str = PATTERN_BOOK_ID, market: str = PATTERN_MARKET) -> list[dict]:
+    """Formasyon planları — YALNIZ kendi defterinin ve piyasasının kapsamında (2026-09-17).
+
+    ÖNCE: filtre yalnız SEMBOLE bakıyordu; mum trader'ın futures planı ana bot/spot ve M2/futures seçimlerinde de
+    "plan" diye çiziliyordu. Plan kaydı kendi `book_id`/`market` alanını taşıyorsa o kullanılır, taşımıyorsa kayıt
+    formasyon defterinin USDⓈ-M perpetual planıdır (dosyanın sahibi odur).
+    """
+    if book_id != PATTERN_BOOK_ID or market != PATTERN_MARKET:
+        return []
     pt = state.get("pattern_trader") or {}
     rows = list(pt.get("active_plans") or []) + list(pt.get("recent_plans") or [])
     seen, out = set(), []
     for p in rows:
         if not isinstance(p, dict) or p.get("symbol") != symbol or p.get("plan_id") in seen:
+            continue
+        if str(p.get("book_id") or PATTERN_BOOK_ID) != book_id or str(p.get("market") or PATTERN_MARKET) != market:
             continue
         seen.add(p.get("plan_id"))
         out.append(p)
@@ -341,7 +457,7 @@ def pattern_plans_for(state, symbol: str) -> list[dict]:
 # --------------------------------------------------------------------------- sayfalar
 def home(state, *, book_id: str, market: str, coin: str, vm: dict, fr: dict, token_qs: str, max_bars: int,
          extra_sections: str = "") -> str:
-    acc = account_snapshot(state, book_id, vm=vm)
+    acc = account_snapshot(state, book_id, market=market, vm=vm)
     body = account_bar(state, book_id=book_id, market=market, coin=coin, fr=fr, token_qs=token_qs)
     for w in acc.get("warnings") or []:
         body += '<div class="card warn-box">⚠ %s</div>' % esc(w)
@@ -356,13 +472,16 @@ def home(state, *, book_id: str, market: str, coin: str, vm: dict, fr: dict, tok
              '<h2>Son kapanışlar</h2><div id="closedhost">%s</div></aside>'
              "</div>" % (esc(coin), chart, '<div id="planhost">' + plan_box(state, book_id=book_id, base=coin, market=market) + "</div>",
                          positions_block(acc, book_id=book_id, market=market, selected=coin, token_qs=token_qs),
-                         closed_block(acc)))
-    body += extra_sections + ROW_DELEGATE_JS + live_refresh_js(book_id, token_qs)
+                         closed_block(acc, book_id=book_id, market=market, token_qs=token_qs)))
+    body += extra_sections + ROW_DELEGATE_JS + live_refresh_js(book_id, token_qs, market=market)
     return body
 
 
 def trades_page(state, *, book_id: str, market: str, tab: str, q: str, token_qs: str) -> str:
-    acc = account_snapshot(state, book_id)
+    acc = account_snapshot(state, book_id, market=market)
+    if acc.get("unsupported"):
+        return (account_bar(state, book_id=book_id, market=market, coin=None, fr=None, token_qs=token_qs)
+                + '<div class="card warn-box">⚠ %s</div>' % esc((acc.get("warnings") or [""])[0]))
     body = account_bar(state, book_id=book_id, market=market, coin=None, fr=None, token_qs=token_qs)
     body += ('<div class="tabs"><a class="tab%s" href="/trades?book=%s&market=%s&tab=open%s">Açık (%d)</a>'
              '<a class="tab%s" href="/trades?book=%s&market=%s&tab=closed%s">Kapanan (%d)</a></div>'
@@ -382,9 +501,10 @@ def trades_page(state, *, book_id: str, market: str, tab: str, q: str, token_qs:
             rows = []
             for t in tr:
                 sym = str(t.get("symbol") or "")
-                rows.append('<tr data-sym="%s"><td><a href="/coin/%s?book=%s&market=%s">%s</a></td><td>%s</td><td class="num">%s</td>'
+                qs = trade_qs(book_id=book_id, market=market, trade_id=t.get("id"), as_of=t.get("closed_at"), token_qs=token_qs)
+                rows.append('<tr data-sym="%s"><td><a href="/coin/%s?%s">%s</a></td><td>%s</td><td class="num">%s</td>'
                             '<td class="num">%s</td><td>%s</td><td>%s</td><td class="num">%s</td><td>%s</td></tr>'
-                            % (esc(sym.upper()), esc(sym.split("/")[0]), esc(book_id), esc(market), esc(sym),
+                            % (esc(sym.upper()), esc(sym.split("/")[0]), esc(qs), esc(sym),
                                badge(str(t.get("side", "")).upper() or "—", "ok" if str(t.get("side", "")).upper() == "LONG" else "bad"),
                                fmt(t.get("entry"), 6), fmt(t.get("exit_price") or t.get("exit"), 6),
                                fmt_utc(t.get("opened_at")), fmt_utc(t.get("closed_at")), pnl_cell(t.get("net_pnl")),

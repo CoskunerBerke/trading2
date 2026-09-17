@@ -448,6 +448,23 @@ class FuturesLedgerV2:
                     pos.stop = trail
             # funding — kaçırılan bütün settlement'lar
             fev = self.funding.accrue(pos, now, mark, funding_rate_lookup)
+            # KAPSAMA İZİ (2026-09-17): funding hangi ana kadar GERÇEKTEN mutabık — çıkış kontrolünden ÖNCE
+            # damgalanır, böylece kapanan işlemin kaydı "funding 0 ölçüldü" ile "funding hiç sorulmadı"yı
+            # ayırt edebilir (`features` kayda kopyalanır; watermark aynı settlement'ın iki kez yazılmasını da önler).
+            pos.features["funding_settled_until"] = pos.last_funding_settlement_utc or pos.opened_at
+            pos.features["funding_rate_source"] = "lookup" if funding_rate_lookup is not None else "none"
+            # GERÇEKTEN uygulanan settlement anları (sayıyı watermark'tan TÜRETMEK yeterli değil: watermark,
+            # oranı sıfır olan ya da qty=0 dönemlerde de ilerler — kapsama bunları atlanmış saymamalıdır).
+            if fev:
+                seen = pos.features.get("funding_settled_ts")
+                seen = list(seen) if isinstance(seen, list) else []
+                for ev in fev:
+                    if ev.ts not in seen:
+                        seen.append(ev.ts)
+                pos.features["funding_settled_ts"] = seen[-64:]
+            # Takvimin O ANKİ saatleri kayda geçer: kapanışta AĞA ÇIKMADAN kapsama hesaplanabilsin.
+            _h = self.funding.hours_for(pos.symbol)
+            pos.features["funding_hours_utc"] = list(_h)
             for ev in fev:
                 self.wallet_balance += ev.amount
                 self.total_funding += ev.amount

@@ -111,6 +111,37 @@ SymbolFilters.from_binance_spot = staticmethod(from_binance_spot)      # type: i
 SymbolFilters.from_binance_futures = staticmethod(from_binance_futures)  # type: ignore[attr-defined]
 
 
+def from_universe_entry(symbol: str, entry: dict | None, market_type: MarketType = MarketType.USDM_PERP,
+                        *, verified_at: str | None = None) -> SymbolFilters:
+    """Keşif kaydındaki RESMÎ exchangeInfo filtrelerinden (`universe.discover` → `entry["filters"]`) SymbolFilters.
+
+    Aynı `exchangeInfo` yanıtından gelen ham `raw` bloğu varsa STRICT ayrıştırılır (`_parse`), yoksa düzleştirilmiş
+    alanlar kullanılır. `PRICE_FILTER.tickSize` / `LOT_SIZE.stepSize` yoksa ya da pozitif değilse `ValueError`:
+    eksik metadata 0.01/0.001 VARSAYILANINA DÜŞMEZ (ölçüldü: varsayılan tick plan geometrisini bozuyor).
+    """
+    f = (entry or {}).get("filters") if isinstance(entry, dict) else None
+    if not isinstance(f, dict):
+        raise ValueError(f"{symbol}: keşif kaydında filtre yok — resmî emir kuralları DOĞRULANAMAZ")
+    raw = f.get("raw")
+    if isinstance(raw, dict) and raw.get("PRICE_FILTER") and raw.get("LOT_SIZE"):
+        sym = {"symbol": symbol, "filters": [{"filterType": k, **v} for k, v in raw.items() if isinstance(v, dict)],
+               "contractType": (entry or {}).get("contract_type") or ""}
+        out = _parse(sym, market_type, strict=True)
+    else:
+        tick, step = f.get("tick_size"), f.get("step_size")
+        if not tick or not step or D(tick) <= 0 or D(step) <= 0:
+            raise ValueError(f"{symbol}: tickSize/stepSize eksik ya da pozitif değil — kural DOĞRULANAMAZ")
+        out = SymbolFilters(symbol=symbol, market_type=market_type, price_tick=D(tick), qty_step=D(step),
+                            min_qty=D(f.get("min_qty") or step), max_qty=D("1000000"), market_max_qty=D("1000000"),
+                            min_notional=D(f.get("min_notional") or DEFAULT_MIN_NOTIONAL[market_type]),
+                            max_leverage=20 if market_type is MarketType.USDM_PERP else 1,
+                            contract_type=str((entry or {}).get("contract_type") or ""))
+    out.symbol = symbol
+    out.source = "binance_api:universe"
+    out.verified_at = str(verified_at or (entry or {}).get("last_seen_at") or iso())
+    return out
+
+
 def default_filters(symbol: str, market_type: MarketType = MarketType.USDM_PERP) -> SymbolFilters:
     return SymbolFilters(symbol=symbol, market_type=market_type, min_notional=DEFAULT_MIN_NOTIONAL[market_type],
                          max_leverage=20 if market_type is MarketType.USDM_PERP else 1, source="default")
@@ -228,6 +259,6 @@ def bracket_for(notional, brackets: list[LeverageBracket] | None = None) -> Leve
     return bl[-1]
 
 
-__all__ = ["from_binance_spot", "from_binance_futures", "refresh_futures_filters", "USDM_ENTRY_CONTRACT_TYPES",
+__all__ = ["from_binance_spot", "from_binance_futures", "from_universe_entry", "refresh_futures_filters", "USDM_ENTRY_CONTRACT_TYPES",
            "default_filters", "FiltersCache", "quantize_order",
            "LeverageBracket", "default_brackets", "bracket_for", "DEFAULT_MIN_NOTIONAL"]

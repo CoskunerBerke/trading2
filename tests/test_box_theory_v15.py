@@ -308,3 +308,21 @@ def test_the_threshold_appears_in_the_arm_label_only_when_it_is_on():
     assert "_ms0.5" in BoxParams(min_stop_pct=0.5).label()
     arms = sweep_params(min_stop_pct=[0.0, 0.5])
     assert len({a.label() for a in arms}) == 2
+
+
+# ------------------------------------------------------------------ ileriye bakma
+def test_the_decision_only_reads_bars_up_to_the_one_it_is_given():
+    """İLERİYE BAKMA KAPISI: tetik anındaki karar, SONRAKİ barın uçları bilinmeden verilebilmeli.
+
+    Backtest'i geçersiz kılacak tek şey budur. Sonraki bara devasa bir ters hareket koyulur; tetik
+    barındaki karar DEĞİŞMEMELİ — çünkü o karar o bar kapandığında verilmiştir."""
+    bars = _short_setup()
+    future = _bar(bars[-1]["timestamp"] + M5, 107.0, 200.0, 1.0, 150.0)
+    at_trigger = decide(daily_rows=_daily(110.0, 90.0), m5_rows=bars)
+    assert at_trigger is not None and at_trigger["direction"] == "SHORT"
+    again = decide(daily_rows=_daily(110.0, 90.0), m5_rows=list(bars))
+    assert again == at_trigger, "aynı girdi aynı kararı vermeli (saflık)"
+    # Gelecek bar EKLENİRSE değerlendirme anı ilerler: artık O bar tetik mi diye bakılır.
+    later = decide(daily_rows=_daily(110.0, 90.0), m5_rows=bars + [future])
+    assert later is None or later.get("signal_ts") == future["timestamp"], \
+        "karar her zaman SON verilen barda alınır; geçmiş bir barın kararı geriye dönük ÜRETİLMEZ"

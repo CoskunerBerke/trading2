@@ -122,6 +122,11 @@ def _engine(tmp_path, records):
 
     e = object.__new__(TradingEngineV3)
     e._exit_lock = threading.RLock()
+    # `__init__` atlandigi icin motorun kosulsuz alanlari ELLE kurulur (gercek nesnede daima vardir:
+    # engine_v3.__init__ `self.pattern_book = None` yazar). 60746c3 formasyon defterini cikis yoluna
+    # eklediginde bu kismi nesne eksik kalmisti — testler AttributeError ile dusuyordu (kod DEGIL, kurgu).
+    e.pattern_book = None
+    e.pattern_scanner = None
     e.ledger2 = _Ledger(records)
     e.ledger_path = tmp_path / "ledger.json"
     e.run_id = "run_test"

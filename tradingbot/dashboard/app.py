@@ -192,7 +192,12 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
         detail += ('<details class="section"><summary>Ana defter — tam pozisyon tablosu</summary><div id="postbl">'
                    + _positions_table(vm) + "</div></details>")
         chp = _coin_head_payload()
-        detail += ('<details class="section"><summary>Coin head kararları</summary><div id="headstbl">'
+        # AÇIK POZİSYON KAPSAMI SAYACI GERİ GELDİ (2026-09-17): terminal görünümüne geçilirken
+        # `_coin_heads_heading(chp)` çağrısı DÜŞMÜŞTÜ; o başlık, bu tablonun açık pozisyonların
+        # TAMAMINI gösterip göstermediğini ölçen sayaç ve eksik varsa kırmızı uyarıdır. Yokluğunda
+        # operatör "pozisyon yok" izlenimi alabiliyordu (regresyon kilidi: test_coin_head_scope).
+        detail += ('<details class="section"><summary>Coin head kararları</summary>'
+                   + _coin_heads_heading(chp) + '<div id="headstbl">'
                    + _heads_table(chp) + "</div>"
                    + '<div id="headsstale" class="warn-box" style="display:none">'
                      "⚠ Coin head verisi yenilenemedi — tablo SON BAŞARILI çekimi gösteriyor.</div></details>")

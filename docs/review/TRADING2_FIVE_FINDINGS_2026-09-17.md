@@ -3,10 +3,10 @@
 Dal `work/chart-analysis-v1`. İnceleme tabanı **60746c32bf31dbadea81e808bc1d3cba6e3399cc** (dal ucu a9b9a15; ikisi
 arasındaki tek fark belgedir — dal bu oturumda İLERLEMEMİŞTİ, eski SHA'ya dönülmedi).
 
-**Test edilen kod SHA'sı: `d26d2a4666797c1fd2f198d272d1b09ad2c424b1`** (4 commit: 6a36596 beş bulgu ·
-61a643e funding ön ısınması · c5071ee CI · d26d2a4 kapsama sayacı + kurgu onarımı).
-CI (bu kod SHA'sında, yeni paketler dâhil): https://github.com/CoskunerBerke/trading2/actions/runs/35209877258 — **success**.
-Tam paket (aynı SHA, değişiklikler dondurulduktan sonra, tek koşu): **2491 passed, 22 skipped, 0 failed** (38dk44sn).
+**Test edilen kod SHA'sı: `ac486a41ace562e328649460f34945ce385abfd5`** (5 kod commit'i: 6a36596 beş bulgu ·
+61a643e funding ön ısınması · c5071ee CI · d26d2a4 kapsama sayacı + kurgu onarımı · ac486a4 `_ms` sözleşmesi).
+CI (bu kod SHA'sında, yeni paketler dâhil): https://github.com/CoskunerBerke/trading2/actions/runs/35213520754 — **success**.
+Tam paket (aynı SHA, değişiklikler dondurulduktan sonra, TEK koşu): **2491 passed, 22 skipped, 0 failed** (38dk49sn).
 
 **VPS'e dağıtım YAPILMADI. VPS HEAD'i bu oturumda OKUNMADI → doğrulanmadı.** Gerçek para açılmadı; mevcut ileri
 testler, defterler, bakiyeler ve sayaçlar sıfırlanmadı.
@@ -62,6 +62,12 @@ Onarıldı (`continue` + boşluk kaydı + yeniden deneme) ve **geri alma sondas�
 | **MİNÖR→gerçek** Yuvarlama sonrası R/R'de giriş kayması **iki kez** sayılıyordu | `cost_fraction_at_fill` (2×taker + 1×kayma) |
 | **MİNÖR→gerçek** Toplam testi 40 satırla kuruluydu (görünen sınır 2000) — onarım geri alınsa da geçiyordu | 2500 satır |
 | **MİNÖR→gerçek** `live_refresh_js`e defter/piyasa **kaçışsız** gömülüyordu | `_js()` ile JSON kaçışı + saldırgan değer testi |
+
+Ayrıca **dağıtım betiğinin kendi değişmez kapısı** bir kusur daha yakaladı: `is_expired` alanı `parse_ts_ms`
+ile çözüyordu ve o fonksiyon 1e11'den küçük sayıları epoch **saniye** sayar. Alan adı `_ms`tir; küçük bir
+sayının saniye sanılması geçerlilik penceresini **1000 kat** uzatırdı. Üretimdeki değerler (~1,78e12)
+etkilenmiyordu, ama sözleşme kesinleştirildi (sayısal → doğrudan ms; ISO → geri düşüş; çözülemeyen →
+fail-closed). Kapı 41 değişmezin tamamıyla gerçek kod üzerinde çalıştırıldı ve geçti.
 
 **Kapsanmayan (kapsam dışı, kayda geçiriliyor):** `C_COMPRESSION_BREAKOUT` planlarının `anchor_ts` üzerinden
 yenilenmesi (süresi dolan kurulumun sayısal olarak aynı ardılı üretilmesi) ve `plans.json`ın budanmaması —

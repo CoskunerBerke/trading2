@@ -34,7 +34,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install pytest httpx
-      - name: Chart analysis + dashboard + strategy book + pattern tests
+      - name: Chart analysis + dashboard + strategy book + pattern + five-findings tests
         run: |
           set +e
           python -m pytest \
@@ -54,6 +54,15 @@ jobs:
             tests/test_replay_strategy_mode_v1.py \
             tests/test_pattern_trader_v1.py \
             tests/test_dashboard_terminal_v1.py \
+            tests/test_accounting.py \
+            tests/test_gap_reconcile.py \
+            tests/test_replay_funding.py \
+            tests/test_trading2_fix_bar_range_v1.py \
+            tests/test_trading2_fix_official_filters_v1.py \
+            tests/test_trading2_fix_pattern_funding_v1.py \
+            tests/test_trading2_fix_plan_expiry_v1.py \
+            tests/test_trading2_fix_panel_identity_v1.py \
+            tests/test_trading2_fix_contracts_v1.py \
             -q --tb=short > pytest.out 2>&1
           rc=$?
           cat pytest.out

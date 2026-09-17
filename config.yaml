@@ -333,8 +333,15 @@ strategy_paper:
     # Kuralın giriş/stop tanımı videodan BİREBİR; çıkış videoda YOKTUR → `exit_kind` bir SEÇİMDİR ve
     # burada araştırma süpürmesinin sonucu yazılır. Süpürme bitene kadar defter KAPALI kalır:
     # ölçülmemiş bir çıkışla canlı ileri test başlatmak, sonucu yorumlanamaz kılar.
+    # OLCUM SONUCU (DENEY_V15, 10 coin, 3 pencere, 42 kol, ~1,1M tetik):
+    #   HICBIR kol karar kuralini gecmedi. En iyi konfigurasyonda bile net beklenti
+    #   P1 -0,0805R / P2 +0,0050R / P3 -0,0785R. Brut (maliyetsiz) sinyal de sifir civarinda,
+    #   yani acik maliyet degil; altinda tasiyacak avantaj YOK.
+    # DEFTER YINE DE ACIK: bu bir ILERI TEST defteridir, kar beklentisi DEGIL. Amaci canli
+    #   davranisin backtest'le tutup tutmadigini olcmek ve paneli beslemek. PAPER, gercek para YOK.
+    #   Kapatmak tek satirdir: enabled: false.
     - name: b1_box_fade
-      enabled: false
+      enabled: true
       starting_equity_usdt: 100
       breakeven_at_mfe_r: 0.0
       state_dir: strategy_paper_box
@@ -342,8 +349,14 @@ strategy_paper:
         near_frac: 0.10          # kenar bandı = kutu yüksekliğinin %10'u
         trigger: break_prev      # kırmızı/yeşil mum ÖNCEKİ mumun ucunu kırmalı
         long_stop: day_low       # video birebir (simetrik okuma: prev_candle)
-        exit_kind: box_opposite  # SÜPÜRME BELİRLEYECEK — varsayılan "videonun kuralı" DEĞİLDİR
+        # SECIM KURALI: hicbir kol pozitif olmadigi icin "kazanan" yok; EN KOTU PENCERESI EN IYI
+        # olan kol secildi (box_mid: -0,0805R). Bu bir kar iddiasi degil, en az kotu olanin adidir.
+        exit_kind: box_mid
         exit_r: 2.0
+        # ZORUNLU ESIK: uretim tek-coin tavani, stop >= risk%/(%30 x kaldirac) = %2,22 istiyor.
+        # Bu esik OLMADAN defter her sinyali MAX_POSITION_PCT ile reddeder ve SESSIZCE OLU kalir
+        # (olculdu: 143/143 ret). Esikle islemlerin %99,5'i boyutlandirilabiliyor.
+        min_stop_pct: 2.22
         eod_close: true
         allow_long: true
         allow_short: true

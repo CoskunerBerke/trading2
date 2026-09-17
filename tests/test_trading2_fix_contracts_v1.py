@@ -183,3 +183,16 @@ def test_funding_coverage_makes_no_provider_call():
 
 def test_javascript_values_are_escaped_before_embedding():
     assert "_js(" in inspect.getsource(term.live_refresh_js), "değerler kaçışsız gömülüyor"
+
+
+def test_market_identity_of_a_trade_has_a_single_definition():
+    """ÜRETİM KUSURU (2026-09-17): borsa kimliği (`USDM_PERP`) panel seçim adıyla (`futures`) doğrudan
+    karşılaştırılıyordu ve 44 kapanış panelde 0 göründü. Kural TEK yerdedir ve kopyası kalmamalıdır."""
+    from tradingbot.dashboard import app as dapp
+    from tradingbot.dashboard.state import market_of
+    assert market_of({"market_type": "USDM_PERP"}) == "futures"
+    assert market_of({"market_type": "SPOT"}) == "spot"
+    assert market_of({}) == "futures", "alan yoksa futures (ana defter)"
+    for mod, src in (("state", inspect.getsource(dstate)), ("app", inspect.getsource(dapp))):
+        body = src.replace(inspect.getsource(market_of), "")
+        assert 'market_type") or "futures"' not in body, "%s: kuralin ikinci kopyasi var" % mod

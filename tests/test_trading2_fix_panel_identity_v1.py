@@ -441,4 +441,49 @@ def test_live_refresh_javascript_targets_the_selected_scope_and_guards_the_respo
     # GÜVENLİK: defter/piyasa değerleri betiğe GÖMÜLÜR; kaçışsız gömme dizgiden çıkışa izin verirdi.
     hostile = term.live_refresh_js('a"b</script><img src=x>', market='c"d')
     assert "</script><img" not in hostile, "betik dizgisinden ÇIKIŞ mümkün"
-    assert '"a\\"b\u003c\/script\u003e' in hostile or "a\\\"b" in hostile, hostile[:300]
+    assert "a" + chr(92) + chr(34) + "b" in hostile, hostile[:300]   # tirnak KACISLI gomuldu
+
+
+# ====================================================================== (k) ÜRETİMDE GÖRÜLEN: piyasa süzgeci
+def test_a_real_ledger_record_is_counted_as_futures_not_dropped(tmp_path: Path):
+    """ÜRETİM KUSURU (2026-09-17, panelde görüldü): ana defterde **44 kapanmış işlem** varken panel
+    «KAPANAN İŞLEM 0» gösteriyordu.
+
+    Kök neden: gerçek `TradeRecord` kayıtları `market_type`i BORSA kimliğiyle taşır (`USDM_PERP`), panelin
+    seçim adıyla (`futures`) değil. Piyasa süzgeci doğrudan eşitlik arayınca BÜTÜN futures kapanışları elendi.
+    Bu testin kurgusu elle yazılmış sözlük DEĞİL: kayıt GERÇEK `FuturesLedgerV2` tarafından üretilir — kusurun
+    kaçmasının sebebi tam olarak sentetik sözlüğün gerçek kaydın şeklini taşımamasıydı.
+    """
+    from datetime import datetime, timezone
+    from decimal import Decimal
+
+    from tradingbot.accounting import AmountType, FuturesLedgerV2, MarketType, SizeSpec, TickData
+    from tradingbot.accounting.filters import default_filters
+    from tradingbot.dashboard.state import market_of
+
+    led = FuturesLedgerV2(Decimal("100"), enforce_position_cap=False)
+    now = datetime(2026, 9, 17, 12, 0, tzinfo=timezone.utc)
+    pos = led.open("BTC/USDT", "LONG", Decimal("100"), SizeSpec(Decimal("50"), AmountType.NOTIONAL, 1),
+                   stop=Decimal("90"), filters=default_filters("BTC/USDT", MarketType.USDM_PERP), now=now)
+    assert pos is not None, led.last_reject_reason
+    assert led.close_manual("BTC/USDT", Decimal("110"), reason="hedef1", now=now,
+                            tick=TickData(last=Decimal("110"), mark=Decimal("110"))) is not None
+    rec = led.history_dicts()[-1]
+    assert rec["market_type"] == "USDM_PERP", "kurulum: gerçek kayıt borsa kimliğini taşır"
+    assert market_of(rec) == "futures", "gerçek kayıt futures sayılmalı (panelde 0 görünmesinin kök nedeni)"
+
+    _setw(tmp_path, led)
+    st = StateReader(tmp_path)
+    assert [t["id"] for t in st.book_trades("main", market="futures")] == [rec["id"]], "kapanış ELENDİ"
+    tot = st.book_history_totals("main", market="futures")
+    assert tot["closed"] == 1 and tot["realized"] == rec["net_pnl"], tot
+    acc = term.account_snapshot(st, "main", market="futures")
+    assert acc["closed"] == 1 and acc["realized"] == rec["net_pnl"], (acc["closed"], acc["realized"])
+    assert "KAPANAN İŞLEM" not in "" and str(acc["closed"]) in term.summary_cards(acc)
+    # spot seçiminde bu futures kaydı GÖRÜNMEZ (kimlik korunur)
+    assert st.book_trades("main", market="spot") == []
+
+
+def _setw(root: Path, led) -> None:
+    """Gerçek defteri panelin okuduğu dosyaya yazar (ana bot futures defteri)."""
+    led.save(root / "futures_ledger.json")

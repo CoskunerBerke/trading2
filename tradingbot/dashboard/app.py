@@ -26,7 +26,7 @@ from ..learn.entry_eval import GATE_MIN_DAYS, GATE_MIN_LINKED_CLOSES as GATE_MIN
 from .candles import CandleSource, build_candle_payload
 from .config import DashboardConfig
 from ..pnl import finite_float_or_none, position_view, realized_net
-from .state import STATE_FILES, StateReader
+from .state import STATE_FILES, StateReader, market_of
 from .views import (NO_DECISION_VERDICT, POSITION_NUM_COLS, _cell_expectancy_r, _cell_pct_signal,
                     coin_head_api_rows,
                     coin_head_table, json_safe, open_coverage, universe_table)
@@ -696,7 +696,7 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
             return _page("İşlem", '<div class="card">işlem bulunamadı</div>', "/trades")
         base = str(t.get("symbol", "")).split("/")[0]
         # Baglanti O ISLEMIN piyasasini ve kimligini tasir: coin sayfasi dogru kapsamda acilir.
-        _mk = "spot" if str(t.get("market_type") or "futures").lower() == "spot" else "futures"
+        _mk = market_of(t)                       # TEK tanim: borsa kimligi (USDM_PERP) panel adina cevrilir
         _qs = term.trade_qs(book_id="main", market=_mk, trade_id=t.get("id"), as_of=t.get("closed_at"))
         body = f'<p><a href="/trades">← işlemler</a> · <a href="/coin/{esc(base)}?{esc(_qs)}">{esc(t.get("symbol"))}</a></p>'
         body += kv_table({k: v for k, v in t.items() if k not in ("features", "fills", "costs")})

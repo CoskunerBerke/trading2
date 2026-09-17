@@ -63,6 +63,17 @@ def _f(x: Any) -> float | None:
     return v if v == v else None
 
 
+def market_of(trade: Any) -> str:
+    """Bir islem kaydinin PIYASASI: "spot" ya da "futures".
+
+    GERCEK defter kayitlari `market_type`i borsa kimligiyle tasir (`USDM_PERP`), panelin secim adiyla
+    (`futures`) DEGIL. Dogrudan esitlik aramak butun futures kapanislarini eler (2026-09-17'de uretimde
+    goruldu: 44 kapanis panelde 0 gorundu). Kural: yalnizca "spot" spottur; digerleri futures.
+    """
+    v = str((trade or {}).get("market_type") or "").strip().lower()
+    return "spot" if v == "spot" else "futures"
+
+
 def _age(ts: Any) -> float | None:
     if not ts:
         return None
@@ -302,7 +313,7 @@ class StateReader:
             return []
         if book_id == "main":
             want = "spot" if market == "spot" else "futures"
-            rows = [t for t in self.trades() if str(t.get("market_type") or "futures").lower() == want]
+            rows = [t for t in self.trades() if market_of(t) == want]
             return list(reversed(rows))                # `trades()` en YENI basta doner; sozlesme: en yeni SONDA
         led = self.book_ledger(book_id)
         if isinstance(led, dict):

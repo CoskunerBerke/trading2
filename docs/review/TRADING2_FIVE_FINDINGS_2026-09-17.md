@@ -8,8 +8,37 @@ arasındaki tek fark belgedir — dal bu oturumda İLERLEMEMİŞTİ, eski SHA'ya
 CI (bu kod SHA'sında, yeni paketler dâhil): https://github.com/CoskunerBerke/trading2/actions/runs/35213520754 — **success**.
 Tam paket (aynı SHA, değişiklikler dondurulduktan sonra, TEK koşu): **2491 passed, 22 skipped, 0 failed** (38dk49sn).
 
-**VPS'e dağıtım YAPILMADI. VPS HEAD'i bu oturumda OKUNMADI → doğrulanmadı.** Gerçek para açılmadı; mevcut ileri
-testler, defterler, bakiyeler ve sayaçlar sıfırlanmadı.
+**2026-09-17 15:27Z'de VPS'e DAĞITILDI** (`3501304 → caf42a5`, DEPLOY_OK; 41 değişmez + 11 config kapısı geçti,
+defterler korundu, doctor 0 hata). Gerçek para açılmadı; ileri testler, defterler, bakiyeler ve sayaçlar
+sıfırlanmadı.
+
+## 0. DAĞITIM SONRASI ÜRETİMDE BULUNAN KUSUR (ve onarımı)
+
+Dağıtımdan hemen sonra panelde görüldü: ana defterde **44 kapanmış işlem** varken panel **«KAPANAN İŞLEM 0»**
+ve net sonuç 0,00 USDT gösteriyordu. **Bu, bu turun kendi gerilemesiydi.**
+
+Kök neden: ana bot geçmişini piyasaya göre ayırırken `market_type` alanı panelin SEÇİM ADIYLA (`"futures"`)
+doğrudan karşılaştırılıyordu. Gerçek `TradeRecord` kayıtları bu alanı BORSA KİMLİĞİYLE taşır (`"USDM_PERP"`),
+bu yüzden bütün futures kapanışları elendi.
+
+Testlerden **kaçtı**, çünkü kurgu elle yazılmış sözlük kullanıyordu ve `trades()` orada eksik alanı
+`setdefault("market_type","futures")` ile dolduruyordu — yani kurgu **gerçek kaydın şeklini taşımıyordu**.
+Bu, karşıt doğrulama turunda `MockProvider` için öğrenilen dersin birebir tekrarıdır (aynı hata iki kez).
+
+Onarım (`5b8ea52`): `dashboard.state.market_of()` TEK tanım (yalnız `"spot"` spottur, gerisi futures),
+`app.py`'deki ikinci kopya da ona bağlandı, sözleşme kapısı üçüncü kopyayı engelliyor. Regresyon testi kaydı
+**gerçek `FuturesLedgerV2`** ile üretir ve geri alma sondasıyla doğrulandı: onarım geri alınınca test DÜŞÜYOR.
+
+**DERS:** panel testlerinin kurgusu, defteri YAZAN kodla üretilmelidir; elle yazılmış sözlük gerçek alan
+değerlerini taşımaz ve kusuru göstermez.
+
+## 0b. İLK ÜRETİM ÖLÇÜMÜ (dağıtım günü)
+
+Formasyon zinciri üretimde **ilk kez uçtan uca çalıştı**: 175 uygun USDⓈ-M perpetual keşfedildi, ilk turda
+40'ı tarandı, **0 hata**, 2 PAPER pozisyon açıldı; rapor 0 kapanışla **hüküm vermiyor** ve
+`funding_measured=False` diyor. Ana bot (2026-08-19'dan beri canlı kâğıt): **44 kapanış, −6,96 USDT (−%6,96),
+13/44 kazanan** — bu 44 işlem ESKİ (onarımdan önceki) ölçüm yoluyla kaydedildi, `funding mutabık 0/44`.
+T2 ve M2: 0 kapanış. **Hiçbiri kârlılık hükmü değildir.**
 
 Korunan: T2/M2 kural formülleri, on coin giriş evreni, sermaye/risk ayarları, stop geometrisi, PAPER modu, ana botun
 defteri ve kararları, kapı modları (`regime_gate`/`candle_confirmation` ENFORCE, `chart_confirmation` SHADOW),

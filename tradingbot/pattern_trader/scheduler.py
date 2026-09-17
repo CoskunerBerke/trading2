@@ -155,6 +155,13 @@ class PatternScanner:
         """Bir tarama turu: kuyruktan bütçe kadar sembol. Bir sembolün arızası turu DURDURMAZ."""
         now_ms = int(now_ms if now_ms is not None else self.clock() * 1000)
         self.refresh_universe(now_ms=now_ms)
+        # FUNDING ARALIK TABLOSU ÖN ISINMASI: `FundingSchedule.accrue` bunu defterin tick'i içinde (kilit altında,
+        # koruyucu çıkış yolunda) sorabilir. Tur başında ve kilitsizken ısıtılırsa o yolda ağ isteği KALMAZ.
+        if self.funding is not None and hasattr(self.funding, "hours_for"):
+            try:
+                self.funding.hours_for("BTC/USDT")
+            except Exception as exc:  # noqa: BLE001 — ön ısınma arızası turu DURDURMAZ
+                log.debug("funding aralık tablosu ön ısınması başarısız: %s", exc)
         entries: dict[str, dict] = dict((self.universe or {}).get("entries") or {})
         q = self.queue(now_ms=now_ms)
         budget = int(limit if limit is not None else self.max_symbols_per_cycle)

@@ -411,3 +411,23 @@ def test_funding_coverage_counts_applied_settlements_not_just_the_watermark(tmp_
                           settled_until=f["funding_settled_until"], hours_utc=f["funding_hours_utc"],
                           settled_ts=f["funding_settled_ts"])
     assert dict(sc.funding.stats) == before, "kapsama hesabı sağlayıcıya çıktı"
+
+
+def test_the_interval_table_is_warmed_outside_the_book_lock(tmp_path: Path):
+    """`FundingSchedule.accrue` settlement saatlerini defterin tick'i İÇİNDE (kilit altında, koruyucu çıkış
+    yolunda) sorabilir. Tarayıcı bunu tur başında ısıttığı için o yolda ağ isteği KALMAZ."""
+    _cfg_, p, sc, book, sym, pos = _scenario(tmp_path, "LONG")
+    calls = {"n": 0}
+    orig = p.funding_info
+    def counting():
+        calls["n"] += 1
+        return orig()
+    p.funding_info = counting
+    sc.funding._intervals_at = None                      # tabloyu bayatlat: bir sonraki soru ağa çıkar
+    sc.scan_cycle(now_ms=CLOCK[0])                       # ÖN ISINMA burada olmalı
+    warmed = calls["n"]
+    assert warmed >= 1, "tur başında tablo ısıtılmadı"
+    CLOCK[0] = AFTER_MS
+    _set_mark(p, sym, float(pos.entry_avg), ts=CLOCK[0], funding_rate=LIVE_ESTIMATE)
+    sc.exit_check()                                      # kilit altındaki yol: YENİ istek OLMAMALI
+    assert calls["n"] == warmed, "koruyucu çıkış yolunda aralık tablosu için ağa çıkıldı"

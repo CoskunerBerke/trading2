@@ -27,7 +27,8 @@ from .core import atomic_write_json, from_iso, iso, utc_now
 from .learn import TradeMemory
 from .regime_gate import BTC_SYMBOL
 from .risk import RiskEngine, build_state, enforces_position_cap
-from .ema200_trend import VARIANTS, daily_rows_from_frame, decide
+from . import paper_rules
+from .ema200_trend import daily_rows_from_frame
 from .timeframes import tf_ms
 
 log = logging.getLogger(__name__)
@@ -38,7 +39,9 @@ SCHEMA_VERSION = "strategy_paper_v1"
 PAPER_MARKET = "USDM_PERP"
 #: `decide`/`read_daily` sözleşmesinden: kural GÜNLÜK kapanmış barları okur (T2: EMA200; M2: 28 gün önceki kapanış);
 #: BTC rejimi yalnız YENİ girişte gerekir (`decide`: position_open iken BTC'ye bakılmaz). Başka dilim zorunlu değildir.
-RULE_TIMEFRAMES = ("1d",)
+#: Trend/momentum defterlerinin dilimleri. V15: demet DEFTERE göre değişir (box 5m de okur) —
+#: tek kaynak `paper_rules.rule_timeframes`; buradaki sabit yalnız geriye dönük varsayılandır.
+RULE_TIMEFRAMES = paper_rules.TREND_TIMEFRAMES
 #: ZAMAN SÖZLEŞMESİ (2026-09-16, canlı fiyat): kâğıt defter fiyatı = doğrulanmış USDⓈ-M perp mark (`funding.mark`) ve
 #: onun KAYNAK zamanı (`funding.ts`: borsanın mark zaman damgası, ms; yoksa snapshot'ın alınma zamanı `ts`, epoch sn).
 #: Alınma zamanı ve karar (kontrol) zamanı ayrıca yazılır; eski bir fiyata yeni zaman damgası basılmaz. Sağlayıcı
@@ -49,7 +52,13 @@ PRICE_FUTURE_SKEW_S = 120.0
 #: ZAMAN SÖZLEŞMESİ (günlük sinyal): kural `as_of` anında KAPANMIŞ son günlük barı okur (açılış + 1g <= as_of). Beklenen
 #: son kapanış, `as_of`tan önceki UTC gün sınırıdır; sağlayıcı gecikme toleransı içinde (4 tur aralığı; canlı sağlayıcıya
 #: karşı ÖLÇÜLMEDİ, kod sabiti) bir önceki bar da güncel sayılır. Daha eskisi BAYAT → ne OPEN ne kural CLOSE (ret gerekçeli).
-BAR_LAG_TOLERANCE_MS: dict[str, int] = {"1d": 3_600_000}
+#: V15 "5m": ÜRETİM TUR TEMPOSUDUR, bir kalite payı DEĞİL. Bot `watch --interval 15` ile 15 dakikada bir
+#: tur atar; 5 dakikalık bir kural bu tempoda 5m barlarının ancak 1/3'ünü görür. Tolerans bunu 0 yapıp
+#: defteri her turda "bayat" diye reddettirmek yerine AÇIKÇA kabul eder ve `data_policy`de ilan eder.
+#: Kaçırılan tetiklerin maliyeti araştırmada AYRI bir kol olarak ölçülür (stride 1 vs 3), varsayılmaz.
+BAR_LAG_TOLERANCE_MS: dict[str, int] = {"1d": 3_600_000, "5m": 900_000}
+#: Üretimin tur aralığı (dk) — yalnız ilan/ölçüm için; zamanlamayı servis dosyası belirler.
+PRODUCTION_TOUR_INTERVAL_MIN = 15
 #: Ham çerçevenin son satırı `as_of`tan bu kadar ileride açılmışsa gelecek zaman damgası (saat sorunu) → ret.
 BAR_FUTURE_SKEW_MS = 60_000
 #: Bar uçlarının (1h) pozisyona uygulanma dilimi: yalnız pozisyon açılışından SONRA açılmış, kapanmış, bir kez.
@@ -250,13 +259,14 @@ def _check_frames(frames: dict | None, prov: dict | None, run_id: str, want_mark
 
 def verify_paper_data(*, symbol: str, frames: dict | None, provenance: dict | None, run_id: str,
                       btc_frames: dict | None = None, btc_provenance: dict | None = None, need_btc: bool = True,
-                      want_market: str = PAPER_MARKET, as_of_ms: int | None = None) -> DataVerdict:
+                      want_market: str = PAPER_MARKET, as_of_ms: int | None = None,
+                      tfs: tuple[str, ...] = RULE_TIMEFRAMES) -> DataVerdict:
     """Kural verisi doğrulaması (SAF). `need_btc`: yeni giriş yolu (rejim referansı gerekir); açık pozisyonun kural
     kapanışı yalnız sembol verisine bağlıdır (`decide` position_open iken BTC okumaz) → BTC eksikliği kapanışı engellemez.
     `as_of_ms` (2026-09-16): değerlendirme anı — canlıda turun karar saati, replay'de simülasyonun karar anı (duvar saati
     DEĞİL). Verilmezse güncellik denetlenemez → `DATA_AS_OF_MISSING` (fail-closed). `bars`: kuralın bu anda okuduğu son
     kapanmış bar; kapanmamış/gelecek son satır sinyalin ya da kaydın parçası olmaz."""
-    why, used, detail = _check_frames(frames, provenance, run_id, want_market, as_of_ms=as_of_ms)
+    why, used, detail = _check_frames(frames, provenance, run_id, want_market, tfs=tfs, as_of_ms=as_of_ms)
     if why:
         return DataVerdict(ok=False, entry_ok=False, reason="DATA_" + why, market=(provenance or {}).get("market") if isinstance(provenance, dict) else None,
                            source=(provenance or {}).get("source") if isinstance(provenance, dict) else None,
@@ -268,7 +278,8 @@ def verify_paper_data(*, symbol: str, frames: dict | None, provenance: dict | No
         entry_ok, reason = False, "DATA_ENTRY_BLOCKED:%s" % (prov.get("reason") or "PROVIDER")
     btc: dict[str, Any] = {"required": bool(need_btc)}
     if need_btc:
-        bwhy, bused, bdetail = _check_frames(btc_frames, btc_provenance, run_id, want_market, as_of_ms=as_of_ms)
+        bwhy, bused, bdetail = _check_frames(btc_frames, btc_provenance, run_id, want_market,
+                                             tfs=paper_rules.TREND_TIMEFRAMES, as_of_ms=as_of_ms)
         btc.update({"ok": not bwhy, "market": (btc_provenance or {}).get("market") if isinstance(btc_provenance, dict) else None,
                     "reason": ("DATA_BTC_" + bwhy) if bwhy else "", "bars": bused, "detail": bdetail})
         if bwhy and entry_ok:
@@ -281,19 +292,24 @@ class BookSpec:
     """Bir defterin ayarları — ana bölüm ya da `extra` listesindeki sözlük, TEK biçime indirgenir."""
 
     def __init__(self, *, name: str, starting_equity_usdt: float = 100.0, atr_mult: float = 3.0,
-                 breakeven_at_mfe_r: float = 0.0, state_dir: str = "strategy_paper", symbols=None, enabled: bool = True):
+                 breakeven_at_mfe_r: float = 0.0, state_dir: str = "strategy_paper", symbols=None, enabled: bool = True,
+                 rule_params: dict | None = None):
         self.name, self.starting_equity_usdt, self.atr_mult = str(name), float(starting_equity_usdt), float(atr_mult)
         self.breakeven_at_mfe_r, self.state_dir = float(breakeven_at_mfe_r), str(state_dir)
         self.symbols, self.enabled = list(symbols or []), bool(enabled)
+        #: Kurala özel ayarlar (box: near_frac/exit_kind/...). Trend defterleri için boştur.
+        self.rule_params: dict = dict(rule_params or {})
 
     @classmethod
     def from_section(cls, sp) -> "BookSpec":
         return cls(name=sp.name, starting_equity_usdt=sp.starting_equity_usdt, atr_mult=sp.atr_mult,
-                   breakeven_at_mfe_r=sp.breakeven_at_mfe_r, state_dir=sp.state_dir, symbols=sp.symbols, enabled=sp.enabled)
+                   breakeven_at_mfe_r=sp.breakeven_at_mfe_r, state_dir=sp.state_dir, symbols=sp.symbols, enabled=sp.enabled,
+                   rule_params=dict(getattr(sp, "rule_params", None) or {}))
 
     @classmethod
     def from_dict(cls, d: dict) -> "BookSpec":
-        allowed = {"name", "starting_equity_usdt", "atr_mult", "breakeven_at_mfe_r", "state_dir", "symbols", "enabled"}
+        allowed = {"name", "starting_equity_usdt", "atr_mult", "breakeven_at_mfe_r", "state_dir", "symbols", "enabled",
+                   "rule_params"}
         return cls(**{k: v for k, v in dict(d).items() if k in allowed})
 
     @property
@@ -395,6 +411,10 @@ class StrategyBook:
         self.cfg, self.profile, self.filters_cache, self.run_id = cfg, profile, filters_cache, run_id
         self.name = str(sp.name)
         self.atr_mult = float(sp.atr_mult)
+        # KURAL KİMLİĞİ (V15): dilimler, BTC ihtiyacı ve parametre nesnesi TEK yerden. Geçersiz ad/parametre
+        # burada ValueError verir — defter sessizce yanlış kuralla açılmaz.
+        self.rule = paper_rules.spec_for(self.name)
+        self.rule_params = paper_rules.build_params(self.name, atr_mult=self.atr_mult, rule_params=sp.rule_params)
         self.symbols: list[str] = list(sp.symbols) if sp.symbols else []
         self.state_dir = Path(cfg.state_path) / str(sp.state_dir)
         self.state_dir.mkdir(parents=True, exist_ok=True)
@@ -551,27 +571,34 @@ class StrategyBook:
                     continue
                 fr = frames_by_symbol.get(sym) or {}
                 # ZAMAN SÖZLEŞMESİ: değerlendirme anı = turun karar saati (`now`); kural da AYNI anda kapanmış barları okur.
+                pos_obj = self.ledger.positions.get(sym)
                 verdict = verify_paper_data(symbol=sym, frames=fr, provenance=prov_all.get(sym), run_id=self.run_id,
-                                            btc_frames=btc_fr, btc_provenance=prov_all.get(BTC_SYMBOL), need_btc=not pos_open,
-                                            as_of_ms=now_ms)
-                d1 = closed_bars(daily_rows_from_frame(fr.get("1d")), now_ms=now_ms, tf="1d")
-                if verdict.ok and (not d1 or int(d1[-1].get("timestamp") or -1) != int(verdict.bars.get("1d") or -2)):
-                    # Kaydedilen bar ile kuralın okuduğu bar birebir aynı olmalı; değilse hüküm KANITSIZ (fail-closed).
-                    verdict = DataVerdict(ok=False, entry_ok=False, reason="DATA_BAR_MISMATCH_1D", market=verdict.market, source=verdict.source,
-                                          tour_id=verdict.tour_id, bars=dict(verdict.bars), btc=dict(verdict.btc), as_of_ms=now_ms,
-                                          detail=dict(verdict.detail) | {"rule_last_open_ms": int(d1[-1].get("timestamp")) if d1 else None})
+                                            btc_frames=btc_fr, btc_provenance=prov_all.get(BTC_SYMBOL),
+                                            need_btc=self.rule.needs_btc and not pos_open,
+                                            as_of_ms=now_ms, tfs=self.rule.timeframes)
+                if verdict.ok:
+                    # Kaydedilen bar ile kuralın okuduğu bar HER dilimde birebir aynı olmalı; değilse hüküm
+                    # KANITSIZ (fail-closed). V15: box defteri 1d + 5m okuduğu için bağ dilim dilim denetlenir.
+                    bad_tf, rule_last = self._bar_binding(fr, verdict, now_ms)
+                    if bad_tf:
+                        verdict = DataVerdict(ok=False, entry_ok=False, reason="DATA_BAR_MISMATCH_%s" % bad_tf.upper(),
+                                              market=verdict.market, source=verdict.source,
+                                              tour_id=verdict.tour_id, bars=dict(verdict.bars), btc=dict(verdict.btc), as_of_ms=now_ms,
+                                              detail=dict(verdict.detail) | {"rule_last_open_ms": rule_last, "rule_tf": bad_tf})
                 self.data_checks[sym] = verdict.to_dict()
                 if not verdict.ok or (not pos_open and not verdict.entry_ok):
                     # Kanıtsız veriyle kural UYGULANMAZ. Yalnız bilgi için: bu veriyle kural ne derdi (uygulanmadı)?
                     try:
-                        wa = decide(self.name, daily_rows=d1, btc_daily_rows=btc, position_open=pos_open, atr_mult=self.atr_mult)
+                        wa = paper_rules.decide_for(self.name, frames=fr, btc_rows=btc, now_ms=now_ms,
+                                                    position=pos_obj, params=self.rule_params)
                         would = str((wa or {}).get("action") or "NONE")
                     except Exception:  # noqa: BLE001
                         would = "ERROR"
                     self._reject_data(sym, verdict, "SIGNAL" if not verdict.ok else "ENTRY", now, would)
                     continue
                 try:
-                    act = decide(self.name, daily_rows=d1, btc_daily_rows=btc, position_open=pos_open, atr_mult=self.atr_mult)
+                    act = paper_rules.decide_for(self.name, frames=fr, btc_rows=btc, now_ms=now_ms,
+                                                 position=pos_obj, params=self.rule_params)
                 except Exception as exc:  # noqa: BLE001 — strateji arızası SESSİZ GEÇMEZ
                     self._reject(sym, "STRATEGY_ERROR:%s" % type(exc).__name__)
                     continue
@@ -585,6 +612,20 @@ class StrategyBook:
                     state = self._state(marks_f)
                 elif act is None and sym not in self.last_actions:
                     self.last_actions[sym] = {"action": "NONE", "reason": "NO_SIGNAL", "at": iso(now)}
+
+    def _bar_binding(self, frames: dict | None, verdict: DataVerdict, now_ms: int) -> tuple[str | None, int | None]:
+        """Kuralın BU anda okuyacağı son kapanmış bar, kayda giren barla her dilimde eşleşiyor mu.
+
+        Döner: (uyuşmayan dilim | None, kuralın okuduğu son açılış ms | None). Okuma `paper_rules` üzerinden,
+        yani `decide`ın kullandığı YOLUN AYNISI — ikinci bir okuma yolu bilerek yoktur.
+        """
+        for tf in self.rule.timeframes:
+            rows = (paper_rules.daily_rows(frames, now_ms=now_ms) if tf == "1d"
+                    else paper_rules.intraday_rows(frames, tf=tf, now_ms=now_ms))
+            last = int(rows[-1].get("timestamp")) if rows and rows[-1].get("timestamp") is not None else None
+            if last is None or last != int(verdict.bars.get(tf) or -2):
+                return tf, last
+        return None, None
 
     def tick(self, marks: dict[str, TickData], *, now: datetime, funding_rate_lookup=None, bar_advance: bool) -> list:
         """CANLI FİYAT KONTROLÜ: defterin stop/hedef/funding/likidasyon kontrolü; ana defterle AYNI çağrı biçimi.
@@ -620,6 +661,9 @@ class StrategyBook:
             fs = self.ledger.summary(marks_f)
             doc = {"schema_version": SCHEMA_VERSION, "generated_at": iso(now), "run_id": self.run_id,
                    "name": self.name, "atr_mult": self.atr_mult, "regime": self.regime,
+                   # V15: defterin kural kimligi ve kurala ozel ayarlari — panel bunlarla AYNI kural
+                   # durumunu yeniden uretir (ikinci varsayilan tutmaz).
+                   "rule_family": self.rule.family, "rule_params": dict(self.spec.rule_params or {}),
                    "starting_equity": float(self.ledger.starting_equity),
                    "summary": {k: (float(v) if isinstance(v, Decimal) else v) for k, v in fs.items()},
                    "positions": {s: {"side": p.side.value, "entry": float(p.entry_avg), "qty": float(p.qty),
@@ -631,7 +675,14 @@ class StrategyBook:
                    "rejections": dict(self.rejections), "closed_recent": self.closed_recent[-20:],
                    # VERİ KAYNAĞI (2026-09-16): bu turun sembol hükümleri, fiyat boşlukları, son olaylar (yeniden başlatmada korunur)
                    "data_checks": dict(self.data_checks), "data_gaps": dict(self.data_gaps), "data_events_recent": self.data_events[-30:],
-                   "data_policy": {"market": PAPER_MARKET, "rule_timeframes": list(RULE_TIMEFRAMES), "price_source": "usdm_perp_mark",
+                   "data_policy": {"market": PAPER_MARKET, "rule_timeframes": list(self.rule.timeframes), "price_source": "usdm_perp_mark",
+                                   # V15: gün içi dilim varsa kuralın GERÇEK örnekleme temposu ilan edilir.
+                                   "intraday": ({"tf": [t for t in self.rule.timeframes if t != "1d"][0],
+                                                 "tour_interval_min": PRODUCTION_TOUR_INTERVAL_MIN,
+                                                 "bars_seen_per_tour": 1,
+                                                 "note": "tur %d dk; 5m barlarinin 1/%d'i degerlendirilir — kacirilan tetikler ARASTIRMADA olculur"
+                                                         % (PRODUCTION_TOUR_INTERVAL_MIN, max(1, PRODUCTION_TOUR_INTERVAL_MIN // 5))}
+                                                if any(t != "1d" for t in self.rule.timeframes) else None),
                                    # ZAMAN SÖZLEŞMELERİ (2026-09-16): canlı fiyat / bar uçları / günlük sinyal güncelliği
                                    "price": {"max_age_s": PRICE_MAX_AGE_S, "future_skew_s": PRICE_FUTURE_SKEW_S,
                                              "time": "funding.ts (borsa mark zamanı) yoksa snapshot.ts (alınma); kontrol anı ayrı"},
@@ -760,15 +811,23 @@ def apply_closed_bars_to_ledger(ledger: FuturesLedgerV2, bars_by_symbol: dict[st
     return out
 
 def validate_settings(*, enabled: bool, name: str | None, app_mode: str | None, starting_equity: float,
-                      atr_mult: float) -> None:
-    """Config doğrulaması (SAF). Gerçek parayla (LIVE) etkinleştirilemez."""
-    if name not in VARIANTS:
-        raise ValueError("strategy_paper.name gecersiz: %r (gecerli: %s)" % (name, ", ".join(VARIANTS)))
+                      atr_mult: float, rule_params: dict | None = None) -> None:
+    """Config doğrulaması (SAF). Gerçek parayla (LIVE) etkinleştirilemez.
+
+    V15: `rule_params` de burada doğrulanır — box defterinin bilinmeyen/geçersiz alanı config
+    yüklenirken patlar, tur ortasında değil.
+    """
+    if name not in paper_rules.VARIANTS:
+        raise ValueError("strategy_paper.name gecersiz: %r (gecerli: %s)" % (name, ", ".join(paper_rules.VARIANTS)))
+    try:
+        paper_rules.build_params(name, atr_mult=atr_mult if atr_mult > 0 else 1.0, rule_params=rule_params)
+    except TypeError as exc:
+        raise ValueError("strategy_paper.rule_params gecersiz alan: %s" % exc) from None
     if enabled and str(app_mode or "").upper() in ("LIVE", "LIVE_LIMITED"):
         raise ValueError("STRATEGY_PAPER_IS_PAPER_ONLY: strategy_paper.enabled yalniz PAPER/TESTNET/OBSERVE/SHADOW_LIVE modda")
     if starting_equity <= 0 or atr_mult <= 0:
         raise ValueError("strategy_paper.starting_equity_usdt ve atr_mult pozitif olmali")
 
 
-__all__ = ["INDEX_FILE", "PAPER_MARKET", "RULE_TIMEFRAMES", "SCHEMA_VERSION", "SUMMARY_FILE", "BookSpec", "DataVerdict",
+__all__ = ["INDEX_FILE", "PAPER_MARKET", "RULE_TIMEFRAMES", "paper_rules", "SCHEMA_VERSION", "SUMMARY_FILE", "BookSpec", "DataVerdict",
            "StrategyBook", "apply_action", "book_specs", "validate_settings", "verify_paper_data"]

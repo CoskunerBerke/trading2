@@ -233,7 +233,8 @@ class StateReader:
                 continue
             seen.add(key)
             name = str(b.get("name") or key)
-            label = {"t2_trend_regime": "T2 · EMA200 trend", "m2_tsmom28": "M2 · 28g momentum"}.get(name, name)
+            label = {"t2_trend_regime": "T2 · EMA200 trend", "m2_tsmom28": "M2 · 28g momentum",
+                     "b1_box_fade": "B1 · Box (önceki gün aralığı, 5m)"}.get(name, name)
             out.append({"book_id": key, "name": name, "label": label, "state_dir": key, "summary_file": b.get("summary_file")})
         if len(out) == 1 and (self.state_dir / "strategy_paper" / "futures_ledger.json").exists():
             sp = self.get("strategy_paper") or {}

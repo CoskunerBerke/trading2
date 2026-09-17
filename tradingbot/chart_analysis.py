@@ -27,7 +27,8 @@ from typing import Any
 
 from .candle_confirmation import closed_bars
 from .chart_patterns import ChartPatternConfig, detect_chart_patterns
-from .ema200_trend import TSMOM_LOOKBACK_DAYS, _atr_last, rule_state
+from . import paper_rules
+from .ema200_trend import TSMOM_LOOKBACK_DAYS, _atr_last
 from .learn.multitimeframe_context import MultiTimeframeConfig, confirmed_swings, equal_level_clusters
 from .timeframes import DAY_MS, TF_MS  # tek kaynak (bulgu #1): panel, mum kapısı ve motor aynı tabloyu okur
 
@@ -553,6 +554,31 @@ def explain(*, book: dict[str, Any], rs: dict[str, Any] | None, decision: dict[s
                     lines.append({"k": "durum", "v": "Koşullar sağlandı; pozisyon yoksa neden açılmadığı defter retlerinde (ör. toplam açık risk tavanı, borsa asgari tutar)."})
                 else:
                     lines.append({"k": "durum", "v": "Pozisyon yok; giriş koşulu %s." % ("sağlanmıyor" if not rs.get("above") else "rejim nedeniyle kapalı")})
+    elif name in ("b1_box_fade",) and rs is not None:
+        if not rs.get("ok"):
+            lines.append({"k": "kural", "v": "Box kuralı değerlendirilemedi: %s (günlük bar %s / 5m bar %s)."
+                          % (rs.get("reason"), rs.get("n_daily_bars"), rs.get("n_m5_bars"))})
+        else:
+            lines.append({"k": "kutu", "v": "Önceki günün aralığı: dip %s — tepe %s (orta %s). Bant: kutu yüksekliğinin %%%g'i."
+                          % (_fmt(rs.get("box_low")), _fmt(rs.get("box_high")), _fmt(rs.get("box_mid")),
+                             float(rs.get("near_frac") or 0) * 100)})
+            loc_tr = {"TOP": "TEPEDE (satış aranır)", "BOTTOM": "DİPTE (alış aranır)",
+                      "MIDDLE": "ORTADA (işlem YOK)", "OUTSIDE": "kutu DIŞINDA (işlem YOK)"}
+            lines.append({"k": "konum", "v": "Son 5m kapanış %s → %s." % (_fmt(rs.get("close")), loc_tr.get(str(rs.get("location")), str(rs.get("location"))))})
+            if rs.get("side"):
+                lines.append({"k": "tetik", "v": "%s tetiği: %s (kural: %s mum ÖNCEKİ mumun ucunu kırmalı)."
+                              % (rs.get("side"), "GERÇEKLEŞTİ" if rs.get("triggered") else "yok",
+                                 "kırmızı" if rs.get("side") == "SHORT" else "yeşil")})
+                if rs.get("stop_if_open") is not None:
+                    tg = rs.get("targets_if_open") or []
+                    lines.append({"k": "risk", "v": "Açılsaydı stop %s, hedef %s (çıkış kuralı: %s)."
+                                  % (_fmt(rs.get("stop_if_open")), _fmt(tg[0]) if tg else "YOK", rs.get("exit_kind"))})
+            if position:
+                lines.append({"k": "pozisyon", "v": "Açık %s: giriş %s (%s), mevcut stop %s."
+                              % (position.get("side"), _fmt(position.get("entry_avg") or position.get("entry")),
+                                 str(position.get("opened_at") or "?")[:16], _fmt(position.get("stop")))})
+            lines.append({"k": "çıkış", "v": "DİKKAT: çıkış kuralı kaynak videoda YOKTUR. Buradaki '%s' bir SEÇİMDİR; "
+                          "araştırma süpürmesiyle ölçülmüştür ve kuralın kendi iddiası değildir." % rs.get("exit_kind")})
     elif name == BOOK_MAIN:
         d = decision or {}
         if d:
@@ -681,6 +707,7 @@ def decision_fingerprint_payload(*, rs: dict[str, Any] | None, decision: dict[st
 def build_snapshot(*, symbol: str, market_type: str, timeframe: str, tf_ms: int, book: dict[str, Any],
                    bars: list[dict[str, Any]], as_of_ms: int, daily_rows: list[dict[str, Any]] | None,
                    btc_daily_rows: list[dict[str, Any]] | None, gates: dict[str, Any], decision: dict[str, Any] | None,
+                   intraday_rows: list[dict[str, Any]] | None = None,
                    plan: dict[str, Any] | None, position: dict[str, Any] | None, history: list[dict[str, Any]] | None,
                    entry_features: dict[str, Any] | None, mark_price: float | None, cfg: dict[str, Any],
                    code: str | None = None, cfg_hash: str | None = None, source: dict[str, Any] | None = None,
@@ -702,8 +729,15 @@ def build_snapshot(*, symbol: str, market_type: str, timeframe: str, tf_ms: int,
     pats = pattern_elements(bars, det, chart_mode=str(gates.get("chart_mode") or "OFF"), fresh_within=gates.get("chart_fresh_within"), timeframe=timeframe, tf_ms=tf_ms)
     name = str(book.get("name") or BOOK_MAIN)
     rs = None
-    if name in ("t2_trend_regime", "m2_tsmom28"):
-        rs = rule_state(name, daily_rows=daily_rows or [], btc_daily_rows=btc_daily_rows or [], atr_mult=float(book.get("atr_mult") or 3.0))
+    if name in paper_rules.VARIANTS and name != "t1_trend":
+        # Kural durumu KAYIT üzerinden: hangi aile, hangi parametre — panel ikinci bir formül tutmaz.
+        try:
+            rp = paper_rules.build_params(name, atr_mult=float(book.get("atr_mult") or 3.0),
+                                          rule_params=dict(book.get("rule_params") or {}))
+            rs = paper_rules.state_from_rows(name, daily=daily_rows or [], intraday=intraday_rows or [],
+                                             btc_rows=btc_daily_rows or [], params=rp)
+        except (ValueError, TypeError) as exc:      # geçersiz defter ayarı panelde SESSİZ KALMAZ
+            rs = {"variant": name, "ok": False, "reason": "RULE_PARAMS_INVALID:%s" % type(exc).__name__}
     trades = trade_elements(book_id=str(book.get("book_id") or BOOK_MAIN), position=position, history=history or [], plan=plan if name == BOOK_MAIN else None,
                             as_of_ms=as_of_ms, mark_price=mark_price, mark_source=mark_source)
     indicators = []
@@ -727,6 +761,32 @@ def build_snapshot(*, symbol: str, market_type: str, timeframe: str, tf_ms: int,
                                "decision_impact": USED_IN_DECISION,
                                "rationale_tr": "M2 kuralının karşılaştırdığı %d gün önceki günlük kapanış." % TSMOM_LOOKBACK_DAYS, "invalidation_tr": "—",
                                "source": {"module": "ema200_trend", "function": "rule_state", "params": {"variant": name, "lookback_days": TSMOM_LOOKBACK_DAYS}}})
+    if rs and rs.get("ok") and rs.get("box_high") is not None:
+        # BOX THEORY: kutu ÖNCEKİ GÜNÜN uçlarıdır ve konum kapısını O belirler → karara girer.
+        band = (float(rs["box_high"]) - float(rs["box_low"])) * float(rs.get("near_frac") or 0.0)
+        sig_close = (int(rs["signal_ts"]) + 300_000) if rs.get("signal_ts") is not None else None
+        for eid, price, lab, why in (
+                ("box_high", rs["box_high"], "Kutu tepesi (önceki gün en yüksek) %.6g",
+                 "Fiyat bu seviyeye ya da %g×kutu bandına değerse kural SATIŞ arar." % float(rs.get("near_frac") or 0)),
+                ("box_low", rs["box_low"], "Kutu dibi (önceki gün en düşük) %.6g",
+                 "Fiyat bu seviyeye ya da %g×kutu bandına değerse kural ALIŞ arar." % float(rs.get("near_frac") or 0)),
+                ("box_top_band", float(rs["box_high"]) - band, "Üst bant sınırı %.6g",
+                 "Bu çizginin ÜSTÜ 'tepeye yakın' sayılır (near_frac)."),
+                ("box_bottom_band", float(rs["box_low"]) + band, "Alt bant sınırı %.6g",
+                 "Bu çizginin ALTI 'dibe yakın' sayılır (near_frac)."),
+                ("box_mid", rs["box_mid"], "Kutu ortası %.6g",
+                 "Yalnız `exit_kind=box_mid` seçildiğinde HEDEFTİR; aksi halde gösterimdir.")):
+            v = _f(price)
+            if v is None:
+                continue
+            used = USED_IN_DECISION if eid in ("box_high", "box_low", "box_top_band", "box_bottom_band") else (
+                USED_IN_DECISION if rs.get("exit_kind") == "box_mid" else OBSERVATION_ONLY)
+            indicators.append({"id": "ind:%s" % eid, "layer": LAYER_INDICATORS, "kind": "rule_reference",
+                               "label_tr": lab % v, "price": v, "t0": None, "t1": None, "anchors": [],
+                               "confirmed_at": sig_close, "decision_impact": used,
+                               "rationale_tr": why, "invalidation_tr": "Yeni gün açılınca kutu YENİLENİR (önceki günün uçlarına taşınır).",
+                               "source": {"module": "box_theory", "function": "rule_state",
+                                          "params": {"variant": name, "near_frac": rs.get("near_frac")}}})
     elements = zones + trends + pats + trades + indicators
     lines = explain(book=book, rs=rs, decision=decision, gates=gates, position=position, entry_features=entry_features,
                     patterns=pats, zones=[z for z in zones if z["layer"] == LAYER_ZONES], trends=trends)

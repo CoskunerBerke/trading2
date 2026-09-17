@@ -615,16 +615,21 @@ class StrategyPaperSection:
     """TEK KURALLI STRATEJİ — KÂĞIT İLERİ TEST (V10, 2026-09-13). Ana botun yanında AYRI defter.
 
     `enabled=true` yalnız PAPER/TESTNET/OBSERVE/SHADOW_LIVE modda kabul edilir; LIVE'da ConfigError.
-    Ana botun defterine, öğrenicisine ve kararlarına DOKUNMAZ. Kural `ema200_trend.py`
-    (replay ile TEK kaynak). Ölçüm: research/entry_v1/out/DENEY_V9.md.
+    Ana botun defterine, öğrenicisine ve kararlarına DOKUNMAZ. Kural modülleri replay ile TEK kaynak:
+    `ema200_trend.py` (trend/momentum) ve `box_theory.py` (V15, gün içi 5m). Hangi defterin hangi modüle
+    ve hangi dilimlere bağlı olduğu `paper_rules.py` kaydındadır. Ölçüm: research/entry_v1/out/.
     """
     enabled: bool = False
-    name: str = "t2_trend_regime"           # t1_trend | t2_trend_regime
+    name: str = "t2_trend_regime"           # t1_trend | t2_trend_regime | m2_tsmom28 | b1_box_fade
     starting_equity_usdt: float = 100.0
     atr_mult: float = 3.0                   # felaket stopu: close - atr_mult * ATR14(1d)
     breakeven_at_mfe_r: float = 0.0         # T1/T2 ölçümü başa-baş koruması KAPALI ile yapıldı
     state_dir: str = "strategy_paper"       # state/<state_dir>/ (defter + trade_memory)
     symbols: list[str] = field(default_factory=list)   # boş → giriş evreni
+    #: V15: kurala özel ayarlar. Trend defterlerinde BOŞ; box defterinde `BoxParams` alanları
+    #: (near_frac, trigger, long_stop, exit_kind, exit_r, eod_close, allow_long/short ...).
+    #: Bilinmeyen alan config yüklenirken ConfigError verir — tur ortasında değil.
+    rule_params: dict[str, Any] = field(default_factory=dict)
     #: V12: EK defterler (her biri bu bölümle aynı anahtarlar; `state_dir` benzersiz ve boş olmayan).
     #: Ana defterle AYNI motor yolundan, kendi defteri/belleği/özetiyle yan yana koşar.
     extra: list[dict[str, Any]] = field(default_factory=list)
@@ -967,7 +972,8 @@ def validate_v3(cfg: V3Config) -> None:
     from .strategy_paper import validate_settings as _sp_validate
     try:
         _sp_validate(enabled=bool(_sp.enabled), name=_sp.name, app_mode=getattr(cfg.mode, "mode", None),
-                     starting_equity=float(_sp.starting_equity_usdt), atr_mult=float(_sp.atr_mult))
+                     starting_equity=float(_sp.starting_equity_usdt), atr_mult=float(_sp.atr_mult),
+                     rule_params=dict(_sp.rule_params or {}))
     except (ValueError, TypeError) as exc:
         raise ConfigError(f"strategy_paper: {exc}") from exc
     seen_dirs = {str(_sp.state_dir)}
@@ -980,7 +986,8 @@ def validate_v3(cfg: V3Config) -> None:
         seen_dirs.add(sd)
         try:
             _sp_validate(enabled=bool(ex.get("enabled", True)), name=ex.get("name"), app_mode=getattr(cfg.mode, "mode", None),
-                         starting_equity=float(ex.get("starting_equity_usdt", 100.0)), atr_mult=float(ex.get("atr_mult", 3.0)))
+                         starting_equity=float(ex.get("starting_equity_usdt", 100.0)), atr_mult=float(ex.get("atr_mult", 3.0)),
+                         rule_params=dict(ex.get("rule_params") or {}))
         except (ValueError, TypeError) as exc:
             raise ConfigError(f"strategy_paper.extra[{i}]: {exc}") from exc
     # FORMASYON PAPER TRADER V1: LIVE'da acilamaz; aile adlari ve esikler protokolden dogrulanir (SAF, tek kaynak).

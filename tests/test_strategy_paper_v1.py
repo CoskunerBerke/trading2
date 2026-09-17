@@ -82,7 +82,11 @@ def _calls(rel: str, func: str) -> int:
 def test_both_engines_apply_actions_through_the_shared_executor():
     assert _calls("replay/engine.py", "apply_action") >= 1, "replay ortak uygulayiciyi cagirmiyor"
     assert _calls("strategy_paper.py", "apply_action") >= 1, "kagit defter ortak uygulayiciyi cagirmiyor"
-    assert _calls("strategy_paper.py", "decide") >= 1, "kagit defter ortak kurali cagirmiyor"
+    # V15: defter kurali DOGRUDAN degil, kural kaydi uzerinden cagirir — dilim demeti (1d / 1d+5m) ve
+    # BTC ihtiyaci kayitta TEK yerde durur. Kaydi atlayan bir cagri sessizce yanlis dilimi dogrulardi.
+    assert _calls("strategy_paper.py", "decide_for") >= 1, "kagit defter kural kaydini cagirmiyor"
+    assert _calls("strategy_paper.py", "decide") == 0, "kagit defter kaydi ATLAYARAK kurali cagiriyor"
+    assert _calls("paper_rules.py", "decide") >= 1, "kural kaydi uretim kural modulune delege etmiyor"
     assert "_strategy_paper_tour(" in (ROOT / "engine_v3.py").read_text(encoding="utf-8")
     rp = (ROOT / "replay" / "engine.py").read_text(encoding="utf-8")
     assert "risk_per_trade_pct" not in rp.split("def _strategy_step")[1].split("def _on_closed")[0], \

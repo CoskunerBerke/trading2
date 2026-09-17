@@ -329,6 +329,31 @@ strategy_paper:
       atr_mult: 3.0
       breakeven_at_mfe_r: 0.0
       state_dir: strategy_paper_m2
+    # V15 (BOX THEORY): üçüncü defter — önceki günün aralığını 5m'de soluklayan gün içi kural.
+    # Kuralın giriş/stop tanımı videodan BİREBİR; çıkış videoda YOKTUR → `exit_kind` bir SEÇİMDİR ve
+    # burada araştırma süpürmesinin sonucu yazılır. Süpürme bitene kadar defter KAPALI kalır:
+    # ölçülmemiş bir çıkışla canlı ileri test başlatmak, sonucu yorumlanamaz kılar.
+    - name: b1_box_fade
+      enabled: false
+      starting_equity_usdt: 100
+      breakeven_at_mfe_r: 0.0
+      state_dir: strategy_paper_box
+      rule_params:
+        near_frac: 0.10          # kenar bandı = kutu yüksekliğinin %10'u
+        trigger: break_prev      # kırmızı/yeşil mum ÖNCEKİ mumun ucunu kırmalı
+        long_stop: day_low       # video birebir (simetrik okuma: prev_candle)
+        exit_kind: box_opposite  # SÜPÜRME BELİRLEYECEK — varsayılan "videonun kuralı" DEĞİLDİR
+        exit_r: 2.0
+        eod_close: true
+        allow_long: true
+        allow_short: true
+        # KALDIRAC ARITMETIGI (olculdu, varsayilmadi): tek coin tavani
+        #   notional <= ozkaynak * max_position_pct/100 * max(kaldirac,1)
+        # 5m stopu dar oldugu icin notional = risk% / stop% buyuk cikar. risk %2, tavan %30, stop %2,8 ->
+        # notional ozkaynagin %71'i -> kaldirac 1'de MAX_POSITION_PCT ile REDDEDILIR. Gereken: L >= 2,38.
+        # Kaldirac burada RISKI ARTIRMAZ (islem basina risk yine %2, stop mesafesiyle belirlenir); yalnizca
+        # gunluk-stop icin tasarlanmis notional tavanini gun ici stopla uyumlu hale getirir.
+        leverage: 3
 
 pattern_trader:                # FORMASYON PAPER TRADER V1 — yeni listeleme öncelikli mum formasyonu defteri (AYRI, sanal)
   enabled: true                # PAPER dışında ConfigError; ana bot ve T2/M2 defterlerine DOKUNMAZ

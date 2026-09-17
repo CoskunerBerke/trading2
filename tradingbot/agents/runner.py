@@ -18,6 +18,10 @@ from .technical import TECHNICAL_AGENTS
 log = logging.getLogger(__name__)
 
 FRAME_SPECS = {"1d": 420, "4h": 730, "1h": 30}   # zaman dilimi → geriye dönük gün
+#: V15: kural defterlerinin isteyebileceği EK dilimler → geriye dönük gün. Box kuralı yalnız ÖNCEKİ
+#: günün kutusunu ve BUGÜNÜN 5m barlarını okur; 3 gün hem günün tamamını hem yeniden başlatmayı karşılar.
+#: Hiçbir defter istemezse bu dilimler HİÇ çekilmez (davranış birebir eski).
+EXTRA_FRAME_DAYS = {"5m": 3, "15m": 10}
 
 
 class AgentRunner:
@@ -31,6 +35,26 @@ class AgentRunner:
         self.manager = CoinManagerAgent()
         self.chief = ChiefAgent(max_concurrent=cfg.risk.max_open_positions)
         self.last_frames: dict[str, dict] = {}
+
+    def ensure_timeframes(self, timeframes) -> list[str]:
+        """Verilen dilimleri çekilenler kümesine EKLER (varsa dokunmaz). Döner: gerçekten eklenenler.
+
+        Neden gerekli: kâğıt defterin kuralı 5m okuyor ama çerçeveyi motor çekmiyorsa defter her turda
+        `DATA_FRAME_MISSING_5M` alır ve HİÇ işlem açmaz — sessiz bir "çalışıyor ama ölü" durumu. Dilim
+        listesi kural kaydından gelir (`paper_rules.rule_timeframes`), buradan sabitlenmez.
+        """
+        added = []
+        for tf in timeframes:
+            tf = str(tf)
+            if tf in self.markets:
+                continue
+            days = EXTRA_FRAME_DAYS.get(tf)
+            if days is None:
+                raise ValueError("bu dilim için geriye dönük gün tanımlı değil: %r (EXTRA_FRAME_DAYS)" % tf)
+            self.markets[tf] = MarketData(self.cfg.exchange.candidates, tf, days, self.cfg.cache_path,
+                                          source=self.cfg.exchange.source, tv_exchange=self.cfg.exchange.tv_exchange)
+            added.append(tf)
+        return added
 
     def set_weights(self, weights: dict | None) -> None:
         self.manager = CoinManagerAgent(weights or None)

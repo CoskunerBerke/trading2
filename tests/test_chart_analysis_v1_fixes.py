@@ -63,7 +63,7 @@ def _series(n: int, tf: str, seed: int, start: float) -> pd.DataFrame:
 def _env(tmp_path: Path, *, n4h: int = 1000, with_position: bool = True, with_config: bool = True) -> tuple[Path, Path]:
     st, data = tmp_path / "state", tmp_path / "data"
     st.mkdir(); data.mkdir()
-    for tf, n in (("4h", n4h), ("1h", 600), ("15m", 600), ("1d", 420), ("1w", 300)):
+    for tf, n in (("4h", n4h), ("1h", 600), ("15m", 600), ("5m", 600), ("1d", 420), ("1w", 300)):
         _series(n, tf, 1, 100.0).to_csv(data / f"tv-binance_BTC-USDT_{tf}.csv", index=False)
         _series(n, tf, 2, 200.0).to_csv(data / f"binanceusdm_BTC-USDT_{tf}.csv", index=False)
     heads = {"generated_at": "2026-09-15T00:00:00+00:00", "run_id": "r1", "heads": [
@@ -137,7 +137,8 @@ def _main_state_snapshot(st: Path, data: Path, *, as_of: int) -> dict:
 # ====================================================================== BULGU 1: zaman dilimleri
 def test_f1_every_supported_timeframe_serves_analysis_and_unknown_tf_is_rejected(tmp_path: Path):
     """2e31926: `api_chart` 15m/1h/4h/1d/1w kabul ediyor, `candle_confirmation._TF_MS` yalnız 4h/1d → 1h isteği KeyError (HTTP 500).
-    Onarım: dilimler tek kaynak (`timeframes`); beş dilim de mevcut veriyle 200; bilinmeyen dilim 400 (sessizce 4h olmaz)."""
+    Onarım: dilimler tek kaynak (`timeframes`); DESTEKLENEN HER dilim mevcut veriyle 200; bilinmeyen dilim 400
+    (sessizce 4h olmaz). V15'te tabloya 5m eklendi ve bu döngü onu kendiliğinden kapsadı — tek kaynağın amacı bu."""
     st, data = _env(tmp_path)
     c = _client(st, data)
     for tf in SUPPORTED_TIMEFRAMES:

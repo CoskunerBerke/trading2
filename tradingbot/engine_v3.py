@@ -261,6 +261,16 @@ class TradingEngineV3(TradingEngine):
             log.info("STRATEJI KAGIT DEFTERI: name=%s atr_mult=%s baslangic=%s USDT state=%s",
                      _book.name, _book.atr_mult, float(_book.ledger.starting_equity), _book.state_dir)
         self.strategy_book = self.strategy_books[0] if self.strategy_books else None     # geriye uyumlu ad
+        # V15: defterlerin kuralı 1d dışında dilim istiyorsa (box → 5m) motor onu GERÇEKTEN çeker. Aksi halde
+        # defter her turda FRAME_MISSING alır ve hiç işlem açmaz. Liste kural kaydından; burada sabit yok.
+        try:
+            from . import paper_rules
+            _want = {tf for b in self.strategy_books for tf in paper_rules.rule_timeframes(b.name)}
+            _added = self.runner.ensure_timeframes(sorted(_want - set(self.runner.markets)))
+            if _added:
+                log.info("STRATEJI KAGIT DEFTERI: ek zaman dilimi cekilecek: %s", ", ".join(_added))
+        except Exception as exc:  # noqa: BLE001 — dilim eklenemezse defter veri hukmunde acikca reddeder
+            log.warning("kagit defter ek zaman dilimi eklenemedi: %s", exc)
         # FORMASYON PAPER TRADER V1 (2026-09-16): yeni listeleme oncelikli mum formasyonu defteri. Kapaliyken None;
         # tarayici ARKA PLAN is parcacigindadir (`ensure_pattern_scanner`), tur ve 60 sn cikis izleyicisi BEKLEMEZ.
         self.pattern_book = None

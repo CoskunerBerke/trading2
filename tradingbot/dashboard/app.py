@@ -2667,6 +2667,7 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
         from ..chart_analysis_store import ChartAnalysisStore
         from ..candle_confirmation import closed_bars
         from ..ema200_trend import daily_rows_from_frame
+        from .. import paper_rules
         sym = base.upper() + "/USDT"
         mtype = market_type_of(market)
         store = ChartAnalysisStore(state.state_dir)
@@ -2712,12 +2713,31 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
             btc = closed_bars(daily_rows_from_frame(b1, tail=320), now_ms=now_ms, tf="1d") if b1 is not None else []
             sp = state.get("strategy_paper") if book_id != BOOK_MAIN else None
             atr_mult = (sp or {}).get("atr_mult") if sp and str(sp.get("name")) == bk.get("name") else None
+            # V15: kural ayarları defterin KENDİ özetinden — ana bölümün özeti başka defterin ayarını taşımaz.
+            bname = str(bk.get("name") or "")
+            bsum = state.book_summary_file(book_id) if book_id != BOOK_MAIN else None
+            rule_params: dict = {}
+            if isinstance(bsum, dict) and str(bsum.get("name") or "") == bname:
+                if bsum.get("atr_mult") is not None:
+                    atr_mult = bsum.get("atr_mult")
+                rule_params = dict(bsum.get("rule_params") or {})
+            # Gün içi dilim(ler)i kuralın KENDİ kaydından sorulur (box: 5m). Trend defterlerinde boş kalır.
+            intraday: list = []
+            if bname in paper_rules.VARIANTS:
+                for _tf in paper_rules.rule_timeframes(bname):
+                    if _tf == "1d":
+                        continue
+                    _idf = candles.load(base, _tf, market, n=600)
+                    if _idf is not None:
+                        intraday = paper_rules.intraday_rows({_tf: _idf}, tf=_tf, now_ms=now_ms, tail=400)
             # kapanmis islem kuyrugu motorla AYNI uzunlukta (parmak izi paritesi); spot yalniz ana botun spot defterinden
             hist = state.book_history(book_id, sym, limit=HISTORY_TAIL) if market == "futures" else (state.spot_history(sym, limit=HISTORY_TAIL) if book_id == BOOK_MAIN else [])
             ef = state.book_entry_features(book_id, (pos or {}).get("id")) if pos else None
             snap = build_snapshot(symbol=sym, market_type=mtype, timeframe=tf, tf_ms=TF_MS[tf],
-                                  book={"book_id": book_id, "name": bk.get("name"), "atr_mult": atr_mult or 3.0}, bars=bars, as_of_ms=now_ms,
-                                  daily_rows=daily, btc_daily_rows=btc, gates=gates, decision=state.last_decision(sym) if book_id == BOOK_MAIN else None,
+                                  book={"book_id": book_id, "name": bk.get("name"), "atr_mult": atr_mult or 3.0,
+                                        "rule_params": rule_params}, bars=bars, as_of_ms=now_ms,
+                                  daily_rows=daily, intraday_rows=intraday,
+                                  btc_daily_rows=btc, gates=gates, decision=state.last_decision(sym) if book_id == BOOK_MAIN else None,
                                   plan=plan, position=pos, history=hist, entry_features=ef, mark_price=mark, cfg=cfgd,
                                   code=cfgj.get("code_sha"), cfg_hash=cfgj.get("config_hash"), source={"frames": "dashboard.candles", "ephemeral": True})
             if len(_chart_cache) > 64:

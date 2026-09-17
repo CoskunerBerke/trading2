@@ -14,7 +14,9 @@ from __future__ import annotations
 
 from typing import Any
 
-TF_MS: dict[str, int] = {"15m": 900_000, "1h": 3_600_000, "4h": 14_400_000, "1d": 86_400_000, "1w": 604_800_000}
+#: BOX THEORY V15: "5m" eklendi — kural gün içi 5 dakikalık barda tetikleniyor ve tablo TEK kaynak
+#: olduğu için mum kapısı, replay, panel ve motor aynı anda öğrenir (ayrı tablo tutulmaz).
+TF_MS: dict[str, int] = {"5m": 300_000, "15m": 900_000, "1h": 3_600_000, "4h": 14_400_000, "1d": 86_400_000, "1w": 604_800_000}
 SUPPORTED_TIMEFRAMES: tuple[str, ...] = tuple(TF_MS)          # kısa → uzun
 DAY_MS = TF_MS["1d"]
 

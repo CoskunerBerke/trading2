@@ -3,6 +3,11 @@
 Dal `work/chart-analysis-v1`. İnceleme tabanı **60746c32bf31dbadea81e808bc1d3cba6e3399cc** (dal ucu a9b9a15; ikisi
 arasındaki tek fark belgedir — dal bu oturumda İLERLEMEMİŞTİ, eski SHA'ya dönülmedi).
 
+**Test edilen kod SHA'sı: `d26d2a4666797c1fd2f198d272d1b09ad2c424b1`** (4 commit: 6a36596 beş bulgu ·
+61a643e funding ön ısınması · c5071ee CI · d26d2a4 kapsama sayacı + kurgu onarımı).
+CI (bu kod SHA'sında, yeni paketler dâhil): https://github.com/CoskunerBerke/trading2/actions/runs/35209877258 — **success**.
+Tam paket (aynı SHA, değişiklikler dondurulduktan sonra, tek koşu): **2491 passed, 22 skipped, 0 failed** (38dk44sn).
+
 **VPS'e dağıtım YAPILMADI. VPS HEAD'i bu oturumda OKUNMADI → doğrulanmadı.** Gerçek para açılmadı; mevcut ileri
 testler, defterler, bakiyeler ve sayaçlar sıfırlanmadı.
 
@@ -98,8 +103,18 @@ Betik erişimi olan bir makinede (örn. VPS) çalıştırılabilir: `python scri
   kalktı**, kartlar «AÇIK İŞLEM 0 / KAPANAN İŞLEM 2»ye döndü, konsolda hata yok. T2+Spot seçiminde kartlar, plan
   kutusu, pozisyon listesi ve kapanışların **dördü de** "bu kapsamda kayıt yok" dedi; başka hesabın sayısı sızmadı.
   main+Spot seçiminde SPOT kaydı (giriş 101,11) ve spot özkaynağı okundu.
-* Tam paket **değişiklikler donduktan sonra bir kez** koşuldu (aşağıdaki koşu çıktısı). Paralel parça
-  kullanılmadı; aynı paket iki farklı yöntemle tekrar çalıştırılmadı.
+* Tam paket **değişiklikler donduktan sonra** koşuldu. İlk koşuda 8 kırmızı test çıktı; **hiçbiri bu turun
+  değişikliklerinden değildi** — dokunulmamış `a9b9a15` üzerinde birebir aynı şekilde düşüyorlar (ayrı bir
+  worktree ile ölçüldü). İkisi de onarıldı ve paket yeniden koşuldu:
+  * **Ürün gerilemesi (inceleme tabanından):** terminal görünümüne geçilirken `overview()` `_coin_heads_heading()`
+    çağrısını düşürmüş; "Açık pozisyon kapsamı: N / M" sayacı ve eksik kapsamda çıkan **kırmızı uyarı** panelden
+    kaybolmuştu. Bu tablo bir açık pozisyon listesi değildir ama açık pozisyonların tamamının orada olup
+    olmadığını **ölçerek** gösterir; yokluğunda operatör "pozisyon yok" izlenimi alabilir. Başlık geri kondu.
+  * **Kurgu hatası:** `test_learning_provenance_engine` motoru `object.__new__` ile kuruyor ve 60746c3 formasyon
+    defterini çıkış yoluna ekledikten sonra `pattern_book` alanını kurmuyordu (ürün kodu sağlam:
+    `engine_v3.__init__` koşulsuz `self.pattern_book = None` yazar). Bu testler çıkış→öğrenme zincirini kapsar ve
+    bu turun funding değişikliği `ledger.tick`e dokunduğu için kapsamlarının geri gelmesi önemliydi.
+  Paralel parça kullanılmadı; aynı paket iki farklı yöntemle tekrar çalıştırılmadı.
 
 ## 6. Sınırlar ve dürüstlük notları
 

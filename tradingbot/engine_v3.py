@@ -266,6 +266,9 @@ class TradingEngineV3(TradingEngine):
         try:
             from . import paper_rules
             _want = {tf for b in self.strategy_books for tf in paper_rules.rule_timeframes(b.name)}
+            # V17: aynı demet PERPETUAL çerçeve çekiminde de kullanılır. Yoksa defterin okuduğu
+            # dilim SPOT'tan gelir ve provenans bunu göremez (ilan yalnız taban dilimleri kapsardı).
+            self._book_timeframes = tuple(sorted(_want))
             _added = self.runner.ensure_timeframes(sorted(_want - set(self.runner.markets)))
             if _added:
                 log.info("STRATEJI KAGIT DEFTERI: ek zaman dilimi cekilecek: %s", ", ".join(_added))
@@ -1105,6 +1108,8 @@ class TradingEngineV3(TradingEngine):
         # TradingView `BINANCE:<SYM>` (SPOT) akisindan aldirir — evren sembolleri icin bu
         # muafiyet KALDIRILIR ve spot ikamesi fail-closed reddedilir.
         futures_required = set(_eu.symbols) if _eu.enabled else set()
+        # V17: perpetual kaynaktan çekilecek dilimler — taban + defterlerin kuralının istedikleri.
+        _perp_tfs = tuple(dict.fromkeys(tuple(self.PERP_BASE_TIMEFRAMES) + tuple(getattr(self, "_book_timeframes", ()))))
         self._frame_provenance = {}
         self._entry_data_blocked: set[str] = set()
         # 2) legacy ajanlar → brief + raporlar
@@ -1113,12 +1118,21 @@ class TradingEngineV3(TradingEngine):
         briefs: list[CoinBrief] = []
         for s in symbols:
             pre = None
+            _perp_bug = ""
             if s not in core_set or s in futures_required:
                 try:
-                    pre = self.perp_frames(s)
-                except Exception as exc:  # noqa: BLE001
+                    pre = self.perp_frames(s, timeframes=_perp_tfs)
+                except (TypeError, AttributeError, KeyError) as exc:
+                    # KOD HATASI, veri yoklugu DEGIL. Ayni sepete atilirsa butun evren sessizce
+                    # SPOT'a duser ve bu "borsa vermedi" gibi gorunur (2026-09-18'de testler yakaladi).
+                    _perp_bug = "%s: %s" % (type(exc).__name__, exc)
+                    log.error("%s perp cerceve cagrisi KOD HATASI verdi: %s", s, _perp_bug)
+                except Exception as exc:  # noqa: BLE001 — saglayici/ag kaynakli: veri YOK
                     log.warning("%s perp verisi alınamadı: %s", s, exc)
-            _need = ("1d", "4h", "1h")
+            # V17: ilan edilen dilim demeti = ajanların tabanı + ETKİN defterlerin kuralının istedikleri.
+            # `USDM_PERP` hükmü ancak BU demetin tamamı perpetual kaynaktan geldiyse verilir; aksi halde
+            # defter SPOT mumuyla perpetual pozisyon açardı ve provenans bunu göremezdi.
+            _need = _perp_tfs
             _perp_ok = bool(pre) and all(pre.get(tf) is not None and len(pre.get(tf)) for tf in _need)
             if _perp_ok:
                 self._frame_provenance[s] = {"market": "USDM_PERP", "source": "binance_usdm", "entry_ok": True}
@@ -1131,7 +1145,8 @@ class TradingEngineV3(TradingEngine):
                 # zaten canli ticker'dan beslenir ve bundan ETKILENMEZ.
                 self._frame_provenance[s] = {"market": "SPOT", "source": f"tradingview:{self.cfg.exchange.tv_exchange}",
                                              "entry_ok": not (s in futures_required),
-                                             "reason": "FUTURES_FRAMES_UNAVAILABLE" if s in futures_required else ""}
+                                             "reason": (("PERP_FRAMES_CODE_ERROR:" + _perp_bug) if _perp_bug
+                                                        else ("FUTURES_FRAMES_UNAVAILABLE" if s in futures_required else ""))}
                 if s in futures_required:
                     self._entry_data_blocked.add(s)
                     log.warning("%s: perpetual çerçeve alınamadı — analiz SPOT ile sürer, YENİ GİRİŞ kapalı", s)

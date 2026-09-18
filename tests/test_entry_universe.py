@@ -164,7 +164,7 @@ def _universe_engine(tmp_path, monkeypatch, universe: list[str], symbols: list[s
     """
     eng = TE._engine(tmp_path, monkeypatch, {"entry_universe": {"enabled": True, "symbols": universe}},
                      symbols=symbols, p_win=0.62)
-    monkeypatch.setattr(eng, "perp_frames", lambda sym: dict(eng._fake_live._frames[sym]))
+    monkeypatch.setattr(eng, "perp_frames", lambda sym, timeframes=None: dict(eng._fake_live._frames[sym]))
     return eng
 
 
@@ -238,7 +238,7 @@ def test_universe_symbols_are_analysed_on_perpetual_frames(tmp_path: Path, monke
                      {"entry_universe": {"enabled": True, "symbols": ["ETH/USDT", "SOL/USDT"]}},
                      symbols=["ETH/USDT", "SOL/USDT"], p_win=0.62)
 
-    def _perp(sym):
+    def _perp(sym, timeframes=None):
         asked.append(sym)
         return dict(eng._fake_live._frames[sym])
 
@@ -263,9 +263,9 @@ def test_missing_perpetual_frames_block_entry_but_not_analysis(tmp_path: Path, m
                      {"entry_universe": {"enabled": True, "symbols": ["ETH/USDT", "SOL/USDT"]}},
                      symbols=["ETH/USDT", "SOL/USDT"], p_win=0.62)
 
-    def _perp(sym):
+    def _perp(sym, timeframes=None):
         if sym == "ETH/USDT":
-            raise RuntimeError("perp feed down")
+            raise RuntimeError("perp feed down")     # SAGLAYICI arizasi (kod hatasi DEGIL)
         return dict(eng._fake_live._frames[sym])
 
     monkeypatch.setattr(eng, "perp_frames", _perp)

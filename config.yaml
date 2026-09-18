@@ -13,18 +13,57 @@ exchange:
   history_days: 730
   cache_dir: "data"
 
-# ANALIZ kapsami. GIRIS evreni ayri bolumdedir (`entry_universe`) ve bundan DARDIR.
+# ANALIZ kapsami (V16: 10 -> 40). GIRIS evreni ayri bolumdedir (`entry_universe`) ve AYNI listedir.
+# SECIM OLCUTLERI (2026-09-18 taze universe.json, sonuclara BAKILMADAN yazildi):
+#   1) Binance USDT perpetual (market_type futures|both), borsa filtreleri DOGRULANMIS
+#   2) listeleme yasi >= 747 gun — en az BIR tam olcum penceresi (P3) kapansin
+#   3) spread <= %0,06 — kayma varsayimimiz 3 bps; bunun cok ustu olcumu bozar
+#   4) ASCII sembol — dogrulanmamis/okunamayan sembol alinmaz
+#   5) 24s hacme gore ilk 40; mevcut on coinin HEPSI listede kaldi (olcum surekliligi)
+# PENCERE KAPSAMI — backtest TEK sayi olarak sunulmaz, pencere basina coin sayisi yazilir:
+#   P1 (2020-11->) 22 coin · P2 (2022-09->) 27 coin · P3 (2024-09->) 40 coin
+# Elenenler ornegi: HYPE/AVA/PUMP/TRUMP/PAXG (yas), DRIFT (spread %0,125), 龙虾 (ASCII disi).
 coins:
   - BTC/USDT
   - ETH/USDT
+  - ZEC/USDT
   - SOL/USDT
-  - BNB/USDT
+  - NEAR/USDT
+  - UNI/USDT
   - XRP/USDT
-  - LINK/USDT
+  - ONE/USDT
+  - BNB/USDT
+  - ARB/USDT
   - DOGE/USDT
-  - AVAX/USDT
-  - LTC/USDT
+  - LSK/USDT
+  - SUI/USDT
+  - ENA/USDT
+  - G/USDT
+  - WLD/USDT
+  - ADA/USDT
+  - ONDO/USDT
+  - 1000PEPE/USDT
+  - COTI/USDT
+  - LINK/USDT
+  - REZ/USDT
+  - DASH/USDT
   - AAVE/USDT
+  - TAO/USDT
+  - BCH/USDT
+  - AVAX/USDT
+  - DOT/USDT
+  - FIL/USDT
+  - APT/USDT
+  - SYN/USDT
+  - LTC/USDT
+  - XLM/USDT
+  - INJ/USDT
+  - FET/USDT
+  - TRX/USDT
+  - XMR/USDT
+  - 1000SHIB/USDT
+  - OP/USDT
+  - KSM/USDT
 
 backtest:
   fee_pct: 0.10             # Binance spot taker (%)
@@ -229,16 +268,46 @@ leverage:
 entry_universe:
   enabled: true
   symbols:
-    - BTC/USDT
-    - ETH/USDT
-    - SOL/USDT
-    - BNB/USDT
-    - XRP/USDT
-    - LINK/USDT
-    - DOGE/USDT
-    - AVAX/USDT
-    - LTC/USDT
-    - AAVE/USDT
+    - BTC/USDT        # P1+P2+P3
+    - ETH/USDT        # P1+P2+P3
+    - ZEC/USDT        # P1+P2+P3
+    - SOL/USDT        # P1+P2+P3
+    - NEAR/USDT       # P1+P2+P3
+    - UNI/USDT        # P1+P2+P3
+    - XRP/USDT        # P1+P2+P3
+    - ONE/USDT        # P2+P3
+    - BNB/USDT        # P1+P2+P3
+    - ARB/USDT        # P3
+    - DOGE/USDT       # P1+P2+P3
+    - LSK/USDT        # P3
+    - SUI/USDT        # P3
+    - ENA/USDT        # P3
+    - G/USDT          # P3
+    - WLD/USDT        # P3
+    - ADA/USDT        # P1+P2+P3
+    - ONDO/USDT       # P3
+    - 1000PEPE/USDT   # P3
+    - COTI/USDT       # P2+P3
+    - LINK/USDT       # P1+P2+P3
+    - REZ/USDT        # P3
+    - DASH/USDT       # P1+P2+P3
+    - AAVE/USDT       # P1+P2+P3
+    - TAO/USDT        # P3
+    - BCH/USDT        # P1+P2+P3
+    - AVAX/USDT       # P1+P2+P3
+    - DOT/USDT        # P1+P2+P3
+    - FIL/USDT        # P1+P2+P3
+    - APT/USDT        # P3
+    - SYN/USDT        # P3
+    - LTC/USDT        # P1+P2+P3
+    - XLM/USDT        # P1+P2+P3
+    - INJ/USDT        # P2+P3
+    - FET/USDT        # P3
+    - TRX/USDT        # P1+P2+P3
+    - XMR/USDT        # P1+P2+P3
+    - 1000SHIB/USDT   # P2+P3
+    - OP/USDT         # P2+P3
+    - KSM/USDT        # P1+P2+P3
   allow_long: true
   allow_short: true
   analyze_outside: false        # tur kapsami = evren ∪ acik pozisyonlar

@@ -19,7 +19,7 @@
 | `olcumler/` | 6 ölçüm betiği + 7 sonuç JSON'u + `trail.log` (trail dosyaları **canlı sürecin anlık kopyası**) |
 | `olcumler/meta/` | Bu ölçümlerin `run_rule` meta kayıtları (`research/entry_v1/out/meta_<run_id>.json`), 111 dosya; henüz koşmamış 9 trail koşusunun metası yok |
 | `reports/` | `PROTOCOL_V15.md`, `DENEY_V15.md`, `BOX_SWEEP_v15_a.{md,json}`, devir notunun yayım kopyası |
-| `data/` | Arşivlerin **kendi** `manifest.json`larından toplanmış kapsam tabloları, toplama raporu, borsa filtre dosyasının kimliği |
+| `arsiv/` | Arşivlerin **kendi** `manifest.json`larından toplanmış kapsam tabloları, toplama raporu, borsa filtre dosyasının kimliği |
 | `FILES.tsv` | Her dosyanın kaynağı, boyutu, SHA256'sı ve notu |
 
 SHA256 değerleri kopyalanan yerel baytlara aittir; paketteki hiçbir dosya CRLF içermez. Windows'ta
@@ -92,13 +92,13 @@ Hiçbir ölçüm kaydı kod SHA'sı taşımaz. Zaman aralıkları `meta_<run_id>
 | `C:\Users\berke\research\bn_archive` (≈101 MB) | `run40`, `rank40`, `grid`, `slots`, `lev`, `trail` (`cache_dir=ARCHIVE`, `require_all=True`) | 40 sembol × `1d`/`4h`/`funding`: ilk bar 2020-10-01 (sonradan listelenenlerde 2024-08-16'ya kadar), son bar 2026-09-19; gap 0, kopya 0, kalite 1,0. **`5m`: yalnız 6/40** (BTC, ETH, NEAR, SOL, UNI, ZEC), 2024-08-01 → 2026-09-20. `1h` yok. |
 | `C:\Users\berke\wt-ten\data` | V15 box süpürmesi (`box_sweep.CACHE_DEFAULT`) | 10 sembol × `5m`/`15m`/`1h`/`4h`/`1d`/`funding`/`oi_1h`. Manifestlerde LTC, SOL, XRP serilerinde 5 günlük boşluk kayıtlı (5m'de 1440 bar; kalite 0,9977–0,9979). `DENEY_V15.md`'deki "0 boşluk" ifadesi BTC içindir. |
 
-* `data/bn_archive_manifests.json` (126 seri) ve `data/wt-ten_history_manifests.json` (70 seri) arşivlerin
+* `arsiv/bn_archive_manifests.json` (126 seri) ve `arsiv/wt-ten_history_manifests.json` (70 seri) arşivlerin
   kendi `manifest.json` dosyalarından toplandı. `checksum` alanları toplayıcının yazdığı değerlerdir;
   bu teslimde veri dosyalarının hash'i **yeniden hesaplanmadı**.
-* `data/collect_binance.json`: `bn_archive` için 2026-09-19 toplama raporu (40 istek, `failed: []`,
+* `arsiv/collect_binance.json`: `bn_archive` için 2026-09-19 toplama raporu (40 istek, `failed: []`,
   `base: https://www.binance.info`, `1d`+`4h`).
 * Borsa kuralları: `bn_archive/symbol_filters.json` yayımlanmadı; boyutu ve bu oturumda hesaplanan
-  SHA256'sı `data/symbol_filters.identity.json`'da. `wt-ten/data/symbol_filters.json` ile aynı dosyadır.
+  SHA256'sı `arsiv/symbol_filters.identity.json`'da. `wt-ten/data/symbol_filters.json` ile aynı dosyadır.
 * **Uç erişimi:** `www.binance.info`'nun bu makineden erişilebildiği önceki oturumların yerel kontrolüdür
   (`collect_binance.py` başlığı: 2026-09-19; devir notu §0). Bu teslimde yeniden sınanmadı. Testlerdeki
   sahte sağlayıcılar gerçek uç erişimini kanıtlamaz.

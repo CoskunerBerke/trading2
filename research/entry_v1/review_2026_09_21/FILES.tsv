@@ -145,7 +145,7 @@ reports/DENEY_V15.md	C:/Users/berke/research/entry_v1/DENEY_V15.md	5368	268779ea
 reports/BOX_SWEEP_v15_a.md	C:/Users/berke/research/entry_v1/out/BOX_SWEEP_v15_a.md	15419	2dd70d60dff54f10c54f6c6c2500289201ec5b1bb050272d508d83e4997a0df1	
 reports/BOX_SWEEP_v15_a.json	C:/Users/berke/research/entry_v1/out/BOX_SWEEP_v15_a.json	256854	25696e05d7a7aa3093ad3aae238b97f45d1c5444e8d65e66409e3bbaa1d524a3	
 reports/DEVIR-2026-09-21.yayim-kopyasi.md	C:/Users/berke/trading2-deploy/DEVIR-2026-09-21.md	9725	26f7a92dd18baabe439ca07c370f88a5e4a6188854e7300f6477c997261cb2b6	yayim kopyasi: yalniz 44. satirdaki VPS kullanici@host maskelendi; baska degisiklik yok
-data/collect_binance.json	C:/Users/berke/research/entry_v1/out/collect_binance.json	22995	d633d351c2af487cd0065c389d187d3dd5800b23d5b4c2685c331754a2a8295d	bn_archive 1d/4h/funding toplama raporu (2026-09-19)
-data/bn_archive_manifests.json	C:/Users/berke/research/bn_archive/history/futures/*/*/manifest.json	62517	c6f63b1dee4c15d2fd07855b9c11877d83dbca7d53a76b9d2d041c850e71a8da	126 mevcut manifestten toplandi
-data/wt-ten_history_manifests.json	C:/Users/berke/wt-ten/data/history/futures/*/*/manifest.json	34981	83e398efe916b448187851d7bf5a97da7c35ef9f5b39643f6212c027ebe304eb	70 mevcut manifestten toplandi
-data/symbol_filters.identity.json	C:/Users/berke/research/bn_archive/symbol_filters.json	202	ff4207b3724b3a0fc49d53f67201e0683f0fce2f5707c2dab6e37da4b5f8d97f	dosya yayimlanmadi; boyut + sha256 (bu oturumda hesaplandi)
+arsiv/collect_binance.json	C:/Users/berke/research/entry_v1/out/collect_binance.json	22995	d633d351c2af487cd0065c389d187d3dd5800b23d5b4c2685c331754a2a8295d	bn_archive 1d/4h/funding toplama raporu (2026-09-19)
+arsiv/bn_archive_manifests.json	C:/Users/berke/research/bn_archive/history/futures/*/*/manifest.json	62517	c6f63b1dee4c15d2fd07855b9c11877d83dbca7d53a76b9d2d041c850e71a8da	126 mevcut manifestten toplandi
+arsiv/wt-ten_history_manifests.json	C:/Users/berke/wt-ten/data/history/futures/*/*/manifest.json	34981	83e398efe916b448187851d7bf5a97da7c35ef9f5b39643f6212c027ebe304eb	70 mevcut manifestten toplandi
+arsiv/symbol_filters.identity.json	C:/Users/berke/research/bn_archive/symbol_filters.json	202	ff4207b3724b3a0fc49d53f67201e0683f0fce2f5707c2dab6e37da4b5f8d97f	dosya yayimlanmadi; boyut + sha256 (bu oturumda hesaplandi)

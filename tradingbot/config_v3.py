@@ -626,6 +626,11 @@ class StrategyPaperSection:
     breakeven_at_mfe_r: float = 0.0         # T1/T2 ölçümü başa-baş koruması KAPALI ile yapıldı
     state_dir: str = "strategy_paper"       # state/<state_dir>/ (defter + trade_memory)
     symbols: list[str] = field(default_factory=list)   # boş → giriş evreni
+    #: GİRİŞ KAYMASI KAPISI (2026-09-21): kuralın hesapladığı fiyattan bu %'den fazla kaymış bir
+    #: gerçekleşmede giriş YAPILMAZ. 0 = kapalı. Şemaya eklenmeden önce config yükleyicisi bu
+    #: alanı "bilinmeyen anahtar" diye SESSİZCE yok sayıyordu — açılsa bile etkisiz kalırdı.
+    #: Bkz. strategy_paper.apply_action GİRİŞ KAYMASI KAPISI.
+    max_entry_drift_pct: float = 0.0
     #: V15: kurala özel ayarlar. Trend defterlerinde BOŞ; box defterinde `BoxParams` alanları
     #: (near_frac, trigger, long_stop, exit_kind, exit_r, eod_close, allow_long/short ...).
     #: Bilinmeyen alan config yüklenirken ConfigError verir — tur ortasında değil.

@@ -74,7 +74,12 @@ def build_params(name: str, *, atr_mult: float = ema200_trend.DEFAULT_ATR_MULT,
     """
     sp = spec_for(name)
     if sp.family == "trend":
-        return float(atr_mult)
+        # KALDIRAC (2026-09-20): trend ailesi eskiden DUZ BIR FLOAT (atr_mult) tasiyordu ve
+        # kaldirac `ema200_trend.decide` icinde 1'e SABITTI. Artik box ile AYNI desen:
+        # dogrulanmis parametre nesnesi, bilinmeyen alan SESSIZCE YUTULMAZ (TypeError).
+        rp = dict(rule_params or {})
+        rp.setdefault("atr_mult", atr_mult)
+        return ema200_trend.TrendParams(**rp).validate()
     return box_theory.BoxParams(**dict(rule_params or {})).validate()
 
 
@@ -122,9 +127,25 @@ def decide_from_rows(name: str, *, daily: list[dict[str, Any]], intraday: list[d
     """Karar — SATIRLARDAN (SAF). Motor çerçeveden, panel/araştırma satırdan gelir; ikisi de BURAYA düşer."""
     sp = spec_for(name)
     if sp.family == "trend":
-        mult = float(params if params is not None else ema200_trend.DEFAULT_ATR_MULT)
+        # GERIYE UYUM: cagiranlarin cogu (testler, panel, arastirma) hala DUZ FLOAT gecebilir.
+        tp = (params if isinstance(params, ema200_trend.TrendParams)
+              else ema200_trend.TrendParams(
+                  atr_mult=float(params) if params is not None else ema200_trend.DEFAULT_ATR_MULT))
+        # TRAIL: pozisyonun acilis ani `_opened_ms` ile tek yerden cozulur (box ile AYNI yol).
+        # Okunamazsa trail sessizce ATLANIR ve kural cikisi normal isler — kanitsiz cikis yok.
+        _pos = None
+        if position is not None:
+            _om = _opened_ms(position)
+            if _om is not None:
+                _pos = {"entry_avg": getattr(position, "entry_avg", None),
+                        "initial_stop": getattr(position, "initial_stop", None),
+                        "opened_ts": _om}
         return ema200_trend.decide(name, daily_rows=daily, btc_daily_rows=btc_rows,
-                                   position_open=position is not None, atr_mult=mult)
+                                   position_open=position is not None,
+                                   atr_mult=tp.atr_mult, leverage=tp.leverage,
+                                   leverage_max=tp.leverage_max,
+                                   trail_arm_r=tp.trail_arm_r, trail_dist_r=tp.trail_dist_r,
+                                   position=_pos)
     p = params if isinstance(params, box_theory.BoxParams) else box_theory.DEFAULT_PARAMS
     pos = None
     if position is not None:
@@ -140,8 +161,11 @@ def state_from_rows(name: str, *, daily: list[dict[str, Any]], intraday: list[di
     """Kuralın karşılaştırdığı değerler — SATIRLARDAN (SAF), `decide_from_rows` ile AYNI okuma."""
     sp = spec_for(name)
     if sp.family == "trend":
-        mult = float(params if params is not None else ema200_trend.DEFAULT_ATR_MULT)
-        return ema200_trend.rule_state(name, daily_rows=daily, btc_daily_rows=btc_rows, atr_mult=mult)
+        # `decide_from_rows` ile AYNI cozumleme — panel ve karar ayni atr_mult'u okumali.
+        tp = (params if isinstance(params, ema200_trend.TrendParams)
+              else ema200_trend.TrendParams(
+                  atr_mult=float(params) if params is not None else ema200_trend.DEFAULT_ATR_MULT))
+        return ema200_trend.rule_state(name, daily_rows=daily, btc_daily_rows=btc_rows, atr_mult=tp.atr_mult)
     p = params if isinstance(params, box_theory.BoxParams) else box_theory.DEFAULT_PARAMS
     return box_theory.rule_state(name, daily_rows=daily, m5_rows=list(intraday or []), params=p)
 

@@ -70,6 +70,9 @@ class BoxParams:
     #: Tek islevi: `risk% / stop%` ile buyuyen notional'in tek-coin tavanina sigmasi. Gun ici dar stopta
     #: 1 birakilirsa kural uretimde MAX_POSITION_PCT ile reddedilir ve defter sessizce bos kalir.
     leverage: int = 1
+    #: IHTIYAC KADAR KALDIRAC TAVANI (2026-09-21) — bkz. TrendParams.leverage_max.
+    #: Box'ta bu kisit olculmustu: 143/143 aday MAX_POSITION_PCT ile reddedilmisti.
+    leverage_max: int = 0
 
     def validate(self) -> "BoxParams":
         if self.trigger not in TRIGGERS:
@@ -298,7 +301,8 @@ def decide(variant: str = "b1_box_fade", *, daily_rows: list[dict[str, Any]],
         return None        # stop maliyetin yanında anlamsız kalacak kadar dar (BİZİM eşiğimiz, videonun değil)
     return {"action": "OPEN", "direction": side, "stop": float(stop),
             "targets": targets_for(side, entry, stop, box_high, box_low, p),
-            "leverage": int(p.leverage), "reason": "BOX_FADE_%s" % loc, "name": variant,
+            "leverage": int(p.leverage), "leverage_max": int(getattr(p, "leverage_max", 0) or 0),
+            "reason": "BOX_FADE_%s" % loc, "name": variant,
             "setup_type": "box_fade", "location": loc,
             "box_high": box_high, "box_low": box_low, "box_mid": (box_high + box_low) / 2.0,
             "signal_close": entry, "signal_ts": cur.get("timestamp"),

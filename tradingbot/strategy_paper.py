@@ -293,10 +293,14 @@ class BookSpec:
 
     def __init__(self, *, name: str, starting_equity_usdt: float = 100.0, atr_mult: float = 3.0,
                  breakeven_at_mfe_r: float = 0.0, state_dir: str = "strategy_paper", symbols=None, enabled: bool = True,
+                 max_entry_drift_pct: float = 0.0,
                  rule_params: dict | None = None):
         self.name, self.starting_equity_usdt, self.atr_mult = str(name), float(starting_equity_usdt), float(atr_mult)
         self.breakeven_at_mfe_r, self.state_dir = float(breakeven_at_mfe_r), str(state_dir)
         self.symbols, self.enabled = list(symbols or []), bool(enabled)
+        #: Kuralin hesapladigi fiyattan bu %'den fazla kaymis bir gerceklesmede giris YAPILMAZ.
+        #: 0 = kapali (eski davranis). Bkz. apply_action icindeki GIRIS KAYMASI KAPISI.
+        self.max_entry_drift_pct = float(max_entry_drift_pct or 0.0)
         #: Kurala özel ayarlar (box: near_frac/exit_kind/...). Trend defterleri için boştur.
         self.rule_params: dict = dict(rule_params or {})
 
@@ -304,12 +308,13 @@ class BookSpec:
     def from_section(cls, sp) -> "BookSpec":
         return cls(name=sp.name, starting_equity_usdt=sp.starting_equity_usdt, atr_mult=sp.atr_mult,
                    breakeven_at_mfe_r=sp.breakeven_at_mfe_r, state_dir=sp.state_dir, symbols=sp.symbols, enabled=sp.enabled,
+                   max_entry_drift_pct=getattr(sp, "max_entry_drift_pct", 0.0),
                    rule_params=dict(getattr(sp, "rule_params", None) or {}))
 
     @classmethod
     def from_dict(cls, d: dict) -> "BookSpec":
         allowed = {"name", "starting_equity_usdt", "atr_mult", "breakeven_at_mfe_r", "state_dir", "symbols", "enabled",
-                   "rule_params"}
+                   "rule_params", "max_entry_drift_pct"}
         return cls(**{k: v for k, v in dict(d).items() if k in allowed})
 
     @property
@@ -334,7 +339,7 @@ def apply_action(act: dict[str, Any] | None, *, symbol: str, price: float, tick:
                  ledger: FuturesLedgerV2, risk: RiskEngine, profile, state, filters, run_id: str,
                  reject: Callable[[str, str], None], on_closed: Callable[[Any], None],
                  on_opened: Callable[[Any, dict[str, Any]], None] | None = None,
-                 data: DataVerdict | None = None) -> str:
+                 data: DataVerdict | None = None, max_entry_drift_pct: float = 0.0) -> str:
     """Stratejinin kararını uygular. Döner: OPENED | CLOSED | REJECTED | NONE. İki motor da bunu çağırır.
 
     `data` (2026-09-16): kural verisinin kimlik hükmü. Sözleşme fail-closed'dur — hüküm yoksa ya da `ok` değilse ne
@@ -367,10 +372,40 @@ def apply_action(act: dict[str, Any] | None, *, symbol: str, price: float, tick:
     if entry <= 0 or stop <= 0 or (direction == "LONG" and stop >= entry) or (direction == "SHORT" and stop <= entry):
         reject(symbol, "STRATEGY_BAD_STOP")
         return "REJECTED"
+    # GIRIS KAYMASI KAPISI (2026-09-21) — kuralin hesapladigi fiyat ile GERCEKLESME fiyati
+    # arasindaki fark. Kural girisi/stopu/hedefi KAPANMIS bardan turetir; defter ise turun
+    # CANLI markiyle acar ve arada 15 dakikaya kadar gecikme mesrudur. Kapi olmadan sonuc
+    # YONLU bir secim yanliligiydi: mark stopa yaklastiysa notional sisip MAX_POSITION_PCT
+    # ile reddediliyor, uzaklastiysa aciliyordu — yani deftere yalnizca "hareket zaten olmus"
+    # girisler suzuluyordu. Bir fade kuralinda (box) bu tam olarak en kotu alt kume.
+    # `max_entry_drift_pct <= 0` iken kapi KAPALI ve davranis bit-bit eskisi gibidir.
+    _sig = act.get("signal_close")
+    if max_entry_drift_pct > 0 and _sig is not None:
+        try:
+            _sigf = float(_sig)
+        except (TypeError, ValueError):
+            _sigf = 0.0
+        if _sigf > 0:
+            _drift = abs(entry - _sigf) / _sigf * 100.0
+            if _drift > float(max_entry_drift_pct):
+                reject(symbol, "ENTRY_DRIFT")
+                return "REJECTED"
     stop_frac = abs(entry - stop) / entry
     risk_usdt = float(profile.risk_per_trade_pct) / 100.0 * float(state.equity)
     notional = risk_usdt / stop_frac
     lev = int(act.get("leverage") or 1)
+    # IHTIYAC KADAR KALDIRAC (2026-09-21) — tavana kadar. Tek pozisyon tavani
+    # `equity x max_position_pct/100 x kaldirac`. Stopu DAR olan islem ayni hareketten daha
+    # cok R uretir ve tam da tavana takilan odur; bu yuzden kaldirac SABIT degil, islemin
+    # ihtiyaci kadar yukselir. Kaldirac islem basina RISKI ARTIRMAZ (risk stop mesafesiyle
+    # belirlenir); yalnizca tavani acar ve likidasyonu yaklastirir — bu yuzden GEREKMEDIKCE
+    # yukseltilmez. `leverage_max <= lev` iken davranis degismez.
+    _lmax = int(act.get("leverage_max") or 0)
+    if _lmax > lev:
+        _cap1 = float(state.equity) * float(getattr(profile, "max_position_pct", 0.0)) / 100.0
+        if _cap1 > 0:
+            _need = int(math.ceil(notional / _cap1))
+            lev = max(lev, min(_need, _lmax))
     plan_dict = {"symbol": symbol, "market_type": "USDM_PERP", "direction": direction, "entry": entry, "stop": stop,
                  "targets": list(act.get("targets") or []), "notional": notional, "margin": notional / max(1, lev),
                  "leverage": lev, "amount_type": "NOTIONAL", "expected_r": float(act.get("expected_r") or 0.0),
@@ -416,6 +451,7 @@ class StrategyBook:
         self.rule = paper_rules.spec_for(self.name)
         self.rule_params = paper_rules.build_params(self.name, atr_mult=self.atr_mult, rule_params=sp.rule_params)
         self.symbols: list[str] = list(sp.symbols) if sp.symbols else []
+        self.max_entry_drift_pct = float(getattr(sp, "max_entry_drift_pct", 0.0) or 0.0)
         self.state_dir = Path(cfg.state_path) / str(sp.state_dir)
         self.state_dir.mkdir(parents=True, exist_ok=True)
         self.ledger_path = self.state_dir / "futures_ledger.json"
@@ -434,6 +470,10 @@ class StrategyBook:
         self.lock = threading.RLock()
         self.last_actions: dict[str, dict[str, Any]] = {}
         self.counters = {"opened": 0, "closed": 0, "rejected": 0, "tours": 0, "data_rejected": 0}
+        # Kural dongusunun en son KOSTUGU an — `generated_at`ten AYRI (bkz. step()).
+        self.rule_evaluated_at: str | None = None
+        self.rule_tour: int = 0
+        self._rule_ran_since_save: bool = False
         self.rejections: dict[str, int] = {}
         self.regime: str | None = None
         self.closed_recent: list[dict[str, Any]] = []
@@ -459,6 +499,12 @@ class StrategyBook:
                     self.rejections = {str(k): int(v) for k, v in (prev.get("rejections") or {}).items()}
                     self.closed_recent = list(prev.get("closed_recent") or [])[-50:]
                     self.data_events = [e for e in (prev.get("data_events_recent") or []) if isinstance(e, dict)][-50:]
+                    # Kuralin en son KOSTUGU an gercek bir olgudur: yeniden baslatma onu silmez.
+                    # Geri yuklenmezse restart sonrasi `rule_stale_s` None kalir ve "kural hic kosmadi"
+                    # ile "kural cok once kostu" ayirt edilemez.
+                    _rev = prev.get("rule_evaluated_at")
+                    self.rule_evaluated_at = str(_rev) if _rev else None
+                    self.rule_tour = int(prev.get("rule_tour") or 0)
         except Exception as exc:  # noqa: BLE001 -- ozet bozuksa sayac sifirdan baslar, defter ETKILENMEZ
             log.warning("strateji defter sayaclari geri yuklenemedi (%s): %s", self.key, exc)
         closed = len(self.ledger.history_dicts())
@@ -549,6 +595,20 @@ class StrategyBook:
         fiyatı (motor `_paper_marks`); `data_gaps`: fiyatı doğrulanamayan semboller (bu turda tick de yok)."""
         with self.lock:
             self.counters["tours"] += 1
+            # KURAL DONGUSU TAZELIGI (2026-09-19): `generated_at` defterin YAZILDIGI andir ve 60 sn'lik
+            # cikis izleyicisi (engine_v3._strategy_paper_exit_check) her dakika `save()` cagirdigi icin
+            # KURAL kosmasa bile tazelenir. Ana bot boru hattindaki bir istisna `_strategy_paper_tour`a
+            # hic ulasilmamasina yol acarsa (engine_v3.py:1301 korumasizdir ve onunde 66 korumasiz ifade
+            # vardir) defter disaridan CANLI gorunur: taze damga + onceki turun hepsi-yesil `data_checks`.
+            # Bu yuzden kural dongusunun kendi zamani AYRI ilan edilir; bayatligi olcen kod artik var.
+            self.rule_evaluated_at = iso(now)
+            self.rule_tour = int(self.counters["tours"])
+            # OLGU, cikarim DEGIL: bir sonraki `save` bu turun kural gecisini ilan eder ve bayragi
+            # tuketir. Once bu bayrak `now - rule_evaluated_at < 1 sn` ile TURETILIYORDU; yuk
+            # altinda step ile save arasi bir saniyeyi asinca kendi testim dustu (2026-09-19 tam
+            # paket kosusu). Zaman farkindan turetilen bayrak, tam da bu oturumda panel testlerinde
+            # onardigim duvar-saati kirilganligiydi; olcum yerine OLGU tasinir.
+            self._rule_ran_since_save = True
             now_ms = int(now.timestamp() * 1000)
             prov_all = provenance_by_symbol or {}
             self.data_checks = {}
@@ -605,13 +665,32 @@ class StrategyBook:
                 res = apply_action(act, symbol=sym, price=float(marks_f[sym]), tick=marks.get(sym), now=now,
                                    ledger=self.ledger, risk=self.risk, profile=self.profile, state=state,
                                    filters=self.filters_cache.get(sym, MarketType.USDM_PERP), run_id=self.run_id,
-                                   reject=self._reject, on_closed=self._on_closed, on_opened=self._on_opened, data=verdict)
+                                   reject=self._reject, on_closed=self._on_closed, on_opened=self._on_opened, data=verdict,
+                                   max_entry_drift_pct=self.max_entry_drift_pct)
                 if res in ("OPENED", "CLOSED"):
                     self.last_actions[sym] = {"action": res, "reason": (act or {}).get("reason"), "at": iso(now),
                                               "data": {"market": verdict.market, "source": verdict.source, "tour_id": verdict.tour_id, "bars": dict(verdict.bars)}}
                     state = self._state(marks_f)
-                elif act is None and sym not in self.last_actions:
-                    self.last_actions[sym] = {"action": "NONE", "reason": "NO_SIGNAL", "at": iso(now)}
+                elif act is None or str((act or {}).get("action") or "").upper() == "NONE":
+                    # TELEMETRI (2026-09-19): bu kayit ONCEDEN yalniz BIR KEZ yazilirdi
+                    # (`sym not in self.last_actions`) ve `last_actions` yeniden baslatmada geri
+                    # YUKLENMEZ (bkz. ozet geri yukleme: counters/rejections/closed_recent/data_events).
+                    # Sonuc: acik bir pozisyonun hukmu, yeniden baslatmadan SONRAKI ILK turda donuyordu;
+                    # panelde ve teshiste "her tur degerlendirildi, cikis sinyali yok" ile "artik hic
+                    # degerlendirilmiyor" AYIRT EDILEMIYORDU. Olculdu: 2026-09-18 21:13Z dagitiminin
+                    # ardindan T2/M2'nin uc acik pozisyonu 21:16:01'de donmus gorunuyordu; cikis yolu
+                    # SAGLAMDI, yalniz GORUNTUSU bayatti — bu, hapsolmus pozisyon suphesini dogurdu.
+                    # Kayit artik her turda tazelenir; `tour` ve `held` alanlari bayatligi makineyle
+                    # olculebilir kilar. `reason` degismedi: flat sembolde "NO_SIGNAL" sozlesmedir.
+                    # "Olcemiyorum" ile "sinyal yok" AYRI kayitlardir (2026-09-19). Kural, acik
+                    # pozisyonun cikisini olcemediginde EXIT_UNMEASURABLE dondurur; bu, ozette
+                    # kalici ve BIRIKIMLI bir sayac olarak gorunur (rejections restart'ta korunur),
+                    # yoksa sessizce tutulan pozisyon "trend bozulmadi" gibi okunur.
+                    _reason = str((act or {}).get("reason") or "NO_SIGNAL")
+                    self.last_actions[sym] = {"action": "NONE", "reason": _reason, "at": iso(now),
+                                              "tour": int(self.counters["tours"]), "held": bool(pos_open)}
+                    if _reason != "NO_SIGNAL":
+                        self.rejections[_reason] = self.rejections.get(_reason, 0) + 1
 
     def _bar_binding(self, frames: dict | None, verdict: DataVerdict, now_ms: int) -> tuple[str | None, int | None]:
         """Kuralın BU anda okuyacağı son kapanmış bar, kayda giren barla her dilimde eşleşiyor mu.
@@ -659,7 +738,18 @@ class StrategyBook:
         with self.lock:
             self.ledger.save(self.ledger_path)
             fs = self.ledger.summary(marks_f)
+            # `generated_at` = bu YAZMA ani. `rule_evaluated_at` = kural dongusunun son kostugu an.
+            # Ikisi AYRI: 60 sn izleyicisi yazar ama kural kosturmaz. `rule_stale_s` farki verir;
+            # tur araligi ~20 dk oldugu icin birkac bin saniyeyi asan deger ARIZADIR.
+            _stale = None
+            if self.rule_evaluated_at:
+                try:
+                    _stale = round((now - datetime.fromisoformat(self.rule_evaluated_at)).total_seconds(), 1)
+                except (TypeError, ValueError):
+                    _stale = None
             doc = {"schema_version": SCHEMA_VERSION, "generated_at": iso(now), "run_id": self.run_id,
+                   "rule_evaluated_at": self.rule_evaluated_at, "rule_tour": int(self.rule_tour),
+                   "rule_stale_s": _stale, "rule_evaluated_this_write": bool(self._rule_ran_since_save),
                    "name": self.name, "atr_mult": self.atr_mult, "regime": self.regime,
                    # V15: defterin kural kimligi ve kurala ozel ayarlari — panel bunlarla AYNI kural
                    # durumunu yeniden uretir (ikinci varsayilan tutmaz).
@@ -694,6 +784,9 @@ class StrategyBook:
                    "note_tr": "KÂĞIT İLERİ TEST — gerçek para yok. Ana botun defterinden bağımsız."}
             doc["key"] = self.key
             atomic_write_json(Path(self.cfg.state_path) / self.summary_file, doc)
+            # Bayrak TUKETILIR: bir sonraki yazma (or. 60 sn'lik cikis izleyicisi) kural gecisi
+            # olmadan gelirse `rule_evaluated_this_write` FALSE olur ve defter "canli" gorunemez.
+            self._rule_ran_since_save = False
 
 
 def apply_closed_bars_to_ledger(ledger: FuturesLedgerV2, bars_by_symbol: dict[str, dict[str, Any]] | None, *, now: datetime,

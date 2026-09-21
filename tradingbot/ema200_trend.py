@@ -14,6 +14,8 @@ olmalı (çağıran `closed_bars` uygular).
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import math
 from typing import Any
 
@@ -93,11 +95,150 @@ def read_daily(rows: list[dict[str, Any]]) -> tuple[float, float, float] | None:
     return close, ema, atr
 
 
+@dataclass(frozen=True)
+class TrendParams:
+    """Trend defterinin (T1/T2/M2) dogrulanmis parametreleri.
+
+    KALDIRAC (2026-09-20): `decide` kaldiraci KODDA 1'e sabitliyordu. Sonucu sessizdi ama
+    agirdi: tek pozisyon tavani `MAX_POSITION_PCT x kaldirac` oldugu icin, stop mesafesi
+    ozkaynagin %6,67'sinden dar olan HER sinyal 30 USDT tavanini asip `MAX_POSITION_PCT`
+    ile reddediliyordu. Box ayni aritmetigi `leverage: 3` ile cozmustu; trend defterlerinde
+    cozulmemisti. Artik defter basina yapilandirilir.
+
+    Kaldirac islem basina RISKI ARTIRMAZ — risk stop mesafesiyle belirlenir ve
+    `risk_per_trade_pct` tavani degismez. Degistirdigi sey: ayni riski tasiyabilmek icin
+    gereken notional'in tavana sigmasi ve likidasyon mesafesinin kisalmasi.
+    """
+
+    atr_mult: float = DEFAULT_ATR_MULT
+    leverage: int = 1
+    #: IHTIYAC KADAR KALDIRAC TAVANI (2026-09-21). `leverage` TABANDIR; uygulayici, islemin
+    #: notional'i tek pozisyon tavanina sigmiyorsa kaldiraci BURAYA KADAR yukseltir. Stopu dar
+    #: olan islem ayni hareketten daha cok R uretir ve tam da tavana takilan odur. Gerekmedikce
+    #: yukseltilmez — kaldirac riski degil, likidasyon yakinligini artirir.
+    leverage_max: int = 0
+    #: MFE ESIGIYLE SILAHLANAN GEVSEK TRAIL (2026-09-20) — ikisi de 0 iken KAPALI ve
+    #: davranis bit-bit eskisi gibidir. `trail_arm_r`: trail ancak en yuksek kar bu R'ye
+    #: ULASINCA silahlanir. `trail_dist_r`: silahlandiktan sonra zirveden bu kadar R geri
+    #: verilirse cikilir. Olculdu: kural cikisi zirvenin ~%64'unu geri veriyor; A=3R/D=1R
+    #: 620 islemin yalniz 67'sine dokunur (digerleri hic 3R MFE gormuyor).
+    #: NEDEN BURADA: defterin kendi `trailing_pct`i AYNI tikin `best`inden turetip AYNI tikin
+    #: `worst`u ile test ediyor (bar ici sira varsayimi) ve canli 1h uclariyla, replay 4h barla
+    #: tikliyor — ayni kural iki motorda FARKLI cikis uretirdi. Kapanmis GUNLUK bardan
+    #: hesaplamak iki motorda da AYNI satirlari okur.
+    trail_arm_r: float = 0.0
+    trail_dist_r: float = 0.0
+
+    def validate(self) -> "TrendParams":
+        if not (self.atr_mult > 0):
+            raise ValueError("trend rule_params.atr_mult pozitif olmali")
+        if not (1 <= int(self.leverage) <= 125):
+            raise ValueError("trend rule_params.leverage 1..125 araliginda olmali")
+        if self.leverage_max and not (int(self.leverage) <= int(self.leverage_max) <= 125):
+            raise ValueError("trend rule_params.leverage_max, leverage ile 125 arasinda olmali")
+        if self.trail_arm_r < 0 or self.trail_dist_r < 0:
+            raise ValueError("trend rule_params.trail_* negatif olamaz")
+        if bool(self.trail_arm_r > 0) != bool(self.trail_dist_r > 0):
+            raise ValueError("trail_arm_r ve trail_dist_r BIRLIKTE verilir (biri 0 ise trail kapalidir)")
+        return self
+
+
+def exit_measure(variant: str, rows: list[dict[str, Any]]) -> tuple[float, float] | None:
+    """Acik pozisyonun KURAL CIKISI icin gereken EN KUCUK olcu: (close, esik) | None.
+
+    CIKIS, GIRISIN on kosullarina BAGLANAMAZ. ATR14 yalniz giris stopunu boyutlandirir ve
+    cikis formulunde HIC yer almaz; buna ragmen 2026-09-19'a kadar ikisi de tek `read_daily`
+    uzerinden okunuyordu. ATR olculemezse (ya da kapanmis gunluk satir sayisi MIN_DAILY_BARS'in
+    altina duserse) `decide` sessizce None donuyor, `apply_action` bunu "NONE" sayiyor ve acik
+    pozisyon kural cikisini BIR DAHA ASLA alamiyordu; defter ozetinde gorunen tek sey
+    {"action": "NONE", "reason": "NO_SIGNAL"} oluyordu — yani "trend bozulmadi, tutuyoruz" ile
+    "cikisi olcemiyorum" ayirt EDILEMIYORDU. Tetikleyici varsayimsal degil: V17 (3b0ae8e)
+    cerceveleri USDS-M perp mumlarina tasidi ve genc perp sozlesmelerinde gunluk satir sayisi
+    210'un altina duser. Veri eksikligi "cik" degil "tut" anlamina gelemez.
+
+    Esik: T2 icin EMA200, M2 icin 28 gun onceki kapanis. EMA200 SUTUNU varsa satir sayisi
+    sarti aranmaz (isinma zaten sutunu ureten tarafta yapilmistir); yalnizca EMA'yi BURADA
+    hesaplamak gerekiyorsa MIN_DAILY_BARS istenir.
+    """
+    if not rows:
+        return None
+    close = _f(rows[-1].get("close"))
+    if close is None:
+        return None
+    if variant == "m2_tsmom28":
+        # M2 cikisi yalnizca 29 bar ister; 210 sarti bu yola HIC ait degildi.
+        if len(rows) <= TSMOM_LOOKBACK_DAYS:
+            return None
+        ref = _f(rows[-1 - TSMOM_LOOKBACK_DAYS].get("close"))
+        return (close, ref) if ref is not None else None
+    ema = _f(rows[-1].get("ema200"))
+    if ema is None:
+        if len(rows) < MIN_DAILY_BARS:
+            return None
+        closes = [_f(r.get("close")) for r in rows]
+        if any(c is None for c in closes):
+            return None
+        ema = _ema_last(closes)
+    return (close, ema) if ema is not None else None
+
+
+def trail_state(rows: list[dict[str, Any]], *, entry: float, initial_stop: float,
+                opened_ms: int) -> tuple[float, float] | None:
+    """(mfe_r, cur_r) — pozisyon acildiktan SONRA acilmis KAPANMIS gunluk barlardan.
+
+    BAR PROVENANSI: yalnizca `timestamp >= opened_ms` olan barlar sayilir. Girisden ONCE
+    acilmis bir barin ucu MFE'ye giremez — bu projede tam bu kusur yasandi (giris oncesi
+    barin uclari MFE'ye yaziliyordu). Fail-closed: olculemezse None.
+    """
+    risk = abs(float(entry) - float(initial_stop))
+    if not (risk > 0) or not rows:
+        return None
+    uygun = [r for r in rows if _f(r.get("timestamp")) is not None and int(r["timestamp"]) >= int(opened_ms)]
+    if not uygun:
+        return None
+    yon = 1.0 if float(initial_stop) < float(entry) else -1.0      # LONG: stop asagida
+    uclar = [_f(r.get("high") if yon > 0 else r.get("low")) for r in uygun]
+    kapanis = _f(uygun[-1].get("close"))
+    if kapanis is None or any(x is None for x in uclar):
+        return None
+    zirve = max(uclar) if yon > 0 else min(uclar)
+    return (yon * (zirve - float(entry)) / risk, yon * (kapanis - float(entry)) / risk)
+
+
 def decide(variant: str, *, daily_rows: list[dict[str, Any]], btc_daily_rows: list[dict[str, Any]] | None,
-           position_open: bool, atr_mult: float = DEFAULT_ATR_MULT) -> dict[str, Any] | None:
+           position_open: bool, atr_mult: float = DEFAULT_ATR_MULT,
+           leverage: int = 1, leverage_max: int = 0, trail_arm_r: float = 0.0,
+           trail_dist_r: float = 0.0, position: Any = None) -> dict[str, Any] | None:
     """Tek karar: {"action": "OPEN"|"CLOSE", ...} ya da None. Bilinmeyen veri → None (fail-closed)."""
     if variant not in VARIANTS:
         raise ValueError("bilinmeyen strateji varyanti: %r" % (variant,))
+    # CIKIS ONCE ve GIRISTEN BAGIMSIZ olculur (2026-09-19): acik pozisyonun kapanmasi, yeni
+    # giris icin gereken buyukluklerin (ATR14) olculebilmesine bagli olamaz.
+    if position_open:
+        # TRAIL (2026-09-20) — KURAL CIKISINDAN ONCE sorulur: kuyrugu kesmemek icin ancak
+        # MFE esigi asildiktan SONRA silahlanir. Kapali (0/0) iken bu blok HIC calismaz ve
+        # davranis bit-bit eskisi gibidir. Olculemezse (bar provenansi / initial_stop yok)
+        # SESSIZ GECMEZ: trail uygulanmaz, kural cikisi normal isler.
+        if trail_arm_r > 0 and trail_dist_r > 0 and position is not None:
+            _e = _f(getattr(position, "entry_avg", None) if not isinstance(position, dict)
+                    else position.get("entry_avg", position.get("entry")))
+            _s0 = _f(getattr(position, "initial_stop", None) if not isinstance(position, dict)
+                     else position.get("initial_stop"))
+            _om = position.get("opened_ts") if isinstance(position, dict) else None
+            if _e is not None and _s0 is not None and _om is not None:
+                st = trail_state(daily_rows, entry=_e, initial_stop=_s0, opened_ms=int(_om))
+                if st is not None and st[0] >= trail_arm_r and (st[0] - st[1]) >= trail_dist_r:
+                    return {"action": "CLOSE", "reason": "TRAIL_GIVEBACK", "name": variant,
+                            "mfe_r": round(st[0], 4), "cur_r": round(st[1], 4)}
+        m = exit_measure(variant, daily_rows)
+        if m is None:
+            # SESSIZ GECMEZ: "olcemiyorum" ile "sinyal yok" ayri kayitlardir.
+            return {"action": "NONE", "reason": "EXIT_UNMEASURABLE", "name": variant}
+        x_close, x_thr = m
+        if x_close > x_thr:
+            return None
+        why = "M2_TSMOM28_CROSS_DOWN" if variant == "m2_tsmom28" else "EMA200_CROSS_DOWN"
+        return {"action": "CLOSE", "reason": why, "name": variant}
     d = read_daily(daily_rows)
     if d is None:
         return None
@@ -110,9 +251,6 @@ def decide(variant: str, *, daily_rows: list[dict[str, Any]], btc_daily_rows: li
         above = close > ref
     else:
         above = close > ema
-    if position_open:
-        why = "M2_TSMOM28_CROSS_DOWN" if variant == "m2_tsmom28" else "EMA200_CROSS_DOWN"
-        return {"action": "CLOSE", "reason": why, "name": variant} if not above else None
     if not above:
         return None
     regime = None
@@ -123,7 +261,7 @@ def decide(variant: str, *, daily_rows: list[dict[str, Any]], btc_daily_rows: li
     stop = close - atr_mult * atr
     if stop <= 0:
         return None
-    act = {"action": "OPEN", "direction": "LONG", "stop": stop, "targets": [], "leverage": 1,
+    act = {"action": "OPEN", "direction": "LONG", "stop": stop, "targets": [], "leverage": int(leverage), "leverage_max": int(leverage_max),
            "reason": "M2_TSMOM28" if variant == "m2_tsmom28" else "EMA200_TREND", "name": variant,
            "regime": regime, "setup_type": "trend",
            "signal_close": close, "ema200": ema, "atr14": atr,

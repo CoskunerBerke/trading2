@@ -40,6 +40,40 @@ from tradingbot.timeframes import SUPPORTED_TIMEFRAMES, TF_MS, bar_close_ms, is_
 
 H4 = TF_MS["4h"]
 NOW = int(time.time() * 1000)
+
+
+@pytest.fixture(autouse=True)
+def _pin_the_panel_clock(monkeypatch):
+    """Panelin gordugu saati `NOW`a sabitler — ARALIKLI DUSMENIN KOKU (2026-09-19 olcumu).
+
+    `NOW` modul IMPORT edilirken bir kez alinir ve bu dosyadaki butun sentetik mum serileri
+    ona gore kurulur. Uretim ise `dashboard/app.py:2782`'de `now_ms = int(time.time() * 1000)`
+    ile ISTEK ANINDAKI saate bakar ve `:2700`'de `bar_closed = last_open + TF_MS[tf] <= now_ms`
+    hukmunu verir. Tam paket ~39 dakika surdugu icin, testin sirasi geldiginde sentetik "acik"
+    bar GERCEK saatte coktan kapanmis olur ve hukum terse doner.
+
+    Olculdu: gecikmesiz kosuda f1+f8 birlikte 1,23 sn'de GECIYOR; toplama bittikten sonra
+    330 sn bekletilince ayni iki test, ayni kodla, f1 DUSUYOR. Iki tam temiz paket kosusunda
+    f1 2/2, f8 1/2 dustu. `_chart_cache` teorisi daha once elenmisti — kok bu degildi.
+
+    Bu bir TEST kusurudur, uretim kusuru DEGIL: panelin gercek saate bakmasi dogrudur. Saat
+    sabitlenince test, olcmek istedigi seyi olcer (acik mumun fiyati her "simdi" yolunda
+    guncelleniyor mu), duvar saatinin fazini degil.
+
+    Yalnizca `app` modulunun gordugu `time` donar; global `time` modulune DOKUNULMAZ.
+    """
+    import tradingbot.dashboard.app as _app
+
+    _real = _app.time
+
+    class _PinnedClock:
+        def __getattr__(self, name):          # time.sleep vb. gercek modulden gelir
+            return getattr(_real, name)
+
+        def time(self):
+            return NOW / 1000.0
+
+    monkeypatch.setattr(_app, "time", _PinnedClock())
 GATES = {"candle_mode": "ENFORCE", "candle_variant": "c3_4h_veto", "chart_mode": "SHADOW", "chart_variant": "p2_4h_veto",
          "regime_mode": "ENFORCE", "regime_variant": "r1_long_only_uptrend", "chart_fresh_within": 3}
 CFG = {"swing_lookback": 3, "cluster_tolerance_atr": 0.10, "trendline_touch_tolerance_pct": 0.3}

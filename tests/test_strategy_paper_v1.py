@@ -72,6 +72,30 @@ def test_daily_rows_from_frame_selects_shared_columns():
 
 
 # ------------------------------------------------------------------ tek kaynak
+def _fn_code(rel: str, *names: str) -> str:
+    """Verilen fonksiyonlarin YALNIZ CALISAN kodu (yorum ve docstring HARIC).
+
+    `ast.unparse` yorumlari tamamen atar; docstringleri de burada ayrica duseruz. Neden AST:
+    duz metin aramasi bir ACIKLAMA satirindaki ismi kod sanip sozlesme testini DUSURUYORDU
+    (2026-09-20). Kaynak metnini parcalayip tokenize etmek de ise yaramaz — girintili bir
+    metot govdesi tek basina tokenize EDILEMEZ ve koruyucu dal ham metni geri verir.
+    """
+    import ast as _ast
+    mod = _ast.parse((ROOT / rel).read_text(encoding="utf-8"))
+    parcalar = []
+    for node in _ast.walk(mod):
+        if isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef)) and node.name in names:
+            govde = list(node.body)
+            if (govde and isinstance(govde[0], _ast.Expr)
+                    and isinstance(getattr(govde[0], "value", None), _ast.Constant)
+                    and isinstance(govde[0].value.value, str)):
+                govde = govde[1:]                         # docstring DUSER
+            parcalar.extend(_ast.unparse(x) for x in govde)
+    if not parcalar:
+        raise AssertionError("fonksiyon bulunamadi: %s icinde %s" % (rel, names))
+    return chr(10).join(parcalar)
+
+
 def _calls(rel: str, func: str) -> int:
     src = (ROOT / rel).read_text(encoding="utf-8")
     return sum(1 for node in ast.walk(ast.parse(src))
@@ -88,9 +112,12 @@ def test_both_engines_apply_actions_through_the_shared_executor():
     assert _calls("strategy_paper.py", "decide") == 0, "kagit defter kaydi ATLAYARAK kurali cagiriyor"
     assert _calls("paper_rules.py", "decide") >= 1, "kural kaydi uretim kural modulune delege etmiyor"
     assert "_strategy_paper_tour(" in (ROOT / "engine_v3.py").read_text(encoding="utf-8")
-    rp = (ROOT / "replay" / "engine.py").read_text(encoding="utf-8")
-    assert "risk_per_trade_pct" not in rp.split("def _strategy_step")[1].split("def _on_closed")[0], \
-        "replay boyutlandirmayi KENDI icinde tutuyor (tek kaynak ihlali)"
+    # SOZLESME: replay KENDI boyutlandirmasini yapmaz; risk/boyut tek kaynakta (`apply_action`).
+    # Tarama YORUMLARI DISLAR (2026-09-20): eskiden duz metin aramasiydi ve ACIKLAMA satirinda
+    # gecen bir isim testi DUSURUYORDU — kodu degil belgeyi olcen bir sozlesme testi bu projede
+    # tekrar tekrar yanlis alarm verir. Artik yalniz CALISAN kod taranir.
+    _kod = _fn_code("replay/engine.py", "_strategy_step", "_strategy_pass", "_strategy_pass_ranked")
+    assert "risk_per_trade_pct" not in _kod,         "replay boyutlandirmayi KENDI icinde tutuyor (tek kaynak ihlali)"
 
 
 def test_research_rules_delegate_to_the_shared_rule():

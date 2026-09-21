@@ -469,12 +469,33 @@ class FuturesLedgerV2:
                 self.wallet_balance += ev.amount
                 self.total_funding += ev.amount
                 self._entry(LedgerKind.FUNDING, ev.amount, pos.id, f"funding rate={ev.rate}{' est' if ev.estimated else ''}", ev.ts)
-            # likidasyon
-            if pos.liquidation_price is not None and is_liquidated(pos.side, worst, pos.liquidation_price):
+            # LIKIDASYON vs STOP — SIRA (2026-09-20)
+            # Eskiden likidasyon KOSULSUZ once kontrol ediliyordu. Tek bir barda her iki seviye
+            # de delindiginde motor stop yerine likidasyonu uyguluyor ve zarar 1R yerine tum
+            # marja (+likidasyon ucreti) cikiyordu. Oysa stop likidasyondan DAHA YAKINSA bu
+            # fiziksel olarak imkansizdir: fiyat uzaktaki likidasyona varmak icin once yakindaki
+            # stoptan GECMEK ZORUNDADIR. Belirsizlik yok, sira bellidir.
+            #
+            # Kusur 1x kaldiracta UYKUDAYDI (likidasyon ulasilamaz): olculdu, 620 sampiyon
+            # kapanista L=2'de stop mesafesi maks %39,7 < likidasyon %49,80 -> 0 mesru likidasyon.
+            # Kaldirac 2'ye cikinca kanal aciliyordu: 2 islem -1R yerine -1,40R/-1,41R,
+            # L=3'te 10 islem (~+3,6R fazladan zarar, en kotusu -2,08R).
+            #
+            # Likidasyon, stoptan YAKIN oldugu her durumda ONCELIKLI KALIR — aksi halde gercek
+            # likidasyon riski gizlenir ve motor gap barlarinda fazla iyimser olur.
+            _stop_once = False
+            if pos.stop is not None and pos.liquidation_price is not None:
+                _stop_once = ((pos.side is PositionSide.LONG and pos.stop > pos.liquidation_price)
+                              or (pos.side is PositionSide.SHORT and pos.stop < pos.liquidation_price))
+            if (not _stop_once) and pos.liquidation_price is not None and is_liquidated(pos.side, worst, pos.liquidation_price):
                 closed.append(self._liquidate(pos, ts))
                 continue
             stop_hit = pos.stop is not None and ((pos.side is PositionSide.LONG and worst <= pos.stop) or
                                                  (pos.side is PositionSide.SHORT and worst >= pos.stop))
+            if _stop_once and not stop_hit and is_liquidated(pos.side, worst, pos.liquidation_price):
+                # Stop daha yakin ama DELINMEDI, likidasyon delindi -> tutarsiz girdi; guvenli taraf.
+                closed.append(self._liquidate(pos, ts))
+                continue
             if stop_hit:
                 # gap-through: mark stop'un ötesindeyse mark'tan doldur
                 trig = pos.stop

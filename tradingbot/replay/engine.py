@@ -96,6 +96,12 @@ class ReplayResult:
     #: Funding kapsami: kac settlement arsivden cevaplandi, kaci BILINMIYORDU. `complete=False`
     #: iken bu sonuclar MALIYET-SONRASI degildir ve oyle raporlanmamalidir.
     funding_coverage: dict = field(default_factory=dict)
+    #: EVREN PROVENANSI (2026-09-19): `symbols` KURUCUYA VERILEN, yani ISTENEN listedir.
+    #: `load()` yeterli serisi olmayan sembolu sessizce atliyordu; bu yuzden 40 coinlik bir
+    #: kosu 10 coinlik arsivde rc=0 ile bitip meta'da "40 sembol" yaziyordu. Artik GERCEKTEN
+    #: yuklenen ve DUSEN semboller (sebebiyle) ayri alanlarda durur; rapor bunlari yazmalidir.
+    loaded_symbols: list[str] = field(default_factory=list)
+    skipped_symbols: dict = field(default_factory=dict)   # sembol -> NO_SERIES | TOO_FEW_BARS:<n>
 
     def to_dict(self) -> dict:
         return self.__dict__.copy()
@@ -107,7 +113,8 @@ class HistoricalReplay:
                  economics_gate: bool = True, spot_listed: set[str] | None = None, entry_rule=None, legacy_agents: bool = True, entry_trigger: bool = True, legacy_veto: bool = False,
                  lookback_bars: int = 400, min_bars: int = 250, decision_stride: int = 1,
                  candle_variant: str | None = "config", chart_variant: str | None = "config",
-                 regime_variant: str | None = "config", strategy=None):
+                 regime_variant: str | None = "config", strategy=None, candidate_order=None,
+                 max_entry_drift_pct: float = 0.0):
         self.cfg, self.run_id, self.store, self.symbols, self.market, self.tf, self.seed = cfg, run_id, store, list(symbols), market, tf, int(seed)
         self.pattern_engine = pattern_engine
         # EKONOMI KAPISI: uretimde karar yolunun ZORUNLU asamasi (engine_v3._assess_opportunities).
@@ -162,6 +169,14 @@ class HistoricalReplay:
         # `strategy(sym, t, frames, position, replay)` -> {"action": "OPEN"|"CLOSE", ...} | None.
         # Acilis/kapanis AYNI defter, risk motoru, borsa filtresi, kayma ve funding yolundan gecer.
         self.strategy = strategy
+        # ADAY SIRALAMA ANAHTARI: `f(sym, act) -> float | None`. None iken davranis DEGISMEZ
+        # (tek gecis, arsiv sirasi). Verildiginde ayni turdaki yeni giris adaylari buyukten
+        # kucuge uygulanir; cikislar siralamaya girmez ve ONCE uygulanir (bkz. _strategy_pass_ranked).
+        self.candidate_order = candidate_order
+        #: PARITE: canli defterin `max_entry_drift_pct` ayarinin replay karsiligi. Ikisi ayni
+        #: `apply_action` kapisini besler; farkli birakmak ayni kurali iki motorda FARKLI
+        #: olcmek demektir (bu projede tekrar eden kusur sinifi).
+        self.max_entry_drift_pct = float(max_entry_drift_pct or 0.0)
         #: ayni barda ikinci girisi engellemek icin (uretimdeki `self.triggers` karsiligi)
         self._fired_bar: dict[str, str] = {}
         self._legacy_agents = None
@@ -244,7 +259,18 @@ class HistoricalReplay:
         self.result = ReplayResult(run_id, self.seed, self.symbols, market, tf, 0, 0, state_dir=str(self.state_dir))
 
     # ------------------------------------------------------------ veri
-    def load(self) -> None:
+    def load(self, *, require_all: bool = False) -> None:
+        """Arsivden serileri yukler.
+
+        SESSIZ DUSURME YOK (2026-09-19): yeterli serisi olmayan sembol atlanir ama artik
+        `result.skipped_symbols` icinde SEBEBIYLE kayda gecer ve uyari loglanir. Onceden tek
+        fail-closed nokta "hicbiri yuklenemedi" idi; 40 sembolun 39'u dusse bile kosu basariyla
+        biter ve meta ISTENEN listeyi yazardi — "hatasiz bitti" veri kaniti sanilirdi.
+
+        `require_all=True`: istenen her sembol yuklenemezse ValueError. Eksik sembolle kosmak
+        AYRI bir deneydir; "40 coinde olctuk" hukmu ancak bu bayrakla kurulabilir.
+        """
+        skipped: dict[str, str] = {}
         for sym in self.symbols:
             fr = {}
             for tf in ("1d", self.tf, "1h"):
@@ -255,6 +281,17 @@ class HistoricalReplay:
             if self.tf in fr and len(fr[self.tf]) >= self.min_bars:
                 self.frames[sym] = fr
                 self.primary[sym] = fr[self.tf]
+            else:
+                skipped[sym] = ("TOO_FEW_BARS:%d" % len(fr[self.tf])) if self.tf in fr else "NO_SERIES"
+        self.result.loaded_symbols = list(self.primary)
+        self.result.skipped_symbols = dict(skipped)
+        if skipped:
+            log.warning("replay evreni EKSIK: %d/%d sembol yuklendi, %d dusuruldu (%s). Bu kosu istenen evreni TEMSIL ETMEZ.",
+                        len(self.primary), len(self.symbols), len(skipped),
+                        ", ".join("%s=%s" % kv for kv in sorted(skipped.items()))[:400])
+            if require_all:
+                raise ValueError("replay evreni eksik: istenen %d sembolun %d'i yuklenemedi (%s)"
+                                 % (len(self.symbols), len(skipped), ", ".join(sorted(skipped))))
         if not self.primary:
             raise ValueError("replay için yeterli veri yok")
         all_ts = sorted(set(int(t) for df in self.primary.values() for t in df["timestamp"]))
@@ -555,7 +592,28 @@ class HistoricalReplay:
         """
         from ..strategy_paper import apply_action
         state = self._portfolio_state(marks_f, now)
-        for sym in list(self.primary):
+
+        # ADAY SIRASI (2026-09-19): risk butcesi (`max_total_open_risk_pct / risk_per_trade_pct`)
+        # ayni anda yalniz birkac pozisyona izin verir. Varsayilan yolda semboller ARSIV SIRASIYLA
+        # gezilir ve slotlar "ilk uyan"a gider — canli defterdeki davranisin aynisi
+        # (`strategy_paper.py`: tur listesi gelis sirasinda gezilir). On coinde bu makul, kirk
+        # coinde DEGIL: ayni uc slota dort kat aday dusunce sonuc sinyal KALITESINI degil
+        # `config.yaml` liste SIRASINI olcer. Olculdu (bn_archive, 6 karsilastirma): kirk coinde
+        # ortalama R 6'nin 5'inde DUSUK, M2 bilesik +216% -> +100%.
+        #
+        # `candidate_order` verilirse: once TUM kararlar yan etkisiz toplanir, sonra ayni turdaki
+        # YENI GIRIS adaylari bu anahtarla (buyukten kucuge) siralanir. CIKIS/azaltma kararlarinin
+        # goreli sirasi KORUNUR ve onlar once uygulanir — cikis butce ACAR, bastirilamaz.
+        # `None` iken davranis BIT BIT eskisi gibidir (tek gecis, arsiv sirasi).
+        if self.candidate_order is None:
+            self._strategy_pass(t, now, marks, marks_f, state, list(self.primary))
+            return
+        self._strategy_pass_ranked(t, now, marks, marks_f, state)
+
+    def _strategy_pass(self, t: int, now, marks: dict, marks_f: dict, state, syms: list) -> None:
+        """ESKI YOL — tek gecis, verilen sirada. Davranis degismez."""
+        from ..strategy_paper import apply_action
+        for sym in syms:
             if sym not in marks_f:
                 continue
             fr = self._slice(sym, t)
@@ -580,9 +638,78 @@ class HistoricalReplay:
                                ledger=self.ledger2, risk=self.risk, profile=self.profile, state=state,
                                filters=self._filters_for(sym), run_id=self.run_id,
                                reject=self._reject, on_closed=self._on_closed, on_opened=_opened,
-                               data=self._paper_data_verdict(sym, t, fr))
+                               data=self._paper_data_verdict(sym, t, fr),
+                               max_entry_drift_pct=self.max_entry_drift_pct)
             if res in ("OPENED", "CLOSED"):
                 state = self._portfolio_state(marks_f, now)
+
+    def _strategy_pass_ranked(self, t: int, now, marks: dict, marks_f: dict, state) -> None:
+        """IKI FAZLI YOL — once kararlar toplanir, sonra YENI GIRISLER siralanir.
+
+        Faz 1: her sembol icin karar uretilir, HICBIR yan etki uygulanmaz. Strateji arizasi
+        burada da sessiz gecmez.
+        Faz 2a: cikis/azaltma kararlari ARSIV SIRASIYLA uygulanir — bunlar butce ACAR ve
+        siralamaya tabi tutulmaz; bir cikisi geciktirmek risk artirir.
+        Faz 2b: yeni giris adaylari `candidate_order(sym, act)` anahtariyla BUYUKTEN KUCUGE
+        uygulanir. Anahtar None dondurursek aday en sona duser (siralanamayan aday one gecemez).
+        Esitlikte arsiv sirasi bozulmaz (kararli siralama).
+
+        KONTROLLU KARSILASTIRMA ICIN: kontrol kolu da BU YOLDAN gecmeli (anahtar = arsiv
+        sirasinin tersi indeksi). Boylece tek degisken SIRALAMA olur; "iki fazli olmak"
+        ayri bir degisken olarak sonuca karismaz.
+        """
+        from ..strategy_paper import apply_action
+        order = {s: i for i, s in enumerate(self.primary)}
+        kararlar = []
+        for sym in list(self.primary):
+            if sym not in marks_f:
+                continue
+            fr = self._slice(sym, t)
+            pos = self.ledger2.positions.get(sym)
+            try:
+                act = self.strategy(sym, t, fr, pos, self)
+            except Exception as exc:  # noqa: BLE001 — strateji arizasi SESSIZ GECMEZ
+                self._reject(sym, "STRATEGY_ERROR:%s" % type(exc).__name__)
+                continue
+            if not act:
+                continue
+            kararlar.append((sym, act, fr, pos))
+
+        yeni_giris = [k for k in kararlar
+                      if str(k[1].get("action") or "").upper() == "OPEN" and k[3] is None]
+        digerleri = [k for k in kararlar if k not in yeni_giris]
+        self.result.n_actionable += len(yeni_giris)
+
+        def _anahtar(k):
+            try:
+                v = self.candidate_order(k[0], k[1])
+            except Exception:  # noqa: BLE001 — siralama arizasi kosuyu durdurmaz, adayi sona atar
+                v = None
+            # (siralanabilir mi, deger, arsiv sirasi) — kararli, None en sona
+            return (0 if v is None else 1, float(v) if v is not None else 0.0, -order.get(k[0], 0))
+
+        yeni_giris.sort(key=_anahtar, reverse=True)
+
+        for grup in (digerleri, yeni_giris):
+            for sym, act, fr, pos in grup:
+                def _opened(p, a, _sym=sym, _t=t):
+                    self._entry_meta[p.id] = {"symbol": _sym, "in_test": True, "regime": a.get("regime"),
+                                              "decision": {}, "opened_ts": _t}
+                    self.memory.record_entry({"trade_id": p.id, "symbol": _sym, "direction": p.side.value,
+                                              "market_type": "USDM_PERP",
+                                              "setup_type": str(a.get("setup_type") or "strategy"),
+                                              "regime": a.get("regime"),
+                                              "features": {"strategy": a.get("name")},
+                                              "run_id": self.run_id, "in_test": True})
+                    self.result.n_opened += 1
+                res = apply_action(act, symbol=sym, price=float(marks_f[sym]), tick=marks.get(sym), now=now,
+                                   ledger=self.ledger2, risk=self.risk, profile=self.profile, state=state,
+                                   filters=self._filters_for(sym), run_id=self.run_id,
+                                   reject=self._reject, on_closed=self._on_closed, on_opened=_opened,
+                                   data=self._paper_data_verdict(sym, t, fr),
+                               max_entry_drift_pct=self.max_entry_drift_pct)
+                if res in ("OPENED", "CLOSED"):
+                    state = self._portfolio_state(marks_f, now)
 
     def _on_closed(self, rec) -> None:
         """Kapanan islemi kaydet — ledger tick'inden de, strateji modunun manuel kapanisindan da AYNI yol."""

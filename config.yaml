@@ -387,17 +387,38 @@ entry_selectivity:
 strategy_paper:
   enabled: true
   name: t2_trend_regime
-  starting_equity_usdt: 100
+  # BAKIYE 200 (2026-09-21, kullanici karari + OLCUM): 100 USDT'de pozisyonlar borsa
+  # minimumlarina takiliyordu. Olculdu (40 coin, 6 pencere): MIN_ORDER_CONFLICT 587 -> 0,
+  # MIN_NOTIONAL 593 -> 238. Denenen butun ayarlar icinde GERCEKTEN bir kisiti acan tek sey.
+  starting_equity_usdt: 200
   atr_mult: 3.0
   breakeven_at_mfe_r: 0.0
   state_dir: strategy_paper
+  rule_params:
+    # IHTIYAC KADAR KALDIRAC (2026-09-21, kullanici talimati: "1x sakin olmasin").
+    # `leverage` TABAN, `leverage_max` TAVAN. Uygulayici kaldiraci ancak islemin notional'i
+    # tek pozisyon tavanina (equity x %30 x kaldirac) sigmiyorsa ve ANCAK gerektigi kadar
+    # yukseltir. Stopu dar olan islem ayni hareketten daha cok R uretir ve tam da tavana
+    # takilan odur. Kaldirac islem basina RISKI ARTIRMAZ (risk stop mesafesiyle belirlenir);
+    # likidasyonu yaklastirir, bu yuzden gerekmedikce yukseltilmez.
+    # Olculdu (620 kapanis): L2'de mesru likidasyon 0/620 (stop maks %39,7 < likidasyon %49,80),
+    # L3'te 9, L5'te 54 -> tavan 4 secildi.
+    leverage: 2
+    leverage_max: 4
+  # GIRIS KAYMASI KAPISI: 0 = KAPALI. Mekanizma yazildi ve testli ama esik degeri HENUZ
+  # OLCULMEDI; olculmeden acilmaz (bkz. apply_action GIRIS KAYMASI KAPISI).
+  max_entry_drift_pct: 0.0
   # V12 (DENEY_V11): ikinci defter — 28 günlük zaman serisi momentumu (m2), T2 ile yan yana ileri test.
   extra:
     - name: m2_tsmom28
-      starting_equity_usdt: 100
+      starting_equity_usdt: 200          # bkz. ana defterdeki BAKIYE 200 gerekcesi
       atr_mult: 3.0
       breakeven_at_mfe_r: 0.0
       state_dir: strategy_paper_m2
+      rule_params:
+        leverage: 2                      # bkz. ana defterdeki IHTIYAC KADAR KALDIRAC gerekcesi
+        leverage_max: 4
+      max_entry_drift_pct: 0.0
     # V15 (BOX THEORY): üçüncü defter — önceki günün aralığını 5m'de soluklayan gün içi kural.
     # Kuralın giriş/stop tanımı videodan BİREBİR; çıkış videoda YOKTUR → `exit_kind` bir SEÇİMDİR ve
     # burada araştırma süpürmesinin sonucu yazılır. Süpürme bitene kadar defter KAPALI kalır:
@@ -411,7 +432,7 @@ strategy_paper:
     #   Kapatmak tek satirdir: enabled: false.
     - name: b1_box_fade
       enabled: true
-      starting_equity_usdt: 100
+      starting_equity_usdt: 200          # bkz. T2 defterindeki BAKIYE 200 gerekcesi
       breakeven_at_mfe_r: 0.0
       state_dir: strategy_paper_box
       rule_params:
@@ -436,6 +457,11 @@ strategy_paper:
         # Kaldirac burada RISKI ARTIRMAZ (islem basina risk yine %2, stop mesafesiyle belirlenir); yalnizca
         # gunluk-stop icin tasarlanmis notional tavanini gun ici stopla uyumlu hale getirir.
         leverage: 3
+        # IHTIYAC KADAR KALDIRAC TAVANI (2026-09-21): yukaridaki aritmetik kaldiraci SABIT 3
+        # tutuyordu. Tavan, uygulayicinin kaldiraci ANCAK GEREKTIGI KADAR (ve en fazla 4)
+        # yukseltmesine izin verir; genis stoplu islemler 3 ile kalir, gereksiz likidasyon
+        # yakinligi olusmaz.
+        leverage_max: 4
 
 pattern_trader:                # FORMASYON PAPER TRADER V1 — yeni listeleme öncelikli mum formasyonu defteri (AYRI, sanal)
   enabled: true                # PAPER dışında ConfigError; ana bot ve T2/M2 defterlerine DOKUNMAZ

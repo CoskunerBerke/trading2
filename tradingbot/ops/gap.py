@@ -224,6 +224,7 @@ class GapReconciler:
                     continue
                 marks[sym] = TickData(last=Decimal(str(c["close"])), mark=Decimal(str(c["close"])),
                                       high=Decimal(str(c["high"])), low=Decimal(str(c["low"])),
+                                      open=Decimal(str(c["open"])) if c.get("open") is not None else None,
                                       ts=iso(datetime.fromtimestamp(c["close_time"] / 1000, tz=start.tzinfo)))
                 close_dt = datetime.fromtimestamp(c["close_time"] / 1000, tz=start.tzinfo)
             if not marks or close_dt is None:

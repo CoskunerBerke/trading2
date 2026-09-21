@@ -528,7 +528,10 @@ class HistoricalReplay:
             nxt = df[df["timestamp"] > t].head(1)
             if len(nxt):
                 r = nxt.iloc[0]
-                marks[sym] = TickData(last=Decimal(str(float(r["close"]))), mark=Decimal(str(float(r["close"]))), high=Decimal(str(float(r["high"]))), low=Decimal(str(float(r["low"]))))
+                # BAR ACILISI (2026-09-22): canli defterle AYNI dolum sozlesmesi (`exit_decision`) acilis boslugunu ancak
+                # bununla ayirir; sutun yoksa acilis BILINMIYOR sayilir (ihtiyatli yol), uydurulmaz.
+                _op = Decimal(str(float(r["open"]))) if "open" in r.index and r["open"] == r["open"] else None
+                marks[sym] = TickData(last=Decimal(str(float(r["close"]))), mark=Decimal(str(float(r["close"]))), high=Decimal(str(float(r["high"]))), low=Decimal(str(float(r["low"]))), open=_op)
         if not marks:
             return
         nxt_now = datetime.fromtimestamp((t + 2 * tf_ms(self.tf)) / 1000, tz=timezone.utc)

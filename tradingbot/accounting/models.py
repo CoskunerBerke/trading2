@@ -137,7 +137,12 @@ def _pick(cls, d: dict) -> dict:
 # ----------------------------------------------------------------------------- market tick
 @dataclass
 class TickData:
-    """Bir tik/bar özeti. `mark` yoksa `last` kullanılır; `high/low` varsa stop/TP tetikleri bar içi uçlarla kontrol edilir."""
+    """Bir tik/bar özeti. `mark` yoksa `last` kullanılır; `high/low` varsa stop/TP tetikleri bar içi uçlarla kontrol edilir.
+
+    `open` (2026-09-22): tik bir BAR ise barın açılış fiyatı — o aralıktaki İLK gözlenen fiyat. Stop/likidasyon
+    sözleşmesi (`futures_ledger.exit_decision`) açılışta oluşan boşluğu bar içi yoldan ancak bununla ayırır.
+    Fiyat-yalnız tikte (high/low yok) ilk gözlem fiyatın kendisidir; bar olup açılışı bilinmeyen tikte ilk gözlem
+    BİLİNMİYOR sayılır. Konumsal kurucu uyumu için alan en sondadır."""
     last: Decimal
     mark: Decimal | None = None
     high: Decimal | None = None
@@ -145,10 +150,11 @@ class TickData:
     bid: Decimal | None = None
     ask: Decimal | None = None
     ts: str = ""
+    open: Decimal | None = None
 
     def __post_init__(self):
         self.last = D(self.last)
-        for k in ("mark", "high", "low", "bid", "ask"):
+        for k in ("mark", "high", "low", "bid", "ask", "open"):
             v = getattr(self, k)
             setattr(self, k, dec_or_none(v))
 

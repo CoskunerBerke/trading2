@@ -10,7 +10,8 @@ Boyut anlamı (SizeSpec):
 * MARGIN  : amount = yatırılacak marj → notional = amount*lev → qty aşağı → efektif marj = qty*fill/lev (≤ amount)
 * QUANTITY: amount = adet
 
-Tik kuralları: mark (yoksa last) ve varsa high/low; öncelik LİKİDASYON > STOP > TP (aynı tikte stop+TP → stop; worst-case).
+Tik kuralları: mark (yoksa last), varsa bar açılışı ve high/low; stop/likidasyon hükmü `EXIT_FILL_CONTRACT`e göre
+(`exit_decision`), sonra TP (aynı tikte stop+TP → stop; worst-case).
 TP1'de kısmi kapanış (varsayılan %50) ve stop GERÇEK başabaşa (giriş+çıkış komisyonu + kayma tamponu) çekilir.
 """
 from __future__ import annotations
@@ -88,6 +89,82 @@ def _side(x) -> PositionSide:
 
 
 DEFAULT_MAX_POSITIONS = 3          # JSON'a yazılan geriye uyumlu varsayılan (asla `null` değil)
+
+
+#: ÇIKIŞ DOLUM SÖZLEŞMESİ (2026-09-22) — stop, likidasyon ve dolum fiyatı hangi GÖZLEME dayanır.
+#:
+#: Olaylar ayrıdır: (a) STOP TETİKLENMESİ = gözlenen bir fiyatın stop seviyesini geçmesi; (b) STOP DOLUMU = tetikten
+#: sonra gözlenen/varsayılan fiyattan piyasa emri; (c) LİKİDASYON = izole marjın tükendiği fiyata ulaşılması. Muhasebe
+#: bunlara göre ayrı yazılır (`_close_part` / `_liquidate`); stop dolumu hiçbir yolda likidasyon fiyatının ÖTESİNDEN
+#: yapılmaz (izole marjda o fiyatta pozisyon zaten likide olmuştur).
+#:
+#: Gözlem sırası: İLK GÖZLEM (bar ise `open`, fiyat-yalnız tikte fiyatın kendisi; bar olup açılışı bilinmiyorsa YOK),
+#: sonra aralığın EN KÖTÜ ucu (LONG `low`, SHORT `high`; sırası gözlenmez), sonra kapanış/mark.
+#:
+#:  1. İlk gözlem likidasyonun ötesindeyse → LİKİDASYON (boşluk; stop tetiklenmiş olabilir ama dolmadı).
+#:  2. İlk gözlem yalnız stopun ötesindeyse → STOP, dolum ilk gözlemden (açılış boşluğu / ardışık tiklerde atlama).
+#:  3. İlk gözlem güvenli tarafta (ya da bilinmiyor) ve en kötü uç:
+#:     a. iki seviyeyi de geçmişse ve likidasyon daha yakınsa → LİKİDASYON (her yolda önce o gelir);
+#:     b. iki seviyeyi de geçmişse ve stop daha yakınsa → bar içinde hangisinin önce gerçekleştiği GÖZLENMEDİ.
+#:        İHTİYATLI POLİTİKA: LİKİDASYON yazılır, kayıtta `INTRABAR_ORDER_UNOBSERVED` ve alternatif (seviyeden stop)
+#:        açıkça tutulur. Sürekli yol ancak ardışık tiklerle gözlenirse (kural 2 ya da 3c) stop kazanır;
+#:     c. yalnız stopu geçmişse → STOP, dolum seviyeden; kapanış/mark da stopun ötesindeyse dolum kapanıştan
+#:        (ihtiyatlı: tetikten sonraki gerçek dolum gözlenmedi, gözlenen kapanıştan iyi varsayılmaz). Bu dal
+#:        likidasyonun ötesine gidemez: kapanış likidasyonu geçseydi en kötü uç da geçmiş olurdu (3a/3b).
+#:  4. Kayma modeli dolumu likidasyonun ötesine iterse → LİKİDASYON (`SLIPPAGE_BEYOND_LIQUIDATION`).
+#:  5. Aynı tikte stop ve hedef → STOP (worst-case; açılış hedefin ötesinde olsa bile) — değişmedi.
+#:
+#: Kayıt: `features["exit_fill"]` = {basis, first_price, first_source, worst_price, close_price, stop,
+#: liquidation_price, stop_triggered, stop_filled[, alternative]}.
+EXIT_FILL_CONTRACT = "exit_fill_v1"
+
+
+def exit_decision(side: PositionSide, stop, liq, td: TickData) -> dict | None:
+    """Tek tikin stop/likidasyon hükmü — SAF; `EXIT_FILL_CONTRACT` kurallarını uygular.
+
+    Döner: None (çıkış yok) | {"kind": "liquidation", "record": {...}} | {"kind": "stop", "ref": Decimal, "record": {...}}.
+    `ref` kayma modeline verilecek tetik referansıdır (dolum `SlippageModel.fill_price(ref, ...)` ile bulunur)."""
+    long = side is PositionSide.LONG
+
+    def beyond(level, price) -> bool:
+        return (price <= level) if long else (price >= level)
+
+    has_ext = td.high is not None or td.low is not None
+    if td.open is not None:
+        first, first_src = td.open, "BAR_OPEN"
+    elif not has_ext:
+        first, first_src = td.ref, "PRICE"
+    else:
+        first, first_src = None, "UNKNOWN"             # bar ama açılış yok: ilk gözlem BİLİNMİYOR
+    worst = td.lo if long else td.hi
+    close = td.ref
+    base = {"contract": EXIT_FILL_CONTRACT, "first_price": str(first) if first is not None else None, "first_source": first_src,
+            "worst_price": str(worst), "close_price": str(close), "stop": str(stop) if stop is not None else None,
+            "liquidation_price": str(liq) if liq is not None else None}
+    if first is not None and liq is not None and beyond(liq, first):
+        return {"kind": "liquidation", "record": {**base, "basis": "FIRST_OBSERVATION_BEYOND_LIQUIDATION",
+                                                  "stop_triggered": bool(stop is not None and beyond(stop, first)),
+                                                  "stop_filled": False}}
+    if first is not None and stop is not None and beyond(stop, first):
+        return {"kind": "stop", "ref": first, "record": {**base, "basis": "GAP_FILL_AT_FIRST_OBSERVATION",
+                                                          "stop_triggered": True, "stop_filled": True}}
+    stop_hit = stop is not None and beyond(stop, worst)
+    liq_hit = liq is not None and beyond(liq, worst)
+    if liq_hit:
+        stop_nearer = stop is not None and ((stop > liq) if long else (stop < liq))
+        if stop_hit and stop_nearer:
+            return {"kind": "liquidation", "record": {**base, "basis": "INTRABAR_ORDER_UNOBSERVED",
+                                                      "policy": "PRUDENT_LIQUIDATION", "alternative": "STOP_AT_LEVEL",
+                                                      "stop_triggered": True, "stop_filled": False}}
+        return {"kind": "liquidation", "record": {**base, "basis": "LIQUIDATION_NEARER" if stop is not None else "LIQUIDATION",
+                                                  "stop_triggered": bool(stop_hit), "stop_filled": False}}
+    if stop_hit:
+        if beyond(stop, close):
+            return {"kind": "stop", "ref": close, "record": {**base, "basis": "STOP_CLOSE_BEYOND_LEVEL_PRUDENT",
+                                                              "stop_triggered": True, "stop_filled": True}}
+        return {"kind": "stop", "ref": stop, "record": {**base, "basis": "STOP_AT_LEVEL",
+                                                         "stop_triggered": True, "stop_filled": True}}
+    return None
 
 
 class FuturesLedgerV2:
@@ -469,39 +546,23 @@ class FuturesLedgerV2:
                 self.wallet_balance += ev.amount
                 self.total_funding += ev.amount
                 self._entry(LedgerKind.FUNDING, ev.amount, pos.id, f"funding rate={ev.rate}{' est' if ev.estimated else ''}", ev.ts)
-            # LIKIDASYON vs STOP — SIRA (2026-09-20)
-            # Eskiden likidasyon KOSULSUZ once kontrol ediliyordu. Tek bir barda her iki seviye
-            # de delindiginde motor stop yerine likidasyonu uyguluyor ve zarar 1R yerine tum
-            # marja (+likidasyon ucreti) cikiyordu. Oysa stop likidasyondan DAHA YAKINSA bu
-            # fiziksel olarak imkansizdir: fiyat uzaktaki likidasyona varmak icin once yakindaki
-            # stoptan GECMEK ZORUNDADIR. Belirsizlik yok, sira bellidir.
-            #
-            # Kusur 1x kaldiracta UYKUDAYDI (likidasyon ulasilamaz): olculdu, 620 sampiyon
-            # kapanista L=2'de stop mesafesi maks %39,7 < likidasyon %49,80 -> 0 mesru likidasyon.
-            # Kaldirac 2'ye cikinca kanal aciliyordu: 2 islem -1R yerine -1,40R/-1,41R,
-            # L=3'te 10 islem (~+3,6R fazladan zarar, en kotusu -2,08R).
-            #
-            # Likidasyon, stoptan YAKIN oldugu her durumda ONCELIKLI KALIR — aksi halde gercek
-            # likidasyon riski gizlenir ve motor gap barlarinda fazla iyimser olur.
-            _stop_once = False
-            if pos.stop is not None and pos.liquidation_price is not None:
-                _stop_once = ((pos.side is PositionSide.LONG and pos.stop > pos.liquidation_price)
-                              or (pos.side is PositionSide.SHORT and pos.stop < pos.liquidation_price))
-            if (not _stop_once) and pos.liquidation_price is not None and is_liquidated(pos.side, worst, pos.liquidation_price):
-                closed.append(self._liquidate(pos, ts))
-                continue
-            stop_hit = pos.stop is not None and ((pos.side is PositionSide.LONG and worst <= pos.stop) or
-                                                 (pos.side is PositionSide.SHORT and worst >= pos.stop))
-            if _stop_once and not stop_hit and is_liquidated(pos.side, worst, pos.liquidation_price):
-                # Stop daha yakin ama DELINMEDI, likidasyon delindi -> tutarsiz girdi; guvenli taraf.
-                closed.append(self._liquidate(pos, ts))
-                continue
-            if stop_hit:
-                # gap-through: mark stop'un ötesindeyse mark'tan doldur
-                trig = pos.stop
-                if (pos.side is PositionSide.LONG and mark < trig) or (pos.side is PositionSide.SHORT and mark > trig):
-                    trig = mark
+            # STOP / LİKİDASYON — ÇIKIŞ DOLUM SÖZLEŞMESİ (2026-09-22). Tanım: `exit_decision` ve modül
+            # sonundaki EXIT_FILL_CONTRACT. Stop tetiklenmesi, dolum fiyatı ve likidasyon AYRI olaylardır;
+            # stop hiçbir yolda likidasyon fiyatının ötesinden doldurulmaz, gözlenmeyen sıra uydurulmaz.
+            dec = exit_decision(pos.side, pos.stop, pos.liquidation_price, td)
+            if dec is not None:
+                pos.features["exit_fill"] = dict(dec["record"])
+                if dec["kind"] == "liquidation":
+                    closed.append(self._liquidate(pos, ts))
+                    continue
+                trig = dec["ref"]
                 fill = self.slippage.fill_price(trig, pos.side.close_side, td, is_market=True)
+                if pos.liquidation_price is not None and is_liquidated(pos.side, fill, pos.liquidation_price):
+                    # Kayma modeli dolumu likidasyonun ötesine itti: izole marjda böyle bir stop dolumu olamaz.
+                    pos.features["exit_fill"].update({"basis": "SLIPPAGE_BEYOND_LIQUIDATION", "stop_filled": False,
+                                                      "slipped_fill": str(fill)})
+                    closed.append(self._liquidate(pos, ts))
+                    continue
                 reason = EXIT_BE_STOP if (pos.tp1_done or bool(pos.meta.get("be_by_mfe"))) else EXIT_STOP
                 self._close_part(pos, fill, pos.qty, reason, ts, ref_price=trig)
                 closed.append(self._finalize(pos, reason, ts))
@@ -737,6 +798,6 @@ class FuturesLedgerV2:
         return cls.from_dict(d, **kwargs)
 
 
-__all__ = ["DEFAULT_MAX_POSITIONS", "FuturesLedgerV2", "R_OK", "R_ALREADY_OPEN", "R_MAX_POSITIONS", "R_ZERO_QTY", "R_MIN_QTY", "R_MAX_QTY", "R_MIN_NOTIONAL",
+__all__ = ["DEFAULT_MAX_POSITIONS", "EXIT_FILL_CONTRACT", "FuturesLedgerV2", "exit_decision", "R_OK", "R_ALREADY_OPEN", "R_MAX_POSITIONS", "R_ZERO_QTY", "R_MIN_QTY", "R_MAX_QTY", "R_MIN_NOTIONAL",
            "R_INSUFFICIENT_MARGIN", "R_LEVERAGE", "R_BAD_PRICE", "R_BAD_STOP", "EXIT_STOP", "EXIT_BE_STOP", "EXIT_TP1", "EXIT_TP2",
            "EXIT_LIQ", "EXIT_MANUAL"]

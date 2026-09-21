@@ -155,13 +155,10 @@ class PatternScanner:
         """Bir tarama turu: kuyruktan bütçe kadar sembol. Bir sembolün arızası turu DURDURMAZ."""
         now_ms = int(now_ms if now_ms is not None else self.clock() * 1000)
         self.refresh_universe(now_ms=now_ms)
-        # FUNDING ARALIK TABLOSU ÖN ISINMASI: `FundingSchedule.accrue` bunu defterin tick'i içinde (kilit altında,
-        # koruyucu çıkış yolunda) sorabilir. Tur başında ve kilitsizken ısıtılırsa o yolda ağ isteği KALMAZ.
-        if self.funding is not None and hasattr(self.funding, "hours_for"):
-            try:
-                self.funding.hours_for("BTC/USDT")
-            except Exception as exc:  # noqa: BLE001 — ön ısınma arızası turu DURDURMAZ
-                log.debug("funding aralık tablosu ön ısınması başarısız: %s", exc)
+        # FUNDING AĞ ADIMI (2026-09-22, REVIEW-2026-09-22 F2): defterin tick'i funding'i YALNIZ bellekten okur; aralık
+        # tablosu ve gerçekleşmiş oranlar burada — tarayıcı iş parçacığında, defter kilidi ve 60 sn çıkış izleyicisi
+        # DIŞINDA — çekilir. Ardından kapanmış işlemlerin bekleyen funding'i bellekten uzlaştırılır.
+        self.funding_step()
         entries: dict[str, dict] = dict((self.universe or {}).get("entries") or {})
         q = self.queue(now_ms=now_ms)
         budget = int(limit if limit is not None else self.max_symbols_per_cycle)
@@ -205,6 +202,24 @@ class PatternScanner:
         except Exception as exc:  # noqa: BLE001
             log.warning("formasyon tarama durumu yazılamadı: %s", exc)
         return self._cycle_report
+
+    def funding_step(self) -> dict[str, Any]:
+        """Ağdan funding verisi çek (defter kilidi TUTULMADAN) + kapanmış işlemlerin bekleyen funding'ini uzlaştır.
+        Arıza turu DURDURMAZ; koruyucu çıkış bu adımı hiç BEKLEMEZ (`exit_check` onu çağırmaz)."""
+        out: dict[str, Any] = {}
+        if self.funding is None or not hasattr(self.funding, "refresh"):
+            return out
+        try:
+            syms = self.book.pending_funding_symbols() if hasattr(self.book, "pending_funding_symbols") else list(self.book.ledger.positions)
+            out["refresh"] = self.funding.refresh(syms)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("funding verisi tazelenemedi (tur sürer): %s", exc)
+        try:
+            if hasattr(self.book, "reconcile_funding"):
+                out["late_posted"] = len(self.book.reconcile_funding(self._now_dt()))
+        except Exception as exc:  # noqa: BLE001
+            log.warning("geç funding uzlaştırması başarısız (tur sürer): %s", exc)
+        return out
 
     def _position_marks(self, now_ms: int) -> dict[str, float]:
         syms = list(self.book.ledger.positions)

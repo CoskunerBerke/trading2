@@ -204,6 +204,52 @@ class PatternBook:
         sch.hours_for_symbol = rates.hours_for if hasattr(rates, "hours_for") else None
         sch.fallback_to_last_known = False
 
+    def pending_funding_symbols(self, window: int = 200) -> list[str]:
+        """Açık pozisyonlar + funding kapsaması EKSİK kapanmış işlemlerin sembolleri (`refresh`in çekeceği liste)."""
+        out = list(self.ledger.positions)
+        for rec in self.ledger.history[-int(window):]:
+            cov = (rec.features or {}).get("funding_coverage") if isinstance(rec.features, dict) else None
+            if isinstance(cov, dict) and cov.get("complete") is False and rec.symbol not in out:
+                out.append(rec.symbol)
+        return out
+
+    def reconcile_funding(self, now: datetime) -> list[dict]:
+        """Kapanmış işlemlerin BEKLEYEN funding'ini, oranlar bellekte bulununca deftere işler (AĞ YOK; ağ adımı
+        `FundingRates.refresh`, tarayıcı iş parçacığında). Defter + işlem kaydı + özet satırı + plan AYNI anda güncellenir;
+        yinelenmezlik kayıttaki `funding_settled_ts`e dayanır (yeniden başlatmada korunur). Bkz.
+        `FuturesLedgerV2.settle_late_funding`."""
+        rates = getattr(self, "funding_rates", None)
+        if rates is None:
+            return []
+        with self.lock:
+            posted = self.ledger.settle_late_funding(rates.lookup, now=now, mark_for=getattr(rates, "settlement_mark", None),
+                                                     hours_for=getattr(rates, "hours_for", None))
+            if not posted:
+                return []
+            touched = {p["trade_id"] for p in posted}
+            by_id = {rec.id: rec for rec in self.ledger.history if rec.id in touched}
+            for rid, rec in by_id.items():
+                f = rec.features if isinstance(rec.features, dict) else {}
+                try:
+                    f["funding_coverage"] = self.funding_coverage(symbol=rec.symbol, opened_at=str(rec.opened_at), until=str(rec.closed_at),
+                                                                  settled_until=f.get("funding_settled_until"),
+                                                                  hours_utc=f.get("funding_hours_utc") or None,
+                                                                  settled_ts=f.get("funding_settled_ts"))
+                except Exception as exc:  # noqa: BLE001 — kapsama hesabı uzlaştırmayı ETKİLEMEZ
+                    log.warning("formasyon defteri funding kapsaması yeniden yazılamadı: %s", exc)
+                for row in self.closed_recent:
+                    if row.get("id") == rid:
+                        row.update({"net_pnl": float(rec.net_pnl), "r": float(rec.r_multiple), "funding_late": True,
+                                    "funding_complete": (f.get("funding_coverage") or {}).get("complete")})
+                pid = f.get("plan_id")
+                pl = self.plans.get(str(pid)) if pid else None
+                if pl is not None:
+                    pl["net_pnl"], pl["net_r"] = float(rec.net_pnl), float(rec.r_multiple)
+            for p in posted:
+                self._event("FUNDING_LATE_POSTED", p["symbol"], "SETTLEMENT_" + p["settlement"], now,
+                            trade_id=p["trade_id"], amount=p["amount"], rate=p["rate"])
+            return posted
+
     def funding_coverage(self, *, symbol: str, opened_at: str, until: str, settled_until: str | None,
                          hours_utc: Any = None, settled_ts: Any = None) -> dict[str, Any]:
         """Bir pozisyon/işlem için funding KAPSAMASI. AĞ ÇAĞRISI YOKTUR: settlement saatleri ve gerçekten

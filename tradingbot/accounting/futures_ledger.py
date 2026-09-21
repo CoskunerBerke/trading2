@@ -473,6 +473,9 @@ class FuturesLedgerV2:
                    "slippage": format(pos.slippage_cost, "f"), "spread": format(spread_cost, "f"),
                    "tax_estimate": format(tax_est, "f"), "tax_policy_version": self.tax_policy.version,
                    "liq_clamped": bool(pos.meta.get("liq_clamped", False))})
+        # R'nin paydası kayda yazılır: kapanıştan SONRA uzlaştırılan funding (`settle_late_funding`) net sonucu
+        # değiştirdiğinde R aynı tanımla yeniden hesaplanır (tahmini payda yok).
+        rec.features["risk_usdt"] = format(risk, "f")
         self.history.append(rec)
         if len(self.history) > self.history_keep:
             self.history = self.history[-self.history_keep:]
@@ -632,6 +635,109 @@ class FuturesLedgerV2:
         fill = self.slippage.fill_price(ref, pos.side.close_side, tick, is_market=True)
         self._close_part(pos, fill, pos.qty, reason, ts, ref_price=ref)
         return self._finalize(pos, reason, ts)
+
+    # ------------------------------------------------------------------ geç funding uzlaştırması (2026-09-22)
+    def settle_late_funding(self, lookup: RateLookup, *, now: datetime | None = None, mark_for=None, hours_for=None,
+                            window: int = 500) -> list[dict]:
+        """KAPANMIŞ işlemlerin, pozisyon açıkken oranı henüz bilinmediği için BEKLEYEN funding settlement'larını,
+        oran ve settlement mark'ı bellekte bulununca deftere işler. AĞ ÇAĞRISI YOKTUR (`lookup`/`mark_for`/`hours_for`
+        bellek okumalarıdır). Dönen: işlenen settlement listesi.
+
+        UZLAŞTIRMA SÖZLEŞMESİ:
+        * Hangi dönemler: `(opened_at, closed_at]` içindeki settlement'lar (`funding_settlements_between`), eksi pozisyon
+          açıkken işlenmiş olanlar (`features.funding_settled_ts`) ve watermark'a (`funding_settled_until`) kadar olanlar.
+          Saatler kayıttaki `funding_hours_utc`, o boşsa `hours_for(symbol)`; ikisi de yoksa dönem üretilmez (kapsama eksik kalır).
+        * Tutar: `qty(t) × mark(t) × oran(t)` (LONG öder / SHORT alır), açık pozisyondaki tahakkukla AYNI formül.
+          `mark(t)` settlement satırının KENDİ mark'ıdır (`mark_for`); yoksa dönem BEKLER (tahmin/sıfır YAZILMAZ).
+          `qty(t)`: kaydın dolumlarından — `t` anına kadar (dahil) girişler eksi `t`den ÖNCEKİ çıkışlar (açık pozisyonda
+          tahakkuk çıkıştan önce yapılır; aynı an kapanış dönemi öder).
+        * Sıra: kronolojik; oranı bilinmeyen ilk dönemde durulur (sonrakiler bekler), açık pozisyon tahakkukuyla aynı.
+        * Yazım: cüzdan (`wallet_balance`), `total_funding`, `FUNDING` defter girişi (işlem kimliğiyle, işleme anı `now`),
+          ve İŞLEM KAYDI (`funding`, `funding_paid/received`, `pnl=net_pnl`, `r_multiple = net / features.risk_usdt`,
+          `costs`, vergi tahmini) BİRLİKTE güncellenir: defter toplamları ile işlem kayıtları birbirini tutar.
+        * Yinelenmezlik: işlenen an `features.funding_settled_ts`e yazılır ve kayıtla birlikte saklanır; aynı dönem ikinci
+          kez işlenmez, yeniden başlatma bunu değiştirmez. Her geç işlem `features.funding_late`e ayrıca yazılır."""
+        from ..core import from_iso, funding_settlements_between
+        now = now or utc_now()
+        posted: list[dict] = []
+        for rec in self.history[-int(window):]:
+            f = rec.features if isinstance(rec.features, dict) else None
+            if f is None or not rec.closed_at:
+                continue
+            hours = tuple(int(h) for h in (f.get("funding_hours_utc") or ()))
+            if not hours and hours_for is not None:
+                try:
+                    hours = tuple(hours_for(rec.symbol) or ())
+                except Exception:  # noqa: BLE001 — aralık okunamazsa dönem üretilmez
+                    hours = ()
+            if not hours:
+                continue
+            try:
+                opened, closed_at = from_iso(str(rec.opened_at)), from_iso(str(rec.closed_at))
+                wm = from_iso(str(f["funding_settled_until"])) if f.get("funding_settled_until") else opened
+            except (TypeError, ValueError):
+                continue
+            applied = {str(x) for x in (f.get("funding_settled_ts") or [])}
+            side_long = str(rec.side).upper() == "LONG"
+            for t in funding_settlements_between(opened, closed_at, hours):
+                key = iso(t)
+                if key in applied or t <= wm:
+                    continue
+                rate = lookup(rec.symbol, t)
+                if rate is None:
+                    break
+                mark = mark_for(rec.symbol, t) if mark_for is not None else None
+                if mark is None or D(mark) <= 0:
+                    break
+                rate, mark = D(rate), D(mark)
+                qty = ZERO
+                for fl in rec.fills or []:
+                    try:
+                        fts = from_iso(str(fl.ts))
+                    except (TypeError, ValueError):
+                        continue
+                    if fl.kind == "entry" and fts <= t:
+                        qty += fl.qty
+                    elif fl.kind != "entry" and fts < t:
+                        qty -= fl.qty
+                qty = max(qty, ZERO) if rec.fills else D(rec.quantity)
+                pay = qty * mark * rate
+                amount = -pay if side_long else pay
+                if amount != ZERO:
+                    self.wallet_balance += amount
+                    self.total_funding += amount
+                    self._entry(LedgerKind.FUNDING, amount, rec.id, f"late funding rate={rate} settlement={key}", iso(now))
+                    if amount < 0:
+                        rec.funding_paid += -amount
+                    else:
+                        rec.funding_received += amount
+                    rec.funding += amount
+                    rec.net_pnl += amount
+                    rec.pnl = rec.net_pnl
+                    try:
+                        risk = D(f.get("risk_usdt")) if f.get("risk_usdt") is not None else ZERO
+                    except (TypeError, ValueError, ArithmeticError):
+                        risk = ZERO
+                    if risk > 0:
+                        rec.r_multiple = rec.net_pnl / risk
+                    rec.tax_estimate = self.tax_policy.estimate(rec.net_pnl)
+                    if isinstance(rec.costs, dict):
+                        rec.costs["funding_paid"] = format(rec.funding_paid, "f")
+                        rec.costs["funding_received"] = format(rec.funding_received, "f")
+                        rec.costs["tax_estimate"] = format(rec.tax_estimate, "f")
+                seen = list(f.get("funding_settled_ts") or [])
+                seen.append(key)
+                f["funding_settled_ts"] = seen[-64:]
+                applied.add(key)
+                f["funding_settled_until"] = key
+                wm = t
+                item = {"trade_id": rec.id, "symbol": rec.symbol, "settlement": key, "rate": format(rate, "f"),
+                        "mark": format(mark, "f"), "qty": format(qty, "f"), "amount": format(amount, "f"), "posted_at": iso(now)}
+                f.setdefault("funding_late", []).append({k: v for k, v in item.items() if k not in ("trade_id", "symbol")})
+                posted.append(item)
+        if posted:
+            self.updated_at = iso(now)
+        return posted
 
     def close_partial(self, symbol: str, price, fraction, reason: str = "kısmi", now: datetime | None = None) -> TradeRecord | None:
         """Kalanın `fraction` kadarını kapat; tamamı kapanırsa TradeRecord döner."""

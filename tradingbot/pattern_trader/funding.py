@@ -9,7 +9,9 @@ Sözleşme (2026-09-17):
 * Settlement saatleri sözleşmeye göredir: `/fapi/v1/fundingInfo` yalnız VARSAYILANDAN (8 saat) sapan sembolleri
   yayımlar; listede olmayan sembol varsayılandadır. Aralık çözülemezse `hours_for` boş demet döner ve o sembol
   için hiçbir dönem üretilmez — sekiz saat varsayımı yeni sözleşmelere doğrulanmadan yayılmaz.
-* Ağ arızası koruyucu çıkışı ENGELLEMEZ: her sağlayıcı çağrısı yutulur, `None`a düşülür ve `stats` sayar.
+* AĞ İSTEĞİ KORUYUCU ÇIKIŞ YOLUNDA DEĞİLDİR (2026-09-22): `lookup`/`hours_for`/`settlement_mark` yalnız bellekten
+  okur (defterin tick'i bunları kilit altında, stop kontrolünden önce çağırır). Ağ yalnız `refresh()`tedir; onu
+  tarayıcı iş parçacığı çağırır ve istek sürerken bu nesnenin kilidi TUTULMAZ. Ağ arızası yutulur, `stats` sayar.
 * Aynı settlement iki kez yazılmaz: yinelenmezliği defterin `last_funding_settlement_utc` watermark'ı sağlar
   (bu servis saf bir ORAN KAYNAĞIDIR, muhasebe yazmaz).
 """
@@ -66,52 +68,137 @@ class FundingRates:
         self._covered: dict[str, tuple[int, int]] = {}      # sembol → (kapsanan_baslangic_ms, kapsanan_bitis_ms)
         self._fetched_at: dict[str, int] = {}
         self._intervals: dict[str, tuple[int, ...] | None] = {}
+        #: settlement anı → o satırın KENDİ mark fiyatı (geç uzlaştırma tutarı için; tahmin yerine geçmez)
+        self._marks: dict[str, dict[int, Decimal]] = {}
+        #: `lookup`un istediği ama bellekte bulunmayan en erken settlement anı (sembol → ms); `refresh` çeker
+        self._wanted: dict[str, int] = {}
+        #: `refresh` tekilliği: ikinci eşzamanlı çağrı BEKLEMEZ, atlanır
+        self._refresh_lock = threading.Lock()
         self._intervals_at: int | None = None
         #: Sapma tablosu GERÇEKTEN alındı mı? False iken varsayılan 8 saat DOĞRULANMAMIŞTIR ve yayılmaz.
         self._intervals_known: bool = False
         self.stats = {"history_calls": 0, "history_errors": 0, "info_calls": 0, "info_errors": 0,
                       "lookups": 0, "hits": 0, "misses": 0}
 
-    # ------------------------------------------------------------------ sözleşme aralığı
-    def _refresh_intervals(self) -> None:
-        now = int(self.clock_ms())
-        if self._intervals_at is not None and (now - self._intervals_at) < self.info_ttl_s * 1000:
-            return
-        if not hasattr(self.provider, "funding_info"):
-            # Uç YOK: sapma tablosu DOĞRULANAMAZ. Varsayılanı yaymak yerine bilinmiyor sayılır (fail-closed).
-            self._intervals_at = now
-            return
-        self.stats["info_calls"] += 1
-        try:
-            rows = self.provider.funding_info()
-        except Exception as exc:  # noqa: BLE001 — aralık tablosu alınamazsa ESKİ (doğrulanmış) tablo korunur
-            self.stats["info_errors"] += 1
-            log.warning("funding aralık tablosu alınamadı: %s", exc)
-            self._intervals_at = now - int(max(0.0, self.info_ttl_s - FAILED_INFO_RETRY_S) * 1000)  # kısa negatif önbellek
-            return
-        if not isinstance(rows, list):
-            self.stats["info_errors"] += 1
-            self._intervals_at = now - int(max(0.0, self.info_ttl_s - FAILED_INFO_RETRY_S) * 1000)
-            return
-        tbl: dict[str, tuple[int, ...] | None] = {}
-        for r in rows:
-            if not isinstance(r, dict):
-                continue
-            raw = str(r.get("symbol") or "")
-            if raw:
-                tbl[raw] = hours_from_interval(r.get("fundingIntervalHours"))
-        self._intervals = tbl
-        self._intervals_known = True                        # tablo GERÇEKTEN alındı: varsayılan artık doğrulanmıştır
-        self._intervals_at = now
+    # ------------------------------------------------------------------ AĞ YOLU (yalnız `refresh`) — 2026-09-22
+    # KORUYUCU ÇIKIŞ SÖZLEŞMESİ (REVIEW-2026-09-22 F2): `lookup`/`hours_for` defterin tick'i İÇİNDE (defter kilidi
+    # altında, stop kontrolünden ÖNCE) çağrılır. Bu yüzden ikisi de ARTIK AĞA ÇIKMAZ: yalnız bellekteki doğrulanmış
+    # veriyi okur, eksik olanı "istenen" diye not eder ve None/boş döner (dönem BEKLER). Ağ istekleri yalnız
+    # `refresh()` içindedir; onu tarayıcı iş parçacığı çağırır (`PatternScanner.scan_cycle`), 60 sn çıkış izleyicisi
+    # ÇAĞIRMAZ. `refresh` ağ isteği sürerken bu nesnenin kilidini TUTMAZ: bekleyen istek, başka iş parçacığındaki
+    # `lookup`/tick'i bekletemez.
+    def _intervals_due(self, now: int) -> bool:
+        return self._intervals_at is None or (now - self._intervals_at) >= self.info_ttl_s * 1000
 
+    def _fetch_intervals(self, now: int) -> None:
+        if not hasattr(self.provider, "funding_info"):
+            with self._lock:                             # uç YOK: sapma tablosu DOĞRULANAMAZ (fail-closed)
+                self._intervals_at = now
+            return
+        with self._lock:
+            self.stats["info_calls"] += 1
+        try:
+            rows = self.provider.funding_info()          # AĞ — kilit DIŞINDA
+        except Exception as exc:  # noqa: BLE001 — aralık tablosu alınamazsa ESKİ (doğrulanmış) tablo korunur
+            rows = exc
+        with self._lock:
+            if isinstance(rows, Exception) or not isinstance(rows, list):
+                self.stats["info_errors"] += 1
+                if isinstance(rows, Exception):
+                    log.warning("funding aralık tablosu alınamadı: %s", rows)
+                self._intervals_at = now - int(max(0.0, self.info_ttl_s - FAILED_INFO_RETRY_S) * 1000)  # kısa negatif önbellek
+                return
+            tbl: dict[str, tuple[int, ...] | None] = {}
+            for r in rows:
+                if not isinstance(r, dict):
+                    continue
+                raw = str(r.get("symbol") or "")
+                if raw:
+                    tbl[raw] = hours_from_interval(r.get("fundingIntervalHours"))
+            self._intervals = tbl
+            self._intervals_known = True                    # tablo GERÇEKTEN alındı: varsayılan artık doğrulanmıştır
+            self._intervals_at = now
+
+    def _history_window(self, symbol: str, want_ms: int | None, now: int) -> tuple[int, int] | None:
+        """Bu sembol için ağdan geçmiş istenmeli mi? Döner: (start, end) ya da None. Kilit altında çağrılır."""
+        cov = self._covered.get(symbol)
+        fetched = self._fetched_at.get(symbol)
+        fresh = fetched is not None and (now - fetched) < self.rate_ttl_s * 1000
+        # İstenen an ancak settlement'tan SONRA yapılmış bir çekimle kapsanmış sayılır: settlement'tan önce yapılan
+        # çekim o satırı içeremez (borsa satırı settlement anında yayımlar).
+        covered = want_ms is None or (cov is not None and fetched is not None and cov[0] <= want_ms
+                                      and want_ms + MATCH_TOLERANCE_MS <= fetched)
+        if fresh and covered:
+            return None
+        base = int(want_ms) if want_ms is not None else now
+        return (min(base - MATCH_TOLERANCE_MS, now - self.lookback_ms), now + MATCH_TOLERANCE_MS)
+
+    def refresh(self, symbols: Any = None, *, now_ms: int | None = None) -> dict[str, Any]:
+        """AĞ adımı: aralık tablosu (TTL dolduysa) + `symbols` ve bekleyen (`lookup`un istediği) semboller için
+        gerçekleşmiş settlement geçmişi. Koruyucu çıkış yolunun DIŞINDA çağrılmalıdır. Aynı anda ikinci çağrı
+        beklemez, atlanır. Ağ arızası yutulur ve `stats`a yazılır; bellekteki doğrulanmış veri korunur."""
+        if not self._refresh_lock.acquire(blocking=False):
+            return {"skipped": "REFRESH_IN_PROGRESS"}
+        try:
+            now = int(now_ms if now_ms is not None else self.clock_ms())
+            with self._lock:
+                due = self._intervals_due(now)
+            if due:
+                self._fetch_intervals(now)
+            with self._lock:
+                wanted = dict(self._wanted)
+            names = list(dict.fromkeys([str(s) for s in (symbols or [])] + sorted(wanted)))
+            fetched = 0
+            for sym in names:
+                with self._lock:
+                    win = self._history_window(sym, wanted.get(sym), now)
+                    if win is not None:
+                        self.stats["history_calls"] += 1
+                if win is None:
+                    continue
+                try:
+                    rows = self.provider.funding_history(sym, limit=1000, start_ms=win[0], end_ms=win[1]) or []   # AĞ — kilit DIŞINDA
+                except Exception as exc:  # noqa: BLE001 — ağ arızası tahakkuku BEKLETİR, çökertmez
+                    with self._lock:
+                        self.stats["history_errors"] += 1
+                    log.warning("%s funding geçmişi alınamadı: %s", sym, exc)
+                    continue
+                fetched += 1
+                with self._lock:
+                    tbl = self._rates.setdefault(sym, {})
+                    mk = self._marks.setdefault(sym, {})
+                    for r in rows:
+                        if not isinstance(r, dict) or r.get("rate") is None:
+                            continue
+                        try:
+                            ts = int(r.get("funding_ts"))
+                            tbl[ts] = D(r.get("rate"))
+                        except (TypeError, ValueError, ArithmeticError):
+                            continue
+                        try:
+                            m = D(r.get("mark")) if r.get("mark") is not None else None
+                        except (TypeError, ValueError, ArithmeticError):
+                            m = None
+                        if m is not None and m > 0:
+                            mk[ts] = m
+                    prev = self._covered.get(sym)
+                    self._covered[sym] = (min(win[0], prev[0]) if prev else win[0], max(win[1], prev[1]) if prev else win[1])
+                    self._fetched_at[sym] = now
+                    w = self._wanted.get(sym)
+                    if w is not None and self._covered[sym][0] <= w and w + MATCH_TOLERANCE_MS <= now:
+                        self._wanted.pop(sym, None)       # istenen an artık kapsamda (oran yoksa lookup yeniden ister)
+            return {"intervals_refreshed": bool(due), "symbols": names, "fetched": fetched}
+        finally:
+            self._refresh_lock.release()
+
+    # ------------------------------------------------------------------ BELLEK OKUMALARI (ağ YOK)
     def hours_for(self, symbol: str) -> tuple[int, ...]:
-        """Sembolün settlement saatleri.
+        """Sembolün settlement saatleri — YALNIZ bellekten (ağ YOK; tablo `refresh` ile yüklenir).
 
         Sapma tablosu HİÇ alınamadıysa BOŞ demet döner: sekiz saat varsayımı DOĞRULANMADAN yayılmaz (karşıt
         doğrulama bulgusu — aksi hâlde eksik settlement'lar hiç "due" olmaz ve kapsama yanlışlıkla TAM görünür).
         Tablo alındıysa: listede olmayan sembol varsayılandadır; listede ama aralığı çözülemiyorsa BOŞ demet."""
         with self._lock:
-            self._refresh_intervals()
             if not self._intervals_known:
                 return ()
             raw = str(symbol).replace("/", "")
@@ -119,50 +206,37 @@ class FundingRates:
                 return FUNDING_HOURS_UTC
             return self._intervals[raw] or ()
 
-    # ------------------------------------------------------------------ gerçekleşmiş oranlar
-    def _ensure(self, symbol: str, want_ms: int) -> None:
-        now = int(self.clock_ms())
-        cov = self._covered.get(symbol)
-        fresh = self._fetched_at.get(symbol) is not None and (now - self._fetched_at[symbol]) < self.rate_ttl_s * 1000
-        if cov is not None and cov[0] <= want_ms <= cov[1] and fresh:
-            return
-        start = min(int(want_ms) - MATCH_TOLERANCE_MS, now - self.lookback_ms)
-        end = now + MATCH_TOLERANCE_MS
-        self.stats["history_calls"] += 1
-        try:
-            rows = self.provider.funding_history(symbol, limit=1000, start_ms=start, end_ms=end) or []
-        except Exception as exc:  # noqa: BLE001 — ağ arızası tahakkuku BEKLETİR, çökertmez
-            self.stats["history_errors"] += 1
-            log.warning("%s funding geçmişi alınamadı: %s", symbol, exc)
-            return
-        tbl = self._rates.setdefault(symbol, {})
-        for r in rows:
-            if not isinstance(r, dict):
-                continue
-            ts, rate = r.get("funding_ts"), r.get("rate")
-            if rate is None:
-                continue
-            try:
-                tbl[int(ts)] = D(rate)
-            except (TypeError, ValueError, ArithmeticError):
-                continue
-        prev = self._covered.get(symbol)
-        self._covered[symbol] = (min(start, prev[0]) if prev else start, max(end, prev[1]) if prev else end)
-        self._fetched_at[symbol] = now
+    def _find(self, tbl: dict[int, Decimal], want: int) -> Decimal | None:
+        hit = tbl.get(want)
+        if hit is None:
+            near = [t for t in tbl if abs(t - want) <= MATCH_TOLERANCE_MS]
+            hit = tbl[min(near, key=lambda t: abs(t - want))] if near else None
+        return hit
 
     def lookup(self, symbol: str, when: datetime) -> Decimal | None:
-        """`RateLookup` sözleşmesi: settlement anının GERÇEKLEŞMİŞ oranı ya da None. Tahmin ÜRETMEZ."""
+        """`RateLookup` sözleşmesi: settlement anının GERÇEKLEŞMİŞ oranı ya da None. Tahmin ÜRETMEZ, AĞA ÇIKMAZ:
+        bellekte yoksa an "istenen" diye not edilir (bir sonraki `refresh` onu çeker) ve None döner — dönem BEKLER."""
         want = int(when.timestamp() * 1000)
         with self._lock:
             self.stats["lookups"] += 1
-            self._ensure(symbol, want)
-            tbl = self._rates.get(symbol) or {}
-            hit = tbl.get(want)
+            hit = self._find(self._rates.get(symbol) or {}, want)
             if hit is None:
-                near = [t for t in tbl if abs(t - want) <= MATCH_TOLERANCE_MS]
-                hit = tbl[min(near, key=lambda t: abs(t - want))] if near else None
+                prev = self._wanted.get(symbol)
+                self._wanted[symbol] = want if prev is None else min(prev, want)
             self.stats["hits" if hit is not None else "misses"] += 1
             return hit
+
+    def settlement_mark(self, symbol: str, when: datetime) -> Decimal | None:
+        """Settlement satırının KENDİ mark fiyatı (`/fapi/v1/fundingRate` → `markPrice`) — yalnız bellekten.
+        Geç (pozisyon kapandıktan sonra) uzlaştırılan funding tutarı bununla hesaplanır; yoksa None (tahmin YOK)."""
+        want = int(when.timestamp() * 1000)
+        with self._lock:
+            return self._find(self._marks.get(symbol) or {}, want)
+
+    def pending(self) -> dict[str, int]:
+        """`lookup`un istediği ama bellekte olmayan en erken settlement anları (sembol → ms)."""
+        with self._lock:
+            return dict(self._wanted)
 
     # ------------------------------------------------------------------ kapsama
     def coverage(self, symbol: str, *, since: datetime, until: datetime) -> dict[str, Any]:

@@ -152,6 +152,7 @@ def test_closed_bar_path_also_settles_funding(tmp_path: Path):
     expected = qty * float(settle_bar["close"]) * TEST_RATE
     spec = {sym: {"tf": "15m", "rows": bars[-48:], "mark": flat, "market": statuses["market"],
                   "first_bar_ms": int(bars[0]["timestamp"])}}
+    sc.funding.refresh([sym])                            # F2 (2026-09-22): ağ adımı TARAYICIDADIR, defter kilidi dışında
     book.apply_closed_bars(spec, now=_dt(AFTER_MS), funding_rate_lookup=sc.funding.lookup)
     assert pos.last_funding_settlement_utc == _iso(SETTLE_MS), pos.last_funding_settlement_utc
     assert float(pos.funding_paid) == pytest.approx(expected, rel=1e-6)
@@ -166,6 +167,7 @@ def test_closed_record_separates_measured_zero_from_unasked_funding(tmp_path: Pa
     target = float(pos.targets[0])
     CLOCK[0] = AFTER_MS                                  # 08:00 geçildi + fiyat hedefin üstünde → kapanış
     _set_mark(p, sym, target + 0.5, ts=CLOCK[0], funding_rate=LIVE_ESTIMATE)
+    sc.funding_step()                                    # F2 (2026-09-22): oranlar tarayıcı adımında çekilir
     recs = sc.exit_check()
     assert len(recs) == 1 and not book.ledger.positions, "üretim çıkış yolu pozisyonu kapatmalı"
 
@@ -292,6 +294,7 @@ def test_contract_with_a_non_default_funding_interval_uses_its_own_settlement_ho
     _cfg_, p, sc, book, sym, pos = _scenario(tmp_path / "iv4", "LONG")
     p._funding_info = [{"symbol": to_raw(sym), "fundingIntervalHours": "4"}]
     fr = FundingRates(p, clock_ms=lambda: CLOCK[0])
+    fr.refresh()                                         # F2 (2026-09-22): aralık tablosu yalnız `refresh`te yüklenir
     assert fr.hours_for(sym) == (0, 4, 8, 12, 16, 20)
     assert fr.hours_for("OTHER/USDT") == (0, 8, 16), "listede olmayan sembol VARSAYILANDADIR"
     book.bind_funding(fr)
@@ -325,11 +328,13 @@ def test_funding_provider_outage_never_blocks_a_protective_exit(tmp_path: Path):
     flat = float(pos.entry_avg)
     CLOCK[0] = AFTER_MS
     _set_mark(p, sym, flat, ts=CLOCK[0], funding_rate=LIVE_ESTIMATE)
+    fr.refresh([sym])                                     # F2 (2026-09-22): ağ adımı (tarayıcı) arızayı YUTAR
     assert sc.exit_check() == [] and sym in book.ledger.positions, "düz fiyat: kapanış yok, çökme de yok"
     assert float(book.ledger.total_funding) == 0.0 and pos.last_funding_settlement_utc == _iso(ENTRY_MS), \
         "oran yokken watermark İLERLEMEZ (sessiz sıfır maliyet yok)"
     assert fr.stats["history_errors"] >= 1, fr.stats
     p.funding_history = orig                              # veri geri geldi → aynı settlement bir kez kapanır
+    fr.refresh([sym])
     sc.exit_check()
     assert pos.last_funding_settlement_utc == _iso(SETTLE_MS) and float(book.ledger.total_funding) < 0.0
     before = float(book.ledger.total_funding)
@@ -350,6 +355,7 @@ def test_the_live_estimate_is_never_applied_to_a_past_settlement(tmp_path: Path)
     assert abs(estimate - realised) > 1e-6, "kurulum: iki değer AYIRT EDİLEBİLİR olmalı"
     CLOCK[0] = AFTER_MS
     _set_mark(p, sym, flat, ts=CLOCK[0], funding_rate=LIVE_ESTIMATE)
+    sc.funding_step()                                    # F2 (2026-09-22): oranlar tarayıcı adımında çekilir
     sc.exit_check()
     assert float(pos.funding_paid) == pytest.approx(realised, rel=1e-6), \
         "gerçekleşmiş oran değil, o anın tahmini uygulanmış (paid=%.6f, tahmin=%.6f)" % (float(pos.funding_paid), estimate)
@@ -377,6 +383,7 @@ def test_an_unreachable_funding_info_does_not_silently_assume_eight_hours(tmp_pa
     _cfg_, p, sc, book, sym, pos = _scenario(tmp_path / "noinfo", "LONG")
     p.funding_info = lambda: (_ for _ in ()).throw(RuntimeError("mock: fundingInfo erisilemedi"))
     fr = FundingRates(p, clock_ms=lambda: CLOCK[0])
+    fr.refresh()                                         # F2 (2026-09-22): tablo yalnız `refresh`te istenir
     assert fr.hours_for(sym) == (), "tablo alınamadı: 8 saat DOĞRULANMAMIŞTIR"
     assert fr.stats["info_errors"] >= 1, fr.stats
     book.bind_funding(fr)
@@ -390,6 +397,7 @@ def test_an_unreachable_funding_info_does_not_silently_assume_eight_hours(tmp_pa
     # tablo geri gelince varsayılan yeniden DOĞRULANIR
     p.funding_info = lambda: []
     CLOCK[0] = AFTER_MS + int(fr.info_ttl_s * 1000) + 1
+    fr.refresh()
     assert fr.hours_for(sym) == (0, 8, 16), "tablo alınınca varsayılan doğrulanmış olur"
 
 
@@ -400,6 +408,7 @@ def test_funding_coverage_counts_applied_settlements_not_just_the_watermark(tmp_
     _cfg_, p, sc, book, sym, pos = _scenario(tmp_path, "LONG")
     CLOCK[0] = AFTER_MS
     _set_mark(p, sym, float(pos.targets[0]) + 0.5, ts=CLOCK[0], funding_rate=LIVE_ESTIMATE)
+    sc.funding_step()                                    # F2 (2026-09-22): oranlar tarayıcı adımında çekilir
     assert len(sc.exit_check()) == 1
     f = book.ledger.history_dicts()[-1]["features"]
     assert f["funding_settled_ts"] == [_iso(SETTLE_MS)], f.get("funding_settled_ts")

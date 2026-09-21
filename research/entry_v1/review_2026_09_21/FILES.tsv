@@ -1,0 +1,151 @@
+yayimlanan_yol	kaynak	bayt	sha256	not
+scripts/universe.py	C:/Users/berke/research/entry_v1/universe.py	6798	693ab1168477e9e679b944d64051e071c084e94c0b4a15c673861c518ab3b904	inceleme dalinda YOK
+scripts/collect_binance.py	C:/Users/berke/research/entry_v1/collect_binance.py	10071	05d6f75fad34dbf49f5011d82f3115f348b9ea56654ed6fafa86bb124cde05c8	inceleme dalinda YOK
+scripts/run_rule.py	C:/Users/berke/research/entry_v1/run_rule.py	9924	e432371d02437c0feb05b4830c1178ec305e66dd3d67953cf6088ff942113d24	inceleme dalindaki kopyadan FARKLI
+scripts/strategy_rules.py	C:/Users/berke/research/entry_v1/strategy_rules.py	3489	8d5abacef76622defe74e0fc91c6c9d5302123156b8dfa9bac2d60975028dc5e	inceleme dalindaki kopyadan FARKLI
+scripts/momentum_rules.py	C:/Users/berke/research/entry_v1/momentum_rules.py	3426	aebc890a98f5e7689a33b137554baf85d7bcd8aac29035c28fef81b8ae82321c	inceleme dalindaki kopyayla AYNI
+scripts/analyze.py	C:/Users/berke/research/entry_v1/analyze.py	6171	af67f24ac56122f69cac30e18bac086abd477634446734e356eae556d9f23fe7	inceleme dalindaki kopyayla AYNI
+scripts/box_sweep.py	C:/Users/berke/research/entry_v1/box_sweep.py	18953	81e2152147ffb4838f9302bb74f10a69147b1df1ca90130927de1d87e17e363d	inceleme dalinda YOK
+scripts/run_box_v15.py	C:/Users/berke/research/entry_v1/run_box_v15.py	4969	c2f6f872e3700e30aca08cee7636a85369ae7ad027683329044608501d2551f8	inceleme dalinda YOK
+scripts/box_rules.py	C:/Users/berke/research/entry_v1/box_rules.py	1538	3f27820a788a92115bbea2aa20f614182450035ce60d66c62fca3fe7e392a3ef	inceleme dalinda YOK
+scripts/entry_rules.py	C:/Users/berke/research/entry_v1/entry_rules.py	7633	d9858a0fb0635022c89cc44f28a11b626fc6c48ba2afb4bf810b77a44535d40c	inceleme dalindaki kopyayla AYNI
+scripts/candle_rules.py	C:/Users/berke/research/entry_v1/candle_rules.py	1573	8531be3616060cde21d672e09df5a7125e9dd7452b1de794c392295a432ea804	inceleme dalindaki kopyayla AYNI
+scripts/chart_rules.py	C:/Users/berke/research/entry_v1/chart_rules.py	1345	0ba58790af7c808480c6c37642fdb44951cc9c18455c68f886230c6f906527ec	inceleme dalindaki kopyayla AYNI
+scripts/regime_rules.py	C:/Users/berke/research/entry_v1/regime_rules.py	1676	6aa4d7319f114bc39d9a33d67f180cdceb9f3e21544bd8f9d8b7d0554402c139	inceleme dalindaki kopyayla AYNI
+scripts/session_rules.py	C:/Users/berke/research/entry_v1/session_rules.py	1077	4226cfb9d6d464bf6111410cef76af9fec6e7fcf99f23f7e7e32335197c22e3b	inceleme dalindaki kopyayla AYNI
+scripts/session_gate.py	C:/Users/berke/research/entry_v1/session_gate.py	2124	acdd5b1076666bd8ebee4877a54abe042ec72d47a4f12c6b772e447abef3a946	inceleme dalindaki kopyayla AYNI
+scripts/probe_box_cost.py	C:/Users/berke/research/entry_v1/probe_box_cost.py	3321	2e50b042a5a2e81febae0fd15670233c497730eec97832b606f6bc8bfdb9bf50	inceleme dalinda YOK
+olcumler/grid.py	C:/Users/berke/trading2-deploy/olcumler/grid.py	5468	a114f386ef0b3ceadd8b683216798dd49c8fda6cfe62725d1c5f99519e78af20	
+olcumler/lev.py	C:/Users/berke/trading2-deploy/olcumler/lev.py	6095	4221ac893c7ae4c6331c945adc8c6fa69cf2433f76c0410cc46873a6a201b8ce	
+olcumler/rank40.py	C:/Users/berke/trading2-deploy/olcumler/rank40.py	5639	d3cbbdcaf1f191c48679ced595b3eef1c883f4abe8b6eb8650bdbef513094d20	
+olcumler/run40.py	C:/Users/berke/trading2-deploy/olcumler/run40.py	6071	69d4adefa4db71f73a7c046c11fe44888bf5532d7fe8bf4779b5bc94c82dc05d	
+olcumler/slots.py	C:/Users/berke/trading2-deploy/olcumler/slots.py	6368	f060617c5942d8252df642484d88de93090967441b7e0be9aa6208c243b1fee6	
+olcumler/trail.py	C:/Users/berke/trading2-deploy/olcumler/trail.py	4940	518a9741f0d341c96830addd4c47d955b967d22610406755935628626cb8b2de	CANLI SURECIN YAZDIGI DOSYANIN ANLIK KOPYASI (bkz. README)
+olcumler/be_measure.json	C:/Users/berke/trading2-deploy/olcumler/be_measure.json	5612	9ae8e0dfdb4bb2b624468ac6a7111708e8c59fc4fa8d71b497d0094d09b47309	
+olcumler/grid.json	C:/Users/berke/trading2-deploy/olcumler/grid.json	4344	5342ad2ca0ed9f5434fc4c35fe57bcd6d60ac6db5425d1299dec3d56a310c697	
+olcumler/lev.json	C:/Users/berke/trading2-deploy/olcumler/lev.json	15390	f4abff738318f88bc70f9bc2946019f7e539d8842ebe460475f3abca3246825f	
+olcumler/rank40.json	C:/Users/berke/trading2-deploy/olcumler/rank40.json	4416	594401b8776597d849ac2b295471e1d39d1edbb01f6dde0030a7c102625058af	
+olcumler/run40.json	C:/Users/berke/trading2-deploy/olcumler/run40.json	7027	eb11004bb097aa25880e294007146d2ede9abc610e3f9ee281d66cf528231240	
+olcumler/slots.json	C:/Users/berke/trading2-deploy/olcumler/slots.json	9966	76a1c3e3fd4904c32f5801eeb3cd43aee7747aec2f5156572ee0be69efe2e3e5	
+olcumler/trail.json	C:/Users/berke/trading2-deploy/olcumler/trail.json	15880	3eff8d7378280aa3ae64df44ba27cf35c5228508607cc05476c4b587e78d624c	CANLI SURECIN YAZDIGI DOSYANIN ANLIK KOPYASI (bkz. README)
+olcumler/trail.log	C:/Users/berke/trading2-deploy/olcumler/trail.log	378	57681b009ab54d8e4b2246f5e81bd6a37ceae48746b6339d70b09c77653c317f	CANLI SURECIN YAZDIGI DOSYANIN ANLIK KOPYASI (bkz. README)
+olcumler/meta/meta_be_m2_p1_off.json	C:/Users/berke/research/entry_v1/out/meta_be_m2_p1_off.json	2431	6fefa264f5bcbd1578e670d68a8dd5f096bacacd21f21f13f8933207236b0980	
+olcumler/meta/meta_be_m2_p1_on.json	C:/Users/berke/research/entry_v1/out/meta_be_m2_p1_on.json	2439	cc9b00283be67060b9bc64c4d3a7685e93d901bbc01e0bc93fe10eee48ee20c1	
+olcumler/meta/meta_be_m2_p2_off.json	C:/Users/berke/research/entry_v1/out/meta_be_m2_p2_off.json	2335	a2a81b8efb5a9a2544d9c1a4039121406e9a6b82029df57ea32f82dfd496b3a6	
+olcumler/meta/meta_be_m2_p2_on.json	C:/Users/berke/research/entry_v1/out/meta_be_m2_p2_on.json	2643	26417f5ad49bd749b85a1ccb247620faa56d7bcd2b93839b902a7ac7052e93a3	
+olcumler/meta/meta_be_m2_p3_off.json	C:/Users/berke/research/entry_v1/out/meta_be_m2_p3_off.json	2232	42fd591bdc72dd4fd5a86a8f81b5103cf14f89cef17c364be18a7f7e09b41a97	
+olcumler/meta/meta_be_m2_p3_on.json	C:/Users/berke/research/entry_v1/out/meta_be_m2_p3_on.json	2323	feba25ce41196f27ae6c77a9fab9d6a328e52adb107091813dba14a0ef20021a	
+olcumler/meta/meta_be_t2_p1_off.json	C:/Users/berke/research/entry_v1/out/meta_be_t2_p1_off.json	2289	0a2b66a462274491b03f4dd13eb77026da2b15812edc5dd40679437c4214ccd0	
+olcumler/meta/meta_be_t2_p1_on.json	C:/Users/berke/research/entry_v1/out/meta_be_t2_p1_on.json	2447	419c0ff252849143b8f0c92438e5af62476273cf58cb4b9af55d7af62afb730f	
+olcumler/meta/meta_be_t2_p2_off.json	C:/Users/berke/research/entry_v1/out/meta_be_t2_p2_off.json	2221	2eff9527237b6c0bc89f860c4bba4b71c404086068c3754eb94bd0d3e7de7283	
+olcumler/meta/meta_be_t2_p2_on.json	C:/Users/berke/research/entry_v1/out/meta_be_t2_p2_on.json	2536	e8dc3c8c3daf6b42c871d40a9f9a09d3c5ccd36c5e1de3bbbb24a555d0dd4a74	
+olcumler/meta/meta_be_t2_p3_off.json	C:/Users/berke/research/entry_v1/out/meta_be_t2_p3_off.json	2070	30860d9b29b5833fe95b77f1ac27cbf9c0ee9589bffba7d3f4dca7a38773f44d	
+olcumler/meta/meta_be_t2_p3_on.json	C:/Users/berke/research/entry_v1/out/meta_be_t2_p3_on.json	2258	87941114ae6f9ad1e9f92eea5e7d2a7507844be32204a26efad36f6fa2663c0f	
+olcumler/meta/meta_gr_m2_p1_10b.json	C:/Users/berke/research/entry_v1/out/meta_gr_m2_p1_10b.json	2294	50007cd232defbaf8a046ea1027525b1d1744c1d0754c52c0716be6e80574f72	
+olcumler/meta/meta_gr_m2_p1_10c.json	C:/Users/berke/research/entry_v1/out/meta_gr_m2_p1_10c.json	2294	2521e3be70db55e11b9d90f80fe198f86f41961321358e9b598c3c7fc2e2d39b	
+olcumler/meta/meta_gr_m2_p2_10b.json	C:/Users/berke/research/entry_v1/out/meta_gr_m2_p2_10b.json	2369	5a66b940f9e0b7cf5b9aab67ae29e7d212aafb80091192e0b3d3846c2c02f0c9	
+olcumler/meta/meta_gr_m2_p2_10c.json	C:/Users/berke/research/entry_v1/out/meta_gr_m2_p2_10c.json	2311	b8b419bcadd9a7515cad027c6a0b83140ee4eba6b55eacedaa214461e1aa20d7	
+olcumler/meta/meta_gr_m2_p3_10b.json	C:/Users/berke/research/entry_v1/out/meta_gr_m2_p3_10b.json	2267	26d878f95125123c0eb13854e70adb9a3673b26621fc32ede6268df1146fca4b	
+olcumler/meta/meta_gr_m2_p3_10c.json	C:/Users/berke/research/entry_v1/out/meta_gr_m2_p3_10c.json	2267	8022ba33e474a136b2e912f608339650e9f578413f4533728f1757d6be8f4fb8	
+olcumler/meta/meta_gr_t2_p1_10b.json	C:/Users/berke/research/entry_v1/out/meta_gr_t2_p1_10b.json	2149	820f9ca20ccd215db4feffb8e2545da4c0a18529555ce68b97099a95955a3293	
+olcumler/meta/meta_gr_t2_p1_10c.json	C:/Users/berke/research/entry_v1/out/meta_gr_t2_p1_10c.json	2207	7075d87504aa6c3077062c3619c3e3493a7649c1ec9a039498901c6c710a3c51	
+olcumler/meta/meta_gr_t2_p2_10b.json	C:/Users/berke/research/entry_v1/out/meta_gr_t2_p2_10b.json	2231	ab0eba1ac5c80f588f7e7a7240e1f48e002a8c03d4f7c8a7d7b2748c95885917	
+olcumler/meta/meta_gr_t2_p2_10c.json	C:/Users/berke/research/entry_v1/out/meta_gr_t2_p2_10c.json	2256	1fcf99738a1688b2215deb800343e56516be79f816ecd9bedafbed271965c8d9	
+olcumler/meta/meta_gr_t2_p3_10b.json	C:/Users/berke/research/entry_v1/out/meta_gr_t2_p3_10b.json	2105	ca14d66c5df9af54e033f8deeede59db4179f515dabf2c32242aa94f113d12a2	
+olcumler/meta/meta_gr_t2_p3_10c.json	C:/Users/berke/research/entry_v1/out/meta_gr_t2_p3_10c.json	2157	6674fbf72422ae1430d5b57d3a173de2ce9f4b152c9ab4c76323a294e6914684	
+olcumler/meta/meta_lv_m2_p1_l1_e200.json	C:/Users/berke/research/entry_v1/out/meta_lv_m2_p1_l1_e200.json	4048	9bf0c4d1ad367a8342b41fcf63ac18ce2817f28882e4321c214d3b80429a2f16	
+olcumler/meta/meta_lv_m2_p1_l2_e100.json	C:/Users/berke/research/entry_v1/out/meta_lv_m2_p1_l2_e100.json	4828	2ffcb3355b95d53931019095d3f03d8262963465864d3b0a440c000ca8b183d9	
+olcumler/meta/meta_lv_m2_p1_l3_e100.json	C:/Users/berke/research/entry_v1/out/meta_lv_m2_p1_l3_e100.json	4828	f8725351d641fc54e7a3756b7c0afffb67380b678c80495b4b41bfbdd407e017	
+olcumler/meta/meta_lv_m2_p1_l3_e200.json	C:/Users/berke/research/entry_v1/out/meta_lv_m2_p1_l3_e200.json	4048	16b3268901bd1e35951c769c4c15bde81f8360ca3f3bcec8718ab3f4f597745a	
+olcumler/meta/meta_lv_m2_p1_l5_e100.json	C:/Users/berke/research/entry_v1/out/meta_lv_m2_p1_l5_e100.json	4853	75f284969b6055720cca74a50bb3c641789d18b72719834c357c03f638a8bd84	
+olcumler/meta/meta_lv_m2_p2_l1_e200.json	C:/Users/berke/research/entry_v1/out/meta_lv_m2_p2_l1_e200.json	4477	74022740c1d04ef5b80df5f875ea0f3dfb97e1e5070d85a42091e7534d3e3343	
+olcumler/meta/meta_lv_m2_p2_l2_e100.json	C:/Users/berke/research/entry_v1/out/meta_lv_m2_p2_l2_e100.json	4830	f6ec24a7ef997d751e71378ecec2a413a4eae6a7fd6101bbfbc9d0ecad6424ca	
+olcumler/meta/meta_lv_m2_p2_l3_e100.json	C:/Users/berke/research/entry_v1/out/meta_lv_m2_p2_l3_e100.json	4830	4b621943703072f12d3afcab1d1144dc9151f1d98dfc36035d8c55942389fcc3	
+olcumler/meta/meta_lv_m2_p2_l3_e200.json	C:/Users/berke/research/entry_v1/out/meta_lv_m2_p2_l3_e200.json	4448	a1877e2a481a337f34bbc76a02783ae127e82f26e95d8b0246056066d47432b0	
+olcumler/meta/meta_lv_m2_p2_l5_e100.json	C:/Users/berke/research/entry_v1/out/meta_lv_m2_p2_l5_e100.json	4804	a07c36820398cf2970852b4b6d9676a2471cdb9b162d665485aff26114e0a34f	
+olcumler/meta/meta_lv_m2_p3_l1_e200.json	C:/Users/berke/research/entry_v1/out/meta_lv_m2_p3_l1_e200.json	4808	7588119db55e157d7c47276a351e0f49a5eb53a53f03e81c73f09cf240088f2b	
+olcumler/meta/meta_lv_m2_p3_l2_e100.json	C:/Users/berke/research/entry_v1/out/meta_lv_m2_p3_l2_e100.json	4895	6ffe03f7070bfd683da6c7a5e26fee79ce40d6a311a86ee6bf2f94e7f2e48c35	
+olcumler/meta/meta_lv_m2_p3_l3_e100.json	C:/Users/berke/research/entry_v1/out/meta_lv_m2_p3_l3_e100.json	4895	8c37134d895aeade33431e15d53105cfe0fe6416fd936c41345eea9c539606fc	
+olcumler/meta/meta_lv_m2_p3_l3_e200.json	C:/Users/berke/research/entry_v1/out/meta_lv_m2_p3_l3_e200.json	4727	b3ba8ddfafde0a899e5f051f2f005acac10f14cefd4d2920c3a20e235f2e3690	
+olcumler/meta/meta_lv_m2_p3_l5_e100.json	C:/Users/berke/research/entry_v1/out/meta_lv_m2_p3_l5_e100.json	4977	cebaaec4372ccd7c1301c6fe876ec06fbfee5a1773b6b056d00bdc449b8361aa	
+olcumler/meta/meta_lv_t2_p1_l1_e200.json	C:/Users/berke/research/entry_v1/out/meta_lv_t2_p1_l1_e200.json	4040	bec1eff8a5d2c41939e8bac14818a10426048c62fd777ef5d1184fd7bcc8ff02	
+olcumler/meta/meta_lv_t2_p1_l2_e100.json	C:/Users/berke/research/entry_v1/out/meta_lv_t2_p1_l2_e100.json	4221	f63db2b672b310017efd2180039db51d5fa14c5f9c498452d5700e62c3d11db7	
+olcumler/meta/meta_lv_t2_p1_l3_e100.json	C:/Users/berke/research/entry_v1/out/meta_lv_t2_p1_l3_e100.json	4221	a839aeeb490781d60960375053d518d95d3ce8e8c6753c8042f4f8ad7d3b4d59	
+olcumler/meta/meta_lv_t2_p1_l3_e200.json	C:/Users/berke/research/entry_v1/out/meta_lv_t2_p1_l3_e200.json	4040	29ac1e8d4f4714b31a8c401cde3b87c2d4d1e69f27276e065cf545f266033831	
+olcumler/meta/meta_lv_t2_p1_l5_e100.json	C:/Users/berke/research/entry_v1/out/meta_lv_t2_p1_l5_e100.json	4599	81f39506e942a5089d0e1bc67120fff321361f5726a1577f05c8921d5031f57e	
+olcumler/meta/meta_lv_t2_p2_l1_e200.json	C:/Users/berke/research/entry_v1/out/meta_lv_t2_p2_l1_e200.json	4392	645cee76f4316bc8acfcb619d4f118c5024bbfb2388f3ff283bee124e43870b9	
+olcumler/meta/meta_lv_t2_p2_l2_e100.json	C:/Users/berke/research/entry_v1/out/meta_lv_t2_p2_l2_e100.json	4674	56f0fe3723e985f887f13515e47e2402279aa6a47859d84514cd70cfc40c7ef7	
+olcumler/meta/meta_lv_t2_p2_l3_e100.json	C:/Users/berke/research/entry_v1/out/meta_lv_t2_p2_l3_e100.json	4674	f772fb0a66408211678c6f5f18ec3973fb92002d6b5c6e02c88d6f152988642b	
+olcumler/meta/meta_lv_t2_p2_l3_e200.json	C:/Users/berke/research/entry_v1/out/meta_lv_t2_p2_l3_e200.json	4309	cc3a787359db4e198873c2c75df16f09c7be9a892768e30b5bf3e7cab22b307c	
+olcumler/meta/meta_lv_t2_p2_l5_e100.json	C:/Users/berke/research/entry_v1/out/meta_lv_t2_p2_l5_e100.json	4674	fda9c06828f956bcd28a99532676fbc76fea75fa51c307c19379af1ebaeed6d9	
+olcumler/meta/meta_lv_t2_p3_l1_e200.json	C:/Users/berke/research/entry_v1/out/meta_lv_t2_p3_l1_e200.json	4536	6aed63d1ad51e32acecbd376337d7f2b2336b618d04f1b3ba096fabcd293bbc0	
+olcumler/meta/meta_lv_t2_p3_l2_e100.json	C:/Users/berke/research/entry_v1/out/meta_lv_t2_p3_l2_e100.json	4641	a5ec4407d20add6825e80bea9255329974a2245919dc28e43341dc7982eb928a	
+olcumler/meta/meta_lv_t2_p3_l3_e100.json	C:/Users/berke/research/entry_v1/out/meta_lv_t2_p3_l3_e100.json	4641	4e10c235ebdb6dce62ace68fa7d940bc51c57555f25fef8285bd7bb2767f81d6	
+olcumler/meta/meta_lv_t2_p3_l3_e200.json	C:/Users/berke/research/entry_v1/out/meta_lv_t2_p3_l3_e200.json	4430	f79fb1cc49751c342fa2fc44550fb389df9e0d9827d8f260e6571705a8a23bd9	
+olcumler/meta/meta_lv_t2_p3_l5_e100.json	C:/Users/berke/research/entry_v1/out/meta_lv_t2_p3_l5_e100.json	4641	364cb86b289832912f580a93bd5ace5dd248aa02f07631284b53b8cac32e77b2	
+olcumler/meta/meta_rk_m2_p1_b.json	C:/Users/berke/research/entry_v1/out/meta_rk_m2_p1_b.json	4746	1e99226487fc46f65a2f6be943b394af1bab2b8b9932fab1e23d49d440589067	
+olcumler/meta/meta_rk_m2_p1_c.json	C:/Users/berke/research/entry_v1/out/meta_rk_m2_p1_c.json	4783	64fc5196d29d0d26e7ca2bae7afc09f40000495dd9104db3eee2fa8cc143cba0	
+olcumler/meta/meta_rk_m2_p2_b.json	C:/Users/berke/research/entry_v1/out/meta_rk_m2_p2_b.json	4903	741d0f16ffbdb2c7c677f2d1349b32ec7f40f178d8b8f6c33b3b1544161dbe8f	
+olcumler/meta/meta_rk_m2_p2_c.json	C:/Users/berke/research/entry_v1/out/meta_rk_m2_p2_c.json	4841	526303af336cb93d2ad93bb060277693137272e1c623c18780416c5f4b310dc0	
+olcumler/meta/meta_rk_m2_p3_b.json	C:/Users/berke/research/entry_v1/out/meta_rk_m2_p3_b.json	5046	cf27b8e27d7ee402d77785ce130105c544830c065f39ae97fb218dd2dcd9063b	
+olcumler/meta/meta_rk_m2_p3_c.json	C:/Users/berke/research/entry_v1/out/meta_rk_m2_p3_c.json	4960	fc524efcd46eb5e777e7096633d5c4f46e58c2b9d211c85a888432be3ca86230	
+olcumler/meta/meta_rk_t2_p1_b.json	C:/Users/berke/research/entry_v1/out/meta_rk_t2_p1_b.json	4090	3d646b990d84f9547fa3c9b9fd7d8e0eaa80896e2bb6f5eed4f0e2913276d373	
+olcumler/meta/meta_rk_t2_p1_c.json	C:/Users/berke/research/entry_v1/out/meta_rk_t2_p1_c.json	4176	5b5c4fbea2fe152bdb13956c08233c5bc87d9d97200e476f66f77cf35b9036fe	
+olcumler/meta/meta_rk_t2_p2_b.json	C:/Users/berke/research/entry_v1/out/meta_rk_t2_p2_b.json	4769	5f449739405e922d2c413081cde8247d3c955cf75674d0a5449cd4811f1dbc7d	
+olcumler/meta/meta_rk_t2_p2_c.json	C:/Users/berke/research/entry_v1/out/meta_rk_t2_p2_c.json	4765	bb3c385aa5897facae6088a858119835ef78f1e7c735afcd4fa57525b726430c	
+olcumler/meta/meta_rk_t2_p3_b.json	C:/Users/berke/research/entry_v1/out/meta_rk_t2_p3_b.json	4840	45a689dda92e3e9a36de4b7b900706f0c7ad7bce72305ae044a6c48688f20f75	
+olcumler/meta/meta_rk_t2_p3_c.json	C:/Users/berke/research/entry_v1/out/meta_rk_t2_p3_c.json	4703	0ef1384a19dd18b80f8606addc7ab63495b10898010599df1156c807c993a3e3	
+olcumler/meta/meta_sl_m2_p1_10c_12slot.json	C:/Users/berke/research/entry_v1/out/meta_sl_m2_p1_10c_12slot.json	2322	3a9beb62b99a3c6fe4c2afa2d1468669e1801f6b938f2387b28b83f4b3547993	
+olcumler/meta/meta_sl_m2_p1_10c_6slot.json	C:/Users/berke/research/entry_v1/out/meta_sl_m2_p1_10c_6slot.json	2319	1c6d71745c62d8a1f97012f22db898cdd9a97c382a5a0dc0a111555c24374d0d	
+olcumler/meta/meta_sl_m2_p1_40c_12slot.json	C:/Users/berke/research/entry_v1/out/meta_sl_m2_p1_40c_12slot.json	4496	14a39d3a06470e9d73349f438194fdf761090b08a7f7f29960c958d5514f25ae	
+olcumler/meta/meta_sl_m2_p1_40c_6slot.json	C:/Users/berke/research/entry_v1/out/meta_sl_m2_p1_40c_6slot.json	4997	909a202c17ad3c11218da672d022aeeb83565358742fd98227a5a0933d9315c3	
+olcumler/meta/meta_sl_m2_p2_10c_12slot.json	C:/Users/berke/research/entry_v1/out/meta_sl_m2_p2_10c_12slot.json	2334	0b792e428830a652311d56f0f08428c067cb467c5afe682c048129802d99238e	
+olcumler/meta/meta_sl_m2_p2_10c_6slot.json	C:/Users/berke/research/entry_v1/out/meta_sl_m2_p2_10c_6slot.json	2521	7af48bcbeb7392342dd53d6d5f08d31b47f68cfec8481cdd6ced327bb4b75872	
+olcumler/meta/meta_sl_m2_p2_40c_12slot.json	C:/Users/berke/research/entry_v1/out/meta_sl_m2_p2_40c_12slot.json	5722	0a805e648238ec81863f6269998d2f90e6a9f0e73b4224e5ba273179f21a6eb7	
+olcumler/meta/meta_sl_m2_p2_40c_6slot.json	C:/Users/berke/research/entry_v1/out/meta_sl_m2_p2_40c_6slot.json	5883	bdef299d1f29d5bc1abb111f1443235ebcc5309f729d0540083fc93b65943bfc	
+olcumler/meta/meta_sl_m2_p3_10c_12slot.json	C:/Users/berke/research/entry_v1/out/meta_sl_m2_p3_10c_12slot.json	2217	4a86993a738c79e4e9387e54db6e7db6b8a5a1901b9704e18bc67848c8442229	
+olcumler/meta/meta_sl_m2_p3_10c_6slot.json	C:/Users/berke/research/entry_v1/out/meta_sl_m2_p3_10c_6slot.json	2236	2d60d3e1cd82ef79df96df2b662c69521c0c1ca632874838640f4e30754a5ef1	
+olcumler/meta/meta_sl_m2_p3_40c_12slot.json	C:/Users/berke/research/entry_v1/out/meta_sl_m2_p3_40c_12slot.json	5879	6ead0a68636f3fbf38042730a0aa6c73759c3e5942e719b09aa8add7b6baa962	
+olcumler/meta/meta_sl_m2_p3_40c_6slot.json	C:/Users/berke/research/entry_v1/out/meta_sl_m2_p3_40c_6slot.json	6315	31b9c29da30e334235ce84a8685527d0b4660161acd5e76cb0ba0e02587a0d59	
+olcumler/meta/meta_sl_t2_p1_10c_12slot.json	C:/Users/berke/research/entry_v1/out/meta_sl_t2_p1_10c_12slot.json	2323	1f2fa63f4127cbcae0e287a2e55076593bcc41dfbf2ac5f848e3861f86c58ec9	
+olcumler/meta/meta_sl_t2_p1_10c_6slot.json	C:/Users/berke/research/entry_v1/out/meta_sl_t2_p1_10c_6slot.json	2345	9e1ed7917d81a02f3eebfa5a8d7decacfea2b6938bd51ab606030838cfa266b3	
+olcumler/meta/meta_sl_t2_p1_40c_12slot.json	C:/Users/berke/research/entry_v1/out/meta_sl_t2_p1_40c_12slot.json	4449	390bb3ea6e05e5b89e3e7833c33978bdbc7aa7a5c1d0dda4e16a29c172a10211	
+olcumler/meta/meta_sl_t2_p1_40c_6slot.json	C:/Users/berke/research/entry_v1/out/meta_sl_t2_p1_40c_6slot.json	4999	7319c11268c8f9d6cc80a78cf8d8b74d25c13ade9409298a1bb90cce31ed78d6	
+olcumler/meta/meta_sl_t2_p2_10c_12slot.json	C:/Users/berke/research/entry_v1/out/meta_sl_t2_p2_10c_12slot.json	2364	0e83af7a85e693ddabc9b5141c7e0a7ee7e1982f2cc106e4e24f450907275638	
+olcumler/meta/meta_sl_t2_p2_10c_6slot.json	C:/Users/berke/research/entry_v1/out/meta_sl_t2_p2_10c_6slot.json	2503	d641de363f64c99d581ae1c2c83e0237e31d87cd8c683fc8fafa020cdba2c1fb	
+olcumler/meta/meta_sl_t2_p2_40c_12slot.json	C:/Users/berke/research/entry_v1/out/meta_sl_t2_p2_40c_12slot.json	5672	51a30bf8747729dc0cc9a245b1ff8d99e1f07040bc156ac3e6cc25d2f41914d4	
+olcumler/meta/meta_sl_t2_p2_40c_6slot.json	C:/Users/berke/research/entry_v1/out/meta_sl_t2_p2_40c_6slot.json	5592	73281a3391312a2e0a8ca452beb2d2d29105f98d5f12f50d747baca0e959e1d6	
+olcumler/meta/meta_sl_t2_p3_10c_12slot.json	C:/Users/berke/research/entry_v1/out/meta_sl_t2_p3_10c_12slot.json	2217	97bf3fe6ff7b784417e10b70438bd0a5e2204cc0e4187cc17ca2345314a71464	
+olcumler/meta/meta_sl_t2_p3_10c_6slot.json	C:/Users/berke/research/entry_v1/out/meta_sl_t2_p3_10c_6slot.json	2373	5775e3f163b1e62fbae46ba30dc300caa03b2bb1bdc23207f1b3c97fdd9ea45e	
+olcumler/meta/meta_sl_t2_p3_40c_12slot.json	C:/Users/berke/research/entry_v1/out/meta_sl_t2_p3_40c_12slot.json	5012	bb5aa71bb9b4ad4aca39c5197715ed5de689d9292cac11d11e110ac2f60e215c	
+olcumler/meta/meta_sl_t2_p3_40c_6slot.json	C:/Users/berke/research/entry_v1/out/meta_sl_t2_p3_40c_6slot.json	5716	8957b1248e8b4cb092aa57bcd2a7de006009d729e454a9e77a56f220aace9db4	
+olcumler/meta/meta_tl_m2_p2_a2d1.json	C:/Users/berke/research/entry_v1/out/meta_tl_m2_p2_a2d1.json	5054	87b7ba2c54dd3ac3c02554d35cc1d19182eba062c3166f95049e582e9b3b9cf5	
+olcumler/meta/meta_tl_m2_p2_a3d1.json	C:/Users/berke/research/entry_v1/out/meta_tl_m2_p2_a3d1.json	5108	3b11e9278c2d27b4f22b034912ec126f8b798be6d6af421ddd4bb41cd1c209e0	
+olcumler/meta/meta_tl_m2_p2_a3d2.json	C:/Users/berke/research/entry_v1/out/meta_tl_m2_p2_a3d2.json	5131	98d300feb3317baabfd4da822ec3fe01f0f1c06b2d28b737205ed30e7b410dc1	
+olcumler/meta/meta_tl_m2_p3_a2d1.json	C:/Users/berke/research/entry_v1/out/meta_tl_m2_p3_a2d1.json	5275	1713d3da4b3ceccaea156ab0926db8668604f269356e741eac687d9cca74baed	
+olcumler/meta/meta_tl_m2_p3_a3d1.json	C:/Users/berke/research/entry_v1/out/meta_tl_m2_p3_a3d1.json	5201	f53461dec57d272d4d7c798bc6af9361d45b652af64c8695dc902f74fa1ad4f3	
+olcumler/meta/meta_tl_m2_p3_a3d2.json	C:/Users/berke/research/entry_v1/out/meta_tl_m2_p3_a3d2.json	5251	f7d00cdce200692d8c663f4cb878d882d75ee44290a91c4b25bff999eca1a845	
+olcumler/meta/meta_tl_t2_p3_a2d1.json	C:/Users/berke/research/entry_v1/out/meta_tl_t2_p3_a2d1.json	4966	62c91c2f586d8ca32d6c7f55c9c25b2fbc5d510d69b3c8f7a9864eeb811ce417	
+olcumler/meta/meta_tl_t2_p3_a3d1.json	C:/Users/berke/research/entry_v1/out/meta_tl_t2_p3_a3d1.json	4966	ad1ed264092d76903b750c8a4cd3237dca59129105d86afba97a3409526c3113	
+olcumler/meta/meta_tl_t2_p3_a3d2.json	C:/Users/berke/research/entry_v1/out/meta_tl_t2_p3_a3d2.json	4942	5c18fa3dd775348fa7384cd981b795c4e397e9d36ad74129df19f0f33a365452	
+olcumler/meta/meta_u40_m2_p1_10coin.json	C:/Users/berke/research/entry_v1/out/meta_u40_m2_p1_10coin.json	2271	1d598b39ac8ee801ca4057aa3a21a6db1b4ca7ee65cd2b1a04fade786118a011	
+olcumler/meta/meta_u40_m2_p1_40coin.json	C:/Users/berke/research/entry_v1/out/meta_u40_m2_p1_40coin.json	4725	1668dbe818a3c8d891bd2db7249d4a842bc6d1ad4c563297f82e38405ed4a273	
+olcumler/meta/meta_u40_m2_p2_10coin.json	C:/Users/berke/research/entry_v1/out/meta_u40_m2_p2_10coin.json	2347	09adf634c22381cc5e3295d9d3343be5a58fb049fc2d7d212d040358adaea0e1	
+olcumler/meta/meta_u40_m2_p2_40coin.json	C:/Users/berke/research/entry_v1/out/meta_u40_m2_p2_40coin.json	5014	2625d438484d01876413ef9cfcfaf8f1df4191df153dde1aa01d996c2e666e74	
+olcumler/meta/meta_u40_m2_p3_10coin.json	C:/Users/berke/research/entry_v1/out/meta_u40_m2_p3_10coin.json	2244	f4d4e8ffec93d690e4d6c4cc961a93e9ebdd4784bd76f202973cb2eeb572c497	
+olcumler/meta/meta_u40_m2_p3_40coin.json	C:/Users/berke/research/entry_v1/out/meta_u40_m2_p3_40coin.json	5192	ab0d37a3b32e0ab0875d48a1019c70a4ca96712bf22839119b6300ca8539d7a0	
+olcumler/meta/meta_u40_t2_p1_10coin.json	C:/Users/berke/research/entry_v1/out/meta_u40_t2_p1_10coin.json	2126	48934e0dde3711d8ac7c7fbc6cf7c4b761922041603b5dffd3d4756826194f91	
+olcumler/meta/meta_u40_t2_p1_40coin.json	C:/Users/berke/research/entry_v1/out/meta_u40_t2_p1_40coin.json	4148	ff0261031b5b670a5fc5699b0387310b80e0648a6831b312bc7931e5461e5a79	
+olcumler/meta/meta_u40_t2_p2_10coin.json	C:/Users/berke/research/entry_v1/out/meta_u40_t2_p2_10coin.json	2233	66f7eb70586e3c0e273552c71daaf4b30c2a8a08a155664b46ea425fb104ce26	
+olcumler/meta/meta_u40_t2_p2_40coin.json	C:/Users/berke/research/entry_v1/out/meta_u40_t2_p2_40coin.json	4513	62d1d7dd9e10ecbaa6941096d8b2da7a3b1ed97d91949bcf4ce3cdb83b026bbb	
+olcumler/meta/meta_u40_t2_p3_10coin.json	C:/Users/berke/research/entry_v1/out/meta_u40_t2_p3_10coin.json	2082	d2814ab37b372b8f45453355368421cf6f027b93c05c06aeebd4551617e52ca0	
+olcumler/meta/meta_u40_t2_p3_40coin.json	C:/Users/berke/research/entry_v1/out/meta_u40_t2_p3_40coin.json	4847	28c654fccf19699a8fc6720ff3d6486e7c533e897f046428f13da351d870d98d	
+reports/PROTOCOL_V15.md	C:/Users/berke/research/entry_v1/PROTOCOL_V15.md	6891	c619632bc1fde0ca9167494da2ad88733729008202a161dc958b1d6a5b480980	
+reports/DENEY_V15.md	C:/Users/berke/research/entry_v1/DENEY_V15.md	5368	268779ea6ae1279182408c292ecba51df135608275027bc49dea342ba3a59a12	
+reports/BOX_SWEEP_v15_a.md	C:/Users/berke/research/entry_v1/out/BOX_SWEEP_v15_a.md	15419	2dd70d60dff54f10c54f6c6c2500289201ec5b1bb050272d508d83e4997a0df1	
+reports/BOX_SWEEP_v15_a.json	C:/Users/berke/research/entry_v1/out/BOX_SWEEP_v15_a.json	256854	25696e05d7a7aa3093ad3aae238b97f45d1c5444e8d65e66409e3bbaa1d524a3	
+reports/DEVIR-2026-09-21.yayim-kopyasi.md	C:/Users/berke/trading2-deploy/DEVIR-2026-09-21.md	9725	26f7a92dd18baabe439ca07c370f88a5e4a6188854e7300f6477c997261cb2b6	yayim kopyasi: yalniz 44. satirdaki VPS kullanici@host maskelendi; baska degisiklik yok
+data/collect_binance.json	C:/Users/berke/research/entry_v1/out/collect_binance.json	22995	d633d351c2af487cd0065c389d187d3dd5800b23d5b4c2685c331754a2a8295d	bn_archive 1d/4h/funding toplama raporu (2026-09-19)
+data/bn_archive_manifests.json	C:/Users/berke/research/bn_archive/history/futures/*/*/manifest.json	62517	c6f63b1dee4c15d2fd07855b9c11877d83dbca7d53a76b9d2d041c850e71a8da	126 mevcut manifestten toplandi
+data/wt-ten_history_manifests.json	C:/Users/berke/wt-ten/data/history/futures/*/*/manifest.json	34981	83e398efe916b448187851d7bf5a97da7c35ef9f5b39643f6212c027ebe304eb	70 mevcut manifestten toplandi
+data/symbol_filters.identity.json	C:/Users/berke/research/bn_archive/symbol_filters.json	202	ff4207b3724b3a0fc49d53f67201e0683f0fce2f5707c2dab6e37da4b5f8d97f	dosya yayimlanmadi; boyut + sha256 (bu oturumda hesaplandi)

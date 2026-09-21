@@ -1,0 +1,218 @@
+{
+ "run_id": "rk_t2_p1_b",
+ "from": "2020-11-01",
+ "to": "2022-08-31",
+ "gate": false,
+ "symbols_requested": [
+  "BTC/USDT",
+  "ETH/USDT",
+  "ZEC/USDT",
+  "SOL/USDT",
+  "NEAR/USDT",
+  "UNI/USDT",
+  "XRP/USDT",
+  "ONE/USDT",
+  "BNB/USDT",
+  "ARB/USDT",
+  "DOGE/USDT",
+  "LSK/USDT",
+  "SUI/USDT",
+  "ENA/USDT",
+  "G/USDT",
+  "WLD/USDT",
+  "ADA/USDT",
+  "ONDO/USDT",
+  "1000PEPE/USDT",
+  "COTI/USDT",
+  "LINK/USDT",
+  "REZ/USDT",
+  "DASH/USDT",
+  "AAVE/USDT",
+  "TAO/USDT",
+  "BCH/USDT",
+  "AVAX/USDT",
+  "DOT/USDT",
+  "FIL/USDT",
+  "APT/USDT",
+  "SYN/USDT",
+  "LTC/USDT",
+  "XLM/USDT",
+  "INJ/USDT",
+  "FET/USDT",
+  "TRX/USDT",
+  "XMR/USDT",
+  "1000SHIB/USDT",
+  "OP/USDT",
+  "KSM/USDT"
+ ],
+ "symbols_loaded": [
+  "1000PEPE/USDT",
+  "1000SHIB/USDT",
+  "AAVE/USDT",
+  "ADA/USDT",
+  "APT/USDT",
+  "ARB/USDT",
+  "AVAX/USDT",
+  "BCH/USDT",
+  "BNB/USDT",
+  "BTC/USDT",
+  "COTI/USDT",
+  "DASH/USDT",
+  "DOGE/USDT",
+  "DOT/USDT",
+  "ENA/USDT",
+  "ETH/USDT",
+  "FET/USDT",
+  "FIL/USDT",
+  "G/USDT",
+  "INJ/USDT",
+  "KSM/USDT",
+  "LINK/USDT",
+  "LSK/USDT",
+  "LTC/USDT",
+  "NEAR/USDT",
+  "ONDO/USDT",
+  "ONE/USDT",
+  "OP/USDT",
+  "REZ/USDT",
+  "SOL/USDT",
+  "SUI/USDT",
+  "SYN/USDT",
+  "TAO/USDT",
+  "TRX/USDT",
+  "UNI/USDT",
+  "WLD/USDT",
+  "XLM/USDT",
+  "XMR/USDT",
+  "XRP/USDT",
+  "ZEC/USDT"
+ ],
+ "symbols_skipped": {},
+ "universe_complete": true,
+ "n_symbols_loaded": 40,
+ "strategy": true,
+ "no_breakeven": true,
+ "exclude": [],
+ "history_root": "C:\\Users\\berke\\research\\bn_archive\\history",
+ "trigger": false,
+ "veto": false,
+ "candidate_order": true,
+ "stride": 1,
+ "elapsed_s": 470.8,
+ "n_decisions": 97967,
+ "n_actionable": 14234,
+ "n_opened": 20,
+ "determinism_hash": "8f821e8322f9e519029e668d908e95d981c258173dd62b00ce5ac52aaebde61e",
+ "rejections": {
+  "total": 14214,
+  "by_reason": {
+   "STEP_ZERO_QTY": 18,
+   "MIN_NOTIONAL": 13,
+   "MIN_ORDER_CONFLICT": 3,
+   "TOTAL_OPEN_RISK": 14171,
+   "STRATEGY_BAD_STOP": 9
+  },
+  "by_symbol": {
+   "BTC/USDT": {
+    "STEP_ZERO_QTY": 12,
+    "TOTAL_OPEN_RISK": 984
+   },
+   "ETH/USDT": {
+    "MIN_NOTIONAL": 12,
+    "TOTAL_OPEN_RISK": 984
+   },
+   "UNI/USDT": {
+    "STEP_ZERO_QTY": 3,
+    "TOTAL_OPEN_RISK": 669
+   },
+   "XRP/USDT": {
+    "MIN_ORDER_CONFLICT": 1,
+    "TOTAL_OPEN_RISK": 441,
+    "STRATEGY_BAD_STOP": 1
+   },
+   "DOGE/USDT": {
+    "TOTAL_OPEN_RISK": 660
+   },
+   "ADA/USDT": {
+    "TOTAL_OPEN_RISK": 180
+   },
+   "LINK/USDT": {
+    "TOTAL_OPEN_RISK": 708
+   },
+   "DASH/USDT": {
+    "TOTAL_OPEN_RISK": 582
+   },
+   "BCH/USDT": {
+    "TOTAL_OPEN_RISK": 587,
+    "STRATEGY_BAD_STOP": 1
+   },
+   "AVAX/USDT": {
+    "TOTAL_OPEN_RISK": 899,
+    "STEP_ZERO_QTY": 1
+   },
+   "DOT/USDT": {
+    "TOTAL_OPEN_RISK": 786
+   },
+   "LTC/USDT": {
+    "TOTAL_OPEN_RISK": 744
+   },
+   "XLM/USDT": {
+    "TOTAL_OPEN_RISK": 538,
+    "STRATEGY_BAD_STOP": 2
+   },
+   "TRX/USDT": {
+    "TOTAL_OPEN_RISK": 862,
+    "STRATEGY_BAD_STOP": 2
+   },
+   "XMR/USDT": {
+    "TOTAL_OPEN_RISK": 690
+   },
+   "KSM/USDT": {
+    "TOTAL_OPEN_RISK": 708
+   },
+   "NEAR/USDT": {
+    "TOTAL_OPEN_RISK": 816,
+    "MIN_NOTIONAL": 1,
+    "MIN_ORDER_CONFLICT": 1,
+    "STEP_ZERO_QTY": 2
+   },
+   "AAVE/USDT": {
+    "TOTAL_OPEN_RISK": 462
+   },
+   "FIL/USDT": {
+    "TOTAL_OPEN_RISK": 293,
+    "STRATEGY_BAD_STOP": 1
+   },
+   "BNB/USDT": {
+    "TOTAL_OPEN_RISK": 405
+   },
+   "ZEC/USDT": {
+    "TOTAL_OPEN_RISK": 352,
+    "STRATEGY_BAD_STOP": 2
+   },
+   "COTI/USDT": {
+    "TOTAL_OPEN_RISK": 384
+   },
+   "ONE/USDT": {
+    "TOTAL_OPEN_RISK": 365,
+    "MIN_ORDER_CONFLICT": 1
+   },
+   "1000SHIB/USDT": {
+    "TOTAL_OPEN_RISK": 66
+   },
+   "SOL/USDT": {
+    "TOTAL_OPEN_RISK": 6
+   }
+  }
+ },
+ "funding_coverage": {
+  "queries": 1773,
+  "answered": 1773,
+  "unknown": 0,
+  "complete": true,
+  "answered_fraction": 1.0,
+  "missing_series": [],
+  "tolerance_ms": 120000,
+  "source": "history store: futures/<symbol>/funding (Binance fundingRate arşivi)"
+ }
+}

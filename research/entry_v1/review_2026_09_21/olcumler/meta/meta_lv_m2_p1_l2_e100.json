@@ -1,0 +1,244 @@
+{
+ "run_id": "lv_m2_p1_l2_e100",
+ "from": "2020-11-01",
+ "to": "2022-08-31",
+ "gate": false,
+ "symbols_requested": [
+  "BTC/USDT",
+  "ETH/USDT",
+  "ZEC/USDT",
+  "SOL/USDT",
+  "NEAR/USDT",
+  "UNI/USDT",
+  "XRP/USDT",
+  "ONE/USDT",
+  "BNB/USDT",
+  "ARB/USDT",
+  "DOGE/USDT",
+  "LSK/USDT",
+  "SUI/USDT",
+  "ENA/USDT",
+  "G/USDT",
+  "WLD/USDT",
+  "ADA/USDT",
+  "ONDO/USDT",
+  "1000PEPE/USDT",
+  "COTI/USDT",
+  "LINK/USDT",
+  "REZ/USDT",
+  "DASH/USDT",
+  "AAVE/USDT",
+  "TAO/USDT",
+  "BCH/USDT",
+  "AVAX/USDT",
+  "DOT/USDT",
+  "FIL/USDT",
+  "APT/USDT",
+  "SYN/USDT",
+  "LTC/USDT",
+  "XLM/USDT",
+  "INJ/USDT",
+  "FET/USDT",
+  "TRX/USDT",
+  "XMR/USDT",
+  "1000SHIB/USDT",
+  "OP/USDT",
+  "KSM/USDT"
+ ],
+ "symbols_loaded": [
+  "1000PEPE/USDT",
+  "1000SHIB/USDT",
+  "AAVE/USDT",
+  "ADA/USDT",
+  "APT/USDT",
+  "ARB/USDT",
+  "AVAX/USDT",
+  "BCH/USDT",
+  "BNB/USDT",
+  "BTC/USDT",
+  "COTI/USDT",
+  "DASH/USDT",
+  "DOGE/USDT",
+  "DOT/USDT",
+  "ENA/USDT",
+  "ETH/USDT",
+  "FET/USDT",
+  "FIL/USDT",
+  "G/USDT",
+  "INJ/USDT",
+  "KSM/USDT",
+  "LINK/USDT",
+  "LSK/USDT",
+  "LTC/USDT",
+  "NEAR/USDT",
+  "ONDO/USDT",
+  "ONE/USDT",
+  "OP/USDT",
+  "REZ/USDT",
+  "SOL/USDT",
+  "SUI/USDT",
+  "SYN/USDT",
+  "TAO/USDT",
+  "TRX/USDT",
+  "UNI/USDT",
+  "WLD/USDT",
+  "XLM/USDT",
+  "XMR/USDT",
+  "XRP/USDT",
+  "ZEC/USDT"
+ ],
+ "symbols_skipped": {},
+ "universe_complete": true,
+ "n_symbols_loaded": 40,
+ "strategy": true,
+ "no_breakeven": true,
+ "exclude": [],
+ "history_root": "C:\\Users\\berke\\research\\bn_archive\\history",
+ "trigger": false,
+ "veto": false,
+ "candidate_order": true,
+ "risk_pct": null,
+ "equity": 100.0,
+ "stride": 1,
+ "elapsed_s": 479.7,
+ "n_decisions": 97967,
+ "n_actionable": 12473,
+ "n_opened": 36,
+ "determinism_hash": "52c07b9c5083af0e0fda2362ce9e557918d6f6720489af95a8b2452d131a4f7d",
+ "rejections": {
+  "total": 12437,
+  "by_reason": {
+   "MIN_ORDER_CONFLICT": 444,
+   "MIN_NOTIONAL": 151,
+   "TOTAL_OPEN_RISK": 11658,
+   "STEP_ZERO_QTY": 175,
+   "STRATEGY_BAD_STOP": 9
+  },
+  "by_symbol": {
+   "DOGE/USDT": {
+    "MIN_ORDER_CONFLICT": 10,
+    "TOTAL_OPEN_RISK": 554
+   },
+   "ETH/USDT": {
+    "MIN_NOTIONAL": 60,
+    "TOTAL_OPEN_RISK": 768
+   },
+   "UNI/USDT": {
+    "TOTAL_OPEN_RISK": 598,
+    "MIN_ORDER_CONFLICT": 6,
+    "STEP_ZERO_QTY": 8
+   },
+   "BCH/USDT": {
+    "TOTAL_OPEN_RISK": 616,
+    "MIN_ORDER_CONFLICT": 7,
+    "STRATEGY_BAD_STOP": 1
+   },
+   "XRP/USDT": {
+    "TOTAL_OPEN_RISK": 484,
+    "MIN_ORDER_CONFLICT": 7,
+    "STRATEGY_BAD_STOP": 1
+   },
+   "ZEC/USDT": {
+    "TOTAL_OPEN_RISK": 533,
+    "MIN_ORDER_CONFLICT": 16,
+    "STRATEGY_BAD_STOP": 2,
+    "MIN_NOTIONAL": 1
+   },
+   "LTC/USDT": {
+    "TOTAL_OPEN_RISK": 705,
+    "MIN_ORDER_CONFLICT": 7,
+    "MIN_NOTIONAL": 44
+   },
+   "DASH/USDT": {
+    "TOTAL_OPEN_RISK": 300,
+    "MIN_ORDER_CONFLICT": 6
+   },
+   "TRX/USDT": {
+    "TOTAL_OPEN_RISK": 523,
+    "STRATEGY_BAD_STOP": 2
+   },
+   "LINK/USDT": {
+    "TOTAL_OPEN_RISK": 649,
+    "MIN_ORDER_CONFLICT": 8,
+    "MIN_NOTIONAL": 15
+   },
+   "XLM/USDT": {
+    "TOTAL_OPEN_RISK": 430,
+    "MIN_ORDER_CONFLICT": 7,
+    "STRATEGY_BAD_STOP": 2
+   },
+   "ADA/USDT": {
+    "TOTAL_OPEN_RISK": 415,
+    "MIN_NOTIONAL": 10,
+    "MIN_ORDER_CONFLICT": 3
+   },
+   "AVAX/USDT": {
+    "TOTAL_OPEN_RISK": 651,
+    "MIN_ORDER_CONFLICT": 132,
+    "STEP_ZERO_QTY": 57
+   },
+   "BTC/USDT": {
+    "TOTAL_OPEN_RISK": 590,
+    "STEP_ZERO_QTY": 16
+   },
+   "DOT/USDT": {
+    "TOTAL_OPEN_RISK": 609,
+    "MIN_ORDER_CONFLICT": 18,
+    "MIN_NOTIONAL": 16
+   },
+   "KSM/USDT": {
+    "TOTAL_OPEN_RISK": 542,
+    "STEP_ZERO_QTY": 25,
+    "MIN_ORDER_CONFLICT": 45
+   },
+   "AAVE/USDT": {
+    "TOTAL_OPEN_RISK": 518,
+    "MIN_ORDER_CONFLICT": 6,
+    "STEP_ZERO_QTY": 28
+   },
+   "NEAR/USDT": {
+    "TOTAL_OPEN_RISK": 585,
+    "MIN_ORDER_CONFLICT": 109,
+    "MIN_NOTIONAL": 1,
+    "STEP_ZERO_QTY": 19
+   },
+   "SOL/USDT": {
+    "TOTAL_OPEN_RISK": 398,
+    "MIN_ORDER_CONFLICT": 42,
+    "MIN_NOTIONAL": 4
+   },
+   "FIL/USDT": {
+    "TOTAL_OPEN_RISK": 346,
+    "STRATEGY_BAD_STOP": 1,
+    "MIN_ORDER_CONFLICT": 6,
+    "STEP_ZERO_QTY": 22
+   },
+   "XMR/USDT": {
+    "TOTAL_OPEN_RISK": 144
+   },
+   "BNB/USDT": {
+    "TOTAL_OPEN_RISK": 108
+   },
+   "COTI/USDT": {
+    "MIN_ORDER_CONFLICT": 9,
+    "TOTAL_OPEN_RISK": 244
+   },
+   "ONE/USDT": {
+    "TOTAL_OPEN_RISK": 288
+   },
+   "1000SHIB/USDT": {
+    "TOTAL_OPEN_RISK": 60
+   }
+  }
+ },
+ "funding_coverage": {
+  "queries": 1456,
+  "answered": 1456,
+  "unknown": 0,
+  "complete": true,
+  "answered_fraction": 1.0,
+  "missing_series": [],
+  "tolerance_ms": 120000,
+  "source": "history store: futures/<symbol>/funding (Binance fundingRate arşivi)"
+ }
+}

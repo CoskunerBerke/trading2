@@ -1,0 +1,100 @@
+{
+ "run_id": "be_t2_p3_off",
+ "from": "2024-09-01",
+ "to": "2026-08-31",
+ "gate": false,
+ "symbols_requested": [
+  "BTC/USDT",
+  "ETH/USDT",
+  "SOL/USDT",
+  "XRP/USDT",
+  "BNB/USDT",
+  "DOGE/USDT",
+  "LINK/USDT",
+  "AAVE/USDT",
+  "AVAX/USDT",
+  "LTC/USDT"
+ ],
+ "symbols_loaded": [
+  "AAVE/USDT",
+  "AVAX/USDT",
+  "BNB/USDT",
+  "BTC/USDT",
+  "DOGE/USDT",
+  "ETH/USDT",
+  "LINK/USDT",
+  "LTC/USDT",
+  "SOL/USDT",
+  "XRP/USDT"
+ ],
+ "symbols_skipped": {},
+ "universe_complete": true,
+ "n_symbols_loaded": 10,
+ "strategy": true,
+ "no_breakeven": true,
+ "exclude": [],
+ "history_root": "C:\\Users\\berke\\wt-ten\\data\\history",
+ "trigger": false,
+ "veto": false,
+ "stride": 1,
+ "elapsed_s": 412.7,
+ "n_decisions": 43750,
+ "n_actionable": 10676,
+ "n_opened": 31,
+ "determinism_hash": "879628874dd1ba1f495fe64463ba17f55b8f30f6d353bc224ada90a4fa44b9e0",
+ "rejections": {
+  "total": 10645,
+  "by_reason": {
+   "STEP_ZERO_QTY": 1167,
+   "TOTAL_OPEN_RISK": 8895,
+   "MIN_NOTIONAL": 521,
+   "MIN_ORDER_CONFLICT": 37,
+   "MAX_POSITION_PCT": 25
+  },
+  "by_symbol": {
+   "BTC/USDT": {
+    "STEP_ZERO_QTY": 745,
+    "TOTAL_OPEN_RISK": 1536,
+    "MAX_POSITION_PCT": 25
+   },
+   "AAVE/USDT": {
+    "STEP_ZERO_QTY": 404,
+    "TOTAL_OPEN_RISK": 1513,
+    "MIN_ORDER_CONFLICT": 29
+   },
+   "DOGE/USDT": {
+    "TOTAL_OPEN_RISK": 624
+   },
+   "AVAX/USDT": {
+    "TOTAL_OPEN_RISK": 936,
+    "STEP_ZERO_QTY": 18
+   },
+   "LTC/USDT": {
+    "TOTAL_OPEN_RISK": 1307,
+    "MIN_NOTIONAL": 151
+   },
+   "ETH/USDT": {
+    "TOTAL_OPEN_RISK": 1237,
+    "MIN_NOTIONAL": 299
+   },
+   "XRP/USDT": {
+    "TOTAL_OPEN_RISK": 523
+   },
+   "LINK/USDT": {
+    "TOTAL_OPEN_RISK": 1219,
+    "MIN_NOTIONAL": 71,
+    "MIN_ORDER_CONFLICT": 8
+   }
+  }
+ },
+ "funding_coverage": {
+  "queries": 3106,
+  "answered": 3106,
+  "unknown": 0,
+  "complete": true,
+  "answered_fraction": 1.0,
+  "missing_series": [],
+  "tolerance_ms": 120000,
+  "source": "history store: futures/<symbol>/funding (Binance fundingRate arşivi)"
+ }
+}

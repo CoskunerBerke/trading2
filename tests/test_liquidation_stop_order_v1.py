@@ -71,7 +71,10 @@ def _open(side: str, stop, *, targets=None, slippage=None):
 
 
 def _tick(led, **kw):
-    return led.tick({ETH: TickData(**kw)}, now_utc=T0 + timedelta(hours=1))
+    td = TickData(**kw)
+    if td.high is not None and td.low is not None:          # test girdisi GEÇERLİ bir bar olmalı (bozuk bar sınanmaz)
+        assert td.low <= td.ref <= td.high and (td.open is None or td.low <= td.open <= td.high), kw
+    return led.tick({ETH: td}, now_utc=T0 + timedelta(hours=1))
 
 
 def _assert_stop_accounting(led, w0, rec, *, fill, side="LONG"):
@@ -153,11 +156,12 @@ def test_bar_with_known_open_fills_the_stop_from_what_was_observed(side, stop, b
     assert recs[0].features["exit_fill"]["first_source"] == "BAR_OPEN"
 
 
-@pytest.mark.parametrize("side,stop,open_off", [("LONG", 2400, -50), ("SHORT", 3600, +50)])
-def test_a_bar_that_opens_beyond_the_liquidation_is_a_liquidation_even_if_it_recovers(side, stop, open_off):
+@pytest.mark.parametrize("side,stop,open_off,high,low", [("LONG", 2400, -50, D(3000), D(1000)),
+                                                         ("SHORT", 3600, +50, D(5000), D(2900))])
+def test_a_bar_that_opens_beyond_the_liquidation_is_a_liquidation_even_if_it_recovers(side, stop, open_off, high, low):
     led, pos, w0 = _open(side, stop)
     liq = pos.liquidation_price
-    recs = _tick(led, open=liq + open_off, high=D(3000), low=D(1000), last=D(3000), mark=D(3000))
+    recs = _tick(led, open=liq + open_off, high=high, low=low, last=D(3000), mark=D(3000))
     assert len(recs) == 1
     _assert_liquidation_accounting(led, w0, recs[0], liq)
     assert recs[0].features["exit_fill"]["basis"] == "FIRST_OBSERVATION_BEYOND_LIQUIDATION"

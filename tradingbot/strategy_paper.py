@@ -74,7 +74,7 @@ BAR_EXTREME_MAX_RATIO = 5.0
 #: Barın uygulanmama gerekçeleri. `BAR_OUT_OF_RANGE` ARTIK YOK: bütünlük ihlali, ölçek şüphesi ve piyasa kimliği
 #: AYRI gerekçelerdir ve hiçbiri barı TÜKETMİŞ saymaz (boşluk kaydı kalır; veri düzelince aynı bar yeniden denenir).
 BAR_CORRUPT = "BAR_CORRUPT"                  # sonlu/pozitif değil ya da low <= close <= high değil
-BAR_SCALE_UNVERIFIED = "BAR_SCALE_UNVERIFIED"  # kapanış canlı mark ölçeğinden uzak: ölçek/birim şüphesi
+BAR_SCALE_UNVERIFIED = "BAR_SCALE_UNVERIFIED"  # ölçek doğrulanamadı: açılış sürekliliği YOK ve kapanış canlı mark'tan uzak
 BAR_MARKET_MISMATCH = "BAR_MARKET_MISMATCH"  # bar çerçevesi beklenen piyasadan değil (SPOT ikamesi vb.)
 
 
@@ -564,7 +564,10 @@ class StrategyBook:
         self.closed_recent.append({"id": getattr(rec, "id", None), "symbol": getattr(rec, "symbol", None),
                                    "exit_reason": getattr(rec, "exit_reason", None),
                                    "net_pnl": float(getattr(rec, "net_pnl", 0) or 0), "r": float(getattr(rec, "r_multiple", 0) or 0),
-                                   "closed_at": getattr(rec, "closed_at", None), "features": d.get("features")})
+                                   "closed_at": getattr(rec, "closed_at", None), "features": d.get("features"),
+                                   # 2026-09-22: fiyat yolu tam doğrulanmadan kapanan işlem özet satırında GÖRÜNÜR (F1)
+                                   "path_unverified": bool((d.get("features") or {}).get("path_unverified")),
+                                   "exit_basis": ((d.get("features") or {}).get("exit_fill") or {}).get("basis")})
         self.closed_recent = self.closed_recent[-50:]
 
     def _on_opened(self, pos, act: dict[str, Any]) -> None:
@@ -789,6 +792,58 @@ class StrategyBook:
             self._rule_ran_since_save = False
 
 
+#: Pozisyon başına saklanan doğrulanmış bar kapanışı sayısı (süreklilik referansı; yeniden başlatmada `meta` ile korunur).
+VERIFIED_BARS_KEEP = 64
+
+
+def _scale_anchor(pos: Any, tf: str, bar_open_ms: int) -> tuple[float, str]:
+    """Süreklilik referansı: bu pozisyonda bu dilimde DOĞRULANMIŞ, `bar_open_ms`ten önce açılmış en yakın barın
+    kapanışı; yoksa giriş fiyatı (girişte doğrulanmış perp mark ile açılmıştır). Döner: (fiyat, kaynak)."""
+    rows = ((pos.meta.get("ohlc_verified") or {}).get(tf) or []) if isinstance(pos.meta.get("ohlc_verified"), dict) else []
+    earlier = [r for r in rows if isinstance(r, (list, tuple)) and len(r) >= 2 and int(r[0]) < int(bar_open_ms)]
+    if earlier:
+        b, c = max(earlier, key=lambda r: int(r[0]))[:2]
+        return float(c), "VERIFIED_BAR:%d" % int(b)
+    try:
+        return float(pos.entry_avg), "ENTRY"
+    except (TypeError, ValueError):
+        return 0.0, "NONE"
+
+
+def _remember_verified(pos: Any, tf: str, bar_open_ms: int, close: float, route: str) -> None:
+    ver = pos.meta.setdefault("ohlc_verified", {})
+    rows = [r for r in (ver.get(tf) or []) if isinstance(r, (list, tuple)) and int(r[0]) != int(bar_open_ms)]
+    rows.append([int(bar_open_ms), float(close), str(route)])
+    ver[tf] = sorted(rows, key=lambda r: int(r[0]))[-VERIFIED_BARS_KEEP:]
+
+
+def _sync_path_flag(pos: Any) -> None:
+    """Çözülmemiş bar boşluklarını pozisyonun `features`ına yansıtır: pozisyon HANGİ yoldan kapanırsa kapansın
+    (bar, canlı fiyat, kural, manuel) kayıt `features["path_unverified"]`i taşır — fiyat yolu tam doğrulanmamış bir
+    kapanış, eksiksiz doğrulanmış sonuç gibi raporlanmaz. Boşluk kalmayınca alan silinir."""
+    gaps = pos.meta.get("ohlc_gaps") if isinstance(pos.meta.get("ohlc_gaps"), dict) else {}
+    bars = []
+    long = str(getattr(getattr(pos, "side", None), "value", "LONG")).upper() == "LONG"
+    stop = float(pos.stop) if getattr(pos, "stop", None) is not None else None
+    for tf, rows in sorted(gaps.items()):
+        for g in rows or []:
+            if not isinstance(g, dict):
+                continue
+            ext = g.get("low") if long else g.get("high")
+            crossed = None
+            if stop is not None and isinstance(ext, (int, float)) and math.isfinite(ext):
+                crossed = bool(ext <= stop) if long else bool(ext >= stop)
+            bars.append({"tf": tf, "bar_open_ms": g.get("bar_open_ms"), "reason": g.get("reason"),
+                         "open": g.get("open"), "high": g.get("high"), "low": g.get("low"), "close": g.get("close"),
+                         "stop_at_sync": stop, "stop_crossed_in_bar": crossed})
+    if bars:
+        pos.features["path_unverified"] = {"unresolved_bars": len(bars), "bars": bars[-10:],
+                                           "any_stop_crossed": any(b["stop_crossed_in_bar"] for b in bars),
+                                           "note": "fiyat yolunda uygulanamamış bar var; sonuç eksiksiz doğrulanmış DEĞİL"}
+    else:
+        pos.features.pop("path_unverified", None)
+
+
 def apply_closed_bars_to_ledger(ledger: FuturesLedgerV2, bars_by_symbol: dict[str, dict[str, Any]] | None, *, now: datetime,
                                 funding_rate_lookup=None, on_closed: Callable[[Any], None] | None = None,
                                 on_event: Callable[..., None] | None = None, want_market: str = PAPER_MARKET) -> list:
@@ -805,7 +860,9 @@ def apply_closed_bars_to_ledger(ledger: FuturesLedgerV2, bars_by_symbol: dict[st
 
       * `BAR_MARKET_MISMATCH`  — çerçeve beklenen piyasadan değil (spec `market` bildiriyorsa denetlenir).
       * `BAR_CORRUPT`          — sonlu/pozitif değil ya da low <= close <= high değil (uydurulmuş uç kullanılmaz).
-      * `BAR_SCALE_UNVERIFIED` — barın KAPANIŞI canlı mark ölçeğinden uzak (ölçek/birim şüphesi).
+      * `BAR_SCALE_UNVERIFIED` — ölçek doğrulanamadı: barın AÇILIŞI önceki doğrulanmış kapanışla (yoksa girişle)
+                                 sürekli değil VE kapanışı canlı mark'tan uzak (birim/ölçek şüphesi). Büyük gerçek
+                                 hareket tek başına bozuk veri sayılmaz (2026-09-22).
 
     Ölçek hükmü barın UÇLARINA değil KAPANIŞINA bakar: sert bir fitil geçerli veridir ve stop kontrolüne girer;
     bütün barın (kapanışıyla birlikte) kaymış olması ise veri sorunudur."""
@@ -822,6 +879,7 @@ def apply_closed_bars_to_ledger(ledger: FuturesLedgerV2, bars_by_symbol: dict[st
         rows = [g for g in (gaps.get(tf) or []) if int(g.get("bar_open_ms") or -1) != int(o)]
         rows.append({"bar_open_ms": int(o), "reason": reason, "at": iso(now), **detail})
         gaps[tf] = rows[-20:]
+        _sync_path_flag(pos)
 
     for sym, spec in (bars_by_symbol or {}).items():
         pos = ledger.positions.get(sym)
@@ -865,34 +923,59 @@ def apply_closed_bars_to_ledger(ledger: FuturesLedgerV2, bars_by_symbol: dict[st
                 hi, lo, cl = float(r.get("high")), float(r.get("low")), float(r.get("close"))
             except (TypeError, ValueError):
                 hi = lo = cl = float("nan")
-            # 1) BÜTÜNLÜK — uydurulmuş uç üretilemez. Uçlar barın KENDİ kapanışına göre de sınırlıdır: derin ama
-            #    gerçek bir fitil geçer, birim/ölçek artefaktı (örn. 10.000 kat) geçmez.
-            if not (all(math.isfinite(v) and v > 0 for v in (hi, lo, cl)) and lo <= cl <= hi
-                    and BAR_EXTREME_MIN_RATIO * cl <= lo and hi <= BAR_EXTREME_MAX_RATIO * cl):
+            try:
+                op = float(r["open"]) if r.get("open") is not None else None
+            except (TypeError, ValueError):
+                op = float("nan")
+            # 1) BÜTÜNLÜK — uydurulmuş uç üretilemez. Uçlar barın KENDİ gövdesine göre sınırlıdır (açılış varsa
+            #    min/maks(açılış, kapanış), yoksa kapanış): derin ama gerçek bir fitil ya da büyük bir gerçek hareket
+            #    geçer, birim/ölçek artefaktı (örn. 10.000 kat) geçmez. Açılış verildiyse o da bütünlüğe tabidir.
+            body_lo = min(cl, op) if op is not None else cl
+            body_hi = max(cl, op) if op is not None else cl
+            if not (all(math.isfinite(v) and v > 0 for v in (hi, lo, cl) + ((op,) if op is not None else ()))
+                    and lo <= cl <= hi and (op is None or lo <= op <= hi)
+                    and BAR_EXTREME_MIN_RATIO * body_lo <= lo and hi <= BAR_EXTREME_MAX_RATIO * body_hi):
                 _ev(sym, "BAR_SKIPPED", BAR_CORRUPT, tf=tf, bar_open_ms=o, mark=ref)
-                _gap(pos, tf, o, BAR_CORRUPT, {"high": hi if math.isfinite(hi) else None, "low": lo if math.isfinite(lo) else None,
+                _gap(pos, tf, o, BAR_CORRUPT, {"open": op if (op is not None and math.isfinite(op)) else None,
+                                               "high": hi if math.isfinite(hi) else None, "low": lo if math.isfinite(lo) else None,
                                                "close": cl if math.isfinite(cl) else None})
                 cursor = max(cursor, o)                  # SONRAKİ barlar işlenmeye devam eder; boşluk kaydı kalır
                 continue
-            # 2) ÖLÇEK — yalnız KAPANIŞ canlı mark'la karşılaştırılır; fitil derinliği ölçüt DEĞİLDİR.
-            if ref > 0 and not ((1.0 - BAR_SCALE_TOLERANCE) * ref <= cl <= (1.0 + BAR_SCALE_TOLERANCE) * ref):
+            # 2) ÖLÇEK (2026-09-22) — bar, fiyat ölçeği DOĞRULANMIŞ bir referansa bağlanabiliyor mu? İki yol:
+            #    a) SÜREKLİLİK: barın açılışı, bu pozisyon için daha önce doğrulanmış en yakın ÖNCEKİ barın kapanışına
+            #       (yoksa giriş fiyatına — girişte doğrulanmış perp mark) ±BAR_SCALE_TOLERANCE içinde. Perp 7/24 işlem
+            #       görür: ardışık barın açılışı öncekinin kapanışıdır; birim artefaktı bu bağı kırar, gerçek hareket
+            #       (fitil ya da kapanışta büyük düşüş) kırmaz.
+            #    b) CANLI MARK YAKINLIĞI (eski yol): kapanış güncel mark'ın ±BAR_SCALE_TOLERANCE'ı içinde.
+            #    ÖNCE yalnız (b) vardı: kapanışı sonradan toparlanan mark'tan %20 uzak GEÇERLİ bir stop barı atlanıyor,
+            #    pozisyon açık kalıp sonra hedefte KÂR yazabiliyordu (REVIEW-2026-09-22 F1). `mark<=0` artık doğrulamayı
+            #    ATLATMAZ: hiçbir yol doğrulayamıyorsa bar uygulanmaz.
+            anchor, anchor_src = _scale_anchor(pos, tf, o)
+            cont_ok = op is not None and anchor > 0 and abs(op / anchor - 1.0) <= BAR_SCALE_TOLERANCE
+            mark_ok = ref > 0 and (1.0 - BAR_SCALE_TOLERANCE) * ref <= cl <= (1.0 + BAR_SCALE_TOLERANCE) * ref
+            if not (cont_ok or mark_ok):
                 _ev(sym, "BAR_SKIPPED", BAR_SCALE_UNVERIFIED, tf=tf, bar_open_ms=o, mark=ref, close=cl)
-                _gap(pos, tf, o, BAR_SCALE_UNVERIFIED, {"close": cl, "mark": ref, "tolerance": BAR_SCALE_TOLERANCE})
+                _gap(pos, tf, o, BAR_SCALE_UNVERIFIED, {"open": op, "high": hi, "low": lo, "close": cl, "mark": ref,
+                                                        "continuity_ref": anchor, "continuity_ref_source": anchor_src,
+                                                        "tolerance": BAR_SCALE_TOLERANCE})
                 cursor = max(cursor, o)
                 continue
             cursor = max(cursor, o)                      # ARTIK uygulanıyor
+            _remember_verified(pos, tf, o, cl, "CONTINUITY" if cont_ok else "MARK")
             close_dt = datetime.fromtimestamp((o + step) / 1000.0, tz=timezone.utc)
-            td = TickData(last=Decimal(str(cl)), mark=Decimal(str(cl)), high=Decimal(str(hi)), low=Decimal(str(lo)), ts=iso(close_dt))
+            td = TickData(last=Decimal(str(cl)), mark=Decimal(str(cl)), high=Decimal(str(hi)), low=Decimal(str(lo)), ts=iso(close_dt),
+                          open=Decimal(str(op)) if op is not None else None)
+            g = pos.meta.get("ohlc_gaps")
+            if isinstance(g, dict) and g.get(tf):        # aynı bar sonunda uygulanıyor: boşluk kaydı ÇÖZÜLDÜ
+                rest = [x for x in g[tf] if int(x.get("bar_open_ms") or -1) != o]
+                if rest:
+                    g[tf] = rest
+                else:
+                    g.pop(tf, None)
+                _sync_path_flag(pos)                     # kapanış bu tikte olursa kayıt GÜNCEL durumu taşısın
             recs = ledger.tick({sym: td}, now_utc=close_dt, funding_rate_lookup=funding_rate_lookup, bar_advance=False)
             if sym in ledger.positions:
                 ledger.positions[sym].meta.setdefault("ohlc_cursor", {})[tf] = cursor
-                g = ledger.positions[sym].meta.get("ohlc_gaps")
-                if isinstance(g, dict) and g.get(tf):      # aynı bar sonunda uygulandı: boşluk kaydı ÇÖZÜLDÜ
-                    rest = [x for x in g[tf] if int(x.get("bar_open_ms") or -1) != o]
-                    if rest:
-                        g[tf] = rest
-                    else:
-                        g.pop(tf, None)
             for rec in recs:
                 if on_closed is not None:
                     on_closed(rec)

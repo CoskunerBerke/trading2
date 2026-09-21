@@ -969,8 +969,12 @@ class TradingEngineV3(TradingEngine):
                 continue
             try:
                 tail = h1.tail(48)
-                rows = [{"timestamp": int(t), "high": float(h), "low": float(lo), "close": float(c)}
-                        for t, h, lo, c in zip(tail["timestamp"], tail["high"], tail["low"], tail["close"])]
+                # ACILIS (2026-09-22): bar olcegi acilis surekliligiyle dogrulanir ve dolum sozlesmesi acilis boslugunu
+                # bununla ayirir. Sutun yoksa satirda `open` olmaz (defter ihtiyatli yola duser, deger UYDURULMAZ).
+                _opens = list(tail["open"]) if "open" in tail.columns else [None] * len(tail)
+                rows = [{"timestamp": int(t), "open": (float(op) if op is not None and op == op else None),
+                         "high": float(h), "low": float(lo), "close": float(c)}
+                        for t, op, h, lo, c in zip(tail["timestamp"], _opens, tail["high"], tail["low"], tail["close"])]
             except (KeyError, TypeError, ValueError):
                 continue
             # PIYASA KIMLIGI (2026-09-17): cerceve provenansi barlarla BIRLIKTE tasinir — defter kimligi fiyat

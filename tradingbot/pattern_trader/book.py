@@ -259,7 +259,10 @@ class PatternBook:
         self.closed_recent.append({"id": getattr(rec, "id", None), "symbol": getattr(rec, "symbol", None), "exit_reason": getattr(rec, "exit_reason", None),
                                    "net_pnl": float(getattr(rec, "net_pnl", 0) or 0), "r": float(getattr(rec, "r_multiple", 0) or 0),
                                    "closed_at": getattr(rec, "closed_at", None), "plan_id": pid, "family": (d.get("features") or {}).get("family"),
-                                   "cohort": (d.get("features") or {}).get("cohort")})
+                                   "cohort": (d.get("features") or {}).get("cohort"),
+                                   "path_unverified": bool((d.get("features") or {}).get("path_unverified")),
+                                   "exit_basis": ((d.get("features") or {}).get("exit_fill") or {}).get("basis"),
+                                   "funding_complete": ((d.get("features") or {}).get("funding_coverage") or {}).get("complete")})
         self.closed_recent = self.closed_recent[-50:]
         pl = self.plans.get(str(pid)) if pid else None
         closed_ms = int(utc_now().timestamp() * 1000)

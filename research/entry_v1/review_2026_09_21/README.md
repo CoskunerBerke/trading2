@@ -6,8 +6,9 @@
 > `C:\Users\berke\trading2-deploy\olcumler` (ölçüm betikleri + sonuçları).
 > Betikler mutlak yollar içerir (`WT = C:/Users/berke/wt-entry`, `ROOT = C:/Users/berke/research/entry_v1`,
 > `ARCHIVE = C:/Users/berke/research/bn_archive`, `wt-ten/data`). Buradan çalıştırılsalar bile yine o yerel
-> dizinleri okur/yazarlar. Mantık değiştirilmedi: her dosya bayt-bayt kopyadır (`FILES.tsv`: kaynak yolu, bayt,
-> SHA256). Tek istisna devir notunun yayım kopyasıdır (aşağıda).
+> dizinleri okur/yazarlar. Mantık değiştirilmedi: yerel kopyalar kaynaklarla bayt-bayt aynıdır; depoya girerken
+> yalnız satır sonları LF'e normalleştirildi (`core.autocrlf=true`). Tek içerik istisnası devir notunun yayım
+> kopyasıdır (aşağıda).
 
 Üst belge: [`docs/review/REVIEW-2026-09-21.md`](../../../docs/review/REVIEW-2026-09-21.md).
 
@@ -20,11 +21,13 @@
 | `olcumler/meta/` | Bu ölçümlerin `run_rule` meta kayıtları (`research/entry_v1/out/meta_<run_id>.json`), 111 dosya; henüz koşmamış 9 trail koşusunun metası yok |
 | `reports/` | `PROTOCOL_V15.md`, `DENEY_V15.md`, `BOX_SWEEP_v15_a.{md,json}`, devir notunun yayım kopyası |
 | `arsiv/` | Arşivlerin **kendi** `manifest.json`larından toplanmış kapsam tabloları, toplama raporu, borsa filtre dosyasının kimliği |
-| `FILES.tsv` | Her dosyanın kaynağı, boyutu, SHA256'sı ve notu |
+| `FILES.tsv` | Her dosyanın kaynağı, yerel boyutu, iki SHA256'sı ve notu |
 
-SHA256 değerleri kopyalanan yerel baytlara aittir; paketteki hiçbir dosya CRLF içermez. Windows'ta
-`core.autocrlf=true` ile checkout edilen kopyada değer farklı çıkabilir — doğrulamak için
-`git show <commit>:<yol> | sha256sum` kullanın.
+**SHA256 ve satır sonları.** Kaynak dosyaların 150'sinden 129'u CRLF içerir; depo bunları LF olarak saklar.
+`FILES.tsv`'de iki değer vardır: `sha256_yerel` = kaynak/yerel kopyanın baytları; `sha256_depo_LF` = CRLF→LF
+dönüşümünden sonraki baytlar, yani depodaki blob. Satır sonu dışında fark olmadığı, commit'teki her blob'un
+yerel dosyanın CRLF→LF hâline eşit olmasıyla doğrulandı. Depodan doğrulama:
+`git show <commit>:research/entry_v1/review_2026_09_21/<yol> | sha256sum` → `sha256_depo_LF`.
 
 ## Betikler — rol ve inceleme dalıyla karşılaştırma
 
@@ -49,8 +52,9 @@ kopyaları `olcumler/` altındakilerle **SHA256 olarak aynıdır** (ikinci bir k
 
 Hiçbir ölçüm kaydı kod SHA'sı taşımaz. Zaman aralıkları `meta_<run_id>.json` değişiklik zamanlarından
 (bitiş) ve satırdaki `elapsed_s` alanından (başlangıç) türetildi; saatler yerel (+03).
-"Sonra değişen" sütunu, `wt-entry`'deki commit edilmemiş dosyalardan hangilerinin ölçüm başladıktan
-**sonra** değiştiğini (dosya zamanı) gösterir. Bu dosyaların ölçüm anındaki içeriği hiçbir yerde saklanmadı.
+"Sonra değişen" sütunu, `wt-entry`'deki o sırada commit edilmemiş dosyalardan ve
+`C:\Users\berke\research\entry_v1` betiklerinden hangilerinin ölçüm başladıktan **sonra** değiştiğini (dosya
+zamanı) gösterir. Bu dosyaların ölçüm anındaki içeriği hiçbir yerde saklanmadı.
 
 "7 kaynak" = commit `5818efa`'daki yedi `tradingbot/` dosyası. `run_rule.py` 09-20 11:09'da,
 `strategy_rules.py` 09-20 23:23'te son kez değişti; yani bu paketteki kopyaları, kendilerinden önceki
@@ -69,6 +73,23 @@ Hiçbir ölçüm kaydı kod SHA'sı taşımaz. Zaman aralıkları `meta_<run_id>
 
 **Sonuç:** süreç-2 dışındaki hiçbir ölçüm `9095ce6`'ya bağlanamaz. Aynı `run_id` için bir ölçümün
 `ok=True` olması, onu başka bir sürecin sonucuyla birleştirmeye yetmez.
+
+### Evren ve aday yolu (meta kayıtlarından)
+
+Canlı kâğıt defterler adayları **sıralamaz** (`candidate_order=None`, tek geçiş). Aşağıdaki kayıtların bir kısmı
+araştırmaya özgü iki fazlı/sıralı yolda koştu; sonuçları canlı davranışa doğrudan aktarılamaz.
+
+| Kayıt | `n_symbols_loaded` | `candidate_order` (meta) | Yol |
+|---|---|---|---|
+| `be_measure.json` | **10** | alan yok (o sürümde parametre yoktu) | tek geçiş |
+| `run40.json` | 10 ve 40 | alan yok | tek geçiş (üretim yolu) |
+| `rank40.json` | 40 | `true` | iki fazlı (kontrol + sıralı kollar) |
+| `grid.json` | 10 | `true` | iki fazlı (B/C kolları; A kolu `run40`'tan) |
+| `slots.json` | 10 ve 40 | `true` | **sıralı** (`_guc` = (kapanış − eşik)/ATR14) |
+| `lev.json` | 40 | `true` | **sıralı** (`_guc`), `equity` 100 veya 200 |
+| `trail.json` | 40 | `false` | tek geçiş (üretim yolu) |
+
+Tüm metalarda `universe_complete: true`.
 
 ### Trail ayrıntısı
 
@@ -95,8 +116,8 @@ Hiçbir ölçüm kaydı kod SHA'sı taşımaz. Zaman aralıkları `meta_<run_id>
 * `arsiv/bn_archive_manifests.json` (126 seri) ve `arsiv/wt-ten_history_manifests.json` (70 seri) arşivlerin
   kendi `manifest.json` dosyalarından toplandı. `checksum` alanları toplayıcının yazdığı değerlerdir;
   bu teslimde veri dosyalarının hash'i **yeniden hesaplanmadı**.
-* `arsiv/collect_binance.json`: `bn_archive` için 2026-09-19 toplama raporu (40 istek, `failed: []`,
-  `base: https://www.binance.info`, `1d`+`4h`).
+* `arsiv/collect_binance.json`: `bn_archive` için 2026-09-19 toplama raporu (40 sembol, 120 satır = 40 × `1d`/`4h`/`funding`, `failed: []`,
+  `base: https://www.binance.info`; `timeframes` alanı yalnız `1d`/`4h` yazar, funding ayrıca toplanmıştır).
 * Borsa kuralları: `bn_archive/symbol_filters.json` yayımlanmadı; boyutu ve bu oturumda hesaplanan
   SHA256'sı `arsiv/symbol_filters.identity.json`'da. `wt-ten/data/symbol_filters.json` ile aynı dosyadır.
 * **Uç erişimi:** `www.binance.info`'nun bu makineden erişilebildiği önceki oturumların yerel kontrolüdür
@@ -123,7 +144,7 @@ ilgili arşiv; Python 3.13 + depo `requirements.txt`. Aynı betiği aynı anda i
 (aynı sonuç dosyasına yazarlar).
 
 ```bash
-# Trail — sürdürülebilir: ok=True olan run_id'leri atlar. 2026-09-21 23:xx'te PID 1472 olarak ZATEN çalışıyordu.
+# Trail — sürdürülebilir: ok=True olan run_id'leri atlar. 2026-09-21 22:59:23 itibarıyla PID 1472 olarak ZATEN çalışıyordu.
 cd C:/Users/berke/research/entry_v1 && python C:/Users/berke/trading2-deploy/olcumler/trail.py
 
 # 5m arşiv (6/40'ta kaldı; toplayıcı süreç çalışmıyor)
@@ -141,8 +162,8 @@ ve bunun için yazılmış bir betik yok; yalnız bekleyen iştir.
 
 ## Hariç tutulanlar
 
-* Mum/funding arşivlerinin veri dosyaları (`bn_archive` ≈101 MB, `wt-ten/data/history`) — yalnız manifest özetleri.
-* `research/entry_v1/state/` (≈625 MB replay durumu/defterleri), `out/` içindeki diğer ~360 dosya (işlem/karar
+* Mum/funding arşivlerinin veri dosyaları (`bn_archive` ≈83 MB, `wt-ten/data/history`) — yalnız manifest özetleri.
+* `research/entry_v1/state/` (≈625 MB replay durumu/defterleri), `out/` içindeki pakete alınmayan ~250 dosya (işlem/karar
   günlükleri ve eski deneylerin metaları; eskileri 2026-09-14 inceleme dalında).
 * `research/entry_v1/vps/tb-diag-*.tar.gz` (VPS teşhis paketi), `configs/`, `__pycache__/`.
 * `trading2-deploy` altındaki bundle'lar, dağıtım betikleri, yerel yedek (`yedek/`), `run40-kismi.json` (kısmi, eski).

@@ -1,0 +1,91 @@
+# pytest full suite
+# commit: 9095ce6574f458e873bf28d707fabe30ab787dc4
+# tree:   75513b4d53593cad5cfd18f0267bf0d6bd4e051d
+# worktree: /c/Users/berke/wt-verify-9095ce6 (git status lines: 0)
+# python: Python 3.13.14; pytest 9.1.1
+# command: python -m pytest tests/ -q -rfEs -p no:cacheprovider
+# started: 2026-09-21T20:33:22Z
+........................................................................ [  2%]
+........................................................................ [  5%]
+........................................................................ [  8%]
+........................................................................ [ 10%]
+........................................................................ [ 13%]
+........................................................................ [ 16%]
+........................................................................ [ 19%]
+....s..................ssssss........................................... [ 21%]
+........................................................................ [ 24%]
+........................................................................ [ 27%]
+........................................................................ [ 30%]
+........................................................................ [ 32%]
+........................................................................ [ 35%]
+........s............................................................... [ 38%]
+........................................................................ [ 41%]
+........................................................................ [ 43%]
+........................................................................ [ 46%]
+...........................................................s............ [ 49%]
+........................................................................ [ 51%]
+........................................................................ [ 54%]
+........................................................................ [ 57%]
+........................................................................ [ 60%]
+........................................................................ [ 62%]
+........................................................................ [ 65%]
+........................................................................ [ 68%]
+........................................................................ [ 71%]
+........................................................................ [ 73%]
+........................................................................ [ 76%]
+........................................................................ [ 79%]
+.................................................................s...... [ 82%]
+........................s.................sssssssssss................... [ 84%]
+........................................................................ [ 87%]
+........................................................................ [ 90%]
+........................................................................ [ 93%]
+........................................................................ [ 95%]
+........................................................................ [ 98%]
+........................................                                 [100%]
+============================== warnings summary ===============================
+..\AppData\Local\Programs\Python\Python313\Lib\site-packages\fastapi\testclient.py:1
+  C:\Users\berke\AppData\Local\Programs\Python\Python313\Lib\site-packages\fastapi\testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+tests/test_chart_analysis_v1.py::test_render_signal_chart_draws_targetless_position
+  C:\Users\berke\wt-verify-9095ce6\tradingbot\charts.py:137: UserWarning: No artists with labels found to put in legend.  Note that artists whose label start with an underscore are ignored when legend() is called with no argument.
+    ax.legend(loc="upper left", fontsize=7, facecolor=BG, edgecolor=GRID, labelcolor=FG)
+
+tests/test_ops_risk_stop.py: 1 warning
+tests/test_patterns.py: 11 warnings
+  C:\Users\berke\wt-verify-9095ce6\tradingbot\patterns\engine.py:228: RuntimeWarning: Mean of empty slice
+    self._mu = np.nanmean(m, axis=0)
+
+tests/test_ops_risk_stop.py: 1 warning
+tests/test_patterns.py: 11 warnings
+  C:\Users\berke\AppData\Local\Programs\Python\Python313\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+    var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+SKIPPED [1] tests\test_deploy_backup_contract.py:240: izin bitleri Windows'ta anlamsýz
+SKIPPED [1] tests\test_deploy_vps.py:255: systemd-analyze yok (yalnýz Linux/CI)
+SKIPPED [1] tests\test_deploy_vps.py:341: setup sandbox testi Linux+bash ister (CI'da çalýþýr)
+SKIPPED [1] tests\test_deploy_vps.py:392: setup sandbox testi Linux+bash ister (CI'da çalýþýr)
+SKIPPED [1] tests\test_deploy_vps.py:406: setup sandbox testi Linux+bash ister (CI'da çalýþýr)
+SKIPPED [1] tests\test_deploy_vps.py:413: setup sandbox testi Linux+bash ister (CI'da çalýþýr)
+SKIPPED [1] tests\test_deploy_vps.py:422: setup sandbox testi Linux+bash ister (CI'da çalýþýr)
+SKIPPED [1] tests\test_explainability_and_activation.py:163: fixture bu turda geçerli plan üretmedi
+SKIPPED [1] tests\test_long_term_retrieval.py:703: 1M ölçek ölçümü opt-in: TRADINGBOT_BENCH_1M=1
+SKIPPED [1] tests\test_replay_research.py:175: symlink Windows'ta yönetici ister
+SKIPPED [1] tests\test_replay_research.py:711: symlink Windows'ta yönetici ister
+SKIPPED [1] tests\test_replay_runner.py:332: runner sandbox Linux+bash ister (CI'da çalýþýr)
+SKIPPED [1] tests\test_replay_runner.py:342: runner sandbox Linux+bash ister (CI'da çalýþýr)
+SKIPPED [1] tests\test_replay_runner.py:355: runner sandbox Linux+bash ister (CI'da çalýþýr)
+SKIPPED [1] tests\test_replay_runner.py:368: runner sandbox Linux+bash ister (CI'da çalýþýr)
+SKIPPED [1] tests\test_replay_runner.py:377: runner sandbox Linux+bash ister (CI'da çalýþýr)
+SKIPPED [1] tests\test_replay_runner.py:395: runner sandbox Linux+bash ister (CI'da çalýþýr)
+SKIPPED [1] tests\test_replay_runner.py:410: runner sandbox Linux+bash ister (CI'da çalýþýr)
+SKIPPED [1] tests\test_replay_runner.py:420: runner sandbox Linux+bash ister (CI'da çalýþýr)
+SKIPPED [1] tests\test_replay_runner.py:430: runner sandbox Linux+bash ister (CI'da çalýþýr)
+SKIPPED [1] tests\test_replay_runner.py:438: runner sandbox Linux+bash ister (CI'da çalýþýr)
+SKIPPED [1] tests\test_replay_runner.py:446: runner sandbox Linux+bash ister (CI'da çalýþýr)
+2610 passed, 22 skipped, 26 warnings in 1115.67s (0:18:35)
+# exit_code: 0
+# finished: 2026-09-21T20:52:05Z
+# git status after run (lines): 0

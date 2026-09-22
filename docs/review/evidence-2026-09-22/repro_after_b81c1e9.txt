@@ -1,0 +1,32 @@
+LNG/USDT funding geçmişi alınamadı: mock: fundingRate zaman asimi
+kod: b81c1e9be1ce819dcbdf8c21981bfb6ed62772c6
+== F1: gecerli ama canli mark'tan uzak kapanmis bar
+  A) bar close=70, 10:16 mark=101 (band disi), 10:17 mark=112
+    10:16 bar uygulamasi: kapanan=1 acik=False gap={}
+    kapanis: sebep=stop cikis=70.0 net=-3.0085 R=-6.017 | yol_dogrulanmadi=None
+  K) kontrol: ayni bar, 10:16 mark=72 (band ici)
+    10:16 bar uygulamasi: kapanan=1 acik=False gap={}
+    kapanis: sebep=stop cikis=70.0 net=-3.0085 R=-6.017 | yol_dogrulanmadi=None
+  W) eski fitil vakasi: low=70 close=101, mark=101
+    10:16 bar uygulamasi: kapanan=1 acik=False gap={}
+    kapanis: sebep=stop cikis=95 net=-0.5098 R=-1.020 | yol_dogrulanmadi=None
+  U) ayni bar ACILISSIZ (dogrulanamaz), 10:16 mark=101, 10:17 mark=112
+    10:16 bar uygulamasi: kapanan=0 acik=True gap={'15m': ['BAR_SCALE_UNVERIFIED']}
+    kapanis: sebep=hedef1 cikis=110 net=0.9895 R=1.979 | yol_dogrulanmadi={'unresolved_bars': 1, 'bars': [{'tf': '15m', 'bar_open_ms': 1789984800000, 'reason': 'BAR_SCALE_UNVERIFIED', 'open': None, 'high': 103.0, 'low': 70.0, 'close': 70.0, 'stop_at_sync': 95.0, 'stop_crossed_in_bar': True}], 'any_stop_crossed': True, 'note': 'fiyat yolunda uygulanamamış bar var; sonuç eksiksiz doğrulanmış DEĞİL'}
+== F2: funding agi istegi ile koruyucu cikis
+  istek beklerken: saglayici_cagrildi=True tick_bitti=True acik=False kapanan=1 kilit_alinabilir=True
+  istek dondukten sonra: sebep=stop cikis=93.9718 net=-0.6094 R=-1.224 | funding=0 settled_until=2026-05-28T07:59:00+00:00
+  gec uzlastirma: islenen=1 ikinci_cagri=0 tutar=['-0.00099000'] kayit_funding=-0.00099000 kayit_net=-0.6104 cuzdan_degisimi=-0.0010 kapsama_tam=True
+== F3: stop / likidasyon sirasi (2x, giris 3000, notional 200)
+  A) LONG stop 2400; fiyat-yalniz tik likidasyonun 50 altinda
+    liq=1506.02 marj=99.00 tick={'last': 1456.02, 'mark': 1456.02} -> sebep=likidasyon cikis=1506.024096385542168674698795180723 net=-99.0990 R=-2.502 cuzdan_degisimi=-99.0000
+  A-OHLC) LONG stop 2400; acilis likidasyonun 50 altinda (bosluk)
+    liq=1506.02 marj=99.00 tick={'open': 1456.02, 'last': 1456.02, 'mark': 1456.02, 'high': 1466.02, 'low': 1456.02} -> sebep=likidasyon cikis=1506.024096385542168674698795180723 net=-99.0990 R=-2.502 cuzdan_degisimi=-99.0000
+  B) LONG stop 2400; acilis 2990, dip likidasyonun 50 altinda, kapanis 2450
+    liq=1506.02 marj=99.00 tick={'open': 2990.0, 'last': 2450.0, 'mark': 2450.0, 'high': 2995.0, 'low': 1456.02} -> sebep=likidasyon cikis=1506.024096385542168674698795180723 net=-99.0990 R=-2.502 cuzdan_degisimi=-99.0000
+  B2) LONG stop 2400; acilis 2300 (stop alti, likidasyon ustu), kapanis 2450
+    liq=1506.02 marj=99.00 tick={'open': 2300.0, 'last': 2450.0, 'mark': 2450.0, 'high': 2460.0, 'low': 2290.0} -> sebep=stop cikis=2300.0 net=-46.3749 R=-1.171 cuzdan_degisimi=-46.2759
+  C) LONG stop 100 (likidasyon yakin); tik likidasyonun 50 altinda
+    liq=1506.02 marj=99.00 tick={'last': 1456.02, 'mark': 1456.02} -> sebep=likidasyon cikis=1506.024096385542168674698795180723 net=-99.0990 R=-0.518 cuzdan_degisimi=-99.0000
+  S-A) SHORT stop 3600; fiyat-yalniz tik likidasyonun 50 ustunde
+    liq=4482.07 marj=99.00 tick={'last': 4532.07, 'mark': 4532.07} -> sebep=likidasyon cikis=4482.071713147410358565737051792829 net=-99.0990 R=-2.502 cuzdan_degisimi=-99.0000

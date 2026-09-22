@@ -1,0 +1,17 @@
+# F2 geri alma — yeni F2 testleri, F2 onarimini ICERMEYEN ebeveyn agacta: 762e013 (= 9207d16^)
+FAILED tests/test_funding_off_exit_path_v1.py::test_a_waiting_funding_request_does_not_hold_the_protective_stop[history-True]
+FAILED tests/test_funding_off_exit_path_v1.py::test_a_waiting_funding_request_does_not_hold_the_protective_stop[info-False]
+FAILED tests/test_funding_off_exit_path_v1.py::test_close_paths_make_no_hidden_funding_http_call
+FAILED tests/test_funding_off_exit_path_v1.py::test_the_scanner_side_refresh_can_block_while_the_exit_monitor_still_closes
+FAILED tests/test_funding_off_exit_path_v1.py::test_funding_that_arrives_after_the_close_is_posted_once_and_ledger_and_reports_agree[LONG--1]
+FAILED tests/test_funding_off_exit_path_v1.py::test_funding_that_arrives_after_the_close_is_posted_once_and_ledger_and_reports_agree[SHORT-1]
+6 failed in 5.60s
+## dusme nedenleri
+tests/test_funding_off_exit_path_v1.py:131: AssertionError: çıkış izleyicisi funding ağ isteğini BEKLİYOR (stop gecikiyor)
+tests/test_funding_off_exit_path_v1.py:131: AssertionError: çıkış izleyicisi funding ağ isteğini BEKLİYOR (stop gecikiyor)
+tests/test_funding_off_exit_path_v1.py:163: AssertionError: {'history': 1, 'info': 0}
+tests/test_funding_off_exit_path_v1.py:171: AttributeError: 'PatternScanner' object has no attribute 'funding_step'
+tests/test_funding_off_exit_path_v1.py:191: AssertionError: assert (1 == 1 and True is False)
+tests/test_funding_off_exit_path_v1.py:191: AssertionError: assert (1 == 1 and True is False)
+## kontrol: ayni testler + uyarlanmis eski funding testleri 9207d16 (F2 onarimi) agacinda
+24 passed in 4.36s

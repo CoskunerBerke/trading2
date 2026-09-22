@@ -1,0 +1,39 @@
+# F3 geri alma — izole worktree /c/Users/berke/wt-revert-demo; ana agac etkilenmedi
+# C1 (bc23d2e) agacinda YALNIZ FuturesLedgerV2.tick icindeki stop/likidasyon blogu e9ed196 haline donduruldu.
+# exit_decision tanimli kalir (test dosyasi ice aktarilabilsin); invariant testi saf fonksiyonu sinar, burada gecer.
+# Test dosyasi b81c1e9 surumudur (gecerli OHLC korumali); diff satirinda bu dosya da gorunur.
+## once: onarim YERINDE
+17 passed in 0.67s
+## sonra: onarim GERI ALINDI ( 2 files changed, 40 insertions(+), 20 deletions(-))
+FAILED tests/test_liquidation_stop_order_v1.py::test_a_price_tick_beyond_the_liquidation_is_a_liquidation_not_a_stop_filled_past_it[LONG-2400--50]
+FAILED tests/test_liquidation_stop_order_v1.py::test_a_price_tick_beyond_the_liquidation_is_a_liquidation_not_a_stop_filled_past_it[SHORT-3600-50]
+FAILED tests/test_liquidation_stop_order_v1.py::test_sequential_ticks_that_land_between_stop_and_liquidation_fill_the_near_stop[LONG-2400-ticks0-2350]
+FAILED tests/test_liquidation_stop_order_v1.py::test_sequential_ticks_that_land_between_stop_and_liquidation_fill_the_near_stop[SHORT-3600-ticks1-3650]
+FAILED tests/test_liquidation_stop_order_v1.py::test_bar_with_known_open_fills_the_stop_from_what_was_observed[LONG-2400-bar0-2400-STOP_AT_LEVEL]
+FAILED tests/test_liquidation_stop_order_v1.py::test_bar_with_known_open_fills_the_stop_from_what_was_observed[SHORT-3600-bar1-3600-STOP_AT_LEVEL]
+FAILED tests/test_liquidation_stop_order_v1.py::test_bar_with_known_open_fills_the_stop_from_what_was_observed[LONG-2400-bar2-2350-STOP_CLOSE_BEYOND_LEVEL_PRUDENT]
+FAILED tests/test_liquidation_stop_order_v1.py::test_bar_with_known_open_fills_the_stop_from_what_was_observed[LONG-2400-bar3-2300-GAP_FILL_AT_FIRST_OBSERVATION]
+FAILED tests/test_liquidation_stop_order_v1.py::test_bar_with_known_open_fills_the_stop_from_what_was_observed[SHORT-3600-bar4-3700-GAP_FILL_AT_FIRST_OBSERVATION]
+FAILED tests/test_liquidation_stop_order_v1.py::test_a_bar_that_opens_beyond_the_liquidation_is_a_liquidation_even_if_it_recovers[LONG-2400--50-high0-low0]
+FAILED tests/test_liquidation_stop_order_v1.py::test_a_bar_that_opens_beyond_the_liquidation_is_a_liquidation_even_if_it_recovers[SHORT-3600-50-high1-low1]
+FAILED tests/test_liquidation_stop_order_v1.py::test_both_levels_inside_one_bar_is_resolved_by_the_declared_prudent_policy[False]
+FAILED tests/test_liquidation_stop_order_v1.py::test_both_levels_inside_one_bar_is_resolved_by_the_declared_prudent_policy[True]
+FAILED tests/test_liquidation_stop_order_v1.py::test_a_nearer_liquidation_still_wins
+FAILED tests/test_liquidation_stop_order_v1.py::test_slippage_can_never_push_a_stop_fill_beyond_the_liquidation
+15 failed, 2 passed in 0.72s
+## dusme nedenleri
+tests/test_liquidation_stop_order_v1.py:99: AssertionError: stop
+tests/test_liquidation_stop_order_v1.py:99: AssertionError: stop
+tests/test_liquidation_stop_order_v1.py:136: KeyError: 'exit_fill'
+tests/test_liquidation_stop_order_v1.py:136: KeyError: 'exit_fill'
+tests/test_liquidation_stop_order_v1.py:155: KeyError: 'exit_fill'
+tests/test_liquidation_stop_order_v1.py:155: KeyError: 'exit_fill'
+tests/test_liquidation_stop_order_v1.py:155: KeyError: 'exit_fill'
+tests/test_liquidation_stop_order_v1.py:87: AssertionError: (Decimal('2400'), 2300)
+tests/test_liquidation_stop_order_v1.py:87: AssertionError: (Decimal('3600'), 3700)
+tests/test_liquidation_stop_order_v1.py:99: AssertionError: stop
+tests/test_liquidation_stop_order_v1.py:99: AssertionError: stop
+tests/test_liquidation_stop_order_v1.py:99: AssertionError: stop
+tests/test_liquidation_stop_order_v1.py:99: AssertionError: stop
+tests/test_liquidation_stop_order_v1.py:196: KeyError: 'exit_fill'
+tests/test_liquidation_stop_order_v1.py:218: AssertionError: assert (1 == 1 and 'stop' == 'likidasyon'

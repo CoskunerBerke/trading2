@@ -1,0 +1,10 @@
+# lint/derleme — commit b81c1e9be1ce819dcbdf8c21981bfb6ed62772c6, worktree /c/Users/berke/wt-verify-b81c1e9, git status satir: 0
+# ruff 0.16.3; Python 3.13.14; 2026-09-22T07:33:11Z
+$ ruff check tradingbot tests --no-cache
+All checks passed!
+rc=0
+$ ruff check . --no-cache
+All checks passed!
+rc=0
+$ python -m compileall -q tradingbot tests scripts   (PYTHONPYCACHEPREFIX=scratch)
+rc=0

@@ -18,7 +18,7 @@ from typing import Any
 
 from ..learn import candle_context as cc
 
-POLICY_VERSION = "structures_v1"
+POLICY_VERSION = "structures_v1.1"      # v1.1 (2026-09-23): durum kesinliği + bayrak kimliği; eşikler AYNI
 SCHEMA_VERSION = "structures_analysis_v1"
 
 # ---------------------------------------------------------------------------- aileler ve durumlar
@@ -176,6 +176,28 @@ def all_names() -> list[str]:
     return sorted(set(out) | set(CHART_NAMES) | set(SCENARIO_NAMES))
 
 
+#: Ortak yapı katmanının modları ve bot anahtarları — config doğrulaması TEK yerde (`validate_settings`).
+MODES = ("OFF", "SHADOW", "ENFORCE")
+BOT_KEYS = ("main", "t2_trend_regime", "m2_tsmom28", "b1_box_fade", "pattern_trader")
+_REAL_MONEY_MODES = ("LIVE", "LIVE_LIMITED")
+
+
+def validate_settings(*, policy_version: str | None, modes: dict[str, Any], app_mode: str | None) -> dict[str, str]:
+    """Config doğrulaması (SAF): normalize edilmiş bot → mod sözlüğü; geçersizse ValueError. `config_v3.validate_v3`
+    bunu ConfigError'a sarar (mum/grafik/rejim kapılarıyla AYNI desen). ENFORCE gerçek parayla AÇILAMAZ."""
+    if str(policy_version or "") != POLICY_VERSION:
+        raise ValueError("structures.policy_version %r desteklenmiyor (kod: %s)" % (policy_version, POLICY_VERSION))
+    out: dict[str, str] = {}
+    for bot in BOT_KEYS:
+        m = str(modes.get(bot) or "OFF").upper()
+        if m not in MODES:
+            raise ValueError("structures.%s geçersiz mod: %r (%s)" % (bot, modes.get(bot), " | ".join(MODES)))
+        if m == "ENFORCE" and str(app_mode or "").upper() in _REAL_MONEY_MODES:
+            raise ValueError("STRUCTURES_NOT_VALIDATED_FOR_LIVE: structures.%s=ENFORCE yalnız PAPER/TESTNET/OBSERVE/SHADOW_LIVE" % bot)
+        out[bot] = m
+    return out
+
+
 def role_of(side: str | None, trend: str | None) -> str:
     if side not in (LONG, SHORT):
         return ROLE_UNKNOWN
@@ -203,4 +225,4 @@ __all__ = ["ALIASES", "CANDLE_CONTEXT_NAMES", "CANDLE_FIXED_NAMES", "CHART_NAMES
            "FAMILY_CHART", "FAMILY_SCENARIO", "LONG", "POLICY_VERSION", "REQUIREMENTS", "ROLE_CONTINUATION",
            "ROLE_RANGE", "ROLE_REVERSAL", "ROLE_UNKNOWN", "SCENARIO_NAMES", "SCHEMA_VERSION", "SHORT", "STATUSES",
            "STATUS_TR", "ST_BROKEN", "ST_CONFIRMED", "ST_EXPIRED", "ST_FORMING", "StructuresConfig", "candle_name",
-           "NAME_TR", "all_names", "catalog_table", "name_tr", "role_of"]
+           "BOT_KEYS", "MODES", "NAME_TR", "all_names", "catalog_table", "name_tr", "role_of", "validate_settings"]

@@ -169,7 +169,8 @@ def entry_decision(policy: BotPolicy, *, intended_side: str, analyses: dict[str,
     recs = [r for r in main_an["records"] if (accept is None or accept(r))]
     # 3) son 2 barda BOZULMUŞ uyumlu yapı
     for rec in recs:
-        if rec.get("status") == K.ST_BROKEN and _match(rec, side, policy.compatible) and \
+        # "bozuldu" = ilk geçersizlik kapanışı (terminal BROKEN ya da süre dolduktan SONRA; `broken_after_expiry`)
+        if rec.get("broken_at_ms") is not None and _match(rec, side, policy.compatible) and \
                 _recent(rec.get("broken_at_ms"), as_of_ms, dtf, K.DEFAULT_CONFIG.fresh_bars):
             return _decision(policy, ACT_WAIT, "COMPATIBLE_BROKEN", side=side, as_of_ms=as_of_ms, analyses=analyses, rec=rec,
                              text_tr="Girmedi / plan iptal: uyumlu yapı %s bozuldu (geçersizlik kapanışı)." % _tr_rec(rec))
@@ -222,7 +223,7 @@ def hold_decision(policy: BotPolicy, *, position_side: str, opened_at_ms: int | 
     opened = int(opened_at_ms) if opened_at_ms is not None else None
     if policy.entry_failure_exit and entry_pattern_id:
         for rec in an["records"]:
-            if rec.get("pattern_id") == entry_pattern_id and rec.get("status") == K.ST_BROKEN and \
+            if rec.get("pattern_id") == entry_pattern_id and rec.get("broken_at_ms") is not None and \
                     opened is not None and int(rec.get("broken_at_ms") or 0) > opened:
                 return _decision(policy, ACT_EXIT, "ENTRY_STRUCTURE_FAILED", side=side, as_of_ms=as_of_ms, analyses=analyses,
                                  rec=rec, text_tr="Çıktı: girişe dayanak yapı %s girişten sonra BOZULDU." % _tr_rec(rec))

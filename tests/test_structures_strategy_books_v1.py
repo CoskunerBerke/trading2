@@ -112,7 +112,7 @@ def test_t2_waits_for_a_forming_flag_and_enters_on_its_breakout_control_enters_i
     pos = enf.ledger.positions[SYM]
     s = pos.features["structure"]
     assert s["name"] == "BULL_FLAG" and s["action"] == "ENTER" and s["status"] == "CONFIRMED"
-    assert s["policy_version"] == "structures_v1" and s["confirmed_at_ms"] <= _asof(brk)
+    assert s["policy_version"] == "structures_v1.1" and s["confirmed_at_ms"] <= _asof(brk)
     assert float(pos.stop) < float(pos.entry_avg), "T2 stopu kendi kuralından (kapanış − 3×ATR); yapı yönü çevirmez"
     # karar deposu: işlem kimliği + değişmez analiz anlık görüntüsü (panel aynı kaydı çizer)
     st = StructureStore(enf.cfg.state_path)

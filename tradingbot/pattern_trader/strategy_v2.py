@@ -15,6 +15,11 @@ Aile bağlam süzgeçleri (politika matrisi C, "Formasyon" satırı — kodlamad
 
 Oluşan (FORMING) kayıt → AWAITING_TRIGGER planı; teyitli (taze) kayıt → TRIGGERED planı (teyit kapanışından sonraki
 ilk doğrulanmış fiyatla giriş; kovalama ve R/R `_try_open`da YENİDEN ölçülür). Olasılık/beklenti ÜRETİLMEZ.
+
+PLAN KAYDI İZLER (2026-09-23): bekleyen planın tetik/bozulma/süre olayı ORTAK KAYITTAN gelir; plan kendi seviyesini
+dondurup ayrı bir tetik değerlendirmesi YAPMAZ. Oluşan yapı gelişirken (bayrak uzar, eğik boyun çizgisi ilerler)
+seviyeler her taramada kayıttan yenilenir (`plan_levels_from_record`); kayıt TEYİT → TETİKLENDİ, BOZULDU → BOZULDU,
+SÜRESİ DOLDU → SÜRESİ DOLDU, analizden ÇEKİLDİ → İPTAL (RECORD_WITHDRAWN). Böylece beş bot aynı kaydı aynı okur.
 """
 from __future__ import annotations
 
@@ -79,6 +84,42 @@ def _family_for(rec: dict[str, Any], *, trend_4h: str, b15: list[dict[str, Any]]
     return None, "NO_PLAN_FAMILY_%s" % name, {}
 
 
+def plan_levels_from_record(rec: dict[str, Any], *, side: str, zones: list[dict[str, Any]], cost_frac: float,
+                             p: dict[str, Any], atr_fallback: float | None = None) -> tuple[dict[str, Any] | None, str]:
+    """Kayıttan plan seviyeleri — TEK tanım (plan kurulurken ve kayıt geliştikçe aynı hesap). Döner: (alanlar | None,
+    gerekçe). Hedef: yapısal ölçülü hareket (min R/R sağlıyorsa) → karşı 1h bölge → fallback R."""
+    trig = (rec.get("trigger") or {}).get("level")
+    inv = (rec.get("invalidation") or {}).get("level")
+    stop = rec.get("stop")
+    atr = rec.get("atr") or atr_fallback
+    if trig is None or inv is None or stop is None or not atr:
+        return None, "RECORD_GEOMETRY_INCOMPLETE"
+    trig, inv, stop, atr = float(trig), float(inv), float(stop), float(atr)
+    tgt, src, g, n = None, "", 0.0, 0.0
+    for t0 in list(rec.get("targets") or []):
+        g, n = rr_after_cost(trig, stop, float(t0), cost_frac=cost_frac)
+        if n >= float(p["min_rr_after_cost"]):
+            tgt, src = float(t0), "structure_measured_move"
+            break
+    if tgt is None:
+        tgt, src, g, n = _target(side, trig, stop, zones, cost_frac=cost_frac, p=p)
+    if tgt is None:
+        return None, "RR_BELOW_MIN"
+    etf = str(rec.get("timeframe"))
+    rule = str((rec.get("trigger") or {}).get("rule") or ("close_above" if side == K.LONG else "close_below"))
+    if rule not in ("close_above", "close_below"):
+        rule = "close_above" if side == K.LONG else "close_below"
+    return {"trigger": {"level": round(trig, 10), "rule": rule, "tf": etf, "sloped": bool((rec.get("trigger") or {}).get("sloped")),
+                        "text_tr": "%s %s kapanışı %s %.6g" % (etf, "boğa" if side == K.LONG else "ayı",
+                                                              "üstünde" if side == K.LONG else "altında", trig)},
+            "invalidation": {"level": round(inv, 10), "rule": (rec.get("invalidation") or {}).get("rule")},
+            "stop": round(stop, 10), "atr": round(atr, 10), "target": round(float(tgt), 10), "target_source": src,
+            "rr_gross": g, "rr_after_cost": n,
+            "structure_geometry": {"anchors": rec.get("anchors"), "geometry": rec.get("geometry"),
+                                   "confirm_bar": rec.get("confirm_bar"), "detected_at_ms": rec.get("detected_at_ms"),
+                                   "expires_at_ms": rec.get("expires_at_ms"), "atr": rec.get("atr")}}, ""
+
+
 def build_plans_v2(symbol: str, *, as_of_ms: int, analyses: dict[str, dict[str, Any] | None], bars_by_tf: dict[str, list],
                    levels_1h: dict[str, Any] | None, trend_4h: dict[str, Any] | None, cost_frac: float,
                    params: dict[str, Any] | None = None, universe_entry: dict[str, Any] | None = None,
@@ -111,46 +152,26 @@ def build_plans_v2(symbol: str, *, as_of_ms: int, analyses: dict[str, dict[str, 
                 skipped.append({"family": "*", "pattern_id": rec["pattern_id"], "name": rec.get("name"), "tf": tf, "reason": why})
                 continue
             side = rec["side"]
-            trig = (rec.get("trigger") or {}).get("level")
-            inv = (rec.get("invalidation") or {}).get("level")
-            stop = rec.get("stop")
-            atr = rec.get("atr") or atr15
-            if trig is None or inv is None or stop is None or not atr:
-                skipped.append({"family": fam, "pattern_id": rec["pattern_id"], "reason": "RECORD_GEOMETRY_INCOMPLETE"})
-                continue
-            trig, inv, stop, atr = float(trig), float(inv), float(stop), float(atr)
-            tgt, src, g, n = None, "", 0.0, 0.0
-            for t0 in list(rec.get("targets") or []):
-                g, n = rr_after_cost(trig, stop, float(t0), cost_frac=cost_frac)
-                if n >= float(p["min_rr_after_cost"]):
-                    tgt, src = float(t0), "structure_measured_move"
-                    break
-            if tgt is None:
-                tgt, src, g, n = _target(side, trig, stop, zones, cost_frac=cost_frac, p=p)
-            if tgt is None:
-                skipped.append({"family": fam, "pattern_id": rec["pattern_id"], "reason": "RR_BELOW_MIN", "target_source": src, "rr_after_cost": n})
+            lv, why2 = plan_levels_from_record(rec, side=side, zones=zones, cost_frac=cost_frac, p=p, atr_fallback=atr15)
+            if lv is None:
+                skipped.append({"family": fam, "pattern_id": rec["pattern_id"], "reason": why2})
                 continue
             confirmed = rec.get("status") == K.ST_CONFIRMED
             etf = str(rec.get("timeframe"))
             step = tf_ms(etf)
             valid_from = int(rec.get("detected_at_ms") or as_of_ms)
             expires = int(rec.get("expires_at_ms") or (valid_from + 8 * step))
-            rule = str((rec.get("trigger") or {}).get("rule") or ("close_above" if side == K.LONG else "close_below"))
-            if rule not in ("close_above", "close_below"):
-                rule = "close_above" if side == K.LONG else "close_below"
             pl = {"version": PROTOCOL_V2, "plan_id": plan_id_v2(symbol, fam, side, rec["pattern_id"]), "symbol": symbol,
                   "market": "USDM_PERP", "family": fam, "family_title_tr": FAMILIES_V2[fam]["title_tr"], "side": side,
                   "entry_tf": etf, "finding_ids": [rec["pattern_id"]], "pattern_id": rec["pattern_id"],
                   "anchor_bar_ts": int(rec["anchors"][-1]["ts"]) if rec.get("anchors") else valid_from - step,
                   "created_at_ms": int(as_of_ms), "created_at": iso_ms(as_of_ms), "valid_from_ms": valid_from,
                   "expires_at_ms": expires, "expires_at": iso_ms(expires), "expires_after_bars": max(1, (expires - valid_from) // step),
-                  "trigger": {"level": round(trig, 10), "rule": rule, "tf": etf, "text_tr": "%s %s kapanışı %s %.6g" % (
-                      etf, "boğa" if side == K.LONG else "ayı", "üstünde" if side == K.LONG else "altında", trig)},
-                  "invalidation": {"level": round(inv, 10), "rule": (rec.get("invalidation") or {}).get("rule")},
-                  "stop": round(stop, 10), "stop_rule": "katalog kaydı: geçersizlik ∓ %.2f×ATR" % K.DEFAULT_CONFIG.stop_buffer_atr,
-                  "stop_buffer_atr": K.DEFAULT_CONFIG.stop_buffer_atr, "atr": round(atr, 10), "target": round(float(tgt), 10),
-                  "target_source": src, "target_rule": "yapısal ölçülü hareket → karşı 1h bölge → fallback R",
-                  "rr_gross": g, "rr_after_cost": n, "min_rr_after_cost": float(p["min_rr_after_cost"]),
+                  "trigger": lv["trigger"], "invalidation": lv["invalidation"], "stop": lv["stop"],
+                  "stop_rule": "katalog kaydı: geçersizlik ∓ %.2f×ATR" % K.DEFAULT_CONFIG.stop_buffer_atr,
+                  "stop_buffer_atr": K.DEFAULT_CONFIG.stop_buffer_atr, "atr": lv["atr"], "target": lv["target"],
+                  "target_source": lv["target_source"], "target_rule": "yapısal ölçülü hareket → karşı 1h bölge → fallback R",
+                  "rr_gross": lv["rr_gross"], "rr_after_cost": lv["rr_after_cost"], "min_rr_after_cost": float(p["min_rr_after_cost"]),
                   "chase_atr": float(FAMILIES_V2[fam]["chase_atr"]), "entry_type": "MARKET_AFTER_TRIGGER_CLOSE", "leverage": 1,
                   "p_win": None, "expected_r": None, "edge_note_tr": "ölçülmedi (kanıt yok)",
                   "cohort": ue.get("cohort"), "age_h_at_plan": ue.get("age_h"), "futures_first_trade_ms": ue.get("futures_first_trade_ms"),
@@ -163,9 +184,7 @@ def build_plans_v2(symbol: str, *, as_of_ms: int, analyses: dict[str, dict[str, 
                                 "timeframe": etf, "status": rec.get("status"), "analysis_id": rec.get("analysis_id"),
                                 "policy_version": K.POLICY_VERSION, "confirmed_at_ms": rec.get("confirmed_at_ms")},
                   # panel motorun ÇİZDİĞİ kaydı çizer: dayanak noktaları ve geometri plana (işlem kaydına DEĞİL) girer
-                  "structure_geometry": {"anchors": rec.get("anchors"), "geometry": rec.get("geometry"),
-                                         "confirm_bar": rec.get("confirm_bar"), "detected_at_ms": rec.get("detected_at_ms"),
-                                         "expires_at_ms": rec.get("expires_at_ms"), "atr": rec.get("atr")},
+                  "structure_geometry": lv["structure_geometry"], "record_revisions": 0,
                   "data_source": dict(data_source or {}), "size": None, "risk": None}
             if confirmed:
                 cb = rec.get("confirm_bar") or {}
@@ -176,4 +195,4 @@ def build_plans_v2(symbol: str, *, as_of_ms: int, analyses: dict[str, dict[str, 
     return plans, skipped
 
 
-__all__ = ["FAMILIES_V2", "PLAN_TIMEFRAMES", "PROTOCOL_V2", "build_plans_v2", "plan_id_v2"]
+__all__ = ["FAMILIES_V2", "PLAN_TIMEFRAMES", "PROTOCOL_V2", "build_plans_v2", "plan_id_v2", "plan_levels_from_record"]

@@ -827,6 +827,7 @@ class StrategyBook:
 
 
     def save(self, marks_f: dict[str, float], now: datetime) -> None:
+        from .structures.catalog import POLICY_VERSION as _ST_POLICY
         with self.lock:
             self.ledger.save(self.ledger_path)
             fs = self.ledger.summary(marks_f)
@@ -853,8 +854,8 @@ class StrategyBook:
                                      "opened_at": p.opened_at, "last_price": float(p.last_price) if p.last_price else None}
                                  for s, p in self.ledger.positions.items()},
                    "history_tail": self.ledger.history_dicts()[-50:],
-                   # ORTAK YAPI (structures_v1): sembol başına SON yapı kararı (neden girdi/girmedi/çıktı) + mod
-                   "structures": {"mode": self.structure_mode, "policy_version": "structures_v1",
+                   # ORTAK YAPI: sembol başına SON yapı kararı (neden girdi/girmedi/çıktı) + mod + politika sürümü
+                   "structures": {"mode": self.structure_mode, "policy_version": _ST_POLICY,
                                   "decisions": dict(self.structure_decisions)},
                    # FUNDING (2026-09-22): kaynak ve bekleyen dönemler — mutabık olmayan funding AYRI durum olarak görünür
                    "funding": {"contract": FUNDING_SETTLEMENT_CONTRACT,

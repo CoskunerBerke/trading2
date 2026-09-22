@@ -53,3 +53,29 @@ Aynı yapı (aynı `pattern_id`) bir defterde **bir kez** giriş üretir (yenide
 Beş botun aynı yapıyı aynı emre çevirmesi GEREKMEZ: tablo rolü gösterir. Aynı coinde aynı yöndeki işlemler bağımsız kanıt
 sayılmaz; panelde üst üste binen maruziyet gösterilir. Risk/boyut/maliyet kapıları atlanmaz (yapı yalnız zamanlamayı,
 beklemeyi, iptali ve yönetimi etkiler). Sürüm etiketi her kararda ve işlem kaydında durur; eski ölçümlerle birleştirilmez.
+
+## D. `structures_v1.1` — uygulama sonrası düzeltmeler (2026-09-23, dağıtımdan ÖNCE)
+
+**Hiçbir eşik değişmedi.** Değişiklikler durum makinesinin ve bayrak kimliğinin ANLAMINDA; gerçek arşivde ileri
+yürüyüş bütünlük denetimiyle (`tradingbot/structures/audit.py`, kanıt: `docs/review/evidence-2026-09-22-shared/`)
+bulundu. İşlem sonucu/PnL'e bakılmadı. Sürüm adı bu yüzden `structures_v1` → `structures_v1.1` (kimlikler değişir).
+
+1. **Terminal durum kalıcıdır.** Teyitten sonra tazelik penceresinde (2 bar) geçersizlik kapanışı → BROKEN; pencere
+   dolunca → EXPIRED. Sonraki kapanışlar durumu DEĞİŞTİRMEZ (önce EXPIRED kayıt sonraki bir kapanışla BROKEN'a
+   dönüyordu: 2 coin 1d'de 203, 4h'de 408 dönüş). Süre dolduktan SONRAKİ ilk geçersizlik kapanışı ayrı bir olaydır:
+   `broken_at_ms` + `broken_after_expiry=True`. B-3 ("son 2 barda bozulmuş uyumlu yapı → BEKLE") ve M2'nin giriş-yapısı
+   çıkışı `broken_at_ms`i okur — amaçları korunur, durum geri yazılmaz.
+2. **Seviyeler olay barında donar.** Teyit/bozulma/süre olayından sonra tetik (eğik çizgide o barın değeri),
+   geçersizlik, stop, hedef ve geometri değişmez. OLUŞAN kayıt ise gelişebilir (bayrak uzar, eğik çizgi ilerler, yeni
+   dayanak eklenir) — bu "revizyon"dur, geriye boyama değildir.
+3. **Bayrak/flama kimliği = direk ucu** (boğa: en yüksek tepe, ayı: en düşük dip). Aynı konsolidasyonun farklı direk
+   başlangıçlı yorumları tek yapıdır; kimlik başına TEK kayıt: olay yaşamış yorum varsa İLK olay (ilk kırılış), yoksa
+   TETİĞİ EN YAKIN yorum (ilk teyit olacak olan). Bayrak ↔ flama adı kimliği değiştirmez. Direk ucu taranan pencerenin
+   başına direk uzunluğundan (8 bar) yakınsa kimliğin bütün yorumları hesaplanamaz → kayıt üretilmez
+   (`FLAG_IDENTITY_AT_WINDOW_EDGE`). Önce: oluşan kayıt ile kırılışta teyit olan kayıt farklı yorum/kimlik olabiliyordu.
+   Eski dedektör çıktısı (`detect_chart_patterns`) bit-bit aynıdır (5410 pencere, 62439 formasyon, 0 fark).
+4. **Formasyon botu planı kaydı izler.** Bekleyen v2 plan kendi seviyesini dondurup ayrı tetik değerlendirmesi YAPMAZ:
+   kayıt TEYİT → TETİKLENDİ (teyit kapanışı anı), BOZULDU → BOZULDU, SÜRESİ DOLDU → SÜRESİ DOLDU, analizden ÇEKİLDİ →
+   İPTAL (`RECORD_WITHDRAWN`); oluşurken seviyeler kayıttan yenilenir (`record_revisions`, `revision_history`).
+   Yeni bir pivotla yeniden tanımlanan yapı (üçgen) yeni kimliktir: eski plan çekilir, aynı taramada yeni plan kurulur.
+5. Doğrulama tek kaynakta: `structures.catalog.validate_settings` (ENFORCE gerçek parayla açılamaz).

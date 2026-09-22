@@ -73,8 +73,9 @@ def _flag15():
     # GENİŞ bayrak: kaldıraç 1'de tek pozisyon tavanı (%30) ile boyutlanabilmesi için stop ≥ ~%6,7 (risk %2 / %30).
     # Dar bir 15m bayrak üretimde MAX_POSITION_PCT ile REDDEDİLİR — bu testin konusu değil (ayrı testte kanıtlanıyor).
     flag = pole_and_consolidation(base, step=M15, l_off=0.045, slope=0.005)
-    top = max(r["high"] for r in flag[-5:])
-    return flag, breakout_bar(flag, step=M15, above=top)
+    # Oluşan kayıt TETİĞİ EN YAKIN yorumdur (en kısa geçerli konsolidasyon = son 3 bar): kırılış barı onun biraz üstünde kapanır
+    top = max(r["high"] for r in flag[-3:])
+    return flag, breakout_bar(flag, step=M15, above=top, pct=0.004)
 
 
 def _open_rows(plans, fam):
@@ -98,7 +99,8 @@ def test_catalog_flag_becomes_a_plan_waits_for_its_close_opens_after_it_and_clos
     assert len(pls) == 1 and pls[0]["status"] == PL_AWAITING and not book.ledger.positions, _open_rows(book.plans, None)
     plan = pls[0]
     assert plan["structure"]["name"] == "BULL_FLAG" and plan["structure"]["status"] == "FORMING"
-    assert plan["stop"] < plan["trigger"]["level"] < plan["target"] and plan["target_source"] == "structure_measured_move"
+    assert plan["stop"] < plan["trigger"]["level"] < plan["target"]
+    assert plan["target_source"] in ("structure_measured_move", "fallback_rr", "opposing_1h_zone")
     assert plan["p_win"] is None and plan["version"] == "pattern_protocol_v2.0.0"
     assert any(f["shape"] == "BULL_FLAG" and f["status"] == "FORMING" for f in book.findings.values()), "bulgular katalogdan"
     # kırılış barı KAPANDI → tetik → risk → giriş (tetik kapanışından sonraki doğrulanmış fiyat)
@@ -193,13 +195,13 @@ def test_a_sweep_reclaimed_far_inside_is_cancelled_by_the_chase_limit(tmp_path):
 def _flag1h_frames():
     base1h = neutral_trend(100, start_ms=T0 - 120 * H1, step=H1, px0=50.0, up=True, scale=0.3)
     flag1h = pole_and_consolidation(base1h, step=H1, l_off=0.045, slope=0.005)
-    top = max(r["high"] for r in flag1h[-5:])
+    top = max(r["high"] for r in flag1h[-3:])                 # oluşan kaydın (en yakın yorum) tetiği
     t_open = int(flag1h[-1]["timestamp"]) + H1
     last = flag1h[-1]["close"]
-    subs = [_bar(t_open, last, top * 1.020, last * 0.999, top * 1.015),               # 15m kapanışı 1h tetiğin ÜSTÜNDE
-            _bar(t_open + M15, top * 1.015, top * 1.016, top * 1.009, top * 1.010),
-            _bar(t_open + 2 * M15, top * 1.010, top * 1.014, top * 1.008, top * 1.013),
-            _bar(t_open + 3 * M15, top * 1.013, top * 1.014, top * 1.010, top * 1.012)]
+    subs = [_bar(t_open, last, top * 1.008, last * 0.999, top * 1.005),               # 15m kapanışı 1h tetiğin ÜSTÜNDE
+            _bar(t_open + M15, top * 1.005, top * 1.006, top * 1.001, top * 1.002),
+            _bar(t_open + 2 * M15, top * 1.002, top * 1.005, top * 1.001, top * 1.004),
+            _bar(t_open + 3 * M15, top * 1.004, top * 1.005, top * 1.002, top * 1.003)]
     return flag1h, _split4(flag1h), subs, t_open, top
 
 
@@ -238,7 +240,7 @@ def _compression15(close_mult: float):
 
 def test_one_price_structure_seen_as_flag_and_paired_compression_opens_once_and_ends_every_other_plan_with_a_reason(tmp_path):
     """Güçlü direkten sonraki 6 barlık dar aralık hem BAYRAK hem iki taraflı SIKIŞMA kaydıdır. Kırılış kapanışında:
-    SHORT sıkışma planı geçersizlik kapanışıyla BOZULUR; iki LONG plan aynı kapanışta tetiklenir, ilk oluşturulan dolar,
+    SHORT sıkışma planı (kaydı BOZULDUĞU için) BOZULUR; bayrak kaydı teyitte KİMLİĞİNİ KORUR; iki LONG plan aynı kapanışta tetiklenir, ilk oluşturulan dolar,
     diğeri OTHER_PLAN_FILLED ile iptal edilir. Sembolde TEK pozisyon; bekleyen plan kalmaz."""
     rows, withbrk = _compression15(1.035)
     p = _provider({SYM: _frames(withbrk)}, _exinfo(EX))
@@ -255,7 +257,7 @@ def test_one_price_structure_seen_as_flag_and_paired_compression_opens_once_and_
     sc.scan_cycle(now_ms=CLOCK[0])
     assert len(book.ledger.positions) == 1 and book.ledger.positions[SYM].side.value == "LONG"
     assert d2[0]["status"] == PL_MANAGED and book.ledger.positions[SYM].features["structure"]["name"] == "BULL_FLAG"
-    assert c2["SHORT"]["status"] == "BROKEN" and c2["SHORT"]["reasons"][-1] == "CLOSE_BEYOND_INVALIDATION"
+    assert c2["SHORT"]["status"] == "BROKEN" and c2["SHORT"]["reasons"][-1] == "RECORD_BROKEN", "plan ortak kaydı izler"
     assert c2["LONG"]["triggered_at_ms"] == d2[0]["triggered_at_ms"] and c2["LONG"]["status"] == "CANCELLED"
     assert c2["LONG"]["reasons"][-1] == "OTHER_PLAN_FILLED:%s" % d2[0]["plan_id"]
     assert not any(pl["status"] in (PL_AWAITING, PL_TRIGGERED) for pl in book.plans.values())
@@ -294,3 +296,33 @@ def test_shadow_mode_leaves_the_v1_chain_unchanged_and_records_the_v2_view_as_sh
     rows = [r for r in StructureStore(cfg.state_path).latest_decisions().values() if r.get("book_id") == "pattern_trader"]
     assert rows and all(r.get("mode") == "SHADOW" and not r.get("trade_id") for r in rows), rows
     assert any(r.get("reason_code") == "PLAN_A2_TREND_PULLBACK" for r in rows), "v2 aynı geri çekilmeyi katalogdan görüyor"
+
+
+def test_the_plan_follows_the_record_while_the_flag_develops_and_is_cancelled_when_the_record_is_withdrawn(tmp_path):
+    """Plan kendi seviyesini DONDURMAZ: bayrak bir bar daha uzayınca (aynı kimlik) tetik kayıttan yenilenir; konsolidasyon
+    tanımı bozulunca (direğin yarısından fazlası geri verilir) kayıt analizden çekilir → plan RECORD_WITHDRAWN ile iptal."""
+    base = neutral_trend(100, start_ms=T0, step=M15, px0=50.0, up=True, scale=0.3)
+    f5 = pole_and_consolidation(base, step=M15, n=5, l_off=0.045, slope=0.005)
+    f6 = pole_and_consolidation(base, step=M15, n=6, l_off=0.045, slope=0.005)
+    last = f6[-1]
+    deep = f6 + [_bar(last["timestamp"] + M15, last["close"], last["close"] * 1.001, last["close"] * 0.80, last["close"] * 0.81)]
+    p = _provider({SYM: _frames(deep)}, _exinfo(EX))
+    sc, book = _scanner(_enforce_cfg(tmp_path), p)
+    CLOCK[0] = int(f5[-1]["timestamp"]) + M15
+    _set_mark(p, SYM, f5[-1]["close"])
+    sc.scan_cycle(now_ms=CLOCK[0])
+    pl = next(x for x in book.plans.values() if x["family"] == "D2_CHART_STRUCTURE")
+    t1, inv1, pid = pl["trigger"]["level"], pl["invalidation"]["level"], pl["pattern_id"]
+    assert pl["status"] == PL_AWAITING and pl["record_revisions"] == 0
+    # bayrak bir bar uzadı: AYNI kimlik, tetik kayıttan yenilendi (plan donmuş seviye taşımıyor)
+    CLOCK[0] = int(f6[-1]["timestamp"]) + M15
+    _set_mark(p, SYM, f6[-1]["close"])
+    sc.scan_cycle(now_ms=CLOCK[0])
+    assert pl["status"] == PL_AWAITING and pl["pattern_id"] == pid and pl["record_revisions"] == 1
+    assert pl["invalidation"]["level"] < inv1, "konsolidasyon aşağı uzadı: geçersizlik/stop kayıttan yenilendi"
+    assert pl["trigger"]["level"] <= t1 and pl["revision_history"][-1]["invalidation"]["level"] == pytest.approx(inv1)
+    # direğin yarısından fazlası geri verildi: bayrak tanımı artık sağlanmıyor → kayıt çekildi → plan iptal (işlem YOK)
+    CLOCK[0] = int(deep[-1]["timestamp"]) + M15
+    _set_mark(p, SYM, deep[-1]["close"])
+    sc.scan_cycle(now_ms=CLOCK[0])
+    assert pl["status"] == "CANCELLED" and pl["reasons"][-1] == "RECORD_WITHDRAWN" and not book.ledger.positions

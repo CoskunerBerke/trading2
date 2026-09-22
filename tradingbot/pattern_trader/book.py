@@ -395,7 +395,11 @@ class PatternBook:
             for pid, pl in list(self.plans.items()):
                 if pl.get("symbol") != symbol or pl.get("status") not in (PL_AWAITING, PL_TRIGGERED):
                     continue
-                if pl["status"] == PL_AWAITING:
+                if pl["status"] == PL_AWAITING and pl.get("version") == "pattern_protocol_v2.0.0" and pl.get("structure"):
+                    # v2: plan ORTAK KAYDI izler (tetik/bozulma/süre olayı kayıttan; ayrı tetik değerlendirmesi YOK)
+                    self._follow_record(pl, analyses, as_of_ms=int(as_of_ms), dec_ms=dec_ms, now=now, out=out, cs=cs,
+                                        levels_1h=levels_1h)
+                elif pl["status"] == PL_AWAITING:
                     last_eval = int(pl.get("last_evaluated_bar_ts") or 0)
                     # Plan KENDİ diliminin kapanışıyla değerlendirilir (v2: 1h yapı 1h kapanışıyla; v1 planları 15m)
                     ptf = str(pl.get("entry_tf") or ENTRY_TF)
@@ -519,11 +523,12 @@ class PatternBook:
     def _catalog_findings(self, symbol: str, analyses: dict[str, Any], cohort: str, ue: dict[str, Any], now: datetime,
                           out: dict[str, Any], cs: dict[str, int]) -> None:
         """v2 bulguları = ortak katalog kayıtları (15m/1h/4h). Panel ve sayaçlar aynı kaydı okur."""
+        from ..structures.catalog import POLICY_VERSION as SK_POLICY
         for tf, an in (analyses or {}).items():
             for r in (an or {}).get("records") or []:
                 fid = r["pattern_id"]
                 prev = self.findings.get(fid)
-                row = {"version": "structures_v1", "finding_id": fid, "pattern_id": fid, "symbol": symbol, "market": r.get("market"),
+                row = {"version": SK_POLICY, "finding_id": fid, "pattern_id": fid, "symbol": symbol, "market": r.get("market"),
                        "tf": tf, "shape": r.get("name"), "family": r.get("family"), "side": r.get("side"), "status": r.get("status"),
                        "bar_ts": int(r["anchors"][-1]["ts"]) if r.get("anchors") else None, "seen_at_ms": r.get("detected_at_ms"),
                        "confirmed_at_ms": r.get("confirmed_at_ms"), "broken_at_ms": r.get("broken_at_ms"),
@@ -583,6 +588,69 @@ class PatternBook:
                                   trend_4h=trend_4h, cost_frac=self.cost_frac, params=self.params, universe_entry=ue, data_source=ds)
         for pl in plans[:5]:
             self._record_plan_decision(pl, analyses, as_of_ms, shadow=True)
+
+    def _follow_record(self, pl: dict[str, Any], analyses: dict[str, Any] | None, *, as_of_ms: int, dec_ms: int, now: datetime,
+                       out: dict[str, Any], cs: dict[str, int], levels_1h: dict[str, Any] | None) -> None:
+        """v2 bekleyen plan → ortak kaydın O ANKİ durumu. Oluşuyorsa seviyeler kayıttan yenilenir (gelişen yapı);
+        teyit → TETİKLENDİ (teyit kapanışı anı, geriye yazılmaz); bozuldu/süresi doldu → aynı durum; kayıt analizden
+        çekildiyse → İPTAL. Analiz yoksa (veri boşluğu) plan bekler; kendi süresi dolarsa SÜRESİ DOLDU."""
+        from ..structures import catalog as SK
+        from .strategy import DEFAULTS as DEFAULTS_PT
+        from .strategy_v2 import plan_levels_from_record
+        tf = str(pl.get("entry_tf") or ENTRY_TF)
+        an = (analyses or {}).get(tf)
+        pid = str(pl.get("pattern_id") or (pl.get("structure") or {}).get("pattern_id") or "")
+        if not an or not isinstance(an.get("records"), list):
+            if self.is_expired(pl, dec_ms):
+                self._set_status(pl, PL_EXPIRED, dec_ms, "EXPIRED_AT_SCAN_NO_ANALYSIS")
+                self.counters["expired"] += 1
+            return
+        rec = next((r for r in an["records"] if r.get("pattern_id") == pid), None)
+        if rec is None:
+            self._set_status(pl, PL_CANCELLED, int(as_of_ms), "RECORD_WITHDRAWN")
+            pl["cancel_detail"] = {"analysis_id": an.get("analysis_id"), "note": "kayıt analizde yok: yapı tanımı artık sağlanmıyor"}
+            self.counters["cancelled"] += 1
+            return
+        st = rec.get("status")
+        if st in (SK.ST_FORMING, SK.ST_CONFIRMED):
+            lv, why = plan_levels_from_record(rec, side=str(pl["side"]), zones=list((levels_1h or {}).get("zones") or []),
+                                              cost_frac=self.cost_frac, p={**DEFAULTS_PT, **(self.params or {})}, atr_fallback=pl.get("atr"))
+            if lv is None:
+                self._set_status(pl, PL_CANCELLED, int(as_of_ms), "RECORD_REVISION_%s" % why)
+                self.counters["cancelled"] += 1
+                return
+            keys = ("trigger", "invalidation", "stop", "target")
+            if any(pl.get(k) != lv.get(k) for k in keys):
+                pl["record_revisions"] = int(pl.get("record_revisions") or 0) + 1
+                pl.setdefault("revision_history", []).append({"at_ms": int(as_of_ms), "status": st, **{k: pl.get(k) for k in keys}})
+                pl["revision_history"] = pl["revision_history"][-5:]
+            pl.update({k: lv[k] for k in ("trigger", "invalidation", "stop", "atr", "target", "target_source", "rr_gross",
+                                          "rr_after_cost", "structure_geometry")})
+            pl["structure"] = dict(pl.get("structure") or {}, status=st, confirmed_at_ms=rec.get("confirmed_at_ms"),
+                                   analysis_id=rec.get("analysis_id"))
+            if rec.get("expires_at_ms"):
+                pl["expires_at_ms"] = int(rec["expires_at_ms"])
+                pl["expires_at"] = iso_ms(pl["expires_at_ms"])
+            if st == SK.ST_CONFIRMED:
+                cb = rec.get("confirm_bar") or {}
+                t_ms = int(rec.get("confirmed_at_ms") or as_of_ms)
+                self._set_status(pl, PL_TRIGGERED, t_ms, "RECORD_CONFIRMED_%s" % rec.get("name"))
+                pl["triggered_at_ms"], pl["trigger_bar_ts"], pl["trigger_close"] = t_ms, cb.get("ts"), cb.get("close")
+                self.counters["triggered"] += 1
+                cs["triggered"] += 1
+                out["triggered"] += 1
+                self._event("PLAN_TRIGGERED", str(pl.get("symbol")), pl["family"], now, plan_id=pl["plan_id"], side=pl["side"],
+                            bar_close=iso_ms(t_ms), source="record")
+            elif self.is_expired(pl, dec_ms):
+                self._set_status(pl, PL_EXPIRED, dec_ms, "EXPIRED_AT_SCAN")
+                self.counters["expired"] += 1
+            return
+        if st == SK.ST_BROKEN:
+            self._set_status(pl, PL_BROKEN, int(rec.get("broken_at_ms") or as_of_ms), "RECORD_BROKEN")
+            self.counters["broken"] += 1
+            return
+        self._set_status(pl, PL_EXPIRED, int(rec.get("expired_at_ms") or as_of_ms), "RECORD_EXPIRED")
+        self.counters["expired"] += 1
 
     def _entry_block_reason(self, symbol: str, ue: dict[str, Any], as_of_ms: int) -> str | None:
         if symbol in self.ledger.positions:

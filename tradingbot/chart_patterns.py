@@ -449,7 +449,10 @@ def _flag_scan(bars, cfg, *, bull: bool) -> tuple[list[dict[str, Any]], list[dic
     n = len(bars)
     pb = cfg.flag_pole_bars
     seen: set[int] = set()
-    for p in range(pb, n - cfg.flag_min_bars - 1):
+    # Üst sınır +1 (2026-09-23): son yinelemede (p = n - min - 1) yalnız q = n - 1 vardır ve kırılış barı henüz YOKTUR —
+    # eski kayıt ÜRETEMEZ (çıktı bit-bit aynı), ama OLUŞAN katalog adayı üretir. Bu olmadan en sıkı yorum oluşurken
+    # görünmüyor, kırılış barında "yeni" bir kayıt olarak doğuyordu (kimlik süreksizliği).
+    for p in range(pb, n - cfg.flag_min_bars):
         c0, cp = bars[p - pb]["close"], bars[p]["close"]
         rise = (cp / c0 - 1.0) if bull else (1.0 - cp / c0)
         if rise * 100.0 < cfg.flag_pole_min_pct:
@@ -469,6 +472,10 @@ def _flag_scan(bars, cfg, *, bull: bool) -> tuple[list[dict[str, Any]], list[dic
                 boundary = max(b["high"] for b in cons)
                 j = q + 1
                 if j < n and bars[j]["close"] > boundary:
+                    # Katalog adayı HER direk için üretilir (kanal sınıflaması ve tekilleştirme analizde — oluşan kayıtla
+                    # AYNI kuralla). Eski kayıt bit-bit eskisi gibi: kırılış barı taramada ilk direğe (`seen`).
+                    cands.append(_flag_cand(bars, cfg, bull=True, p=p, q=q, c0=c0, cp=cp, pole_h=pole_h, cons=cons,
+                                            boundary=boundary, break_index=j))
                     if j in seen:
                         break
                     seen.add(j)
@@ -476,8 +483,6 @@ def _flag_scan(bars, cfg, *, bull: bool) -> tuple[list[dict[str, Any]], list[dic
                                     anchors=[_anchor(bars, {"index": p - pb, "level": c0, "side": "close"}, "direk_basi"),
                                              _anchor(bars, {"index": p, "level": cp, "side": "close"}, "direk_ucu")],
                                     geometry=[_seg(bars, p - pb, c0, p, cp, "direk"), _seg(bars, p + 1, boundary, j, boundary, "bayrak_siniri")]))
-                    cands.append(_flag_cand(bars, cfg, bull=True, p=p, q=q, c0=c0, cp=cp, pole_h=pole_h, cons=cons,
-                                            boundary=boundary, break_index=j))
                     break
                 if j >= n and q == n - 1:
                     cands.append(_flag_cand(bars, cfg, bull=True, p=p, q=q, c0=c0, cp=cp, pole_h=pole_h, cons=cons,
@@ -492,6 +497,8 @@ def _flag_scan(bars, cfg, *, bull: bool) -> tuple[list[dict[str, Any]], list[dic
                 boundary = min(b["low"] for b in cons)
                 j = q + 1
                 if j < n and bars[j]["close"] < boundary:
+                    cands.append(_flag_cand(bars, cfg, bull=False, p=p, q=q, c0=c0, cp=cp, pole_h=pole_h, cons=cons,
+                                            boundary=boundary, break_index=j))
                     if j in seen:
                         break
                     seen.add(j)
@@ -499,8 +506,6 @@ def _flag_scan(bars, cfg, *, bull: bool) -> tuple[list[dict[str, Any]], list[dic
                                     anchors=[_anchor(bars, {"index": p - pb, "level": c0, "side": "close"}, "direk_basi"),
                                              _anchor(bars, {"index": p, "level": cp, "side": "close"}, "direk_ucu")],
                                     geometry=[_seg(bars, p - pb, c0, p, cp, "direk"), _seg(bars, p + 1, boundary, j, boundary, "bayrak_siniri")]))
-                    cands.append(_flag_cand(bars, cfg, bull=False, p=p, q=q, c0=c0, cp=cp, pole_h=pole_h, cons=cons,
-                                            boundary=boundary, break_index=j))
                     break
                 if j >= n and q == n - 1:
                     cands.append(_flag_cand(bars, cfg, bull=False, p=p, q=q, c0=c0, cp=cp, pole_h=pole_h, cons=cons,
@@ -512,6 +517,10 @@ def _flag_cand(bars, cfg, *, bull: bool, p: int, q: int, c0: float, cp: float, p
                cons: list[dict[str, Any]], boundary: float, break_index: int | None) -> dict[str, Any]:
     shape = _channel_shape(cons, bull=bull, tol_pct=cfg.level_tolerance_pct)
     inv = min(b["low"] for b in cons) if bull else max(b["high"] for b in cons)
+    # KİMLİK DAYANAĞI: direğin ucu (boğa: en yüksek tepe, ayı: en düşük dip; eşitlikte ilk). Aynı konsolidasyonun
+    # farklı direk başlangıçlı yorumları bu barı PAYLAŞIR; yorum değişse de yapının kimliği değişmez.
+    win = range(p - cfg.flag_pole_bars, p + 1)
+    ext_i = (max(win, key=lambda i: (bars[i]["high"], -i)) if bull else min(win, key=lambda i: (bars[i]["low"], i)))
     retr = (cp - min(b["low"] for b in cons)) / pole_h if (bull and pole_h > 0) else \
         ((max(b["high"] for b in cons) - cp) / pole_h if pole_h > 0 else 1.0)
     return {"pattern": BULL_FLAG if bull else BEAR_FLAG, "side": BULL if bull else BEAR, "above": bull,
@@ -520,6 +529,8 @@ def _flag_cand(bars, cfg, *, bull: bool, p: int, q: int, c0: float, cp: float, p
                         _anchor(bars, {"index": p, "level": cp, "side": "close"}, "direk_ucu")],
             "geometry_at": (lambda j, _p=p, _c0=c0, _cp=cp, _b=boundary: [
                 _seg(bars, _p - cfg.flag_pole_bars, _c0, _p, _cp, "direk"), _seg(bars, _p + 1, _b, j, _b, "bayrak_siniri")]),
+            "identity_anchor": _anchor(bars, {"index": ext_i, "level": bars[ext_i]["high"] if bull else bars[ext_i]["low"],
+                                              "side": "high" if bull else "low"}, "direk_zirvesi" if bull else "direk_dibi"),
             "invalidation": inv, "height": pole_h, "channel": shape, "consolidation_bars": len(cons),
             "break_index": break_index, "quality": max(0.0, 1.0 - max(0.0, retr) / cfg.flag_max_retrace)}
 

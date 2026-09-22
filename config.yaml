@@ -471,7 +471,7 @@ structures:                    # ORTAK YAPI KATALOĞU (2026-09-22) — beş bot 
   # ENFORCE = yapı gerçekten giriş zamanlamasını, beklemeyi, plan iptalini ve açık pozisyon yönetimini etkiler (PAPER).
   # Kârlılık iddiası YOK: bu sürüm izlenebilir karar entegrasyonudur; ölçüm eski sürümlerden AYRI tutulur.
   enabled: true
-  policy_version: structures_v1
+  policy_version: structures_v1.1
   main: ENFORCE
   t2_trend_regime: ENFORCE
   m2_tsmom28: ENFORCE

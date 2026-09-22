@@ -68,17 +68,18 @@ def extend(rows: list[dict[str, Any]], ohlc: list[tuple[float, float, float, flo
 
 
 def pole_and_consolidation(rows: list[dict[str, Any]], *, step: int, shape: str = "parallel", n: int = 5,
-                           pole_scale: float = 3.0) -> list[dict[str, Any]]:
+                           pole_scale: float = 3.0, h_off: float = 0.004, l_off: float = 0.015,
+                           slope: float = 0.004) -> list[dict[str, Any]]:
     """Mum-nötr direk (8 bar, nötr motif `pole_scale`) + `n` DOJI konsolidasyon barı. `shape`: `parallel` (tepeler ve
     dipler aynı hızla iner: BAYRAK) | `converging` (tepeler iner, dipler yükselir: FLAMA). Dojiler tarafsızdır (taraf
     üretmez); ilk doji önceki gövdenin DIŞINDA (harami/doji yıldızı oluşmaz)."""
     out = list(rows)
     out += neutral_trend(8, start_ms=out[-1]["timestamp"] + step, step=step, px0=out[-1]["close"], up=True, scale=pole_scale)
     last = out[-1]
-    h0, l0 = last["close"] * 1.004, last["close"] * 0.985
+    h0, l0 = last["close"] * (1 + h_off), last["close"] * (1 - l_off)
     for k in range(n):
         if shape == "parallel":
-            hi, lo = h0 - k * last["close"] * 0.004, l0 - k * last["close"] * 0.004
+            hi, lo = h0 - k * last["close"] * slope, l0 - k * last["close"] * slope
         else:
             hi, lo = h0 - k * last["close"] * 0.0015, l0 + k * last["close"] * 0.001
         mid = (hi + lo) / 2.0

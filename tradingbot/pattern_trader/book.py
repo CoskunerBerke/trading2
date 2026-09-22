@@ -97,6 +97,11 @@ class PatternBook:
         #: Gerçekleşmiş funding oran kaynağı (`bind_funding` ile tarayıcıdan gelir). None iken funding dönemleri
         #: BEKLER: bilinmeyen maliyet sıfır SAYILMAZ, kapsama `funding_coverage` ile görünür kalır.
         self.funding_rates: Any = None
+        #: ORTAK YAPI (structures_v1): OFF → v1 (A/B/C) aynen; SHADOW → v1 işlem yapar, v2 kararları yalnız kaydedilir;
+        #: ENFORCE → bulgular ve planlar ORTAK KATALOGDAN (protokol v2), zincirin geri kalanı (tetik→risk→giriş→yönetim) aynı.
+        _st = getattr(v3, "structures", None)
+        self.structure_mode = _st.mode_for("pattern_trader") if _st is not None else "OFF"
+        self._structure_store = None
         #: Tur içi filtre belleği (sembol → (keşif anı ms, SymbolFilters)). PAYLAŞILAN önbelleğe YAZILMAZ;
         #: bkz. `_resolve_filters` — ana botun resmî yenileme damgası kirletilmez, kilitsiz nesneye iş
         #: parçacığından yazılmaz.
@@ -345,7 +350,16 @@ class PatternBook:
             levels_1h = levels_for(b1h, tf=STRUCTURE_TF, atr=atr1h) if len(b1h) >= REQUIREMENTS["levels"] else {"pivots": [], "zones": [], "reason": "NOT_ENOUGH_1H_BARS", "n": len(b1h)}
             atr4h = atr14(b4h) if len(b4h) >= REQUIREMENTS["atr"] else None
             trend_4h = detect_trend(b4h, atr=atr4h, cfg=self.candle_cfg) if len(b4h) >= REQUIREMENTS["trend"] else {"trend": "UNKNOWN", "reason": "NOT_ENOUGH_4H_BARS", "n_bars": len(b4h)}
+            # ORTAK KATALOG (structures_v1): 15m/1h/4h analizi — piyasa kimliği her dilimin KENDİ provenansından.
+            analyses: dict[str, Any] = {}
+            if self.structure_mode != "OFF":
+                analyses = self._structure_analyses(symbol, bars_by_tf, statuses, ds, as_of_ms)
+            if self.structure_mode == "ENFORCE":
+                # v2 bulguları = katalog kayıtları; pozisyon açıkken de her taramada güncellenir (panel aynı kaydı okur)
+                self._catalog_findings(symbol, analyses, cohort, ue, now, out, cs)
             for tf, rows in ((ENTRY_TF, b15), (STRUCTURE_TF, b1h), (CONTEXT_TF, b4h)):
+                if self.structure_mode == "ENFORCE":
+                    break                                  # v2: bulgular katalogdan (aşağıda), v1 dedektörü çalışmaz
                 if len(rows) < REQUIREMENTS["shape"]:
                     continue
                 # Ilk tarama (last_scan yok) => since=0: son MAX_BACKFILL_BARS kapanmis bar taranir. Bot yeni
@@ -382,26 +396,29 @@ class PatternBook:
                     continue
                 if pl["status"] == PL_AWAITING:
                     last_eval = int(pl.get("last_evaluated_bar_ts") or 0)
-                    for b in b15:
+                    # Plan KENDİ diliminin kapanışıyla değerlendirilir (v2: 1h yapı 1h kapanışıyla; v1 planları 15m)
+                    ptf = str(pl.get("entry_tf") or ENTRY_TF)
+                    pstep = tf_ms(ptf)
+                    for b in (bars_by_tf.get(ptf) or []):
                         ts = int(b["timestamp"])
-                        if ts <= last_eval or ts + tf_ms(ENTRY_TF) > int(as_of_ms):
+                        if ts <= last_eval or ts + pstep > int(as_of_ms):
                             continue
-                        if self.is_expired(pl, ts + tf_ms(ENTRY_TF)):
-                            self._set_status(pl, PL_EXPIRED, ts + tf_ms(ENTRY_TF), "NOT_TRIGGERED_BEFORE_EXPIRY")
+                        if self.is_expired(pl, ts + pstep):
+                            self._set_status(pl, PL_EXPIRED, ts + pstep, "NOT_TRIGGERED_BEFORE_EXPIRY")
                             self.counters["expired"] += 1
                             break
                         res = evaluate_trigger(pl, b)
                         pl["last_evaluated_bar_ts"] = ts
                         if res == PL_TRIGGERED:
-                            self._set_status(pl, PL_TRIGGERED, ts + tf_ms(ENTRY_TF), "CLOSE_%s_%s" % (pl["trigger"]["rule"].upper(), pl["trigger"]["level"]))
-                            pl["triggered_at_ms"], pl["trigger_bar_ts"], pl["trigger_close"] = ts + tf_ms(ENTRY_TF), ts, float(b["close"])
+                            self._set_status(pl, PL_TRIGGERED, ts + pstep, "CLOSE_%s_%s" % (pl["trigger"]["rule"].upper(), pl["trigger"]["level"]))
+                            pl["triggered_at_ms"], pl["trigger_bar_ts"], pl["trigger_close"] = ts + pstep, ts, float(b["close"])
                             self.counters["triggered"] += 1
                             cs["triggered"] += 1
                             out["triggered"] += 1
-                            self._event("PLAN_TRIGGERED", symbol, pl["family"], now, plan_id=pid, side=pl["side"], bar_close=iso_ms(ts + tf_ms(ENTRY_TF)))
+                            self._event("PLAN_TRIGGERED", symbol, pl["family"], now, plan_id=pid, side=pl["side"], bar_close=iso_ms(ts + pstep))
                             break
                         if res == PL_BROKEN:
-                            self._set_status(pl, PL_BROKEN, ts + tf_ms(ENTRY_TF), "CLOSE_BEYOND_INVALIDATION")
+                            self._set_status(pl, PL_BROKEN, ts + pstep, "CLOSE_BEYOND_INVALIDATION")
                             self.counters["broken"] += 1
                             break
                     if pl["status"] == PL_AWAITING and self.is_expired(pl, dec_ms):
@@ -425,9 +442,18 @@ class PatternBook:
             if blocked:
                 out["skipped"].append({"reason": blocked})
             else:
-                sym_findings = [f for f in self.findings.values() if f.get("symbol") == symbol]
-                plans, skipped = build_plans(symbol, as_of_ms=as_of_ms, bars_by_tf=bars_by_tf, findings=sym_findings, levels_1h=levels_1h, trend_4h=trend_4h,
-                                             cost_frac=self.cost_frac, params=self.params, universe_entry=ue, data_source=ds, enabled_families=self.families)
+                if self.structure_mode == "ENFORCE":
+                    from ..structures.bots import used_patterns_of
+                    from .strategy_v2 import build_plans_v2
+                    plans, skipped = build_plans_v2(symbol, as_of_ms=as_of_ms, analyses=analyses, bars_by_tf=bars_by_tf, levels_1h=levels_1h,
+                                                    trend_4h=trend_4h, cost_frac=self.cost_frac, params=self.params, universe_entry=ue,
+                                                    data_source=ds, used_patterns=used_patterns_of(self.ledger))
+                else:
+                    sym_findings = [f for f in self.findings.values() if f.get("symbol") == symbol]
+                    plans, skipped = build_plans(symbol, as_of_ms=as_of_ms, bars_by_tf=bars_by_tf, findings=sym_findings, levels_1h=levels_1h, trend_4h=trend_4h,
+                                                 cost_frac=self.cost_frac, params=self.params, universe_entry=ue, data_source=ds, enabled_families=self.families)
+                    if self.structure_mode == "SHADOW" and analyses:
+                        self._shadow_v2(symbol, analyses, bars_by_tf, levels_1h, trend_4h, ue, ds, as_of_ms)
                 out["skipped"].extend(skipped)
                 for pl in plans:
                     if pl["plan_id"] in self.plans:
@@ -440,6 +466,21 @@ class PatternBook:
                     self.counters["plans"] += 1
                     cs["plans"] += 1
                     self._event("PLAN_CREATED", symbol, pl["family"], now, plan_id=pl["plan_id"], side=pl["side"], trigger=pl["trigger"]["level"], stop=pl["stop"], target=pl["target"])
+                    if pl.get("structure"):
+                        self._record_plan_decision(pl, analyses, as_of_ms)
+                        if pl.get("status") == PL_TRIGGERED:
+                            # teyitli katalog kaydından doğan plan: teyit kapanışından sonraki İLK doğrulanmış fiyatla
+                            # (bu tarama) risk/giriş denenir; kovalama ve R/R `_try_open`da yeniden ölçülür
+                            self.counters["triggered"] += 1
+                            cs["triggered"] += 1
+                            out["triggered"] += 1
+                            r = self._try_open(pl, now=now, as_of_ms=as_of_ms, price=price, statuses=statuses, liquidity=liquidity,
+                                               universe_entry=ue, decision_ms=dec_ms)
+                            if r == "OPENED":
+                                out["opened"] += 1
+                                cs["opened"] += 1
+                            elif r == "REJECTED":
+                                out["rejected"].append({"plan_id": pl["plan_id"], "reason": (pl.get("reasons") or ["?"])[-1]})
             self.symbol_scans[symbol] = {"last_scan_ms": int(as_of_ms), "last_15m_bar_ts": int(b15[-1]["timestamp"]) if b15 else prev_bar, "cohort": cohort,
                                          "last_bar_ts": {tf: int(rows[-1]["timestamp"]) for tf, rows in ((ENTRY_TF, b15), (STRUCTURE_TF, b1h), (CONTEXT_TF, b4h)) if rows},
                                          "n_15m": len(b15), "n_1h": len(b1h), "n_4h": len(b4h), "trend_4h": trend_4h.get("trend"), "n_zones_1h": len(levels_1h.get("zones") or [])}
@@ -449,6 +490,90 @@ class PatternBook:
             out["levels_1h"] = {"n_zones": len(levels_1h.get("zones") or []), "reason": levels_1h.get("reason")}
             out["trend_4h"] = trend_4h.get("trend")
             return out
+
+    # ------------------------------------------------------------------ ORTAK KATALOG (structures_v1)
+    def _structure_analyses(self, symbol: str, bars_by_tf: dict[str, list], statuses: dict[str, dict], ds: dict[str, dict],
+                            as_of_ms: int) -> dict[str, Any]:
+        from ..structures import analyze
+        out: dict[str, Any] = {}
+        for tf in (ENTRY_TF, STRUCTURE_TF, CONTEXT_TF):
+            rows = bars_by_tf.get(tf) or []
+            if not rows:
+                out[tf] = None
+                continue
+            mk = str((statuses.get(tf) or {}).get("market") or "UNVERIFIED")
+            out[tf] = analyze(market=mk, symbol=symbol, timeframe=tf, bars=rows, as_of_ms=int(as_of_ms),
+                              data_provenance=dict(ds.get(tf) or {}, market=mk))
+        try:
+            from ..structures.store import StructureStore
+            if self._structure_store is None:
+                self._structure_store = StructureStore(self.cfg.state_path)
+            for an in out.values():
+                if an:
+                    self._structure_store.save_latest(an)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("formasyon defteri analiz kaydı yazılamadı: %s", exc)
+        return out
+
+    def _catalog_findings(self, symbol: str, analyses: dict[str, Any], cohort: str, ue: dict[str, Any], now: datetime,
+                          out: dict[str, Any], cs: dict[str, int]) -> None:
+        """v2 bulguları = ortak katalog kayıtları (15m/1h/4h). Panel ve sayaçlar aynı kaydı okur."""
+        for tf, an in (analyses or {}).items():
+            for r in (an or {}).get("records") or []:
+                fid = r["pattern_id"]
+                prev = self.findings.get(fid)
+                row = {"version": "structures_v1", "finding_id": fid, "pattern_id": fid, "symbol": symbol, "market": r.get("market"),
+                       "tf": tf, "shape": r.get("name"), "family": r.get("family"), "side": r.get("side"), "status": r.get("status"),
+                       "bar_ts": int(r["anchors"][-1]["ts"]) if r.get("anchors") else None, "seen_at_ms": r.get("detected_at_ms"),
+                       "confirmed_at_ms": r.get("confirmed_at_ms"), "broken_at_ms": r.get("broken_at_ms"),
+                       "trigger": r.get("trigger"), "invalidation": r.get("invalidation"), "analysis_id": r.get("analysis_id"),
+                       "cohort": cohort, "age_h": ue.get("age_h")}
+                if prev is None:
+                    out["new_findings"] += 1
+                    self.counters["findings"] += 1
+                    cs["findings"] += 1
+                if r.get("status") == "CONFIRMED" and (prev or {}).get("status") != "CONFIRMED":
+                    out["confirmed"] += 1
+                    self.counters["confirmed"] += 1
+                    cs["confirmed"] += 1
+                    self._event("FINDING_CONFIRMED", symbol, str(r.get("name")), now, tf=tf, finding_id=fid,
+                                confirmed_at=iso_ms(r.get("confirmed_at_ms")))
+                self.findings[fid] = row
+        if len(self.findings) > 5000:
+            for k in sorted(self.findings, key=lambda x: int(self.findings[x].get("seen_at_ms") or 0))[:1000]:
+                self.findings.pop(k, None)
+
+    def _record_plan_decision(self, pl: dict[str, Any], analyses: dict[str, Any] | None, at_ms: int, *, action: str | None = None,
+                              trade_id: str | None = None, shadow: bool = False) -> None:
+        try:
+            from ..structures.store import StructureStore
+            if self._structure_store is None:
+                self._structure_store = StructureStore(self.cfg.state_path)
+            act = action or ("ENTER" if pl.get("status") == PL_TRIGGERED else "WAIT_TRIGGER")
+            st = pl.get("structure") or {}
+            dec = {"bot": "pattern_trader", "policy_version": st.get("policy_version"), "action": act,
+                   "reason_code": "PLAN_" + str(pl.get("family")), "side": pl.get("side"), "decision_tf": pl.get("entry_tf"),
+                   "as_of_ms": int(at_ms), "pattern_ids": [st.get("pattern_id")] if st.get("pattern_id") else [],
+                   "primary": dict(st, trigger=pl.get("trigger"), invalidation=pl.get("invalidation"), stop=pl.get("stop"),
+                                   targets=[pl.get("target")]),
+                   "plan": {"plan_id": pl.get("plan_id"), "trigger": pl.get("trigger"), "invalidation": pl.get("invalidation"),
+                            "stop": pl.get("stop"), "targets": [pl.get("target")], "expires_at_ms": pl.get("expires_at_ms"),
+                            "timeframe": pl.get("entry_tf")},
+                   "analysis_ids": {tf: (a or {}).get("analysis_id") for tf, a in (analyses or {}).items()},
+                   "text_tr": ("Girdi: " if act == "ENTER" else "Bekliyor: ") + "%s — %s" % (pl.get("family_title_tr") or pl.get("family"),
+                                                                                              (pl.get("trigger") or {}).get("text_tr")),
+                   "mode": "SHADOW" if shadow else self.structure_mode}
+            self._structure_store.record_decision(dec, book_id=BOOK_KEY, market="USDM_PERP", symbol=str(pl.get("symbol")),
+                                                  at_ms=int(at_ms), analyses=analyses, trade_id=trade_id)
+        except Exception as exc:  # noqa: BLE001 — kayıt arızası planı ETKİLEMEZ
+            log.warning("formasyon planı yapı kararı yazılamadı: %s", exc)
+
+    def _shadow_v2(self, symbol, analyses, bars_by_tf, levels_1h, trend_4h, ue, ds, as_of_ms) -> None:
+        from .strategy_v2 import build_plans_v2
+        plans, _ = build_plans_v2(symbol, as_of_ms=as_of_ms, analyses=analyses, bars_by_tf=bars_by_tf, levels_1h=levels_1h,
+                                  trend_4h=trend_4h, cost_frac=self.cost_frac, params=self.params, universe_entry=ue, data_source=ds)
+        for pl in plans[:5]:
+            self._record_plan_decision(pl, analyses, as_of_ms, shadow=True)
 
     def _entry_block_reason(self, symbol: str, ue: dict[str, Any], as_of_ms: int) -> str | None:
         if symbol in self.ledger.positions:
@@ -674,12 +799,21 @@ class PatternBook:
         if res != "OPENED" or not opened_pos:
             return _reject(rejected[-1] if rejected else "LEDGER_%s" % res)
         pos = opened_pos[0]
-        pos.meta.update({"plan_id": pl["plan_id"], "family": pl["family"], "protocol_version": PROTOCOL_VERSION, "cohort": pl.get("cohort"),
+        # v2 planı KENDİ protokol sürümünü ve dilimini taşır; zaman stopu birimi değişmedi (15m bar × max_hold_bars)
+        pos.meta.update({"plan_id": pl["plan_id"], "family": pl["family"], "protocol_version": pl.get("version") or PROTOCOL_VERSION, "cohort": pl.get("cohort"),
                          "age_h_at_entry": universe_entry.get("age_h"), "futures_first_trade_ms": universe_entry.get("futures_first_trade_ms"),
-                         "max_hold_bars": int(self.section.max_hold_bars), "entry_tf": ENTRY_TF, "trigger": dict(pl["trigger"]), "target_source": pl["target_source"],
+                         "max_hold_bars": int(self.section.max_hold_bars), "entry_tf": pl.get("entry_tf") or ENTRY_TF, "time_stop_tf": ENTRY_TF,
+                         "trigger": dict(pl["trigger"]), "target_source": pl["target_source"],
                          "price_source": {"kind": "usdm_perp_mark", "price_ts_ms": price.get("price_ts_ms"), "age_s": price.get("age_s")}})
         pos.features.update({"plan_id": pl["plan_id"], "family": pl["family"], "cohort": pl.get("cohort"), "age_h_at_entry": universe_entry.get("age_h"),
                              "rr_after_cost": n, "target_source": pl["target_source"], "side_rule": pl["trigger"]["rule"]})
+        if pl.get("structure"):
+            # ORTAK YAPI: işlem kaydına girişin dayanağı olan katalog kaydı (panel "neden girdi?" ve aynı yapının ikinci
+            # işlemi açmaması bununla okunur)
+            pos.features["structure"] = dict(pl["structure"], action="ENTER", reason_code="PLAN_" + str(pl.get("family")),
+                                             bot="pattern_trader", text_tr="Girdi: %s planı tetiklendi (%s)." % (
+                                                 pl.get("family"), (pl.get("trigger") or {}).get("text_tr")))
+            self._record_plan_decision(pl, None, int(as_of_ms), action="ENTER", trade_id=pos.id)
         self._set_status(pl, PL_OPENED, int(as_of_ms), "FILLED_%s" % pos.id)
         pl["position_id"], pl["entry_price"], pl["size"] = pos.id, float(pos.entry_avg), {"qty": float(pos.qty), "notional": float(pos.qty * pos.entry_avg), "leverage": pos.leverage}
         pl["risk"] = {"risk_usdt": round(abs(float(pos.entry_avg) - float(pl["stop"])) * float(pos.qty), 6), "risk_pct_of_start": round(abs(float(pos.entry_avg) - float(pl["stop"])) * float(pos.qty) / float(self.ledger.starting_equity) * 100.0, 4)}

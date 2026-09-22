@@ -898,10 +898,11 @@ class HistoricalReplay:
         # Determinism hash'ine GIRMEZ: ayni girdi ayni kararlari uretir, kapsam bir olcumdur.
         self.result.funding_coverage = self.funding_rates.coverage()
         if not self.result.funding_coverage.get("complete"):
-            log.warning("replay funding EKSIK: %s settlement cevaplanamadi (%s eksik seri) — "
-                        "bu sonuclar maliyet-sonrasi DEGILDIR",
+            log.warning("replay funding EKSIK: %s settlement cevaplanamadi (%s eksik seri), %s settlement mark'siz "
+                        "uygulanamadi — bu sonuclar maliyet-sonrasi DEGILDIR",
                         self.result.funding_coverage.get("unknown"),
-                        len(self.result.funding_coverage.get("missing_series") or []))
+                        len(self.result.funding_coverage.get("missing_series") or []),
+                        self.result.funding_coverage.get("settlements_without_mark"))
         canon = json.dumps([[x["symbol"], x["side"], round(x["entry"], 8), round(x["exit"] or 0, 8), x["exit_reason"], round(x["net_r"], 6)] for x in tr], sort_keys=True)
         self.result.determinism_hash = hashlib.sha256(canon.encode()).hexdigest()
         self.ledger2.save(self.state_dir / "futures_ledger.json")

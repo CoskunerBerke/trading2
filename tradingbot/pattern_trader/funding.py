@@ -157,9 +157,12 @@ class FundingRates:
                 wanted = dict(self._wanted)
             names = list(dict.fromkeys([str(s) for s in (symbols or [])] + sorted(wanted)))
             fetched = 0
+            attempted = 0
             exhausted: list[str] = []
             for i, sym in enumerate(names):
-                if budget_s is not None and fetched > 0 and (self.monotonic() - t_start) >= float(budget_s):
+                # BÜTÇE DENEMEYE göre (başarıya göre DEĞİL): tüm istekler zaman aşımıyla düşse de tur sınırsız uzamaz
+                # (doğrulayıcı bulgusu, 2026-09-22). En az bir deneme yapılır; aralık tablosu isteği de süreye dahildir.
+                if budget_s is not None and (attempted > 0 or due) and (self.monotonic() - t_start) >= float(budget_s):
                     exhausted = names[i:]
                     break
                 with self._lock:
@@ -168,6 +171,7 @@ class FundingRates:
                         self.stats["history_calls"] += 1
                 if win is None:
                     continue
+                attempted += 1
                 try:
                     rows = self.provider.funding_history(sym, limit=1000, start_ms=win[0], end_ms=win[1]) or []   # AĞ — kilit DIŞINDA
                 except Exception as exc:  # noqa: BLE001 — ağ arızası tahakkuku BEKLETİR, çökertmez

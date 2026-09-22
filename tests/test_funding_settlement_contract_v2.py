@@ -344,3 +344,141 @@ def test_replay_source_uses_the_row_mark_then_a_declared_proxy_then_waits():
     assert pos.funding_paid == D("0.1") + D("0.101")
     cov = src.coverage()["marks"]
     assert cov["bar_open_proxy"] >= 1 and cov["settlement_row"] >= 1
+
+
+# ----------------------------------------------------------------------------------------------- bağımsız doğrulayıcı bulguları
+def test_records_closed_under_the_old_contract_are_never_charged_again():
+    """Eski sürüm (statik oran) funding işledi, kayıt hangi ana kadar işlendiğini taşımıyor → geç yol DOKUNMAZ.
+    (Doğrulayıcı: 3501304 kaydı 4e64257'de ikinci kez −0.2 yazılıyordu.)"""
+    led = FuturesLedgerV2(D("1000"), fees=FeeSchedule(maker_pct=D("0"), taker_pct=D("0")), slippage=SlippageModel.zero())
+    _open(led, stop="50", at=datetime(2026, 9, 15, 7, 59, tzinfo=UTC))
+    lk = static_rates({SYM: D("0.001")})
+    for h in (8, 16):
+        led.tick({SYM: TickData(last=D("100"))}, now_utc=datetime(2026, 9, 15, h, 1, tzinfo=UTC), funding_rate_lookup=lk)
+    led.close_manual(SYM, D("100"), now=datetime(2026, 9, 15, 16, 30, tzinfo=UTC))
+    rec = led.history[-1]
+    for k in ("funding_contract", "funding_contract_from", "funding_settled_until", "funding_settled_ts", "funding_settlements",
+              "funding_coverage"):
+        rec.features.pop(k, None)                               # eski sürümün kaydı bu alanları TAŞIMIYORDU
+    led._write_funding_coverage(rec)
+    assert rec.features["funding_contract"] == "pre_v2_unverified"
+    before = (rec.funding, led.wallet_balance, led.total_funding)
+    src = type("Src", (), {"__call__": lambda self, s, t: D("0.001"), "settlement_mark": lambda self, s, t: D("100"),
+                           "hours_for": lambda self, s: (0, 8, 16)})()
+    for _ in range(3):
+        assert led.settle_late_funding(src, now=datetime(2026, 9, 16, tzinfo=UTC), hours_for=src.hours_for) == []
+    assert (rec.funding, led.wallet_balance, led.total_funding) == before == (D("-0.2"), D("999.8"), D("-0.2"))
+    assert SYM not in led.funding_pending_symbols(), "eski sözleşmeli kayıt her tur yeniden İSTENMEZ"
+
+
+def test_a_retroactive_bar_close_before_a_processed_settlement_reverses_it_order_independently():
+    """Canlı tik 08:00 settlement'ını işledi; SONRA gelen 06:00–07:00 barı pozisyonu 07:00'de kapatıyor → pozisyon 08:00'de
+    açık DEĞİLDİ: tutar ters kayıtla geri alınır. Oran erken/geç gelsin, sonuç aynı (0). (Doğrulayıcı sondası probe_retro)"""
+    from tradingbot.strategy_paper import apply_closed_bars_to_ledger
+
+    def run(publish_at):
+        led, rates, clock, _ = _world(publish_at=publish_at)
+        _open(led, stop="95", at=datetime(2026, 9, 22, 5, 59, tzinfo=UTC))
+        _net(rates, clock, datetime(2026, 9, 22, 8, 0, 30, tzinfo=UTC))
+        led.tick({SYM: TickData(last=D("100"))}, now_utc=datetime(2026, 9, 22, 8, 0, 30, tzinfo=UTC), funding_rate_lookup=rates)
+        bar = {"timestamp": _ms(datetime(2026, 9, 22, 6, 0, tzinfo=UTC)), "open": 100.0, "high": 100.5, "low": 90.0, "close": 99.0}
+        recs = apply_closed_bars_to_ledger(led, {SYM: {"tf": "1h", "rows": [bar], "mark": 100.0}},
+                                           now=datetime(2026, 9, 22, 8, 5, tzinfo=UTC), funding_rate_lookup=rates)
+        assert recs, "bar pozisyonu stoplamalı"
+        _net(rates, clock, datetime(2026, 9, 22, 9, 1, tzinfo=UTC))
+        led.settle_late_funding(rates, now=datetime(2026, 9, 22, 9, 1, tzinfo=UTC), hours_for=rates.hours_for)
+        return led, led.history[-1]
+
+    le, early = run(T0800)
+    ll, late = run(datetime(2026, 9, 22, 9, 0, tzinfo=UTC))
+    assert early.funding == late.funding == 0
+    assert early.features["funding_coverage"]["complete"] and late.features["funding_coverage"]["complete"]
+    assert "2026-09-22T08:00:00+00:00" not in (early.features.get("funding_settled_ts") or [])
+    assert any(r.get("reversed_at") for r in early.features["funding_settlements"])
+    _reconciled(le, early)
+    _reconciled(ll, late)
+
+
+def test_positions_without_an_entry_fill_use_their_initial_quantity():
+    """İçe aktarılmış (v1) pozisyonda giriş dolumu yok, TP1 çıkış dolumu var → miktar 0 DEĞİL, başlangıç − önceki çıkışlar."""
+    from tradingbot.accounting.funding import qty_open_at
+    from tradingbot.accounting.models import Fill, Side
+    fills = [Fill(id="x", order_id="x", symbol=SYM, side=Side.SELL, qty=D("0.5"), price=D("101"), ts="2026-09-22T09:00:00+00:00",
+                  kind="hedef1")]
+    assert qty_open_at(fills, datetime(2026, 9, 22, 8, 0, tzinfo=UTC), D("1")) == (D("1"), "NO_ENTRY_FILL_INITIAL_QTY")
+    assert qty_open_at(fills, datetime(2026, 9, 22, 16, 0, tzinfo=UTC), D("1")) == (D("0.5"), "NO_ENTRY_FILL_INITIAL_QTY")
+    assert qty_open_at([], datetime(2026, 9, 22, 8, 0, tzinfo=UTC), D("1")) == (D("1"), "NO_ENTRY_FILL_INITIAL_QTY")
+
+
+def test_refresh_budget_also_bounds_failing_requests():
+    """Doğrulayıcı: bütçe yalnız BAŞARILI çekimden sonra işliyordu; her istek zaman aşımıyla düşerse tur sınırsız uzuyordu."""
+    tick = {"t": 0.0}
+
+    class Down:
+        def __init__(self):
+            self.asked = []
+
+        def funding_history(self, symbol, limit=1000, start_ms=None, end_ms=None):
+            self.asked.append(symbol)
+            tick["t"] += 10.0
+            raise TimeoutError("ağ yok")
+
+        def funding_info(self):
+            tick["t"] += 10.0
+            raise TimeoutError("ağ yok")
+
+    prov = Down()
+    fr = FundingRates(prov, clock_ms=lambda: _ms(T0802), monotonic=lambda: tick["t"])
+    out = fr.refresh(["A/USDT", "B/USDT", "C/USDT", "D/USDT"], budget_s=20.0)
+    assert len(prov.asked) <= 2 and out.get("budget_exhausted"), (prov.asked, out)
+    assert tick["t"] <= 30.0
+
+
+def test_replay_coverage_is_incomplete_when_a_settlement_had_no_mark():
+    import pandas as pd
+
+    from tradingbot.replay.funding_archive import ArchiveFundingRates
+    t1 = _ms(T0800)
+
+    class Store:
+        def read(self, market, symbol, kind):
+            return pd.DataFrame({"timestamp": [t1], "rate": [0.001], "mark": [float("nan")]})
+
+    src = ArchiveFundingRates(Store())
+    for _ in range(4):                                            # yeniden denemeler tekil sayılır
+        assert src(SYM, T0800) == D("0.001") and src.settlement_mark(SYM, T0800) is None
+    cov = src.coverage()
+    assert cov["complete"] is False and cov["settlements_without_mark"] == 1 and cov["unknown"] == 0
+
+
+def test_more_than_64_settlements_are_each_posted_once_on_the_late_path():
+    """Kayıttaki işlenmiş-an listesi 64 ile sınırlı; yinelenmezliği watermark taşır (doğrulayıcı sondası L)."""
+    start = datetime(2026, 8, 1, 7, 59, tzinfo=UTC)
+    end = datetime(2026, 8, 26, 8, 30, tzinfo=UTC)
+
+    class Src:
+        def __call__(self, s, t):
+            return D("0.0001")
+
+        def settlement_mark(self, s, t):
+            return D("100")
+
+        def hours_for(self, s):
+            return (0, 8, 16)
+
+    src = Src()
+    led = FuturesLedgerV2(D("1000"), fees=FeeSchedule(maker_pct=D("0"), taker_pct=D("0")), slippage=SlippageModel.zero(),
+                          funding=FundingSchedule())
+    led.funding.bind_source(src)
+    _open(led, stop="50", at=start)
+    led.tick({SYM: TickData(last=D("100"))}, now_utc=start + timedelta(minutes=1), funding_rate_lookup=None)
+    led.close_manual(SYM, D("100"), now=end)
+    rec = led.history[-1]
+    from tradingbot.core import funding_settlements_between
+    n = len(funding_settlements_between(start, end, (0, 8, 16)))
+    assert n > 64
+    for _ in range(3):
+        led.settle_late_funding(src, now=end + timedelta(hours=1), hours_for=src.hours_for)
+    assert rec.funding == D("-0.01") * n and led.total_funding == rec.funding
+    assert rec.features["funding_coverage"]["complete"]
+    _reconciled(led, rec)

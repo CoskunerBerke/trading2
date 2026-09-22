@@ -81,38 +81,97 @@ def test_one_realized_source_is_bound_to_all_five_futures_ledgers(tmp_path, monk
     assert prov.calls == [], "kurulum ağa çıkmaz"
 
 
-def test_tour_step_fetches_realized_rows_and_the_exit_monitor_stays_offline(tmp_path, monkeypatch):
+class ArmedProvider:
+    """SENTETİK. Bağımsız doğrulayıcının sondası (2026-09-22): `armed` iken funding ağına dokunulursa TEST DÜŞER.
+    Yalnız ETH için satır verir (BTC satırı yok → çıkış yolunda arama ıskalar ve bekler, ağa çıkmaz)."""
+
+    def __init__(self):
+        self.calls, self.armed = [], False
+
+    def _hit(self, what):
+        self.calls.append(what)
+        if self.armed:
+            raise AssertionError("funding network touched on the exit path: %s" % (what,))
+
+    def funding_history(self, symbol, limit=1000, start_ms=None, end_ms=None):
+        self._hit(("history", symbol))
+        if not symbol.startswith("ETH"):
+            return []
+        now = utc_now()
+        return [{"symbol": symbol.replace("/", ""), "funding_ts": int(t.timestamp() * 1000), "rate": 0.0001, "mark": 100.0}
+                for t in funding_settlements_between(now - timedelta(days=3), now, FUNDING_HOURS_UTC)
+                if (start_ms is None or int(t.timestamp() * 1000) >= start_ms) and (end_ms is None or int(t.timestamp() * 1000) <= end_ms)]
+
+    def funding_info(self):
+        self._hit(("info", None))
+        return []
+
+
+def test_all_three_exit_monitors_stay_offline_but_tick_every_futures_ledger_with_the_source(tmp_path, monkeypatch):
+    """Doğrulayıcının testi (kaynak: bağımsız doğrulama, 2026-09-22): çıkış izleyicileri (ana defter, strateji
+    defterleri, formasyon tarayıcısı) funding AĞINA dokunmaz ama gerçekleşmiş kaynakla (bellek) tick'ler; ağ adımından
+    önce de sonra da. Bekleyen (satırı olmayan) sembol ağa çıkmadan BEKLER."""
+    from tradingbot.accounting import TickData as TD
     eng = _engine(tmp_path, monkeypatch, _ov(), symbols=2, equity=EQUITY)
-    prov = SynthFundingProvider(rate=0.0001, mark=100.0)
+    prov = ArmedProvider()
     monkeypatch.setattr(eng, "_gap_provider_factory", lambda: prov)
+    monkeypatch.setattr("tradingbot.pattern_trader.scheduler.PatternScanner.start", lambda self: None)
     now = utc_now()
     opened = now - timedelta(hours=9)
     sym = "ETH/USDT"
-    pos = eng.ledger2.open(sym, "LONG", Decimal("100"), SizeSpec(Decimal("1"), AmountType.QUANTITY, 1), stop=Decimal("50"), now=opened)
+    small = SizeSpec(Decimal("0.1"), AmountType.QUANTITY, 1)
+    p_main = eng.ledger2.open(sym, "LONG", Decimal("100"), small, stop=Decimal("50"), now=opened)
+    p_btc = eng.ledger2.open("BTC/USDT", "LONG", Decimal("100"), small, stop=Decimal("50"), now=opened)
     t2 = next(b for b in eng.strategy_books if b.name == "t2_trend_regime")
-    pos_t2 = t2.ledger.open(sym, "SHORT", Decimal("100"), SizeSpec(Decimal("0.5"), AmountType.QUANTITY, 1), stop=Decimal("150"), now=opened)
-    assert pos is not None and pos_t2 is not None
-    # spot defterindeki varlık futures funding'ine GİRMEZ
-    eng.spot2.market_buy("SOL/USDT", qty=Decimal("1"), ref_price=Decimal("10"), now=now)
-    assert eng.spot2.qty("SOL/USDT") > 0
+    p_t2 = t2.ledger.open(sym, "LONG", Decimal("100"), small, stop=Decimal("50"), now=opened)
+    eng.ensure_pattern_scanner()
+    p_pb = eng.pattern_book.ledger.open(sym, "LONG", Decimal("100"), small, stop=Decimal("50"), now=opened)
+    assert p_main and p_btc and p_t2 and p_pb
     eng.ensure_gap_reconciled()
-    out = eng._funding_step(now)
-    assert out["refresh"]["fetched"] >= 1
-    asked = {s for k, s in prov.calls if k == "history"}
-    assert sym in asked and "SOL/USDT" not in asked
+    fake = lambda syms, **_: ({s: TD(last=Decimal("90")) for s in syms}, {s: 90.0 for s in syms}, {})  # noqa: E731
+    monkeypatch.setattr(eng, "_paper_marks", fake)
+    monkeypatch.setattr(eng.pattern_scanner.price, "marks", fake)
+    monkeypatch.setattr(eng.runner.live, "snapshot", lambda s: {"ticker": {"last": 90.0}})
+    prov.armed, n0 = True, len(prov.calls)
+    eng.exit_check()                                   # (1) ağ adımından ÖNCE: aralık tablosu yok → ağ yok, dönem bekler
+    assert len(prov.calls) == n0, prov.calls[n0:]
+    prov.armed = False
+    eng._funding_step(now)                             # (2) tur ağ adımı + tarayıcı ağ adımı belleği doldurur
+    eng.pattern_scanner.funding_step()
+    prov.armed, n = True, len(prov.calls)
+    eng.exit_check()
+    assert len(prov.calls) == n, prov.calls[n:]
     due = funding_settlements_between(opened, now, FUNDING_HOURS_UTC)
-    assert due, "pencere en az bir settlement içermeli"
-    eng.ledger2.tick({sym: TickData(last=Decimal("90"))}, now_utc=now, funding_rate_lookup=eng.funding_rates)
-    t2.tick({sym: TickData(last=Decimal("90"))}, now=now, funding_rate_lookup=eng.funding_rates, bar_advance=False)
-    for p, per in ((pos, Decimal("-0.01")), (pos_t2, Decimal("0.005"))):     # qty x mark(100) x 0.0001; LONG öder, SHORT alır
-        rows = p.features["funding_settlements"]
-        assert len(rows) == len(due)
-        assert all(r["mark_basis"] == "SETTLEMENT_ROW" and Decimal(r["mark"]) == Decimal("100") for r in rows)   # 90 DEĞİL
-        assert (p.funding_received - p.funding_paid) == per * len(due)
-    n = len(prov.calls)
-    closed = eng.exit_check()                                     # 60 sn izleyici: yalnız bellek
-    assert len(prov.calls) == n, "çıkış izleyicisi funding ağına ÇIKMAMALI"
-    assert isinstance(closed, list)
+    for name, p in (("main", p_main), ("t2", p_t2), ("pattern", p_pb)):
+        rows = p.features.get("funding_settlements") or []
+        assert p.last_price == Decimal("90"), (name, "çıkış izleyicisi bu defteri tick'lemedi")
+        assert len(rows) == len(due), (name, rows, p.features.get("funding_pending"))
+        assert all(r["mark_basis"] == "SETTLEMENT_ROW" and Decimal(r["mark"]) == Decimal("100") for r in rows), name
+    assert p_btc.features.get("funding_pending", {}).get("reason") == "RATE_UNKNOWN"
+
+
+def test_the_engine_tour_itself_refreshes_and_accrues_the_main_and_strategy_ledgers(tmp_path, monkeypatch):
+    """Tur yolu (metin değil DAVRANIŞ): `tour()` → `_funding_step` (ağ) → ana defter + strateji defteri tick'i kaynakla.
+    Kaynak bağlantısı kaldırılırsa ya da tur `_funding_step`i çağırmazsa settlement satırı OLUŞMAZ."""
+    from tradingbot.accounting import TickData as TD
+    eng = _engine(tmp_path, monkeypatch, _ov(), symbols=2, equity=EQUITY)
+    prov = SynthFundingProvider(rate=0.0001, mark=100.0)
+    monkeypatch.setattr(eng, "_gap_provider_factory", lambda: prov)
+    monkeypatch.setattr("tradingbot.pattern_trader.scheduler.PatternScanner.start", lambda self: None)
+    now = utc_now()
+    opened = now - timedelta(hours=9)
+    small = SizeSpec(Decimal("0.1"), AmountType.QUANTITY, 1)
+    p_main = eng.ledger2.open("ETH/USDT", "LONG", Decimal("100"), small, stop=Decimal("1"), now=opened)
+    t2 = next(b for b in eng.strategy_books if b.name == "t2_trend_regime")
+    p_t2 = t2.ledger.open("ETH/USDT", "LONG", Decimal("100"), small, stop=Decimal("1"), now=opened)
+    fake = lambda syms, **_: ({s: TD(last=Decimal("150")) for s in syms}, {s: 150.0 for s in syms}, {})  # noqa: E731
+    monkeypatch.setattr(eng, "_paper_marks", fake)
+    eng.tour(do_scan=False, obsidian=False, charts=False)
+    assert any(c[0] == "history" and c[1] == "ETH/USDT" for c in prov.calls), "tur funding ağ adımını çağırmadı"
+    due = funding_settlements_between(opened, now, FUNDING_HOURS_UTC)
+    for name, p in (("main", p_main), ("t2", p_t2)):
+        rows = p.features.get("funding_settlements") or []
+        assert len(rows) == len(due) and all(r["mark_basis"] == "SETTLEMENT_ROW" for r in rows), (name, rows)
 
 
 def test_without_the_source_periods_wait_instead_of_applying_the_current_rate(tmp_path, monkeypatch):

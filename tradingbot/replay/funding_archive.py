@@ -61,6 +61,8 @@ class ArchiveFundingRates:
         self.mark_rows = 0
         self.mark_proxied = 0
         self.mark_missing = 0
+        #: settlement mark'ı (satır ya da ilan edilmiş vekil) HİÇ bulunamayan TEKİL settlement'lar (yeniden denemeler sayılmaz)
+        self.mark_missing_keys: set[tuple[str, int]] = set()
 
     def _load(self, symbol: str) -> tuple[list[int], list[Decimal]]:
         cached = self._series.get(symbol)
@@ -134,6 +136,7 @@ class ArchiveFundingRates:
                 self.mark_proxied += 1
                 return Decimal(str(px))
         self.mark_missing += 1
+        self.mark_missing_keys.add((symbol, int(when.timestamp() * 1000)))
         return None
 
     def mark_basis(self, symbol: str, when: datetime) -> str:
@@ -169,12 +172,16 @@ class ArchiveFundingRates:
     def coverage(self) -> dict:
         """Kac settlement cevaplandi, kac tanesi bilinmiyordu, hangi seriler eksikti."""
         total = self.hits + self.unknown
+        # TAM ancak oran bilinmeyen sorgu YOKSA ve settlement mark'ı bulunamayan (dönemi uygulanamayan) settlement da
+        # yoksa: oranı bilinen ama mark'ı olmayan dönem funding'e GİRMEZ ve sonraki dönemleri bekletir (doğrulayıcı bulgusu).
         return {"queries": total, "answered": self.hits, "unknown": self.unknown,
-                "complete": self.unknown == 0,
+                "complete": self.unknown == 0 and not self.mark_missing_keys,
+                "settlements_without_mark": len(self.mark_missing_keys),
                 "answered_fraction": round(self.hits / total, 6) if total else None,
                 "missing_series": sorted(self.missing_series),
                 # settlement mark'i dayanaklari (funding_settlement_v2): satirin kendi mark'i / vekil / yok (bekledi)
-                "marks": {"settlement_row": self.mark_rows, "bar_open_proxy": self.mark_proxied, "missing": self.mark_missing},
+                "marks": {"settlement_row": self.mark_rows, "bar_open_proxy": self.mark_proxied, "missing_lookups": self.mark_missing,
+                          "missing_settlements": len(self.mark_missing_keys)},
                 "tolerance_ms": self.tolerance_ms,
                 "source": "history store: futures/<symbol>/funding (Binance fundingRate arşivi)"}
 

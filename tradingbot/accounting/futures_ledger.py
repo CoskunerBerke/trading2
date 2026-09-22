@@ -27,6 +27,7 @@ from .fees import FeeSchedule
 from .filters import LeverageBracket, bracket_for, default_filters
 from .funding import (
     FUNDING_SETTLEMENT_CONTRACT,
+    LEGACY_FUNDING_CONTRACT,
     FundingSchedule,
     RateLookup,
     funding_coverage,
@@ -468,7 +469,52 @@ class FuturesLedgerV2:
             pos.isolated_margin = ZERO
         return gross, exit_fee
 
+    def _reverse_settlements_after_close(self, pos: Position, ts: str) -> None:
+        """GERİYE DÖNÜK KAPANIŞ (2026-09-22): kapanmış bir bar pozisyonu, canlı tikin DAHA ÖNCE işlediği bir settlement'tan
+        ÖNCE kapatıyorsa (kapanış anı < settlement anı) o settlement'ta pozisyon açık DEĞİLDİ — yazılan tutar TERS kayıtla
+        geri alınır ve settlement işlenmişler listesinden çıkar. Sonuç, verinin (bar/oran) geliş sırasından bağımsızdır.
+        Kapanış tam settlement anındaysa (aynı an) dönem ödenir, geri alınmaz."""
+        rows = pos.features.get("funding_settlements")
+        if not isinstance(rows, list) or not rows:
+            return
+        from ..core import from_iso
+        try:
+            closed = from_iso(ts)
+        except (TypeError, ValueError):
+            return
+        keep_ts = [str(x) for x in (pos.features.get("funding_settled_ts") or [])]
+        changed = False
+        for row in rows:
+            if row.get("reversed_at") or row.get("path") == "REVERSAL":
+                continue
+            try:
+                st = from_iso(str(row.get("settlement")))
+            except (TypeError, ValueError):
+                continue
+            if st <= closed:
+                continue
+            amt = D(row.get("amount") or 0)
+            if amt != ZERO:
+                self.wallet_balance -= amt
+                self.total_funding -= amt
+                if amt < 0:
+                    pos.funding_paid -= -amt
+                else:
+                    pos.funding_received -= amt
+                self._entry(LedgerKind.FUNDING, -amt, pos.id, "funding reversal settlement=%s closed=%s (closed before settlement)"
+                            % (row.get("settlement"), ts), ts)
+            row["reversed_at"] = ts
+            keep_ts = [x for x in keep_ts if x != str(row.get("settlement"))]
+            changed = True
+        if changed:
+            pos.features["funding_settled_ts"] = keep_ts
+            done = [from_iso(str(r["settlement"])) for r in rows if not r.get("reversed_at") and r.get("path") != "REVERSAL"]
+            base = from_iso(str(pos.features.get("funding_contract_from") or pos.opened_at))
+            pos.features["funding_settled_until"] = iso(max([d for d in done if d <= closed] + [base]))
+            pos.last_funding_settlement_utc = pos.features["funding_settled_until"]
+
     def _finalize(self, pos: Position, reason: str, ts: str) -> TradeRecord:
+        self._reverse_settlements_after_close(pos, ts)
         self.positions.pop(pos.symbol, None)
         pos.status = "CLOSED"
         pos.closed_at = ts
@@ -684,7 +730,18 @@ class FuturesLedgerV2:
         """İşlem kaydının funding kapsaması (AĞ YOK). Kayıtta settlement saatleri yoksa (pozisyon hiç tick görmediyse)
         takvimin O ANKİ aralığı yazılır — `hours_for` bellekten okur (kaynak `refresh` ile doldurur)."""
         f = rec.features
-        f.setdefault("funding_contract", FUNDING_SETTLEMENT_CONTRACT)
+        if "funding_contract" not in f:
+            # Bu sürümde HİÇ tick görmemiş (eski sürümden devralınmış) pozisyon: sözleşme ancak kanıtla devralınır.
+            # Eski sürüm funding işlediyse ve hangi ana kadar işlediği (watermark) kayıtta yoksa, geç yol o dönemleri
+            # İKİNCİ KEZ yazabilirdi (doğrulayıcı bulgusu) → kayıt "eski sözleşme, doğrulanmamış" etiketlenir, dokunulmaz.
+            if f.get("funding_settled_until"):
+                f["funding_contract"] = FUNDING_SETTLEMENT_CONTRACT
+                f["funding_contract_from"] = str(f["funding_settled_until"])
+            elif rec.funding_paid == ZERO and rec.funding_received == ZERO:
+                f["funding_contract"] = FUNDING_SETTLEMENT_CONTRACT
+                f["funding_contract_from"] = str(rec.opened_at)
+            else:
+                f["funding_contract"] = LEGACY_FUNDING_CONTRACT
         f.setdefault("funding_contract_from", str(rec.opened_at))
         if not f.get("funding_hours_utc"):
             try:
@@ -723,6 +780,8 @@ class FuturesLedgerV2:
             f = rec.features if isinstance(rec.features, dict) else None
             if f is None or not rec.closed_at:
                 continue
+            if f.get("funding_contract") != FUNDING_SETTLEMENT_CONTRACT:
+                continue                       # eski sözleşmeyle kapanmış kayıt: geç yol DOKUNMAZ (çift yazım yok)
             hours = tuple(int(h) for h in (f.get("funding_hours_utc") or ()))
             if not hours and hours_for is not None:
                 try:
@@ -769,6 +828,12 @@ class FuturesLedgerV2:
                         risk = D(f.get("risk_usdt")) if f.get("risk_usdt") is not None else ZERO
                     except (TypeError, ValueError, ArithmeticError):
                         risk = ZERO
+                    if risk <= 0 and f.get("initial_stop") is not None:
+                        try:                   # R paydası kayıtta yoksa AYNI tanımla kayıttan: |giriş − ilk stop| × miktar
+                            risk = abs(D(rec.entry) - D(f.get("initial_stop"))) * D(rec.quantity)
+                            f["risk_usdt"] = format(risk, "f")
+                        except (TypeError, ValueError, ArithmeticError):
+                            risk = ZERO
                     if risk > 0:
                         rec.r_multiple = rec.net_pnl / risk
                     rec.tax_estimate = self.tax_policy.estimate(rec.net_pnl)
@@ -792,21 +857,30 @@ class FuturesLedgerV2:
                                      "path": "LATE", "estimated": False, "posted_at": item["posted_at"]})
                 posted.append(item)
             if touched:
-                pend = f.get("funding_pending") if isinstance(f.get("funding_pending"), dict) else None
-                if pend is not None and str(pend.get("since") or "") <= str(f.get("funding_settled_until") or ""):
-                    f.pop("funding_pending", None)            # bekleyen dönem artık işlendi
                 self._write_funding_coverage(rec)
+                cov = f.get("funding_coverage") or {}
+                if cov.get("complete"):
+                    f.pop("funding_pending", None)            # bekleyen dönem kalmadı
+                else:                                         # hâlâ bekleyen var: ilk bekleyen an (işlenmemiş)
+                    applied_now = {str(x) for x in (f.get("funding_settled_ts") or [])}
+                    wm_now = from_iso(str(f.get("funding_settled_until"))) if f.get("funding_settled_until") else opened
+                    first = next((t for t in funding_settlements_between(opened, closed_at, hours)
+                                  if iso(t) not in applied_now and t > wm_now), None)
+                    if first is not None:
+                        f["funding_pending"] = {"since": iso(first), "reason": "RATE_OR_MARK_MISSING"}
         if posted:
             self.updated_at = iso(now)
         return posted
 
     def funding_pending_symbols(self, window: int = 200) -> list[str]:
-        """Funding verisi gereken semboller: açık pozisyonlar + kapsaması EKSİK kapanmış işlemler (kaynağın `refresh`i
-        bunları çeker). AĞ YOK."""
+        """Funding verisi gereken semboller: açık pozisyonlar + bu sözleşmeyle kapanmış ve kapsaması EKSİK işlemler
+        (kaynağın `refresh`i bunları çeker). Eski sözleşmeli kayıtlar geç yola girmediği için istenmez. AĞ YOK."""
         out = list(self.positions)
         for rec in self.history[-int(window):]:
-            cov = (rec.features or {}).get("funding_coverage") if isinstance(rec.features, dict) else None
-            if isinstance(cov, dict) and cov.get("complete") is False and rec.symbol not in out:
+            f = rec.features if isinstance(rec.features, dict) else {}
+            cov = f.get("funding_coverage")
+            if f.get("funding_contract") == FUNDING_SETTLEMENT_CONTRACT and isinstance(cov, dict) \
+                    and cov.get("complete") is False and rec.symbol not in out:
                 out.append(rec.symbol)
         return out
 

@@ -1,0 +1,14 @@
+# Doğrulayıcı bulgularına ait yeni testler, onarımdan ÖNCEKİ commit 4e64257 üzerinde (izole worktree, 2026-09-23)
+# komut: python -m pytest -q -p no:cacheprovider tests/test_funding_settlement_contract_v2.py tests/test_funding_five_ledgers_v2.py
+E       AssertionError: assert 'funding_settlement_v2' == 'pre_v2_unverified'
+E       AssertionError: assert Decimal('-0.1000000') == Decimal('0')
+E       AssertionError: assert (Decimal('0'), 'FILLS') == (Decimal('1')..._INITIAL_QTY')
+E       AssertionError: (['A/USDT', 'B/USDT', 'C/USDT', 'D/USDT'], {'intervals_refreshed': True, 'symbols': ['A/USDT', 'B/USDT', 'C/USDT', 'D/USDT'], 'fetched': 0})
+E       assert (4 <= 2)
+E       assert (True is False)
+FAILED tests/test_funding_settlement_contract_v2.py::test_records_closed_under_the_old_contract_are_never_charged_again
+FAILED tests/test_funding_settlement_contract_v2.py::test_a_retroactive_bar_close_before_a_processed_settlement_reverses_it_order_independently
+FAILED tests/test_funding_settlement_contract_v2.py::test_positions_without_an_entry_fill_use_their_initial_quantity
+FAILED tests/test_funding_settlement_contract_v2.py::test_refresh_budget_also_bounds_failing_requests
+FAILED tests/test_funding_settlement_contract_v2.py::test_replay_coverage_is_incomplete_when_a_settlement_had_no_mark
+5 failed, 22 passed in 1.20s

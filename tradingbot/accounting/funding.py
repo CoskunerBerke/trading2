@@ -38,6 +38,9 @@ MarkLookup = Callable[[str, datetime], "Decimal | float | str | None"]
 
 #: Açık ve kapanmış işlemlerin ORTAK settlement sözleşmesinin adı (kayda `features.funding_contract` olarak yazılır).
 FUNDING_SETTLEMENT_CONTRACT = "funding_settlement_v2"
+#: Bu sürümden ÖNCE funding işlenmiş ve işlendiği anı kaydında taşımayan işlem: doğruluk statüsü sonradan UYDURULMAZ,
+#: geç uzlaştırma bu kayda dokunmaz (aksi hâlde eski yolun yazdığı dönemler ikinci kez yazılırdı).
+LEGACY_FUNDING_CONTRACT = "pre_v2_unverified"
 
 #: `mark_basis` değerleri: satırın kendi mark'ı / kaynağın ilan ettiği vekil / yalnız-oran lookup'ında tik fiyatı.
 MARK_SETTLEMENT_ROW = "SETTLEMENT_ROW"
@@ -62,13 +65,14 @@ class FundingEvent:
 
 
 def qty_open_at(fills: Iterable[Any] | None, t: datetime, fallback) -> tuple[Decimal | None, str]:
-    """Settlement anı `t`de GERÇEKTEN açık miktar (sözleşme: modül başı). Dolum yoksa `fallback` (eski/içe aktarılmış
-    pozisyon) ve gerekçe `NO_FILLS_CURRENT_QTY`. Zamanı okunamayan dolum varsa miktar BİLİNMİYOR sayılır (None):
-    yanlış miktarla tutar yazmak yerine dönem bekler."""
+    """Settlement anı `t`de GERÇEKTEN açık miktar (sözleşme: modül başı). `fallback` = pozisyonun GİRİŞ (başlangıç)
+    miktarıdır: dolum listesinde giriş dolumu yoksa (eski/içe aktarılmış pozisyon; TP1 gibi çıkış dolumları olabilir)
+    giriş bu miktar sayılır ve `t`den önceki çıkışlar düşülür (gerekçe `NO_ENTRY_FILL_INITIAL_QTY`). Zamanı okunamayan
+    dolum varsa miktar BİLİNMİYOR sayılır (None): yanlış miktarla tutar yazmak yerine dönem bekler."""
     fl = list(fills or [])
-    if not fl:
-        return D(fallback), "NO_FILLS_CURRENT_QTY"
-    qty = ZERO
+    has_entry = any(str(getattr(f, "kind", "")) == "entry" for f in fl)
+    qty = ZERO if has_entry else D(fallback)
+    basis = "FILLS" if has_entry else "NO_ENTRY_FILL_INITIAL_QTY"
     for f in fl:
         try:
             fts = from_iso(str(getattr(f, "ts", "") or ""))
@@ -78,7 +82,7 @@ def qty_open_at(fills: Iterable[Any] | None, t: datetime, fallback) -> tuple[Dec
             continue                                  # t anındaki/sonraki dolum t'deki miktarı DEĞİŞTİRMEZ
         q = D(getattr(f, "qty", 0))
         qty = qty + q if str(getattr(f, "kind", "")) == "entry" else qty - q
-    return max(qty, ZERO), "FILLS"
+    return max(qty, ZERO), basis
 
 
 def settlement_amount(side, qty, mark, rate) -> Decimal:
@@ -187,7 +191,7 @@ class FundingSchedule:
             if rate == ZERO:
                 last_rate, settled_until = rate, t
                 continue
-            qty_t, qty_basis = qty_open_at(position.fills, t, position.qty)
+            qty_t, qty_basis = qty_open_at(position.fills, t, position.initial_qty or position.qty)
             if qty_t is None:
                 pending = {"since": iso(t), "reason": qty_basis}
                 break
@@ -257,6 +261,6 @@ def funding_coverage(*, opened_at: str, until: str, settled_until: str | None, h
             "reason": "" if missing == 0 else "RATES_MISSING"}
 
 
-__all__ = ["FUNDING_SETTLEMENT_CONTRACT", "MARK_SETTLEMENT_ROW", "MARK_TICK", "FundingEvent", "FundingSchedule",
+__all__ = ["FUNDING_SETTLEMENT_CONTRACT", "LEGACY_FUNDING_CONTRACT", "MARK_SETTLEMENT_ROW", "MARK_TICK", "FundingEvent", "FundingSchedule",
            "MarkLookup", "RateLookup", "funding_coverage", "has_settlement_marks", "qty_open_at", "settlement_amount",
            "settlement_mark", "static_rates"]

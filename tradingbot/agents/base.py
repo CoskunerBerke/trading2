@@ -55,6 +55,10 @@ class CoinContext:
     equity_usdt: float = 50.0
     risk_pct: float = 2.0
     atr_stop_mult: float = 2.5
+    #: ORTAK YAPI (structures_v1): çerçevelerin GERÇEK piyasası (motorun provenansı; `None` = doğrulanmadı) ve ana botun
+    #: yapı modu. Mod OFF iken mum ajanı eski formülünü kullanır (davranış bit-bit eski).
+    frame_market: str | None = None
+    structures_mode: str = "OFF"
 
     @property
     def base(self) -> str:

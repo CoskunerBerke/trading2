@@ -73,7 +73,8 @@ def _as_multiplier(value) -> float:
 # Karar hunisi: her turda ve kayan 24 saatte tutulur. `trades_opened_24h` YALNIZ gozlem metrigidir,
 # karar kapisi DEGILDIR. `daily_trade_cap`/`per_run_trade_cap` her zaman null olarak raporlanir.
 _FUNNEL_KEYS = ("actionable", "ranked", "chief_blocked", "hard_safety_blocked", "no_trigger",
-                "trigger_fired", "candle_blocked", "chart_blocked", "regime_blocked", "positive_point_edge", "positive_conservative_edge",
+                "trigger_fired", "candle_blocked", "chart_blocked", "regime_blocked", "structure_blocked",
+                "positive_point_edge", "positive_conservative_edge",
                 "negative_edge_blocked", "research_small", "duplicate_blocked",
                 "research_policy_blocked", "size_multiplier_zero", "leverage_gate_blocked",
                 "precision_unresolved",
@@ -1173,6 +1174,9 @@ class TradingEngineV3(TradingEngine):
                     self._entry_data_blocked.add(s)
                     log.warning("%s: perpetual çerçeve alınamadı — analiz SPOT ile sürer, YENİ GİRİŞ kapalı", s)
             try:
+                # ORTAK YAPI: ajanlar ortak analizi çerçevenin GERÇEK piyasa kimliğiyle ister (provenans run'dan ÖNCE belli).
+                if hasattr(self.runner, "frame_markets"):
+                    self.runner.frame_markets[s] = str((self._frame_provenance.get(s) or {}).get("market") or "UNVERIFIED")
                 b = self.runner.run_symbol(s, analyses.get(s), pre)
             except Exception as exc:  # noqa: BLE001
                 log.exception("%s ajan hatası: %s", s, exc)
@@ -1311,6 +1315,14 @@ class TradingEngineV3(TradingEngine):
         # kapanmış işlemlerin bekleyen funding'i uzlaştırılır; sonra tick YALNIZ bellekten okur. Anlık `funding_pct`
         # (tahmin) geçmiş settlement'a UYGULANMAZ; `funding` sözlüğü yalnız strateji turunun imzasında kalır.
         funding: dict = {}
+        # 4b) ORTAK YAPI YÖNETİMİ (structures_v1): girişten sonra teyitli karşı yapı → stop sıkılaştırma. Stopu bu turda
+        # değişen sembolde tick YALNIZ son fiyatla yapılır: önceki barın uçları yeni stopu geriye dönük tetikleyemez.
+        try:
+            for _sym in self._structure_manage(now, marks):
+                if _sym in marks:
+                    marks[_sym] = TickData(last=marks[_sym].last, mark=marks[_sym].mark, ts=marks[_sym].ts)
+        except Exception as exc:  # noqa: BLE001 — yönetim arızası turu ve koruyucu tick'i DURDURMAZ
+            log.warning("yapı yönetimi adımı başarısız (tur sürer): %s", exc)
         self._funding_step(now)
         cur_bar = max((b.last_bar_4h for b in briefs if b.last_bar_4h), default="")
         bar_advance = bool(cur_bar and cur_bar != self.last_bar_seen)
@@ -1621,7 +1633,23 @@ class TradingEngineV3(TradingEngine):
                     funnel["regime_blocked"] += 1
                     entry["block_code"] = "REGIME_VETO:" + str((rg.get("verdict") or {}).get("reason") or "?")
                     continue
+            # ---------------------------------------------------------------- 2e) ORTAK YAPI POLITIKASI (structures_v1)
+            # Katalog (4h karar / 1d baglam) → giris zamanlamasi: karsi teyitli yapi BEKLETIR, geri cekilme plani uyumlu
+            # TEYITLI yapi ister. Yon ASLA cevrilmez; risk/boyut/maliyet kapilari asagida aynen. Mantik
+            # `structures.bots.main_entry_decision` — replay ana modu AYNI fonksiyonu cagirir.
+            sg = self._structure_gate(sym, d, plan, b, now, market)
+            if sg is not None:
+                from .structures.bots import compact as _sc
+                entry["structure"] = _sc(sg)
+                if sg.get("blocks"):
+                    funnel["structure_blocked"] += 1
+                    entry["block_code"] = "STRUCTURE:" + str(sg.get("reason_code") or "?")
+                    continue
             feats = features_from_brief(b, self.runner.chief.decide(briefs), b.scan_score or None)
+            if sg is not None:
+                from .structures.bots import compact as _sc2
+                # PLAN GEREKÇESİ: katalogdan dönen seviyeler + teyit (girişin dayanağı) işlem kaydına yazılır
+                feats["structure"] = _sc2(sg)
             feats.update({"initial_stop": plan.stop, "p_win": b.p_win, "regime": d.regime, "consensus_score": d.consensus_score, "consensus_conf": d.consensus_confidence,
                           "n_dissent": len(d.dissent), "n_vetoes": len(d.vetoes), "expected_r": d.expected_r, "expected_cost_pct": d.expected_cost, "market_type": market,
                           "spread_pct": next((r.metrics.get("spread_pct") for r in d.specialist_reports if r.agent_name == "orderbook_liquidity" and r.usable), None)})
@@ -1794,7 +1822,9 @@ class TradingEngineV3(TradingEngine):
                     symbol=sym, direction=d.direction, ref_price=b.price, notional=notional,
                     leverage=int(rd.adjusted_leverage or 1), stop=plan.stop, targets=plan.targets,
                     filters=f_sym, provenance=prec_prov, setup_type=plan.entry_type,
-                    trigger_text=plan.entry_trigger, features=feats, tick=marks.get(sym), now=now,
+                    trigger_text=(str(plan.entry_trigger or "") + ((" | yapı: " + str(sg.get("text_tr")))
+                                                                    if (sg is not None and sg.get("primary")) else "")),
+                    features=feats, tick=marks.get(sym), now=now,
                     meta={"coin_head_id": d.coin_head_id, "run_id": self.run_id,
                                               "decision_snapshot": d.to_dict(include_reports=False),
                                               # KALDIRAC SNAPSHOT'I: pozisyon omru boyunca DEGISMEZ (restart dahil).
@@ -1832,6 +1862,8 @@ class TradingEngineV3(TradingEngine):
                     entry["filled_risk_usdt"] = round(_filled_risk, 6)
                 trade_id = pos.id
                 entry["trade_id"] = trade_id
+                if sg is not None:
+                    self._record_main_structure(sym, sg, market=market, at=now, trade_id=trade_id, applied="OPENED")
                 desc = f"{sym} {d.direction} FUTURES @ {float(pos.entry_avg):.6g} · notional {float(pos.qty * pos.entry_avg):.2f} · {pos.leverage}x · stop {plan.stop:.6g} · TP {', '.join(f'{t:.6g}' for t in plan.targets)} · P(win) %{(b.p_win or 0.5)*100:.0f}"
             else:
                 order = self.spot2.market_buy(sym, quote_amount=Decimal(str(notional)), ref_price=Decimal(str(b.price)), tick=marks.get(sym), strategy=plan.entry_type, now=now)
@@ -2225,6 +2257,95 @@ class TradingEngineV3(TradingEngine):
                                  last_bar=b.last_bar_4h,
                                  already_fired_bar=self.triggers.get(b.symbol))
         return ok
+
+    # ------------------------------------------------------------------ ORTAK YAPI (structures_v1) — ana bot
+    def _structure_mode_main(self) -> str:
+        _st = getattr(getattr(self.cfg, "v3", None), "structures", None)
+        return _st.mode_for("main") if _st is not None else "OFF"
+
+    def _structure_gate(self, sym: str, d, plan, b, now: datetime, market: str) -> dict | None:
+        """Ana bot giriş kapısı (SAF karar + kayıt). OFF → None (davranış bit-bit eski). SHADOW → karar kaydedilir,
+        engellemez. ENFORCE → bekle/tetiği bekle/iptal girişi ENGELLER (`blocks`)."""
+        mode = self._structure_mode_main()
+        if mode == "OFF":
+            return None
+        try:
+            from .structures.bots import BLOCKING_ACTIONS, main_entry_decision, used_patterns_of
+            prov = (getattr(self, "_frame_provenance", None) or {}).get(sym) or {}
+            dec, analyses = main_entry_decision(
+                symbol=sym, frames=self.runner.last_frames.get(sym) or {}, frame_market=str(prov.get("market") or "UNVERIFIED"),
+                as_of_ms=int(now.timestamp() * 1000), direction=d.direction, entry_type=str(plan.entry_type or ""),
+                price=float(b.price) if b.price else None, used=used_patterns_of(self.ledger2),
+                provenance={k: prov.get(k) for k in ("market", "source", "tour_id")}, plan_market=market)
+        except Exception as exc:  # noqa: BLE001 — yapı katmanı arızası girişi SESSİZCE açmaz: ENFORCE'ta bekletir
+            log.warning("%s yapı kapısı hesaplanamadı: %s", sym, exc)
+            dec, analyses = {"bot": "main", "action": "WAIT" if mode == "ENFORCE" else "NO_EFFECT",
+                             "reason_code": "STRUCTURE_ERROR:%s" % type(exc).__name__, "pattern_ids": [], "primary": None,
+                             "text_tr": "Yapı analizi hata verdi; giriş yapılmadı." if mode == "ENFORCE" else ""}, {}
+            BLOCKING_ACTIONS = ("WAIT", "WAIT_TRIGGER", "CANCEL")
+        dec["mode"] = mode
+        dec["blocks"] = bool(mode == "ENFORCE" and dec.get("action") in BLOCKING_ACTIONS)
+        self._record_main_structure(sym, dec, market=market, at=now, analyses=analyses,
+                                    applied="BLOCKED" if dec["blocks"] else "PASSED")
+        return dec
+
+    def _record_main_structure(self, sym: str, dec: dict, *, market: str, at: datetime, analyses: dict | None = None,
+                               trade_id: str | None = None, applied: str = "") -> None:
+        try:
+            from .structures.store import StructureStore
+            st = getattr(self, "_structure_store", None)
+            if st is None:
+                st = self._structure_store = StructureStore(self.cfg.state_path)
+            for an in (analyses or {}).values():
+                if an:
+                    st.save_latest(an)
+            st.record_decision(dict(dec, applied=applied), book_id="main", market=market, symbol=sym,
+                               at_ms=int(at.timestamp() * 1000), analyses=analyses, trade_id=trade_id)
+        except Exception as exc:  # noqa: BLE001 — kayıt arızası kararı ETKİLEMEZ
+            log.warning("ana bot yapı kararı kaydedilemedi (%s): %s", sym, exc)
+
+    def _structure_manage(self, now: datetime, marks: dict) -> list[str]:
+        """Ana bot açık pozisyon yönetimi: girişten SONRA 4h'de teyitli karşı yapı → stop teyit barının ucuna
+        SIKILAŞTIRILIR (yalnız sıkılaştırır; fiyatın doğru tarafında). Pozisyon yalnız GERÇEK perp çerçevesiyle yönetilir.
+        Dönen: stopu değişen semboller — bu turun tick'inde onların bar uçları KULLANILMAZ (eski high/low yeni stopu
+        geriye dönük tetikleyemez; bkz. tur adımı 5)."""
+        mode = self._structure_mode_main()
+        if mode == "OFF" or not self.ledger2.positions:
+            return []
+        from .structures.bots import compact, main_hold_decision
+        from .structures.policy import ACT_TIGHTEN, tightened_stop
+        changed: list[str] = []
+        for sym, pos in list(self.ledger2.positions.items()):
+            prov = (getattr(self, "_frame_provenance", None) or {}).get(sym) or {}
+            frames = self.runner.last_frames.get(sym)
+            if not frames or str(prov.get("market")) != "USDM_PERP":
+                continue
+            try:
+                dec, analyses = main_hold_decision(symbol=sym, frames=frames, frame_market="USDM_PERP",
+                                                   as_of_ms=int(now.timestamp() * 1000), position=pos,
+                                                   provenance={k: prov.get(k) for k in ("market", "source", "tour_id")})
+            except Exception as exc:  # noqa: BLE001 — yönetim analizi arızası koruyucu stopu DEĞİŞTİRMEZ
+                log.warning("%s yapı yönetimi hesaplanamadı: %s", sym, exc)
+                continue
+            dec["mode"] = mode
+            applied = "NONE"
+            if dec.get("action") == ACT_TIGHTEN and mode == "ENFORCE":
+                mk = marks.get(sym)
+                px = float(mk.ref) if mk is not None else float(pos.last_price or pos.entry_avg)
+                new = tightened_stop(pos.side.value, float(pos.stop) if pos.stop is not None else None, dec.get("primary") or {}, px)
+                if new is not None:
+                    old = pos.stop
+                    pos.stop = Decimal(str(new))
+                    pos.meta["structure_stop"] = {"from": str(old) if old is not None else None, "to": str(pos.stop), "at": iso(now),
+                                                  "pattern_id": (dec.get("primary") or {}).get("pattern_id")}
+                    pos.features["structure_management"] = compact(dec)
+                    applied = "STOP_TIGHTENED"
+                    changed.append(sym)
+                else:
+                    applied = "NO_TIGHTER_VALID_STOP"
+            if dec.get("action") != "NO_EFFECT" or applied != "NONE":
+                self._record_main_structure(sym, dec, market="USDM_PERP", at=now, analyses=analyses, trade_id=pos.id, applied=applied)
+        return changed
 
     def _candle_confirmation(self, symbol: str, direction: str, now: datetime) -> dict | None:
         """SAF sorgu: durum DEGISTIRMEZ. Mantik `candle_confirmation.candle_confirmation` icinde — TEK kaynak.

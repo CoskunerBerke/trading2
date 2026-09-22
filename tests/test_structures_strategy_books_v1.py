@@ -248,3 +248,45 @@ def test_box_old_red_candle_trigger_no_longer_opens_without_a_confirmed_edge_str
     assert d["action"] in ("WAIT_TRIGGER", "NO_EFFECT") and enf.last_actions[SYM]["action"] == "NONE"
     if d["action"] == "WAIT_TRIGGER":
         assert d["primary"]["side"] == "SHORT" and d["primary"]["status"] == "FORMING"
+
+
+# ============================================================================ replay ↔ PAPER paritesi
+def test_replay_strategy_mode_makes_the_same_structure_decisions_as_the_live_book(tmp_path):
+    """Aynı günlük veri: canlı `StrategyBook.step` ve replay strateji modu (`paper_rules.replay_strategy`) AYNI
+    `decide_with_structures` girişini kullanır → oluşan bayrakta ikisi de BEKLER, kırılış barında ikisi de AYNI yapı
+    kimliğiyle açar. Karar anı: canlıda bar kapanışı + 60 sn, replay'de bar kapanışı (aynı kapanmış satırlar → aynı
+    analiz kimliği). Dolum: canlıda doğrulanmış perp mark, replay'de adım barının kapanışı (her ikisi `apply_action`)."""
+    from tradingbot.accounting import TickData as TD
+    from tradingbot.ema200_trend import TrendParams
+    from tradingbot.history import HistoryStore
+    from tradingbot.paper_rules import replay_strategy
+    from tradingbot.replay.engine import HistoricalReplay
+
+    flag, brk = _daily_flag()
+    btc = _btc(len(brk))
+    live = _book(_cfg(tmp_path / "live", "ENFORCE"), "t2_trend_regime")
+    _step(live, {"1d": flag}, as_of_ms=_asof(flag), price=flag[-1]["close"], btc=btc[:len(flag)])
+    _step(live, {"1d": brk}, as_of_ms=_asof(brk), price=brk[-1]["close"], btc=btc)
+    live_pid = live.ledger.positions[SYM].features["structure"]["pattern_id"]
+    live_open_bar = int(brk[-1]["timestamp"])
+
+    store = HistoryStore(tmp_path / "hist")
+    store.write("futures", SYM, "1d", _df(brk), source="test:sentetik")
+    store.write("futures", BTC, "1d", _df(btc), source="test:sentetik")
+    cfg = _cfg(tmp_path / "rep", "ENFORCE")
+    rep = HistoricalReplay(cfg, run_id="parity", store=store, symbols=[SYM], market="futures", tf="1d", seed=0,
+                           strategy=replay_strategy("t2_trend_regime", params=TrendParams(atr_mult=3.0, leverage=2, leverage_max=4)))
+    rep.frames = {SYM: {"1d": _df(brk)}, BTC: {"1d": _df(btc)}}
+    rep.primary = {SYM: rep.frames[SYM]["1d"]}
+    opened_at_bar = None
+    for row in brk[-3:]:
+        t = int(row["timestamp"])
+        now = datetime.fromtimestamp((t + DAY) / 1000, tz=timezone.utc)
+        px = float(row["close"])
+        rep._strategy_step(t, now, {SYM: TD(last=Decimal(str(px)), mark=Decimal(str(px)))}, {SYM: px})
+        if SYM in rep.ledger2.positions and opened_at_bar is None:
+            opened_at_bar = t
+    assert opened_at_bar == live_open_bar, (opened_at_bar, live_open_bar)
+    assert rep.ledger2.positions[SYM].features["structure"]["pattern_id"] == live_pid
+    log = rep._structure_log
+    assert [x["action"] for x in log[-2:]] == ["WAIT_TRIGGER", "ENTER"], log[-3:]

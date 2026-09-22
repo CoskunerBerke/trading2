@@ -220,5 +220,49 @@ def box_decide(name: str, *, daily_rows: list[dict[str, Any]], m5_rows: list[dic
     return act, dec, analyses
 
 
-__all__ = ["MODE_ENFORCE", "MODE_OFF", "MODE_SHADOW", "PAPER_MARKET", "StructureContext", "box_decide", "compact",
-           "trend_decide", "used_patterns_of"]
+# ---------------------------------------------------------------------------- ana bot (4h karar / 1d bağlam)
+def main_analyses(*, symbol: str, frames: dict | None, frame_market: str, as_of_ms: int,
+                  provenance: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Ana botun okuduğu ortak analizler (4h karar, 1d bağlam). Mum ajanı AYNI çerçeve + piyasa kimliğiyle aynı analiz
+    nesnesini alır (`analysis_id` as_of'tan bağımsız: kapanmış satırlar + sürüm)."""
+    out: dict[str, Any] = {}
+    for tf in ("4h", "1d"):
+        df = (frames or {}).get(tf)
+        out[tf] = analyze(market=frame_market, symbol=symbol, timeframe=tf, bars=df, as_of_ms=as_of_ms,
+                          data_provenance=provenance) if df is not None and len(df) else None
+    return out
+
+
+def main_entry_decision(*, symbol: str, frames: dict | None, frame_market: str, as_of_ms: int, direction: str,
+                        entry_type: str | None, price: float | None, used: set[str],
+                        provenance: dict[str, Any] | None = None,
+                        plan_market: str | None = None) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Ana bot giriş kapısı (canlı `_execute_locked` ve replay ana modu AYNI fonksiyon). Geri çekilme planı uyumlu
+    TEYİTLİ yapı ister (planın "alıcı/satıcı mumu" şartı artık kodda); karşı teyitli yapı bekletir. Futures planı için
+    perpetual OLMAYAN çerçeveden yapı okunmaz: karar BEKLE (`STRUCTURE_FRAME_MARKET_MISMATCH`, spot ikamesi yok)."""
+    analyses = main_analyses(symbol=symbol, frames=frames, frame_market=frame_market, as_of_ms=as_of_ms, provenance=provenance)
+    if str(plan_market or "") == PAPER_MARKET and str(frame_market) != PAPER_MARKET:
+        dec = P._decision(P.POLICIES[P.BOT_MAIN], P.ACT_WAIT, "STRUCTURE_FRAME_MARKET_MISMATCH:%s" % frame_market,
+                          side=direction, as_of_ms=as_of_ms, analyses=analyses,
+                          text_tr="Girmedi: futures kararı için perpetual çerçeve yok (%s); spot yapısı futures'a ikame edilmez." % frame_market)
+        return dec, analyses
+    dec = P.entry_decision(P.POLICIES[P.BOT_MAIN], intended_side=direction, analyses=analyses, as_of_ms=as_of_ms,
+                           price=price, used_patterns=used, entry_type=entry_type)
+    return dec, analyses
+
+
+def main_hold_decision(*, symbol: str, frames: dict | None, frame_market: str, as_of_ms: int, position: Any,
+                       provenance: dict[str, Any] | None = None) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Ana bot açık pozisyon: girişten SONRA teyitli karşı yapı (4h) → TIGHTEN_STOP kararı (uygulama motorda)."""
+    analyses = main_analyses(symbol=symbol, frames=frames, frame_market=frame_market, as_of_ms=as_of_ms, provenance=provenance)
+    dec = P.hold_decision(P.POLICIES[P.BOT_MAIN], position_side=_side_of(position) or "LONG",
+                          opened_at_ms=_opened_ms(position), entry_pattern_id=_entry_pid(position),
+                          analyses=analyses, as_of_ms=as_of_ms)
+    return dec, analyses
+
+
+BLOCKING_ACTIONS = (P.ACT_WAIT, P.ACT_WAIT_TRIGGER, P.ACT_CANCEL)
+
+
+__all__ = ["BLOCKING_ACTIONS", "MODE_ENFORCE", "MODE_OFF", "MODE_SHADOW", "PAPER_MARKET", "StructureContext", "box_decide",
+           "compact", "main_analyses", "main_entry_decision", "main_hold_decision", "trend_decide", "used_patterns_of"]

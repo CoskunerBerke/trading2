@@ -125,6 +125,11 @@ class CandleAgent(Agent):
 
     def analyze(self, ctx: CoinContext, rep: AgentReport) -> None:
         total, wsum = 0.0, 0.0
+        # ORTAK YAPI (structures_v1): mod OFF değilse şekil oyu KENDİ formülünden DEĞİL ortak katalogdan gelir ve
+        # "aynı formasyon birden çok bağımsız oy" SAYILMAZ: 1d/4h'deki bütün TAZE teyitli kayıtlar (mum, grafik,
+        # senaryo) tek bir taraf hükmüne indirgenir → en fazla BİR oy (±0.35); iki taraf birden varsa oy YOK.
+        catalog_mode = str(getattr(ctx, "structures_mode", "OFF") or "OFF").upper() != "OFF"
+        struct_vote = self._catalog_vote(ctx, rep) if catalog_mode else None
         for tf, w in (("1d", 0.5), ("4h", 0.5)):
             df = ctx.frame(tf)
             if df is None:
@@ -137,19 +142,20 @@ class CandleAgent(Agent):
             dn_wick = (min(o[-1], c[-1]) - l[-1]) / rng
             b = (clv - 0.5) * 1.2
             pats = []
-            if body < 0.1:
-                pats.append("doji (kararsızlık)")
-                b *= 0.3
-            if dn_wick > 0.55 and body < 0.35 and c[-1] >= o[-1]:
-                pats.append("çekiç/pin bar (alıcı reddi)"); b += 0.35
-            if up_wick > 0.55 and body < 0.35 and c[-1] <= o[-1]:
-                pats.append("kayan yıldız (satıcı reddi)"); b -= 0.35
-            if c[-1] > o[-1] and c[-2] < o[-2] and c[-1] > o[-2] and o[-1] < c[-2]:
-                pats.append("boğa yutan"); b += 0.4
-            if c[-1] < o[-1] and c[-2] > o[-2] and c[-1] < o[-2] and o[-1] > c[-2]:
-                pats.append("ayı yutan"); b -= 0.4
-            if h[-1] < h[-2] and l[-1] > l[-2]:
-                pats.append("iç bar (sıkışma)")
+            if not catalog_mode:
+                if body < 0.1:
+                    pats.append("doji (kararsızlık)")
+                    b *= 0.3
+                if dn_wick > 0.55 and body < 0.35 and c[-1] >= o[-1]:
+                    pats.append("çekiç/pin bar (alıcı reddi)"); b += 0.35
+                if up_wick > 0.55 and body < 0.35 and c[-1] <= o[-1]:
+                    pats.append("kayan yıldız (satıcı reddi)"); b -= 0.35
+                if c[-1] > o[-1] and c[-2] < o[-2] and c[-1] > o[-2] and o[-1] < c[-2]:
+                    pats.append("boğa yutan"); b += 0.4
+                if c[-1] < o[-1] and c[-2] > o[-2] and c[-1] < o[-2] and o[-1] > c[-2]:
+                    pats.append("ayı yutan"); b -= 0.4
+                if h[-1] < h[-2] and l[-1] > l[-2]:
+                    pats.append("iç bar (sıkışma)")
             ups = int((c[-5:] > o[-5:]).sum())
             # yapı: son 40 barda swing yüksek/alçak
             hh = h[-20:].max() > h[-40:-20].max()
@@ -166,8 +172,46 @@ class CandleAgent(Agent):
             if tf == "4h" and clv < 0.2 and ups <= 1:
                 rep.warnings.append("4h'de üst üste güçlü kırmızı mumlar: dipten short kovalama, tepki bekle")
         rep.bias = total / wsum if wsum else 0.0
+        if struct_vote:
+            rep.bias += struct_vote
         rep.confidence = int(35 + 45 * min(1.0, abs(rep.bias)))
         rep.summary = f"Mum yapısı {rep.stance_lower}: " + (rep.findings[0].split(": ", 1)[1][:120] if rep.findings else "-")
+
+    #: Ortak katalogdan gelen TEK yapı oyu (taraf başına en fazla bir; iki taraf çelişirse sıfır).
+    CATALOG_VOTE = 0.35
+
+    def _catalog_vote(self, ctx: CoinContext, rep: AgentReport) -> float:
+        from ..structures import analyze
+        from ..timeframes import tf_ms
+        sides: dict[str, list[str]] = {"LONG": [], "SHORT": []}
+        seen: set[str] = set()
+        ids: dict[str, str] = {}
+        for tf in ("1d", "4h"):
+            df = ctx.frame(tf)
+            if df is None or "timestamp" not in df.columns:
+                continue
+            last = int(df["timestamp"].iloc[-1])
+            an = analyze(market=ctx.frame_market or "UNVERIFIED", symbol=ctx.symbol, timeframe=tf, bars=df,
+                         as_of_ms=last + tf_ms(tf))
+            ids[tf] = an["analysis_id"]
+            for r in an["records"]:
+                if r.get("status") != "CONFIRMED" or r.get("side") not in sides or r["pattern_id"] in seen:
+                    continue
+                seen.add(r["pattern_id"])
+                sides[r["side"]].append("%s %s" % (tf, r["name"]))
+        rep.metrics["structure_analysis_ids"] = ids
+        rep.metrics["structure_confirmed"] = {k: v[:6] for k, v in sides.items()}
+        if sides["LONG"] and sides["SHORT"]:
+            rep.findings.append("Ortak katalog: iki yönde teyitli yapı (%s | %s) — oy YOK" % (
+                ", ".join(sides["LONG"][:3]), ", ".join(sides["SHORT"][:3])))
+            return 0.0
+        if sides["LONG"]:
+            rep.findings.append("Ortak katalog: teyitli boğa yapısı (%s) — TEK oy" % ", ".join(sides["LONG"][:3]))
+            return self.CATALOG_VOTE
+        if sides["SHORT"]:
+            rep.findings.append("Ortak katalog: teyitli ayı yapısı (%s) — TEK oy" % ", ".join(sides["SHORT"][:3]))
+            return -self.CATALOG_VOTE
+        return 0.0
 
 
 # ---------------------------------------------------------------- 4) Hacim

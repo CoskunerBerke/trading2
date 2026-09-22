@@ -35,6 +35,11 @@ class AgentRunner:
         self.manager = CoinManagerAgent()
         self.chief = ChiefAgent(max_concurrent=cfg.risk.max_open_positions)
         self.last_frames: dict[str, dict] = {}
+        #: ORTAK YAPI: motor her sembol için çerçeve piyasasını `run_symbol`dan ÖNCE yazar (provenans); ajanlar ortak
+        #: analizi AYNI piyasa kimliğiyle ister (aynı analiz nesnesi). Mod config'ten (`structures.main`).
+        self.frame_markets: dict[str, str] = {}
+        _st = getattr(getattr(cfg, "v3", None), "structures", None)
+        self.structures_mode = _st.mode_for("main") if _st is not None else "OFF"
 
     def ensure_timeframes(self, timeframes) -> list[str]:
         """Verilen dilimleri çekilenler kümesine EKLER (varsa dokunmaz). Döner: gerçekten eklenenler.
@@ -80,7 +85,8 @@ class AgentRunner:
         live = self.live.snapshot(symbol)
         ctx = CoinContext(symbol=symbol, frames=frames, live=live, analysis=analysis,
                           equity_usdt=self.cfg.risk.starting_equity_usdt, risk_pct=self.cfg.risk.risk_per_trade_pct,
-                          atr_stop_mult=self.cfg.risk.atr_stop_mult)
+                          atr_stop_mult=self.cfg.risk.atr_stop_mult, frame_market=self.frame_markets.get(symbol),
+                          structures_mode=str(getattr(self, "structures_mode", "OFF") or "OFF"))
         reports = [a.run(ctx) for a in self.agents]
         brief = self.manager.decide(ctx, reports)
         brief.generated_at = datetime.now(timezone.utc).isoformat(timespec="seconds")

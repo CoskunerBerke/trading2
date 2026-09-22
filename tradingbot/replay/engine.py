@@ -114,7 +114,7 @@ class HistoricalReplay:
                  lookback_bars: int = 400, min_bars: int = 250, decision_stride: int = 1,
                  candle_variant: str | None = "config", chart_variant: str | None = "config",
                  regime_variant: str | None = "config", strategy=None, candidate_order=None,
-                 max_entry_drift_pct: float = 0.0):
+                 max_entry_drift_pct: float = 0.0, structures_mode: str | None = "config"):
         self.cfg, self.run_id, self.store, self.symbols, self.market, self.tf, self.seed = cfg, run_id, store, list(symbols), market, tf, int(seed)
         self.pattern_engine = pattern_engine
         # EKONOMI KAPISI: uretimde karar yolunun ZORUNLU asamasi (engine_v3._assess_opportunities).
@@ -165,6 +165,14 @@ class HistoricalReplay:
             regime_variant = str(getattr(_en, "regime_gate_variant", "") or "") if _rm == "ENFORCE" else None
         self.regime_variant = regime_variant or None
         self._regime_cache: dict[int, str] = {}
+        # ORTAK YAPI (structures_v1): ana mod canlı motorla AYNI kapıyı (`structures.bots.main_entry_decision`) ve AYNI
+        # yönetimi (girişten sonra teyitli karşı yapı → stop sıkılaştırma) uygular. "config" canlının modunu izler,
+        # None/"OFF" kapatır. Karar kaydı `_structure_log`ta (replay ↔ PAPER karşılaştırması için).
+        if structures_mode == "config":
+            _st = getattr(getattr(cfg, "v3", None), "structures", None)
+            structures_mode = _st.mode_for("main") if _st is not None else "OFF"
+        self.structures_main = str(structures_mode or "OFF").upper()
+        self._structure_log: list[dict] = []
         # STRATEJI MODU (V9, arastirma): verilirse uzman yigini, baş yönetici ve kapılar ATLANIR;
         # `strategy(sym, t, frames, position, replay)` -> {"action": "OPEN"|"CLOSE", ...} | None.
         # Acilis/kapanis AYNI defter, risk motoru, borsa filtresi, kayma ve funding yolundan gecer.
@@ -440,6 +448,20 @@ class HistoricalReplay:
                     if not _ok:
                         self._reject(sym, "CHART_VETO:" + (_why or "?"))
                         continue
+                _struct = None
+                if self.structures_main != "OFF":
+                    from ..structures.bots import BLOCKING_ACTIONS, compact, main_entry_decision, used_patterns_of
+                    _mk = "USDM_PERP" if self.market == "futures" else "SPOT"
+                    _sd, _ = main_entry_decision(symbol=sym, frames=fr, frame_market=_mk, as_of_ms=t + tf_ms(self.tf),
+                                                 direction=d.direction, entry_type=plan.entry_type or "", price=marks_f.get(sym),
+                                                 used=used_patterns_of(self.ledger2), plan_market=_mk,
+                                                 provenance={"market": _mk, "source": "replay_archive", "tour_id": self.run_id})
+                    self._structure_log.append({"symbol": sym, "t": int(t), "action": _sd.get("action"), "reason_code": _sd.get("reason_code"),
+                                                "pattern_ids": list(_sd.get("pattern_ids") or [])})
+                    if self.structures_main == "ENFORCE" and _sd.get("action") in BLOCKING_ACTIONS:
+                        self._reject(sym, "STRUCTURE:" + str(_sd.get("reason_code")))
+                        continue
+                    _struct = compact(_sd)
                 if self.regime_variant:
                     from ..candle_confirmation import closed_bars as _closed_bars_rg
                     from ..regime_gate import BTC_SYMBOL as _BTC
@@ -497,7 +519,8 @@ class HistoricalReplay:
                                                       # GOZLEM: plan hangi yoldan geldi ve sabirli (legacy)
                                                       # motor bu girise KATILIYOR muydu?
                                                       "plan_source": getattr(d, "plan_source", ""),
-                                                      "legacy_reject": getattr(d, "legacy_plan_reject", "")},
+                                                      "legacy_reject": getattr(d, "legacy_plan_reject", ""),
+                                                      "structure": _struct},
                                             tick=marks[sym], now=now, meta={"run_id": self.run_id, "replay": True, "in_test": in_test})
                     if pos is None:
                         # gerçek borsa filtresi (ör. STEP_ZERO_QTY): minimumlar GEVŞETİLMEZ, sahte fill üretilmez;
@@ -518,12 +541,36 @@ class HistoricalReplay:
                                               "decision": d.to_dict(include_reports=False), "run_id": self.run_id, "in_test": in_test})
                     self.result.n_opened += 1
                     state = self._portfolio_state(marks_f, now)                       # aynı adımda sonraki aday güncel durumu görür
+            # ORTAK YAPI YÖNETİMİ (canlıyla aynı): girişten SONRA teyitli karşı yapı → stop sıkılaştırma. Sonraki tick
+            # bir SONRAKİ barın uçlarını kullanır: sıkılaştırmadan önceki uçlar yeni stopu geriye dönük tetiklemez.
+            if self.structures_main == "ENFORCE" and self.ledger2.positions:
+                self._structure_manage(t, marks_f)
             # sonraki barın uçlarıyla tick (bir sonraki karar anına kadar olan bar) — event-time ilerleme
             self._advance(t, now)
             if on_progress and seq % 50 == 0:
                 on_progress({"t": iso(now), "decisions": self.result.n_decisions, "opened": self.result.n_opened, "closed": len(self.result.trades)})
         self._finish(wf)
         return self.result
+
+    def _structure_manage(self, t: int, marks_f: dict) -> None:
+        from ..structures.bots import compact, main_hold_decision
+        from ..structures.policy import ACT_TIGHTEN, tightened_stop
+        _mk = "USDM_PERP" if self.market == "futures" else "SPOT"
+        for sym, pos in list(self.ledger2.positions.items()):
+            if sym not in marks_f:
+                continue
+            dec, _ = main_hold_decision(symbol=sym, frames=self._slice(sym, t), frame_market=_mk, as_of_ms=t + tf_ms(self.tf),
+                                        position=pos, provenance={"market": _mk, "source": "replay_archive"})
+            if dec.get("action") != ACT_TIGHTEN:
+                continue
+            new = tightened_stop(pos.side.value, float(pos.stop) if pos.stop is not None else None, dec.get("primary") or {},
+                                 float(marks_f[sym]))
+            self._structure_log.append({"symbol": sym, "t": int(t), "action": dec.get("action"), "reason_code": dec.get("reason_code"),
+                                        "pattern_ids": list(dec.get("pattern_ids") or []), "new_stop": new})
+            if new is not None:
+                pos.meta["structure_stop"] = {"from": str(pos.stop) if pos.stop is not None else None, "to": str(new), "t": int(t)}
+                pos.stop = Decimal(str(new))
+                pos.features["structure_management"] = compact(dec)
 
     def _bar_open_at(self, symbol: str, when: datetime):
         """Settlement anında AÇILAN arşiv barının açılışı (önce 1h, yoksa birincil dilim); yoksa None."""

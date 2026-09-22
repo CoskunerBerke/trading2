@@ -154,8 +154,13 @@ def _clean_rows(bars) -> list[dict[str, Any]]:
     return out
 
 
-# ---------------------------------------------------------------------------- dedektorler
-def _doubles(bars, lows, highs, cfg, *, bottom: bool) -> list[dict[str, Any]]:
+# ---------------------------------------------------------------------------- dedektorler (ADAY GEOMETRI)
+# 2026-09-22 (ortak yapi katalogu): her dedektor once KIRILISTAN BAGIMSIZ bir ADAY uretir (dayanak pivotlar, tetik
+# sinir fonksiyonu, gecersizlik seviyesi, olculu hareket yuksekligi). Eski API (`detect_chart_patterns`) adaylari
+# `_first_break` ile AYNEN eski kurala gore kayda cevirir — cikti bit-bit eskisidir (regresyon testi:
+# tests/test_chart_patterns_candidates_v1.py). Ortak katalog (`tradingbot/structures`) ayni adaylari OKUR ve kendi durum
+# makinesini (FORMING/CONFIRMED/BROKEN/EXPIRED) uygular: ikinci bir dedektor YOKTUR.
+def _double_cands(bars, lows, highs, cfg, *, bottom: bool) -> list[dict[str, Any]]:
     pts = lows if bottom else highs
     out = []
     for a in range(len(pts)):
@@ -182,23 +187,34 @@ def _doubles(bars, lows, highs, cfg, *, bottom: bool) -> list[dict[str, Any]]:
                 neck = max(m["high"] for m in mid)
                 if (neck / base - 1.0) * 100.0 < cfg.min_depth_pct:
                     continue
-                j = _first_break(bars, p2["index"] + 1, lambda _j: neck, above=True)
             else:
                 neck = min(m["low"] for m in mid)
                 if (1.0 - neck / base) * 100.0 < cfg.min_depth_pct:
                     continue
-                j = _first_break(bars, p2["index"] + 1, lambda _j: neck, above=False)
-            if j is None:
-                continue
             role = "dip" if bottom else "tepe"
-            out.append(_rec(bars, DOUBLE_BOTTOM if bottom else DOUBLE_TOP, BULL if bottom else BEAR,
-                            j, p2["confirmed_at_index"], neck, p1["index"], j,
-                            anchors=[_anchor(bars, p1, role + "1"), _anchor(bars, p2, role + "2")],
-                            geometry=[_seg(bars, p1["index"], neck, j, neck, "boyun")]))
+            spread = abs(p1["level"] - p2["level"]) / max(abs(p1["level"]), abs(p2["level"]), 1e-12) * 100.0
+            out.append({"pattern": DOUBLE_BOTTOM if bottom else DOUBLE_TOP, "side": BULL if bottom else BEAR,
+                        "above": bottom, "level_at": (lambda _j, _n=neck: _n), "scan_from": p2["index"] + 1,
+                        "last_confirm_idx": p2["confirmed_at_index"], "start_idx": p1["index"],
+                        "anchors": [_anchor(bars, p1, role + "1"), _anchor(bars, p2, role + "2")],
+                        "geometry_at": (lambda j, _i=p1["index"], _n=neck: [_seg(bars, _i, _n, j, _n, "boyun")]),
+                        "invalidation": min(p1["level"], p2["level"]) if bottom else max(p1["level"], p2["level"]),
+                        "height": abs(neck - base), "quality": max(0.0, 1.0 - spread / cfg.level_tolerance_pct)})
     return out
 
 
-def _triples(bars, lows, highs, cfg, *, bottom: bool) -> list[dict[str, Any]]:
+def _doubles(bars, lows, highs, cfg, *, bottom: bool) -> list[dict[str, Any]]:
+    out = []
+    for c in _double_cands(bars, lows, highs, cfg, bottom=bottom):
+        j = _first_break(bars, c["scan_from"], c["level_at"], above=c["above"])
+        if j is None:
+            continue
+        out.append(_rec(bars, c["pattern"], c["side"], j, c["last_confirm_idx"], c["level_at"](j), c["start_idx"], j,
+                        anchors=c["anchors"], geometry=c["geometry_at"](j)))
+    return out
+
+
+def _triple_cands(bars, lows, highs, cfg, *, bottom: bool) -> list[dict[str, Any]]:
     pts = lows if bottom else highs
     out = []
     for a in range(len(pts)):
@@ -226,23 +242,34 @@ def _triples(bars, lows, highs, cfg, *, bottom: bool) -> list[dict[str, Any]]:
                     neck = max(m["high"] for m in mid)
                     if (neck / base - 1.0) * 100.0 < cfg.min_depth_pct:
                         continue
-                    j = _first_break(bars, p3["index"] + 1, lambda _j: neck, above=True)
                 else:
                     neck = min(m["low"] for m in mid)
                     if (1.0 - neck / base) * 100.0 < cfg.min_depth_pct:
                         continue
-                    j = _first_break(bars, p3["index"] + 1, lambda _j: neck, above=False)
-                if j is None:
-                    continue
                 role = "dip" if bottom else "tepe"
-                out.append(_rec(bars, TRIPLE_BOTTOM if bottom else TRIPLE_TOP, BULL if bottom else BEAR,
-                                j, p3["confirmed_at_index"], neck, p1["index"], j,
-                                anchors=[_anchor(bars, p1, role + "1"), _anchor(bars, p2, role + "2"), _anchor(bars, p3, role + "3")],
-                                geometry=[_seg(bars, p1["index"], neck, j, neck, "boyun")]))
+                spread = (max(lv) - min(lv)) / max(max(abs(x) for x in lv), 1e-12) * 100.0
+                out.append({"pattern": TRIPLE_BOTTOM if bottom else TRIPLE_TOP, "side": BULL if bottom else BEAR,
+                            "above": bottom, "level_at": (lambda _j, _n=neck: _n), "scan_from": p3["index"] + 1,
+                            "last_confirm_idx": p3["confirmed_at_index"], "start_idx": p1["index"],
+                            "anchors": [_anchor(bars, p1, role + "1"), _anchor(bars, p2, role + "2"), _anchor(bars, p3, role + "3")],
+                            "geometry_at": (lambda j, _i=p1["index"], _n=neck: [_seg(bars, _i, _n, j, _n, "boyun")]),
+                            "invalidation": min(lv) if bottom else max(lv), "height": abs(neck - base),
+                            "quality": max(0.0, 1.0 - spread / cfg.level_tolerance_pct)})
     return out
 
 
-def _head_shoulders(bars, lows, highs, cfg, *, inverse: bool) -> list[dict[str, Any]]:
+def _triples(bars, lows, highs, cfg, *, bottom: bool) -> list[dict[str, Any]]:
+    out = []
+    for c in _triple_cands(bars, lows, highs, cfg, bottom=bottom):
+        j = _first_break(bars, c["scan_from"], c["level_at"], above=c["above"])
+        if j is None:
+            continue
+        out.append(_rec(bars, c["pattern"], c["side"], j, c["last_confirm_idx"], c["level_at"](j), c["start_idx"], j,
+                        anchors=c["anchors"], geometry=c["geometry_at"](j)))
+    return out
+
+
+def _hs_cands(bars, lows, highs, cfg, *, inverse: bool) -> list[dict[str, Any]]:
     pts = lows if inverse else highs
     out = []
     for a in range(len(pts) - 2):
@@ -277,22 +304,33 @@ def _head_shoulders(bars, lows, highs, cfg, *, inverse: bool) -> list[dict[str, 
 
         def neck(j, _t1=t1, _t1i=t1i, _slope=slope):
             return _t1 + _slope * (j - _t1i)
-        j = _first_break(bars, s2["index"] + 1, neck, above=inverse)
-        if j is None:
-            continue
         troughs = [{"index": t1i, "level": t1, "side": "high" if inverse else "low"},
                    {"index": t2i, "level": t2, "side": "high" if inverse else "low"}]
-        out.append(_rec(bars, INVERSE_HEAD_AND_SHOULDERS if inverse else HEAD_AND_SHOULDERS,
-                        BULL if inverse else BEAR, j, s2["confirmed_at_index"], neck(j),
-                        s1["index"], j,
-                        anchors=[_anchor(bars, s1, "omuz1"), _anchor(bars, h, "bas"), _anchor(bars, s2, "omuz2"),
-                                 _anchor(bars, troughs[0], "boyun1"), _anchor(bars, troughs[1], "boyun2")],
-                        geometry=[_seg(bars, t1i, t1, j, neck(j), "boyun")]))
+        sdiff = abs(s1["level"] - s2["level"]) / max(abs(s1["level"]), abs(s2["level"]), 1e-12) * 100.0
+        out.append({"pattern": INVERSE_HEAD_AND_SHOULDERS if inverse else HEAD_AND_SHOULDERS, "side": BULL if inverse else BEAR,
+                    "above": inverse, "level_at": neck, "scan_from": s2["index"] + 1,
+                    "last_confirm_idx": s2["confirmed_at_index"], "start_idx": s1["index"],
+                    "anchors": [_anchor(bars, s1, "omuz1"), _anchor(bars, h, "bas"), _anchor(bars, s2, "omuz2"),
+                                _anchor(bars, troughs[0], "boyun1"), _anchor(bars, troughs[1], "boyun2")],
+                    "geometry_at": (lambda j, _t1i=t1i, _t1=t1, _neck=neck: [_seg(bars, _t1i, _t1, j, _neck(j), "boyun")]),
+                    "invalidation": s2["level"], "height": abs(neck(h["index"]) - h["level"]),
+                    "quality": max(0.0, 1.0 - sdiff / cfg.shoulder_tolerance_pct)})
     return out
 
 
-def _triangles(bars, lows, highs, cfg, *, descending: bool) -> list[dict[str, Any]]:
-    """Alcalan: duz destek (>=2 esit dip) + alcalan tepeler (>=2). Kirilis yonu tarafi belirler."""
+def _head_shoulders(bars, lows, highs, cfg, *, inverse: bool) -> list[dict[str, Any]]:
+    out = []
+    for c in _hs_cands(bars, lows, highs, cfg, inverse=inverse):
+        j = _first_break(bars, c["scan_from"], c["level_at"], above=c["above"])
+        if j is None:
+            continue
+        out.append(_rec(bars, c["pattern"], c["side"], j, c["last_confirm_idx"], c["level_at"](j), c["start_idx"], j,
+                        anchors=c["anchors"], geometry=c["geometry_at"](j)))
+    return out
+
+
+def _triangle_cands(bars, lows, highs, cfg, *, descending: bool) -> list[dict[str, Any]]:
+    """Alcalan: duz destek (>=2 esit dip) + alcalan tepeler (>=2). Kirilis yonu tarafi belirler (iki tarafli aday)."""
     flat_pts = lows if descending else highs
     slope_pts = highs if descending else lows
     step = cfg.triangle_min_step_pct / 100.0
@@ -325,7 +363,6 @@ def _triangles(bars, lows, highs, cfg, *, descending: bool) -> list[dict[str, An
                 return _q1["level"] + _slope * (j - _q1["index"])
             last_idx = max(f2["index"], q2["index"])
             last_conf = max(f2["confirmed_at_index"], q2["confirmed_at_index"])
-            j_flat = _first_break(bars, last_idx + 1, lambda _j: support, above=not descending)
 
             def line_before_apex(j, _line=line, _support=support, _desc=descending):
                 # Egimli sinir destege/dirence ulastiktan (tepe noktasi) sonra formasyon GECERSIZ:
@@ -334,28 +371,81 @@ def _triangles(bars, lows, highs, cfg, *, descending: bool) -> list[dict[str, An
                 if (_desc and lv <= _support) or ((not _desc) and lv >= _support):
                     return None
                 return lv
-            j_line = _first_break(bars, last_idx + 1, line_before_apex, above=descending)
-            cands = [(j, "flat") for j in [j_flat] if j is not None] + \
-                    [(j, "line") for j in [j_line] if j is not None]
-            if not cands:
-                continue
-            j, which = min(cands)
-            name = DESCENDING_TRIANGLE if descending else ASCENDING_TRIANGLE
-            if descending:
-                side = BEAR if which == "flat" else BULL
-            else:
-                side = BULL if which == "flat" else BEAR
-            lvl = support if which == "flat" else line(j)
-            out.append(_rec(bars, name, side, j, last_conf, lvl, f1["index"], j,
-                            anchors=[_anchor(bars, f1, "duz1"), _anchor(bars, f2, "duz2"),
-                                     _anchor(bars, q1, "egik1"), _anchor(bars, q2, "egik2")],
-                            geometry=[_seg(bars, f1["index"], support, j, support, "duz_sinir"),
-                                      _seg(bars, q1["index"], q1["level"], j, line(j), "egik_sinir")]))
+            fspread = abs(f1["level"] - f2["level"]) / max(abs(f1["level"]), abs(f2["level"]), 1e-12) * 100.0
+            out.append({"pattern": DESCENDING_TRIANGLE if descending else ASCENDING_TRIANGLE, "descending": descending,
+                        "support": support, "line": line, "line_before_apex": line_before_apex,
+                        "scan_from": last_idx + 1, "last_confirm_idx": last_conf, "start_idx": f1["index"],
+                        "anchors": [_anchor(bars, f1, "duz1"), _anchor(bars, f2, "duz2"),
+                                    _anchor(bars, q1, "egik1"), _anchor(bars, q2, "egik2")],
+                        "geometry_at": (lambda j, _f1=f1["index"], _s=support, _q1=q1, _line=line: [
+                            _seg(bars, _f1, _s, j, _s, "duz_sinir"), _seg(bars, _q1["index"], _q1["level"], j, _line(j), "egik_sinir")]),
+                        "height": abs(q1["level"] - support),
+                        "quality": max(0.0, 1.0 - fspread / cfg.level_tolerance_pct)})
     return out
 
 
-def _flags(bars, cfg, *, bull: bool) -> list[dict[str, Any]]:
+def _triangles(bars, lows, highs, cfg, *, descending: bool) -> list[dict[str, Any]]:
     out = []
+    for c in _triangle_cands(bars, lows, highs, cfg, descending=descending):
+        support, line, lba = c["support"], c["line"], c["line_before_apex"]
+        j_flat = _first_break(bars, c["scan_from"], lambda _j, _s=support: _s, above=not descending)
+        j_line = _first_break(bars, c["scan_from"], lba, above=descending)
+        cands = [(j, "flat") for j in [j_flat] if j is not None] + \
+                [(j, "line") for j in [j_line] if j is not None]
+        if not cands:
+            continue
+        j, which = min(cands)
+        name = c["pattern"]
+        if descending:
+            side = BEAR if which == "flat" else BULL
+        else:
+            side = BULL if which == "flat" else BEAR
+        lvl = support if which == "flat" else line(j)
+        out.append(_rec(bars, name, side, j, c["last_confirm_idx"], lvl, c["start_idx"], j,
+                        anchors=c["anchors"], geometry=c["geometry_at"](j)))
+    return out
+
+
+def _channel_shape(cons: list[dict[str, Any]], *, bull: bool, tol_pct: float) -> str:
+    """Konsolidasyon kanalinin SEKLI — bayrak (PARALLEL) ile flama (CONVERGING) AYNI ad altinda birlestirilmez.
+
+    Tepeler ve dipler ayri ayri en kucuk kareler dogrusuna oturtulur; her sinirin konsolidasyon boyunca TOPLAM hareketi
+    baslangic genisliginin (w0) orani olarak olculur (fiyat olceginden bagimsiz). Esik eps = 0.10 x w0:
+    CONVERGING: ust sinir eps'ten fazla iner VE alt sinir eps'ten fazla yukselir VE genislik en az %30 daralir.
+    PARALLEL: iki sinir da direkle ters yone ya da yatay (boga: ikisi de <= +eps; ayi: ikisi de >= -eps) ve genislik
+    degisimi %30'dan az. Digeri UNCLASSIFIED (bayrak SAYILMAZ). `tol_pct` imza uyumu icin tutulur."""
+    n = len(cons)
+    if n < 3:
+        return "UNCLASSIFIED"
+    xs = list(range(n))
+    mx = sum(xs) / n
+
+    def fit(ys):
+        my = sum(ys) / n
+        den = sum((x - mx) ** 2 for x in xs) or 1.0
+        s = sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / den
+        return s, my - s * mx
+    sh, ih = fit([float(b["high"]) for b in cons])
+    sl, il = fit([float(b["low"]) for b in cons])
+    w0 = ih - il
+    w1 = (ih + sh * (n - 1)) - (il + sl * (n - 1))
+    if w0 <= 0:
+        return "UNCLASSIFIED"
+    eps = 0.10 * w0
+    mh, ml = sh * (n - 1), sl * (n - 1)
+    if mh < -eps and ml > eps and w1 <= 0.7 * w0:
+        return "CONVERGING"
+    same_dir = (mh <= eps and ml <= eps) if bull else (mh >= -eps and ml >= -eps)
+    if same_dir and abs(w1 - w0) <= 0.3 * w0:
+        return "PARALLEL"
+    return "UNCLASSIFIED"
+
+
+def _flag_scan(bars, cfg, *, bull: bool) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """(eski kayitlar, katalog adaylari). Eski kayitlar bit-bit eskisidir; adaylar KIRILMIS (break_index dolu) ve
+    SURMEKTE olan (son kapanmis bara kadar kirilmamis) konsolidasyonlari, kanal sekliyle birlikte tasir."""
+    out: list[dict[str, Any]] = []
+    cands: list[dict[str, Any]] = []
     n = len(bars)
     pb = cfg.flag_pole_bars
     seen: set[int] = set()
@@ -366,7 +456,8 @@ def _flags(bars, cfg, *, bull: bool) -> list[dict[str, Any]]:
             continue
         pole_h = abs(cp - c0)
         pole_ext = max(b["high"] for b in bars[p - pb:p + 1]) if bull else min(b["low"] for b in bars[p - pb:p + 1])
-        for q in range(p + cfg.flag_min_bars, min(n - 1, p + cfg.flag_max_bars) + 1):
+        q_last = min(n - 1, p + cfg.flag_max_bars)
+        for q in range(p + cfg.flag_min_bars, q_last + 1):
             cons = bars[p + 1:q + 1]
             if bull:
                 if max(b["high"] for b in cons) > pole_ext * (1 + cfg.level_tolerance_pct / 100.0):
@@ -385,7 +476,12 @@ def _flags(bars, cfg, *, bull: bool) -> list[dict[str, Any]]:
                                     anchors=[_anchor(bars, {"index": p - pb, "level": c0, "side": "close"}, "direk_basi"),
                                              _anchor(bars, {"index": p, "level": cp, "side": "close"}, "direk_ucu")],
                                     geometry=[_seg(bars, p - pb, c0, p, cp, "direk"), _seg(bars, p + 1, boundary, j, boundary, "bayrak_siniri")]))
+                    cands.append(_flag_cand(bars, cfg, bull=True, p=p, q=q, c0=c0, cp=cp, pole_h=pole_h, cons=cons,
+                                            boundary=boundary, break_index=j))
                     break
+                if j >= n and q == n - 1:
+                    cands.append(_flag_cand(bars, cfg, bull=True, p=p, q=q, c0=c0, cp=cp, pole_h=pole_h, cons=cons,
+                                            boundary=boundary, break_index=None))
             else:
                 if min(b["low"] for b in cons) < pole_ext * (1 - cfg.level_tolerance_pct / 100.0):
                     break
@@ -403,8 +499,33 @@ def _flags(bars, cfg, *, bull: bool) -> list[dict[str, Any]]:
                                     anchors=[_anchor(bars, {"index": p - pb, "level": c0, "side": "close"}, "direk_basi"),
                                              _anchor(bars, {"index": p, "level": cp, "side": "close"}, "direk_ucu")],
                                     geometry=[_seg(bars, p - pb, c0, p, cp, "direk"), _seg(bars, p + 1, boundary, j, boundary, "bayrak_siniri")]))
+                    cands.append(_flag_cand(bars, cfg, bull=False, p=p, q=q, c0=c0, cp=cp, pole_h=pole_h, cons=cons,
+                                            boundary=boundary, break_index=j))
                     break
-    return out
+                if j >= n and q == n - 1:
+                    cands.append(_flag_cand(bars, cfg, bull=False, p=p, q=q, c0=c0, cp=cp, pole_h=pole_h, cons=cons,
+                                            boundary=boundary, break_index=None))
+    return out, cands
+
+
+def _flag_cand(bars, cfg, *, bull: bool, p: int, q: int, c0: float, cp: float, pole_h: float,
+               cons: list[dict[str, Any]], boundary: float, break_index: int | None) -> dict[str, Any]:
+    shape = _channel_shape(cons, bull=bull, tol_pct=cfg.level_tolerance_pct)
+    inv = min(b["low"] for b in cons) if bull else max(b["high"] for b in cons)
+    retr = (cp - min(b["low"] for b in cons)) / pole_h if (bull and pole_h > 0) else \
+        ((max(b["high"] for b in cons) - cp) / pole_h if pole_h > 0 else 1.0)
+    return {"pattern": BULL_FLAG if bull else BEAR_FLAG, "side": BULL if bull else BEAR, "above": bull,
+            "level_at": (lambda _j, _b=boundary: _b), "scan_from": q + 1, "last_confirm_idx": q, "start_idx": p - cfg.flag_pole_bars,
+            "anchors": [_anchor(bars, {"index": p - cfg.flag_pole_bars, "level": c0, "side": "close"}, "direk_basi"),
+                        _anchor(bars, {"index": p, "level": cp, "side": "close"}, "direk_ucu")],
+            "geometry_at": (lambda j, _p=p, _c0=c0, _cp=cp, _b=boundary: [
+                _seg(bars, _p - cfg.flag_pole_bars, _c0, _p, _cp, "direk"), _seg(bars, _p + 1, _b, j, _b, "bayrak_siniri")]),
+            "invalidation": inv, "height": pole_h, "channel": shape, "consolidation_bars": len(cons),
+            "break_index": break_index, "quality": max(0.0, 1.0 - max(0.0, retr) / cfg.flag_max_retrace)}
+
+
+def _flags(bars, cfg, *, bull: bool) -> list[dict[str, Any]]:
+    return _flag_scan(bars, cfg, bull=bull)[0]
 
 
 # ---------------------------------------------------------------------------- giris noktasi
@@ -436,6 +557,42 @@ def detect_chart_patterns(bars: list[dict[str, Any]], cfg: ChartPatternConfig | 
     return out
 
 
+
+# ---------------------------------------------------------------------------- ortak katalog girdisi (2026-09-22)
+def structure_candidates(bars: list[dict[str, Any]], cfg: ChartPatternConfig | None = None) -> dict[str, Any]:
+    """Ortak yapi katalogunun (`tradingbot/structures`) okudugu GEOMETRI: kirilmis ya da kirilmamis her aday.
+
+    Esikler ve pivot teyidi `detect_chart_patterns` ile AYNIDIR (ayni aday uretecleri). Donus: `rows` (taranan kapanmis
+    barlar, indeksler buna gore), `candidates` (her biri: pattern, side|None, tetik sinir fonksiyon(lar)i, gecersizlik,
+    olculu hareket yuksekligi, dayanak pivotlar, geometri fonksiyonu, kalite) ve yetersiz veride `reason`. Durum
+    (FORMING/CONFIRMED/BROKEN/EXPIRED) BURADA verilmez: katalogun durum makinesi kapanislarla uygular."""
+    cfg = cfg or ChartPatternConfig()
+    rows = _clean_rows(bars)[-cfg.scan_bars:]
+    out: dict[str, Any] = {"schema_version": SCHEMA_VERSION, "policy_version": cfg.policy_version,
+                           "config_id": cfg.config_id, "rows": rows, "candidates": []}
+    need = 2 * cfg.swing_lookback + cfg.min_separation_bars + 2
+    if len(rows) < need:
+        out["reason"] = "NOT_ENOUGH_BARS"
+        out["need"] = need
+        return out
+    sw = confirmed_swings(rows, lookback=cfg.swing_lookback)
+    lows, highs = sw["lows"], sw["highs"]
+    c: list[dict[str, Any]] = []
+    c += _double_cands(rows, lows, highs, cfg, bottom=True)
+    c += _double_cands(rows, lows, highs, cfg, bottom=False)
+    c += _triple_cands(rows, lows, highs, cfg, bottom=True)
+    c += _triple_cands(rows, lows, highs, cfg, bottom=False)
+    c += _hs_cands(rows, lows, highs, cfg, inverse=True)
+    c += _hs_cands(rows, lows, highs, cfg, inverse=False)
+    c += _triangle_cands(rows, lows, highs, cfg, descending=True)
+    c += _triangle_cands(rows, lows, highs, cfg, descending=False)
+    c += _flag_scan(rows, cfg, bull=True)[1]
+    c += _flag_scan(rows, cfg, bull=False)[1]
+    out["candidates"] = c
+    out["swings"] = sw
+    return out
+
+
 def fresh_patterns(det: dict[str, Any], within: int) -> list[dict[str, Any]]:
     return [p for p in (det.get("patterns") or []) if int(p.get("bars_since", 10**9)) <= within]
 
@@ -450,7 +607,7 @@ def fresh_side(pats: list[dict[str, Any]]) -> str | None:
 
 
 __all__ = ["SCHEMA_VERSION", "ALL_PATTERNS", "BULL", "BEAR", "CONFIRMED", "ChartPatternConfig",
-           "detect_chart_patterns", "fresh_patterns", "fresh_side",
+           "detect_chart_patterns", "fresh_patterns", "fresh_side", "structure_candidates",
            "DOUBLE_BOTTOM", "DOUBLE_TOP", "TRIPLE_BOTTOM", "TRIPLE_TOP",
            "INVERSE_HEAD_AND_SHOULDERS", "HEAD_AND_SHOULDERS", "DESCENDING_TRIANGLE",
            "ASCENDING_TRIANGLE", "BULL_FLAG", "BEAR_FLAG"]

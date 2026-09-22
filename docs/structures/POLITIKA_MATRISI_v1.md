@@ -30,10 +30,13 @@ Botun **niyetli yönü** (kuralın/konsensüsün yönü) sabittir; yapı bu yön
 1. Analiz hesaplanamıyor (bar yetersiz / veri kimliği) → **ETKİSİZ** (gerekçe kodu: hangi dilim, kaç bar gerekiyordu).
 2. Değerlendirilen dilimlerden birinde **taze teyitli KARŞI** yapı → **BEKLE** (`OPPOSING_CONFIRMED`).
 3. Karar diliminde son 2 bar içinde **BOZULMUŞ uyumlu** yapı → **BEKLE/PLAN İPTALİ** (`COMPATIBLE_BROKEN`).
-4. Karar diliminde **FORMING uyumlu** yapı → **TETİĞİ BEKLE** (`WAIT_TRIGGER`; tetik/geçersizlik/son kullanma kayıtta).
-5. Karar diliminde **taze teyitli uyumlu** yapı → **GİRİŞ ADAYI** (teyit kapanışından sonraki ilk doğrulanmış fiyat;
-   fiyat tetikten `chase` × ATR'den uzaksa **İPTAL** `CHASE_LIMIT`).
+4. Karar diliminde **taze teyitli uyumlu** yapı → **GİRİŞ ADAYI** (teyit kapanışından sonraki ilk doğrulanmış fiyat;
+   fiyat tetikten 1.0 × ATR14'ten uzaksa **İPTAL** `CHASE_LIMIT`).
+5. Karar diliminde **FORMING uyumlu** yapı → **TETİĞİ BEKLE** (`WAIT_TRIGGER`; tetik/geçersizlik/son kullanma kayıtta).
 6. Hiçbiri → **ETKİSİZ** (`NO_STRUCTURE`): botun kendi kuralı aynen geçerli.
+
+(Uygulamadan önce düzeltildi: ilk taslakta 4 ile 5 ters sıradaydı; teyitli uyumlu yapı varken başka bir oluşan yapı
+yüzünden beklemek kuralın amacına ters düşüyordu. Hiçbir sonuç görülmeden, politika kodu yazılmadan değiştirildi.)
 
 Aynı yapı (aynı `pattern_id`) bir defterde **bir kez** giriş üretir (yeniden tarama/yeniden başlatma ikinci işlem açmaz).
 

@@ -77,8 +77,14 @@ def test_scheduler_binds_funding_on_both_ledger_call_paths(fonksiyon):
 
 def test_pattern_book_never_estimates_an_unknown_funding_rate():
     """Bilinmeyen oran TAHMİNLE doldurulmaz (`fallback_to_last_known=False`) — bilinmeyen dönem BEKLER."""
+    # 2026-09-22: bağlama tek yerde (`FundingSchedule.bind_source`) — beş defter aynı kuralı kullanır.
+    from tradingbot.accounting.funding import FundingSchedule
     src = inspect.getsource(pbook.PatternBook.bind_funding)
-    assert "fallback_to_last_known = False" in src
+    assert "bind_source(" in src
+    assert "self.fallback_to_last_known = False" in inspect.getsource(FundingSchedule.bind_source)
+    sch = FundingSchedule()
+    sch.bind_source(type("Src", (), {"hours_for": lambda self, s: (0, 8, 16)})())
+    assert sch.fallback_to_last_known is False and sch.hours_for("X/USDT") == (0, 8, 16)
 
 
 # ---------------------------------------------------------------- BULGU 4: süre kontrolü TEK tanım, girişin başında
@@ -175,7 +181,10 @@ def test_funding_coverage_makes_no_provider_call():
     body = inspect.getsource(pbook.PatternBook.funding_coverage).split('"""', 2)[-1]
     # Saatler ÇAĞRIYLA gelir; `hours_for` yalnız eski (alan taşımayan) kayıtlar için geri düşüştür.
     assert "hours_utc is not None else" in body, body[:300]
-    assert "applied_settlements" in body, "gerçekten uygulanan settlement'lar sayılmalı"
+    # 2026-09-22: sayım ortak `accounting.funding.funding_coverage`ta (beş defter aynı kapsama tanımı)
+    from tradingbot.accounting import funding as af
+    assert "funding_coverage(" in body
+    assert "applied_settlements" in inspect.getsource(af.funding_coverage), "gerçekten uygulanan settlement'lar sayılmalı"
     # `_on_closed` kaydın KENDİ alanlarını geçirir: kapanış yolunda saat çözümü AĞA çıkmaz.
     closed = inspect.getsource(pbook.PatternBook._on_closed)
     assert 'hours_utc=f.get("funding_hours_utc")' in closed and 'settled_ts=f.get("funding_settled_ts")' in closed

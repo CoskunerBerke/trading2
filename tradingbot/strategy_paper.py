@@ -22,6 +22,7 @@ from typing import Any, Callable
 
 from .accounting import (AmountType, FeeSchedule, FuturesLedgerV2, LiquidationParams, MarketType, SizeSpec,
                          SlippageModel, TaxPolicy, TickData, default_brackets)
+from .accounting.funding import FUNDING_SETTLEMENT_CONTRACT
 from .candle_confirmation import closed_bars
 from .core import atomic_write_json, from_iso, iso, utc_now
 from .learn import TradeMemory
@@ -481,6 +482,8 @@ class StrategyBook:
         self.data_checks: dict[str, dict[str, Any]] = {}
         self.data_gaps: dict[str, dict[str, Any]] = {}
         self.data_events: list[dict[str, Any]] = []
+        #: Gerçekleşmiş funding kaynağı (`bind_funding`); None iken dönemler BEKLER (bekleyen maliyet, tahmin yok).
+        self.funding_rates: Any = None
         self._restore_counters()
 
     def _restore_counters(self) -> None:
@@ -558,10 +561,47 @@ class StrategyBook:
                 self._data_event(sym, "PRICE_RESTORED", "", now)
                 self.data_gaps.pop(sym, None)
 
+    # ------------------------------------------------------------------ funding (2026-09-22, funding_settlement_v2)
+    def bind_funding(self, rates: Any) -> None:
+        """Gerçekleşmiş settlement kaynağını (oran + settlement mark'ı) deftere BAĞLAR — formasyon defteriyle AYNI
+        kural (`FundingSchedule.bind_source`): sözleşmenin kendi aralığı, bilinmeyen dönem BEKLER (tahmin yok)."""
+        self.funding_rates = rates
+        self.ledger.funding.bind_source(rates)
+
+    def reconcile_funding(self, now: datetime) -> list[dict]:
+        """Kapanmış işlemlerin BEKLEYEN funding'ini, veri bellekte bulununca deftere işler (AĞ YOK; ağ adımı motorun
+        `_funding_step`i). Defter + işlem kaydı + özet satırı AYNI anda güncellenir; yinelenmezlik kayıttaki
+        `funding_settled_ts`dir. Bkz. `FuturesLedgerV2.settle_late_funding`."""
+        rates = getattr(self, "funding_rates", None)
+        if rates is None:
+            return []
+        with self.lock:
+            posted = self.ledger.settle_late_funding(rates, now=now, hours_for=getattr(rates, "hours_for", None))
+            if not posted:
+                return []
+            touched = {p["trade_id"] for p in posted}
+            for rec in self.ledger.history:
+                if rec.id not in touched:
+                    continue
+                cov = (rec.features or {}).get("funding_coverage") or {}
+                for row in self.closed_recent:
+                    if row.get("id") == rec.id:
+                        row.update({"net_pnl": float(rec.net_pnl), "r": float(rec.r_multiple), "funding": float(rec.funding),
+                                    "funding_late": True, "funding_complete": cov.get("complete")})
+            for p in posted:
+                self._data_event(p["symbol"], "FUNDING_LATE_POSTED", "SETTLEMENT_" + p["settlement"], now,
+                                 trade_id=p["trade_id"], amount=p["amount"], rate=p["rate"], mark=p["mark"], qty=p["qty"])
+            self.ledger.save(self.ledger_path)
+            return posted
+
     def _on_closed(self, rec) -> None:
         self.counters["closed"] += 1
         d = rec.to_legacy_dict() if hasattr(rec, "to_legacy_dict") else {}
+        _cov = ((d.get("features") or {}).get("funding_coverage") or {})
         self.closed_recent.append({"id": getattr(rec, "id", None), "symbol": getattr(rec, "symbol", None),
+                                   "funding": float(getattr(rec, "funding", 0) or 0),
+                                   # funding HENÜZ mutabık değilse net sonuç kesin DEĞİLDİR (bekleyen maliyet)
+                                   "funding_complete": _cov.get("complete"),
                                    "exit_reason": getattr(rec, "exit_reason", None),
                                    "net_pnl": float(getattr(rec, "net_pnl", 0) or 0), "r": float(getattr(rec, "r_multiple", 0) or 0),
                                    "closed_at": getattr(rec, "closed_at", None), "features": d.get("features"),
@@ -764,6 +804,13 @@ class StrategyBook:
                                      "opened_at": p.opened_at, "last_price": float(p.last_price) if p.last_price else None}
                                  for s, p in self.ledger.positions.items()},
                    "history_tail": self.ledger.history_dicts()[-50:],
+                   # FUNDING (2026-09-22): kaynak ve bekleyen dönemler — mutabık olmayan funding AYRI durum olarak görünür
+                   "funding": {"contract": FUNDING_SETTLEMENT_CONTRACT,
+                               "source": "settlement_source" if getattr(self, "funding_rates", None) is not None else "none",
+                               "pending_positions": {s: dict(p.features.get("funding_pending") or {})
+                                                     for s, p in self.ledger.positions.items() if p.features.get("funding_pending")},
+                               "incomplete_closed": [h.id for h in self.ledger.history[-200:]
+                                                     if ((h.features or {}).get("funding_coverage") or {}).get("complete") is False]},
                    "last_actions": self.last_actions, "counters": dict(self.counters),
                    "rejections": dict(self.rejections), "closed_recent": self.closed_recent[-20:],
                    # VERİ KAYNAĞI (2026-09-16): bu turun sembol hükümleri, fiyat boşlukları, son olaylar (yeniden başlatmada korunur)

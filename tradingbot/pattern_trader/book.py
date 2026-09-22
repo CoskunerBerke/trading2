@@ -200,9 +200,7 @@ class PatternBook:
         takvimine geçer ve bilinmeyen oran TAHMİNLE doldurulmaz (`fallback_to_last_known=False`) — bilinmeyen dönem
         BEKLER, sıfır maliyet olarak net performansa girmez."""
         self.funding_rates = rates
-        sch = self.ledger.funding
-        sch.hours_for_symbol = rates.hours_for if hasattr(rates, "hours_for") else None
-        sch.fallback_to_last_known = False
+        self.ledger.funding.bind_source(rates)
 
     def pending_funding_symbols(self, window: int = 200) -> list[str]:
         """Açık pozisyonlar + funding kapsaması EKSİK kapanmış işlemlerin sembolleri (`refresh`in çekeceği liste)."""
@@ -222,8 +220,8 @@ class PatternBook:
         if rates is None:
             return []
         with self.lock:
-            posted = self.ledger.settle_late_funding(rates.lookup, now=now, mark_for=getattr(rates, "settlement_mark", None),
-                                                     hours_for=getattr(rates, "hours_for", None))
+            # Kaynak NESNESİ verilir (oran + settlement mark'ı + dayanağı): açık pozisyon tahakkukuyla AYNI sözleşme.
+            posted = self.ledger.settle_late_funding(rates, now=now, hours_for=getattr(rates, "hours_for", None))
             if not posted:
                 return []
             touched = {p["trade_id"] for p in posted}
@@ -259,31 +257,11 @@ class PatternBook:
 
         `settled` GERÇEKTEN uygulanan dönemlerden sayılır; yoksa watermark'tan türetilir (eski kayıtlar için).
         `complete=False` ise o işlemin funding maliyeti ÖLÇÜLMEMİŞTİR — sıfır sanılmamalıdır."""
-        from ..core import from_iso, funding_settlements_between
+        from ..accounting.funding import funding_coverage
         hours = tuple(hours_utc) if hours_utc is not None else self.ledger.funding.hours_for(symbol)
-        out: dict[str, Any] = {"interval_known": bool(hours), "hours_utc": list(hours), "settled_until": settled_until,
-                               "rate_source": "lookup" if getattr(self, "funding_rates", None) is not None else "none"}
-        if not hours:
-            return {**out, "due": None, "settled": None, "missing": None, "complete": False, "reason": "INTERVAL_UNKNOWN"}
-        try:
-            o, u = from_iso(str(opened_at)), from_iso(str(until))
-        except (ValueError, TypeError):
-            return {**out, "due": None, "settled": None, "missing": None, "complete": False, "reason": "TIME_UNREADABLE"}
-        due_ts = funding_settlements_between(o, u, hours)
-        if isinstance(settled_ts, list):
-            applied = {str(t) for t in settled_ts}
-            settled = sum(1 for t in due_ts if iso(t) in applied)
-            out["source"] = "applied_settlements"
-        else:                                             # eski kayıt: yalnız watermark var (alt sınır)
-            try:
-                w = from_iso(str(settled_until)) if settled_until else o
-            except (ValueError, TypeError):
-                return {**out, "due": len(due_ts), "settled": None, "missing": None, "complete": False, "reason": "TIME_UNREADABLE"}
-            settled = len(funding_settlements_between(o, w, hours))
-            out["source"] = "watermark"
-        missing = max(0, len(due_ts) - settled)
-        return {**out, "due": len(due_ts), "settled": settled, "missing": missing, "complete": missing == 0,
-                "reason": "" if missing == 0 else "RATES_MISSING"}
+        return funding_coverage(opened_at=opened_at, until=until, settled_until=settled_until, hours_utc=hours,
+                                settled_ts=settled_ts,
+                                rate_source="lookup" if getattr(self, "funding_rates", None) is not None else "none")
 
     def _on_closed(self, rec) -> None:
         self.counters["closed"] += 1

@@ -21,7 +21,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 from .accounting import (AmountType, FeeSchedule, FiltersCache, FuturesLedgerV2, LiquidationParams, MarketType, Side, SizeSpec,
-                         SlippageModel, SpotLedger, TaxPolicy, TickData, default_brackets, static_rates)
+                         SlippageModel, SpotLedger, TaxPolicy, TickData, default_brackets)
 from .agents.manager import CoinBrief
 from .coinhead import ChiefPortfolioManager, CoinHeadConfig, CoinHeadInputs, CoinHeadRegistry, Verdict
 from .config import BotConfig
@@ -189,6 +189,19 @@ class TradingEngineV3(TradingEngine):
         self._gap_checked = False                              # süreç başına bir kez offline-gap uzlaştırması
         self._gap_blocked = False                              # GAP_AMBIGUOUS → yeni giriş yok (çıkışlar sürer)
         self._gap_provider_factory = None                      # test enjeksiyonu; None → gerçek USDⓈ-M public provider
+        # GERÇEKLEŞMİŞ FUNDING KAYNAĞI (2026-09-22, funding_settlement_v2): beş futures defteri (ana bot, T2, M2, Box,
+        # formasyon) TEK kaynağı paylaşır — settlement satırının oranı ve KENDİ mark'ı. Anlık `funding_pct` metriği
+        # geçmiş settlement'lara artık UYGULANMAZ (REVIEW-2026-09-22 §8). Ağ yalnız tur adımında (`_funding_step`) ve
+        # formasyon tarayıcısında (`funding_step`); defter tick'i ve 60 sn çıkış izleyicisi yalnız bellekten okur.
+        # Kaynak kapalıysa (config) dönemler BEKLER: bekleyen maliyet görünür, tahmin yazılmaz.
+        self.funding_rates = None
+        self._funding_status: dict = {}
+        if bool(getattr(v3.futures_v3, "realized_funding_source", False)):
+            from .pattern_trader.funding import FundingRates, LazyProvider
+            self.funding_rates = FundingRates(LazyProvider(self._futures_provider_factory))
+            self.ledger2.funding.bind_source(self.funding_rates)
+        else:
+            self.ledger2.funding.fallback_to_last_known = False
         if self.ledger2.positions:
             log.info("resume: %d açık futures pozisyonu (%s) · defter güncelleme %s",
                      len(self.ledger2.positions), ", ".join(sorted(self.ledger2.positions)), self.ledger2.updated_at or "-")
@@ -257,6 +270,10 @@ class TradingEngineV3(TradingEngine):
         for _spec in book_specs(v3):
             _book = StrategyBook(cfg, profile=self.profile, killswitch=self.killswitch,
                                  filters_cache=self.filters, run_id="", spec=_spec)   # run_id turda atanir
+            if self.funding_rates is not None:
+                _book.bind_funding(self.funding_rates)
+            else:
+                _book.ledger.funding.fallback_to_last_known = False
             self.strategy_books.append(_book)
             log.info("STRATEJI KAGIT DEFTERI: name=%s atr_mult=%s baslangic=%s USDT state=%s",
                      _book.name, _book.atr_mult, float(_book.ledger.starting_equity), _book.state_dir)
@@ -848,7 +865,8 @@ class TradingEngineV3(TradingEngine):
             if not marks:
                 return []
             now = utc_now()
-            records = self.ledger2.tick(marks, now_utc=now, bar_advance=False)
+            # Funding: kaynak YALNIZ bellekten okunur (ağ yok); bilinmeyen dönem bekler, stop kontrolü beklemez.
+            records = self.ledger2.tick(marks, now_utc=now, funding_rate_lookup=self.funding_rates, bar_advance=False)
             self.ledger2.save(self.ledger_path)
             from .ops.gap import write_watermark
             write_watermark(self.cfg.state_path, now, self.run_id or None)
@@ -1289,16 +1307,16 @@ class TradingEngineV3(TradingEngine):
                 if sym in marks:
                     marks[sym] = TickData(last=marks[sym].last, mark=marks[sym].mark, ts=marks[sym].ts)
         # 5) İZLE: tick (bar_advance yeni 4h bar kapanışında)
-        funding = {}
-        for b in briefs:
-            mk = next((r for r in b.reports if r.agent == "market"), None)
-            if mk and "funding_pct" in mk.metrics:
-                funding[b.symbol] = Decimal(str(mk.metrics["funding_pct"])) / Decimal(100)
+        # FUNDING (2026-09-22): önce AĞ adımı (defter kilidi dışında) — gerçekleşmiş settlement satırları çekilir ve
+        # kapanmış işlemlerin bekleyen funding'i uzlaştırılır; sonra tick YALNIZ bellekten okur. Anlık `funding_pct`
+        # (tahmin) geçmiş settlement'a UYGULANMAZ; `funding` sözlüğü yalnız strateji turunun imzasında kalır.
+        funding: dict = {}
+        self._funding_step(now)
         cur_bar = max((b.last_bar_4h for b in briefs if b.last_bar_4h), default="")
         bar_advance = bool(cur_bar and cur_bar != self.last_bar_seen)
         if cur_bar:
             self.last_bar_seen = cur_bar
-        records = self.ledger2.tick(marks, now_utc=now, funding_rate_lookup=static_rates(funding), bar_advance=bar_advance)
+        records = self.ledger2.tick(marks, now_utc=now, funding_rate_lookup=self.funding_rates, bar_advance=bar_advance)
         # 6) KAYIT SIRASI: önce defter, sonra öğrenme (crash penceresinde çift öğrenme olmasın)
         self.ledger2.save(self.ledger_path)
         # 6b) STRATEJİ KÂĞIT DEFTERİ (V10): ana defterden SONRA, aynı marks/funding/bar ilerlemesiyle.
@@ -2291,6 +2309,42 @@ class TradingEngineV3(TradingEngine):
             out.extend(list(b.ledger.positions))
         return list(dict.fromkeys(out))
 
+    #: Tur içi funding ağ adımının süre bütçesi (sn): aşılınca kalan semboller bir sonraki tura kalır (dönemleri bekler).
+    FUNDING_REFRESH_BUDGET_S = 20.0
+
+    def _funding_step(self, now: datetime) -> dict:
+        """AĞ adımı (2026-09-22): gerçekleşmiş funding satırlarını çek + kapanmış işlemlerin bekleyen funding'ini
+        uzlaştır (ana bot + strateji defterleri; formasyon defteri kendi tarayıcı adımında). Defter kilidi TUTULMAZ,
+        60 sn çıkış izleyicisi bunu ÇAĞIRMAZ. Futures pozisyonu ya da bekleyen işlem yoksa ağa çıkılmaz. Spot defteri
+        (`spot2`) funding'e dahil DEĞİLDİR. Arıza turu durdurmaz: dönemler bekler."""
+        fr = getattr(self, "funding_rates", None)
+        if fr is None:
+            return {}
+        books = list(getattr(self, "strategy_books", None) or [])
+        syms = list(dict.fromkeys(self.ledger2.funding_pending_symbols()
+                                  + [s for b in books for s in b.ledger.funding_pending_symbols()]))
+        out: dict = {"symbols": len(syms)}
+        if syms or fr.pending():
+            try:
+                out["refresh"] = fr.refresh(syms, budget_s=self.FUNDING_REFRESH_BUDGET_S)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("funding verisi tazelenemedi (tur sürer, dönemler bekler): %s", exc)
+        try:
+            posted = self.ledger2.settle_late_funding(fr, now=now, hours_for=fr.hours_for)
+            if posted:
+                self.ledger2.save(self.ledger_path)
+                log.info("ana defter: %d geç funding settlement işlendi", len(posted))
+            out["late_main"] = len(posted)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("ana defter geç funding uzlaştırması başarısız: %s", exc)
+        for b in books:
+            try:
+                out["late_" + b.key] = len(b.reconcile_funding(now))
+            except Exception as exc:  # noqa: BLE001
+                log.warning("strateji defteri geç funding uzlaştırması başarısız (%s): %s", b.key, exc)
+        self._funding_status = out
+        return out
+
     def _strategy_paper_tour(self, symbols, marks: dict, marks_f: dict, funding: dict, bar_advance: bool, now: datetime) -> None:
         """Tek kurallı stratejinin turu: kural → ayrı defter → tick → özet. Arıza ana turu DURDURMAZ."""
         books = list(getattr(self, "strategy_books", None) or [])
@@ -2325,9 +2379,10 @@ class TradingEngineV3(TradingEngine):
                 # 2) gecmis OHLC: kapanmis 1h barlarin uclari — yalniz pozisyon acilisindan SONRA acilmis, tuketilmemis barlar
                 #    (bu adimda acilan pozisyon icin hicbir bar uygun degildir: giris oncesi fitil yeni pozisyonu stop'lamaz;
                 #    stop sonrasi ayni turda yeniden giris de olmaz — kural bir sonraki turda yeniden degerlendirir)
-                book.apply_closed_bars(pbars, now=tick_now, funding_rate_lookup=static_rates(funding))
+                book.apply_closed_bars(pbars, now=tick_now, funding_rate_lookup=self.funding_rates)
                 # 3) canli fiyat kontrolu (fiyat-yalniz; bar_advance ana turun 4h bar ilerlemesi)
-                book.tick(pmarks, now=tick_now, funding_rate_lookup=static_rates(funding), bar_advance=bar_advance)
+                # Funding: gerceklesmis oran + settlement mark kaynagi (bellek); anlik oran gecmise UYGULANMAZ.
+                book.tick(pmarks, now=tick_now, funding_rate_lookup=self.funding_rates, bar_advance=bar_advance)
                 book.save(pmarks_f, tick_now)
                 index.append({"key": book.key, "name": book.name, "summary_file": book.summary_file})
             except Exception as exc:  # noqa: BLE001 — bir defterin arızası ne ana botu ne diğer defteri ETKİLER
@@ -2472,6 +2527,7 @@ class TradingEngineV3(TradingEngine):
         feed = self._pattern_feed()
         sc = PatternScanner(book=self.pattern_book, data=DataService(feed), price=PriceService(provider, feed),
                             universe_provider=provider, state_path=self.cfg.state_path,
+                            funding=getattr(self, "funding_rates", None),     # beş defter TEK funding kaynağı
                             min_quote_volume_24h=float(pt.min_quote_volume_24h), max_spread_pct=float(pt.max_spread_pct),
                             max_symbols_per_cycle=int(pt.max_symbols_per_cycle), universe_refresh_minutes=float(pt.universe_refresh_minutes),
                             cycle_seconds=float(pt.scan_seconds), run_id=lambda: str(getattr(self, "run_id", "") or ""))
@@ -2530,7 +2586,7 @@ class TradingEngineV3(TradingEngine):
                 marks, marks_f, gaps = self._paper_marks(list(book.ledger.positions), now=now)
                 book.record_gaps(gaps, now)                  # bosluk acilis/kapanis olaylari (durum/gerekce degisince bir kez)
                 if marks:
-                    book.tick(marks, now=now, bar_advance=False)
+                    book.tick(marks, now=now, funding_rate_lookup=self.funding_rates, bar_advance=False)
                 book.save(marks_f, now)
             except Exception as exc:  # noqa: BLE001
                 log.warning("strateji kagit defteri exit-monitor basarisiz (%s): %s", book.key, exc)

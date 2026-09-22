@@ -268,9 +268,11 @@ def test_control_unknown_rate_is_never_silently_charged_and_never_marked_settled
 
 
 # ====================================================================== KARŞI ÖRNEK 3: ana bot ile formasyon defteri arasındaki fark
-def test_control_main_engine_binds_funding_but_pattern_scheduler_does_not(tmp_path: Path):
-    """KONTROL/SINIR: ana bot (`engine_v3`) defter çağrılarına `static_rates(...)` geçirir; formasyon tarayıcısı
-    geçirmez. Bu kapı farkın YERİNİ sabitler — onarım `scheduler.py`'deki iki çağrıya lookup eklemekle kapanır."""
+def test_control_main_engine_and_pattern_scheduler_bind_the_same_realized_source(tmp_path: Path):
+    """KONTROL/SINIR (2026-09-22 güncellendi): eskiden ana bot (`engine_v3`) defter çağrılarına `static_rates(...)`
+    (anlık oranı HER geçmiş settlement'a uygulayan yalnız-oran lookup) geçiriyordu — REVIEW-2026-09-22 §8. Artık ana
+    bot, T2/M2/Box ve formasyon defteri AYNI gerçekleşmiş kaynağı (oran + settlement mark) verir; `static_rates`
+    üretim modüllerinde çağrılmaz. Bu kapı çağrı yerlerini ve kaynağı sabitler."""
     import inspect
 
     from tradingbot import engine_v3
@@ -278,10 +280,10 @@ def test_control_main_engine_binds_funding_but_pattern_scheduler_does_not(tmp_pa
 
     eng_src = inspect.getsource(engine_v3)
     sch_src = inspect.getsource(pt_scheduler)
-    assert "funding_rate_lookup=static_rates(" in eng_src, "ana bot funding oranını defterine BAĞLAR"
+    assert "static_rates(" not in eng_src, "ana bot anlık oranı geçmiş settlement'lara UYGULAMAMALI"
+    assert eng_src.count("funding_rate_lookup=self.funding_rates") >= 5, "ana defter/strateji defteri çağrıları kaynağı vermeli"
     assert "book.apply_closed_bars(" in sch_src and "book.tick(" in sch_src, "üretim çağrı yolları burada"
-    # NOT: bu satır bugünkü kusuru belgeler; onarımdan sonra da anlamlı kalması için kusur kanıtı
-    # test_defect_* kapılarında tutulur — burada yalnız çağrı yerlerinin varlığı sabitlenir.
+    assert "funding_rate_lookup=self.funding)" in sch_src and "funding_rate_lookup=self.funding," in sch_src
 
 
 # ====================================================================== SÖZLEŞME ARALIĞI: 8 saat VARSAYILMAZ

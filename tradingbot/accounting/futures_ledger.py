@@ -25,7 +25,16 @@ from typing import Any, Iterable, Mapping
 from ..core import D, ZERO, StorageError, atomic_write_json, iso, quantize_price, quantize_qty, read_json, utc_now
 from .fees import FeeSchedule
 from .filters import LeverageBracket, bracket_for, default_filters
-from .funding import FundingSchedule, RateLookup
+from .funding import (
+    FUNDING_SETTLEMENT_CONTRACT,
+    FundingSchedule,
+    RateLookup,
+    funding_coverage,
+    has_settlement_marks,
+    qty_open_at,
+    settlement_amount,
+    settlement_mark,
+)
 from .liquidation import LiquidationParams, is_liquidated, liquidation_outcome, liquidation_price
 from .models import (
     SCHEMA_VERSION,
@@ -89,6 +98,24 @@ def _side(x) -> PositionSide:
 
 
 DEFAULT_MAX_POSITIONS = 3          # JSON'a yazılan geriye uyumlu varsayılan (asla `null` değil)
+
+#: Kayıtta tutulan settlement ayrıntısı sayısı (panel/uzlaştırma kanıtı; yinelenmezlik bundan DEĞİL watermark'tan).
+FUNDING_SETTLEMENTS_KEEP = 64
+
+
+def _rate_source_label(lookup) -> str:
+    """Kayda yazılan funding kaynağı etiketi: gerçekleşmiş oran+settlement mark'ı / yalnız oran (eski) / yok."""
+    if lookup is None:
+        return "none"
+    return "settlement_source" if has_settlement_marks(lookup) else "rate_only"
+
+
+def _note_settlement(features: dict, item: dict) -> None:
+    """İşlenen settlement'ın ayrıntısı (tutar, oran, mark, miktar ve dayanakları) kayda — açık ve geç yol AYNI biçim."""
+    rows = features.get("funding_settlements")
+    rows = list(rows) if isinstance(rows, list) else []
+    rows.append(item)
+    features["funding_settlements"] = rows[-FUNDING_SETTLEMENTS_KEEP:]
 
 
 #: ÇIKIŞ DOLUM SÖZLEŞMESİ (2026-09-22) — stop, likidasyon ve dolum fiyatı hangi GÖZLEME dayanır.
@@ -476,6 +503,10 @@ class FuturesLedgerV2:
         # R'nin paydası kayda yazılır: kapanıştan SONRA uzlaştırılan funding (`settle_late_funding`) net sonucu
         # değiştirdiğinde R aynı tanımla yeniden hesaplanır (tahmini payda yok).
         rec.features["risk_usdt"] = format(risk, "f")
+        # FUNDING KAPSAMASI (2026-09-22, beş defter ortak): bekleyen settlement varsa işlemin net sonucu HENÜZ
+        # MUTABIK DEĞİLDİR — sıfır maliyet sayılmaz; geç uzlaştırma tamamlayınca aynı alan yeniden yazılır.
+        # Kaynak bağlı değilse (`funding_rate_source` yok/none) kapsama "none" etiketiyle eksik görünür.
+        self._write_funding_coverage(rec)
         self.history.append(rec)
         if len(self.history) > self.history_keep:
             self.history = self.history[-self.history_keep:]
@@ -526,13 +557,19 @@ class FuturesLedgerV2:
                 trail = best * (_ONE - pos.trailing_pct / _HUNDRED) if pos.side is PositionSide.LONG else best * (_ONE + pos.trailing_pct / _HUNDRED)
                 if pos.stop is None or (pos.side is PositionSide.LONG and trail > pos.stop) or (pos.side is PositionSide.SHORT and trail < pos.stop):
                     pos.stop = trail
-            # funding — kaçırılan bütün settlement'lar
+            # funding — kaçırılan bütün settlement'lar (SÖZLEŞME: accounting/funding.py FUNDING_SETTLEMENT_CONTRACT;
+            # miktar settlement anındaki dolumlardan, mark settlement satırının kendisinden)
+            if "funding_contract" not in pos.features:
+                # Bu sözleşmeden ÖNCE işlenmiş settlement'lar (eski sürüm, anlık oran) sonradan doğrulanmış SAYILMAZ:
+                # sözleşmenin devraldığı an (tahakkuktan ÖNCEKİ watermark) kayıtta durur; yeni pozisyonda açılış anıdır.
+                pos.features["funding_contract_from"] = pos.last_funding_settlement_utc or pos.opened_at
             fev = self.funding.accrue(pos, now, mark, funding_rate_lookup)
             # KAPSAMA İZİ (2026-09-17): funding hangi ana kadar GERÇEKTEN mutabık — çıkış kontrolünden ÖNCE
             # damgalanır, böylece kapanan işlemin kaydı "funding 0 ölçüldü" ile "funding hiç sorulmadı"yı
             # ayırt edebilir (`features` kayda kopyalanır; watermark aynı settlement'ın iki kez yazılmasını da önler).
             pos.features["funding_settled_until"] = pos.last_funding_settlement_utc or pos.opened_at
-            pos.features["funding_rate_source"] = "lookup" if funding_rate_lookup is not None else "none"
+            pos.features["funding_rate_source"] = _rate_source_label(funding_rate_lookup)
+            pos.features["funding_contract"] = FUNDING_SETTLEMENT_CONTRACT
             # GERÇEKTEN uygulanan settlement anları (sayıyı watermark'tan TÜRETMEK yeterli değil: watermark,
             # oranı sıfır olan ya da qty=0 dönemlerde de ilerler — kapsama bunları atlanmış saymamalıdır).
             if fev:
@@ -548,7 +585,13 @@ class FuturesLedgerV2:
             for ev in fev:
                 self.wallet_balance += ev.amount
                 self.total_funding += ev.amount
-                self._entry(LedgerKind.FUNDING, ev.amount, pos.id, f"funding rate={ev.rate}{' est' if ev.estimated else ''}", ev.ts)
+                self._entry(LedgerKind.FUNDING, ev.amount, pos.id,
+                            f"funding rate={ev.rate} mark={ev.mark} qty={ev.qty} basis={ev.mark_basis}"
+                            f"{' est' if ev.estimated else ''}", ev.ts)
+                _note_settlement(pos.features, {"settlement": ev.ts, "rate": format(ev.rate, "f"), "mark": format(ev.mark, "f"),
+                                                "qty": format(ev.qty, "f"), "amount": format(ev.amount, "f"),
+                                                "mark_basis": ev.mark_basis, "qty_basis": ev.qty_basis, "path": "OPEN",
+                                                "estimated": bool(ev.estimated), "posted_at": ts})
             # STOP / LİKİDASYON — ÇIKIŞ DOLUM SÖZLEŞMESİ (2026-09-22). Tanım: `exit_decision` ve modül
             # sonundaki EXIT_FILL_CONTRACT. Stop tetiklenmesi, dolum fiyatı ve likidasyon AYRI olaylardır;
             # stop hiçbir yolda likidasyon fiyatının ötesinden doldurulmaz, gözlenmeyen sıra uydurulmaz.
@@ -637,24 +680,40 @@ class FuturesLedgerV2:
         return self._finalize(pos, reason, ts)
 
     # ------------------------------------------------------------------ geç funding uzlaştırması (2026-09-22)
+    def _write_funding_coverage(self, rec: TradeRecord) -> None:
+        """İşlem kaydının funding kapsaması (AĞ YOK). Kayıtta settlement saatleri yoksa (pozisyon hiç tick görmediyse)
+        takvimin O ANKİ aralığı yazılır — `hours_for` bellekten okur (kaynak `refresh` ile doldurur)."""
+        f = rec.features
+        f.setdefault("funding_contract", FUNDING_SETTLEMENT_CONTRACT)
+        f.setdefault("funding_contract_from", str(rec.opened_at))
+        if not f.get("funding_hours_utc"):
+            try:
+                f["funding_hours_utc"] = list(self.funding.hours_for(rec.symbol))
+            except Exception:  # noqa: BLE001 — aralık okunamazsa kapsama INTERVAL_UNKNOWN der
+                f["funding_hours_utc"] = []
+        f["funding_coverage"] = funding_coverage(
+            opened_at=str(rec.opened_at), until=str(rec.closed_at), settled_until=f.get("funding_settled_until"),
+            hours_utc=f.get("funding_hours_utc"), settled_ts=f.get("funding_settled_ts"),
+            rate_source=str(f.get("funding_rate_source") or ""))
+
     def settle_late_funding(self, lookup: RateLookup, *, now: datetime | None = None, mark_for=None, hours_for=None,
                             window: int = 500) -> list[dict]:
-        """KAPANMIŞ işlemlerin, pozisyon açıkken oranı henüz bilinmediği için BEKLEYEN funding settlement'larını,
-        oran ve settlement mark'ı bellekte bulununca deftere işler. AĞ ÇAĞRISI YOKTUR (`lookup`/`mark_for`/`hours_for`
-        bellek okumalarıdır). Dönen: işlenen settlement listesi.
+        """KAPANMIŞ işlemlerin, pozisyon açıkken oranı/mark'ı henüz bilinmediği için BEKLEYEN funding settlement'larını,
+        veri bellekte bulununca deftere işler. AĞ ÇAĞRISI YOKTUR (`lookup`/`mark_for`/`hours_for` bellek okumalarıdır).
+        `lookup` bir kaynak nesnesi olabilir (`settlement_mark` taşır); `mark_for` verilirse mark ondan okunur.
+        Dönen: işlenen settlement listesi.
 
-        UZLAŞTIRMA SÖZLEŞMESİ:
+        UZLAŞTIRMA SÖZLEŞMESİ = açık pozisyon tahakkukuyla AYNI (`accounting/funding.py`, FUNDING_SETTLEMENT_CONTRACT):
         * Hangi dönemler: `(opened_at, closed_at]` içindeki settlement'lar (`funding_settlements_between`), eksi pozisyon
           açıkken işlenmiş olanlar (`features.funding_settled_ts`) ve watermark'a (`funding_settled_until`) kadar olanlar.
           Saatler kayıttaki `funding_hours_utc`, o boşsa `hours_for(symbol)`; ikisi de yoksa dönem üretilmez (kapsama eksik kalır).
-        * Tutar: `qty(t) × mark(t) × oran(t)` (LONG öder / SHORT alır), açık pozisyondaki tahakkukla AYNI formül.
-          `mark(t)` settlement satırının KENDİ mark'ıdır (`mark_for`); yoksa dönem BEKLER (tahmin/sıfır YAZILMAZ).
-          `qty(t)`: kaydın dolumlarından — `t` anına kadar (dahil) girişler eksi `t`den ÖNCEKİ çıkışlar (açık pozisyonda
-          tahakkuk çıkıştan önce yapılır; aynı an kapanış dönemi öder).
-        * Sıra: kronolojik; oranı bilinmeyen ilk dönemde durulur (sonrakiler bekler), açık pozisyon tahakkukuyla aynı.
+        * Tutar: `settlement_amount(yön, qty_open_at(dolumlar, t), mark(t), oran(t))` — açık yoldaki fonksiyonların
+          AYNISI. `mark(t)` settlement satırının kendi mark'ı (ya da kaynağın ilan ettiği vekil, `mark_basis` ile);
+          yoksa dönem BEKLER (tahmin/sıfır YAZILMAZ).
+        * Sıra: kronolojik; oranı/mark'ı bilinmeyen ilk dönemde durulur (sonrakiler bekler), açık pozisyon tahakkukuyla aynı.
         * Yazım: cüzdan (`wallet_balance`), `total_funding`, `FUNDING` defter girişi (işlem kimliğiyle, işleme anı `now`),
           ve İŞLEM KAYDI (`funding`, `funding_paid/received`, `pnl=net_pnl`, `r_multiple = net / features.risk_usdt`,
-          `costs`, vergi tahmini) BİRLİKTE güncellenir: defter toplamları ile işlem kayıtları birbirini tutar.
+          `costs`, vergi tahmini, `funding_settlements`, `funding_coverage`) BİRLİKTE güncellenir.
         * Yinelenmezlik: işlenen an `features.funding_settled_ts`e yazılır ve kayıtla birlikte saklanır; aynı dönem ikinci
           kez işlenmez, yeniden başlatma bunu değiştirmez. Her geç işlem `features.funding_late`e ayrıca yazılır."""
         from ..core import from_iso, funding_settlements_between
@@ -678,35 +737,27 @@ class FuturesLedgerV2:
             except (TypeError, ValueError):
                 continue
             applied = {str(x) for x in (f.get("funding_settled_ts") or [])}
-            side_long = str(rec.side).upper() == "LONG"
+            touched = False
             for t in funding_settlements_between(opened, closed_at, hours):
                 key = iso(t)
                 if key in applied or t <= wm:
                     continue
-                rate = lookup(rec.symbol, t)
-                if rate is None:
+                raw_rate = lookup(rec.symbol, t)
+                if raw_rate is None:
                     break
-                mark = mark_for(rec.symbol, t) if mark_for is not None else None
-                if mark is None or D(mark) <= 0:
+                rate = D(raw_rate)
+                qty, qty_basis = qty_open_at(rec.fills, t, rec.quantity)
+                if qty is None:
                     break
-                rate, mark = D(rate), D(mark)
-                qty = ZERO
-                for fl in rec.fills or []:
-                    try:
-                        fts = from_iso(str(fl.ts))
-                    except (TypeError, ValueError):
-                        continue
-                    if fl.kind == "entry" and fts <= t:
-                        qty += fl.qty
-                    elif fl.kind != "entry" and fts < t:
-                        qty -= fl.qty
-                qty = max(qty, ZERO) if rec.fills else D(rec.quantity)
-                pay = qty * mark * rate
-                amount = -pay if side_long else pay
+                mark, mark_basis = settlement_mark(lookup, rec.symbol, t, mark_for)
+                if rate != ZERO and qty > 0 and mark is None:
+                    break                                   # settlement mark'ı yok → dönem BEKLER
+                amount = settlement_amount(rec.side, qty, mark, rate) if (rate != ZERO and qty > 0) else ZERO
                 if amount != ZERO:
                     self.wallet_balance += amount
                     self.total_funding += amount
-                    self._entry(LedgerKind.FUNDING, amount, rec.id, f"late funding rate={rate} settlement={key}", iso(now))
+                    self._entry(LedgerKind.FUNDING, amount, rec.id,
+                                f"late funding rate={rate} mark={mark} qty={qty} basis={mark_basis} settlement={key}", iso(now))
                     if amount < 0:
                         rec.funding_paid += -amount
                     else:
@@ -731,13 +782,33 @@ class FuturesLedgerV2:
                 applied.add(key)
                 f["funding_settled_until"] = key
                 wm = t
+                touched = True
                 item = {"trade_id": rec.id, "symbol": rec.symbol, "settlement": key, "rate": format(rate, "f"),
-                        "mark": format(mark, "f"), "qty": format(qty, "f"), "amount": format(amount, "f"), "posted_at": iso(now)}
+                        "mark": format(mark, "f") if mark is not None else None, "qty": format(qty, "f"),
+                        "amount": format(amount, "f"), "posted_at": iso(now)}
                 f.setdefault("funding_late", []).append({k: v for k, v in item.items() if k not in ("trade_id", "symbol")})
+                _note_settlement(f, {"settlement": key, "rate": item["rate"], "mark": item["mark"], "qty": item["qty"],
+                                     "amount": item["amount"], "mark_basis": mark_basis, "qty_basis": qty_basis,
+                                     "path": "LATE", "estimated": False, "posted_at": item["posted_at"]})
                 posted.append(item)
+            if touched:
+                pend = f.get("funding_pending") if isinstance(f.get("funding_pending"), dict) else None
+                if pend is not None and str(pend.get("since") or "") <= str(f.get("funding_settled_until") or ""):
+                    f.pop("funding_pending", None)            # bekleyen dönem artık işlendi
+                self._write_funding_coverage(rec)
         if posted:
             self.updated_at = iso(now)
         return posted
+
+    def funding_pending_symbols(self, window: int = 200) -> list[str]:
+        """Funding verisi gereken semboller: açık pozisyonlar + kapsaması EKSİK kapanmış işlemler (kaynağın `refresh`i
+        bunları çeker). AĞ YOK."""
+        out = list(self.positions)
+        for rec in self.history[-int(window):]:
+            cov = (rec.features or {}).get("funding_coverage") if isinstance(rec.features, dict) else None
+            if isinstance(cov, dict) and cov.get("complete") is False and rec.symbol not in out:
+                out.append(rec.symbol)
+        return out
 
     def close_partial(self, symbol: str, price, fraction, reason: str = "kısmi", now: datetime | None = None) -> TradeRecord | None:
         """Kalanın `fraction` kadarını kapat; tamamı kapanırsa TradeRecord döner."""

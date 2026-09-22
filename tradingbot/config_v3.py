@@ -137,6 +137,12 @@ class FuturesV3Section:
     # TP1 dokunusu BEKLENMEZ. 0 = kapali (eski davranis). Yalniz sikilastirir, asla gevsetmez.
     # Olcum: 12 acik pozisyonun 9'unda stop hic tasinmamisti (ZEN +%12,3 MFE, stop girisin %13 altinda).
     breakeven_at_mfe_r: float = 0.0
+    # GERÇEKLEŞMİŞ FUNDING KAYNAĞI (2026-09-22): true iken motor tek bir `FundingRates` kaynağı kurar (Binance
+    # `/fapi/v1/fundingRate` settlement satırları: oran + satırın kendi mark'ı; `/fapi/v1/fundingInfo` aralıkları) ve
+    # futures kullanan BEŞ deftere (ana bot, T2, M2, Box, formasyon) bağlar. Ağ yalnız tur/tarayıcı adımındadır
+    # (`refresh`), defter kilidi ve 60 sn çıkış izleyicisi ağa çıkmaz. false: kaynak yok → dönemler BEKLER (bekleyen
+    # maliyet; anlık oran geçmiş settlement'lara UYGULANMAZ). Varsayılan false: testler ve ağsız ortam ağa çıkmaz.
+    realized_funding_source: bool = False
 
 
 @dataclass

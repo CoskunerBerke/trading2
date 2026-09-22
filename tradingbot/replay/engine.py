@@ -285,6 +285,9 @@ class HistoricalReplay:
                 skipped[sym] = ("TOO_FEW_BARS:%d" % len(fr[self.tf])) if self.tf in fr else "NO_SERIES"
         self.result.loaded_symbols = list(self.primary)
         self.result.skipped_symbols = dict(skipped)
+        # SETTLEMENT MARK VEKILI (2026-09-22): arsiv satirinda mark yoksa (2023 sonu oncesi) settlement ANINDAKI bar
+        # acilisi — ilan edilmis vekildir, olay `mark_basis="BAR_OPEN_PROXY"` tasir (satir mark'i gibi damgalanmaz).
+        self.funding_rates.mark_proxy = self._bar_open_at
         if skipped:
             log.warning("replay evreni EKSIK: %d/%d sembol yuklendi, %d dusuruldu (%s). Bu kosu istenen evreni TEMSIL ETMEZ.",
                         len(self.primary), len(self.symbols), len(skipped),
@@ -521,6 +524,24 @@ class HistoricalReplay:
                 on_progress({"t": iso(now), "decisions": self.result.n_decisions, "opened": self.result.n_opened, "closed": len(self.result.trades)})
         self._finish(wf)
         return self.result
+
+    def _bar_open_at(self, symbol: str, when: datetime):
+        """Settlement anında AÇILAN arşiv barının açılışı (önce 1h, yoksa birincil dilim); yoksa None."""
+        want = int(when.timestamp() * 1000)
+        idx = getattr(self, "_open_index", None)
+        if idx is None:
+            idx = self._open_index = {}
+        for tf in ("1h", self.tf):
+            key = (symbol, tf)
+            tbl = idx.get(key)
+            if tbl is None:
+                df = (self.frames.get(symbol) or {}).get(tf)
+                tbl = {} if df is None else {int(a): float(b) for a, b in zip(df["timestamp"], df["open"])}
+                idx[key] = tbl
+            v = tbl.get(want)
+            if v is not None and v == v and v > 0:
+                return Decimal(str(v))
+        return None
 
     def _advance(self, t: int, now: datetime) -> None:
         marks = {}

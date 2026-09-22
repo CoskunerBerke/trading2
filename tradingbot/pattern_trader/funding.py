@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from datetime import datetime
 from decimal import Decimal
 from typing import Any, Callable
@@ -57,9 +58,11 @@ class FundingRates:
     isteğe bağlı `funding_info()` veren nesne (duck-typed; testler MockProvider verir)."""
 
     def __init__(self, provider: Any, *, clock_ms: Callable[[], int] = _now_ms, rate_ttl_s: float = RATE_TTL_S,
-                 info_ttl_s: float = INFO_TTL_S, lookback_ms: int = DEFAULT_LOOKBACK_MS) -> None:
+                 info_ttl_s: float = INFO_TTL_S, lookback_ms: int = DEFAULT_LOOKBACK_MS,
+                 monotonic: Callable[[], float] = time.monotonic) -> None:
         self.provider = provider
         self.clock_ms = clock_ms
+        self.monotonic = monotonic
         self.rate_ttl_s = float(rate_ttl_s)
         self.info_ttl_s = float(info_ttl_s)
         self.lookback_ms = int(lookback_ms)
@@ -133,13 +136,18 @@ class FundingRates:
         base = int(want_ms) if want_ms is not None else now
         return (min(base - MATCH_TOLERANCE_MS, now - self.lookback_ms), now + MATCH_TOLERANCE_MS)
 
-    def refresh(self, symbols: Any = None, *, now_ms: int | None = None) -> dict[str, Any]:
+    def refresh(self, symbols: Any = None, *, now_ms: int | None = None, budget_s: float | None = None) -> dict[str, Any]:
         """AĞ adımı: aralık tablosu (TTL dolduysa) + `symbols` ve bekleyen (`lookup`un istediği) semboller için
         gerçekleşmiş settlement geçmişi. Koruyucu çıkış yolunun DIŞINDA çağrılmalıdır. Aynı anda ikinci çağrı
-        beklemez, atlanır. Ağ arızası yutulur ve `stats`a yazılır; bellekteki doğrulanmış veri korunur."""
+        beklemez, atlanır. Ağ arızası yutulur ve `stats`a yazılır; bellekteki doğrulanmış veri korunur.
+
+        `budget_s` (2026-09-22): tek çağrının ağda geçirebileceği süre. Aşılınca kalan semboller BU turda
+        çekilmez (`budget_exhausted`; dönemleri bekler, bir sonraki adım çeker) — tek iş parçacıklı motor turunda
+        yavaş ağ, turu ve dolayısıyla turlar arasındaki çıkış izleyicisini sınırsız uzatmasın. En az bir sembol çekilir."""
         if not self._refresh_lock.acquire(blocking=False):
             return {"skipped": "REFRESH_IN_PROGRESS"}
         try:
+            t_start = self.monotonic()
             now = int(now_ms if now_ms is not None else self.clock_ms())
             with self._lock:
                 due = self._intervals_due(now)
@@ -149,7 +157,11 @@ class FundingRates:
                 wanted = dict(self._wanted)
             names = list(dict.fromkeys([str(s) for s in (symbols or [])] + sorted(wanted)))
             fetched = 0
-            for sym in names:
+            exhausted: list[str] = []
+            for i, sym in enumerate(names):
+                if budget_s is not None and fetched > 0 and (self.monotonic() - t_start) >= float(budget_s):
+                    exhausted = names[i:]
+                    break
                 with self._lock:
                     win = self._history_window(sym, wanted.get(sym), now)
                     if win is not None:
@@ -187,7 +199,10 @@ class FundingRates:
                     w = self._wanted.get(sym)
                     if w is not None and self._covered[sym][0] <= w and w + MATCH_TOLERANCE_MS <= now:
                         self._wanted.pop(sym, None)       # istenen an artık kapsamda (oran yoksa lookup yeniden ister)
-            return {"intervals_refreshed": bool(due), "symbols": names, "fetched": fetched}
+            out = {"intervals_refreshed": bool(due), "symbols": names, "fetched": fetched}
+            if exhausted:
+                out["budget_exhausted"] = exhausted
+            return out
         finally:
             self._refresh_lock.release()
 
@@ -226,6 +241,14 @@ class FundingRates:
             self.stats["hits" if hit is not None else "misses"] += 1
             return hit
 
+    def __call__(self, symbol: str, when: datetime) -> Decimal | None:
+        """Nesnenin kendisi bir `RateLookup`tır; defter tick'ine KAYNAK olarak verilir (oran + `settlement_mark`)."""
+        return self.lookup(symbol, when)
+
+    def mark_basis(self, symbol: str, when: datetime) -> str:
+        """Bu kaynağın mark dayanağı: settlement satırının KENDİ mark'ı (vekil yok)."""
+        return "SETTLEMENT_ROW"
+
     def settlement_mark(self, symbol: str, when: datetime) -> Decimal | None:
         """Settlement satırının KENDİ mark fiyatı (`/fapi/v1/fundingRate` → `markPrice`) — yalnız bellekten.
         Geç (pozisyon kapandıktan sonra) uzlaştırılan funding tutarı bununla hesaplanır; yoksa None (tahmin YOK)."""
@@ -251,4 +274,28 @@ class FundingRates:
                 "complete": known == len(due), "reason": "" if known == len(due) else "RATES_MISSING"}
 
 
-__all__ = ["MATCH_TOLERANCE_MS", "DEFAULT_LOOKBACK_MS", "FAILED_INFO_RETRY_S", "FundingRates", "hours_from_interval"]
+class LazyProvider:
+    """Sağlayıcıyı İLK ağ adımında kurar (`factory()`): motor kurulurken ağ nesnesi açılmaz, test enjeksiyonu
+    (`_gap_provider_factory`) kuruluştan sonra verilse de geçerli olur. Yalnız funding uçlarını iletir."""
+
+    def __init__(self, factory: Callable[[], Any]) -> None:
+        self._factory = factory
+        self._provider: Any = None
+
+    def _get(self) -> Any:
+        if self._provider is None:
+            self._provider = self._factory()
+        return self._provider
+
+    def funding_history(self, symbol: str, limit: int = 1000, start_ms: int | None = None, end_ms: int | None = None):
+        return self._get().funding_history(symbol, limit=limit, start_ms=start_ms, end_ms=end_ms)
+
+    def funding_info(self):
+        p = self._get()
+        if not hasattr(p, "funding_info"):
+            raise AttributeError("sağlayıcı fundingInfo vermiyor")
+        return p.funding_info()
+
+
+__all__ = ["MATCH_TOLERANCE_MS", "DEFAULT_LOOKBACK_MS", "FAILED_INFO_RETRY_S", "FundingRates", "LazyProvider",
+           "hours_from_interval"]

@@ -251,7 +251,7 @@ class PatternScanner:
                     "source": (statuses.get("15m") or {}).get("source"),
                     "first_bar_ms": int(rows[0]["timestamp"]) if rows else 0}
             self.book.apply_closed_bars({symbol: spec}, now=self._now_dt(),
-                                        funding_rate_lookup=self.funding.lookup if self.funding is not None else None)
+                                        funding_rate_lookup=self.funding)   # KAYNAK nesnesi: oran + settlement mark (funding_settlement_v2)
         return res
 
     # ------------------------------------------------------------------ açık pozisyon izleyicisi (tarama dışı)
@@ -267,7 +267,7 @@ class PatternScanner:
         book.record_gaps(gaps, now)
         # Funding oranı BULUNAMAZSA lookup None döner ve defter o dönemi bekletir; koruyucu stop/hedef kontrolü
         # bundan ETKİLENMEZ (tick yine çalışır).
-        recs = book.tick(marks, now=now, funding_rate_lookup=(self.funding.lookup if self.funding is not None else None),
+        recs = book.tick(marks, now=now, funding_rate_lookup=self.funding,   # KAYNAK nesnesi (oran + settlement mark)
                          bar_advance=False) if marks else []
         book.save(marks_f, now)
         return recs

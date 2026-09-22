@@ -17,14 +17,16 @@ UTC = timezone.utc
 T0 = datetime(2026, 8, 20, 6, 0, tzinfo=UTC)          # kesinti başlangıcı (watermark)
 
 
-def _mk_ledger(tmp_path: Path, *, short: bool = True) -> tuple[FuturesLedgerV2, Path]:
+def _mk_ledger(tmp_path: Path, *, short: bool = True, opened: datetime | None = None) -> tuple[FuturesLedgerV2, Path]:
+    """`opened`: pozisyonun açılış anı (dolum zamanı). Funding testleri settlement'tan ÖNCE açılmış pozisyon ister:
+    funding_settlement_v2 miktarı DOLUMLARDAN okur — watermark'ı geriye çekmek pozisyonu o anda açık YAPMAZ."""
     led = FuturesLedgerV2(50)
     if short:
         pos = led.open("SUI/USDT", "SHORT", Decimal("0.65"), SizeSpec(Decimal("15"), AmountType.NOTIONAL, 1),
-                       stop=Decimal("0.6777"), targets=[Decimal("0.6053"), Decimal("0.5812")], setup_type="pullback")
+                       stop=Decimal("0.6777"), targets=[Decimal("0.6053"), Decimal("0.5812")], setup_type="pullback", now=opened)
     else:
         pos = led.open("BZ/USDT", "LONG", Decimal("90.61"), SizeSpec(Decimal("15"), AmountType.NOTIONAL, 1),
-                       stop=Decimal("88.3408"), targets=[Decimal("95.0585"), Decimal("97.2977")], setup_type="pullback")
+                       stop=Decimal("88.3408"), targets=[Decimal("95.0585"), Decimal("97.2977")], setup_type="pullback", now=opened)
     assert pos is not None
     p = tmp_path / "futures_ledger.json"
     led.save(p)
@@ -130,7 +132,7 @@ def test_gap_same_candle_stop_and_tp_worst_case(tmp_path: Path):
 
 # 5) Funding sınırı: kesinti 08:00 UTC settlement'ı kapsar → gerçek oranla TAM BİR KEZ uygulanır
 def test_gap_funding_applied_once(tmp_path: Path):
-    led, p = _mk_ledger(tmp_path)
+    led, p = _mk_ledger(tmp_path, opened=datetime(2026, 8, 19, 23, 30, tzinfo=UTC))
     led.positions["SUI/USDT"].last_funding_settlement_utc = "2026-08-20T00:00:00+00:00"   # duvar saatinden bağımsız sabit pencere
     led.save(p)
     start = datetime(2026, 8, 20, 7, 50, tzinfo=UTC)
@@ -209,7 +211,7 @@ def test_gap_two_open_positions_preserved(tmp_path: Path):
 # 9) Funding oranı bilinmiyorsa dönem BEKLER (sessiz kayıp yok) ve sonra tam bir kez uygulanır
 def test_funding_unknown_rate_stays_pending_then_settles_once(tmp_path: Path):
     from tradingbot.accounting.models import TickData
-    led, p = _mk_ledger(tmp_path)
+    led, p = _mk_ledger(tmp_path, opened=datetime(2026, 8, 19, 23, 30, tzinfo=UTC))
     pos = led.positions["SUI/USDT"]
     pos.meta.pop("last_funding_rate", None)
     pos.last_funding_settlement_utc = "2026-08-20T00:00:00+00:00"

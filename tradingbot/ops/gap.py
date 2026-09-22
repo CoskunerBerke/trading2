@@ -79,6 +79,29 @@ class GapReport:
                 "ambiguous": self.ambiguous, "blocked": self.blocked, "reason": self.reason}
 
 
+class _GapFundingSource:
+    """Kesinti penceresi için GERÇEKLEŞMİŞ settlement kaynağı (oran + satırın kendi mark'ı) — defterin açık pozisyon
+    tahakkukuyla AYNI sözleşme (`accounting/funding.py`, FUNDING_SETTLEMENT_CONTRACT). Mark'ı olmayan satırda dönem
+    BEKLER; mum kapanışı settlement mark'ının yerine GEÇMEZ."""
+
+    def __init__(self, table: dict[str, dict[int, tuple[Decimal, Decimal | None]]]) -> None:
+        self.table = table
+
+    def _row(self, symbol: str, when: datetime):
+        return (self.table.get(symbol) or {}).get(int(when.timestamp() * 1000) // 3_600_000)
+
+    def __call__(self, symbol: str, when: datetime):
+        row = self._row(symbol, when)
+        return None if row is None else row[0]
+
+    def settlement_mark(self, symbol: str, when: datetime):
+        row = self._row(symbol, when)
+        return None if row is None else row[1]
+
+    def mark_basis(self, symbol: str, when: datetime) -> str:
+        return "SETTLEMENT_ROW"
+
+
 class GapReconciler:
     """Futures defteri için kesinti penceresi uzlaştırıcısı. `provider_factory` → USDⓈ-M public
     kline/fundingRate sağlayıcısı (test edilebilirlik için enjekte edilir; ağ yalnız gerektiğinde açılır)."""
@@ -130,19 +153,24 @@ class GapReconciler:
             cursor = last_ts + step
         return out
 
-    def _fetch_funding(self, provider: Any, symbol: str, start_ms: int, end_ms: int) -> dict[int, Decimal]:
-        """Settlement zamanı (saat hassasiyetinde epoch-saat) → gerçek dönem oranı."""
+    def _fetch_funding(self, provider: Any, symbol: str, start_ms: int, end_ms: int) -> dict[int, tuple[Decimal, Decimal | None]]:
+        """Settlement zamanı (saat hassasiyetinde epoch-saat) → (gerçek dönem oranı, o satırın KENDİ mark'ı ya da None).
+        Alınamazsa boş: dönemler BEKLER (tahmin yok; defter kaynağa bağlıysa sonraki tur gerçek veriyle işler)."""
         try:
             rows = provider.funding_history(symbol, limit=1000, start_ms=start_ms, end_ms=end_ms) or []
-        except Exception as exc:  # noqa: BLE001 — funding geçmişi alınamazsa tahmini yol (estimated) devreye girer
-            log.warning("%s funding geçmişi alınamadı (%s) — son bilinen oranla tahmin edilecek", symbol, exc)
+        except Exception as exc:  # noqa: BLE001 — funding geçmişi alınamazsa dönem BEKLER
+            log.warning("%s funding geçmişi alınamadı (%s) — dönemler bekleyecek", symbol, exc)
             return {}
-        out: dict[int, Decimal] = {}
+        out: dict[int, tuple[Decimal, Decimal | None]] = {}
         for r in rows:
             fts = int(r.get("funding_ts") or 0)
             rate = r.get("rate")
             if fts and rate is not None:
-                out[fts // 3_600_000] = Decimal(str(rate))
+                try:
+                    mk = Decimal(str(r.get("mark"))) if r.get("mark") is not None else None
+                except (TypeError, ValueError, ArithmeticError):
+                    mk = None
+                out[fts // 3_600_000] = (Decimal(str(rate)), mk if (mk is not None and mk > 0) else None)
         return out
 
     # ------------------------------------------------------------------ uzlaştırma
@@ -207,9 +235,7 @@ class GapReconciler:
             log.error("GAP_AMBIGUOUS: %s", rep.ambiguous)
             return rep
 
-        def rate_lookup(symbol: str, when: datetime):
-            table = funding.get(symbol) or {}
-            return table.get(int(when.timestamp() * 1000) // 3_600_000)
+        rate_lookup = _GapFundingSource(funding)
 
         # Olay-zamanı birleştirme: bütün sembollerin barları zaman damgasına göre tek akışta.
         stamps = sorted({c["ts"] for rows in candles.values() for c in rows})

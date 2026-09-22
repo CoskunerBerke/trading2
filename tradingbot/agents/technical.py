@@ -125,10 +125,12 @@ class CandleAgent(Agent):
 
     def analyze(self, ctx: CoinContext, rep: AgentReport) -> None:
         total, wsum = 0.0, 0.0
-        # ORTAK YAPI (structures_v1): mod OFF değilse şekil oyu KENDİ formülünden DEĞİL ortak katalogdan gelir ve
-        # "aynı formasyon birden çok bağımsız oy" SAYILMAZ: 1d/4h'deki bütün TAZE teyitli kayıtlar (mum, grafik,
-        # senaryo) tek bir taraf hükmüne indirgenir → en fazla BİR oy (±0.35); iki taraf birden varsa oy YOK.
-        catalog_mode = str(getattr(ctx, "structures_mode", "OFF") or "OFF").upper() != "OFF"
+        # ORTAK YAPI: YALNIZ ENFORCE'ta şekil oyu KENDİ formülünden DEĞİL ortak katalogdan gelir ve "aynı formasyon
+        # birden çok bağımsız oy" SAYILMAZ: 1d/4h'deki bütün TAZE teyitli kayıtlar (mum, grafik, senaryo) tek bir taraf
+        # hükmüne indirgenir → en fazla BİR oy (±0.35); iki taraf birden varsa oy YOK. SHADOW'da ajan OFF ile BİT-BİT
+        # aynıdır (bulgu #1: önce SHADOW da formülü değiştiriyor, konsensüsü ve kararı etkiliyordu); gölge kaydı ana
+        # botun yapı kapısında tutulur.
+        catalog_mode = str(getattr(ctx, "structures_mode", "OFF") or "OFF").upper() == "ENFORCE"
         struct_vote = self._catalog_vote(ctx, rep) if catalog_mode else None
         for tf, w in (("1d", 0.5), ("4h", 0.5)):
             df = ctx.frame(tf)

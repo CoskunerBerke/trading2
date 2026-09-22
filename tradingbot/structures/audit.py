@@ -9,7 +9,8 @@ Her kapanmış barda analiz, o ana kadarki barlarla (kayan pencere) YENİDEN hes
   EVENT_TIME_CHANGED:* — bir kez yazılan olay zamanı değişti;
   STATUS_WENT_BACK / TERMINAL_STATUS_CHANGED — durum geri döndü ya da terminal durum değişti;
   IDENTITY_SWITCH_AT_EVENT — oluşan kayıt kendi tetiği kesildiği barda kayboldu ve aynı ad/tarafta YENİ kimlikli
-    teyitli kayıt doğdu (o barda teyit olan yeni bir pivot yoksa).
+    teyitli kayıt doğdu (o barda teyit olan yeni bir pivot yoksa);
+  RECORD_BORN_LATE — önceki değerlendirmede tespit edilebilir olduğu hâlde raporlanmamış kimlik (geçmişe sonradan kayıt).
 BİLGİ (meşru gelişme; sayılır): FORMING_LEVEL_REVISIONS, ANCHORS_APPENDED_WHILE_DEVELOPING,
   FORMING_INTERPRETATION_REPLACED, REDEFINED_BY_NEW_PIVOT_AT_TRIGGER_BAR, LATE_BREAK_EVENTS_AFTER_EXPIRY,
   FORMING_WITHDRAWN (oluşan kayıt terminal durum olmadan analizden çıktı).
@@ -40,6 +41,7 @@ def walk_forward_audit(rows: list[dict[str, Any]], *, market: str, symbol: str, 
     late_seen: set = set()
     prev_ids: set = set()
     prev_name: dict = {}
+    prev_as_of = None
     n_an = 0
 
     def ex(d: dict[str, Any]) -> None:
@@ -60,6 +62,12 @@ def walk_forward_audit(rows: list[dict[str, Any]], *, market: str, symbol: str, 
             pid = r["pattern_id"]
             ids.add(pid)
             st = r.get("status")
+            # GEÇ DOĞAN KAYIT: bir önceki değerlendirmede tespit edilebilir olduğu hâlde (tespit anı ≤ önceki an) o zaman
+            # raporlanmamış kimlik — geçmiş hakkında SONRADAN üretilen kayıt (pencere/ufuk kayması; bulgu #13)
+            if pid in new_this_step and prev_as_of is not None and r.get("detected_at_ms") is not None                     and int(r["detected_at_ms"]) <= int(prev_as_of):
+                v["RECORD_BORN_LATE"] += 1
+                ex({"kind": "RECORD_BORN_LATE", "pattern_id": pid, "name": r.get("name"), "status": st,
+                    "detected_at_ms": r.get("detected_at_ms"), "as_of": as_of})
             anc = [(int(a["ts"]), round(float(a["price"]), 10), a.get("role")) for a in (r.get("anchors") or [])]
             if any(a[0] > last_ts for a in anc):
                 v["ANCHOR_AFTER_LAST_CLOSED_BAR"] += 1
@@ -131,6 +139,7 @@ def walk_forward_audit(rows: list[dict[str, Any]], *, market: str, symbol: str, 
                 info["FORMING_INTERPRETATION_REPLACED"] += 1
         prev_name = {r["pattern_id"]: (r.get("name"), r.get("side"), (r.get("trigger") or {}).get("level")) for r in recs}
         prev_ids = ids
+        prev_as_of = as_of
     return {"analyses": n_an, "violations": dict(v), "info": dict(info), "examples": examples,
             "distinct_records": sum(names_seen.values()), "records_by_name": dict(names_seen.most_common()),
             "confirmations_by_name": dict(names_conf.most_common()), "rejects": dict(rejects)}

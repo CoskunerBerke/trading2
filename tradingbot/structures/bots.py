@@ -49,19 +49,28 @@ def compact(dec: dict[str, Any] | None) -> dict[str, Any] | None:
             "targets": pr.get("targets"), "text_tr": dec.get("text_tr"), "as_of_ms": dec.get("as_of_ms")}
 
 
+def _enter_structure(features: Any) -> dict[str, Any] | None:
+    """İşlem kaydındaki yapı referansı YALNIZ girişin dayanağıysa: eylemi ENTER ve gölge DEĞİL (bulgu #5: SHADOW'da
+    açılan pozisyon WAIT kararının KARŞI kaydını taşıyordu; M2 bu kaydın bozulmasını "giriş yapısı bozuldu" sayıp LONG'u
+    ters yönde kapatabiliyordu)."""
+    s = (features or {}).get("structure") if isinstance(features, dict) else None
+    if not isinstance(s, dict) or s.get("shadow") or str(s.get("action") or "").upper() != "ENTER" or not s.get("pattern_id"):
+        return None
+    return s
+
+
 def used_patterns_of(ledger: Any) -> set[str]:
     """Defterde girişe dayanak olmuş yapı kimlikleri (açık + kapanmış işlemler) — aynı yapı ikinci işlem açmaz;
-    kaynak defterin kendisidir (yeniden başlatmada kaybolmaz)."""
+    kaynak defterin kendisidir (yeniden başlatmada kaybolmaz). Yalnız ENTER (gölge olmayan) referanslar sayılır."""
     out: set[str] = set()
     for pos in list(getattr(ledger, "positions", {}).values()):
-        pid = ((getattr(pos, "features", None) or {}).get("structure") or {}).get("pattern_id")
-        if pid:
-            out.add(str(pid))
+        s = _enter_structure(getattr(pos, "features", None))
+        if s:
+            out.add(str(s["pattern_id"]))
     for rec in list(getattr(ledger, "history", []) or [])[-2000:]:
-        f = rec.features if isinstance(getattr(rec, "features", None), dict) else {}
-        pid = (f.get("structure") or {}).get("pattern_id")
-        if pid:
-            out.add(str(pid))
+        s = _enter_structure(rec.features if isinstance(getattr(rec, "features", None), dict) else None)
+        if s:
+            out.add(str(s["pattern_id"]))
     return out
 
 
@@ -70,11 +79,47 @@ def _opened_ms(position: Any) -> int | None:
     return om(position)
 
 
-def _entry_pid(position: Any) -> str | None:
+def _entry_structure(position: Any) -> dict[str, Any] | None:
     f = getattr(position, "features", None)
     if f is None and isinstance(position, dict):
         f = position.get("features")
-    return ((f or {}).get("structure") or {}).get("pattern_id")
+    return _enter_structure(f)
+
+
+def _entry_pid(position: Any) -> str | None:
+    s = _entry_structure(position)
+    return str(s["pattern_id"]) if s else None
+
+
+def _frozen_entry_failure(pol: Any, position: Any, daily_rows: list[dict[str, Any]], analyses: dict[str, Any],
+                          as_of_ms: int) -> dict[str, Any] | None:
+    """Giriş yapısı analizden DÜŞTÜYSE (pencere/ufuk dışına çıktı) başarısızlığı pozisyonun DONMUŞ kaydından ölç
+    (bulgu #4): girişten SONRA kapanan bir günlük bar giriş yapısının geçersizliğinin ötesinde kapandıysa → EXIT.
+    Kayıt hâlâ analizdeyse bu yol kullanılmaz (durum makinesi karar verir)."""
+    s = _entry_structure(position)
+    an = (analyses or {}).get(pol.decision_tf) or {}
+    if not s or not isinstance(an.get("records"), list):
+        return None
+    if any(r.get("pattern_id") == s["pattern_id"] for r in an["records"]):
+        return None
+    inv = (s.get("invalidation") or {}).get("level") if isinstance(s.get("invalidation"), dict) else None
+    opened = _opened_ms(position)
+    side = _side_of(position)
+    if inv is None or opened is None or side not in (K.LONG, K.SHORT):
+        return None
+    for r in daily_rows or []:
+        close_ms = int(r["timestamp"]) + DAY_MS
+        if close_ms <= opened or close_ms > int(as_of_ms):
+            continue
+        c = float(r["close"])
+        if (c < float(inv)) if side == K.LONG else (c > float(inv)):
+            return P._decision(pol, P.ACT_EXIT, "ENTRY_STRUCTURE_FAILED", side=side, as_of_ms=as_of_ms, analyses=analyses,
+                               rec=s, extra={"source": "FROZEN_ENTRY_RECORD", "bar_ts": int(r["timestamp"]), "close": c,
+                                             "invalidation": float(inv)},
+                               text_tr="Çıktı: girişe dayanak yapı (%s %s) girişten sonra geçersizliğinin ötesinde kapandı "
+                                       "(kayıt artık analiz penceresinde değil; donmuş seviye %.6g)." % (
+                                           s.get("timeframe"), s.get("name"), float(inv)))
+    return None
 
 
 def _side_of(position: Any) -> str | None:
@@ -116,12 +161,34 @@ def trend_decide(name: str, *, daily_rows: list[dict[str, Any]], base: dict[str,
         return base, dec, analyses
     dec = P.hold_decision(pol, position_side=_side_of(position) or "LONG", opened_at_ms=_opened_ms(position),
                           entry_pattern_id=_entry_pid(position), analyses=analyses, as_of_ms=ctx.as_of_ms)
+    if dec["action"] != P.ACT_EXIT and pol.entry_failure_exit:
+        dec = _frozen_entry_failure(pol, position, daily_rows, analyses, ctx.as_of_ms) or dec
     if enforce and dec["action"] == P.ACT_EXIT:
         return ({"action": "CLOSE", "reason": dec["reason_code"], "name": name, "structure": compact(dec)}, dec, analyses)
     return base, dec, analyses
 
 
 # ---------------------------------------------------------------------------- Box (5m, önceki günün kutusu)
+def _outside_breakout_since(m5_rows: list[dict[str, Any]], day0: int, level: float, *, up: bool) -> int | None:
+    """Gün içinde kenarın ötesinde ardışık `breakout_hold_closes` kapanış olmuş ve o zamandan beri İÇERİ kapanış yoksa
+    kırılımın başladığı barın zamanı; değilse None. Yalnız KAPANMIŞ barlar (çağıran kapanmış satır verir)."""
+    need = int(K.DEFAULT_CONFIG.breakout_hold_closes)
+    run, start, active = 0, None, None
+    for r in m5_rows or []:
+        if int(r["timestamp"]) < int(day0):
+            continue
+        beyond = float(r["close"]) > level if up else float(r["close"]) < level
+        if beyond:
+            run += 1
+            if run == 1:
+                start = int(r["timestamp"])
+            if run >= need and active is None:
+                active = start
+        else:
+            run, start, active = 0, None, None
+    return active
+
+
 def box_decide(name: str, *, daily_rows: list[dict[str, Any]], m5_rows: list[dict[str, Any]], base: dict[str, Any] | None,
                position: Any, params: Any, ctx: StructureContext) -> tuple[dict[str, Any] | None, dict[str, Any], dict[str, Any]]:
     """Kenarda dönüş / taşma-geri dönüş → fade girişi; teyitli dış kırılım → o kenarın planı İPTAL, açık fade ÇIKIŞ."""
@@ -165,9 +232,16 @@ def box_decide(name: str, *, daily_rows: list[dict[str, Any]], m5_rows: list[dic
     brk_side = K.LONG if intended == K.SHORT else K.SHORT
     brk = [r for r in an["records"] if r.get("name") == P.BREAKOUT and r.get("reference") == edge and r.get("side") == brk_side
            and r.get("status") == K.ST_CONFIRMED]
-    if brk:
+    # Teyitli dış kırılım, içeri KAPANIŞ olana kadar (gün içinde) geçerlidir — kaydın 2 barlık tazeliği değil (bulgu #6:
+    # iptal 2 bar sonra kalkıyor, kutunun DIŞINDA yeni bir dönüş mumuyla fade açılabiliyordu). Günün kapanmış 5m
+    # barlarından doğrudan ölçülür (kayıt ufuk dışına düşse de).
+    since = _outside_breakout_since(m5_rows, day0, hi if intended == K.SHORT else lo, up=intended == K.SHORT)
+    if brk or since is not None:
+        ref = brk[0] if brk else next((r for r in an["records"] if r.get("name") == P.BREAKOUT and r.get("reference") == edge
+                                       and r.get("side") == brk_side), None)
         dec = P._decision(pol, P.ACT_CANCEL, "BOX_OUTSIDE_BREAKOUT", side=intended, as_of_ms=ctx.as_of_ms, analyses=analyses,
-                          rec=brk[0], text_tr="İptal: kutu %s dışında teyitli kırılım (ardışık %d kapanış); aksi yöndeki dönüş planı iptal." % (
+                          rec=ref, extra={"outside_since_ms": since},
+                          text_tr="İptal: kutu %s dışında teyitli kırılım (ardışık %d kapanış, içeri dönüş yok); aksi yöndeki dönüş planı iptal." % (
                               "tepesinin" if intended == K.SHORT else "dibinin", K.DEFAULT_CONFIG.breakout_hold_closes))
         if enforce:
             return {"action": "NONE", "reason": "STRUCTURE_BOX_OUTSIDE_BREAKOUT", "name": name, "structure": compact(dec)}, dec, analyses

@@ -153,6 +153,12 @@ def entry_decision(policy: BotPolicy, *, intended_side: str, analyses: dict[str,
     main_an = analyses.get(dtf)
     # 1) analiz yok
     if not _usable(main_an):
+        if entry_type and entry_type in policy.confirmed_required_for:
+            # Teyitli yapı ŞART olan plan (ana bot geri çekilmesi) analiz yokken GİREMEZ (fail-closed; bulgu #14):
+            # önce "etkisiz" dönüp şartı atlıyordu.
+            return _decision(policy, ACT_WAIT, "PULLBACK_NEEDS_CONFIRMED_STRUCTURE:ANALYSIS_UNAVAILABLE", side=side,
+                             as_of_ms=as_of_ms, analyses=analyses, extra={"missing_tf": dtf},
+                             text_tr="Girmedi: geri çekilme planı teyitli yapı istiyor; %s analizi yok." % dtf)
         return _decision(policy, ACT_NO_EFFECT, "STRUCTURE_ANALYSIS_UNAVAILABLE:%s" % dtf, side=side, as_of_ms=as_of_ms,
                          analyses=analyses, extra={"missing_tf": dtf},
                          text_tr="%s analizi yok (bar yetersiz/veri kimliği); bot kendi kuralıyla karar verdi." % dtf)

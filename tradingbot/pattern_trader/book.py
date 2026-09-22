@@ -184,11 +184,22 @@ class PatternBook:
         self.counters[key] += 1
         self.rejections[reason] = self.rejections.get(reason, 0) + 1
 
+    _STATUS_TR = {PL_CANCELLED: "iptal", PL_BROKEN: "yapı bozuldu", PL_EXPIRED: "süresi doldu", PL_REJECTED: "işlem açılamadı",
+                  PL_CLOSED: "işlem kapandı"}
+
     def _set_status(self, pl: dict[str, Any], status: str, at_ms: int, reason: str = "") -> None:
         pl["status"] = status
         pl.setdefault("status_history", []).append({"status": status, "at_ms": int(at_ms), "at": iso_ms(at_ms), "reason": reason})
         if reason:
             pl.setdefault("reasons", []).append(reason)
+        # KARAR DEPOSU (bulgu #18): v2 planının sonucu panelin okuduğu depoya yazılır — reddedilen plan "girdi",
+        # biten plan "bekliyor" görünmez. Açılış (ENTER + işlem kimliği) `_try_open`da yazılır.
+        if pl.get("structure") and pl.get("version") == "pattern_protocol_v2.0.0" and status in self._STATUS_TR:
+            closed = status == PL_CLOSED
+            self._record_plan_decision(
+                pl, getattr(self, "_scan_analyses", None) or None, int(at_ms), action="EXIT" if closed else "CANCEL",
+                trade_id=pl.get("position_id") if closed else None, reason_code="PLAN_%s:%s" % (status, reason or "-"),
+                text_tr="%s: plan %s — %s" % ("Çıktı" if closed else "Girmedi", self._STATUS_TR[status], reason or "-"))
 
     def _state(self, marks_f: dict[str, float]):
         pos = [{"symbol": s, "market_type": "USDM_PERP", "side": p.side.value, "notional": float(p.qty * p.entry_avg), "margin": float(p.isolated_margin),
@@ -353,7 +364,12 @@ class PatternBook:
             # ORTAK KATALOG (structures_v1): 15m/1h/4h analizi — piyasa kimliği her dilimin KENDİ provenansından.
             analyses: dict[str, Any] = {}
             if self.structure_mode != "OFF":
-                analyses = self._structure_analyses(symbol, bars_by_tf, statuses, ds, as_of_ms)
+                try:
+                    analyses = self._structure_analyses(symbol, bars_by_tf, statuses, ds, as_of_ms)
+                except Exception as exc:  # noqa: BLE001 — yapı arızası çıkış/zaman stopunu ENGELLEMEZ (bulgu #16)
+                    log.warning("formasyon defteri yapı analizi başarısız (%s): %s", symbol, exc)
+                    analyses = {}
+                    out["skipped"].append({"reason": "STRUCTURE_ANALYSIS_ERROR:%s" % type(exc).__name__})
             self._scan_analyses = analyses              # giriş kaydı (ENTER) bu taramanın analizine bağlanır
             if self.structure_mode == "ENFORCE":
                 # v2 bulguları = katalog kayıtları; pozisyon açıkken de her taramada güncellenir (panel aynı kaydı okur)
@@ -395,7 +411,7 @@ class PatternBook:
             for pid, pl in list(self.plans.items()):
                 if pl.get("symbol") != symbol or pl.get("status") not in (PL_AWAITING, PL_TRIGGERED):
                     continue
-                if pl["status"] == PL_AWAITING and pl.get("version") == "pattern_protocol_v2.0.0" and pl.get("structure"):
+                if pl["status"] in (PL_AWAITING, PL_TRIGGERED) and pl.get("version") == "pattern_protocol_v2.0.0" and pl.get("structure"):
                     # v2: plan ORTAK KAYDI izler (tetik/bozulma/süre olayı kayıttan; ayrı tetik değerlendirmesi YOK)
                     self._follow_record(pl, analyses, as_of_ms=int(as_of_ms), dec_ms=dec_ms, now=now, out=out, cs=cs,
                                         levels_1h=levels_1h)
@@ -472,7 +488,8 @@ class PatternBook:
                     cs["plans"] += 1
                     self._event("PLAN_CREATED", symbol, pl["family"], now, plan_id=pl["plan_id"], side=pl["side"], trigger=pl["trigger"]["level"], stop=pl["stop"], target=pl["target"])
                     if pl.get("structure"):
-                        self._record_plan_decision(pl, analyses, as_of_ms)
+                        if pl.get("status") != PL_TRIGGERED:
+                            self._record_plan_decision(pl, analyses, as_of_ms)
                         if pl.get("status") == PL_TRIGGERED:
                             # teyitli katalog kaydından doğan plan: teyit kapanışından sonraki İLK doğrulanmış fiyatla
                             # (bu tarama) risk/giriş denenir; kovalama ve R/R `_try_open`da yeniden ölçülür
@@ -550,7 +567,8 @@ class PatternBook:
                 self.findings.pop(k, None)
 
     def _record_plan_decision(self, pl: dict[str, Any], analyses: dict[str, Any] | None, at_ms: int, *, action: str | None = None,
-                              trade_id: str | None = None, shadow: bool = False) -> None:
+                              trade_id: str | None = None, shadow: bool = False, reason_code: str | None = None,
+                              text_tr: str | None = None) -> None:
         try:
             from ..structures.store import StructureStore
             if self._structure_store is None:
@@ -565,7 +583,7 @@ class PatternBook:
                 st.update(status=_cur.get("status"), confirmed_at_ms=_cur.get("confirmed_at_ms"),
                           analysis_id=_cur.get("analysis_id"))
             dec = {"bot": "pattern_trader", "policy_version": st.get("policy_version"), "action": act,
-                   "reason_code": "PLAN_" + str(pl.get("family")), "side": pl.get("side"), "decision_tf": pl.get("entry_tf"),
+                   "reason_code": reason_code or ("PLAN_" + str(pl.get("family"))), "side": pl.get("side"), "decision_tf": pl.get("entry_tf"),
                    "as_of_ms": int(at_ms), "pattern_ids": [st.get("pattern_id")] if st.get("pattern_id") else [],
                    "primary": dict(st, **(pl.get("structure_geometry") or {}), trigger=pl.get("trigger"),
                                    invalidation=pl.get("invalidation"), stop=pl.get("stop"), targets=[pl.get("target")],
@@ -574,8 +592,8 @@ class PatternBook:
                             "stop": pl.get("stop"), "targets": [pl.get("target")], "expires_at_ms": pl.get("expires_at_ms"),
                             "timeframe": pl.get("entry_tf")},
                    "analysis_ids": {tf: (a or {}).get("analysis_id") for tf, a in (analyses or {}).items()},
-                   "text_tr": ("Girdi: " if act == "ENTER" else "Bekliyor: ") + "%s — %s" % (pl.get("family_title_tr") or pl.get("family"),
-                                                                                              (pl.get("trigger") or {}).get("text_tr")),
+                   "text_tr": text_tr or (("Girdi: " if act == "ENTER" else "Bekliyor: ") + "%s — %s" % (
+                       pl.get("family_title_tr") or pl.get("family"), (pl.get("trigger") or {}).get("text_tr"))),
                    "mode": "SHADOW" if shadow else self.structure_mode}
             self._structure_store.record_decision(dec, book_id=BOOK_KEY, market="USDM_PERP", symbol=str(pl.get("symbol")),
                                                   at_ms=int(at_ms), analyses=analyses, trade_id=trade_id)
@@ -600,7 +618,8 @@ class PatternBook:
         tf = str(pl.get("entry_tf") or ENTRY_TF)
         an = (analyses or {}).get(tf)
         pid = str(pl.get("pattern_id") or (pl.get("structure") or {}).get("pattern_id") or "")
-        if not an or not isinstance(an.get("records"), list):
+        # PİYASA KİMLİĞİ (bulgu #11): planın KENDİ dilimi doğrulanmış perp çerçeveden değilse analiz YOK sayılır
+        if not an or not isinstance(an.get("records"), list) or str(an.get("market") or "") != PAPER_MARKET:
             if self.is_expired(pl, dec_ms):
                 self._set_status(pl, PL_EXPIRED, dec_ms, "EXPIRED_AT_SCAN_NO_ANALYSIS")
                 self.counters["expired"] += 1
@@ -612,6 +631,16 @@ class PatternBook:
             self.counters["cancelled"] += 1
             return
         st = rec.get("status")
+        if pl["status"] == PL_TRIGGERED:
+            # tetiklenmiş, fiyat/giriş bekleyen plan (bulgu #10): kayıt teyitli-taze kaldıkça bekler; bozulur ya da
+            # bayatlarsa plan da biter (giriş bayat ya da bozulmuş yapıyla AÇILMAZ)
+            if st == SK.ST_BROKEN:
+                self._set_status(pl, PL_BROKEN, int(rec.get("broken_at_ms") or as_of_ms), "RECORD_BROKEN")
+                self.counters["broken"] += 1
+            elif st == SK.ST_EXPIRED:
+                self._set_status(pl, PL_EXPIRED, int(rec.get("expired_at_ms") or as_of_ms), "RECORD_EXPIRED")
+                self.counters["expired"] += 1
+            return
         if st in (SK.ST_FORMING, SK.ST_CONFIRMED):
             lv, why = plan_levels_from_record(rec, side=str(pl["side"]), zones=list((levels_1h or {}).get("zones") or []),
                                               cost_frac=self.cost_frac, p={**DEFAULTS_PT, **(self.params or {})}, atr_fallback=pl.get("atr"))
@@ -783,6 +812,12 @@ class PatternBook:
         if str(st15.get("market") or "") != PAPER_MARKET:
             return _reject("DATA_MARKET_%s" % (str(st15.get("market") or "UNKNOWN").upper()),
                            market=str(st15.get("market") or ""), source=str(st15.get("source") or ""))
+        _ptf = str(pl.get("entry_tf") or ENTRY_TF)
+        if _ptf != ENTRY_TF:
+            stp = statuses.get(_ptf) or {}
+            if str(stp.get("market") or "") != PAPER_MARKET or stp.get("error"):
+                return _reject("DATA_MARKET_%s_%s" % (str(stp.get("market") or "UNKNOWN").upper(), _ptf),
+                               market=str(stp.get("market") or ""), source=str(stp.get("source") or ""))
         # fiyat: doğrulanmış, güncel perp mark (aynı sözleşme: strategy_paper.verified_price)
         if not price or not price.get("ok"):
             self.data_gaps[symbol] = {"reason": (price or {}).get("reason") or "NO_VERIFIED_FUTURES_PRICE", "at": iso(now)}

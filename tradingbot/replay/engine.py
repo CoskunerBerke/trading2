@@ -462,6 +462,8 @@ class HistoricalReplay:
                         self._reject(sym, "STRUCTURE:" + str(_sd.get("reason_code")))
                         continue
                     _struct = compact(_sd)
+                    if self.structures_main != "ENFORCE" and _struct is not None:
+                        _struct["shadow"] = True         # gölge karar girişin dayanağı SAYILMAZ (bulgu #5)
                 if self.regime_variant:
                     from ..candle_confirmation import closed_bars as _closed_bars_rg
                     from ..regime_gate import BTC_SYMBOL as _BTC
@@ -808,10 +810,14 @@ class HistoricalReplay:
             return None
         from ..agents.base import CoinContext
         try:
+            # PARİTE (bulgu #3): canlı `AgentRunner` bağlama yapı modunu ve çerçeve piyasasını verir; replay de AYNISINI
+            # verir (önce vermiyordu: replay mum ajanı eski formülde kalıyor, canlı ENFORCE katalog oyu kullanıyordu).
             ctx = CoinContext(symbol=sym, frames=fr, live={"ticker": {"last": price}},
                               equity_usdt=float(self.cfg.risk.starting_equity_usdt),
                               risk_pct=float(self.cfg.risk.risk_per_trade_pct),
-                              atr_stop_mult=float(self.cfg.risk.atr_stop_mult))
+                              atr_stop_mult=float(self.cfg.risk.atr_stop_mult),
+                              frame_market="USDM_PERP" if self.market == "futures" else "SPOT",
+                              structures_mode=str(getattr(self, "structures_main", "OFF") or "OFF"))
             reports = [a.run(ctx) for a in self._legacy_agents]
             return self._legacy_manager.decide(ctx, reports)
         except Exception as exc:  # noqa: BLE001 — ajan arizasi turu COKERTMEZ ama SESSIZ de kalmaz

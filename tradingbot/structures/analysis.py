@@ -136,7 +136,12 @@ def _run_status(rows: list[dict[str, Any]], *, start: int, detected_idx: int, si
     """Tetik/geçersizlik kapanışlarını `start` indeksinden itibaren kronolojik uygular.
 
     `trigger_at(k)` k barındaki tetik seviyesi (None → o barda tetik yok, ör. üçgen tepe noktasından sonra). LONG:
-    kapanış > tetik → CONFIRMED; kapanış < geçersizlik → BROKEN. SHORT tersi. Teyit anı `detected_idx`ten erken olamaz.
+    kapanış > tetik → CONFIRMED; kapanış < geçersizlik → BROKEN. SHORT tersi.
+    TANINMADAN ÖNCE (k < detected_idx; son pivot henüz teyitsiz) yapı BİLİNMEZ: o barlar yalnız BOZABİLİR (geçersizlik
+    kapanışı → tanınma anında BROKEN), TEYİT EDEMEZ — teyit, tanınma barı ya da sonrasında tetiğin ötesinde KAPANIŞ ister
+    (önce: tanınmadan önceki bir kesişme teyit sayılıyor, aradaki geçersizlik kapanışları atlanıyordu → üçgenin iki
+    tarafı birden teyitli görünebiliyordu; doğrulayıcı bulgusu #7). Tanındıktan sonra tetik tanımsızsa (tepe noktası
+    geçildi) yapı artık tetiklenemez → EXPIRED (TRIGGER_UNREACHABLE_APEX_PASSED; bulgu #17).
     Teyit yoksa `detected_idx + window` sonrası EXPIRED; teyitten sonra geçersizlik kapanışı BROKEN (başarısız yapı);
     teyit `fresh_bars`tan eskiyse EXPIRED (CONFIRMATION_STALE)."""
     n = len(rows)
@@ -146,12 +151,20 @@ def _run_status(rows: list[dict[str, Any]], *, start: int, detected_idx: int, si
     k = max(0, int(start))
     while k < n:
         c = rows[k]["close"]
-        lvl = trigger_at(k)
         if (c < invalidation) if long else (c > invalidation):
             res.update(status=K.ST_BROKEN, broken_idx=max(k, detected_idx))
-            res["reasons"].append("CLOSE_BEYOND_INVALIDATION_BEFORE_TRIGGER")
+            res["reasons"].append("CLOSE_BEYOND_INVALIDATION_BEFORE_TRIGGER" if k >= detected_idx
+                                  else "CLOSE_BEYOND_INVALIDATION_BEFORE_RECOGNITION")
             return res
-        if lvl is not None and ((c > lvl) if long else (c < lvl)):
+        if k < detected_idx:
+            k += 1
+            continue                                   # tanınmadan önceki kapanış teyit ETMEZ
+        lvl = trigger_at(k)
+        if lvl is None:
+            res.update(status=K.ST_EXPIRED, expired_idx=k)
+            res["reasons"].append("TRIGGER_UNREACHABLE_APEX_PASSED")
+            return res
+        if (c > lvl) if long else (c < lvl):
             res["confirm_idx"] = max(k, detected_idx)
             res["status"] = K.ST_CONFIRMED
             return _after_confirm(res, n=n, fresh_bars=fresh_bars,
@@ -189,7 +202,10 @@ def _finish(rec: dict[str, Any], rows, st: dict[str, Any], *, step: int, n: int,
     if st["confirm_idx"] is None:
         rec["expires_at_ms"] = int(rows[detected_idx]["timestamp"]) + (window + 1) * step
     else:
-        rec["expires_at_ms"] = int(rows[st["confirm_idx"]]["timestamp"]) + (fresh_bars + 1) * step
+        # Teyit barından sonra `fresh_bars` bar kapanana kadar TAZE; bir sonraki (fresh_bars+1.) bar kapanınca EXPIRED.
+        # O an = `expired_at_ms` (bayatlama kapanışı). Önce bir bar erken yazılıyordu (bulgu #9): formasyon planı, aynı
+        # kaydı T2/M2/ana bot hâlâ taze sayarken süresi dolmuş sayıyordu.
+        rec["expires_at_ms"] = int(rows[st["confirm_idx"]]["timestamp"]) + (fresh_bars + 2) * step
     rec["reason_codes"] = list(rec.get("reason_codes") or []) + list(st["reasons"])
     ci = st["confirm_idx"]
     rec["confirm_bar"] = ({"ts": int(rows[ci]["timestamp"]), "open": rows[ci]["open"], "high": rows[ci]["high"],
@@ -440,8 +456,9 @@ def _compression(rows, atr, *, market, symbol, tf, step, cfg: K.StructuresConfig
                 out.append(_comp_rec(rows, atr, active, side=K.SHORT if side == K.LONG else K.LONG, confirm_idx=None,
                                      broken_idx=i, market=market, symbol=symbol, tf=tf, step=step, cfg=cfg, n=n))
                 active = None
-                continue
-            if i - active["end"] >= cfg.scenario_trigger_window:
+                # (bulgu #13) `continue` YOK: bu bar da kendi penceresiyle değerlendirilir — tespit taramanın başladığı
+                # yerden (ufuktan) bağımsız kalsın; aksi hâlde ufuk kayınca geçmiş tarihli sıkışma "yeni" doğuyordu.
+            elif i - active["end"] >= cfg.scenario_trigger_window:
                 active = None
         a = atr[i]
         if a is None:
@@ -621,60 +638,57 @@ def _retests(rows, atr, levels, *, market, symbol, tf, step, cfg) -> list[dict]:
     horizon = max(0, n - 3 * cfg.retest_window)
     for L in levels:
         lv, up = L["level"], L["kind"] == "high"             # tepe kırılırsa LONG, dip kırılırsa SHORT
-        b0 = None
-        for k in range(max(L["valid_from_idx"], horizon, 1), n):
-            crossed = (rows[k]["close"] > lv and rows[k - 1]["close"] <= lv) if up else (rows[k]["close"] < lv and rows[k - 1]["close"] >= lv)
-            if crossed:
-                b0 = k
-                break
-        if b0 is None:
-            continue
-        a = atr[b0]
-        if not a:
-            continue
-        tol = cfg.retest_tolerance_atr * a
-        side = K.LONG if up else K.SHORT
-        st = {"status": K.ST_FORMING, "confirm_idx": None, "broken_idx": None, "expired_idx": None, "reasons": []}
-        retest_idx = None
+        # UFUK İÇİNDEKİ HER kesişme kendi kaydıdır (bulgu #13): önce yalnız İLK kesişme alınıyordu; ufuk ilk kesişmeyi
+        # geçince bir sonraki kesişme geçmiş tarihli "yeni" kayıt olarak doğuyordu (geç doğan kayıt).
+        crosses = [k for k in range(max(L["valid_from_idx"], horizon, 1), n)
+                   if ((rows[k]["close"] > lv and rows[k - 1]["close"] <= lv) if up else (rows[k]["close"] < lv and rows[k - 1]["close"] >= lv))]
+        for b0 in crosses:
+            a = atr[b0]
+            if not a:
+                continue
+            tol = cfg.retest_tolerance_atr * a
+            side = K.LONG if up else K.SHORT
+            st = {"status": K.ST_FORMING, "confirm_idx": None, "broken_idx": None, "expired_idx": None, "reasons": []}
+            retest_idx = None
 
-        def _through(q, _lv=lv, _tol=tol, _up=up):
-            return (rows[q]["close"] < _lv - _tol) if _up else (rows[q]["close"] > _lv + _tol)
-        for r in range(b0 + 1, n):
-            br = rows[r]
-            if _through(r):
-                st.update(status=K.ST_BROKEN, broken_idx=r)
-                st["reasons"].append("CLOSED_BACK_THROUGH_LEVEL")
-                break
-            touched = (br["low"] <= lv + tol) if up else (br["high"] >= lv - tol)
-            held = (br["close"] > lv) if up else (br["close"] < lv)
-            if touched and held:
-                st.update(status=K.ST_CONFIRMED, confirm_idx=r)
-                retest_idx = r
-                _after_confirm(st, n=n, fresh_bars=cfg.fresh_bars, beyond=_through)
-                break
-            if r - b0 >= cfg.retest_window:
-                st.update(status=K.ST_EXPIRED, expired_idx=r)
-                st["reasons"].append("NO_RETEST_IN_WINDOW")
-                break
-        inv = (lv - tol) if up else (lv + tol)
-        buf = cfg.stop_buffer_atr * a
-        anchors = [{"ts": int(L["anchor_ts"]), "price": lv, "role": "seviye", "confirmed_at_ms": None},
-                   {"ts": int(rows[b0]["timestamp"]), "price": rows[b0]["close"], "role": "kirilis", "confirmed_at_ms": int(rows[b0]["timestamp"]) + step}]
-        if retest_idx is not None:
-            anchors.append({"ts": int(rows[retest_idx]["timestamp"]), "price": rows[retest_idx]["low"] if up else rows[retest_idx]["high"],
-                            "role": "yeniden_test", "confirmed_at_ms": int(rows[retest_idx]["timestamp"]) + step})
-        rec = {"family": K.FAMILY_SCENARIO, "name": "BREAK_RETEST_HOLD", "side": side, "reference": L["name"], "anchors": anchors, "atr": a,
-               "detected_at_ms": int(rows[b0]["timestamp"]) + step,
-               "trigger": {"rule": "retest_and_hold", "level": lv},
-               "invalidation": {"rule": "close_below" if up else "close_above", "level": inv},
-               "stop": (inv - buf) if up else (inv + buf), "targets": [],
-               "geometry_quality": round(max(0.0, 1.0 - (abs((rows[retest_idx]["low"] if up else rows[retest_idx]["high"]) - lv) / tol)), 4) if retest_idx is not None else 0.0,
-               "reason_codes": ["NO_STRUCTURAL_TARGET"],
-               "geometry": [{"kind": "seviye", "t0": int(L["anchor_ts"]), "y0": lv, "t1": int(rows[_event_idx(st, n)]["timestamp"]), "y1": lv}]}
-        _finish(rec, rows, st, step=step, n=n, window=cfg.retest_window, fresh_bars=cfg.fresh_bars, detected_idx=b0)
-        rec["pattern_id"] = _pid(market, symbol, tf, "BREAK_RETEST_HOLD", side, [int(L["anchor_ts"]), int(rows[b0]["timestamp"])], cfg.policy_version)
-        rec["trend_context"], rec["role"] = None, K.ROLE_UNKNOWN
-        out.append(rec)
+            def _through(q, _lv=lv, _tol=tol, _up=up):
+                return (rows[q]["close"] < _lv - _tol) if _up else (rows[q]["close"] > _lv + _tol)
+            for r in range(b0 + 1, n):
+                br = rows[r]
+                if _through(r):
+                    st.update(status=K.ST_BROKEN, broken_idx=r)
+                    st["reasons"].append("CLOSED_BACK_THROUGH_LEVEL")
+                    break
+                touched = (br["low"] <= lv + tol) if up else (br["high"] >= lv - tol)
+                held = (br["close"] > lv) if up else (br["close"] < lv)
+                if touched and held:
+                    st.update(status=K.ST_CONFIRMED, confirm_idx=r)
+                    retest_idx = r
+                    _after_confirm(st, n=n, fresh_bars=cfg.fresh_bars, beyond=_through)
+                    break
+                if r - b0 >= cfg.retest_window:
+                    st.update(status=K.ST_EXPIRED, expired_idx=r)
+                    st["reasons"].append("NO_RETEST_IN_WINDOW")
+                    break
+            inv = (lv - tol) if up else (lv + tol)
+            buf = cfg.stop_buffer_atr * a
+            anchors = [{"ts": int(L["anchor_ts"]), "price": lv, "role": "seviye", "confirmed_at_ms": None},
+                       {"ts": int(rows[b0]["timestamp"]), "price": rows[b0]["close"], "role": "kirilis", "confirmed_at_ms": int(rows[b0]["timestamp"]) + step}]
+            if retest_idx is not None:
+                anchors.append({"ts": int(rows[retest_idx]["timestamp"]), "price": rows[retest_idx]["low"] if up else rows[retest_idx]["high"],
+                                "role": "yeniden_test", "confirmed_at_ms": int(rows[retest_idx]["timestamp"]) + step})
+            rec = {"family": K.FAMILY_SCENARIO, "name": "BREAK_RETEST_HOLD", "side": side, "reference": L["name"], "anchors": anchors, "atr": a,
+                   "detected_at_ms": int(rows[b0]["timestamp"]) + step,
+                   "trigger": {"rule": "retest_and_hold", "level": lv},
+                   "invalidation": {"rule": "close_below" if up else "close_above", "level": inv},
+                   "stop": (inv - buf) if up else (inv + buf), "targets": [],
+                   "geometry_quality": round(max(0.0, 1.0 - (abs((rows[retest_idx]["low"] if up else rows[retest_idx]["high"]) - lv) / tol)), 4) if retest_idx is not None else 0.0,
+                   "reason_codes": ["NO_STRUCTURAL_TARGET"],
+                   "geometry": [{"kind": "seviye", "t0": int(L["anchor_ts"]), "y0": lv, "t1": int(rows[_event_idx(st, n)]["timestamp"]), "y1": lv}]}
+            _finish(rec, rows, st, step=step, n=n, window=cfg.retest_window, fresh_bars=cfg.fresh_bars, detected_idx=b0)
+            rec["pattern_id"] = _pid(market, symbol, tf, "BREAK_RETEST_HOLD", side, [int(L["anchor_ts"]), int(rows[b0]["timestamp"])], cfg.policy_version)
+            rec["trend_context"], rec["role"] = None, K.ROLE_UNKNOWN
+            out.append(rec)
     return out
 
 
@@ -730,7 +744,15 @@ def analyze(*, market: str, symbol: str, timeframe: str, bars: Any, as_of_ms: in
         hit = _CACHE.get(key, _MISSING)
         if hit is not _MISSING:
             _CACHE.move_to_end(key)
-            return hit
+    if hit is not _MISSING:
+        # İÇERİK aynı (kimlik = kapanmış satırlar + sürüm + piyasa); karar ANI ve veri provenansı ÇAĞIRANINDIR (bulgu #8:
+        # önce ilk çağıranın `as_of`u ve boş provenansı dönüyordu). Kayıt sözlükleri paylaşılır — tüketiciler değiştirmez.
+        out_hit = dict(hit)
+        out_hit["as_of_ms"] = int(as_of_ms)
+        p2 = dict(data_provenance or {})
+        p2.update({k: (hit.get("data_provenance") or {}).get(k) for k in ("n_closed_bars", "first_bar_ts", "last_closed_bar_ts", "fingerprint")})
+        out_hit["data_provenance"] = p2
+        return out_hit
     n = len(rows)
     prov = dict(data_provenance or {})
     prov.update({"n_closed_bars": n, "first_bar_ts": int(rows[0]["timestamp"]) if rows else None, "last_closed_bar_ts": last_ts,

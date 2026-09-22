@@ -141,6 +141,10 @@ def build_plans_v2(symbol: str, *, as_of_ms: int, analyses: dict[str, dict[str, 
         if not an:
             skipped.append({"family": "*", "tf": tf, "reason": "ANALYSIS_UNAVAILABLE"})
             continue
+        if str(an.get("market") or "") != "USDM_PERP":
+            # vadeli plan yalnız DOĞRULANMIŞ perp çerçevesinin analizinden kurulur (spot/doğrulanmamış dilim YOK; bulgu #11)
+            skipped.append({"family": "*", "tf": tf, "reason": "ANALYSIS_MARKET_%s" % (an.get("market") or "UNKNOWN")})
+            continue
         for rec in an.get("records") or []:
             if rec.get("side") not in (K.LONG, K.SHORT) or rec.get("status") not in (K.ST_FORMING, K.ST_CONFIRMED):
                 continue

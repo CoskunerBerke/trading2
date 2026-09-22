@@ -101,10 +101,16 @@ def test_market_symbol_and_timeframe_identities_never_mix():
     assert _an(rows4h, tf="4h")["timeframe"] == "4h" and all(r["timeframe"] == "4h" for r in _an(rows4h, tf="4h")["records"])
 
 
-def test_same_inputs_return_the_same_versioned_result_for_every_caller():
+def test_same_inputs_share_one_cached_result_but_each_caller_keeps_its_own_moment_and_provenance():
+    """Aynı market+sembol+dilim+veri → AYNI sürümlü içerik (önbellek; kayıtlar paylaşılır). Karar ANI ve veri
+    provenansı ise ÇAĞIRANINDIR (doğrulayıcı bulgusu #8: önce ilk çağıranın anı ve boş provenansı dönüyordu)."""
     rows = _flag_rows()
-    a, b = _an(rows), _an(list(rows))
-    assert a is b, "aynı market+sembol+dilim+as_of+veri → AYNI sürümlü sonuç nesnesi (önbellek)"
+    a = _an(rows)
+    b = analyze(market="USDM_PERP", symbol="X/USDT", timeframe=a["timeframe"], bars=list(rows),
+                  as_of_ms=a["as_of_ms"] + 60_000, data_provenance={"market": "USDM_PERP", "source": "test", "tour_id": "t2"})
+    assert b["analysis_id"] == a["analysis_id"] and b["records"] is a["records"], "içerik önbellekten, yeniden hesap yok"
+    assert b["as_of_ms"] == a["as_of_ms"] + 60_000 and a["as_of_ms"] != b["as_of_ms"]
+    assert b["data_provenance"]["tour_id"] == "t2" and b["data_provenance"]["fingerprint"] == a["data_provenance"]["fingerprint"]
     assert a["policy_version"] == K.POLICY_VERSION and a["schema_version"] == K.SCHEMA_VERSION
 
 

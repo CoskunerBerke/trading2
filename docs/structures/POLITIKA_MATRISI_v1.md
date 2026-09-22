@@ -79,3 +79,29 @@ bulundu. İşlem sonucu/PnL'e bakılmadı. Sürüm adı bu yüzden `structures_v
    İPTAL (`RECORD_WITHDRAWN`); oluşurken seviyeler kayıttan yenilenir (`record_revisions`, `revision_history`).
    Yeni bir pivotla yeniden tanımlanan yapı (üçgen) yeni kimliktir: eski plan çekilir, aynı taramada yeni plan kurulur.
 5. Doğrulama tek kaynakta: `structures.catalog.validate_settings` (ENFORCE gerçek parayla açılamaz).
+
+## E. `structures_v1.2` — bağımsız doğrulayıcı bulguları (2026-09-23, dağıtımdan ÖNCE)
+
+Adversaryal doğrulayıcı 18 bulgu raporladı (3 yüksek, 4 orta, 11 düşük); hepsi kaynaktan yeniden doğrulandı ve
+düzeltildi, her biri için düzeltmeden ÖNCEKİ kodda düşen bir gerileme testi var
+(`tests/test_structures_verifier_findings_v1.py`). **Eşik değişmedi**; yine sonuca/PnL'e bakılmadı. Anlamı değişenler:
+
+* **SHADOW = OFF (bit-bit)**: ana botun mum ajanı katalog oyunu yalnız ENFORCE'ta kullanır (#1); replay ana modu canlıyla
+  aynı modu ve çerçeve piyasasını ajanlara verir (#3). Gölge kararlar işlem kaydında `shadow` işaretlidir ve girişin
+  dayanağı SAYILMAZ; yalnız gölge olmayan ENTER referansı "kullanılmış yapı" ve "giriş yapısı" olur (#5).
+* **Durum makinesi**: tanınmadan (son pivot teyidinden) önceki kapanışlar yapıyı yalnız BOZABİLİR, teyit EDEMEZ; teyit
+  tanınma barında ya da sonrasında tetiğin ötesinde kapanış ister (#7). Tanındıktan sonra tetik tanımsızlaşırsa (üçgen
+  tepe noktası geçildi) → EXPIRED `TRIGGER_UNREACHABLE_APEX_PASSED` (#17). Teyitli kaydın `expires_at_ms`i bayatlama
+  kapanışına eşittir (#9). Önbellek içeriği paylaşır ama karar anı ve provenans çağıranındır (#8).
+* **Geç doğan kayıt yok (#13)**: kırılım-geri test her seviye ve ufuk içindeki HER kesişme için kayıt üretir (önce yalnız
+  ilk kesişme); sıkışma dedektörü kırılış barını da kendi penceresiyle değerlendirir. Denetime `RECORD_BORN_LATE` eklendi.
+* **Box (#6)**: teyitli dış kırılım, gün içinde içeri KAPANIŞ olana kadar o kenarın dönüş planını iptal eder (önce 2 barlık
+  tazelikle sınırlıydı). **M2 (#4)**: giriş yapısı analiz penceresinden düşse de girişten sonraki günlük kapanışlar,
+  işlem kaydındaki DONMUŞ geçersizlik seviyesiyle ölçülür. **Ana bot**: geri çekilme planı analiz yokken bekler (#14);
+  kovalama ölçüsü doğrulanmış perp mark'tan (#12); çalışma anı modu LIVE ise ENFORCE → SHADOW (#15); yapıyla
+  sıkılaştırılmış stopu, sıkılaştırmadan ÖNCE açılmış 1h barının uçları sonraki turlarda da tetiklemez (#2).
+* **Arıza izolasyonu (#16)**: yapı katmanı istisnası botun kendi çıkışını düşürmez (kural yeniden sorulur; ENFORCE'ta
+  yalnız YENİ giriş engellenir); formasyon defterinde analiz arızası taramayı/zaman stopunu durdurmaz.
+* **Formasyon (#10, #11, #18)**: tetiklenmiş (fiyat bekleyen) plan da kaydını izler; plan yalnız doğrulanmış perp
+  diliminin analizinden kurulur ve o dilimin piyasası girişte denetlenir; her plan sonucu (red/iptal/bozulma/süre/kapanış)
+  karar deposuna yazılır — reddedilen plan panelde "girdi" görünmez.

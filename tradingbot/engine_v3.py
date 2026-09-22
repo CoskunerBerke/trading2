@@ -90,6 +90,33 @@ _CAPACITY_CODES = ("TOTAL_OPEN_RISK", "MARGIN_UTILIZATION", "MAX_POSITIONS", "MA
                    "CLUSTER_CAP", "ALTCOIN_EXPOSURE", "MAX_POSITION_PCT", "SPOT_ALLOCATION")
 
 
+def _pre_change_extreme_symbols(positions: dict, marks: dict, frames_by_symbol: dict) -> list[str]:
+    """Stopu ortak yapıyla sıkılaştırılmış (meta `structure_stop.at`) pozisyonlardan, bu tur tikinin 1h uçlarını taşıyan
+    barı sıkılaştırmadan ÖNCE AÇILMIŞ olanlar. O barın uçları sıkılaştırmadan önceki fiyatlardır; yeni stopu geriye dönük
+    tetiklemesinler diye tick yalnız son fiyatla yapılır. Bar zamanı okunamazsa ihtiyatlı: uçlar kullanılmaz."""
+    out: list[str] = []
+    for sym, pos in (positions or {}).items():
+        ss = (getattr(pos, "meta", None) or {}).get("structure_stop") or {}
+        mk = marks.get(sym)
+        if not ss or mk is None or (getattr(mk, "high", None) is None and getattr(mk, "low", None) is None):
+            continue
+        at = ss.get("at")
+        try:
+            at_ms = int(from_iso(at).timestamp() * 1000) if at else None
+        except (TypeError, ValueError):
+            at_ms = None
+        h1 = (frames_by_symbol.get(sym) or {}).get("1h")
+        bar_open = None
+        try:
+            if h1 is not None and len(h1) and "timestamp" in h1.columns:
+                bar_open = int(h1["timestamp"].iloc[-1])
+        except (TypeError, ValueError, AttributeError):
+            bar_open = None
+        if at_ms is None or bar_open is None or bar_open < at_ms:
+            out.append(sym)
+    return out
+
+
 class TradingEngineV3(TradingEngine):
     def __init__(self, cfg: BotConfig):
         super().__init__(cfg)
@@ -1054,6 +1081,9 @@ class TradingEngineV3(TradingEngine):
         now_ms = int(now.timestamp() * 1000)
         self._tour_now_ms = now_ms          # ZAMAN SOZLESMESI: turun karar saati; provenans bagi ve kagit defter kurali bu ana gore okur
         st = self.cfg.state_path
+        # ORTAK YAPI: mum ajanı bu turun ETKİN modunu kullanır (çalışma anı modu LIVE ise ENFORCE gölgeye düşer; bulgu #15)
+        if getattr(self, "runner", None) is not None:
+            self.runner.structures_mode = self._structure_mode_main()
         # 0) heartbeat + kill switch tetikleri
         atomic_write_json(st / "heartbeat.json", {"at": iso(now), "run_id": self.run_id, "pid": __import__("os").getpid()})
         # 0.4) BELLEK: onceki tur istisna ile bittiyse aday memosu asili kalabilir; tur basinda
@@ -1323,6 +1353,11 @@ class TradingEngineV3(TradingEngine):
                     marks[_sym] = TickData(last=marks[_sym].last, mark=marks[_sym].mark, ts=marks[_sym].ts)
         except Exception as exc:  # noqa: BLE001 — yönetim arızası turu ve koruyucu tick'i DURDURMAZ
             log.warning("yapı yönetimi adımı başarısız (tur sürer): %s", exc)
+        # Sonraki turlar da (bulgu #2): tur tiki son 1h barın uçlarını taşır ve aynı bar birkaç tur boyunca "son bar"
+        # kalır. Stopu yapıyla sıkılaştırılmış pozisyonda, sıkılaştırmadan ÖNCE açılmış barın uçları yeni stopu geriye
+        # dönük tetikleyemez: o barlarda tick yalnız son fiyattır. Yalnız bu yolun (yapı sıkılaştırması) pozisyonları.
+        for _sym in _pre_change_extreme_symbols(self.ledger2.positions, marks, self.runner.last_frames):
+            marks[_sym] = TickData(last=marks[_sym].last, mark=marks[_sym].mark, ts=marks[_sym].ts)
         self._funding_step(now)
         cur_bar = max((b.last_bar_4h for b in briefs if b.last_bar_4h), default="")
         bar_advance = bool(cur_bar and cur_bar != self.last_bar_seen)
@@ -1648,8 +1683,11 @@ class TradingEngineV3(TradingEngine):
             feats = features_from_brief(b, self.runner.chief.decide(briefs), b.scan_score or None)
             if sg is not None:
                 from .structures.bots import compact as _sc2
-                # PLAN GEREKÇESİ: katalogdan dönen seviyeler + teyit (girişin dayanağı) işlem kaydına yazılır
+                # PLAN GEREKÇESİ: katalogdan dönen seviyeler + teyit (girişin dayanağı) işlem kaydına yazılır. SHADOW'da
+                # karar yalnız gözlemdir: `shadow` işaretli kayıt girişin dayanağı SAYILMAZ (bulgu #5).
                 feats["structure"] = _sc2(sg)
+                if sg.get("mode") != "ENFORCE" and feats["structure"] is not None:
+                    feats["structure"]["shadow"] = True
             feats.update({"initial_stop": plan.stop, "p_win": b.p_win, "regime": d.regime, "consensus_score": d.consensus_score, "consensus_conf": d.consensus_confidence,
                           "n_dissent": len(d.dissent), "n_vetoes": len(d.vetoes), "expected_r": d.expected_r, "expected_cost_pct": d.expected_cost, "market_type": market,
                           "spread_pct": next((r.metrics.get("spread_pct") for r in d.specialist_reports if r.agent_name == "orderbook_liquidity" and r.usable), None)})
@@ -2260,8 +2298,18 @@ class TradingEngineV3(TradingEngine):
 
     # ------------------------------------------------------------------ ORTAK YAPI (structures_v1) — ana bot
     def _structure_mode_main(self) -> str:
+        """Ana botun etkin yapı modu. Config doğrulaması ENFORCE'u gerçek parayla reddeder; bu, ÇALIŞMA ANI modunu da
+        denetler (`mode.json` esastır; bulgu #15): LIVE/LIVE_LIMITED iken ENFORCE → SHADOW (kayıt sürer, engellemez)."""
         _st = getattr(getattr(self.cfg, "v3", None), "structures", None)
-        return _st.mode_for("main") if _st is not None else "OFF"
+        mode = _st.mode_for("main") if _st is not None else "OFF"
+        ms = getattr(self, "mode_state", None)
+        live = str(getattr(getattr(ms, "mode", None), "value", "") or "").upper()
+        if mode == "ENFORCE" and live in ("LIVE", "LIVE_LIMITED"):
+            if not getattr(self, "_structures_live_warned", False):
+                log.warning("yapı katmanı ENFORCE, çalışma modu %s: gerçek parayla ENFORCE KAPALI → SHADOW", live)
+                self._structures_live_warned = True
+            return "SHADOW"
+        return mode
 
     def _structure_gate(self, sym: str, d, plan, b, now: datetime, market: str) -> dict | None:
         """Ana bot giriş kapısı (SAF karar + kayıt). OFF → None (davranış bit-bit eski). SHADOW → karar kaydedilir,
@@ -2272,11 +2320,19 @@ class TradingEngineV3(TradingEngine):
         try:
             from .structures.bots import BLOCKING_ACTIONS, main_entry_decision, used_patterns_of
             prov = (getattr(self, "_frame_provenance", None) or {}).get(sym) or {}
+            # KOVALAMA FİYATI (bulgu #12): vadeli karar için tur bağındaki DOĞRULANMIŞ perp mark; yoksa brif fiyatı
+            # (spot öncelikli olabilir) — hangisi kullanıldıysa kararda yazılır.
+            _pm = prov.get("perp_mark") or {}
+            if market == "USDM_PERP" and _pm.get("fresh") and _pm.get("price"):
+                _px, _px_src = float(_pm["price"]), "perp_mark"
+            else:
+                _px, _px_src = (float(b.price) if b.price else None), "brief_price"
             dec, analyses = main_entry_decision(
                 symbol=sym, frames=self.runner.last_frames.get(sym) or {}, frame_market=str(prov.get("market") or "UNVERIFIED"),
                 as_of_ms=int(now.timestamp() * 1000), direction=d.direction, entry_type=str(plan.entry_type or ""),
-                price=float(b.price) if b.price else None, used=used_patterns_of(self.ledger2),
+                price=_px, used=used_patterns_of(self.ledger2),
                 provenance={k: prov.get(k) for k in ("market", "source", "tour_id")}, plan_market=market)
+            dec.setdefault("detail", {})["chase_price_source"] = _px_src
         except Exception as exc:  # noqa: BLE001 — yapı katmanı arızası girişi SESSİZCE açmaz: ENFORCE'ta bekletir
             log.warning("%s yapı kapısı hesaplanamadı: %s", sym, exc)
             dec, analyses = {"bot": "main", "action": "WAIT" if mode == "ENFORCE" else "NO_EFFECT",

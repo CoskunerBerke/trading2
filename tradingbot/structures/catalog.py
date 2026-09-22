@@ -137,6 +137,45 @@ def candle_name(shape: str, trend: str) -> tuple[str, str | None]:
     return CANDLE_FIXED_NAMES.get(shape, (shape.replace("_LIKE", ""), None))
 
 
+#: Panel/rapor için Türkçe adlar — TEK kaynak (panel ikinci bir ad listesi tutmaz). Eksik ad ham koduyla gösterilir.
+NAME_TR: dict[str, str] = {
+    "HAMMER": "Çekiç", "HANGING_MAN": "Asılı adam", "INVERTED_HAMMER": "Ters çekiç", "SHOOTING_STAR": "Kayan yıldız",
+    "HAMMER_SHAPE_NO_TREND": "Çekiç şekli (trend yok, yönsüz)", "INVERTED_HAMMER_SHAPE_NO_TREND": "Ters çekiç şekli (trend yok, yönsüz)",
+    "BULLISH_ENGULFING": "Yutan boğa", "BEARISH_ENGULFING": "Yutan ayı", "BULLISH_HARAMI": "Boğa harami",
+    "BEARISH_HARAMI": "Ayı harami", "BULLISH_HARAMI_CROSS": "Boğa harami haç", "BEARISH_HARAMI_CROSS": "Ayı harami haç",
+    "MORNING_STAR": "Sabah yıldızı", "EVENING_STAR": "Akşam yıldızı", "MORNING_DOJI_STAR": "Sabah doji yıldızı",
+    "EVENING_DOJI_STAR": "Akşam doji yıldızı", "BULLISH_DOJI_STAR": "Boğa doji yıldızı", "BEARISH_DOJI_STAR": "Ayı doji yıldızı",
+    "PIERCING_LINE": "Delici hat", "DARK_CLOUD_COVER": "Kara bulut örtüsü", "TWEEZER_BOTTOM": "Cımbız dip",
+    "TWEEZER_TOP": "Cımbız tepe", "THREE_WHITE_SOLDIERS": "Üç beyaz asker", "THREE_BLACK_CROWS": "Üç kara karga",
+    "BULLISH_BELT_HOLD": "Boğa kuşak tutuşu", "BEARISH_BELT_HOLD": "Ayı kuşak tutuşu", "BULLISH_KICKER": "Boğa tekmesi",
+    "BEARISH_KICKER": "Ayı tekmesi", "BULLISH_MEETING_LINES": "Boğa buluşma çizgileri",
+    "BEARISH_MEETING_LINES": "Ayı buluşma çizgileri", "HOMING_PIGEON": "Eve dönen güvercin",
+    "DESCENDING_HAWK": "Alçalan şahin", "DOJI": "Doji", "SPINNING_TOP": "Topaç", "MARUBOZU": "Marubozu",
+    "TRI_STAR": "Üçlü yıldız", "BULLISH_ABANDONED_BABY": "Boğa terk edilmiş bebek",
+    "BEARISH_ABANDONED_BABY": "Ayı terk edilmiş bebek",
+    "DOUBLE_BOTTOM": "Çift dip", "DOUBLE_TOP": "Çift tepe", "TRIPLE_BOTTOM": "Üçlü dip", "TRIPLE_TOP": "Üçlü tepe",
+    "INVERSE_HEAD_AND_SHOULDERS": "Ters omuz-baş-omuz", "HEAD_AND_SHOULDERS": "Omuz-baş-omuz",
+    "ASCENDING_TRIANGLE": "Yükselen üçgen", "DESCENDING_TRIANGLE": "Alçalan üçgen", "BULL_FLAG": "Boğa bayrağı",
+    "BEAR_FLAG": "Ayı bayrağı", "BULL_PENNANT": "Boğa flaması", "BEAR_PENNANT": "Ayı flaması",
+    "COMPRESSION_BREAKOUT": "Sıkışma kırılımı", "BREAK_RETEST_HOLD": "Kırılım · geri test · korunma",
+    "SWEEP_RECLAIM": "Taşma ve içeride kapanış", "RANGE_BREAKOUT": "Aralık kırılımı",
+}
+
+
+def name_tr(name: str | None) -> str:
+    return NAME_TR.get(str(name or ""), str(name or "—"))
+
+
+def all_names() -> list[str]:
+    """Katalogdaki bütün kanonik adlar (mum bağlamlı + sabit + bağlamsız şekil + grafik + senaryo)."""
+    out: list[str] = []
+    for d in CANDLE_CONTEXT_NAMES.values():
+        out += [n for n, _ in d.values()]
+    out += ["HAMMER_SHAPE_NO_TREND", "INVERTED_HAMMER_SHAPE_NO_TREND"]
+    out += [n for n, _ in CANDLE_FIXED_NAMES.values()]
+    return sorted(set(out) | set(CHART_NAMES) | set(SCENARIO_NAMES))
+
+
 def role_of(side: str | None, trend: str | None) -> str:
     if side not in (LONG, SHORT):
         return ROLE_UNKNOWN
@@ -164,4 +203,4 @@ __all__ = ["ALIASES", "CANDLE_CONTEXT_NAMES", "CANDLE_FIXED_NAMES", "CHART_NAMES
            "FAMILY_CHART", "FAMILY_SCENARIO", "LONG", "POLICY_VERSION", "REQUIREMENTS", "ROLE_CONTINUATION",
            "ROLE_RANGE", "ROLE_REVERSAL", "ROLE_UNKNOWN", "SCENARIO_NAMES", "SCHEMA_VERSION", "SHORT", "STATUSES",
            "STATUS_TR", "ST_BROKEN", "ST_CONFIRMED", "ST_EXPIRED", "ST_FORMING", "StructuresConfig", "candle_name",
-           "catalog_table", "role_of"]
+           "NAME_TR", "all_names", "catalog_table", "name_tr", "role_of"]

@@ -162,6 +162,10 @@ def build_plans_v2(symbol: str, *, as_of_ms: int, analyses: dict[str, dict[str, 
                   "structure": {"pattern_id": rec["pattern_id"], "name": rec.get("name"), "family": rec.get("family"),
                                 "timeframe": etf, "status": rec.get("status"), "analysis_id": rec.get("analysis_id"),
                                 "policy_version": K.POLICY_VERSION, "confirmed_at_ms": rec.get("confirmed_at_ms")},
+                  # panel motorun ÇİZDİĞİ kaydı çizer: dayanak noktaları ve geometri plana (işlem kaydına DEĞİL) girer
+                  "structure_geometry": {"anchors": rec.get("anchors"), "geometry": rec.get("geometry"),
+                                         "confirm_bar": rec.get("confirm_bar"), "detected_at_ms": rec.get("detected_at_ms"),
+                                         "expires_at_ms": rec.get("expires_at_ms"), "atr": rec.get("atr")},
                   "data_source": dict(data_source or {}), "size": None, "risk": None}
             if confirmed:
                 cb = rec.get("confirm_bar") or {}

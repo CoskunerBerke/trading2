@@ -252,16 +252,22 @@ def positions_block(acc: dict[str, Any], *, book_id: str, market: str, selected:
         un, kind = _pos_unreal(p)
         tgts = [t for t in (p.get("targets") or []) if _f(t) is not None]
         sel = " on" if selected and base == selected else ""
+        # SATIR KİMLİĞİ (2026-09-23): tıklama grafiği defter + piyasa + sembol + DİLİM + İŞLEM + AN ile açar. Dilim,
+        # girişe dayanak olan yapı kaydının dilimidir (yoksa varsayılan dilim).
+        _fs = (p.get("features") or {}).get("structure") if isinstance(p.get("features"), dict) else None
+        _tf = str((_fs or {}).get("timeframe") or "") if isinstance(_fs, dict) else ""
         det = ("miktar %s · kaldıraç %sx · açılış %s · ücret %s · funding %s · kaynak %s"
                % (fmt(p.get("qty"), 6), esc(str(p.get("leverage") or 1)), fmt_utc(p.get("opened_at")),
                   usdt(p.get("fees_paid") or p.get("fees")), usdt(p.get("funding_net") or p.get("funding")), esc(psrc)))
         rows.append(
-            '<div class="trow%s" data-base="%s" data-book="%s" data-market="%s" tabindex="0" role="button" aria-label="%s grafiğini aç">'
+            '<div class="trow%s" data-base="%s" data-book="%s" data-market="%s" data-trade="%s" data-tf="%s" data-asof="%s" '
+            'tabindex="0" role="button" aria-label="%s grafiğini aç">'
             '<div class="tmain"><span class="sym">%s</span> %s<span class="num">%s</span></div>'
             '<div class="tsub"><span>giriş <b>%s</b></span><span>güncel <b>%s</b></span><span>stop <b>%s</b></span>'
             '<span>hedef <b>%s</b></span><span class="pnl">açık K/Z %s <i>(%s)</i></span></div>'
             '<details class="tdet"><summary>ayrıntı</summary><div class="small mut">%s</div></details></div>'
-            % (sel, esc(base), esc(book_id), esc(market), esc(sym), esc(sym),
+            % (sel, esc(base), esc(book_id), esc(market), esc(str(p.get("id") or "")), esc(_tf), esc(str(p.get("opened_at") or "")),
+               esc(sym), esc(sym),
                badge("LONG" if side == "LONG" else "SHORT", "ok" if side == "LONG" else "bad"),
                "", fmt(entry, 6) if entry is not None else "—", fmt(last, 6) if last is not None else "—",
                fmt(stop, 6) if stop is not None else '<span class="mut">yok</span>',
@@ -276,12 +282,14 @@ ROW_DELEGATE_JS = """<script>(function(){
   if(window.__rowDelegate)return;window.__rowDelegate=1;
   function go(el){var b=el.dataset.base;if(!b)return;
     document.querySelectorAll('.trow').forEach(function(x){x.classList.remove('on');});el.classList.add('on');
-    if(window.__chartSelect){window.__chartSelect(b,el.dataset.market,el.dataset.book);}
+    window.__chartTrade=el.dataset.trade||'';window.__chartAsOf=el.dataset.asof||'';
+    if(window.__chartSelect){window.__chartSelect(b,el.dataset.market,el.dataset.book,el.dataset.tf||'',el.dataset.trade||'',el.dataset.asof||'');}
     else{var u=new URL(window.location.href);u.searchParams.set('coin',b);window.location.href=u.toString();}
     var c=document.getElementById('acctcoin');if(c)c.textContent='\u00b7 '+b;
     var pb=document.getElementById('planhost');                       // plan/islem ozeti de SECILEN coine gecer
     if(pb){var q='/api/planbox/'+encodeURIComponent(b)+'?book='+encodeURIComponent(el.dataset.book||'main')
-             +'&market='+encodeURIComponent(el.dataset.market||'futures')+(window.__tokenQs?'&'+window.__tokenQs.slice(1):'');
+             +'&market='+encodeURIComponent(el.dataset.market||'futures')
+             +(el.dataset.trade?'&trade='+encodeURIComponent(el.dataset.trade):'')+(window.__tokenQs?'&'+window.__tokenQs.slice(1):'');
       fetch(q,{headers:window.__authHeaders||{}}).then(function(r){return r.json();}).then(function(d){
         if((window.__chartBase||'').toUpperCase()===String(d.base).toUpperCase())pb.innerHTML=d.html;}).catch(function(){});}}
   document.addEventListener('click',function(e){var el=e.target.closest&&e.target.closest('.trow');
@@ -312,7 +320,7 @@ def live_refresh_js(book_id: str, token_qs: str = "", every_ms: int = 20000, mar
   function refreshPlan(){var pb=document.getElementById('planhost');if(!pb)return;
     var b=(window.__chartBase||'').toUpperCase();if(!b)return;
     var q='/api/planbox/'+encodeURIComponent(b)+'?book='+encodeURIComponent(book)+'&market='+encodeURIComponent(market)
-          +(window.__tokenQs?'&'+window.__tokenQs.slice(1):'');
+          +(window.__chartTrade?'&trade='+encodeURIComponent(window.__chartTrade):'')+(window.__tokenQs?'&'+window.__tokenQs.slice(1):'');
     fetch(q,{headers:window.__authHeaders||{}}).then(function(r){return r.json();}).then(function(d){
       if((window.__chartBase||'').toUpperCase()===String(d.base).toUpperCase()&&String(d.book)===book)pb.innerHTML=d.html;
     }).catch(function(){});}
@@ -331,7 +339,7 @@ def live_refresh_js(book_id: str, token_qs: str = "", every_ms: int = 20000, mar
 })();</script>""" % (_js(book_id), _js(market), qs, int(every_ms)))
 
 
-def trade_qs(*, book_id: str, market: str, trade_id: Any = None, as_of: Any = None, token_qs: str = "") -> str:
+def trade_qs(*, book_id: str, market: str, trade_id: Any = None, as_of: Any = None, token_qs: str = "", tf: Any = None) -> str:
     """Satır bağlantılarının KİMLİK sorgusu: defter + piyasa (+ işlem kimliği/zamanı). 2026-09-17: bu bağ olmadan
     T2'den tıklayan kullanıcı ANA defterin sayfasına düşüyordu."""
     parts = ["book=%s" % quote_plus(str(book_id)), "market=%s" % quote_plus(str(market))]
@@ -339,6 +347,8 @@ def trade_qs(*, book_id: str, market: str, trade_id: Any = None, as_of: Any = No
         parts.append("trade=%s" % quote_plus(str(trade_id)))
     if as_of:
         parts.append("as_of=%s" % quote_plus(str(as_of)))
+    if tf:
+        parts.append("tf=%s" % quote_plus(str(tf)))
     if token_qs:
         parts.append(token_qs.lstrip("?&"))
     return "&".join(p for p in parts if p)
@@ -357,7 +367,9 @@ def closed_block(acc: dict[str, Any], *, limit: int = 8, book_id: str | None = N
     rows = []
     for t in tr:
         sym = str(t.get("symbol") or "")
-        qs = trade_qs(book_id=bid, market=mkt, trade_id=t.get("id"), as_of=t.get("closed_at"), token_qs=token_qs)
+        _fs = (t.get("features") or {}).get("structure") if isinstance(t.get("features"), dict) else None
+        qs = trade_qs(book_id=bid, market=mkt, trade_id=t.get("id"), as_of=t.get("closed_at"), token_qs=token_qs,
+                      tf=(_fs or {}).get("timeframe") if isinstance(_fs, dict) else None)
         rows.append([('<a href="/coin/%s?%s">%s</a>' % (esc(sym.split("/")[0]), esc(qs), esc(sym))),
                      badge(str(t.get("side", "")).upper() or "—", "ok" if str(t.get("side", "")).upper() == "LONG" else "bad"),
                      fmt(t.get("entry"), 6), fmt(t.get("exit_price") or t.get("exit"), 6),
@@ -369,9 +381,10 @@ def closed_block(acc: dict[str, Any], *, limit: int = 8, book_id: str | None = N
 
 
 # --------------------------------------------------------------------------- plan / işlem kutusu (grafik altı)
-def plan_box(state, *, book_id: str, base: str, market: str) -> str:
+def plan_box(state, *, book_id: str, base: str, market: str, trade_id: str | None = None) -> str:
     """Grafiğin altındaki kısa özet: açık işlem → yön/giriş/stop/çıkış kuralı; bekleyen GERÇEK plan → koşullu
-    LONG/SHORT metni; ikisi de yoksa nedeni KAYITTAN okunur (tahmin edilmez)."""
+    LONG/SHORT metni; ikisi de yoksa nedeni KAYITTAN okunur (tahmin edilmez). Altında ORTAK YAPI bölümü: motorun
+    bu defter/piyasa/sembol (+ işlem) için yazdığı yapı kararı AYNEN (`structures_view`)."""
     sym = "%s/USDT" % base.upper()
     if not state.book_supports_market(book_id, market):
         return ('<div class="planbox"><div class="planrow mut">Bu hesabın Spot görünümü YOKTUR (defter yalnız '
@@ -423,6 +436,12 @@ def plan_box(state, *, book_id: str, base: str, market: str) -> str:
                                   esc(str(scans.get("trend_4h", "?"))), esc(str(scans.get("n_zones_1h", "?")))))
                 else:
                     out.append('<div class="planrow mut">Bu coin mum trader tarafından henüz taranmadı (kayıt yok).</div>')
+    try:
+        from . import structures_view as sv
+        _tid = trade_id or ((pos or {}).get("id") if pos else None)
+        out.append(sv.box_html(sv.resolve(state, book_id=book_id, market=market, symbol=sym, trade_id=_tid), exit_tr=exit_tr))
+    except Exception as exc:  # noqa: BLE001 — panel yapı bölümü arızası kutunun geri kalanını BOZMAZ
+        out.append('<div class="planrow bad">Yapı kaydı okunamadı: %s</div>' % esc(type(exc).__name__))
     out.append("</div>")
     return "".join(out)
 

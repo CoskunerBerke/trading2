@@ -354,6 +354,7 @@ class PatternBook:
             analyses: dict[str, Any] = {}
             if self.structure_mode != "OFF":
                 analyses = self._structure_analyses(symbol, bars_by_tf, statuses, ds, as_of_ms)
+            self._scan_analyses = analyses              # giriş kaydı (ENTER) bu taramanın analizine bağlanır
             if self.structure_mode == "ENFORCE":
                 # v2 bulguları = katalog kayıtları; pozisyon açıkken de her taramada güncellenir (panel aynı kaydı okur)
                 self._catalog_findings(symbol, analyses, cohort, ue, now, out, cs)
@@ -550,12 +551,20 @@ class PatternBook:
             if self._structure_store is None:
                 self._structure_store = StructureStore(self.cfg.state_path)
             act = action or ("ENTER" if pl.get("status") == PL_TRIGGERED else "WAIT_TRIGGER")
-            st = pl.get("structure") or {}
+            st = dict(pl.get("structure") or {})
+            # Kaydın O ANKİ durumu (örn. girişte TEYİTLİ): plan oluşurkenki durum eski kalır; taramanın analizi varsa
+            # aynı kimlikli kayıttan durum/teyit/analiz kimliği güncellenir (seviye/stop/hedef PLANDAN — değişmez).
+            _tfa = (analyses or {}).get(str(pl.get("entry_tf") or "")) or {}
+            _cur = next((r for r in (_tfa.get("records") or []) if r.get("pattern_id") == st.get("pattern_id")), None)
+            if _cur is not None:
+                st.update(status=_cur.get("status"), confirmed_at_ms=_cur.get("confirmed_at_ms"),
+                          analysis_id=_cur.get("analysis_id"))
             dec = {"bot": "pattern_trader", "policy_version": st.get("policy_version"), "action": act,
                    "reason_code": "PLAN_" + str(pl.get("family")), "side": pl.get("side"), "decision_tf": pl.get("entry_tf"),
                    "as_of_ms": int(at_ms), "pattern_ids": [st.get("pattern_id")] if st.get("pattern_id") else [],
-                   "primary": dict(st, trigger=pl.get("trigger"), invalidation=pl.get("invalidation"), stop=pl.get("stop"),
-                                   targets=[pl.get("target")]),
+                   "primary": dict(st, **(pl.get("structure_geometry") or {}), trigger=pl.get("trigger"),
+                                   invalidation=pl.get("invalidation"), stop=pl.get("stop"), targets=[pl.get("target")],
+                                   side=pl.get("side")),
                    "plan": {"plan_id": pl.get("plan_id"), "trigger": pl.get("trigger"), "invalidation": pl.get("invalidation"),
                             "stop": pl.get("stop"), "targets": [pl.get("target")], "expires_at_ms": pl.get("expires_at_ms"),
                             "timeframe": pl.get("entry_tf")},
@@ -813,7 +822,8 @@ class PatternBook:
             pos.features["structure"] = dict(pl["structure"], action="ENTER", reason_code="PLAN_" + str(pl.get("family")),
                                              bot="pattern_trader", text_tr="Girdi: %s planı tetiklendi (%s)." % (
                                                  pl.get("family"), (pl.get("trigger") or {}).get("text_tr")))
-            self._record_plan_decision(pl, None, int(as_of_ms), action="ENTER", trade_id=pos.id)
+            self._record_plan_decision(pl, getattr(self, "_scan_analyses", None) or None, int(as_of_ms), action="ENTER",
+                                       trade_id=pos.id)
         self._set_status(pl, PL_OPENED, int(as_of_ms), "FILLED_%s" % pos.id)
         pl["position_id"], pl["entry_price"], pl["size"] = pos.id, float(pos.entry_avg), {"qty": float(pos.qty), "notional": float(pos.qty * pos.entry_avg), "leverage": pos.leverage}
         pl["risk"] = {"risk_usdt": round(abs(float(pos.entry_avg) - float(pl["stop"])) * float(pos.qty), 6), "risk_pct_of_start": round(abs(float(pos.entry_avg) - float(pl["stop"])) * float(pos.qty) / float(self.ledger.starting_equity) * 100.0, 4)}

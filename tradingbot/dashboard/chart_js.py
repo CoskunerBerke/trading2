@@ -19,8 +19,9 @@ CHART_JS = r"""
   var DEF={ema25:0,ema99:0,ema200:0,vwap:0,sma25:0,sma50:0,sma99:0,sma200:0,bb_up:0,bb_mid:0,bb_lo:0,ema50:0};
   // VARSAYILAN GORUNUM SADE (2026-09-16): yalniz mumlar + GERCEK islem katmani (giris/cikis/stop/hedef).
   // Seviye/bolge/trend/formasyon/gosterge katmanlari "Katmanlar" altinda ACILIR — ekran hepsi acik gelmez.
-  var LAYER_DEF={levels:0,zones:0,trend:0,patterns:0,trades:1,volume:0,indicators:0};
-  var LAYERS=[['levels','Seviyeler'],['zones','Bölgeler'],['trend','Trend'],['patterns','Formasyonlar'],['trades','İşlemler'],
+  // YAPI (2026-09-23): motorun karar satirindaki TEK kayit (secili islem ya da son karar) — varsayilan ACIK, tek kayit.
+  var LAYER_DEF={levels:0,zones:0,trend:0,patterns:0,trades:1,structure:1,volume:0,indicators:0};
+  var LAYERS=[['levels','Seviyeler'],['zones','Bölgeler'],['trend','Trend'],['patterns','Formasyonlar'],['trades','İşlemler'],['structure','Yapı (bot kararı)'],
               ['volume','Hacim'],['indicators','Göstergeler (RSI/MACD/EMA)']];
   var IMPACT={USED_IN_DECISION:['kararda kullanıldı','#26a69a'],OBSERVATION_ONLY:['yalnız gözlem','#90a4ae'],UNCONFIRMED:['henüz teyitsiz','#ffb74d'],INVALID:['geçersiz / ihlal','#ef5350']};
   var MKT={USDM_PERP:'futures',SPOT:'spot'};
@@ -39,7 +40,7 @@ CHART_JS = r"""
     return {tf:val('tf',window.__chartTf||'4h'),market:val('mk',window.__chartMarket||'spot'),book:val('bk',window.__chartBook||'main'),n:isNaN(n)?300:n,aid:val('hist','')};}
   function sameScope(a,b){return a.tf===b.tf&&a.market===b.market&&a.book===b.book;}
   function tq(){return tokenQs?'&'+tokenQs.slice(1):'';}
-  function chartUrl(sc,my){return '/api/chart/'+base+'?tf='+enc(sc.tf)+'&market='+enc(sc.market)+'&book='+enc(sc.book)+'&n='+sc.n+(sc.aid?'&analysis_id='+enc(sc.aid):'')+tq()+'&req='+my;}
+  function chartUrl(sc,my){return '/api/chart/'+base+'?tf='+enc(sc.tf)+'&market='+enc(sc.market)+'&book='+enc(sc.book)+'&n='+sc.n+(sc.aid?'&analysis_id='+enc(sc.aid):'')+(window.__chartTrade?'&trade='+enc(window.__chartTrade):'')+(window.__chartAsOf?'&as_of='+enc(window.__chartAsOf):'')+tq()+'&req='+my;}
   function historyUrl(sc,my){return '/api/chart/'+base+'/history?tf='+enc(sc.tf)+'&market='+enc(sc.market)+'&book='+enc(sc.book)+tq()+'&req='+my;}
   function identityMatches(d,sc){var A=d.analysis||{};var a=A.identity||{};
     if(a.timeframe&&a.timeframe!==sc.tf)return false;if(a.book_id&&a.book_id!==sc.book)return false;
@@ -77,6 +78,8 @@ CHART_JS = r"""
     else if(er&&!d.historical&&!er.matches_now)parts.push('<span class="mut">motorun son kaydı '+esc(er.analysis_id)+' ('+esc(iso(er.as_of_ms))+') şimdiki durumdan farklı: '+esc((er.diff||[]).join('; '))+'</span>');
     if(!d.historical&&d.live&&d.live.mark_price_source&&d.live.mark_price!=null)parts.push('canlı fiyat: son mum kapanışı '+esc(fmt(d.live.mark_price))+' ('+esc(d.live.mark_price_source.file||'mum')+(d.live.mark_price_source.bar_closed?', kapanmış bar':', kapanmamış bar')+'; borsa mark fiyatı DEĞİL)');
     if(A.synthetic)parts.push('<span class="warn">SENTETİK GÖSTERİM VERİSİ</span>');
+    var S=d.structure||{};if(S.decision)parts.push('yapı katmanı: '+esc(S.decision.bot||'')+' '+esc(S.decision.action||'')+' · '+(S.origin==='trade'?'işlem '+esc(S.trade||'')+' GİRİŞ anındaki kayıt':'son karar kaydı')+(S.record_tf&&S.record_tf!==d.tf?' · kayıt dilimi '+esc(S.record_tf)+' (grafik '+esc(d.tf)+')':''));
+    else if(S.note)parts.push('<span class="mut">'+esc(S.note)+'</span>');
     document.getElementById('srcline').innerHTML=parts.join(' · ');}
   function explain(d){var a=d.analysis||{};var ex=a.explanation||[];var html='';
     if(!ex.length)html='<div class="mut">Açıklama yok.</div>';
@@ -117,7 +120,7 @@ CHART_JS = r"""
     function mk(e,xs,ys,sym,color,size,name){var idx=elIndex.length;elIndex.push(e);traces.push({type:'scatter',mode:'markers',x:xs,y:ys,name:name||e.label_tr,marker:{symbol:sym,color:color,size:size||9,line:{width:1,color:'#0e1116'}},
       text:xs.map(function(){return e.label_tr+'<br>'+(IMPACT[e.decision_impact]||['?'])[0];}),hoverinfo:'text',customdata:xs.map(function(){return idx;}),showlegend:false,xaxis:'x',yaxis:'y'});}
     function segline(e,t0,y0,t1,y1,color,dash,width){shapes.push({type:'line',xref:'x',yref:'y',x0:new Date(t0),x1:new Date(t1),y0:y0,y1:y1,line:{color:color,width:width||1.4,dash:dash||'solid'}});mk(e,[new Date(t1)],[y1],'circle',color,6);}
-    var A=d.analysis||{};var els=A.elements||[];
+    var A=d.analysis||{};var els=(A.elements||[]).concat(((d.structure||{}).elements)||[]);
     els.forEach(function(e){
       if(!layerOn(e.layer))return;
       var imc=(IMPACT[e.decision_impact]||['','#b0bec5'])[1];
@@ -143,6 +146,14 @@ CHART_JS = r"""
         else if(e.kind==='plan_entry'){hl(e.price,'#b3e5fc','dash','PLAN GİRİŞ '+fmt(e.price),x[Math.max(0,x.length-30)]);mk(e,[x1],[e.price],'diamond-open','#b3e5fc',8);}
         else if(e.kind==='plan_stop'){hl(e.price,'#ef9a9a','dash','PLAN STOP '+fmt(e.price),x[Math.max(0,x.length-30)]);mk(e,[x1],[e.price],'diamond-open','#ef9a9a',8);}
         else if(e.kind==='plan_target'){hl(e.price,'#a5d6a7','dot',e.label_tr,x[Math.max(0,x.length-30)]);mk(e,[x1],[e.price],'diamond-open','#a5d6a7',8);}}
+      else if(e.layer==='structure'){var sc2='#ffd54f';
+        if(e.kind==='structure_geometry'){segline(e,e.t0,e.y0,e.t1!=null?e.t1:e.t0,e.y1!=null?e.y1:e.y0,sc2,'solid',1.6);}
+        else if(e.kind==='structure_anchors'){mk(e,(e.anchors||[]).map(function(a){return new Date(a.timestamp);}),(e.anchors||[]).map(function(a){return a.price;}),'star-diamond',sc2,9);}
+        else if(e.kind==='structure_trigger'){hl(e.price,'#4fc3f7','dash',e.label_tr,e.t0?new Date(e.t0):null);mk(e,[x1],[e.price],'line-ew','#4fc3f7',8);}
+        else if(e.kind==='structure_invalidation'){hl(e.price,'#ff8a65','dot',e.label_tr,e.t0?new Date(e.t0):null);mk(e,[x1],[e.price],'line-ew','#ff8a65',8);}
+        else if(e.kind==='structure_stop'){hl(e.price,'#ef5350','dashdot',e.label_tr,e.t0?new Date(e.t0):null);mk(e,[x1],[e.price],'line-ew','#ef5350',8);}
+        else if(e.kind==='structure_target'){hl(e.price,'#66bb6a','dashdot',e.label_tr,e.t0?new Date(e.t0):null);mk(e,[x1],[e.price],'line-ew','#66bb6a',8);}
+        else if(e.kind==='structure_confirm'){mk(e,[new Date(e.t0)],[e.price],'star',sc2,12,'teyit kapanışı');}}
       else if(e.layer==='indicators'){if(e.kind==='rule_reference'){if(e.t0!=null&&e.t1!=null){segline(e,e.t0,e.price,e.t1,e.price,'#ffd54f','dashdot',1.2);ann.push({xref:'x',x:new Date(e.t1),yref:'y',y:e.price,text:e.label_tr,showarrow:false,font:{size:9,color:'#ffd54f'},yshift:10});}
         else{hl(e.price,'#ffd54f','dashdot',e.label_tr);mk(e,[x1],[e.price],'line-ew','#ffd54f',8);}}}
     });
@@ -162,7 +173,9 @@ CHART_JS = r"""
     var mk=MKT[a.market_type]||sc.market;var stored=!!(A.analysis_id&&(d.analysis_stored||d.historical));
     var stamp=String(a.as_of||(d.live&&d.live.as_of)||'').replace(/[^0-9]/g,'').slice(0,12);
     return base+'_'+(a.timeframe||sc.tf)+'_'+mk+'_'+(a.book_id||sc.book)+'_'+(stored?A.analysis_id:('canli-'+(stamp||'x')));}
-  ['tf','mk','bk'].forEach(function(id){var el=document.getElementById(id);if(el)el.addEventListener('change',function(){resetHistory();var sc=scope();loadHistory(sc,'');load(sc);});});
+  ['tf','mk','bk'].forEach(function(id){var el=document.getElementById(id);if(el)el.addEventListener('change',function(){
+    if(id!=='tf'){window.__chartTrade='';window.__chartAsOf='';}   // baska defter/piyasa: secili islem kimligi TASINMAZ
+    resetHistory();var sc=scope();loadHistory(sc,'');load(sc);});});
   ['nbars','hist'].forEach(function(id){var el=document.getElementById(id);if(el)el.addEventListener('change',function(){load(scope());});});
   document.getElementById('reload').addEventListener('click',function(){var sc=scope();loadHistory(sc,sc.aid);load(sc);});
   var png=document.getElementById('dl-png');if(png)png.addEventListener('click',function(){Plotly.downloadImage('chart',{format:'png',width:1400,height:800,filename:fileStem()});});
@@ -173,7 +186,8 @@ CHART_JS = r"""
   // TERMINAL PANELI (2026-09-16): acik islem satirina tiklaninca AYNI ekranda coin/defter/piyasa degistirilir.
   // Sayfa yenilenmez, kullanicinin katman/dilim secimi KORUNUR; kapsam degistigi icin gecmis secimi sifirlanir
   // ve gec gelen eski yanit (seq + kapsam kontrolu) yeni grafigi EZEMEZ.
-  window.__chartSelect=function(b,market,book,tf){
+  window.__chartSelect=function(b,market,book,tf,trade,asof){
+    if(trade!==undefined){window.__chartTrade=trade||'';window.__chartAsOf=asof||'';}
     if(b){base=String(b).toUpperCase();window.__chartBase=base;}
     if(market){var mk=document.getElementById('mk');if(mk&&mk.value!==market)mk.value=market;}
     if(book){var bk=document.getElementById('bk');if(bk&&bk.value!==book)bk.value=book;}

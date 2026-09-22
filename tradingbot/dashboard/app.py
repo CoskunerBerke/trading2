@@ -497,7 +497,13 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
             body += f'<div class="grid">{card("Karar (eski ajan)", verdict_badge(b.get("verdict")))}{card("Kanaat", fmt(b.get("conviction"), 0) + "%")}{card("Fiyat", fmt(b.get("price")))}{card("P(kazanç) — eski ajan", _pct_signal(b.get("p_win")))}</div><p class="mut">{esc(b.get("headline"))}</p>'
         else:
             body += '<div class="card mut">Bu coin için karar yok; yalnızca grafik.</div>'
-        body += "<h2>Grafik</h2>" + chart_block(base, tf, market, token_qs=token_qs, max_bars=cfg.max_bars, book=_book, books=_books)
+        body += "<h2>Grafik</h2>" + chart_block(base, tf, market, token_qs=token_qs, max_bars=cfg.max_bars, book=_book, books=_books,
+                                                trade=trade, as_of=as_of)
+        if state.book_supports_market(_book, market):
+            from . import structures_view as _sv
+            body += ('<h2>Yapı kararı</h2><div class="planbox">%s</div>'
+                     % _sv.box_html(_sv.resolve(state, book_id=_book, market=market, symbol=f"{base}/USDT", trade_id=trade),
+                                    exit_tr=term.exit_tr))
         if h:
             def plan_kv(p: dict) -> str:
                 if not p:
@@ -674,12 +680,28 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
                              "closed_html": term.closed_block(acc, book_id=bid, market=mkt)})
 
     @app.get("/api/planbox/{base}")
-    def api_planbox(base: str, book: str | None = Query(None), market: str = Query("futures")):
-        """Grafik altindaki islem/plan ozeti — satir tiklanip coin degisince AYNI ekranda guncellenir (SALT OKUMA)."""
+    def api_planbox(base: str, book: str | None = Query(None), market: str = Query("futures"), trade: str | None = Query(None)):
+        """Grafik altindaki islem/plan ozeti — satir tiklanip coin degisince AYNI ekranda guncellenir (SALT OKUMA).
+        `trade`: tiklanan islemin kimligi — yapi bolumu o islemin GIRIS anindaki kaydini gosterir."""
         bid = _book_or_default(book)
         mkt = "spot" if market == "spot" else "futures"
-        return JSONResponse({"base": base.upper()[:16], "book": bid, "market": mkt,
-                             "html": term.plan_box(state, book_id=bid, base=base.upper()[:16], market=mkt)})
+        return JSONResponse({"base": base.upper()[:16], "book": bid, "market": mkt, "trade": trade,
+                             "html": term.plan_box(state, book_id=bid, base=base.upper()[:16], market=mkt, trade_id=trade)})
+
+    @app.get("/api/structures/{base}")
+    def api_structures(base: str, book: str | None = Query(None), market: str = Query("futures"), trade: str | None = Query(None),
+                       tf: str | None = Query(None)):
+        """ORTAK YAPI KAYDI (structures_v1) — motorun bu defter/piyasa/sembol (+ islem) icin yazdigi karar satiri,
+        grafik elemanlari, bes botun eslemesi ve cakisan pozisyonlar. SALT OKUMA: analiz YENIDEN HESAPLANMAZ."""
+        from . import structures_view as sv
+        bid = _book_or_default(book)
+        mkt = "spot" if market == "spot" else "futures"
+        b = base.upper()[:16]
+        ctx = sv.resolve(state, book_id=bid, market=mkt, symbol=b + "/USDT", trade_id=trade)
+        return JSONResponse({"base": b, "book": bid, "market": mkt, "market_id": ctx["market_id"], "trade": trade,
+                             "origin": ctx["origin"], "decision": ctx["decision"], "exit_decision": ctx["exit_decision"],
+                             "cross": [{k: v for k, v in c.items()} for c in ctx["cross"]], "exposure": ctx["exposure"],
+                             "elements": sv.elements(ctx, chart_tf=tf)})
 
     @app.get("/api/patterns")
     def api_patterns():
@@ -2769,7 +2791,8 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
 
     @app.get("/api/chart/{base}")
     def api_chart(base: str, tf: str = Query("4h"), market: str = Query("spot"), book: str = Query("main"), n: int = Query(300),
-                  analysis_id: str | None = Query(None), req: str | None = Query(None)):
+                  analysis_id: str | None = Query(None), req: str | None = Query(None), trade: str | None = Query(None),
+                  as_of: str | None = Query(None)):
         """Mum + analiz katmanlari. SALT OKUMA: defter/ogrenme/analiz kaydi YAZILMAZ; veri indirmez.
         Yanit: `analysis` (kayit ya da gecici hesap), `historical`, `analysis_origin`, `analysis_stored`, `engine_record`
         (motorun son kaydi ve simdiki durumdan farki), `live` (canli defter katmani: zaman + kaynak + pozisyon/plan)."""
@@ -2810,8 +2833,27 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
         payload = build_candle_payload(df, n=n, plan=plan, position=pos, levels=None, base=base, tf=tf, market=market)
         payload.update({"book": book, "books": state.books(), "req": req, "source": src, "tf_ms": TF_MS[tf],
                         "analysis": snap, "historical": bool(historical), "analysis_origin": origin,
-                        "analysis_stored": bool(meta.get("stored")), "engine_record": meta.get("engine_record"), "live": meta.get("live")})
+                        "analysis_stored": bool(meta.get("stored")), "engine_record": meta.get("engine_record"), "live": meta.get("live"),
+                        "structure": _structure_layer(base, market, book, tf, trade=trade, as_of=as_of, historical=bool(historical))})
         return JSONResponse(payload)
+
+    def _structure_layer(base: str, market: str, book: str, tf: str, *, trade: str | None, as_of: str | None,
+                         historical: bool) -> dict:
+        """Grafigin YAPI katmani: motorun karar satirindaki kayit AYNEN (panel yeniden hesaplamaz). Islem secildiyse o
+        islemin GIRIS anindaki satiri; gecmis bir analiz secilip islem secilmediyse katman BOS (anlar karismaz)."""
+        from . import structures_view as sv
+        if historical and not trade:
+            return {"origin": "skipped_historical", "elements": [], "decision": None,
+                    "note": "geçmiş analizde yapı katmanı yalnız seçili işlemin kaydını gösterir"}
+        try:
+            ctx = sv.resolve(state, book_id=book, market=market, symbol=base + "/USDT", trade_id=trade)
+        except Exception as exc:  # noqa: BLE001 — okuma arizasi grafigi BOZMAZ, acikca bildirilir
+            return {"origin": "error", "elements": [], "decision": None, "note": "yapı kaydı okunamadı: %s" % type(exc).__name__}
+        dec = ctx.get("decision") or {}
+        keep = {k: dec.get(k) for k in ("bot", "action", "reason_code", "text_tr", "side", "pattern_ids", "policy_version",
+                                        "decision_id", "at", "trade_id", "mode", "applied", "source")} if dec else None
+        return {"origin": ctx["origin"], "trade": trade, "as_of": as_of, "decision": keep, "elements": sv.elements(ctx, chart_tf=tf),
+                "record_tf": ((dec.get("primary") or {}).get("timeframe") if dec else None)}
 
     @app.get("/api/chart/{base}/history")
     def api_chart_history(base: str, tf: str = Query("4h"), market: str = Query("spot"), book: str = Query("main"), req: str | None = Query(None)):

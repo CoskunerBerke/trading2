@@ -702,7 +702,7 @@ from ..timeframes import SUPPORTED_TIMEFRAMES  # dilim listesi API ile AYNI kayn
 
 
 def chart_block(base: str, tf: str = "4h", market: str = "spot", *, token_qs: str = "", max_bars: int = 600,
-                book: str = "main", books: list[dict] | None = None) -> str:
+                book: str = "main", books: list[dict] | None = None, trade: str | None = None, as_of: str | None = None) -> str:
     """Grafik bloğu: TF / piyasa / DEFTER seçimi, katmanlar, geçmiş analiz, PNG/JSON, kaynak satırı, açıklama + detay."""
     tfs = "".join(f'<option value="{t}" {"selected" if t == tf else ""}>{t}</option>' for t in SUPPORTED_TIMEFRAMES)
     mks = "".join(f'<option value="{m}" {"selected" if m == market else ""}>{m}</option>' for m in ("spot", "futures"))
@@ -721,7 +721,7 @@ def chart_block(base: str, tf: str = "4h", market: str = "spot", *, token_qs: st
 <div id="chart"></div>
 <div class="grid2"><div class="card" id="explain"><div class="mut">açıklama yükleniyor…</div></div><div class="card" id="detail"><div class="mut">Bir çizgi/işarete tıkla.</div></div></div>
 <script src="/static/plotly.min.js{token_qs}"></script>
-<script>window.__chartBase={json.dumps(base)};window.__chartTf={json.dumps(tf)};window.__chartMarket={json.dumps(market)};window.__chartBook={json.dumps(book)};window.__tokenQs={json.dumps(token_qs)};</script>
+<script>window.__chartBase={json.dumps(base)};window.__chartTf={json.dumps(tf)};window.__chartMarket={json.dumps(market)};window.__chartBook={json.dumps(book)};window.__tokenQs={json.dumps(token_qs)};window.__chartTrade={json.dumps(trade or "")};window.__chartAsOf={json.dumps(as_of or "")};</script>
 <script>{CHART_JS}</script>"""
 
 

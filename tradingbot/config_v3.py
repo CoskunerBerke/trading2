@@ -694,6 +694,28 @@ class PatternTraderSection:
 
 
 @dataclass
+class StructuresSection:
+    """ORTAK YAPI KATALOĞU (2026-09-22, `structures_v1`): beş botun mum/grafik yapısını ORTAK analizden okuyup
+    SÜRÜMLÜ politikayla karara bağlaması. Bot başına mod: OFF (hesap yok, davranış bit-bit eski) | SHADOW (analiz ve
+    karar kaydı yazılır, işlem ETKİLENMEZ) | ENFORCE (politika giriş/bekleme/iptal/yönetimi gerçekten etkiler). ENFORCE
+    yalnız PAPER/TESTNET/OBSERVE/SHADOW_LIVE'da. Politika: docs/structures/POLITIKA_MATRISI_v1.md. Varsayılan KAPALI:
+    config.yaml açar; testler ve eski kurulumlar etkilenmez."""
+    enabled: bool = False
+    policy_version: str = "structures_v1"
+    main: str = "OFF"
+    t2_trend_regime: str = "OFF"
+    m2_tsmom28: str = "OFF"
+    b1_box_fade: str = "OFF"
+    pattern_trader: str = "OFF"
+
+    def mode_for(self, bot: str) -> str:
+        """Bot kimliğinin etkin modu (bölüm kapalıysa OFF). Bilinmeyen bot OFF."""
+        if not bool(self.enabled):
+            return "OFF"
+        return str(getattr(self, str(bot), "OFF") or "OFF").upper()
+
+
+@dataclass
 class V3Config:
     app: AppConfig = field(default_factory=AppConfig)
     mode: ModeConfig = field(default_factory=ModeConfig)
@@ -724,6 +746,7 @@ class V3Config:
     strategy_paper: StrategyPaperSection = field(default_factory=StrategyPaperSection)
     chart_analysis: ChartAnalysisSection = field(default_factory=ChartAnalysisSection)
     pattern_trader: PatternTraderSection = field(default_factory=PatternTraderSection)
+    structures: StructuresSection = field(default_factory=StructuresSection)
     warnings: list[str] = field(default_factory=list)
 
 
@@ -739,7 +762,8 @@ _SECTIONS = {"app": AppConfig, "mode": ModeConfig, "markets": MarketsConfig, "un
              "news": NewsSection,
              "strategy_paper": StrategyPaperSection,
              "chart_analysis": ChartAnalysisSection,
-             "pattern_trader": PatternTraderSection}
+             "pattern_trader": PatternTraderSection,
+             "structures": StructuresSection}
 
 VALID_MODES = ("OBSERVE", "PAPER", "TESTNET", "SHADOW_LIVE", "LIVE_LIMITED", "LIVE")
 VALID_LLM_MODES = ("OFF", "POSTMORTEM_ONLY", "ADVISORY", "VETO_ONLY", "RESEARCH_COUNCIL")
@@ -978,6 +1002,18 @@ def validate_v3(cfg: V3Config) -> None:
             app_mode=getattr(cfg.mode, "mode", None))
     except ValueError as exc:
         raise ConfigError(f"entry_selectivity.regime_gate: {exc}") from exc
+    # ORTAK YAPI KATALOĞU (structures_v1): mod/sürüm doğrulaması; ENFORCE gerçek parayla AÇILAMAZ.
+    _st = cfg.structures
+    from .structures.catalog import POLICY_VERSION as _ST_VER
+    if str(_st.policy_version) != _ST_VER:
+        raise ConfigError(f"structures.policy_version {_st.policy_version!r} desteklenmiyor (kod: {_ST_VER})")
+    for _bot in ("main", "t2_trend_regime", "m2_tsmom28", "b1_box_fade", "pattern_trader"):
+        _m = str(getattr(_st, _bot, "OFF") or "OFF").upper()
+        if _m not in ("OFF", "SHADOW", "ENFORCE"):
+            raise ConfigError(f"structures.{_bot} geçersiz mod: {_m!r} (OFF | SHADOW | ENFORCE)")
+        if _m == "ENFORCE" and str(getattr(cfg.mode, "mode", "") or "").upper() in ("LIVE", "LIVE_LIMITED"):
+            raise ConfigError(f"STRUCTURES_NOT_VALIDATED_FOR_LIVE: structures.{_bot}=ENFORCE yalnız PAPER/TESTNET/OBSERVE/SHADOW_LIVE")
+        setattr(_st, _bot, _m)
     # STRATEJİ KÂĞIT DEFTERİ (V10): kurallar `strategy_paper.validate_settings` içinde (SAF, tek kaynak).
     _sp = cfg.strategy_paper
     from .strategy_paper import validate_settings as _sp_validate

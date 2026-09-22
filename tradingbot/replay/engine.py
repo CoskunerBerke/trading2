@@ -637,6 +637,9 @@ class HistoricalReplay:
     def _strategy_pass(self, t: int, now, marks: dict, marks_f: dict, state, syms: list) -> None:
         """ESKI YOL — tek gecis, verilen sirada. Davranis degismez."""
         from ..strategy_paper import apply_action
+        # ORTAK YAPI (2026-09-22): yapı-duyarlı strateji çağrısı kovalama sınırını canlı defterle AYNI fiyattan
+        # (`apply_action`a verilen mark) ölçsün diye turun fiyatları okunabilir tutulur (`paper_rules.replay_strategy`).
+        self._strategy_marks_f = dict(marks_f)
         for sym in syms:
             if sym not in marks_f:
                 continue
@@ -683,6 +686,7 @@ class HistoricalReplay:
         ayri bir degisken olarak sonuca karismaz.
         """
         from ..strategy_paper import apply_action
+        self._strategy_marks_f = dict(marks_f)
         order = {s: i for i, s in enumerate(self.primary)}
         kararlar = []
         for sym in list(self.primary):

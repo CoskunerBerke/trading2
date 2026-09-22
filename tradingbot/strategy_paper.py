@@ -357,6 +357,9 @@ def apply_action(act: dict[str, Any] | None, *, symbol: str, price: float, tick:
         if data is None or not data.ok:
             reject(symbol, (data.reason if (data is not None and data.reason) else "DATA_VERDICT_MISSING"))
             return "REJECTED"
+        if act.get("structure"):
+            # YAPI ÇIKIŞI (structures_v1): kapanışa dayanak yapı kaydın kendisine yazılır (panel "neden çıktı?").
+            pos.features["exit_structure"] = dict(act["structure"])
         rec = ledger.close_manual(symbol, price, reason=str(act.get("reason") or "STRATEGY_EXIT"), now=now, tick=tick)
         if rec is None:
             return "NONE"
@@ -425,7 +428,9 @@ def apply_action(act: dict[str, Any] | None, *, symbol: str, price: float, tick:
                       filters=filters, stop=stop, targets=list(act.get("targets") or []),
                       setup_type=str(act.get("setup_type") or "strategy"), trigger_text=str(act.get("reason") or ""),
                       features={"regime": act.get("regime"), "market_type": "USDM_PERP", "strategy": act.get("name"),
-                                "expected_r": float(act.get("expected_r") or 0.0), "p_win": None, "data_source": data_src},
+                                "expected_r": float(act.get("expected_r") or 0.0), "p_win": None, "data_source": data_src,
+                                # ORTAK YAPI (structures_v1): girişin dayanağı ve politika sürümü — eski ölçümlerden AYRI
+                                "structure": dict(act["structure"]) if act.get("structure") else None},
                       tick=tick, now=now, meta={"run_id": run_id, "strategy": str(act.get("name") or ""), "data_source": data_src})
     if pos is None:
         reject(symbol, ledger.last_reject_reason or "LEDGER_REJECT")
@@ -484,6 +489,11 @@ class StrategyBook:
         self.data_events: list[dict[str, Any]] = []
         #: Gerçekleşmiş funding kaynağı (`bind_funding`); None iken dönemler BEKLER (bekleyen maliyet, tahmin yok).
         self.funding_rates: Any = None
+        #: ORTAK YAPI POLİTİKASI (structures_v1): OFF | SHADOW | ENFORCE (config `structures`). Son kararlar özet dosyasına.
+        _st = getattr(v3, "structures", None)
+        self.structure_mode = _st.mode_for(self.name) if _st is not None else "OFF"
+        self.structure_decisions: dict[str, dict[str, Any]] = {}
+        self._structure_store = None
         self._restore_counters()
 
     def _restore_counters(self) -> None:
@@ -610,6 +620,32 @@ class StrategyBook:
                                    "exit_basis": ((d.get("features") or {}).get("exit_fill") or {}).get("basis")})
         self.closed_recent = self.closed_recent[-50:]
 
+    def _record_structure(self, sym: str, sdec: dict[str, Any], analyses: dict[str, Any], *, res: str, now_ms: int,
+                          pos_before: Any) -> None:
+        """Yapı kararını ortak depoya ve özet dosyasına yazar (panel motorun kaydını çizer). Arıza işlemi ETKİLEMEZ."""
+        try:
+            from .structures.store import StructureStore
+            if self._structure_store is None:
+                self._structure_store = StructureStore(self.cfg.state_path)
+            trade_id = None
+            if res == "OPENED":
+                p = self.ledger.positions.get(sym)
+                trade_id = getattr(p, "id", None)
+            elif res == "CLOSED" and pos_before is not None:
+                trade_id = getattr(pos_before, "id", None)
+            for an in (analyses or {}).values():
+                if an:
+                    self._structure_store.save_latest(an)
+            row = self._structure_store.record_decision(dict(sdec, mode=self.structure_mode, applied=res), book_id=self.key,
+                                                        market="USDM_PERP", symbol=sym, at_ms=now_ms, analyses=analyses,
+                                                        trade_id=trade_id)
+            keep = {k: row.get(k) for k in ("bot", "policy_version", "action", "reason_code", "side", "text_tr", "pattern_ids",
+                                             "primary", "plan", "analysis_ids", "at_ms", "first_seen_ms", "last_seen_ms",
+                                             "decision_id", "trade_id", "mode", "applied")}
+            self.structure_decisions[sym] = keep
+        except Exception as exc:  # noqa: BLE001
+            log.warning("yapı kararı kaydedilemedi (%s %s): %s", self.key, sym, exc)
+
     def _on_opened(self, pos, act: dict[str, Any]) -> None:
         self.counters["opened"] += 1
         try:
@@ -699,9 +735,20 @@ class StrategyBook:
                         would = "ERROR"
                     self._reject_data(sym, verdict, "SIGNAL" if not verdict.ok else "ENTRY", now, would)
                     continue
+                sdec, sanal = None, {}
                 try:
-                    act = paper_rules.decide_for(self.name, frames=fr, btc_rows=btc, now_ms=now_ms,
-                                                 position=pos_obj, params=self.rule_params)
+                    if self.structure_mode != "OFF":
+                        # ORTAK YAPI (structures_v1): canlı defter ve replay AYNI girişi kullanır (paper_rules).
+                        from .structures.bots import StructureContext, used_patterns_of
+                        sctx = StructureContext(mode=self.structure_mode, symbol=sym, as_of_ms=now_ms, price=float(marks_f[sym]),
+                                                used_patterns=used_patterns_of(self.ledger),
+                                                provenance={"market": verdict.market, "source": verdict.source,
+                                                            "tour_id": verdict.tour_id, "bars": dict(verdict.bars)})
+                        act, sdec, sanal = paper_rules.decide_with_structures(self.name, frames=fr, btc_rows=btc, now_ms=now_ms,
+                                                                              position=pos_obj, params=self.rule_params, ctx=sctx)
+                    else:
+                        act = paper_rules.decide_for(self.name, frames=fr, btc_rows=btc, now_ms=now_ms,
+                                                     position=pos_obj, params=self.rule_params)
                 except Exception as exc:  # noqa: BLE001 — strateji arızası SESSİZ GEÇMEZ
                     self._reject(sym, "STRATEGY_ERROR:%s" % type(exc).__name__)
                     continue
@@ -710,6 +757,8 @@ class StrategyBook:
                                    filters=self.filters_cache.get(sym, MarketType.USDM_PERP), run_id=self.run_id,
                                    reject=self._reject, on_closed=self._on_closed, on_opened=self._on_opened, data=verdict,
                                    max_entry_drift_pct=self.max_entry_drift_pct)
+                if sdec is not None:
+                    self._record_structure(sym, sdec, sanal, res=res, now_ms=now_ms, pos_before=pos_obj)
                 if res in ("OPENED", "CLOSED"):
                     self.last_actions[sym] = {"action": res, "reason": (act or {}).get("reason"), "at": iso(now),
                                               "data": {"market": verdict.market, "source": verdict.source, "tour_id": verdict.tour_id, "bars": dict(verdict.bars)}}
@@ -804,6 +853,9 @@ class StrategyBook:
                                      "opened_at": p.opened_at, "last_price": float(p.last_price) if p.last_price else None}
                                  for s, p in self.ledger.positions.items()},
                    "history_tail": self.ledger.history_dicts()[-50:],
+                   # ORTAK YAPI (structures_v1): sembol başına SON yapı kararı (neden girdi/girmedi/çıktı) + mod
+                   "structures": {"mode": self.structure_mode, "policy_version": "structures_v1",
+                                  "decisions": dict(self.structure_decisions)},
                    # FUNDING (2026-09-22): kaynak ve bekleyen dönemler — mutabık olmayan funding AYRI durum olarak görünür
                    "funding": {"contract": FUNDING_SETTLEMENT_CONTRACT,
                                "source": "settlement_source" if getattr(self, "funding_rates", None) is not None else "none",

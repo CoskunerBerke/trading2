@@ -466,6 +466,18 @@ strategy_paper:
         # yakinligi olusmaz.
         leverage_max: 4
 
+structures:                    # ORTAK YAPI KATALOĞU (2026-09-22) — beş bot aynı mum/grafik analizini okur
+  # Politika: docs/structures/POLITIKA_MATRISI_v1.md (kodlamadan önce yazıldı; eşikler sonuçlara göre seçilmedi).
+  # ENFORCE = yapı gerçekten giriş zamanlamasını, beklemeyi, plan iptalini ve açık pozisyon yönetimini etkiler (PAPER).
+  # Kârlılık iddiası YOK: bu sürüm izlenebilir karar entegrasyonudur; ölçüm eski sürümlerden AYRI tutulur.
+  enabled: true
+  policy_version: structures_v1
+  main: ENFORCE
+  t2_trend_regime: ENFORCE
+  m2_tsmom28: ENFORCE
+  b1_box_fade: ENFORCE
+  pattern_trader: ENFORCE
+
 pattern_trader:                # FORMASYON PAPER TRADER V1 — yeni listeleme öncelikli mum formasyonu defteri (AYRI, sanal)
   enabled: true                # PAPER dışında ConfigError; ana bot ve T2/M2 defterlerine DOKUNMAZ
   starting_equity_usdt: 100    # sanal bakiye (ana portföyle TOPLANMAZ)

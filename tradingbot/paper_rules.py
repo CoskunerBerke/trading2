@@ -187,6 +187,51 @@ def decide_for(name: str, *, frames: dict | None, btc_rows: list[dict[str, Any]]
     return decide_from_rows(name, daily=d1, intraday=intra, btc_rows=btc_rows, position=position, params=params)
 
 
+def decide_with_structures(name: str, *, frames: dict | None, btc_rows: list[dict[str, Any]] | None, now_ms: int,
+                           position: Any = None, params: Any = None, ctx: Any = None
+                           ) -> tuple[dict[str, Any] | None, dict[str, Any] | None, dict[str, Any]]:
+    """Defterin kararı + ORTAK YAPI POLİTİKASI (structures_v1). Döner: (uygulanacak aksiyon, yapı kararı, analizler).
+
+    Canlı `StrategyBook.step` ve replay strateji modu BU fonksiyonu çağırır (tek kaynak). `ctx` None ya da mod OFF ise
+    davranış `decide_for` ile bit-bit aynıdır (yapı kararı None). Trend (T2/M2): 1d analiz, kuralın OPEN'ı yapıyla
+    zamanlanır; M2 açık pozisyonda yapı çıkışı. Box: 5m analiz, kutu kenarında dönüş/taşma-geri dönüş, dış kırılım iptali."""
+    d1, intra = _frames_rows(name, frames, now_ms)
+    base = decide_from_rows(name, daily=d1, intraday=intra, btc_rows=btc_rows, position=position, params=params)
+    if ctx is None or str(getattr(ctx, "mode", "OFF")).upper() == "OFF":
+        return base, None, {}
+    from .structures import bots as SB
+    if spec_for(name).family == "trend":
+        return SB.trend_decide(name, daily_rows=d1, base=base, position=position, ctx=ctx)
+    p = params if isinstance(params, box_theory.BoxParams) else box_theory.DEFAULT_PARAMS
+    return SB.box_decide(name, daily_rows=d1, m5_rows=list(intra or []), base=base, position=position, params=p, ctx=ctx)
+
+
+def replay_strategy(name: str, *, params: Any = None, mode: str = "ENFORCE", btc_symbol: str = "BTC/USDT"):
+    """Replay strateji modu için yapı-duyarlı karar çağrısı: `HistoricalReplay(strategy=...)`. Canlı `StrategyBook.step`
+    ile AYNI girdiler: karar anı = adım barının kapanışı, BTC günlük satırları aynı arşivden, kovalama fiyatı = replay'in
+    `apply_action`a vereceği mark (`_strategy_marks_f`), kullanılmış yapılar = defterin kendisi."""
+    from .structures.bots import StructureContext, used_patterns_of
+    from .timeframes import tf_ms as _tfms
+
+    def _strategy(sym, t, fr, pos, eng):
+        now_ms = int(t) + _tfms(eng.tf)
+        btc_fr = eng._slice(btc_symbol, t) if btc_symbol in getattr(eng, "frames", {}) else {}
+        btc = closed_bars(ema200_trend.daily_rows_from_frame((btc_fr or {}).get("1d")), now_ms=now_ms, tf="1d")
+        px = (getattr(eng, "_strategy_marks_f", None) or {}).get(sym)
+        ctx = StructureContext(mode=mode, symbol=sym, as_of_ms=now_ms, price=float(px) if px is not None else None,
+                               used_patterns=used_patterns_of(eng.ledger2),
+                               provenance={"market": "USDM_PERP", "source": "replay_archive", "tour_id": str(getattr(eng, "run_id", ""))})
+        act, dec, _an = decide_with_structures(name, frames=fr, btc_rows=btc, now_ms=now_ms, position=pos, params=params, ctx=ctx)
+        log_ = getattr(eng, "_structure_log", None)
+        if log_ is None:
+            log_ = eng._structure_log = []
+        if dec is not None:
+            log_.append({"symbol": sym, "t": int(t), "action": dec.get("action"), "reason_code": dec.get("reason_code"),
+                         "pattern_ids": list(dec.get("pattern_ids") or []), "applied": (act or {}).get("action")})
+        return act
+    return _strategy
+
+
 def state_for(name: str, *, frames: dict | None, btc_rows: list[dict[str, Any]] | None,
               now_ms: int, params: Any = None) -> dict[str, Any]:
     """Kuralın karşılaştırdığı değerler — ÇERÇEVEDEN (motor yolu)."""
@@ -195,5 +240,5 @@ def state_for(name: str, *, frames: dict | None, btc_rows: list[dict[str, Any]] 
 
 
 __all__ = ["BOX_TIMEFRAMES", "BOX_VARIANTS", "TREND_TIMEFRAMES", "TREND_VARIANTS", "VARIANTS", "RuleSpec",
-           "build_params", "daily_rows", "decide_for", "decide_from_rows", "intraday_rows", "needs_btc",
+           "build_params", "daily_rows", "decide_for", "decide_from_rows", "decide_with_structures", "intraday_rows", "needs_btc", "replay_strategy",
            "rule_timeframes", "spec_for", "state_for", "state_from_rows"]

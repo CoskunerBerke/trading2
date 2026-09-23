@@ -81,6 +81,21 @@ def _opened_ms(position: Any) -> int | None:
     return om(position)
 
 
+def _entry_bar_close_ms(position: Any, tf: str, step_ms: int) -> int | None:
+    """Girişin KULLANDIĞI son kapanmış `tf` barının kapanış anı — pozisyonun veri kaynağı kaydından
+    (`features.data_source.bars[tf]`: kuralın gerçekten okuduğu barın açılışı; canlı ve replay aynı alan). Yoksa None."""
+    f = getattr(position, "features", None)
+    if f is None and isinstance(position, dict):
+        f = position.get("features")
+    ts = (((f or {}).get("data_source") or {}).get("bars") or {}).get(tf)
+    if ts is None or isinstance(ts, bool):
+        return None
+    try:
+        return int(ts) + int(step_ms)
+    except (TypeError, ValueError):
+        return None
+
+
 def _entry_structure(position: Any) -> dict[str, Any] | None:
     f = getattr(position, "features", None)
     if f is None and isinstance(position, dict):
@@ -224,20 +239,28 @@ def box_decide(name: str, *, daily_rows: list[dict[str, Any]], m5_rows: list[dic
             return base, dec, analyses
         side = _side_of(position) or K.SHORT
         edge = "BOX_HIGH" if side == K.SHORT else "BOX_LOW"
-        dec = P.hold_decision(pol, position_side=side, opened_at_ms=_opened_ms(position), entry_pattern_id=None,
+        # "GİRİŞTEN SONRA" = girişin KULLANDIĞI son 5m barının kapanışından sonra (tur-4 doğrulayıcı #3). Dolum anı
+        # (`opened_at`) değil: tur sembolleri sırayla işlerken giriş barıyla dolum arasında bir 5m kapanışı daha olabilir;
+        # o kapanıştaki kırılım girişin bilgisinde YOKTU ve pozisyonu yönetmelidir. Kayıt yoksa (eski pozisyon) dolum anı.
+        opened = _opened_ms(position)
+        ebc = _entry_bar_close_ms(position, "5m", M5_MS)
+        ref_ms = min(ebc, int(opened)) if (ebc is not None and opened is not None) else (ebc if ebc is not None else opened)
+        ref_src = "entry_bar_close" if (ebc is not None and ref_ms == ebc) else ("opened_at" if ref_ms is not None else None)
+        dec = P.hold_decision(pol, position_side=side, opened_at_ms=ref_ms, entry_pattern_id=None,
                               analyses=analyses, as_of_ms=ctx.as_of_ms, accept=lambda r, _e=edge: r.get("reference") == _e)
         if dec["action"] != P.ACT_EXIT:
             # Tur aralığı (~15-20 dk) 5m kaydının tazeliğinden (10-15 dk) uzun olabilir: kırılım gün içi kapanışlardan
             # doğrudan ölçülür (tur-3 doğrulayıcı #1). Kırılım GİRİŞTEN SONRA teyit olmuş olmalı; içeri kapanış iptal eder.
-            opened = _opened_ms(position)
             bo = _outside_breakout(m5_rows, day0, hi if side == K.SHORT else lo, up=side == K.SHORT)
-            if bo is not None and opened is not None and bo["confirmed_at_ms"] > int(opened):
+            if bo is not None and ref_ms is not None and bo["confirmed_at_ms"] > int(ref_ms):
                 ref = next((r for r in an["records"] if r.get("name") == P.BREAKOUT and r.get("reference") == edge), None)
                 dec = P._decision(pol, P.ACT_EXIT, pol.hold_reason or "BOX_OUTSIDE_BREAKOUT_EXIT", side=side, as_of_ms=ctx.as_of_ms,
                                   analyses=analyses, rec=ref, extra={"outside_since_ms": bo["start_ms"],
                                                                      "breakout_confirmed_at_ms": bo["confirmed_at_ms"]},
                                   text_tr="Çıktı: girişten sonra kutu %s dışında teyitli kırılım (ardışık %d kapanış, içeri dönüş yok)." % (
                                       "tepesinin" if side == K.SHORT else "dibinin", K.DEFAULT_CONFIG.breakout_hold_closes))
+        # "girişten sonra" hükmünün dayandığı an kararda görünür (hangi kaynaktan: giriş barı / dolum)
+        dec = dict(dec, detail=dict(dec.get("detail") or {}, entry_reference_ms=ref_ms, entry_reference=ref_src))
         if enforce and dec["action"] == P.ACT_EXIT:
             return ({"action": "CLOSE", "reason": dec["reason_code"], "name": name, "structure": compact(dec)}, dec, analyses)
         return base, dec, analyses

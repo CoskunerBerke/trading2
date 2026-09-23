@@ -11,7 +11,9 @@ Her kapanmış barda analiz, o ana kadarki barlarla (kayan pencere) YENİDEN hes
   IDENTITY_SWITCH_AT_EVENT — oluşan kayıt kendi tetiği kesildiği barda kayboldu ve aynı ad/tarafta YENİ kimlikli
     teyitli kayıt doğdu (o barda teyit olan yeni bir pivot yoksa);
   RECORD_BORN_LATE — önceki değerlendirmede tespit edilebilir olduğu hâlde raporlanmamış kimlik (geçmişe sonradan kayıt);
-  CONFIRMED_WITHDRAWN_WHILE_FRESH — teyitli (taze) kayıt bir sonraki değerlendirmede çıktıda YOK (geçmiş silindi).
+  CONFIRMED_WITHDRAWN_WHILE_FRESH — teyitli (taze) kayıt bir sonraki değerlendirmede çıktıda YOK (geçmiş silindi);
+  TRIANGLE_BREAK_CONFIRMED_TWICE — aynı düz çiftin (ad + taraf + iki düz dayanak) kırılımı iki ayrı kimlikle teyitli
+    (tur-4 doğrulayıcı #2; grup başına bir kez sayılır).
 BİLGİ (meşru gelişme; sayılır): FORMING_LEVEL_REVISIONS, ANCHORS_APPENDED_WHILE_DEVELOPING,
   FORMING_INTERPRETATION_REPLACED, REDEFINED_BY_NEW_PIVOT_AT_TRIGGER_BAR, LATE_BREAK_EVENTS_AFTER_EXPIRY,
   FORMING_WITHDRAWN (oluşan kayıt terminal durum olmadan analizden çıktı).
@@ -43,6 +45,7 @@ def walk_forward_audit(rows: list[dict[str, Any]], *, market: str, symbol: str, 
     prev_ids: set = set()
     prev_name: dict = {}
     prev_as_of = None
+    tri_conf: dict = {}
     n_an = 0
 
     def ex(d: dict[str, Any]) -> None:
@@ -120,6 +123,15 @@ def walk_forward_audit(rows: list[dict[str, Any]], *, market: str, symbol: str, 
                 info["LATE_BREAK_EVENTS_AFTER_EXPIRY"] += 1
             if st == "CONFIRMED" and last_status.get(pid) != "CONFIRMED":
                 names_conf[r.get("name")] += 1
+            if r.get("name") in ("ASCENDING_TRIANGLE", "DESCENDING_TRIANGLE") and r.get("confirmed_at_ms") is not None                     and len(r.get("anchors") or []) >= 2:
+                gk = (r.get("name"), r.get("side"), int(r["anchors"][0]["ts"]), int(r["anchors"][1]["ts"]))
+                grp = tri_conf.setdefault(gk, set())
+                if pid not in grp:
+                    grp.add(pid)
+                    if len(grp) == 2:
+                        v["TRIANGLE_BREAK_CONFIRMED_TWICE"] += 1
+                        ex({"kind": "TRIANGLE_BREAK_CONFIRMED_TWICE", "name_side": [gk[0], gk[1]], "flat_ts": [gk[2], gk[3]],
+                            "pattern_ids": sorted(grp)})
             last_status[pid] = st
         gone_forming = [g for g in prev_ids - ids if last_status.get(g) == "FORMING"]
         info["FORMING_WITHDRAWN"] += len(gone_forming)

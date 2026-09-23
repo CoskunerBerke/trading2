@@ -746,6 +746,10 @@ class StrategyBook:
                                                             "tour_id": verdict.tour_id, "bars": dict(verdict.bars)})
                         act, sdec, sanal = paper_rules.decide_with_structures(self.name, frames=fr, btc_rows=btc, now_ms=now_ms,
                                                                               position=pos_obj, params=self.rule_params, ctx=sctx)
+                        _serr = paper_rules.structure_error_of(sdec)
+                        if _serr:
+                            # ortak geri düşüş arızayı kararda taşır; SAYAÇ da görür (tur-4 doğrulayıcı #5; replay aynı)
+                            self._reject(sym, _serr)
                     else:
                         act = paper_rules.decide_for(self.name, frames=fr, btc_rows=btc, now_ms=now_ms,
                                                      position=pos_obj, params=self.rule_params)
@@ -794,7 +798,8 @@ class StrategyBook:
                     _reason = str((act or {}).get("reason") or "NO_SIGNAL")
                     self.last_actions[sym] = {"action": "NONE", "reason": _reason, "at": iso(now),
                                               "tour": int(self.counters["tours"]), "held": bool(pos_open)}
-                    if _reason != "NO_SIGNAL":
+                    if _reason != "NO_SIGNAL" and not _reason.startswith("STRUCTURE_ERROR"):
+                        # yapı arızası yukarıda `_reject` ile BİR KEZ sayıldı (çift sayım yok)
                         self.rejections[_reason] = self.rejections.get(_reason, 0) + 1
 
     def _bar_binding(self, frames: dict | None, verdict: DataVerdict, now_ms: int) -> tuple[str | None, int | None]:

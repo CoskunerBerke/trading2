@@ -323,6 +323,8 @@ def _chart(rows, atr, *, market, symbol, tf, step, cfg: K.StructuresConfig) -> t
     n = len(crow)
     out: list[dict] = []
     unclassified = 0
+    tri_resolved: set = set()
+    tri_skipped = 0
 
     edge = {"n": 0}
 
@@ -390,6 +392,15 @@ def _chart(rows, atr, *, market, symbol, tf, step, cfg: K.StructuresConfig) -> t
     for c in sc["candidates"]:
         pat = c["pattern"]
         if pat in ("ASCENDING_TRIANGLE", "DESCENDING_TRIANGLE"):
+            # DÜZ ÇİFT KİMLİĞİ (tur-4 doğrulayıcı #2): aynı düz çiftin ardışık eğim çiftleri AYNI üçgenin "o anki"
+            # yorumlarıdır (üreteç onları eğim sırasıyla verir). Önceki yorum yerini almadan ÖNCE sınırlarında bir olay
+            # yaşadıysa (teyit ya da bozulma) üçgen o anda çözülmüştür; sonraki yorum AYNI kırılımı ikinci kez teyit
+            # edemez ve hiç "o anki" olmaz (kayıt yok). Karar yalnız selefin yerini almadan önceki kapanışlarına bağlıdır
+            # (ardılın tanınma anından önce sabittir): kayıt doğup sonra kaybolmaz.
+            key = (pat, int(c["anchors"][0]["index"]), int(c["anchors"][1]["index"]))
+            if key in tri_resolved:
+                tri_skipped += 1
+                continue
             desc = bool(c["descending"])
             support, lba = c["support"], c["line_before_apex"]
             # iki yönlü aday: düz sınır kırılışı ve eğik sınır kırılışı ayrı kayıt (biri teyit olursa diğeri o bar
@@ -405,6 +416,8 @@ def _chart(rows, atr, *, market, symbol, tf, step, cfg: K.StructuresConfig) -> t
                           extra_reasons=("PAIRED_TRIANGLE_SIDE",) + (("SLOPED",) if trig is lba else ()))
                 if r is not None:
                     out.append(r)
+                    if r.get("confirmed_at_ms") is not None or r.get("status") == K.ST_BROKEN:
+                        tri_resolved.add(key)
             continue
         side = _CHART_SIDE[c["side"]]
         name = pat
@@ -424,6 +437,8 @@ def _chart(rows, atr, *, market, symbol, tf, step, cfg: K.StructuresConfig) -> t
         rej.append({"detector": "chart", "reason": "FLAG_CHANNEL_UNCLASSIFIED", "count": unclassified})
     if edge["n"]:
         rej.append({"detector": "chart", "reason": "FLAG_IDENTITY_AT_WINDOW_EDGE", "count": edge["n"]})
+    if tri_skipped:
+        rej.append({"detector": "chart", "reason": "TRIANGLE_FLAT_PAIR_ALREADY_RESOLVED", "count": tri_skipped})
     # BAYRAK/FLAMA — KİMLİK BAŞINA TEK KAYIT (2026-09-23). Aynı direk ucunun (kimlik) iç içe yorumları farklı
     # uzunlukta konsolidasyon okur: sıkı yorum önce kırılır, gevşek yorum aynı barda hâlâ oluşuyor olabilir. Seçim:
     # olay yaşamış (teyit/bozulma/süre) yorum varsa İLK olay (ilk kırılış) — yapı o anda teyit olmuştur ve seviyeler

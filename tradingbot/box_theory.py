@@ -137,11 +137,24 @@ def rows_from_frame(frame, tail: int = 400) -> list[dict[str, Any]]:
         return []
 
 
-def read_box(daily_rows: list[dict[str, Any]]) -> tuple[float, float] | None:
-    """(box_high, box_low) — SON KAPANMIŞ günlük barın uçları. Ölçülemezse None (fail-closed)."""
-    if not daily_rows or len(daily_rows) < MIN_DAILY_BARS:
+def read_box(daily_rows: list[dict[str, Any]], *, before_ms: int | None = None) -> tuple[float, float] | None:
+    """(box_high, box_low) — SON KAPANMIŞ günlük barın uçları. Ölçülemezse None (fail-closed).
+
+    `before_ms` (değerlendirilen 5m barının UTC gün başı) verilirse kutu, açılışı ondan ÖNCE olan son günlük bardır
+    (tur-4 doğrulayıcı #4): 00:00-00:05 UTC aralığında son kapanmış 5m barı hâlâ DÜNE aittir ama dünün günlük barı da
+    kapanmıştır; önce kutu olarak o gün (değerlendirilen barı İÇEREN gün) okunuyordu. Günü okunamayan bar → None."""
+    rows = list(daily_rows or [])
+    if before_ms is not None:
+        while rows:
+            ts = _i(rows[-1].get("timestamp"))
+            if ts is None:
+                return None
+            if ts < int(before_ms):
+                break
+            rows.pop()
+    if not rows or len(rows) < MIN_DAILY_BARS:
         return None
-    last = daily_rows[-1]
+    last = rows[-1]
     hi, lo = _f(last.get("high")), _f(last.get("low"))
     if hi is None or lo is None or not (hi > lo > 0):
         return None
@@ -150,6 +163,14 @@ def read_box(daily_rows: list[dict[str, Any]]) -> tuple[float, float] | None:
 
 def _day_start_ms(ts: int) -> int:
     return int(ts) - (int(ts) % DAY_MS)
+
+
+def _eval_day_start(m5_rows: list[dict[str, Any]] | None) -> int | None:
+    """Değerlendirilen (son kapanmış) 5m barının UTC gün başı; okunamazsa None."""
+    if not m5_rows:
+        return None
+    ts = _i(m5_rows[-1].get("timestamp"))
+    return _day_start_ms(ts) if ts is not None else None
 
 
 def read_intraday(m5_rows: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -266,7 +287,7 @@ def decide(variant: str = "b1_box_fade", *, daily_rows: list[dict[str, Any]],
     if variant not in VARIANTS:
         raise ValueError("bilinmeyen strateji varyanti: %r" % (variant,))
     p = params.validate()
-    box = read_box(daily_rows)
+    box = read_box(daily_rows, before_ms=_eval_day_start(m5_rows))
     intr = read_intraday(m5_rows)
     if box is None or intr is None:
         return None
@@ -325,7 +346,7 @@ def rule_state(variant: str = "b1_box_fade", *, daily_rows: list[dict[str, Any]]
                            "min_daily_bars": MIN_DAILY_BARS, "min_m5_bars": MIN_M5_BARS,
                            "params_label": p.label(), "near_frac": float(p.near_frac),
                            "exit_kind": p.exit_kind, "reason": None}
-    box = read_box(daily_rows or [])
+    box = read_box(daily_rows or [], before_ms=_eval_day_start(m5_rows))
     if box is None:
         out["reason"] = "NOT_ENOUGH_DAILY_BARS" if len(daily_rows or []) < MIN_DAILY_BARS else "DAILY_ROWS_UNREADABLE"
         return out

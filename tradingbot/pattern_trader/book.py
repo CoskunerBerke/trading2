@@ -645,7 +645,13 @@ class PatternBook:
             return
         rec = next((r for r in an["records"] if r.get("pattern_id") == pid), None)
         if rec is None and pl["status"] == PL_TRIGGERED:
-            return                                     # teyit gerçekleşti; kayıt görünmüyorsa giriş denenmez, süre sınırı işler
+            # teyit gerçekleşti; kayıt görünmüyorsa giriş denenmez (adım 3 süzgeci). Planın KENDİ geçerlilik sınırı BURADA
+            # işler: giriş yolu (`_try_open`) bu plana hiç ulaşmadığı için süre orada dolamaz — önce plan hiç bitmiyor ve
+            # aynı aile/yöndeki yeni planları engelliyordu (tur-4 doğrulayıcı #1).
+            if self.is_expired(pl, dec_ms):
+                self._set_status(pl, PL_EXPIRED, dec_ms, "EXPIRED_AT_SCAN_RECORD_MISSING")
+                self.counters["expired"] += 1
+            return
         if rec is None:
             self._set_status(pl, PL_CANCELLED, int(as_of_ms), "RECORD_WITHDRAWN")
             pl["cancel_detail"] = {"analysis_id": an.get("analysis_id"), "note": "kayıt analizde yok: yapı tanımı artık sağlanmıyor"}

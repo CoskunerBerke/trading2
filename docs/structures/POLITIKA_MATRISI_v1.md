@@ -126,3 +126,25 @@ doğrulandı ve düzeltildi; her biri için `905098d`'de düşen gerileme testi 
   kapanış satırı başka sembolün analizini taşımaz.
 * Süresi dolan kaydın `expires_at_ms`i sona erdiği andır; eğik tetikli oluşan üçgenin son geçerliliği tepe noktasını aşmaz.
   Önbellekte kayıt düzeyinde de an ve kaynak çağıranındır.
+
+## G. `structures_v1.4` — üçüncü doğrulama turu (2026-09-23, dağıtımdan ÖNCE)
+
+`68e1a14` üzerinde üçüncü bağımsız doğrulayıcı 5 bulgu raporladı (1 orta, 4 düşük; kritik/yüksek yok); hepsi kaynaktan
+doğrulandı ve düzeltildi; her biri için `68e1a14`'te DAVRANIŞLA düşen gerileme testi var (`test_r4_*`; kanıt
+`docs/review/evidence-2026-09-22-shared/revert_round4_on_68e1a14.txt`). **Eşik değişmedi.** Anlamı değişenler:
+
+* **Üçgen — düz çift kimliği**: aynı düz çiftin ardışık eğim-çifti yorumlarından biri yerini almadan ÖNCE sınırlarında
+  olay yaşadıysa (teyit ya da bozulma), sonraki yorumlar hiç doğmaz (`rejects`: `TRIANGLE_FLAT_PAIR_ALREADY_RESOLVED`).
+  Önce aynı kırılım iki kimlikle iki kez teyit oluyordu. Selef olaysız yerini alırsa ardıl doğar ve kendi kırılımını
+  teyit eder. Denetime `TRIANGLE_BREAK_CONFIRMED_TWICE` ihlali eklendi (gerçek arşiv ölçümü inceleme belgesinde).
+* **Formasyon**: kaydı analizden çekilen tetiklenmiş v2 planı kendi süre sınırında `EXPIRED_AT_SCAN_RECORD_MISSING` ile
+  biter (önce hiç bitmiyordu ve aynı aile/yöndeki yeni planları engelliyordu).
+* **Box — "girişten sonra"**: dış kırılım ve karşı yapı, girişin KULLANDIĞI son 5m barının kapanışıyla karşılaştırılır
+  (`features.data_source.bars["5m"]`, canlı ve replay aynı alan; yoksa dolum anı). Dayanak kararın
+  `detail.entry_reference_ms` / `detail.entry_reference` alanında görünür.
+* **Box — kutu günü (temel kural da değişir)**: kutu, değerlendirilen 5m barının UTC gününden ÖNCEKİ son günlük bardır
+  (`box_theory.read_box(before_ms=...)`; `decide` ve `rule_state` aynı okuma). Önce günün SON 5m barı değerlendirilirken
+  (canlıda 00:00–00:05 UTC'ye düşen tur, replay'de her günün son adımı) o anda kapanmış olan AYNI günün barı kutu
+  sayılıyordu — değerlendirilen barı içeren gün. Değişiklik yalnız o adımı etkiler; canlı ve replay birlikte değişir.
+* **Yapı arızası sayacı**: ortak geri düşüşten gelen `STRUCTURE_ERROR:<tür>` canlı defterde ve replay'de ret sayacına
+  BİR KEZ yazılır (önce tur-3 taşımasından sonra hiç sayılmıyordu).

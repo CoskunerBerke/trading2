@@ -216,6 +216,13 @@ def decide_with_structures(name: str, *, frames: dict | None, btc_rows: list[dic
         return base, dec, {}
 
 
+def structure_error_of(dec: dict[str, Any] | None) -> str | None:
+    """Yapı kararı ortak geri düşüşten geliyorsa arıza kodu (`STRUCTURE_ERROR:<tür>`); değilse None. Canlı defter ve
+    replay AYNI koşulla ret sayacına yazar."""
+    why = str((dec or {}).get("reason_code") or "")
+    return why if why.startswith("STRUCTURE_ERROR") else None
+
+
 def replay_strategy(name: str, *, params: Any = None, mode: str = "ENFORCE", btc_symbol: str = "BTC/USDT"):
     """Replay strateji modu için yapı-duyarlı karar çağrısı: `HistoricalReplay(strategy=...)`. Canlı `StrategyBook.step`
     ile AYNI girdiler: karar anı = adım barının kapanışı, BTC günlük satırları aynı arşivden, kovalama fiyatı = replay'in
@@ -232,6 +239,9 @@ def replay_strategy(name: str, *, params: Any = None, mode: str = "ENFORCE", btc
                                used_patterns=used_patterns_of(eng.ledger2),
                                provenance={"market": "USDM_PERP", "source": "replay_archive", "tour_id": str(getattr(eng, "run_id", ""))})
         act, dec, _an = decide_with_structures(name, frames=fr, btc_rows=btc, now_ms=now_ms, position=pos, params=params, ctx=ctx)
+        _serr = structure_error_of(dec)
+        if _serr and hasattr(eng, "_reject"):
+            eng._reject(sym, _serr)                     # canlı defterle AYNI sayaç (tur-4 doğrulayıcı #5)
         log_ = getattr(eng, "_structure_log", None)
         if log_ is None:
             log_ = eng._structure_log = []
@@ -251,4 +261,5 @@ def state_for(name: str, *, frames: dict | None, btc_rows: list[dict[str, Any]] 
 
 __all__ = ["BOX_TIMEFRAMES", "BOX_VARIANTS", "TREND_TIMEFRAMES", "TREND_VARIANTS", "VARIANTS", "RuleSpec",
            "build_params", "daily_rows", "decide_for", "decide_from_rows", "decide_with_structures", "intraday_rows", "needs_btc", "replay_strategy",
+           "structure_error_of",
            "rule_timeframes", "spec_for", "state_for", "state_from_rows"]

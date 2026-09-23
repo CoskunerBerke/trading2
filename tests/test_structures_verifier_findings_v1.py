@@ -496,3 +496,142 @@ def test_r3_9_cached_records_carry_the_callers_moment_and_source():
     assert a["records"], "sentetik seride kayıt var"
     assert all(r["as_of_ms"] == b["as_of_ms"] and r["data_provenance"]["source"] == "perp_frames" for r in b["records"])
     assert all(r["data_provenance"]["source"] is None for r in a["records"]), "ilk çağıranın kayıtları değişmedi"
+
+
+# ============================================================================ TUR 4 (düzeltmelerin doğrulaması, 68e1a14)
+def test_r4_1_a_triggered_v2_plan_whose_record_left_the_analysis_ends_at_its_own_expiry(tmp_path, monkeypatch):
+    """Kayıt analizden çekilen tetiklenmiş v2 planı süre sınırında biter (önce hiç bitmiyordu: giriş yolu ona hiç
+    ulaşmadığı için süre orada dolamıyordu ve plan aynı aile/yöndeki yeni planları engelliyordu)."""
+    book = _book(tmp_path)
+    rows = neutral_trend(80, start_ms=T0, step=900_000, up=True, scale=0.3)
+    as_of = int(rows[-1]["timestamp"]) + 900_000
+    pl = dict(_plan("TRIGGERED"), expires_at_ms=as_of + 2 * 900_000, triggered_at_ms=as_of - 900_000)
+    book.plans[pl["plan_id"]] = pl
+    an = {"15m": {"market": "USDM_PERP", "analysis_id": "a1", "records": []}}
+    monkeypatch.setattr(book, "_structure_analyses", lambda *a, **k: an)
+    kw = dict(bars_by_tf={"15m": rows, "1h": [], "4h": []}, statuses={}, universe_entry=None, price=None, liquidity=None, run_id="t")
+    book.process_symbol("LNG/USDT", as_of_ms=as_of, **kw)
+    assert pl["status"] == "TRIGGERED" and not book.ledger.positions, "süre dolmadan: bekler, kayıt yokken AÇILMAZ"
+    book.process_symbol("LNG/USDT", as_of_ms=as_of + 3 * 900_000, **kw)
+    assert pl["status"] == "EXPIRED" and pl["reasons"][-1] == "EXPIRED_AT_SCAN_RECORD_MISSING", (pl["status"], pl["reasons"])
+    assert not book.ledger.positions
+
+
+def _tri_rows(*, breakout_before_successor: bool):
+    """Yükselen üçgen: düz tepeler f1/f2 (~110), yükselen dipler q1 < q2 < q3 (q3, f2'den sonra). Kırılım q3'ün
+    teyidinden ÖNCE (selef A kırılımı teyit eder) ya da SONRA (A yerini alınca biter, ardıl B teyit eder)."""
+    lead = [80.0 + 20.0 * i / 59 for i in range(60)]
+    tail = [(39, 110.6), (40, 110.9), (44, 111.4)] if breakout_before_successor else [(41, 108.0), (44, 108.8), (46, 110.8), (48, 111.3)]
+    way = [(0, 100.0), (10, 110.0), (16, 101.0), (21, 108.0), (26, 103.0), (32, 110.1), (37, 105.0)] + tail
+    path = []
+    for (i0, p0), (i1, p1) in zip(way, way[1:]):
+        path += [p0 + (p1 - p0) * (i - i0) / (i1 - i0) for i in range(i0, i1)]
+    closes = lead + path + [way[-1][1]]
+    peaks, troughs = {60 + 10, 60 + 21, 60 + 32}, {60 + 16, 60 + 26, 60 + 37}
+    rows, prev = [], closes[0] - 0.1
+    for k, c in enumerate(closes):
+        rows.append(_bar(T0 + k * H4, prev, max(prev, c) + (0.3 if k in peaks else 0.05),
+                         min(prev, c) - (0.3 if k in troughs else 0.05), c))
+        prev = c
+    return rows
+
+
+def test_r4_2_the_same_triangle_break_is_confirmed_once_per_flat_pair_and_the_successor_is_never_born():
+    rows = _tri_rows(breakout_before_successor=True)
+    seen: dict[str, int] = {}
+    for end in range(len(rows) - 12, len(rows) + 1):              # ileri yürüyüş: her kapanmış barda yeniden hesap
+        A.clear_cache()
+        an = A.analyze(market="USDM_PERP", symbol="SYN/USDT", timeframe="4h", bars=rows[:end], as_of_ms=int(rows[end - 1]["timestamp"]) + H4)
+        for r in an["records"]:
+            if r["name"] == "ASCENDING_TRIANGLE" and r["side"] == K.LONG and r["confirmed_at_ms"] is not None:
+                seen.setdefault(r["pattern_id"], int(r["confirmed_at_ms"]))
+    assert len(seen) == 1, "aynı düz çiftin kırılımı TEK teyit: %s" % seen
+    assert any(x.get("reason") == "TRIANGLE_FLAT_PAIR_ALREADY_RESOLVED" for x in an["rejects"]), an["rejects"]
+    # selef olaysız yerini alırsa ardıl DOĞAR ve kendi kırılımını teyit eder (aşırı bastırma yok)
+    rows2 = _tri_rows(breakout_before_successor=False)
+    A.clear_cache()
+    an2 = A.analyze(market="USDM_PERP", symbol="SYN/USDT", timeframe="4h", bars=rows2, as_of_ms=int(rows2[-1]["timestamp"]) + H4)
+    longs = [r for r in an2["records"] if r["name"] == "ASCENDING_TRIANGLE" and r["side"] == K.LONG]
+    assert sorted((r["status"], r["confirmed_at_ms"] is not None) for r in longs) == [(K.ST_CONFIRMED, True), (K.ST_EXPIRED, False)], \
+        [(r["status"], r["reason_codes"]) for r in longs]
+    assert any("SUPERSEDED_BY_NEW_PIVOT" in r["reason_codes"] for r in longs)
+
+
+def test_r4_2b_the_walk_forward_audit_counts_a_triangle_break_confirmed_twice(monkeypatch):
+    """Denetim ölçütünün kendisi: aynı düz çiftin iki kimlikle teyidi grup başına BİR ihlal (gerçek arşiv ölçümü bununla)."""
+    from tradingbot.structures import audit as AU
+    rows = _rows([100] * 6)
+
+    def rec(pid, conf):
+        return {"pattern_id": pid, "name": "ASCENDING_TRIANGLE", "side": K.LONG, "status": K.ST_CONFIRMED, "confirmed_at_ms": conf,
+                "anchors": [{"ts": T0, "price": 110.0, "role": "duz1"}, {"ts": T0 + H4, "price": 110.1, "role": "duz2"},
+                            {"ts": T0 + 2 * H4, "price": 101.0, "role": "egik1"}], "detected_at_ms": T0 + 3 * H4}
+    monkeypatch.setattr(AU, "analyze", lambda **k: {"records": [rec("a", T0 + 4 * H4), rec("b", T0 + 5 * H4)], "rejects": []})
+    r = AU.walk_forward_audit(rows, market="USDM_PERP", symbol="S", timeframe="4h", step_ms=H4, n_eval=3)
+    assert r["violations"].get("TRIANGLE_BREAK_CONFIRMED_TWICE") == 1, r["violations"]
+
+
+def test_r4_3_box_exit_compares_the_breakout_to_the_entry_bar_not_to_the_fill_time():
+    from tradingbot import box_theory
+    day0 = T0 + 300 * DAY
+    daily, m5 = box_day(day0=day0, ending="none")
+    t = m5[-1]["timestamp"]                                       # girişin kullandığı son 5m barı (kapanış t+5dk)
+    rows = list(m5) + [_bar(t + M5, 104.2, 105.9, 104.1, 105.6),    # kutu (105) üstünde 1. kapanış
+                       _bar(t + 2 * M5, 105.6, 106.0, 105.3, 105.8)]  # 2. kapanış → teyit t+3*5dk
+    fill = t + 3 * M5 + 120_000                                   # yavaş tur: dolum teyitten SONRA
+    ctx = SB.StructureContext(mode="ENFORCE", symbol="SYN/USDT", as_of_ms=int(rows[-1]["timestamp"]) + M5, price=rows[-1]["close"])
+
+    def pos(entry_bar):
+        feats = {"structure": {}, "data_source": {"bars": {"5m": entry_bar, "1d": day0 - DAY}}}
+        return SimpleNamespace(opened_at=_iso(fill), side=SimpleNamespace(value="SHORT"), features=feats, fills=[])
+    act, dec, _ = SB.box_decide("b1_box_fade", daily_rows=daily, m5_rows=rows, base=None, position=pos(t),
+                                params=box_theory.BoxParams(), ctx=ctx)
+    assert dec["action"] == P.ACT_EXIT and act["action"] == "CLOSE", (dec["action"], dec["reason_code"])
+    assert dec["detail"]["entry_reference"] == "entry_bar_close" and dec["detail"]["entry_reference_ms"] == t + M5
+    # giriş barı kırılımın teyidinden SONRA ise (bilgi girişte vardı) çıkış yok
+    _, dec2, _ = SB.box_decide("b1_box_fade", daily_rows=daily, m5_rows=rows, base=None, position=pos(t + 2 * M5),
+                               params=box_theory.BoxParams(), ctx=ctx)
+    assert dec2["action"] != P.ACT_EXIT
+
+
+def test_r4_4_the_box_is_the_day_before_the_evaluated_5m_bar_also_between_00_00_and_00_05_utc():
+    from tradingbot import box_theory
+    day0 = T0 + 300 * DAY
+    daily, _ = box_day(day0=day0, ending="none")                  # son günlük bar = day0-1: kutu (95, 105)
+    m5 = neutral_trend(288, start_ms=day0, step=M5, px0=101.0, up=True, scale=0.02)   # day0'ın tüm 5m barları
+    d_bar = _bar(day0, m5[0]["open"], max(r["high"] for r in m5), min(r["low"] for r in m5), m5[-1]["close"])
+    assert d_bar["high"] != 105.0
+    daily_now = daily + [d_bar]                                   # 00:02: day0'ın günlük barı da kapandı
+    st = box_theory.rule_state("b1_box_fade", daily_rows=daily_now, m5_rows=m5)
+    assert (st["box_high"], st["box_low"]) == (105.0, 95.0), "değerlendirilen bar day0'a ait → kutu day0-1"
+    assert box_theory.read_box(daily_now, before_ms=day0) == (105.0, 95.0)
+    nxt = m5 + [_bar(day0 + DAY, m5[-1]["close"], m5[-1]["close"] + 0.1, m5[-1]["close"] - 0.1, m5[-1]["close"])]
+    st2 = box_theory.rule_state("b1_box_fade", daily_rows=daily_now, m5_rows=nxt)
+    assert (st2["box_high"], st2["box_low"]) == (d_bar["high"], d_bar["low"]), "yeni günün ilk barı → kutu day0"
+    bad = daily[:-1] + [dict(daily[-1], timestamp=None)]
+    assert box_theory.read_box(bad, before_ms=day0) is None, "günü okunamayan bar: fail-closed"
+
+
+def test_r4_5_a_structure_error_is_counted_once_in_live_and_in_replay(tmp_path, monkeypatch):
+    import test_structures_strategy_books_v1 as S
+
+    from tradingbot import paper_rules
+
+    def boom(*a, **k):
+        raise RuntimeError("yapı katmanı arızası")
+    monkeypatch.setattr(SB, "trend_decide", boom)
+    flag, brk = S._daily_flag()
+    btc = S._btc(len(brk))
+    opened = {"action": "OPEN", "direction": "LONG", "stop": brk[-1]["close"] * 0.9, "name": "t2_trend_regime", "leverage": 2}
+    monkeypatch.setattr(paper_rules, "decide_from_rows", lambda *a, **k: dict(opened))
+    book = S._book(S._cfg(tmp_path, "ENFORCE"), "t2_trend_regime")
+    S._step(book, {"1d": brk}, as_of_ms=S._asof(brk), price=brk[-1]["close"], btc=btc)
+    assert S.SYM not in book.ledger.positions, "ENFORCE: yapı ölçülemezken yeni giriş yok"
+    assert book.rejections.get("STRUCTURE_ERROR:RuntimeError") == 1 and book.counters["rejected"] == 1, (book.rejections, book.counters)
+    # replay: aynı ortak geri düşüş, aynı sayaç
+    got: list = []
+    eng = SimpleNamespace(tf="1d", frames={}, ledger2=SimpleNamespace(positions={}, history=[]), run_id="r",
+                          _strategy_marks_f={S.SYM: brk[-1]["close"]}, _reject=lambda s, why: got.append((s, why)))
+    fn = paper_rules.replay_strategy("t2_trend_regime", mode="ENFORCE")
+    act = fn(S.SYM, int(brk[-1]["timestamp"]), {"1d": pd.DataFrame(brk)}, None, eng)
+    assert act["action"] == "NONE" and got == [(S.SYM, "STRUCTURE_ERROR:RuntimeError")], (act, got)

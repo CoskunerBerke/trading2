@@ -132,7 +132,7 @@ def _event_idx(st: dict[str, Any], n: int) -> int:
 
 
 def _run_status(rows: list[dict[str, Any]], *, start: int, detected_idx: int, side: str, trigger_at, invalidation: float,
-                window: int, fresh_bars: int) -> dict[str, Any]:
+                window: int, fresh_bars: int, superseded_idx: int | None = None) -> dict[str, Any]:
     """Tetik/geçersizlik kapanışlarını `start` indeksinden itibaren kronolojik uygular.
 
     `trigger_at(k)` k barındaki tetik seviyesi (None → o barda tetik yok, ör. üçgen tepe noktasından sonra). LONG:
@@ -159,6 +159,12 @@ def _run_status(rows: list[dict[str, Any]], *, start: int, detected_idx: int, si
         if k < detected_idx:
             k += 1
             continue                                   # tanınmadan önceki kapanış teyit ETMEZ
+        if superseded_idx is not None and k >= superseded_idx:
+            # yeni bir dayanak pivot (üçgenin eğim tarafı) teyit oldu: bu aday artık "o anki" yapı değil; teyit olmadan
+            # sona erer (kaydı çıktıdan DÜŞMEZ — geçmiş korunur; tur-3 doğrulayıcı #2)
+            res.update(status=K.ST_EXPIRED, expired_idx=k)
+            res["reasons"].append("SUPERSEDED_BY_NEW_PIVOT")
+            return res
         lvl = trigger_at(k)
         if lvl is None:
             res.update(status=K.ST_EXPIRED, expired_idx=k)
@@ -199,7 +205,9 @@ def _finish(rec: dict[str, Any], rows, st: dict[str, Any], *, step: int, n: int,
         int(rows[detected_idx]["timestamp"]) + (window + 1) * step if st["expired_idx"] is not None else None)
     rec["bars_since_confirm"] = (n - 1 - st["confirm_idx"]) if st["confirm_idx"] is not None else None
     rec["fresh"] = bool(st["status"] == K.ST_CONFIRMED)
-    if st["confirm_idx"] is None:
+    if st["status"] == K.ST_EXPIRED and rec.get("expired_at_ms") is not None:
+        rec["expires_at_ms"] = rec["expired_at_ms"]      # sona erdiği an (tepe noktası/yerini alma/pencere/bayatlama)
+    elif st["confirm_idx"] is None:
         rec["expires_at_ms"] = int(rows[detected_idx]["timestamp"]) + (window + 1) * step
     else:
         # Teyit barından sonra `fresh_bars` bar kapanana kadar TAZE; bir sonraki (fresh_bars+1.) bar kapanınca EXPIRED.
@@ -322,6 +330,9 @@ def _chart(rows, atr, *, market, symbol, tf, step, cfg: K.StructuresConfig) -> t
         det = int(c["last_confirm_idx"])
         if det >= n:
             return None                                   # son pivot henüz teyitli değil: yapı BİLİNMİYOR
+        sup = c.get("superseded_idx")
+        if sup is not None and int(sup) <= det:
+            return None                                   # tanınmadan ÖNCE yerini almış aday hiç "o anki" olmadı
         ia = c.get("identity_anchor")
         if ia is not None and int(ia.get("index", 0)) < ccfg.flag_pole_bars:
             # PENCERE KENARI: bu direk ucunu paylaşan yorumların bir kısmının direk başı taranan pencerenin DIŞINDA;
@@ -329,7 +340,8 @@ def _chart(rows, atr, *, market, symbol, tf, step, cfg: K.StructuresConfig) -> t
             edge["n"] += 1
             return None
         st = _run_status(crow, start=start, detected_idx=det, side=side, trigger_at=trigger_at, invalidation=invalidation,
-                         window=cfg.chart_trigger_window, fresh_bars=cfg.fresh_bars)
+                         window=cfg.chart_trigger_window, fresh_bars=cfg.fresh_bars,
+                         superseded_idx=int(sup) if sup is not None else None)
         a = atr[det + off] if 0 <= det + off < len(atr) else None
         end_idx = _event_idx(st, n)
         lvl_end = trigger_at(end_idx)
@@ -359,6 +371,12 @@ def _chart(rows, atr, *, market, symbol, tf, step, cfg: K.StructuresConfig) -> t
         if c.get("identity_anchor"):
             rec["pole"] = {"start": _anc(c["anchors"][0]), "end": _anc(c["anchors"][1])}
         _finish(rec, crow, st, step=step, n=n, window=cfg.chart_trigger_window, fresh_bars=cfg.fresh_bars, detected_idx=det)
+        if st["status"] == K.ST_FORMING:
+            # EĞİK tetik tepe noktasında tanımsızlaşır: yayımlanan son geçerlilik o barın kapanışını AŞMAZ (R2-8)
+            for j in range(det, det + cfg.chart_trigger_window + 1):
+                if trigger_at(j) is None:
+                    rec["expires_at_ms"] = min(int(rec["expires_at_ms"]), int(crow[n - 1]["timestamp"]) + (j - (n - 1) + 1) * step)
+                    break
         # Bayrak/flama kimliği addan BAĞIMSIZ: aynı direk ucunun paralel (bayrak) ve daralan (flama) yorumları tek yapıdır.
         rec["pattern_id"] = _pid(market, symbol, tf, "FLAG_OR_PENNANT" if c.get("identity_anchor") else name, side,
                                  [a_["ts"] for a_ in anchors], cfg.policy_version)
@@ -514,7 +532,8 @@ def _levels_for_scenarios(rows, swings, reference_levels, step) -> list[dict]:
     out = []
     for p in swings:
         out.append({"name": "SWING_%s" % ("HIGH" if p["side"] == "high" else "LOW"), "level": float(p["level"]),
-                    "kind": p["side"], "valid_from_idx": int(p["confirmed_at_index"]) + 1, "anchor_ts": int(p["timestamp"])})
+                    "kind": p["side"], "valid_from_idx": int(p["confirmed_at_index"]) + 1, "anchor_ts": int(p["timestamp"]),
+                    "valid_until_idx": p.get("valid_until_idx")})
     for r in reference_levels or []:
         try:
             lv = float(r["level"])
@@ -536,7 +555,10 @@ def _sweeps_and_breakouts(rows, atr, levels, *, market, symbol, tf, step, cfg) -
     for L in levels:
         lv, hi_side = L["level"], L["kind"] == "high"
         k = max(L["valid_from_idx"], horizon)
+        until = L.get("valid_until_idx")
         while k < n:
+            if until is not None and k >= int(until):
+                break                                        # seviye artık "o anki" kümede değil: yeni olay başlatmaz
             b = rows[k]
             over = (b["high"] > lv) if hi_side else (b["low"] < lv)
             inside_before = k > 0 and ((rows[k - 1]["close"] <= lv) if hi_side else (rows[k - 1]["close"] >= lv))
@@ -640,7 +662,8 @@ def _retests(rows, atr, levels, *, market, symbol, tf, step, cfg) -> list[dict]:
         lv, up = L["level"], L["kind"] == "high"             # tepe kırılırsa LONG, dip kırılırsa SHORT
         # UFUK İÇİNDEKİ HER kesişme kendi kaydıdır (bulgu #13): önce yalnız İLK kesişme alınıyordu; ufuk ilk kesişmeyi
         # geçince bir sonraki kesişme geçmiş tarihli "yeni" kayıt olarak doğuyordu (geç doğan kayıt).
-        crosses = [k for k in range(max(L["valid_from_idx"], horizon, 1), n)
+        until = L.get("valid_until_idx")
+        crosses = [k for k in range(max(L["valid_from_idx"], horizon, 1), n if until is None else min(n, int(until)))
                    if ((rows[k]["close"] > lv and rows[k - 1]["close"] <= lv) if up else (rows[k]["close"] < lv and rows[k - 1]["close"] >= lv))]
         for b0 in crosses:
             a = atr[b0]
@@ -752,6 +775,9 @@ def analyze(*, market: str, symbol: str, timeframe: str, bars: Any, as_of_ms: in
         p2 = dict(data_provenance or {})
         p2.update({k: (hit.get("data_provenance") or {}).get(k) for k in ("n_closed_bars", "first_bar_ts", "last_closed_bar_ts", "fingerprint")})
         out_hit["data_provenance"] = p2
+        out_hit["records"] = [dict(r, as_of_ms=int(as_of_ms),
+                                   data_provenance=dict(r.get("data_provenance") or {}, source=p2.get("source"), market=p2.get("market")))
+                              for r in (hit.get("records") or [])]
         return out_hit
     n = len(rows)
     prov = dict(data_provenance or {})
@@ -779,8 +805,19 @@ def analyze(*, market: str, symbol: str, timeframe: str, bars: Any, as_of_ms: in
         rej.append({"detector": "compression", "reason": "NOT_ENOUGH_BARS", "have": n, "need": K.REQUIREMENTS["compression"]})
     swings = confirmed_swings(rows, lookback=cfg.pivot_lookback) if n >= K.REQUIREMENTS["levels"] else {"highs": [], "lows": []}
     if n >= K.REQUIREMENTS["swing_scenarios"] or reference_levels:
-        sel = sorted(swings["highs"], key=lambda p: p["index"])[-cfg.swing_levels:] + \
-            sorted(swings["lows"], key=lambda p: p["index"])[-cfg.swing_levels:]
+        # "O ANKİ" SEVİYE KÜMESİ (tur-3 doğrulayıcı #2): k barındaki olay, k anında bilinen son `swing_levels` salınımla
+        # değerlendirilir. Önce seviyeler SON barın kümesinden seçiliyordu: yeni bir salınım teyit olunca eski seviye
+        # kümeden çıkıyor ve ona dayanan TAZE teyitli kayıt bir bar sonra çıktıdan DÜŞÜYORDU (süpürme %13, geri test %9).
+        horizon_min = max(0, n - 3 * max(cfg.scenario_trigger_window, cfg.retest_window))
+        sel = []
+        for side_pts in (swings["highs"], swings["lows"]):
+            pts = sorted(side_pts, key=lambda p: p["index"])
+            for i, p in enumerate(pts):
+                nxt = pts[i + cfg.swing_levels] if i + cfg.swing_levels < len(pts) else None
+                until = (int(nxt["confirmed_at_index"]) + 1) if nxt is not None else None
+                if until is not None and until <= horizon_min:
+                    continue                               # ufuk başlamadan kümeden çıkmış: olay başlatamaz
+                sel.append(dict(p, valid_until_idx=until))
         lv = _levels_for_scenarios(rows, sel, reference_levels, step)
         recs += _sweeps_and_breakouts(rows, atr, lv, market=market, symbol=symbol, tf=timeframe, step=step, cfg=cfg)
         recs += _retests(rows, atr, [x for x in lv if x["name"].startswith("SWING")], market=market, symbol=symbol,

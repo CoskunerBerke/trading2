@@ -108,7 +108,9 @@ def test_same_inputs_share_one_cached_result_but_each_caller_keeps_its_own_momen
     a = _an(rows)
     b = analyze(market="USDM_PERP", symbol="X/USDT", timeframe=a["timeframe"], bars=list(rows),
                   as_of_ms=a["as_of_ms"] + 60_000, data_provenance={"market": "USDM_PERP", "source": "test", "tour_id": "t2"})
-    assert b["analysis_id"] == a["analysis_id"] and b["records"] is a["records"], "içerik önbellekten, yeniden hesap yok"
+    assert b["analysis_id"] == a["analysis_id"], "içerik önbellekten, yeniden hesap yok"
+    assert [r["pattern_id"] for r in b["records"]] == [r["pattern_id"] for r in a["records"]]
+    assert all(r["as_of_ms"] == b["as_of_ms"] for r in b["records"]), "kayıt düzeyinde de çağıranın anı (tur-3 #9)"
     assert b["as_of_ms"] == a["as_of_ms"] + 60_000 and a["as_of_ms"] != b["as_of_ms"]
     assert b["data_provenance"]["tour_id"] == "t2" and b["data_provenance"]["fingerprint"] == a["data_provenance"]["fingerprint"]
     assert a["policy_version"] == K.POLICY_VERSION and a["schema_version"] == K.SCHEMA_VERSION

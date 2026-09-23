@@ -200,10 +200,20 @@ def decide_with_structures(name: str, *, frames: dict | None, btc_rows: list[dic
     if ctx is None or str(getattr(ctx, "mode", "OFF")).upper() == "OFF":
         return base, None, {}
     from .structures import bots as SB
-    if spec_for(name).family == "trend":
-        return SB.trend_decide(name, daily_rows=d1, base=base, position=position, ctx=ctx)
-    p = params if isinstance(params, box_theory.BoxParams) else box_theory.DEFAULT_PARAMS
-    return SB.box_decide(name, daily_rows=d1, m5_rows=list(intra or []), base=base, position=position, params=p, ctx=ctx)
+    try:
+        if spec_for(name).family == "trend":
+            return SB.trend_decide(name, daily_rows=d1, base=base, position=position, ctx=ctx)
+        p = params if isinstance(params, box_theory.BoxParams) else box_theory.DEFAULT_PARAMS
+        return SB.box_decide(name, daily_rows=d1, m5_rows=list(intra or []), base=base, position=position, params=p, ctx=ctx)
+    except Exception as exc:  # noqa: BLE001
+        # YAPI KATMANI ARIZASI — canlı ve replay AYNI kural (tur-3 doğrulayıcı #6): botun kendi kararı korunur (çıkış/yönetim
+        # ASLA düşmez); ENFORCE'ta yalnız YENİ giriş engellenir (fail-closed). Arıza kararda görünür.
+        why = "STRUCTURE_ERROR:%s" % type(exc).__name__
+        dec = {"bot": name, "action": "NO_EFFECT", "reason_code": why, "pattern_ids": [], "primary": None,
+               "text_tr": "Yapı analizi hata verdi (%s); botun kendi kuralı uygulandı." % type(exc).__name__, "detail": {"error": str(exc)[:200]}}
+        if str(getattr(ctx, "mode", "")).upper() == "ENFORCE" and base and str(base.get("action") or "").upper() == "OPEN":
+            return {"action": "NONE", "reason": why, "name": name}, dict(dec, action="WAIT"), {}
+        return base, dec, {}
 
 
 def replay_strategy(name: str, *, params: Any = None, mode: str = "ENFORCE", btc_symbol: str = "BTC/USDT"):

@@ -15,6 +15,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..timeframes import DAY_MS
+
+M5_MS = 300_000
 from . import catalog as K
 from . import policy as P
 from .analysis import analyze
@@ -169,10 +171,11 @@ def trend_decide(name: str, *, daily_rows: list[dict[str, Any]], base: dict[str,
 
 
 # ---------------------------------------------------------------------------- Box (5m, önceki günün kutusu)
-def _outside_breakout_since(m5_rows: list[dict[str, Any]], day0: int, level: float, *, up: bool) -> int | None:
+def _outside_breakout(m5_rows: list[dict[str, Any]], day0: int, level: float, *, up: bool) -> dict[str, int] | None:
     """Gün içinde kenarın ötesinde ardışık `breakout_hold_closes` kapanış olmuş ve o zamandan beri İÇERİ kapanış yoksa
-    kırılımın başladığı barın zamanı; değilse None. Yalnız KAPANMIŞ barlar (çağıran kapanmış satır verir)."""
+    {başlangıç barı zamanı, teyit kapanışı anı}; değilse None. Yalnız KAPANMIŞ barlar (çağıran kapanmış satır verir)."""
     need = int(K.DEFAULT_CONFIG.breakout_hold_closes)
+    step = M5_MS
     run, start, active = 0, None, None
     for r in m5_rows or []:
         if int(r["timestamp"]) < int(day0):
@@ -183,10 +186,15 @@ def _outside_breakout_since(m5_rows: list[dict[str, Any]], day0: int, level: flo
             if run == 1:
                 start = int(r["timestamp"])
             if run >= need and active is None:
-                active = start
+                active = {"start_ms": int(start), "confirmed_at_ms": int(r["timestamp"]) + step}
         else:
             run, start, active = 0, None, None
     return active
+
+
+def _outside_breakout_since(m5_rows: list[dict[str, Any]], day0: int, level: float, *, up: bool) -> int | None:
+    bo = _outside_breakout(m5_rows, day0, level, up=up)
+    return bo["start_ms"] if bo else None
 
 
 def box_decide(name: str, *, daily_rows: list[dict[str, Any]], m5_rows: list[dict[str, Any]], base: dict[str, Any] | None,
@@ -218,6 +226,18 @@ def box_decide(name: str, *, daily_rows: list[dict[str, Any]], m5_rows: list[dic
         edge = "BOX_HIGH" if side == K.SHORT else "BOX_LOW"
         dec = P.hold_decision(pol, position_side=side, opened_at_ms=_opened_ms(position), entry_pattern_id=None,
                               analyses=analyses, as_of_ms=ctx.as_of_ms, accept=lambda r, _e=edge: r.get("reference") == _e)
+        if dec["action"] != P.ACT_EXIT:
+            # Tur aralığı (~15-20 dk) 5m kaydının tazeliğinden (10-15 dk) uzun olabilir: kırılım gün içi kapanışlardan
+            # doğrudan ölçülür (tur-3 doğrulayıcı #1). Kırılım GİRİŞTEN SONRA teyit olmuş olmalı; içeri kapanış iptal eder.
+            opened = _opened_ms(position)
+            bo = _outside_breakout(m5_rows, day0, hi if side == K.SHORT else lo, up=side == K.SHORT)
+            if bo is not None and opened is not None and bo["confirmed_at_ms"] > int(opened):
+                ref = next((r for r in an["records"] if r.get("name") == P.BREAKOUT and r.get("reference") == edge), None)
+                dec = P._decision(pol, P.ACT_EXIT, pol.hold_reason or "BOX_OUTSIDE_BREAKOUT_EXIT", side=side, as_of_ms=ctx.as_of_ms,
+                                  analyses=analyses, rec=ref, extra={"outside_since_ms": bo["start_ms"],
+                                                                     "breakout_confirmed_at_ms": bo["confirmed_at_ms"]},
+                                  text_tr="Çıktı: girişten sonra kutu %s dışında teyitli kırılım (ardışık %d kapanış, içeri dönüş yok)." % (
+                                      "tepesinin" if side == K.SHORT else "dibinin", K.DEFAULT_CONFIG.breakout_hold_closes))
         if enforce and dec["action"] == P.ACT_EXIT:
             return ({"action": "CLOSE", "reason": dec["reason_code"], "name": name, "structure": compact(dec)}, dec, analyses)
         return base, dec, analyses
@@ -253,7 +273,7 @@ def box_decide(name: str, *, daily_rows: list[dict[str, Any]], m5_rows: list[dic
             return False
         return (float(r.get("pattern_high") or 0) >= hi - band) if _side == K.SHORT else (float(r.get("pattern_low") or 1e30) <= lo + band)
 
-    if not brk:
+    if not brk and since is None:
         dec = P.entry_decision(pol, intended_side=intended, analyses=analyses, as_of_ms=ctx.as_of_ms, price=ctx.price,
                                used_patterns=ctx.used_patterns, accept=accept)
     if not enforce:

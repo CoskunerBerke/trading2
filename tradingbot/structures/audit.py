@@ -10,7 +10,8 @@ Her kapanmış barda analiz, o ana kadarki barlarla (kayan pencere) YENİDEN hes
   STATUS_WENT_BACK / TERMINAL_STATUS_CHANGED — durum geri döndü ya da terminal durum değişti;
   IDENTITY_SWITCH_AT_EVENT — oluşan kayıt kendi tetiği kesildiği barda kayboldu ve aynı ad/tarafta YENİ kimlikli
     teyitli kayıt doğdu (o barda teyit olan yeni bir pivot yoksa);
-  RECORD_BORN_LATE — önceki değerlendirmede tespit edilebilir olduğu hâlde raporlanmamış kimlik (geçmişe sonradan kayıt).
+  RECORD_BORN_LATE — önceki değerlendirmede tespit edilebilir olduğu hâlde raporlanmamış kimlik (geçmişe sonradan kayıt);
+  CONFIRMED_WITHDRAWN_WHILE_FRESH — teyitli (taze) kayıt bir sonraki değerlendirmede çıktıda YOK (geçmiş silindi).
 BİLGİ (meşru gelişme; sayılır): FORMING_LEVEL_REVISIONS, ANCHORS_APPENDED_WHILE_DEVELOPING,
   FORMING_INTERPRETATION_REPLACED, REDEFINED_BY_NEW_PIVOT_AT_TRIGGER_BAR, LATE_BREAK_EVENTS_AFTER_EXPIRY,
   FORMING_WITHDRAWN (oluşan kayıt terminal durum olmadan analizden çıktı).
@@ -122,6 +123,13 @@ def walk_forward_audit(rows: list[dict[str, Any]], *, market: str, symbol: str, 
             last_status[pid] = st
         gone_forming = [g for g in prev_ids - ids if last_status.get(g) == "FORMING"]
         info["FORMING_WITHDRAWN"] += len(gone_forming)
+        # TEYİTLİ-TAZE kayıt çıktıdan düştü mü (tur-3 doğrulayıcı #2): teyitli kayıt ya taze kalır ya BOZULUR/BAYATLAR —
+        # bir sonraki değerlendirmede HİÇ görünmemesi geçmişi siler (giriş adaylığı/karşı-yapı beklemesi erken biter)
+        for g in prev_ids - ids:
+            if last_status.get(g) == "CONFIRMED":
+                v["CONFIRMED_WITHDRAWN_WHILE_FRESH"] += 1
+                ex({"kind": "CONFIRMED_WITHDRAWN_WHILE_FRESH", "pattern_id": g, "name_side": list(prev_name.get(g, (None, None, None))[:2]),
+                    "as_of": as_of})
         born_conf = {(r.get("name"), r.get("side")) for r in recs if r.get("status") == "CONFIRMED" and r["pattern_id"] in new_this_step}
         born_form = {(r.get("name"), r.get("side")) for r in recs if r.get("status") == "FORMING" and r["pattern_id"] in new_this_step}
         redefined = {(r.get("name"), r.get("side")) for r in recs if r["pattern_id"] in new_this_step and any(

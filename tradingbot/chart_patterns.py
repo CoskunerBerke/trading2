@@ -384,6 +384,64 @@ def _triangle_cands(bars, lows, highs, cfg, *, descending: bool) -> list[dict[st
     return out
 
 
+def _triangle_cands_pit(bars, lows, highs, cfg, *, descending: bool) -> list[dict[str, Any]]:
+    """KATALOG İÇİN "O ANKİ" üçgen adayları (2026-09-23, doğrulayıcı tur-3 #2). Eski üreteç (`_triangle_cands`, eski
+    kayıt bit-bit aynı kalsın diye DEĞİŞMEDİ) düz çift başına YALNIZ son iki eğim pivotunu alır; yeni bir eğim pivotu
+    teyit olunca önceki üçgen çıktıdan DÜŞER — teyitli-taze olsa bile (ölçüldü: yükselen üçgen teyitlerinin %18'i).
+    Burada her ardışık eğim çifti kendi adayıdır ve `superseded_idx` = bir sonraki eğim pivotunun teyit indeksi: aday o
+    ana kadar geçerlidir; o anda hâlâ oluşuyorsa SUPERSEDED ile sona erer, önce teyit olduysa kaydı yaşamaya devam eder."""
+    flat_pts = lows if descending else highs
+    slope_pts = highs if descending else lows
+    step = cfg.triangle_min_step_pct / 100.0
+    out = []
+    for a in range(len(flat_pts)):
+        for b in range(a + 1, len(flat_pts)):
+            f1, f2 = flat_pts[a], flat_pts[b]
+            if f2["index"] - f1["index"] > cfg.max_pattern_bars:
+                break
+            if f2["index"] - f1["index"] < cfg.min_separation_bars:
+                continue
+            if not _near(f1["level"], f2["level"], cfg.level_tolerance_pct):
+                continue
+            sl = [q for q in slope_pts if f1["index"] < q["index"] < f2["index"] + cfg.max_pattern_bars // 2
+                  and q["index"] > f1["index"]]
+            sl = [q for q in sl if q["index"] <= f2["index"] + cfg.min_separation_bars]
+            for m in range(len(sl) - 1):
+                q1, q2 = sl[m], sl[m + 1]
+                if q2["index"] - q1["index"] < cfg.min_separation_bars:
+                    continue
+                if descending and not (q2["level"] < q1["level"] * (1 - step)):
+                    continue
+                if not descending and not (q2["level"] > q1["level"] * (1 + step)):
+                    continue
+                nxt = sl[m + 2] if m + 2 < len(sl) else None
+                support = (f1["level"] + f2["level"]) / 2.0
+                slope = (q2["level"] - q1["level"]) / float(max(1, q2["index"] - q1["index"]))
+
+                def line(j, _q1=q1, _slope=slope):
+                    return _q1["level"] + _slope * (j - _q1["index"])
+                last_idx = max(f2["index"], q2["index"])
+                last_conf = max(f2["confirmed_at_index"], q2["confirmed_at_index"])
+
+                def line_before_apex(j, _line=line, _support=support, _desc=descending):
+                    lv = _line(j)
+                    if (_desc and lv <= _support) or ((not _desc) and lv >= _support):
+                        return None
+                    return lv
+                fspread = abs(f1["level"] - f2["level"]) / max(abs(f1["level"]), abs(f2["level"]), 1e-12) * 100.0
+                out.append({"pattern": DESCENDING_TRIANGLE if descending else ASCENDING_TRIANGLE, "descending": descending,
+                            "support": support, "line": line, "line_before_apex": line_before_apex,
+                            "scan_from": last_idx + 1, "last_confirm_idx": last_conf, "start_idx": f1["index"],
+                            "superseded_idx": int(nxt["confirmed_at_index"]) if nxt is not None and nxt.get("confirmed_at_index") is not None else None,
+                            "anchors": [_anchor(bars, f1, "duz1"), _anchor(bars, f2, "duz2"),
+                                        _anchor(bars, q1, "egik1"), _anchor(bars, q2, "egik2")],
+                            "geometry_at": (lambda j, _f1=f1["index"], _s=support, _q1=q1, _line=line: [
+                                _seg(bars, _f1, _s, j, _s, "duz_sinir"), _seg(bars, _q1["index"], _q1["level"], j, _line(j), "egik_sinir")]),
+                            "height": abs(q1["level"] - support),
+                            "quality": max(0.0, 1.0 - fspread / cfg.level_tolerance_pct)})
+    return out
+
+
 def _triangles(bars, lows, highs, cfg, *, descending: bool) -> list[dict[str, Any]]:
     out = []
     for c in _triangle_cands(bars, lows, highs, cfg, descending=descending):
@@ -595,8 +653,8 @@ def structure_candidates(bars: list[dict[str, Any]], cfg: ChartPatternConfig | N
     c += _triple_cands(rows, lows, highs, cfg, bottom=False)
     c += _hs_cands(rows, lows, highs, cfg, inverse=True)
     c += _hs_cands(rows, lows, highs, cfg, inverse=False)
-    c += _triangle_cands(rows, lows, highs, cfg, descending=True)
-    c += _triangle_cands(rows, lows, highs, cfg, descending=False)
+    c += _triangle_cands_pit(rows, lows, highs, cfg, descending=True)     # "o anki" adaylar (eski kayıt ayrı üreteçte)
+    c += _triangle_cands_pit(rows, lows, highs, cfg, descending=False)
     c += _flag_scan(rows, cfg, bull=True)[1]
     c += _flag_scan(rows, cfg, bull=False)[1]
     out["candidates"] = c

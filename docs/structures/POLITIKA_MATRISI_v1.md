@@ -105,3 +105,24 @@ düzeltildi, her biri için düzeltmeden ÖNCEKİ kodda düşen bir gerileme tes
 * **Formasyon (#10, #11, #18)**: tetiklenmiş (fiyat bekleyen) plan da kaydını izler; plan yalnız doğrulanmış perp
   diliminin analizinden kurulur ve o dilimin piyasası girişte denetlenir; her plan sonucu (red/iptal/bozulma/süre/kapanış)
   karar deposuna yazılır — reddedilen plan panelde "girdi" görünmez.
+
+## F. `structures_v1.3` — ikinci doğrulama turu (2026-09-23, dağıtımdan ÖNCE)
+
+`905098d` üzerinde ikinci bağımsız doğrulayıcı 9 bulgu raporladı (2 orta, 7 düşük; kritik/yüksek yok); hepsi kaynaktan
+doğrulandı ve düzeltildi; her biri için `905098d`'de düşen gerileme testi var (`test_structures_verifier_findings_v1.py`,
+`test_r3_*`). **Eşik değişmedi.** Anlamı değişenler:
+
+* **"O anki" seviye kümesi**: süpürme/aralık kırılımı/geri test olayı, OLAYIN BAŞLADIĞI anda bilinen son `swing_levels`
+  salınımla değerlendirilir; seviye kümeden sonradan çıkınca kayıt DÜŞMEZ (önce teyitli-taze kayıtların %6–13'ü bir bar
+  sonra çıktıdan siliniyordu). Üçgende her ardışık eğim-pivot çifti kendi adayıdır; yeni bir eğim pivotu teyit olunca
+  oluşan aday `SUPERSEDED_BY_NEW_PIVOT` ile sona erer, önce teyit olduysa yaşar (eski dedektör çıktısı değişmedi).
+  Denetime `CONFIRMED_WITHDRAWN_WHILE_FRESH` eklendi.
+* **Box**: açık fade, girişten SONRA teyit olan dış kırılımla (içeri kapanış yoksa) kayıt tazeliğinden bağımsız kapanır
+  (tur aralığı 5m tazeliğinden uzun olabilir); SHADOW kaydı ENFORCE ile aynı iptali yazar.
+* **Arıza yedeği tek yerde**: `paper_rules.decide_with_structures` yapı katmanı istisnasında botun kendi kararını korur
+  (ENFORCE'ta yeni giriş yok) — canlı ve replay aynı.
+* **Formasyon**: tetiklenmiş v2 plan yalnız kaydı o taramada teyitli-tazeyken açılır (analiz arızası/yokluğunda açılmaz;
+  kayıt görünmüyorsa iptal değil bekler, süre sınırı işler); kardeş-plan iptali giriş satırını ezmez; izleyiciden gelen
+  kapanış satırı başka sembolün analizini taşımaz.
+* Süresi dolan kaydın `expires_at_ms`i sona erdiği andır; eğik tetikli oluşan üçgenin son geçerliliği tepe noktasını aşmaz.
+  Önbellekte kayıt düzeyinde de an ve kaynak çağıranındır.

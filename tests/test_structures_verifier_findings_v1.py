@@ -373,3 +373,126 @@ def test_13_retests_emit_every_level_and_every_cross_so_nothing_is_born_late():
         by_level.setdefault(r["anchors"][0]["price"], []).append(int(r["anchors"][1]["ts"]))
     assert set(by_level) == {110.0, 105.0}, "iki seviyenin de kaydı var"
     assert sorted(by_level[110.0]) == [int(rows[k]["timestamp"]) for k in (3, 7, 11)], "110'un üç kesişmesi"
+
+
+# ============================================================================ TUR 3 (düzeltmelerin doğrulaması, 905098d)
+def test_r3_1_box_exits_an_open_fade_on_an_outside_breakout_confirmed_after_entry_even_when_the_record_is_stale():
+    from tradingbot import box_theory
+    day0 = T0 + 300 * DAY
+    daily, m5 = box_day(day0=day0, ending="none")
+    t = m5[-1]["timestamp"]
+    opened = t + M5                                              # fade açılışı
+    rows = list(m5) + [_bar(t + M5, 104.0, 104.5, 103.8, 104.2),
+                       _bar(t + 2 * M5, 104.2, 105.9, 104.1, 105.6),   # kutu (105) üstünde 1. kapanış
+                       _bar(t + 3 * M5, 105.6, 106.0, 105.3, 105.8)]   # 2. kapanış → teyitli dış kırılım
+    for i in range(4, 10):                                       # kayıt bayatlayana kadar dışarıda
+        rows.append(_bar(t + i * M5, 105.8, 106.1, 105.5, 105.9))
+    pos = SimpleNamespace(opened_at=_iso(opened), side=SimpleNamespace(value="SHORT"), features={"structure": {}}, fills=[])
+    ctx = SB.StructureContext(mode="ENFORCE", symbol="SYN/USDT", as_of_ms=int(rows[-1]["timestamp"]) + M5, price=rows[-1]["close"])
+    act, dec, _ = SB.box_decide("b1_box_fade", daily_rows=daily, m5_rows=rows, base=None, position=pos,
+                                params=box_theory.BoxParams(), ctx=ctx)
+    assert dec["action"] == P.ACT_EXIT and act["action"] == "CLOSE", (dec["action"], dec["reason_code"])
+    assert dec["detail"]["breakout_confirmed_at_ms"] > opened
+    late = SimpleNamespace(opened_at=_iso(int(rows[-1]["timestamp"])), side=SimpleNamespace(value="SHORT"),
+                           features={"structure": {}}, fills=[])
+    _, dec2, _ = SB.box_decide("b1_box_fade", daily_rows=daily, m5_rows=rows, base=None, position=late,
+                               params=box_theory.BoxParams(), ctx=ctx)
+    assert dec2["action"] != P.ACT_EXIT, "girişten ÖNCE teyit olmuş kırılım açık pozisyonu kapatmaz"
+
+
+def test_r3_2_levels_are_point_in_time_and_superseded_triangles_end_instead_of_vanishing():
+    rows = _rows([100] * 10 + [100.5, 101.2, 100.8, 100.2, 99.8, 100.1, 100.4, 100.2, 100.0, 100.3])
+    rows[11] = _bar(rows[11]["timestamp"], 100.5, 101.6, 100.4, 100.8)          # tepe 101'i fitille aşar, içeride kapanır
+    atr = [1.0] * len(rows)
+    cfg = K.DEFAULT_CONFIG
+    lvl = {"name": "SWING_HIGH", "level": 101.0, "kind": "high", "valid_from_idx": 5, "anchor_ts": int(rows[2]["timestamp"])}
+    active = A._sweeps_and_breakouts(rows, atr, [dict(lvl, valid_until_idx=None)], market="USDM_PERP", symbol="S", tf="4h", step=H4, cfg=cfg)
+    ended = A._sweeps_and_breakouts(rows, atr, [dict(lvl, valid_until_idx=11)], market="USDM_PERP", symbol="S", tf="4h", step=H4, cfg=cfg)
+    assert [r["name"] for r in active] == ["SWEEP_RECLAIM"], [(r["name"], r["status"]) for r in active]
+    assert ended == [], "seviye kümeden çıktıktan SONRA başlayan olay kayıt üretmez"
+    r = A._run_status(_rows([100] * 12), start=0, detected_idx=3, side=K.LONG, trigger_at=lambda k: 110.0,
+                      invalidation=90.0, window=20, fresh_bars=2, superseded_idx=6)
+    assert r["status"] == K.ST_EXPIRED and r["expired_idx"] == 6 and r["reasons"] == ["SUPERSEDED_BY_NEW_PIVOT"]
+    r2 = A._run_status(_rows([100, 100, 100, 100, 111, 111, 111, 111, 111]), start=0, detected_idx=3, side=K.LONG,
+                       trigger_at=lambda k: 110.0, invalidation=90.0, window=20, fresh_bars=2, superseded_idx=6)
+    assert r2["confirm_idx"] == 4, "yerini almadan ÖNCE teyit olan kayıt yaşamaya devam eder"
+
+
+def test_r3_3_4_sibling_cancels_do_not_overwrite_the_entry_row_and_watcher_exits_carry_no_foreign_analysis(tmp_path):
+    from tradingbot.structures.store import StructureStore
+    book = _book(tmp_path)
+    st = StructureStore(book.cfg.state_path)
+    st.record_decision({"bot": "pattern_trader", "action": "ENTER", "pattern_ids": ["p1"], "primary": {"pattern_id": "p1"}},
+                       book_id="pattern_trader", market="USDM_PERP", symbol="LNG/USDT", at_ms=T0, trade_id="F00001")
+    sib = _plan("AWAITING_TRIGGER", pid="p2")
+    book._set_status(sib, "CANCELLED", T0 + 1, "OTHER_PLAN_FILLED:pl_p1")
+    assert st.latest_decisions()["pattern_trader|USDM_PERP|LNG/USDT"]["action"] == "ENTER"
+    book._scan_analyses, book._scan_symbol = {"15m": {"analysis_id": "foreign", "records": []}}, "OTH/USDT"
+    pl = dict(_plan("MANAGED", pid="p1"), position_id="F00001")
+    book._set_status(pl, "CLOSED", T0 + 2, "EXIT_STOP")
+    row = st.latest_decisions()["pattern_trader|USDM_PERP|LNG/USDT"]
+    assert row["action"] == "EXIT" and not row.get("analysis_ids"), row.get("analysis_ids")
+
+
+def test_r3_5_a_triggered_v2_plan_opens_only_while_its_record_is_confirmed_in_this_scan():
+    from tradingbot.pattern_trader.book import PatternBook
+    pl = _plan("TRIGGERED")
+    ok = {"15m": {"market": "USDM_PERP", "records": [{"pattern_id": "p1", "status": "CONFIRMED"}]}}
+    assert PatternBook._record_confirmed_now(pl, ok)
+    assert not PatternBook._record_confirmed_now(pl, {})
+    assert not PatternBook._record_confirmed_now(pl, {"15m": {"market": "SPOT", "records": [{"pattern_id": "p1", "status": "CONFIRMED"}]}})
+    assert not PatternBook._record_confirmed_now(pl, {"15m": {"market": "USDM_PERP", "records": [{"pattern_id": "p1", "status": "EXPIRED"}]}})
+
+
+def test_r3_6_the_structure_error_fallback_is_shared_by_live_and_replay(monkeypatch):
+    from tradingbot import paper_rules
+
+    def boom(*a, **k):
+        raise RuntimeError("boom")
+    monkeypatch.setattr(SB, "trend_decide", boom)
+    rows = neutral_trend(260, start_ms=T0, step=DAY, up=True, scale=0.3)
+    frames = {"1d": pd.DataFrame(rows)}
+    now = int(rows[-1]["timestamp"]) + DAY + 60_000
+    cases = (({"action": "CLOSE", "reason": "EMA200_CROSS_DOWN"}, "ENFORCE", "CLOSE"),
+             ({"action": "OPEN", "direction": "LONG", "stop": 1.0}, "ENFORCE", "NONE"),
+             ({"action": "OPEN", "direction": "LONG", "stop": 1.0}, "SHADOW", "OPEN"))
+    for base, mode, want in cases:
+        monkeypatch.setattr(paper_rules, "decide_from_rows", lambda *a, _b=base, **k: dict(_b))
+        ctx = SB.StructureContext(mode=mode, symbol="SYN/USDT", as_of_ms=now)
+        act, dec, _ = paper_rules.decide_with_structures("t2_trend_regime", frames=frames, btc_rows=[], now_ms=now, position=None, ctx=ctx)
+        assert act["action"] == want and dec["reason_code"] == "STRUCTURE_ERROR:RuntimeError", (mode, act, dec)
+
+
+def test_r3_7_box_shadow_records_the_same_cancel_as_enforce_after_an_outside_breakout():
+    from tradingbot import box_theory
+    day0 = T0 + 300 * DAY
+    daily, m5 = box_day(day0=day0, ending="breakout")
+    t = m5[-1]["timestamp"]
+    rows = list(m5) + [_bar(t + i * M5, 105.9, 106.2, 105.6, 105.9) for i in range(1, 6)]
+    decs = {}
+    for mode in ("ENFORCE", "SHADOW"):
+        ctx = SB.StructureContext(mode=mode, symbol="SYN/USDT", as_of_ms=int(rows[-1]["timestamp"]) + M5, price=rows[-1]["close"])
+        _, dec, _ = SB.box_decide("b1_box_fade", daily_rows=daily, m5_rows=rows, base={"action": "OPEN", "direction": "SHORT"},
+                                  position=None, params=box_theory.BoxParams(), ctx=ctx)
+        decs[mode] = (dec["action"], dec["reason_code"])
+    assert decs["ENFORCE"] == decs["SHADOW"] == (P.ACT_CANCEL, "BOX_OUTSIDE_BREAKOUT")
+
+
+def test_r3_8_an_expired_record_publishes_the_moment_it_expired_as_its_validity_end():
+    rows = _rows([100] * 12)
+    st = A._run_status(rows, start=0, detected_idx=2, side=K.LONG, trigger_at=lambda k: 110.0 if k < 5 else None,
+                       invalidation=90.0, window=20, fresh_bars=2)
+    rec: dict = {}
+    A._finish(rec, rows, st, step=H4, n=len(rows), window=20, fresh_bars=2, detected_idx=2)
+    assert rec["status"] == K.ST_EXPIRED and rec["expires_at_ms"] == rec["expired_at_ms"] == T0 + 6 * H4
+
+
+def test_r3_9_cached_records_carry_the_callers_moment_and_source():
+    rows = bearish_engulf_confirmed(neutral_trend(120, start_ms=T0, step=H4, up=True, scale=0.3), step=H4)
+    A.clear_cache()
+    a = A.analyze(market="USDM_PERP", symbol="SYN/USDT", timeframe="4h", bars=rows, as_of_ms=int(rows[-1]["timestamp"]) + H4)
+    b = A.analyze(market="USDM_PERP", symbol="SYN/USDT", timeframe="4h", bars=rows, as_of_ms=int(rows[-1]["timestamp"]) + H4 + 5,
+                  data_provenance={"market": "USDM_PERP", "source": "perp_frames", "tour_id": "t9"})
+    assert a["records"], "sentetik seride kayıt var"
+    assert all(r["as_of_ms"] == b["as_of_ms"] and r["data_provenance"]["source"] == "perp_frames" for r in b["records"])
+    assert all(r["data_provenance"]["source"] is None for r in a["records"]), "ilk çağıranın kayıtları değişmedi"

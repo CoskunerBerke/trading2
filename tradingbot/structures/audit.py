@@ -17,8 +17,9 @@ Her kapanmış barda analiz, o ana kadarki barlarla (kayan pencere) YENİDEN hes
 BİLGİ (meşru gelişme; sayılır): FORMING_LEVEL_REVISIONS, ANCHORS_APPENDED_WHILE_DEVELOPING,
   FORMING_INTERPRETATION_REPLACED, REDEFINED_BY_NEW_PIVOT_AT_TRIGGER_BAR, LATE_BREAK_EVENTS_AFTER_EXPIRY,
   FORMING_WITHDRAWN (oluşan kayıt terminal durum olmadan analizden çıktı),
-  SAME_BREAK_SIBLING_CONFIRMATIONS (grafik yapısının farklı dayanak çiftli yorumu, daha önce teyit olmuş bir kırılımı
-    `policy.same_break` ölçüsünde yeniden teyit etti — analiz alternatif yorumları tutar, TÜKETİCİ tek kullanır; tur-5 F2).
+  SAME_BREAK_SIBLING_CONFIRMATIONS (başka kimlikli bir grafik kaydı — farklı dayanaklı ya da farklı adlı yorum —
+    daha önce teyit olmuş bir kırılımı `policy.same_break` ölçüsünde yeniden teyit etti; analiz alternatif yorumları
+    tutar, TÜKETİCİ tek kullanır; tur-5 F2, tur-7).
 """
 from __future__ import annotations
 

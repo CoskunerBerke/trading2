@@ -162,7 +162,8 @@ gerilemesiydi. Hepsi kaynaktan ve yeniden üretilerek doğrulandı; her biri iç
   aynı kırılımı ayrı kimliklerle teyit edebilir. Analiz bu alternatif yorumları TUTAR (geçmiş/panel; denetimde BİLGİ:
   `SAME_BREAK_SIBLING_CONFIRMATIONS`); TÜKETİCİ (`policy.already_used` — grafik yapısıyla giren ana bot, T2, M2 ve
   formasyon botunun plan kurma ve kaydın teyit anı; Box grafik yapısı kullanmaz) kullanılmış bir girişle AYNI KIRILIMI —
-  aynı sembol/dilim/ad/taraf, teyitler arası en çok `fresh_bars` bar, tetikler eşit-seviye toleransında (%1,5) —
+  aynı sembol/dilim/ad/taraf (J: ad artık karşılaştırılmaz), teyitler arası en çok `fresh_bars` bar, tetikler
+  eşit-seviye toleransında (%1,5) —
   kullanılmış sayar (`policy.same_break`). Mum ve senaryo aileleri bu eşleşmeye girmez (ölçülmedi).
 * **Formasyon (F3):** ENFORCE dışındaki modda açık kalan v2 planı İPTAL (`STRUCTURE_MODE_<mod>`); önce SHADOW/OFF'ta kayıt
   denetimi olmadan açılabiliyordu (mod değişimi ya da geri alma).
@@ -201,3 +202,11 @@ için `41e3489`'da DAVRANIŞLA düşen test var (`test_r6_*`; kanıt `revert_rou
   sinyal (sahte ya da yinelenen teyit değil); ancak karşı yapı olarak kullanan kararlar (bekleme/M2 çıkışı) da o olayı
   görmez. Değiştirmek, ardılın aynı tarafını selefin kaydı bittikten sonra ve yalnız TAZE kesişmeyle açmayı gerektirir;
   bu teslimde yapılmadı.
+
+### J'ye ek — yedinci doğrulama turu (`17e5ab8`, kod değişmedi)
+
+Gerçek kusur bulunmadı. Adın karşılaştırılmaması bazı GERÇEKTEN farklı seviyeleri de aynı kırılım sayar (doğrulayıcının
+ölçümü: 15m/1h/4h/1d örnekleminde yeni eşleşen çiftlerin %71–80'i aynı barda tek kapanışın iki seviyeyi geçmesi; açıkça
+ayrı kırılım 15m'de 27, 1h'de 12, 4h'de 1, 1d'de 0). Bunun bir kararı değiştirmesi için ilk işlemin kardeşin taze
+penceresinde kapanması ve fiyatın kovalama sınırında kalması gerekir: örneklemin tamamında 15 olay (13'ünde engellenen
+işlem yaklaşık benzetimde zarar ederdi). Ölçülmüş tasarım bedeli olarak kabul edildi.

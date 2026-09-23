@@ -7,6 +7,7 @@ on:
     branches:
       - work/chart-analysis-v1
       - work/entry-research-v1
+      - work/shared-pattern-decisions-v1
     paths:
       - "tradingbot/**"
       - "tests/**"
@@ -50,7 +51,7 @@ jobs:
             tests/test_strategy_paper_multibook_v1.py \
             tests/test_strategy_paper_universe_v1.py \
             tests/test_strategy_paper_data_source_v1.py \
-            tests/test_strategy_paper_price_time_v1.py \
+            tests/test_strategy_paper_price_time_v1.py             tests/test_strategy_paper_held_telemetry_v1.py \
             tests/test_replay_strategy_mode_v1.py \
             tests/test_pattern_trader_v1.py \
             tests/test_dashboard_terminal_v1.py \
@@ -63,11 +64,28 @@ jobs:
             tests/test_trading2_fix_plan_expiry_v1.py \
             tests/test_trading2_fix_panel_identity_v1.py \
             tests/test_trading2_fix_contracts_v1.py \
+            tests/test_funding_settlement_contract_v2.py \
+            tests/test_funding_five_ledgers_v2.py \
+            tests/test_funding_off_exit_path_v1.py \
+            tests/test_structures_analysis_v1.py \
+            tests/test_structures_integrity_v1.py \
+            tests/test_structures_strategy_books_v1.py \
+            tests/test_structures_main_bot_v1.py \
+            tests/test_structures_pattern_bot_v2.py \
+            tests/test_structures_panel_v1.py \
+            tests/test_structures_verifier_findings_v1.py \
+            tests/test_candle_confirmation_parity_v1.py \
+            tests/test_box_theory_book_v15.py \
+            tests/test_box_theory_v15.py \
+            tests/test_engine_v3.py \
             -q --tb=short > pytest.out 2>&1
           rc=$?
           cat pytest.out
           if [ "$rc" -ne 0 ]; then
             summary=$(tail -n 40 pytest.out | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
             echo "::error title=pytest failure::${summary}"
+          else
+            # anonim okumada loglar 403: gecen kosunun sayisi ek aciklama (annotation) olarak da gorunsun
+            echo "::notice title=pytest summary::$(tail -n 1 pytest.out | sed 's/%/%25/g')"
           fi
           exit $rc

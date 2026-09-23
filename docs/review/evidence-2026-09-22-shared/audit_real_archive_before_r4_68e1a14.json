@@ -1,0 +1,761 @@
+{
+ "label": "GERÇEK ARŞİV (bn_archive, Binance USDⓈ-M perpetual) — salt okuma; PnL yok",
+ "code_root": "<gecici>\\wt_pre_r4_68e1a14",
+ "policy_version": "structures_v1.3",
+ "symbols": [
+  "BTC/USDT",
+  "ETH/USDT",
+  "ZEC/USDT",
+  "SOL/USDT",
+  "NEAR/USDT",
+  "UNI/USDT",
+  "XRP/USDT",
+  "ONE/USDT",
+  "BNB/USDT",
+  "ARB/USDT",
+  "DOGE/USDT",
+  "LSK/USDT",
+  "SUI/USDT",
+  "ENA/USDT",
+  "G/USDT",
+  "WLD/USDT",
+  "ADA/USDT",
+  "ONDO/USDT",
+  "1000PEPE/USDT",
+  "COTI/USDT",
+  "LINK/USDT",
+  "REZ/USDT",
+  "DASH/USDT",
+  "AAVE/USDT",
+  "TAO/USDT",
+  "BCH/USDT",
+  "AVAX/USDT",
+  "DOT/USDT",
+  "FIL/USDT",
+  "APT/USDT",
+  "SYN/USDT",
+  "LTC/USDT",
+  "XLM/USDT",
+  "INJ/USDT",
+  "FET/USDT",
+  "TRX/USDT",
+  "XMR/USDT",
+  "1000SHIB/USDT",
+  "OP/USDT",
+  "KSM/USDT"
+ ],
+ "by_tf": {
+  "1d": {
+   "analyses": 14600,
+   "violations": {
+    "TRIANGLE_BREAK_CONFIRMED_TWICE": 41
+   },
+   "info": {
+    "LATE_BREAK_EVENTS_AFTER_EXPIRY": 7115,
+    "FORMING_LEVEL_REVISIONS": 3455,
+    "ANCHORS_APPENDED_WHILE_DEVELOPING": 1970,
+    "FORMING_WITHDRAWN": 1686,
+    "FORMING_INTERPRETATION_REPLACED": 100
+   },
+   "examples": [
+    {
+     "kind": "TRIANGLE_BREAK_CONFIRMED_TWICE",
+     "name_side": [
+      "ASCENDING_TRIANGLE",
+      "LONG"
+     ],
+     "flat_ts": [
+      1750032000000,
+      1751500800000
+     ],
+     "pattern_ids": [
+      "06a775ffcd696751",
+      "3260b45841ce5baf"
+     ],
+     "symbol": "BTC/USDT",
+     "tf": "1d"
+    },
+    {
+     "kind": "TRIANGLE_BREAK_CONFIRMED_TWICE",
+     "name_side": [
+      "ASCENDING_TRIANGLE",
+      "LONG"
+     ],
+     "flat_ts": [
+      1749427200000,
+      1751500800000
+     ],
+     "pattern_ids": [
+      "08180dd35ca1b362",
+      "911c2e5c3c5fc609"
+     ],
+     "symbol": "BTC/USDT",
+     "tf": "1d"
+    },
+    {
+     "kind": "TRIANGLE_BREAK_CONFIRMED_TWICE",
+     "name_side": [
+      "ASCENDING_TRIANGLE",
+      "LONG"
+     ],
+     "flat_ts": [
+      1748304000000,
+      1751500800000
+     ],
+     "pattern_ids": [
+      "0661f072c87ac7b0",
+      "1d6ffc50897109ec"
+     ],
+     "symbol": "BTC/USDT",
+     "tf": "1d"
+    },
+    {
+     "kind": "TRIANGLE_BREAK_CONFIRMED_TWICE",
+     "name_side": [
+      "DESCENDING_TRIANGLE",
+      "LONG"
+     ],
+     "flat_ts": [
+      1765065600000,
+      1766534400000
+     ],
+     "pattern_ids": [
+      "a406d9d809cf45a9",
+      "fb4fd3a232dec4b7"
+     ],
+     "symbol": "ETH/USDT",
+     "tf": "1d"
+    },
+    {
+     "kind": "TRIANGLE_BREAK_CONFIRMED_TWICE",
+     "name_side": [
+      "ASCENDING_TRIANGLE",
+      "LONG"
+     ],
+     "flat_ts": [
+      1755129600000,
+      1756857600000
+     ],
+     "pattern_ids": [
+      "c19de62e1fe7aee1",
+      "d1fd9121af5a3bfe"
+     ],
+     "symbol": "SOL/USDT",
+     "tf": "1d"
+    },
+    {
+     "kind": "TRIANGLE_BREAK_CONFIRMED_TWICE",
+     "name_side": [
+      "DESCENDING_TRIANGLE",
+      "LONG"
+     ],
+     "flat_ts": [
+      1755561600000,
+      1760659200000
+     ],
+     "pattern_ids": [
+      "2d553573585a457b",
+      "e12c8f911f82345a"
+     ],
+     "symbol": "SOL/USDT",
+     "tf": "1d"
+    },
+    {
+     "kind": "TRIANGLE_BREAK_CONFIRMED_TWICE",
+     "name_side": [
+      "ASCENDING_TRIANGLE",
+      "SHORT"
+     ],
+     "flat_ts": [
+      1771977600000,
+      1776384000000
+     ],
+     "pattern_ids": [
+      "2b88b46c73f704e5",
+      "fb3023b149a22099"
+     ],
+     "symbol": "SOL/USDT",
+     "tf": "1d"
+    },
+    {
+     "kind": "TRIANGLE_BREAK_CONFIRMED_TWICE",
+     "name_side": [
+      "DESCENDING_TRIANGLE",
+      "SHORT"
+     ],
+     "flat_ts": [
+      1774742400000,
+      1779926400000
+     ],
+     "pattern_ids": [
+      "22a7ae71a63bd997",
+      "456b101dc1be1534"
+     ],
+     "symbol": "SOL/USDT",
+     "tf": "1d"
+    },
+    {
+     "kind": "TRIANGLE_BREAK_CONFIRMED_TWICE",
+     "name_side": [
+      "DESCENDING_TRIANGLE",
+      "SHORT"
+     ],
+     "flat_ts": [
+      1771459200000,
+      1774742400000
+     ],
+     "pattern_ids": [
+      "4ab92982f719f01b",
+      "d914420d6562347e"
+     ],
+     "symbol": "UNI/USDT",
+     "tf": "1d"
+    },
+    {
+     "kind": "TRIANGLE_BREAK_CONFIRMED_TWICE",
+     "name_side": [
+      "DESCENDING_TRIANGLE",
+      "SHORT"
+     ],
+     "flat_ts": [
+      1771891200000,
+      1774742400000
+     ],
+     "pattern_ids": [
+      "75e4ddc5c99c75f3",
+      "ef1e5f92994e5e03"
+     ],
+     "symbol": "UNI/USDT",
+     "tf": "1d"
+    },
+    {
+     "kind": "TRIANGLE_BREAK_CONFIRMED_TWICE",
+     "name_side": [
+      "DESCENDING_TRIANGLE",
+      "SHORT"
+     ],
+     "flat_ts": [
+      1771459200000,
+      1774742400000
+     ],
+     "pattern_ids": [
+      "2cb7b923bd8ed8c4",
+      "e74b373b758dcab6"
+     ],
+     "symbol": "BNB/USDT",
+     "tf": "1d"
+    },
+    {
+     "kind": "TRIANGLE_BREAK_CONFIRMED_TWICE",
+     "name_side": [
+      "DESCENDING_TRIANGLE",
+      "LONG"
+     ],
+     "flat_ts": [
+      1781049600000,
+      1785456000000
+     ],
+     "pattern_ids": [
+      "3d623502c7a44931",
+      "c1c1d0e0822893d9"
+     ],
+     "symbol": "ARB/USDT",
+     "tf": "1d"
+    }
+   ],
+   "distinct_records": 40007,
+   "confirmations_by_name": {
+    "SWEEP_RECLAIM": 5016,
+    "RANGE_BREAKOUT": 2245,
+    "BREAK_RETEST_HOLD": 1976,
+    "THREE_BLACK_CROWS": 1040,
+    "BEARISH_ENGULFING": 759,
+    "EVENING_STAR": 621,
+    "BULLISH_ENGULFING": 595,
+    "TWEEZER_TOP": 559,
+    "TWEEZER_BOTTOM": 527,
+    "BEARISH_HARAMI": 520,
+    "THREE_WHITE_SOLDIERS": 513,
+    "DESCENDING_TRIANGLE": 492,
+    "BULLISH_HARAMI": 425,
+    "BEARISH_BELT_HOLD": 370,
+    "MORNING_STAR": 353,
+    "BULLISH_BELT_HOLD": 315,
+    "ASCENDING_TRIANGLE": 312,
+    "HAMMER": 276,
+    "DARK_CLOUD_COVER": 266,
+    "SHOOTING_STAR": 254,
+    "PIERCING_LINE": 195,
+    "DOUBLE_TOP": 167,
+    "EVENING_DOJI_STAR": 150,
+    "DOUBLE_BOTTOM": 143,
+    "INVERTED_HAMMER": 135,
+    "BEAR_FLAG": 108,
+    "MORNING_DOJI_STAR": 99,
+    "HANGING_MAN": 93,
+    "BEARISH_HARAMI_CROSS": 83,
+    "BULLISH_HARAMI_CROSS": 67,
+    "COMPRESSION_BREAKOUT": 51,
+    "BEAR_PENNANT": 46,
+    "BULL_FLAG": 44,
+    "HEAD_AND_SHOULDERS": 35,
+    "BEARISH_MEETING_LINES": 25,
+    "TRIPLE_TOP": 22,
+    "BEARISH_DOJI_STAR": 21,
+    "INVERSE_HEAD_AND_SHOULDERS": 20,
+    "BULLISH_MEETING_LINES": 19,
+    "TRIPLE_BOTTOM": 15,
+    "BULLISH_DOJI_STAR": 12,
+    "BULL_PENNANT": 7,
+    "DESCENDING_HAWK": 2,
+    "HOMING_PIGEON": 1
+   },
+   "rejects": {
+    "FLAG_CHANNEL_UNCLASSIFIED": 12368,
+    "FLAG_IDENTITY_AT_WINDOW_EDGE": 342
+   },
+   "symbols_without_rows": [],
+   "per_symbol_violations": {
+    "BTC/USDT": {
+     "TRIANGLE_BREAK_CONFIRMED_TWICE": 3
+    },
+    "ETH/USDT": {
+     "TRIANGLE_BREAK_CONFIRMED_TWICE": 1
+    },
+    "SOL/USDT": {
+     "TRIANGLE_BREAK_CONFIRMED_TWICE": 4
+    },
+    "UNI/USDT": {
+     "TRIANGLE_BREAK_CONFIRMED_TWICE": 2
+    },
+    "BNB/USDT": {
+     "TRIANGLE_BREAK_CONFIRMED_TWICE": 1
+    },
+    "ARB/USDT": {
+     "TRIANGLE_BREAK_CONFIRMED_TWICE": 2
+    },
+    "DOGE/USDT": {
+     "TRIANGLE_BREAK_CONFIRMED_TWICE": 4
+    },
+    "LSK/USDT": {
+     "TRIANGLE_BREAK_CONFIRMED_TWICE": 1
+    },
+    "SUI/USDT": {
+     "TRIANGLE_BREAK_CONFIRMED_TWICE": 1
+    },
+    "ENA/USDT": {
+     "TRIANGLE_BREAK_CONFIRMED_TWICE": 2
+    },
+    "WLD/USDT": {
+     "TRIANGLE_BREAK_CONFIRMED_TWICE": 1
+    },
+    "ADA/USDT": {
+     "TRIANGLE_BREAK_CONFIRMED_TWICE": 2
+    },
+    "1000PEPE/USDT": {
+     "TRIANGLE_BREAK_CONFIRMED_TWICE": 1
+    },
+    "COTI/USDT": {
+     "TRIANGLE_BREAK_CONFIRMED_TWICE": 1
+    },
+    "REZ/USDT": {
+     "TRIANGLE_BREAK_CONFIRMED_TWICE": 1
+    },
+    "DASH/USDT": {
+     "TRIANGLE_BREAK_CONFIRMED_TWICE": 4
+    },
+    "AAVE/USDT": {
+     "TRIANGLE_BREAK_CONFIRMED_TWICE": 1
+    },
+    "AVAX/USDT": {
+     "TRIANGLE_BREAK_CONFIRMED_TWICE": 3
+    },
+    "FIL/USDT": {
+     "TRIANGLE_BREAK_CONFIRMED_TWICE": 1
+    },
+    "APT/USDT": {
+     "TRIANGLE_BREAK_CONFIRMED_TWICE": 1
+    },
+    "XLM/USDT": {
+     "TRIANGLE_BREAK_CONFIRMED_TWICE": 2
+    },
+    "INJ/USDT": {
+     "TRIANGLE_BREAK_CONFIRMED_TWICE": 1
+    },
+    "FET/USDT": {
+     "TRIANGLE_BREAK_CONFIRMED_TWICE": 1
+    }
+   }
+  },
+  "4h": {
+   "analyses": 28800,
+   "violations": {
+    "TRIANGLE_BREAK_CONFIRMED_TWICE": 120
+   },
+   "info": {
+    "LATE_BREAK_EVENTS_AFTER_EXPIRY": 13497,
+    "FORMING_LEVEL_REVISIONS": 7622,
+    "ANCHORS_APPENDED_WHILE_DEVELOPING": 3742,
+    "FORMING_WITHDRAWN": 2605,
+    "FORMING_INTERPRETATION_REPLACED": 121
+   },
+   "examples": [
+    {
+     "kind": "TRIANGLE_BREAK_CONFIRMED_TWICE",
+     "name_side": [
+      "ASCENDING_TRIANGLE",
+      "LONG"
+     ],
+     "flat_ts": [
+      1780920000000,
+      1781380800000
+     ],
+     "pattern_ids": [
+      "06a19b53bbae6a1e",
+      "3d71d289932d52ce"
+     ],
+     "symbol": "BTC/USDT",
+     "tf": "4h"
+    },
+    {
+     "kind": "TRIANGLE_BREAK_CONFIRMED_TWICE",
+     "name_side": [
+      "ASCENDING_TRIANGLE",
+      "LONG"
+     ],
+     "flat_ts": [
+      1780862400000,
+      1781380800000
+     ],
+     "pattern_ids": [
+      "23e0640516affdb6",
+      "a4e4eccb86e02e11"
+     ],
+     "symbol": "BTC/USDT",
+     "tf": "4h"
+    },
+    {
+     "kind": "TRIANGLE_BREAK_CONFIRMED_TWICE",
+     "name_side": [
+      "ASCENDING_TRIANGLE",
+      "LONG"
+     ],
+     "flat_ts": [
+      1783900800000,
+      1784419200000
+     ],
+     "pattern_ids": [
+      "875df3c4cfc103e0",
+      "d0cff391531892e3"
+     ],
+     "symbol": "BTC/USDT",
+     "tf": "4h"
+    },
+    {
+     "kind": "TRIANGLE_BREAK_CONFIRMED_TWICE",
+     "name_side": [
+      "DESCENDING_TRIANGLE",
+      "SHORT"
+     ],
+     "flat_ts": [
+      1778198400000,
+      1778601600000
+     ],
+     "pattern_ids": [
+      "3ed577cc7d826053",
+      "a8fa09144d34d2cb"
+     ],
+     "symbol": "ETH/USDT",
+     "tf": "4h"
+    },
+    {
+     "kind": "TRIANGLE_BREAK_CONFIRMED_TWICE",
+     "name_side": [
+      "ASCENDING_TRIANGLE",
+      "LONG"
+     ],
+     "flat_ts": [
+      1780948800000,
+      1781380800000
+     ],
+     "pattern_ids": [
+      "0d100ccaf043f306",
+      "db959d565680cc4a"
+     ],
+     "symbol": "ETH/USDT",
+     "tf": "4h"
+    },
+    {
+     "kind": "TRIANGLE_BREAK_CONFIRMED_TWICE",
+     "name_side": [
+      "ASCENDING_TRIANGLE",
+      "LONG"
+     ],
+     "flat_ts": [
+      1780862400000,
+      1781380800000
+     ],
+     "pattern_ids": [
+      "265a37795a44866f",
+      "f13bdd344267a420"
+     ],
+     "symbol": "ETH/USDT",
+     "tf": "4h"
+    },
+    {
+     "kind": "TRIANGLE_BREAK_CONFIRMED_TWICE",
+     "name_side": [
+      "ASCENDING_TRIANGLE",
+      "LONG"
+     ],
+     "flat_ts": [
+      1783900800000,
+      1784304000000
+     ],
+     "pattern_ids": [
+      "4018d3720fcbf008",
+      "531c06eb2afa93bb"
+     ],
+     "symbol": "ETH/USDT",
+     "tf": "4h"
+    },
+    {
+     "kind": "TRIANGLE_BREAK_CONFIRMED_TWICE",
+     "name_side": [
+      "ASCENDING_TRIANGLE",
+      "LONG"
+     ],
+     "flat_ts": [
+      1783785600000,
+      1784304000000
+     ],
+     "pattern_ids": [
+      "68354ff2e6d27d98",
+      "8119eec7e1d95491"
+     ],
+     "symbol": "ETH/USDT",
+     "tf": "4h"
+    },
+    {
+     "kind": "TRIANGLE_BREAK_CONFIRMED_TWICE",
+     "name_side": [
+      "ASCENDING_TRIANGLE",
+      "SHORT"
+     ],
+     "flat_ts": [
+      1787875200000,
+      1788667200000
+     ],
+     "pattern_ids": [
+      "1c40adf7679285d4",
+      "2ee4ff6aa8e92cb0"
+     ],
+     "symbol": "ETH/USDT",
+     "tf": "4h"
+    },
+    {
+     "kind": "TRIANGLE_BREAK_CONFIRMED_TWICE",
+     "name_side": [
+      "ASCENDING_TRIANGLE",
+      "SHORT"
+     ],
+     "flat_ts": [
+      1788105600000,
+      1788667200000
+     ],
+     "pattern_ids": [
+      "5d7812cfeec81bb4",
+      "6ecdf412153fc4ec"
+     ],
+     "symbol": "ETH/USDT",
+     "tf": "4h"
+    },
+    {
+     "kind": "TRIANGLE_BREAK_CONFIRMED_TWICE",
+     "name_side": [
+      "ASCENDING_TRIANGLE",
+      "LONG"
+     ],
+     "flat_ts": [
+      1788192000000,
+      1788667200000
+     ],
+     "pattern_ids": [
+      "c1596f4ac7d220be",
+      "fa7acb06b09b505a"
+     ],
+     "symbol": "ETH/USDT",
+     "tf": "4h"
+    },
+    {
+     "kind": "TRIANGLE_BREAK_CONFIRMED_TWICE",
+     "name_side": [
+      "ASCENDING_TRIANGLE",
+      "LONG"
+     ],
+     "flat_ts": [
+      1778788800000,
+      1779148800000
+     ],
+     "pattern_ids": [
+      "6fc2bbd774c6ba35",
+      "ae41b94e828e752a"
+     ],
+     "symbol": "ZEC/USDT",
+     "tf": "4h"
+    }
+   ],
+   "distinct_records": 83202,
+   "confirmations_by_name": {
+    "SWEEP_RECLAIM": 10475,
+    "RANGE_BREAKOUT": 4076,
+    "BREAK_RETEST_HOLD": 3750,
+    "THREE_BLACK_CROWS": 1602,
+    "ASCENDING_TRIANGLE": 1433,
+    "DESCENDING_TRIANGLE": 1421,
+    "BEARISH_ENGULFING": 1324,
+    "THREE_WHITE_SOLDIERS": 1289,
+    "BULLISH_ENGULFING": 1235,
+    "TWEEZER_BOTTOM": 948,
+    "EVENING_STAR": 945,
+    "TWEEZER_TOP": 922,
+    "BEARISH_HARAMI": 871,
+    "BULLISH_HARAMI": 855,
+    "MORNING_STAR": 838,
+    "DOUBLE_TOP": 645,
+    "BULLISH_BELT_HOLD": 612,
+    "DOUBLE_BOTTOM": 553,
+    "BEARISH_BELT_HOLD": 552,
+    "HAMMER": 518,
+    "DARK_CLOUD_COVER": 500,
+    "SHOOTING_STAR": 454,
+    "PIERCING_LINE": 393,
+    "TRIPLE_TOP": 332,
+    "TRIPLE_BOTTOM": 277,
+    "EVENING_DOJI_STAR": 256,
+    "MORNING_DOJI_STAR": 234,
+    "HANGING_MAN": 208,
+    "INVERTED_HAMMER": 207,
+    "BULLISH_HARAMI_CROSS": 202,
+    "BEARISH_HARAMI_CROSS": 198,
+    "COMPRESSION_BREAKOUT": 79,
+    "HEAD_AND_SHOULDERS": 69,
+    "BEAR_FLAG": 64,
+    "INVERSE_HEAD_AND_SHOULDERS": 61,
+    "BEARISH_MEETING_LINES": 51,
+    "BULL_FLAG": 50,
+    "BULLISH_DOJI_STAR": 39,
+    "BEARISH_DOJI_STAR": 38,
+    "BULLISH_MEETING_LINES": 30,
+    "BULL_PENNANT": 18,
+    "BEAR_PENNANT": 17,
+    "DESCENDING_HAWK": 12,
+    "HOMING_PIGEON": 10
+   },
+   "rejects": {
+    "FLAG_CHANNEL_UNCLASSIFIED": 17579,
+    "FLAG_IDENTITY_AT_WINDOW_EDGE": 168
+   },
+   "symbols_without_rows": [],
+   "per_symbol_violations": {
+    "BTC/USDT": {
+     "TRIANGLE_BREAK_CONFIRMED_TWICE": 3
+    },
+    "ETH/USDT": {
+     "TRIANGLE_BREAK_CONFIRMED_TWICE": 8
+    },
+    "ZEC/USDT": {
+     "TRIANGLE_BREAK_CONFIRMED_TWICE": 5
+    },
+    "SOL/USDT": {
+     "TRIANGLE_BREAK_CONFIRMED_TWICE": 3
+    },
+    "UNI/USDT": {
+     "TRIANGLE_BREAK_CONFIRMED_TWICE": 2
+    },
+    "XRP/USDT": {
+     "TRIANGLE_BREAK_CONFIRMED_TWICE": 1
+    },
+    "ONE/USDT": {
+     "TRIANGLE_BREAK_CONFIRMED_TWICE": 2
+    },
+    "BNB/USDT": {
+     "TRIANGLE_BREAK_CONFIRMED_TWICE": 2
+    },
+    "ARB/USDT": {
+     "TRIANGLE_BREAK_CONFIRMED_TWICE": 1
+    },
+    "DOGE/USDT": {
+     "TRIANGLE_BREAK_CONFIRMED_TWICE": 2
+    },
+    "LSK/USDT": {
+     "TRIANGLE_BREAK_CONFIRMED_TWICE": 3
+    },
+    "SUI/USDT": {
+     "TRIANGLE_BREAK_CONFIRMED_TWICE": 8
+    },
+    "ENA/USDT": {
+     "TRIANGLE_BREAK_CONFIRMED_TWICE": 7
+    },
+    "G/USDT": {
+     "TRIANGLE_BREAK_CONFIRMED_TWICE": 4
+    },
+    "WLD/USDT": {
+     "TRIANGLE_BREAK_CONFIRMED_TWICE": 1
+    },
+    "ADA/USDT": {
+     "TRIANGLE_BREAK_CONFIRMED_TWICE": 1
+    },
+    "1000PEPE/USDT": {
+     "TRIANGLE_BREAK_CONFIRMED_TWICE": 7
+    },
+    "COTI/USDT": {
+     "TRIANGLE_BREAK_CONFIRMED_TWICE": 2
+    },
+    "LINK/USDT": {
+     "TRIANGLE_BREAK_CONFIRMED_TWICE": 6
+    },
+    "DASH/USDT": {
+     "TRIANGLE_BREAK_CONFIRMED_TWICE": 1
+    },
+    "TAO/USDT": {
+     "TRIANGLE_BREAK_CONFIRMED_TWICE": 3
+    },
+    "AVAX/USDT": {
+     "TRIANGLE_BREAK_CONFIRMED_TWICE": 5
+    },
+    "DOT/USDT": {
+     "TRIANGLE_BREAK_CONFIRMED_TWICE": 2
+    },
+    "FIL/USDT": {
+     "TRIANGLE_BREAK_CONFIRMED_TWICE": 6
+    },
+    "APT/USDT": {
+     "TRIANGLE_BREAK_CONFIRMED_TWICE": 5
+    },
+    "XLM/USDT": {
+     "TRIANGLE_BREAK_CONFIRMED_TWICE": 7
+    },
+    "INJ/USDT": {
+     "TRIANGLE_BREAK_CONFIRMED_TWICE": 2
+    },
+    "FET/USDT": {
+     "TRIANGLE_BREAK_CONFIRMED_TWICE": 1
+    },
+    "TRX/USDT": {
+     "TRIANGLE_BREAK_CONFIRMED_TWICE": 2
+    },
+    "XMR/USDT": {
+     "TRIANGLE_BREAK_CONFIRMED_TWICE": 2
+    },
+    "OP/USDT": {
+     "TRIANGLE_BREAK_CONFIRMED_TWICE": 11
+    },
+    "KSM/USDT": {
+     "TRIANGLE_BREAK_CONFIRMED_TWICE": 5
+    }
+   }
+  }
+ },
+ "elapsed_s": 395.1
+}

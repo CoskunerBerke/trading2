@@ -1,0 +1,264 @@
+{
+ "label": "GERÇEK ARŞİV (bn_archive) — replay strateji modu, yapı ENFORCE; PnL raporlanmaz",
+ "code_sha": "17e5ab8e2782e065ccd567b58df70ebf7cbb432c",
+ "symbols": [
+  "BTC/USDT",
+  "ETH/USDT",
+  "ZEC/USDT",
+  "SOL/USDT",
+  "NEAR/USDT",
+  "UNI/USDT",
+  "XRP/USDT",
+  "ONE/USDT",
+  "BNB/USDT",
+  "ARB/USDT",
+  "DOGE/USDT",
+  "LSK/USDT",
+  "SUI/USDT",
+  "ENA/USDT",
+  "G/USDT",
+  "WLD/USDT",
+  "ADA/USDT",
+  "ONDO/USDT",
+  "1000PEPE/USDT",
+  "COTI/USDT",
+  "LINK/USDT",
+  "REZ/USDT",
+  "DASH/USDT",
+  "AAVE/USDT",
+  "TAO/USDT",
+  "BCH/USDT",
+  "AVAX/USDT",
+  "DOT/USDT",
+  "FIL/USDT",
+  "APT/USDT",
+  "SYN/USDT",
+  "LTC/USDT",
+  "XLM/USDT",
+  "INJ/USDT",
+  "FET/USDT",
+  "TRX/USDT",
+  "XMR/USDT",
+  "1000SHIB/USDT",
+  "OP/USDT",
+  "KSM/USDT"
+ ],
+ "window": [
+  "2025-09-19",
+  "2026-09-19"
+ ],
+ "B_decision_effect": {
+  "t2_trend_regime|ENFORCE": {
+   "rule": "t2_trend_regime",
+   "mode": "ENFORCE",
+   "symbols_loaded": 40,
+   "symbols_skipped": {},
+   "filters_source": "binance_api",
+   "filters_verified_at": "2026-09-10T21:34:11+00:00",
+   "elapsed_s": 986.5,
+   "n_decisions": 87640,
+   "n_opened": 20,
+   "n_closed_trades": 17,
+   "determinism_hash": "4f11261e60e8b850cab40d756875b2049ddcb683e9e72b0f217461992833da3f",
+   "structure_decisions_by_action": {
+    "WAIT": 2889,
+    "WAIT_TRIGGER": 803,
+    "CANCEL": 712,
+    "ENTER": 1302,
+    "NO_EFFECT": 81934
+   },
+   "structure_decisions_by_reason": {
+    "NO_EFFECT:BASE_RULE_NO_ENTRY": 79513,
+    "WAIT:OPPOSING_CONFIRMED": 2703,
+    "NO_EFFECT:TREND_EXIT_RULE_ONLY": 2335,
+    "ENTER:COMPATIBLE_CONFIRMED": 1302,
+    "WAIT_TRIGGER:WAIT_TRIGGER": 803,
+    "CANCEL:CHASE_LIMIT": 712,
+    "WAIT:COMPATIBLE_BROKEN": 186,
+    "NO_EFFECT:NO_STRUCTURE": 80,
+    "NO_EFFECT:BASE_RULE_EXIT": 6
+   },
+   "structure_decision_to_applied_action": {
+    "NO_EFFECT→None": 81848,
+    "WAIT→NONE": 2889,
+    "ENTER→OPEN": 1302,
+    "WAIT_TRIGGER→NONE": 803,
+    "CANCEL→NONE": 712,
+    "NO_EFFECT→OPEN": 80,
+    "NO_EFFECT→CLOSE": 6
+   },
+   "closed_trades_with_entry_structure": 16,
+   "closed_trades_exited_by_structure": 0,
+   "open_positions_at_end": 3,
+   "open_positions_with_entry_structure": 3,
+   "exit_reasons": {
+    "stop": 10,
+    "EMA200_CROSS_DOWN": 6,
+    "likidasyon": 1
+   },
+   "hold_hours": {
+    "n": 17,
+    "median": 156.0,
+    "mean": 451.5,
+    "min": 8.0,
+    "max": 3088.0
+   },
+   "example_trades": [
+    {
+     "trade_id": "F00001",
+     "symbol": "UNI/USDT",
+     "side": "LONG",
+     "opened_at": "2025-09-19T04:00:00+00:00",
+     "structure": {
+      "pattern_id": "800d5174b1d15630",
+      "name": "BULLISH_HARAMI",
+      "timeframe": "1d",
+      "status": "CONFIRMED",
+      "action": "ENTER"
+     }
+    },
+    {
+     "trade_id": "F00002",
+     "symbol": "ARB/USDT",
+     "side": "LONG",
+     "opened_at": "2025-09-19T04:00:00+00:00",
+     "structure": {
+      "pattern_id": "ef12864ab7efb457",
+      "name": "BREAK_RETEST_HOLD",
+      "timeframe": "1d",
+      "status": "CONFIRMED",
+      "action": "ENTER"
+     }
+    },
+    {
+     "trade_id": "F00003",
+     "symbol": "DOGE/USDT",
+     "side": "LONG",
+     "opened_at": "2025-09-19T04:00:00+00:00",
+     "structure": {
+      "pattern_id": "9a4c7af05e19642b",
+      "name": "BULLISH_HARAMI",
+      "timeframe": "1d",
+      "status": "CONFIRMED",
+      "action": "ENTER"
+     }
+    },
+    {
+     "trade_id": "F00005",
+     "symbol": "BNB/USDT",
+     "side": "LONG",
+     "opened_at": "2025-09-22T08:00:00+00:00",
+     "structure": {
+      "pattern_id": "32a738522d320511",
+      "name": "BULLISH_HARAMI",
+      "timeframe": "1d",
+      "status": "CONFIRMED",
+      "action": "ENTER"
+     }
+    },
+    {
+     "trade_id": "F00007",
+     "symbol": "ETH/USDT",
+     "side": "LONG",
+     "opened_at": "2025-09-29T00:00:00+00:00",
+     "structure": {
+      "pattern_id": "07ca2c8079015f2a",
+      "name": "HAMMER",
+      "timeframe": "1d",
+      "status": "CONFIRMED",
+      "action": "ENTER"
+     }
+    }
+   ],
+   "example_structure_exits": [],
+   "example_wait_or_cancel_decisions": [
+    {
+     "symbol": "BTC/USDT",
+     "t": 1758240000000,
+     "action": "WAIT",
+     "reason_code": "OPPOSING_CONFIRMED",
+     "pattern_ids": [
+      "31cc9b4d3bf7172f"
+     ],
+     "applied": "NONE"
+    },
+    {
+     "symbol": "ETH/USDT",
+     "t": 1758240000000,
+     "action": "WAIT_TRIGGER",
+     "reason_code": "WAIT_TRIGGER",
+     "pattern_ids": [
+      "4ed50b58c9fcc870"
+     ],
+     "applied": "NONE"
+    },
+    {
+     "symbol": "ZEC/USDT",
+     "t": 1758240000000,
+     "action": "WAIT",
+     "reason_code": "OPPOSING_CONFIRMED",
+     "pattern_ids": [
+      "3def564a41d3bf1d"
+     ],
+     "applied": "NONE"
+    },
+    {
+     "symbol": "SOL/USDT",
+     "t": 1758240000000,
+     "action": "WAIT",
+     "reason_code": "OPPOSING_CONFIRMED",
+     "pattern_ids": [
+      "200dc605bd93caf7"
+     ],
+     "applied": "NONE"
+    },
+    {
+     "symbol": "NEAR/USDT",
+     "t": 1758240000000,
+     "action": "CANCEL",
+     "reason_code": "CHASE_LIMIT",
+     "pattern_ids": [
+      "27e8eafa38c18e89"
+     ],
+     "applied": "NONE"
+    },
+    {
+     "symbol": "XRP/USDT",
+     "t": 1758240000000,
+     "action": "WAIT",
+     "reason_code": "OPPOSING_CONFIRMED",
+     "pattern_ids": [
+      "513fb7f77344107a"
+     ],
+     "applied": "NONE"
+    },
+    {
+     "symbol": "BNB/USDT",
+     "t": 1758240000000,
+     "action": "CANCEL",
+     "reason_code": "CHASE_LIMIT",
+     "pattern_ids": [
+      "4098232369274430"
+     ],
+     "applied": "NONE"
+    },
+    {
+     "symbol": "ENA/USDT",
+     "t": 1758240000000,
+     "action": "WAIT_TRIGGER",
+     "reason_code": "WAIT_TRIGGER",
+     "pattern_ids": [
+      "61c73d074be78439"
+     ],
+     "applied": "NONE"
+    }
+   ],
+   "rejections_top": {
+    "TOTAL_OPEN_RISK": 2720,
+    "total": 1362,
+    "STEP_ZERO_QTY": 4
+   }
+  }
+ },
+ "elapsed_s": 988.1
+}

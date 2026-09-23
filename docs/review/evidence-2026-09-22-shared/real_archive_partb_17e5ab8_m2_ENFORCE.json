@@ -1,0 +1,330 @@
+{
+ "label": "GERÇEK ARŞİV (bn_archive) — replay strateji modu, yapı ENFORCE; PnL raporlanmaz",
+ "code_sha": "17e5ab8e2782e065ccd567b58df70ebf7cbb432c",
+ "symbols": [
+  "BTC/USDT",
+  "ETH/USDT",
+  "ZEC/USDT",
+  "SOL/USDT",
+  "NEAR/USDT",
+  "UNI/USDT",
+  "XRP/USDT",
+  "ONE/USDT",
+  "BNB/USDT",
+  "ARB/USDT",
+  "DOGE/USDT",
+  "LSK/USDT",
+  "SUI/USDT",
+  "ENA/USDT",
+  "G/USDT",
+  "WLD/USDT",
+  "ADA/USDT",
+  "ONDO/USDT",
+  "1000PEPE/USDT",
+  "COTI/USDT",
+  "LINK/USDT",
+  "REZ/USDT",
+  "DASH/USDT",
+  "AAVE/USDT",
+  "TAO/USDT",
+  "BCH/USDT",
+  "AVAX/USDT",
+  "DOT/USDT",
+  "FIL/USDT",
+  "APT/USDT",
+  "SYN/USDT",
+  "LTC/USDT",
+  "XLM/USDT",
+  "INJ/USDT",
+  "FET/USDT",
+  "TRX/USDT",
+  "XMR/USDT",
+  "1000SHIB/USDT",
+  "OP/USDT",
+  "KSM/USDT"
+ ],
+ "window": [
+  "2025-09-19",
+  "2026-09-19"
+ ],
+ "B_decision_effect": {
+  "m2_tsmom28|ENFORCE": {
+   "rule": "m2_tsmom28",
+   "mode": "ENFORCE",
+   "symbols_loaded": 40,
+   "symbols_skipped": {},
+   "filters_source": "binance_api",
+   "filters_verified_at": "2026-09-10T21:34:11+00:00",
+   "elapsed_s": 988.7,
+   "n_decisions": 87640,
+   "n_opened": 39,
+   "n_closed_trades": 37,
+   "determinism_hash": "1fcc1e60ffddcec7508bf6f4233f8370eb2ebc7d970a2fd03dc83316934ba89d",
+   "structure_decisions_by_action": {
+    "WAIT": 2848,
+    "NO_EFFECT": 81064,
+    "CANCEL": 793,
+    "ENTER": 589,
+    "WAIT_TRIGGER": 2324,
+    "EXIT": 22
+   },
+   "structure_decisions_by_reason": {
+    "NO_EFFECT:BASE_RULE_NO_ENTRY": 77827,
+    "WAIT:OPPOSING_CONFIRMED": 2608,
+    "WAIT_TRIGGER:WAIT_TRIGGER": 2324,
+    "NO_EFFECT:NO_STRUCTURE": 1765,
+    "NO_EFFECT:NO_OPPOSING_AFTER_ENTRY": 1460,
+    "CANCEL:CHASE_LIMIT": 793,
+    "ENTER:COMPATIBLE_CONFIRMED": 589,
+    "WAIT:COMPATIBLE_BROKEN": 240,
+    "EXIT:M2_STRUCTURE_EXIT": 20,
+    "NO_EFFECT:BASE_RULE_EXIT": 12,
+    "EXIT:ENTRY_STRUCTURE_FAILED": 2
+   },
+   "structure_decision_to_applied_action": {
+    "NO_EFFECT→None": 79287,
+    "WAIT→NONE": 2848,
+    "WAIT_TRIGGER→NONE": 2324,
+    "NO_EFFECT→OPEN": 1765,
+    "CANCEL→NONE": 793,
+    "ENTER→OPEN": 589,
+    "EXIT→CLOSE": 22,
+    "NO_EFFECT→CLOSE": 12
+   },
+   "closed_trades_with_entry_structure": 12,
+   "closed_trades_exited_by_structure": 22,
+   "open_positions_at_end": 2,
+   "open_positions_with_entry_structure": 0,
+   "exit_reasons": {
+    "M2_STRUCTURE_EXIT": 20,
+    "M2_TSMOM28_CROSS_DOWN": 12,
+    "stop": 3,
+    "ENTRY_STRUCTURE_FAILED": 2
+   },
+   "hold_hours": {
+    "n": 37,
+    "median": 92.0,
+    "mean": 155.1,
+    "min": 16.0,
+    "max": 912.0
+   },
+   "example_trades": [
+    {
+     "trade_id": "F00003",
+     "symbol": "ARB/USDT",
+     "side": "LONG",
+     "opened_at": "2025-09-19T04:00:00+00:00",
+     "structure": {
+      "pattern_id": "ef12864ab7efb457",
+      "name": "BREAK_RETEST_HOLD",
+      "timeframe": "1d",
+      "status": "CONFIRMED",
+      "action": "ENTER"
+     }
+    },
+    {
+     "trade_id": "F00004",
+     "symbol": "XMR/USDT",
+     "side": "LONG",
+     "opened_at": "2025-09-20T00:00:00+00:00",
+     "structure": {
+      "pattern_id": "7ec74c90df433a02",
+      "name": "BREAK_RETEST_HOLD",
+      "timeframe": "1d",
+      "status": "CONFIRMED",
+      "action": "ENTER"
+     }
+    },
+    {
+     "trade_id": "F00011",
+     "symbol": "NEAR/USDT",
+     "side": "LONG",
+     "opened_at": "2025-10-06T04:00:00+00:00",
+     "structure": {
+      "pattern_id": "65bb2ca07ca89e53",
+      "name": "BREAK_RETEST_HOLD",
+      "timeframe": "1d",
+      "status": "CONFIRMED",
+      "action": "ENTER"
+     }
+    },
+    {
+     "trade_id": "F00013",
+     "symbol": "XMR/USDT",
+     "side": "LONG",
+     "opened_at": "2025-10-10T00:00:00+00:00",
+     "structure": {
+      "pattern_id": "8f00230e7ac317bb",
+      "name": "BREAK_RETEST_HOLD",
+      "timeframe": "1d",
+      "status": "CONFIRMED",
+      "action": "ENTER"
+     }
+    },
+    {
+     "trade_id": "F00017",
+     "symbol": "DASH/USDT",
+     "side": "LONG",
+     "opened_at": "2025-10-14T08:00:00+00:00",
+     "structure": {
+      "pattern_id": "fe2b55d30729d336",
+      "name": "BREAK_RETEST_HOLD",
+      "timeframe": "1d",
+      "status": "CONFIRMED",
+      "action": "ENTER"
+     }
+    }
+   ],
+   "example_structure_exits": [
+    {
+     "trade_id": "F00005",
+     "symbol": "ZEC/USDT",
+     "closed_at": "2025-09-22T00:00:00+00:00",
+     "exit_reason": "M2_STRUCTURE_EXIT",
+     "exit_structure": {
+      "pattern_id": "6c57a57c9291c3c8",
+      "name": "SWEEP_RECLAIM",
+      "timeframe": "1d",
+      "reason_code": "M2_STRUCTURE_EXIT"
+     }
+    },
+    {
+     "trade_id": "F00008",
+     "symbol": "WLD/USDT",
+     "closed_at": "2025-10-04T00:00:00+00:00",
+     "exit_reason": "M2_STRUCTURE_EXIT",
+     "exit_structure": {
+      "pattern_id": "72ccb4b19927fd2e",
+      "name": "SWEEP_RECLAIM",
+      "timeframe": "1d",
+      "reason_code": "M2_STRUCTURE_EXIT"
+     }
+    },
+    {
+     "trade_id": "F00004",
+     "symbol": "XMR/USDT",
+     "closed_at": "2025-10-04T00:00:00+00:00",
+     "exit_reason": "M2_STRUCTURE_EXIT",
+     "exit_structure": {
+      "pattern_id": "2ebe92da907bea7a",
+      "name": "SWEEP_RECLAIM",
+      "timeframe": "1d",
+      "reason_code": "M2_STRUCTURE_EXIT"
+     }
+    },
+    {
+     "trade_id": "F00011",
+     "symbol": "NEAR/USDT",
+     "closed_at": "2025-10-10T00:00:00+00:00",
+     "exit_reason": "M2_STRUCTURE_EXIT",
+     "exit_structure": {
+      "pattern_id": "4cfd40f362104428",
+      "name": "SWEEP_RECLAIM",
+      "timeframe": "1d",
+      "reason_code": "M2_STRUCTURE_EXIT"
+     }
+    },
+    {
+     "trade_id": "F00015",
+     "symbol": "BNB/USDT",
+     "closed_at": "2025-10-14T00:00:00+00:00",
+     "exit_reason": "M2_STRUCTURE_EXIT",
+     "exit_structure": {
+      "pattern_id": "1286086a2a10780d",
+      "name": "SWEEP_RECLAIM",
+      "timeframe": "1d",
+      "reason_code": "M2_STRUCTURE_EXIT"
+     }
+    }
+   ],
+   "example_wait_or_cancel_decisions": [
+    {
+     "symbol": "BTC/USDT",
+     "t": 1758240000000,
+     "action": "WAIT",
+     "reason_code": "OPPOSING_CONFIRMED",
+     "pattern_ids": [
+      "31cc9b4d3bf7172f"
+     ],
+     "applied": "NONE"
+    },
+    {
+     "symbol": "ZEC/USDT",
+     "t": 1758240000000,
+     "action": "WAIT",
+     "reason_code": "OPPOSING_CONFIRMED",
+     "pattern_ids": [
+      "3def564a41d3bf1d"
+     ],
+     "applied": "NONE"
+    },
+    {
+     "symbol": "SOL/USDT",
+     "t": 1758240000000,
+     "action": "WAIT",
+     "reason_code": "OPPOSING_CONFIRMED",
+     "pattern_ids": [
+      "200dc605bd93caf7"
+     ],
+     "applied": "NONE"
+    },
+    {
+     "symbol": "NEAR/USDT",
+     "t": 1758240000000,
+     "action": "CANCEL",
+     "reason_code": "CHASE_LIMIT",
+     "pattern_ids": [
+      "27e8eafa38c18e89"
+     ],
+     "applied": "NONE"
+    },
+    {
+     "symbol": "XRP/USDT",
+     "t": 1758240000000,
+     "action": "WAIT",
+     "reason_code": "OPPOSING_CONFIRMED",
+     "pattern_ids": [
+      "513fb7f77344107a"
+     ],
+     "applied": "NONE"
+    },
+    {
+     "symbol": "ONE/USDT",
+     "t": 1758240000000,
+     "action": "WAIT",
+     "reason_code": "OPPOSING_CONFIRMED",
+     "pattern_ids": [
+      "97a82dc68ef379c1"
+     ],
+     "applied": "NONE"
+    },
+    {
+     "symbol": "DOGE/USDT",
+     "t": 1758240000000,
+     "action": "WAIT_TRIGGER",
+     "reason_code": "WAIT_TRIGGER",
+     "pattern_ids": [
+      "1c58aab5fc26831c"
+     ],
+     "applied": "NONE"
+    },
+    {
+     "symbol": "WLD/USDT",
+     "t": 1758240000000,
+     "action": "WAIT_TRIGGER",
+     "reason_code": "WAIT_TRIGGER",
+     "pattern_ids": [
+      "05366e9a0a105950"
+     ],
+     "applied": "NONE"
+    }
+   ],
+   "rejections_top": {
+    "TOTAL_OPEN_RISK": 4626,
+    "total": 2315,
+    "STEP_ZERO_QTY": 4
+   }
+  }
+ },
+ "elapsed_s": 990.3
+}

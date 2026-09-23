@@ -1,1 +1,2 @@
+# kod 17e5ab8 (structures_v1.7); eski modül 2399eb5'ten depo dışı kopya; komut: python chart_detector_equivalence.py <eski.py>
 pencere=5410 (gercek arsiv=5170) formasyon=62439 fark=0

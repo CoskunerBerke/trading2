@@ -1,0 +1,27 @@
+# Tur-5 doğrulayıcı gerileme testleri, düzeltme ÖNCESİ commit 5fa43127f9b9bbecfe23f8a310f99686d4e0d9fe üzerinde
+# (test dosyası düzeltmeli daldan kopyalandı; üretim kodu 5fa4312'nin kendisi)
+# komut: python -m pytest tests/test_structures_verifier_findings_v1.py -q -k r5_ --tb=line
+
+E   AssertionError: {}
+tests\test_structures_verifier_findings_v1.py:654: AssertionError: {}
+E   AssertionError: ana bot geri çekilmesi aynı kırılımın kardeş kimliğiyle İKİNCİ kez girmez
+tests\test_structures_verifier_findings_v1.py:685: AssertionError: ana bot geri çekilmesi aynı kırılımın kardeş kimliğiyle İKİNCİ kez girmez
+E   AssertionError: ('TRIGGERED', ['RECORD_CONFIRMED_ASCENDING_TRIANGLE'])
+tests\test_structures_verifier_findings_v1.py:713: AssertionError: ('TRIGGERED', ['RECORD_CONFIRMED_ASCENDING_TRIANGLE'])
+E   AssertionError: ('MANAGED', ['CLOSE_CLOSE_ABOVE_105.4', 'PRICE_GAP_STALE_FUTURES_PRICE', 'FILLED_F00001'])
+tests\test_structures_verifier_findings_v1.py:735: AssertionError: ('MANAGED', ['CLOSE_CLOSE_ABOVE_105.4', 'PRICE_GAP_STALE_FUTURES_PRICE', 'FILLED_F00001'])
+E   AssertionError: ('MANAGED', ['CLOSE_CLOSE_ABOVE_105.4', 'PRICE_GAP_STALE_FUTURES_PRICE', 'FILLED_F00001'])
+tests\test_structures_verifier_findings_v1.py:735: AssertionError: ('MANAGED', ['CLOSE_CLOSE_ABOVE_105.4', 'PRICE_GAP_STALE_FUTURES_PRICE', 'FILLED_F00001'])
+E   AssertionError: iki gün önceki kutu SESSİZCE kullanılmaz
+tests\test_structures_verifier_findings_v1.py:744: AssertionError: iki gün önceki kutu SESSİZCE kullanılmaz
+E   AssertionError: ({'STRUCTURE_ERROR:RuntimeError': 1, 'STRATEGY_ERROR:RuntimeError': 1}, {'opened': 0, 'closed': 0, 'rejected': 2, 'tours': 1, ...})
+tests\test_structures_verifier_findings_v1.py:764: AssertionError: ({'STRUCTURE_ERROR:RuntimeError': 1, 'STRATEGY_ERROR:RuntimeError': 1}, {'opened': 0, 'closed': 0, 'rejected': 2, 'tours': 1, ...})
+FAILED tests/test_structures_verifier_findings_v1.py::test_r5_1_a_breakout_closing_on_the_predecessors_superseded_bar_is_confirmed_by_the_successor
+FAILED tests/test_structures_verifier_findings_v1.py::test_r5_2_a_sibling_identity_of_an_already_traded_break_opens_no_second_trade
+FAILED tests/test_structures_verifier_findings_v1.py::test_r5_2b_the_pattern_bot_cancels_a_plan_whose_record_confirms_as_an_already_traded_break
+FAILED tests/test_structures_verifier_findings_v1.py::test_r5_3_a_leftover_v2_plan_is_cancelled_outside_enforce_and_opens_no_position[SHADOW]
+FAILED tests/test_structures_verifier_findings_v1.py::test_r5_3_a_leftover_v2_plan_is_cancelled_outside_enforce_and_opens_no_position[OFF]
+FAILED tests/test_structures_verifier_findings_v1.py::test_r5_4_the_box_needs_exactly_yesterdays_daily_bar_and_the_end_of_day_close_does_not_need_the_box
+FAILED tests/test_structures_verifier_findings_v1.py::test_r5_5_a_base_rule_exception_is_counted_once_as_strategy_error_in_live_like_replay
+7 failed, 32 deselected in 0.64s
+# çıkış kodu: 1

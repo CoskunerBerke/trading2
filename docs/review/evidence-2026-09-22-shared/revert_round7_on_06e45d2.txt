@@ -1,0 +1,15 @@
+# Tur-7 doğrulayıcı gerileme testleri, düzeltme ÖNCESİ commit 06e45d2099ace68c8835655d45c955e8ff1628bb üzerinde
+# (test dosyası düzeltmeli daldan kopyalandı; üretim kodu 06e45d2'nin kendisi)
+# komut: python -m pytest tests/test_structures_verifier_findings_v1.py -q -k r7_ --tb=line
+
+E   AssertionError: farklı adla aynı kırılım ikinci kez giriş vermez: COMPATIBLE_CONFIRMED
+tests\test_structures_verifier_findings_v1.py:868: AssertionError: farklı adla aynı kırılım ikinci kez giriş vermez: COMPATIBLE_CONFIRMED
+E   AssertionError: ikiz kayıt İKİNCİ işlem açmaz
+tests\test_structures_verifier_findings_v1.py:912: AssertionError: ikiz kayıt İKİNCİ işlem açmaz
+E   AssertionError: ('TRIGGERED', 'BULL_PENNANT')
+tests\test_structures_verifier_findings_v1.py:928: AssertionError: ('TRIGGERED', 'BULL_PENNANT')
+FAILED tests/test_structures_verifier_findings_v1.py::test_r7_1_the_same_break_under_another_chart_name_is_already_used
+FAILED tests/test_structures_verifier_findings_v1.py::test_r7_1b_the_pattern_bot_opens_no_second_trade_on_a_double_triple_twin
+FAILED tests/test_structures_verifier_findings_v1.py::test_r7_2_a_followed_plan_takes_the_records_current_name
+3 failed, 42 deselected in 1.04s
+# çıkış kodu: 1

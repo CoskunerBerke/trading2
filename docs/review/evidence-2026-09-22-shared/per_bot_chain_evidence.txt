@@ -1,0 +1,16 @@
+# Beş botun karar zinciri — SENTETİK veri (etiketli), üretim kodu; kod 17e5ab8 (structures_v1.7); ayrıntı per_bot_chain_evidence.json
+# bot | senaryo | sonuç | işlem kimliği ya da karar kimliği (decision_id)
+main             | geri çekilme planı + teyitli uyumlu 4h yutan boğa          | OPENED                             | F00001
+main             | geri çekilme planı, yapı yok                               | WAIT (giriş yok)                   | c952d911723bac83
+main             | açık LONG, girişten sonra teyitli 4h yutan ayı             | TIGHTEN_STOP                       | F00001
+main             | LONG adayı, teyitli karşı (ayı) yapı                       | WAIT (giriş yok)                   | 35719c1fb45be458
+t2_trend_regime  | kural OPEN, 1d bayrak OLUŞUYOR                             | WAIT_TRIGGER (giriş yok)           | f05127089e1416cf
+t2_trend_regime  | kırılış kapanışı: teyitli bayrak                           | OPENED                             | F00001
+m2_tsmom28       | bayrak teyidiyle giriş, sonra teyitli süpürme (başarısız k | OPENED → CLOSED (M2_STRUCTURE_EXIT | F00001
+b1_box_fade      | kutu tepesinde teyitli taşma-geri dönüş                    | OPENED SHORT                       | F00001
+b1_box_fade      | açık fade'e karşı teyitli dış kırılım                      | CLOSED (BOX_OUTSIDE_BREAKOUT_EXIT) | F00001
+b1_box_fade      | teyitli dış kırılım, karşı fade planı                      | CANCEL (giriş yok)                 | e73f64df2e9210d4
+pattern_trader   | 15m bayrak OLUŞUYOR                                        | PLAN AWAITING_TRIGGER (emir yok)   | c41d02a0e10583fd
+pattern_trader   | kırılış kapanışı: kayıt TEYİT → plan tetik → risk → giriş  | OPENED                             | F00001
+pattern_trader   | hedefte kapanış                                            | CLOSED (hedef1)                    | F00001
+pattern_trader   | teyitli süpürme, fiyat tetikten >1 ATR uzak                | CANCELLED CHASE_LIMIT              | be2099744013afde

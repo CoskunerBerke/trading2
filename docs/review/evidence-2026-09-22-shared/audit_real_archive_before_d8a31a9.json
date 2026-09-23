@@ -1,0 +1,739 @@
+{
+ "label": "GERÇEK ARŞİV (bn_archive, Binance USDⓈ-M perpetual) — salt okuma; PnL yok",
+ "code_root": "<gecici>\\wt_before_d8a31a9",
+ "policy_version": "structures_v1",
+ "symbols": [
+  "BTC/USDT",
+  "ETH/USDT",
+  "ZEC/USDT",
+  "SOL/USDT",
+  "NEAR/USDT",
+  "UNI/USDT",
+  "XRP/USDT",
+  "ONE/USDT",
+  "BNB/USDT",
+  "ARB/USDT",
+  "DOGE/USDT",
+  "LSK/USDT",
+  "SUI/USDT",
+  "ENA/USDT",
+  "G/USDT",
+  "WLD/USDT",
+  "ADA/USDT",
+  "ONDO/USDT",
+  "1000PEPE/USDT",
+  "COTI/USDT",
+  "LINK/USDT",
+  "REZ/USDT",
+  "DASH/USDT",
+  "AAVE/USDT",
+  "TAO/USDT",
+  "BCH/USDT",
+  "AVAX/USDT",
+  "DOT/USDT",
+  "FIL/USDT",
+  "APT/USDT",
+  "SYN/USDT",
+  "LTC/USDT",
+  "XLM/USDT",
+  "INJ/USDT",
+  "FET/USDT",
+  "TRX/USDT",
+  "XMR/USDT",
+  "1000SHIB/USDT",
+  "OP/USDT",
+  "KSM/USDT"
+ ],
+ "by_tf": {
+  "1d": {
+   "analyses": 14600,
+   "violations": {
+    "LEVELS_CHANGED_AFTER_EVENT": 16976,
+    "TERMINAL_STATUS_CHANGED": 4157,
+    "IDENTITY_SWITCH_AT_EVENT": 8
+   },
+   "info": {
+    "FORMING_LEVEL_REVISIONS": 2648,
+    "FORMING_WITHDRAWN": 2237,
+    "ANCHORS_APPENDED_WHILE_DEVELOPING": 1095,
+    "FORMING_INTERPRETATION_REPLACED": 438,
+    "REDEFINED_BY_NEW_PIVOT_AT_TRIGGER_BAR": 7
+   },
+   "examples": [
+    {
+     "kind": "LEVELS_CHANGED_AFTER_EVENT",
+     "pattern_id": "f2770c15fca035c0",
+     "name": "INVERSE_HEAD_AND_SHOULDERS",
+     "frozen": "(177236.23333333345, 102614.0, 101873.57857142857, (184999.00000000012,), None)",
+     "now": "(177882.66666666677, 102614.0, 101873.57857142857, (185645.43333333344,), None)",
+     "symbol": "BTC/USDT",
+     "tf": "1d"
+    },
+    {
+     "kind": "TERMINAL_STATUS_CHANGED",
+     "pattern_id": "8b8eacb9d6dc461a",
+     "name": "INVERSE_HEAD_AND_SHOULDERS",
+     "from": "EXPIRED",
+     "to": "BROKEN",
+     "symbol": "BTC/USDT",
+     "tf": "1d"
+    },
+    {
+     "kind": "TERMINAL_STATUS_CHANGED",
+     "pattern_id": "5331bc4100047839",
+     "name": "MORNING_DOJI_STAR",
+     "from": "EXPIRED",
+     "to": "BROKEN",
+     "symbol": "BTC/USDT",
+     "tf": "1d"
+    },
+    {
+     "kind": "TERMINAL_STATUS_CHANGED",
+     "pattern_id": "67c4be23788119c6",
+     "name": "MORNING_STAR",
+     "from": "EXPIRED",
+     "to": "BROKEN",
+     "symbol": "BTC/USDT",
+     "tf": "1d"
+    },
+    {
+     "kind": "TERMINAL_STATUS_CHANGED",
+     "pattern_id": "eafefffa7af61697",
+     "name": "BULLISH_HARAMI",
+     "from": "EXPIRED",
+     "to": "BROKEN",
+     "symbol": "BTC/USDT",
+     "tf": "1d"
+    },
+    {
+     "kind": "TERMINAL_STATUS_CHANGED",
+     "pattern_id": "b93cd7785714bbee",
+     "name": "BULLISH_HARAMI_CROSS",
+     "from": "EXPIRED",
+     "to": "BROKEN",
+     "symbol": "BTC/USDT",
+     "tf": "1d"
+    },
+    {
+     "kind": "TERMINAL_STATUS_CHANGED",
+     "pattern_id": "222aa57845e67bf2",
+     "name": "BREAK_RETEST_HOLD",
+     "from": "EXPIRED",
+     "to": "BROKEN",
+     "symbol": "BTC/USDT",
+     "tf": "1d"
+    },
+    {
+     "kind": "LEVELS_CHANGED_AFTER_EVENT",
+     "pattern_id": "f2770c15fca035c0",
+     "name": "INVERSE_HEAD_AND_SHOULDERS",
+     "frozen": "(177236.23333333345, 102614.0, 101873.57857142857, (184999.00000000012,), None)",
+     "now": "(178529.1000000001, 102614.0, 101873.57857142857, (186291.86666666676,), None)",
+     "symbol": "BTC/USDT",
+     "tf": "1d"
+    },
+    {
+     "kind": "TERMINAL_STATUS_CHANGED",
+     "pattern_id": "5fd445858e8ffef9",
+     "name": "BREAK_RETEST_HOLD",
+     "from": "EXPIRED",
+     "to": "BROKEN",
+     "symbol": "ETH/USDT",
+     "tf": "1d"
+    },
+    {
+     "kind": "LEVELS_CHANGED_AFTER_EVENT",
+     "pattern_id": "e90c58e40a12e06c",
+     "name": "INVERSE_HEAD_AND_SHOULDERS",
+     "frozen": "(5755.480000000001, 2433.8, 2398.503035714286, (6112.460000000001,), None)",
+     "now": "(5783.960000000002, 2433.8, 2398.503035714286, (6140.940000000002,), None)",
+     "symbol": "ETH/USDT",
+     "tf": "1d"
+    },
+    {
+     "kind": "TERMINAL_STATUS_CHANGED",
+     "pattern_id": "183305d1ac6fb276",
+     "name": "THREE_WHITE_SOLDIERS",
+     "from": "EXPIRED",
+     "to": "BROKEN",
+     "symbol": "ETH/USDT",
+     "tf": "1d"
+    },
+    {
+     "kind": "TERMINAL_STATUS_CHANGED",
+     "pattern_id": "a879ccb3dd389f81",
+     "name": "DOUBLE_BOTTOM",
+     "from": "EXPIRED",
+     "to": "BROKEN",
+     "symbol": "ETH/USDT",
+     "tf": "1d"
+    }
+   ],
+   "distinct_records": 38444,
+   "confirmations_by_name": {
+    "SWEEP_RECLAIM": 4783,
+    "RANGE_BREAKOUT": 2194,
+    "BREAK_RETEST_HOLD": 1100,
+    "THREE_BLACK_CROWS": 1040,
+    "BEARISH_ENGULFING": 759,
+    "EVENING_STAR": 621,
+    "BULLISH_ENGULFING": 595,
+    "TWEEZER_TOP": 559,
+    "TWEEZER_BOTTOM": 527,
+    "DESCENDING_TRIANGLE": 523,
+    "BEARISH_HARAMI": 520,
+    "THREE_WHITE_SOLDIERS": 513,
+    "BULLISH_HARAMI": 425,
+    "BEARISH_BELT_HOLD": 370,
+    "MORNING_STAR": 353,
+    "ASCENDING_TRIANGLE": 321,
+    "BULLISH_BELT_HOLD": 315,
+    "HAMMER": 276,
+    "DARK_CLOUD_COVER": 266,
+    "SHOOTING_STAR": 254,
+    "PIERCING_LINE": 195,
+    "DOUBLE_TOP": 170,
+    "DOUBLE_BOTTOM": 150,
+    "EVENING_DOJI_STAR": 150,
+    "INVERTED_HAMMER": 135,
+    "MORNING_DOJI_STAR": 99,
+    "BEAR_FLAG": 94,
+    "HANGING_MAN": 93,
+    "BEARISH_HARAMI_CROSS": 83,
+    "BULLISH_HARAMI_CROSS": 67,
+    "COMPRESSION_BREAKOUT": 51,
+    "BEAR_PENNANT": 38,
+    "BULL_FLAG": 37,
+    "HEAD_AND_SHOULDERS": 35,
+    "BEARISH_MEETING_LINES": 25,
+    "TRIPLE_TOP": 22,
+    "BEARISH_DOJI_STAR": 21,
+    "INVERSE_HEAD_AND_SHOULDERS": 20,
+    "BULLISH_MEETING_LINES": 19,
+    "TRIPLE_BOTTOM": 15,
+    "BULLISH_DOJI_STAR": 12,
+    "BULL_PENNANT": 7,
+    "DESCENDING_HAWK": 2,
+    "HOMING_PIGEON": 1
+   },
+   "rejects": {
+    "FLAG_CHANNEL_UNCLASSIFIED": 11711
+   },
+   "symbols_without_rows": [],
+   "per_symbol_violations": {
+    "BTC/USDT": {
+     "LEVELS_CHANGED_AFTER_EVENT": 556,
+     "TERMINAL_STATUS_CHANGED": 120
+    },
+    "ETH/USDT": {
+     "TERMINAL_STATUS_CHANGED": 83,
+     "LEVELS_CHANGED_AFTER_EVENT": 74
+    },
+    "ZEC/USDT": {
+     "TERMINAL_STATUS_CHANGED": 81,
+     "LEVELS_CHANGED_AFTER_EVENT": 59
+    },
+    "SOL/USDT": {
+     "TERMINAL_STATUS_CHANGED": 124,
+     "LEVELS_CHANGED_AFTER_EVENT": 544
+    },
+    "NEAR/USDT": {
+     "TERMINAL_STATUS_CHANGED": 72,
+     "LEVELS_CHANGED_AFTER_EVENT": 150,
+     "IDENTITY_SWITCH_AT_EVENT": 1
+    },
+    "UNI/USDT": {
+     "TERMINAL_STATUS_CHANGED": 92,
+     "LEVELS_CHANGED_AFTER_EVENT": 278,
+     "IDENTITY_SWITCH_AT_EVENT": 1
+    },
+    "XRP/USDT": {
+     "LEVELS_CHANGED_AFTER_EVENT": 545,
+     "TERMINAL_STATUS_CHANGED": 88
+    },
+    "ONE/USDT": {
+     "LEVELS_CHANGED_AFTER_EVENT": 502,
+     "TERMINAL_STATUS_CHANGED": 92
+    },
+    "BNB/USDT": {
+     "LEVELS_CHANGED_AFTER_EVENT": 532,
+     "TERMINAL_STATUS_CHANGED": 114,
+     "IDENTITY_SWITCH_AT_EVENT": 1
+    },
+    "ARB/USDT": {
+     "TERMINAL_STATUS_CHANGED": 75,
+     "LEVELS_CHANGED_AFTER_EVENT": 10
+    },
+    "DOGE/USDT": {
+     "LEVELS_CHANGED_AFTER_EVENT": 612,
+     "TERMINAL_STATUS_CHANGED": 79
+    },
+    "LSK/USDT": {
+     "TERMINAL_STATUS_CHANGED": 91,
+     "LEVELS_CHANGED_AFTER_EVENT": 83
+    },
+    "SUI/USDT": {
+     "LEVELS_CHANGED_AFTER_EVENT": 479,
+     "TERMINAL_STATUS_CHANGED": 94
+    },
+    "ENA/USDT": {
+     "TERMINAL_STATUS_CHANGED": 128,
+     "LEVELS_CHANGED_AFTER_EVENT": 116
+    },
+    "G/USDT": {
+     "TERMINAL_STATUS_CHANGED": 122,
+     "LEVELS_CHANGED_AFTER_EVENT": 201,
+     "IDENTITY_SWITCH_AT_EVENT": 1
+    },
+    "WLD/USDT": {
+     "TERMINAL_STATUS_CHANGED": 100,
+     "LEVELS_CHANGED_AFTER_EVENT": 519,
+     "IDENTITY_SWITCH_AT_EVENT": 1
+    },
+    "ADA/USDT": {
+     "TERMINAL_STATUS_CHANGED": 121,
+     "LEVELS_CHANGED_AFTER_EVENT": 453
+    },
+    "ONDO/USDT": {
+     "TERMINAL_STATUS_CHANGED": 82,
+     "LEVELS_CHANGED_AFTER_EVENT": 414
+    },
+    "1000PEPE/USDT": {
+     "TERMINAL_STATUS_CHANGED": 113,
+     "LEVELS_CHANGED_AFTER_EVENT": 338
+    },
+    "COTI/USDT": {
+     "LEVELS_CHANGED_AFTER_EVENT": 476,
+     "TERMINAL_STATUS_CHANGED": 107
+    },
+    "LINK/USDT": {
+     "TERMINAL_STATUS_CHANGED": 109,
+     "LEVELS_CHANGED_AFTER_EVENT": 540
+    },
+    "REZ/USDT": {
+     "LEVELS_CHANGED_AFTER_EVENT": 281,
+     "TERMINAL_STATUS_CHANGED": 97
+    },
+    "DASH/USDT": {
+     "LEVELS_CHANGED_AFTER_EVENT": 369,
+     "TERMINAL_STATUS_CHANGED": 94
+    },
+    "AAVE/USDT": {
+     "LEVELS_CHANGED_AFTER_EVENT": 371,
+     "TERMINAL_STATUS_CHANGED": 125
+    },
+    "TAO/USDT": {
+     "TERMINAL_STATUS_CHANGED": 91,
+     "LEVELS_CHANGED_AFTER_EVENT": 294
+    },
+    "BCH/USDT": {
+     "TERMINAL_STATUS_CHANGED": 112,
+     "LEVELS_CHANGED_AFTER_EVENT": 634
+    },
+    "AVAX/USDT": {
+     "LEVELS_CHANGED_AFTER_EVENT": 1434,
+     "TERMINAL_STATUS_CHANGED": 109
+    },
+    "DOT/USDT": {
+     "LEVELS_CHANGED_AFTER_EVENT": 1068,
+     "TERMINAL_STATUS_CHANGED": 107
+    },
+    "FIL/USDT": {
+     "TERMINAL_STATUS_CHANGED": 113,
+     "LEVELS_CHANGED_AFTER_EVENT": 359
+    },
+    "APT/USDT": {
+     "LEVELS_CHANGED_AFTER_EVENT": 221,
+     "TERMINAL_STATUS_CHANGED": 138
+    },
+    "SYN/USDT": {
+     "LEVELS_CHANGED_AFTER_EVENT": 431,
+     "TERMINAL_STATUS_CHANGED": 116
+    },
+    "LTC/USDT": {
+     "TERMINAL_STATUS_CHANGED": 132,
+     "LEVELS_CHANGED_AFTER_EVENT": 547,
+     "IDENTITY_SWITCH_AT_EVENT": 1
+    },
+    "XLM/USDT": {
+     "LEVELS_CHANGED_AFTER_EVENT": 213,
+     "TERMINAL_STATUS_CHANGED": 124
+    },
+    "INJ/USDT": {
+     "TERMINAL_STATUS_CHANGED": 113,
+     "LEVELS_CHANGED_AFTER_EVENT": 731
+    },
+    "FET/USDT": {
+     "TERMINAL_STATUS_CHANGED": 120,
+     "LEVELS_CHANGED_AFTER_EVENT": 175,
+     "IDENTITY_SWITCH_AT_EVENT": 1
+    },
+    "TRX/USDT": {
+     "TERMINAL_STATUS_CHANGED": 98,
+     "LEVELS_CHANGED_AFTER_EVENT": 616,
+     "IDENTITY_SWITCH_AT_EVENT": 1
+    },
+    "XMR/USDT": {
+     "LEVELS_CHANGED_AFTER_EVENT": 672,
+     "TERMINAL_STATUS_CHANGED": 105
+    },
+    "1000SHIB/USDT": {
+     "TERMINAL_STATUS_CHANGED": 86,
+     "LEVELS_CHANGED_AFTER_EVENT": 550
+    },
+    "OP/USDT": {
+     "TERMINAL_STATUS_CHANGED": 105,
+     "LEVELS_CHANGED_AFTER_EVENT": 314
+    },
+    "KSM/USDT": {
+     "LEVELS_CHANGED_AFTER_EVENT": 215,
+     "TERMINAL_STATUS_CHANGED": 85
+    }
+   }
+  },
+  "4h": {
+   "analyses": 28800,
+   "violations": {
+    "LEVELS_CHANGED_AFTER_EVENT": 44779,
+    "TERMINAL_STATUS_CHANGED": 8095,
+    "IDENTITY_SWITCH_AT_EVENT": 5
+   },
+   "info": {
+    "FORMING_LEVEL_REVISIONS": 6847,
+    "FORMING_WITHDRAWN": 3591,
+    "ANCHORS_APPENDED_WHILE_DEVELOPING": 2047,
+    "FORMING_INTERPRETATION_REPLACED": 677,
+    "REDEFINED_BY_NEW_PIVOT_AT_TRIGGER_BAR": 39
+   },
+   "examples": [
+    {
+     "kind": "TERMINAL_STATUS_CHANGED",
+     "pattern_id": "696614b75a3c25d6",
+     "name": "RANGE_BREAKOUT",
+     "from": "EXPIRED",
+     "to": "BROKEN",
+     "symbol": "BTC/USDT",
+     "tf": "4h"
+    },
+    {
+     "kind": "TERMINAL_STATUS_CHANGED",
+     "pattern_id": "8f530efbc686f2cf",
+     "name": "RANGE_BREAKOUT",
+     "from": "EXPIRED",
+     "to": "BROKEN",
+     "symbol": "BTC/USDT",
+     "tf": "4h"
+    },
+    {
+     "kind": "TERMINAL_STATUS_CHANGED",
+     "pattern_id": "f365f8015714b82f",
+     "name": "BREAK_RETEST_HOLD",
+     "from": "EXPIRED",
+     "to": "BROKEN",
+     "symbol": "BTC/USDT",
+     "tf": "4h"
+    },
+    {
+     "kind": "TERMINAL_STATUS_CHANGED",
+     "pattern_id": "b1293e871ef69e9f",
+     "name": "INVERSE_HEAD_AND_SHOULDERS",
+     "from": "EXPIRED",
+     "to": "BROKEN",
+     "symbol": "BTC/USDT",
+     "tf": "4h"
+    },
+    {
+     "kind": "TERMINAL_STATUS_CHANGED",
+     "pattern_id": "d017c4aa37fcd5f8",
+     "name": "SWEEP_RECLAIM",
+     "from": "EXPIRED",
+     "to": "BROKEN",
+     "symbol": "BTC/USDT",
+     "tf": "4h"
+    },
+    {
+     "kind": "TERMINAL_STATUS_CHANGED",
+     "pattern_id": "1436c80dec45f9f8",
+     "name": "SWEEP_RECLAIM",
+     "from": "EXPIRED",
+     "to": "BROKEN",
+     "symbol": "BTC/USDT",
+     "tf": "4h"
+    },
+    {
+     "kind": "TERMINAL_STATUS_CHANGED",
+     "pattern_id": "2f3cba70d40ab81e",
+     "name": "BULLISH_BELT_HOLD",
+     "from": "EXPIRED",
+     "to": "BROKEN",
+     "symbol": "BTC/USDT",
+     "tf": "4h"
+    },
+    {
+     "kind": "TERMINAL_STATUS_CHANGED",
+     "pattern_id": "2dff24a2c0b6d80a",
+     "name": "THREE_WHITE_SOLDIERS",
+     "from": "EXPIRED",
+     "to": "BROKEN",
+     "symbol": "BTC/USDT",
+     "tf": "4h"
+    },
+    {
+     "kind": "TERMINAL_STATUS_CHANGED",
+     "pattern_id": "445a34ced633d889",
+     "name": "RANGE_BREAKOUT",
+     "from": "EXPIRED",
+     "to": "BROKEN",
+     "symbol": "ETH/USDT",
+     "tf": "4h"
+    },
+    {
+     "kind": "TERMINAL_STATUS_CHANGED",
+     "pattern_id": "9643d97191f3e95e",
+     "name": "RANGE_BREAKOUT",
+     "from": "EXPIRED",
+     "to": "BROKEN",
+     "symbol": "ETH/USDT",
+     "tf": "4h"
+    },
+    {
+     "kind": "TERMINAL_STATUS_CHANGED",
+     "pattern_id": "f5a94ee2c1263c9c",
+     "name": "TWEEZER_BOTTOM",
+     "from": "EXPIRED",
+     "to": "BROKEN",
+     "symbol": "ETH/USDT",
+     "tf": "4h"
+    },
+    {
+     "kind": "TERMINAL_STATUS_CHANGED",
+     "pattern_id": "9b2f1bbbfaf429f3",
+     "name": "SWEEP_RECLAIM",
+     "from": "EXPIRED",
+     "to": "BROKEN",
+     "symbol": "ETH/USDT",
+     "tf": "4h"
+    }
+   ],
+   "distinct_records": 80293,
+   "confirmations_by_name": {
+    "SWEEP_RECLAIM": 10023,
+    "RANGE_BREAKOUT": 3989,
+    "BREAK_RETEST_HOLD": 2059,
+    "THREE_BLACK_CROWS": 1602,
+    "DESCENDING_TRIANGLE": 1516,
+    "ASCENDING_TRIANGLE": 1500,
+    "BEARISH_ENGULFING": 1324,
+    "THREE_WHITE_SOLDIERS": 1289,
+    "BULLISH_ENGULFING": 1235,
+    "TWEEZER_BOTTOM": 948,
+    "EVENING_STAR": 945,
+    "TWEEZER_TOP": 922,
+    "BEARISH_HARAMI": 871,
+    "BULLISH_HARAMI": 855,
+    "MORNING_STAR": 838,
+    "DOUBLE_TOP": 648,
+    "BULLISH_BELT_HOLD": 612,
+    "DOUBLE_BOTTOM": 565,
+    "BEARISH_BELT_HOLD": 552,
+    "HAMMER": 518,
+    "DARK_CLOUD_COVER": 500,
+    "SHOOTING_STAR": 454,
+    "PIERCING_LINE": 393,
+    "TRIPLE_TOP": 333,
+    "TRIPLE_BOTTOM": 278,
+    "EVENING_DOJI_STAR": 256,
+    "MORNING_DOJI_STAR": 234,
+    "HANGING_MAN": 208,
+    "INVERTED_HAMMER": 207,
+    "BULLISH_HARAMI_CROSS": 202,
+    "BEARISH_HARAMI_CROSS": 198,
+    "COMPRESSION_BREAKOUT": 74,
+    "HEAD_AND_SHOULDERS": 70,
+    "INVERSE_HEAD_AND_SHOULDERS": 61,
+    "BEAR_FLAG": 54,
+    "BEARISH_MEETING_LINES": 51,
+    "BULL_FLAG": 39,
+    "BULLISH_DOJI_STAR": 39,
+    "BEARISH_DOJI_STAR": 38,
+    "BULLISH_MEETING_LINES": 30,
+    "BULL_PENNANT": 16,
+    "DESCENDING_HAWK": 12,
+    "BEAR_PENNANT": 11,
+    "HOMING_PIGEON": 10
+   },
+   "rejects": {
+    "FLAG_CHANNEL_UNCLASSIFIED": 15861
+   },
+   "symbols_without_rows": [],
+   "per_symbol_violations": {
+    "BTC/USDT": {
+     "TERMINAL_STATUS_CHANGED": 202,
+     "LEVELS_CHANGED_AFTER_EVENT": 564
+    },
+    "ETH/USDT": {
+     "TERMINAL_STATUS_CHANGED": 206,
+     "LEVELS_CHANGED_AFTER_EVENT": 1147
+    },
+    "ZEC/USDT": {
+     "TERMINAL_STATUS_CHANGED": 188,
+     "LEVELS_CHANGED_AFTER_EVENT": 897,
+     "IDENTITY_SWITCH_AT_EVENT": 1
+    },
+    "SOL/USDT": {
+     "TERMINAL_STATUS_CHANGED": 171,
+     "LEVELS_CHANGED_AFTER_EVENT": 1109
+    },
+    "NEAR/USDT": {
+     "LEVELS_CHANGED_AFTER_EVENT": 623,
+     "TERMINAL_STATUS_CHANGED": 198
+    },
+    "UNI/USDT": {
+     "TERMINAL_STATUS_CHANGED": 185,
+     "LEVELS_CHANGED_AFTER_EVENT": 974
+    },
+    "XRP/USDT": {
+     "TERMINAL_STATUS_CHANGED": 177,
+     "LEVELS_CHANGED_AFTER_EVENT": 561
+    },
+    "ONE/USDT": {
+     "TERMINAL_STATUS_CHANGED": 203,
+     "LEVELS_CHANGED_AFTER_EVENT": 1309
+    },
+    "BNB/USDT": {
+     "TERMINAL_STATUS_CHANGED": 229,
+     "LEVELS_CHANGED_AFTER_EVENT": 2104
+    },
+    "ARB/USDT": {
+     "TERMINAL_STATUS_CHANGED": 175,
+     "LEVELS_CHANGED_AFTER_EVENT": 1391
+    },
+    "DOGE/USDT": {
+     "LEVELS_CHANGED_AFTER_EVENT": 444,
+     "TERMINAL_STATUS_CHANGED": 179
+    },
+    "LSK/USDT": {
+     "LEVELS_CHANGED_AFTER_EVENT": 1753,
+     "TERMINAL_STATUS_CHANGED": 141
+    },
+    "SUI/USDT": {
+     "LEVELS_CHANGED_AFTER_EVENT": 2867,
+     "TERMINAL_STATUS_CHANGED": 237
+    },
+    "ENA/USDT": {
+     "LEVELS_CHANGED_AFTER_EVENT": 912,
+     "TERMINAL_STATUS_CHANGED": 269
+    },
+    "G/USDT": {
+     "TERMINAL_STATUS_CHANGED": 233,
+     "LEVELS_CHANGED_AFTER_EVENT": 1153,
+     "IDENTITY_SWITCH_AT_EVENT": 1
+    },
+    "WLD/USDT": {
+     "TERMINAL_STATUS_CHANGED": 175,
+     "LEVELS_CHANGED_AFTER_EVENT": 755,
+     "IDENTITY_SWITCH_AT_EVENT": 1
+    },
+    "ADA/USDT": {
+     "TERMINAL_STATUS_CHANGED": 187,
+     "LEVELS_CHANGED_AFTER_EVENT": 1238
+    },
+    "ONDO/USDT": {
+     "TERMINAL_STATUS_CHANGED": 212,
+     "LEVELS_CHANGED_AFTER_EVENT": 804
+    },
+    "1000PEPE/USDT": {
+     "TERMINAL_STATUS_CHANGED": 174,
+     "LEVELS_CHANGED_AFTER_EVENT": 579
+    },
+    "COTI/USDT": {
+     "TERMINAL_STATUS_CHANGED": 165,
+     "LEVELS_CHANGED_AFTER_EVENT": 969
+    },
+    "LINK/USDT": {
+     "LEVELS_CHANGED_AFTER_EVENT": 1251,
+     "TERMINAL_STATUS_CHANGED": 228
+    },
+    "REZ/USDT": {
+     "TERMINAL_STATUS_CHANGED": 237,
+     "LEVELS_CHANGED_AFTER_EVENT": 822
+    },
+    "DASH/USDT": {
+     "TERMINAL_STATUS_CHANGED": 226,
+     "LEVELS_CHANGED_AFTER_EVENT": 772
+    },
+    "AAVE/USDT": {
+     "TERMINAL_STATUS_CHANGED": 180,
+     "LEVELS_CHANGED_AFTER_EVENT": 589
+    },
+    "TAO/USDT": {
+     "TERMINAL_STATUS_CHANGED": 190,
+     "LEVELS_CHANGED_AFTER_EVENT": 1424
+    },
+    "BCH/USDT": {
+     "TERMINAL_STATUS_CHANGED": 223,
+     "LEVELS_CHANGED_AFTER_EVENT": 2521,
+     "IDENTITY_SWITCH_AT_EVENT": 1
+    },
+    "AVAX/USDT": {
+     "LEVELS_CHANGED_AFTER_EVENT": 1124,
+     "TERMINAL_STATUS_CHANGED": 260
+    },
+    "DOT/USDT": {
+     "TERMINAL_STATUS_CHANGED": 172,
+     "LEVELS_CHANGED_AFTER_EVENT": 1252
+    },
+    "FIL/USDT": {
+     "TERMINAL_STATUS_CHANGED": 206,
+     "LEVELS_CHANGED_AFTER_EVENT": 1494
+    },
+    "APT/USDT": {
+     "TERMINAL_STATUS_CHANGED": 228,
+     "LEVELS_CHANGED_AFTER_EVENT": 1389
+    },
+    "SYN/USDT": {
+     "TERMINAL_STATUS_CHANGED": 191,
+     "LEVELS_CHANGED_AFTER_EVENT": 465
+    },
+    "LTC/USDT": {
+     "TERMINAL_STATUS_CHANGED": 198,
+     "LEVELS_CHANGED_AFTER_EVENT": 1074
+    },
+    "XLM/USDT": {
+     "TERMINAL_STATUS_CHANGED": 217,
+     "LEVELS_CHANGED_AFTER_EVENT": 1214
+    },
+    "INJ/USDT": {
+     "TERMINAL_STATUS_CHANGED": 233,
+     "LEVELS_CHANGED_AFTER_EVENT": 909
+    },
+    "FET/USDT": {
+     "TERMINAL_STATUS_CHANGED": 154,
+     "LEVELS_CHANGED_AFTER_EVENT": 1321
+    },
+    "TRX/USDT": {
+     "TERMINAL_STATUS_CHANGED": 185,
+     "LEVELS_CHANGED_AFTER_EVENT": 465
+    },
+    "XMR/USDT": {
+     "TERMINAL_STATUS_CHANGED": 229,
+     "LEVELS_CHANGED_AFTER_EVENT": 1285
+    },
+    "1000SHIB/USDT": {
+     "LEVELS_CHANGED_AFTER_EVENT": 1008,
+     "TERMINAL_STATUS_CHANGED": 175
+    },
+    "OP/USDT": {
+     "TERMINAL_STATUS_CHANGED": 249,
+     "LEVELS_CHANGED_AFTER_EVENT": 1214,
+     "IDENTITY_SWITCH_AT_EVENT": 1
+    },
+    "KSM/USDT": {
+     "TERMINAL_STATUS_CHANGED": 208,
+     "LEVELS_CHANGED_AFTER_EVENT": 1033
+    }
+   }
+  }
+ },
+ "elapsed_s": 300.5
+}

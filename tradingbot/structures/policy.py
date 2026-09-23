@@ -124,15 +124,16 @@ def _level_tol_pct() -> float:
 
 
 def same_break(a: dict[str, Any] | None, b: dict[str, Any] | None) -> bool:
-    """AYNI KIRILIM (tur-5 doğrulayıcı F2) — yalnız GRAFİK yapıları. Aynı seviyenin farklı dayanak çiftli yorumları
-    (ör. üç eşit tepeden kurulan kardeş üçgenler) aynı kırılımı ayrı kimliklerle teyit eder; analiz bu yorumları AYRI
-    kayıt olarak verir (geçmiş, panel), tüketici için ise TEK kırılımdır. İkisi de teyitli; aynı sembol, dilim, ad ve
-    taraf; teyit anları arasında en çok `fresh_bars` bar; tetik seviyeleri eşit-seviye toleransında (%)."""
+    """AYNI KIRILIM (tur-5 doğrulayıcı F2) — yalnız GRAFİK yapıları. Aynı seviyenin farklı dayanaklı yorumları (ör. üç
+    eşit tepeden kurulan kardeş üçgenler; aynı diplerden çift ve üçlü dip — aynı boyun çizgisi) aynı kırılımı ayrı
+    kimliklerle teyit eder; analiz bu yorumları AYRI kayıt olarak verir (geçmiş, panel), tüketici için ise TEK kırılımdır.
+    İkisi de teyitli; aynı sembol, dilim ve taraf (AD karşılaştırılmaz — tur-7: çift/üçlü dip ve bayrak/flama aynı
+    kırılımı farklı adla verir); teyit anları arasında en çok `fresh_bars` bar; tetikler eşit-seviye toleransında (%)."""
     if not a or not b:
         return False
     if a.get("family") != K.FAMILY_CHART or b.get("family") != K.FAMILY_CHART:
         return False
-    for k in ("symbol", "timeframe", "name", "side"):
+    for k in ("symbol", "timeframe", "side"):
         if a.get(k) is None or a.get(k) != b.get(k):
             return False
     ca, cb = a.get("confirmed_at_ms"), b.get("confirmed_at_ms")

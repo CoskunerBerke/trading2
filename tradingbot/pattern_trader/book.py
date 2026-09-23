@@ -695,8 +695,11 @@ class PatternBook:
                 pl["revision_history"] = pl["revision_history"][-5:]
             pl.update({k: lv[k] for k in ("trigger", "invalidation", "stop", "atr", "target", "target_source", "rr_gross",
                                           "rr_after_cost", "structure_geometry")})
+            # ad/aile de KAYITTAN (tur-7: bayrak/flama kimliği aynı kalırken adı teyide kadar değişebilir; işlem kaydı ve
+            # panel teyit anındaki adı taşımalı)
             pl["structure"] = dict(pl.get("structure") or {}, status=st, confirmed_at_ms=rec.get("confirmed_at_ms"),
-                                   analysis_id=rec.get("analysis_id"), side=str(pl["side"]), trigger=dict(lv["trigger"]))
+                                   analysis_id=rec.get("analysis_id"), side=str(pl["side"]), trigger=dict(lv["trigger"]),
+                                   name=rec.get("name"), family=rec.get("family"))
             if rec.get("expires_at_ms"):
                 pl["expires_at_ms"] = int(rec["expires_at_ms"])
                 pl["expires_at"] = iso_ms(pl["expires_at_ms"])

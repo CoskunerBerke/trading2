@@ -851,3 +851,78 @@ def test_r6_3_a_leftover_v1_plan_is_cancelled_in_enforce_and_opens_no_position(t
         CLOCK[0] = PT0
     assert plan["status"] == "CANCELLED" and plan["reasons"][-1] == "STRUCTURE_MODE_ENFORCE_V1_PLAN", (plan["status"], plan.get("reasons"))
     assert "LNG/USDT" not in book.ledger.positions
+
+
+# ============================================================================ TUR 7 (düzeltmelerin doğrulaması, 06e45d2)
+def test_r7_1_the_same_break_under_another_chart_name_is_already_used():
+    """Aynı diplerden çift ve üçlü dip AYNI boyun çizgisini, stopu ve teyit barını verir (gerçek arşivde 4h'de 86 çift);
+    06e45d2'de `same_break` adı karşılaştırdığı için ikinci işlem açılabiliyordu."""
+    a = _chart_rec("dbl", conf_bar=10, level=77.97, name="DOUBLE_BOTTOM")
+    b = _chart_rec("tpl", conf_bar=10, level=77.97, name="TRIPLE_BOTTOM")
+    used = _Used({"dbl"}, [{k: a[k] for k in ("pattern_id", "family", "name", "side", "symbol", "timeframe",
+                                              "confirmed_at_ms", "trigger")}])
+    an = {"4h": {"market": "USDM_PERP", "records": [b]}, "1d": {"market": "USDM_PERP", "records": []}}
+    as_of = int(b["confirmed_at_ms"]) + 60_000
+    d = P.entry_decision(P.POLICIES[P.BOT_MAIN], intended_side=K.LONG, analyses=an, as_of_ms=as_of, used_patterns=used,
+                         entry_type="pullback")
+    assert d["action"] == P.ACT_WAIT, "farklı adla aynı kırılım ikinci kez giriş vermez: %s" % d["reason_code"]
+    assert P.same_break(a, b) and not P.same_break(a, dict(b, side=K.SHORT))
+
+
+def test_r7_1b_the_pattern_bot_opens_no_second_trade_on_a_double_triple_twin(tmp_path):
+    """ÜRETİM tarama yolu: işlem DOUBLE_BOTTOM kaydıyla açılır ve hedefte kapanır; ikizi TRIPLE_BOTTOM (yeni kimlik,
+    AYNI tetik ve teyit barı) sonraki taramada ikinci işlem açmaz (06e45d2'de açıyordu)."""
+    import test_structures_pattern_bot_v2 as V
+    from test_pattern_trader_v1 import CLOCK, M15, _exinfo, _provider, _scanner, _set_mark
+    from test_pattern_trader_v1 import T0 as PT0
+    try:
+        CLOCK[0] = PT0
+        flag, brk = V._flag15()
+        p = _provider({V.SYM: V._frames(brk)}, _exinfo(V.EX))
+        sc, book = _scanner(V._enforce_cfg(tmp_path), p)
+        orig = book._structure_analyses
+
+        def twins(*a, **k):
+            out = orig(*a, **k)
+            if out.get("15m"):
+                recs = []
+                for r in out["15m"]["records"]:
+                    if r.get("family") == K.FAMILY_CHART and r.get("side") == K.LONG:
+                        recs += [dict(r, name="DOUBLE_BOTTOM"), dict(r, name="TRIPLE_BOTTOM", pattern_id="7" + r["pattern_id"][1:])]
+                    else:
+                        recs.append(r)
+                out["15m"] = dict(out["15m"], records=recs)
+            return out
+        book._structure_analyses = twins
+        CLOCK[0] = int(flag[-1]["timestamp"]) + M15
+        _set_mark(p, V.SYM, flag[-1]["close"])
+        sc.scan_cycle(now_ms=CLOCK[0])
+        CLOCK[0] = int(brk[-1]["timestamp"]) + M15
+        _set_mark(p, V.SYM, brk[-1]["close"])
+        sc.scan_cycle(now_ms=CLOCK[0])
+        pos1 = book.ledger.positions[V.SYM]
+        plan1 = next(pl for pl in book.plans.values() if pl.get("position_id") == pos1.id)
+        CLOCK[0] += M15
+        _set_mark(p, V.SYM, float(plan1["target"]) * 1.001)
+        sc.exit_check()
+        assert V.SYM not in book.ledger.positions
+        CLOCK[0] = int(brk[-1]["timestamp"]) + 2 * M15 + 60_000
+        _set_mark(p, V.SYM, float(plan1["trigger"]["level"]) * 1.002)
+        sc.scan_cycle(now_ms=CLOCK[0])
+        assert V.SYM not in book.ledger.positions and book.counters["opened"] == 1, "ikiz kayıt İKİNCİ işlem açmaz"
+    finally:
+        CLOCK[0] = PT0
+
+
+def test_r7_2_a_followed_plan_takes_the_records_current_name(tmp_path):
+    """Bayrak/flama kimliği aynı kalırken adı teyide kadar değişebilir: plan (ve işlem kaydı) teyit anındaki adı taşır
+    (06e45d2'de plan kurulurkenki ad kalıyordu)."""
+    book = _book(tmp_path)
+    now = datetime.fromtimestamp(T0 / 1000, tz=timezone.utc)
+    rec = _chart_rec("pf", conf_bar=10, level=50.0, tf="4h", sym="LNG/USDT", name="BULL_FLAG")
+    pl = dict(_plan("AWAITING_TRIGGER", pid="pf", tf="4h"), family="D2_CHART_STRUCTURE")
+    pl["structure"] = dict(pl["structure"], name="BULL_PENNANT")
+    out, cs = {"triggered": 0}, {"triggered": 0}
+    book._follow_record(pl, {"4h": {"market": "USDM_PERP", "analysis_id": "x", "records": [rec]}}, as_of_ms=int(rec["confirmed_at_ms"]),
+                        dec_ms=int(rec["confirmed_at_ms"]), now=now, out=out, cs=cs, levels_1h=None)
+    assert pl["status"] == "TRIGGERED" and pl["structure"]["name"] == "BULL_FLAG", (pl["status"], pl["structure"].get("name"))

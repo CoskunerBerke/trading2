@@ -185,3 +185,19 @@ için `41e3489`'da DAVRANIŞLA düşen test var (`test_r6_*`; kanıt `revert_rou
   sonraki ilk kırılımı (ör. eğik taraf aşağı kırılıp fiyat dönünce düz tepenin kırılımı) ardılla teyit edilir.
 * **ENFORCE'ta kalan v1 planı İPTAL (#3):** `STRUCTURE_MODE_ENFORCE_V1_PLAN` — dağıtımdan kalan v1 planı yapı
   denetiminden geçmeden dolamaz (F3'ün aynası).
+
+## J. `structures_v1.7` — altıncı doğrulama turu (2026-09-23, dağıtımdan ÖNCE)
+
+`06e45d2` üzerinde altıncı bağımsız doğrulayıcı 3 bulgu raporladı (2 orta, 1 düşük). İkisi düzeltildi; her biri için
+`06e45d2`'de DAVRANIŞLA düşen test var (`test_r7_*`; kanıt `revert_round7_on_06e45d2.txt`). **Eşik değişmedi.**
+
+* **Aynı kırılımda AD karşılaştırılmaz (#1):** aynı diplerden çift ve üçlü dip (aynı boyun çizgisi, stop ve teyit barı)
+  ya da bayrak/flama aynı kırılımı farklı adla verir; `policy.same_break` artık grafik ailesinde sembol + dilim + taraf +
+  teyit penceresi + tetik toleransıyla eşler (önce formasyon botu ikiz kayıtla ikinci işlem açabiliyordu).
+* **Plan adı kayıttan yenilenir (#2):** izlenen planın yapı özeti (ve işlem kaydı) teyit anındaki adı/aileyi taşır.
+* **BİLİNEN SINIRLAMA (#3, bilinçli bırakıldı):** üçgenin düz çiftinde bir tarafın teyidi o tarafı KALICI çözer; aynı
+  tarafta, ilk teyitten sonra fiyat geri dönüp yeniden kırarsa (ayrı ikinci kırılım) bu kırılım kayıt üretmez.
+  Doğrulayıcının ölçümü: 4h, 8 coin × 2500 bar'da 23 taze kesişme, bunların 6'sında hiçbir üçgen kaydı yok. Yön: kaçan
+  sinyal (sahte ya da yinelenen teyit değil); ancak karşı yapı olarak kullanan kararlar (bekleme/M2 çıkışı) da o olayı
+  görmez. Değiştirmek, ardılın aynı tarafını selefin kaydı bittikten sonra ve yalnız TAZE kesişmeyle açmayı gerektirir;
+  bu teslimde yapılmadı.

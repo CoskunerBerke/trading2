@@ -701,7 +701,7 @@ class StructuresSection:
     yalnız PAPER/TESTNET/OBSERVE/SHADOW_LIVE'da. Politika: docs/structures/POLITIKA_MATRISI_v1.md. Varsayılan KAPALI:
     config.yaml açar; testler ve eski kurulumlar etkilenmez."""
     enabled: bool = False
-    policy_version: str = "structures_v1.5"
+    policy_version: str = "structures_v1.6"
     main: str = "OFF"
     t2_trend_regime: str = "OFF"
     m2_tsmom28: str = "OFF"

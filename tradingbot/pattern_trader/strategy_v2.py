@@ -186,9 +186,12 @@ def build_plans_v2(symbol: str, *, as_of_ms: int, analyses: dict[str, dict[str, 
                   "last_evaluated_bar_ts": None, "triggered_at_ms": None, "trigger_bar_ts": None, "position_id": None, "reasons": [],
                   "evidence": {**ev, "record": {k: rec.get(k) for k in ("pattern_id", "name", "family", "timeframe", "status",
                                                                         "detected_at_ms", "confirmed_at_ms", "analysis_id", "reference")}},
+                  # `side` + `trigger`: işlem kaydına girer; `policy.same_break` aynı kırılımın kardeş kimliğini bunlarla
+                  # tanır (tur-6 #1: önce eksikti ve formasyon botunda aynı kırılım ikinci işlem açabiliyordu)
                   "structure": {"pattern_id": rec["pattern_id"], "name": rec.get("name"), "family": rec.get("family"),
                                 "timeframe": etf, "status": rec.get("status"), "analysis_id": rec.get("analysis_id"),
-                                "policy_version": K.POLICY_VERSION, "confirmed_at_ms": rec.get("confirmed_at_ms")},
+                                "policy_version": K.POLICY_VERSION, "confirmed_at_ms": rec.get("confirmed_at_ms"),
+                                "side": side, "trigger": dict(lv["trigger"])},
                   # panel motorun ÇİZDİĞİ kaydı çizer: dayanak noktaları ve geometri plana (işlem kaydına DEĞİL) girer
                   "structure_geometry": lv["structure_geometry"], "record_revisions": 0,
                   "data_source": dict(data_source or {}), "size": None, "risk": None}

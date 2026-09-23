@@ -170,3 +170,18 @@ gerilemesiydi. Hepsi kaynaktan ve yeniden üretilerek doğrulandı; her biri iç
   (`BOX_DAY_BAR_MISSING`) — önce iki gün önceki kutu sessizce kullanılıyordu. Gün sonu kapanışı kutudan BAĞIMSIZDIR.
 * **Canlı defter (F5):** botun kendi kuralının arızası tek ve doğru etiketle (`STRATEGY_ERROR`) sayılır (replay ile aynı);
   önce ayrıca `STRUCTURE_ERROR` da sayılıyordu.
+
+## I. `structures_v1.6` — beşinci doğrulama turu (2026-09-23, dağıtımdan ÖNCE)
+
+`41e3489` üzerinde beşinci bağımsız doğrulayıcı 3 bulgu raporladı (1 yüksek, 1 düşük-orta, 1 düşük); yüksek olanı H
+bölümündeki "aynı kırılım tek kullanım" düzeltmesinin formasyon botunda HİÇ işlemediğiydi (uçtan uca ikinci işlem
+açıldı; benim testim alanları elle yazdığı için görmemişti). Hepsi kaynaktan ve yeniden üretilerek doğrulandı; her biri
+için `41e3489`'da DAVRANIŞLA düşen test var (`test_r6_*`; kanıt `revert_round6_on_41e3489.txt`). **Eşik değişmedi.**
+
+* **Formasyon girişi aynı kırılım alanlarını taşır (#1):** plan yapısı ve işlem kaydı `side` + `trigger` içerir (plan
+  kurulurken, kayıt izlenirken yenilenir, `_try_open` açıkça yazar); `policy.same_break` artık formasyon girişlerini de
+  tanır. Uçtan uca test gerçek tarama yolundan açılmış girişle yapılır.
+* **Üçgen düz çifti TARAF bazında çözülür (#2):** selef yorumda bir tarafın teyidi yalnız O TARAFI çözer; karşı tarafın
+  sonraki ilk kırılımı (ör. eğik taraf aşağı kırılıp fiyat dönünce düz tepenin kırılımı) ardılla teyit edilir.
+* **ENFORCE'ta kalan v1 planı İPTAL (#3):** `STRUCTURE_MODE_ENFORCE_V1_PLAN` — dağıtımdan kalan v1 planı yapı
+  denetiminden geçmeden dolamaz (F3'ün aynası).

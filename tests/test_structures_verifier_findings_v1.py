@@ -517,14 +517,15 @@ def test_r4_1_a_triggered_v2_plan_whose_record_left_the_analysis_ends_at_its_own
     assert not book.ledger.positions
 
 
-def _tri_rows(*, breakout_before_successor: bool = True, tail=None):
+def _tri_rows(*, breakout_before_successor: bool = True, tail=None, way=None):
     """Yükselen üçgen: düz tepeler f1/f2 (~110), yükselen dipler q1 < q2 < q3 (q3, f2'den sonra). Kırılım q3'ün
     teyidinden ÖNCE (selef A kırılımı teyit eder) ya da SONRA (A yerini alınca biter, ardıl B teyit eder); `tail`
-    verilirse kırılım yolu doğrudan o noktalardır."""
+    verilirse kırılım yolu doğrudan o noktalardır; `way` verilirse bütün yol (pivot indeksleri aynı kalmalı)."""
     lead = [80.0 + 20.0 * i / 59 for i in range(60)]
     if tail is None:
         tail = [(39, 110.6), (40, 110.9), (44, 111.4)] if breakout_before_successor else [(41, 108.0), (44, 108.8), (46, 110.8), (48, 111.3)]
-    way = [(0, 100.0), (10, 110.0), (16, 101.0), (21, 108.0), (26, 103.0), (32, 110.1), (37, 105.0)] + tail
+    if way is None:
+        way = [(0, 100.0), (10, 110.0), (16, 101.0), (21, 108.0), (26, 103.0), (32, 110.1), (37, 105.0)] + tail
     path = []
     for (i0, p0), (i1, p1) in zip(way, way[1:]):
         path += [p0 + (p1 - p0) * (i - i0) / (i1 - i0) for i in range(i0, i1)]
@@ -762,3 +763,91 @@ def test_r5_5_a_base_rule_exception_is_counted_once_as_strategy_error_in_live_li
     book = S._book(S._cfg(tmp_path, "ENFORCE"), "t2_trend_regime")
     S._step(book, {"1d": brk}, as_of_ms=S._asof(brk), price=brk[-1]["close"], btc=S._btc(len(brk)))
     assert book.rejections == {"STRATEGY_ERROR:RuntimeError": 1} and book.counters["rejected"] == 1, (book.rejections, book.counters)
+
+
+# ============================================================================ TUR 6 (düzeltmelerin doğrulaması, 41e3489)
+def test_r6_1_the_pattern_bot_opens_no_second_trade_on_a_sibling_of_the_break_it_traded(tmp_path):
+    """ÜRETİM tarama yolu: gerçek bayrak işlemi → hedefte kapanır → sonraki taramanın analizinde aynı kırılımın kardeş
+    yorumu (yeni kimlik, tetik +%0,3, bir bar sonra teyit). 41e3489'da giriş kaydı `side`/`trigger` taşımadığı için
+    kardeş kullanılmamış sayılıyor ve İKİNCİ işlem açılıyordu."""
+    import copy
+
+    import test_structures_pattern_bot_v2 as V
+    from test_pattern_trader_v1 import CLOCK, M15, _exinfo, _provider, _scanner, _set_mark
+    from test_pattern_trader_v1 import T0 as PT0
+    try:
+        CLOCK[0] = PT0
+        flag, brk = V._flag15()
+        p = _provider({V.SYM: V._frames(brk)}, _exinfo(V.EX))
+        sc, book = _scanner(V._enforce_cfg(tmp_path), p)
+        CLOCK[0] = int(flag[-1]["timestamp"]) + M15
+        _set_mark(p, V.SYM, flag[-1]["close"])
+        sc.scan_cycle(now_ms=CLOCK[0])
+        CLOCK[0] = int(brk[-1]["timestamp"]) + M15
+        _set_mark(p, V.SYM, brk[-1]["close"])
+        sc.scan_cycle(now_ms=CLOCK[0])
+        pos1 = book.ledger.positions[V.SYM]
+        st1 = pos1.features["structure"]
+        rec1 = copy.deepcopy(next(r for r in book._scan_analyses["15m"]["records"] if r["pattern_id"] == st1["pattern_id"]))
+        plan1 = next(pl for pl in book.plans.values() if pl.get("position_id") == pos1.id)
+        CLOCK[0] += M15
+        _set_mark(p, V.SYM, float(plan1["target"]) * 1.001)
+        sc.exit_check()
+        assert V.SYM not in book.ledger.positions
+        sib = copy.deepcopy(rec1)
+        sib.update(pattern_id="sib" + rec1["pattern_id"][3:], confirmed_at_ms=int(rec1["confirmed_at_ms"]) + M15,
+                   expires_at_ms=int(rec1["confirmed_at_ms"]) + 4 * M15)
+        sib["trigger"] = dict(rec1["trigger"], level=float(rec1["trigger"]["level"]) * 1.003)
+        assert P.same_break(rec1, sib)
+        orig = book._structure_analyses
+
+        def with_sibling(*a, **k):
+            out = orig(*a, **k)
+            if out.get("15m"):
+                out["15m"] = dict(out["15m"], records=list(out["15m"]["records"]) + [sib])
+            return out
+        book._structure_analyses = with_sibling
+        CLOCK[0] = int(sib["confirmed_at_ms"]) + 60_000
+        _set_mark(p, V.SYM, float(sib["trigger"]["level"]) * 1.001)
+        sc.scan_cycle(now_ms=CLOCK[0])
+        assert V.SYM not in book.ledger.positions and book.counters["opened"] == 1, "aynı kırılım İKİNCİ işlem açmaz"
+        assert not any(pl.get("pattern_id") == sib["pattern_id"] and pl.get("status") in ("OPENED", "MANAGED", "CLOSED")
+                       for pl in book.plans.values())
+        assert st1.get("side") == K.LONG and (st1.get("trigger") or {}).get("level") is not None, \
+            "giriş kaydı aynı kırılım alanlarını (taraf, tetik) taşır"
+    finally:
+        CLOCK[0] = PT0
+
+
+def test_r6_2_the_opposite_side_confirming_first_does_not_swallow_the_later_flat_break():
+    """Eğik taraf (SHORT) önce aşağı kırılır ve teyit olur, fiyat döner, q3 teyidiyle düz tepe yukarı kırılır: bu FARKLI
+    kırılımı ardıl teyit eder (41e3489'da çift bütünüyle çözüldüğü için hiçbir kayıt teyit etmiyordu)."""
+    way = [(0, 100.0), (10, 110.0), (16, 101.0), (21, 108.0), (26, 103.0), (32, 110.1), (33, 108.5), (34, 107.0),
+           (35, 105.5), (36, 104.2), (37, 104.0), (38, 106.0), (39, 108.0), (40, 110.9), (44, 111.4)]
+    rows = _tri_rows(way=way)
+    conf: dict = {}
+    for end in range(90, len(rows) + 1):
+        A.clear_cache()
+        an = A.analyze(market="USDM_PERP", symbol="SYN/USDT", timeframe="4h", bars=rows[:end], as_of_ms=int(rows[end - 1]["timestamp"]) + H4)
+        for r in an["records"]:
+            if r["name"] == "ASCENDING_TRIANGLE" and r.get("confirmed_at_ms") is not None:
+                conf.setdefault((r["side"], r["pattern_id"]), (int(r["confirmed_at_ms"]) - T0) // H4 - 1)
+    got = sorted((k[0], v) for k, v in conf.items())
+    assert got == [(K.LONG, 100), (K.SHORT, 96)], got
+
+
+def test_r6_3_a_leftover_v1_plan_is_cancelled_in_enforce_and_opens_no_position(tmp_path):
+    from test_pattern_trader_v1 import CLOCK, M15, _set_mark
+    from test_pattern_trader_v1 import T0 as PT0
+    from test_trading2_fix_plan_expiry_v1 import _triggered_plan_waiting_for_price
+    p, sc, book, plan, rows15 = _triggered_plan_waiting_for_price(tmp_path)
+    assert plan.get("version") != "pattern_protocol_v2.0.0"
+    book.structure_mode = "ENFORCE"
+    CLOCK[0] = int(plan["expires_at_ms"]) - M15
+    _set_mark(p, "LNG/USDT", rows15[40]["close"])
+    try:
+        sc.scan_cycle(now_ms=CLOCK[0])
+    finally:
+        CLOCK[0] = PT0
+    assert plan["status"] == "CANCELLED" and plan["reasons"][-1] == "STRUCTURE_MODE_ENFORCE_V1_PLAN", (plan["status"], plan.get("reasons"))
+    assert "LNG/USDT" not in book.ledger.positions

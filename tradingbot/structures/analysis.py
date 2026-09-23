@@ -393,16 +393,14 @@ def _chart(rows, atr, *, market, symbol, tf, step, cfg: K.StructuresConfig) -> t
         pat = c["pattern"]
         if pat in ("ASCENDING_TRIANGLE", "DESCENDING_TRIANGLE"):
             # DÜZ ÇİFT KİMLİĞİ (tur-4 doğrulayıcı #2): aynı düz çiftin ardışık eğim çiftleri AYNI üçgenin "o anki"
-            # yorumlarıdır (üreteç onları eğim sırasıyla verir). Önceki yorum yerini almadan ÖNCE bir kırılımı TEYİT
-            # ettiyse üçgen o anda çözülmüştür; sonraki yorum AYNI kırılımı ikinci kez teyit edemez ve hiç "o anki" olmaz
-            # (kayıt yok). YALNIZ TEYİT çözer (tur-5 F1): bozulma çözseydi, kırılım selefin yerini aldığı barda kapandığında
-            # (selefin bir tarafı o barda yerini alır, karşı tarafı aynı kapanışla bozulur) kırılımı HİÇBİR kayıt teyit
-            # etmiyordu. Selefin teyitleri yerini alma anından önce olur (ardılın tanınma anından önce sabittir):
-            # kayıt doğup sonra kaybolmaz.
+            # yorumlarıdır (üreteç onları eğim sırasıyla verir). Önceki yorum yerini almadan ÖNCE bir TARAFIN kırılımını
+            # TEYİT ettiyse o taraf çözülmüştür: sonraki yorumların AYNI tarafı ikinci kez teyit edemez ve hiç "o anki"
+            # olmaz (kayıt yok). YALNIZ TEYİT çözer (tur-5 F1: bozulma çözseydi, kırılım selefin yerini aldığı barda
+            # kapanınca kırılımı HİÇBİR kayıt teyit etmiyordu) ve YALNIZ O TARAFI çözer (tur-6 #2: çift bütünüyle
+            # çözülünce karşı tarafın SONRAKİ ilk kırılımı — ör. eğik taraf aşağı kırılıp fiyat dönünce düz tepenin
+            # kırılımı — hiçbir kayıtla teyit edilmiyordu). Selefin teyitleri yerini alma anından önce olur (ardılın
+            # tanınma anından önce sabittir): kayıt doğup sonra kaybolmaz.
             key = (pat, int(c["anchors"][0]["index"]), int(c["anchors"][1]["index"]))
-            if key in tri_resolved:
-                tri_skipped += 1
-                continue
             desc = bool(c["descending"])
             support, lba = c["support"], c["line_before_apex"]
             # iki yönlü aday: düz sınır kırılışı ve eğik sınır kırılışı ayrı kayıt (biri teyit olursa diğeri o bar
@@ -410,6 +408,9 @@ def _chart(rows, atr, *, market, symbol, tf, step, cfg: K.StructuresConfig) -> t
             flat_side = K.SHORT if desc else K.LONG
             line_side = K.LONG if desc else K.SHORT
             for side, trig, inv in ((flat_side, (lambda _k, _s=support: _s), None), (line_side, lba, support)):
+                if (key, side) in tri_resolved:
+                    tri_skipped += 1                       # bu tarafın kırılımını selef yorum teyit etti
+                    continue
                 if inv is None:
                     # düz sınır tarafı: geçersizlik = eğik sınırın SON pivotu (karşı taraf kırılırsa bu taraf biter)
                     inv = c["anchors"][3]["level"]
@@ -419,7 +420,7 @@ def _chart(rows, atr, *, market, symbol, tf, step, cfg: K.StructuresConfig) -> t
                 if r is not None:
                     out.append(r)
                     if r.get("confirmed_at_ms") is not None:
-                        tri_resolved.add(key)
+                        tri_resolved.add((key, side))
             continue
         side = _CHART_SIDE[c["side"]]
         name = pat

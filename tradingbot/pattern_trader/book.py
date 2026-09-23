@@ -418,6 +418,12 @@ class PatternBook:
             for pid, pl in list(self.plans.items()):
                 if pl.get("symbol") != symbol or pl.get("status") not in (PL_AWAITING, PL_TRIGGERED):
                     continue
+                if self.structure_mode == "ENFORCE" and not (pl.get("version") == "pattern_protocol_v2.0.0" and pl.get("structure")):
+                    # ENFORCE'ta giriş yalnız ortak kayıttan kurulan v2 planıyla olur; dağıtımdan (ya da mod geçişinden)
+                    # kalan v1 planı yapı denetiminden geçmemiştir → İPTAL (tur-6 #3: önce ENFORCE'ta da dolabiliyordu).
+                    self._set_status(pl, PL_CANCELLED, int(as_of_ms), "STRUCTURE_MODE_ENFORCE_V1_PLAN")
+                    self.counters["cancelled"] += 1
+                    continue
                 if pl["status"] in (PL_AWAITING, PL_TRIGGERED) and pl.get("version") == "pattern_protocol_v2.0.0" and pl.get("structure"):
                     if self.structure_mode != "ENFORCE":
                         # v2 planı yalnız ENFORCE'ta kurulur ve yalnız orada kayıtla yönetilir. SHADOW/OFF'a geçişte (ya da
@@ -690,7 +696,7 @@ class PatternBook:
             pl.update({k: lv[k] for k in ("trigger", "invalidation", "stop", "atr", "target", "target_source", "rr_gross",
                                           "rr_after_cost", "structure_geometry")})
             pl["structure"] = dict(pl.get("structure") or {}, status=st, confirmed_at_ms=rec.get("confirmed_at_ms"),
-                                   analysis_id=rec.get("analysis_id"))
+                                   analysis_id=rec.get("analysis_id"), side=str(pl["side"]), trigger=dict(lv["trigger"]))
             if rec.get("expires_at_ms"):
                 pl["expires_at_ms"] = int(rec["expires_at_ms"])
                 pl["expires_at"] = iso_ms(pl["expires_at_ms"])
@@ -965,7 +971,9 @@ class PatternBook:
         if pl.get("structure"):
             # ORTAK YAPI: işlem kaydına girişin dayanağı olan katalog kaydı (panel "neden girdi?" ve aynı yapının ikinci
             # işlemi açmaması bununla okunur)
+            # `side`/`trigger` AÇIKÇA planın kendisinden (eski planlar da taşısın): aynı kırılım eşleşmesi bunları okur
             pos.features["structure"] = dict(pl["structure"], action="ENTER", reason_code="PLAN_" + str(pl.get("family")),
+                                             side=str(pl.get("side")), trigger=dict(pl.get("trigger") or {}),
                                              bot="pattern_trader", text_tr="Girdi: %s planı tetiklendi (%s)." % (
                                                  pl.get("family"), (pl.get("trigger") or {}).get("text_tr")))
             self._record_plan_decision(pl, (getattr(self, "_scan_analyses", None) or None)

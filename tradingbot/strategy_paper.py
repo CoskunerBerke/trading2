@@ -494,8 +494,10 @@ class StrategyBook:
         self.structure_mode = _st.mode_for(self.name) if _st is not None else "OFF"
         self.structure_decisions: dict[str, dict[str, Any]] = {}
         self._structure_store = None
-        #: İZLEME KESİNTİSİ (2026-09-23): defterin bu süreç açılmadan ÖNCEKİ son kaydı; ilk bar uygulamasında denetlenir.
+        #: İZLEME KESİNTİSİ (2026-09-23): defterin bu süreç açılmadan ÖNCEKİ son kaydı ve o anda açık pozisyonlar;
+        #: bu süreçteki İLK defter etkinliğinde (`_resume_once`) bir kez denetlenir.
         self._resume_saved_at = self.ledger.updated_at
+        self._resume_positions: list[str] = sorted(self.ledger.positions)
         self._resume_checked = False
         self._gap_until_ms: int | None = None
         self.monitoring_gap: dict[str, Any] | None = None
@@ -567,6 +569,7 @@ class StrategyBook:
         """Doğrulanmış futures fiyatı olmayan semboller (tick YOK, uydurma gerçekleşme YOK): durum + olay (durum
         değişince bir kez; her 60 sn'de yinelenmez)."""
         with self.lock:
+            self._resume_once(now)
             for sym, g in (gaps or {}).items():
                 prev = self.data_gaps.get(sym)
                 if not prev or prev.get("reason") != g.get("reason"):
@@ -591,6 +594,7 @@ class StrategyBook:
         if rates is None:
             return []
         with self.lock:
+            self._resume_once(now)
             posted = self.ledger.settle_late_funding(rates, now=now, hours_for=getattr(rates, "hours_for", None))
             if not posted:
                 return []
@@ -678,6 +682,7 @@ class StrategyBook:
         pozisyonun stop/hedef/likidasyon takibi `tick` ile ayrı sürer. `marks`/`marks_f`: DOĞRULANMIŞ futures
         fiyatı (motor `_paper_marks`); `data_gaps`: fiyatı doğrulanamayan semboller (bu turda tick de yok)."""
         with self.lock:
+            self._resume_once(now)
             self.counters["tours"] += 1
             # KURAL DONGUSU TAZELIGI (2026-09-19): `generated_at` defterin YAZILDIGI andir ve 60 sn'lik
             # cikis izleyicisi (engine_v3._strategy_paper_exit_check) her dakika `save()` cagirdigi icin
@@ -827,6 +832,7 @@ class StrategyBook:
         """CANLI FİYAT KONTROLÜ: defterin stop/hedef/funding/likidasyon kontrolü; ana defterle AYNI çağrı biçimi.
         `marks` yalnız doğrulanmış, güncel perp mark taşır (bar ucu YOK; uçlar `apply_closed_bars` ile ayrı sözleşmede)."""
         with self.lock:
+            self._resume_once(now)
             recs = self.ledger.tick(marks, now_utc=now, funding_rate_lookup=funding_rate_lookup, bar_advance=bar_advance)
             for rec in recs:
                 self._on_closed(rec)
@@ -847,23 +853,29 @@ class StrategyBook:
         SONRAKİ geçerli barı engellemez. Tam sözleşme: `apply_closed_bars_to_ledger`.
         `bars_by_symbol[sym] = {"tf": "1h", "rows": [...], "mark": canlı mark, "market": çerçevenin piyasası}`."""
         with self.lock:
-            if not self._resume_checked:
-                # Süreç başındaki İLK uygulama: defter uzun süre izlenmediyse kesinti kaydedilir; kesintinin bittiği ana
-                # kadar kapanmış barlar (bu süreç boyunca, hangi çağrıda gelirse gelsin) uygulanmaz.
-                self._resume_checked = True
-                self._gap_until_ms = monitoring_gap_on_resume(self.ledger, self._resume_saved_at, now=now, book_key=self.key,
-                                                              state_path=self.cfg.state_path)
-                if self._gap_until_ms is not None:
-                    self.monitoring_gap = {"from": str(self._resume_saved_at), "to": iso(now),
-                                           "positions": sorted(self.ledger.positions)}
+            self._resume_once(now)
             return apply_closed_bars_to_ledger(self.ledger, bars_by_symbol, now=now, funding_rate_lookup=funding_rate_lookup,
                                                on_closed=self._on_closed, on_event=self._data_event,
                                                gap_until_ms=self._gap_until_ms)
+
+    def _resume_once(self, now: datetime) -> None:
+        """İZLEME KESİNTİSİ: bu süreçteki İLK defter etkinliğinde (adım, fiyat tiki, bar, fiyat boşluğu, funding ya da
+        kayıt — hangisi önce gelirse) BİR KEZ denetlenir. Defter uzun süre izlenmediyse kesinti YÜKLEME anındaki
+        pozisyonlarla kaydedilir (ilk adım onları kapatsa bile) ve kesintinin bittiği ana kadar kapanmış barlar bu süreç
+        boyunca uygulanmaz. Çağıran `self.lock`u tutar."""
+        if self._resume_checked:
+            return
+        self._resume_checked = True
+        self._gap_until_ms = monitoring_gap_on_resume(self.ledger, self._resume_saved_at, now=now, book_key=self.key,
+                                                      state_path=self.cfg.state_path, positions=self._resume_positions)
+        if self._gap_until_ms is not None:
+            self.monitoring_gap = {"from": str(self._resume_saved_at), "to": iso(now), "positions": list(self._resume_positions)}
 
 
     def save(self, marks_f: dict[str, float], now: datetime) -> None:
         from .structures.catalog import POLICY_VERSION as _ST_POLICY
         with self.lock:
+            self._resume_once(now)
             self.ledger.save(self.ledger_path)
             fs = self.ledger.summary(marks_f)
             # `generated_at` = bu YAZMA ani. `rule_evaluated_at` = kural dongusunun son kostugu an.
@@ -1001,10 +1013,15 @@ def record_monitoring_gap(state_path: Path | str, rec: dict[str, Any]) -> None:
 
 
 def monitoring_gap_on_resume(ledger: FuturesLedgerV2, last_saved: Any, *, now: datetime, book_key: str,
-                             state_path: Path | str) -> int | None:
-    """Süreç başındaki İLK bar uygulamasında izleme kesintisi var mı? Varsa kaydeder ve kesintinin bittiği anı (ms) döner;
-    o ana kadar kapanmış barlar uygulanmaz. Açık pozisyon yoksa ya da son kayıt okunamıyorsa kesinti YOK sayılır."""
-    if not ledger.positions or not last_saved:
+                             state_path: Path | str, positions: Any = None) -> int | None:
+    """Süreçteki İLK defter etkinliğinde izleme kesintisi var mı? Varsa kaydeder ve kesintinin bittiği anı (ms) döner;
+    o ana kadar kapanmış barlar uygulanmaz. Son kayıt okunamıyorsa kesinti YOK sayılır.
+
+    `positions`: defter YÜKLENİRKEN açık olan pozisyonlar — kesinti boyunca izlenmeyenler bunlardır. İlk adım onları
+    kapatmış olsa bile kayıt bu listeyle yazılır (verilmezse o anki pozisyonlar). Açık pozisyon yoksa da kesinti
+    KAYDEDİLİR: kural o aralıkta hiç değerlendirilmedi (ileri test verisindeki boşluk görünür kalır)."""
+    held = sorted(ledger.positions) if positions is None else sorted(positions)
+    if not last_saved:
         return None
     try:
         last = datetime.fromisoformat(str(last_saved))
@@ -1016,13 +1033,13 @@ def monitoring_gap_on_resume(ledger: FuturesLedgerV2, last_saved: Any, *, now: d
     if gap_s <= MONITORING_GAP_S:
         return None
     rec = {"kind": "MONITORING_GAP", "book": book_key, "from": iso(last), "to": iso(now), "gap_s": round(gap_s, 1),
-           "positions": sorted(ledger.positions), "recorded_at": iso(now),
+           "positions": held, "recorded_at": iso(now),
            "policy": "bars_closed_in_gap_not_applied", "note_tr": ("Defter bu aralıkta izlenmedi; aralıkta kapanan barlar "
                                                                    "UYGULANMADI, geçmiş boşluk tahmini işlemle doldurulmadı. "
                                                                    "Koruyucu izleme güncel fiyatla sürüyor.")}
     record_monitoring_gap(state_path, rec)
-    log.warning("İZLEME KESİNTİSİ %s: %s → %s (%.1f sa), %d açık pozisyon; aradaki barlar uygulanmadı",
-                book_key, rec["from"], rec["to"], gap_s / 3600.0, len(ledger.positions))
+    log.warning("İZLEME KESİNTİSİ %s: %s → %s (%.1f sa), yüklemede %d açık pozisyon; aradaki barlar uygulanmadı",
+                book_key, rec["from"], rec["to"], gap_s / 3600.0, len(held))
     return int(now.timestamp() * 1000)
 
 

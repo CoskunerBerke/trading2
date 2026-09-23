@@ -243,6 +243,76 @@ def test_resume_after_an_outage_records_the_gap_and_does_not_backfill_trades(tmp
     assert len(recs) == 1 and sym not in book.ledger.positions
 
 
+def _gap_records(state_path) -> list[dict]:
+    p = Path(state_path) / MONITORING_GAPS_FILE
+    return [json.loads(x) for x in p.read_text(encoding="utf-8").splitlines()] if p.exists() else []
+
+
+def test_the_outage_is_recorded_with_the_positions_held_at_load_even_if_the_first_step_closes_them(tmp_path, monkeypatch):
+    # 2026-09-23 doğrulama koşusunda Box zamanlayıcısı `step` → `apply_closed_bars` sırasıyla çalıştı: 3,5 gün izlenmeyen
+    # AVAX/ENA `step` içinde kapandı ve kesinti HİÇ kaydedilmedi (denetim yalnız ilk bar uygulamasındaydı).
+    last = DAY.replace(hour=4)
+    eng, sym, book = _book_with_position(tmp_path, monkeypatch, last_saved=last, opened=DAY.replace(hour=2))
+    resume = DAY + timedelta(days=3, hours=10, minutes=5)
+    stop = book.ledger.positions[sym].stop
+    closed = book.tick({sym: TickData(last=stop * D("0.95"), mark=stop * D("0.95"), ts=resume.isoformat())}, now=resume,
+                       bar_advance=False)                               # İLK etkinlik güncel fiyatla kapatır (gerçek olay)
+    assert len(closed) == 1 and sym not in book.ledger.positions
+    rec = _gap_records(eng.cfg.state_path)
+    assert len(rec) == 1 and rec[0]["positions"] == [sym], "ÖNCE: kayıt yoktu (pozisyon ilk bar uygulamasından önce kapandı)"
+    assert rec[0]["from"].startswith("2026-09-21T04:00") and rec[0]["to"].startswith(resume.isoformat()[:16])
+    book.apply_closed_bars({}, now=resume + timedelta(minutes=1))
+    book.step(symbols=[], frames_by_symbol={}, marks={}, marks_f={}, now=resume + timedelta(minutes=2))
+    assert len(_gap_records(eng.cfg.state_path)) == 1, "kesinti süreç başına BİR kez yazılır"
+    assert book.monitoring_gap["positions"] == [sym]
+
+
+def test_the_first_step_triggers_the_outage_check_before_it_can_change_positions(tmp_path, monkeypatch):
+    last = DAY.replace(hour=4)
+    eng, sym, book = _book_with_position(tmp_path, monkeypatch, last_saved=last, opened=DAY.replace(hour=2))
+    resume = DAY + timedelta(days=3, hours=10, minutes=5)
+    book.step(symbols=[], frames_by_symbol={}, marks={}, marks_f={}, now=resume)       # Box zamanlayıcısının sırası
+    rec = _gap_records(eng.cfg.state_path)
+    assert len(rec) == 1 and rec[0]["positions"] == [sym] and rec[0]["policy"] == "bars_closed_in_gap_not_applied"
+
+
+def test_an_outage_without_open_positions_is_still_recorded(tmp_path, monkeypatch):
+    eng = _engine(tmp_path, monkeypatch, symbols=1, equity=EQUITY)
+    b = _t2(eng)
+    b.ledger.save(b.ledger_path)
+    d = json.loads(b.ledger_path.read_text(encoding="utf-8"))
+    d["updated_at"] = DAY.replace(hour=4).isoformat()
+    b.ledger_path.write_text(json.dumps(d), encoding="utf-8")
+    book = _t2(eng)
+    resume = DAY + timedelta(days=3, hours=10, minutes=5)
+    book.step(symbols=[], frames_by_symbol={}, marks={}, marks_f={}, now=resume)
+    rec = _gap_records(eng.cfg.state_path)
+    assert len(rec) == 1 and rec[0]["positions"] == [], "kural bu aralıkta hiç değerlendirilmedi: ileri test boşluğu görünür"
+
+
+def test_the_pattern_book_records_the_outage_with_its_load_time_positions(tmp_path):
+    from test_pattern_trader_v1 import _book_obj, _cfg
+    cfg = _cfg(tmp_path)
+    sym = "SOL/USDT"
+    b = _book_obj(cfg)
+    assert b.ledger.open(sym, "LONG", 100, SizeSpec(50, AmountType.NOTIONAL, leverage=1), stop=95, targets=[130],
+                         filters=_filters(sym), now=DAY.replace(hour=2)) is not None
+    b.ledger.save(b.ledger_path)
+    d = json.loads(b.ledger_path.read_text(encoding="utf-8"))
+    d["updated_at"] = DAY.replace(hour=4).isoformat()
+    b.ledger_path.write_text(json.dumps(d), encoding="utf-8")
+    book = _book_obj(cfg)                                            # YENİ süreç
+    resume = DAY + timedelta(days=3, hours=10, minutes=5)
+    closed = book.tick({sym: TickData(last=D("90"), mark=D("90"), ts=resume.isoformat())}, now=resume)
+    assert len(closed) == 1 and not book.ledger.positions            # ilk etkinlik (TIME_STOP/tik) kapattı
+    rec = _gap_records(cfg.state_path)
+    assert len(rec) == 1 and rec[0]["book"] == "pattern_trader" and rec[0]["positions"] == [sym]
+    ev = [e for e in book.events if e["kind"] == "MONITORING_GAP"]
+    assert len(ev) == 1 and ev[0]["positions"] == [sym]
+    book.apply_closed_bars({}, now=resume + timedelta(minutes=1))
+    assert len(_gap_records(cfg.state_path)) == 1
+
+
 def test_a_short_restart_is_not_a_monitoring_gap(tmp_path, monkeypatch):
     now = DAY.replace(hour=12, minute=5)
     eng, sym, book = _book_with_position(tmp_path, monkeypatch, last_saved=now - timedelta(minutes=30),

@@ -76,8 +76,10 @@ class PatternBook:
                                           # bir `meta.last_funding_rate` tahmini kesinti ÜRETEMEZ.
                                           funding=FundingSchedule(fallback_to_last_known=False),
                                           tp1_fraction=Decimal("1"), breakeven_at_mfe_r=Decimal("0"), tax_policy=TaxPolicy.disabled())
-        #: İZLEME KESİNTİSİ (2026-09-23): defterin bu süreç açılmadan ÖNCEKİ son kaydı; ilk bar uygulamasında denetlenir.
+        #: İZLEME KESİNTİSİ (2026-09-23): defterin bu süreç açılmadan ÖNCEKİ son kaydı ve o anda açık pozisyonlar;
+        #: bu süreçteki İLK defter etkinliğinde (`_resume_once`) bir kez denetlenir.
         self._resume_saved_at = self.ledger.updated_at
+        self._resume_positions: list[str] = sorted(self.ledger.positions)
         self._resume_checked = False
         self._gap_until_ms: int | None = None
         self.risk = RiskEngine(profile, killswitch, v3.risk_profiles.clusters or None)
@@ -140,6 +142,7 @@ class PatternBook:
 
     def save(self, marks_f: dict[str, float] | None, now: datetime) -> None:
         with self.lock:
+            self._resume_once(now)
             self.ledger.save(self.ledger_path)
             atomic_write_json(self.state_dir / "plans.json", {"schema_version": "pattern_plans_v1", "generated_at": iso(now), "plans": self.plans})
             atomic_write_json(self.state_dir / "findings.json", {"schema_version": "pattern_findings_v1", "generated_at": iso(now), "findings": self.findings})
@@ -245,6 +248,7 @@ class PatternBook:
         if rates is None:
             return []
         with self.lock:
+            self._resume_once(now)
             # Kaynak NESNESİ verilir (oran + settlement mark'ı + dayanağı): açık pozisyon tahakkukuyla AYNI sözleşme.
             posted = self.ledger.settle_late_funding(rates, now=now, hours_for=getattr(rates, "hours_for", None))
             if not posted:
@@ -348,6 +352,7 @@ class PatternBook:
             self.run_id = str(run_id or self.run_id)
             self.counters["scans"] += 1
             now = datetime.fromtimestamp(int(as_of_ms) / 1000.0, tz=timezone.utc)
+            self._resume_once(now)
             ue = universe_entry or {}
             cohort = str(ue.get("cohort") or "UNKNOWN")
             out: dict[str, Any] = {"symbol": symbol, "as_of_ms": int(as_of_ms), "new_findings": 0, "confirmed": 0, "new_plans": 0, "triggered": 0, "opened": 0,
@@ -1026,6 +1031,7 @@ class PatternBook:
     # ------------------------------------------------------------------ fiyat yolu (izleyici) ve bar uçları
     def tick(self, marks: dict[str, TickData], *, now: datetime, funding_rate_lookup=None, bar_advance: bool = False) -> list:
         with self.lock:
+            self._resume_once(now)
             recs = self.ledger.tick(marks, now_utc=now, funding_rate_lookup=funding_rate_lookup, bar_advance=bar_advance)
             for rec in recs:
                 self._on_closed(rec)
@@ -1033,21 +1039,29 @@ class PatternBook:
 
     def apply_closed_bars(self, bars_by_symbol: dict[str, dict[str, Any]] | None, *, now: datetime, funding_rate_lookup=None) -> list:
         with self.lock:
-            if not getattr(self, "_resume_checked", False):
-                # İZLEME KESİNTİSİ (2026-09-23): süreç başındaki ilk uygulamada defter uzun süre izlenmediyse kesinti
-                # kaydedilir; o ana kadar kapanmış barlar (bu süreçte hangi sembol çağrısında gelirse gelsin) uygulanmaz.
-                self._resume_checked = True
-                self._gap_until_ms = monitoring_gap_on_resume(self.ledger, getattr(self, "_resume_saved_at", None), now=now,
-                                                              book_key=self.key, state_path=self.cfg.state_path)
-                if self._gap_until_ms is not None:
-                    self._event("MONITORING_GAP", "*", "bars_closed_in_gap_not_applied", now,
-                                since=str(getattr(self, "_resume_saved_at", None)), positions=sorted(self.ledger.positions))
+            self._resume_once(now)
             return apply_closed_bars_to_ledger(self.ledger, bars_by_symbol, now=now, funding_rate_lookup=funding_rate_lookup, on_closed=self._on_closed,
                                                on_event=lambda sym, kind, reason, at, **extra: self._event(kind, sym, reason, at, **extra),
                                                gap_until_ms=getattr(self, "_gap_until_ms", None))
 
+    def _resume_once(self, now: datetime) -> None:
+        """İZLEME KESİNTİSİ (2026-09-23): bu süreçteki İLK defter etkinliğinde (tarama adımı, fiyat tiki, bar, fiyat
+        boşluğu, funding ya da kayıt — hangisi önce gelirse) BİR KEZ denetlenir. Defter uzun süre izlenmediyse kesinti
+        YÜKLEME anındaki pozisyonlarla kaydedilir (ilk adımın TIME_STOP'u onları kapatsa bile); kesintinin bittiği ana
+        kadar kapanmış barlar bu süreçte uygulanmaz. Çağıran `self.lock`u tutar."""
+        if getattr(self, "_resume_checked", True):
+            return
+        self._resume_checked = True
+        held = list(getattr(self, "_resume_positions", None) or [])
+        self._gap_until_ms = monitoring_gap_on_resume(self.ledger, getattr(self, "_resume_saved_at", None), now=now,
+                                                      book_key=self.key, state_path=self.cfg.state_path, positions=held)
+        if self._gap_until_ms is not None:
+            self._event("MONITORING_GAP", "*", "bars_closed_in_gap_not_applied", now,
+                        since=str(getattr(self, "_resume_saved_at", None)), positions=held)
+
     def record_gaps(self, gaps: dict[str, dict[str, Any]], now: datetime) -> None:
         with self.lock:
+            self._resume_once(now)
             for sym, g in (gaps or {}).items():
                 prev = self.data_gaps.get(sym)
                 if not prev or prev.get("reason") != g.get("reason"):

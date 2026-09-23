@@ -148,3 +148,25 @@ doğrulandı ve düzeltildi; her biri için `68e1a14`'te DAVRANIŞLA düşen ger
   sayılıyordu — değerlendirilen barı içeren gün. Değişiklik yalnız o adımı etkiler; canlı ve replay birlikte değişir.
 * **Yapı arızası sayacı**: ortak geri düşüşten gelen `STRUCTURE_ERROR:<tür>` canlı defterde ve replay'de ret sayacına
   BİR KEZ yazılır (önce tur-3 taşımasından sonra hiç sayılmıyordu).
+
+## H. `structures_v1.5` — dördüncü doğrulama turu (2026-09-23, dağıtımdan ÖNCE)
+
+`5fa4312` üzerinde dördüncü bağımsız doğrulayıcı 5 bulgu raporladı (2 orta, 3 düşük); biri (F1) `5fa4312`'nin KENDİ
+gerilemesiydi. Hepsi kaynaktan ve yeniden üretilerek doğrulandı; her biri için `5fa4312`'de DAVRANIŞLA düşen test var
+(`test_r5_*`; kanıt `docs/review/evidence-2026-09-22-shared/revert_round5_on_5fa4312.txt`). **Eşik değişmedi.**
+
+* **Üçgen düz çifti YALNIZ TEYİTLE çözülür (F1):** `5fa4312`'de bozulma da çözüyordu; kırılım selefin yerini aldığı barda
+  kapanınca (selefin bir tarafı o barda yerini alır, karşı tarafı aynı kapanışla bozulur) kırılımı HİÇBİR kayıt teyit
+  etmiyordu. Artık o kırılımı ardıl teyit eder.
+* **Aynı kırılım tek kullanım (F2):** grafik yapısının kardeş yorumları (ör. bir düz dayanağı ortak farklı düz çiftler)
+  aynı kırılımı ayrı kimliklerle teyit edebilir. Analiz bu alternatif yorumları TUTAR (geçmiş/panel; denetimde BİLGİ:
+  `SAME_BREAK_SIBLING_CONFIRMATIONS`); TÜKETİCİ (`policy.already_used` — grafik yapısıyla giren ana bot, T2, M2 ve
+  formasyon botunun plan kurma ve kaydın teyit anı; Box grafik yapısı kullanmaz) kullanılmış bir girişle AYNI KIRILIMI —
+  aynı sembol/dilim/ad/taraf, teyitler arası en çok `fresh_bars` bar, tetikler eşit-seviye toleransında (%1,5) —
+  kullanılmış sayar (`policy.same_break`). Mum ve senaryo aileleri bu eşleşmeye girmez (ölçülmedi).
+* **Formasyon (F3):** ENFORCE dışındaki modda açık kalan v2 planı İPTAL (`STRUCTURE_MODE_<mod>`); önce SHADOW/OFF'ta kayıt
+  denetimi olmadan açılabiliyordu (mod değişimi ya da geri alma).
+* **Box (F4):** kutu TAM olarak değerlendirilen günden önceki günün barıdır; o bar yoksa (günlük veri gecikmesi) giriş yok
+  (`BOX_DAY_BAR_MISSING`) — önce iki gün önceki kutu sessizce kullanılıyordu. Gün sonu kapanışı kutudan BAĞIMSIZDIR.
+* **Canlı defter (F5):** botun kendi kuralının arızası tek ve doğru etiketle (`STRATEGY_ERROR`) sayılır (replay ile aynı);
+  önce ayrıca `STRUCTURE_ERROR` da sayılıyordu.

@@ -18,7 +18,7 @@ from typing import Any
 
 from ..learn import candle_context as cc
 
-POLICY_VERSION = "structures_v1.4"      # v1.1 durum kesinliği+bayrak kimliği; v1.2-v1.4 doğrulayıcı düzeltmeleri; eşikler AYNI
+POLICY_VERSION = "structures_v1.5"      # v1.1 durum kesinliği+bayrak kimliği; v1.2-v1.5 doğrulayıcı düzeltmeleri; eşikler AYNI
 SCHEMA_VERSION = "structures_analysis_v1"
 
 # ---------------------------------------------------------------------------- aileler ve durumlar

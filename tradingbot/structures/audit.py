@@ -16,14 +16,18 @@ Her kapanmış barda analiz, o ana kadarki barlarla (kayan pencere) YENİDEN hes
     (tur-4 doğrulayıcı #2; grup başına bir kez sayılır).
 BİLGİ (meşru gelişme; sayılır): FORMING_LEVEL_REVISIONS, ANCHORS_APPENDED_WHILE_DEVELOPING,
   FORMING_INTERPRETATION_REPLACED, REDEFINED_BY_NEW_PIVOT_AT_TRIGGER_BAR, LATE_BREAK_EVENTS_AFTER_EXPIRY,
-  FORMING_WITHDRAWN (oluşan kayıt terminal durum olmadan analizden çıktı).
+  FORMING_WITHDRAWN (oluşan kayıt terminal durum olmadan analizden çıktı),
+  SAME_BREAK_SIBLING_CONFIRMATIONS (grafik yapısının farklı dayanak çiftli yorumu, daha önce teyit olmuş bir kırılımı
+    `policy.same_break` ölçüsünde yeniden teyit etti — analiz alternatif yorumları tutar, TÜKETİCİ tek kullanır; tur-5 F2).
 """
 from __future__ import annotations
 
 from collections import Counter
 from typing import Any
 
+from . import catalog as K
 from .analysis import analyze
+from .policy import same_break
 
 RANK = {"FORMING": 0, "CONFIRMED": 1, "BROKEN": 2, "EXPIRED": 2}
 
@@ -46,6 +50,8 @@ def walk_forward_audit(rows: list[dict[str, Any]], *, market: str, symbol: str, 
     prev_name: dict = {}
     prev_as_of = None
     tri_conf: dict = {}
+    chart_conf: list = []
+    conf_seen: set = set()
     n_an = 0
 
     def ex(d: dict[str, Any]) -> None:
@@ -68,7 +74,8 @@ def walk_forward_audit(rows: list[dict[str, Any]], *, market: str, symbol: str, 
             st = r.get("status")
             # GEÇ DOĞAN KAYIT: bir önceki değerlendirmede tespit edilebilir olduğu hâlde (tespit anı ≤ önceki an) o zaman
             # raporlanmamış kimlik — geçmiş hakkında SONRADAN üretilen kayıt (pencere/ufuk kayması; bulgu #13)
-            if pid in new_this_step and prev_as_of is not None and r.get("detected_at_ms") is not None                     and int(r["detected_at_ms"]) <= int(prev_as_of):
+            if pid in new_this_step and prev_as_of is not None and r.get("detected_at_ms") is not None \
+                    and int(r["detected_at_ms"]) <= int(prev_as_of):
                 v["RECORD_BORN_LATE"] += 1
                 ex({"kind": "RECORD_BORN_LATE", "pattern_id": pid, "name": r.get("name"), "status": st,
                     "detected_at_ms": r.get("detected_at_ms"), "as_of": as_of})
@@ -123,7 +130,14 @@ def walk_forward_audit(rows: list[dict[str, Any]], *, market: str, symbol: str, 
                 info["LATE_BREAK_EVENTS_AFTER_EXPIRY"] += 1
             if st == "CONFIRMED" and last_status.get(pid) != "CONFIRMED":
                 names_conf[r.get("name")] += 1
-            if r.get("name") in ("ASCENDING_TRIANGLE", "DESCENDING_TRIANGLE") and r.get("confirmed_at_ms") is not None                     and len(r.get("anchors") or []) >= 2:
+            if r.get("family") == K.FAMILY_CHART and r.get("confirmed_at_ms") is not None and pid not in conf_seen:
+                conf_seen.add(pid)
+                if any(same_break(o, r) for o in chart_conf[-64:]):
+                    info["SAME_BREAK_SIBLING_CONFIRMATIONS"] += 1
+                chart_conf.append({k: r.get(k) for k in ("pattern_id", "family", "name", "side", "symbol", "timeframe",
+                                                         "confirmed_at_ms", "trigger")})
+            if r.get("name") in ("ASCENDING_TRIANGLE", "DESCENDING_TRIANGLE") and r.get("confirmed_at_ms") is not None \
+                    and len(r.get("anchors") or []) >= 2:
                 gk = (r.get("name"), r.get("side"), int(r["anchors"][0]["ts"]), int(r["anchors"][1]["ts"]))
                 grp = tri_conf.setdefault(gk, set())
                 if pid not in grp:

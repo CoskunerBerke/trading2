@@ -517,11 +517,13 @@ def test_r4_1_a_triggered_v2_plan_whose_record_left_the_analysis_ends_at_its_own
     assert not book.ledger.positions
 
 
-def _tri_rows(*, breakout_before_successor: bool):
+def _tri_rows(*, breakout_before_successor: bool = True, tail=None):
     """Yükselen üçgen: düz tepeler f1/f2 (~110), yükselen dipler q1 < q2 < q3 (q3, f2'den sonra). Kırılım q3'ün
-    teyidinden ÖNCE (selef A kırılımı teyit eder) ya da SONRA (A yerini alınca biter, ardıl B teyit eder)."""
+    teyidinden ÖNCE (selef A kırılımı teyit eder) ya da SONRA (A yerini alınca biter, ardıl B teyit eder); `tail`
+    verilirse kırılım yolu doğrudan o noktalardır."""
     lead = [80.0 + 20.0 * i / 59 for i in range(60)]
-    tail = [(39, 110.6), (40, 110.9), (44, 111.4)] if breakout_before_successor else [(41, 108.0), (44, 108.8), (46, 110.8), (48, 111.3)]
+    if tail is None:
+        tail = [(39, 110.6), (40, 110.9), (44, 111.4)] if breakout_before_successor else [(41, 108.0), (44, 108.8), (46, 110.8), (48, 111.3)]
     way = [(0, 100.0), (10, 110.0), (16, 101.0), (21, 108.0), (26, 103.0), (32, 110.1), (37, 105.0)] + tail
     path = []
     for (i0, p0), (i1, p1) in zip(way, way[1:]):
@@ -635,3 +637,128 @@ def test_r4_5_a_structure_error_is_counted_once_in_live_and_in_replay(tmp_path, 
     fn = paper_rules.replay_strategy("t2_trend_regime", mode="ENFORCE")
     act = fn(S.SYM, int(brk[-1]["timestamp"]), {"1d": pd.DataFrame(brk)}, None, eng)
     assert act["action"] == "NONE" and got == [(S.SYM, "STRUCTURE_ERROR:RuntimeError")], (act, got)
+
+
+# ============================================================================ TUR 5 (düzeltmelerin doğrulaması, 5fa4312)
+def test_r5_1_a_breakout_closing_on_the_predecessors_superseded_bar_is_confirmed_by_the_successor():
+    """Kırılım, selefin yerini aldığı barda kapanır: selefin LONG'u o barda yerini alır, SHORT'u aynı kapanışla bozulur.
+    Bozulma düz çifti ÇÖZMEZ; kırılımı ardıl teyit eder (5fa4312'de HİÇBİR kayıt teyit etmiyordu)."""
+    rows = _tri_rows(tail=[(39, 109.5), (40, 110.9), (44, 111.4)])        # ilk kapanış > düz tepe: bar 100 = q3 teyidi
+    conf: dict = {}
+    for end in range(96, len(rows) + 1):
+        A.clear_cache()
+        an = A.analyze(market="USDM_PERP", symbol="SYN/USDT", timeframe="4h", bars=rows[:end], as_of_ms=int(rows[end - 1]["timestamp"]) + H4)
+        for r in an["records"]:
+            if r["name"] == "ASCENDING_TRIANGLE" and r.get("confirmed_at_ms") is not None:
+                conf.setdefault((r["side"], r["pattern_id"]), (int(r["confirmed_at_ms"]) - T0) // H4 - 1)
+    assert sorted((k[0], v) for k, v in conf.items()) == [(K.LONG, 100)], conf
+
+
+def _chart_rec(pid, *, conf_bar, level, tf="4h", sym="SYN/USDT", name="ASCENDING_TRIANGLE", side=K.LONG, family=K.FAMILY_CHART):
+    step = {"4h": H4, "1d": DAY}[tf]
+    return {"pattern_id": pid, "family": family, "name": name, "side": side, "symbol": sym, "timeframe": tf,
+            "status": K.ST_CONFIRMED, "confirmed_at_ms": T0 + conf_bar * step, "trigger": {"rule": "close_above", "level": level},
+            "invalidation": {"level": level * 0.95}, "stop": level * 0.94, "targets": [level * 1.1], "atr": level * 0.01,
+            "expires_at_ms": T0 + (conf_bar + 3) * step, "confirm_bar": {"ts": T0 + (conf_bar - 1) * step, "close": level * 1.002,
+                                                                       "low": level * 0.99, "high": level * 1.004}}
+
+
+class _Used(set):
+    """Kimlik kümesi + giriş özetleri (üretimde `bots.UsedStructures`; burada sınıfa bağlı olmadan)."""
+
+    def __init__(self, ids, entries):
+        super().__init__(ids)
+        self.entries = list(entries)
+
+
+def test_r5_2_a_sibling_identity_of_an_already_traded_break_opens_no_second_trade():
+    a = _chart_rec("a", conf_bar=10, level=64082.7)
+    b = _chart_rec("b", conf_bar=12, level=64306.3)             # BTC 4h örneği: aynı direnç, 2 bar sonra, tetik %0,35 farklı
+    used = _Used({"a"}, [{k: a[k] for k in ("pattern_id", "family", "name", "side", "symbol", "timeframe",
+                                            "confirmed_at_ms", "trigger")}])
+    an = {"4h": {"market": "USDM_PERP", "records": [b]}, "1d": {"market": "USDM_PERP", "records": []}}
+    as_of = int(b["confirmed_at_ms"]) + 60_000
+    pol = P.POLICIES[P.BOT_MAIN]
+    d_used = P.entry_decision(pol, intended_side=K.LONG, analyses=an, as_of_ms=as_of, used_patterns=used, entry_type="pullback")
+    d_new = P.entry_decision(pol, intended_side=K.LONG, analyses=an, as_of_ms=as_of, used_patterns=set(), entry_type="pullback")
+    assert d_new["action"] == P.ACT_ENTER and d_new["primary"]["pattern_id"] == "b"
+    assert d_used["action"] == P.ACT_WAIT and d_used["reason_code"] == "PULLBACK_NEEDS_CONFIRMED_STRUCTURE", \
+        "ana bot geri çekilmesi aynı kırılımın kardeş kimliğiyle İKİNCİ kez girmez"
+    assert P.same_break(a, b) and P.same_break(b, a)
+    assert not P.same_break(a, _chart_rec("c", conf_bar=13, level=64306.3)), "taze pencere (2 bar) dışı: yeni olay"
+    assert not P.same_break(a, _chart_rec("d", conf_bar=11, level=66000.0)), "tolerans (%1,5) dışı seviye"
+    assert not P.same_break(a, _chart_rec("e", conf_bar=11, level=64100.0, sym="OTH/USDT"))
+    assert not P.same_break(dict(a, family=K.FAMILY_CANDLE), dict(b, family=K.FAMILY_CANDLE)), "yalnız grafik yapıları"
+    # defterden okunan kullanılmış yapılar giriş özetini sembolüyle taşır (canlı/replay ve formasyon aynı kaynak)
+    from tradingbot.structures.bots import used_patterns_of
+    led = SimpleNamespace(positions={"SYN/USDT": SimpleNamespace(symbol="SYN/USDT", features={"structure": dict(
+        used.entries[0], action="ENTER")})}, history=[])
+    u2 = used_patterns_of(led)
+    assert "a" in u2 and P.already_used(b, u2) and not P.already_used(_chart_rec("z", conf_bar=30, level=70000.0), u2)
+
+
+def test_r5_2b_the_pattern_bot_cancels_a_plan_whose_record_confirms_as_an_already_traded_break(tmp_path):
+    book = _book(tmp_path)
+    now = datetime.fromtimestamp(T0 / 1000, tz=timezone.utc)
+    a = _chart_rec("pa", conf_bar=10, level=50.0, tf="4h", sym="LNG/USDT")
+    b = _chart_rec("pb", conf_bar=11, level=50.1, tf="4h", sym="LNG/USDT")
+    book.ledger.history.append(SimpleNamespace(symbol="LNG/USDT", features={"structure": {
+        "action": "ENTER", "pattern_id": "pa", "family": a["family"], "name": a["name"], "side": a["side"], "timeframe": "4h",
+        "confirmed_at_ms": a["confirmed_at_ms"], "trigger": dict(a["trigger"])}}))
+    pl = dict(_plan("AWAITING_TRIGGER", pid="pb", tf="4h"), family="D2_CHART_STRUCTURE")
+    out, cs = {"triggered": 0}, {"triggered": 0}
+    an = {"4h": {"market": "USDM_PERP", "analysis_id": "x", "records": [b]}}
+    book._follow_record(pl, an, as_of_ms=int(b["confirmed_at_ms"]), dec_ms=int(b["confirmed_at_ms"]), now=now, out=out, cs=cs,
+                        levels_1h=None)
+    assert pl["status"] == "CANCELLED" and pl["reasons"][-1] == "SAME_BREAK_ALREADY_USED", (pl["status"], pl.get("reasons"))
+    pl2 = dict(_plan("AWAITING_TRIGGER", pid="pb", tf="4h"), family="D2_CHART_STRUCTURE")
+    book.ledger.history.pop()
+    book._follow_record(pl2, an, as_of_ms=int(b["confirmed_at_ms"]), dec_ms=int(b["confirmed_at_ms"]), now=now, out=out, cs=cs,
+                        levels_1h=None)
+    assert pl2["status"] == "TRIGGERED", "kullanılmış kırılım yoksa aynı kayıt tetikler"
+
+
+@pytest.mark.parametrize("mode", ["SHADOW", "OFF"])
+def test_r5_3_a_leftover_v2_plan_is_cancelled_outside_enforce_and_opens_no_position(tmp_path, mode):
+    from test_pattern_trader_v1 import CLOCK, M15, _set_mark
+    from test_trading2_fix_plan_expiry_v1 import _triggered_plan_waiting_for_price
+    p, sc, book, plan, rows15 = _triggered_plan_waiting_for_price(tmp_path)
+    plan.update(version="pattern_protocol_v2.0.0", pattern_id="deadbeefdeadbeef", entry_tf="15m",
+                structure={"pattern_id": "deadbeefdeadbeef", "name": "BULL_FLAG", "policy_version": K.POLICY_VERSION})
+    book.structure_mode = mode
+    CLOCK[0] = int(plan["expires_at_ms"]) - M15
+    _set_mark(p, "LNG/USDT", rows15[40]["close"])
+    try:
+        sc.scan_cycle(now_ms=CLOCK[0])
+    finally:
+        CLOCK[0] = T0
+    assert plan["status"] == "CANCELLED" and plan["reasons"][-1] == "STRUCTURE_MODE_%s" % mode, (plan["status"], plan.get("reasons"))
+    assert "LNG/USDT" not in book.ledger.positions
+
+
+def test_r5_4_the_box_needs_exactly_yesterdays_daily_bar_and_the_end_of_day_close_does_not_need_the_box():
+    from tradingbot import box_theory
+    day0 = T0 + 300 * DAY
+    daily, m5 = box_day(day0=day0, ending="none")                  # son günlük bar = day0-1 (kutu 95-105)
+    lag = daily[:-1]                                               # dünün günlük barı henüz gelmedi (gecikme)
+    assert box_theory.read_box(lag, before_ms=day0) is None, "iki gün önceki kutu SESSİZCE kullanılmaz"
+    assert box_theory.read_box(daily, before_ms=day0) == (105.0, 95.0)
+    assert box_theory.rule_state("b1_box_fade", daily_rows=lag, m5_rows=m5)["reason"] == "BOX_DAY_BAR_MISSING"
+    pos = {"opened_ts": day0 - 3_600_000}                          # dün açılmış pozisyon
+    for d in (daily, lag, []):
+        act = box_theory.decide("b1_box_fade", daily_rows=d, m5_rows=m5, position=pos)
+        assert act and act["action"] == "CLOSE" and act["reason"] == "BOX_EOD_FLAT", (len(d), act)
+
+
+def test_r5_5_a_base_rule_exception_is_counted_once_as_strategy_error_in_live_like_replay(tmp_path, monkeypatch):
+    import test_structures_strategy_books_v1 as S
+
+    from tradingbot import paper_rules
+
+    def boom(*a, **k):
+        raise RuntimeError("botun kendi kuralı arızalı")
+    monkeypatch.setattr(paper_rules, "decide_from_rows", boom)
+    flag, brk = S._daily_flag()
+    book = S._book(S._cfg(tmp_path, "ENFORCE"), "t2_trend_regime")
+    S._step(book, {"1d": brk}, as_of_ms=S._asof(brk), price=brk[-1]["close"], btc=S._btc(len(brk)))
+    assert book.rejections == {"STRATEGY_ERROR:RuntimeError": 1} and book.counters["rejected"] == 1, (book.rejections, book.counters)

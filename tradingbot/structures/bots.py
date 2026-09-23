@@ -34,7 +34,7 @@ class StructureContext:
     as_of_ms: int
     market: str = PAPER_MARKET
     price: float | None = None
-    used_patterns: set[str] = field(default_factory=set)
+    used_patterns: set[str] = field(default_factory=set)      # `used_patterns_of` → UsedStructures (kimlik + kırılım)
     provenance: dict[str, Any] = field(default_factory=dict)
 
 
@@ -61,18 +61,27 @@ def _enter_structure(features: Any) -> dict[str, Any] | None:
     return s
 
 
-def used_patterns_of(ledger: Any) -> set[str]:
+class UsedStructures(set):
+    """Kullanılmış yapı kimlikleri (küme) + girişlerin kayıt özeti (`entries`: sembol, dilim, aile, ad, taraf, teyit anı,
+    tetik) — `policy.already_used` aynı KIRILIMIN kardeş kimliğini de kullanılmış sayar (tur-5 doğrulayıcı F2)."""
+
+    def __init__(self, ids: Any = (), entries: Any = ()) -> None:
+        super().__init__(ids)
+        self.entries: list[dict[str, Any]] = list(entries)
+
+
+def used_patterns_of(ledger: Any) -> UsedStructures:
     """Defterde girişe dayanak olmuş yapı kimlikleri (açık + kapanmış işlemler) — aynı yapı ikinci işlem açmaz;
     kaynak defterin kendisidir (yeniden başlatmada kaybolmaz). Yalnız ENTER (gölge olmayan) referanslar sayılır."""
-    out: set[str] = set()
-    for pos in list(getattr(ledger, "positions", {}).values()):
-        s = _enter_structure(getattr(pos, "features", None))
+    out = UsedStructures()
+    items = [(getattr(p, "symbol", None), getattr(p, "features", None)) for p in list(getattr(ledger, "positions", {}).values())]
+    items += [(getattr(r, "symbol", None), r.features if isinstance(getattr(r, "features", None), dict) else None)
+              for r in list(getattr(ledger, "history", []) or [])[-2000:]]
+    for sym, feats in items:
+        s = _enter_structure(feats)
         if s:
             out.add(str(s["pattern_id"]))
-    for rec in list(getattr(ledger, "history", []) or [])[-2000:]:
-        s = _enter_structure(rec.features if isinstance(getattr(rec, "features", None), dict) else None)
-        if s:
-            out.add(str(s["pattern_id"]))
+            out.entries.append(dict(s, symbol=sym))
     return out
 
 
@@ -382,4 +391,5 @@ BLOCKING_ACTIONS = (P.ACT_WAIT, P.ACT_WAIT_TRIGGER, P.ACT_CANCEL)
 
 
 __all__ = ["BLOCKING_ACTIONS", "MODE_ENFORCE", "MODE_OFF", "MODE_SHADOW", "PAPER_MARKET", "StructureContext", "box_decide",
-           "compact", "main_analyses", "main_entry_decision", "main_hold_decision", "trend_decide", "used_patterns_of"]
+           "compact", "main_analyses", "main_entry_decision", "main_hold_decision", "trend_decide", "used_patterns_of",
+           "UsedStructures"]

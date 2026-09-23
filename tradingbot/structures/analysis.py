@@ -393,10 +393,12 @@ def _chart(rows, atr, *, market, symbol, tf, step, cfg: K.StructuresConfig) -> t
         pat = c["pattern"]
         if pat in ("ASCENDING_TRIANGLE", "DESCENDING_TRIANGLE"):
             # DÜZ ÇİFT KİMLİĞİ (tur-4 doğrulayıcı #2): aynı düz çiftin ardışık eğim çiftleri AYNI üçgenin "o anki"
-            # yorumlarıdır (üreteç onları eğim sırasıyla verir). Önceki yorum yerini almadan ÖNCE sınırlarında bir olay
-            # yaşadıysa (teyit ya da bozulma) üçgen o anda çözülmüştür; sonraki yorum AYNI kırılımı ikinci kez teyit
-            # edemez ve hiç "o anki" olmaz (kayıt yok). Karar yalnız selefin yerini almadan önceki kapanışlarına bağlıdır
-            # (ardılın tanınma anından önce sabittir): kayıt doğup sonra kaybolmaz.
+            # yorumlarıdır (üreteç onları eğim sırasıyla verir). Önceki yorum yerini almadan ÖNCE bir kırılımı TEYİT
+            # ettiyse üçgen o anda çözülmüştür; sonraki yorum AYNI kırılımı ikinci kez teyit edemez ve hiç "o anki" olmaz
+            # (kayıt yok). YALNIZ TEYİT çözer (tur-5 F1): bozulma çözseydi, kırılım selefin yerini aldığı barda kapandığında
+            # (selefin bir tarafı o barda yerini alır, karşı tarafı aynı kapanışla bozulur) kırılımı HİÇBİR kayıt teyit
+            # etmiyordu. Selefin teyitleri yerini alma anından önce olur (ardılın tanınma anından önce sabittir):
+            # kayıt doğup sonra kaybolmaz.
             key = (pat, int(c["anchors"][0]["index"]), int(c["anchors"][1]["index"]))
             if key in tri_resolved:
                 tri_skipped += 1
@@ -416,7 +418,7 @@ def _chart(rows, atr, *, market, symbol, tf, step, cfg: K.StructuresConfig) -> t
                           extra_reasons=("PAIRED_TRIANGLE_SIDE",) + (("SLOPED",) if trig is lba else ()))
                 if r is not None:
                     out.append(r)
-                    if r.get("confirmed_at_ms") is not None or r.get("status") == K.ST_BROKEN:
+                    if r.get("confirmed_at_ms") is not None:
                         tri_resolved.add(key)
             continue
         side = _CHART_SIDE[c["side"]]

@@ -419,6 +419,13 @@ class PatternBook:
                 if pl.get("symbol") != symbol or pl.get("status") not in (PL_AWAITING, PL_TRIGGERED):
                     continue
                 if pl["status"] in (PL_AWAITING, PL_TRIGGERED) and pl.get("version") == "pattern_protocol_v2.0.0" and pl.get("structure"):
+                    if self.structure_mode != "ENFORCE":
+                        # v2 planı yalnız ENFORCE'ta kurulur ve yalnız orada kayıtla yönetilir. SHADOW/OFF'a geçişte (ya da
+                        # geri almada) kalan açık v2 planı İPTAL: önce SHADOW/OFF'ta kayıt denetimi olmadan açılıyordu
+                        # (tur-5 doğrulayıcı F3). Açık pozisyonlar defterin kendi stop/hedef/zaman stopuyla sürer.
+                        self._set_status(pl, PL_CANCELLED, int(as_of_ms), "STRUCTURE_MODE_%s" % self.structure_mode)
+                        self.counters["cancelled"] += 1
+                        continue
                     # v2: plan ORTAK KAYDI izler (tetik/bozulma/süre olayı kayıttan; ayrı tetik değerlendirmesi YOK)
                     self._follow_record(pl, analyses, as_of_ms=int(as_of_ms), dec_ms=dec_ms, now=now, out=out, cs=cs,
                                         levels_1h=levels_1h)
@@ -688,6 +695,15 @@ class PatternBook:
                 pl["expires_at_ms"] = int(rec["expires_at_ms"])
                 pl["expires_at"] = iso_ms(pl["expires_at_ms"])
             if st == SK.ST_CONFIRMED:
+                from ..structures.bots import used_patterns_of
+                from ..structures.policy import already_used
+                if already_used(rec, used_patterns_of(self.ledger)):
+                    # kayıt, bu defterde girişe dayanak olmuş bir kırılımın kardeş yorumu olarak teyit oldu (aynı seviye,
+                    # taze pencere): aynı kırılım ikinci işlem açmaz (tur-5 doğrulayıcı F2)
+                    self._set_status(pl, PL_CANCELLED, int(as_of_ms), "SAME_BREAK_ALREADY_USED")
+                    pl["cancel_detail"] = {"pattern_id": rec.get("pattern_id"), "confirmed_at_ms": rec.get("confirmed_at_ms")}
+                    self.counters["cancelled"] += 1
+                    return
                 cb = rec.get("confirm_bar") or {}
                 t_ms = int(rec.get("confirmed_at_ms") or as_of_ms)
                 self._set_status(pl, PL_TRIGGERED, t_ms, "RECORD_CONFIRMED_%s" % rec.get("name"))

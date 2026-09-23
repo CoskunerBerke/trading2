@@ -28,6 +28,7 @@ from typing import Any
 
 from ..learn.candle_context import TREND_DOWN, TREND_UP
 from ..structures import catalog as K
+from ..structures.policy import already_used
 from ..timeframes import tf_ms
 from .strategy import DEFAULTS, PL_AWAITING, PL_TRIGGERED, _pullback_ok, _target, _zone_near, rr_after_cost
 from .universe import iso_ms
@@ -128,7 +129,7 @@ def build_plans_v2(symbol: str, *, as_of_ms: int, analyses: dict[str, dict[str, 
     """Katalog kayıtları → koşullu planlar. Döner: (planlar, plana dönüşmeyen kayıtlar için gerekçeler)."""
     from .detect import atr14
     p = {**DEFAULTS, **(params or {})}
-    used = set(used_patterns or ())
+    used = used_patterns if isinstance(used_patterns, set) else set(used_patterns or ())
     b15 = [b for b in (bars_by_tf.get("15m") or []) if int(b["timestamp"]) + tf_ms("15m") <= int(as_of_ms)]
     atr15 = atr14(b15) if len(b15) >= 15 else None
     zones = list((levels_1h or {}).get("zones") or [])
@@ -148,7 +149,8 @@ def build_plans_v2(symbol: str, *, as_of_ms: int, analyses: dict[str, dict[str, 
         for rec in an.get("records") or []:
             if rec.get("side") not in (K.LONG, K.SHORT) or rec.get("status") not in (K.ST_FORMING, K.ST_CONFIRMED):
                 continue
-            if rec["pattern_id"] in used:
+            if already_used(rec, used):
+                # aynı kimlik ya da kullanılmış bir girişle AYNI kırılım (kardeş yorum; tur-5 doğrulayıcı F2)
                 skipped.append({"family": "*", "pattern_id": rec["pattern_id"], "reason": "PATTERN_ALREADY_USED"})
                 continue
             fam, why, ev = _family_for(rec, trend_4h=ht, b15=b15, zones=zones, atr15=atr15, p=p)

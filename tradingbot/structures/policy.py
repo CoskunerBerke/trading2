@@ -118,6 +118,41 @@ def _recent(ts: int | None, as_of_ms: int, tf: str, bars: int) -> bool:
     return ts is not None and int(ts) >= int(as_of_ms) - (bars + 1) * tf_ms(tf)
 
 
+def _level_tol_pct() -> float:
+    from ..chart_patterns import ChartPatternConfig
+    return float(ChartPatternConfig().level_tolerance_pct)      # eşit tepe/dip toleransı (düz çiftler bununla kurulur)
+
+
+def same_break(a: dict[str, Any] | None, b: dict[str, Any] | None) -> bool:
+    """AYNI KIRILIM (tur-5 doğrulayıcı F2) — yalnız GRAFİK yapıları. Aynı seviyenin farklı dayanak çiftli yorumları
+    (ör. üç eşit tepeden kurulan kardeş üçgenler) aynı kırılımı ayrı kimliklerle teyit eder; analiz bu yorumları AYRI
+    kayıt olarak verir (geçmiş, panel), tüketici için ise TEK kırılımdır. İkisi de teyitli; aynı sembol, dilim, ad ve
+    taraf; teyit anları arasında en çok `fresh_bars` bar; tetik seviyeleri eşit-seviye toleransında (%)."""
+    if not a or not b:
+        return False
+    if a.get("family") != K.FAMILY_CHART or b.get("family") != K.FAMILY_CHART:
+        return False
+    for k in ("symbol", "timeframe", "name", "side"):
+        if a.get(k) is None or a.get(k) != b.get(k):
+            return False
+    ca, cb = a.get("confirmed_at_ms"), b.get("confirmed_at_ms")
+    ta, tb = (a.get("trigger") or {}).get("level"), (b.get("trigger") or {}).get("level")
+    if ca is None or cb is None or ta is None or tb is None:
+        return False
+    if abs(int(ca) - int(cb)) > int(K.DEFAULT_CONFIG.fresh_bars) * tf_ms(str(a["timeframe"])):
+        return False
+    ta, tb = float(ta), float(tb)
+    return abs(ta - tb) <= _level_tol_pct() / 100.0 * max(abs(ta), abs(tb), 1e-12)
+
+
+def already_used(rec: dict[str, Any], used: Any) -> bool:
+    """Kayıt bu defterde girişe dayanak olmuş mu: aynı kimlik ya da (grafik yapısında) kullanılmış bir girişle AYNI
+    kırılım. `used`: kimlik kümesi; `entries` özniteliği varsa (bots.UsedStructures) girişlerin kayıt özeti."""
+    if rec.get("pattern_id") in used:
+        return True
+    return any(same_break(u, rec) for u in (getattr(used, "entries", None) or ()))
+
+
 def _decision(policy: BotPolicy, action: str, reason: str, *, side: str | None, as_of_ms: int,
               analyses: dict[str, Any], rec: dict[str, Any] | None = None, extra: dict[str, Any] | None = None,
               text_tr: str = "") -> dict[str, Any]:
@@ -148,7 +183,7 @@ def entry_decision(policy: BotPolicy, *, intended_side: str, analyses: dict[str,
     if side not in (K.LONG, K.SHORT):
         return _decision(policy, ACT_NO_EFFECT, "NO_INTENDED_SIDE", side=None, as_of_ms=as_of_ms, analyses=analyses,
                          text_tr="Botun kuralı bu turda yön üretmedi; yapı politikası uygulanmadı.")
-    used = set(used_patterns or ())
+    used = used_patterns if isinstance(used_patterns, set) else set(used_patterns or ())
     dtf = policy.decision_tf
     main_an = analyses.get(dtf)
     # 1) analiz yok
@@ -183,8 +218,8 @@ def entry_decision(policy: BotPolicy, *, intended_side: str, analyses: dict[str,
     # 4) taze teyitli uyumlu yapı → giriş adayı (kovalama sınırı)
     for rec in recs:
         if rec.get("status") == K.ST_CONFIRMED and _match(rec, side, policy.compatible):
-            if rec["pattern_id"] in used:
-                continue
+            if already_used(rec, used):
+                continue                                   # aynı yapı / aynı kırılım ikinci işlem açmaz
             trig = (rec.get("trigger") or {}).get("level")
             atr = rec.get("atr")
             if price is not None and trig is not None and atr:

@@ -757,9 +757,10 @@ class StrategyBook:
                     if self.structure_mode == "OFF":
                         self._reject(sym, "STRATEGY_ERROR:%s" % type(exc).__name__)
                         continue
-                    # YAPI KATMANI ARIZASI (bulgu #16): botun KENDİ kuralı yeniden sorulur — çıkış/yönetim ASLA düşmez.
-                    # ENFORCE'ta yapı ölçülemediği için YENİ GİRİŞ yok (fail-closed); SHADOW'da kural aynen uygulanır.
-                    self._reject(sym, "STRUCTURE_ERROR:%s" % type(exc).__name__)
+                    # Arıza nerede: botun KENDİ kuralı yeniden sorulur. Kural da hata verirse arıza kuralındır — yalnız
+                    # STRATEGY_ERROR (replay ile aynı; önce ayrıca STRUCTURE_ERROR da sayılıyordu, tur-5 F5). Kural
+                    # sağlamsa arıza yapı katmanındadır (bulgu #16): çıkış/yönetim ASLA düşmez; ENFORCE'ta yapı
+                    # ölçülemediği için YENİ GİRİŞ yok (fail-closed); SHADOW'da kural aynen uygulanır.
                     sdec, sanal = None, {}
                     try:
                         act = paper_rules.decide_for(self.name, frames=fr, btc_rows=btc, now_ms=now_ms,
@@ -767,6 +768,7 @@ class StrategyBook:
                     except Exception as exc2:  # noqa: BLE001
                         self._reject(sym, "STRATEGY_ERROR:%s" % type(exc2).__name__)
                         continue
+                    self._reject(sym, "STRUCTURE_ERROR:%s" % type(exc).__name__)
                     if self.structure_mode == "ENFORCE" and str((act or {}).get("action") or "").upper() == "OPEN":
                         continue
                 res = apply_action(act, symbol=sym, price=float(marks_f[sym]), tick=marks.get(sym), now=now,

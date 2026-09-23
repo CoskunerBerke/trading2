@@ -142,7 +142,9 @@ def read_box(daily_rows: list[dict[str, Any]], *, before_ms: int | None = None) 
 
     `before_ms` (değerlendirilen 5m barının UTC gün başı) verilirse kutu, açılışı ondan ÖNCE olan son günlük bardır
     (tur-4 doğrulayıcı #4): 00:00-00:05 UTC aralığında son kapanmış 5m barı hâlâ DÜNE aittir ama dünün günlük barı da
-    kapanmıştır; önce kutu olarak o gün (değerlendirilen barı İÇEREN gün) okunuyordu. Günü okunamayan bar → None."""
+    kapanmıştır; önce kutu olarak o gün (değerlendirilen barı İÇEREN gün) okunuyordu. O bar TAM OLARAK önceki gün
+    olmalıdır (tur-5 doğrulayıcı F4): günlük veri gecikince (1d tazelik toleransı) iki gün önceki kutu SESSİZCE
+    kullanılıyordu. Günü okunamayan ya da eksik bar → None."""
     rows = list(daily_rows or [])
     if before_ms is not None:
         while rows:
@@ -152,6 +154,8 @@ def read_box(daily_rows: list[dict[str, Any]], *, before_ms: int | None = None) 
             if ts < int(before_ms):
                 break
             rows.pop()
+        if not rows or _i(rows[-1].get("timestamp")) != int(before_ms) - DAY_MS:
+            return None
     if not rows or len(rows) < MIN_DAILY_BARS:
         return None
     last = rows[-1]
@@ -287,21 +291,25 @@ def decide(variant: str = "b1_box_fade", *, daily_rows: list[dict[str, Any]],
     if variant not in VARIANTS:
         raise ValueError("bilinmeyen strateji varyanti: %r" % (variant,))
     p = params.validate()
-    box = read_box(daily_rows, before_ms=_eval_day_start(m5_rows))
     intr = read_intraday(m5_rows)
-    if box is None or intr is None:
+    if intr is None:
         return None
-    box_high, box_low = box
-    cur, prev = intr["cur"], intr["prev"]
 
     if position:
-        # Açık pozisyonun stop/hedefi DEFTERDEN yürür; kuralın tek kapatma sebebi gün sonu düzleşmesidir.
+        # Açık pozisyonun stop/hedefi DEFTERDEN yürür; kuralın tek kapatma sebebi gün sonu düzleşmesidir. Kutuya
+        # BAĞLI DEĞİLDİR (tur-5 F4): günlük veri eksik/gecikmiş olsa da gün sonu kapanışı işler.
         if not p.eod_close:
             return None
         opened = _i(position.get("opened_ts"))
         if opened is None or _day_start_ms(opened) >= intr["day_start_ms"]:
             return None
         return {"action": "CLOSE", "reason": "BOX_EOD_FLAT", "name": variant}
+
+    box = read_box(daily_rows, before_ms=intr["day_start_ms"])
+    if box is None:
+        return None
+    box_high, box_low = box
+    cur, prev = intr["cur"], intr["prev"]
 
     loc = _edge_location(m5_rows, box_high, box_low, p)
     if loc == "TOP" and p.allow_short:
@@ -346,9 +354,15 @@ def rule_state(variant: str = "b1_box_fade", *, daily_rows: list[dict[str, Any]]
                            "min_daily_bars": MIN_DAILY_BARS, "min_m5_bars": MIN_M5_BARS,
                            "params_label": p.label(), "near_frac": float(p.near_frac),
                            "exit_kind": p.exit_kind, "reason": None}
-    box = read_box(daily_rows or [], before_ms=_eval_day_start(m5_rows))
+    d0 = _eval_day_start(m5_rows)
+    box = read_box(daily_rows or [], before_ms=d0)
     if box is None:
-        out["reason"] = "NOT_ENOUGH_DAILY_BARS" if len(daily_rows or []) < MIN_DAILY_BARS else "DAILY_ROWS_UNREADABLE"
+        if len(daily_rows or []) < MIN_DAILY_BARS:
+            out["reason"] = "NOT_ENOUGH_DAILY_BARS"
+        elif d0 is not None and not any(_i(r.get("timestamp")) == d0 - DAY_MS for r in (daily_rows or [])):
+            out["reason"] = "BOX_DAY_BAR_MISSING"          # dünün günlük barı henüz yok (gecikme) ya da eksik
+        else:
+            out["reason"] = "DAILY_ROWS_UNREADABLE"
         return out
     box_high, box_low = box
     out.update({"box_high": box_high, "box_low": box_low, "box_mid": (box_high + box_low) / 2.0})

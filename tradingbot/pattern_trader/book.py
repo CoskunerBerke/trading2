@@ -25,7 +25,8 @@ from ..core import atomic_write_json, iso, read_json, utc_now
 from ..learn import TradeMemory
 from ..learn.candle_context import CandleContextConfig, detect_trend
 from ..risk import RiskEngine, build_state
-from ..strategy_paper import PAPER_MARKET, DataVerdict, apply_action, apply_closed_bars_to_ledger, parse_ts_ms
+from ..strategy_paper import (PAPER_MARKET, DataVerdict, apply_action, apply_closed_bars_to_ledger, monitoring_gap_on_resume,
+                              parse_ts_ms)
 from ..timeframes import tf_ms
 from .data import REQUIREMENTS, readiness
 from .detect import ST_BROKEN, ST_CONFIRMED, ST_EXPIRED, atr14, detect_findings, levels_for, update_finding
@@ -75,6 +76,10 @@ class PatternBook:
                                           # bir `meta.last_funding_rate` tahmini kesinti ÜRETEMEZ.
                                           funding=FundingSchedule(fallback_to_last_known=False),
                                           tp1_fraction=Decimal("1"), breakeven_at_mfe_r=Decimal("0"), tax_policy=TaxPolicy.disabled())
+        #: İZLEME KESİNTİSİ (2026-09-23): defterin bu süreç açılmadan ÖNCEKİ son kaydı; ilk bar uygulamasında denetlenir.
+        self._resume_saved_at = self.ledger.updated_at
+        self._resume_checked = False
+        self._gap_until_ms: int | None = None
         self.risk = RiskEngine(profile, killswitch, v3.risk_profiles.clusters or None)
         self.memory = TradeMemory(self.state_dir / "trade_memory.jsonl", source="PATTERN_PAPER")
         self.lock = threading.RLock()
@@ -1028,8 +1033,18 @@ class PatternBook:
 
     def apply_closed_bars(self, bars_by_symbol: dict[str, dict[str, Any]] | None, *, now: datetime, funding_rate_lookup=None) -> list:
         with self.lock:
+            if not getattr(self, "_resume_checked", False):
+                # İZLEME KESİNTİSİ (2026-09-23): süreç başındaki ilk uygulamada defter uzun süre izlenmediyse kesinti
+                # kaydedilir; o ana kadar kapanmış barlar (bu süreçte hangi sembol çağrısında gelirse gelsin) uygulanmaz.
+                self._resume_checked = True
+                self._gap_until_ms = monitoring_gap_on_resume(self.ledger, getattr(self, "_resume_saved_at", None), now=now,
+                                                              book_key=self.key, state_path=self.cfg.state_path)
+                if self._gap_until_ms is not None:
+                    self._event("MONITORING_GAP", "*", "bars_closed_in_gap_not_applied", now,
+                                since=str(getattr(self, "_resume_saved_at", None)), positions=sorted(self.ledger.positions))
             return apply_closed_bars_to_ledger(self.ledger, bars_by_symbol, now=now, funding_rate_lookup=funding_rate_lookup, on_closed=self._on_closed,
-                                               on_event=lambda sym, kind, reason, at, **extra: self._event(kind, sym, reason, at, **extra))
+                                               on_event=lambda sym, kind, reason, at, **extra: self._event(kind, sym, reason, at, **extra),
+                                               gap_until_ms=getattr(self, "_gap_until_ms", None))
 
     def record_gaps(self, gaps: dict[str, dict[str, Any]], now: datetime) -> None:
         with self.lock:

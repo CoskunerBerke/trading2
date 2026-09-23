@@ -27,7 +27,7 @@ import threading
 from pathlib import Path
 from typing import Any, Iterable
 
-from ..core import atomic_write_text, iso, stable_id, utc_now
+from ..core import iso, stable_id, utc_now
 
 log = logging.getLogger(__name__)
 
@@ -321,6 +321,9 @@ class EntrySnapshotStore:
         self._bc_sig: tuple[int, int] | None = None
         self._bc_cache: dict[str, dict[str, Any]] | None = None
         self._arc_links: dict[str, str] | None = None
+        #: SEÇİLİ aday memosu (`by_candidate(only=...)`) — (imza, kimlik kümesi) ile geçerli; yalnız istenen satırlar.
+        self._bo_key: tuple[Any, frozenset[str]] | None = None
+        self._bo_cache: dict[str, dict[str, Any]] | None = None
 
     def iter_hot_rows(self) -> Iterable[dict[str, Any]]:
         """YALNIZ sıcak dosya. Rotasyondan sonra burada olmayan satırlar arşivdedir.
@@ -400,14 +403,45 @@ class EntrySnapshotStore:
         yield from self.iter_archived_rows()
         yield from self.iter_hot_rows()
 
-    def by_candidate(self, *, include_archive: bool = False) -> dict[str, dict[str, Any]]:
+    def by_candidate(self, *, include_archive: bool = False,
+                     only: Iterable[str] | None = None) -> dict[str, dict[str, Any]]:
         """`candidate_id → snapshot`. İlk kayıt otoritedir (karar anı sonradan değişmez).
 
         `include_archive=False` (varsayılan) SICAK yolu korur. Arşivlenmiş kanıt gerektiğinde
         çağıran açıkça ister; bkz. `resolve_missing`.
+
+        `only` (2026-09-23, OOM onarımı): verilirse YALNIZ bu kimlikler tutulur; dosya akışla okunur ve
+        bellek istenen satır kadardır. Motorun sıcak yolu yalnız işleme bağlı adayları okur
+        (`trade_links()` değerleri); bütün pencereyi tutan eski çağrı üretimde (17.8k satır, 655 MB)
+        +1,86 GB kalıcı bellek yapıyordu ve worker 4 GiB sınırında OOM ile ölüyordu.
         """
         out: dict[str, dict[str, Any]] = {}
+        wanted = None if only is None else {str(x) for x in only if x}
+        if wanted is not None and not include_archive:
+            if not wanted:
+                return out
+            key = (self._hot_signature(), frozenset(wanted))
+            if key[0] is not None and key == self._bo_key and self._bo_cache is not None:
+                return dict(self._bo_cache)
+            for r in self.iter_hot_rows():
+                cid = r.get("candidate_id")
+                if not cid or r.get("kind") == "link":
+                    continue
+                cid = str(cid)
+                if cid in wanted and cid not in out:
+                    out[cid] = r
+            if key[0] is not None:
+                self._bo_key, self._bo_cache = key, out
+                return dict(out)
+            return out
         if include_archive:
+            if wanted is not None:
+                out.update({k: v for k, v in self._archive_index()[0].items() if k in wanted})
+                for r in self.iter_hot_rows():
+                    cid = r.get("candidate_id")
+                    if cid and r.get("kind") != "link" and str(cid) in wanted and str(cid) not in out:
+                        out[str(cid)] = r
+                return out
             # Arşiv yolu memolanmaz: çevrimdışı/talep üzerine çalışır ve sıcak imzayla korunmaz.
             out.update(self._archive_index()[0])
             for r in self.iter_hot_rows():
@@ -443,6 +477,8 @@ class EntrySnapshotStore:
         ~258 MB'lık ayrıştırılmış nesne grafiği bellekte TUTULMAZ."""
         self._bc_sig = None
         self._bc_cache = None
+        self._bo_key = None
+        self._bo_cache = None
 
     def resolve_missing(self, snaps: dict[str, dict[str, Any]], links: dict[str, str],
                         wanted_trade_ids: Iterable[str]) -> dict[str, Any]:
@@ -485,7 +521,14 @@ class EntrySnapshotStore:
         if include_archive:
             return set(self.by_candidate(include_archive=True).keys())
         if self._ids is None:
-            self._ids = set(self.by_candidate().keys())
+            # AKIŞ (2026-09-23, OOM onarımı): yalnız KİMLİKLER tutulur. Eskiden `by_candidate()` bütün sıcak
+            # dosyayı ayrıştırıp memoya alıyordu; ilk `append` bunu tetikliyordu (üretimde +1,86 GB, OOM).
+            ids: set[str] = set()
+            for r in self.iter_hot_rows():
+                cid = r.get("candidate_id")
+                if cid and r.get("kind") != "link":
+                    ids.add(str(cid))
+            self._ids = ids
         return self._ids
 
     def append(self, rec: dict[str, Any]) -> bool:
@@ -574,12 +617,63 @@ class EntrySnapshotStore:
         return n
 
     def _hot_lines(self) -> list[str]:
+        """BÜTÜN sıcak satırlar belleğe — yalnız testler/çevrimdışı araçlar için. Sıcak döngü (`rotate`,
+        `_apply_trim`) bunu ÇAĞIRMAZ: üretim dosyasında (655 MB) tek çağrı +2,5 GB geçici tepe yaptı."""
         try:
             text = self.path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             self.errors += 1
             return []
         return [ln for ln in text.splitlines() if ln.strip()]
+
+    def _hot_head(self, n: int) -> list[str]:
+        """İlk `n` dolu satır — AKIŞ; yalnız mühürlenecek baş blok belleğe alınır (`_hot_lines` ile aynı satır tanımı)."""
+        out: list[str] = []
+        if n <= 0:
+            return out
+        try:
+            fh = open(self.path, encoding="utf-8", errors="replace")
+        except OSError:
+            self.errors += 1
+            return out
+        with fh:
+            for line in fh:
+                s = line.rstrip("\r\n")
+                if not s.strip():
+                    continue
+                out.append(s)
+                if len(out) >= n:
+                    break
+        return out
+
+    def _rewrite_without_head(self, n: int) -> None:
+        """İlk `n` dolu satırı atıp kalanını AKIŞLA yeniden yazar (geçici dosya + fsync + os.replace).
+        İçerik eski `atomic_write_text("\\n".join(rest) + "\\n")` ile aynıdır; hata aynı `StorageError`dır."""
+        from ..core.errors import StorageError
+        tmp = self.path.with_name(self.path.name + f".tmp-{os.getpid()}")
+        try:
+            with open(self.path, encoding="utf-8", errors="replace") as src, \
+                    open(tmp, "w", encoding="utf-8", newline="\n") as dst:
+                skipped = 0
+                for line in src:
+                    s = line.rstrip("\r\n")
+                    if not s.strip():
+                        continue
+                    if skipped < n:
+                        skipped += 1
+                        continue
+                    dst.write(s + "\n")
+                dst.flush()
+                try:
+                    os.fsync(dst.fileno())
+                except OSError:
+                    pass
+            os.replace(tmp, self.path)
+        except OSError as exc:
+            try:
+                tmp.unlink(missing_ok=True)
+            finally:
+                raise StorageError(f"atomik yazım başarısız: {self.path}: {exc}") from exc
 
     @staticmethod
     def _block_sha(lines: list[str]) -> str:
@@ -596,10 +690,10 @@ class EntrySnapshotStore:
         want = str(pending.get("block_sha256") or "")
         if n <= 0 or not want:
             return 0
-        lines = self._hot_lines()
-        if len(lines) >= n and self._block_sha(lines[:n]) == want:
-            rest = lines[n:]
-            atomic_write_text(self.path, ("\n".join(rest) + "\n") if rest else "")
+        # AKIŞ (2026-09-23): baş blok doğrulanır, kalan satırlar dosyadan dosyaya yazılır (tüm dosya belleğe ALINMAZ).
+        head = self._hot_head(n)
+        if len(head) >= n and self._block_sha(head[:n]) == want:
+            self._rewrite_without_head(n)
             self._ids = None
             return n
         return 0
@@ -626,12 +720,14 @@ class EntrySnapshotStore:
                     res["trimmed"] += self._apply_trim(pending)
                     if self.archive.segment_for(str(pending.get("segment_id") or "")) is not None:
                         self.archive.clear_pending_trim()
-                lines = self._hot_lines()
-                res["hot_lines"] = len(lines)
-                if len(lines) <= self.max_lines:
+                # AKIŞ (2026-09-23, OOM onarımı): önce satırlar SAYILIR; yalnız budanacak baş blok belleğe alınır.
+                # Eski yol her turda `_hot_lines()` ile bütün dosyayı tek string + liste yapıyordu (üretimde +2,5 GB tepe).
+                n_hot = self._hot_line_count()
+                res["hot_lines"] = n_hot
+                if n_hot <= self.max_lines:
                     return res
-                cut = len(lines) - self.max_lines
-                meta = self.archive.seal(lines[:cut])
+                cut = n_hot - self.max_lines
+                meta = self.archive.seal(self._hot_head(cut))
                 self.archive.commit(meta, pending_trim={
                     "segment_id": meta["segment_id"], "n_lines": cut,
                     "block_sha256": meta["block_sha256"]})
@@ -640,7 +736,7 @@ class EntrySnapshotStore:
                 res["trimmed"] += self._apply_trim({"n_lines": cut,
                                                     "block_sha256": meta["block_sha256"]})
                 self.archive.clear_pending_trim()
-                res["hot_lines"] = len(self._hot_lines())
+                res["hot_lines"] = self._hot_line_count()
                 self._arc_key = None      # segment kümesi değişti → indeks yenilenecek
                 self._ids = None
             except (ArchiveError, OSError, ValueError) as exc:
@@ -672,10 +768,10 @@ class EntrySnapshotStore:
                 "n_segments": int((arc or {}).get("n_segments") or 0)}
 
     def stats(self) -> dict[str, Any]:
-        snaps = self.by_candidate()
+        # Yalnız SAYI gerekir: kimlik kümesi akışla (bütün snapshot grafiği belleğe alınmaz — 2026-09-23 OOM onarımı).
         links = self.trade_links()
         return {"schema_version": SCHEMA_VERSION, "path": str(self.path),
-                "snapshots": len(snaps), "links": len(links),
+                "snapshots": len(self.known_ids()), "links": len(links),
                 "appended": self.appended, "duplicates": self.duplicates,
                 "errors": self.errors, "retention": self.retention_stats()}
 

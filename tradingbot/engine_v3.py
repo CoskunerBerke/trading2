@@ -191,6 +191,9 @@ class TradingEngineV3(TradingEngine):
         # geldi ve o sembolde YENI girise guvenilebilir mi.
         self._frame_provenance: dict[str, dict] = {}
         self._entry_data_blocked: set[str] = set()
+        #: Süreç başlangıcı (ms): bundan ÖNCE açılmış ve bar imleci olmayan ana defter pozisyonu eski yolla izlenmişti
+        #: (`_main_closed_bars` geçişi). Bu süreçte açılan pozisyon imleç sözleşmesiyle baştan izlenir.
+        self._started_ms = int(utc_now().timestamp() * 1000)
         # Pattern kaniti onbellegi: anahtar (sembol, indeks son bari). Indeks tur icinde
         # degismedigi icin ayni cevap yeniden hesaplanmaz (olculdu: sorgu basina 12,6 sn).
         self._pattern_cache: dict[tuple, dict] = {}
@@ -1031,29 +1034,76 @@ class TradingEngineV3(TradingEngine):
         return out
 
     def _marks(self, briefs: list[CoinBrief]) -> dict[str, TickData]:
+        """Tur tiki: YALNIZ güncel fiyat (2026-09-23). Kapanmış 1h bar uçları ayrı sözleşmeyle uygulanır
+        (`_main_closed_bars` → `apply_closed_bars_to_ledger`): yalnız pozisyon açılışından SONRA açılmış, kapanmış
+        ve daha önce uygulanmamış barlar, bir kez. Eskiden son kapanmış 1h barın uçları her tura eklenirdi; girişten
+        önce açılmış barın (girişi içeren kısmi bar dahil) fitili stop/TP'yi tetikleyebiliyor ve aynı bar birkaç
+        turda yeniden uygulanıyordu (REVIEW-2026-09-23 §10)."""
         out: dict[str, TickData] = {}
         for b in briefs:
             if not b.price:
                 continue
-            frames = self.runner.last_frames.get(b.symbol) or {}
-            h1 = frames.get("1h")
-            hi = lo = None
-            if h1 is not None and len(h1):
-                hi, lo = float(h1["high"].iloc[-1]), float(h1["low"].iloc[-1])
-                # sağlamlık: 1h uçları canlı fiyatla tutarsızsa (ölçek/veri farkı) kullanma
-                if not (0.8 * b.price <= lo <= hi <= 1.2 * b.price):
-                    hi = lo = None
-                else:
-                    hi, lo = max(hi, b.price), min(lo, b.price)
             mk = next((r for r in b.reports if r.agent == "market"), None)
             mark = None
             if mk and mk.metrics.get("mark"):
                 mark = mk.metrics["mark"]
-            out[b.symbol] = TickData(last=Decimal(str(b.price)), mark=Decimal(str(mark)) if mark else None,
-                                     high=Decimal(str(hi)) if hi else None, low=Decimal(str(lo)) if lo else None, ts=iso())
+            out[b.symbol] = TickData(last=Decimal(str(b.price)), mark=Decimal(str(mark)) if mark else None, ts=iso())
         for sym, p in self.ledger2.positions.items():
             if sym not in out and p.last_price:
                 out[sym] = TickData(last=p.last_price, ts=iso())
+        return out
+
+    def _main_closed_bars(self, marks: dict[str, TickData], now: datetime) -> dict[str, dict]:
+        """Ana defter pozisyonları için kapanmış 1h barlar — kâğıt defterlerle AYNI sözleşme (`apply_closed_bars_to_ledger`):
+        bar yalnız kapanmışsa, pozisyon açılışından SONRA açılmışsa (girişi içeren kısmi bar DAHİL DEĞİL) ve imlecin
+        (`meta.ohlc_cursor['1h']`) ötesindeyse uygulanır; piyasa kimliği çerçevenin kendi provenansından denetlenir.
+
+        GEÇİŞ: bu süreç başlamadan ÖNCE açılmış ve imleci olmayan pozisyon eski yolla (tur tikinde son kapanmış bar) ya da
+        kesinti uzlaştırıcısıyla izlenmişti; imleç şimdiye kadar kapanmış SON bara çekilir ve geçmiş barlar geriye dönük
+        UYGULANMAZ. Bu süreçte açılan pozisyon imleçsiz başlar (açılıştan sonraki ilk bardan itibaren uygulanır).
+        Yapıyla sıkılaştırılmış stop (`meta.structure_stop.at`):
+        sıkılaştırmadan ÖNCE açılmış barlar yeni stopa uygulanmaz (`_pre_change_extreme_symbols` ile aynı kural)."""
+        from .strategy_paper import BAR_TIMEFRAME
+        out: dict[str, dict] = {}
+        now_ms = int(now.timestamp() * 1000)
+        step = 3_600_000
+        for sym, pos in list(self.ledger2.positions.items()):
+            prov = (getattr(self, "_frame_provenance", None) or {}).get(sym) or {}
+            h1 = (self.runner.last_frames.get(sym) or {}).get(BAR_TIMEFRAME)
+            if prov.get("tour_id") != str(self.run_id) or h1 is None or not len(h1) or "timestamp" not in h1.columns:
+                continue                          # bu turda yüklenmemiş çerçeve: bar yok (güncel fiyat izlemesi sürer)
+            try:
+                tail = h1.tail(48)
+                _opens = list(tail["open"]) if "open" in tail.columns else [None] * len(tail)
+                rows = [{"timestamp": int(t), "open": (float(op) if op is not None and op == op else None),
+                         "high": float(h), "low": float(lo), "close": float(c)}
+                        for t, op, h, lo, c in zip(tail["timestamp"], _opens, tail["high"], tail["low"], tail["close"])]
+            except (KeyError, TypeError, ValueError):
+                continue
+            meta = pos.meta if isinstance(getattr(pos, "meta", None), dict) else {}
+            cur = meta.get("ohlc_cursor") if isinstance(meta.get("ohlc_cursor"), dict) else {}
+            try:
+                opened_ms = int(from_iso(str(pos.opened_at)).timestamp() * 1000)
+            except (TypeError, ValueError):
+                opened_ms = None
+            if cur.get(BAR_TIMEFRAME) is None and opened_ms is not None and opened_ms < int(getattr(self, "_started_ms", 0)):
+                last_closed = max((r["timestamp"] for r in rows if r["timestamp"] + step <= now_ms), default=None)
+                if last_closed is not None:
+                    meta.setdefault("ohlc_cursor", {})[BAR_TIMEFRAME] = int(last_closed)
+                    meta["ohlc_cursor_migrated_at"] = iso(now)
+                    log.info("%s ana defter bar imleci başlatıldı (geçiş): son kapanmış bar %s, geçmiş barlar uygulanmadı",
+                             sym, iso(datetime.fromtimestamp(last_closed / 1000, tz=timezone.utc)))
+            ss = meta.get("structure_stop") if isinstance(meta.get("structure_stop"), dict) else {}
+            if ss.get("at"):
+                try:
+                    at_ms = int(from_iso(str(ss["at"])).timestamp() * 1000)
+                    rows = [r for r in rows if r["timestamp"] >= at_ms]
+                except (TypeError, ValueError):
+                    rows = []                     # zaman okunamazsa ihtiyatlı: bar uygulanmaz
+            mk = marks.get(sym)
+            out[sym] = {"tf": BAR_TIMEFRAME, "rows": rows, "mark": float(mk.last) if mk is not None and mk.last else 0.0,
+                        "market": str(prov.get("market") or ""), "source": prov.get("source"), "tour_id": prov.get("tour_id"),
+                        "first_bar_ms": rows[0]["timestamp"] if rows else 0}
         return out
 
     def _quality_for(self, symbol: str, now_ms: int) -> dict:
@@ -1106,6 +1156,11 @@ class TradingEngineV3(TradingEngine):
             self.ensure_index_refresher()
         except Exception as exc:  # noqa: BLE001 — yenileyici arizasi turu durdurmaz
             log.warning("indeks yenileyicisi başlatılamadı (tur sürer): %s", exc)
+        # 0.75) BOX ZAMANLAYICISI (2026-09-23): Box defterinin 5m kapanışları ana turdan BAĞIMSIZ değerlendirilir.
+        try:
+            self.ensure_box_timer()
+        except Exception as exc:  # noqa: BLE001 — zamanlayıcı kurulamazsa Box eski yoldan (tur adımı) sürer
+            log.warning("Box zamanlayıcısı başlatılamadı (Box tur adımında sürer): %s", exc)
         # 0.6) yürütme hassasiyeti: kapı AÇIKSA bayat/eksik sembol filtrelerini resmi kaynaktan yenile
         #      (ağırlık 1). Kapalıyken hiçbir istek atılmaz — eski davranış birebir korunur.
         self.ensure_symbol_filters()
@@ -1363,7 +1418,15 @@ class TradingEngineV3(TradingEngine):
         bar_advance = bool(cur_bar and cur_bar != self.last_bar_seen)
         if cur_bar:
             self.last_bar_seen = cur_bar
-        records = self.ledger2.tick(marks, now_utc=now, funding_rate_lookup=getattr(self, "funding_rates", None), bar_advance=bar_advance)
+        # KAPANMIŞ 1h BAR UÇLARI (2026-09-23): tur tiki yalnız güncel fiyattır; barlar kâğıt defterlerle AYNI sözleşmeyle,
+        # kronolojik ve bir kez uygulanır (girişten önce açılmış/kısmi bar YOK). Sonra güncel fiyatla koruyucu tick.
+        from .strategy_paper import apply_closed_bars_to_ledger
+        bar_records = apply_closed_bars_to_ledger(
+            self.ledger2, self._main_closed_bars(marks, now), now=now,
+            funding_rate_lookup=getattr(self, "funding_rates", None),
+            on_event=lambda sym, kind, reason, at, **extra: log.info("ana defter %s %s %s %s", sym, kind, reason, extra))
+        records = list(bar_records) + self.ledger2.tick(marks, now_utc=now, funding_rate_lookup=getattr(self, "funding_rates", None),
+                                                        bar_advance=bar_advance)
         # 6) KAYIT SIRASI: önce defter, sonra öğrenme (crash penceresinde çift öğrenme olmasın)
         self.ledger2.save(self.ledger_path)
         # 6b) STRATEJİ KÂĞIT DEFTERİ (V10): ana defterden SONRA, aynı marks/funding/bar ilerlemesiyle.
@@ -2536,17 +2599,49 @@ class TradingEngineV3(TradingEngine):
         self._funding_status = out
         return out
 
+    def ensure_box_timer(self) -> dict:
+        """Box defterini (kural ailesi `box`) ana turdan bağımsız zamanlayıcıya bağlar ve arka planda başlatır (bir kez).
+        Zamanlayıcı canlıyken tur adımı Box defterini ATLAR: tek değerlendirme yolu → aynı mum iki kez değerlendirilmez."""
+        t = getattr(self, "box_timer", None)
+        if t is not None:
+            if not t.alive:
+                t.start()
+            return t.status()
+        from . import paper_rules
+        book = next((b for b in (getattr(self, "strategy_books", None) or [])
+                     if paper_rules.spec_for(b.name).family == "box"), None)
+        if book is None:
+            return {"enabled": False, "reason": "box defteri yok"}
+        from .box_timer import BoxTimer
+        _eu = self.cfg.v3.entry_universe
+
+        def _symbols() -> list[str]:
+            return list(book.symbols) if book.symbols else (list(_eu.symbols) if _eu.enabled else [])
+        t = BoxTimer(book=book, provider_factory=self._futures_provider_factory, state_path=self.cfg.state_path,
+                     symbols_fn=_symbols, funding_rates=getattr(self, "funding_rates", None))
+        self.box_timer = t
+        t.start()
+        return t.status()
+
+    def _box_timer_owns(self, book) -> bool:
+        t = getattr(self, "box_timer", None)
+        return t is not None and t.book is book and t.alive
+
     def _strategy_paper_tour(self, symbols, marks: dict, marks_f: dict, funding: dict, bar_advance: bool, now: datetime) -> None:
         """Tek kurallı stratejinin turu: kural → ayrı defter → tick → özet. Arıza ana turu DURDURMAZ."""
-        books = list(getattr(self, "strategy_books", None) or [])
-        if not books:
+        # Box zamanlayıcısı canlıysa Box defteri BURADA değerlendirilmez (tek yol; bkz. `ensure_box_timer`); defter
+        # indeksinde yine yer alır (özetini zamanlayıcı yazar).
+        all_books = list(getattr(self, "strategy_books", None) or [])
+        if not all_books:
             return
+        books = [b for b in all_books if not self._box_timer_owns(b)]
         # GIRIS EVRENI (V13): defterler YALNIZ olculen sabit evrende (entry_universe.symbols) yeni pozisyon
         # acar; tur listesi ana defterin acik pozisyonlarini/tarayici adaylarini da icerir ve bunlar OLCULMEMIS
         # bir evrendir (ZEN/USDT olayi, 2026-09-13). Defterin kendi acik pozisyonlari yine de yonetilir.
         _eu = self.cfg.v3.entry_universe
         universe = list(_eu.symbols) if _eu.enabled else list(symbols)
-        index = []
+        index = [{"key": b.key, "name": b.name, "summary_file": b.summary_file, "evaluated_by": "box_timer"}
+                 for b in all_books if b not in books]
         # VERI KIMLIGI (2026-09-16): kagit defterler ana botun spot-ticker `marks`ini DEGIL, dogrulanmis USDS-M perpetual
         # fiyatini kullanir (`_paper_marks`); cerceve provenansi (tur kimligi + bar bagi) defter adimina tasinir.
         scope = list(dict.fromkeys([s for b in books for s in (b.symbols or universe)] + [s for b in books for s in b.ledger.positions]))
@@ -4151,7 +4246,8 @@ class TradingEngineV3(TradingEngine):
         # Deney penceresi saklama penceresinden çok dardır, gereken kanıt daima sıcaktadır.
         store = getattr(self, "entry_snapshot_store", None)
         links = (store.trade_links() if store else {})
-        snaps = (store.by_candidate() if store else {})
+        # YALNIZ bağlı adaylar okunur (2026-09-23 OOM onarımı): bütün sıcak pencere belleğe ALINMAZ.
+        snaps = (store.by_candidate(only=set(links.values())) if store else {})
         cand_by_trade = {t: snaps.get(c) for t, c in links.items()}
         # A/E KARARI TEK KANONİK YOLDAN: değişmez giriş snapshot'ı + mevcut challenger
         # değerlendiricisi, snapshot'ın donmuş as-of anında. `entry_selectivity.json.trades`
@@ -4552,8 +4648,10 @@ class TradingEngineV3(TradingEngine):
             _en = self.cfg.v3.entry_selectivity
             # SICAK yol: arşiv HER TURDA taranmaz. Varsayılan saklama penceresi terfi
             # penceresinden geniştir, dolayısıyla gereken kanıt sıcakta bulunur.
-            snaps = store.by_candidate()
+            # Rapor yalnız işleme BAĞLI adayların snapshot'ını kullanır (`evaluate_closes`/`leakage_report`:
+            # `snapshots.get(links[trade_id])`). Bütün pencere belleğe ALINMAZ (2026-09-23 OOM onarımı).
             links = store.trade_links()
+            snaps = store.by_candidate(only=set(links.values()))
             if _en.include_legacy_memory:
                 # GÖZLEM KÖPRÜSÜ: yeni depo boşken panel "hiç veri yok" göstermesin diye eski
                 # giriş kayıtları da değerlendirilir — ama ayrı sınıfta ve kapı dışında.

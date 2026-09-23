@@ -494,6 +494,11 @@ class StrategyBook:
         self.structure_mode = _st.mode_for(self.name) if _st is not None else "OFF"
         self.structure_decisions: dict[str, dict[str, Any]] = {}
         self._structure_store = None
+        #: İZLEME KESİNTİSİ (2026-09-23): defterin bu süreç açılmadan ÖNCEKİ son kaydı; ilk bar uygulamasında denetlenir.
+        self._resume_saved_at = self.ledger.updated_at
+        self._resume_checked = False
+        self._gap_until_ms: int | None = None
+        self.monitoring_gap: dict[str, Any] | None = None
         self._restore_counters()
 
     def _restore_counters(self) -> None:
@@ -842,8 +847,18 @@ class StrategyBook:
         SONRAKİ geçerli barı engellemez. Tam sözleşme: `apply_closed_bars_to_ledger`.
         `bars_by_symbol[sym] = {"tf": "1h", "rows": [...], "mark": canlı mark, "market": çerçevenin piyasası}`."""
         with self.lock:
+            if not self._resume_checked:
+                # Süreç başındaki İLK uygulama: defter uzun süre izlenmediyse kesinti kaydedilir; kesintinin bittiği ana
+                # kadar kapanmış barlar (bu süreç boyunca, hangi çağrıda gelirse gelsin) uygulanmaz.
+                self._resume_checked = True
+                self._gap_until_ms = monitoring_gap_on_resume(self.ledger, self._resume_saved_at, now=now, book_key=self.key,
+                                                              state_path=self.cfg.state_path)
+                if self._gap_until_ms is not None:
+                    self.monitoring_gap = {"from": str(self._resume_saved_at), "to": iso(now),
+                                           "positions": sorted(self.ledger.positions)}
             return apply_closed_bars_to_ledger(self.ledger, bars_by_symbol, now=now, funding_rate_lookup=funding_rate_lookup,
-                                               on_closed=self._on_closed, on_event=self._data_event)
+                                               on_closed=self._on_closed, on_event=self._data_event,
+                                               gap_until_ms=self._gap_until_ms)
 
 
     def save(self, marks_f: dict[str, float], now: datetime) -> None:
@@ -886,6 +901,8 @@ class StrategyBook:
                                                      if ((h.features or {}).get("funding_coverage") or {}).get("complete") is False]},
                    "last_actions": self.last_actions, "counters": dict(self.counters),
                    "rejections": dict(self.rejections), "closed_recent": self.closed_recent[-20:],
+                   # İZLEME KESİNTİSİ (2026-09-23): bu süreçte algılanan kesinti (yoksa None); tam kayıt MONITORING_GAPS_FILE
+                   "monitoring_gap": self.monitoring_gap,
                    # VERİ KAYNAĞI (2026-09-16): bu turun sembol hükümleri, fiyat boşlukları, son olaylar (yeniden başlatmada korunur)
                    "data_checks": dict(self.data_checks), "data_gaps": dict(self.data_gaps), "data_events_recent": self.data_events[-30:],
                    "data_policy": {"market": PAPER_MARKET, "rule_timeframes": list(self.rule.timeframes), "price_source": "usdm_perp_mark",
@@ -964,9 +981,55 @@ def _sync_path_flag(pos: Any) -> None:
         pos.features.pop("path_unverified", None)
 
 
+#: İZLEME KESİNTİSİ (2026-09-23): defterin son kaydından (`ledger.updated_at`, her tur + 60 sn izleyici yazar) bu kadar
+#: süre geçtikten sonra ilk bar uygulamasında, aradaki sürede kapanmış barlar UYGULANMAZ: kesinti açıkça kaydedilir
+#: (`MONITORING_GAPS_FILE`) ve geçmiş boşluk bar uçlarından TAHMİNİ işlemlerle doldurulmaz. Olağan tur+bekleme döngüsü
+#: ~40 dk'dır (tur ~24 dk + 15 dk); 2 saat olağan işletimi kesinti saymaz.
+MONITORING_GAP_S = 7200.0
+MONITORING_GAPS_FILE = "monitoring_gaps.jsonl"
+
+
+def record_monitoring_gap(state_path: Path | str, rec: dict[str, Any]) -> None:
+    """Kesinti kaydını ekler (salt ekleme, arıza sessiz geçmez ama çağıranı durdurmaz)."""
+    try:
+        p = Path(state_path) / MONITORING_GAPS_FILE
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with open(p, "a", encoding="utf-8", newline="\n") as fh:
+            fh.write(json.dumps(rec, ensure_ascii=False, default=str) + "\n")
+    except (OSError, TypeError, ValueError) as exc:
+        log.warning("izleme kesintisi kaydı yazılamadı: %s (%s)", exc, rec)
+
+
+def monitoring_gap_on_resume(ledger: FuturesLedgerV2, last_saved: Any, *, now: datetime, book_key: str,
+                             state_path: Path | str) -> int | None:
+    """Süreç başındaki İLK bar uygulamasında izleme kesintisi var mı? Varsa kaydeder ve kesintinin bittiği anı (ms) döner;
+    o ana kadar kapanmış barlar uygulanmaz. Açık pozisyon yoksa ya da son kayıt okunamıyorsa kesinti YOK sayılır."""
+    if not ledger.positions or not last_saved:
+        return None
+    try:
+        last = datetime.fromisoformat(str(last_saved))
+    except (TypeError, ValueError):
+        return None
+    if last.tzinfo is None:
+        last = last.replace(tzinfo=timezone.utc)
+    gap_s = (now - last).total_seconds()
+    if gap_s <= MONITORING_GAP_S:
+        return None
+    rec = {"kind": "MONITORING_GAP", "book": book_key, "from": iso(last), "to": iso(now), "gap_s": round(gap_s, 1),
+           "positions": sorted(ledger.positions), "recorded_at": iso(now),
+           "policy": "bars_closed_in_gap_not_applied", "note_tr": ("Defter bu aralıkta izlenmedi; aralıkta kapanan barlar "
+                                                                   "UYGULANMADI, geçmiş boşluk tahmini işlemle doldurulmadı. "
+                                                                   "Koruyucu izleme güncel fiyatla sürüyor.")}
+    record_monitoring_gap(state_path, rec)
+    log.warning("İZLEME KESİNTİSİ %s: %s → %s (%.1f sa), %d açık pozisyon; aradaki barlar uygulanmadı",
+                book_key, rec["from"], rec["to"], gap_s / 3600.0, len(ledger.positions))
+    return int(now.timestamp() * 1000)
+
+
 def apply_closed_bars_to_ledger(ledger: FuturesLedgerV2, bars_by_symbol: dict[str, dict[str, Any]] | None, *, now: datetime,
                                 funding_rate_lookup=None, on_closed: Callable[[Any], None] | None = None,
-                                on_event: Callable[..., None] | None = None, want_market: str = PAPER_MARKET) -> list:
+                                on_event: Callable[..., None] | None = None, want_market: str = PAPER_MARKET,
+                                gap_until_ms: int | None = None) -> list:
     """`StrategyBook.apply_closed_bars` sözleşmesinin defter-bağımsız çekirdeği (T2/M2 ve formasyon defteri AYNI kodu kullanır).
     `on_event(symbol, kind, reason, at, **extra)` atlanan barları raporlar; `on_closed(rec)` kapanan işlem başına çağrılır.
 
@@ -1033,12 +1096,27 @@ def apply_closed_bars_to_ledger(ledger: FuturesLedgerV2, bars_by_symbol: dict[st
             rows = sorted((r for r in (spec.get("rows") or []) if r.get("timestamp") is not None), key=lambda r: int(r["timestamp"]))
         except (TypeError, ValueError):
             rows = []
+        gap_skipped = 0
         for r in rows:
             o = int(r["timestamp"])
             if o + step > now_ms:
                 break                                    # kapanmamış (ve sonrakiler de): uçları KULLANILMAZ
             if o < opened_ms or (o <= cursor and o not in pending):
                 continue                                 # girişten önce açılmış ya da zaten UYGULANMIŞ
+            if gap_until_ms is not None and o + step <= int(gap_until_ms):
+                # İZLEME KESİNTİSİ (2026-09-23): bar izlenmeyen aralıkta kapandı → UYGULANMAZ (geçmiş boşluk tahmini
+                # işlemle doldurulmaz); imleç ilerler, bir daha denenmez ve bu bara ait eski boşluk kaydı düşer.
+                cursor = max(cursor, o)
+                gap_skipped += 1
+                g = pos.meta.get("ohlc_gaps")
+                if o in pending and isinstance(g, dict) and g.get(tf):
+                    rest = [x for x in g[tf] if int(x.get("bar_open_ms") or -1) != o]
+                    if rest:
+                        g[tf] = rest
+                    else:
+                        g.pop(tf, None)
+                    _sync_path_flag(pos)
+                continue
             try:
                 hi, lo, cl = float(r.get("high")), float(r.get("low")), float(r.get("close"))
             except (TypeError, ValueError):
@@ -1102,6 +1180,8 @@ def apply_closed_bars_to_ledger(ledger: FuturesLedgerV2, bars_by_symbol: dict[st
                 out.append(rec)
             if sym not in ledger.positions:
                 break
+        if gap_skipped:
+            _ev(sym, "BAR_SKIPPED", "MONITORING_GAP", tf=tf, n_bars=gap_skipped, gap_until_ms=int(gap_until_ms or 0))
         if sym in ledger.positions and cursor:
             ledger.positions[sym].meta.setdefault("ohlc_cursor", {})[tf] = cursor
     return out

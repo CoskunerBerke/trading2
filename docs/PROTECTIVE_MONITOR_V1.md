@@ -119,6 +119,13 @@ ilk taze kontrol sonraki düzenli geçişte geldi — yukarıdaki dürtme bunu h
 pozisyonları yine ilk kontrolde (4,6 sn) kapandı: Box kadansı ölçülmedi. Kalan ~1 sn'lik aşım aralık kararıdır
 (`--exit-every`, ör. 45 sn); bu sürümde değiştirilmedi.
 
+Üçüncü yerel sonuç (aynı ortam ve veri, `86a4377`, dürtmeli): tur 618 sn; bellek tepesi 2360 MB çalışma kümesi; izleyici
+12 geçiş (1 dürtme), 0 hata, geçiş aralığı ≤ 60,2 sn, en uzun geçiş 10,3 sn. Ana/T2/formasyon ve M2'nin yüklemedeki
+pozisyonları en uzun 60,0 sn. M2 turda yine ARB açtı; dürtme çalıştı (izleyicinin ARB'yi ilk taze fiyatla gördüğü geçiş
+dürtmeyle başladı). Kalan 69,0 sn, ARB'nin giriş fiyatının yaşıdır: tur fiyatları adımın başında alıyor, M2 adımı ~1 dk
+sonra bu fiyatla açıyor; ölçücü aralığı pozisyonun karşılaştırıldığı son fiyattan sayar. Bu, izleme değil GİRİŞ fiyatı
+zamanlamasıdır (T2/M2 dolum fiyatı); bu PR'da değiştirilmedi. Box kadansı yine ölçülmedi (pozisyonlar 4,7 sn'de kapandı).
+
 Güvenlik: `--source` yalnız okunur; `--work` varsa betik durur (silmez). Config, kopyadan ÖNCE doğrulanır. Bütün veri
 yolları çalışma kopyasına zorlanır (ortamdaki `TRADINGBOT_VAULT_PATH` dahil — gerçek Obsidian kasasına yazılmaz); Obsidian
 git senkronu ve Telegram/Discord bildirimleri o süreçte kapatılır (rapor `neutralized`). Ctrl+C: temizlik yapılır, rapor

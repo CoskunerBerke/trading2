@@ -292,6 +292,18 @@ def cmd_watch(cfg: BotConfig, args) -> int:
         pass
     log.info("İzleme başladı [%s · %s]: tur her %d dk (tarama her %d turda bir), spot WFO döngüsü her %s bar kapanışında. Ctrl+C ile durdur.",
              cfg.mode, type(eng).__name__, args.interval, scan_every, cfg.exchange.timeframe)
+    # KORUYUCU İZLEYİCİ (2026-09-24): beş defterin çıkış kontrolü AYRI iş parçacığında, turdan bağımsız `--exit-every` sn'de
+    # bir. Tur ağırlaşsa/bloke olsa da açık pozisyonlar izlenir. Kurulamazsa eski eşzamanlı yol (turlar arası) sürer.
+    exit_every = max(10, int(getattr(args, "exit_every", 60) or 60))
+    if hasattr(eng, "ensure_protective_monitor"):
+        try:
+            eng.ensure_protective_monitor(interval_s=float(exit_every))
+        except Exception as exc:  # noqa: BLE001
+            log.exception("koruyucu izleyici başlatılamadı (turlar arası eşzamanlı çıkış kontrolü sürer): %s", exc)
+
+    def _monitor_alive() -> bool:
+        mon = getattr(eng, "protective_monitor", None)
+        return bool(mon is not None and mon.alive)
     while not stop_flag["stop"]:
         try:
             now_ms = int(time.time() * 1000)
@@ -318,7 +330,6 @@ def cmd_watch(cfg: BotConfig, args) -> int:
             stop_flag["stop"] = True
         # bekleme: SIGTERM'e ve stop isteğine duyarlı (2 sn parçalar)
         remaining = max(1, args.interval) * 60
-        exit_every = max(10, int(getattr(args, "exit_every", 60) or 60))
         since_exit = 0
         since_hb = 0
         from .ops.health import heartbeat as write_heartbeat
@@ -335,7 +346,16 @@ def cmd_watch(cfg: BotConfig, args) -> int:
                     pass
             if watcher.requested():
                 stop_flag["stop"] = True
-            if since_exit >= exit_every and hasattr(eng, "exit_check"):       # hızlı çıkış monitörü: tur/taramayı beklemez
+            if _monitor_alive():
+                # izleyici iş parçacığı koruyor; ana iş parçacığı yalnız onun kapanışlarını ÖĞRENİR (öğreniciler tek iş parçacığında)
+                try:
+                    closed = eng.drain_protective_closes()
+                    if closed:
+                        print(f"  ⏱ exit-monitor: {', '.join(c.get('symbol', '?') for c in closed)} kapandı")
+                    eng.record_monitor_path()
+                except Exception as exc:  # noqa: BLE001
+                    log.exception("koruyucu kapanış öğrenme hatası: %s", exc)
+            elif since_exit >= exit_every and hasattr(eng, "exit_check"):       # eşzamanlı yedek yol: tur/taramayı beklemez
                 since_exit = 0
                 try:
                     closed = eng.exit_check()
@@ -343,7 +363,13 @@ def cmd_watch(cfg: BotConfig, args) -> int:
                         print(f"  ⏱ exit-monitor: {', '.join(c.get('symbol', '?') for c in closed)} kapandı")
                 except Exception as exc:  # noqa: BLE001
                     log.exception("exit-monitor hatası: %s", exc)
-    # temiz çıkış: state/log flush → istek tüket → instance kaydı sil → yalnız kendi lock'unu kaldır
+    # temiz çıkış: izleyici durur → state/log flush → istek tüket → instance kaydı sil → yalnız kendi lock'unu kaldır
+    if hasattr(eng, "stop_protective_monitor"):
+        try:
+            eng.stop_protective_monitor()
+            eng.drain_protective_closes()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("koruyucu izleyici kapatılırken hata: %s", exc)
     coop = watcher.requested()
     try:
         from .core import atomic_write_json, iso

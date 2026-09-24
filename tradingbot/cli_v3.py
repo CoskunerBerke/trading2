@@ -872,6 +872,48 @@ def cmd_learning_reconcile(cfg: BotConfig, args) -> int:
     return 0 if manifest["idempotent"] else 1
 
 
+def cmd_outage_simulate(cfg: BotConfig, args) -> int:
+    """İzleme kesintisini geçmiş mumlarla AYRI SİMÜLASYON olarak oynatır (2026-09-24). Girdi, kesinti kaydedilirken
+    yazılan defter anlık görüntüsüdür; canlı PAPER defteri, bakiye ve öğrenme DEĞİŞMEZ. Sonuç
+    `state/outage_simulations/<defter>-<başlangıç>.json` (etiket SIMULATION_NOT_APPLIED_TO_PAPER_LEDGER)."""
+    from .accounting import FuturesLedgerV2
+    from .core import from_iso, read_json
+    from .ops.gap import simulate_outage
+    from .strategy_paper import MONITORING_GAPS_FILE
+    st = cfg.state_path
+    rows = []
+    p = st / MONITORING_GAPS_FILE
+    if p.exists():
+        for line in p.read_text(encoding="utf-8").splitlines():
+            try:
+                r = json.loads(line)
+            except (ValueError, TypeError):
+                continue
+            if isinstance(r, dict) and r.get("kind") == "MONITORING_GAP" and r.get("book") == args.book:
+                rows.append(r)
+    if not rows:
+        print(f"'{args.book}' defteri için kayıtlı izleme kesintisi yok ({p}).")
+        return 1
+    gap = rows[-1]
+    src = gap.get("simulation_input")
+    if not src or not (st / src).exists():
+        print(f"kesinti {gap.get('from')} → {gap.get('to')} için simülasyon girdisi yok (eski kayıt); simülasyon yapılamaz.")
+        return 1
+    led = FuturesLedgerV2.from_dict(read_json(st / src))
+
+    def factory():
+        from .market.http import HttpClient
+        from .market.providers import BinanceFuturesProvider
+        from .market.ratelimit import BudgetPool
+        return BinanceFuturesProvider(HttpClient(BinanceFuturesProvider.base_url, BudgetPool().get("fapi.binance.com")))
+    doc = simulate_outage(led, start=from_iso(gap["from"]), end=from_iso(args.until or gap["to"]), provider_factory=factory,
+                          state_dir=st, book_key=args.book)
+    rep = doc["report"]
+    print(f"SİMÜLASYON ({doc['label']}): {args.book} {gap['from']} → {args.until or gap['to']} · durum {rep['status']} · "
+          f"{rep['bars_replayed']} bar · simüle kapanış {len(doc['simulated_closes'])} → {doc['path']}")
+    return 0
+
+
 def cmd_authority(cfg: BotConfig, args) -> int:
     """Tek yetkili worker markörü: --claim bu makineye alır, --release kaldırır, varsayılan durumu basar."""
     from .ops.authority import check, claim, current_host, read_authority, release
@@ -1047,6 +1089,10 @@ def cmd_futures_backtest(cfg: BotConfig, args) -> int:
 
 # ------------------------------------------------------------------ parser kaydı
 def register(sub: argparse._SubParsersAction) -> None:
+    s = sub.add_parser("outage-simulate", help="İzleme kesintisini geçmiş mumlarla AYRI simülasyon olarak oynat (canlı defter değişmez)")
+    s.add_argument("--book", default="main", help="defter anahtarı (main | strateji defteri dizini | formasyon defteri)")
+    s.add_argument("--until", default=None, help="bitiş (ISO; varsayılan: kesinti kaydının sonu)")
+    s.set_defaults(fn=cmd_outage_simulate)
     s = sub.add_parser("doctor", help="Ortam/durum sağlık kontrolü"); s.add_argument("--quick", action="store_true")
     s.add_argument("--json", action="store_true", help="makine-okunur structured sonuç (exit kodu aynı)"); s.set_defaults(fn=cmd_doctor)
     s = sub.add_parser("preflight", help="Systemd başlangıç ön kontrolü: yalnız-bayat-heartbeat'e izin, geri kalan fail-closed")

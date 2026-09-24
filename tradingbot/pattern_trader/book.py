@@ -82,6 +82,9 @@ class PatternBook:
         self._resume_positions: list[str] = sorted(self.ledger.positions)
         self._resume_checked = False
         self._gap_until_ms: int | None = None
+        self.monitoring_gap: dict[str, Any] | None = None
+        #: KORUYUCU İZLEYİCİ (2026-09-24): gözlem ölçümü (`protective_monitor.ObservationLog`); None → ölçüm yok.
+        self.observer: Any = None
         self.risk = RiskEngine(profile, killswitch, v3.risk_profiles.clusters or None)
         self.memory = TradeMemory(self.state_dir / "trade_memory.jsonl", source="PATTERN_PAPER")
         self.lock = threading.RLock()
@@ -904,7 +907,7 @@ class PatternBook:
         # likidite: tetik anında ölçülür; bilinmiyorsa iyi likidite SAYILMAZ
         liq = None
         try:
-            liq = liquidity() if liquidity is not None else None
+            liq = self._call_unlocked(liquidity) if liquidity is not None else None
         except Exception as exc:  # noqa: BLE001
             liq = {"error": f"{type(exc).__name__}: {exc}"[:120]}
         if not liq or liq.get("spread_pct") is None:
@@ -1029,13 +1032,56 @@ class PatternBook:
             self._event("TIME_STOP", symbol, "MAX_HOLD_BARS", now, bars=max_bars, mark=mark)
 
     # ------------------------------------------------------------------ fiyat yolu (izleyici) ve bar uçları
-    def tick(self, marks: dict[str, TickData], *, now: datetime, funding_rate_lookup=None, bar_advance: bool = False) -> list:
+    def tick(self, marks: dict[str, TickData], *, now: datetime, funding_rate_lookup=None, bar_advance: bool = False,
+             expect: dict[str, str] | None = None, source: str = "scanner") -> list:
+        """Güncel fiyat tiki — `protective_monitor.guarded_tick` ile (kimlik + fiyat zamanı sırası; bkz. StrategyBook.tick)."""
+        from ..protective_monitor import guarded_tick, note_gap_first_observations
         with self.lock:
             self._resume_once(now)
-            recs = self.ledger.tick(marks, now_utc=now, funding_rate_lookup=funding_rate_lookup, bar_advance=bar_advance)
+            recs, info = guarded_tick(self.ledger, marks, now=now, funding_rate_lookup=funding_rate_lookup,
+                                      bar_advance=bar_advance, expect=expect)
             for rec in recs:
                 self._on_closed(rec)
+            applied = info.get("applied") or {}
+            if applied and self.monitoring_gap:
+                note_gap_first_observations(self.monitoring_gap, book_key=self.key, state_path=self.cfg.state_path,
+                                            applied=applied, now=now, closed_ids=[str(getattr(r, "id", "")) for r in recs])
+            if applied and self.observer is not None:
+                from ..strategy_paper import parse_ts_ms
+                opened = {s: parse_ts_ms(p.opened_at) or 0 for s, p in self.ledger.positions.items()}
+                self.observer.note(self.key, applied, int(now.timestamp() * 1000), opened_ms=opened, source=source)
             return recs
+
+    def held_ids(self) -> dict[str, str]:
+        """Açık pozisyonların kimlik anlık görüntüsü (kısa kilit)."""
+        with self.lock:
+            return {s: str(p.id) for s, p in self.ledger.positions.items()}
+
+    def protect(self, marks: dict[str, TickData], marks_f: dict[str, float], gaps: dict[str, dict] | None, *, now: datetime,
+                expect: dict[str, str] | None = None, source: str = "monitor", funding_rate_lookup: Any = "__book__") -> list:
+        """KORUYUCU İZLEME ADIMI (tek kısa atomik bölüm; AĞ YOK): fiyat boşlukları → korumalı tick → kayıt."""
+        frl = getattr(self, "funding_rates", None) if funding_rate_lookup == "__book__" else funding_rate_lookup
+        with self.lock:
+            self._resume_once(now)
+            self.record_gaps(gaps or {}, now)
+            recs = self.tick(marks, now=now, funding_rate_lookup=frl, bar_advance=False, expect=expect, source=source) if marks else []
+            self.save(marks_f, now)
+            return recs
+
+    def _call_unlocked(self, fn: Callable[[], Any]) -> Any:
+        """AĞ BEKLEMESİ DEFTER KİLİDİNİ TUTMAZ (2026-09-24): tetik anındaki likidite (spread/derinlik) isteği sürerken kilit
+        TAMAMEN bırakılır ve sonra aynı derinlikte geri alınır. Arada yalnız koruyucu yol (izleyici/tick) çalışabilir: mevcut
+        pozisyonları kapatır ya da tick'ler, YENİ pozisyon açmaz. Giriş yolu kilidi geri aldıktan sonra defteri (cüzdan,
+        pozisyon sayısı) yeniden okur; bu sembolde pozisyon yoktu ve olamaz."""
+        lk = self.lock
+        try:
+            state = lk._release_save()                 # yalnız bu iş parçacığı tutuyorsa (RLock sözleşmesi)
+        except RuntimeError:
+            return fn()
+        try:
+            return fn()
+        finally:
+            lk._acquire_restore(state)
 
     def apply_closed_bars(self, bars_by_symbol: dict[str, dict[str, Any]] | None, *, now: datetime, funding_rate_lookup=None) -> list:
         with self.lock:
@@ -1056,6 +1102,7 @@ class PatternBook:
         self._gap_until_ms = monitoring_gap_on_resume(self.ledger, getattr(self, "_resume_saved_at", None), now=now,
                                                       book_key=self.key, state_path=self.cfg.state_path, positions=held)
         if self._gap_until_ms is not None:
+            self.monitoring_gap = {"from": str(getattr(self, "_resume_saved_at", None)), "to": iso(now), "positions": list(held)}
             self._event("MONITORING_GAP", "*", "bars_closed_in_gap_not_applied", now,
                         since=str(getattr(self, "_resume_saved_at", None)), positions=held)
 

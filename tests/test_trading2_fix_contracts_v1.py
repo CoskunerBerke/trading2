@@ -66,9 +66,11 @@ def test_the_bar_scale_verdict_reads_the_close_not_the_extremes():
 
 
 # ---------------------------------------------------------------- BULGU 3: funding her iki üretim yoluna bağlanır
-@pytest.mark.parametrize("fonksiyon", ["apply_closed_bars", "tick"])
+@pytest.mark.parametrize("fonksiyon", ["apply_closed_bars", "protect"])
 def test_scheduler_binds_funding_on_both_ledger_call_paths(fonksiyon):
-    """`_scan_symbol` (bar uçları) ve `exit_check` (çıkış izleyicisi) çağrılarının İKİSİ de oran kaynağını verir."""
+    """`_scan_symbol` (bar uçları) ve `exit_check` (çıkış izleyicisi) çağrılarının İKİSİ de oran kaynağını verir.
+    2026-09-24: izleyici yolu tek kısa atomik bölümdür (`book.protect` → korumalı `tick`); kaynak `protect`e verilir
+    ve aynen tick'e geçer (davranış: test_funding_five_ledgers_v2, test_protective_monitor_v1)."""
     calls = _calls(ROOT / "tradingbot" / "pattern_trader" / "scheduler.py", fonksiyon)
     assert calls, "scheduler artık %s çağırmıyor" % fonksiyon
     for c in calls:

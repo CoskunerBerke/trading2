@@ -20,7 +20,6 @@ import logging
 import threading
 import time
 from datetime import datetime, timezone
-from decimal import Decimal
 from pathlib import Path
 from typing import Any, Callable
 
@@ -133,35 +132,10 @@ class BoxTimer:
         return df
 
     def _marks(self, prov: Any, syms: list[str], now_ms: int) -> tuple[dict[str, TickData], dict[str, float], dict[str, dict]]:
-        """Doğrulanmış perp mark (`premiumIndex`, borsanın kendi zamanıyla) → `verified_price` hükmü."""
-        from .market.providers import to_raw
-        from .strategy_paper import verified_price
-        rows: dict[str, dict] = {}
-        try:
-            data = prov.http.get(f"{prov.prefix}/premiumIndex", weight=10)
-            rows = {str(r.get("symbol")): r for r in (data if isinstance(data, list) else [data]) if isinstance(r, dict)}
-        except Exception as exc:  # noqa: BLE001 — tek istek düşerse sembol başına dene
-            log.warning("Box zamanlayıcısı premiumIndex toplu alınamadı: %s", exc)
-        out, outf, gaps = {}, {}, {}
-        for sym in syms:
-            r = rows.get(to_raw(sym))
-            if r is None:
-                try:
-                    m = prov.mark_price(sym) or {}
-                    r = {"markPrice": m.get("mark"), "time": m.get("ts")}
-                except Exception as exc:  # noqa: BLE001
-                    r = {"error": str(exc)[:120]}
-            snap = {"ts": now_ms / 1000.0, "errors": [r["error"]] if r.get("error") else [],
-                    "funding": {"mark": r.get("markPrice"), "ts": r.get("time")}}
-            v = verified_price(snap, now_ms=now_ms)
-            if not v["ok"]:
-                gaps[sym] = {"reason": v["reason"], "detail": v["detail"], "age_s": v["age_s"]}
-                continue
-            px = float(v["mark"])
-            out[sym] = TickData(last=Decimal(str(px)), mark=Decimal(str(px)),
-                                ts=iso(datetime.fromtimestamp(v["price_ts_ms"] / 1000.0, tz=timezone.utc)))
-            outf[sym] = px
-        return out, outf, gaps
+        """Doğrulanmış perp mark (`premiumIndex`, borsanın kendi zamanıyla) → `verified_price` hükmü. Koruyucu izleyiciyle
+        TEK yol (`protective_monitor.perp_marks`)."""
+        from .protective_monitor import perp_marks
+        return perp_marks(prov, syms, now_ms)
 
     def _bars_1h(self, prov: Any, syms: list[str], marks_f: dict[str, float], now_ms: int) -> dict[str, dict]:
         out: dict[str, dict] = {}
@@ -227,7 +201,7 @@ class BoxTimer:
             self.book.step(symbols=eligible, frames_by_symbol=frames, marks=pmarks, marks_f=pmarks_f, now=now,
                            provenance_by_symbol=provs, data_gaps=gaps)
             self.book.apply_closed_bars(pbars, now=now, funding_rate_lookup=self.funding_rates)
-            self.book.tick(pmarks, now=now, funding_rate_lookup=self.funding_rates, bar_advance=False)
+            self.book.tick(pmarks, now=now, funding_rate_lookup=self.funding_rates, bar_advance=False, source="box_timer")
             self.book.save(pmarks_f, now)
         missed = max(0, (bar_open - self.last_bar_open) // M5_MS - 1) if self.last_bar_open else 0
         lag = round((now_ms - (bar_open + M5_MS)) / 1000.0, 1)
@@ -250,12 +224,12 @@ class BoxTimer:
     def _protect(self, now_ms: int) -> dict[str, Any]:
         now = datetime.fromtimestamp(now_ms / 1000.0, tz=timezone.utc)
         prov = self._prov()
-        held = list(self.book.ledger.positions)
-        pmarks, pmarks_f, gaps = self._marks(prov, held, now_ms)
-        with self.book.lock:
-            self.book.record_gaps(gaps, now)
-            self.book.tick(pmarks, now=now, funding_rate_lookup=self.funding_rates, bar_advance=False)
-            self.book.save(pmarks_f, now)
+        expect = self.book.held_ids()                     # kimlik anlık görüntüsü (kısa kilit)
+        held = list(expect)
+        pmarks, pmarks_f, gaps = self._marks(prov, held, now_ms)      # AĞ — kilit DIŞINDA
+        # tek kısa atomik bölüm (boşluk → korumalı tick → kayıt); koruyucu izleyici de aynı defteri aynı kilitle günceller
+        self.book.protect(pmarks, pmarks_f, gaps, now=now, expect=expect, source="box_timer",
+                          funding_rate_lookup=self.funding_rates)
         if self.last_tick_ms:
             self.protect_gaps_s = (self.protect_gaps_s + [round((now_ms - self.last_tick_ms) / 1000.0, 1)])[-100:]
         self.last_tick_ms = now_ms

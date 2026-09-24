@@ -259,18 +259,16 @@ class PatternScanner:
         """Açık pozisyonlar için doğrulanmış güncel fiyatla stop/hedef/likidasyon kontrolü. Tarama kuyruğundan
         BAĞIMSIZ: ana döngünün 60 sn'lik çıkış izleyicisi bunu çağırır ve tarama iş parçacığını BEKLEMEZ."""
         book = self.book
-        if not book.ledger.positions:
+        expect = book.held_ids() if hasattr(book, "held_ids") else {s: str(p.id) for s, p in book.ledger.positions.items()}
+        if not expect:
             return []
         now = self._now_dt()
         now_ms = int(now.timestamp() * 1000)
-        marks, marks_f, gaps = self.price.marks(list(book.ledger.positions), now_ms=now_ms)
-        book.record_gaps(gaps, now)
+        marks, marks_f, gaps = self.price.marks(list(expect), now_ms=now_ms)      # AĞ — defter kilidi DIŞINDA
         # Funding oranı BULUNAMAZSA lookup None döner ve defter o dönemi bekletir; koruyucu stop/hedef kontrolü
-        # bundan ETKİLENMEZ (tick yine çalışır).
-        recs = book.tick(marks, now=now, funding_rate_lookup=self.funding,   # KAYNAK nesnesi (oran + settlement mark)
-                         bar_advance=False) if marks else []
-        book.save(marks_f, now)
-        return recs
+        # bundan ETKİLENMEZ (tick yine çalışır). Tek kısa atomik bölüm: boşluk → korumalı tick (kimlik + sıra) → kayıt.
+        return book.protect(marks, marks_f, gaps, now=now, expect=expect, source="scanner_exit_check",
+                            funding_rate_lookup=self.funding)   # KAYNAK nesnesi (oran + settlement mark)
 
     # ------------------------------------------------------------------ durum / arka plan
     def status(self) -> dict[str, Any]:

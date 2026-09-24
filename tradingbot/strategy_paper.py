@@ -501,6 +501,8 @@ class StrategyBook:
         self._resume_checked = False
         self._gap_until_ms: int | None = None
         self.monitoring_gap: dict[str, Any] | None = None
+        #: KORUYUCU İZLEYİCİ (2026-09-24): gözlem ölçümü (`protective_monitor.ObservationLog`); None → ölçüm yok.
+        self.observer: Any = None
         self._restore_counters()
 
     def _restore_counters(self) -> None:
@@ -828,14 +830,53 @@ class StrategyBook:
                 return tf, last
         return None, None
 
-    def tick(self, marks: dict[str, TickData], *, now: datetime, funding_rate_lookup=None, bar_advance: bool) -> list:
+    def tick(self, marks: dict[str, TickData], *, now: datetime, funding_rate_lookup=None, bar_advance: bool,
+             expect: dict[str, str] | None = None, source: str = "tour") -> list:
         """CANLI FİYAT KONTROLÜ: defterin stop/hedef/funding/likidasyon kontrolü; ana defterle AYNI çağrı biçimi.
-        `marks` yalnız doğrulanmış, güncel perp mark taşır (bar ucu YOK; uçlar `apply_closed_bars` ile ayrı sözleşmede)."""
+        `marks` yalnız doğrulanmış, güncel perp mark taşır (bar ucu YOK; uçlar `apply_closed_bars` ile ayrı sözleşmede).
+
+        KORUYUCU İZLEYİCİ (2026-09-24): tur, Box zamanlayıcısı ve izleyici bu defteri ayrı iş parçacıklarından tick'ler.
+        Tick `protective_monitor.guarded_tick` ile yapılır: `expect` verilirse fiyat alınmadan önceki pozisyon kimliği
+        doğrulanır; pozisyona uygulanmış fiyattan daha ESKİ fiyat uygulanmaz. Kesintiden sonraki ilk gözlem kayda geçer."""
+        from .protective_monitor import guarded_tick
         with self.lock:
             self._resume_once(now)
-            recs = self.ledger.tick(marks, now_utc=now, funding_rate_lookup=funding_rate_lookup, bar_advance=bar_advance)
+            recs, info = guarded_tick(self.ledger, marks, now=now, funding_rate_lookup=funding_rate_lookup,
+                                      bar_advance=bar_advance, expect=expect)
             for rec in recs:
                 self._on_closed(rec)
+            self._after_tick(info, recs, now, source)
+            return recs
+
+    def _after_tick(self, info: dict[str, Any], recs: list, now: datetime, source: str) -> None:
+        """Ölçüm + kesinti sonrası ilk gözlem (çağıran kilidi tutar)."""
+        applied = info.get("applied") or {}
+        if not applied:
+            return
+        note_ids = [str(getattr(r, "id", "")) for r in recs]
+        if self.monitoring_gap:
+            from .protective_monitor import note_gap_first_observations
+            note_gap_first_observations(self.monitoring_gap, book_key=self.key, state_path=self.cfg.state_path,
+                                        applied=applied, now=now, closed_ids=note_ids)
+        if self.observer is not None:
+            opened = {s: parse_ts_ms(p.opened_at) or 0 for s, p in self.ledger.positions.items()}
+            self.observer.note(self.key, applied, int(now.timestamp() * 1000), opened_ms=opened, source=source)
+
+    def held_ids(self) -> dict[str, str]:
+        """Açık pozisyonların kimlik anlık görüntüsü (kısa kilit) — izleyici fiyatı bunun İÇİN alır ve kilit altında doğrular."""
+        with self.lock:
+            return {s: str(p.id) for s, p in self.ledger.positions.items()}
+
+    def protect(self, marks: dict[str, TickData], marks_f: dict[str, float], gaps: dict[str, dict] | None, *, now: datetime,
+                expect: dict[str, str] | None = None, source: str = "monitor", funding_rate_lookup: Any = "__book__") -> list:
+        """KORUYUCU İZLEME ADIMI (tek kısa atomik bölüm; AĞ YOK): fiyat boşlukları → korumalı tick → kayıt.
+        Funding kaynağı yalnız bellekten okunur (ağ adımı turdadır)."""
+        frl = self.funding_rates if funding_rate_lookup == "__book__" else funding_rate_lookup
+        with self.lock:
+            self._resume_once(now)
+            self.record_gaps(gaps or {}, now)
+            recs = self.tick(marks, now=now, funding_rate_lookup=frl, bar_advance=False, expect=expect, source=source) if marks else []
+            self.save(marks_f, now)
             return recs
 
     def apply_closed_bars(self, bars_by_symbol: dict[str, dict[str, Any]] | None, *, now: datetime, funding_rate_lookup=None) -> list:
@@ -1037,6 +1078,17 @@ def monitoring_gap_on_resume(ledger: FuturesLedgerV2, last_saved: Any, *, now: d
            "policy": "bars_closed_in_gap_not_applied", "note_tr": ("Defter bu aralıkta izlenmedi; aralıkta kapanan barlar "
                                                                    "UYGULANMADI, geçmiş boşluk tahmini işlemle doldurulmadı. "
                                                                    "Koruyucu izleme güncel fiyatla sürüyor.")}
+    # SİMÜLASYON GİRDİSİ (2026-09-24): kesinti anındaki defter (pozisyonlar + cüzdan + maliyet ayarları; geçmiş/kayıt
+    # satırları hariç) ayrı dosyaya yazılır. Geçmiş uzlaştırma yalnız bununla, AYRI simülasyon olarak koşar
+    # (`python -m tradingbot outage-simulate`); canlı defter değişmez.
+    try:
+        snap = ledger.to_dict()
+        snap["history"], snap["entries"] = [], []
+        sp = Path(state_path) / "outage_simulations" / ("%s-%s.ledger_at_load.json" % (book_key, iso(last).replace(":", "").replace("+", "_")))
+        atomic_write_json(sp, snap)
+        rec["simulation_input"] = str(sp.relative_to(Path(state_path)))
+    except Exception as exc:  # noqa: BLE001 — girdi yazılamazsa kesinti kaydı yine yazılır
+        log.warning("kesinti simülasyon girdisi yazılamadı (%s): %s", book_key, exc)
     record_monitoring_gap(state_path, rec)
     log.warning("İZLEME KESİNTİSİ %s: %s → %s (%.1f sa), yüklemede %d açık pozisyon; aradaki barlar uygulanmadı",
                 book_key, rec["from"], rec["to"], gap_s / 3600.0, len(held))

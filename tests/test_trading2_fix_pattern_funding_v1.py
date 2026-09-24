@@ -283,8 +283,9 @@ def test_control_main_engine_and_pattern_scheduler_bind_the_same_realized_source
     assert "static_rates(" not in eng_src, "ana bot anlık oranı geçmiş settlement'lara UYGULAMAMALI"
     assert eng_src.count('funding_rate_lookup=getattr(self, "funding_rates", None)') >= 5, "ana defter/strateji defteri çağrıları kaynağı vermeli"
     # Metin sayımı yalnız YERİ sabitler; davranış kanıtı: test_funding_five_ledgers_v2 (tur, üç çıkış izleyicisi, tarayıcı)
-    assert "book.apply_closed_bars(" in sch_src and "book.tick(" in sch_src, "üretim çağrı yolları burada"
-    assert "funding_rate_lookup=self.funding)" in sch_src and "funding_rate_lookup=self.funding," in sch_src
+    # 2026-09-24: çıkış izleyicisi yolu `book.protect` (tek kısa atomik bölüm: boşluk → korumalı tick → kayıt)
+    assert "book.apply_closed_bars(" in sch_src and "book.protect(" in sch_src, "üretim çağrı yolları burada"
+    assert sch_src.count("funding_rate_lookup=self.funding)") == 2
 
 
 # ====================================================================== SÖZLEŞME ARALIĞI: 8 saat VARSAYILMAZ

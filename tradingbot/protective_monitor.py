@@ -157,7 +157,8 @@ def guarded_tick(ledger: Any, marks: dict[str, Any] | None, *, now: datetime, fu
     * Hiç zamanı olmayan tik (yalnız test/elle yollar; canlı fiyat yolları daima zamanlıdır) denetlenemez: uygulanır ama
       sırayı ilerletmez.
 
-    Döner: (kapanan kayıtlar, {"applied": {sym: {id, price, price_ts_ms, source_ts_ms, fetched_ts_ms}}, "skipped": {sym: neden}})."""
+    Döner: (kapanan kayıtlar, {"applied": {sym: {id, price, price_ts_ms, source_ts_ms, fetched_ts_ms, applied_ms}},
+    "skipped": {sym: neden}})."""
     use: dict[str, TickData] = {}
     applied: dict[str, dict[str, Any]] = {}
     skipped: dict[str, str] = {}
@@ -195,7 +196,8 @@ def guarded_tick(ledger: Any, marks: dict[str, Any] | None, *, now: datetime, fu
             skipped[sym] = "OLDER_THAN_APPLIED"
             continue
         use[sym] = td
-        applied[sym] = {"id": str(pos.id), "price": float(td.ref), "price_ts_ms": ref, "source_ts_ms": src, "fetched_ts_ms": got}
+        applied[sym] = {"id": str(pos.id), "price": float(td.ref), "price_ts_ms": ref, "source_ts_ms": src, "fetched_ts_ms": got,
+                        "applied_ms": apply_ms}
     recs = ledger.tick(use, now_utc=now, funding_rate_lookup=funding_rate_lookup, bar_advance=bar_advance) if use else []
     for sym, info in applied.items():
         pos = ledger.positions.get(sym)
@@ -221,7 +223,8 @@ def note_gap_first_observations(gap: dict[str, Any] | None, *, book_key: str, st
         if sym not in held or sym in seen:
             continue
         ts = info.get("price_ts_ms")
-        row = {"position_id": info.get("id"), "price": info.get("price"), "observed_at": iso(now),
+        seen_ms = info.get("applied_ms")                # fiyatın GERÇEKTEN uygulandığı an (tur `now`u fiyat alınmadan önceki andır)
+        row = {"position_id": info.get("id"), "price": info.get("price"), "observed_at": iso(_dt(seen_ms)) if seen_ms else iso(now),
                "price_ts": iso(_dt(ts)) if ts else None, "closed_by_this_observation": info.get("id") in closed}
         seen[sym] = row
         _append_jsonl(Path(state_path) / FIRST_OBS_FILE, {"kind": "MONITORING_GAP_FIRST_OBSERVATION", "book": book_key, "symbol": sym,
@@ -236,7 +239,13 @@ class ObservationLog:
     """Defter/pozisyon başına doğrulanmış koruyucu gözlem aralıkları (iş parçacığı güvenli, bellek içi).
 
     İlk gözlemde aralık, pozisyonun açılışından (ya da ölçümün başladığı andan — hangisi SONRAYSA) sayılır; böylece
-    izleme başlamadan önce açık kalmış süre de görünür ve hiç gözlenmeyen pozisyon `current_gap_s` ile yakalanır."""
+    izleme başlamadan önce açık kalmış süre de görünür ve hiç gözlenmeyen pozisyon `current_gap_s` ile yakalanır.
+
+    Gözlem zamanı = UYGULANAN fiyatın kendi zamanı (`price_ts_ms`: borsa, yoksa alınma), çağıranın `now`u DEĞİL: tur
+    `now`unu fiyatları almadan önce alır ve kilit/ağ beklemesinden sonra uygular; o anı yazmak son gözlemi GERİYE taşır
+    ve sonraki aralığı şişirirdi. Son gözlem yalnız İLERİ gider (daha eski fiyatlı gözlem aralığı kısaltmaz).
+    Ölçüm sırasında açılan pozisyonda taban, izleyicinin onu İÇERMEYEN son anlık görüntüsüdür (`snapshot`): tur girişleri
+    `opened_at`'ı turun karar anıyla yazar (defterde henüz yokken), o an taban olsaydı var olmayan bir bekleme sayılırdı."""
 
     def __init__(self, target_s: float = DEFAULT_INTERVAL_S, clock_ms: Callable[[], int] = _now_ms) -> None:
         self.target_s = float(target_s)
@@ -244,7 +253,30 @@ class ObservationLog:
         self.started_ms = int(clock_ms())
         self._lock = threading.Lock()
         self._pos: dict[str, dict[str, dict[str, Any]]] = {}
+        self._snaps: dict[str, dict[str, Any]] = {}
         self.exceeded: list[dict[str, Any]] = []
+
+    def snapshot(self, book_key: str, ids: Iterable[str], ms: int) -> None:
+        """İzleyicinin geçiş başındaki kimlik anlık görüntüsü: yeni beliren kimlik için "en geç şu anda yoktu" sınırı."""
+        ids = {str(x) for x in ids}
+        with self._lock:
+            st = self._snaps.setdefault(str(book_key), {"ms": None, "ids": set(), "appeared": {}})
+            known = self._pos.get(str(book_key)) or {}
+            if st["ms"] is not None:
+                for pid in ids - st["ids"]:
+                    if pid not in known:
+                        st["appeared"].setdefault(pid, st["ms"])
+            st["ms"], st["ids"] = int(ms), ids
+
+    def _floor_ms(self, book_key: str, pid: str) -> int:
+        st = self._snaps.get(book_key)
+        if not st or st["ms"] is None:
+            return self.started_ms
+        if pid in st["appeared"]:
+            return max(self.started_ms, int(st["appeared"].pop(pid)))
+        if pid not in st["ids"]:                        # son anlık görüntüden SONRA açıldı
+            return max(self.started_ms, int(st["ms"]))
+        return self.started_ms
 
     def note(self, book_key: str, applied: dict[str, dict[str, Any]], now_ms: int, *, opened_ms: dict[str, int] | None = None,
              source: str = "") -> None:
@@ -252,19 +284,20 @@ class ObservationLog:
             book = self._pos.setdefault(str(book_key), {})
             for sym, info in (applied or {}).items():
                 pid = str(info.get("id"))
+                obs_ms = int(info.get("price_ts_ms") or now_ms)
                 rec = book.get(pid)
                 if rec is None:
-                    base = max(int((opened_ms or {}).get(sym) or 0), self.started_ms)
-                    rec = book[pid] = {"symbol": sym, "first_obs_ms": int(now_ms), "last_obs_ms": None, "base_ms": base,
+                    base = max(int((opened_ms or {}).get(sym) or 0), self._floor_ms(str(book_key), pid))
+                    rec = book[pid] = {"symbol": sym, "first_obs_ms": obs_ms, "last_obs_ms": None, "base_ms": base,
                                        "n": 0, "max_gap_s": 0.0, "sources": {}}
                 prev = rec["last_obs_ms"] if rec["last_obs_ms"] is not None else rec["base_ms"]
-                gap = max(0.0, (int(now_ms) - int(prev)) / 1000.0)
+                gap = max(0.0, (obs_ms - int(prev)) / 1000.0)
                 if gap > rec["max_gap_s"]:
                     rec["max_gap_s"] = round(gap, 1)
                 if gap > self.target_s:
                     self.exceeded = (self.exceeded + [{"book": book_key, "symbol": sym, "position_id": pid, "gap_s": round(gap, 1),
-                                                       "until": iso(_dt(now_ms)), "source": source}])[-200:]
-                rec["last_obs_ms"] = int(now_ms)
+                                                       "until": iso(_dt(obs_ms)), "source": source}])[-200:]
+                rec["last_obs_ms"] = max(obs_ms, int(rec["last_obs_ms"] or 0))
                 rec["n"] += 1
                 rec["sources"][source or "?"] = rec["sources"].get(source or "?", 0) + 1
 
@@ -274,6 +307,9 @@ class ObservationLog:
             book = self._pos.get(str(book_key)) or {}
             for pid in [p for p in book if p not in keep]:
                 book[pid]["closed"] = True
+            st = self._snaps.get(str(book_key))
+            for pid in [p for p in (st or {}).get("appeared", {}) if p not in keep]:
+                st["appeared"].pop(pid, None)
 
     def status(self, now_ms: int | None = None, open_ids: dict[str, dict[str, str]] | None = None) -> dict[str, Any]:
         now_ms = int(now_ms if now_ms is not None else self.clock_ms())
@@ -397,6 +433,7 @@ class ProtectiveMonitor:
         for h in handles:                               # kısa kilit: yalnız kimlik anlık görüntüsü
             try:
                 held[h.key] = dict(h.held() or {})
+                self.observer.snapshot(h.key, held[h.key].values(), start_ms)
             except Exception as exc:  # noqa: BLE001
                 errs[h.key] = f"held: {type(exc).__name__}: {exc}"[:200]
         syms = list(dict.fromkeys(s for ids in held.values() for s in ids))

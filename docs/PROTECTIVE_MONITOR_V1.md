@@ -93,6 +93,19 @@ Betik (`scripts/measure_protective_monitor.py`) Windows ve Linux'ta çalışır;
 5. `olcum.json` sonucu: `memory.peak_rss_process_mb` (< 4096 hedef), `monitor.books.<defter>.verdict`
    (`WITHIN_60S` / `OVER_60S` / `NOT_MEASURED_NO_OPEN_POSITION`), `monitor.over_60s`, `tour_s`, `pattern_index`.
 
+Aralık tanımı: pozisyon başına iki ardışık koruyucu gözlem arasındaki süre; gözlem zamanı UYGULANAN fiyatın kendi zamanıdır
+(borsa, yoksa alınma), son gözlem geriye gitmez. Ölçüm sırasında açılan pozisyon, izleyicinin onu içermeyen son anlık
+görüntüsünden sayılır (tur girişi `opened_at`'ı turun karar anıyla yazar). Ölçüm sırasında açık pozisyonu kalmayan defter
+yalnız ilk kontrolüyle ölçülmüş sayılır; zaman içindeki kadansı DOĞRULANMIŞ değildir.
+
+İlk yerel sonuç (2026-09-24, Windows 11, Python 3.13, 2,2 GB saatlik yedek kopyası; ölçücü düzeltmesinden ÖNCE):
+tur 665 sn; bellek tepesi 2432 MB çalışma kümesi / 3262 MB işlenmiş (VPS sınırıyla birebir karşılaştırılamaz); izleyici
+13 geçiş, 0 hata, geçiş aralığı ≤ 60,1 sn, en uzun geçiş 23 sn. Pozisyon aralıkları çoğunlukla 60,0–60,8 sn (60 sn aralık +
+fiyat alma gecikmesi — hedefi 1 sn'den az aşıyor), bir geçişte 79,4 sn (fiyat alma ~20 sn sürdü; gerçek). 108,7 sn (T2 ZEN)
+ve 551,9 sn (M2 ARB) ölçücü hatasıydı (tur `now`u geri yazılıyor / giriş karar anından sayılıyordu; düzeltildi); M2 ARB'nin
+108,7 sn'lik değeri gerçek olabilir, yeni ölçüm gösterir. Box'ın iki pozisyonu ilk kontrolde (0,9 sn) kapandı: Box kadansı
+ölçülmedi. Sonuç: 60 sn hedefi bu ölçümde tam tutmadı; VPS (Linux) üzerinde ölçülmedi.
+
 Güvenlik: `--source` yalnız okunur; `--work` varsa betik durur (silmez). Config, kopyadan ÖNCE doğrulanır. Bütün veri
 yolları çalışma kopyasına zorlanır (ortamdaki `TRADINGBOT_VAULT_PATH` dahil — gerçek Obsidian kasasına yazılmaz); Obsidian
 git senkronu ve Telegram/Discord bildirimleri o süreçte kapatılır (rapor `neutralized`). Ctrl+C: temizlik yapılır, rapor

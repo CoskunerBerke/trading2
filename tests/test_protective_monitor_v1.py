@@ -799,3 +799,59 @@ def test_watch_starts_the_monitor_and_only_drains_learning_in_the_main_thread(tm
 def test_watch_falls_back_to_the_synchronous_exit_check_if_the_monitor_cannot_start(tmp_path, monkeypatch):
     calls = _run_watch(tmp_path, monkeypatch, monitor_ok=False)
     assert "exit_check" in calls and calls.index("exit_check") > calls.index("tour")
+
+
+# ---------------------------------------------------------------------- ölçüm doğruluğu (Windows ölçümü, 2026-09-24)
+def test_observer_last_seen_never_moves_back_and_uses_price_time():
+    """Tur `now`unu fiyatı almadan önce alır ve kilit/ağ beklemesinden SONRA uygular. Eski ölçücü bu erken anı son gözlem
+    yazıyordu: izleyici 60 sn'de bir baktığı hâlde sonraki aralık 108.7 sn görünüyordu (sahte aşım)."""
+    from tradingbot.protective_monitor import ObservationLog
+    t0 = 1_790_000_000_000
+    log = ObservationLog(target_s=60, clock_ms=lambda: t0)
+    obs = lambda ms: {"ZEN/USDT": {"id": "F3", "price_ts_ms": ms}}  # noqa: E731
+    log.note("t2", obs(t0 + 60_000), t0 + 60_000, source="monitor")
+    log.note("t2", obs(t0 + 120_000), t0 + 120_000, source="monitor")
+    # tur: `now` = t0+71 sn (fiyat almadan önce), fiyat t0+125 sn'de alındı, izleyicinin notundan SONRA not edildi
+    log.note("t2", obs(t0 + 125_000), t0 + 71_000, source="tour")
+    log.note("t2", obs(t0 + 180_000), t0 + 180_000, source="monitor")
+    rec = log.status(now_ms=t0 + 180_000)["books"]["t2"]["positions"]["F3"]
+    assert rec["max_gap_s"] == 60.0 and not log.exceeded, (rec, log.exceeded)
+    # eski fiyatlı gözlem son gözlemi GERİYE almaz
+    log.note("t2", obs(t0 + 150_000), t0 + 150_000, source="tour")
+    log.note("t2", obs(t0 + 240_000), t0 + 240_000, source="monitor")
+    assert log.status(now_ms=t0 + 240_000)["books"]["t2"]["positions"]["F3"]["max_gap_s"] == 60.0 and not log.exceeded
+
+
+def test_observer_tour_entry_counted_from_last_snapshot_not_backdated_open():
+    """Tur girişi `opened_at`'ı turun karar anıyla yazar (defterde ~9 dk sonra belirir). Eski ölçücü aralığı o andan
+    sayıyordu (551.9 sn sahte aşım). Taban: izleyicinin pozisyonu İÇERMEYEN son anlık görüntüsü."""
+    from tradingbot.protective_monitor import ObservationLog
+    t0 = 1_790_000_000_000
+    log = ObservationLog(target_s=60, clock_ms=lambda: t0)
+    log.snapshot("m2", ["F1"], t0 + 600_000)                          # ARB yok
+    opened = {"ARB/USDT": t0 + 10_000}                                 # tur karar anı (geriye tarihli)
+    log.note("m2", {"ARB/USDT": {"id": "F5", "price_ts_ms": t0 + 612_000}}, t0 + 611_000, opened_ms=opened, source="tour")
+    log.snapshot("m2", ["F1", "F5"], t0 + 660_000)
+    log.note("m2", {"ARB/USDT": {"id": "F5", "price_ts_ms": t0 + 661_000}}, t0 + 661_000, opened_ms=opened, source="monitor")
+    rec = log.status(now_ms=t0 + 661_000)["books"]["m2"]["positions"]["F5"]
+    assert rec["max_gap_s"] == 49.0 and not log.exceeded, (rec, log.exceeded)
+    # hiç not edilmeden izleyicinin görüntüsüne giren pozisyon: taban = onu içermeyen ÖNCEKİ görüntü (gizlenmez)
+    log.snapshot("m2", ["F1", "F5", "F7"], t0 + 720_000)
+    log.note("m2", {"ONE/USDT": {"id": "F7", "price_ts_ms": t0 + 790_000}}, t0 + 790_000, opened_ms={"ONE/USDT": t0}, source="monitor")
+    assert log.status(now_ms=t0 + 790_000)["books"]["m2"]["positions"]["F7"]["max_gap_s"] == 130.0
+    # ölçüm başında zaten açık pozisyon: taban açılış/başlangıç (izleme öncesi süre görünür kalır)
+    log.note("m2", {"SOL/USDT": {"id": "F1", "price_ts_ms": t0 + 30_000}}, t0 + 30_000, opened_ms={"SOL/USDT": t0 - 5_000})
+    assert log.status(now_ms=t0 + 30_000)["books"]["m2"]["positions"]["F1"]["max_gap_s"] == 30.0
+
+
+def test_first_observation_records_apply_time_not_tour_start():
+    from tradingbot.protective_monitor import note_gap_first_observations
+    import tempfile
+    t0 = datetime(2026, 9, 24, 21, 11, 1, tzinfo=timezone.utc)
+    applied_at = t0 + timedelta(seconds=55)
+    gap = {"from": iso(t0 - timedelta(hours=3)), "to": iso(t0), "positions": ["ZEN/USDT"]}
+    with tempfile.TemporaryDirectory() as d:
+        note_gap_first_observations(gap, book_key="t2", state_path=d, now=t0,
+                                    applied={"ZEN/USDT": {"id": "F3", "price": 1.0, "price_ts_ms": int(applied_at.timestamp() * 1000) - 2000,
+                                                          "applied_ms": int(applied_at.timestamp() * 1000)}})
+    assert gap["first_observations"]["ZEN/USDT"]["observed_at"] == iso(applied_at)

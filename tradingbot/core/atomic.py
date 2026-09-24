@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import threading
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -28,7 +29,9 @@ def _default(o: Any):
 def atomic_write_bytes(path: Path | str, data: bytes, *, keep_backup: bool = False) -> Path:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + f".tmp-{os.getpid()}")
+    # Geçici ad süreç VE iş parçacığı başına: koruyucu izleyici (2026-09-24) ana turla aynı süreçte yazar; yalnız pid ile
+    # iki iş parçacığı aynı geçici dosyayı paylaşıp birbirinin yarım içeriğini `os.replace` edebilirdi.
+    tmp = path.with_name(path.name + f".tmp-{os.getpid()}-{threading.get_ident()}")
     try:
         with open(tmp, "wb") as fh:
             fh.write(data)

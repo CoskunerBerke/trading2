@@ -33,8 +33,8 @@ from test_risk_capacity_and_gates import EQUITY  # noqa: E402
 from tradingbot.accounting import AmountType, FuturesLedgerV2, SizeSpec, TickData  # noqa: E402
 from tradingbot.core import from_iso, iso, utc_now  # noqa: E402
 from tradingbot.ops.gap import SIMULATION_LABEL, read_watermark, simulate_outage, write_watermark  # noqa: E402
-from tradingbot.protective_monitor import (FIRST_OBS_FILE, ORDER_SKEW_S, guarded_tick,  # noqa: E402
-                                           perp_marks)
+from tradingbot.protective_monitor import FIRST_OBS_FILE, guarded_tick, perp_marks  # noqa: E402
+from tradingbot.strategy_paper import PRICE_MAX_AGE_S  # noqa: E402
 from tradingbot.strategy_paper import MONITORING_GAPS_FILE  # noqa: E402
 
 UTC = timezone.utc
@@ -422,24 +422,78 @@ def test_a_tp1_partial_between_snapshot_and_protect_closes_only_the_remaining_qu
     assert exits == q0, "toplam çıkış miktarı = giriş miktarı (kısmi yarı ikinci kez kapanmadı)"
 
 
-def test_an_older_price_arriving_after_a_newer_observation_is_not_applied(tmp_path, monkeypatch):
-    """Ağır turun dakikalar önce aldığı fiyat, izleyicinin daha yeni gözleminden SONRA uygulanamaz."""
+def _live(px: float, *, src: datetime | None, got: datetime | None) -> TickData:
+    """Canlı fiyat tiki: borsa (kaynak) ve alınma zamanı AYRI (`protective_monitor.live_tick` biçimi)."""
+    best = src or got
+    return TickData(last=D(str(px)), mark=D(str(px)), ts=iso(best) if best else "",
+                    src_ts=iso(src, timespec="milliseconds") if src else "", fetched_ts=iso(got, timespec="milliseconds") if got else "")
+
+
+def test_an_older_exchange_timed_price_is_rejected_without_any_tolerance(tmp_path, monkeypatch):
+    """Karşılaştırılabilir borsa zamanlarında, uygulanmış fiyattan YALNIZ 5 sn eski ve stop altı fiyat bile kapatmaz.
+    ÖNCE (09840eb): 10 sn'lik sıra payı bu fiyatla stop kapatıyordu ve eski test bunu BEKLİYORDU."""
     eng, books = _five_books(tmp_path, monkeypatch)
     led = eng.ledger2
-    t_new = utc_now()
+    t0 = utc_now()
+    clock = Clock(t0 + timedelta(seconds=1))
     with eng._exit_lock:
-        guarded_tick(led, {SYM: _tick(101.0, t_new)}, now=t_new)          # izleyici: güncel, stop üstü
-    stale = t_new - timedelta(seconds=120)
+        recs, info = guarded_tick(led, {SYM: _live(101.0, src=t0, got=t0)}, now=t0, apply_clock=clock)
+    assert recs == [] and SYM in info["applied"]
+    meta = led.positions[SYM].meta
+    assert meta["mark_src_ts_ms"] == _ms(t0) and meta["mark_fetched_ts_ms"] == _ms(t0), "kaynak ve alınma zamanı AYRI kalıcı"
+    older = _live(94.0, src=t0 - timedelta(seconds=5), got=t0 + timedelta(seconds=1))      # yeni ALINDI ama borsa zamanı eski
     with eng._exit_lock:
-        recs, info = guarded_tick(led, {SYM: _tick(94.0, stale)}, now=t_new + timedelta(seconds=1))
+        recs, info = guarded_tick(led, {SYM: older}, now=t0 + timedelta(seconds=1), apply_clock=clock)
     assert recs == [] and info["skipped"] == {SYM: "OLDER_THAN_APPLIED"} and SYM in led.positions
-    # ÖNCE (korumasız defter tiki): aynı eski fiyat pozisyonu stop'la kapatırdı
-    probe = FuturesLedgerV2.from_dict(led.to_dict())
-    assert len(probe.tick({SYM: _tick(94.0, stale)}, now_utc=t_new)) == 1
-    # sıra payı içindeki farklı saat damgası "aynı an" sayılır; yeni ve stop altı fiyat kapatır
+    probe = FuturesLedgerV2.from_dict(led.to_dict())                     # korumasız defter tiki bu fiyatla KAPATIRDI
+    assert len(probe.tick({SYM: older}, now_utc=t0)) == 1
+    same = _live(94.0, src=t0, got=t0 + timedelta(seconds=2))            # AYNI borsa anı: daha eski değil
     with eng._exit_lock:
-        recs, _ = guarded_tick(led, {SYM: _tick(94.0, t_new - timedelta(seconds=ORDER_SKEW_S / 2))}, now=t_new + timedelta(seconds=2))
+        recs, _ = guarded_tick(led, {SYM: same}, now=t0 + timedelta(seconds=2), apply_clock=clock)
+    assert len(recs) == 1 and SYM not in led.positions
+
+
+def test_without_a_comparable_exchange_time_the_fetch_times_decide(tmp_path, monkeypatch):
+    """Borsa zamanı olmayan fiyat (yalnız alınma zamanı): önbellekten gelen daha ESKİ alınma reddedilir, yenisi uygulanır."""
+    eng, books = _five_books(tmp_path, monkeypatch)
+    led = eng.ledger2
+    t0 = utc_now()
+    clock = Clock(t0 + timedelta(seconds=2))
+    with eng._exit_lock:
+        guarded_tick(led, {SYM: _live(101.0, src=t0, got=t0)}, now=t0, apply_clock=clock)
+        recs, info = guarded_tick(led, {SYM: _live(94.0, src=None, got=t0 - timedelta(seconds=50))}, now=t0, apply_clock=clock)
+    assert recs == [] and info["skipped"] == {SYM: "OLDER_THAN_APPLIED"}
+    with eng._exit_lock:
+        recs, _ = guarded_tick(led, {SYM: _live(94.0, src=None, got=t0 + timedelta(seconds=1))}, now=t0, apply_clock=clock)
     assert len(recs) == 1
+
+
+def test_freshness_is_checked_again_when_the_price_is_applied(tmp_path, monkeypatch):
+    """Alınırken taze (yaş 170 sn < 180) fiyat, kilit beklemesi/uzun tur yüzünden UYGULANIRKEN bayatsa tick YOK."""
+    eng, books = _five_books(tmp_path, monkeypatch)
+    led = eng.ledger2
+    t0 = utc_now()
+    px = _live(90.0, src=t0 - timedelta(seconds=170), got=t0)
+    late = Clock(t0 + timedelta(seconds=20))                             # uygulama anı: 190 sn > PRICE_MAX_AGE_S
+    with eng._exit_lock:
+        recs, info = guarded_tick(led, {SYM: px}, now=t0, apply_clock=late)
+    assert recs == [] and info["skipped"] == {SYM: "STALE_AT_APPLY"} and SYM in led.positions
+    assert 170 < PRICE_MAX_AGE_S < 190
+    future = _live(90.0, src=t0 + timedelta(minutes=10), got=t0)
+    with eng._exit_lock:
+        recs, info = guarded_tick(led, {SYM: future}, now=t0, apply_clock=Clock(t0))
+    assert recs == [] and info["skipped"] == {SYM: "PRICE_TIME_IN_FUTURE"}
+    # izleyici yolu da aynı saati kilit altında okur: saat 20 sn ilerletilince aynı fiyat uygulanmaz
+    clock = Clock(t0)
+    stale_at_apply = Clock(t0 + timedelta(seconds=200))
+    eng.ensure_protective_monitor(interval_s=60, start=False, clock_ms=clock,
+                                  price_fn=lambda syms, now_ms: ({s: _live(90.0, src=t0, got=t0) for s in syms}, {s: 90.0 for s in syms}, {}))
+    eng.protective_monitor.clock_ms = stale_at_apply
+    eng.protective_monitor.run_once(now_ms=_ms(t0))
+    assert all(SYM in led_.positions for led_ in books.values()), "uygulama anında bayat fiyat hiçbir defterde kapanış üretmedi"
+    eng.protective_monitor.clock_ms = clock
+    eng.protective_monitor.run_once(now_ms=_ms(t0))
+    assert all(SYM not in led_.positions for led_ in books.values())
 
 
 def test_network_waits_never_hold_a_ledger_lock(tmp_path, monkeypatch):
@@ -538,9 +592,9 @@ def test_restart_learns_a_monitor_close_exactly_once_and_keeps_the_price_order(t
     eng, books = _five_books(tmp_path, monkeypatch)
     t_obs = utc_now()
     eng.ensure_protective_monitor(interval_s=60, start=False, price_fn=_price_fn({SYM: 101.0}), clock_ms=Clock(t_obs))
-    eng.protective_monitor.run_once()                                 # gözlem: mark_ts_ms kalıcı
+    eng.protective_monitor.run_once()                                 # gözlem: fiyat zamanı kalıcı
     t2 = next(b for b in eng.strategy_books if b.key == "strategy_paper")
-    assert t2.ledger.positions[SYM].meta["mark_ts_ms"] == _ms(t_obs.replace(microsecond=0))
+    assert t2.ledger.positions[SYM].meta["mark_src_ts_ms"] == _ms(t_obs.replace(microsecond=0))
     for key, led in books.items():
         if key != "main":
             led.positions[SYM].stop = D("1")                         # yalnız ana defter kapansın

@@ -16,7 +16,12 @@ giriş/risk eşikleri, T2/M2 zaman ufukları ve `config.yaml` **değişmedi**. D
 * Süreçteki ilk defter etkinliğinde (tur, izleyici, `exit_check` — hangisi önce) bir kez: son canlı iz =
   `max(exit_watermark, defter.updated_at)`; `MONITORING_GAP_S` (2 sa) aşılmışsa `state/monitoring_gaps.jsonl`a
   `book=main`, `from/to`, **yükleme anındaki pozisyonlar** yazılır.
-* Aralıkta kapanan 1h barlar ana deftere **uygulanmaz** (`gap_until_ms`; imleç geçer). `GapReconciler` canlı deftere
+* Aralıkta kapanan 1h barlar ana deftere **uygulanmaz** (`gap_until_ms`; imleç geçer).
+* **İki saatten KISA kesintiler (politika değişmedi, bilinçli):** eşik `MONITORING_GAP_S` = 2 sa (diğer dört defterle
+  aynı). Bundan kısa bir kesinti kesinti olarak KAYDEDİLMEZ ve arada kapanan 1h barlar normal bar sözleşmesiyle
+  (girişten sonra açılmış, bir kez) uygulanır — yani bu durumda **geçmiş zamanlı (bar kapanış anında) kapanış hâlâ
+  MÜMKÜNDÜR**. Eski `GapReconciler` 5 dk'dan uzun her kesintiyi 1m mumlarla dolduruyordu; o yol kaldırıldı, 2 saatin
+  altındaki bar uygulaması ise korunuyor. `GapReconciler` canlı deftere
   artık hiç çağrılmaz; yeni girişler kesinti yüzünden kilitlenmez (`_gap_blocked` daima False).
 * Koruyucu yönetim **ilk geçerli güncel perp fiyatla** sürer; o gözlemin gerçek zamanı ve fiyatın kaynak zamanı
   `state/monitoring_gap_observations.jsonl`a (pozisyon başına bir satır) yazılır. Fiyat stopun ötesindeyse kapanış
@@ -41,9 +46,14 @@ giriş/risk eşikleri, T2/M2 zaman ufukları ve `config.yaml` **değişmedi**. D
 * **Çift kapanış yok:** tur ile izleyici aynı defter kilidinde sıralanır (ana defter: `_exit_lock`; `open`, funding
   uzlaştırma, yapı stop'u sıkılaştırma ve tur tiki de bu kilitte). Kilit altında pozisyon kimliği yeniden doğrulanır
   (`POSITION_CHANGED`); miktar daima güncel pozisyondan okunur (TP1 kısmi sonrası yalnız kalan kapanır).
-* **Zaman sırası:** uygulanan fiyatın kaynak zamanı `pos.meta.mark_ts_ms`e yazılır (defterle kalıcı). Ondan
-  `ORDER_SKEW_S` (10 sn — farklı saat kaynakları payı) daha eski fiyat uygulanmaz (`OLDER_THAN_APPLIED`). Kapanmış bar
-  uçları ayrı sözleşmedir.
+* **Zaman ve tazelik (PR #1 düzeltmesi):** fiyat tiki borsa **kaynak** zamanını (`src_ts`) ve bizim **alınma** zamanımızı
+  (`fetched_ts`) ayrı taşır; pozisyona uygulananlar `pos.meta.mark_src_ts_ms` / `mark_fetched_ts_ms`e yazılır (defterle
+  kalıcı). İki fiyatın da borsa zamanı varsa daha eski borsa zamanlı fiyat **paysız** reddedilir (`OLDER_THAN_APPLIED`;
+  önceki 10 sn'lik `ORDER_SKEW_S` payı kaldırıldı — 5 sn eski fiyatla stop kapanabiliyordu); borsa zamanı karşılaştırılamıyorsa
+  alınma zamanları karşılaştırılır (önbellekten gelen eski alınma reddedilir). Tazelik **uygulama anında**, kilit altında
+  yeniden denetlenir (`apply_clock`): fiyat zamanı 180 sn'den eskiyse `STALE_AT_APPLY`, 120 sn'den ileriyse
+  `PRICE_TIME_IN_FUTURE` → tick yok. Hiç zamanı olmayan tik (yalnız test/elle yollar) denetlenemez; uygulanır ama sırayı
+  ilerletmez. Kapanmış bar uçları ayrı sözleşmedir.
 * **Yeniden başlatma:** ana defter kapanışları öğrenilene kadar `state/protective_learn_queue.json`da kalır; yeni süreç
   bir kez öğrenir; zincir onarımı (`_complete_close_chain`) kuyruktakilere dokunmaz (çift öğrenme yok). Pozisyon dict'i
   kopyala-yaz güncellenir (kilitsiz okuyucular "dictionary changed size" ile düşmez); atomik yazımın geçici dosyası iş

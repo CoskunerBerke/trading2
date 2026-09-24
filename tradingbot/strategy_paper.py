@@ -110,7 +110,8 @@ def verified_price(snapshot: dict | None, *, now_ms: int, max_age_s: float = PRI
     `max_age_s` içinde. Aksi hâlde ok=False ve gerekçe: NO_VERIFIED_FUTURES_PRICE | INVALID_FUTURES_PRICE_TIME |
     STALE_FUTURES_PRICE. Hüküm yalnız BU kontrol anı içindir; eski fiyat yeni zamanla etiketlenmez."""
     snap = snapshot if isinstance(snapshot, dict) else {}
-    out: dict[str, Any] = {"ok": False, "mark": 0.0, "price_ts_ms": None, "fetched_at_ms": None, "checked_at_ms": int(now_ms),
+    out: dict[str, Any] = {"ok": False, "mark": 0.0, "price_ts_ms": None, "fetched_at_ms": None, "source_ts_ms": None,
+                           "checked_at_ms": int(now_ms),
                            "age_s": None, "reason": "", "detail": "", "source": "live.snapshot.funding.mark"}
     fm = (snap.get("funding") or {}).get("mark") if isinstance(snap.get("funding"), dict) else None
     try:
@@ -123,7 +124,8 @@ def verified_price(snapshot: dict | None, *, now_ms: int, max_age_s: float = PRI
     fetched = parse_ts_ms(snap.get("ts"))
     src_ts = parse_ts_ms((snap.get("funding") or {}).get("ts")) if isinstance(snap.get("funding"), dict) else None
     price_ts = src_ts if src_ts is not None else fetched
-    out.update(mark=mark, price_ts_ms=price_ts, fetched_at_ms=fetched)
+    # `source_ts_ms` (2026-09-24): YALNIZ borsanın mark zamanı (yoksa None) — alınma zamanıyla karıştırılmaz
+    out.update(mark=mark, price_ts_ms=price_ts, fetched_at_ms=fetched, source_ts_ms=src_ts)
     if price_ts is None:
         out.update(reason="INVALID_FUTURES_PRICE_TIME", detail="fiyat zamanı yok/çözülemedi")
         return out
@@ -831,18 +833,19 @@ class StrategyBook:
         return None, None
 
     def tick(self, marks: dict[str, TickData], *, now: datetime, funding_rate_lookup=None, bar_advance: bool,
-             expect: dict[str, str] | None = None, source: str = "tour") -> list:
+             expect: dict[str, str] | None = None, source: str = "tour", apply_clock=None) -> list:
         """CANLI FİYAT KONTROLÜ: defterin stop/hedef/funding/likidasyon kontrolü; ana defterle AYNI çağrı biçimi.
         `marks` yalnız doğrulanmış, güncel perp mark taşır (bar ucu YOK; uçlar `apply_closed_bars` ile ayrı sözleşmede).
 
         KORUYUCU İZLEYİCİ (2026-09-24): tur, Box zamanlayıcısı ve izleyici bu defteri ayrı iş parçacıklarından tick'ler.
         Tick `protective_monitor.guarded_tick` ile yapılır: `expect` verilirse fiyat alınmadan önceki pozisyon kimliği
-        doğrulanır; pozisyona uygulanmış fiyattan daha ESKİ fiyat uygulanmaz. Kesintiden sonraki ilk gözlem kayda geçer."""
+        doğrulanır; pozisyona uygulanmış fiyattan daha ESKİ fiyat uygulanmaz; tazelik uygulama anında (`apply_clock`;
+        verilmezse `now`) denetlenir. Kesintiden sonraki ilk gözlem kayda geçer."""
         from .protective_monitor import guarded_tick
         with self.lock:
             self._resume_once(now)
             recs, info = guarded_tick(self.ledger, marks, now=now, funding_rate_lookup=funding_rate_lookup,
-                                      bar_advance=bar_advance, expect=expect)
+                                      bar_advance=bar_advance, expect=expect, apply_clock=apply_clock)
             for rec in recs:
                 self._on_closed(rec)
             self._after_tick(info, recs, now, source)
@@ -868,14 +871,16 @@ class StrategyBook:
             return {s: str(p.id) for s, p in self.ledger.positions.items()}
 
     def protect(self, marks: dict[str, TickData], marks_f: dict[str, float], gaps: dict[str, dict] | None, *, now: datetime,
-                expect: dict[str, str] | None = None, source: str = "monitor", funding_rate_lookup: Any = "__book__") -> list:
+                expect: dict[str, str] | None = None, source: str = "monitor", funding_rate_lookup: Any = "__book__",
+                apply_clock=None) -> list:
         """KORUYUCU İZLEME ADIMI (tek kısa atomik bölüm; AĞ YOK): fiyat boşlukları → korumalı tick → kayıt.
         Funding kaynağı yalnız bellekten okunur (ağ adımı turdadır)."""
         frl = self.funding_rates if funding_rate_lookup == "__book__" else funding_rate_lookup
         with self.lock:
             self._resume_once(now)
             self.record_gaps(gaps or {}, now)
-            recs = self.tick(marks, now=now, funding_rate_lookup=frl, bar_advance=False, expect=expect, source=source) if marks else []
+            recs = self.tick(marks, now=now, funding_rate_lookup=frl, bar_advance=False, expect=expect, source=source,
+                             apply_clock=apply_clock) if marks else []
             self.save(marks_f, now)
             return recs
 

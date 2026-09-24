@@ -1033,13 +1033,13 @@ class PatternBook:
 
     # ------------------------------------------------------------------ fiyat yolu (izleyici) ve bar uçları
     def tick(self, marks: dict[str, TickData], *, now: datetime, funding_rate_lookup=None, bar_advance: bool = False,
-             expect: dict[str, str] | None = None, source: str = "scanner") -> list:
+             expect: dict[str, str] | None = None, source: str = "scanner", apply_clock=None) -> list:
         """Güncel fiyat tiki — `protective_monitor.guarded_tick` ile (kimlik + fiyat zamanı sırası; bkz. StrategyBook.tick)."""
         from ..protective_monitor import guarded_tick, note_gap_first_observations
         with self.lock:
             self._resume_once(now)
             recs, info = guarded_tick(self.ledger, marks, now=now, funding_rate_lookup=funding_rate_lookup,
-                                      bar_advance=bar_advance, expect=expect)
+                                      bar_advance=bar_advance, expect=expect, apply_clock=apply_clock)
             for rec in recs:
                 self._on_closed(rec)
             applied = info.get("applied") or {}
@@ -1058,13 +1058,15 @@ class PatternBook:
             return {s: str(p.id) for s, p in self.ledger.positions.items()}
 
     def protect(self, marks: dict[str, TickData], marks_f: dict[str, float], gaps: dict[str, dict] | None, *, now: datetime,
-                expect: dict[str, str] | None = None, source: str = "monitor", funding_rate_lookup: Any = "__book__") -> list:
+                expect: dict[str, str] | None = None, source: str = "monitor", funding_rate_lookup: Any = "__book__",
+                apply_clock=None) -> list:
         """KORUYUCU İZLEME ADIMI (tek kısa atomik bölüm; AĞ YOK): fiyat boşlukları → korumalı tick → kayıt."""
         frl = getattr(self, "funding_rates", None) if funding_rate_lookup == "__book__" else funding_rate_lookup
         with self.lock:
             self._resume_once(now)
             self.record_gaps(gaps or {}, now)
-            recs = self.tick(marks, now=now, funding_rate_lookup=frl, bar_advance=False, expect=expect, source=source) if marks else []
+            recs = self.tick(marks, now=now, funding_rate_lookup=frl, bar_advance=False, expect=expect, source=source,
+                             apply_clock=apply_clock) if marks else []
             self.save(marks_f, now)
             return recs
 

@@ -268,6 +268,7 @@ class PatternScanner:
         # Funding oranı BULUNAMAZSA lookup None döner ve defter o dönemi bekletir; koruyucu stop/hedef kontrolü
         # bundan ETKİLENMEZ (tick yine çalışır). Tek kısa atomik bölüm: boşluk → korumalı tick (kimlik + sıra) → kayıt.
         return book.protect(marks, marks_f, gaps, now=now, expect=expect, source="scanner_exit_check",
+                            apply_clock=lambda: int(self.clock() * 1000),   # uygulama anı tazeliği: tarayıcının saati
                             funding_rate_lookup=self.funding)   # KAYNAK nesnesi (oran + settlement mark)
 
     # ------------------------------------------------------------------ durum / arka plan

@@ -16,9 +16,10 @@ Sözleşme:
   izleyici aynı defter kilidinde sıralanır; kapanan pozisyon sözlükten düşer, ikinci kez kapatılamaz. Arada tur pozisyonu
   kapatıp aynı sembolde yenisini açtıysa eski gözlem yeni pozisyona uygulanmaz. Miktar (TP1 kısmi) daima kilit altındaki
   GÜNCEL pozisyondan okunur.
-* ZAMAN SIRASI: pozisyona en son uygulanan fiyatın kaynak zamanı `meta.mark_ts_ms`e yazılır (defterle kalıcı; yeniden
-  başlatmada korunur). Daha ESKİ bir fiyat sonradan gelirse (ör. ağır turun dakikalar önce aldığı fiyat) uygulanmaz.
-  Kapanmış bar uçları (`apply_closed_bars_to_ledger`) ayrı sözleşmedir ve bu denetimden geçmez.
+* ZAMAN: fiyatın borsa (kaynak) zamanı ile alınma zamanı ayrı taşınır ve pozisyona uygulananlar `meta.mark_src_ts_ms` /
+  `meta.mark_fetched_ts_ms`e yazılır (defterle kalıcı). Karşılaştırılabilir borsa zamanlarında daha ESKİ fiyat paysız
+  reddedilir; tazelik UYGULAMA anında (kilit altında) yeniden denetlenir. Kapanmış bar uçları
+  (`apply_closed_bars_to_ledger`) ayrı sözleşmedir ve bu denetimden geçmez.
 * İzleyici iş parçacığı öğrenme/risk/bildirim YAPMAZ: ana defterin kapanışları kalıcı bir kuyruğa yazılır, öğreniciler
   ana iş parçacığında kalır (bkz. `engine_v3.drain_protective_closes`).
 * ÖLÇÜM (`ObservationLog`): defter/pozisyon başına ardışık doğrulanmış gözlemler arası en uzun aralık ve hâlâ süren
@@ -46,10 +47,9 @@ FIRST_OBS_FILE = "monitoring_gap_observations.jsonl"
 DEFAULT_INTERVAL_S = 60.0
 #: Fiyatı defterin kullandığı tek kaynaktan: USDⓈ-M perp mark (premiumIndex), borsa zamanıyla.
 PRICE_SOURCE = "binance_usdm.premiumIndex.markPrice"
-#: SIRA PAYI (sn): fiyat damgaları farklı saatlerden gelebilir (borsanın mark zamanı ↔ yerel alınma zamanı; ağ gecikmesi).
-#: Uygulanmış fiyattan bu kadar eski fiyat "aynı an" sayılır ve uygulanır; daha eskisi (ör. turun ~60 sn'lik önbellekten ya
-#: da dakikalar önce aldığı fiyat) UYGULANMAZ.
-ORDER_SKEW_S = 10.0
+#: Uygulama anında tazelik (2026-09-24): `strategy_paper.verified_price` ile AYNI eşikler (180 sn yaş, 120 sn ileri saat
+#: payı) — fiyat alınırken taze olsa bile kilit beklemesi/uzun tur sonrasında UYGULANIRKEN bayatsa tick yapılmaz.
+from .strategy_paper import PRICE_FUTURE_SKEW_S, PRICE_MAX_AGE_S  # noqa: E402
 
 
 def _now_ms() -> int:
@@ -71,9 +71,27 @@ def _dt(ms: int) -> datetime:
 
 
 def mark_ts_ms(td: Any) -> int | None:
-    """TickData'nın fiyat KAYNAK zamanı (ms) ya da None."""
+    """TickData'nın bilinen en iyi fiyat zamanı (`ts`: kaynak varsa o, yoksa alınma) — ms ya da None."""
     from .strategy_paper import parse_ts_ms
     return parse_ts_ms(getattr(td, "ts", None) or None)
+
+
+def tick_times(td: Any) -> tuple[int | None, int | None]:
+    """(borsa KAYNAK zamanı, ALINMA zamanı) — ms ya da None. Eski biçim (yalnız `ts`, iki alan da boş) kaynak zamanı sayılır."""
+    from .strategy_paper import parse_ts_ms
+    src_s, got_s = getattr(td, "src_ts", "") or "", getattr(td, "fetched_ts", "") or ""
+    if not src_s and not got_s:
+        return parse_ts_ms(getattr(td, "ts", None) or None), None
+    return parse_ts_ms(src_s or None), parse_ts_ms(got_s or None)
+
+
+def live_tick(v: dict[str, Any]) -> TickData:
+    """`verified_price` hükmünden fiyat tiki: kaynak (borsa) ve alınma zamanı AYRI alanlarda."""
+    px = Decimal(str(float(v["mark"])))
+    src, got = v.get("source_ts_ms"), v.get("fetched_at_ms")
+    return TickData(last=px, mark=px, ts=iso(_dt(v["price_ts_ms"])) if v.get("price_ts_ms") else "",
+                    src_ts=iso(_dt(src), timespec="milliseconds") if src else "",
+                    fetched_ts=iso(_dt(got), timespec="milliseconds") if got else "")
 
 
 # ---------------------------------------------------------------------- fiyat
@@ -105,9 +123,8 @@ def perp_marks(prov: Any, syms: Iterable[str], now_ms: int) -> tuple[dict[str, T
         if not v["ok"]:
             gaps[sym] = {"reason": v["reason"], "detail": v["detail"], "age_s": v["age_s"], "at": iso(_dt(now_ms))}
             continue
-        px = float(v["mark"])
-        out[sym] = TickData(last=Decimal(str(px)), mark=Decimal(str(px)), ts=iso(_dt(v["price_ts_ms"])))
-        outf[sym] = px
+        out[sym] = live_tick(v)
+        outf[sym] = float(v["mark"])
     return out, outf, gaps
 
 
@@ -124,18 +141,27 @@ def perp_price_fn(provider_factory: Callable[[], Any]) -> Callable[[list[str], i
 
 # ---------------------------------------------------------------------- tick (kimlik + sıra korumalı)
 def guarded_tick(ledger: Any, marks: dict[str, Any] | None, *, now: datetime, funding_rate_lookup: Any = None,
-                 bar_advance: bool = False, expect: dict[str, str] | None = None) -> tuple[list, dict[str, Any]]:
-    """Defter tick'i, iki koruma ile (çağıran defter kilidini TUTAR; ağ YOK):
+                 bar_advance: bool = False, expect: dict[str, str] | None = None,
+                 apply_clock: Callable[[], int] | None = None) -> tuple[list, dict[str, Any]]:
+    """Defter tick'i, koruma denetimleriyle (çağıran defter kilidini TUTAR; ağ YOK):
 
-    * `expect` {sembol: pozisyon kimliği}: fiyat alınmadan önceki kimlik; eşleşmeyen/eksik pozisyon tick'lenmez
+    * KİMLİK — `expect` {sembol: pozisyon kimliği}: fiyat alınmadan önceki kimlik; eşleşmeyen/eksik pozisyon tick'lenmez
       (`POSITION_CHANGED` / `NOT_IN_SNAPSHOT`). None → defterdeki bütün pozisyonlar.
-    * sıra: fiyat kaynak zamanı pozisyona daha önce uygulanan fiyattan (`meta.mark_ts_ms`) `ORDER_SKEW_S`den fazla
-      ESKİYSE uygulanmaz (`OLDER_THAN_APPLIED`). Zamanı çözülemeyen fiyat sırayı ilerletmez.
+    * TAZELİK UYGULAMA ANINDA — `apply_clock()` KİLİT ALTINDA okunur (canlı yollar kendi gerçek saatini verir: izleyici,
+      Box zamanlayıcısı, tarayıcı, motor; verilmezse çağıranın `now`u); fiyat zamanı (kaynak, yoksa
+      alınma) `PRICE_MAX_AGE_S`den eski → `STALE_AT_APPLY`, `PRICE_FUTURE_SKEW_S`den ileride → `PRICE_TIME_IN_FUTURE`.
+      Alınırken taze olan fiyat kilit beklemesi ya da uzun tur sonrasında bayatlamışsa uygulanmaz.
+    * SIRA — kaynak (borsa) zamanı ile alınma zamanı AYRI tutulur (`meta.mark_src_ts_ms` / `meta.mark_fetched_ts_ms`,
+      defterle kalıcı). İki fiyatın da borsa zamanı varsa daha ESKİ borsa zamanlı fiyat PAYSIZ reddedilir; biri yoksa
+      alınma zamanları karşılaştırılır (önbellekten gelen eski alınma reddedilir). `OLDER_THAN_APPLIED`.
+    * Hiç zamanı olmayan tik (yalnız test/elle yollar; canlı fiyat yolları daima zamanlıdır) denetlenemez: uygulanır ama
+      sırayı ilerletmez.
 
-    Döner: (kapanan kayıtlar, {"applied": {sym: {id, price, price_ts_ms}}, "skipped": {sym: neden}})."""
+    Döner: (kapanan kayıtlar, {"applied": {sym: {id, price, price_ts_ms, source_ts_ms, fetched_ts_ms}}, "skipped": {sym: neden}})."""
     use: dict[str, TickData] = {}
     applied: dict[str, dict[str, Any]] = {}
     skipped: dict[str, str] = {}
+    apply_ms = int(apply_clock() if apply_clock is not None else now.timestamp() * 1000)
     for sym, raw in (marks or {}).items():
         pos = ledger.positions.get(sym)
         if pos is None:
@@ -148,20 +174,37 @@ def guarded_tick(ledger: Any, marks: dict[str, Any] | None, *, now: datetime, fu
                 skipped[sym] = "POSITION_CHANGED"
                 continue
         td = TickData.coerce(raw)
-        ts = mark_ts_ms(td)
+        src, got = tick_times(td)
+        ref = src if src is not None else got
+        if ref is not None:
+            if ref > apply_ms + int(PRICE_FUTURE_SKEW_S * 1000):
+                skipped[sym] = "PRICE_TIME_IN_FUTURE"
+                continue
+            if apply_ms - ref > int(PRICE_MAX_AGE_S * 1000):
+                skipped[sym] = "STALE_AT_APPLY"
+                continue
         meta = pos.meta if isinstance(getattr(pos, "meta", None), dict) else {}
-        last = meta.get("mark_ts_ms")
-        if ts is not None and last is not None and int(ts) < int(last) - int(ORDER_SKEW_S * 1000):
+        last_src, last_got = meta.get("mark_src_ts_ms"), meta.get("mark_fetched_ts_ms")
+        if src is not None and last_src is not None:
+            older = int(src) < int(last_src)
+        elif got is not None and last_got is not None:
+            older = int(got) < int(last_got)
+        else:
+            older = False
+        if older:
             skipped[sym] = "OLDER_THAN_APPLIED"
             continue
         use[sym] = td
-        applied[sym] = {"id": str(pos.id), "price": float(td.ref), "price_ts_ms": ts}
+        applied[sym] = {"id": str(pos.id), "price": float(td.ref), "price_ts_ms": ref, "source_ts_ms": src, "fetched_ts_ms": got}
     recs = ledger.tick(use, now_utc=now, funding_rate_lookup=funding_rate_lookup, bar_advance=bar_advance) if use else []
     for sym, info in applied.items():
         pos = ledger.positions.get(sym)
-        if pos is not None and info["price_ts_ms"] is not None and isinstance(getattr(pos, "meta", None), dict):
-            pos.meta["mark_ts_ms"] = max(int(pos.meta.get("mark_ts_ms") or 0), int(info["price_ts_ms"]))
-    return recs, {"applied": applied, "skipped": skipped}
+        if pos is None or not isinstance(getattr(pos, "meta", None), dict):
+            continue
+        for key, val in (("mark_src_ts_ms", info["source_ts_ms"]), ("mark_fetched_ts_ms", info["fetched_ts_ms"])):
+            if val is not None:
+                pos.meta[key] = max(int(pos.meta.get(key) or 0), int(val))
+    return recs, {"applied": applied, "skipped": skipped, "apply_ms": apply_ms}
 
 
 def note_gap_first_observations(gap: dict[str, Any] | None, *, book_key: str, state_path: Path | str,
@@ -278,8 +321,8 @@ class BookHandle:
     def held(self) -> dict[str, str]:
         return self.book.held_ids()
 
-    def protect(self, marks, marks_f, gaps, now, expect) -> list:
-        return self.book.protect(marks, marks_f, gaps, now=now, expect=expect, source="monitor")
+    def protect(self, marks, marks_f, gaps, now, expect, apply_clock=None) -> list:
+        return self.book.protect(marks, marks_f, gaps, now=now, expect=expect, source="monitor", apply_clock=apply_clock)
 
 
 class ProtectiveMonitor:
@@ -369,7 +412,7 @@ class ProtectiveMonitor:
                     continue
                 try:
                     recs = h.protect({s: marks[s] for s in ids if s in marks}, {s: marks_f[s] for s in ids if s in marks_f},
-                                     {s: gaps[s] for s in ids if s in gaps}, now, ids)
+                                     {s: gaps[s] for s in ids if s in gaps}, now, ids, apply_clock=self.clock_ms)
                     closed[h.key] = [str(getattr(r, "id", "")) for r in (recs or [])]
                 except Exception as exc:  # noqa: BLE001 — bir defterin arızası diğerlerini DURDURMAZ
                     errs[h.key] = f"protect: {type(exc).__name__}: {exc}"[:200]
@@ -410,5 +453,5 @@ class ProtectiveMonitor:
             log.warning("koruyucu izleyici durumu yazılamadı: %s", exc)
 
 
-__all__ = ["BookHandle", "FIRST_OBS_FILE", "ORDER_SKEW_S", "ObservationLog", "PRICE_SOURCE", "ProtectiveMonitor", "STATUS_FILE", "guarded_tick",
-           "mark_ts_ms", "note_gap_first_observations", "perp_marks", "perp_price_fn"]
+__all__ = ["BookHandle", "FIRST_OBS_FILE", "ObservationLog", "PRICE_SOURCE", "ProtectiveMonitor", "STATUS_FILE", "guarded_tick",
+           "live_tick", "mark_ts_ms", "note_gap_first_observations", "perp_marks", "perp_price_fn", "tick_times"]

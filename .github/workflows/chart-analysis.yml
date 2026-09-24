@@ -81,6 +81,7 @@ jobs:
             tests/test_engine_v3.py \
             tests/test_runtime_fixes_v1.py \
             tests/test_protective_monitor_v1.py \
+            tests/test_measure_protective_monitor_script.py \
             tests/test_learning_provenance_engine.py \
             -q --tb=short > pytest.out 2>&1
           rc=$?

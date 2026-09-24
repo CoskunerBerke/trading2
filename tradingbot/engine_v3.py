@@ -117,6 +117,13 @@ def _pre_change_extreme_symbols(positions: dict, marks: dict, frames_by_symbol: 
     return out
 
 
+
+def _wall_ms() -> int:
+    """Koruyucu tick'in UYGULAMA anı — motorun saati (`utc_now`), kilit altında okunur (`protective_monitor.guarded_tick`
+    tazelik denetimi). Fiyat doğrulaması (`verified_price`) da aynı saate göre yapılır."""
+    return int(utc_now().timestamp() * 1000)
+
+
 class TradingEngineV3(TradingEngine):
     def __init__(self, cfg: BotConfig):
         super().__init__(cfg)
@@ -867,7 +874,10 @@ class TradingEngineV3(TradingEngine):
         pozisyonlarla `monitoring_gaps.jsonl`a kaydedilir; aralıkta kapanan 1h barlar ana deftere UYGULANMAZ; pozisyonlar
         ilk geçerli güncel perp fiyatla koruyucu yönetime devam eder ve o gözlemin GERÇEK zamanı kayda eklenir. Geçmiş
         uzlaştırma yalnız ayrı SİMÜLASYON olarak alınabilir (`python -m tradingbot outage-simulate`); canlı deftere yazılmaz.
-        İşlem geçmişi, bakiye ve açık pozisyonlar SIFIRLANMAZ. Ad geriye uyum için korunur."""
+        İşlem geçmişi, bakiye ve açık pozisyonlar SIFIRLANMAZ. Ad geriye uyum için korunur.
+
+        EŞİK `MONITORING_GAP_S` (2 sa): bundan KISA kesinti kaydedilmez ve arada kapanan 1h barlar normal bar sözleşmesiyle
+        uygulanır — bu durumda bar kapanış anında (geçmiş zamanlı) kapanış hâlâ MÜMKÜNDÜR (docs/PROTECTIVE_MONITOR_V1.md)."""
         self._main_resume_once(utc_now())
 
     def _main_resume_once(self, now: datetime) -> None:
@@ -892,7 +902,7 @@ class TradingEngineV3(TradingEngine):
             return {s: str(p.id) for s, p in self.ledger2.positions.items()}
 
     def _protect_main(self, marks: dict[str, TickData], gaps: dict[str, dict] | None, now: datetime,
-                      expect: dict[str, str] | None, *, source: str = "monitor", queue: bool = True) -> list:
+                      expect: dict[str, str] | None, *, source: str = "monitor", queue: bool = True, apply_clock=None) -> list:
         """Ana defterin koruyucu adımı — TEK kısa atomik bölüm, AĞ YOK (fiyat çağıran tarafından kilit DIŞINDA alınır):
         kesinti denetimi → korumalı tick (kimlik + fiyat zamanı sırası) → kayıt → gözlem damgası. Öğrenme burada YAPILMAZ:
         izleyici iş parçacığında (`queue=True`) kapanışlar kalıcı kuyruğa yazılır ve ana iş parçacığı öğrenir
@@ -902,7 +912,7 @@ class TradingEngineV3(TradingEngine):
         with self._ledger_lock:
             self._main_resume_once(now)
             recs, info = guarded_tick(self.ledger2, marks, now=now, funding_rate_lookup=getattr(self, "funding_rates", None),
-                                      bar_advance=False, expect=expect)
+                                      bar_advance=False, expect=expect, apply_clock=apply_clock)
             self.ledger2.save(self.ledger_path)
             if info.get("applied"):
                 write_watermark(self.cfg.state_path, now, self.run_id or None)
@@ -1049,7 +1059,7 @@ class TradingEngineV3(TradingEngine):
         if gaps:
             log.warning("exit-monitor: %d ana defter pozisyonunda geçerli/güncel perp fiyatı yok (tick yok): %s", len(gaps),
                         ", ".join("%s=%s" % (s, g.get("reason")) for s, g in sorted(gaps.items()))[:300])
-        records = self._protect_main(marks, gaps, now, expect, source="exit_check", queue=False)
+        records = self._protect_main(marks, gaps, now, expect, source="exit_check", queue=False, apply_clock=_wall_ms)
         # FİYAT YOLU: yalnız SON FİYAT (bar uçları YOK) → `last_only`; kapanıştan SONRA (kapanan pozisyon yazılmaz).
         if marks:
             from .learn.position_path import TICK_LAST_ONLY
@@ -1086,8 +1096,8 @@ class TradingEngineV3(TradingEngine):
             def held(self):
                 return eng._main_held_ids()
 
-            def protect(self, marks, marks_f, gaps, now, expect):
-                return eng._protect_main(marks, gaps, now, expect, source="monitor")
+            def protect(self, marks, marks_f, gaps, now, expect, apply_clock=None):
+                return eng._protect_main(marks, gaps, now, expect, source="monitor", apply_clock=apply_clock)
         out: list = [_Main()]
         out += [BookHandle(b) for b in (getattr(self, "strategy_books", None) or [])]
         if getattr(self, "pattern_book", None) is not None:
@@ -1183,8 +1193,8 @@ class TradingEngineV3(TradingEngine):
                              "age_s": v["age_s"], "last_seen_mark": v["mark"] if v["mark"] > 0 else None}
                 continue
             mark = float(v["mark"])
-            out[sym] = TickData(last=Decimal(str(mark)), mark=Decimal(str(mark)),
-                                ts=iso(datetime.fromtimestamp(v["price_ts_ms"] / 1000.0, tz=timezone.utc)))   # fiyatin KAYNAK zamani
+            from .protective_monitor import live_tick
+            out[sym] = live_tick(v)          # `ts` = bilinen en iyi fiyat zamani; KAYNAK (borsa) ve ALINMA zamani ayri alanlarda
             outf[sym] = mark
         return out, outf, gaps
 
@@ -1628,7 +1638,7 @@ class TradingEngineV3(TradingEngine):
                 on_event=lambda sym, kind, reason, at, **extra: log.info("ana defter %s %s %s %s", sym, kind, reason, extra),
                 gap_until_ms=self._main_gap_until_ms)
             tick_records, tinfo = guarded_tick(self.ledger2, vmarks, now=tick_now, funding_rate_lookup=getattr(self, "funding_rates", None),
-                                               bar_advance=bar_advance, expect=held0)
+                                               bar_advance=bar_advance, expect=held0, apply_clock=_wall_ms)
             if bar_advance:                              # fiyatsız/atlanan pozisyonun 4h sayacı da ilerler (fiyat uydurulmadan)
                 for _sym, _pid in held0.items():
                     _pos = self.ledger2.positions.get(_sym)
@@ -2891,7 +2901,8 @@ class TradingEngineV3(TradingEngine):
                 book.apply_closed_bars(pbars, now=tick_now, funding_rate_lookup=getattr(self, "funding_rates", None))
                 # 3) canli fiyat kontrolu (fiyat-yalniz; bar_advance ana turun 4h bar ilerlemesi)
                 # Funding: gerceklesmis oran + settlement mark kaynagi (bellek); anlik oran gecmise UYGULANMAZ.
-                book.tick(pmarks, now=tick_now, funding_rate_lookup=getattr(self, "funding_rates", None), bar_advance=bar_advance)
+                book.tick(pmarks, now=tick_now, funding_rate_lookup=getattr(self, "funding_rates", None), bar_advance=bar_advance,
+                          apply_clock=_wall_ms)
                 book.save(pmarks_f, tick_now)
                 index.append({"key": book.key, "name": book.name, "summary_file": book.summary_file})
             except Exception as exc:  # noqa: BLE001 — bir defterin arızası ne ana botu ne diğer defteri ETKİLER
@@ -3096,7 +3107,7 @@ class TradingEngineV3(TradingEngine):
                 marks, marks_f, gaps = self._paper_marks(list(expect), now=now)   # AĞ — defter kilidi DIŞINDA
                 # tek kısa atomik bölüm: bosluk olaylari (durum/gerekce degisince bir kez) → korumali tick → kayit
                 book.protect(marks, marks_f, gaps, now=now, expect=expect, source="exit_check",
-                             funding_rate_lookup=getattr(self, "funding_rates", None))
+                             funding_rate_lookup=getattr(self, "funding_rates", None), apply_clock=_wall_ms)
             except Exception as exc:  # noqa: BLE001
                 log.warning("strateji kagit defteri exit-monitor basarisiz (%s): %s", book.key, exc)
 

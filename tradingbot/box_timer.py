@@ -201,7 +201,8 @@ class BoxTimer:
             self.book.step(symbols=eligible, frames_by_symbol=frames, marks=pmarks, marks_f=pmarks_f, now=now,
                            provenance_by_symbol=provs, data_gaps=gaps)
             self.book.apply_closed_bars(pbars, now=now, funding_rate_lookup=self.funding_rates)
-            self.book.tick(pmarks, now=now, funding_rate_lookup=self.funding_rates, bar_advance=False, source="box_timer")
+            self.book.tick(pmarks, now=now, funding_rate_lookup=self.funding_rates, bar_advance=False, source="box_timer",
+                           apply_clock=self.clock_ms)
             self.book.save(pmarks_f, now)
         missed = max(0, (bar_open - self.last_bar_open) // M5_MS - 1) if self.last_bar_open else 0
         lag = round((now_ms - (bar_open + M5_MS)) / 1000.0, 1)
@@ -229,7 +230,7 @@ class BoxTimer:
         pmarks, pmarks_f, gaps = self._marks(prov, held, now_ms)      # AĞ — kilit DIŞINDA
         # tek kısa atomik bölüm (boşluk → korumalı tick → kayıt); koruyucu izleyici de aynı defteri aynı kilitle günceller
         self.book.protect(pmarks, pmarks_f, gaps, now=now, expect=expect, source="box_timer",
-                          funding_rate_lookup=self.funding_rates)
+                          funding_rate_lookup=self.funding_rates, apply_clock=self.clock_ms)
         if self.last_tick_ms:
             self.protect_gaps_s = (self.protect_gaps_s + [round((now_ms - self.last_tick_ms) / 1000.0, 1)])[-100:]
         self.last_tick_ms = now_ms

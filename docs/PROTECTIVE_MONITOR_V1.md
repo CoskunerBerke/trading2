@@ -70,15 +70,37 @@ giriş/risk eşikleri, T2/M2 zaman ufukları ve `config.yaml` **değişmedi**. D
   istek), geçmiş zamanlı stop kapanışı (1h kesinti barı), spot ticker ile kapanış, izleyici modülünün yokluğu.
 * `python scripts/measure_protective_monitor.py index-check` — pyarrow ile Parquet'ten formasyon indeksinin kurulup
   sorgulandığını gösterir (SENTETİK).
-* Üretime benzer ölçüm (bu depoda/bulutta girdisi YOK):
+* Üretime benzer ölçüm (bu depoda/bulutta girdisi YOK) — bkz. §4.1.
 
-  ```
-  python scripts/measure_protective_monitor.py measure --source <VPS-kopyası>/data --work <boş-yol> \
-      --config <VPS-kopyası>/config.yaml --out olcum.json
-  ```
-  Kaynak kopya salt okunur; `--work` altına kopyalanır (7,3 GB için yer gerekir). Rapor: süreç bellek tepesi (VmHWM),
-  tur süresi, formasyon indeksi durumu, beş defterin açık pozisyon başına en uzun izleme aralığı, 60 sn aşımları.
-  Binance public uçlarına erişim gerekir.
+### 4.1 Yerel ölçüm adımları (Windows ya da Linux)
+
+Betik (`scripts/measure_protective_monitor.py`) Windows ve Linux'ta çalışır; ek paket gerekmez. Windows işi CI'da da
+(`measure-script-windows`, boşluklu yol ve Windows konsoluyla) sınanır.
+
+1. Kod: `git fetch origin && git checkout claude/gifted-knuth-0ehpcs` (PR #1).
+2. Ortam (Windows PowerShell örneği): `py -3.12 -m venv .venv` → `.venv\Scripts\activate` → `pip install -r requirements.txt`.
+3. Ön kontrol — kopyalamaz, çalıştırmaz; engel varsa "HAZIR DEĞİL" ve çıkış kodu 1:
+   ```
+   python scripts\measure_protective_monitor.py preflight --source D:\tb-olcum\data --work D:\tb-work --config D:\tb-olcum\config.yaml --net
+   ```
+   Denetler: Python ≥ 3.11, bellek ölçüm yöntemi, pyarrow, `state/` + `market/` düzeni ve boyutu, boş disk (kopya + %5 +
+   512 MB), `--work` ile `--source`un iç içe olmaması, config modunun PAPER olması, state/önbellek/kasa/log/yedek
+   yollarının çalışma kopyasında kalması, `--net` ile Binance public erişimi.
+4. Ölçüm (yaklaşık 10–15 dk + kopyalama):
+   ```
+   python scripts\measure_protective_monitor.py measure --source D:\tb-olcum\data --work D:\tb-work --config D:\tb-olcum\config.yaml --out olcum.json
+   ```
+5. `olcum.json` sonucu: `memory.peak_rss_process_mb` (< 4096 hedef), `monitor.books.<defter>.verdict`
+   (`WITHIN_60S` / `OVER_60S` / `NOT_MEASURED_NO_OPEN_POSITION`), `monitor.over_60s`, `tour_s`, `pattern_index`.
+
+Güvenlik: `--source` yalnız okunur; `--work` varsa betik durur (silmez). Config, kopyadan ÖNCE doğrulanır. Bütün veri
+yolları çalışma kopyasına zorlanır (ortamdaki `TRADINGBOT_VAULT_PATH` dahil — gerçek Obsidian kasasına yazılmaz); Obsidian
+git senkronu ve Telegram/Discord bildirimleri o süreçte kapatılır (rapor `neutralized`). Ctrl+C: temizlik yapılır, rapor
+`INTERRUPTED` olarak yazılır (çıkış kodu 130).
+
+Bellek ölçütü: Linux'ta `/proc` RSS/VmHWM (VPS 4G sınırına en yakın). Windows'ta Win32 çalışma kümesi (WorkingSet /
+PeakWorkingSet) ve işlenmiş bellek tepesi — Linux RSS'e **yakın ama aynı değil**; rapor bunu
+`memory.comparable_to_vps_limit: false` ile yazar. Kesin 4G yargısı için ölçüm Linux'ta (ya da WSL2'de) tekrarlanmalıdır.
 
 ## 5. Dağıtım notları
 

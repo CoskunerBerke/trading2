@@ -94,3 +94,31 @@ jobs:
             echo "::notice title=pytest summary::$(tail -n 1 pytest.out | sed 's/%/%25/g')"
           fi
           exit $rc
+
+  measure-script-windows:
+    # Ölçüm betiği kullanıcının yerel (Windows) ölçüm ortamında GERÇEKTEN çalışır mı: Win32 bellek ölçümü, Windows yolları,
+    # konsol kodlaması (PYTHONUTF8 YOK), atomik yazım. Ağ/Binance çağrısı yapmaz; secrets kullanmaz.
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest httpx
+      - name: Measurement script tests (Windows)
+        run: python -m pytest tests/test_measure_protective_monitor_script.py -q --tb=short -rs
+      - name: index-check + preflight (Windows console)
+        shell: pwsh
+        run: |
+          python scripts/measure_protective_monitor.py index-check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP\tb src\state" | Out-Null
+          Set-Content -Path "$env:RUNNER_TEMP\tb src\state\futures_ledger.json" -Value "{}"
+          Set-Content -Path "$env:RUNNER_TEMP\tbcfg.yaml" -Value "mode: PAPER"
+          python scripts/measure_protective_monitor.py preflight --source "$env:RUNNER_TEMP\tb src" --work "$env:RUNNER_TEMP\tb work" --config "$env:RUNNER_TEMP\tbcfg.yaml"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

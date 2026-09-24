@@ -12,6 +12,7 @@ import argparse
 import hashlib
 import importlib.util
 import json
+import os
 import sys
 import threading
 from pathlib import Path
@@ -120,16 +121,18 @@ class _FakeEngine:
         return []
 
 
-def _setup(tmp_path, monkeypatch, *, tour_error=None, index_error=None):
+def _setup(tmp_path, monkeypatch, *, tour_error=None, index_error=None, config_text: str = "mode: PAPER\n"):
     src = tmp_path / "src"
     (src / "state").mkdir(parents=True)
     (src / "state" / "futures_ledger.json").write_text('{"x": 1}', encoding="utf-8")
     (src / "market").mkdir()
     (src / "market" / "part.csv").write_text("a,b\n1,2\n", encoding="utf-8")
     cfg = tmp_path / "config.yaml"
-    cfg.write_text("mode: PAPER\n", encoding="utf-8")
-    for k in ("TRADINGBOT_DATA", "TRADINGBOT_STATE_DIR", "TRADINGBOT_CACHE_DIR", "TRADINGBOT_VAULT_PATH"):
-        monkeypatch.delenv(k, raising=False)                # betiğin yazdığı ortam test sonunda geri alınır
+    cfg.write_text(config_text, encoding="utf-8")
+    for k in ("TRADINGBOT_DATA", "TRADINGBOT_STATE_DIR", "TRADINGBOT_CACHE_DIR", "TRADINGBOT_VAULT_PATH", "TRADINGBOT_LOG_DIR",
+              "TRADINGBOT_BACKUPS_DIR", "TRADINGBOT_VAULT_GIT_SYNC"):
+        monkeypatch.delenv(k, raising=False)                # betik ortamı kendi içinde geri yükler; test de temiz başlar
+    monkeypatch.setattr(_FakeEngine, "last", None)
     monkeypatch.setattr(_FakeEngine, "tour_error", tour_error)
     monkeypatch.setattr(_FakeEngine, "index_error", index_error)
     monkeypatch.setattr("tradingbot.engine_v3.TradingEngineV3", _FakeEngine)
@@ -191,3 +194,162 @@ def test_an_existing_work_directory_is_never_overwritten(tmp_path, monkeypatch):
     with pytest.raises(SystemExit):
         m.cmd_measure(args)
     assert (Path(args.work) / "keep.txt").read_text(encoding="utf-8") == "x" and not out.exists()
+
+
+# ---------------------------------------------------------------------------------------------- Windows uyumu
+def test_the_memory_probe_uses_the_native_method_of_this_platform():
+    """Linux: /proc (VmRSS/VmHWM). Windows: Win32 GetProcessMemoryInfo (ctypes, ek paket yok). CI iki platformda da koşar."""
+    m = _script()
+    probe = m.MemoryProbe()
+    expected = {"linux": "procfs", "win32": "psapi"}.get(sys.platform)
+    if expected:
+        assert probe.backend == expected, (probe.backend, probe.errors)
+    vals = probe.read()
+    assert vals["current_mb"] > 0 and vals["peak_mb"] >= vals["current_mb"] - 1.0
+    if sys.platform == "win32":
+        assert vals["peak_commit_mb"] > 0
+    other = "psapi" if sys.platform != "win32" else "procfs"     # bu platformda olmayan yöntem → atlanır, hata vermez
+    probe_other = m.MemoryProbe(order=(other,))
+    assert probe_other.backend == "none" and other in probe_other.errors and probe_other.read() == {}
+
+
+def test_the_script_runs_without_any_posix_only_module(tmp_path, monkeypatch):
+    """ÖNCE: betik ilk satırda `import resource` yapıyordu (yalnız POSIX) → Windows'ta hiç açılmıyordu. Bellek ölçülemese bile
+    ölçüm koşar, rapor yazılır ve bellek alanları dürüstçe boş kalır."""
+    import builtins
+    real_import = builtins.__import__
+
+    def no_posix(name, *a, **k):
+        if name in ("resource", "psutil"):
+            raise ImportError("bu platformda yok: %s" % name)
+        return real_import(name, *a, **k)
+    monkeypatch.setattr(builtins, "__import__", no_posix)
+    m = _script()                                         # modül yüklenirken POSIX modülü İSTENMEZ
+    monkeypatch.setattr(m, "MEMORY_ORDER", ("psapi", "psutil", "getrusage") if sys.platform != "win32" else ("psutil", "getrusage"))
+    src, args, out, digest = _setup(tmp_path, monkeypatch)
+    assert m.cmd_measure(args) == 0
+    mem = json.loads(out.read_text(encoding="utf-8"))["memory"]
+    assert mem["backend"] == "none" and mem["peak_rss_process_mb"] is None and mem["under_vps_limit"] is None
+    assert not _alive("rss-sampler")
+
+
+def test_path_containment_is_correct_for_windows_paths():
+    import ntpath
+    import posixpath
+    m = _script()
+    assert m._inside(r"C:\Data\Work\state", r"c:/data/work", pathmod=ntpath), "büyük/küçük harf ve ayırıcı duyarsız"
+    assert m._inside(r"C:\Data\Work", r"C:\Data\Work", pathmod=ntpath)
+    assert not m._inside(r"C:\Data\Work2\state", r"C:\Data\Work", pathmod=ntpath), "önek 'Work2' içeride SAYILMAZ"
+    assert not m._inside(r"D:\Data\Work\state", r"C:\Data\Work", pathmod=ntpath), "farklı sürücü"
+    assert not m._inside("/tmp/work2/state", "/tmp/work", pathmod=posixpath)
+
+
+def test_measure_forces_a_private_vault_and_turns_off_notifications_and_git_sync(tmp_path, monkeypatch):
+    """Gerçek kasa/ayarlar asla kullanılmaz: ortamdaki kasa yolu ve git senkronu, config'teki Telegram/izleme bildirimleri
+    bu süreçte kapatılır ve rapora yazılır; betik bitince ortam eski hâline döner."""
+    real_vault = tmp_path / "gercek_kasa"
+    m = _script()
+    src, args, out, digest = _setup(tmp_path, monkeypatch, config_text=(
+        "mode: PAPER\nobsidian:\n  git_sync: true\ntelegram:\n  enabled: true\nmonitoring:\n  telegram_enabled: true\n"))
+    monkeypatch.setenv("TRADINGBOT_VAULT_PATH", str(real_vault))
+    monkeypatch.setenv("TRADINGBOT_VAULT_GIT_SYNC", "1")
+    assert m.cmd_measure(args) == 0
+    cfg = _FakeEngine.last.cfg
+    work = Path(args.work).resolve()
+    assert Path(cfg.obsidian.vault_path).resolve() == work / "vault" and cfg.obsidian.git_sync is False
+    assert cfg.v3.telegram.enabled is False and cfg.v3.monitoring.telegram_enabled is False
+    assert Path(cfg.state_path).resolve() == work / "state" and Path(cfg.cache_path).resolve() == work / "market"
+    rep = json.loads(out.read_text(encoding="utf-8"))
+    assert set(rep["neutralized"]) == {"obsidian.git_sync", "telegram.enabled", "monitoring.telegram_enabled"}
+    assert all(m._inside(p, work) for p in rep["paths"].values())
+    assert not real_vault.exists(), "gerçek kasa klasörüne dokunulmadı"
+    assert os.environ["TRADINGBOT_VAULT_PATH"] == str(real_vault) and "TRADINGBOT_DATA" not in os.environ, "ortam geri yüklendi"
+
+
+def test_a_config_path_outside_the_work_copy_stops_before_anything_is_copied(tmp_path, monkeypatch):
+    elsewhere = tmp_path / "canli_state"
+    m = _script()
+    src, args, out, digest = _setup(tmp_path, monkeypatch, config_text="mode: PAPER\nstate_dir: %s\n" % elsewhere.as_posix())
+    with pytest.raises(SystemExit) as ei:
+        m.cmd_measure(args)
+    assert "DIŞINDA" in str(ei.value) and not Path(args.work).exists() and not elsewhere.exists() and not out.exists()
+
+
+def test_a_non_paper_config_is_refused(tmp_path, monkeypatch):
+    m = _script()
+    src, args, out, digest = _setup(tmp_path, monkeypatch)
+    monkeypatch.setattr(m, "_load_config", lambda path: _Cfg("LIVE"))
+    with pytest.raises(SystemExit) as ei:
+        m.cmd_measure(args)
+    assert "PAPER" in str(ei.value) and not Path(args.work).exists()
+
+
+class _Cfg:
+    """Yalnız mod/yol denetimi için asgari config."""
+
+    def __init__(self, mode):
+        from types import SimpleNamespace
+        root = Path(os.environ["TRADINGBOT_DATA"])
+        self.mode = mode
+        self.state_path, self.cache_path, self.logs_path, self.backups_path = root / "state", root / "market", root / "logs", root / "b"
+        self.obsidian = SimpleNamespace(vault_path=str(root / "vault"), git_sync=False)
+        self.v3 = None
+
+
+def test_too_little_disk_space_stops_before_copying(tmp_path, monkeypatch):
+    m = _script()
+    src, args, out, digest = _setup(tmp_path, monkeypatch)
+    monkeypatch.setattr(m, "_free_bytes", lambda p: 10)
+    with pytest.raises(SystemExit) as ei:
+        m.cmd_measure(args)
+    assert "boş disk yetersiz" in str(ei.value) and not Path(args.work).exists()
+
+
+def test_preflight_reports_readiness_without_copying_or_running(tmp_path, monkeypatch, capsys):
+    m = _script()
+    src, args, out, digest = _setup(tmp_path, monkeypatch)
+    pre = argparse.Namespace(source=args.source, work=args.work, config=args.config, net=False, work_is_disposable=False)
+    assert m.cmd_preflight(pre) == 0
+    text = capsys.readouterr().out
+    doc = json.loads(text[: text.rindex("}") + 1])
+    assert doc["ready"] is True and doc["source"]["state"] and doc["memory"]["backend"] != "none"
+    assert not Path(args.work).exists() and _FakeEngine.last is None, "preflight kopyalamaz, motor kurmaz"
+    bad = argparse.Namespace(source=str(tmp_path / "yok"), work=args.work, config=args.config, net=False, work_is_disposable=False)
+    assert m.cmd_preflight(bad) == 1
+    assert "HAZIR DEĞİL" in capsys.readouterr().out
+
+
+def test_ctrl_c_during_the_tour_cleans_up_and_writes_an_interrupted_report(tmp_path, monkeypatch):
+    m = _script()
+    src, args, out, digest = _setup(tmp_path, monkeypatch, tour_error=KeyboardInterrupt())
+    assert m.cmd_measure(args) == 130
+    rep = json.loads(out.read_text(encoding="utf-8"))
+    assert rep["tour_error"] == "INTERRUPTED"
+    eng = _FakeEngine.last
+    assert all(s.stopped for s in (eng.pattern_scanner, eng.box_timer, eng._refresher))
+    assert not _alive("rss-sampler") and not _alive("protective-monitor")
+
+
+def test_atomic_write_retries_a_windows_sharing_violation(tmp_path, monkeypatch):
+    """Windows'ta hedef başka tanıtıcıda açıkken `os.replace` PermissionError verebilir: kısa aralıkla yeniden denenir; hep
+    başarısızsa hata SESSİZ geçmez (StorageError)."""
+    from tradingbot.core import atomic
+    from tradingbot.core.errors import StorageError
+    monkeypatch.setattr(atomic, "_REPLACE_RETRIES", 3)
+    monkeypatch.setattr(atomic, "_REPLACE_BACKOFF_S", 0.0)
+    real = os.replace
+    calls = {"n": 0}
+
+    def flaky(a, b):
+        calls["n"] += 1
+        if calls["n"] <= 2:
+            raise PermissionError(13, "sharing violation")
+        return real(a, b)
+    monkeypatch.setattr(atomic.os, "replace", flaky)
+    target = tmp_path / "x.json"
+    atomic.atomic_write_json(target, {"a": 1})
+    assert json.loads(target.read_text(encoding="utf-8")) == {"a": 1} and calls["n"] == 3
+    monkeypatch.setattr(atomic.os, "replace", lambda a, b: (_ for _ in ()).throw(PermissionError(13, "locked")))
+    with pytest.raises(StorageError):
+        atomic.atomic_write_json(target, {"a": 2})
+    assert json.loads(target.read_text(encoding="utf-8")) == {"a": 1} and not list(tmp_path.glob("x.json.tmp-*"))

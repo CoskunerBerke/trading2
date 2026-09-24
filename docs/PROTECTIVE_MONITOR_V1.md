@@ -54,6 +54,12 @@ giriş/risk eşikleri, T2/M2 zaman ufukları ve `config.yaml` **değişmedi**. D
   yeniden denetlenir (`apply_clock`): fiyat zamanı 180 sn'den eskiyse `STALE_AT_APPLY`, 120 sn'den ileriyse
   `PRICE_TIME_IN_FUTURE` → tick yok. Hiç zamanı olmayan tik (yalnız test/elle yollar) denetlenemez; uygulanır ama sırayı
   ilerletmez. Kapanmış bar uçları ayrı sözleşmedir.
+* **Turda açılan pozisyon (Windows ölçümü #2 düzeltmesi):** tur giriş fiyatını adımın başında alır, pozisyonu sonra
+  açar; pozisyon izleyicinin geçişinden hemen sonra deftere girerse ilk taze fiyatlı kontrol bir sonraki düzenli geçişi
+  bekliyordu (M2 ARB: 84 sn). Artık ana bot girişi (`_execute_futures_entry`) ve T2/M2 adımı yeni pozisyon açınca
+  izleyiciyi dürter (`ProtectiveMonitor.poke`): izleyici hemen bir geçiş yapar (kilit tutulmadan çağrılır, ağ izleyici
+  iş parçacığında). Giriş fiyatı ve alım-satım kararları değişmez. Box ve formasyon defterleri kendi iş parçacıklarında
+  açar; onlara dürtme eklenmedi (ölçümde yeni formasyon pozisyonunun ilk aralığı 43,6 sn).
 * **Yeniden başlatma:** ana defter kapanışları öğrenilene kadar `state/protective_learn_queue.json`da kalır; yeni süreç
   bir kez öğrenir; zincir onarımı (`_complete_close_chain`) kuyruktakilere dokunmaz (çift öğrenme yok). Pozisyon dict'i
   kopyala-yaz güncellenir (kilitsiz okuyucular "dictionary changed size" ile düşmez); atomik yazımın geçici dosyası iş
@@ -105,6 +111,13 @@ fiyat alma gecikmesi — hedefi 1 sn'den az aşıyor), bir geçişte 79,4 sn (fi
 ve 551,9 sn (M2 ARB) ölçücü hatasıydı (tur `now`u geri yazılıyor / giriş karar anından sayılıyordu; düzeltildi); M2 ARB'nin
 108,7 sn'lik değeri gerçek olabilir, yeni ölçüm gösterir. Box'ın iki pozisyonu ilk kontrolde (0,9 sn) kapandı: Box kadansı
 ölçülmedi. Sonuç: 60 sn hedefi bu ölçümde tam tutmadı; VPS (Linux) üzerinde ölçülmedi.
+
+İkinci yerel sonuç (aynı ortam ve veri, `8e2f9ec`, ölçücü düzeltmesinden SONRA, dürtmeden ÖNCE): tur 615 sn; bellek tepesi
+2358 MB çalışma kümesi; izleyici 12 geçiş, 0 hata, geçiş aralığı ≤ 60,1 sn, en uzun geçiş 8,4 sn. Ana/T2/formasyon en uzun
+61,0 sn (60 sn aralık + fiyat alma gecikmesi). M2 ARB 84,0 sn (gerçek): tur girişi izleyici geçişinden sonra deftere girdi,
+ilk taze kontrol sonraki düzenli geçişte geldi — yukarıdaki dürtme bunu hedefler; dürtmeli sürüm henüz ÖLÇÜLMEDİ. Box'ın
+pozisyonları yine ilk kontrolde (4,6 sn) kapandı: Box kadansı ölçülmedi. Kalan ~1 sn'lik aşım aralık kararıdır
+(`--exit-every`, ör. 45 sn); bu sürümde değiştirilmedi.
 
 Güvenlik: `--source` yalnız okunur; `--work` varsa betik durur (silmez). Config, kopyadan ÖNCE doğrulanır. Bütün veri
 yolları çalışma kopyasına zorlanır (ortamdaki `TRADINGBOT_VAULT_PATH` dahil — gerçek Obsidian kasasına yazılmaz); Obsidian

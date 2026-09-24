@@ -14,6 +14,7 @@ emir reddi alan aday hiçbir kapasite tüketmez (bkz. `_execute_locked` sözleş
 """
 from __future__ import annotations
 
+from collections.abc import Iterable
 import logging
 import os
 import time
@@ -2564,11 +2565,30 @@ class TradingEngineV3(TradingEngine):
         """
         meta = dict(meta or {})
         meta["precision"] = provenance.to_dict() if hasattr(provenance, "to_dict") else (provenance or None)
+        t_before = _wall_ms()
         with self._ledger_lock:        # koruyucu izleyiciyle aynı defter kilidi (kısa; ağ YOK)
-            return self.ledger2.open(symbol, direction, ref_price,
-                                     SizeSpec(Decimal(str(notional)), AmountType.NOTIONAL, int(leverage or 1)),
-                                     stop=stop, targets=targets, filters=filters, setup_type=setup_type,
-                                     trigger_text=trigger_text, features=features, tick=tick, now=now, meta=meta)
+            pos = self.ledger2.open(symbol, direction, ref_price,
+                                    SizeSpec(Decimal(str(notional)), AmountType.NOTIONAL, int(leverage or 1)),
+                                    stop=stop, targets=targets, filters=filters, setup_type=setup_type,
+                                    trigger_text=trigger_text, features=features, tick=tick, now=now, meta=meta)
+        if pos is not None:
+            self._protective_new_positions("main", (), {symbol: str(pos.id)}, t_before)
+        return pos
+
+    def _protective_new_positions(self, book_key: str, before: Iterable[str], held: dict, since_ms: int) -> None:
+        """Turda açılan pozisyon → izleyici HEMEN bir geçiş yapar (kilit tutulmadan çağrılır; ağ yok). Tur giriş fiyatını
+        adımın başında alır ve pozisyonu sonra açar; ilk taze fiyatlı koruyucu kontrol bir sonraki düzenli geçişi
+        beklemez. Ölçüm tabanı: pozisyon `since_ms` anında (adımdan önce) defterde yoktu."""
+        prev = {str(x) for x in before}
+        new = [str(pid) for pid in (held or {}).values() if str(pid) not in prev]
+        if not new:
+            return
+        obs = getattr(self, "protective_observer", None)
+        if obs is not None:
+            obs.appeared(book_key, new, since_ms)
+        mon = getattr(self, "protective_monitor", None)
+        if mon is not None:
+            mon.poke(f"{book_key}: yeni pozisyon")
 
     def _trigger_fired(self, b: CoinBrief, direction: str, entry: float, entry_type: str) -> bool:
         """SAF sorgu: durum DEGISTIRMEZ. Mantik `entry_trigger.trigger_fired` icinde — TEK kaynak.
@@ -2893,8 +2913,10 @@ class TradingEngineV3(TradingEngine):
                 syms = book.symbols or universe
                 frames = {s: (self.runner.last_frames.get(s) or {}) for s in set(syms) | set(book.ledger.positions) | {"BTC/USDT"}}
                 # 1) kural (giris/kural cikisi) — veri kimligi + guncellik hukmu ile (onceki sira korunur: kural once)
+                held_before, t_before = book.held_ids(), _wall_ms()
                 book.step(symbols=list(syms), frames_by_symbol=frames, marks=pmarks, marks_f=pmarks_f, now=now,
                           provenance_by_symbol=self._frame_provenance, data_gaps=pgaps)
+                self._protective_new_positions(book.key, held_before.values(), book.held_ids(), t_before)
                 # 2) gecmis OHLC: kapanmis 1h barlarin uclari — yalniz pozisyon acilisindan SONRA acilmis, tuketilmemis barlar
                 #    (bu adimda acilan pozisyon icin hicbir bar uygun degildir: giris oncesi fitil yeni pozisyonu stop'lamaz;
                 #    stop sonrasi ayni turda yeniden giris de olmaz — kural bir sonraki turda yeniden degerlendirir)

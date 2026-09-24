@@ -268,6 +268,15 @@ class ObservationLog:
                         st["appeared"].setdefault(pid, st["ms"])
             st["ms"], st["ids"] = int(ms), ids
 
+    def appeared(self, book_key: str, ids: Iterable[str], ms: int) -> None:
+        """Turda açılan pozisyon: `ms` anında (adımdan hemen önce) defterde YOKTU — anlık görüntüden daha kesin taban."""
+        with self._lock:
+            st = self._snaps.setdefault(str(book_key), {"ms": None, "ids": set(), "appeared": {}})
+            known = self._pos.get(str(book_key)) or {}
+            for pid in (str(x) for x in ids):
+                if pid not in known:
+                    st["appeared"][pid] = max(int(st["appeared"].get(pid) or 0), int(ms))
+
     def _floor_ms(self, book_key: str, pid: str) -> int:
         st = self._snaps.get(book_key)
         if not st or st["ms"] is None:
@@ -385,8 +394,12 @@ class ProtectiveMonitor:
         self.pass_gaps_s: list[float] = []
         self._last_start_ms: int | None = None
         self._stop = threading.Event()
+        #: `poke` ile erken uyanma (yeni pozisyon bir sonraki düzenli geçişi beklemez); `stop` da uyandırır
+        self._wake = threading.Event()
+        self.pokes = 0
+        self.last_poke: str | None = None
         #: geçişler arası bekleme; testler bunu olayla sürer (uyku süresine dayanmaz)
-        self._waiter = waiter or self._stop.wait
+        self._waiter = waiter or self._wake.wait
         self._thread: threading.Thread | None = None
         self._open_ids: dict[str, dict[str, str]] = {}
 
@@ -401,6 +414,7 @@ class ProtectiveMonitor:
 
     def stop(self, timeout: float = 10.0) -> None:
         self._stop.set()
+        self._wake.set()
         t = self._thread
         if t is not None and t.is_alive():
             t.join(timeout)
@@ -409,8 +423,20 @@ class ProtectiveMonitor:
     def alive(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
 
+    def poke(self, reason: str = "") -> bool:
+        """Hemen bir geçiş iste (iş parçacığı canlıysa; beklemez, ağ yok). Tur yeni pozisyon açtığında çağrılır: tur giriş
+        fiyatını adımın başında alır, pozisyon deftere sonra girer; ilk TAZE fiyatlı koruyucu kontrol bir sonraki düzenli
+        geçişi (≤ `interval_s`) beklemesin. Geçiş sırasında gelen dürtme kaybolmaz: bekleme hemen döner."""
+        if not self.alive:
+            return False
+        self.pokes += 1
+        self.last_poke = str(reason)[:120]
+        self._wake.set()
+        return True
+
     def _loop(self) -> None:
         while not self._stop.is_set():
+            self._wake.clear()
             t0 = self.clock_ms()
             try:
                 self.run_once()
@@ -478,7 +504,7 @@ class ProtectiveMonitor:
     def status(self, now_ms: int | None = None) -> dict[str, Any]:
         d = sorted(self.durations_s)
         return {"schema_version": "protective_monitor_v1", "alive": self.alive, "interval_s": self.interval_s,
-                "price_source": PRICE_SOURCE, "runs": self.runs, "errors": self.errors, "last_error": self.last_error,
+                "price_source": PRICE_SOURCE, "runs": self.runs, "pokes": self.pokes, "errors": self.errors, "last_error": self.last_error,
                 "last_run": self.last_run, "duration_p50_s": d[len(d) // 2] if d else None,
                 "duration_max_s": d[-1] if d else None, "pass_gap_max_s": max(self.pass_gaps_s) if self.pass_gaps_s else None,
                 "observations": self.observer.status(now_ms, self._open_ids)}

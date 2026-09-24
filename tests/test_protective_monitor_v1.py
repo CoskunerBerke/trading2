@@ -855,3 +855,92 @@ def test_first_observation_records_apply_time_not_tour_start():
                                     applied={"ZEN/USDT": {"id": "F3", "price": 1.0, "price_ts_ms": int(applied_at.timestamp() * 1000) - 2000,
                                                           "applied_ms": int(applied_at.timestamp() * 1000)}})
     assert gap["first_observations"]["ZEN/USDT"]["observed_at"] == iso(applied_at)
+
+
+# ---------------------------------------------------------------------- turda açılan pozisyon: hemen taze kontrol (Windows ölçümü #2)
+def _wait_until(cond, timeout: float = 10.0) -> bool:
+    ev = threading.Event()
+    end = datetime.now().timestamp() + timeout
+    while datetime.now().timestamp() < end:
+        if cond():
+            return True
+        ev.wait(0.02)
+    return bool(cond())
+
+
+def test_poke_runs_an_immediate_pass_instead_of_waiting_for_the_next_interval(tmp_path):
+    from tradingbot.protective_monitor import ProtectiveMonitor
+    ev = threading.Event()
+    seen: list = []
+
+    def handles():
+        seen.append(1)
+        ev.set()
+        return []
+    mon = ProtectiveMonitor(handles_fn=handles, price_fn=lambda s, n: ({}, {}, {}), state_path=tmp_path, interval_s=3600)
+    assert mon.poke("iş parçacığı yok") is False
+    mon.start()
+    try:
+        assert ev.wait(10)
+        ev.clear()
+        assert mon.poke("strategy_paper_m2: yeni pozisyon") is True
+        assert ev.wait(10), "dürtme geçiş başlatmadı (sonraki düzenli geçiş 3600 sn sonra)"
+        assert len(seen) == 2 and mon.status()["pokes"] == 1
+    finally:
+        mon.stop(10)
+    assert not mon.alive, "stop bekleyen izleyiciyi hemen uyandırır"
+
+
+def test_observer_floor_for_a_tour_entry_is_the_moment_before_the_step():
+    from tradingbot.protective_monitor import ObservationLog
+    t0 = 1_790_000_000_000
+    log = ObservationLog(target_s=60, clock_ms=lambda: t0)
+    log.snapshot("m2", [], t0)                                          # izleyici geçişi: pozisyon yok
+    log.appeared("m2", ["F5"], t0 + 50_000)                             # tur adımından hemen önce de yoktu
+    log.note("m2", {"ARB/USDT": {"id": "F5", "price_ts_ms": t0 + 51_500}}, t0 + 51_500,
+             opened_ms={"ARB/USDT": t0 - 600_000}, source="monitor")   # opened_at = turun karar anı (geriye tarihli)
+    assert log.status(now_ms=t0 + 51_500)["books"]["m2"]["positions"]["F5"]["max_gap_s"] == 1.5
+
+
+def test_a_position_opened_by_the_t2_m2_tour_gets_a_fresh_check_right_away_not_at_the_next_interval(tmp_path, monkeypatch):
+    """Windows ölçümü #2: M2 ARB 84 sn — tur fiyatı adımın başında aldı, pozisyonu izleyicinin geçişinden SONRA açtı, ilk
+    taze kontrol bir sonraki düzenli geçişte geldi. Düzeltme: tur yeni pozisyon açınca izleyici hemen bir geçiş yapar."""
+    eng, books = _five_books(tmp_path, monkeypatch)
+    passes: list = []
+    fresh = threading.Event()
+
+    def counted(syms, now_ms):
+        passes.append(list(syms))
+        if "SOL/USDT" in syms:
+            fresh.set()
+        return _price_fn(101.0)(syms, now_ms)
+    eng.ensure_protective_monitor(interval_s=3600.0, price_fn=counted)
+    mon = eng.protective_monitor
+    try:
+        assert _wait_until(lambda: mon.runs >= 1)
+        m2 = next(b for b in eng.strategy_books if b.key == "strategy_paper_m2")
+
+        def step(**kw):                                                 # kural girişi (turun karar anıyla)
+            with m2.lock:
+                assert m2.ledger.open("SOL/USDT", "LONG", D("100"), QTY, stop=D("95"), targets=[D("130")], now=kw["now"])
+        monkeypatch.setattr(m2, "step", step)
+        monkeypatch.setattr(eng, "_paper_marks", _fixed_marks(101.0))
+        eng._strategy_paper_tour(list(_UNIVERSE), {}, {}, {}, False, utc_now() - timedelta(minutes=10))
+        assert fresh.wait(10), "yeni pozisyonun ilk taze kontrolü sonraki düzenli geçişi (3600 sn) bekledi"
+        assert _wait_until(lambda: mon.runs >= 2)
+        pid = m2.held_ids()["SOL/USDT"]
+        rec = mon.status()["observations"]["books"]["strategy_paper_m2"]["positions"][pid]
+        assert rec["sources"].get("monitor", 0) >= 1 and rec["max_gap_s"] < 60.0, rec
+        assert mon.status()["pokes"] >= 1
+    finally:
+        eng.stop_protective_monitor(10)
+
+
+def test_a_main_entry_pokes_the_monitor(tmp_path, monkeypatch):
+    eng, books = _five_books(tmp_path, monkeypatch)
+    pokes: list = []
+    eng.protective_monitor = type("M", (), {"poke": lambda self, r="": pokes.append(r)})()
+    eng.protective_observer = None
+    pos = eng._execute_futures_entry(symbol="SOL/USDT", direction="LONG", ref_price=D("100"), notional=50, leverage=1,
+                                     stop=D("95"), targets=[D("130")], filters=None, provenance=None)
+    assert pos is not None and pokes == ["main: yeni pozisyon"]

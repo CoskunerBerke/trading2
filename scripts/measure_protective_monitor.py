@@ -572,7 +572,7 @@ def _run_measure(args, cfg, work: Path, prep: dict, neutralized: dict, paths: di
         sampler.stop()
     obs = status.get("observations") or {}
     books = _book_rows(obs, report.get("positions_at_load") or {})
-    report["monitor"] = {"runs": status.get("runs"), "errors": status.get("errors"), "last_error": status.get("last_error"),
+    report["monitor"] = {"runs": status.get("runs"), "pokes": status.get("pokes"), "errors": status.get("errors"), "last_error": status.get("last_error"),
                          "duration_max_s": status.get("duration_max_s"), "pass_gap_max_s": status.get("pass_gap_max_s"),
                          "worst_gap_s": obs.get("worst_gap_s"), "over_60s": obs.get("exceeded"), "books": books}
     final = probe.read()

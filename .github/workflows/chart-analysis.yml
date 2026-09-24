@@ -16,6 +16,7 @@ on:
   pull_request:
     branches:
       - work/entry-research-v1
+      - work/runtime-fixes-v1
   workflow_dispatch:
 
 permissions:
@@ -78,6 +79,9 @@ jobs:
             tests/test_box_theory_book_v15.py \
             tests/test_box_theory_v15.py \
             tests/test_engine_v3.py \
+            tests/test_runtime_fixes_v1.py \
+            tests/test_protective_monitor_v1.py \
+            tests/test_learning_provenance_engine.py \
             -q --tb=short > pytest.out 2>&1
           rc=$?
           cat pytest.out

@@ -60,21 +60,25 @@ def _peak_rss_mb() -> float:
 
 
 class RssSampler(threading.Thread):
+    """RSS örnekleyici. Durdurma olayı `_halt`: `threading.Thread._stop` iç metodunu EZMEMELİ (ezilirse `join` →
+    `self._stop()` çağrısı TypeError verir)."""
+
     def __init__(self, every_s: float = 0.25):
         super().__init__(daemon=True, name="rss-sampler")
         self.every_s, self.max_mb, self.samples = every_s, 0.0, 0
-        self._stop = threading.Event()
+        self._halt = threading.Event()
 
     def run(self) -> None:
-        while not self._stop.is_set():
+        while not self._halt.is_set():
             v = _proc_status_mb("VmRSS")
             if v is not None:
                 self.max_mb, self.samples = max(self.max_mb, v), self.samples + 1
-            self._stop.wait(self.every_s)
+            self._halt.wait(self.every_s)
 
-    def stop(self) -> None:
-        self._stop.set()
-        self.join(5)
+    def stop(self, timeout: float = 5.0) -> None:
+        self._halt.set()
+        if self.is_alive():
+            self.join(timeout)
 
 
 # ---------------------------------------------------------------------------------------------- 1) index-check
@@ -177,48 +181,56 @@ def cmd_measure(args) -> int:
                     "config": str(Path(args.config).resolve()), "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
     sampler = RssSampler()
     sampler.start()
-    t_init = time.time()
-    from tradingbot.engine_v3 import TradingEngineV3
-    eng = TradingEngineV3(cfg)
-    report["engine_init_s"] = round(time.time() - t_init, 2)
-    report["rss_after_init_mb"] = _proc_status_mb("VmRSS")
-    report["positions_at_load"] = {"main": sorted(eng.ledger2.positions)}
-    for b in eng.strategy_books:
-        report["positions_at_load"][b.key] = sorted(b.ledger.positions)
-    if eng.pattern_book is not None:
-        report["positions_at_load"][eng.pattern_book.key] = sorted(eng.pattern_book.ledger.positions)
-    eng.ensure_protective_monitor(interval_s=float(args.interval))
-    t0 = time.time()
+    eng = None
     tour_err = None
+    status: dict = {}
     try:
-        summ = eng.tour(do_scan=not args.no_scan, obsidian=not args.no_obsidian, charts=False)
-        report["tour"] = {k: summ.get(k) for k in ("run_id", "opened", "closed") if isinstance(summ, dict)}
-    except Exception as exc:  # noqa: BLE001
-        tour_err = f"{type(exc).__name__}: {exc}"
-    report["tour_s"] = round(time.time() - t0, 1)
-    report["tour_error"] = tour_err
-    # formasyon indeksi (arka planda kurulur): en fazla --index-wait sn beklenir
-    deadline = time.time() + float(args.index_wait)
-    while time.time() < deadline:
-        st = eng.index_refresh_status()
-        if (st.get("index") or {}).get("events"):
-            break
-        time.sleep(2)
-    report["pattern_index"] = eng.index_refresh_status()
-    # tur bittikten sonra bir izleyici geçişi daha (tur sonu aralığı da ölçülsün)
-    mon = eng.protective_monitor
-    mon.run_once()
-    status = mon.status()
-    eng.stop_protective_monitor()
-    eng.drain_protective_closes()
-    sampler.stop()
-    for stopper in (getattr(eng, "pattern_scanner", None), getattr(eng, "box_timer", None), getattr(eng, "_refresher", None)):
+        t_init = time.time()
+        from tradingbot.engine_v3 import TradingEngineV3
+        eng = TradingEngineV3(cfg)
+        report["engine_init_s"] = round(time.time() - t_init, 2)
+        report["rss_after_init_mb"] = _proc_status_mb("VmRSS")
+        report["positions_at_load"] = {"main": sorted(eng.ledger2.positions)}
+        for b in eng.strategy_books:
+            report["positions_at_load"][b.key] = sorted(b.ledger.positions)
+        if eng.pattern_book is not None:
+            report["positions_at_load"][eng.pattern_book.key] = sorted(eng.pattern_book.ledger.positions)
+        eng.ensure_protective_monitor(interval_s=float(args.interval))
+        t0 = time.time()
         try:
-            if stopper is not None and hasattr(stopper, "stop"):
-                stopper.stop()
-        except Exception:  # noqa: BLE001
-            pass
-    obs = status["observations"]
+            summ = eng.tour(do_scan=not args.no_scan, obsidian=not args.no_obsidian, charts=False)
+            report["tour"] = {k: summ.get(k) for k in ("run_id", "opened", "closed") if isinstance(summ, dict)}
+        except Exception as exc:  # noqa: BLE001
+            tour_err = f"{type(exc).__name__}: {exc}"
+        report["tour_s"] = round(time.time() - t0, 1)
+        report["tour_error"] = tour_err
+        # formasyon indeksi (arka planda kurulur): en fazla --index-wait sn beklenir
+        deadline = time.time() + float(args.index_wait)
+        while time.time() < deadline:
+            st = eng.index_refresh_status()
+            if (st.get("index") or {}).get("events"):
+                break
+            time.sleep(2)
+        report["pattern_index"] = eng.index_refresh_status()
+        # tur bittikten sonra bir izleyici geçişi daha (tur sonu aralığı da ölçülsün)
+        eng.protective_monitor.run_once()
+        status = eng.protective_monitor.status()
+    finally:
+        # TEMİZLİK her koşulda: izleyici, arka plan iş parçacıkları, örnekleyici (ölçüm yarıda kalsa da süreç asılı kalmaz)
+        if eng is not None:
+            try:
+                eng.stop_protective_monitor()
+                eng.drain_protective_closes()
+            except Exception as exc:  # noqa: BLE001
+                report["cleanup_error"] = f"{type(exc).__name__}: {exc}"[:300]
+            for stopper in (getattr(eng, "pattern_scanner", None), getattr(eng, "box_timer", None), getattr(eng, "_refresher", None)):
+                try:
+                    if stopper is not None and hasattr(stopper, "stop"):
+                        stopper.stop()
+                except Exception:  # noqa: BLE001
+                    pass
+        sampler.stop()
+    obs = status.get("observations") or {}
     books = {}
     for key, b in (obs.get("books") or {}).items():
         rows = b.get("positions") or {}
@@ -228,16 +240,16 @@ def cmd_measure(args) -> int:
                       "max_gap_s": b.get("max_gap_s"),
                       "positions": {pid: {k: r.get(k) for k in ("symbol", "open", "observations", "max_gap_s", "current_gap_s", "sources")}
                                     for pid, r in rows.items()}}
-    for key in report["positions_at_load"]:
+    for key in report.get("positions_at_load") or {}:
         books.setdefault(key, {"open_positions": 0, "verdict": "NOT_MEASURED_NO_OPEN_POSITION", "max_gap_s": None, "positions": {}})
-    report["monitor"] = {"runs": status["runs"], "errors": status["errors"], "last_error": status["last_error"],
-                         "duration_max_s": status["duration_max_s"], "pass_gap_max_s": status["pass_gap_max_s"],
+    report["monitor"] = {"runs": status.get("runs"), "errors": status.get("errors"), "last_error": status.get("last_error"),
+                         "duration_max_s": status.get("duration_max_s"), "pass_gap_max_s": status.get("pass_gap_max_s"),
                          "worst_gap_s": obs.get("worst_gap_s"), "over_60s": obs.get("exceeded"), "books": books}
     report["memory"] = {"peak_rss_process_mb": _peak_rss_mb(), "peak_rss_sampled_mb": sampler.max_mb, "samples": sampler.samples,
                         "limit_note": "systemd MemoryMax=4G (deploy/tradingbot-worker.service)"}
     report["finished_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     Path(args.out).write_text(json.dumps(report, indent=1, ensure_ascii=False, default=str), encoding="utf-8")
-    print(f"tur {report['tour_s']} sn · bellek tepesi {report['memory']['peak_rss_process_mb']} MB · "
+    print(f"tur {report.get('tour_s')} sn · bellek tepesi {report['memory']['peak_rss_process_mb']} MB · "
           f"izleyici en kötü aralık {obs.get('worst_gap_s')} sn · rapor {args.out}")
     for key, b in books.items():
         print(f"  {key:22s} açık {b['open_positions']!s:>3} · {b['verdict']:32s} · en uzun {b['max_gap_s']}")

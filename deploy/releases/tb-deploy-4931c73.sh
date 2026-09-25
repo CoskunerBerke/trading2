@@ -252,25 +252,40 @@ then
 fi
 ok "preflight ve değişmezler geçti"
 
-say "9/9 yeniden başlatma (mevcut tur biter, state yazılır; en çok ~90 sn)"
-r0="$(systemctl show "$WORKER" -p NRestarts --value)"
+say "9/9 yeniden başlatma (mevcut tur biter, state yazılır; en çok ~90 sn) + 60 sn kararlılık"
+RESTART_AT="$(date '+%Y-%m-%d %H:%M:%S')"
+key_log() {    # yalnız karar verdiren satırlar (analiz gürültüsü değil)
+  journalctl -u "$WORKER" --since "$RESTART_AT" --no-pager 2>/dev/null \
+    | grep -E 'Started|Stopping|Stopped|Main process exited|Scheduled restart|Failed|Traceback|ERROR|CRITICAL|Killed|oom|BLOCK|ALLOW' \
+    | tail -n 40 || true
+}
 systemctl restart "$WORKER" "$DASH" || true      # preflight düşerse restart hata döner; aşağıda yakalanır
+# NRestarts yalnız OTOMATİK yeniden başlamaları sayar ve elle restart'ta SIFIRLANIR: dağıtım öncesi değerle
+# KARŞILAŞTIRILMAZ (2026-09-25 VPS: sağlıklı worker bu yüzden "kalkmadı" sayılıp geri alınmıştı). Taban = restart'tan
+# hemen sonraki değer; kararlılık = 60 sn boyunca aynı süreç (MainPID) ve taban üstünde yeni otomatik başlama yok.
+n0="$(systemctl show "$WORKER" -p NRestarts --value)"
 up=""
-for _ in $(seq 1 24); do
+for _ in $(seq 1 36); do                         # en çok 3 dk: preflight + başlatma
   sleep 5
-  if [[ "$(systemctl is-active "$WORKER" || true)" == "active" && "$(systemctl show "$WORKER" -p NRestarts --value)" == "$r0" ]]; then
-    up=1; break
-  fi
+  if [[ "$(systemctl is-active "$WORKER" || true)" == "active" ]]; then up=1; break; fi
 done
-if [[ -z "$up" ]]; then
-  journalctl -u "$WORKER" -n 40 --no-pager || true
-  revert_code; systemctl restart "$WORKER" "$DASH" || true
-  die "worker 2 dk içinde kararlı ayağa kalkmadı → kod ${PREV:0:7}'e geri alındı ve servisler yeniden başlatıldı"
+pid1=""
+if [[ -n "$up" ]]; then
+  pid1="$(systemctl show "$WORKER" -p MainPID --value)"
+  sleep 60
+  if [[ "$(systemctl is-active "$WORKER" || true)" != "active" || -z "$pid1" || "$pid1" == "0" \
+        || "$(systemctl show "$WORKER" -p MainPID --value)" != "$pid1" \
+        || "$(systemctl show "$WORKER" -p NRestarts --value)" != "$n0" ]]; then
+    up=""
+  fi
 fi
-sleep 20
-[[ "$(systemctl is-active "$WORKER" || true)" == "active" ]] || { journalctl -u "$WORKER" -n 40 --no-pager || true; die "worker başladıktan sonra düştü — yukarıdaki log'u bana iletin (kod ${TIP:0:7}'de; geri almak için: sudo bash $APP/deploy/rollback.sh)"; }
+if [[ -z "$up" ]]; then
+  key_log
+  revert_code; systemctl restart "$WORKER" "$DASH" || true
+  die "worker kararlı çalışmadı (aktif olmadı ya da 60 sn içinde yeniden başladı) → kod ${PREV:0:7}'e geri alındı ve servisler yeniden başlatıldı. Yukarıdaki satırları bana iletin"
+fi
 trap - ERR
-ok "worker çalışıyor"
+ok "worker çalışıyor (PID $pid1, 60 sn kararlı)"
 echo "   panel: $(curl -fsS -m 5 http://127.0.0.1:8080/health/live 2>/dev/null | head -c 200 || echo 'henüz yanıt yok (birkaç sn sonra --check)')"
 memory_report
 

@@ -2,9 +2,9 @@
 """SİNYAL LABORATUVARI — komut satırı. Binance USDⓈ-M geçmiş mumlarını indirir (önbelleğe), bütün sinyalleri geçmişte
 adım adım tarar, maliyet sonrası sonucu keşif/doğrulama dönemlerine ayırıp raporlar. Salt araştırma: botlara dokunmaz.
 
-    python scripts/signal_lab.py                         # varsayılan: 12 coin · 15m,30m,1h,4h
+    python scripts/signal_lab.py                         # varsayılan: 12 coin · 5m,15m,1h,4h
     python scripts/signal_lab.py --tfs 1h,4h --symbols BTC/USDT,ETH/USDT --jobs 4
-    python scripts/signal_lab.py --tfs 1m --days 1m=20   # 1 dakika: yalnız maliyet karşılaştırması
+    python scripts/signal_lab.py --tfs 4h --days 4h=1460   # daha uzun geçmiş
 
 Çıktı: <out>/signal_lab_report.json (bütün kombinasyonlar) + <out>/signal_lab_events.csv.gz (her işlem).
 """
@@ -56,9 +56,13 @@ def main(argv: list[str] | None = None) -> int:
         days[k.strip()] = int(v)
     symbols = [s.strip().upper() for s in a.symbols.split(",") if s.strip()]
     tfs = [t.strip() for t in a.tfs.split(",") if t.strip()]
-    report = L.run(symbols=symbols, tfs=tfs, cache_dir=Path(a.cache), out_dir=Path(a.out), cfg=L.LabConfig(),
-                   provider_factory=None if a.offline else provider_factory, days=days, jobs=a.jobs,
-                   catalog=not a.no_catalog)
+    try:
+        report = L.run(symbols=symbols, tfs=tfs, cache_dir=Path(a.cache), out_dir=Path(a.out), cfg=L.LabConfig(),
+                       provider_factory=None if a.offline else provider_factory, days=days, jobs=a.jobs,
+                       catalog=not a.no_catalog)
+    except ValueError as exc:
+        print(f"HATA: {exc}", file=sys.stderr)
+        return 2
     print()
     print(L.render(report, top=a.top))
     print(f"\nayrıntı: {Path(a.out) / 'signal_lab_report.json'}")

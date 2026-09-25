@@ -16,8 +16,8 @@ Yöntem (her sinyal aynı kuralla ölçülür):
 * Bağlam (yalnız o ana kadarki barlardan): hacim (son 20 bar ortalamasına oran), RSI14, EMA50/EMA200 trend yönü
   (sinyal tarafına göre trendle/trende karşı), volatilite (ATR%'nin son 200 bar medyanına oranı).
 * Keşif / doğrulama: her zaman diliminde dönemin ilk `split` kısmı keşif, kalanı doğrulama. ADAY olmak için iki
-  dönemde de ortalama R > 0 ve yeterli işlem gerekir; GÜÇLÜ ADAY için doğrulama döneminin %95 aralığı 0'ın üstünde
-  olmalıdır. ZAYIF İZ (iki dönem pozitif, aralık 0'ı içeriyor) tek başına güvenilmez: rastgele yürüyüş verisinde
+  dönemde de ortalama R > 0 ve yeterli işlem gerekir; GÜÇLÜ ADAY için İKİ dönemin de %95 aralığı 0'ın üstünde olmalı
+  ve sinyal, aynı dilim/yön/bağlamdaki rastgele girişi iki dönemde de geçmelidir (yalnız piyasa yönü olmasın). ZAYIF İZ (iki dönem pozitif, aralık 0'ı içeriyor) tek başına güvenilmez: rastgele yürüyüş verisinde
   kombinasyonların %6–11'i ZAYIF İZ, %0–0,5'i GÜÇLÜ ADAY çıktı (`tests/test_signal_lab.py`, mum içi yol da rastgele). Rastgele an/yön PLASEBO
   sinyali aynı hükümden geçer; gerçek sinyallerin aday oranı plaseboyu açıkça geçmiyorsa liste tesadüf olabilir.
 
@@ -39,15 +39,15 @@ from typing import Any, Callable
 import numpy as np
 import pandas as pd
 
-from .timeframes import tf_ms
+from .timeframes import SUPPORTED_TIMEFRAMES, tf_ms
 
 LONG, SHORT = "LONG", "SHORT"
 MARKET = "USDM_PERP"
 DEFAULT_SYMBOLS = ("BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT", "DOGE/USDT", "ADA/USDT", "AVAX/USDT",
                    "LINK/USDT", "LTC/USDT", "DOT/USDT", "NEAR/USDT")
-DEFAULT_TFS = ("15m", "30m", "1h", "4h")
+DEFAULT_TFS = ("5m", "15m", "1h", "4h")   # ortak analizin desteklediği dilimler (30m/1m YOK)
 #: zaman dilimi başına varsayılan geçmiş (gün) — 1m yalnız maliyet karşılaştırması için (istenirse)
-DEFAULT_DAYS = {"1m": 20, "5m": 60, "15m": 180, "30m": 270, "1h": 365, "2h": 540, "4h": 730, "1d": 1460}
+DEFAULT_DAYS = {"5m": 60, "15m": 180, "1h": 365, "4h": 730, "1d": 1460, "1w": 2920}
 V_STRONG, V_WEAK, V_LOSS, V_NONE, V_THIN = "GÜÇLÜ ADAY", "ZAYIF İZ", "KAYBETTİRİR", "KANIT YOK", "VERİ AZ"
 
 
@@ -86,6 +86,7 @@ class Event:
     target: float | None = None
     ctx: dict[str, str] = field(default_factory=dict)
     r: float | None = None
+    cost_r: float = 0.0              # maliyetin R cinsinden payı (kısa dilimde küçük stop → büyük pay)
     exit_reason: str = ""
     hold: int = 0
     period: str = ""
@@ -333,8 +334,9 @@ def simulate(ev: Event, arr: dict[str, np.ndarray], atr: np.ndarray, cfg: LabCon
             break
     if exit_px is None:
         exit_px = float(c[j + cfg.max_hold_bars - 1])
-    pnl = s * (float(exit_px) - entry) - (entry + float(exit_px)) * cfg.cost_per_side
-    ev.r, ev.exit_reason, ev.hold = pnl / risk, reason, k - j + 1
+    cost = (entry + float(exit_px)) * cfg.cost_per_side
+    pnl = s * (float(exit_px) - entry) - cost
+    ev.r, ev.cost_r, ev.exit_reason, ev.hold = pnl / risk, cost / risk, reason, k - j + 1
     return ""
 
 
@@ -376,22 +378,38 @@ def r_stats(rs: np.ndarray, iters: int, seed: int = 20260925) -> dict[str, Any]:
     out = {"n": n, "mean_r": round(float(rs.mean()), 4), "win_rate": round(float(len(wins) / n), 4),
            "profit_factor": round(float(wins.sum() / -losses.sum()), 3) if len(losses) and losses.sum() < 0 else None,
            "sum_r": round(float(rs.sum()), 2), "max_drawdown_r": round(dd, 2), "ci95": None}
-    if n >= 5:
+    if n > 4000:                                    # büyük örneklem: normal yaklaşım (bootstrap belleği n×iters)
+        se = float(rs.std(ddof=1)) / math.sqrt(n)
+        out["ci95"] = [round(float(rs.mean()) - 1.96 * se, 4), round(float(rs.mean()) + 1.96 * se, 4)]
+    elif n >= 5:
         rng = np.random.default_rng(seed)
         means = rs[rng.integers(0, n, size=(iters, n))].mean(axis=1)
         out["ci95"] = [round(float(np.quantile(means, 0.025)), 4), round(float(np.quantile(means, 0.975)), 4)]
     return out
 
 
-def verdict(is_st: dict, oos_st: dict, cfg: LabConfig) -> str:
+def _ci_lo(st: dict) -> float:
+    return st["ci95"][0] if st.get("ci95") else float("-inf")
+
+
+def replicated(is_st: dict, oos_st: dict, cfg: LabConfig) -> bool:
+    """İki dönemde de yeterli işlem ve %95 aralığın alt ucu 0'ın üstünde (keşifte şans, doğrulamada şans değil)."""
+    return (is_st.get("n", 0) >= cfg.min_is and oos_st.get("n", 0) >= cfg.min_oos
+            and _ci_lo(is_st) > 0 and _ci_lo(oos_st) > 0)
+
+
+def verdict(is_st: dict, oos_st: dict, cfg: LabConfig, vs_placebo: dict | None = None) -> str:
+    """GÜÇLÜ ADAY: iki dönemde de aralık 0'ın üstünde VE aynı dilim/yön/bağlamdaki rastgele girişi iki dönemde de geçiyor
+    (yalnız "yükselen piyasada long" olmasın). ZAYIF İZ: iki dönemde ortalama pozitif ama bu şartlardan biri eksik."""
     if is_st.get("n", 0) < cfg.min_is or oos_st.get("n", 0) < cfg.min_oos:
         return V_THIN
     if oos_st.get("ci95") and oos_st["ci95"][1] < 0:
         return V_LOSS
     if is_st["mean_r"] > 0 and oos_st["mean_r"] > 0:
-        if oos_st.get("ci95") and oos_st["ci95"][0] > 0:
+        beats = bool(vs_placebo) and vs_placebo.get("IS", -1) > 0 and vs_placebo.get("OOS", -1) > 0
+        if replicated(is_st, oos_st, cfg) and beats:
             return V_STRONG
-        if (oos_st.get("profit_factor") or 0) > 1.1:
+        if replicated(is_st, oos_st, cfg) or _ci_lo(oos_st) > 0 or (oos_st.get("profit_factor") or 0) > 1.1:
             return V_WEAK
     return V_NONE
 
@@ -400,6 +418,8 @@ def aggregate(events: list[dict], cfg: LabConfig) -> dict[str, Any]:
     if not events:
         return {"groups": [], "tested": 0}
     ev = pd.DataFrame(events)
+    if "cost_r" not in ev:
+        ev["cost_r"] = 0.0
     cut = {}
     for tf, g in ev.groupby("tf"):
         lo_t, hi_t = int(g["t_ms"].min()), int(g["t_ms"].max())
@@ -413,21 +433,42 @@ def aggregate(events: list[dict], cfg: LabConfig) -> dict[str, Any]:
     for key, g in ev.groupby(keys):
         slices = [("HEPSİ", "HEPSİ", g)] + [(d[4:], b, gg) for d in dims for b, gg in g.groupby(d) if b != "bilinmiyor"]
         for dim, bucket, gg in slices:
-            is_r = gg.loc[gg["period"] == "IS", "r"].to_numpy(dtype=float)
-            oos_r = gg.loc[gg["period"] == "OOS", "r"].to_numpy(dtype=float)
-            if len(is_r) + len(oos_r) < 10:
+            is_m, oos_m = gg["period"] == "IS", gg["period"] == "OOS"
+            if len(gg) < 10:
                 continue
-            is_st, oos_st = r_stats(is_r, cfg.bootstrap_iters), r_stats(oos_r, cfg.bootstrap_iters)
+            is_st = r_stats(gg.loc[is_m, "r"].to_numpy(dtype=float), cfg.bootstrap_iters)
+            oos_st = r_stats(gg.loc[oos_m, "r"].to_numpy(dtype=float), cfg.bootstrap_iters)
+            for st, m in ((is_st, is_m), (oos_st, oos_m)):
+                if st.get("n"):
+                    st["cost_r"] = round(float(gg.loc[m, "cost_r"].mean()), 4)
             groups.append({**dict(zip(keys, key)), "context": dim, "bucket": bucket, "IS": is_st, "OOS": oos_st,
-                           "verdict": verdict(is_st, oos_st, cfg), "symbols": int(gg["symbol"].nunique())})
+                           "symbols": int(gg["symbol"].nunique())})
+    # aynı dilim/yön/bağlamdaki PLASEBO (rastgele an + rastgele yön) ile karşılaştırma
+    plac = {(g["tf"], g["side"], g["context"], g["bucket"]): g for g in groups if g["family"] == "placebo"}
+    for g in groups:
+        pg = plac.get((g["tf"], g["side"], g["context"], g["bucket"]))
+        vs = None
+        if g["family"] != "placebo" and pg and pg["IS"].get("n", 0) >= cfg.min_oos and pg["OOS"].get("n", 0) >= cfg.min_oos \
+                and g["IS"].get("n") and g["OOS"].get("n"):
+            vs = {"IS": round(g["IS"]["mean_r"] - pg["IS"]["mean_r"], 4), "OOS": round(g["OOS"]["mean_r"] - pg["OOS"]["mean_r"], 4),
+                  "placebo_mean_r": [pg["IS"]["mean_r"], pg["OOS"]["mean_r"]], "placebo_n": [pg["IS"]["n"], pg["OOS"]["n"]]}
+        g["vs_placebo"] = vs
+        g["replicated"] = replicated(g["IS"], g["OOS"], cfg)
+        g["verdict"] = verdict(g["IS"], g["OOS"], cfg, vs)
     judged = [g for g in groups if g["verdict"] != V_THIN]
     real = [g for g in judged if g["family"] != "placebo"]
-    plac = [g for g in judged if g["family"] == "placebo"]
-    rate = lambda gs, v: round(sum(1 for g in gs if g["verdict"] == v) / len(gs), 4) if gs else None  # noqa: E731
+    pl = [g for g in judged if g["family"] == "placebo"]
+    rate = lambda gs: round(sum(1 for g in gs if g["replicated"] and g["IS"]["mean_r"] > 0) / len(gs), 4) if gs else None  # noqa: E731
+    tf_summary = {}
+    for tf, g in ev.groupby("tf"):
+        r_ = g[g["family"] != "placebo"]
+        p_ = g[g["family"] == "placebo"]
+        tf_summary[tf] = {"trades": int(len(r_)), "mean_r": round(float(r_["r"].mean()), 4) if len(r_) else None,
+                          "cost_r": round(float(r_["cost_r"].mean()), 4) if len(r_) else None,
+                          "placebo_mean_r": round(float(p_["r"].mean()), 4) if len(p_) else None}
     return {"groups": groups, "tested": len(real),
-            "candidate_rate": {"real": {V_STRONG: rate(real, V_STRONG), V_WEAK: rate(real, V_WEAK)},
-                               "placebo": {V_STRONG: rate(plac, V_STRONG), V_WEAK: rate(plac, V_WEAK), "tested": len(plac)}},
-            "cutoff_ms": {k: int(v) for k, v in cut.items()}, "events": int(len(ev))}
+            "candidate_rate": {"real": rate(real), "placebo": rate(pl), "placebo_tested": len(pl)},
+            "tf_summary": tf_summary, "cutoff_ms": {k: int(v) for k, v in cut.items()}, "events": int(len(ev))}
 
 
 # ---------------------------------------------------------------------------- çalıştırma
@@ -435,6 +476,9 @@ def run(*, symbols: list[str], tfs: list[str], cache_dir: Path, out_dir: Path, c
         days: dict[str, int] | None = None, jobs: int = 1, catalog: bool = True, now_ms: int | None = None,
         log: Callable[[str], None] = print) -> dict[str, Any]:
     now_ms = int(now_ms if now_ms is not None else time.time() * 1000)
+    bad = [tf for tf in tfs if tf not in SUPPORTED_TIMEFRAMES]
+    if bad:
+        raise ValueError(f"desteklenmeyen zaman dilimi: {', '.join(bad)} — ortak analiz yalnız {', '.join(SUPPORTED_TIMEFRAMES)} okur")
     days = {**DEFAULT_DAYS, **(days or {})}
     out_dir.mkdir(parents=True, exist_ok=True)
     t0 = time.time()
@@ -467,7 +511,7 @@ def run(*, symbols: list[str], tfs: list[str], cache_dir: Path, out_dir: Path, c
             log(f"tarandı {meta['symbol']} {meta['tf']}: {meta.get('trades', 0)} işlem ({time.time() - t0:.0f} sn)")
     agg = aggregate(events, cfg)
     with gzip.open(out_dir / "signal_lab_events.csv.gz", "wt", newline="", encoding="utf-8") as fh:
-        cols = ["symbol", "tf", "family", "name", "side", "t_ms", "r", "exit_reason", "hold", "ctx"]
+        cols = ["symbol", "tf", "family", "name", "side", "t_ms", "r", "cost_r", "exit_reason", "hold", "ctx"]
         w = csv.writer(fh)
         w.writerow(cols)
         for e in events:
@@ -475,8 +519,8 @@ def run(*, symbols: list[str], tfs: list[str], cache_dir: Path, out_dir: Path, c
     report = {"kind": "SIGNAL_LAB", "config": asdict(cfg), "cost_round_trip_pct": round(2 * cfg.cost_per_side * 100, 3),
               "symbols": symbols, "timeframes": tfs, "days": {tf: days[tf] for tf in tfs}, "series": metas,
               "seconds": round(time.time() - t0, 1), **agg,
-              "note_tr": "Geçmiş test (PAPER değil, canlı değil). Aday = keşif ve doğrulama dönemlerinin ikisinde de maliyet "
-                         "sonrası ortalama R > 0. Çok kombinasyon denendi; beklenen tesadüfi aday sayısı ayrıca yazıldı."}
+              "note_tr": "Geçmiş test (PAPER değil, canlı değil). GÜÇLÜ ADAY = iki dönemde de %95 aralık 0'ın üstünde ve aynı "
+                         "bağlamdaki rastgele girişi iki dönemde de geçiyor. Kâr garantisi değildir."}
     (out_dir / "signal_lab_report.json").write_text(json.dumps(report, ensure_ascii=False, indent=1), encoding="utf-8")
     return report
 
@@ -486,25 +530,30 @@ def render(report: dict[str, Any], *, top: int = 25) -> str:
     fmt = lambda st: (f"n={st['n']:<4} ort.R={st['mean_r']:+.3f} kazanma={st['win_rate'] * 100:3.0f}%"  # noqa: E731
                       + (f" %95[{st['ci95'][0]:+.2f},{st['ci95'][1]:+.2f}]" if st.get("ci95") else "")) if st.get("n") else "n=0"
     lines = [f"SİNYAL LABORATUVARI · {len(report.get('symbols') or [])} coin · {', '.join(report.get('timeframes') or [])} · "
-             f"{report.get('events', 0)} işlem · gidiş-dönüş maliyet %{report.get('cost_round_trip_pct')} · {report.get('seconds')} sn",
-             f"Hükme giren kombinasyon: {report.get('tested', 0)}"]
+             f"{report.get('events', 0)} işlem · gidiş-dönüş maliyet %{report.get('cost_round_trip_pct')} · {report.get('seconds')} sn"]
+    lines.append("\n== ZAMAN DİLİMİ ÖZETİ (bütün gerçek sinyaller) ==")
+    lines.append(f"{'dilim':>5} {'işlem':>8} {'ort.R':>8} {'maliyet(R)':>11} {'rastgele ort.R':>15}")
+    for tf, t in (report.get("tf_summary") or {}).items():
+        f3 = lambda x: "—" if x is None else f"{x:+.3f}"  # noqa: E731
+        lines.append(f"{tf:>5} {t['trades']:>8} {f3(t['mean_r']):>8} {f3(t['cost_r']):>11} {f3(t['placebo_mean_r']):>15}")
     cr = report.get("candidate_rate") or {}
     pct = lambda x: "—" if x is None else f"%{x * 100:.1f}"  # noqa: E731
-    lines.append(f"Aday oranı — gerçek sinyaller: güçlü {pct((cr.get('real') or {}).get(V_STRONG))}, zayıf "
-                 f"{pct((cr.get('real') or {}).get(V_WEAK))} · RASTGELE (plasebo): güçlü {pct((cr.get('placebo') or {}).get(V_STRONG))}, "
-                 f"zayıf {pct((cr.get('placebo') or {}).get(V_WEAK))}  ← gerçek oran plaseboyu açıkça geçmiyorsa aday listesi tesadüf olabilir")
+    lines.append(f"\nİki dönemde de sıfırın üstünde kalan kombinasyon oranı: gerçek sinyaller {pct(cr.get('real'))} · RASTGELE "
+                 f"{pct(cr.get('placebo'))} (hükme giren: {report.get('tested', 0)} gerçek, {cr.get('placebo_tested', 0)} rastgele)")
     real = [x for x in g if x["family"] != "placebo"]
     for v in (V_STRONG, V_WEAK):
         rows = sorted([x for x in real if x["verdict"] == v], key=lambda x: -x["OOS"]["mean_r"])[:top]
         lines.append(f"\n== {v} ({sum(1 for x in real if x['verdict'] == v)}) ==")
         for x in rows:
-            lines.append(f"{x['tf']:>4} {x['name']:<28}{x['side']:<6}{x['context'] + '=' + str(x['bucket']):<26} "
-                         f"keşif {fmt(x['IS'])} | doğrulama {fmt(x['OOS'])} · {x['symbols']} coin")
+            vs = x.get("vs_placebo")
+            vtxt = f" · rastgeleye göre {vs['IS']:+.2f}/{vs['OOS']:+.2f}" if vs else " · rastgele karşılaştırması yok"
+            lines.append(f"{x['tf']:>4} {x['name']:<26}{x['side']:<6}{x['context'] + '=' + str(x['bucket']):<24} "
+                         f"keşif {fmt(x['IS'])} | doğrulama {fmt(x['OOS'])}{vtxt} · {x['symbols']} coin")
     base = [x for x in real if x["context"] == "HEPSİ" and x["verdict"] != V_THIN]
     loss = sorted([x for x in base if x["verdict"] == V_LOSS], key=lambda x: x["OOS"]["mean_r"])[:15]
     lines.append(f"\n== {V_LOSS} (bağlamsız, en kötü 15) ==")
     for x in loss:
-        lines.append(f"{x['tf']:>4} {x['name']:<28}{x['side']:<6} doğrulama {fmt(x['OOS'])}")
-    lines.append(f"\nNot: {V_WEAK} rastgele veride de %6–11 oranında çıkar; tek başına güvenilmez. Yalnız {V_STRONG} bota bağlanmaya "
-                 "aday olur ve önce PAPER'da ayrıca izlenir. Geçmiş test; kâr garantisi değildir.")
+        lines.append(f"{x['tf']:>4} {x['name']:<26}{x['side']:<6} doğrulama {fmt(x['OOS'])} · maliyet {x['OOS'].get('cost_r', 0):.2f}R")
+    lines.append(f"\nNot: {V_STRONG} = iki dönemde de %95 aralık 0'ın üstünde VE aynı bağlamdaki rastgele girişi iki dönemde de "
+                 f"geçiyor. {V_WEAK} tek başına güvenilmez. Geçmiş test; kâr garantisi değildir.")
     return "\n".join(lines)

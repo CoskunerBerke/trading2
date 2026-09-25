@@ -40,6 +40,7 @@ def test_simulation_is_costed_and_pessimistic():
     assert L.simulate(ev, arr, atr, cfg) == "" and ev.exit_reason == "TARGET"
     cost = (100 + 104) * cfg.cost_per_side / 2.0
     assert abs(ev.r - (2.0 - cost)) < 1e-9, ev.r
+    assert abs(ev.cost_r - cost) < 1e-9, "maliyetin R payı ayrıca kaydedilir"
     arr = _flat()
     arr["high"][11], arr["low"][11] = 104.5, 97.0              # aynı barda ikisi de → STOP (iyimserlik yok)
     ev = L.Event("X", "1h", "t", "T", L.LONG, 10, 0, stop=98.0)
@@ -113,6 +114,7 @@ def test_end_to_end_run_writes_report_and_placebo_baseline(tmp_path):
     assert doc["events"] > 0 and doc["cost_round_trip_pct"] == 0.16
     assert any(g["family"] == "placebo" for g in doc["groups"]) and "placebo" in doc["candidate_rate"]
     assert {g["context"] for g in doc["groups"]} >= {"HEPSİ", "hacim", "rsi", "trend", "volatilite"}
+    assert doc["tf_summary"]["1h"]["trades"] > 0 and doc["tf_summary"]["1h"]["cost_r"] > 0
     txt = L.render(rep)
     assert "RASTGELE" in txt and "SİNYAL LABORATUVARI" in txt
     calls = prov.calls                                          # ikinci çalıştırma önbellekten (indirme yok)
@@ -130,3 +132,30 @@ def test_random_walk_yields_no_strong_candidates():
     agg = L.aggregate(evs, L.LabConfig())
     assert agg["tested"] > 50
     assert not [g for g in agg["groups"] if g["verdict"] == L.V_STRONG and g["family"] != "placebo"]
+
+
+def _events(name: str, family: str, mean: float, n: int, seed: int, side: str = L.LONG) -> list[dict]:
+    rnd = np.random.default_rng(seed)
+    return [{"symbol": f"S{k % 3}", "tf": "4h", "family": family, "name": name, "side": side, "t_ms": T0 + k * STEP,
+             "r": float(x), "cost_r": 0.05, "ctx": {"hacim": "normal"}} for k, x in enumerate(rnd.normal(mean, 1.0, n))]
+
+
+def test_strong_candidate_must_beat_random_entries_in_the_same_context():
+    """"Yükselen piyasada long" tuzağı: sinyal iki dönemde de kazandırsa bile aynı bağlamdaki rastgele long kadar
+    kazandırıyorsa GÜÇLÜ ADAY değildir."""
+    cfg = L.LabConfig()
+    sig = _events("SIG", "extra", 0.5, 600, 1)
+    same = L.aggregate(sig + _events("PLACEBO_RANDOM", "placebo", 0.6, 600, 2), cfg)
+    lower = L.aggregate(sig + _events("PLACEBO_RANDOM", "placebo", -0.1, 600, 2), cfg)
+    pick = lambda agg: next(g for g in agg["groups"] if g["name"] == "SIG" and g["context"] == "HEPSİ")  # noqa: E731
+    assert pick(same)["replicated"] and pick(same)["verdict"] == L.V_WEAK
+    assert pick(lower)["verdict"] == L.V_STRONG and pick(lower)["vs_placebo"]["OOS"] > 0
+    alone = L.aggregate(sig, cfg)                                   # rastgele karşılaştırma yoksa güçlü DENMEZ
+    assert pick(alone)["verdict"] == L.V_WEAK and pick(alone)["vs_placebo"] is None
+
+
+def test_unsupported_timeframe_is_rejected_up_front(tmp_path):
+    import pytest
+    with pytest.raises(ValueError, match="30m"):
+        L.run(symbols=["BTC/USDT"], tfs=["30m"], cache_dir=tmp_path, out_dir=tmp_path / "o", cfg=L.LabConfig(),
+              provider_factory=None, log=lambda m: None)

@@ -1,1 +1,1 @@
---symbols genis --tfs 1h,4h --days 1h=730,4h=1460
+--no-catalog --symbols genis --tfs 4h,1d --days 4h=1460,1d=1825

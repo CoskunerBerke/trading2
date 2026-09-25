@@ -412,6 +412,14 @@ def apply_action(act: dict[str, Any] | None, *, symbol: str, price: float, tick:
         if _cap1 > 0:
             _need = int(math.ceil(notional / _cap1))
             lev = max(lev, min(_need, _lmax))
+    # TAVANA KÜÇÜLTME (2026-09-25, yalnız isteyen eylem — formasyon v3): tek pozisyon tavanını aşan işlem REDDEDİLMEZ,
+    # tavana sığacak kadar küçültülür → işlem başına risk bütçenin ALTINA iner (asla üstüne çıkmaz), kaldıraç değişmez.
+    if act.get("cap_notional_to_position_pct"):
+        _cap2 = float(risk.equity_basis(state)) * float(getattr(profile, "max_position_pct", 0.0)) / 100.0 * max(lev, 1)
+        if _cap2 > 0 and notional > _cap2:
+            act["_notional_scaled"] = {"from": round(notional, 6), "to": round(_cap2 * 0.999, 6),
+                                       "risk_fraction_of_budget": round(_cap2 * 0.999 / notional, 6)}
+            notional = _cap2 * 0.999
     plan_dict = {"symbol": symbol, "market_type": "USDM_PERP", "direction": direction, "entry": entry, "stop": stop,
                  "targets": list(act.get("targets") or []), "notional": notional, "margin": notional / max(1, lev),
                  "leverage": lev, "amount_type": "NOTIONAL", "expected_r": float(act.get("expected_r") or 0.0),

@@ -121,7 +121,10 @@ class PatternScanner:
         for pl in self.book.plans.values():
             if pl.get("status") in (PL_AWAITING, PL_TRIGGERED):
                 add(str(pl.get("symbol") or ""), "pending_plan")
-        elig = [(s, e) for s, e in entries.items() if e.get("eligible")]
+        allowed = getattr(self.book, "allowed_symbols", None)
+        # protokol evreni (ör. v3: laboratuvarda test edilen coinler): yeni tarama yalnız onlarda; açık pozisyon ve
+        # bekleyen plan yukarıda her durumda kuyrukta
+        elig = [(s, e) for s, e in entries.items() if e.get("eligible") and (allowed is None or s in allowed)]
         new_list = [(s, e) for s, e in elig if e.get("priority")]
         rest = [(s, e) for s, e in elig if not e.get("priority")]
         new_list.sort(key=lambda t: (self._last_scan_ms.get(t[0], 0), t[1].get("age_h") if t[1].get("age_h") is not None else 1e9))

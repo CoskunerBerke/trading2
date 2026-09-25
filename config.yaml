@@ -483,7 +483,12 @@ pattern_trader:                # FORMASYON PAPER TRADER V1 — yeni listeleme ö
   starting_equity_usdt: 100    # sanal bakiye (ana portföyle TOPLANMAZ)
   state_dir: pattern_trader
   max_open_positions: 3
-  families: [A_TREND_PULLBACK, B_LEVEL_REVERSAL, C_COMPRESSION_BREAKOUT]
+  families: [A_TREND_PULLBACK, B_LEVEL_REVERSAL, C_COMPRESSION_BREAKOUT]   # yalnız protocol: classic iken
+  # PROTOKOL v3 (2026-09-25, kullanıcı onayı): 15m formasyon girişleri KAPALI; tek sinyal = 4h "üç beyaz asker" + RSI14>70
+  # → LONG (sinyal laboratuvarı: 30 coin, 4 yıl, 1.412 kombinasyondan sıkı testi geçen tek sonuç; kâr garantisi değil).
+  # Geri almak için: protocol: classic. Ayrıntı: docs/PATTERN_TRADER_V3.md
+  protocol: momentum_4h_v3
+  symbols: []                  # boş → laboratuvarda test edilen 30 coin (strategy_v3.V3_SYMBOLS)
   stop_buffer_atr: 0.25        # sürümlü plan geometrisi (sonuçlara göre AYARLANMAZ)
   min_rr_after_cost: 1.5
   fallback_rr: 2.0

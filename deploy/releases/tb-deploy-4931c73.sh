@@ -68,8 +68,15 @@ for p in [st / "futures_ledger.json"] + sorted(st.glob("*/futures_ledger.json"))
         print("  %-24s OKUNAMADI: %s" % (p.parent.name if p.parent != st else "ana", type(e).__name__)); continue
     pos = d.get("positions") or {}
     name = "ana" if p.parent == st else p.parent.name
-    print("  %-24s bakiye=%-10s acik=%d %s" % (name, d.get("wallet_balance", d.get("equity")), len(pos),
+    print("  %-24s bakiye=%-10s acik=%d %s" % (name, str(d.get("wallet_balance", d.get("equity")))[:10], len(pos),
                                             ",".join(sorted(pos))[:80]))
+    for r in (d.get("history") or [])[-3:]:
+        try:
+            pnl = round(float(r.get("pnl") or 0), 3)
+        except (TypeError, ValueError):
+            pnl = r.get("pnl")
+        print("      son kapanış: %-12s açılış %s  kapanış %s  %-22s pnl=%s" % (
+            r.get("symbol"), str(r.get("opened_at"))[:16], str(r.get("closed_at"))[:16], r.get("exit_reason"), pnl))
 PY
 }
 
@@ -187,6 +194,12 @@ fi
 
 # ------------------------------------------------------------------ 2) değişiklik
 mkdir -p "$LOGDIR"
+# SSH bağlantısı koparsa (HUP) dağıtım yarıda KALMAZ: sona kadar sürer, çıktı ayrıca log dosyasına yazılır.
+trap '' HUP
+# tee de INT/TERM/HUP'u yok sayar: Ctrl+C önce tee'yi öldürürse betiğin sonraki yazımı SIGPIPE ile onu da öldürür ve
+# geri alma YARIM kalır (sahte VPS'te ölçüldü).
+exec > >(trap '' INT TERM HUP; exec tee -a "$LOGDIR/${TIP:0:7}-deploy.log") 2>&1
+echo "   (çıktı ayrıca: $LOGDIR/${TIP:0:7}-deploy.log)"
 book_snapshot > "$LOGDIR/${TIP:0:7}-before.txt" 2>&1 || true
 echo "$PREV" > "$LOGDIR/${TIP:0:7}-prev-commit.txt"
 
@@ -200,7 +213,7 @@ ok "yedek alındı; geri dönüş işaretçisi ${PREV:0:7}"
 
 revert_code() {                 # kodu dağıtım ÖNCESİ duruma döndürür: aynı dal adı, aynı commit
   trap - ERR
-  echo "   GERİ ALINIYOR: kod ${PREV:0:7}'e dönüyor"
+  trap '' INT TERM              # geri alma yarıda kesilmez (ikinci Ctrl+C dahil); ÖNCE iş, SONRA ekrana yazı
   if [[ "$BRANCH_NOW" != "detached" ]]; then
     # dalı yalnız bu betiğin az önce yaptığı ileri sarmadan geri alır (dal önceden tam olarak PREV'deydi)
     gitc checkout -q -B "$BRANCH_NOW" "$PREV" || gitc checkout -q "$PREV" \
@@ -208,13 +221,26 @@ revert_code() {                 # kodu dağıtım ÖNCESİ duruma döndürür: a
   else
     gitc checkout -q "$PREV" || echo "   UYARI: checkout başarısız — elle: sudo -u $SVC_USER git -C $APP checkout ${PREV:0:7}" >&2
   fi
-  "$VENV/bin/pip" install -q -r "$APP/requirements.txt" || true
+  "$VENV/bin/pip" install -q -r "$APP/requirements.txt" >/dev/null 2>&1 || true
+  echo "   GERİ ALINDI: kod ${PREV:0:7}" || true
 }
 
 say "7/9 kod ${PREV:0:7} → ${TIP:0:7} (ff-only)"
 gitc merge -q --ff-only "$TIP"
 # Bu noktadan sonra beklenmeyen her hata kodu geri alır (servisler henüz yeniden başlatılmadı → eski sürüm çalışıyor).
 trap 'revert_code; echo "DUR: beklenmeyen hata (satır $LINENO) → kod ${PREV:0:7}e geri alındı" >&2' ERR
+RESTARTED=""
+on_abort() {
+  trap '' INT TERM
+  if [[ -z "$RESTARTED" ]]; then
+    revert_code
+    echo "DUR: durduruldu → kod ${PREV:0:7}'e geri alındı; servisler YENİDEN BAŞLATILMADI (eski sürüm çalışıyor)" >&2 || true
+  else
+    echo "DUR: durduruldu — servisler yeni kodla başlatılmıştı; durum için: sudo bash $0 --check" >&2 || true
+  fi
+  exit 130
+}
+trap on_abort INT TERM
 [[ "$(gitc rev-parse HEAD)" == "$TIP" ]] || die "ileri sarma sonrası HEAD hedef değil"
 "$VENV/bin/pip" install -q -r "$APP/requirements.txt"
 chown -R "$SVC_USER:$SVC_USER" "$VENV" 2>/dev/null || true
@@ -259,6 +285,35 @@ key_log() {    # yalnız karar verdiren satırlar (analiz gürültüsü değil)
     | grep -E 'Started|Stopping|Stopped|Main process exited|Scheduled restart|Failed|Traceback|ERROR|CRITICAL|Killed|oom|BLOCK|ALLOW' \
     | tail -n 40 || true
 }
+# Worker SIGTERM'de MEVCUT TURU bitirip çıkar; tur ~10 dk sürer, TimeoutStopSec 90 sn → tur ortasında durdurmak SIGKILL
+# demektir (2026-09-25 ilk denemede iki kez oldu). Turlar arası beklemede ise 2 sn içinde temiz kapanır ve state yazılır.
+# Bekleme aralığı: heartbeat.json yalnız turlar arasında "source": "watch" ile ~30 sn'de bir yazılır (tur başı yazımı
+# bu alanı taşımaz).
+idle_now() {
+  py - "$STATE/heartbeat.json" <<'PY'
+import datetime as dt, json, sys
+try:
+    d = json.load(open(sys.argv[1], encoding="utf-8"))
+    t = dt.datetime.fromisoformat(str(d.get("ts") or d.get("at")).replace("Z", "+00:00"))
+    if t.tzinfo is None:
+        t = t.replace(tzinfo=dt.timezone.utc)
+    age = (dt.datetime.now(dt.timezone.utc) - t).total_seconds()
+except Exception:
+    sys.exit(1)
+sys.exit(0 if d.get("source") == "watch" and age < 45 else 1)
+PY
+}
+waited=0
+until idle_now; do
+  if (( waited >= 1800 )); then
+    revert_code
+    die "worker 30 dk içinde turlar arası beklemeye girmedi → kod ${PREV:0:7}'e geri alındı, servisler YENİDEN BAŞLATILMADI"
+  fi
+  (( waited % 60 == 0 )) && echo "   worker turda; tur bitince yeniden başlatılacak (bekleniyor: $((waited / 60)) dk)"
+  sleep 10; waited=$((waited + 10))
+done
+ok "worker turlar arası beklemede → şimdi yeniden başlatılıyor"
+RESTARTED=1
 systemctl restart "$WORKER" "$DASH" || true      # preflight düşerse restart hata döner; aşağıda yakalanır
 # NRestarts yalnız OTOMATİK yeniden başlamaları sayar ve elle restart'ta SIFIRLANIR: dağıtım öncesi değerle
 # KARŞILAŞTIRILMAZ (2026-09-25 VPS: sağlıklı worker bu yüzden "kalkmadı" sayılıp geri alınmıştı). Taban = restart'tan
@@ -284,7 +339,7 @@ if [[ -z "$up" ]]; then
   revert_code; systemctl restart "$WORKER" "$DASH" || true
   die "worker kararlı çalışmadı (aktif olmadı ya da 60 sn içinde yeniden başladı) → kod ${PREV:0:7}'e geri alındı ve servisler yeniden başlatıldı. Yukarıdaki satırları bana iletin"
 fi
-trap - ERR
+trap - ERR INT TERM
 ok "worker çalışıyor (PID $pid1, 60 sn kararlı)"
 echo "   panel: $(curl -fsS -m 5 http://127.0.0.1:8080/health/live 2>/dev/null | head -c 200 || echo 'henüz yanıt yok (birkaç sn sonra --check)')"
 memory_report

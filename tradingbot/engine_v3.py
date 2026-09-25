@@ -2950,6 +2950,7 @@ class TradingEngineV3(TradingEngine):
             from .chart_analysis import TF_MS
             from .chart_analysis_store import DIRNAME, ChartAnalysisStore
             from .ema200_trend import daily_rows_from_frame
+            from . import paper_rules
             tf = str(getattr(ca, "timeframe", "4h") or "4h")
             step = int(TF_MS.get(tf, 14_400_000))
             as_of = int(now.timestamp() * 1000)
@@ -3027,9 +3028,12 @@ class TradingEngineV3(TradingEngine):
                             ef = row.get("features") or (row.get("entry") or {}).get("features")
                         except Exception:  # noqa: BLE001
                             ef = None
+                    # 4h trend gözlem defteri kuralını grafik diliminin KENDİ kapanmış barlarından okur (ikinci okuma yok)
+                    _intra = bars if (tf == "4h" and str(b["name"]) in paper_rules.DONCHIAN_VARIANTS) else None
                     snap = build_snapshot(symbol=sym, market_type=market_type, timeframe=tf, tf_ms=step,
                                           book={"book_id": b["book_id"], "name": b["name"], "atr_mult": b["atr_mult"]},
                                           bars=bars, as_of_ms=as_of, daily_rows=daily, btc_daily_rows=btc_rows, gates=gates,
+                                          intraday_rows=_intra,
                                           decision=last_dec.get(sym) if is_main else None, plan=plan if is_main else None,
                                           position=posd, history=hist, entry_features=ef, mark_price=mark, cfg=cfgd,
                                           code=code, cfg_hash=chash, mark_source={"kind": "ticker_last", "module": "engine_v3", "function": "_marks"},

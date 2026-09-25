@@ -579,6 +579,21 @@ def explain(*, book: dict[str, Any], rs: dict[str, Any] | None, decision: dict[s
                                  str(position.get("opened_at") or "?")[:16], _fmt(position.get("stop")))})
             lines.append({"k": "çıkış", "v": "DİKKAT: çıkış kuralı kaynak videoda YOKTUR. Buradaki '%s' bir SEÇİMDİR; "
                           "araştırma süpürmesiyle ölçülmüştür ve kuralın kendi iddiası değildir." % rs.get("exit_kind")})
+    elif name in paper_rules.DONCHIAN_VARIANTS and rs is not None:
+        lines.append({"k": "kanıt", "v": "GÖZLEM DEFTERİ — %s. Kâr beklentisi değil; canlı davranış ölçülüyor." % rs.get("evidence")})
+        if not rs.get("ok"):
+            lines.append({"k": "kural", "v": "4h trend kuralı değerlendirilemedi: %s (4h bar %s / en az %s)."
+                          % (rs.get("reason"), rs.get("n_bars"), rs.get("min_bars"))})
+        else:
+            lines.append({"k": "kanal", "v": "Son 4h kapanış %s · önceki 20 barın tepesi %s · önceki 10 barın dibi %s · ATR14 %s."
+                          % (_fmt(rs.get("close")), _fmt(rs.get("channel_high20")), _fmt(rs.get("channel_low10")), _fmt(rs.get("atr14")))})
+            lines.append({"k": "giriş", "v": "Taze kırılım (kapanış 20 bar tepesini İLK kez aştı): %s. Açılsaydı stop %s (2×ATR)."
+                          % ("VAR" if rs.get("fresh_breakout") else "yok", _fmt(rs.get("stop_if_open")))})
+        if position:
+            lines.append({"k": "pozisyon", "v": "Açık %s: giriş %s (%s), stop %s. Hedef yok."
+                          % (position.get("side"), _fmt(position.get("entry_avg") or position.get("entry")),
+                             str(position.get("opened_at") or "?")[:16], _fmt(position.get("stop")))})
+        lines.append({"k": "çıkış", "v": "4h kapanış önceki 10 barın dibinin altına inince (DONCHIAN_EXIT_LOW10), stop ya da 300 bar (50 gün)."})
     elif name == BOOK_MAIN:
         d = decision or {}
         if d:

@@ -57,7 +57,9 @@ PRICE_FUTURE_SKEW_S = 120.0
 #: tur atar; 5 dakikalık bir kural bu tempoda 5m barlarının ancak 1/3'ünü görür. Tolerans bunu 0 yapıp
 #: defteri her turda "bayat" diye reddettirmek yerine AÇIKÇA kabul eder ve `data_policy`de ilan eder.
 #: Kaçırılan tetiklerin maliyeti araştırmada AYRI bir kol olarak ölçülür (stride 1 vs 3), varsayılmaz.
-BAR_LAG_TOLERANCE_MS: dict[str, int] = {"1d": 3_600_000, "5m": 900_000}
+#: "4h" (2026-09-25, 4h trend gözlem defteri): bir tur (15 dk). Sağlayıcı yeni 4h barı turdan biraz geç verirse defter
+#: bir önceki barı okur; sinyal penceresi sinyal KAPANIŞINDAN ölçüldüğü için bu, geç girişe dönüşmez.
+BAR_LAG_TOLERANCE_MS: dict[str, int] = {"1d": 3_600_000, "5m": 900_000, "4h": 900_000}
 #: Üretimin tur aralığı (dk) — yalnız ilan/ölçüm için; zamanlamayı servis dosyası belirler.
 PRODUCTION_TOUR_INTERVAL_MIN = 15
 #: Ham çerçevenin son satırı `as_of`tan bu kadar ileride açılmışsa gelecek zaman damgası (saat sorunu) → ret.
@@ -396,6 +398,18 @@ def apply_action(act: dict[str, Any] | None, *, symbol: str, price: float, tick:
             if _drift > float(max_entry_drift_pct):
                 reject(symbol, "ENTRY_DRIFT")
                 return "REJECTED"
+    # TEST EDİLMİŞ RİSK ARALIĞI (2026-09-25, yalnız isteyen eylem — 4h trend gözlem defteri): girişten stop'a mesafe
+    # laboratuvarın kabul ettiği ATR aralığında değilse (0,1 < mesafe/ATR <= 10) girilmez. Kural stop'u KAPANIŞTAN kurar;
+    # defter canlı fiyattan girer, arada fiyat stop'a çok yaklaştıysa işlem laboratuvarda sayılmayan bir işlemdir.
+    _rb, _atr = act.get("risk_atr_bounds"), act.get("atr14")
+    if _rb and _atr:
+        try:
+            _lo, _hi, _a = float(_rb[0]), float(_rb[1]), float(_atr)
+        except (TypeError, ValueError, IndexError):
+            _lo = _hi = _a = 0.0
+        if not (_a > 0 and _lo * _a < abs(entry - stop) <= _hi * _a):
+            reject(symbol, "RISK_OUTSIDE_TESTED_RANGE")
+            return "REJECTED"
     stop_frac = abs(entry - stop) / entry
     risk_usdt = float(profile.risk_per_trade_pct) / 100.0 * float(state.equity)
     notional = risk_usdt / stop_frac
@@ -669,6 +683,13 @@ class StrategyBook:
 
     def _on_opened(self, pos, act: dict[str, Any]) -> None:
         self.counters["opened"] += 1
+        if act.get("_notional_scaled"):
+            # tavana küçültülen işlem (bkz. apply_action TAVANA KÜÇÜLTME): risk bütçenin altında — kayıtta görünür
+            pos.meta["size_scaled_to_cap"] = dict(act["_notional_scaled"])
+        if act.get("one_entry_per_signal"):
+            pos.meta["signal"] = {"signal_ts": act.get("signal_ts"), "signal_close_ms": act.get("signal_close_ms"),
+                                  "signal_close": act.get("signal_close"), "atr14": act.get("atr14"),
+                                  "lab_algo": act.get("lab_algo")}
         try:
             self.memory.record_entry({"trade_id": pos.id, "symbol": pos.symbol, "direction": pos.side.value, "market_type": "USDM_PERP",
                                       "setup_type": "trend", "regime": act.get("regime"),
@@ -793,6 +814,9 @@ class StrategyBook:
                     self._reject(sym, "STRUCTURE_ERROR:%s" % type(exc).__name__)
                     if self.structure_mode == "ENFORCE" and str((act or {}).get("action") or "").upper() == "OPEN":
                         continue
+                if not pos_open and paper_rules.signal_already_used(act, self.ledger.history, sym):
+                    # aynı sinyalle ikinci giriş yok (laboratuvarda her sinyal TEK işlem; stop aynı barda gelirse)
+                    act = {"action": "NONE", "reason": "SIGNAL_ALREADY_USED", "name": self.name}
                 res = apply_action(act, symbol=sym, price=float(marks_f[sym]), tick=marks.get(sym), now=now,
                                    ledger=self.ledger, risk=self.risk, profile=self.profile, state=state,
                                    filters=self.filters_cache.get(sym, MarketType.USDM_PERP), run_id=self.run_id,

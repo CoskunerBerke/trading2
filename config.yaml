@@ -465,6 +465,25 @@ strategy_paper:
         # yukseltmesine izin verir; genis stoplu islemler 3 ile kalir, gereksiz likidasyon
         # yakinligi olusmaz.
         leverage_max: 4
+    # 4H TREND TAKIBI — GOZLEM DEFTERI (2026-09-25, kullanici onayi). KANITLANMADI: sinyal laboratuvarinin
+    # algoritma kosusunda (GitHub run 36150821072) siki testi GECEMEDI, en yakin aday oldu (kesif +0,42R,
+    # dogrulama +0,05R ve araligi sifiri kapsiyor). Amac canli davranisi OLCMEK; kar beklentisi degil.
+    # Kural sabit (laboratuvarla birebir): 4h kapanis onceki 20 barin tepesini ilk kez asar -> LONG;
+    # stop 2xATR14; kapanis onceki 10 barin dibinin altina inince cik; en cok 300 bar. Ayrinti:
+    # docs/DONCHIAN_TREND_4H.md. PAPER, gercek para YOK, kaldirac 1. Kapatmak: enabled: false.
+    - name: d4_donchian_20_10
+      enabled: true
+      starting_equity_usdt: 200          # bkz. T2 defterindeki BAKIYE 200 gerekcesi
+      breakeven_at_mfe_r: 0.0
+      state_dir: strategy_paper_trend4h
+      # Laboratuvarin 30 coininden turun zaten cektigi 23'u (kalan 7'si giris evreninde degil; veri yok).
+      symbols: [BTC/USDT, ETH/USDT, SOL/USDT, BNB/USDT, XRP/USDT, DOGE/USDT, ADA/USDT, AVAX/USDT, LINK/USDT,
+                LTC/USDT, DOT/USDT, NEAR/USDT, TRX/USDT, BCH/USDT, UNI/USDT, FIL/USDT, XLM/USDT, AAVE/USDT,
+                APT/USDT, ARB/USDT, OP/USDT, INJ/USDT, SUI/USDT]
+      rule_params:
+        leverage: 1              # tavani asan islem REDDEDILMEZ, tavana kucultulur (risk butcenin altinda kalir)
+        entry_window_min: 60     # sinyal kapanisindan 60 dk icinde girilmezse sinyal kacmis sayilir
+      max_entry_drift_pct: 0.0
 
 structures:                    # ORTAK YAPI KATALOĞU (2026-09-22) — beş bot aynı mum/grafik analizini okur
   # Politika: docs/structures/POLITIKA_MATRISI_v1.md (kodlamadan önce yazıldı; eşikler sonuçlara göre seçilmedi).

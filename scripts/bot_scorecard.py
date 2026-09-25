@@ -31,7 +31,7 @@ from tradingbot.pattern_trader.report import MIN_TRADES_FOR_VERDICT, _funding_co
 LEDGER_FILE = "futures_ledger.json"
 #: defter klasörü (state altında) → görünen ad; "" = ana bot (state kökündeki defter)
 BOOKS = {"": "Ana bot", "strategy_paper": "T2", "strategy_paper_m2": "M2 (TSMOM28)", "strategy_paper_box": "Box",
-         "pattern_trader": "Formasyon"}
+         "pattern_trader": "Formasyon", "strategy_paper_trend4h": "Trend 4h (gözlem, kanıtlanmadı)"}
 V_THIN, V_LOSS, V_WIN, V_OPEN = "VERİ YETERSİZ", "ZARARDA (kanıtlı)", "KÂRDA (kanıtlı, PAPER)", "BELİRSİZ"
 
 
@@ -44,7 +44,7 @@ def _configure_console() -> None:
 
 
 def find_books(state: Path) -> dict[str, Path]:
-    """Bilinen beş defter + state altında `futures_ledger.json` taşıyan başka klasörler (adıyla)."""
+    """Bilinen defterler + state altında `futures_ledger.json` taşıyan başka klasörler (adıyla)."""
     out: dict[str, Path] = {}
     for sub in BOOKS:
         p = state / sub / LEDGER_FILE if sub else state / LEDGER_FILE

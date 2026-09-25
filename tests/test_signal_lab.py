@@ -159,3 +159,24 @@ def test_unsupported_timeframe_is_rejected_up_front(tmp_path):
     with pytest.raises(ValueError, match="30m"):
         L.run(symbols=["BTC/USDT"], tfs=["30m"], cache_dir=tmp_path, out_dir=tmp_path / "o", cfg=L.LabConfig(),
               provider_factory=None, log=lambda m: None)
+
+
+def test_day_clustered_interval_is_not_narrowed_by_coins_moving_together():
+    """12 coin aynı gün aynı yönde: işlem düzeyinde bootstrap aralığı 12 kat fazla gözlem sanır; gün kümeli aralık geniş kalır."""
+    rnd = np.random.default_rng(3)
+    day_r = rnd.normal(0.1, 1.0, 60)
+    rs = np.repeat(day_r, 12) + rnd.normal(0, 0.05, 720)
+    days = np.repeat(np.arange(60), 12)
+    naive, clustered = L.r_stats(rs, 1000), L.r_stats(rs, 1000, days=days)
+    width = lambda st: st["ci95"][1] - st["ci95"][0]  # noqa: E731
+    assert clustered["days"] == 60 and width(clustered) > 2.5 * width(naive)
+
+
+def test_listing_after_requested_start_is_not_downloaded_again(tmp_path):
+    df = synth(300, seed=9)
+    prov = FakeProvider(df)
+    now = int(df["timestamp"].iloc[-1]) + 2 * STEP
+    kw = dict(days=60, cache_dir=tmp_path, provider_factory=lambda: prov, now_ms=now)   # istenen başlangıç listelemeden önce
+    assert len(L.load_series("NEW/USDT", "1h", **kw)) == 300
+    calls = prov.calls
+    assert len(L.load_series("NEW/USDT", "1h", **kw)) == 300 and prov.calls == calls

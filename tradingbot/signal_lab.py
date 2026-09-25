@@ -19,7 +19,8 @@ Yöntem (her sinyal aynı kuralla ölçülür):
   dönemde de ortalama R > 0 ve yeterli işlem gerekir; GÜÇLÜ ADAY için İKİ dönemin de %95 aralığı 0'ın üstünde olmalı
   ve sinyal, aynı dilim/yön/bağlamdaki rastgele girişi iki dönemde de geçmelidir (yalnız piyasa yönü olmasın). ZAYIF İZ (iki dönem pozitif, aralık 0'ı içeriyor) tek başına güvenilmez: rastgele yürüyüş verisinde
   kombinasyonların %6–11'i ZAYIF İZ, %0–0,5'i GÜÇLÜ ADAY çıktı (`tests/test_signal_lab.py`, mum içi yol da rastgele). Rastgele an/yön PLASEBO
-  sinyali aynı hükümden geçer; gerçek sinyallerin aday oranı plaseboyu açıkça geçmiyorsa liste tesadüf olabilir.
+  sinyali aynı hükümden geçer; aralıklar GÜN KÜMELİ bootstrap'tır (aynı gün birlikte hareket eden coinler bağımsız
+  sayılmaz); gerçek sinyallerin aday oranı plaseboyu açıkça geçmiyorsa liste tesadüf olabilir.
 
 PAPER/geçmiş testtir; kâr garantisi değildir.
 """
@@ -45,6 +46,10 @@ LONG, SHORT = "LONG", "SHORT"
 MARKET = "USDM_PERP"
 DEFAULT_SYMBOLS = ("BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT", "DOGE/USDT", "ADA/USDT", "AVAX/USDT",
                    "LINK/USDT", "LTC/USDT", "DOT/USDT", "NEAR/USDT")
+#: sağlamlık denemesi için geniş liste (uzun geçmişli, likit USDⓈ-M perpetual'lar; sonradan listelenenler kendi başlangıcından)
+WIDE_SYMBOLS = DEFAULT_SYMBOLS + ("TRX/USDT", "BCH/USDT", "UNI/USDT", "ATOM/USDT", "ETC/USDT", "FIL/USDT", "XLM/USDT",
+                                  "AAVE/USDT", "APT/USDT", "ARB/USDT", "OP/USDT", "INJ/USDT", "SUI/USDT", "HBAR/USDT",
+                                  "ICP/USDT", "SAND/USDT", "ALGO/USDT", "VET/USDT")
 DEFAULT_TFS = ("5m", "15m", "1h", "4h")   # ortak analizin desteklediği dilimler (30m/1m YOK)
 #: zaman dilimi başına varsayılan geçmiş (gün) — 1m yalnız maliyet karşılaştırması için (istenirse)
 DEFAULT_DAYS = {"5m": 60, "15m": 180, "1h": 365, "4h": 730, "1d": 1460, "1w": 2920}
@@ -124,8 +129,11 @@ def load_series(symbol: str, tf: str, *, days: int, cache_dir: Path, provider_fa
     end = now_ms - now_ms % step
     start = end - int(days) * 86_400_000
     p = cache_path(cache_dir, symbol, tf)
+    meta_p = p.with_name(p.name + ".meta.json")
     df = pd.read_csv(p) if p.exists() else pd.DataFrame()
-    need_head = df.empty or int(df["timestamp"].iloc[0]) > start + step
+    asked = json.loads(meta_p.read_text(encoding="utf-8")).get("requested_start_ms") if meta_p.exists() else None
+    # borsada daha eski bar yoksa (sonradan listelenmiş) aynı başlangıç bir daha istenmez
+    need_head = df.empty or (int(df["timestamp"].iloc[0]) > start + step and (asked is None or int(asked) > start))
     need_tail = df.empty or int(df["timestamp"].iloc[-1]) < end - 2 * step
     if (need_head or need_tail) and provider_factory is not None:
         prov = provider_factory()
@@ -137,6 +145,8 @@ def load_series(symbol: str, tf: str, *, days: int, cache_dir: Path, provider_fa
         df = pd.concat([x for x in parts if len(x)]).drop_duplicates("timestamp", keep="last").sort_values("timestamp")
         p.parent.mkdir(parents=True, exist_ok=True)
         df.to_csv(p, index=False, compression="gzip")
+        if need_head:
+            meta_p.write_text(json.dumps({"requested_start_ms": int(start)}), encoding="utf-8")
     if df.empty:
         return df
     return df[df["timestamp"] >= start].reset_index(drop=True)
@@ -368,7 +378,9 @@ def _task(args: tuple) -> tuple[list[dict], dict]:
 
 
 # ---------------------------------------------------------------------------- istatistik ve hüküm
-def r_stats(rs: np.ndarray, iters: int, seed: int = 20260925) -> dict[str, Any]:
+def r_stats(rs: np.ndarray, iters: int, seed: int = 20260925, days: np.ndarray | None = None) -> dict[str, Any]:
+    """Özet + ortalama R için %95 aralık. `days` verilirse GÜN KÜMELİ bootstrap: aynı gün açılan işlemler (coinler birlikte
+    hareket eder) birlikte yeniden örneklenir; işlemleri bağımsız sayıp aralığı yapay daraltmaz."""
     n = int(len(rs))
     if n == 0:
         return {"n": 0}
@@ -378,11 +390,21 @@ def r_stats(rs: np.ndarray, iters: int, seed: int = 20260925) -> dict[str, Any]:
     out = {"n": n, "mean_r": round(float(rs.mean()), 4), "win_rate": round(float(len(wins) / n), 4),
            "profit_factor": round(float(wins.sum() / -losses.sum()), 3) if len(losses) and losses.sum() < 0 else None,
            "sum_r": round(float(rs.sum()), 2), "max_drawdown_r": round(dd, 2), "ci95": None}
+    rng = np.random.default_rng(seed)
+    if days is not None and n >= 5:
+        _, inv = np.unique(days, return_inverse=True)
+        sums, counts = np.bincount(inv, weights=rs), np.bincount(inv).astype(float)
+        d = len(sums)
+        out["days"] = int(d)
+        if d >= 5:
+            idx = rng.integers(0, d, size=(iters, d))
+            means = sums[idx].sum(axis=1) / counts[idx].sum(axis=1)
+            out["ci95"] = [round(float(np.quantile(means, 0.025)), 4), round(float(np.quantile(means, 0.975)), 4)]
+        return out
     if n > 4000:                                    # büyük örneklem: normal yaklaşım (bootstrap belleği n×iters)
         se = float(rs.std(ddof=1)) / math.sqrt(n)
         out["ci95"] = [round(float(rs.mean()) - 1.96 * se, 4), round(float(rs.mean()) + 1.96 * se, 4)]
     elif n >= 5:
-        rng = np.random.default_rng(seed)
         means = rs[rng.integers(0, n, size=(iters, n))].mean(axis=1)
         out["ci95"] = [round(float(np.quantile(means, 0.025)), 4), round(float(np.quantile(means, 0.975)), 4)]
     return out
@@ -425,6 +447,7 @@ def aggregate(events: list[dict], cfg: LabConfig) -> dict[str, Any]:
         lo_t, hi_t = int(g["t_ms"].min()), int(g["t_ms"].max())
         cut[tf] = lo_t + cfg.split * (hi_t - lo_t)
     ev["period"] = ["IS" if t <= cut[tf] else "OOS" for t, tf in zip(ev["t_ms"], ev["tf"])]
+    ev["day"] = ev["t_ms"] // 86_400_000
     ctx = pd.json_normalize(ev["ctx"]).add_prefix("ctx.")
     ev = pd.concat([ev.drop(columns=["ctx"]).reset_index(drop=True), ctx.reset_index(drop=True)], axis=1)
     dims = [c for c in ev.columns if c.startswith("ctx.")]
@@ -436,8 +459,8 @@ def aggregate(events: list[dict], cfg: LabConfig) -> dict[str, Any]:
             is_m, oos_m = gg["period"] == "IS", gg["period"] == "OOS"
             if len(gg) < 10:
                 continue
-            is_st = r_stats(gg.loc[is_m, "r"].to_numpy(dtype=float), cfg.bootstrap_iters)
-            oos_st = r_stats(gg.loc[oos_m, "r"].to_numpy(dtype=float), cfg.bootstrap_iters)
+            is_st = r_stats(gg.loc[is_m, "r"].to_numpy(dtype=float), cfg.bootstrap_iters, days=gg.loc[is_m, "day"].to_numpy())
+            oos_st = r_stats(gg.loc[oos_m, "r"].to_numpy(dtype=float), cfg.bootstrap_iters, days=gg.loc[oos_m, "day"].to_numpy())
             for st, m in ((is_st, is_m), (oos_st, oos_m)):
                 if st.get("n"):
                     st["cost_r"] = round(float(gg.loc[m, "cost_r"].mean()), 4)

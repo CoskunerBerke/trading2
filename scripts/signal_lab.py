@@ -5,6 +5,7 @@ adım adım tarar, maliyet sonrası sonucu keşif/doğrulama dönemlerine ayır�
     python scripts/signal_lab.py                         # varsayılan: 12 coin · 5m,15m,1h,4h
     python scripts/signal_lab.py --tfs 1h,4h --symbols BTC/USDT,ETH/USDT --jobs 4
     python scripts/signal_lab.py --tfs 4h --days 4h=1460   # daha uzun geçmiş
+    python scripts/signal_lab.py --symbols genis --tfs 1h,4h --days 1h=730,4h=1460   # sağlamlık: 30 coin, uzun geçmiş
 
 Çıktı: <out>/signal_lab_report.json (bütün kombinasyonlar) + <out>/signal_lab_events.csv.gz (her işlem).
 """
@@ -54,7 +55,8 @@ def main(argv: list[str] | None = None) -> int:
     for part in filter(None, a.days.split(",")):
         k, v = part.split("=")
         days[k.strip()] = int(v)
-    symbols = [s.strip().upper() for s in a.symbols.split(",") if s.strip()]
+    presets = {"GENIS": L.WIDE_SYMBOLS, "GENİŞ": L.WIDE_SYMBOLS, "VARSAYILAN": L.DEFAULT_SYMBOLS}
+    symbols = list(presets.get(a.symbols.strip().upper()) or [s.strip().upper() for s in a.symbols.split(",") if s.strip()])
     tfs = [t.strip() for t in a.tfs.split(",") if t.strip()]
     try:
         report = L.run(symbols=symbols, tfs=tfs, cache_dir=Path(a.cache), out_dir=Path(a.out), cfg=L.LabConfig(),

@@ -62,8 +62,8 @@ def main(argv: list[str] | None = None) -> int:
         report = L.run(symbols=symbols, tfs=tfs, cache_dir=Path(a.cache), out_dir=Path(a.out), cfg=L.LabConfig(),
                        provider_factory=None if a.offline else provider_factory, days=days, jobs=a.jobs,
                        catalog=not a.no_catalog)
-    except ValueError as exc:
-        print(f"HATA: {exc}", file=sys.stderr)
+    except (ValueError, L.DownloadAborted) as exc:
+        print(f"\nHATA: {exc}", file=sys.stderr)
         return 2
     print()
     print(L.render(report, top=a.top))

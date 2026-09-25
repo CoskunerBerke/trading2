@@ -180,3 +180,31 @@ def test_listing_after_requested_start_is_not_downloaded_again(tmp_path):
     assert len(L.load_series("NEW/USDT", "1h", **kw)) == 300
     calls = prov.calls
     assert len(L.load_series("NEW/USDT", "1h", **kw)) == 300 and prov.calls == calls
+
+
+class DeadProvider:
+    def __init__(self):
+        self.calls = 0
+
+    def klines(self, *a, **k):
+        self.calls += 1
+        raise ConnectionResetError(10054, "bağlantı kapatıldı")
+
+
+def test_download_failures_abort_instead_of_testing_stale_partial_data(tmp_path):
+    import pytest
+    dead = DeadProvider()
+    with pytest.raises(L.DownloadAborted, match="ÇALIŞTIRILMADI"):
+        L.run(symbols=["A/USDT", "B/USDT", "C/USDT", "D/USDT"], tfs=["1h"], cache_dir=tmp_path, out_dir=tmp_path / "o",
+              cfg=L.LabConfig(), provider_factory=lambda: dead, days={"1h": 30}, log=lambda m: None)
+    assert dead.calls == 3 and not (tmp_path / "o" / "signal_lab_report.json").exists()
+
+
+def test_short_cached_history_is_reported_not_silently_used(tmp_path):
+    df = synth(700, seed=4)
+    prov = FakeProvider(df)
+    now = int(df["timestamp"].iloc[-1]) + 2 * STEP
+    L.load_series("OLD/USDT", "1h", days=25, cache_dir=tmp_path / "c", provider_factory=lambda: prov, now_ms=now)
+    rep = L.run(symbols=["OLD/USDT"], tfs=["1h"], cache_dir=tmp_path / "c", out_dir=tmp_path / "o", cfg=L.LabConfig(),
+                provider_factory=None, days={"1h": 60}, catalog=False, now_ms=now, log=lambda m: None)
+    assert rep["data_warnings"] and "EKSİK_GEÇMİŞ" in rep["data_warnings"][0] and "UYARI" in L.render(rep)

@@ -367,6 +367,28 @@ def process_series(df: pd.DataFrame, symbol: str, tf: str, cfg: LabConfig, *, ca
                   "first": int(df["timestamp"].iloc[0]) if len(df) else None, "last": int(df["timestamp"].iloc[-1]) if len(df) else None}
 
 
+class DownloadAborted(RuntimeError):
+    """İndirme art arda başarısız: rapor eksik geçmişle üretilmez."""
+
+
+def coverage_problem(meta: dict, days: int, tf: str, cache_dir: Path, now_ms: int) -> str | None:
+    """İstenen geçmişin %90'ından azı varsa uyarı metni — coin o tarihte listelenmemişse (en az bu kadar geriden
+    istenip borsada daha eski bar çıkmadığı kayıtlıysa) uyarı YOK."""
+    if meta.get("error"):
+        return meta["error"]
+    step = tf_ms(tf)
+    want = int(days) * 86_400_000 // step
+    if meta.get("bars", 0) >= 0.9 * want:
+        return None
+    start = (now_ms - now_ms % step) - int(days) * 86_400_000
+    mp = cache_path(cache_dir, meta["symbol"], tf)
+    mp = mp.with_name(mp.name + ".meta.json")
+    asked = json.loads(mp.read_text(encoding="utf-8")).get("requested_start_ms") if mp.exists() else None
+    if asked is not None and int(asked) <= start:
+        return None
+    return f"EKSİK_GEÇMİŞ ({meta.get('bars', 0)}/{want} bar)"
+
+
 def _task(args: tuple) -> tuple[list[dict], dict]:
     cache_dir, symbol, tf, days, now_ms, cfg_d, catalog = args
     cfg = LabConfig(**cfg_d)
@@ -505,13 +527,21 @@ def run(*, symbols: list[str], tfs: list[str], cache_dir: Path, out_dir: Path, c
     days = {**DEFAULT_DAYS, **(days or {})}
     out_dir.mkdir(parents=True, exist_ok=True)
     t0 = time.time()
+    fails, failed = 0, []
     for s in symbols:                                       # indirme sırayla (hız sınırı), işlem paralel
         for tf in tfs:
             try:
                 df = load_series(s, tf, days=days[tf], cache_dir=cache_dir, provider_factory=provider_factory, now_ms=now_ms)
                 log(f"veri {s} {tf}: {len(df)} bar")
+                fails = 0
             except Exception as exc:  # noqa: BLE001 — bir sembolün verisi diğerlerini durdurmaz
-                log(f"veri {s} {tf}: HATA {type(exc).__name__}: {exc}")
+                log(f"veri {s} {tf}: HATA {type(exc).__name__}: {str(exc)[:160]}")
+                failed.append(f"{s} {tf}")
+                fails += 1
+                if fails >= 3:                              # bağlantı yok: eksik veriyle SESSİZCE test etme
+                    raise DownloadAborted(f"Binance'ten art arda {fails} seri indirilemedi ({', '.join(failed[-3:])}). "
+                                          "Bağlantı ya da Binance tarafında geçici kısıtlama olabilir; 10-15 dk sonra "
+                                          "tekrar deneyin (inen veri önbellekte kalır). Test ÇALIŞTIRILMADI.")
     tasks = [(str(cache_dir), s, tf, days[tf], now_ms, asdict(cfg), catalog) for s in symbols for tf in tfs]
     events, metas = [], []
     if jobs > 1:
@@ -533,6 +563,8 @@ def run(*, symbols: list[str], tfs: list[str], cache_dir: Path, out_dir: Path, c
             metas.append(meta)
             log(f"tarandı {meta['symbol']} {meta['tf']}: {meta.get('trades', 0)} işlem ({time.time() - t0:.0f} sn)")
     agg = aggregate(events, cfg)
+    warnings = [f"{m['symbol']} {m['tf']}: {w}" for m in metas
+                if (w := coverage_problem(m, days[m["tf"]], m["tf"], cache_dir, now_ms))]
     with gzip.open(out_dir / "signal_lab_events.csv.gz", "wt", newline="", encoding="utf-8") as fh:
         cols = ["symbol", "tf", "family", "name", "side", "t_ms", "r", "cost_r", "exit_reason", "hold", "ctx"]
         w = csv.writer(fh)
@@ -541,7 +573,7 @@ def run(*, symbols: list[str], tfs: list[str], cache_dir: Path, out_dir: Path, c
             w.writerow([e[c] if c != "ctx" else json.dumps(e["ctx"], ensure_ascii=False) for c in cols])
     report = {"kind": "SIGNAL_LAB", "config": asdict(cfg), "cost_round_trip_pct": round(2 * cfg.cost_per_side * 100, 3),
               "symbols": symbols, "timeframes": tfs, "days": {tf: days[tf] for tf in tfs}, "series": metas,
-              "seconds": round(time.time() - t0, 1), **agg,
+              "seconds": round(time.time() - t0, 1), "data_warnings": warnings, **agg,
               "note_tr": "Geçmiş test (PAPER değil, canlı değil). GÜÇLÜ ADAY = iki dönemde de %95 aralık 0'ın üstünde ve aynı "
                          "bağlamdaki rastgele girişi iki dönemde de geçiyor. Kâr garantisi değildir."}
     (out_dir / "signal_lab_report.json").write_text(json.dumps(report, ensure_ascii=False, indent=1), encoding="utf-8")
@@ -554,6 +586,8 @@ def render(report: dict[str, Any], *, top: int = 25) -> str:
                       + (f" %95[{st['ci95'][0]:+.2f},{st['ci95'][1]:+.2f}]" if st.get("ci95") else "")) if st.get("n") else "n=0"
     lines = [f"SİNYAL LABORATUVARI · {len(report.get('symbols') or [])} coin · {', '.join(report.get('timeframes') or [])} · "
              f"{report.get('events', 0)} işlem · gidiş-dönüş maliyet %{report.get('cost_round_trip_pct')} · {report.get('seconds')} sn"]
+    if report.get("data_warnings"):
+        lines.append(f"UYARI — eksik veri ({len(report['data_warnings'])} seri): " + "; ".join(report["data_warnings"][:10]))
     lines.append("\n== ZAMAN DİLİMİ ÖZETİ (bütün gerçek sinyaller) ==")
     lines.append(f"{'dilim':>5} {'işlem':>8} {'ort.R':>8} {'maliyet(R)':>11} {'rastgele ort.R':>15}")
     for tf, t in (report.get("tf_summary") or {}).items():

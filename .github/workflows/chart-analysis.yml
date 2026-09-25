@@ -81,7 +81,7 @@ jobs:
             tests/test_engine_v3.py \
             tests/test_runtime_fixes_v1.py \
             tests/test_protective_monitor_v1.py \
-            tests/test_measure_protective_monitor_script.py \
+            tests/test_measure_protective_monitor_script.py tests/test_bot_scorecard_script.py \
             tests/test_learning_provenance_engine.py \
             -q --tb=short > pytest.out 2>&1
           rc=$?
@@ -111,7 +111,7 @@ jobs:
           pip install -r requirements.txt
           pip install pytest httpx
       - name: Measurement script tests (Windows)
-        run: python -m pytest tests/test_measure_protective_monitor_script.py -q --tb=short -rs
+        run: python -m pytest tests/test_measure_protective_monitor_script.py tests/test_bot_scorecard_script.py -q --tb=short -rs
       - name: index-check + preflight (Windows console)
         shell: pwsh
         run: |

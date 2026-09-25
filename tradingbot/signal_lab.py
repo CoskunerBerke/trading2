@@ -28,9 +28,11 @@ from __future__ import annotations
 
 import csv
 import gzip
+import io
 import json
 import math
 import time
+import zipfile
 import zlib
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field
@@ -116,6 +118,101 @@ def download(provider: Any, symbol: str, tf: str, start_ms: int, end_ms: int, *,
     if "is_closed" in out:
         out = out[out["is_closed"].astype(bool)]
     return out[["timestamp", "open", "high", "low", "close", "volume", "close_time"]].reset_index(drop=True)
+
+
+ARCHIVE_BASE = "https://data.binance.vision/data/futures/um"
+_DAY = 86_400_000
+
+
+def _http_get(url: str, timeout: float = 60.0) -> bytes | None:
+    """Arşiv dosyası (yoksa None). 404 dışındaki hatalar yükselir (sessiz boş veri YOK)."""
+    import urllib.error
+    import urllib.request
+    req = urllib.request.Request(url, headers={"User-Agent": "tradingbot-signal-lab/1"})
+    last: Exception | None = None
+    for attempt in range(4):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                return r.read()
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                return None
+            last = exc
+        except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
+            last = exc
+        time.sleep(1.5 * (attempt + 1))
+    raise ConnectionError(f"arşiv indirilemedi: {url}: {last}")
+
+
+def _parse_archive_zip(data: bytes) -> pd.DataFrame:
+    with zipfile.ZipFile(io.BytesIO(data)) as zf:
+        raw = zf.read(zf.namelist()[0]).decode("utf-8")
+    df = pd.read_csv(io.StringIO(raw), header=None, dtype=str)
+    df = df[df[0].str.isdigit()]                        # başlık satırı (yeni dosyalar) atılır
+    out = pd.DataFrame({"timestamp": df[0].astype("int64"), "open": df[1].astype(float), "high": df[2].astype(float),
+                        "low": df[3].astype(float), "close": df[4].astype(float), "volume": df[5].astype(float),
+                        "close_time": df[6].astype("int64")})
+    big = out["timestamp"] > 10 ** 14                   # mikro saniye → milisaniye
+    out.loc[big, ["timestamp", "close_time"]] = out.loc[big, ["timestamp", "close_time"]] // 1000
+    return out
+
+
+def _month_start(ms: int) -> int:
+    d = pd.Timestamp(int(ms), unit="ms", tz="UTC")
+    return int(pd.Timestamp(year=d.year, month=d.month, day=1, tz="UTC").timestamp() * 1000)
+
+
+def _next_month(ms: int) -> int:
+    d = pd.Timestamp(int(ms), unit="ms", tz="UTC")
+    y, m = (d.year + 1, 1) if d.month == 12 else (d.year, d.month + 1)
+    return int(pd.Timestamp(year=y, month=m, day=1, tz="UTC").timestamp() * 1000)
+
+
+class ArchiveProvider:
+    """Binance toplu veri arşivi (data.binance.vision, USDⓈ-M): biten aylar ay dosyasından, içinde bulunulan ay gün
+    dosyalarından; yalnız BİTMİŞ günler (bugün yok). `klines` imzası REST sağlayıcıyla aynıdır (`download` ortak)."""
+
+    def __init__(self, fetch: Callable[[str], bytes | None] = _http_get, clock_ms: Callable[[], int] | None = None):
+        self.fetch = fetch
+        self.clock_ms = clock_ms or (lambda: int(time.time() * 1000))
+        self._files: dict[tuple, pd.DataFrame | None] = {}
+
+    def _file(self, sym: str, tf: str, kind: str, stamp: str) -> pd.DataFrame | None:
+        key = (sym, tf, kind, stamp)
+        if key not in self._files:
+            data = self.fetch(f"{ARCHIVE_BASE}/{kind}/klines/{sym}/{tf}/{sym}-{tf}-{stamp}.zip")
+            self._files[key] = _parse_archive_zip(data) if data else None
+        return self._files[key]
+
+    def _days(self, sym: str, tf: str, month_ms: int, today_ms: int) -> pd.DataFrame | None:
+        parts, day = [], month_ms
+        while day < min(_next_month(month_ms), today_ms):
+            f = self._file(sym, tf, "daily", pd.Timestamp(day, unit="ms", tz="UTC").strftime("%Y-%m-%d"))
+            if f is not None:
+                parts.append(f)
+            day += _DAY
+        return pd.concat(parts) if parts else None
+
+    def klines(self, symbol: str, interval: str, limit: int = 1500, start_ms: int | None = None,
+               end_ms: int | None = None) -> pd.DataFrame:
+        sym = symbol.split(":")[0].replace("/", "").upper()
+        now = int(self.clock_ms())
+        today = now - now % _DAY
+        start, end = int(start_ms or 0), int(end_ms if end_ms is not None else now)
+        this_month, cur, got = _month_start(now), _month_start(start), []
+        while cur <= min(end, today) and sum(len(x) for x in got) < limit:
+            f = self._file(sym, interval, "monthly", pd.Timestamp(cur, unit="ms", tz="UTC").strftime("%Y-%m")) \
+                if cur < this_month else None
+            if f is None and cur >= _month_start(today - _DAY * 40):   # ay dosyası henüz yayımlanmadı → gün dosyaları
+                f = self._days(sym, interval, cur, today)
+            if f is not None and len(f):
+                got.append(f[(f["timestamp"] >= start) & (f["timestamp"] <= end)])
+            cur = _next_month(cur)
+        if not got:
+            return pd.DataFrame(columns=["timestamp", "open", "high", "low", "close", "volume", "close_time", "is_closed"])
+        out = pd.concat(got).drop_duplicates("timestamp").sort_values("timestamp").head(limit).reset_index(drop=True)
+        out["is_closed"] = out["close_time"] < now
+        return out
 
 
 def cache_path(cache_dir: Path, symbol: str, tf: str) -> Path:

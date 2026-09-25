@@ -6,6 +6,7 @@ adım adım tarar, maliyet sonrası sonucu keşif/doğrulama dönemlerine ayır�
     python scripts/signal_lab.py --tfs 1h,4h --symbols BTC/USDT,ETH/USDT --jobs 4
     python scripts/signal_lab.py --tfs 4h --days 4h=1460   # daha uzun geçmiş
     python scripts/signal_lab.py --symbols genis --tfs 1h,4h --days 1h=730,4h=1460   # sağlamlık: 30 coin, uzun geçmiş
+    python scripts/signal_lab.py --source archive ...    # REST erişimi yoksa: data.binance.vision toplu arşivi
 
 Çıktı: <out>/signal_lab_report.json (bütün kombinasyonlar) + <out>/signal_lab_events.csv.gz (her işlem).
 """
@@ -49,6 +50,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--jobs", type=int, default=max(1, min(4, (os.cpu_count() or 2) - 1)))
     ap.add_argument("--no-catalog", action="store_true", help="yalnız ek varyasyonlar (hızlı deneme)")
     ap.add_argument("--offline", action="store_true", help="indirme yok; yalnız önbellek")
+    ap.add_argument("--source", choices=("api", "archive"), default="api",
+                    help="api = fapi.binance.com (güncel); archive = data.binance.vision toplu arşivi (bitmiş günler)")
     ap.add_argument("--top", type=int, default=25)
     a = ap.parse_args(argv)
     days = {}
@@ -60,7 +63,8 @@ def main(argv: list[str] | None = None) -> int:
     tfs = [t.strip() for t in a.tfs.split(",") if t.strip()]
     try:
         report = L.run(symbols=symbols, tfs=tfs, cache_dir=Path(a.cache), out_dir=Path(a.out), cfg=L.LabConfig(),
-                       provider_factory=None if a.offline else provider_factory, days=days, jobs=a.jobs,
+                       provider_factory=None if a.offline else (L.ArchiveProvider if a.source == "archive" else provider_factory),
+                       days=days, jobs=a.jobs,
                        catalog=not a.no_catalog)
     except (ValueError, L.DownloadAborted) as exc:
         print(f"\nHATA: {exc}", file=sys.stderr)

@@ -208,3 +208,46 @@ def test_short_cached_history_is_reported_not_silently_used(tmp_path):
     rep = L.run(symbols=["OLD/USDT"], tfs=["1h"], cache_dir=tmp_path / "c", out_dir=tmp_path / "o", cfg=L.LabConfig(),
                 provider_factory=None, days={"1h": 60}, catalog=False, now_ms=now, log=lambda m: None)
     assert rep["data_warnings"] and "EKSİK_GEÇMİŞ" in rep["data_warnings"][0] and "UYARI" in L.render(rep)
+
+
+def _zip_csv(rows, header=False, micros=False):
+    import io
+    import zipfile
+    buf = io.StringIO()
+    if header:
+        buf.write("open_time,open,high,low,close,volume,close_time,quote_volume,count,tbv,tbq,ignore\n")
+    k = 1000 if micros else 1
+    for r in rows:
+        buf.write(f"{int(r['timestamp']) * k},{r['open']},{r['high']},{r['low']},{r['close']},{r['volume']},"
+                  f"{int(r['close_time']) * k},0,0,0,0,0\n")
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w") as zf:
+        zf.writestr("x.csv", buf.getvalue())
+    return out.getvalue()
+
+
+def test_archive_provider_reads_monthly_and_daily_files():
+    """data.binance.vision: biten ay → ay dosyası (eski biçim başlıksız), içinde bulunulan ay → gün dosyaları (başlıklı,
+    mikro saniye); olmayan dosya (listeleme öncesi) boş; download() sayfalama REST ile aynı."""
+    step = 3_600_000
+    t_aug = int(pd.Timestamp("2026-08-01", tz="UTC").timestamp() * 1000)
+    t_sep = int(pd.Timestamp("2026-09-01", tz="UTC").timestamp() * 1000)
+    now = t_sep + 3 * 86_400_000 + 5 * step                       # 4 Eylül 05:00 — 1-3 Eylül bitmiş günler
+    bars = lambda a, n: [{"timestamp": a + i * step, "open": 1, "high": 2, "low": 0.5, "close": 1.5, "volume": 10,  # noqa: E731
+                          "close_time": a + (i + 1) * step - 1} for i in range(n)]
+    files = {"monthly/klines/XUSDT/1h/XUSDT-1h-2026-08.zip": _zip_csv(bars(t_aug, 31 * 24))}
+    for d in range(3):
+        day = t_sep + d * 86_400_000
+        files[f"daily/klines/XUSDT/1h/XUSDT-1h-{pd.Timestamp(day, unit='ms', tz='UTC'):%Y-%m-%d}.zip"] = \
+            _zip_csv(bars(day, 24), header=True, micros=True)
+    asked = []
+
+    def fetch(url):
+        asked.append(url)
+        return files.get(url.split("/futures/um/")[1])
+    prov = L.ArchiveProvider(fetch=fetch, clock_ms=lambda: now)
+    df = L.download(prov, "X/USDT", "1h", t_aug - 60 * 86_400_000, now, page=500)
+    assert len(df) == 31 * 24 + 3 * 24 and df["timestamp"].is_monotonic_increasing
+    assert int(df["timestamp"].iloc[-1]) == t_sep + 3 * 86_400_000 - step, "yalnız bitmiş günler"
+    assert int(df["timestamp"].iloc[0]) == t_aug and df["timestamp"].diff().dropna().eq(step).all()
+    assert not any("2026-09-04" in u for u in asked), "bugünün dosyası istenmez"

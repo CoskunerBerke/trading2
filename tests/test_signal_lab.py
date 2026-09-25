@@ -74,10 +74,13 @@ def test_no_lookahead_signals_and_context_ignore_future_bars():
     fut = df.copy()
     fut.loc[cut:, ["open", "high", "low", "close"]] *= 3.0     # gelecek tamamen farklı
     b, _ = L.process_series(fut, "X/USDT", "1h", cfg)
+    # işlem kesilmiş veride tamamlandıysa (çıkışı kesimden önce), uzun veride AYNI olmalı; tamamlanmadıysa sayılmaz
     lim = cut - cfg.max_hold_bars - 1
-    ka = {(e.name, e.side, e.i, round(e.r, 9), tuple(sorted(e.ctx.items()))) for e in a if e.i < lim}
-    kb = {(e.name, e.side, e.i, round(e.r, 9), tuple(sorted(e.ctx.items()))) for e in b if e.i < lim}
+    ok = lambda e: (e.i + 1 + e.hold <= cut and e.i < cut - 2) if e.exit else e.i < lim  # noqa: E731
+    ka = {(e.name, e.side, e.i, round(e.r, 9), tuple(sorted(e.ctx.items()))) for e in a if ok(e)}
+    kb = {(e.name, e.side, e.i, round(e.r, 9), tuple(sorted(e.ctx.items()))) for e in b if ok(e)}
     assert ka and ka == kb
+    assert any(e.family == "algo" for e in a), "algoritmalar da gelecekten bağımsız"
 
 
 def test_extra_signal_definitions():
@@ -251,3 +254,39 @@ def test_archive_provider_reads_monthly_and_daily_files():
     assert int(df["timestamp"].iloc[-1]) == t_sep + 3 * 86_400_000 - step, "yalnız bitmiş günler"
     assert int(df["timestamp"].iloc[0]) == t_aug and df["timestamp"].diff().dropna().eq(step).all()
     assert not any("2026-09-04" in u for u in asked), "bugünün dosyası istenmez"
+
+
+def test_rule_exits_follow_their_own_rule_and_pay_costs():
+    cfg = L.LabConfig()
+    n = 40
+    arr = {k: np.full(n, 100.0) for k in ("open", "high", "low", "close")}
+    atr = np.full(n, 2.0)
+    aux = {k: np.full(n, np.nan) for k in ("lo10", "hi10", "mom28", "sma5", "sma20")}
+    aux["lo10"][:] = 99.0
+    arr["close"][15] = 98.5                                   # 15. kapanış 10 bar dibinin altında → 16 açılışta çık
+    arr["open"][16] = 98.0
+    ev = L.Event("X", "1d", "algo", "TREND_DONCHIAN_20_10", L.LONG, 10, 0, stop=96.0, exit={"kind": "channel", "max_bars": 300})
+    assert L.simulate_rule(ev, arr, atr, aux, cfg) == "" and ev.exit_reason == "RULE" and ev.hold == 6
+    assert abs(ev.r - ((98.0 - 100.0) - (100.0 + 98.0) * cfg.cost_per_side) / 4.0) < 1e-9
+    ev = L.Event("X", "1d", "algo", "XSMOM_28_WEEKLY", L.SHORT, 10, 0, stop=106.0, exit={"kind": "hold", "bars": 7})
+    assert L.simulate_rule(ev, arr, atr, aux, cfg) == "" and ev.hold == 8 and ev.exit_reason == "RULE"
+    ev = L.Event("X", "1d", "algo", "TREND_DONCHIAN_20_10", L.LONG, 36, 0, stop=96.0, exit={"kind": "channel", "max_bars": 300})
+    aux["lo10"][:] = 50.0
+    assert L.simulate_rule(ev, arr, atr, aux, cfg) == "NO_FUTURE_DATA", "veri bitmeden kapanmayan işlem sayılmaz"
+
+
+def test_cross_sectional_momentum_ranks_coins_by_past_return():
+    frames = {}
+    for k in range(12):
+        df = synth(400, seed=100 + k)
+        drift = np.exp(np.arange(400) * (0.004 if k == 0 else 0.0))
+        for col in ("open", "high", "low", "close"):
+            df[col] = df[col] * drift
+        df["timestamp"] = (df["timestamp"] - STEP * 0) // STEP * 86_400_000
+        frames[f"C{k}/USDT"] = df
+    evs = L.xsmom_events(frames, L.LabConfig())
+    real = [e for e in evs if e.name == L.XSMOM]
+    assert real and all(e.exit == {"kind": "hold", "bars": 7} for e in real)
+    longs = [e.symbol for e in real if e.side == L.LONG]
+    assert longs.count("C0/USDT") >= 0.8 * len({e.t_ms for e in real if e.side == L.LONG}), "sürekli yükselen coin hep güçlüler arasında"
+    assert any(e.name == "PLACEBO_" + L.XSMOM for e in evs)

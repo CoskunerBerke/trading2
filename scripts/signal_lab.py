@@ -48,7 +48,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--cache", default=str(ROOT / "signal_lab_data"), help="mum önbelleği klasörü")
     ap.add_argument("--out", default=str(ROOT / "signal_lab_out"), help="rapor klasörü")
     ap.add_argument("--jobs", type=int, default=max(1, min(4, (os.cpu_count() or 2) - 1)))
-    ap.add_argument("--no-catalog", action="store_true", help="yalnız ek varyasyonlar (hızlı deneme)")
+    ap.add_argument("--no-catalog", action="store_true", help="katalog taraması yok (ek varyasyonlar + algoritmalar; hızlı)")
+    ap.add_argument("--no-algos", action="store_true", help="algoritmaları (trend, momentum, RSI2, sıkışma, coinler arası) çalıştırma")
     ap.add_argument("--offline", action="store_true", help="indirme yok; yalnız önbellek")
     ap.add_argument("--source", choices=("api", "archive"), default="api",
                     help="api = fapi.binance.com (güncel); archive = data.binance.vision toplu arşivi (bitmiş günler)")
@@ -65,7 +66,7 @@ def main(argv: list[str] | None = None) -> int:
         report = L.run(symbols=symbols, tfs=tfs, cache_dir=Path(a.cache), out_dir=Path(a.out), cfg=L.LabConfig(),
                        provider_factory=None if a.offline else (L.ArchiveProvider if a.source == "archive" else provider_factory),
                        days=days, jobs=a.jobs,
-                       catalog=not a.no_catalog)
+                       catalog=not a.no_catalog, algos=not a.no_algos)
     except (ValueError, L.DownloadAborted) as exc:
         print(f"\nHATA: {exc}", file=sys.stderr)
         return 2

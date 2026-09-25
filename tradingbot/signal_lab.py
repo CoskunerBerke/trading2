@@ -94,6 +94,7 @@ class Event:
     ctx: dict[str, str] = field(default_factory=dict)
     r: float | None = None
     cost_r: float = 0.0              # maliyetin R cinsinden payı (kısa dilimde küçük stop → büyük pay)
+    exit: dict[str, Any] = field(default_factory=dict)   # kural çıkışı (algoritmalar); boş → sabit hedef/zaman
     exit_reason: str = ""
     hold: int = 0
     period: str = ""
@@ -401,6 +402,200 @@ def extra_events(df: pd.DataFrame, symbol: str, tf: str, atr: np.ndarray) -> lis
     return out
 
 
+# ---------------------------------------------------------------------------- algoritmalar (kural çıkışlı)
+#: Formasyondan farklı, literatürde sınanmış işlem ALGORİTMALARI. Tanımlar sabit (sonuca göre AYARLANMAZ); her biri kendi
+#: çıkış kuralıyla simüle edilir ve AYNI çıkış kuralını kullanan rastgele girişli eşiyle (PLACEBO_<ad>) karşılaştırılır.
+ALGOS = ("TREND_DONCHIAN_20_10", "TSMOM_28", "RSI2_REVERSION", "BB_SQUEEZE_BREAKOUT")
+XSMOM = "XSMOM_28_WEEKLY"
+
+
+def _wilder_rsi(c: pd.Series, n: int) -> np.ndarray:
+    d = c.diff()
+    up = d.clip(lower=0).ewm(alpha=1 / n, adjust=False, min_periods=n).mean()
+    dn = (-d.clip(upper=0)).ewm(alpha=1 / n, adjust=False, min_periods=n).mean()
+    return (100 - 100 / (1 + up / dn.replace(0, np.nan))).to_numpy()
+
+
+def aux_series(df: pd.DataFrame) -> dict[str, np.ndarray]:
+    """Algoritmaların nedensel yardımcı serileri (i barında yalnız ≤ i barları)."""
+    h, lo, c = (df[k].astype(float) for k in ("high", "low", "close"))
+    sd20 = c.rolling(20).std(ddof=0)
+    sma20 = c.rolling(20).mean()
+    bbw = (4 * sd20 / sma20)
+    return {"hi20": h.rolling(20).max().shift(1).to_numpy(), "lo20": lo.rolling(20).min().shift(1).to_numpy(),
+            "hi10": h.rolling(10).max().shift(1).to_numpy(), "lo10": lo.rolling(10).min().shift(1).to_numpy(),
+            "mom28": (c / c.shift(28) - 1).to_numpy(), "sma5": c.rolling(5).mean().to_numpy(), "sma20": sma20.to_numpy(),
+            "sma200": c.rolling(200).mean().to_numpy(), "rsi2": _wilder_rsi(c, 2),
+            "bb_up": (sma20 + 2 * sd20).to_numpy(), "bb_dn": (sma20 - 2 * sd20).to_numpy(),
+            "squeeze": (bbw <= bbw.rolling(120, min_periods=60).quantile(0.1).shift(1)).to_numpy()}
+
+
+def _h(*parts: Any) -> float:
+    return zlib.crc32("|".join(str(x) for x in parts).encode()) / 2 ** 32
+
+
+def algo_events(df: pd.DataFrame, symbol: str, tf: str, atr: np.ndarray, aux: dict[str, np.ndarray]) -> list[Event]:
+    """Algoritma girişleri (karar i barının kapanışında) + her biri için aynı çıkışlı rastgele eş (plasebo)."""
+    c = df["close"].to_numpy(dtype=float)
+    arr = {"timestamp": df["timestamp"].to_numpy(dtype=np.int64), "step": tf_ms(tf)}
+    n, out = len(df), []
+    nan = lambda x: x is None or x != x  # noqa: E731
+
+    def add(name, side, i, stop_mult, exit_spec, stop=None):
+        a = atr[i]
+        st = stop if stop is not None else (c[i] - stop_mult * a if side == LONG else c[i] + stop_mult * a)
+        out.append(Event(symbol, tf, "algo", name, side, i, int(arr["timestamp"][i]) + arr["step"], float(st),
+                         trigger=None, exit=dict(exit_spec)))
+
+    for i in range(210, n):
+        a = atr[i]
+        if nan(a) or a <= 0:
+            continue
+        # 1) kaplumbağa trend takibi: 20 bar kırılımı, 10 bar karşı kanal çıkışı, 2 ATR ilk stop
+        if not nan(aux["hi20"][i]) and c[i] > aux["hi20"][i] and c[i - 1] <= aux["hi20"][i - 1]:
+            add("TREND_DONCHIAN_20_10", LONG, i, 2.0, {"kind": "channel", "max_bars": 300})
+        elif not nan(aux["lo20"][i]) and c[i] < aux["lo20"][i] and c[i - 1] >= aux["lo20"][i - 1]:
+            add("TREND_DONCHIAN_20_10", SHORT, i, 2.0, {"kind": "channel", "max_bars": 300})
+        # 2) zaman serisi momentumu (28 bar getirisi işaret değiştirince), 3 ATR felaket stopu
+        m0, m1 = aux["mom28"][i], aux["mom28"][i - 1]
+        if not nan(m0) and not nan(m1):
+            if m0 > 0 >= m1:
+                add("TSMOM_28", LONG, i, 3.0, {"kind": "sign", "max_bars": 300})
+            elif m0 < 0 <= m1:
+                add("TSMOM_28", SHORT, i, 3.0, {"kind": "sign", "max_bars": 300})
+        # 3) RSI(2) geri dönüş (Connors): 200 ortalama yönünde aşırı uç, 5 ortalamayı geçince çık, en çok 10 bar
+        r0, r1, sma = aux["rsi2"][i], aux["rsi2"][i - 1], aux["sma200"][i]
+        if not nan(r0) and not nan(r1) and not nan(sma):
+            if c[i] > sma and r0 < 10 <= r1:
+                add("RSI2_REVERSION", LONG, i, 3.0, {"kind": "sma_cross", "max_bars": 10})
+            elif c[i] < sma and r0 > 90 >= r1:
+                add("RSI2_REVERSION", SHORT, i, 3.0, {"kind": "sma_cross", "max_bars": 10})
+        # 4) Bollinger sıkışma kırılımı: bant genişliği son 120 barın en dar %10'unda iken ilk kapanış band dışı
+        if bool(aux["squeeze"][i - 1]) and not nan(aux["bb_up"][i]):
+            if c[i] > aux["bb_up"][i] and c[i - 1] <= aux["bb_up"][i - 1]:
+                add("BB_SQUEEZE_BREAKOUT", LONG, i, 0.0, {"kind": "mid_cross", "max_bars": 60}, stop=min(aux["sma20"][i], c[i] - a))
+            elif c[i] < aux["bb_dn"][i] and c[i - 1] >= aux["bb_dn"][i - 1]:
+                add("BB_SQUEEZE_BREAKOUT", SHORT, i, 0.0, {"kind": "mid_cross", "max_bars": 60}, stop=max(aux["sma20"][i], c[i] + a))
+    # EŞ (plasebo): her algoritma için barların %1'inde rastgele an ve yön, AYNI çıkış kuralı ve tipik stop mesafesi.
+    # Seçim yalnız o barın zaman damgasından türetilir (gerçek sinyale ve seri uzunluğuna bağlı DEĞİL).
+    for name, mult, spec in PLACEBO_SPECS:
+        for j in range(210, n):
+            u = _h(symbol, tf, name, int(arr["timestamp"][j]))
+            a = atr[j]
+            if u >= 0.01 or nan(a) or a <= 0:
+                continue
+            side = LONG if u < 0.005 else SHORT
+            out.append(Event(symbol, tf, "placebo", "PLACEBO_" + name, side, j, int(arr["timestamp"][j]) + arr["step"],
+                             float(c[j] - mult * a if side == LONG else c[j] + mult * a), trigger=None, exit=dict(spec)))
+    return out
+
+
+#: (algoritma, tipik ilk stop ATR katı, çıkış kuralı) — eşlerin (plasebo) tanımı
+PLACEBO_SPECS = (("TREND_DONCHIAN_20_10", 2.0, {"kind": "channel", "max_bars": 300}),
+                 ("TSMOM_28", 3.0, {"kind": "sign", "max_bars": 300}),
+                 ("RSI2_REVERSION", 3.0, {"kind": "sma_cross", "max_bars": 10}),
+                 ("BB_SQUEEZE_BREAKOUT", 1.5, {"kind": "mid_cross", "max_bars": 60}))
+
+
+def _rule_exit(kind: str, k: int, s: float, c: np.ndarray, aux: dict[str, np.ndarray], spec: dict, j: int) -> bool:
+    """k barının KAPANIŞINDA çıkış koşulu (çıkış bir sonraki barın açılışında)."""
+    if kind == "channel":
+        ref = aux["lo10"][k] if s > 0 else aux["hi10"][k]
+        return ref == ref and ((c[k] < ref) if s > 0 else (c[k] > ref))
+    if kind == "sign":
+        m = aux["mom28"][k]
+        return m == m and ((m <= 0) if s > 0 else (m >= 0))
+    if kind == "sma_cross":
+        m = aux["sma5"][k]
+        return m == m and ((c[k] > m) if s > 0 else (c[k] < m))
+    if kind == "mid_cross":
+        m = aux["sma20"][k]
+        return m == m and ((c[k] < m) if s > 0 else (c[k] > m))
+    if kind == "hold":
+        return k >= j + int(spec["bars"]) - 1
+    raise ValueError(f"bilinmeyen çıkış: {kind}")
+
+
+def simulate_rule(ev: Event, arr: dict[str, np.ndarray], atr: np.ndarray, aux: dict[str, np.ndarray], cfg: LabConfig) -> str:
+    """Kural çıkışlı işlem: sonraki açılışta giriş; ilk stop bar içinde (kötümser); kural kapanışta tetiklenirse sonraki
+    açılışta çıkış; `max_bars` dolarsa kapanışta. Veri bitmeden kapanmayan işlem SAYILMAZ (sona doğru yanlılık yok)."""
+    o, h, lo, c = arr["open"], arr["high"], arr["low"], arr["close"]
+    n, j = len(o), ev.i + 1
+    if j >= n - 1:
+        return "NO_FUTURE_DATA"
+    s = 1.0 if ev.side == LONG else -1.0
+    entry, stop, a = float(o[j]), float(ev.stop), float(atr[ev.i])
+    if not a or a != a:
+        return "NO_ATR"
+    risk = s * (entry - stop)
+    if risk <= cfg.min_risk_atr * a:
+        return "STOP_TOO_CLOSE"
+    if risk > 10 * a:
+        return "STOP_TOO_FAR"
+    spec = ev.exit
+    kind, max_bars = str(spec["kind"]), int(spec.get("max_bars") or spec.get("bars") or 300)
+    exit_px, reason, k = None, "TIME", j
+    for k in range(j, min(n, j + max_bars)):
+        if (s > 0 and lo[k] <= stop) or (s < 0 and h[k] >= stop):
+            exit_px, reason = ((min(o[k], stop) if s > 0 else max(o[k], stop)) if k > j else stop), "STOP"
+            break
+        if _rule_exit(kind, k, s, c, aux, spec, j):
+            if k + 1 >= n:
+                return "NO_FUTURE_DATA"
+            exit_px, reason, k = float(o[k + 1]), "RULE", k + 1
+            break
+    else:
+        if j + max_bars > n:
+            return "NO_FUTURE_DATA"
+        exit_px, k = float(c[j + max_bars - 1]), j + max_bars - 1
+    if exit_px is None:
+        return "NO_FUTURE_DATA"
+    cost = (entry + float(exit_px)) * cfg.cost_per_side
+    ev.r, ev.cost_r, ev.exit_reason, ev.hold = (s * (float(exit_px) - entry) - cost) / risk, cost / risk, reason, k - j + 1
+    return ""
+
+
+def xsmom_events(frames: dict[str, pd.DataFrame], cfg: LabConfig, *, lookback: int = 28, top: int = 5, hold: int = 7) -> list[Event]:
+    """Coinler arası momentum (1d): her 7 günde bir, son 28 günün en güçlü `top` coini LONG, en zayıf `top` coini SHORT;
+    bir sonraki yeniden dengelemede çıkış. Felaket stopu 3 ATR (R birimi). Eşi: aynı günlerde rastgele seçilen coinler."""
+    tf = "1d"
+    closes = pd.DataFrame({s: df.set_index("timestamp")["close"] for s, df in frames.items() if len(df)}).sort_index()
+    if closes.shape[1] < 2 * top:
+        return []
+    prep = {}
+    for s, df in frames.items():
+        if len(df) < 60:
+            continue
+        ind = indicators(df)
+        prep[s] = (df, {k: df[k].to_numpy(dtype=float) for k in ("open", "high", "low", "close", "volume")}, ind,
+                   {int(t): i for i, t in enumerate(df["timestamp"])}, aux_series(df))
+    out: list[Event] = []
+    ts = list(closes.index)
+    for r in range(lookback + 1, len(ts) - hold - 1, hold):
+        ret = (closes.iloc[r] / closes.iloc[r - lookback] - 1).dropna()
+        ret = ret[[s for s in ret.index if s in prep]]
+        if len(ret) < 2 * top:
+            continue
+        legs = [(s, LONG, XSMOM) for s in ret.nlargest(top).index] + [(s, SHORT, XSMOM) for s in ret.nsmallest(top).index]
+        pool = sorted(ret.index)
+        rnd = sorted(pool, key=lambda s: _h("xs", ts[r], s))
+        legs += [(s, LONG, "PLACEBO_" + XSMOM) for s in rnd[:top]] + [(s, SHORT, "PLACEBO_" + XSMOM) for s in rnd[top:2 * top]]
+        for s, side, name in legs:
+            df, arr, ind, idx, aux = prep[s]
+            i = idx.get(int(ts[r]))
+            if i is None or ind["atr"][i] != ind["atr"][i]:
+                continue
+            a = ind["atr"][i]
+            ev = Event(s, tf, "placebo" if name.startswith("PLACEBO_") else "algo", name, side, i, int(ts[r]) + tf_ms(tf),
+                       float(arr["close"][i] - 3 * a if side == LONG else arr["close"][i] + 3 * a),
+                       exit={"kind": "hold", "bars": hold})
+            if simulate_rule(ev, arr, ind["atr"], aux, cfg):
+                continue
+            ev.ctx = context(ind, arr, ev.i, ev.side)
+            out.append(ev)
+    return out
+
+
 EXTRA_SIGNALS = ("THREE_INSIDE_UP", "THREE_INSIDE_DOWN", "THREE_OUTSIDE_UP", "THREE_OUTSIDE_DOWN", "NR7_BREAKOUT",
                  "INSIDE_BAR_BREAKOUT", "DONCHIAN20_BREAKOUT")
 
@@ -447,14 +642,17 @@ def simulate(ev: Event, arr: dict[str, np.ndarray], atr: np.ndarray, cfg: LabCon
     return ""
 
 
-def process_series(df: pd.DataFrame, symbol: str, tf: str, cfg: LabConfig, *, catalog: bool = True) -> tuple[list[Event], dict]:
+def process_series(df: pd.DataFrame, symbol: str, tf: str, cfg: LabConfig, *, catalog: bool = True,
+                   algos: bool = True) -> tuple[list[Event], dict]:
     arr = {k: df[k].to_numpy(dtype=float) for k in ("open", "high", "low", "close", "volume")}
     ind = indicators(df)
-    evs = (catalog_events(df, symbol, tf, cfg) if catalog else []) + extra_events(df, symbol, tf, ind["atr"])
+    aux = aux_series(df) if algos else {}
+    evs = (catalog_events(df, symbol, tf, cfg) if catalog else []) + extra_events(df, symbol, tf, ind["atr"]) \
+        + (algo_events(df, symbol, tf, ind["atr"], aux) if algos else [])
     skipped: dict[str, int] = {}
     done: list[Event] = []
     for ev in evs:
-        why = simulate(ev, arr, ind["atr"], cfg)
+        why = simulate_rule(ev, arr, ind["atr"], aux, cfg) if ev.exit else simulate(ev, arr, ind["atr"], cfg)
         if why:
             skipped[why] = skipped.get(why, 0) + 1
             continue
@@ -487,12 +685,12 @@ def coverage_problem(meta: dict, days: int, tf: str, cache_dir: Path, now_ms: in
 
 
 def _task(args: tuple) -> tuple[list[dict], dict]:
-    cache_dir, symbol, tf, days, now_ms, cfg_d, catalog = args
+    cache_dir, symbol, tf, days, now_ms, cfg_d, catalog, algos = args
     cfg = LabConfig(**cfg_d)
     df = load_series(symbol, tf, days=days, cache_dir=Path(cache_dir), provider_factory=None, now_ms=now_ms)
     if len(df) < cfg.window + cfg.max_hold_bars + 10:
         return [], {"symbol": symbol, "tf": tf, "bars": len(df), "error": "YETERSİZ_VERİ"}
-    evs, meta = process_series(df, symbol, tf, cfg, catalog=catalog)
+    evs, meta = process_series(df, symbol, tf, cfg, catalog=catalog, algos=algos)
     return [asdict(e) for e in evs], meta
 
 
@@ -586,9 +784,11 @@ def aggregate(events: list[dict], cfg: LabConfig) -> dict[str, Any]:
             groups.append({**dict(zip(keys, key)), "context": dim, "bucket": bucket, "IS": is_st, "OOS": oos_st,
                            "symbols": int(gg["symbol"].nunique())})
     # aynı dilim/yön/bağlamdaki PLASEBO (rastgele an + rastgele yön) ile karşılaştırma
-    plac = {(g["tf"], g["side"], g["context"], g["bucket"]): g for g in groups if g["family"] == "placebo"}
+    plac = {(g["name"], g["tf"], g["side"], g["context"], g["bucket"]): g for g in groups if g["family"] == "placebo"}
     for g in groups:
-        pg = plac.get((g["tf"], g["side"], g["context"], g["bucket"]))
+        k = (g["tf"], g["side"], g["context"], g["bucket"])
+        # algoritma → aynı çıkış kuralını kullanan kendi eşi; formasyon → genel rastgele giriş
+        pg = plac.get(("PLACEBO_" + g["name"],) + k) or plac.get(("PLACEBO_RANDOM",) + k)
         vs = None
         if g["family"] != "placebo" and pg and pg["IS"].get("n", 0) >= cfg.min_oos and pg["OOS"].get("n", 0) >= cfg.min_oos \
                 and g["IS"].get("n") and g["OOS"].get("n"):
@@ -616,7 +816,7 @@ def aggregate(events: list[dict], cfg: LabConfig) -> dict[str, Any]:
 # ---------------------------------------------------------------------------- çalıştırma
 def run(*, symbols: list[str], tfs: list[str], cache_dir: Path, out_dir: Path, cfg: LabConfig, provider_factory,
         days: dict[str, int] | None = None, jobs: int = 1, catalog: bool = True, now_ms: int | None = None,
-        log: Callable[[str], None] = print) -> dict[str, Any]:
+        log: Callable[[str], None] = print, algos: bool = True) -> dict[str, Any]:
     now_ms = int(now_ms if now_ms is not None else time.time() * 1000)
     bad = [tf for tf in tfs if tf not in SUPPORTED_TIMEFRAMES]
     if bad:
@@ -639,7 +839,7 @@ def run(*, symbols: list[str], tfs: list[str], cache_dir: Path, out_dir: Path, c
                     raise DownloadAborted(f"Binance'ten art arda {fails} seri indirilemedi ({', '.join(failed[-3:])}). "
                                           "Bağlantı ya da Binance tarafında geçici kısıtlama olabilir; 10-15 dk sonra "
                                           "tekrar deneyin (inen veri önbellekte kalır). Test ÇALIŞTIRILMADI.")
-    tasks = [(str(cache_dir), s, tf, days[tf], now_ms, asdict(cfg), catalog) for s in symbols for tf in tfs]
+    tasks = [(str(cache_dir), s, tf, days[tf], now_ms, asdict(cfg), catalog, algos) for s in symbols for tf in tfs]
     events, metas = [], []
     if jobs > 1:
         with ProcessPoolExecutor(max_workers=jobs) as ex:
@@ -659,6 +859,11 @@ def run(*, symbols: list[str], tfs: list[str], cache_dir: Path, out_dir: Path, c
             events += evs
             metas.append(meta)
             log(f"tarandı {meta['symbol']} {meta['tf']}: {meta.get('trades', 0)} işlem ({time.time() - t0:.0f} sn)")
+    if algos and "1d" in tfs:                         # coinler arası momentum: bütün coinlerin günlük serisi birlikte
+        frames = {s: load_series(s, "1d", days=days["1d"], cache_dir=cache_dir, provider_factory=None, now_ms=now_ms) for s in symbols}
+        xs = xsmom_events(frames, cfg)
+        events += [asdict(e) for e in xs]
+        log(f"coinler arası momentum: {sum(1 for e in xs if e.family == 'algo')} işlem")
     agg = aggregate(events, cfg)
     warnings = [f"{m['symbol']} {m['tf']}: {w}" for m in metas
                 if (w := coverage_problem(m, days[m["tf"]], m["tf"], cache_dir, now_ms))]
@@ -703,6 +908,13 @@ def render(report: dict[str, Any], *, top: int = 25) -> str:
             vtxt = f" · rastgeleye göre {vs['IS']:+.2f}/{vs['OOS']:+.2f}" if vs else " · rastgele karşılaştırması yok"
             lines.append(f"{x['tf']:>4} {x['name']:<26}{x['side']:<6}{x['context'] + '=' + str(x['bucket']):<24} "
                          f"keşif {fmt(x['IS'])} | doğrulama {fmt(x['OOS'])}{vtxt} · {x['symbols']} coin")
+    algo_rows = sorted([x for x in real if x["family"] == "algo" and x["context"] == "HEPSİ"], key=lambda x: (x["name"], x["tf"], x["side"]))
+    if algo_rows:
+        lines.append("\n== ALGORİTMALAR (bağlamsız; eşi = aynı çıkış kuralıyla rastgele giriş) ==")
+        for x in algo_rows:
+            vs = x.get("vs_placebo")
+            vtxt = f" · eşine göre {vs['IS']:+.2f}/{vs['OOS']:+.2f}" if vs else " · eş karşılaştırması yok"
+            lines.append(f"{x['tf']:>4} {x['name']:<22}{x['side']:<6} keşif {fmt(x['IS'])} | doğrulama {fmt(x['OOS'])}{vtxt} · {x['verdict']}")
     base = [x for x in real if x["context"] == "HEPSİ" and x["verdict"] != V_THIN]
     loss = sorted([x for x in base if x["verdict"] == V_LOSS], key=lambda x: x["OOS"]["mean_r"])[:15]
     lines.append(f"\n== {V_LOSS} (bağlamsız, en kötü 15) ==")

@@ -1,1 +1,1 @@
---no-catalog --symbols genis --tfs 4h,1d --days 4h=1460,1d=1825
+--only-variations --variations CV000_EXAMPLE_BULL3 --symbols genis --tfs 4h --days 4h=1460

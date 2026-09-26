@@ -181,7 +181,8 @@ büyüklüğüne ve ileriye dönük PAPER sonucuna bakılır.
 
 ## 7. Varyasyon ekleme prosedürü
 
-Her adım `claude/candle-cvNNN` dalında bir commit ile biter.
+Her adım `claude/candle-cvNNN` dalında bir commit ile biter. Kullanıcı ayrı dala izin vermediyse adımlar açık PR'ı
+olan geliştirme dalında yapılır; PR'daki `chart-analysis.yml` aynı denetimleri koşar.
 
 1. **Çeviri.** Görsel ya da metin okunur. `notes_tr` yazılır: soldan sağa her mumun rengi, gövdesi, fitilleri, ATR'ye
    ve komşularına göre büyüklüğü, konumu (içinde, yutan, ortanın üstünde kapanış) ve hacmi; sonra formasyon öncesi

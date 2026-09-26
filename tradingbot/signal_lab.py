@@ -60,6 +60,9 @@ DEFAULT_TFS = ("5m", "15m", "1h", "4h")   # ortak analizin desteklediği dilimle
 #: zaman dilimi başına varsayılan geçmiş (gün) — 1m yalnız maliyet karşılaştırması için (istenirse)
 DEFAULT_DAYS = {"5m": 60, "15m": 180, "1h": 365, "4h": 730, "1d": 1460, "1w": 2920}
 V_STRONG, V_WEAK, V_LOSS, V_NONE, V_THIN = "GÜÇLÜ ADAY", "ZAYIF İZ", "KAYBETTİRİR", "KANIT YOK", "VERİ AZ"
+#: `--futures` kipleri (SPEC fut_v1): off = bugünkü laboratuvar (bayt bayt aynı; futures_* modülleri HİÇ içe aktarılmaz)
+FUTURES_MODES = ("off", "probe", "ctx", "rules")
+FUTURES_TFS = ("1h", "4h", "1d")                 # OI/fonlama kuralları yalnız bu dilimlerde
 
 
 @dataclass(frozen=True)
@@ -102,6 +105,7 @@ class Event:
     exit_reason: str = ""
     hold: int = 0
     period: str = ""
+    funding_r: float | None = None   # fonlama taşıma maliyeti (R; yalnız vadeli koşuda, BİLGİ — hükme girmez)
 
 
 # ---------------------------------------------------------------------------- veri
@@ -147,6 +151,11 @@ def _http_get(url: str, timeout: float = 60.0) -> bytes | None:
             last = exc
         time.sleep(1.5 * (attempt + 1))
     raise ConnectionError(f"arşiv indirilemedi: {url}: {last}")
+
+
+def _offline_fetch(url: str) -> bytes | None:
+    """`--offline` vadeli yoklaması: ağ YOK (her istek hata sayılır)."""
+    raise ConnectionError(f"çevrimdışı: {url}")
 
 
 def _parse_archive_zip(data: bytes) -> pd.DataFrame:
@@ -273,7 +282,10 @@ def indicators(df: pd.DataFrame) -> dict[str, np.ndarray]:
             "atr_pct": atr_pct.to_numpy()}
 
 
-def context(ind: dict[str, np.ndarray], arr: dict[str, np.ndarray], i: int, side: str) -> dict[str, str]:
+def context(ind: dict[str, np.ndarray], arr: dict[str, np.ndarray], i: int, side: str,
+            fut: dict[str, np.ndarray] | None = None) -> dict[str, str]:
+    """Bağlam kovaları. `fut` (vadeli özellikler, `--futures ctx|rules`) verilirse oi_rejim / oi_seviye / fonlama
+    kovaları eklenir (yalnız KEŞİF); `fut` yoksa çıktı bugünkü 4 anahtardır."""
     c = arr["close"][i]
     vr = arr["volume"][i] / ind["vol_avg"][i] if ind["vol_avg"][i] and ind["vol_avg"][i] > 0 else float("nan")
     rsi, e50, e200 = ind["rsi"][i], ind["ema50"][i], ind["ema200"][i]
@@ -283,10 +295,14 @@ def context(ind: dict[str, np.ndarray], arr: dict[str, np.ndarray], i: int, side
     else:
         up, down = c > e50 > e200, c < e50 < e200
         trend = "karışık" if not (up or down) else ("trendle" if (up and side == LONG) or (down and side == SHORT) else "trende_karşı")
-    return {"hacim": "bilinmiyor" if math.isnan(vr) else ("düşük(<0.8x)" if vr < 0.8 else ("yüksek(>1.5x)" if vr > 1.5 else "normal")),
-            "rsi": "bilinmiyor" if math.isnan(rsi) else ("<30" if rsi < 30 else ("30-50" if rsi < 50 else ("50-70" if rsi < 70 else ">70"))),
-            "trend": trend,
-            "volatilite": "bilinmiyor" if math.isnan(vx) else ("düşük" if vx < 0.8 else ("yüksek" if vx > 1.25 else "normal"))}
+    out = {"hacim": "bilinmiyor" if math.isnan(vr) else ("düşük(<0.8x)" if vr < 0.8 else ("yüksek(>1.5x)" if vr > 1.5 else "normal")),
+           "rsi": "bilinmiyor" if math.isnan(rsi) else ("<30" if rsi < 30 else ("30-50" if rsi < 50 else ("50-70" if rsi < 70 else ">70"))),
+           "trend": trend,
+           "volatilite": "bilinmiyor" if math.isnan(vx) else ("düşük" if vx < 0.8 else ("yüksek" if vx > 1.25 else "normal"))}
+    if fut is None:
+        return out
+    from . import futures_features as FF                # tembel: varsayılan yol futures_* modüllerine hiç girmez
+    return {**out, **FF.ctx_labels(fut, i)}
 
 
 # ---------------------------------------------------------------------------- sinyaller
@@ -647,24 +663,36 @@ def simulate(ev: Event, arr: dict[str, np.ndarray], atr: np.ndarray, cfg: LabCon
 
 
 def process_series(df: pd.DataFrame, symbol: str, tf: str, cfg: LabConfig, *, catalog: bool = True,
-                   algos: bool = True, extras: bool = True, variations: tuple[str, ...] | list[str] = ()) -> tuple[list[Event], dict]:
+                   algos: bool = True, extras: bool = True, variations: tuple[str, ...] | list[str] = (),
+                   futures: str = "off", fut_raw: dict | None = None) -> tuple[list[Event], dict]:
     """`variations`: mum varyasyonu kimlikleri (`candle_variations`; taslak ve örnek DAHİL) — her biri kendi çıkış
-    kuralı (`candle_lab.vcfg`) ve eşleştirilmiş plasebosuyla. `extras=False`: ek sinyaller (ve PLACEBO_RANDOM) yok."""
+    kuralı (`candle_lab.vcfg`) ve eşleştirilmiş plasebosuyla. `extras=False`: ek sinyaller (ve PLACEBO_RANDOM) yok.
+    `futures` (`FUTURES_MODES`): ctx → bağlama vadeli kovalar; rules → ayrıca vadeli kurallar, kontrolleri ve plaseboları
+    (`futures_lab`) + bilgi amaçlı `funding_r`. `fut_raw` = `futures_data.read_futures_cache` (None → vadeli özellik yok)."""
     arr = {k: df[k].to_numpy(dtype=float) for k in ("open", "high", "low", "close", "volume")}
     ind = indicators(df)
-    aux = aux_series(df) if algos else {}
+    aux = aux_series(df) if algos or futures == "rules" else {}
     evs = (catalog_events(df, symbol, tf, cfg) if catalog else []) \
         + (extra_events(df, symbol, tf, ind["atr"]) if extras else []) \
         + (algo_events(df, symbol, tf, ind["atr"], aux) if algos else [])
     skipped: dict[str, int] = {}
+    feat = None
+    if futures != "off" and fut_raw is not None:        # tembel: varsayılan yol futures_* modüllerine hiç girmez
+        from . import futures_features as FF
+        feat = FF.bar_features(df["timestamp"].to_numpy(dtype=np.int64), tf_ms(tf), arr["close"], fut_raw)
+        if futures == "rules":
+            from . import futures_lab
+            evs += futures_lab.events(df, symbol, tf, ind, aux, feat, skipped)
     done: list[Event] = []
     for ev in evs:
         why = simulate_rule(ev, arr, ind["atr"], aux, cfg) if ev.exit else simulate(ev, arr, ind["atr"], cfg)
         if why:
             skipped[why] = skipped.get(why, 0) + 1
             continue
-        ev.ctx = context(ind, arr, ev.i, ev.side)
+        ev.ctx = context(ind, arr, ev.i, ev.side, fut=feat)
         done.append(ev)
+    if feat is not None and futures == "rules":
+        futures_lab.funding_carry(done, arr, df["timestamp"].to_numpy(dtype=np.int64), tf_ms(tf), fut_raw)
     n_signals, vmeta = len(evs), {}
     if variations:                                      # tembel: varsayılan yol candle_lab'a hiç girmez
         from . import candle_lab, candle_variations
@@ -690,6 +718,9 @@ def process_series(df: pd.DataFrame, symbol: str, tf: str, cfg: LabConfig, *, ca
             "first": int(df["timestamp"].iloc[0]) if len(df) else None, "last": int(df["timestamp"].iloc[-1]) if len(df) else None}
     if variations:
         meta["variations"] = vmeta
+    if futures != "off":
+        from . import futures_lab
+        meta["futures"] = futures_lab.feature_meta(df["timestamp"].to_numpy(dtype=np.int64), tf_ms(tf), feat, fut_raw)
     return done, meta
 
 
@@ -718,11 +749,20 @@ def coverage_problem(meta: dict, days: int, tf: str, cache_dir: Path, now_ms: in
 def _task(args: tuple) -> tuple[list[dict], dict]:
     cache_dir, symbol, tf, days, now_ms, cfg_d, catalog, algos, *rest = args
     variations, extras = tuple(rest[0]) if len(rest) > 0 else (), bool(rest[1]) if len(rest) > 1 else True
+    futures = str(rest[2]) if len(rest) > 2 else "off"
     cfg = LabConfig(**cfg_d)
     df = load_series(symbol, tf, days=days, cache_dir=Path(cache_dir), provider_factory=None, now_ms=now_ms)
     if len(df) < cfg.window + cfg.max_hold_bars + 10:
         return [], {"symbol": symbol, "tf": tf, "bars": len(df), "error": "YETERSİZ_VERİ"}
-    evs, meta = process_series(df, symbol, tf, cfg, catalog=catalog, algos=algos, extras=extras, variations=variations)
+    fut_raw = None
+    if futures != "off":                                # işçi yalnız önbelleği okur (ağ YOK)
+        from . import futures_data
+        fut_raw = futures_data.read_futures_cache(cache_dir, symbol)
+        if futures == "probe":                          # kör sayım: olaylar var, simülasyon (R) YOK
+            from . import futures_lab
+            return futures_lab.probe_series(df, symbol, tf, fut_raw)
+    evs, meta = process_series(df, symbol, tf, cfg, catalog=catalog, algos=algos, extras=extras, variations=variations,
+                               futures=futures, fut_raw=fut_raw)
     return [asdict(e) for e in evs], meta
 
 
@@ -879,8 +919,8 @@ def aggregate(events: list[dict], cfg: LabConfig) -> dict[str, Any]:
     for g in groups:
         k = (g["tf"], g["side"], g["context"], g["bucket"])
         # algoritma → aynı çıkış kuralını kullanan kendi eşi; formasyon → genel rastgele giriş;
-        # mum varyasyonu → YALNIZ kendi eşleştirilmiş eşi (aynı bağlam/stop/çıkış), genel rastgele girişe düşmez
-        if g["family"] == "candle_var":
+        # mum varyasyonu / vadeli kural → YALNIZ kendi eşleştirilmiş eşi, genel rastgele girişe düşmez (kontrolün eşi yok)
+        if g["family"] in ("candle_var", "futures", "control"):
             pg = plac.get(("PLACEBO_" + g["name"],) + k)
         else:
             pg = plac.get(("PLACEBO_" + g["name"],) + k) or plac.get(("PLACEBO_RANDOM",) + k)
@@ -903,12 +943,12 @@ def aggregate(events: list[dict], cfg: LabConfig) -> dict[str, Any]:
             vs["ci95"] = ci
         g["verdict_strict"] = verdict_strict(g["verdict"], vs.get("ci95") if vs else None)
     judged = [g for g in groups if g["verdict"] != V_THIN]
-    real = [g for g in judged if g["family"] != "placebo"]
+    real = [g for g in judged if g["family"] not in ("placebo", "control")]   # kontrol (CTRL_) hipotez değildir
     pl = [g for g in judged if g["family"] == "placebo"]
     rate = lambda gs: round(sum(1 for g in gs if g["replicated"] and g["IS"]["mean_r"] > 0) / len(gs), 4) if gs else None  # noqa: E731
     tf_summary = {}
     for tf, g in ev.groupby("tf"):
-        r_ = g[g["family"] != "placebo"]
+        r_ = g[~g["family"].isin(("placebo", "control"))]
         p_ = g[g["family"] == "placebo"]
         tf_summary[tf] = {"trades": int(len(r_)), "mean_r": round(float(r_["r"].mean()), 4) if len(r_) else None,
                           "cost_r": round(float(r_["cost_r"].mean()), 4) if len(r_) else None,
@@ -922,11 +962,22 @@ def aggregate(events: list[dict], cfg: LabConfig) -> dict[str, Any]:
 def run(*, symbols: list[str], tfs: list[str], cache_dir: Path, out_dir: Path, cfg: LabConfig, provider_factory,
         days: dict[str, int] | None = None, jobs: int = 1, catalog: bool = True, now_ms: int | None = None,
         log: Callable[[str], None] = print, algos: bool = True, variations: tuple[str, ...] | list[str] = (),
-        extras: bool = True) -> dict[str, Any]:
+        extras: bool = True, futures: str = "off", futures_fetch: Callable[[str], bytes | None] | None = None) -> dict[str, Any]:
+    """`futures` (`FUTURES_MODES`, varsayılan off = bugünkü laboratuvar): probe = vadeli arşiv yoklaması + kör sayım (R yok);
+    ctx = bağlama vadeli kovalar (KEŞİF); rules = ön kayıtlı vadeli kurallar (`futures_lab`, docs/FUTURES_OI_FUNDING_LAB.md).
+    `futures_fetch`: vadeli arşiv indiricisi (testlerde sahte; None → `_http_get`)."""
     now_ms = int(now_ms if now_ms is not None else time.time() * 1000)
     bad = [tf for tf in tfs if tf not in SUPPORTED_TIMEFRAMES]
     if bad:
         raise ValueError(f"desteklenmeyen zaman dilimi: {', '.join(bad)} — ortak analiz yalnız {', '.join(SUPPORTED_TIMEFRAMES)} okur")
+    if futures not in FUTURES_MODES:
+        raise ValueError(f"bilinmeyen --futures kipi: {futures} (geçerli: {', '.join(FUTURES_MODES)})")
+    if futures != "off":
+        if variations:
+            raise ValueError("--futures mum varyasyonlarıyla birlikte koşmaz (DSL v2'ye kadar)")
+        badf = [tf for tf in tfs if tf not in FUTURES_TFS]
+        if badf:
+            raise ValueError(f"--futures yalnız {', '.join(FUTURES_TFS)} dilimlerinde: {', '.join(badf)}")
     variations = tuple(dict.fromkeys(variations or ()))
     if variations:                                      # bilinmeyen/bozuk kimlik indirmeden ÖNCE ValueError
         from . import candle_variations
@@ -949,7 +1000,18 @@ def run(*, symbols: list[str], tfs: list[str], cache_dir: Path, out_dir: Path, c
                     raise DownloadAborted(f"Binance'ten art arda {fails} seri indirilemedi ({', '.join(failed[-3:])}). "
                                           "Bağlantı ya da Binance tarafında geçici kısıtlama olabilir; 10-15 dk sonra "
                                           "tekrar deneyin (inen veri önbellekte kalır). Test ÇALIŞTIRILMADI.")
-    opt = (variations, extras) if (variations or not extras) else ()   # varsayılan yol: görev demeti aynı
+    coverage = None
+    if futures != "off":                                # ana süreçte, süreç havuzundan ÖNCE (işçiler yalnız önbelleği okur)
+        from . import futures_data, futures_lab
+        offline = provider_factory is None
+        fetch = futures_fetch or (_offline_fetch if offline else None)
+        coverage = futures_data.ensure_futures(symbols, cache_dir, futures_data.need_start(days, tfs, now_ms), now_ms,
+                                               fetch=fetch, log=log, offline=offline)
+        if futures != "probe":
+            for line in futures_lab.cache_schema_lines(symbols, cache_dir):
+                log(line)
+    # varsayılan yol: görev demeti aynı (vadeli kip yalnız açıksa eklenir)
+    opt = ((variations, extras) + ((futures,) if futures != "off" else ())) if (variations or not extras or futures != "off") else ()
     tasks = [(str(cache_dir), s, tf, days[tf], now_ms, asdict(cfg), catalog, algos) + opt for s in symbols for tf in tfs]
     events, metas = [], []
     if jobs > 1:
@@ -970,26 +1032,46 @@ def run(*, symbols: list[str], tfs: list[str], cache_dir: Path, out_dir: Path, c
             events += evs
             metas.append(meta)
             log(f"tarandı {meta['symbol']} {meta['tf']}: {meta.get('trades', 0)} işlem ({time.time() - t0:.0f} sn)")
-    if algos and "1d" in tfs:                         # coinler arası momentum: bütün coinlerin günlük serisi birlikte
+    if algos and "1d" in tfs and futures != "probe":  # coinler arası momentum: bütün coinlerin günlük serisi birlikte
         frames = {s: load_series(s, "1d", days=days["1d"], cache_dir=cache_dir, provider_factory=None, now_ms=now_ms) for s in symbols}
         xs = xsmom_events(frames, cfg)
         events += [asdict(e) for e in xs]
         log(f"coinler arası momentum: {sum(1 for e in xs if e.family == 'algo')} işlem")
-    agg = aggregate(events, cfg)
     warnings = [f"{m['symbol']} {m['tf']}: {w}" for m in metas
                 if (w := coverage_problem(m, days[m["tf"]], m["tf"], cache_dir, now_ms))]
+    if futures != "off":
+        warnings += futures_lab.coverage_warnings(metas)
+    if futures == "probe":                              # yoklama: P1–P7 + kör sayım (P8); hüküm/aggregate YOK
+        probe = futures_data.probe(symbols, cache_dir, now_ms, fetch=futures_fetch or (_offline_fetch if provider_factory is None
+                                                                                        else None), log=log, coverage=coverage)
+        report = {"kind": "SIGNAL_LAB", "config": asdict(cfg), "symbols": symbols, "timeframes": tfs,
+                  "days": {tf: days[tf] for tf in tfs}, "series": metas, "seconds": round(time.time() - t0, 1),
+                  "data_warnings": warnings, "events": 0,
+                  "futures": {"mode": futures, "version": futures_lab.FUT_VERSION, "registry_sha": futures_lab.FUT_REGISTRY_SHA,
+                              "coverage": coverage, "probe": probe, "blind": futures_lab.blind_report(events, metas, tfs, cfg),
+                              "hypotheses": 8, "primary_tf": futures_lab.PRIMARY_TF}}
+        (out_dir / "signal_lab_report.json").write_text(json.dumps(report, ensure_ascii=False, indent=1), encoding="utf-8")
+        return report
+    agg = aggregate(events, cfg)
     with gzip.open(out_dir / "signal_lab_events.csv.gz", "wt", newline="", encoding="utf-8") as fh:
         cols = ["symbol", "tf", "family", "name", "side", "t_ms", "r", "cost_r", "exit_reason", "hold", "ctx"]
+        if futures != "off":
+            cols.append("funding_r")                    # yalnız vadeli koşuda (varsayılan CSV bayt bayt aynı)
         w = csv.writer(fh)
         w.writerow(cols)
         for e in events:
-            w.writerow([e[c] if c != "ctx" else json.dumps(e["ctx"], ensure_ascii=False) for c in cols])
+            w.writerow([e.get(c) if c != "ctx" else json.dumps(e["ctx"], ensure_ascii=False) for c in cols])
     report = {"kind": "SIGNAL_LAB", "config": asdict(cfg), "cost_round_trip_pct": round(2 * cfg.cost_per_side * 100, 3),
               "symbols": symbols, "timeframes": tfs, "days": {tf: days[tf] for tf in tfs}, "series": metas,
               "seconds": round(time.time() - t0, 1), "data_warnings": warnings, **agg,
               "note_tr": "Geçmiş test (PAPER değil, canlı değil). GÜÇLÜ ADAY = iki dönemde de %95 aralık 0'ın üstünde ve aynı "
                          "bağlamdaki rastgele girişi iki dönemde de geçiyor. Kâr garantisi değildir.",
               "strict_rule_tr": STRICT_RULE_TR}
+    if futures != "off":
+        report["futures"] = {"mode": futures, "version": futures_lab.FUT_VERSION, "registry_sha": futures_lab.FUT_REGISTRY_SHA,
+                             "coverage": coverage,
+                             "contributions": futures_lab.contributions(events, agg, cfg, tfs) if futures == "rules" else [],
+                             "hypotheses": 8, "primary_tf": futures_lab.PRIMARY_TF}
     if variations:                                      # varyasyon başına makinece okunur kayıt (bayt bayt kopyalanır)
         from . import candle_lab, candle_variations
         # koşunun kipi kayda girer: kapı yalnız "yalnız varyasyon" koşusunu kabul eder (katalog/ek/algoritma olayları
@@ -1062,6 +1144,9 @@ def render(report: dict[str, Any], *, top: int = 25) -> str:
              f"{report.get('events', 0)} işlem · gidiş-dönüş maliyet %{report.get('cost_round_trip_pct')} · {report.get('seconds')} sn"]
     if report.get("data_warnings"):
         lines.append(f"UYARI — eksik veri ({len(report['data_warnings'])} seri): " + "; ".join(report["data_warnings"][:10]))
+    if (report.get("futures") or {}).get("mode") == "probe":   # yoklama: hüküm yok, yalnız vadeli bölüm
+        from . import futures_lab
+        return "\n".join(lines + futures_lab.render_section(report, fmt))
     lines.append("\n== ZAMAN DİLİMİ ÖZETİ (bütün gerçek sinyaller) ==")
     lines.append(f"{'dilim':>5} {'işlem':>8} {'ort.R':>8} {'maliyet(R)':>11} {'rastgele ort.R':>15}")
     for tf, t in (report.get("tf_summary") or {}).items():
@@ -1071,7 +1156,7 @@ def render(report: dict[str, Any], *, top: int = 25) -> str:
     pct = lambda x: "—" if x is None else f"%{x * 100:.1f}"  # noqa: E731
     lines.append(f"\nİki dönemde de sıfırın üstünde kalan kombinasyon oranı: gerçek sinyaller {pct(cr.get('real'))} · RASTGELE "
                  f"{pct(cr.get('placebo'))} (hükme giren: {report.get('tested', 0)} gerçek, {cr.get('placebo_tested', 0)} rastgele)")
-    real = [x for x in g if x["family"] != "placebo"]
+    real = [x for x in g if x["family"] not in ("placebo", "control")]
     for v in (V_STRONG, V_WEAK):
         rows = sorted([x for x in real if x["verdict"] == v], key=lambda x: -x["OOS"]["mean_r"])[:top]
         lines.append(f"\n== {v} ({sum(1 for x in real if x['verdict'] == v)}) ==")
@@ -1100,4 +1185,7 @@ def render(report: dict[str, Any], *, top: int = 25) -> str:
                  f"geçiyor. {V_WEAK} tek başına güvenilmez. Geçmiş test; kâr garantisi değildir.")
     lines.append(f"Sıkı {V_STRONG} = ayrıca doğrulama döneminde eşine göre farkın gün kümeli %95 aralığı 0'ın üstünde "
                  f"(önceden kayıtlı kural: signal_lab.STRICT_RULE_TR).")
+    if report.get("futures"):
+        from . import futures_lab
+        lines += futures_lab.render_section(report, fmt)
     return "\n".join(lines)

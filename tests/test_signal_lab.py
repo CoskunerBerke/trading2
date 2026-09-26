@@ -525,3 +525,137 @@ def test_random_walk_loose_variation_is_not_strong(registry):
     hepsi = next(g for g in mine if g["context"] == "HEPSİ")
     assert hepsi["IS"]["n"] >= 30 and hepsi["OOS"]["n"] >= 20 and hepsi["vs_placebo"] is not None
     assert not [g for g in mine if g["verdict"] == L.V_STRONG]
+
+
+# ================================================================== vadeli veri kapalı (--futures off, SPEC fut_v1 §2.1)
+#: Değişiklikten ÖNCEKİ kodla (d7f122a) hesaplanan altın özetler: varsayılan yol bayt bayt aynı kalmalı. `events_csv`
+#: ham tam duyarlıklı r/cost_r içerir; numpy'nin CPU'ya göre seçilen exp/log çekirdekleri (AVX-512 ↔ AVX2/skaler) son
+#: ULP'de ayrışabildiğinden özet `_csv_digest` ile ondalıklar 9 haneye yuvarlanarak alınır (d7f122a'da iki kipte aynı).
+GOLDEN_OFF = {"report_raw": "a1456d61632503c4", "report_json": "6699ef0905364917", "events_csv": "491cdf62fa8c8438",
+              "aggregate": "9da2f56cc9379b4e", "render": "230e7810547bc00f"}
+
+
+def _csv_digest(raw: bytes) -> str:
+    """Olay CSV'sinin özeti; ondalıklı sayılar 9 haneye yuvarlanır (ULP gürültüsü CPU'ya bağlı, davranış değil)."""
+    import hashlib
+    import re
+
+    def rnd(m) -> str:
+        return f"{round(float(m.group(0)), 9) + 0.0:.9f}"
+    txt = re.sub(r"-?\d+\.\d+(?:[eE][-+]?\d+)?|-?\d+[eE][-+]?\d+", rnd, raw.decode("utf-8"))
+    return hashlib.sha256(txt.encode("utf-8")).hexdigest()[:16]
+
+
+def _golden_run(tmp_path, **extra):
+    import gzip
+    import hashlib
+    import re
+    df = synth(900, seed=5)
+    prov = FakeProvider(df)
+    now = int(df["timestamp"].iloc[-1]) + 2 * STEP
+    rep = L.run(symbols=["AAA/USDT", "BBB/USDT"], tfs=["1h"], cache_dir=tmp_path / "c", out_dir=tmp_path / "o",
+                cfg=L.LabConfig(min_is=5, min_oos=5, bootstrap_iters=200), provider_factory=lambda: prov, days={"1h": 37},
+                jobs=1, catalog=False, now_ms=now, log=lambda m: None, **extra)
+    sha = lambda b: hashlib.sha256(b).hexdigest()[:16]  # noqa: E731
+    raw = (tmp_path / "o" / "signal_lab_report.json").read_text(encoding="utf-8")
+    no_sec = re.sub(r'\n "seconds": [0-9.]+,', "", raw)
+    assert no_sec != raw
+    doc = json.loads(raw)
+    doc.pop("seconds")
+    shown = dict(rep, seconds=0)
+    csv = gzip.decompress((tmp_path / "o" / "signal_lab_events.csv.gz").read_bytes())
+    return {"report_raw": sha(no_sec.encode()), "report_json": sha(json.dumps(doc, ensure_ascii=False, sort_keys=True).encode()),
+            "events_csv": _csv_digest(csv), "events_csv_raw": sha(csv),
+            "render": sha(L.render(shown).encode())}
+
+
+def test_default_off_report_events_and_render_are_byte_identical_to_pre_futures_code(tmp_path):
+    import hashlib
+    got = _golden_run(tmp_path / "a")
+    assert {k: got[k] for k in got if k in GOLDEN_OFF} == {k: GOLDEN_OFF[k] for k in got if k in GOLDEN_OFF}, got
+    assert _golden_run(tmp_path / "b", futures="off") == got, "açıkça off = varsayılan (aynı makinede ham CSV de bayt bayt)"
+    evs = (_events("SIG", "extra", 0.5, 400, 1) + _events("PLACEBO_RANDOM", "placebo", -0.1, 400, 2)
+           + _events("TREND_DONCHIAN_20_10", "algo", 0.3, 300, 3, side=L.SHORT)
+           + _events("PLACEBO_TREND_DONCHIAN_20_10", "placebo", 0.0, 300, 4, side=L.SHORT))
+    agg = L.aggregate(evs, L.LabConfig(bootstrap_iters=200))
+    assert hashlib.sha256(json.dumps(agg, ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:16] == GOLDEN_OFF["aggregate"]
+
+
+def test_default_path_never_imports_or_calls_futures_modules(monkeypatch, tmp_path):
+    import subprocess
+    import sys
+    from pathlib import Path
+    from tradingbot import futures_data as FD
+    from tradingbot import futures_features as FF
+    from tradingbot import futures_lab as FL
+
+    def boom(*a, **k):
+        raise AssertionError("varsayılan laboratuvar yolu futures_* modüllerine girmemeli")
+    for mod, fns in ((FD, ("ensure_futures", "read_futures_cache", "probe", "need_start")), (FF, ("bar_features", "ctx_labels")),
+                     (FL, ("events", "funding_carry", "feature_meta", "contributions", "render_section", "log_lines",
+                           "coverage_warnings", "cache_schema_lines", "probe_series", "blind_report"))):
+        for fn in fns:
+            monkeypatch.setattr(mod, fn, boom)
+    df = synth(700, seed=3)
+    evs, meta = L.process_series(df, "X/USDT", "1h", L.LabConfig(), catalog=False)
+    assert evs and "futures" not in meta and all(e.funding_r is None for e in evs)
+    rep = L.run(symbols=["AAA/USDT"], tfs=["1h"], cache_dir=tmp_path / "c", out_dir=tmp_path / "o", cfg=L.LabConfig(),
+                provider_factory=lambda: FakeProvider(synth(900, seed=5)), days={"1h": 37}, jobs=1, catalog=False,
+                now_ms=T0 + 901 * STEP, log=lambda m: None)
+    assert "futures" not in rep and "VADELİ" not in L.render(rep)
+    # ayrı süreçte: varsayılan koşu hiçbir futures_* modülünü içe aktarmaz
+    code = ("import sys, json, tempfile, pathlib; sys.path.insert(0, 'tests'); import test_signal_lab as T; "
+            "from tradingbot import signal_lab as L; d = pathlib.Path(tempfile.mkdtemp()); df = T.synth(700, seed=3); "
+            "L.run(symbols=['A/USDT'], tfs=['1h'], cache_dir=d / 'c', out_dir=d / 'o', cfg=L.LabConfig(), "
+            "provider_factory=lambda: T.FakeProvider(df), days={'1h': 25}, catalog=False, now_ms=int(df['timestamp'].iloc[-1]) + 2 * T.STEP, "
+            "log=lambda m: None); L.render(json.loads((d / 'o' / 'signal_lab_report.json').read_text(encoding='utf-8'))); "
+            "print(','.join(m for m in sys.modules if 'futures_' in m))")
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True,
+                         cwd=str(Path(__file__).resolve().parents[1])).stdout.strip()
+    assert out == "", out
+
+
+def test_context_without_futures_has_exactly_four_keys():
+    df = synth(400, seed=2)
+    ind = L.indicators(df)
+    arr = {k: df[k].to_numpy(dtype=float) for k in ("close", "volume")}
+    assert list(L.context(ind, arr, 300, L.LONG)) == ["hacim", "rsi", "trend", "volatilite"]
+    assert L.context(ind, arr, 300, L.LONG, fut=None) == L.context(ind, arr, 300, L.LONG)
+    fut = {"dpx": np.full(400, 0.1), "doi": np.full(400, -0.1), "oi_pct": np.full(400, 0.9), "f8": np.full(400, np.nan)}
+    assert L.context(ind, arr, 300, L.LONG, fut=fut) == {**L.context(ind, arr, 300, L.LONG), "oi_rejim": "fiyat↑OI↓",
+                                                         "oi_seviye": "yüksek(≥%80)", "fonlama": "bilinmiyor"}
+    assert dataclasses.fields(L.Event)[-1].name == "funding_r" and L.Event("X", "1h", "f", "n", L.LONG, 0, 0, 1.0).funding_r is None
+
+
+def test_task_tuple_unchanged_when_futures_off(monkeypatch, tmp_path):
+    seen = []
+    real_task = L._task
+
+    def rec(t):
+        seen.append(t)
+        return real_task(t)
+    monkeypatch.setattr(L, "_task", rec)
+    prov = FakeProvider(synth(900, seed=5))
+    now = int(prov.df["timestamp"].iloc[-1]) + 2 * STEP
+    kw = dict(symbols=["AAA/USDT"], tfs=["1h"], cache_dir=tmp_path / "c", cfg=L.LabConfig(), provider_factory=lambda: prov,
+              days={"1h": 37}, jobs=1, now_ms=now, log=lambda m: None)
+    L.run(out_dir=tmp_path / "o", catalog=False, **kw)
+    L.run(out_dir=tmp_path / "o2", catalog=False, extras=False, **kw)
+    assert [len(t) for t in seen] == [8, 10], "varsayılan 8'li demet; ek sinyalsiz koşu 10'lu (bugünkü gibi)"
+    assert seen[1][8:] == ((), False)
+
+
+def test_default_run_fetches_no_futures_urls(monkeypatch, tmp_path):
+    asked = []
+
+    def rec(url, timeout=60.0):
+        asked.append(url)
+        return None
+    monkeypatch.setattr(L, "_http_get", rec)
+    now = int(pd.Timestamp("2026-09-04 05:00", tz="UTC").timestamp() * 1000)
+    rep = L.run(symbols=["AAA/USDT"], tfs=["1h"], cache_dir=tmp_path / "c", out_dir=tmp_path / "o", cfg=L.LabConfig(),
+                provider_factory=lambda: L.ArchiveProvider(fetch=rec, clock_ms=lambda: now), days={"1h": 5}, jobs=1,
+                catalog=False, now_ms=now, log=lambda m: None, futures_fetch=lambda url: asked.append(url))
+    assert asked and all("/klines/" in u for u in asked), "yalnız mum dosyaları istenir"
+    assert not any("/metrics/" in u or "/fundingRate/" in u for u in asked)
+    assert "futures" not in rep

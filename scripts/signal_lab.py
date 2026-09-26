@@ -9,6 +9,10 @@ adım adım tarar, maliyet sonrası sonucu keşif/doğrulama dönemlerine ayır�
     python scripts/signal_lab.py --source archive ...    # REST erişimi yoksa: data.binance.vision toplu arşivi
     python scripts/signal_lab.py --only-variations --variations CV001_X --symbols genis --tfs 4h,1h,1d \
         --days 4h=1460,1h=730,1d=1825                      # yalnız mum varyasyonları (docs/CANDLE_VARIATIONS_4H.md)
+    python scripts/signal_lab.py --source archive --futures probe --symbols genis --tfs 4h,1h,1d \
+        --days 4h=1460,1h=730,1d=1825                      # vadeli veri yoklaması (docs/FUTURES_OI_FUNDING_LAB.md)
+    python scripts/signal_lab.py --source archive --only-futures --symbols genis --tfs 4h,1h,1d \
+        --days 4h=1460,1h=730,1d=1825                      # ön kayıtlı 8 OI/fonlama hipotezi (doğrulayıcı koşu)
 
 Çıktı: <out>/signal_lab_report.json (bütün kombinasyonlar) + <out>/signal_lab_events.csv.gz (her işlem)
 + varyasyon koşulduysa <out>/variation_records/<ID>.json (kapının okuduğu kayıt; bayt bayt kopyalanır).
@@ -88,7 +92,30 @@ def main(argv: list[str] | None = None) -> int:
                          "yalnız --only-variations ile")
     ap.add_argument("--only-variations", action="store_true",
                     help="yalnız mum varyasyonları + eşleri (katalog, ek sinyaller ve algoritmalar yok)")
+    ap.add_argument("--futures", choices=L.FUTURES_MODES, default="off",
+                    help="açık pozisyon/fonlama (yalnız arşiv): probe = yoklama + kör sayım; ctx = bağlam dilimleri (KEŞİF); "
+                         "rules = ön kayıtlı vadeli kurallar")
+    ap.add_argument("--only-futures", action="store_true",
+                    help="yalnız vadeli kurallar + kontrolleri + eşleri (--futures rules; katalog, ek sinyaller ve algoritmalar yok)")
     a = ap.parse_args(argv)
+    futures = a.futures
+    if a.only_futures:
+        if futures == "ctx":
+            print("\nHATA: --only-futures bağlam dilimi koşusuyla (--futures ctx) birlikte olmaz", file=sys.stderr)
+            return 2
+        futures = "rules" if futures == "off" else futures
+    if futures != "off":
+        if a.variations or a.only_variations:
+            print("\nHATA: --futures mum varyasyonlarıyla (--variations / --only-variations) birlikte koşmaz (DSL v2'ye kadar)",
+                  file=sys.stderr)
+            return 2
+        if a.source == "api" and not a.offline:
+            print("\nHATA: OI geçmişi yalnız arşivden: --source archive", file=sys.stderr)
+            return 2
+        bad = [t.strip() for t in a.tfs.split(",") if t.strip() and t.strip() not in L.FUTURES_TFS]
+        if bad:
+            print(f"\nHATA: --futures yalnız {', '.join(L.FUTURES_TFS)} dilimlerinde (verilen: {', '.join(bad)})", file=sys.stderr)
+            return 2
     try:
         variations = resolve_variations(a.variations)
     except ValueError as exc:
@@ -113,13 +140,19 @@ def main(argv: list[str] | None = None) -> int:
         report = L.run(symbols=symbols, tfs=tfs, cache_dir=Path(a.cache), out_dir=Path(a.out), cfg=L.LabConfig(),
                        provider_factory=None if a.offline else (L.ArchiveProvider if a.source == "archive" else provider_factory),
                        days=days, jobs=a.jobs,
-                       catalog=not a.no_catalog and not a.only_variations, algos=not a.no_algos and not a.only_variations,
-                       variations=variations, extras=not a.only_variations)
-    except (ValueError, L.DownloadAborted) as exc:
+                       catalog=not a.no_catalog and not a.only_variations and not a.only_futures,
+                       algos=not a.no_algos and not a.only_variations and not a.only_futures,
+                       variations=variations, extras=not a.only_variations and not a.only_futures, futures=futures)
+    except (ValueError, L.DownloadAborted) as exc:     # FuturesDataUnavailable da DownloadAborted'dır
         print(f"\nHATA: {exc}", file=sys.stderr)
         return 2
     print()
     print(L.render(report, top=a.top))
+    if futures != "off":                                 # iş günlüğü satırları (bakımcı yalnız günlüğü okur)
+        from tradingbot import futures_lab
+        print()
+        for line in futures_lab.log_lines(report):
+            print(line)
     print(f"\nayrıntı: {Path(a.out) / 'signal_lab_report.json'}")
     return 0
 

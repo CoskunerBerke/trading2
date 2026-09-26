@@ -10,6 +10,9 @@ Soru tek: "Hangi bot, bugüne kadar kapattığı işlemlerde para kazandırdı v
   0'ın altındaysa `ZARARDA (kanıtlı)`, tamamı üstündeyse `KÂRDA (kanıtlı, PAPER)`, değilse `BELİRSİZ`.
 * PAPER sonucudur: gerçek emir defteri, kısmi dolum ve gecikme yoktur. Kesinti içinde kapanan ya da funding'i tam
   mutabık olmayan işlemler ayrıca sayılır; hüküm bunları DÜZELTMEZ, yalnız görünür kılar.
+* Mum varyasyonları (C4): `candle:<id>` işlemleri ayrıca varyasyon başına (`by_variation`) — aynı hüküm kuralı, gözlem
+  bayrağı ve laboratuvarın doğrulama dönemi (OOS) ortalaması/aralığı. En az 30 işlemde PAPER ortalaması laboratuvar OOS
+  aralığının alt ucunun altındaysa `LAB_DRIFT` (canlı davranış laboratuvardan sapıyor).
 
 Kullanım:
     python scripts/bot_scorecard.py --state <state klasörü> [--since 2026-09-01] [--out karne.json]
@@ -31,8 +34,12 @@ from tradingbot.pattern_trader.report import MIN_TRADES_FOR_VERDICT, _funding_co
 LEDGER_FILE = "futures_ledger.json"
 #: defter klasörü (state altında) → görünen ad; "" = ana bot (state kökündeki defter)
 BOOKS = {"": "Ana bot", "strategy_paper": "T2", "strategy_paper_m2": "M2 (TSMOM28)", "strategy_paper_box": "Box",
-         "pattern_trader": "Formasyon", "strategy_paper_trend4h": "Trend 4h (gözlem, kanıtlanmadı)"}
+         "pattern_trader": "Formasyon", "strategy_paper_trend4h": "Trend 4h (gözlem, kanıtlanmadı)",
+         "strategy_paper_candle4h": "C4 Mum varyasyonları (PAPER)"}
 V_THIN, V_LOSS, V_WIN, V_OPEN = "VERİ YETERSİZ", "ZARARDA (kanıtlı)", "KÂRDA (kanıtlı, PAPER)", "BELİRSİZ"
+#: Mum varyasyonu işlemlerinin kurulum öneki (`candle_book.SETUP_PREFIX`).
+CANDLE_PREFIX = "candle:"
+LAB_DRIFT = "LAB_DRIFT"
 
 
 def _configure_console() -> None:
@@ -78,6 +85,42 @@ def _group(trades: list, key) -> dict[str, dict[str, Any]]:
     return dict(sorted(rows.items(), key=lambda kv: kv[1]["net_usdt"]))
 
 
+def _num(x: Any) -> float | None:
+    try:
+        v = float(x)
+    except (TypeError, ValueError):
+        return None
+    return v if v == v and v not in (float("inf"), float("-inf")) else None
+
+
+def by_variation(trades: list) -> dict[str, dict[str, Any]]:
+    """Mum varyasyonu başına (`candle:<id>`): n, ortalama R, %95 aralık, kazanma oranı, hüküm; girişteki anlık görüntüden
+    (`features.candle_variation`) gözlem bayrağı ve laboratuvarın OOS ortalaması/aralığı. `LAB_DRIFT`: en az
+    `MIN_TRADES_FOR_VERDICT` işlemde PAPER ortalaması laboratuvar OOS aralığının alt ucunun altında."""
+    groups: dict[str, list] = {}
+    for t in trades:
+        st_ = str(t.setup_type or "")
+        if st_.startswith(CANDLE_PREFIX):
+            groups.setdefault(st_[len(CANDLE_PREFIX):], []).append(t)
+    out: dict[str, dict[str, Any]] = {}
+    for vid, ts in sorted(groups.items()):
+        st = _r_stats([float(t.r_multiple) for t in ts])
+        snaps = [((t.features or {}).get("candle_variation") or {}) for t in ts]
+        snaps = [s_ for s_ in snaps if isinstance(s_, dict)]
+        last = snaps[-1] if snaps else {}
+        ci = last.get("lab_oos_ci95")
+        lab_ci = [_num(ci[0]), _num(ci[1])] if isinstance(ci, (list, tuple)) and len(ci) == 2 else None
+        flags = []
+        if st["n"] >= MIN_TRADES_FOR_VERDICT and lab_ci and lab_ci[0] is not None and st["mean_r"] < lab_ci[0]:
+            flags.append(LAB_DRIFT)
+        out[vid] = {"n": st["n"], "mean_r": st["mean_r"], "ci95_mean_r": st["ci95_mean_r"], "win_rate": st["win_rate"],
+                    "verdict": verdict(st), "net_usdt": round(sum(float(t.pnl) for t in ts), 4),
+                    "observation": any(s_.get("observation") is True for s_ in snaps),
+                    "definition_sha": last.get("definition_sha"), "lab_verdict": last.get("lab_verdict"),
+                    "lab_oos_mean_r": _num(last.get("lab_oos_mean_r")), "lab_oos_ci95": lab_ci, "flags": flags}
+    return out
+
+
 def book_card(path: Path, *, since: str | None = None) -> dict[str, Any]:
     led = FuturesLedgerV2.load(path)
     trades = [t for t in led.history if not since or str(t.closed_at) >= since]
@@ -85,7 +128,7 @@ def book_card(path: Path, *, since: str | None = None) -> dict[str, Any]:
     rs = [float(t.r_multiple) for t in trades]
     st = _r_stats(rs)
     cov = _funding_coverage([{"features": t.features or {}} for t in trades])
-    return {
+    card = {
         "ledger": str(path), "starting_equity": float(led.starting_equity), "wallet_balance": round(float(led.wallet_balance), 4),
         "return_pct_realized": round((float(led.wallet_balance) / float(led.starting_equity) - 1) * 100, 2) if led.starting_equity else None,
         "open_positions": len(led.positions), "closed_trades_total": len(led.history), "window_since": since,
@@ -97,6 +140,10 @@ def book_card(path: Path, *, since: str | None = None) -> dict[str, Any]:
         "by_setup": _group(trades, lambda t: t.setup_type), "by_exit": _group(trades, lambda t: t.exit_reason),
         "by_month": dict(sorted(_group(trades, lambda t: str(t.closed_at)[:7]).items())),
     }
+    bv = by_variation(trades)
+    if bv:                       # yalnız mum varyasyonu işlemi olan defterde (diğer defterlerin çıktısı aynı kalır)
+        card["by_variation"] = bv
+    return card
 
 
 def scorecard(state: Path, *, since: str | None = None) -> dict[str, Any]:
@@ -143,6 +190,14 @@ def render(card: dict[str, Any]) -> str:
         fc = b["funding_coverage"]
         if fc["incomplete"] or b["no_stop_trades"]:
             lines.append(f"   dikkat: funding'i eksik {fc['incomplete']} işlem, stopsuz {b['no_stop_trades']} işlem")
+        for vid, v in (b.get("by_variation") or {}).items():
+            ci, lci = v.get("ci95_mean_r"), v.get("lab_oos_ci95")
+            lab = (f" · lab OOS {_fmt(v.get('lab_oos_mean_r'))}" + (f" [{_fmt(lci[0])}, {_fmt(lci[1])}]" if lci else "")
+                   if v.get("lab_oos_mean_r") is not None else " · lab OOS —")
+            lines.append(f"   varyasyon {vid}{' (gözlem, kanıtlanmadı)' if v.get('observation') else ''}: n={v['n']} "
+                         f"ort. R {_fmt(v['mean_r'])} {(f'[{ci[0]:+.2f}, {ci[1]:+.2f}]' if ci else '—')} "
+                         f"kazanma {_fmt(v['win_rate'] * 100 if v['win_rate'] is not None else None, 0)}% · {v['verdict']}{lab}"
+                         + (" · " + ", ".join(v["flags"]) if v.get("flags") else ""))
     lines.append(f"Hüküm kuralı: {card['min_trades_for_verdict']} işlemden az → VERİ YETERSİZ; ortalama R'nin %95 aralığı tamamen 0'ın "
                  "altında → ZARARDA, tamamen üstünde → KÂRDA; değilse BELİRSİZ. PAPER sonucu, kâr garantisi değildir.")
     return "\n".join(lines)

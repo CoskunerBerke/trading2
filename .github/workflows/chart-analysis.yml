@@ -8,10 +8,14 @@ on:
       - work/chart-analysis-v1
       - work/entry-research-v1
       - work/shared-pattern-decisions-v1
+      # mum varyasyonu prosedürünün dalı (docs/CANDLE_VARIATIONS_4H.md): kayıt, laboratuvar kaydı ve etkinleştirme
+      # commit'leri tanım mührü + altın özet + config kapısı testlerinden geçmeden dağıtılmaz
+      - "claude/candle-cv*"
     paths:
       - "tradingbot/**"
       - "tests/**"
       - "requirements.txt"
+      - "config.yaml"
       - ".github/workflows/chart-analysis.yml"
   pull_request:
     branches:
@@ -83,6 +87,7 @@ jobs:
             tests/test_protective_monitor_v1.py \
             tests/test_measure_protective_monitor_script.py tests/test_bot_scorecard_script.py tests/test_signal_lab.py \
             tests/test_pattern_trader_momentum_v3.py tests/test_donchian_trend_book.py \
+            tests/test_candle_dsl.py tests/test_candle_variations_book.py \
             tests/test_learning_provenance_engine.py \
             -q --tb=short > pytest.out 2>&1
           rc=$?

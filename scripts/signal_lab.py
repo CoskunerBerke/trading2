@@ -7,8 +7,11 @@ adım adım tarar, maliyet sonrası sonucu keşif/doğrulama dönemlerine ayır�
     python scripts/signal_lab.py --tfs 4h --days 4h=1460   # daha uzun geçmiş
     python scripts/signal_lab.py --symbols genis --tfs 1h,4h --days 1h=730,4h=1460   # sağlamlık: 30 coin, uzun geçmiş
     python scripts/signal_lab.py --source archive ...    # REST erişimi yoksa: data.binance.vision toplu arşivi
+    python scripts/signal_lab.py --only-variations --variations CV001_X --symbols genis --tfs 4h,1h,1d \
+        --days 4h=1460,1h=730,1d=1825                      # yalnız mum varyasyonları (docs/CANDLE_VARIATIONS_4H.md)
 
-Çıktı: <out>/signal_lab_report.json (bütün kombinasyonlar) + <out>/signal_lab_events.csv.gz (her işlem).
+Çıktı: <out>/signal_lab_report.json (bütün kombinasyonlar) + <out>/signal_lab_events.csv.gz (her işlem)
++ varyasyon koşulduysa <out>/variation_records/<ID>.json (kapının okuduğu kayıt; bayt bayt kopyalanır).
 """
 from __future__ import annotations
 
@@ -39,6 +42,32 @@ def provider_factory():
                                              timeout=15.0, max_retries=4))
 
 
+def resolve_variations(spec: str, *, warn=print) -> list[str]:
+    """`--variations` değeri → kimlik listesi. `all` = örnek OLMAYAN bütün kayıtlar. Bilinmeyen/bozuk kimlik ValueError.
+    Çeviri onayı (readback) olmayan kayıt için UYARI: taslak koşar ama kaydı onayı taşımaz ve kapıdan geçmez; onaydan
+    sonra laboratuvar yeniden koşulmalıdır."""
+    spec = (spec or "").strip()
+    if not spec:
+        return []
+    from tradingbot import candle_variations as CV
+    if spec.lower() in ("all", "hepsi"):
+        ids = [e["id"] for e in CV.VARIATIONS if isinstance(e, dict) and isinstance(e.get("id"), str) and e.get("example") is not True]
+    else:
+        ids = [x.strip().upper() for x in spec.split(",") if x.strip()]
+    out: list[str] = []
+    for vid in ids:
+        if vid in out:
+            continue
+        var = CV.get(vid)
+        if var.example:
+            warn(f"UYARI: {vid} ÖRNEK kayıt — laboratuvarda koşar, hiçbir zaman işlem açmaz")
+        if var.readback is None:
+            warn(f"UYARI: {vid} çeviri onayı (readback) YOK — taslak koşu: kaydı kapıdan geçmez (READBACK_AFTER_LAB); "
+                 "çeviri onayından sonra laboratuvar yeniden koşulmalı")
+        out.append(vid)
+    return out
+
+
 def main(argv: list[str] | None = None) -> int:
     _configure_console()
     ap = argparse.ArgumentParser(description="Sinyal laboratuvarı (geçmiş test, maliyet sonrası, keşif/doğrulama).")
@@ -54,7 +83,25 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--source", choices=("api", "archive"), default="api",
                     help="api = fapi.binance.com (güncel); archive = data.binance.vision toplu arşivi (bitmiş günler)")
     ap.add_argument("--top", type=int, default=25)
+    ap.add_argument("--variations", default="",
+                    help="mum varyasyonları: CV001_X,CV002_Y ya da all (örnek olmayan bütün kayıtlar); taslaklar da koşar; "
+                         "yalnız --only-variations ile")
+    ap.add_argument("--only-variations", action="store_true",
+                    help="yalnız mum varyasyonları + eşleri (katalog, ek sinyaller ve algoritmalar yok)")
     a = ap.parse_args(argv)
+    try:
+        variations = resolve_variations(a.variations)
+    except ValueError as exc:
+        print(f"\nHATA: {exc}", file=sys.stderr)
+        return 2
+    if a.only_variations and not variations:
+        print("\nHATA: --only-variations için --variations ile en az bir varyasyon gerekli", file=sys.stderr)
+        return 2
+    if variations and not a.only_variations:
+        # katalog/ek/algoritma olayları keşif/doğrulama kesimini ve plasebo havuzlarını değiştirir; kapı böyle kaydı almaz
+        print("\nHATA: --variations yalnız --only-variations ile koşar (katalogla birlikte koşu kesimi değiştirir; "
+              "kayıt kapıdan geçmez)", file=sys.stderr)
+        return 2
     days = {}
     for part in filter(None, a.days.split(",")):
         k, v = part.split("=")
@@ -66,7 +113,8 @@ def main(argv: list[str] | None = None) -> int:
         report = L.run(symbols=symbols, tfs=tfs, cache_dir=Path(a.cache), out_dir=Path(a.out), cfg=L.LabConfig(),
                        provider_factory=None if a.offline else (L.ArchiveProvider if a.source == "archive" else provider_factory),
                        days=days, jobs=a.jobs,
-                       catalog=not a.no_catalog, algos=not a.no_algos)
+                       catalog=not a.no_catalog and not a.only_variations, algos=not a.no_algos and not a.only_variations,
+                       variations=variations, extras=not a.only_variations)
     except (ValueError, L.DownloadAborted) as exc:
         print(f"\nHATA: {exc}", file=sys.stderr)
         return 2

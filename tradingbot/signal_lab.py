@@ -31,6 +31,7 @@ import gzip
 import io
 import json
 import math
+import os
 import time
 import zipfile
 import zlib
@@ -643,11 +644,14 @@ def simulate(ev: Event, arr: dict[str, np.ndarray], atr: np.ndarray, cfg: LabCon
 
 
 def process_series(df: pd.DataFrame, symbol: str, tf: str, cfg: LabConfig, *, catalog: bool = True,
-                   algos: bool = True) -> tuple[list[Event], dict]:
+                   algos: bool = True, extras: bool = True, variations: tuple[str, ...] | list[str] = ()) -> tuple[list[Event], dict]:
+    """`variations`: mum varyasyonu kimlikleri (`candle_variations`; taslak ve örnek DAHİL) — her biri kendi çıkış
+    kuralı (`candle_lab.vcfg`) ve eşleştirilmiş plasebosuyla. `extras=False`: ek sinyaller (ve PLACEBO_RANDOM) yok."""
     arr = {k: df[k].to_numpy(dtype=float) for k in ("open", "high", "low", "close", "volume")}
     ind = indicators(df)
     aux = aux_series(df) if algos else {}
-    evs = (catalog_events(df, symbol, tf, cfg) if catalog else []) + extra_events(df, symbol, tf, ind["atr"]) \
+    evs = (catalog_events(df, symbol, tf, cfg) if catalog else []) \
+        + (extra_events(df, symbol, tf, ind["atr"]) if extras else []) \
         + (algo_events(df, symbol, tf, ind["atr"], aux) if algos else [])
     skipped: dict[str, int] = {}
     done: list[Event] = []
@@ -658,8 +662,32 @@ def process_series(df: pd.DataFrame, symbol: str, tf: str, cfg: LabConfig, *, ca
             continue
         ev.ctx = context(ind, arr, ev.i, ev.side)
         done.append(ev)
-    return done, {"symbol": symbol, "tf": tf, "bars": len(df), "signals": len(evs), "trades": len(done), "skipped": skipped,
-                  "first": int(df["timestamp"].iloc[0]) if len(df) else None, "last": int(df["timestamp"].iloc[-1]) if len(df) else None}
+    n_signals, vmeta = len(evs), {}
+    if variations:                                      # tembel: varsayılan yol candle_lab'a hiç girmez
+        from . import candle_lab, candle_variations
+        for vid in variations:
+            var = candle_variations.get(vid)
+            vevs, atr_sig = candle_lab.variation_events(df, symbol, tf, var, skipped=skipped)
+            vc = candle_lab.vcfg(cfg, var)
+            cnt = {"signals": 0, "trades": 0, "placebo_signals": 0, "placebo_trades": 0}
+            for ev in vevs:
+                pre = "placebo_" if ev.family == "placebo" else ""
+                cnt[pre + "signals"] += 1
+                why = simulate(ev, arr, atr_sig, vc)
+                if why:
+                    k = f"{ev.name}:{why}"                # gerçek: "<id>:<neden>", plasebo: "PLACEBO_<id>:<neden>"
+                    skipped[k] = skipped.get(k, 0) + 1
+                    continue
+                ev.ctx = context(ind, arr, ev.i, ev.side)  # tam serinin göstergeleri: dilimler yalnız bilgi amaçlı
+                done.append(ev)
+                cnt[pre + "trades"] += 1
+            n_signals += len(vevs)
+            vmeta[vid] = cnt
+    meta = {"symbol": symbol, "tf": tf, "bars": len(df), "signals": n_signals, "trades": len(done), "skipped": skipped,
+            "first": int(df["timestamp"].iloc[0]) if len(df) else None, "last": int(df["timestamp"].iloc[-1]) if len(df) else None}
+    if variations:
+        meta["variations"] = vmeta
+    return done, meta
 
 
 class DownloadAborted(RuntimeError):
@@ -685,12 +713,13 @@ def coverage_problem(meta: dict, days: int, tf: str, cache_dir: Path, now_ms: in
 
 
 def _task(args: tuple) -> tuple[list[dict], dict]:
-    cache_dir, symbol, tf, days, now_ms, cfg_d, catalog, algos = args
+    cache_dir, symbol, tf, days, now_ms, cfg_d, catalog, algos, *rest = args
+    variations, extras = tuple(rest[0]) if len(rest) > 0 else (), bool(rest[1]) if len(rest) > 1 else True
     cfg = LabConfig(**cfg_d)
     df = load_series(symbol, tf, days=days, cache_dir=Path(cache_dir), provider_factory=None, now_ms=now_ms)
     if len(df) < cfg.window + cfg.max_hold_bars + 10:
         return [], {"symbol": symbol, "tf": tf, "bars": len(df), "error": "YETERSİZ_VERİ"}
-    evs, meta = process_series(df, symbol, tf, cfg, catalog=catalog, algos=algos)
+    evs, meta = process_series(df, symbol, tf, cfg, catalog=catalog, algos=algos, extras=extras, variations=variations)
     return [asdict(e) for e in evs], meta
 
 
@@ -787,8 +816,12 @@ def aggregate(events: list[dict], cfg: LabConfig) -> dict[str, Any]:
     plac = {(g["name"], g["tf"], g["side"], g["context"], g["bucket"]): g for g in groups if g["family"] == "placebo"}
     for g in groups:
         k = (g["tf"], g["side"], g["context"], g["bucket"])
-        # algoritma → aynı çıkış kuralını kullanan kendi eşi; formasyon → genel rastgele giriş
-        pg = plac.get(("PLACEBO_" + g["name"],) + k) or plac.get(("PLACEBO_RANDOM",) + k)
+        # algoritma → aynı çıkış kuralını kullanan kendi eşi; formasyon → genel rastgele giriş;
+        # mum varyasyonu → YALNIZ kendi eşleştirilmiş eşi (aynı bağlam/stop/çıkış), genel rastgele girişe düşmez
+        if g["family"] == "candle_var":
+            pg = plac.get(("PLACEBO_" + g["name"],) + k)
+        else:
+            pg = plac.get(("PLACEBO_" + g["name"],) + k) or plac.get(("PLACEBO_RANDOM",) + k)
         vs = None
         if g["family"] != "placebo" and pg and pg["IS"].get("n", 0) >= cfg.min_oos and pg["OOS"].get("n", 0) >= cfg.min_oos \
                 and g["IS"].get("n") and g["OOS"].get("n"):
@@ -816,11 +849,16 @@ def aggregate(events: list[dict], cfg: LabConfig) -> dict[str, Any]:
 # ---------------------------------------------------------------------------- çalıştırma
 def run(*, symbols: list[str], tfs: list[str], cache_dir: Path, out_dir: Path, cfg: LabConfig, provider_factory,
         days: dict[str, int] | None = None, jobs: int = 1, catalog: bool = True, now_ms: int | None = None,
-        log: Callable[[str], None] = print, algos: bool = True) -> dict[str, Any]:
+        log: Callable[[str], None] = print, algos: bool = True, variations: tuple[str, ...] | list[str] = (),
+        extras: bool = True) -> dict[str, Any]:
     now_ms = int(now_ms if now_ms is not None else time.time() * 1000)
     bad = [tf for tf in tfs if tf not in SUPPORTED_TIMEFRAMES]
     if bad:
         raise ValueError(f"desteklenmeyen zaman dilimi: {', '.join(bad)} — ortak analiz yalnız {', '.join(SUPPORTED_TIMEFRAMES)} okur")
+    variations = tuple(dict.fromkeys(variations or ()))
+    if variations:                                      # bilinmeyen/bozuk kimlik indirmeden ÖNCE ValueError
+        from . import candle_variations
+        var_objs = {vid: candle_variations.get(vid) for vid in variations}
     days = {**DEFAULT_DAYS, **(days or {})}
     out_dir.mkdir(parents=True, exist_ok=True)
     t0 = time.time()
@@ -839,7 +877,8 @@ def run(*, symbols: list[str], tfs: list[str], cache_dir: Path, out_dir: Path, c
                     raise DownloadAborted(f"Binance'ten art arda {fails} seri indirilemedi ({', '.join(failed[-3:])}). "
                                           "Bağlantı ya da Binance tarafında geçici kısıtlama olabilir; 10-15 dk sonra "
                                           "tekrar deneyin (inen veri önbellekte kalır). Test ÇALIŞTIRILMADI.")
-    tasks = [(str(cache_dir), s, tf, days[tf], now_ms, asdict(cfg), catalog, algos) for s in symbols for tf in tfs]
+    opt = (variations, extras) if (variations or not extras) else ()   # varsayılan yol: görev demeti aynı
+    tasks = [(str(cache_dir), s, tf, days[tf], now_ms, asdict(cfg), catalog, algos) + opt for s in symbols for tf in tfs]
     events, metas = [], []
     if jobs > 1:
         with ProcessPoolExecutor(max_workers=jobs) as ex:
@@ -878,8 +917,65 @@ def run(*, symbols: list[str], tfs: list[str], cache_dir: Path, out_dir: Path, c
               "seconds": round(time.time() - t0, 1), "data_warnings": warnings, **agg,
               "note_tr": "Geçmiş test (PAPER değil, canlı değil). GÜÇLÜ ADAY = iki dönemde de %95 aralık 0'ın üstünde ve aynı "
                          "bağlamdaki rastgele girişi iki dönemde de geçiyor. Kâr garantisi değildir."}
+    if variations:                                      # varyasyon başına makinece okunur kayıt (bayt bayt kopyalanır)
+        from . import candle_lab, candle_variations
+        # koşunun kipi kayda girer: kapı yalnız "yalnız varyasyon" koşusunu kabul eder (katalog/ek/algoritma olayları
+        # keşif/doğrulama kesimini ve plasebo havuzlarını değiştirir)
+        report["mode"] = {"catalog": bool(catalog), "algos": bool(algos), "extras": bool(extras),
+                          "only_variations": not (catalog or algos or extras)}
+        summary = {}
+        for vid, var in var_objs.items():
+            rec = candle_lab.build_record(report, var, env=os.environ, events=events)
+            path = candle_lab.write_record(out_dir, rec)
+            log(f"mum varyasyonu kaydı: {path}")
+            summary[vid] = {"definition_sha": rec["definition_sha"], "side": rec["side"], "example": rec["example"],
+                            "readback": var.readback is not None, "primary_tf": rec["primary_tf"], "verdict": rec["verdict"],
+                            "golden_sha": rec["golden_sha"], "record": f"{candle_lab.RECORDS_SUBDIR}/{vid}.json",
+                            "by_tf": {tf: {k: b[k] for k in ("signals", "trades", "non_overlap_mean_r")}
+                                      for tf, b in rec["by_tf"].items()}}
+        report["variations"] = summary
+        report["trials_to_date"] = candle_variations.trials_to_date()
     (out_dir / "signal_lab_report.json").write_text(json.dumps(report, ensure_ascii=False, indent=1), encoding="utf-8")
     return report
+
+
+def _render_variations(report: dict[str, Any], real: list[dict], fmt: Callable[[dict], str]) -> list[str]:
+    """MUM VARYASYONLARI bölümü (yalnız varyasyon koşulduysa): her (dilim, kimlik, yön) için HEPSİ satırı."""
+    rows = [x for x in real if x["family"] == "candle_var" and x["context"] == "HEPSİ"]
+    info = report.get("variations") or {}
+    if not rows and not info:
+        return []
+    f2 = lambda x: "—" if x is None else f"{x:+.2f}"  # noqa: E731
+    lines = ["\n== MUM VARYASYONLARI (bağlamsız; eşi = aynı bağlam filtreli rastgele giriş) =="]
+    if report.get("trials_to_date") is not None:
+        lines.append(f"bugüne kadar denenen varyasyon: {report['trials_to_date']} — çoklu test: rastgele veride kombinasyonların "
+                     f"%6–11'i {V_WEAK}, %0–0,5'i {V_STRONG} çıkar; doğrulama dönemi görülen grafiklerle örtüşebilir")
+    for vid in sorted(set(info) | {x["name"] for x in rows}):
+        inf = info.get(vid) or {}
+        mine = [x for x in rows if x["name"] == vid]
+        head = f"{vid} {inf.get('side') or (mine[0]['side'] if mine else '')} · sha {inf.get('definition_sha', '?')}"
+        if inf.get("example"):
+            head += " · ÖRNEK (işlem açmaz)"
+        if inf.get("readback") is False:
+            head += " · çeviri onayı YOK (taslak)"
+        if inf.get("record"):
+            head += f" · kayıt {inf['record']}"
+        lines.append(head)
+        for tf in list(report.get("timeframes") or []) or sorted({x["tf"] for x in mine}):
+            x = next((r for r in mine if r["tf"] == tf), None)
+            b = (inf.get("by_tf") or {}).get(tf) or {}
+            tag = "" if tf == inf.get("primary_tf", "4h") else " (bilgi)"
+            no = b.get("non_overlap_mean_r") or {}
+            notxt = f" · örtüşmesiz ort.R {f2(no.get('IS'))}/{f2(no.get('OOS'))}" if no else ""
+            if x is None:
+                lines.append(f"  {tf:>4}{tag} işlem {b.get('trades', 0)} (< 10, hüküm yok) · {V_THIN}")
+                continue
+            vs = x.get("vs_placebo")
+            vtxt = f" · eşine göre {vs['IS']:+.2f}/{vs['OOS']:+.2f}" if vs else " · eş karşılaştırması yok"
+            cost = lambda st: f" maliyet {st['cost_r']:.2f}R" if st.get("cost_r") is not None else ""  # noqa: E731
+            lines.append(f"  {tf:>4}{tag} keşif {fmt(x['IS'])}{cost(x['IS'])} | doğrulama {fmt(x['OOS'])}{cost(x['OOS'])}"
+                         f"{vtxt}{notxt} · {x['symbols']} coin · {x['verdict']}")
+    return lines
 
 
 def render(report: dict[str, Any], *, top: int = 25) -> str:
@@ -915,6 +1011,7 @@ def render(report: dict[str, Any], *, top: int = 25) -> str:
             vs = x.get("vs_placebo")
             vtxt = f" · eşine göre {vs['IS']:+.2f}/{vs['OOS']:+.2f}" if vs else " · eş karşılaştırması yok"
             lines.append(f"{x['tf']:>4} {x['name']:<22}{x['side']:<6} keşif {fmt(x['IS'])} | doğrulama {fmt(x['OOS'])}{vtxt} · {x['verdict']}")
+    lines += _render_variations(report, real, fmt)
     base = [x for x in real if x["context"] == "HEPSİ" and x["verdict"] != V_THIN]
     loss = sorted([x for x in base if x["verdict"] == V_LOSS], key=lambda x: x["OOS"]["mean_r"])[:15]
     lines.append(f"\n== {V_LOSS} (bağlamsız, en kötü 15) ==")

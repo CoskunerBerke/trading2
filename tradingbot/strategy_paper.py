@@ -410,6 +410,13 @@ def apply_action(act: dict[str, Any] | None, *, symbol: str, price: float, tick:
         if not (_a > 0 and _lo * _a < abs(entry - stop) <= _hi * _a):
             reject(symbol, "RISK_OUTSIDE_TESTED_RANGE")
             return "REJECTED"
+    # HEDEF GİRİŞTEN (2026-09-26, yalnız isteyen eylem — mum varyasyonları): hedef = gerçek giriş ± R × risk. Laboratuvar
+    # hedefi sonraki barın AÇILIŞINDAN ölçer (`simulate`: entry + s·default_rr·risk); kural kapanıştan ölçseydi canlı giriş
+    # kaydıkça R değişirdi. Anahtar yoksa `targets` eylemdeki gibi kalır (diğer defterler bit-bit aynı).
+    _tr = act.get("target_r_from_entry")
+    if _tr:
+        _s = 1.0 if direction == "LONG" else -1.0
+        act["targets"] = [entry + _s * float(_tr) * abs(entry - stop)]
     stop_frac = abs(entry - stop) / entry
     risk_usdt = float(profile.risk_per_trade_pct) / 100.0 * float(state.equity)
     notional = risk_usdt / stop_frac
@@ -448,13 +455,18 @@ def apply_action(act: dict[str, Any] | None, *, symbol: str, price: float, tick:
         return "REJECTED"
     # Kanıt: hangi veriyle girildiği pozisyon/işlem kaydına yazılır (piyasa, kaynak, tur, kullanılan bar zamanları).
     data_src = {"market": data.market, "source": data.source, "tour_id": data.tour_id, "bars": dict(data.bars), "btc": dict(data.btc)}
+    feats = {"regime": act.get("regime"), "market_type": "USDM_PERP", "strategy": act.get("name"),
+             "expected_r": float(act.get("expected_r") or 0.0), "p_win": None, "data_source": data_src,
+             # ORTAK YAPI (structures_v1): girişin dayanağı ve politika sürümü — eski ölçümlerden AYRI
+             "structure": dict(act["structure"]) if act.get("structure") else None}
+    if act.get("variation"):
+        # MUM VARYASYONU (2026-09-26, yalnız isteyen eylem): kimlik, definition_sha, laboratuvar kanıtı, gözlem bayrağı ve
+        # çıkış (hedef R, en uzun tutma) — girişteki ANLIK GÖRÜNTÜ; işlem kaydına da geçer. Anahtar yalnız o zaman eklenir.
+        feats["candle_variation"] = dict(act["variation"])
     pos = ledger.open(symbol, direction, entry, SizeSpec(Decimal(str(notional)), AmountType.NOTIONAL, int(rd.adjusted_leverage or lev)),
                       filters=filters, stop=stop, targets=list(act.get("targets") or []),
                       setup_type=str(act.get("setup_type") or "strategy"), trigger_text=str(act.get("reason") or ""),
-                      features={"regime": act.get("regime"), "market_type": "USDM_PERP", "strategy": act.get("name"),
-                                "expected_r": float(act.get("expected_r") or 0.0), "p_win": None, "data_source": data_src,
-                                # ORTAK YAPI (structures_v1): girişin dayanağı ve politika sürümü — eski ölçümlerden AYRI
-                                "structure": dict(act["structure"]) if act.get("structure") else None},
+                      features=feats,
                       tick=tick, now=now, meta={"run_id": run_id, "strategy": str(act.get("name") or ""), "data_source": data_src})
     if pos is None:
         reject(symbol, ledger.last_reject_reason or "LEDGER_REJECT")

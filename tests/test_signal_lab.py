@@ -7,6 +7,7 @@ import json
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from tradingbot import signal_lab as L
 
@@ -290,3 +291,237 @@ def test_cross_sectional_momentum_ranks_coins_by_past_return():
     longs = [e.symbol for e in real if e.side == L.LONG]
     assert longs.count("C0/USDT") >= 0.8 * len({e.t_ms for e in real if e.side == L.LONG}), "sürekli yükselen coin hep güçlüler arasında"
     assert any(e.name == "PLACEBO_" + L.XSMOM for e in evs)
+
+
+# ================================================================== mum varyasyonları (candle_lab)
+H4 = 14_400_000
+LOOSE_ID = "CV950_LAB_LOOSE"
+
+
+def synth4h(n: int, seed: int = 1) -> pd.DataFrame:
+    """`synth` ile aynı fiyat yolu, 4h adımlı zaman damgaları."""
+    df = synth(n, seed=seed)
+    df["timestamp"] = T0 // H4 * H4 + np.arange(n, dtype=np.int64) * H4
+    df["close_time"] = df["timestamp"] + H4 - 1
+    return df
+
+
+def _loose_entry(vid: str = LOOSE_ID, **definition) -> dict:
+    """Test varyasyonu: tek boğa mum, gövde ≥ %50 (gevşek — rastgele veride sık eşleşir), varsayılan çıkışlar."""
+    d = {"side": "LONG", "timeframe": "4h", "bars": [{"color": "bull", "body_range": [0.5, None]}],
+         "confirm": {"kind": "pattern_close"}, "stop": {"anchor": "pattern", "atr_buffer": 0.25},
+         "exit": {"target_r": 2.0, "max_hold_bars": 24}}
+    d.update(definition)
+    return {"id": vid, "definition": d}
+
+
+@pytest.fixture
+def registry(monkeypatch):
+    """Kaydı bu test için SABİTLER: örnek + verilen varyasyonlar (gerçek kayda kullanıcı varyasyonu eklense de sayılar ve
+    `all` listesi değişmez; gerçek kayıt değişmez)."""
+    from tradingbot import candle_variations as V
+
+    def add(*entries):
+        monkeypatch.setattr(V, "VARIATIONS", (V.CV000_EXAMPLE_BULL3,) + tuple(entries))
+        V.reset_cache()
+    yield add
+    V.reset_cache()
+
+
+def _cli():
+    import importlib.util
+    from pathlib import Path
+    spec = importlib.util.spec_from_file_location("_signal_lab_cli_probe", Path(__file__).resolve().parents[1] / "scripts" / "signal_lab.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_default_path_never_touches_candle_lab(monkeypatch, tmp_path):
+    from tradingbot import candle_lab
+
+    def boom(*a, **k):
+        raise AssertionError("varsayılan laboratuvar yolu candle_lab'a girmemeli")
+    for fn in ("variation_events", "vcfg", "build_record", "write_record"):
+        monkeypatch.setattr(candle_lab, fn, boom)
+    df = synth(700, seed=3)
+    evs, meta = L.process_series(df, "X/USDT", "1h", L.LabConfig(), catalog=False)
+    assert evs and "variations" not in meta and not any(e.family == "candle_var" for e in evs)
+    assert any(e.name == "PLACEBO_RANDOM" for e in evs) and any(e.family == "algo" for e in evs)
+    evs2, meta2 = L.process_series(df, "X/USDT", "1h", L.LabConfig(), catalog=False, algos=True, extras=True, variations=())
+    assert [dataclasses.asdict(e) for e in evs2] == [dataclasses.asdict(e) for e in evs] and meta2 == meta
+    prov = FakeProvider(synth(900, seed=5))
+    now = int(prov.df["timestamp"].iloc[-1]) + 2 * STEP
+    rep = L.run(symbols=["AAA/USDT"], tfs=["1h"], cache_dir=tmp_path / "c", out_dir=tmp_path / "o", cfg=L.LabConfig(),
+                provider_factory=lambda: prov, days={"1h": 37}, jobs=1, catalog=False, now_ms=now, log=lambda m: None)
+    assert rep["events"] > 0 and "variations" not in rep and "trials_to_date" not in rep
+    assert not (tmp_path / "o" / "variation_records").exists()
+    assert "MUM VARYASYONLARI" not in L.render(rep)
+    # eski 8'li görev demeti hâlâ çalışır (geri uyumlu)
+    evs3, meta3 = L._task((str(tmp_path / "c"), "AAA/USDT", "1h", 37, now, dataclasses.asdict(L.LabConfig()), False, True))
+    assert evs3 and "variations" not in meta3
+
+
+def test_variation_events_simulated_with_own_exit_spec(registry):
+    from tradingbot import candle_lab as CL
+    from tradingbot import candle_variations as V
+    vid = "CV951_LAB_EXIT"
+    registry(_loose_entry(vid, exit={"target_r": 1.5, "max_hold_bars": 6}, risk_atr_bounds=[0.3, 1.2]))
+    var = V.get(vid)
+    vc = CL.vcfg(L.LabConfig(), var)
+    assert (vc.default_rr, vc.max_hold_bars, vc.min_risk_atr, vc.max_risk_atr) == (1.5, 6, 0.3, 1.2)
+    assert dataclasses.replace(vc, default_rr=2.0, max_hold_bars=24, min_risk_atr=0.1, max_risk_atr=5.0) == L.LabConfig()
+    no_target = CL.vcfg(L.LabConfig(), dataclasses.replace(var, target_r=None))
+    assert no_target.default_rr == float("inf"), "hedefsiz varyasyon: yalnız stop ve zaman çıkışı"
+    df = synth4h(1100, seed=7)
+    evs, meta = L.process_series(df, "X/USDT", "4h", L.LabConfig(), catalog=False, algos=False, extras=False, variations=(vid,))
+    raw, atr_sig = CL.variation_events(df, "X/USDT", "4h", var)
+    real = [e for e in evs if e.family == "candle_var"]
+    assert len(real) >= 20
+    o = df["open"].to_numpy(dtype=float)
+    for e in real:
+        risk = o[e.i + 1] - e.stop                              # giriş sonraki barın açılışı
+        assert 0.3 * atr_sig[e.i] < risk <= 1.2 * atr_sig[e.i], "risk sınırları tanımdan (pencere ATR14'ü ile)"
+        assert 1 <= e.hold <= 6
+        gross = e.r + e.cost_r
+        if e.exit_reason == "TIME":
+            assert e.hold == 6
+        elif e.exit_reason == "TARGET":
+            assert gross >= 1.5 - 1e-9
+        else:
+            assert e.exit_reason == "STOP" and gross <= -1.0 + 1e-9
+    assert any(e.exit_reason == "TARGET" and abs(e.r + e.cost_r - 1.5) < 1e-9 for e in real)
+    assert any(e.exit_reason == "TIME" for e in real)
+    sk = meta["skipped"]
+    assert sk.get(f"{vid}:STOP_TOO_FAR", 0) > 0 and all(k.startswith((vid + ":", "PLACEBO_" + vid + ":")) for k in sk)
+    m = meta["variations"][vid]
+    assert m["signals"] == sum(e.family == "candle_var" for e in raw) and m["trades"] == len(real)
+    assert m["placebo_signals"] == sum(e.family == "placebo" for e in raw) and m["placebo_trades"] == len(evs) - len(real)
+    assert meta["signals"] == len(raw) and meta["trades"] == len(evs)
+    # aynı olaylar LabConfig varsayılan çıkışıyla başka sonuç verir (çıkış gerçekten tanımdan)
+    arr = {k: df[k].to_numpy(dtype=float) for k in ("open", "high", "low", "close", "volume")}
+    wide = [dataclasses.replace(e) for e in raw if e.family == "candle_var"]
+    kept = sum(1 for e in wide if not L.simulate(e, arr, atr_sig, L.LabConfig()))
+    assert kept > len(real)
+
+
+def test_only_variations_skips_catalog_extras_algos(registry, monkeypatch, tmp_path, capsys):
+    from tradingbot import candle_variations as V
+    registry(_loose_entry())
+    df = synth4h(800, seed=4)
+    evs, meta = L.process_series(df, "X/USDT", "4h", L.LabConfig(), catalog=False, algos=False, extras=False, variations=(LOOSE_ID,))
+    assert {e.family for e in evs} == {"candle_var", "placebo"} and {e.name for e in evs} == {LOOSE_ID, "PLACEBO_" + LOOSE_ID}
+    both, _ = L.process_series(df, "X/USDT", "4h", L.LabConfig(), catalog=False, variations=(LOOSE_ID,))
+    assert {"extra", "algo"} <= {e.family for e in both} and any(e.name == "PLACEBO_RANDOM" for e in both)
+    cli = _cli()
+    seen: dict = {}
+
+    def fake_run(**kw):
+        seen.clear()
+        seen.update(kw)
+        return {"groups": [], "symbols": kw["symbols"], "timeframes": kw["tfs"]}
+    monkeypatch.setattr(L, "run", fake_run)
+    out = str(tmp_path / "o")
+    assert cli.main(["--only-variations", "--variations", LOOSE_ID.lower(), "--offline", "--tfs", "4h", "--out", out]) == 0
+    assert (seen["catalog"], seen["algos"], seen["extras"], seen["variations"]) == (False, False, False, [LOOSE_ID])
+    assert "readback" in capsys.readouterr().out, "çeviri onayı olmayan kayıt için uyarı"
+    assert cli.main(["--offline", "--tfs", "4h", "--out", out]) == 0
+    assert (seen["catalog"], seen["algos"], seen["extras"], seen["variations"]) == (True, True, True, [])
+    assert cli.main(["--only-variations", "--variations", "all", "--offline", "--out", out]) == 0
+    assert seen["variations"] == [e["id"] for e in V.VARIATIONS if not e.get("example")] == [LOOSE_ID], "all = örnek olmayanlar"
+    assert (seen["catalog"], seen["algos"], seen["extras"]) == (False, False, False)
+    seen.clear()
+    assert cli.main(["--only-variations", "--offline", "--out", out]) == 2 and not seen
+    # katalogla birlikte varyasyon koşusu reddedilir (keşif/doğrulama kesimi değişir; kapı böyle kaydı almaz)
+    assert cli.main(["--variations", LOOSE_ID, "--no-catalog", "--offline", "--out", out]) == 2 and not seen
+    assert "--only-variations" in capsys.readouterr().err
+    assert cli.main(["--variations", "CV999_NOPE", "--offline", "--out", out]) == 2 and not seen
+    assert "UNKNOWN_ID" in capsys.readouterr().err
+
+
+def test_variation_record_written(registry, monkeypatch, tmp_path):
+    import re
+
+    from tradingbot import candle_dsl as D
+    from tradingbot import candle_lab as CL
+    from tradingbot import candle_variations as V
+    registry(dict(_loose_entry(), readback={"confirmed_by": "user", "date": "2000-01-01"}))
+    var = V.get(LOOSE_ID)
+    df = synth4h(900, seed=5)
+    prov = FakeProvider(df)
+    now = int(df["timestamp"].iloc[-1]) + 2 * H4
+    for k in ("GITHUB_RUN_ID", "GITHUB_REPOSITORY", "GITHUB_SHA", "GITHUB_SERVER_URL"):
+        monkeypatch.delenv(k, raising=False)
+    kw = dict(symbols=["AAA/USDT", "BBB/USDT"], tfs=["4h"], cache_dir=tmp_path / "c", cfg=L.LabConfig(min_is=5, min_oos=5),
+              provider_factory=lambda: prov, days={"4h": 150}, jobs=1, catalog=False, algos=False, extras=False, now_ms=now,
+              log=lambda m: None, variations=(LOOSE_ID,))
+    rep = L.run(out_dir=tmp_path / "local", **kw)
+    path = tmp_path / "local" / "variation_records" / f"{LOOSE_ID}.json"
+
+    def strict(s):
+        raise ValueError(f"JSON'da sonlu olmayan sayı: {s}")
+    rec = json.loads(path.read_text(encoding="utf-8"), parse_constant=strict)
+    assert rec["record_schema"] == "candle_lab/1" and rec["id"] == LOOSE_ID and rec["definition_sha"] == var.definition_sha
+    assert rec["dsl_version"] == D.DSL_VERSION and rec["window"] == D.WINDOW == 500
+    assert rec["golden_sha"] == CL.golden_sha(var) and re.fullmatch(r"[0-9a-f]{16}", rec["golden_sha"])
+    assert rec["run"]["github_run_id"] is None and rec["run"]["run_url"] is None and rec["run"]["commit"] is None
+    assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", rec["run"]["completed_at"])
+    assert rec["universe"] == {"symbols": ["AAA/USDT", "BBB/USDT"], "tfs": ["4h"], "days": {"4h": 150}}
+    b = rec["by_tf"]["4h"]
+    assert rec["primary_tf"] == "4h" and rec["verdict"] == b["verdict"] and rec["cutoff_ms"]["4h"] == rep["cutoff_ms"]["4h"]
+    assert b["trades"] > 10 and b["IS"]["n"] + b["OOS"]["n"] == b["trades"] and b["signals"] >= b["trades"] and b["symbols"] == 2
+    assert b["vs_placebo"] is not None and b["placebo_trades"] > 0
+    no = b["non_overlap_mean_r"]
+    assert 0 < no["n"]["IS"] <= b["IS"]["n"] and 0 < no["n"]["OOS"] <= b["OOS"]["n"] and no["IS"] is not None
+    assert rec["trials_to_date"] == V.trials_to_date() == 1 and rec["definition"] == var.definition and rec["side"] == "LONG"
+    # koşu anındaki çeviri onayı ve koşunun kipi kayda girer (kapı ikisini de denetler); bağımlılık sürümleri teşhis için
+    assert rec["readback"] == var.readback == {"confirmed_by": "user", "date": "2000-01-01"}
+    assert rec["run"]["mode"] == {"catalog": False, "algos": False, "extras": False, "only_variations": True}
+    assert set(rec["run"]["versions"]) == {"python", "numpy", "pandas"}
+    assert rep["variations"][LOOSE_ID]["definition_sha"] == var.definition_sha and rep["trials_to_date"] == 1
+    txt = L.render(rep)
+    assert "MUM VARYASYONLARI" in txt and var.definition_sha in txt and LOOSE_ID in txt
+    # yerel çalıştırmanın kaydı kapıdan geçmez
+    monkeypatch.setattr(V, "LAB_RECORDS_DIR", path.parent)
+    assert V.gate(LOOSE_ID) == (None, "LAB_NOT_FROM_CI")
+    # GitHub Actions ortamı → çalıştırma bilgisi kayda yazılır; kapı kaynak denetimlerini geçer, onay aşamasına gelir
+    for k, v in (("GITHUB_RUN_ID", "4242"), ("GITHUB_REPOSITORY", "owner/repo"), ("GITHUB_SHA", "abc123"),
+                 ("GITHUB_SERVER_URL", "https://github.com")):
+        monkeypatch.setenv(k, v)
+    L.run(out_dir=tmp_path / "ci", **kw)
+    ci_path = tmp_path / "ci" / "variation_records" / f"{LOOSE_ID}.json"
+    ci = json.loads(ci_path.read_text(encoding="utf-8"))
+    assert ci["run"]["github_run_id"] == "4242" and ci["run"]["commit"] == "abc123"
+    assert ci["run"]["run_url"] == "https://github.com/owner/repo/actions/runs/4242"
+    monkeypatch.setattr(V, "LAB_RECORDS_DIR", ci_path.parent)
+    assert V.gate(LOOSE_ID)[1] in ("NO_APPROVAL", "VERDICT_LOSS")
+
+
+def test_candle_variation_is_compared_only_with_its_matched_placebo():
+    cfg = L.LabConfig()
+    pick = lambda agg, name: next(g for g in agg["groups"] if g["name"] == name and g["context"] == "HEPSİ")  # noqa: E731
+    sig = _events("CV001_X", "candle_var", 0.5, 600, 1)
+    rnd = _events("PLACEBO_RANDOM", "placebo", -0.5, 600, 2)
+    own = _events("PLACEBO_CV001_X", "placebo", 0.4, 600, 3)
+    alone = pick(L.aggregate(sig + rnd, cfg), "CV001_X")
+    assert alone["vs_placebo"] is None and alone["verdict"] == L.V_WEAK, "PLACEBO_RANDOM'a düşmez"
+    g = pick(L.aggregate(sig + rnd + own, cfg), "CV001_X")
+    assert g["vs_placebo"]["placebo_mean_r"] == [pick(L.aggregate(own, cfg), "PLACEBO_CV001_X")[p]["mean_r"] for p in ("IS", "OOS")]
+    # diğer aileler değişmedi: formasyon hâlâ genel rastgele girişle karşılaştırılır
+    assert pick(L.aggregate(_events("SIG", "extra", 0.5, 600, 1) + rnd, cfg), "SIG")["vs_placebo"] is not None
+
+
+def test_random_walk_loose_variation_is_not_strong(registry):
+    """Yöntem kalibrasyonu: avantajı OLMAYAN veride gevşek bir mum varyasyonu GÜÇLÜ ADAY çıkmamalı; eşi (aynı bağlam, aynı
+    stop ve çıkış) karşılaştırmada bulunur."""
+    registry(_loose_entry())
+    evs = []
+    for k, seed in enumerate((11, 12, 13)):
+        e, _ = L.process_series(synth4h(1800, seed=seed), f"R{k}/USDT", "4h", L.LabConfig(), catalog=False, algos=False,
+                                extras=False, variations=(LOOSE_ID,))
+        evs += [dataclasses.asdict(x) for x in e]
+    agg = L.aggregate(evs, L.LabConfig())
+    mine = [g for g in agg["groups"] if g["family"] == "candle_var"]
+    hepsi = next(g for g in mine if g["context"] == "HEPSİ")
+    assert hepsi["IS"]["n"] >= 30 and hepsi["OOS"]["n"] >= 20 and hepsi["vs_placebo"] is not None
+    assert not [g for g in mine if g["verdict"] == L.V_STRONG]

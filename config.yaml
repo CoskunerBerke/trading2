@@ -484,6 +484,23 @@ strategy_paper:
         leverage: 1              # tavani asan islem REDDEDILMEZ, tavana kucultulur (risk butcenin altinda kalir)
         entry_window_min: 60     # sinyal kapanisindan 60 dk icinde girilmezse sinyal kacmis sayilir
       max_entry_drift_pct: 0.0
+    # C4 · MUM VARYASYONLARI (4h) — YALNIZ kullanıcının gönderdiği mum varyasyonlarını işler. PAPER, gerçek para YOK,
+    # kaldıraç 1. Liste BOŞ başlar; bir varyasyon ancak çeviri onayı + laboratuvar kaydı (definition_sha eşleşir) +
+    # kullanıcı onayı ile eklenir (docs/CANDLE_VARIATIONS_4H.md). Liste sırası = öncelik. Kapatmak: önce variations: []
+    # (açık pozisyonlar kendi stop/hedef/zamanıyla kapansın), sonra enabled: false (kapalı defterde pozisyon DONAR).
+    - name: c4_candle_variations
+      enabled: true
+      starting_equity_usdt: 200
+      breakeven_at_mfe_r: 0.0
+      state_dir: strategy_paper_candle4h
+      symbols: [BTC/USDT, ETH/USDT, SOL/USDT, BNB/USDT, XRP/USDT, DOGE/USDT, ADA/USDT, AVAX/USDT, LINK/USDT,
+                LTC/USDT, DOT/USDT, NEAR/USDT, TRX/USDT, BCH/USDT, UNI/USDT, FIL/USDT, XLM/USDT, AAVE/USDT,
+                APT/USDT, ARB/USDT, OP/USDT, INJ/USDT, SUI/USDT]
+      rule_params:
+        leverage: 1
+        entry_window_min: 60
+        variations: []
+      max_entry_drift_pct: 0.0
 
 structures:                    # ORTAK YAPI KATALOĞU (2026-09-22) — beş bot aynı mum/grafik analizini okur
   # Politika: docs/structures/POLITIKA_MATRISI_v1.md (kodlamadan önce yazıldı; eşikler sonuçlara göre seçilmedi).

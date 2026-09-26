@@ -2751,7 +2751,11 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
                         continue
                     _idf = candles.load(base, _tf, market, n=600)
                     if _idf is not None:
-                        intraday = paper_rules.intraday_rows({_tf: _idf}, tf=_tf, now_ms=now_ms, tail=400)
+                        if bname in paper_rules.CANDLE_VARIANTS:
+                            # mum varyasyonları: kuralın KENDİ okuması (son 500 kapanmış 4h bar, hacim dahil)
+                            intraday = paper_rules.intraday_for(bname, {_tf: _idf}, now_ms) or []
+                        else:
+                            intraday = paper_rules.intraday_rows({_tf: _idf}, tf=_tf, now_ms=now_ms, tail=400)
             # kapanmis islem kuyrugu motorla AYNI uzunlukta (parmak izi paritesi); spot yalniz ana botun spot defterinden
             hist = state.book_history(book_id, sym, limit=HISTORY_TAIL) if market == "futures" else (state.spot_history(sym, limit=HISTORY_TAIL) if book_id == BOOK_MAIN else [])
             ef = state.book_entry_features(book_id, (pos or {}).get("id")) if pos else None

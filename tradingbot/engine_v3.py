@@ -125,6 +125,23 @@ def _wall_ms() -> int:
     return int(utc_now().timestamp() * 1000)
 
 
+def chart_rule_inputs(book: dict, *, tf: str, bars: list, frames: dict | None, as_of_ms: int) -> tuple[dict, list | None]:
+    """Grafik analizine giden defter kimliği ve kuralın gün içi satırları: (build_snapshot `book`, `intraday_rows`).
+
+    Panel (`dashboard/app.py`) aynı defter için AYNI okumayı yapar; ikisi farklı okursa `analysis_id` hiç eşleşmez.
+    * D4 (4h trend): grafik diliminin KENDİ kapanmış barları (ikinci okuma yok).
+    * C4 (mum varyasyonları): kuralın kendi penceresi — son 500 kapanmış 4h bar, hacim dahil (`paper_rules.intraday_for`,
+      `decide_for` ile aynı okuma; motor çerçevesi 700 bar) — ve defterin `rule_params`ı (etkin varyasyon listesi).
+    * Diğer defterler: DEĞİŞMEDİ (rule_params yok, gün içi satır yok)."""
+    from . import paper_rules
+    name = str(book["name"])
+    out = {"book_id": book["book_id"], "name": book["name"], "atr_mult": book["atr_mult"]}
+    if name in paper_rules.CANDLE_VARIANTS:
+        out["rule_params"] = dict(book.get("rule_params") or {})
+        return out, paper_rules.intraday_for(name, frames, as_of_ms) or []
+    return out, (bars if (tf == "4h" and name in paper_rules.DONCHIAN_VARIANTS) else None)
+
+
 class TradingEngineV3(TradingEngine):
     def __init__(self, cfg: BotConfig):
         super().__init__(cfg)
@@ -2950,7 +2967,6 @@ class TradingEngineV3(TradingEngine):
             from .chart_analysis import TF_MS
             from .chart_analysis_store import DIRNAME, ChartAnalysisStore
             from .ema200_trend import daily_rows_from_frame
-            from . import paper_rules
             tf = str(getattr(ca, "timeframe", "4h") or "4h")
             step = int(TF_MS.get(tf, 14_400_000))
             as_of = int(now.timestamp() * 1000)
@@ -2972,7 +2988,8 @@ class TradingEngineV3(TradingEngine):
             btc_rows = closed_bars(daily_rows_from_frame(btc_fr, tail=320), now_ms=as_of, tf="1d") if btc_fr is not None else []
             books = [{"book_id": BOOK_MAIN, "name": BOOK_MAIN, "atr_mult": None, "ledger": self.ledger2, "memory": None}]
             for b in (getattr(self, "strategy_books", None) or []):
-                books.append({"book_id": b.key, "name": b.name, "atr_mult": b.atr_mult, "ledger": b.ledger, "memory": b.memory})
+                books.append({"book_id": b.key, "name": b.name, "atr_mult": b.atr_mult, "ledger": b.ledger, "memory": b.memory,
+                              "rule_params": dict(getattr(getattr(b, "spec", None), "rule_params", None) or {})})
             scope = list(dict.fromkeys(list(symbols) + [s for b in books for s in list(b["ledger"].positions)]))
             written = 0
             for sym in scope:
@@ -3028,10 +3045,10 @@ class TradingEngineV3(TradingEngine):
                             ef = row.get("features") or (row.get("entry") or {}).get("features")
                         except Exception:  # noqa: BLE001
                             ef = None
-                    # 4h trend gözlem defteri kuralını grafik diliminin KENDİ kapanmış barlarından okur (ikinci okuma yok)
-                    _intra = bars if (tf == "4h" and str(b["name"]) in paper_rules.DONCHIAN_VARIANTS) else None
+                    # kuralın okuduğu gün içi satırlar ve defter kimliği panelle AYNI (analysis_id paritesi)
+                    _book, _intra = chart_rule_inputs(b, tf=tf, bars=bars, frames=fr, as_of_ms=as_of)
                     snap = build_snapshot(symbol=sym, market_type=market_type, timeframe=tf, tf_ms=step,
-                                          book={"book_id": b["book_id"], "name": b["name"], "atr_mult": b["atr_mult"]},
+                                          book=_book,
                                           bars=bars, as_of_ms=as_of, daily_rows=daily, btc_daily_rows=btc_rows, gates=gates,
                                           intraday_rows=_intra,
                                           decision=last_dec.get(sym) if is_main else None, plan=plan if is_main else None,

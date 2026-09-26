@@ -4,7 +4,9 @@
 # Kod kaynağı: betikle aynı klasörde tb-4931c73.bundle varsa o (sha256 doğrulanır); yoksa herkese açık GitHub deposu
 # (commit TAM SHA ile istenir ve doğrulanır — içerik commit kimliğine bağlıdır). VPS'te:
 #   sudo bash tb-deploy-4931c73.sh --dry-run   # yalnız kontroller; kod/state/servis DEĞİŞMEZ
-#   sudo bash tb-deploy-4931c73.sh             # dağıt
+#   sudo bash tb-deploy-4931c73.sh             # dağıt (bu terminalde)
+#   sudo bash tb-deploy-4931c73.sh --detach    # dağıt, SSH'tan BAĞIMSIZ ayrı systemd görevi olarak; çıktıyı izler.
+#                                              # Pencere/PC kapansa da sürer. Ctrl+C yalnız İZLEMEYİ bırakır.
 #   sudo bash tb-deploy-4931c73.sh --check     # dağıtım sonrası durum (salt okunur; tekrar tekrar koşulabilir)
 #
 # Sıra: kaynak → HEAD + temiz ağaç → hedef commit'in getirilmesi → HEAD hedefin atası mı → disk → [dry-run burada biter]
@@ -92,6 +94,29 @@ memory_report() {
 [[ -d "$APP/.git" ]] || die "$APP bir git kopyası değil"
 load_env
 
+# ------------------------------------------------------------------ --detach: SSH'tan bağımsız ayrı görev + izleme
+if [[ "$MODE" == "--detach" ]]; then
+  UNIT="tb-deploy-${TIP:0:7}"
+  if systemctl is-active --quiet "$UNIT"; then
+    echo "dağıtım zaten çalışıyor ($UNIT). İzlemek için: sudo journalctl -u $UNIT -f -o cat"; exit 0
+  fi
+  START="$(date '+%Y-%m-%d %H:%M:%S')"
+  systemd-run --unit="$UNIT" --collect --quiet --setenv=TRADINGBOT_BASE="$BASE" --setenv=TRADINGBOT_USER="$SVC_USER" \
+    bash "$HERE/$(basename "${BASH_SOURCE[0]}")" deploy || die "ayrı görev başlatılamadı (systemd-run)"
+  cat <<EOF
+Dağıtım AYRI bir görev olarak başladı ($UNIT). Bu pencereyi ya da PC'yi kapatsanız da sürer.
+  Ctrl+C yalnız İZLEMEYİ bırakır, dağıtımı ETKİLEMEZ.
+  Sonra tekrar izlemek:  sudo journalctl -u $UNIT -f -o cat     (görev bitince: sudo tail -40 $LOGDIR/${TIP:0:7}-deploy.log)
+  Dağıtımı durdurmak:    sudo systemctl stop $UNIT   (yeniden başlatmadan önceyse kod geri alınır)
+EOF
+  journalctl -u "$UNIT" -f -o cat --no-pager --since "$START" & jp=$!
+  sleep 3
+  while systemctl is-active --quiet "$UNIT"; do sleep 3; done
+  sleep 2; kill "$jp" 2>/dev/null || true
+  echo; echo "görev bitti. Durum için: sudo bash $0 --check"
+  exit 0
+fi
+
 # ------------------------------------------------------------------ --check: dağıtım sonrası durum (salt okunur)
 if [[ "$MODE" == "--check" ]]; then
   say "kod"
@@ -129,7 +154,7 @@ PY
   exit 0
 fi
 
-[[ "$MODE" == "deploy" || "$MODE" == "--dry-run" ]] || die "bilinmeyen seçenek: $MODE (--dry-run | --check | seçeneksiz)"
+[[ "$MODE" == "deploy" || "$MODE" == "--dry-run" ]] || die "bilinmeyen seçenek: $MODE (--dry-run | --detach | --check | seçeneksiz)"
 
 # ------------------------------------------------------------------ 1) kontroller (hiçbir şeye dokunmaz)
 say "1/9 kod kaynağı"
@@ -303,13 +328,21 @@ except Exception:
 sys.exit(0 if d.get("source") == "watch" and age < 45 else 1)
 PY
 }
+# Worker her yeniden başlatmadan sonra ve her yeni 4h mumda TURDAN ÖNCE tam spot WFO döngüsü koşar (bekleme döngüsü
+# bunu kontrol etmez); WFO + tur 1 saati aşabiliyor (2026-09-25 VPS: 30 dk içinde hiç bekleme görülmedi) → 3 saat.
+phase_now() {
+  journalctl -u "$WORKER" --since "-6h" -o cat --no-pager 2>/dev/null \
+    | grep -E '^===== .* — (SPOT WFO|TUR #)' | tail -n 1 | tr -d '=' | sed 's/^ *//;s/ *$//' || true
+}
 waited=0
 until idle_now; do
-  if (( waited >= 1800 )); then
+  if (( waited >= 10800 )); then
     revert_code
-    die "worker 30 dk içinde turlar arası beklemeye girmedi → kod ${PREV:0:7}'e geri alındı, servisler YENİDEN BAŞLATILMADI"
+    die "worker 3 saat içinde turlar arası beklemeye girmedi → kod ${PREV:0:7}'e geri alındı, servisler YENİDEN BAŞLATILMADI"
   fi
-  (( waited % 60 == 0 )) && echo "   worker turda; tur bitince yeniden başlatılacak (bekleniyor: $((waited / 60)) dk)"
+  if (( waited % 300 == 0 )); then
+    echo "   $(date '+%H:%M') worker meşgul [$(phase_now)] — bitince yeniden başlatılacak (bekleniyor: $((waited / 60)) dk)"
+  fi
   sleep 10; waited=$((waited + 10))
 done
 ok "worker turlar arası beklemede → şimdi yeniden başlatılıyor"
@@ -351,7 +384,8 @@ DAĞITIM TAMAM: ${PREV:0:7} → ${TIP:0:7}. Defterler sıfırlanmadı (önceki d
 İzleme:
   sudo bash $0 --check                         # durum, bellek, defterler, karne, son uyarılar
   journalctl -u $WORKER -f                     # canlı log (Ctrl+C ile çık)
-İlk tur ~10-15 dk sürer; 4h trend defteri (state/strategy_paper_trend4h) ilk turdan sonra görünür.
+Yeni worker önce tam spot WFO döngüsünü, sonra ilk turu çalıştırır (toplam 1 saati aşabilir); 4h trend defteri
+(state/strategy_paper_trend4h) ilk turdan SONRA görünür.
 Bellek: ilk 2-3 turda tepe değeri 4G sınırına yaklaşırsa (ör. > 3,6G) bana --check çıktısını iletin.
 
 Geri alma (gerekirse): sudo bash $APP/deploy/rollback.sh   → ${PREV:0:7}

@@ -1,0 +1,1 @@
+--only-variations --variations CV000_EXAMPLE_BULL3 --symbols genis --tfs 4h --days 4h=1460

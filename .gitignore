@@ -26,3 +26,7 @@ Trading_bot/Data Quality/
 *.pem
 *.key
 deploy/env
+
+# sinyal laboratuvarı: indirilen mumlar ve raporlar (yerel)
+signal_lab_data/
+signal_lab_out/

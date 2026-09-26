@@ -142,7 +142,11 @@ class TickData:
     `open` (2026-09-22): tik bir BAR ise barın açılış fiyatı — o aralıktaki İLK gözlenen fiyat. Stop/likidasyon
     sözleşmesi (`futures_ledger.exit_decision`) açılışta oluşan boşluğu bar içi yoldan ancak bununla ayırır.
     Fiyat-yalnız tikte (high/low yok) ilk gözlem fiyatın kendisidir; bar olup açılışı bilinmeyen tikte ilk gözlem
-    BİLİNMİYOR sayılır. Konumsal kurucu uyumu için alan en sondadır."""
+    BİLİNMİYOR sayılır. Konumsal kurucu uyumu için alan en sondadır.
+
+    `src_ts` / `fetched_ts` (2026-09-24): canlı fiyatın KAYNAK (borsa mark) zamanı ve bizim ALINMA zamanı ayrı taşınır;
+    `ts` geriye uyum için "bilinen en iyi fiyat zamanı"dır (kaynak varsa o, yoksa alınma). Koruyucu tick sırası ve tazeliği
+    bunlarla denetlenir (`protective_monitor.guarded_tick`); bar tikleri bu alanları kullanmaz."""
     last: Decimal
     mark: Decimal | None = None
     high: Decimal | None = None
@@ -151,6 +155,8 @@ class TickData:
     ask: Decimal | None = None
     ts: str = ""
     open: Decimal | None = None
+    src_ts: str = ""
+    fetched_ts: str = ""
 
     def __post_init__(self):
         self.last = D(self.last)

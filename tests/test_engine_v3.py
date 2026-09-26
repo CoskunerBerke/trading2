@@ -25,6 +25,9 @@ class FakeLive:
         if symbol in self.price:
             px = self.price[symbol]
             lv["ticker"].update({"last": px, "high": px * 1.03, "low": px * 0.97})
+            # 2026-09-24: futures defterinin koruyucu yolu doğrulanmış USDⓈ-M perp mark'ı okur (spot ticker DEĞİL);
+            # gerçek piyasada ikisi birlikte hareket eder — sahte canlı veri de öyle.
+            lv["funding"] = dict(lv.get("funding") or {}, mark=px)
         lv["ts"] = self._now_s
         return lv
 

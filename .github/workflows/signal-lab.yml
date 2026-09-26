@@ -1,0 +1,62 @@
+# SİNYAL LABORATUVARI — GitHub'ın sunucusunda geçmiş test (kullanıcının ağından bağımsız).
+# Veri: Binance toplu arşivi (data.binance.vision, --source archive). Secrets kullanmaz, işlem açmaz, botlara dokunmaz.
+# Tetik: `research/signal_lab_args.txt` değişince (argümanlar oradan) ya da elle (workflow_dispatch).
+name: signal-lab
+
+on:
+  push:
+    branches:
+      - "claude/**"
+      - "work/**"
+    paths:
+      - "research/signal_lab_args.txt"
+      - ".github/workflows/signal-lab.yml"
+  workflow_dispatch:
+    inputs:
+      args:
+        description: "scripts/signal_lab.py argümanları (boşsa research/signal_lab_args.txt)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  signal-lab:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Restore candle cache
+        uses: actions/cache@v4
+        with:
+          path: signal_lab_data
+          key: signal-lab-data-${{ github.run_id }}
+          restore-keys: signal-lab-data-
+      - name: Archive reachability
+        run: curl -sS -o /dev/null -w "data.binance.vision HTTP %{http_code}\n" https://data.binance.vision/ || true
+      - name: Run signal lab
+        env:
+          ARGS_IN: ${{ github.event.inputs.args }}
+        run: |
+          set -o pipefail
+          ARGS="$ARGS_IN"
+          if [ -z "$ARGS" ]; then ARGS="$(cat research/signal_lab_args.txt)"; fi
+          echo "argümanlar: $ARGS"
+          mkdir -p signal_lab_out
+          # shellcheck disable=SC2086
+          python scripts/signal_lab.py --source archive --jobs 4 $ARGS | tee signal_lab_out/console.txt
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: signal-lab-report
+          path: signal_lab_out/
+          if-no-files-found: warn

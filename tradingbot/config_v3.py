@@ -676,6 +676,10 @@ class PatternTraderSection:
     state_dir: str = "pattern_trader"
     max_open_positions: int = 3
     families: list[str] = field(default_factory=lambda: ["A_TREND_PULLBACK", "B_LEVEL_REVERSAL", "C_COMPRESSION_BREAKOUT"])
+    # --- protokol (2026-09-25): "classic" = v1/v2 (yapı moduna göre, eski davranış); "momentum_4h_v3" = yalnız
+    # laboratuvarda sıkı testi geçen 4h sinyali (üç beyaz asker + RSI>70, LONG; bkz. pattern_trader/strategy_v3.py) ---
+    protocol: str = "classic"
+    symbols: list[str] = field(default_factory=list)   # boş + v3 → laboratuvarda test edilen 30 coin
     # --- plan geometrisi (surumlu; sonuclari gorduken sonra "kar cikana kadar" degistirilmez) ---
     stop_buffer_atr: float = 0.25
     min_rr_after_cost: float = 1.5
@@ -1050,6 +1054,8 @@ def validate_v3(cfg: V3Config) -> None:
             raise ConfigError("pattern_trader.starting_equity_usdt (0, 1000] araliginda olmali (sanal bakiye)")
         if int(_pt.max_open_positions) < 1:
             raise ConfigError("pattern_trader.max_open_positions >= 1 olmali")
+        if str(_pt.protocol) not in ("classic", "momentum_4h_v3"):
+            raise ConfigError("pattern_trader.protocol bilinmiyor: %s (gecerli: classic, momentum_4h_v3)" % _pt.protocol)
         if float(_pt.min_rr_after_cost) <= 0 or float(_pt.stop_buffer_atr) < 0:
             raise ConfigError("pattern_trader: min_rr_after_cost > 0 ve stop_buffer_atr >= 0 olmali")
         if str(_pt.state_dir) in ("", str(cfg.strategy_paper.state_dir)) or "/" in str(_pt.state_dir) or "\\" in str(_pt.state_dir):

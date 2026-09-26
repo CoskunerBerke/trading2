@@ -57,7 +57,9 @@ PRICE_FUTURE_SKEW_S = 120.0
 #: tur atar; 5 dakikalık bir kural bu tempoda 5m barlarının ancak 1/3'ünü görür. Tolerans bunu 0 yapıp
 #: defteri her turda "bayat" diye reddettirmek yerine AÇIKÇA kabul eder ve `data_policy`de ilan eder.
 #: Kaçırılan tetiklerin maliyeti araştırmada AYRI bir kol olarak ölçülür (stride 1 vs 3), varsayılmaz.
-BAR_LAG_TOLERANCE_MS: dict[str, int] = {"1d": 3_600_000, "5m": 900_000}
+#: "4h" (2026-09-25, 4h trend gözlem defteri): bir tur (15 dk). Sağlayıcı yeni 4h barı turdan biraz geç verirse defter
+#: bir önceki barı okur; sinyal penceresi sinyal KAPANIŞINDAN ölçüldüğü için bu, geç girişe dönüşmez.
+BAR_LAG_TOLERANCE_MS: dict[str, int] = {"1d": 3_600_000, "5m": 900_000, "4h": 900_000}
 #: Üretimin tur aralığı (dk) — yalnız ilan/ölçüm için; zamanlamayı servis dosyası belirler.
 PRODUCTION_TOUR_INTERVAL_MIN = 15
 #: Ham çerçevenin son satırı `as_of`tan bu kadar ileride açılmışsa gelecek zaman damgası (saat sorunu) → ret.
@@ -110,7 +112,8 @@ def verified_price(snapshot: dict | None, *, now_ms: int, max_age_s: float = PRI
     `max_age_s` içinde. Aksi hâlde ok=False ve gerekçe: NO_VERIFIED_FUTURES_PRICE | INVALID_FUTURES_PRICE_TIME |
     STALE_FUTURES_PRICE. Hüküm yalnız BU kontrol anı içindir; eski fiyat yeni zamanla etiketlenmez."""
     snap = snapshot if isinstance(snapshot, dict) else {}
-    out: dict[str, Any] = {"ok": False, "mark": 0.0, "price_ts_ms": None, "fetched_at_ms": None, "checked_at_ms": int(now_ms),
+    out: dict[str, Any] = {"ok": False, "mark": 0.0, "price_ts_ms": None, "fetched_at_ms": None, "source_ts_ms": None,
+                           "checked_at_ms": int(now_ms),
                            "age_s": None, "reason": "", "detail": "", "source": "live.snapshot.funding.mark"}
     fm = (snap.get("funding") or {}).get("mark") if isinstance(snap.get("funding"), dict) else None
     try:
@@ -123,7 +126,8 @@ def verified_price(snapshot: dict | None, *, now_ms: int, max_age_s: float = PRI
     fetched = parse_ts_ms(snap.get("ts"))
     src_ts = parse_ts_ms((snap.get("funding") or {}).get("ts")) if isinstance(snap.get("funding"), dict) else None
     price_ts = src_ts if src_ts is not None else fetched
-    out.update(mark=mark, price_ts_ms=price_ts, fetched_at_ms=fetched)
+    # `source_ts_ms` (2026-09-24): YALNIZ borsanın mark zamanı (yoksa None) — alınma zamanıyla karıştırılmaz
+    out.update(mark=mark, price_ts_ms=price_ts, fetched_at_ms=fetched, source_ts_ms=src_ts)
     if price_ts is None:
         out.update(reason="INVALID_FUTURES_PRICE_TIME", detail="fiyat zamanı yok/çözülemedi")
         return out
@@ -394,6 +398,25 @@ def apply_action(act: dict[str, Any] | None, *, symbol: str, price: float, tick:
             if _drift > float(max_entry_drift_pct):
                 reject(symbol, "ENTRY_DRIFT")
                 return "REJECTED"
+    # TEST EDİLMİŞ RİSK ARALIĞI (2026-09-25, yalnız isteyen eylem — 4h trend gözlem defteri): girişten stop'a mesafe
+    # laboratuvarın kabul ettiği ATR aralığında değilse (0,1 < mesafe/ATR <= 10) girilmez. Kural stop'u KAPANIŞTAN kurar;
+    # defter canlı fiyattan girer, arada fiyat stop'a çok yaklaştıysa işlem laboratuvarda sayılmayan bir işlemdir.
+    _rb, _atr = act.get("risk_atr_bounds"), act.get("atr14")
+    if _rb and _atr:
+        try:
+            _lo, _hi, _a = float(_rb[0]), float(_rb[1]), float(_atr)
+        except (TypeError, ValueError, IndexError):
+            _lo = _hi = _a = 0.0
+        if not (_a > 0 and _lo * _a < abs(entry - stop) <= _hi * _a):
+            reject(symbol, "RISK_OUTSIDE_TESTED_RANGE")
+            return "REJECTED"
+    # HEDEF GİRİŞTEN (2026-09-26, yalnız isteyen eylem — mum varyasyonları): hedef = gerçek giriş ± R × risk. Laboratuvar
+    # hedefi sonraki barın AÇILIŞINDAN ölçer (`simulate`: entry + s·default_rr·risk); kural kapanıştan ölçseydi canlı giriş
+    # kaydıkça R değişirdi. Anahtar yoksa `targets` eylemdeki gibi kalır (diğer defterler bit-bit aynı).
+    _tr = act.get("target_r_from_entry")
+    if _tr:
+        _s = 1.0 if direction == "LONG" else -1.0
+        act["targets"] = [entry + _s * float(_tr) * abs(entry - stop)]
     stop_frac = abs(entry - stop) / entry
     risk_usdt = float(profile.risk_per_trade_pct) / 100.0 * float(state.equity)
     notional = risk_usdt / stop_frac
@@ -410,6 +433,14 @@ def apply_action(act: dict[str, Any] | None, *, symbol: str, price: float, tick:
         if _cap1 > 0:
             _need = int(math.ceil(notional / _cap1))
             lev = max(lev, min(_need, _lmax))
+    # TAVANA KÜÇÜLTME (2026-09-25, yalnız isteyen eylem — formasyon v3): tek pozisyon tavanını aşan işlem REDDEDİLMEZ,
+    # tavana sığacak kadar küçültülür → işlem başına risk bütçenin ALTINA iner (asla üstüne çıkmaz), kaldıraç değişmez.
+    if act.get("cap_notional_to_position_pct"):
+        _cap2 = float(risk.equity_basis(state)) * float(getattr(profile, "max_position_pct", 0.0)) / 100.0 * max(lev, 1)
+        if _cap2 > 0 and notional > _cap2:
+            act["_notional_scaled"] = {"from": round(notional, 6), "to": round(_cap2 * 0.999, 6),
+                                       "risk_fraction_of_budget": round(_cap2 * 0.999 / notional, 6)}
+            notional = _cap2 * 0.999
     plan_dict = {"symbol": symbol, "market_type": "USDM_PERP", "direction": direction, "entry": entry, "stop": stop,
                  "targets": list(act.get("targets") or []), "notional": notional, "margin": notional / max(1, lev),
                  "leverage": lev, "amount_type": "NOTIONAL", "expected_r": float(act.get("expected_r") or 0.0),
@@ -424,13 +455,18 @@ def apply_action(act: dict[str, Any] | None, *, symbol: str, price: float, tick:
         return "REJECTED"
     # Kanıt: hangi veriyle girildiği pozisyon/işlem kaydına yazılır (piyasa, kaynak, tur, kullanılan bar zamanları).
     data_src = {"market": data.market, "source": data.source, "tour_id": data.tour_id, "bars": dict(data.bars), "btc": dict(data.btc)}
+    feats = {"regime": act.get("regime"), "market_type": "USDM_PERP", "strategy": act.get("name"),
+             "expected_r": float(act.get("expected_r") or 0.0), "p_win": None, "data_source": data_src,
+             # ORTAK YAPI (structures_v1): girişin dayanağı ve politika sürümü — eski ölçümlerden AYRI
+             "structure": dict(act["structure"]) if act.get("structure") else None}
+    if act.get("variation"):
+        # MUM VARYASYONU (2026-09-26, yalnız isteyen eylem): kimlik, definition_sha, laboratuvar kanıtı, gözlem bayrağı ve
+        # çıkış (hedef R, en uzun tutma) — girişteki ANLIK GÖRÜNTÜ; işlem kaydına da geçer. Anahtar yalnız o zaman eklenir.
+        feats["candle_variation"] = dict(act["variation"])
     pos = ledger.open(symbol, direction, entry, SizeSpec(Decimal(str(notional)), AmountType.NOTIONAL, int(rd.adjusted_leverage or lev)),
                       filters=filters, stop=stop, targets=list(act.get("targets") or []),
                       setup_type=str(act.get("setup_type") or "strategy"), trigger_text=str(act.get("reason") or ""),
-                      features={"regime": act.get("regime"), "market_type": "USDM_PERP", "strategy": act.get("name"),
-                                "expected_r": float(act.get("expected_r") or 0.0), "p_win": None, "data_source": data_src,
-                                # ORTAK YAPI (structures_v1): girişin dayanağı ve politika sürümü — eski ölçümlerden AYRI
-                                "structure": dict(act["structure"]) if act.get("structure") else None},
+                      features=feats,
                       tick=tick, now=now, meta={"run_id": run_id, "strategy": str(act.get("name") or ""), "data_source": data_src})
     if pos is None:
         reject(symbol, ledger.last_reject_reason or "LEDGER_REJECT")
@@ -501,6 +537,8 @@ class StrategyBook:
         self._resume_checked = False
         self._gap_until_ms: int | None = None
         self.monitoring_gap: dict[str, Any] | None = None
+        #: KORUYUCU İZLEYİCİ (2026-09-24): gözlem ölçümü (`protective_monitor.ObservationLog`); None → ölçüm yok.
+        self.observer: Any = None
         self._restore_counters()
 
     def _restore_counters(self) -> None:
@@ -657,6 +695,13 @@ class StrategyBook:
 
     def _on_opened(self, pos, act: dict[str, Any]) -> None:
         self.counters["opened"] += 1
+        if act.get("_notional_scaled"):
+            # tavana küçültülen işlem (bkz. apply_action TAVANA KÜÇÜLTME): risk bütçenin altında — kayıtta görünür
+            pos.meta["size_scaled_to_cap"] = dict(act["_notional_scaled"])
+        if act.get("one_entry_per_signal"):
+            pos.meta["signal"] = {"signal_ts": act.get("signal_ts"), "signal_close_ms": act.get("signal_close_ms"),
+                                  "signal_close": act.get("signal_close"), "atr14": act.get("atr14"),
+                                  "lab_algo": act.get("lab_algo")}
         try:
             self.memory.record_entry({"trade_id": pos.id, "symbol": pos.symbol, "direction": pos.side.value, "market_type": "USDM_PERP",
                                       "setup_type": "trend", "regime": act.get("regime"),
@@ -781,6 +826,9 @@ class StrategyBook:
                     self._reject(sym, "STRUCTURE_ERROR:%s" % type(exc).__name__)
                     if self.structure_mode == "ENFORCE" and str((act or {}).get("action") or "").upper() == "OPEN":
                         continue
+                if not pos_open and paper_rules.signal_already_used(act, self.ledger.history, sym):
+                    # aynı sinyalle ikinci giriş yok (laboratuvarda her sinyal TEK işlem; stop aynı barda gelirse)
+                    act = {"action": "NONE", "reason": "SIGNAL_ALREADY_USED", "name": self.name}
                 res = apply_action(act, symbol=sym, price=float(marks_f[sym]), tick=marks.get(sym), now=now,
                                    ledger=self.ledger, risk=self.risk, profile=self.profile, state=state,
                                    filters=self.filters_cache.get(sym, MarketType.USDM_PERP), run_id=self.run_id,
@@ -828,14 +876,56 @@ class StrategyBook:
                 return tf, last
         return None, None
 
-    def tick(self, marks: dict[str, TickData], *, now: datetime, funding_rate_lookup=None, bar_advance: bool) -> list:
+    def tick(self, marks: dict[str, TickData], *, now: datetime, funding_rate_lookup=None, bar_advance: bool,
+             expect: dict[str, str] | None = None, source: str = "tour", apply_clock=None) -> list:
         """CANLI FİYAT KONTROLÜ: defterin stop/hedef/funding/likidasyon kontrolü; ana defterle AYNI çağrı biçimi.
-        `marks` yalnız doğrulanmış, güncel perp mark taşır (bar ucu YOK; uçlar `apply_closed_bars` ile ayrı sözleşmede)."""
+        `marks` yalnız doğrulanmış, güncel perp mark taşır (bar ucu YOK; uçlar `apply_closed_bars` ile ayrı sözleşmede).
+
+        KORUYUCU İZLEYİCİ (2026-09-24): tur, Box zamanlayıcısı ve izleyici bu defteri ayrı iş parçacıklarından tick'ler.
+        Tick `protective_monitor.guarded_tick` ile yapılır: `expect` verilirse fiyat alınmadan önceki pozisyon kimliği
+        doğrulanır; pozisyona uygulanmış fiyattan daha ESKİ fiyat uygulanmaz; tazelik uygulama anında (`apply_clock`;
+        verilmezse `now`) denetlenir. Kesintiden sonraki ilk gözlem kayda geçer."""
+        from .protective_monitor import guarded_tick
         with self.lock:
             self._resume_once(now)
-            recs = self.ledger.tick(marks, now_utc=now, funding_rate_lookup=funding_rate_lookup, bar_advance=bar_advance)
+            recs, info = guarded_tick(self.ledger, marks, now=now, funding_rate_lookup=funding_rate_lookup,
+                                      bar_advance=bar_advance, expect=expect, apply_clock=apply_clock)
             for rec in recs:
                 self._on_closed(rec)
+            self._after_tick(info, recs, now, source)
+            return recs
+
+    def _after_tick(self, info: dict[str, Any], recs: list, now: datetime, source: str) -> None:
+        """Ölçüm + kesinti sonrası ilk gözlem (çağıran kilidi tutar)."""
+        applied = info.get("applied") or {}
+        if not applied:
+            return
+        note_ids = [str(getattr(r, "id", "")) for r in recs]
+        if self.monitoring_gap:
+            from .protective_monitor import note_gap_first_observations
+            note_gap_first_observations(self.monitoring_gap, book_key=self.key, state_path=self.cfg.state_path,
+                                        applied=applied, now=now, closed_ids=note_ids)
+        if self.observer is not None:
+            opened = {s: parse_ts_ms(p.opened_at) or 0 for s, p in self.ledger.positions.items()}
+            self.observer.note(self.key, applied, int(now.timestamp() * 1000), opened_ms=opened, source=source)
+
+    def held_ids(self) -> dict[str, str]:
+        """Açık pozisyonların kimlik anlık görüntüsü (kısa kilit) — izleyici fiyatı bunun İÇİN alır ve kilit altında doğrular."""
+        with self.lock:
+            return {s: str(p.id) for s, p in self.ledger.positions.items()}
+
+    def protect(self, marks: dict[str, TickData], marks_f: dict[str, float], gaps: dict[str, dict] | None, *, now: datetime,
+                expect: dict[str, str] | None = None, source: str = "monitor", funding_rate_lookup: Any = "__book__",
+                apply_clock=None) -> list:
+        """KORUYUCU İZLEME ADIMI (tek kısa atomik bölüm; AĞ YOK): fiyat boşlukları → korumalı tick → kayıt.
+        Funding kaynağı yalnız bellekten okunur (ağ adımı turdadır)."""
+        frl = self.funding_rates if funding_rate_lookup == "__book__" else funding_rate_lookup
+        with self.lock:
+            self._resume_once(now)
+            self.record_gaps(gaps or {}, now)
+            recs = self.tick(marks, now=now, funding_rate_lookup=frl, bar_advance=False, expect=expect, source=source,
+                             apply_clock=apply_clock) if marks else []
+            self.save(marks_f, now)
             return recs
 
     def apply_closed_bars(self, bars_by_symbol: dict[str, dict[str, Any]] | None, *, now: datetime, funding_rate_lookup=None) -> list:
@@ -1037,6 +1127,17 @@ def monitoring_gap_on_resume(ledger: FuturesLedgerV2, last_saved: Any, *, now: d
            "policy": "bars_closed_in_gap_not_applied", "note_tr": ("Defter bu aralıkta izlenmedi; aralıkta kapanan barlar "
                                                                    "UYGULANMADI, geçmiş boşluk tahmini işlemle doldurulmadı. "
                                                                    "Koruyucu izleme güncel fiyatla sürüyor.")}
+    # SİMÜLASYON GİRDİSİ (2026-09-24): kesinti anındaki defter (pozisyonlar + cüzdan + maliyet ayarları; geçmiş/kayıt
+    # satırları hariç) ayrı dosyaya yazılır. Geçmiş uzlaştırma yalnız bununla, AYRI simülasyon olarak koşar
+    # (`python -m tradingbot outage-simulate`); canlı defter değişmez.
+    try:
+        snap = ledger.to_dict()
+        snap["history"], snap["entries"] = [], []
+        sp = Path(state_path) / "outage_simulations" / ("%s-%s.ledger_at_load.json" % (book_key, iso(last).replace(":", "").replace("+", "_")))
+        atomic_write_json(sp, snap)
+        rec["simulation_input"] = str(sp.relative_to(Path(state_path)))
+    except Exception as exc:  # noqa: BLE001 — girdi yazılamazsa kesinti kaydı yine yazılır
+        log.warning("kesinti simülasyon girdisi yazılamadı (%s): %s", book_key, exc)
     record_monitoring_gap(state_path, rec)
     log.warning("İZLEME KESİNTİSİ %s: %s → %s (%.1f sa), yüklemede %d açık pozisyon; aradaki barlar uygulanmadı",
                 book_key, rec["from"], rec["to"], gap_s / 3600.0, len(held))

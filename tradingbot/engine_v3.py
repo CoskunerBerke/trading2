@@ -14,6 +14,7 @@ emir reddi alan aday hiçbir kapasite tüketmez (bkz. `_execute_locked` sözleş
 """
 from __future__ import annotations
 
+from collections.abc import Iterable
 import logging
 import os
 import time
@@ -115,6 +116,30 @@ def _pre_change_extreme_symbols(positions: dict, marks: dict, frames_by_symbol: 
         if at_ms is None or bar_open is None or bar_open < at_ms:
             out.append(sym)
     return out
+
+
+
+def _wall_ms() -> int:
+    """Koruyucu tick'in UYGULAMA anı — motorun saati (`utc_now`), kilit altında okunur (`protective_monitor.guarded_tick`
+    tazelik denetimi). Fiyat doğrulaması (`verified_price`) da aynı saate göre yapılır."""
+    return int(utc_now().timestamp() * 1000)
+
+
+def chart_rule_inputs(book: dict, *, tf: str, bars: list, frames: dict | None, as_of_ms: int) -> tuple[dict, list | None]:
+    """Grafik analizine giden defter kimliği ve kuralın gün içi satırları: (build_snapshot `book`, `intraday_rows`).
+
+    Panel (`dashboard/app.py`) aynı defter için AYNI okumayı yapar; ikisi farklı okursa `analysis_id` hiç eşleşmez.
+    * D4 (4h trend): grafik diliminin KENDİ kapanmış barları (ikinci okuma yok).
+    * C4 (mum varyasyonları): kuralın kendi penceresi — son 500 kapanmış 4h bar, hacim dahil (`paper_rules.intraday_for`,
+      `decide_for` ile aynı okuma; motor çerçevesi 700 bar) — ve defterin `rule_params`ı (etkin varyasyon listesi).
+    * Diğer defterler: DEĞİŞMEDİ (rule_params yok, gün içi satır yok)."""
+    from . import paper_rules
+    name = str(book["name"])
+    out = {"book_id": book["book_id"], "name": book["name"], "atr_mult": book["atr_mult"]}
+    if name in paper_rules.CANDLE_VARIANTS:
+        out["rule_params"] = dict(book.get("rule_params") or {})
+        return out, paper_rules.intraday_for(name, frames, as_of_ms) or []
+    return out, (bars if (tf == "4h" and name in paper_rules.DONCHIAN_VARIANTS) else None)
 
 
 class TradingEngineV3(TradingEngine):
@@ -220,6 +245,27 @@ class TradingEngineV3(TradingEngine):
         self._gap_checked = False                              # süreç başına bir kez offline-gap uzlaştırması
         self._gap_blocked = False                              # GAP_AMBIGUOUS → yeni giriş yok (çıkışlar sürer)
         self._gap_provider_factory = None                      # test enjeksiyonu; None → gerçek USDⓈ-M public provider
+        # İZLEME KESİNTİSİ — ANA DEFTER (2026-09-24): kâğıt defterlerle AYNI politika. Son koruyucu gözlem (`exit_watermark`,
+        # yoksa defterin son kaydı) ve YÜKLEME anındaki pozisyonlar burada tutulur; süreçteki ilk defter etkinliğinde bir kez
+        # denetlenir (`_main_resume_once`). Geçmiş mumlarla canlı deftere kapanış YAZILMAZ.
+        from .ops.gap import read_watermark
+        _wm = read_watermark(st)
+        try:
+            _upd = from_iso(str(self.ledger2.updated_at)) if self.ledger2.updated_at else None
+        except (TypeError, ValueError):
+            _upd = None
+        _last = max([t for t in (_wm, _upd) if t is not None], default=None)      # sürecin SON canlı izleme izi
+        self._main_resume_saved_at = iso(_last) if _last is not None else None
+        self._main_resume_positions: list[str] = sorted(self.ledger2.positions)
+        self._main_resume_checked = False
+        self._main_gap_until_ms: int | None = None
+        self.main_monitoring_gap: dict | None = None
+        self._main_price_gaps: dict = {}
+        # KORUYUCU İZLEYİCİ (2026-09-24): `watch` başlatır (`ensure_protective_monitor`); kapanış öğrenme kuyruğu kilidi
+        self.protective_monitor = None
+        self.protective_observer = None
+        self._pending_lock = __import__("threading").Lock()
+        self._monitor_path_marks = None
         # GERÇEKLEŞMİŞ FUNDING KAYNAĞI (2026-09-22, funding_settlement_v2): beş futures defteri (ana bot, T2, M2, Box,
         # formasyon) TEK kaynağı paylaşır — settlement satırının oranı ve KENDİ mark'ı. Anlık `funding_pct` metriği
         # geçmiş settlement'lara artık UYGULANMAZ (REVIEW-2026-09-22 §8). Ağ yalnız tur adımında (`_funding_step`) ve
@@ -828,113 +874,280 @@ class TradingEngineV3(TradingEngine):
             log.warning("%s pattern kanıtı üretilemedi: %s", symbol, exc)
             return None
 
-    # ------------------------------------------------------------------ offline gap uzlaştırması (süreç başına bir kez)
-    def ensure_gap_reconciled(self) -> None:
-        """Restart sonrası ilk çalışmada kesinti penceresini uzlaştırır: kaçan stop/TP/liq/funding olayları
-        arşiv mumlarıyla olay-zamanında işlenir; veri belirsizse GAP_AMBIGUOUS → yeni giriş yok (fail-closed)."""
-        with self._exit_lock:
-            if self._gap_checked:
-                return
-            self._gap_checked = True
-            from .ops.gap import GapReconciler
-            factory = self._gap_provider_factory
-            if factory is None:
-                def factory():
-                    from .market.http import HttpClient
-                    from .market.providers import BinanceFuturesProvider
-                    from .market.ratelimit import BudgetPool
-                    pool = BudgetPool(safety=self.cfg.v3.data.rate_budget_safety)
-                    return BinanceFuturesProvider(HttpClient(BinanceFuturesProvider.base_url, pool.get("fapi.binance.com")))
-            try:
-                rep = GapReconciler(self.ledger2, self.ledger_path, self.cfg.state_path, factory).reconcile(self.run_id or None)
-            except Exception as exc:  # noqa: BLE001 — uzlaştırıcı hatası fail-closed: giriş yok, çıkışlar canlı yoldan sürer
-                log.exception("gap-reconcile hatası: %s", exc)
-                self._gap_blocked = True
-                return
-            self._gap_blocked = bool(rep.blocked)
-            spot_open = self.spot2.positions()
-            if spot_open:
-                log.warning("gap-reconcile spot defterini KAPSAMAZ; %d açık spot pozisyonu canlı tick ile değerlenecek", len(spot_open))
-            for rec in rep.closed:
-                legacy = rec.to_legacy_dict()
-                snap = self.last_decisions.get(rec.symbol) or {}
-                try:
-                    lesson = self.learner.learn(legacy)
-                    # PROVENANS: düğüm anahtarlarını YALNIZ v2 öğrenici üretir ve DÖNDÜRÜR.
-                    # Dönüş atılırsa indekse `learning_keys` HİÇ yazılmaz (bkz. note_learned).
-                    v2_lesson = self.learner2.on_trade_closed(legacy | {"features": legacy.get("features") or {}},
-                                                              {"regime": snap.get("regime"), "consensus_score": snap.get("consensus_score"),
-                                                               "dissent": snap.get("dissent"), "vetoes": snap.get("vetoes")})
-                    self._journal_outcome(legacy, lesson)
-                    # `exit_check` ile AYNI boşluk: gap-reconcile kapanışları da indekse yazılmalı.
-                    from .learn.reconcile import note_learned
-                    note_learned(getattr(self, "learned_index", None), legacy, lesson,
-                                 source="GAP_RECONCILE",
-                                 learning_keys=(v2_lesson or {}).get("learning_keys"))
-                except Exception as exc:  # noqa: BLE001
-                    log.exception("gap-reconcile öğrenme hatası: %s", exc)
+    @property
+    def _ledger_lock(self):
+        """Ana defterin (ledger2) TEK kilidi — tur, koruyucu izleyici ve eşzamanlı `exit_check` bu kilitte sıralanır.
+        `__init__` kurar (`_exit_lock`); kısmi nesnede (test) tembel oluşturulur."""
+        lk = self.__dict__.get("_exit_lock")
+        if lk is None:
+            lk = self.__dict__["_exit_lock"] = __import__("threading").RLock()
+        return lk
 
-    # ------------------------------------------------------------------ hızlı çıkış monitörü (tur beklemeden)
+    # ------------------------------------------------------------------ İZLEME KESİNTİSİ — ana defter (süreç başına bir kez)
+    def ensure_gap_reconciled(self) -> None:
+        """Restart sonrası kesinti politikası — kâğıt defterlerle (T2/M2/Box/formasyon) AYNI (2026-09-24).
+
+        ESKİ davranış (kaldırıldı): kesinti penceresi geçmiş 1m/5m mumlarla olay-zamanında yeniden oynatılıyor ve stop/TP
+        kapanışları canlı PAPER defterine GEÇMİŞ zamanla yazılıyordu. YENİ: kesinti, kapsadığı aralık ve YÜKLEME anındaki
+        pozisyonlarla `monitoring_gaps.jsonl`a kaydedilir; aralıkta kapanan 1h barlar ana deftere UYGULANMAZ; pozisyonlar
+        ilk geçerli güncel perp fiyatla koruyucu yönetime devam eder ve o gözlemin GERÇEK zamanı kayda eklenir. Geçmiş
+        uzlaştırma yalnız ayrı SİMÜLASYON olarak alınabilir (`python -m tradingbot outage-simulate`); canlı deftere yazılmaz.
+        İşlem geçmişi, bakiye ve açık pozisyonlar SIFIRLANMAZ. Ad geriye uyum için korunur.
+
+        EŞİK `MONITORING_GAP_S` (2 sa): bundan KISA kesinti kaydedilmez ve arada kapanan 1h barlar normal bar sözleşmesiyle
+        uygulanır — bu durumda bar kapanış anında (geçmiş zamanlı) kapanış hâlâ MÜMKÜNDÜR (docs/PROTECTIVE_MONITOR_V1.md)."""
+        self._main_resume_once(utc_now())
+
+    def _main_resume_once(self, now: datetime) -> None:
+        with self._ledger_lock:
+            if getattr(self, "_main_resume_checked", True):
+                return
+            self._main_resume_checked = True
+            self._gap_checked = True
+            from .strategy_paper import monitoring_gap_on_resume
+            held = list(getattr(self, "_main_resume_positions", None) or [])
+            saved = getattr(self, "_main_resume_saved_at", None)
+            self._main_gap_until_ms = monitoring_gap_on_resume(self.ledger2, saved, now=now, book_key="main",
+                                                               state_path=self.cfg.state_path, positions=held)
+            if self._main_gap_until_ms is not None:
+                self.main_monitoring_gap = {"from": str(saved), "to": iso(now), "positions": held,
+                                            "policy": "bars_closed_in_gap_not_applied; first_current_price_observation_recorded",
+                                            "historical_reconciliation": "SIMULATION_ONLY (outage-simulate)"}
+
+    # ------------------------------------------------------------------ KORUYUCU İZLEME (2026-09-24): kısa atomik ana defter adımı
+    def _main_held_ids(self) -> dict[str, str]:
+        with self._ledger_lock:
+            return {s: str(p.id) for s, p in self.ledger2.positions.items()}
+
+    def _protect_main(self, marks: dict[str, TickData], gaps: dict[str, dict] | None, now: datetime,
+                      expect: dict[str, str] | None, *, source: str = "monitor", queue: bool = True, apply_clock=None) -> list:
+        """Ana defterin koruyucu adımı — TEK kısa atomik bölüm, AĞ YOK (fiyat çağıran tarafından kilit DIŞINDA alınır):
+        kesinti denetimi → korumalı tick (kimlik + fiyat zamanı sırası) → kayıt → gözlem damgası. Öğrenme burada YAPILMAZ:
+        izleyici iş parçacığında (`queue=True`) kapanışlar kalıcı kuyruğa yazılır ve ana iş parçacığı öğrenir
+        (`drain_protective_closes`); eşzamanlı `exit_check` (`queue=False`) kaydı döndürür ve kendisi öğrenir."""
+        from .ops.gap import write_watermark
+        from .protective_monitor import guarded_tick
+        with self._ledger_lock:
+            self._main_resume_once(now)
+            recs, info = guarded_tick(self.ledger2, marks, now=now, funding_rate_lookup=getattr(self, "funding_rates", None),
+                                      bar_advance=False, expect=expect, apply_clock=apply_clock)
+            self.ledger2.save(self.ledger_path)
+            if info.get("applied"):
+                write_watermark(self.cfg.state_path, now, self.run_id or None)
+            self._main_after_tick(info, recs, now, source)
+            self._main_price_gaps = dict(gaps or {})
+        if source == "monitor" and marks:
+            self._monitor_path_marks = (dict(marks), now)     # fiyat yolu kaydı ana iş parçacığında (`record_monitor_path`)
+        if recs and queue:
+            self._queue_protective_closes(recs)
+        return recs
+
+    def record_monitor_path(self, max_age_s: float = 120.0) -> int:
+        """İzleyicinin son ana defter gözlemini fiyat yolu deposuna yazar (`last_only`) — ANA iş parçacığında (`watch`
+        beklemesi); depo ve politika değerlendirmesi iş parçacıkları arasında paylaşılmaz. Eski gözlem yazılmaz."""
+        item, self._monitor_path_marks = getattr(self, "_monitor_path_marks", None), None
+        if not item:
+            return 0
+        marks, at = item
+        if (utc_now() - at).total_seconds() > max_age_s:
+            return 0
+        from .learn.position_path import TICK_LAST_ONLY
+        self._record_position_path(marks, None, at, tick_kind=TICK_LAST_ONLY)
+        return len(marks)
+
+    def _main_after_tick(self, info: dict, recs: list, now: datetime, source: str) -> None:
+        """Ölçüm + kesinti sonrası ilk gözlem (çağıran `_exit_lock`u tutar)."""
+        applied = info.get("applied") or {}
+        if not applied:
+            return
+        if getattr(self, "main_monitoring_gap", None):
+            from .protective_monitor import note_gap_first_observations
+            note_gap_first_observations(self.main_monitoring_gap, book_key="main", state_path=self.cfg.state_path,
+                                        applied=applied, now=now, closed_ids=[str(getattr(r, "id", "")) for r in recs])
+        obs = getattr(self, "protective_observer", None)
+        if obs is not None:
+            from .strategy_paper import parse_ts_ms
+            opened = {s: parse_ts_ms(p.opened_at) or 0 for s, p in self.ledger2.positions.items()}
+            obs.note("main", applied, int(now.timestamp() * 1000), opened_ms=opened, source=source)
+
+    #: izleyicinin kapattığı ana defter işlemleri — öğrenilene kadar kalıcı (yeniden başlatmada kaybolmaz)
+    PROTECTIVE_QUEUE_FILE = "protective_learn_queue.json"
+
+    def _queue_protective_closes(self, recs: list) -> None:
+        lk = getattr(self, "_pending_lock", None)
+        if lk is None:
+            lk = self._pending_lock = __import__("threading").Lock()
+        with lk:
+            path = self.cfg.state_path / self.PROTECTIVE_QUEUE_FILE
+            cur = (read_json(path, default=None) or {}).get("pending") or []
+            have = {str(r.get("id")) for r in cur if isinstance(r, dict)}
+            for rec in recs:
+                if str(rec.id) not in have:
+                    cur.append({"id": str(rec.id), "symbol": rec.symbol, "closed_at": str(rec.closed_at),
+                                "exit_reason": str(rec.exit_reason), "queued_at": iso(utc_now())})
+            atomic_write_json(path, {"schema_version": "protective_learn_queue_v1", "pending": cur})
+
+    def _pending_protective_ids(self) -> set[str]:
+        doc = read_json(self.cfg.state_path / self.PROTECTIVE_QUEUE_FILE, default=None) or {}
+        return {str(r.get("id")) for r in (doc.get("pending") or []) if isinstance(r, dict)}
+
+    def drain_protective_closes(self) -> list[dict]:
+        """ANA iş parçacığında (tur ya da `watch` beklemesi) izleyicinin kapattığı ana defter işlemlerini öğrenir
+        (legacy + v2 + günlük + öğrenildi indeksi, kaynak EXIT_MONITOR) ve risk durumunu yeniler. Öğreniciler tek iş
+        parçacığında kalır. Kuyruk kalıcıdır: süreç arada ölürse bir sonraki başlangıçta aynı işlem BİR KEZ öğrenilir."""
+        lk = getattr(self, "_pending_lock", None)
+        if lk is None:
+            lk = self._pending_lock = __import__("threading").Lock()
+        path = self.cfg.state_path / self.PROTECTIVE_QUEUE_FILE
+        with lk:
+            pending = [r for r in ((read_json(path, default=None) or {}).get("pending") or []) if isinstance(r, dict)]
+        if not pending:
+            return []
+        ids = [str(r.get("id")) for r in pending]
+        with self._ledger_lock:
+            by_id = {str(h.id): h for h in self.ledger2.history if str(h.id) in set(ids)}
+        idx = getattr(self, "learned_index", None)
+        recs = []
+        for tid in ids:
+            rec = by_id.get(tid)
+            if rec is None:
+                log.warning("koruyucu kuyruk: %s defter geçmişinde yok (öğrenilemedi, kuyruktan düşülüyor)", tid)
+                continue
+            try:
+                from .learn.close_chain import close_event_id
+                if idx is not None and close_event_id(rec.id, rec.closed_at, rec.exit_reason) in idx.load():
+                    continue                                   # zaten öğrenildi (çift öğrenme yok)
+            except Exception:  # noqa: BLE001
+                pass
+            recs.append(rec)
+        out = self._learn_protective_closes(recs) if recs else []
+        with lk:
+            rest = [r for r in ((read_json(path, default=None) or {}).get("pending") or [])
+                    if isinstance(r, dict) and str(r.get("id")) not in set(ids)]
+            atomic_write_json(path, {"schema_version": "protective_learn_queue_v1", "pending": rest})
+        if out:
+            try:
+                state = self._portfolio_state({})
+                self._persist_risk_state(state, [], utc_now())
+            except Exception as exc:  # noqa: BLE001
+                log.warning("koruyucu izleyici risk durumu yazılamadı: %s", exc)
+        return out
+
+    def _learn_protective_closes(self, records: list) -> list[dict]:
+        """Koruyucu yolun (60 sn izleyici) kapanışlarını öğrenir — YALNIZ ana iş parçacığında çağrılır."""
+        out = []
+        for rec in records:
+            legacy = rec.to_legacy_dict()
+            snap = self.last_decisions.get(rec.symbol) or {}
+            try:
+                lesson = self.learner.learn(legacy)
+                # PROVENANS: v2 dersinin DÖNÜŞÜ tutulur; `lesson` legacy öğreniciden gelir
+                # ve `learning_keys` İÇERMEZ (bkz. note_learned sözleşmesi).
+                v2_lesson = self.learner2.on_trade_closed(legacy | {"features": legacy.get("features") or {}}, {"regime": snap.get("regime"), "consensus_score": snap.get("consensus_score"),
+                                                                                                                "dissent": snap.get("dissent"), "vetoes": snap.get("vetoes")})
+                self._journal_outcome(legacy, lesson)
+                # ÖĞRENİLDİ KAYDI — ders sıcak pencereden (200) arşive döndükten sonra kapanış "eksik" görünüp
+                # İKİNCİ kez öğrenilmesin; kapanışların çoğu bu 60 sn'lik izleyiciden geçer.
+                from .learn.reconcile import note_learned
+                note_learned(getattr(self, "learned_index", None), legacy, lesson,
+                             source="EXIT_MONITOR",
+                             learning_keys=(v2_lesson or {}).get("learning_keys"))
+            except Exception as exc:  # noqa: BLE001 — öğrenme hatası defteri geri almaz
+                log.exception("exit-monitor öğrenme hatası: %s", exc)
+            out.append(legacy)
+            log.info("exit-monitor: %s %s kapandı (%s) net %.4f", rec.symbol, rec.side, rec.exit_reason, float(rec.net_pnl))
+        return out
+
+    # ------------------------------------------------------------------ hızlı çıkış monitörü (tur beklemeden) — EŞZAMANLI yol
     def exit_check(self) -> list[dict]:
-        """Açık pozisyonlar için canlı fiyatla stop/TP/likidasyon/zaman kontrolü + defter kaydı + öğrenme; tur/tarama beklemez.
-        Yeni giriş AÇMAZ. Dönen: kapanan işlemlerin legacy dict'leri."""
+        """Açık pozisyonlar için güncel doğrulanmış USDⓈ-M perp mark ile stop/TP/likidasyon/zaman kontrolü + defter kaydı +
+        öğrenme; tur/tarama beklemez; yeni giriş AÇMAZ. Dönen: kapanan işlemlerin legacy dict'leri.
+
+        Bu, ÇAĞIRAN iş parçacığında koşan eşzamanlı yoldur (koruyucu izleyici iş parçacığı yoksa `watch` bunu çağırır;
+        testler de). İzleyici canlıyken `watch` bunu ÇAĞIRMAZ (bkz. `ensure_protective_monitor`). Fiyat kimliği
+        (2026-09-24): spot ticker `last` DEĞİL, doğrulanmış perp mark (`_paper_marks`); yoksa tick YOK."""
         self.ensure_gap_reconciled()
         self._strategy_paper_exit_check()
         self._pattern_exit_check()
-        with self._exit_lock:
-            if not self.ledger2.positions:
-                return []
-            marks: dict[str, TickData] = {}
-            for sym in list(self.ledger2.positions):
-                try:
-                    snap = self.runner.live.snapshot(sym) or {}
-                    px = float(((snap.get("ticker") or {}).get("last")) or 0)
-                    if px > 0:
-                        marks[sym] = TickData(last=Decimal(str(px)), mark=Decimal(str(px)))
-                except Exception as exc:  # noqa: BLE001
-                    log.warning("%s exit-monitor fiyat alınamadı: %s", sym, exc)
-            if not marks:
-                return []
-            now = utc_now()
-            # Funding: kaynak YALNIZ bellekten okunur (ağ yok); bilinmeyen dönem bekler, stop kontrolü beklemez.
-            records = self.ledger2.tick(marks, now_utc=now, funding_rate_lookup=getattr(self, "funding_rates", None), bar_advance=False)
-            self.ledger2.save(self.ledger_path)
-            from .ops.gap import write_watermark
-            write_watermark(self.cfg.state_path, now, self.run_id or None)
-            # FİYAT YOLU: bu yol yalnız SON FİYATI bilir (bar uçları YOK) ve bunu açıkça
-            # `last_only` olarak işaretler. Kapanış kontrolünden SONRA çağrılır ki kapanan
-            # pozisyon için yanıltıcı bir "açık pozisyon" snapshot'ı yazılmasın.
+        expect = self._main_held_ids()
+        if not expect:
+            return self.drain_protective_closes()
+        now = utc_now()
+        marks, _mf, gaps = self._paper_marks(list(expect), now=now)          # AĞ — defter kilidi DIŞINDA
+        if gaps:
+            log.warning("exit-monitor: %d ana defter pozisyonunda geçerli/güncel perp fiyatı yok (tick yok): %s", len(gaps),
+                        ", ".join("%s=%s" % (s, g.get("reason")) for s, g in sorted(gaps.items()))[:300])
+        records = self._protect_main(marks, gaps, now, expect, source="exit_check", queue=False, apply_clock=_wall_ms)
+        # FİYAT YOLU: yalnız SON FİYAT (bar uçları YOK) → `last_only`; kapanıştan SONRA (kapanan pozisyon yazılmaz).
+        if marks:
             from .learn.position_path import TICK_LAST_ONLY
             self._record_position_path(marks, None, now, tick_kind=TICK_LAST_ONLY)
-            out = []
-            for rec in records:
-                legacy = rec.to_legacy_dict()
-                snap = self.last_decisions.get(rec.symbol) or {}
-                try:
-                    lesson = self.learner.learn(legacy)
-                    # PROVENANS: v2 dersinin DÖNÜŞÜ tutulur; `lesson` legacy öğreniciden gelir
-                    # ve `learning_keys` İÇERMEZ (bkz. note_learned sözleşmesi).
-                    v2_lesson = self.learner2.on_trade_closed(legacy | {"features": legacy.get("features") or {}}, {"regime": snap.get("regime"), "consensus_score": snap.get("consensus_score"),
-                                                                                                                    "dissent": snap.get("dissent"), "vetoes": snap.get("vetoes")})
-                    self._journal_outcome(legacy, lesson)
-                    # ÖĞRENİLDİ KAYDI — bu yol eskiden indekse HİÇ yazmıyordu. Ders sıcak
-                    # pencereden (200) arşive döndükten sonra kapanış "eksik" görünüp İKİNCİ
-                    # kez öğrenilebilirdi; kapanışların çoğu bu 60 sn'lik monitörden geçer.
-                    from .learn.reconcile import note_learned
-                    note_learned(getattr(self, "learned_index", None), legacy, lesson,
-                                 source="EXIT_MONITOR",
-                                 learning_keys=(v2_lesson or {}).get("learning_keys"))
-                except Exception as exc:  # noqa: BLE001 — öğrenme hatası defteri geri almaz
-                    log.exception("exit-monitor öğrenme hatası: %s", exc)
-                out.append(legacy)
-                log.info("exit-monitor: %s %s kapandı (%s) net %.4f", rec.symbol, rec.side, rec.exit_reason, float(rec.net_pnl))
-            if records:
-                try:
-                    state = self._portfolio_state({k: float(v.last) for k, v in marks.items()})
-                    self._persist_risk_state(state, [], now)
-                except Exception as exc:  # noqa: BLE001
-                    log.warning("exit-monitor risk durumu yazılamadı: %s", exc)
-            return out
+        out = self._learn_protective_closes(records) if records else []
+        if records:
+            try:
+                state = self._portfolio_state({k: float(v.last) for k, v in marks.items()})
+                self._persist_risk_state(state, [], now)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("exit-monitor risk durumu yazılamadı: %s", exc)
+        return out + self.drain_protective_closes()
+
+    # ------------------------------------------------------------------ koruyucu izleyici iş parçacığı
+    def _monitor_provider_factory(self):
+        """İzleyicinin KENDİ sağlayıcısı (tur nesneleri iş parçacıkları arasında paylaşılmaz): kısa zaman aşımı, tek deneme."""
+        factory = self._gap_provider_factory
+        if factory is not None:
+            return factory()
+        from .market.http import HttpClient
+        from .market.providers import BinanceFuturesProvider
+        from .market.ratelimit import BudgetPool
+        pool = BudgetPool(safety=self.cfg.v3.data.rate_budget_safety)
+        return BinanceFuturesProvider(HttpClient(BinanceFuturesProvider.base_url, pool.get("fapi.binance.com"),
+                                                 timeout=5.0, max_retries=1))
+
+    def _protective_handles(self) -> list:
+        from .protective_monitor import BookHandle
+        eng = self
+
+        class _Main:
+            key = "main"
+
+            def held(self):
+                return eng._main_held_ids()
+
+            def protect(self, marks, marks_f, gaps, now, expect, apply_clock=None):
+                return eng._protect_main(marks, gaps, now, expect, source="monitor", apply_clock=apply_clock)
+        out: list = [_Main()]
+        out += [BookHandle(b) for b in (getattr(self, "strategy_books", None) or [])]
+        if getattr(self, "pattern_book", None) is not None:
+            out.append(BookHandle(self.pattern_book))
+        return out
+
+    def ensure_protective_monitor(self, *, interval_s: float = 60.0, start: bool = True, price_fn=None, clock_ms=None,
+                                  waiter=None) -> dict:
+        """Beş defterin koruyucu izleyicisini kurar ve (istenirse) arka planda başlatır (bir kez). İzleyici canlıyken
+        `watch` eşzamanlı `exit_check`i çağırmaz; ana iş parçacığı yalnız `drain_protective_closes` ile öğrenir."""
+        mon = getattr(self, "protective_monitor", None)
+        if mon is None:
+            from .protective_monitor import ObservationLog, ProtectiveMonitor, perp_price_fn
+            kw = {"clock_ms": clock_ms} if clock_ms is not None else {}
+            obs = ObservationLog(target_s=float(interval_s), **kw)
+            self.protective_observer = obs
+            for b in (getattr(self, "strategy_books", None) or []):
+                b.observer = obs
+            if getattr(self, "pattern_book", None) is not None:
+                self.pattern_book.observer = obs
+            mon = ProtectiveMonitor(handles_fn=self._protective_handles,
+                                    price_fn=price_fn or perp_price_fn(self._monitor_provider_factory),
+                                    state_path=self.cfg.state_path, interval_s=float(interval_s), observer=obs, waiter=waiter, **kw)
+            self.protective_monitor = mon
+        if start and not mon.alive:
+            mon.start()
+        return mon.status()
+
+    def stop_protective_monitor(self, timeout: float = 10.0) -> None:
+        mon = getattr(self, "protective_monitor", None)
+        if mon is not None:
+            mon.stop(timeout)
 
     # ------------------------------------------------------------------ VERI KIMLIGI (2026-09-16): provenans bagi + dogrulanmis perp fiyati
     def _bind_provenance(self, symbol: str) -> None:
@@ -998,8 +1211,8 @@ class TradingEngineV3(TradingEngine):
                              "age_s": v["age_s"], "last_seen_mark": v["mark"] if v["mark"] > 0 else None}
                 continue
             mark = float(v["mark"])
-            out[sym] = TickData(last=Decimal(str(mark)), mark=Decimal(str(mark)),
-                                ts=iso(datetime.fromtimestamp(v["price_ts_ms"] / 1000.0, tz=timezone.utc)))   # fiyatin KAYNAK zamani
+            from .protective_monitor import live_tick
+            out[sym] = live_tick(v)          # `ts` = bilinen en iyi fiyat zamani; KAYNAK (borsa) ve ALINMA zamani ayri alanlarda
             outf[sym] = mark
         return out, outf, gaps
 
@@ -1420,19 +1633,43 @@ class TradingEngineV3(TradingEngine):
             self.last_bar_seen = cur_bar
         # KAPANMIŞ 1h BAR UÇLARI (2026-09-23): tur tiki yalnız güncel fiyattır; barlar kâğıt defterlerle AYNI sözleşmeyle,
         # kronolojik ve bir kez uygulanır (girişten önce açılmış/kısmi bar YOK). Sonra güncel fiyatla koruyucu tick.
+        # KORUYUCU TİK (2026-09-24): ana defterin tur tiki koruyucu izleyiciyle (ayrı iş parçacığı) AYNI kilitte, TEK kısa
+        # atomik bölümde ve aynı kimlik/sıra korumasıyla yapılır. Fiyat, BU AN için doğrulanmış USDⓈ-M perp mark'tır
+        # (`_paper_marks`, kilit DIŞINDA alınır) — spot ticker DEĞİL; turun dakikalar önce aldığı fiyat bu anın gözlemi diye
+        # yeniden damgalanmaz. Doğrulanmış fiyatı olmayan pozisyon tick'lenmez (uydurma fiyat yok); 4h bar sayacı yine
+        # ilerler. Kapanmış 1h bar uçları turun karar anına (`now`) göre ayrı sözleşmeyle uygulanır; izleme kesintisinde
+        # kapanan barlar UYGULANMAZ (`_main_gap_until_ms`).
+        from .ops.gap import write_watermark
+        from .protective_monitor import guarded_tick
         from .strategy_paper import apply_closed_bars_to_ledger
-        bar_records = apply_closed_bars_to_ledger(
-            self.ledger2, self._main_closed_bars(marks, now), now=now,
-            funding_rate_lookup=getattr(self, "funding_rates", None),
-            on_event=lambda sym, kind, reason, at, **extra: log.info("ana defter %s %s %s %s", sym, kind, reason, extra))
-        records = list(bar_records) + self.ledger2.tick(marks, now_utc=now, funding_rate_lookup=getattr(self, "funding_rates", None),
-                                                        bar_advance=bar_advance)
-        # 6) KAYIT SIRASI: önce defter, sonra öğrenme (crash penceresinde çift öğrenme olmasın)
-        self.ledger2.save(self.ledger_path)
+        held0 = self._main_held_ids()
+        tick_now = utc_now()
+        vmarks, _vmf, vgaps = self._paper_marks(list(held0), now=tick_now) if held0 else ({}, {}, {})   # AĞ — kilit DIŞINDA
+        if vgaps:
+            log.warning("ana defter: %d pozisyonda geçerli/güncel perp fiyatı yok (tick yok): %s", len(vgaps),
+                        ", ".join("%s=%s" % (s, g.get("reason")) for s, g in sorted(vgaps.items()))[:300])
+        with self._ledger_lock:
+            self._main_resume_once(now)
+            bar_records = apply_closed_bars_to_ledger(
+                self.ledger2, self._main_closed_bars(vmarks, now), now=now,
+                funding_rate_lookup=getattr(self, "funding_rates", None),
+                on_event=lambda sym, kind, reason, at, **extra: log.info("ana defter %s %s %s %s", sym, kind, reason, extra),
+                gap_until_ms=self._main_gap_until_ms)
+            tick_records, tinfo = guarded_tick(self.ledger2, vmarks, now=tick_now, funding_rate_lookup=getattr(self, "funding_rates", None),
+                                               bar_advance=bar_advance, expect=held0, apply_clock=_wall_ms)
+            if bar_advance:                              # fiyatsız/atlanan pozisyonun 4h sayacı da ilerler (fiyat uydurulmadan)
+                for _sym, _pid in held0.items():
+                    _pos = self.ledger2.positions.get(_sym)
+                    if _pos is not None and str(_pos.id) == _pid and _sym not in (tinfo.get("applied") or {}):
+                        _pos.bars_held += 1
+            records = list(bar_records) + tick_records
+            # 6) KAYIT SIRASI: önce defter, sonra öğrenme (crash penceresinde çift öğrenme olmasın)
+            self.ledger2.save(self.ledger_path)
+            write_watermark(st, tick_now, self.run_id or None)      # süreç canlı ve koruyucu yol koştu (monoton)
+            self._main_price_gaps = dict(vgaps)
+            self._main_after_tick(tinfo, tick_records, tick_now, "tour")
         # 6b) STRATEJİ KÂĞIT DEFTERİ (V10): ana defterden SONRA, aynı marks/funding/bar ilerlemesiyle.
         self._strategy_paper_tour(symbols, marks, marks_f, funding, bar_advance, now)
-        from .ops.gap import write_watermark
-        write_watermark(st, now, self.run_id or None)
         self.spot2.tick(marks_f, now)
         self.spot2.save(st / "spot_ledger.json")
         self._notify_closed(records, now)
@@ -1455,6 +1692,12 @@ class TradingEngineV3(TradingEngine):
                              learning_keys=(v2_lesson or {}).get("learning_keys"))
             except Exception as exc:  # noqa: BLE001 — indeks arızası öğrenmeyi geçersiz KILMAZ
                 log.warning("öğrenildi kaydı yazılamadı: %s", exc)
+        # KORUYUCU İZLEYİCİ (2026-09-24): izleyici iş parçacığının kapattığı ana defter işlemleri burada (ana iş parçacığı)
+        # öğrenilir; kuyruk kalıcıdır, zincir onarımı kuyruktaki kimliklere dokunmaz (çift öğrenme yok).
+        try:
+            self.drain_protective_closes()
+        except Exception as exc:  # noqa: BLE001 — öğrenme arızası turu DURDURMAZ
+            log.warning("koruyucu kapanış kuyruğu öğrenilemedi: %s", exc)
         # CRASH PENCERESİ ONARIMI: defter `ledger2.save()` ile ÖNCE kalıcı olur, öğrenme SONRA
         # çalışır. Arada süreç ölürse `ledger2.tick()` o kapanışı bir daha DÖNDÜRMEZ ve işlem
         # kalıcı olarak öğrenilmemiş kalırdı. Bu çağrı eksik adımı tamamlar; normalde no-op'tur.
@@ -2339,10 +2582,30 @@ class TradingEngineV3(TradingEngine):
         """
         meta = dict(meta or {})
         meta["precision"] = provenance.to_dict() if hasattr(provenance, "to_dict") else (provenance or None)
-        return self.ledger2.open(symbol, direction, ref_price,
-                                 SizeSpec(Decimal(str(notional)), AmountType.NOTIONAL, int(leverage or 1)),
-                                 stop=stop, targets=targets, filters=filters, setup_type=setup_type,
-                                 trigger_text=trigger_text, features=features, tick=tick, now=now, meta=meta)
+        t_before = _wall_ms()
+        with self._ledger_lock:        # koruyucu izleyiciyle aynı defter kilidi (kısa; ağ YOK)
+            pos = self.ledger2.open(symbol, direction, ref_price,
+                                    SizeSpec(Decimal(str(notional)), AmountType.NOTIONAL, int(leverage or 1)),
+                                    stop=stop, targets=targets, filters=filters, setup_type=setup_type,
+                                    trigger_text=trigger_text, features=features, tick=tick, now=now, meta=meta)
+        if pos is not None:
+            self._protective_new_positions("main", (), {symbol: str(pos.id)}, t_before)
+        return pos
+
+    def _protective_new_positions(self, book_key: str, before: Iterable[str], held: dict, since_ms: int) -> None:
+        """Turda açılan pozisyon → izleyici HEMEN bir geçiş yapar (kilit tutulmadan çağrılır; ağ yok). Tur giriş fiyatını
+        adımın başında alır ve pozisyonu sonra açar; ilk taze fiyatlı koruyucu kontrol bir sonraki düzenli geçişi
+        beklemez. Ölçüm tabanı: pozisyon `since_ms` anında (adımdan önce) defterde yoktu."""
+        prev = {str(x) for x in before}
+        new = [str(pid) for pid in (held or {}).values() if str(pid) not in prev]
+        if not new:
+            return
+        obs = getattr(self, "protective_observer", None)
+        if obs is not None:
+            obs.appeared(book_key, new, since_ms)
+        mon = getattr(self, "protective_monitor", None)
+        if mon is not None:
+            mon.poke(f"{book_key}: yeni pozisyon")
 
     def _trigger_fired(self, b: CoinBrief, direction: str, entry: float, entry_type: str) -> bool:
         """SAF sorgu: durum DEGISTIRMEZ. Mantik `entry_trigger.trigger_fired` icinde — TEK kaynak.
@@ -2453,13 +2716,18 @@ class TradingEngineV3(TradingEngine):
                 px = float(mk.ref) if mk is not None else float(pos.last_price or pos.entry_avg)
                 new = tightened_stop(pos.side.value, float(pos.stop) if pos.stop is not None else None, dec.get("primary") or {}, px)
                 if new is not None:
-                    old = pos.stop
-                    pos.stop = Decimal(str(new))
-                    pos.meta["structure_stop"] = {"from": str(old) if old is not None else None, "to": str(pos.stop), "at": iso(now),
-                                                  "pattern_id": (dec.get("primary") or {}).get("pattern_id")}
-                    pos.features["structure_management"] = compact(dec)
-                    applied = "STOP_TIGHTENED"
-                    changed.append(sym)
+                    with self._ledger_lock:      # izleyici arada kapattıysa (ya da kimlik değiştiyse) stop YAZILMAZ
+                        live = self.ledger2.positions.get(sym)
+                        if live is pos:
+                            old = pos.stop
+                            pos.stop = Decimal(str(new))
+                            pos.meta["structure_stop"] = {"from": str(old) if old is not None else None, "to": str(pos.stop), "at": iso(now),
+                                                          "pattern_id": (dec.get("primary") or {}).get("pattern_id")}
+                            pos.features["structure_management"] = compact(dec)
+                            applied = "STOP_TIGHTENED"
+                            changed.append(sym)
+                        else:
+                            applied = "POSITION_CLOSED_BY_MONITOR"
                 else:
                     applied = "NO_TIGHTER_VALID_STOP"
             if dec.get("action") != "NO_EFFECT" or applied != "NONE":
@@ -2584,9 +2852,11 @@ class TradingEngineV3(TradingEngine):
             except Exception as exc:  # noqa: BLE001
                 log.warning("funding verisi tazelenemedi (tur sürer, dönemler bekler): %s", exc)
         try:
-            posted = self.ledger2.settle_late_funding(fr, now=now, hours_for=fr.hours_for)
+            with self._ledger_lock:                        # kısa atomik bölüm (ağ yukarıda, kilit DIŞINDA)
+                posted = self.ledger2.settle_late_funding(fr, now=now, hours_for=fr.hours_for)
+                if posted:
+                    self.ledger2.save(self.ledger_path)
             if posted:
-                self.ledger2.save(self.ledger_path)
                 log.info("ana defter: %d geç funding settlement işlendi", len(posted))
             out["late_main"] = len(posted)
         except Exception as exc:  # noqa: BLE001
@@ -2660,15 +2930,18 @@ class TradingEngineV3(TradingEngine):
                 syms = book.symbols or universe
                 frames = {s: (self.runner.last_frames.get(s) or {}) for s in set(syms) | set(book.ledger.positions) | {"BTC/USDT"}}
                 # 1) kural (giris/kural cikisi) — veri kimligi + guncellik hukmu ile (onceki sira korunur: kural once)
+                held_before, t_before = book.held_ids(), _wall_ms()
                 book.step(symbols=list(syms), frames_by_symbol=frames, marks=pmarks, marks_f=pmarks_f, now=now,
                           provenance_by_symbol=self._frame_provenance, data_gaps=pgaps)
+                self._protective_new_positions(book.key, held_before.values(), book.held_ids(), t_before)
                 # 2) gecmis OHLC: kapanmis 1h barlarin uclari — yalniz pozisyon acilisindan SONRA acilmis, tuketilmemis barlar
                 #    (bu adimda acilan pozisyon icin hicbir bar uygun degildir: giris oncesi fitil yeni pozisyonu stop'lamaz;
                 #    stop sonrasi ayni turda yeniden giris de olmaz — kural bir sonraki turda yeniden degerlendirir)
                 book.apply_closed_bars(pbars, now=tick_now, funding_rate_lookup=getattr(self, "funding_rates", None))
                 # 3) canli fiyat kontrolu (fiyat-yalniz; bar_advance ana turun 4h bar ilerlemesi)
                 # Funding: gerceklesmis oran + settlement mark kaynagi (bellek); anlik oran gecmise UYGULANMAZ.
-                book.tick(pmarks, now=tick_now, funding_rate_lookup=getattr(self, "funding_rates", None), bar_advance=bar_advance)
+                book.tick(pmarks, now=tick_now, funding_rate_lookup=getattr(self, "funding_rates", None), bar_advance=bar_advance,
+                          apply_clock=_wall_ms)
                 book.save(pmarks_f, tick_now)
                 index.append({"key": book.key, "name": book.name, "summary_file": book.summary_file})
             except Exception as exc:  # noqa: BLE001 — bir defterin arızası ne ana botu ne diğer defteri ETKİLER
@@ -2715,7 +2988,8 @@ class TradingEngineV3(TradingEngine):
             btc_rows = closed_bars(daily_rows_from_frame(btc_fr, tail=320), now_ms=as_of, tf="1d") if btc_fr is not None else []
             books = [{"book_id": BOOK_MAIN, "name": BOOK_MAIN, "atr_mult": None, "ledger": self.ledger2, "memory": None}]
             for b in (getattr(self, "strategy_books", None) or []):
-                books.append({"book_id": b.key, "name": b.name, "atr_mult": b.atr_mult, "ledger": b.ledger, "memory": b.memory})
+                books.append({"book_id": b.key, "name": b.name, "atr_mult": b.atr_mult, "ledger": b.ledger, "memory": b.memory,
+                              "rule_params": dict(getattr(getattr(b, "spec", None), "rule_params", None) or {})})
             scope = list(dict.fromkeys(list(symbols) + [s for b in books for s in list(b["ledger"].positions)]))
             written = 0
             for sym in scope:
@@ -2771,9 +3045,12 @@ class TradingEngineV3(TradingEngine):
                             ef = row.get("features") or (row.get("entry") or {}).get("features")
                         except Exception:  # noqa: BLE001
                             ef = None
+                    # kuralın okuduğu gün içi satırlar ve defter kimliği panelle AYNI (analysis_id paritesi)
+                    _book, _intra = chart_rule_inputs(b, tf=tf, bars=bars, frames=fr, as_of_ms=as_of)
                     snap = build_snapshot(symbol=sym, market_type=market_type, timeframe=tf, tf_ms=step,
-                                          book={"book_id": b["book_id"], "name": b["name"], "atr_mult": b["atr_mult"]},
+                                          book=_book,
                                           bars=bars, as_of_ms=as_of, daily_rows=daily, btc_daily_rows=btc_rows, gates=gates,
+                                          intraday_rows=_intra,
                                           decision=last_dec.get(sym) if is_main else None, plan=plan if is_main else None,
                                           position=posd, history=hist, entry_features=ef, mark_price=mark, cfg=cfgd,
                                           code=code, cfg_hash=chash, mark_source={"kind": "ticker_last", "module": "engine_v3", "function": "_marks"},
@@ -2869,11 +3146,11 @@ class TradingEngineV3(TradingEngine):
                 # yeniden kullanilmaz; fiyat yasi kontrol anina gore denetlenir (bayat → STALE_FUTURES_PRICE boslugu);
                 # bar uclari bu yola EKLENMEZ (fiyat-yalniz tick: giris oncesi/tuketilmis fitil yeni olay uretmez).
                 now = utc_now()
-                marks, marks_f, gaps = self._paper_marks(list(book.ledger.positions), now=now)
-                book.record_gaps(gaps, now)                  # bosluk acilis/kapanis olaylari (durum/gerekce degisince bir kez)
-                if marks:
-                    book.tick(marks, now=now, funding_rate_lookup=getattr(self, "funding_rates", None), bar_advance=False)
-                book.save(marks_f, now)
+                expect = book.held_ids()                     # kimlik anlık görüntüsü (kısa kilit)
+                marks, marks_f, gaps = self._paper_marks(list(expect), now=now)   # AĞ — defter kilidi DIŞINDA
+                # tek kısa atomik bölüm: bosluk olaylari (durum/gerekce degisince bir kez) → korumali tick → kayit
+                book.protect(marks, marks_f, gaps, now=now, expect=expect, source="exit_check",
+                             funding_rate_lookup=getattr(self, "funding_rates", None), apply_clock=_wall_ms)
             except Exception as exc:  # noqa: BLE001
                 log.warning("strateji kagit defteri exit-monitor basarisiz (%s): %s", book.key, exc)
 
@@ -3584,8 +3861,11 @@ class TradingEngineV3(TradingEngine):
             return {"ran": False, "reason": "NO_INDEX"}
         try:
             from .learn.reconcile import complete_missing_chain
+            # Koruyucu kuyruğundaki kapanışlar `drain_protective_closes`e aittir (v2 dersi dahil tam öğrenme); onarım onlara
+            # dokunmaz — aksi hâlde aynı kapanış iki yoldan öğrenilebilirdi.
+            _pend = self._pending_protective_ids()
             res = complete_missing_chain(
-                history=self.ledger2.history, memory=self.memory, learner=self.learner,
+                history=[h for h in self.ledger2.history if str(h.id) not in _pend], memory=self.memory, learner=self.learner,
                 index=idx, provenance_store=getattr(self, "provenance", None),
                 journal_outcome=self._journal_outcome)
             if res.get("lessons_added") or res.get("outcomes_added"):

@@ -82,6 +82,9 @@ class PatternBook:
         self._resume_positions: list[str] = sorted(self.ledger.positions)
         self._resume_checked = False
         self._gap_until_ms: int | None = None
+        self.monitoring_gap: dict[str, Any] | None = None
+        #: KORUYUCU İZLEYİCİ (2026-09-24): gözlem ölçümü (`protective_monitor.ObservationLog`); None → ölçüm yok.
+        self.observer: Any = None
         self.risk = RiskEngine(profile, killswitch, v3.risk_profiles.clusters or None)
         self.memory = TradeMemory(self.state_dir / "trade_memory.jsonl", source="PATTERN_PAPER")
         self.lock = threading.RLock()
@@ -89,6 +92,15 @@ class PatternBook:
         self.params = {"stop_buffer_atr": float(section.stop_buffer_atr), "min_rr_after_cost": float(section.min_rr_after_cost),
                        "fallback_rr": float(section.fallback_rr), "measured_move_mult": float(section.measured_move_mult)}
         self.families = tuple(section.families)
+        #: PROTOKOL (2026-09-25): "classic" → v1/v2 (yapı moduna göre, eski davranış); "momentum_4h_v3" → yalnız laboratuvarda
+        #: sıkı testi geçen 4h sinyali (`strategy_v3`). `symbols` doluysa YENİ plan yalnız bu coinlerde kurulur; açık
+        #: pozisyonlar ve eski protokolden kalan pozisyonlar kendi stop/hedef/zaman stopuyla yönetilmeye devam eder.
+        self.protocol = str(getattr(section, "protocol", "classic") or "classic")
+        _syms = [str(x).upper() for x in (getattr(section, "symbols", None) or [])]
+        if self.protocol == "momentum_4h_v3" and not _syms:
+            from .strategy_v3 import V3_SYMBOLS
+            _syms = list(V3_SYMBOLS)
+        self.allowed_symbols: frozenset[str] | None = frozenset(_syms) if _syms else None
         self.run_id = ""
         self.plans: dict[str, dict[str, Any]] = {}
         self.findings: dict[str, dict[str, Any]] = {}
@@ -167,7 +179,8 @@ class PatternBook:
                    "recent_plans": sorted([self._plan_brief(pl) for pl in self.plans.values()], key=lambda d: -(d.get("created_at_ms") or 0))[:60],
                    "events_recent": self.events[-60:], "data_gaps": dict(self.data_gaps), "cooldown_until_ms": dict(self.cooldown_until),
                    "cohort_stats": self.cohort_stats, "symbol_scans": self.symbol_scans, "closed_recent": self.closed_recent[-30:],
-                   "policy": {"families": list(self.families), "params": dict(self.params), "entry_tf": ENTRY_TF, "structure_tf": STRUCTURE_TF, "context_tf": CONTEXT_TF,
+                   "policy": {"protocol": self.protocol, "symbols": sorted(self.allowed_symbols) if self.allowed_symbols else None,
+                              "families": list(self.families), "params": dict(self.params), "entry_tf": ENTRY_TF, "structure_tf": STRUCTURE_TF, "context_tf": CONTEXT_TF,
                               "requirements": dict(REQUIREMENTS), "max_open_positions": int(self.section.max_open_positions),
                               "max_hold_bars": int(self.section.max_hold_bars), "cooldown_bars_after_loss": int(self.section.cooldown_bars_after_loss),
                               "max_spread_pct": float(self.section.max_spread_pct), "min_depth_0_5pct_usdt": float(self.section.min_depth_0_5pct_usdt),
@@ -378,7 +391,7 @@ class PatternBook:
             # ORTAK KATALOG (structures_v1): 15m/1h/4h analizi — piyasa kimliği her dilimin KENDİ provenansından.
             analyses: dict[str, Any] = {}
             analysis_failed = False
-            if self.structure_mode != "OFF":
+            if self.structure_mode != "OFF" or self.protocol == "momentum_4h_v3":
                 try:
                     analyses = self._structure_analyses(symbol, bars_by_tf, statuses, ds, as_of_ms)
                 except Exception as exc:  # noqa: BLE001 — yapı arızası çıkış/zaman stopunu ENGELLEMEZ (bulgu #16)
@@ -427,6 +440,15 @@ class PatternBook:
             triggered: list[dict[str, Any]] = []
             for pid, pl in list(self.plans.items()):
                 if pl.get("symbol") != symbol or pl.get("status") not in (PL_AWAITING, PL_TRIGGERED):
+                    continue
+                if self.protocol == "momentum_4h_v3":
+                    if pl.get("version") != "pattern_protocol_v3.0.0":
+                        # protokol geçişi: eski (v1/v2) bekleyen plan açılmaz; açık pozisyonlar kendi kuralıyla sürer
+                        self._set_status(pl, PL_CANCELLED, int(as_of_ms), "PROTOCOL_MOMENTUM_4H_V3")
+                        self.counters["cancelled"] += 1
+                        continue
+                    if pl["status"] == PL_TRIGGERED:
+                        triggered.append(pl)           # fiyat beklenen v3 planı: süre dolana kadar yeniden denenir
                     continue
                 if self.structure_mode == "ENFORCE" and not (pl.get("version") == "pattern_protocol_v2.0.0" and pl.get("structure")):
                     # ENFORCE'ta giriş yalnız ortak kayıttan kurulan v2 planıyla olur; dağıtımdan (ya da mod geçişinden)
@@ -494,10 +516,18 @@ class PatternBook:
             self._time_stop(symbol, now=now, as_of_ms=as_of_ms, price=price)
             # 5) yeni planlar: pozisyon yoksa, soğuma yoksa, evren uygunsa
             blocked = self._entry_block_reason(symbol, ue, as_of_ms)
+            if not blocked and self.allowed_symbols is not None and symbol not in self.allowed_symbols:
+                blocked = "NOT_IN_PROTOCOL_UNIVERSE"
             if blocked:
                 out["skipped"].append({"reason": blocked})
             else:
-                if self.structure_mode == "ENFORCE":
+                if self.protocol == "momentum_4h_v3":
+                    from ..structures.bots import used_patterns_of
+                    from .strategy_v3 import build_plans_v3
+                    plans, skipped = ([], [{"reason": "STRUCTURE_ANALYSIS_ERROR"}]) if analysis_failed else build_plans_v3(
+                        symbol, as_of_ms=as_of_ms, analyses=analyses, bars_by_tf=bars_by_tf, universe_entry=ue, data_source=ds,
+                        used_patterns=used_patterns_of(self.ledger))
+                elif self.structure_mode == "ENFORCE":
                     from ..structures.bots import used_patterns_of
                     from .strategy_v2 import build_plans_v2
                     plans, skipped = build_plans_v2(symbol, as_of_ms=as_of_ms, analyses=analyses, bars_by_tf=bars_by_tf, levels_1h=levels_1h,
@@ -901,10 +931,23 @@ class PatternBook:
             self._set_status(pl, PL_CANCELLED, int(as_of_ms), "MARK_BEYOND_STOP_AT_ENTRY")
             self.counters["cancelled"] += 1
             return "CANCELLED"
+        # v3 (laboratuvar kuralı): risk test aralığında mı; hedef GERÇEK giriş fiyatından R katı
+        if pl.get("risk_atr_bounds"):
+            lo_atr, hi_atr = (float(x) for x in pl["risk_atr_bounds"])
+            risk_atr = abs(mark - float(pl["stop"])) / float(pl["atr"])
+            if not (lo_atr < risk_atr <= hi_atr):
+                self._set_status(pl, PL_CANCELLED, int(as_of_ms), "RISK_OUTSIDE_TESTED_RANGE")
+                pl["cancel_detail"] = {"risk_atr": round(risk_atr, 4), "bounds": [lo_atr, hi_atr]}
+                self.counters["cancelled"] += 1
+                return "CANCELLED"
+        if pl.get("target_from_entry_rr"):
+            rr = float(pl["target_from_entry_rr"])
+            d = abs(mark - float(pl["stop"]))
+            pl["target"] = round(mark + rr * d if pl["side"] == "LONG" else mark - rr * d, 10)
         # likidite: tetik anında ölçülür; bilinmiyorsa iyi likidite SAYILMAZ
         liq = None
         try:
-            liq = liquidity() if liquidity is not None else None
+            liq = self._call_unlocked(liquidity) if liquidity is not None else None
         except Exception as exc:  # noqa: BLE001
             liq = {"error": f"{type(exc).__name__}: {exc}"[:120]}
         if not liq or liq.get("spread_pct") is None:
@@ -960,6 +1003,8 @@ class PatternBook:
         act = {"action": "OPEN", "direction": pl["side"], "stop": float(pl["stop"]), "targets": [float(pl["target"])], "leverage": int(pl.get("leverage") or 1),
                "name": "%s:%s" % (BOOK_NAME, pl["family"]), "reason": pl["plan_id"], "expected_r": 0.0, "regime": pl.get("evidence", {}).get("htf_trend"),
                "setup_type": pl["family"]}
+        if pl.get("version") == "pattern_protocol_v3.0.0":
+            act["cap_notional_to_position_pct"] = True     # geniş 4h stop: tavana küçült (risk ≤ bütçe, kaldıraç 1x)
         tick = TickData(last=Decimal(str(mark)), mark=Decimal(str(mark)), ts=iso_ms(price.get("price_ts_ms")) or iso(now))
         rejected: list[str] = []
         opened_pos: list[Any] = []
@@ -973,10 +1018,13 @@ class PatternBook:
         if res != "OPENED" or not opened_pos:
             return _reject(rejected[-1] if rejected else "LEDGER_%s" % res)
         pos = opened_pos[0]
+        if act.get("_notional_scaled"):
+            pl["size_scaled_to_cap"] = dict(act["_notional_scaled"])
+            pos.meta["size_scaled_to_cap"] = dict(act["_notional_scaled"])
         # v2 planı KENDİ protokol sürümünü ve dilimini taşır; zaman stopu birimi değişmedi (15m bar × max_hold_bars)
         pos.meta.update({"plan_id": pl["plan_id"], "family": pl["family"], "protocol_version": pl.get("version") or PROTOCOL_VERSION, "cohort": pl.get("cohort"),
                          "age_h_at_entry": universe_entry.get("age_h"), "futures_first_trade_ms": universe_entry.get("futures_first_trade_ms"),
-                         "max_hold_bars": int(self.section.max_hold_bars), "entry_tf": pl.get("entry_tf") or ENTRY_TF, "time_stop_tf": ENTRY_TF,
+                         "max_hold_bars": int(pl.get("max_hold_bars") or self.section.max_hold_bars), "entry_tf": pl.get("entry_tf") or ENTRY_TF, "time_stop_tf": ENTRY_TF,
                          "trigger": dict(pl["trigger"]), "target_source": pl["target_source"],
                          "price_source": {"kind": "usdm_perp_mark", "price_ts_ms": price.get("price_ts_ms"), "age_s": price.get("age_s")}})
         pos.features.update({"plan_id": pl["plan_id"], "family": pl["family"], "cohort": pl.get("cohort"), "age_h_at_entry": universe_entry.get("age_h"),
@@ -1029,13 +1077,58 @@ class PatternBook:
             self._event("TIME_STOP", symbol, "MAX_HOLD_BARS", now, bars=max_bars, mark=mark)
 
     # ------------------------------------------------------------------ fiyat yolu (izleyici) ve bar uçları
-    def tick(self, marks: dict[str, TickData], *, now: datetime, funding_rate_lookup=None, bar_advance: bool = False) -> list:
+    def tick(self, marks: dict[str, TickData], *, now: datetime, funding_rate_lookup=None, bar_advance: bool = False,
+             expect: dict[str, str] | None = None, source: str = "scanner", apply_clock=None) -> list:
+        """Güncel fiyat tiki — `protective_monitor.guarded_tick` ile (kimlik + fiyat zamanı sırası; bkz. StrategyBook.tick)."""
+        from ..protective_monitor import guarded_tick, note_gap_first_observations
         with self.lock:
             self._resume_once(now)
-            recs = self.ledger.tick(marks, now_utc=now, funding_rate_lookup=funding_rate_lookup, bar_advance=bar_advance)
+            recs, info = guarded_tick(self.ledger, marks, now=now, funding_rate_lookup=funding_rate_lookup,
+                                      bar_advance=bar_advance, expect=expect, apply_clock=apply_clock)
             for rec in recs:
                 self._on_closed(rec)
+            applied = info.get("applied") or {}
+            if applied and self.monitoring_gap:
+                note_gap_first_observations(self.monitoring_gap, book_key=self.key, state_path=self.cfg.state_path,
+                                            applied=applied, now=now, closed_ids=[str(getattr(r, "id", "")) for r in recs])
+            if applied and self.observer is not None:
+                from ..strategy_paper import parse_ts_ms
+                opened = {s: parse_ts_ms(p.opened_at) or 0 for s, p in self.ledger.positions.items()}
+                self.observer.note(self.key, applied, int(now.timestamp() * 1000), opened_ms=opened, source=source)
             return recs
+
+    def held_ids(self) -> dict[str, str]:
+        """Açık pozisyonların kimlik anlık görüntüsü (kısa kilit)."""
+        with self.lock:
+            return {s: str(p.id) for s, p in self.ledger.positions.items()}
+
+    def protect(self, marks: dict[str, TickData], marks_f: dict[str, float], gaps: dict[str, dict] | None, *, now: datetime,
+                expect: dict[str, str] | None = None, source: str = "monitor", funding_rate_lookup: Any = "__book__",
+                apply_clock=None) -> list:
+        """KORUYUCU İZLEME ADIMI (tek kısa atomik bölüm; AĞ YOK): fiyat boşlukları → korumalı tick → kayıt."""
+        frl = getattr(self, "funding_rates", None) if funding_rate_lookup == "__book__" else funding_rate_lookup
+        with self.lock:
+            self._resume_once(now)
+            self.record_gaps(gaps or {}, now)
+            recs = self.tick(marks, now=now, funding_rate_lookup=frl, bar_advance=False, expect=expect, source=source,
+                             apply_clock=apply_clock) if marks else []
+            self.save(marks_f, now)
+            return recs
+
+    def _call_unlocked(self, fn: Callable[[], Any]) -> Any:
+        """AĞ BEKLEMESİ DEFTER KİLİDİNİ TUTMAZ (2026-09-24): tetik anındaki likidite (spread/derinlik) isteği sürerken kilit
+        TAMAMEN bırakılır ve sonra aynı derinlikte geri alınır. Arada yalnız koruyucu yol (izleyici/tick) çalışabilir: mevcut
+        pozisyonları kapatır ya da tick'ler, YENİ pozisyon açmaz. Giriş yolu kilidi geri aldıktan sonra defteri (cüzdan,
+        pozisyon sayısı) yeniden okur; bu sembolde pozisyon yoktu ve olamaz."""
+        lk = self.lock
+        try:
+            state = lk._release_save()                 # yalnız bu iş parçacığı tutuyorsa (RLock sözleşmesi)
+        except RuntimeError:
+            return fn()
+        try:
+            return fn()
+        finally:
+            lk._acquire_restore(state)
 
     def apply_closed_bars(self, bars_by_symbol: dict[str, dict[str, Any]] | None, *, now: datetime, funding_rate_lookup=None) -> list:
         with self.lock:
@@ -1056,6 +1149,7 @@ class PatternBook:
         self._gap_until_ms = monitoring_gap_on_resume(self.ledger, getattr(self, "_resume_saved_at", None), now=now,
                                                       book_key=self.key, state_path=self.cfg.state_path, positions=held)
         if self._gap_until_ms is not None:
+            self.monitoring_gap = {"from": str(getattr(self, "_resume_saved_at", None)), "to": iso(now), "positions": list(held)}
             self._event("MONITORING_GAP", "*", "bars_closed_in_gap_not_applied", now,
                         since=str(getattr(self, "_resume_saved_at", None)), positions=held)
 

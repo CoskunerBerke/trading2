@@ -8,14 +8,19 @@ on:
       - work/chart-analysis-v1
       - work/entry-research-v1
       - work/shared-pattern-decisions-v1
+      # mum varyasyonu prosedürünün dalı (docs/CANDLE_VARIATIONS_4H.md): kayıt, laboratuvar kaydı ve etkinleştirme
+      # commit'leri tanım mührü + altın özet + config kapısı testlerinden geçmeden dağıtılmaz
+      - "claude/candle-cv*"
     paths:
       - "tradingbot/**"
       - "tests/**"
       - "requirements.txt"
+      - "config.yaml"
       - ".github/workflows/chart-analysis.yml"
   pull_request:
     branches:
       - work/entry-research-v1
+      - work/runtime-fixes-v1
   workflow_dispatch:
 
 permissions:
@@ -78,6 +83,12 @@ jobs:
             tests/test_box_theory_book_v15.py \
             tests/test_box_theory_v15.py \
             tests/test_engine_v3.py \
+            tests/test_runtime_fixes_v1.py \
+            tests/test_protective_monitor_v1.py \
+            tests/test_measure_protective_monitor_script.py tests/test_bot_scorecard_script.py tests/test_signal_lab.py \
+            tests/test_pattern_trader_momentum_v3.py tests/test_donchian_trend_book.py \
+            tests/test_candle_dsl.py tests/test_candle_variations_book.py \
+            tests/test_learning_provenance_engine.py \
             -q --tb=short > pytest.out 2>&1
           rc=$?
           cat pytest.out
@@ -89,3 +100,31 @@ jobs:
             echo "::notice title=pytest summary::$(tail -n 1 pytest.out | sed 's/%/%25/g')"
           fi
           exit $rc
+
+  measure-script-windows:
+    # Ölçüm betiği kullanıcının yerel (Windows) ölçüm ortamında GERÇEKTEN çalışır mı: Win32 bellek ölçümü, Windows yolları,
+    # konsol kodlaması (PYTHONUTF8 YOK), atomik yazım. Ağ/Binance çağrısı yapmaz; secrets kullanmaz.
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest httpx
+      - name: Measurement script tests (Windows)
+        run: python -m pytest tests/test_measure_protective_monitor_script.py tests/test_bot_scorecard_script.py tests/test_signal_lab.py -q --tb=short -rs
+      - name: index-check + preflight (Windows console)
+        shell: pwsh
+        run: |
+          python scripts/measure_protective_monitor.py index-check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP\tb src\state" | Out-Null
+          Set-Content -Path "$env:RUNNER_TEMP\tb src\state\futures_ledger.json" -Value "{}"
+          Set-Content -Path "$env:RUNNER_TEMP\tbcfg.yaml" -Value "mode: PAPER"
+          python scripts/measure_protective_monitor.py preflight --source "$env:RUNNER_TEMP\tb src" --work "$env:RUNNER_TEMP\tb work" --config "$env:RUNNER_TEMP\tbcfg.yaml"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

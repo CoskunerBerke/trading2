@@ -17,15 +17,21 @@ import datetime as _dt
 from dataclasses import dataclass
 from typing import Any
 
-from . import box_theory, ema200_trend
+from . import box_theory, candle_book, donchian_trend, ema200_trend
 from .candle_confirmation import closed_bars
 
 TREND_VARIANTS: tuple[str, ...] = tuple(ema200_trend.VARIANTS)
 BOX_VARIANTS: tuple[str, ...] = tuple(box_theory.VARIANTS)
+DONCHIAN_VARIANTS: tuple[str, ...] = tuple(donchian_trend.VARIANTS)
+CANDLE_VARIANTS: tuple[str, ...] = tuple(candle_book.VARIANTS)
 
 #: Trend/momentum aileleri yalnız günlük bar okur; box ayrıca gün içi 5m okur.
 TREND_TIMEFRAMES: tuple[str, ...] = ("1d",)
 BOX_TIMEFRAMES: tuple[str, ...] = ("1d", "5m")
+#: 4h trend takibi (gözlem defteri, 2026-09-25) yalnız 4h okur; günlük bar ve BTC rejimi kullanmaz.
+DONCHIAN_TIMEFRAMES: tuple[str, ...] = (donchian_trend.TIMEFRAME,)
+#: Mum varyasyonları (C4, 2026-09-26) yalnız 4h okur (son 500 kapanmış bar, HACİM dahil); günlük bar ve BTC rejimi yok.
+CANDLE_TIMEFRAMES: tuple[str, ...] = (candle_book.TIMEFRAME,)
 
 
 @dataclass(frozen=True)
@@ -33,7 +39,7 @@ class RuleSpec:
     """Bir defterin kural kimliği: hangi aile, hangi çerçeveler, BTC rejimi gerekli mi."""
 
     name: str
-    family: str                       # "trend" | "box"
+    family: str                       # "trend" | "box" | "donchian" | "candle"
     timeframes: tuple[str, ...]
     needs_btc: bool
 
@@ -44,6 +50,12 @@ for _v in TREND_VARIANTS:
 for _v in BOX_VARIANTS:
     # Box kuralı BTC rejimine HİÇ bakmaz; BTC çerçevesini şart koşmak kanıtsız bir kapı olurdu.
     _SPECS[_v] = RuleSpec(_v, "box", BOX_TIMEFRAMES, needs_btc=False)
+for _v in DONCHIAN_VARIANTS:
+    # Laboratuvardaki kural BTC rejimine bakmaz; burada da bakmaz (test edilmemiş kapı eklenmez).
+    _SPECS[_v] = RuleSpec(_v, "donchian", DONCHIAN_TIMEFRAMES, needs_btc=False)
+for _v in CANDLE_VARIANTS:
+    # Varyasyonlar laboratuvarda BTC rejimi ve yapı katmanı OLMADAN ölçülür; burada da yok.
+    _SPECS[_v] = RuleSpec(_v, "candle", CANDLE_TIMEFRAMES, needs_btc=False)
 
 VARIANTS: tuple[str, ...] = tuple(_SPECS)
 
@@ -69,10 +81,15 @@ def build_params(name: str, *, atr_mult: float = ema200_trend.DEFAULT_ATR_MULT,
                  rule_params: dict[str, Any] | None = None) -> Any:
     """Defter ayarlarını kuralın beklediği parametre nesnesine çevirir.
 
-    trend → `atr_mult` (float) · box → doğrulanmış `BoxParams`. Bilinmeyen box alanı SESSİZCE yutulmaz:
-    `BoxParams(**...)` TypeError verir, config kapısı bunu yakalar.
+    trend → `atr_mult` (float) · box → doğrulanmış `BoxParams` · donchian → `DonchianParams` (yalnız uygulama ayarları;
+    kural tanımı sabit) · candle → `CandleParams` (uygulama ayarları + etkin varyasyon kimlikleri; kayıtta olmayan kimlik
+    ValueError). Bilinmeyen alan SESSİZCE yutulmaz: `...Params(**...)` TypeError verir, config kapısı yakalar.
     """
     sp = spec_for(name)
+    if sp.family == "donchian":
+        return donchian_trend.DonchianParams(**dict(rule_params or {})).validate()
+    if sp.family == "candle":
+        return candle_book.CandleParams(**dict(rule_params or {})).validate()
     if sp.family == "trend":
         # KALDIRAC (2026-09-20): trend ailesi eskiden DUZ BIR FLOAT (atr_mult) tasiyordu ve
         # kaldirac `ema200_trend.decide` icinde 1'e SABITTI. Artik box ile AYNI desen:
@@ -100,6 +117,13 @@ def intraday_rows(frames: dict | None, *, tf: str, now_ms: int, tail: int = 400)
     return _rows(frames, tf, now_ms, tail)
 
 
+def _pos_field(position: Any, key: str) -> Any:
+    """Pozisyon nesnesi (defter) ya da sözlük (araştırma) alanı; yoksa None."""
+    if isinstance(position, dict):
+        return position.get(key)
+    return getattr(position, key, None)
+
+
 def _opened_ms(position: Any) -> int | None:
     """Pozisyonun açılış anı (ms). Okunamıyorsa None — gün sonu kapanışı KANITSIZ tetiklenmez."""
     if position is None:
@@ -123,9 +147,31 @@ def _opened_ms(position: Any) -> int | None:
 
 def decide_from_rows(name: str, *, daily: list[dict[str, Any]], intraday: list[dict[str, Any]] | None,
                      btc_rows: list[dict[str, Any]] | None, position: Any = None,
-                     params: Any = None) -> dict[str, Any] | None:
-    """Karar — SATIRLARDAN (SAF). Motor çerçeveden, panel/araştırma satırdan gelir; ikisi de BURAYA düşer."""
+                     params: Any = None, now_ms: int | None = None) -> dict[str, Any] | None:
+    """Karar — SATIRLARDAN (SAF). Motor çerçeveden, panel/araştırma satırdan gelir; ikisi de BURAYA düşer.
+
+    `now_ms` yalnız donchian ve candle ailelerinde kullanılır (sinyalin giriş penceresi); diğer aileler okumaz."""
     sp = spec_for(name)
+    if sp.family == "candle":
+        cp = params if isinstance(params, candle_book.CandleParams) else candle_book.DEFAULT_PARAMS
+        cpos = None
+        if position is not None:
+            opened = _opened_ms(position)
+            if opened is None:
+                return None        # açılış anı okunamıyorsa zaman sınırı hükmedilemez (stop/hedef defterde sürer)
+            # zaman sınırı girişteki anlık görüntüden (features.candle_variation) okunur
+            cpos = {"opened_ts": opened, "setup_type": _pos_field(position, "setup_type") or "",
+                    "features": dict(_pos_field(position, "features") or {})}
+        return candle_book.decide(name, rows=list(intraday or []), position=cpos, now_ms=now_ms, params=cp)
+    if sp.family == "donchian":
+        dp = params if isinstance(params, donchian_trend.DonchianParams) else donchian_trend.DEFAULT_PARAMS
+        dpos = None
+        if position is not None:
+            opened = _opened_ms(position)
+            if opened is None:
+                return None        # açılış anı okunamıyorsa kural çıkışı hükmedilemez (stop defterde sürer)
+            dpos = {"opened_ts": opened}
+        return donchian_trend.decide(name, rows=list(intraday or []), position=dpos, now_ms=now_ms, params=dp)
     if sp.family == "trend":
         # GERIYE UYUM: cagiranlarin cogu (testler, panel, arastirma) hala DUZ FLOAT gecebilir.
         tp = (params if isinstance(params, ema200_trend.TrendParams)
@@ -160,6 +206,12 @@ def state_from_rows(name: str, *, daily: list[dict[str, Any]], intraday: list[di
                     btc_rows: list[dict[str, Any]] | None, params: Any = None) -> dict[str, Any]:
     """Kuralın karşılaştırdığı değerler — SATIRLARDAN (SAF), `decide_from_rows` ile AYNI okuma."""
     sp = spec_for(name)
+    if sp.family == "candle":
+        cp = params if isinstance(params, candle_book.CandleParams) else candle_book.DEFAULT_PARAMS
+        return candle_book.rule_state(name, rows=list(intraday or []), params=cp)
+    if sp.family == "donchian":
+        dp = params if isinstance(params, donchian_trend.DonchianParams) else donchian_trend.DEFAULT_PARAMS
+        return donchian_trend.rule_state(name, rows=list(intraday or []), params=dp)
     if sp.family == "trend":
         # `decide_from_rows` ile AYNI cozumleme — panel ve karar ayni atr_mult'u okumali.
         tp = (params if isinstance(params, ema200_trend.TrendParams)
@@ -173,6 +225,9 @@ def state_from_rows(name: str, *, daily: list[dict[str, Any]], intraday: list[di
 def _frames_rows(name: str, frames: dict | None, now_ms: int) -> tuple[list, list | None]:
     sp = spec_for(name)
     d1 = daily_rows(frames, now_ms=now_ms)
+    if sp.family == "candle":
+        # mum varyasyonları: son 500 kapanmış 4h bar, HACİM dahil (diğer aileler aşağıdaki gibi: 400 bar, hacimsiz)
+        return d1, candle_book.window_rows(frames, now_ms=now_ms)
     intra = None
     for tf in sp.timeframes:
         if tf != "1d":
@@ -180,11 +235,16 @@ def _frames_rows(name: str, frames: dict | None, now_ms: int) -> tuple[list, lis
     return d1, intra
 
 
+def intraday_for(name: str, frames: dict | None, now_ms: int) -> list[dict[str, Any]] | None:
+    """Defterin kuralının okuduğu gün içi satırlar — panel için, `decide_for` ile AYNI okuma (aileye göre)."""
+    return _frames_rows(name, frames, now_ms)[1]
+
+
 def decide_for(name: str, *, frames: dict | None, btc_rows: list[dict[str, Any]] | None,
                now_ms: int, position: Any = None, params: Any = None) -> dict[str, Any] | None:
     """Defterin kararı — ÇERÇEVEDEN (motor yolu). Okumayı yapar, kararı `decide_from_rows`a bırakır."""
     d1, intra = _frames_rows(name, frames, now_ms)
-    return decide_from_rows(name, daily=d1, intraday=intra, btc_rows=btc_rows, position=position, params=params)
+    return decide_from_rows(name, daily=d1, intraday=intra, btc_rows=btc_rows, position=position, params=params, now_ms=now_ms)
 
 
 def decide_with_structures(name: str, *, frames: dict | None, btc_rows: list[dict[str, Any]] | None, now_ms: int,
@@ -196,8 +256,10 @@ def decide_with_structures(name: str, *, frames: dict | None, btc_rows: list[dic
     davranış `decide_for` ile bit-bit aynıdır (yapı kararı None). Trend (T2/M2): 1d analiz, kuralın OPEN'ı yapıyla
     zamanlanır; M2 açık pozisyonda yapı çıkışı. Box: 5m analiz, kutu kenarında dönüş/taşma-geri dönüş, dış kırılım iptali."""
     d1, intra = _frames_rows(name, frames, now_ms)
-    base = decide_from_rows(name, daily=d1, intraday=intra, btc_rows=btc_rows, position=position, params=params)
-    if ctx is None or str(getattr(ctx, "mode", "OFF")).upper() == "OFF":
+    base = decide_from_rows(name, daily=d1, intraday=intra, btc_rows=btc_rows, position=position, params=params, now_ms=now_ms)
+    if ctx is None or str(getattr(ctx, "mode", "OFF")).upper() == "OFF" or spec_for(name).family in ("donchian", "candle"):
+        # donchian (gözlem defteri) ve candle (mum varyasyonları): laboratuvarda yapı katmanı OLMADAN test edildi;
+        # burada da uygulanmaz.
         return base, None, {}
     from .structures import bots as SB
     try:
@@ -216,6 +278,26 @@ def decide_with_structures(name: str, *, frames: dict | None, btc_rows: list[dic
         return base, dec, {}
 
 
+def signal_already_used(act: dict[str, Any] | None, history: Any, symbol: str) -> bool:
+    """`one_entry_per_signal` isteyen OPEN: bu sembolde sinyal kapanışından SONRA açılmış bir işlem zaten var mı?
+
+    Laboratuvarda her sinyal TEK işlemdir. Stop aynı 4h bar içinde tetiklenirse sonraki tur aynı sinyali yeniden görür;
+    bu kontrol olmadan defter aynı sinyalle ikinci kez girerdi. Kaynak defterin kendi işlem geçmişidir (ek durum yok)."""
+    if not act or not act.get("one_entry_per_signal"):
+        return False
+    try:
+        sig = int(act.get("signal_close_ms"))
+    except (TypeError, ValueError):
+        return False
+    for rec in list(history or []):
+        if getattr(rec, "symbol", None) != symbol:
+            continue
+        om = _opened_ms(rec)
+        if om is not None and om >= sig:
+            return True
+    return False
+
+
 def structure_error_of(dec: dict[str, Any] | None) -> str | None:
     """Yapı kararı ortak geri düşüşten geliyorsa arıza kodu (`STRUCTURE_ERROR:<tür>`); değilse None. Canlı defter ve
     replay AYNI koşulla ret sayacına yazar."""
@@ -231,6 +313,11 @@ def replay_strategy(name: str, *, params: Any = None, mode: str = "ENFORCE", btc
     from .timeframes import tf_ms as _tfms
 
     def _strategy(sym, t, fr, pos, eng):
+        if name in CANDLE_VARIANTS:
+            # mum varyasyonları tam 500 kapanmış 4h bar ister; replay dilimi kısaysa hiç sinyal üretmez → SESSİZ kalmaz
+            lb = getattr(eng, "lookback_bars", None)
+            if lb is not None and int(lb) < candle_book.WINDOW + 2:
+                raise ValueError("%s replay için lookback_bars >= %d gerekir (şu an %s)" % (name, candle_book.WINDOW + 2, lb))
         now_ms = int(t) + _tfms(eng.tf)
         btc_fr = eng._slice(btc_symbol, t) if btc_symbol in getattr(eng, "frames", {}) else {}
         btc = closed_bars(ema200_trend.daily_rows_from_frame((btc_fr or {}).get("1d")), now_ms=now_ms, tf="1d")
@@ -259,7 +346,9 @@ def state_for(name: str, *, frames: dict | None, btc_rows: list[dict[str, Any]] 
     return state_from_rows(name, daily=d1, intraday=intra, btc_rows=btc_rows, params=params)
 
 
-__all__ = ["BOX_TIMEFRAMES", "BOX_VARIANTS", "TREND_TIMEFRAMES", "TREND_VARIANTS", "VARIANTS", "RuleSpec",
-           "build_params", "daily_rows", "decide_for", "decide_from_rows", "decide_with_structures", "intraday_rows", "needs_btc", "replay_strategy",
-           "structure_error_of",
+__all__ = ["BOX_TIMEFRAMES", "BOX_VARIANTS", "CANDLE_TIMEFRAMES", "CANDLE_VARIANTS", "DONCHIAN_TIMEFRAMES", "DONCHIAN_VARIANTS",
+           "TREND_TIMEFRAMES", "TREND_VARIANTS", "VARIANTS", "RuleSpec",
+           "build_params", "daily_rows", "decide_for", "decide_from_rows", "decide_with_structures", "intraday_for", "intraday_rows",
+           "needs_btc", "replay_strategy",
+           "signal_already_used", "structure_error_of",
            "rule_timeframes", "spec_for", "state_for", "state_from_rows"]

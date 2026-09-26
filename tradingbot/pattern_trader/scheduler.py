@@ -121,7 +121,10 @@ class PatternScanner:
         for pl in self.book.plans.values():
             if pl.get("status") in (PL_AWAITING, PL_TRIGGERED):
                 add(str(pl.get("symbol") or ""), "pending_plan")
-        elig = [(s, e) for s, e in entries.items() if e.get("eligible")]
+        allowed = getattr(self.book, "allowed_symbols", None)
+        # protokol evreni (ör. v3: laboratuvarda test edilen coinler): yeni tarama yalnız onlarda; açık pozisyon ve
+        # bekleyen plan yukarıda her durumda kuyrukta
+        elig = [(s, e) for s, e in entries.items() if e.get("eligible") and (allowed is None or s in allowed)]
         new_list = [(s, e) for s, e in elig if e.get("priority")]
         rest = [(s, e) for s, e in elig if not e.get("priority")]
         new_list.sort(key=lambda t: (self._last_scan_ms.get(t[0], 0), t[1].get("age_h") if t[1].get("age_h") is not None else 1e9))
@@ -259,18 +262,17 @@ class PatternScanner:
         """Açık pozisyonlar için doğrulanmış güncel fiyatla stop/hedef/likidasyon kontrolü. Tarama kuyruğundan
         BAĞIMSIZ: ana döngünün 60 sn'lik çıkış izleyicisi bunu çağırır ve tarama iş parçacığını BEKLEMEZ."""
         book = self.book
-        if not book.ledger.positions:
+        expect = book.held_ids() if hasattr(book, "held_ids") else {s: str(p.id) for s, p in book.ledger.positions.items()}
+        if not expect:
             return []
         now = self._now_dt()
         now_ms = int(now.timestamp() * 1000)
-        marks, marks_f, gaps = self.price.marks(list(book.ledger.positions), now_ms=now_ms)
-        book.record_gaps(gaps, now)
+        marks, marks_f, gaps = self.price.marks(list(expect), now_ms=now_ms)      # AĞ — defter kilidi DIŞINDA
         # Funding oranı BULUNAMAZSA lookup None döner ve defter o dönemi bekletir; koruyucu stop/hedef kontrolü
-        # bundan ETKİLENMEZ (tick yine çalışır).
-        recs = book.tick(marks, now=now, funding_rate_lookup=self.funding,   # KAYNAK nesnesi (oran + settlement mark)
-                         bar_advance=False) if marks else []
-        book.save(marks_f, now)
-        return recs
+        # bundan ETKİLENMEZ (tick yine çalışır). Tek kısa atomik bölüm: boşluk → korumalı tick (kimlik + sıra) → kayıt.
+        return book.protect(marks, marks_f, gaps, now=now, expect=expect, source="scanner_exit_check",
+                            apply_clock=lambda: int(self.clock() * 1000),   # uygulama anı tazeliği: tarayıcının saati
+                            funding_rate_lookup=self.funding)   # KAYNAK nesnesi (oran + settlement mark)
 
     # ------------------------------------------------------------------ durum / arka plan
     def status(self) -> dict[str, Any]:

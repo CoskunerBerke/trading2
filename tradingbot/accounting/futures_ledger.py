@@ -402,7 +402,11 @@ class FuturesLedgerV2:
         self.wallet_balance -= entry_fee
         self.total_fees += entry_fee
         self._entry(LedgerKind.FEE, -entry_fee, pid, "entry fee", ts)
-        self.positions[symbol] = pos
+        # KOPYALA-YAZ (2026-09-24): pozisyon sözlüğü yerinde DEĞİŞTİRİLMEZ, yenisiyle değiştirilir. Koruyucu izleyici
+        # (`protective_monitor`) defteri turdan ayrı bir iş parçacığında kilit altında günceller; kilitsiz okuyan
+        # gösterim/özet kodu (`for s, p in ledger.positions.items()`) eski sözlüğü sonuna kadar tutarlı görür ve
+        # "dictionary changed size during iteration" ile düşmez.
+        self.positions = {**self.positions, symbol: pos}
         self.last_reject_reason = R_OK
         return pos
 
@@ -515,7 +519,8 @@ class FuturesLedgerV2:
 
     def _finalize(self, pos: Position, reason: str, ts: str) -> TradeRecord:
         self._reverse_settlements_after_close(pos, ts)
-        self.positions.pop(pos.symbol, None)
+        if pos.symbol in self.positions:                 # kopyala-yaz (bkz. `open`)
+            self.positions = {k: v for k, v in self.positions.items() if k != pos.symbol}
         pos.status = "CLOSED"
         pos.closed_at = ts
         gross = D(pos.meta.get("gross_realized", 0))

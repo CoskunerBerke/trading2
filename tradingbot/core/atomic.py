@@ -8,6 +8,8 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import threading
+import time
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -25,10 +27,30 @@ def _default(o: Any):
     return str(o)
 
 
+#: WINDOWS (2026-09-24): hedef dosya başka bir tanıtıcıda (başka iş parçacığı/süreç okurken) açıksa `os.replace` paylaşım
+#: ihlaliyle PermissionError verebilir. Kısa, artan aralıklarla birkaç kez yeniden denenir; sonra hata yükselir (sessiz
+#: kayıp yok). POSIX'te `rename` açık dosyada da atomik çalışır; orada yeniden deneme yoktur.
+_REPLACE_RETRIES = 8 if os.name == "nt" else 0
+_REPLACE_BACKOFF_S = 0.025
+
+
+def _replace(tmp: Path, path: Path) -> None:
+    for attempt in range(_REPLACE_RETRIES + 1):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            if attempt >= _REPLACE_RETRIES:
+                raise
+            time.sleep(_REPLACE_BACKOFF_S * (attempt + 1))
+
+
 def atomic_write_bytes(path: Path | str, data: bytes, *, keep_backup: bool = False) -> Path:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + f".tmp-{os.getpid()}")
+    # Geçici ad süreç VE iş parçacığı başına: koruyucu izleyici (2026-09-24) ana turla aynı süreçte yazar; yalnız pid ile
+    # iki iş parçacığı aynı geçici dosyayı paylaşıp birbirinin yarım içeriğini `os.replace` edebilirdi.
+    tmp = path.with_name(path.name + f".tmp-{os.getpid()}-{threading.get_ident()}")
     try:
         with open(tmp, "wb") as fh:
             fh.write(data)
@@ -39,7 +61,7 @@ def atomic_write_bytes(path: Path | str, data: bytes, *, keep_backup: bool = Fal
                 pass
         if keep_backup and path.exists():
             shutil.copy2(path, path.with_name(path.name + ".bak"))
-        os.replace(tmp, path)
+        _replace(tmp, path)
     except OSError as exc:
         try:
             tmp.unlink(missing_ok=True)

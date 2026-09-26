@@ -674,7 +674,7 @@ def test_registry_examples(vid):
 
 
 def _record(var_or_entry, **over) -> dict:
-    rec = {"record_schema": "candle_lab/1", "id": CV0, "definition_sha": D.definition_sha(var_or_entry), "dsl_version": D.DSL_VERSION,
+    rec = {"record_schema": V.RECORD_SCHEMA, "id": CV0, "definition_sha": D.definition_sha(var_or_entry), "dsl_version": D.DSL_VERSION,
            "window": D.WINDOW, "verdict": L.V_STRONG, "run": {"github_run_id": "1", "run_url": "https://example.invalid/1",
                                                               "commit": "abc", "completed_at": "2026-09-27T10:00:00Z",
                                                               "mode": {"only_variations": True}},

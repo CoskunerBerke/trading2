@@ -21,6 +21,9 @@ Yöntem (her sinyal aynı kuralla ölçülür):
   kombinasyonların %6–11'i ZAYIF İZ, %0–0,5'i GÜÇLÜ ADAY çıktı (`tests/test_signal_lab.py`, mum içi yol da rastgele). Rastgele an/yön PLASEBO
   sinyali aynı hükümden geçer; aralıklar GÜN KÜMELİ bootstrap'tır (aynı gün birlikte hareket eden coinler bağımsız
   sayılmaz); gerçek sinyallerin aday oranı plaseboyu açıkça geçmiyorsa liste tesadüf olabilir.
+* SIKI GÜÇLÜ ADAY (`STRICT_RULE_TR`, `verdict_strict`): GÜÇLÜ ADAY'ın bütün şartları + doğrulama döneminde eşine göre
+  farkın gün kümeli %95 aralığı 0'ın üstünde. Standart kural farkın yalnız pozitif olmasını ister; genel sürüklenmesi
+  olan piyasada avantajsız bir şekil eşini şans eseri iki dönemde de geçebilir. Sıkı kural bu zayıflığı kapatır.
 
 PAPER/geçmiş testtir; kâr garantisi değildir.
 """
@@ -766,9 +769,68 @@ def replicated(is_st: dict, oos_st: dict, cfg: LabConfig) -> bool:
             and _ci_lo(is_st) > 0 and _ci_lo(oos_st) > 0)
 
 
+#: SIKI GÜÇLÜ ADAY — ÖNCEDEN KAYITLI KURAL (2026-09-26; hiçbir varyasyonun sonucu görülmeden yazıldı, AYARLANMAZ).
+STRICT_RULE_TR = (
+    "SIKI GÜÇLÜ ADAY = standart GÜÇLÜ ADAY'ın bütün şartları (verdict → GÜÇLÜ ADAY) VE doğrulama (OOS) döneminde "
+    "(grup ort.R − eşleştirilmiş plasebo grubunun ort.R) farkının gün kümeli %95 aralığının alt ucu > 0. Aralık: iki taraf "
+    "AYRI ve bağımsız gün kümeli bootstrap ile yeniden örneklenir (r_stats ile aynı düzen: gün başına toplam ve sayı, "
+    "tekrar ortalaması = örneklenen toplam / örneklenen sayı), taraf başına bootstrap_iters tekrar, sabit tohumlar; tekrar "
+    "farkı = gerçek ort. − plasebo ort.; aralık %2,5 / %97,5 yüzdelikleri. Keşif (IS) aralığı yalnız bilgi amaçlıdır. Bir "
+    "dönemde taraflardan birinin günü 5'ten azsa o dönemin aralığı yoktur (None) ve sıkı şart o dönemde geçmez. Standart "
+    "hüküm GÜÇLÜ ADAY ama sıkı şart geçmiyorsa sıkı hüküm ZAYIF İZ; diğer bütün durumlarda sıkı hüküm = standart hüküm.")
+#: Sıkı kuralın bootstrap tohumu: gerçek taraf bu tohumla, plasebo tarafı tohum + 1 ile (belirlenimci, bağımsız akışlar).
+STRICT_SEED = 20260926
+#: Bir dönemde tarafların her birinde gereken en az gün (daha azında aralık None → sıkı şart geçmez).
+STRICT_MIN_DAYS = 5
+
+
+def _day_boot_means(rs: np.ndarray, days: np.ndarray, iters: int, seed: int) -> np.ndarray | None:
+    """Gün kümeli bootstrap tekrar ortalamaları (`r_stats` ile aynı düzen); gün < STRICT_MIN_DAYS → None."""
+    rs = np.asarray(rs, dtype=float)
+    if len(rs) == 0:
+        return None
+    _, inv = np.unique(np.asarray(days), return_inverse=True)
+    sums, counts = np.bincount(inv, weights=rs), np.bincount(inv).astype(float)
+    d = len(sums)
+    if d < STRICT_MIN_DAYS:
+        return None
+    idx = np.random.default_rng(seed).integers(0, d, size=(iters, d))
+    return sums[idx].sum(axis=1) / counts[idx].sum(axis=1)
+
+
+def diff_ci(rs: np.ndarray, days: np.ndarray, p_rs: np.ndarray, p_days: np.ndarray, iters: int,
+            seed: int = STRICT_SEED) -> list[float] | None:
+    """(gerçek ort.R − plasebo ort.R) için gün kümeli %95 aralık: iki taraf AYRI yeniden örneklenir (bağımsız, sabit
+    tohumlar). Taraflardan birinde gün < STRICT_MIN_DAYS → None."""
+    a = _day_boot_means(rs, days, iters, seed)
+    b = _day_boot_means(p_rs, p_days, iters, seed + 1)
+    if a is None or b is None:
+        return None
+    d = a - b
+    return [round(float(np.quantile(d, 0.025)), 4), round(float(np.quantile(d, 0.975)), 4)]
+
+
+def verdict_strict(standard: str, ci95: dict | None) -> str:
+    """Sıkı hüküm (`STRICT_RULE_TR`): standart GÜÇLÜ ADAY ve doğrulama farkı aralığının alt ucu > 0 → GÜÇLÜ ADAY; standart
+    GÜÇLÜ ADAY ama şart geçmiyor → ZAYIF İZ; diğerleri standart hükmün aynısı."""
+    if standard != V_STRONG:
+        return standard
+    oos = (ci95 or {}).get("OOS")
+    return V_STRONG if oos and oos[0] > 0 else V_WEAK
+
+
+def _group_rows(ev: pd.DataFrame, g: dict) -> pd.DataFrame:
+    """Grubun olayları (`aggregate`ın gruplamasıyla aynı: tf/aile/ad/yön + bağlam dilimi)."""
+    m = (ev["tf"] == g["tf"]) & (ev["family"] == g["family"]) & (ev["name"] == g["name"]) & (ev["side"] == g["side"])
+    if g["context"] != "HEPSİ":
+        m &= ev["ctx." + g["context"]] == g["bucket"]
+    return ev.loc[m, ["period", "r", "day"]]
+
+
 def verdict(is_st: dict, oos_st: dict, cfg: LabConfig, vs_placebo: dict | None = None) -> str:
     """GÜÇLÜ ADAY: iki dönemde de aralık 0'ın üstünde VE aynı dilim/yön/bağlamdaki rastgele girişi iki dönemde de geçiyor
-    (yalnız "yükselen piyasada long" olmasın). ZAYIF İZ: iki dönemde ortalama pozitif ama bu şartlardan biri eksik."""
+    (yalnız "yükselen piyasada long" olmasın). ZAYIF İZ: iki dönemde ortalama pozitif ama bu şartlardan biri eksik.
+    Sıkı kural ayrıdır (`STRICT_RULE_TR`, `verdict_strict`); bu fonksiyonun hükmü DEĞİŞMEZ."""
     if is_st.get("n", 0) < cfg.min_is or oos_st.get("n", 0) < cfg.min_oos:
         return V_THIN
     if oos_st.get("ci95") and oos_st["ci95"][1] < 0:
@@ -830,6 +892,16 @@ def aggregate(events: list[dict], cfg: LabConfig) -> dict[str, Any]:
         g["vs_placebo"] = vs
         g["replicated"] = replicated(g["IS"], g["OOS"], cfg)
         g["verdict"] = verdict(g["IS"], g["OOS"], cfg, vs)
+        # sıkı şart: aralık YALNIZ standart GÜÇLÜ ADAY + eş karşılaştırması olan gruplar için (katalogda binlerce grup var)
+        if g["verdict"] == V_STRONG and vs is not None:
+            mine, theirs = _group_rows(ev, g), _group_rows(ev, pg)
+            ci = {}
+            for per in ("IS", "OOS"):
+                a, b = mine[mine["period"] == per], theirs[theirs["period"] == per]
+                ci[per] = diff_ci(a["r"].to_numpy(dtype=float), a["day"].to_numpy(), b["r"].to_numpy(dtype=float),
+                                  b["day"].to_numpy(), cfg.bootstrap_iters)
+            vs["ci95"] = ci
+        g["verdict_strict"] = verdict_strict(g["verdict"], vs.get("ci95") if vs else None)
     judged = [g for g in groups if g["verdict"] != V_THIN]
     real = [g for g in judged if g["family"] != "placebo"]
     pl = [g for g in judged if g["family"] == "placebo"]
@@ -916,7 +988,8 @@ def run(*, symbols: list[str], tfs: list[str], cache_dir: Path, out_dir: Path, c
               "symbols": symbols, "timeframes": tfs, "days": {tf: days[tf] for tf in tfs}, "series": metas,
               "seconds": round(time.time() - t0, 1), "data_warnings": warnings, **agg,
               "note_tr": "Geçmiş test (PAPER değil, canlı değil). GÜÇLÜ ADAY = iki dönemde de %95 aralık 0'ın üstünde ve aynı "
-                         "bağlamdaki rastgele girişi iki dönemde de geçiyor. Kâr garantisi değildir."}
+                         "bağlamdaki rastgele girişi iki dönemde de geçiyor. Kâr garantisi değildir.",
+              "strict_rule_tr": STRICT_RULE_TR}
     if variations:                                      # varyasyon başına makinece okunur kayıt (bayt bayt kopyalanır)
         from . import candle_lab, candle_variations
         # koşunun kipi kayda girer: kapı yalnız "yalnız varyasyon" koşusunu kabul eder (katalog/ek/algoritma olayları
@@ -930,7 +1003,7 @@ def run(*, symbols: list[str], tfs: list[str], cache_dir: Path, out_dir: Path, c
             log(f"mum varyasyonu kaydı: {path}")
             summary[vid] = {"definition_sha": rec["definition_sha"], "side": rec["side"], "example": rec["example"],
                             "readback": var.readback is not None, "primary_tf": rec["primary_tf"], "verdict": rec["verdict"],
-                            "golden_sha": rec["golden_sha"], "record": f"{candle_lab.RECORDS_SUBDIR}/{vid}.json",
+                            "verdict_strict": rec["verdict_strict"], "golden_sha": rec["golden_sha"], "record": f"{candle_lab.RECORDS_SUBDIR}/{vid}.json",
                             "by_tf": {tf: {k: b[k] for k in ("signals", "trades", "non_overlap_mean_r")}
                                       for tf, b in rec["by_tf"].items()}}
         report["variations"] = summary
@@ -972,9 +1045,12 @@ def _render_variations(report: dict[str, Any], real: list[dict], fmt: Callable[[
                 continue
             vs = x.get("vs_placebo")
             vtxt = f" · eşine göre {vs['IS']:+.2f}/{vs['OOS']:+.2f}" if vs else " · eş karşılaştırması yok"
+            oci = ((vs or {}).get("ci95") or {}).get("OOS")
+            citxt = f" · eşine göre fark %95 doğrulama [{oci[0]:+.2f},{oci[1]:+.2f}]" if oci else ""
             cost = lambda st: f" maliyet {st['cost_r']:.2f}R" if st.get("cost_r") is not None else ""  # noqa: E731
             lines.append(f"  {tf:>4}{tag} keşif {fmt(x['IS'])}{cost(x['IS'])} | doğrulama {fmt(x['OOS'])}{cost(x['OOS'])}"
-                         f"{vtxt}{notxt} · {x['symbols']} coin · {x['verdict']}")
+                         f"{vtxt}{citxt}{notxt} · {x['symbols']} coin · hüküm: {x['verdict']} · sıkı: "
+                         f"{x.get('verdict_strict', x['verdict'])}")
     return lines
 
 
@@ -999,11 +1075,14 @@ def render(report: dict[str, Any], *, top: int = 25) -> str:
     for v in (V_STRONG, V_WEAK):
         rows = sorted([x for x in real if x["verdict"] == v], key=lambda x: -x["OOS"]["mean_r"])[:top]
         lines.append(f"\n== {v} ({sum(1 for x in real if x['verdict'] == v)}) ==")
+        if v == V_STRONG:
+            lines.append(f"sıkı şartı da geçen: {sum(1 for x in real if x['verdict'] == v and x.get('verdict_strict') == V_STRONG)}")
         for x in rows:
             vs = x.get("vs_placebo")
             vtxt = f" · rastgeleye göre {vs['IS']:+.2f}/{vs['OOS']:+.2f}" if vs else " · rastgele karşılaştırması yok"
+            stxt = f" · sıkı: {x.get('verdict_strict', x['verdict'])}" if v == V_STRONG else ""
             lines.append(f"{x['tf']:>4} {x['name']:<26}{x['side']:<6}{x['context'] + '=' + str(x['bucket']):<24} "
-                         f"keşif {fmt(x['IS'])} | doğrulama {fmt(x['OOS'])}{vtxt} · {x['symbols']} coin")
+                         f"keşif {fmt(x['IS'])} | doğrulama {fmt(x['OOS'])}{vtxt} · {x['symbols']} coin{stxt}")
     algo_rows = sorted([x for x in real if x["family"] == "algo" and x["context"] == "HEPSİ"], key=lambda x: (x["name"], x["tf"], x["side"]))
     if algo_rows:
         lines.append("\n== ALGORİTMALAR (bağlamsız; eşi = aynı çıkış kuralıyla rastgele giriş) ==")
@@ -1019,4 +1098,6 @@ def render(report: dict[str, Any], *, top: int = 25) -> str:
         lines.append(f"{x['tf']:>4} {x['name']:<26}{x['side']:<6} doğrulama {fmt(x['OOS'])} · maliyet {x['OOS'].get('cost_r', 0):.2f}R")
     lines.append(f"\nNot: {V_STRONG} = iki dönemde de %95 aralık 0'ın üstünde VE aynı bağlamdaki rastgele girişi iki dönemde de "
                  f"geçiyor. {V_WEAK} tek başına güvenilmez. Geçmiş test; kâr garantisi değildir.")
+    lines.append(f"Sıkı {V_STRONG} = ayrıca doğrulama döneminde eşine göre farkın gün kümeli %95 aralığı 0'ın üstünde "
+                 f"(önceden kayıtlı kural: signal_lab.STRICT_RULE_TR).")
     return "\n".join(lines)

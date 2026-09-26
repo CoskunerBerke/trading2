@@ -12,7 +12,8 @@ Soru tek: "Hangi bot, bugüne kadar kapattığı işlemlerde para kazandırdı v
   mutabık olmayan işlemler ayrıca sayılır; hüküm bunları DÜZELTMEZ, yalnız görünür kılar.
 * Mum varyasyonları (C4): `candle:<id>` işlemleri ayrıca varyasyon başına (`by_variation`) — aynı hüküm kuralı, gözlem
   bayrağı ve laboratuvarın doğrulama dönemi (OOS) ortalaması/aralığı. En az 30 işlemde PAPER ortalaması laboratuvar OOS
-  aralığının alt ucunun altındaysa `LAB_DRIFT` (canlı davranış laboratuvardan sapıyor).
+  aralığının alt ucunun altındaysa `LAB_DRIFT` (canlı davranış laboratuvardan sapıyor). Sıkı eşi C4S aynı satırları
+  yazar; anlık görüntüde kip varsa (`verdict_mode`, `verdict_used`) satıra eklenir.
 
 Kullanım:
     python scripts/bot_scorecard.py --state <state klasörü> [--since 2026-09-01] [--out karne.json]
@@ -35,7 +36,8 @@ LEDGER_FILE = "futures_ledger.json"
 #: defter klasörü (state altında) → görünen ad; "" = ana bot (state kökündeki defter)
 BOOKS = {"": "Ana bot", "strategy_paper": "T2", "strategy_paper_m2": "M2 (TSMOM28)", "strategy_paper_box": "Box",
          "pattern_trader": "Formasyon", "strategy_paper_trend4h": "Trend 4h (gözlem, kanıtlanmadı)",
-         "strategy_paper_candle4h": "C4 Mum varyasyonları (PAPER)"}
+         "strategy_paper_candle4h": "C4 Mum varyasyonları (PAPER)",
+         "strategy_paper_candle4h_strict": "C4S Mum varyasyonları 4h (sıkı, PAPER)"}
 V_THIN, V_LOSS, V_WIN, V_OPEN = "VERİ YETERSİZ", "ZARARDA (kanıtlı)", "KÂRDA (kanıtlı, PAPER)", "BELİRSİZ"
 #: Mum varyasyonu işlemlerinin kurulum öneki (`candle_book.SETUP_PREFIX`).
 CANDLE_PREFIX = "candle:"
@@ -118,6 +120,9 @@ def by_variation(trades: list) -> dict[str, dict[str, Any]]:
                     "observation": any(s_.get("observation") is True for s_ in snaps),
                     "definition_sha": last.get("definition_sha"), "lab_verdict": last.get("lab_verdict"),
                     "lab_oos_mean_r": _num(last.get("lab_oos_mean_r")), "lab_oos_ci95": lab_ci, "flags": flags}
+        for k in ("verdict_mode", "verdict_used"):      # yalnız kipi yazan anlık görüntüde (eski işlemlerin çıktısı aynı)
+            if isinstance(last.get(k), str):
+                out[vid][k] = last[k]
     return out
 
 

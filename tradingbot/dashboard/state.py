@@ -236,7 +236,8 @@ class StateReader:
             label = {"t2_trend_regime": "T2 · EMA200 trend", "m2_tsmom28": "M2 · 28g momentum",
                      "b1_box_fade": "B1 · Box (önceki gün aralığı, 5m)",
                      "d4_donchian_20_10": "D4 · 4h trend takibi (gözlem, kanıtlanmadı)",
-                     "c4_candle_variations": "C4 · Mum varyasyonları (4h, PAPER)"}.get(name, name)
+                     "c4_candle_variations": "C4 · Mum varyasyonları (4h, PAPER)",
+                     "c4s_candle_variations_strict": "C4S · Mum varyasyonları 4h (sıkı, PAPER)"}.get(name, name)
             out.append({"book_id": key, "name": name, "label": label, "state_dir": key, "summary_file": b.get("summary_file")})
         if len(out) == 1 and (self.state_dir / "strategy_paper" / "futures_ledger.json").exists():
             sp = self.get("strategy_paper") or {}

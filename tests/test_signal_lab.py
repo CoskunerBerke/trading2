@@ -461,7 +461,7 @@ def test_variation_record_written(registry, monkeypatch, tmp_path):
     def strict(s):
         raise ValueError(f"JSON'da sonlu olmayan sayı: {s}")
     rec = json.loads(path.read_text(encoding="utf-8"), parse_constant=strict)
-    assert rec["record_schema"] == "candle_lab/1" and rec["id"] == LOOSE_ID and rec["definition_sha"] == var.definition_sha
+    assert rec["record_schema"] == "candle_lab/2" and rec["id"] == LOOSE_ID and rec["definition_sha"] == var.definition_sha
     assert rec["dsl_version"] == D.DSL_VERSION and rec["window"] == D.WINDOW == 500
     assert rec["golden_sha"] == CL.golden_sha(var) and re.fullmatch(r"[0-9a-f]{16}", rec["golden_sha"])
     assert rec["run"]["github_run_id"] is None and rec["run"]["run_url"] is None and rec["run"]["commit"] is None

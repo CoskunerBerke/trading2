@@ -214,7 +214,8 @@ def test_repository_config_idle_book():
     vs = spec.rule_params.get("variations")
     assert int(spec.rule_params.get("leverage", 1)) == 1 and isinstance(vs, list) and len(vs) == len(set(vs))
     assert spec.max_entry_drift_pct == 0.0 and v3.structures.mode_for(NAME) == "OFF"
-    assert [b.name for b in specs][-1] == NAME and len(specs) == 5
+    # sıkı eşi C4S (tests/test_candle_strict_book.py) C4'ün hemen ardından gelir
+    assert [b.name for b in specs][-2:] == [NAME, "c4s_candle_variations_strict"] and len(specs) == 6
     with pytest.raises(ValueError, match="PAPER_ONLY"):
         validate_settings(enabled=True, name=NAME, app_mode="LIVE", starting_equity=200.0, atr_mult=3.0)
 
@@ -230,15 +231,23 @@ def test_repository_config_idle_book():
 
 def test_repository_config_variations_pass_gate():
     """CI kapısı: config'te etkin her varyasyon kapıdan GEÇER (çeviri onayı + CI laboratuvar kaydı + kullanıcı onayı).
-    Liste boşken boş geçer; bozuk bir etkinleştirme birleşmeden önce burada düşer."""
+    Liste boşken boş geçer; bozuk bir etkinleştirme birleşmeden önce burada düşer. Her mum defteri KENDİ hüküm kipiyle
+    denetlenir (C4 standart, C4S sıkı); C4S'teki her kimlik C4'te de durur (karşılaştırma). Yalnız ETKİN defterler
+    denetlenir (`book_specs`); kapatılmış (`enabled: false`) bir defter bu testi kırmaz."""
     v3 = load_v3(yaml.safe_load((ROOT / "config.yaml").read_text(encoding="utf-8")))
+    lists: dict[str, list] = {}
     for b in book_specs(v3):
-        if b.name != NAME:
+        if b.name not in B.VARIANTS:
             continue
-        for vid in b.rule_params.get("variations") or []:
-            var, why = V.gate(vid)
-            assert why is None and var is not None and var.id == vid, (vid, why)
+        mode = B.mode_for(b.name, paper_rules.build_params(b.name, rule_params=b.rule_params))
+        lists[b.name] = list(b.rule_params.get("variations") or [])
+        for vid in lists[b.name]:
+            var, why = V.gate(vid, mode)
+            assert why is None and var is not None and var.id == vid, (b.name, mode, vid, why)
             assert not var.example
+    assert set(lists) <= set(B.VARIANTS)
+    if "c4s_candle_variations_strict" in lists and NAME in lists:
+        assert set(lists["c4s_candle_variations_strict"]) <= set(lists[NAME]), "C4S ⊆ C4"
 
 
 # ================================================================== 4) kapı
@@ -283,7 +292,9 @@ def test_gate_reasons(tmp_path, monkeypatch):
     }
     for code, (var, why) in cases.items():
         assert var is None and why == code, (code, why)
-    assert set(cases) == set(V.GATE_REASONS) - {"GATE_ERROR"}, "her ret kodu sınandı"
+    # hüküm kipi kodları tests/test_candle_strict_book.py içinde sınanır
+    assert set(cases) == set(V.GATE_REASONS) - {"GATE_ERROR", "UNKNOWN_VERDICT_MODE", "LAB_NO_STRICT_VERDICT",
+                                                "STRICT_NOT_STRONG"}, "her ret kodu sınandı"
     assert V.RECORD_SCHEMA == CL.RECORD_SCHEMA, "kapı laboratuvarın kayıt şemasını bekler"
     assert case(rec_over={"window": 400}) == (None, "DSL_VERSION_MISMATCH")
     # geçersiz kayıt: bilinmeyen/boş hüküm, katalogla birlikte (yalnız varyasyon OLMAYAN) koşu, kip bilgisi yok

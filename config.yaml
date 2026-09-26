@@ -501,6 +501,24 @@ strategy_paper:
         entry_window_min: 60
         variations: []
       max_entry_drift_pct: 0.0
+    # C4S · MUM VARYASYONLARI (4h, SIKI) — C4'ün AYNI kuralı, AYNI 23 coin; tek fark kapının okuduğu hüküm: sıkı GÜÇLÜ
+    # ADAY şartı (laboratuvar kaydının verdict_strict alanı). Yalnız o şartı geçen varyasyonlar girer; gözlem onayı
+    # (ZAYIF İZ vb.) bu deftere varyasyon SOKMAZ. Amaç C4 ile karşılaştırma: aynı sinyaller, daha sıkı eleme. Kullanıcı
+    # onayı yine şarttır; buradaki her kimlik C4 listesinde de durur. Kapatmak: C4 ile aynı (docs/CANDLE_VARIATIONS_4H.md).
+    - name: c4s_candle_variations_strict
+      enabled: true
+      starting_equity_usdt: 200
+      breakeven_at_mfe_r: 0.0
+      state_dir: strategy_paper_candle4h_strict
+      symbols: [BTC/USDT, ETH/USDT, SOL/USDT, BNB/USDT, XRP/USDT, DOGE/USDT, ADA/USDT, AVAX/USDT, LINK/USDT,
+                LTC/USDT, DOT/USDT, NEAR/USDT, TRX/USDT, BCH/USDT, UNI/USDT, FIL/USDT, XLM/USDT, AAVE/USDT,
+                APT/USDT, ARB/USDT, OP/USDT, INJ/USDT, SUI/USDT]
+      rule_params:
+        leverage: 1
+        entry_window_min: 60
+        variations: []
+        verdict_mode: strict
+      max_entry_drift_pct: 0.0
 
 structures:                    # ORTAK YAPI KATALOĞU (2026-09-22) — beş bot aynı mum/grafik analizini okur
   # Politika: docs/structures/POLITIKA_MATRISI_v1.md (kodlamadan önce yazıldı; eşikler sonuçlara göre seçilmedi).

@@ -53,6 +53,20 @@ jobs:
           mkdir -p signal_lab_out
           # shellcheck disable=SC2086
           python scripts/signal_lab.py --source archive --jobs 4 $ARGS | tee signal_lab_out/console.txt
+      # Çıktı (artifact) indirmesi bakımcı ortamından engelli olabilir: her varyasyon kaydı iş günlüğüne base64 olarak
+      # basılır; `scripts/extract_lab_records.py` günlükten bayt bayt geri yazar (sha256 ve bayt sayısı denetlenir).
+      - name: Print lab records
+        if: always()
+        run: |
+          shopt -s nullglob
+          for f in signal_lab_out/variation_records/*.json; do
+            n="$(basename "$f")"
+            sha="$(sha256sum "$f" | cut -d ' ' -f 1)"
+            bytes="$(wc -c < "$f" | tr -d ' ')"
+            echo "=== LAB RECORD BEGIN $n sha256=$sha bytes=$bytes"
+            base64 -w 76 "$f"
+            echo "=== LAB RECORD END $n"
+          done
       - name: Upload report
         if: always()
         uses: actions/upload-artifact@v4

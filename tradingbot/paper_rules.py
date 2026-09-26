@@ -30,7 +30,8 @@ TREND_TIMEFRAMES: tuple[str, ...] = ("1d",)
 BOX_TIMEFRAMES: tuple[str, ...] = ("1d", "5m")
 #: 4h trend takibi (gözlem defteri, 2026-09-25) yalnız 4h okur; günlük bar ve BTC rejimi kullanmaz.
 DONCHIAN_TIMEFRAMES: tuple[str, ...] = (donchian_trend.TIMEFRAME,)
-#: Mum varyasyonları (C4, 2026-09-26) yalnız 4h okur (son 500 kapanmış bar, HACİM dahil); günlük bar ve BTC rejimi yok.
+#: Mum varyasyonları (C4 ve sıkı eşi C4S, 2026-09-26) yalnız 4h okur (son 500 kapanmış bar, HACİM dahil); günlük bar ve
+#: BTC rejimi yok.
 CANDLE_TIMEFRAMES: tuple[str, ...] = (candle_book.TIMEFRAME,)
 
 
@@ -83,13 +84,19 @@ def build_params(name: str, *, atr_mult: float = ema200_trend.DEFAULT_ATR_MULT,
 
     trend → `atr_mult` (float) · box → doğrulanmış `BoxParams` · donchian → `DonchianParams` (yalnız uygulama ayarları;
     kural tanımı sabit) · candle → `CandleParams` (uygulama ayarları + etkin varyasyon kimlikleri; kayıtta olmayan kimlik
-    ValueError). Bilinmeyen alan SESSİZCE yutulmaz: `...Params(**...)` TypeError verir, config kapısı yakalar.
+    ValueError; sıkı defter C4S `verdict_mode` yazılmazsa "strict" alır, başka kip ValueError). Bilinmeyen alan SESSİZCE yutulmaz: `...Params(**...)` TypeError verir, config kapısı yakalar.
     """
     sp = spec_for(name)
     if sp.family == "donchian":
         return donchian_trend.DonchianParams(**dict(rule_params or {})).validate()
     if sp.family == "candle":
-        return candle_book.CandleParams(**dict(rule_params or {})).validate()
+        rp = dict(rule_params or {})
+        fixed = candle_book.FIXED_VERDICT_MODE.get(sp.name)
+        if fixed is not None:
+            rp.setdefault("verdict_mode", fixed)
+            if rp["verdict_mode"] != fixed:
+                raise ValueError("%s yalnız verdict_mode: %s ile koşar: %r" % (sp.name, fixed, rp["verdict_mode"]))
+        return candle_book.CandleParams(**rp).validate()
     if sp.family == "trend":
         # KALDIRAC (2026-09-20): trend ailesi eskiden DUZ BIR FLOAT (atr_mult) tasiyordu ve
         # kaldirac `ema200_trend.decide` icinde 1'e SABITTI. Artik box ile AYNI desen:

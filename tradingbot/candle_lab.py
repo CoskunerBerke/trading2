@@ -44,7 +44,8 @@ from . import candle_dsl as D
 from . import signal_lab as L
 from .timeframes import tf_ms
 
-RECORD_SCHEMA = "candle_lab/1"
+#: 2: `verdict_strict` (üstte ve dilim başına) ve `vs_placebo.ci95` eklendi (signal_lab.STRICT_RULE_TR).
+RECORD_SCHEMA = "candle_lab/2"
 #: Laboratuvar olay ailesi (gerçek varyasyon olayları).
 FAMILY = "candle_var"
 PLACEBO_PREFIX = "PLACEBO_"
@@ -322,11 +323,13 @@ def _clean(x: Any) -> Any:
 
 def build_record(report: Mapping[str, Any], var: D.Variation, *, env: Mapping[str, str] | None = None,
                  events: Iterable[Any] | None = None, now: datetime | None = None) -> dict[str, Any]:
-    """Makinece okunur laboratuvar kaydı (`candle_lab/1`). Gruplar `(tf, candle_var, id, yön, HEPSİ)`; birincil dilim
+    """Makinece okunur laboratuvar kaydı (`RECORD_SCHEMA`). Gruplar `(tf, candle_var, id, yön, HEPSİ)`; birincil dilim
     tanımın dilimidir (4h), diğerleri bilgi amaçlıdır; birincil dilim koşulmadıysa hüküm None (kapı reddeder).
     `events` verilirse örtüşmesiz ortalama R de yazılır. `readback`: çalıştırma anında kayıttaki çeviri onayı (mühre
     girmez) — taslak (onaysız) koşunun kaydı kapıdan geçmez. `run.mode`: koşunun kipi (`report["mode"]`); kapı yalnız
-    `only_variations` koşusunu kabul eder (katalogla birlikte koşu keşif/doğrulama kesimini değiştirir)."""
+    `only_variations` koşusunu kabul eder (katalogla birlikte koşu keşif/doğrulama kesimini değiştirir).
+    `verdict` standart hükümdür; `verdict_strict` sıkı hükümdür (`signal_lab.STRICT_RULE_TR`). İkisi de üstte (birincil
+    dilim) ve `by_tf` içinde durur; `vs_placebo.ci95` farkın gün kümeli aralığıdır (yalnız standart GÜÇLÜ ADAY'da)."""
     from . import candle_variations as CV
     groups = list(report.get("groups") or [])
     cut = dict(report.get("cutoff_ms") or {})
@@ -342,6 +345,8 @@ def build_record(report: Mapping[str, Any], var: D.Variation, *, env: Mapping[st
         no = non_overlap_mean_r([e for e in evs if _get(e, "tf") == tf], cut.get(tf)) if evs is not None else None
         by_tf[tf] = {"IS": dict(g["IS"]) if g else {"n": 0}, "OOS": dict(g["OOS"]) if g else {"n": 0},
                      "vs_placebo": g.get("vs_placebo") if g else None, "verdict": g["verdict"] if g else L.V_THIN,
+                     # sıkı hüküm yoksa standart hükme DÜŞÜLMEZ (None → sıkı kapı LAB_NO_STRICT_VERDICT ile reddeder)
+                     "verdict_strict": g.get("verdict_strict") if g else L.V_THIN,
                      "symbols": int(g["symbols"]) if g else 0, "non_overlap_mean_r": no, **cnt}
     slices = [g for g in groups if g.get("family") == FAMILY and g.get("name") == var.id and g.get("side") == var.side
               and g.get("context") != "HEPSİ" and (g.get("IS") or {}).get("n") and (g.get("OOS") or {}).get("n")]
@@ -353,9 +358,12 @@ def build_record(report: Mapping[str, Any], var: D.Variation, *, env: Mapping[st
            "window": D.WINDOW, "golden_sha": golden_sha(var), "run": run, "readback": var.readback,
            "universe": {"symbols": list(report.get("symbols") or []), "tfs": tfs, "days": dict(report.get("days") or {})},
            "primary_tf": primary, "verdict": by_tf[primary]["verdict"] if primary in by_tf else None,
+           "verdict_strict": by_tf[primary]["verdict_strict"] if primary in by_tf else None,
+           "strict_rule_tr": L.STRICT_RULE_TR,
            "by_tf": by_tf, "skipped": skipped,
            "context_slices_info": [{"tf": g["tf"], "context": g["context"], "bucket": g["bucket"], "IS": _brief(g["IS"]),
-                                    "OOS": _brief(g["OOS"]), "vs_placebo": g.get("vs_placebo"), "verdict": g.get("verdict")}
+                                    "OOS": _brief(g["OOS"]), "vs_placebo": g.get("vs_placebo"), "verdict": g.get("verdict"),
+                                    "verdict_strict": g.get("verdict_strict")}
                                    for g in slices],
            "context_slices_note_tr": "Bağlam dilimleri yalnız KEŞİF amaçlıdır (çoklu test); hüküm HEPSİ satırındadır.",
            "trials_to_date": CV.trials_to_date(), "cutoff_ms": {str(k): int(v) for k, v in cut.items()},

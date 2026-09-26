@@ -130,7 +130,7 @@ def chart_rule_inputs(book: dict, *, tf: str, bars: list, frames: dict | None, a
 
     Panel (`dashboard/app.py`) aynı defter için AYNI okumayı yapar; ikisi farklı okursa `analysis_id` hiç eşleşmez.
     * D4 (4h trend): grafik diliminin KENDİ kapanmış barları (ikinci okuma yok).
-    * C4 (mum varyasyonları): kuralın kendi penceresi — son 500 kapanmış 4h bar, hacim dahil (`paper_rules.intraday_for`,
+    * C4 ve C4S (mum varyasyonları, standart ve sıkı): kuralın kendi penceresi — son 500 kapanmış 4h bar, hacim dahil (`paper_rules.intraday_for`,
       `decide_for` ile aynı okuma; motor çerçevesi 700 bar) — ve defterin `rule_params`ı (etkin varyasyon listesi).
     * Diğer defterler: DEĞİŞMEDİ (rule_params yok, gün içi satır yok)."""
     from . import paper_rules

@@ -1,21 +1,63 @@
-# Mum varyasyonları (4h) — C4 kâğıt defteri (2026-09-26)
+# Mum varyasyonları (4h) — C4 ve C4S kâğıt defterleri (2026-09-26)
 
 Kullanıcının gönderdiği mum dizilimlerini (görsel ya da metin) sabit bir tanıma çeviren, laboratuvarda ölçen ve yalnız
 kullanıcı açıkça izin verirse PAPER'da işleyen defter. Mod PAPER; gerçek para yok. Kaldıraç 1.
 
-**Bugünkü durum: defter açık ama BOŞTUR.** `config.yaml`'daki liste (`variations: []`) boş başlar. Kullanıcı bir
-varyasyon gönderip aşağıdaki prosedür tamamlanana kadar defter hiçbir işlem açmaz. Kuralın durumu (`rule_state`)
-`NO_VARIATIONS` ("varyasyon bekliyor") döner. Kayıttaki tek varyasyon bir tasarım örneğidir ve hiçbir zaman işlem açmaz.
+**Bugünkü durum: iki defter de açık ama BOŞTUR** (C4 standart, C4S sıkı; bkz. "İki defter"). `config.yaml`'daki
+listeler (`variations: []`) boş başlar. Kullanıcı bir varyasyon gönderip aşağıdaki prosedür tamamlanana kadar defterler
+hiçbir işlem açmaz. Kuralın durumu (`rule_state`)
+`NO_VARIATIONS` ("varyasyon bekliyor") döner. Kayıtta bir tasarım örneği (hiçbir zaman işlem açmaz) ve kullanıcının
+onayladığı 1. partinin sekiz varyasyonu (CV001–CV008) durur; sekizi de laboratuvar bekler, hiçbiri etkin değildir.
 
 Kâr garantisi değildir. Laboratuvar sonucu geçmiş testtir; defter canlı davranışı ölçer.
 
+## İki defter
+
+| Defter | Config adı | Durum klasörü | Kapının okuduğu hüküm | Kabul ettiği varyasyon |
+|---|---|---|---|---|
+| C4 (standart) | `c4_candle_variations` | `state/strategy_paper_candle4h` | `verdict` | GÜÇLÜ ADAY; ya da ZAYIF İZ, KANIT YOK, VERİ AZ + açık gözlem onayı |
+| C4S (sıkı) | `c4s_candle_variations_strict` | `state/strategy_paper_candle4h_strict` | `verdict_strict` | yalnız sıkı GÜÇLÜ ADAY; gözlem onayı kabul edilmez |
+
+- Kural, dedektör, pencere (500 kapanmış 4h bar), 23 coin, giriş, stop, hedef ve zaman sınırı iki defterde AYNIDIR.
+  Tek fark kapının hangi hükmü okuduğudur (`gate(vid, verdict_mode)`; C4S'te `rule_params.verdict_mode: strict`).
+- **C4S ⊆ C4 yapı gereğidir.** Sıkı kapı standart kapının bütün denetimlerini aynı sırayla yapar. Ek olarak iki hüküm
+  de GÜÇLÜ ADAY olmalıdır. Sıkı kapıdan geçen her varyasyon standart kapıdan da geçer.
+- Bir varyasyon C4S'e yalnız sıkı hükmü GÜÇLÜ ADAY ise eklenir. Kullanıcı onayı yine şarttır (aynı `approval`). C4S
+  listesindeki her kimlik C4 listesinde de durur; CI bunu denetler.
+- Sıkı kipin ret kodları: `LAB_NO_STRICT_VERDICT` (kayıtta sıkı hüküm yok), `STRICT_NOT_STRONG` (sıkı ya da standart
+  hüküm GÜÇLÜ ADAY değil; gözlem bayrağı bunu aşmaz). Bilinmeyen kip `UNKNOWN_VERDICT_MODE` döner, kapı hata vermez.
+- C4S hep sıkı kipte koşar. Ayarda `verdict_mode: standard` yazılırsa config reddedilir.
+- Amaç karşılaştırmadır: aynı sinyaller, daha sıkı eleme. İşlem kaydında `features.candle_variation.verdict_mode` ve
+  `verdict_used` durur. Karnede iki defter ayrı satırdır.
+- Her defterin kapı uyarısı günlüğe ayrı yazılır; biri ötekinin uyarısını bastırmaz.
+
 ## 1. Durum tablosu
 
-| Kimlik | Başlık | Hüküm | Laboratuvar çalıştırması | `definition_sha` | Gözlem | Etkin |
-|---|---|---|---|---|---|---|
-| `CV000_EXAMPLE_BULL3` | ÖRNEK (işlem açmaz): düşüş sonrası uzun kırmızı, küçük bekleme, hacimli yeşil | — | yok | `d429437bb457fcdd` | — | hayır (örnek) |
+C4 sütunu standart hükümle, C4S sütunu sıkı hükümle etkinliği gösterir.
 
-Yeni bir varyasyon etkinleştirildiğinde bu tabloya bir satır eklenir (prosedürün 8. adımı).
+| Kimlik | Başlık | Hüküm (standart / sıkı) | Laboratuvar çalıştırması | `definition_sha` | Gözlem | C4 | C4S |
+|---|---|---|---|---|---|---|---|
+| `CV000_EXAMPLE_BULL3` | ÖRNEK (işlem açmaz): düşüş sonrası uzun kırmızı, küçük bekleme, hacimli yeşil | — / — | yok | `d429437bb457fcdd` | — | hayır (örnek) | hayır (örnek) |
+| `CV001_BREAKOUT20_TREND_VOL_L` | Trendle 20 bar tepesinin ilk kırılımı, hacmi ≥1,3x ve gövdesi ≥%55 yeşil (LONG) | laboratuvar bekliyor | — | `568292b548308023` | — | hayır | hayır |
+| `CV002_BREAKOUT20_TREND_VOL_S` | Trendle 20 bar dibinin ilk kırılımı, hacmi ≥1,3x ve gövdesi ≥%55 kırmızı (SHORT) | laboratuvar bekliyor | — | `d2a63f46ff2a72f5` | — | hayır | hayır |
+| `CV003_PULLBACK_ENGULF_L` | Trendde geri çekilme sonrası yutan yeşil (LONG) | laboratuvar bekliyor | — | `6a51dc3b125a6dea` | — | hayır | hayır |
+| `CV004_PULLBACK_ENGULF_S` | Trendde tepki yükselişi sonrası yutan kırmızı (SHORT) | laboratuvar bekliyor | — | `904dcdb6954657b4` | — | hayır | hayır |
+| `CV005_SUPPORT_HARAMI_L` | Destekte uzun kırmızı + içinde hacmi artan yeşil (boğa harami, LONG) | laboratuvar bekliyor | — | `e681cff403c840b3` | — | hayır | hayır |
+| `CV006_RESIST_HARAMI_S` | Dirençte uzun yeşil + içinde hacmi artan kırmızı (ayı harami, SHORT) | laboratuvar bekliyor | — | `e7dafeddb50d7f62` | — | hayır | hayır |
+| `CV007_SWEEP_REJECT_ENGULF_L` | 20 bar dibini süpürüp geri kapanan, alt fitili ≥%45 mum + hacimli yutan yeşil (LONG) | laboratuvar bekliyor | — | `07fc988844ebe90f` | — | hayır | hayır |
+| `CV008_SWEEP_REJECT_ENGULF_S` | 20 bar tepesini süpürüp geri kapanan, üst fitili ≥%45 mum + hacimli yutan kırmızı (SHORT) | laboratuvar bekliyor | — | `fd7a16f7a2274991` | — | hayır | hayır |
+
+Yeni bir varyasyon kayda eklendiğinde bu tabloya bir satır eklenir; laboratuvar sonucu ve etkinleştirme (prosedürün 7.
+ve 8. adımları) aynı satırda güncellenir.
+
+**1. parti (CV001–CV008, 2026-09-26).** Kullanıcının ilettiği strateji listesinin (ChatGPT çıktısı) 1., 2., 4. ve 5.
+maddeleri; her madde LONG ve SHORT aynası olarak iki kimliktir. Çeviri kullanıcıya okundu; kullanıcı "en iyi seçeneği
+yap" diyerek onayladı (`readback` 2026-09-26). Her şartın kaynağı (SÖZLÜK, kullanıcının sayısı ya da varsayım) kaydın
+`notes_tr` alanındadır. Varsayımlar: "ilk kırılım" önceki barın kendi 20 bar ucunun ötesinde kapanmamasıdır; "EMA20/50'ye
+geri çekilme" DSL'de yazılamaz, RSI14 bandı (LONG 40–55, SHORT 45–60) onu temsil eder; destek/direnç: c0'ın dibi/tepesi
+önceki 20 barın dibine/tepesine iki yönde de 0,5 ATR'den yakındır (seviyenin 0,5 ATR'den fazla ötesine geçen c0 kırılım
+sayılır, eşleşmez; süpürme CV007/CV008'dir). 1. maddedeki OI filtresi verisi olmadığı için yoktur. Hepsinde teyit son mumun
+kapanışı ve varsayılan çıkışlardır. Hiçbiri etkin değildir (`variations: []`). Bu partiyle `trials_to_date` 8 olur.
 
 ## 2. Kural ve sınırlar
 
@@ -98,7 +140,7 @@ karşılığı olanlar `learn.candle_context.CandleContextConfig` değerleridir 
 | gövde boşluğu | `c1.body_lo > c0.body_hi` (yukarı) | perp'lerde gerçek boşluk nadirdir |
 | varsayılan çıkışlar | stop formasyon ucu ± 0,25 ATR, hedef 2R, en çok 24 bar | laboratuvarın tampon, `default_rr`, `max_hold_bars` değerleri |
 
-### Örnek (kayıttaki tek kayıt, `example=True`)
+### Örnek (kayıttaki tek tasarım örneği, `example=True`)
 
 `CV000_EXAMPLE_BULL3` (LONG): düşüş sonrası (`prior_move` 10 bar ≤ −0,5 ATR, RSI14 ≤ 55) uzun kırmızı mum (gövde ≥ %60,
 aralık ≥ 1,3 ATR); gövdesi ilk mumun gövde ortasının altında kalan küçük bekleme mumu (gövde ≤ %35, aralık ≤ 0,7 ATR),
@@ -174,10 +216,20 @@ eseri "iyi" görünen bir tanım bulma olasılığı artar. Laboratuvarın doğr
 baktığı grafiklerle örtüşür; gerçekten örneklem dışı olan tek ölçüm ileriye dönük PAPER sonucudur. Bir hüküm için en az
 30 kapanmış işlem gerekir.
 
-GÜÇLÜ ADAY'ın "eşini geçiyor" şartı yalnız iki dönemde de farkın sıfırdan büyük olmasını ister, anlamlı olmasını değil.
-Genel olarak yükselen bir piyasada avantajı olmayan bir LONG şekli, iki dönemde aralığı sıfırın üstünde bulur ve eşini
-yaklaşık dörtte bir olasılıkla şans eseri iki kez geçer. Tek bir GÜÇLÜ ADAY bu yüzden kanıt değildir; eşine göre farkın
-büyüklüğüne ve ileriye dönük PAPER sonucuna bakılır.
+Laboratuvar iki hüküm yazar:
+
+- **Standart (`verdict`):** iki dönemde de yeterli işlem, %95 aralık 0'ın üstünde ve eşine göre fark iki dönemde de
+  sıfırdan büyük. Fark yalnız pozitif olmalıdır, anlamlı olması gerekmez. Genel olarak yükselen piyasada avantajı
+  olmayan bir LONG şekli eşini yaklaşık dörtte bir olasılıkla şans eseri iki kez geçer ve GÜÇLÜ ADAY çıkar.
+- **Sıkı (`verdict_strict`):** standardın bütün şartları, ayrıca doğrulama döneminde eşine göre farkın gün kümeli %95
+  aralığının alt ucu 0'ın üstünde. Gerçek ve eş tarafı ayrı ayrı, gün kümeli olarak yeniden örneklenir. Bir tarafta 5
+  günden az işlem varsa aralık yoktur ve şart geçmez. Standart GÜÇLÜ ADAY ama sıkı şart geçmiyorsa sıkı hüküm ZAYIF
+  İZ'dir. Diğer durumlarda iki hüküm aynıdır.
+
+Sıkı kural standart kuralın bu zayıflığını kapatmak için vardır. Önceden kayıtlıdır (`signal_lab.STRICT_RULE_TR`),
+sonuca göre ayarlanmaz. Avantajsız, ortak sürüklenmeli sentetik gruplarda standart kural %25 civarında yanılır; sıkı
+kural bunların %10'undan azını geçirir (`tests/test_signal_lab_strict.py`). Sıkı GÜÇLÜ ADAY da kâr garantisi değildir;
+ileriye dönük PAPER sonucuna bakılır.
 
 ## 7. Varyasyon ekleme prosedürü
 
@@ -205,12 +257,20 @@ olan geliştirme dalında yapılır; PR'daki `chart-analysis.yml` aynı denetiml
    tetiklenir):
    `--only-variations --variations CVnnn_X --symbols genis --tfs 4h,1h,1d --days 4h=1460,1h=730,1d=1825`.
    Alternatif: `gh workflow run signal-lab.yml -f args="..."`. `signal-lab-report` çıktısından `console.txt` (MUM
-   VARYASYONLARI bölümü) ve `variation_records/CVnnn_X.json` indirilir.
+   VARYASYONLARI bölümü; her dilimde standart ve sıkı hüküm) ve `variation_records/CVnnn_X.json` indirilir.
+   Çıktı indirmesi engelli olabilir. O zaman iş günlüğü kullanılır: "Run signal lab" adımı konsol raporunu, "Print lab
+   records" adımı her kaydı base64 olarak basar (`=== LAB RECORD BEGIN … sha256=… bytes=…` ile `=== LAB RECORD END …`
+   arası).
 6. **Kayıt.** JSON dosyası bayt bayt `tradingbot/candle_lab_records/CVnnn_X.json` olarak kopyalanır ve commit edilir.
+   Günlükten almak için günlük bir dosyaya kaydedilir ve `python scripts/extract_lab_records.py <günlük> --dry-run`,
+   sonra `--dry-run` olmadan çalıştırılır. Günlük ham indirme (web), API `/actions/jobs/<id>/logs` ya da
+   `gh run view <id> --log` çıktısı olabilir. Betik sha256'yı ve bayt sayısını denetler, dosyayı bayt bayt yazar. Bozuk,
+   yarım ya da yinelenen blokta o kaydı yazmaz ve 2 koduyla çıkar. Kayıt şeması `candle_lab/2`dir; eski şemalı kayıt
+   kapıdan geçmez.
    `claude/candle-cvNNN` dalına itmek `chart-analysis.yml`i tetikler: CI tanım mührünü, DSL sürümünü ve altın özeti
    (`golden_sha`, `test_golden_sha_matches_every_lab_record`) denetler. Tetiklenmediyse elle koşulur:
    `gh workflow run chart-analysis.yml --ref claude/candle-cvNNN`. CI yeşil olmadan ilerlenmez.
-7. **Kullanıcıya rapor (sade Türkçe).** Hüküm kelimesi; keşif ve doğrulama dönemi için işlem sayısı, ortalama R ve gün
+7. **Kullanıcıya rapor (sade Türkçe).** Hüküm kelimesi (standart ve sıkı); keşif ve doğrulama dönemi için işlem sayısı, ortalama R ve gün
    kümeli %95 aralık; iki dönemde eşleştirilmiş plaseboya göre fark; R cinsinden maliyet; dilim başına sonuç (1h ve 1d
    bilgi amaçlı); örtüşmesiz ortalama R; öne çıkan bağlam dilimleri (keşif amaçlı olduğu belirtilerek);
    `trials_to_date` ve çoklu test uyarısı; doğrulama döneminin görülen grafiklerle örtüştüğü hatırlatması;
@@ -222,10 +282,13 @@ olan geliştirme dalında yapılır; PR'daki `chart-analysis.yml` aynı denetiml
      `run_id` ile). İşlemleri "gözlem, kanıtlanmadı" diye etiketlenir (D4 gibi).
    - KAYBETTİRİR: asla; `retired` yazılır.
    - Kimlik `config.yaml → c4_candle_variations.rule_params.variations` listesine eklenir; sıra önceliktir.
+   - Sıkı hüküm de GÜÇLÜ ADAY ise kimlik ayrıca `c4s_candle_variations_strict.rule_params.variations` listesine,
+     aynı sırayla eklenir. Sıkı hüküm GÜÇLÜ ADAY değilse C4S'e eklenmez (gözlem onayı olsa bile).
    - Bu belgenin durum tablosu güncellenir.
    - Testler çalıştırılır. `claude/candle-cvNNN` dalına itilir; `chart-analysis.yml` bu dalda ve `config.yaml`
      değişikliğinde tetiklenir (gerekirse `gh workflow run chart-analysis.yml --ref claude/candle-cvNNN`). CI yeşil
-     olmalı (`test_repository_config_variations_pass_gate`: etkin her kimlik kapıdan geçer). Sonra PR açılır ve
+     olmalı (`test_repository_config_variations_pass_gate`: etkin her kimlik kendi defterinin kipiyle kapıdan geçer;
+     C4S listesi C4 listesinin alt kümesidir). Sonra PR açılır ve
      birleştirilir.
    - Dağıtım `bash deploy/update.sh` ile (turlar arasında yeniden başlatır). CI yeşil olmadan dağıtılmaz.
 9. **İzleme.** `python scripts/bot_scorecard.py --state <state>` defterin `candle:CVnnn` satırını ve varyasyon başına
@@ -239,15 +302,23 @@ olan geliştirme dalında yapılır; PR'daki `chart-analysis.yml` aynı denetiml
 
 ## 8. Kapatma
 
-`config.yaml` → `strategy_paper.extra` içinde `c4_candle_variations`. Durum klasörü `state/strategy_paper_candle4h`.
+`config.yaml` → `strategy_paper.extra` içinde iki kayıt: `c4_candle_variations` (durum klasörü
+`state/strategy_paper_candle4h`) ve `c4s_candle_variations_strict` (durum klasörü `state/strategy_paper_candle4h_strict`).
+İki defter birbirinden bağımsız kapatılır; biri kapanınca öteki sürer.
 
-- **Tek varyasyonu kapatmak:** kimliği `variations` listesinden çıkarmak yeter. Diğer varyasyonlar sürer; o
-  varyasyonun açık pozisyonları kendi stop, hedef ve (girişteki anlık görüntüden) zaman sınırıyla biter.
-- **Tüm defteri kapatmak (`enabled: false`):** defter hiç kurulmaz; stop, hedef ve zaman sınırını işleyen kalmaz. Açık
-  pozisyon varsa `state/strategy_paper_candle4h` kaydında donmuş olarak durur (D4 ile aynı). Temiz kapatmak için önce
-  listeyi boşaltın (`variations: []`), açık pozisyonların kapanmasını bekleyin, sonra `enabled: false` yapın.
+- **Tek varyasyonu kapatmak:** kimliği o defterin `variations` listesinden çıkarmak yeter. Diğer varyasyonlar sürer; o
+  varyasyonun açık pozisyonları kendi stop, hedef ve (girişteki anlık görüntüden) zaman sınırıyla biter. Bir kimliği
+  C4'ten çıkarırken C4S'ten de çıkarın (C4S listesi C4'ün alt kümesi kalmalı; CI denetler).
+- **Bir defteri kapatmak (`enabled: false`):** defter hiç kurulmaz; stop, hedef ve zaman sınırını işleyen kalmaz. Açık
+  pozisyon varsa o defterin durum klasöründe donmuş olarak durur (D4 ile aynı). Temiz kapatmak için önce listeyi
+  boşaltın (`variations: []`), açık pozisyonların kapanmasını bekleyin, sonra `enabled: false` yapın. C4S'i kapatmak
+  C4'ü etkilemez; C4'ü kapatırken C4S'i de kapatın (karşılaştırmanın eşi kalmaz). Kapı testi
+  (`test_repository_config_variations_pass_gate`) yalnız etkin defterleri denetler. Config'i sabitleyen iki test
+  (`test_repository_config_idle_book`, `test_repository_config_has_both_books`) ise defterin etkin olmasını bekler;
+  kapatan PR'da bu iki test de güncellenir.
 
-Diğer defterler (ana bot, T2, M2, Box, Formasyon v3, D4) değişmez. Uygulayıcıdaki iki yeni anahtar
+Diğer defterler (ana bot, T2, M2, Box, Formasyon v3, D4) değişmez. C4'ün davranışı da değişmez: kapı varsayılan olarak
+standart kiptedir. Uygulayıcıdaki iki yeni anahtar
 (`target_r_from_entry`, `variation`) yalnız onları taşıyan eylemde çalışır.
 
 Bu değişiklik VPS'e ancak birleştirilip dağıtıldığında gider. O zamana kadar canlı botlarda hiçbir şey değişmez.

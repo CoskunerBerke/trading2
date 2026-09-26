@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""MUM VARYASYONLARI (4h) — C4 kâğıt defterinin kuralı; canlı motor ile replay'in ORTAK tek kaynağı (2026-09-26).
+"""MUM VARYASYONLARI (4h) — C4 ve C4S kâğıt defterlerinin kuralı; canlı motor ile replay'in ORTAK tek kaynağı (2026-09-26).
 
 Defter YALNIZ kullanıcının gönderdiği, çevirisi onaylanmış, laboratuvarda ölçülmüş ve kullanıcının açıkça izin verdiği mum
 varyasyonlarını işler. Liste (`rule_params.variations`) BOŞ başlar: defter açıktır ama işlem açmaz ("varyasyon bekliyor").
@@ -13,6 +13,9 @@ Kural (docs/CANDLE_VARIATIONS_4H.md):
   fonksiyon. Parite tanım gereğidir; EMA200 de "son 500 barın EMA200'ü"dür.
 * Kapı: her varyasyon `candle_variations.gate` ile denetlenir (çeviri onayı, CI laboratuvar kaydı, `definition_sha`,
   hüküm, kullanıcı onayı). Kapı ASLA yükseltmez; reddedilen varyasyon yalnız kendisi kapanır, nedeni `rule_state`te.
+* İki defter, tek kural: C4 (`c4_candle_variations`) standart hükümle, C4S (`c4s_candle_variations_strict`) sıkı hükümle
+  (`verdict_strict`, `CandleParams.verdict_mode = "strict"`) kapıdan geçirir. Dedektör, pencere, giriş, stop, hedef ve
+  zaman sınırı AYNIDIR; yalnız kapının okuduğu hüküm değişir. C4S her zaman sıkı kipte koşar (`mode_for`).
 * Öncelik: config listesinin sırası. Aynı barda eşleşen diğerleri `also_matched`e yazılır.
 * Giriş: sinyal kapanışından sonraki ilk doğrulanmış perp fiyatı, en geç `entry_window_min` (60 dk); geç giriş yok.
   Stop ve ATR14 dedektörden; hedef GİRİŞ fiyatından `target_r` × risk (`apply_action.target_r_from_entry`).
@@ -22,7 +25,8 @@ Kural (docs/CANDLE_VARIATIONS_4H.md):
 
 Fonksiyonlar SAFTIR: dosya/ağ yok (yalnız kapının laboratuvar kaydı okuması), girdiler değiştirilmez. Barlar KRONOLOJİK
 ve KAPANMIŞ olmalı (çağıran `window_rows`/`closed_bars` uygular). Tek yan etki: kapının reddi süreç başına (kimlik,
-neden) bir kez günlüğe yazılır — etkinleştirilmiş ama geçemeyen varyasyon sunucuda sessiz kalmaz.
+neden) bir kez günlüğe yazılır — etkinleştirilmiş ama geçemeyen varyasyon sunucuda sessiz kalmaz. Anahtar DEFTER başınadır
+(defter, kimlik, neden): iki defter birbirinin uyarısını bastırmaz.
 """
 from __future__ import annotations
 
@@ -35,7 +39,11 @@ from . import candle_dsl, candle_variations
 from .candle_confirmation import closed_bars
 from .timeframes import tf_ms
 
-VARIANTS = ("c4_candle_variations",)
+VARIANTS = ("c4_candle_variations", "c4s_candle_variations_strict")
+#: Hüküm kipi SABİT olan defterler: sıkı defter ayarda ne yazarsa yazsın sıkı kapıdan geçirir (C4S ⊆ C4 yapı gereği).
+FIXED_VERDICT_MODE = {"c4s_candle_variations_strict": "strict"}
+#: Günlük ve panel için kısa defter adı.
+BOOK_TAGS = {"c4_candle_variations": "C4", "c4s_candle_variations_strict": "C4S (sıkı)"}
 TIMEFRAME = "4h"
 STEP_MS = tf_ms(TIMEFRAME)
 WINDOW = candle_dsl.WINDOW
@@ -46,20 +54,27 @@ ROW_COLUMNS = ("timestamp", "open", "high", "low", "close", "volume")
 EVIDENCE = "Yalnız kullanıcının onayladığı ve laboratuvarda ölçülen mum varyasyonları; PAPER, kâr garantisi değildir."
 
 log = logging.getLogger(__name__)
-#: Günlüğe yazılmış kapı retleri (kimlik, neden): süreç başına bir kez.
-_GATE_LOGGED: set[tuple[str, str]] = set()
+#: Günlüğe yazılmış kapı retleri (defter, kip, kimlik, neden): süreç başına bir kez.
+_GATE_LOGGED: set[tuple[str, str, str, str]] = set()
 
 
-def _note_gate_refusal(vid: Any, why: Any) -> None:
-    """Etkin listedeki varyasyon kapıdan geçmedi: süreç başına (kimlik, neden) bir kez UYARI. ASLA yükseltmez."""
+def _note_gate_refusal(vid: Any, why: Any, variant: str = VARIANTS[0], verdict_mode: str = "standard") -> None:
+    """Etkin listedeki varyasyon kapıdan geçmedi: süreç başına (defter, kip, kimlik, neden) bir kez UYARI. ASLA
+    yükseltmez."""
     try:
-        key = (str(vid), str(why))
+        key = (str(variant), str(verdict_mode), str(vid), str(why))
         if key in _GATE_LOGGED:
             return
         _GATE_LOGGED.add(key)
-        log.warning("C4 mum varyasyonu %s kapıdan geçmedi: %s — işlem açmaz (ayrıntı: rule_state)", key[0], key[1])
+        log.warning("%s mum varyasyonu %s kapıdan geçmedi: %s — işlem açmaz (ayrıntı: rule_state)",
+                    BOOK_TAGS.get(key[0], key[0]), key[2], key[3])
     except Exception:  # noqa: BLE001
         pass
+
+
+def mode_for(variant: str, params: "CandleParams") -> str:
+    """Defterin kapıda kullandığı hüküm kipi: sabit kipli defterde (C4S) sabit kip, diğerinde `params.verdict_mode`."""
+    return FIXED_VERDICT_MODE.get(str(variant), str(params.verdict_mode))
 
 
 @dataclass(frozen=True)
@@ -74,6 +89,8 @@ class CandleParams:
     entry_window_min: int = 60
     #: Etkin varyasyon kimlikleri; liste SIRASI önceliktir. Boş = defter bekler.
     variations: tuple[str, ...] = ()
+    #: Kapının okuduğu hüküm: "standard" (`verdict`, C4) ya da "strict" (`verdict_strict`, C4S).
+    verdict_mode: str = "standard"
 
     def __post_init__(self) -> None:
         # YAML listesi → demet (dondurulmuş nesne). Diğer tipler `validate`te reddedilir.
@@ -91,6 +108,8 @@ class CandleParams:
             raise ValueError("entry_window_min 1 ile 240 dakika arasında olmalı: %r" % (self.entry_window_min,))
         if not isinstance(self.variations, tuple):
             raise ValueError("variations kimlik listesi olmalı: %r" % (self.variations,))
+        if not isinstance(self.verdict_mode, str) or self.verdict_mode not in candle_variations.VERDICT_MODES:
+            raise ValueError("verdict_mode %s olmalı: %r" % (" ya da ".join(candle_variations.VERDICT_MODES), self.verdict_mode))
         known = {e.get("id") for e in tuple(candle_variations.VARIATIONS) if isinstance(e, dict)}
         seen: set[str] = set()
         for vid in self.variations:
@@ -168,10 +187,12 @@ def lab_info(vid: str) -> dict[str, Any]:
     return out
 
 
-def _snapshot(var: Any, hit: Any) -> dict[str, Any]:
-    """`features.candle_variation`: işlemin hangi tanımla, hangi kanıtla ve hangi çıkışla açıldığı (sonradan değişmez)."""
+def _snapshot(var: Any, hit: Any, verdict_mode: str = "standard") -> dict[str, Any]:
+    """`features.candle_variation`: işlemin hangi tanımla, hangi kanıtla ve hangi çıkışla açıldığı (sonradan değişmez).
+    `verdict_mode` ve `verdict_used`: kapının hangi kiple, kaydın hangi hükmüyle geçirdiği."""
     info = lab_info(var.id)
     return {"id": var.id, "definition_sha": var.definition_sha, "dsl_version": candle_dsl.DSL_VERSION,
+            "verdict_mode": str(verdict_mode), "verdict_used": candle_variations.verdict_used(var.id, verdict_mode),
             "lab_verdict": info["lab_verdict"], "lab_run_url": info["lab_run_url"], "lab_oos_mean_r": info["lab_oos_mean_r"],
             "lab_oos_ci95": info["lab_oos_ci95"], "observation": bool((var.approval or {}).get("observation") is True),
             "target_r": var.target_r, "max_hold_bars": int(var.max_hold_bars),
@@ -224,6 +245,7 @@ def decide(variant: str = VARIANTS[0], *, rows: list[dict[str, Any]], position: 
     if variant not in VARIANTS:
         raise ValueError("bilinmeyen strateji varyanti: %r" % (variant,))
     p = params.validate()
+    mode = mode_for(variant, p)
     if position:
         return _time_stop(variant, list(rows or []), position)
     if not p.variations:
@@ -236,9 +258,9 @@ def decide(variant: str = VARIANTS[0], *, rows: list[dict[str, Any]], position: 
         return None                                     # sinyal kaçtı (kesinti): geç giriş laboratuvarda yok
     hits: list[tuple[Any, Any]] = []
     for vid in p.variations:                            # config sırası = öncelik
-        var, gate_why = candle_variations.gate(vid)
+        var, gate_why = candle_variations.gate(vid, mode)
         if var is None:
-            _note_gate_refusal(vid, gate_why)
+            _note_gate_refusal(vid, gate_why, variant, mode)
             continue
         hit = candle_dsl.detect_last(win, var)
         if hit is not None:
@@ -256,7 +278,7 @@ def decide(variant: str = VARIANTS[0], *, rows: list[dict[str, Any]], position: 
         # tavanı aşan işlem reddedilmez küçültülür (kaldıraç 1, risk bütçenin altında kalır)
         "risk_atr_bounds": [float(var.risk_atr_bounds[0]), float(var.risk_atr_bounds[1])], "one_entry_per_signal": True,
         "cap_notional_to_position_pct": True,
-        "variation": _snapshot(var, hit), "also_matched": [v.id for v, _h in hits[1:]]}
+        "variation": _snapshot(var, hit, mode), "also_matched": [v.id for v, _h in hits[1:]]}
     if var.target_r is not None:
         act["target_r_from_entry"] = float(var.target_r)   # hedef GERÇEK girişten ölçülür (laboratuvar: sonraki açılış)
     return act
@@ -270,8 +292,9 @@ def rule_state(variant: str = VARIANTS[0], *, rows: list[dict[str, Any]],
     if variant not in VARIANTS:
         raise ValueError("bilinmeyen strateji varyanti: %r" % (variant,))
     p = params.validate()
+    mode = mode_for(variant, p)
     rows = list(rows or [])
-    out: dict[str, Any] = {"variant": variant, "ok": False, "timeframe": TIMEFRAME, "window": WINDOW, "n_bars": len(rows),
+    out: dict[str, Any] = {"variant": variant, "verdict_mode": mode, "ok": False, "timeframe": TIMEFRAME, "window": WINDOW, "n_bars": len(rows),
                            "signal_ts": None, "reason": None, "window_reason": None,
                            "volume_present": bool(rows) and all(isinstance(r, dict) and _f(r.get("volume")) is not None
                                                                 for r in rows),
@@ -285,8 +308,10 @@ def rule_state(variant: str = VARIANTS[0], *, rows: list[dict[str, Any]],
         return out
     out["reason"] = why
     for vid in p.variations:
-        var, gwhy = candle_variations.gate(vid)
-        row: dict[str, Any] = {"id": vid, "active": var is not None, "gate_reason": gwhy, "matched": None,
+        var, gwhy = candle_variations.gate(vid, mode)
+        row: dict[str, Any] = {"id": vid, "active": var is not None, "gate_reason": gwhy,
+                               "gate_reason_tr": candle_variations.GATE_REASONS_TR.get(gwhy) if gwhy else None,
+                               "verdict_used": candle_variations.verdict_used(vid, mode), "matched": None,
                                "first_fail": None, "first_fail_clause": None, "pending_break": None, "stop_if_open": None,
                                "lab_verdict": lab_info(vid)["lab_verdict"],
                                "observation": bool((var.approval or {}).get("observation") is True) if var is not None else None}
@@ -303,5 +328,6 @@ def rule_state(variant: str = VARIANTS[0], *, rows: list[dict[str, Any]],
     return out
 
 
-__all__ = ["DEFAULT_PARAMS", "CandleParams", "EVIDENCE", "ROW_COLUMNS", "SETUP_PREFIX", "STEP_MS", "TIMEFRAME", "VARIANTS",
-           "WINDOW", "decide", "lab_info", "rows_from_frame", "rule_state", "window_rows"]
+__all__ = ["BOOK_TAGS", "DEFAULT_PARAMS", "FIXED_VERDICT_MODE", "CandleParams", "EVIDENCE", "ROW_COLUMNS", "SETUP_PREFIX",
+           "STEP_MS", "TIMEFRAME", "VARIANTS", "WINDOW", "decide", "lab_info", "mode_for", "rows_from_frame", "rule_state",
+           "window_rows"]

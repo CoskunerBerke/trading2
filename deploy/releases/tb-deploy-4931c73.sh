@@ -37,8 +37,11 @@ die() { printf '\nDUR: %s\n' "$*" >&2; exit 1; }
 as_svc() { sudo -u "$SVC_USER" "$@"; }
 gitc() { as_svc git -C "$APP" "$@"; }
 
-# Servisin ortamı: unit'in Environment= satırları + EnvironmentFile (değerler YAZDIRILMAZ, yalnız aktarılır).
+# Servisin ortamı: unit'in Environment= satırları + EnvironmentFile. Değerler KOMUT SATIRINA KONMAZ: sudo tam komut
+# satırını sistem log'una yazar (2026-09-25 VPS'te görüldü; o gün değerler boştu). Geçici dosyaya (0600, servis
+# kullanıcısı) yazılır, alt süreç oradan okur; çıkışta silinir.
 ENV_ARGS=()
+ENVFILE=""
 load_env() {
   local e line
   for e in $(systemctl show "$WORKER" -p Environment --value 2>/dev/null); do ENV_ARGS+=("$e"); done
@@ -54,8 +57,17 @@ load_env() {
     done < "$BASE/env"
   fi
   ENV_ARGS+=("TRADINGBOT_BASE=$BASE" "ALLOW_LIVE_TRADING=false" "MPLCONFIGDIR=$BASE/.cache-deploy-mpl")
+  ENVFILE="$(mktemp /tmp/tb-deploy-env.XXXXXX)"
+  chmod 600 "$ENVFILE"; printf '%s\n' "${ENV_ARGS[@]}" > "$ENVFILE"; chown "$SVC_USER" "$ENVFILE"
 }
-py() { as_svc env -C "$APP" "${ENV_ARGS[@]}" "$VENV/bin/python" "$@"; }
+trap 'rm -f "$ENVFILE"' EXIT
+# svc_run DİZİN KOMUT...: servis kullanıcısı + servis ortamı, verilen dizinde (değerler dosyadan; komut satırında yok)
+svc_run() {
+  local dir="$1"; shift
+  as_svc bash -c 'd="$1"; f="$2"; shift 2; while IFS= read -r l; do export "$l"; done < "$f"; cd "$d" && exec "$@"' \
+    _ "$dir" "$ENVFILE" "$@"
+}
+py() { svc_run "$APP" "$VENV/bin/python" "$@"; }
 
 book_snapshot() {   # defterlerin bakiye ve açık pozisyonları (salt okunur)
   py - "$STATE" <<'PY'
@@ -109,7 +121,8 @@ Dağıtım AYRI bir görev olarak başladı ($UNIT). Bu pencereyi ya da PC'yi ka
   Sonra tekrar izlemek:  sudo journalctl -u $UNIT -f -o cat     (görev bitince: sudo tail -40 $LOGDIR/${TIP:0:7}-deploy.log)
   Dağıtımı durdurmak:    sudo systemctl stop $UNIT   (yeniden başlatmadan önceyse kod geri alınır)
 EOF
-  journalctl -u "$UNIT" -f -o cat --no-pager --since "$START" & jp=$!
+  journalctl -u "$UNIT" -f -o cat --no-pager --since "$START" \
+    > >(grep --line-buffered -vE '^ +root : |pam_unix\(sudo:session\)') & jp=$!
   sleep 3
   while systemctl is-active --quiet "$UNIT"; do sleep 3; done
   sleep 2; kill "$jp" 2>/dev/null || true
@@ -228,8 +241,28 @@ echo "   (çıktı ayrıca: $LOGDIR/${TIP:0:7}-deploy.log)"
 book_snapshot > "$LOGDIR/${TIP:0:7}-before.txt" 2>&1 || true
 echo "$PREV" > "$LOGDIR/${TIP:0:7}-prev-commit.txt"
 
+# Ctrl+C / systemctl stop: kod henüz değişmediyse yalnız çıkar; değiştiyse geri alır; servis yeni kodla başladıysa bildirir.
+MERGED=""; RESTARTED=""
+WT="$BASE/deploy-wt-${TIP:0:7}"
+cleanup_wt() { gitc worktree remove --force "$WT" >/dev/null 2>&1 || true; }
+on_abort() {
+  trap '' INT TERM
+  if [[ -n "$RESTARTED" ]]; then
+    echo "DUR: durduruldu — servisler yeni kodla başlatılmıştı; durum için: sudo bash $0 --check" >&2 || true
+  elif [[ -n "$MERGED" ]]; then
+    revert_code
+    echo "DUR: durduruldu → kod ${PREV:0:7}'e geri alındı; servisler YENİDEN BAŞLATILMADI (eski sürüm çalışıyor)" >&2 || true
+  else
+    cleanup_wt
+    echo "DUR: durduruldu — kod DEĞİŞMEDİ, servisler yeniden başlatılmadı" >&2 || true
+  fi
+  exit 130
+}
+trap on_abort INT TERM
+trap 'cleanup_wt' ERR
+
 say "6/9 doğrulanmış yedek (git ve servislere dokunmadan ÖNCE)"
-as_svc env -C "$APP" "${ENV_ARGS[@]}" TRADINGBOT_DATA="$DATA" TRADINGBOT_STATE_DIR="$STATE" \
+svc_run "$APP" env TRADINGBOT_DATA="$DATA" TRADINGBOT_STATE_DIR="$STATE" \
   TRADINGBOT_BACKUPS_DIR="$DATA/backups" bash "$APP/deploy/backup.sh" manual \
   || die "YEDEK BAŞARISIZ ya da DOĞRULANAMADI → dağıtım DURDURULDU (git/servis dokunulmadı)"
 echo "$PREV" > "$BASE/.last_good_commit"       # deploy/rollback.sh bunu kullanır
@@ -250,32 +283,17 @@ revert_code() {                 # kodu dağıtım ÖNCESİ duruma döndürür: a
   echo "   GERİ ALINDI: kod ${PREV:0:7}" || true
 }
 
-say "7/9 kod ${PREV:0:7} → ${TIP:0:7} (ff-only)"
-gitc merge -q --ff-only "$TIP"
-# Bu noktadan sonra beklenmeyen her hata kodu geri alır (servisler henüz yeniden başlatılmadı → eski sürüm çalışıyor).
-trap 'revert_code; echo "DUR: beklenmeyen hata (satır $LINENO) → kod ${PREV:0:7}e geri alındı" >&2' ERR
-RESTARTED=""
-on_abort() {
-  trap '' INT TERM
-  if [[ -z "$RESTARTED" ]]; then
-    revert_code
-    echo "DUR: durduruldu → kod ${PREV:0:7}'e geri alındı; servisler YENİDEN BAŞLATILMADI (eski sürüm çalışıyor)" >&2 || true
-  else
-    echo "DUR: durduruldu — servisler yeni kodla başlatılmıştı; durum için: sudo bash $0 --check" >&2 || true
-  fi
-  exit 130
-}
-trap on_abort INT TERM
-[[ "$(gitc rev-parse HEAD)" == "$TIP" ]] || die "ileri sarma sonrası HEAD hedef değil"
-"$VENV/bin/pip" install -q -r "$APP/requirements.txt"
-chown -R "$SVC_USER:$SVC_USER" "$VENV" 2>/dev/null || true
-ok "kod hedefte; bağımlılıklar kuruldu"
-
-say "8/9 preflight (yeni kod, servisin ortamıyla) + config değişmezleri"
-if ! py -m tradingbot preflight --quick; then
-  revert_code; die "preflight başarısız → kod geri alındı, servisler YENİDEN BAŞLATILMADI (eski sürüm çalışmaya devam ediyor)"
+say "7/9 yeni kodun sınanması — AYRI çalışma kopyasında (çalışan bot ve kodu DEĞİŞMEZ)"
+# Kod, ancak worker boşa çıktığı anda ve yeniden başlatmadan SANİYELER önce değiştirilir. Önceki sürümde kod beklemeden
+# ÖNCE değişiyordu: bekleme sırasında worker kendiliğinden yeniden başlarsa (OOM) yeni kodla açılıyor, betik sonra
+# diski geri alsa da bellekte yeni kod çalışmaya devam ediyordu (2026-09-25/26 VPS'te oldu).
+cleanup_wt
+[[ -e "$WT" ]] && rm -rf -- "${WT:?}"
+gitc worktree add -q --detach "$WT" "$TIP"
+if ! svc_run "$WT" "$VENV/bin/python" -m tradingbot preflight --quick; then
+  cleanup_wt; die "preflight (yeni kod) başarısız → kod DEĞİŞMEDİ, servisler yeniden başlatılmadı"
 fi
-if ! py - <<'PY'
+if ! svc_run "$WT" "$VENV/bin/python" - <<'PY'
 import sys
 from tradingbot.config_v3 import load_v3
 import yaml
@@ -299,11 +317,12 @@ for n, okk in checks:
 sys.exit(1 if bad else 0)
 PY
 then
-  revert_code; die "config değişmezleri düştü → kod geri alındı, servisler YENİDEN BAŞLATILMADI"
+  cleanup_wt; die "config değişmezleri (yeni kod) düştü → kod DEĞİŞMEDİ, servisler yeniden başlatılmadı"
 fi
-ok "preflight ve değişmezler geçti"
+cleanup_wt
+ok "yeni kod ayrı kopyada preflight ve değişmezlerden geçti"
 
-say "9/9 yeniden başlatma (mevcut tur biter, state yazılır; en çok ~90 sn) + 60 sn kararlılık"
+say "8/9 worker'ın turlar arası beklemeye girmesi bekleniyor (kod hâlâ ${PREV:0:7})"
 RESTART_AT="$(date '+%Y-%m-%d %H:%M:%S')"
 key_log() {    # yalnız karar verdiren satırlar (analiz gürültüsü değil)
   journalctl -u "$WORKER" --since "$RESTART_AT" --no-pager 2>/dev/null \
@@ -337,15 +356,24 @@ phase_now() {
 waited=0
 until idle_now; do
   if (( waited >= 10800 )); then
-    revert_code
-    die "worker 3 saat içinde turlar arası beklemeye girmedi → kod ${PREV:0:7}'e geri alındı, servisler YENİDEN BAŞLATILMADI"
+    die "worker 3 saat içinde turlar arası beklemeye girmedi → kod DEĞİŞMEDİ, servisler yeniden başlatılmadı"
   fi
   if (( waited % 300 == 0 )); then
     echo "   $(date '+%H:%M') worker meşgul [$(phase_now)] — bitince yeniden başlatılacak (bekleniyor: $((waited / 60)) dk)"
   fi
   sleep 10; waited=$((waited + 10))
 done
-ok "worker turlar arası beklemede → şimdi yeniden başlatılıyor"
+ok "worker turlar arası beklemede"
+
+say "9/9 kod ${PREV:0:7} → ${TIP:0:7} (ff-only) + hemen yeniden başlatma + 60 sn kararlılık"
+MERGED=1
+gitc merge -q --ff-only "$TIP"
+# Bu noktadan sonra beklenmeyen her hata kodu geri alır.
+trap 'revert_code; echo "DUR: beklenmeyen hata (satır $LINENO) → kod ${PREV:0:7}e geri alındı" >&2' ERR
+[[ "$(gitc rev-parse HEAD)" == "$TIP" ]] || die "ileri sarma sonrası HEAD hedef değil"
+"$VENV/bin/pip" install -q -r "$APP/requirements.txt"
+chown -R "$SVC_USER:$SVC_USER" "$VENV" 2>/dev/null || true
+RESTART_AT="$(date '+%Y-%m-%d %H:%M:%S')"
 RESTARTED=1
 systemctl restart "$WORKER" "$DASH" || true      # preflight düşerse restart hata döner; aşağıda yakalanır
 # NRestarts yalnız OTOMATİK yeniden başlamaları sayar ve elle restart'ta SIFIRLANIR: dağıtım öncesi değerle

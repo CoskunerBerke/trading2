@@ -1,1 +1,1 @@
---futures probe --symbols genis --tfs 4h,1h,1d --days 4h=1460,1h=730,1d=1825
+--only-futures --symbols genis --tfs 4h,1h,1d --days 4h=1460,1h=730,1d=1825

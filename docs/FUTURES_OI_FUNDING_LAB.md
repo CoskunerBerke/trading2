@@ -135,3 +135,30 @@ katalog, ek sinyal ve algoritma yok.
   bunun savunmasıdır.
 - 4 saatlik düzende tek eksik uzlaşma 8 saatlik aralık gibi görünür (çıkarım farktan). Bu özelliği ve taşımayı etkileyebilir.
 - `--futures off` (varsayılan) bugünkü laboratuvarla bayt bayt aynıdır. Testlerle bağlıdır (`tests/test_signal_lab.py`).
+
+## Sonuç: fut_v1 (2026-09-27)
+
+- **Yoklama** ([run 36280789728](https://github.com/CoskunerBerke/trading2/actions/runs/36280789728)): ayrıştırıcıyla çelişki yok.
+  - OI 23 coinde 2021-12-01'den, BTC'de 2021-09-05'ten başlıyor. Sonra listelenenler (APT, ARB, OP, INJ, SUI, ICP) daha kısa.
+  - 50.843 günden 19'u eksik, hata 0, checksum örneklemi 90/90.
+- **Doğrulayıcı koşu** ([run 36283079342](https://github.com/CoskunerBerke/trading2/actions/runs/36283079342)): **8 hipotezin hiçbiri aday değil.**
+
+| 4h kural | Yön | Keşif ort.R | Doğrulama ort.R | Eşine göre (doğr.) | Kontrole göre (doğr.) | Katkı | Hüküm / sıkı |
+|---|---|---|---|---|---|---|---|
+| OI_BREAKOUT_20 | LONG | +0,33 | −0,00 | −0,03 | −0,73 | YOK | KANIT YOK / KANIT YOK |
+| OI_BREAKOUT_20 | SHORT | −0,05 | +0,03 | +0,02 | +0,08 | VAR | KANIT YOK / KANIT YOK |
+| OI_REGIME_CONT | LONG | −0,01 | +0,05 | +0,12 | +0,05 | YOK | KANIT YOK / KANIT YOK |
+| OI_REGIME_CONT | SHORT | +0,06 | −0,06 | −0,08 | −0,01 | YOK | KANIT YOK / KANIT YOK |
+| OI_REGIME_REVERT | LONG | +0,02 | −0,05 | +0,04 | −0,01 | YOK | KANIT YOK / KANIT YOK |
+| OI_REGIME_REVERT | SHORT | −0,06 | −0,07 | −0,09 | −0,03 | YOK | KANIT YOK / KANIT YOK |
+| FUNDING_SWEEP_REVERSAL | LONG | −0,09 | −0,13 | −0,05 | +0,07 | YOK | KANIT YOK / KANIT YOK |
+| FUNDING_SWEEP_REVERSAL | SHORT | −0,31 | −0,81 (n=12) | −0,79 | −0,74 | ÖLÇÜLEMEDİ | VERİ AZ / VERİ AZ |
+
+- OI artışı 4h kırılım LONG'a katkı yapmadı. Tersine, OI düşerken olan kırılımlar (kontrol) daha iyi gitti.
+- Katkı VAR olan tek satırda (kırılım SHORT) fark küçük ve aralığı sıfırı kapsıyor.
+- 1h ve 1d yalnız bilgidir. 1h'de kırılım LONG ve rejim devamı LONG ZAYIF İZ çıktı; aday olamazlar.
+- Keşif dilimleri: GÜÇLÜ ADAY 0, ZAYIF İZ 16. Bunlar hipotez değildir. Birini kullanmak yeni bir ön kayıt (fut_v2) ve
+  yeni deneme demektir.
+- Gerçek ve rastgele kombinasyonların iki dönemde de sıfırın üstünde kalma oranı: %0,0 / %0,0.
+
+Bu kurallarla OI ve fonlama bilgisi 4h'de gösterilebilir bir avantaj eklemedi. Hiçbir defter değişmedi.

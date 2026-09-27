@@ -162,3 +162,9 @@ katalog, ek sinyal ve algoritma yok.
 - Gerçek ve rastgele kombinasyonların iki dönemde de sıfırın üstünde kalma oranı: %0,0 / %0,0.
 
 Bu kurallarla OI ve fonlama bilgisi 4h'de gösterilebilir bir avantaj eklemedi. Hiçbir defter değişmedi.
+
+**Keşif koşusu** ([run 36283839374](https://github.com/CoskunerBerke/trading2/actions/runs/36283839374), 4h, mevcut algoritmalar ve ek sinyaller vadeli kovalara göre):
+- GÜÇLÜ ADAY 0 (standart ve sıkı). ZAYIF İZ 32; bunların 15'i vadeli dilim.
+- Tekrarlayan desen, keşif döneminde güçlü, doğrulama döneminde sıfıra yakın. Örnek: Donchian LONG, OI son 20 günün
+  en yüksek %20'sindeyken keşif +0,39R (aralık > 0), doğrulama +0,15R (aralık 0'ı kapsıyor).
+- Hiçbir dilim ön kayda alınmadı. Bir dilimi test etmek fut_v2 ve yeni deneme demektir.

@@ -152,12 +152,27 @@ def _opened_ms(position: Any) -> int | None:
         return None
 
 
+def _entry_bar_open_ms(position: Any, tf: str) -> int | None:
+    """Girişin OKUDUĞU son kapanmış `tf` barının açılışı (ms) — pozisyonun veri kaynağı kaydından
+    (`features.data_source.bars[tf]`; canlı ve replay aynı alan, `structures.bots._entry_bar_close_ms` ile aynı okuma).
+    Yoksa ya da okunamazsa None."""
+    f = _pos_field(position, "features")
+    ts = (((f or {}).get("data_source") or {}).get("bars") or {}).get(tf) if isinstance(f, dict) else None
+    if ts is None or isinstance(ts, bool):
+        return None
+    try:
+        return int(ts)
+    except (TypeError, ValueError):
+        return None
+
+
 def decide_from_rows(name: str, *, daily: list[dict[str, Any]], intraday: list[dict[str, Any]] | None,
                      btc_rows: list[dict[str, Any]] | None, position: Any = None,
                      params: Any = None, now_ms: int | None = None) -> dict[str, Any] | None:
     """Karar — SATIRLARDAN (SAF). Motor çerçeveden, panel/araştırma satırdan gelir; ikisi de BURAYA düşer.
 
-    `now_ms` yalnız donchian ve candle ailelerinde kullanılır (sinyalin giriş penceresi); diğer aileler okumaz."""
+    `now_ms` donchian ve candle ailelerinde sinyalin giriş penceresi, box'ta sinyal gününün bitip bitmediği (2026-09-27)
+    için kullanılır; trend ailesi okumaz."""
     sp = spec_for(name)
     if sp.family == "candle":
         cp = params if isinstance(params, candle_book.CandleParams) else candle_book.DEFAULT_PARAMS
@@ -205,8 +220,9 @@ def decide_from_rows(name: str, *, daily: list[dict[str, Any]], intraday: list[d
         opened = _opened_ms(position)
         if opened is None:
             return None            # açılış anı okunamıyorsa gün sonu hükmü verilemez (fail-closed)
-        pos = {"opened_ts": opened}
-    return box_theory.decide(name, daily_rows=daily, m5_rows=list(intraday or []), position=pos, params=p)
+        # gün sonu sinyal barının gününe göre (2026-09-27): girişin okuduğu 5m barı pozisyonun veri kaynağı kaydında
+        pos = {"opened_ts": opened, "signal_ts": _entry_bar_open_ms(position, "5m")}
+    return box_theory.decide(name, daily_rows=daily, m5_rows=list(intraday or []), position=pos, params=p, now_ms=now_ms)
 
 
 def state_from_rows(name: str, *, daily: list[dict[str, Any]], intraday: list[dict[str, Any]] | None,

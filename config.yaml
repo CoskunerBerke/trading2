@@ -499,7 +499,15 @@ strategy_paper:
       rule_params:
         leverage: 1
         entry_window_min: 60
-        variations: []
+        variations:                # 2026-09-27 kullanıcı onayı: GÖZLEM (kanıtlanmadı; laboratuvar 36277302747). Sıra = öncelik.
+          - CV001_BREAKOUT20_TREND_VOL_L
+          - CV002_BREAKOUT20_TREND_VOL_S
+          - CV003_PULLBACK_ENGULF_L
+          - CV004_PULLBACK_ENGULF_S
+          - CV005_SUPPORT_HARAMI_L
+          - CV006_RESIST_HARAMI_S
+          - CV007_SWEEP_REJECT_ENGULF_L
+          - CV008_SWEEP_REJECT_ENGULF_S
       max_entry_drift_pct: 0.0
     # C4S · MUM VARYASYONLARI (4h, SIKI) — C4'ün AYNI kuralı, AYNI 23 coin; tek fark kapının okuduğu hüküm: sıkı GÜÇLÜ
     # ADAY şartı (laboratuvar kaydının verdict_strict alanı). Yalnız o şartı geçen varyasyonlar girer; gözlem onayı

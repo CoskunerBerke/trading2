@@ -130,7 +130,10 @@ CV001_BREAKOUT20_TREND_VOL_L: dict[str, Any] = {
         "renk → bull",
         _BATCH1_EXITS_NOTE,
         _BATCH1_READBACK_NOTE],
-    "readback": {"confirmed_by": "user", "date": "2026-09-26"}, "approval": None, "retired": None, "supersedes": None,
+    "readback": {"confirmed_by": "user", "date": "2026-09-26"},
+    # ONAY (2026-09-27): kullanıcı "evet onaylıyorum" — 8 varyasyon C4'te GÖZLEM olarak (laboratuvar 36277302747: 4h
+    # hükmü GÜÇLÜ ADAY değil; işlemler "gözlem, kanıtlanmadı"). Sıkı hüküm GÜÇLÜ olmadığı için C4S'e girmez.
+    "approval": {"by": "user", "date": "2026-09-27", "observation": True, "run_id": "36277302747"}, "retired": None, "supersedes": None,
     "definition": {
         "side": "LONG",
         "timeframe": "4h",
@@ -159,7 +162,10 @@ CV002_BREAKOUT20_TREND_VOL_S: dict[str, Any] = {
         "renk → bear",
         _BATCH1_EXITS_NOTE,
         _BATCH1_READBACK_NOTE],
-    "readback": {"confirmed_by": "user", "date": "2026-09-26"}, "approval": None, "retired": None, "supersedes": None,
+    "readback": {"confirmed_by": "user", "date": "2026-09-26"},
+    # ONAY (2026-09-27): kullanıcı "evet onaylıyorum" — 8 varyasyon C4'te GÖZLEM olarak (laboratuvar 36277302747: 4h
+    # hükmü GÜÇLÜ ADAY değil; işlemler "gözlem, kanıtlanmadı"). Sıkı hüküm GÜÇLÜ olmadığı için C4S'e girmez.
+    "approval": {"by": "user", "date": "2026-09-27", "observation": True, "run_id": "36277302747"}, "retired": None, "supersedes": None,
     "definition": {
         "side": "SHORT",
         "timeframe": "4h",
@@ -188,7 +194,10 @@ CV003_PULLBACK_ENGULF_L: dict[str, Any] = {
         "giriş yutan mumun kapanışında; formasyon tepesinin kırılımı beklenmedi, çünkü RSI şartı giriş mumuna kayardı (varsayım)",
         _BATCH1_EXITS_NOTE,
         _BATCH1_READBACK_NOTE],
-    "readback": {"confirmed_by": "user", "date": "2026-09-26"}, "approval": None, "retired": None, "supersedes": None,
+    "readback": {"confirmed_by": "user", "date": "2026-09-26"},
+    # ONAY (2026-09-27): kullanıcı "evet onaylıyorum" — 8 varyasyon C4'te GÖZLEM olarak (laboratuvar 36277302747: 4h
+    # hükmü GÜÇLÜ ADAY değil; işlemler "gözlem, kanıtlanmadı"). Sıkı hüküm GÜÇLÜ olmadığı için C4S'e girmez.
+    "approval": {"by": "user", "date": "2026-09-27", "observation": True, "run_id": "36277302747"}, "retired": None, "supersedes": None,
     "definition": {
         "side": "LONG",
         "timeframe": "4h",
@@ -217,7 +226,10 @@ CV004_PULLBACK_ENGULF_S: dict[str, Any] = {
         "giriş yutan mumun kapanışında; formasyon dibinin kırılımı beklenmedi, çünkü RSI şartı giriş mumuna kayardı (varsayım)",
         _BATCH1_EXITS_NOTE,
         _BATCH1_READBACK_NOTE],
-    "readback": {"confirmed_by": "user", "date": "2026-09-26"}, "approval": None, "retired": None, "supersedes": None,
+    "readback": {"confirmed_by": "user", "date": "2026-09-26"},
+    # ONAY (2026-09-27): kullanıcı "evet onaylıyorum" — 8 varyasyon C4'te GÖZLEM olarak (laboratuvar 36277302747: 4h
+    # hükmü GÜÇLÜ ADAY değil; işlemler "gözlem, kanıtlanmadı"). Sıkı hüküm GÜÇLÜ olmadığı için C4S'e girmez.
+    "approval": {"by": "user", "date": "2026-09-27", "observation": True, "run_id": "36277302747"}, "retired": None, "supersedes": None,
     "definition": {
         "side": "SHORT",
         "timeframe": "4h",
@@ -248,7 +260,10 @@ CV005_SUPPORT_HARAMI_L: dict[str, Any] = {
         "RSI14 < 40 → rsi14 [None, 40] (kullanıcının sayısı)",
         _BATCH1_EXITS_NOTE,
         _BATCH1_READBACK_NOTE],
-    "readback": {"confirmed_by": "user", "date": "2026-09-26"}, "approval": None, "retired": None, "supersedes": None,
+    "readback": {"confirmed_by": "user", "date": "2026-09-26"},
+    # ONAY (2026-09-27): kullanıcı "evet onaylıyorum" — 8 varyasyon C4'te GÖZLEM olarak (laboratuvar 36277302747: 4h
+    # hükmü GÜÇLÜ ADAY değil; işlemler "gözlem, kanıtlanmadı"). Sıkı hüküm GÜÇLÜ olmadığı için C4S'e girmez.
+    "approval": {"by": "user", "date": "2026-09-27", "observation": True, "run_id": "36277302747"}, "retired": None, "supersedes": None,
     "definition": {
         "side": "LONG",
         "timeframe": "4h",
@@ -280,7 +295,10 @@ CV006_RESIST_HARAMI_S: dict[str, Any] = {
         "RSI14 > 60 → rsi14 [60, None] (kullanıcının sayısı)",
         _BATCH1_EXITS_NOTE,
         _BATCH1_READBACK_NOTE],
-    "readback": {"confirmed_by": "user", "date": "2026-09-26"}, "approval": None, "retired": None, "supersedes": None,
+    "readback": {"confirmed_by": "user", "date": "2026-09-26"},
+    # ONAY (2026-09-27): kullanıcı "evet onaylıyorum" — 8 varyasyon C4'te GÖZLEM olarak (laboratuvar 36277302747: 4h
+    # hükmü GÜÇLÜ ADAY değil; işlemler "gözlem, kanıtlanmadı"). Sıkı hüküm GÜÇLÜ olmadığı için C4S'e girmez.
+    "approval": {"by": "user", "date": "2026-09-27", "observation": True, "run_id": "36277302747"}, "retired": None, "supersedes": None,
     "definition": {
         "side": "SHORT",
         "timeframe": "4h",
@@ -310,7 +328,10 @@ CV007_SWEEP_REJECT_ENGULF_L: dict[str, Any] = {
         "stop süpürme fitilinin altında: formasyon dibi − 0.25 ATR",
         _BATCH1_EXITS_NOTE,
         _BATCH1_READBACK_NOTE],
-    "readback": {"confirmed_by": "user", "date": "2026-09-26"}, "approval": None, "retired": None, "supersedes": None,
+    "readback": {"confirmed_by": "user", "date": "2026-09-26"},
+    # ONAY (2026-09-27): kullanıcı "evet onaylıyorum" — 8 varyasyon C4'te GÖZLEM olarak (laboratuvar 36277302747: 4h
+    # hükmü GÜÇLÜ ADAY değil; işlemler "gözlem, kanıtlanmadı"). Sıkı hüküm GÜÇLÜ olmadığı için C4S'e girmez.
+    "approval": {"by": "user", "date": "2026-09-27", "observation": True, "run_id": "36277302747"}, "retired": None, "supersedes": None,
     "definition": {
         "side": "LONG",
         "timeframe": "4h",
@@ -340,7 +361,10 @@ CV008_SWEEP_REJECT_ENGULF_S: dict[str, Any] = {
         "stop süpürme fitilinin üstünde: formasyon tepesi + 0.25 ATR",
         _BATCH1_EXITS_NOTE,
         _BATCH1_READBACK_NOTE],
-    "readback": {"confirmed_by": "user", "date": "2026-09-26"}, "approval": None, "retired": None, "supersedes": None,
+    "readback": {"confirmed_by": "user", "date": "2026-09-26"},
+    # ONAY (2026-09-27): kullanıcı "evet onaylıyorum" — 8 varyasyon C4'te GÖZLEM olarak (laboratuvar 36277302747: 4h
+    # hükmü GÜÇLÜ ADAY değil; işlemler "gözlem, kanıtlanmadı"). Sıkı hüküm GÜÇLÜ olmadığı için C4S'e girmez.
+    "approval": {"by": "user", "date": "2026-09-27", "observation": True, "run_id": "36277302747"}, "retired": None, "supersedes": None,
     "definition": {
         "side": "SHORT",
         "timeframe": "4h",

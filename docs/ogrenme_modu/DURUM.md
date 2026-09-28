@@ -1,6 +1,9 @@
 # Öğrenme modu L1: durum kaydı (güncelleme 2026-09-28 ~07:00 UTC)
 
-**Güncel:** inceleme bulguları F1–F9 düzeltildi (`627eac5`); tam paket 3430 geçti / 0 düştü / 7 atlandı, CI listesi 855 geçti, ruff temiz. `6fb39cd`: ana bot `leverage_max: 5`. Şu an ikinci doğrulama turu çalışıyor: düzeltmelerin yeniden incelenmesi, gerçek `config.yaml` ile uçtan uca benzetim (açık/kapalı/eski kod karşılaştırması), durum dosyası geçişi ve geri dönüş güvenliği. Ardından dağıtım betiği `tb-deploy-<tip>.sh` hazırlanacak.
+**Güncel (2026-09-28 ~09:00 UTC):**
+- `627eac5`: 1. inceleme bulguları F1–F9 düzeltildi. `6fb39cd`: ana bot `leverage_max: 5`.
+- `49256cb`: 2. doğrulama turu (gerçek `config.yaml` ile 48 turluk uçtan uca benzetim, durum geçişi, geri dönüş) bulguları düzeltildi: politika rezervi (öğrenme-ekstra işlemler temel işlemleri dışlamaz), Box/D4'te açık pozisyonlu sembolde temel sinyalin "olsaydı" kaydı, deneyim önbelleği bellek düzeltmesi, geri dönüş hazırlık betiği `scripts/learning_mode_rollback_prep.py`, etiket/sayaç yedekleri. Tam paket 3445 geçti / 0 düştü; öğrenme kapalıyken 48 tur önceki kapalı koşuyla aynı.
+- Şu an 3. tur çalışıyor: 2. tur düzeltmelerinin bağımsız incelemesi + VPS işletim ölçümleri (bellek/disk büyümesi) + `trade_memory.jsonl` büyümesinin sınırlanması. Ardından dağıtım betiği `tb-deploy-<tip>.sh` (değişmez listesi: CONTRACT.md "Additions from the second verification round" ve 2. tur raporu).
 
 ---
 

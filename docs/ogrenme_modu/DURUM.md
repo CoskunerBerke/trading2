@@ -1,15 +1,8 @@
 # Öğrenme modu L1: durum kaydı (güncelleme 2026-09-28 ~07:00 UTC)
 
-**Güncel (2026-09-28 ~17:15 UTC):**
-- `627eac5` 1. inceleme (F1–F9) · `6fb39cd` ana bot `leverage_max: 5` · `49256cb` 2. tur (politika rezervi, A15 +CF, geri dönüş güvenliği) · `e6dac70` 3. tur.
-- `e6dac70`: politika etiketi için ayrı taban öğrenicisi (`learning_basis.py`), TP1 sonrası açık pay, A15'te bir hareket bir kez, rezerv kaynaklı retlerin doğru kodu; `trade_memory.jsonl` / `position_path.jsonl` / deney olayları artımlı okunur (öğrenme kapalıyken çıktı birebir aynı; 157 MB dosyada her değişimde +588 MB tepe → ~0). Tam paket 3475 geçti / 0 düştü.
-- Şu an 4. tur: 3. tur değişikliklerinin incelemesi (öğrenme kapalıyken de çalışan ortak okuyucular dahil) ve dağıtım betiği `deploy/releases/tb-deploy-<tip>.sh`. Betik hazır olunca kullanıcıya SSH komutu verilecek.
-- 4. tur düzeltmeleri (commit bekliyor; ayrıntı `CONTRACT.md` "fourth verification round"):
-  - panel JSONL kuyrukları akışla okunuyor: 143 MB trade_memory'de `/api/coin-memory` tepe RSS 130 MB (49256cb 719, e6dac70 986);
-  - `MemoryTail` / `PositionPathStore`: baş bekçisi (ilk 4 KB) eklendi; okuma ortasındaki istisnadan sonra satırlar iki kez uygulanmıyor;
-  - politika tabanı `.bak` ile yazılıyor; öğrenme başladıktan sonra kaybolursa kirli öğreniciden yeniden kurulmuyor (ERROR + health alarmı LOST);
-  - Formasyon D8 da A15 "tek hareket tek kayıt" kuralına uyuyor.
-- Dağıtım betiği `tb-deploy-e6dac70.sh` hazır ama commit edilmedi. `--check` artık LOST alarmını gösteriyor. Commit'ten sonra TIP ve dosya adı yeni uca çevrilmeli.
+**Güncel (2026-09-28 akşam): DAĞITIMA HAZIR.** Kod `c0b8c94`, dağıtım betiği `deploy/releases/tb-deploy-c0b8c94.sh` (`9f54393`, sha256 `d258fb3e…264f`). Dağıtımı yalnız kullanıcı yapar.
+- Dört inceleme turu: `627eac5` (F1–F9) · `49256cb` (politika rezervi, A15 +CF, geri dönüş güvenliği) · `e6dac70` (politika tabanı öğrenicisi, artımlı bellek okuyucuları) · `c0b8c94` (panel bellek sınırı, okuyucu sağlamlığı, POLICY_BASIS_LOST alarmı). Son tam paket 3484 geçti / 0 düştü; öğrenme kapalıyken 48 tur öncekiyle birebir.
+- Ertelenenler (izlenecek): deneyim önbelleği ~1,8 MB/gün; çıkış değerlendirmesi CPU'su kapanan işlem sayısıyla doğrusal; deney olaylarının her turda baştan okunması (~1,9 sn/okuma 30. günde); trade_memory/position_path/deney olayları ~12,5 MB/gün disk (döndürme yok); T2/M2/D4 "olsaydı" etiketi 30 barlık ufuk (yaklaşık); D4/C4 sessiz 60 dk pencere bitişleri kayıtsız; depo unit dosyası hâlâ MemoryMax=4G (VPS 6G).
 
 ---
 

@@ -590,7 +590,7 @@ learning_mode:
   counterfactual: true
   counterfactual_max_pending: 2000
   books:
-    main:                         {enabled: true, slots: 20}
+    main:                         {enabled: true, slots: 20, leverage_max: 5}   # 5 = kademe tavanı (profil 5); likidasyon tamponu ayrıca kısar
     t2_trend_regime:              {enabled: true, slots: 40, leverage_max: 4}
     m2_tsmom28:                   {enabled: true, slots: 40, leverage_max: 4}
     b1_box_fade:                  {enabled: true, slots: 20, leverage_max: 4, min_stop_pct: 0.32}

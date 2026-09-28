@@ -15,6 +15,7 @@ from typing import Any
 from urllib.parse import quote_plus
 
 from .templates import age_text, badge, card, chart_block, esc, fmt, fmt_utc, money_html, pnl_cell, table
+from .learning_view import book_badge_for, tags_html
 
 #: Çıkış nedeni kodları → kullanıcı diline. Ham kod satır detayında kalır.
 EXIT_TR = {"stop": "Stop", "be_stop": "Başa baş stop", "hedef1": "Hedef 1", "hedef2": "Hedef 2", "tp1": "Hedef 1", "tp2": "Hedef 2",
@@ -233,6 +234,13 @@ def _pos_unreal(p: dict[str, Any]) -> tuple[float | None, str]:
     return round((last - entry) * qty * sign, 4), "brüt"
 
 
+def _lm_tags_line(p: dict[str, Any]) -> str:
+    """ÖĞRENME MODU (2026-09-28): işlemin öğrenme etiketleri (size_rule, learning_unlocked_by, exploration,
+    in_lab_universe) ayrı bir satırda. Öğrenmede açılmamış işlemde "" → satır bit-aynı."""
+    tg = tags_html(p.get("features"))
+    return ('<div class="tsub small">%s</div>' % tg) if tg else ""
+
+
 def positions_block(acc: dict[str, Any], *, book_id: str, market: str, selected: str | None, token_qs: str = "") -> str:
     """Açık işlemler — yetkili defterden. Satır tıklanınca aynı ekranda o coinin grafiği açılır."""
     if acc.get("unsupported"):
@@ -264,7 +272,7 @@ def positions_block(acc: dict[str, Any], *, book_id: str, market: str, selected:
             'tabindex="0" role="button" aria-label="%s grafiğini aç">'
             '<div class="tmain"><span class="sym">%s</span> %s<span class="num">%s</span></div>'
             '<div class="tsub"><span>giriş <b>%s</b></span><span>güncel <b>%s</b></span><span>stop <b>%s</b></span>'
-            '<span>hedef <b>%s</b></span><span class="pnl">açık K/Z %s <i>(%s)</i></span></div>'
+            '<span>hedef <b>%s</b></span><span class="pnl">açık K/Z %s <i>(%s)</i></span></div>%s'
             '<details class="tdet"><summary>ayrıntı</summary><div class="small mut">%s</div></details></div>'
             % (sel, esc(base), esc(book_id), esc(market), esc(str(p.get("id") or "")), esc(_tf), esc(str(p.get("opened_at") or "")),
                esc(sym), esc(sym),
@@ -272,7 +280,7 @@ def positions_block(acc: dict[str, Any], *, book_id: str, market: str, selected:
                "", fmt(entry, 6) if entry is not None else "—", fmt(last, 6) if last is not None else "—",
                fmt(stop, 6) if stop is not None else '<span class="mut">yok</span>',
                (fmt(tgts[0], 6) if tgts else '<span class="mut">Sabit hedef yok — strateji çıkışı</span>'),
-               (money_html(un) if un is not None else NO_DATA), esc(kind), det))
+               (money_html(un) if un is not None else NO_DATA), esc(kind), _lm_tags_line(p), det))
     return '<div class="tlist">' + "".join(rows) + "</div>"
 
 
@@ -483,6 +491,8 @@ def home(state, *, book_id: str, market: str, coin: str, vm: dict, fr: dict, tok
     for issue in (vm.get("inconsistencies") or []):
         body += '<div class="card warn-box">⚠ Veri tutarsızlığı — %s</div>' % esc(issue.get("message", ""))
     body += '<div id="cardshost">' + summary_cards(acc) + "</div>"
+    if market == "futures":                             # ÖĞRENME MODU (2026-09-28): slot açık/K · Σmarj/E; kapalıyken ""
+        body += book_badge_for(state, acc["book_id"])
     books = state.books()
     chart = chart_block(coin, "1h", market, token_qs=token_qs, max_bars=max_bars, book=book_id, books=books)
     body += ('<div class="mainsplit">'
@@ -521,9 +531,10 @@ def trades_page(state, *, book_id: str, market: str, tab: str, q: str, token_qs:
             for t in tr:
                 sym = str(t.get("symbol") or "")
                 qs = trade_qs(book_id=book_id, market=market, trade_id=t.get("id"), as_of=t.get("closed_at"), token_qs=token_qs)
-                rows.append('<tr data-sym="%s"><td><a href="/coin/%s?%s">%s</a></td><td>%s</td><td class="num">%s</td>'
+                _tg = tags_html(t.get("features"))            # öğrenme etiketi (yoksa hücre bit-aynı)
+                rows.append('<tr data-sym="%s"><td><a href="/coin/%s?%s">%s</a>%s</td><td>%s</td><td class="num">%s</td>'
                             '<td class="num">%s</td><td>%s</td><td>%s</td><td class="num">%s</td><td>%s</td></tr>'
-                            % (esc(sym.upper()), esc(sym.split("/")[0]), esc(qs), esc(sym),
+                            % (esc(sym.upper()), esc(sym.split("/")[0]), esc(qs), esc(sym), ("<br>" + _tg) if _tg else "",
                                badge(str(t.get("side", "")).upper() or "—", "ok" if str(t.get("side", "")).upper() == "LONG" else "bad"),
                                fmt(t.get("entry"), 6), fmt(t.get("exit_price") or t.get("exit"), 6),
                                fmt_utc(t.get("opened_at")), fmt_utc(t.get("closed_at")), pnl_cell(t.get("net_pnl")),
@@ -545,7 +556,7 @@ def trades_page(state, *, book_id: str, market: str, tab: str, q: str, token_qs:
                 tgts = [t for t in (p.get("targets") or []) if _f(t) is not None]
                 body += ('<div class="trow" data-sym="%s"><div class="tmain"><a class="sym" href="/coin/%s?book=%s&market=%s">%s</a> %s</div>'
                          '<div class="tsub"><span>giriş <b>%s</b></span><span>güncel <b>%s</b></span><span>stop <b>%s</b></span>'
-                         '<span>hedef <b>%s</b></span><span class="pnl">açık K/Z %s <i>(%s)</i></span></div>'
+                         '<span>hedef <b>%s</b></span><span class="pnl">açık K/Z %s <i>(%s)</i></span></div>%s'
                          '<details class="tdet"><summary>ayrıntı</summary><div class="small mut">miktar %s · kaldıraç %sx · açılış %s · '
                          'ücret %s · funding %s · fiyat kaynağı %s · defter %s</div></details></div>'
                          % (esc(sym.upper()), esc(sym.split("/")[0]), esc(book_id), esc(market), esc(sym),
@@ -553,7 +564,7 @@ def trades_page(state, *, book_id: str, market: str, tab: str, q: str, token_qs:
                             fmt(p.get("entry_avg") or p.get("entry"), 6), fmt(last, 6) if last is not None else "—",
                             fmt(p.get("stop"), 6) if _f(p.get("stop")) is not None else "—",
                             (fmt(tgts[0], 6) if tgts else '<span class="mut">Sabit hedef yok</span>'),
-                            (money_html(un) if un is not None else NO_DATA), esc(kind),
+                            (money_html(un) if un is not None else NO_DATA), esc(kind), _lm_tags_line(p),
                             fmt(p.get("qty"), 6), esc(str(p.get("leverage") or 1)), fmt_utc(p.get("opened_at")),
                             usdt(p.get("fees_paid") or p.get("fees")), usdt(p.get("funding_net") or p.get("funding")),
                             esc(psrc), esc(acc["label"])))

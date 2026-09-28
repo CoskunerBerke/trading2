@@ -236,6 +236,49 @@ def _time_stop(variant: str, rows: list[dict[str, Any]], position: dict[str, Any
 
 
 # ---------------------------------------------------------------------------- karar
+def _matched(variant: str, rows: Any, now_ms: int | None, p: CandleParams, mode: str) -> list[tuple[Any, Any]]:
+    """Giriş yolu (SAF): pencere → giriş penceresi → kapı → dedektör. Döner: eşleşen (varyasyon, isabet) çiftleri, config
+    sırasıyla (ilk = öncelikli). `decide` ve `entry_hits` AYNI yolu kullanır (ikinci okuma yok)."""
+    win, _why = candle_dsl.window_from_rows(rows, STEP_MS)
+    if win is None:
+        return []
+    signal_close_ms = int(win.ts[-1]) + STEP_MS
+    if now_ms is not None and int(now_ms) - signal_close_ms > int(p.entry_window_min) * 60_000:
+        return []                                       # sinyal kaçtı (kesinti): geç giriş laboratuvarda yok
+    hits: list[tuple[Any, Any]] = []
+    for vid in p.variations:                            # config sırası = öncelik
+        var, gate_why = candle_variations.gate(vid, mode)
+        if var is None:
+            _note_gate_refusal(vid, gate_why, variant, mode)
+            continue
+        hit = candle_dsl.detect_last(win, var)
+        if hit is not None:
+            hits.append((var, hit))
+    return hits
+
+
+def entry_hits(variant: str = VARIANTS[0], *, rows: list[dict[str, Any]], now_ms: int | None = None,
+               params: CandleParams = DEFAULT_PARAMS) -> list[dict[str, Any]]:
+    """Bu barda eşleşen TÜM varyasyonların geometrisi, config sırasıyla — giriş yolu `decide` ile AYNI (pencere, giriş
+    penceresi, kapı, dedektör). Öğrenme modunun karşı-olgusal kaydı içindir (2026-09-28, öğrenme modu): `also_matched`
+    varyasyonları ve açık pozisyon yüzünden girilemeyen varyasyonlar. Açık pozisyonu BİLMEZ (çağıran ayırır); işlem açmaz."""
+    if variant not in VARIANTS:
+        raise ValueError("bilinmeyen strateji varyanti: %r" % (variant,))
+    p = params.validate()
+    if not p.variations:
+        return []
+    out: list[dict[str, Any]] = []
+    for var, hit in _matched(variant, rows, now_ms, p, mode_for(variant, p)):
+        out.append({"id": var.id, "direction": var.side, "stop": float(hit.stop), "signal_close": float(hit.close),
+                    "signal_ts": int(hit.signal_ts), "signal_close_ms": int(hit.signal_close_ms), "atr14": float(hit.atr_i),
+                    "risk_atr_bounds": [float(var.risk_atr_bounds[0]), float(var.risk_atr_bounds[1])],
+                    "target_r": (float(var.target_r) if var.target_r is not None else None),
+                    "max_hold_bars": int(var.max_hold_bars), "definition_sha": var.definition_sha,
+                    "setup_type": SETUP_PREFIX + var.id,
+                    "observation": bool((var.approval or {}).get("observation") is True)})
+    return out
+
+
 def decide(variant: str = VARIANTS[0], *, rows: list[dict[str, Any]], position: dict[str, Any] | None = None,
            now_ms: int | None = None, params: CandleParams = DEFAULT_PARAMS) -> dict[str, Any] | None:
     """Tek karar: {"action": "OPEN"|"CLOSE"|"NONE", ...} ya da None. Bilinmeyen veri → None (fail-closed).
@@ -250,21 +293,7 @@ def decide(variant: str = VARIANTS[0], *, rows: list[dict[str, Any]], position: 
         return _time_stop(variant, list(rows or []), position)
     if not p.variations:
         return None                                     # defter bekler: etkin varyasyon yok
-    win, _why = candle_dsl.window_from_rows(rows, STEP_MS)
-    if win is None:
-        return None
-    signal_close_ms = int(win.ts[-1]) + STEP_MS
-    if now_ms is not None and int(now_ms) - signal_close_ms > int(p.entry_window_min) * 60_000:
-        return None                                     # sinyal kaçtı (kesinti): geç giriş laboratuvarda yok
-    hits: list[tuple[Any, Any]] = []
-    for vid in p.variations:                            # config sırası = öncelik
-        var, gate_why = candle_variations.gate(vid, mode)
-        if var is None:
-            _note_gate_refusal(vid, gate_why, variant, mode)
-            continue
-        hit = candle_dsl.detect_last(win, var)
-        if hit is not None:
-            hits.append((var, hit))
+    hits = _matched(variant, rows, now_ms, p, mode)
     if not hits:
         return None
     var, hit = hits[0]
@@ -329,5 +358,5 @@ def rule_state(variant: str = VARIANTS[0], *, rows: list[dict[str, Any]],
 
 
 __all__ = ["BOOK_TAGS", "DEFAULT_PARAMS", "FIXED_VERDICT_MODE", "CandleParams", "EVIDENCE", "ROW_COLUMNS", "SETUP_PREFIX",
-           "STEP_MS", "TIMEFRAME", "VARIANTS", "WINDOW", "decide", "lab_info", "mode_for", "rows_from_frame", "rule_state",
-           "window_rows"]
+           "STEP_MS", "TIMEFRAME", "VARIANTS", "WINDOW", "decide", "entry_hits", "lab_info", "mode_for", "rows_from_frame",
+           "rule_state", "window_rows"]

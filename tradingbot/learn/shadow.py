@@ -35,9 +35,27 @@ class ShadowTrade:
     outcome: dict[str, Any] | None = None
     labeled_at: str | None = None
     is_counterfactual: bool = True
+    # --- ÖĞRENME MODU (2026-09-28, öğrenme modu): defter karşı-olgusalları için İSTEĞE BAĞLI alanlar. Hepsi None
+    # varsayılanlı → eski dosyalar yüklenir; None iken `to_dict` bunları YAZMAZ (ana botun kaydı bit-aynı kalır).
+    book: str | None = None
+    signal_key: str | None = None
+    variation: str | None = None
+    label_kind: str | None = None
+    features: dict[str, Any] | None = None
+    learning_unlocked: bool | None = None
+    rule_version: str | None = None
+    approx: bool | None = None
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        d = asdict(self)
+        for k in OPTIONAL_FIELDS:
+            if d.get(k) is None:
+                d.pop(k, None)
+        return d
+
+
+#: `ShadowTrade`in isteğe bağlı alanları — None iken diske yazılmaz (bkz. `to_dict`).
+OPTIONAL_FIELDS = ("book", "signal_key", "variation", "label_kind", "features", "learning_unlocked", "rule_version", "approx")
 
 
 def label_with_candles(sh: ShadowTrade, df: pd.DataFrame, *, tp1_fraction: float = 0.5) -> dict[str, Any] | None:
@@ -116,6 +134,9 @@ class ShadowBook:
         self.archived_total = 0
         d = read_json(self.path, default={"trades": []})
         self.trades: list[ShadowTrade] = [ShadowTrade(**{k: v for k, v in t.items() if k in ShadowTrade.__dataclass_fields__}) for t in d.get("trades", [])]
+        #: Defter düzeyi sayaçlar (öğrenme modu karşı-olgusal kaydı, 2026-09-28). BOŞKEN dosyaya yazılmaz → ana botun
+        #: `shadow_book.json` biçimi bit-aynı kalır.
+        self.meta: dict[str, Any] = dict(d.get("meta") or {}) if isinstance(d, dict) else {}
 
     MAX_TRADES = 5000                       # aktif dosya siniri (arsiv bunun DISINDA, sinirsiz)
 
@@ -144,7 +165,10 @@ class ShadowBook:
         moved = self._archive_overflow()
         if moved > 0:
             self.trades = self.trades[moved:]
-        atomic_write_json(self.path, {"trades": [t.to_dict() for t in self.trades]})
+        payload: dict[str, Any] = {"trades": [t.to_dict() for t in self.trades]}
+        if self.meta:
+            payload["meta"] = self.meta
+        atomic_write_json(self.path, payload)
 
     def _event_key(self, plan_id: str, symbol: str, direction: str, variant: str) -> tuple:
         return (str(plan_id), str(symbol), str(direction), str(variant))

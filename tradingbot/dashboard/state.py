@@ -47,6 +47,8 @@ STATE_FILES: dict[str, str] = {
     "profitability_experiment_v1_2": "profitability_experiment_v1_2.json",
     # LLM alt sisteminin GERÇEK durumu (DISABLED / NOT_CONFIGURED / NO_CALLS / ACTIVE).
     "llm_status": "llm_status.json",
+    # ÖĞRENME MODU (2026-09-28, öğrenme modu): ilk aktif an (`learning_mode_since`) — öncesi/sonrası ayrımı (salt okunur).
+    "learning_mode": "learning_mode.json",
 }
 JSONL_FILES: dict[str, str] = {"llm_calls": "llm_calls.jsonl", "trade_memory": "trade_memory.jsonl", "signals_log": "signals_log.jsonl",
                                "decision_journal": "decision_journal.jsonl",

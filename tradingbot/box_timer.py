@@ -48,8 +48,13 @@ class BoxTimer:
     def __init__(self, *, book: Any, provider_factory: Callable[[], Any], state_path: Path | str,
                  symbols_fn: Callable[[], list[str]], funding_rates: Any = None,
                  clock_ms: Callable[[], int] = _now_ms, poll_s: float = 15.0, tick_every_s: float = 60.0,
-                 settle_ms: int = SETTLE_MS) -> None:
+                 settle_ms: int = SETTLE_MS, learning: Any = None) -> None:
         self.book = book
+        #: ÖĞRENME MODU (2026-09-28, öğrenme modu): `LearningMode` ya da None. Kapı HER değerlendirme geçişinde BİR kez
+        #: yenilenir (`refresh`); defter o geçişin değişmez görünümünü (`book(ad)`: min_stop_pct 0,32, slot, kaldıraç) alır.
+        #: None ya da kapalı → davranış ve durum dosyası bit-bit eskisi gibi.
+        self.learning = learning
+        self.last_learning: dict[str, Any] | None = None
         self.provider_factory = provider_factory
         self.symbols_fn = symbols_fn
         self.funding_rates = funding_rates
@@ -165,6 +170,24 @@ class BoxTimer:
             log.warning("Box zamanlayıcısı giriş kaydı okunamadı: %s", exc)
         return out
 
+    def _learning_pass(self) -> tuple[Any, bool]:
+        """Bu geçişin öğrenme görünümü: (BookLearning | None, yapı girişi gölgede mi). Kapı arızası → baseline (None)."""
+        lm = self.learning
+        if lm is None or not bool(getattr(lm, "enabled", False)):
+            return None, False
+        name = str(getattr(self.book, "name", ""))
+        try:
+            lm.refresh()
+            bl = lm.book(name)
+            es = bool(bl is not None and lm.structures_entry_shadow(name))
+            st = dict(lm.status())
+        except Exception as exc:  # noqa: BLE001 — öğrenme kapısı okunamazsa bu geçiş baseline
+            log.warning("Box zamanlayıcısı öğrenme kapısı okunamadı (baseline): %s", exc)
+            bl, es, st = None, False, {"reason": "ERROR:%s" % type(exc).__name__}
+        self.last_learning = {"active": bl is not None, "reason": st.get("reason"), "since": st.get("since"),
+                              "min_stop_pct": getattr(bl, "min_stop_pct", None), "structures_entry_shadow": es}
+        return bl, es
+
     def _evaluate(self, bar_open: int, now_ms: int) -> dict[str, Any]:
         t0 = time.time()
         now = datetime.fromtimestamp(now_ms / 1000.0, tz=timezone.utc)
@@ -196,10 +219,13 @@ class BoxTimer:
         eligible = [s for s in universe if (s, bar_open) not in traded]
         blocked = len(universe) - len(eligible)
         pbars = self._bars_1h(prov, [s for s in held if s in pmarks_f], pmarks_f, now_ms) if held else {}
+        bl, eshadow = self._learning_pass()
+        # anahtar kapalıyken çağrı AYNEN eskisi (ek anahtar geçilmez)
+        lkw = {"learning": bl, "structures_entry_shadow": eshadow} if self.last_learning is not None else {}
         with self.book.lock:
             self.book.run_id = run_id
             self.book.step(symbols=eligible, frames_by_symbol=frames, marks=pmarks, marks_f=pmarks_f, now=now,
-                           provenance_by_symbol=provs, data_gaps=gaps)
+                           provenance_by_symbol=provs, data_gaps=gaps, **lkw)
             self.book.apply_closed_bars(pbars, now=now, funding_rate_lookup=self.funding_rates)
             self.book.tick(pmarks, now=now, funding_rate_lookup=self.funding_rates, bar_advance=False, source="box_timer",
                            apply_clock=self.clock_ms)
@@ -239,12 +265,15 @@ class BoxTimer:
 
     def status(self) -> dict[str, Any]:
         lags = sorted(self.lags_s)
-        return {"schema_version": "box_timer_v1", "alive": self.alive, "last_bar_open": self.last_bar_open,
-                "evaluations": self.evaluations, "missed_bars": self.missed_bars,
-                "duplicates_blocked": self.duplicates_blocked, "errors": self.errors, "last_error": self.last_error,
-                "lags_s": self.lags_s[-100:], "lag_p50_s": lags[len(lags) // 2] if lags else None,
-                "lag_max_s": lags[-1] if lags else None, "protect_gaps_s": self.protect_gaps_s[-100:],
-                "last_eval": self.last_eval, "poll_s": self.poll_s, "tick_every_s": self.tick_every_s}
+        out = {"schema_version": "box_timer_v1", "alive": self.alive, "last_bar_open": self.last_bar_open,
+               "evaluations": self.evaluations, "missed_bars": self.missed_bars,
+               "duplicates_blocked": self.duplicates_blocked, "errors": self.errors, "last_error": self.last_error,
+               "lags_s": self.lags_s[-100:], "lag_p50_s": lags[len(lags) // 2] if lags else None,
+               "lag_max_s": lags[-1] if lags else None, "protect_gaps_s": self.protect_gaps_s[-100:],
+               "last_eval": self.last_eval, "poll_s": self.poll_s, "tick_every_s": self.tick_every_s}
+        if self.last_learning is not None:
+            out["learning"] = dict(self.last_learning)      # öğrenme modu (2026-09-28): yalnız anahtar açıkken
+        return out
 
     def _write_status(self, now: datetime) -> None:
         try:

@@ -23,7 +23,7 @@ from decimal import Decimal
 
 from .accounting import (AmountType, FeeSchedule, FiltersCache, FuturesLedgerV2, LiquidationParams, MarketType, Side, SizeSpec,
                          SlippageModel, SpotLedger, TaxPolicy, TickData, default_brackets)
-from .agents.manager import CoinBrief
+from .agents.manager import CoinBrief, learning_capacity_rule
 from .coinhead import ChiefPortfolioManager, CoinHeadConfig, CoinHeadInputs, CoinHeadRegistry, Verdict
 from .config import BotConfig
 from .core import (atomic_write_json, from_iso, iso, new_id, read_json, run_id_now,
@@ -32,6 +32,9 @@ from .engine import TradingEngine
 from .entry_universe import GATE_CODE as ENTRY_UNIVERSE_GATE, entry_block_reason
 from .learn import LearnConfig, LearnerV2, ModelRegistry, ShadowBook, TradeMemory
 from .learning import features_from_brief
+from .learning_mode import (BOOK_NAMES as _LM_BOOK_NAMES, LEVERAGE_FALLBACK_REASON, OVERRIDE_KEYS as _LM_OVERRIDE_KEYS,
+                            SIZE_BUMP, SIZE_SHRUNK, SYMBOLS_UNIVERSE, LearningMode, counterfactual_ok, fit_size,
+                            leverage_fallback)
 from .market.quality import DataQualityConfig, DataQualityGate
 from .risk import (KillSwitch, ModeState, RiskEngine, build_state, enforces_position_cap, resolve_profile,
                    spot_notional_from_prices,
@@ -89,6 +92,14 @@ from .economics_gate import SOFT_PENALTY_R as _SOFT_PENALTY_R  # noqa: E402
 # gercek kapasite doldugu icin verilmistir (KOTA DEGIL).
 _CAPACITY_CODES = ("TOTAL_OPEN_RISK", "MARGIN_UTILIZATION", "MAX_POSITIONS", "MAX_POSITIONS_MARKET",
                    "CLUSTER_CAP", "ALTCOIN_EXPOSURE", "MAX_POSITION_PCT", "SPOT_ALLOCATION")
+
+# ÖĞRENME MODU (2026-09-28, öğrenme modu) — ana bot. Huni anahtarları YALNIZ öğrenme aktifken eklenir (kapalıyken huni
+# dosyası bit-aynı). Yapı girişi gölgeye alınsa da veri kimliği/analiz arızası kodları ENGEL kalır (DATA_INTEGRITY).
+_LM_FUNNEL_KEYS = ("learning_opened", "learning_unlocked", "learning_exploration", "learning_leverage_fallback",
+                   "min_notional_bumped", "shrunk_to_margin", "counterfactual_recorded")
+_LM_STRUCTURE_HARD = ("STRUCTURE_FRAME_MARKET_MISMATCH", "STRUCTURE_ERROR")
+#: Kaldıraç tabanı bu veri/stop nedenleriyle düştüyse karşı-olgusal YAZILMAZ (mevcut gölge kuralıyla aynı küme).
+_LM_LEV_DATA_CODES = frozenset({"DATA_STALE", "DATA_CONFLICT", "STOP_UNKNOWN"})
 
 
 def _pre_change_extreme_symbols(positions: dict, marks: dict, frames_by_symbol: dict) -> list[str]:
@@ -192,6 +203,19 @@ class TradingEngineV3(TradingEngine):
         self.mode_state = ModeState(st / "mode.json")
         if self.mode_state.mode.value != cfg.mode:
             log.warning("mode.json (%s) ile config mode (%s) farklı — mode.json esas (geçişler yalnız manuel)", self.mode_state.mode.value, cfg.mode)
+        # ÖĞRENME MODU (2026-09-28, öğrenme modu): tek anahtar; kapı `_research_mode_ok` ile AYNI (PAPER + paper gateway +
+        # canlı emir yolu kapalı). Tur başına bir kez `_lm_refresh()`; kapalı/askıdayken `_lm_main` None → yol bit-aynı.
+        # Öğrenme RiskEngine'i taban profilin KOPYASIdır (PROFILES'a yazılmaz) ve AYNI kill switch'i paylaşır.
+        self.lm = LearningMode.from_config(cfg, self._research_mode_ok)
+        self.risk_learning = (RiskEngine(self.lm.profile_for(self.profile, main=True), self.killswitch,
+                                         v3.risk_profiles.clusters or None) if self.lm.enabled else None)
+        self._lm_main = None                    # bu turun değişmez `BookLearning` görünümü (yalnız aktif + main açık)
+        self._lm_ovr: dict = {}                 # bu turun strateji ezmeleri (yalnız `_lm_main` varken dolu)
+        # defter görünümleri (2026-09-28, öğrenme modu — C2): ad → BookLearning / yapı girişi gölgesi; AYNI turun anlık
+        # görüntüsü (Box zamanlayıcısı `lm`yi kendi iş parçacığında tazeleyebilir, tur ortasında görünüm değişmez)
+        self._lm_books: dict = {}
+        self._lm_eshadow: dict = {}
+        self._lm_since_doc: dict | None = None  # `learning_mode.json` önbelleği (ilk aktif an; yeniden başlatmada korunur)
         if cfg.mode != "PAPER":
             for w in warn_if_below_recommended(self.profile):
                 log.warning("risk profili uyarısı: %s", w)
@@ -686,8 +710,22 @@ class TradingEngineV3(TradingEngine):
     def _persist_risk_state(self, state, risk_log: list[dict], now: datetime) -> bool:
         """risk.json'u atomik yaz (yetkili spot+futures defterlerinden türetilen birleşik durum). False → yazım başarısız (çağıran fail-closed)."""
         try:
-            atomic_write_json(self.cfg.state_path / "risk.json", {"generated_at": iso(now), "mode": self.mode_state.mode.value, **self.risk.snapshot(state),
-                                                                   "last_decisions": risk_log[-50:]})
+            doc = {"generated_at": iso(now), "mode": self.mode_state.mode.value, **self.risk.snapshot(state),
+                   "last_decisions": risk_log[-50:]}
+            _bl = getattr(self, "_lm_main", None)
+            if _bl is not None and getattr(self, "risk_learning", None) is not None:
+                # ÖĞRENME MODU (2026-09-28): ana botun GERÇEKTE uyguladığı öğrenme bütçesi (panel %6 tabanla karıştırmasın).
+                # Yalnız aktifken yazılır → kapalıyken risk.json bit-aynı.
+                _lp = self.risk_learning.profile
+                _basis = self.risk_learning.equity_basis(state)
+                doc["learning_mode"] = {"active": True, "book": _bl.to_dict(),
+                                        "risk_profile": {"name": _lp.name, "max_total_open_risk_pct": _lp.max_total_open_risk_pct,
+                                                         "max_spot_allocation_pct": _lp.max_spot_allocation_pct,
+                                                         "risk_per_trade_cap_pct": _lp.risk_per_trade_pct},
+                                        "equity_basis": _basis,
+                                        "max_total_open_risk_usdt": round(_basis * _lp.max_total_open_risk_pct / 100.0, 6),
+                                        "slot_margin_usdt": round((1.0 - _bl.reserve_pct / 100.0) * _basis / max(1, _bl.slots), 6)}
+            atomic_write_json(self.cfg.state_path / "risk.json", doc)
             return True
         except Exception as exc:  # noqa: BLE001 — risk durumu yazılamıyorsa yeni giriş kabul edilmez; çıkışlar etkilenmez
             log.error("risk.json yazılamadı: %s — yeni girişler bu turda kapalı (fail-closed)", exc)
@@ -1343,6 +1381,9 @@ class TradingEngineV3(TradingEngine):
         now = utc_now()
         now_ms = int(now.timestamp() * 1000)
         self._tour_now_ms = now_ms          # ZAMAN SOZLESMESI: turun karar saati; provenans bagi ve kagit defter kurali bu ana gore okur
+        # ÖĞRENME MODU (2026-09-28, öğrenme modu): kapı tur başına BİR kez; tur boyunca aynı görünüm (coin head → giriş)
+        self._lm_refresh()
+        self._lm_publish(now)               # ilk aktif an (learning_mode.json) + şef brifing metni; kapalıyken no-op
         st = self.cfg.state_path
         # ORTAK YAPI: mum ajanı bu turun ETKİN modunu kullanır (çalışma anı modu LIVE ise ENFORCE gölgeye düşer; bulgu #15)
         if getattr(self, "runner", None) is not None:
@@ -1518,13 +1559,19 @@ class TradingEngineV3(TradingEngine):
             opos = self.ledger2.positions.get(b.symbol)
             f_fut = self.filters.get(b.symbol, MarketType.USDM_PERP)
             f_spot = self.filters.get(b.symbol, MarketType.SPOT)
+            _hfilters = {"futures": {"min_notional": float(f_fut.min_notional), "max_leverage": min(f_fut.max_leverage, self.profile.futures_max_leverage)},
+                         "spot": {"min_notional": float(f_spot.min_notional)}}
+            _bl = getattr(self, "_lm_main", None)
+            if _bl is not None and _bl.min_notional_bump:
+                # ÖĞRENME MODU (2026-09-28, öğrenme modu) B5: min-notional çatışması %2 tavan içinde plan vetosu üretmez
+                for _mk in _hfilters.values():
+                    _mk["learning_min_notional_bump_cap_pct"] = float(_bl.hard_cap_pct)
             inputs[b.symbol] = CoinHeadInputs(frames=frames, live=live, legacy_reports=b.reports, legacy_brief=b, availability=self._availability(b.symbol),
                                               quality=self._quality_for(b.symbol, now_ms), btc_frames=btc_frames, eth_frames=eth_frames, btc_regime=btc_regime,
                                               portfolio={"same_direction_open": same_dir, "net_exposure": {b.symbol: state.net_exposure(b.symbol)},
                                                          "kill_switch_active": not self.killswitch.allows_entry(),
                                                          "open_position": {"side": opos.side.value} if opos else None},
-                                              edge=edge, filters={"futures": {"min_notional": float(f_fut.min_notional), "max_leverage": min(f_fut.max_leverage, self.profile.futures_max_leverage)},
-                                                                  "spot": {"min_notional": float(f_spot.min_notional)}},
+                                              edge=edge, filters=_hfilters,
                                               run_id=self.run_id, snapshot_id=snap_id, now_ms=now_ms,
                                               snapshot_at_ms=now_ms, snapshot_seq=self._tour_no,
                                               pattern_evidence=self._pattern_evidence(b.symbol, now_ms))
@@ -1794,6 +1841,10 @@ class TradingEngineV3(TradingEngine):
         health = {"state": "KILL_SWITCH" if self.killswitch.active else "HEALTHY", "at": iso(now), "run_id": self.run_id, "seconds": round(time.time() - t0, 1),
                   "symbols": len(symbols), "decisions": len(decisions), "opened": len(opened), "closed": len(records), "kill_trips": trips,
                   "mode": self.mode_state.mode.value, "profile": self.profile.name}
+        _lm = getattr(self, "lm", None)
+        if _lm is not None and _lm.enabled:     # ÖĞRENME MODU (2026-09-28): kapalıyken health.json bit-aynı
+            # reason: ACTIVE | LEARNING_MODE_SUSPENDED:<neden>; learning_mode_since: İLK aktif an (kalıcı, panel/karne ayrımı)
+            health["learning_mode"] = dict(_lm.status(), learning_mode_since=self._lm_since())
         atomic_write_json(st / "health.json", health)
         self._notify_health(str(health.get("state") or "UNKNOWN"), str(health.get("summary") or ""), now)
         self._notify_maintenance(health, now)
@@ -1863,6 +1914,15 @@ class TradingEngineV3(TradingEngine):
         entries_allowed = True
         funnel = self._funnel = {k: 0 for k in _FUNNEL_KEYS}
         funnel["actionable"] = sum(1 for d in decisions.values() if d.is_actionable)
+        # ÖĞRENME MODU (2026-09-28, öğrenme modu): bu turun değişmez görünümü. None → her dal baseline (bit-aynı).
+        # Aktifken: S1/S2/S3 kapıları gölgede, S5 keşif, B1/S7 kaldıraç tabanı, B3 çarpanlar yalnız kayıt, `fit_size`
+        # (slot K) + öğrenme RiskEngine'i (AYNI kill switch) + `allow_shrink` yedeği, kalan her geçerli red → karşı-olgusal.
+        bl = getattr(self, "_lm_main", None)
+        if bl is not None and getattr(self, "risk_learning", None) is None:
+            bl = None                                   # savunma: öğrenme RiskEngine'i yoksa baseline
+        if bl is not None:
+            for _k in _LM_FUNNEL_KEYS:
+                funnel[_k] = 0
         self._opportunity_cost = []
         # GİRİŞ SEÇİCİLİĞİ: sıralamaya giren adayların KARAR ANI girdileri. Snapshot tur SONUNDA
         # (baseline kararı belli olunca) tek seferde yazılır; hiçbir sonuç alanı GİRMEZ.
@@ -1923,6 +1983,9 @@ class TradingEngineV3(TradingEngine):
                      "adjusted_leverage": None, "at": iso(now)}
             risk_log.append(entry)
             self._entry_capture(sym, d, plan, perm, state, entry, market, now)
+            lm_unlocked: list[str] = []         # ÖĞRENME: baseline'da bu adayı durduracak kapılar (yalnız `bl` varken dolar)
+            lm_exploration = None               # S5: RESEARCH_SIZE | NEG_EDGE
+            lm_lev_fb = None                    # B1/S7: taban kaldıraç düşüşü (2x)
             # ---------------------------------------------------------------- 1) CHIEF (siralama + SERT red-team)
             # Chief kapasite REZERVE ETMEZ; buradaki tek sert kaynagi gercek red-team hard veto'sudur.
             if not perm.get("allow"):
@@ -1931,7 +1994,11 @@ class TradingEngineV3(TradingEngine):
                     funnel["hard_safety_blocked"] += 1
                 entry["block_code"] = perm.get("block_code") or "CHIEF_BLOCKED"
                 entry["hard_veto"] = bool(perm.get("block_code"))
-                if self.cfg.v3.learning_v3.shadow_trades and plan.expected_r >= self.head_cfg.min_expected_r:
+                if bl is not None:              # ÖĞRENME: sinyal anahtarlı karşı-olgusal (R ≥ 1.5 şartı yok)
+                    self._lm_counterfactual(bl, sym=sym, market=market, d=d, plan=plan, b=b,
+                                            reason=self._lm_chief_reason(perm, d),
+                                            reasons=["CHIEF:" + str(perm.get("reason"))], now=now, entry=entry)
+                elif self.cfg.v3.learning_v3.shadow_trades and plan.expected_r >= self.head_cfg.min_expected_r:
                     self._shadow_add({"plan_id": stable_id("plan", self.run_id, sym), "symbol": sym, "market_type": market, "direction": d.direction, "entry": plan.entry,
                                      "stop": plan.stop, "targets": plan.targets, "horizon_bars": plan.time_horizon_bars, "leverage": plan.size.leverage},
                                     ["CHIEF:" + str(perm.get("reason"))], now=now)
@@ -1953,7 +2020,12 @@ class TradingEngineV3(TradingEngine):
                 if cc.get("blocks"):
                     funnel["candle_blocked"] += 1
                     entry["block_code"] = "CANDLE_VETO:" + str((cc.get("verdict") or {}).get("reason") or "?")
+                    if bl is not None:
+                        self._lm_counterfactual(bl, sym=sym, market=market, d=d, plan=plan, b=b,
+                                                reason=entry["block_code"], now=now, entry=entry)
                     continue
+                if bl is not None and (cc.get("learning_override") or {}).get("would_block"):
+                    lm_unlocked.append("CANDLE_VETO:" + str((cc.get("verdict") or {}).get("reason") or "?"))
             # ---------------------------------------------------------------- 2c) GRAFIK FORMASYONU ONAYI (kapasite TUKETMEZ)
             # V5: kirilisla teyitli cift dip/OBO/ucgen/bayrak. Mantik `chart_confirmation.py`
             # icinde — replay AYNI fonksiyonu cagirir (tek kaynak). OFF iken yol degismez.
@@ -1963,6 +2035,9 @@ class TradingEngineV3(TradingEngine):
                 if ch.get("blocks"):
                     funnel["chart_blocked"] += 1
                     entry["block_code"] = "CHART_VETO:" + str((ch.get("verdict") or {}).get("reason") or "?")
+                    if bl is not None:
+                        self._lm_counterfactual(bl, sym=sym, market=market, d=d, plan=plan, b=b,
+                                                reason=entry["block_code"], now=now, entry=entry)
                     continue
             # ---------------------------------------------------------------- 2d) PIYASA REJIMI (kapasite TUKETMEZ)
             # V7: BTC gunluk close > EMA200 -> UP. Secili varyant ENFORCE ise gecmeyen aday ACILMAZ.
@@ -1973,7 +2048,12 @@ class TradingEngineV3(TradingEngine):
                 if rg.get("blocks"):
                     funnel["regime_blocked"] += 1
                     entry["block_code"] = "REGIME_VETO:" + str((rg.get("verdict") or {}).get("reason") or "?")
+                    if bl is not None:
+                        self._lm_counterfactual(bl, sym=sym, market=market, d=d, plan=plan, b=b,
+                                                reason=entry["block_code"], now=now, entry=entry)
                     continue
+                if bl is not None and (rg.get("learning_override") or {}).get("would_block"):
+                    lm_unlocked.append("REGIME_VETO:" + str((rg.get("verdict") or {}).get("reason") or "?"))
             # ---------------------------------------------------------------- 2e) ORTAK YAPI POLITIKASI (structures_v1)
             # Katalog (4h karar / 1d baglam) → giris zamanlamasi: karsi teyitli yapi BEKLETIR, geri cekilme plani uyumlu
             # TEYITLI yapi ister. Yon ASLA cevrilmez; risk/boyut/maliyet kapilari asagida aynen. Mantik
@@ -1985,7 +2065,12 @@ class TradingEngineV3(TradingEngine):
                 if sg.get("blocks"):
                     funnel["structure_blocked"] += 1
                     entry["block_code"] = "STRUCTURE:" + str(sg.get("reason_code") or "?")
+                    if bl is not None:
+                        self._lm_counterfactual(bl, sym=sym, market=market, d=d, plan=plan, b=b,
+                                                reason=entry["block_code"], now=now, entry=entry)
                     continue
+                if bl is not None and (sg.get("learning_entry_shadow") or {}).get("would_block"):
+                    lm_unlocked.append("STRUCTURE:" + str(sg.get("reason_code") or "?"))
             feats = features_from_brief(b, self.runner.chief.decide(briefs), b.scan_score or None)
             if sg is not None:
                 from .structures.bots import compact as _sc2
@@ -1998,28 +2083,53 @@ class TradingEngineV3(TradingEngine):
                           "n_dissent": len(d.dissent), "n_vetoes": len(d.vetoes), "expected_r": d.expected_r, "expected_cost_pct": d.expected_cost, "market_type": market,
                           "spread_pct": next((r.metrics.get("spread_pct") for r in d.specialist_reports if r.agent_name == "orderbook_liquidity" and r.usable), None)})
             self._entry_attach_features(sym, feats)
+            if bl is not None:
+                # S1/S2: gölgeye alınan (ya da zaten gölgede olan) kapıların hükmü işlem kaydında özellik olarak kalır
+                for _gk, _gv in (("candle_confirmation", cc), ("chart_confirmation", ch), ("regime_gate", rg)):
+                    if _gv is not None:
+                        feats[_gk] = self._lm_gate_feature(_gv)
             # ---------------------------------------------------------------- 3) EKONOMI (kapasite TUKETMEZ)
             # --- HARD: maliyet ve belirsizlik sonrasi ekonomi ---
             _opp = getattr(d, "opportunity", None) or {}
+            # ÖĞRENME (S5): RESEARCH_SIZE_ONLY / NEGATIVE_NET_EDGE keşif işlemi olarak açılır (etiketli); sert ekonomi
+            # kodları (ZERO_STOP_DISTANCE, UNKNOWN_GATE_CODE) engel KALIR.
+            _lm_explore = (bl is not None and self._lm_override("economics_exploration", False) is True
+                           and not list(_opp.get("hard_block_codes") or []))
             if _opp:
                 if _opp.get("tradeable"):
                     funnel["positive_conservative_edge"] += 1
                 elif _opp.get("research_only"):
                     # Point-estimate pozitif ama belirsizlik yutuyor -> gercek giris YOK, karsi-olgusal izle.
                     funnel["research_small"] += 1
-                    entry["block_code"] = "RESEARCH_SIZE_ONLY"
-                    if self.cfg.v3.learning_v3.shadow_trades:
-                        self._shadow_add({"plan_id": stable_id("plan", self.run_id, sym), "symbol": sym,
-                                         "market_type": market, "direction": d.direction, "entry": plan.entry,
-                                         "stop": plan.stop, "targets": plan.targets,
-                                         "horizon_bars": plan.time_horizon_bars, "leverage": plan.size.leverage},
-                                        ["RESEARCH_SIZE_ONLY"], now=now)
-                    continue
+                    if _lm_explore:
+                        lm_exploration = "RESEARCH_SIZE"
+                        lm_unlocked.append("RESEARCH_SIZE_ONLY")
+                    else:
+                        entry["block_code"] = "RESEARCH_SIZE_ONLY"
+                        if bl is not None:
+                            self._lm_counterfactual(bl, sym=sym, market=market, d=d, plan=plan, b=b,
+                                                    reason="RESEARCH_SIZE_ONLY", now=now, entry=entry)
+                        elif self.cfg.v3.learning_v3.shadow_trades:
+                            self._shadow_add({"plan_id": stable_id("plan", self.run_id, sym), "symbol": sym,
+                                             "market_type": market, "direction": d.direction, "entry": plan.entry,
+                                             "stop": plan.stop, "targets": plan.targets,
+                                             "horizon_bars": plan.time_horizon_bars, "leverage": plan.size.leverage},
+                                            ["RESEARCH_SIZE_ONLY"], now=now)
+                        continue
                 else:
-                    funnel["negative_edge_blocked"] += 1
-                    entry["block_code"] = "NEGATIVE_NET_EDGE"
-                    continue
-                if _opp.get("net_expectancy_r", 0) > 0:
+                    if _lm_explore:
+                        lm_exploration = "NEG_EDGE"
+                        lm_unlocked.append("NEGATIVE_NET_EDGE")
+                    else:
+                        funnel["negative_edge_blocked"] += 1
+                        entry["block_code"] = "NEGATIVE_NET_EDGE"
+                        if bl is not None:
+                            _hard_e = list(_opp.get("hard_block_codes") or [])
+                            self._lm_counterfactual(bl, sym=sym, market=market, d=d, plan=plan, b=b,
+                                                    reason=(str(_hard_e[0]) if _hard_e else "NEGATIVE_NET_EDGE"),
+                                                    reasons=["NEGATIVE_NET_EDGE"], now=now, entry=entry)
+                        continue
+                if lm_exploration is None and _opp.get("net_expectancy_r", 0) > 0:
                     funnel["positive_point_edge"] += 1
             # ---------------------------------------------------------------- 4) DUPLICATE (kapasite TUKETMEZ)
             # --- HARD: ayni benzersiz sinyalin tekrari (yeni bar/yeni setup ENGELLENMEZ) ---
@@ -2072,10 +2182,15 @@ class TradingEngineV3(TradingEngine):
                                               "research": _res_mult}
             entry["size_multiplier_total"] = final_size_multiplier
             # SIFIR CARPAN ASLA EMIR ACMAZ (acikca verilen 0.0 artik 1.0'a yuvarlanmiyor).
+            # ÖĞRENME (B3): çarpanlar yalnız KAYITTIR, boyut `fit_size`tan gelir — araştırma politikasının 0'ı engel kalır.
             if final_size_multiplier <= 0.0:
-                funnel["size_multiplier_zero"] += 1
-                entry["block_code"] = "SIZE_MULTIPLIER_ZERO"
-                continue
+                if bl is not None and _res_mult > 0.0:
+                    if lm_exploration is None:
+                        lm_unlocked.append("SIZE_MULTIPLIER_ZERO")
+                else:
+                    funnel["size_multiplier_zero"] += 1
+                    entry["block_code"] = "SIZE_MULTIPLIER_ZERO"
+                    continue
             final_notional = round(float(plan.notional or 0.0) * final_size_multiplier, 6)
             # UYGULAMA FIYATI: emir `plan.entry`den DEGIL, defterin referans fiyatindan (`b.price`)
             # ve aleyhte kaymayla dolar; stop ise plandan gelir. Risk kontrolu `plan.entry` ile
@@ -2106,23 +2221,74 @@ class TradingEngineV3(TradingEngine):
             lev_dec = None
             plan_leverage = int(plan.size.leverage or 1)
             if market == "USDM_PERP" and self.leverage_cfg.enabled:
-                lev_dec = select_leverage(self._leverage_context(sym, d, plan, exec_entry, state, chief, _opp),
-                                          self.leverage_cfg)
+                # B2: seviye bağlamı TABAN risk bütçesiyle (%6) kurulur — öğrenme bütçesi 4x/5x'i kolaylaştırmaz
+                _lctx = self._leverage_context(sym, d, plan, exec_entry, state, chief, _opp)
+                lev_dec = select_leverage(_lctx, self.leverage_cfg)
                 entry["leverage_decision"] = lev_dec.to_dict()
-                if not lev_dec.tradeable:
+                if not lev_dec.tradeable and bl is not None:
+                    # ÖĞRENME (B1/S7): taban düşerse yalnız izinli küme için 2x; veri/stop/likidasyon/spread NO_TRADE kalır
+                    _sa = ((_lctx.stop_frac * 100.0 / _lctx.atr_pct)
+                           if (_lctx.stop_frac and _lctx.atr_pct) else None)
+                    lm_lev_fb = leverage_fallback(lev_dec.blocked_higher, stop_atr=_sa,
+                                                  allow_confidence=self._lm_override("leverage_confidence_fallback",
+                                                                                     False) is True)
+                if not lev_dec.tradeable and lm_lev_fb is None:
                     funnel["leverage_gate_blocked"] += 1
                     entry["block_code"] = "LEVERAGE_GATE_BLOCKED"
                     # REDDEDILEN AMA VERI/STOP ACISINDAN GECERLI ADAY -> salt GOZLEMSEL golge kayit.
                     # Gercek fill/ledger/emir URETMEZ; `is_counterfactual=True` ile ayri dosyada durur.
                     # Veri bayat/celiskili ya da stop bilinmiyorsa aday "gecerli" degildir: kayit YOK.
-                    if (self.cfg.v3.learning_v3.shadow_trades
+                    if bl is not None:
+                        if not _LM_LEV_DATA_CODES & set(lev_dec.blocked_higher):
+                            self._lm_counterfactual(bl, sym=sym, market=market, d=d, plan=plan, b=b,
+                                                    reason="LEVERAGE_GATE_BLOCKED",
+                                                    reasons=list(lev_dec.blocked_higher)[:6], now=now, entry=entry)
+                    elif (self.cfg.v3.learning_v3.shadow_trades
                             and not {"DATA_STALE", "DATA_CONFLICT", "STOP_UNKNOWN"} & set(lev_dec.blocked_higher)):
                         self._shadow_add({"plan_id": stable_id("plan", self.run_id, sym), "symbol": sym, "market_type": market,
                                          "direction": d.direction, "entry": plan.entry, "stop": plan.stop, "targets": plan.targets,
                                          "horizon_bars": plan.time_horizon_bars, "leverage": plan.size.leverage},
                                         ["LEVERAGE_GATE_BLOCKED"] + list(lev_dec.blocked_higher)[:6], now=now)
                     continue
-                plan_leverage = lev_dec.leverage
+                if lm_lev_fb is not None:
+                    plan_leverage = int(lm_lev_fb)
+                    lm_unlocked.append("LEVERAGE_GATE_BLOCKED:" + ",".join(lev_dec.blocked_higher))
+                    entry["leverage_decision"]["learning_fallback"] = {"leverage": plan_leverage,
+                                                                       "reason": LEVERAGE_FALLBACK_REASON,
+                                                                       "base_failures": list(lev_dec.blocked_higher)}
+                else:
+                    plan_leverage = lev_dec.leverage
+            # ---------------------------------------------------------------- 6c) ÖĞRENME BOYUTU (SPEC §3, slot K)
+            # Baş/çarpan notional tavanlarının YERİNE `fit_size`: %0,5 hedef risk, rezerv, liq ≥ 2 × stop, min-notional'a
+            # çıkarma yalnız %2 tavan ve serbest marj içinde. Sığmazsa red + karşı-olgusal (boyut yüzünden SESSİZ ret yok).
+            lm_fit = None
+            _lm_base = (final_notional, plan_leverage)          # baseline'ın göreceği boyut (learning_unlocked_by)
+            if bl is not None:
+                lm_fit = self._lm_fit(bl, market=market, exec_entry=exec_entry, stop=plan.stop,
+                                      leverage_max=plan_leverage, f_sym=f_sym, state=state)
+                entry["learning_fit"] = {"ok": lm_fit.ok, "reason": lm_fit.reason or None, "size_rule": lm_fit.size_rule,
+                                         "notional": round(lm_fit.notional, 6), "leverage": lm_fit.leverage,
+                                         "margin": round(lm_fit.margin, 6), "risk_usdt": round(lm_fit.risk_usdt, 6),
+                                         "why": lm_fit.detail.get("why"),
+                                         "risk_fraction_of_budget": lm_fit.detail.get("risk_fraction_of_budget")}
+                if not lm_fit.ok:
+                    entry.update({"risk_allowed": False, "risk_reasons": [lm_fit.reason]})
+                    if lm_fit.reason == "INSUFFICIENT_MARGIN":
+                        funnel["risk_capacity_blocked"] += 1
+                        entry["block_code"] = "RISK_CAPACITY_BLOCKED"
+                    else:
+                        entry["block_code"] = "RISK_ENGINE_BLOCKED"
+                    self._lm_counterfactual(bl, sym=sym, market=market, d=d, plan=plan, b=b, reason=lm_fit.reason,
+                                            reasons=[str(lm_fit.detail.get("why") or "")] if lm_fit.detail.get("why") else [],
+                                            now=now, entry=entry)
+                    continue
+                final_notional = round(float(lm_fit.notional), 6)
+                plan_leverage = int(lm_fit.leverage)
+                final_risk_usdt = round(final_notional * _stop_frac, 6)
+                final_risk_pct = round(final_risk_usdt / _eq * 100.0, 6) if _eq else 0.0
+                entry["final_notional"] = final_notional
+                entry["final_risk_usdt"] = final_risk_usdt
+                entry["final_risk_pct"] = final_risk_pct
             entry["leverage"] = plan_leverage
             # ---------------------------------------------------------------- 7) YETKILI RISK KAPASITESI (NIHAI degerlerle)
             plan_dict = {"symbol": sym, "market_type": market, "direction": d.direction, "entry": exec_entry, "stop": plan.stop, "targets": plan.targets,
@@ -2130,7 +2296,8 @@ class TradingEngineV3(TradingEngine):
                          "leverage": plan_leverage, "amount_type": "NOTIONAL", "expected_r": plan.expected_r,
                          "spread_pct": feats.get("spread_pct"),
                          "min_notional": float(f_sym.min_notional)}
-            rd = self.risk.evaluate(plan_dict, state, {"now_utc": now})
+            # ÖĞRENME: öğrenme RiskEngine'i (toplam açık risk 100, spot tahsisi 100; AYNI kill switch). Kapalıyken `self.risk`.
+            rd = (self.risk_learning if bl is not None else self.risk).evaluate(plan_dict, state, {"now_utc": now})
             entry.update({"risk_allowed": rd.allowed, "risk_reasons": rd.reasons, "risk_warnings": rd.warnings,
                           "adjusted_notional": rd.adjusted_notional, "adjusted_leverage": rd.adjusted_leverage,
                           "risk_usdt": rd.risk_usdt})
@@ -2145,12 +2312,39 @@ class TradingEngineV3(TradingEngine):
                 else:
                     entry["block_code"] = "RISK_ENGINE_BLOCKED"
                 # guclu aday reddedildi -> golge islem (karsi-olgusal)
-                if self.cfg.v3.learning_v3.shadow_trades and plan.expected_r >= self.head_cfg.min_expected_r:
+                if bl is not None:              # ÖĞRENME: her segmenti denetlenen red nedeni (kill switch dahil) → CF
+                    self._lm_counterfactual(bl, sym=sym, market=market, d=d, plan=plan, b=b,
+                                            reason=":".join(str(c) for c in rd.reasons), reasons=list(rd.reasons),
+                                            now=now, entry=entry)
+                elif self.cfg.v3.learning_v3.shadow_trades and plan.expected_r >= self.head_cfg.min_expected_r:
                     self._shadow_add({"plan_id": stable_id("plan", self.run_id, sym), "symbol": sym, "market_type": market, "direction": d.direction, "entry": plan.entry,
                                      "stop": plan.stop, "targets": plan.targets, "horizon_bars": plan.time_horizon_bars, "leverage": plan.size.leverage},
                                     list(rd.reasons), now=now)
                 continue
             funnel["capacity_approved"] += 1
+            # ÖĞRENME: bu işlemin etiketleri (defter meta/özellikleri + karar günlüğü satırı)
+            lm_tags = None
+            if bl is not None:
+                if getattr(plan, "learning_min_notional_bump", False):
+                    lm_unlocked.append("NO_TRADE_MIN_ORDER_CONFLICT")      # baş planı baseline'da vetolardı (B5)
+                lm_unlocked += self._lm_baseline_blockers(plan_dict, market=market, base_notional=float(_lm_base[0]),
+                                                          base_leverage=int(_lm_base[1]), state=state, now=now)
+                lm_tags = {"book": "main", "size_rule": lm_fit.size_rule, "slots": int(bl.slots),
+                           "risk_pct": float(bl.risk_pct), "leverage": int(plan_leverage),
+                           "leverage_max": int(lm_fit.detail.get("l_max") or plan_leverage),
+                           "risk_usdt": round(float(lm_fit.risk_usdt), 8),
+                           "equity_basis": float(self.risk_learning.equity_basis(state)),
+                           "risk_fraction_of_budget": lm_fit.detail.get("risk_fraction_of_budget"),
+                           "learning_unlocked_by": list(dict.fromkeys(lm_unlocked)),
+                           "exploration": lm_exploration,
+                           "leverage_fallback": (LEVERAGE_FALLBACK_REASON if lm_lev_fb is not None else None),
+                           "size_multipliers_recorded": dict(entry.get("size_multiplier_parts") or {},
+                                                             total=entry.get("size_multiplier_total")),
+                           "penalties_recorded": _opp.get("learning_penalties")}
+                feats["learning"] = dict(lm_tags)
+                if lm_exploration is not None:
+                    feats["exploration"] = lm_exploration
+                # `entry["learning"]` YALNIZ başarılı dolumdan sonra yazılır (OPEN_FAILED satırı işlem etiketi taşımaz)
             # Risk motoru yalnizca KUCULTUR: nihai boyutu asla buyutme.
             notional = min(final_notional, float(rd.adjusted_notional if rd.adjusted_notional is not None else final_notional))
             entry["executed_notional"] = round(notional, 6)
@@ -2162,37 +2356,54 @@ class TradingEngineV3(TradingEngine):
             entry["applied_risk_usdt"] = applied_risk_usdt
             # ---------------------------------------------------------------- 8) LEDGER / BORSA ACILISI
             if market == "USDM_PERP":
+                _open_meta = {"coin_head_id": d.coin_head_id, "run_id": self.run_id,
+                              "decision_snapshot": d.to_dict(include_reports=False),
+                              # KALDIRAC SNAPSHOT'I: pozisyon omru boyunca DEGISMEZ (restart dahil).
+                              "leverage_decision": (lev_dec.to_dict() if lev_dec else
+                                                    {"leverage": plan_leverage, "reasons": ["STATIC_PLAN_LEVERAGE"],
+                                                     "blocked_higher": ["DYNAMIC_LEVERAGE_DISABLED"]}),
+                              "risk_snapshot": {"final_notional": final_notional,
+                                                # UYGULANAN degerler (deftere giden):
+                                                "applied_notional": round(notional, 6),
+                                                "initial_margin": round(notional / max(plan_leverage, 1), 6),
+                                                "stop_frac": round(_stop_frac, 8),
+                                                # dolum sonrasi GERCEKLESEN degerle guncellenir (asagi bkz.)
+                                                "max_loss_at_stop_usdt": applied_risk_usdt,
+                                                "applied_risk_usdt": applied_risk_usdt,
+                                                # istenen (kucultme oncesi) — seffaflik icin AYRI alan
+                                                "requested_notional": final_notional,
+                                                "requested_risk_usdt": final_risk_usdt,
+                                                "risk_engine_risk_usdt": rd.risk_usdt,
+                                                "execution_entry": round(exec_entry, 10)}}
+                _lm_spec = None
+                if lm_tags is not None:
+                    _open_meta["learning"] = dict(lm_tags)
+                    if lm_lev_fb is not None:           # kaldıraç snapshot'ı düşüşü göstersin (taban NO_TRADE → 2x)
+                        _open_meta["leverage_decision"] = dict(entry.get("leverage_decision") or {}, leverage=plan_leverage)
+                    # min-notional çıkarması: adıma YUKARI yuvarlanmış miktar aynen açılır (defterin aşağı yuvarlaması adım kaybettirmez)
+                    if lm_fit.size_rule == SIZE_BUMP and lm_fit.detail.get("qty") and notional + 1e-4 >= final_notional:
+                        _lm_spec = SizeSpec(Decimal(str(lm_fit.detail["qty"])), AmountType.QUANTITY,
+                                            int(rd.adjusted_leverage or 1))
                 pos = self._execute_futures_entry(
                     symbol=sym, direction=d.direction, ref_price=b.price, notional=notional,
                     leverage=int(rd.adjusted_leverage or 1), stop=plan.stop, targets=plan.targets,
                     filters=f_sym, provenance=prec_prov, setup_type=plan.entry_type,
                     trigger_text=(str(plan.entry_trigger or "") + ((" | yapı: " + str(sg.get("text_tr")))
                                                                     if (sg is not None and sg.get("primary")) else "")),
-                    features=feats, tick=marks.get(sym), now=now,
-                    meta={"coin_head_id": d.coin_head_id, "run_id": self.run_id,
-                                              "decision_snapshot": d.to_dict(include_reports=False),
-                                              # KALDIRAC SNAPSHOT'I: pozisyon omru boyunca DEGISMEZ (restart dahil).
-                                              "leverage_decision": (lev_dec.to_dict() if lev_dec else
-                                                                    {"leverage": plan_leverage, "reasons": ["STATIC_PLAN_LEVERAGE"],
-                                                                     "blocked_higher": ["DYNAMIC_LEVERAGE_DISABLED"]}),
-                                              "risk_snapshot": {"final_notional": final_notional,
-                                                                # UYGULANAN degerler (deftere giden):
-                                                                "applied_notional": round(notional, 6),
-                                                                "initial_margin": round(notional / max(plan_leverage, 1), 6),
-                                                                "stop_frac": round(_stop_frac, 8),
-                                                                # dolum sonrasi GERCEKLESEN degerle guncellenir (asagi bkz.)
-                                                                "max_loss_at_stop_usdt": applied_risk_usdt,
-                                                                "applied_risk_usdt": applied_risk_usdt,
-                                                                # istenen (kucultme oncesi) — seffaflik icin AYRI alan
-                                                                "requested_notional": final_notional,
-                                                                "requested_risk_usdt": final_risk_usdt,
-                                                                "risk_engine_risk_usdt": rd.risk_usdt,
-                                                                "execution_entry": round(exec_entry, 10)}})
+                    features=feats, tick=marks.get(sym), now=now, meta=_open_meta,
+                    size_spec=_lm_spec, allow_shrink=(True if lm_tags is not None else None))
                 if pos is None:
                     entry["exec_reject"] = self.ledger2.last_reject_reason
                     entry["block_code"] = "EXCHANGE_REJECTED"
                     funnel["exchange_rejected"] += 1
+                    if bl is not None:          # defter/borsa filtresi KALIR (+CF: MIN_NOTIONAL, MIN_QTY, ...)
+                        self._lm_counterfactual(bl, sym=sym, market=market, d=d, plan=plan, b=b,
+                                                reason=str(entry["exec_reject"] or ""), reasons=["EXCHANGE_REJECTED"],
+                                                now=now, entry=entry)
                     continue
+                if lm_tags is not None:
+                    lm_tags = entry["learning"] = self._lm_after_open(pos, lm_tags)
+                    feats["learning"] = dict(lm_tags)           # işlem hafızası satırı da nihai etiketi taşısın
                 # GERCEKLESEN DOLUM: defter qty'yi lot adimina yuvarlar, bu yuzden dolan notional
                 # istenen/uygulanan notional'dan KUCUK olabilir. Gozlem metadata'si defterin
                 # GERCEKTEN actigi pozisyonu bildirir; kabul karari (rd) DEGISMEZ.
@@ -2210,13 +2421,30 @@ class TradingEngineV3(TradingEngine):
                     self._record_main_structure(sym, sg, market=market, at=now, trade_id=trade_id, applied="OPENED")
                 desc = f"{sym} {d.direction} FUTURES @ {float(pos.entry_avg):.6g} · notional {float(pos.qty * pos.entry_avg):.2f} · {pos.leverage}x · stop {plan.stop:.6g} · TP {', '.join(f'{t:.6g}' for t in plan.targets)} · P(win) %{(b.p_win or 0.5)*100:.0f}"
             else:
-                order = self.spot2.market_buy(sym, quote_amount=Decimal(str(notional)), ref_price=Decimal(str(b.price)), tick=marks.get(sym), strategy=plan.entry_type, now=now)
-                if order is None or str(getattr(order, "status", "")).upper() not in ("FILLED", "PARTIALLY_FILLED"):
+                if (lm_tags is not None and lm_fit.size_rule == SIZE_BUMP and lm_fit.detail.get("qty")
+                        and notional + 1e-4 >= final_notional):
+                    # ÖĞRENME: min-notional çıkarması adıma YUKARI yuvarlanmış MİKTARLA açılır
+                    order = self.spot2.market_buy(sym, qty=Decimal(str(lm_fit.detail["qty"])), ref_price=Decimal(str(b.price)),
+                                                  tick=marks.get(sym), strategy=plan.entry_type, now=now)
+                else:
+                    order = self.spot2.market_buy(sym, quote_amount=Decimal(str(notional)), ref_price=Decimal(str(b.price)), tick=marks.get(sym), strategy=plan.entry_type, now=now)
+                _ost = getattr(order, "status", "") if order is not None else ""
+                if lm_tags is not None:
+                    # ÖĞRENME: durumun DEĞERİ okunur — `str(OrderStatus.FILLED)` Python ≥3.11'de 'OrderStatus.FILLED' döner
+                    # ve dolan emir reddedilmiş sayılırdı (baseline dalı bit-aynı bırakıldı; ayrı düzeltme konusu)
+                    _ost = getattr(_ost, "value", _ost)
+                if order is None or str(_ost).upper() not in ("FILLED", "PARTIALLY_FILLED"):
                     entry["exec_reject"] = getattr(self.spot2, "last_reject_reason", "spot reject")
                     entry["block_code"] = "EXCHANGE_REJECTED"
                     funnel["exchange_rejected"] += 1
+                    if bl is not None:
+                        self._lm_counterfactual(bl, sym=sym, market=market, d=d, plan=plan, b=b,
+                                                reason=str(entry["exec_reject"] or ""), reasons=["EXCHANGE_REJECTED"],
+                                                now=now, entry=entry)
                     continue
                 trade_id = getattr(order, "id", new_id("spot"))
+                if lm_tags is not None:
+                    entry["learning"] = lm_tags
                 desc = f"{sym} SPOT LONG @ {b.price:.6g} · {notional:.2f} USDT · stop {plan.stop:.6g}"
             # Eslesmis gozlem beklemede: ACTIVE gercek islemi daraltti, SHADOW ise yalniz
             # KARSI-OLGUSAL degerlendirildi (gercek giris ondan ETKILENMEDI).
@@ -2229,6 +2457,13 @@ class TradingEngineV3(TradingEngine):
                                                "source": ("applied" if _pol is res else "counterfactual"),
                                                "symbol": sym, "side": d.direction})
             funnel["opened"] += 1
+            if lm_tags is not None:
+                funnel["learning_opened"] += 1
+                funnel["learning_unlocked"] += int(bool(lm_tags.get("learning_unlocked_by")))
+                funnel["learning_exploration"] += int(lm_tags.get("exploration") is not None)
+                funnel["learning_leverage_fallback"] += int(lm_tags.get("leverage_fallback") is not None)
+                funnel["min_notional_bumped"] += int(lm_tags.get("size_rule") == SIZE_BUMP)
+                funnel["shrunk_to_margin"] += int(lm_tags.get("size_rule") == SIZE_SHRUNK)
             self._notify_opened(sym, market, plan, notional, plan_leverage, final_risk_usdt, trade_id, now)
             self._seen_signals = (self._seen_signals + [_sig])[-5000:]
             # TETIK KAYDI ACILIS ANINDA islenir: tetiklenip acilmamis (kapasite/emir reddi) bir aday
@@ -2574,20 +2809,25 @@ class TradingEngineV3(TradingEngine):
     def _execute_futures_entry(self, *, symbol: str, direction: str, ref_price, notional, leverage: int,
                                stop, targets, filters, provenance, setup_type: str = "", trigger_text: str = "",
                                features: dict | None = None, tick: TickData | None = None, now=None,
-                               meta: dict | None = None):
+                               meta: dict | None = None, size_spec: SizeSpec | None = None,
+                               allow_shrink: bool | None = None):
         """Doğrulanmış teklifi AYNI filtre nesnesiyle deftere işler. Reddedilirse None döner.
 
         Kural provenansı pozisyon meta'sına yazılır (`meta.precision`); böylece dolumda hangi
         tick/step'in ve hangi kaynağın kullanıldığı pozisyonla birlikte kalıcıdır.
+        ÖĞRENME MODU (2026-09-28): `size_spec` (min-notional çıkarmasında adıma YUKARI yuvarlanmış miktar) ve
+        `allow_shrink` (yalnız bu çağrı; defter özniteliği/JSON DEĞİŞMEZ) yalnız öğrenme aktifken verilir; None → bit-aynı.
         """
         meta = dict(meta or {})
         meta["precision"] = provenance.to_dict() if hasattr(provenance, "to_dict") else (provenance or None)
+        _kw = {} if allow_shrink is None else {"allow_shrink": bool(allow_shrink)}
         t_before = _wall_ms()
         with self._ledger_lock:        # koruyucu izleyiciyle aynı defter kilidi (kısa; ağ YOK)
             pos = self.ledger2.open(symbol, direction, ref_price,
-                                    SizeSpec(Decimal(str(notional)), AmountType.NOTIONAL, int(leverage or 1)),
+                                    size_spec if size_spec is not None
+                                    else SizeSpec(Decimal(str(notional)), AmountType.NOTIONAL, int(leverage or 1)),
                                     stop=stop, targets=targets, filters=filters, setup_type=setup_type,
-                                    trigger_text=trigger_text, features=features, tick=tick, now=now, meta=meta)
+                                    trigger_text=trigger_text, features=features, tick=tick, now=now, meta=meta, **_kw)
         if pos is not None:
             self._protective_new_positions("main", (), {symbol: str(pos.id)}, t_before)
         return pos
@@ -2643,6 +2883,9 @@ class TradingEngineV3(TradingEngine):
         mode = self._structure_mode_main()
         if mode == "OFF":
             return None
+        # ÖĞRENME MODU (2026-09-28, öğrenme modu) S3: yalnız GİRİŞ kararı gölgeye alınır (bekle/tetik bekle/iptal girişi
+        # engellemez; planın kendi giriş/stopu kullanılır). Yönetim (`_structure_manage`, stop sıkılaştırma) ENFORCE kalır.
+        _lm_entry_shadow = mode == "ENFORCE" and self._lm_override("structures_entry_shadow", False) is True
         try:
             from .structures.bots import BLOCKING_ACTIONS, main_entry_decision, used_patterns_of
             prov = (getattr(self, "_frame_provenance", None) or {}).get(sym) or {}
@@ -2667,6 +2910,12 @@ class TradingEngineV3(TradingEngine):
             BLOCKING_ACTIONS = ("WAIT", "WAIT_TRIGGER", "CANCEL")
         dec["mode"] = mode
         dec["blocks"] = bool(mode == "ENFORCE" and dec.get("action") in BLOCKING_ACTIONS)
+        if _lm_entry_shadow:
+            # veri kimliği (perp olmayan çerçeve) ve analiz arızası gölgeye ALINMAZ: engel kalır (DATA_INTEGRITY)
+            _hard = str(dec.get("reason_code") or "").startswith(_LM_STRUCTURE_HARD)
+            dec["learning_entry_shadow"] = {"would_block": dec["blocks"], "kept_hard": bool(dec["blocks"] and _hard)}
+            if not (dec["blocks"] and _hard):
+                dec["mode"], dec["blocks"] = "SHADOW", False
         self._record_main_structure(sym, dec, market=market, at=now, analyses=analyses,
                                     applied="BLOCKED" if dec["blocks"] else "PASSED")
         return dec
@@ -2746,6 +2995,7 @@ class TradingEngineV3(TradingEngine):
         mode = str(getattr(_en, "candle_confirmation_mode", "OFF") or "OFF").upper()
         if mode == "OFF":
             return None
+        mode, _lm_from = self._lm_gate_mode("candle_veto_shadow", mode)       # S2: öğrenme aktifken ENFORCE → SHADOW
         variant = str(getattr(_en, "candle_confirmation_variant", "") or "")
         try:
             from .candle_confirmation import candle_confirmation, closed_bars
@@ -2758,13 +3008,13 @@ class TradingEngineV3(TradingEngine):
             now_ms = int(now.timestamp() * 1000)
             b4 = closed_bars(rows_from_frame(frames.get("4h")), now_ms=now_ms, tf="4h")
             b1 = closed_bars(rows_from_frame(frames.get("1d")), now_ms=now_ms, tf="1d")
-            return candle_confirmation(mode=mode, variant=variant, direction=direction,
-                                       bars_4h=b4, bars_1d=b1, cfg=cfg)
+            return self._lm_mark_gate(candle_confirmation(mode=mode, variant=variant, direction=direction,
+                                                          bars_4h=b4, bars_1d=b1, cfg=cfg), _lm_from)
         except Exception as exc:  # noqa: BLE001 — ariza SESSIZ GECMEZ
             log.warning("mum onayi degerlendirilemedi (%s): %s", symbol, exc)
-            return {"schema_version": "candle_confirmation_v1", "mode": mode, "variant": variant,
-                    "verdict": {"ok": False, "reason": "CANDLE_ERROR:%s" % type(exc).__name__},
-                    "blocks": mode == "ENFORCE", "shadow": {}, "error": str(exc)[:200]}
+            return self._lm_mark_gate({"schema_version": "candle_confirmation_v1", "mode": mode, "variant": variant,
+                                       "verdict": {"ok": False, "reason": "CANDLE_ERROR:%s" % type(exc).__name__},
+                                       "blocks": mode == "ENFORCE", "shadow": {}, "error": str(exc)[:200]}, _lm_from)
 
     def _chart_confirmation(self, symbol: str, direction: str, now: datetime) -> dict | None:
         """SAF sorgu: durum DEGISTIRMEZ. Mantik `chart_confirmation.chart_confirmation` icinde — TEK kaynak.
@@ -2808,6 +3058,7 @@ class TradingEngineV3(TradingEngine):
         mode = str(getattr(_en, "regime_gate_mode", "OFF") or "OFF").upper()
         if mode == "OFF":
             return None
+        mode, _lm_from = self._lm_gate_mode("regime_gate_shadow", mode)       # S1: öğrenme aktifken ENFORCE → SHADOW
         variant = str(getattr(_en, "regime_gate_variant", "") or "")
         try:
             from .candle_confirmation import closed_bars
@@ -2815,13 +3066,13 @@ class TradingEngineV3(TradingEngine):
             frames = (getattr(self.runner, "last_frames", None) or {}).get(BTC_SYMBOL) or {}
             now_ms = int(now.timestamp() * 1000)
             bars = closed_bars(rows_for_regime(frames.get("1d")), now_ms=now_ms, tf="1d")
-            return regime_confirmation(mode=mode, variant=variant, direction=direction,
-                                       btc_daily_bars=bars)
+            return self._lm_mark_gate(regime_confirmation(mode=mode, variant=variant, direction=direction,
+                                                          btc_daily_bars=bars), _lm_from)
         except Exception as exc:  # noqa: BLE001 — ariza SESSIZ GECMEZ
             log.warning("rejim kapisi degerlendirilemedi (%s): %s", symbol, exc)
-            return {"schema_version": "regime_gate_v1", "mode": mode, "variant": variant, "regime": None,
-                    "verdict": {"ok": False, "reason": "REGIME_ERROR:%s" % type(exc).__name__},
-                    "blocks": mode == "ENFORCE", "shadow": {}, "error": str(exc)[:200]}
+            return self._lm_mark_gate({"schema_version": "regime_gate_v1", "mode": mode, "variant": variant, "regime": None,
+                                       "verdict": {"ok": False, "reason": "REGIME_ERROR:%s" % type(exc).__name__},
+                                       "blocks": mode == "ENFORCE", "shadow": {}, "error": str(exc)[:200]}, _lm_from)
 
     def _strategy_open_symbols(self) -> list[str]:
         """Strateji defterlerinin acik pozisyonlari: tur kapsamina girer ki cerceve/fiyat alinsin ve kural
@@ -2887,8 +3138,12 @@ class TradingEngineV3(TradingEngine):
 
         def _symbols() -> list[str]:
             return list(book.symbols) if book.symbols else (list(_eu.symbols) if _eu.enabled else [])
+        # ÖĞRENME MODU (2026-09-28, öğrenme modu — C2): zamanlayıcı kapıyı HER 5m geçişinde kendisi tazeler ve defterin
+        # o geçişlik görünümünü (min_stop_pct 0,32, slot, kaldıraç) verir. Anahtar kapalıyken None → kurulum bit-aynı.
+        _lm = getattr(self, "lm", None)
+        _lkw = {"learning": _lm} if (_lm is not None and bool(getattr(_lm, "enabled", False))) else {}
         t = BoxTimer(book=book, provider_factory=self._futures_provider_factory, state_path=self.cfg.state_path,
-                     symbols_fn=_symbols, funding_rates=getattr(self, "funding_rates", None))
+                     symbols_fn=_symbols, funding_rates=getattr(self, "funding_rates", None), **_lkw)
         self.box_timer = t
         t.start()
         return t.status()
@@ -2912,9 +3167,23 @@ class TradingEngineV3(TradingEngine):
         universe = list(_eu.symbols) if _eu.enabled else list(symbols)
         index = [{"key": b.key, "name": b.name, "summary_file": b.summary_file, "evaluated_by": "box_timer"}
                  for b in all_books if b not in books]
+        # ÖĞRENME MODU (2026-09-28, öğrenme modu — C2): defter görünümü TUR BAŞI anlık görüntüsüdür (`_lm_refresh`).
+        # `symbols: universe` (C9: D4/C4) → defter listesi ∪ ana giriş evreni (in_lab_universe etiketini defter koyar).
+        # Anahtar kapalıyken kapsam ve `step` çağrısı bit-aynı (ek anahtar geçilmez).
+        _lm = getattr(self, "lm", None)
+        _lm_on = _lm is not None and bool(getattr(_lm, "enabled", False))
+        plan: list[tuple] = []
+        for b in books:
+            bl = (getattr(self, "_lm_books", None) or {}).get(b.name) if _lm_on else None
+            syms = b.symbols or universe
+            if bl is not None and b.symbols and getattr(bl, "symbols", None) == SYMBOLS_UNIVERSE and _eu.enabled:
+                syms = list(dict.fromkeys(list(b.symbols) + list(_eu.symbols)))
+            lkw = ({"learning": bl, "structures_entry_shadow": bool((getattr(self, "_lm_eshadow", None) or {}).get(b.name))}
+                   if _lm_on else {})
+            plan.append((b, syms, lkw))
         # VERI KIMLIGI (2026-09-16): kagit defterler ana botun spot-ticker `marks`ini DEGIL, dogrulanmis USDS-M perpetual
         # fiyatini kullanir (`_paper_marks`); cerceve provenansi (tur kimligi + bar bagi) defter adimina tasinir.
-        scope = list(dict.fromkeys([s for b in books for s in (b.symbols or universe)] + [s for b in books for s in b.ledger.positions]))
+        scope = list(dict.fromkeys([s for _b, syms, _k in plan for s in syms] + [s for b in books for s in b.ledger.positions]))
         # ZAMAN SOZLESMESI (2026-09-16): fiyat = kontrol anina gore GUNCEL dogrulanmis perp mark (fiyat-yalniz tick); kapanmis
         # 1h bar uclari ayri sozlesmeyle defterde uygulanir (pozisyon acilisindan sonra, bir kez); kural `now` aninda
         # kapanmis gunluk barlari okur ve ayni `as_of` ile guncellik denetlenir.
@@ -2924,15 +3193,14 @@ class TradingEngineV3(TradingEngine):
         if pgaps:
             log.warning("kagit defter: %d sembol icin gecerli/guncel perp fiyati YOK (tick yok): %s", len(pgaps),
                         ", ".join("%s=%s" % (s, g.get("reason")) for s, g in sorted(pgaps.items()))[:300])
-        for book in books:
+        for book, syms, lkw in plan:
             try:
                 book.run_id = str(getattr(self, "run_id", "") or "")
-                syms = book.symbols or universe
                 frames = {s: (self.runner.last_frames.get(s) or {}) for s in set(syms) | set(book.ledger.positions) | {"BTC/USDT"}}
                 # 1) kural (giris/kural cikisi) — veri kimligi + guncellik hukmu ile (onceki sira korunur: kural once)
                 held_before, t_before = book.held_ids(), _wall_ms()
                 book.step(symbols=list(syms), frames_by_symbol=frames, marks=pmarks, marks_f=pmarks_f, now=now,
-                          provenance_by_symbol=self._frame_provenance, data_gaps=pgaps)
+                          provenance_by_symbol=self._frame_provenance, data_gaps=pgaps, **lkw)
                 self._protective_new_positions(book.key, held_before.values(), book.held_ids(), t_before)
                 # 2) gecmis OHLC: kapanmis 1h barlarin uclari — yalniz pozisyon acilisindan SONRA acilmis, tuketilmemis barlar
                 #    (bu adimda acilan pozisyon icin hicbir bar uygun degildir: giris oncesi fitil yeni pozisyonu stop'lamaz;
@@ -3103,6 +3371,18 @@ class TradingEngineV3(TradingEngine):
         """Tur adımı: tarayıcıyı başlat (arka plan) + ekonomik raporu yaz. Arıza ana turu DURDURMAZ."""
         if self.pattern_book is None:
             return
+        # ÖĞRENME MODU (2026-09-28, öğrenme modu — C2): her ana turda defterin görünümü + ana giriş evreni (S9) + kapı.
+        # Görünüm tarayıcının SONRAKİ turunda (`begin_cycle`) devreye girer; kapı (`lm.active`) her formasyon turunda
+        # tarayıcı iş parçacığından bir kez sorulur. Anahtar kapalıyken çağrı YOK (defter/özet bit-aynı).
+        _lm = getattr(self, "lm", None)
+        if _lm is not None and bool(getattr(_lm, "enabled", False)) and hasattr(self.pattern_book, "set_learning"):
+            try:
+                _eu = self.cfg.v3.entry_universe
+                self.pattern_book.set_learning((getattr(self, "_lm_books", None) or {}).get("pattern_trader"),
+                                               universe_symbols=list(_eu.symbols) if _eu.enabled else [],
+                                               gate=_lm.active, status=_lm.status())
+            except Exception as exc:  # noqa: BLE001 — görünüm verilemezse defter baseline sürer (askıda)
+                log.warning("formasyon defterine öğrenme görünümü verilemedi (baseline): %s", exc)
         try:
             self.ensure_pattern_scanner()
         except Exception as exc:  # noqa: BLE001
@@ -3264,6 +3544,11 @@ class TradingEngineV3(TradingEngine):
             _fp = float(getattr(self.cfg.v3.universe, "futures_only_penalty_r", 0.0) or 0.0)
             if _fp > 0 and str(getattr(plan, "market_type", "")) != "spot":
                 _listed = self.spot_listing.is_listed(sym)
+            _sp = float(getattr(self.cfg.v3.futures_v3, "short_penalty_r", 0.0) or 0.0)
+            # ÖĞRENME MODU (2026-09-28, öğrenme modu) S5: kesit cezaları özellik olarak KAYDEDİLİR, UYGULANMAZ
+            # (kapalıyken `_lm_pen` False → çağrı bit-aynı).
+            _lm_pen = self._lm_override("economics_exploration", False) is True
+            _sp_eff, _fp_eff = (0.0, 0.0) if _lm_pen else (_sp, _fp)
             a, _unknown = assess_one(
                 symbol=sym, direction=d.direction, setup=plan.entry_type or "-", regime=d.regime,
                 soft_flags=list(getattr(d, "soft_flags", []) or []) + list(getattr(plan, "soft_flags", []) or []),
@@ -3272,12 +3557,19 @@ class TradingEngineV3(TradingEngine):
                 expected_r=plan.expected_r,
                 is_spot=(str(getattr(plan, "market_type", "")) == "spot"),
                 learner=self.learner2, p_win_override=d.p_win,
-                short_penalty_r=float(getattr(self.cfg.v3.futures_v3, "short_penalty_r", 0.0) or 0.0),
-                futures_only_penalty_r=_fp, spot_listed=_listed,
+                short_penalty_r=_sp_eff,
+                futures_only_penalty_r=_fp_eff, spot_listed=_listed,
                 risk_per_trade_pct=self.profile.risk_per_trade_pct)
             for _c in _unknown:
                 log.error("kayıtsız kapı kodu %s (%s) — aday fail-closed reddedildi", _c, sym)
             d.opportunity = a.to_dict()
+            if _lm_pen:
+                _is_spot = str(getattr(plan, "market_type", "")) == "spot"
+                _would = ((_sp if str(d.direction or "").upper() == "SHORT" else 0.0)
+                          + (_fp if (_fp > 0 and not _is_spot and _listed is not True) else 0.0))
+                d.opportunity["learning_penalties"] = {"applied": False, "short_penalty_r": _sp,
+                                                       "futures_only_penalty_r": _fp, "spot_listed": _listed,
+                                                       "would_apply_r": round(_would, 6)}
             # ÖĞRENME KARARI DEĞİŞTİRDİ Mİ? — PAPER_BOUNDED'ta etkin p_win baseline'dan
             # farklıysa AYNI ekonomi kapısı baseline ile de değerlendirilir; `tradeable`
             # sonucu farklıysa açıkça işaretlenir. SHADOW'da p_win zaten baseline'dır.
@@ -3299,8 +3591,8 @@ class TradingEngineV3(TradingEngine):
                         is_spot=(str(getattr(plan, "market_type", "")) == "spot"),
                         learner=self.learner2,
                         p_win_override=float(inf["baseline"]),
-                        short_penalty_r=float(getattr(self.cfg.v3.futures_v3, "short_penalty_r", 0.0) or 0.0),
-                        futures_only_penalty_r=_fp, spot_listed=_listed,
+                        short_penalty_r=_sp_eff,
+                        futures_only_penalty_r=_fp_eff, spot_listed=_listed,
                         risk_per_trade_pct=self.profile.risk_per_trade_pct)
                     changed = bool(a.tradeable) != bool(base_a.tradeable)
                 d.opportunity["decision_changed_by_learning"] = changed
@@ -3342,7 +3634,9 @@ class TradingEngineV3(TradingEngine):
         hist.append({"at": iso(now), **f})
         cutoff = (now - timedelta(hours=24)).isoformat()
         recent = [h for h in hist if str(h.get("at", "")) >= cutoff]
-        roll = {k: sum(int(h.get(k, 0) or 0) for h in recent) for k in list(_FUNNEL_KEYS) + ["closed"]}
+        # ÖĞRENME MODU (2026-09-28): öğrenme anahtarları yalnız bu turda varsa kayan pencereye eklenir (kapalıyken bit-aynı)
+        roll = {k: sum(int(h.get(k, 0) or 0) for h in recent)
+                for k in list(_FUNNEL_KEYS) + ["closed"] + [k for k in _LM_FUNNEL_KEYS if k in f]}
         denom = max(1, f.get("actionable", 0))
         atomic_write_json(self._funnel_path, {
             "schema": "decision_funnel_v1", "at": iso(now), "run": f,
@@ -3377,6 +3671,238 @@ class TradingEngineV3(TradingEngine):
         from .learn.research_coordinator import mode_gate
         return mode_gate(self.mode_state.mode.value, self.cfg.v3.execution.gateway,
                          self.mode_state.is_live_order_path_enabled())
+
+    # ------------------------------------------------------------------ ÖĞRENME MODU (2026-09-28, öğrenme modu) — ana bot
+    def _lm_refresh(self) -> None:
+        """Kapıyı tur başına BİR kez değerlendirir ve bu turun DEĞİŞMEZ görünümünü saklar (`_lm_main`, `_lm_ovr`).
+
+        Box zamanlayıcısı aynı `LearningMode` nesnesini kendi iş parçacığında tazeleyebilir; ana tur bu yüzden
+        `lm.on`u değil bu görünümü okur. Kapalı / askıda / main defteri kapalı → `_lm_main` None → baseline (bit-aynı)."""
+        self._lm_main, self._lm_ovr = None, {}
+        self._lm_books, self._lm_eshadow = {}, {}
+        lm = getattr(self, "lm", None)
+        if lm is None or not lm.enabled:
+            return
+        try:
+            lm.refresh()
+            bl = lm.book("main")
+            if bl is not None:
+                ovr = {k: lm.override(k, None) for k in _LM_OVERRIDE_KEYS}
+                ovr["structures_entry_shadow"] = bool(lm.structures_entry_shadow("main"))
+                self._lm_ovr = ovr
+            self._lm_main = bl
+            # C2: kâğıt defterler ve formasyon için AYNI anın görünümleri (defter kapalı/askıda → anahtar yok → None)
+            books, esh = {}, {}
+            for name in _LM_BOOK_NAMES:
+                if name == "main":
+                    continue
+                v = lm.book(name)
+                if v is not None:
+                    books[name], esh[name] = v, bool(lm.structures_entry_shadow(name))
+            self._lm_books, self._lm_eshadow = books, esh
+        except Exception as exc:  # noqa: BLE001 — öğrenme katmanı arızası turu DURDURMAZ: baseline
+            log.warning("öğrenme modu kapısı değerlendirilemedi (baseline sürüyor): %s", exc)
+            self._lm_main, self._lm_ovr = None, {}
+            self._lm_books, self._lm_eshadow = {}, {}
+
+    #: `learning_mode_since` durum dosyası (state kökünde): öğrenmenin İLK KEZ aktif olduğu an. Yeniden başlatma, askı ya
+    #: da kapatma onu SIFIRLAMAZ — panel/karne öncesi-sonrası ayrımını buna göre yapar (USDT ölçeği o andan sonra farklı).
+    LM_SINCE_FILE = "learning_mode.json"
+
+    def _lm_since(self) -> str | None:
+        """Kalıcı `learning_mode_since` (yoksa None). Dosya süreç başına bir kez okunur."""
+        if getattr(self, "_lm_since_doc", None) is None:
+            doc = read_json(self.cfg.state_path / self.LM_SINCE_FILE, default=None)
+            self._lm_since_doc = doc if isinstance(doc, dict) else {}
+        v = self._lm_since_doc.get("since")
+        return str(v) if v else None
+
+    def _lm_publish(self, now: datetime) -> None:
+        """Tur başı yayın (2026-09-28, öğrenme modu — C2): (1) öğrenme bu tur aktifse ve daha önce hiç kaydedilmediyse
+        `learning_mode.json`a ilk aktif an yazılır (bir kez; mevcut kayıt ASLA ezilmez); (2) şef brifingindeki kapasite
+        kuralı ("en fazla 3 pozisyon; toplam risk ≤ %6") ana defter öğrenmedeyken öğrenme bütçesini söyler, değilse
+        eski metin. Anahtar kapalıyken hiçbir dosya yazılmaz ve metin değişmez. Arıza turu DURDURMAZ."""
+        lm = getattr(self, "lm", None)
+        chief = getattr(getattr(self, "runner", None), "chief", None)
+        try:
+            if chief is not None and hasattr(chief, "learning_rule"):
+                bl = getattr(self, "_lm_main", None)
+                chief.learning_rule = (learning_capacity_rule(slots=bl.slots, risk_pct=bl.risk_pct,
+                                                              max_total_open_risk_pct=lm.max_total_open_risk_pct)
+                                       if (bl is not None and lm is not None) else None)
+            if lm is None or not lm.enabled or not lm.on or self._lm_since():
+                return
+            st = lm.status()
+            doc = {"schema_version": "learning_mode_since_v1", "since": iso(now), "run_id": str(getattr(self, "run_id", "") or ""),
+                   "books": list(st.get("books") or []), "mode": self.mode_state.mode.value,
+                   "note_tr": "Öğrenme modunun İLK aktif olduğu an (yalnız PAPER). Bu andan sonraki USDT sonuçları öğrenme "
+                              "ölçeğindedir (%0,5 risk, slot boyutu) ve öncekiyle karşılaştırılmaz; R ölçütleri esastır. "
+                              "Yeniden başlatma/askı/kapatma bu değeri SIFIRLAMAZ."}
+            atomic_write_json(self.cfg.state_path / self.LM_SINCE_FILE, doc)
+            self._lm_since_doc = doc
+            log.info("öğrenme modu ilk kez aktif: learning_mode_since=%s", doc["since"])
+        except Exception as exc:  # noqa: BLE001 — yayın arızası turu DURDURMAZ
+            log.warning("öğrenme modu durum yayını başarısız (tur sürer): %s", exc)
+
+    def _lm_override(self, key: str, default):
+        """Bu turun strateji ezmesi — yalnız öğrenme aktif VE main defteri açıkken; aksi halde `default`."""
+        if getattr(self, "_lm_main", None) is None:
+            return default
+        v = (getattr(self, "_lm_ovr", None) or {}).get(key)
+        return default if v is None else v
+
+    def _lm_gate_mode(self, key: str, mode: str) -> tuple[str, str | None]:
+        """S1/S2: öğrenme aktifken ENFORCE kapı SHADOW'a iner; hüküm yine hesaplanır ve kaydedilir.
+        Döner: (etkin mod, ezilen mod | None). Ezme yoksa mod aynen döner (bit-aynı)."""
+        if mode == "ENFORCE" and self._lm_override(key, False) is True:
+            return "SHADOW", mode
+        return mode, None
+
+    @staticmethod
+    def _lm_mark_gate(out, from_mode: str | None):
+        """Gölgeye alınan kapı kaydına ezmeyi yazar (`would_block`: ENFORCE'ta engeller miydi). Ezme yoksa DOKUNMAZ."""
+        if from_mode is not None and isinstance(out, dict):
+            out["learning_override"] = {"from": from_mode, "to": out.get("mode"),
+                                        "would_block": not bool((out.get("verdict") or {}).get("ok", True))}
+        return out
+
+    @staticmethod
+    def _lm_gate_feature(g) -> dict | None:
+        """Kapı hükmünün işlem kaydına giden kısa özeti (S1/S2: gölgede de hüküm özellik olarak kalır)."""
+        if not isinstance(g, dict):
+            return None
+        return {k: g.get(k) for k in ("mode", "variant", "regime", "verdict", "blocks", "learning_override")
+                if g.get(k) is not None}
+
+    @staticmethod
+    def _lm_chief_reason(perm: dict, d) -> str:
+        """Chief reddinin karşı-olgusal nedeni. Red-team SERT kodlarının HEPSİ karşı-olgusala uygunsa (ör.
+        COSTS_EXCEED_EDGE, KILL_SWITCH_ACTIVE) ilk kod; aksi halde chief kodu (veri/uygulanabilirlik → kayıt yok)."""
+        bc = str((perm or {}).get("block_code") or "")
+        if not bc:
+            return "CHIEF_BLOCKED"
+        codes: list[str] = []
+        for v in (getattr(d, "vetoes", None) or []):
+            tail = str(v).split(":", 1)[1] if ":" in str(v) else str(v)
+            codes += [c.strip().upper() for c in tail.split(",") if c.strip()]
+        if codes and all(counterfactual_ok(c) for c in codes):
+            return codes[0]
+        return bc
+
+    def _lm_cf_features(self, d, plan, b, entry: dict | None, extra: dict | None = None) -> dict:
+        """Karşı-olgusal kaydın özellikleri: gerçek işlemin taşıyacağı karar anı hükümleri (rejim/mum/yapı dahil)."""
+        e = entry or {}
+        opp = getattr(d, "opportunity", None) or {}
+        out = {"p_win": getattr(b, "p_win", None), "expected_r": getattr(plan, "expected_r", None),
+               "regime": getattr(d, "regime", None), "setup_type": getattr(plan, "entry_type", None),
+               "conservative_net_edge_r": opp.get("conservative_net_edge_r"),
+               "net_expectancy_r": opp.get("net_expectancy_r"), "learning_penalties": opp.get("learning_penalties")}
+        for k in ("candle_confirmation", "chart_confirmation", "regime_gate"):
+            if e.get(k) is not None:
+                out[k] = self._lm_gate_feature(e[k])
+        for k in ("structure", "leverage_decision", "learning_fit"):
+            if e.get(k) is not None:
+                out[k] = e[k]
+        out.update(extra or {})
+        return {k: v for k, v in out.items() if v is not None}
+
+    def _lm_counterfactual(self, bl, *, sym: str, market: str, d, plan, b, reason: str, reasons=(), now: datetime,
+                           entry: dict | None = None, extra: dict | None = None) -> bool:
+        """Açılmayan GEÇERLİ sinyal → ana gölge defterine tek karşı-olgusal (P1: `plan_id` = bar başına sinyal anahtarı).
+
+        Yalnız öğrenme aktif + `counterfactual` açık + neden `counterfactual_ok` + geometri geçerliyken. Aynı sinyal
+        (anahtar/sembol/yön) etiketlenene dek ikinci kez YAZILMAZ (ShadowBook açık-olay tekilliği) → bir 4h barı boyunca
+        tekrarlanan turlar tek kayıt üretir. `expected_r ≥ 1.5` şartı öğrenmede aranmaz. Defter/equity'ye DOKUNMAZ."""
+        if bl is None or not bl.counterfactual or not counterfactual_ok(reason):
+            return False
+        try:
+            e_px, s_px = float(plan.entry or 0), float(plan.stop or 0)
+            dirn = str(d.direction or "").upper()
+            if e_px <= 0 or s_px <= 0 or not ((dirn == "LONG" and s_px < e_px) or (dirn == "SHORT" and s_px > e_px)):
+                return False
+            sig = self._signal_id(sym, market, d, plan, b)
+            why = [str(reason)] + [str(x) for x in (reasons or ()) if str(x) != str(reason)][:6]
+            shs = self._shadow_add({"plan_id": sig, "symbol": sym, "market_type": market, "direction": d.direction,
+                                    "entry": plan.entry, "stop": plan.stop, "targets": plan.targets,
+                                    "horizon_bars": plan.time_horizon_bars, "leverage": plan.size.leverage},
+                                   why, now=now)
+            if shs:
+                feats = self._lm_cf_features(d, plan, b, entry, extra)
+                for sh in shs:
+                    sh.book, sh.signal_key, sh.label_kind = "main", sig, "TARGET_STOP_TIME"
+                    sh.learning_unlocked, sh.features = False, feats
+                self.shadow.save()
+                fun = getattr(self, "_funnel", None)
+                if isinstance(fun, dict) and "counterfactual_recorded" in fun:
+                    fun["counterfactual_recorded"] += 1
+            if entry is not None:
+                entry["counterfactual"] = {"signal_key": sig, "reason": str(reason), "recorded": bool(shs)}
+            return bool(shs)
+        except Exception as exc:  # noqa: BLE001 — karşı-olgusal kayıt kararı ETKİLEMEZ
+            log.warning("%s öğrenme karşı-olgusalı yazılamadı: %s", sym, exc)
+            return False
+
+    def _lm_fit(self, bl, *, market: str, exec_entry: float, stop, leverage_max: int, f_sym, state):
+        """Öğrenme boyutu (SPEC §3, slot K): `fit_size` — %0,5 hedef risk, rezerv %5, likidasyon ≥ 2 × stop, kaldıraç
+        tavanı = seviye seçimi ∧ defter `leverage_max` ∧ profil ∧ borsa; min-notional'a çıkarma yalnız %2 tavan ve serbest
+        marj içinde. Taban equity = öğrenme RiskEngine'inin `equity_basis`i (kabul kararıyla AYNI)."""
+        spot = market == "SPOT"
+        prof = self.risk_learning.profile
+        if spot:
+            lev_cap = 1
+            avail = float(getattr(self.spot2, "cash", 0) or 0)          # serbest spot nakdi (kilitli hariç)
+        else:
+            lev_cap = max(1, min(int(leverage_max or 1), int(bl.leverage_max), int(prof.futures_max_leverage),
+                                 int(getattr(f_sym, "max_leverage", None) or leverage_max or 1)))
+            avail = float(self.ledger2.available)
+        step = _f_num(getattr(f_sym, "qty_step", None))
+        return fit_size(equity=self.risk_learning.equity_basis(state), entry=exec_entry, stop=float(stop), slots=bl.slots,
+                        leverage_max=lev_cap, risk_pct=bl.risk_pct, reserve_pct=bl.reserve_pct,
+                        liq_buffer_mult=bl.liq_buffer_mult, mmr=0.004, min_notional=float(f_sym.min_notional),
+                        qty_step=(step if step and step > 0 else None), price_for_step=exec_entry,
+                        hard_cap_pct=bl.hard_cap_pct, min_notional_bump=bl.min_notional_bump, available_margin=avail,
+                        min_qty=_f_num(getattr(f_sym, "min_qty", None)), max_position_pct=prof.max_position_pct)
+
+    def _lm_baseline_blockers(self, plan_dict: dict, *, market: str, base_notional: float, base_leverage: int,
+                              state, now: datetime) -> list[str]:
+        """`learning_unlocked_by` için ucuz baseline tekrarı: taban RiskEngine (%6 / 2% / spot %30) + taban boyutun marjı.
+        Boş liste → baseline da açardı. Hata → ['BASELINE_UNKNOWN'] (uydurma yok)."""
+        try:
+            if base_notional <= 0:
+                return []                                 # sıfır çarpan zaten kayıtlı (SIZE_MULTIPLIER_ZERO / ekonomi)
+            lev = max(1, int(base_leverage or 1))
+            bp = dict(plan_dict, notional=round(base_notional, 6), margin=round(base_notional / lev, 6), leverage=lev)
+            rdb = self.risk.evaluate(bp, state, {"now_utc": now})
+            if not rdb.allowed:
+                return list(rdb.reasons)
+            n = min(base_notional, float(rdb.adjusted_notional if rdb.adjusted_notional is not None else base_notional))
+            if market == "SPOT":
+                free = float(getattr(self.spot2, "cash", 0) or 0)          # serbest spot nakdi (kilitli hariç)
+                return ["INSUFFICIENT_MARGIN"] if n > free else []
+            lev2 = max(1, int(rdb.adjusted_leverage or lev))
+            return ["INSUFFICIENT_MARGIN"] if n / lev2 > float(self.ledger2.available) else []
+        except Exception:  # noqa: BLE001
+            return ["BASELINE_UNKNOWN"]
+
+    def _lm_after_open(self, pos, tags: dict) -> dict:
+        """Dolum sonrası etiket: defter marja küçülttüyse (`meta.shrunk_to_margin`) SHRUNK_TO_MARGIN ve risk payı ölçeklenir.
+        Etiket `pos.meta["learning"]` ve `pos.features["learning"]`a defter kilidi altında yazılır."""
+        t = dict(tags)
+        sh = (getattr(pos, "meta", None) or {}).get("shrunk_to_margin")
+        if isinstance(sh, dict):
+            try:
+                ratio = float(Decimal(str(sh.get("filled_qty"))) / Decimal(str(sh.get("requested_qty"))))
+            except Exception:  # noqa: BLE001
+                ratio = None
+            t["size_rule"] = SIZE_SHRUNK
+            if ratio is not None:
+                for k in ("risk_usdt", "risk_fraction_of_budget"):
+                    if t.get(k) is not None:
+                        t[k] = round(float(t[k]) * ratio, 8)
+        with self._ledger_lock:
+            pos.meta["learning"] = dict(t)
+            pos.features["learning"] = dict(t)
+        return t
 
     def _research_entry(self, sym: str, d, plan, snap) -> dict:
         """Giriş anında iki ayrı karar üretir.
@@ -3645,6 +4171,11 @@ class TradingEngineV3(TradingEngine):
                             "shadow_recorded": sym in shadowed,
                             "stage_history": [k for k, val in (self._funnel or {}).items() if val]
                             if getattr(self, "_funnel", None) else None})
+                # ÖĞRENME MODU (2026-09-28, öğrenme modu): işlem etiketleri (size_rule, learning_unlocked_by, exploration),
+                # öğrenme boyutu ve karşı-olgusal kaydı. Anahtarlar yalnız öğrenme aktifken vardır → kapalıyken satır bit-aynı.
+                for _lk in ("learning", "learning_fit", "counterfactual"):
+                    if e and e.get(_lk) is not None:
+                        rec[_lk] = e[_lk]
                 # VERI KIMLIGI: karar cercevesi hangi piyasadan geldi ve o sembolde YENI
                 # girise guvenilebilir miydi. Sonradan "hangi mumla karar verdik" sorusu
                 # kayittan cevaplanabilsin diye kalici.

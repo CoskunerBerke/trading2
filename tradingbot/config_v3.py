@@ -7,6 +7,7 @@ Bilinmeyen anahtarlar sessizce yutulmaz: uyarı listesine yazılır (`V3Config.w
 from __future__ import annotations
 
 import logging
+import math
 import os
 from dataclasses import dataclass, field, fields
 from typing import Any
@@ -720,6 +721,26 @@ class StructuresSection:
 
 
 @dataclass
+class LearningModeSection:
+    """ÖĞRENME MODU (2026-09-28, öğrenme modu) — yalnız PAPER. Mantık `learning_mode.py`de (SAF, tek kaynak).
+
+    `enabled=true` yalnız mode=PAPER + gateway=paper + testnet kapalı + risk profili PAPER_RESEARCH iken kabul edilir
+    (aksi ConfigError). Bilinmeyen anahtar UYARI değil ConfigError'dur (yazım hatası sessizce geçmesin). Kod varsayılanı
+    KAPALI; kapalıyken hiçbir yol değişmez. Env `TRADINGBOT_LEARNING_MODE=off` yalnız KAPATABİLİR, açamaz.
+    Strateji ezmeleri `cfg`'ye YAZILMAZ; `LearningMode.override` ile okunur (askıya alınınca kendiliğinden döner)."""
+    enabled: bool = False
+    risk_per_trade_pct: float = 0.5           # öğrenme hedef riski; profil tavanı (2.0) AYNEN kalır
+    max_total_open_risk_pct: float = 100.0    # öğrenme RiskEngine profilinin toplam açık risk tavanı
+    margin_reserve_pct: float = 5.0           # Σ marj ≤ (1 − rezerv) × equity
+    liq_buffer_mult: float = 2.0              # liq mesafesi ≥ k × stop mesafesi
+    min_notional_bump: bool = True            # min-notional'a çıkarma (yalnız %2 tavan ve serbest marj içinde)
+    counterfactual: bool = True               # açılmayan sinyal için karşı-olgusal kayıt
+    counterfactual_max_pending: int = 2000    # defter başına bekleyen kayıt tavanı
+    books: dict[str, Any] = field(default_factory=dict)               # ad → BookLearningCfg (doğrulamada normalize)
+    strategy_overrides: dict[str, Any] = field(default_factory=dict)  # yalnız OVERRIDE_KEYS
+
+
+@dataclass
 class V3Config:
     app: AppConfig = field(default_factory=AppConfig)
     mode: ModeConfig = field(default_factory=ModeConfig)
@@ -751,6 +772,7 @@ class V3Config:
     chart_analysis: ChartAnalysisSection = field(default_factory=ChartAnalysisSection)
     pattern_trader: PatternTraderSection = field(default_factory=PatternTraderSection)
     structures: StructuresSection = field(default_factory=StructuresSection)
+    learning_mode: LearningModeSection = field(default_factory=LearningModeSection)
     warnings: list[str] = field(default_factory=list)
 
 
@@ -767,7 +789,8 @@ _SECTIONS = {"app": AppConfig, "mode": ModeConfig, "markets": MarketsConfig, "un
              "strategy_paper": StrategyPaperSection,
              "chart_analysis": ChartAnalysisSection,
              "pattern_trader": PatternTraderSection,
-             "structures": StructuresSection}
+             "structures": StructuresSection,
+             "learning_mode": LearningModeSection}
 
 VALID_MODES = ("OBSERVE", "PAPER", "TESTNET", "SHADOW_LIVE", "LIVE_LIMITED", "LIVE")
 VALID_LLM_MODES = ("OFF", "POSTMORTEM_ONLY", "ADVISORY", "VETO_ONLY", "RESEARCH_COUNCIL")
@@ -776,6 +799,17 @@ VALID_LLM_MODES = ("OFF", "POSTMORTEM_ONLY", "ADVISORY", "VETO_ONLY", "RESEARCH_
 def load_v3(raw: dict[str, Any]) -> V3Config:
     warnings: list[str] = []
     kw = {}
+    # ÖĞRENME MODU (2026-09-28, öğrenme modu): bilinmeyen anahtar / sözlük olmayan bölüm UYARI değil ConfigError —
+    # `_build` bilinmeyeni sessizce düşürür, burada bir yazım hatası (ör. `enable: true`) fark edilmeden geçmemeli.
+    _lm_raw = raw.get("learning_mode")
+    if _lm_raw is not None:
+        if not isinstance(_lm_raw, dict):
+            raise ConfigError("learning_mode bir sözlük olmalı (ör. {enabled: false})")
+        _lm_allowed = {f.name for f in fields(LearningModeSection)}
+        _lm_unknown = sorted(str(k) for k in _lm_raw if k not in _lm_allowed)
+        if _lm_unknown:
+            raise ConfigError("learning_mode: bilinmeyen anahtar(lar): %s (geçerli: %s)"
+                              % (", ".join(_lm_unknown), ", ".join(sorted(_lm_allowed))))
     for name, cls in _SECTIONS.items():
         val = raw.get(name)
         if name == "mode" and isinstance(val, str):        # `mode: PAPER` kısa yazımı
@@ -798,6 +832,15 @@ def load_v3(raw: dict[str, Any]) -> V3Config:
             log.warning("learning_v3.influence_mode env override: %s -> %s",
                         cfg.learning_v3.influence_mode, env_mode)
         cfg.learning_v3.influence_mode = env_mode
+    # ÖĞRENME MODU ENV (2026-09-28, öğrenme modu): VPS drop-in yalnız KAPATABİLİR. Açma yolu yoktur; başka her değer
+    # fail-closed ConfigError (yanlış yazılmış bir "kapat" sessizce açık bırakmasın).
+    env_lm = os.environ.get("TRADINGBOT_LEARNING_MODE", "").strip().lower()
+    if env_lm:
+        if env_lm not in ("off", "false", "0", "disabled"):
+            raise ConfigError(f"TRADINGBOT_LEARNING_MODE geçersiz: {env_lm!r} — env yalnız kapatabilir (off)")
+        if cfg.learning_mode.enabled:
+            log.warning("learning_mode env override: enabled -> false (TRADINGBOT_LEARNING_MODE=%s)", env_lm)
+        cfg.learning_mode.enabled = False
     validate_v3(cfg)
     return cfg
 
@@ -1115,4 +1158,109 @@ def validate_v3(cfg: V3Config) -> None:
         cfg.warnings.append(f"dashboard.host={cfg.dashboard.host} public; token env {cfg.dashboard.auth_token_env} tanımlı değil → dashboard başlatılmayacak")
     # risk profili çözümlenebilir mi (ConfigError yayılır)
     from .risk.profiles import resolve_profile
-    resolve_profile(cfg.risk_profiles.profile, cfg.risk_profiles.overrides, i_understand=cfg.risk_profiles.i_understand)
+    _prof = resolve_profile(cfg.risk_profiles.profile, cfg.risk_profiles.overrides, i_understand=cfg.risk_profiles.i_understand)
+    # ÖĞRENME MODU (2026-09-28, öğrenme modu): kurallar aşağıda; kapalıyken yalnız yapı/sınır denetlenir.
+    _validate_learning_mode(cfg, _prof)
+
+
+def _is_int(v: Any) -> bool:
+    return isinstance(v, int) and not isinstance(v, bool)
+
+
+def _is_num(v: Any) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(float(v))
+
+
+def _validate_learning_mode(cfg: V3Config, profile) -> None:
+    """ÖĞRENME MODU doğrulaması (2026-09-28, öğrenme modu) — fail-closed, sessiz varsayılan YOK.
+
+    Her zaman: tipler, sınırlar, defter adları, bilinmeyen alt anahtar ve ezme anahtarları. Yalnız `enabled=true`
+    iken: mode=PAPER, gateway=paper, testnet kapalı, risk profili PAPER_RESEARCH ve kaldıraç ≤ profil tavanı.
+    `books` değerleri `BookLearningCfg`'ye normalize edilir (idempotent: ikinci doğrulama aynı sonucu verir)."""
+    from .learning_mode import BOOK_NAMES, LIST_OVERRIDE_KEYS, OVERRIDE_KEYS, SYMBOLS_UNIVERSE, BookLearningCfg
+    from .structures.catalog import BOT_KEYS as _ST_BOTS
+    lm = cfg.learning_mode
+    for _f in ("enabled", "min_notional_bump", "counterfactual"):
+        if not isinstance(getattr(lm, _f), bool):
+            raise ConfigError(f"learning_mode.{_f} true/false olmalı (verilen: {getattr(lm, _f)!r})")
+    if lm.enabled:
+        # YALNIZ PAPER: üç bağımsız katmanın ilki (ikincisi çalışma zamanı mode_gate, üçüncüsü `learning.on` korumaları).
+        _m = str(getattr(cfg.mode, "mode", "") or "").upper()
+        if _m != "PAPER":
+            raise ConfigError(f"LEARNING_MODE_PAPER_ONLY: learning_mode.enabled=true yalnız mode=PAPER'da (mevcut {_m})")
+        if str(cfg.execution.gateway or "").lower() != "paper":
+            raise ConfigError("LEARNING_MODE_PAPER_ONLY: learning_mode.enabled=true yalnız execution.gateway=paper iken "
+                              f"(mevcut {cfg.execution.gateway!r})")
+        if bool(cfg.execution.testnet_enabled):
+            raise ConfigError("LEARNING_MODE_PAPER_ONLY: learning_mode.enabled=true iken execution.testnet_enabled false olmalı")
+        if str(getattr(profile, "name", "") or "").upper() != "PAPER_RESEARCH":
+            raise ConfigError("LEARNING_MODE_PAPER_ONLY: learning_mode.enabled=true yalnız risk_profiles.profile="
+                              f"PAPER_RESEARCH iken (mevcut {getattr(profile, 'name', None)!r})")
+    _r = lm.risk_per_trade_pct
+    if not (_is_num(_r) and 0 < float(_r) <= 2.0):
+        raise ConfigError(f"learning_mode.risk_per_trade_pct (0, 2] aralığında olmalı (verilen: {_r!r})")
+    _t = lm.max_total_open_risk_pct
+    if not (_is_num(_t) and 0 < float(_t) <= 100.0):
+        raise ConfigError(f"learning_mode.max_total_open_risk_pct (0, 100] aralığında olmalı (verilen: {_t!r})")
+    _res = lm.margin_reserve_pct
+    if not (_is_num(_res) and 0 <= float(_res) <= 50.0):
+        raise ConfigError(f"learning_mode.margin_reserve_pct [0, 50] aralığında olmalı (verilen: {_res!r})")
+    _lb = lm.liq_buffer_mult
+    if not (_is_num(_lb) and float(_lb) >= 1.5):
+        raise ConfigError(f"learning_mode.liq_buffer_mult >= 1.5 olmalı (verilen: {_lb!r})")
+    _mp = lm.counterfactual_max_pending
+    if not (_is_int(_mp) and 1 <= int(_mp) <= 2000):
+        raise ConfigError(f"learning_mode.counterfactual_max_pending 1..2000 aralığında olmalı (verilen: {_mp!r})")
+    # kaldıraç tavanı: kapalıyken mutlak 5 (TESTNET profili kapalı bölümü düşürmesin), açıkken profil tavanı da
+    _lev_cap = min(5, int(profile.futures_max_leverage)) if lm.enabled else 5
+    if not isinstance(lm.books, dict):
+        raise ConfigError("learning_mode.books bir sözlük olmalı (defter adı → ayar)")
+    _books: dict[str, BookLearningCfg] = {}
+    _allowed = set(BookLearningCfg.__dataclass_fields__)
+    for _name, _raw in lm.books.items():
+        _n = str(_name)
+        if _n not in BOOK_NAMES:
+            raise ConfigError(f"learning_mode.books: bilinmeyen defter {_n!r} (geçerli: {', '.join(BOOK_NAMES)})")
+        if isinstance(_raw, BookLearningCfg):
+            _d = _raw.to_dict()
+        elif isinstance(_raw, dict):
+            _d = dict(_raw)
+        elif _raw is None:
+            _d = {}
+        else:
+            raise ConfigError(f"learning_mode.books.{_n} bir sözlük olmalı")
+        _unk = sorted(str(k) for k in _d if k not in _allowed)
+        if _unk:
+            raise ConfigError(f"learning_mode.books.{_n}: bilinmeyen anahtar(lar): {', '.join(_unk)} "
+                              f"(geçerli: {', '.join(sorted(_allowed))})")
+        _bc = BookLearningCfg(**_d)
+        if not isinstance(_bc.enabled, bool):
+            raise ConfigError(f"learning_mode.books.{_n}.enabled true/false olmalı")
+        if not (_is_int(_bc.slots) and 1 <= _bc.slots <= 200):
+            raise ConfigError(f"learning_mode.books.{_n}.slots 1..200 aralığında olmalı (verilen: {_bc.slots!r})")
+        if not (_is_int(_bc.leverage_max) and 1 <= _bc.leverage_max <= _lev_cap):
+            raise ConfigError(f"learning_mode.books.{_n}.leverage_max 1..{_lev_cap} aralığında olmalı "
+                              f"(verilen: {_bc.leverage_max!r}; tavan min(5, profil futures_max_leverage))")
+        if _bc.min_stop_pct is not None and not (_is_num(_bc.min_stop_pct) and float(_bc.min_stop_pct) >= 0):
+            raise ConfigError(f"learning_mode.books.{_n}.min_stop_pct >= 0 olmalı (verilen: {_bc.min_stop_pct!r})")
+        if _bc.symbols not in (None, SYMBOLS_UNIVERSE):
+            raise ConfigError(f"learning_mode.books.{_n}.symbols yalnız {SYMBOLS_UNIVERSE!r} olabilir "
+                              f"(verilen: {_bc.symbols!r})")
+        _books[_n] = _bc
+    lm.books = _books
+    if not isinstance(lm.strategy_overrides, dict):
+        raise ConfigError("learning_mode.strategy_overrides bir sözlük olmalı")
+    for _k, _v in lm.strategy_overrides.items():
+        if _k not in OVERRIDE_KEYS:
+            raise ConfigError(f"learning_mode.strategy_overrides: bilinmeyen anahtar {_k!r} "
+                              f"(geçerli: {', '.join(OVERRIDE_KEYS)})")
+        if _k in LIST_OVERRIDE_KEYS:
+            if not isinstance(_v, (list, tuple)) or not all(isinstance(x, str) for x in _v):
+                raise ConfigError(f"learning_mode.strategy_overrides.{_k} bot adı listesi olmalı")
+            _bad = [x for x in _v if x not in _ST_BOTS]
+            if _bad or len(set(_v)) != len(_v):
+                raise ConfigError(f"learning_mode.strategy_overrides.{_k}: geçersiz/yinelenen bot "
+                                  f"{', '.join(_bad) or '(yinelenen)'} (geçerli: {', '.join(_ST_BOTS)})")
+            lm.strategy_overrides[_k] = list(_v)
+        elif not isinstance(_v, bool):
+            raise ConfigError(f"learning_mode.strategy_overrides.{_k} true/false olmalı (verilen: {_v!r})")

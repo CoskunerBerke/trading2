@@ -307,9 +307,15 @@ class FuturesLedgerV2:
              filters: SymbolFilters | None = None, fees: FeeSchedule | None = None, slippage: SlippageModel | None = None,
              brackets: list[LeverageBracket] | None = None, setup_type: str = "", trigger_text: str = "",
              features: dict | None = None, mark_price=None, tick: TickData | None = None, now: datetime | None = None,
-             meta: dict | None = None) -> Position | None:
-        """Pozisyon aç. Reddedilirse None döner ve `last_reject_reason` doldurulur (asla sessiz küçültme yok; `allow_shrink` hariç)."""
+             meta: dict | None = None, allow_shrink: bool | None = None) -> Position | None:
+        """Pozisyon aç. Reddedilirse None döner ve `last_reject_reason` doldurulur (asla sessiz küçültme yok; `allow_shrink` hariç).
+
+        `allow_shrink` (2026-09-28, öğrenme modu): None → defterin KALICI özniteliği (eski davranış, bit-aynı); bool →
+        YALNIZ bu çağrı için ezme. Öznitelik değiştirilmez ve JSON'a yazılmaz. Ezme ile küçültme olursa pozisyonun
+        `meta["shrunk_to_margin"]` alanı istenen/dolan miktarı taşır (çağıran `size_rule=SHRUNK_TO_MARGIN` yazar)."""
         self.last_reject_reason = ""
+        _shrink = self.allow_shrink if allow_shrink is None else bool(allow_shrink)
+        _shrunk: dict | None = None
         pside = _side(side)
         ok, why = self.can_open(symbol)
         if not ok:
@@ -347,10 +353,13 @@ class FuturesLedgerV2:
         taker = fees.rate(False)
         margin_rate = _ONE / lev
         if qty > 0 and margin_rate * qty * fill + taker * qty * fill > self.available:
-            if not self.allow_shrink:
+            if not _shrink:
                 need = qty * fill * (margin_rate + taker)
                 return self._reject(R_INSUFFICIENT_MARGIN, f"gerekli {need:.4f} > serbest {self.available:.4f}")
+            _req_qty = qty
             qty = quantize_qty(self.available / (fill * (margin_rate + taker)), filters.qty_step)
+            if allow_shrink is not None:
+                _shrunk = {"requested_qty": format(_req_qty, "f"), "filled_qty": format(qty, "f")}
         if qty <= 0:
             return self._reject(R_ZERO_QTY, symbol)
         if qty < filters.min_qty:
@@ -388,6 +397,8 @@ class FuturesLedgerV2:
                        requested_margin=req_margin, amount_type=size.amount_type, setup_type=setup_type,
                        trigger_text=trigger_text, features=dict(features or {}), fills=[fill_rec], meta=dict(meta or {}))
         pos.meta.setdefault("ref_entry", format(ref, "f"))
+        if _shrunk is not None:
+            pos.meta["shrunk_to_margin"] = _shrunk
         pos.meta["fees"] = fees.to_dict()
         pos.meta["filters"] = filters.to_dict()
         pos.meta["initial_margin"] = format(margin, "f")

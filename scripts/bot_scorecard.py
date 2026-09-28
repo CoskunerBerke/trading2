@@ -14,9 +14,14 @@ Soru tek: "Hangi bot, bugüne kadar kapattığı işlemlerde para kazandırdı v
   bayrağı ve laboratuvarın doğrulama dönemi (OOS) ortalaması/aralığı. En az 30 işlemde PAPER ortalaması laboratuvar OOS
   aralığının alt ucunun altındaysa `LAB_DRIFT` (canlı davranış laboratuvardan sapıyor). Sıkı eşi C4S aynı satırları
   yazar; anlık görüntüde kip varsa (`verdict_mode`, `verdict_used`) satıra eklenir.
+* ÖĞRENME MODU (2026-09-28, öğrenme modu): `state/learning_mode.json` (`learning_mode_since`, ilk aktif an) varsa her
+  defter için ayrıca ÖNCE / SONRA (girişi o andan önce/sonra açılan işlemler) ve SONRA içinde üç sütun: politika işlemleri
+  (taban kurallar da açardı), öğrenme-ekstra işlemler (`features.learning.learning_unlocked_by` dolu) ve karşı-olgusallar
+  (açılmayan geçerli sinyallerin etiketli sonucu — P&L'e ASLA girmez, USDT'si yoktur). R esastır: sonrası USDT öğrenme
+  ölçeğindedir (%0,5 risk, slot boyutu) ve öncesiyle karşılaştırılmaz. Dosya yoksa karne çıktısı AYNEN eskisidir.
 
 Kullanım:
-    python scripts/bot_scorecard.py --state <state klasörü> [--since 2026-09-01] [--out karne.json]
+    python scripts/bot_scorecard.py --state <state klasörü> [--since 2026-09-01] [--learning-since <ISO>] [--out karne.json]
 """
 from __future__ import annotations
 
@@ -30,6 +35,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from tradingbot.accounting import FuturesLedgerV2  # noqa: E402
+from tradingbot.core import from_iso  # noqa: E402
 from tradingbot.pattern_trader.report import MIN_TRADES_FOR_VERDICT, _funding_coverage, _r_stats  # noqa: E402
 
 LEDGER_FILE = "futures_ledger.json"
@@ -42,6 +48,12 @@ V_THIN, V_LOSS, V_WIN, V_OPEN = "VERİ YETERSİZ", "ZARARDA (kanıtlı)", "KÂRD
 #: Mum varyasyonu işlemlerinin kurulum öneki (`candle_book.SETUP_PREFIX`).
 CANDLE_PREFIX = "candle:"
 LAB_DRIFT = "LAB_DRIFT"
+#: ÖĞRENME MODU (2026-09-28): ilk aktif an dosyası (motor yazar), defter başına karşı-olgusal dosyası ve ana botun gölge
+#: defteri (karşı-olgusallar `book == "main"`). Sınıflar: politika (taban da açardı) / öğrenme-ekstra.
+LEARNING_SINCE_FILE = "learning_mode.json"
+CF_FILE = "counterfactual_trades.json"
+MAIN_SHADOW_FILE = "shadow_book.json"
+POLICY, LEARNING_EXTRA = "policy", "learning_extra"
 
 
 def _configure_console() -> None:
@@ -151,15 +163,105 @@ def book_card(path: Path, *, since: str | None = None) -> dict[str, Any]:
     return card
 
 
-def scorecard(state: Path, *, since: str | None = None) -> dict[str, Any]:
+def learning_since(state: Path) -> str | None:
+    """`learning_mode_since`: öğrenmenin İLK aktif olduğu an (motorun `learning_mode.json`u). Yoksa/bozuksa None."""
+    try:
+        d = json.loads((state / LEARNING_SINCE_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    v = d.get("since") if isinstance(d, dict) else None
+    return str(v) if v else None
+
+
+def _ts(x: Any):
+    try:
+        return from_iso(str(x)) if x else None
+    except (TypeError, ValueError):
+        return None
+
+
+def learning_class(t) -> str:
+    """Öğrenme dönemindeki işlemin sınıfı: `learning_unlocked_by` DOLU → öğrenme-ekstra; boş ya da etiket yok (askıda
+    açılmış) → politika. `BASELINE_UNKNOWN` da ekstra sayılır (taban kararı bilinmiyorsa politika diye iddia edilmez)."""
+    lr = (t.features or {}).get("learning")
+    return LEARNING_EXTRA if isinstance(lr, dict) and lr.get("learning_unlocked_by") else POLICY
+
+
+def _slice(trades: list) -> dict[str, Any]:
+    """R önce; USDT yalnız bilgi (öğrenme ölçeği öncesiyle KIYASLANMAZ)."""
+    st = _r_stats([float(t.r_multiple) for t in trades])
+    return {"n": st["n"], "mean_r": st["mean_r"], "ci95_mean_r": st["ci95_mean_r"], "sum_r": st["sum_r"],
+            "win_rate": st["win_rate"], "verdict": verdict(st), "net_usdt": round(sum(float(t.pnl) for t in trades), 4)}
+
+
+def counterfactual_card(path: Path, *, book: str | None = None) -> dict[str, Any] | None:
+    """Karşı-olgusal kayıtların R özeti — P&L'e GİRMEZ (USDT alanı bilerek yok). `book` verilirse yalnız o defterin
+    kayıtları (ana botun `shadow_book.json`u öğrenme öncesi gölgeleri de taşır). Dosya/kayıt yoksa None."""
+    try:
+        d = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    rows = [t for t in ((d or {}).get("trades") or []) if isinstance(t, dict) and (book is None or t.get("book") == book)]
+    if not rows:
+        return None
+    lab = [t for t in rows if isinstance(t.get("outcome"), dict) and _num(t["outcome"].get("r_multiple")) is not None]
+    st = _r_stats([float(t["outcome"]["r_multiple"]) for t in lab])
+    return {"file": str(path), "recorded": len(rows), "labeled": len(lab), "pending": len(rows) - len(lab),
+            "approx": sum(1 for t in lab if t.get("approx")), "mean_r": st["mean_r"], "ci95_mean_r": st["ci95_mean_r"],
+            "sum_r": st["sum_r"], "win_rate": st["win_rate"], "verdict": verdict(st), "in_pnl": False}
+
+
+def learning_split(path: Path, *, learning_since_iso: str, since: str | None = None, cf_path: Path | None = None,
+                   cf_book: str | None = None) -> dict[str, Any]:
+    """Tek defterin öğrenme ayrımı: ÖNCE / SONRA (giriş anı `learning_mode_since`e göre; öğrenme etiketi taşıyan işlem
+    daima SONRA) ve SONRA içinde politika / öğrenme-ekstra; ayrıca karşı-olgusallar. `since` karne penceresidir."""
+    led = FuturesLedgerV2.load(path)
+    cut = _ts(learning_since_iso)
+    trades = [t for t in led.history if not since or str(t.closed_at) >= since]
+    trades.sort(key=lambda t: str(t.closed_at))
+
+    def _after(t) -> bool:
+        if isinstance((t.features or {}).get("learning"), dict):
+            return True
+        at = _ts(t.opened_at) or _ts(t.closed_at)
+        return bool(cut is not None and at is not None and at >= cut)
+    after = [t for t in trades if _after(t)]
+    before = [t for t in trades if not _after(t)]
+    return {"before": _slice(before), "after": _slice(after),
+            POLICY: _slice([t for t in after if learning_class(t) == POLICY]),
+            LEARNING_EXTRA: _slice([t for t in after if learning_class(t) == LEARNING_EXTRA]),
+            "counterfactual": counterfactual_card(cf_path, book=cf_book) if cf_path is not None else None}
+
+
+def scorecard(state: Path, *, since: str | None = None, learning_since_iso: str | None = None) -> dict[str, Any]:
     books = {}
-    for sub, path in find_books(state).items():
+    found = find_books(state)
+    for sub, path in found.items():
         try:
             books[sub or "main"] = {"name": BOOKS.get(sub, sub), **book_card(path, since=since)}
         except Exception as exc:  # noqa: BLE001 — bozuk bir defter diğerlerinin karnesini durdurmaz
             books[sub or "main"] = {"name": BOOKS.get(sub, sub), "ledger": str(path), "error": f"{type(exc).__name__}: {exc}"}
-    return {"kind": "BOT_SCORECARD_PAPER", "state": str(state), "since": since, "min_trades_for_verdict": MIN_TRADES_FOR_VERDICT,
+    card = {"kind": "BOT_SCORECARD_PAPER", "state": str(state), "since": since, "min_trades_for_verdict": MIN_TRADES_FOR_VERDICT,
             "note_tr": "PAPER sonucu; gerçek emir defteri/kısmi dolum/gecikme yok. Hüküm kâr garantisi değildir.", "books": books}
+    # ÖĞRENME MODU (2026-09-28): ilk aktif an biliniyorsa öncesi/sonrası ayrımı (yoksa karne AYNEN eskisi)
+    src = "--learning-since" if learning_since_iso else LEARNING_SINCE_FILE
+    lsi = learning_since_iso or learning_since(state)
+    if lsi:
+        split: dict[str, Any] = {}
+        for sub, path in found.items():
+            key = sub or "main"
+            cf_path = (state / MAIN_SHADOW_FILE) if not sub else (path.parent / CF_FILE)
+            try:
+                split[key] = {"name": BOOKS.get(sub, sub), **learning_split(path, learning_since_iso=lsi, since=since,
+                                                                            cf_path=cf_path, cf_book="main" if not sub else None)}
+            except Exception as exc:  # noqa: BLE001
+                split[key] = {"name": BOOKS.get(sub, sub), "error": f"{type(exc).__name__}: {exc}"}
+        card["learning_mode"] = {
+            "since": lsi, "source": src, "books": split,
+            "note_tr": ("R esastır. learning_mode_since sonrası USDT sonuçları öğrenme ölçeğindedir (%0,5 risk, slot boyutu) ve "
+                        "öncesiyle KIYASLANMAZ. Politika: taban kurallar da açardı; öğrenme-ekstra: yalnız öğrenme modu açtı; "
+                        "karşı-olgusal: açılmayan geçerli sinyalin etiketli sonucu — P&L'e GİRMEZ.")}
+    return card
 
 
 def _fmt(v, nd=2) -> str:
@@ -203,9 +305,38 @@ def render(card: dict[str, Any]) -> str:
                          f"ort. R {_fmt(v['mean_r'])} {(f'[{ci[0]:+.2f}, {ci[1]:+.2f}]' if ci else '—')} "
                          f"kazanma {_fmt(v['win_rate'] * 100 if v['win_rate'] is not None else None, 0)}% · {v['verdict']}{lab}"
                          + (" · " + ", ".join(v["flags"]) if v.get("flags") else ""))
+    lines += render_learning(card)
     lines.append(f"Hüküm kuralı: {card['min_trades_for_verdict']} işlemden az → VERİ YETERSİZ; ortalama R'nin %95 aralığı tamamen 0'ın "
                  "altında → ZARARDA, tamamen üstünde → KÂRDA; değilse BELİRSİZ. PAPER sonucu, kâr garantisi değildir.")
     return "\n".join(lines)
+
+
+def _nr(b: dict[str, Any] | None) -> str:
+    """«n / ort. R» hücresi (R esas)."""
+    if not b:
+        return "—"
+    return f"{b.get('n', 0)} / {_fmt(b.get('mean_r'))}"
+
+
+def render_learning(card: dict[str, Any]) -> list[str]:
+    """ÖĞRENME MODU ayrımı (yalnız `learning_mode_since` biliniyorsa; aksi halde hiç satır yok → çıktı AYNEN eskisi)."""
+    lm = card.get("learning_mode")
+    if not lm:
+        return []
+    lines = [f"ÖĞRENME MODU AYRIMI · learning_mode_since {lm['since']} ({lm['source']}) · R esas; sonrası USDT öğrenme ölçeğinde, "
+             "öncesiyle KIYASLANMAZ",
+             f"{'bot':<14}{'önce n/ort.R':>16}{'sonra n/ort.R':>16}{'politika':>14}{'öğrenme-ekstra':>16}{'karşı-olgusal (P&L dışı)':>28}"]
+    for key, b in lm["books"].items():
+        if "error" in b:
+            lines.append(f"{b['name']:<14} OKUNAMADI: {b['error']}")
+            continue
+        cf = b.get("counterfactual")
+        cf_txt = (f"{cf['labeled']}/{cf['recorded']} etiketli · ort.R {_fmt(cf['mean_r'])}" if cf else "—")
+        lines.append(f"{b['name']:<14}{_nr(b['before']):>16}{_nr(b['after']):>16}{_nr(b[POLICY]):>14}{_nr(b[LEARNING_EXTRA]):>16}"
+                     f"{cf_txt:>28}")
+    lines.append("   " + lm["note_tr"])
+    lines.append("")
+    return lines
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -214,12 +345,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--state", required=True, help="state klasörü (ör. C:\\tb-olcum-veri\\state)")
     ap.add_argument("--since", default=None, help="yalnız bu tarihten (YYYY-AA-GG) sonra kapananlar")
     ap.add_argument("--out", default=None, help="ayrıntılı JSON raporu")
+    ap.add_argument("--learning-since", default=None,
+                    help="öğrenme modu başlangıcı (ISO); verilmezse state/learning_mode.json okunur")
     a = ap.parse_args(argv)
     state = Path(a.state)
     if not state.is_dir():
         print(f"state klasörü yok: {state}", file=sys.stderr)
         return 2
-    card = scorecard(state, since=a.since)
+    card = scorecard(state, since=a.since, learning_since_iso=a.learning_since)
     if not card["books"]:
         print(f"{state} altında {LEDGER_FILE} bulunamadı", file=sys.stderr)
         return 2

@@ -270,6 +270,16 @@ def decide_for(name: str, *, frames: dict | None, btc_rows: list[dict[str, Any]]
     return decide_from_rows(name, daily=d1, intraday=intra, btc_rows=btc_rows, position=position, params=params, now_ms=now_ms)
 
 
+def candle_hits_for(name: str, *, frames: dict | None, now_ms: int, params: Any = None) -> list[dict[str, Any]]:
+    """Mum varyasyonları (C4/C4S): bu barda eşleşen TÜM varyasyonların geometrisi — `decide_for` ile AYNI okuma ve giriş
+    yolu (`candle_book.entry_hits`). Öğrenme modunun karşı-olgusal kaydı içindir (2026-09-28, öğrenme modu); karar
+    DEĞİŞMEZ. Diğer aileler: boş liste."""
+    if spec_for(name).family != "candle":
+        return []
+    cp = params if isinstance(params, candle_book.CandleParams) else candle_book.DEFAULT_PARAMS
+    return candle_book.entry_hits(name, rows=candle_book.window_rows(frames, now_ms=now_ms), now_ms=now_ms, params=cp)
+
+
 def decide_with_structures(name: str, *, frames: dict | None, btc_rows: list[dict[str, Any]] | None, now_ms: int,
                            position: Any = None, params: Any = None, ctx: Any = None
                            ) -> tuple[dict[str, Any] | None, dict[str, Any] | None, dict[str, Any]]:
@@ -371,7 +381,8 @@ def state_for(name: str, *, frames: dict | None, btc_rows: list[dict[str, Any]] 
 
 __all__ = ["BOX_TIMEFRAMES", "BOX_VARIANTS", "CANDLE_TIMEFRAMES", "CANDLE_VARIANTS", "DONCHIAN_TIMEFRAMES", "DONCHIAN_VARIANTS",
            "TREND_TIMEFRAMES", "TREND_VARIANTS", "VARIANTS", "RuleSpec",
-           "build_params", "daily_rows", "decide_for", "decide_from_rows", "decide_with_structures", "intraday_for", "intraday_rows",
+           "build_params", "candle_hits_for", "daily_rows", "decide_for", "decide_from_rows", "decide_with_structures",
+           "intraday_for", "intraday_rows",
            "needs_btc", "replay_strategy",
            "signal_already_used", "structure_error_of",
            "rule_timeframes", "spec_for", "state_for", "state_from_rows"]

@@ -565,3 +565,42 @@ pattern_trader:                # FORMASYON PAPER TRADER V1 — yeni listeleme ö
   max_symbols_per_cycle: 40    # tarama bütçesi (istek ağırlığı RateBudget ile ayrıca sınırlı)
   scan_seconds: 60
   universe_refresh_minutes: 30
+
+# ---- ÖĞRENME MODU (2026-09-28, öğrenme modu) — YALNIZ PAPER --------------------------------------------------
+# Amaç: her bot (ana bot, T2, M2, Box, D4, C4, formasyon) mümkün olan en çok işleme girsin; ortak öğrenme katmanı
+# R deneyimi toplasın. Yalnız ölçümü bozmayan sınırlar gevşer (toplam açık risk %6 → 100, adet/marj darboğazı, Box
+# min stop 2,22 → 0,32, kapıların girişi gölgede); veri kimliği, R geometrisi, çift sayım, 60 dk giriş pencereleri,
+# sembol başına tek pozisyon ve borsa filtreleri AYNEN kalır. Tek kaynak: `tradingbot/learning_mode.py`.
+# * YALNIZ PAPER: mode=PAPER + gateway=paper + testnet kapalı + risk profili PAPER_RESEARCH değilse ConfigError; çalışma
+#   anında mod kapısı düşerse "ÖĞRENME MODU ASKIDA" olur ve bütün botlar bugünkü (baseline) kurallarla sürer.
+# * BOYUT: işlem başı hedef risk %0,5 (bugün %2) → işlem başına USDT ≈ 1/4'e iner; R (kâr/zarar ÷ ilk stop riski)
+#   ölçekten bağımsızdır ve DEĞİŞMEZ. Karşılaştırma R ile yapılır; öğrenme dönemindeki USDT eski USDT ile kıyaslanmaz.
+#   Eşzamanlı pozisyonlar defter başına `slots` ile sınırlıdır (Σ marj ≤ %95 özkaynak, likidasyon ≥ 2 × stop mesafesi).
+# * KAPATMAK: `enabled: false` + worker'ı yeniden başlat (ya da env TRADINGBOT_LEARNING_MODE=off; env yalnız kapatır).
+#   Açık pozisyonlar kendi stop/hedef/kaldıracıyla kapanır (zorla kapanış yok); toplam açık risk %6'nın altına inene
+#   kadar TOTAL_OPEN_RISK yeni girişleri durdurabilir — beklenen davranıştır.
+# * `learning_mode_since` (state/learning_mode.json) ilk aktif anı tutar; panel ve bot karnesi öncesi/sonrası ayırır.
+learning_mode:
+  enabled: true
+  risk_per_trade_pct: 0.5
+  max_total_open_risk_pct: 100
+  margin_reserve_pct: 5
+  liq_buffer_mult: 2.0
+  min_notional_bump: true
+  counterfactual: true
+  counterfactual_max_pending: 2000
+  books:
+    main:                         {enabled: true, slots: 20}
+    t2_trend_regime:              {enabled: true, slots: 40, leverage_max: 4}
+    m2_tsmom28:                   {enabled: true, slots: 40, leverage_max: 4}
+    b1_box_fade:                  {enabled: true, slots: 20, leverage_max: 4, min_stop_pct: 0.32}
+    d4_donchian_20_10:            {enabled: true, slots: 20, leverage_max: 3, symbols: universe}
+    c4_candle_variations:         {enabled: true, slots: 20, leverage_max: 3, symbols: universe}
+    c4s_candle_variations_strict: {enabled: false}
+    pattern_trader:               {enabled: true, slots: 30, leverage_max: 3}
+  strategy_overrides:
+    regime_gate_shadow: true
+    candle_veto_shadow: true
+    structures_entry_shadow: [main, t2_trend_regime, m2_tsmom28]
+    economics_exploration: true
+    leverage_confidence_fallback: true

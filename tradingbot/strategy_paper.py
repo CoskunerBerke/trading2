@@ -21,11 +21,13 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .accounting import (AmountType, FeeSchedule, FuturesLedgerV2, LiquidationParams, MarketType, SizeSpec,
-                         SlippageModel, TaxPolicy, TickData, default_brackets)
+                         SlippageModel, TaxPolicy, TickData, default_brackets, default_filters)
 from .accounting.funding import FUNDING_SETTLEMENT_CONTRACT
 from .candle_confirmation import closed_bars
-from .core import atomic_write_json, from_iso, iso, utc_now
+from .core import atomic_write_json, from_iso, iso, quantize_qty, utc_now
 from .learn import TradeMemory
+from .learning_mode import (DEFAULT_MAX_TOTAL_OPEN_RISK_PCT, SIZE_BUMP, SIZE_SHRUNK, counterfactual_ok, fit_size,
+                            profile_for)
 from .regime_gate import BTC_SYMBOL
 from .risk import RiskEngine, build_state, enforces_position_cap
 from . import paper_rules
@@ -79,6 +81,11 @@ BAR_EXTREME_MAX_RATIO = 5.0
 BAR_CORRUPT = "BAR_CORRUPT"                  # sonlu/pozitif değil ya da low <= close <= high değil
 BAR_SCALE_UNVERIFIED = "BAR_SCALE_UNVERIFIED"  # ölçek doğrulanamadı: açılış sürekliliği YOK ve kapanış canlı mark'tan uzak
 BAR_MARKET_MISMATCH = "BAR_MARKET_MISMATCH"  # bar çerçevesi beklenen piyasadan değil (SPOT ikamesi vb.)
+#: ÖĞRENME MODU (2026-09-28, öğrenme modu): defterin karşı-olgusal kaydı (`state_dir` altında; anahtar hiç açılmazsa YOK).
+CF_FILE = "counterfactual_trades.json"
+CF_ARCHIVE_DIR = "counterfactual_archive"
+#: Likidasyon mesafesi yaklaşığında bakım marjı oranı (`fit_size` ve RiskEngine LIQ_BUFFER ile aynı varsayım).
+LEARNING_MMR = 0.004
 
 
 def parse_ts_ms(x: Any) -> int | None:
@@ -340,17 +347,247 @@ def book_specs(v3) -> list["BookSpec"]:
     return out
 
 
+def _baseline_size(act: dict[str, Any], *, entry: float, stop: float, profile, state, risk: RiskEngine
+                   ) -> tuple[float, int, dict[str, Any] | None]:
+    """Anahtar KAPALIYKEN boyut (TEK kaynak): profil işlem riski / stop mesafesi, ihtiyaç kadar kaldıraç, isteyen
+    eylemde tavana küçültme. Döner: (notional, kaldıraç, küçültme kaydı | None). SAF — `act` değişmez.
+    Öğrenme modu (2026-09-28) bunu yalnız "taban bu işlemi durdurur muydu?" etiketi için yeniden koşar."""
+    stop_frac = abs(entry - stop) / entry
+    risk_usdt = float(profile.risk_per_trade_pct) / 100.0 * float(state.equity)
+    notional = risk_usdt / stop_frac
+    lev = int(act.get("leverage") or 1)
+    # IHTIYAC KADAR KALDIRAC (2026-09-21) — tavana kadar. Tek pozisyon tavani
+    # `equity x max_position_pct/100 x kaldirac`. Stopu DAR olan islem ayni hareketten daha
+    # cok R uretir ve tam da tavana takilan odur; bu yuzden kaldirac SABIT degil, islemin
+    # ihtiyaci kadar yukselir. Kaldirac islem basina RISKI ARTIRMAZ (risk stop mesafesiyle
+    # belirlenir); yalnizca tavani acar ve likidasyonu yaklastirir — bu yuzden GEREKMEDIKCE
+    # yukseltilmez. `leverage_max <= lev` iken davranis degismez.
+    _lmax = int(act.get("leverage_max") or 0)
+    if _lmax > lev:
+        _cap1 = float(state.equity) * float(getattr(profile, "max_position_pct", 0.0)) / 100.0
+        if _cap1 > 0:
+            _need = int(math.ceil(notional / _cap1))
+            lev = max(lev, min(_need, _lmax))
+    # TAVANA KÜÇÜLTME (2026-09-25, yalnız isteyen eylem — formasyon v3): tek pozisyon tavanını aşan işlem REDDEDİLMEZ,
+    # tavana sığacak kadar küçültülür → işlem başına risk bütçenin ALTINA iner (asla üstüne çıkmaz), kaldıraç değişmez.
+    scaled = None
+    if act.get("cap_notional_to_position_pct"):
+        _cap2 = float(risk.equity_basis(state)) * float(getattr(profile, "max_position_pct", 0.0)) / 100.0 * max(lev, 1)
+        if _cap2 > 0 and notional > _cap2:
+            scaled = {"from": round(notional, 6), "to": round(_cap2 * 0.999, 6),
+                      "risk_fraction_of_budget": round(_cap2 * 0.999 / notional, 6)}
+            notional = _cap2 * 0.999
+    return notional, lev, scaled
+
+
+def _signal_key(act: dict[str, Any] | None) -> str | None:
+    """Karşı-olgusal tekillik anahtarı = kuralın BAR BAŞINA sinyal kimliği (P1; 2026-09-28, öğrenme modu): önce
+    `signal_ts` (sinyal barının açılışı), yoksa `signal_close_ms`. Tur kimliğinden ASLA türetilmez; yoksa None (kayıt yok)."""
+    for k in ("signal_ts", "signal_close_ms"):
+        v = (act or {}).get(k)
+        if v is None or isinstance(v, bool):
+            continue
+        try:
+            return "%s:%d" % (k, int(v))
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _box_eod_bars(act: dict[str, Any], now: datetime) -> int:
+    """Box karşı-olgusalının ufku (5m bar): girişten SONRAKİ ilk bardan sinyal gününün son (23:55) barına kadar — kuralın
+    gün sonu düzleşmesi. Gün bittiyse 0 (kayıt yok)."""
+    try:
+        sig = int(act.get("signal_ts"))
+    except (TypeError, ValueError):
+        return 0
+    day, m5 = 86_400_000, 300_000
+    eod = sig - sig % day + day
+    first = (int(now.timestamp() * 1000) // m5 + 1) * m5
+    return max(0, (eod - first) // m5)
+
+
+def _entry_features(act: dict[str, Any], data: DataVerdict) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Girişin kanıt kaydı: (features, data_source). Anahtar sırası sabit (defter JSON'u bit-aynı kalır)."""
+    # Kanıt: hangi veriyle girildiği pozisyon/işlem kaydına yazılır (piyasa, kaynak, tur, kullanılan bar zamanları).
+    data_src = {"market": data.market, "source": data.source, "tour_id": data.tour_id, "bars": dict(data.bars), "btc": dict(data.btc)}
+    feats = {"regime": act.get("regime"), "market_type": "USDM_PERP", "strategy": act.get("name"),
+             "expected_r": float(act.get("expected_r") or 0.0), "p_win": None, "data_source": data_src,
+             # ORTAK YAPI (structures_v1): girişin dayanağı ve politika sürümü — eski ölçümlerden AYRI
+             "structure": dict(act["structure"]) if act.get("structure") else None}
+    if act.get("variation"):
+        # MUM VARYASYONU (2026-09-26, yalnız isteyen eylem): kimlik, definition_sha, laboratuvar kanıtı, gözlem bayrağı ve
+        # çıkış (hedef R, en uzun tutma) — girişteki ANLIK GÖRÜNTÜ; işlem kaydına da geçer. Anahtar yalnız o zaman eklenir.
+        feats["candle_variation"] = dict(act["variation"])
+    return feats, data_src
+
+
+def _ledger_preview(ledger: FuturesLedgerV2, symbol: str, direction: str, entry: float, notional: float, lev: int,
+                    filters, tick: TickData | None) -> str | None:
+    """Defterin `open` kapılarının YAN ETKİSİZ ön-izlemesi (taban davranışı, kalıcı `allow_shrink` ile): ilk ret kodu ya
+    da None. Yalnız öğrenme etiketi (`learning_unlocked_by`) içindir (2026-09-28, öğrenme modu)."""
+    ok, why = ledger.can_open(symbol)
+    if not ok:
+        return why
+    f = filters if filters is not None else default_filters(symbol, MarketType.USDM_PERP)
+    lev = max(1, int(lev))
+    if lev > int(f.max_leverage):
+        return "LEVERAGE_TOO_HIGH"
+    fill = ledger.market_fill_price(symbol, direction, entry, filters=f, tick=tick)
+    if fill <= 0:
+        return "BAD_PRICE"
+    qty = quantize_qty(Decimal(str(notional)) / fill, f.qty_step)
+    cost_rate = Decimal(1) / Decimal(lev) + ledger.fees.rate(False)
+    if qty > 0 and qty * fill * cost_rate > ledger.available and not ledger.allow_shrink:
+        return "INSUFFICIENT_MARGIN"
+    if qty <= 0:
+        return "STEP_ZERO_QTY"
+    if qty < f.min_qty:
+        return "MIN_QTY"
+    if qty > f.market_max_qty:
+        return "MAX_QTY"
+    if qty * fill < f.min_notional:
+        return "MIN_NOTIONAL"
+    return None
+
+
+def _baseline_blocks(act: dict[str, Any], *, symbol: str, direction: str, entry: float, stop: float,
+                     tick: TickData | None, now: datetime, ledger: FuturesLedgerV2, risk: RiskEngine, profile, state,
+                     filters) -> list[str]:
+    """Anahtar KAPALI olsaydı bu işlemi hangi kapı durdururdu? (2026-09-28, öğrenme modu) — ucuz yeniden koşum: taban
+    boyut (`_baseline_size`), taban profilli RiskEngine (AYNI kill switch), defter ön-izlemesi. Karar ve durum DEĞİŞMEZ;
+    sonuç yalnız etikettir (boş = taban da açardı)."""
+    try:
+        base = RiskEngine(profile, getattr(risk, "ks", None), getattr(risk, "clusters", None))
+        notional, lev, _scaled = _baseline_size(act, entry=entry, stop=stop, profile=profile, state=state, risk=base)
+        plan = {"symbol": symbol, "market_type": "USDM_PERP", "direction": direction, "entry": entry, "stop": stop,
+                "targets": list(act.get("targets") or []), "notional": notional, "margin": notional / max(1, lev),
+                "leverage": lev, "amount_type": "NOTIONAL", "expected_r": float(act.get("expected_r") or 0.0),
+                "min_notional": 5.0}
+        rd = base.evaluate(plan, state, {"now_utc": now})
+        if not rd.allowed:
+            return [str(r) for r in (rd.reasons or ["RISK_DENIED"])]
+        why = _ledger_preview(ledger, symbol, direction, entry, float(rd.adjusted_notional or notional),
+                              int(rd.adjusted_leverage or lev), filters, tick)
+        return [why] if why else []
+    except Exception as exc:  # noqa: BLE001 — etiket hesaplanamazsa işlem ETKİLENMEZ
+        log.warning("öğrenme etiketi (taban kapıları) hesaplanamadı (%s): %s", symbol, exc)
+        return ["BASELINE_UNKNOWN"]
+
+
+def _open_learning(act: dict[str, Any], *, symbol: str, direction: str, entry: float, stop: float,
+                   tick: TickData | None, now: datetime, ledger: FuturesLedgerV2, risk: RiskEngine, profile, state,
+                   filters, run_id: str, reject: Callable[[str, str], None],
+                   on_opened: Callable[[Any, dict[str, Any]], None] | None, data: DataVerdict, learning: Any) -> str:
+    """ÖĞRENME MODU AÇILIŞI (2026-09-28, öğrenme modu) — `apply_action`ın OPEN kolu, yalnız `learning.on` iken.
+
+    Veri, stop, giriş kayması ve test edilmiş risk aralığı kapıları bu çağrıdan ÖNCE aynen uygulanmıştır. Boyut
+    `fit_size` (slot başına eşit marj, `risk_pct` hedef risk, likidasyon mesafesi ≥ k × stop, min-notional'a çıkarma
+    yalnız %2 tavan ve serbest marj içinde; tek pozisyon tavanı önceden uygulanır → MAX_POSITION_PCT reddi olmaz).
+    Taban `equity_basis(state)`. Risk kapısı ÇAĞIRANIN verdiği öğrenme RiskEngine'i (`risk`; toplam açık risk 100, işlem
+    tavanı 2 aynen). Defter `allow_shrink=True` YALNIZ bu çağrı için (kalıcı öznitelik değişmez). Etiketler
+    `pos.meta["learning"]` ve `features["learning"]`e yazılır: size_rule, slots, risk_pct, risk_fraction_of_budget,
+    learning_unlocked_by. Retten sonra `act["_learning"]["fit"]` çağıranın karşı-olgusal kaydına kalır."""
+    filt = filters if filters is not None else default_filters(symbol, MarketType.USDM_PERP)
+    rprof = getattr(risk, "profile", None) or profile
+    lmax = int(learning.leverage_max)
+    for cap in (getattr(rprof, "futures_max_leverage", None), getattr(filt, "max_leverage", None)):
+        if cap:
+            lmax = min(lmax, int(cap))
+    E = float(risk.equity_basis(state))
+    fill_px = float(ledger.market_fill_price(symbol, direction, entry, filters=filt, tick=tick))
+    fit = fit_size(equity=E, entry=entry, stop=stop, slots=int(learning.slots), leverage_max=max(1, lmax),
+                   risk_pct=float(learning.risk_pct), reserve_pct=float(learning.reserve_pct),
+                   liq_buffer_mult=float(learning.liq_buffer_mult), mmr=LEARNING_MMR, min_notional=float(filt.min_notional),
+                   qty_step=float(filt.qty_step), price_for_step=fill_px if fill_px > 0 else None,
+                   hard_cap_pct=float(learning.hard_cap_pct), min_notional_bump=bool(learning.min_notional_bump),
+                   available_margin=float(ledger.available), min_qty=float(filt.min_qty),
+                   max_position_pct=getattr(rprof, "max_position_pct", None))
+    tags = dict(act.get("_learning") or {}) if isinstance(act.get("_learning"), dict) else {}
+    tags["fit"] = {"ok": fit.ok, "reason": fit.reason, "size_rule": fit.size_rule, "notional": round(fit.notional, 6),
+                   "leverage": int(fit.leverage), "margin": round(fit.margin, 6), "risk_usdt": round(fit.risk_usdt, 6),
+                   "why": fit.detail.get("why"), "equity_basis": E}
+    act["_learning"] = tags
+    if not fit.ok:
+        reject(symbol, fit.reason or "LEARNING_SIZE")
+        return "REJECTED"
+    unlocked = [str(x) for x in (tags.get("unlocked_by") or [])]
+    unlocked += [x for x in _baseline_blocks(act, symbol=symbol, direction=direction, entry=entry, stop=stop, tick=tick,
+                                             now=now, ledger=ledger, risk=risk, profile=profile, state=state,
+                                             filters=filt) if x not in unlocked]
+    rfb = fit.detail.get("risk_fraction_of_budget")
+    lrn = {"book": str(getattr(learning, "name", "")), "size_rule": fit.size_rule, "slots": int(learning.slots),
+           "risk_pct": float(learning.risk_pct), "leverage": int(fit.leverage), "leverage_max": int(lmax),
+           "risk_usdt": round(fit.risk_usdt, 6), "equity_basis": E,
+           "risk_fraction_of_budget": round(float(rfb), 6) if rfb is not None else None,
+           "learning_unlocked_by": unlocked}
+    plan_dict = {"symbol": symbol, "market_type": "USDM_PERP", "direction": direction, "entry": entry, "stop": stop,
+                 "targets": list(act.get("targets") or []), "notional": fit.notional, "margin": fit.margin,
+                 "leverage": int(fit.leverage), "amount_type": "NOTIONAL", "expected_r": float(act.get("expected_r") or 0.0),
+                 "min_notional": float(filt.min_notional)}
+    rd = risk.evaluate(plan_dict, state, {"now_utc": now})
+    if not rd.allowed:
+        reject(symbol, (rd.reasons or ["RISK_DENIED"])[0])
+        return "REJECTED"
+    notional = float(rd.adjusted_notional or fit.notional)
+    lev = int(rd.adjusted_leverage or fit.leverage)
+    if notional <= 0:
+        reject(symbol, "ZERO_NOTIONAL")
+        return "REJECTED"
+    feats, data_src = _entry_features(act, data)
+    feats["learning"] = dict(lrn)
+    if "in_lab_universe" in tags:
+        feats["in_lab_universe"] = bool(tags["in_lab_universe"])
+    qty_s = fit.detail.get("qty")
+    # RiskEngine `adjusted_notional`ı 4 haneye YUVARLAR (≤ 5e-5 USDT); bu fark gerçek bir aşağı ayar sayılmaz (ana bot
+    # `notional + 1e-4 >= final_notional` ile aynı tolerans). Aksi halde çıkarma NOTIONAL'a düşüp bir adım kaybederdi.
+    if fit.size_rule == SIZE_BUMP and qty_s and notional + RISK_NOTIONAL_ROUND_TOL >= fit.notional:
+        # çıkarılan miktar adıma YUKARI yuvarlandı: defterin aşağı yuvarlaması bir adım kaybettirmesin (miktarla aç)
+        size = SizeSpec(Decimal(str(qty_s)), AmountType.QUANTITY, lev)
+    else:
+        size = SizeSpec(Decimal(str(notional)), AmountType.NOTIONAL, lev)
+    pos = ledger.open(symbol, direction, entry, size, filters=filt, stop=stop, targets=list(act.get("targets") or []),
+                      setup_type=str(act.get("setup_type") or "strategy"), trigger_text=str(act.get("reason") or ""),
+                      features=feats, tick=tick, now=now,
+                      meta={"run_id": run_id, "strategy": str(act.get("name") or ""), "data_source": data_src,
+                            "learning": dict(lrn)},
+                      allow_shrink=True)
+    if pos is None:
+        reject(symbol, ledger.last_reject_reason or "LEDGER_REJECT")
+        return "REJECTED"
+    sh = pos.meta.get("shrunk_to_margin")
+    if isinstance(sh, dict):
+        # yedek emniyet devreye girdi: defter serbest marja küçülttü (R geçerli; risk bütçenin altında)
+        upd: dict[str, Any] = {"size_rule": SIZE_SHRUNK}
+        try:
+            ratio = float(Decimal(str(sh["filled_qty"])) / Decimal(str(sh["requested_qty"])))
+            if rfb is not None:
+                upd["risk_fraction_of_budget"] = round(float(rfb) * ratio, 6)
+            upd["risk_usdt"] = round(fit.risk_usdt * ratio, 6)
+        except (KeyError, TypeError, ValueError, ArithmeticError):
+            pass
+        pos.meta["learning"].update(upd)
+        pos.features["learning"].update(upd)
+    if on_opened is not None:
+        on_opened(pos, act)
+    return "OPENED"
+
+
 def apply_action(act: dict[str, Any] | None, *, symbol: str, price: float, tick: TickData | None, now: datetime,
                  ledger: FuturesLedgerV2, risk: RiskEngine, profile, state, filters, run_id: str,
                  reject: Callable[[str, str], None], on_closed: Callable[[Any], None],
                  on_opened: Callable[[Any, dict[str, Any]], None] | None = None,
-                 data: DataVerdict | None = None, max_entry_drift_pct: float = 0.0) -> str:
+                 data: DataVerdict | None = None, max_entry_drift_pct: float = 0.0, learning: Any = None) -> str:
     """Stratejinin kararını uygular. Döner: OPENED | CLOSED | REJECTED | NONE. İki motor da bunu çağırır.
 
     `data` (2026-09-16): kural verisinin kimlik hükmü. Sözleşme fail-closed'dur — hüküm yoksa ya da `ok` değilse ne
     OPEN ne CLOSE uygulanır (SPOT ikamesi / kaynağı bilinmeyen veriyle futures işlemi yok); OPEN ayrıca `entry_ok`
     (provenansın giriş izni + BTC referansı) ister. Açık pozisyonun stop/hedef/likidasyonu bu fonksiyondan değil,
-    defterin `tick`inden yürür ve bu hükümden ETKİLENMEZ."""
+    defterin `tick`inden yürür ve bu hükümden ETKİLENMEZ.
+
+    `learning` (2026-09-28, öğrenme modu): `BookLearning` ya da None. None ya da `on` değilse davranış bit-bit eskisi
+    gibidir. Açıkken YALNIZ boyut/risk/defter adımı değişir (`_open_learning`); veri, stop, kayma ve test edilmiş aralık
+    kapıları aynen kalır ve `risk` çağıranın öğrenme RiskEngine'idir. Replay her zaman None geçer."""
     if not act:
         return "NONE"
     action = str(act.get("action") or "").upper()
@@ -417,30 +654,14 @@ def apply_action(act: dict[str, Any] | None, *, symbol: str, price: float, tick:
     if _tr:
         _s = 1.0 if direction == "LONG" else -1.0
         act["targets"] = [entry + _s * float(_tr) * abs(entry - stop)]
-    stop_frac = abs(entry - stop) / entry
-    risk_usdt = float(profile.risk_per_trade_pct) / 100.0 * float(state.equity)
-    notional = risk_usdt / stop_frac
-    lev = int(act.get("leverage") or 1)
-    # IHTIYAC KADAR KALDIRAC (2026-09-21) — tavana kadar. Tek pozisyon tavani
-    # `equity x max_position_pct/100 x kaldirac`. Stopu DAR olan islem ayni hareketten daha
-    # cok R uretir ve tam da tavana takilan odur; bu yuzden kaldirac SABIT degil, islemin
-    # ihtiyaci kadar yukselir. Kaldirac islem basina RISKI ARTIRMAZ (risk stop mesafesiyle
-    # belirlenir); yalnizca tavani acar ve likidasyonu yaklastirir — bu yuzden GEREKMEDIKCE
-    # yukseltilmez. `leverage_max <= lev` iken davranis degismez.
-    _lmax = int(act.get("leverage_max") or 0)
-    if _lmax > lev:
-        _cap1 = float(state.equity) * float(getattr(profile, "max_position_pct", 0.0)) / 100.0
-        if _cap1 > 0:
-            _need = int(math.ceil(notional / _cap1))
-            lev = max(lev, min(_need, _lmax))
-    # TAVANA KÜÇÜLTME (2026-09-25, yalnız isteyen eylem — formasyon v3): tek pozisyon tavanını aşan işlem REDDEDİLMEZ,
-    # tavana sığacak kadar küçültülür → işlem başına risk bütçenin ALTINA iner (asla üstüne çıkmaz), kaldıraç değişmez.
-    if act.get("cap_notional_to_position_pct"):
-        _cap2 = float(risk.equity_basis(state)) * float(getattr(profile, "max_position_pct", 0.0)) / 100.0 * max(lev, 1)
-        if _cap2 > 0 and notional > _cap2:
-            act["_notional_scaled"] = {"from": round(notional, 6), "to": round(_cap2 * 0.999, 6),
-                                       "risk_fraction_of_budget": round(_cap2 * 0.999 / notional, 6)}
-            notional = _cap2 * 0.999
+    if learning is not None and getattr(learning, "on", False):
+        # ÖĞRENME MODU (2026-09-28, öğrenme modu): slot boyutu + öğrenme RiskEngine'i + çağrı başına allow_shrink.
+        return _open_learning(act, symbol=symbol, direction=direction, entry=entry, stop=stop, tick=tick, now=now,
+                              ledger=ledger, risk=risk, profile=profile, state=state, filters=filters, run_id=run_id,
+                              reject=reject, on_opened=on_opened, data=data, learning=learning)
+    notional, lev, _scaled = _baseline_size(act, entry=entry, stop=stop, profile=profile, state=state, risk=risk)
+    if _scaled is not None:
+        act["_notional_scaled"] = _scaled
     plan_dict = {"symbol": symbol, "market_type": "USDM_PERP", "direction": direction, "entry": entry, "stop": stop,
                  "targets": list(act.get("targets") or []), "notional": notional, "margin": notional / max(1, lev),
                  "leverage": lev, "amount_type": "NOTIONAL", "expected_r": float(act.get("expected_r") or 0.0),
@@ -453,16 +674,7 @@ def apply_action(act: dict[str, Any] | None, *, symbol: str, price: float, tick:
     if notional <= 0:
         reject(symbol, "ZERO_NOTIONAL")
         return "REJECTED"
-    # Kanıt: hangi veriyle girildiği pozisyon/işlem kaydına yazılır (piyasa, kaynak, tur, kullanılan bar zamanları).
-    data_src = {"market": data.market, "source": data.source, "tour_id": data.tour_id, "bars": dict(data.bars), "btc": dict(data.btc)}
-    feats = {"regime": act.get("regime"), "market_type": "USDM_PERP", "strategy": act.get("name"),
-             "expected_r": float(act.get("expected_r") or 0.0), "p_win": None, "data_source": data_src,
-             # ORTAK YAPI (structures_v1): girişin dayanağı ve politika sürümü — eski ölçümlerden AYRI
-             "structure": dict(act["structure"]) if act.get("structure") else None}
-    if act.get("variation"):
-        # MUM VARYASYONU (2026-09-26, yalnız isteyen eylem): kimlik, definition_sha, laboratuvar kanıtı, gözlem bayrağı ve
-        # çıkış (hedef R, en uzun tutma) — girişteki ANLIK GÖRÜNTÜ; işlem kaydına da geçer. Anahtar yalnız o zaman eklenir.
-        feats["candle_variation"] = dict(act["variation"])
+    feats, data_src = _entry_features(act, data)
     pos = ledger.open(symbol, direction, entry, SizeSpec(Decimal(str(notional)), AmountType.NOTIONAL, int(rd.adjusted_leverage or lev)),
                       filters=filters, stop=stop, targets=list(act.get("targets") or []),
                       setup_type=str(act.get("setup_type") or "strategy"), trigger_text=str(act.get("reason") or ""),
@@ -539,6 +751,15 @@ class StrategyBook:
         self.monitoring_gap: dict[str, Any] | None = None
         #: KORUYUCU İZLEYİCİ (2026-09-24): gözlem ölçümü (`protective_monitor.ObservationLog`); None → ölçüm yok.
         self.observer: Any = None
+        #: ÖĞRENME MODU (2026-09-28, öğrenme modu): hepsi TEMBEL kurulur — anahtar bu süreçte hiç açılmazsa hiçbiri oluşmaz
+        #: (dosya yok, özet alanı yok). `risk_learning`: taban profilin KOPYASI (toplam açık risk 100; PROFILES'a yazılmaz).
+        self.risk_learning: RiskEngine | None = None
+        self._risk_learning_key: float | None = None
+        self.rule_params_learning: Any = None
+        self._rule_params_learning_key: float | None = None
+        self.cf: Any = None                           # learning_cf.CounterfactualRecorder (state_dir/CF_FILE)
+        self.learning: dict[str, Any] | None = None   # özet dosyasına giden durum (yalnız öğrenme görüldüyse)
+        self.learning_counters: dict[str, int] = {}
         self._restore_counters()
 
     def _restore_counters(self) -> None:
@@ -563,6 +784,10 @@ class StrategyBook:
                     _rev = prev.get("rule_evaluated_at")
                     self.rule_evaluated_at = str(_rev) if _rev else None
                     self.rule_tour = int(prev.get("rule_tour") or 0)
+                    # öğrenme modu sayaçları (2026-09-28): yalnız özet onları taşıyorsa (anahtar hiç açılmadıysa alan yok)
+                    _lc = (prev.get("learning") or {}).get("counters") if isinstance(prev.get("learning"), dict) else None
+                    if isinstance(_lc, dict):
+                        self.learning_counters = {str(k): int(v) for k, v in _lc.items() if isinstance(v, (int, float))}
         except Exception as exc:  # noqa: BLE001 -- ozet bozuksa sayac sifirdan baslar, defter ETKILENMEZ
             log.warning("strateji defter sayaclari geri yuklenemedi (%s): %s", self.key, exc)
         closed = len(self.ledger.history_dicts())
@@ -668,8 +893,9 @@ class StrategyBook:
         self.closed_recent = self.closed_recent[-50:]
 
     def _record_structure(self, sym: str, sdec: dict[str, Any], analyses: dict[str, Any], *, res: str, now_ms: int,
-                          pos_before: Any) -> None:
-        """Yapı kararını ortak depoya ve özet dosyasına yazar (panel motorun kaydını çizer). Arıza işlemi ETKİLEMEZ."""
+                          pos_before: Any, mode: str | None = None) -> None:
+        """Yapı kararını ortak depoya ve özet dosyasına yazar (panel motorun kaydını çizer). Arıza işlemi ETKİLEMEZ.
+        `mode`: bu kararda GERÇEKTEN uygulanan kip (öğrenme modunda giriş gölgesi → SHADOW); None → defterin kipi."""
         try:
             from .structures.store import StructureStore
             if self._structure_store is None:
@@ -683,7 +909,7 @@ class StrategyBook:
             for an in (analyses or {}).values():
                 if an:
                     self._structure_store.save_latest(an)
-            row = self._structure_store.record_decision(dict(sdec, mode=self.structure_mode, applied=res), book_id=self.key,
+            row = self._structure_store.record_decision(dict(sdec, mode=mode or self.structure_mode, applied=res), book_id=self.key,
                                                         market="USDM_PERP", symbol=sym, at_ms=now_ms, analyses=analyses,
                                                         trade_id=trade_id)
             keep = {k: row.get(k) for k in ("bot", "policy_version", "action", "reason_code", "side", "text_tr", "pattern_ids",
@@ -718,14 +944,24 @@ class StrategyBook:
     # ------------------------------------------------------------------ tur
     def step(self, *, symbols: list[str], frames_by_symbol: dict[str, dict], marks: dict[str, TickData],
              marks_f: dict[str, float], now: datetime, provenance_by_symbol: dict[str, dict] | None = None,
-             data_gaps: dict[str, dict] | None = None) -> None:
+             data_gaps: dict[str, dict] | None = None, learning: Any = None,
+             structures_entry_shadow: bool = False) -> None:
         """Her turda: veri kimliği doğrulaması → kural → apply_action. Ana bot dokunulmaz; yalnız bu defter değişir.
 
         `provenance_by_symbol` (2026-09-16): sağlayıcının BU tur için yazdığı çerçeve provenansı (motor
         `_frame_provenance`, tur kimliği ve bar bağıyla). Yoksa/eşleşmiyorsa/SPOT ise kural bu sembol için
         DEĞERLENDİRİLMEZ (ne OPEN ne kural CLOSE'u SPOT ikamesiyle üretilir); ret gerekçeli kaydedilir. Açık
         pozisyonun stop/hedef/likidasyon takibi `tick` ile ayrı sürer. `marks`/`marks_f`: DOĞRULANMIŞ futures
-        fiyatı (motor `_paper_marks`); `data_gaps`: fiyatı doğrulanamayan semboller (bu turda tick de yok)."""
+        fiyatı (motor `_paper_marks`); `data_gaps`: fiyatı doğrulanamayan semboller (bu turda tick de yok).
+
+        ÖĞRENME MODU (2026-09-28, öğrenme modu): `learning` = bu geçişin `BookLearning` görünümü (motor ya da Box
+        zamanlayıcısı `LearningMode.book(ad)` ile verir) ya da None. None/kapalı → bit-bit eski yol. Açıkken: öğrenme
+        RiskEngine'i + `fit_size` (`apply_action(learning=…)`), Box'ta öğrenme `min_stop_pct`i, reddedilen geçerli sinyal
+        için karşı-olgusal kayıt (anahtar = barın sinyal kimliği), bekleyen kayıtların eldeki çerçevelerle etiketlenmesi
+        (ek API çağrısı yok). `structures_entry_shadow` (motor `lm.structures_entry_shadow(ad)`): yalnız öğrenme açıkken,
+        ENFORCE yapı kipinde YENİ GİRİŞ kararı gölgeye alınır (bekle/iptal/geometri yok); açık pozisyonun yönetimi (yapı
+        çıkışı) ENFORCE kalır. `symbols` motorca genişletilebilir (D4/C4 evreni); `features.in_lab_universe` defterin
+        kendi listesine üyeliktir."""
         with self.lock:
             self._resume_once(now)
             self.counters["tours"] += 1
@@ -752,6 +988,17 @@ class StrategyBook:
             from .regime_gate import btc_regime
             self.regime = btc_regime(btc)
             state = self._state(marks_f)
+            # ÖĞRENME MODU (2026-09-28): geçiş başına değişmez görünüm; kapalıyken aşağıdaki yol bit-bit eskisi.
+            bl = learning if (learning is not None and getattr(learning, "on", False)) else None
+            params, risk_eng = self.rule_params, self.risk
+            eshadow = False
+            if bl is not None:
+                eshadow = bool(structures_entry_shadow)
+                params, risk_eng = self._learning_params(bl), self._learning_risk(bl)
+                self._learning_begin(bl, now, eshadow)
+            elif self.learning is not None and self.learning.get("active"):
+                # askıya alındı / kapatıldı: bu geçiş baseline; açık pozisyonlar kendi stop/hedefiyle yönetilir
+                self.learning = dict(self.learning, active=False, suspended_at=iso(now))
             # KAPSAM (V13): `symbols` = YENI giris izinli evren (olculen on coin). Defterin kendi acik
             # pozisyonlari evren disinda kalsa bile YONETILIR (kural kapanisi + stop); `decide` acik
             # pozisyonda hicbir zaman OPEN dondurmez, dolayisiyla evren disinda yeni giris olamaz.
@@ -784,32 +1031,36 @@ class StrategyBook:
                     # Kanıtsız veriyle kural UYGULANMAZ. Yalnız bilgi için: bu veriyle kural ne derdi (uygulanmadı)?
                     try:
                         wa = paper_rules.decide_for(self.name, frames=fr, btc_rows=btc, now_ms=now_ms,
-                                                    position=pos_obj, params=self.rule_params)
+                                                    position=pos_obj, params=params)
                         would = str((wa or {}).get("action") or "NONE")
                     except Exception:  # noqa: BLE001
                         would = "ERROR"
                     self._reject_data(sym, verdict, "SIGNAL" if not verdict.ok else "ENTRY", now, would)
                     continue
                 sdec, sanal = None, {}
+                # YAPI KİPİ (öğrenme modu, 2026-09-28): yalnız YENİ GİRİŞ gölgeye alınır; açık pozisyon (yönetim) ENFORCE kalır.
+                smode = self.structure_mode
+                if eshadow and smode == "ENFORCE" and pos_obj is None:
+                    smode = "SHADOW"
                 try:
-                    if self.structure_mode != "OFF":
+                    if smode != "OFF":
                         # ORTAK YAPI (structures_v1): canlı defter ve replay AYNI girişi kullanır (paper_rules).
                         from .structures.bots import StructureContext, used_patterns_of
-                        sctx = StructureContext(mode=self.structure_mode, symbol=sym, as_of_ms=now_ms, price=float(marks_f[sym]),
+                        sctx = StructureContext(mode=smode, symbol=sym, as_of_ms=now_ms, price=float(marks_f[sym]),
                                                 used_patterns=used_patterns_of(self.ledger),
                                                 provenance={"market": verdict.market, "source": verdict.source,
                                                             "tour_id": verdict.tour_id, "bars": dict(verdict.bars)})
                         act, sdec, sanal = paper_rules.decide_with_structures(self.name, frames=fr, btc_rows=btc, now_ms=now_ms,
-                                                                              position=pos_obj, params=self.rule_params, ctx=sctx)
+                                                                              position=pos_obj, params=params, ctx=sctx)
                         _serr = paper_rules.structure_error_of(sdec)
                         if _serr:
                             # ortak geri düşüş arızayı kararda taşır; SAYAÇ da görür (tur-4 doğrulayıcı #5; replay aynı)
                             self._reject(sym, _serr)
                     else:
                         act = paper_rules.decide_for(self.name, frames=fr, btc_rows=btc, now_ms=now_ms,
-                                                     position=pos_obj, params=self.rule_params)
+                                                     position=pos_obj, params=params)
                 except Exception as exc:  # noqa: BLE001 — strateji arızası SESSİZ GEÇMEZ
-                    if self.structure_mode == "OFF":
+                    if smode == "OFF":
                         self._reject(sym, "STRATEGY_ERROR:%s" % type(exc).__name__)
                         continue
                     # Arıza nerede: botun KENDİ kuralı yeniden sorulur. Kural da hata verirse arıza kuralındır — yalnız
@@ -819,23 +1070,26 @@ class StrategyBook:
                     sdec, sanal = None, {}
                     try:
                         act = paper_rules.decide_for(self.name, frames=fr, btc_rows=btc, now_ms=now_ms,
-                                                     position=pos_obj, params=self.rule_params)
+                                                     position=pos_obj, params=params)
                     except Exception as exc2:  # noqa: BLE001
                         self._reject(sym, "STRATEGY_ERROR:%s" % type(exc2).__name__)
                         continue
                     self._reject(sym, "STRUCTURE_ERROR:%s" % type(exc).__name__)
-                    if self.structure_mode == "ENFORCE" and str((act or {}).get("action") or "").upper() == "OPEN":
+                    if smode == "ENFORCE" and str((act or {}).get("action") or "").upper() == "OPEN":
                         continue
                 if not pos_open and paper_rules.signal_already_used(act, self.ledger.history, sym):
                     # aynı sinyalle ikinci giriş yok (laboratuvarda her sinyal TEK işlem; stop aynı barda gelirse)
                     act = {"action": "NONE", "reason": "SIGNAL_ALREADY_USED", "name": self.name}
+                if bl is not None and not pos_open and act and str(act.get("action") or "").upper() == "OPEN":
+                    act["_learning"] = self._learning_tags(sym, act, sdec, smode, price=float(marks_f[sym]))
                 res = apply_action(act, symbol=sym, price=float(marks_f[sym]), tick=marks.get(sym), now=now,
-                                   ledger=self.ledger, risk=self.risk, profile=self.profile, state=state,
+                                   ledger=self.ledger, risk=risk_eng, profile=self.profile, state=state,
                                    filters=self.filters_cache.get(sym, MarketType.USDM_PERP), run_id=self.run_id,
                                    reject=self._reject, on_closed=self._on_closed, on_opened=self._on_opened, data=verdict,
-                                   max_entry_drift_pct=self.max_entry_drift_pct)
+                                   max_entry_drift_pct=self.max_entry_drift_pct, learning=bl)
                 if sdec is not None:
-                    self._record_structure(sym, sdec, sanal, res=res, now_ms=now_ms, pos_before=pos_obj)
+                    self._record_structure(sym, sdec, sanal, res=res, now_ms=now_ms, pos_before=pos_obj,
+                                           mode=(smode if smode != self.structure_mode else None))
                 if res in ("OPENED", "CLOSED"):
                     self.last_actions[sym] = {"action": res, "reason": (act or {}).get("reason"), "at": iso(now),
                                               "data": {"market": verdict.market, "source": verdict.source, "tour_id": verdict.tour_id, "bars": dict(verdict.bars)}}
@@ -861,6 +1115,245 @@ class StrategyBook:
                     if _reason != "NO_SIGNAL" and not _reason.startswith("STRUCTURE_ERROR"):
                         # yapı arızası yukarıda `_reject` ile BİR KEZ sayıldı (çift sayım yok)
                         self.rejections[_reason] = self.rejections.get(_reason, 0) + 1
+                if bl is not None:
+                    self._learning_after(sym, act, res, bl=bl, pos_open=pos_open, pos_obj=pos_obj, verdict=verdict, fr=fr,
+                                         btc=btc, now=now, now_ms=now_ms, price=float(marks_f[sym]), params=params)
+            if self.cf is not None:
+                # bekleyen karşı-olgusallar eldeki çerçevelerle (ek API yok); askıdayken de etiketleme sürer (kayıp yok)
+                self._learning_label(frames_by_symbol, now)
+
+    # ------------------------------------------------------------------ öğrenme modu (2026-09-28)
+    def _learning_params(self, bl: Any) -> Any:
+        """Box: öğrenme `min_stop_pct` (0,32) ile AYRI parametre nesnesi — taban nesne değişmez; diğer aileler taban."""
+        msp = getattr(bl, "min_stop_pct", None)
+        if self.rule.family != "box" or msp is None:
+            return self.rule_params
+        key = float(msp)
+        if self.rule_params_learning is None or self._rule_params_learning_key != key:
+            rp = dict(self.spec.rule_params or {})
+            rp["min_stop_pct"] = key
+            self.rule_params_learning = paper_rules.build_params(self.name, atr_mult=self.atr_mult, rule_params=rp)
+            self._rule_params_learning_key = key
+        return self.rule_params_learning
+
+    def _learning_risk(self, bl: Any) -> RiskEngine:
+        """Öğrenme RiskEngine'i: taban profilin KOPYASI (toplam açık risk tavanı; işlem tavanı 2 aynen), AYNI kill switch."""
+        key = float(getattr(bl, "max_total_open_risk_pct", None) or DEFAULT_MAX_TOTAL_OPEN_RISK_PCT)
+        if self.risk_learning is None or self._risk_learning_key != key:
+            self.risk_learning = RiskEngine(profile_for(self.profile, max_total_open_risk_pct=key), self.risk.ks,
+                                            self.risk.clusters)
+            self._risk_learning_key = key
+        return self.risk_learning
+
+    def _learning_begin(self, bl: Any, now: datetime, eshadow: bool) -> None:
+        prev = self.learning or {}
+        since = prev.get("since") if prev.get("active") else iso(now)
+        self.learning = {"active": True, "since": since, "last_active_at": iso(now),
+                         "book": bl.to_dict() if hasattr(bl, "to_dict") else {"name": getattr(bl, "name", None)},
+                         "structures_entry_shadow": bool(eshadow and self.structure_mode == "ENFORCE"),
+                         "rule_params_effective": ({"min_stop_pct": float(bl.min_stop_pct)}
+                                                   if self.rule.family == "box" and getattr(bl, "min_stop_pct", None) is not None
+                                                   else None)}
+        if getattr(bl, "counterfactual", False):
+            self._cf_recorder(bl)
+
+    def _count(self, key: str, n: int = 1) -> None:
+        self.learning_counters[key] = int(self.learning_counters.get(key, 0)) + int(n)
+
+    def _cf_recorder(self, bl: Any) -> Any:
+        if self.cf is None:
+            from .learning_cf import CounterfactualRecorder
+            self.cf = CounterfactualRecorder(self.state_dir / CF_FILE, book=self.name,
+                                             max_pending=int(getattr(bl, "max_pending", 2000) or 2000),
+                                             archive=self._cf_archive())
+        else:
+            self.cf.max_pending = max(1, int(getattr(bl, "max_pending", self.cf.max_pending) or self.cf.max_pending))
+        return self.cf
+
+    def _cf_archive(self) -> Any:
+        """Etiketlenmiş kayıtlar taşarsa KAYIPSIZ arşiv (ana gölge defteriyle aynı kural); kurulamazsa None → budama yok."""
+        lv = getattr(self.cfg.v3, "learning_v3", None)
+        if not bool(getattr(lv, "decision_archive_enabled", False)):
+            return None
+        try:
+            from .learn.journal_archive import SegmentArchive
+            return SegmentArchive(self.state_dir / CF_ARCHIVE_DIR, stream_id="counterfactual_%s" % self.key,
+                                  record_schema_version="shadow_trade_v1",
+                                  max_segments=int(getattr(lv, "decision_archive_max_segments", 0) or 0))
+        except Exception as exc:  # noqa: BLE001 — arşiv kurulamazsa SİLME de yapılmaz
+            log.warning("karşı-olgusal arşivi kurulamadı (%s): %s", self.key, exc)
+            return None
+
+    def _learning_tags(self, sym: str, act: dict[str, Any], sdec: dict[str, Any] | None, smode: str, *,
+                       price: float) -> dict[str, Any]:
+        """Girişin öğrenme etiketleri: kendi evrenine üyelik ve anahtar kapalıyken bu sinyali ÜRETMEYECEK/GEÇİRMEYECEK
+        defter düzeyi kapılar (`apply_action` bunlara risk/defter kapılarını ekler → `learning_unlocked_by`)."""
+        unlocked: list[str] = []
+        tags: dict[str, Any] = {}
+        if self.symbols:
+            inside = sym in self.symbols
+            tags["in_lab_universe"] = inside
+            if not inside:
+                unlocked.append("BOOK_UNIVERSE")
+        if smode != self.structure_mode and isinstance(sdec, dict):
+            from .structures.bots import BLOCKING_ACTIONS
+            act_s = str(sdec.get("action") or "")
+            blocked = (act_s in BLOCKING_ACTIONS) if self.rule.family == "trend" else (act_s != "ENTER")
+            if blocked:
+                unlocked.append("STRUCTURE_%s" % (sdec.get("reason_code") or act_s))
+                self._count("structures_entry_shadowed")
+        if self.rule.family == "box":
+            msp = float(getattr(self.rule_params, "min_stop_pct", 0.0) or 0.0)
+            try:
+                px = float(act.get("signal_close") or price)
+                st = float(act.get("stop") or 0.0)
+            except (TypeError, ValueError):
+                px, st = 0.0, 0.0
+            if msp > 0 and px > 0 and st > 0 and abs(px - st) / px * 100.0 < msp:
+                unlocked.append("BOX_MIN_STOP_PCT")
+        tags["unlocked_by"] = unlocked
+        return tags
+
+    def _decision_tf(self) -> str:
+        intra = [t for t in self.rule.timeframes if t != "1d"]
+        return intra[-1] if intra else "1d"
+
+    def _cf_record(self, sym: str, act: dict[str, Any], reason: str, *, price: float, now: datetime,
+                   verdict: DataVerdict, variation: str | None = None, rule_version: str | None = None) -> bool:
+        """Açılmayan geçerli sinyalin karşı-olgusal kaydı (P1: anahtar = barın sinyal kimliği, tur kimliği DEĞİL).
+        Etiket türü: mum/Box TARGET_STOP_TIME (kuralın kendi hedef/stop/zaman çıkışı), D4/T2/M2 HORIZON (yaklaşık)."""
+        from .learning_cf import HORIZON_BARS, LABEL_HORIZON, LABEL_TARGET_STOP_TIME
+        key = _signal_key(act)
+        if key is None or self.cf is None:
+            return False
+        direction = str(act.get("direction") or "LONG").upper()
+        try:
+            entry, stop = float(price), float(act.get("stop") or 0.0)
+        except (TypeError, ValueError):
+            return False
+        tf = self._decision_tf()
+        fam = self.rule.family
+        targets: list[float] = []
+        if fam == "candle":
+            var = act.get("variation") if isinstance(act.get("variation"), dict) else {}
+            hold = var.get("max_hold_bars")
+            tr = act.get("target_r_from_entry")
+            if tr:
+                s = 1.0 if direction == "LONG" else -1.0
+                targets = [entry + s * float(tr) * abs(entry - stop)]
+            # zaman sınırı girişin barı DAHİL H bar; etiketleyici girişten SONRAKİ ilk bardan sayar → H − 1
+            kind, horizon = LABEL_TARGET_STOP_TIME, max(1, int(hold) - 1) if hold else 0
+        elif fam == "box" and bool(getattr(self.rule_params, "eod_close", True)):
+            targets = [float(t) for t in (act.get("targets") or [])]
+            kind, horizon = LABEL_TARGET_STOP_TIME, _box_eod_bars(act, now)
+        else:
+            kind, horizon = LABEL_HORIZON, HORIZON_BARS
+        if horizon <= 0:
+            return False
+        feats: dict[str, Any] = {"strategy": self.name, "setup_type": act.get("setup_type"), "regime": act.get("regime"),
+                                 "signal_close": act.get("signal_close"), "atr14": act.get("atr14"),
+                                 "lab_algo": act.get("lab_algo"), "structure": act.get("structure"),
+                                 "data_source": {"market": verdict.market, "source": verdict.source,
+                                                 "tour_id": verdict.tour_id, "bars": dict(verdict.bars)},
+                                 "learning": (act.get("_learning") or {}).get("fit") if isinstance(act.get("_learning"), dict) else None}
+        if act.get("variation"):
+            feats["candle_variation"] = dict(act["variation"])
+        if self.symbols:
+            feats["in_lab_universe"] = sym in self.symbols
+        ok = self.cf.record(signal_key=key, symbol=sym, direction=direction, entry=entry, stop=stop, targets=targets,
+                            reason=str(reason), created_at=now, tf_minutes=tf_ms(tf) // 60_000, horizon_bars=int(horizon),
+                            label_kind=kind, features=feats, variation=variation,
+                            rule_version=rule_version or act.get("lab_algo") or act.get("params_label") or self.name)
+        if ok:
+            self._count("counterfactual_recorded")
+        return ok
+
+    def _learning_after(self, sym: str, act: dict[str, Any] | None, res: str, *, bl: Any, pos_open: bool, pos_obj: Any,
+                        verdict: DataVerdict, fr: dict, btc: list, now: datetime, now_ms: int, price: float,
+                        params: Any) -> None:
+        """Geçişin öğrenme sonrası: sayaçlar + açılmayan geçerli sinyallerin karşı-olgusal kaydı. Arıza işlemi ETKİLEMEZ."""
+        try:
+            a = act or {}
+            is_open = str(a.get("action") or "").upper() == "OPEN"
+            if res == "OPENED":
+                p = self.ledger.positions.get(sym)
+                lr = (getattr(p, "features", None) or {}).get("learning") or {}
+                self._count("opened")
+                if lr.get("learning_unlocked_by"):
+                    self._count("learning_unlocked")
+                if lr.get("size_rule") == SIZE_BUMP:
+                    self._count("min_notional_bumped")
+                elif lr.get("size_rule") == SIZE_SHRUNK:
+                    self._count("shrunk_to_margin")
+            if not getattr(bl, "counterfactual", False) or not verdict.ok or not verdict.entry_ok:
+                return
+            self._cf_recorder(bl)
+            fam_candle = self.rule.family == "candle"
+            if res == "REJECTED" and is_open:
+                why = str((self.last_actions.get(sym) or {}).get("reason") or "")
+                if counterfactual_ok(why):
+                    self._cf_record(sym, a, why, price=price, now=now, verdict=verdict,
+                                    variation=(a.get("lab_algo") if fam_candle else None))
+            elif not pos_open and not is_open and counterfactual_ok(str(a.get("reason") or "")) \
+                    and str(a.get("reason") or "").startswith("STRUCTURE"):
+                # yapı kapısı (ENFORCE, gölgeye alınmamış) girişi durdurdu: kuralın KENDİ geometrisi kaydedilir
+                base = paper_rules.decide_for(self.name, frames=fr, btc_rows=btc, now_ms=now_ms, position=None, params=params)
+                if base and str(base.get("action") or "").upper() == "OPEN":
+                    base = dict(base, structure=a.get("structure"))       # engelleyen yapı kararı özelliklerde kalır
+                    self._cf_record(sym, base, str(a.get("reason")), price=price, now=now, verdict=verdict,
+                                    variation=(base.get("lab_algo") if fam_candle else None))
+            if fam_candle:
+                self._cf_candle(sym, a, is_open=is_open, pos_open=pos_open, pos_obj=pos_obj, verdict=verdict, fr=fr,
+                                now=now, now_ms=now_ms, price=price, params=params)
+        except Exception as exc:  # noqa: BLE001 — karşı-olgusal kaydı işlem yolunu ASLA durdurmaz
+            log.warning("öğrenme sonrası adım başarısız (%s %s): %s", self.key, sym, exc)
+
+    def _cf_candle(self, sym: str, act: dict[str, Any], *, is_open: bool, pos_open: bool, pos_obj: Any,
+                   verdict: DataVerdict, fr: dict, now: datetime, now_ms: int, price: float, params: Any) -> None:
+        """C4 (C10): `also_matched` varyasyonları ve açık pozisyon yüzünden girilemeyen varyasyonlar — her biri kendi
+        stop/hedef R/en uzun tutma süresiyle karşı-olgusal kayıt (defter bölünmez)."""
+        also = [str(v) for v in (act.get("also_matched") or [])] if (is_open and not pos_open) else []
+        if not pos_open and not also:
+            return
+        hits = paper_rules.candle_hits_for(self.name, frames=fr, now_ms=now_ms, params=params)
+        opened = parse_ts_ms(getattr(pos_obj, "opened_at", None)) if pos_open else None
+        for h in hits:
+            if pos_open:
+                if opened is not None and opened >= int(h["signal_close_ms"]):
+                    continue                              # açık pozisyon BU sinyalden açıldı (eşleşenleri o an kaydedildi)
+                reason = "POSITION_OPEN"
+            elif h["id"] in also:
+                lo, hi = h["risk_atr_bounds"]
+                dist = abs(float(price) - float(h["stop"]))
+                reason = "ALSO_MATCHED" if (h["atr14"] > 0 and lo * h["atr14"] < dist <= hi * h["atr14"]) \
+                    else "RISK_OUTSIDE_TESTED_RANGE"
+            else:
+                continue
+            hact = {"direction": h["direction"], "stop": h["stop"], "signal_ts": h["signal_ts"],
+                    "signal_close_ms": h["signal_close_ms"], "signal_close": h["signal_close"], "atr14": h["atr14"],
+                    "setup_type": h["setup_type"], "lab_algo": h["id"], "target_r_from_entry": h["target_r"],
+                    "variation": {"id": h["id"], "definition_sha": h["definition_sha"], "target_r": h["target_r"],
+                                  "max_hold_bars": h["max_hold_bars"], "observation": h["observation"]}}
+            self._cf_record(sym, hact, reason, price=price, now=now, verdict=verdict, variation=h["id"],
+                            rule_version=h["definition_sha"])
+
+    def _learning_label(self, frames_by_symbol: dict[str, dict], now: datetime) -> None:
+        try:
+            n = self.cf.label_pending(frames_by_symbol or {}, now)
+            if n:
+                self._count("counterfactual_labeled", n)
+            self.cf.save()
+        except Exception as exc:  # noqa: BLE001 — etiketleme arızası defteri ETKİLEMEZ
+            log.warning("karşı-olgusal etiketleme/kayıt başarısız (%s): %s", self.key, exc)
+
+    def _learning_doc(self) -> dict[str, Any]:
+        doc = dict(self.learning or {})
+        doc["counters"] = dict(self.learning_counters)
+        doc["counterfactual"] = self.cf.stats() if self.cf is not None else None
+        rl = self.risk_learning
+        doc["risk_profile"] = ({"name": rl.profile.name, "max_total_open_risk_pct": rl.profile.max_total_open_risk_pct,
+                                "risk_per_trade_cap_pct": rl.profile.risk_per_trade_pct} if rl is not None else None)
+        return doc
 
     def _bar_binding(self, frames: dict | None, verdict: DataVerdict, now_ms: int) -> tuple[str | None, int | None]:
         """Kuralın BU anda okuyacağı son kapanmış bar, kayda giren barla her dilimde eşleşiyor mu.
@@ -1024,6 +1517,9 @@ class StrategyBook:
                                    "note_tr": "Yeni giriş yalnız bu turun doğrulanmış ve GÜNCEL USDⓈ-M perpetual çerçevesi (+ BTC referansı) ile; "
                                               "kural kapanışı sembol çerçevesine bağlı; stop/hedef takibi güncel doğrulanmış perp mark fiyatıyla."},
                    "note_tr": "KÂĞIT İLERİ TEST — gerçek para yok. Ana botun defterinden bağımsız."}
+            if self.learning is not None:
+                # ÖĞRENME MODU (2026-09-28): durum, sayaçlar, karşı-olgusal istatistikleri — anahtar hiç açılmadıysa alan YOK
+                doc["learning"] = self._learning_doc()
             doc["key"] = self.key
             atomic_write_json(Path(self.cfg.state_path) / self.summary_file, doc)
             # Bayrak TUKETILIR: bir sonraki yazma (or. 60 sn'lik cikis izleyicisi) kural gecisi

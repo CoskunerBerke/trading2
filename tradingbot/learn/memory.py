@@ -159,9 +159,13 @@ class MemoryTail:
     kapanış zinciri her turda) — 157 MB'lık dosyada okuma başına ~4–5 sn CPU ve +520–590 MB tepe RSS; haftalar içinde
     worker MemoryMax'a yürürdü.
 
-    Okuyucu yalnız YENİ tam satırları ayrıştırır (bayt ofseti + dosya kimliği (st_dev, st_ino) + son 4 KB bekçi). Dosya
-    değiştirildi/kesildi/döndürüldü (kimlik, boy ya da bekçi uyuşmuyor) → baştan TAM yeniden okuma (yine satır satır). Çıktılar
-    eski okuyucularla BİREBİR aynıdır:
+    Okuyucu yalnız YENİ tam satırları ayrıştırır (bayt ofseti + dosya kimliği (st_dev, st_ino) + iki 4 KB bekçi: dosyanın
+    ilk 4 KB'ı ve ofsetten önceki son 4 KB). Dosya döndürüldü (kimlik), kısaldı (boy) ya da bekçilerden biri değişti → baştan
+    TAM yeniden okuma (yine satır satır). Bu bekçilerin DIŞINDA kalan, boyu ve inode'u koruyan yerinde değişiklik (ör. dosyanın
+    ortasında aynı uzunlukta bir düzeltme) yakalanmaz; yeniden başlatmaya ya da dosya değişene kadar eski içerik görülür
+    (depoda bu dosyaları yerinde yeniden yazan yol yok; `deploy/restore.sh` worker'ı durdurur — 2026-09-28, dördüncü
+    doğrulama turu). Okuma ortasında istisna (G/Ç, bellek) → durum sıfırlanır ve istisna yükselir; sonraki çağrı tam okur
+    (yarım uygulanmış satırlar iki kez sayılmaz). Çıktılar eski okuyucularla BİREBİR aynıdır:
 
     * `closed_rows()`  == `[project(r) for r in memory.trades(closed_only=True)]` (sıralama dahil);
     * `last_entries(k)` == `[r for r in memory.iter_rows() if isinstance(r, dict) and r.get("kind") == "entry"][-k:]`
@@ -188,6 +192,7 @@ class MemoryTail:
         self._ident = ident
         self._offset = 0
         self._guard = b""
+        self._head = b""                              # dosyanın ilk GUARD_BYTES baytı (baş bekçisi; dördüncü tur)
         self._merged: dict[Any, dict] = {}
         self._entries: deque[tuple[int, int]] = deque(maxlen=self.keep_entries or None)
         self._exit_ids: set[str] = set()
@@ -204,7 +209,13 @@ class MemoryTail:
         if n == 0:
             return self._offset == 0
         fh.seek(self._offset - n)
-        return fh.read(n) == self._guard
+        if fh.read(n) != self._guard:
+            return False
+        h = len(self._head)
+        if h and self._offset > n:                  # ofset ≤ 4 KB iken baş bekçisi son bekçinin kendisidir
+            fh.seek(0)
+            return fh.read(h) == self._head
+        return True
 
     def _sync(self, fh) -> bool:
         """`fh` (ikili, açık) ile durumu dosyanın SONUNA getirir. Döner: durum dosyanın tamamını temsil ediyor mu."""
@@ -218,24 +229,33 @@ class MemoryTail:
         self._partial = False
         if st.st_size <= self._offset:
             return not self._anomaly
-        fh.seek(self._offset)
-        pos = self._offset
-        last_nl = pos
-        for raw in fh:
-            n = len(raw)
-            if not raw.endswith(b"\n"):
-                # tamamlanmamış son satır: işlenmez, ofset ilerlemez; doluysa bu çağrı eski yola düşer
-                if raw.strip():
-                    self._partial = True
-                break
-            self._line(raw, pos, n)
-            pos += n
+        try:
+            fh.seek(self._offset)
+            pos = self._offset
             last_nl = pos
-        if last_nl > self._offset:
-            self._offset = last_nl
-            k = min(self.GUARD_BYTES, last_nl)
-            fh.seek(last_nl - k)
-            self._guard = fh.read(k)
+            for raw in fh:
+                n = len(raw)
+                if not raw.endswith(b"\n"):
+                    # tamamlanmamış son satır: işlenmez, ofset ilerlemez; doluysa bu çağrı eski yola düşer
+                    if raw.strip():
+                        self._partial = True
+                    break
+                self._line(raw, pos, n)
+                pos += n
+                last_nl = pos
+            if last_nl > self._offset:
+                self._offset = last_nl
+                k = min(self.GUARD_BYTES, last_nl)
+                fh.seek(last_nl - k)
+                self._guard = fh.read(k)
+                if len(self._head) < self.GUARD_BYTES:
+                    fh.seek(0)
+                    self._head = fh.read(min(self.GUARD_BYTES, last_nl))
+        except BaseException:
+            # (2026-09-28, öğrenme modu; dördüncü doğrulama turu) satırlar tek tek uygulanıyor, ofset döngü sonunda: yarıda
+            # kalan okuma durumu yarım bırakırdı ve yeniden deneme aynı satırları İKİNCİ kez uygulardı → sıfırla, tam okunur
+            self._reset(None)
+            raise
         return not (self._anomaly or self._partial)
 
     def _line(self, raw: bytes, pos: int, n: int) -> None:

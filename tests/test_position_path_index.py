@@ -172,3 +172,51 @@ def test_experiment_event_stream_equals_reading_the_whole_file(tmp_path):
         st.events_path.write_bytes(body)
         got = list(st.iter_events())
         assert (got, st.malformed) == _old_iter_events(st.events_path), trial
+
+
+def test_same_size_rewrite_in_the_first_4kb_reindexes(tmp_path):
+    """(bulgu R4a-2, 2026-09-28 dördüncü doğrulama turu) Aynı inode + aynı boy yerinde değişiklik dosya başında (son 4 KB
+    bekçisinin çok gerisinde): baş bekçisi tam yeniden dizine düşürür."""
+    p = tmp_path / "position_path.jsonl"
+    store = PositionPathStore(p)
+    _append(p, [_row(i, "T%d" % (i % 7), pad="x" * 300) for i in range(1, 60)])
+    assert p.stat().st_size > 4 * PositionPathStore.IX_GUARD_BYTES
+    _check(store)
+    body = p.read_bytes()
+    i = body.index(b'"trade_id": "T1"')
+    assert i < PositionPathStore.IX_GUARD_BYTES
+    with open(p, "r+b") as fh:
+        fh.write(body[:i] + b'"trade_id": "T8"' + body[i + 16:])
+    _check(store)
+    assert store.trade_path("T8") and store._path_counts()[0] == 8
+
+
+def test_an_error_midway_through_indexing_does_not_index_rows_twice(tmp_path, monkeypatch):
+    """(bulgu R4a-3) Dizin satır satır güncellenip ofset sonda işleniyordu: okuma ortasında G/Ç hatası yarım dizin bırakır,
+    yeniden deneme satırları iki kez sayardı (`_path_counts`, `trade_path`, `last_rows`). Artık dizin sıfırlanır."""
+    import tradingbot.learn.position_path as PP
+    p = tmp_path / "position_path.jsonl"
+    store = PositionPathStore(p)
+    _append(p, [_row(1, "A", sid=""), _row(2, "A", sid="")])
+    _check(store)
+    _append(p, [_row(3, "A", sid=""), _row(4, "A", sid="")])
+    real = json.loads
+    state = {"n": 0}
+
+    class J:
+        JSONDecodeError = json.JSONDecodeError
+
+        @staticmethod
+        def loads(s, *a, **k):
+            d = real(s, *a, **k)
+            if isinstance(d, dict) and d.get("ts_ms") == 4000 and state["n"] == 0:
+                state["n"] += 1
+                raise OSError(5, "EIO (enjekte)")
+            return d
+
+    monkeypatch.setattr(PP, "json", J)
+    with pytest.raises(OSError):
+        store._path_counts()
+    monkeypatch.setattr(PP, "json", json)
+    _check(store)
+    assert [r["ts_ms"] for r in store.trade_path("A")] == [1000, 2000, 3000, 4000]

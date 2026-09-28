@@ -16,7 +16,12 @@ p_win: şampiyon model varsa `p = w·p_model_kalibre + (1 − w)·önsel` (model
 `0,5·önsel + 0,5·v1`; önsel/v1 bu görünümden. YAKLAŞIK: ajan ağırlıkları, etki katmanı (PAPER_BOUNDED) ve tabanın öğrenme
 defterinde hiç açılmamış işlemleri görünüme girmez; öğrenme KAPALIYKEN (enabled: false) kapanışlar işlenmez.
 
-Kalıcılık: `state/learning_policy_basis.json` — yalnız öğrenme etkinken yazılır (kapalı yol ve eski kod dokunmaz).
+Kalıcılık: `state/learning_policy_basis.json` — yalnız öğrenme etkinken yazılır (kapalı yol ve eski kod dokunmaz). Her
+kayıtta aynı içerik `.bak`a da atomik yazılır; ana dosya bozuksa ya da silinmişse yedekten okunur (2026-09-28, öğrenme modu;
+dördüncü doğrulama turu). Görünüm YALNIZ öğrenmenin ana defterde ilk aktif olduğu anda kurulur: sonra dosya kaybolursa
+(ikisi de yok / okunamıyor / şema farklı) gerçek öğreniciler öğrenme-ekstra sonuçları çoktan gördüğü için yeniden KURULMAZ —
+motor ERROR günlüğü + `health.learning_mode.policy_basis` alarmı verir, etiket eski kuralla (LEARNING_LEARNER) sürer.
+`SCHEMA_VERSION` değişirse `load_status` içinde açık göç yazılmalıdır (aksi hâlde alarm).
 """
 from __future__ import annotations
 
@@ -86,19 +91,39 @@ class PolicyBasis:
         b.save()
         return b
 
+    @staticmethod
+    def backup_path(path: Path | str) -> Path:
+        p = Path(path)
+        return p.with_name(p.name + ".bak")
+
     @classmethod
     def load(cls, path: Path | str) -> "PolicyBasis | None":
-        d = read_json(Path(path), default=None)
-        if not isinstance(d, dict) or d.get("schema_version") != SCHEMA_VERSION:
-            return None
+        return cls.load_status(path)[0]
+
+    @classmethod
+    def load_status(cls, path: Path | str) -> tuple["PolicyBasis | None", str]:
+        """(görünüm, durum): OK | MISSING (dosya da yedek de yok) | UNREADABLE | SCHEMA_MISMATCH:<sürüm>. Ana dosya bozuksa
+        `read_json` yedeğe düşer; ana dosya yoksa yedek okunur (2026-09-28, öğrenme modu; dördüncü doğrulama turu)."""
+        p, bak = Path(path), cls.backup_path(path)
+        if not p.exists() and not bak.exists():
+            return None, "MISSING"
+        src = p if p.exists() else bak
+        d = read_json(src, default=None)
+        if not isinstance(d, dict):
+            return None, "UNREADABLE"
+        if d.get("schema_version") != SCHEMA_VERSION:
+            return None, "SCHEMA_MISMATCH:%s" % (d.get("schema_version"),)
         try:
-            return cls(path, win=HierarchicalRate.from_dict(d.get("win") or {}),
-                       exp_r=HierarchicalRate.from_dict(d.get("exp_r") or {}), v1=dict(d.get("v1") or {}),
-                       seeded_at=str(d.get("seeded_at") or ""), n_policy=int(d.get("n_policy") or 0),
-                       n_extra=int(d.get("n_extra") or 0), updated_at=d.get("updated_at"))
+            b = cls(path, win=HierarchicalRate.from_dict(d.get("win") or {}),
+                    exp_r=HierarchicalRate.from_dict(d.get("exp_r") or {}), v1=dict(d.get("v1") or {}),
+                    seeded_at=str(d.get("seeded_at") or ""), n_policy=int(d.get("n_policy") or 0),
+                    n_extra=int(d.get("n_extra") or 0), updated_at=d.get("updated_at"))
         except (TypeError, ValueError, AttributeError) as exc:
             log.warning("taban öğrenici görünümü okunamadı (%s): %s", path, exc)
-            return None
+            return None, "UNREADABLE"
+        if src is bak:
+            log.warning("taban öğrenici görünümü yedekten okundu (%s yok)", p)
+        return b, "OK"
 
     def to_dict(self) -> dict[str, Any]:
         return {"schema_version": SCHEMA_VERSION, "seeded_at": self.seeded_at, "updated_at": self.updated_at,
@@ -106,7 +131,11 @@ class PolicyBasis:
                 "exp_r": self.exp_r.to_dict(), "v1": dict(self.v1)}
 
     def save(self) -> None:
-        atomic_write_json(self.path, self.to_dict())
+        # ana dosya + aynı içerikli yedek (ikisi de atomik): tek dosyanın kaybı/bozulması görünümü kirli öğreniciden yeniden
+        # kurdurmaz (2026-09-28, öğrenme modu; dördüncü doğrulama turu)
+        doc = self.to_dict()
+        atomic_write_json(self.path, doc)
+        atomic_write_json(self.backup_path(self.path), doc)
 
     def status(self) -> dict[str, Any]:
         return {"seeded_at": self.seeded_at, "updated_at": self.updated_at, "n_policy": self.n_policy,

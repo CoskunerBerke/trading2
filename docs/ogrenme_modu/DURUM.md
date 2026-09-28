@@ -4,6 +4,12 @@
 - `627eac5` 1. inceleme (F1–F9) · `6fb39cd` ana bot `leverage_max: 5` · `49256cb` 2. tur (politika rezervi, A15 +CF, geri dönüş güvenliği) · `e6dac70` 3. tur.
 - `e6dac70`: politika etiketi için ayrı taban öğrenicisi (`learning_basis.py`), TP1 sonrası açık pay, A15'te bir hareket bir kez, rezerv kaynaklı retlerin doğru kodu; `trade_memory.jsonl` / `position_path.jsonl` / deney olayları artımlı okunur (öğrenme kapalıyken çıktı birebir aynı; 157 MB dosyada her değişimde +588 MB tepe → ~0). Tam paket 3475 geçti / 0 düştü.
 - Şu an 4. tur: 3. tur değişikliklerinin incelemesi (öğrenme kapalıyken de çalışan ortak okuyucular dahil) ve dağıtım betiği `deploy/releases/tb-deploy-<tip>.sh`. Betik hazır olunca kullanıcıya SSH komutu verilecek.
+- 4. tur düzeltmeleri (commit bekliyor; ayrıntı `CONTRACT.md` "fourth verification round"):
+  - panel JSONL kuyrukları akışla okunuyor: 143 MB trade_memory'de `/api/coin-memory` tepe RSS 130 MB (49256cb 719, e6dac70 986);
+  - `MemoryTail` / `PositionPathStore`: baş bekçisi (ilk 4 KB) eklendi; okuma ortasındaki istisnadan sonra satırlar iki kez uygulanmıyor;
+  - politika tabanı `.bak` ile yazılıyor; öğrenme başladıktan sonra kaybolursa kirli öğreniciden yeniden kurulmuyor (ERROR + health alarmı LOST);
+  - Formasyon D8 da A15 "tek hareket tek kayıt" kuralına uyuyor.
+- Dağıtım betiği `tb-deploy-e6dac70.sh` hazır ama commit edilmedi. `--check` artık LOST alarmını gösteriyor. Commit'ten sonra TIP ve dosya adı yeni uca çevrilmeli.
 
 ---
 

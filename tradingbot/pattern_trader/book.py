@@ -961,7 +961,7 @@ class PatternBook:
             if blocked == "POSITION_OPEN":
                 self._set_status(pl, PL_CANCELLED, int(as_of_ms), "SAME_SYMBOL_POSITION_OPEN")
                 self.counters["cancelled"] += 1
-                if lm is not None:                     # D8: sembol dolu — sinyal kaybolmaz (karşı-olgusal)
+                if lm is not None and not self._cf_held_skip(symbol):   # D8: sembol dolu — sinyal kaybolmaz (karşı-olgusal)
                     _e, _ref = self._cf_entry_ref(pl, price)
                     self._cf_record(pl, "POSITION_OPEN", entry=_e, at=cf_at, extra={"entry_ref": _ref})
                 return "CANCELLED"
@@ -1373,8 +1373,8 @@ class PatternBook:
     def _cf_signals_while_open(self, symbol: str, *, as_of_ms: int, dec_ms: int, analyses: dict[str, Any], bars_by_tf: dict[str, list],
                                ue: dict[str, Any], ds: dict[str, Any], price: dict[str, Any] | None) -> int:
         """D8: sembolde pozisyon AÇIKKEN taze sinyal (yalnız v3 protokolü; aynı kırılım `used_patterns` ile elenir) —
-        plan KURULMAZ, yalnız POSITION_OPEN karşı-olgusalı yazılır."""
-        if self.protocol != "momentum_4h_v3":
+        plan KURULMAZ, yalnız POSITION_OPEN karşı-olgusalı yazılır; A15 tek hareket tek kayıt kuralıyla (`_cf_held_skip`)."""
+        if self.protocol != "momentum_4h_v3" or self._cf_held_skip(symbol):
             return 0
         allowed = self.entry_symbols()
         if allowed is not None and symbol not in allowed:
@@ -1390,11 +1390,25 @@ class PatternBook:
         at = datetime.fromtimestamp(int(dec_ms) / 1000.0, tz=timezone.utc)
         n = 0
         for pl in plans:
-            if pl["plan_id"] in self.plans:
+            if pl["plan_id"] in self.plans or (n and self._cf_held_skip(symbol)):
                 continue
             e, ref = self._cf_entry_ref(pl, price)
             n += int(self._cf_record(pl, "POSITION_OPEN", entry=e, at=at, extra={"entry_ref": ref}))
         return n
+
+    def _cf_held_skip(self, symbol: str) -> bool:
+        """A15 "+CF" tek hareket tek kayıt — Box/D4 (`StrategyBook._cf_held`) ile AYNI kural, D8'in iki yolunda (taze sinyal ve
+        sembol dolu diye iptal edilen plan) (2026-09-28, öğrenme modu; dördüncü doğrulama turu): tutulan pozisyon öğrenme-
+        ekstra DEĞİLSE (politika ya da etiketsiz) taban da aynı pozisyonu tutuyordur → sinyali ALMAZDI, kayıt yok. Bu
+        sembolde sonuçlanmamış POSITION_OPEN kaydı varsa tabanın varsayımsal pozisyonu hâlâ açıktır → yeni kayıt yok (uçtan
+        uca koşu: politika UNI pozisyonu tutulurken 4 saatte bir üç örtüşen kayıt). Taban kapıları (adet, risk, marj) burada
+        ölçülmez: her kayıt varsayımsal pozisyon sayılır (Box/D4'ün `baseline_blocked_by` ayrımı yok). True → kayıt yazma."""
+        pos = self.ledger.positions.get(symbol)
+        held = (getattr(pos, "meta", None) or {}).get("learning") if pos is not None else None
+        if not (isinstance(held, dict) and held.get("learning_unlocked_by")):
+            return True
+        cf = self.cf
+        return bool(cf is not None and cf.has_pending(symbol=symbol, reason="POSITION_OPEN", hypothetical_only=True))
 
     def _liquidity_wait(self, pl: dict[str, Any], code: str, *, as_of_ms: int, decision_ms: int, mark: float, now: datetime,
                         detail: str = "") -> str:

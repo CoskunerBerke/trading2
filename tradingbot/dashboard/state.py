@@ -3,8 +3,9 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Iterator
 
 from ..core import from_iso, read_json, utc_now
 
@@ -50,33 +51,123 @@ STATE_FILES: dict[str, str] = {
     # ÖĞRENME MODU (2026-09-28, öğrenme modu): ilk aktif an (`learning_mode_since`) — öncesi/sonrası ayrımı (salt okunur).
     "learning_mode": "learning_mode.json",
 }
-def tail_lines(path: Path, n: int, *, block: int = 1 << 16) -> list[str]:
-    """`path.read_text(encoding="utf-8", errors="replace").splitlines()[-n:]` ile BİREBİR aynı, ama dosyanın yalnız son
-    `n` satırı kadarını okur (2026-09-28, öğrenme modu; üçüncü doğrulama turu). Öğrenmede `trade_memory.jsonl` günde
-    ~3,5 MB büyür (giriş satırı ~73 KB); panel (MemoryMax 512M) her istekte dosyanın TAMAMINI metne çevirip bölüyordu.
+#: `str.splitlines()`in `\n` DIŞINDAKİ satır sınırlarının UTF-8 baytları: \r \v \f \x1c–\x1e, NEL, U+2028/U+2029. Bir bayt
+#: satırında bunlardan hiçbiri yoksa satır tam BİR metin satırıdır (`errors="replace"` bu karakterleri başka bayttan üretmez).
+_EXTRA_BREAKS = (b"\r", b"\x0b", b"\x0c", b"\x1c", b"\x1d", b"\x1e", b"\xc2\x85", b"\xe2\x80\xa8", b"\xe2\x80\xa9")
 
-    Kesim yalnız bir `\\n` baytından SONRA yapılır: UTF-8'de bu bayt her zaman karakter ve `splitlines` sınırıdır, çözücü
-    orada sıfırlanır → kesimden sonraki satırlar tam dosyanın son satırlarıyla aynıdır. Yeterli satır yoksa blok büyür;
-    dosya başına varılırsa tam okuma. `n <= 0` → eski ifade aynen."""
-    if n <= 0:
-        return path.read_text(encoding="utf-8", errors="replace").splitlines()[-n:]
+
+def _byte_lines(fh, start: int, end: int) -> Iterator[bytes]:
+    """[start, end) aralığının bayt satırları (`\\n` dahil; sondaki parça sonsuz olabilir). `end`in ötesi OKUNMAZ (yazıcı
+    bu arada eklese de iki geçiş aynı aralığı görür)."""
+    fh.seek(start)
+    pos = start
+    while pos < end:
+        raw = fh.readline(end - pos)
+        if not raw:
+            return
+        pos += len(raw)
+        yield raw
+
+
+def _n_text_lines(raw: bytes) -> int:
+    """Bir bayt satırının `decode("utf-8", "replace").splitlines()` satır sayısı (dolu satır için en az 1)."""
+    if not any(b in raw for b in _EXTRA_BREAKS):         # bayt araması (memchr); düzenli ifade ~10× yavaş
+        return 1
+    return len(raw.decode("utf-8", errors="replace").splitlines())
+
+
+def _tail_start(fh, end: int, n: int, block: int) -> int:
+    """[c, end) en az `n` bayt satırı tutan EN KISA sonek: c dosya başı ya da bir `\\n` baytının hemen sonrası. Sondan
+    geriye sabit boy bloklarla yalnız `\\n` sayılır; bellekte bir blok durur."""
+    if end <= 0:
+        return 0
+    fh.seek(end - 1)
+    k = n if fh.read(1) != b"\n" else n + 1          # sondan k'ıncı `\n`in hemen sonrası
+    pos, step = end, max(1, int(block))
+    while pos > 0:
+        size = min(step, pos)
+        pos -= size
+        fh.seek(pos)
+        buf = fh.read(size)
+        if len(buf) != size:                        # dosya bu arada kısaldı: baştan akış (sonuç yine tutarlı)
+            return 0
+        c = buf.count(b"\n")
+        if c >= k:
+            i = size
+            for _ in range(k):
+                i = buf.rfind(b"\n", 0, i)
+            return pos + i + 1
+        k -= c
+    return 0
+
+
+def _tail_text(path: Path, n: int, *, block: int, keep: Callable[[bytes], bool] | None = None) -> Iterator[str]:
+    """`tail_lines`in akışlı çekirdeği. `keep(raw) is False` → bu bayt satırının metin satırları ÜRETİLMEZ (çözülmez de);
+    yalnız `tail_jsonl`in `needle` süzgeci kullanır (çağıran zaten eşleşmeyen satırı atar)."""
     with open(path, "rb") as fh:
-        pos = fh.seek(0, 2)
-        buf = b""
-        step = max(1, int(block))
-        while True:
-            if pos <= 0:
-                return buf.decode("utf-8", errors="replace").splitlines()[-n:]
-            k = min(step, pos)
-            pos -= k
-            fh.seek(pos)
-            buf = fh.read(k) + buf
-            i = buf.find(b"\n")
-            if i >= 0:
-                lines = buf[i + 1:].decode("utf-8", errors="replace").splitlines()
-                if len(lines) >= n:
-                    return lines[-n:]
-            step = min(step * 2, 1 << 26)
+        end = fh.seek(0, 2)
+        start = _tail_start(fh, end, n, block)
+        # 1. geçiş: aralıktaki metin satırı sayısı (yalnız sayım; satır tutulmaz). Kesimden sonra en az n satır var;
+        # fazlası `\n` dışı satır sınırlarından gelir ve BAŞTAN atlanır (`[-n:]`).
+        skip = max(0, sum(_n_text_lines(raw) for raw in _byte_lines(fh, start, end)) - n)
+        for raw in _byte_lines(fh, start, end):
+            drop = 0
+            if skip:
+                k = _n_text_lines(raw)
+                if k <= skip:
+                    skip -= k
+                    continue
+                drop, skip = skip, 0
+            if keep is not None and not keep(raw):
+                continue
+            parts = raw.decode("utf-8", errors="replace").splitlines()
+            yield from (parts[drop:] if drop else parts)
+
+
+def iter_tail_lines(path: Path, n: int, *, block: int = 1 << 20) -> Iterator[str]:
+    """`path.read_text(encoding="utf-8", errors="replace").splitlines()[-n:]` ile BİREBİR aynı satırlar, aynı sırada — AKIŞLA
+    (2026-09-28, öğrenme modu; dördüncü doğrulama turu). Üçüncü turdaki `tail_lines` sonek büyüdükçe tamponu yeniden çözüp
+    bölüyordu: tampon + kopya + metin + iki satır listesi aynı anda → tepe ≈ 7× dosya (eski `read_text` yolu ≈ 4×); 512M
+    panel `/api/coin-memory` isteğinde trade_memory ~52 MB'ta ölüyordu (eskisi ~67 MB).
+
+    Kesim yalnız bir `\\n` baytından SONRA yapılır: UTF-8'de bu bayt her zaman karakter ve satır sınırıdır, çözücü orada
+    sıfırlanır → kesimden sonraki bayt satırlarının `splitlines()` parçaları tam dosyanın son satırlarıyla aynıdır. Önce
+    geriye doğru yalnız `\\n` sayılarak kesim bulunur, sonra aralık iki kez satır satır okunur (sayım + üretim). Bellekte
+    yalnız bir blok / bir satır durur. `n <= 0` → eski ifade aynen."""
+    if n <= 0:
+        yield from path.read_text(encoding="utf-8", errors="replace").splitlines()[-n:]
+        return
+    yield from _tail_text(path, n, block=block)
+
+
+def tail_lines(path: Path, n: int, *, block: int = 1 << 20) -> list[str]:
+    """`path.read_text(encoding="utf-8", errors="replace").splitlines()[-n:]` ile BİREBİR aynı liste (`iter_tail_lines`).
+    Tepe bellek yalnız dönen satırlardır (2026-09-28, öğrenme modu; dördüncü doğrulama turu)."""
+    return list(iter_tail_lines(path, n, block=block))
+
+
+#: `needle` süzgecinin güvenli olduğu değerler: düz ASCII kimlik/sembol (JSON kaçışı gerektirmez).
+_PLAIN_NEEDLE = re.compile(r"[A-Za-z0-9_./:-]+")
+
+
+def _needle_filter(needle: str | None) -> Callable[[bytes], bool] | None:
+    """Bayt satırı ön süzgeci (2026-09-28, öğrenme modu; dördüncü doğrulama turu): `needle` baytları YOKSA ve satırda hiç `\\`
+    yoksa o satırdaki hiçbir JSON değeri `str(değer) == needle` olamaz → satır çözülmez/ayrıştırılmaz. Gerekçe: kaçışsız JSON
+    dizesinin karakterleri metinde aynen durur; `errors="replace"` geçerli baytları bire bir çözer. Dize olmayan değerlerin
+    `str()`i (int → aynı rakamlar; float → '.', 'e', 'inf', 'nan'; bool/None → True/False/None; liste/sözlük → köşeli/kıvrık
+    parantez) yalnız düz tamsayı biçiminde eşleşebilir, o da metinde aynen durur. Bu koşulu garanti etmeyen `needle` (boş,
+    düz olmayan karakter, True/False/None, tamsayı olmayan sayı biçimi) → süzgeç YOK (tam ayrıştırma)."""
+    if not needle or not _PLAIN_NEEDLE.fullmatch(needle) or needle in ("None", "True", "False"):
+        return None
+    try:
+        float(needle)
+    except ValueError:
+        pass
+    else:
+        if not needle.isdigit():
+            return None
+    nb = needle.encode("ascii")
+    return lambda raw: nb in raw or b"\\" in raw
 
 
 def iter_text_lines(path: Path):
@@ -134,28 +225,44 @@ class StateReader:
             return None
         return read_json(self.state_dir / fn, default=None)
 
-    def tail_jsonl(self, name: str, n: int = 200) -> list[dict]:
+    def tail_jsonl(self, name: str, n: int = 200, *, needle: str | None = None,
+                   project: Callable[[dict], Any] | None = None) -> list:
+        """Son `n` satırın sözlük olan JSON'ları (eski: `read_text().splitlines()[-n:]`; okunamazsa []). Satırlar AKIŞLA
+        ayrıştırılır (2026-09-28, öğrenme modu; dördüncü doğrulama turu): bellekte satır listesi yok, yalnız sonuç.
+
+        * `project`: her sözlüğe ayrıştırıldığı anda uygulanır; None dönerse satır atlanır → tüketici yalnız gereken alanları
+          tutar (ör. 4000 satırlık `trade_memory` kuyruğunda ~74 KB'lık giriş satırlarının tamamı değil).
+        * `needle`: `_needle_filter` — `str(alan) == needle` süzgeci uygulayan çağıran için, eşleşemeyecek satırlar hiç
+          ayrıştırılmaz. Sonuç, çağıranın süzgecinden sonra eskisiyle AYNIDIR (yalnız eski yolun JSONDecodeError DIŞI bir
+          istisna fırlatacağı satırda — ör. 4300+ haneli tamsayı — o satır artık atlanabilir).
+        Varsayılanlarla (ikisi de None) çıktı eskisiyle BİREBİR aynıdır."""
         fn = JSONL_FILES.get(name)
         if not fn:
             return []
         p = self.state_dir / fn
         if not p.exists():
             return []
+        out: list = []
         try:
-            lines = tail_lines(p, n)
+            lines = (_tail_text(p, n, block=1 << 20, keep=_needle_filter(needle)) if n > 0
+                     else iter_tail_lines(p, n))
+            for ln in lines:
+                ln = ln.strip()
+                if not ln:
+                    continue
+                try:
+                    d = json.loads(ln)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(d, dict):
+                    if project is None:
+                        out.append(d)
+                    else:
+                        v = project(d)
+                        if v is not None:
+                            out.append(v)
         except OSError:
             return []
-        out: list[dict] = []
-        for ln in lines:
-            ln = ln.strip()
-            if not ln:
-                continue
-            try:
-                d = json.loads(ln)
-                if isinstance(d, dict):
-                    out.append(d)
-            except json.JSONDecodeError:
-                continue
         return out
 
     def mtimes(self) -> dict[str, float]:
@@ -775,7 +882,20 @@ class StateReader:
         mfes: list[float] = []
         exits: dict[str, int] = {}
         first = last = None
-        for row in self.tail_jsonl("trade_memory", 4000):
+
+        def _mem_row(row: dict) -> dict | None:
+            # 512M panel (2026-09-28, öğrenme modu; dördüncü doğrulama turu): yalnız bu sembolün satırları ve aşağıda okunan
+            # alanlar tutulur — 4000 satırlık kuyrukta tam ayrıştırılmış ~74 KB'lık giriş satırları BİRİKMEZ (sonuç aynı)
+            if str(row.get("symbol") or "") != sym:
+                return None
+            keep = {k: row[k] for k in ("symbol", "kind", "recorded_at") if k in row}
+            if "outcome" in row:
+                o = row["outcome"]
+                keep["outcome"] = ({k: o[k] for k in ("r_multiple", "mae_pct", "mfe_pct", "exit_reason") if k in o}
+                                   if isinstance(o, dict) else o)
+            return keep
+
+        for row in self.tail_jsonl("trade_memory", 4000, needle=sym, project=_mem_row):
             if str(row.get("symbol") or "") != sym:
                 continue
             if row.get("kind") == "exit":
@@ -846,7 +966,8 @@ class StateReader:
         except Exception:  # noqa: BLE001
             pass
         # --- son karar etkisi + tarih aralığı + tutarlılık
-        for row in reversed(self.tail_jsonl("decision_journal", 2000)):
+        for row in reversed(self.tail_jsonl("decision_journal", 2000, needle=sym,
+                                            project=lambda r: r if r.get("symbol") == sym else None)):
             if row.get("symbol") == sym and row.get("learning_influence"):
                 out["last_influence"] = row["learning_influence"]
                 out["last_decision_ts"] = row.get("decision_ts")

@@ -747,7 +747,10 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
             body += "<h2>Doldurmalar</h2>" + render_any(t["fills"])
         if t.get("features"):
             body += "<h2>Giriş özellikleri</h2>" + render_any(t["features"])
-        mem = [m for m in state.tail_jsonl("trade_memory", 2000) if str(m.get("trade_id") or m.get("id")) == trade_id]
+        # 512M panel (2026-09-28, öğrenme modu; dördüncü doğrulama turu): kuyruk akışla okunur, yalnız bu işlemin satırları
+        # tutulur (eskiden 2000 tam ayrıştırılmış satır listesi); sonuç aynı
+        mem = state.tail_jsonl("trade_memory", 2000, needle=trade_id,
+                               project=lambda m: m if str(m.get("trade_id") or m.get("id")) == trade_id else None)
         if mem:
             body += "<h2>Post-mortem / hafıza</h2>" + render_any(mem)
         return _page(f"İşlem {trade_id[:20]}", body, "/trades")
@@ -2050,7 +2053,10 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
             return JSONResponse({"available": False,
                                  "reason": ("entry_selectivity.json yok — worker bu sürümle "
                                             "tur tamamlamadı")})
-        rows = state.tail_jsonl("entry_snapshot", 4000)
+        # yalnız aşağıda okunan alanlar tutulur (satır ~36 KB; 4000 satır tam ayrıştırılınca 512M panel için ağır —
+        # 2026-09-28, öğrenme modu; dördüncü doğrulama turu); sayılar ve kümeler aynı
+        rows = state.tail_jsonl("entry_snapshot", 4000,
+                                project=lambda r: {k: r[k] for k in ("candidate_id", "kind", "trade_id") if k in r})
         cand = {str(r.get("candidate_id")) for r in rows
                 if r.get("candidate_id") and r.get("kind") != "link"}
         linked = {str(r.get("trade_id")) for r in rows

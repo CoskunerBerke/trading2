@@ -503,18 +503,22 @@ def test_process_symbol_labels_counterfactuals_with_the_bars_it_holds(tmp_path, 
 
 
 def test_position_open_and_exchange_rejects_write_counterfactuals(tmp_path, monkeypatch):
-    # (a) aynı sembolde pozisyon açık: plan iptal + POSITION_OPEN karşı-olgusalı
+    # (a) aynı sembolde ÖĞRENME-EKSTRA pozisyon açık (R/R tabanı altında → taban açmazdı): plan iptal + POSITION_OPEN
     _, book = _direct(tmp_path / "occ")
-    assert _open(book, _plan(pid="first")) == "OPENED"
+    assert _open(book, _plan(pid="first", min_rr=5.0)) == "OPENED"
+    assert book.ledger.positions["BTC/USDT"].meta["learning"]["learning_unlocked_by"]
     pl2 = _plan(pid="second")
     assert _open(book, pl2) == "CANCELLED" and pl2["reasons"][-1] == "SAME_SYMBOL_POSITION_OPEN"
     assert [t.reason_not_opened for t in book.cf.sb.trades] == [["POSITION_OPEN"]]
-    # pozisyon AÇIKKEN taze sinyal (plan kurulmaz): v3 kurucu bir plan döndürür → POSITION_OPEN kaydı
+    # pozisyon AÇIKKEN taze sinyal (plan kurulmaz): "second" kaydı (tabanın varsayımsal pozisyonu) sonuçlanmadı → aynı
+    # hareket, kayıt YOK (dördüncü doğrulama turu); sonuçlanınca taze sinyal POSITION_OPEN kaydı olur
     import tradingbot.pattern_trader.strategy_v3 as S3
     fresh = _plan(pid="third")
     monkeypatch.setattr(S3, "build_plans_v3", lambda *a, **k: ([dict(fresh)], []))
-    n = book._cf_signals_while_open("BTC/USDT", as_of_ms=NOW, dec_ms=NOW, analyses={}, bars_by_tf={}, ue=_ue(), ds={},
-                                    price=_price())
+    kw = dict(as_of_ms=NOW, dec_ms=NOW, analyses={}, bars_by_tf={}, ue=_ue(), ds={}, price=_price())
+    assert book._cf_signals_while_open("BTC/USDT", **kw) == 0 and book.cf.stats()["recorded_total"] == 1
+    book.cf.sb.trades[0].outcome = {"r_multiple": 1.0}
+    n = book._cf_signals_while_open("BTC/USDT", **kw)
     assert n == 1 and "third" not in book.plans and book.cf.stats()["recorded_total"] == 2
     # (b) min-notional çıkarma KAPALI + borsa minimumu 50 → MIN_ORDER_CONFLICT reddi + karşı-olgusal
     _, b2 = _direct(tmp_path / "mno", bl_over={"min_notional_bump": False})
@@ -533,12 +537,48 @@ def test_position_open_and_exchange_rejects_write_counterfactuals(tmp_path, monk
     assert b4._cf_record(_plan(), "STOP_BEYOND_QUANTIZED_ENTRY", entry=100.0, at=_dt(NOW)) is False
 
 
+def test_d8_follows_the_a15_one_move_one_record_rule(tmp_path, monkeypatch):
+    """(bulgu R4b-5, 2026-09-28 dördüncü doğrulama turu) Formasyon D8 = Box/D4'ün A15 kuralı: tutulan pozisyon POLİTİKA
+    (boş `learning_unlocked_by`) ya da etiketsizse taban da aynı pozisyonu tutar → taze sinyal ve sembol dolu diye iptal edilen
+    plan için kayıt YOK. Öğrenme-ekstra pozisyonda ilk sinyal kaydedilir; o kayıt sonuçlanmadan aynı sembolde yeni kayıt yok
+    (uçtan uca koşu: politika UNI pozisyonu tutulurken 12:10/16:10/20:10'da üç örtüşen POSITION_OPEN kaydı yazılıyordu)."""
+    import tradingbot.pattern_trader.strategy_v3 as S3
+    plans = [_plan(pid="f1")]
+    monkeypatch.setattr(S3, "build_plans_v3", lambda *a, **k: ([dict(x) for x in plans], []))
+    kw = dict(as_of_ms=NOW, dec_ms=NOW, analyses={}, bars_by_tf={}, ue=_ue(), ds={}, price=_price())
+    # politika pozisyonu: iki yolda da kayıt yok
+    _, book = _direct(tmp_path / "policy")
+    assert _open(book, _plan(pid="first")) == "OPENED"
+    assert book.ledger.positions["BTC/USDT"].meta["learning"]["learning_unlocked_by"] == []
+    assert book._cf_signals_while_open("BTC/USDT", **kw) == 0
+    pl2 = _plan(pid="second")
+    assert _open(book, pl2) == "CANCELLED" and pl2["reasons"][-1] == "SAME_SYMBOL_POSITION_OPEN"
+    assert (book.cf is None or book.cf.sb.trades == []) and "counterfactual" not in pl2
+    # etiketsiz (taban/askıda açılmış) pozisyon: aynı
+    del book.ledger.positions["BTC/USDT"].meta["learning"]
+    assert book._cf_signals_while_open("BTC/USDT", **kw) == 0
+    # öğrenme-ekstra pozisyon: ilk taze sinyal kaydedilir, aynı taramadaki ikinci plan ve sonraki sinyaller kaydedilmez
+    _, bx = _direct(tmp_path / "extra")
+    assert _open(bx, _plan(pid="first", min_rr=5.0)) == "OPENED"
+    plans[:] = [_plan(pid="f1"), _plan(pid="f2", stop=97.0)]
+    assert bx._cf_signals_while_open("BTC/USDT", **kw) == 1
+    plans[:] = [_plan(pid="f3", stop=96.0)]
+    assert bx._cf_signals_while_open("BTC/USDT", **kw) == 0
+    pl3 = _plan(pid="sib")
+    assert _open(bx, pl3) == "CANCELLED" and "counterfactual" not in pl3
+    assert [t.signal_key for t in bx.cf.sb.trades] == ["f1"]
+    # kayıt sonuçlanınca (tabanın varsayımsal pozisyonu kapandı) yeni sinyal yeniden kaydedilir
+    bx.cf.sb.trades[0].outcome = {"r_multiple": -1.0}
+    assert bx._cf_signals_while_open("BTC/USDT", **kw) == 1
+    assert [t.signal_key for t in bx.cf.sb.trades] == ["f1", "f3"]
+
+
 def test_position_open_counterfactual_is_superseded_when_the_same_plan_opens_later(tmp_path, monkeypatch):
     """F7 (Formasyon, 2026-09-28 öğrenme modu): pozisyon açıkken taze sinyal POSITION_OPEN kaydına düşer (plan kurulmaz);
     pozisyon aynı 4h barında kapanır, öğrenmede soğuma yok (D5), aynı plan kimliği yeniden kurulup GERÇEKTEN açılır →
     kayıt düşer (aynı gözlem hem dolum hem "açılmadı" SAYILMAZ), anahtar tekillikte kalır (yeniden yazılmaz)."""
     _, book = _direct(tmp_path)
-    assert _open(book, _plan(pid="first")) == "OPENED"
+    assert _open(book, _plan(pid="first", min_rr=5.0)) == "OPENED"          # öğrenme-ekstra (taban açmazdı)
     import tradingbot.pattern_trader.strategy_v3 as S3
     fresh = _plan(pid="third")
     monkeypatch.setattr(S3, "build_plans_v3", lambda *a, **k: ([dict(fresh)], []))

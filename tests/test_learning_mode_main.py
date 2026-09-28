@@ -889,6 +889,62 @@ def test_policy_economics_is_assessed_with_the_baseline_learner_and_real_penalti
     assert off._lm_policy_opp == {} and not (off.cfg.state_path / BASIS_FILE).exists()
 
 
+def test_policy_basis_is_never_reseeded_from_contaminated_learners_after_activation(tmp_path, monkeypatch):
+    """(bulgu R4b-4, 2026-09-28 dördüncü doğrulama turu) Görünüm dosyası öğrenme başladıktan sonra kaybolursa (silindi, bozuk,
+    şema farklı) motor onu öğrenme-ekstra sonuçları görmüş gerçek öğrenicilerden SESSİZCE yeniden kuruyordu (ikinci turdaki
+    hata geri gelir). Artık: aynı içerik `.bak`a da yazılır ve ondan okunur; ikisi de yoksa/okunamıyorsa görünüm KURULMAZ —
+    ERROR + `health.learning_mode.policy_basis.status = LOST`, etiket LEARNING_LEARNER. `learning_mode.json` ana defteri
+    içermiyorsa (ana defter öğrenmede hiç olmadı) öğreniciler temizdir → kurulur."""
+    from tradingbot.learning_basis import BASIS_FILE, PolicyBasis
+    now = datetime(2026, 9, 28, 12, tzinfo=timezone.utc)
+    eng = _eng(tmp_path, monkeypatch, _lm())
+    eng._lm_publish(now)
+    st = eng.cfg.state_path
+    doc = json.loads((st / "learning_mode.json").read_text(encoding="utf-8"))
+    assert "main" in doc["books"] and eng._lm_basis is not None
+    for i in range(10):                                  # öğrenme-ekstra kayıplar: öğrenici kirlenir, görünüm kirlenmez
+        rec = {"id": "X%d" % i, "symbol": "ETH/USDT", "side": "SHORT", "setup_type": "pullback", "r_multiple": -1.0,
+               "net_pnl": -0.5, "pnl": -0.5, "exit_reason": "stop", "closed_at": "2026-09-28T00:00:00+00:00",
+               "features": {"regime": "TREND_DOWN", "learning": {"learning_unlocked_by": ["REGIME_VETO:R1"]}}}
+        eng.learner2.on_trade_closed(rec, {"regime": "TREND_DOWN"})
+        eng.learner2.save()
+        eng._lm_basis_observe(rec, {"regime": "TREND_DOWN"})
+    good = eng._lm_basis.to_dict()
+    main_f, bak_f = st / BASIS_FILE, PolicyBasis.backup_path(st / BASIS_FILE)
+    assert json.loads(bak_f.read_text(encoding="utf-8")) == good
+    # ana dosya silindi → yedekten; ana dosya bozuk → yedekten (bozuk olan .corrupt-N olarak kalır)
+    main_f.unlink()
+    e2 = _eng(tmp_path, monkeypatch, _lm())
+    assert e2._lm_basis is not None and e2._lm_basis.to_dict() == good and e2._lm_basis_alarm is None
+    main_f.write_text("{bozuk", encoding="utf-8")
+    e3 = _eng(tmp_path, monkeypatch, _lm())
+    assert e3._lm_basis is not None and e3._lm_basis.to_dict() == good
+    # ikisi de yok → yeniden KURULMAZ (dosya yazılmaz), alarm
+    main_f.unlink()
+    bak_f.unlink()
+    e4 = _eng(tmp_path, monkeypatch, _lm())
+    assert e4._lm_basis is None and not main_f.exists() and not bak_f.exists()
+    assert e4._lm_basis_alarm["status"] == "LOST" and e4._lm_basis_alarm["file"] == "MISSING"
+    assert e4._lm_basis_alarm["learning_mode_since"] == doc["since"]
+    e4.tour(do_scan=False, obsidian=False, charts=False)
+    assert e4._lm_basis is None and not main_f.exists()
+    pb = json.loads((st / "health.json").read_text(encoding="utf-8"))["learning_mode"]["policy_basis"]
+    assert pb["status"] == "LOST" and pb["code"] == "POLICY_BASIS_LOST"
+    # şema farklı → yine alarm (açık göç gerekir)
+    main_f.write_text(json.dumps(dict(good, schema_version="learning_policy_basis_v2")), encoding="utf-8")
+    e5 = _eng(tmp_path, monkeypatch, _lm())
+    assert e5._lm_basis is None and e5._lm_basis_alarm["file"] == "SCHEMA_MISMATCH:learning_policy_basis_v2"
+    # `learning_mode.json` okunamıyor → "önceden aktif" sayılır (kurulmaz)
+    main_f.unlink()
+    (st / "learning_mode.json").write_text("{bozuk", encoding="utf-8")
+    e5b = _eng(tmp_path, monkeypatch, _lm())
+    assert e5b._lm_basis is None and e5b._lm_basis_alarm["status"] == "LOST" and not main_f.exists()
+    # ana defter öğrenmede hiç olmadıysa (ilk aktif anın defterleri main içermez) öğreniciler temiz → kurulur
+    (st / "learning_mode.json").write_text(json.dumps(dict(doc, books=["t2_trend_regime"])), encoding="utf-8")
+    e6 = _eng(tmp_path, monkeypatch, _lm())
+    assert e6._lm_basis is not None and e6._lm_basis_alarm is None and main_f.exists() and bak_f.exists()
+
+
 def test_policy_basis_follows_the_learners_on_baseline_closes_and_ignores_learning_extras(tmp_path):
     """Taban öğrenici görünümü: kurulduğu an gerçek öğrenicilerin kopyası; taban (etiketsiz ya da politika) kapanışında
     `LearnerV2` (win/exp_r) ve v1 lojistik öğreniciyle BİREBİR aynı güncellenir, öğrenme-ekstra kapanışta güncellenmez.

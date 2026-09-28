@@ -394,3 +394,170 @@ def test_dashboard_streamed_lines_equal_the_whole_file_split(tmp_path):
         p = tmp_path / ("m%d.jsonl" % trial)
         p.write_bytes(body)
         assert list(iter_text_lines(p)) == p.read_text(encoding="utf-8", errors="replace").splitlines(), trial
+
+
+# ============================================================================ panel — dördüncü doğrulama turu
+def _heavy_memory(path: Path, n_trades: int = 70) -> int:
+    """~74 KB'lık Türkçe giriş satırları + çıkış satırları (üretim biçimi); dosya boyu döner."""
+    txt = "Şef değerlendirmesi: trend güçlü, hacim artıyor, ığüşöç ÇĞİÖŞÜ. " * 20
+    with open(path, "w", encoding="utf-8") as fh:
+        for i in range(n_trades):
+            sym = ("ETH/USDT", "BTC/USDT", "SOL/USDT")[i % 3]
+            fh.write(json.dumps({"kind": "entry", "trade_id": "F%05d" % i, "symbol": sym, "recorded_at": "2026-09-%02d" % (1 + i % 28),
+                                 "decision": {"reports": [{"text": txt, "i": k} for k in range(50)]}},
+                                ensure_ascii=False) + "\n")
+            fh.write(json.dumps({"kind": "exit", "trade_id": "F%05d" % i, "recorded_at": "2026-09-%02d" % (1 + i % 28),
+                                 "symbol": sym, "outcome": {"r_multiple": (i % 5) - 2, "mae_pct": 1.0, "exit_reason": "stop",
+                                                            "path": list(range(300))}}, ensure_ascii=False) + "\n")
+    return path.stat().st_size
+
+
+def _old_tail_jsonl(path: Path, n: int) -> list[dict]:
+    """Öğrenme modundan önceki `StateReader.tail_jsonl` (birebir)."""
+    out = []
+    for ln in path.read_text(encoding="utf-8", errors="replace").splitlines()[-n:]:
+        ln = ln.strip()
+        if not ln:
+            continue
+        try:
+            d = json.loads(ln)
+            if isinstance(d, dict):
+                out.append(d)
+        except json.JSONDecodeError:
+            continue
+    return out
+
+
+def test_dashboard_tail_peak_is_the_returned_lines_not_a_multiple_of_the_file(tmp_path):
+    """(bulgu R4a-1) Üçüncü turun `tail_lines`i soneki büyüttükçe tamponu yeniden çözüp bölüyordu: tampon + kopya + metin +
+    iki satır listesi → tepe ≈ 6–7× dosya (eski `read_text` yolu ≈ 4×). Artık tepe ≈ dönen satırlar + bir blok."""
+    from tradingbot.dashboard.state import tail_lines
+    p = tmp_path / "trade_memory.jsonl"
+    size = _heavy_memory(p, 40)
+    whole = p.read_text(encoding="utf-8", errors="replace").splitlines()
+    kept = sum(sys.getsizeof(s) for s in whole)
+    tracemalloc.start()
+    try:
+        got = tail_lines(p, 4000)                         # dosyadaki satırdan fazla: dosyanın tamamı
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert got == whole
+    assert peak < 1.25 * kept + (1 << 20) + 4 * max(len(s) for s in whole), (peak, kept, size)
+
+
+def test_dashboard_coin_memory_and_trade_rows_stream_with_bounded_memory(tmp_path):
+    """(bulgu R4a-1) `/api/coin-memory/{base}` (4000 satır) ve `/trades/{id}` (2000 satır) trade_memory kuyruğunu TAM
+    ayrıştırıp tutuyordu (512M panel ~52 MB dosyada ölüyordu). Kuyruk artık akışla okunur, satır yalnız gerekiyorsa ayrıştırılır
+    ve yalnız okunan alanlar tutulur. Sonuç eski yolla AYNI; tepe dosya boyundan bağımsız (bir blok + bir satır)."""
+    from tradingbot.dashboard.state import StateReader
+    st = tmp_path / "state"
+    st.mkdir()
+    size = _heavy_memory(st / "trade_memory.jsonl", 160)
+    reader = StateReader(st)
+
+    class Old(StateReader):
+        def tail_jsonl(self, name, n=200, **_kw):             # eski okuyucu: needle/project yok sayılır
+            p = self.state_dir / {"trade_memory": "trade_memory.jsonl", "decision_journal": "decision_journal.jsonl"}[name]
+            return _old_tail_jsonl(p, n) if p.exists() else []
+
+    tracemalloc.start()
+    try:
+        cm = reader.coin_memory("ETH")
+        tid = "F00007"
+        mem = reader.tail_jsonl("trade_memory", 2000, needle=tid,
+                                project=lambda m: m if str(m.get("trade_id") or m.get("id")) == tid else None)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert cm == Old(st).coin_memory("ETH") and cm["real"]["n"] > 0
+    assert mem == [m for m in _old_tail_jsonl(st / "trade_memory.jsonl", 2000)
+                   if str(m.get("trade_id") or m.get("id")) == tid] and len(mem) == 2
+    assert peak < min(size / 3, 3 << 20), (peak, size)
+
+
+def test_dashboard_needle_prefilter_never_drops_a_row_the_caller_keeps(tmp_path):
+    """`tail_jsonl(needle=…)` ön süzgeci: kaçışlı dizeler (\\u0045, \\/), dize olmayan değerler (int/float/bool/None/liste),
+    bozuk satırlar, `\\n` dışı satır sınırları — çağıranın süzgecinden sonra sonuç eski okuyucuyla AYNI."""
+    from tradingbot.dashboard.state import StateReader
+    rng = random.Random(5)
+    st = tmp_path / "st"
+    st.mkdir()
+    vals = ["ETH/USDT", "BTC/USDT", 5, 5.0, 1e1, None, True, False, 0, "", ["ETH/USDT"], "T1", "12", 12, "ESC_E", "ESC_SL"]
+    odd = [b"", b"  ", b"\xff\xfe{", b'{"c": "x\xe2\x80\xa8y"}', b'{"d": "\xc2\x85"}', b"\x0cff", b"[1]", b'"s"']
+
+    def row() -> bytes:
+        if rng.random() < 0.2:
+            return rng.choice(odd)
+        d = {"kind": rng.choice(["entry", "exit"])}
+        for key in ("symbol", "trade_id", "id"):
+            if rng.random() < 0.6:
+                d[key] = rng.choice(vals)
+        s = json.dumps(d, ensure_ascii=rng.random() < 0.5)
+        s = s.replace('"ESC_E"', '"\\u0045TH/USDT"').replace('"ESC_SL"', '"ETH\\/USDT"')
+        return s.encode("utf-8")
+
+    for trial in range(60):
+        body = b"".join(row() + rng.choice([b"\n", b"\n", b"\r\n", b"\r", b"\x0b"]) for _ in range(rng.randint(0, 50)))
+        (st / "trade_memory.jsonl").write_bytes(body)
+        for n in (1, 3, 20, 400):
+            old = _old_tail_jsonl(st / "trade_memory.jsonl", n)
+            reader = StateReader(st)
+            assert reader.tail_jsonl("trade_memory", n) == old
+            for sym in ("ETH/USDT", "5", "10.0", "None", "True"):
+                got = reader.tail_jsonl("trade_memory", n, needle=sym,
+                                        project=lambda r: r if str(r.get("symbol") or "") == sym else None)
+                assert got == [r for r in old if str(r.get("symbol") or "") == sym], (trial, n, sym)
+            for tid in ("T1", "12", "0", "False", ""):
+                got = reader.tail_jsonl("trade_memory", n, needle=tid,
+                                        project=lambda m: m if str(m.get("trade_id") or m.get("id")) == tid else None)
+                assert got == [m for m in old if str(m.get("trade_id") or m.get("id")) == tid], (trial, n, tid)
+
+
+# ============================================================================ bekçiler ve istisna — dördüncü doğrulama turu
+def test_same_size_rewrite_in_the_first_4kb_is_detected_far_from_the_end(tmp_path):
+    """(bulgu R4a-2) Aynı inode + aynı boy yerinde değişiklik, son 4 KB bekçisinin ÇOK gerisinde (dosya başında): üçüncü
+    turda yakalanmıyordu (eski içerik, `clean=True`). Baş bekçisi (ilk 4 KB) tam yeniden okumaya düşürür. Ortada (iki bekçinin
+    dışında) aynı boy değişiklik hâlâ yakalanmaz — sözleşmede yazılı sınır."""
+    path = tmp_path / "trade_memory.jsonl"
+    mem = TradeMemory(path)
+    tail = MemoryTail(mem, project=experience_row, keep_entries=50)
+    _append(path, [x for i in range(40) for x in (_entry(i, heavy=150), _exit(i))])
+    assert path.stat().st_size > 5 * MemoryTail.GUARD_BYTES
+    _check(tail, mem)
+    before = path.read_bytes()
+    i = before.index(b'"trade_id": "T0"', before.index(b'"kind": "exit"'))
+    assert i < MemoryTail.GUARD_BYTES
+    alt = before[:i] + b'"trade_id": "T9"' + before[i + 16:]
+    st0 = os.stat(path)
+    with open(path, "r+b") as fh:
+        fh.write(alt)
+    assert (os.stat(path).st_ino, os.stat(path).st_size) == (st0.st_ino, st0.st_size)
+    loads = tail.full_loads
+    _check(tail, mem)
+    assert tail.full_loads == loads + 1 and "T0" not in tail.exit_ids()
+
+
+def test_an_error_midway_through_a_sync_does_not_apply_lines_twice(tmp_path):
+    """(bulgu R4a-3) Satırlar tek tek uygulanıyor, ofset döngü sonunda işleniyordu: okuma ortasında istisna (G/Ç, bellek)
+    yarım durum bırakır, yeniden deneme aynı satırları İKİNCİ kez uygulardı (`last_entries` kopyalar, `clean=True`). Artık
+    durum sıfırlanır, istisna yükselir; sonraki çağrı tam okur ve eski okuyucuyla aynıdır."""
+    path = tmp_path / "trade_memory.jsonl"
+    mem = TradeMemory(path)
+    boom = {"on": False}
+
+    def proj(r: dict) -> dict:
+        if boom["on"] and r.get("trade_id") == "T12":
+            boom["on"] = False
+            raise MemoryError("geçici")
+        return experience_row(r)
+
+    tail = MemoryTail(mem, project=proj, keep_entries=50)
+    _append(path, [x for i in range(5) for x in (_entry(i), _exit(i))])
+    _check(tail, mem, ks=(1, 3, 5, 10))
+    _append(path, [x for i in range(10, 15) for x in (_entry(i), _exit(i))])
+    boom["on"] = True
+    with pytest.raises(MemoryError):
+        tail.last_entries(10)
+    _check(tail, mem, ks=(1, 3, 5, 10))
+    assert tail.stats()["entries_kept"] == 10 and tail.stats()["clean"]

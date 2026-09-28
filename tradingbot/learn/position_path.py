@@ -299,6 +299,7 @@ class PositionPathStore:
         self._ix_ident = ident
         self._ix_off = 0
         self._ix_guard = b""
+        self._ix_head = b""                          # dosyanın ilk IX_GUARD_BYTES baytı (baş bekçisi; dördüncü tur)
         self._ix_seen: set[str] = set()
         self._ix_trades: dict[str, list[tuple[int, int]]] = {}
         self._ix_tail: deque[tuple[int, int]] = deque(maxlen=self.IX_LAST_ROWS)
@@ -333,32 +334,47 @@ class PositionPathStore:
         self._ix_total += 1
 
     def _ix_sync(self, fh) -> bool:
+        """Dizini dosyanın SONUNA getirir. Tam yeniden dizin: kimlik (st_dev, st_ino) değişti, dosya kısaldı ya da iki 4 KB
+        bekçiden (dosyanın ilk 4 KB'ı, ofsetten önceki son 4 KB) biri değişti. Bekçilerin dışında boyu/inode'u koruyan yerinde
+        değişiklik yakalanmaz (depoda bu dosyayı yerinde yeniden yazan yol yok). Okuma ortasında istisna → dizin sıfırlanır,
+        istisna yükselir; sonraki çağrı tam dizinler (2026-09-28, öğrenme modu; dördüncü doğrulama turu)."""
         st = os.fstat(fh.fileno())
         ident = (int(st.st_dev), int(st.st_ino))
         ok_guard = True
         if self._ix_guard:
             fh.seek(self._ix_off - len(self._ix_guard))
             ok_guard = fh.read(len(self._ix_guard)) == self._ix_guard
+            if ok_guard and self._ix_head and self._ix_off > len(self._ix_guard):
+                fh.seek(0)
+                ok_guard = fh.read(len(self._ix_head)) == self._ix_head
         if ident != self._ix_ident or st.st_size < self._ix_off or not ok_guard:
             self._ix_reset(ident)
         self._ix_partial = False
         if st.st_size > self._ix_off:
-            fh.seek(self._ix_off)
-            pos = last = self._ix_off
-            for raw in fh:
-                n = len(raw)
-                if not raw.endswith(b"\n"):
-                    if raw.strip():
-                        self._ix_partial = True              # `iter_rows` tamamlanmamış son satırı da okur → eski yol
-                    break
-                self._ix_line(raw, pos, n)
-                pos += n
-                last = pos
-            if last > self._ix_off:
-                self._ix_off = last
-                k = min(self.IX_GUARD_BYTES, last)
-                fh.seek(last - k)
-                self._ix_guard = fh.read(k)
+            try:
+                fh.seek(self._ix_off)
+                pos = last = self._ix_off
+                for raw in fh:
+                    n = len(raw)
+                    if not raw.endswith(b"\n"):
+                        if raw.strip():
+                            self._ix_partial = True              # `iter_rows` tamamlanmamış son satırı da okur → eski yol
+                        break
+                    self._ix_line(raw, pos, n)
+                    pos += n
+                    last = pos
+                if last > self._ix_off:
+                    self._ix_off = last
+                    k = min(self.IX_GUARD_BYTES, last)
+                    fh.seek(last - k)
+                    self._ix_guard = fh.read(k)
+                    if len(self._ix_head) < self.IX_GUARD_BYTES:
+                        fh.seek(0)
+                        self._ix_head = fh.read(min(self.IX_GUARD_BYTES, last))
+            except BaseException:
+                # satırlar tek tek dizine giriyor, ofset döngü sonunda: yarım dizin + yeniden deneme = çift satır → sıfırla
+                self._ix_reset(None)
+                raise
         return not (self._ix_anomaly or self._ix_partial)
 
     def _ix_run(self, fn):

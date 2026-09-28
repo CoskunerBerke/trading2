@@ -222,9 +222,11 @@ class TradingEngineV3(TradingEngine):
         # TABAN ÖĞRENİCİ GÖRÜNÜMÜ (2026-09-28, üçüncü doğrulama turu): politika etiketinin ekonomi kapısı öğrenme-ekstra
         # sonuçlarını görmeyen öğreniciyle ölçülür (`learning_basis`). Yalnız etkinken okunur; ilk aktif turda kurulur.
         self._lm_basis = None
+        self._lm_basis_file = None              # yükleme durumu (OK | MISSING | UNREADABLE | SCHEMA_MISMATCH:…)
+        self._lm_basis_alarm: dict | None = None  # görünüm kaybolduysa (yeniden KURULMAZ) — health alarmı
         if self.lm.enabled:
             from .learning_basis import BASIS_FILE, PolicyBasis
-            self._lm_basis = PolicyBasis.load(st / BASIS_FILE)
+            self._lm_basis, self._lm_basis_file = PolicyBasis.load_status(st / BASIS_FILE)
         self._lm_main = None                    # bu turun değişmez `BookLearning` görünümü (yalnız aktif + main açık)
         self._lm_ovr: dict = {}                 # bu turun strateji ezmeleri (yalnız `_lm_main` varken dolu)
         # defter görünümleri (2026-09-28, öğrenme modu — C2): ad → BookLearning / yapı girişi gölgesi; AYNI turun anlık
@@ -1877,7 +1879,8 @@ class TradingEngineV3(TradingEngine):
             _basis = getattr(self, "_lm_basis", None)
             health["learning_mode"] = dict(_lm.status(), learning_mode_since=self._lm_since(),
                                            memory=self._lm_memory_health(),
-                                           policy_basis=(_basis.status() if _basis is not None else None))
+                                           policy_basis=(_basis.status() if _basis is not None
+                                                         else getattr(self, "_lm_basis_alarm", None)))
         atomic_write_json(st / "health.json", health)
         self._notify_health(str(health.get("state") or "UNKNOWN"), str(health.get("summary") or ""), now)
         self._notify_maintenance(health, now)
@@ -3809,9 +3812,30 @@ class TradingEngineV3(TradingEngine):
 
     def _lm_basis_ensure(self) -> None:
         """Taban öğrenici görünümü yoksa ŞİMDİ kurulur (öğrenmenin ilk aktif turu: öğreniciler yalnız taban kapanışlarını
-        gördü). Dosya varsa `__init__` yükledi. Arıza → görünüm yok (etiket eski kuralla, `policy_basis` LEARNING_LEARNER)."""
-        if getattr(self, "_lm_basis", None) is not None:
+        gördü). Dosya varsa `__init__` yükledi. Arıza → görünüm yok (etiket eski kuralla, `policy_basis` LEARNING_LEARNER).
+
+        YALNIZ İLK ETKİNLEŞMEDE (2026-09-28, öğrenme modu; dördüncü doğrulama turu): `learning_mode.json` ana defterin daha
+        önce öğrenmede olduğunu söylüyorsa (ilk aktif anın `books` listesinde `main`; liste yoksa ya da dosya okunamıyorsa
+        da öyle sayılır) gerçek öğreniciler öğrenme-ekstra sonuçları çoktan gördü → kopyalamak ikinci turdaki hatayı sessizce
+        geri getirirdi. Görünüm dosyası (ve yedeği) yok/okunamıyor/şeması farklıysa KURULMAZ: ERROR günlüğü (süreç başına bir
+        kez) + health alarmı (`policy_basis.status = LOST`); etiket eski kuralla (LEARNING_LEARNER) sürer. Onarım: dosyayı
+        yedekten geri yükleyip worker'ı yeniden başlatmak."""
+        if getattr(self, "_lm_basis", None) is not None or getattr(self, "_lm_basis_alarm", None) is not None:
             return
+        since = self._lm_since()
+        if since or (self.cfg.state_path / self.LM_SINCE_FILE).exists():      # okunamayan kayıt da "önceden aktif" sayılır
+            books = (getattr(self, "_lm_since_doc", None) or {}).get("books")
+            if not isinstance(books, list) or "main" in books:
+                self._lm_basis_alarm = {
+                    "status": "LOST", "code": "POLICY_BASIS_LOST", "file": getattr(self, "_lm_basis_file", None),
+                    "learning_mode_since": since,
+                    "note_tr": "Taban öğrenici görünümü (learning_policy_basis.json) öğrenme başladıktan sonra kayboldu; "
+                               "kirli öğreniciden yeniden KURULMADI. Politika etiketi LEARNING_LEARNER ile sürüyor. Onarım: "
+                               "dosyayı (ya da .bak) yedekten geri yükle ve worker'ı yeniden başlat."}
+                log.error("öğrenme modu: taban öğrenici görünümü YOK (%s) ama öğrenme %s'den beri aktif — yeniden "
+                          "kurulmadı (öğreniciler öğrenme-ekstra sonuçları gördü); politika etiketi LEARNING_LEARNER",
+                          self._lm_basis_alarm["file"], since)
+                return
         try:
             from .learning_basis import BASIS_FILE, PolicyBasis
             self._lm_basis = PolicyBasis.seed(self.cfg.state_path / BASIS_FILE, learner2=self.learner2,

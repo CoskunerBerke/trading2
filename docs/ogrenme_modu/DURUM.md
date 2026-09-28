@@ -1,9 +1,9 @@
 # Öğrenme modu L1: durum kaydı (güncelleme 2026-09-28 ~07:00 UTC)
 
-**Güncel (2026-09-28 ~09:00 UTC):**
-- `627eac5`: 1. inceleme bulguları F1–F9 düzeltildi. `6fb39cd`: ana bot `leverage_max: 5`.
-- `49256cb`: 2. doğrulama turu (gerçek `config.yaml` ile 48 turluk uçtan uca benzetim, durum geçişi, geri dönüş) bulguları düzeltildi: politika rezervi (öğrenme-ekstra işlemler temel işlemleri dışlamaz), Box/D4'te açık pozisyonlu sembolde temel sinyalin "olsaydı" kaydı, deneyim önbelleği bellek düzeltmesi, geri dönüş hazırlık betiği `scripts/learning_mode_rollback_prep.py`, etiket/sayaç yedekleri. Tam paket 3445 geçti / 0 düştü; öğrenme kapalıyken 48 tur önceki kapalı koşuyla aynı.
-- Şu an 3. tur çalışıyor: 2. tur düzeltmelerinin bağımsız incelemesi + VPS işletim ölçümleri (bellek/disk büyümesi) + `trade_memory.jsonl` büyümesinin sınırlanması. Ardından dağıtım betiği `tb-deploy-<tip>.sh` (değişmez listesi: CONTRACT.md "Additions from the second verification round" ve 2. tur raporu).
+**Güncel (2026-09-28 ~17:15 UTC):**
+- `627eac5` 1. inceleme (F1–F9) · `6fb39cd` ana bot `leverage_max: 5` · `49256cb` 2. tur (politika rezervi, A15 +CF, geri dönüş güvenliği) · `e6dac70` 3. tur.
+- `e6dac70`: politika etiketi için ayrı taban öğrenicisi (`learning_basis.py`), TP1 sonrası açık pay, A15'te bir hareket bir kez, rezerv kaynaklı retlerin doğru kodu; `trade_memory.jsonl` / `position_path.jsonl` / deney olayları artımlı okunur (öğrenme kapalıyken çıktı birebir aynı; 157 MB dosyada her değişimde +588 MB tepe → ~0). Tam paket 3475 geçti / 0 düştü.
+- Şu an 4. tur: 3. tur değişikliklerinin incelemesi (öğrenme kapalıyken de çalışan ortak okuyucular dahil) ve dağıtım betiği `deploy/releases/tb-deploy-<tip>.sh`. Betik hazır olunca kullanıcıya SSH komutu verilecek.
 
 ---
 

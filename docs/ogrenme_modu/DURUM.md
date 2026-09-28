@@ -1,5 +1,7 @@
 # Öğrenme modu L1: durum kaydı (güncelleme 2026-09-28 ~07:00 UTC)
 
+**DAĞITILDI (2026-09-28 21:20 UTC, kullanıcı):** VPS `a8fe2a5` → `c0b8c94` (`tb-deploy-c0b8c94.sh --detach`). Kuru çalışma 26/26 değişmez; doğrulanmış yedek `tradingbot-manual-20260928T211042Z.tar.gz` (24.440 dosya); worker 60 sn kararlı; yeniden başlatma sonrası bellek 556M (tepe 668M) / 6G, OOM 0. Önceki tepe 4,8G. İzleme: `--check` (ilk tam turdan sonra; Box için ikinci örnek ≥50 dk sonra).
+
 **Güncel (2026-09-28 akşam): DAĞITIMA HAZIR.** Kod `c0b8c94`, dağıtım betiği `deploy/releases/tb-deploy-c0b8c94.sh` (`9f54393`, sha256 `d258fb3e…264f`). Dağıtımı yalnız kullanıcı yapar.
 - Dört inceleme turu: `627eac5` (F1–F9) · `49256cb` (politika rezervi, A15 +CF, geri dönüş güvenliği) · `e6dac70` (politika tabanı öğrenicisi, artımlı bellek okuyucuları) · `c0b8c94` (panel bellek sınırı, okuyucu sağlamlığı, POLICY_BASIS_LOST alarmı). Son tam paket 3484 geçti / 0 düştü; öğrenme kapalıyken 48 tur öncekiyle birebir.
 - Ertelenenler (izlenecek): deneyim önbelleği ~1,8 MB/gün; çıkış değerlendirmesi CPU'su kapanan işlem sayısıyla doğrusal; deney olaylarının her turda baştan okunması (~1,9 sn/okuma 30. günde); trade_memory/position_path/deney olayları ~12,5 MB/gün disk (döndürme yok); T2/M2/D4 "olsaydı" etiketi 30 barlık ufuk (yaklaşık); D4/C4 sessiz 60 dk pencere bitişleri kayıtsız; depo unit dosyası hâlâ MemoryMax=4G (VPS 6G).

@@ -11,6 +11,10 @@
   TARGET_STOP_TIME: ufuk kuralın en uzun tutma süresi. HORIZON: 30 bar, `approx=True`. RULE_EXIT (kural çıkış yüklemi)
   bu sürümde HORIZON ile etiketlenir (`label_method=HORIZON_FALLBACK`, `approx=True`).
 * `record`/`label_pending` diske YAZMAZ; geçiş sonunda `save()` çağrılır (tek atomik yazım).
+* Aynı sinyal sonraki bir turda GERÇEK işlem olarak açılırsa bekleyen kaydı `supersede` ile düşürülür (aynı gözlem iki kez
+  sayılmaz; `superseded` sayacı).
+* Etiketleme ucuzdur (2026-09-28, öğrenme modu): yol, stop/hedef hiç değmediyse ve ufuk dolmadıysa yürütülmez (numpy ön
+  kontrol); tam yürütme (`label_with_candles`) yalnız sonuç kesinleşebilecekken yapılır — sonuçlar aynıdır.
 """
 from __future__ import annotations
 
@@ -22,6 +26,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 from .core import from_iso, iso, stable_id
@@ -130,6 +135,100 @@ def _frame_rows(raw: Any) -> pd.DataFrame | None:
     return df
 
 
+def _frame_for(frames: dict[str, Any] | None, tf_minutes: int) -> Any:
+    if not frames:
+        return None
+    key = _TF_BY_MIN.get(int(tf_minutes))
+    raw = frames.get(key) if key is not None else None
+    if raw is None:
+        raw = frames.get(int(tf_minutes))
+    if raw is None:
+        raw = frames.get(str(tf_minutes))
+    return raw
+
+
+def _eval_view(t: ShadowTrade) -> ShadowTrade:
+    """Etiketleme görünümü: TARGET_STOP_TIME kaydın kendisi; HORIZON/RULE_EXIT hedefsiz, ufuk kapanışında R
+    (stop yine ÖNCE) — `label_with_candles`ın `hold_h` yolu. Kaydın kendi varyantı değişmez."""
+    if str(t.label_kind or LABEL_TARGET_STOP_TIME) == LABEL_TARGET_STOP_TIME:
+        return t
+    return replace(t, variant="hold_h")
+
+
+def _may_finalise(v: ShadowTrade, arr: tuple, created_ms: int, label_ms: int) -> bool:
+    """Ucuz ön kontrol (muhafazakâr ÜST küme): yolda stop ya da hedef seviyesine değen bar var mı. False → tam yürütme
+    `horizon` dışında bir sonuç VEREMEZ (ufuk dolmadıysa kesinleşmez), yürütmeye gerek yok."""
+    if v.variant not in ("as_planned", "hold_h"):
+        return True
+    ts, hi, lo = arr
+    i0 = int(np.searchsorted(ts, created_ms, side="left"))          # ⊇ `ts > created`
+    i1 = int(np.searchsorted(ts, label_ms, side="right"))           # `ts <= label`
+    if i1 <= i0:
+        return False
+    h, lw = hi[i0:i1], lo[i0:i1]
+    long = v.direction == "LONG"
+    if bool((lw <= v.stop).any()) if long else bool((h >= v.stop).any()):
+        return True
+    tg = list(v.targets or []) if v.variant != "hold_h" else []
+    if tg:
+        return bool((h >= min(tg)).any()) if long else bool((lw <= max(tg)).any())
+    return False
+
+
+def label_records(trades: list[ShadowTrade], frames_by_symbol: dict[str, dict[str, Any]] | None,
+                  now: datetime) -> tuple[int, list[ShadowTrade]]:
+    """Bekleyen kayıtları (outcome None) YALNIZ `now` anında kapanmış barlarla etiketler; kayıtları yerinde günceller.
+
+    Kesinleşme: stop/hedef (önce stop) ya da ufuk penceresinin son barı kapanmış VE veri pencereyi kapsıyor. Ufuk +
+    `STALE_GRACE_BARS` geçtiği hâlde etiketlenemeyen kayıt (veri boşluğu / evrenden çıkmış sembol) bayattır.
+    Döner: (bu çağrıda etiketlenen sayı, bayat kayıtlar). Defter başı kayıtçı ve ana botun öğrenme gölgeleri ORTAK."""
+    now = _aware(now)
+    now_ms = int(now.timestamp() * 1000)
+    n = 0
+    stale: list[ShadowTrade] = []
+    cache: dict[tuple, tuple[pd.DataFrame, tuple] | None] = {}
+    for t in trades:
+        if t.outcome is not None:
+            continue
+        tf_ms = int(t.tf_minutes) * 60_000
+        label_ms = int(from_iso(t.label_ts).timestamp() * 1000)
+        ck = (t.symbol, int(t.tf_minutes))
+        if ck not in cache:
+            df = _frame_rows(_frame_for((frames_by_symbol or {}).get(t.symbol), t.tf_minutes))
+            if df is not None:
+                df = df[df["timestamp"] + tf_ms <= now_ms].reset_index(drop=True)   # yalnız kapanmış barlar
+            if df is not None and not df.empty:
+                cache[ck] = (df, (df["timestamp"].to_numpy(dtype="int64"), df["high"].to_numpy(dtype=float),
+                                  df["low"].to_numpy(dtype=float)))
+            else:
+                cache[ck] = None
+        hit = cache[ck]
+        horizon_done = now_ms >= label_ms + tf_ms
+        if hit is not None:
+            df, arr = hit
+            v = _eval_view(t)
+            created_ms = int(from_iso(t.created_at).timestamp() * 1000)
+            res = label_with_candles(v, df) if (horizon_done or _may_finalise(v, arr, created_ms, label_ms)) else None
+            if res is not None:
+                final = res.get("exit_reason") in _FINAL_EXITS
+                if not final and horizon_done:
+                    # ufuk penceresinin son barı kapandı; veri pencereyi kapsıyor mu (boşluk → bekle)
+                    in_win = df[(df["timestamp"] <= label_ms)]
+                    final = (not in_win.empty) and int(in_win["timestamp"].iloc[-1]) > label_ms - tf_ms
+                if final:
+                    kind = str(t.label_kind or LABEL_TARGET_STOP_TIME)
+                    out = dict(res)
+                    out.update({"label_kind": kind, "approx": bool(t.approx),
+                                "label_method": ("PATH" if kind == LABEL_TARGET_STOP_TIME else
+                                                 LABEL_HORIZON if kind == LABEL_HORIZON else "HORIZON_FALLBACK")})
+                    t.outcome, t.labeled_at = out, iso(now)
+                    n += 1
+                    continue
+        if now_ms > label_ms + (STALE_GRACE_BARS + 1) * tf_ms:
+            stale.append(t)
+    return n, stale
+
+
 class CounterfactualRecorder:
     """Defter başına karşı-olgusal kayıtçı (`state_dir/counterfactual_trades.json`)."""
 
@@ -142,6 +241,7 @@ class CounterfactualRecorder:
         self.dropped = int(m.get("dropped", 0) or 0)
         self.expired = int(m.get("expired", 0) or 0)
         self.recorded_total = int(m.get("recorded_total", 0) or 0)
+        self.superseded = int(m.get("superseded", 0) or 0)
         self._keys: set[tuple] = {self._key(t.signal_key or t.plan_id, t.symbol, t.direction, t.variation)
                                   for t in self.sb.trades}
         #: Düşürülen kayıtların anahtarları (süreç içi, sınırlı): aynı bar yeniden kaydı tekrar tetiklemesin.
@@ -217,58 +317,36 @@ class CounterfactualRecorder:
         self.sb.trades = [t for t in self.sb.trades if id(t) not in drop]
         self.dropped += over
 
+    # ------------------------------------------------------------ gerçek işlemle değişim
+    def supersede(self, *, signal_key: str | None, symbol: str, direction: str, variation: str | None = None) -> int:
+        """Aynı sinyal (defter, anahtar, sembol, yön, varyasyon) sonradan GERÇEK işlem olarak açıldı: karşı-olgusal kaydı
+        düşürülür (aynı gözlem hem dolum hem "açılmadı" olarak sayılmasın). Anahtar tekillik kümesinde KALIR (yeniden
+        kaydedilmez). Döner: düşürülen kayıt sayısı."""
+        if not signal_key:
+            return 0
+        key = self._key(signal_key, symbol, str(direction or "").upper(), variation)
+        keep, n = [], 0
+        for t in self.sb.trades:
+            if self._key(t.signal_key or t.plan_id, t.symbol, t.direction, t.variation) == key:
+                n += 1
+            else:
+                keep.append(t)
+        if n:
+            self.sb.trades = keep
+            self.superseded += n
+            self._dirty = True
+        return n
+
     # ------------------------------------------------------------ etiketleme
     @staticmethod
     def _frame_for(frames: dict[str, Any] | None, tf_minutes: int) -> Any:
-        if not frames:
-            return None
-        key = _TF_BY_MIN.get(int(tf_minutes))
-        raw = frames.get(key) if key is not None else None
-        if raw is None:
-            raw = frames.get(int(tf_minutes))
-        if raw is None:
-            raw = frames.get(str(tf_minutes))
-        return raw
+        return _frame_for(frames, tf_minutes)
 
     def label_pending(self, frames_by_symbol: dict[str, dict[str, Any]], now: datetime) -> int:
-        """Bekleyen kayıtları yalnız KAPANMIŞ barlarla etiketler. Döner: bu çağrıda etiketlenen kayıt sayısı."""
-        now = _aware(now)
-        now_ms = int(now.timestamp() * 1000)
-        n = 0
-        stale: list[ShadowTrade] = []
-        cache: dict[tuple, pd.DataFrame | None] = {}
-        for t in self.sb.trades:
-            if t.outcome is not None:
-                continue
-            tf_ms = int(t.tf_minutes) * 60_000
-            label_ms = int(from_iso(t.label_ts).timestamp() * 1000)
-            ck = (t.symbol, int(t.tf_minutes))
-            if ck not in cache:
-                df = _frame_rows(self._frame_for((frames_by_symbol or {}).get(t.symbol), t.tf_minutes))
-                if df is not None:
-                    df = df[df["timestamp"] + tf_ms <= now_ms].reset_index(drop=True)   # yalnız kapanmış barlar
-                    df = df if not df.empty else None
-                cache[ck] = df
-            df = cache[ck]
-            res = label_with_candles(self._eval_view(t), df) if df is not None else None
-            if res is not None:
-                final = res.get("exit_reason") in _FINAL_EXITS
-                if not final and now_ms >= label_ms + tf_ms:
-                    # ufuk penceresinin son barı kapandı; veri pencereyi kapsıyor mu (boşluk → bekle)
-                    in_win = df[(df["timestamp"] <= label_ms)]
-                    final = (not in_win.empty) and int(in_win["timestamp"].iloc[-1]) > label_ms - tf_ms
-                if final:
-                    kind = str(t.label_kind or LABEL_TARGET_STOP_TIME)
-                    out = dict(res)
-                    out.update({"label_kind": kind, "approx": bool(t.approx),
-                                "label_method": ("PATH" if kind == LABEL_TARGET_STOP_TIME else
-                                                 LABEL_HORIZON if kind == LABEL_HORIZON else "HORIZON_FALLBACK")})
-                    t.outcome, t.labeled_at = out, iso(now)
-                    n += 1
-                    self._dirty = True
-                    continue
-            if now_ms > label_ms + (STALE_GRACE_BARS + 1) * tf_ms:
-                stale.append(t)
+        """Bekleyen kayıtları yalnız KAPANMIŞ barlarla etiketler (`label_records`). Döner: bu çağrıda etiketlenen sayı."""
+        n, stale = label_records(self.sb.trades, frames_by_symbol, now)
+        if n:
+            self._dirty = True
         if stale:
             gone = {id(t) for t in stale}
             for t in stale:
@@ -282,11 +360,7 @@ class CounterfactualRecorder:
 
     @staticmethod
     def _eval_view(t: ShadowTrade) -> ShadowTrade:
-        """Etiketleme görünümü: TARGET_STOP_TIME kaydın kendisi; HORIZON/RULE_EXIT hedefsiz, ufuk kapanışında R
-        (stop yine ÖNCE) — `label_with_candles`ın `hold_h` yolu. Kaydın kendi varyantı değişmez."""
-        if str(t.label_kind or LABEL_TARGET_STOP_TIME) == LABEL_TARGET_STOP_TIME:
-            return t
-        return replace(t, variant="hold_h")
+        return _eval_view(t)
 
     # ------------------------------------------------------------ kalıcılık / rapor
     def save(self) -> None:
@@ -294,7 +368,7 @@ class CounterfactualRecorder:
         if not self._dirty and self.path.exists():
             return
         self.sb.meta = {"schema_version": SCHEMA_VERSION, "book": self.book_name, "dropped": self.dropped,
-                        "expired": self.expired, "recorded_total": self.recorded_total}
+                        "expired": self.expired, "recorded_total": self.recorded_total, "superseded": self.superseded}
         self.sb.save()
         self._dirty = False
 
@@ -302,8 +376,8 @@ class CounterfactualRecorder:
         pending = sum(1 for t in self.sb.trades if t.outcome is None)
         return {"book": self.book_name, "pending": pending, "labeled": len(self.sb.trades) - pending,
                 "dropped": self.dropped, "expired": self.expired, "recorded_total": self.recorded_total,
-                "max_pending": self.max_pending}
+                "superseded": self.superseded, "max_pending": self.max_pending}
 
 
 __all__ = ["CounterfactualRecorder", "HORIZON_BARS", "LABEL_HORIZON", "LABEL_KINDS", "LABEL_RULE_EXIT",
-           "LABEL_TARGET_STOP_TIME", "SCHEMA_VERSION"]
+           "LABEL_TARGET_STOP_TIME", "SCHEMA_VERSION", "label_records"]

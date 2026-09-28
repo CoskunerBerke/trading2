@@ -166,6 +166,8 @@ class BookLearning:
     min_stop_pct: float | None
     symbols: str | None
     hard_cap_pct: float = HARD_CAP_PCT
+    #: öğrenme RiskEngine profilinin toplam açık risk tavanı (config `max_total_open_risk_pct`; defterler de uyar)
+    max_total_open_risk_pct: float = DEFAULT_MAX_TOTAL_OPEN_RISK_PCT
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -301,7 +303,8 @@ class LearningMode:
                             min_notional_bump=self.min_notional_bump, counterfactual=self.counterfactual,
                             max_pending=self.max_pending,
                             min_stop_pct=(None if bc.min_stop_pct is None else float(bc.min_stop_pct)),
-                            symbols=bc.symbols, hard_cap_pct=HARD_CAP_PCT)
+                            symbols=bc.symbols, hard_cap_pct=HARD_CAP_PCT,
+                            max_total_open_risk_pct=self.max_total_open_risk_pct)
 
     def override(self, key: str, default):
         """Strateji ezmesi: yalnız AKTİFKEN config değeri, aksi halde `default`. Bilinmeyen anahtar KeyError."""
@@ -531,7 +534,7 @@ def leverage_fallback(base_failures: Iterable[str], *, stop_atr: float | None, a
 
 
 __all__ = ["BOOK_NAMES", "OVERRIDE_KEYS", "LIST_OVERRIDE_KEYS", "SIZE_SLOT", "SIZE_BUMP", "SIZE_SHRUNK", "SIZE_RULES",
-           "HARD_CAP_PCT", "SYMBOLS_UNIVERSE", "STATE_DISABLED", "STATE_ACTIVE", "SUSPENDED_PREFIX",
+           "HARD_CAP_PCT", "RISK_NOTIONAL_ROUND_TOL", "SYMBOLS_UNIVERSE", "STATE_DISABLED", "STATE_ACTIVE", "SUSPENDED_PREFIX",
            "LEVERAGE_FALLBACK", "LEVERAGE_FALLBACK_REASON", "COUNTERFACTUAL_OK", "COUNTERFACTUAL_NEVER",
            "BookLearningCfg", "BookLearning", "LearningMode", "FitResult", "profile_for", "fit_size",
            "leverage_fallback", "counterfactual_ok"]

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import sys
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
@@ -331,6 +332,31 @@ def test_structures_entry_shadow_for_main_keeps_data_identity_block(tmp_path, mo
         assert _main_cfs(eng) == []                                           # veri kimliği → karşı-olgusal YOK
 
 
+def test_structures_entry_shadow_keeps_an_approved_entry_reference_unshadowed(tmp_path, monkeypatch):
+    """S3: giriş gölgesi yalnız ENGELLEYECEK kararı gölgeler. Yapının ONAYLADIĞI (ENTER) girişte referans ENFORCE'taki gibi
+    gölge işaretsiz yazılır → yönetim (`main_hold_decision` giriş kimliği) ve kullanılmış yapı sayımı baseline ile aynı."""
+    import tradingbot.structures.bots as SB
+    enter = {"bot": "main", "action": "ENTER", "reason_code": "COMPATIBLE_CONFIRMED", "pattern_ids": ["pid-1"],
+             "primary": {"pattern_id": "pid-1", "name": "bull_flag", "timeframe": "4h", "side": "SHORT"}, "text_tr": "gir"}
+    monkeypatch.setattr(SB, "main_entry_decision", lambda **k: (dict(enter), {}))
+    ex = {"structures": {"enabled": True, "main": "ENFORCE"}}
+    out = {}
+    for name, lm in (("off", None), ("on", _lm())):
+        eng = _eng(tmp_path / name, monkeypatch, lm, ex)
+        decisions, chief, briefs, marks = _cands(eng, SYMS[:1])
+        if name == "off":                                   # baseline kapasiteye takılmasın: tek aday, küçük notional
+            decisions[SYMS[0]].active_plan.notional = 10.0
+        opened, risk_log = eng._execute(decisions, chief, briefs, None, marks, utc_now())
+        assert len(opened) == 1, (name, _log(risk_log, SYMS[0]))
+        pos = eng.ledger2.positions[SYMS[0]]
+        out[name] = (pos.features["structure"], SB._entry_pid(pos), set(SB.used_patterns_of(eng.ledger2)),
+                     _log(risk_log, SYMS[0])["structure"])
+    assert out["off"][0].get("shadow") is None and out["off"][1] == "pid-1"
+    assert out["on"][0].get("shadow") is None and out["on"][1] == "pid-1", out["on"]
+    assert out["on"][2] == out["off"][2] == {"pid-1"}
+    assert out["on"][3] == out["off"][3]
+
+
 def test_structures_off_learning_blocks_entry(tmp_path, monkeypatch):
     import tradingbot.structures.bots as SB
     monkeypatch.setattr(SB, "main_entry_decision", lambda **k: _struct_dec("OPPOSING_CONFIRMED"))
@@ -488,6 +514,91 @@ def test_one_counterfactual_per_signal_key_across_repeated_tours(tmp_path, monke
     from tradingbot.learn.shadow import ShadowBook
     again = [t for t in ShadowBook(eng.shadow.path).trades if t.book == "main"]
     assert len(again) == 2 and all(t.features for t in again)
+
+
+def test_counterfactual_is_superseded_when_the_same_signal_opens_on_a_later_tour(tmp_path, monkeypatch):
+    """Tur 1: kill switch → karşı-olgusal; tur 2 (aynı 4h barı, aynı sinyal anahtarı): açılır → kayıt düşer; aynı gözlem
+    hem dolum hem "açılmadı" olarak SAYILMAZ (`meta.lm_superseded`, huni `counterfactual_superseded`)."""
+    eng = _eng(tmp_path, monkeypatch, _lm())
+    now = utc_now().replace(microsecond=0)
+    eng.killswitch.trip("MANUAL", "test")
+    decisions, chief, briefs, marks = _cands(eng, SYMS[:1])
+    opened, _ = eng._execute(decisions, chief, briefs, None, marks, now)
+    assert opened == [] and len(_main_cfs(eng)) == 1
+    eng.killswitch.reset("test", "reset")
+    eng.run_id = "run_2"
+    opened, risk_log = eng._execute(decisions, chief, briefs, None, marks, now)
+    assert len(opened) == 1 and SYMS[0] in eng.ledger2.positions
+    assert _main_cfs(eng) == [], "işleme dönüşen sinyalin karşı-olgusalı kalmamalı"
+    assert eng._funnel["counterfactual_superseded"] == 1 and eng.shadow.meta.get("lm_superseded") == 1
+    from tradingbot.learn.shadow import ShadowBook
+    assert [t for t in ShadowBook(eng.shadow.path).trades if t.book == "main"] == []
+
+
+def test_main_counterfactual_pending_cap_drops_the_oldest_and_does_not_rerecord(tmp_path, monkeypatch):
+    lm = _lm()
+    lm["learning_mode"]["counterfactual_max_pending"] = 1
+    eng = _eng(tmp_path, monkeypatch, lm)
+    eng.killswitch.trip("MANUAL", "test")
+    decisions, chief, briefs, marks = _cands(eng, SYMS[:2])
+    eng._execute(decisions, chief, briefs, None, marks, utc_now())
+    cfs = _main_cfs(eng)
+    assert len(cfs) == 1 and eng._funnel["counterfactual_dropped"] == 1 and eng.shadow.meta["lm_dropped"] == 1
+    kept = cfs[0].symbol
+    eng.run_id = "run_2"
+    eng._execute(decisions, chief, briefs, None, marks, utc_now())          # aynı bar: düşen sinyal YENİDEN yazılmaz
+    assert [t.symbol for t in _main_cfs(eng)] == [kept] and eng._funnel["counterfactual_dropped"] == 0
+
+
+def _h4_closed(now, t0, n: int, crash_bar: int, sym_px: float = 100.0):
+    """`runner.last_frames` anlamı: yalnız `now` anında KAPANMIŞ 4h barları (drop_unclosed_last_bar)."""
+    import pandas as pd
+    rows = []
+    for i in range(n):
+        ts = int((t0 + timedelta(hours=4 * i)).timestamp() * 1000)
+        if ts + 4 * 3_600_000 > int(now.timestamp() * 1000):
+            break
+        rows.append({"timestamp": ts, "open": sym_px, "high": sym_px * 1.01, "low": sym_px * (0.80 if i == crash_bar else 0.99),
+                     "close": sym_px, "volume": 1.0})
+    return pd.DataFrame(rows)
+
+
+def test_main_learning_counterfactual_waits_for_the_last_horizon_bar_to_close(tmp_path, monkeypatch):
+    """Ana öğrenme karşı-olgusalı defter kayıtçısının kuralıyla etiketlenir: `label_ts` geçtikten sonraki ilk turda
+    ufkun SON barı henüz kapanmamıştır → bekler; o bar kapanınca (stop o barda) stop ile, 6/6 barla etiketlenir. Eski
+    (öğrenmesiz) gölge kaydı aynı veriyle eski yoldan AYNEN etiketlenir (davranış değişmez)."""
+    eng = _eng(tmp_path, monkeypatch, _lm())
+    t0 = datetime(2026, 9, 1, 8, 0, tzinfo=timezone.utc)
+    created = t0 + timedelta(hours=2, minutes=7)            # tur 10:07 (08:00 barı oluşuyor)
+    h = 6
+    plan = {"symbol": "S/USDT", "direction": "LONG", "entry": 100.0, "stop": 90.0, "targets": [130.0], "horizon_bars": h}
+    (lm_row,) = eng.shadow.add(dict(plan, plan_id="sig-lm"), ["TOTAL_OPEN_RISK"], now=created)
+    lm_row.book, lm_row.signal_key, lm_row.label_kind = "main", "sig-lm", "TARGET_STOP_TIME"
+    (legacy,) = eng.shadow.add(dict(plan, plan_id="plan-legacy"), ["RISK_CAPACITY_BLOCKED"], now=created)
+    now1 = created + timedelta(hours=4 * h, minutes=15)     # label_ts'den sonraki ilk tur
+    eng.runner.last_frames["S/USDT"] = {"4h": _h4_closed(now1, t0, 20, crash_bar=6)}
+    monkeypatch.setattr(M, "utc_now", lambda: now1)
+    eng._label_shadows()
+    assert lm_row.outcome is None, "ufkun son barı kapanmadan etiket KESİNLEŞMEZ"
+    assert legacy.outcome is not None and legacy.outcome["bars"] == h - 1          # eski yol: bugünkü davranış aynen
+    now2 = created + timedelta(hours=4 * h + 4)
+    eng.runner.last_frames["S/USDT"] = {"4h": _h4_closed(now2, t0, 20, crash_bar=6)}
+    monkeypatch.setattr(M, "utc_now", lambda: now2)
+    eng._label_shadows()
+    assert lm_row.outcome["exit_reason"] == "stop" and lm_row.outcome["bars"] == h and lm_row.outcome["r_multiple"] == -1.0
+    assert lm_row.outcome["label_kind"] == "TARGET_STOP_TIME"
+
+
+def test_main_learning_counterfactual_without_frames_expires_instead_of_lingering(tmp_path, monkeypatch):
+    eng = _eng(tmp_path, monkeypatch, _lm())
+    created = datetime(2026, 9, 1, 10, 7, tzinfo=timezone.utc)
+    (row,) = eng.shadow.add({"plan_id": "sig-x", "symbol": "GONE/USDT", "direction": "LONG", "entry": 100.0, "stop": 90.0,
+                             "targets": [130.0], "horizon_bars": 2}, ["TOTAL_OPEN_RISK"], now=created)
+    row.book, row.signal_key, row.label_kind = "main", "sig-x", "TARGET_STOP_TIME"
+    eng.runner.last_frames.pop("GONE/USDT", None)            # sembol taramadan çıktı: çerçeve yok
+    monkeypatch.setattr(M, "utc_now", lambda: created + timedelta(hours=4 * 2 + 4 * 12 + 1))
+    eng._label_shadows()
+    assert [t for t in eng.shadow.trades if t.book == "main"] == [] and eng.shadow.meta.get("lm_expired") == 1
 
 
 def test_exchange_reject_under_learning_is_open_failed_with_counterfactual(tmp_path, monkeypatch):

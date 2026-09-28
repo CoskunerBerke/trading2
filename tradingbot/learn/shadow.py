@@ -84,9 +84,11 @@ def label_with_candles(sh: ShadowTrade, df: pd.DataFrame, *, tp1_fraction: float
     frac_open = 1.0
     mae = mfe = 0.0
     exit_reason, exit_px, bars = "horizon", float(path["close"].iloc[-1]), 0
-    for _, row in path.iterrows():
+    # sütun yürüyüşü (2026-09-28, öğrenme modu): `iterrows` ile AYNI değerler (yalnız high/low okunur), satır başına Series
+    # kurulmaz — binlerce bekleyen karşı-olgusal kaydın etiketlenmesi defter kilidini uzun tutmasın
+    for hi_v, lo_v in zip(path["high"].tolist(), path["low"].tolist()):
         bars += 1
-        hi, lo = float(row["high"]), float(row["low"])
+        hi, lo = float(hi_v), float(lo_v)
         move_hi = (hi / sh.entry - 1) * 100 * (1 if long else -1)
         move_lo = (lo / sh.entry - 1) * 100 * (1 if long else -1)
         mfe = max(mfe, move_hi if long else move_lo)

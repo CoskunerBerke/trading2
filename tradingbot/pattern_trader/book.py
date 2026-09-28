@@ -1164,10 +1164,15 @@ class PatternBook:
                 self._set_status(q, PL_CANCELLED, int(as_of_ms), "OTHER_PLAN_FILLED:%s" % pl["plan_id"])
                 self.counters["cancelled"] += 1
         try:
+            mfeats = {"plan_id": pl["plan_id"], "family": pl["family"], "side": pl["side"],
+                      "cohort": pl.get("cohort"), "age_h_at_entry": universe_entry.get("age_h"), "rr_after_cost": n, "target_source": pl["target_source"],
+                      "finding_ids": list(pl.get("finding_ids") or []), "evidence": pl.get("evidence")}
+            if lm is not None and isinstance(pos.features.get("learning"), dict):
+                # ÖĞRENME MODU (2026-09-28, öğrenme modu): işlem hafızası satırı da etiketleri taşır (yalnız öğrenmede açılan)
+                mfeats["learning"] = dict(pos.features["learning"])
+                mfeats["in_lab_universe"] = bool(pos.features.get("in_lab_universe"))
             self.memory.record_entry({"trade_id": pos.id, "symbol": symbol, "direction": pos.side.value, "market_type": "USDM_PERP", "setup_type": pl["family"],
-                                      "regime": pl.get("evidence", {}).get("htf_trend"), "features": {"plan_id": pl["plan_id"], "family": pl["family"], "side": pl["side"],
-                                      "cohort": pl.get("cohort"), "age_h_at_entry": universe_entry.get("age_h"), "rr_after_cost": n, "target_source": pl["target_source"],
-                                      "finding_ids": list(pl.get("finding_ids") or []), "evidence": pl.get("evidence")}, "run_id": self.run_id, "in_test": True})
+                                      "regime": pl.get("evidence", {}).get("htf_trend"), "features": mfeats, "run_id": self.run_id, "in_test": True})
         except Exception as exc:  # noqa: BLE001
             log.warning("formasyon defteri giriş belleği yazılamadı (%s): %s", symbol, exc)
         return "OPENED"
@@ -1260,8 +1265,24 @@ class PatternBook:
         if self.cf is None:
             from ..learning_cf import CounterfactualRecorder
             self.cf = CounterfactualRecorder(self.state_dir / "counterfactual_trades.json", book=BOOK_KEY,
-                                             max_pending=int(getattr(lm, "max_pending", 2000) or 2000))
+                                             max_pending=int(getattr(lm, "max_pending", 2000) or 2000),
+                                             archive=self._cf_archive())
         return self.cf
+
+    def _cf_archive(self) -> Any:
+        """Etiketlenmiş kayıtlar taşarsa KAYIPSIZ arşiv (strateji defterleriyle aynı kural, 2026-09-28 öğrenme modu);
+        kurulamazsa None → budama yok (dosya büyür, sessiz silme yok)."""
+        lv = getattr(self.cfg.v3, "learning_v3", None)
+        if not bool(getattr(lv, "decision_archive_enabled", False)):
+            return None
+        try:
+            from ..learn.journal_archive import SegmentArchive
+            return SegmentArchive(self.state_dir / "counterfactual_archive", stream_id="counterfactual_%s" % BOOK_KEY,
+                                  record_schema_version="shadow_trade_v1",
+                                  max_segments=int(getattr(lv, "decision_archive_max_segments", 0) or 0))
+        except Exception as exc:  # noqa: BLE001 — arşiv kurulamazsa SİLME de yapılmaz
+            log.warning("formasyon karşı-olgusal arşivi kurulamadı: %s", exc)
+            return None
 
     @staticmethod
     def _cf_entry_ref(pl: dict[str, Any], price: dict[str, Any] | None) -> tuple[float | None, str]:

@@ -722,3 +722,71 @@ def test_allow_shrink_none_is_bit_identical_to_the_old_call(tmp_path):
         d.pop("updated_at")
         outs.append(json.dumps(d, sort_keys=True, default=str))
     assert outs[0] == outs[1]
+
+
+# ============================================================================ etiketleme maliyeti (2026-09-28)
+def test_label_precheck_gives_the_same_labels_as_the_full_walk_and_skips_untouched_paths(tmp_path, monkeypatch):
+    """Ön kontrol (stop/hedef değmediyse ve ufuk dolmadıysa yürütme yok) SONUÇ değiştirmez: rastgele yollarda her geçişte
+    tam yürütmeyle birebir aynı etiket; değmemiş bekleyen kayıtlar için `label_with_candles` hiç çağrılmaz."""
+    import random
+
+    import tradingbot.learning_cf as LC
+    rnd = random.Random(7)
+    t0 = datetime(2026, 9, 1, tzinfo=timezone.utc)
+    tf = 5
+    px, rows = 100.0, []
+    for i in range(400):
+        px *= 1 + rnd.uniform(-0.004, 0.004)
+        rows.append({"timestamp": int((t0 + timedelta(minutes=tf * i)).timestamp() * 1000), "open": px,
+                     "high": px * (1 + rnd.uniform(0, 0.003)), "low": px * (1 - rnd.uniform(0, 0.003)), "close": px})
+    df = pd.DataFrame(rows)
+
+    def build(path):
+        cf = CounterfactualRecorder(path, book="b1_box_fade", max_pending=5000)
+        r2 = random.Random(11)
+        for k in range(300):
+            side = "LONG" if k % 2 else "SHORT"
+            e = 100.0 * (1 + r2.uniform(-0.02, 0.02))
+            d = e * r2.uniform(0.002, 0.03)
+            kind = (LC.LABEL_TARGET_STOP_TIME, LC.LABEL_HORIZON)[k % 3 == 0]
+            tg = [e + (2 if side == "LONG" else -2) * d] if k % 4 else []
+            assert cf.record(signal_key="k%d" % k, symbol="S", direction=side, entry=e,
+                             stop=(e - d) if side == "LONG" else (e + d), targets=tg, reason="TOTAL_OPEN_RISK",
+                             created_at=t0 + timedelta(minutes=r2.randint(0, 300)), tf_minutes=tf,
+                             horizon_bars=r2.randint(5, 60), label_kind=kind)
+        return cf
+
+    fast, slow = build(tmp_path / "a.json"), build(tmp_path / "b.json")
+    real_may = LC._may_finalise
+    for step in range(0, 460, 7):
+        now = t0 + timedelta(minutes=tf * step)
+        n_fast = fast.label_pending({"S": {"5m": df}}, now)
+        monkeypatch.setattr(LC, "_may_finalise", lambda *a, **k: True)          # eski davranış: her kayıt yürütülür
+        n_slow = slow.label_pending({"S": {"5m": df}}, now)
+        monkeypatch.setattr(LC, "_may_finalise", real_may)
+        assert n_fast == n_slow
+        assert [(t.signal_key, t.outcome) for t in fast.sb.trades] == [(t.signal_key, t.outcome) for t in slow.sb.trades]
+    assert fast.stats()["labeled"] > 50 and fast.stats()["expired"] == slow.stats()["expired"]
+    # değmemiş bekleyen yol: yürütücü çağrılmaz
+    calls = []
+    real_walk = LC.label_with_candles
+    monkeypatch.setattr(LC, "label_with_candles", lambda *a, **k: calls.append(1) or real_walk(*a, **k))
+    flat = pd.DataFrame([{"timestamp": int((t0 + timedelta(minutes=tf * i)).timestamp() * 1000), "open": 100.0,
+                          "high": 100.1, "low": 99.9, "close": 100.0} for i in range(100)])
+    cf = CounterfactualRecorder(tmp_path / "c.json", book="b1_box_fade")
+    for k in range(50):
+        cf.record(signal_key="f%d" % k, symbol="S", direction="LONG", entry=100.0, stop=95.0, targets=[110.0],
+                  reason="TOTAL_OPEN_RISK", created_at=t0, tf_minutes=tf, horizon_bars=200, label_kind=LC.LABEL_TARGET_STOP_TIME)
+    assert cf.label_pending({"S": {"5m": flat}}, t0 + timedelta(minutes=tf * 90)) == 0 and calls == []
+
+
+def test_supersede_drops_the_record_and_keeps_the_key(tmp_path):
+    cf = CounterfactualRecorder(tmp_path / "counterfactual_trades.json", book="d4_donchian_20_10")
+    t0 = datetime(2026, 9, 1, tzinfo=timezone.utc)
+    kw = dict(signal_key="signal_ts:1", symbol="S", direction="LONG", entry=100.0, stop=95.0, targets=[],
+              reason="KILL_SWITCH_ACTIVE", created_at=t0, tf_minutes=240, horizon_bars=30, label_kind="HORIZON")
+    assert cf.record(**kw) and cf.record(**dict(kw, symbol="T"))
+    assert cf.supersede(signal_key="signal_ts:1", symbol="S", direction="long") == 1
+    assert [t.symbol for t in cf.sb.trades] == ["T"] and cf.stats()["superseded"] == 1
+    assert not cf.record(**kw), "işleme dönüşen sinyal yeniden karşı-olgusal yazılmaz"
+    assert cf.supersede(signal_key=None, symbol="T", direction="LONG") == 0

@@ -382,6 +382,71 @@ def test_min_notional_bump_and_per_call_shrink_backstop():
     assert led.allow_shrink is False and led.to_dict()["allow_shrink"] is False
 
 
+ETH_F = SymbolFilters(symbol=SYM, market_type=MarketType.USDM_PERP, price_tick=Decimal("0.01"), qty_step=Decimal("0.001"),
+                      min_qty=Decimal("0.001"), min_notional=Decimal("20"), max_leverage=20)
+
+
+@pytest.mark.parametrize("px", [2500.73, 2500.77])
+def test_min_notional_bump_survives_risk_engine_4dp_rounding(px):
+    """RiskEngine `adjusted_notional`ı 4 haneye yuvarlar (20.01224 → 20.0122); çıkarma bu artık yüzünden NOTIONAL'a düşüp
+    defterde bir adım kaybetmemeli (0.007 × 2501 = 17.5 < 20 → MIN_NOTIONAL). Beş ondalıklı qty × dolum (ETH tick/step)."""
+    led, risk, st, now = _ledger_env()
+    lrisk = RiskEngine(profile_for(PAPER), risk.ks)
+    tick = TickData(last=Decimal(str(px)), mark=Decimal(str(px)), ts=now.isoformat())
+    act = {"action": "OPEN", "direction": "LONG", "stop": px * 0.90, "targets": [px * 1.2], "name": "t2", "leverage": 2,
+           "leverage_max": 4}
+    rej: list = []
+    res = apply_action(act, symbol=SYM, price=px, tick=tick, now=now, ledger=led, risk=lrisk, profile=PAPER, state=st,
+                       filters=ETH_F, run_id=RUN, reject=lambda s, r: rej.append(r), on_closed=lambda r: None,
+                       data=_verdict(), learning=_bl("t2_trend_regime"))
+    fit = act["_learning"]["fit"]
+    assert fit["ok"] and fit["size_rule"] == "BUMP_MIN_NOTIONAL" and round(fit["notional"], 4) != fit["notional"], fit
+    assert res == "OPENED", (rej, fit)
+    pos = led.positions[SYM]
+    assert pos.qty == Decimal("0.008") and float(pos.qty * pos.entry_avg) >= 20.0
+    assert pos.meta["learning"]["size_rule"] == "BUMP_MIN_NOTIONAL" and pos.meta["learning"]["risk_usdt"] <= 0.02 * 200.0
+
+
+@pytest.mark.parametrize("px,tick", [(100.0, "0.01"), (1.0, "0.001"), (0.0123, "0.0001")])
+def test_learning_sizes_on_the_fill_price_and_tags_the_realised_risk(px, tick):
+    """Box (öğrenme min_stop %0,32): stop mesafesi defterin DOLUM fiyatından ölçülür (kayma + tick yukarı); etiketlenen
+    `risk_usdt` / `risk_fraction_of_budget` gerçekleşen pozisyonun riskine eşit ve %0,5 bütçenin içinde (eskiden mark'tan
+    ölçülüyordu: kaba tick'te gerçek risk etiketin 3,5 katıydı)."""
+    led, risk, st, now = _ledger_env()
+    lrisk = RiskEngine(profile_for(PAPER), risk.ks)
+    f = SymbolFilters(symbol=SYM, market_type=MarketType.USDM_PERP, price_tick=Decimal(tick), qty_step=Decimal("0.001"),
+                      min_qty=Decimal("0.001"), min_notional=Decimal("5"), max_leverage=20)
+    stop = px * (1 - 0.0032)
+    tk = TickData(last=Decimal(str(px)), mark=Decimal(str(px)), ts=now.isoformat())
+    act = {"action": "OPEN", "direction": "LONG", "stop": stop, "targets": [px * 1.01], "name": "box", "leverage": 3,
+           "leverage_max": 4}
+    res = apply_action(act, symbol=SYM, price=px, tick=tk, now=now, ledger=led, risk=lrisk, profile=PAPER, state=st,
+                       filters=f, run_id=RUN, reject=lambda s, r: pytest.fail(r), on_closed=lambda r: None,
+                       data=_verdict(), learning=_bl("b1_box_fade"))
+    assert res == "OPENED"
+    pos = led.positions[SYM]
+    lr = pos.meta["learning"]
+    actual = float(pos.qty) * abs(float(pos.entry_avg) - stop)
+    assert lr["risk_usdt"] == pytest.approx(actual, rel=1e-5, abs=1e-6) and lr == pos.features["learning"]
+    assert actual <= 0.005 * 200.0 + 1e-9 and lr["risk_fraction_of_budget"] == pytest.approx(actual / 1.0, rel=1e-5)
+    assert float(pos.entry_avg) > px                                      # dolum mark'ın üstünde (LONG, kayma)
+
+
+def test_book_learning_risk_engine_honours_max_total_open_risk_pct():
+    """`learning_mode.max_total_open_risk_pct` defterlerde de geçerli (ana bot ve Formasyon gibi); eskiden hep 100'dü."""
+    sec = _section(t2_trend_regime={"enabled": True, "slots": 40})
+    sec.max_total_open_risk_pct = 50.0
+    lm = LearningMode(sec, mode_gate=lambda: (True, "OK"))
+    lm.refresh()
+    bl = lm.book("t2_trend_regime")
+    assert bl.max_total_open_risk_pct == 50.0 == lm.profile_for(PAPER).max_total_open_risk_pct
+    fake = types.SimpleNamespace(risk_learning=None, _risk_learning_key=None, profile=PAPER,
+                                 risk=types.SimpleNamespace(ks=KillSwitch(), clusters=None))
+    assert StrategyBook._learning_risk(fake, bl).profile.max_total_open_risk_pct == 50.0
+    assert PAPER.max_total_open_risk_pct == 6.0
+    assert _bl("t2_trend_regime").max_total_open_risk_pct == 100.0          # varsayılan (config L1 değeri) değişmez
+
+
 # ============================================================================ 3) ölçüm kapıları AYNEN durdurur
 def test_keeps_still_block_under_learning(tmp_path):
     lrn = _bl("d4_donchian_20_10")
@@ -457,6 +522,41 @@ def test_one_blocked_signal_over_sixteen_tours_is_one_counterfactual_and_is_labe
     assert summ["learning"]["counterfactual"]["labeled"] >= 1 and summ["learning"]["counters"]["counterfactual_labeled"] >= 1
 
 
+def test_counterfactual_is_superseded_when_the_same_signal_opens_on_a_later_tour(tmp_path):
+    """D4: tur 1 kill switch → karşı-olgusal; 15 dk sonra (aynı 4h sinyali, 60 dk penceresi içinde) açılır → kayıt düşer
+    (`superseded`); aynı gözlem hem dolum hem "açılmadı" olarak SAYILMAZ, sonraki turda yeniden de yazılmaz."""
+    lrn = _bl("d4_donchian_20_10")
+    book = _book(tmp_path, "d4_donchian_20_10", symbols=[SYM])
+    fbs = _d4_fbs()
+    book.risk.ks.trip("TEST", "manual trip")
+    _step(book, fbs, now_ms=NOW_H4, px=104.1, learning=lrn)
+    assert SYM not in book.ledger.positions and book.rejections == {"KILL_SWITCH_ACTIVE": 1}
+    assert [t.reason_not_opened for t in book.cf.sb.trades] == [["KILL_SWITCH_ACTIVE"]]
+    book.risk.ks.reset("test", "reset")
+    _step(book, fbs, now_ms=NOW_H4 + 15 * 60_000, px=104.1, learning=lrn)
+    assert SYM in book.ledger.positions
+    assert book.cf.sb.trades == [] and book.cf.stats()["superseded"] == 1
+    assert book.learning_counters["counterfactual_superseded"] == 1
+    doc = json.loads((book.state_dir / CF_FILE).read_text(encoding="utf-8"))
+    assert doc["trades"] == [] and doc["meta"]["superseded"] == 1
+
+
+def test_trade_memory_entry_rows_carry_learning_tags_only_under_learning(tmp_path):
+    """İşlem hafızası (öğrenen katman) satırı da `learning` etiketlerini taşır; öğrenmesiz açılışta satır bugünküyle aynı."""
+    out = {}
+    for name, kw in (("off", {}), ("on", {"learning": _bl("d4_donchian_20_10")})):
+        book = _book(tmp_path / name, "d4_donchian_20_10", symbols=[SYM])
+        _step(book, _d4_fbs(), now_ms=NOW_H4, px=104.1, **kw)
+        assert SYM in book.ledger.positions, name
+        rows = [r for r in book.memory.iter_rows() if r.get("kind") == "entry"]
+        assert len(rows) == 1
+        out[name] = rows[0]["features"]
+    assert "learning" not in out["off"] and "in_lab_universe" not in out["off"]
+    pos_tags = out["on"]["learning"]
+    assert pos_tags["size_rule"] == SIZE_SLOT and pos_tags["book"] == "d4_donchian_20_10" and out["on"]["in_lab_universe"] is True
+    assert {k: v for k, v in out["on"].items() if k not in ("learning", "in_lab_universe")}.keys() == out["off"].keys()
+
+
 # ============================================================================ 5) T2/M2 yapı GİRİŞİ gölgesi, yönetim ENFORCE
 def test_t2_structure_entry_shadow_opens_with_the_rules_own_geometry_and_tags_the_unlock(tmp_path):
     flag, _brk = _trend_rows()
@@ -496,6 +596,30 @@ def test_m2_entry_shadow_keeps_structure_management_enforced(tmp_path):
     _step(book, _trend_fbs(after), now_ms=_asof(after), px=float(after[-1]["close"]), learning=lrn, structures_entry_shadow=True)
     assert SYM not in book.ledger.positions and book.ledger.history[-1].exit_reason == "M2_STRUCTURE_EXIT"
     assert book.structure_decisions[SYM]["action"] == "EXIT" and book.structure_decisions[SYM]["mode"] == "ENFORCE"
+
+
+def test_m2_entry_shadow_keeps_entry_structure_failed_exit_for_an_approved_entry(tmp_path):
+    """Yapının ONAYLADIĞI (ENTER) M2 girişi giriş gölgesinde de gölge işaretsiz referans taşır: bayrak bozulunca baseline
+    ENFORCE gibi ENTRY_STRUCTURE_FAILED ile kapanır (eskiden `shadow=True` yüzünden giriş kimliği yok sayılıyordu)."""
+    from tradingbot.structures.bots import _entry_pid, used_patterns_of
+    flag, brk = _trend_rows()
+    inv = min(r["low"] for r in flag[-5:])
+    lb = brk[-1]
+    fail = list(brk) + [{"timestamp": lb["timestamp"] + DAY, "open": lb["close"] * 0.998, "high": lb["close"] * 0.999,
+                         "low": inv * 0.985, "close": inv * 0.99, "volume": 1.0}]
+    out = {}
+    for name, kw in (("base", {}), ("learn", {"learning": _bl("m2_tsmom28"), "structures_entry_shadow": True})):
+        book = _book(tmp_path / name, "m2_tsmom28", mode="ENFORCE")
+        _step(book, _trend_fbs(brk), now_ms=_asof(brk), px=float(brk[-1]["close"]), **kw)
+        pos = book.ledger.positions[SYM]
+        assert pos.features["structure"]["action"] == "ENTER" and pos.features["structure"].get("shadow") is None, name
+        assert book.structure_decisions[SYM]["mode"] == "ENFORCE", name
+        pid = _entry_pid(pos)
+        assert pid and set(used_patterns_of(book.ledger)) == {pid}
+        _step(book, _trend_fbs(fail), now_ms=_asof(fail), px=float(fail[-1]["close"]), **kw)
+        assert SYM not in book.ledger.positions, name
+        out[name] = (pid, book.ledger.history[-1].exit_reason)
+    assert out["base"] == out["learn"] and out["learn"][1] == "ENTRY_STRUCTURE_FAILED"
 
 
 # ============================================================================ 6) Box öğrenme min_stop

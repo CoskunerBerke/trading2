@@ -96,7 +96,8 @@ _CAPACITY_CODES = ("TOTAL_OPEN_RISK", "MARGIN_UTILIZATION", "MAX_POSITIONS", "MA
 # ÖĞRENME MODU (2026-09-28, öğrenme modu) — ana bot. Huni anahtarları YALNIZ öğrenme aktifken eklenir (kapalıyken huni
 # dosyası bit-aynı). Yapı girişi gölgeye alınsa da veri kimliği/analiz arızası kodları ENGEL kalır (DATA_INTEGRITY).
 _LM_FUNNEL_KEYS = ("learning_opened", "learning_unlocked", "learning_exploration", "learning_leverage_fallback",
-                   "min_notional_bumped", "shrunk_to_margin", "counterfactual_recorded")
+                   "min_notional_bumped", "shrunk_to_margin", "counterfactual_recorded", "counterfactual_dropped",
+                   "counterfactual_superseded")
 _LM_STRUCTURE_HARD = ("STRUCTURE_FRAME_MARKET_MISMATCH", "STRUCTURE_ERROR")
 #: Kaldıraç tabanı bu veri/stop nedenleriyle düştüyse karşı-olgusal YAZILMAZ (mevcut gölge kuralıyla aynı küme).
 _LM_LEV_DATA_CODES = frozenset({"DATA_STALE", "DATA_CONFLICT", "STOP_UNKNOWN"})
@@ -2459,6 +2460,8 @@ class TradingEngineV3(TradingEngine):
             funnel["opened"] += 1
             if lm_tags is not None:
                 funnel["learning_opened"] += 1
+                # önceki turda reddedilip karşı-olgusala yazılan AYNI sinyal şimdi gerçek işlem: kayıt düşer (çift sayım yok)
+                funnel["counterfactual_superseded"] += self._lm_cf_supersede(_sig, sym, d.direction)
                 funnel["learning_unlocked"] += int(bool(lm_tags.get("learning_unlocked_by")))
                 funnel["learning_exploration"] += int(lm_tags.get("exploration") is not None)
                 funnel["learning_leverage_fallback"] += int(lm_tags.get("leverage_fallback") is not None)
@@ -2914,7 +2917,9 @@ class TradingEngineV3(TradingEngine):
             # veri kimliği (perp olmayan çerçeve) ve analiz arızası gölgeye ALINMAZ: engel kalır (DATA_INTEGRITY)
             _hard = str(dec.get("reason_code") or "").startswith(_LM_STRUCTURE_HARD)
             dec["learning_entry_shadow"] = {"would_block": dec["blocks"], "kept_hard": bool(dec["blocks"] and _hard)}
-            if not (dec["blocks"] and _hard):
+            # YALNIZ engelleyecek karar gölgelenir; geçiren karar (ENTER/uyumlu) ENFORCE kalır → girişin yapı referansı
+            # gölge işaretsiz yazılır, yönetim (`_structure_manage`) ve kullanılmış yapı sayımı ENFORCE ile aynı
+            if dec["blocks"] and not _hard:
                 dec["mode"], dec["blocks"] = "SHADOW", False
         self._record_main_structure(sym, dec, market=market, at=now, analyses=analyses,
                                     applied="BLOCKED" if dec["blocks"] else "PASSED")
@@ -3435,7 +3440,14 @@ class TradingEngineV3(TradingEngine):
                 log.warning("strateji kagit defteri exit-monitor basarisiz (%s): %s", book.key, exc)
 
     def _label_shadows(self) -> None:
-        pend = self.shadow.pending(utc_now())
+        now = utc_now()
+        # ÖĞRENME MODU (2026-09-28, öğrenme modu): ana öğrenme karşı-olgusalları (`book == "main"`) kapanmış bar / ufuk
+        # tamamlanma kuralıyla AYRI etiketlenir; eski gölgeler (book yok) aşağıda AYNEN (öğrenme hiç açılmadıysa bit-aynı).
+        try:
+            self._lm_label_main_cf(now)
+        except Exception as exc:  # noqa: BLE001 — etiketleme arızası turu ETKİLEMEZ
+            log.warning("ana karşı-olgusal etiketleme başarısız: %s", exc)
+        pend = [t for t in self.shadow.pending(now) if t.book != "main"]
         for sh in pend[:20]:
             frames = self.runner.last_frames.get(sh.symbol) or {}
             h4 = frames.get("4h")
@@ -3822,25 +3834,106 @@ class TradingEngineV3(TradingEngine):
                 return False
             sig = self._signal_id(sym, market, d, plan, b)
             why = [str(reason)] + [str(x) for x in (reasons or ()) if str(x) != str(reason)][:6]
-            shs = self._shadow_add({"plan_id": sig, "symbol": sym, "market_type": market, "direction": d.direction,
-                                    "entry": plan.entry, "stop": plan.stop, "targets": plan.targets,
-                                    "horizon_bars": plan.time_horizon_bars, "leverage": plan.size.leverage},
-                                   why, now=now)
+            gone = self._lm_cf_gone_keys()
+            if (sig, sym, dirn) in gone:                # tavandan düşen / bayatlayan / işleme dönüşen sinyal yeniden YAZILMAZ
+                shs = []
+            else:
+                shs = self._shadow_add({"plan_id": sig, "symbol": sym, "market_type": market, "direction": d.direction,
+                                        "entry": plan.entry, "stop": plan.stop, "targets": plan.targets,
+                                        "horizon_bars": plan.time_horizon_bars, "leverage": plan.size.leverage},
+                                       why, now=now)
             if shs:
                 feats = self._lm_cf_features(d, plan, b, entry, extra)
                 for sh in shs:
                     sh.book, sh.signal_key, sh.label_kind = "main", sig, "TARGET_STOP_TIME"
                     sh.learning_unlocked, sh.features = False, feats
+                n_drop = self._lm_cf_cap(int(getattr(bl, "max_pending", 2000) or 2000))
                 self.shadow.save()
                 fun = getattr(self, "_funnel", None)
                 if isinstance(fun, dict) and "counterfactual_recorded" in fun:
                     fun["counterfactual_recorded"] += 1
+                    fun["counterfactual_dropped"] += n_drop
             if entry is not None:
                 entry["counterfactual"] = {"signal_key": sig, "reason": str(reason), "recorded": bool(shs)}
             return bool(shs)
         except Exception as exc:  # noqa: BLE001 — karşı-olgusal kayıt kararı ETKİLEMEZ
             log.warning("%s öğrenme karşı-olgusalı yazılamadı: %s", sym, exc)
             return False
+
+    # ------------------------------------------------------------------ ana karşı-olgusal bakım (2026-09-28, öğrenme modu)
+    def _lm_cf_gone_keys(self):
+        g = getattr(self, "_lm_cf_gone", None)
+        if g is None:
+            from collections import deque
+            g = self._lm_cf_gone = deque(maxlen=10_000)
+        return g
+
+    def _lm_cf_meta_add(self, key: str, n: int) -> None:
+        if n:
+            self.shadow.meta[key] = int(self.shadow.meta.get(key, 0) or 0) + int(n)
+
+    def _lm_cf_forget(self, rows) -> None:
+        g = self._lm_cf_gone_keys()
+        drop = {id(t) for t in rows}
+        for t in rows:
+            g.append((str(t.plan_id), str(t.symbol), str(t.direction).upper()))
+        self.shadow.trades = [t for t in self.shadow.trades if id(t) not in drop]
+
+    def _lm_cf_cap(self, max_pending: int) -> int:
+        """Ana öğrenme karşı-olgusallarında bekleyen tavanı (`counterfactual_max_pending`): aşılırsa EN ESKİ bekleyenler
+        düşer (`meta.lm_dropped`). Yalnız `book == "main"` kayıtları sayılır; eski (öğrenmesiz) gölgelere DOKUNULMAZ."""
+        pend = [t for t in self.shadow.trades if t.book == "main" and t.outcome is None]
+        over = len(pend) - max(1, int(max_pending))
+        if over <= 0:
+            return 0
+        self._lm_cf_forget(pend[:over])
+        self._lm_cf_meta_add("lm_dropped", over)
+        return over
+
+    def _lm_cf_supersede(self, sig: str, sym: str, direction: str) -> int:
+        """Aynı sinyal (anahtar/sembol/yön) sonradan GERÇEK işlem olarak açıldı: ana karşı-olgusal kaydı düşer
+        (`meta.lm_superseded`) — aynı gözlem hem dolum hem "açılmadı" olarak sayılmaz."""
+        try:
+            dirn = str(direction or "").upper()
+            rows = [t for t in self.shadow.trades if t.book == "main" and str(t.plan_id) == str(sig)
+                    and t.symbol == sym and str(t.direction).upper() == dirn]
+            if not rows:
+                return 0
+            self._lm_cf_forget(rows)
+            self._lm_cf_meta_add("lm_superseded", len(rows))
+            self.shadow.save()
+            return len(rows)
+        except Exception as exc:  # noqa: BLE001 — bakım arızası işlemi ETKİLEMEZ
+            log.warning("%s karşı-olgusal değişimi yapılamadı: %s", sym, exc)
+            return 0
+
+    def _lm_label_main_cf(self, now: datetime) -> int:
+        """Ana öğrenme karşı-olgusalları (`book == "main"`) defter kayıtçısıyla AYNI kuralla etiketlenir: yalnız kapanmış 4h
+        barları, ufuk penceresi tamamlanınca (son bar KAPANMIŞ ve veri pencereyi kapsıyor), önce stop; ufuk + tampon geçip
+        etiketlenemeyen (evrenden çıkmış sembol / boşluk) bayat kayıt düşer (`meta.lm_expired`). Ek API yok."""
+        rows = [t for t in self.shadow.trades if t.book == "main" and t.outcome is None]
+        if not rows:
+            return 0
+        from .learning_cf import label_records
+        frames = {s: (self.runner.last_frames.get(s) or {}) for s in {t.symbol for t in rows}}
+        n, stale = label_records(rows, frames, now)
+        if stale:
+            self._lm_cf_forget(stale)
+            self._lm_cf_meta_add("lm_expired", len(stale))
+        if n or stale:
+            self.shadow.save()
+        if n:
+            from .learn.research_policy import BLOCKED
+            for sh in rows:
+                if sh.outcome is None:
+                    continue
+                for pending in self.research.pop_pending_for_trade(sh.id):
+                    dec = dict(pending.get("decision") or {})
+                    self.research.observe(pending["policy_id"], trade_id=sh.id,
+                                          baseline_r=float(sh.outcome.get("r_multiple", 0) or 0),
+                                          risk_budget_contribution_r=0.0, kind=BLOCKED, size_multiplier=0.0,
+                                          reasons=list(dec.get("reasons") or []))
+        return n
 
     def _lm_fit(self, bl, *, market: str, exec_entry: float, stop, leverage_max: int, f_sym, state):
         """Öğrenme boyutu (SPEC §3, slot K): `fit_size` — %0,5 hedef risk, rezerv %5, likidasyon ≥ 2 × stop, kaldıraç

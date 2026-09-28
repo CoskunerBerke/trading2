@@ -568,3 +568,63 @@ def test_depth_unknown_waits_across_scanner_cycles_then_opens_or_expires(tmp_pat
             assert pl["status"] == PL_EXPIRED and not book.ledger.positions and not book.rejections
             assert book.cf.stats()["recorded_total"] == 1 and book.cf.sb.trades[0].reason_not_opened == ["LIQUIDITY_UNKNOWN"]
             assert (book.state_dir / "counterfactual_trades.json").exists()
+
+
+# ====================================================================== D2: çıkarma RiskEngine yuvarlamasından sağ çıkar
+@pytest.mark.parametrize("px", [2500.73, 2500.77])
+def test_min_notional_bump_survives_risk_engine_4dp_rounding(px):
+    """RiskEngine `adjusted_notional`ı 4 haneye yuvarlar; göreli tolerans (1e-6 × 20 = 2e-5) bu artığı (≤ 5e-5) gerçek aşağı
+    ayar sanıyordu → çıkarılan adım kayboluyor, defter MIN_NOTIONAL veriyordu. Mutlak tolerans: pozisyon açılır."""
+    from decimal import Decimal
+
+    from tradingbot.accounting import FeeSchedule, FuturesLedgerV2, SlippageModel, TickData
+    from tradingbot.accounting.models import MarketType, SymbolFilters
+    from tradingbot.learning_mode import BookLearning, profile_for
+    from tradingbot.pattern_trader.learning import open_learning
+    from tradingbot.risk import RiskEngine, build_state
+    from tradingbot.risk.killswitch import KillSwitch
+    from tradingbot.risk.profiles import PROFILES
+    from tradingbot.strategy_paper import DataVerdict
+
+    now = _dt(NOW)
+    E = 100.0
+    led = FuturesLedgerV2(starting_equity=E, fees=FeeSchedule(maker_pct=Decimal("0.02"), taker_pct=Decimal("0.05")),
+                          slippage=SlippageModel(fixed_bps=Decimal("3")))
+    filt = SymbolFilters(symbol="ETH/USDT", market_type=MarketType.USDM_PERP, price_tick=Decimal("0.01"),
+                         qty_step=Decimal("0.001"), min_qty=Decimal("0.001"), min_notional=Decimal("20"), max_leverage=20)
+    tick = TickData(last=Decimal(str(px)), mark=Decimal(str(px)), ts=now.isoformat())
+    fill = float(led.market_fill_price("ETH/USDT", "LONG", Decimal(str(px)), filters=filt, tick=tick))
+    st = build_state(equity=E, starting_equity=E, available=float(led.available), used_margin=0.0, positions=[],
+                     history=[], high_water_mark=0.0, now=now)
+    bl = BookLearning(on=True, name="pattern_trader", slots=30, leverage_max=3, risk_pct=0.5, reserve_pct=5.0,
+                      liq_buffer_mult=2.0, min_notional_bump=True, counterfactual=False, max_pending=10,
+                      min_stop_pct=None, symbols=None)
+    act = {"action": "OPEN", "direction": "LONG", "stop": px * 0.93, "targets": [px * 1.2], "name": "p", "leverage": 1}
+    dv = DataVerdict(ok=True, entry_ok=True, market="USDM_PERP", source="t", tour_id="r", bars={})
+    r = open_learning(act=act, symbol="ETH/USDT", price=px, fill_price=fill, tick=tick, now=now, ledger=led,
+                      risk=RiskEngine(profile_for(PROFILES["PAPER_RESEARCH"]), KillSwitch()), state=st, filters=filt,
+                      run_id="r", learning=bl, data=dv, max_position_pct=30.0, depth=None)
+    assert r.info["fit"]["size_rule"] == "BUMP_MIN_NOTIONAL", r.info
+    assert r.pos is not None, (r.reason, r.info["fit"])
+    assert float(r.pos.qty * r.pos.entry_avg) >= 20.0 and r.pos.meta["learning"]["size_rule"] == "BUMP_MIN_NOTIONAL"
+
+
+def test_pattern_counterfactual_recorder_has_the_lossless_archive(tmp_path):
+    """Formasyon kayıtçısı da strateji defterleri gibi arşivli: etiketli kayıtlar taşınca SİLİNMEZ, arşive mühürlenir."""
+    _, book = _direct(tmp_path)
+    cf = book._cf_recorder(book.learning)
+    assert cf.sb.archive is not None
+    assert str(cf.sb.archive.root).startswith(str(book.state_dir))
+
+
+def test_pattern_trade_memory_entry_rows_carry_learning_tags_only_under_learning(tmp_path):
+    out = {}
+    for name, learning in (("off", False), ("on", True)):
+        _, book = _direct(tmp_path / name, learning=learning)
+        assert _open(book, _plan()) == "OPENED", book.rejections
+        rows = [r for r in book.memory.iter_rows() if r.get("kind") == "entry"]
+        assert len(rows) == 1
+        out[name] = rows[0]["features"]
+    assert "learning" not in out["off"] and "in_lab_universe" not in out["off"]
+    assert out["on"]["learning"]["size_rule"] in ("SLOT", "BUMP_MIN_NOTIONAL") and out["on"]["learning"]["slots"] == 30
+    assert out["on"]["in_lab_universe"] is True

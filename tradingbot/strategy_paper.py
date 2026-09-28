@@ -26,8 +26,8 @@ from .accounting.funding import FUNDING_SETTLEMENT_CONTRACT
 from .candle_confirmation import closed_bars
 from .core import atomic_write_json, from_iso, iso, quantize_qty, utc_now
 from .learn import TradeMemory
-from .learning_mode import (DEFAULT_MAX_TOTAL_OPEN_RISK_PCT, SIZE_BUMP, SIZE_SHRUNK, counterfactual_ok, fit_size,
-                            profile_for)
+from .learning_mode import (DEFAULT_MAX_TOTAL_OPEN_RISK_PCT, RISK_NOTIONAL_ROUND_TOL, SIZE_BUMP, SIZE_SHRUNK,
+                            counterfactual_ok, fit_size, profile_for)
 from .regime_gate import BTC_SYMBOL
 from .risk import RiskEngine, build_state, enforces_position_cap
 from . import paper_rules
@@ -496,10 +496,13 @@ def _open_learning(act: dict[str, Any], *, symbol: str, direction: str, entry: f
             lmax = min(lmax, int(cap))
     E = float(risk.equity_basis(state))
     fill_px = float(ledger.market_fill_price(symbol, direction, entry, filters=filt, tick=tick))
-    fit = fit_size(equity=E, entry=entry, stop=stop, slots=int(learning.slots), leverage_max=max(1, lmax),
+    # stop mesafesi defterin GERÇEKLEŞME fiyatından (kayma + tick yukarı yuvarlama dahil) — ana bot (`exec_entry`) ve
+    # Formasyon (`qmark`) ile aynı; mark'tan ölçmek dar stoplarda riski eksik gösteriyordu (2026-09-28, öğrenme modu)
+    sz_px = fill_px if fill_px > 0 else float(entry)
+    fit = fit_size(equity=E, entry=sz_px, stop=stop, slots=int(learning.slots), leverage_max=max(1, lmax),
                    risk_pct=float(learning.risk_pct), reserve_pct=float(learning.reserve_pct),
                    liq_buffer_mult=float(learning.liq_buffer_mult), mmr=LEARNING_MMR, min_notional=float(filt.min_notional),
-                   qty_step=float(filt.qty_step), price_for_step=fill_px if fill_px > 0 else None,
+                   qty_step=float(filt.qty_step), price_for_step=sz_px,
                    hard_cap_pct=float(learning.hard_cap_pct), min_notional_bump=bool(learning.min_notional_bump),
                    available_margin=float(ledger.available), min_qty=float(filt.min_qty),
                    max_position_pct=getattr(rprof, "max_position_pct", None))
@@ -521,7 +524,7 @@ def _open_learning(act: dict[str, Any], *, symbol: str, direction: str, entry: f
            "risk_usdt": round(fit.risk_usdt, 6), "equity_basis": E,
            "risk_fraction_of_budget": round(float(rfb), 6) if rfb is not None else None,
            "learning_unlocked_by": unlocked}
-    plan_dict = {"symbol": symbol, "market_type": "USDM_PERP", "direction": direction, "entry": entry, "stop": stop,
+    plan_dict = {"symbol": symbol, "market_type": "USDM_PERP", "direction": direction, "entry": sz_px, "stop": stop,
                  "targets": list(act.get("targets") or []), "notional": fit.notional, "margin": fit.margin,
                  "leverage": int(fit.leverage), "amount_type": "NOTIONAL", "expected_r": float(act.get("expected_r") or 0.0),
                  "min_notional": float(filt.min_notional)}
@@ -555,17 +558,19 @@ def _open_learning(act: dict[str, Any], *, symbol: str, direction: str, entry: f
     if pos is None:
         reject(symbol, ledger.last_reject_reason or "LEDGER_REJECT")
         return "REJECTED"
-    sh = pos.meta.get("shrunk_to_margin")
-    if isinstance(sh, dict):
+    upd: dict[str, Any] = {}
+    if isinstance(pos.meta.get("shrunk_to_margin"), dict):
         # yedek emniyet devreye girdi: defter serbest marja küçülttü (R geçerli; risk bütçenin altında)
-        upd: dict[str, Any] = {"size_rule": SIZE_SHRUNK}
-        try:
-            ratio = float(Decimal(str(sh["filled_qty"])) / Decimal(str(sh["requested_qty"])))
-            if rfb is not None:
-                upd["risk_fraction_of_budget"] = round(float(rfb) * ratio, 6)
-            upd["risk_usdt"] = round(fit.risk_usdt * ratio, 6)
-        except (KeyError, TypeError, ValueError, ArithmeticError):
-            pass
+        upd["size_rule"] = SIZE_SHRUNK
+    try:
+        # etiketler GERÇEKLEŞEN pozisyondan: defterin miktarı (adıma aşağı) × |dolum − stop| (Formasyon ile aynı)
+        r_act = float(pos.qty) * abs(float(pos.entry_avg) - float(stop))
+        budget = float(fit.detail.get("risk_budget_usdt") or 0.0)
+        upd["risk_usdt"] = round(r_act, 6)
+        upd["risk_fraction_of_budget"] = round(r_act / budget, 6) if budget > 0 else None
+    except (TypeError, ValueError, ArithmeticError):
+        pass
+    if upd:
         pos.meta["learning"].update(upd)
         pos.features["learning"].update(upd)
     if on_opened is not None:
@@ -929,15 +934,21 @@ class StrategyBook:
                                   "signal_close": act.get("signal_close"), "atr14": act.get("atr14"),
                                   "lab_algo": act.get("lab_algo")}
         try:
+            mfeats = {"strategy": act.get("name"), "signal_close": act.get("signal_close"),
+                      "ema200": act.get("ema200"), "atr14": act.get("atr14"),
+                      # CHART ANALYSIS V1: giris ANINDAKI referanslar (sonradan degismez)
+                      "signal_ts": act.get("signal_ts"), "ref_close": act.get("ref_close"),
+                      "ref_ts": act.get("ref_ts"), "stop_at_entry": act.get("stop"),
+                      "atr_mult": self.atr_mult}
+            _lr = (pos.features or {}).get("learning")
+            if isinstance(_lr, dict):
+                # ÖĞRENME MODU (2026-09-28, öğrenme modu): işlem hafızası satırı da etiketleri taşır (yalnız öğrenmede açılan)
+                mfeats["learning"] = dict(_lr)
+                if "in_lab_universe" in pos.features:
+                    mfeats["in_lab_universe"] = bool(pos.features["in_lab_universe"])
             self.memory.record_entry({"trade_id": pos.id, "symbol": pos.symbol, "direction": pos.side.value, "market_type": "USDM_PERP",
                                       "setup_type": "trend", "regime": act.get("regime"),
-                                      "features": {"strategy": act.get("name"), "signal_close": act.get("signal_close"),
-                                                   "ema200": act.get("ema200"), "atr14": act.get("atr14"),
-                                                   # CHART ANALYSIS V1: giris ANINDAKI referanslar (sonradan degismez)
-                                                   "signal_ts": act.get("signal_ts"), "ref_close": act.get("ref_close"),
-                                                   "ref_ts": act.get("ref_ts"), "stop_at_entry": act.get("stop"),
-                                                   "atr_mult": self.atr_mult},
-                                      "run_id": self.run_id, "in_test": True})
+                                      "features": mfeats, "run_id": self.run_id, "in_test": True})
         except Exception as exc:  # noqa: BLE001 — bellek arızası işlemi ETKİLEMEZ
             log.warning("strateji bellek kaydı yazılamadı (%s): %s", pos.symbol, exc)
 
@@ -1052,6 +1063,16 @@ class StrategyBook:
                                                             "tour_id": verdict.tour_id, "bars": dict(verdict.bars)})
                         act, sdec, sanal = paper_rules.decide_with_structures(self.name, frames=fr, btc_rows=btc, now_ms=now_ms,
                                                                               position=pos_obj, params=params, ctx=sctx)
+                        if smode != self.structure_mode and self.rule.family == "trend" and isinstance(sdec, dict):
+                            from .structures.bots import BLOCKING_ACTIONS
+                            if str(sdec.get("action") or "") not in BLOCKING_ACTIONS:
+                                # S4 (2026-09-28, öğrenme modu): giriş gölgesi YALNIZ engelleyecek kararı (bekle/tetik
+                                # bekle/iptal) gölgeler. ENFORCE'un da geçireceği karar (ENTER/uyumlu) ENFORCE'taki gibi
+                                # işaretsiz kalır: trend kuralında ENFORCE geometriyi değiştirmez, yalnız referansı yazar →
+                                # M2 ENTRY_STRUCTURE_FAILED yönetimi ve kullanılmış yapı sayımı ENFORCE ile aynı.
+                                smode = self.structure_mode
+                                if isinstance((act or {}).get("structure"), dict):
+                                    act["structure"].pop("shadow", None)
                         _serr = paper_rules.structure_error_of(sdec)
                         if _serr:
                             # ortak geri düşüş arızayı kararda taşır; SAYAÇ da görür (tur-4 doğrulayıcı #5; replay aynı)
@@ -1285,6 +1306,12 @@ class StrategyBook:
                     self._count("min_notional_bumped")
                 elif lr.get("size_rule") == SIZE_SHRUNK:
                     self._count("shrunk_to_margin")
+                if self.cf is not None:
+                    # önceki turda reddedilip karşı-olgusala yazılan AYNI sinyal şimdi gerçek işlem: kayıt düşer (çift sayım yok)
+                    n_sup = self.cf.supersede(signal_key=_signal_key(a), symbol=sym, direction=str(a.get("direction") or "LONG"),
+                                              variation=(a.get("lab_algo") if self.rule.family == "candle" else None))
+                    if n_sup:
+                        self._count("counterfactual_superseded", n_sup)
             if not getattr(bl, "counterfactual", False) or not verdict.ok or not verdict.entry_ok:
                 return
             self._cf_recorder(bl)

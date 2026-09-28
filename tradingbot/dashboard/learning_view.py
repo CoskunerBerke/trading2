@@ -25,11 +25,13 @@ SIZE_RULE_TR = {"SLOT": "slot", "BUMP_MIN_NOTIONAL": "min. tutara çıkarıldı"
 EXPLORATION_TR = {"RESEARCH_SIZE": "keşif: araştırma boyutu", "NEG_EDGE": "keşif: negatif kenar"}
 #: Ana botun öğrenme huni anahtarları (`engine_v3._LM_FUNNEL_KEYS`; yalnız öğrenme aktif turda yazılır).
 FUNNEL_KEYS = ("learning_opened", "learning_unlocked", "learning_exploration", "learning_leverage_fallback",
-               "min_notional_bumped", "shrunk_to_margin", "counterfactual_recorded")
+               "min_notional_bumped", "shrunk_to_margin", "counterfactual_recorded", "counterfactual_dropped",
+               "counterfactual_superseded")
 FUNNEL_TR = {"learning_opened": "Öğrenmede açılan", "learning_unlocked": "Öğrenme-ekstra açılan",
              "learning_exploration": "Keşif işlemi", "learning_leverage_fallback": "Kaldıraç tabanı 2x",
              "min_notional_bumped": "Min. tutara çıkarılan", "shrunk_to_margin": "Marja küçültülen",
-             "counterfactual_recorded": "Karşı-olgusal kayıt"}
+             "counterfactual_recorded": "Karşı-olgusal kayıt", "counterfactual_dropped": "Karşı-olgusal tavandan düşen",
+             "counterfactual_superseded": "Karşı-olgusal → gerçek işlem"}
 
 
 def _f(x: Any) -> float | None:

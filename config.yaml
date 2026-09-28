@@ -543,7 +543,7 @@ structures:                    # ORTAK YAPI KATALOĞU (2026-09-22) — beş bot 
   pattern_trader: ENFORCE
 
 pattern_trader:                # FORMASYON PAPER TRADER V1 — yeni listeleme öncelikli mum formasyonu defteri (AYRI, sanal)
-  enabled: true                # PAPER dışında ConfigError; ana bot ve T2/M2 defterlerine DOKUNMAZ
+  enabled: true                # LIVE/LIVE_LIMITED'da ConfigError (PAPER/TESTNET/OBSERVE/SHADOW_LIVE serbest; gerçek emir YOK); ana bot ve T2/M2 defterlerine DOKUNMAZ
   starting_equity_usdt: 100    # sanal bakiye (ana portföyle TOPLANMAZ)
   state_dir: pattern_trader
   max_open_positions: 3

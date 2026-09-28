@@ -1,4 +1,10 @@
-# Öğrenme modu L1: durum kaydı (2026-09-28 05:35 UTC)
+# Öğrenme modu L1: durum kaydı (güncelleme 2026-09-28 ~07:00 UTC)
+
+**Güncel:** inceleme bulguları F1–F9 düzeltildi (`627eac5`); tam paket 3430 geçti / 0 düştü / 7 atlandı, CI listesi 855 geçti, ruff temiz. `6fb39cd`: ana bot `leverage_max: 5`. Şu an ikinci doğrulama turu çalışıyor: düzeltmelerin yeniden incelenmesi, gerçek `config.yaml` ile uçtan uca benzetim (açık/kapalı/eski kod karşılaştırması), durum dosyası geçişi ve geri dönüş güvenliği. Ardından dağıtım betiği `tb-deploy-<tip>.sh` hazırlanacak.
+
+---
+
+(Aşağısı 05:35 UTC ara kaydıdır.)
 
 **Bu commit bir ara kayıttır (WIP), dağıtılamaz.** VPS'e giden yol yalnız `deploy/releases/tb-deploy-<tip>.sh` betikleridir, ve bu kod için henüz betik yok. VPS'te son doğrulanan kod `a8fe2a5`. `7ad8832` betiği hazır, kullanıcının çalıştırması bekleniyor.
 

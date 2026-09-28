@@ -26,8 +26,9 @@ from .accounting.funding import FUNDING_SETTLEMENT_CONTRACT
 from .candle_confirmation import closed_bars
 from .core import atomic_write_json, from_iso, iso, quantize_qty, utc_now
 from .learn import TradeMemory
-from .learning_mode import (DEFAULT_MAX_TOTAL_OPEN_RISK_PCT, RISK_NOTIONAL_ROUND_TOL, SIZE_BUMP, SIZE_SHRUNK,
-                            counterfactual_ok, fit_size, profile_for)
+from .learning_mode import (BASELINE_SIZE_KEY, DEFAULT_MAX_TOTAL_OPEN_RISK_PCT, RISK_NOTIONAL_ROUND_TOL, SIZE_BUMP,
+                            SIZE_SHRUNK, baseline_size_tag, baseline_view, counterfactual_ok, fit_size, policy_reserve_usdt,
+                            profile_for)
 from .regime_gate import BTC_SYMBOL
 from .risk import RiskEngine, build_state, enforces_position_cap
 from . import paper_rules
@@ -423,12 +424,19 @@ def _entry_features(act: dict[str, Any], data: DataVerdict) -> tuple[dict[str, A
 
 
 def _ledger_preview(ledger: FuturesLedgerV2, symbol: str, direction: str, entry: float, notional: float, lev: int,
-                    filters, tick: TickData | None) -> str | None:
+                    filters, tick: TickData | None, *, available: Decimal | None = None,
+                    n_positions: int | None = None) -> str | None:
     """Defterin `open` kapılarının YAN ETKİSİZ ön-izlemesi (taban davranışı, kalıcı `allow_shrink` ile): ilk ret kodu ya
-    da None. Yalnız öğrenme etiketi (`learning_unlocked_by`) içindir (2026-09-28, öğrenme modu)."""
-    ok, why = ledger.can_open(symbol)
-    if not ok:
-        return why
+    da None. Yalnız öğrenme etiketi (`learning_unlocked_by`) içindir (2026-09-28, öğrenme modu). `available` /
+    `n_positions`: taban görünümünün serbest marjı ve pozisyon adedi (None → defterin kendisi)."""
+    if n_positions is None:
+        ok, why = ledger.can_open(symbol)
+        if not ok:
+            return why
+    elif symbol in ledger.positions:
+        return "ALREADY_OPEN"
+    elif ledger.enforce_position_cap and int(n_positions) >= int(ledger.max_positions):
+        return "MAX_POSITIONS"
     f = filters if filters is not None else default_filters(symbol, MarketType.USDM_PERP)
     lev = max(1, int(lev))
     if lev > int(f.max_leverage):
@@ -438,7 +446,8 @@ def _ledger_preview(ledger: FuturesLedgerV2, symbol: str, direction: str, entry:
         return "BAD_PRICE"
     qty = quantize_qty(Decimal(str(notional)) / fill, f.qty_step)
     cost_rate = Decimal(1) / Decimal(lev) + ledger.fees.rate(False)
-    if qty > 0 and qty * fill * cost_rate > ledger.available and not ledger.allow_shrink:
+    avail = ledger.available if available is None else available
+    if qty > 0 and qty * fill * cost_rate > avail and not ledger.allow_shrink:
         return "INSUFFICIENT_MARGIN"
     if qty <= 0:
         return "STEP_ZERO_QTY"
@@ -453,26 +462,38 @@ def _ledger_preview(ledger: FuturesLedgerV2, symbol: str, direction: str, entry:
 
 def _baseline_blocks(act: dict[str, Any], *, symbol: str, direction: str, entry: float, stop: float,
                      tick: TickData | None, now: datetime, ledger: FuturesLedgerV2, risk: RiskEngine, profile, state,
-                     filters) -> list[str]:
+                     filters) -> tuple[list[str], dict[str, Any] | None]:
     """Anahtar KAPALI olsaydı bu işlemi hangi kapı durdururdu? (2026-09-28, öğrenme modu) — ucuz yeniden koşum: taban
     boyut (`_baseline_size`), taban profilli RiskEngine (AYNI kill switch), defter ön-izlemesi. Karar ve durum DEĞİŞMEZ;
-    sonuç yalnız etikettir (boş = taban da açardı)."""
+    sonuç yalnız etikettir (boş = taban da açardı). Kapılar öğrenme defterinin DEĞİL taban görünümünün (`baseline_view`:
+    öğrenme-ekstra pozisyonlar yok, politika pozisyonları taban boyutunda) marjı/riskiyle ölçülür — öğrenme defterinin
+    küçük pozisyonları tabanın marj darlığını gizlemesin (ikinci doğrulama turu). YAKLAŞIK. Döner: (kodlar, taban boyutu
+    etiketi | None)."""
     try:
+        view, dm = baseline_view(state, {s: (p.meta or {}).get("learning") for s, p in ledger.positions.items()})
         base = RiskEngine(profile, getattr(risk, "ks", None), getattr(risk, "clusters", None))
-        notional, lev, _scaled = _baseline_size(act, entry=entry, stop=stop, profile=profile, state=state, risk=base)
+        notional, lev, _scaled = _baseline_size(act, entry=entry, stop=stop, profile=profile, state=view, risk=base)
         plan = {"symbol": symbol, "market_type": "USDM_PERP", "direction": direction, "entry": entry, "stop": stop,
                 "targets": list(act.get("targets") or []), "notional": notional, "margin": notional / max(1, lev),
                 "leverage": lev, "amount_type": "NOTIONAL", "expected_r": float(act.get("expected_r") or 0.0),
                 "min_notional": 5.0}
-        rd = base.evaluate(plan, state, {"now_utc": now})
+        rd = base.evaluate(plan, view, {"now_utc": now})
         if not rd.allowed:
-            return [str(r) for r in (rd.reasons or ["RISK_DENIED"])]
-        why = _ledger_preview(ledger, symbol, direction, entry, float(rd.adjusted_notional or notional),
-                              int(rd.adjusted_leverage or lev), filters, tick)
-        return [why] if why else []
+            return [str(r) for r in (rd.reasons or ["RISK_DENIED"])], None
+        n2, lev2 = float(rd.adjusted_notional or notional), int(rd.adjusted_leverage or lev)
+        why = _ledger_preview(ledger, symbol, direction, entry, n2, lev2, filters, tick,
+                              available=(ledger.available - Decimal(str(dm))) if view is not state else None,
+                              n_positions=len(view.open_positions) if view is not state else None)
+        if why:
+            return [why], None
+        # taban boyutu, taban defterin GERÇEKTEN açacağı gibi: dolum fiyatında adıma AŞAĞI yuvarlanmış miktar × dolum
+        f = filters if filters is not None else default_filters(symbol, MarketType.USDM_PERP)
+        fill = ledger.market_fill_price(symbol, direction, entry, filters=f, tick=tick)
+        qty = quantize_qty(Decimal(str(n2)) / fill, f.qty_step) if fill > 0 else Decimal(0)
+        return [], baseline_size_tag(float(qty * fill), lev2)
     except Exception as exc:  # noqa: BLE001 — etiket hesaplanamazsa işlem ETKİLENMEZ
         log.warning("öğrenme etiketi (taban kapıları) hesaplanamadı (%s): %s", symbol, exc)
-        return ["BASELINE_UNKNOWN"]
+        return ["BASELINE_UNKNOWN"], None
 
 
 def _open_learning(act: dict[str, Any], *, symbol: str, direction: str, entry: float, stop: float,
@@ -499,31 +520,41 @@ def _open_learning(act: dict[str, Any], *, symbol: str, direction: str, entry: f
     # stop mesafesi defterin GERÇEKLEŞME fiyatından (kayma + tick yukarı yuvarlama dahil) — ana bot (`exec_entry`) ve
     # Formasyon (`qmark`) ile aynı; mark'tan ölçmek dar stoplarda riski eksik gösteriyordu (2026-09-28, öğrenme modu)
     sz_px = fill_px if fill_px > 0 else float(entry)
+    tags = dict(act.get("_learning") or {}) if isinstance(act.get("_learning"), dict) else {}
+    # taban kapıları boyuttan ÖNCE (ikinci doğrulama turu): politika işlemi (etiket boş) politika rezervini kullanır,
+    # öğrenme-ekstra giriş serbest marjı rezerv kadar EKSİK görür → keşif defteri doldurup politikayı dışarıda bırakamaz
+    unlocked = [str(x) for x in (tags.get("unlocked_by") or [])]
+    bcodes, bsize = _baseline_blocks(act, symbol=symbol, direction=direction, entry=entry, stop=stop, tick=tick,
+                                     now=now, ledger=ledger, risk=risk, profile=profile, state=state, filters=filt)
+    unlocked += [x for x in bcodes if x not in unlocked]
+    avail = float(ledger.available)
+    p_res = 0.0
+    if unlocked:
+        p_res = policy_reserve_usdt(equity=E, slots=int(learning.slots), reserve_pct=float(learning.reserve_pct))
+        avail -= p_res
     fit = fit_size(equity=E, entry=sz_px, stop=stop, slots=int(learning.slots), leverage_max=max(1, lmax),
                    risk_pct=float(learning.risk_pct), reserve_pct=float(learning.reserve_pct),
                    liq_buffer_mult=float(learning.liq_buffer_mult), mmr=LEARNING_MMR, min_notional=float(filt.min_notional),
                    qty_step=float(filt.qty_step), price_for_step=sz_px,
                    hard_cap_pct=float(learning.hard_cap_pct), min_notional_bump=bool(learning.min_notional_bump),
-                   available_margin=float(ledger.available), min_qty=float(filt.min_qty),
+                   available_margin=avail, min_qty=float(filt.min_qty),
                    max_position_pct=getattr(rprof, "max_position_pct", None))
-    tags = dict(act.get("_learning") or {}) if isinstance(act.get("_learning"), dict) else {}
     tags["fit"] = {"ok": fit.ok, "reason": fit.reason, "size_rule": fit.size_rule, "notional": round(fit.notional, 6),
                    "leverage": int(fit.leverage), "margin": round(fit.margin, 6), "risk_usdt": round(fit.risk_usdt, 6),
-                   "why": fit.detail.get("why"), "equity_basis": E}
+                   "why": fit.detail.get("why"), "equity_basis": E,
+                   "policy_grade": not unlocked, "policy_reserve_usdt": round(p_res, 6)}
     act["_learning"] = tags
     if not fit.ok:
         reject(symbol, fit.reason or "LEARNING_SIZE")
         return "REJECTED"
-    unlocked = [str(x) for x in (tags.get("unlocked_by") or [])]
-    unlocked += [x for x in _baseline_blocks(act, symbol=symbol, direction=direction, entry=entry, stop=stop, tick=tick,
-                                             now=now, ledger=ledger, risk=risk, profile=profile, state=state,
-                                             filters=filt) if x not in unlocked]
     rfb = fit.detail.get("risk_fraction_of_budget")
     lrn = {"book": str(getattr(learning, "name", "")), "size_rule": fit.size_rule, "slots": int(learning.slots),
            "risk_pct": float(learning.risk_pct), "leverage": int(fit.leverage), "leverage_max": int(lmax),
            "risk_usdt": round(fit.risk_usdt, 6), "equity_basis": E,
            "risk_fraction_of_budget": round(float(rfb), 6) if rfb is not None else None,
            "learning_unlocked_by": unlocked}
+    if not unlocked and bsize is not None:
+        lrn[BASELINE_SIZE_KEY] = bsize              # taban görünümü: bu politika pozisyonunu taban boyutunda sayar
     plan_dict = {"symbol": symbol, "market_type": "USDM_PERP", "direction": direction, "entry": sz_px, "stop": stop,
                  "targets": list(act.get("targets") or []), "notional": fit.notional, "margin": fit.margin,
                  "leverage": int(fit.leverage), "amount_type": "NOTIONAL", "expected_r": float(act.get("expected_r") or 0.0),
@@ -1187,6 +1218,8 @@ class StrategyBook:
             self.cf = CounterfactualRecorder(self.state_dir / CF_FILE, book=self.name,
                                              max_pending=int(getattr(bl, "max_pending", 2000) or 2000),
                                              archive=self._cf_archive())
+            # sayaçların kalıcı yedeği: özet `learning` alanını kaybettiyse (öğrenme kapalı geçti / eski kod) geri gelir
+            self.learning_counters = self.cf.sync_book_counters(self.learning_counters)
         else:
             self.cf.max_pending = max(1, int(getattr(bl, "max_pending", self.cf.max_pending) or self.cf.max_pending))
         return self.cf
@@ -1332,8 +1365,32 @@ class StrategyBook:
             if fam_candle:
                 self._cf_candle(sym, a, is_open=is_open, pos_open=pos_open, pos_obj=pos_obj, verdict=verdict, fr=fr,
                                 now=now, now_ms=now_ms, price=price, params=params)
+            elif pos_open and self.rule.family in ("box", "donchian"):
+                self._cf_held(sym, pos_obj, verdict=verdict, fr=fr, btc=btc, now=now, now_ms=now_ms, price=price)
         except Exception as exc:  # noqa: BLE001 — karşı-olgusal kaydı işlem yolunu ASLA durdurmaz
             log.warning("öğrenme sonrası adım başarısız (%s %s): %s", self.key, sym, exc)
+
+    def _cf_held(self, sym: str, pos_obj: Any, *, verdict: DataVerdict, fr: dict, btc: list, now: datetime, now_ms: int,
+                 price: float) -> bool:
+        """SPEC A15 "+CF" (2026-09-28, öğrenme modu; ikinci doğrulama turu): sembolde pozisyon AÇIKKEN TABAN kuralın (kendi
+        parametreleriyle — Box'ta taban `min_stop_pct`) TAZE giriş sinyali POSITION_OPEN karşı-olgusalı olur: tabanın
+        alacağı sinyal, öğrenme defterinde daha önce açılmış (ör. dar stoplu) bir işlem sembolü tuttuğu için kaybolmasın.
+        Öğrenme parametresiyle (Box 0,32) doğan dar stoplu sinyaller açık sembolde YAZILMAZ: 24 saatlik uçtan uca koşuda
+        Box'ta günde ~511 kayıt ediyordu (tabanınki ~47) — aynı hareketin ardışık barları, dosya/bellek yükü. Yalnız OLAY
+        tabanlı aileler (Box, D4); mum ailesi `_cf_candle`da. Trend ailesinin girişi bir DURUM koşuludur (pozisyon boyunca
+        her bar doğru) → tutulan işlemin günlük tekrarı olurdu, yazılmaz. Açık pozisyonun KENDİ (ya da daha eski) sinyali
+        kaydedilmez. Öğrenme parametresi (`_learning_params`) bilerek KULLANILMAZ."""
+        base = paper_rules.decide_for(self.name, frames=fr, btc_rows=btc, now_ms=now_ms, position=None,
+                                      params=self.rule_params)
+        if not base or str(base.get("action") or "").upper() != "OPEN":
+            return False
+        opened = parse_ts_ms(getattr(pos_obj, "opened_at", None))
+        sc = base.get("signal_close_ms")
+        if sc is None and base.get("signal_ts") is not None:
+            sc = int(base["signal_ts"]) + tf_ms(self._decision_tf())
+        if opened is None or sc is None or int(opened) >= int(sc):
+            return False                                  # pozisyon bu (ya da daha eski) sinyalden açıldı
+        return self._cf_record(sym, base, "POSITION_OPEN", price=price, now=now, verdict=verdict)
 
     def _cf_candle(self, sym: str, act: dict[str, Any], *, is_open: bool, pos_open: bool, pos_obj: Any,
                    verdict: DataVerdict, fr: dict, now: datetime, now_ms: int, price: float, params: Any) -> None:
@@ -1369,6 +1426,7 @@ class StrategyBook:
             n = self.cf.label_pending(frames_by_symbol or {}, now)
             if n:
                 self._count("counterfactual_labeled", n)
+            self.cf.sync_book_counters(self.learning_counters)
             self.cf.save()
         except Exception as exc:  # noqa: BLE001 — etiketleme arızası defteri ETKİLEMEZ
             log.warning("karşı-olgusal etiketleme/kayıt başarısız (%s): %s", self.key, exc)

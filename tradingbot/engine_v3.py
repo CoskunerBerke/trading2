@@ -32,9 +32,10 @@ from .engine import TradingEngine
 from .entry_universe import GATE_CODE as ENTRY_UNIVERSE_GATE, entry_block_reason
 from .learn import LearnConfig, LearnerV2, ModelRegistry, ShadowBook, TradeMemory
 from .learning import features_from_brief
-from .learning_mode import (BOOK_NAMES as _LM_BOOK_NAMES, LEVERAGE_FALLBACK_REASON, OVERRIDE_KEYS as _LM_OVERRIDE_KEYS,
-                            SIZE_BUMP, SIZE_SHRUNK, SYMBOLS_UNIVERSE, LearningMode, counterfactual_ok, fit_size,
-                            leverage_fallback)
+from .learning_mode import (BASELINE_SIZE_KEY, BOOK_NAMES as _LM_BOOK_NAMES, LEVERAGE_FALLBACK_REASON,
+                            OVERRIDE_KEYS as _LM_OVERRIDE_KEYS, SIZE_BUMP, SIZE_SHRUNK, SYMBOLS_UNIVERSE, LearningMode,
+                            baseline_size_tag, baseline_view, counterfactual_ok, fit_size, leverage_fallback,
+                            policy_reserve_usdt)
 from .market.quality import DataQualityConfig, DataQualityGate
 from .risk import (KillSwitch, ModeState, RiskEngine, build_state, enforces_position_cap, resolve_profile,
                    spot_notional_from_prices,
@@ -99,6 +100,8 @@ _LM_FUNNEL_KEYS = ("learning_opened", "learning_unlocked", "learning_exploration
                    "min_notional_bumped", "shrunk_to_margin", "counterfactual_recorded", "counterfactual_dropped",
                    "counterfactual_superseded")
 _LM_STRUCTURE_HARD = ("STRUCTURE_FRAME_MARKET_MISMATCH", "STRUCTURE_ERROR")
+#: Ana öğrenme karşı-olgusallarının etiket yedeği (`shadow_book.json`u eski kod yeniden yazınca etiketler buradan döner).
+SHADOW_TAGS_FILE = "shadow_book_learning_tags.json"
 #: Kaldıraç tabanı bu veri/stop nedenleriyle düştüyse karşı-olgusal YAZILMAZ (mevcut gölge kuralıyla aynı küme).
 _LM_LEV_DATA_CODES = frozenset({"DATA_STALE", "DATA_CONFLICT", "STOP_UNKNOWN"})
 
@@ -426,7 +429,10 @@ class TradingEngineV3(TradingEngine):
         except Exception as exc:  # noqa: BLE001 — arşiv kurulamazsa SİLME de yapılmaz
             log.warning("gölge arşivi başlatılamadı (budama devre dışı, kayıp yok): %s", exc)
             self.shadow_archive = None
-        self.shadow = ShadowBook(st / "shadow_book.json", archive=self.shadow_archive)
+        # öğrenme karşı-olgusallarının etiketleri geri almada (eski kod dosyayı yeniden yazar) kaybolmasın: ayrı yedek
+        # (yalnız etiketli satır varken yazılır; 2026-09-28, öğrenme modu)
+        self.shadow = ShadowBook(st / "shadow_book.json", archive=self.shadow_archive,
+                                 tags_path=st / SHADOW_TAGS_FILE)
         # --- Outcome Learning Loop V1: karar günlüğü + sınırlı öğrenme etkisi ---
         # Arıza worker'ı ÇÖKERTMEZ: journal/influence başlatılamazsa baseline davranış sürer.
         from .learn.decision_journal import DecisionJournal
@@ -1845,7 +1851,8 @@ class TradingEngineV3(TradingEngine):
         _lm = getattr(self, "lm", None)
         if _lm is not None and _lm.enabled:     # ÖĞRENME MODU (2026-09-28): kapalıyken health.json bit-aynı
             # reason: ACTIVE | LEARNING_MODE_SUSPENDED:<neden>; learning_mode_since: İLK aktif an (kalıcı, panel/karne ayrımı)
-            health["learning_mode"] = dict(_lm.status(), learning_mode_since=self._lm_since())
+            health["learning_mode"] = dict(_lm.status(), learning_mode_since=self._lm_since(),
+                                           memory=self._lm_memory_health())
         atomic_write_json(st / "health.json", health)
         self._notify_health(str(health.get("state") or "UNKNOWN"), str(health.get("summary") or ""), now)
         self._notify_maintenance(health, now)
@@ -2264,14 +2271,30 @@ class TradingEngineV3(TradingEngine):
             # çıkarma yalnız %2 tavan ve serbest marj içinde. Sığmazsa red + karşı-olgusal (boyut yüzünden SESSİZ ret yok).
             lm_fit = None
             _lm_base = (final_notional, plan_leverage)          # baseline'ın göreceği boyut (learning_unlocked_by)
+            _lm_bsize = None
             if bl is not None:
+                # taban kapıları boyuttan ÖNCE (2026-09-28, ikinci doğrulama turu): taban da açacaksa (etiket boş) politika
+                # rezervi kullanılır; öğrenme-ekstra aday serbest marjı rezerv kadar EKSİK görür (keşif defteri doldurup
+                # politika işlemini dışarıda bırakamaz). Kapılar taban görünümüyle ölçülür (`baseline_view`).
+                if getattr(plan, "learning_min_notional_bump", False):
+                    lm_unlocked.append("NO_TRADE_MIN_ORDER_CONFLICT")      # baş planı baseline'da vetolardı (B5)
+                _bp = {"symbol": sym, "market_type": market, "direction": d.direction, "entry": exec_entry,
+                       "stop": plan.stop, "targets": plan.targets, "amount_type": "NOTIONAL",
+                       "expected_r": plan.expected_r, "spread_pct": feats.get("spread_pct"),
+                       "min_notional": float(f_sym.min_notional)}
+                _bcodes, _lm_bsize = self._lm_baseline_blockers(_bp, market=market, base_notional=float(_lm_base[0]),
+                                                                base_leverage=int(_lm_base[1]), state=state, now=now,
+                                                                f_sym=f_sym)
+                lm_unlocked += _bcodes
                 lm_fit = self._lm_fit(bl, market=market, exec_entry=exec_entry, stop=plan.stop,
-                                      leverage_max=plan_leverage, f_sym=f_sym, state=state)
+                                      leverage_max=plan_leverage, f_sym=f_sym, state=state, policy=not lm_unlocked)
                 entry["learning_fit"] = {"ok": lm_fit.ok, "reason": lm_fit.reason or None, "size_rule": lm_fit.size_rule,
                                          "notional": round(lm_fit.notional, 6), "leverage": lm_fit.leverage,
                                          "margin": round(lm_fit.margin, 6), "risk_usdt": round(lm_fit.risk_usdt, 6),
                                          "why": lm_fit.detail.get("why"),
-                                         "risk_fraction_of_budget": lm_fit.detail.get("risk_fraction_of_budget")}
+                                         "risk_fraction_of_budget": lm_fit.detail.get("risk_fraction_of_budget"),
+                                         "policy_grade": not lm_unlocked,
+                                         "policy_reserve_usdt": lm_fit.detail.get("policy_reserve_usdt")}
                 if not lm_fit.ok:
                     entry.update({"risk_allowed": False, "risk_reasons": [lm_fit.reason]})
                     if lm_fit.reason == "INSUFFICIENT_MARGIN":
@@ -2326,10 +2349,6 @@ class TradingEngineV3(TradingEngine):
             # ÖĞRENME: bu işlemin etiketleri (defter meta/özellikleri + karar günlüğü satırı)
             lm_tags = None
             if bl is not None:
-                if getattr(plan, "learning_min_notional_bump", False):
-                    lm_unlocked.append("NO_TRADE_MIN_ORDER_CONFLICT")      # baş planı baseline'da vetolardı (B5)
-                lm_unlocked += self._lm_baseline_blockers(plan_dict, market=market, base_notional=float(_lm_base[0]),
-                                                          base_leverage=int(_lm_base[1]), state=state, now=now)
                 lm_tags = {"book": "main", "size_rule": lm_fit.size_rule, "slots": int(bl.slots),
                            "risk_pct": float(bl.risk_pct), "leverage": int(plan_leverage),
                            "leverage_max": int(lm_fit.detail.get("l_max") or plan_leverage),
@@ -2342,6 +2361,8 @@ class TradingEngineV3(TradingEngine):
                            "size_multipliers_recorded": dict(entry.get("size_multiplier_parts") or {},
                                                              total=entry.get("size_multiplier_total")),
                            "penalties_recorded": _opp.get("learning_penalties")}
+                if not lm_tags["learning_unlocked_by"] and _lm_bsize is not None:
+                    lm_tags[BASELINE_SIZE_KEY] = dict(_lm_bsize)      # taban görünümü: politika pozisyonu taban boyutunda
                 feats["learning"] = dict(lm_tags)
                 if lm_exploration is not None:
                     feats["exploration"] = lm_exploration
@@ -2403,7 +2424,8 @@ class TradingEngineV3(TradingEngine):
                                                 now=now, entry=entry)
                     continue
                 if lm_tags is not None:
-                    lm_tags = entry["learning"] = self._lm_after_open(pos, lm_tags)
+                    lm_tags = entry["learning"] = self._lm_after_open(pos, lm_tags,
+                                                                      budget=lm_fit.detail.get("risk_budget_usdt"))
                     feats["learning"] = dict(lm_tags)           # işlem hafızası satırı da nihai etiketi taşısın
                 # GERCEKLESEN DOLUM: defter qty'yi lot adimina yuvarlar, bu yuzden dolan notional
                 # istenen/uygulanan notional'dan KUCUK olabilir. Gozlem metadata'si defterin
@@ -3935,10 +3957,11 @@ class TradingEngineV3(TradingEngine):
                                           reasons=list(dec.get("reasons") or []))
         return n
 
-    def _lm_fit(self, bl, *, market: str, exec_entry: float, stop, leverage_max: int, f_sym, state):
+    def _lm_fit(self, bl, *, market: str, exec_entry: float, stop, leverage_max: int, f_sym, state, policy: bool = True):
         """Öğrenme boyutu (SPEC §3, slot K): `fit_size` — %0,5 hedef risk, rezerv %5, likidasyon ≥ 2 × stop, kaldıraç
         tavanı = seviye seçimi ∧ defter `leverage_max` ∧ profil ∧ borsa; min-notional'a çıkarma yalnız %2 tavan ve serbest
-        marj içinde. Taban equity = öğrenme RiskEngine'inin `equity_basis`i (kabul kararıyla AYNI)."""
+        marj içinde. Taban equity = öğrenme RiskEngine'inin `equity_basis`i (kabul kararıyla AYNI). `policy` False
+        (öğrenme-ekstra aday) → serbest marjdan politika rezervi düşülür (2026-09-28, ikinci doğrulama turu)."""
         spot = market == "SPOT"
         prof = self.risk_learning.profile
         if spot:
@@ -3949,45 +3972,98 @@ class TradingEngineV3(TradingEngine):
                                  int(getattr(f_sym, "max_leverage", None) or leverage_max or 1)))
             avail = float(self.ledger2.available)
         step = _f_num(getattr(f_sym, "qty_step", None))
-        return fit_size(equity=self.risk_learning.equity_basis(state), entry=exec_entry, stop=float(stop), slots=bl.slots,
-                        leverage_max=lev_cap, risk_pct=bl.risk_pct, reserve_pct=bl.reserve_pct,
-                        liq_buffer_mult=bl.liq_buffer_mult, mmr=0.004, min_notional=float(f_sym.min_notional),
-                        qty_step=(step if step and step > 0 else None), price_for_step=exec_entry,
-                        hard_cap_pct=bl.hard_cap_pct, min_notional_bump=bl.min_notional_bump, available_margin=avail,
-                        min_qty=_f_num(getattr(f_sym, "min_qty", None)), max_position_pct=prof.max_position_pct)
+        eq = self.risk_learning.equity_basis(state)
+        p_res = 0.0 if policy else policy_reserve_usdt(equity=eq, slots=bl.slots, reserve_pct=bl.reserve_pct)
+        fit = fit_size(equity=eq, entry=exec_entry, stop=float(stop), slots=bl.slots,
+                       leverage_max=lev_cap, risk_pct=bl.risk_pct, reserve_pct=bl.reserve_pct,
+                       liq_buffer_mult=bl.liq_buffer_mult, mmr=0.004, min_notional=float(f_sym.min_notional),
+                       qty_step=(step if step and step > 0 else None), price_for_step=exec_entry,
+                       hard_cap_pct=bl.hard_cap_pct, min_notional_bump=bl.min_notional_bump, available_margin=avail - p_res,
+                       min_qty=_f_num(getattr(f_sym, "min_qty", None)), max_position_pct=prof.max_position_pct)
+        fit.detail["policy_reserve_usdt"] = round(p_res, 6)
+        return fit
 
     def _lm_baseline_blockers(self, plan_dict: dict, *, market: str, base_notional: float, base_leverage: int,
-                              state, now: datetime) -> list[str]:
+                              state, now: datetime, f_sym=None) -> tuple[list[str], dict | None]:
         """`learning_unlocked_by` için ucuz baseline tekrarı: taban RiskEngine (%6 / 2% / spot %30) + taban boyutun marjı.
-        Boş liste → baseline da açardı. Hata → ['BASELINE_UNKNOWN'] (uydurma yok)."""
+        Boş liste → baseline da açardı. Hata → ['BASELINE_UNKNOWN'] (uydurma yok). Kapılar öğrenme defterinin DEĞİL taban
+        görünümünün (`baseline_view`: öğrenme-ekstra pozisyonlar yok, politika pozisyonları taban boyutunda) risk/marjıyla
+        ölçülür — YAKLAŞIK (2026-09-28, ikinci doğrulama turu). Döner: (kodlar, taban boyutu etiketi | None; yalnız futures)."""
         try:
             if base_notional <= 0:
-                return []                                 # sıfır çarpan zaten kayıtlı (SIZE_MULTIPLIER_ZERO / ekonomi)
+                return [], None                           # sıfır çarpan zaten kayıtlı (SIZE_MULTIPLIER_ZERO / ekonomi)
+            with self._ledger_lock:
+                tagged = {s: (p.meta or {}).get("learning") for s, p in self.ledger2.positions.items()}
+                avail0 = float(self.ledger2.available)
+            view, dm = baseline_view(state, tagged)
             lev = max(1, int(base_leverage or 1))
             bp = dict(plan_dict, notional=round(base_notional, 6), margin=round(base_notional / lev, 6), leverage=lev)
-            rdb = self.risk.evaluate(bp, state, {"now_utc": now})
+            rdb = self.risk.evaluate(bp, view, {"now_utc": now})
             if not rdb.allowed:
-                return list(rdb.reasons)
+                return list(rdb.reasons), None
             n = min(base_notional, float(rdb.adjusted_notional if rdb.adjusted_notional is not None else base_notional))
             if market == "SPOT":
                 free = float(getattr(self.spot2, "cash", 0) or 0)          # serbest spot nakdi (kilitli hariç)
-                return ["INSUFFICIENT_MARGIN"] if n > free else []
+                return (["INSUFFICIENT_MARGIN"], None) if n > free else ([], None)
             lev2 = max(1, int(rdb.adjusted_leverage or lev))
-            return ["INSUFFICIENT_MARGIN"] if n / lev2 > float(self.ledger2.available) else []
+            if n / lev2 > avail0 - dm:
+                return ["INSUFFICIENT_MARGIN"], None
+            # taban boyutu, defterin GERÇEKTEN açacağı gibi: adıma AŞAĞI yuvarlanmış miktar × giriş
+            ent = _f_num(plan_dict.get("entry"))
+            step = _f_num(getattr(f_sym, "qty_step", None))
+            if ent and ent > 0 and step and step > 0:
+                qty = (Decimal(str(n)) / Decimal(str(ent)) / Decimal(str(step))).to_integral_value(rounding="ROUND_FLOOR")
+                n = float(qty * Decimal(str(step)) * Decimal(str(ent)))
+            return [], baseline_size_tag(n, lev2)
         except Exception:  # noqa: BLE001
-            return ["BASELINE_UNKNOWN"]
+            return ["BASELINE_UNKNOWN"], None
 
-    def _lm_after_open(self, pos, tags: dict) -> dict:
-        """Dolum sonrası etiket: defter marja küçülttüyse (`meta.shrunk_to_margin`) SHRUNK_TO_MARGIN ve risk payı ölçeklenir.
+    def _lm_memory_health(self) -> dict:
+        """Süreç belleği (öğrenme modunda daha çok işlem → daha çok kayıt): VmRSS / VmHWM (MB) ve deneyim önbelleği satır
+        sayısı. Dağıtımın geri alma eşiği (tepe RSS > MemoryMax'ın %90'ı) buradan izlenir. Okunamazsa None (2026-09-28)."""
+        out: dict = {"rss_mb": None, "hwm_mb": None, "exp_cache_rows": None}
+        try:
+            with open("/proc/self/status", encoding="ascii") as fh:
+                for line in fh:
+                    k, _, v = line.partition(":")
+                    if k in ("VmRSS", "VmHWM"):
+                        out["rss_mb" if k == "VmRSS" else "hwm_mb"] = round(int(v.split()[0]) / 1024.0, 1)
+        except (OSError, ValueError, IndexError):
+            pass
+        idx = getattr(self, "_exp_index", None)
+        if idx is not None:
+            try:
+                out["exp_cache_rows"] = {k: len(v) for k, v in idx._rows.items()}
+            except Exception:  # noqa: BLE001
+                pass
+        return out
+
+    def _lm_after_open(self, pos, tags: dict, *, budget: float | None = None) -> dict:
+        """Dolum sonrası etiket: defter marja küçülttüyse (`meta.shrunk_to_margin`) SHRUNK_TO_MARGIN. Risk etiketleri
+        GERÇEKLEŞEN pozisyondan: defterin miktarı (adıma AŞAĞI) × |dolum − stop|, pay = bu / `budget` (fit'in risk bütçesi)
+        — defterler ve Formasyon ile aynı kural; `fit_size` değeri `risk_usdt_fit`te kalır (2026-09-28, öğrenme modu).
         Etiket `pos.meta["learning"]` ve `pos.features["learning"]`a defter kilidi altında yazılır."""
         t = dict(tags)
         sh = (getattr(pos, "meta", None) or {}).get("shrunk_to_margin")
         if isinstance(sh, dict):
+            t["size_rule"] = SIZE_SHRUNK
+        r_act = None
+        try:
+            if getattr(pos, "stop", None) is not None:
+                r_act = float(pos.qty) * abs(float(pos.entry_avg) - float(pos.stop))
+        except (TypeError, ValueError, ArithmeticError):
+            r_act = None
+        if r_act is not None:
+            t["risk_usdt_fit"] = t.get("risk_usdt")
+            t["risk_usdt"] = round(r_act, 8)
+            b = _f_num(budget)
+            t["risk_fraction_of_budget"] = round(r_act / b, 8) if (b is not None and b > 0) else None
+        elif isinstance(sh, dict):
+            # stop okunamadı (olağan dışı): eski yaklaşım — küçültme oranıyla ölçekle
             try:
                 ratio = float(Decimal(str(sh.get("filled_qty"))) / Decimal(str(sh.get("requested_qty"))))
             except Exception:  # noqa: BLE001
                 ratio = None
-            t["size_rule"] = SIZE_SHRUNK
             if ratio is not None:
                 for k in ("risk_usdt", "risk_fraction_of_budget"):
                     if t.get(k) is not None:
@@ -4075,13 +4151,15 @@ class TradingEngineV3(TradingEngine):
         Dosya imzası (mtime, size) değişmediyse havuz yeniden kurulmaz. Hata → boş havuz
         (baseline fail-safe).
         """
-        from .learn.experience import ExperienceIndex, PreparedPool, prepare_pool
+        from .learn.experience import ExperienceIndex, PreparedPool, experience_row, prepare_pool
         idx = getattr(self, "_exp_index", None)
         if idx is None:
             idx = self._exp_index = ExperienceIndex()
         st = self.cfg.state_path
+        # önbellek yalnız havuzun okuduğu alanları tutar (karar/şef raporları yok; havuz sonucu BİREBİR aynı) —
+        # öğrenmede kapanış sayısı arttı, tam satırlar süreç ömrü boyunca birikiyordu (2026-09-28, öğrenme modu)
         mem = idx.rows("memory", st / "trade_memory.jsonl",
-                       lambda: self.memory.trades(closed_only=True))
+                       lambda: [experience_row(r) for r in self.memory.trades(closed_only=True)])
         shad = idx.rows("shadow", st / "shadow_book.json",
                         lambda: [t.to_dict() for t in self.shadow.trades])
         # UZUN VADELİ GEÇMİŞ: aktif dosyadan çıkmış gölge sonuçlar arşiv indeksinden gelir.

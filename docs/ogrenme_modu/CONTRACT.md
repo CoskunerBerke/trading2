@@ -48,6 +48,22 @@ This contract sits on top of SPEC.md in the same folder. Where the two differ, t
 | P1 | The counterfactual `plan_id` is the per-bar signal key, never a run_id-derived id. |
 | P2 | `FuturesLedgerV2.open(..., allow_shrink: bool | None = None)`: `None` uses the attribute (unchanged); a bool overrides for this call only; nothing is persisted. |
 
+### Additions from the second verification round (2026-09-28)
+
+All of these apply only while learning is active; the OFF path is unchanged.
+
+| Item | Rule |
+|---|---|
+| Baseline view | `learning_unlocked_by` is computed against `learning_mode.baseline_view(state, …)`, not the learning book. The view drops open positions tagged learning-extra and counts policy positions at their recorded `baseline_size` (floored qty × fill, leverage). It is approximate: trades the baseline would hold but the learning book never opened, and the P&L difference, are unknown. Policy opens record `meta.learning.baseline_size`. |
+| Policy reserve | Candidates tagged learning-extra (non-empty `learning_unlocked_by`, computed before sizing) see free margin reduced by `policy_reserve_usdt` = min(2 slots × (1 − reserve) × E / K, 10% × E). Policy-grade candidates use the full free margin. The slot size and risk rules are unchanged. The fit record carries `policy_grade` and `policy_reserve_usdt`. |
+| A15 held symbols | Box and D4: a fresh entry signal of the **baseline** rule (the book's own `rule_params`; for Box the baseline `min_stop_pct`) on a symbol the book already holds is recorded as a `POSITION_OPEN` counterfactual. C4 already did this, and Formasyon D8 is unchanged. Learning-parameter signals (Box 0.32) on held symbols are not recorded: in the 24h end-to-end run that path produced about 511 Box records per day, against about 47 baseline-grade ones. T2/M2 are excluded because their entry is a state predicate, true on every bar of a held position. |
+| F7 Formasyon | A D8 `POSITION_OPEN` counterfactual is superseded when the same plan id later opens for real (counter `counterfactual_superseded`). |
+| Main risk tags | `risk_usdt` / `risk_fraction_of_budget` come from the filled position (qty × \|fill − stop\|); the fit value is kept in `risk_usdt_fit`. |
+| Counter backup | Book learning counters are also kept in `counterfactual_trades.json` `meta.book_counters` and merged by max when the recorder is built. Neither the OFF path nor the old code writes that file. |
+| Shadow tag backup | The main `ShadowBook` keeps the optional fields of tagged rows, plus `meta`, in `state/shadow_book_learning_tags.json`, keyed by row id. The file is written only when tagged rows or meta exist. On load, rows whose tags the old code stripped get them back. |
+| Experience cache | The engine caches `learn.experience.experience_row(row)`: a projection without `decision` / `chief` / `snapshot` / `risk_decision` / `model_versions`, and with postmortem reduced to `lesson_codes`. The pool is identical. `health.learning_mode.memory` = {rss_mb, hwm_mb, exp_cache_rows}. |
+| Rollback | Before the old code starts, run `scripts/learning_mode_rollback_prep.py --state <state>` with the worker stopped. It cancels pending Formasyon plans that are outside the protocol universe or in a liquidity wait. |
+
 ## Interfaces (fixed; stage A creates them, later stages consume them)
 
 `tradingbot/learning_mode.py`: pure module, stdlib plus `risk.profiles` only.
@@ -168,7 +184,7 @@ learning_mode:
   counterfactual: true
   counterfactual_max_pending: 2000
   books:
-    main:                         {enabled: true, slots: 20}
+    main:                         {enabled: true, slots: 20, leverage_max: 5}   # 2026-09-28: kademe tavanı (6fb39cd)
     t2_trend_regime:              {enabled: true, slots: 40, leverage_max: 4}
     m2_tsmom28:                   {enabled: true, slots: 40, leverage_max: 4}
     b1_box_fade:                  {enabled: true, slots: 20, leverage_max: 4, min_stop_pct: 0.32}

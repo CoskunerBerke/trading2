@@ -353,9 +353,10 @@ def test_suspension_returns_new_entries_to_the_baseline_and_keeps_positions(tmp_
     assert summ["learning"]["active"] is False and "suspended_at" in summ["learning"]
 
 
-def test_min_notional_bump_and_per_call_shrink_backstop():
+def test_min_notional_bump_and_per_call_shrink_backstop(monkeypatch):
     """(a) min-notional'a çıkarma miktarla açılır (adıma YUKARI, %2 tavan içinde); (b) serbest marj yetmezse defter
     YALNIZ bu çağrıda küçültür → size_rule SHRUNK_TO_MARGIN; kalıcı `allow_shrink` false kalır."""
+    import tradingbot.strategy_paper as SPM
     f = SymbolFilters(symbol=SYM, market_type=MarketType.USDM_PERP, price_tick=Decimal("0.01"), qty_step=Decimal("0.1"),
                       min_qty=Decimal("0.1"), min_notional=Decimal("20"), max_leverage=20)
     led, risk, st, now = _ledger_env()
@@ -368,7 +369,9 @@ def test_min_notional_bump_and_per_call_shrink_backstop():
     assert res == "OPENED" and pos.meta["learning"]["size_rule"] == "BUMP_MIN_NOTIONAL"
     assert pos.qty == Decimal("0.2") and float(pos.qty * pos.entry_avg) >= 20.0
     assert pos.meta["learning"]["risk_usdt"] <= 0.02 * 200.0
-    # (b) cüzdan 4 USDT (equity tabanı 200; slot marjı 5): sığmaz; rezerv 0 → defter kendi ücretiyle küçültür
+    # (b) cüzdan 4 USDT (equity tabanı 200; slot marjı 5): sığmaz; rezerv 0 → defter kendi ücretiyle küçültür. Politika
+    # rezervi (öğrenme-ekstra giriş son 2 slotu göremez) ayrı bir kuraldır; yedek emniyeti yalıtmak için burada 0.
+    monkeypatch.setattr(SPM, "policy_reserve_usdt", lambda **kw: 0.0)
     led, risk, st, now = _ledger_env(wallet=4.0)
     act = {"action": "OPEN", "direction": "LONG", "stop": 95.0, "name": "t2"}
     fine = SymbolFilters(symbol=SYM, market_type=MarketType.USDM_PERP, price_tick=Decimal("0.01"), qty_step=Decimal("0.00001"),
@@ -445,6 +448,89 @@ def test_book_learning_risk_engine_honours_max_total_open_risk_pct():
     assert StrategyBook._learning_risk(fake, bl).profile.max_total_open_risk_pct == 50.0
     assert PAPER.max_total_open_risk_pct == 6.0
     assert _bl("t2_trend_regime").max_total_open_risk_pct == 100.0          # varsayılan (config L1 değeri) değişmez
+
+
+# ============================================================================ 2b) taban görünümü ve politika rezervi
+@pytest.mark.parametrize("name", ["t2_trend_regime", "d4_donchian_20_10"])
+def test_policy_label_matches_what_the_baseline_book_actually_opens(name, tmp_path):
+    """(2026-09-28, ikinci doğrulama turu) `learning_unlocked_by` boş (= "taban da açardı") etiketi taban kapılarını
+    öğrenme defterinin küçük pozisyonlarıyla DEĞİL taban görünümüyle (öğrenme-ekstra yok, politika pozisyonları taban
+    boyutunda) ölçer: aynı sinyallerde politika etiketli işlemler taban defterin GERÇEKTEN açtıklarıdır. Eskiden öğrenme
+    defterinin boş marjı/riski yüzünden taban TOTAL_OPEN_RISK / INSUFFICIENT_MARGIN ile reddettiği işlemler de "politika"
+    sayılıyordu (karne sütunu şişiyordu)."""
+    syms = ["S%02d/USDT" % i for i in range(12)]
+    if name == "t2_trend_regime":
+        _flag, brk = _trend_rows()
+        fbs, now_ms, px = _trend_fbs(brk, syms), _asof(brk), float(brk[-1]["close"])
+    else:
+        fbs, now_ms, px = _d4_fbs(syms), NOW_H4, 104.1
+    uni = syms if name == "d4_donchian_20_10" else None
+    base = _book(tmp_path / "base", name, symbols=uni)
+    _step(base, fbs, now_ms=now_ms, px=px, symbols=syms)
+    book = _book(tmp_path / "learn", name, symbols=uni)
+    _step(book, fbs, now_ms=now_ms, px=px, symbols=syms, learning=_bl(name))
+    assert set(book.ledger.positions) == set(syms)
+    policy = {s for s, p in book.ledger.positions.items() if not p.meta["learning"]["learning_unlocked_by"]}
+    assert policy == set(base.ledger.positions), (sorted(policy), sorted(base.ledger.positions), base.rejections)
+    for s in policy:                                     # taban görünümü politika pozisyonunu taban boyutunda sayar
+        bs = book.ledger.positions[s].meta["learning"]["baseline_size"]
+        bp = base.ledger.positions[s]
+        assert bs["leverage"] == bp.leverage and bs["notional"] == pytest.approx(float(bp.qty * bp.entry_avg), rel=0.02)
+    extra = [p.meta["learning"]["learning_unlocked_by"] for s, p in book.ledger.positions.items() if s not in policy]
+    assert extra and all(set(u) & set(base.rejections) for u in extra), (extra, base.rejections)
+
+
+def test_policy_reserve_keeps_margin_for_signals_the_baseline_would_take():
+    """Politika rezervi (2026-09-28, ikinci doğrulama turu): öğrenme-ekstra giriş serbest marjın son 2 slotunu GÖREMEZ
+    (INSUFFICIENT_MARGIN → karşı-olgusal), taban kuralların da alacağı sinyal aynı durumda AÇILIR. Eskiden keşif işlemleri
+    defteri %95'e doldurunca politika işlemi (ana bot UNI, Box sinyalleri) dışarıda kalıyordu."""
+    from tradingbot.learning_mode import policy_reserve_usdt
+    lrisk = RiskEngine(profile_for(PAPER), KillSwitch())
+    f5 = SymbolFilters(symbol=SYM, market_type=MarketType.USDM_PERP, price_tick=Decimal("0.01"), qty_step=Decimal("0.001"),
+                       min_qty=Decimal("0.001"), min_notional=Decimal("5"), max_leverage=20)
+    bl = _bl("d4_donchian_20_10")                                  # K=20, E=200 → slot marjı 9,5; rezerv 19
+    assert policy_reserve_usdt(equity=200.0, slots=20, reserve_pct=5.0) == pytest.approx(19.0)
+    out = {}
+    for kind, unlocked in (("policy", []), ("extra", ["BOOK_UNIVERSE"])):
+        led, risk, st, now = _ledger_env(wallet=25.0)              # serbest 25: genel rezerv 10 + 1 slot sığar, +19 sığmaz
+        act = {"action": "OPEN", "direction": "LONG", "stop": 95.0, "targets": [], "name": "d4", "leverage": 1,
+               "_learning": {"unlocked_by": list(unlocked)}}
+        rej: list = []
+        res = apply_action(act, symbol=SYM, price=100.0, tick=None, now=now, ledger=led, risk=lrisk, profile=PAPER,
+                           state=st, filters=f5, run_id=RUN, reject=lambda s, r: rej.append(r), on_closed=lambda r: None,
+                           data=_verdict(), learning=bl)
+        out[kind] = (res, rej, act["_learning"]["fit"], led)
+    res, rej, fit, led = out["policy"]
+    assert res == "OPENED" and rej == [] and fit["policy_grade"] is True and fit["policy_reserve_usdt"] == 0.0
+    lr = led.positions[SYM].meta["learning"]
+    assert lr["learning_unlocked_by"] == [] and lr["size_rule"] == SIZE_SLOT and lr["baseline_size"]["notional"] > 0
+    res, rej, fit, led = out["extra"]
+    assert res == "REJECTED" and rej == ["INSUFFICIENT_MARGIN"] and not led.positions
+    assert fit["policy_grade"] is False and fit["policy_reserve_usdt"] == pytest.approx(19.0)
+
+
+def test_box_signal_on_a_held_symbol_becomes_a_position_open_counterfactual(tmp_path):
+    """SPEC A15 "+CF" (2026-09-28, ikinci doğrulama turu): dar stoplu öğrenme işlemi sembolü tutarken gelen (tabanın
+    AÇTIĞI) geniş stoplu Box sinyali kaybolmaz → POSITION_OPEN karşı-olgusalı. Açık pozisyonun kendi sinyali yazılmaz."""
+    base = _book(tmp_path / "base", "b1_box_fade", mode="SHADOW")
+    _step(base, _box_fbs(BOX_TIGHT), now_ms=NOW_M5, px=108.3)
+    assert SYM not in base.ledger.positions
+    _step(base, _box_fbs(BOX_WIDE, now_ms=NOW_M5 + M5), now_ms=NOW_M5 + M5, px=107.0)
+    assert SYM in base.ledger.positions, "önkoşul: taban bu sinyali alır"
+    book = _book(tmp_path / "learn", "b1_box_fade", mode="SHADOW")
+    lrn = _bl("b1_box_fade")
+    _step(book, _box_fbs(BOX_TIGHT), now_ms=NOW_M5, px=108.3, learning=lrn)
+    assert "BOX_MIN_STOP_PCT" in book.ledger.positions[SYM].meta["learning"]["learning_unlocked_by"]
+    _step(book, _box_fbs(BOX_TIGHT), now_ms=NOW_M5 + 60_000, px=108.3, learning=lrn)   # aynı bar: kendi sinyali
+    assert book.cf.sb.trades == []
+    # yeni barda yalnız öğrenme parametresiyle (0,32) doğan dar stoplu sinyal: taban almazdı → açık sembolde kayıt YOK
+    _step(book, _box_fbs(BOX_TIGHT, now_ms=NOW_M5 + M5), now_ms=NOW_M5 + M5, px=108.3, learning=lrn)
+    assert book.cf.sb.trades == []
+    _step(book, _box_fbs(BOX_WIDE, now_ms=NOW_M5 + 2 * M5), now_ms=NOW_M5 + 2 * M5, px=107.0, learning=lrn)
+    (t,) = book.cf.sb.trades
+    assert t.reason_not_opened == ["POSITION_OPEN"] and t.direction == "SHORT" and t.stop == 110.0
+    assert t.label_kind == "TARGET_STOP_TIME" and t.tf_minutes == 5 and t.targets == [90.0]
+    assert float(book.ledger.positions[SYM].stop) == pytest.approx(109.6), "sembol başına tek pozisyon kalır"
 
 
 # ============================================================================ 3) ölçüm kapıları AYNEN durdurur
@@ -779,3 +865,27 @@ def test_counters_survive_a_restart(tmp_path):
     _step(again, _trend_fbs(brk, syms), now_ms=_asof(brk) + 900_000,
           px=float(brk[-1]["close"]), symbols=syms, learning=_bl("t2_trend_regime"))
     assert again.cf is not None and (again.state_dir / CF_FILE).exists()
+
+
+def test_counters_survive_an_off_pass_and_a_rollback_rewrite_of_the_summary(tmp_path):
+    """(2026-09-28, ikinci doğrulama turu) Özetin `learning` alanı öğrenme kapalı geçişte (ve eski kodda) yazılmaz; sayaçlar
+    karşı-olgusal dosyasındaki yedekten (`meta.book_counters`) geri gelir — OFF→ON ya da geri alma→yeniden dağıtım
+    sonrası 0'dan başlamaz."""
+    syms = ["S%02d/USDT" % i for i in range(3)]
+    _flag, brk = _trend_rows()
+    fbs, t0, px = _trend_fbs(brk, syms), _asof(brk), float(brk[-1]["close"])
+    book = _book(tmp_path, "t2_trend_regime")
+    _step(book, fbs, now_ms=t0, px=px, symbols=syms, learning=_bl("t2_trend_regime"))
+    assert book.learning_counters.get("opened") == 3
+    doc = json.loads((book.state_dir / CF_FILE).read_text(encoding="utf-8"))
+    assert doc["meta"]["book_counters"]["opened"] == 3
+    off = _book(tmp_path, "t2_trend_regime")                         # yeni süreç, öğrenme KAPALI
+    _step(off, fbs, now_ms=t0 + 900_000, px=px, symbols=syms, learning=None)
+    summ = json.loads((Path(off.cfg.state_path) / off.summary_file).read_text(encoding="utf-8"))
+    assert "learning" not in summ, "kapalı geçiş özeti bugünkü gibi (alan yok)"
+    on = _book(tmp_path, "t2_trend_regime")                          # yeniden AÇIK
+    assert on.learning_counters == {}
+    _step(on, fbs, now_ms=t0 + 1_800_000, px=px, symbols=syms, learning=_bl("t2_trend_regime"))
+    assert on.learning_counters.get("opened") == 3, on.learning_counters
+    summ = json.loads((Path(on.cfg.state_path) / on.summary_file).read_text(encoding="utf-8"))
+    assert summ["learning"]["counters"]["opened"] == 3

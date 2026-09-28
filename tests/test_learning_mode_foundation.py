@@ -13,6 +13,7 @@ import json
 import math
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from pathlib import Path
 
 import pandas as pd
 import pytest
@@ -677,6 +678,43 @@ def test_old_shadow_files_load_and_new_fields_round_trip(tmp_path):
     back = ShadowBook(p).trades[1]
     assert (back.book, back.signal_key, back.variation, back.label_kind, back.features, back.learning_unlocked,
             back.rule_version, back.approx) == ("main", "k", "CV1", "HORIZON", {"a": 1}, False, "v1", True)
+
+
+def test_learning_tags_survive_an_old_code_rewrite_of_the_shadow_book(tmp_path):
+    """(2026-09-28, ikinci doğrulama turu) Geri almada eski kod `shadow_book.json`u kendi alanlarıyla yeniden yazar:
+    isteğe bağlı alanlar ve `meta` düşer. Etiket yedeği (`tags_path`, eski kodun dokunmadığı ayrı dosya) yeniden
+    dağıtımda bunları kimlikle geri yazar (ana karşı-olgusal yeniden `book == "main"` olur). Etiketsiz defter yedek
+    dosyası YAZMAZ (öğrenme hiç açılmadıysa dosya kümesi bit-aynı)."""
+    p, side = tmp_path / "shadow_book.json", tmp_path / "shadow_book_learning_tags.json"
+    plain = ShadowBook(p, tags_path=side)
+    plain.add({"plan_id": "p0", "symbol": "Y/USDT", "direction": "LONG", "entry": 1.0, "stop": 0.9, "targets": []},
+              ["TOTAL_OPEN_RISK"], now=T0)
+    assert not side.exists(), "etiketli satır yok → yedek dosya yok"
+    sb = ShadowBook(p, tags_path=side)
+    row = {k: getattr(sb.trades[0], k) for k in _OLD_FIELDS}
+    sb.trades.append(ShadowTrade(**{**row, "id": "cf_main_1", "plan_id": "sig:1", "book": "main", "signal_key": "sig:1",
+                                    "label_kind": "TARGET_STOP_TIME", "features": {"x": 1}, "learning_unlocked": False}))
+    sb.meta["lm_superseded"] = 2
+    sb.save()
+    assert side.exists()
+    # eski kod: yalnız kendi alanları (asdict), meta YOK
+    raw = json.loads(p.read_text(encoding="utf-8"))
+    p.write_text(json.dumps({"trades": [{k: r[k] for k in _OLD_FIELDS} for r in raw["trades"]]}), encoding="utf-8")
+    assert ShadowBook(p).trades[1].book is None, "önkoşul: yedeksiz yükleme etiketi kaybeder"
+    back = ShadowBook(p, tags_path=side)
+    t = back.trades[1]
+    assert (t.id, t.book, t.signal_key, t.label_kind, t.features, t.learning_unlocked) == \
+        ("cf_main_1", "main", "sig:1", "TARGET_STOP_TIME", {"x": 1}, False)
+    assert back.trades[0].book is None and back.tags_restored == 1 and back.meta == {"lm_superseded": 2}
+    back.save()
+    again = json.loads(p.read_text(encoding="utf-8"))
+    assert again["trades"][1]["book"] == "main" and again["meta"] == {"lm_superseded": 2}
+
+
+def test_engine_main_shadow_book_keeps_a_tag_backup():
+    import tradingbot.engine_v3 as M
+    src = Path(M.__file__).read_text(encoding="utf-8")
+    assert "tags_path=st / SHADOW_TAGS_FILE" in src and M.SHADOW_TAGS_FILE == "shadow_book_learning_tags.json"
 
 
 # ============================================================================ defter allow_shrink (P2)

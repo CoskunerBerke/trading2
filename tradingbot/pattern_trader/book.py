@@ -30,14 +30,15 @@ from ..accounting.funding import FundingSchedule
 from ..core import atomic_write_json, iso, read_json, utc_now
 from ..learn import TradeMemory
 from ..learn.candle_context import CandleContextConfig, detect_trend
-from ..learning_mode import STATE_ACTIVE, STATE_DISABLED, SUSPENDED_PREFIX, LearningMode
+from ..learning_mode import (STATE_ACTIVE, STATE_DISABLED, SUSPENDED_PREFIX, LearningMode, baseline_view,
+                             policy_reserve_usdt)
 from ..risk import RiskEngine, build_state
-from ..strategy_paper import (PAPER_MARKET, DataVerdict, apply_action, apply_closed_bars_to_ledger, monitoring_gap_on_resume,
-                              parse_ts_ms)
+from ..strategy_paper import (PAPER_MARKET, DataVerdict, _baseline_blocks, apply_action, apply_closed_bars_to_ledger,
+                              monitoring_gap_on_resume, parse_ts_ms)
 from ..timeframes import tf_ms
 from .data import REQUIREMENTS, readiness
 from .detect import ST_BROKEN, ST_CONFIRMED, ST_EXPIRED, atr14, detect_findings, levels_for, update_finding
-from .learning import LEARNING_MIN_DEPTH_USDT, baseline_blockers, cf_horizon, open_learning
+from .learning import LEARNING_MIN_DEPTH_USDT, cf_horizon, open_learning
 from .strategy import (CONTEXT_TF, ENTRY_TF, PL_AWAITING, PL_BROKEN, PL_CANCELLED, PL_CLOSED, PL_EXPIRED, PL_MANAGED, PL_OPENED,
                        PL_REJECTED, PL_RISK_CHECK, PL_TRIGGERED, PROTOCOL_VERSION, STRUCTURE_TF, TERMINAL, build_plans,
                        cost_fraction, cost_fraction_at_fill, evaluate_trigger, rr_after_cost)
@@ -154,7 +155,8 @@ class PatternBook:
         self.learning_counters: dict[str, int] = {"opened": 0, "liquidity_waits": 0, "cooldown_skipped": 0,
                                                   "rr_floor_ignored": 0, "rescaled_after_rounding": 0,
                                                   "min_notional_bumped": 0, "shrunk_to_margin": 0,
-                                                  "counterfactual_recorded": 0, "max_positions_blocked": 0}
+                                                  "counterfactual_recorded": 0, "max_positions_blocked": 0,
+                                                  "counterfactual_superseded": 0}
         self._restore()
 
     # ------------------------------------------------------------------ kalıcılık
@@ -192,6 +194,7 @@ class PatternBook:
             self.ledger.save(self.ledger_path)
             if self.cf is not None:                    # öğrenme karşı-olgusalı: yalnız değiştiyse tek atomik yazım
                 try:
+                    self.cf.sync_book_counters(self.learning_counters)   # sayaçların kalıcı yedeği (özetten bağımsız)
                     self.cf.save()
                 except Exception as exc:  # noqa: BLE001 — kayıt arızası defteri ETKİLEMEZ
                     log.warning("formasyon karşı-olgusal kaydı yazılamadı: %s", exc)
@@ -1157,6 +1160,16 @@ class PatternBook:
         if lm is not None:
             self.learning_counters["opened"] += 1
             pos.features["in_lab_universe"] = bool(self.allowed_symbols is None or symbol in self.allowed_symbols)
+        if self.cf is not None:
+            # D8 kaydı (pozisyon açıkken taze sinyal; plan KURULMAMIŞTI) aynı plan kimliğiyle şimdi GERÇEK işlem: kayıt düşer
+            # (aynı gözlem hem dolum hem "açılmadı" sayılmaz; defterlerle aynı kural, 2026-09-28 öğrenme modu)
+            try:
+                n_sup = self.cf.supersede(signal_key=str(pl["plan_id"]), symbol=symbol, direction=str(pl.get("side") or ""))
+            except Exception as exc:  # noqa: BLE001 — karşı-olgusal arızası işlemi ETKİLEMEZ
+                log.warning("formasyon karşı-olgusalı geri alınamadı (%s): %s", symbol, exc)
+                n_sup = 0
+            if n_sup:
+                self.learning_counters["counterfactual_superseded"] += int(n_sup)
         self._event("PLAN_OPENED", symbol, pl["family"], now, plan_id=pl["plan_id"], side=pl["side"], entry=float(pos.entry_avg), stop=float(pl["stop"]), target=float(pl["target"]), position_id=pos.id)
         # karşı plan(lar) iptal: bir yön gerçekleşince aynı sembolde bekleyen tüm planlar kapanır (tersleme yok)
         for q in self.plans.values():
@@ -1216,6 +1229,11 @@ class PatternBook:
             self._lm_universe = self._lm_universe_next if bl is not None else frozenset()
             if bl is not None:
                 self._lm_ever = True
+                if bool(getattr(bl, "counterfactual", False)):
+                    try:
+                        self._cf_recorder(bl)          # sayaç yedeği ilk aktif turda geri yüklensin (kayıt beklemeden)
+                    except Exception as exc:  # noqa: BLE001 — kayıtçı arızası defteri ETKİLEMEZ
+                        log.warning("formasyon karşı-olgusal kayıtçısı kurulamadı: %s", exc)
             if self._lm_since is None or (bl is not None) != was_on:
                 self._lm_since = iso(now or utc_now())
             self._lm_reason = reason
@@ -1267,6 +1285,9 @@ class PatternBook:
             self.cf = CounterfactualRecorder(self.state_dir / "counterfactual_trades.json", book=BOOK_KEY,
                                              max_pending=int(getattr(lm, "max_pending", 2000) or 2000),
                                              archive=self._cf_archive())
+            # sayaçların kalıcı yedeği: özet `learning` alanını kaybettiyse (öğrenme kapalı geçti / eski kod) geri gelir
+            for k, v in self.cf.sync_book_counters(self.learning_counters).items():
+                self.learning_counters[k] = int(v)
         return self.cf
 
     def _cf_archive(self) -> Any:
@@ -1395,10 +1416,13 @@ class PatternBook:
     def _open_learning(self, lm: Any, pl: dict[str, Any], *, act: dict[str, Any], symbol: str, mark: float, qmark: float, tick: Any,
                        now: datetime, filters: Any, verdict: Any, depth: float, unlocked: list[str], as_of_ms: int,
                        universe_entry: dict[str, Any]) -> tuple[Any, str]:
-        """D2/D3/D6/D17 girişi: slot boyutu (öğrenme RiskEngine'i) + baseline'da engelleyecek kodların etiketi."""
+        """D2/D3/D6/D17 girişi: slot boyutu (öğrenme RiskEngine'i) + baseline'da engelleyecek kodların etiketi. Taban
+        kapıları (adet tavanı, risk, marj) öğrenme defterinin DEĞİL taban görünümünün (`baseline_view`) durumuyla ölçülür;
+        taban da alacaksa (etiket boş) politika rezervi kullanılabilir (2026-09-28, ikinci doğrulama turu)."""
         state = self._state({symbol: mark})
+        view, _dm = baseline_view(state, {s: (p.meta or {}).get("learning") for s, p in self.ledger.positions.items()})
         tags = list(unlocked)
-        if len(self.ledger.positions) >= int(self.section.max_open_positions):
+        if len(view.open_positions) >= int(self.section.max_open_positions):
             tags.append(R_MAX_POSITIONS)
         if int(self.cooldown_until.get(symbol) or 0) > int(as_of_ms):
             tags.append("COOLDOWN_AFTER_LOSS")
@@ -1407,12 +1431,16 @@ class PatternBook:
         tags.extend((pl.get("liquidity_wait") or {}).get("codes") or [])
         if float(depth) < float(self.section.min_depth_0_5pct_usdt):
             tags.append("THIN_DEPTH")
-        tags.extend(baseline_blockers(act=act, symbol=symbol, mark=mark, now=now, ledger=self.ledger, risk=self.risk,
-                                      profile=self.profile, state=state))
+        bcodes, bsize = _baseline_blocks(act, symbol=symbol, direction=str(act.get("direction") or "LONG"), entry=mark,
+                                         stop=float(act.get("stop") or 0.0), tick=tick, now=now, ledger=self.ledger,
+                                         risk=self.risk, profile=self.profile, state=state, filters=filters)
+        tags.extend(c for c in bcodes if c not in tags)
+        p_res = (policy_reserve_usdt(equity=float(self.risk.equity_basis(state)), slots=int(lm.slots),
+                                     reserve_pct=float(lm.reserve_pct)) if tags else 0.0)
         res = open_learning(act=act, symbol=symbol, price=mark, fill_price=qmark, tick=tick, now=now, ledger=self.ledger,
                             risk=self._learning_risk(), state=state, filters=filters, run_id=self.run_id, learning=lm, data=verdict,
                             max_position_pct=float(getattr(self.profile, "max_position_pct", 0.0) or 0.0) or None,
-                            depth=depth, unlocked=tags)
+                            depth=depth, unlocked=tags, reserve_usdt=p_res, baseline_size=bsize)
         pl["learning"] = dict(res.info.get("meta") or {}, fit=res.info.get("fit"), min_depth_0_5pct=res.info.get("min_depth_0_5pct"))
         if res.pos is None:
             return None, res.reason

@@ -128,7 +128,7 @@ class ShadowBook:
     sınırsız büyüme tercih edilir. Arşiv yazımı başarısızsa da budama YAPILMAZ.
     """
 
-    def __init__(self, path: Path | str, *, archive: Any | None = None):
+    def __init__(self, path: Path | str, *, archive: Any | None = None, tags_path: Path | str | None = None):
         self.path = Path(path)
         self.archive = archive
         self.archive_errors = 0
@@ -139,8 +139,51 @@ class ShadowBook:
         #: Defter düzeyi sayaçlar (öğrenme modu karşı-olgusal kaydı, 2026-09-28). BOŞKEN dosyaya yazılmaz → ana botun
         #: `shadow_book.json` biçimi bit-aynı kalır.
         self.meta: dict[str, Any] = dict(d.get("meta") or {}) if isinstance(d, dict) else {}
+        #: GERİ ALMA YEDEĞİ (2026-09-28, öğrenme modu; ikinci doğrulama turu): eski kod bu dosyayı kendi alanlarıyla yeniden
+        #: yazar, isteğe bağlı alanları (`OPTIONAL_FIELDS`) ve `meta`yı DÜŞÜRÜR. `tags_path` verilirse etiketli satırların
+        #: isteğe bağlı alanları kimlikle AYRI dosyada tutulur (eski kod ona dokunmaz) ve yüklemede etiketi düşmüş satıra geri
+        #: yazılır. Etiketli satır yoksa dosya YAZILMAZ (öğrenme hiç açılmadıysa dosya kümesi bit-aynı).
+        self.tags_path = Path(tags_path) if tags_path else None
+        self._tags_sig: tuple | None = None
+        self.tags_restored = 0
+        if self.tags_path is not None:
+            self._restore_tags()
 
     MAX_TRADES = 5000                       # aktif dosya siniri (arsiv bunun DISINDA, sinirsiz)
+
+    @staticmethod
+    def _tags_of(t: "ShadowTrade") -> dict[str, Any]:
+        return {k: getattr(t, k) for k in OPTIONAL_FIELDS if getattr(t, k) is not None}
+
+    def _restore_tags(self) -> None:
+        side = read_json(self.tags_path, default=None)
+        if not isinstance(side, dict):
+            return
+        tags = side.get("tags") if isinstance(side.get("tags"), dict) else {}
+        for t in self.trades:
+            tg = tags.get(t.id)
+            if not isinstance(tg, dict) or self._tags_of(t):
+                continue                                   # yedeği yok ya da etiketleri zaten yerinde
+            for k in OPTIONAL_FIELDS:
+                if tg.get(k) is not None:
+                    setattr(t, k, tg[k])
+            self.tags_restored += 1
+        m = side.get("meta")
+        if isinstance(m, dict):
+            for k, v in m.items():
+                self.meta.setdefault(k, v)                 # eski kodun düşürdüğü sayaçlar (lm_superseded, ...)
+
+    def _save_tags(self) -> None:
+        if self.tags_path is None:
+            return
+        tagged = {t.id: tg for t in self.trades if (tg := self._tags_of(t))}
+        if not tagged and not self.meta and not self.tags_path.exists():
+            return
+        sig = (tuple(sorted(tagged)), json.dumps(self.meta, sort_keys=True, default=str))
+        if sig == self._tags_sig:
+            return                                         # etiketler kayıttan sonra değişmez: yalnız küme değişince yaz
+        atomic_write_json(self.tags_path, {"schema_version": "shadow_tags_v1", "tags": tagged, "meta": dict(self.meta)})
+        self._tags_sig = sig
 
     def _archive_overflow(self) -> int:
         """Tasan EN ESKI kayitlari once arsive muhurler. Basarisizsa 0 doner → budama YOK."""
@@ -171,6 +214,11 @@ class ShadowBook:
         if self.meta:
             payload["meta"] = self.meta
         atomic_write_json(self.path, payload)
+        if self.tags_path is not None:
+            try:
+                self._save_tags()
+            except Exception:  # noqa: BLE001 — yedek arızası gölge kaydını ETKİLEMEZ
+                pass
 
     def _event_key(self, plan_id: str, symbol: str, direction: str, variant: str) -> tuple:
         return (str(plan_id), str(symbol), str(direction), str(variant))

@@ -533,8 +533,86 @@ def leverage_fallback(base_failures: Iterable[str], *, stop_atr: float | None, a
     return int(min_leverage)
 
 
+# ---------------------------------------------------------------------------- taban görünümü / politika rezervi
+#: POLİTİKA REZERVİ (2026-09-28, öğrenme modu; ikinci doğrulama turu): taban kuralların da AÇACAĞI sinyal
+#: (`learning_unlocked_by` boş = politika işlemi) için ayrılan marj, slot cinsinden. Öğrenme-ekstra giriş serbest marjı bu
+#: kadar EKSİK görür → keşif işlemleri defteri doldurup politika işlemini dışarıda bırakamaz. Politika girişi rezervi
+#: kullanır (yalnız %5 genel rezerv kalır). Boyut kuralı (slot marjı, risk) DEĞİŞMEZ; yalnız sığma sınırı.
+POLICY_RESERVE_SLOTS = 2
+#: Rezervin üst sınırı (E'nin %'si): az slotlu defterde (K küçük → slot büyük) rezerv defteri yutmasın.
+POLICY_RESERVE_MAX_PCT = 10.0
+#: Politika pozisyonunun taban boyutu (`pos.meta["learning"]["baseline_size"]`: notional, kaldıraç) — taban görünümü bunu okur.
+BASELINE_SIZE_KEY = "baseline_size"
+
+
+def policy_reserve_usdt(*, equity, slots, reserve_pct=DEFAULT_RESERVE_PCT, n_slots: int = POLICY_RESERVE_SLOTS) -> float:
+    """Politika rezervi (USDT) = min(`n_slots` × slot marjı ((1 − rezerv) × E / K), %`POLICY_RESERVE_MAX_PCT` × E).
+    Geçersiz girdi → 0 (rezerv yok)."""
+    E = _num(equity)
+    try:
+        K = max(1, int(slots or 1))
+    except (TypeError, ValueError):
+        K = 1
+    r = _num(reserve_pct)
+    if E is None or E <= 0 or r is None:
+        return 0.0
+    return max(0.0, min(float(n_slots) * (1.0 - r / 100.0) * E / K, POLICY_RESERVE_MAX_PCT / 100.0 * E))
+
+
+def baseline_size_tag(notional, leverage) -> dict[str, Any] | None:
+    """`baseline_size` etiketi (taban boyutu: notional, kaldıraç). Geçersizse None (görünüm gerçek boyutu kullanır)."""
+    n, lev = _num(notional), _num(leverage)
+    if n is None or n <= 0 or lev is None or lev < 1:
+        return None
+    return {"notional": round(n, 6), "leverage": int(lev)}
+
+
+def baseline_view(state: Any, learning_by_symbol: dict[str, Any], *, market_type: str = "USDM_PERP") -> tuple[Any, float]:
+    """Taban defterin ŞU AN tutacağı portföyün YAKLAŞIK görünümü (2026-09-28, öğrenme modu) — `learning_unlocked_by`
+    etiketi ve politika önceliği içindir; karar/boyut/defter DEĞİŞMEZ.
+
+    * öğrenme-ekstra açık pozisyon (`learning_unlocked_by` dolu): taban defterde OLMAZDI → çıkarılır (marjı serbest);
+    * politika pozisyonu (boş etiket): taban boyutunda (`baseline_size`) sayılır; kayıt yoksa gerçek boyutla;
+    * öğrenme etiketi olmayan pozisyon (taban/askıda açılmış): olduğu gibi.
+
+    Döner: (görünüm, marj farkı = görünümün kullanılan marjı − gerçek). Görünümdeki serbest marj = gerçek − fark.
+    YAKLAŞIK: taban defterin burada hiç açılmamış işlemleri ve gerçekleşen P&L farkı bilinmez (özsermaye aynı sayılır).
+    Öğrenme etiketi taşıyan pozisyon yoksa durum AYNEN döner (fark 0)."""
+    ops = list(getattr(state, "open_positions", None) or [])
+    keep: list[Any] = []
+    delta, changed = 0.0, False
+    for o in ops:
+        lr = learning_by_symbol.get(o.symbol) if getattr(o, "market_type", None) == market_type else None
+        if not isinstance(lr, dict):
+            keep.append(o)
+            continue
+        changed = True
+        m0 = float(_num(getattr(o, "margin", None)) or 0.0)
+        if lr.get("learning_unlocked_by"):
+            delta -= m0
+            continue
+        bs = lr.get(BASELINE_SIZE_KEY)
+        n = _num(bs.get("notional")) if isinstance(bs, dict) else None
+        lev = _num(bs.get("leverage")) if isinstance(bs, dict) else None
+        entry = _num(getattr(o, "entry", None))
+        if n is None or n <= 0 or lev is None or lev < 1 or not entry:
+            keep.append(o)
+            continue
+        stop = _num(getattr(o, "stop", None))
+        m = n / lev
+        keep.append(replace(o, notional=n, margin=m, leverage=float(lev),
+                            risk_usdt=(abs(entry - stop) / entry * n) if stop is not None else n))
+        delta += m - m0
+    if not changed:
+        return state, 0.0
+    view = replace(state, open_positions=keep, used_margin=max(0.0, float(state.used_margin) + delta),
+                   available=float(state.available) - delta)
+    return view, delta
+
+
 __all__ = ["BOOK_NAMES", "OVERRIDE_KEYS", "LIST_OVERRIDE_KEYS", "SIZE_SLOT", "SIZE_BUMP", "SIZE_SHRUNK", "SIZE_RULES",
            "HARD_CAP_PCT", "RISK_NOTIONAL_ROUND_TOL", "SYMBOLS_UNIVERSE", "STATE_DISABLED", "STATE_ACTIVE", "SUSPENDED_PREFIX",
            "LEVERAGE_FALLBACK", "LEVERAGE_FALLBACK_REASON", "COUNTERFACTUAL_OK", "COUNTERFACTUAL_NEVER",
            "BookLearningCfg", "BookLearning", "LearningMode", "FitResult", "profile_for", "fit_size",
-           "leverage_fallback", "counterfactual_ok"]
+           "leverage_fallback", "counterfactual_ok", "POLICY_RESERVE_SLOTS", "POLICY_RESERVE_MAX_PCT",
+           "BASELINE_SIZE_KEY", "policy_reserve_usdt", "baseline_size_tag", "baseline_view"]

@@ -242,6 +242,10 @@ class CounterfactualRecorder:
         self.expired = int(m.get("expired", 0) or 0)
         self.recorded_total = int(m.get("recorded_total", 0) or 0)
         self.superseded = int(m.get("superseded", 0) or 0)
+        #: Defterin öğrenme sayaçlarının KALICI yedeği (2026-09-28, ikinci doğrulama turu): özetin `learning` alanı öğrenme
+        #: kapalıyken ve eski kodda yazılmaz (sayaçlar silinirdi); bu dosyaya ise ne kapalı yol ne eski kod dokunur.
+        self.book_counters: dict[str, int] = {str(k): int(v) for k, v in (m.get("book_counters") or {}).items()
+                                              if isinstance(v, (int, float)) and not isinstance(v, bool)}
         self._keys: set[tuple] = {self._key(t.signal_key or t.plan_id, t.symbol, t.direction, t.variation)
                                   for t in self.sb.trades}
         #: Düşürülen kayıtların anahtarları (süreç içi, sınırlı): aynı bar yeniden kaydı tekrar tetiklemesin.
@@ -363,12 +367,27 @@ class CounterfactualRecorder:
         return _eval_view(t)
 
     # ------------------------------------------------------------ kalıcılık / rapor
+    def sync_book_counters(self, counters: dict | None) -> dict[str, int]:
+        """Defter sayaçlarını yedekle birleştirir (anahtar başına EN BÜYÜK — sayaçlar yalnız artar) ve birleşik sözlüğü
+        döner; yedek değiştiyse kayıt kirlenir (sonraki `save` yazar)."""
+        merged = dict(self.book_counters)
+        for k, v in (counters or {}).items():
+            if isinstance(v, bool) or not isinstance(v, (int, float)):
+                continue
+            merged[str(k)] = max(int(v), int(merged.get(str(k), 0)))
+        if merged != self.book_counters:
+            self.book_counters = merged
+            self._dirty = True
+        return dict(merged)
+
     def save(self) -> None:
         """Tek atomik yazım (arşiv taşması `ShadowBook.save` kurallarıyla). Değişiklik yoksa dokunmaz."""
         if not self._dirty and self.path.exists():
             return
         self.sb.meta = {"schema_version": SCHEMA_VERSION, "book": self.book_name, "dropped": self.dropped,
                         "expired": self.expired, "recorded_total": self.recorded_total, "superseded": self.superseded}
+        if self.book_counters:
+            self.sb.meta["book_counters"] = dict(self.book_counters)
         self.sb.save()
         self._dirty = False
 

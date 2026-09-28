@@ -160,7 +160,9 @@ def test_learning_opens_candidate_that_baseline_blocks_for_capacity(tmp_path, mo
         if case == "TOTAL_OPEN_RISK":
             _prefill(eng, notional=40.0, lev=2, stop_pct=5.0, n=3, now=now)      # risk 6/6, marj 60/100
         else:
-            _prefill(eng, notional=170.0, lev=2, stop_pct=0.5, n=1, now=now)     # risk 0.85, marj 85/100
+            # risk 0.80, marj 80,25/100 (serbest ≈19,7): taban (40 @2x → 20) sığmaz; öğrenme slotu (10 @2x → 5) genel
+            # rezerv (5) + politika rezervi (2 slot = 9,5) düşülünce de sığar (2026-09-28, ikinci doğrulama turu)
+            _prefill(eng, notional=160.5, lev=2, stop_pct=0.5, n=1, now=now)
         decisions, chief, briefs, marks = _cands(eng, SYMS[:1])
         opened, risk_log = eng._execute(decisions, chief, briefs, None, marks, now)
         runs[name] = (eng, opened, _log(risk_log, SYMS[0]))
@@ -240,6 +242,65 @@ def test_min_notional_bump_above_hard_cap_is_refused_with_counterfactual(tmp_pat
     e = _log(risk_log, SYMS[0])
     assert opened == [] and e["risk_reasons"] == ["MIN_ORDER_CONFLICT"] and e["learning_fit"]["why"] == "RISK_CAP"
     assert [t.reason_not_opened[0] for t in _main_cfs(eng)] == ["MIN_ORDER_CONFLICT"]
+
+
+def test_policy_candidate_is_not_crowded_out_by_an_earlier_learning_extra_candidate(tmp_path, monkeypatch):
+    """(2026-09-28, ikinci doğrulama turu) Defter öğrenme-ekstra pozisyonlarla dolu (serbest ≈ 12,9 / E=100). Aynı turda
+    ÖNCE taban kurallarının açmayacağı aday (MIN_ORDER_CONFLICT), SONRA tabanın da açacağı aday gelir:
+
+    * taban görünümü öğrenme-ekstra pozisyonları saymaz → ikinci aday "politika" (etiket boş, `baseline_size` kayıtlı);
+      eskiden öğrenme defterinin dar marjı yüzünden INSUFFICIENT_MARGIN etiketi alıyordu;
+    * politika rezervi: öğrenme-ekstra aday son 2 slotu (9,5) göremez → INSUFFICIENT_MARGIN + karşı-olgusal; politika
+      adayı tam slotla açılır. Eskiden ilk aday slotu alıyor, politika adayı marja küçülüyordu (V2: ana bot UNI)."""
+    eng = _eng(tmp_path, monkeypatch, _lm())
+    now = utc_now().replace(microsecond=0)
+    extra_tag = {"book": "main", "size_rule": "SLOT", "learning_unlocked_by": ["REGIME_VETO:R1_SHORT_BLOCKED"]}
+    for sym in ("XRP/USDT", "DOGE/USDT", "TRX/USDT"):
+        px = Decimal("1.0")
+        pos = eng.ledger2.open(sym, "LONG", px, SizeSpec(Decimal("58"), AmountType.NOTIONAL, 2),
+                               stop=px * Decimal("0.995"), targets=[px * Decimal("1.2")], now=now,
+                               meta={"learning": dict(extra_tag)})
+        assert pos is not None, eng.ledger2.last_reject_reason
+    assert 12.0 < float(eng.ledger2.available) < 14.5
+    ext, pol = SYMS[1], SYMS[0]
+    d1, c1, b1, m1 = _cands(eng, [ext], notional=3.0)              # taban: 3 < min 5 → MIN_ORDER_CONFLICT
+    d2, c2, b2, m2 = _cands(eng, [pol])                            # taban: 40 @2x, risk %2 → açardı
+    chief = SimpleNamespace(priority=[ext, pol], permission={**c1.permission, **c2.permission}, to_dict=lambda: {},
+                            market_risk_mode="NÖTR")
+    opened, risk_log = eng._execute({**d1, **d2}, chief, b1 + b2, None, {**m1, **m2}, now)
+    e_ext, e_pol = _log(risk_log, ext), _log(risk_log, pol)
+    assert ext not in eng.ledger2.positions and e_ext["learning_fit"]["reason"] == "INSUFFICIENT_MARGIN"
+    assert e_ext["learning_fit"]["policy_grade"] is False and e_ext["learning_fit"]["policy_reserve_usdt"] == 9.5
+    assert [t.reason_not_opened[0] for t in _main_cfs(eng)] == ["INSUFFICIENT_MARGIN"]
+    pos = eng.ledger2.positions[pol]
+    tags = pos.meta["learning"]
+    assert tags["learning_unlocked_by"] == [] and tags["size_rule"] == SIZE_SLOT, tags
+    assert e_pol["learning_fit"]["policy_grade"] is True and e_pol["learning_fit"]["policy_reserve_usdt"] == 0.0
+    assert tags["baseline_size"]["leverage"] == 2 and 30.0 < tags["baseline_size"]["notional"] <= 40.0
+
+
+def test_risk_tags_are_the_filled_risk_after_step_rounding(tmp_path, monkeypatch):
+    """(2026-09-28, öğrenme modu) Defter miktarı adıma AŞAĞI yuvarlar: `risk_usdt` / `risk_fraction_of_budget` etiketi
+    GERÇEKLEŞEN pozisyondan (miktar × |dolum − stop|) okunur — defterler ve Formasyon ile aynı; fit değeri
+    `risk_usdt_fit`te kalır. Eskiden fit (yuvarlama öncesi) değeri yazılıyordu (gerçek riskten %12'ye kadar büyük)."""
+    from tradingbot.accounting import MarketType
+    from tradingbot.accounting.models import SymbolFilters
+    eng = _eng(tmp_path, monkeypatch, _lm())
+    eng.filters._data[MarketType.USDM_PERP][SYMS[0]] = SymbolFilters(SYMS[0], qty_step=Decimal("0.01"),
+                                                                     min_qty=Decimal("0.01"))
+    decisions, chief, briefs, marks = _cands(eng, SYMS[:1], stop_pct=5.0)
+    opened, risk_log = eng._execute(decisions, chief, briefs, None, marks, utc_now())
+    e = _log(risk_log, SYMS[0])
+    assert opened, e
+    pos = eng.ledger2.positions[SYMS[0]]
+    tags = pos.meta["learning"]
+    filled = float(pos.qty) * abs(float(pos.entry_avg) - float(pos.stop))
+    assert tags["size_rule"] == SIZE_SLOT and tags["risk_usdt_fit"] == pytest.approx(e["learning_fit"]["risk_usdt"], abs=1e-6)
+    assert filled < 0.9 * tags["risk_usdt_fit"], "senaryo: adım (0.01) yuvarlaması riski belirgin küçültür"
+    assert tags["risk_usdt"] == pytest.approx(filled, rel=1e-6)
+    assert tags["risk_fraction_of_budget"] == pytest.approx(filled / 0.5, rel=1e-6)
+    assert tags == pos.features["learning"] == e["learning"]
+    assert e["filled_risk_usdt"] == pytest.approx(filled, abs=1e-6)
 
 
 # ============================================================================ STRATEJİ KAPILARI (S1/S2/S3/S5)
@@ -689,3 +750,39 @@ def test_learning_tour_tags_journal_health_and_funnel(tmp_path, monkeypatch):
         assert p.meta["learning"]["book"] == "main" and p.features["learning"]["slots"] == 20
     mem = [json.loads(x) for x in (st / "trade_memory.jsonl").read_text(encoding="utf-8").splitlines() if x.strip()]
     assert any((m.get("features") or {}).get("learning") for m in mem if m.get("kind") == "entry")
+
+
+# ============================================================================ deneyim önbelleği (bellek)
+def test_experience_cache_keeps_only_what_the_pool_reads_and_the_pool_is_unchanged(tmp_path, monkeypatch):
+    """(2026-09-28, ikinci doğrulama turu) Öğrenmede ana bot günde ~27 işlem kapatır; her giriş satırı ajan/şef raporlarıyla
+    ~50–80 KB. Deneyim önbelleği bu satırları süreç ömrü boyunca TAM tutuyordu (RSS tur başına ~1 MB büyüyordu). Önbellek
+    artık yalnız havuzun okuduğu alanları tutar; hazırlanan havuz (deneyimler + vektörler) tam satırlarla BİREBİR aynı."""
+    from tradingbot.learn.experience import experience_row, prepare_pool
+    eng = _eng(tmp_path, monkeypatch, _lm())
+    heavy = {"reports": ["x" * 2000] * 20}
+    for i in range(6):
+        tid = "T%d" % i
+        feats = {"rr": 1.5 + i, "atr_pct": 0.2 * i, "conviction": 0.1 * i} if i % 3 else {}   # özelliksiz satır da var
+        eng.memory.record_entry({"trade_id": tid, "symbol": SYMS[i % 2], "direction": "LONG", "market_type": "USDM_PERP",
+                                 "setup_type": "pullback", "regime": "TREND_UP", "features": feats, "rr": 2.0 + i,
+                                 "decision": dict(heavy), "chief": dict(heavy), "snapshot": dict(heavy),
+                                 "risk_decision": {"allowed": True}, "model_versions": {"m": "1"}})
+        eng.memory.record_exit(tid, {"r_multiple": (-1.0) ** i * 0.7, "opened_at": "2026-09-2%dT00:00:00+00:00" % i,
+                                     "closed_at": "2026-09-2%dT04:00:00+00:00" % i, "fee_drag_r": 0.05},
+                               postmortem={"lesson_codes": ["L%d" % i], "text": "y" * 3000})
+    cfg = SimpleNamespace(shadow_weight=0.25, shadow_fidelity=0.5)
+    pool = eng._prepared_experience_pool(cfg)
+    cached = eng._exp_index._rows["memory"]
+    assert len(cached) == 6 and len(pool) == 6
+    assert not any(k in r for r in cached for k in ("decision", "chief", "snapshot", "risk_decision", "model_versions"))
+    assert all(set((r.get("postmortem") or {})) <= {"lesson_codes"} for r in cached)
+    full = eng.memory.trades(closed_only=True)
+    assert len(json.dumps(cached, default=str)) * 5 < len(json.dumps(full, default=str))
+    ref = prepare_pool(memory_rows=full, shadow_trades=[], shadow_weight=0.25, shadow_fidelity=0.5)
+    compact = prepare_pool(memory_rows=[experience_row(r) for r in full], shadow_trades=[], shadow_weight=0.25,
+                           shadow_fidelity=0.5)
+    for p in (pool, compact):
+        assert [e.to_dict() for e in p.experiences] == [e.to_dict() for e in ref.experiences]
+        assert p.vectors == ref.vectors and p.norms == ref.norms and p.order == ref.order
+    h = eng._lm_memory_health()
+    assert set(h) == {"rss_mb", "hwm_mb", "exp_cache_rows"} and h["exp_cache_rows"]["memory"] == 6

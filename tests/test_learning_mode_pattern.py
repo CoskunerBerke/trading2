@@ -230,6 +230,21 @@ def test_learning_opens_the_4th_and_5th_position_with_slot_sizing(tmp_path):
     assert all(p.get("learning", {}).get("size_rule") == "SLOT" for p in doc["positions"].values())
 
 
+def test_baseline_count_cap_label_ignores_learning_extra_positions(tmp_path):
+    """(2026-09-28, ikinci doğrulama turu) Taban görünümü: defterdeki 3 pozisyon öğrenme-ekstra (R/R tabanı altında —
+    taban bunları hiç açmazdı) → 4. sinyal için taban adet tavanı (3) DOLU sayılmaz; taban da açardı → etiket boş
+    (politika) ve taban boyutu kaydedilir. Eskiden öğrenme defterinin adedi sayılıyordu (MAX_POSITIONS etiketi)."""
+    _, book = _direct(tmp_path)
+    syms = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT"]
+    for s in syms[:3]:
+        assert _open(book, _plan(s, min_rr=5.0)) == "OPENED"
+        assert "RR_BELOW_MIN_AT_ENTRY" in book.ledger.positions[s].meta["learning"]["learning_unlocked_by"]
+    assert _open(book, _plan(syms[3])) == "OPENED"
+    m = book.ledger.positions[syms[3]].meta["learning"]
+    assert m["learning_unlocked_by"] == [], m
+    assert m["baseline_size"]["notional"] > 0 and m["baseline_size"]["leverage"] >= 1
+
+
 # ====================================================================== D1: çalışma zamanı askısı tavanı geri getirir
 @pytest.mark.parametrize("how", ["no_view", "gate_down"])
 def test_runtime_suspension_restores_the_count_cap(tmp_path, how):
@@ -516,6 +531,55 @@ def test_position_open_and_exchange_rejects_write_counterfactuals(tmp_path, monk
     _, b4 = _direct(tmp_path / "never")
     assert b4._cf_record(_plan(), "DATA_STALE_15M", entry=100.0, at=_dt(NOW)) is False
     assert b4._cf_record(_plan(), "STOP_BEYOND_QUANTIZED_ENTRY", entry=100.0, at=_dt(NOW)) is False
+
+
+def test_position_open_counterfactual_is_superseded_when_the_same_plan_opens_later(tmp_path, monkeypatch):
+    """F7 (Formasyon, 2026-09-28 öğrenme modu): pozisyon açıkken taze sinyal POSITION_OPEN kaydına düşer (plan kurulmaz);
+    pozisyon aynı 4h barında kapanır, öğrenmede soğuma yok (D5), aynı plan kimliği yeniden kurulup GERÇEKTEN açılır →
+    kayıt düşer (aynı gözlem hem dolum hem "açılmadı" SAYILMAZ), anahtar tekillikte kalır (yeniden yazılmaz)."""
+    _, book = _direct(tmp_path)
+    assert _open(book, _plan(pid="first")) == "OPENED"
+    import tradingbot.pattern_trader.strategy_v3 as S3
+    fresh = _plan(pid="third")
+    monkeypatch.setattr(S3, "build_plans_v3", lambda *a, **k: ([dict(fresh)], []))
+    assert book._cf_signals_while_open("BTC/USDT", as_of_ms=NOW, dec_ms=NOW, analyses={}, bars_by_tf={}, ue=_ue(), ds={},
+                                       price=_price()) == 1
+    assert "third" not in book.plans and [t.signal_key for t in book.cf.sb.trades] == ["third"]
+    assert book.ledger.close_manual("BTC/USDT", 99.0, reason="STOP_TEST", now=_dt(NOW + 60_000)) is not None
+    assert book._entry_block_reason("BTC/USDT", _ue(), NOW + 120_000) is None
+    assert _open(book, _plan(pid="third", now_ms=NOW + 120_000), now_ms=NOW + 120_000) == "OPENED"
+    assert book.ledger.positions["BTC/USDT"].meta.get("plan_id") == "third"
+    assert book.cf.sb.trades == [] and book.cf.stats()["superseded"] == 1
+    assert book.learning_counters["counterfactual_superseded"] == 1
+    # aynı sinyal (kapanan pozisyon sonrası) yeniden taranırsa YENİDEN kaydedilmez
+    assert book._cf_record(_plan(pid="third"), "POSITION_OPEN", entry=100.0, at=_dt(NOW + 180_000)) is False
+    book.save({"BTC/USDT": 100.0}, _dt(NOW + 180_000))
+    doc = json.loads((book.state_dir / "counterfactual_trades.json").read_text(encoding="utf-8"))
+    assert doc["trades"] == [] and doc["meta"]["superseded"] == 1
+    summ = json.loads((book.cfg.state_path / "pattern_trader.json").read_text(encoding="utf-8"))
+    assert summ["learning"]["counters"]["counterfactual_superseded"] == 1
+
+
+def test_learning_counters_survive_an_off_process_via_the_counterfactual_backup(tmp_path):
+    """(2026-09-28, ikinci doğrulama turu) Özet `learning` alanı kapalı süreçte (ve eski kodda) yazılmaz; sayaçlar
+    `counterfactual_trades.json` `meta.book_counters` yedeğinden ilk aktif turda geri gelir (0'dan başlamaz)."""
+    cfg, book = _direct(tmp_path)
+    assert _open(book, _plan("BTC/USDT")) == "OPENED" and _open(book, _plan("ETH/USDT")) == "OPENED"
+    assert book.learning_counters["opened"] == 2
+    book.save({"BTC/USDT": 100.0, "ETH/USDT": 100.0}, _dt(NOW))
+    doc = json.loads((book.state_dir / "counterfactual_trades.json").read_text(encoding="utf-8"))
+    assert doc["meta"]["book_counters"]["opened"] == 2
+    off_cfg = _cfg(tmp_path, learning=LEARN_OFF)                     # yeni süreç, öğrenme KAPALI: özet alanı düşer
+    off = P._book_obj(off_cfg)
+    assert off.learning_counters["opened"] == 2                      # (özetten; kapalı kaydetme alanı düşürür)
+    off.begin_cycle(_dt(NOW + 60_000))
+    off.save({"BTC/USDT": 100.0, "ETH/USDT": 100.0}, _dt(NOW + 60_000))
+    assert "learning" not in json.loads((off_cfg.state_path / "pattern_trader.json").read_text(encoding="utf-8"))
+    on = P._book_obj(_cfg(tmp_path, learning=LEARN))                 # yeniden AÇIK
+    assert on.learning_counters["opened"] == 0
+    on.set_learning(_bl(on.cfg))
+    on.begin_cycle(_dt(NOW + 120_000))
+    assert on.learning_counters["opened"] == 2, on.learning_counters
 
 
 def test_learning_view_is_fixed_per_cycle_and_the_gate_is_asked_once(tmp_path):

@@ -288,6 +288,23 @@ def experience_vector(e: Experience, rows_by_id: dict[str, dict[str, Any]],
     return v, (math.sqrt(sum(x * x for x in v)) or 1.0)
 
 
+#: Havuzun HİÇ okumadığı ağır giriş yükleri (ajan/şef raporları, anlık görüntü, risk kararı; satır başına ~50–80 KB).
+#: Önbellek bunları TUTMAZ (2026-09-28, öğrenme modu — ikinci doğrulama turu: öğrenmede ana bot günde ~27 kapanış
+#: üretiyor, tam satırlar önbellekte sınırsız birikiyordu). Özellik yoksa satırın kendisi vektörlenir; `build_features`
+#: yalnız düz sayısal anahtarları okur, bu anahtarların hiçbiri onlardan değildir.
+_HEAVY_ROW_KEYS = frozenset({"decision", "chief", "snapshot", "risk_decision", "model_versions", "price_path"})
+
+
+def experience_row(row: dict[str, Any]) -> dict[str, Any]:
+    """`TradeMemory` satırının havuz için SINIRLI kopyası: `real_experiences`, `rows_by_identity` ve `experience_vector`
+    tam satırla BİREBİR aynı sonucu verir (ağır yükler ve dersler dışındaki postmortem alanları düşer)."""
+    out = {k: v for k, v in row.items() if k not in _HEAVY_ROW_KEYS}
+    pm = row.get("postmortem")
+    if isinstance(pm, dict) and pm:
+        out["postmortem"] = {"lesson_codes": pm.get("lesson_codes")}
+    return out
+
+
 def rows_by_identity(memory_rows: Iterable[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     """`outcome_id` → ham `TradeMemory` satırı (vektörleme için)."""
     out: dict[str, dict[str, Any]] = {}

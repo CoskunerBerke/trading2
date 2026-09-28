@@ -25,7 +25,7 @@ from typing import Any
 from ..accounting import SizeSpec
 from ..accounting.models import AmountType
 from ..learning_cf import STALE_GRACE_BARS
-from ..learning_mode import RISK_NOTIONAL_ROUND_TOL, SIZE_BUMP, SIZE_SHRUNK, fit_size
+from ..learning_mode import BASELINE_SIZE_KEY, RISK_NOTIONAL_ROUND_TOL, SIZE_BUMP, SIZE_SHRUNK, fit_size
 from ..timeframes import tf_ms
 from .data import BARS_PER_TF
 
@@ -81,12 +81,15 @@ class LearningOpen:
 def open_learning(*, act: dict[str, Any], symbol: str, price: float, fill_price: float, tick: Any, now: datetime,
                   ledger: Any, risk: Any, state: Any, filters: Any, run_id: str, learning: Any, data: Any,
                   max_position_pct: float | None, depth: float | None = None,
-                  unlocked: list[str] | None = None) -> LearningOpen:
+                  unlocked: list[str] | None = None, reserve_usdt: float = 0.0,
+                  baseline_size: dict[str, Any] | None = None) -> LearningOpen:
     """ÖĞRENME GİRİŞİ (D2/D3): `fit_size` → derinlik (D17) → öğrenme RiskEngine'i → defter (allow_shrink yedek).
 
     `price` referans mark (defter gerçekleşmeyi bundan üretir), `fill_price` = `ledger.market_fill_price` önizlemesi
     (boyut ve risk BU fiyatla). `data` fail-closed veri hükmü (`apply_action` ile aynı sözleşme). Pozisyon kanıtı:
-    `pos.meta["learning"]` = {size_rule, slots, risk_pct, risk_fraction_of_budget, learning_unlocked_by, ...}."""
+    `pos.meta["learning"]` = {size_rule, slots, risk_pct, risk_fraction_of_budget, learning_unlocked_by, ...}.
+    `reserve_usdt`: öğrenme-ekstra girişin (etiket dolu) göremeyeceği politika rezervi (serbest marjdan düşülür);
+    `baseline_size`: politika işleminin taban boyutu (taban görünümü için pozisyon etiketine yazılır)."""
     if data is None or not data.ok or not data.entry_ok:
         return LearningOpen(None, (data.reason if (data is not None and data.reason) else "DATA_VERDICT_MISSING"))
     direction = str(act.get("direction") or "LONG").upper()
@@ -104,12 +107,14 @@ def open_learning(*, act: dict[str, Any], symbol: str, price: float, fill_price:
                    risk_pct=float(learning.risk_pct), reserve_pct=float(learning.reserve_pct),
                    liq_buffer_mult=float(learning.liq_buffer_mult), min_notional=mn, qty_step=float(filters.qty_step),
                    price_for_step=fill, hard_cap_pct=float(learning.hard_cap_pct),
-                   min_notional_bump=bool(learning.min_notional_bump), available_margin=float(ledger.available),
+                   min_notional_bump=bool(learning.min_notional_bump),
+                   available_margin=float(ledger.available) - max(0.0, float(reserve_usdt or 0.0)),
                    min_qty=float(filters.min_qty), max_position_pct=max_position_pct)
     info: dict[str, Any] = {"book": str(learning.name), "equity_basis": E, "leverage_max": lev_max, "min_notional": mn,
                             "fit": {"ok": fit.ok, "notional": round(fit.notional, 6), "leverage": fit.leverage,
                                     "margin": round(fit.margin, 6), "risk_usdt": round(fit.risk_usdt, 6),
                                     "size_rule": fit.size_rule, "reason": fit.reason,
+                                    "policy_grade": not unlocked, "policy_reserve_usdt": round(float(reserve_usdt or 0.0), 6),
                                     "detail": {k: (round(v, 8) if isinstance(v, float) else v) for k, v in fit.detail.items()}}}
     if not fit.ok:
         return LearningOpen(None, fit.reason or "MIN_ORDER_CONFLICT", info)
@@ -160,44 +165,13 @@ def open_learning(*, act: dict[str, Any], symbol: str, price: float, fill_price:
             "notional": round(float(pos.qty * pos.entry_avg), 6), "margin": round(float(pos.isolated_margin), 6)}
     if "min_depth_0_5pct" in info:
         meta["min_depth_0_5pct"] = info["min_depth_0_5pct"]
+    if not unlocked and isinstance(baseline_size, dict):
+        meta[BASELINE_SIZE_KEY] = dict(baseline_size)        # taban görünümü bu politika pozisyonunu taban boyutunda sayar
     pos.meta["learning"] = dict(meta)
     pos.features["learning"] = dict(meta)
     info["meta"] = meta
     return LearningOpen(pos, "", info)
 
 
-def baseline_blockers(*, act: dict[str, Any], symbol: str, mark: float, now: datetime, ledger: Any, risk: Any,
-                      profile: Any, state: Any) -> list[str]:
-    """`learning_unlocked_by` için UCUZ yeniden ölçüm: bugünkü (baseline) boyutla aynı plan taban RiskEngine'inden ve
-    defter marjından geçer miydi? Döner: engelleyecek kodlar (TOTAL_OPEN_RISK, INSUFFICIENT_MARGIN, ...). Durum
-    DEĞİŞTİRMEZ; yalnız etiket içindir."""
-    stop = float(act.get("stop") or 0.0)
-    if mark <= 0 or stop <= 0 or mark == stop:
-        return []
-    s0 = abs(mark - stop) / mark
-    lev = max(1, int(act.get("leverage") or 1))
-    nb = float(profile.risk_per_trade_pct) / 100.0 * float(state.equity) / s0
-    if act.get("cap_notional_to_position_pct"):
-        cap2 = float(risk.equity_basis(state)) * float(getattr(profile, "max_position_pct", 0.0)) / 100.0 * lev
-        if cap2 > 0 and nb > cap2:
-            nb = cap2 * 0.999
-    plan = {"symbol": symbol, "market_type": "USDM_PERP", "direction": str(act.get("direction") or "LONG").upper(),
-            "entry": mark, "stop": stop, "targets": list(act.get("targets") or []), "notional": nb, "margin": nb / lev,
-            "leverage": lev, "amount_type": "NOTIONAL", "expected_r": 0.0, "min_notional": BASE_MIN_NOTIONAL}
-    out: list[str] = []
-    try:
-        rd = risk.evaluate(plan, state, {"now_utc": now})
-        out.extend(str(c) for c in (rd.reasons or []) if not rd.allowed)
-    except Exception:  # noqa: BLE001 — etiket hesabı girişi ETKİLEMEZ
-        pass
-    try:
-        taker = float(ledger.fees.rate(False))
-        if nb / lev + nb * taker > float(ledger.available):
-            out.append("INSUFFICIENT_MARGIN")
-    except Exception:  # noqa: BLE001
-        pass
-    return out
-
-
 __all__ = ["BASE_MIN_NOTIONAL", "CF_COVER_MARGIN_BARS", "LEARNING_DEPTH_NOTIONAL_MULT", "LEARNING_MIN_DEPTH_USDT",
-           "LearningOpen", "baseline_blockers", "cf_horizon", "min_depth_for", "open_learning"]
+           "LearningOpen", "cf_horizon", "min_depth_for", "open_learning"]

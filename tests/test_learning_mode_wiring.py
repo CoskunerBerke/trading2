@@ -260,7 +260,7 @@ def test_chief_capacity_rule_text():
 CONTRACT_SECTION = {
     "enabled": True, "risk_per_trade_pct": 0.5, "max_total_open_risk_pct": 100, "margin_reserve_pct": 5,
     "liq_buffer_mult": 2.0, "min_notional_bump": True, "counterfactual": True, "counterfactual_max_pending": 2000,
-    "books": {"main": {"enabled": True, "slots": 20},
+    "books": {"main": {"enabled": True, "slots": 20, "leverage_max": 5},
               "t2_trend_regime": {"enabled": True, "slots": 40, "leverage_max": 4},
               "m2_tsmom28": {"enabled": True, "slots": 40, "leverage_max": 4},
               "b1_box_fade": {"enabled": True, "slots": 20, "leverage_max": 4, "min_stop_pct": 0.32},

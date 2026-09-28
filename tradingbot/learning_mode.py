@@ -21,7 +21,7 @@ import threading
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, Mapping
 
 from .risk.profiles import RiskProfile
 
@@ -543,6 +543,11 @@ POLICY_RESERVE_SLOTS = 2
 POLICY_RESERVE_MAX_PCT = 10.0
 #: Politika pozisyonunun taban boyutu (`pos.meta["learning"]["baseline_size"]`: notional, kaldıraç) — taban görünümü bunu okur.
 BASELINE_SIZE_KEY = "baseline_size"
+#: Politika pozisyonunun AÇIK kalan payı (qty / açılış qty'si) — kısmi kapanıştan (TP1) sonra taban görünümü taban boyutunu
+#: bu payla ölçekler (2026-09-28, öğrenme modu; üçüncü doğrulama turu). Kalıcı etikete YAZILMAZ; `learning_tags` üretir.
+OPEN_FRAC_KEY = "_open_frac"
+#: Politika rezervi yüzünden sığmayan öğrenme-ekstra adayın `detail.why` değeri (ret nedeni INSUFFICIENT_MARGIN).
+WHY_POLICY_RESERVE = "POLICY_RESERVE"
 
 
 def policy_reserve_usdt(*, equity, slots, reserve_pct=DEFAULT_RESERVE_PCT, n_slots: int = POLICY_RESERVE_SLOTS) -> float:
@@ -559,6 +564,41 @@ def policy_reserve_usdt(*, equity, slots, reserve_pct=DEFAULT_RESERVE_PCT, n_slo
     return max(0.0, min(float(n_slots) * (1.0 - r / 100.0) * E / K, POLICY_RESERVE_MAX_PCT / 100.0 * E))
 
 
+def fit_with_reserve(*, policy_reserve: float = 0.0, available_margin=None, **kw) -> FitResult:
+    """`fit_size` + politika rezervi (2026-09-28, öğrenme modu; üçüncü doğrulama turu): serbest marjdan `policy_reserve`
+    düşülerek boyutlanır. Rezervsiz SIĞACAK aday rezerv yüzünden sığmıyorsa (MIN_ORDER_CONFLICT/MARGIN ya da
+    INSUFFICIENT_MARGIN) ret nedeni INSUFFICIENT_MARGIN, `detail.why` = POLICY_RESERVE (fit'in kendi nedeni `fit_reason`
+    / `fit_why`de kalır) — kapasite sayacı ve karşı-olgusal nedeni gerçek en küçük emir çatışmasından ayrılır.
+    Rezerv 0 (politika adayı) → `fit_size` çağrısı AYNEN (bit-aynı)."""
+    res = max(0.0, float(_num(policy_reserve) or 0.0))
+    if res <= 0 or available_margin is None:
+        return fit_size(available_margin=available_margin, **kw)
+    av = float(_num(available_margin) or 0.0)
+    fit = fit_size(available_margin=av - res, **kw)
+    if fit.ok or not (fit.reason == "INSUFFICIENT_MARGIN"
+                      or (fit.reason == "MIN_ORDER_CONFLICT" and fit.detail.get("why") == "MARGIN")):
+        return fit
+    if not fit_size(available_margin=av, **kw).ok:
+        return fit                                  # rezervsiz de sığmıyor: gerçek marj/emir çatışması, neden AYNEN
+    return replace(fit, reason="INSUFFICIENT_MARGIN",
+                   detail=dict(fit.detail, why=WHY_POLICY_RESERVE, fit_reason=fit.reason, fit_why=fit.detail.get("why")))
+
+
+def learning_tags(positions: Mapping[str, Any] | None) -> dict[str, Any]:
+    """{sembol: `meta["learning"]`} — taban görünümünün girdisi. Taban boyutu kayıtlı POLİTİKA pozisyonu kısmen kapandıysa
+    (qty < `initial_qty`, ör. TP1) etiketin KOPYASINA açık pay (`OPEN_FRAC_KEY`) eklenir; pozisyonun kendi etiketi
+    DEĞİŞMEZ (2026-09-28, öğrenme modu; üçüncü doğrulama turu)."""
+    out: dict[str, Any] = {}
+    for s, p in (positions or {}).items():
+        lr = (getattr(p, "meta", None) or {}).get("learning")
+        if isinstance(lr, dict) and not lr.get("learning_unlocked_by") and isinstance(lr.get(BASELINE_SIZE_KEY), dict):
+            q, q0 = _num(getattr(p, "qty", None)), _num(getattr(p, "initial_qty", None))
+            if q is not None and q0 is not None and q0 > 0 and 0 < q < q0:
+                lr = dict(lr, **{OPEN_FRAC_KEY: q / q0})
+        out[s] = lr
+    return out
+
+
 def baseline_size_tag(notional, leverage) -> dict[str, Any] | None:
     """`baseline_size` etiketi (taban boyutu: notional, kaldıraç). Geçersizse None (görünüm gerçek boyutu kullanır)."""
     n, lev = _num(notional), _num(leverage)
@@ -567,22 +607,45 @@ def baseline_size_tag(notional, leverage) -> dict[str, Any] | None:
     return {"notional": round(n, 6), "leverage": int(lev)}
 
 
-def baseline_view(state: Any, learning_by_symbol: dict[str, Any], *, market_type: str = "USDM_PERP") -> tuple[Any, float]:
+def _open_frac(lr: dict) -> float:
+    f = _num(lr.get(OPEN_FRAC_KEY))
+    return f if (f is not None and 0 < f < 1) else 1.0
+
+
+def baseline_view(state: Any, learning_by_symbol: dict[str, Any], *, market_type: str = "USDM_PERP",
+                  spot_by_symbol: dict[str, Any] | None = None) -> tuple[Any, float]:
     """Taban defterin ŞU AN tutacağı portföyün YAKLAŞIK görünümü (2026-09-28, öğrenme modu) — `learning_unlocked_by`
     etiketi ve politika önceliği içindir; karar/boyut/defter DEĞİŞMEZ.
 
     * öğrenme-ekstra açık pozisyon (`learning_unlocked_by` dolu): taban defterde OLMAZDI → çıkarılır (marjı serbest);
-    * politika pozisyonu (boş etiket): taban boyutunda (`baseline_size`) sayılır; kayıt yoksa gerçek boyutla;
+    * politika pozisyonu (boş etiket): taban boyutunda (`baseline_size`) sayılır; kayıt yoksa gerçek boyutla. Kısmen
+      kapandıysa (TP1; `learning_tags` açık payı ekler) taban boyutu AYNI payla ölçeklenir (üçüncü doğrulama turu);
     * öğrenme etiketi olmayan pozisyon (taban/askıda açılmış): olduğu gibi.
+    * SPOT (`spot_by_symbol`, ana botun spot alımlarının etiketleri; üçüncü doğrulama turu): öğrenme-ekstra spot çıkarılır
+      (spot tahsisi düşer), politika spotu taban boyutuna orantılı ölçeklenir. Spot nakit farkı `baseline_spot_delta`.
 
-    Döner: (görünüm, marj farkı = görünümün kullanılan marjı − gerçek). Görünümdeki serbest marj = gerçek − fark.
+    Döner: (görünüm, marj farkı = görünümün kullanılan (futures) marjı − gerçek). Görünümdeki serbest marj = gerçek − fark.
     YAKLAŞIK: taban defterin burada hiç açılmamış işlemleri ve gerçekleşen P&L farkı bilinmez (özsermaye aynı sayılır).
     Öğrenme etiketi taşıyan pozisyon yoksa durum AYNEN döner (fark 0)."""
     ops = list(getattr(state, "open_positions", None) or [])
+    spot_tags = spot_by_symbol or {}
     keep: list[Any] = []
     delta, changed = 0.0, False
     for o in ops:
-        lr = learning_by_symbol.get(o.symbol) if getattr(o, "market_type", None) == market_type else None
+        mt = getattr(o, "market_type", None)
+        if mt == "SPOT" and mt != market_type:
+            lr = spot_tags.get(o.symbol)
+            if not isinstance(lr, dict):
+                keep.append(o)
+                continue
+            changed = True
+            if lr.get("learning_unlocked_by"):
+                continue                                  # taban bu spotu hiç almazdı
+            k = _spot_scale(o, lr)
+            keep.append(o if k is None else replace(o, notional=float(o.notional) * k, margin=float(o.margin) * k,
+                                                    risk_usdt=float(o.risk_usdt) * k))
+            continue
+        lr = learning_by_symbol.get(o.symbol) if mt == market_type else None
         if not isinstance(lr, dict):
             keep.append(o)
             continue
@@ -598,6 +661,7 @@ def baseline_view(state: Any, learning_by_symbol: dict[str, Any], *, market_type
         if n is None or n <= 0 or lev is None or lev < 1 or not entry:
             keep.append(o)
             continue
+        n *= _open_frac(lr)
         stop = _num(getattr(o, "stop", None))
         m = n / lev
         keep.append(replace(o, notional=n, margin=m, leverage=float(lev),
@@ -610,9 +674,40 @@ def baseline_view(state: Any, learning_by_symbol: dict[str, Any], *, market_type
     return view, delta
 
 
+def _spot_scale(o: Any, lr: dict) -> float | None:
+    """Politika spotunun taban boyutu / gerçek maliyet oranı (açık payla). Kayıt yoksa None (gerçek boyut)."""
+    bs = lr.get(BASELINE_SIZE_KEY)
+    n = _num(bs.get("notional")) if isinstance(bs, dict) else None
+    m0 = _num(getattr(o, "margin", None))
+    if n is None or n <= 0 or m0 is None or m0 <= 0:
+        return None
+    return n * _open_frac(lr) / m0
+
+
+def baseline_spot_delta(state: Any, spot_by_symbol: dict[str, Any] | None) -> float:
+    """Taban görünümünün spot MALİYET farkı (görünüm − gerçek; 2026-09-28, öğrenme modu — üçüncü doğrulama turu):
+    öğrenme-ekstra spot çıkarılır (−maliyet), politika spotu taban boyutuna ölçeklenir. Görünümün serbest spot nakdi =
+    gerçek nakit − fark. Etiket yoksa 0."""
+    tags = spot_by_symbol or {}
+    delta = 0.0
+    for o in list(getattr(state, "open_positions", None) or []):
+        lr = tags.get(o.symbol) if getattr(o, "market_type", None) == "SPOT" else None
+        if not isinstance(lr, dict):
+            continue
+        m0 = float(_num(getattr(o, "margin", None)) or 0.0)
+        if lr.get("learning_unlocked_by"):
+            delta -= m0
+            continue
+        k = _spot_scale(o, lr)
+        if k is not None:
+            delta += m0 * k - m0
+    return delta
+
+
 __all__ = ["BOOK_NAMES", "OVERRIDE_KEYS", "LIST_OVERRIDE_KEYS", "SIZE_SLOT", "SIZE_BUMP", "SIZE_SHRUNK", "SIZE_RULES",
            "HARD_CAP_PCT", "RISK_NOTIONAL_ROUND_TOL", "SYMBOLS_UNIVERSE", "STATE_DISABLED", "STATE_ACTIVE", "SUSPENDED_PREFIX",
            "LEVERAGE_FALLBACK", "LEVERAGE_FALLBACK_REASON", "COUNTERFACTUAL_OK", "COUNTERFACTUAL_NEVER",
            "BookLearningCfg", "BookLearning", "LearningMode", "FitResult", "profile_for", "fit_size",
            "leverage_fallback", "counterfactual_ok", "POLICY_RESERVE_SLOTS", "POLICY_RESERVE_MAX_PCT",
-           "BASELINE_SIZE_KEY", "policy_reserve_usdt", "baseline_size_tag", "baseline_view"]
+           "BASELINE_SIZE_KEY", "OPEN_FRAC_KEY", "WHY_POLICY_RESERVE", "policy_reserve_usdt", "fit_with_reserve",
+           "learning_tags", "baseline_size_tag", "baseline_view", "baseline_spot_delta"]

@@ -828,3 +828,108 @@ def test_supersede_drops_the_record_and_keeps_the_key(tmp_path):
     assert [t.symbol for t in cf.sb.trades] == ["T"] and cf.stats()["superseded"] == 1
     assert not cf.record(**kw), "işleme dönüşen sinyal yeniden karşı-olgusal yazılmaz"
     assert cf.supersede(signal_key=None, symbol="T", direction="LONG") == 0
+
+
+# ============================================================================ üçüncü doğrulama turu (2026-09-28)
+def test_reserve_blocked_extra_reports_insufficient_margin_not_a_min_order_conflict():
+    """Politika rezervi (öğrenme-ekstra aday serbest marjın son 2 slotunu göremez) küçük bir artık bırakınca `fit_size`
+    boyutu min-notional'ın altına indiriyor, çıkarma MARGIN'dan düşüyordu → MIN_ORDER_CONFLICT (ana botta
+    RISK_ENGINE_BLOCKED, kapasite sayacı artmıyordu; 30 turda 354 kez). Rezervsiz sığacak aday artık INSUFFICIENT_MARGIN,
+    why=POLICY_RESERVE; rezervsiz de sığmayan aday ve politika adayı AYNEN eski sonuç (2026-09-28, üçüncü doğrulama turu)."""
+    from tradingbot.learning_mode import WHY_POLICY_RESERVE, fit_with_reserve, policy_reserve_usdt
+    kw = dict(equity=100, entry=100, stop=95, slots=20, leverage_max=2, risk_pct=0.5, min_notional=5, qty_step=0.001)
+    p_res = policy_reserve_usdt(equity=100, slots=20)
+    assert p_res == pytest.approx(9.5)
+    old = fit_size(available_margin=16.08 - p_res, **kw)                    # UNI 16:10 (uçtan uca koşu): usable 1,58
+    assert not old.ok and old.reason == "MIN_ORDER_CONFLICT" and old.detail["why"] == "MARGIN"
+    new = fit_with_reserve(policy_reserve=p_res, available_margin=16.08, **kw)
+    assert not new.ok and new.reason == "INSUFFICIENT_MARGIN" and new.detail["why"] == WHY_POLICY_RESERVE
+    assert new.detail["fit_reason"] == "MIN_ORDER_CONFLICT" and new.detail["fit_why"] == "MARGIN"
+    assert counterfactual_ok(new.reason)
+    assert fit_with_reserve(policy_reserve=p_res, available_margin=40.0, **kw) == fit_size(available_margin=40.0 - p_res, **kw)
+    # rezervsiz de sığmıyor → gerçek marj çatışması, neden AYNEN
+    tight = fit_with_reserve(policy_reserve=p_res, available_margin=6.0, **kw)
+    assert tight == fit_size(available_margin=6.0 - p_res, **kw)
+    # politika adayı (rezerv 0) ve serbest marj bilinmiyor → `fit_size` BİT-AYNI
+    for av in (16.08, 6.0, None):
+        assert fit_with_reserve(policy_reserve=0.0, available_margin=av, **kw) == fit_size(available_margin=av, **kw)
+    # başka nedenler (RISK_CAP) rezervden bağımsız → aynen
+    cap = dict(kw, entry=60000, stop=57600, min_notional=60, qty_step=0.001)
+    assert fit_with_reserve(policy_reserve=p_res, available_margin=100, **cap).reason == "MIN_ORDER_CONFLICT"
+
+
+def _tp1_ledger(*, n: float, lev: int, tags: bool = True):
+    """Üç politika pozisyonu (etiket: taban boyutu = gerçek boyut) + TP1 (%50 kapanır, stop başa-baş)."""
+    from tradingbot.accounting.filters import default_filters
+    from tradingbot.learning_mode import baseline_size_tag
+    now = datetime(2026, 9, 28, 12, 0, tzinfo=timezone.utc)
+    led = FuturesLedgerV2(1000.0, max_positions=3, enforce_position_cap=False)
+    for s in ("AAA/USDT", "BBB/USDT", "CCC/USDT"):
+        pos = led.open(s, "LONG", 100.0, SizeSpec(Decimal(str(n)), AmountType.NOTIONAL, lev), stop=98.5,
+                       targets=[101.5, 104.0], filters=default_filters(s, MarketType.USDM_PERP), now=now)
+        assert pos is not None, led.last_reject_reason
+        if tags:
+            pos.meta["learning"] = {"learning_unlocked_by": [],
+                                    "baseline_size": baseline_size_tag(float(pos.qty * pos.entry_avg), pos.leverage)}
+    led.tick({s: 101.6 for s in list(led.positions)}, now + timedelta(minutes=5))
+    assert all(p.tp1_done and p.qty < p.initial_qty for p in led.positions.values())
+    return led, now
+
+
+def _led_state(led, now):
+    from tradingbot.risk import build_state
+    pos = [{"symbol": s, "market_type": "USDM_PERP", "side": p.side.value, "notional": float(p.qty * p.entry_avg),
+            "margin": float(p.isolated_margin), "entry": float(p.entry_avg), "stop": float(p.stop) if p.stop else None,
+            "leverage": p.leverage, "liq_price": None, "opened_at": p.opened_at} for s, p in led.positions.items()]
+    fs = led.summary({})
+    return build_state(equity=float(fs["equity_mtm"]), starting_equity=float(led.starting_equity),
+                       available=float(fs["available"]), used_margin=float(fs["used_margin"]), positions=pos,
+                       history=led.history_dicts(), high_water_mark=0.0, now=now)
+
+
+def test_baseline_view_scales_a_policy_position_after_a_partial_close():
+    """TP1 politika pozisyonunun %50'sini kapatıp marjın yarısını serbest bırakır; taban görünümü pozisyonu kayıtlı TAM
+    taban boyutuyla sayıyordu → kullanılan marj ve risk 2 katı (3 pozisyonda +399,9 marj), tabanın açacağı aday
+    INSUFFICIENT_MARGIN (ekstra) etiketi alıyordu. `learning_tags` açık payı ekler; taban boyutu = gerçek boyut iken görünüm
+    gerçeğe EŞİT (2026-09-28, üçüncü doğrulama turu)."""
+    from tradingbot.learning_mode import OPEN_FRAC_KEY, baseline_view, learning_tags
+    led, now = _tp1_ledger(n=1333, lev=5)
+    st = _led_state(led, now)
+    tags = learning_tags(led.positions)
+    assert all(t[OPEN_FRAC_KEY] == pytest.approx(0.5, abs=1e-3) for t in tags.values())
+    assert all(OPEN_FRAC_KEY not in p.meta["learning"] for p in led.positions.values()), "kalıcı etiket değişmez"
+    view, dm = baseline_view(st, tags)
+    assert dm == pytest.approx(0.0, abs=0.05) and view.available == pytest.approx(st.available, abs=0.05)
+    assert sum(o.risk_usdt for o in view.open_positions) == pytest.approx(sum(o.risk_usdt for o in st.open_positions),
+                                                                         rel=1e-3, abs=1e-6)
+    old_view, old_dm = baseline_view(st, {s: p.meta["learning"] for s, p in led.positions.items()})
+    assert old_dm > 390.0, "eski girdi (açık pay yok): tam taban boyutu sayılır"
+    # açılmadan önce (tam pozisyon) ve etiketsiz pozisyon: pay eklenmez
+    assert learning_tags({"X": type("P", (), {"meta": {"learning": {"learning_unlocked_by": ["R"]}}, "qty": 1,
+                                                "initial_qty": 2})()})["X"] == {"learning_unlocked_by": ["R"]}
+
+
+def test_baseline_view_drops_learning_extra_spot_and_scales_policy_spot():
+    """Ana botun öğrenme spot alımları etiketsizdi → taban görünümü onları tabanın %30 spot tahsisine sayıyordu; 30'u aşan
+    ekstra spotla sonraki her spot aday SPOT_ALLOCATION (ekstra) etiketi alıyordu. Etiketli ekstra spot görünümden düşer,
+    politika spotu taban boyutuna ölçeklenir; nakit farkı `baseline_spot_delta` (2026-09-28, üçüncü doğrulama turu)."""
+    from tradingbot.learning_mode import OPEN_FRAC_KEY, baseline_spot_delta, baseline_view
+    from tradingbot.risk import build_state
+    now = datetime(2026, 9, 28, 12, 0, tzinfo=timezone.utc)
+    pos = [{"symbol": "AAA/USDT", "market_type": "SPOT", "side": "LONG", "notional": 350.0, "margin": 350.0,
+            "entry": 10.0, "stop": None, "leverage": 1, "opened_at": ""},
+           {"symbol": "BBB/USDT", "market_type": "SPOT", "side": "LONG", "notional": 20.0, "margin": 20.0,
+            "entry": 10.0, "stop": 9.5, "leverage": 1, "opened_at": ""}]
+    st = build_state(equity=1000.0, starting_equity=1000.0, available=1000.0, used_margin=0.0, positions=pos,
+                     history=[], high_water_mark=0.0, now=now)
+    spot = {"AAA/USDT": {"learning_unlocked_by": ["REGIME_VETO:R1"]},
+            "BBB/USDT": {"learning_unlocked_by": [], "baseline_size": {"notional": 80.0, "leverage": 1},
+                         OPEN_FRAC_KEY: 0.5}}
+    view, dm = baseline_view(st, {}, spot_by_symbol=spot)
+    assert dm == 0.0 and [o.symbol for o in view.open_positions] == ["BBB/USDT"]
+    (b,) = view.open_positions
+    assert b.margin == pytest.approx(40.0) and b.notional == pytest.approx(40.0) and b.risk_usdt == pytest.approx(2.0)
+    assert view.spot_exposure_usdt == pytest.approx(40.0) and st.spot_exposure_usdt == pytest.approx(370.0)
+    assert baseline_spot_delta(st, spot) == pytest.approx(-350.0 + 20.0)
+    # etiket yoksa görünüm ve fark AYNEN
+    assert baseline_view(st, {}, spot_by_symbol={}) == (st, 0.0) and baseline_spot_delta(st, {}) == 0.0

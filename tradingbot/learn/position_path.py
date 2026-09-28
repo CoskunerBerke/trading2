@@ -28,6 +28,7 @@ import logging
 import math
 import os
 import threading
+from collections import deque
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -244,6 +245,12 @@ class PositionPathStore:
         self.skipped_unchanged = 0
         self._last: dict[str, dict[str, Any]] | None = None
         self._ids: set[str] | None = None
+        #: ARTIMLI DİZİN (2026-09-28, öğrenme modu; üçüncü doğrulama turu): öğrenmede bu dosya ~60 kat hızlı büyür
+        #: (uçtan uca koşu: günde 3667 satır / 4,6 MB; kapalıyken 75 KB). `stats()` (turda 2 kez), çıkış değerlendirmesi ve
+        #: kârlılık deneyi dosyayı her turda baştan belleğe alıyordu (30 günlük dosyada her biri +650 MB tepe, 3–4,5 sn).
+        #: Dizin yalnız satır ofsetlerini tutar; satırlar gerektiğinde diskten ayrıştırılır. Çıktılar BİREBİR aynı.
+        self._ix_lock = threading.Lock()
+        self._ix_reset(None)
 
     # ------------------------------------------------------------------ okuma
     def iter_rows(self) -> Iterable[dict[str, Any]]:
@@ -282,6 +289,125 @@ class PositionPathStore:
         for rows in out.values():
             rows.sort(key=lambda x: (int(x.get("ts_ms") or 0), str(x.get("snapshot_id") or "")))
         return out
+
+    # ------------------------------------------------------------------ artımlı dizin
+    IX_GUARD_BYTES = 4096
+    #: Kârlılık deneyinin okuduğu son satır sayısı (`last_rows`).
+    IX_LAST_ROWS = 2000
+
+    def _ix_reset(self, ident: tuple[int, int] | None) -> None:
+        self._ix_ident = ident
+        self._ix_off = 0
+        self._ix_guard = b""
+        self._ix_seen: set[str] = set()
+        self._ix_trades: dict[str, list[tuple[int, int]]] = {}
+        self._ix_tail: deque[tuple[int, int]] = deque(maxlen=self.IX_LAST_ROWS)
+        self._ix_total = 0
+        self._ix_anomaly = False
+        self._ix_partial = False
+
+    def _ix_line(self, raw: bytes, pos: int, n: int) -> None:
+        if self._ix_anomaly:
+            return
+        text = raw.decode("utf-8", errors="replace")             # `iter_rows` ile aynı çözücü (satır sonu = sıfırlama)
+        body = text[:-2] if text.endswith("\r\n") else text[:-1]
+        if "\r" in body:                                          # metin kipinde yalnız \r de satır böler → eski yol
+            self._ix_anomaly = True
+            return
+        line = text.strip()
+        if not line:
+            return
+        try:
+            d = json.loads(line)
+        except json.JSONDecodeError:
+            return
+        if not (isinstance(d, dict) and d.get("trade_id")):
+            return
+        self._ix_tail.append((pos, n))
+        sid = str(d.get("snapshot_id") or "")
+        if sid and sid in self._ix_seen:
+            return
+        if sid:
+            self._ix_seen.add(sid)
+        self._ix_trades.setdefault(str(d["trade_id"]), []).append((pos, n))
+        self._ix_total += 1
+
+    def _ix_sync(self, fh) -> bool:
+        st = os.fstat(fh.fileno())
+        ident = (int(st.st_dev), int(st.st_ino))
+        ok_guard = True
+        if self._ix_guard:
+            fh.seek(self._ix_off - len(self._ix_guard))
+            ok_guard = fh.read(len(self._ix_guard)) == self._ix_guard
+        if ident != self._ix_ident or st.st_size < self._ix_off or not ok_guard:
+            self._ix_reset(ident)
+        self._ix_partial = False
+        if st.st_size > self._ix_off:
+            fh.seek(self._ix_off)
+            pos = last = self._ix_off
+            for raw in fh:
+                n = len(raw)
+                if not raw.endswith(b"\n"):
+                    if raw.strip():
+                        self._ix_partial = True              # `iter_rows` tamamlanmamış son satırı da okur → eski yol
+                    break
+                self._ix_line(raw, pos, n)
+                pos += n
+                last = pos
+            if last > self._ix_off:
+                self._ix_off = last
+                k = min(self.IX_GUARD_BYTES, last)
+                fh.seek(last - k)
+                self._ix_guard = fh.read(k)
+        return not (self._ix_anomaly or self._ix_partial)
+
+    def _ix_run(self, fn):
+        """Dizin dosyanın tamamını temsil ediyorsa `fn(fh | None)`; aksi hâlde None (çağıran eski yolu çalıştırır)."""
+        with self._ix_lock:
+            try:
+                fh = open(self.path, "rb")
+            except FileNotFoundError:
+                self._ix_reset(None)
+                return fn(None)
+            except OSError:
+                return None
+            with fh:
+                if self._ix_sync(fh):
+                    return fn(fh)
+        return None
+
+    @staticmethod
+    def _ix_parse(fh, pos: int, n: int) -> dict[str, Any]:
+        fh.seek(pos)
+        return json.loads(fh.read(n).decode("utf-8", errors="replace").strip())
+
+    def trade_path(self, trade_id: Any) -> list[dict[str, Any]]:
+        """`paths_by_trade().get(trade_id) or []` ile aynı; yalnız bu işlemin satırlarını ayrıştırır."""
+        def f(fh):
+            offs = self._ix_trades.get(trade_id) if fh is not None else None
+            if not offs:
+                return []
+            rows = [self._ix_parse(fh, pos, n) for pos, n in offs]
+            rows.sort(key=lambda x: (int(x.get("ts_ms") or 0), str(x.get("snapshot_id") or "")))
+            return rows
+        out = self._ix_run(f)
+        return out if out is not None else (self.paths_by_trade().get(trade_id) or [])
+
+    def last_rows(self, k: int) -> list[dict[str, Any]]:
+        """`[r for r in iter_rows()][-k:]` ile aynı (0 < k <= IX_LAST_ROWS)."""
+        k = int(k)
+        if not 0 < k <= self.IX_LAST_ROWS:
+            raise ValueError("PositionPathStore.last_rows: 0 < k <= IX_LAST_ROWS olmalı")
+        out = self._ix_run(lambda fh: [] if fh is None else [self._ix_parse(fh, pos, n)
+                                                               for pos, n in list(self._ix_tail)[-k:]])
+        return out if out is not None else [r for r in self.iter_rows()][-k:]
+
+    def _path_counts(self) -> tuple[int, int]:
+        out = self._ix_run(lambda fh: (len(self._ix_trades), self._ix_total))
+        if out is not None:
+            return out
+        by_trade = self.paths_by_trade()
+        return len(by_trade), sum(len(v) for v in by_trade.values())
 
     def _state(self) -> tuple[dict[str, dict[str, Any]], set[str]]:
         if self._last is None or self._ids is None:
@@ -371,12 +497,12 @@ class PositionPathStore:
         self.rejected[code] = self.rejected.get(code, 0) + 1
 
     def stats(self) -> dict[str, Any]:
-        by_trade = self.paths_by_trade()
+        n_trades, n_snaps = self._path_counts()             # artımlı dizinden (dosya baştan belleğe alınmaz)
         return {"schema_version": SCHEMA_VERSION, "path": str(self.path),
                 "appended": self.appended, "errors": self.errors,
                 "rejected": dict(self.rejected), "skipped_unchanged": self.skipped_unchanged,
-                "trades_with_path": len(by_trade),
-                "total_snapshots": sum(len(v) for v in by_trade.values())}
+                "trades_with_path": n_trades,
+                "total_snapshots": n_snaps}
 
 
 def path_completeness(rows: list[dict[str, Any]], *, opened_at: Any = None,

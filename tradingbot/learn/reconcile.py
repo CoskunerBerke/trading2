@@ -185,6 +185,17 @@ def bootstrap_index(*, history: Any, learner: Any, index: LearnedIndex,
 
 
 def _memory_exit_ids(memory: Any) -> set[str]:
+    # artımlı okuyucu bağlıysa yalnız yeni satırlar okunur (tur başına iki tam ayrıştırma yerine); temiz değilse
+    # (sözlük olmayan satır, UTF-8 hatası, tamamlanmamış son satır) aşağıdaki eski akış AYNEN (2026-09-28, üçüncü tur)
+    tail = getattr(memory, "tail", None)
+    if tail is not None:
+        try:
+            ids = tail.exit_ids()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("trade_memory artımlı okunamadı (tam okumaya dönülüyor): %s", exc)
+            ids = None
+        if ids is not None:
+            return ids
     out: set[str] = set()
     try:
         for row in memory.iter_rows():

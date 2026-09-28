@@ -31,7 +31,7 @@ from ..core import atomic_write_json, iso, read_json, utc_now
 from ..learn import TradeMemory
 from ..learn.candle_context import CandleContextConfig, detect_trend
 from ..learning_mode import (STATE_ACTIVE, STATE_DISABLED, SUSPENDED_PREFIX, LearningMode, baseline_view,
-                             policy_reserve_usdt)
+                             learning_tags, policy_reserve_usdt)
 from ..risk import RiskEngine, build_state
 from ..strategy_paper import (PAPER_MARKET, DataVerdict, _baseline_blocks, apply_action, apply_closed_bars_to_ledger,
                               monitoring_gap_on_resume, parse_ts_ms)
@@ -1420,7 +1420,7 @@ class PatternBook:
         kapıları (adet tavanı, risk, marj) öğrenme defterinin DEĞİL taban görünümünün (`baseline_view`) durumuyla ölçülür;
         taban da alacaksa (etiket boş) politika rezervi kullanılabilir (2026-09-28, ikinci doğrulama turu)."""
         state = self._state({symbol: mark})
-        view, _dm = baseline_view(state, {s: (p.meta or {}).get("learning") for s, p in self.ledger.positions.items()})
+        view, _dm = baseline_view(state, learning_tags(self.ledger.positions))
         tags = list(unlocked)
         if len(view.open_positions) >= int(self.section.max_open_positions):
             tags.append(R_MAX_POSITIONS)

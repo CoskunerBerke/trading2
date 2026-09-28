@@ -27,8 +27,8 @@ from .candle_confirmation import closed_bars
 from .core import atomic_write_json, from_iso, iso, quantize_qty, utc_now
 from .learn import TradeMemory
 from .learning_mode import (BASELINE_SIZE_KEY, DEFAULT_MAX_TOTAL_OPEN_RISK_PCT, RISK_NOTIONAL_ROUND_TOL, SIZE_BUMP,
-                            SIZE_SHRUNK, baseline_size_tag, baseline_view, counterfactual_ok, fit_size, policy_reserve_usdt,
-                            profile_for)
+                            SIZE_SHRUNK, baseline_size_tag, baseline_view, counterfactual_ok, fit_with_reserve,
+                            learning_tags, policy_reserve_usdt, profile_for)
 from .regime_gate import BTC_SYMBOL
 from .risk import RiskEngine, build_state, enforces_position_cap
 from . import paper_rules
@@ -470,7 +470,7 @@ def _baseline_blocks(act: dict[str, Any], *, symbol: str, direction: str, entry:
     küçük pozisyonları tabanın marj darlığını gizlemesin (ikinci doğrulama turu). YAKLAŞIK. Döner: (kodlar, taban boyutu
     etiketi | None)."""
     try:
-        view, dm = baseline_view(state, {s: (p.meta or {}).get("learning") for s, p in ledger.positions.items()})
+        view, dm = baseline_view(state, learning_tags(ledger.positions))
         base = RiskEngine(profile, getattr(risk, "ks", None), getattr(risk, "clusters", None))
         notional, lev, _scaled = _baseline_size(act, entry=entry, stop=stop, profile=profile, state=view, risk=base)
         plan = {"symbol": symbol, "market_type": "USDM_PERP", "direction": direction, "entry": entry, "stop": stop,
@@ -527,18 +527,17 @@ def _open_learning(act: dict[str, Any], *, symbol: str, direction: str, entry: f
     bcodes, bsize = _baseline_blocks(act, symbol=symbol, direction=direction, entry=entry, stop=stop, tick=tick,
                                      now=now, ledger=ledger, risk=risk, profile=profile, state=state, filters=filt)
     unlocked += [x for x in bcodes if x not in unlocked]
-    avail = float(ledger.available)
     p_res = 0.0
     if unlocked:
         p_res = policy_reserve_usdt(equity=E, slots=int(learning.slots), reserve_pct=float(learning.reserve_pct))
-        avail -= p_res
-    fit = fit_size(equity=E, entry=sz_px, stop=stop, slots=int(learning.slots), leverage_max=max(1, lmax),
-                   risk_pct=float(learning.risk_pct), reserve_pct=float(learning.reserve_pct),
-                   liq_buffer_mult=float(learning.liq_buffer_mult), mmr=LEARNING_MMR, min_notional=float(filt.min_notional),
-                   qty_step=float(filt.qty_step), price_for_step=sz_px,
-                   hard_cap_pct=float(learning.hard_cap_pct), min_notional_bump=bool(learning.min_notional_bump),
-                   available_margin=avail, min_qty=float(filt.min_qty),
-                   max_position_pct=getattr(rprof, "max_position_pct", None))
+    # rezerv yüzünden sığmayan ekstra aday INSUFFICIENT_MARGIN (why=POLICY_RESERVE) — üçüncü doğrulama turu
+    fit = fit_with_reserve(policy_reserve=p_res, available_margin=float(ledger.available),
+                           equity=E, entry=sz_px, stop=stop, slots=int(learning.slots), leverage_max=max(1, lmax),
+                           risk_pct=float(learning.risk_pct), reserve_pct=float(learning.reserve_pct),
+                           liq_buffer_mult=float(learning.liq_buffer_mult), mmr=LEARNING_MMR,
+                           min_notional=float(filt.min_notional), qty_step=float(filt.qty_step), price_for_step=sz_px,
+                           hard_cap_pct=float(learning.hard_cap_pct), min_notional_bump=bool(learning.min_notional_bump),
+                           min_qty=float(filt.min_qty), max_position_pct=getattr(rprof, "max_position_pct", None))
     tags["fit"] = {"ok": fit.ok, "reason": fit.reason, "size_rule": fit.size_rule, "notional": round(fit.notional, 6),
                    "leverage": int(fit.leverage), "margin": round(fit.margin, 6), "risk_usdt": round(fit.risk_usdt, 6),
                    "why": fit.detail.get("why"), "equity_basis": E,
@@ -1169,7 +1168,8 @@ class StrategyBook:
                         self.rejections[_reason] = self.rejections.get(_reason, 0) + 1
                 if bl is not None:
                     self._learning_after(sym, act, res, bl=bl, pos_open=pos_open, pos_obj=pos_obj, verdict=verdict, fr=fr,
-                                         btc=btc, now=now, now_ms=now_ms, price=float(marks_f[sym]), params=params)
+                                         btc=btc, now=now, now_ms=now_ms, price=float(marks_f[sym]), params=params,
+                                         state=state)
             if self.cf is not None:
                 # bekleyen karşı-olgusallar eldeki çerçevelerle (ek API yok); askıdayken de etiketleme sürer (kayıp yok)
                 self._learning_label(frames_by_symbol, now)
@@ -1273,7 +1273,8 @@ class StrategyBook:
         return intra[-1] if intra else "1d"
 
     def _cf_record(self, sym: str, act: dict[str, Any], reason: str, *, price: float, now: datetime,
-                   verdict: DataVerdict, variation: str | None = None, rule_version: str | None = None) -> bool:
+                   verdict: DataVerdict, variation: str | None = None, rule_version: str | None = None,
+                   extra_features: dict[str, Any] | None = None) -> bool:
         """Açılmayan geçerli sinyalin karşı-olgusal kaydı (P1: anahtar = barın sinyal kimliği, tur kimliği DEĞİL).
         Etiket türü: mum/Box TARGET_STOP_TIME (kuralın kendi hedef/stop/zaman çıkışı), D4/T2/M2 HORIZON (yaklaşık)."""
         from .learning_cf import HORIZON_BARS, LABEL_HORIZON, LABEL_TARGET_STOP_TIME
@@ -1314,6 +1315,8 @@ class StrategyBook:
             feats["candle_variation"] = dict(act["variation"])
         if self.symbols:
             feats["in_lab_universe"] = sym in self.symbols
+        if extra_features:
+            feats.update(extra_features)
         ok = self.cf.record(signal_key=key, symbol=sym, direction=direction, entry=entry, stop=stop, targets=targets,
                             reason=str(reason), created_at=now, tf_minutes=tf_ms(tf) // 60_000, horizon_bars=int(horizon),
                             label_kind=kind, features=feats, variation=variation,
@@ -1324,7 +1327,7 @@ class StrategyBook:
 
     def _learning_after(self, sym: str, act: dict[str, Any] | None, res: str, *, bl: Any, pos_open: bool, pos_obj: Any,
                         verdict: DataVerdict, fr: dict, btc: list, now: datetime, now_ms: int, price: float,
-                        params: Any) -> None:
+                        params: Any, state: Any = None) -> None:
         """Geçişin öğrenme sonrası: sayaçlar + açılmayan geçerli sinyallerin karşı-olgusal kaydı. Arıza işlemi ETKİLEMEZ."""
         try:
             a = act or {}
@@ -1366,12 +1369,13 @@ class StrategyBook:
                 self._cf_candle(sym, a, is_open=is_open, pos_open=pos_open, pos_obj=pos_obj, verdict=verdict, fr=fr,
                                 now=now, now_ms=now_ms, price=price, params=params)
             elif pos_open and self.rule.family in ("box", "donchian"):
-                self._cf_held(sym, pos_obj, verdict=verdict, fr=fr, btc=btc, now=now, now_ms=now_ms, price=price)
+                self._cf_held(sym, pos_obj, verdict=verdict, fr=fr, btc=btc, now=now, now_ms=now_ms, price=price,
+                              state=state)
         except Exception as exc:  # noqa: BLE001 — karşı-olgusal kaydı işlem yolunu ASLA durdurmaz
             log.warning("öğrenme sonrası adım başarısız (%s %s): %s", self.key, sym, exc)
 
     def _cf_held(self, sym: str, pos_obj: Any, *, verdict: DataVerdict, fr: dict, btc: list, now: datetime, now_ms: int,
-                 price: float) -> bool:
+                 price: float, state: Any = None) -> bool:
         """SPEC A15 "+CF" (2026-09-28, öğrenme modu; ikinci doğrulama turu): sembolde pozisyon AÇIKKEN TABAN kuralın (kendi
         parametreleriyle — Box'ta taban `min_stop_pct`) TAZE giriş sinyali POSITION_OPEN karşı-olgusalı olur: tabanın
         alacağı sinyal, öğrenme defterinde daha önce açılmış (ör. dar stoplu) bir işlem sembolü tuttuğu için kaybolmasın.
@@ -1379,7 +1383,18 @@ class StrategyBook:
         Box'ta günde ~511 kayıt ediyordu (tabanınki ~47) — aynı hareketin ardışık barları, dosya/bellek yükü. Yalnız OLAY
         tabanlı aileler (Box, D4); mum ailesi `_cf_candle`da. Trend ailesinin girişi bir DURUM koşuludur (pozisyon boyunca
         her bar doğru) → tutulan işlemin günlük tekrarı olurdu, yazılmaz. Açık pozisyonun KENDİ (ya da daha eski) sinyali
-        kaydedilmez. Öğrenme parametresi (`_learning_params`) bilerek KULLANILMAZ."""
+        kaydedilmez. Öğrenme parametresi (`_learning_params`) bilerek KULLANILMAZ.
+
+        Tek hareket tek kayıt (2026-09-28, üçüncü doğrulama turu): tutulan pozisyon öğrenme-ekstra DEĞİLSE (politika ya da
+        taban/askıda açılmış) taban da aynı pozisyonu tutuyordur → taze sinyali ALMAZDI, kayıt yok. Bu sembolde sonuçlanmamış
+        ve taban kapılarından GEÇMİŞ bir POSITION_OPEN kaydı varsa tabanın varsayımsal pozisyonu hâlâ açıktır → yeni sinyal
+        kaydedilmez (eskiden aynı hareketin ardışık sinyalleri aynı stop/hedef/etiket anıyla 8 kez sayılıyordu). Taban
+        kapıları (`_cf_held_gate`: toplam açık risk, adet, marj) bu sinyali durduracaksa kayıt yine yazılır ama
+        `baseline_blocked_by` taşır ve varsayımsal pozisyon SAYILMAZ — tabanın sonraki gerçek girişi bastırılmaz; aynı sembolde
+        sonuçlanmamış kayıt varken kapıya takılan yeni sinyal ise yazılmaz (aynı hareketin tekrarı)."""
+        held = (getattr(pos_obj, "meta", None) or {}).get("learning")
+        if not (isinstance(held, dict) and held.get("learning_unlocked_by")):
+            return False
         base = paper_rules.decide_for(self.name, frames=fr, btc_rows=btc, now_ms=now_ms, position=None,
                                       params=self.rule_params)
         if not base or str(base.get("action") or "").upper() != "OPEN":
@@ -1390,7 +1405,65 @@ class StrategyBook:
             sc = int(base["signal_ts"]) + tf_ms(self._decision_tf())
         if opened is None or sc is None or int(opened) >= int(sc):
             return False                                  # pozisyon bu (ya da daha eski) sinyalden açıldı
-        return self._cf_record(sym, base, "POSITION_OPEN", price=price, now=now, verdict=verdict)
+        if self.cf is not None and self.cf.has_pending(symbol=sym, reason="POSITION_OPEN", hypothetical_only=True):
+            return False                                  # tabanın varsayımsal pozisyonu (önceki kayıt) sonuçlanmadı
+        extra = None
+        if state is not None:
+            codes = self._cf_held_gate(sym, base, state=state, now=now, price=price)
+            if codes and self.cf is not None and self.cf.has_pending(symbol=sym, reason="POSITION_OPEN"):
+                return False                              # aynı hareketin taban kapısına takılan sinyali zaten kayıtlı
+            extra = {"baseline_blocked_by": codes}
+        return self._cf_record(sym, base, "POSITION_OPEN", price=price, now=now, verdict=verdict, extra_features=extra)
+
+    def _cf_held_gate(self, sym: str, act: dict[str, Any], *, state: Any, now: datetime, price: float) -> list[str]:
+        """Taban bu taze sinyali AÇAR MIYDI? (2026-09-28, öğrenme modu; üçüncü doğrulama turu) — boş liste: açardı.
+
+        Sanal taban portföyü = taban görünümü (öğrenme-ekstra yok, politika pozisyonları taban boyutunda) + bu defterin
+        sonuçlanmamış, kapıdan geçmiş POSITION_OPEN kayıtları (tabanın varsayımsal pozisyonları) taban boyutunda. Taban profilli
+        RiskEngine (AYNI kill switch), defter adet tavanı ve serbest marj. YAKLAŞIK: gerçekleşen P&L farkı ve tabanın başka
+        nedenle açıp öğrenme defterinin hiç görmediği işlemler bilinmez. Arıza → ['BASELINE_UNKNOWN']."""
+        try:
+            from dataclasses import replace as _replace
+
+            from .risk.state import OpenPosition
+            view, _dm = baseline_view(state, learning_tags(self.ledger.positions))
+            base = RiskEngine(self.profile, getattr(self.risk, "ks", None), getattr(self.risk, "clusters", None))
+            held = {o.symbol for o in view.open_positions}
+            hyp, m_h = [], 0.0
+            for t in list(self.cf.sb.trades if self.cf is not None else []):
+                if (t.outcome is not None or t.symbol == sym or t.symbol in held
+                        or list(t.reason_not_opened or [])[:1] != ["POSITION_OPEN"]
+                        or (t.features or {}).get("baseline_blocked_by")):
+                    continue
+                n_h, lev_h, _ = _baseline_size(act, entry=float(t.entry), stop=float(t.stop), profile=self.profile,
+                                               state=view, risk=base)
+                lev_h = max(1, int(lev_h))
+                hyp.append(OpenPosition(symbol=t.symbol, market_type="USDM_PERP", side=str(t.direction), notional=n_h,
+                                        margin=n_h / lev_h, risk_usdt=abs(float(t.entry) - float(t.stop)) / float(t.entry) * n_h,
+                                        entry=float(t.entry), stop=float(t.stop), leverage=float(lev_h)))
+                held.add(t.symbol)
+                m_h += n_h / lev_h
+            if hyp:
+                view = _replace(view, open_positions=list(view.open_positions) + hyp,
+                                used_margin=float(view.used_margin) + m_h, available=float(view.available) - m_h)
+            stop = float(act.get("stop") or 0.0)
+            n, lev, _ = _baseline_size(act, entry=float(price), stop=stop, profile=self.profile, state=view, risk=base)
+            plan = {"symbol": sym, "market_type": "USDM_PERP", "direction": str(act.get("direction") or "LONG").upper(),
+                    "entry": float(price), "stop": stop, "targets": list(act.get("targets") or []), "notional": n,
+                    "margin": n / max(1, lev), "leverage": lev, "amount_type": "NOTIONAL",
+                    "expected_r": float(act.get("expected_r") or 0.0), "min_notional": 5.0}
+            rd = base.evaluate(plan, view, {"now_utc": now})
+            if not rd.allowed:
+                return [str(r) for r in (rd.reasons or ["RISK_DENIED"])]
+            if self.ledger.enforce_position_cap and len(view.open_positions) >= int(self.ledger.max_positions):
+                return ["MAX_POSITIONS"]
+            n2, lev2 = float(rd.adjusted_notional or n), max(1, int(rd.adjusted_leverage or lev))
+            if n2 / lev2 > float(view.available):
+                return ["INSUFFICIENT_MARGIN"]
+            return []
+        except Exception as exc:  # noqa: BLE001 — etiket hesaplanamazsa kayıt yine yazılır (varsayımsal sayılmaz)
+            log.warning("A15 taban kapısı hesaplanamadı (%s %s): %s", self.key, sym, exc)
+            return ["BASELINE_UNKNOWN"]
 
     def _cf_candle(self, sym: str, act: dict[str, Any], *, is_open: bool, pos_open: bool, pos_obj: Any,
                    verdict: DataVerdict, fr: dict, now: datetime, now_ms: int, price: float, params: Any) -> None:

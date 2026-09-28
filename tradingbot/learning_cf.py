@@ -321,6 +321,16 @@ class CounterfactualRecorder:
         self.sb.trades = [t for t in self.sb.trades if id(t) not in drop]
         self.dropped += over
 
+    def has_pending(self, *, symbol: str, reason: str, hypothetical_only: bool = False) -> bool:
+        """Bu sembolde `reason` nedenli, henüz ETİKETLENMEMİŞ kayıt var mı (yön/varyasyon fark etmez)? A15 "+CF": taban
+        kuralın varsayımsal pozisyonu (POSITION_OPEN kaydı) sonuçlanmadan aynı hareketin yeni sinyalleri kaydedilmez
+        (2026-09-28, öğrenme modu; üçüncü doğrulama turu). `hypothetical_only`: taban kapılarının durduracağı kayıtlar
+        (`features.baseline_blocked_by` dolu) varsayımsal pozisyon SAYILMAZ."""
+        sym, r = str(symbol), str(reason)
+        return any(t.outcome is None and t.symbol == sym and list(t.reason_not_opened or [])[:1] == [r]
+                   and not (hypothetical_only and (t.features or {}).get("baseline_blocked_by"))
+                   for t in self.sb.trades)
+
     # ------------------------------------------------------------ gerçek işlemle değişim
     def supersede(self, *, signal_key: str | None, symbol: str, direction: str, variation: str | None = None) -> int:
         """Aynı sinyal (defter, anahtar, sembol, yön, varyasyon) sonradan GERÇEK işlem olarak açıldı: karşı-olgusal kaydı

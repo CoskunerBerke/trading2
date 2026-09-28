@@ -533,6 +533,68 @@ def test_box_signal_on_a_held_symbol_becomes_a_position_open_counterfactual(tmp_
     assert float(book.ledger.positions[SYM].stop) == pytest.approx(109.6), "sembol başına tek pozisyon kalır"
 
 
+def test_held_symbol_counterfactual_counts_one_move_once(tmp_path):
+    """(2026-09-28, üçüncü doğrulama turu; bulgu R1-3) A15 "+CF" aynı hareketin her taze taban sinyalini POSITION_OPEN
+    olarak yazıyordu (uçtan uca koşu: DOGE 08:15–09:30 altı kayıt, hepsi aynı stop/hedef/etiket anı; 25 kaydın 13'ü taban
+    kendi pozisyonunu tutarken). Şimdi: (a) tabanın varsayımsal pozisyonu (sonuçlanmamış POSITION_OPEN kaydı) açıkken yeni
+    sinyal yazılmaz, sonuçlanınca yazılır; (b) tutulan pozisyon politika (taban da tutuyor) ise hiç yazılmaz."""
+    lrn = _bl("b1_box_fade")
+    book = _book(tmp_path / "extra", "b1_box_fade", mode="SHADOW")
+    _step(book, _box_fbs(BOX_TIGHT), now_ms=NOW_M5, px=108.3, learning=lrn)
+    assert "BOX_MIN_STOP_PCT" in book.ledger.positions[SYM].meta["learning"]["learning_unlocked_by"]
+    _step(book, _box_fbs(BOX_WIDE, now_ms=NOW_M5 + 2 * M5), now_ms=NOW_M5 + 2 * M5, px=107.0, learning=lrn)
+    (first,) = book.cf.sb.trades
+    assert first.reason_not_opened == ["POSITION_OPEN"] and first.outcome is None
+    assert first.features["baseline_blocked_by"] == [], "taban kapıları geçer: varsayımsal taban pozisyonu"
+    _step(book, _box_fbs(BOX_WIDE, now_ms=NOW_M5 + 3 * M5), now_ms=NOW_M5 + 3 * M5, px=107.0, learning=lrn)
+    assert book.cf.sb.trades == [first], "tabanın varsayımsal pozisyonu açık: aynı hareketin yeni sinyali yazılmaz"
+    first.outcome = {"exit_reason": "stop", "r_multiple": -1.0}         # varsayımsal pozisyon sonuçlandı
+    _step(book, _box_fbs(BOX_WIDE, now_ms=NOW_M5 + 4 * M5), now_ms=NOW_M5 + 4 * M5, px=107.0, learning=lrn)
+    assert len(book.cf.sb.trades) == 2 and book.cf.sb.trades[1].reason_not_opened == ["POSITION_OPEN"]
+    assert book.cf.sb.trades[1].signal_key != first.signal_key
+    # (b) tutulan pozisyon POLİTİKA: taban da aynı pozisyonu tutuyor → taze sinyal kaydı yok
+    pol = _book(tmp_path / "policy", "b1_box_fade", mode="SHADOW")
+    _step(pol, _box_fbs(BOX_TIGHT), now_ms=NOW_M5, px=108.3, learning=lrn)
+    pol.ledger.positions[SYM].meta["learning"]["learning_unlocked_by"] = []
+    for k in (2, 3):
+        _step(pol, _box_fbs(BOX_WIDE, now_ms=NOW_M5 + k * M5), now_ms=NOW_M5 + k * M5, px=107.0, learning=lrn)
+    assert pol.cf.sb.trades == []
+
+
+def test_held_symbol_counterfactual_uses_a_virtual_baseline_portfolio(tmp_path):
+    """(2026-09-28, üçüncü doğrulama turu) Uçtan uca koşu: yalnız "sonuçlanmamış kayıt = taban pozisyonu" kuralı, tabanın
+    TOTAL_OPEN_RISK ile ALMADIĞI önceki sinyali varsayımsal pozisyon sayıp tabanın sonraki GERÇEK girişini bastırıyordu
+    (OP 10:35 kaydı → OFF'un OP 11:15 işlemi kayıtsız). Taban kapıları sanal taban portföyüyle (taban görünümü +
+    sonuçlanmamış varsayımsal pozisyonlar taban boyutunda) ölçülür: durduracaksa kayıt `baseline_blocked_by` taşır ve
+    varsayımsal pozisyon SAYILMAZ."""
+    import dataclasses
+    s2 = "SOL/USDT"
+    syms = (SYM, s2)
+    lrn = _bl("b1_box_fade")
+    book = _book(tmp_path, "b1_box_fade", mode="SHADOW")
+    rp = float(book.profile.risk_per_trade_pct)
+    book.profile = dataclasses.replace(book.profile, max_total_open_risk_pct=1.5 * rp)     # tek taban pozisyonu sığar
+    _step(book, _box_fbs(BOX_TIGHT, syms=syms), now_ms=NOW_M5, px=108.3, symbols=list(syms), learning=lrn)
+    assert all(book.ledger.positions[s].meta["learning"]["learning_unlocked_by"] for s in syms), "ikisi de ekstra"
+    t2 = NOW_M5 + 2 * M5
+    _step(book, _box_fbs(BOX_WIDE, now_ms=t2, syms=syms), now_ms=t2, px=107.0, symbols=list(syms), learning=lrn)
+    a, b = book.cf.sb.trades
+    assert (a.symbol, a.features["baseline_blocked_by"]) == (SYM, [])
+    assert b.symbol == s2 and "TOTAL_OPEN_RISK" in b.features["baseline_blocked_by"], b.features
+    # aynı hareketin yeni sinyalleri: SYM (varsayımsal pozisyon açık) ve s2 (kapıya takılan kaydı sonuçlanmadı) yazılmaz
+    t3 = NOW_M5 + 3 * M5
+    _step(book, _box_fbs(BOX_WIDE, now_ms=t3, syms=syms), now_ms=t3, px=107.0, symbols=list(syms), learning=lrn)
+    assert book.cf.sb.trades == [a, b]
+    # tabanın varsayımsal SYM pozisyonu sonuçlandı → bütçe serbest: s2'nin sinyali (sonuçlanmamış ENGELLİ kaydı olsa da)
+    # taban girişi olur — engelli kayıt varsayımsal pozisyon sayılmaz, tabanın gerçek girişini BASTIRMAZ; SYM bu kez kapıya takılır
+    a.outcome = {"exit_reason": "stop", "r_multiple": -1.0}
+    t4 = NOW_M5 + 4 * M5
+    _step(book, _box_fbs(BOX_WIDE, now_ms=t4, syms=syms), now_ms=t4, px=107.0, symbols=[s2, SYM], learning=lrn)
+    c, d = book.cf.sb.trades[2:]
+    assert (c.symbol, c.features["baseline_blocked_by"]) == (s2, [])
+    assert d.symbol == SYM and "TOTAL_OPEN_RISK" in d.features["baseline_blocked_by"]
+
+
 # ============================================================================ 3) ölçüm kapıları AYNEN durdurur
 def test_keeps_still_block_under_learning(tmp_path):
     lrn = _bl("d4_donchian_20_10")

@@ -25,7 +25,7 @@ from typing import Any
 from ..accounting import SizeSpec
 from ..accounting.models import AmountType
 from ..learning_cf import STALE_GRACE_BARS
-from ..learning_mode import BASELINE_SIZE_KEY, RISK_NOTIONAL_ROUND_TOL, SIZE_BUMP, SIZE_SHRUNK, fit_size
+from ..learning_mode import BASELINE_SIZE_KEY, RISK_NOTIONAL_ROUND_TOL, SIZE_BUMP, SIZE_SHRUNK, fit_with_reserve
 from ..timeframes import tf_ms
 from .data import BARS_PER_TF
 
@@ -103,13 +103,14 @@ def open_learning(*, act: dict[str, Any], symbol: str, price: float, fill_price:
         if cap:                                                # borsa ve profil tavanı: fit ile RiskEngine AYNI kaldıraçta
             lev_max = min(lev_max, int(cap))
     lev_max = max(1, lev_max)
-    fit = fit_size(equity=E, entry=fill, stop=stop, slots=int(learning.slots), leverage_max=lev_max,
-                   risk_pct=float(learning.risk_pct), reserve_pct=float(learning.reserve_pct),
-                   liq_buffer_mult=float(learning.liq_buffer_mult), min_notional=mn, qty_step=float(filters.qty_step),
-                   price_for_step=fill, hard_cap_pct=float(learning.hard_cap_pct),
-                   min_notional_bump=bool(learning.min_notional_bump),
-                   available_margin=float(ledger.available) - max(0.0, float(reserve_usdt or 0.0)),
-                   min_qty=float(filters.min_qty), max_position_pct=max_position_pct)
+    # rezerv yüzünden sığmayan ekstra aday INSUFFICIENT_MARGIN (why=POLICY_RESERVE) — üçüncü doğrulama turu
+    fit = fit_with_reserve(policy_reserve=max(0.0, float(reserve_usdt or 0.0)), available_margin=float(ledger.available),
+                           equity=E, entry=fill, stop=stop, slots=int(learning.slots), leverage_max=lev_max,
+                           risk_pct=float(learning.risk_pct), reserve_pct=float(learning.reserve_pct),
+                           liq_buffer_mult=float(learning.liq_buffer_mult), min_notional=mn,
+                           qty_step=float(filters.qty_step), price_for_step=fill, hard_cap_pct=float(learning.hard_cap_pct),
+                           min_notional_bump=bool(learning.min_notional_bump), min_qty=float(filters.min_qty),
+                           max_position_pct=max_position_pct)
     info: dict[str, Any] = {"book": str(learning.name), "equity_basis": E, "leverage_max": lev_max, "min_notional": mn,
                             "fit": {"ok": fit.ok, "notional": round(fit.notional, 6), "leverage": fit.leverage,
                                     "margin": round(fit.margin, 6), "risk_usdt": round(fit.risk_usdt, 6),

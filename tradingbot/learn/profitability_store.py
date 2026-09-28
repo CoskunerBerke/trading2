@@ -143,25 +143,31 @@ class ExperimentStore:
             return
         # Her tarama TAM yeniden okumadır; sayaç birikmemeli.
         self.malformed = 0
+        # AKIŞ (2026-09-28, öğrenme modu; üçüncü doğrulama turu): öğrenmede defter ~30 kat hızlı büyür (uçtan uca koşu:
+        # günde 4,4 MB; kapalıyken 0,15 MB) ve turda en az iki kez okunur. `read_text()` + `splitlines()` dosyanın TAMAMINI
+        # metin ve satır listesi olarak belleğe alıyordu. Bayt satırı (`\\n`e kadar) ayrı çözülüp `splitlines()` ile bölünür:
+        # `\\n` her zaman karakter ve satır sınırıdır, çözücü orada sıfırlanır → satırlar ve sıraları BİREBİR aynı.
         try:
-            text = self.events_path.read_text(encoding="utf-8", errors="replace")
+            fh = open(self.events_path, "rb")
         except OSError as exc:
             self.errors += 1
             log.warning("deney olay defteri okunamadı: %s", exc)
             return
-        for ln in text.splitlines():
-            ln = ln.strip()
-            if not ln:
-                continue
-            try:
-                d = json.loads(ln)
-            except json.JSONDecodeError:
-                self.malformed += 1
-                continue
-            if isinstance(d, dict):
-                yield d
-            else:
-                self.malformed += 1
+        with fh:
+            for raw in fh:
+                for ln in raw.decode("utf-8", errors="replace").splitlines():
+                    ln = ln.strip()
+                    if not ln:
+                        continue
+                    try:
+                        d = json.loads(ln)
+                    except json.JSONDecodeError:
+                        self.malformed += 1
+                        continue
+                    if isinstance(d, dict):
+                        yield d
+                    else:
+                        self.malformed += 1
 
     def known_event_ids(self) -> set[str]:
         if self._ids is None:

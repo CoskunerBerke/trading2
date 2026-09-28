@@ -50,6 +50,44 @@ STATE_FILES: dict[str, str] = {
     # ÖĞRENME MODU (2026-09-28, öğrenme modu): ilk aktif an (`learning_mode_since`) — öncesi/sonrası ayrımı (salt okunur).
     "learning_mode": "learning_mode.json",
 }
+def tail_lines(path: Path, n: int, *, block: int = 1 << 16) -> list[str]:
+    """`path.read_text(encoding="utf-8", errors="replace").splitlines()[-n:]` ile BİREBİR aynı, ama dosyanın yalnız son
+    `n` satırı kadarını okur (2026-09-28, öğrenme modu; üçüncü doğrulama turu). Öğrenmede `trade_memory.jsonl` günde
+    ~3,5 MB büyür (giriş satırı ~73 KB); panel (MemoryMax 512M) her istekte dosyanın TAMAMINI metne çevirip bölüyordu.
+
+    Kesim yalnız bir `\\n` baytından SONRA yapılır: UTF-8'de bu bayt her zaman karakter ve `splitlines` sınırıdır, çözücü
+    orada sıfırlanır → kesimden sonraki satırlar tam dosyanın son satırlarıyla aynıdır. Yeterli satır yoksa blok büyür;
+    dosya başına varılırsa tam okuma. `n <= 0` → eski ifade aynen."""
+    if n <= 0:
+        return path.read_text(encoding="utf-8", errors="replace").splitlines()[-n:]
+    with open(path, "rb") as fh:
+        pos = fh.seek(0, 2)
+        buf = b""
+        step = max(1, int(block))
+        while True:
+            if pos <= 0:
+                return buf.decode("utf-8", errors="replace").splitlines()[-n:]
+            k = min(step, pos)
+            pos -= k
+            fh.seek(pos)
+            buf = fh.read(k) + buf
+            i = buf.find(b"\n")
+            if i >= 0:
+                lines = buf[i + 1:].decode("utf-8", errors="replace").splitlines()
+                if len(lines) >= n:
+                    return lines[-n:]
+            step = min(step * 2, 1 << 26)
+
+
+def iter_text_lines(path: Path):
+    """`path.read_text(encoding="utf-8", errors="replace").splitlines()` ile AYNI satırlar, aynı sırada — ama akışla (dosya
+    metin olarak belleğe alınmaz; 2026-09-28, öğrenme modu — üçüncü doğrulama turu). Her bayt satırı (`\\n`e kadar) ayrı
+    çözülür ve `splitlines()` ile bölünür: `\\n` her zaman karakter ve satır sınırıdır, çözücü orada sıfırlanır."""
+    with open(path, "rb") as fh:
+        for raw in fh:
+            yield from raw.decode("utf-8", errors="replace").splitlines()
+
+
 JSONL_FILES: dict[str, str] = {"llm_calls": "llm_calls.jsonl", "trade_memory": "trade_memory.jsonl", "signals_log": "signals_log.jsonl",
                                "decision_journal": "decision_journal.jsonl",
                                "position_path": "position_path.jsonl",
@@ -104,11 +142,11 @@ class StateReader:
         if not p.exists():
             return []
         try:
-            lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
+            lines = tail_lines(p, n)
         except OSError:
             return []
         out: list[dict] = []
-        for ln in lines[-n:]:
+        for ln in lines:
             ln = ln.strip()
             if not ln:
                 continue
@@ -389,7 +427,7 @@ class StateReader:
         if not p.exists():
             return None
         try:
-            for ln in p.read_text(encoding="utf-8", errors="replace").splitlines():
+            for ln in iter_text_lines(p):
                 if trade_id not in ln:
                     continue
                 try:

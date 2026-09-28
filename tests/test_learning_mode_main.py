@@ -733,6 +733,9 @@ def test_learning_tour_tags_journal_health_and_funnel(tmp_path, monkeypatch):
     h = json.loads((st / "health.json").read_text(encoding="utf-8"))
     assert h["learning_mode"]["active"] is True and h["learning_mode"]["reason"] == "ACTIVE"
     assert eng._lm_main is not None and eng._lm_main.name == "main" and eng._lm_main.slots == 20
+    # taban öğrenici görünümü ilk aktif turda kurulur (üçüncü doğrulama turu); artımlı hafıza okuyucusu temiz
+    assert h["learning_mode"]["policy_basis"]["seeded_at"] and (st / "learning_policy_basis.json").exists()
+    assert h["learning_mode"]["memory"]["trade_memory"] is None or h["learning_mode"]["memory"]["trade_memory"]["clean"]
     rj = json.loads((st / "risk.json").read_text(encoding="utf-8"))
     assert rj["learning_mode"]["risk_profile"]["max_total_open_risk_pct"] == 100.0
     assert rj["learning_mode"]["risk_profile"]["risk_per_trade_cap_pct"] == 2.0
@@ -785,4 +788,197 @@ def test_experience_cache_keeps_only_what_the_pool_reads_and_the_pool_is_unchang
         assert [e.to_dict() for e in p.experiences] == [e.to_dict() for e in ref.experiences]
         assert p.vectors == ref.vectors and p.norms == ref.norms and p.order == ref.order
     h = eng._lm_memory_health()
-    assert set(h) == {"rss_mb", "hwm_mb", "exp_cache_rows"} and h["exp_cache_rows"]["memory"] == 6
+    assert set(h) == {"rss_mb", "hwm_mb", "exp_cache_rows", "trade_memory"} and h["exp_cache_rows"]["memory"] == 6
+    assert h["trade_memory"]["clean"] is True and h["trade_memory"]["full_loads"] == 1 and h["trade_memory"]["mb"] > 0
+
+
+# ============================================================================ üçüncü doğrulama turu (2026-09-28)
+def _fill_extras(eng, notional: float, *, now) -> float:
+    """Defteri üç öğrenme-ekstra pozisyonla doldurur; serbest marjı döner."""
+    extra_tag = {"book": "main", "size_rule": "SLOT", "learning_unlocked_by": ["REGIME_VETO:R1_SHORT_BLOCKED"]}
+    for sym in ("XRP/USDT", "DOGE/USDT", "TRX/USDT"):
+        px = Decimal("1.0")
+        pos = eng.ledger2.open(sym, "LONG", px, SizeSpec(Decimal(str(notional)), AmountType.NOTIONAL, 2),
+                               stop=px * Decimal("0.995"), targets=[px * Decimal("1.2")], now=now,
+                               meta={"learning": dict(extra_tag)})
+        assert pos is not None, eng.ledger2.last_reject_reason
+    return float(eng.ledger2.available)
+
+
+def test_policy_label_economics_uses_the_baseline_learner_so_the_reserve_does_not_starve_it(tmp_path, monkeypatch):
+    """Uçtan uca koşu (bulgu R1-1): tabanın 48 turdaki TEK ana işlemi UNI 16:10 öğrenme defterinde açılmadı. Öğrenme-ekstra
+    kapanışlar öğreniciye girip p_win'i 0,5 → 0,142'ye indirdi; ekonomi kapısı NEGATIVE_NET_EDGE dedi → aday "ekstra" →
+    politika rezervi düşüldü (serbest 16,08 − 9,5) → MIN_ORDER_CONFLICT/MARGIN. Etiketin ekonomi kodu artık TABAN öğrenici
+    görünümünün hükmüdür (`_lm_policy_opp`): taban işlenebilir diyorsa aday politika → tam marj → açılır. Keşif etiketi
+    (NEG_EDGE, öğrenme dünyasının kararı) ve öğrenme dünyasının kodu `policy_basis` kaydında kalır."""
+    eng = _eng(tmp_path, monkeypatch, _lm())
+    now = utc_now().replace(microsecond=0)
+    avail = _fill_extras(eng, 56.0, now=now)
+    assert 14.75 < avail < 19.25, avail           # ekstra: 5 + 9,5 rezerv + 4,75 slot sığmaz; politika: 5 + 4,75 sığar
+    sym = SYMS[0]
+    decisions, chief, briefs, marks = _cands(eng, [sym], opp=dict(NEG, conservative_net_edge_r=-0.856))
+    eng._lm_policy_opp[sym] = {"tradeable": True, "research_only": False, "hard_block_codes": [], "size_multiplier": 1.0,
+                               "conservative_net_edge_r": 0.116}
+    eng._lm_pwin_policy[sym] = 0.5
+    opened, risk_log = eng._execute(decisions, chief, briefs, None, marks, now)
+    e = _log(risk_log, sym)
+    assert opened, e
+    tags = eng.ledger2.positions[sym].meta["learning"]
+    assert tags["learning_unlocked_by"] == [] and tags["exploration"] == "NEG_EDGE"
+    pb = tags["policy_basis"]
+    assert pb["policy_basis"] == "POLICY_LEARNER" and pb["learning_codes"] == ["NEGATIVE_NET_EDGE"] and pb["policy_codes"] == []
+    assert pb["p_win_policy"] == 0.5 and pb["conservative_net_edge_r_policy"] == 0.116
+    assert e["learning_fit"]["policy_grade"] is True and e["learning_fit"]["policy_reserve_usdt"] == 0.0
+    assert e["learning_fit"]["policy_basis"] == "POLICY_LEARNER"
+    # taban boyutu tabanın ekonomi çarpanıyla (öğrenme dünyasının keşif çarpanı 0): 40 @2x
+    assert tags["baseline_size"]["leverage"] == 2 and 30.0 < tags["baseline_size"]["notional"] <= 40.0
+    # taban görünümü de işlenemez diyorsa etiket AYNI kalır (ekstra → rezerv → açılmaz, kapasite sayacı + karşı-olgusal)
+    eng2 = _eng(tmp_path / "neg", monkeypatch, _lm())
+    _fill_extras(eng2, 56.0, now=now)
+    d2, c2, b2, m2 = _cands(eng2, [sym], opp=NEG)
+    eng2._lm_policy_opp[sym] = dict(NEG)
+    opened2, rl2 = eng2._execute(d2, c2, b2, None, m2, now)
+    e2 = _log(rl2, sym)
+    assert opened2 == [] and e2["learning_fit"]["policy_grade"] is False and e2["learning_fit"]["reason"] == "INSUFFICIENT_MARGIN"
+    assert e2["learning_fit"]["why"] == "POLICY_RESERVE" and e2["block_code"] == "RISK_CAPACITY_BLOCKED"
+    assert eng2._funnel["risk_capacity_blocked"] == 1
+    (cf,) = _main_cfs(eng2)
+    assert cf.reason_not_opened == ["INSUFFICIENT_MARGIN", "POLICY_RESERVE"]
+
+
+def test_policy_economics_is_assessed_with_the_baseline_learner_and_real_penalties(tmp_path, monkeypatch):
+    """`_assess_opportunities`: öğrenme dünyasının hükmü (`d.opportunity`, öğrenme-ekstra kayıplarla eğilmiş öğrenici ve
+    p_win) NEGATIF; aynı kapı taban öğrenici görünümüyle (`_lm_policy_opp`) işlenebilir. Kesit cezaları tabanda uygulanır
+    (öğrenmede yalnız kayıt). Öğrenme kapalıyken taban görünümü hiç kurulmaz."""
+    from tradingbot.learning_basis import BASIS_FILE
+    eng = _eng(tmp_path, monkeypatch, _lm())
+    assert eng._lm_basis is not None and (eng.cfg.state_path / BASIS_FILE).exists(), "ilk aktif turda kurulur"
+    # öğrenme-ekstra kayıplar: gerçek öğreniciye girer, taban görünümüne GİRMEZ
+    for i in range(12):
+        rec = {"id": "X%d" % i, "symbol": "ETH/USDT", "side": "SHORT", "setup_type": "pullback", "r_multiple": -1.0,
+               "net_pnl": -0.5, "pnl": -0.5, "exit_reason": "stop", "closed_at": "2026-09-28T00:00:00+00:00",
+               "features": {"regime": "TREND_DOWN", "learning": {"learning_unlocked_by": ["REGIME_VETO:R1"]}}}
+        eng.learner2.on_trade_closed(rec, {"regime": "TREND_DOWN"})
+        eng._lm_basis_observe(rec, {"regime": "TREND_DOWN"})
+    assert eng.learner2.exp_r.stats["leaf:pullback|SHORT"].n == 12
+    assert "leaf:pullback|SHORT" not in eng._lm_basis.exp_r.stats and eng._lm_basis.n_extra == 12
+    b = SimpleNamespace(symbol="ETH/USDT", dont_list=[])
+    plan = SimpleNamespace(valid=True, stop_pct=2.0, expected_cost_pct=0.2, expected_r=1.95, entry_type="pullback",
+                           market_type="futures", soft_flags=[])
+    d = SimpleNamespace(is_actionable=True, active_plan=plan, direction="SHORT", regime="TREND_DOWN", p_win=0.142,
+                        soft_flags=[], opportunity=None)
+    eng._lm_pwin_policy["ETH/USDT"] = eng._lm_basis.p_win(None, {}, regime="TREND_DOWN", symbol="ETH/USDT",
+                                                          setup="pullback", prior_blend_n=30.0)
+    assert eng._lm_pwin_policy["ETH/USDT"] == 0.5
+    eng._assess_opportunities({"ETH/USDT": d}, [b])
+    assert d.opportunity["tradeable"] is False
+    pol = eng._lm_policy_opp["ETH/USDT"]
+    assert pol["tradeable"] is True and pol["sample_size"] == 0 and pol["conservative_net_edge_r"] > 0
+    # tabanda kesit cezası UYGULANIR (öğrenmede yalnız kayıt)
+    eng3 = _eng(tmp_path / "pen", monkeypatch, _lm(), {"futures_v3": {"short_penalty_r": 0.5}})
+    d3 = SimpleNamespace(**{**vars(d), "p_win": 0.5, "opportunity": None})
+    eng3._lm_pwin_policy["ETH/USDT"] = 0.5
+    eng3._assess_opportunities({"ETH/USDT": d3}, [b])
+    assert "SHORT_SEGMENT_PENALTY" in {s["code"] for s in eng3._lm_policy_opp["ETH/USDT"]["soft_evidence"]}
+    assert "SHORT_SEGMENT_PENALTY" not in {s["code"] for s in d3.opportunity["soft_evidence"]}
+    # KAPALI: görünüm yok, dosya yok, ek değerlendirme yok
+    off = _eng(tmp_path / "off", monkeypatch, _lm(enabled=False))
+    assert off._lm_basis is None and not (off.cfg.state_path / BASIS_FILE).exists()
+    d4 = SimpleNamespace(**{**vars(d), "opportunity": None})
+    off._assess_opportunities({"ETH/USDT": d4}, [b])
+    assert off._lm_policy_opp == {} and not (off.cfg.state_path / BASIS_FILE).exists()
+
+
+def test_policy_basis_follows_the_learners_on_baseline_closes_and_ignores_learning_extras(tmp_path):
+    """Taban öğrenici görünümü: kurulduğu an gerçek öğrenicilerin kopyası; taban (etiketsiz ya da politika) kapanışında
+    `LearnerV2` (win/exp_r) ve v1 lojistik öğreniciyle BİREBİR aynı güncellenir, öğrenme-ekstra kapanışta güncellenmez.
+    p_win motorun `baseline_p_win` formülüdür (şampiyon yok: 0,5·önsel + 0,5·v1; şampiyon var: model karışımı)."""
+    from tradingbot.learn.learner_v2 import LearnerV2, PredictionResult
+    from tradingbot.learn.memory import TradeMemory
+    from tradingbot.learn.registry import ModelRegistry
+    from tradingbot.learning import Learner
+    from tradingbot.learning_basis import PolicyBasis, economics_codes
+    l2 = LearnerV2(TradeMemory(tmp_path / "tm.jsonl"), ModelRegistry(tmp_path / "models.json"),
+                   state_path=tmp_path / "learn_v2.json")
+    l1 = Learner(tmp_path / "learning.json", min_trades=3)
+    feats = {"regime": "RANGE", "bias_trend": 0.4, "conf_trend": 0.7, "rr": 1.8, "atr_pct": 0.3}
+
+    def close(i, r, tags=None):
+        return {"id": "T%d" % i, "symbol": "SOL/USDT", "side": "LONG", "setup_type": "breakout", "r_multiple": r,
+                "net_pnl": r, "pnl": r, "exit_reason": "target" if r > 0 else "stop",
+                "closed_at": "2026-09-2%dT00:00:00+00:00" % i, "features": dict(feats, **({"learning": tags} if tags else {}))}
+
+    l2.on_trade_closed(close(0, 1.2), {"regime": "RANGE"})
+    l1.learn(close(0, 1.2))
+    basis = PolicyBasis.seed(tmp_path / "basis.json", learner2=l2, learner1=l1)
+    for i, (r, tags) in enumerate([(-1.0, {"learning_unlocked_by": []}), (0.8, None),
+                                   (-1.0, {"learning_unlocked_by": ["STRUCTURE:X"]})], start=1):
+        rec = close(i, r, tags)
+        l2.on_trade_closed(rec, {"regime": "RANGE"})
+        l1.learn(rec)
+        added = basis.observe(rec, {"regime": "RANGE"})
+        assert added is (i != 3)
+        if i == 2:                               # yalnız taban kapanışları görüldü → görünüm = gerçek öğrenici
+            assert basis.win.to_dict() == l2.win.to_dict() and basis.exp_r.to_dict() == l2.exp_r.to_dict()
+            assert basis.v1["weights"] == pytest.approx(l1.state.weights) and basis.v1["bias"] == pytest.approx(l1.state.bias)
+            assert basis.v1["n_trades"] == l1.state.n_trades == 3
+            assert basis.v1_predict(feats) == pytest.approx(l1.predict(feats))
+            pr = l2.prior_only(regime="RANGE", symbol="SOL/USDT", setup="breakout")
+            assert basis.p_win(pr, feats, regime="RANGE", symbol="SOL/USDT", setup="breakout", prior_blend_n=30.0) == \
+                round(0.5 * pr.prior_used + 0.5 * l1.predict(feats), 3)
+            ready = PredictionResult(0.7, 0.62, "m", 30, True, round(l2.win.estimate(regime="RANGE",
+                                                                                      leaf="SOL/USDT|breakout")[0], 4), 3.0)
+            assert basis.p_win(ready, feats, regime="RANGE", symbol="SOL/USDT", setup="breakout",
+                               prior_blend_n=30.0) == pytest.approx(0.62, abs=1e-3)
+    assert basis.win.stats[""].n == 3 and l2.win.stats[""].n == 4 and basis.n_policy == 2 and basis.n_extra == 1
+    again = PolicyBasis.load(tmp_path / "basis.json")
+    assert again is not None and again.to_dict() == basis.to_dict()
+    assert economics_codes({"tradeable": True}) == [] and economics_codes({"research_only": True}) == ["RESEARCH_SIZE_ONLY"]
+    assert economics_codes({"tradeable": False}) == ["NEGATIVE_NET_EDGE"] and economics_codes(None) == []
+
+
+def test_main_baseline_gate_counts_a_tp1_policy_position_at_its_open_share(tmp_path, monkeypatch):
+    """(bulgu R1-2) Üç politika pozisyonu (taban boyutu 133 @5x kayıtlı) TP1'den geçti: taban defter aynı TP1'lerle
+    marjın yarısını serbest bırakır ve 133 @5x adayı AÇAR. Taban görünümü tam taban boyutunu sayıyordu → aday
+    INSUFFICIENT_MARGIN (ekstra, rezerv düşülür). Açık payla ölçeklenince etiket boş (2026-09-28, üçüncü doğrulama turu)."""
+    from tradingbot.learning_mode import baseline_size_tag
+    eng = _eng(tmp_path, monkeypatch, _lm())
+    now = utc_now().replace(microsecond=0)
+    for s in ("XRP/USDT", "DOGE/USDT", "TRX/USDT"):
+        pos = eng.ledger2.open(s, "LONG", Decimal("100"), SizeSpec(Decimal("23.75"), AmountType.NOTIONAL, 5),
+                               stop=Decimal("98.5"), targets=[Decimal("101.5"), Decimal("104")], now=now)
+        assert pos is not None, eng.ledger2.last_reject_reason
+        pos.meta["learning"] = {"learning_unlocked_by": [], "baseline_size": baseline_size_tag(133.32, 5)}
+    eng.ledger2.tick({s: Decimal("101.6") for s in list(eng.ledger2.positions)}, now + timedelta(minutes=5))
+    assert all(p.tp1_done for p in eng.ledger2.positions.values())
+    state = eng._portfolio_state({s: 101.6 for s in eng.ledger2.positions})
+    plan = {"symbol": "ADA/USDT", "market_type": "USDM_PERP", "direction": "LONG", "entry": 100.0, "stop": 98.5,
+            "targets": [101.5, 104.0], "amount_type": "NOTIONAL", "expected_r": 1.0, "spread_pct": 0.02, "min_notional": 5.0}
+    codes, bsize = eng._lm_baseline_blockers(plan, market="USDM_PERP", base_notional=133.32, base_leverage=5,
+                                             state=state, now=now)
+    assert codes == [] and bsize is not None and bsize["leverage"] == 5, codes
+
+
+def test_main_learning_spot_extra_is_not_counted_against_the_baseline_spot_allocation(tmp_path, monkeypatch):
+    """(bulgu R1-5) Ana botun öğrenme spot alımı etiketsizdi: taban görünümü onu tabanın %30 spot tahsisine sayıyordu → 35
+    USDT'lik ekstra spottan sonra her spot aday SPOT_ALLOCATION (ekstra). Spot defterinin `position_meta` kaydı artık
+    öğrenme etiketini taşır (pozisyon kapanınca defter siler); görünüm ekstra spotu çıkarır, nakdi geri ekler."""
+    eng = _eng(tmp_path, monkeypatch, _lm())
+    now = utc_now().replace(microsecond=0)
+    sym = "BNB/USDT"
+    tick = TickData(last=Decimal("10"), mark=Decimal("10"), bid=Decimal("10"), ask=Decimal("10"))
+    order = eng.spot2.market_buy(sym, quote_amount=Decimal("35"), ref_price=Decimal("10"), tick=tick, now=now)
+    assert order is not None and sym in eng.spot2.positions()
+    plan = {"symbol": "ADA/USDT", "market_type": "SPOT", "direction": "LONG", "entry": 10.0, "stop": 9.5,
+            "targets": [11.0], "amount_type": "NOTIONAL", "expected_r": 1.0, "spread_pct": 0.02, "min_notional": 5.0}
+
+    def gate():
+        state = eng._portfolio_state({sym: 10.0})
+        return eng._lm_baseline_blockers(plan, market="SPOT", base_notional=5.0, base_leverage=1, state=state, now=now)
+    assert gate()[0] == ["SPOT_ALLOCATION"], "etiketsiz spot (taban/askıda alınmış) tabanın tahsisinde sayılır"
+    eng._lm_spot_tag_set(sym, {"book": "main", "learning_unlocked_by": ["REGIME_VETO:R1"]})
+    assert eng.spot2.position_meta[sym]["learning"]["open_qty"]
+    codes, bsize = gate()
+    assert codes == [] and bsize == {"notional": 5.0, "leverage": 1}
+    doc = json.loads(json.dumps(eng.spot2.position_meta, default=str))
+    assert doc[sym]["learning"]["learning_unlocked_by"] == ["REGIME_VETO:R1"]

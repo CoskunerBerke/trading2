@@ -1,5 +1,7 @@
 # Öğrenme modu L1: durum kaydı (güncelleme 2026-09-28 ~07:00 UTC)
 
+**DAĞITIMA HAZIR (2026-09-29 22:00 UTC):** kod `f9a61dd` (Ortak Deneyim Katmanı v1 yalnız KAYIT + karşı-olgusal net R cf_label_v3 + canlı stop-taşıma muhasebe düzeltmesi), betik `deploy/releases/tb-deploy-f9a61dd.sh` (`ac42168`, sha256 `e82cec8c…f997ef`). Tam paket 3753 geçti / 0 düştü; 34 değişmez; sahte VPS uçtan uca. Sıradaki: emir akışı/kalabalık (plan hazır: laboratuvar fut_v2 + ayrı kayıt servisi flow_v1).
+
 **Kodlandı, dağıtılmadı (2026-09-29, ORTAK DENEYİM FIX):** Ortak Deneyim Katmanı v1 (yalnız KAYIT) inceleme bulguları kapandı
 (docs/ortak_deneyim/SPEC_V1.md §18): depo döngü histerezisi (dolu sıcak dosyada tur başına segment yok; ölçek tezgâhı kararlı
 adım p50 404 → 91 ms), büyük imleç en çok 5 adımda bir yazılır, G/Ç hatası yarım yazımı geri keser, okuyucu eşit revizyonda

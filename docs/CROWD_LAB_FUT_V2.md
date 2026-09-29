@@ -241,6 +241,42 @@ Komut satırı kuralları: kalabalık kipleri yalnız `--source archive` (ya da 
 - Kalabalık uçları coinler arasında ve günler boyunca kümelenir. Gün kümeli aralık, sıkı kural ve KESİN katkı bunun savunmasıdır.
 - 4h konum/akış durumu yavaş değişir; 1h yalnız bilgidir.
 
-## Sonuç
+## Sonuç: fut_v2 (2026-09-30)
 
-(Doğrulayıcı koşudan sonra doldurulacak.)
+- **Yoklama** ([run 36642581545](https://github.com/CoskunerBerke/trading2/actions/runs/36642581545)): ayrıştırıcıyla çelişki yok; `COLUMN_MAP`, kural ve sabit değişmedi.
+  - Metrics: 30/30 coin OK, hata 0, toplam 20 eksik gün; 5 dk ızgara payı 1,0; pencerede yinelenen satır çatışması 0.
+  - Büyük trader pozisyon oranı (`tpls`) 2022-12-14'ten başlıyor (ARB, SUI, ICP listelendikleri günden). OI ve tüm hesap
+    oranı pencerenin başından var. 2023 sonrası boş hücre payı ≤ %0,3.
+  - Taker mumları: 789.115 bar; bulunma %100, hacim uyuşmazlığı 0, geçersiz 0; taker payı ≈ 0,49.
+  - Eksik anahtar 404 (403 değil); checksum örneklemi 120/120; 47.821 dosya, hata 0, önbellek 358 MB.
+  - 4h `pos_side`: LONG %10,9, SHORT %10,0, NONE %79,1 (UNKNOWN %7,5). `flow_side`: LONG %3,9, SHORT %1,9.
+  - Kör sayım: 4h ailesinde her hipotezde IS ≥ 312 ve OOS ≥ 238; VERİ AZ yok.
+- **Doğrulayıcı koşu** ([run 36646091499](https://github.com/CoskunerBerke/trading2/actions/runs/36646091499)): **8 hipotezin hiçbiri aday değil; dört "takip mi karşı mı" satırının dördü de "kanıt yok".**
+
+| 4h kural | Yön | n (keşif/doğr.) | Keşif ort.R | Doğrulama ort.R | Eşine göre (doğr.) | Kontrole göre (keşif / doğr.) | Katkı | Hüküm / sıkı |
+|---|---|---|---|---|---|---|---|---|
+| BRK_FLOW_FOLLOW | LONG | 1030 / 477 | +0,28 | +0,27 | +0,29 | −0,16 / +0,22 | YOK | ZAYIF İZ / ZAYIF İZ |
+| BRK_FLOW_FOLLOW | SHORT | 322 / 301 | +0,08 | +0,11 | +0,05 | +0,17 / +0,16 | VAR | ZAYIF İZ / ZAYIF İZ |
+| BRK_FLOW_CONTRA | LONG | 322 / 301 | −0,31 | −0,19 | +0,08 | −0,11 / +0,04 | YOK | KANIT YOK / KANIT YOK |
+| BRK_FLOW_CONTRA | SHORT | 1030 / 474 | −0,21 | −0,23 | −0,08 | +0,01 / +0,03 | VAR | KAYBETTİRİR / KAYBETTİRİR |
+| SWEEP_POS_CONTRA | LONG | 312 / 392 | +0,15 | −0,20 | −0,03 | +0,25 / −0,01 | YOK | KANIT YOK / KANIT YOK |
+| SWEEP_POS_CONTRA | SHORT | 436 / 238 | −0,24 | −0,10 | −0,09 | −0,12 / −0,05 | YOK | KANIT YOK / KANIT YOK |
+| SWEEP_POS_FOLLOW | LONG | 436 / 238 | −0,17 | +0,00 | +0,23 | +0,06 / +0,22 | VAR | KANIT YOK / KANIT YOK |
+| SWEEP_POS_FOLLOW | SHORT | 312 / 392 | −0,11 | −0,10 | +0,06 | +0,06 / +0,03 | VAR | KANIT YOK / KANIT YOK |
+
+- **Kırılımda kalabalık girerken:** kalabalıkla birlikte (takip) girmek iki dönemde de artıda (LONG +0,28 / +0,27R), ama
+  doğrulama aralığı sıfırı kapsıyor ve katkı YOK: aynı kırılım kalabalık girmezken (kontrol) keşif döneminde daha iyi gitti.
+  Kazancın kaynağı kalabalık değil, kırılımın kendisi. Kalabalığa karşı (kırılımı söndürmek) SHORT tarafında iki dönemde de
+  kaybettirdi (−0,21 / −0,23R), ama kontrole göre fark ~0: kırılıma karşı girmek zaten kaybettiriyor, kalabalık bunu
+  değiştirmiyor.
+- **Süpürmede kalabalık tuzaktayken:** ne karşı ne takip; hiçbir satır iki dönemde de sıfırdan ayrışmadı.
+- **1h (yalnız bilgi, aday olamaz):** kırılım takip LONG +0,41 / +0,41R, katkı VAR ama ZAYIF İZ. Kırılım karşı ve süpürme
+  takip satırları KAYBETTİRİR.
+- Fonlama taşıma (bilgi): kırılım takip LONG'da işlem başı ≈ −0,02R; hükme girmedi.
+
+Bu kurallarla kalabalık verisi (taker akışı, OI, long/short oranları, fonlama) 4h'de gösterilebilir bir ek avantaj
+vermedi. Hiçbir defter değişmedi. Ana botun piyasa ajanındaki "kalabalık çok long ise long'a karşı" eğilimi de bu koşuyla
+desteklenmedi ya da çürütülmedi (süpürme konum satırları kanıt yok); dokunulmadı.
+
+Bir satırı (örneğin 1h kırılım takip LONG) test etmek yeni bir ön kayıt (fut_v3) ve yeni deneme demektir. Deneme sayısı
+şimdi 2 vadeli aile, 16 hipotez; aday 0.

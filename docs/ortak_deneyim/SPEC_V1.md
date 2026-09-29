@@ -130,7 +130,7 @@ report.py (CLI process; streams store; no engine, no network, no writes except -
 | `…/adapters.py` | `@dataclass class EntryFacts`, `ClosedFacts`, `CfFacts` (plain copies)<br>`class SourceDelta: new_open: list[EntryFacts]; new_closed: list[ClosedFacts]; revised: list[ClosedFacts]; cf_seen: list[CfFacts]; cf_vanished: list[str]; resync: bool; busy: bool`<br>`class MainAdapter(eng)`, `class StrategyAdapter(book)`, `class PatternAdapter(book)`, each with `.book`, `.book_name`, `.book_type` and `read(cursor: SourceCursor, *, lock_timeout_s: float) -> SourceDelta`.<br>`def main_signal_keys(eng, risk_log, decisions, briefs) -> dict[str, str]` (trade_id → `_signal_id`, §5.4) |
 | `…/collector.py` | `class SharedExperienceCollector`:<br>`@classmethod from_engine(cls, eng) -> "SharedExperienceCollector"`<br>`step(self, eng, *, risk_log, decisions, briefs, now) -> dict`<br>`health(self) -> dict`<br>`status(self) -> dict`<br>Internals: `_cursor: CursorState` (load/save `cursor.json`), `_drafts: dict[str, Draft]` (pending snapshots; memory only), breaker and budget. |
 | `…/store.py` | `class ExperienceStore(DecisionJournal)`: `__init__(self, root: Path, *, hot_max_lines=5000, archive_max_segments=0, code_sha=None)`, where path = `root/"experience.jsonl"` and archive = `SegmentArchive(root/"archive", stream_id="shared_experience", record_schema_version=ROW_SCHEMA, code_sha=code_sha, max_segments=archive_max_segments)`<br>`append_rows(self, rows: list[dict]) -> tuple[int, int]` (written, rejected): dedupe by `decision_id` against `_seen`; `json.dumps(allow_nan=False)` per row (NaN → reject and count); **one** `open("a")` + `flush` + `fsync` under `self._lock`; updates `_line_count`.<br>`disk_bytes(self) -> int` (hot size + archive `manifest()` totals).<br>Inherited: `rotate()`, `load_seen()`, `iter_all_rows()`, `stats()`. |
-| `…/stats.py` | `summarize(rs: list[float], *, clusters: list[str] \| None, min_n: int) -> dict`. Reuses `pattern_trader.report._r_stats` / `_bootstrap_ci` (seed 20260916, n < 5 → None) and `patterns.engine.wilson`, and adds `cluster_bootstrap_ci(rs, clusters, iters=2000, seed=20260929)`. `verdict(st) -> str` (§11.3). |
+| `…/stats.py` | `summarize(rs: list[float], *, clusters: list[str] \| None, min_n: int) -> dict`. Reuses `pattern_trader.report._r_stats` / `_bootstrap_ci` (seed 20260916, n < 5 → None) and `patterns.engine.wilson`, and adds `cluster_bootstrap_ci(rs, clusters, iters=2000, seed=20260929)`. `verdict(st) -> str` (§11.3). **As built (§18):** no `stats.py`; the statistics live in `report.py`, and the iid CI is a numpy bootstrap with the same method and seed but not numerically the scorecard's `_bootstrap_ci`. |
 | `…/report.py` | `iter_rows(root: Path) -> Iterator[dict]` (archive then hot, deduped by `row_id`, streaming)<br>`build(root, query: Query) -> dict`<br>`render_tr(doc) -> str`<br>`status_doc(root) -> dict` |
 | `docs/ogrenme_modu/DENEYIM_KATMANI_V1.md` | Pre-registration doc (Turkish): the situation_v1 definitions, bucket edges, default dimensions, backoff order, verdict rules, cohort rules. Committed **before** any data is looked at. |
 
@@ -463,14 +463,15 @@ Estimated at the live rates: about 2–3k rows, cleared in about 4–6 steps at 
 
 | File | Purpose |
 |---|---|
-| `experience.jsonl` | Hot file, ≤ `hot_max_lines` = 5000 |
+| `experience.jsonl` | Hot file, ≤ `hot_max_lines` = 5000. **Rotation hysteresis (2026-09-29, §18):** a rotation runs only when the file exceeds 5000 lines and trims it to `hot_max_lines × 0.5` = 2500, so each segment holds ≥ 2500 rows (about one rotation per day at live rates). Below the limit `rotate()` does no I/O. Crash recovery (`recover()` + pending trim) runs once per process, when the collector is built, and again after an archive error. |
 | `archive/segments/seg-*.jsonl.gz`, `archive/manifest.json` | `SegmentArchive`: lossless seal → manifest → trim, with crash recovery through `pending_trim`; `max_segments = 0` means unlimited |
-| `cursor.json` | Schema `shared_experience_cursor_v1`: per book `{ledger:{n,last_key,first_key}, open_entries:[…], unfinal:{key:{rev,fp,closed_at}}, cf:{known:[…], pending:{…}}}` and `backfill:{done, per_book}`. About 1 MB at 40k known CF ids. Atomic write, only when changed. |
+| `cursor.json` | Schema `shared_experience_cursor_v1`: per book `{ledger:{n,last_key,first_key}, open_entries:[…], unfinal:{key:{rev,fp,closed_at}}, cf:{known:[…], pending:{…}}}` and `backfill:{done, per_book}`. About 1 MB at 40k known CF ids (measured: 3.3 MB at 40,320 ids). Atomic write, only when changed; **above 256 KB at most every 5 steps** (2026-09-29, §18). As built it also carries, per book and only when non-empty: `sig_tid` (main: unconsumed `trade_id → signal id`, 2 days / 500), `cf_gone` (tombstones of vanished CF ids: last written rev, 3 days / 2000) and `pend_e` (entry drafts of trades that closed while their snapshot was still pending). |
 | `status.json` | Written every step. Small. |
 
 **Volume at live rates.** From the `--check` after about 10 hours: Box CF ≈ 1,170/day, main CF ≥ 130/day, real entries ≈ 150–200/day, outcomes ≈ 120–150/day.
-- About 3,000 rows/day, about 3.3 MB/day raw, about 0.4 MB/day gzipped, so roughly 150 MB/year archive.
-- The hot file rotates about every 1.7 days. Hourly backups (`ops/backup.py:72` rglob) copy ≤ about 6 MB of hot data.
+- Design estimate: about 3,000 rows/day, about 3.3 MB/day raw, about 0.4 MB/day gzipped, so roughly 150 MB/year archive.
+- **Measured (2026-09-29 review, harness row sizes):** CF rev 0 3,063 B, CF rev > 0 1,841 B, entry 3,088 B, outcome 1,700 B → about 2,900 rows/day and **about 7.1 MB/day raw**. Whole-file gzip ratio 0.11 → about 0.8 MB/day archive (about 300 MB/year). The hot file (about 13 MB at 5000 lines) fills about 1.7 days after deploy; after that one rotation seals about 2500 rows roughly once a day.
+- **Backups (2026-09-29, §18):** the hourly backup copies the immutable `archive/segments/` only at UTC hour 00; the other 23 hourly copies carry manifest + hot file + cursor + status (≤ about 20 MB). Manual/daily/weekly backups always carry the segments.
 
 **Hard cap `max_total_mb` (default 1024):**
 - Above 90% of the cap: status WARN.
@@ -478,8 +479,9 @@ Estimated at the live rates: about 2–3k rows, cleared in about 4–6 steps at 
 - Nothing is ever deleted.
 
 **Restart:**
-- `ExperienceStore.load_seen()` streams the hot file (≤ 5000 ids) and `cursor.json` is loaded.
-- If `cursor.json` is lost: resync as in §6. `row_id`s are deterministic, so the worst case is duplicate lines, which the report dedupes.
+- `ExperienceStore.load_seen()` streams the hot file (≤ 5000 ids) and `cursor.json` is loaded; then the store's crash recovery runs once, before any append.
+- If `cursor.json` is lost (or is up to 5 steps stale, because large cursors are written at most every 5 steps): resync as in §6. `row_id`s are deterministic, so the worst case is duplicate lines. The report keeps the **last** copy of an equal (kind, key, rev) (§18).
+- A failed batch write is truncated back to its start size, so it leaves no bytes behind (`rollback`; a failed truncate is counted as `rollback_failed`).
 
 **Reads inside the worker:** only its own hot file, once at start, streaming. The worker never reads a book's `trade_memory.jsonl`, `position_path.jsonl` or CF JSON files. If a later version needs such a JSONL, it must use the `learn.memory.MemoryTail` / `PositionPathStore` offset-index mechanism (CONTRACT round 3/4 rows) and never a full parse per tour.
 
@@ -491,6 +493,8 @@ Estimated at the live rates: about 2–3k rows, cleared in about 4–6 steps at 
 - Add `SharedExperienceSection` after `LearningModeSection` (`:724-741`).
 - Add `shared_experience: SharedExperienceSection = field(default_factory=SharedExperienceSection)` to `V3Config` after `:775`.
 - Add `"shared_experience": SharedExperienceSection` to `_SECTIONS` after `:793`.
+
+**As built (§18):** the section also has `enabled: bool = False` (the collector runs only when `enabled` is true **and** `mode == RECORD`) and `lazy_fetch_max_per_tour: int = 0` (0..20; 0 = no network). `config.yaml` is `{enabled: true, mode: RECORD}`.
 
 ```python
 @dataclass
@@ -526,7 +530,7 @@ shared_experience:            # ORTAK DENEYİM KATMANI v1 — yalnız KAYIT (kar
 ```
 
 **Side effects:**
-- `config_hash()` (`:4676`) changes once at deploy, because the new section enters `asdict(v3)`. That happens whatever the mode, exactly as with learning_mode. The hash is a label only; the dashboard compares it for display at `app.py:2718`.
+- `config_hash()` (`:4676`) changes once at deploy, because the new section enters `asdict(v3)`. That happens whatever the mode, exactly as with learning_mode. The hash is a label only; the dashboard compares it for display at `app.py:2718`. **As built (§18):** `config_hash()` drops the `shared_experience` section, so the hash does NOT change at deploy and decision-journal rows are identical with the layer OFF or RECORD.
 - Rolling back to old code leaves `state/shared_experience/` orphaned and harmless.
 
 ---
@@ -668,7 +672,7 @@ The cluster CI guards against clustered Box counterfactuals (many signals on one
 | Adapter copies (facts for new items only) | — | < 2 MB | Freed at step end |
 | CSV reads (Formasyon-only symbols, ≤ 720 rows) | — | < 1 MB | Memoised per step |
 | Rotation (reads hot file ≤ 5000 lines, seals gzip) | — | ≈ 20 MB | About once per 1.7 days |
-| **Total** | **≤ 12 MB (cap 25 MB)** | **≤ 40 MB** | < 1% of the 6G limit; 1.5G headroom at today's 4.5G peak |
+| **Total** | **≤ 12 MB (cap 25 MB)** | **≤ 40 MB** | < 1% of the 6G limit; 1.5G headroom at today's 4.5G peak. Measured at full lists: 22 MB retained (see below) |
 
 **CPU per step, typical:**
 - snapshots: about 15 new rows × 4 ms, minus cache hits → < 60 ms;
@@ -677,6 +681,20 @@ The cluster CI guards against clustered Box counterfactuals (many signals on one
 - **< 100 ms, compared with a 6-minute tour.**
 
 The budget is 2 s and the first-start backfill is spread over steps by the row cap.
+
+**Measured at VPS list sizes (2026-09-29 review + FIX stage; replaces the estimates above as alarm baselines).** Scale bench: 8 books × 5000 active CFs (40,320 known ids), 8 × 1000 closed trades, 91 open positions, real collector/store/ledgers/recorders:
+
+| Item | Before the FIX stage | After (rotation hysteresis, cursor throttle, backfill copy cap) |
+|---|---|---|
+| Retained memory | 22.5 MB (`_memq` 10.3, cursor books 10.3, cache 1.2, `_seen` 0.8) | 22.2 MB (same parts; `_seen` 0.5) |
+| Transient per steady step | about 61 MB (hot-file read + re-parse + cursor JSON every step) | small: the hot file is read only at a rotation (about once a day); the 3.3 MB cursor JSON only every 5 steps |
+| Steady step (13 rows/step) | p50 404 ms, p95 489, max 785 (rotate 227 ms, a 13-row segment per step) | **p50 91 ms, p95 179, max 217** (rotate 0.0 ms between rotations) |
+| First-start backfill | 162 steps, p50 887 ms, p95 1,269, max 1,610 | 181 steps, p50 584 ms, p95 968, max 1,262 |
+| Restart | construction 291 ms, first step 429 ms | construction 274 ms, first step 315 ms |
+| Per-book lock hold (collector copy) | backfill max 428 ms; steady ≤ 32 ms | backfill p50 about 15 ms per book (CF scan 5000 records: 16 → 10 ms), max about 0.46 s (GC pauses on the large heap, not the copy); steady ≤ 17 ms |
+| Growth with segment count | per-step bookkeeping grew linearly (≈ 1.9 s at 21.6k segments; breaker at about 31k segments ≈ 130 days) | none between rotations (no manifest/segment-dir access); one rotation ≈ one 2500-row segment per day |
+
+At harness volume (24 tours × 30 min, about 300–650 rows) steps are 8–35 ms p50. **`--check` thresholds:** steady `step_ms_p95` < 1,000 ms at full lists (alarm at 1,500 ms = the breaker's overrun factor × budget); retained memory about 25 MB; `cursor.json` up to about 3.5 MB; hot file ≤ about 15 MB. The first ~180 steps after the first deploy are backfill (p95 about 1 s).
 
 **The layer adds no threads, no network, no frame retention** (frames are never stored in the cache; only derived scalars are) and no JSON parsing of CF or ledger files in the worker.
 
@@ -786,7 +804,7 @@ The budget is 2 s and the first-start backfill is spread over steps by the row c
 **Prerequisite:** the VPS runs `c0b8c94` (or the net-R release, if shipped together).
 
 **New invariants, appended to the checks list at `:861-898`; all 26 existing ones stay:**
-1. `v3.shared_experience.mode == "RECORD"`, and the raw `config.yaml` section is exactly `{"mode": "RECORD"}`.
+1. `v3.shared_experience.enabled is True` and `v3.shared_experience.mode == "RECORD"`, and the raw `config.yaml` section is exactly `{"enabled": true, "mode": "RECORD"}` (as built, §18; the design said `{"mode": "RECORD"}`). `mode_state.mode == PAPER` (the collector suspends itself otherwise).
 2. The service environment has no `TRADINGBOT_SHARED_EXPERIENCE`, or the operator intended it (a set value is printed loudly).
 3. `tradingbot.shared_experience.situation.SCHEMA_SHA == "<pinned>"` and `W4H == W1H == WBTC == 200 ≤ pattern_trader.data.BARS_PER_TF[...]`.
 4. `state/shared_experience` is creatable and writable by the service user.
@@ -807,7 +825,7 @@ The budget is 2 s and the first-start backfill is spread over steps by the row c
 
 **Off switch:** `shared_experience.mode: OFF` + `systemctl restart tradingbot-worker`, or a drop-in `TRADINGBOT_SHARED_EXPERIENCE=off` + restart. No state migration is needed.
 
-**Backup:** covered automatically by `rglob`; the hot file is bounded and the archive is gzipped.
+**Backup:** covered by `rglob`; the hot file is bounded and the archive is gzipped. As built (§18) the hourly backup carries `shared_experience/archive/segments/` only at UTC hour 00 (`BackupResult.skipped_xp_segments` counts the rest). To restore from another hourly backup, copy the segments from the newest UTC-00 (or manual) backup; segment files are immutable.
 
 ---
 
@@ -861,3 +879,35 @@ The budget is 2 s and the first-start backfill is spread over steps by the row c
 8. **Release timing:** ship together with the net-R release (proposed; otherwise the CF net column stays empty and only real trades answer), or ship RECORD first so snapshots start accumulating?
 9. **RECORD outside PAPER** (TESTNET/OBSERVE/SHADOW_LIVE): v1 proposes PAPER-only.
 10. **Dashboard surface** for the report (Phase 2), and whether `hot_max_lines = 5000` is acceptable for hourly backup size.
+
+---
+
+## 18. As built, and review fixes (2026-09-29)
+
+KARARLAR.md still wins over this file. This section records where the code differs from the design above, so the design text is not read as the contract.
+
+**Deviations recorded by the build stages:**
+- **Config.** `SharedExperienceSection` has `enabled` in addition to `mode`; the collector runs only when `enabled` is true and `mode == RECORD`. `config.yaml` is `{enabled: true, mode: RECORD}`. There is a `lazy_fetch_max_per_tour` knob (0..20, default 0 = no network); §1.5 said v1 has none.
+- **Decision identity.** `engine_v3.config_hash()` drops the `shared_experience` section (a third engine edit beyond E1/E2), so OFF and RECORD give the same hash as HEAD.
+- **Budget and breaker.** Work loops stop at 0.75 × `tour_budget_s`; the breaker fires after 3 consecutive steps over 1.5 × budget or 5 consecutive exceptions.
+- **LIVE boundary.** The cursor's `born_ms` (the first RECORD tour's start). Earlier trades and CFs are backfill (`BACKFILL_*` origins).
+- **Rows.** `setup_key` uses the ledger's book key; `join_key` has a fixed field order; real and CF `cost_r` are all-in; the cohort helper is split between rows and report; the store degrades at 110% of the cap.
+- **Report.** There is no `stats.py`; the statistics live in `report.py`. There is no `--variation` flag (`--setup candle:CV00x` selects a C4 variation). The iid CI is a numpy bootstrap with the same method and seed as the scorecard, but **not numerically the scorecard's `_bootstrap_ci`** (PCG64 vs `random.Random`, and bootstrap results depend on the order of the values). Reusing the pure-Python function would cost about 10 million Python calls per cell at n = 5000. The report states this in `params.ci_iid_note`.
+- **Summary sweep.** Nothing writes `report_summary.json` automatically; the CLI help and the dashboard card say so. A low-priority timer is optional (release notes).
+
+**Review fixes (FIX stage):**
+
+| Finding | Change | Test |
+|---|---|---|
+| Rotation every step once the hot file is full (HIGH) | `ExperienceStore.rotate`: no I/O below `hot_max_lines`; when over, trim to `hot_max_lines × 0.5`; `recover()` once per process (collector start, before any append) and after an archive error; archive bytes re-read only after a rotation; `_seen` drops only the archived block's ids | `test_a_full_hot_file_does_not_seal_a_segment_per_step…`, `test_an_archive_failure_retries_recovery…` |
+| Write amplification (MEDIUM) | As above, plus `cursor.json` above 256 KB is written at most every 5 steps (content is re-derivable; `row_id`s are deterministic). The manifest is written by `SegmentArchive` (shared with the decision journal, unchanged), now about twice per rotation instead of twice per step | `test_a_large_cursor_is_written_at_most_every_n_steps…` |
+| Backups carry the whole archive (MEDIUM) | `ops/backup.run_backup`: the hourly backup copies `shared_experience/archive/segments/` only at UTC hour 00 (`skipped_xp_segments` counts the rest) | `test_hourly_backups_carry_the_immutable_xp_segments_only_once_a_day` |
+| Failed write leaves rows; reader keeps the stale copy (MEDIUM) | `append_rows` truncates the file back to its pre-write size on `OSError` (`rollback`, `rollback_failed`); the report keeps the **last** copy of an equal (kind, key, rev) (`dup_rows_replaced`) | `test_a_failed_write_leaves_nothing_on_disk…` (fsync EIO and partial write + ENOSPC), `test_the_reader_keeps_the_last_copy…` |
+| Deferred entry draft lost on restart (LOW) | Entry drafts of closed trades are persisted in the cursor (`pend_e`, Decimal-exact) and re-registered at load; the report counts `real_entry_missing` regardless of the snapshot filter | `test_a_trade_closed_between_steps_keeps_its_deferred_entry_across_a_restart` |
+| SPOT real trades not counted (LOW) | `spot_real_excluded` (SPOT_LONG opens in the risk log) and the gauge `spot_real_closed_seen` (`len(eng.spot2.history)`) in status counters | `test_spot_real_opens_are_counted_not_silently_skipped` |
+| Main signal key lost when the opening step skips the ledger (LOW) | Unconsumed `trade_id → signal id` kept in the main cursor (`sig_tid`, 2 days / 500); `main_entry_no_sigkey` counter | `test_a_main_open_whose_step_skipped_the_ledger…` |
+| Re-appearing CF id collides with its old revisions (LOW) | Tombstones `cf_gone` (last written rev; 3 days / 2000 per book): a re-recorded id continues at `last_rev + 1`; `cf_reappeared` counter | `test_a_counterfactual_id_that_reappears_continues_its_revisions` |
+| C4S double-counted in the CANDLE_PATTERN family (LOW) | C4S has no family (setup key stays separate) | `test_c4s_rows_stay_out_of_the_candle_family_pool`, store family test |
+| iid CI vs scorecard (LOW) | Documented (see above; not reused) | `test_the_report_says_its_iid_ci_is_not_numerically_the_scorecards` |
+| Memory/CPU above §12 (LOW) | §12 now carries the measured numbers and `--check` thresholds | — |
+| Lock/GIL during backfill (LOW) | At most 100 history records and 100 CF facts per book are copied under a lock per step; CF scan fast path (16 → 10 ms per 5000 records) | `test_backfill_copies_at_most_a_hundred_records_per_book_under_the_lock` |

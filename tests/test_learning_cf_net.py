@@ -95,7 +95,7 @@ def test_cost_floor_long_032pct_stop_matches_the_ledger(tmp_path, case, targets_
     assert _label(cf, df, exec_model=BOX, filters_for=lambda s: FILT) == 1
     o = t.outcome
     assert o["r_multiple"] == pytest.approx(gross) and o["r_gross"] == o["r_multiple"]
-    assert o["r_net"] == pytest.approx(net, abs=1e-3) and o["label_version"] == LABEL_VERSION == "cf_label_v2"
+    assert o["r_net"] == pytest.approx(net, abs=1e-3) and o["label_version"] == LABEL_VERSION == "cf_label_v3"
     assert o["cost_r"] == pytest.approx(o["r_gross"] - o["r_net"], abs=1e-6)
     assert sum(o["cost_parts_r"].values()) == pytest.approx(o["cost_r"], abs=1e-5)
     assert set(o["cost_parts_r"]) == {"fees", "entry_fill", "exit_slippage", "exit_fill_model", "path", "funding"}
@@ -105,13 +105,16 @@ def test_cost_floor_long_032pct_stop_matches_the_ledger(tmp_path, case, targets_
     xm = o["exec_model"]
     assert (xm["taker_pct"], xm["maker_pct"], xm["slippage_bps"], xm["tp1_fraction"], xm["breakeven_at_mfe_r"]) == \
         (0.05, 0.02, 3.0, 0.5, 0.0)
-    assert (xm["filters_source"], xm["price_tick"], xm["contract"]) == ("exchange", 0.001, "cf_net_ledger_replay_v1")
+    assert (xm["filters_source"], xm["price_tick"], xm["contract"]) == ("exchange", 0.001, "cf_net_ledger_replay_v2")
+    assert (xm["intrabar_path"], xm["stop_fill"]) == ("open>adverse>favourable>close", "level_plus_slippage_gap_only_at_bar_open")
     assert V1_KEYS <= set(o)
 
 
 # ============================================================================ 2) kimlik: net = atılık defterin R'si
 def _scratch_ledger_r(t: ShadowTrade, df: pd.DataFrame, model: ExecModel) -> float:
-    """Bağımsız yeniden oynatma (araştırmanın `analyze.replay` yolu): defteri AÇ, barları tick'le, açık kalırsa kapat."""
+    """Bağımsız yeniden oynatma — `cf_net_ledger_replay_v2` sözleşmesi (2026-09-29): defteri AÇ; her barı açılış → ters uç
+    → lehte uç → kapanış sırasıyla AYRI fiyat-yalnız tick'lerle yürü; stopun ötesindeki nokta seviyeye kırpılır (ilk olmayan
+    barın açılışı hariç: gerçek boşluk); açık kalırsa son kapanıştan kapat."""
     led = model.new_ledger()
     led.open(t.symbol, t.direction, Decimal(str(t.entry)), SizeSpec(_replay_notional(FILT, Decimal("100")), AmountType.NOTIONAL, 3),
              stop=Decimal(str(t.stop)), targets=[Decimal(str(x)) for x in t.targets], filters=FILT,
@@ -120,14 +123,22 @@ def _scratch_ledger_r(t: ShadowTrade, df: pd.DataFrame, model: ExecModel) -> flo
     c_ms = int(datetime.fromisoformat(t.created_at).timestamp() * 1000)
     l_ms = int(datetime.fromisoformat(t.label_ts).timestamp() * 1000)
     rows = df[(df["timestamp"] > c_ms) & (df["timestamp"] <= l_ms)]
+    long = t.direction == "LONG"
     last = None
-    for r in rows.itertuples():
+    for k, r in enumerate(rows.itertuples()):
+        odt = datetime.fromtimestamp(int(r.timestamp) / 1000, tz=UTC)
         cdt = datetime.fromtimestamp((int(r.timestamp) + tf_ms) / 1000, tz=UTC)
-        recs = led.tick({t.symbol: TickData(last=Decimal(str(r.close)), mark=Decimal(str(r.close)), high=Decimal(str(r.high)),
-                                            low=Decimal(str(r.low)), open=Decimal(str(r.open)), ts=iso(cdt))}, now_utc=cdt)
+        pts = [("o", r.open), ("a", r.low if long else r.high), ("f", r.high if long else r.low), ("c", r.close)]
+        for name, px in pts:
+            pos = led.positions[t.symbol]
+            p = Decimal(str(px))
+            if (p <= pos.stop) if long else (p >= pos.stop):
+                p = p if (name == "o" and k > 0) else pos.stop
+            at = odt if name == "o" else cdt
+            recs = led.tick({t.symbol: TickData(last=p, mark=p, ts=iso(at))}, now_utc=at)
+            if recs:
+                return float(recs[-1].r_multiple)
         last = (r.close, cdt)
-        if recs:
-            return float(recs[-1].r_multiple)
     return float(led.close_manual(t.symbol, Decimal(str(last[0])), now=last[1]).r_multiple)
 
 
@@ -171,7 +182,9 @@ def test_without_exec_model_the_outcome_is_the_v1_outcome_and_net_only_adds_fiel
 # ============================================================================ 4) ana defter: MFE başa-baş
 def test_main_mfe_breakeven_turns_a_gross_full_loss_into_a_near_scratch(tmp_path):
     """Ana defter (TP1 %50, `breakeven_at_mfe_r` 1,0): +1,2R MFE sonra tam stop — brüt −1,0; defter stopu başa-başa
-    çekmişti → net ≈ −0,03 (etiketleyici bu kuralı bilmez; fark `path` parçasındadır)."""
+    çekmişti → net ≈ 0 (etiketleyici bu kuralı bilmez; fark `path` parçasındadır). v3 (2026-09-29): çıkış GERÇEKTEN sonraki
+    düşüşte (3. bar) ücret dahil başa-baş SEVİYESİNDEN (+ kayma) → net ≈ 0,000; v2 −0,032'yi 1. barın AÇILIŞINDAN (yüksekten
+    ÖNCEKİ fiyat) üretiyordu."""
     main = ExecModel.of_ledger(_ledger(be="1.0"))
     cf = CounterfactualRecorder(tmp_path / "cf.json", book="main")
     t = _rec(cf, stop_pct=5.0, targets_r=(1.5, 3.0), horizon=6, tf=240)
@@ -182,8 +195,11 @@ def test_main_mfe_breakeven_turns_a_gross_full_loss_into_a_near_scratch(tmp_path
     assert _label(cf, df, tf_ms=H4, n=6, exec_model=main, filters_for=lambda s: FILT) == 1
     o = t.outcome
     assert o["r_multiple"] == pytest.approx(-1.0) and o["exit_reason"] == "stop"
-    assert o["r_net"] == pytest.approx(-0.0318, abs=2e-3) and o["net_exit_reason"] == "başa-baş stop"
+    assert o["r_net"] == pytest.approx(0.0, abs=2e-3) and o["net_exit_reason"] == "başa-baş stop"
     assert o["cost_parts_r"]["path"] < -0.9, "başa-baş kuralı maliyet değil KAZANÇ (negatif maliyet) olarak görünür"
+    assert o["net_exit_basis"] == "STOP_AT_LEVEL" and o["cost_parts_r"]["exit_fill_model"] == 0.0
+    be = o["entry_fill"] * 1.0005 / ((1 - 0.0003) * (1 - 0.0005))              # ücret dahil başa-baş (defter formülü)
+    assert o["net_exit_price"] == pytest.approx(round(be, 3) * (1 - 0.0003), abs=2e-3), "seviye + çıkış kayması"
 
 
 # ============================================================================ 5) araştırma eşleşmesi net tabanda
@@ -337,7 +353,7 @@ def test_v2_outcome_survives_an_old_code_rewrite_unchanged(tmp_path):
 
 
 # ============================================================================ 10) kapalı-biçim tahmin (v1c)
-def test_closed_form_estimate_is_an_upper_bound_close_to_the_replay(tmp_path):
+def test_closed_form_estimate_is_close_to_the_replay_on_simple_paths(tmp_path):
     for case, targets_r, horizon in (("stop", (2.0,), 5), ("target", (1.0,), 5), ("eod", (5.0,), 3)):
         cf = CounterfactualRecorder(tmp_path / f"{case}.json", book="b1_box_fade")
         t = _rec(cf, targets_r=targets_r, horizon=horizon)
@@ -501,7 +517,7 @@ def test_backfill_rows_write_v2_from_klines_else_the_v1c_estimate(tmp_path):
         return df_ok if a <= int(T0.timestamp() * 1000) else None           # "nok" için mum yok
     out = B.backfill_rows(doc["trades"], model=BOX, now=T0 + timedelta(hours=3), frames_fn=frames_fn,
                           filters_for=lambda s: FILT)
-    assert (out["candidates"], out["v2"], out["v1c"], out["none"]) == (2, 1, 1, 0)
+    assert (out["candidates"], out["net"], out["v1c"], out["none"]) == (2, 1, 1, 0)
     ok, nok = doc["trades"][0]["outcome"], doc["trades"][1]["outcome"]
     assert ok["label_version"] == LABEL_VERSION and ok["net_backfilled"]["source"] == "offline_klines"
     assert ok["r_net"] == pytest.approx(-1.371, abs=2e-3) and ok["r_multiple"] == -1.0
@@ -532,7 +548,7 @@ def test_backfill_script_run_is_dry_by_default_and_apply_backs_up(tmp_path, monk
     now = T0 + timedelta(hours=3)
     rep = B.run(state, cfg, apply=False, fetch=True, frames_fn=lambda *a: df_ok, now=now)
     assert rep["books"]["strategy_paper_box"]["write"] == "DRY_RUN" and f.read_bytes() == raw0
-    assert rep["books"]["strategy_paper_box"]["v2"] == 1
+    assert rep["books"]["strategy_paper_box"]["net"] == 1
     rep = B.run(state, cfg, apply=True, fetch=True, frames_fn=lambda *a: df_ok, now=now)
     assert rep["books"]["strategy_paper_box"]["write"] == "WRITTEN" and "WRITTEN" in B.render(rep)
     o = json.loads(f.read_text(encoding="utf-8"))["trades"][0]["outcome"]

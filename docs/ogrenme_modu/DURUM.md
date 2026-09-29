@@ -1,5 +1,23 @@
 # Öğrenme modu L1: durum kaydı (güncelleme 2026-09-28 ~07:00 UTC)
 
+**Kodlandı, dağıtılmadı (2026-09-29, ORTAK DENEYİM FIX):** Ortak Deneyim Katmanı v1 (yalnız KAYIT) inceleme bulguları kapandı
+(docs/ortak_deneyim/SPEC_V1.md §18): depo döngü histerezisi (dolu sıcak dosyada tur başına segment yok; ölçek tezgâhı kararlı
+adım p50 404 → 91 ms), büyük imleç en çok 5 adımda bir yazılır, G/Ç hatası yarım yazımı geri keser, okuyucu eşit revizyonda
+sonuncuyu alır, kapanmış işlemin bekleyen girişi yeniden başlatmada korunur, ana sinyal anahtarı / karşı-olgusal mezar taşı
+imleçte, SPOT sayılır, C4S aile havuzunda değil, saatlik yedek değişmez segmentleri yalnız UTC 00'da taşır. Dağıtım betiğine:
+`shared_experience` değişmezleri ve `--check` eklemeleri (bu aşamanın dönüş notları).
+
+**Kodlandı, dağıtılmadı (2026-09-29, CF-FIX):** net etiket inceleme bulguları kapandı → `cf_label_v3` /
+`cf_net_ledger_replay_v2` (CONTRACT "Intra-bar path"): bar içi nedensel yol (açılış → ters uç → lehte uç → kapanış;
+başa-baş/TP1 yalnız sonraki noktalara), dokunulan stop seviyeden + kayma (boşluk yalnız ilk olmayan barın açılışında),
+v1c "yaklaşık" (üst sınır değil) ve kesin değil (betik mumla yeniden dener), Formasyon qmark çift kayması giderildi.
+Ayrıca AYRI bir CANLI MUHASEBE düzeltmesi: fiyat izlemesiyle stop taşındıktan (MFE başa-baş / TP1) sonra uygulanan,
+taşımadan önce açılmış 1h bar artık pozisyonu o barın eski açılışından kapatmaz (`strategy_paper.apply_closed_bars_to_ledger`;
+öğrenme kapalıyken de PAPER muhasebesini değiştirir — parite iddiasının dışında). İnceleme sonrası (2026-09-29, FIX): bar
+atlanmaz, kendi süresinde geçerli stoplarla sınanır — kesin stop (ilk stopu delen fitil) ve kesin hedef uygulanır, yalnız
+sıra belirsizse `OPENED_BEFORE_STOP_MOVE` ile tüketilir. Karşı-olgusal bar içi yolu korunur; taşınan stop için belirsiz
+barlar `intrabar_ambiguous_bars` ile işaretlenir ("ihtiyatlı" iddiası yalnız ilk stop için).
+
 **Kodlandı, dağıtılmadı (2026-09-29):** karşı-olgusal NET etiket `cf_label_v2` (CONTRACT "cost-bias fix" bölümü). Kesinleşen
 "olsaydı" etiketine defterin kendi yürütme modeliyle aynı barlarda yeniden oynatılan net R eklenir; eski brüt alanlar kalır.
 Karne/panel net ortalamayı raporlar (brüt yalnız bilgi). Eski etiketler: son ~25 saati kod içinde tembel, daha eskisi

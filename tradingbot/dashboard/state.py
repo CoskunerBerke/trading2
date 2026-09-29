@@ -51,6 +51,35 @@ STATE_FILES: dict[str, str] = {
     # ÖĞRENME MODU (2026-09-28, öğrenme modu): ilk aktif an (`learning_mode_since`) — öncesi/sonrası ayrımı (salt okunur).
     "learning_mode": "learning_mode.json",
 }
+#: ORTAK DENEYİM KATMANI v1 (2026-09-29): panel kartı YALNIZ iki küçük dosyayı okur — toplayıcının `status.json`ı ve CLI
+#: taramasının `report_summary.json`ı (`shared-experience-report --summary-out`, ayrı süreç). Panel paketi İÇE AKTARMAZ
+#: (yalnız motor ve CLI aktarır — AST testi); ad ve şerit sabitleri `shared_experience.report` ile test eşitliğine bağlı.
+#: Depo taranmaz; her dosya ≤ `XP_MAX_BYTES` (512M panelde sınırsız okuma YOK), bozuksa kopyalanmadan yok sayılır.
+XP_DIR = "shared_experience"
+XP_STATUS_FILE = "status.json"
+XP_SUMMARY_FILE = "report_summary.json"
+XP_SUMMARY_SCHEMA = "shared_experience_summary_v1"
+XP_BANNER_TR = "tanımlayıcı; karar yok; kanıt değil"
+XP_MAX_BYTES = 1 << 20
+XP_TOP_CELLS = 10
+
+
+def _xp_json(path: Path) -> dict | None:
+    """Salt-okur küçük JSON (2026-09-29): yok / büyük / bozuk → None. `read_json`in aksine bozuk dosyayı KOPYALAMAZ."""
+    try:
+        if path.stat().st_size > XP_MAX_BYTES:
+            return None
+        d = json.loads(path.read_bytes())
+    except (OSError, ValueError):
+        return None
+    return d if isinstance(d, dict) else None
+
+
+def _xp_col(d: Any) -> dict[str, Any]:
+    d = d if isinstance(d, dict) else {}
+    return {k: d.get(k) for k in ("n", "n_final", "win_rate", "mean_r", "tier", "verdict", "verdict_tr")}
+
+
 #: `str.splitlines()`in `\n` DIŞINDAKİ satır sınırlarının UTF-8 baytları: \r \v \f \x1c–\x1e, NEL, U+2028/U+2029. Bir bayt
 #: satırında bunlardan hiçbiri yoksa satır tam BİR metin satırıdır (`errors="replace"` bu karakterleri başka bayttan üretmez).
 _EXTRA_BREAKS = (b"\r", b"\x0b", b"\x0c", b"\x1c", b"\x1d", b"\x1e", b"\xc2\x85", b"\xe2\x80\xa8", b"\xe2\x80\xa9")
@@ -984,6 +1013,42 @@ class StateReader:
             out["consistency"] = round(abs(2 * pos / len(all_rs) - 1), 4)
         out["available"] = bool(rs or sh_rows or out["aggregate"])
         return out
+
+    def shared_experience(self) -> dict[str, Any] | None:
+        """ORTAK DENEYİM kartı (2026-09-29) — O(1), salt okur: sayımlar + son toplama adımı (`status.json`) ve son rapor
+        taraması + en çok gözlemli hücreler (`report_summary.json`). Katman hiç çalışmadıysa None (kart basılmaz)."""
+        d = self.state_dir / XP_DIR
+        st = _xp_json(d / XP_STATUS_FILE)
+        if st is None:
+            return None
+        c = st.get("counters") if isinstance(st.get("counters"), dict) else {}
+        store = st.get("store") if isinstance(st.get("store"), dict) else {}
+        sm = _xp_json(d / XP_SUMMARY_FILE)
+        if sm is not None and sm.get("schema") != XP_SUMMARY_SCHEMA:
+            sm = None
+        try:
+            disk_mb = round(float(store.get("disk_bytes") or 0) / 1048576.0, 2)
+        except (TypeError, ValueError):
+            disk_mb = None
+        cells = []
+        for cell in ((sm or {}).get("top_cells") or [])[:XP_TOP_CELLS]:
+            if isinstance(cell, dict):
+                cells.append({"group": cell.get("group"), "book_name": cell.get("book_name"),
+                              "setup_type": cell.get("setup_type"), "side": cell.get("side"),
+                              "dims": dict(cell.get("dims") or {}), "real": _xp_col(cell.get("real")),
+                              "cf": _xp_col(cell.get("cf"))})
+        counts = (sm or {}).get("counts") if isinstance((sm or {}).get("counts"), dict) else {}
+        return {"banner": XP_BANNER_TR, "state": st.get("state"), "last_step_at": st.get("last_step_at"),
+                "steps": st.get("steps"), "step_ms_p50": st.get("step_ms_p50"), "step_ms_p95": st.get("step_ms_p95"),
+                "drafts": st.get("drafts"), "rows_total": c.get("rows_total"),
+                "rows_by_kind": dict(c.get("rows_by_kind") or {}), "rows_by_book": dict(c.get("rows_by_book") or {}),
+                "snapshot_status_mix": dict(c.get("snapshot_status_mix") or {}), "errors_total": c.get("errors_total"),
+                "breaker_tripped": bool((st.get("breaker") or {}).get("tripped")) if isinstance(st.get("breaker"), dict) else False,
+                "disk_mb": disk_mb, "hot_lines": store.get("hot_lines"),
+                "last_sweep_at": (sm or {}).get("generated_at"), "sweep_params": (sm or {}).get("params"),
+                "sweep_counts": {k: counts.get(k) for k in ("real_closed_net", "real_open", "cf_net", "cf_net_a15",
+                                                           "cf_gross_legacy", "cf_pending")} if counts else None,
+                "top_cells": cells}
 
     def learning_research(self) -> dict[str, Any]:
         """PAPER araştırma politikası özeti — hangi aday aktif, neyi değiştirdi, sonucu ne.

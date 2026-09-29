@@ -7,6 +7,12 @@
   4. saklama: hourly 24 / daily 7 / weekly 4 (kind başına en yeni N)
 `verify_backup(archive)` sha256 + tar bütünlüğü; `restore_backup(archive, state_dir, dry_run)` doğrular, geçici dizine
 açar, mevcut state'i `state.pre-restore-<ts>` olarak kenara alır ve yenisini yerine koyar (asla silmez).
+
+ORTAK DENEYİM ARŞİVİ (2026-09-29, inceleme bulgusu): `shared_experience/archive/segments/` sınırsız büyüyen, DEĞİŞMEZ
+(sha256'lı, içerik adlı) segmentlerdir. Saatlik yedek onları yalnız günün İLK saatinde (UTC 00) taşır; diğer 23 saatlik yedek
+manifest + sıcak dosya + imleçle yetinir (her kopya bütün arşivi taşıyordu: 35 kopya × arşiv). Elle/günlük/haftalık yedek
+hep taşır. Segmentsiz bir saatlik yedekten geri yüklemede segmentler en yeni UTC-00 (ya da elle) yedekten kopyalanır —
+dosyalar değişmez olduğu için daha yeni bir yedekteki segment kümesi eskisini kapsar.
 """
 from __future__ import annotations
 
@@ -26,6 +32,10 @@ from ..core import StorageError
 KINDS = ("hourly", "daily", "weekly", "manual")
 _SKIP_SUFFIXES = {".lock", ".tmp"}
 _SKIP_PREFIXES = ("state.pre-restore-",)
+#: Saatlik yedeğin yalnız UTC 00 saatinde taşıdığı değişmez segment klasörü (2026-09-29; `shared_experience.state_dir`
+#: varsayılanı). Başka bir `state_dir` seçilirse klasör her yedekte taşınır (davranış eskisi gibi).
+XP_SEGMENTS_REL = "shared_experience/archive/segments/"
+XP_SEGMENTS_HOUR_UTC = 0
 
 
 @dataclass
@@ -37,6 +47,8 @@ class BackupResult:
     bytes: int
     created_at: str
     pruned: list[str] = field(default_factory=list)
+    #: (2026-09-29) bu yedeğe ALINMAYAN ortak deneyim segmenti sayısı (saatlik yedek, UTC 00 dışı).
+    skipped_xp_segments: int = 0
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -66,14 +78,20 @@ def _sqlite_backup(src: Path, dst: Path) -> None:
         con.close()
 
 
-def _copy_tree_state(state_dir: Path, staging: Path) -> tuple[int, int]:
-    """state → staging (db'ler .backup ile, diğerleri kopya). Dönen: (dosya sayısı, bayt)."""
+def _copy_tree_state(state_dir: Path, staging: Path, *, skip_dirs: tuple[str, ...] = (),
+                     skipped: list[int] | None = None) -> tuple[int, int]:
+    """state → staging (db'ler .backup ile, diğerleri kopya). Dönen: (dosya sayısı, bayt). `skip_dirs` (göreli, `/` ile
+    biten) altındaki dosyalar alınmaz ve `skipped[0]`a sayılır."""
     n = b = 0
     for p in sorted(state_dir.rglob("*")):
         if not p.is_file():
             continue
         rel = p.relative_to(state_dir)
         if any(str(rel).startswith(pre) for pre in _SKIP_PREFIXES) or p.suffix in _SKIP_SUFFIXES or ".tmp-" in p.name:
+            continue
+        if skip_dirs and any(rel.as_posix().startswith(d) for d in skip_dirs):
+            if skipped is not None:
+                skipped[0] += 1
             continue
         if p.suffix in (".db-wal", ".db-shm", ".db-journal"):
             continue
@@ -106,7 +124,9 @@ def _prune(kind_dir: Path, keep: int) -> list[str]:
 
 def run_backup(state_dir: Path | str, backups_dir: Path | str, kind: str = "hourly", *, keep_hourly: int = 24,
                keep_daily: int = 7, keep_weekly: int = 4, keep_manual: int = 10, vault_dir: Path | str | None = None,
-               include_vault: bool = False) -> BackupResult:
+               include_vault: bool = False, xp_segments: bool | None = None, now: datetime | None = None) -> BackupResult:
+    """`xp_segments` (2026-09-29): None → saatlik yedekte yalnız UTC `XP_SEGMENTS_HOUR_UTC` saatinde, diğer türlerde her
+    zaman ortak deneyim segmentleri alınır; True/False zorlar. `now` yalnız bu kural içindir (test)."""
     state_dir, backups_dir = Path(state_dir), Path(backups_dir)
     if kind not in KINDS:
         raise ValueError(f"bilinmeyen yedek türü: {kind} (geçerli: {KINDS})")
@@ -120,7 +140,11 @@ def run_backup(state_dir: Path | str, backups_dir: Path | str, kind: str = "hour
     try:
         staging = tmp_root / "state"
         staging.mkdir()
-        n, b = _copy_tree_state(state_dir, staging)
+        if xp_segments is None:
+            hour = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).hour
+            xp_segments = kind != "hourly" or hour == XP_SEGMENTS_HOUR_UTC
+        skipped = [0]
+        n, b = _copy_tree_state(state_dir, staging, skip_dirs=() if xp_segments else (XP_SEGMENTS_REL,), skipped=skipped)
         vault_n = 0
         if include_vault and vault_dir and Path(vault_dir).exists():
             vdst = tmp_root / "vault"
@@ -139,7 +163,8 @@ def run_backup(state_dir: Path | str, backups_dir: Path | str, kind: str = "hour
     keep = {"hourly": keep_hourly, "daily": keep_daily, "weekly": keep_weekly, "manual": keep_manual}[kind]
     pruned = _prune(kind_dir, keep)
     return BackupResult(kind=kind, archive=str(archive), sha256=digest, files=n, bytes=archive.stat().st_size,
-                        created_at=datetime.now(timezone.utc).isoformat(timespec="seconds"), pruned=pruned)
+                        created_at=datetime.now(timezone.utc).isoformat(timespec="seconds"), pruned=pruned,
+                        skipped_xp_segments=int(skipped[0]))
 
 
 def verify_backup(archive: Path | str) -> dict[str, Any]:

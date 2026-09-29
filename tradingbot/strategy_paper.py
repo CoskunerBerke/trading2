@@ -23,6 +23,7 @@ from typing import Any, Callable
 from .accounting import (AmountType, FeeSchedule, FuturesLedgerV2, LiquidationParams, MarketType, SizeSpec,
                          SlippageModel, TaxPolicy, TickData, default_brackets, default_filters)
 from .accounting.funding import FUNDING_SETTLEMENT_CONTRACT
+from .accounting.futures_ledger import exit_decision
 from .candle_confirmation import closed_bars
 from .core import atomic_write_json, from_iso, iso, quantize_qty, utc_now
 from .learn import TradeMemory
@@ -1708,6 +1709,112 @@ def _scale_anchor(pos: Any, tf: str, bar_open_ms: int) -> tuple[float, str]:
         return 0.0, "NONE"
 
 
+#: TP1 kısmi dolumunun `Fill.kind`ı (`futures_ledger.EXIT_TP1`): defter bu dolumda stopu başa-başa taşır.
+_TP1_FILL_KIND = "hedef1"
+#: Stop taşındıktan sonra uygulanan, taşımadan ÖNCE açılmış barın atlama gerekçesi (2026-09-29, canlı muhasebe düzeltmesi):
+#: yalnız bar içi sıra BELİRSİZ olduğunda (ters uç yeni stopun ötesinde, eski stopun berisinde) kullanılır.
+BAR_OPENED_BEFORE_STOP_MOVE = "OPENED_BEFORE_STOP_MOVE"
+#: Taşımadan ÖNCE açılmış barın, o barda GEÇERLİ olan stopla uygulandığını bildiren olay (2026-09-29, inceleme bulgusu).
+BAR_PRE_MOVE_STOP = "BAR_PRE_MOVE_STOP"
+BAR_PRE_MOVE_APPLIED = "APPLIED_AGAINST_STOPS_IN_FORCE"
+
+
+def _stop_moved_ms(pos: Any) -> int | None:
+    """STOPUN SON TAŞINDIĞI AN (2026-09-29, canlı muhasebe düzeltmesi): MFE başa-başı (`meta.be_by_mfe.at`) ya da TP1 kısmi
+    dolumu (defter stopu o dolumda başa-başa çeker; `Fill.ts`). İkisi de defter tick'inin kendi zamanıyla yazılır. Yoksa
+    None. (Ortak yapı sıkılaştırması `meta.structure_stop.at` ana motorda `_main_closed_bars` içinde ayrıca süzülür.)"""
+    meta = pos.meta if isinstance(getattr(pos, "meta", None), dict) else {}
+    out: list[int | None] = []
+    be = meta.get("be_by_mfe")
+    if isinstance(be, dict):
+        out.append(parse_ts_ms(be.get("at")))
+    if bool(getattr(pos, "tp1_done", False)):
+        out += [parse_ts_ms(getattr(f, "ts", None)) for f in (getattr(pos, "fills", None) or [])
+                if getattr(f, "kind", None) == _TP1_FILL_KIND]
+    vals = [x for x in out if x is not None]
+    return max(vals) if vals else None
+
+
+def _dec_or_none(x: Any) -> Decimal | None:
+    try:
+        d = Decimal(str(x)) if x is not None else None
+    except (ArithmeticError, ValueError):
+        return None
+    return d if d is not None and d.is_finite() and d > 0 else None
+
+
+def _stops_in_bar(pos: Any, bar_open_ms: int, bar_close_ms: int) -> tuple[Decimal | None, Decimal | None]:
+    """BAR BOYUNCA GEÇERLİ STOP ARALIĞI (2026-09-29, inceleme bulgusu): (barın açılışında geçerli stop = barın EN GEVŞEK
+    stopu, barın kapanışından önce yapılmış son taşımadan sonraki stop = barın EN SIKI stopu). Kaynak pozisyonun kendi
+    kayıtlarıdır: ilk stop (`initial_stop`), ortak yapı sıkılaştırması (`meta.structure_stop` at/to), MFE başa-baş
+    (`meta.be_by_mfe` at/stop), TP1 dolumu (`Fill.ts`; taşıdığı stop kaydedilmez → SON taşımaysa güncel stop, değilse
+    gevşek sınırda bir önceki stop, sıkı sınırda güncel stop — iki sınır da güvenli yöndedir). Stoplar yalnız sıkılaşır.
+    İlk stop okunamazsa (None, None)."""
+    meta = pos.meta if isinstance(getattr(pos, "meta", None), dict) else {}
+    first = _dec_or_none(getattr(pos, "initial_stop", None))
+    cur = _dec_or_none(getattr(pos, "stop", None))
+    if first is None or cur is None:
+        return None, None
+    moves: list[tuple[int, Decimal | None]] = []
+    for key, val_key in (("structure_stop", "to"), ("be_by_mfe", "stop")):
+        m = meta.get(key)
+        if isinstance(m, dict):
+            t = parse_ts_ms(m.get("at"))
+            if t is not None:
+                moves.append((t, _dec_or_none(m.get(val_key))))
+    if bool(getattr(pos, "tp1_done", False)):
+        for f in getattr(pos, "fills", None) or []:
+            if getattr(f, "kind", None) == _TP1_FILL_KIND:
+                t = parse_ts_ms(getattr(f, "ts", None))
+                if t is not None:
+                    moves.append((t, None))
+    moves.sort(key=lambda x: x[0])
+    if moves and moves[-1][1] is None:
+        moves[-1] = (moves[-1][0], cur)              # son taşıma TP1 ise taşıdığı stop güncel stoptur
+    loose, tight = first, first
+    for t, val in moves:
+        if t <= bar_open_ms and val is not None:
+            loose = val
+        if t < bar_close_ms:
+            tight = val if val is not None else cur
+    return loose, tight
+
+
+def _tighter(long: bool, a: Decimal | None, b: Decimal | None) -> Decimal | None:
+    if a is None or b is None:
+        return a if b is None else b
+    return max(a, b) if long else min(a, b)
+
+
+class _PreMoveView:
+    """TAŞIMADAN ÖNCE AÇILMIŞ BARIN TİKİ (2026-09-29, inceleme bulgusu): tick süresince pozisyon, barın açılışındaki
+    stop durumuyla görünür — stop = o anda geçerli stop; MFE başa-başı o anda HENÜZ yoksa (`be_by_mfe.at` > bar açılışı)
+    işaret geçici olarak boş görünür ve defterin MFE başa-baş eşiği geçici olarak 0 olur (bar kendi yükseğiyle ikinci bir
+    taşıma UYDURMAZ; çıkış etiketi o anki duruma göre "stop" olur). Çıkışta (istisnada da) hepsi geri konur; pozisyon açık
+    kalırsa stop, tick öncesi stop ile tick'in (ör. TP1 dolumunun) bıraktığı stopun SIKI olanıdır. Çağıran defter kilidini
+    tutar (koruyucu izleyici aynı kilitle bekler)."""
+
+    def __init__(self, ledger: FuturesLedgerV2, pos: Any, stop: Decimal, *, hide_be: bool) -> None:
+        self.ledger, self.pos, self.stop, self.hide_be = ledger, pos, stop, hide_be
+        self.long = str(getattr(getattr(pos, "side", None), "value", "LONG")).upper() == "LONG"
+
+    def __enter__(self) -> "_PreMoveView":
+        self._stop0 = self.pos.stop
+        self._thr0 = self.ledger.breakeven_at_mfe_r
+        self._be0 = self.pos.meta.get("be_by_mfe") if self.hide_be else None
+        self.pos.stop = self.stop
+        if self._be0 is not None:
+            self.pos.meta["be_by_mfe"] = {}              # anahtar sırası korunur; boş = o anda başa-baş yoktu
+            self.ledger.breakeven_at_mfe_r = Decimal("0")
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        self.ledger.breakeven_at_mfe_r = self._thr0
+        if self._be0 is not None and self.pos.meta.get("be_by_mfe") == {}:
+            self.pos.meta["be_by_mfe"] = self._be0
+        self.pos.stop = _tighter(self.long, self._stop0, self.pos.stop)
+
+
 def _remember_verified(pos: Any, tf: str, bar_open_ms: int, close: float, route: str) -> None:
     ver = pos.meta.setdefault("ohlc_verified", {})
     rows = [r for r in (ver.get(tf) or []) if isinstance(r, (list, tuple)) and int(r[0]) != int(bar_open_ms)]
@@ -1825,7 +1932,14 @@ def apply_closed_bars_to_ledger(ledger: FuturesLedgerV2, bars_by_symbol: dict[st
                                  hareket tek başına bozuk veri sayılmaz (2026-09-22).
 
     Ölçek hükmü barın UÇLARINA değil KAPANIŞINA bakar: sert bir fitil geçerli veridir ve stop kontrolüne girer;
-    bütün barın (kapanışıyla birlikte) kaymış olması ise veri sorunudur."""
+    bütün barın (kapanışıyla birlikte) kaymış olması ise veri sorunudur.
+
+    STOP TAŞIMASI (2026-09-29, canlı muhasebe düzeltmesi + inceleme bulgusu): stopun son taşındığı andan (`_stop_moved_ms`:
+    MFE başa-baş, TP1 dolumu) ÖNCE açılmış bar GÜNCEL stopa sınanmaz; kendi süresinde geçerli stoplarla (`_stops_in_bar`)
+    sınanır: kesin çıkış (açılış ya da ters uç, barın açılışındaki stopun ötesinde) ve hiçbir sırada stop olmayan bar
+    (ters uç bar içindeki en sıkı stopun berisinde; hedef dolabilir) barın açılışındaki stop durumuyla uygulanır
+    (`BAR_PRE_MOVE_STOP` olayı; çıkışta `exit_fill.stop_in_force = "PRE_MOVE"`); ters uç ikisinin arasındaysa sıra
+    belirsizdir → bar tüketilir, `BAR_SKIPPED` / `OPENED_BEFORE_STOP_MOVE` yazılır."""
     out: list = []
     now_ms = int(now.timestamp() * 1000)
 
@@ -1948,7 +2062,43 @@ def apply_closed_bars_to_ledger(ledger: FuturesLedgerV2, bars_by_symbol: dict[st
                 else:
                     g.pop(tf, None)
                 _sync_path_flag(pos)                     # kapanış bu tikte olursa kayıt GÜNCEL durumu taşısın
-            recs = ledger.tick({sym: td}, now_utc=close_dt, funding_rate_lookup=funding_rate_lookup, bar_advance=False)
+            # STOP TAŞINDIKTAN SONRA GELEN ESKİ BAR (2026-09-29, canlı muhasebe düzeltmesi + inceleme bulgusu): stop fiyat
+            # izlemesiyle (MFE başa-baş / TP1) taşındıysa, taşımadan ÖNCE açılmış barın açılışı ve uçları GÜNCEL stopa
+            # sınanamaz (eskiden açılış yeni stopun ötesindeyse pozisyon o daha önceki açılıştan kapanıyordu: stop 98 iken
+            # 99,0 açılış, 16:40'ta başa-başa taşındı, 17:05 turunda 98,97'den "başa-baş stop"). Bar, KENDİ süresinde geçerli
+            # olan stoplarla sınanır (`_stops_in_bar`): açılıştaki (en gevşek) stopa göre kesin çıkış (açılış ya da ters uç
+            # onun ötesinde — sıra ne olursa olsun pozisyon kapanmıştı) → o stopla uygulanır (ihtiyatlı: seviyeden); ters uç
+            # bar içindeki EN SIKI stopun da berisindeyse hiçbir sırada stop yoktur → aynı görünümle uygulanır (kesin hedef
+            # dolumu kaybolmaz); ters uç ikisinin ARASINDAYSA sıra belirsizdir → bar uygulanmaz, tüketilir ve `BAR_SKIPPED` /
+            # `OPENED_BEFORE_STOP_MOVE` yazılır (taşımadan sonraki yolu koruyucu izleyici yeni stopla izledi).
+            moved_ms = _stop_moved_ms(pos)
+            view = None
+            if moved_ms is not None and o < moved_ms:
+                long = str(getattr(pos.side, "value", pos.side)).upper() == "LONG"
+                s_open, s_tight = _stops_in_bar(pos, o, o + step)
+                info = {"tf": tf, "bar_open_ms": o, "stop_moved_at": iso(datetime.fromtimestamp(moved_ms / 1000.0, tz=timezone.utc)),
+                        "stop_at_bar_open": str(s_open) if s_open is not None else None,
+                        "stop_tightest_in_bar": str(s_tight) if s_tight is not None else None,
+                        "stop": str(pos.stop) if pos.stop is not None else None}
+                certain = s_open is not None and exit_decision(pos.side, s_open, pos.liquidation_price, td) is not None
+                worst = Decimal(str(lo)) if long else Decimal(str(hi))
+                if not certain and (s_tight is None or (worst <= s_tight if long else worst >= s_tight)):
+                    _ev(sym, "BAR_SKIPPED", BAR_OPENED_BEFORE_STOP_MOVE, detail="AMBIGUOUS_INTRABAR_ORDER", **info)
+                    continue
+                be = pos.meta.get("be_by_mfe") if isinstance(pos.meta.get("be_by_mfe"), dict) else {}
+                be_ms = parse_ts_ms(be.get("at")) if be else None
+                view = _PreMoveView(ledger, pos, s_open, hide_be=be_ms is not None and be_ms > o)
+                _ev(sym, BAR_PRE_MOVE_STOP, BAR_PRE_MOVE_APPLIED, certain_exit=bool(certain), **info)
+            if view is None:
+                recs = ledger.tick({sym: td}, now_utc=close_dt, funding_rate_lookup=funding_rate_lookup, bar_advance=False)
+            else:
+                with view:
+                    recs = ledger.tick({sym: td}, now_utc=close_dt, funding_rate_lookup=funding_rate_lookup, bar_advance=False)
+                for rec in recs:
+                    ef = rec.features.get("exit_fill") if isinstance(rec.features, dict) else None
+                    if isinstance(ef, dict):             # hangi stopun geçerli sayıldığı kayıtta görünür
+                        rec.features["exit_fill"] = {**ef, "stop_in_force": "PRE_MOVE", "stop_at_bar_open": info["stop_at_bar_open"],
+                                                     "stop_after_move": info["stop"], "stop_moved_at": info["stop_moved_at"]}
             if sym in ledger.positions:
                 ledger.positions[sym].meta.setdefault("ohlc_cursor", {})[tf] = cursor
             for rec in recs:

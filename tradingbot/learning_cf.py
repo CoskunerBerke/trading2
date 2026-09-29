@@ -27,6 +27,22 @@ AYNI kapanmış barlar üzerinde yeniden oynatılan NET sonuç eklenir (`net_out
 Eski (v1) etiketli kayıtlar TEMBEL yeniden etiketlenir (`relabel_net`): etiketleme çağrısında eldeki kapanmış barlar
 pencereyi baştan kapsıyor ve brüt sonuç AYNEN yeniden üretiliyorsa net eklenir (`net_backfilled`); pencere çerçeveden
 düşmüşse kayıt `cf_label_v1` + `net_status` ile işaretlenir ve çevrimdışı `scripts/cf_backfill_net.py`e kalır.
+
+BAR İÇİ YOL — `cf_label_v3` / `cf_net_ledger_replay_v2` (2026-09-29, inceleme bulguları): v2 her barı TEK tick (açılış,
+yüksek, düşük, kapanış) olarak defterden geçiriyordu; defter MFE başa-başını barın YÜKSEĞİYLE taşıyıp aynı tikte barın
+(daha önceki) AÇILIŞINI stopun ötesinde görünce açılıştan satıyordu (nedensel olarak imkânsız sıra), ve 4h/1d barda kapanış
+stopun ötesindeyse dolum kapanıştan yapılıyordu (canlı 60 sn izleyici seviyenin yanında doldurur). v3 her barı İHTİYATLI ve
+NEDENSEL bir yol olarak yürür: açılış → ters uç → lehte uç → kapanış, her nokta AYRI fiyat-yalnız tick; MFE başa-baş / TP1
+yalnız onları tetikleyen noktadan SONRAKİ noktalarda etkilidir. Sıra İLK stop için ihtiyatlıdır (ters uç hedeften önce);
+lehte ucun TAŞIDIĞI stop (başa-baş / TP1) için DEĞİLDİR: aynı barın ters ucu yeni stopun ötesindeyse sıra belirsizdir ve
+bu yol hep "sürer" dalını alır (inceleme bulgusu, 2026-09-29). Kötü dal (lehte uç → ters uç) karalama Monte Carlo'da daha
+KÖTÜ bir tahminci çıktı (ana defter net − gerçek ort. +0,01 → −0,07 R, ort. |fark| 0,04 → 0,10), bu yüzden yol korunur ve
+böyle barlar sayılır: net sonuç `intrabar_ambiguous_bars` taşır (> 0 → rapor süzebilir; `net_stats` sayar). Dokunulan stop
+SEVİYEDEN (+ defterin çıkış kayması) dolar; yalnız bar stopun ÖTESİNDE AÇILIRSA (gerçek boşluk) dolum açılıştandır — yolun
+İLK barı hariç: girişten o barın açılışına kadarki aralığı canlı izleyici izliyordu (karşı-olgusal onu görmez), orada
+geçilen stop seviyede dolar. Kalan iyimserlik iki kaynaklıdır: (1) canlı izleyicinin iki 60 sn fiyatı arasında seviyeyi
+AŞMASI (seviyeden dolum bunu yüklemez), (2) yukarıdaki belirsiz barlar.
+Eski `cf_label_v2` kayıtları sürümlerini KORUR (yeniden oynatılmaz; üretimde v2 kaydı yoktur — v2 hiç dağıtılmadı).
 """
 from __future__ import annotations
 
@@ -62,12 +78,20 @@ SCHEMA_VERSION = "learning_cf_v1"
 _FINAL_EXITS = ("stop", "breakeven_stop", "target")
 _TF_BY_MIN = {v // 60_000: k for k, v in TF_MS.items()}
 #: ETİKET SÜRÜMLERİ (2026-09-29, maliyet sapması). v1 = alan YOK (yalnız brüt); v1 işaretli = net yeniden oynatma bu yoldan
-#: yapılamadı (`net_status` nedeni; çevrimdışı dolgu bekler); v2 = brüt + net; v1c = çevrimdışı kapalı-biçim TAHMİN
-#: (`r_net_approx`, üst sınır: çıkış dolum modeli/funding yok) — v2 net ortalamasına ASLA karışmaz.
-LABEL_VERSION = "cf_label_v2"
+#: yapılamadı (`net_status` nedeni; çevrimdışı dolgu bekler); v2 = brüt + net (`cf_net_ledger_replay_v1`: bar tek tick);
+#: v3 = brüt + net (`cf_net_ledger_replay_v2`: bar içi nedensel yol, seviyeden stop dolumu — 2026-09-29); v1c = çevrimdışı
+#: kapalı-biçim YAKLAŞIK net (`r_net_approx`; ne alt ne üst sınır: çıkış dolum modeli, ücret dahil başa-baş fiyatı, MFE
+#: başa-baş ve funding yok) — net ortalamasına ASLA karışmaz. Net'i olan her sürüm (v2, v3) `r_net` taşır.
+LABEL_VERSION = "cf_label_v3"
 LABEL_VERSION_V1 = "cf_label_v1"
 LABEL_VERSION_V1C = "cf_label_v1c"
-NET_CONTRACT = "cf_net_ledger_replay_v1"
+LABEL_VERSION_V2 = "cf_label_v2"
+NET_CONTRACT = "cf_net_ledger_replay_v2"
+#: Bar içi yol sırası (2026-09-29, `cf_net_ledger_replay_v2`): nedensel; İLK stop için ihtiyatlı (önce ters uç). Lehte ucun
+#: taşıdığı stop için sıra belirsiz olabilir → `intrabar_ambiguous_bars` (inceleme bulgusu, 2026-09-29).
+INTRABAR_PATH = "open>adverse>favourable>close"
+#: Karşı-olgusal stop dolum kuralı (2026-09-29): dokunulan stop seviyeden + defterin çıkış kayması; boşluk yalnız bar açılışı.
+STOP_FILL_RULE = "level_plus_slippage_gap_only_at_bar_open"
 #: `won_net` eşiği — gerçek işlem etiketiyle AYNI kural (`learn.labels.label_outcome`: |R| < 0,25 SCRATCH, R ≥ 0,25 WIN).
 WON_NET_MIN_R = 0.25
 #: Yeniden oynatma pozisyonu (USDT, 1x). R büyüklükten bağımsızdır (payda aynı miktarla ölçeklenir); taban yalnız adım
@@ -269,7 +293,8 @@ class ExecModel:
                                entries_keep=64, history_keep=4)
 
     def to_dict(self, filters: SymbolFilters | None = None) -> dict[str, Any]:
-        return {"contract": NET_CONTRACT, "taker_pct": float(self.fees.taker_pct), "maker_pct": float(self.fees.maker_pct),
+        return {"contract": NET_CONTRACT, "intrabar_path": INTRABAR_PATH, "stop_fill": STOP_FILL_RULE,
+                "taker_pct": float(self.fees.taker_pct), "maker_pct": float(self.fees.maker_pct),
                 "fee_source": str(self.fees.source), "slippage_bps": float(self.slippage.fixed_bps), "tp_maker": self.tp_maker,
                 "tp1_fraction": float(self.tp1_fraction), "breakeven_at_mfe_r": float(self.breakeven_at_mfe_r),
                 "filters_source": (str(filters.source) if filters is not None else None),
@@ -324,10 +349,26 @@ def _r6(x: float) -> float:
     return round(float(x), 6) + 0.0                  # −0,0 yazılmaz
 
 
+def _bar_path(long: bool, op: float | None, hi: float, lo: float, cl: float) -> list[tuple[str, float]]:
+    """BAR İÇİ YOL (2026-09-29, `cf_net_ledger_replay_v2`): açılış → TERS uç → LEHTE uç → kapanış. Bar içi sıra gözlenmez;
+    ters ucun önce gelmesi İLK stop için İHTİYATLIDIR (brüt etiketleyicinin "önce stop" kuralıyla aynı) ve her nokta
+    kendinden önceki noktalardan SONRA gerçekleşmiştir: bir noktanın taşıdığı stop (MFE başa-baş / TP1) yalnız SONRAKİ
+    noktalarla sınanır. Lehte ucun taşıdığı stop için bu sıra ihtiyatlı DEĞİLDİR (aynı barın ters ucu yeni stopun
+    ötesindeyse sıra belirsiz; `_net_replay` böyle barları `intrabar_ambiguous_bars` ile sayar). Açılışı okunamayan barda
+    yol ters uçtan başlar."""
+    adv, fav = (lo, hi) if long else (hi, lo)
+    pts = [("open", op)] if op is not None else []
+    return pts + [("adverse", adv), ("favourable", fav), ("close", cl)]
+
+
+def _beyond(long: bool, level: Decimal, px: Decimal) -> bool:
+    return px <= level if long else px >= level
+
+
 def _decompose(rec: Any, view: ShadowTrade, r_gross: float) -> dict[str, float]:
     """r_gross − r_net'in parçaları (POZİTİF = maliyet; toplamları `cost_r`). Kimlik sırası: yol (seviyede dolum, başa-baş
-    fiyatı, MFE başa-baş, TP1 miktar yuvarlaması, zaman çıkışı) → çıkış dolum modeli (`exit_fill_v1`: boşluk/kapanış) →
-    giriş dolumu (kayma + tick; payda da dolumdan) → çıkış kayması → ücretler → funding."""
+    fiyatı, MFE başa-baş, TP1 miktar yuvarlaması, zaman çıkışı) → çıkış dolum modeli (v3, 2026-09-29: yalnız bar açılışı
+    boşluğu; v2: boşluk/kapanış) → giriş dolumu (kayma + tick; payda da dolumdan) → çıkış kayması → ücretler → funding."""
     side = 1.0 if str(view.direction).upper() == "LONG" else -1.0
     fills = list(rec.fills)
     ent = [f for f in fills if f.kind == "entry"][0]
@@ -355,13 +396,17 @@ def _decompose(rec: Any, view: ShadowTrade, r_gross: float) -> dict[str, float]:
 
 def net_outcome(view: ShadowTrade, df: pd.DataFrame, gross: dict[str, Any], *, model: ExecModel,
                 filters: SymbolFilters | None = None, funding_lookup: Any = None) -> dict[str, Any]:
-    """Kesinleşmiş brüt etiketin NET karşılığı (`cf_net_ledger_replay_v1`): sinyal atılık bir `FuturesLedgerV2`de (defterin
-    kendi modeli) `open()` ile açılır — giriş `market_fill_price`tan (kayma + agresif tick) — ve brüt etiketleyicinin
-    yürüdüğü AYNI kapanmış barlarla (`ts ∈ (created, label_ts]`, en fazla brüt `bars` kadar) `TickData(open, high, low,
-    close)` olarak tick'lenir: `exit_fill_v1`, TP1, başa-baş fiyatı (ücret dahil), MFE başa-baş ve funding GERÇEK defterin
-    uyguladığı gibidir. Son bardan sonra hâlâ açıksa kuralın zaman çıkışı (Box gün sonu / zaman stopu / HORIZON) =
-    `close_manual(son kapanış)` (kayma + taker ücreti). `r_net` = kaydın `r_multiple`ı (net / |dolum − ilk stop| × miktar).
-    HORIZON türleri (`hold_h` görünümü) hedefsizdir. Hata/ret → `r_net` None ve `net_status` nedeni (brüt etkilenmez)."""
+    """Kesinleşmiş brüt etiketin NET karşılığı (`cf_net_ledger_replay_v2`, 2026-09-29): sinyal atılık bir `FuturesLedgerV2`de
+    (defterin kendi modeli) `open()` ile açılır — giriş `market_fill_price`tan (kayma + agresif tick; kayıt zaten dolum
+    fiyatıyla yazıldıysa, `features.entry_ref == "quantized_entry"`, İKİNCİ kez kaydırılmaz) — ve brüt etiketleyicinin
+    yürüdüğü AYNI kapanmış barlarda (`ts ∈ (created, label_ts]`, en fazla brüt `bars` kadar) her bar `_bar_path` sırasıyla
+    (açılış → ters uç → lehte uç → kapanış) AYRI fiyat-yalnız tick'lerle yürünür: TP1, başa-baş fiyatı (ücret dahil), MFE
+    başa-baş ve funding GERÇEK defterin uyguladığı gibidir, ama bir noktanın taşıdığı stop yalnız SONRAKİ noktalarla sınanır.
+    Stop dolumu (`STOP_FILL_RULE`): stopa değen/geçen nokta SEVİYEDEN (+ çıkış kayması) dolar — canlı 60 sn izleyicinin
+    ulaştığı dolum; yalnız bar stopun ötesinde AÇILIRSA (ilk bar hariç) dolum açılıştandır (gerçek boşluk). Son bardan sonra
+    hâlâ açıksa kuralın zaman çıkışı (Box gün sonu / zaman stopu / HORIZON) = `close_manual(son kapanış)` (kayma + taker
+    ücreti). `r_net` = kaydın `r_multiple`ı (net / |dolum − ilk stop| × miktar). HORIZON türleri (`hold_h` görünümü)
+    hedefsizdir. Hata/ret → `r_net` None ve `net_status` nedeni (brüt etkilenmez)."""
     r_gross = float(gross.get("r_multiple") or 0.0)
     out: dict[str, Any] = {"label_version": LABEL_VERSION, "r_gross": r_gross}
     try:
@@ -382,8 +427,12 @@ def _net_replay(view: ShadowTrade, df: pd.DataFrame, gross: dict[str, Any], r_gr
     targets = [] if view.variant == "hold_h" else [D(float(t)) for t in (view.targets or [])]
     created, label_ts = from_iso(view.created_at), from_iso(view.label_ts)
     led = model.new_ledger()
+    # FORMASYON qmark (2026-09-29): kayıt girişi defterin `market_fill_price`ından geçmiş DOLUM fiyatıysa ikinci kez kayma +
+    # tick yuvarlaması uygulanmaz (dolum = kayıt girişi; ızgaradaki fiyatın agresif yuvarlaması kendisidir).
+    pre_filled = str(((view.features or {}) if isinstance(view.features, dict) else {}).get("entry_ref") or "") == \
+        "quantized_entry"
     pos = led.open(sym, view.direction, entry, SizeSpec(_replay_notional(f, entry), AmountType.NOTIONAL, 1), stop=stop,
-                   targets=targets, filters=f, now=created)
+                   targets=targets, filters=f, now=created, slippage=SlippageModel.zero() if pre_filled else None)
     if pos is None:
         return {"r_net": None, "net_status": "OPEN_REJECTED:%s" % (led.last_reject_reason or "?"), "exec_model": xm}
     tf_ms = int(view.tf_minutes) * 60_000
@@ -392,19 +441,51 @@ def _net_replay(view: ShadowTrade, df: pd.DataFrame, gross: dict[str, Any], r_gr
     n_bars = int(gross.get("bars") or len(path))
     path = path.iloc[:max(0, n_bars)]
     lookup = _quiet_rates(funding_lookup)
+    long = str(view.direction).upper() == "LONG"
     rec, last_c, last_dt = None, None, None
     opens = path["open"].tolist() if "open" in path.columns else [None] * len(path)
+    first_bar = True
+    ambiguous = 0
     for t, o, h, lo, c in zip(path["timestamp"].tolist(), opens, path["high"].tolist(), path["low"].tolist(),
                               path["close"].tolist()):
+        odt = datetime.fromtimestamp(int(t) / 1000.0, tz=timezone.utc)
         cdt = datetime.fromtimestamp((int(t) + tf_ms) / 1000.0, tz=timezone.utc)
-        op = _open_px(o)
-        td = TickData(last=D(float(c)), mark=D(float(c)), high=D(float(h)), low=D(float(lo)), ts=iso(cdt),
-                      open=D(op) if op is not None else None)
-        recs = led.tick({sym: td}, now_utc=cdt, funding_rate_lookup=lookup, bar_advance=True)
+        # BAR İÇİ NEDENSEL YOL (2026-09-29): her nokta ayrı fiyat-yalnız tick; açılış barın açılış anında, diğerleri
+        # kapanış anında (funding: açılışta boşlukla kapanan pozisyon bar içi settlement ödemez). Stopun ötesindeki nokta
+        # SEVİYEYE kırpılır (defter orada `seviye + kayma` doldurur) — boşluk yalnız ilk olmayan barın açılışında.
+        stop_before_fav = None
+        for i, (point, px) in enumerate(_bar_path(long, _open_px(o), float(h), float(lo), float(c))):
+            p = led.positions.get(sym)
+            if p is None:
+                break
+            if point == "favourable":
+                stop_before_fav = p.stop
+            at = odt if point == "open" else cdt
+            price, rule = D(float(px)), None
+            if p.stop is not None and _beyond(long, p.stop, price):
+                if point == "open" and not first_bar:
+                    rule = "GAP_FILL_AT_BAR_OPEN"
+                else:
+                    price, rule = p.stop, "STOP_AT_LEVEL"
+            recs = led.tick({sym: TickData(last=price, mark=price, ts=iso(at))}, now_utc=at, funding_rate_lookup=lookup,
+                            bar_advance=(i == 0))
+            if recs:
+                rec = recs[-1]
+                ef = (rec.features or {}).get("exit_fill")
+                if rule is not None and isinstance(ef, dict) and rec.exit_reason in (EXIT_STOP, EXIT_BE_STOP):
+                    ef.update({"basis": rule, "path_point": point, "path_price": str(D(float(px))),
+                               "fill_rule": STOP_FILL_RULE, "net_contract": NET_CONTRACT})
+                break
         last_c, last_dt = float(c), cdt
-        if recs:
-            rec = recs[-1]
+        first_bar = False
+        if rec is not None:
             break
+        # BELİRSİZ BAR (2026-09-29, inceleme bulgusu): lehte uç stopu taşıdı (başa-baş / TP1) ve aynı barın ters ucu yeni
+        # stopun ötesinde → "lehte uç → ters uç" sırasında pozisyon bu barda seviyeden kapanırdı; yol "sürer" dalını aldı.
+        p = led.positions.get(sym)
+        if (p is not None and p.stop is not None and stop_before_fav is not None and p.stop != stop_before_fav
+                and _beyond(long, p.stop, D(float(lo) if long else float(h)))):
+            ambiguous += 1
     basis = None
     if rec is None:
         if last_c is None:
@@ -421,7 +502,7 @@ def _net_replay(view: ShadowTrade, df: pd.DataFrame, gross: dict[str, Any], r_gr
             "net_exit_basis": str(basis), "net_exit_price": float(rec.exit_price) if rec.exit_price is not None else None,
             "entry_fill": float(ent.price), "won_net": r_net >= WON_NET_MIN_R, "veto_was_right_net": r_net <= 0,
             "funding_complete": bool(cov.get("complete")), "funding_missing": cov.get("missing"),
-            "net_status": "OK", "exec_model": xm}
+            "intrabar_ambiguous_bars": int(ambiguous), "net_status": "OK", "exec_model": xm}
 
 
 def outcome_r(outcome: dict[str, Any] | None) -> float | None:
@@ -522,9 +603,11 @@ def relabel_net(trades: list[ShadowTrade], frames_by_symbol: dict[str, dict[str,
 
 def approx_net_r(t: ShadowTrade, outcome: dict[str, Any], *, model: ExecModel,
                  filters: SymbolFilters | None = None) -> float | None:
-    """KAPALI-BİÇİM NET TAHMİN (`cf_label_v1c`, yalnız çevrimdışı dolgu; bar YOK): saklı brüt çıkışa defterin ücret/kayma
-    modeli ve kendi giriş dolumu (`market_fill_price`) uygulanır. Çıkış dolum modeli (boşluk/kapanış), ücret dahil başa-baş
-    fiyatı, MFE başa-baş ve funding YOK → NET'in ÜST SINIRI; v2 net ortalamasına karıştırılmaz."""
+    """KAPALI-BİÇİM YAKLAŞIK NET (`cf_label_v1c`, yalnız çevrimdışı dolgu; bar YOK): saklı brüt çıkışa defterin ücret/kayma
+    modeli ve kendi giriş dolumu (`market_fill_price`) uygulanır. Çıkış dolum modeli (boşluk), ücret dahil başa-baş fiyatı
+    (başa-baş bacağı ham girişten fiyatlanır → tahmin DÜŞÜK kalır), MFE başa-baş (kurtarılan zarar görünmez → DÜŞÜK) ve
+    funding YOK. Hatalar iki yöne de gidebilir: ne alt ne üst sınırdır (2026-09-29 düzeltmesi: eskiden "üst sınır"
+    deniyordu, yanlıştı). Net ortalamasına karıştırılmaz; çevrimdışı betik mum bulunca kaydı v3 ile değiştirir."""
     side = str(t.direction).upper()
     sg = 1.0 if side == "LONG" else -1.0
     f = _replay_filters(str(t.symbol), filters)
@@ -569,7 +652,7 @@ def label_records(trades: list[ShadowTrade], frames_by_symbol: dict[str, dict[st
     `STALE_GRACE_BARS` geçtiği hâlde etiketlenemeyen kayıt (veri boşluğu / evrenden çıkmış sembol) bayattır.
     Döner: (bu çağrıda etiketlenen sayı, bayat kayıtlar). Defter başı kayıtçı ve ana botun öğrenme gölgeleri ORTAK.
 
-    `exec_model` (2026-09-29): verilirse kesinleşen her etikete `net_outcome` (v2: net R, maliyet parçaları) eklenir;
+    `exec_model` (2026-09-29): verilirse kesinleşen her etikete `net_outcome` (v3: net R, maliyet parçaları) eklenir;
     `filters_for(symbol)` defterin filtre önbelleği, `funding_lookup` defterin gerçekleşmiş funding kaynağıdır (yan
     etkisiz okunur). None → çıktı v1 ile BİT-AYNI."""
     now = _aware(now)
@@ -626,7 +709,7 @@ class CounterfactualRecorder:
         self.expired = int(m.get("expired", 0) or 0)
         self.recorded_total = int(m.get("recorded_total", 0) or 0)
         self.superseded = int(m.get("superseded", 0) or 0)
-        #: Tembel net dolguyla (v1 → v2) yeniden etiketlenen kayıt sayısı (2026-09-29, maliyet sapması).
+        #: Tembel net dolguyla (v1 → v3) yeniden etiketlenen kayıt sayısı (2026-09-29, maliyet sapması).
         self.net_backfilled = int(m.get("net_backfilled", 0) or 0)
         #: Defterin öğrenme sayaçlarının KALICI yedeği (2026-09-28, ikinci doğrulama turu): özetin `learning` alanı öğrenme
         #: kapalıyken ve eski kodda yazılmaz (sayaçlar silinirdi); bu dosyaya ise ne kapalı yol ne eski kod dokunur.
@@ -820,10 +903,10 @@ def _fin(x: Any) -> float | None:
 
 
 def net_stats(outcomes: Any) -> dict[str, Any]:
-    """Etiketli karşı-olgusalların R özeti (2026-09-29): raporlanan taban NET (`r_net`, v2); brüt (`r_multiple`) yalnız
+    """Etiketli karşı-olgusalların R özeti (2026-09-29): raporlanan taban NET (`r_net`, v2/v3); brüt (`r_multiple`) yalnız
     bilgi. `n_gross_only`: net'i olmayan etiketli kayıt (v1 / net hatası); v1c tahminleri net ortalamasına KARIŞMAZ."""
     gross, net, cost, fin = [], [], [], 0
-    lab = 0
+    lab = amb = 0
     for o in outcomes:
         if not isinstance(o, dict):
             continue
@@ -838,14 +921,17 @@ def net_stats(outcomes: Any) -> dict[str, Any]:
                 cost.append(c)
             if o.get("funding_complete") is False:
                 fin += 1
+            if (o.get("intrabar_ambiguous_bars") or 0) > 0:
+                amb += 1                               # (2026-09-29) bar içi sırası belirsiz net etiket (bkz. `_bar_path`)
 
     def mean(xs: list[float]) -> float | None:
         return round(sum(xs) / len(xs), 4) if xs else None
     return {"r_basis": "net", "n_net": len(net), "mean_r_net": mean(net), "mean_r_gross": mean(gross),
-            "mean_cost_r": mean(cost), "n_gross_only": lab - len(net), "n_net_funding_incomplete": fin}
+            "mean_cost_r": mean(cost), "n_gross_only": lab - len(net), "n_net_funding_incomplete": fin,
+            "n_net_intrabar_ambiguous": amb}
 
 
-__all__ = ["CounterfactualRecorder", "ExecModel", "HORIZON_BARS", "LABEL_HORIZON", "LABEL_KINDS", "LABEL_RULE_EXIT",
-           "LABEL_TARGET_STOP_TIME", "LABEL_VERSION", "LABEL_VERSION_V1", "LABEL_VERSION_V1C", "NET_CONTRACT",
-           "SCHEMA_VERSION", "WON_NET_MIN_R", "approx_net_r", "label_records", "net_outcome", "net_stats", "outcome_r",
-           "relabel_net"]
+__all__ = ["CounterfactualRecorder", "ExecModel", "HORIZON_BARS", "INTRABAR_PATH", "LABEL_HORIZON", "LABEL_KINDS",
+           "LABEL_RULE_EXIT", "LABEL_TARGET_STOP_TIME", "LABEL_VERSION", "LABEL_VERSION_V1", "LABEL_VERSION_V1C",
+           "LABEL_VERSION_V2", "NET_CONTRACT", "SCHEMA_VERSION", "STOP_FILL_RULE", "WON_NET_MIN_R", "approx_net_r",
+           "label_records", "net_outcome", "net_stats", "outcome_r", "relabel_net"]

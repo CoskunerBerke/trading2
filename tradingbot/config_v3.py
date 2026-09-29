@@ -740,6 +740,38 @@ class LearningModeSection:
     strategy_overrides: dict[str, Any] = field(default_factory=dict)  # yalnız OVERRIDE_KEYS
 
 
+#: ORTAK DENEYİM KATMANI (2026-09-29): geçerli modlar. ADVISE / ENFORCE v1'de YOK (karar hiçbir koşulda değişmez).
+SHARED_EXPERIENCE_MODES = ("OFF", "RECORD")
+
+
+@dataclass
+class SharedExperienceSection:
+    """ORTAK DENEYİM KATMANI v1 (2026-09-29) — yalnız KAYIT: karar/defter/öğrenici DEĞİŞMEZ. Kod varsayılanı KAPALI.
+
+    Katman ancak `enabled: true` VE `mode: RECORD` iken çalışır; mod yalnız OFF | RECORD (başka her değer ConfigError
+    SHARED_EXPERIENCE_MODE_NOT_IMPLEMENTED). YALNIZ PAPER: çalışma anı modu PAPER değilse toplayıcı `SUSPENDED:<mod>`
+    olur ve satır yazmaz (config PAPER dışındaysa ayrıca uyarı). Env `TRADINGBOT_SHARED_EXPERIENCE=off` yalnız KAPATABİLİR.
+    Bilinmeyen anahtar ConfigError. Tasarım: docs/ortak_deneyim/SPEC_V1.md §9; kararlar KARARLAR.md."""
+    enabled: bool = False
+    mode: str = "OFF"                   # OFF | RECORD
+    state_dir: str = "shared_experience"   # state kökü altında düz ad (/, \, .. yok)
+    hot_max_lines: int = 5000           # 500..50000 — sıcak dosya; taşan satırlar KAYIPSIZ arşive
+    archive_max_segments: int = 0       # 0 = sınırsız (kayıpsız)
+    max_total_mb: int = 1024            # 64..10240 — %90 WARN, %100 seyreltme, %110 DEGRADED (hiçbir şey silinmez)
+    tour_budget_s: float = 2.0          # 0.1..10 — tur başına süre bütçesi (kalan iş sonraki tura)
+    max_rows_per_tour: int = 600        # 10..5000 — tur başına satır tavanı
+    backfill: bool = True               # ilk açılışta mevcut geçmiş/açık pozisyon/karşı-olgusallar da yazılır
+    cache_entries: int = 2048           # 64..10000 — anlık görüntü LRU önbelleği
+    pending_max_age_h: float = 48.0     # 1..240 — eksik barlı taslak en çok bu kadar bekler (sonra GAP/NO_BARS)
+    lock_timeout_s: float = 0.2         # 0..2 — defter kilidi DENEME süresi (meşgulse defter bu tur atlanır)
+    lazy_fetch_max_per_tour: int = 0    # 0..20 — tembel ağ çekimi; 0 = ağ YOK (v1 varsayılanı)
+
+    @property
+    def active(self) -> bool:
+        """Toplayıcı kurulur mu (yalnız `enabled` + RECORD)."""
+        return bool(self.enabled) and str(self.mode or "").upper() == "RECORD"
+
+
 @dataclass
 class V3Config:
     app: AppConfig = field(default_factory=AppConfig)
@@ -773,6 +805,7 @@ class V3Config:
     pattern_trader: PatternTraderSection = field(default_factory=PatternTraderSection)
     structures: StructuresSection = field(default_factory=StructuresSection)
     learning_mode: LearningModeSection = field(default_factory=LearningModeSection)
+    shared_experience: SharedExperienceSection = field(default_factory=SharedExperienceSection)
     warnings: list[str] = field(default_factory=list)
 
 
@@ -790,7 +823,8 @@ _SECTIONS = {"app": AppConfig, "mode": ModeConfig, "markets": MarketsConfig, "un
              "chart_analysis": ChartAnalysisSection,
              "pattern_trader": PatternTraderSection,
              "structures": StructuresSection,
-             "learning_mode": LearningModeSection}
+             "learning_mode": LearningModeSection,
+             "shared_experience": SharedExperienceSection}
 
 VALID_MODES = ("OBSERVE", "PAPER", "TESTNET", "SHADOW_LIVE", "LIVE_LIMITED", "LIVE")
 VALID_LLM_MODES = ("OFF", "POSTMORTEM_ONLY", "ADVISORY", "VETO_ONLY", "RESEARCH_COUNCIL")
@@ -810,6 +844,16 @@ def load_v3(raw: dict[str, Any]) -> V3Config:
         if _lm_unknown:
             raise ConfigError("learning_mode: bilinmeyen anahtar(lar): %s (geçerli: %s)"
                               % (", ".join(_lm_unknown), ", ".join(sorted(_lm_allowed))))
+    # ORTAK DENEYİM KATMANI (2026-09-29): aynı kural — bilinmeyen anahtar / sözlük olmayan bölüm ConfigError.
+    _xp_raw = raw.get("shared_experience")
+    if _xp_raw is not None:
+        if not isinstance(_xp_raw, dict):
+            raise ConfigError("shared_experience bir sözlük olmalı (ör. {enabled: false})")
+        _xp_allowed = {f.name for f in fields(SharedExperienceSection)}
+        _xp_unknown = sorted(str(k) for k in _xp_raw if k not in _xp_allowed)
+        if _xp_unknown:
+            raise ConfigError("shared_experience: bilinmeyen anahtar(lar): %s (geçerli: %s)"
+                              % (", ".join(_xp_unknown), ", ".join(sorted(_xp_allowed))))
     for name, cls in _SECTIONS.items():
         val = raw.get(name)
         if name == "mode" and isinstance(val, str):        # `mode: PAPER` kısa yazımı
@@ -841,6 +885,16 @@ def load_v3(raw: dict[str, Any]) -> V3Config:
         if cfg.learning_mode.enabled:
             log.warning("learning_mode env override: enabled -> false (TRADINGBOT_LEARNING_MODE=%s)", env_lm)
         cfg.learning_mode.enabled = False
+    # ORTAK DENEYİM ENV (2026-09-29): VPS drop-in yalnız KAPATABİLİR (açma yolu yok); başka her değer fail-closed.
+    env_xp = os.environ.get("TRADINGBOT_SHARED_EXPERIENCE", "").strip().lower()
+    if env_xp:
+        if env_xp not in ("off", "false", "0", "disabled"):
+            raise ConfigError(f"TRADINGBOT_SHARED_EXPERIENCE geçersiz: {env_xp!r} — env yalnız kapatabilir (off)")
+        if cfg.shared_experience.enabled or str(cfg.shared_experience.mode or "").upper() != "OFF":
+            log.warning("shared_experience env override: -> enabled=false, mode=OFF (TRADINGBOT_SHARED_EXPERIENCE=%s)",
+                        env_xp)
+        cfg.shared_experience.enabled = False
+        cfg.shared_experience.mode = "OFF"
     validate_v3(cfg)
     return cfg
 
@@ -1161,6 +1215,8 @@ def validate_v3(cfg: V3Config) -> None:
     _prof = resolve_profile(cfg.risk_profiles.profile, cfg.risk_profiles.overrides, i_understand=cfg.risk_profiles.i_understand)
     # ÖĞRENME MODU (2026-09-28, öğrenme modu): kurallar aşağıda; kapalıyken yalnız yapı/sınır denetlenir.
     _validate_learning_mode(cfg, _prof)
+    # ORTAK DENEYİM KATMANI (2026-09-29): tip/aralık/mod/yol denetimi (kapalıyken de).
+    _validate_shared_experience(cfg)
 
 
 def _is_int(v: Any) -> bool:
@@ -1264,3 +1320,54 @@ def _validate_learning_mode(cfg: V3Config, profile) -> None:
             lm.strategy_overrides[_k] = list(_v)
         elif not isinstance(_v, bool):
             raise ConfigError(f"learning_mode.strategy_overrides.{_k} true/false olmalı (verilen: {_v!r})")
+
+
+#: ORTAK DENEYİM KATMANI (2026-09-29): sayısal alan → (tür, alt, üst). Tamsayı alanlar bool KABUL ETMEZ.
+_XP_INT_RANGES = {"hot_max_lines": (500, 50000), "archive_max_segments": (0, 1_000_000), "max_total_mb": (64, 10240),
+                  "max_rows_per_tour": (10, 5000), "cache_entries": (64, 10000), "lazy_fetch_max_per_tour": (0, 20)}
+_XP_NUM_RANGES = {"tour_budget_s": (0.1, 10.0), "pending_max_age_h": (1.0, 240.0), "lock_timeout_s": (0.0, 2.0)}
+
+
+def _validate_shared_experience(cfg: V3Config) -> None:
+    """ORTAK DENEYİM KATMANI doğrulaması (2026-09-29) — fail-closed, sessiz varsayılan YOK (kapalıyken de denetlenir).
+
+    `mode` büyük harfe normalize edilir ve yalnız OFF | RECORD olabilir (ADVISE/ENFORCE → ConfigError
+    SHARED_EXPERIENCE_MODE_NOT_IMPLEMENTED); `state_dir` state kökü altında düz ad olmalı; sayılar aralıkta. YALNIZ
+    PAPER: bölüm açık ama mod PAPER değilse ConfigError DEĞİL uyarı — toplayıcı çalışma anında `SUSPENDED:<mod>` olur ve
+    satır yazmaz (depodaki config.yaml PAPER dışına taşındığında öğrenme modu kapısı ayrıca devrededir)."""
+    xp = getattr(cfg, "shared_experience", None)
+    if xp is None:
+        return
+    if not isinstance(xp.enabled, bool):
+        raise ConfigError(f"shared_experience.enabled true/false olmalı (verilen: {xp.enabled!r})")
+    if not isinstance(xp.backfill, bool):
+        raise ConfigError(f"shared_experience.backfill true/false olmalı (verilen: {xp.backfill!r})")
+    if xp.mode is False:
+        # YAML 1.1 (PyYAML) çıplak `mode: OFF` / `mode: off` yazımını bool False okur (2026-09-29): belgelenen kapatma
+        # yolu başlatmayı ÇÖKERTMESİN → OFF. `mode: on/yes` (True) belirsizdir → aşağıda ConfigError.
+        xp.mode = "OFF"
+    if not isinstance(xp.mode, str):
+        raise ConfigError(f"shared_experience.mode metin olmalı (OFF | RECORD; verilen: {xp.mode!r})")
+    _m = xp.mode.strip().upper()
+    if _m not in SHARED_EXPERIENCE_MODES:
+        raise ConfigError(f"SHARED_EXPERIENCE_MODE_NOT_IMPLEMENTED: shared_experience.mode yalnız "
+                          f"{' | '.join(SHARED_EXPERIENCE_MODES)} olabilir (verilen: {xp.mode!r}; v1 yalnız KAYIT)")
+    xp.mode = _m
+    sd = xp.state_dir
+    if (not isinstance(sd, str) or not sd.strip() or sd != sd.strip() or "/" in sd or "\\" in sd or ".." in sd
+            or sd in (".",) or ":" in sd):
+        raise ConfigError(f"shared_experience.state_dir state kökü altında düz bir ad olmalı (/, \\, .., : yok; "
+                          f"verilen: {sd!r})")
+    for _k, (_lo, _hi) in _XP_INT_RANGES.items():
+        _v = getattr(xp, _k)
+        if not (_is_int(_v) and _lo <= int(_v) <= _hi):
+            raise ConfigError(f"shared_experience.{_k} {_lo}..{_hi} aralığında tamsayı olmalı (verilen: {_v!r})")
+    for _k, (_lo, _hi) in _XP_NUM_RANGES.items():
+        _v = getattr(xp, _k)
+        if not (_is_num(_v) and _lo <= float(_v) <= _hi):
+            raise ConfigError(f"shared_experience.{_k} [{_lo}, {_hi}] aralığında olmalı (verilen: {_v!r})")
+    if xp.active and str(getattr(cfg.mode, "mode", "") or "").upper() != "PAPER":
+        msg = ("shared_experience: YALNIZ PAPER — mode=%s iken katman ASKIDA kalır (SUSPENDED:%s), satır yazılmaz"
+               % (cfg.mode.mode, cfg.mode.mode))
+        if msg not in cfg.warnings:
+            cfg.warnings.append(msg)

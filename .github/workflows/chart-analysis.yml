@@ -91,6 +91,12 @@ jobs:
             tests/test_signal_lab_strict.py tests/test_extract_lab_records.py \
             tests/test_futures_lab.py tests/test_futures_data.py tests/test_futures_features.py \
             tests/test_learning_provenance_engine.py \
+            tests/test_learning_cf_net.py tests/test_learning_cf_path_v3.py tests/test_closed_bar_after_stop_move_v1.py \
+            tests/test_shared_experience_situation_v1.py tests/test_shared_experience_parity_v1.py \
+            tests/test_shared_experience_store_v1.py tests/test_shared_experience_join_v1.py \
+            tests/test_shared_experience_collector_v1.py tests/test_shared_experience_no_decision_change_v1.py \
+            tests/test_shared_experience_config_v1.py tests/test_shared_experience_report_v1.py \
+            tests/test_shared_experience_review_fixes_v1.py \
             -q --tb=short > pytest.out 2>&1
           rc=$?
           cat pytest.out

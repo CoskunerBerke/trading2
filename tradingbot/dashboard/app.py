@@ -36,7 +36,8 @@ from .templates import (HEADS_TABLE_CLS, POS_TABLE_CLS, age_text, badge, card, c
                         money_html_text, page, pct, pnl_cell, render_any, sample_banner, table,
                         challenger_blocks, observation_block, quality_block,
                         retention_block,
-                        calibration_block, verdict_badge, verdict_kind, weight_table)
+                        calibration_block, verdict_badge, verdict_kind, weight_table,
+                        experience_layer_card)
 from . import terminal as term
 from . import learning_view as lv
 
@@ -144,6 +145,13 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
         except Exception:  # noqa: BLE001
             return ""
 
+    def _xp_card() -> str:
+        """ORTAK DENEYİM (2026-09-29): salt okur kart; katman hiç çalışmadıysa "" (sayfa bit-aynı). Arızası sayfayı düşürmez."""
+        try:
+            return experience_layer_card(state.shared_experience())
+        except Exception:  # noqa: BLE001
+            return ""
+
     def _page(title: str, body: str, active: str, extra_head: str = "") -> HTMLResponse:
         return HTMLResponse(page(title, _lm_banner() + body, active, brand=cfg.title, extra_head=extra_head, token_qs=token_qs))
 
@@ -190,7 +198,7 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
         # `c.display` ZATEN bicimlenmis metindir; ikinci kez para bicimlendirmesine SOKULMAZ.
         # `id="sumgrid"` ve hemen ardindan gelen `<div class="grid">` sozlesmesi KORUNUR (HTML-API paritesi testi).
         # ÖĞRENME MODU (2026-09-28): defter başına slot/Σmarj/karşı-olgusal tablosu — anahtar hiç açılmadıysa "" (bit-aynı)
-        detail = _lm_section()
+        detail = _lm_section() + _xp_card()      # ORTAK DENEYİM (2026-09-29): katman yoksa ""
         detail += '<details class="section"><summary>Kâr / zarar özeti ve teknik kartlar</summary><div>'
         detail += '<div class="grid" id="sumgrid">' + "".join(
             card(c.title, card_value(c), c.sub, cid="sc-" + c.key) for c in vm["cards"]) + "</div>"
@@ -2977,6 +2985,12 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
         if d is None:
             raise HTTPException(404, "dosya yok")
         return JSONResponse(d)
+
+    @app.get("/api/shared-experience")
+    def api_shared_experience():
+        """ORTAK DENEYİM (2026-09-29): kartın verisi (status.json + rapor özeti; salt okur, O(1))."""
+        d = state.shared_experience()
+        return JSONResponse({"available": d is not None, **(d or {})})
 
     @app.get("/api/evidence/{base}")
     def api_evidence(base: str):

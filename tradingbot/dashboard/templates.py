@@ -1003,8 +1003,64 @@ def challenger_blocks(q: dict) -> str:
     return out
 
 
+def _xp_num(x: Any, nd: int = 2, sign: bool = True) -> str:
+    try:
+        f = float(x)
+    except (TypeError, ValueError):
+        return "—"
+    if not math.isfinite(f):
+        return "—"
+    return ("%+.*f" if sign else "%.*f") % (nd, f)
+
+
+def experience_layer_card(xp: dict | None) -> str:
+    """ORTAK DENEYİM KATMANI v1 (2026-09-29) — SALT SUNUM kartı: sayımlar, son toplama adımı / son rapor taraması ve EN ÇOK
+    GÖZLEMLİ hücreler (örneklem büyüklüğüne göre; "en iyiler" DEĞİL). Hiçbir şey hesaplanmaz; `StateReader.
+    shared_experience()` ne verdiyse o basılır. None → "" (katman hiç çalışmadıysa sayfa bit-aynı)."""
+    if not xp:
+        return ""
+    state = str(xp.get("state") or "?")
+    kind = "ok" if state == "OK" else ("bad" if state.startswith("DISABLED") or state == "DEGRADED" else "warn")
+    kinds = xp.get("rows_by_kind") or {}
+    mix = xp.get("snapshot_status_mix") or {}
+    tot_mix = sum(int(v or 0) for v in mix.values()) if isinstance(mix, dict) else 0
+    ok_pct = ("%%%.0f OK" % (100.0 * int(mix.get("OK") or 0) / tot_mix)) if tot_mix else "—"
+    sweep = xp.get("last_sweep_at")
+    cards = "".join([
+        card("Durum", badge(state, kind), "devre kesici AÇIK" if xp.get("breaker_tripped") else "yalnız KAYIT · karar değişmez"),
+        card("Satır", fmt(xp.get("rows_total"), 0),
+             "giriş %s · kapanış %s · olsaydı %s" % (esc(kinds.get("xp_entry", 0)), esc(kinds.get("xp_outcome", 0)),
+                                                     esc(kinds.get("xp_cf", 0)))),
+        card("Son toplama adımı", fmt_utc(xp.get("last_step_at")),
+             "p95 %s ms · taslak %s · hata %s" % (esc(xp.get("step_ms_p95")), esc(xp.get("drafts")), esc(xp.get("errors_total")))),
+        card("Son rapor taraması", fmt_utc(sweep) if sweep else "yok",
+             "elle / ayrı zamanlayıcı: shared-experience-report --summary-out"),
+        card("Anlık görüntü", esc(ok_pct), "disk %s MB · sıcak %s satır" % (esc(xp.get("disk_mb")), esc(xp.get("hot_lines")))),
+    ])
+    rows = []
+    for c in xp.get("top_cells") or []:
+        d = c.get("dims") or {}
+        r, f = c.get("real") or {}, c.get("cf") or {}
+        rows.append([esc(c.get("group")),
+                     esc(" · ".join(str(d.get(k, "?")) for k in ("trend", "vol", "btc", "volume", "structure"))),
+                     esc(r.get("n")), esc(_xp_num(r.get("mean_r"))), esc(r.get("verdict_tr") or "—"),
+                     esc(f.get("n")), esc(_xp_num(f.get("mean_r"))), esc(f.get("verdict_tr") or "—")])
+    tbl = (table(["Kurulum", "Durum (trend · oynaklık · BTC · hacim · yapı)", "Gerçek n", "Gerçek ort. net R", "Gerçek hüküm",
+                  "Olsaydı n", "Olsaydı ort. net R", "Olsaydı hüküm"], rows, num_cols={2, 3, 5, 6},
+                 empty="rapor taraması henüz yok — hücre gösterilmez")
+           if sweep else '<div class="card mut">rapor taraması henüz yok — tarama OTOMATİK DEĞİL (worker yazmaz); elle '
+                         'ya da ayrı bir zamanlayıcıyla: `python -m tradingbot shared-experience-report '
+                         '--summary-out state/shared_experience/report_summary.json`</div>')
+    return ('<details class="section"><summary>Ortak deneyim — yalnız KAYIT</summary><div>'
+            '<div class="small mut"><b>%s</b> · gerçek ve karşı-olgusal ayrı sütunlar; n&lt;10 sayı yok, n&lt;30 hüküm yok'
+            '</div><div class="grid">%s</div><h3>En çok gözlemli hücreler (coinler arası havuz; en iyiler DEĞİL)</h3>%s'
+            '<div class="small mut">Ayrıntı ve "bu durumu daha önce gördük mü?": '
+            '<code>python -m tradingbot shared-experience-report --for-symbol SOL/USDT</code></div></div></details>'
+            % (esc(xp.get("banner") or ""), cards, tbl))
+
+
 __all__ = ["page", "table", "kv_table", "render_any", "card", "badge", "health_badge", "ks_badge", "verdict_badge", "pnl_cell",
            "fmt", "pct", "esc", "age_text", "chart_block", "CSS", "NAV", "NAV_MAIN", "NAV_MORE", "CHART_JS",
            "retention_block", "calibration_block", "quality_block", "observation_block",
            "evidence_badge", "NOT_ENOUGH_DATA", "RESEARCH_ONLY", "ACTIVE_POLICY_UNCHANGED",
-           "challenger_blocks"]
+           "challenger_blocks", "experience_layer_card"]

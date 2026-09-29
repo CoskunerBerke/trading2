@@ -604,3 +604,15 @@ learning_mode:
     structures_entry_shadow: [main, t2_trend_regime, m2_tsmom28]
     economics_exploration: true
     leverage_confidence_fallback: true
+
+# ---- ORTAK DENEYİM KATMANI v1 (2026-09-29) — YALNIZ KAYIT, YALNIZ PAPER --------------------------------------------
+# Tek hafıza: ana bot, T2, M2, Box, D4, C4, C4S ve formasyon defterlerinin gerçek işlemleri (giriş + sonuç) ve açılmayan
+# geçerli sinyallerin karşı-olgusalları, girişteki DURUM anlık görüntüsüyle (4h trend/oynaklık/yapı/hacim, 1h, BTC)
+# state/shared_experience/ altına yazılır. KARAR DEĞİŞMEZ: katman hiçbir deftere/plana/öğreniciye yazmaz; arızası turu
+# durdurmaz (devre kesici). Kod varsayılanı KAPALI; mod yalnız OFF | RECORD. Soru: "bu durumda bu kurulumla daha önce
+# kazandık mı?" → python -m tradingbot shared-experience-report (ayrı aşama). Ayrıntı: docs/ortak_deneyim/SPEC_V1.md
+# * KAPATMAK: `enabled: false` (ya da `mode: OFF`) + worker'ı yeniden başlat, ya da env TRADINGBOT_SHARED_EXPERIENCE=off
+#   (env yalnız kapatır). Durum dosyası/geçmiş silinmez; geri almada state/shared_experience/ zararsız kalır.
+shared_experience:
+  enabled: true
+  mode: RECORD

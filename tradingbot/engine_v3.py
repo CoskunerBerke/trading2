@@ -1833,6 +1833,8 @@ class TradingEngineV3(TradingEngine):
         # Karar günlüğü: DEĞERLENDİRİLEN HER aday (kabul/red/veto) tek seferde yazılır.
         # Hot loop'un DIŞINDA, tur sonunda ve fail-safe: arıza turu bozmaz.
         self._journal_decisions(risk_log, decisions, now)
+        # ORTAK DENEYİM KATMANI v1 (2026-09-29): yalnız KAYIT — tüm kararlar/kapanışlar/etiketlerden SONRA, salt okur.
+        self._shared_experience_step(risk_log, decisions, briefs, now)
         # Açık pozisyon yönetim gözlemi + kapanış zinciri özeti. İKİSİ DE SALT OKUNURDUR:
         # motor bu dosyaları okumaz, yalnız yazar. `REDUCE/EXIT` bugün ADVISORY_ONLY'dir.
         self._write_position_management(marks, decisions, now)
@@ -1881,6 +1883,12 @@ class TradingEngineV3(TradingEngine):
                                            memory=self._lm_memory_health(),
                                            policy_basis=(_basis.status() if _basis is not None
                                                          else getattr(self, "_lm_basis_alarm", None)))
+        _xp = self.__dict__.get("_shared_xp")
+        if _xp:                                  # ORTAK DENEYİM (2026-09-29): OFF → anahtar yok (health.json bit-aynı)
+            try:
+                health["shared_experience"] = _xp.health()
+            except Exception as exc:  # noqa: BLE001 — sağlık özeti turu durdurmaz
+                health["shared_experience"] = {"state": "HEALTH_ERROR", "error": str(exc)[:120]}
         atomic_write_json(st / "health.json", health)
         self._notify_health(str(health.get("state") or "UNKNOWN"), str(health.get("summary") or ""), now)
         self._notify_maintenance(health, now)
@@ -4639,6 +4647,27 @@ class TradingEngineV3(TradingEngine):
             self._journal_errors += 1
             log.warning("karar günlüğü yazılamadı (tur etkilenmedi): %s", exc)
 
+    def _shared_experience_step(self, risk_log, decisions, briefs, now) -> None:
+        """ORTAK DENEYİM KATMANI v1 (2026-09-29) — yalnız KAYIT (docs/ortak_deneyim/SPEC_V1.md §10). Kapalıyken birkaç
+        öznitelik okuması ve dönüş (paket içe aktarılmaz, dosya yazılmaz). Açıkken toplayıcı ilk çağrıda TEMBEL kurulur;
+        kurulum üç kez başarısız olursa bu süreçte bir daha denenmez. Arıza turu/kararı ETKİLEMEZ."""
+        sec = getattr(getattr(self.cfg, "v3", None), "shared_experience", None)
+        if sec is None or not getattr(sec, "enabled", False) or str(getattr(sec, "mode", "OFF")).upper() != "RECORD":
+            return
+        xp = self.__dict__.get("_shared_xp")
+        if xp is False:                                  # kurulum kalıcı başarısız (bu süreçte)
+            return
+        try:
+            if xp is None:
+                from .shared_experience.collector import SharedExperienceCollector
+                xp = self.__dict__["_shared_xp"] = SharedExperienceCollector.from_engine(self)
+            xp.step(self, risk_log=risk_log, decisions=decisions, briefs=briefs, now=now)
+        except Exception as exc:  # noqa: BLE001 — kayıt katmanı ASLA turu durdurmaz
+            n_fail = self.__dict__["_shared_xp_fail"] = int(self.__dict__.get("_shared_xp_fail", 0)) + 1
+            if xp is None and n_fail >= 3:
+                self.__dict__["_shared_xp"] = False
+            log.warning("ortak deneyim katmanı adımı atlandı (karar ETKİLENMEZ): %s", exc)
+
     def _journal_outcome(self, rec_legacy: dict, lesson: dict | None = None) -> None:
         """Kapanan işlemi aynı `trade_id` üzerinden karar snapshot'ına bağlar (idempotent)."""
         j = getattr(self, "decision_journal", None)
@@ -4696,7 +4725,12 @@ class TradingEngineV3(TradingEngine):
         try:
             from dataclasses import asdict
             from .core import payload_hash
-            h = payload_hash(asdict(self.cfg.v3)) if self.cfg.v3 is not None else None
+            if self.cfg.v3 is not None:
+                _d = asdict(self.cfg.v3)
+                # ORTAK DENEYİM (2026-09-29): yalnız-KAYIT katmanının bölümü karar kimliğine GİRMEZ — özet OFF/RECORD'da
+                # ve bölümden önceki kodla (HEAD) aynı kalır; karar günlüğü satırları katman açılınca değişmez.
+                _d.pop("shared_experience", None)
+                h = payload_hash(_d)
         except Exception:  # noqa: BLE001
             h = None
         self._config_hash_cache = h

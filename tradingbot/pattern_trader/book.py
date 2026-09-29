@@ -1128,7 +1128,10 @@ class PatternBook:
             if pos is None:
                 r = _reject(why, **{k: v for k, v in ((pl.get("learning") or {}).get("fit") or {}).items()
                                     if k in ("notional", "leverage", "size_rule") and isinstance(v, (int, float, str))})
-                self._cf_record(pl, why, entry=qmark, at=cf_at, extra={"entry_ref": "quantized_entry"})
+                # KARŞI-OLGUSAL GİRİŞ (2026-09-29, inceleme bulgusu): diğer nedenler gibi REFERANS fiyat (mark) yazılır;
+                # `qmark` zaten defterin dolum fiyatıdır (kayma + tick; özellikte `rr_at_entry.quantized_entry`) — net yeniden
+                # oynatma onu İKİNCİ kez kaydırırdı (eski `quantized_entry` kayıtlarını `learning_cf.net_outcome` ayrıca tanır).
+                self._cf_record(pl, why, entry=mark, at=cf_at, extra={"entry_ref": "mark"})
                 return r
         if act.get("_notional_scaled"):
             pl["size_scaled_to_cap"] = dict(act["_notional_scaled"])

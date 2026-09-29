@@ -1,15 +1,20 @@
 # -*- coding: utf-8 -*-
 """KARŞI-OLGUSAL NET DOLGU (2026-09-29, maliyet sapması) — ESKİ (v1, yalnız brüt) etiketli "olsaydı" kayıtlarına NET R.
 
-Neden: `cf_label_v2` öncesi etiketler yalnız BRÜT R taşır (referans fiyat, seviyeden dolum, ücret/kayma/funding yok); gerçek
+Neden: net etiket öncesi etiketler yalnız BRÜT R taşır (referans fiyat, seviyeden dolum, ücret/kayma/funding yok); gerçek
 işlemlerin R'si NET. Çalışan kod v1 kayıtları TEMBEL doldurur (`learning_cf.relabel_net`), ama yalnız pencere defterin
 eldeki kapanmış barlarındaysa (Box 5m ≈ 25 saat). Daha eski kayıtlar için bu betik:
 
 1. Kapanmış mumları borsadan (resmi USDⓈ-M, salt okunur) çeker ve AYNI `relabel_net` / `net_outcome` yolunu koşar →
-   `label_version = cf_label_v2`, `net_backfilled = {at, source: "offline_klines"}` (brüt yeniden üretilemezse yazılmaz).
-2. Mum alınamazsa (ağ yok / `--no-fetch` / pencere tutmuyor) KAPALI-BİÇİM TAHMİN yazar: `label_version = cf_label_v1c`,
-   `r_net_approx` (ücret + kayma + giriş dolumu; çıkış dolum modeli ve funding YOK → ÜST SINIR). Tahmin v2 net
-   ortalamasına ASLA karışmaz (karne `n_approx_v1c` ayrı sayar).
+   `label_version = cf_label_v3` (`cf_net_ledger_replay_v2`: bar içi nedensel yol, seviyeden stop dolumu),
+   `net_backfilled = {at, source: "offline_klines"}` (brüt yeniden üretilemezse yazılmaz).
+2. Mum alınamazsa (ağ yok / `--no-fetch` / pencere tutmuyor) KAPALI-BİÇİM YAKLAŞIK NET yazar: `label_version =
+   cf_label_v1c`, `r_net_approx` (ücret + kayma + giriş dolumu; çıkış dolum modeli, ücret dahil başa-baş fiyatı, MFE
+   başa-baş ve funding YOK → ne alt ne üst sınır, 2026-09-29 düzeltmesi). Tahmin net ortalamasına ASLA karışmaz (karne
+   `n_approx_v1c` ayrı sayar).
+3. v1c KESİN DEĞİLDİR (2026-09-29, inceleme bulgusu): sonraki bir koşuda v1c kayıtlar yine adaydır; mumla brüt aynen yeniden
+   üretilirse kayıt net yeniden oynatmayla (v3) DEĞİŞTİRİLİR (`r_net_approx` düşer), üretilemezse kayda DOKUNULMAZ (tahmin
+   aynen kalır, dosya bu yüzden yeniden yazılmaz).
 
 Brüt alanlar (`r_multiple`, `won`, `veto_was_right`, `exit_reason`, `exit_price`) DEĞİŞMEZ. Yürütme modeli her defterin
 kurucusuyla AYNI parametrelerle kurulan defterden `ExecModel.of_ledger` ile alınır (test: gerçek defterlerle eşit).
@@ -121,8 +126,20 @@ def cf_files(state: Path, cfg: Any) -> list[tuple[str, Path, str | None]]:
 
 
 def _candidate(row: dict[str, Any]) -> bool:
+    """Net'i olmayan etiketli kayıt: v1 (alan yok), `cf_label_v1` (tembel yol yapamadı) ya da `cf_label_v1c` (kapalı-biçim
+    tahmin — 2026-09-29: KESİN değil, mumla yeniden denenir)."""
     o = row.get("outcome")
-    return (isinstance(o, dict) and o.get("r_net") is None and o.get("label_version") in (None, LABEL_VERSION_V1))
+    return (isinstance(o, dict) and o.get("r_net") is None
+            and o.get("label_version") in (None, LABEL_VERSION_V1, LABEL_VERSION_V1C))
+
+
+def _is_v1c(row: dict[str, Any]) -> bool:
+    o = row.get("outcome")
+    return isinstance(o, dict) and o.get("label_version") == LABEL_VERSION_V1C
+
+
+#: v1c tahmininin kendi alanları: kayıt net yeniden oynatmayla değiştirilince düşer (net alanları yenileriyle yazılır).
+_V1C_ONLY = ("r_net_approx",)
 
 
 def _shadow(row: dict[str, Any]) -> ShadowTrade:
@@ -130,6 +147,8 @@ def _shadow(row: dict[str, Any]) -> ShadowTrade:
     o = dict(st.outcome or {})
     o.pop("label_version", None)                     # tembel yolun "bu yoldan yok" işareti: burada mumlarla yeniden denenir
     o.pop("net_status", None)
+    for k in _V1C_ONLY:                              # v1c tahmini (2026-09-29): başarılı yeniden oynatmada kalmaz
+        o.pop(k, None)
     st.outcome = o
     return st
 
@@ -172,7 +191,7 @@ def backfill_rows(rows: list[dict[str, Any]], *, model: ExecModel, now: datetime
                   filters_for: Callable[[str], Any] | None = None, funding_lookup: Any = None) -> dict[str, Any]:
     """Aday satırların `outcome`ını YERİNDE günceller. Döner: özet (sayılar, brüt/net ortalamaları)."""
     cands = [r for r in rows if _candidate(r)]
-    summ: dict[str, Any] = {"candidates": len(cands), "v2": 0, "v1c": 0, "none": 0}
+    summ: dict[str, Any] = {"candidates": len(cands), "net": 0, "v1c": 0, "v1c_upgraded": 0, "v1c_kept": 0, "none": 0}
     if not cands:
         return summ
     shadows = {id(r): _shadow(r) for r in cands}
@@ -199,10 +218,14 @@ def backfill_rows(rows: list[dict[str, Any]], *, model: ExecModel, now: datetime
         st = shadows[id(r)]
         o = dict(st.outcome or {})
         if o.get("r_net") is not None:
+            summ["v1c_upgraded"] += int(_is_v1c(r))
             r["outcome"] = o
-            summ["v2"] += 1
+            summ["net"] += 1
             gross.append(float(o["r_multiple"]))
             net.append(float(o["r_net"]))
+            continue
+        if _is_v1c(r):
+            summ["v1c_kept"] += 1                    # yeniden oynatılamadı: tahmin AYNEN kalır (yazım tetiklemez)
             continue
         why = str(o.get("net_status") or ("NO_KLINES" if frames_fn is not None else "NO_FETCH"))
         filt = filters_for(st.symbol) if filters_for is not None else None
@@ -219,7 +242,7 @@ def backfill_rows(rows: list[dict[str, Any]], *, model: ExecModel, now: datetime
 
     def mean(xs: list[float]) -> float | None:
         return round(sum(xs) / len(xs), 4) if xs else None
-    summ.update({"v2_mean_r_gross": mean(gross), "v2_mean_r_net": mean(net),
+    summ.update({"net_mean_r_gross": mean(gross), "net_mean_r_net": mean(net),
                  "v1c_mean_r_gross": mean([g for g, _ in approx]), "v1c_mean_r_net_approx": mean([x for _, x in approx])})
     return summ
 
@@ -270,7 +293,7 @@ def run(state: Path, cfg: Any, *, apply: bool, fetch: bool, now: datetime | None
         summ = backfill_rows(rows, model=models.get(key) or models["main"], now=now, frames_fn=frames_fn if fetch else None,
                              filters_for=filters_for, funding_lookup=rates)
         summ["file"] = str(path)
-        if apply and (summ["v2"] or summ["v1c"]):
+        if apply and (summ["net"] or summ["v1c"]):
             summ["write"] = _write(path, doc, stat0, stamp)
         else:
             summ["write"] = "DRY_RUN" if not apply else "NO_CHANGE"
@@ -308,9 +331,10 @@ def render(rep: dict[str, Any]) -> str:
         if "error" in b:
             lines.append(f"   {key:<32} OKUNAMADI: {b['error']}")
             continue
-        lines.append(f"   {key:<32} aday {b['candidates']:>4} · v2 net {b['v2']:>4} (brüt {b.get('v2_mean_r_gross')} → net "
-                     f"{b.get('v2_mean_r_net')}) · v1c tahmin {b['v1c']:>4} (brüt {b.get('v1c_mean_r_gross')} → üst sınır "
-                     f"{b.get('v1c_mean_r_net_approx')}) · yok {b['none']} · {b['write']}")
+        lines.append(f"   {key:<32} aday {b['candidates']:>4} · net {b['net']:>4} (brüt {b.get('net_mean_r_gross')} → net "
+                     f"{b.get('net_mean_r_net')}; v1c'den {b.get('v1c_upgraded', 0)}) · v1c tahmin {b['v1c']:>4} (brüt "
+                     f"{b.get('v1c_mean_r_gross')} → yaklaşık {b.get('v1c_mean_r_net_approx')}; eski v1c korunan "
+                     f"{b.get('v1c_kept', 0)}) · yok {b['none']} · {b['write']}")
     return "\n".join(lines)
 
 

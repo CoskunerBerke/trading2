@@ -3,6 +3,7 @@
   doctor · migrate · collect · analyze(v3) · paper-status · spot-status · futures-status · replay · backtest(futures)
   validate-model · model-status · risk-status · health · reconcile · dashboard · export-trades · export-tax · mode-status
   mode-transition · killswitch-reset · backup · restore · universe
+  shared-experience-report · shared-experience-status (ortak deneyim; salt okur, 2026-09-29)
 Gerçek emir komutu YOKTUR; LIVE yolu bu sürümde kapalıdır.
 """
 from __future__ import annotations
@@ -914,6 +915,70 @@ def cmd_outage_simulate(cfg: BotConfig, args) -> int:
     return 0
 
 
+# ------------------------------------------------------------------ ortak deneyim katmanı (2026-09-29)
+def _xp_root(cfg: BotConfig, args) -> Path:
+    """Ortak deneyim deposunun kökü (2026-09-29): `--root` > `--state-dir`/<state_dir> > `state/<state_dir>`.
+    `state_dir` yapılandırmanın `shared_experience.state_dir` alanıdır (varsayılan `shared_experience`)."""
+    if getattr(args, "root", None):
+        return Path(args.root)
+    st = Path(args.state_dir) if getattr(args, "state_dir", None) else cfg.state_path
+    sec = getattr(getattr(cfg, "v3", None), "shared_experience", None)
+    return st / str(getattr(sec, "state_dir", None) or "shared_experience")
+
+
+def cmd_shared_experience_report(cfg: BotConfig, args) -> int:
+    """ORTAK DENEYİM RAPORU (2026-09-29): "bu durumda, bu kurulumda daha önce kazandık mı kaybettik mi?".
+
+    SALT OKUR — ayrı süreç, motor kurulmaz, ağ yok (yalnız depo dosyaları; `--live` Formasyon CSV önbelleğini okur).
+    Yazdığı TEK şey `--out` / `--summary-out` ile açıkça verilen dosyalardır. Tanımlayıcıdır; karar değildir."""
+    from .shared_experience import report as xr
+    try:
+        dims = xr.parse_situation(args.situation)
+        for d in xr.DIMS:
+            v = getattr(args, "dim_" + d, None)
+            if v:
+                dims[d] = v
+        q = xr.Query(book=args.book, setup=args.setup, side=args.side, family=args.family, group_by=args.group_by,
+                     dims=dims, kind=args.kind, cohort=args.cohort, cf_reason_family=args.cf_reason_family,
+                     origin=args.origin, snapshot=args.snapshot, min_n=args.min_n, shrink_k=args.shrink_k,
+                     backoff=not args.no_backoff, cells=args.cells, cells_min=args.cells_min,
+                     focus_coin=args.coin).validate()
+        snap_doc = None
+        if args.snapshot_json:
+            snap_doc = json.loads(Path(args.snapshot_json).read_text(encoding="utf-8"))
+            if not isinstance(snap_doc, dict):
+                raise xr.ReportError("--snapshot-json bir JSON nesnesi olmalı")
+        doc = xr.run(_xp_root(cfg, args), q, since=args.since, until=args.until, for_symbol=args.for_symbol,
+                     snapshot_doc=snap_doc, live=args.live, csv_dir=cfg.cache_path, with_summary=bool(args.summary_out))
+    except (xr.ReportError, OSError, ValueError) as exc:
+        print(f"⛔ ortak deneyim raporu: {exc}")
+        return 2
+    summ = doc.pop("summary", None)
+    text = json.dumps(doc, ensure_ascii=False, indent=1, sort_keys=True) if args.json else xr.render_tr(doc)
+    print(text)
+    if args.out:
+        Path(args.out).write_text(text + "\n", encoding="utf-8")
+    if args.summary_out and summ is not None:
+        from .core import atomic_write_text
+        atomic_write_text(Path(args.summary_out), json.dumps(summ, ensure_ascii=False, indent=1, sort_keys=True))
+    return 0
+
+
+def cmd_shared_experience_status(cfg: BotConfig, args) -> int:
+    """Ortak deneyim katmanı durumu (2026-09-29): status.json + imleç + arşiv + defter başına 24 sa / 7 gün kapsamı ve
+    VERİ YOK bayrakları + geri alma tetikleri. SALT OKUR (motor yok, ağ yok)."""
+    from .shared_experience import report as xr
+    doc = xr.status_doc(_xp_root(cfg, args))
+    print(json.dumps(doc, ensure_ascii=False, indent=1, sort_keys=True) if args.json else xr.render_status_tr(doc))
+    return 0
+
+
+def _xp_args(s: argparse.ArgumentParser) -> None:
+    s.add_argument("--root", default=None, help="depo klasörü (varsayılan state/<shared_experience.state_dir>)")
+    s.add_argument("--state-dir", dest="state_dir", default=None, help="state kökü (varsayılan yapılandırmadaki)")
+    s.add_argument("--json", action="store_true", help="makine-okunur JSON (metinle aynı içerik)")
+
+
 def cmd_authority(cfg: BotConfig, args) -> int:
     """Tek yetkili worker markörü: --claim bu makineye alır, --release kaldırır, varsayılan durumu basar."""
     from .ops.authority import check, claim, current_host, read_authority, release
@@ -1220,6 +1285,48 @@ def register(sub: argparse._SubParsersAction) -> None:
     s.add_argument("--state-dir", dest="state_dir", default=None)
     s.add_argument("--manifest-out", dest="manifest_out", default=None, help="audit manifest JSON yolu")
     s.set_defaults(fn=cmd_learning_reconcile)
+    # ORTAK DENEYİM KATMANI v1 (2026-09-29): salt-okur rapor + durum (ayrı süreç; motor/ağ yok)
+    s = sub.add_parser("shared-experience-report",
+                       help="Ortak deneyim: bu durumda bu kurulumda daha önce kazandık mı? (tanımlayıcı; karar yok)")
+    _xp_args(s)
+    s.add_argument("--book", default=None, help="defter anahtarı ya da adı (ör. strategy_paper_box / b1_box_fade)")
+    s.add_argument("--setup", default=None, help="setup_type (ör. box_fade, trend, candle:CV001, A_TREND_PULLBACK)")
+    s.add_argument("--side", default=None, choices=["LONG", "SHORT"])
+    s.add_argument("--family", default=None, choices=["TREND", "FADE", "BREAKOUT", "CANDLE_PATTERN", "MOMENTUM"])
+    s.add_argument("--group-by", dest="group_by", default="both", choices=["setup", "family", "both"])
+    s.add_argument("--trend", dest="dim_trend", default=None, choices=["UP", "DOWN", "RANGE", "UNKNOWN"])
+    s.add_argument("--vol", dest="dim_vol", default=None, choices=["LOW", "NORMAL", "HIGH", "UNKNOWN"])
+    s.add_argument("--btc", dest="dim_btc", default=None, choices=["UP", "DOWN", "RANGE", "UNKNOWN"])
+    s.add_argument("--volume", dest="dim_volume", default=None, choices=["LOW", "NORMAL", "HIGH", "UNKNOWN"])
+    s.add_argument("--structure", dest="dim_structure", default=None, choices=["HH_HL", "LH_LL", "MIXED", "UNKNOWN"])
+    s.add_argument("--situation", default=None, help="boyut=değer listesi, ör. trend=UP,vol=HIGH,btc=UP")
+    s.add_argument("--for-symbol", "--like", dest="for_symbol", default=None,
+                   help="bu durumu daha önce gördük mü: sembolün depodaki son anlık görüntüsü (ya da --live)")
+    s.add_argument("--live", action="store_true", help="--for-symbol için AĞSIZ canlı anlık görüntü (Formasyon CSV önbelleği)")
+    s.add_argument("--snapshot-json", dest="snapshot_json", default=None, help="situation_v1 anlık görüntüsü JSON dosyası")
+    s.add_argument("--coin", default=None, help="kısmi havuz odağı (varsayılan --for-symbol)")
+    s.add_argument("--kind", default="both", choices=["real", "cf", "both"])
+    s.add_argument("--cohort", default="all", choices=["all", "policy", "extra", "pre"])
+    s.add_argument("--cf-reason-family", dest="cf_reason_family", default=None,
+                   choices=["CAPACITY", "EXCHANGE", "OCCUPANCY", "PARITY", "GATE", "LIQUIDITY", "OTHER"])
+    s.add_argument("--since", default=None, help="karar anı alt sınırı (ISO)")
+    s.add_argument("--until", default=None, help="karar anı üst sınırı (ISO, hariç)")
+    s.add_argument("--origin", default="all", choices=["all", "live"])
+    s.add_argument("--snapshot", default="ok", choices=["ok", "ok+partial", "any"])
+    s.add_argument("--min-n", dest="min_n", type=int, default=30, help="hüküm eşiği (karne ile aynı: 30; en az 10)")
+    s.add_argument("--shrink-k", dest="shrink_k", type=float, default=20.0, help="coin başına kısmi havuz k (varsayılan 20)")
+    s.add_argument("--no-backoff", dest="no_backoff", action="store_true", help="geri çekilme seviyelerini gösterme")
+    s.add_argument("--cells", action="store_true", help="her tam hücre (nerede kazandık haritası)")
+    s.add_argument("--cells-min", dest="cells_min", type=int, default=10)
+    s.add_argument("--out", default=None, help="çıktının kopyası (yazdığı TEK dosya)")
+    s.add_argument("--summary-out", dest="summary_out", default=None,
+                   help="panel kartı özeti (ör. state/shared_experience/report_summary.json). Otomatik yazan YOK "
+                        "(2026-09-29): elle ya da ayrı kurulan düşük öncelikli bir zamanlayıcıyla çalıştırın")
+    s.set_defaults(fn=cmd_shared_experience_report)
+    s = sub.add_parser("shared-experience-status",
+                       help="Ortak deneyim katmanı durumu + defter başına 24 sa/7 gün kapsamı (salt okur)")
+    _xp_args(s)
+    s.set_defaults(fn=cmd_shared_experience_status)
     s = sub.add_parser("authority", help="Tek yetkili worker markörü (split-brain koruması): --claim / --release / durum")
     s.add_argument("--claim", action="store_true"); s.add_argument("--release", action="store_true"); s.add_argument("--note", default="")
     s.set_defaults(fn=cmd_authority)

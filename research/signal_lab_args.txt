@@ -1,1 +1,1 @@
---no-catalog --futures ctx --symbols genis --tfs 4h --days 4h=1460
+--futures crowd-probe --symbols genis --tfs 4h,1h --days 4h=1460,1h=730

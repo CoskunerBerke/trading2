@@ -232,7 +232,7 @@ learning_mode:
     main:                         {enabled: true, slots: 20, leverage_max: 5}   # 2026-09-28: kademe tavanı (6fb39cd)
     t2_trend_regime:              {enabled: true, slots: 40, leverage_max: 4}
     m2_tsmom28:                   {enabled: true, slots: 40, leverage_max: 4}
-    b1_box_fade:                  {enabled: true, slots: 20, leverage_max: 4, min_stop_pct: 0.32}
+    b1_box_fade:                  {enabled: true, slots: 40, leverage_max: 4, min_stop_pct: 0.32}   # 2026-09-30: 20→40 (kullanıcı onayı)
     d4_donchian_20_10:            {enabled: true, slots: 20, leverage_max: 3, symbols: universe}
     c4_candle_variations:         {enabled: true, slots: 20, leverage_max: 3, symbols: universe}
     c4s_candle_variations_strict: {enabled: false}

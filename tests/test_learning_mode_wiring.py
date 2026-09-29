@@ -263,7 +263,7 @@ CONTRACT_SECTION = {
     "books": {"main": {"enabled": True, "slots": 20, "leverage_max": 5},
               "t2_trend_regime": {"enabled": True, "slots": 40, "leverage_max": 4},
               "m2_tsmom28": {"enabled": True, "slots": 40, "leverage_max": 4},
-              "b1_box_fade": {"enabled": True, "slots": 20, "leverage_max": 4, "min_stop_pct": 0.32},
+              "b1_box_fade": {"enabled": True, "slots": 40, "leverage_max": 4, "min_stop_pct": 0.32},
               "d4_donchian_20_10": {"enabled": True, "slots": 20, "leverage_max": 3, "symbols": "universe"},
               "c4_candle_variations": {"enabled": True, "slots": 20, "leverage_max": 3, "symbols": "universe"},
               "c4s_candle_variations_strict": {"enabled": False},

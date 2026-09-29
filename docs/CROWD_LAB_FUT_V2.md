@@ -278,5 +278,15 @@ Bu kurallarla kalabalık verisi (taker akışı, OI, long/short oranları, fonla
 vermedi. Hiçbir defter değişmedi. Ana botun piyasa ajanındaki "kalabalık çok long ise long'a karşı" eğilimi de bu koşuyla
 desteklenmedi ya da çürütülmedi (süpürme konum satırları kanıt yok); dokunulmadı.
 
+**Keşif koşusu** ([run 36647017857](https://github.com/CoskunerBerke/trading2/actions/runs/36647017857), 4h, mevcut algoritmalar ve ek sinyaller dört kalabalık kovasına göre):
+- GÜÇLÜ ADAY 0 (standart ve sıkı). ZAYIF İZ 45; bunların 25'i kalabalık dilimi.
+- fut_v1'deki desen tekrarlıyor: bir dönemde güçlü, öbür dönemde sıfıra yakın ya da aralığı sıfırı kapsıyor. Örnekler:
+  - Donchian 20/10 LONG, kalabalık aynı yönde giriyorken: keşif +0,28R (aralık > 0), doğrulama +0,25R (aralık 0'ı kapsıyor).
+    Bu, doğrulayıcı koşudaki kırılım takip LONG satırıyla tutarlı; ek bilgi değil.
+  - Donchian 20/10 SHORT, kalabalık tersine konumluyken: keşif +0,01R, doğrulama +0,33R (aralık −0,01…+0,72).
+  - Üç dış mum aşağı SHORT, OI'de SHORT_BUILD: keşif +0,04R, doğrulama +0,20R (aralık +0,01…+0,38); keşif döneminde yok.
+- Gerçek ve rastgele kombinasyonların iki dönemde de sıfırın üstünde kalma oranı: %0,0 / %0,0.
+- Hiçbir dilim ön kayda alınmadı.
+
 Bir satırı (örneğin 1h kırılım takip LONG) test etmek yeni bir ön kayıt (fut_v3) ve yeni deneme demektir. Deneme sayısı
 şimdi 2 vadeli aile, 16 hipotez; aday 0.

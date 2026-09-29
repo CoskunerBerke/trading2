@@ -1,5 +1,7 @@
 # Öğrenme modu L1: durum kaydı (güncelleme 2026-09-28 ~07:00 UTC)
 
+**DAĞITILDI (2026-09-29 21:56 UTC, kullanıcı):** VPS `c0b8c94` → `f9a61dd` (`tb-deploy-f9a61dd.sh --detach`). 34/34 değişmez; iki doğrulanmış yedek (`tradingbot-manual-20260929T214536Z`, `…T215032Z`); karşı-olgusal net dolgu: Box 460 kayıt, brüt ort. +0,669R → net +0,543R (yazıldı; `.pre-cf-net-*` yedekleri); worker 60 sn kararlı, bellek 595M/709M, panel 91M. Dağıtım öncesi: C4 5 açık pozisyon (C4 çalışıyor), D4 4, Box 18, ana 21, T2 24, M2 30. Not: Box "olsaydı" net +0,54R iken gerçek öğrenme işlemleri ~−0,6R — nüfus farkı (stop genişliği/neden) VPS'te salt okunur kırılımla incelenecek.
+
 **DAĞITIMA HAZIR (2026-09-29 22:00 UTC):** kod `f9a61dd` (Ortak Deneyim Katmanı v1 yalnız KAYIT + karşı-olgusal net R cf_label_v3 + canlı stop-taşıma muhasebe düzeltmesi), betik `deploy/releases/tb-deploy-f9a61dd.sh` (`ac42168`, sha256 `e82cec8c…f997ef`). Tam paket 3753 geçti / 0 düştü; 34 değişmez; sahte VPS uçtan uca. Sıradaki: emir akışı/kalabalık (plan hazır: laboratuvar fut_v2 + ayrı kayıt servisi flow_v1).
 
 **Kodlandı, dağıtılmadı (2026-09-29, ORTAK DENEYİM FIX):** Ortak Deneyim Katmanı v1 (yalnız KAYIT) inceleme bulguları kapandı

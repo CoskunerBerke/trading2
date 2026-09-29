@@ -1,5 +1,7 @@
 # Öğrenme modu L1: durum kaydı (güncelleme 2026-09-28 ~07:00 UTC)
 
+**Sürüyor (2026-09-29 08:15 UTC):** 10 saatlik canlı kontrol temiz (bellek 3,6G/tepe 4,5G, tur 6 dk, Box kaçan bar 0/saat). Bulgular: (1) "olsaydı" R'si BRÜT — Box karşı-olgusal ort. +0,40R, gerçek öğrenme işlemleri −0,64R; maliyet (ücret+kayma) düşülmüş, sürümlü etiket (r_gross/cost_r/r_net/label_version) kuruluyor ve eski kayıtlar yeniden hesaplanacak. (2) C4 10 saatte 0 sinyal/0 karşı-olgusal — olağan mı hata mı inceleniyor. (3) Ortak Deneyim Katmanı 1. aşama tasarımı öğrenme modu sonrası koda göre yenileniyor (karşı-olgusal satırları net R ile birinci sınıf satır). Ardından: uygulama → bağımsız inceleme turları → tek dağıtım betiği.
+
 **DAĞITILDI (2026-09-28 21:20 UTC, kullanıcı):** VPS `a8fe2a5` → `c0b8c94` (`tb-deploy-c0b8c94.sh --detach`). Kuru çalışma 26/26 değişmez; doğrulanmış yedek `tradingbot-manual-20260928T211042Z.tar.gz` (24.440 dosya); worker 60 sn kararlı; yeniden başlatma sonrası bellek 556M (tepe 668M) / 6G, OOM 0. Önceki tepe 4,8G. İzleme: `--check` (ilk tam turdan sonra; Box için ikinci örnek ≥50 dk sonra).
 
 **Güncel (2026-09-28 akşam): DAĞITIMA HAZIR.** Kod `c0b8c94`, dağıtım betiği `deploy/releases/tb-deploy-c0b8c94.sh` (`9f54393`, sha256 `d258fb3e…264f`). Dağıtımı yalnız kullanıcı yapar.

@@ -659,3 +659,75 @@ def test_default_run_fetches_no_futures_urls(monkeypatch, tmp_path):
     assert asked and all("/klines/" in u for u in asked), "yalnız mum dosyaları istenir"
     assert not any("/metrics/" in u or "/fundingRate/" in u for u in asked)
     assert "futures" not in rep
+
+
+# ================================================================== kalabalık laboratuvarı (fut_v2, 2026-09-30)
+def test_default_path_never_imports_or_calls_crowd_modules(monkeypatch, tmp_path):
+    """Varsayılan yol (--futures off) crowd_* modüllerini hiç içe aktarmaz ve çağırmaz; rapor/olay/render altın özetleri
+    yukarıdaki GOLDEN_OFF testiyle bağlıdır."""
+    import subprocess
+    import sys
+    from pathlib import Path
+    from tradingbot import crowd_data as CD
+    from tradingbot import crowd_features as CF
+    from tradingbot import crowd_lab as CL
+
+    def boom(*a, **k):
+        raise AssertionError("varsayılan laboratuvar yolu crowd_* modüllerine girmemeli")
+    for mod, fns in ((CD, ("ensure_crowd", "read_crowd_cache", "probe", "cache_schema_lines", "join_taker")),
+                     (CF, ("bar_features", "ctx_labels")),
+                     (CL, ("features", "events", "funding_carry", "feature_meta", "contributions", "pairs", "render_section",
+                           "log_lines", "coverage_warnings", "probe_series", "blind_report"))):
+        for fn in fns:
+            monkeypatch.setattr(mod, fn, boom)
+    df = synth(700, seed=3)
+    evs, meta = L.process_series(df, "X/USDT", "1h", L.LabConfig(), catalog=False)
+    assert evs and "crowd" not in meta and all(set(e.ctx) == {"hacim", "rsi", "trend", "volatilite"} for e in evs)
+    rep = L.run(symbols=["AAA/USDT"], tfs=["1h"], cache_dir=tmp_path / "c", out_dir=tmp_path / "o", cfg=L.LabConfig(),
+                provider_factory=lambda: FakeProvider(synth(900, seed=5)), days={"1h": 37}, jobs=1, catalog=False,
+                now_ms=T0 + 901 * STEP, log=lambda m: None)
+    assert "crowd" not in rep and "KALABALIK" not in L.render(rep)
+    code = ("import sys, json, tempfile, pathlib; sys.path.insert(0, 'tests'); import test_signal_lab as T; "
+            "from tradingbot import signal_lab as L; d = pathlib.Path(tempfile.mkdtemp()); df = T.synth(700, seed=3); "
+            "L.run(symbols=['A/USDT'], tfs=['1h'], cache_dir=d / 'c', out_dir=d / 'o', cfg=L.LabConfig(), "
+            "provider_factory=lambda: T.FakeProvider(df), days={'1h': 25}, catalog=False, now_ms=int(df['timestamp'].iloc[-1]) + 2 * T.STEP, "
+            "log=lambda m: None); L.render(json.loads((d / 'o' / 'signal_lab_report.json').read_text(encoding='utf-8'))); "
+            "print(','.join(m for m in sys.modules if 'crowd_' in m or 'futures_' in m))")
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True,
+                         cwd=str(Path(__file__).resolve().parents[1])).stdout.strip()
+    assert out == "", out
+
+
+def test_context_without_crowd_is_unchanged_and_crowd_adds_four_buckets():
+    df = synth(400, seed=2)
+    ind = L.indicators(df)
+    arr = {k: df[k].to_numpy(dtype=float) for k in ("close", "volume")}
+    base = L.context(ind, arr, 300, L.LONG)
+    assert L.context(ind, arr, 300, L.LONG, crowd=None) == base == L.context(ind, arr, 300, L.LONG, fut=None, crowd=None)
+    crowd = {"pos_side": np.full(400, 1.0), "flow_side": np.full(400, np.nan), "oi_quad": np.full(400, 3.0),
+             "cvd_share_z": np.full(400, -1.5)}
+    got = L.context(ind, arr, 300, L.SHORT, crowd=crowd)
+    assert list(got)[:4] == list(base) and got == {**L.context(ind, arr, 300, L.SHORT), "kalabalik_poz": "kalabalığa_karşı",
+                                                   "kalabalik_akis": "bilinmiyor", "oi_ceyrek": "SHORT_COVER",
+                                                   "taker_24s": "kalabalıkla"}
+    assert L.CROWD_MODES == ("crowd-probe", "crowd", "crowd-ctx") and L.FUTURES_MODES[:4] == ("off", "probe", "ctx", "rules")
+    assert L.CROWD_TFS == ("1h", "4h") and L.FUTURES_TFS == ("1h", "4h", "1d")
+
+
+def test_task_tuple_unchanged_by_default_and_crowd_mode_only_appends_the_mode(monkeypatch, tmp_path):
+    seen = []
+    real_task = L._task
+
+    def rec(t):
+        seen.append(t)
+        return real_task(t)
+    monkeypatch.setattr(L, "_task", rec)
+    prov = FakeProvider(synth(900, seed=5))
+    now = int(prov.df["timestamp"].iloc[-1]) + 2 * STEP
+    kw = dict(symbols=["AAA/USDT"], tfs=["1h"], cache_dir=tmp_path / "c", cfg=L.LabConfig(), provider_factory=lambda: prov,
+              days={"1h": 37}, jobs=1, now_ms=now, log=lambda m: None, catalog=False)
+    L.run(out_dir=tmp_path / "o", **kw)
+    rep = L.run(out_dir=tmp_path / "o2", futures="crowd", algos=False, extras=False, futures_fetch=lambda url: None, **kw)
+    assert [len(t) for t in seen] == [8, 11] and seen[1][8:] == ((), False, "crowd"), "kip yalnız açıkken eklenir"
+    assert rep["crowd"]["coverage"]["AAA/USDT"]["status"] == "NO_DATA" and rep["series"][0]["crowd"] == {"error": "NO_CACHE"}
+    assert any("KALABALIK_VERİ_YOK" in w for w in rep["data_warnings"]) and "futures" not in rep

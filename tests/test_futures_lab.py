@@ -560,3 +560,76 @@ def test_end_to_end_rules_probe_offline_and_abort(tmp_path, monkeypatch):
         L.run(out_dir=tmp_path / "x", provider_factory=None, futures="rules", **{**kw, "tfs": ["15m"]})
     with pytest.raises(ValueError, match="kipi"):
         L.run(out_dir=tmp_path / "x", provider_factory=None, futures="on", **kw)
+
+
+# ---------------------------------------------------------------------------- fut_v2 (kalabalık) eklenince fut_v1 aynı kalır
+#: Kalabalık laboratuvarından (fut_v2, 2026-09-30) ÖNCEKİ kodla (676c180) hesaplanan özetler: fut_v1 kiplerinin (probe/rules/
+#: ctx) raporu, render'ı, günlük satırları, indirdiği URL'ler ve olay CSV'si DEĞİŞMEZ. Olay CSV'si 9 haneye yuvarlanarak
+#: özetlenir (numpy çekirdeklerinin CPU'ya bağlı son-ULP gürültüsü; `test_signal_lab._csv_digest`). P7 (hız) ve süreler hariç.
+GOLDEN_FUT = {
+    "probe": {"report": "a5090dbcd600fe5e", "render": "f25ceae9d04c3752", "log_lines": "51898cb5d6763036", "logs": "096a58212e64f046",
+              "urls": "4105df34717487e0"},
+    "rules": {"report": "1bd61f6b9437edf4", "render": "44724ef393ff0edc", "log_lines": "1bc8577b6e6abdf5", "logs": "19c4c4e0b816521c",
+              "events_csv": "743e161c1f6d24c5", "urls": "f3d1f7e7af27b525"},
+    "ctx": {"report": "45b169ba953f170a", "render": "ecbe6033f430fa11", "log_lines": "5d43d8a1cdbc3b8f", "logs": "19c4c4e0b816521c",
+            "events_csv": "2b93fb922f2d21aa", "urls": "f3d1f7e7af27b525"},
+}
+
+_GOLDEN_FUT_CODE = r'''
+import gzip, hashlib, json, sys, tempfile
+from pathlib import Path
+sys.path.insert(0, "tests")
+import test_futures_lab as T
+import test_signal_lab as TS
+from tradingbot import futures_lab as FL
+from tradingbot import signal_lab as L
+
+sha = lambda b: hashlib.sha256(b).hexdigest()[:16]
+
+def digest(mode, tmp, algos):
+    frames, raws, now = T.lab_world()
+    arc = T.Archive(raws)
+    logs = []
+    kw = dict(symbols=list(frames), tfs=["4h"], cache_dir=tmp / "c", cfg=L.LabConfig(min_is=5, min_oos=5, bootstrap_iters=200),
+              days={"4h": 150}, jobs=1, catalog=False, algos=algos, extras=algos, now_ms=now, log=logs.append)
+    rep = L.run(out_dir=tmp / "o", provider_factory=lambda: T.Klines(frames), futures=mode, futures_fetch=arc, **kw)
+    doc = json.loads((tmp / "o" / "signal_lab_report.json").read_text(encoding="utf-8"))
+    doc.pop("seconds")
+    shown = dict(rep, seconds=0)
+    if mode == "probe":
+        doc["futures"]["probe"].pop("P7")
+        shown["futures"] = {**shown["futures"], "probe": {k: v for k, v in shown["futures"]["probe"].items() if k != "P7"}}
+    out = {"report": sha(json.dumps(doc, ensure_ascii=False, sort_keys=True).encode()), "render": sha(L.render(shown).encode()),
+           "log_lines": sha("\n".join(FL.log_lines(shown)).encode()),
+           "logs": sha("\n".join(x for x in logs if x.startswith("FUT_") and '"item":"P7"' not in x).encode())}
+    p = tmp / "o" / "signal_lab_events.csv.gz"
+    if p.exists():
+        out["events_csv"] = TS._csv_digest(gzip.decompress(p.read_bytes()))
+    out["urls"] = sha("\n".join(sorted(arc.asked)).encode())
+    return out
+
+res = {}
+for mode, algos in (("probe", False), ("rules", False), ("ctx", True)):
+    with tempfile.TemporaryDirectory() as d:
+        res[mode] = digest(mode, Path(d), algos)
+print(json.dumps({"digests": res, "crowd_modules": sorted(m for m in sys.modules if "crowd_" in m)}))
+'''
+
+
+def test_fut_v1_modes_are_byte_identical_to_pre_crowd_code_and_never_import_crowd_modules():
+    import subprocess
+    import sys
+    out = subprocess.run([sys.executable, "-c", _GOLDEN_FUT_CODE], capture_output=True, text=True, check=True, cwd=str(ROOT))
+    res = json.loads(out.stdout.strip().splitlines()[-1])
+    assert res["crowd_modules"] == [], "fut_v1 kipleri crowd_* modüllerini içe aktarmaz"
+    assert res["digests"] == GOLDEN_FUT, res["digests"]
+
+
+def test_fut_v1_seal_and_funding_carry_default_unchanged_by_crowd_lab():
+    import inspect
+    from tradingbot import crowd_lab as CL
+    again = hashlib.sha256(json.dumps(FL.FUT_REGISTRY, sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:16]
+    assert FL.FUT_REGISTRY_SHA == again == PINNED_SHA and CL.CROWD_REGISTRY_SHA != PINNED_SHA
+    assert FL.FUT_VERSION == "fut_v1" and CL.CROWD_VERSION == "fut_v2"
+    assert inspect.signature(FL.funding_carry).parameters["names"].default is FL.FUT_NAMES
+    assert not {k for k in FL.FUT_REGISTRY if "crowd" in k.lower()}, "fut_v1 kaydına kalabalık girmez"

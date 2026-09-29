@@ -13,6 +13,12 @@ adım adım tarar, maliyet sonrası sonucu keşif/doğrulama dönemlerine ayır�
         --days 4h=1460,1h=730,1d=1825                      # vadeli veri yoklaması (docs/FUTURES_OI_FUNDING_LAB.md)
     python scripts/signal_lab.py --source archive --only-futures --symbols genis --tfs 4h,1h,1d \
         --days 4h=1460,1h=730,1d=1825                      # ön kayıtlı 8 OI/fonlama hipotezi (doğrulayıcı koşu)
+    python scripts/signal_lab.py --source archive --futures crowd-probe --symbols genis --tfs 4h,1h \
+        --days 4h=1460,1h=730                              # kalabalık verisi yoklaması (docs/CROWD_LAB_FUT_V2.md)
+    python scripts/signal_lab.py --source archive --futures crowd --symbols genis --tfs 4h,1h \
+        --days 4h=1460,1h=730                              # ön kayıtlı 8 kalabalık hipotezi (fut_v2 doğrulayıcı koşu)
+    python scripts/signal_lab.py --source archive --futures crowd-ctx --no-catalog --symbols genis --tfs 4h \
+        --days 4h=1460                                     # kalabalık bağlam dilimleri (KEŞİF, 2026-09-30)
 
 Çıktı: <out>/signal_lab_report.json (bütün kombinasyonlar) + <out>/signal_lab_events.csv.gz (her işlem)
 + varyasyon koşulduysa <out>/variation_records/<ID>.json (kapının okuduğu kayıt; bayt bayt kopyalanır).
@@ -94,14 +100,15 @@ def main(argv: list[str] | None = None) -> int:
                     help="yalnız mum varyasyonları + eşleri (katalog, ek sinyaller ve algoritmalar yok)")
     ap.add_argument("--futures", choices=L.FUTURES_MODES, default="off",
                     help="açık pozisyon/fonlama (yalnız arşiv): probe = yoklama + kör sayım; ctx = bağlam dilimleri (KEŞİF); "
-                         "rules = ön kayıtlı vadeli kurallar")
+                         "rules = ön kayıtlı vadeli kurallar; crowd-probe / crowd / crowd-ctx = kalabalık (fut_v2, yalnız "
+                         "1h/4h): yoklama / ön kayıtlı 8 hipotez (katalog, ek sinyal, algoritma yok) / bağlam dilimleri")
     ap.add_argument("--only-futures", action="store_true",
                     help="yalnız vadeli kurallar + kontrolleri + eşleri (--futures rules; katalog, ek sinyaller ve algoritmalar yok)")
     a = ap.parse_args(argv)
     futures = a.futures
     if a.only_futures:
-        if futures == "ctx":
-            print("\nHATA: --only-futures bağlam dilimi koşusuyla (--futures ctx) birlikte olmaz", file=sys.stderr)
+        if futures in ("ctx", "crowd-ctx"):
+            print(f"\nHATA: --only-futures bağlam dilimi koşusuyla (--futures {futures}) birlikte olmaz", file=sys.stderr)
             return 2
         futures = "rules" if futures == "off" else futures
     if futures != "off":
@@ -112,10 +119,13 @@ def main(argv: list[str] | None = None) -> int:
         if a.source == "api" and not a.offline:
             print("\nHATA: OI geçmişi yalnız arşivden: --source archive", file=sys.stderr)
             return 2
-        bad = [t.strip() for t in a.tfs.split(",") if t.strip() and t.strip() not in L.FUTURES_TFS]
+        allowed = L.CROWD_TFS if futures in L.CROWD_MODES else L.FUTURES_TFS
+        bad = [t.strip() for t in a.tfs.split(",") if t.strip() and t.strip() not in allowed]
         if bad:
-            print(f"\nHATA: --futures yalnız {', '.join(L.FUTURES_TFS)} dilimlerinde (verilen: {', '.join(bad)})", file=sys.stderr)
+            mode = f" {futures}" if futures in L.CROWD_MODES else ""     # fut_v1 kiplerinin iletisi aynen
+            print(f"\nHATA: --futures{mode} yalnız {', '.join(allowed)} dilimlerinde (verilen: {', '.join(bad)})", file=sys.stderr)
             return 2
+    only_crowd = futures == "crowd"                      # kalabalık doğrulayıcı koşusu: katalog, ek sinyal, algoritma YOK
     try:
         variations = resolve_variations(a.variations)
     except ValueError as exc:
@@ -140,15 +150,21 @@ def main(argv: list[str] | None = None) -> int:
         report = L.run(symbols=symbols, tfs=tfs, cache_dir=Path(a.cache), out_dir=Path(a.out), cfg=L.LabConfig(),
                        provider_factory=None if a.offline else (L.ArchiveProvider if a.source == "archive" else provider_factory),
                        days=days, jobs=a.jobs,
-                       catalog=not a.no_catalog and not a.only_variations and not a.only_futures,
-                       algos=not a.no_algos and not a.only_variations and not a.only_futures,
-                       variations=variations, extras=not a.only_variations and not a.only_futures, futures=futures)
+                       catalog=not a.no_catalog and not a.only_variations and not a.only_futures and not only_crowd,
+                       algos=not a.no_algos and not a.only_variations and not a.only_futures and not only_crowd,
+                       variations=variations, extras=not a.only_variations and not a.only_futures and not only_crowd,
+                       futures=futures)
     except (ValueError, L.DownloadAborted) as exc:     # FuturesDataUnavailable da DownloadAborted'dır
         print(f"\nHATA: {exc}", file=sys.stderr)
         return 2
     print()
     print(L.render(report, top=a.top))
-    if futures != "off":                                 # iş günlüğü satırları (bakımcı yalnız günlüğü okur)
+    if futures in L.CROWD_MODES:                         # iş günlüğü satırları (bakımcı yalnız günlüğü okur)
+        from tradingbot import crowd_lab
+        print()
+        for line in crowd_lab.log_lines(report):
+            print(line)
+    elif futures != "off":
         from tradingbot import futures_lab
         print()
         for line in futures_lab.log_lines(report):

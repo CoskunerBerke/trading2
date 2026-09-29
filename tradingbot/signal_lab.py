@@ -60,9 +60,13 @@ DEFAULT_TFS = ("5m", "15m", "1h", "4h")   # ortak analizin desteklediği dilimle
 #: zaman dilimi başına varsayılan geçmiş (gün) — 1m yalnız maliyet karşılaştırması için (istenirse)
 DEFAULT_DAYS = {"5m": 60, "15m": 180, "1h": 365, "4h": 730, "1d": 1460, "1w": 2920}
 V_STRONG, V_WEAK, V_LOSS, V_NONE, V_THIN = "GÜÇLÜ ADAY", "ZAYIF İZ", "KAYBETTİRİR", "KANIT YOK", "VERİ AZ"
-#: `--futures` kipleri (SPEC fut_v1): off = bugünkü laboratuvar (bayt bayt aynı; futures_* modülleri HİÇ içe aktarılmaz)
-FUTURES_MODES = ("off", "probe", "ctx", "rules")
+#: `--futures` kipleri (SPEC fut_v1): off = bugünkü laboratuvar (bayt bayt aynı; futures_* modülleri HİÇ içe aktarılmaz).
+#: crowd-probe / crowd / crowd-ctx (2026-09-30): kalabalık laboratuvarı fut_v2 (docs/CROWD_LAB_FUT_V2.md; crowd_* modülleri
+#: yalnız bu kiplerde tembel içe aktarılır — off ve fut_v1 kipleri bayt bayt aynı)
+CROWD_MODES = ("crowd-probe", "crowd", "crowd-ctx")
+FUTURES_MODES = ("off", "probe", "ctx", "rules") + CROWD_MODES
 FUTURES_TFS = ("1h", "4h", "1d")                 # OI/fonlama kuralları yalnız bu dilimlerde
+CROWD_TFS = ("1h", "4h")                         # kalabalık (taker mumları) yalnız bu dilimlerde
 
 
 @dataclass(frozen=True)
@@ -283,9 +287,10 @@ def indicators(df: pd.DataFrame) -> dict[str, np.ndarray]:
 
 
 def context(ind: dict[str, np.ndarray], arr: dict[str, np.ndarray], i: int, side: str,
-            fut: dict[str, np.ndarray] | None = None) -> dict[str, str]:
+            fut: dict[str, np.ndarray] | None = None, crowd: dict[str, Any] | None = None) -> dict[str, str]:
     """Bağlam kovaları. `fut` (vadeli özellikler, `--futures ctx|rules`) verilirse oi_rejim / oi_seviye / fonlama
-    kovaları eklenir (yalnız KEŞİF); `fut` yoksa çıktı bugünkü 4 anahtardır."""
+    kovaları eklenir (yalnız KEŞİF); `crowd` (kalabalık özellikleri, `--futures crowd|crowd-ctx`) verilirse kalabalik_poz /
+    kalabalik_akis / oi_ceyrek / taker_24s eklenir (KEŞİF); ikisi de yoksa çıktı bugünkü 4 anahtardır."""
     c = arr["close"][i]
     vr = arr["volume"][i] / ind["vol_avg"][i] if ind["vol_avg"][i] and ind["vol_avg"][i] > 0 else float("nan")
     rsi, e50, e200 = ind["rsi"][i], ind["ema50"][i], ind["ema200"][i]
@@ -299,6 +304,9 @@ def context(ind: dict[str, np.ndarray], arr: dict[str, np.ndarray], i: int, side
            "rsi": "bilinmiyor" if math.isnan(rsi) else ("<30" if rsi < 30 else ("30-50" if rsi < 50 else ("50-70" if rsi < 70 else ">70"))),
            "trend": trend,
            "volatilite": "bilinmiyor" if math.isnan(vx) else ("düşük" if vx < 0.8 else ("yüksek" if vx > 1.25 else "normal"))}
+    if crowd is not None:                               # tembel: varsayılan yol crowd_* modüllerine hiç girmez
+        from . import crowd_features as CF
+        out = {**out, **CF.ctx_labels(crowd, i, side)}
     if fut is None:
         return out
     from . import futures_features as FF                # tembel: varsayılan yol futures_* modüllerine hiç girmez
@@ -664,20 +672,28 @@ def simulate(ev: Event, arr: dict[str, np.ndarray], atr: np.ndarray, cfg: LabCon
 
 def process_series(df: pd.DataFrame, symbol: str, tf: str, cfg: LabConfig, *, catalog: bool = True,
                    algos: bool = True, extras: bool = True, variations: tuple[str, ...] | list[str] = (),
-                   futures: str = "off", fut_raw: dict | None = None) -> tuple[list[Event], dict]:
+                   futures: str = "off", fut_raw: dict | None = None, crowd_raw: dict | None = None) -> tuple[list[Event], dict]:
     """`variations`: mum varyasyonu kimlikleri (`candle_variations`; taslak ve örnek DAHİL) — her biri kendi çıkış
     kuralı (`candle_lab.vcfg`) ve eşleştirilmiş plasebosuyla. `extras=False`: ek sinyaller (ve PLACEBO_RANDOM) yok.
     `futures` (`FUTURES_MODES`): ctx → bağlama vadeli kovalar; rules → ayrıca vadeli kurallar, kontrolleri ve plaseboları
-    (`futures_lab`) + bilgi amaçlı `funding_r`. `fut_raw` = `futures_data.read_futures_cache` (None → vadeli özellik yok)."""
+    (`futures_lab`) + bilgi amaçlı `funding_r`. `fut_raw` = `futures_data.read_futures_cache` (None → vadeli özellik yok).
+    crowd-ctx → bağlama kalabalık kovaları; crowd → ayrıca ön kayıtlı kalabalık kuralları (`crowd_lab`, fut_v2) + bilgi
+    amaçlı `funding_r`. `crowd_raw` = `crowd_data.read_crowd_cache` (None → kalabalık özelliği yok)."""
     arr = {k: df[k].to_numpy(dtype=float) for k in ("open", "high", "low", "close", "volume")}
     ind = indicators(df)
-    aux = aux_series(df) if algos or futures == "rules" else {}
+    aux = aux_series(df) if algos or futures in ("rules", "crowd") else {}
     evs = (catalog_events(df, symbol, tf, cfg) if catalog else []) \
         + (extra_events(df, symbol, tf, ind["atr"]) if extras else []) \
         + (algo_events(df, symbol, tf, ind["atr"], aux) if algos else [])
     skipped: dict[str, int] = {}
-    feat = None
-    if futures != "off" and fut_raw is not None:        # tembel: varsayılan yol futures_* modüllerine hiç girmez
+    feat = cfeat = None
+    if futures in CROWD_MODES:                          # tembel: yalnız kalabalık kiplerinde crowd_* modülleri
+        if crowd_raw is not None:
+            from . import crowd_lab
+            cfeat = crowd_lab.features(df, tf, crowd_raw)
+            if futures == "crowd":
+                evs += crowd_lab.events(df, symbol, tf, ind, aux, cfeat, skipped)
+    elif futures != "off" and fut_raw is not None:      # tembel: varsayılan yol futures_* modüllerine hiç girmez
         from . import futures_features as FF
         feat = FF.bar_features(df["timestamp"].to_numpy(dtype=np.int64), tf_ms(tf), arr["close"], fut_raw)
         if futures == "rules":
@@ -689,10 +705,12 @@ def process_series(df: pd.DataFrame, symbol: str, tf: str, cfg: LabConfig, *, ca
         if why:
             skipped[why] = skipped.get(why, 0) + 1
             continue
-        ev.ctx = context(ind, arr, ev.i, ev.side, fut=feat)
+        ev.ctx = context(ind, arr, ev.i, ev.side, fut=feat, crowd=cfeat)
         done.append(ev)
     if feat is not None and futures == "rules":
         futures_lab.funding_carry(done, arr, df["timestamp"].to_numpy(dtype=np.int64), tf_ms(tf), fut_raw)
+    if cfeat is not None and futures == "crowd":
+        crowd_lab.funding_carry(done, arr, df["timestamp"].to_numpy(dtype=np.int64), tf_ms(tf), crowd_raw)
     n_signals, vmeta = len(evs), {}
     if variations:                                      # tembel: varsayılan yol candle_lab'a hiç girmez
         from . import candle_lab, candle_variations
@@ -718,7 +736,10 @@ def process_series(df: pd.DataFrame, symbol: str, tf: str, cfg: LabConfig, *, ca
             "first": int(df["timestamp"].iloc[0]) if len(df) else None, "last": int(df["timestamp"].iloc[-1]) if len(df) else None}
     if variations:
         meta["variations"] = vmeta
-    if futures != "off":
+    if futures in CROWD_MODES:
+        from . import crowd_lab
+        meta["crowd"] = crowd_lab.feature_meta(df["timestamp"].to_numpy(dtype=np.int64), tf_ms(tf), cfeat, crowd_raw)
+    elif futures != "off":
         from . import futures_lab
         meta["futures"] = futures_lab.feature_meta(df["timestamp"].to_numpy(dtype=np.int64), tf_ms(tf), feat, fut_raw)
     return done, meta
@@ -754,15 +775,21 @@ def _task(args: tuple) -> tuple[list[dict], dict]:
     df = load_series(symbol, tf, days=days, cache_dir=Path(cache_dir), provider_factory=None, now_ms=now_ms)
     if len(df) < cfg.window + cfg.max_hold_bars + 10:
         return [], {"symbol": symbol, "tf": tf, "bars": len(df), "error": "YETERSİZ_VERİ"}
-    fut_raw = None
-    if futures != "off":                                # işçi yalnız önbelleği okur (ağ YOK)
+    fut_raw = crowd_raw = None
+    if futures in CROWD_MODES:                          # işçi yalnız önbelleği okur (ağ YOK)
+        from . import crowd_data
+        crowd_raw = crowd_data.read_crowd_cache(cache_dir, symbol, tf)
+        if futures == "crowd-probe":                    # kör sayım: olaylar var, simülasyon (R) YOK
+            from . import crowd_lab
+            return crowd_lab.probe_series(df, symbol, tf, crowd_raw)
+    elif futures != "off":                              # işçi yalnız önbelleği okur (ağ YOK)
         from . import futures_data
         fut_raw = futures_data.read_futures_cache(cache_dir, symbol)
         if futures == "probe":                          # kör sayım: olaylar var, simülasyon (R) YOK
             from . import futures_lab
             return futures_lab.probe_series(df, symbol, tf, fut_raw)
     evs, meta = process_series(df, symbol, tf, cfg, catalog=catalog, algos=algos, extras=extras, variations=variations,
-                               futures=futures, fut_raw=fut_raw)
+                               futures=futures, fut_raw=fut_raw, crowd_raw=crowd_raw)
     return [asdict(e) for e in evs], meta
 
 
@@ -919,8 +946,9 @@ def aggregate(events: list[dict], cfg: LabConfig) -> dict[str, Any]:
     for g in groups:
         k = (g["tf"], g["side"], g["context"], g["bucket"])
         # algoritma → aynı çıkış kuralını kullanan kendi eşi; formasyon → genel rastgele giriş;
-        # mum varyasyonu / vadeli kural → YALNIZ kendi eşleştirilmiş eşi, genel rastgele girişe düşmez (kontrolün eşi yok)
-        if g["family"] in ("candle_var", "futures", "control"):
+        # mum varyasyonu / vadeli kural / kalabalık kuralı → YALNIZ kendi eşleştirilmiş eşi, genel rastgele girişe düşmez
+        # (kontrolün eşi yok)
+        if g["family"] in ("candle_var", "futures", "control", "crowd"):
             pg = plac.get(("PLACEBO_" + g["name"],) + k)
         else:
             pg = plac.get(("PLACEBO_" + g["name"],) + k) or plac.get(("PLACEBO_RANDOM",) + k)
@@ -965,6 +993,8 @@ def run(*, symbols: list[str], tfs: list[str], cache_dir: Path, out_dir: Path, c
         extras: bool = True, futures: str = "off", futures_fetch: Callable[[str], bytes | None] | None = None) -> dict[str, Any]:
     """`futures` (`FUTURES_MODES`, varsayılan off = bugünkü laboratuvar): probe = vadeli arşiv yoklaması + kör sayım (R yok);
     ctx = bağlama vadeli kovalar (KEŞİF); rules = ön kayıtlı vadeli kurallar (`futures_lab`, docs/FUTURES_OI_FUNDING_LAB.md).
+    crowd-probe / crowd / crowd-ctx = kalabalık laboratuvarı fut_v2 (`crowd_lab`, docs/CROWD_LAB_FUT_V2.md): yoklama + kör
+    sayım / ön kayıtlı 8 hipotez / bağlama kalabalık kovaları (KEŞİF); yalnız 1h/4h.
     `futures_fetch`: vadeli arşiv indiricisi (testlerde sahte; None → `_http_get`)."""
     now_ms = int(now_ms if now_ms is not None else time.time() * 1000)
     bad = [tf for tf in tfs if tf not in SUPPORTED_TIMEFRAMES]
@@ -975,9 +1005,10 @@ def run(*, symbols: list[str], tfs: list[str], cache_dir: Path, out_dir: Path, c
     if futures != "off":
         if variations:
             raise ValueError("--futures mum varyasyonlarıyla birlikte koşmaz (DSL v2'ye kadar)")
-        badf = [tf for tf in tfs if tf not in FUTURES_TFS]
+        allowed = CROWD_TFS if futures in CROWD_MODES else FUTURES_TFS
+        badf = [tf for tf in tfs if tf not in allowed]
         if badf:
-            raise ValueError(f"--futures yalnız {', '.join(FUTURES_TFS)} dilimlerinde: {', '.join(badf)}")
+            raise ValueError(f"--futures yalnız {', '.join(allowed)} dilimlerinde: {', '.join(badf)}")
     variations = tuple(dict.fromkeys(variations or ()))
     if variations:                                      # bilinmeyen/bozuk kimlik indirmeden ÖNCE ValueError
         from . import candle_variations
@@ -1000,14 +1031,22 @@ def run(*, symbols: list[str], tfs: list[str], cache_dir: Path, out_dir: Path, c
                     raise DownloadAborted(f"Binance'ten art arda {fails} seri indirilemedi ({', '.join(failed[-3:])}). "
                                           "Bağlantı ya da Binance tarafında geçici kısıtlama olabilir; 10-15 dk sonra "
                                           "tekrar deneyin (inen veri önbellekte kalır). Test ÇALIŞTIRILMADI.")
-    coverage = None
+    coverage = crowd_cov = None
     if futures != "off":                                # ana süreçte, süreç havuzundan ÖNCE (işçiler yalnız önbelleği okur)
         from . import futures_data, futures_lab
         offline = provider_factory is None
         fetch = futures_fetch or (_offline_fetch if offline else None)
+        # kalabalık kiplerinde de: fonlama fut_v1 önbelleğinden okunur (bu çağrı onu günceller)
         coverage = futures_data.ensure_futures(symbols, cache_dir, futures_data.need_start(days, tfs, now_ms), now_ms,
                                                fetch=fetch, log=log, offline=offline)
-        if futures != "probe":
+        if futures in CROWD_MODES:
+            from . import crowd_data, crowd_lab
+            crowd_cov = crowd_data.ensure_crowd(symbols, tfs, cache_dir, {tf: days[tf] for tf in tfs}, now_ms, fetch=fetch,
+                                                log=log, offline=offline)
+            if futures != "crowd-probe":
+                for line in crowd_data.cache_schema_lines(symbols, tfs, cache_dir):
+                    log(line)
+        elif futures != "probe":
             for line in futures_lab.cache_schema_lines(symbols, cache_dir):
                 log(line)
     # varsayılan yol: görev demeti aynı (vadeli kip yalnız açıksa eklenir)
@@ -1041,6 +1080,20 @@ def run(*, symbols: list[str], tfs: list[str], cache_dir: Path, out_dir: Path, c
                 if (w := coverage_problem(m, days[m["tf"]], m["tf"], cache_dir, now_ms))]
     if futures != "off":
         warnings += futures_lab.coverage_warnings(metas)
+        if futures in CROWD_MODES:
+            warnings += crowd_lab.coverage_warnings(metas)
+    if futures == "crowd-probe":                        # kalabalık yoklaması: P1–P7 + kör sayım (P8); hüküm/aggregate YOK
+        probe = crowd_data.probe(symbols, tfs, cache_dir, now_ms, fetch=futures_fetch or (_offline_fetch if provider_factory is None
+                                                                                          else None), log=log, coverage=crowd_cov)
+        report = {"kind": "SIGNAL_LAB", "config": asdict(cfg), "symbols": symbols, "timeframes": tfs,
+                  "days": {tf: days[tf] for tf in tfs}, "series": metas, "seconds": round(time.time() - t0, 1),
+                  "data_warnings": warnings, "events": 0,
+                  "crowd": {"mode": futures, "version": crowd_lab.CROWD_VERSION, "registry_sha": crowd_lab.CROWD_REGISTRY_SHA,
+                            "coverage": crowd_cov, "fut_coverage": coverage, "probe": probe,
+                            "blind": crowd_lab.blind_report(events, metas, tfs, cfg), "hypotheses": 8,
+                            "primary_tf": crowd_lab.PRIMARY_TF, "trials": crowd_lab.TRIALS}}
+        (out_dir / "signal_lab_report.json").write_text(json.dumps(report, ensure_ascii=False, indent=1), encoding="utf-8")
+        return report
     if futures == "probe":                              # yoklama: P1–P7 + kör sayım (P8); hüküm/aggregate YOK
         probe = futures_data.probe(symbols, cache_dir, now_ms, fetch=futures_fetch or (_offline_fetch if provider_factory is None
                                                                                         else None), log=log, coverage=coverage)
@@ -1067,7 +1120,12 @@ def run(*, symbols: list[str], tfs: list[str], cache_dir: Path, out_dir: Path, c
               "note_tr": "Geçmiş test (PAPER değil, canlı değil). GÜÇLÜ ADAY = iki dönemde de %95 aralık 0'ın üstünde ve aynı "
                          "bağlamdaki rastgele girişi iki dönemde de geçiyor. Kâr garantisi değildir.",
               "strict_rule_tr": STRICT_RULE_TR}
-    if futures != "off":
+    if futures in CROWD_MODES:
+        contrib = crowd_lab.contributions(events, agg, cfg, tfs) if futures == "crowd" else []
+        report["crowd"] = {"mode": futures, "version": crowd_lab.CROWD_VERSION, "registry_sha": crowd_lab.CROWD_REGISTRY_SHA,
+                           "coverage": crowd_cov, "contributions": contrib, "pairs": crowd_lab.pairs(contrib), "hypotheses": 8,
+                           "primary_tf": crowd_lab.PRIMARY_TF, "trials": crowd_lab.TRIALS}
+    elif futures != "off":
         report["futures"] = {"mode": futures, "version": futures_lab.FUT_VERSION, "registry_sha": futures_lab.FUT_REGISTRY_SHA,
                              "coverage": coverage,
                              "contributions": futures_lab.contributions(events, agg, cfg, tfs) if futures == "rules" else [],
@@ -1147,6 +1205,9 @@ def render(report: dict[str, Any], *, top: int = 25) -> str:
     if (report.get("futures") or {}).get("mode") == "probe":   # yoklama: hüküm yok, yalnız vadeli bölüm
         from . import futures_lab
         return "\n".join(lines + futures_lab.render_section(report, fmt))
+    if (report.get("crowd") or {}).get("mode") == "crowd-probe":   # kalabalık yoklaması: hüküm yok, yalnız kalabalık bölümü
+        from . import crowd_lab
+        return "\n".join(lines + crowd_lab.render_section(report, fmt))
     lines.append("\n== ZAMAN DİLİMİ ÖZETİ (bütün gerçek sinyaller) ==")
     lines.append(f"{'dilim':>5} {'işlem':>8} {'ort.R':>8} {'maliyet(R)':>11} {'rastgele ort.R':>15}")
     for tf, t in (report.get("tf_summary") or {}).items():
@@ -1188,4 +1249,7 @@ def render(report: dict[str, Any], *, top: int = 25) -> str:
     if report.get("futures"):
         from . import futures_lab
         lines += futures_lab.render_section(report, fmt)
+    if report.get("crowd"):
+        from . import crowd_lab
+        lines += crowd_lab.render_section(report, fmt)
     return "\n".join(lines)

@@ -296,10 +296,12 @@ def probe_series(df: pd.DataFrame, symbol: str, tf: str, fut_raw: dict | None) -
 
 
 # ---------------------------------------------------------------------------- fonlama taşıma (bilgi)
-def funding_carry(done: list[L.Event], arr: dict[str, np.ndarray], ts: np.ndarray, step: int, raw: dict | None) -> None:
+def funding_carry(done: list[L.Event], arr: dict[str, np.ndarray], ts: np.ndarray, step: int, raw: dict | None,
+                  names: frozenset[str] = FUT_NAMES) -> None:
     """Vadeli ailelerin (kural, kontrol, plaseboları) işlemlerine `funding_r` yazar: ts[j] < t ≤ çıkış_ms uzlaşmaları,
     `−s·Σ oran·px / risk`. Penceredeki uzlaşma dizisi kesintisizse (önceki ve sonraki uzlaşma var, bütün aralıklar
-    1/2/4/8 saat) değer; değilse NaN (atılmaz, doldurulmaz). Diğer olaylar None kalır."""
+    1/2/4/8 saat) değer; değilse NaN (atılmaz, doldurulmaz). Diğer olaylar None kalır. `names` (2026-09-30): hangi olay
+    adlarına yazılacağı; varsayılan fut_v1 adları (davranış aynı), kalabalık laboratuvarı (fut_v2) kendi adlarını verir."""
     raw = raw or {}
     ft = np.asarray(raw.get("f_t", []), dtype=np.int64)
     fr = np.asarray(raw.get("f_rate", []), dtype=float)
@@ -311,7 +313,7 @@ def funding_carry(done: list[L.Event], arr: dict[str, np.ndarray], ts: np.ndarra
     o, c = arr["open"], arr["close"]
     n = len(o)
     for ev in done:
-        if ev.name not in FUT_NAMES:
+        if ev.name not in names:
             continue
         j = ev.i + 1
         e = j + int(ev.hold) - 1

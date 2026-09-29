@@ -44,7 +44,8 @@ jobs:
           restore-keys: signal-lab-data-
       - name: Archive reachability
         run: curl -sS -o /dev/null -w "data.binance.vision HTTP %{http_code}\n" https://data.binance.vision/ || true
-      # Vadeli arşiv (OI/fonlama) erişimi — ölümcül değil; eksik anahtar 404 mü 403 mü (403 `error` sayılır), fapi 451 beklenir
+      # Vadeli arşiv (OI/fonlama) erişimi — ölümcül değil; eksik anahtar 404 mü 403 mü (403 `error` sayılır), fapi 451 beklenir.
+      # Aylık mum (taker sütunlu) dosyası kalabalık laboratuvarı (fut_v2, docs/CROWD_LAB_FUT_V2.md) içindir (2026-09-30).
       - name: Futures archive reachability
         run: |
           B=https://data.binance.vision/data/futures/um
@@ -53,6 +54,7 @@ jobs:
                    "$B/monthly/fundingRate/BTCUSDT/BTCUSDT-fundingRate-2022-01.zip" \
                    "$B/daily/fundingRate/BTCUSDT/BTCUSDT-fundingRate-$Y.zip" \
                    "$B/daily/metrics/BTCUSDT/BTCUSDT-metrics-2019-01-01.zip" \
+                   "$B/monthly/klines/BTCUSDT/4h/BTCUSDT-4h-2024-01.zip" \
                    "https://fapi.binance.com/fapi/v1/fundingRate?symbol=BTCUSDT&limit=1"; do
             curl -sS -o /dev/null -w "HTTP %{http_code} $u\n" "$u" || echo "HATA $u"
           done
@@ -101,3 +103,10 @@ jobs:
         run: |
           grep -E '^FUT_' signal_lab_out/console.txt || true
           du -sh signal_lab_data signal_lab_data/futures || true
+      # Kalabalık satırları (CROWD_REGISTRY / CROWD_COV / CROWD_PROBE / CROWD_COUNT / CROWD_SHARE / CROWD_RESULT / CROWD_PAIR)
+      # ve kalabalık önbelleğinin boyutu (fut_v2, 2026-09-30) — bakımcı yalnız günlüğü okur
+      - name: Print crowd lines
+        if: always()
+        run: |
+          grep -E '^CROWD_' signal_lab_out/console.txt || true
+          du -sh signal_lab_data/crowd || true

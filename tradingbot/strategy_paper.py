@@ -1496,7 +1496,12 @@ class StrategyBook:
 
     def _learning_label(self, frames_by_symbol: dict[str, dict], now: datetime) -> None:
         try:
-            n = self.cf.label_pending(frames_by_symbol or {}, now)
+            # NET ETİKET (2026-09-29, maliyet sapması): defterin KENDİ yürütme modeli (ücret/kayma/TP1/başa-baş/funding),
+            # filtre önbelleği ve gerçekleşmiş funding kaynağı; eski (brüt) etiketler tembel doldurulur
+            from .learning_cf import ExecModel
+            n = self.cf.label_pending(frames_by_symbol or {}, now, exec_model=ExecModel.of_ledger(self.ledger),
+                                      filters_for=lambda s: self.filters_cache.get(s, MarketType.USDM_PERP),
+                                      funding_lookup=self.funding_rates)
             if n:
                 self._count("counterfactual_labeled", n)
             self.cf.sync_book_counters(self.learning_counters)

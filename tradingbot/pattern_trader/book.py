@@ -1483,7 +1483,11 @@ class PatternBook:
         if cf is None:
             return 0
         try:
-            return int(cf.label_pending({symbol: dict(bars_by_tf or {})}, now))
+            # NET ETİKET (2026-09-29, maliyet sapması): formasyon defterinin KENDİ modeli (TP1 = tamamı, funding tahminsiz)
+            from ..learning_cf import ExecModel
+            return int(cf.label_pending({symbol: dict(bars_by_tf or {})}, now, exec_model=ExecModel.of_ledger(self.ledger),
+                                        filters_for=lambda s: self.filters_cache.get(s, MarketType.USDM_PERP),
+                                        funding_lookup=getattr(self, "funding_rates", None)))
         except Exception as exc:  # noqa: BLE001 — etiket arızası taramayı ETKİLEMEZ
             log.warning("formasyon karşı-olgusal etiketi başarısız (%s): %s", symbol, exc)
             return 0

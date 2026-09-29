@@ -927,8 +927,12 @@ class StateReader:
         sh_lab = [t for t in sh_rows if isinstance(t.get("outcome"), dict)]
         sh_rs = [_num((t.get("outcome") or {}).get("r_multiple")) for t in sh_lab]
         sh_rs = [r for r in sh_rs if r is not None]
+        # NET (2026-09-29, maliyet sapması): `avg_r` brüt kalır (eski gölgeler yalnız brüt); net etiketli (cf_label_v2)
+        # karşı-olgusalların ortalaması ayrıca — ikisi tek ortalamada KARIŞTIRILMAZ
+        sh_net = [r for r in (_num((t.get("outcome") or {}).get("r_net")) for t in sh_lab) if r is not None]
         out["shadow"] = {"n": len(sh_rows), "labeled": len(sh_lab),
                          "avg_r": round(sum(sh_rs) / len(sh_rs), 4) if sh_rs else None,
+                         "avg_r_net": round(sum(sh_net) / len(sh_net), 4) if sh_net else None, "n_net": len(sh_net),
                          "weight": "shadow_weight×fidelity (gerçekten DAİMA düşük)"}
         # --- tam-geçmiş toplamları (aggregates.json — L3 sembol, L2 sembol|yön|setup)
         try:

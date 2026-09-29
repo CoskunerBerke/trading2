@@ -275,8 +275,13 @@ class ShadowBook:
             except Exception:  # noqa: BLE001 — istatistik arizasi golge defterini bozamaz
                 arc = None
         n_arch = int((arc or {}).get("n_archived_records") or 0)
+        # NET (2026-09-29, maliyet sapması): `avg_r` BRÜT kalır (v1 anlamı); net etiketli (`r_net`, cf_label_v2) kayıtların
+        # ortalaması ayrıca — eski gölgelerde net yoktur (n_net 0, avg_r_net None)
+        rn = [float(t.outcome["r_net"]) for t in done if isinstance(t.outcome.get("r_net"), (int, float))
+              and not isinstance(t.outcome.get("r_net"), bool)]
         return {"total": len(self.trades), "labeled": len(done), "veto_right_rate": round(len(vr) / len(done), 3) if done else None,
-                "avg_r": round(sum(t.outcome["r_multiple"] for t in done) / len(done), 3) if done else None, "is_counterfactual": True,
+                "avg_r": round(sum(t.outcome["r_multiple"] for t in done) / len(done), 3) if done else None,
+                "avg_r_net": round(sum(rn) / len(rn), 3) if rn else None, "n_net": len(rn), "is_counterfactual": True,
                 "archived": n_arch, "lifetime": len(self.trades) + n_arch,
                 "archive_health": (arc or {}).get("health") or ("NO_ARCHIVE" if self.archive is None else None),
                 "archive_segments": int((arc or {}).get("n_segments") or 0),

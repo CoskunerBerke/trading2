@@ -392,7 +392,9 @@ def test_dashboard_with_active_learning_shows_banner_badges_tags_and_counts(tmp_
     assert api["enabled"] is True and api["status"]["since"] == "2026-09-28T08:00:00+00:00"
     assert rows["strategy_paper"]["slots_k"] == 40 and rows["strategy_paper"]["open_extra"] == 1
     assert rows["strategy_paper"]["counterfactual"]["recorded_total"] == 11
-    assert rows["main"]["counterfactual"] == {"pending": 1, "labeled": 1, "dropped": None, "recorded_total": 2}, \
+    # (2026-09-29) net taban: eski (brüt, v1) etiket net ortalamasına GİRMEZ; brüt yalnız bilgi
+    assert rows["main"]["counterfactual"] == {"pending": 1, "labeled": 1, "dropped": None, "recorded_total": 2,
+                                              "n_net": 0, "mean_r_net": None, "mean_r_gross": 1.2}, \
         "ana bot: yalnız book=main kayıtları (öğrenme öncesi gölge sayılmaz)"
     assert rows["strategy_paper"]["margin_frac"] == pytest.approx(0.2 * 100.0 / 100.0)
 
@@ -459,9 +461,11 @@ def test_scorecard_splits_before_after_policy_extra_and_counterfactuals(tmp_path
     assert m["before"]["mean_r"] < 0 < m["policy"]["mean_r"] and m["learning_extra"]["mean_r"] < 0
     assert (t2["before"]["n"], t2["after"]["n"], t2["policy"]["n"], t2["learning_extra"]["n"]) == (20, 7, 2, 5)
     cf = t2["counterfactual"]
-    assert (cf["recorded"], cf["labeled"], cf["pending"], cf["approx"]) == (3, 2, 1, 1) and cf["mean_r"] == 0.5
+    # (2026-09-29) net taban: yalnız brüt (v1) etiketler net ortalamasına GİRMEZ → mean_r yok, brüt 0,5 yalnız bilgi
+    assert (cf["recorded"], cf["labeled"], cf["pending"], cf["approx"]) == (3, 2, 1, 1) and cf["mean_r"] is None
+    assert (cf["n_net"], cf["mean_r_gross"], cf["n_gross_only_v1"], cf["r_basis"]) == (0, 0.5, 2, "net")
     assert cf["in_pnl"] is False and "net_usdt" not in cf, "karşı-olgusal P&L'e GİRMEZ"
-    assert m["counterfactual"]["recorded"] == 1 and m["counterfactual"]["mean_r"] == 0.5, "öğrenme öncesi gölge sayılmaz"
+    assert m["counterfactual"]["recorded"] == 1 and m["counterfactual"]["mean_r_gross"] == 0.5, "öğrenme öncesi gölge sayılmaz"
     # R esas; defterlerin P&L kartı karşı-olgusaldan etkilenmez
     assert {k: v for k, v in card.items() if k != "learning_mode"} == card_off
     txt = S.render(card)

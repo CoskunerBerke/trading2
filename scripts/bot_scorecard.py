@@ -19,6 +19,9 @@ Soru tek: "Hangi bot, bugüne kadar kapattığı işlemlerde para kazandırdı v
   (taban kurallar da açardı), öğrenme-ekstra işlemler (`features.learning.learning_unlocked_by` dolu) ve karşı-olgusallar
   (açılmayan geçerli sinyallerin etiketli sonucu — P&L'e ASLA girmez, USDT'si yoktur). R esastır: sonrası USDT öğrenme
   ölçeğindedir (%0,5 risk, slot boyutu) ve öncesiyle karşılaştırılmaz. Dosya yoksa karne çıktısı AYNEN eskisidir.
+* KARŞI-OLGUSAL NET R (2026-09-29): karşı-olgusal ort. R, aralık ve hüküm yalnız NET etiketli kayıtlardan (`r_net`,
+  `cf_label_v2`: defterin ücret/kayma/funding modeliyle aynı barlarda yeniden oynatma) — gerçek işlemlerle aynı taban.
+  Brüt ortalama (`mean_r_gross`) yalnız bilgi; net'i olmayan eski kayıtlar ve kapalı-biçim tahminleri ayrı sayılır.
 
 Kullanım:
     python scripts/bot_scorecard.py --state <state klasörü> [--since 2026-09-01] [--learning-since <ISO>] [--out karne.json]
@@ -196,7 +199,12 @@ def _slice(trades: list) -> dict[str, Any]:
 
 def counterfactual_card(path: Path, *, book: str | None = None) -> dict[str, Any] | None:
     """Karşı-olgusal kayıtların R özeti — P&L'e GİRMEZ (USDT alanı bilerek yok). `book` verilirse yalnız o defterin
-    kayıtları (ana botun `shadow_book.json`u öğrenme öncesi gölgeleri de taşır). Dosya/kayıt yoksa None."""
+    kayıtları (ana botun `shadow_book.json`u öğrenme öncesi gölgeleri de taşır). Dosya/kayıt yoksa None.
+
+    NET TABAN (2026-09-29, maliyet sapması): `mean_r`, aralık, kazanma oranı ve hüküm YALNIZ net etiketli (`r_net`,
+    `cf_label_v2`) kayıtlardan — gerçek işlemlerin net R'siyle aynı tabanda. Brüt ortalama (`mean_r_gross`, bütün etiketli
+    kayıtlar) yalnız bilgi; yalnız brüt (v1) kayıt sayısı `n_gross_only_v1`, çevrimdışı kapalı-biçim tahminleri (v1c)
+    `n_approx_v1c` / `mean_r_net_approx_v1c` ayrı gösterilir ve net ortalamasına KARIŞMAZ."""
     try:
         d = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -205,10 +213,22 @@ def counterfactual_card(path: Path, *, book: str | None = None) -> dict[str, Any
     if not rows:
         return None
     lab = [t for t in rows if isinstance(t.get("outcome"), dict) and _num(t["outcome"].get("r_multiple")) is not None]
-    st = _r_stats([float(t["outcome"]["r_multiple"]) for t in lab])
+    net = [t for t in lab if _num(t["outcome"].get("r_net")) is not None]
+    st = _r_stats([float(t["outcome"]["r_net"]) for t in net])
+    gst = _r_stats([float(t["outcome"]["r_multiple"]) for t in lab])
+    v1c = [_num(t["outcome"].get("r_net_approx")) for t in lab if _num(t["outcome"].get("r_net")) is None]
+    v1c = [x for x in v1c if x is not None]
+    costs = [c for c in (_num(t["outcome"].get("cost_r")) for t in net) if c is not None]
     return {"file": str(path), "recorded": len(rows), "labeled": len(lab), "pending": len(rows) - len(lab),
-            "approx": sum(1 for t in lab if t.get("approx")), "mean_r": st["mean_r"], "ci95_mean_r": st["ci95_mean_r"],
-            "sum_r": st["sum_r"], "win_rate": st["win_rate"], "verdict": verdict(st), "in_pnl": False}
+            "approx": sum(1 for t in lab if t.get("approx")), "r_basis": "net", "n_net": st["n"],
+            "mean_r": st["mean_r"], "ci95_mean_r": st["ci95_mean_r"], "sum_r": st["sum_r"], "win_rate": st["win_rate"],
+            "verdict": verdict(st), "mean_r_gross": gst["mean_r"],
+            "mean_r_gross_net_rows": _r_stats([float(t["outcome"]["r_multiple"]) for t in net])["mean_r"],
+            "mean_cost_r": round(sum(costs) / len(costs), 4) if costs else None,
+            "n_gross_only_v1": len(lab) - len(net) - len(v1c), "n_approx_v1c": len(v1c),
+            "mean_r_net_approx_v1c": round(sum(v1c) / len(v1c), 4) if v1c else None,
+            "n_net_funding_incomplete": sum(1 for t in net if t["outcome"].get("funding_complete") is False),
+            "in_pnl": False}
 
 
 def learning_split(path: Path, *, learning_since_iso: str, since: str | None = None, cf_path: Path | None = None,
@@ -325,16 +345,20 @@ def render_learning(card: dict[str, Any]) -> list[str]:
         return []
     lines = [f"ÖĞRENME MODU AYRIMI · learning_mode_since {lm['since']} ({lm['source']}) · R esas; sonrası USDT öğrenme ölçeğinde, "
              "öncesiyle KIYASLANMAZ",
-             f"{'bot':<14}{'önce n/ort.R':>16}{'sonra n/ort.R':>16}{'politika':>14}{'öğrenme-ekstra':>16}{'karşı-olgusal (P&L dışı)':>28}"]
+             f"{'bot':<14}{'önce n/ort.R':>16}{'sonra n/ort.R':>16}{'politika':>14}{'öğrenme-ekstra':>16}  karşı-olgusal (P&L dışı) — net R"]
     for key, b in lm["books"].items():
         if "error" in b:
             lines.append(f"{b['name']:<14} OKUNAMADI: {b['error']}")
             continue
         cf = b.get("counterfactual")
-        cf_txt = (f"{cf['labeled']}/{cf['recorded']} etiketli · ort.R {_fmt(cf['mean_r'])}" if cf else "—")
+        # NET TABAN (2026-09-29): ort.R net etiketlilerden; brüt yalnız parantezde (maliyet öncesi, kıyas için)
+        cf_txt = (f"{cf['labeled']}/{cf['recorded']} etiketli · net {cf.get('n_net', 0)} · ort.R {_fmt(cf['mean_r'])} "
+                  f"(brüt {_fmt(cf.get('mean_r_gross'))})" if cf else "—")
         lines.append(f"{b['name']:<14}{_nr(b['before']):>16}{_nr(b['after']):>16}{_nr(b[POLICY]):>14}{_nr(b[LEARNING_EXTRA]):>16}"
-                     f"{cf_txt:>28}")
+                     f"  {cf_txt}")
     lines.append("   " + lm["note_tr"])
+    lines.append("   Karşı-olgusal ort.R NETtir (defterin ücret/kayma/funding modeliyle aynı barlarda yeniden oynatma, "
+                 "cf_label_v2); brüt değer yalnız bilgi. Net'i olmayan eski (brüt) kayıtlar ortalamaya girmez.")
     lines.append("")
     return lines
 

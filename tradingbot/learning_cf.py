@@ -15,21 +15,37 @@
   sayılmaz; `superseded` sayacı).
 * Etiketleme ucuzdur (2026-09-28, öğrenme modu): yol, stop/hedef hiç değmediyse ve ufuk dolmadıysa yürütülmez (numpy ön
   kontrol); tam yürütme (`label_with_candles`) yalnız sonuç kesinleşebilecekken yapılır — sonuçlar aynıdır.
+
+NET ETİKET — `cf_label_v2` (2026-09-29, maliyet sapması): brüt R (`r_multiple`: referans fiyattan, seviyeden dolum, ücret/
+kayma/funding YOK) gerçek işlemlerin NET R'siyle aynı tabanda değildi (Box: +0,40R "olsaydı" / −0,57R gerçek; sıkı stopta
+maliyet ~0,45R). Kesinleşen etikete, defterin KENDİ yürütme modeliyle (`ExecModel.of_ledger`: ücret, kayma, TP1 oranı,
+MFE başa-baş, likidasyon, funding takvimi — yeniden YAZILMAZ, defter nesnesinden kopyalanır) atılık bir `FuturesLedgerV2`de
+AYNI kapanmış barlar üzerinde yeniden oynatılan NET sonuç eklenir (`net_outcome`). Eski alanlar (`r_multiple`, `won`,
+`veto_was_right`, `exit_reason`, `exit_price`) v1 anlamıyla (BRÜT) KALIR; yeni alanlar yanına yazılır (`label_version`,
+`r_gross`, `r_net`, `cost_r`, `cost_parts_r`, `won_net`, `veto_was_right_net`, `funding_complete`, `exec_model`, ...).
+`label_version` alanı olmayan sonuç v1'dir (yalnız brüt). `exec_model` verilmezse çıktı v1 ile BİT-AYNI.
+Eski (v1) etiketli kayıtlar TEMBEL yeniden etiketlenir (`relabel_net`): etiketleme çağrısında eldeki kapanmış barlar
+pencereyi baştan kapsıyor ve brüt sonuç AYNEN yeniden üretiliyorsa net eklenir (`net_backfilled`); pencere çerçeveden
+düşmüşse kayıt `cf_label_v1` + `net_status` ile işaretlenir ve çevrimdışı `scripts/cf_backfill_net.py`e kalır.
 """
 from __future__ import annotations
 
 import math
 from collections import deque
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 import pandas as pd
 
-from .core import from_iso, iso, stable_id
+from .accounting import (EXIT_BE_STOP, EXIT_STOP, AmountType, FeeSchedule, FuturesLedgerV2, LiquidationParams, SizeSpec,
+                         SlippageModel, TaxPolicy, TickData, default_filters)
+from .accounting.funding import FundingSchedule
+from .accounting.models import MarketType, SymbolFilters
+from .core import D, from_iso, iso, stable_id
 from .learn.shadow import ShadowBook, ShadowTrade, label_with_candles
 from .learning_mode import counterfactual_ok
 from .timeframes import TF_MS
@@ -45,6 +61,23 @@ STALE_GRACE_BARS = 10
 SCHEMA_VERSION = "learning_cf_v1"
 _FINAL_EXITS = ("stop", "breakeven_stop", "target")
 _TF_BY_MIN = {v // 60_000: k for k, v in TF_MS.items()}
+#: ETİKET SÜRÜMLERİ (2026-09-29, maliyet sapması). v1 = alan YOK (yalnız brüt); v1 işaretli = net yeniden oynatma bu yoldan
+#: yapılamadı (`net_status` nedeni; çevrimdışı dolgu bekler); v2 = brüt + net; v1c = çevrimdışı kapalı-biçim TAHMİN
+#: (`r_net_approx`, üst sınır: çıkış dolum modeli/funding yok) — v2 net ortalamasına ASLA karışmaz.
+LABEL_VERSION = "cf_label_v2"
+LABEL_VERSION_V1 = "cf_label_v1"
+LABEL_VERSION_V1C = "cf_label_v1c"
+NET_CONTRACT = "cf_net_ledger_replay_v1"
+#: `won_net` eşiği — gerçek işlem etiketiyle AYNI kural (`learn.labels.label_outcome`: |R| < 0,25 SCRATCH, R ≥ 0,25 WIN).
+WON_NET_MIN_R = 0.25
+#: Yeniden oynatma pozisyonu (USDT, 1x). R büyüklükten bağımsızdır (payda aynı miktarla ölçeklenir); taban yalnız adım
+#: yuvarlamasını (TP1 kısmi miktarı) önemsiz kılmak için büyütülür (`_replay_notional`).
+NET_NOTIONAL_USDT = Decimal("1000")
+#: Tembel net dolgu: bir etiketleme çağrısında en fazla bu kadar v1 kayıt yeniden oynatılır (defter kilidi kısa kalsın).
+RELABEL_MAX_PER_CALL = 400
+#: Doğrulanmamış (varsayılan) filtreyle yeniden oynatma: gerçek defter bu hassasiyetle GİRMEZ (UNRESOLVED_PRECISION), 0,01
+#: varsayılan tick'i düşük fiyatlı sembolde dolumu uydururdu → tick/adım yuvarlaması YAPILMAZ (kayıtta `filters_source`).
+NEUTRAL_FILTERS_SOURCE = "UNVERIFIED_NEUTRAL"
 
 
 def _aware(dt: datetime) -> datetime:
@@ -97,8 +130,19 @@ def _to_ms(v: Any) -> int | None:
         return None
 
 
+def _open_px(v: Any) -> float | None:
+    """Bar açılışı (net yeniden oynatmanın ilk gözlemi); okunamaz/sonlu-pozitif değilse None (brüt etiket etkilenmez)."""
+    try:
+        o = float(v) if v is not None else None
+    except (TypeError, ValueError):
+        return None
+    return o if (o is not None and math.isfinite(o) and o > 0) else None
+
+
 def _frame_rows(raw: Any) -> pd.DataFrame | None:
-    """DataFrame (timestamp sütunu ya da datetime index) ya da dict satır listesi → `timestamp`(ms)+OHLC DataFrame."""
+    """DataFrame (timestamp sütunu ya da datetime index) ya da dict satır listesi → `timestamp`(ms)+OHLC DataFrame.
+    `open` (2026-09-29): varsa taşınır (net yeniden oynatmanın `exit_fill_v1` boşluk kuralı için); yoksa None. Brüt
+    etiketleyici yalnız high/low/close okur — satır kümesi ve brüt sonuç DEĞİŞMEZ (açılışı bozuk satır düşürülmez)."""
     if raw is None:
         return None
     if isinstance(raw, pd.DataFrame):
@@ -109,15 +153,17 @@ def _frame_rows(raw: Any) -> pd.DataFrame | None:
             ts = [_to_ms(v) for v in df["timestamp"].tolist()]
         else:
             ts = [_to_ms(v) for v in df.index.tolist()]
-        rows = [{"timestamp": t, "high": h, "low": lo, "close": c}
-                for t, h, lo, c in zip(ts, df["high"].tolist(), df["low"].tolist(), df["close"].tolist())]
+        ops = df["open"].tolist() if "open" in df.columns else [None] * len(ts)
+        rows = [{"timestamp": t, "open": o, "high": h, "low": lo, "close": c}
+                for t, o, h, lo, c in zip(ts, ops, df["high"].tolist(), df["low"].tolist(), df["close"].tolist())]
     elif isinstance(raw, (list, tuple)):
         rows = []
         for r in raw:
             if not isinstance(r, dict):
                 continue
             t = _to_ms(r.get("timestamp", r.get("open_time", r.get("ts", r.get("t")))))
-            rows.append({"timestamp": t, "high": r.get("high"), "low": r.get("low"), "close": r.get("close")})
+            rows.append({"timestamp": t, "open": r.get("open"), "high": r.get("high"), "low": r.get("low"),
+                         "close": r.get("close")})
     else:
         return None
     clean = []
@@ -128,7 +174,7 @@ def _frame_rows(raw: Any) -> pd.DataFrame | None:
             continue
         if t is None or not (math.isfinite(h) and math.isfinite(lo) and math.isfinite(c)):
             continue
-        clean.append({"timestamp": int(t), "high": h, "low": lo, "close": c})
+        clean.append({"timestamp": int(t), "open": _open_px(r.get("open")), "high": h, "low": lo, "close": c})
     if not clean:
         return None
     df = pd.DataFrame(clean).drop_duplicates("timestamp", keep="last").sort_values("timestamp").reset_index(drop=True)
@@ -175,34 +221,368 @@ def _may_finalise(v: ShadowTrade, arr: tuple, created_ms: int, label_ms: int) ->
     return False
 
 
+# ============================================================================ NET ETİKET (2026-09-29, maliyet sapması)
+@dataclass(frozen=True)
+class ExecModel:
+    """Defterin yürütme modeli — `of_ledger` ile defter NESNESİNDEN kopyalanır (config'ten yeniden yazılmaz): ücret tablosu,
+    kayma, TP1 oranı, MFE başa-baş eşiği, TP maker bayrağı, likidasyon parametreleri, kaldıraç kademeleri, en-kötü-durum
+    bayrağı ve funding takvimi (saatler, bağlı kaynağın `hours_for`u, son orana düşme bayrağı)."""
+    fees: FeeSchedule
+    slippage: SlippageModel
+    tp1_fraction: Decimal
+    breakeven_at_mfe_r: Decimal
+    tp_maker: bool
+    liq_params: LiquidationParams
+    brackets: tuple | None
+    worst_case: bool
+    funding_hours_utc: tuple
+    funding_fallback: bool
+    funding_hours_for: Any = None
+
+    @classmethod
+    def of_ledger(cls, led: Any) -> "ExecModel":
+        fd = getattr(led, "funding", None) or FundingSchedule()
+        lp = led.liq_params
+        return cls(fees=FeeSchedule.from_dict(led.fees.to_dict()),
+                   slippage=SlippageModel(fixed_bps=D(led.slippage.fixed_bps), spread_half=bool(led.slippage.spread_half)),
+                   tp1_fraction=D(led.tp1_fraction), breakeven_at_mfe_r=D(led.breakeven_at_mfe_r), tp_maker=bool(led.tp_maker),
+                   liq_params=LiquidationParams(liq_fee_pct=D(lp.liq_fee_pct), fee_cushion_pct=D(lp.fee_cushion_pct),
+                                                use_brackets=bool(lp.use_brackets)),
+                   brackets=tuple(led.brackets) if led.brackets else None, worst_case=bool(led.worst_case),
+                   funding_hours_utc=tuple(fd.hours_utc), funding_fallback=bool(fd.fallback_to_last_known),
+                   funding_hours_for=fd.hours_for_symbol)
+
+    def new_ledger(self) -> FuturesLedgerV2:
+        """Atılık defter (yalnız bu kayıt için; hiçbir yere yazılmaz). Özkaynak sınırsız, adet tavanı yok."""
+        return FuturesLedgerV2(Decimal("1e12"), max_positions=1, enforce_position_cap=False,
+                               fees=FeeSchedule.from_dict(self.fees.to_dict()),
+                               slippage=SlippageModel(fixed_bps=self.slippage.fixed_bps, spread_half=self.slippage.spread_half),
+                               brackets=list(self.brackets) if self.brackets else None,
+                               liq_params=LiquidationParams(liq_fee_pct=self.liq_params.liq_fee_pct,
+                                                            fee_cushion_pct=self.liq_params.fee_cushion_pct,
+                                                            use_brackets=self.liq_params.use_brackets),
+                               funding=FundingSchedule(hours_utc=tuple(self.funding_hours_utc),
+                                                       fallback_to_last_known=self.funding_fallback,
+                                                       hours_for_symbol=self.funding_hours_for),
+                               tax_policy=TaxPolicy.disabled(), tp1_fraction=self.tp1_fraction,
+                               breakeven_at_mfe_r=self.breakeven_at_mfe_r, worst_case=self.worst_case, tp_maker=self.tp_maker,
+                               entries_keep=64, history_keep=4)
+
+    def to_dict(self, filters: SymbolFilters | None = None) -> dict[str, Any]:
+        return {"contract": NET_CONTRACT, "taker_pct": float(self.fees.taker_pct), "maker_pct": float(self.fees.maker_pct),
+                "fee_source": str(self.fees.source), "slippage_bps": float(self.slippage.fixed_bps), "tp_maker": self.tp_maker,
+                "tp1_fraction": float(self.tp1_fraction), "breakeven_at_mfe_r": float(self.breakeven_at_mfe_r),
+                "filters_source": (str(filters.source) if filters is not None else None),
+                "price_tick": (float(filters.price_tick) if filters is not None else None)}
+
+
+class _PeekRates:
+    """Canlı `FundingRates` için YAN ETKİSİZ oran okuyucu: `peek` (istenen an kaydedilmez, sayaç artmaz) → karşı-olgusal
+    yeniden oynatma funding ağ adımını TETİKLEMEZ. Settlement mark'ı ve dayanağı kaynaktan aynen iletilir."""
+
+    def __init__(self, src: Any) -> None:
+        self._src = src
+
+    def __call__(self, symbol: str, when: datetime):
+        return self._src.peek(symbol, when)
+
+    def settlement_mark(self, symbol: str, when: datetime):
+        return self._src.settlement_mark(symbol, when)
+
+    def mark_basis(self, symbol: str, when: datetime) -> str:
+        fn = getattr(self._src, "mark_basis", None)
+        return str(fn(symbol, when)) if callable(fn) else "SETTLEMENT_ROW"
+
+
+def _quiet_rates(src: Any) -> Any:
+    if src is None:
+        return None
+    if callable(getattr(src, "peek", None)) and callable(getattr(src, "settlement_mark", None)):
+        return _PeekRates(src)
+    if callable(getattr(src, "peek", None)):
+        return src.peek
+    return src
+
+
+def _replay_filters(symbol: str, filters: SymbolFilters | None) -> SymbolFilters:
+    f = filters if isinstance(filters, SymbolFilters) else default_filters(symbol, MarketType.USDM_PERP)
+    if str(getattr(f, "source", "") or "") in ("", "default"):
+        return SymbolFilters(symbol=symbol, market_type=MarketType.USDM_PERP, price_tick=Decimal("0"),
+                             qty_step=Decimal("0.00000001"), min_qty=Decimal("0"), max_qty=Decimal("1e15"),
+                             market_max_qty=Decimal("1e15"), min_notional=Decimal("0"), max_leverage=125,
+                             source=NEUTRAL_FILTERS_SOURCE)
+    return f
+
+
+def _replay_notional(f: SymbolFilters, entry: Decimal) -> Decimal:
+    """R'yi değiştirmeyen boyut: en az 1000 USDT; en az ~1000 adım (TP1 kısmi miktarının adım yuvarlaması ≤ %0,1 kalsın);
+    min tutar / min miktarın 2 katı. Kaldıraç 1 (R kaldıraçtan bağımsız; likidasyon stopun çok ötesinde)."""
+    return max(NET_NOTIONAL_USDT, D(f.min_notional) * 2, D(f.qty_step) * entry * 1000, D(f.min_qty) * entry * 2)
+
+
+def _r6(x: float) -> float:
+    return round(float(x), 6) + 0.0                  # −0,0 yazılmaz
+
+
+def _decompose(rec: Any, view: ShadowTrade, r_gross: float) -> dict[str, float]:
+    """r_gross − r_net'in parçaları (POZİTİF = maliyet; toplamları `cost_r`). Kimlik sırası: yol (seviyede dolum, başa-baş
+    fiyatı, MFE başa-baş, TP1 miktar yuvarlaması, zaman çıkışı) → çıkış dolum modeli (`exit_fill_v1`: boşluk/kapanış) →
+    giriş dolumu (kayma + tick; payda da dolumdan) → çıkış kayması → ücretler → funding."""
+    side = 1.0 if str(view.direction).upper() == "LONG" else -1.0
+    fills = list(rec.fills)
+    ent = [f for f in fills if f.kind == "entry"][0]
+    exits = [f for f in fills if f.kind != "entry"]
+    q0 = float(rec.quantity)
+    e_ref, e_fill = float(ent.ref_price if ent.ref_price is not None else ent.price), float(ent.price)
+    stop0 = float(view.stop)
+    risk_ref, risk_fill = abs(e_ref - stop0) * q0, abs(e_fill - stop0) * q0
+
+    def ref_of(f) -> float:
+        return float(f.ref_price if f.ref_price is not None else f.price)
+    g_rr = sum(side * (ref_of(f) - e_ref) * float(f.qty) for f in exits)
+    g_rf = sum(side * (ref_of(f) - e_fill) * float(f.qty) for f in exits)
+    g_level = g_rr
+    ef = (rec.features or {}).get("exit_fill") or {}
+    if exits and rec.exit_reason in (EXIT_STOP, EXIT_BE_STOP) and ef.get("stop") is not None and exits[-1].ref_price is not None:
+        g_level = g_rr - side * (float(exits[-1].ref_price) - float(ef["stop"])) * float(exits[-1].qty)
+    gross, fees, fund = float(rec.gross_pnl), float(rec.fees), float(rec.funding)
+    a0, a = g_level / risk_ref, g_rr / risk_ref
+    b, c = g_rf / risk_fill, gross / risk_fill
+    dd, e = (gross - fees) / risk_fill, (gross - fees + fund) / risk_fill
+    return {"path": _r6(r_gross - a0), "exit_fill_model": _r6(a0 - a), "entry_fill": _r6(a - b), "exit_slippage": _r6(b - c),
+            "fees": _r6(c - dd), "funding": _r6(dd - e)}
+
+
+def net_outcome(view: ShadowTrade, df: pd.DataFrame, gross: dict[str, Any], *, model: ExecModel,
+                filters: SymbolFilters | None = None, funding_lookup: Any = None) -> dict[str, Any]:
+    """Kesinleşmiş brüt etiketin NET karşılığı (`cf_net_ledger_replay_v1`): sinyal atılık bir `FuturesLedgerV2`de (defterin
+    kendi modeli) `open()` ile açılır — giriş `market_fill_price`tan (kayma + agresif tick) — ve brüt etiketleyicinin
+    yürüdüğü AYNI kapanmış barlarla (`ts ∈ (created, label_ts]`, en fazla brüt `bars` kadar) `TickData(open, high, low,
+    close)` olarak tick'lenir: `exit_fill_v1`, TP1, başa-baş fiyatı (ücret dahil), MFE başa-baş ve funding GERÇEK defterin
+    uyguladığı gibidir. Son bardan sonra hâlâ açıksa kuralın zaman çıkışı (Box gün sonu / zaman stopu / HORIZON) =
+    `close_manual(son kapanış)` (kayma + taker ücreti). `r_net` = kaydın `r_multiple`ı (net / |dolum − ilk stop| × miktar).
+    HORIZON türleri (`hold_h` görünümü) hedefsizdir. Hata/ret → `r_net` None ve `net_status` nedeni (brüt etkilenmez)."""
+    r_gross = float(gross.get("r_multiple") or 0.0)
+    out: dict[str, Any] = {"label_version": LABEL_VERSION, "r_gross": r_gross}
+    try:
+        out.update(_net_replay(view, df, gross, r_gross, model=model, filters=filters, funding_lookup=funding_lookup))
+    except Exception as exc:  # noqa: BLE001 — net yeniden oynatma arızası brüt etiketi ETKİLEMEZ
+        out.update({"r_net": None, "net_status": "NET_ERROR:%s" % type(exc).__name__})
+    return out
+
+
+def _net_replay(view: ShadowTrade, df: pd.DataFrame, gross: dict[str, Any], r_gross: float, *, model: ExecModel,
+                filters: SymbolFilters | None, funding_lookup: Any) -> dict[str, Any]:
+    if view.variant not in ("as_planned", "hold_h"):
+        return {"r_net": None, "net_status": "VARIANT_UNSUPPORTED:%s" % view.variant}
+    sym = str(view.symbol)
+    f = _replay_filters(sym, filters)
+    xm = model.to_dict(f)
+    entry, stop = D(float(view.entry)), D(float(view.stop))
+    targets = [] if view.variant == "hold_h" else [D(float(t)) for t in (view.targets or [])]
+    created, label_ts = from_iso(view.created_at), from_iso(view.label_ts)
+    led = model.new_ledger()
+    pos = led.open(sym, view.direction, entry, SizeSpec(_replay_notional(f, entry), AmountType.NOTIONAL, 1), stop=stop,
+                   targets=targets, filters=f, now=created)
+    if pos is None:
+        return {"r_net": None, "net_status": "OPEN_REJECTED:%s" % (led.last_reject_reason or "?"), "exec_model": xm}
+    tf_ms = int(view.tf_minutes) * 60_000
+    ts = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
+    path = df.loc[((ts > created) & (ts <= label_ts)).values]
+    n_bars = int(gross.get("bars") or len(path))
+    path = path.iloc[:max(0, n_bars)]
+    lookup = _quiet_rates(funding_lookup)
+    rec, last_c, last_dt = None, None, None
+    opens = path["open"].tolist() if "open" in path.columns else [None] * len(path)
+    for t, o, h, lo, c in zip(path["timestamp"].tolist(), opens, path["high"].tolist(), path["low"].tolist(),
+                              path["close"].tolist()):
+        cdt = datetime.fromtimestamp((int(t) + tf_ms) / 1000.0, tz=timezone.utc)
+        op = _open_px(o)
+        td = TickData(last=D(float(c)), mark=D(float(c)), high=D(float(h)), low=D(float(lo)), ts=iso(cdt),
+                      open=D(op) if op is not None else None)
+        recs = led.tick({sym: td}, now_utc=cdt, funding_rate_lookup=lookup, bar_advance=True)
+        last_c, last_dt = float(c), cdt
+        if recs:
+            rec = recs[-1]
+            break
+    basis = None
+    if rec is None:
+        if last_c is None:
+            return {"r_net": None, "net_status": "NO_BARS", "exec_model": xm}
+        rec = led.close_manual(sym, D(last_c), reason="horizon", now=last_dt)
+        basis = "HORIZON_CLOSE" if str(gross.get("exit_reason")) == "horizon" else "CLOSED_AT_GROSS_EXIT_BAR"
+    if basis is None:
+        basis = ((rec.features or {}).get("exit_fill") or {}).get("basis") or "TARGET_AT_LEVEL"
+    r_net = _r6(float(rec.r_multiple))
+    parts = _decompose(rec, view, r_gross)
+    ent = [x for x in rec.fills if x.kind == "entry"][0]
+    cov = (rec.features or {}).get("funding_coverage") or {}
+    return {"r_net": r_net, "cost_r": _r6(r_gross - r_net), "cost_parts_r": parts, "net_exit_reason": str(rec.exit_reason),
+            "net_exit_basis": str(basis), "net_exit_price": float(rec.exit_price) if rec.exit_price is not None else None,
+            "entry_fill": float(ent.price), "won_net": r_net >= WON_NET_MIN_R, "veto_was_right_net": r_net <= 0,
+            "funding_complete": bool(cov.get("complete")), "funding_missing": cov.get("missing"),
+            "net_status": "OK", "exec_model": xm}
+
+
+def outcome_r(outcome: dict[str, Any] | None) -> float | None:
+    """Karşı-olgusal sonucun raporlanan R'si: NET (`r_net`) varsa o, yoksa brüt `r_multiple` (v1). Araştırma eşleşmesi
+    gerçek işlemin NET R'siyle aynı tabanda olsun diye (2026-09-29)."""
+    o = outcome if isinstance(outcome, dict) else {}
+    for k in ("r_net", "r_multiple"):
+        try:
+            v = float(o.get(k))
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(v):
+            return v
+    return None
+
+
+def _closed_frame(cache: dict, frames_by_symbol: dict[str, dict[str, Any]] | None, t: ShadowTrade,
+                  now_ms: int) -> tuple[pd.DataFrame, tuple] | None:
+    """Kaydın sembol/diliminin `now` anında KAPANMIŞ barları (önbellekli): (df, (ts, high, low) dizileri) ya da None."""
+    tf_ms = int(t.tf_minutes) * 60_000
+    ck = (t.symbol, int(t.tf_minutes))
+    if ck not in cache:
+        df = _frame_rows(_frame_for((frames_by_symbol or {}).get(t.symbol), t.tf_minutes))
+        if df is not None:
+            df = df[df["timestamp"] + tf_ms <= now_ms].reset_index(drop=True)   # yalnız kapanmış barlar
+        if df is not None and not df.empty:
+            cache[ck] = (df, (df["timestamp"].to_numpy(dtype="int64"), df["high"].to_numpy(dtype=float),
+                              df["low"].to_numpy(dtype=float)))
+        else:
+            cache[ck] = None
+    return cache[ck]
+
+
+def _filters_of(filters_for: Callable[[str], Any] | None, symbol: str) -> SymbolFilters | None:
+    if filters_for is None:
+        return None
+    try:
+        f = filters_for(symbol)
+    except Exception:  # noqa: BLE001 — filtre okunamazsa nötr yeniden oynatma (kayıtta `filters_source`)
+        return None
+    return f if isinstance(f, SymbolFilters) else None
+
+
+def _same_gross(res: dict[str, Any] | None, stored: dict[str, Any]) -> bool:
+    if not isinstance(res, dict):
+        return False
+    try:
+        return (abs(float(res["r_multiple"]) - float(stored.get("r_multiple"))) <= 1e-9
+                and str(res.get("exit_reason")) == str(stored.get("exit_reason"))
+                and int(res.get("bars") or 0) == int(stored.get("bars") or 0))
+    except (TypeError, ValueError, KeyError):
+        return False
+
+
+def relabel_net(trades: list[ShadowTrade], frames_by_symbol: dict[str, dict[str, Any]] | None, now: datetime, *,
+                exec_model: ExecModel, filters_for: Callable[[str], Any] | None = None, funding_lookup: Any = None,
+                limit: int = RELABEL_MAX_PER_CALL, source: str = "lazy", _cache: dict | None = None) -> dict[str, int]:
+    """TEMBEL NET DOLGU (2026-09-29): etiketli ama `label_version` alanı OLMAYAN (v1, yalnız brüt) kayıtlara net eklenir.
+    Koşul: eldeki kapanmış barlar pencerenin İLK barını içeriyor ve brüt sonuç (R, çıkış, bar sayısı) AYNEN yeniden
+    üretiliyor — o zaman `net_outcome` aynı barlarla koşar, sonuca `net_backfilled` = {at, source} yazılır. Pencere
+    çerçeveden düşmüşse ya da brüt tutmuyorsa kayıt `label_version = cf_label_v1` + `net_status` ile işaretlenir (bir daha
+    denenmez; çevrimdışı `scripts/cf_backfill_net.py` doldurur). Sembolün çerçevesi hiç yoksa dokunulmaz (sonra denenir).
+    Brüt alanlar DEĞİŞMEZ. Döner: {relabeled, unavailable, skipped}."""
+    now = _aware(now)
+    now_ms = int(now.timestamp() * 1000)
+    cache = _cache if _cache is not None else {}
+    counts = {"relabeled": 0, "unavailable": 0, "skipped": 0}
+    tried = 0
+    for t in trades:
+        o = t.outcome
+        if not isinstance(o, dict) or o.get("label_version") is not None:
+            continue
+        if tried >= max(0, int(limit)):
+            break
+        hit = _closed_frame(cache, frames_by_symbol, t, now_ms)
+        if hit is None:
+            counts["skipped"] += 1
+            continue
+        tried += 1
+        df, _arr = hit
+        tf_ms = int(t.tf_minutes) * 60_000
+        created_ms = int(from_iso(t.created_at).timestamp() * 1000)
+        if int(df["timestamp"].iloc[0]) > (created_ms // tf_ms + 1) * tf_ms:
+            o.update({"label_version": LABEL_VERSION_V1, "net_status": "NET_BACKFILL_WINDOW_NOT_IN_FRAME"})
+            counts["unavailable"] += 1
+            continue
+        v = _eval_view(t)
+        if not _same_gross(label_with_candles(v, df), o):
+            o.update({"label_version": LABEL_VERSION_V1, "net_status": "NET_BACKFILL_GROSS_MISMATCH"})
+            counts["unavailable"] += 1
+            continue
+        o.update(net_outcome(v, df, o, model=exec_model, filters=_filters_of(filters_for, t.symbol),
+                             funding_lookup=funding_lookup))
+        o["net_backfilled"] = {"at": iso(now), "source": str(source)}
+        counts["relabeled"] += 1
+    return counts
+
+
+def approx_net_r(t: ShadowTrade, outcome: dict[str, Any], *, model: ExecModel,
+                 filters: SymbolFilters | None = None) -> float | None:
+    """KAPALI-BİÇİM NET TAHMİN (`cf_label_v1c`, yalnız çevrimdışı dolgu; bar YOK): saklı brüt çıkışa defterin ücret/kayma
+    modeli ve kendi giriş dolumu (`market_fill_price`) uygulanır. Çıkış dolum modeli (boşluk/kapanış), ücret dahil başa-baş
+    fiyatı, MFE başa-baş ve funding YOK → NET'in ÜST SINIRI; v2 net ortalamasına karıştırılmaz."""
+    side = str(t.direction).upper()
+    sg = 1.0 if side == "LONG" else -1.0
+    f = _replay_filters(str(t.symbol), filters)
+    led = model.new_ledger()
+    e_fill = float(led.market_fill_price(str(t.symbol), side, D(float(t.entry)), filters=f))
+    stop = float(t.stop)
+    if e_fill <= 0 or e_fill == stop:
+        return None
+    close_side = "SELL" if side == "LONG" else "BUY"
+    slip = model.slippage
+
+    def mkt(px: float) -> float:
+        return float(slip.fill_price(D(float(px)), close_side))
+    tg = [] if str(t.label_kind or LABEL_TARGET_STOP_TIME) != LABEL_TARGET_STOP_TIME else [float(x) for x in (t.targets or [])]
+    fr = float(model.tp1_fraction)
+    ex = str(outcome.get("exit_reason") or "")
+    taker, maker = float(model.fees.rate(False)), float(model.fees.rate(True))
+    tp_fee = maker if model.tp_maker else taker
+    legs: list[tuple[float, float, float]] = []                     # (pay, dolum, ücret oranı)
+    if ex in ("target", "breakeven_stop") and len(tg) >= 2 and fr >= 1:
+        legs = [(1.0, tg[0], tp_fee)]                                # TP1 tamamını kapatır (defterin kuralı)
+    elif ex == "target":
+        legs = ([(fr, tg[0], tp_fee), (1 - fr, tg[-1], tp_fee)] if len(tg) >= 2
+                else [(1.0, tg[-1] if tg else float(outcome.get("exit_price") or 0.0), tp_fee)])
+    elif ex == "breakeven_stop" and tg:
+        legs = [(fr, tg[0], tp_fee), (1 - fr, mkt(float(t.entry)), taker)]
+    elif ex == "stop":
+        legs = [(1.0, mkt(stop), taker)]
+    else:
+        legs = [(1.0, mkt(float(outcome.get("exit_price") or 0.0)), taker)]
+    gross = sum(w * sg * (px - e_fill) for w, px, _ in legs)
+    fees = taker * e_fill + sum(w * rate * px for w, px, rate in legs)
+    return _r6((gross - fees) / abs(e_fill - stop))
+
+
 def label_records(trades: list[ShadowTrade], frames_by_symbol: dict[str, dict[str, Any]] | None,
-                  now: datetime) -> tuple[int, list[ShadowTrade]]:
+                  now: datetime, *, exec_model: ExecModel | None = None, filters_for: Callable[[str], Any] | None = None,
+                  funding_lookup: Any = None, _cache: dict | None = None) -> tuple[int, list[ShadowTrade]]:
     """Bekleyen kayıtları (outcome None) YALNIZ `now` anında kapanmış barlarla etiketler; kayıtları yerinde günceller.
 
     Kesinleşme: stop/hedef (önce stop) ya da ufuk penceresinin son barı kapanmış VE veri pencereyi kapsıyor. Ufuk +
     `STALE_GRACE_BARS` geçtiği hâlde etiketlenemeyen kayıt (veri boşluğu / evrenden çıkmış sembol) bayattır.
-    Döner: (bu çağrıda etiketlenen sayı, bayat kayıtlar). Defter başı kayıtçı ve ana botun öğrenme gölgeleri ORTAK."""
+    Döner: (bu çağrıda etiketlenen sayı, bayat kayıtlar). Defter başı kayıtçı ve ana botun öğrenme gölgeleri ORTAK.
+
+    `exec_model` (2026-09-29): verilirse kesinleşen her etikete `net_outcome` (v2: net R, maliyet parçaları) eklenir;
+    `filters_for(symbol)` defterin filtre önbelleği, `funding_lookup` defterin gerçekleşmiş funding kaynağıdır (yan
+    etkisiz okunur). None → çıktı v1 ile BİT-AYNI."""
     now = _aware(now)
     now_ms = int(now.timestamp() * 1000)
     n = 0
     stale: list[ShadowTrade] = []
-    cache: dict[tuple, tuple[pd.DataFrame, tuple] | None] = {}
+    cache: dict[tuple, tuple[pd.DataFrame, tuple] | None] = _cache if _cache is not None else {}
     for t in trades:
         if t.outcome is not None:
             continue
         tf_ms = int(t.tf_minutes) * 60_000
         label_ms = int(from_iso(t.label_ts).timestamp() * 1000)
-        ck = (t.symbol, int(t.tf_minutes))
-        if ck not in cache:
-            df = _frame_rows(_frame_for((frames_by_symbol or {}).get(t.symbol), t.tf_minutes))
-            if df is not None:
-                df = df[df["timestamp"] + tf_ms <= now_ms].reset_index(drop=True)   # yalnız kapanmış barlar
-            if df is not None and not df.empty:
-                cache[ck] = (df, (df["timestamp"].to_numpy(dtype="int64"), df["high"].to_numpy(dtype=float),
-                                  df["low"].to_numpy(dtype=float)))
-            else:
-                cache[ck] = None
-        hit = cache[ck]
+        hit = _closed_frame(cache, frames_by_symbol, t, now_ms)
         horizon_done = now_ms >= label_ms + tf_ms
         if hit is not None:
             df, arr = hit
@@ -221,6 +601,10 @@ def label_records(trades: list[ShadowTrade], frames_by_symbol: dict[str, dict[st
                     out.update({"label_kind": kind, "approx": bool(t.approx),
                                 "label_method": ("PATH" if kind == LABEL_TARGET_STOP_TIME else
                                                  LABEL_HORIZON if kind == LABEL_HORIZON else "HORIZON_FALLBACK")})
+                    if exec_model is not None:
+                        # NET ETİKET (2026-09-29): aynı barlar, defterin kendi modeli; brüt alanlar v1 anlamıyla kalır
+                        out.update(net_outcome(v, df, res, model=exec_model, filters=_filters_of(filters_for, t.symbol),
+                                               funding_lookup=funding_lookup))
                     t.outcome, t.labeled_at = out, iso(now)
                     n += 1
                     continue
@@ -242,6 +626,8 @@ class CounterfactualRecorder:
         self.expired = int(m.get("expired", 0) or 0)
         self.recorded_total = int(m.get("recorded_total", 0) or 0)
         self.superseded = int(m.get("superseded", 0) or 0)
+        #: Tembel net dolguyla (v1 → v2) yeniden etiketlenen kayıt sayısı (2026-09-29, maliyet sapması).
+        self.net_backfilled = int(m.get("net_backfilled", 0) or 0)
         #: Defterin öğrenme sayaçlarının KALICI yedeği (2026-09-28, ikinci doğrulama turu): özetin `learning` alanı öğrenme
         #: kapalıyken ve eski kodda yazılmaz (sayaçlar silinirdi); bu dosyaya ise ne kapalı yol ne eski kod dokunur.
         self.book_counters: dict[str, int] = {str(k): int(v) for k, v in (m.get("book_counters") or {}).items()
@@ -356,11 +742,23 @@ class CounterfactualRecorder:
     def _frame_for(frames: dict[str, Any] | None, tf_minutes: int) -> Any:
         return _frame_for(frames, tf_minutes)
 
-    def label_pending(self, frames_by_symbol: dict[str, dict[str, Any]], now: datetime) -> int:
-        """Bekleyen kayıtları yalnız KAPANMIŞ barlarla etiketler (`label_records`). Döner: bu çağrıda etiketlenen sayı."""
-        n, stale = label_records(self.sb.trades, frames_by_symbol, now)
+    def label_pending(self, frames_by_symbol: dict[str, dict[str, Any]], now: datetime, *,
+                      exec_model: ExecModel | None = None, filters_for: Callable[[str], Any] | None = None,
+                      funding_lookup: Any = None) -> int:
+        """Bekleyen kayıtları yalnız KAPANMIŞ barlarla etiketler (`label_records`). Döner: bu çağrıda etiketlenen sayı.
+        `exec_model` (2026-09-29): yeni etiketlere NET eklenir ve eski (v1) etiketliler TEMBEL doldurulur (`relabel_net`,
+        çağrı başına en çok `RELABEL_MAX_PER_CALL`); None → eski davranış (bit-aynı)."""
+        cache: dict = {}
+        n, stale = label_records(self.sb.trades, frames_by_symbol, now, exec_model=exec_model, filters_for=filters_for,
+                                 funding_lookup=funding_lookup, _cache=cache)
         if n:
             self._dirty = True
+        if exec_model is not None:
+            rc = relabel_net(self.sb.trades, frames_by_symbol, now, exec_model=exec_model, filters_for=filters_for,
+                             funding_lookup=funding_lookup, _cache=cache)
+            if rc["relabeled"] or rc["unavailable"]:
+                self.net_backfilled += rc["relabeled"]
+                self._dirty = True
         if stale:
             gone = {id(t) for t in stale}
             for t in stale:
@@ -396,6 +794,8 @@ class CounterfactualRecorder:
             return
         self.sb.meta = {"schema_version": SCHEMA_VERSION, "book": self.book_name, "dropped": self.dropped,
                         "expired": self.expired, "recorded_total": self.recorded_total, "superseded": self.superseded}
+        if self.net_backfilled:
+            self.sb.meta["net_backfilled"] = self.net_backfilled
         if self.book_counters:
             self.sb.meta["book_counters"] = dict(self.book_counters)
         self.sb.save()
@@ -403,10 +803,49 @@ class CounterfactualRecorder:
 
     def stats(self) -> dict:
         pending = sum(1 for t in self.sb.trades if t.outcome is None)
-        return {"book": self.book_name, "pending": pending, "labeled": len(self.sb.trades) - pending,
-                "dropped": self.dropped, "expired": self.expired, "recorded_total": self.recorded_total,
-                "superseded": self.superseded, "max_pending": self.max_pending}
+        out = {"book": self.book_name, "pending": pending, "labeled": len(self.sb.trades) - pending,
+               "dropped": self.dropped, "expired": self.expired, "recorded_total": self.recorded_total,
+               "superseded": self.superseded, "max_pending": self.max_pending}
+        out.update(net_stats(t.outcome for t in self.sb.trades))
+        out["net_backfilled"] = self.net_backfilled
+        return out
 
 
-__all__ = ["CounterfactualRecorder", "HORIZON_BARS", "LABEL_HORIZON", "LABEL_KINDS", "LABEL_RULE_EXIT",
-           "LABEL_TARGET_STOP_TIME", "SCHEMA_VERSION", "label_records"]
+def _fin(x: Any) -> float | None:
+    try:
+        v = float(x)
+    except (TypeError, ValueError):
+        return None
+    return v if math.isfinite(v) else None
+
+
+def net_stats(outcomes: Any) -> dict[str, Any]:
+    """Etiketli karşı-olgusalların R özeti (2026-09-29): raporlanan taban NET (`r_net`, v2); brüt (`r_multiple`) yalnız
+    bilgi. `n_gross_only`: net'i olmayan etiketli kayıt (v1 / net hatası); v1c tahminleri net ortalamasına KARIŞMAZ."""
+    gross, net, cost, fin = [], [], [], 0
+    lab = 0
+    for o in outcomes:
+        if not isinstance(o, dict):
+            continue
+        lab += 1
+        g, n_ = _fin(o.get("r_multiple")), _fin(o.get("r_net"))
+        if g is not None:
+            gross.append(g)
+        if n_ is not None:
+            net.append(n_)
+            c = _fin(o.get("cost_r"))
+            if c is not None:
+                cost.append(c)
+            if o.get("funding_complete") is False:
+                fin += 1
+
+    def mean(xs: list[float]) -> float | None:
+        return round(sum(xs) / len(xs), 4) if xs else None
+    return {"r_basis": "net", "n_net": len(net), "mean_r_net": mean(net), "mean_r_gross": mean(gross),
+            "mean_cost_r": mean(cost), "n_gross_only": lab - len(net), "n_net_funding_incomplete": fin}
+
+
+__all__ = ["CounterfactualRecorder", "ExecModel", "HORIZON_BARS", "LABEL_HORIZON", "LABEL_KINDS", "LABEL_RULE_EXIT",
+           "LABEL_TARGET_STOP_TIME", "LABEL_VERSION", "LABEL_VERSION_V1", "LABEL_VERSION_V1C", "NET_CONTRACT",
+           "SCHEMA_VERSION", "WON_NET_MIN_R", "approx_net_r", "label_records", "net_outcome", "net_stats", "outcome_r",
+           "relabel_net"]

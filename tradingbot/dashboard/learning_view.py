@@ -136,7 +136,25 @@ def _cf_main(state) -> dict[str, Any] | None:
     if not rows:
         return None
     lab = [t for t in rows if isinstance(t.get("outcome"), dict)]
-    return {"pending": len(rows) - len(lab), "labeled": len(lab), "dropped": None, "recorded_total": len(rows)}
+    out = {"pending": len(rows) - len(lab), "labeled": len(lab), "dropped": None, "recorded_total": len(rows)}
+    out.update(_cf_net(t["outcome"] for t in lab))
+    return out
+
+
+def _cf_net(outcomes) -> dict[str, Any]:
+    """Karşı-olgusal R özeti (2026-09-29, maliyet sapması): NET (`r_net`, cf_label_v2) esas; brüt yalnız bilgi. Kayıtta ne
+    yazıyorsa o okunur — net'i olmayan (eski, brüt) kayıt net ortalamasına girmez."""
+    net, gross = [], []
+    for o in outcomes:
+        if not isinstance(o, dict):
+            continue
+        g, n = _f(o.get("r_multiple")), _f(o.get("r_net"))
+        if g is not None:
+            gross.append(g)
+        if n is not None:
+            net.append(n)
+    return {"n_net": len(net), "mean_r_net": round(sum(net) / len(net), 4) if net else None,
+            "mean_r_gross": round(sum(gross) / len(gross), 4) if gross else None}
 
 
 def book_row(state, b: dict[str, Any]) -> dict[str, Any] | None:
@@ -188,10 +206,19 @@ def book_badge_html(row: dict[str, Any] | None) -> str:
     return ('<div class="pills lmbook">%s<span class="pill" title="açık pozisyon / slot sayısı (K)">slot %s</span>'
             '<span class="pill" title="Σ izole marj / başlangıç özkaynağı (≤ %%95)">Σmarj/E %s</span>'
             '<span class="pill" title="öğrenmede açılmış açık pozisyon (ekstra: taban kurallar açmazdı)">öğrenme %d · ekstra %d</span>'
-            '<span class="pill" title="karşı-olgusal kayıt (P&amp;L\'e girmez)">karşı-olgusal %s kayıt · %s etiketli · %s bekleyen</span></div>'
+            '<span class="pill" title="karşı-olgusal kayıt (P&amp;L\'e girmez)">karşı-olgusal %s kayıt · %s etiketli · %s bekleyen</span>'
+            '<span class="pill" title="karşı-olgusal NET ortalama R (ücret, kayma, funding sonrası; %s net etiketli) — brüt: %s">'
+            'karşı-olgusal net ort. R %s</span></div>'
             % (state, esc(slots), esc(("%.0f%%" % (mf * 100)) if mf is not None else "—"),
                int(row.get("open_learning") or 0), int(row.get("open_extra") or 0),
-               esc(str(cf.get("recorded_total", "—"))), esc(str(cf.get("labeled", "—"))), esc(str(cf.get("pending", "—")))))
+               esc(str(cf.get("recorded_total", "—"))), esc(str(cf.get("labeled", "—"))), esc(str(cf.get("pending", "—"))),
+               esc(str(cf.get("n_net", 0))), esc(_r(cf.get("mean_r_gross"))), esc(_r(cf.get("mean_r_net")))))
+
+
+def _r(x: Any) -> str:
+    """R hücresi: işaretli iki ondalık; yoksa «—»."""
+    v = _f(x)
+    return "—" if v is None else ("%+.2f" % v)
 
 
 def book_badge_for(state, book_id: str) -> str:
@@ -218,13 +245,18 @@ def books_table_html(rows: list[dict[str, Any]]) -> str:
                      esc(str(r.get("open_learning") or 0)), esc(str(r.get("open_extra") or 0)),
                      esc(str(c.get("opened", "—"))), esc(str(c.get("min_notional_bumped", "—"))), esc(str(c.get("shrunk_to_margin", "—"))),
                      esc(str(cf.get("recorded_total", "—"))), esc(str(cf.get("labeled", "—"))), esc(str(cf.get("pending", "—"))),
-                     esc(str(cf.get("dropped", "—") if cf.get("dropped") is not None else "—"))])
+                     esc(str(cf.get("dropped", "—") if cf.get("dropped") is not None else "—")),
+                     esc(_r(cf.get("mean_r_net"))) + (' <span class="small mut">(%s)</span>' % esc(str(cf.get("n_net")))
+                                                      if cf.get("n_net") is not None else ""),
+                     esc(_r(cf.get("mean_r_gross")))])
     return (table(["Defter", "Durum", "Slot (açık/K)", "Σmarj/E", "Σmarj USDT", "Öğrenmede açık", "Öğrenme-ekstra",
                    "Açılan (öğrenme)", "Min. tutara çıkarılan", "Marja küçültülen", "Karşı-olgusal", "Etiketli", "Bekleyen",
-                   "Düşürülen"], body, num_cols={4, 5, 6, 7, 8, 9, 10, 11, 12, 13})
+                   "Düşürülen", "KO net ort. R", "KO brüt ort. R"], body, num_cols={4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15})
             + '<p class="small mut">Slot: eşzamanlı pozisyon sınırı K (Σ marj ≤ %95 E, likidasyon ≥ 2 × stop). '
               '«Öğrenme-ekstra»: taban kuralların AÇMAYACAĞI işlem (<code>learning_unlocked_by</code> dolu). Karşı-olgusal '
-              'kayıtlar açılmayan geçerli sinyallerin etiketli sonucudur ve P&amp;L\'e GİRMEZ.</p>')
+              'kayıtlar açılmayan geçerli sinyallerin etiketli sonucudur ve P&amp;L\'e GİRMEZ. «KO net ort. R»: defterin '
+              'ücret/kayma/funding modeliyle aynı barlarda yeniden oynatılmış NET R (gerçek işlemlerle aynı taban; parantezde '
+              'net etiketli sayısı); «KO brüt ort. R» maliyet öncesi, yalnız bilgi.</p>')
 
 
 def section_html(state) -> str:

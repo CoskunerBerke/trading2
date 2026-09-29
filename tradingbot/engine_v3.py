@@ -4061,17 +4061,31 @@ class TradingEngineV3(TradingEngine):
     def _lm_label_main_cf(self, now: datetime) -> int:
         """Ana öğrenme karşı-olgusalları (`book == "main"`) defter kayıtçısıyla AYNI kuralla etiketlenir: yalnız kapanmış 4h
         barları, ufuk penceresi tamamlanınca (son bar KAPANMIŞ ve veri pencereyi kapsıyor), önce stop; ufuk + tampon geçip
-        etiketlenemeyen (evrenden çıkmış sembol / boşluk) bayat kayıt düşer (`meta.lm_expired`). Ek API yok."""
+        etiketlenemeyen (evrenden çıkmış sembol / boşluk) bayat kayıt düşer (`meta.lm_expired`). Ek API yok.
+
+        NET ETİKET (2026-09-29, maliyet sapması): kesinleşen etikete ana defterin KENDİ yürütme modeliyle (`ledger2`: ücret,
+        kayma, TP1, MFE başa-baş 1R, funding) aynı barlarda yeniden oynatılan NET R eklenir; eski (v1, brüt) etiketli ana
+        kayıtlar tembel doldurulur (`relabel_net`). Araştırma eşleşmesi (BLOCKED) net R'yi kullanır — bağlı gözlemler de
+        gerçek işlemin net R'siyle yazılır (aynı taban)."""
         rows = [t for t in self.shadow.trades if t.book == "main" and t.outcome is None]
-        if not rows:
+        old = [t for t in self.shadow.trades if t.book == "main" and isinstance(t.outcome, dict)
+               and t.outcome.get("label_version") is None]
+        if not rows and not old:
             return 0
-        from .learning_cf import label_records
-        frames = {s: (self.runner.last_frames.get(s) or {}) for s in {t.symbol for t in rows}}
-        n, stale = label_records(rows, frames, now)
+        from .learning_cf import ExecModel, label_records, outcome_r, relabel_net
+        xm = ExecModel.of_ledger(self.ledger2)
+        ff = (lambda s: self.filters.get(s, MarketType.USDM_PERP))
+        fl = getattr(self, "funding_rates", None)
+        frames = {s: (self.runner.last_frames.get(s) or {}) for s in {t.symbol for t in rows + old}}
+        cache: dict = {}
+        n, stale = (label_records(rows, frames, now, exec_model=xm, filters_for=ff, funding_lookup=fl, _cache=cache)
+                    if rows else (0, []))
+        rc = (relabel_net(old, frames, now, exec_model=xm, filters_for=ff, funding_lookup=fl, _cache=cache)
+              if old else {})
         if stale:
             self._lm_cf_forget(stale)
             self._lm_cf_meta_add("lm_expired", len(stale))
-        if n or stale:
+        if n or stale or rc.get("relabeled") or rc.get("unavailable"):
             self.shadow.save()
         if n:
             from .learn.research_policy import BLOCKED
@@ -4081,7 +4095,7 @@ class TradingEngineV3(TradingEngine):
                 for pending in self.research.pop_pending_for_trade(sh.id):
                     dec = dict(pending.get("decision") or {})
                     self.research.observe(pending["policy_id"], trade_id=sh.id,
-                                          baseline_r=float(sh.outcome.get("r_multiple", 0) or 0),
+                                          baseline_r=float(outcome_r(sh.outcome) or 0),
                                           risk_budget_contribution_r=0.0, kind=BLOCKED, size_multiplier=0.0,
                                           reasons=list(dec.get("reasons") or []))
         return n

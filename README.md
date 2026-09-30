@@ -117,7 +117,7 @@ Names only — see `deploy/env.example` on the development branch. Never commit 
 
 ## Deployment
 
-The repository ships a `Dockerfile` (plus `Dockerfile.v3` and `deploy/docker-compose.yml` on the development branch: worker + dashboard, non-root user, one data volume) and systemd unit files under `deploy/` for running the paper bot 24/7 on a small Linux server.
+The repository ships a `Dockerfile` (plus `Dockerfile.v3` and `deploy/docker-compose.yml` on the development branch: worker, dashboard and hourly backup services, non-root user, one data volume) and systemd unit files under `deploy/` for running the paper bot 24/7 on a small Linux server.
 
 ## Disclaimer
 

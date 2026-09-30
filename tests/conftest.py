@@ -8,8 +8,28 @@ from __future__ import annotations
 
 import math
 import pandas as pd
+import pytest
 
 from tradingbot.learn.snapshot import build_snapshot
+from tradingbot.market import http as _http
+
+
+@pytest.fixture(autouse=True)
+def _offline_http(monkeypatch):
+    """Testler AĞSIZDIR. Sahte oturum verilmemiş bir `HttpClient` gerçek `requests` oturumu açacağı anda
+    `TransientHttpError` ile düşer: ağ olmayan makinedeki son durumun aynısı (çağıran hatayı yakalar, önceki veri
+    korunur), ama dış bağlantı ve yeniden deneme beklemesi olmadan. Eskiden motor turları (`ensure_venue_events` →
+    exchangeInfo + fundingInfo) fapi.binance.com'a bağlanmaya çalışıyordu; sonuç test makinesinin ağına bağlıydı.
+    `session=` ile sahte oturum verilen istemciler etkilenmez."""
+    real_session = _http.HttpClient.session
+
+    def _session(self):
+        if self._session is None:
+            raise _http.TransientHttpError(f"test: ağ yok ({self.base_url}); sahte oturum için session= verin")
+        return real_session.fget(self)
+
+    monkeypatch.setattr(_http.HttpClient, "session", property(_session))
+
 
 BAR_MS = 86_400_000
 

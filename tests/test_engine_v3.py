@@ -265,3 +265,31 @@ def test_active_research_policy_blocks_new_entries_without_touching_open_positio
     # risk günlüğüne aday kararı yazıldı; mod ve kill switch değişmedi
     assert s["risk"]["killswitch"] == "ARMED"
     assert eng.mode_state.mode.value == "PAPER"
+
+
+def test_engine_helper_tour_opens_no_network_connection(tmp_path: Path, monkeypatch):
+    """`_engine` AĞSIZ bir motor kurar: tur hiçbir dış bağlantı denemez. Eskiden turdaki `ensure_venue_events`
+    fapi.binance.com'a (exchangeInfo + fundingInfo) bağlanmaya çalışıyordu (`tests/conftest.py::_offline_http` bunu
+    kapatır); bu test o çağrıyı yakalar (vekil sunucu üzerinden `connect`, doğrudan erişimde `getaddrinfo`)."""
+    import socket
+
+    tried: list = []
+
+    def _no_connect(self, addr):
+        tried.append(("connect", addr))
+        raise OSError("test: ağ yok")
+
+    real_gai = socket.getaddrinfo
+
+    def _gai(host, *a, **k):
+        if host not in (None, "localhost", "127.0.0.1", "::1"):
+            tried.append(("getaddrinfo", host))
+            raise socket.gaierror("test: ağ yok")
+        return real_gai(host, *a, **k)
+
+    monkeypatch.setattr(socket.socket, "connect", _no_connect)
+    monkeypatch.setattr(socket, "getaddrinfo", _gai)
+    eng = _engine(tmp_path, monkeypatch)
+    s = eng.tour(do_scan=False, obsidian=False, charts=False)
+    assert s["run_id"]
+    assert tried == [], f"tur dış bağlantı denedi: {tried[:3]}"

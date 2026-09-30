@@ -3,9 +3,11 @@
 
 Bu betik SAHTE veri üretir: ekran görüntüsü ve yerleşim doğrulaması içindir, GERÇEK PİYASA SONUCU DEĞİLDİR ve
 üretim state dizinine yazılmamalıdır. Bot bu dosyaları okumaz; yalnız panel (salt okunur) okur.
+Hedef klasörde bu betiğin yazmadığı bir `state/` varsa (işaret dosyası yok) hiçbir şey yazılmaz.
 """
 from __future__ import annotations
 
+import argparse
 import json
 import math
 import sys
@@ -13,6 +15,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 H1 = 3_600_000
+MARKER = "DEMO_SYNTHETIC.txt"
+MARKER_TEXT = "Bu klasör scripts/demo_panel_state.py tarafından yazıldı: SENTETİK demo verisi, gerçek piyasa sonucu değil.\n"
 
 
 def iso(ms: int) -> str:
@@ -34,10 +38,13 @@ def candles(path: Path, *, px0: float, n: int, step: int, end_ms: int, seed: int
     path.write_text("\n".join(rows), encoding="utf-8")
 
 
-def main(root: Path) -> None:
+def build(root: Path) -> None:
+    if _foreign_state(root):
+        raise ValueError("%s/state bu betiğin yazmadığı dosyalar içeriyor (%s yok)" % (root, MARKER))
     state, data = root / "state", root / "data"
     state.mkdir(parents=True, exist_ok=True)
     data.mkdir(parents=True, exist_ok=True)
+    (state / MARKER).write_text(MARKER_TEXT, encoding="utf-8")
     now = datetime.now(timezone.utc)
     now_ms = int(now.timestamp() * 1000)
 
@@ -166,5 +173,24 @@ def main(root: Path) -> None:
     print("UYARI: bu veriler SENTETİKTİR — gerçek piyasa sonucu değildir.")
 
 
+def _foreign_state(root: Path) -> bool:
+    """Hedefte bu betiğin yazmadığı dolu bir state klasörü var mı (işaret dosyası yok)?"""
+    st = root / "state"
+    return st.is_dir() and any(st.iterdir()) and not (st / MARKER).exists()
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description="Panel ekran görüntüsü için SENTETİK demo durumu yazar (gerçek veri değil).")
+    ap.add_argument("root", nargs="?", default="demo-panel", help="hedef klasör (state/ ve data/ altına yazılır)")
+    args = ap.parse_args(argv)
+    root = Path(args.root).resolve()
+    if _foreign_state(root):
+        print("HATA: %s/state bu betiğin yazmadığı dosyalar içeriyor (%s yok); üretim state'ine yazılmaz."
+              % (root, MARKER), file=sys.stderr)
+        return 2
+    build(root)
+    return 0
+
+
 if __name__ == "__main__":
-    main(Path(sys.argv[1] if len(sys.argv) > 1 else "demo-panel").resolve())
+    raise SystemExit(main())

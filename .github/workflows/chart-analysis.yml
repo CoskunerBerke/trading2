@@ -35,11 +35,15 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pytest httpx
+          pip install pytest httpx ruff
+      # ruff.toml: yalnız doğruluk kuralları (E9, F821, F811, F632, F70x) — repo genelinde temiz, ucuz kapı
+      - name: Lint (ruff check .)
+        run: ruff check .
       - name: Chart analysis + dashboard + strategy book + pattern + five-findings tests
         run: |
           set +e
@@ -103,6 +107,7 @@ jobs:
             tests/test_shared_experience_advisor_eval_v1.py tests/test_shared_experience_advisor_no_decision_change_v1.py \
             tests/test_shared_experience_advisor_budget_v1.py tests/test_shared_experience_advisor_config_v1.py \
             tests/test_dashboard_advisor_card_v1.py tests/test_shared_experience_advisor_ops_v1.py tests/test_restore_sh_v1.py \
+            tests/test_demo_panel_state_script.py \
             -q --tb=short > pytest.out 2>&1
           rc=$?
           cat pytest.out
@@ -125,6 +130,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip

@@ -70,7 +70,21 @@ def _thin_keep(row: Mapping[str, Any]) -> bool:
 
 
 class ExperienceStore(DecisionJournal):
-    """Ortak deneyim deposu: toplu, idempotent, kayıpsız döngülü JSONL. Arızası çağıranı ÇÖKERTMEZ (sayılır)."""
+    """Ortak deneyim deposu: toplu, idempotent, kayıpsız döngülü JSONL. Arızası çağıranı ÇÖKERTMEZ (sayılır).
+
+    Akış sözleşmesi SINIF ÖZNİTELİKLERİNDEDİR (2026-09-29, gölge danışman): şema, kabul edilen türler, akış kimliği, sıcak
+    dosya adı ve %100 disk baskısında seyreltme. Ana deponun değerleri DEĞİŞMEDİ; türetilmiş akışlar (ör.
+    `advice_store.AdviceStore`) yalnız bu öznitelikleri ezer — satırlar iki akış arasında ASLA karışmaz."""
+
+    #: Satır şeması (her satırın `schema` alanı).
+    SCHEMA: str = ROW_SCHEMA
+    #: Kabul edilen satır türleri (başka tür → RED `KIND`).
+    KINDS_ACCEPTED: tuple[str, ...] = tuple(KINDS)
+    #: Arşiv akış kimliği ve sıcak dosya adı.
+    STREAM_ID: str = STREAM_ID
+    HOT_FILE: str = HOT_FILE
+    #: %100 disk baskısında seyreltme (ana depo: evet; kapalıysa %100 doğrudan DEGRADED).
+    THIN_ENABLED: bool = True
 
     def __init__(self, root: Path | str, *, hot_max_lines: int = DEFAULT_HOT_MAX_LINES, archive_max_segments: int = 0,
                  code_sha: str | None = None, max_total_mb: float | None = DEFAULT_MAX_TOTAL_MB):
@@ -80,9 +94,9 @@ class ExperienceStore(DecisionJournal):
             self.root.mkdir(parents=True, exist_ok=True)
         except OSError:
             pass
-        archive = SegmentArchive(self.root / ARCHIVE_DIR, stream_id=STREAM_ID, record_schema_version=ROW_SCHEMA,
+        archive = SegmentArchive(self.root / ARCHIVE_DIR, stream_id=self.STREAM_ID, record_schema_version=self.SCHEMA,
                                  code_sha=code_sha, max_segments=int(archive_max_segments))
-        super().__init__(self.root / HOT_FILE, max_lines=int(hot_max_lines), archive=archive)
+        super().__init__(self.root / self.HOT_FILE, max_lines=int(hot_max_lines), archive=archive)
         mb = float(max_total_mb) if max_total_mb is not None else 0.0
         #: None → tavan yok (yalnız test/araç); yapılandırma 64..10240 MB doğrular.
         self.max_total_bytes: int | None = int(mb * 1024 * 1024) if mb > 0 else None
@@ -126,7 +140,7 @@ class ExperienceStore(DecisionJournal):
         if frac >= DEGRADE_FRACTION:
             return STATE_DEGRADED
         if frac >= THIN_FRACTION:
-            return STATE_THINNING
+            return STATE_THINNING if self.THIN_ENABLED else STATE_DEGRADED
         if frac >= WARN_FRACTION:
             return STATE_WARN
         return STATE_OK
@@ -149,14 +163,15 @@ class ExperienceStore(DecisionJournal):
         return dict(self.cf_labelled)
 
     # -------------------------------------------------------------- doğrulama
-    @staticmethod
-    def _validate(row: Any) -> tuple[dict[str, Any] | None, str]:
-        """(yazılacak satır, neden). Satır ancak gerekirse kopyalanır (çağıranın sözlüğü DEĞİŞMEZ)."""
+    @classmethod
+    def _validate(cls, row: Any) -> tuple[dict[str, Any] | None, str]:
+        """(yazılacak satır, neden). Satır ancak gerekirse kopyalanır (çağıranın sözlüğü DEĞİŞMEZ). Şema ve türler sınıf
+        özniteliklerinden (`SCHEMA`, `KINDS_ACCEPTED`)."""
         if not isinstance(row, Mapping):
             return None, "NOT_A_MAPPING"
-        if row.get("schema") != ROW_SCHEMA:
+        if row.get("schema") != cls.SCHEMA:
             return None, "SCHEMA"
-        if row.get("kind") not in KINDS:
+        if row.get("kind") not in cls.KINDS_ACCEPTED:
             return None, "KIND"                        # `decision` / `outcome_link` ASLA bu akışa girmez
         rid = row.get("row_id")
         if not isinstance(rid, str) or not _ROW_ID_RE.match(rid):
@@ -176,7 +191,7 @@ class ExperienceStore(DecisionJournal):
         return dict(row), ""
 
     def _thin_eligible(self, row: Mapping[str, Any]) -> bool:
-        return (row.get("kind") == KIND_CF and row.get("rev") == 0
+        return (self.THIN_ENABLED and row.get("kind") == KIND_CF and row.get("rev") == 0
                 and self.cf_labelled.get(str(row.get("book")), 0) >= THIN_MIN_LABELLED_CF)
 
     # -------------------------------------------------------------- yazım
@@ -372,7 +387,7 @@ class ExperienceStore(DecisionJournal):
 
     def summary(self) -> dict[str, Any]:
         """Sağlık/durum için O(1) özet (dosya TARANMAZ)."""
-        return {"schema": ROW_SCHEMA, "hot_lines": int(self._line_count), "hot_max_lines": int(self.max_lines),
+        return {"schema": self.SCHEMA, "hot_lines": int(self._line_count), "hot_max_lines": int(self.max_lines),
                 "hot_keep_lines": int(self.keep_lines), "rotations": int(self.rotations), **self.pressure(),
                 "counters": dict(self.counters), "cf_labelled": dict(self.cf_labelled),
                 "write_errors": int(self.errors), "archive_errors": int(self.archive_errors),

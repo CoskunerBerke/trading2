@@ -64,10 +64,25 @@ XP_MAX_BYTES = 1 << 20
 XP_TOP_CELLS = 10
 
 
-def _xp_json(path: Path) -> dict | None:
+#: GÖLGE DANIŞMAN (2026-09-29): kart YALNIZ iki dosyayı okur — danışmanın `advice/advisor_status.json`ı (≤ 256 KB) ve
+#: CLI taramasının `advice/walkforward_summary.json`ı (≤ 4 MB, isteğe bağlı). Panel paketi İÇE AKTARMAZ; ad, şema ve şerit
+#: sabitleri `shared_experience.advisor_live` / `advisor_eval` ile test eşitliğine bağlı. Durum dosyası yoksa kart YOK.
+XP_ADVICE_DIR = "advice"
+XP_ADV_STATUS_FILE = "advisor_status.json"
+XP_ADV_STATUS_SCHEMA = "shared_experience_advisor_status_v1"
+XP_ADV_SUMMARY_FILE = "walkforward_summary.json"
+XP_ADV_SUMMARY_SCHEMA = "shared_experience_advisor_summary_v1"
+XP_ADV_BANNER_TR = ("yalnız KAYIT — karar değişmez; ara bakış kanıt değildir; başarı yalnız önceden kayıtlı bakışlarda "
+                    "(L1/L2/L3)")
+XP_ADV_STATUS_MAX = 256 * 1024
+XP_ADV_SUMMARY_MAX = 4 * 1024 * 1024
+XP_ADV_LABELS = ("GIR", "NOTR", "GIRME", "VERI_AZ")
+
+
+def _xp_json(path: Path, max_bytes: int | None = None) -> dict | None:
     """Salt-okur küçük JSON (2026-09-29): yok / büyük / bozuk → None. `read_json`in aksine bozuk dosyayı KOPYALAMAZ."""
     try:
-        if path.stat().st_size > XP_MAX_BYTES:
+        if path.stat().st_size > (XP_MAX_BYTES if max_bytes is None else max_bytes):
             return None
         d = json.loads(path.read_bytes())
     except (OSError, ValueError):
@@ -1049,6 +1064,51 @@ class StateReader:
                 "sweep_counts": {k: counts.get(k) for k in ("real_closed_net", "real_open", "cf_net", "cf_net_a15",
                                                            "cf_gross_legacy", "cf_pending")} if counts else None,
                 "top_cells": cells}
+
+    def shared_experience_advisor(self) -> dict[str, Any] | None:
+        """GÖLGE DANIŞMAN kartı (2026-09-29) — O(1), salt okur: `advice/advisor_status.json` (24 sa halka, koşan
+        walk-forward) + son CLI taraması (`advice/walkforward_summary.json`). Durum dosyası yoksa None (kart basılmaz)."""
+        d = self.state_dir / XP_DIR / XP_ADVICE_DIR
+        st = _xp_json(d / XP_ADV_STATUS_FILE, XP_ADV_STATUS_MAX)
+        if st is None or st.get("schema") != XP_ADV_STATUS_SCHEMA:
+            return None
+        sm = _xp_json(d / XP_ADV_SUMMARY_FILE, XP_ADV_SUMMARY_MAX)
+        if sm is not None and sm.get("schema") != XP_ADV_SUMMARY_SCHEMA:
+            sm = None
+        ring = st.get("ring_24h") if isinstance(st.get("ring_24h"), dict) else {}
+        running = st.get("running") if isinstance(st.get("running"), dict) else {}
+        books: list[dict[str, Any]] = []
+        names = sorted(set(ring) | {k for k in running if k != "ALL"})
+        for b in names:
+            r = ring.get(b) if isinstance(ring.get(b), dict) else {}
+            real = r.get("real") if isinstance(r.get("real"), dict) else {}
+            cf = r.get("cf") if isinstance(r.get("cf"), dict) else {}
+            run = running.get(b) if isinstance(running.get(b), dict) else {}
+            sb = ((sm or {}).get("by_book") or {}).get(b) if isinstance((sm or {}).get("by_book"), dict) else None
+            books.append({"book": b, "real": {k: real.get(k, 0) for k in XP_ADV_LABELS + ("LATE", "NO_GROUP")},
+                          "cf": {k: cf.get(k, 0) for k in XP_ADV_LABELS},
+                          "running": {k: run.get(k) for k in ("N_T", "N_G", "U_mean", "U_sum100", "delta")},
+                          "sweep": ({k: sb.get(k) for k in ("n_T", "n_G", "U_mean", "U_mean_ci", "delta", "delta_ci")}
+                                    if isinstance(sb, dict) else None)})
+        fold = st.get("fold") if isinstance(st.get("fold"), dict) else {}
+        pos = st.get("position") if isinstance(st.get("position"), dict) else {}
+        lk = (sm or {}).get("looks") if isinstance((sm or {}).get("looks"), dict) else None
+        # (2026-09-30) kayıt engeli / bekleyen segment görünür olsun (yalnız okunur; alan yoksa None)
+        rec = st.get("record") if isinstance(st.get("record"), dict) else {}
+        sg = st.get("segments") if isinstance(st.get("segments"), dict) else {}
+        warns = [str(x) for x in st.get("warnings")] if isinstance(st.get("warnings"), list) else []
+        return {"banner": XP_ADV_BANNER_TR, "state": st.get("state"), "mode": st.get("mode"),
+                "advisor_sha": st.get("advisor_sha"), "last_step_at": st.get("last_step_at"),
+                "step_ms_p95": st.get("step_ms_p95"), "index_mb": st.get("index_mb"), "lag_rows": pos.get("lag_rows"),
+                "advisor_born_at": st.get("advisor_born_at"), "errors": st.get("errors"),
+                "breaker_tripped": bool((st.get("breaker") or {}).get("tripped")) if isinstance(st.get("breaker"), dict)
+                else False, "pending_contexts": fold.get("pending_contexts"),
+                "running_all": running.get("ALL") if isinstance(running.get("ALL"), dict) else None, "books": books,
+                "last_sweep_at": (sm or {}).get("generated_at"), "sweep_primary": (sm or {}).get("primary"),
+                "looks": lk,
+                "record": {k: rec.get(k) for k in ("blocked", "emitted", "written", "retry_pending", "dropped")},
+                "waiting_segment": sg.get("waiting") if isinstance(sg.get("waiting"), dict) else None,
+                "segments_bad": sg.get("segments_bad"), "warnings": warns[:10]}
 
     def learning_research(self) -> dict[str, Any]:
         """PAPER araştırma politikası özeti — hangi aday aktif, neyi değiştirdi, sonucu ne.

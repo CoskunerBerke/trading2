@@ -98,6 +98,11 @@ jobs:
             tests/test_shared_experience_collector_v1.py tests/test_shared_experience_no_decision_change_v1.py \
             tests/test_shared_experience_config_v1.py tests/test_shared_experience_report_v1.py \
             tests/test_shared_experience_review_fixes_v1.py \
+            tests/test_shared_experience_advisor_rule_v1.py tests/test_shared_experience_advisor_causality_v1.py \
+            tests/test_shared_experience_advisor_fold_v1.py tests/test_shared_experience_advice_store_v1.py \
+            tests/test_shared_experience_advisor_eval_v1.py tests/test_shared_experience_advisor_no_decision_change_v1.py \
+            tests/test_shared_experience_advisor_budget_v1.py tests/test_shared_experience_advisor_config_v1.py \
+            tests/test_dashboard_advisor_card_v1.py tests/test_shared_experience_advisor_ops_v1.py \
             -q --tb=short > pytest.out 2>&1
           rc=$?
           cat pytest.out

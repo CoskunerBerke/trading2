@@ -118,6 +118,15 @@ class XpSettings:
     pending_max_age_h: float = 48.0
     lock_timeout_s: float = 0.2
     lazy_fetch_max_per_tour: int = 0
+    # GÖLGE DANIŞMAN (2026-09-29; docs/ortak_deneyim/DANISMAN_V1.md): yalnız OFF | RECORD; OFF → hiçbir şey kurulmaz
+    advisor_mode: str = "OFF"
+    advisor_budget_ms: int = 250
+    advisor_catch_up_budget_ms: int = 1000
+    advisor_rebuild_rows_per_step: int = 5000
+    advisor_snapshot_every_steps: int = 60
+    advisor_max_index_mb: int = 96
+    advice_hot_max_lines: int = 2000
+    advice_max_total_mb: int = 256
 
     @classmethod
     def from_section(cls, sec: Any) -> "XpSettings":
@@ -547,6 +556,21 @@ class SharedExperienceCollector:
         except Exception as exc:  # noqa: BLE001 — kurtarma sonraki döngü çağrısında yeniden denenir
             self.c["rotate_errors"] += 1
             self.last_error_code = ("ROTATE: %s" % exc)[:200]
+        # GÖLGE DANIŞMAN (2026-09-29): yalnız `advisor_mode: RECORD` iken TEMBEL kurulur (OFF → modül yüklenmez, `advice/`
+        # klasörü kurulmaz; toplayıcının bütün dosyaları bayt bayt aynı). Kurulum arızası toplayıcıyı ETKİLEMEZ.
+        self._advisor: Any = None
+        self._advisor_ms = 0.0
+        self._advisor_on = str(getattr(self.s, "advisor_mode", "OFF") or "OFF").upper() == "RECORD"
+        self._advisor_init_error: str | None = None
+        if self._advisor_on:
+            try:
+                from .advisor_live import LiveAdvisor
+                self._advisor = LiveAdvisor(self.root, settings=self.s, code_sha=code_sha, config_hash=config_hash,
+                                            main_store=self.store)
+            except Exception as exc:  # noqa: BLE001
+                self._advisor = None
+                self._advisor_init_error = ("%s: %s" % (type(exc).__name__, exc))[:200]
+                log.warning("gölge danışman kurulamadı (toplayıcı ve karar ETKİLENMEZ): %s", exc)
 
     # ------------------------------------------------------------------ kurulum
     @classmethod
@@ -684,10 +708,14 @@ class SharedExperienceCollector:
     def health(self) -> dict[str, Any]:
         """`health.json["shared_experience"]` — O(1), ASLA istisna atmaz."""
         try:
-            return {"mode": MODE_RECORD, "state": self.state, "rows_total": int(self.c["rows_total"]),
-                    "rows_last": int(self.rows_last), "drafts": len(self._drafts),
-                    "step_ms": (self._step_ms[-1] if self._step_ms else None), "errors": int(self.c["errors_total"]),
-                    "disk_mb": round(self.disk_bytes / 1048576.0, 3)}
+            h = {"mode": MODE_RECORD, "state": self.state, "rows_total": int(self.c["rows_total"]),
+                 "rows_last": int(self.rows_last), "drafts": len(self._drafts),
+                 "step_ms": (self._step_ms[-1] if self._step_ms else None), "errors": int(self.c["errors_total"]),
+                 "disk_mb": round(self.disk_bytes / 1048576.0, 3)}
+            if self._advisor_on:                               # GÖLGE DANIŞMAN: yalnız RECORD'da (OFF → anahtar yok)
+                h["advisor"] = (self._advisor.health() if self._advisor is not None
+                                else {"state": "INIT_ERROR", "error": self._advisor_init_error})
+            return h
         except Exception:  # noqa: BLE001
             return {"mode": MODE_RECORD, "state": "UNKNOWN"}
 
@@ -741,6 +769,7 @@ class SharedExperienceCollector:
         self.steps += 1
         self.last_step_at = iso(now)
         self.rows_last = 0
+        self._advisor_ms = 0.0
         try:
             mstate = getattr(eng, "mode_state", None)
             m = getattr(mstate, "mode", None)
@@ -771,7 +800,12 @@ class SharedExperienceCollector:
                         BREAKER_ERRORS, exc)
             if self._consec_errors >= BREAKER_ERRORS:
                 self.state = STATE_BREAKER
-        ms = round((time.perf_counter() - t0) * 1000.0, 3)
+        wall = (time.perf_counter() - t0) * 1000.0
+        # (2026-09-30, inceleme bulgusu) `step_ms` (sağlık, durum p50/p95, aşım denetimi) toplayıcının KENDİ süresidir:
+        # gölge danışmanın süresi DIŞLANIR — katmanın dağıtım denetimi (`--check`: p95 ≥ 1000 ms uyarı, > 1500 ms geri
+        # alma) danışmanın yetişme/döngü adımlarıyla tetiklenmesin. Danışmanın süresi yalnız `health.advisor` ve
+        # `advice/advisor_status.json`da. Danışman KAPALIYKEN `_advisor_ms` = 0 → değerler eskisiyle AYNI.
+        ms = round(wall - self._advisor_ms, 3)
         self._step_ms.append(ms)
         if ms > OVERRUN_FACTOR * float(self.s.tour_budget_s) * 1000.0:
             self.c["budget_overruns"] += 1
@@ -786,6 +820,8 @@ class SharedExperienceCollector:
         self._write_status()
         res["state"] = self.state
         res["step_ms"] = ms
+        if self._advisor_on:
+            res["advisor_ms"] = round(self._advisor_ms, 3)
         return res
 
     # ------------------------------------------------------------------ adım
@@ -894,6 +930,8 @@ class SharedExperienceCollector:
                     committed += 1
                     self._count_row(row)
         self.rows_last = int(written)
+        if self._advisor is not None:
+            self._advisor_hook(rows, seen, pre, ctx)
         try:
             self.store.rotate()
         except Exception as exc:  # noqa: BLE001
@@ -907,6 +945,24 @@ class SharedExperienceCollector:
             pass
         return {"rows": int(written), "rejected": int(rejected), "committed": committed, "drafts": len(self._drafts),
                 "io_error": io_fail}
+
+    def _advisor_hook(self, rows: list[dict], seen: Any, pre: set, ctx: "_StepCtx") -> None:
+        """GÖLGE DANIŞMAN kancası (2026-09-29): bu adımda DİSKE yazılan satırlar (dosya sırası; `row_id` başına ilk kopya)
+        danışmana verilir. Yalnız KAYIT; danışmanın süresi toplayıcının aşım denetiminden düşülür, arızası sızmaz."""
+        t0 = time.perf_counter()
+        try:
+            got: set[str] = set()
+            out: list[dict] = []
+            for r in rows:
+                rid = str(r.get("row_id"))
+                if rid in seen and rid not in pre and rid not in got:
+                    got.add(rid)
+                    out.append(r)
+            self._advisor.on_flush(out, batch_recorded_at=ctx.env.get("recorded_at"), now=ctx.now,
+                                   budget_ms=float(getattr(self.s, "advisor_budget_ms", 250)))
+        except Exception as exc:  # noqa: BLE001 — danışman ASLA toplayıcıyı durdurmaz
+            log.warning("gölge danışman kancası atlandı (karar ETKİLENMEZ): %s", exc)
+        self._advisor_ms = (time.perf_counter() - t0) * 1000.0
 
     def _count_row(self, row: Mapping[str, Any]) -> None:
         self.c["rows_total"] += 1

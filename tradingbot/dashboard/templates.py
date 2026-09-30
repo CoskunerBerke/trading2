@@ -1059,8 +1059,66 @@ def experience_layer_card(xp: dict | None) -> str:
             % (esc(xp.get("banner") or ""), cards, tbl))
 
 
+def _adv_ci(c: Any) -> str:
+    if isinstance(c, (list, tuple)) and len(c) == 2:
+        return "[%s ; %s]" % (_xp_num(c[0], 3), _xp_num(c[1], 3))
+    return "—"
+
+
+def advisor_card(d: dict | None) -> str:
+    """GÖLGE DANIŞMAN kartı (2026-09-29) — SALT SUNUM: defter başına son 24 sa tavsiye dağılımı (gerçek ve olsaydı kanalı
+    ayrı), koşan walk-forward (gerçek hedefler, birincil kanal) ve son CLI taramasının aralıkları / bakış durumu. Hiçbir
+    şey hesaplanmaz. None → "" (danışman hiç çalışmadıysa sayfa bit-aynı)."""
+    if not d:
+        return ""
+    state = str(d.get("state") or "?")
+    kind = "ok" if state == "OK" else ("bad" if state.startswith("DISABLED") or state in ("DEGRADED", "RECORD_BLOCKED")
+                                       else "warn")
+    ra = d.get("running_all") or {}
+    rec = d.get("record") if isinstance(d.get("record"), dict) else {}
+    ws = d.get("waiting_segment") if isinstance(d.get("waiting_segment"), dict) else None
+    rec_txt = ("ENGELLİ: %s" % esc(rec.get("blocked"))) if rec.get("blocked") else (
+        ("segment bekleniyor: seq %s (%s)" % (esc(ws.get("seq")), esc(ws.get("reason")))) if ws else "OK")
+    cards = "".join([
+        card("Danışman", badge(state, kind), "mod %s · %s" % (esc(d.get("mode")), esc(d.get("advisor_sha")))),
+        card("Son adım", fmt_utc(d.get("last_step_at")),
+             "p95 %s ms · dizin %s MB · gecikme %s satır" % (esc(d.get("step_ms_p95")), esc(d.get("index_mb")),
+                                                             esc(d.get("lag_rows")))),
+        card("Doğum", fmt_utc(d.get("advisor_born_at")) if d.get("advisor_born_at") else "yetişiyor",
+             "ileriye dönük değerlendirme bu andan başlar"),
+        card("Koşan U_ort (tümü)", esc(_xp_num(ra.get("U_mean"), 3)),
+             "N_T %s · N_G %s · Δ %s" % (esc(ra.get("N_T")), esc(ra.get("N_G")), esc(_xp_num(ra.get("delta"), 3)))),
+        card("Kayıt", rec_txt, "yayımlanan %s · yazılan %s · bekleyen %s · okunamayan segment %s" % (
+            esc(rec.get("emitted")), esc(rec.get("written")), esc(rec.get("retry_pending")), esc(d.get("segments_bad")))),
+    ])
+    rows = []
+    for b in d.get("books") or []:
+        r, c, run, sw = b.get("real") or {}, b.get("cf") or {}, b.get("running") or {}, b.get("sweep") or {}
+        rows.append([esc(b.get("book"))] + [esc(r.get(k, 0)) for k in ("GIR", "NOTR", "GIRME", "VERI_AZ", "LATE")]
+                    + [esc(c.get(k, 0)) for k in ("GIR", "NOTR", "GIRME", "VERI_AZ")]
+                    + [esc(run.get("N_T")), esc(run.get("N_G")), esc(_xp_num(run.get("U_mean"), 3)),
+                       esc(_xp_num(run.get("delta"), 3)), esc(_adv_ci(sw.get("U_mean_ci")) if sw else "—")])
+    tbl = table(["Defter", "Gerçek GİR", "NÖTR", "GİRME", "VERİ AZ", "GEÇ", "Olsaydı GİR", "NÖTR", "GİRME", "VERİ AZ",
+                 "N_T", "N_G", "U_ort", "Δ", "U_ort aralık (tarama)"], rows, num_cols=set(range(1, 14)),
+                empty="son 24 saatte hedef yok")
+    lk = d.get("looks") or {}
+    if d.get("last_sweep_at"):
+        h1 = lk.get("H1") or {}
+        sweep = ("Son tarama %s · H1 bakış: <b>%s</b> (%s) · birincil U_ort %s %s" % (
+            esc(fmt_utc(d.get("last_sweep_at"))), esc(h1.get("verdict") or "bakış istenmedi"), esc(h1.get("reason") or "—"),
+            esc(_xp_num((d.get("sweep_primary") or {}).get("U_mean"), 3)),
+            esc(_adv_ci((d.get("sweep_primary") or {}).get("U_mean_ci")))))
+    else:
+        sweep = ("tarama yok — elle/zamanlayıcı: <code>python -m tradingbot shared-experience-advisor --looks "
+                 "--summary-out state/shared_experience/advice/walkforward_summary.json</code>")
+    return ('<details class="section"><summary>Gölge danışman — yalnız KAYIT</summary><div>'
+            '<div class="small mut"><b>%s</b> · GİR hiçbir zaman girişi zorlamaz ya da boyutu büyütmez</div>'
+            '<div class="grid">%s</div><h3>Defter başına son 24 saat (tavsiye dağılımı) ve koşan walk-forward</h3>%s'
+            '<div class="small mut">%s</div></div></details>' % (esc(d.get("banner") or ""), cards, tbl, sweep))
+
+
 __all__ = ["page", "table", "kv_table", "render_any", "card", "badge", "health_badge", "ks_badge", "verdict_badge", "pnl_cell",
            "fmt", "pct", "esc", "age_text", "chart_block", "CSS", "NAV", "NAV_MAIN", "NAV_MORE", "CHART_JS",
            "retention_block", "calibration_block", "quality_block", "observation_block",
            "evidence_badge", "NOT_ENOUGH_DATA", "RESEARCH_ONLY", "ACTIVE_POLICY_UNCHANGED",
-           "challenger_blocks", "experience_layer_card"]
+           "challenger_blocks", "experience_layer_card", "advisor_card"]

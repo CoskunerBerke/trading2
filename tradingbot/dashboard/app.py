@@ -37,7 +37,7 @@ from .templates import (HEADS_TABLE_CLS, POS_TABLE_CLS, age_text, badge, card, c
                         challenger_blocks, observation_block, quality_block,
                         retention_block,
                         calibration_block, verdict_badge, verdict_kind, weight_table,
-                        experience_layer_card)
+                        experience_layer_card, advisor_card)
 from . import terminal as term
 from . import learning_view as lv
 
@@ -146,11 +146,17 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
             return ""
 
     def _xp_card() -> str:
-        """ORTAK DENEYİM (2026-09-29): salt okur kart; katman hiç çalışmadıysa "" (sayfa bit-aynı). Arızası sayfayı düşürmez."""
+        """ORTAK DENEYİM (2026-09-29): salt okur kart; katman hiç çalışmadıysa "" (sayfa bit-aynı). Arızası sayfayı düşürmez.
+        GÖLGE DANIŞMAN kartı hemen altında (durum dosyası yoksa "")."""
         try:
-            return experience_layer_card(state.shared_experience())
+            out = experience_layer_card(state.shared_experience())
         except Exception:  # noqa: BLE001
-            return ""
+            out = ""
+        try:
+            out += advisor_card(state.shared_experience_advisor())
+        except Exception:  # noqa: BLE001
+            pass
+        return out
 
     def _page(title: str, body: str, active: str, extra_head: str = "") -> HTMLResponse:
         return HTMLResponse(page(title, _lm_banner() + body, active, brand=cfg.title, extra_head=extra_head, token_qs=token_qs))
@@ -2985,6 +2991,12 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
         if d is None:
             raise HTTPException(404, "dosya yok")
         return JSONResponse(d)
+
+    @app.get("/api/shared-experience-advisor")
+    def api_shared_experience_advisor():
+        """GÖLGE DANIŞMAN (2026-09-29): kartın verisi (advisor_status.json + walk-forward özeti; salt okur, O(1))."""
+        d = state.shared_experience_advisor()
+        return JSONResponse({"available": d is not None, **(d or {})})
 
     @app.get("/api/shared-experience")
     def api_shared_experience():

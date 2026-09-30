@@ -742,6 +742,9 @@ class LearningModeSection:
 
 #: ORTAK DENEYİM KATMANI (2026-09-29): geçerli modlar. ADVISE / ENFORCE v1'de YOK (karar hiçbir koşulda değişmez).
 SHARED_EXPERIENCE_MODES = ("OFF", "RECORD")
+#: GÖLGE DANIŞMAN (2026-09-29; docs/ortak_deneyim/DANISMAN_V1.md): yalnız OFF | RECORD. ADVISE / ENFORCE YOK — GİR hiçbir
+#: aşamada girişi zorlamaz, boyutu büyütmez; bu aşamada tavsiye hiçbir kararı DEĞİŞTİRMEZ.
+SHARED_EXPERIENCE_ADVISOR_MODES = ("OFF", "RECORD")
 
 
 @dataclass
@@ -765,11 +768,31 @@ class SharedExperienceSection:
     pending_max_age_h: float = 48.0     # 1..240 — eksik barlı taslak en çok bu kadar bekler (sonra GAP/NO_BARS)
     lock_timeout_s: float = 0.2         # 0..2 — defter kilidi DENEME süresi (meşgulse defter bu tur atlanır)
     lazy_fetch_max_per_tour: int = 0    # 0..20 — tembel ağ çekimi; 0 = ağ YOK (v1 varsayılanı)
+    # GÖLGE DANIŞMAN (2026-09-29): her giriş/olsaydı sinyali için "ortak hafıza bu anda ne derdi?" — yalnız KAYIT
+    # (`state/<state_dir>/advice/`); karar DEĞİŞMEZ. Çalışır ancak enabled + mode RECORD + advisor_mode RECORD iken.
+    # Env `TRADINGBOT_SHARED_EXPERIENCE_ADVISOR=off` yalnız KAPATABİLİR.
+    advisor_mode: str = "OFF"               # OFF | RECORD (ADVISE/ENFORCE → ConfigError)
+    advisor_budget_ms: int = 250            # 20..2000 — danışmanın CANLI adım payı (anlık görüntü kapısı)
+    # 20..5000 — YETİŞME adımı payı (2026-09-30): üretim satırlarında ~2,7 satır/ms → 200 bin satır ~75 turda (~19 sa);
+    # 250 ms ile ~300 tur (~3 gün) sürüyordu. Yalnız yetişirken; canlıda `advisor_budget_ms`.
+    advisor_catch_up_budget_ms: int = 1000
+    advisor_rebuild_rows_per_step: int = 5000   # 500..50000 — yetişmede adım başına en çok satır
+    advisor_snapshot_every_steps: int = 60  # 5..1000 — anlık görüntü sıklığı (adım)
+    advisor_max_index_mb: int = 96          # 16..512 — üstünde danışman DEGRADED (canlı tavsiye durur)
+    # 500..50000 — tavsiye sıcak dosyası (2026-09-30: 5000 → 2000; tavsiye satırı ~2,5 KB, döngü ~1000 satırlık blokla
+    # ~0,25 s — 5000 satırda ~0,7–1,1 s sürüyordu)
+    advice_hot_max_lines: int = 2000
+    advice_max_total_mb: int = 256          # 32..4096 — tavsiye deposu disk tavanı (%100 → DEGRADED; seyreltme yok)
 
     @property
     def active(self) -> bool:
         """Toplayıcı kurulur mu (yalnız `enabled` + RECORD)."""
         return bool(self.enabled) and str(self.mode or "").upper() == "RECORD"
+
+    @property
+    def advisor_active(self) -> bool:
+        """Gölge danışman çalışır mı (toplayıcı + `advisor_mode: RECORD`)."""
+        return self.active and str(self.advisor_mode or "").upper() == "RECORD"
 
 
 @dataclass
@@ -895,6 +918,15 @@ def load_v3(raw: dict[str, Any]) -> V3Config:
                         env_xp)
         cfg.shared_experience.enabled = False
         cfg.shared_experience.mode = "OFF"
+    # GÖLGE DANIŞMAN ENV (2026-09-29): yalnız KAPATABİLİR (açma yolu yok); başka her değer fail-closed.
+    env_adv = os.environ.get("TRADINGBOT_SHARED_EXPERIENCE_ADVISOR", "").strip().lower()
+    if env_adv:
+        if env_adv not in ("off", "false", "0", "disabled"):
+            raise ConfigError(f"TRADINGBOT_SHARED_EXPERIENCE_ADVISOR geçersiz: {env_adv!r} — env yalnız kapatabilir (off)")
+        if str(cfg.shared_experience.advisor_mode or "").upper() != "OFF":
+            log.warning("shared_experience.advisor_mode env override: -> OFF (TRADINGBOT_SHARED_EXPERIENCE_ADVISOR=%s)",
+                        env_adv)
+        cfg.shared_experience.advisor_mode = "OFF"
     validate_v3(cfg)
     return cfg
 
@@ -1326,6 +1358,11 @@ def _validate_learning_mode(cfg: V3Config, profile) -> None:
 _XP_INT_RANGES = {"hot_max_lines": (500, 50000), "archive_max_segments": (0, 1_000_000), "max_total_mb": (64, 10240),
                   "max_rows_per_tour": (10, 5000), "cache_entries": (64, 10000), "lazy_fetch_max_per_tour": (0, 20)}
 _XP_NUM_RANGES = {"tour_budget_s": (0.1, 10.0), "pending_max_age_h": (1.0, 240.0), "lock_timeout_s": (0.0, 2.0)}
+#: GÖLGE DANIŞMAN (2026-09-29): tamsayı alanlar (bool KABUL ETMEZ).
+_XP_ADV_INT_RANGES = {"advisor_budget_ms": (20, 2000), "advisor_catch_up_budget_ms": (20, 5000),
+                      "advisor_rebuild_rows_per_step": (500, 50000),
+                      "advisor_snapshot_every_steps": (5, 1000), "advisor_max_index_mb": (16, 512),
+                      "advice_hot_max_lines": (500, 50000), "advice_max_total_mb": (32, 4096)}
 
 
 def _validate_shared_experience(cfg: V3Config) -> None:
@@ -1366,6 +1403,21 @@ def _validate_shared_experience(cfg: V3Config) -> None:
         _v = getattr(xp, _k)
         if not (_is_num(_v) and _lo <= float(_v) <= _hi):
             raise ConfigError(f"shared_experience.{_k} [{_lo}, {_hi}] aralığında olmalı (verilen: {_v!r})")
+    # GÖLGE DANIŞMAN (2026-09-29): yalnız OFF | RECORD (büyük harfe normalize); `advisor_mode: OFF` (YAML bool) → OFF.
+    if xp.advisor_mode is False:
+        xp.advisor_mode = "OFF"
+    if not isinstance(xp.advisor_mode, str):
+        raise ConfigError(f"shared_experience.advisor_mode metin olmalı (OFF | RECORD; verilen: {xp.advisor_mode!r})")
+    _am = xp.advisor_mode.strip().upper()
+    if _am not in SHARED_EXPERIENCE_ADVISOR_MODES:
+        raise ConfigError(f"SHARED_EXPERIENCE_ADVISOR_MODE_NOT_IMPLEMENTED: shared_experience.advisor_mode yalnız "
+                          f"{' | '.join(SHARED_EXPERIENCE_ADVISOR_MODES)} olabilir (verilen: {xp.advisor_mode!r}; "
+                          f"danışman yalnız KAYIT — GİR girişi zorlamaz, boyutu büyütmez)")
+    xp.advisor_mode = _am
+    for _k, (_lo, _hi) in _XP_ADV_INT_RANGES.items():
+        _v = getattr(xp, _k)
+        if not (_is_int(_v) and _lo <= int(_v) <= _hi):
+            raise ConfigError(f"shared_experience.{_k} {_lo}..{_hi} aralığında tamsayı olmalı (verilen: {_v!r})")
     if xp.active and str(getattr(cfg.mode, "mode", "") or "").upper() != "PAPER":
         msg = ("shared_experience: YALNIZ PAPER — mode=%s iken katman ASKIDA kalır (SUSPENDED:%s), satır yazılmaz"
                % (cfg.mode.mode, cfg.mode.mode))

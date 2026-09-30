@@ -4,6 +4,7 @@
   validate-model · model-status · risk-status · health · reconcile · dashboard · export-trades · export-tax · mode-status
   mode-transition · killswitch-reset · backup · restore · universe
   shared-experience-report · shared-experience-status (ortak deneyim; salt okur, 2026-09-29)
+  shared-experience-advisor (gölge danışman walk-forward / verify / ask / replay; salt okur, 2026-09-29)
 Gerçek emir komutu YOKTUR; LIVE yolu bu sürümde kapalıdır.
 """
 from __future__ import annotations
@@ -954,7 +955,20 @@ def cmd_shared_experience_report(cfg: BotConfig, args) -> int:
         print(f"⛔ ortak deneyim raporu: {exc}")
         return 2
     summ = doc.pop("summary", None)
+    adv_text = None
+    if getattr(args, "advisor", False):
+        # GÖLGE DANIŞMAN (2026-09-29): walk-forward özeti rapora EKLENİR (salt okur; tanımlayıcı)
+        from .shared_experience import advisor_eval as ae
+        try:
+            wf = ae.run_walkforward(_xp_root(cfg, args))
+        except (xr.ReportError, OSError, ValueError) as exc:
+            print(f"⛔ gölge danışman özeti: {exc}")
+            return 2
+        doc["advisor_walkforward"] = ae.summary(wf)
+        adv_text = ae.render_tr(wf)
     text = json.dumps(doc, ensure_ascii=False, indent=1, sort_keys=True) if args.json else xr.render_tr(doc)
+    if adv_text is not None and not args.json:
+        text = text + "\n\n" + adv_text
     print(text)
     if args.out:
         Path(args.out).write_text(text + "\n", encoding="utf-8")
@@ -970,6 +984,49 @@ def cmd_shared_experience_status(cfg: BotConfig, args) -> int:
     from .shared_experience import report as xr
     doc = xr.status_doc(_xp_root(cfg, args))
     print(json.dumps(doc, ensure_ascii=False, indent=1, sort_keys=True) if args.json else xr.render_status_tr(doc))
+    return 0
+
+
+def cmd_shared_experience_advisor(cfg: BotConfig, args) -> int:
+    """GÖLGE DANIŞMAN (2026-09-29): "GİRME dediklerini atlasaydık net R artar mıydı?" — önceden kayıtlı walk-forward
+    (`docs/ortak_deneyim/DANISMAN_V1.md`), canlı ↔ çevrimdışı doğrulama, "şu an ne derdi?" sorusu ve yeniden oynatma.
+
+    SALT OKUR — ayrı süreç, motor kurulmaz, ağ yok. Yazdığı TEK şey `--out` / `--summary-out` / `--replay-out` ile açıkça
+    verilen dosyalardır (tavsiye deposuna ASLA yazmaz). Ara bakış KANIT DEĞİLDİR; hiçbir karar değişmez."""
+    from .shared_experience import advisor_eval as ae
+    from .shared_experience import report as xr
+    root = _xp_root(cfg, args)
+    if not root.is_dir():
+        print(f"⛔ gölge danışman: ortak deneyim deposu yok ({root}) — katman kapalı ya da hiç çalışmadı")
+        return 2
+    try:
+        if args.mode == "verify":
+            doc = ae.verify(root)
+        elif args.mode == "ask":
+            if not (args.for_symbol and args.setup and args.side and args.book):
+                raise xr.ReportError("--mode ask için --book, --for-symbol, --setup ve --side gerekir")
+            doc = ae.ask(root, book=args.book, setup=args.setup, side=args.side, symbol=args.for_symbol, live=args.live,
+                         csv_dir=cfg.cache_path)
+        elif args.mode == "replay":
+            if not args.replay_out:
+                raise xr.ReportError("--mode replay için --replay-out gerekir (tavsiye deposuna ASLA yazılmaz)")
+            doc = ae.replay(root, args.replay_out)
+        else:
+            doc = ae.run_walkforward(root, eligibility=args.eligible, since=args.since, until=args.until,
+                                     with_looks=args.looks, clock=args.clock, book=args.book, family=args.family,
+                                     cohort=args.cohort, boot=not args.no_boot,
+                                     invariants_green=True if args.invariants_green else None)
+    except (xr.ReportError, OSError, ValueError) as exc:
+        print(f"⛔ gölge danışman: {exc}")
+        return 2
+    text = json.dumps(doc, ensure_ascii=False, indent=1, sort_keys=True) if args.json else ae.render_tr(doc)
+    print(text)
+    if args.out:
+        Path(args.out).write_text(text + "\n", encoding="utf-8")
+    if args.summary_out and args.mode == "walkforward":
+        from .core import atomic_write_text
+        atomic_write_text(Path(args.summary_out), json.dumps(ae.summary(doc), ensure_ascii=False, indent=1,
+                                                             sort_keys=True))
     return 0
 
 
@@ -1322,7 +1379,37 @@ def register(sub: argparse._SubParsersAction) -> None:
     s.add_argument("--summary-out", dest="summary_out", default=None,
                    help="panel kartı özeti (ör. state/shared_experience/report_summary.json). Otomatik yazan YOK "
                         "(2026-09-29): elle ya da ayrı kurulan düşük öncelikli bir zamanlayıcıyla çalıştırın")
+    s.add_argument("--advisor", action="store_true",
+                   help="gölge danışmanın walk-forward özetini rapora ekle (salt okur; tanımlayıcı)")
     s.set_defaults(fn=cmd_shared_experience_report)
+    # GÖLGE DANIŞMAN (2026-09-29): salt-okur walk-forward / doğrulama / soru / yeniden oynatma (ayrı süreç; motor/ağ yok)
+    s = sub.add_parser("shared-experience-advisor",
+                       help="Gölge danışman: GİRME'yi atlasaydık net R artar mıydı? (yalnız KAYIT; karar değişmez)")
+    _xp_args(s)
+    s.add_argument("--mode", default="walkforward", choices=["walkforward", "verify", "ask", "replay"])
+    s.add_argument("--eligible", default="prospective", choices=["prospective", "live", "all"])
+    s.add_argument("--clock", default="avail", choices=["avail", "event"],
+                   help="event = RETRO keşif (kanıt değil; kural değiştirilemez)")
+    s.add_argument("--since", default=None, help="hedef as_of alt sınırı (ISO; katlama daima deponun başından)")
+    s.add_argument("--until", default=None, help="hedef as_of üst sınırı (ISO, hariç)")
+    s.add_argument("--book", default=None, help="defter anahtarı ya da adı (ask için zorunlu)")
+    s.add_argument("--family", default=None, choices=["TREND", "FADE", "BREAKOUT", "CANDLE_PATTERN", "MOMENTUM"])
+    s.add_argument("--cohort", default="all", choices=["all", "policy", "extra", "pre", "cf"])
+    s.add_argument("--looks", action="store_true", help="L1/L2/L3 bakışları: NOT_REACHED | PENDING | PASS(Lk) | FAIL")
+    s.add_argument("--invariants-green", dest="invariants_green", action="store_true",
+                   help="pencere boyunca sürüm --check değişmezlerinin yeşil olduğunu operatör BEYAN eder (bütünlük)")
+    s.add_argument("--for-symbol", dest="for_symbol", default=None, help="ask: sembol (ör. SOL/USDT)")
+    s.add_argument("--setup", default=None, help="ask: setup_type (ör. box_fade, trend)")
+    s.add_argument("--side", default=None, choices=["LONG", "SHORT"])
+    s.add_argument("--live", action="store_true", help="ask: AĞSIZ canlı anlık görüntü (Formasyon CSV önbelleği)")
+    s.add_argument("--no-boot", dest="no_boot", action="store_true", help="bootstrap aralıklarını atla (hızlı bakış)")
+    s.add_argument("--out", default=None, help="çıktının kopyası")
+    s.add_argument("--summary-out", dest="summary_out", default=None,
+                   help="panel kartı özeti (ör. state/shared_experience/advice/walkforward_summary.json); otomatik "
+                        "yazan YOK — elle ya da ayrı zamanlayıcıyla")
+    s.add_argument("--replay-out", dest="replay_out", default=None,
+                   help="replay: yeniden hesaplanan tavsiye satırları (JSONL; tavsiye deposuna ASLA yazılmaz)")
+    s.set_defaults(fn=cmd_shared_experience_advisor)
     s = sub.add_parser("shared-experience-status",
                        help="Ortak deneyim katmanı durumu + defter başına 24 sa/7 gün kapsamı (salt okur)")
     _xp_args(s)

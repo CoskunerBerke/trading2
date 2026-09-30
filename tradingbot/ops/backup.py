@@ -13,6 +13,16 @@ ORTAK DENEYİM ARŞİVİ (2026-09-29, inceleme bulgusu): `shared_experience/arch
 manifest + sıcak dosya + imleçle yetinir (her kopya bütün arşivi taşıyordu: 35 kopya × arşiv). Elle/günlük/haftalık yedek
 hep taşır. Segmentsiz bir saatlik yedekten geri yüklemede segmentler en yeni UTC-00 (ya da elle) yedekten kopyalanır —
 dosyalar değişmez olduğu için daha yeni bir yedekteki segment kümesi eskisini kapsar.
+
+GÖLGE DANIŞMAN (2026-09-29): tavsiye deposunun arşiv segmentleri (`shared_experience/advice/archive/segments/`) aynı kuralla
+yalnız UTC 00 saatlik yedeğinde taşınır; türetilmiş ve yeniden kurulabilir anlık görüntü (`advice/advisor_state.v1.gz`)
+saatlik yedeğe HİÇ alınmaz. Günlük/haftalık/elle yedek her şeyi taşır.
+
+SEGMENT GERİ KOPYASI (2026-09-30, inceleme bulgusu): `restore_backup` geri yüklenen manifestlerin listelediği ama state'te
+olmayan (ya da sha256'sı tutmayan) ortak deneyim / tavsiye segmentlerini, kenara alınan önceki state'ten
+(`state.pre-restore-<ts>`) sha256 doğrulamasıyla geri kopyalar (segmentler değişmez ve içerik adlıdır; aynı ad + aynı sha256 =
+aynı bayt). Hâlâ eksik kalanlar sonuçta `xp_segments.missing` olarak listelenir; danışman o segmentte ATLAMAZ, bekler
+(`WAITING_SEGMENTS`) — eksikler en yeni UTC-00 / günlük yedekten elle kopyalanır.
 """
 from __future__ import annotations
 
@@ -36,6 +46,12 @@ _SKIP_PREFIXES = ("state.pre-restore-",)
 #: varsayılanı). Başka bir `state_dir` seçilirse klasör her yedekte taşınır (davranış eskisi gibi).
 XP_SEGMENTS_REL = "shared_experience/archive/segments/"
 XP_SEGMENTS_HOUR_UTC = 0
+#: Gölge danışman (2026-09-29): tavsiye arşiv segmentleri (saatlikte yalnız UTC 00) ve türetilmiş anlık görüntü (saatlikte
+#: HİÇ). Yol sabitleri `shared_experience.advice_store` / `advisor_live` ile test eşitliğine bağlı (paket içe aktarılmaz).
+XP_ADVICE_SEGMENTS_REL = "shared_experience/advice/archive/segments/"
+XP_ADVISOR_STATE_REL = "shared_experience/advice/advisor_state.v1.gz"
+#: Geri yüklemede segment geri kopyası yapılan arşivler (manifest = `<kök>/manifest.json`, segmentler `<kök>/segments/`).
+XP_ARCHIVE_ROOTS_REL = ("shared_experience/archive", "shared_experience/advice/archive")
 
 
 @dataclass
@@ -144,7 +160,10 @@ def run_backup(state_dir: Path | str, backups_dir: Path | str, kind: str = "hour
             hour = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).hour
             xp_segments = kind != "hourly" or hour == XP_SEGMENTS_HOUR_UTC
         skipped = [0]
-        n, b = _copy_tree_state(state_dir, staging, skip_dirs=() if xp_segments else (XP_SEGMENTS_REL,), skipped=skipped)
+        skip_dirs: tuple[str, ...] = () if xp_segments else (XP_SEGMENTS_REL, XP_ADVICE_SEGMENTS_REL)
+        if kind == "hourly":
+            skip_dirs = skip_dirs + (XP_ADVISOR_STATE_REL,)     # türetilmiş; saatlikte ASLA (UTC 00 dahil)
+        n, b = _copy_tree_state(state_dir, staging, skip_dirs=skip_dirs, skipped=skipped)
         vault_n = 0
         if include_vault and vault_dir and Path(vault_dir).exists():
             vdst = tmp_root / "vault"
@@ -209,6 +228,47 @@ def latest_backup(backups_dir: Path | str, kind: str | None = None) -> Path | No
     return cands[-1] if cands else None
 
 
+def _xp_segments_copy_back(state_dir: Path, previous: Path | None) -> dict[str, Any]:
+    """Geri yüklenen state'in ortak deneyim / tavsiye manifestlerindeki segmentler: eksik ya da sha256'sı tutmayan her
+    biri `previous` state'ten (varsa, sha256 doğrulanarak) geri kopyalanır. Dönen: {needed, present, copied, missing[]}.
+    Arıza ASLA geri yüklemeyi bozmaz (yalnız raporlanır)."""
+    import json as _json
+    out: dict[str, Any] = {"needed": 0, "present": 0, "copied": 0, "missing": []}
+    for rel in XP_ARCHIVE_ROOTS_REL:
+        try:
+            man = _json.loads((state_dir / rel / "manifest.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        segs = man.get("segments") if isinstance(man, dict) else None
+        for seg in segs if isinstance(segs, list) else []:
+            if not isinstance(seg, dict):
+                continue
+            name, sha = str(seg.get("file") or ""), str(seg.get("sha256") or "")
+            if not name or "/" in name or "\\" in name or name.startswith("."):
+                continue
+            out["needed"] += 1
+            dst = state_dir / rel / "segments" / name
+            try:
+                if dst.is_file() and _sha256_file(dst) == sha:
+                    out["present"] += 1
+                    continue
+                src = (previous / rel / "segments" / name) if previous is not None else None
+                if src is not None and src.is_file() and _sha256_file(src) == sha:
+                    dst.parent.mkdir(parents=True, exist_ok=True)
+                    tmp = dst.with_name(dst.name + ".tmp-restore")
+                    shutil.copy2(src, tmp)
+                    if _sha256_file(tmp) != sha:
+                        tmp.unlink(missing_ok=True)
+                        raise OSError("kopya sha256 tutmadı")
+                    os.replace(tmp, dst)
+                    out["copied"] += 1
+                    continue
+            except OSError:
+                pass
+            out["missing"].append("%s/segments/%s" % (rel, name))
+    return out
+
+
 def restore_backup(archive: Path | str, state_dir: Path | str, dry_run: bool = False) -> dict[str, Any]:
     """Doğrula → geçici dizine aç → `state_dir` → `state.pre-restore-<ts>` → yeni state yerine. Vault üyeleri
     (varsa) `state_dir.parent/vault.restored-<ts>` altına açılır (mevcut vault'a dokunulmaz)."""
@@ -245,8 +305,13 @@ def restore_backup(archive: Path | str, state_dir: Path | str, dry_run: bool = F
             os.replace(tmp_root / "vault", vault_out)
     finally:
         shutil.rmtree(tmp_root, ignore_errors=True)
+    try:
+        xp_segs = _xp_segments_copy_back(state_dir, pre)
+    except Exception as exc:  # noqa: BLE001 — geri yükleme tamamlandı; yalnız rapor
+        xp_segs = {"error": ("%s: %s" % (type(exc).__name__, exc))[:200]}
     return {"ok": True, "dry_run": False, "state_dir": str(state_dir), "previous": str(pre) if pre else None,
-            "vault_restored_to": str(vault_out) if vault_out else None, "members": names, "verify": ver}
+            "vault_restored_to": str(vault_out) if vault_out else None, "members": names, "verify": ver,
+            "xp_segments": xp_segs}
 
 
 __all__ = ["run_backup", "verify_backup", "restore_backup", "latest_backup", "BackupResult", "KINDS"]

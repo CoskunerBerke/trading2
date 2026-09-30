@@ -296,3 +296,34 @@ def test_engine_helper_tour_opens_no_network_connection(tmp_path: Path, monkeypa
     s = eng.tour(do_scan=False, obsidian=False, charts=False)
     assert s["run_id"]
     assert tried == [], f"tur dış bağlantı denedi: {tried[:3]}"
+
+
+def test_offline_guard_survives_monkeypatch_undo(monkeypatch):
+    """Testin kendi `monkeypatch.undo()` çağrısı (ör. `test_spot_futures_risk_split` iki motoru ardarda kurar) ağ
+    korumasını kaldırmaz: sahte oturumsuz `HttpClient` yine dış bağlantı denemeden `TransientHttpError` verir."""
+    import socket
+
+    from tradingbot.market.http import HttpClient, TransientHttpError
+
+    monkeypatch.setattr(HttpClient, "timeout", 1.0, raising=False)
+    monkeypatch.undo()
+    tried: list = []
+
+    def _no_connect(self, addr):
+        tried.append(("connect", addr))
+        raise OSError("test: ağ yok")
+
+    real_gai = socket.getaddrinfo
+
+    def _gai(host, *a, **k):
+        if host not in (None, "localhost", "127.0.0.1", "::1"):
+            tried.append(("getaddrinfo", host))
+            raise socket.gaierror("test: ağ yok")
+        return real_gai(host, *a, **k)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(socket.socket, "connect", _no_connect)
+        mp.setattr(socket, "getaddrinfo", _gai)
+        with pytest.raises(TransientHttpError):
+            HttpClient("https://fapi.binance.com", max_retries=0).get("/fapi/v1/ping")
+    assert tried == [], f"dış bağlantı denendi: {tried[:3]}"

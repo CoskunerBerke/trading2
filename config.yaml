@@ -613,6 +613,11 @@ learning_mode:
 # kazandık mı?" → python -m tradingbot shared-experience-report (ayrı aşama). Ayrıntı: docs/ortak_deneyim/SPEC_V1.md
 # * KAPATMAK: `enabled: false` (ya da `mode: OFF`) + worker'ı yeniden başlat, ya da env TRADINGBOT_SHARED_EXPERIENCE=off
 #   (env yalnız kapatır). Durum dosyası/geçmiş silinmez; geri almada state/shared_experience/ zararsız kalır.
+# * GÖLGE DANIŞMAN (2026-09-30; docs/ortak_deneyim/DANISMAN_V1.md): her yeni giriş/olsaydı sinyali için ortak hafızanın
+#   cevabı (GİR / GİRME / NÖTR / VERİ AZ) state/shared_experience/advice/ altına YALNIZ KAYDEDİLİR; hiçbir karar DEĞİŞMEZ,
+#   GİR girişi zorlamaz/boyutu büyütmez. Kapatmak: `advisor_mode: OFF` + restart, ya da env
+#   TRADINGBOT_SHARED_EXPERIENCE_ADVISOR=off (env yalnız kapatır). advice/ klasörü silinmez (doğum/üst işaret oradan).
 shared_experience:
   enabled: true
   mode: RECORD
+  advisor_mode: RECORD

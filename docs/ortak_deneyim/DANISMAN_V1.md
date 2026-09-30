@@ -324,8 +324,10 @@ Lk bakışında H1 için aşağıdakilerin **HEPSİ** sağlanırsa sonuç **GEÇ
 | `ADVISOR_SHA` | `8a89fd7e69a2d33b` |
 | `WF_SHA` | `b34d6b7a313d24d1` |
 | `situation_v1 SCHEMA_SHA` | `640fd10e5d6f727c` |
-| Mühür commit'i | _(bu belgeyi ve uygulamayı içeren commit; canlıya almadan önce)_ |
+| Mühür commit'i | `55179f4` (bu belge ve uygulama; 2026-09-30, gerçek veride hiçbir tavsiye üretilmeden önce) |
 | `advisor_born_ms` | _(ilk canlı toplu yazımda; `advice/advisor_meta.json`)_ |
+
+**Canlıya alma (2026-09-30):** `config.yaml` → `shared_experience.advisor_mode: RECORD` (mühür commit'inden SONRAKİ ayrı commit). VPS'e dağıtımı kullanıcı çalıştırır; danışman yalnız KAYDEDER, hiçbir kararı değiştirmez. İlk açılışta yetişme ~1 gün sürer; `advisor_born_ms` yetişme bitip ilk canlı toplu yazımda kurulur.
 
 **Mühürden önceki değişiklikler (2026-09-30, inceleme; henüz canlı veri, mühür commit'i ve dağıtım YOK — bu yüzden hâlâ v1):**
 - `ADVISOR_SHA` `b4bcba95dcc6a2ef` → `8a89fd7e69a2d33b`: yazım anı = toplu yazımın monoton saati; saati ilerletmeyen toplu yazımda katlanan kanıt, saati ilerleten sonrakine kadar bekler (§2.3). Monoton saatli depolarda tavsiye BİREBİR aynıdır.

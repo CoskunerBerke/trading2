@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """ORTAK DENEYİM KATMANI v1 — YAPILANDIRMA + MOTOR KANCASI (2026-09-29; SPEC_V1 §9-§10, görev X3).
 
-* Kod varsayılanı KAPALI (`enabled: false`, `mode: OFF`); `config.yaml` bölümü tam olarak `{enabled: true, mode: RECORD}`.
+* Kod varsayılanı KAPALI (`enabled: false`, `mode: OFF`); `config.yaml` bölümü tam olarak `{enabled: true, mode: RECORD, advisor_mode: RECORD}` (danışman 2026-09-30).
 * Mod yalnız OFF | RECORD (ADVISE/ENFORCE → ConfigError SHARED_EXPERIENCE_MODE_NOT_IMPLEMENTED); bilinmeyen anahtar,
   tip/aralık hatası ve yol kaçışı (`state_dir`) ConfigError.
 * Env `TRADINGBOT_SHARED_EXPERIENCE` yalnız KAPATABİLİR; başka her değer ConfigError.
@@ -58,7 +58,8 @@ def test_code_default_is_off_and_absent_section_is_inactive():
 
 def test_config_yaml_section_is_exactly_enabled_record_and_validates():
     raw = yaml.safe_load((ROOT / "config.yaml").read_text(encoding="utf-8"))
-    assert raw["shared_experience"] == {"enabled": True, "mode": "RECORD"}
+    # 2026-09-30: gölge danışman kayıtta (DANISMAN_V1 §7; yalnız KAYIT, karar değişmez)
+    assert raw["shared_experience"] == {"enabled": True, "mode": "RECORD", "advisor_mode": "RECORD"}
     cfg = load_config(ROOT / "config.yaml")
     xp = cfg.v3.shared_experience
     assert xp.active and xp.mode == "RECORD" and xp.lazy_fetch_max_per_tour == 0

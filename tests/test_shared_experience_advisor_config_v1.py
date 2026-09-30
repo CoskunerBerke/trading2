@@ -68,14 +68,16 @@ def test_code_defaults_are_off_and_the_documented_values():
     assert xs2.advisor_mode == "RECORD" and xs2.advisor_budget_ms == 400
 
 
-def test_current_config_yaml_parses_unchanged_with_the_advisor_off():
+def test_current_config_yaml_records_advice_and_off_still_parses():
+    """2026-09-30: canlıya alma (DANISMAN_V1 §7) — config.yaml danışmanı KAYITTA açar; başka advisor_* anahtarı yok
+    (işletim ayarları kod varsayılanında). Kapatma yolu (`advisor_mode: OFF`) aynı bölümle doğrulanır."""
     raw = yaml.safe_load((ROOT / "config.yaml").read_text(encoding="utf-8"))
-    assert raw["shared_experience"] == {"enabled": True, "mode": "RECORD"}     # canlıya alma ayrı onay (DANISMAN_V1 §7)
+    assert raw["shared_experience"] == {"enabled": True, "mode": "RECORD", "advisor_mode": "RECORD"}
     xp = load_config(ROOT / "config.yaml").v3.shared_experience
-    assert xp.active and xp.advisor_mode == "OFF" and xp.advisor_active is False
-    # onaydan sonraki bölüm de doğrulanır
-    xp2 = load_v3({**raw, "shared_experience": dict(raw["shared_experience"], advisor_mode="RECORD")}).shared_experience
-    assert xp2.advisor_active and xp2.advisor_mode == "RECORD"
+    assert xp.active and xp.advisor_mode == "RECORD" and xp.advisor_active is True
+    # geri alma: aynı bölüm advisor_mode OFF ile → danışman kurulmaz, toplayıcı aynen sürer
+    xp2 = load_v3({**raw, "shared_experience": dict(raw["shared_experience"], advisor_mode="OFF")}).shared_experience
+    assert xp2.active and xp2.advisor_active is False and xp2.advisor_mode == "OFF"
 
 
 @pytest.mark.parametrize("sec,active", [

@@ -267,10 +267,13 @@ def test_active_research_policy_blocks_new_entries_without_touching_open_positio
     assert eng.mode_state.mode.value == "PAPER"
 
 
-def test_engine_helper_tour_opens_no_network_connection(tmp_path: Path, monkeypatch):
+@pytest.mark.parametrize("v3_overrides", [None, {"entry_universe": {"enabled": True, "symbols": ["ETH/USDT", "SOL/USDT"]}}],
+                         ids=["default", "entry_universe"])
+def test_engine_helper_tour_opens_no_network_connection(tmp_path: Path, monkeypatch, v3_overrides):
     """`_engine` AĞSIZ bir motor kurar: tur hiçbir dış bağlantı denemez. Eskiden turdaki `ensure_venue_events`
-    fapi.binance.com'a (exchangeInfo + fundingInfo) bağlanmaya çalışıyordu (`tests/conftest.py::_offline_http` bunu
-    kapatır); bu test o çağrıyı yakalar (vekil sunucu üzerinden `connect`, doğrudan erişimde `getaddrinfo`)."""
+    fapi.binance.com'a (exchangeInfo + fundingInfo, HttpClient) ve giriş evreni açıkken `perp_frames` gerçek ccxt ile
+    bağlanmaya çalışıyordu (`tests/conftest.py::_offline_network` ikisini de kapatır); bu test o çağrıları yakalar
+    (vekil sunucu üzerinden `connect`, doğrudan erişimde `getaddrinfo`)."""
     import socket
 
     tried: list = []
@@ -289,7 +292,7 @@ def test_engine_helper_tour_opens_no_network_connection(tmp_path: Path, monkeypa
 
     monkeypatch.setattr(socket.socket, "connect", _no_connect)
     monkeypatch.setattr(socket, "getaddrinfo", _gai)
-    eng = _engine(tmp_path, monkeypatch)
+    eng = _engine(tmp_path, monkeypatch, v3_overrides)
     s = eng.tour(do_scan=False, obsidian=False, charts=False)
     assert s["run_id"]
     assert tried == [], f"tur dış bağlantı denedi: {tried[:3]}"

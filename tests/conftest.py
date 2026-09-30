@@ -10,12 +10,13 @@ import math
 import pandas as pd
 import pytest
 
+from tradingbot import engine as _engine_mod
 from tradingbot.learn.snapshot import build_snapshot
 from tradingbot.market import http as _http
 
 
 @pytest.fixture(autouse=True)
-def _offline_http(monkeypatch):
+def _offline_network(monkeypatch):
     """Testler AĞSIZDIR. Sahte oturum verilmemiş bir `HttpClient` gerçek `requests` oturumu açacağı anda
     `TransientHttpError` ile düşer: ağ olmayan makinedeki son durumun aynısı (çağıran hatayı yakalar, önceki veri
     korunur), ama dış bağlantı ve yeniden deneme beklemesi olmadan. Eskiden motor turları (`ensure_venue_events` →
@@ -29,6 +30,16 @@ def _offline_http(monkeypatch):
         return real_session.fget(self)
 
     monkeypatch.setattr(_http.HttpClient, "session", property(_session))
+
+    # Aynısı ccxt yolu için: `TradingEngine.perp_frames` sahte borsa (`eng._fu`) verilmemişse gerçek
+    # `ccxt.binanceusdm` kurup Binance'e bağlanıyordu (ör. giriş evreni açık turlarda). Artık ağ hatasıyla düşer;
+    # tur bunu ağ kaynaklı "veri yok" olarak işler (ağsız makinedeki gibi). `eng._fu = SahteBorsa()` etkilenmez.
+    def _offline_fut(self):
+        if self._fu is None:
+            raise ConnectionError("test: ağ yok (ccxt binanceusdm); sahte borsa için eng._fu verin")
+        return self._fu
+
+    monkeypatch.setattr(_engine_mod.TradingEngine, "_fut", _offline_fut)
 
 
 BAR_MS = 86_400_000

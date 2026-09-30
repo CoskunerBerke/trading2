@@ -51,6 +51,8 @@ STATE_FILES: dict[str, str] = {
     # ÖĞRENME MODU (2026-09-28, öğrenme modu): ilk aktif an (`learning_mode_since`) — öncesi/sonrası ayrımı (salt okunur).
     "learning_mode": "learning_mode.json",
 }
+#: Üst düzeyi liste olabilen state dosyaları (`StateReader.orders` iki biçimi de okur); diğerleri daima JSON nesnesidir.
+_LIST_STATE_FILES = frozenset({"orders"})
 #: ORTAK DENEYİM KATMANI v1 (2026-09-29): panel kartı YALNIZ iki küçük dosyayı okur — toplayıcının `status.json`ı ve CLI
 #: taramasının `report_summary.json`ı (`shared-experience-report --summary-out`, ayrı süreç). Panel paketi İÇE AKTARMAZ
 #: (yalnız motor ve CLI aktarır — AST testi); ad ve şerit sabitleri `shared_experience.report` ile test eşitliğine bağlı.
@@ -264,10 +266,15 @@ class StateReader:
 
     # ---- ham okuma
     def get(self, name: str) -> Any:
+        """State dosyası (üst düzey JSON nesnesi). Dosya yok/bozuk ya da GEÇERLİ JSON ama yanlış üst düzey türdeyse
+        (liste/sayı/metin; yalnız `orders` liste olabilir) None: sayfalar «Veri yok» basar, 500 vermez."""
         fn = STATE_FILES.get(name)
         if not fn:
             return None
-        return read_json(self.state_dir / fn, default=None)
+        d = read_json(self.state_dir / fn, default=None)
+        if isinstance(d, dict) or (isinstance(d, list) and name in _LIST_STATE_FILES):
+            return d
+        return None
 
     def tail_jsonl(self, name: str, n: int = 200, *, needle: str | None = None,
                    project: Callable[[dict], Any] | None = None) -> list:
@@ -541,7 +548,8 @@ class StateReader:
             return None
         if b["book_id"] == "main":
             return self.get("futures_ledger")
-        return read_json(self.state_dir / b["state_dir"] / "futures_ledger.json", default=None)
+        d = read_json(self.state_dir / b["state_dir"] / "futures_ledger.json", default=None)
+        return d if isinstance(d, dict) else None
 
     def book_position(self, book_id: str, symbol: str) -> dict | None:
         led = self.book_ledger(book_id) or {}

@@ -774,6 +774,9 @@ def test_collector_never_mutates_the_books_it_reads(tmp_path):
     open_pos(box.ledger, "ETH/USDT", at=T0 - timedelta(minutes=5), meta={"signal": {"signal_ts": 1}})
     t = record_cf(box, "AVAX/USDT", sig=1, created=T0 - timedelta(minutes=5))
     t.outcome = {"r_multiple": 1.0, "label_version": "cf_label_v3", "r_net": 0.8, "r_gross": 1.0, "cost_r": 0.2}
+    # Boş updated_at'i to_dict() o anki saatle doldurur; saniye sınırında sahte fark çıkmasın diye sabitle.
+    # Sabit değer, kayıtçının updated_at'e yazmadığını da denetler.
+    eng.ledger2.updated_at = box.ledger.updated_at = "2026-01-01T00:00:00+00:00"
 
     def snap():
         return (json.dumps(eng.ledger2.to_dict(), sort_keys=True, default=str),

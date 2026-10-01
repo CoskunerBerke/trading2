@@ -63,7 +63,8 @@ At a glance (counted from this repository): about 100,000 lines of Python in `tr
 
 ## Features
 
-- **Eight paper strategy books**, each with its own simulated balance and ledger:
+- **Eight paper strategy books**, each with its own simulated balance and ledger (the main bot keeps a futures and a
+  spot ledger):
   - **Main bot:** multi-agent decisions: per-coin specialists (volatility, trend, candles, volume, support/resistance,
     momentum, historical analogs, live market data) → coin head → red team → chief → deterministic global risk engine.
   - **T2** EMA200 trend regime · **M2** 28-day time-series momentum · **B1 Box** fade of the previous day's range on
@@ -73,10 +74,11 @@ At a glance (counted from this repository): about 100,000 lines of Python in `tr
     candidate out of 1,412 combinations that passed the signal lab's strict test ([details](docs/PATTERN_TRADER_V3.md)).
 - **Realistic paper accounting:** taker fees, funding at the exchange's settlement times, slippage, tick/step/min-notional
   filters, isolated margin and liquidation checks, one position per symbol per book.
-- **Learning mode (paper only):** relaxes only the limits that block valid signals (total open-risk cap, position-count and
-  margin bottlenecks) so every book collects more R-multiple experience, at a smaller risk per trade; limits that protect
-  measurement quality (data identity, stop geometry, double counting, exchange filters) stay. Results are compared in R,
-  not in USDT.
+- **Learning mode (paper only, enabled in the committed config):** relaxes capacity limits (total open-risk cap,
+  position-count and margin bottlenecks) and some selectivity gates so every book collects more R-multiple experience,
+  at a smaller risk per trade. Under it the main bot also opens negative-edge candidates as tagged exploration trades.
+  Limits that protect measurement quality (data identity, stop geometry, double counting, exchange filters) stay.
+  Results are compared in R, not in USDT, and policy trades are reported separately from learning-extra ones.
 - **Counterfactual labels:** every valid signal that could not be opened is stored and later labelled with closed bars and
   the ledger's own cost model (net R, versioned labels).
 - **Shared experience memory:** one record-only store of real trades and counterfactuals with a market-situation snapshot
@@ -94,9 +96,11 @@ At a glance (counted from this repository): about 100,000 lines of Python in `tr
 
 ## How it works
 
-One worker process (`python -m tradingbot watch`) runs a *tour* every 15 minutes. It loads closed-bar USDⓈ-M perpetual
-frames for a fixed 40-coin universe, binds each frame's provenance to that tour, and lets every book decide on closed bars
-only; a symbol whose perpetual frames cannot be verified for that tour gets no new entry.
+One worker process (`python -m tradingbot watch`) runs a *tour*, waits 15 minutes after it ends, and repeats; one
+recorded production tour took about 24 minutes, so the main bot decides roughly every 39 minutes. A tour loads
+closed-bar USDⓈ-M perpetual frames for a fixed 40-coin universe and binds each frame's provenance to that tour. Every
+book then decides on closed bars only, and a symbol whose perpetual frames cannot be verified for that tour gets no new
+futures entry (the main bot's spot buys are not gated by this check or by the universe).
 
 - **Main bot:** per-coin specialists → coin head (plan and expected R) → red team (only real safety problems reject) →
   chief (ranking, bounded soft penalties) → global risk engine, which checks the *final* size before the paper ledger
@@ -104,8 +108,15 @@ only; a symbol whose perpetual frames cannot be verified for that tour gets no n
   and soft penalties.
 - **Single-rule books:** T2, M2, Box, D4 and C4/C4S are pure rule functions over closed bars that share one executor; the
   Formasyon book has its own background scanner.
-- **Time-critical work runs off the tour:** a protective monitor thread checks every open position about once a minute
-  against a verified perpetual mark, and a Box timer thread evaluates each closed 5-minute candle.
+- **Learning mode is on in the committed config**, so these are the rules actually running:
+  - every book except C4S sizes from equal slots at 0.5% risk;
+  - the main bot opens negative-edge and research-size candidates as tagged exploration trades;
+  - the main bot only records its regime gate, candle veto and blocking structure decisions, so it can open SHORTs and
+    enter while BTC is below its EMA200;
+  - Box accepts stops down to 0.32%, and D4 and C4 enter on the whole universe.
+- **Time-critical work runs off the tour:** a protective monitor thread checks every open futures position about once a
+  minute against a verified perpetual mark, and a Box timer thread evaluates each closed 5-minute candle. The main bot's
+  spot holdings have no stop orders, are not monitored and are never sold by the worker (a known gap).
 - **One accounting model:** `Decimal` paper ledgers (isolated margin for futures) with taker fees, 3 bps slippage,
   exchange filters, realised funding settlements and a prudent order when a bar crosses both the stop and the
   liquidation price.
@@ -297,12 +308,12 @@ Note: [`deploy/env.example`](deploy/env.example) still lists a few older names t
 
 ```bash
 pip install -r requirements-dev.txt
-python -m pytest -q tests          # full suite, offline (about 19 minutes)
+python -m pytest -q tests          # full suite, offline (about 20 minutes)
 ruff check .                       # lint gate defined in ruff.toml
 ```
 
-- The full suite has **4,082 tests**. Run on 2026-10-01 on a 4-core Linux machine: 4,075 passed, 7 skipped, about
-  19 minutes. The skipped tests need the author's local research package or archive files, an opt-in benchmark
+- The full suite has **4,082 tests**. Runs on 2026-10-01 on a shared 4-core Linux machine: 4,075 passed, 7 skipped,
+  in 19 to 22 minutes depending on load. The skipped tests need the author's local research package or archive files, an opt-in benchmark
   (`TRADINGBOT_BENCH_1M=1`), or a fixture case that did not come up in that run.
 - Tests need no network: exchanges, Telegram and archives are faked, and an autouse fixture in
   [`tests/conftest.py`](tests/conftest.py) makes the bot's HTTP client and the engine's ccxt exchange fail at once when a
@@ -414,7 +425,8 @@ dosyasında **4.082 otomatik test** ve `docs/` altında 60'tan fazla tasarım be
 
 ### Özellikler
 
-- **Sekiz kâğıt strateji defteri** (her birinin ayrı sanal bakiyesi ve defteri var): ana çoklu ajan botu (coin başına
+- **Sekiz kâğıt strateji defteri** (her birinin ayrı sanal bakiyesi ve defteri var; ana botun vadeli ve spot iki
+  defteri vardır): ana çoklu ajan botu (coin başına
   uzmanlar → coin yöneticisi → red team → baş yönetici → deterministik risk motoru), **T2** EMA200 trend, **M2** 28 günlük
   momentum, **B1 Box** (önceki gün aralığı, 5m), **D4** 4h Donchian 20/10 trend (yalnız gözlem: laboratuvarın sıkı testini
   geçemedi), **C4 / C4S** 4h mum varyasyonları (mühürlü tanımlar)
@@ -422,9 +434,10 @@ dosyasında **4.082 otomatik test** ve `docs/` altında 60'tan fazla tasarım be
   kombinasyondan sıkı testi geçen tek sonuç, [ayrıntı](docs/PATTERN_TRADER_V3.md)).
 - **Gerçekçi muhasebe:** komisyon, borsanın uzlaşma saatlerinde fonlama, kayma, tick/step/min-notional filtreleri, izole
   marj ve likidasyon kontrolü.
-- **Öğrenme modu (yalnız PAPER):** yalnızca geçerli sinyali engelleyen limitler (toplam açık risk tavanı, adet ve marj
-  darboğazı) gevşer, işlem başı risk küçülür; ölçüm kalitesini koruyan limitler kalır. Karşılaştırma USDT ile değil R ile
-  yapılır.
+- **Öğrenme modu (yalnız PAPER, depodaki config'te açık):** kapasite limitleri (toplam açık risk tavanı, adet ve marj
+  darboğazı) ve bazı seçicilik kapıları gevşer, işlem başı risk küçülür. Ana bot negatif beklentili adayları da etiketli
+  keşif işlemi olarak açar. Ölçüm kalitesini koruyan limitler kalır. Karşılaştırma USDT ile değil R ile yapılır; politika
+  işlemleri öğrenme-ekstra işlemlerden ayrı raporlanır.
 - **Karşı-olgusal ("olsaydı") etiketler:** açılamayan geçerli sinyaller kapanmış barlarla ve defterin kendi maliyet modeliyle
   net R olarak etiketlenir.
 - **Ortak deneyim hafızası:** gerçek işlemler ve karşı-olgusallar piyasa durumu anlık görüntüsüyle (trend, oynaklık, BTC
@@ -441,9 +454,11 @@ dosyasında **4.082 otomatik test** ve `docs/` altında 60'tan fazla tasarım be
 
 ### Nasıl çalışır
 
-Tek bir worker süreci (`python -m tradingbot watch`) 15 dakikada bir *tur* atar. Sabit 40 coinlik evren için kapanmış
-USDⓈ-M perpetual mumlarını yükler, her çerçevenin kimliğini o tura bağlar ve her defterin yalnız kapanmış barlarla karar
-vermesini sağlar; perpetual mumları o tur için doğrulanamayan sembolde yeni giriş açılmaz.
+Tek bir worker süreci (`python -m tradingbot watch`) bir *tur* atar, tur bittikten sonra 15 dakika bekler ve yeniden
+başlar; kayıtlı bir üretim turu yaklaşık 24 dakika sürdü, yani ana bot yaklaşık 39 dakikada bir karar verir. Tur, sabit
+40 coinlik evren için kapanmış USDⓈ-M perpetual mumlarını yükler ve her çerçevenin kimliğini o tura bağlar. Her defter
+yalnız kapanmış barlarla karar verir; perpetual mumları o tur için doğrulanamayan sembolde yeni vadeli giriş açılmaz
+(ana botun spot alımları bu denetime ve sabit evrene tabi değildir).
 
 - **Ana bot:** coin başına uzmanlar → coin yöneticisi (plan ve beklenen R) → red team (yalnız gerçek güvenlik sorunları
   reddeder) → baş yönetici (sıralama, sınırlı yumuşak cezalar) → küresel risk motoru; kâğıt defter, risk motoru *nihai*
@@ -451,8 +466,15 @@ vermesini sağlar; perpetual mumları o tur için doğrulanamayan sembolde yeni 
   eksi belirsizlik ve yumuşak cezalar.
 - **Tek kurallı defterler:** T2, M2, Box, D4 ve C4/C4S, kapanmış barlar üzerinde çalışan saf kural fonksiyonlarıdır ve
   ortak bir uygulayıcıyı paylaşır; Formasyon defterinin kendi arka plan tarayıcısı vardır.
-- **Zaman açısından kritik işler turun dışında:** koruyucu izleyici iş parçacığı açık pozisyonları yaklaşık dakikada bir
-  doğrulanmış perpetual fiyatla denetler; Box zamanlayıcısı her kapanan 5 dakikalık mumu değerlendirir.
+- **Depodaki config'te öğrenme modu açık**, yani çalışan kurallar şunlardır:
+  - C4S dışındaki her defter %0,5 riskle eşit slotlardan boyutlanır;
+  - ana bot negatif beklentili ve araştırma boyutlu adayları etiketli keşif işlemi olarak açar;
+  - ana bot rejim kapısını, mum vetosunu ve engelleyen yapı kararlarını yalnız kaydeder, bu yüzden SHORT açabilir ve BTC
+    EMA200 altındayken girebilir;
+  - Box %0,32'ye kadar dar stopları kabul eder, D4 ve C4 evrenin tamamında girer.
+- **Zaman açısından kritik işler turun dışında:** koruyucu izleyici iş parçacığı açık vadeli pozisyonları yaklaşık dakikada
+  bir doğrulanmış perpetual fiyatla denetler; Box zamanlayıcısı her kapanan 5 dakikalık mumu değerlendirir. Ana botun spot
+  pozisyonlarında stop emri yoktur, izlenmezler ve worker onları hiç satmaz (bilinen açık).
 - **Tek muhasebe modeli:** `Decimal` kâğıt defterler (vadelide izole marj); komisyon, 3 bps kayma, borsa filtreleri,
   gerçekleşmiş fonlama ve bir bar hem stopu hem likidasyon fiyatını geçtiğinde ihtiyatlı sıra.
 - **Geri beslemesiz kanıt:** açılamayan geçerli sinyaller sonradan net R ile etiketlenir; ortak deneyim katmanı ve gölge
@@ -535,8 +557,8 @@ python -m pytest -q tests
 ruff check .
 ```
 
-Tam pakette **4.082 test** var (2026-10-01, 4 çekirdekli Linux makine: 4.075 geçti, 7 atlandı, yaklaşık 19
-dakika). Atlananlar yazarın yerel araştırma paketini ya da arşiv dosyalarını, isteğe bağlı bir ölçümü
+Tam pakette **4.082 test** var (2026-10-01, paylaşılan 4 çekirdekli Linux makine: 4.075 geçti, 7 atlandı, yüke
+göre 19–22 dakika). Atlananlar yazarın yerel araştırma paketini ya da arşiv dosyalarını, isteğe bağlı bir ölçümü
 (`TRADINGBOT_BENCH_1M=1`) veya o koşuda oluşmayan bir fixture durumunu gerektirir. Testler ağ gerektirmez: borsa, Telegram
 ve arşivler sahtedir; [`tests/conftest.py`](tests/conftest.py) içindeki otomatik fixture, test sahtesini vermediyse botun
 HTTP istemcisini ve motorun ccxt borsasını ağsız makinedeki gibi hemen düşürür.

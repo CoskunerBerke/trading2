@@ -5,6 +5,7 @@ name: chart-analysis
 on:
   push:
     branches:
+      - main
       - work/chart-analysis-v1
       - work/entry-research-v1
       - work/shared-pattern-decisions-v1

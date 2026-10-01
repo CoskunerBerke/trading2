@@ -29,10 +29,11 @@ A 24/7 research bot that runs eight crypto strategy books side by side **with si
 
 ## Contents
 
-[Overview](#overview) · [Features](#features) · [Screenshots](#screenshots) · [Architecture](#architecture) ·
-[Research results so far](#research-results-so-far) · [Tech stack](#tech-stack) · [Project structure](#project-structure) ·
-[Quick start](#quick-start) · [Configuration](#configuration) · [Testing](#testing) · [Deployment](#deployment) ·
-[Security](#security) · [Status and roadmap](#status-and-roadmap) · [Documentation](#documentation) · [Türkçe](#türkçe)
+[Overview](#overview) · [Features](#features) · [How it works](#how-it-works) · [Screenshots](#screenshots) ·
+[Architecture](#architecture) · [Research results so far](#research-results-so-far) · [Tech stack](#tech-stack) ·
+[Project structure](#project-structure) · [Quick start](#quick-start) · [Configuration](#configuration) ·
+[Testing](#testing) · [Deployment](#deployment) · [Security](#security) · [Status and roadmap](#status-and-roadmap) ·
+[Documentation](#documentation) · [Türkçe](#türkçe)
 
 ## Overview
 
@@ -84,11 +85,35 @@ At a glance (counted from this repository): about 100,000 lines of Python in `tr
   decision** (tests compare decisions with the advisor on and off). It is judged only at pre-registered evaluation dates.
 - **Signal and crowd labs:** candle/chart signals and crowd data (open interest, long/short ratios, taker flow, funding) are
   tested on `data.binance.vision` archives inside GitHub Actions.
-- **Read-only web dashboard** (FastAPI + locally served Plotly): 17 pages plus a JSON API, `/health/live`,
-  `/health/ready`, Prometheus `/metrics` and server-sent events. It has no write endpoints.
+- **Read-only web dashboard** (FastAPI + locally served Plotly): 18 HTML pages (16 in the navigation plus coin and trade
+  detail pages), a JSON API, `/health/live`, `/health/ready`, Prometheus `/metrics` and server-sent events. It has no write
+  endpoints.
 - **Obsidian vault output:** canvas diagrams and Markdown notes for coins, agents, signals and lessons.
 - **Operations:** `doctor` and `preflight` checks, singleton lock, persistent kill switch, cooperative stop, verified
   backups and restore, optional Telegram/Discord alerts, bot scorecard (`scripts/bot_scorecard.py`).
+
+## How it works
+
+One worker process (`python -m tradingbot watch`) runs a *tour* every 15 minutes. It loads closed-bar USDⓈ-M perpetual
+frames for a fixed 40-coin universe, binds each frame's provenance to that tour, and lets every book decide on closed bars
+only; a symbol whose perpetual frames cannot be verified for that tour gets no new entry.
+
+- **Main bot:** per-coin specialists → coin head (plan and expected R) → red team (only real safety problems reject) →
+  chief (ranking, bounded soft penalties) → global risk engine, which checks the *final* size before the paper ledger
+  opens anything. Candidates are ranked by a conservative after-cost edge: expected net R minus an uncertainty penalty
+  and soft penalties.
+- **Single-rule books:** T2, M2, Box, D4 and C4/C4S are pure rule functions over closed bars that share one executor; the
+  Formasyon book has its own background scanner.
+- **Time-critical work runs off the tour:** a protective monitor thread checks every open position about once a minute
+  against a verified perpetual mark, and a Box timer thread evaluates each closed 5-minute candle.
+- **One accounting model:** `Decimal` paper ledgers (isolated margin for futures) with taker fees, 3 bps slippage,
+  exchange filters, realised funding settlements and a prudent order when a bar crosses both the stop and the
+  liquidation price.
+- **Evidence without feedback:** valid signals that could not be opened are labelled later in net R; the shared
+  experience store and the shadow advisor record everything and do not change decisions.
+
+The full explanation, with diagrams, formulas, design trade-offs, test counts and a code tour, is in
+**[docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md)**; [docs/README.md](docs/README.md) indexes all documents in English.
 
 ## Screenshots
 
@@ -284,8 +309,9 @@ ruff check .                       # lint gate defined in ruff.toml
   test did not give them a fake, as on an offline machine.
 - [`ruff.toml`](ruff.toml) enables correctness rules only (syntax errors, undefined names, redefinitions, misplaced
   `return`/`continue`); the code base intentionally uses long lines.
-- **CI:** the [`chart-analysis`](.github/workflows/chart-analysis.yml) workflow runs on every push to `main` and on
-  pull requests into `work/runtime-fixes-v1` (the development line's pull request #1 is one). On Ubuntu
+- **CI:** the [`chart-analysis`](.github/workflows/chart-analysis.yml) workflow runs on pushes to `main` that change code,
+  tests, `requirements.txt`, `config.yaml` or the workflow, and on pull requests into `work/runtime-fixes-v1` (the
+  development line's pull request #1 is one) or `work/entry-research-v1`. On Ubuntu
   it runs Ruff and 84 of the 222 test files (1,449 tests: accounting, funding, the dashboard, strategy books, learning
   mode, shared experience, the shadow advisor); on Windows it runs the measurement-script tests. The full suite is run
   locally.
@@ -330,10 +356,12 @@ Research project, work in progress. Current state (September 2026):
 
 ## Documentation
 
-Most documents are in Turkish.
+Start with [docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md) (English). [docs/README.md](docs/README.md) is an English index of
+every document; most of the other documents are in Turkish.
 
 | Topic | Documents |
 |---|---|
+| Start here (English) | [HOW_IT_WORKS](docs/HOW_IT_WORKS.md), [documentation index](docs/README.md) |
 | Architecture and accounting | [ARCHITECTURE](docs/ARCHITECTURE.md), [PAPER_ACCOUNTING](docs/PAPER_ACCOUNTING.md), [DATA_PIPELINE](docs/DATA_PIPELINE.md), [COIN_HEADS](docs/COIN_HEADS.md) |
 | Risk and modes | [RISK_POLICY](docs/RISK_POLICY.md), [LIVE_GRADUATION](docs/LIVE_GRADUATION.md), [BINANCE_TESTNET](docs/BINANCE_TESTNET.md), [LLM_POLICY](docs/LLM_POLICY.md) |
 | Learning | [LEARNING_SYSTEM](docs/LEARNING_SYSTEM.md), [learning mode](docs/ogrenme_modu/SPEC.md), [shared experience](docs/ortak_deneyim/SPEC_V1.md), [shadow advisor](docs/ortak_deneyim/DANISMAN_V1.md), [HISTORICAL_LEARNING](docs/HISTORICAL_LEARNING.md) |
@@ -406,10 +434,33 @@ dosyasında **4.082 otomatik test** ve `docs/` altında 60'tan fazla tasarım be
   değerlendirilir.
 - **Sinyal ve kalabalık laboratuvarı:** mum/grafik sinyalleri ve kalabalık verisi (OI, long/short oranları, taker akışı,
   fonlama) `data.binance.vision` arşivleriyle GitHub Actions üzerinde sınanır.
-- **Salt okunur web paneli** (FastAPI + yerel Plotly): 17 sayfa, JSON API, `/health/live`, `/health/ready`, Prometheus
-  `/metrics` ve SSE; yazma ucu yoktur.
+- **Salt okunur web paneli** (FastAPI + yerel Plotly): 18 HTML sayfası (menüde 16 sayfa, ayrıca coin ve işlem ayrıntı
+  sayfaları), JSON API, `/health/live`, `/health/ready`, Prometheus `/metrics` ve SSE; yazma ucu yoktur.
 - **Obsidian** notları ve şemaları; `doctor`/`preflight` kontrolleri, tekil kilit, kalıcı kill switch, doğrulanmış yedekleme
   ve geri yükleme, isteğe bağlı Telegram/Discord bildirimleri, bot karnesi (`scripts/bot_scorecard.py`).
+
+### Nasıl çalışır
+
+Tek bir worker süreci (`python -m tradingbot watch`) 15 dakikada bir *tur* atar. Sabit 40 coinlik evren için kapanmış
+USDⓈ-M perpetual mumlarını yükler, her çerçevenin kimliğini o tura bağlar ve her defterin yalnız kapanmış barlarla karar
+vermesini sağlar; perpetual mumları o tur için doğrulanamayan sembolde yeni giriş açılmaz.
+
+- **Ana bot:** coin başına uzmanlar → coin yöneticisi (plan ve beklenen R) → red team (yalnız gerçek güvenlik sorunları
+  reddeder) → baş yönetici (sıralama, sınırlı yumuşak cezalar) → küresel risk motoru; kâğıt defter, risk motoru *nihai*
+  boyutu kabul etmeden pozisyon açmaz. Adaylar maliyet sonrası muhafazakâr beklentiye göre sıralanır: beklenen net R
+  eksi belirsizlik ve yumuşak cezalar.
+- **Tek kurallı defterler:** T2, M2, Box, D4 ve C4/C4S, kapanmış barlar üzerinde çalışan saf kural fonksiyonlarıdır ve
+  ortak bir uygulayıcıyı paylaşır; Formasyon defterinin kendi arka plan tarayıcısı vardır.
+- **Zaman açısından kritik işler turun dışında:** koruyucu izleyici iş parçacığı açık pozisyonları yaklaşık dakikada bir
+  doğrulanmış perpetual fiyatla denetler; Box zamanlayıcısı her kapanan 5 dakikalık mumu değerlendirir.
+- **Tek muhasebe modeli:** `Decimal` kâğıt defterler (vadelide izole marj); komisyon, 3 bps kayma, borsa filtreleri,
+  gerçekleşmiş fonlama ve bir bar hem stopu hem likidasyon fiyatını geçtiğinde ihtiyatlı sıra.
+- **Geri beslemesiz kanıt:** açılamayan geçerli sinyaller sonradan net R ile etiketlenir; ortak deneyim katmanı ve gölge
+  danışman her şeyi kaydeder, kararları değiştirmez.
+
+Şemalar, formüller, tasarım ödünleşimleri, test sayıları ve kod turuyla tam anlatım
+**[docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md)** belgesindedir (İngilizce, sonunda Türkçe özet var);
+[docs/README.md](docs/README.md) bütün belgelerin İngilizce dizinidir.
 
 ### Mimari
 
@@ -489,8 +540,10 @@ dakika). Atlananlar yazarın yerel araştırma paketini ya da arşiv dosyaların
 (`TRADINGBOT_BENCH_1M=1`) veya o koşuda oluşmayan bir fixture durumunu gerektirir. Testler ağ gerektirmez: borsa, Telegram
 ve arşivler sahtedir; [`tests/conftest.py`](tests/conftest.py) içindeki otomatik fixture, test sahtesini vermediyse botun
 HTTP istemcisini ve motorun ccxt borsasını ağsız makinedeki gibi hemen düşürür.
-CI'daki [`chart-analysis`](.github/workflows/chart-analysis.yml) iş akışı `main`'e yapılan her push'ta ve
-`work/runtime-fixes-v1` dalına açılan pull request'lerde (geliştirme hattının 1 numaralı pull request'i de bunlardandır) çalışır.
+CI'daki [`chart-analysis`](.github/workflows/chart-analysis.yml) iş akışı `main`'e yapılan ve kodu, testleri,
+`requirements.txt`'yi, `config.yaml`'ı ya da iş akışının kendisini değiştiren push'larda ve `work/runtime-fixes-v1`
+(geliştirme hattının 1 numaralı pull request'i de bunlardandır) ya da `work/entry-research-v1` dalına açılan pull
+request'lerde çalışır.
 Ubuntu'da Ruff'ı ve 222 test dosyasından 84'ünü (1.449 test: muhasebe, fonlama, panel, strateji defterleri, öğrenme modu,
 ortak deneyim, gölge danışman), Windows'ta ölçüm betiği testlerini koşar. Tam paket yerelde çalıştırılır.
 
@@ -518,8 +571,10 @@ uçtan uca çalıştırılmadı; gerçek parayla işlem bu sürümde kapalıdır
 
 ### Belgeler
 
-Belgelerin çoğu Türkçedir; konu başlıklarına göre liste yukarıdaki [Documentation](#documentation) tablosundadır
-(mimari ve muhasebe, risk ve modlar, öğrenme, strateji ve araştırma, işletim ve güvenlik).
+Başlangıç için [docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md) (İngilizce, Türkçe özetli) ve İngilizce belge dizini
+[docs/README.md](docs/README.md); diğer belgelerin çoğu Türkçedir. Konu başlıklarına göre liste yukarıdaki
+[Documentation](#documentation) tablosundadır (mimari ve muhasebe, risk ve modlar, öğrenme, strateji ve araştırma,
+işletim ve güvenlik).
 
 ### Uyarı
 

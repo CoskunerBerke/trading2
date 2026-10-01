@@ -3426,6 +3426,7 @@ class TradingEngineV3(TradingEngine):
         ca = getattr(self.cfg.v3, "chart_analysis", None)
         if ca is None or not getattr(ca, "enabled", False):
             return
+        store = None
         try:
             from .candle_confirmation import closed_bars
             from .chart_analysis import (BOOK_MAIN, HISTORY_TAIL, bars_from_frame, build_snapshot, closed_bars_at, code_sha, config_hash,
@@ -3458,6 +3459,8 @@ class TradingEngineV3(TradingEngine):
                               "rule_params": dict(getattr(getattr(b, "spec", None), "rule_params", None) or {})})
             scope = list(dict.fromkeys(list(symbols) + [s for b in books for s in list(b["ledger"].positions)]))
             written = 0
+            # TOPLU İNDEKS (2026-10-01): kayıt dosyaları hemen yazılır; index.json bu döngünün sonunda TEK kez yazılır.
+            store.begin_batch()
             for sym in scope:
                 fr = self.runner.last_frames.get(sym) or {}
                 df = fr.get(tf)
@@ -3525,6 +3528,7 @@ class TradingEngineV3(TradingEngine):
                                           source={"frames": "runner.last_frames", "provenance": prov, "bar_market": bar_market, "daily_market": bar_market,
                                                   "btc_market": btc_market, "btc_market_ok": (btc_market == "USDM_PERP") if not is_main else None})
                     written += int(bool(store.save(snap).get("written")))
+            store.end_batch()
             if skipped:
                 cfg_doc["skipped"] = skipped
                 atomic_write_json(self.cfg.state_path / DIRNAME / "config.json", cfg_doc)
@@ -3534,6 +3538,13 @@ class TradingEngineV3(TradingEngine):
                 log.info("grafik analizi: %d yeni analiz ani kaydedildi", written)
         except Exception as exc:  # noqa: BLE001 -- gosterim katmani ana turu ASLA durdurmaz
             log.warning("grafik analizi turu basarisiz (ana tur ETKILENMEZ): %s", exc)
+        finally:
+            if store is not None:
+                # İstisna yolunda: o ana kadar kaydedilen analizlerin indeksi (bugünkü kayıt-kayıt yazımdaki gibi) kalıcı olur.
+                try:
+                    store.end_batch()
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("grafik analizi indeksi yazılamadı (ana tur ETKILENMEZ): %s", exc)
 
     # ------------------------------------------------------------------ FORMASYON PAPER TRADER V1
     def _pattern_feed(self):

@@ -41,8 +41,11 @@ def _index(hist, drop_last: int):
 
 
 def _set_optimizations(mp, on: bool) -> None:
+    """Bütün tur hızlandırmalarının geri dönüş anahtarları (AÇIK = üretim varsayılanı)."""
+    import tradingbot.chart_analysis_store as CAS
     from tradingbot.engine_v3 import TradingEngineV3
-    mp.setattr(TradingEngineV3, "EVIDENCE_PREWARM", bool(on))
+    mp.setattr(TradingEngineV3, "EVIDENCE_PREWARM", bool(on))      # C2: kanıt ön ısıtması
+    mp.setattr(CAS, "BATCH_INDEX_WRITES", bool(on))                # C3: grafik analizi indeksi tur başına bir kez
 
 
 def _run(root: Path, monkeypatch, *, optimized: bool, wait_prewarm: bool = True, tours: int = 5) -> dict:

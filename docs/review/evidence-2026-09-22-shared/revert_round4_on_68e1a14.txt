@@ -1,0 +1,21 @@
+# Tur-4 doğrulayıcı gerileme testleri, düzeltme ÖNCESİ commit 68e1a140d0440a6426857b695476749ae4b06c6e üzerinde
+# (test dosyası düzeltmeli daldan kopyalandı; üretim kodu 68e1a14'ün kendisi)
+# komut: python -m pytest tests/test_structures_verifier_findings_v1.py -q -k r4_ --tb=line
+
+E   AssertionError: ('TRIGGERED', [])
+tests\test_structures_verifier_findings_v1.py:516: AssertionError: ('TRIGGERED', [])
+E   AssertionError: aynı düz çiftin kırılımı TEK teyit: {'2a3c3e1314cb4cc7': 1781366400000, 'ac711ef70e3777ee': 1781380800000}
+tests\test_structures_verifier_findings_v1.py:548: AssertionError: aynı düz çiftin kırılımı TEK teyit: {'2a3c3e1314cb4cc7': 1781366400000, 'ac711ef70e3777ee': 1781380800000}
+E   AssertionError: ('NO_EFFECT', 'NO_OPPOSING_AFTER_ENTRY')
+tests\test_structures_verifier_findings_v1.py:575: AssertionError: ('NO_EFFECT', 'NO_OPPOSING_AFTER_ENTRY')
+E   AssertionError: değerlendirilen bar day0'a ait → kutu day0-1
+tests\test_structures_verifier_findings_v1.py:592: AssertionError: değerlendirilen bar day0'a ait → kutu day0-1
+E   AssertionError: ({'STRUCTURE_ERROR:RuntimeError': 1}, {'opened': 0, 'closed': 0, 'rejected': 0, 'tours': 1, ...})
+tests\test_structures_verifier_findings_v1.py:616: AssertionError: ({'STRUCTURE_ERROR:RuntimeError': 1}, {'opened': 0, 'closed': 0, 'rejected': 0, 'tours': 1, ...})
+FAILED tests/test_structures_verifier_findings_v1.py::test_r4_1_a_triggered_v2_plan_whose_record_left_the_analysis_ends_at_its_own_expiry
+FAILED tests/test_structures_verifier_findings_v1.py::test_r4_2_the_same_triangle_break_is_confirmed_once_per_flat_pair_and_the_successor_is_never_born
+FAILED tests/test_structures_verifier_findings_v1.py::test_r4_3_box_exit_compares_the_breakout_to_the_entry_bar_not_to_the_fill_time
+FAILED tests/test_structures_verifier_findings_v1.py::test_r4_4_the_box_is_the_day_before_the_evaluated_5m_bar_also_between_00_00_and_00_05_utc
+FAILED tests/test_structures_verifier_findings_v1.py::test_r4_5_a_structure_error_is_counted_once_in_live_and_in_replay
+5 failed, 26 deselected in 0.22s
+# çıkış kodu: 1

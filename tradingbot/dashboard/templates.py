@@ -1,0 +1,1124 @@
+"""HTML şablonları (jinja2 bağımlılığı yok — saf Python). Mobil-öncelikli koyu tema, satır içi CSS/JS, CDN yok."""
+from __future__ import annotations
+
+import html
+import json
+import math
+from typing import Any, Iterable
+
+#: ANA GEZINME — en fazla dort gorunur bolum (2026-09-16 panel sadelestirmesi). Teknik sayfalar KAYBOLMAZ:
+#: hepsi "Gelismis" menusunde erisilebilir kalir ve dogrudan URL'leri calismaya devam eder.
+NAV_MAIN: list[tuple[str, str]] = [
+    ("/", "Genel bakış"), ("/trades", "İşlemler"), ("/patterns", "Tarayıcı"),
+]
+NAV_MORE: list[tuple[str, str]] = [
+    ("/portfolio/futures", "Futures defteri"), ("/portfolio/spot", "Spot defteri"), ("/portfolio/strategy", "Trend defterleri"),
+    ("/universe", "Evren"), ("/scanner", "Eski tarayıcı"), ("/orders", "Emirler"), ("/risk", "Risk"), ("/learning", "Öğrenme"),
+    ("/quant", "Quant"), ("/backtest", "Backtest"), ("/models", "Modeller"), ("/llm", "LLM"), ("/health", "Sağlık"),
+]
+#: Geriye uyumluluk: eski `NAV` adi tum baglantilarin duz listesidir.
+NAV: list[tuple[str, str]] = NAV_MAIN + NAV_MORE
+
+# Açık pozisyon tablosunun sticky sütun sınıfı — TEK KAYNAK.
+# Sunucu render'ı (`table(..., cls=POS_TABLE_CLS)`) ve polling JS'i AYNI sabiti kullanır; ikisi
+# ayrı yazıldığında polling tabloyu sınıfsız kuruyor ve sticky sütunlar sessizce kayboluyordu.
+POS_TABLE_CLS = "pos"
+
+#: TERMINAL GORUNUMU (2026-09-16): sakin koyu tema, tek vurgu rengi, az kart, buyuk grafik. Renk TEK BASINA anlam
+#: tasimaz — yon/sonuc her yerde metinle de yazilir (LONG/SHORT rozeti, +/- isaretli tutar).
+CSS_TERMINAL = """
+header nav{display:flex;gap:.15rem;align-items:center;flex-wrap:wrap}
+header nav a{padding:.35rem .6rem;border-radius:7px;white-space:nowrap}
+header nav a.on{background:rgba(77,163,255,.16);color:#cfe6ff}
+header nav a:focus-visible,.trow:focus-visible,.tab:focus-visible,select:focus-visible,input:focus-visible,summary:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+details.more{position:relative;display:inline-block}
+details.more>summary{list-style:none;cursor:pointer;padding:.35rem .6rem;border-radius:7px;color:var(--acc)}
+details.more>summary::-webkit-details-marker{display:none}
+details.more>summary::after{content:" ▾"}
+details.more.on>summary{background:rgba(77,163,255,.16);color:#cfe6ff}
+.moremenu{position:absolute;right:0;top:110%;z-index:40;background:var(--panel);border:1px solid var(--line);border-radius:10px;
+  padding:.35rem;display:flex;flex-direction:column;min-width:190px;box-shadow:0 10px 30px rgba(0,0,0,.45)}
+.acctbar{display:flex;gap:.6rem;align-items:center;flex-wrap:wrap;margin:.5rem 0 .8rem;padding:.5rem .7rem;background:var(--panel);
+  border:1px solid var(--line);border-radius:10px}
+.acctbar select{background:#0f141b;color:var(--fg);border:1px solid var(--line);border-radius:7px;padding:.3rem .45rem;min-height:32px}
+.acctsep{flex:1}
+.cards4{display:grid;grid-template-columns:repeat(4,1fr);gap:.7rem;margin:.2rem 0 1rem}
+.cards4 .card{padding:.75rem .9rem}
+.cards4 .v{font-size:1.5rem;font-weight:650;letter-spacing:-.02em}
+.mainsplit{display:grid;grid-template-columns:minmax(0,2.1fr) minmax(300px,1fr);gap:1rem;align-items:start}
+.chartcol{min-width:0}
+.chartcol #chart{height:460px;min-height:460px}
+.sidecol{min-width:0}
+.h2row{display:flex;gap:.5rem;align-items:baseline}
+.planbox{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:.6rem .8rem;margin:.5rem 0}
+.planrow{padding:.2rem 0;line-height:1.5}
+.planrow+.planrow{border-top:1px dashed var(--line);margin-top:.3rem;padding-top:.4rem}
+.tlist{display:flex;flex-direction:column;gap:.45rem}
+.trow{background:var(--panel);border:1px solid var(--line);border-left:3px solid transparent;border-radius:10px;padding:.55rem .7rem;cursor:pointer}
+.trow:hover{border-color:#2f3a49;background:#181e27}
+.trow.on{border-left-color:var(--acc);background:#182231}
+.tmain{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap}
+.tmain .sym{font-weight:650}
+.tsub{display:flex;gap:.9rem;flex-wrap:wrap;margin-top:.3rem;font-size:.85rem;color:var(--mut)}
+.tsub b{color:var(--fg);font-weight:600}
+.tsub .pnl i{font-style:normal;opacity:.75}
+.tdet{margin-top:.25rem}
+.tdet>summary{cursor:pointer;font-size:.8rem;color:var(--mut)}
+.tabs{display:flex;gap:.4rem;margin:.2rem 0 .7rem}
+.tab{padding:.4rem .8rem;border:1px solid var(--line);border-radius:999px;color:var(--mut)}
+.tab.on{background:rgba(77,163,255,.16);border-color:rgba(77,163,255,.4);color:#cfe6ff}
+.filters{display:flex;gap:.6rem;align-items:center;flex-wrap:wrap;margin-bottom:.6rem}
+.filters input{background:#0f141b;color:var(--fg);border:1px solid var(--line);border-radius:7px;padding:.4rem .6rem;min-width:180px;min-height:32px}
+.empty{background:var(--panel);border:1px dashed var(--line);border-radius:10px;padding:1.1rem;color:var(--mut);text-align:center}
+.pills{display:flex;gap:.4rem;flex-wrap:wrap;margin:.3rem 0}
+.pill{border:1px solid var(--line);border-radius:999px;padding:.15rem .55rem;font-size:.8rem;color:var(--mut)}
+.pill.ok{border-color:rgba(38,166,154,.5);color:#8fd6cd}
+.pill.warn{border-color:rgba(245,197,66,.5);color:#e6cf84}
+.pill.bad{border-color:rgba(239,83,80,.5);color:#f0a3a1}
+details.section{margin:1rem 0;border:1px solid var(--line);border-radius:10px;background:var(--panel)}
+details.section>summary{cursor:pointer;padding:.6rem .8rem;font-weight:600}
+details.section>div{padding:0 .8rem .8rem}
+details.layerbox,details.srcbox{margin:.35rem 0}
+details.layerbox>summary,details.srcbox>summary{cursor:pointer;font-size:.82rem;color:var(--mut);padding:.2rem 0}
+.sidecol table{display:block;overflow-x:auto}
+@media(max-width:1100px){.mainsplit{grid-template-columns:1fr}.cards4{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:560px){.cards4{grid-template-columns:1fr}.cards4 .v{font-size:1.3rem}.chartcol #chart{height:320px;min-height:320px}
+  .acctbar{gap:.4rem}.acctsep{flex-basis:100%;height:0}.tsub{gap:.6rem}header nav a{padding:.3rem .45rem;font-size:.9rem}}
+"""
+
+CSS_EXTRA = """
+.live{display:flex;flex-wrap:wrap;gap:.4rem;align-items:center;font-size:.86rem}
+.warn-box{border-left:3px solid #ef5350;background:rgba(239,83,80,.08)}
+.num.flat{color:#9aa4b2}
+.small{font-size:.8rem}
+"""
+
+CSS = """
+:root{--bg:#0e1116;--panel:#161b22;--line:#242c37;--fg:#d7dde5;--mut:#8b98a8;--acc:#4da3ff;--up:#26a69a;--dn:#ef5350;--warn:#f5c542}
+*{box-sizing:border-box}html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+a{color:var(--acc);text-decoration:none}a:hover{text-decoration:underline}
+header{position:sticky;top:0;z-index:5;background:var(--panel);border-bottom:1px solid var(--line);padding:6px 10px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+header .brand{font-weight:700;white-space:nowrap}
+nav{display:flex;gap:2px;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none}nav::-webkit-scrollbar{display:none}
+nav a{padding:6px 9px;border-radius:6px;white-space:nowrap;color:var(--fg);font-size:13px}nav a.on,nav a:hover{background:var(--line);text-decoration:none}
+main{padding:10px;max-width:1400px;margin:0 auto}
+h1{font-size:20px;margin:6px 0 10px}h2{font-size:16px;margin:16px 0 8px;color:var(--fg)}h3{font-size:14px;margin:12px 0 6px;color:var(--mut)}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px}
+.card .k{color:var(--mut);font-size:11px;text-transform:uppercase;letter-spacing:.04em}.card .v{font-size:20px;font-weight:600;margin-top:2px}
+.tw{overflow-x:auto;-webkit-overflow-scrolling:touch;border:1px solid var(--line);border-radius:8px;background:var(--panel)}
+table{border-collapse:collapse;width:100%;min-width:480px;font-size:13px}th,td{padding:6px 8px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap}
+th{color:var(--mut);font-weight:600;position:sticky;top:0;background:var(--panel)}tr:last-child td{border-bottom:0}td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
+.badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:12px;font-weight:600;background:var(--line)}
+.b-ok{background:#1b4332;color:#95d5b2}.b-warn{background:#4a3b00;color:#ffe08a}.b-bad{background:#4a1c1c;color:#ffb4ab}.b-info{background:#1c2f4a;color:#9ecbff}
+.up{color:var(--up)}.dn{color:var(--dn)}.mut{color:var(--mut)}.small{font-size:12px}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+select,button,input{background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:5px 8px;font:inherit}
+button{cursor:pointer}button:hover{background:var(--line)}
+label.chk{display:inline-flex;align-items:center;gap:4px;font-size:12px;color:var(--mut);margin-right:6px}
+#chart{width:100%;height:70vh;min-height:420px}
+pre{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:8px;overflow-x:auto;font-size:12px}
+footer{color:var(--mut);font-size:11px;text-align:center;padding:14px}
+.kv td:first-child{color:var(--mut);width:34%}
+/* Yatay taşma SAYFAYA değil, tablonun KENDİ kapsayıcısına aittir. */
+html,body{max-width:100%;overflow-x:hidden}
+main{max-width:100%}
+.tw{max-width:100%}
+/* Geniş açık-pozisyon tablosunda ilk üç sütun (Sembol · Piyasa · Yön) sabit kalır.
+   SÜTUN GENİŞLİKLERİ SABİTLENİR: `left` değerleri ancak genişlikler kesin olduğunda doğrudur.
+   Önce genişlik serbestti; `1000000BONKDOWN/USDT` gibi uzun sembolde 1. sütun 192px'e çıkıyor,
+   `left:96px`e sabitlenmiş 2. sütun onun ÜZERİNE biniyordu. Uzun sembol artık ellipsis ile
+   kısaltılır; tam değer `title` içinde korunur. Toplam: 130 + 96 + 76 = 302px.
+   (2. ve 3. sütun genişlikleri en uzun rozetlere göre seçildi: «FUTURES» ve «SHORT».) */
+.tw table.pos td:nth-child(-n+3),.tw table.pos th:nth-child(-n+3){position:sticky;background:var(--panel);z-index:1;overflow:hidden;text-overflow:ellipsis}
+.tw table.pos td:nth-child(1),.tw table.pos th:nth-child(1){left:0;width:130px;min-width:130px;max-width:130px}
+.tw table.pos td:nth-child(2),.tw table.pos th:nth-child(2){left:130px;width:96px;min-width:96px;max-width:96px}
+.tw table.pos td:nth-child(3),.tw table.pos th:nth-child(3){left:226px;width:76px;min-width:76px;max-width:76px}
+.tw table.pos th:nth-child(-n+3){z-index:2}
+/* Uzun damga/etiket/alan adı kartı taşırmaz. Altyazılar `exposure.max_total_open_risk_usdt`
+   gibi bölünemeyen uzun tanımlayıcılar içerebilir → `anywhere` altyazıya da gerekli. */
+.card .v,.card .small{overflow-wrap:anywhere}
+@media(max-width:900px){.tw table.pos td:nth-child(-n+3),.tw table.pos th:nth-child(-n+3){position:static}}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:6px}.xl{margin:2px 0;font-size:13px;line-height:1.35}#chart{height:560px}.chartbar{flex-wrap:wrap;gap:6px}#detail .small{font-size:12px;margin:2px 0}
+@media(max-width:600px){.grid2{grid-template-columns:1fr}#chart{height:440px}label.chk{font-size:12px}.xl{font-size:13px}#srcline{font-size:12px}}
+@media(max-width:600px){main{padding:6px}h1{font-size:17px}.card .v{font-size:17px}table{font-size:12px}
+  .grid{grid-template-columns:1fr}}      /* mobilde kartlar okunabilir sırayla alt alta */
+"""
+
+
+def esc(x: Any) -> str:
+    return html.escape("" if x is None else str(x), quote=True)
+
+
+def fmt(x: Any, nd: int = 4) -> str:
+    if x is None or x == "":
+        return "-"
+    if isinstance(x, bool):
+        return "evet" if x else "hayır"
+    try:
+        f = float(x)
+    except (TypeError, ValueError):
+        return esc(x)
+    if not math.isfinite(f):                    # NaN / ±inf → "-" (sahte sayı yok)
+        return "-"
+    if abs(f) >= 1000:
+        return f"{f:,.2f}"
+    if abs(f) >= 1:
+        return f"{f:,.{nd}f}".rstrip("0").rstrip(".") if nd else f"{f:.0f}"
+    return f"{f:.6g}"
+
+
+def pct(x: Any, nd: int = 2) -> str:
+    try:
+        f = float(x)
+    except (TypeError, ValueError):
+        return "-"
+    return f"{f:+.{nd}f}%" if math.isfinite(f) else "-"   # "+inf%" / "+nan%" YAZILMAZ
+
+
+def age_text(seconds: float | None) -> str:
+    if seconds is None:
+        return "-"
+    s = int(seconds)
+    if s < 90:
+        return f"{s}s"
+    if s < 5400:
+        return f"{s // 60}dk"
+    if s < 172800:
+        return f"{s // 3600}sa {s % 3600 // 60}dk"
+    return f"{s // 86400}g"
+
+
+def badge(text: Any, kind: str = "info") -> str:
+    return f'<span class="badge b-{kind}">{esc(text)}</span>'
+
+
+def health_badge(state: str) -> str:
+    st = str(state or "UNKNOWN").upper()
+    kind = {"HEALTHY": "ok", "DEGRADED": "warn", "PAUSED": "warn", "DATA_STALE": "warn", "KILL_SWITCH": "bad",
+            "RECONCILIATION_REQUIRED": "bad"}.get(st, "info")
+    return badge(st, kind)
+
+
+def ks_badge(state: str) -> str:
+    st = str(state or "ARMED").upper()
+    return badge(st, "ok" if st == "ARMED" else "bad")
+
+
+def verdict_kind(v: Any) -> str:
+    """Karar rozetinin RENK SINIFI — TEK KAYNAK (sunucu render'ı ve polling JS'i aynı haritayı kullanır)."""
+    v = str(v or "")
+    if v in ("SPOT_LONG", "FUTURES_LONG", "LONG"):
+        return "ok"
+    if v in ("FUTURES_SHORT", "SHORT", "EXIT", "RISK_BLOCKED"):
+        return "bad"
+    return "info"
+
+
+def verdict_badge(v: str) -> str:
+    return badge(str(v or "") or "-", verdict_kind(v))
+
+
+def money_html_text(txt: Any) -> str:
+    """ZATEN BİÇİMLENMİŞ para metnini `<td>`ye sarar; renk `+/-` işaretinden gelir.
+
+    Polling JS'i `buildHeadsTable` içinde AYNI kuralı uygular → iki yüzey aynı sınıfı üretir.
+    """
+    t = "" if txt is None else str(txt)
+    cls = "up" if t.startswith("+") else ("dn" if t.startswith("-") else ("" if t in ("—", "", "-") else "flat"))
+    return f'<td class="num {cls}">{esc(t)}</td>'
+
+
+HEADS_TABLE_CLS = "heads"        # polling JS'i AYNI sabiti ENJEKTE ederek kullanır
+
+
+def pnl_cell(x: Any, nd: int = 2) -> str:
+    try:
+        f = float(x)
+    except (TypeError, ValueError):
+        return "<td class=num>-</td>"
+    cls = "up" if f > 0 else ("dn" if f < 0 else "")
+    return f'<td class="num {cls}">{f:+,.{nd}f}</td>'
+
+
+def money_html(x, *, pct: bool = False, nd: int = 2) -> str:
+    """Para/yüzde hücresi. Renk TEK BAŞINA anlam taşımaz — `+/-` işareti HER ZAMAN yazılır.
+
+    |x| < 0.01 iken `+0.00`'a yuvarlanmaz (gerçek küçük K/Z sıfır gibi görünmez).
+    """
+    from ..pnl import fmt_money, fmt_pct, pnl_class
+    if x is None or x == "":
+        return "<td class=num>—</td>"
+    txt = fmt_pct(x, nd) if pct else fmt_money(x)
+    return f'<td class="num {pnl_class(x)}">{esc(txt)}</td>'
+
+
+SAMPLE_BANDS = ((30, "Yetersiz örneklem — performans sonucu kesin değildir", "warn-box"),
+                (50, "Sınırlı örneklem — sonuçlar yönlendirici, kesin değil", "warn-box"),
+                (None, "Değerlendirilebilir örneklem", ""))
+
+
+def sample_banner(n_closed: int) -> str:
+    """Örneklem durumu — YALNIZ UI açıklamasıdır; algoritmayı ve işlem kararını DEĞİŞTİRMEZ."""
+    for limit, text, cls in SAMPLE_BANDS:
+        if limit is None or n_closed < limit:
+            return f'<div class="card {cls}">Kapanmış işlem: <b>{int(n_closed)}</b> — {esc(text)}</div>'
+    return ""
+
+
+def weight_table(weights: dict, label: str = "Alan") -> str:
+    """Ağırlık tablosu: pozitif/negatif RENKLE ayrılır, anlamlı ondalıkla gösterilir.
+
+    4–6 haneli ham ondalık yerine büyüklüğe göre 2–4 hane; işaret her zaman yazılır.
+    """
+    def _w(v: Any) -> str:
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            return f'<td>{esc(v)}</td>'
+        nd = 2 if abs(f) >= 1 else (3 if abs(f) >= 0.1 else 4)
+        cls = "up" if f > 0 else ("dn" if f < 0 else "flat")
+        return f'<td class="num {cls}">{f:+.{nd}f}</td>'
+
+    rows = [[esc(TR_FIELDS.get(k, k)), _w(v)] for k, v in weights.items()]
+    return table([label, "Ağırlık"], rows, num_cols={1}, empty="ağırlık yok")
+
+
+# Ham iç alan adı → operatörün anlayacağı Türkçe karşılık.
+TR_FIELDS = {"n": "İşlem", "n_trades": "İşlem", "wins": "Kazanan", "n_wins": "Kazanan",
+             "losses": "Kaybeden", "sum_r": "Toplam R", "avg_r": "Ortalama R",
+             "mae": "Maksimum ters hareket", "mfe": "Maksimum olumlu hareket",
+             "exit": "Çıkış nedeni", "bars": "Süre (bar)", "pnl": "Net K/Z", "r": "R sonucu",
+             "won": "Sonuç", "why": "Öğrenilen ders", "at": "Tarih", "setup": "Setup",
+             "side": "Yön", "symbol": "Sembol", "id": "İşlem ID"}
+
+
+def lessons_table(lessons: list[dict]) -> str:
+    """Dersler — okunur sütunlar. Uzun «why» metni hücreyi büyütmez: kısaltılmış önizleme +
+    tam metin `title` (tooltip) ve `<details>` içinde korunur."""
+    from ..pnl import fmt_money
+    rows = []
+    for x in lessons:
+        why = x.get("why")
+        why_txt = " ".join(why) if isinstance(why, list) else str(why or "")
+        preview = (why_txt[:90] + "…") if len(why_txt) > 90 else why_txt
+        why_cell = (f'<details><summary title="{esc(why_txt)}">{esc(preview) or "—"}</summary>'
+                    f'<div class="small mut">{esc(why_txt)}</div></details>') if why_txt else "—"
+        won = x.get("won")
+        res = badge("KAZANDI", "ok") if won is True else (badge("KAYBETTİ", "bad") if won is False else "—")
+        r = x.get("r")
+        rows.append([esc(x.get("id") or "—"), esc(x.get("symbol") or "—"), esc(x.get("side") or "—"),
+                     money_html(x.get("pnl")),
+                     f'<td class="num">{float(r):+.3f}R</td>'
+                     if isinstance(r, (int, float)) and not isinstance(r, bool) and math.isfinite(float(r))
+                     else "<td>—</td>",
+                     res, esc(x.get("exit") or "—"), fmt(x.get("bars"), 0),
+                     pct(x.get("mae")), pct(x.get("mfe")), why_cell,
+                     f'<span title="{esc(x.get("at") or "")}">{esc(fmt_utc(x.get("at")))}</span>',
+                     esc(x.get("setup") or "—")])
+    return table(["İşlem ID", "Sembol", "Yön", "Net K/Z", "R sonucu", "Sonuç", "Çıkış nedeni",
+                  "Süre (bar)", "MAE", "MFE", "Öğrenilen ders", "Tarih", "Setup"],
+                 rows, num_cols={3, 4, 7, 8, 9}, empty="ders kaydı yok")
+
+
+def live_bar(fr: dict | None) -> str:
+    """CANLI/BAYAT göstergesi. Fiyat yaşı ile STRATEJİ TURU yaşı AYRI gösterilir."""
+    if not fr:
+        return ""
+    tz = esc(fr.get("tz_label") or "UTC")
+    pstate = fr.get("price_state")
+    dot = {"live": "🟢", "stale": "🔴"}.get(pstate, "⚪")
+    label = {"live": "CANLI", "stale": "FİYAT VERİSİ GÜNCEL DEĞİL"}.get(pstate, "FİYAT DURUMU BİLİNMİYOR")
+    warn = ' warn-box' if pstate != "live" else ""
+    # Fiyat tazeliği ile worker sağlığı AYRI kavramlardır: strateji turu taze olsa bile fiyat
+    # bayatsa gösterge KIRMIZI kalır. Eşik yükseltilerek sorun gizlenmez.
+    note = ('<div class="small" id="stalenote">Strateji çalışıyor; ancak pozisyon fiyatları '
+            'belirtilen süredir güncellenmedi.</div>') if pstate == "stale" else \
+           '<div class="small" id="stalenote" style="display:none">Strateji çalışıyor; ancak pozisyon fiyatları belirtilen süredir güncellenmedi.</div>'
+    return (f'<div class="card live{warn}" id="livebar" data-tz="{tz}">'
+            f'<span id="livedot">{dot}</span> <b id="livelabel">{esc(label)}</b> — '
+            f'Son fiyat güncellemesi: <span id="priceage">{esc(age_text(fr.get("price_age_s")))}</span> önce · '
+            f'Son strateji turu: <span id="runage">{esc(age_text(fr.get("run_age_s")))}</span> önce · '
+            f'Son coin-head kararı: <span id="headsage">{esc(age_text(fr.get("heads_age_s")))}</span> önce · '
+            f'saat dilimi {tz}{note}</div>')
+
+
+def chief_block(cv) -> str:
+    """Baş yönetici — UZUN HAM JSON YERİNE etiketli kartlar.
+
+    «İşlem adayı» ile «açık pozisyon» KASITLI olarak ayrı kartlardadır: `breadth.long` son turdaki
+    LONG *aday* sayısıdır, açık LONG *pozisyon* sayısı defterden gelir.
+    """
+    from ..pnl import fmt_money
+
+    def _pct(x, nd=1):
+        return f"%{float(x):.{nd}f}" if x is not None else "Veri yok"
+
+    def _usdt(x):
+        return (fmt_money(x, signed=False, currency="") + " USDT") if x is not None else "Veri yok"
+
+    def _basis(c):
+        """Risk bütçesinin EQUITY TABANI — kartta açıkça yazılır (motor `starting_equity`
+        kullanırken panel canlı equity gösterirse aynı büyüklük iki farklı sayı olur)."""
+        if getattr(c, "risk_equity_basis_usdt", None) is None:
+            return ""
+        label = {"starting_equity": "Başlangıç özkaynağı tabanı",
+                 "live_equity": "Canlı özkaynak tabanı"}.get(
+                     str(getattr(c, "risk_equity_basis_kind", "") or ""), "Özkaynak tabanı")
+        return " · %s: %s USDT" % (label, fmt_money(c.risk_equity_basis_usdt, signed=False, currency=""))
+
+    def _spot_no_stop(c):
+        """Stopsuz spot AÇIKÇA yazılır — stop alanı boşken 'risk azaldı' izlenimi verilmez."""
+        out = ""
+        if getattr(c, "spot_exposure_unknown", False):
+            bad = list(getattr(c, "spot_symbols_unknown_price", None) or [])
+            out += (" · ⚠ fiyat geçersiz (" + esc(", ".join(str(x) for x in bad[:3]))
+                    + ") — maruziyet ölçülemedi, yeni spot giriş reddedilir")
+        syms = list(getattr(c, "spot_symbols_without_stop", None) or [])
+        if syms:
+            out += " · stopsuz (stopla sınırlanmamış): " + esc(", ".join(str(x) for x in syms[:4]))
+        return out
+
+    def _risk_age(c):
+        """Risk anlık görüntüsünün yaşı — fiyat tazeliğinden AYRI etiketlenir."""
+        st = getattr(c, "risk_snapshot_state", None)
+        if st == "stale":
+            return " · ⚠ Risk verisi güncel değil (%s önce)" % age_text(c.risk_snapshot_age_s)
+        if st == "unknown" or st is None:
+            return " · ⚠ Risk verisi yaşı bilinmiyor"
+        return " · risk verisi %s önce" % age_text(c.risk_snapshot_age_s)
+
+    # Uzun ISO damgası kartı taşırıyordu; insan okunur biçim + ham değer tooltip'te.
+    gen = f'<span title="{esc(cv.generated_at or "")}">{esc(fmt_utc(cv.generated_at))}</span>'
+    c = [card("Karar üretim zamanı", gen),
+         card("Piyasa risk modu", badge(cv.market_risk_mode, "info")),
+         card("LONG işlem adayı", str(cv.long_candidates), "karar — açık pozisyon DEĞİL"),
+         card("SHORT işlem adayı", str(cv.short_candidates), "karar — açık pozisyon DEĞİL"),
+         card("NO TRADE", str(cv.no_trade)),
+         card("HOLD", str(cv.hold), "açık pozisyonu korunan semboller"),
+         card("Veri geçersiz", str(cv.data_invalid)),
+         card("Açık LONG pozisyon", str(cv.open_long), "defterden (gerçek)"),
+         card("Açık SHORT pozisyon", str(cv.open_short), "defterden (gerçek)"),
+         card("Toplam açık pozisyon", str(cv.open_total), "defterden (gerçek)"),
+         card("Long notional", fmt_money(cv.long_notional, signed=False, currency="") + " USDT"),
+         card("Short notional", fmt_money(cv.short_notional, signed=False, currency="") + " USDT"),
+         # AÇIK RİSK ARTIK İKİ AYRI KAVRAM — aynı kartta karıştırılmaz:
+         card("Açık stop riski", _usdt(cv.open_stop_risk_usdt),
+              "pozisyonların stop'a kadar BRÜT tahmini kaybı (ücret hariç)"),
+         card("Risk motoru rezervasyonu", _usdt(cv.open_risk_usdt),
+              "risk.json → total_open_risk_usdt (spot+futures BİRLEŞİK toplam)" + _risk_age(cv)),
+         # SPOT NOTIONAL ile FUTURES STOP RISKI AYNI KARTTA TOPLANMAZ — kabul kapısı futures
+         # kovasını kullanır; spot kendi allocation kapısıyla korunur.
+         card("Futures stop riski", _usdt(cv.futures_stop_risk_usdt),
+              "yalnız futures pozisyonları — kabul kapısının kovası" + _risk_age(cv)),
+         card("Futures bütçe kullanımı", _pct(cv.futures_risk_budget_util_pct),
+              "futures stop riski / azami risk bütçesi" + _risk_age(cv)),
+         card("Spot maruziyeti", _usdt(cv.spot_exposure_usdt),
+              "açık spot notional — RİSK DEĞİL" + _spot_no_stop(cv) + _risk_age(cv)),
+         card("Spot allocation kullanımı", _pct(cv.spot_allocation_util_pct),
+              "spot notional / spot tavanı (ayrı kapı)" + _risk_age(cv)),
+         card("Risk bütçesi kullanımı", _pct(cv.risk_budget_util_pct),
+              (("azami " + fmt_money(cv.risk_budget_max_usdt, signed=False, currency="") + " USDT"
+                + _basis(cv)) if cv.risk_budget_max_usdt is not None
+               else "azami bütçe bilinmiyor — equity tabanı yayımlanmamış") + _risk_age(cv)),
+         card("Teminat kullanımı", _pct(cv.margin_util_pct), "açık teminat / futures özkaynak"),
+         card("Günlük gerçekleşen net K/Z", fmt_money(cv.realized_today)),
+         card("Günlük gerçekleşmemiş net K/Z", fmt_money(cv.unrealized_open)),
+         card("Drawdown", _pct(cv.drawdown_pct, 2), "risk motoru (risk.json)")]
+    return "<h2>Baş yönetici</h2>" + f'<div class="grid">{"".join(c)}</div>'
+
+
+def live_script(cfg) -> str:
+    """Hafif POLLING. WebSocket yok; tarayıcı borsaya bağlanmaz; istek fırtınası engellenir.
+
+    * Aynı anda tek istek (overlap koruması), `AbortController` ile zaman aşımı.
+    * Arka plan sekmesinde aralık `background_backoff_mult` katına çıkar.
+    * Bağlantı koparsa CANLI etiketi YEŞİL KALMAZ.
+    """
+    from .views import POSITION_NUM_COLS, POSITION_PNL_COLS   # hizalama sözleşmesi TEK kaynak
+    pos = int(getattr(cfg, "poll_positions_s", 7)) * 1000
+    summ = int(getattr(cfg, "poll_portfolio_s", 20)) * 1000
+    heal = int(getattr(cfg, "poll_health_s", 12)) * 1000
+    mult = int(getattr(cfg, "background_backoff_mult", 4))
+    stale = int(getattr(cfg, "stale_price_s", 90))
+    # Coin head tablosu portfoy karti temposuyla yenilenir (pozisyon acilis/kapanisini yakalar).
+    heads_ms = int(getattr(cfg, "poll_heads_s", getattr(cfg, "poll_portfolio_s", 20))) * 1000
+    return r"""<script>
+/* TABLO MARKUP SÖZLEŞMESİ — sunucu render'ı (`templates.table` + `app._positions_table`) ile
+   AYNI olmak ZORUNDA: `.tw` sarmalayıcı, `<table class="__TCLS__">`, `NUM` sütunlarında sağa
+   hizalama, YALNIZ `PNL` sütunlarında up/dn/flat rengi, ilk üç sütunda tam değer `title`'da.
+   Sütun listeleri Python'daki `views.POSITION_NUM_COLS / POSITION_PNL_COLS`tan ENJEKTE edilir;
+   burada `i>=3` gibi ayrı bir kural YOKTUR (önce vardı: «Açılış» ve «İşlem ID» metin sütunları
+   polling'den sonra sağa yaslanıyordu). Fonksiyon `document`a dokunmaz → testte node ile çalışır. */
+function buildPosTable(d,NUM,PNL){
+  function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+  var h='<table class="__TCLS__"><thead><tr>'+d.columns.map(function(c,i){
+    return '<th class="'+(NUM.indexOf(i)>=0?'num':'')+'">'+esc(String(c))+'</th>';}).join('')+'</tr></thead><tbody>';
+  if(!d.rows.length){h+='<tr><td colspan="'+d.columns.length+'" class="mut">açık pozisyon yok</td></tr>';}
+  d.rows.forEach(function(r){h+='<tr>'+r.map(function(c,i){
+    var s=String(c==null?'—':c);var cls=(NUM.indexOf(i)>=0)?'num':'';
+    if(PNL.indexOf(i)>=0){var ch=s.charAt(0);
+      cls+=(ch==='+')?' up':(ch==='-')?' dn':(s==='—'?'':' flat');}   /* sunucu `money_html` ile aynı */
+    var attr=(i<3)?' title="'+esc(s)+'"':'';                                 /* sabit genişlik + ellipsis */
+    return '<td class="'+cls+'"'+attr+'>'+esc(s)+'</td>';}).join('')+'</tr>';});
+  return '<div class="tw">'+h+'</tbody></table></div>';
+}
+/* COIN HEAD TABLOSU — sunucu render'i (`app._heads_table`) ile AYNI markup sozlesmesi:
+   `.tw` sarmalayici, `<table class="__HCLS__">`, NUM sutunlarinda sag hizalama, PNL sutunlarinda
+   +/- rengi, BADGE sutunlarinda `<span class="badge b-KIND">`, sembol sutununda `/coin/<base>`
+   baglantisi. IS KURALI BURADA YOK: satirlar/meta sunucudaki `views.coin_head_table`tan gelir. */
+function buildHeadsTable(d){
+  function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
+  var NUM=d.num_cols||[],PNL=d.pnl_cols||[],BADGE=d.badge_cols||[],SC=(d.symbol_col==null?0:d.symbol_col);
+  var h='<table class="__HCLS__"><thead><tr>'+d.columns.map(function(c,i){
+    return '<th class="'+(NUM.indexOf(i)>=0?'num':'')+'">'+esc(c)+'</th>';}).join('')+'</tr></thead><tbody>';
+  if(!d.rows.length){return '<div class="card mut">'+esc(d.empty_text||'kayit yok')+'</div>';}
+  d.rows.forEach(function(r,ri){
+    var m=(d.meta&&d.meta[ri])||{};
+    h+='<tr>'+r.map(function(c,i){
+      var s=String(c==null?'':c);
+      if(i===SC){return '<td class="">'+'<a href="/coin/'+esc(s.split('/')[0])+'">'+esc(s)+'</a>'+'</td>';}
+      if(BADGE.indexOf(i)>=0){
+        var kind;
+        if(i===2){kind=m.status_kind||'info';}
+        else if(m.no_decision){kind='warn';}
+        else{kind=(s==='SPOT_LONG'||s==='FUTURES_LONG'||s==='LONG')?'ok':
+                  ((s==='FUTURES_SHORT'||s==='SHORT'||s==='EXIT'||s==='RISK_BLOCKED')?'bad':'info');}
+        return '<td class="">'+'<span class="badge b-'+esc(kind)+'">'+esc(s||'-')+'</span>'+'</td>';
+      }
+      if(PNL.indexOf(i)>=0){
+        var cls=(s.charAt(0)==='+')?'up':((s.charAt(0)==='-')?'dn':((s==='—'||s===''||s==='-')?'':'flat'));
+        return '<td class="num '+cls+'">'+esc(s)+'</td>';
+      }
+      return '<td class="'+(NUM.indexOf(i)>=0?'num':'')+'">'+esc(s)+'</td>';
+    }).join('')+'</tr>';});
+  return '<div class="tw">'+h+'</tbody></table></div>';
+}
+var NUMCOLS=__NUMCOLS__,PNLCOLS=__PNLCOLS__;
+(function(){
+ var busy={},fails=0;
+ function agetxt(s){if(s==null)return '-';s=Math.floor(s);if(s<90)return s+'s';if(s<5400)return Math.floor(s/60)+'dk';
+   if(s<172800)return Math.floor(s/3600)+'sa '+Math.floor((s%3600)/60)+'dk';return Math.floor(s/86400)+'g';}
+ function setLive(state,fr){
+  var d=document.getElementById('livedot'),l=document.getElementById('livelabel'),b=document.getElementById('livebar');
+  if(!d||!l||!b)return;
+  if(state==='off'){d.textContent='\u26AB';l.textContent='BA\u011eLANTI YOK';b.classList.add('warn-box');return;}
+  var st=fr&&fr.price_state;
+  d.textContent=st==='live'?'\uD83D\uDFE2':(st==='stale'?'\uD83D\uDD34':'\u26AA');
+  l.textContent=st==='live'?'CANLI':(st==='stale'?'F\u0130YAT VER\u0130S\u0130 G\u00dcNCEL DE\u011e\u0130L':'F\u0130YAT DURUMU B\u0130L\u0130NM\u0130YOR');
+  b.classList.toggle('warn-box',st!=='live');
+  /* Yeni fiyat gelince sayfa YENİLENMEDEN tekrar yeşile döner; açıklama notu da gizlenir. */
+  var n=document.getElementById('stalenote');if(n){n.style.display=(st==='stale')?'':'none';}
+  var p=document.getElementById('priceage');if(p&&fr)p.textContent=agetxt(fr.price_age_s);
+  var r=document.getElementById('runage');if(r&&fr)r.textContent=agetxt(fr.run_age_s);
+  var h=document.getElementById('headsage');if(h&&fr)h.textContent=agetxt(fr.heads_age_s);
+ }
+ function poll(key,url,cb,base,onerr){
+  function tick(){
+   if(busy[key])return;                                   /* overlap koruması: istek fırtınası yok */
+   busy[key]=1;
+   var ac=('AbortController' in window)?new AbortController():null;
+   var to=setTimeout(function(){if(ac)ac.abort();},Math.max(5000,base));
+   fetch(url,{headers:window.__authHeaders||{},signal:ac?ac.signal:undefined})
+    .then(function(r){return r.ok?r.json():Promise.reject(r.status);})
+    .then(function(d){fails=0;cb(d);})
+    .catch(function(){fails++;if(fails>2)setLive('off',null);if(onerr){try{onerr();}catch(e){}}})
+    .then(function(){clearTimeout(to);busy[key]=0;});
+  }
+  function iv(){return document.hidden?base*BG:base;}   /* arka plan sekmesinde backoff */
+  var timer=setInterval(function(){tick();},base);
+  document.addEventListener('visibilitychange',function(){clearInterval(timer);timer=setInterval(function(){tick();},iv());});
+  tick();
+ }
+ var BG=__MULT__;
+ poll('pos','/api/live/positions'+(window.__tokenQs||'').replace('?','?'),function(d){
+   setLive('on',d.freshness);
+   var el=document.getElementById('postbl');
+   if(el&&d.rows){
+     el.innerHTML=buildPosTable(d,NUMCOLS,PNLCOLS);
+   }
+ },__POS__);
+ poll('sum','/api/live/summary',function(d){
+   /* Kartlar polling sonrası GERÇEKTEN güncellenir (eski kod boş callback kullanıyordu). */
+   if(!d||!d.cards)return;
+   d.cards.forEach(function(c){
+     var el=document.getElementById('sc-'+c.key);if(!el)return;
+     var v=el.querySelector('.v');if(!v)return;
+     var signed=(c.kind==='money'||c.kind==='pct_signed');
+     var cls='flat';
+     if(signed&&c.value!=null){cls=(c.value>0)?'up':((c.value<0)?'dn':'flat');}
+     v.innerHTML='<span class="'+cls+'">'+String(c.display).replace(/&/g,'&amp;')
+       .replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</span>';
+     var s=el.querySelector('.small');if(s&&c.sub!=null){s.textContent=c.sub;}
+   });
+ },__SUM__);
+ /* COIN HEAD tablosu + kapsam sayaci CANLI guncellenir. Endpoint hata verirse MEVCUT TABLO
+    SILINMEZ; yalniz stale uyarisi acilir ve bir sonraki basarili poll'da temizlenir. */
+ poll('heads','/api/live/coin-heads',function(d){
+   if(!d||!d.rows)return;
+   var t=document.getElementById('headstbl');
+   if(t){t.innerHTML=buildHeadsTable(d);}
+   var cov=document.getElementById('headscov');
+   if(cov){
+     cov.textContent='Açık pozisyon kapsamı: '+d.open_positions_shown+' / '+d.open_positions_total;
+     cov.className='badge '+(d.coverage_complete?'b-ok':'b-bad');
+   }
+   var ms=document.getElementById('headsmiss');
+   if(ms){
+     var miss=d.missing_open_symbols||[];
+     ms.textContent=miss.length?(d.missing_text||('⚠ '+miss.join(', '))):'';
+     ms.style.display=miss.length?'':'none';
+   }
+   var sn=document.getElementById('headsstale');
+   if(sn){sn.style.display='none';}                      /* basarili poll stale uyarisini temizler */
+ },__HEADS__,function(){
+   var sn=document.getElementById('headsstale');
+   if(sn){sn.style.display='';}                          /* tablo KORUNUR, yalniz uyari acilir */
+ });
+ poll('hp','/api/live/health',function(d){
+   if(d&&d.price_age_s!=null&&d.price_age_s>__STALE__){setLive('on',{price_state:'stale',price_age_s:d.price_age_s,
+     run_age_s:d.last_run_age_s,heads_age_s:null});}
+ },__HEAL__);
+})();
+</script>""".replace("__POS__", str(pos)).replace("__SUM__", str(summ)).replace("__HEAL__", str(heal))             .replace("__MULT__", str(mult)).replace("__STALE__", str(stale)).replace("__TCLS__", POS_TABLE_CLS)             .replace("__HEADS__", str(heads_ms)).replace("__HCLS__", HEADS_TABLE_CLS)             .replace("__NUMCOLS__", json.dumps(list(POSITION_NUM_COLS))).replace("__PNLCOLS__", json.dumps(list(POSITION_PNL_COLS)))
+
+
+def card(k: str, v: str, sub: str = "", cid: str = "") -> str:
+    i = f' id="{esc(cid)}"' if cid else ""
+    return (f'<div class="card"{i}><div class="k">{esc(k)}</div><div class="v">{v}</div>'
+            + (f'<div class="small mut">{sub}</div>' if sub else "") + "</div>")
+
+
+def card_value(c) -> str:
+    """Kart değeri — `SummaryCard.display` OLDUĞU GİBİ basılır, yeniden biçimlendirilmez.
+
+    Renk yalnız işaretli (para) kartlarda uygulanır; oran/sayaç kartları nötrdür. Renk TEK BAŞINA
+    anlam taşımaz: `+/-` işareti zaten `display` içindedir.
+    """
+    from ..pnl import pnl_class
+    cls = pnl_class(c.value) if (c.signed and c.value is not None) else "flat"
+    return f'<span class="{cls}">{esc(c.display)}</span>'
+
+
+def fmt_utc(iso_ts: Any, *, fallback: str = "—") -> str:
+    """ISO zaman damgası → `22.08.2026 22:31:41 UTC` (insan okunur, karttan taşmaz).
+
+    Ham ISO değeri `title` özniteliğinde korunur (tooltip); veri kaybı yoktur.
+    """
+    s = str(iso_ts or "").strip()
+    if not s:
+        return fallback
+    try:
+        from ..core import from_iso
+        d = from_iso(s)
+    except Exception:  # noqa: BLE001 — biçim bilinmiyorsa ham metin gösterilir
+        return esc(s)
+    return d.strftime("%d.%m.%Y %H:%M:%S UTC")
+
+
+def table(headers: list[str], rows: Iterable[Iterable[str]], *, num_cols: set[int] | None = None,
+          empty: str = "kayıt yok", cls: str = "") -> str:
+    """Hücreler önceden HTML olarak hazırlanmış kabul edilir (esc çağıranın sorumluluğu) — `<td` ile başlıyorsa olduğu gibi konur."""
+    num_cols = num_cols or set()
+    rows = list(rows)
+    if not rows:
+        return f'<div class="card mut">{esc(empty)}</div>'
+    th = "".join(f'<th class="{"num" if i in num_cols else ""}">{esc(h)}</th>' for i, h in enumerate(headers))
+    body = []
+    for r in rows:
+        cells = []
+        for i, c in enumerate(r):
+            c = "" if c is None else str(c)
+            cells.append(c if c.startswith("<td") else f'<td class="{"num" if i in num_cols else ""}">{c}</td>')
+        body.append("<tr>" + "".join(cells) + "</tr>")
+    c = f' class="{esc(cls)}"' if cls else ""
+    return f'<div class="tw"><table{c}><thead><tr>{th}</tr></thead><tbody>{"".join(body)}</tbody></table></div>'
+
+
+def kv_table(d: dict[str, Any], *, skip: set[str] | None = None) -> str:
+    skip = skip or set()
+    rows = []
+    for k, v in d.items():
+        if k in skip:
+            continue
+        if isinstance(v, (dict, list)):
+            vv = f"<code>{esc(json.dumps(v, ensure_ascii=False)[:300])}</code>"
+        else:
+            vv = fmt(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else esc(v)
+        rows.append([esc(k), vv])
+    if not rows:
+        return '<div class="card mut">boş</div>'
+    return '<div class="tw"><table class="kv"><tbody>' + "".join(f"<tr><td>{a}</td><td>{b}</td></tr>" for a, b in rows) + "</tbody></table></div>"
+
+
+def render_any(obj: Any, depth: int = 0) -> str:
+    """Bilinmeyen şekilli JSON'u makul HTML'e çevirir (liste-of-dict → tablo, dict → k/v)."""
+    if depth > 3:
+        return f"<pre>{esc(json.dumps(obj, ensure_ascii=False, indent=1)[:4000])}</pre>"
+    if isinstance(obj, list):
+        if obj and all(isinstance(x, dict) for x in obj):
+            keys: list[str] = []
+            for x in obj[:200]:
+                for k in x.keys():
+                    if k not in keys:
+                        keys.append(k)
+            keys = keys[:14]
+            rows = [[(fmt(x.get(k)) if isinstance(x.get(k), (int, float)) and not isinstance(x.get(k), bool) else esc(json.dumps(x.get(k), ensure_ascii=False)[:80] if isinstance(x.get(k), (dict, list)) else x.get(k))) for k in keys] for x in obj[:200]]
+            return table(keys, rows)
+        return "<ul>" + "".join(f"<li>{esc(x) if not isinstance(x, (dict, list)) else render_any(x, depth + 1)}</li>" for x in obj[:200]) + "</ul>"
+    if isinstance(obj, dict):
+        simple = {k: v for k, v in obj.items() if not isinstance(v, (dict, list))}
+        out = [kv_table(simple)] if simple else []
+        for k, v in obj.items():
+            if isinstance(v, (dict, list)) and v:
+                out.append(f"<h3>{esc(k)}</h3>" + render_any(v, depth + 1))
+        return "".join(out) or '<div class="card mut">boş</div>'
+    return f"<pre>{esc(obj)}</pre>"
+
+
+def page(title: str, body: str, active: str = "/", *, brand: str = "Trading Bot", extra_head: str = "", token_qs: str = "") -> str:
+    nav = "".join(f'<a href="{href}{token_qs}" class="{"on" if href == active else ""}">{esc(label)}</a>' for href, label in NAV_MAIN)
+    more = "".join(f'<a href="{href}{token_qs}" class="{"on" if href == active else ""}">{esc(label)}</a>' for href, label in NAV_MORE)
+    more_on = " on" if any(href == active for href, _ in NAV_MORE) else ""
+    nav += (f'<details class="more{more_on}"><summary aria-haspopup="true">Gelişmiş</summary>'
+            f'<div class="moremenu">{more}</div></details>')
+    return f"""<!doctype html><html lang="tr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{esc(title)} · {esc(brand)}</title><style>{CSS}{CSS_EXTRA}{CSS_TERMINAL}</style>{extra_head}</head><body>
+<header><span class="brand">📈 {esc(brand)}</span><span class="pill ok" title="kâğıt (sanal) mod — gerçek para yok">PAPER</span><nav>{nav}</nav></header>
+<main><h1>{esc(title)}</h1>{body}</main>
+<footer>salt-okunur panel · PAPER · yatırım tavsiyesi değildir · <span id="sse" class="mut">canlı: bağlanıyor…</span></footer>
+<script>
+(function(){{try{{var es=new EventSource('/events{token_qs}');var el=document.getElementById('sse');
+es.addEventListener('heartbeat',function(){{el.textContent='canlı: ok';}});
+es.addEventListener('state',function(e){{el.textContent='canlı: güncellendi';if(window.__onState){{window.__onState(JSON.parse(e.data));}}}});
+es.onerror=function(){{el.textContent='canlı: bağlantı yok';}};}}catch(e){{}}}})();
+</script></body></html>"""
+
+
+from .chart_js import CHART_JS  # CHART ANALYSIS V1 (salt sunum)
+from ..timeframes import SUPPORTED_TIMEFRAMES  # dilim listesi API ile AYNI kaynaktan (bulgu #1)
+
+
+def chart_block(base: str, tf: str = "4h", market: str = "spot", *, token_qs: str = "", max_bars: int = 600,
+                book: str = "main", books: list[dict] | None = None, trade: str | None = None, as_of: str | None = None) -> str:
+    """Grafik bloğu: TF / piyasa / DEFTER seçimi, katmanlar, geçmiş analiz, PNG/JSON, kaynak satırı, açıklama + detay."""
+    tfs = "".join(f'<option value="{t}" {"selected" if t == tf else ""}>{t}</option>' for t in SUPPORTED_TIMEFRAMES)
+    mks = "".join(f'<option value="{m}" {"selected" if m == market else ""}>{m}</option>' for m in ("spot", "futures"))
+    bl = books or [{"book_id": "main", "label": "Ana bot"}]
+    bks = "".join(f'<option value="{esc(str(b.get("book_id")))}" {"selected" if b.get("book_id") == book else ""}>{esc(str(b.get("label") or b.get("book_id")))}</option>' for b in bl)
+    return f"""<div class="row chartbar" style="margin:6px 0">
+<label class="chk">TF <select id="tf">{tfs}</select></label><label class="chk">Piyasa <select id="mk">{mks}</select></label>
+<label class="chk">Defter <select id="bk">{bks}</select></label>
+<label class="chk">Bar <input id="nbars" type="number" min="50" max="{max_bars}" value="300" style="width:70px"></label>
+<label class="chk">Geçmiş <select id="hist"><option value="">şimdi (canlı analiz)</option></select></label>
+<button id="reload">↻</button> <button id="dl-png" title="PNG indir">PNG</button> <button id="dl-json" title="Analiz JSON indir">JSON</button></div>
+<details class="layerbox"><summary>Katmanlar ve göstergeler</summary>
+<div class="row chartbar"><span class="mut small">Katmanlar:</span> <span id="laybox"></span></div>
+<div class="row chartbar"><span class="mut small">Göstergeler:</span> <span id="ovbox"></span></div></details>
+<details class="srcbox"><summary>Veri kaynağı ve analiz kimliği</summary><div id="srcline" class="mut small" style="margin:4px 0"></div></details>
+<div id="chart"></div>
+<div class="grid2"><div class="card" id="explain"><div class="mut">açıklama yükleniyor…</div></div><div class="card" id="detail"><div class="mut">Bir çizgi/işarete tıkla.</div></div></div>
+<script src="/static/plotly.min.js{token_qs}"></script>
+<script>window.__chartBase={json.dumps(base)};window.__chartTf={json.dumps(tf)};window.__chartMarket={json.dumps(market)};window.__chartBook={json.dumps(book)};window.__tokenQs={json.dumps(token_qs)};window.__chartTrade={json.dumps(trade or "")};window.__chartAsOf={json.dumps(as_of or "")};</script>
+<script>{CHART_JS}</script>"""
+
+
+# --------------------------------------------------------------- öğrenme kalite blokları
+#
+# Bu dört blok SALT SUNUMDUR: hiçbir öğrenme/risk matematiği burada hesaplanmaz. Hepsi
+# eksik/bozuk/stale/null/non-finite girdiye dayanıklıdır — hiçbir koşulda exception atmaz,
+# çünkü `/learning` ve `/quant` sayfaları eski şemalı `learning.json` ile de 200 dönmelidir.
+
+NOT_ENOUGH_DATA = "NOT ENOUGH DATA"
+RESEARCH_ONLY = "RESEARCH ONLY"
+ACTIVE_POLICY_UNCHANGED = "ACTIVE POLICY UNCHANGED"
+
+#: Kanıt seviyesi → rozet türü. Bilinmeyen seviye nötr gösterilir.
+_EVIDENCE_KIND = {"OBSERVATION": "", "RESEARCH_HYPOTHESIS": "warn",
+                  "VALIDATED_POLICY_CANDIDATE": "ok", "APPLIED_BOUNDED": "ok",
+                  "REJECTED": "bad", "RETIRED": ""}
+
+
+def _d(x: Any) -> dict:
+    return x if isinstance(x, dict) else {}
+
+
+def _num(x: Any, nd: int = 3, suffix: str = "") -> str:
+    """Sonlu sayı → biçimli metin; değilse «Veri yok» (sessiz 0 YOK)."""
+    from ..pnl import finite_float_or_none
+    v = finite_float_or_none(x)
+    return "Veri yok" if v is None else f"{v:.{nd}f}{suffix}"
+
+
+def evidence_badge(level: Any) -> str:
+    lv = str(level or "").upper()
+    return badge(lv or "—", _EVIDENCE_KIND.get(lv, "")) if lv else "—"
+
+
+def retention_block(ln: dict) -> str:
+    """Ders saklama zinciri — 200'ün SAKLAMA SINIRI OLMADIĞINI açıkça yazar."""
+    ret = _d(_d(ln).get("lesson_retention"))
+    if not ret:
+        return ""
+    health = str(ret.get("archive_health") or "—")
+    kind = {"OK": "ok", "EMPTY": "", "DEGRADED": "warn", "ARCHIVE_FAILED": "bad",
+            "DISABLED": "warn"}.get(health, "")
+    scopes = ", ".join(str(x) for x in (ret.get("retrieval_scopes") or [])) or "HOT"
+    rows = [
+        ["Sıcak pencere (ekran)", _num(ret.get("hot_window"), 0)],
+        ["Sıcak dersler", _num(ret.get("hot_lessons"), 0)],
+        ["Arşivlenmiş dersler", _num(ret.get("archived_lessons"), 0)],
+        ["Ömür boyu ders", _num(ret.get("lifetime_lessons"), 0)],
+        ["Segment", _num(ret.get("segments"), 0)],
+        ["İndekslenmiş", _num(ret.get("indexed_lessons"), 0)],
+        ["Toplam (aggregate) hücre", _num(ret.get("aggregate_cells"), 0)],
+        ["Saklama politikası", esc(str(ret.get("retention_policy") or "—"))],
+        ["Arşiv sağlığı", badge(health, kind)],
+        ["Retrieval kapsamı", esc(scopes)],
+        ["Taşmada ayrıntı siliniyor mu?",
+         badge("HAYIR", "ok") if ret.get("deletes_detail_on_overflow") is False else badge("BİLİNMİYOR", "warn")],
+    ]
+    err = ret.get("last_archive_error") or ret.get("last_rotation_error")
+    if err:
+        rows.append(["Son arşiv hatası", f'<span class="bad">{esc(str(err)[:200])}</span>'])
+    note = str(ret.get("note_tr") or "")
+    return ("<h2>Ders saklama (kayıpsız)</h2>"
+            + table(["Alan", "Değer"], rows, empty="saklama bilgisi yok")
+            + f'<p class="mut small">{esc(note)} Arşiv yazılamazsa sıcak pencere BUDANMAZ — '
+              'arşivsiz silme yasaktır.</p>')
+
+
+def calibration_block(ln: dict) -> str:
+    """Güvenilirlik kovaları — tek sonuç «model haklıydı/yanıldı» DEMEK DEĞİLDİR."""
+    cal = _d(_d(ln).get("calibration"))
+    if not cal:
+        return ""
+    buckets = [b for b in (cal.get("buckets") or []) if isinstance(b, dict)]
+    rows = []
+    for b in buckets:
+        suf = badge("YETERLİ", "ok") if b.get("sufficient") else badge(NOT_ENOUGH_DATA, "warn")
+        rows.append([esc(str(b.get("bucket") or "—")), _num(b.get("real_n"), 0),
+                     _num(b.get("mean_predicted_p"), 3), _num(b.get("observed_win_rate"), 3),
+                     _num(b.get("shrunk_observed_rate"), 3),
+                     f"{_num(b.get('ci95_low'), 3)} – {_num(b.get('ci95_high'), 3)}", suf])
+    head = ('<div class="grid">'
+            + card("Kalibrasyon örneği (gerçek)", _num(cal.get("n_real"), 0), "yalnız GERÇEK PAPER sonuçları")
+            + card("ECE", _num(cal.get("ece"), 4), "expected calibration error — düşük daha iyi")
+            + card("Yeterli kova", _num(cal.get("n_sufficient_buckets"), 0),
+                   f"kova başına asgari örnek: {esc(str(cal.get('min_bucket_sample') or '—'))}")
+            + card("Reddedilen (gelecek/çift)",
+                   f"{_num(cal.get('rejected_future'), 0)} / {_num(cal.get('rejected_duplicate'), 0)}",
+                   "no-lookahead + duplicate koruması")
+            + "</div>")
+    return ("<h2>Olasılık kalibrasyonu</h2>" + head
+            + table(["Kova", "n (gerçek)", "Ortalama tahmin", "Gözlenen", "Büzülmüş", "%95 GA", "Durum"],
+                    rows, num_cols={1, 2, 3, 4}, empty="kalibrasyon örneği yok")
+            + '<p class="mut small">TEK sonuç bir olasılık tahminini doğrulamaz da yanlışlamaz da: '
+              '%29 olasılıklı olay da gerçekleşir. Bu tablo çok sayıda tahminin TOPLU davranışını '
+              'ölçer. Kova örneği yetersizse hüküm YOKTUR (' + NOT_ENOUGH_DATA + '). Kalibrasyon '
+              'aktif RiskEngine\'e DOKUNMAZ — ' + ACTIVE_POLICY_UNCHANGED + '.</p>')
+
+
+def quality_block(ln: dict, *, win_rate: Any = None, expectancy_r: Any = None,
+                  counters_bad: str = "") -> str:
+    """Win rate TEK BAŞINA gösterilmez: payoff ve net beklenti ile BİRLİKTE okunur.
+
+    `win_rate`/`expectancy_r` ÇAĞIRANDAN gelir — bu blok sayacı KENDİ TÜRETMEZ. Çelişkili
+    sayaçta (`counters_bad`) birleşik kart «Veri yok» olur; %100 üstü oran UYDURULMAZ.
+    """
+    from ..pnl import finite_float_or_none
+    d = _d(ln)
+    q = _d(d.get("quality_metrics"))
+    wr = finite_float_or_none(win_rate)
+    exp_r = finite_float_or_none(expectancy_r)
+    if counters_bad:
+        wr = exp_r = None
+    if wr is None:
+        wr = finite_float_or_none(q.get("win_rate"))
+    if exp_r is None:
+        exp_r = finite_float_or_none(q.get("expectancy_r"))
+    payoff = finite_float_or_none(q.get("payoff_ratio"))
+    avg_w, avg_l = finite_float_or_none(q.get("avg_win_r")), finite_float_or_none(q.get("avg_loss_r"))
+    if payoff is None and avg_w is not None and avg_l:
+        payoff = avg_w / abs(avg_l)
+    combined = ("Veri yok" if (wr is None or payoff is None or exp_r is None)
+                else f"%{wr * 100:.1f} · {payoff:.2f} · {exp_r:+.3f}R")
+    cards = ('<div class="grid">'
+             + card("Oran × payoff × beklenti", combined,
+                    "üçü BİRLİKTE okunur — tek başına oran başarı ölçüsü DEĞİLDİR")
+             + card("Payoff", _num(payoff, 3), "ortalama kazanç R / ortalama kayıp R")
+             + card("Net beklenti", _num(exp_r, 4, "R"), "işlem başına maliyet sonrası R")
+             + card("Ortalama kazanç / kayıp",
+                    f"{_num(avg_w, 3, 'R')} / {_num(avg_l, 3, 'R')}", "R cinsinden")
+             + card("Profit factor", _num(q.get("profit_factor"), 3), "brüt kâr / brüt zarar")
+             + card("Maks. drawdown", _num(q.get("max_drawdown_r"), 3, "R"), "R cinsinden")
+             + card("Tail (CVaR5)", _num(q.get("tail_loss_r_cvar5"), 3, "R"), "en kötü %5 ortalaması")
+             + card("En uzun kayıp serisi", _num(q.get("longest_loss_streak"), 0))
+             + card("Maliyet sürüklemesi", _num(q.get("cost_drag_r"), 4, "R"), "ücret + funding + kayma")
+             + card("Capture ratio", _num(q.get("capture_ratio_mean"), 3), "gerçekleşen R / MFE R")
+             + "</div>")
+    warn = ('<p class="mut small">YÜKSEK KAZANMA ORANI TEK BAŞINA BAŞARI DEĞİLDİR. Örnek: '
+            "4 işlemin 3'ü kazanç (oran 0.75) ama ortalama kazanç +0.40R / ortalama kayıp "
+            '−1.00R → beklenti yalnız +0.05R (maliyet öncesi) ve tek kötü seri bunu siler. '
+            "Buna karşılık 2 işlemin 1'i kazanç (oran 0.50), +1.50R / −1.00R → beklenti "
+            '+0.25R. Terfi kapıları payoff, tail ve yoğunlaşmayı BİRLİKTE arar.</p>')
+    return "<h2>Kalite metrikleri (birlikte okunur)</h2>" + cards + warn
+
+
+def observation_block(lessons: list) -> str:
+    """Gözlem ↔ hipotez ayrımı + edge/execution sınıfları. Politika iddiası YOKTUR."""
+    rows = []
+    for x in (lessons or [])[-30:][::-1]:
+        if not isinstance(x, dict):
+            continue
+        obs = _d(x.get("observation"))
+        raw_h = x.get("hypotheses")
+        hyps = [h for h in raw_h if isinstance(h, dict)] if isinstance(raw_h, list) else []
+        if not obs and not hyps:
+            continue
+        raw_c = obs.get("observation_codes")
+        codes = ", ".join(str(c) for c in raw_c) if isinstance(raw_c, list) else "—"
+        codes = codes or "—"
+        hcodes = ", ".join(str(h.get("code")) for h in hyps) or "—"
+        cap = obs.get("capture_ratio")
+        cap_txt = _num(cap, 3) if cap is not None else esc(str(obs.get("capture_ratio_state") or "—"))
+        rows.append([esc(str(x.get("id") or "—")), esc(str(x.get("symbol") or "—")),
+                     esc(codes), esc(hcodes),
+                     _num(obs.get("mfe_r"), 3), _num(obs.get("mae_r"), 3),
+                     _num(obs.get("realized_r"), 3), cap_txt,
+                     _num(obs.get("cost_drag_total_r"), 4),
+                     esc(str(obs.get("data_quality") or "—")),
+                     evidence_badge(x.get("evidence_level"))])
+    if not rows:
+        return ""
+    return ("<h3>Gözlem ↔ hipotez (edge vs execution)</h3>"
+            + table(["İşlem", "Sembol", "GÖZLEM kodları", "HİPOTEZ kodları", "MFE R", "MAE R",
+                     "Gerçekleşen R", "Capture", "Maliyet R", "Veri", "Kanıt"],
+                    rows, num_cols={4, 5, 6, 7, 8}, empty="gözlem kaydı yok")
+            + f'<p class="mut small">Soldaki kodlar GÖZLEMDİR (ne oldu), sağdakiler '
+              f'ARAŞTIRMA HİPOTEZİDİR (ne sorulmalı) — {RESEARCH_ONLY}. Tek işlem '
+              f'`OBSERVATION` seviyesini AŞAMAZ ve politika değiştiremez: '
+              f'{ACTIVE_POLICY_UNCHANGED}. Nedensellik iddiası yoktur.</p>')
+
+
+def challenger_blocks(q: dict) -> str:
+    """Offline challenger bölümleri — hepsi ARAŞTIRMA; aktif politika DEĞİŞMEZ.
+
+    Eksik/bozuk/`None` bölümde sessizce atlanır; hiçbir koşulda exception atmaz.
+    """
+    out = ""
+    heat = _d(q.get("portfolio_heat"))
+    if heat:
+        v = str(heat.get("verdict") or "—")
+        kind = {"ADVISORY": "", "COUNTERFACTUAL_SIZE_REDUCTION": "warn",
+                "COUNTERFACTUAL_BLOCK": "bad"}.get(v, "")
+        out += ("<h2>Portföy ısısı (advisory)</h2>"
+                + '<div class="grid">'
+                + card("Karar", badge(v, kind), "yalnız karşı-olgusal — emir/limit DEĞİŞMEZ")
+                + card("Toplam stop riski", _num(heat.get("total_stop_risk_usdt"), 2, " USDT"))
+                + card("En büyük küme payı", _num(heat.get("top_cluster_share"), 3))
+                + card("En büyük sembol payı", _num(heat.get("top_symbol_share"), 3))
+                + card("En büyük tema payı", _num(heat.get("top_theme_share"), 3))
+                + card("Kâr yoğunlaşması", _num(heat.get("profit_concentration"), 3))
+                + card("Korelasyon kalitesi", esc(str(heat.get("correlation_quality") or "—")),
+                       "eksikse bağımsızlık VARSAYILMAZ")
+                + card("Aktif motora etki",
+                       badge("YOK", "ok") if heat.get("applies_to_active_engine") is False
+                       else badge("BİLİNMİYOR", "warn"), ACTIVE_POLICY_UNCHANGED)
+                + "</div>")
+        reasons = [r for r in (heat.get("reasons") or []) if isinstance(r, str)]
+        if reasons:
+            out += "<ul>" + "".join(f"<li>{esc(r)}</li>" for r in reasons) + "</ul>"
+
+    ex = _d(q.get("exit_challenger"))
+    if ex:
+        state = str(ex.get("state") or "—")
+        if state != "RUN":
+            out += (f"<h2>Çıkış challenger'ı</h2><div class=\"card mut\">{esc(state)} — "
+                    f"{esc(str(ex.get('note') or NOT_ENOUGH_DATA))}</div>")
+        else:
+            rows = []
+            champ = _d(ex.get("champion"))
+            cm = _d(champ.get("metrics"))
+            rows.append([esc(str(champ.get("policy") or "CHAMPION")), _num(champ.get("n"), 0),
+                         _num(cm.get("expectancy_r"), 4), _num(cm.get("payoff_ratio"), 3),
+                         _num(cm.get("max_drawdown_r"), 3), _num(cm.get("tail_loss_r_cvar5"), 3),
+                         "—", "—", "—"])
+            for c in (ex.get("challengers") or []):
+                if not isinstance(c, dict):
+                    continue
+                m, r_, t = _d(c.get("metrics")), _d(c.get("high_mfe_stop_rescue")), _d(c.get("big_winner_truncation"))
+                rows.append([esc(str(c.get("policy") or "—")), _num(c.get("n"), 0),
+                             _num(m.get("expectancy_r"), 4), _num(m.get("payoff_ratio"), 3),
+                             _num(m.get("max_drawdown_r"), 3), _num(m.get("tail_loss_r_cvar5"), 3),
+                             _num(c.get("delta_expectancy_r"), 4),
+                             f"{_num(r_.get('mean_delta_r'), 3)} (n={_num(r_.get('n'), 0)})",
+                             (badge("KESİYOR", "bad") if t.get("truncates_winners")
+                              else badge("HAYIR", "ok"))])
+            out += ("<h2>Çıkış challenger'ı (offline)</h2>"
+                    + table(["Politika", "n", "Beklenti R", "Payoff", "Maks DD", "Tail CVaR5",
+                             "Δ beklenti", "Yüksek MFE kurtarma", "Büyük kazananı kesiyor mu?"],
+                            rows, num_cols={1, 2, 3, 4, 5, 6}, empty="karşılaştırma yok")
+                    + f'<p class="mut small">Aynı giriş, aynı barlar, aynı maliyet modeli '
+                      f'(anahtar {esc(str(ex.get("cost_model_key") or "—"))}). {RESEARCH_ONLY} — '
+                      f'{ACTIVE_POLICY_UNCHANGED}.</p>')
+
+    se = _d(q.get("selectivity_challenger"))
+    if se:
+        state = str(se.get("state") or "—")
+        if state != "RUN":
+            out += (f"<h2>Seçicilik challenger'ı</h2><div class=\"card mut\">{esc(state)} — "
+                    f"{esc(str(se.get('note') or NOT_ENOUGH_DATA))}</div>")
+        else:
+            sel, ev = _d(se.get("selection")), _d(se.get("evaluation"))
+            rows = []
+            for c in (sel.get("candidates") or []):
+                if not isinstance(c, dict):
+                    continue
+                m, g = _d(c.get("validation_metrics")), _d(c.get("coverage_gate"))
+                rows.append([esc(str(c.get("rule") or "—")), _num(c.get("threshold"), 4),
+                             _num(m.get("n"), 0), _num(m.get("expectancy_r"), 4),
+                             _num(m.get("win_rate"), 3), _num(m.get("payoff_ratio"), 3),
+                             _num(g.get("trade_fraction"), 3),
+                             badge("GEÇTİ", "ok") if g.get("passed") else badge("DÜŞTÜ", "warn")])
+            out += ("<h2>Seçicilik challenger'ı (offline)</h2>"
+                    + table(["Kural", "Eşik", "n (val)", "Beklenti R", "Kazanma oranı", "Payoff",
+                             "Kalan oran", "Kapsam kapısı"], rows, num_cols={1, 2, 3, 4, 5, 6},
+                            empty="aday yok")
+                    + '<div class="grid">'
+                    + card("Seçilen", esc(str(sel.get("selected") or "—")),
+                           "eşik train'de fit, aday validation'da seçildi")
+                    + card("Test beklentisi",
+                           _num(_d(ev.get("selected_test_metrics")).get("expectancy_r"), 4, "R"),
+                           "test yalnız ÖLÇER, seçimi değiştirmez")
+                    + card("Champion test beklentisi",
+                           _num(_d(ev.get("champion_test_metrics")).get("expectancy_r"), 4, "R"))
+                    + card("Test seçimi değiştirdi mi?",
+                           badge("HAYIR", "ok") if ev.get("selection_unchanged") else badge("BİLİNMİYOR", "warn"))
+                    + "</div>"
+                    + f'<p class="mut small">{RESEARCH_ONLY} — işlem sayısını düşürmek TEK BAŞINA '
+                      f'başarı değildir; kapsam kapısı fail-closed. {ACTIVE_POLICY_UNCHANGED}.</p>')
+    return out
+
+
+def _xp_num(x: Any, nd: int = 2, sign: bool = True) -> str:
+    try:
+        f = float(x)
+    except (TypeError, ValueError):
+        return "—"
+    if not math.isfinite(f):
+        return "—"
+    return ("%+.*f" if sign else "%.*f") % (nd, f)
+
+
+def experience_layer_card(xp: dict | None) -> str:
+    """ORTAK DENEYİM KATMANI v1 (2026-09-29) — SALT SUNUM kartı: sayımlar, son toplama adımı / son rapor taraması ve EN ÇOK
+    GÖZLEMLİ hücreler (örneklem büyüklüğüne göre; "en iyiler" DEĞİL). Hiçbir şey hesaplanmaz; `StateReader.
+    shared_experience()` ne verdiyse o basılır. None → "" (katman hiç çalışmadıysa sayfa bit-aynı)."""
+    if not xp:
+        return ""
+    state = str(xp.get("state") or "?")
+    kind = "ok" if state == "OK" else ("bad" if state.startswith("DISABLED") or state == "DEGRADED" else "warn")
+    kinds = xp.get("rows_by_kind") or {}
+    mix = xp.get("snapshot_status_mix") or {}
+    tot_mix = sum(int(v or 0) for v in mix.values()) if isinstance(mix, dict) else 0
+    ok_pct = ("%%%.0f OK" % (100.0 * int(mix.get("OK") or 0) / tot_mix)) if tot_mix else "—"
+    sweep = xp.get("last_sweep_at")
+    cards = "".join([
+        card("Durum", badge(state, kind), "devre kesici AÇIK" if xp.get("breaker_tripped") else "yalnız KAYIT · karar değişmez"),
+        card("Satır", fmt(xp.get("rows_total"), 0),
+             "giriş %s · kapanış %s · olsaydı %s" % (esc(kinds.get("xp_entry", 0)), esc(kinds.get("xp_outcome", 0)),
+                                                     esc(kinds.get("xp_cf", 0)))),
+        card("Son toplama adımı", fmt_utc(xp.get("last_step_at")),
+             "p95 %s ms · taslak %s · hata %s" % (esc(xp.get("step_ms_p95")), esc(xp.get("drafts")), esc(xp.get("errors_total")))),
+        card("Son rapor taraması", fmt_utc(sweep) if sweep else "yok",
+             "elle / ayrı zamanlayıcı: shared-experience-report --summary-out"),
+        card("Anlık görüntü", esc(ok_pct), "disk %s MB · sıcak %s satır" % (esc(xp.get("disk_mb")), esc(xp.get("hot_lines")))),
+    ])
+    rows = []
+    for c in xp.get("top_cells") or []:
+        d = c.get("dims") or {}
+        r, f = c.get("real") or {}, c.get("cf") or {}
+        rows.append([esc(c.get("group")),
+                     esc(" · ".join(str(d.get(k, "?")) for k in ("trend", "vol", "btc", "volume", "structure"))),
+                     esc(r.get("n")), esc(_xp_num(r.get("mean_r"))), esc(r.get("verdict_tr") or "—"),
+                     esc(f.get("n")), esc(_xp_num(f.get("mean_r"))), esc(f.get("verdict_tr") or "—")])
+    tbl = (table(["Kurulum", "Durum (trend · oynaklık · BTC · hacim · yapı)", "Gerçek n", "Gerçek ort. net R", "Gerçek hüküm",
+                  "Olsaydı n", "Olsaydı ort. net R", "Olsaydı hüküm"], rows, num_cols={2, 3, 5, 6},
+                 empty="rapor taraması henüz yok — hücre gösterilmez")
+           if sweep else '<div class="card mut">rapor taraması henüz yok — tarama OTOMATİK DEĞİL (worker yazmaz); elle '
+                         'ya da ayrı bir zamanlayıcıyla: `python -m tradingbot shared-experience-report '
+                         '--summary-out state/shared_experience/report_summary.json`</div>')
+    return ('<details class="section"><summary>Ortak deneyim — yalnız KAYIT</summary><div>'
+            '<div class="small mut"><b>%s</b> · gerçek ve karşı-olgusal ayrı sütunlar; n&lt;10 sayı yok, n&lt;30 hüküm yok'
+            '</div><div class="grid">%s</div><h3>En çok gözlemli hücreler (coinler arası havuz; en iyiler DEĞİL)</h3>%s'
+            '<div class="small mut">Ayrıntı ve "bu durumu daha önce gördük mü?": '
+            '<code>python -m tradingbot shared-experience-report --for-symbol SOL/USDT</code></div></div></details>'
+            % (esc(xp.get("banner") or ""), cards, tbl))
+
+
+def _adv_ci(c: Any) -> str:
+    if isinstance(c, (list, tuple)) and len(c) == 2:
+        return "[%s ; %s]" % (_xp_num(c[0], 3), _xp_num(c[1], 3))
+    return "—"
+
+
+def advisor_card(d: dict | None) -> str:
+    """GÖLGE DANIŞMAN kartı (2026-09-29) — SALT SUNUM: defter başına son 24 sa tavsiye dağılımı (gerçek ve olsaydı kanalı
+    ayrı), koşan walk-forward (gerçek hedefler, birincil kanal) ve son CLI taramasının aralıkları / bakış durumu. Hiçbir
+    şey hesaplanmaz. None → "" (danışman hiç çalışmadıysa sayfa bit-aynı)."""
+    if not d:
+        return ""
+    state = str(d.get("state") or "?")
+    kind = "ok" if state == "OK" else ("bad" if state.startswith("DISABLED") or state in ("DEGRADED", "RECORD_BLOCKED")
+                                       else "warn")
+    ra = d.get("running_all") or {}
+    rec = d.get("record") if isinstance(d.get("record"), dict) else {}
+    ws = d.get("waiting_segment") if isinstance(d.get("waiting_segment"), dict) else None
+    rec_txt = ("ENGELLİ: %s" % esc(rec.get("blocked"))) if rec.get("blocked") else (
+        ("segment bekleniyor: seq %s (%s)" % (esc(ws.get("seq")), esc(ws.get("reason")))) if ws else "OK")
+    cards = "".join([
+        card("Danışman", badge(state, kind), "mod %s · %s" % (esc(d.get("mode")), esc(d.get("advisor_sha")))),
+        card("Son adım", fmt_utc(d.get("last_step_at")),
+             "p95 %s ms · dizin %s MB · gecikme %s satır" % (esc(d.get("step_ms_p95")), esc(d.get("index_mb")),
+                                                             esc(d.get("lag_rows")))),
+        card("Doğum", fmt_utc(d.get("advisor_born_at")) if d.get("advisor_born_at") else "yetişiyor",
+             "ileriye dönük değerlendirme bu andan başlar"),
+        card("Koşan U_ort (tümü)", esc(_xp_num(ra.get("U_mean"), 3)),
+             "N_T %s · N_G %s · Δ %s" % (esc(ra.get("N_T")), esc(ra.get("N_G")), esc(_xp_num(ra.get("delta"), 3)))),
+        card("Kayıt", rec_txt, "yayımlanan %s · yazılan %s · bekleyen %s · okunamayan segment %s" % (
+            esc(rec.get("emitted")), esc(rec.get("written")), esc(rec.get("retry_pending")), esc(d.get("segments_bad")))),
+    ])
+    rows = []
+    for b in d.get("books") or []:
+        r, c, run, sw = b.get("real") or {}, b.get("cf") or {}, b.get("running") or {}, b.get("sweep") or {}
+        rows.append([esc(b.get("book"))] + [esc(r.get(k, 0)) for k in ("GIR", "NOTR", "GIRME", "VERI_AZ", "LATE")]
+                    + [esc(c.get(k, 0)) for k in ("GIR", "NOTR", "GIRME", "VERI_AZ")]
+                    + [esc(run.get("N_T")), esc(run.get("N_G")), esc(_xp_num(run.get("U_mean"), 3)),
+                       esc(_xp_num(run.get("delta"), 3)), esc(_adv_ci(sw.get("U_mean_ci")) if sw else "—")])
+    tbl = table(["Defter", "Gerçek GİR", "NÖTR", "GİRME", "VERİ AZ", "GEÇ", "Olsaydı GİR", "NÖTR", "GİRME", "VERİ AZ",
+                 "N_T", "N_G", "U_ort", "Δ", "U_ort aralık (tarama)"], rows, num_cols=set(range(1, 14)),
+                empty="son 24 saatte hedef yok")
+    lk = d.get("looks") or {}
+    if d.get("last_sweep_at"):
+        h1 = lk.get("H1") or {}
+        sweep = ("Son tarama %s · H1 bakış: <b>%s</b> (%s) · birincil U_ort %s %s" % (
+            esc(fmt_utc(d.get("last_sweep_at"))), esc(h1.get("verdict") or "bakış istenmedi"), esc(h1.get("reason") or "—"),
+            esc(_xp_num((d.get("sweep_primary") or {}).get("U_mean"), 3)),
+            esc(_adv_ci((d.get("sweep_primary") or {}).get("U_mean_ci")))))
+    else:
+        sweep = ("tarama yok — elle/zamanlayıcı: <code>python -m tradingbot shared-experience-advisor --looks "
+                 "--summary-out state/shared_experience/advice/walkforward_summary.json</code>")
+    return ('<details class="section"><summary>Gölge danışman — yalnız KAYIT</summary><div>'
+            '<div class="small mut"><b>%s</b> · GİR hiçbir zaman girişi zorlamaz ya da boyutu büyütmez</div>'
+            '<div class="grid">%s</div><h3>Defter başına son 24 saat (tavsiye dağılımı) ve koşan walk-forward</h3>%s'
+            '<div class="small mut">%s</div></div></details>' % (esc(d.get("banner") or ""), cards, tbl, sweep))
+
+
+__all__ = ["page", "table", "kv_table", "render_any", "card", "badge", "health_badge", "ks_badge", "verdict_badge", "pnl_cell",
+           "fmt", "pct", "esc", "age_text", "chart_block", "CSS", "NAV", "NAV_MAIN", "NAV_MORE", "CHART_JS",
+           "retention_block", "calibration_block", "quality_block", "observation_block",
+           "evidence_badge", "NOT_ENOUGH_DATA", "RESEARCH_ONLY", "ACTIVE_POLICY_UNCHANGED",
+           "challenger_blocks", "experience_layer_card", "advisor_card"]

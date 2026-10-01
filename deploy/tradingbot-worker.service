@@ -1,0 +1,81 @@
+# Trading Bot v3 — 7/24 worker (PAPER). Kurulum: deploy/setup_vps_v3.sh
+# sudo cp deploy/tradingbot-worker.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now tradingbot-worker
+[Unit]
+Description=Trading Bot v3 worker (paper trading, 7/24)
+Documentation=file:///opt/tradingbot/app/README.md
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=600
+StartLimitBurst=5
+# Worker SÜRECİ ÖLDÜĞÜNDE süreç içi notifier mesaj gönderemez → harici oneshot hook.
+# `systemctl stop` bunu TETİKLEMEZ (systemd sözleşmesi): kontrollü durdurma yanlış "çöktü" üretmez.
+# `Restart=on-failure` + StartLimitBurst nedeniyle unit ancak yeniden başlatma bütçesi tükendiğinde
+# `failed` olur → hook restart döngüsünde mesaj yağmuru üretmez.
+OnFailure=tradingbot-alert@%n.service
+
+[Service]
+Type=simple
+User=tradingbot
+Group=tradingbot
+WorkingDirectory=/opt/tradingbot/app
+EnvironmentFile=-/opt/tradingbot/env
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONIOENCODING=utf-8
+Environment=TZ=Europe/Istanbul
+Environment=TRADINGBOT_DATA=/opt/tradingbot/data
+Environment=TRADINGBOT_VAULT_PATH=/opt/tradingbot/data/vault
+Environment=TRADINGBOT_STATE_DIR=/opt/tradingbot/data/state
+Environment=TRADINGBOT_CACHE_DIR=/opt/tradingbot/data/market
+Environment=TRADINGBOT_LOG_DIR=/opt/tradingbot/data/logs
+Environment=TRADINGBOT_BACKUPS_DIR=/opt/tradingbot/data/backups
+Environment=ALLOW_LIVE_TRADING=false
+# matplotlib config/cache: systemd'nin yönettiği dar kapsamlı dizin (service user yazabilir; world-writable değil)
+CacheDirectory=tradingbot
+CacheDirectoryMode=0750
+Environment=MPLCONFIGDIR=/var/cache/tradingbot/matplotlib
+# kaynak-kontrollü preflight (setup kurar): doctor tamamen OK ya da YALNIZ bayat-heartbeat → başla; gerisi fail-closed
+ExecStartPre=/opt/tradingbot/preflight.sh
+ExecStart=/opt/tradingbot/venv/bin/python -m tradingbot watch --interval 15 --scan-every 2
+Restart=on-failure
+RestartSec=30
+TimeoutStartSec=120
+TimeoutStopSec=90
+KillSignal=SIGTERM
+KillMode=mixed
+SendSIGKILL=yes
+Nice=5
+OOMScoreAdjust=200
+# Tam Tier A futures pattern index (≈578k olay / 89 seri) hedef VPS'te ≈3.1 GB worker belleği ölçüldü;
+# önceki 1.5G cgroup sınırı yükleme sırasında OOM-kill üretiyordu. 4G doğrulanmış çalışma sınırıdır
+# (ölçüm; sabit tüketim garantisi değil — 8 GB sınıfı VPS önerilir).
+MemoryMax=4G
+CPUQuota=150%
+
+# --- sertleştirme
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/opt/tradingbot/data
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=no
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+AmbientCapabilities=
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

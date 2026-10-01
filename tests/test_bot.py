@@ -17,7 +17,7 @@ from tradingbot.decision import decide
 from tradingbot.obsidian import ObsidianWriter
 from tradingbot.portfolio import Portfolio
 from tradingbot.signals import apply_paper
-from tradingbot.strategies import StrategySpec, generate_signals, iter_specs
+from tradingbot.strategies import generate_signals, iter_specs
 
 
 def make_df(n: int = 1200, seed: int = 7, drift: float = 0.0004, vol: float = 0.02) -> pd.DataFrame:

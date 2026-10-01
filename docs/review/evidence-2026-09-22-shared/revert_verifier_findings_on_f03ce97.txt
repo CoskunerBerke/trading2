@@ -1,0 +1,43 @@
+# Doğrulayıcı bulgularının gerileme testleri, DÜZELTME ÖNCESİ commit f03ce97 üzerinde (izole worktree, 2026-09-23)
+# komut: python -m pytest -q -p no:cacheprovider tests/test_structures_verifier_findings_v1.py tests/test_structures_analysis_v1.py -k "verifier or same_inputs" --tb=line
+# #2 düzeltme öncesi yardımcı fonksiyon olmadığı için ImportError ile düşer (davranışsal kanıt: doğrulayıcının r5 betiği).
+
+FAILED tests/test_structures_verifier_findings_v1.py::test_1_shadow_candle_agent_is_bit_identical_to_off_and_only_enforce_votes_from_the_catalog
+FAILED tests/test_structures_verifier_findings_v1.py::test_2_bar_extremes_from_before_a_structure_tightening_are_not_used_in_later_tours
+FAILED tests/test_structures_verifier_findings_v1.py::test_3_replay_legacy_brief_gives_the_agents_the_same_structure_mode_and_frame_market_as_live
+FAILED tests/test_structures_verifier_findings_v1.py::test_4_m2_exits_on_its_frozen_entry_invalidation_when_the_record_is_no_longer_in_the_analysis
+FAILED tests/test_structures_verifier_findings_v1.py::test_5_only_real_enter_references_count_as_entry_structures_or_used_patterns
+FAILED tests/test_structures_verifier_findings_v1.py::test_6_a_confirmed_outside_breakout_keeps_cancelling_the_fade_until_a_close_back_inside
+FAILED tests/test_structures_verifier_findings_v1.py::test_7_closes_before_recognition_cannot_confirm_but_can_break
+FAILED tests/test_structures_verifier_findings_v1.py::test_17_a_trigger_that_became_undefined_after_recognition_expires_the_record
+FAILED tests/test_structures_verifier_findings_v1.py::test_9_a_confirmed_record_is_valid_exactly_as_long_as_it_is_fresh
+FAILED tests/test_structures_verifier_findings_v1.py::test_10_a_triggered_plan_waiting_for_price_ends_when_its_record_breaks_or_goes_stale
+FAILED tests/test_structures_verifier_findings_v1.py::test_11_plans_are_neither_built_nor_triggered_from_a_non_perp_timeframe
+FAILED tests/test_structures_verifier_findings_v1.py::test_18_a_rejected_or_ended_plan_is_recorded_as_such_not_as_an_entry
+FAILED tests/test_structures_verifier_findings_v1.py::test_15_runtime_live_mode_downgrades_enforce_to_shadow
+FAILED tests/test_structures_verifier_findings_v1.py::test_12_the_main_gate_measures_the_chase_from_the_verified_perp_mark
+FAILED tests/test_structures_verifier_findings_v1.py::test_14_a_pullback_plan_waits_when_the_decision_timeframe_analysis_is_unavailable
+FAILED tests/test_structures_verifier_findings_v1.py::test_16_a_structure_layer_error_never_drops_the_bots_own_exit_and_blocks_only_new_entries
+FAILED tests/test_structures_verifier_findings_v1.py::test_16_pattern_book_structure_analysis_error_does_not_stop_the_scan
+FAILED tests/test_structures_analysis_v1.py::test_same_inputs_share_one_cached_result_but_each_caller_keeps_its_own_moment_and_provenance
+18 failed, 16 deselected in 2.24s
+
+# satır başına ilk hata:
+E   AssertionError: assert (-0.450000000... yap�)', ...}) == (-0.100000000...selen yap�)'})
+E   ImportError: cannot import name '_pre_change_extreme_symbols' from 'tradingbot.engine_v3' (<gecici>\
+E   AssertionError: assert {'mode': 'OFF...market': None} == {'mode': 'ENF...: 'USDM_PERP'}
+E   AssertionError: assert ('NO_EFFECT' == 'EXIT'
+E   AssertionError: assert {'h_wait', 'p...ow', 'p_wait'} == {'p_enter'}
+E   AssertionError: ('ENTER', 'COMPATIBLE_CONFIRMED')
+E   AssertionError: assert ('CONFIRMED' == 'BROKEN'
+E   AssertionError: assert ('FORMING' == 'EXPIRED'
+E   AssertionError: assert ('EXPIRED' == 'EXPIRED'
+E   AssertionError: ('CONFIRMED', 'CANCELLED')
+E   AssertionError: assert ([] == []
+E   KeyError: 'pattern_trader|USDM_PERP|LNG/USDT'
+E   AssertionError: assert 'ENFORCE' == 'SHADOW'
+E   assert (100.0 == 101.5)
+E   AssertionError: assert ('NO_EFFECT' == 'WAIT'
+E   AssertionError: assert ('ETH/USDT' not in {'ETH/USDT': Position(id='F00001', symbol='ETH/USDT', market_type=<MarketType.USDM_PERP: 'USDM_PERP'>, side=<PositionS...ntract_type': ''}, 'initial_margi
+E   RuntimeError: x
+E   assert (1720915200000 == (1720915200000 + 60000))

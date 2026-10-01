@@ -253,9 +253,20 @@ class ChiefBrief:
         return asdict(self)
 
 
+def learning_capacity_rule(*, slots: int, risk_pct: float, max_total_open_risk_pct: float) -> str:
+    """ÖĞRENME MODU (2026-09-28, öğrenme modu): şef brifingindeki kapasite kuralının öğrenme sürümü — "en fazla 3
+    pozisyon; toplam risk ≤ %6" öğrenme aktifken DOĞRU değildir (slot boyutu, %0,5 hedef risk, toplam açık risk tavanı)."""
+    return ("ÖĞRENME MODU (yalnız PAPER): en fazla %d eşzamanlı pozisyon (slot); işlem başı hedef risk %%%s (tavan %%2); "
+            "toplam açık risk ≤ %%%s — adet/%%6 sınırı öğrenme süresince uygulanmaz, R ölçütleri esastır"
+            % (int(slots), ("%g" % float(risk_pct)).replace(".", ","), ("%g" % float(max_total_open_risk_pct)).replace(".", ",")))
+
+
 class ChiefAgent:
     def __init__(self, max_concurrent: int = 3):
         self.max_concurrent = max_concurrent
+        #: ÖĞRENME MODU (2026-09-28, öğrenme modu): motor her tur başında yazar (`learning_capacity_rule`); None → kapasite
+        #: kuralının metni AYNEN eskisi.
+        self.learning_rule: str | None = None
 
     def decide(self, briefs: list[CoinBrief]) -> ChiefBrief:
         btc = next((b for b in briefs if b.symbol.startswith("BTC/")), None)
@@ -275,7 +286,7 @@ class ChiefAgent:
             f"Piyasa modu {mode}: " + {"RISK-ON": "long planlarına öncelik, short'larda boyut yarım",
                                        "RISK-OFF": "short planlarına öncelik, long'larda boyut yarım ve sadece güçlü kanaat",
                                        "NÖTR": "yalnızca R/R ≥ 2 ve kanaat ≥ 60 olan planlar; her iki yönde de küçük boyut"}[mode],
-            f"Aynı anda en fazla {self.max_concurrent} pozisyon; toplam riske atılan sermaye ≤ %6",
+            getattr(self, "learning_rule", None) or f"Aynı anda en fazla {self.max_concurrent} pozisyon; toplam riske atılan sermaye ≤ %6",
             "Altcoinler BTC ile yüksek korelasyonlu: BTC yön değiştirirse tüm alt planlarını yeniden değerlendir",
             "Her plan 4h kapanışına göre tetiklenir; bar içi fitillere göre işlem açma",
         ]

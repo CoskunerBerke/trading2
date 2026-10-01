@@ -1,0 +1,362 @@
+# SESSION HANDOFF — trading2 v3 (yeni Claude oturumu YALNIZ bu dosyayı okuyarak devam eder; repo'yu yeniden tarama)
+
+- **Repository:** https://github.com/CoskunerBerke/trading2.git · yerel `C:\Users\berke\Trading bot` · **branch** `feature/trading-v3-paper-testnet`
+- **HEAD:** `git rev-parse --short HEAD` (bu oturum: `docs: record historical learning session` — önceki 8 mantıksal commit aşağıda). `main` değişmedi; PR/merge/tag yok; yalnız feature branch'e normal push.
+- **Testler:** `python -m pytest tests -q` → **303 passed / 19 skipped** (Phase 8: +10 gap-reconcile, +1 heartbeat, +1 universe-plan, +1 namespace, +1 authority) (Phase 6: +2 kapanış-notu regresyonu; `test_risk` cooldown iddiaları sabit saate bağlandı) (156 → +8 snapshot, +6 ledger restart, +9 ops/risk/stop/runtime, +6 history, +7 patterns, +4 replay/learning). Ruff E9/F63/F7/F82/F401 temiz.
+- **Mod:** PAPER / profil PAPER_RESEARCH · LIVE kapalı (`live_order_path_enabled: false`, `ALLOW_LIVE_TRADING` unset) · TESTNET kapalı · LLM `noop` · API anahtarı/.env yok · kill switch ARMED.
+- **Gerçek emir 0 · LIVE çağrısı 0 · TESTNET çağrısı 0 · dış LLM çağrısı 0** (bütün oturum).
+
+## Bu oturumun commitleri (hepsi origin'de)
+1. `7cfe7d5 fix(ops): refresh intratour risk and add cooperative shutdown`
+2. `48912cb feat(history): add resumable historical market data`
+3. `5d765fa feat(patterns): add causal features and similar-pattern evidence`
+4. `9eb374a feat(learning): add accelerated hierarchical replay learning`
+5. `1039db5 feat(runtime): integrate evidence with paper spot and futures`
+6. `d32c954 feat(ui): expose historical evidence in Obsidian and dashboard`
+7. (testler her commit'in içinde; ayrı `test:` commit gerekmedi)
+8. `67f29ae docs: document historical learning architecture` (`docs/HISTORICAL_LEARNING.md` + README işareti)
+Önceki oturumlar: `2d483e6` snapshot olay-zaman sırası · `c28af1a` v1/v2 ledger restart izolasyonu · phase 1–4 soak kayıtları.
+
+## Üç açık PAPER pozisyon (değişmedi; ledger semantik değerleri korundu)
+`state/futures_ledger.json` schema 2 · wallet **49.981576985** · total_fees 0.018423015 · funding 0 · history 0 · entries 3 · fills F00001-e / F00002-e / F00003-e (her biri 1)
+- **F00001 SUI/USDT SHORT** qty 23.076 @ 0.65 · margin 14.9994 · 1x · stop 0.677739 · TP 0.605321 / 0.581182 · entry_fee 0.0074997
+- **F00002 KORU/USDT SHORT** qty 0.376 @ 18.21 · margin 6.84696 · stop 20.8773 · TP 12.9054 / 10.2481 · entry_fee 0.0034235
+- **F00003 FIL/USDT SHORT** qty 23.809 @ 0.63 · margin 14.99967 · stop 0.668837 · TP 0.568224 / 0.534686 · entry_fee 0.0074998
+Backup'lar: `backups/hourly/tradingbot-hourly-20260818T205349Z…20260819T072955Z` + `backups/manual/futures_ledger.pre-hist.*.json` (git dışı). Kod öncesi sha256 `453d7158…`; Phase 5 MTM tick'leri (last_price/MAE/MFE/bars_held/updated_at) dosya hash'ini değiştirdi, semantik değerler birebir aynı (her fazdan sonra karşılaştırıldı).
+
+## Ops/risk düzeltmeleri (commit 1)
+- **Intratour risk refresh:** her PAPER fill sonrası portföy durumu yetkili spot+futures defterlerinden yeniden hesaplanır, `risk.json` atomik yazılır; sonraki aday önceki fill'i görür; kritik bölge başında da yenilenir (RLock, reservation/commit); persist hatası → yeni giriş yok (`RISK_STATE_PERSIST_FAILED`), çıkışlar sürer; retry duplicate üretmez; spot+futures birleşik exposure. Testler: 3 fill → 4. red, persist hatası, birleşik exposure.
+- **Kooperatif stop:** `ops/shutdown.py` — `state/.worker_instance.json` / `.dashboard_instance.json` (pid+token), `python -m tradingbot stop [--target worker|dashboard|all] [--timeout] [--force]` token doğrulamalı atomik `.stop_request.json`; worker 2 sn'de kontrol, yeni giriş kapanır (`SHUTDOWN_REQUESTED`), tur/atomik defter işlemi biter, `health.json` STOPPED, log flush, istek tüketilir, kayıt silinir, **yalnız kendi** lock'u kaldırılır; dashboard uvicorn `should_exit`; force yok (opsiyonel `--force` graceful sayılmaz); bayat instance yalnız raporlanır, lock probe OS kilidi serbestse bayat dosyayı kaldırır. Gerçek dashboard ile doğrulandı ("panel temiz durduruldu").
+- `watch --exit-every N` (vars. 60 sn): `engine.exit_check()` açık pozisyon stop/TP/liq/zaman kontrolü tur/tarama beklemeden; giriş açmaz; defter+öğrenme+risk.json günceller.
+
+## Tarihsel sistem (commit 2–6, ayrıntı `docs/HISTORICAL_LEARNING.md`)
+- `tradingbot/history/`: HistoryStore (market/symbol/tf/YYYY/MM, geniş kline şeması, funding, OI, manifest checksum/gap/dup/quality/bad_chunks/cursor), HistoryCollector (archive `.CHECKSUM` doğrulamalı → REST, resume, idempotent, fail-closed), tier A/B/C + `HistorySection` config; CLI `history-plan/collect/validate`.
+- `tradingbot/patterns/`: causal feature frame (future-mutation testli), triple-barrier R sonuçları (önce stop, fee/slippage/funding, spot short yasak), `SimilarPatternEngine` (16/32/64/128; no-look-ahead + embargo + overlap purge; aynı coin/küme/evren-aynı-rejim), `compute_stats` (n, Beta P(win), Wilson CI, beklenti CI, PF, maxDD, MAE/MFE, 30/90/180/360g, edge decay; kodlar INSUFFICIENT_SAMPLE/LOW_CONFIDENCE/NEGATIVE_EXPECTANCY/EDGE_DECAY/REGIME_MISMATCH/COST_ERODED_EDGE/DATA_INVALID), `EvidencePacket` + deterministik Türkçe açıklama; CoinHead `SimilarPatternAgent` (grup `historical_edge`); CLI `build-features/pattern-query/evidence-show`.
+- `learn/memory` **source namespace** (LIVE_PAPER/HISTORICAL_REPLAY/SHADOW/TESTNET/LIVE); `HierarchicalRate` global→market→cluster→regime→leaf + recency half-life; `tradingbot/replay/` event-time `HistoricalReplay` (`state/replay/<run_id>/`, walk-forward purge/embargo, determinism hash); CLI `historical-replay`, `learning-status [--replay]`.
+- Runtime: `engine_v3` tur başında `state/evidence/<SYM>.json` (LONG/SHORT paket + açıklama + komşular) → `CoinHeadInputs.pattern_evidence`; Obsidian coin notunda "Benzer Geçmiş Olaylar"; dashboard `GET /api/evidence/{base}`.
+
+## Bounded gerçek veri pilotu (2026-08-18 21:36–23:05Z; API anahtarı yok, public)
+- `history-plan`: 36 seri, ~506k satır, ~21.5 MB, ~1002 istek, ETA ≈ 6 dk (KORU spot'ta yok → yalnız futures).
+- `history-collect` spot+futures × {BTC, ETH, SOL, SUI, FIL} + KORU futures × {15m, 1h, 4h}, 360 gün: **455.4k satır, gap 0, duplicate 0, bad_chunk 0, 168 arşiv ayı checksum'lı**; ikinci koşu +0 satır (idempotent); `history-validate` 45 seri invalid 0 (funding/OI dahil).
+- `build-features`: 33 seri, **449.540 feature satırı**.
+- `historical-replay` futures 4h, 5 sembol, seed 7, stride 2, train 180g / test 30g: pattern index 4955 olay; **4650 karar, 736 aday, 45 açılış, 42 kapanış**; tümü: n 42, beklenti **+0.16R**, win %40.5, maxDD 10.7R, PF 1.23; **out-of-sample: n 19, beklenti +0.05R, win %36.8, maxDD 7.9R, PF 1.08** (sıfırdan ayırt edilemez → kenar iddiası YOK); LONG −0.39R (n 17) / SHORT +0.53R (n 25); çıkışlar stop 25 / TP2 13 / BE 4; replay defteri 50 → 60.25 (in-sample dahil). **Aynı seed iki koşu → aynı determinism hash `0ee595ba…`.**
+- Pattern kanıtı örneği (SUI 4h): LONG n 60, P(kazanç) 0.37 (0.26–0.49), net −0.20R → NEGATIVE_EXPECTANCY/LOW_CONFIDENCE; SHORT n 60, P 0.56, net +0.21R ama CI alt sınırı ≤0 → LOW_CONFIDENCE (fail-closed doğru).
+- Bütün evren planı: `history-plan --universe` (Tier A/B/C tahmini) — büyük indirme sonraki 7/24 sunucu aşamasına bırakıldı.
+
+## Phase 5 — doğal exit izleme (gerçek 3 pozisyon, `watch --interval 15 --scan-every 2 --exit-every 60`)
+- **Deneme 1 (2026-08-18 23:11:59Z → ≈23:33Z, ~21 dk): USER_INTERRUPTED / INCOMPLETE** — Claude oturumu kapandı, host süreçleri sonlandırdı (bot hatası değil). Bu sürede: 3 pozisyon **bir kez** resume (fills değişmedi), pattern index 10074 olay, 6 kanıt dosyası, tur 1–2 (176 s / 40 s), traceback 0, ledger 23:33:22'de tur dışı kaydedildi (exit-monitor çalıştı), `stop` bayat kayıtları dürüst raporladı.
+- **Deneme 2 (2026-08-19 07:29:55Z → …): sonuç aşağıdaki "Phase 5b" bölümünde.**
+
+## Phase 5b SONUÇ (2026-08-19 07:29:55Z → 08:30:20Z, **kesintisiz 60 dk, kooperatif stop ile temiz kapanış**)
+- Worker PID 11012 (`watch --interval 15 --scan-every 2 --exit-every 60`) + dashboard 16524; backup `hourly-20260819T072955Z`. Resume: 3 pozisyon **bir kez** yüklendi (fills F0000x-e ×1 değişmedi; duplicate 0).
+- Health: live 200 / ready 200 (tur 1 sonrası) / metrics 200; heartbeat 07:30:47 → 07:50:27 → 08:08:14 → 08:26:09 (4 tur: 190/47/113/28 s, 2 tarama); pattern index 10074 olay, 6 kanıt dosyası; chief allow 0–1, risk_dec 0–1 (max pozisyon dolu → yeni giriş yok). Ağ: tur 3'te Binance `fapi` read-timeout (tarama atlandı, son tarama kullanıldı, tur tamamlandı — fail-safe; ERROR 1, uygulama hatası değil, crash yok).
+- Pozisyonlar 60 dk sonunda **hâlâ açık** (doğal kapanış olmadı; manuel kapatma/fiyat/yapay mum yok): SUI mark 0.6583 (−1.3 %, MAE −1.34/MFE +0.55, bars 5), KORU mark 19.84 (−9.0 %, MAE −10.93/MFE +3.68, stop 20.88'e %5 kaldı, bars 5), FIL mark 0.6375 (−1.2 %, MAE −1.44/MFE +0.43, bars 4). Exit monitörü 60 sn'de çalıştı (tur dışı ledger kayıtları); 00:00 ve 08:00 UTC funding uzlaştırmaları muhasebeleştirildi: short'lar +0.0023366 aldı → wallet **49.9839135**, entries 7, fees 0.018423015 değişmedi, history 0.
+- Kapanış: `python -m tradingbot stop --target all` → worker+dashboard 3 sn'de graceful (`health.json` STOPPED/cooperative_stop, tur 4; "İzleme temiz durduruldu", "panel temiz durduruldu"); lock/instance/istek dosyaları kalktı; port 8080 kapalı; süreç 0; doctor OK; kaynak/test/config/deploy değişmedi (yalnız state/log/backup/vault + bu dosya).
+- Gerçek emir 0 · LIVE 0 · TESTNET 0 · LLM 0. Sentetik testlerde TP/SL/BE/zaman çıkış zinciri + trade memory + learner v2 doğrulanmıştır (test_ops_risk_stop / test_ledger_restart / test_engine_v3).
+
+## Phase 6 SONUÇ — İLK GERÇEK DOĞAL KAPANIŞ (2026-08-19 08:36:05Z → 15:24Z, kesintisiz ~6 sa 30 dk)
+- Worker PID 4960 (`watch --interval 15 --scan-every 2 --exit-every 60`) + dashboard; backup `hourly-20260819T083605Z` (sha256 `1a6f4c5f…`) + `manual/futures_ledger.pre-phase6.*`. Resume: 3 pozisyon **bir kez** yüklendi.
+- Sağlık: live/metrics hep 200; `/health/ready` iki kez kısa süre 503 → **kök neden:** heartbeat tur başına yazılıyor, tur aralığı 15 dk = `heartbeat_max_age_s` 900 s ile eşit; sonraki turda kendiliğinden 200. Uygulama hatası değil, kod değiştirilmedi. Traceback 0, ERROR 0, ağ hatası 0, duplicate 0.
+- **F00001 SUI/USDT SHORT — 2026-08-19T15:06:15Z, neden `stop` (doğal, manuel müdahale yok).** Giriş 0.65 @ 2026-08-18T16:48:57Z → çıkış **0.68310487** (ref 0.6829, kayma 0.00472758). Tek exit fill `F00001-stop-1` (BUY 23.076, taker); entry fill değişmedi → duplicate 0. Ledger kayıtları: 1 PNL + 1 FEE.
+- Muhasebe (birebir doğrulandı): brüt **−0.76392798**, entry fee 0.0074997 + exit fee 0.00788166 = **0.01538136**, funding **−0.00051539**, net **−0.77982474**, **R −1.2183** (risk 0.640115 USDT), MAE −5.06 % / MFE +0.55 %, bars 7. Wallet 49.9839135 → **49.2121039**, total_fees → 0.026304679, equity(MTM) 48.39.
+- Zincir **tam ve tam bir kez**: kapanış → değişmez hafıza (`trade_memory.jsonl` exit satırı 1, `recorded_at` 15:09:58Z, post-mortem `pm-v2` gömülü) → LearnerV2 (`n_closed` 1, `pullback|SHORT` exp_r −0.211, calibrator platt n_fit 0 = ısınıyor) → etiket (LOSS / won false / exit_quality STOP / entry_timing MAE_BEFORE_MFE / fee_drag 0.024R) → deterministik post-mortem (LLM yok) → ders (`Learning/Dersler.md`) → `Models/Registry.md` (henüz kayıtlı model yok) → dashboard `/trades`, `/trades/F00001`, `/learning`, `/portfolio/futures`, `/api/evidence/SUI` hepsi 200 ve kaydı gösteriyor.
+- Risk state kapanış anında (15:06:15Z) güncellendi: açık 2, margin 21.8466, open_risk 1.9276, equity 48.4276, kill switch ARMED.
+- **Bulunan gerçek hata + düzeltme (commit `384baf2`):** `Trades/<id>.md` notu hiç üretilmiyordu — `write_trade` çağıransızdı, dolayısıyla Trade → Lesson → Model wikilink zinciri kopuktu. `engine_v3._write_trade_notes()` eklendi (post-mortem hafızadan; dondurulmuş not varsa atlanır → restart/retry ikinci kez yazmaz), nota zincir bağlantıları eklendi. Düzeltme sonrası tek tur `Trading_bot/Trades/F00001.md` üretti; ek tur sonrası hafıza exit 1 / learner n_closed 1 / ledger değişmedi (çift öğrenme yok). `708fd5a` testin zaman bağımlılığını giderdi.
+- Kapanış: `python -m tradingbot stop --target all` → graceful true, forced yok, health STOPPED, port 8080 kapalı, lock/instance/request dosyaları yok, doctor OK.
+- Kalan **iki açık pozisyon korunuyor** (manuel kapatma/stop-TP değişikliği yok): F00002 KORU/USDT SHORT qty 0.376 @ 18.21 (stop 20.8773, last 19.27, MAE −12.08/MFE +3.68, bars 8) · F00003 FIL/USDT SHORT qty 23.809 @ 0.63 (stop 0.668838, last 0.6479, MAE −2.84/MFE +0.43, bars 7). Ledger: schema 2, wallet 49.212103889678140, fees 0.026304678990060, funding 0.0023365487882, history 1, entries 9, her açık pozisyonda 1 fill.
+- Gerçek emir 0 · LIVE 0 · TESTNET 0 · LLM 0 · API anahtarı okunmadı.
+- Bilinen lint borcu (bu oturumdan değil): `ruff --select F401` → tests/test_history.py, test_ops_risk_stop.py, test_replay_learning.py'de 5 kullanılmayan import.
+
+## Phase 7 SONUÇ — KORU + FIL DOĞAL KAPANIŞ (2026-08-19 15:39Z → 2026-08-20 01:52Z, kesintisiz ~10 sa 13 dk, kaynak değişikliği YOK)
+- Worker PID 5520 + dashboard; backup `hourly-20260819T153858Z` + `manual/futures_ledger.pre-phase7.*`. 2 pozisyon bir kez resume; 20 durum kontrolü; traceback 0, ERROR 0; `/ready` 2 kısa bilinen heartbeat-yaşı dalgalanması (uygulama hatası değil); kill switch hep ARMED; duplicate 0.
+- **F00003 FIL/USDT SHORT — 2026-08-19T16:16:05Z `stop`:** 0.63 → 0.66903859 (tek fill `F00003-stop-1`); brüt −0.929470, fee 0.015464, funding **+0.004322 (alındı)**, kayma 0.130965, net **−0.940613**, **R −1.0172**, MAE −6.78 %/MFE +0.43 %, 9 bar.
+- **F00002 KORU/USDT SHORT — 2026-08-20T01:42:15Z `stop`:** 18.21 → 20.976291 (tek fill `F00002-stop-1`); brüt −1.040125, fee 0.007367, funding 0, kayma 0.006125, net **−1.047492**, **R −1.0445**, MAE −15.16 %/MFE +3.68 %, 12 bar; post-mortem dersi: "önce %3.7 lehte gitti, kâr alınmadı → TP1 daha yakın / erken başa-baş".
+- Her iki kapanışta zincir **tam ve tam bir kez**: memory exit 1'er (pm-v2 gömülü) → LearnerV2 `n_closed` 3 (−1.2183/−1.0172/−1.0445; hepsi stop) → ders → **`Trades/F00003.md` + `Trades/F00002.md` dondurulmuş + Ders/Öğrenme/Model/Portföy/Coin Head wikilinkleri (384baf2 düzeltmesi gerçek kapanışlarda çalıştı)** → dashboard /trades /trades/<id> /learning /portfolio/futures 200. Risk state kapanış anında güncellendi.
+- **Yeni doğal PAPER girişleri (gizlenmedi; limitler doğrulandı):** F00004 BZ/USDT LONG 0.165 @ 90.61 (15:39:46Z, stop 88.3408, TP 95.0585/97.2977) ve F00005 XAUT/USDT LONG 0.003 @ 4479.32 (16:51:05Z, stop 4401.1487, TP 4631.6126/4708.4339); her biri tek fill, 1x, ~15 USDT notional. Market limiti 3/3 dolunca NATGAS/HYPE/COHR/INTC adayları `MAX_POSITIONS_MARKET` ile reddedildi; open-risk tepe %4.79 < %6.
+- Kapanış sonrası ledger: wallet **47.217875941484741276311217560**, fees 0.052407096617746955883902440, funding 0.0038062735964, history 3, entries 16; açık: F00004 (last 90.12, MAE −1.40, bars 4) + F00005 (last 4468.7, MAE −0.65, bars 2), 1'er fill.
+- Kapanış: `stop --target all` graceful, force yok; süreç/port/lock temiz; doctor OK. Kaynak değişmedi → 198 test baseline geçerli. Gerçek emir 0 · LIVE 0 · TESTNET 0 · LLM 0.
+
+## Phase 8 SONUÇ — 7/24 hazırlık: gap reconciliation + heartbeat + evren planı + VPS raporu (2026-08-20, kaynak commit'leri origin'de)
+- Başlangıç güvenliği: HEAD=origin `eaffb24`, worker/port/lock 0, doctor OK, 198 baseline yeşil; `backups/manual/*.pre-phase8.20260820T070022Z` + `semantic_snapshot.phase8...json` (ledger sha `fa76a91e…`, wallet 47.217875941484741276311217560, F00004 BZ + F00005 XAUT tek fill, duplicate 0). Üç salt-okunur denetçi (STATE_SAFETY / HISTORY_CAPACITY / RESTART_GAP) kanıt topladı; karar/uygulama lead'de kaldı.
+- **`02a4b77` fix(restart):** `ops/gap.py` GapReconciler — `state/exit_watermark.json` (tur + exit-monitor her kayıtta yazar) ile kesinti penceresi ölçülür; açık futures pozisyonları için pencerenin kapanmış mumları (≤48sa 1m / ≤10g 5m / üstü 15m) + gerçek dönem funding oranları çekilir, mevcut `tick()` yoluna olay-zamanı sırasında verilir (worst-case liq>stop>TP korunur; kararlar `state/gap_status.json`). Fail-closed: eksik/belirsiz veri → all-or-nothing GAP_AMBIGUOUS, tur girişleri `GAP_RECONCILE_PENDING` ile reddeder, watermark ilerlemez. Funding'de sessiz dönem kaybı bitti (oran bilinmeyen settlement BEKLER, gelince tam bir kez). 10 regresyon testi.
+- **`1d0c5c1` fix(health):** watch döngüsü ~30 sn'de bir turlardan bağımsız heartbeat yazar; `read_heartbeat_age` `ts`/`at` iki şemayı da okur (doctor'un "kalp atışı yok" körlüğü bitti); `/ready` 15dk-tur 503 dalgalanması kökten çözüldü, gerçek ölümde fail-closed 503 sürer.
+- **`a64b069` feat(history):** `history-plan --universe` gerçek `universe.json` şemasını (`merged`, eligible filtresi) okur; çıktıya `point_in_time:false` + `survivorship_bias` işareti. `universe` çalıştırıldı: spot 3681→32, futures 872→89, birleşik **95 uygun sembol**. Gerçek plan: A 570 seri/2.01M, B 100/3.11M, C 88/10.33M → **758 seri, 15.45M satır, ~622 MB ham, ~21.2k istek, ~2 sa** (indirme BAŞLATILMADI — Windows'ta yalnız plan).
+- **`fb553f8` feat(learning):** SYNTHETIC_TEST namespace'i + izolasyon regresyonu (aynı JSONL'de bile kaynaklar birbirinin sayaç/sorgularını kirletemez; bilinmeyen source ValueError). Replay zaten ayrı state + HISTORICAL_REPLAY.
+- **`56bebcb` ops(vps):** `ops/authority.py` + CLI `authority --claim/--release` — `state/worker_authority.json` başka host'taysa `watch` fail-closed başlamaz (exit 4); `setup_vps_v3.sh` ufw yalnız-SSH + kurulumda otomatik claim.
+- **Kapasite/VPS (docs/VPS_PHASE8_PLAN.md):** ölçülen yoğunluklar ham ~45 B/satır, feature ~468 B/satır (×10.3), replay RAM ~3.7 KB/bar (4h evren 1.5 GB, 1h 5.9 GB → stride); 1. yıl ayak izi 12–17 GB < 45 GB → **öneri: OVH VPS-2 (4 vCore/8 GB/75 GB NVMe), Ubuntu 24.04, AB lokasyonu (~10–14 €/ay)**; satın alma sonrası-deploy öncesi salt-okunur Binance erişim testi. Satın alma YAPILMADI; kullanıcı onayı bekleniyor.
+- F00004/F00005 el sürülmedi (tek fill, aynı ID); worker bu fazda hiç başlatılmadı; gerçek emir 0 · LIVE 0 · TESTNET 0 · LLM 0.
+
+## Phase 11 — Sabit işlem kotası kaldırıldı: karar ekonomiyle veriliyor (kaynak; VPS'te çalıştırılmadı)
+Kullanıcının gördüğü "2 işlem" davranışının gerçek kaynağı `ChiefConfig.max_new_positions_per_run = 2`
+idi — günlük değil, **her tarama turunda** en fazla iki yeni pozisyona izin veren sabit bir hard-cap.
+Buna ek olarak zayıf kanıtlar (MA konumu, RSI, konsensüs, güven, sabit R/R, rejim uyumu, aynı yön/küme
+adedi) ard arda dizilmiş **sert veto** zinciri oluşturuyor ve maliyet sonrası pozitif fırsatları
+sistematik olarak öldürüyordu.
+
+- **`decision_gates.py` (yeni).** Giriş yolundaki her kontrolün TEK merkezi sözleşmesi:
+  `HARD_SAFETY` (25 kod — yalnız gerçek güvenlik/veri/ekonomi ihlalleri), `SOFT_EVIDENCE` (21 kod —
+  tek başına ASLA reddetmez, puanı/boyutu düşürür), `RESEARCH_ONLY` (3 kod). `GateLedger.block()`
+  yumuşak kodu reddeder, `penalise()` sert kodu reddeder; toplam yumuşak ceza **üst sınırlıdır**
+  (çok sayıda orta zayıflık otomatik vetoya dönüşemez). `FORBIDDEN_QUOTA_CODES` kota kodlarının
+  kaynağa geri sızmasını engeller.
+- **`opportunity.py` (yeni).** `OpportunityAssessment` + `conservative_net_edge_r` +
+  **dinamik boyut**. Maliyet ÇİFT SAYILMAZ: `expectancy_basis = NET_OUTCOME` ise `cost_r = 0`
+  (geçmiş R'ler zaten net), `GROSS_MINUS_COSTS` ise maliyet bir kez düşülür. Belirsizlik cezası
+  `k/√(n+1)`. **Soğuk başlangıç**: geçmiş yokken plan geometrisine yaslanır, veri biriktikçe
+  gerçekleşmiş dağılıma kayar — aksi halde taze bir bot yalnız "veri yok" diye hiç işlem açamazdı.
+- **Chief.** `max_new_positions_per_run` **kaldırıldı** (artık `None` ve yalnız raporlama sözleşmesi).
+  Aynı yön/küme yığılması ve RISK-ON/RISK-OFF uyumsuzluğu artık **boyut küçültür**, veto vermez.
+  Adaylar işlenmeden ÖNCE `conservative_net_edge_r`'ye göre sıralanır. Tek sert kapı **gerçek risk
+  kapasitesidir** → `RISK_CAPACITY_BLOCKED` (kota DEĞİL).
+- **Coin Head iki aşamaya ayrıldı.** Aşama 1 yalnız GEOMETRİ (entry/stop/target, stop mesafesi > 0);
+  `min_expected_r = 1.5`, `consensus_threshold = 0.22`, `min_confidence = 0.25` artık YUMUŞAK kanıt.
+  Yön için yalnız küçük bir `direction_epsilon = 0.05` kaldı. R/R 1.2 ama yüksek kalibre p_win'li işlem
+  yaşayabilir; R/R 2.0 ama düşük p_win'li işlem elenir.
+- **Risk profilleri.** `max_open_positions` / `max_positions_per_market` artık **nullable**;
+  PAPER_RESEARCH'te `None` → karar toplam açık risk (%6), işlem başına tavan (%2), margin, liq buffer
+  ve same-symbol kapılarıyla verilir. **TESTNET/SHADOW_LIVE/LIVE/LIVE_LIMITED muhafazakâr adet ve
+  risk limitleri DEĞİŞMEDİ.**
+- **Benzersiz sinyal.** `symbol|market|timeframe|closed_bar_ts|side|setup_type` → aynı sinyal iki kez
+  açılamaz; YENİ kapanmış bar / yeni setup engellenmez.
+- **Karar hunisi.** `state/decision_funnel.json` + kayan 24 saat; `/metrics`, `/api/overview`,
+  `/health`. `trades_opened_24h` yalnız gözlem metriğidir. `daily_trade_cap` ve `per_run_trade_cap`
+  **her zaman null**.
+- **Araştırma adayı** artık aday başına **tek** parametre değiştirir
+  (`MAX_CHANGES_PER_CANDIDATE = 1`); kalıcı veto (taraf/sembol/rejim) yalnız yeterli örnek +
+  `CI95_high < 0` + `profit_factor < 1` kanıtıyla üretilebilir.
+- **`tests/test_opportunity_and_limits.py` (yeni, 28 test)** + genişletilen chief testleri:
+  kota yokluğu, ön-sıralama, kapasite bloğu, 100 ardışık benzersiz fırsat, duplicate, tek/çok zayıf
+  kanıt, maliyet-sonrası negatif, çift-sayım koruması, sıfır stop, PAPER vs TESTNET/LIVE profilleri,
+  LLM bütçesinin karar yoluna ulaşmadığı, starvation ve negatif-edge sıfır-işlem regresyonları.
+
+## Phase 10d — Eksik halka kapatıldı: döngü gerçekten kendi kendine yürüyor (kaynak; VPS'te çalıştırılmadı)
+Phase 10c'de analitik modüller vardı ama **çalışma yolunda bağlı değildi**: motor yalnız
+`evaluate_active()`/`maybe_activate()` çağırıyordu; `propose`/`record_offline`/`start_shadow` hiçbir
+runtime yolunda yoktu, SHADOW politika giriş anında değerlendirilmediği için gözlem birikmiyordu ve
+durum makinesi kilitleniyordu. Lifecycle testleri de geçişleri elle sürüyordu.
+
+- **`learn/research_coordinator.py` (yeni).** Tek orkestrasyon noktası: canlı `LIVE_PAPER` hafızasını
+  `trade_id` ile birleştirir → coverage + leakage + join kapıları → loss attribution → sınırlı aday →
+  **anchored walk-forward** (train < purge < embargo < test, test pencereleri ayrık) → offline verdict →
+  SHADOW. Her turda ağır iş yok: asgari yeni kapanış + cooldown birlikte geçilmeli. Durum
+  `state/research_coordinator.json`'da atomik ve restart'a dayanıklı.
+- **MUTLAK MOD KAPISI.** Üretim, gözlem, aktivasyon ve uygulama yalnız `mode == PAPER` **ve**
+  `execution.gateway == paper` **ve** `live_order_path_enabled == false` bileşiminde mümkün. Diğer
+  modlarda katman salt-okunur; durum geçişi yapılmaz, hiçbir giriş etkilenmez.
+- **SHADOW gözlem yolu motora bağlandı.** Baseline'ın kabul ettiği her yeni giriş için SHADOW adayı
+  **karşı-olgusal** değerlendirilir; gerçek giriş DEĞİŞMEZ. İşlem kapanınca eşleşmiş gözlem yazılır.
+  Metrik adı açıkça `risk_budget_contribution_r`: eleme → 0.0, küçültme → gerçekleşen R × çarpan.
+  Pozisyon küçültmesi "trade R değişti" diye RAPORLANMAZ. `pending` kayıtları `policy_id|trade_id`
+  ile anahtarlanır → restart'a dayanıklı ve idempotent.
+- **Aktivasyon kapıları sıkılaştırıldı.** SHADOW → ACTIVE için hepsi gerekli: `min_shadow_obs`,
+  cooldown, eşleşmiş `delta > 0`, **eşleşmiş `delta` CI95 alt sınırı > 0**, candidate beklentisi
+  baseline'dan yüksek, offline `fold_consistency >= 0.6`, offline verdict `SHADOW_CANDIDATE`,
+  başka aktif aday yok. `RESEARCH_ONLY` asla aktifleşemez (ve döngüyü kilitlememesi için
+  yeterli gözlemden sonra emekli edilir).
+- **Karantina.** Diskten yüklenen politika artık sınırları geçmiyorsa (kurcalanmış `size_multiplier`,
+  yasak anahtar, çözümlenemeyen alan) **uygulanmadan RETIRED** edilir ve `quarantined` altında
+  raporlanır.
+- **Gerçek bug:** `evaluate_policies` coverage kapısında kaynağı `HISTORICAL_REPLAY` olarak
+  sabitliyordu; canlı `LIVE_PAPER` satırlarında namespace kontrolü her zaman düşüyordu. Kaynak artık
+  satırlardan çıkarılıyor, karışık namespace `single_source_namespace` kapısıyla reddediliyor.
+  Bu hatayı runtime testi ortaya çıkardı.
+- **`tests/test_research_runtime_e2e.py` (yeni, 16 test).** Temiz state ve **boş
+  `research_policy.json`** ile gerçek `TradingEngineV3` turları; test kodunda `propose`/
+  `record_offline`/`start_shadow`/`observe`/`maybe_activate`/`_set_state` çağrısı YOK — bir **AST**
+  testi bunu zorluyor. Ayrıca AST testi motorun runtime yolunda koordinatör çağrısının gerçekten
+  bulunduğunu ve `maybe_promote`'un bulunmadığını doğruluyor.
+
+## Phase 10c — Öğrenme döngüsü uçtan uca (kaynak; VPS'te çalıştırılmadı)
+Kararın nedensel bağlamını dondur → sonucu aynı kayda bağla → neden kaybedildiğini yapılandırılmış
+biçimde çıkar → sınırlı ve açıklanabilir aday üret → OOS'ta doğrula → PAPER'da karşı-olgusal karşılaştır
+→ kötüleşirse geri dön. Her adım çalışan koddur ve `tests/test_end_to_end_learning.py` bu zinciri
+gerçek modüllerle uçtan uca sürer.
+
+- **Otomatik terfi kapatıldı (blocker).** `config.yaml` `auto_promote_in_paper: false`; `validate_v3`
+  `true` değerini **`PAPER_AUTO_PROMOTION_FORBIDDEN`** ile fail-closed reddediyor. `TradingEngineV3`
+  döngüsünden otomatik `maybe_promote()` çağrısı **tamamen kaldırıldı** — eğitim sürüyor, yeni model
+  yalnız CANDIDATE kalıyor. `maybe_promote` yalnız açık manuel CLI yolunda (`--promote --operator <ad>`).
+- **`learn/attribution.py` (v2).** 13 kayıp sınıfı (`WRONG_DIRECTION`, `LATE_ENTRY`,
+  `VOLATILITY_MISMATCH`, `TREND_MISMATCH`, `WEAK_MOMENTUM`, `LOW_LIQUIDITY`, `COST_DRAG`,
+  `FUNDING_DRAG`, `PATTERN_NEGATIVE`, `AGENT_DISAGREEMENT`, `STOP_TOO_CLOSE_ASSOCIATION`,
+  `TIME_EXIT_NO_EDGE`, `INSUFFICIENT_EVIDENCE`) + her kayıp işlem için kanıt, koşullu istatistik ve
+  baseline farkı; 16 kesitte toplu rapor. **Yön ancak CI95 sıfırı kesmiyorsa** verilir — gürültüden
+  aday üretilmesini engelleyen kapı budur.
+- **`learn/policy.py`.** Kayıptan türeyen sınırlı filtreler: `max_vol_regime`, `max_spread_pct`,
+  `min_pattern_ci_low`, `max_n_dissent`, `high_vol_size_multiplier`, `side_regime_veto`.
+  `candidates_from_attribution()` her adayı **en fazla 2 parametre** değiştirerek, gerekçesi ve kaynak
+  bulgusuyla üretir. Politika kimliği = davranış (köken alanları hash'e girmez).
+- **`learn/research_policy.py` (yeni).** `PROPOSED → OFFLINE_VALIDATED → SHADOW →
+  PAPER_RESEARCH_ACTIVE → RETIRED / MANUAL_REVIEW_READY`. `REJECTED` doğrudan RETIRED;
+  `RESEARCH_ONLY` asla aktifleşemez; `CHAMPION/LIVE/TESTNET/PROMOTED` durumları kod düzeyinde
+  üretilemez. Aktifleşme: yeterli eşleşmiş gözlem + cooldown + pozitif fark + tek aktif aday.
+  Kötüleşirse otomatik baseline'a dönülür. Gözlemler `trade_id` ile tekil (çift sayım yok).
+- **`engine_v3` entegrasyonu.** Araştırma politikası risk/chief onayından **sonra** çalışır ve yalnız
+  daraltır. Elediği giriş karşı-olgusal gölge işlemle izlenir; gölge etiketlenince eşleşmiş gözlem
+  yazılır. İzin verdiği işlem kapanınca baseline (tam boyut) ve candidate (çarpanlı) birlikte
+  kaydedilir. **Aktif aday yoksa davranış birebir aynı.** Online öğrenme temposu: asgari yeni kapanış
+  (`retrain_min_new_closed`) + cooldown (`retrain_cooldown_hours`).
+- **Walk-forward kapıları** madde 9'un tam listesine tamamlandı: `feature_coverage_valid`,
+  `no_timestamp_leakage`, `join_intact`, `policy_bounds_valid`, `drawdown_acceptable`,
+  `no_duplicate_test_rows` + mevcutlar. Model kalibrasyonu (Brier/ECE/log loss) `replay-evaluate`
+  yolunda ölçülür; politika raporu varsa okur, yoksa nerede ölçüldüğünü açıkça yazar.
+- **Gözlemlenebilirlik.** `/metrics`: `tradingbot_research_policy_active`,
+  `tradingbot_research_observations`, `tradingbot_research_delta_r`,
+  `tradingbot_auto_promotion_enabled` (her zaman 0). `/health` ve `/api/overview` aktif adayı,
+  gerekçesini, değiştirdiği parametreleri, eşleşmiş gözlem sayısını ve emeklilik nedenini gösterir.
+- **Yeni CLI:** `research-status` (salt-okunur durum), `policy-from-losses` (kayıp analizinden
+  açıklanabilir aday üretimi; yalnız replay klasörüne yazar).
+- **Uçtan uca test senaryosu.** `SHORT + HIGH_VOL + negatif pattern` sistematik zarar, `LONG +
+  NORMAL_VOL + pozitif pattern` kâr. Yüksek volatilite **gerçekten oynak barlardan** gelir (alan elle
+  yazılmaz), pattern güveni gerçek `patterns/engine.py::query` şeklinden okunur. Gürültü kasten
+  bırakılmıştır (~%11 tesadüfi kazanç / ~%14 tesadüfi kayıp). Sistem kombinasyonu veriden bulur,
+  `side_regime_veto=["SHORT|HIGH_VOL"]` adayını üretir ve aday OOS'ta baseline'ı geçer.
+
+## Phase 10b — Denetim düzeltmeleri: gerçek eşleme + train/serve paritesi (kaynak; VPS'te çalıştırılmadı)
+`ecc532b` üzerinde yapılan bağımsız kaynak denetimi dört blocker buldu. Hepsi düzeltildi; her biri
+gerçek çağrı yolunu süren bir testle korunuyor (`tests/test_prediction_parity.py`).
+
+- **B1 — ajan alanları kalıcı boştu.** İki çağrı yeri de `d.to_dict().get("agent_reports")` okuyordu;
+  `CoinHeadDecision.to_dict()` bu anahtarı üretmiyor (gerçek anahtar `specialist_reports`). Ayrıca
+  `AGENT_NAMES` legacy ajan adları içeriyordu (`market/candles/levels/analog/edge`), bunlar hiçbir zaman
+  `factor_group` olarak üretilmiyor. → Artık `d.factor_scores` okunuyor ve `AGENT_NAMES` gerçek
+  `FACTOR_GROUPS` (11 grup) ile birebir; eşitlik testle kalıcı olarak korunuyor.
+- **B2 — yeni replay çıktısı kendi coverage gate'ini geçemiyordu** (%48.4 < %55). Eşikler
+  DEĞİŞTİRİLMEDEN, gerçek alanlar dolduğu için artık geçiyor. Gerçek replay çağrı yolundan ölçülen:
+  **required %97.30** (eşik 90) · **overall %66.96** (eşik 55) · **prediction %75.28** ·
+  **nonconstant %69.57** · timestamp ihlali 0 · join bozuk 0.
+- **B3 — `rr` hiç hesaplanmıyordu.** `TradePlanV3`'te `rr` yoktu, `getattr(plan, "rr", None)` daima
+  `None` dönüyordu (üstelik `rr` zorunlu alan). → Salt-okunur `TradePlanV3.rr` property'si eklendi
+  (`|tp1−entry| / |entry−stop|`); hedef/stop yoksa `None`, sahte 0 üretmez.
+- **B4 — pattern kanıtı karara hiç ulaşmıyordu.** `pattern_evidence` yalnız `CoinHeadInputs`'taydı ve
+  şekli taraf kırılımlı (`{"LONG": ..., "SHORT": ...}`). → `CoinHeadDecision.pattern_evidence` alanı
+  eklendi (karar akışında zaten hesaplanan kanıt taşınır, **ikinci sorgu yok**; `to_dict()` dışında
+  tutulur), snapshot tarafa göre seçim yapar. Anahtarlar `patterns/engine.py::query`'den doğrulandı.
+
+- **`prediction_features_v3` (train/serve paritesi).** 115 alan iki gruba ayrıldı: **89 prediction**
+  alanı (predict'ten önce mevcut, replay ve canlıda aynı anlamda üretilebilen, prediction çıktısına
+  bağlı olmayan) ve **26 audit-only** alan (ölçek bağımlı ham seviyeler, hiçbir yolun doldurmadığı
+  portföy alanları, karardan sonra oluşan `risk_allowed` ve **dairesel** `p_win_prior`). Model girdisi
+  150 boyut (89 alan + 61 `miss_*` göstergesi) — eksiklik göstergeleri artık modele ULAŞIYOR.
+  Eğitim (`LearnerV2.train_challenger`, `replay/research._fit_fold`) ve çıkarım (`engine_v3`) aynı
+  `prediction_vector()` fonksiyonunu çağırır. Canlı yolda snapshot artık `learner2.predict`'ten **önce**
+  üretilir ve **aynı nesne** giriş kaydında yeniden kullanılır.
+- **Model artifact'i kendi şemasını taşır**: `feature_schema_id`, `feature_version`, `feature_names`
+  (tam sıra), `prediction_schema_hash`, `imputation_contract`. Serve tarafında **simetrik** doğrulama:
+  model şeması ile girdi şeması birebir eşleşmezse model KULLANILMAZ, prior'a dönülür ve
+  `schema_mismatch_total` artar. Bu iki yönü de kapatır — v3 modele legacy sözlük ve deploy öncesinden
+  kalan legacy şampiyona v3 vektörü gitmesi.
+- **Otomatik PAPER terfisi KAPATILDI**: `auto_promote_in_paper` varsayılanı `False` (eski config'te alan
+  yoksa da False). Feature-rich model yalnız CANDIDATE kalır; kendiliğinden tahmin yoluna giremez.
+  LIVE/TESTNET davranışı değişmedi (manuel onay olmadan terfi yok). Açık manuel shadow onayı ayrı görev.
+- **Snapshot telemetrisi** (`learn/telemetry.py`): `snapshot_success_total`, `snapshot_failure_total`,
+  `leakage_failure_total`, `schema_mismatch_total`, `last_failure_code`, `last_failure_at`.
+  `state/snapshot_telemetry.json`'a atomik yazılır; `/metrics`, `/api/overview` ve `/health` üzerinden
+  okunur. Hata kodu tek satır ve ≤120 karakter (secret/payload/stack trace yazılmaz). Canlı işlem akışı
+  snapshot hatasından etkilenmez ama hata SESSİZ kalmaz.
+- **Timeframe doğruluğu**: canlı yol artık gerçekte kullandığı frame anahtarını yazıyor; "4h" yokken
+  başka bir frame'i alıp yine `timeframe="4h"` yazmıyor. Frame seçimi deterministik (`sorted`), ve her
+  iki yolda `last_bar_ts ≤ decision_ts` ikinci savunma hattı olarak doğrulanıyor.
+- **Politika OOS kırılımı düzeltildi**: eskiden `rows` (train+validation+test, in-sample) ve ızgaranın
+  İLK adayı kullanılıyordu. Artık yalnız her fold'un OOS test satırları ve o fold'un kendi
+  validation'ında seçtiği aday. Eşleşmiş fark aynı kayıtlar üzerinde (bloke işlem 0 R), fold test
+  kümelerinin ayrık olduğu `no_duplicate_test_rows` kapısıyla doğrulanıyor.
+- **Totolojik test kaldırıldı**: eski `test_replay_and_paper_produce_identical_vector_and_hash`
+  `build_snapshot`'ı aynı argümanlarla iki kez çağırıyordu. Yerine `TradingEngineV3._snapshot_v3` ve
+  `HistoricalReplay._snapshot` metotlarının **gerçek gövdelerini** çalıştıran parite testi geldi.
+- **Eski sparse hafızada model üretilmez**: v3 snapshot'ı olmayan satırlar eğitime girmez (sahte 0 ile
+  doldurma yok); yeterli satır yoksa `train_challenger` `None` döner.
+- **CI**: yeni `learning-tests` job'ı `test_feature_snapshot.py`, `test_prediction_parity.py`,
+  `test_learn.py`, `test_policy_eval.py`, replay araştırma testleri, ruff ve tam paketi Ubuntu'da
+  ayrı adımlar hâlinde koşar (yerel "303 passed" tek başına kanıt sayılmaz). `ruff.toml` doğruluk
+  kurallarını (E9/F821/F811/F632/F702/F706/F707) kapı yapar; biçim kuralları ayrı temizlik konusudur.
+
+## Phase 10 — Bağlamsal öğrenme: FeatureSnapshotV3 (kaynak; VPS'te çalıştırılmadı)
+- **Kök neden:** replay entry hafızası pratikte yalnız `expected_r`/`p_win` yazıyordu; canlı yol ayrı
+  `features_from_brief` kullanıyordu. Core-4 `train_manifest`'inde MA/volatilite/funding/spread/korelasyon/
+  ajan/konsensüs alanlarının neredeyse tamamı 0 idi → model bağlam öğrenmedi, expected_r kalibrasyonu yaptı.
+- **`learn/snapshot.py` FeatureSnapshotV3:** 115 alan + `miss_*` göstergeleri; kimlik/provenance, trend/MA/
+  cross, momentum, volatilite/rejim, hacim, funding/OI/basis/spread/depth/slippage/tazelik, BTC bağlamı/
+  korelasyon/beta, ajan bias-confidence + consensus/dissent/veto + pattern kanıtı, plan/risk.
+  **Paylaşılan builder**: replay ve canlı PAPER aynı fonksiyonu çağırır.
+  Nedensellik: `decision_ts` sonrası bar → `LeakageError`; gelecek bar mutasyonu geçmiş hash'i değiştirmez;
+  eksik alan sessizce 0 sayılmaz.
+  > Bu bölümün ilk hâli (commit `330aab5`/`ecc532b`) alan sayısını 117 olarak veriyordu ve alanların
+  > dolduğunu varsayıyordu. Bağımsız kaynak denetimi bunun doğru olmadığını gösterdi; düzeltmeler ve
+  > ölçülen gerçek değerler **Phase 10b**'de.
+- **`learn/coverage.py` gate:** alan bazında available/missing/mean/std/unique/constant + join/timestamp/
+  namespace/sembol/taraf kontrolü. Yetersizse **FEATURE_COVERAGE_INVALID** → `replay-train` durur.
+  Eski Core-4 hafızası bu kapıdan GEÇEMEZ (snapshot yok → açık blok).
+- **`learn/policy.py`:** sınırlandırılmış aday politika (deterministik ızgara, `POLICY_BOUNDS`); risk limiti
+  yükseltme / LIVE / pozisyon / kaynak kodu değişikliği kod düzeyinde imkânsız; politika yalnız filtreler ya
+  da boyutu küçültür. Baseline = mevcut bot davranışı (passthrough).
+- **`replay/policy_eval.py`:** gerçek baseline↔candidate walk-forward (aday yalnız train'in iç validation
+  diliminde seçilir, test fold'unda uygulanır; çoklu-test cezası, bootstrap CI, fold tutarlılığı).
+  Verdict en fazla SHADOW_CANDIDATE; PIT=false/survivorship varsa RESEARCH_ONLY/REJECTED. Terfi yok.
+- **`learn/attribution.py` + CLI:** `feature-coverage`, `loss-attribution`, `policy-candidates`,
+  `policy-evaluate` — deterministik, secretsız JSON; yalnız `state/replay/<run_id>` altına yazar.
+- Canlı PAPER emir akışı DEĞİŞMEDİ (snapshot hatası akışı durdurmaz); eski Core-4 artifact'lerine
+  yazılmadı; yeni deneme için ayrı run-id kullanılacak.
+  > Düzeltme (Phase 10b): p_win modelinin girdisi bu fazda gerçekten değişti. Otomatik PAPER terfisi
+  > kapatıldığı ve şema doğrulaması fail-closed olduğu için mevcut worker baseline davranışını korur —
+  > şampiyon yoksa hiyerarşik prior, legacy şampiyon varsa legacy köprü kullanılır.
+
+## Phase 9b — Replay hattı sertleştirme (kaynak; VPS'te çalıştırılmadı)
+- **Runner gerçek replay'i yönetir:** eylemler `plan|replay|train|evaluate|full|status`; `full` = plan →
+  historical-replay → train → evaluate. En ağır iş dahil hepsi kaynak sınırlı **transient systemd service**
+  içinde (`--service-type=exec --wait`) → SSH kopsa da sürer; `systemd-run` yoksa BLOCK (sınırsız `nice`
+  fallback kaldırıldı). Eşzamanlı aynı run-id engeli, `--resume/--force` sözleşmesi, `status` (unit
+  state/result/exit + son loglar + artifact'ler), RUN_ID/cgroup regex doğrulaması (injection engeli).
+- **historical-replay izolasyonu:** artık kanonik `resolve_replay_dir` doğrulamasından geçer (CLI exit 2) ve
+  `HistoricalReplay.__init__` içinde defense-in-depth tekrar doğrulanır; CLI çözülmüş kökü `state_root` olarak
+  verir → double-run-id/TOCTOU yok; hedef kesin `state/replay/<run_id>`.
+- **Plan ↔ runner uyumu:** `--runner-memory-max-mb`/`--runner-safe-pct` (vars. %80) ile tahmin cgroup sınırını
+  aşarsa plan bloklar; `--pattern-stride` varsayılanı artık `--stride` (parite).
+- **Gerçek walk-forward OOS:** `replay_result.json` pencerelerine kesin `bounds` (train/purge/embargo/test ms)
+  yazılır; değerlendirme her fold'da yalnız geçmiş train ile model üretir, purge/embargo kayıtlarını hem
+  eğitimden hem OOS'tan çıkarır, örtüşen test penceresi/çift sayım/sınır ihlali/eksik fold → fail-closed.
+  Fold bazlı + toplu metrikler (expectancy/PF/maxDD/win rate/Brier/ECE/log-loss/CI95) ve 6 kapılı SHADOW
+  ADAYI kararı. `purge_embargo_enforced` yalnız doğrulama geçtiyse true.
+- **Determinizm düzeltmesi:** `LogisticModel` params'ındaki `trained_at` (duvar saati) hash'ten ayıklandı →
+  bağımsız iki koşu aynı `params_hash`.
+- **Semantik operasyonel doğrulama:** `semantic_live_snapshot`/`compare_semantic` — byte hash yerine mod,
+  live-path, gerçek emir, pozisyon kimlik/plan alanları, fill kimlikleri ve duplicate kontrolü; MTM/updated_at
+  değişimi ihlal sayılmaz. Ayrıca test, replay hattının canlı state dosyalarını HİÇ açmadığını dosya erişimi
+  izleyerek kanıtlar.
+
+## Phase 9 — Replay araştırma hattı (kaynak; VPS'te çalıştırılmadı)
+- `tradingbot/replay/research.py` + CLI `replay-plan` / `replay-train` / `replay-evaluate` + `deploy/replay_runner.sh`.
+  Kök neden: `historical-replay` yalnız rapor üretiyordu — biriken `HISTORICAL_REPLAY` hafızasından challenger
+  EĞİTİLMİYOR, objektif OOS/kalibrasyon değerlendirmesi yapılmıyordu; `--state-dir`/run-id yol sözleşmesi de
+  yalnız "tam eşitlik" kontrolüyle korunuyordu (traversal/symlink/boş id açıktı).
+- İzolasyon: `resolve_replay_dir` traversal, symlink kaçışı, mutlak/boş/nokta-tire run-id, canlı state ile
+  çakışma ve canlı klasöre doğrudan yazımı fail-closed reddeder; eğitim/değerlendirme canlı `models.json`,
+  `learn_v2.json`, ledger ve trade memory dosyalarını AÇMAZ (testler bayt-düzeyi sha256 ile kanıtlar).
+- Determinizm: recency ağırlıkları için referans an = son kaydın zamanı (duvar saati değil) → aynı veriyle
+  bağımsız iki koşu aynı `params_hash`/`metrics_hash`. İdempotency: aynı `input_hash` → yeniden eğitim yok.
+- Terfi yok: model replay registry'sinde CANDIDATE kalır; CHAMPION işaretli model değerlendirmede reddedilir;
+  rapor en fazla "shadow adayı olabilir" (OOS beklenti %95 alt sınırı > 0 ve yeterli örnek şartıyla).
+- Kapasite: plan, ölçülen yoğunlukla (≈5.2 KB/pattern olayı) tahmin üretir ve host (1024 MB) + worker (900 MB)
+  rezervini düşer; RAM ölçülemezse `--assume-available-mb` şarttır. İlk Core-4 pilotu yalnız PLAN olarak
+  `docs/VPS_PHASE8_PLAN.md` §6b'de hazır.
+
+## Bilinen sınırlamalar (dürüst)
+- Gerçek WebSocket veri döngüsü yok; exit monitörü REST/last fiyatla 60 sn periyotlu; intrabar yalnız bar uçları.
+- Replay CoinHead tam zinciriyle yavaş (`--stride`); pattern index bellek içi.
+- OI geçmişi Binance'te ~30 gün; mark kline geçmişi yok (funding kaydındaki mark).
+- LLM `noop`: açıklamalar deterministik şablon; gerçek sağlayıcı yalnız env+bütçe ile.
+- Windows: konsol sinyalleri güvenilmez → kooperatif `stop` birincil yol; ölen süreçten kalan bayat instance/lock dosyaları yalnız raporlanır (lock OS kilidi serbestse probe temizler).
+
+## Sonraki oturumun TEK görevi
+Kullanıcı OVH VPS-2 (Ubuntu 24.04, AB) siparişini onaylayıp sunucu bilgileri hazır olduğunda: migrasyon sırasını (docs/VPS_PHASE8_PLAN.md §6) uygula — kooperatif stop → final backup/hash → aktar → salt-okunur doctor/validate → yalnız sunucu worker'ı (authority claim'li) → 24 sa PAPER soak → ardından sunucuda `history-collect` tier'ları ve bütün-evren feature/replay.
+
+## Kesin resume komutları
+```bash
+git status --short && git log --oneline -3
+python -m pytest tests -q
+python -m tradingbot doctor --quick && python -m tradingbot mode-status && python -m tradingbot health
+python -m tradingbot stop --target all --timeout 5          # bayat instance/lock raporu
+python -m tradingbot futures-status && python -m tradingbot learning-status
+python -m tradingbot history-validate && python -m tradingbot evidence-show --symbol SUI/USDT --market futures --tf 4h --live
+python -m tradingbot watch --interval 15 --scan-every 2 --exit-every 60   # + dashboard --host 127.0.0.1 --port 8080 ; sonda: python -m tradingbot stop
+```

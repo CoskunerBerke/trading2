@@ -1,0 +1,26 @@
+# ÖNERİLEN PAPER AKTİVASYON KONFİGÜRASYONU — yürütme hassasiyeti (tradingbot/execspec.py)
+#
+# Bu dosya config.yaml'a EKLENECEK `execution` alanlarını gösterir; tek başına çalıştırılmaz.
+# Varsayılanlar (kodda) KAPALIDIR: alan yazılmazsa davranış birebir eskisi gibidir.
+#
+# Ölçüm (2026-09-08T14:43Z kohortu, 48 sembol, resmi /fapi/v1/exchangeInfo 15:52Z):
+#   * 48/48 sembol Binance USDⓈ-M'de listeli (29 PERPETUAL/COIN + 19 TRADIFI_PERPETUAL) → hiçbiri
+#     sentetik spesifikasyon GEREKTİRMEZ; `symbol_filters.json` ilk turda resmi kaynaktan dolar.
+#   * Kapı açıkken hiçbir kohort sembolü engellenmez (0/48); yalnız listelenmemiş/yeni/vadeli
+#     sözleşmeler `UNRESOLVED_PRECISION` ile açıkça bloke olur ve funnel'da sayılır.
+#   * Açık 12 pozisyonun çıkışları ETKİLENMEZ (tick() kural çözümü çağırmaz; pozisyonun kendi
+#     meta.filters'ı kullanılır). Tarihsel dolumlar yeniden yazılmaz.
+#
+# Etkinleştirildiğinde değişen davranış (yalnız YENİ girişler):
+#   * Dolum fiyatı resmi tick ile yuvarlanır (TRX 0.00001, NATGAS 0.001, ONDO 0.0001, ZEN 0.001…).
+#     Ölçülen örnekler: TRX 0.3386→0.33871 (eski 0.34), NATGAS 2.932→2.933 (eski 2.94).
+#   * Miktar resmi LOT_SIZE.stepSize ile yuvarlanır (TRX 1, NATGAS 0.1, MSFT 0.01…).
+#   * Resmi metadata 24 saatten eskiyse tur başında 1 ağırlıklı exchangeInfo isteğiyle yenilenir;
+#     yenileme başarısızsa eski önbellek korunur, süresi dolan kural yeni giriş AÇAMAZ (açık log).
+execution:
+  gateway: paper
+  testnet_enabled: false
+  reconcile_on_start: true
+  require_verified_precision: true     # ← AKTİVASYON: doğrulanmamış tick/step ile yeni giriş yok
+  filters_max_age_hours: 24            # exchangeInfo tazelik sınırı (ağırlık 1/istek)
+  filters_refresh_on_start: true

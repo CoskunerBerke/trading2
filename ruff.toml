@@ -1,0 +1,17 @@
+# Lint yapılandırması. Kod tabanı bilinçli olarak uzun satır kullanıyor (yoğun, tek ekranda okunan
+# bloklar), bu yüzden biçim kuralları değil DOĞRULUK kuralları kapı olarak seçilmiştir:
+#   E9   sözdizimi/çalıştırma hataları
+#   F821 tanımsız ad      -> `min_n` gibi refactor kazalarını yakalar
+#   F811 yeniden tanımlama-> sessizce ezilen fonksiyon/test
+#   F632 `is` ile literal karşılaştırma
+#   F702/F706/F707 yanlış yerde continue/return/except
+# Bu küme repo genelinde temizdir ve CI'da kapı olarak koşar. Biçim/kullanılmayan-değişken kuralları
+# (F401/F841/F541) henüz temiz olmadığı için kapıya alınmadı; ayrı bir temizlik görevi konusudur.
+line-length = 150
+target-version = "py312"
+
+[lint]
+select = ["E9", "F821", "F811", "F632", "F702", "F706", "F707"]
+
+[lint.per-file-ignores]
+"tests/*" = ["F811"]        # pytest fixture'ları ad gölgeleyebilir

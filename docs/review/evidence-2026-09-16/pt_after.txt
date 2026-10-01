@@ -1,0 +1,21 @@
+
+[F1] izleyici: sağlıklı tur (pozitif bağlı perp mark, 10 dk eski) → aynı run_id ile 3 exit-check; sağlayıcı stop altı fiyat veriyor
+   bağlı perp_mark (10 dk eski): {'ETH/USDT': (535.2271, 1789548746.815), 'SOL/USDT': (2505.3042, 1789548746.815)}
+   run_id aynı; sağlayıcı çağrısı=4 tick fiyatları=[{'ETH/USDT': None, 'SOL/USDT': None}, {'ETH/USDT': None, 'SOL/USDT': None}, {'ETH/USDT': None, 'SOL/USDT': None}] stop={'ETH/USDT': 486.9593, 'SOL/USDT': 2279.371}
+   pozisyon={'strategy_paper': [], 'strategy_paper_m2': []} kapanış={'strategy_paper': 2, 'strategy_paper_m2': 2}
+  BULGU_YOK  izleyici canlı sağlayıcıyı hiç sormadı; eski (tur) fiyatıyla pozisyon stop altında açık kaldı
+   bağlı mark kaldırılınca: sağlayıcı çağrısı +0, pozisyon={'strategy_paper': [], 'strategy_paper_m2': []}
+
+[F2] giriş öncesi kapanmış 1h mumunun low'u stop altında; pozisyon sonra açılıyor; güncel mark = giriş
+   son 1h bar açılış=2026-09-16 07:00:00+00:00 kapanış=2026-09-16 08:00:00+00:00; pozisyon açılışı=['2026-09-16T09:02:27+00:00']
+   açılan=2 kapanan=0 pozisyon=['ETH/USDT', 'SOL/USDT'] nedenler=[]
+  BULGU_YOK  tur tick'i: pozisyon açıldığı turda giriş ÖNCESİ bar fitiliyle stop'landı
+   izleyici: pozisyon=['ETH/USDT', 'SOL/USDT'] kapanan=0 nedenler=[] mae_önce={'ETH/USDT': -0.030426858248118194, 'SOL/USDT': -0.030157708731861965}
+  BULGU_YOK  60 sn izleyici: giriş öncesi 1h fitili yeni fiyat hareketi gibi kullanıldı, stop kapanışı üretti
+
+[F3] coin + BTC günlük serisi 46 gün eski (yeterli sayıda mum), yeni tur kimliğiyle bağlanıyor
+   karar anı=2026-09-16 09:02:28.168000+00:00 serinin son barı açılış=2026-07-31 00:00:00+00:00 (kapanışı +1g)
+   data_checks={'ETH/USDT': {'ok': False, 'entry_ok': False, 'reason': 'DATA_FRAME_STALE_1D'}, 'SOL/USDT': {'ok': False, 'entry_ok': False, 'reason': 'DATA_FRAME_STALE_1D'}}
+   ret={'DATA_FRAME_STALE_1D': 2} açılan=0 pozisyon=[]
+   data_source.bars={}
+  BULGU_YOK  46 gün eski günlük seriyle (yeni tour_id) veri kapısı geçti ve T2 giriş açtı

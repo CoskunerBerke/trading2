@@ -1,0 +1,83 @@
+........................................................................ [  2%]
+........................................................................ [  5%]
+........................................................................ [  7%]
+........................................................................ [ 10%]
+........................................................................ [ 12%]
+........................................................................ [ 15%]
+........................................................................ [ 18%]
+.................s..................ssssss.............................. [ 20%]
+........................................................................ [ 23%]
+........................................................................ [ 25%]
+........................................................................ [ 28%]
+........................................................................ [ 30%]
+........................................................................ [ 33%]
+.....................s.................................................. [ 36%]
+........................................................................ [ 38%]
+........................................................................ [ 41%]
+........................................................................ [ 43%]
+........................................................................ [ 46%]
+..............................................s......................... [ 48%]
+........................................................................ [ 51%]
+........................................................................ [ 54%]
+........................................................................ [ 56%]
+........................................................................ [ 59%]
+........................................................................ [ 61%]
+........................................................................ [ 64%]
+........................................................................ [ 66%]
+........................................................................ [ 69%]
+........................................................................ [ 72%]
+........................................................................ [ 74%]
+........................................................................ [ 77%]
+....................................................s................... [ 79%]
+...........s.................sssssssssss................................ [ 82%]
+........................................................................ [ 85%]
+........................................................................ [ 87%]
+........................................................................ [ 90%]
+........................................................................ [ 92%]
+........................................................................ [ 95%]
+........................................................................ [ 97%]
+...........................................................              [100%]
+============================== warnings summary ===============================
+..\..\..\..\..\..\Programs\Python\Python313\Lib\site-packages\fastapi\testclient.py:1
+  C:\Users\berke\AppData\Local\Programs\Python\Python313\Lib\site-packages\fastapi\testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+tests/test_chart_analysis_v1.py::test_render_signal_chart_draws_targetless_position
+  <gecici>\wt_full_11e0892\tradingbot\charts.py:137: UserWarning: No artists with labels found to put in legend.  Note that artists whose label start with an underscore are ignored when legend() is called with no argument.
+    ax.legend(loc="upper left", fontsize=7, facecolor=BG, edgecolor=GRID, labelcolor=FG)
+
+tests/test_ops_risk_stop.py: 1 warning
+tests/test_patterns.py: 11 warnings
+  <gecici>\wt_full_11e0892\tradingbot\patterns\engine.py:228: RuntimeWarning: Mean of empty slice
+    self._mu = np.nanmean(m, axis=0)
+
+tests/test_ops_risk_stop.py: 1 warning
+tests/test_patterns.py: 11 warnings
+  C:\Users\berke\AppData\Local\Programs\Python\Python313\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+    var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+SKIPPED [1] tests\test_deploy_backup_contract.py:240: izin bitleri Windows'ta anlamsız
+SKIPPED [1] tests\test_deploy_vps.py:255: systemd-analyze yok (yalnız Linux/CI)
+SKIPPED [1] tests\test_deploy_vps.py:341: setup sandbox testi Linux+bash ister (CI'da çalışır)
+SKIPPED [1] tests\test_deploy_vps.py:392: setup sandbox testi Linux+bash ister (CI'da çalışır)
+SKIPPED [1] tests\test_deploy_vps.py:406: setup sandbox testi Linux+bash ister (CI'da çalışır)
+SKIPPED [1] tests\test_deploy_vps.py:413: setup sandbox testi Linux+bash ister (CI'da çalışır)
+SKIPPED [1] tests\test_deploy_vps.py:422: setup sandbox testi Linux+bash ister (CI'da çalışır)
+SKIPPED [1] tests\test_explainability_and_activation.py:163: fixture bu turda geçerli plan üretmedi
+SKIPPED [1] tests\test_long_term_retrieval.py:703: 1M ölçek ölçümü opt-in: TRADINGBOT_BENCH_1M=1
+SKIPPED [1] tests\test_replay_research.py:175: symlink Windows'ta yönetici ister
+SKIPPED [1] tests\test_replay_research.py:711: symlink Windows'ta yönetici ister
+SKIPPED [1] tests\test_replay_runner.py:332: runner sandbox Linux+bash ister (CI'da çalışır)
+SKIPPED [1] tests\test_replay_runner.py:342: runner sandbox Linux+bash ister (CI'da çalışır)
+SKIPPED [1] tests\test_replay_runner.py:355: runner sandbox Linux+bash ister (CI'da çalışır)
+SKIPPED [1] tests\test_replay_runner.py:368: runner sandbox Linux+bash ister (CI'da çalışır)
+SKIPPED [1] tests\test_replay_runner.py:377: runner sandbox Linux+bash ister (CI'da çalışır)
+SKIPPED [1] tests\test_replay_runner.py:395: runner sandbox Linux+bash ister (CI'da çalışır)
+SKIPPED [1] tests\test_replay_runner.py:410: runner sandbox Linux+bash ister (CI'da çalışır)
+SKIPPED [1] tests\test_replay_runner.py:420: runner sandbox Linux+bash ister (CI'da çalışır)
+SKIPPED [1] tests\test_replay_runner.py:430: runner sandbox Linux+bash ister (CI'da çalışır)
+SKIPPED [1] tests\test_replay_runner.py:438: runner sandbox Linux+bash ister (CI'da çalışır)
+SKIPPED [1] tests\test_replay_runner.py:446: runner sandbox Linux+bash ister (CI'da çalışır)
+2773 passed, 22 skipped, 26 warnings in 862.23s (0:14:22)

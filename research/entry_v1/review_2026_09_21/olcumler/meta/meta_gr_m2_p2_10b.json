@@ -1,0 +1,113 @@
+{
+ "run_id": "gr_m2_p2_10b",
+ "from": "2022-09-01",
+ "to": "2024-08-31",
+ "gate": false,
+ "symbols_requested": [
+  "BTC/USDT",
+  "ETH/USDT",
+  "SOL/USDT",
+  "XRP/USDT",
+  "BNB/USDT",
+  "DOGE/USDT",
+  "LINK/USDT",
+  "AAVE/USDT",
+  "AVAX/USDT",
+  "LTC/USDT"
+ ],
+ "symbols_loaded": [
+  "AAVE/USDT",
+  "AVAX/USDT",
+  "BNB/USDT",
+  "BTC/USDT",
+  "DOGE/USDT",
+  "ETH/USDT",
+  "LINK/USDT",
+  "LTC/USDT",
+  "SOL/USDT",
+  "XRP/USDT"
+ ],
+ "symbols_skipped": {},
+ "universe_complete": true,
+ "n_symbols_loaded": 10,
+ "strategy": true,
+ "no_breakeven": true,
+ "exclude": [],
+ "history_root": "C:\\Users\\berke\\research\\bn_archive\\history",
+ "trigger": false,
+ "veto": false,
+ "candidate_order": true,
+ "stride": 1,
+ "elapsed_s": 205.3,
+ "n_decisions": 43810,
+ "n_actionable": 11427,
+ "n_opened": 95,
+ "determinism_hash": "507608bce67fe4c32d1b3f2110dafa40dde3ec1f9d2f2fe190b367437e8791a8",
+ "rejections": {
+  "total": 11332,
+  "by_reason": {
+   "MIN_NOTIONAL": 988,
+   "TOTAL_OPEN_RISK": 9588,
+   "STEP_ZERO_QTY": 731,
+   "MAX_POSITION_PCT": 5,
+   "STRATEGY_BAD_STOP": 2,
+   "MIN_ORDER_CONFLICT": 18
+  },
+  "by_symbol": {
+   "BTC/USDT": {
+    "MIN_NOTIONAL": 6,
+    "TOTAL_OPEN_RISK": 1519,
+    "STEP_ZERO_QTY": 502,
+    "MAX_POSITION_PCT": 1
+   },
+   "ETH/USDT": {
+    "MIN_NOTIONAL": 414,
+    "TOTAL_OPEN_RISK": 1197
+   },
+   "DOGE/USDT": {
+    "TOTAL_OPEN_RISK": 719,
+    "STRATEGY_BAD_STOP": 1,
+    "MIN_ORDER_CONFLICT": 18,
+    "MIN_NOTIONAL": 1
+   },
+   "LINK/USDT": {
+    "TOTAL_OPEN_RISK": 1458,
+    "MIN_NOTIONAL": 330
+   },
+   "AAVE/USDT": {
+    "TOTAL_OPEN_RISK": 990,
+    "STEP_ZERO_QTY": 125
+   },
+   "AVAX/USDT": {
+    "TOTAL_OPEN_RISK": 1486,
+    "STEP_ZERO_QTY": 104
+   },
+   "LTC/USDT": {
+    "TOTAL_OPEN_RISK": 1404,
+    "MIN_NOTIONAL": 237,
+    "MAX_POSITION_PCT": 3,
+    "STRATEGY_BAD_STOP": 1
+   },
+   "BNB/USDT": {
+    "TOTAL_OPEN_RISK": 424
+   },
+   "SOL/USDT": {
+    "TOTAL_OPEN_RISK": 66
+   },
+   "XRP/USDT": {
+    "TOTAL_OPEN_RISK": 325,
+    "MAX_POSITION_PCT": 1
+   }
+  }
+ },
+ "funding_coverage": {
+  "queries": 3399,
+  "answered": 3399,
+  "unknown": 0,
+  "complete": true,
+  "answered_fraction": 1.0,
+  "missing_series": [],
+  "tolerance_ms": 120000,
+  "source": "history store: futures/<symbol>/funding (Binance fundingRate arşivi)"
+ }
+}

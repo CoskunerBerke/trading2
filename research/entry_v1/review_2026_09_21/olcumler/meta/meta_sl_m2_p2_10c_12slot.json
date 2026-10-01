@@ -1,0 +1,111 @@
+{
+ "run_id": "sl_m2_p2_10c_12slot",
+ "from": "2022-09-01",
+ "to": "2024-08-31",
+ "gate": false,
+ "symbols_requested": [
+  "BTC/USDT",
+  "ETH/USDT",
+  "SOL/USDT",
+  "XRP/USDT",
+  "BNB/USDT",
+  "DOGE/USDT",
+  "LINK/USDT",
+  "AAVE/USDT",
+  "AVAX/USDT",
+  "LTC/USDT"
+ ],
+ "symbols_loaded": [
+  "AAVE/USDT",
+  "AVAX/USDT",
+  "BNB/USDT",
+  "BTC/USDT",
+  "DOGE/USDT",
+  "ETH/USDT",
+  "LINK/USDT",
+  "LTC/USDT",
+  "SOL/USDT",
+  "XRP/USDT"
+ ],
+ "symbols_skipped": {},
+ "universe_complete": true,
+ "n_symbols_loaded": 10,
+ "strategy": true,
+ "no_breakeven": true,
+ "exclude": [],
+ "history_root": "C:\\Users\\berke\\research\\bn_archive\\history",
+ "trigger": false,
+ "veto": false,
+ "candidate_order": true,
+ "risk_pct": 0.5,
+ "stride": 1,
+ "elapsed_s": 182.6,
+ "n_decisions": 43810,
+ "n_actionable": 14957,
+ "n_opened": 39,
+ "determinism_hash": "752450aeda737fc8162bf4453b64d0334e99ef69cd3b1a37cc91c4afb61a67f1",
+ "rejections": {
+  "total": 14918,
+  "by_reason": {
+   "STEP_ZERO_QTY": 734,
+   "MIN_ORDER_CONFLICT": 13704,
+   "MIN_NOTIONAL": 475,
+   "MAX_POSITION_PCT": 4,
+   "STRATEGY_BAD_STOP": 1
+  },
+  "by_symbol": {
+   "BTC/USDT": {
+    "STEP_ZERO_QTY": 680,
+    "MIN_ORDER_CONFLICT": 1347,
+    "MAX_POSITION_PCT": 1
+   },
+   "ETH/USDT": {
+    "MIN_ORDER_CONFLICT": 1614,
+    "MIN_NOTIONAL": 306
+   },
+   "AAVE/USDT": {
+    "MIN_ORDER_CONFLICT": 1665,
+    "STEP_ZERO_QTY": 8
+   },
+   "SOL/USDT": {
+    "MIN_ORDER_CONFLICT": 1971,
+    "MIN_NOTIONAL": 1
+   },
+   "BNB/USDT": {
+    "MIN_ORDER_CONFLICT": 632,
+    "MIN_NOTIONAL": 78,
+    "STEP_ZERO_QTY": 42
+   },
+   "LTC/USDT": {
+    "MIN_ORDER_CONFLICT": 1625,
+    "MIN_NOTIONAL": 81,
+    "MAX_POSITION_PCT": 3,
+    "STRATEGY_BAD_STOP": 1
+   },
+   "AVAX/USDT": {
+    "MIN_ORDER_CONFLICT": 1598,
+    "STEP_ZERO_QTY": 4
+   },
+   "LINK/USDT": {
+    "MIN_ORDER_CONFLICT": 1779,
+    "MIN_NOTIONAL": 9
+   },
+   "XRP/USDT": {
+    "MIN_ORDER_CONFLICT": 593
+   },
+   "DOGE/USDT": {
+    "MIN_ORDER_CONFLICT": 880
+   }
+  }
+ },
+ "funding_coverage": {
+  "queries": 1534,
+  "answered": 1534,
+  "unknown": 0,
+  "complete": true,
+  "answered_fraction": 1.0,
+  "missing_series": [],
+  "tolerance_ms": 120000,
+  "source": "history store: futures/<symbol>/funding (Binance fundingRate arşivi)"
+ }
+}

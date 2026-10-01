@@ -53,6 +53,7 @@ def build_report(cfg: BotConfig, exchange: str, analyses: list[CoinAnalysis], de
         "open_pnl": {k: round(v, 2) for k, v in portfolio.open_pnl(prices).items()},
         "closed_trades": len(portfolio.history),
         "realized_pnl": round(sum(h.get("pnl", 0.0) for h in portfolio.history), 2),
+        "history": list(portfolio.history[-50:]),
     }
     return RunReport(
         run_time=when, exchange=exchange, timeframe=cfg.exchange.timeframe, summary=summary.to_dict(),

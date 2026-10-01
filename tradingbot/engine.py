@@ -8,7 +8,6 @@ import json
 import logging
 import time
 from datetime import datetime, timezone
-from pathlib import Path
 
 import pandas as pd
 
@@ -33,7 +32,7 @@ class TradingEngine:
         self.runner = AgentRunner(cfg)
         self.scanner = MarketScanner(cfg.scanner.min_volume_usdt, cfg.scanner.flag_score, cfg.scanner.top_n, max_symbols=cfg.scanner.max_symbols) if cfg.scanner.enabled else None
         self.ledger_path = cfg.state_path / "futures_ledger.json"
-        self.ledger = FuturesLedger.load(self.ledger_path, cfg.futures.starting_equity_usdt, cfg.futures.max_positions)
+        self.ledger = self._load_legacy_ledger()      # v3 motoru bunu geçersiz kılar: dosyanın tek sahibi FuturesLedgerV2
         self.learner = Learner(cfg.state_path / "learning.json", cfg.learning.min_trades)
         self.trig_path = cfg.state_path / "triggers.json"
         self.triggers: dict[str, str] = json.loads(self.trig_path.read_text(encoding="utf-8")) if self.trig_path.exists() else {}
@@ -43,18 +42,36 @@ class TradingEngine:
         self.last_scan_at = 0.0
 
     # ------------------------------------------------------------------ yardımcılar
+    def _load_legacy_ledger(self):
+        """v1 (legacy) defter yükleyici. Dosya v2 şemasındaysa `LedgerSchemaError` yükselir (fail-closed; dosya korunur):
+        legacy motor v2 execution state'ini açamaz/üzerine yazamaz."""
+        return FuturesLedger.load(self.ledger_path, self.cfg.futures.starting_equity_usdt, self.cfg.futures.max_positions)
+
     def _fut(self):
         if self._fu is None:
             import ccxt
             self._fu = ccxt.binanceusdm({"enableRateLimit": True})
         return self._fu
 
-    def perp_frames(self, symbol: str) -> dict:
-        """Yalnızca perpetual olan semboller için Binance futures mumları (1d/4h/1h)."""
+    #: Perpetual çerçeve çekilirken dilim → bar sayısı. Kural defterleri bu tablodan ek dilim ister
+    #: (`paper_rules.rule_timeframes`); tabloda olmayan dilim SESSİZCE atlanmaz, KeyError verir.
+    PERP_FRAME_LIMITS = {"1d": 400, "4h": 700, "1h": 500, "5m": 500, "15m": 500}
+    #: Ajanların her zaman istediği taban dilimler.
+    PERP_BASE_TIMEFRAMES = ("1d", "4h", "1h")
+
+    def perp_frames(self, symbol: str, timeframes: tuple[str, ...] | None = None) -> dict:
+        """Perpetual sembolün Binance futures mumları.
+
+        `timeframes` VERİLMEZSE taban demet kullanılır. V17: liste SABİT DEĞİLDİR — etkin kâğıt
+        defterlerin kuralı 5m okuyorsa o dilim de BURADAN gelmeli. Aksi halde 5m TradingView SPOT
+        akışına düşer, provenans yine USDM_PERP der (yalnız ilan edilen dilimler denetlenir) ve
+        defter SPOT mumuyla perpetual pozisyon açar. Bu kusur 2026-09-18'de üretimde görüldü.
+        """
         ex = self._fut()
         perp = f"{symbol}:USDT"
         out = {}
-        for tf, lim in (("1d", 400), ("4h", 700), ("1h", 500)):
+        for tf in (timeframes or self.PERP_BASE_TIMEFRAMES):
+            lim = self.PERP_FRAME_LIMITS[str(tf)]
             raw = ex.fetch_ohlcv(perp, tf, limit=lim)
             out[tf] = prepare(pd.DataFrame(raw, columns=["timestamp", "open", "high", "low", "close", "volume"]))
         return out

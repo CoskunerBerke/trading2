@@ -1,0 +1,224 @@
+"""Mum kaynağı (CSV önbellek + isteğe bağlı parquet) ve grafik yükü (overlay/panel/level/plan)."""
+from __future__ import annotations
+
+import math
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+import pandas as pd
+
+from ..indicators import bollinger, ema, rsi, sma
+from ..indicators_ext import macd, vwap_session
+
+TF_ALIASES = {"1h": ("1h", "60"), "4h": ("4h", "240"), "1d": ("1d", "D", "1D"), "15m": ("15m", "15"), "1w": ("1w", "W")}
+from ..timeframes import TF_MS  # tek kaynak (algoritma katmani panel modulunu ICE AKTARMAZ; bulgu #1)
+
+
+def _clean(v: Any) -> Any:
+    if v is None:
+        return None
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return None if (math.isnan(f) or math.isinf(f)) else round(f, 8)
+
+
+def _series(s: pd.Series) -> list[float | None]:
+    return [_clean(x) for x in s.to_numpy(dtype=float)]
+
+
+class CandleSource:
+    """`data_dir` altındaki `tv-binance_BTC-USDT_4h.csv` / `binance_BTC-USDT_4h.csv` (+ `candles/**/*.parquet`)."""
+
+    def __init__(self, data_dir: Path | str, quote: str = "USDT") -> None:
+        self.data_dir = Path(data_dir)
+        self.quote = quote
+
+    #: Piyasaya gore IZINLI dosya onekleri. Futures istegi spot dosyasina DUSMEZ (ve tersi): eksik veri
+    #: acikca eksik doner; baska piyasa ya da baska zaman dilimiyle DOLDURULMAZ (CHART ANALYSIS V1 kusur #1).
+    PREFIXES = {"futures": ("binanceusdm", "tv-binanceusdm"),
+                "spot": ("tv-binance", "binance", "bybit", "okx", "kucoin")}
+
+    def candidates(self, base: str, tf: str, market: str = "spot") -> list[Path]:
+        base = base.upper()
+        market = "futures" if market == "futures" else "spot"
+        tfs = TF_ALIASES.get(tf, (tf,))
+        out: list[Path] = []
+        for t in tfs:
+            for pre in self.PREFIXES[market]:
+                out.append(self.data_dir / f"{pre}_{base}-{self.quote}_{t}.csv")
+        sub = self.data_dir / "candles"
+        if sub.exists():
+            for p in sorted(sub.rglob("*.parquet")):
+                if self._parquet_matches(p, base, tfs, market):
+                    out.append(p)
+        return out
+
+    def _parquet_matches(self, p: Path, base: str, tfs: tuple, market: str) -> bool:
+        """Parquet: sembol (BASE-QUOTE ya da BASE_QUOTE ya da BASEQUOTE), zaman dilimi ve piyasa KESIN eslesir."""
+        import re
+        stem = p.stem.upper()
+        q = self.quote.upper()
+        sym_ok = re.search(r"(^|[^A-Z0-9])%s[-_]?%s([^A-Z0-9]|$)" % (re.escape(base), re.escape(q)), stem) is not None
+        tf_ok = any(re.search(r"(^|[^A-Z0-9])%s([^A-Z0-9]|$)" % re.escape(str(t).upper()), stem) for t in tfs)
+        parts = {x.lower() for x in p.relative_to(self.data_dir).parts[:-1]}
+        other = "spot" if market == "futures" else "futures"
+        market_ok = other not in parts and (market in parts or not ({"spot", "futures"} & parts))
+        return sym_ok and tf_ok and market_ok
+
+    def find(self, base: str, tf: str = "4h", market: str = "spot") -> Path | None:
+        for p in self.candidates(base, tf, market):
+            if p.exists():
+                return p
+        return None
+
+    def source_info(self, base: str, tf: str = "4h", market: str = "spot", *, now_ms: int | None = None) -> dict[str, Any]:
+        """Grafik veri kaynagi: dosya, piyasa, dilim, son bar ve tazelik. Eksikse `missing=True` (doldurma YOK)."""
+        import time
+        p = self.find(base, tf, market)
+        info: dict[str, Any] = {"base": base.upper(), "tf": tf, "market": "futures" if market == "futures" else "spot",
+                                "file": p.name if p else None, "format": (p.suffix.lstrip(".") if p else None), "missing": p is None,
+                                "last_bar_ts": None, "age_s": None, "stale": None, "mtime": None}
+        if p is None:
+            return info
+        try:
+            info["mtime"] = int(p.stat().st_mtime * 1000)
+        except OSError:
+            pass
+        df = self.load(base, tf, market, n=2)
+        if df is not None and len(df):
+            last = int(df["timestamp"].iloc[-1])
+            info["last_bar_ts"] = last
+            now = int(now_ms if now_ms is not None else time.time() * 1000)
+            step = TF_MS.get(tf, 0)
+            info["age_s"] = max(0, (now - last) // 1000)
+            info["stale"] = bool(step and (now - last) > 2 * step + step)   # son bar + bir tam bar + tolerans
+        return info
+
+    def available_bases(self) -> list[str]:
+        bases: set[str] = set()
+        for p in self.data_dir.glob("*_*-*_*.csv"):
+            try:
+                pair = p.name.split("_", 1)[1].rsplit("_", 1)[0]
+                bases.add(pair.split("-")[0].upper())
+            except IndexError:
+                continue
+        return sorted(bases)
+
+    def bounds(self, base: str, tf: str = "4h", market: str = "spot") -> dict[str, Any] | None:
+        """Arşivin gerçek kapsamı (ilk/son bar, satır sayısı) — 'veri yok' bildirimi DÜRÜST olsun diye (bulgu #6)."""
+        df = self.load(base, tf, market)
+        if df is None or df.empty:
+            return None
+        return {"first_ts": int(df["timestamp"].iloc[0]), "last_ts": int(df["timestamp"].iloc[-1]), "rows": int(len(df))}
+
+    def load(self, base: str, tf: str = "4h", market: str = "spot", n: int | None = None, *, end_ts: int | None = None) -> pd.DataFrame | None:
+        """Mumlar. `end_ts` verilirse ÖNCE `timestamp <= end_ts` seçilir, SONRA son `n` bar alınır: geçmiş bir analiz anı
+        için görüntülenecek barlar ve gösterge ısınması o tarih aralığından gelir (2e31926 önce en yeni n barı kesip
+        sonra tarihe filtreliyordu; arşivde olan tarih için 'veri yok' dönüyordu — bulgu #6)."""
+        p = self.find(base, tf, market)
+        if p is None:
+            return None
+        try:
+            if p.suffix == ".parquet":
+                df = pd.read_parquet(p)   # pyarrow yoksa ImportError → None
+            else:
+                df = pd.read_csv(p)
+        except (OSError, ValueError, ImportError):
+            return None
+        cols = {c.lower(): c for c in df.columns}
+        need = ["open", "high", "low", "close"]
+        if not all(c in cols for c in need):
+            return None
+        ts_col = cols.get("timestamp") or cols.get("time") or cols.get("ts") or cols.get("open_time")
+        out = pd.DataFrame({k: pd.to_numeric(df[cols[k]], errors="coerce") for k in need})
+        out["volume"] = pd.to_numeric(df[cols["volume"]], errors="coerce") if "volume" in cols else 0.0
+        if ts_col is not None:
+            ts = df[ts_col]
+            if np.issubdtype(ts.dtype, np.number):
+                ts = pd.to_numeric(ts, errors="coerce")
+                # saniye/milisaniye ayrımı
+                ts = ts.where(ts > 1e11, ts * 1000)
+                out["timestamp"] = ts.astype("int64")
+            else:
+                out["timestamp"] = (pd.to_datetime(ts, utc=True, errors="coerce").astype("int64") // 1_000_000)
+        elif isinstance(df.index, pd.DatetimeIndex):
+            idx = df.index.tz_localize("UTC") if df.index.tz is None else df.index.tz_convert("UTC")
+            out["timestamp"] = idx.asi8 // 1_000_000
+        else:
+            return None
+        out = out.dropna(subset=["open", "high", "low", "close", "timestamp"]).sort_values("timestamp").drop_duplicates("timestamp", keep="last")
+        out = out.reset_index(drop=True)
+        if end_ts is not None:
+            out = out[out["timestamp"] <= int(end_ts)].reset_index(drop=True)   # analiz anına göre seçim, kuyruktan ÖNCE
+        if n:
+            out = out.iloc[-int(n):].reset_index(drop=True)
+        return out
+
+
+def build_candle_payload(df: pd.DataFrame, *, n: int = 600, plan: dict | None = None, position: dict | None = None,
+                         levels: list[dict] | dict | None = None, funding: list | None = None, oi: list | None = None,
+                         base: str = "", tf: str = "", market: str = "spot", warmup: int = 250) -> dict[str, Any]:
+    """Overlay'ler ısınma dahil hesaplanır (warmup ekstra bar), sonra son `n` bar döndürülür."""
+    if df is None or df.empty:
+        return {"base": base, "tf": tf, "market": market, "t": [], "o": [], "h": [], "l": [], "c": [], "v": [], "overlays": {},
+                "levels": [], "plan": {}, "position": {}, "panels": {}, "error": "veri yok"}
+    close = df["close"].astype(float)
+    ov: dict[str, pd.Series] = {}
+    for L in (25, 50, 99, 200):
+        ov[f"sma{L}"] = sma(close, L)
+        ov[f"ema{L}"] = ema(close, L)
+    try:
+        ov["vwap"] = vwap_session(df)
+    except (ValueError, KeyError):
+        ov["vwap"] = pd.Series(np.nan, index=df.index)
+    lo, mid, up = bollinger(close, 20, 2.0)
+    ov["bb_up"], ov["bb_mid"], ov["bb_lo"] = up, mid, lo
+    r = rsi(close, 14)
+    m_line, m_sig, m_hist = macd(close)
+    k = min(len(df), int(n))
+    sl = slice(len(df) - k, len(df))
+    payload: dict[str, Any] = {
+        "base": base, "tf": tf, "market": market,
+        "t": [int(x) for x in df["timestamp"].iloc[sl].to_numpy()],
+        "o": _series(df["open"].iloc[sl]), "h": _series(df["high"].iloc[sl]), "l": _series(df["low"].iloc[sl]),
+        "c": _series(close.iloc[sl]), "v": _series(df["volume"].iloc[sl].astype(float)),
+        "overlays": {kk: _series(vv.iloc[sl]) for kk, vv in ov.items()},
+        "panels": {"rsi": _series(r.iloc[sl]), "macd_line": _series(m_line.iloc[sl]), "macd_signal": _series(m_sig.iloc[sl]),
+                   "macd_hist": _series(m_hist.iloc[sl]), "funding": list(funding or []), "oi": list(oi or [])},
+        "levels": [], "plan": {}, "position": {},
+    }
+    # seviyeler
+    lv: list[dict] = []
+    if isinstance(levels, dict):
+        for name, val in levels.items():
+            c = _clean(val)
+            if c is not None:
+                lv.append({"name": str(name), "price": c, "kind": "resistance" if str(name).lower().startswith("r") else ("support" if str(name).lower().startswith("s") else "level")})
+    elif isinstance(levels, list):
+        for x in levels:
+            if isinstance(x, dict) and _clean(x.get("price")) is not None:
+                lv.append({"name": str(x.get("name", "")), "price": _clean(x.get("price")), "kind": str(x.get("kind", "level"))})
+    payload["levels"] = lv
+    if plan:
+        tg = plan.get("targets") or [plan.get("target1"), plan.get("target2")]
+        entry = plan.get("entry")
+        if entry is None and plan.get("entry_zone"):
+            ez = plan["entry_zone"]
+            entry = (float(ez[0]) + float(ez[1])) / 2 if len(ez) > 1 and ez[0] and ez[1] else (ez[0] if ez else None)
+        payload["plan"] = {"direction": plan.get("direction"), "entry": _clean(entry), "stop": _clean(plan.get("stop")),
+                           "tp1": _clean(tg[0]) if len(tg) > 0 else None, "tp2": _clean(tg[1]) if len(tg) > 1 else None,
+                           "liq": _clean(plan.get("liq") or plan.get("liquidation_price")), "valid": bool(plan.get("valid", True))}
+    if position:
+        tg = position.get("targets") or [position.get("target1"), position.get("target2")]
+        payload["position"] = {"side": position.get("side"), "entry": _clean(position.get("entry_avg") or position.get("entry")),
+                               "stop": _clean(position.get("stop")), "tp1": _clean(tg[0]) if len(tg) > 0 else None,
+                               "tp2": _clean(tg[1]) if len(tg) > 1 else None,
+                               "liq": _clean(position.get("liquidation_price") or position.get("liq_price")),
+                               "qty": _clean(position.get("qty") or position.get("units")), "leverage": position.get("leverage")}
+    return payload
+
+
+__all__ = ["CandleSource", "build_candle_payload", "TF_ALIASES", "TF_MS"]

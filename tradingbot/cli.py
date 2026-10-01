@@ -15,7 +15,6 @@ import json
 import logging
 import sys
 import time
-from pathlib import Path
 
 from .analyzer import CoinAnalysis, analyze_symbol
 from .config import BotConfig, load_config
@@ -208,6 +207,9 @@ def _print_tour(summ: dict) -> None:
         print(f"   ➖ KAPANDI: {c}")
     lr = summ["learning"]
     print(f"🎓 ÖĞRENME: {lr['trades']} işlem · kazanma %{lr['win_rate']} · beklenti {lr['expectancy_r']:+.2f}R · model {'AKTİF' if lr['ready'] else 'ısınıyor'} · {summ['seconds']}s")
+    if summ.get("risk"):
+        r = summ["risk"]
+        print(f"🛡️ RİSK: profil {r['profile']} · kill switch {r['killswitch']}" + (f" · TETİK: {r['trips']}" if r.get("trips") else ""))
 
 
 def cmd_scan(cfg: BotConfig, args) -> int:
@@ -226,10 +228,18 @@ def cmd_scan(cfg: BotConfig, args) -> int:
     return 0
 
 
+def _make_engine(cfg: BotConfig, legacy: bool = False):
+    """v3 motoru (Coin Heads + Risk Engine + defter v2) varsayılan; `--legacy` ile eski motor."""
+    if legacy or not (cfg.v3 and cfg.v3.coin_heads.enabled):
+        from .engine import TradingEngine
+        return TradingEngine(cfg)
+    from .engine_v3 import TradingEngineV3
+    return TradingEngineV3(cfg)
+
+
 def cmd_tour(cfg: BotConfig, args) -> int:
-    """Tek tur: tara → ajanlar → plan → kağıt futures → öğren → Obsidian."""
-    from .engine import TradingEngine
-    eng = TradingEngine(cfg)
+    """Tek tur: tara → ajanlar → Coin Heads → Baş Yönetici → Risk Engine → kağıt futures/spot → öğren → Obsidian."""
+    eng = _make_engine(cfg, getattr(args, "legacy", False))
     summ = eng.tour(do_scan=not args.no_scan, symbols_override=args.symbols or None, obsidian=not args.no_obsidian)
     _print_tour(summ)
     return 0
@@ -238,16 +248,63 @@ def cmd_tour(cfg: BotConfig, args) -> int:
 def cmd_watch(cfg: BotConfig, args) -> int:
     """7/24 izleme: her `interval` dakikada tam tur (tara→ajanlar→kağıt futures→öğren);
     her yeni 4h bar kapanışında ayrıca spot walk-forward döngüsü (`run`)."""
+    import signal
     from .data import TIMEFRAME_MS
-    from .engine import TradingEngine
-    eng = TradingEngine(cfg)
+    lock = None
+    try:
+        from .ops.lock import AlreadyRunningError, SingletonLock
+        lock = SingletonLock(cfg.state_path / ".lock")
+        try:
+            lock.acquire()
+        except AlreadyRunningError as exc:
+            print(f"⛔ Başka bir `watch` süreci çalışıyor ({exc}). Aynı state/vault'a iki yazar olmaz.")
+            return 3
+    except ImportError:
+        pass
+    from .ops.authority import check as authority_check
+    ok, why = authority_check(cfg.state_path)
+    if not ok:                       # split-brain koruması: yetki başka makinede → bu worker başlamaz (fail-closed)
+        print(f"⛔ {why}. Devralmak için: python -m tradingbot authority --claim")
+        if lock is not None:
+            lock.release(remove_file=True)
+        return 4
+    log.info("worker yetkisi: %s", why)
+    eng = _make_engine(cfg, getattr(args, "legacy", False))
     tf_ms = TIMEFRAME_MS[cfg.exchange.timeframe]
     last_full_bar = -1
     scan_every = max(1, args.scan_every)
     n = 0
-    log.info("İzleme başladı: tur her %d dk (tarama her %d turda bir), spot WFO döngüsü her %s bar kapanışında. Ctrl+C ile durdur.",
-             args.interval, scan_every, cfg.exchange.timeframe)
-    while True:
+    stop_flag = {"stop": False}
+    # kooperatif durdurma: instance kaydı (pid+token) + `python -m tradingbot stop` isteğini kısa aralıklarla kontrol
+    from .ops.shutdown import InstanceRecord, StopWatcher
+    inst = InstanceRecord(cfg.state_path, "worker", {"interval_min": args.interval, "scan_every": scan_every})
+    inst.register()
+    watcher = StopWatcher(cfg.state_path, inst.token)
+    if hasattr(eng, "set_stop_check"):
+        eng.set_stop_check(watcher.requested)      # tur ortasında istek gelirse: yeni giriş yok, çıkışlar/defter işlemi tamamlanır
+
+    def _sigterm(signum, frame):   # graceful: mevcut tur biter, state kaydedilir, döngü çıkar
+        log.info("SIGTERM alındı — mevcut tur bitince duruluyor")
+        stop_flag["stop"] = True
+    try:
+        signal.signal(signal.SIGTERM, _sigterm)
+    except (ValueError, OSError):
+        pass
+    log.info("İzleme başladı [%s · %s]: tur her %d dk (tarama her %d turda bir), spot WFO döngüsü her %s bar kapanışında. Ctrl+C ile durdur.",
+             cfg.mode, type(eng).__name__, args.interval, scan_every, cfg.exchange.timeframe)
+    # KORUYUCU İZLEYİCİ (2026-09-24): beş defterin çıkış kontrolü AYRI iş parçacığında, turdan bağımsız `--exit-every` sn'de
+    # bir. Tur ağırlaşsa/bloke olsa da açık pozisyonlar izlenir. Kurulamazsa eski eşzamanlı yol (turlar arası) sürer.
+    exit_every = max(10, int(getattr(args, "exit_every", 60) or 60))
+    if hasattr(eng, "ensure_protective_monitor"):
+        try:
+            eng.ensure_protective_monitor(interval_s=float(exit_every))
+        except Exception as exc:  # noqa: BLE001
+            log.exception("koruyucu izleyici başlatılamadı (turlar arası eşzamanlı çıkış kontrolü sürer): %s", exc)
+
+    def _monitor_alive() -> bool:
+        mon = getattr(eng, "protective_monitor", None)
+        return bool(mon is not None and mon.alive)
+    while not stop_flag["stop"]:
         try:
             now_ms = int(time.time() * 1000)
             cur_bar = now_ms // tf_ms
@@ -261,10 +318,78 @@ def cmd_watch(cfg: BotConfig, args) -> int:
             n += 1
         except KeyboardInterrupt:
             print("İzleme durduruldu.")
-            return 0
-        except Exception as exc:  # noqa: BLE001
+            break
+        except Exception as exc:  # noqa: BLE001 — tur hatası döngüyü öldürmez; kayıt + sağlık dosyasına yazılır
             log.exception("İzleme turu hatası: %s", exc)
-        time.sleep(max(1, args.interval) * 60)
+            try:
+                from .core import atomic_write_json, iso
+                atomic_write_json(cfg.state_path / "health.json", {"state": "DEGRADED", "at": iso(), "error": f"{type(exc).__name__}: {exc}"[:300]})
+            except Exception:  # noqa: BLE001
+                pass
+        if watcher.requested():
+            stop_flag["stop"] = True
+        # bekleme: SIGTERM'e ve stop isteğine duyarlı (2 sn parçalar)
+        remaining = max(1, args.interval) * 60
+        since_exit = 0
+        since_hb = 0
+        from .ops.health import heartbeat as write_heartbeat
+        while remaining > 0 and not stop_flag["stop"]:
+            time.sleep(min(2, remaining))
+            remaining -= 2
+            since_exit += 2
+            since_hb += 2
+            if since_hb >= 30:          # canlılık kalp atışı tur süresinden BAĞIMSIZ (interval ne olursa olsun ~30 sn'de bir)
+                since_hb = 0
+                try:
+                    write_heartbeat(cfg.state_path, getattr(eng, "run_id", None) or None, {"source": "watch"})
+                except Exception:  # noqa: BLE001 — heartbeat hatası izlemeyi durdurmaz
+                    pass
+            if watcher.requested():
+                stop_flag["stop"] = True
+            if _monitor_alive():
+                # izleyici iş parçacığı koruyor; ana iş parçacığı yalnız onun kapanışlarını ÖĞRENİR (öğreniciler tek iş parçacığında)
+                try:
+                    closed = eng.drain_protective_closes()
+                    if closed:
+                        print(f"  ⏱ exit-monitor: {', '.join(c.get('symbol', '?') for c in closed)} kapandı")
+                    eng.record_monitor_path()
+                except Exception as exc:  # noqa: BLE001
+                    log.exception("koruyucu kapanış öğrenme hatası: %s", exc)
+            elif since_exit >= exit_every and hasattr(eng, "exit_check"):       # eşzamanlı yedek yol: tur/taramayı beklemez
+                since_exit = 0
+                try:
+                    closed = eng.exit_check()
+                    if closed:
+                        print(f"  ⏱ exit-monitor: {', '.join(c.get('symbol', '?') for c in closed)} kapandı")
+                except Exception as exc:  # noqa: BLE001
+                    log.exception("exit-monitor hatası: %s", exc)
+    # temiz çıkış: izleyici durur → state/log flush → istek tüket → instance kaydı sil → yalnız kendi lock'unu kaldır
+    if hasattr(eng, "stop_protective_monitor"):
+        try:
+            eng.stop_protective_monitor()
+            eng.drain_protective_closes()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("koruyucu izleyici kapatılırken hata: %s", exc)
+    coop = watcher.requested()
+    try:
+        from .core import atomic_write_json, iso
+        atomic_write_json(cfg.state_path / "health.json", {"state": "STOPPED", "at": iso(), "reason": "cooperative_stop" if coop else "signal", "tours": n})
+    except Exception:  # noqa: BLE001
+        pass
+    log.info("İzleme temiz durduruldu (kooperatif=%s, tur=%d)", coop, n)
+    for h in list(log.handlers) + list(logging.getLogger().handlers):
+        try:
+            h.flush()
+        except Exception:  # noqa: BLE001
+            pass
+    watcher.consume()
+    inst.unregister()
+    if lock is not None:
+        try:
+            lock.release(remove_file=True)
+        except Exception:  # noqa: BLE001
+            pass
+    return 0
 
 
 def _old_cmd_watch(cfg: BotConfig, args) -> int:
@@ -366,10 +491,16 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("watch", help="7/24 izleme: tur periyodik, spot WFO döngüsü her bar kapanışında"); common(s)
     s.add_argument("--interval", type=int, default=15, help="Tur aralığı (dakika)")
     s.add_argument("--scan-every", type=int, default=2, help="Kaç turda bir tam piyasa taraması")
-    s.add_argument("--no-obsidian", action="store_true"); s.add_argument("--no-paper", action="store_true"); s.add_argument("--no-wfo", action="store_true")
+    s.add_argument("--no-obsidian", action="store_true"); s.add_argument("--no-paper", action="store_true"); s.add_argument("--exit-every", dest="exit_every", type=int, default=60, help="açık pozisyon çıkış kontrolü periyodu (sn)"); s.add_argument("--no-wfo", action="store_true")
     s.set_defaults(fn=cmd_watch)
     s = sub.add_parser("obsidian", help="Son rapordan Obsidian'ı yeniden yaz"); s.set_defaults(fn=cmd_obsidian)
     s = sub.add_parser("reset-portfolio", help="Kağıt portföyü sıfırla"); s.set_defaults(fn=cmd_reset_portfolio)
+    for name in ("tour", "watch"):
+        sub.choices[name].add_argument("--legacy", action="store_true", help="v2 motoru (Coin Heads/Risk Engine olmadan)")
+    from .cli_v3 import register as _register_v3
+    _register_v3(sub)
+    from .notify.cli import register as _register_alert
+    _register_alert(sub)
     return p
 
 
@@ -381,8 +512,19 @@ def main(argv: list[str] | None = None) -> int:
             pass
     args = build_parser().parse_args(argv)
     _setup_logging(args.verbose)
-    cfg = load_config(args.config)
-    if not cfg.coins:
+    from .core import ConfigError
+    try:
+        cfg = load_config(args.config)
+    except ConfigError as exc:
+        print(f"⛔ YAPILANDIRMA HATASI (program başlatılmadı): {exc}")
+        return 2
+    try:   # JSON satır log + rotasyon (ops varsa)
+        from .ops.logging_setup import setup_logging as _json_logs
+        if cfg.v3 and cfg.v3.monitoring.json_logs and args.cmd in ("watch", "tour", "run"):
+            _json_logs("DEBUG" if args.verbose else "INFO", True, cfg.logs_path, None)
+    except ImportError:
+        pass
+    if not cfg.coins and args.cmd not in ("doctor", "migrate", "mode-status", "risk-status", "health", "paper-status", "dashboard", "backup", "restore"):
         print("config.yaml içinde coin listesi boş.")
         return 2
     return int(args.fn(cfg, args))

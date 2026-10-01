@@ -1,0 +1,92 @@
+{
+ "label": "GERÇEK ARŞİV (bn_archive) — replay strateji modu, yapı OFF; PnL raporlanmaz",
+ "code_sha": "17e5ab8e2782e065ccd567b58df70ebf7cbb432c",
+ "symbols": [
+  "BTC/USDT",
+  "ETH/USDT",
+  "ZEC/USDT",
+  "SOL/USDT",
+  "NEAR/USDT",
+  "UNI/USDT",
+  "XRP/USDT",
+  "ONE/USDT",
+  "BNB/USDT",
+  "ARB/USDT",
+  "DOGE/USDT",
+  "LSK/USDT",
+  "SUI/USDT",
+  "ENA/USDT",
+  "G/USDT",
+  "WLD/USDT",
+  "ADA/USDT",
+  "ONDO/USDT",
+  "1000PEPE/USDT",
+  "COTI/USDT",
+  "LINK/USDT",
+  "REZ/USDT",
+  "DASH/USDT",
+  "AAVE/USDT",
+  "TAO/USDT",
+  "BCH/USDT",
+  "AVAX/USDT",
+  "DOT/USDT",
+  "FIL/USDT",
+  "APT/USDT",
+  "SYN/USDT",
+  "LTC/USDT",
+  "XLM/USDT",
+  "INJ/USDT",
+  "FET/USDT",
+  "TRX/USDT",
+  "XMR/USDT",
+  "1000SHIB/USDT",
+  "OP/USDT",
+  "KSM/USDT"
+ ],
+ "window": [
+  "2025-09-19",
+  "2026-09-19"
+ ],
+ "B_decision_effect": {
+  "m2_tsmom28|OFF": {
+   "rule": "m2_tsmom28",
+   "mode": "OFF",
+   "symbols_loaded": 40,
+   "symbols_skipped": {},
+   "filters_source": "binance_api",
+   "filters_verified_at": "2026-09-10T21:34:11+00:00",
+   "elapsed_s": 762.4,
+   "n_decisions": 87640,
+   "n_opened": 18,
+   "n_closed_trades": 15,
+   "determinism_hash": "a7675c79ada999d8fc8ed604805590fd7a3f48ea2b98377415d514b4314beb98",
+   "structure_decisions_by_action": {},
+   "structure_decisions_by_reason": {},
+   "structure_decision_to_applied_action": {},
+   "closed_trades_with_entry_structure": 0,
+   "closed_trades_exited_by_structure": 0,
+   "open_positions_at_end": 3,
+   "open_positions_with_entry_structure": 0,
+   "exit_reasons": {
+    "M2_TSMOM28_CROSS_DOWN": 8,
+    "stop": 7
+   },
+   "hold_hours": {
+    "n": 15,
+    "median": 216.0,
+    "mean": 364.5,
+    "min": 4.0,
+    "max": 1772.0
+   },
+   "example_trades": [],
+   "example_structure_exits": [],
+   "example_wait_or_cancel_decisions": [],
+   "rejections_top": {
+    "TOTAL_OPEN_RISK": 16390,
+    "total": 8199,
+    "STEP_ZERO_QTY": 8
+   }
+  }
+ },
+ "elapsed_s": 764.0
+}

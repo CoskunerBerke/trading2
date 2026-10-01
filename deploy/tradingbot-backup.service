@@ -1,0 +1,31 @@
+# Trading Bot v3 — tek seferlik yedek (timer tetikler). Saatlik: sqlite .backup + state JSON + tar.gz + sha256; saklama 24s/7g/4h.
+[Unit]
+Description=Trading Bot v3 backup (oneshot)
+After=tradingbot-worker.service
+
+[Service]
+Type=oneshot
+User=tradingbot
+Group=tradingbot
+WorkingDirectory=/opt/tradingbot/app
+EnvironmentFile=-/opt/tradingbot/env
+Environment=TZ=Europe/Istanbul
+Environment=TRADINGBOT_DATA=/opt/tradingbot/data
+Environment=TRADINGBOT_STATE_DIR=/opt/tradingbot/data/state
+Environment=TRADINGBOT_BACKUPS_DIR=/opt/tradingbot/data/backups
+Environment=TRADINGBOT_VAULT_PATH=/opt/tradingbot/data/vault
+ExecStart=/opt/tradingbot/venv/bin/python -m tradingbot backup --hourly
+TimeoutStartSec=600
+Nice=10
+IOSchedulingClass=idle
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/opt/tradingbot/data/backups
+ReadOnlyPaths=/opt/tradingbot/data/state /opt/tradingbot/data/vault
+PrivateTmp=yes
+PrivateDevices=yes
+RestrictSUIDSGID=yes
+CapabilityBoundingSet=
+UMask=0027

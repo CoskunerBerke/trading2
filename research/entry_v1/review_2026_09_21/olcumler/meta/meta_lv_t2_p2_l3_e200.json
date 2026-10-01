@@ -1,0 +1,234 @@
+{
+ "run_id": "lv_t2_p2_l3_e200",
+ "from": "2022-09-01",
+ "to": "2024-08-31",
+ "gate": false,
+ "symbols_requested": [
+  "BTC/USDT",
+  "ETH/USDT",
+  "ZEC/USDT",
+  "SOL/USDT",
+  "NEAR/USDT",
+  "UNI/USDT",
+  "XRP/USDT",
+  "ONE/USDT",
+  "BNB/USDT",
+  "ARB/USDT",
+  "DOGE/USDT",
+  "LSK/USDT",
+  "SUI/USDT",
+  "ENA/USDT",
+  "G/USDT",
+  "WLD/USDT",
+  "ADA/USDT",
+  "ONDO/USDT",
+  "1000PEPE/USDT",
+  "COTI/USDT",
+  "LINK/USDT",
+  "REZ/USDT",
+  "DASH/USDT",
+  "AAVE/USDT",
+  "TAO/USDT",
+  "BCH/USDT",
+  "AVAX/USDT",
+  "DOT/USDT",
+  "FIL/USDT",
+  "APT/USDT",
+  "SYN/USDT",
+  "LTC/USDT",
+  "XLM/USDT",
+  "INJ/USDT",
+  "FET/USDT",
+  "TRX/USDT",
+  "XMR/USDT",
+  "1000SHIB/USDT",
+  "OP/USDT",
+  "KSM/USDT"
+ ],
+ "symbols_loaded": [
+  "1000PEPE/USDT",
+  "1000SHIB/USDT",
+  "AAVE/USDT",
+  "ADA/USDT",
+  "APT/USDT",
+  "ARB/USDT",
+  "AVAX/USDT",
+  "BCH/USDT",
+  "BNB/USDT",
+  "BTC/USDT",
+  "COTI/USDT",
+  "DASH/USDT",
+  "DOGE/USDT",
+  "DOT/USDT",
+  "ENA/USDT",
+  "ETH/USDT",
+  "FET/USDT",
+  "FIL/USDT",
+  "G/USDT",
+  "INJ/USDT",
+  "KSM/USDT",
+  "LINK/USDT",
+  "LSK/USDT",
+  "LTC/USDT",
+  "NEAR/USDT",
+  "ONDO/USDT",
+  "ONE/USDT",
+  "OP/USDT",
+  "REZ/USDT",
+  "SOL/USDT",
+  "SUI/USDT",
+  "SYN/USDT",
+  "TAO/USDT",
+  "TRX/USDT",
+  "UNI/USDT",
+  "WLD/USDT",
+  "XLM/USDT",
+  "XMR/USDT",
+  "XRP/USDT",
+  "ZEC/USDT"
+ ],
+ "symbols_skipped": {},
+ "universe_complete": true,
+ "n_symbols_loaded": 40,
+ "strategy": true,
+ "no_breakeven": true,
+ "exclude": [],
+ "history_root": "C:\\Users\\berke\\research\\bn_archive\\history",
+ "trigger": false,
+ "veto": false,
+ "candidate_order": true,
+ "risk_pct": null,
+ "equity": 200.0,
+ "stride": 1,
+ "elapsed_s": 889.5,
+ "n_decisions": 142278,
+ "n_actionable": 40876,
+ "n_opened": 24,
+ "determinism_hash": "8034ff33ab24eefad2d1b97bde3b468de1eee89d6d8b1130e73fa6c1e90f9847",
+ "rejections": {
+  "total": 40852,
+  "by_reason": {
+   "TOTAL_OPEN_RISK": 40841,
+   "STEP_ZERO_QTY": 4,
+   "MIN_NOTIONAL": 1,
+   "STRATEGY_BAD_STOP": 6
+  },
+  "by_symbol": {
+   "ETH/USDT": {
+    "TOTAL_OPEN_RISK": 2298
+   },
+   "TRX/USDT": {
+    "TOTAL_OPEN_RISK": 990
+   },
+   "BNB/USDT": {
+    "TOTAL_OPEN_RISK": 1704
+   },
+   "BTC/USDT": {
+    "TOTAL_OPEN_RISK": 3109,
+    "STEP_ZERO_QTY": 4,
+    "MIN_NOTIONAL": 1
+   },
+   "AAVE/USDT": {
+    "TOTAL_OPEN_RISK": 1684
+   },
+   "1000SHIB/USDT": {
+    "TOTAL_OPEN_RISK": 1566
+   },
+   "DASH/USDT": {
+    "TOTAL_OPEN_RISK": 636
+   },
+   "DOGE/USDT": {
+    "TOTAL_OPEN_RISK": 1763,
+    "STRATEGY_BAD_STOP": 1
+   },
+   "UNI/USDT": {
+    "TOTAL_OPEN_RISK": 1554
+   },
+   "XRP/USDT": {
+    "TOTAL_OPEN_RISK": 1478
+   },
+   "COTI/USDT": {
+    "TOTAL_OPEN_RISK": 1242
+   },
+   "AVAX/USDT": {
+    "TOTAL_OPEN_RISK": 1236
+   },
+   "BCH/USDT": {
+    "TOTAL_OPEN_RISK": 534
+   },
+   "ONE/USDT": {
+    "TOTAL_OPEN_RISK": 1044
+   },
+   "XMR/USDT": {
+    "TOTAL_OPEN_RISK": 1443,
+    "STRATEGY_BAD_STOP": 3
+   },
+   "ADA/USDT": {
+    "TOTAL_OPEN_RISK": 1086
+   },
+   "FIL/USDT": {
+    "TOTAL_OPEN_RISK": 1056
+   },
+   "DOT/USDT": {
+    "TOTAL_OPEN_RISK": 1044
+   },
+   "LINK/USDT": {
+    "TOTAL_OPEN_RISK": 1649,
+    "STRATEGY_BAD_STOP": 1
+   },
+   "LTC/USDT": {
+    "TOTAL_OPEN_RISK": 1355,
+    "STRATEGY_BAD_STOP": 1
+   },
+   "INJ/USDT": {
+    "TOTAL_OPEN_RISK": 120
+   },
+   "XLM/USDT": {
+    "TOTAL_OPEN_RISK": 1272
+   },
+   "SOL/USDT": {
+    "TOTAL_OPEN_RISK": 1620
+   },
+   "OP/USDT": {
+    "TOTAL_OPEN_RISK": 1026
+   },
+   "FET/USDT": {
+    "TOTAL_OPEN_RISK": 1398
+   },
+   "APT/USDT": {
+    "TOTAL_OPEN_RISK": 978
+   },
+   "NEAR/USDT": {
+    "TOTAL_OPEN_RISK": 1476
+   },
+   "ARB/USDT": {
+    "TOTAL_OPEN_RISK": 846
+   },
+   "KSM/USDT": {
+    "TOTAL_OPEN_RISK": 936
+   },
+   "ZEC/USDT": {
+    "TOTAL_OPEN_RISK": 538
+   },
+   "1000PEPE/USDT": {
+    "TOTAL_OPEN_RISK": 858
+   },
+   "SUI/USDT": {
+    "TOTAL_OPEN_RISK": 780
+   },
+   "WLD/USDT": {
+    "TOTAL_OPEN_RISK": 522
+   }
+  }
+ },
+ "funding_coverage": {
+  "queries": 5034,
+  "answered": 5034,
+  "unknown": 0,
+  "complete": true,
+  "answered_fraction": 1.0,
+  "missing_series": [],
+  "tolerance_ms": 120000,
+  "source": "history store: futures/<symbol>/funding (Binance fundingRate arşivi)"
+ }
+}

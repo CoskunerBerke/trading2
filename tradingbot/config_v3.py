@@ -1,0 +1,1425 @@
+"""v3 yapılandırma bölümleri — `config.yaml` geriye uyumlu genişletilir. Riskle ilgili kritik hatalarda program başlamaz.
+
+Bölümler: app, mode, markets, universe, data, scanner_v3, agents, coin_heads, llm, spot, futures_v3, execution, fees, tax_policy,
+risk_profiles, portfolio, learning_v3, storage, obsidian_v3, dashboard, monitoring, deployment, security.
+Bilinmeyen anahtarlar sessizce yutulmaz: uyarı listesine yazılır (`V3Config.warnings`).
+"""
+from __future__ import annotations
+
+import logging
+import math
+import os
+from dataclasses import dataclass, field, fields
+from typing import Any
+
+from .core import ConfigError
+from .risk.leverage import validate_leverage_settings
+
+log = logging.getLogger(__name__)
+
+
+def _build(cls, data: dict | None, warnings: list[str], section: str):
+    data = data or {}
+    allowed = {f.name for f in fields(cls)}
+    unknown = [k for k in data if k not in allowed]
+    if unknown:
+        warnings.append(f"{section}: bilinmeyen anahtar(lar) yok sayıldı: {', '.join(unknown)}")
+    return cls(**{k: v for k, v in data.items() if k in allowed})
+
+
+@dataclass
+class AppConfig:
+    name: str = "trading2"
+    version: str = "3.0"
+    timezone_display: str = "Europe/Istanbul"
+    run_label: str = "default"
+
+
+@dataclass
+class ModeConfig:
+    mode: str = "PAPER"                       # OBSERVE | PAPER | TESTNET | SHADOW_LIVE | LIVE_LIMITED | LIVE
+    live_trading: bool = False                # config guard (env ALLOW_LIVE_TRADING ile birlikte)
+    withdrawals: bool = False                 # her zaman false/unsupported
+    account_label: str = "default"
+
+
+@dataclass
+class MarketsConfig:
+    spot_enabled: bool = True
+    futures_enabled: bool = True
+    quote_assets: list[str] = field(default_factory=lambda: ["USDT"])
+    allow_usdc: bool = False
+
+
+@dataclass
+class UniverseSection:
+    min_quote_volume_24h: float = 20_000_000
+    max_spread_pct: float = 0.2
+    min_depth_0_5pct_usdt: float = 50_000
+    min_listing_age_days: int = 60
+    max_symbols: int = 200
+    refresh_minutes: int = 360
+    tier2_top: int = 30
+    tier3_top: int = 10
+    # --- DEGERLENDIRME EVRENI: panel top-listesi degil, botun analiz kapsami ---
+    # Uygun sembol 40'in altindaysa sayi YAPAY doldurulmaz (below_target_reason raporlanir).
+    eval_target_min: int = 40
+    eval_target: int = 50
+    eval_target_max: int = 60
+    # --- KANIT ONARIMI V1.1: yalniz-vadeli (Binance spot'ta listesiz) adaylara YUMUSAK ceza ---
+    # Olcum: yalniz-vadeli kesit 87 kurulumda -0.24R, spot'ta listeli kripto LONG +0.155R -> acik ~0.37R.
+    # futures_only_penalty_r bu acigi muhafazakar beklentiden duser; aday DEGERLENDIRILIR, kaniti guclu ise
+    # acilir, zayifsa arastirma boyutunda acilir. Yasak yoktur. 0 = kapali (eski davranis).
+    # Liste `state/spot_listing.json`da onbelleklenir; veri YOKSA ceza fail-safe uygulanir (yasak degil).
+    futures_only_penalty_r: float = 0.0
+    spot_listing_ttl_minutes: int = 1440
+
+
+@dataclass
+class DataConfig:
+    primary: str = "binance"                  # binance | tradingview
+    fallback: list[str] = field(default_factory=lambda: ["tradingview", "ccxt"])
+    max_candle_age_bars: int = 2
+    max_ticker_age_s: int = 120
+    max_clock_drift_ms: int = 5000
+    max_price_divergence_pct: float = 0.5
+    rate_budget_safety: float = 0.7
+    parquet_enabled: bool = True
+
+
+@dataclass
+class CoinHeadsSection:
+    enabled: bool = True
+    consensus_threshold: float = 0.22
+    min_confidence: float = 0.25
+    min_expected_r: float = 1.5
+    max_workers: int = 4
+    decision_ttl_minutes: int = 240
+    funding_horizon_bars: int = 12
+    # HEDEF MESAFESI (arastirma kaldiraci). None = DOKUNMA: plan hangi kaynaktan geldiyse
+    # hedefleri AYNEN kalir ve davranis uretimdekiyle bit-aynidir. Sayi verilirse hedefler
+    # STOP MESAFESININ katlari olarak yeniden kurulur; stop, giris, risk ve kaldirac
+    # DEGISMEZ. Bu tek degiskenin amaci basabas icin gereken isabet oranini olcmektir:
+    #     basabas p = |ort_kayip_R| / (|ort_kayip_R| + k)
+    target_r_multiple: float | None = None
+    target2_r_multiple: float | None = None
+
+
+@dataclass
+class LLMSection:
+    provider: str = "noop"                    # noop | anthropic
+    mode: str = "POSTMORTEM_ONLY"             # OFF | POSTMORTEM_ONLY | ADVISORY | VETO_ONLY | RESEARCH_COUNCIL
+    model_cheap: str = "claude-haiku-4-5-20251001"
+    model_strong: str = "claude-opus-5"
+    model_batch: str = "claude-haiku-4-5-20251001"
+    daily_usd_budget: float = 2.0
+    daily_token_budget: int = 400_000
+    per_tour_candidates: int = 3
+    max_output_tokens: int = 1200
+    cannot_execute: bool = True               # bilgi amaçlı; kodla zaten sabit
+    api_key_env: str = "ANTHROPIC_API_KEY"
+
+
+@dataclass
+class FuturesV3Section:
+    margin_mode: str = "isolated"
+    leverage_default: int = 1
+    leverage_max_paper_research: int = 2
+    tp1_fraction: float = 0.5
+    ambiguity_policy: str = "worst_case"
+    liq_fee_pct: float = 0.5
+    intrabar_source: str = "1m_or_high_low"   # bilgi
+    # --- KANIT ONARIMI V1.1 (2026-09-09 olcumu, 239 kurulum, vadeli fiyat, maliyet dahil) ---
+    # short_penalty_r: SHORT adaylara eklenen YUMUSAK ceza (R). Olcum: SHORT kesiti LONG'a gore ~0.6R geride
+    # (n=13, ince). Ceza yalniz muhafazakar beklentiyi dusurur: net beklentisi pozitif aday en kotu arastirma
+    # boyutuna (RESEARCH_MULTIPLIER) iner, ASLA sifirlanmaz. Yasak yoktur. 0 = kapali (eski davranis).
+    short_penalty_r: float = 0.0
+    # breakeven_at_mfe_r>0: en yuksek kar (MFE) bu R esigine ulasinca stop gercek basa-basa TASINIR,
+    # TP1 dokunusu BEKLENMEZ. 0 = kapali (eski davranis). Yalniz sikilastirir, asla gevsetmez.
+    # Olcum: 12 acik pozisyonun 9'unda stop hic tasinmamisti (ZEN +%12,3 MFE, stop girisin %13 altinda).
+    breakeven_at_mfe_r: float = 0.0
+    # GERÇEKLEŞMİŞ FUNDING KAYNAĞI (2026-09-22): true iken motor tek bir `FundingRates` kaynağı kurar (Binance
+    # `/fapi/v1/fundingRate` settlement satırları: oran + satırın kendi mark'ı; `/fapi/v1/fundingInfo` aralıkları) ve
+    # futures kullanan BEŞ deftere (ana bot, T2, M2, Box, formasyon) bağlar. Ağ yalnız tur/tarayıcı adımındadır
+    # (`refresh`), defter kilidi ve 60 sn çıkış izleyicisi ağa çıkmaz. false: kaynak yok → dönemler BEKLER (bekleyen
+    # maliyet; anlık oran geçmiş settlement'lara UYGULANMAZ). Varsayılan false: testler ve ağsız ortam ağa çıkmaz.
+    realized_funding_source: bool = False
+
+
+@dataclass
+class LeverageSection:
+    """PAPER futures icin dinamik 2x-5x kaldirac. VARSAYILAN KAPALI.
+
+    Kaldirac RISKI ARTIRMAZ: notional risk butcesi + stop mesafesinden gelir, kaldirac yalnizca
+    `initial_margin = notional / leverage` degerini belirler. `max_leverage` 5 MUTLAK ust sinirdir.
+    Zayif sinyal `min_leverage` ile ACILMAZ; NO_TRADE/HOLD/veto uretilir.
+    """
+    enabled: bool = False                     # yalniz PAPER arastirma profilinde acilir
+    paper_only: bool = True                   # LIVE/TESTNET icin varsayilan KAPALI
+    min_leverage: int = 2
+    max_leverage: int = 5
+    min_confidence: float = 0.30
+    max_stop_atr_mult: float = 4.0
+    min_stop_atr_mult: float = 0.5
+    min_depth_usdt: float = 25_000.0
+    max_spread_pct: float = 0.30
+    min_liq_buffer_mult: float = 3.0
+    conf_3x: float = 0.45
+    conf_4x: float = 0.58
+    conf_5x: float = 0.70
+    edge_3x: float = 0.15
+    edge_4x: float = 0.30
+    edge_5x: float = 0.45
+    max_atr_pct_3x: float = 8.0
+    max_atr_pct_4x: float = 6.0
+    max_atr_pct_5x: float = 4.0
+    min_depth_4x: float = 100_000.0
+    min_depth_5x: float = 250_000.0
+    max_spread_4x: float = 0.12
+    max_spread_5x: float = 0.06
+    max_funding_4x: float = 0.03
+    max_funding_5x: float = 0.015
+    max_open_risk_frac_4x: float = 0.70
+    max_open_risk_frac_5x: float = 0.50
+    max_same_dir_4x: int = 3
+    max_same_dir_5x: int = 2
+    max_corr_5x: float = 0.80
+    liq_buffer_4x: float = 3.5
+    liq_buffer_5x: float = 4.5
+    require_regime_alignment_5x: bool = True
+
+
+@dataclass
+class TelegramSection:
+    """Telegram bildirimleri. TOKEN ASLA CONFIG'E YAZILMAZ — yalniz env degisken ADI tutulur."""
+    enabled: bool = False
+    bot_token_env: str = "TRADINGBOT_TELEGRAM_BOT_TOKEN"
+    chat_id_env: str = "TRADINGBOT_TELEGRAM_CHAT_ID"
+    timeout_s: float = 8.0
+    max_retries: int = 3                      # sonsuz retry YOK
+    retry_backoff_s: float = 2.0
+    outbox_file: str = "notify_outbox.json"   # state_path altinda; atomik yazilir
+    outbox_keep: int = 2000
+    retry_batch: int = 5                      # tur başına en çok bu kadar başarısız olay yeniden denenir
+    daily_summary_enabled: bool = True
+    daily_summary_hour_utc: int = 21
+    notify_open: bool = True
+    notify_close: bool = True
+    notify_health: bool = True
+    suppress_backlog_on_start: bool = True    # restart'ta eski aciklar icin sahte bildirim YOK
+
+
+@dataclass
+class ExecutionSection:
+    gateway: str = "paper"                    # paper | binance_spot_testnet | binance_futures_testnet | live(disabled)
+    testnet_enabled: bool = False
+    client_order_prefix: str = "tb"
+    reconcile_on_start: bool = True
+    # --- YÜRÜTME HASSASİYETİ (bkz. tradingbot/execspec.py) ---------------------------------
+    # `require_verified_precision`: True ise DOĞRULANMIŞ fiyat/miktar adımı olmayan sembolde YENİ
+    # GİRİŞ açılmaz (çıkışlar etkilenmez). VARSAYILAN KAPALI: açmak ayrı bir operatör kararıdır.
+    require_verified_precision: bool = False
+    # Filtre önbelleği (`symbol_filters.json`) bu yaştan eskiyse resmi USD-M exchangeInfo'dan
+    # yenilenir (ağırlık 1). Yenileme başarısızsa ESKİ önbellek KORUNUR ve sonuç açıkça loglanır.
+    filters_max_age_hours: float = 24.0
+    filters_refresh_on_start: bool = True
+
+
+@dataclass
+class FeesSection:
+    spot_maker_pct: float = 0.10
+    spot_taker_pct: float = 0.10
+    futures_maker_pct: float = 0.02
+    futures_taker_pct: float = 0.05
+    slippage_bps: float = 3.0
+    bnb_discount: bool = False
+    source: str = "config"
+
+
+@dataclass
+class TaxPolicySection:
+    enabled: bool = False
+    status: str = "UNVERIFIED_OR_NOT_EFFECTIVE"
+    jurisdiction: str = "TR"
+    residence: str = "TR"
+    transaction_tax_rate: float = 0.0
+    gain_withholding_rate: float = 0.0
+    accounting_method: str = "FIFO"
+    source_url: str = "https://www.tbmm.gov.tr/Haber/Detay?Id=24224a43-2062-4397-8761-019d2b9e0bd5"
+    source_checked_at: str = "2026-03-26"
+    manually_confirmed: bool = False
+    version: str = "tr-2026-unverified"
+
+
+@dataclass
+class RiskProfilesSection:
+    profile: str = "PAPER_RESEARCH"
+    overrides: dict[str, Any] = field(default_factory=dict)
+    i_understand: bool = False
+    clusters: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
+class LearningV3Section:
+    enabled: bool = True
+    min_samples_train: int = 40
+    holdout_frac: float = 0.2
+    half_life_days: float = 60.0
+    calibrator: str = "platt"
+    shadow_trades: bool = True
+    # --- KANIT ONARIMI V1 (2026-09-09): aday sonuc etiketleme ---
+    # entry_snapshot.jsonl 2.677 adayi tam ozellik setiyle tutuyor ama sonuclari islenmiyordu. Acikken her
+    # tur, ufku dolan adaylar Binance vadeli 1h barlariyla uclu bariyerle etiketlenir ve AYRI dosyaya
+    # (`entry_outcomes.jsonl`) eklenir. Islem davranisina dokunmaz; yalniz veri uretir. Kod varsayilani KAPALI.
+    outcome_labeling_enabled: bool = False
+    outcome_horizon_hours: int = 168            # olcumde kenarin doydugu ufuk (7 gun)
+    outcome_cost_r: float = 0.16                # gidis-donus maliyet, R cinsinden (olcumdeki deger)
+    outcome_max_symbols_per_tour: int = 15      # oran butcesi: tur basina en fazla bu kadar sembol cekilir
+    # GUVENLI VARSAYILAN: otomatik CHAMPION terfisi KAPALI. Feature-rich model yalniz CANDIDATE
+    # olarak kalir; canli tahmin yoluna kendiliginden giremez. `true` verilmesi
+    # PAPER_AUTO_PROMOTION_FORBIDDEN ile fail-closed reddedilir (bkz. validate_v3).
+    auto_promote_in_paper: bool = False
+    # --- Outcome Learning Loop V1 (karar gunlugu + sinirli ogrenme etkisi) ---
+    # `decision_journal`: DEGERLENDIRILEN HER aday (kabul/red/veto/golge) icin kalici snapshot.
+    # `influence_mode`: OFF | SHADOW | PAPER_BOUNDED. Varsayilan SHADOW -> ayarlama HESAPLANIR ve
+    # kaydedilir ama baseline karar BIREBIR korunur. PAPER_BOUNDED yalniz PAPER modunda kabul
+    # edilir (bkz. validate_v3) ve etki `influence_max_fraction` ile sinirlidir.
+    decision_journal_enabled: bool = True
+    decision_journal_max_lines: int = 20_000
+    # --- KAYIPSIZ SAKLAMA: aktif gunluk sinirli kalir, tasan kayitlar SILINMEZ ---
+    # Aktif dosyadan cikarilan her kayit once sikistirilmis + checksum'li bir segmente
+    # muhurlenir (bkz. learn/journal_archive). Arsiv yoksa/yazilamazsa budama YAPILMAZ.
+    # Yol state kokunden turer (`state_path/<dirname>`); mutlak yol hard-code EDILMEZ.
+    decision_archive_enabled: bool = True
+    decision_archive_dirname: str = "decision_archive"
+    shadow_archive_dirname: str = "shadow_archive"
+    # 0 = SINIRSIZ saklama, hicbir segment silinmez. Silme yalniz burasi acikca pozitif
+    # yapilirsa mumkundur (varsayilan davranis: asla silme).
+    decision_archive_max_segments: int = 0
+    # --- UZUN VADELI RETRIEVAL: arsivlenmis golge sonuclar canli havuzda kalir ---
+    # Indeks TUREV veridir: silinirse kayipsiz arsivden deterministik yeniden kurulur.
+    # Kapatilirsa retrieval yalniz aktif pencereyi gorur (HOT_ONLY) — kayip degil, kapsam daralmasi.
+    experience_index_enabled: bool = True
+    experience_index_dirname: str = "experience_index"
+    # --- DERS SAKLAMA: 200 yalniz SICAK/dashboard penceresidir, saklama siniri DEGILDIR ---
+    # Eskiden `learning.py` `lessons[-200:]` ile tasan dersleri KALICI olarak siliyordu.
+    # Artik tasan dersler once muhurlenmis segmente arsivlenir, sonra sicak pencere kisalir.
+    # Arsiv kapaliysa ya da yazilamiyorsa BUDAMA DA YAPILMAZ (arsivsiz silme yasak).
+    lesson_archive_enabled: bool = True
+    lesson_archive_dirname: str = "lesson_archive"
+    lesson_hot_window: int = 200
+    # Aday basina taranan AZAMI segment — retrieval O(total archive) OLAMAZ.
+    lesson_max_segments_scanned: int = 4
+    # Asgari muhurleme blogu: tasma bu kadar birikmeden segment muhurlenmez (ders SILINMEZ,
+    # yalniz muhurleme ertelenir). SegmentArchive.commit() manifesti bastan yazdigi icin
+    # cok sayida kucuk segment maliyeti O(segment^2)'ye tasir.
+    lesson_min_rotate_block: int = 50
+    # Aday basina taranan deneyim UST SINIRI. Havuz bunun altindaysa TAM tarama yapilir
+    # (davranis birebir eski haliyle ayni); ustundeyse sembol/yon kovalari + en yeni
+    # kullanilabilir kuyruk taranir. Maliyet arsiv toplamiyla DOGRUSAL BUYUMEZ.
+    retrieval_max_scan: int = 5_000
+    # --- FEATURE YONETISIMI: genis olc, dar karar ver ---
+    # Aktif bagimsiz bilgi ailesi tavani ve karar duzeyi yumusak girdi tavani. Kayit
+    # `learn/feature_registry.py`dedir; ihlal config'i FAIL-CLOSED reddeder.
+    max_active_families: int = 8
+    max_active_soft_features: int = 12
+    influence_mode: str = "SHADOW"
+    influence_prior_strength: float = 20.0  # w = n/(n+prior_strength); >= 20 zorunlu
+    influence_max_fraction: float = 0.05    # etkinin mutlak tavani (baseline orani)
+    influence_top_k: int = 5
+    # --- online ogrenme temposu: her kapanista yeniden egitim YOK ---
+    retrain_min_new_closed: int = 10        # egitim icin gereken asgari YENI kapanmis islem
+    retrain_cooldown_hours: float = 6.0     # iki egitim arasindaki asgari sure
+    # --- PAPER arastirma politikasi (CHAMPION DEGIL; yalniz filtreler ya da kucultur) ---
+    research_enabled: bool = True
+    research_min_shadow_obs: int = 20       # aktiflesmeden once gereken eslesmis golge gozlemi
+    research_min_active_obs: int = 20       # emeklilik karari icin gereken gozlem
+    research_min_review_obs: int = 60       # manuel inceleme isareti icin gereken gozlem
+    research_cooldown_hours: float = 24.0   # iki durum degisikligi arasindaki asgari sure
+    research_retire_delta_r: float = -0.10  # bu kadar kotulesirse otomatik baseline'a donulur
+    research_min_fold_consistency: float = 0.6   # offline fold tutarliligi tabani (aktivasyon kapisi)
+    # --- ResearchCoordinator: aday uretim turu temposu (her turda agir is YOK) ---
+    research_min_new_closed: int = 20       # arastirma turunu tetikleyen asgari YENI kapanis
+    research_run_cooldown_hours: float = 12.0    # iki arastirma turu arasindaki asgari sure
+    research_min_rows: int = 40             # walk-forward icin gereken asgari kronolojik kapanis
+    research_seed: int = 7                  # deterministik aday uretimi/degerlendirmesi
+
+
+@dataclass
+class StorageSection:
+    sqlite_enabled: bool = True
+    db_filename: str = "tradingbot.db"
+    parquet_dir: str = "candles"
+    backups_dir: str = "backups"
+    keep_hourly: int = 24
+    keep_daily: int = 7
+    keep_weekly: int = 4
+
+
+@dataclass
+class ObsidianV3Section:
+    coin_heads_enabled: bool = True
+    prune_stale_hours: int = 48
+    signals_retention_days: int = 30
+    signals_max_files: int = 200
+    write_only_on_change: bool = True
+
+
+@dataclass
+class DashboardSection:
+    enabled: bool = True
+    host: str = "127.0.0.1"
+    port: int = 8080
+    auth_token_env: str = "TRADINGBOT_DASHBOARD_TOKEN"
+    allow_insecure_public: bool = False
+    max_bars: int = 600
+    # --- canli yenileme (tarayici polling; Binance'a DOGRUDAN baglanti YOK) ---
+    poll_positions_s: int = 7                 # acik pozisyon mark/PnL
+    poll_portfolio_s: int = 20                # bakiye/teminat/acik risk
+    poll_health_s: int = 12                   # saglik + heartbeat
+    stale_price_s: int = 90                   # bu yasin uzerinde "FIYAT VERISI GUNCEL DEGIL"
+    stale_run_s: int = 2400                   # strateji turu yasi uyarisi
+    background_backoff_mult: int = 4          # arka plan sekmesinde aralik carpani
+    timezone_label: str = "UTC"
+
+
+@dataclass
+class MonitoringSection:
+    json_logs: bool = True
+    log_dir: str = "logs"
+    heartbeat_stale_s: int = 2400
+    telegram_enabled: bool = False
+    discord_enabled: bool = False
+
+
+@dataclass
+class SecuritySection:
+    live_confirmation_required: bool = True
+    redact_logs: bool = True
+    api_key_env_names: list[str] = field(default_factory=lambda: ["BINANCE_TESTNET_SPOT_KEY", "BINANCE_TESTNET_SPOT_SECRET",
+                                                                  "BINANCE_TESTNET_FUTURES_KEY", "BINANCE_TESTNET_FUTURES_SECRET"])
+
+
+@dataclass
+class HistorySection:
+    """Tarihsel veri gölü (public Binance; API anahtarı yok). Aralıklar gün; `max_available` → listing'den itibaren."""
+    enabled: bool = True
+    root_dir: str = "history"                        # cache_path altında
+    tier_a_timeframes: list[str] = field(default_factory=lambda: ["1h", "4h", "1d"])
+    tier_b_top_n: int = 50
+    tier_b_timeframes: list[str] = field(default_factory=lambda: ["15m", "1h", "4h", "1d"])
+    tier_c_top_n: int = 20
+    tier_c_1m_days: int = 90
+    tier_c_5m_days: int = 365
+    max_available: bool = True                       # 15m ve üzeri: mümkün olan maksimum
+    default_days: int = 360                          # max_available kapalıysa
+    include_funding: bool = True
+    include_open_interest: bool = True
+    archive_first: bool = True                       # data.binance.vision aylık arşiv → REST tamamlama
+    request_pause_s: float = 0.0                     # ek nezaket beklemesi (rate budget zaten var)
+    # --- OTOMATIK ARTIMLI YENILEME (worker icinde, arka plan is parcaciginda) ---
+    #: `false` (varsayilan) eski davranistir: indeks surec basina bir kez kurulur ve
+    #: calisma zamaninda yenilenmez. `true` iken arsiv yalnizca YENI KAPANMIS barlarla
+    #: ilerletilir ve indeks yeniden kurulup ATOMIK yayimlanir. Tur bu ise ASLA blok olmaz.
+    auto_refresh: bool = False
+    refresh_minutes: int = 15                        # yenileme periyodu (arka plan)
+    #: Artimli guncellemenin dokundugu zaman dilimleri. Karar yolu 1d/4h/1h kullanir; pattern
+    #: indeksi 4h'tir. 15m karar formulune GIRMEZ, bu yuzden varsayilan listede yoktur.
+    refresh_timeframes: list[str] = field(default_factory=lambda: ["4h", "1h", "1d"])
+    #: Tur basina azami istek (rate-limit korumasi). Gecikmis arsiv birkac turda yakalanir.
+    refresh_max_requests: int = 24
+    #: Indekse alinacak azami sembol — BELLEK TAVANI. Onceki OOM tam Tier-A indeksindendi;
+    #: yeniden kurulum sirasinda eski ve yeni indeks birlikte yasar, bu yuzden kume baglanir.
+    refresh_max_symbols: int = 16
+
+
+@dataclass
+class QuantEvalSection:
+    """Quant Evaluation V1 — offline/salt-okunur araştırma bileşenleri. GÜVENLİ VARSAYILANLAR:
+    her şey kapalı ya da read-only; `auto_promotion=true` hiçbir koşulda kabul edilmez
+    (fail-closed, `learning_v3.auto_promote_in_paper` ile aynı ilke)."""
+    journal_enabled: bool = False              # birleşik karar→sonuç günlüğü (offline üretim)
+    attribution_enabled: bool = False          # çok boyutlu attribution raporu (offline)
+    replay_cost_manifest: bool = True          # manifest yalnız metadata — güvenli, default açık
+    walk_forward_enabled: bool = False         # fold üretimi/raporu (offline)
+    risk_v2_advisory: bool = False             # Risk V2 önerileri — YALNIZ tavsiye, emir yolu yok
+    challenger_shadow: bool = False            # challenger shadow karşılaştırması (ayrı book)
+    dashboard_view: bool = True                # /quant read-only görünümü — state'i yalnız okur
+    auto_promotion: bool = False               # true → ConfigError; terfi yalnız manuel
+
+
+@dataclass
+class ExitPolicySection:
+    """Çıkış politikası (`EXIT_GIVEBACK_AND_PROFIT_PROTECTION_V1`) — GÜVENLİ VARSAYILANLAR.
+
+    `action_mode` yalnız `SHADOW` olabilir. `PAPER_BOUNDED` bu sürümde config ile AÇILAMAZ:
+    gerçek azaltma/çıkış yolu ancak `exit_eval` terfi kapıları geçildikten sonra ve ayrı bir
+    operatör kararıyla açılır (bkz. `learn/exit_executor.ALLOWED_MODES`).
+
+    `path_enabled=false` yalnız yol KAYDINI durdurur; mevcut stop/TP davranışı hiçbir koşulda
+    bu bölümden etkilenmez.
+    """
+    path_enabled: bool = True                 # açık pozisyon fiyat yolu kaydı (salt gözlem)
+    action_mode: str = "SHADOW"               # SHADOW | (PAPER_BOUNDED bu sürümde YASAK)
+    policy_version: str = "exit_v1.0.0"
+    #: `learn.exit_policy.ExitPolicyConfig` alanları; verilmeyenler güvenli varsayılanda kalır.
+    policy: dict[str, Any] = field(default_factory=dict)
+    #: Yol deposu ayarları — 60 sn'lik exit-monitor'ün diski şişirmesini engeller.
+    min_snapshot_interval_s: float = 55.0
+    min_r_change: float = 0.02
+    max_mark_age_s: float = 900.0
+    #: Karşı-olgusal değerlendirme maliyet modeli (champion ile AYNI tarife kullanılır).
+    eval_fee_rate: float = 0.0005
+    eval_slippage_rate: float = 0.0003
+    auto_promotion: bool = False              # true → ConfigError; terfi yalnız manuel
+
+
+@dataclass
+class NewsSection:
+    """HABER/OLAY BAGLAMI — yalniz GOZLEM. Hicbir alani karar kapisina, skora ya da boyuta girmez.
+
+    `venue_events` borsanin KENDI ucundan (exchangeInfo + fundingInfo) dogrulanabilir
+    sozlesme degisikliklerini yakalar: sembolun `TRADING` olmaktan cikmasi, min-notional /
+    adim / tick degisikligi, funding araligi ya da tavaninin degismesi. Tur basina iki hafif
+    istek (agirlik 1) eder ve bir vadeli bot icin en cok para kaybettiren "haber" sinifidir.
+
+    ETKIN KAYNAK SAYISI: BIR. Bu surumde `news.jsonl`e yazan TEK yer
+    `engine_v3.ensure_venue_events`tir. Asagidakiler UYGULANMADI ve bu bolumde onlari acan
+    bir anahtar YOKTUR (ne `feeds`, ne baska bir alan):
+
+    * proje/zincir duyurulari — cekici yok
+    * makro takvim — cekici yok
+    * genel basin akisi (RSS/JSON) — cekici yok, besleme yapilandirmasi yok
+
+    `market.news` kayit sozlesmesi (provenans, uc durum, gecmise sizinti yasagi) bu kaynaklar
+    icin HAZIRDIR, ama kaynaklarin kendisi yoktur. Dogrulamadigim bir ucu varsayilan yapmam;
+    eklenecekse ayri bir surumun isidir. Venue olaylari "butun haber analizi" DEGILDIR.
+    """
+    enabled: bool = True
+    venue_events: bool = True
+    refresh_minutes: int = 60          # venue goruntusu bu siklikta yenilenir
+    context_window_hours: float = 48.0  # karar kaydina giren pencere
+    max_items_in_decision: int = 10
+    retention_days: int = 365          # okuma penceresi; dosyadan SILME yapilmaz
+    #: PROJE DUYURULARI: her coinin kendi deposundan yayimlanan surumler (anahtarsiz,
+    #: dogrulanabilir). Surum/yazilim duyurularini kapsar; listeleme, yonetisim ve basin
+    #: bultenlerini KAPSAMAZ. Kimliksiz GitHub siniri 60 istek/saattir.
+    project_releases: bool = True
+    project_per_repo: int = 5                  # depo basina cekilecek son surum sayisi
+
+
+@dataclass
+class EntryUniverseSection:
+    """SABIT GIRIS EVRENI — yeni futures girisi YALNIZ bu USDT perpetual listesinde acilabilir.
+
+    Neden ayri bir bolum: `coins` listesi analiz kapsamidir ve tarayici (scanner) turlerce
+    yuzlerce sembol getirir. Giris evreni bundan AYRI ve DARDIR: liste disinda kalan bir
+    sembolde YENI pozisyon acilmaz.
+
+    Sinirlar bilincli:
+
+    * Kapi yalnizca **giris** yolundadir. Mevcut acik pozisyonlarin fiyat takibi, stop/TP
+      yonetimi ve kapanisi liste degistiginde bile AYNEN surer (bkz. `engine_v3.exit_check`
+      ve `FuturesLedger.tick`) — liste degisti diye pozisyon kapatilmaz.
+    * `enabled=false` eski davranisa doner (tarayici adaylari giris uretebilir).
+    * `enabled=true` iken bos liste `ConfigError`'dur: sessizce "her sembol serbest"e dusmez.
+    * Semboller `BASE/QUOTE` biçimine normalize edilir; `BTCUSDT` da `BTC/USDT` de kabul edilir.
+    """
+    enabled: bool = False
+    #: Giris izinli USDⓈ-M perpetual semboller (bot biçimi `BASE/QUOTE`).
+    symbols: list[str] = field(default_factory=list)
+    #: Liste disindaki semboller de her turda ANALIZ edilsin mi (yalniz gozlem, giris yok).
+    #: false (varsayilan): tur kapsami = evren ∪ acik pozisyonlar. API/LLM tuketimini dusurur.
+    analyze_outside: bool = False
+    allow_long: bool = True
+    allow_short: bool = True
+    #: Tarayici (scanner) adaylarinin tur kapsamina eklenmesi. `enabled=true` iken varsayilan
+    #: false: 160 sembollük tarama baglam icin calismaya devam eder ama GIRIS adayi uretmez.
+    scanner_feeds_entries: bool = False
+
+
+@dataclass
+class EntrySelectivitySection:
+    """Giriş seçiciliği (`ENTRY_SELECTIVITY_CHALLENGER_V1`) — GÜVENLİ VARSAYILANLAR.
+
+    `mode` yalnız `SHADOW` olabilir. `PAPER_BOUNDED` bu sürümde config ile AÇILAMAZ: bir
+    challenger ailesinin gerçek giriş kararını daraltması ancak `entry_eval` terfi kapıları
+    geçildikten sonra ve ayrı bir operatör kararıyla olur
+    (bkz. `learn/entry_eval.ALLOWED_MODES`).
+
+    `snapshot_enabled=false` yalnız aday snapshot KAYDINI durdurur; mevcut sıralama, kabul
+    kararı, boyut, kaldıraç, stop/TP ve RiskEngine davranışı hiçbir koşulda bu bölümden
+    etkilenmez.
+    """
+    snapshot_enabled: bool = True             # sıralamaya giren aday snapshot'ı (salt gözlem)
+    mode: str = "SHADOW"                      # SHADOW | (PAPER_BOUNDED bu sürümde YASAK)
+    #: entry_v1.1.0: E ailesi kapsam-eşli (futures stop riski / snapshot'ta donmuş futures
+    #: bütçesi; futures-only yön sayımı). Eşikler v1.0.0 ile AYNI. Yeni snapshot'lar bu sürümle
+    #: yazılır; eski satırlar kendi sürümleriyle (entry_v1.0.0) okunmaya devam eder.
+    policy_version: str = "entry_v1.1.0"
+    #: `learn.entry_challenger.EntryChallengerConfig` alanları; verilmeyenler güvenli varsayılanda.
+    policy: dict[str, Any] = field(default_factory=dict)
+    #: Tek turda yazılacak azami snapshot — patolojik bir tur diski şişiremez.
+    max_snapshots_per_cycle: int = 200
+    #: `trade_memory` giriş kayıtlarından türetilen gözlem snapshot'ları rapora eklensin mi.
+    #: Bunlar `LEGACY_MEMORY` işaretlidir ve TERFİ KANITI SAYILMAZ (yalnız görünürlük).
+    include_legacy_memory: bool = True
+    #: Sıcak `entry_snapshot.jsonl` satır tavanı. Aşan satırlar ÖNCE arşive mühürlenir,
+    #: SONRA sıcak dosyadan çıkarılır (arşiv-önce, kayıpsız). Arşiv yazılamazsa budama YOK.
+    snapshot_max_lines: int = 20_000
+    #: Arşivde tutulacak azami segment. 0 → SINIRSIZ (hiçbir segment silinmez, varsayılan).
+    snapshot_archive_max_segments: int = 0
+    auto_promotion: bool = False              # true → ConfigError; terfi yalnız manuel
+    #: WEEKLY_MARKET_STRUCTURE_AND_CONTEXTUAL_PRICE_ACTION_V1 — F ve G aileleri.
+    #: `enabled=false` yalnız GÖZLEMİ durdurur; hiçbir aktif karar bu bölümden etkilenmez.
+    weekly_context_enabled: bool = True
+    #: `learn.weekly_structure.WeeklyStructureConfig` alanları.
+    weekly_structure_policy: dict[str, Any] = field(default_factory=dict)
+    #: `learn.candle_context.CandleContextConfig` alanları.
+    candle_policy: dict[str, Any] = field(default_factory=dict)
+    #: `learn.entry_challenger_v2.WeeklyChallengerConfig` taban alanları (varyantlar üstüne biner).
+    weekly_challenger_policy: dict[str, Any] = field(default_factory=dict)
+    #: MULTI_TIMEFRAME_LIQUIDITY_CONFIRMATION_V1 — H ailesi (SHADOW).
+    #: `enabled=false` yalnız GÖZLEMİ durdurur; hiçbir aktif karar bu bölümden etkilenmez.
+    #: `mtf_mode` yalnız `SHADOW` olabilir: `PAPER_BOUNDED` ve `ACTIVE` config ile AÇILAMAZ.
+    mtf_enabled: bool = True
+    mtf_mode: str = "SHADOW"                  # SHADOW | (PAPER_BOUNDED/ACTIVE YASAK)
+    mtf_auto_promotion: bool = False          # true → ConfigError; terfi yalnız manuel
+    #: `learn.multitimeframe_context.MultiTimeframeConfig` taban alanları.
+    mtf_policy: dict[str, Any] = field(default_factory=dict)
+    #: PROFITABILITY_EXPERIMENT_V1 — beş donmuş politikanın izole PAPER yarışması.
+    #: `enabled=false` yalnız GÖZLEMİ durdurur; hiçbir aktif karar bu bölümden etkilenmez.
+    #: `mode` yalnız `SHADOW` olabilir; deney kanonik deftere ASLA yazmaz.
+    experiment_enabled: bool = True
+    experiment_mode: str = "SHADOW"           # SHADOW | (baska deger -> ConfigError)
+    experiment_auto_promotion: bool = False   # true -> ConfigError
+    #: `learn.profitability_experiment.ExperimentConfig` alanları.
+    experiment_policy: dict[str, Any] = field(default_factory=dict)
+    #: MUM ONAYI (V4, 2026-09-12): `OFF` | `SHADOW` | `ENFORCE`. `ENFORCE` giriş kararını
+    #: GERÇEKTEN daraltır (`candle_confirmation.py`, iki motorda tek kaynak). DENEY_V4'te
+    #: hiçbir varyant iki pencerede doğrulanmadı; açmak operatör kararıdır. LIVE ve
+    #: LIVE_LIMITED modda `ENFORCE` yasaktır (doğrulanmamış mantık gerçek parayla çalışmaz).
+    candle_confirmation_mode: str = "OFF"
+    #: c1_4h | c2_4h_confirm | c3_4h_veto | c4_1d — bkz. `candle_confirmation.VARIANTS`.
+    candle_confirmation_variant: str = "c3_4h_veto"
+    #: GRAFİK FORMASYONU ONAYI (V5, 2026-09-12): `OFF` | `SHADOW` | `ENFORCE`; mantık
+    #: `chart_confirmation.py` (iki motorda tek kaynak). LIVE/LIVE_LIMITED'da ENFORCE yasak.
+    chart_confirmation_mode: str = "OFF"
+    #: p1_4h_confirm | p2_4h_veto | p3_1d_confirm | p4_1d_veto — bkz. `chart_confirmation.VARIANTS`.
+    chart_confirmation_variant: str = "p2_4h_veto"
+    #: `chart_patterns.ChartPatternConfig` alanları; verilmeyenler varsayılanda.
+    chart_policy: dict[str, Any] = field(default_factory=dict)
+    #: PİYASA REJİMİ KAPISI (V7, 2026-09-13): `OFF` | `SHADOW` | `ENFORCE`; mantık `regime_gate.py`
+    #: (iki motorda tek kaynak). BTC günlük close > EMA200 → UP. DENEY_V7: üç pencerede de temeli
+    #: geçti ama 2022 sonrası hâlâ negatif; "kayıp azaltıcı", doğrulanmış kârlı kural DEĞİL.
+    regime_gate_mode: str = "OFF"
+    #: r1_long_only_uptrend | r2_no_trade_downtrend | r3_follow_regime
+    regime_gate_variant: str = "r1_long_only_uptrend"
+
+
+@dataclass
+class StrategyPaperSection:
+    """TEK KURALLI STRATEJİ — KÂĞIT İLERİ TEST (V10, 2026-09-13). Ana botun yanında AYRI defter.
+
+    `enabled=true` yalnız PAPER/TESTNET/OBSERVE/SHADOW_LIVE modda kabul edilir; LIVE'da ConfigError.
+    Ana botun defterine, öğrenicisine ve kararlarına DOKUNMAZ. Kural modülleri replay ile TEK kaynak:
+    `ema200_trend.py` (trend/momentum) ve `box_theory.py` (V15, gün içi 5m). Hangi defterin hangi modüle
+    ve hangi dilimlere bağlı olduğu `paper_rules.py` kaydındadır. Ölçüm: research/entry_v1/out/.
+    """
+    enabled: bool = False
+    name: str = "t2_trend_regime"           # t1_trend | t2_trend_regime | m2_tsmom28 | b1_box_fade
+    starting_equity_usdt: float = 100.0
+    atr_mult: float = 3.0                   # felaket stopu: close - atr_mult * ATR14(1d)
+    breakeven_at_mfe_r: float = 0.0         # T1/T2 ölçümü başa-baş koruması KAPALI ile yapıldı
+    state_dir: str = "strategy_paper"       # state/<state_dir>/ (defter + trade_memory)
+    symbols: list[str] = field(default_factory=list)   # boş → giriş evreni
+    #: GİRİŞ KAYMASI KAPISI (2026-09-21): kuralın hesapladığı fiyattan bu %'den fazla kaymış bir
+    #: gerçekleşmede giriş YAPILMAZ. 0 = kapalı. Şemaya eklenmeden önce config yükleyicisi bu
+    #: alanı "bilinmeyen anahtar" diye SESSİZCE yok sayıyordu — açılsa bile etkisiz kalırdı.
+    #: Bkz. strategy_paper.apply_action GİRİŞ KAYMASI KAPISI.
+    max_entry_drift_pct: float = 0.0
+    #: V15: kurala özel ayarlar. Trend defterlerinde BOŞ; box defterinde `BoxParams` alanları
+    #: (near_frac, trigger, long_stop, exit_kind, exit_r, eod_close, allow_long/short ...).
+    #: Bilinmeyen alan config yüklenirken ConfigError verir — tur ortasında değil.
+    rule_params: dict[str, Any] = field(default_factory=dict)
+    #: V12: EK defterler (her biri bu bölümle aynı anahtarlar; `state_dir` benzersiz ve boş olmayan).
+    #: Ana defterle AYNI motor yolundan, kendi defteri/belleği/özetiyle yan yana koşar.
+    extra: list[dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass
+class ChartAnalysisSection:
+    """CHART ANALYSIS V1 — botun gercek hesaplarini/gerekcelerini grafikte gorunur kilan analiz kayitlari.
+
+    SALT GOSTERIM: hicbir kapiyi, defteri, ogrenme state'ini degistirmez. Motor her turda (yeni kapanmis bar
+    ya da karar degisimi varsa) analiz anini `state/chart_analysis/` altina yazar; panel yalniz okur.
+    """
+    enabled: bool = True
+    timeframe: str = "4h"                  # motor kaydinin grafik dilimi (karar dilimi)
+    keep_per_series: int = 300              # seri (defter|sembol|tf) basina saklanan analiz ani (en eski silinir)
+    swing_lookback: int = 3                 # teyitli pivot: her iki yanda N kapanmis bar (formasyon dedektoruyle AYNI)
+    cluster_tolerance_atr: float = 0.10     # esit seviye kumesi toleransi (ATR kati; MTF config ile AYNI deger)
+    trendline_touch_tolerance_pct: float = 0.3   # trend cizgisi temas/ihlal toleransi (%)
+    bars: int = 400                         # analiz penceresi (kapanmis bar)
+
+
+@dataclass
+class PatternTraderSection:
+    """FORMASYON PAPER TRADER V1 (2026-09-16) — yeni listelenen coin oncelikli, 15m/1h/4h mum formasyonu, kosullu
+    LONG/SHORT plan, AYRI PAPER defteri.
+
+    `enabled=true` yalniz PAPER/TESTNET/OBSERVE/SHADOW_LIVE modda kabul edilir (LIVE'da ConfigError). Ana botun,
+    T2/M2 defterlerinin evrenine/kuralina/sermayesine DOKUNMAZ; kendi sanal bakiyesi ve kendi state dizini vardir.
+    Evren KESFEDILIR (resmi USDM exchangeInfo): `universe.min_listing_age_days`/`max_symbols` buraya MIRAS KALMAZ.
+    """
+    enabled: bool = False
+    starting_equity_usdt: float = 100.0
+    state_dir: str = "pattern_trader"
+    max_open_positions: int = 3
+    families: list[str] = field(default_factory=lambda: ["A_TREND_PULLBACK", "B_LEVEL_REVERSAL", "C_COMPRESSION_BREAKOUT"])
+    # --- protokol (2026-09-25): "classic" = v1/v2 (yapı moduna göre, eski davranış); "momentum_4h_v3" = yalnız
+    # laboratuvarda sıkı testi geçen 4h sinyali (üç beyaz asker + RSI>70, LONG; bkz. pattern_trader/strategy_v3.py) ---
+    protocol: str = "classic"
+    symbols: list[str] = field(default_factory=list)   # boş + v3 → laboratuvarda test edilen 30 coin
+    # --- plan geometrisi (surumlu; sonuclari gorduken sonra "kar cikana kadar" degistirilmez) ---
+    stop_buffer_atr: float = 0.25
+    min_rr_after_cost: float = 1.5
+    fallback_rr: float = 2.0
+    measured_move_mult: float = 2.0
+    max_hold_bars: int = 96                  # 15m x 96 = 24 saat zaman stopu
+    cooldown_bars_after_loss: int = 8        # zarardan sonra AYNI sembolde bekleme (tersleme/martingale YOK)
+    # --- evren / islenebilirlik (yas filtresi YOK) ---
+    min_quote_volume_24h: float = 5_000_000
+    max_spread_pct: float = 0.15
+    min_depth_0_5pct_usdt: float = 20_000
+    # --- tarama butcesi ---
+    max_symbols_per_cycle: int = 40
+    scan_seconds: float = 60.0
+    universe_refresh_minutes: float = 30.0
+
+
+@dataclass
+class StructuresSection:
+    """ORTAK YAPI KATALOĞU (2026-09-22, `structures_v1`): beş botun mum/grafik yapısını ORTAK analizden okuyup
+    SÜRÜMLÜ politikayla karara bağlaması. Bot başına mod: OFF (hesap yok, davranış bit-bit eski) | SHADOW (analiz ve
+    karar kaydı yazılır, işlem ETKİLENMEZ) | ENFORCE (politika giriş/bekleme/iptal/yönetimi gerçekten etkiler). ENFORCE
+    yalnız PAPER/TESTNET/OBSERVE/SHADOW_LIVE'da. Politika: docs/structures/POLITIKA_MATRISI_v1.md. Varsayılan KAPALI:
+    config.yaml açar; testler ve eski kurulumlar etkilenmez."""
+    enabled: bool = False
+    policy_version: str = "structures_v1.7"
+    main: str = "OFF"
+    t2_trend_regime: str = "OFF"
+    m2_tsmom28: str = "OFF"
+    b1_box_fade: str = "OFF"
+    pattern_trader: str = "OFF"
+
+    def mode_for(self, bot: str) -> str:
+        """Bot kimliğinin etkin modu (bölüm kapalıysa OFF). Bilinmeyen bot OFF."""
+        if not bool(self.enabled):
+            return "OFF"
+        return str(getattr(self, str(bot), "OFF") or "OFF").upper()
+
+
+@dataclass
+class LearningModeSection:
+    """ÖĞRENME MODU (2026-09-28, öğrenme modu) — yalnız PAPER. Mantık `learning_mode.py`de (SAF, tek kaynak).
+
+    `enabled=true` yalnız mode=PAPER + gateway=paper + testnet kapalı + risk profili PAPER_RESEARCH iken kabul edilir
+    (aksi ConfigError). Bilinmeyen anahtar UYARI değil ConfigError'dur (yazım hatası sessizce geçmesin). Kod varsayılanı
+    KAPALI; kapalıyken hiçbir yol değişmez. Env `TRADINGBOT_LEARNING_MODE=off` yalnız KAPATABİLİR, açamaz.
+    Strateji ezmeleri `cfg`'ye YAZILMAZ; `LearningMode.override` ile okunur (askıya alınınca kendiliğinden döner)."""
+    enabled: bool = False
+    risk_per_trade_pct: float = 0.5           # öğrenme hedef riski; profil tavanı (2.0) AYNEN kalır
+    max_total_open_risk_pct: float = 100.0    # öğrenme RiskEngine profilinin toplam açık risk tavanı
+    margin_reserve_pct: float = 5.0           # Σ marj ≤ (1 − rezerv) × equity
+    liq_buffer_mult: float = 2.0              # liq mesafesi ≥ k × stop mesafesi
+    min_notional_bump: bool = True            # min-notional'a çıkarma (yalnız %2 tavan ve serbest marj içinde)
+    counterfactual: bool = True               # açılmayan sinyal için karşı-olgusal kayıt
+    counterfactual_max_pending: int = 2000    # defter başına bekleyen kayıt tavanı
+    books: dict[str, Any] = field(default_factory=dict)               # ad → BookLearningCfg (doğrulamada normalize)
+    strategy_overrides: dict[str, Any] = field(default_factory=dict)  # yalnız OVERRIDE_KEYS
+
+
+#: ORTAK DENEYİM KATMANI (2026-09-29): geçerli modlar. ADVISE / ENFORCE v1'de YOK (karar hiçbir koşulda değişmez).
+SHARED_EXPERIENCE_MODES = ("OFF", "RECORD")
+#: GÖLGE DANIŞMAN (2026-09-29; docs/ortak_deneyim/DANISMAN_V1.md): yalnız OFF | RECORD. ADVISE / ENFORCE YOK — GİR hiçbir
+#: aşamada girişi zorlamaz, boyutu büyütmez; bu aşamada tavsiye hiçbir kararı DEĞİŞTİRMEZ.
+SHARED_EXPERIENCE_ADVISOR_MODES = ("OFF", "RECORD")
+
+
+@dataclass
+class SharedExperienceSection:
+    """ORTAK DENEYİM KATMANI v1 (2026-09-29) — yalnız KAYIT: karar/defter/öğrenici DEĞİŞMEZ. Kod varsayılanı KAPALI.
+
+    Katman ancak `enabled: true` VE `mode: RECORD` iken çalışır; mod yalnız OFF | RECORD (başka her değer ConfigError
+    SHARED_EXPERIENCE_MODE_NOT_IMPLEMENTED). YALNIZ PAPER: çalışma anı modu PAPER değilse toplayıcı `SUSPENDED:<mod>`
+    olur ve satır yazmaz (config PAPER dışındaysa ayrıca uyarı). Env `TRADINGBOT_SHARED_EXPERIENCE=off` yalnız KAPATABİLİR.
+    Bilinmeyen anahtar ConfigError. Tasarım: docs/ortak_deneyim/SPEC_V1.md §9; kararlar KARARLAR.md."""
+    enabled: bool = False
+    mode: str = "OFF"                   # OFF | RECORD
+    state_dir: str = "shared_experience"   # state kökü altında düz ad (/, \, .. yok)
+    hot_max_lines: int = 5000           # 500..50000 — sıcak dosya; taşan satırlar KAYIPSIZ arşive
+    archive_max_segments: int = 0       # 0 = sınırsız (kayıpsız)
+    max_total_mb: int = 1024            # 64..10240 — %90 WARN, %100 seyreltme, %110 DEGRADED (hiçbir şey silinmez)
+    tour_budget_s: float = 2.0          # 0.1..10 — tur başına süre bütçesi (kalan iş sonraki tura)
+    max_rows_per_tour: int = 600        # 10..5000 — tur başına satır tavanı
+    backfill: bool = True               # ilk açılışta mevcut geçmiş/açık pozisyon/karşı-olgusallar da yazılır
+    cache_entries: int = 2048           # 64..10000 — anlık görüntü LRU önbelleği
+    pending_max_age_h: float = 48.0     # 1..240 — eksik barlı taslak en çok bu kadar bekler (sonra GAP/NO_BARS)
+    lock_timeout_s: float = 0.2         # 0..2 — defter kilidi DENEME süresi (meşgulse defter bu tur atlanır)
+    lazy_fetch_max_per_tour: int = 0    # 0..20 — tembel ağ çekimi; 0 = ağ YOK (v1 varsayılanı)
+    # GÖLGE DANIŞMAN (2026-09-29): her giriş/olsaydı sinyali için "ortak hafıza bu anda ne derdi?" — yalnız KAYIT
+    # (`state/<state_dir>/advice/`); karar DEĞİŞMEZ. Çalışır ancak enabled + mode RECORD + advisor_mode RECORD iken.
+    # Env `TRADINGBOT_SHARED_EXPERIENCE_ADVISOR=off` yalnız KAPATABİLİR.
+    advisor_mode: str = "OFF"               # OFF | RECORD (ADVISE/ENFORCE → ConfigError)
+    advisor_budget_ms: int = 250            # 20..2000 — danışmanın CANLI adım payı (anlık görüntü kapısı)
+    # 20..5000 — YETİŞME adımı payı (2026-09-30): üretim satırlarında ~2,7 satır/ms → 200 bin satır ~75 turda (~19 sa);
+    # 250 ms ile ~300 tur (~3 gün) sürüyordu. Yalnız yetişirken; canlıda `advisor_budget_ms`.
+    advisor_catch_up_budget_ms: int = 1000
+    advisor_rebuild_rows_per_step: int = 5000   # 500..50000 — yetişmede adım başına en çok satır
+    advisor_snapshot_every_steps: int = 60  # 5..1000 — anlık görüntü sıklığı (adım)
+    advisor_max_index_mb: int = 96          # 16..512 — üstünde danışman DEGRADED (canlı tavsiye durur)
+    # 500..50000 — tavsiye sıcak dosyası (2026-09-30: 5000 → 2000; tavsiye satırı ~2,5 KB, döngü ~1000 satırlık blokla
+    # ~0,25 s — 5000 satırda ~0,7–1,1 s sürüyordu)
+    advice_hot_max_lines: int = 2000
+    advice_max_total_mb: int = 256          # 32..4096 — tavsiye deposu disk tavanı (%100 → DEGRADED; seyreltme yok)
+
+    @property
+    def active(self) -> bool:
+        """Toplayıcı kurulur mu (yalnız `enabled` + RECORD)."""
+        return bool(self.enabled) and str(self.mode or "").upper() == "RECORD"
+
+    @property
+    def advisor_active(self) -> bool:
+        """Gölge danışman çalışır mı (toplayıcı + `advisor_mode: RECORD`)."""
+        return self.active and str(self.advisor_mode or "").upper() == "RECORD"
+
+
+@dataclass
+class V3Config:
+    app: AppConfig = field(default_factory=AppConfig)
+    mode: ModeConfig = field(default_factory=ModeConfig)
+    markets: MarketsConfig = field(default_factory=MarketsConfig)
+    universe: UniverseSection = field(default_factory=UniverseSection)
+    data: DataConfig = field(default_factory=DataConfig)
+    coin_heads: CoinHeadsSection = field(default_factory=CoinHeadsSection)
+    llm: LLMSection = field(default_factory=LLMSection)
+    futures_v3: FuturesV3Section = field(default_factory=FuturesV3Section)
+    execution: ExecutionSection = field(default_factory=ExecutionSection)
+    fees: FeesSection = field(default_factory=FeesSection)
+    tax_policy: TaxPolicySection = field(default_factory=TaxPolicySection)
+    risk_profiles: RiskProfilesSection = field(default_factory=RiskProfilesSection)
+    leverage: LeverageSection = field(default_factory=LeverageSection)
+    telegram: TelegramSection = field(default_factory=TelegramSection)
+    learning_v3: LearningV3Section = field(default_factory=LearningV3Section)
+    storage: StorageSection = field(default_factory=StorageSection)
+    obsidian_v3: ObsidianV3Section = field(default_factory=ObsidianV3Section)
+    dashboard: DashboardSection = field(default_factory=DashboardSection)
+    monitoring: MonitoringSection = field(default_factory=MonitoringSection)
+    security: SecuritySection = field(default_factory=SecuritySection)
+    history: HistorySection = field(default_factory=HistorySection)
+    quant_eval: QuantEvalSection = field(default_factory=QuantEvalSection)
+    exit_policy: ExitPolicySection = field(default_factory=ExitPolicySection)
+    entry_selectivity: EntrySelectivitySection = field(default_factory=EntrySelectivitySection)
+    entry_universe: EntryUniverseSection = field(default_factory=EntryUniverseSection)
+    news: NewsSection = field(default_factory=NewsSection)
+    strategy_paper: StrategyPaperSection = field(default_factory=StrategyPaperSection)
+    chart_analysis: ChartAnalysisSection = field(default_factory=ChartAnalysisSection)
+    pattern_trader: PatternTraderSection = field(default_factory=PatternTraderSection)
+    structures: StructuresSection = field(default_factory=StructuresSection)
+    learning_mode: LearningModeSection = field(default_factory=LearningModeSection)
+    shared_experience: SharedExperienceSection = field(default_factory=SharedExperienceSection)
+    warnings: list[str] = field(default_factory=list)
+
+
+_SECTIONS = {"app": AppConfig, "mode": ModeConfig, "markets": MarketsConfig, "universe": UniverseSection, "data": DataConfig,
+             "coin_heads": CoinHeadsSection, "llm": LLMSection, "futures_v3": FuturesV3Section, "execution": ExecutionSection, "fees": FeesSection,
+             "tax_policy": TaxPolicySection, "risk_profiles": RiskProfilesSection, "leverage": LeverageSection,
+             "telegram": TelegramSection, "learning_v3": LearningV3Section, "storage": StorageSection,
+             "obsidian_v3": ObsidianV3Section, "dashboard": DashboardSection, "monitoring": MonitoringSection, "security": SecuritySection,
+             "history": HistorySection, "quant_eval": QuantEvalSection,
+             "exit_policy": ExitPolicySection,
+             "entry_selectivity": EntrySelectivitySection,
+             "entry_universe": EntryUniverseSection,
+             "news": NewsSection,
+             "strategy_paper": StrategyPaperSection,
+             "chart_analysis": ChartAnalysisSection,
+             "pattern_trader": PatternTraderSection,
+             "structures": StructuresSection,
+             "learning_mode": LearningModeSection,
+             "shared_experience": SharedExperienceSection}
+
+VALID_MODES = ("OBSERVE", "PAPER", "TESTNET", "SHADOW_LIVE", "LIVE_LIMITED", "LIVE")
+VALID_LLM_MODES = ("OFF", "POSTMORTEM_ONLY", "ADVISORY", "VETO_ONLY", "RESEARCH_COUNCIL")
+
+
+def load_v3(raw: dict[str, Any]) -> V3Config:
+    warnings: list[str] = []
+    kw = {}
+    # ÖĞRENME MODU (2026-09-28, öğrenme modu): bilinmeyen anahtar / sözlük olmayan bölüm UYARI değil ConfigError —
+    # `_build` bilinmeyeni sessizce düşürür, burada bir yazım hatası (ör. `enable: true`) fark edilmeden geçmemeli.
+    _lm_raw = raw.get("learning_mode")
+    if _lm_raw is not None:
+        if not isinstance(_lm_raw, dict):
+            raise ConfigError("learning_mode bir sözlük olmalı (ör. {enabled: false})")
+        _lm_allowed = {f.name for f in fields(LearningModeSection)}
+        _lm_unknown = sorted(str(k) for k in _lm_raw if k not in _lm_allowed)
+        if _lm_unknown:
+            raise ConfigError("learning_mode: bilinmeyen anahtar(lar): %s (geçerli: %s)"
+                              % (", ".join(_lm_unknown), ", ".join(sorted(_lm_allowed))))
+    # ORTAK DENEYİM KATMANI (2026-09-29): aynı kural — bilinmeyen anahtar / sözlük olmayan bölüm ConfigError.
+    _xp_raw = raw.get("shared_experience")
+    if _xp_raw is not None:
+        if not isinstance(_xp_raw, dict):
+            raise ConfigError("shared_experience bir sözlük olmalı (ör. {enabled: false})")
+        _xp_allowed = {f.name for f in fields(SharedExperienceSection)}
+        _xp_unknown = sorted(str(k) for k in _xp_raw if k not in _xp_allowed)
+        if _xp_unknown:
+            raise ConfigError("shared_experience: bilinmeyen anahtar(lar): %s (geçerli: %s)"
+                              % (", ".join(_xp_unknown), ", ".join(sorted(_xp_allowed))))
+    for name, cls in _SECTIONS.items():
+        val = raw.get(name)
+        if name == "mode" and isinstance(val, str):        # `mode: PAPER` kısa yazımı
+            val = {"mode": val}
+        kw[name] = _build(cls, val if isinstance(val, dict) else None, warnings, name)
+    cfg = V3Config(**kw)
+    cfg.warnings = warnings
+    # GUVENLI RUNTIME OVERRIDE (VPS drop-in icin): yalniz OGRENME modu, typed ve fail-closed.
+    # Kaynak agacini kirletmeden (config.yaml repo'da) PAPER_BOUNDED acip kapatmayi saglar.
+    # Gecersiz deger ConfigError ile REDDEDILIR; PAPER-disi modda PAPER_BOUNDED yine yasak
+    # (asagidaki validate_v3 kurali env yolu icin de gecerlidir).
+    env_mode = os.environ.get("TRADINGBOT_LEARNING_INFLUENCE_MODE", "").strip().upper()
+    if env_mode:
+        from .learn.influence import MODES as _ENV_MODES
+        if env_mode not in _ENV_MODES:
+            raise ConfigError(
+                f"TRADINGBOT_LEARNING_INFLUENCE_MODE geçersiz: {env_mode!r} "
+                f"(geçerli: {', '.join(_ENV_MODES)})")
+        if env_mode != cfg.learning_v3.influence_mode:
+            log.warning("learning_v3.influence_mode env override: %s -> %s",
+                        cfg.learning_v3.influence_mode, env_mode)
+        cfg.learning_v3.influence_mode = env_mode
+    # ÖĞRENME MODU ENV (2026-09-28, öğrenme modu): VPS drop-in yalnız KAPATABİLİR. Açma yolu yoktur; başka her değer
+    # fail-closed ConfigError (yanlış yazılmış bir "kapat" sessizce açık bırakmasın).
+    env_lm = os.environ.get("TRADINGBOT_LEARNING_MODE", "").strip().lower()
+    if env_lm:
+        if env_lm not in ("off", "false", "0", "disabled"):
+            raise ConfigError(f"TRADINGBOT_LEARNING_MODE geçersiz: {env_lm!r} — env yalnız kapatabilir (off)")
+        if cfg.learning_mode.enabled:
+            log.warning("learning_mode env override: enabled -> false (TRADINGBOT_LEARNING_MODE=%s)", env_lm)
+        cfg.learning_mode.enabled = False
+    # ORTAK DENEYİM ENV (2026-09-29): VPS drop-in yalnız KAPATABİLİR (açma yolu yok); başka her değer fail-closed.
+    env_xp = os.environ.get("TRADINGBOT_SHARED_EXPERIENCE", "").strip().lower()
+    if env_xp:
+        if env_xp not in ("off", "false", "0", "disabled"):
+            raise ConfigError(f"TRADINGBOT_SHARED_EXPERIENCE geçersiz: {env_xp!r} — env yalnız kapatabilir (off)")
+        if cfg.shared_experience.enabled or str(cfg.shared_experience.mode or "").upper() != "OFF":
+            log.warning("shared_experience env override: -> enabled=false, mode=OFF (TRADINGBOT_SHARED_EXPERIENCE=%s)",
+                        env_xp)
+        cfg.shared_experience.enabled = False
+        cfg.shared_experience.mode = "OFF"
+    # GÖLGE DANIŞMAN ENV (2026-09-29): yalnız KAPATABİLİR (açma yolu yok); başka her değer fail-closed.
+    env_adv = os.environ.get("TRADINGBOT_SHARED_EXPERIENCE_ADVISOR", "").strip().lower()
+    if env_adv:
+        if env_adv not in ("off", "false", "0", "disabled"):
+            raise ConfigError(f"TRADINGBOT_SHARED_EXPERIENCE_ADVISOR geçersiz: {env_adv!r} — env yalnız kapatabilir (off)")
+        if str(cfg.shared_experience.advisor_mode or "").upper() != "OFF":
+            log.warning("shared_experience.advisor_mode env override: -> OFF (TRADINGBOT_SHARED_EXPERIENCE_ADVISOR=%s)",
+                        env_adv)
+        cfg.shared_experience.advisor_mode = "OFF"
+    validate_v3(cfg)
+    return cfg
+
+
+def validate_v3(cfg: V3Config) -> None:
+    """Risk-kritik hatalarda ConfigError (başlama). Sessiz varsayılana düşme yok."""
+    m = cfg.mode.mode.upper()
+    if m not in VALID_MODES:
+        raise ConfigError(f"mode.mode geçersiz: {cfg.mode.mode} (geçerli: {', '.join(VALID_MODES)})")
+    cfg.mode.mode = m
+    if cfg.mode.withdrawals:
+        raise ConfigError("mode.withdrawals desteklenmiyor — false olmalı")
+    if m in ("LIVE", "LIVE_LIMITED"):
+        raise ConfigError("LIVE/LIVE_LIMITED bu sürümde kapalı; config ile açılamaz")
+    if cfg.mode.live_trading and os.environ.get("ALLOW_LIVE_TRADING", "").lower() != "true":
+        raise ConfigError("mode.live_trading=true fakat ALLOW_LIVE_TRADING env yok — tutarsız (gerçek emir bu sürümde kapalı)")
+    # KALDIRAÇ: kural kümesi TEK kanonik yerde (`risk.leverage.validate_leverage_settings`).
+    # Motor kurulumu (`TradingEngineV3.__init__`) AYNI fonksiyonu çağırır; iki kopya kural yok.
+    lev = cfg.leverage
+    validate_leverage_settings(enabled=bool(lev.enabled), paper_only=bool(lev.paper_only),
+                               min_leverage=int(lev.min_leverage), max_leverage=int(lev.max_leverage), mode=m)
+    tg = cfg.telegram
+    if tg.max_retries < 0 or tg.timeout_s <= 0:
+        raise ConfigError("telegram.max_retries ≥ 0 ve timeout_s > 0 olmalı")
+    if not (0 <= int(tg.daily_summary_hour_utc) <= 23):
+        raise ConfigError(f"telegram.daily_summary_hour_utc 0..23 aralığında olmalı "
+                          f"(verilen: {tg.daily_summary_hour_utc})")
+    if tg.retry_backoff_s < 0:
+        raise ConfigError("telegram.retry_backoff_s negatif olamaz")
+    if tg.retry_batch < 1:
+        raise ConfigError("telegram.retry_batch en az 1 olmalı")
+    for _f in ("bot_token_env", "chat_id_env"):
+        _v = str(getattr(tg, _f) or "")
+        if _v and (":" in _v or len(_v) > 100):
+            raise ConfigError(f"telegram.{_f} bir ORTAM DEĞİŞKENİ ADI olmalı — token değeri config'e yazılamaz")
+    lm = cfg.llm.mode.upper()
+    if lm not in VALID_LLM_MODES:
+        raise ConfigError(f"llm.mode geçersiz: {cfg.llm.mode}")
+    cfg.llm.mode = lm
+    if cfg.llm.daily_usd_budget < 0 or cfg.llm.daily_token_budget < 0:
+        raise ConfigError("llm bütçeleri negatif olamaz")
+    if cfg.learning_v3.auto_promote_in_paper:
+        # Otomatik CHAMPION terfisi hiçbir modda kabul edilmez: araştırma adayı ile canlı tahmin modeli
+        # arasındaki sınır operatör onayıyla geçilir. Sessiz varsayılana düşme YOK.
+        raise ConfigError("PAPER_AUTO_PROMOTION_FORBIDDEN: learning_v3.auto_promote_in_paper=true "
+                          "desteklenmiyor — terfi yalnız açık manuel operatör onayıyla yapılır")
+    # Outcome Learning Loop: etki sözleşmesi fail-closed doğrulanır.
+    # FEATURE YONETISIMI: tavan ihlali fail-closed (indikator enflasyonu ONLENIR).
+    try:
+        from .learn.feature_registry import FeatureGovernanceError, validate_registry
+        validate_registry(max_families=cfg.learning_v3.max_active_families,
+                          max_soft_inputs=cfg.learning_v3.max_active_soft_features)
+    except FeatureGovernanceError as exc:
+        raise ConfigError(f"FEATURE_GOVERNANCE: {exc}") from exc
+    from .learn.influence import MODES as _INFLUENCE_MODES, PAPER_BOUNDED as _PB
+    _lv3 = cfg.learning_v3
+    if _lv3.influence_mode not in _INFLUENCE_MODES:
+        raise ConfigError(f"learning_v3.influence_mode geçersiz: {_lv3.influence_mode} "
+                          f"(geçerli: {', '.join(_INFLUENCE_MODES)})")
+    if _lv3.influence_mode == _PB and m != "PAPER":
+        raise ConfigError("LEARNING_INFLUENCE_PAPER_ONLY: learning_v3.influence_mode=PAPER_BOUNDED "
+                          f"yalnız PAPER modunda kullanılabilir (mevcut mode={m})")
+    if _lv3.influence_prior_strength < 20.0:
+        raise ConfigError("learning_v3.influence_prior_strength >= 20 olmalı "
+                          "(öğrenme etkisinin küçük kalması için)")
+    if not (0.0 < _lv3.influence_max_fraction <= 0.20):
+        raise ConfigError("learning_v3.influence_max_fraction (0, 0.20] aralığında olmalı")
+    if cfg.quant_eval.auto_promotion:
+        # `learning_v3.auto_promote_in_paper` ile AYNI ilke: challenger'dan CHAMPION'a geçiş
+        # yalnız açık manuel operatör onayıyla olur — config bunu otomatikleştiremez.
+        raise ConfigError("QUANT_AUTO_PROMOTION_FORBIDDEN: quant_eval.auto_promotion=true "
+                          "desteklenmiyor — terfi yalnız manuel operatör onayıyla yapılır")
+    # ÇIKIŞ POLİTİKASI: gerçek azaltma/çıkış yolu bu sürümde config ile AÇILAMAZ.
+    _ex = cfg.exit_policy
+    from .learn.exit_executor import ALLOWED_MODES as _EX_MODES, KNOWN_MODES as _EX_KNOWN
+    _am = str(_ex.action_mode or "").upper()
+    if _am not in _EX_KNOWN:
+        raise ConfigError(f"exit_policy.action_mode geçersiz: {_ex.action_mode!r} "
+                          f"(bilinen: {', '.join(_EX_KNOWN)})")
+    if _am not in _EX_MODES:
+        raise ConfigError(
+            f"EXIT_EXECUTION_NOT_ACTIVATED: exit_policy.action_mode={_am} bu sürümde kapalı "
+            f"(izinli: {', '.join(_EX_MODES)}). Gerçek çıkış yolu ancak terfi kapıları geçilip "
+            "açık operatör onayı verildikten sonra açılır.")
+    _ex.action_mode = _am
+    if _ex.auto_promotion:
+        # `learning_v3.auto_promote_in_paper` ve `quant_eval.auto_promotion` ile AYNI ilke.
+        raise ConfigError("EXIT_AUTO_PROMOTION_FORBIDDEN: exit_policy.auto_promotion=true "
+                          "desteklenmiyor — terfi yalnız manuel operatör onayıyla yapılır")
+    if _ex.min_snapshot_interval_s < 0 or _ex.min_r_change < 0 or _ex.max_mark_age_s <= 0:
+        raise ConfigError("exit_policy zamanlama/eşik alanları negatif olamaz "
+                          "(max_mark_age_s pozitif olmalı)")
+    if _ex.eval_fee_rate < 0 or _ex.eval_slippage_rate < 0:
+        raise ConfigError("exit_policy maliyet oranları negatif olamaz")
+    # SABIT GIRIS EVRENI — fail-closed. `enabled=true` iken bos liste sessizce "hepsi serbest"e
+    # DUSMEZ; evren yoksa program baslamaz. Semboller burada normalize edilir ki kapi, tur kapsami
+    # ve rapor AYNI biçimi gorsun.
+    _eu = cfg.entry_universe
+    if _eu.enabled:
+        from .entry_universe import normalize_all as _norm_universe
+        _syms = _norm_universe(_eu.symbols)
+        if not _syms:
+            raise ConfigError("ENTRY_UNIVERSE_EMPTY: entry_universe.enabled=true fakat symbols boş — "
+                              "boş evren 'her sembol serbest' anlamına GELMEZ (fail-closed)")
+        _bad = [s for s in _syms if "/" not in s]
+        if _bad:
+            raise ConfigError(f"entry_universe.symbols çözümlenemedi: {', '.join(_bad)} "
+                              "(beklenen biçim BASE/QUOTE, ör. BTC/USDT)")
+        if not (_eu.allow_long or _eu.allow_short):
+            raise ConfigError("entry_universe: allow_long ve allow_short birlikte false olamaz — "
+                              "bu, evreni sessizce kapatmak olur (giriş istenmiyorsa enabled=false)")
+        _eu.symbols = _syms
+    # HABER/OLAY: gozlem bolumu; yine de sayisal alanlar sessiz varsayilana DUSMEZ.
+    _nw = cfg.news
+    if _nw.refresh_minutes < 1 or _nw.max_items_in_decision < 0 or _nw.retention_days < 1:
+        raise ConfigError("news.refresh_minutes >= 1, max_items_in_decision >= 0 ve retention_days >= 1 olmalı")
+    if _nw.context_window_hours <= 0:
+        raise ConfigError("news.context_window_hours pozitif olmalı")
+    # ARSIV/INDEKS YENILEME: sayisal alanlar sessiz varsayilana DUSMEZ.
+    _hc = cfg.history
+    if _hc.auto_refresh:
+        if _hc.refresh_minutes < 1:
+            raise ConfigError("history.refresh_minutes >= 1 olmalı")
+        if _hc.refresh_max_requests < 1:
+            raise ConfigError("history.refresh_max_requests >= 1 olmalı")
+        if not (1 <= _hc.refresh_max_symbols <= 64):
+            raise ConfigError("history.refresh_max_symbols 1..64 aralığında olmalı "
+                              "(bellek tavanı: yeniden kurulumda eski ve yeni indeks birlikte yaşar)")
+        _tfs = [str(t) for t in (_hc.refresh_timeframes or [])]
+        if not _tfs:
+            raise ConfigError("history.auto_refresh=true iken refresh_timeframes boş olamaz")
+        if "4h" not in _tfs:
+            raise ConfigError("history.refresh_timeframes '4h' içermeli — pattern indeksi bu seriden kurulur")
+        _hc.refresh_timeframes = _tfs
+    try:
+        from .learn.exit_policy import ExitPolicyConfig as _EPC
+        _EPC.from_dict({"policy_version": _ex.policy_version} | dict(_ex.policy or {}))
+    except (ValueError, TypeError) as exc:
+        raise ConfigError(f"exit_policy.policy geçersiz: {exc}") from exc
+    # GİRİŞ SEÇİCİLİĞİ: gerçek giriş filtresi bu sürümde config ile AÇILAMAZ.
+    _en = cfg.entry_selectivity
+    from .learn.entry_eval import ALLOWED_MODES as _EN_MODES, KNOWN_MODES as _EN_KNOWN
+    _enm = str(_en.mode or "").upper()
+    if _enm not in _EN_KNOWN:
+        raise ConfigError(f"entry_selectivity.mode geçersiz: {_en.mode!r} "
+                          f"(bilinen: {', '.join(_EN_KNOWN)})")
+    if _enm not in _EN_MODES:
+        raise ConfigError(
+            f"ENTRY_SELECTIVITY_NOT_ACTIVATED: entry_selectivity.mode={_enm} bu sürümde kapalı "
+            f"(izinli: {', '.join(_EN_MODES)}). Gerçek giriş filtresi ancak terfi kapıları "
+            "geçilip açık operatör onayı verildikten sonra açılır.")
+    _en.mode = _enm
+    if _en.auto_promotion:
+        # `exit_policy.auto_promotion` ve `quant_eval.auto_promotion` ile AYNI ilke.
+        raise ConfigError("ENTRY_AUTO_PROMOTION_FORBIDDEN: entry_selectivity.auto_promotion=true "
+                          "desteklenmiyor — terfi yalnız manuel operatör onayıyla yapılır")
+    if _en.max_snapshots_per_cycle < 1:
+        raise ConfigError("entry_selectivity.max_snapshots_per_cycle >= 1 olmalı")
+    if _en.snapshot_max_lines < 0 or _en.snapshot_archive_max_segments < 0:
+        raise ConfigError("entry_selectivity saklama alanları negatif olamaz "
+                          "(snapshot_max_lines=0 → rotasyon kapalı, silme YOK)")
+    if 0 < _en.snapshot_max_lines < _en.max_snapshots_per_cycle:
+        # Tavan tek turun yazabileceğinden küçükse her tur rotasyon tetiklenir ve sıcak
+        # dosya asla bir turu bile taşıyamaz — sessiz kanıt kaybı riski.
+        raise ConfigError("entry_selectivity.snapshot_max_lines, max_snapshots_per_cycle'dan "
+                          "küçük olamaz")
+    try:
+        from .learn.entry_challenger import EntryChallengerConfig as _ECC
+        _ECC.from_dict({"policy_version": _en.policy_version} | dict(_en.policy or {}))
+    except (ValueError, TypeError) as exc:
+        raise ConfigError(f"entry_selectivity.policy geçersiz: {exc}") from exc
+    # HAFTALIK BAĞLAM (F/G aileleri): SHADOW dışına çıkış yolu YOKTUR — `entry_selectivity.mode`
+    # zaten yukarıda `SHADOW`a kilitlendi ve bu aileler o modun altında çalışır.
+    try:
+        from .learn.candle_context import CandleContextConfig as _CCC
+        from .learn.entry_challenger_v2 import WeeklyChallengerConfig as _WCC
+        from .learn.weekly_structure import WeeklyStructureConfig as _WSC
+        _WSC.from_dict(dict(_en.weekly_structure_policy or {}))
+        _CCC.from_dict(dict(_en.candle_policy or {}))
+        _WCC.from_dict(dict(_en.weekly_challenger_policy or {}))
+    except (ValueError, TypeError) as exc:
+        raise ConfigError(f"entry_selectivity haftalık bağlam politikası geçersiz: {exc}") from exc
+    # MUM ONAYI (V4): kurallar `candle_confirmation.validate_settings` icinde (SAF, tek kaynak).
+    from .candle_confirmation import validate_settings as _cc_validate
+    try:
+        _en.candle_confirmation_mode = _cc_validate(
+            mode=_en.candle_confirmation_mode, variant=_en.candle_confirmation_variant,
+            app_mode=getattr(cfg.mode, "mode", None))
+    except ValueError as exc:
+        raise ConfigError(f"entry_selectivity.candle_confirmation: {exc}") from exc
+    # GRAFİK FORMASYONU ONAYI (V5): kurallar `chart_confirmation.validate_settings` içinde.
+    from .chart_confirmation import validate_settings as _ch_validate
+    from .chart_patterns import ChartPatternConfig as _CPC
+    try:
+        _en.chart_confirmation_mode = _ch_validate(
+            mode=_en.chart_confirmation_mode, variant=_en.chart_confirmation_variant,
+            app_mode=getattr(cfg.mode, "mode", None))
+        _CPC.from_dict(dict(_en.chart_policy or {}))
+    except ValueError as exc:
+        raise ConfigError(f"entry_selectivity.chart_confirmation: {exc}") from exc
+    # PİYASA REJİMİ KAPISI (V7): kurallar `regime_gate.validate_settings` içinde.
+    from .regime_gate import validate_settings as _rg_validate
+    try:
+        _en.regime_gate_mode = _rg_validate(
+            mode=_en.regime_gate_mode, variant=_en.regime_gate_variant,
+            app_mode=getattr(cfg.mode, "mode", None))
+    except ValueError as exc:
+        raise ConfigError(f"entry_selectivity.regime_gate: {exc}") from exc
+    # ORTAK YAPI KATALOĞU (structures_v1): kurallar `structures.catalog.validate_settings` içinde (SAF, tek kaynak).
+    _st = cfg.structures
+    from .structures.catalog import BOT_KEYS as _ST_BOTS, validate_settings as _st_validate
+    try:
+        _norm = _st_validate(policy_version=_st.policy_version, modes={b: getattr(_st, b, "OFF") for b in _ST_BOTS},
+                             app_mode=getattr(cfg.mode, "mode", None))
+    except ValueError as exc:
+        raise ConfigError(str(exc)) from exc
+    for _bot, _m in _norm.items():
+        setattr(_st, _bot, _m)
+    # STRATEJİ KÂĞIT DEFTERİ (V10): kurallar `strategy_paper.validate_settings` içinde (SAF, tek kaynak).
+    _sp = cfg.strategy_paper
+    from .strategy_paper import validate_settings as _sp_validate
+    try:
+        _sp_validate(enabled=bool(_sp.enabled), name=_sp.name, app_mode=getattr(cfg.mode, "mode", None),
+                     starting_equity=float(_sp.starting_equity_usdt), atr_mult=float(_sp.atr_mult),
+                     rule_params=dict(_sp.rule_params or {}))
+    except (ValueError, TypeError) as exc:
+        raise ConfigError(f"strategy_paper: {exc}") from exc
+    seen_dirs = {str(_sp.state_dir)}
+    for i, ex in enumerate(list(_sp.extra or [])):
+        if not isinstance(ex, dict):
+            raise ConfigError(f"strategy_paper.extra[{i}] bir sözlük olmalı")
+        sd = str(ex.get("state_dir") or "")
+        if not sd or sd in seen_dirs or "/" in sd or "\\" in sd or ".." in sd:
+            raise ConfigError(f"strategy_paper.extra[{i}].state_dir benzersiz ve düz bir dizin adı olmalı: {sd!r}")
+        seen_dirs.add(sd)
+        try:
+            _sp_validate(enabled=bool(ex.get("enabled", True)), name=ex.get("name"), app_mode=getattr(cfg.mode, "mode", None),
+                         starting_equity=float(ex.get("starting_equity_usdt", 100.0)), atr_mult=float(ex.get("atr_mult", 3.0)),
+                         rule_params=dict(ex.get("rule_params") or {}))
+        except (ValueError, TypeError) as exc:
+            raise ConfigError(f"strategy_paper.extra[{i}]: {exc}") from exc
+    # FORMASYON PAPER TRADER V1: LIVE'da acilamaz; aile adlari ve esikler protokolden dogrulanir (SAF, tek kaynak).
+    _pt = cfg.pattern_trader
+    if _pt.enabled:
+        from .pattern_trader.strategy import FAMILIES as _PT_FAMILIES
+        if str(getattr(cfg.mode, "mode", "") or "").upper() in ("LIVE", "LIVE_LIMITED"):
+            raise ConfigError("pattern_trader.enabled yalniz PAPER/TESTNET/OBSERVE/SHADOW_LIVE modda acilabilir (gercek para YOK)")
+        _bad = [f for f in (_pt.families or []) if f not in _PT_FAMILIES]
+        if _bad:
+            raise ConfigError("pattern_trader.families bilinmeyen aile: %s (gecerli: %s)" % (", ".join(_bad), ", ".join(_PT_FAMILIES)))
+        if not _pt.families:
+            raise ConfigError("pattern_trader.families bos olamaz")
+        if float(_pt.starting_equity_usdt) <= 0 or float(_pt.starting_equity_usdt) > 1000:
+            raise ConfigError("pattern_trader.starting_equity_usdt (0, 1000] araliginda olmali (sanal bakiye)")
+        if int(_pt.max_open_positions) < 1:
+            raise ConfigError("pattern_trader.max_open_positions >= 1 olmali")
+        if str(_pt.protocol) not in ("classic", "momentum_4h_v3"):
+            raise ConfigError("pattern_trader.protocol bilinmiyor: %s (gecerli: classic, momentum_4h_v3)" % _pt.protocol)
+        if float(_pt.min_rr_after_cost) <= 0 or float(_pt.stop_buffer_atr) < 0:
+            raise ConfigError("pattern_trader: min_rr_after_cost > 0 ve stop_buffer_atr >= 0 olmali")
+        if str(_pt.state_dir) in ("", str(cfg.strategy_paper.state_dir)) or "/" in str(_pt.state_dir) or "\\" in str(_pt.state_dir):
+            raise ConfigError("pattern_trader.state_dir benzersiz ve duz bir dizin adi olmali: %r" % (_pt.state_dir,))
+    # ÇOK ZAMAN DİLİMLİ LİKİDİTE TEYİDİ (H ailesi): SHADOW dışına çıkış yolu YOKTUR.
+    # `entry_selectivity.mode` zaten SHADOW'a kilitli; H ayrıca KENDİ kapısını da taşır ki
+    # ileride giriş bölümü gevşetilse bile H tek başına aktifleşemesin (fail-closed).
+    _hm = str(_en.mtf_mode or "").upper()
+    if _hm not in _EN_KNOWN:
+        raise ConfigError(f"entry_selectivity.mtf_mode geçersiz: {_en.mtf_mode!r} "
+                          f"(bilinen: {', '.join(_EN_KNOWN)})")
+    if _hm not in _EN_MODES:
+        raise ConfigError(
+            f"MULTITIMEFRAME_NOT_ACTIVATED: entry_selectivity.mtf_mode={_hm} bu sürümde "
+            f"kapalı (izinli: {', '.join(_EN_MODES)}). H ailesi yalnız SHADOW'da çalışır; "
+            "gerçek giriş kararını ancak terfi kapıları geçilip açık operatör onayı "
+            "verildikten sonra ETKİLEYEBİLİR.")
+    _en.mtf_mode = _hm
+    if _en.mtf_auto_promotion:
+        raise ConfigError("MULTITIMEFRAME_AUTO_PROMOTION_FORBIDDEN: "
+                          "entry_selectivity.mtf_auto_promotion=true desteklenmiyor — "
+                          "terfi yalnız manuel operatör onayıyla yapılır")
+    try:
+        from .learn.multitimeframe_context import MultiTimeframeConfig as _MTC
+        _MTC.from_dict(dict(_en.mtf_policy or {}))
+    except (ValueError, TypeError) as exc:
+        raise ConfigError(f"entry_selectivity.mtf_policy geçersiz: {exc}") from exc
+    # KARLILIK DENEYI: SHADOW disina cikis yolu YOKTUR ve kanonik deftere yazmaz.
+    _xm = str(getattr(_en, "experiment_mode", "SHADOW") or "").upper()
+    if _xm not in _EN_KNOWN:
+        raise ConfigError(f"entry_selectivity.experiment_mode geçersiz: {_xm!r} "
+                          f"(bilinen: {', '.join(_EN_KNOWN)})")
+    if _xm not in _EN_MODES:
+        raise ConfigError(
+            f"PROFITABILITY_EXPERIMENT_NOT_ACTIVATED: experiment_mode={_xm} bu sürümde "
+            f"kapalı (izinli: {', '.join(_EN_MODES)}). Deney yalnız izole SHADOW PAPER "
+            "simülasyonudur; kanonik defteri hiçbir koşulda etkileyemez.")
+    _en.experiment_mode = _xm
+    if getattr(_en, "experiment_auto_promotion", False):
+        raise ConfigError("PROFITABILITY_EXPERIMENT_AUTO_PROMOTION_FORBIDDEN: "
+                          "entry_selectivity.experiment_auto_promotion=true desteklenmiyor "
+                          "— terfi yalnız manuel operatör onayıyla yapılır")
+    try:
+        from .learn.profitability_experiment import ExperimentConfig as _PXC
+        _PXC.from_dict(dict(getattr(_en, "experiment_policy", None) or {}))
+    except (ValueError, TypeError) as exc:
+        raise ConfigError(f"entry_selectivity.experiment_policy geçersiz: {exc}") from exc
+    if cfg.futures_v3.margin_mode.lower() != "isolated":
+        raise ConfigError("futures_v3.margin_mode paper'da bile yalnız 'isolated' desteklenir")
+    if not (1 <= cfg.futures_v3.leverage_default <= cfg.futures_v3.leverage_max_paper_research <= 125):
+        raise ConfigError("futures_v3 kaldıraç ayarları tutarsız (1 ≤ default ≤ max ≤ 125)")
+    if cfg.tax_policy.enabled and not cfg.tax_policy.manually_confirmed:
+        raise ConfigError("tax_policy.enabled=true için manually_confirmed=true ve doğrulanmış kaynak gerekir")
+    if cfg.execution.gateway.lower() == "live":
+        raise ConfigError("execution.gateway=live bu sürümde kapalı")
+    if cfg.dashboard.host not in ("127.0.0.1", "localhost", "::1") and not cfg.dashboard.allow_insecure_public and not os.environ.get(cfg.dashboard.auth_token_env):
+        cfg.warnings.append(f"dashboard.host={cfg.dashboard.host} public; token env {cfg.dashboard.auth_token_env} tanımlı değil → dashboard başlatılmayacak")
+    # risk profili çözümlenebilir mi (ConfigError yayılır)
+    from .risk.profiles import resolve_profile
+    _prof = resolve_profile(cfg.risk_profiles.profile, cfg.risk_profiles.overrides, i_understand=cfg.risk_profiles.i_understand)
+    # ÖĞRENME MODU (2026-09-28, öğrenme modu): kurallar aşağıda; kapalıyken yalnız yapı/sınır denetlenir.
+    _validate_learning_mode(cfg, _prof)
+    # ORTAK DENEYİM KATMANI (2026-09-29): tip/aralık/mod/yol denetimi (kapalıyken de).
+    _validate_shared_experience(cfg)
+
+
+def _is_int(v: Any) -> bool:
+    return isinstance(v, int) and not isinstance(v, bool)
+
+
+def _is_num(v: Any) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(float(v))
+
+
+def _validate_learning_mode(cfg: V3Config, profile) -> None:
+    """ÖĞRENME MODU doğrulaması (2026-09-28, öğrenme modu) — fail-closed, sessiz varsayılan YOK.
+
+    Her zaman: tipler, sınırlar, defter adları, bilinmeyen alt anahtar ve ezme anahtarları. Yalnız `enabled=true`
+    iken: mode=PAPER, gateway=paper, testnet kapalı, risk profili PAPER_RESEARCH ve kaldıraç ≤ profil tavanı.
+    `books` değerleri `BookLearningCfg`'ye normalize edilir (idempotent: ikinci doğrulama aynı sonucu verir)."""
+    from .learning_mode import BOOK_NAMES, LIST_OVERRIDE_KEYS, OVERRIDE_KEYS, SYMBOLS_UNIVERSE, BookLearningCfg
+    from .structures.catalog import BOT_KEYS as _ST_BOTS
+    lm = cfg.learning_mode
+    for _f in ("enabled", "min_notional_bump", "counterfactual"):
+        if not isinstance(getattr(lm, _f), bool):
+            raise ConfigError(f"learning_mode.{_f} true/false olmalı (verilen: {getattr(lm, _f)!r})")
+    if lm.enabled:
+        # YALNIZ PAPER: üç bağımsız katmanın ilki (ikincisi çalışma zamanı mode_gate, üçüncüsü `learning.on` korumaları).
+        _m = str(getattr(cfg.mode, "mode", "") or "").upper()
+        if _m != "PAPER":
+            raise ConfigError(f"LEARNING_MODE_PAPER_ONLY: learning_mode.enabled=true yalnız mode=PAPER'da (mevcut {_m})")
+        if str(cfg.execution.gateway or "").lower() != "paper":
+            raise ConfigError("LEARNING_MODE_PAPER_ONLY: learning_mode.enabled=true yalnız execution.gateway=paper iken "
+                              f"(mevcut {cfg.execution.gateway!r})")
+        if bool(cfg.execution.testnet_enabled):
+            raise ConfigError("LEARNING_MODE_PAPER_ONLY: learning_mode.enabled=true iken execution.testnet_enabled false olmalı")
+        if str(getattr(profile, "name", "") or "").upper() != "PAPER_RESEARCH":
+            raise ConfigError("LEARNING_MODE_PAPER_ONLY: learning_mode.enabled=true yalnız risk_profiles.profile="
+                              f"PAPER_RESEARCH iken (mevcut {getattr(profile, 'name', None)!r})")
+    _r = lm.risk_per_trade_pct
+    if not (_is_num(_r) and 0 < float(_r) <= 2.0):
+        raise ConfigError(f"learning_mode.risk_per_trade_pct (0, 2] aralığında olmalı (verilen: {_r!r})")
+    _t = lm.max_total_open_risk_pct
+    if not (_is_num(_t) and 0 < float(_t) <= 100.0):
+        raise ConfigError(f"learning_mode.max_total_open_risk_pct (0, 100] aralığında olmalı (verilen: {_t!r})")
+    _res = lm.margin_reserve_pct
+    if not (_is_num(_res) and 0 <= float(_res) <= 50.0):
+        raise ConfigError(f"learning_mode.margin_reserve_pct [0, 50] aralığında olmalı (verilen: {_res!r})")
+    _lb = lm.liq_buffer_mult
+    if not (_is_num(_lb) and float(_lb) >= 1.5):
+        raise ConfigError(f"learning_mode.liq_buffer_mult >= 1.5 olmalı (verilen: {_lb!r})")
+    _mp = lm.counterfactual_max_pending
+    if not (_is_int(_mp) and 1 <= int(_mp) <= 2000):
+        raise ConfigError(f"learning_mode.counterfactual_max_pending 1..2000 aralığında olmalı (verilen: {_mp!r})")
+    # kaldıraç tavanı: kapalıyken mutlak 5 (TESTNET profili kapalı bölümü düşürmesin), açıkken profil tavanı da
+    _lev_cap = min(5, int(profile.futures_max_leverage)) if lm.enabled else 5
+    if not isinstance(lm.books, dict):
+        raise ConfigError("learning_mode.books bir sözlük olmalı (defter adı → ayar)")
+    _books: dict[str, BookLearningCfg] = {}
+    _allowed = set(BookLearningCfg.__dataclass_fields__)
+    for _name, _raw in lm.books.items():
+        _n = str(_name)
+        if _n not in BOOK_NAMES:
+            raise ConfigError(f"learning_mode.books: bilinmeyen defter {_n!r} (geçerli: {', '.join(BOOK_NAMES)})")
+        if isinstance(_raw, BookLearningCfg):
+            _d = _raw.to_dict()
+        elif isinstance(_raw, dict):
+            _d = dict(_raw)
+        elif _raw is None:
+            _d = {}
+        else:
+            raise ConfigError(f"learning_mode.books.{_n} bir sözlük olmalı")
+        _unk = sorted(str(k) for k in _d if k not in _allowed)
+        if _unk:
+            raise ConfigError(f"learning_mode.books.{_n}: bilinmeyen anahtar(lar): {', '.join(_unk)} "
+                              f"(geçerli: {', '.join(sorted(_allowed))})")
+        _bc = BookLearningCfg(**_d)
+        if not isinstance(_bc.enabled, bool):
+            raise ConfigError(f"learning_mode.books.{_n}.enabled true/false olmalı")
+        if not (_is_int(_bc.slots) and 1 <= _bc.slots <= 200):
+            raise ConfigError(f"learning_mode.books.{_n}.slots 1..200 aralığında olmalı (verilen: {_bc.slots!r})")
+        if not (_is_int(_bc.leverage_max) and 1 <= _bc.leverage_max <= _lev_cap):
+            raise ConfigError(f"learning_mode.books.{_n}.leverage_max 1..{_lev_cap} aralığında olmalı "
+                              f"(verilen: {_bc.leverage_max!r}; tavan min(5, profil futures_max_leverage))")
+        if _bc.min_stop_pct is not None and not (_is_num(_bc.min_stop_pct) and float(_bc.min_stop_pct) >= 0):
+            raise ConfigError(f"learning_mode.books.{_n}.min_stop_pct >= 0 olmalı (verilen: {_bc.min_stop_pct!r})")
+        if _bc.symbols not in (None, SYMBOLS_UNIVERSE):
+            raise ConfigError(f"learning_mode.books.{_n}.symbols yalnız {SYMBOLS_UNIVERSE!r} olabilir "
+                              f"(verilen: {_bc.symbols!r})")
+        _books[_n] = _bc
+    lm.books = _books
+    if not isinstance(lm.strategy_overrides, dict):
+        raise ConfigError("learning_mode.strategy_overrides bir sözlük olmalı")
+    for _k, _v in lm.strategy_overrides.items():
+        if _k not in OVERRIDE_KEYS:
+            raise ConfigError(f"learning_mode.strategy_overrides: bilinmeyen anahtar {_k!r} "
+                              f"(geçerli: {', '.join(OVERRIDE_KEYS)})")
+        if _k in LIST_OVERRIDE_KEYS:
+            if not isinstance(_v, (list, tuple)) or not all(isinstance(x, str) for x in _v):
+                raise ConfigError(f"learning_mode.strategy_overrides.{_k} bot adı listesi olmalı")
+            _bad = [x for x in _v if x not in _ST_BOTS]
+            if _bad or len(set(_v)) != len(_v):
+                raise ConfigError(f"learning_mode.strategy_overrides.{_k}: geçersiz/yinelenen bot "
+                                  f"{', '.join(_bad) or '(yinelenen)'} (geçerli: {', '.join(_ST_BOTS)})")
+            lm.strategy_overrides[_k] = list(_v)
+        elif not isinstance(_v, bool):
+            raise ConfigError(f"learning_mode.strategy_overrides.{_k} true/false olmalı (verilen: {_v!r})")
+
+
+#: ORTAK DENEYİM KATMANI (2026-09-29): sayısal alan → (tür, alt, üst). Tamsayı alanlar bool KABUL ETMEZ.
+_XP_INT_RANGES = {"hot_max_lines": (500, 50000), "archive_max_segments": (0, 1_000_000), "max_total_mb": (64, 10240),
+                  "max_rows_per_tour": (10, 5000), "cache_entries": (64, 10000), "lazy_fetch_max_per_tour": (0, 20)}
+_XP_NUM_RANGES = {"tour_budget_s": (0.1, 10.0), "pending_max_age_h": (1.0, 240.0), "lock_timeout_s": (0.0, 2.0)}
+#: GÖLGE DANIŞMAN (2026-09-29): tamsayı alanlar (bool KABUL ETMEZ).
+_XP_ADV_INT_RANGES = {"advisor_budget_ms": (20, 2000), "advisor_catch_up_budget_ms": (20, 5000),
+                      "advisor_rebuild_rows_per_step": (500, 50000),
+                      "advisor_snapshot_every_steps": (5, 1000), "advisor_max_index_mb": (16, 512),
+                      "advice_hot_max_lines": (500, 50000), "advice_max_total_mb": (32, 4096)}
+
+
+def _validate_shared_experience(cfg: V3Config) -> None:
+    """ORTAK DENEYİM KATMANI doğrulaması (2026-09-29) — fail-closed, sessiz varsayılan YOK (kapalıyken de denetlenir).
+
+    `mode` büyük harfe normalize edilir ve yalnız OFF | RECORD olabilir (ADVISE/ENFORCE → ConfigError
+    SHARED_EXPERIENCE_MODE_NOT_IMPLEMENTED); `state_dir` state kökü altında düz ad olmalı; sayılar aralıkta. YALNIZ
+    PAPER: bölüm açık ama mod PAPER değilse ConfigError DEĞİL uyarı — toplayıcı çalışma anında `SUSPENDED:<mod>` olur ve
+    satır yazmaz (depodaki config.yaml PAPER dışına taşındığında öğrenme modu kapısı ayrıca devrededir)."""
+    xp = getattr(cfg, "shared_experience", None)
+    if xp is None:
+        return
+    if not isinstance(xp.enabled, bool):
+        raise ConfigError(f"shared_experience.enabled true/false olmalı (verilen: {xp.enabled!r})")
+    if not isinstance(xp.backfill, bool):
+        raise ConfigError(f"shared_experience.backfill true/false olmalı (verilen: {xp.backfill!r})")
+    if xp.mode is False:
+        # YAML 1.1 (PyYAML) çıplak `mode: OFF` / `mode: off` yazımını bool False okur (2026-09-29): belgelenen kapatma
+        # yolu başlatmayı ÇÖKERTMESİN → OFF. `mode: on/yes` (True) belirsizdir → aşağıda ConfigError.
+        xp.mode = "OFF"
+    if not isinstance(xp.mode, str):
+        raise ConfigError(f"shared_experience.mode metin olmalı (OFF | RECORD; verilen: {xp.mode!r})")
+    _m = xp.mode.strip().upper()
+    if _m not in SHARED_EXPERIENCE_MODES:
+        raise ConfigError(f"SHARED_EXPERIENCE_MODE_NOT_IMPLEMENTED: shared_experience.mode yalnız "
+                          f"{' | '.join(SHARED_EXPERIENCE_MODES)} olabilir (verilen: {xp.mode!r}; v1 yalnız KAYIT)")
+    xp.mode = _m
+    sd = xp.state_dir
+    if (not isinstance(sd, str) or not sd.strip() or sd != sd.strip() or "/" in sd or "\\" in sd or ".." in sd
+            or sd in (".",) or ":" in sd):
+        raise ConfigError(f"shared_experience.state_dir state kökü altında düz bir ad olmalı (/, \\, .., : yok; "
+                          f"verilen: {sd!r})")
+    for _k, (_lo, _hi) in _XP_INT_RANGES.items():
+        _v = getattr(xp, _k)
+        if not (_is_int(_v) and _lo <= int(_v) <= _hi):
+            raise ConfigError(f"shared_experience.{_k} {_lo}..{_hi} aralığında tamsayı olmalı (verilen: {_v!r})")
+    for _k, (_lo, _hi) in _XP_NUM_RANGES.items():
+        _v = getattr(xp, _k)
+        if not (_is_num(_v) and _lo <= float(_v) <= _hi):
+            raise ConfigError(f"shared_experience.{_k} [{_lo}, {_hi}] aralığında olmalı (verilen: {_v!r})")
+    # GÖLGE DANIŞMAN (2026-09-29): yalnız OFF | RECORD (büyük harfe normalize); `advisor_mode: OFF` (YAML bool) → OFF.
+    if xp.advisor_mode is False:
+        xp.advisor_mode = "OFF"
+    if not isinstance(xp.advisor_mode, str):
+        raise ConfigError(f"shared_experience.advisor_mode metin olmalı (OFF | RECORD; verilen: {xp.advisor_mode!r})")
+    _am = xp.advisor_mode.strip().upper()
+    if _am not in SHARED_EXPERIENCE_ADVISOR_MODES:
+        raise ConfigError(f"SHARED_EXPERIENCE_ADVISOR_MODE_NOT_IMPLEMENTED: shared_experience.advisor_mode yalnız "
+                          f"{' | '.join(SHARED_EXPERIENCE_ADVISOR_MODES)} olabilir (verilen: {xp.advisor_mode!r}; "
+                          f"danışman yalnız KAYIT — GİR girişi zorlamaz, boyutu büyütmez)")
+    xp.advisor_mode = _am
+    for _k, (_lo, _hi) in _XP_ADV_INT_RANGES.items():
+        _v = getattr(xp, _k)
+        if not (_is_int(_v) and _lo <= int(_v) <= _hi):
+            raise ConfigError(f"shared_experience.{_k} {_lo}..{_hi} aralığında tamsayı olmalı (verilen: {_v!r})")
+    if xp.active and str(getattr(cfg.mode, "mode", "") or "").upper() != "PAPER":
+        msg = ("shared_experience: YALNIZ PAPER — mode=%s iken katman ASKIDA kalır (SUSPENDED:%s), satır yazılmaz"
+               % (cfg.mode.mode, cfg.mode.mode))
+        if msg not in cfg.warnings:
+            cfg.warnings.append(msg)

@@ -1,0 +1,116 @@
+"""Paylaşılan test yardımcıları — FeatureSnapshotV3 üreten gerçekçi fixture'lar.
+
+Coverage gate artık sparse hafızayı (yalnız expected_r dolu, Core-4 gibi) bloklar; bu yüzden replay
+fixture'ları gerçek snapshot şemasıyla üretilir. `sparse` modu eski davranışı taklit eder ve gate'in
+gerçekten blokladığını göstermek için kullanılır.
+"""
+from __future__ import annotations
+
+import math
+import pandas as pd
+import pytest
+
+from tradingbot import engine as _engine_mod
+from tradingbot.learn.snapshot import build_snapshot
+from tradingbot.market import http as _http
+
+
+@pytest.fixture(autouse=True)
+def _offline_network():
+    """Testler AĞSIZDIR. Sahte oturum verilmemiş bir `HttpClient` gerçek `requests` oturumu açacağı anda
+    `TransientHttpError` ile düşer: ağ olmayan makinedeki son durumun aynısı (çağıran hatayı yakalar, önceki veri
+    korunur), ama dış bağlantı ve yeniden deneme beklemesi olmadan. Eskiden motor turları (`ensure_venue_events` →
+    exchangeInfo + fundingInfo) fapi.binance.com'a bağlanmaya çalışıyordu; sonuç test makinesinin ağına bağlıydı.
+    `session=` ile sahte oturum verilen istemciler etkilenmez. Kendi `MonkeyPatch`ini kullanır: testin
+    `monkeypatch.undo()` çağrısı (ör. iki motoru ard arda kuran testler) bu korumayı kaldırmaz."""
+    real_session = _http.HttpClient.session
+
+    def _session(self):
+        if self._session is None:
+            raise _http.TransientHttpError(f"test: ağ yok ({self.base_url}); sahte oturum için session= verin")
+        return real_session.fget(self)
+
+    # Aynısı ccxt yolu için: `TradingEngine.perp_frames` sahte borsa (`eng._fu`) verilmemişse gerçek
+    # `ccxt.binanceusdm` kurup Binance'e bağlanıyordu (ör. giriş evreni açık turlarda). Artık ağ hatasıyla düşer;
+    # tur bunu ağ kaynaklı "veri yok" olarak işler (ağsız makinedeki gibi). `eng._fu = SahteBorsa()` etkilenmez.
+    def _offline_fut(self):
+        if self._fu is None:
+            raise ConnectionError("test: ağ yok (ccxt binanceusdm); sahte borsa için eng._fu verin")
+        return self._fu
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(_http.HttpClient, "session", property(_session))
+        mp.setattr(_engine_mod.TradingEngine, "_fut", _offline_fut)
+        yield
+
+
+BAR_MS = 86_400_000
+
+
+def synth_bars(n: int = 160, *, end_ms: int, seed: int = 3, drift: float = 0.05, bar_ms: int = BAR_MS,
+               hl_pct: float = 0.012) -> pd.DataFrame:
+    """Deterministik sentetik mumlar (rastgelelik yok; sinüs + drift).
+
+    `hl_pct`: bar içi yüksek/düşük genişliği. ATR% ve dolayısıyla `vol_regime_code` bunun üzerinden
+    kontrol edilir — uçtan uca testte "yüksek volatilite" senaryosu böyle kurulur (sahte alan değil,
+    gerçekten oynak barlar).
+    """
+    ts = [end_ms - (n - 1 - i) * bar_ms for i in range(n)]
+    close = [100.0 + drift * i + 6.0 * math.sin((i + seed) / 9.0) + 2.0 * math.sin((i + seed) / 3.3) for i in range(n)]
+    return pd.DataFrame({
+        "timestamp": ts, "open": [c * (1 - hl_pct / 12) for c in close],
+        "high": [c * (1 + hl_pct) for c in close], "low": [c * (1 - hl_pct) for c in close], "close": close,
+        "volume": [1000.0 + 40.0 * math.sin((i + seed) / 5.0) + i for i in range(n)],
+    })
+
+
+def make_snapshot(*, symbol: str, side: str, decision_ts_ms: int, seed: int = 3, source: str = "HISTORICAL_REPLAY",
+                  bar_ms: int = BAR_MS, entry: float | None = None, strength: float = 0.35) -> dict:
+    """Gerçekçi, dolu FeatureSnapshotV3 (coverage gate'i geçecek kadar kapsamlı).
+
+    `strength`: kurulumun gücü (-1..1). Ajan bias'ı, konsensüs ve beklenen R'yi birlikte hareket ettirir;
+    model testlerinin ayrıştırılabilir iki sınıf üretebilmesi için gerekir (sabit fixture'da öğrenilecek
+    sinyal olmaz). Yalnız `prediction_features_v3` alanlarını etkiler.
+    """
+    bars = synth_bars(end_ms=decision_ts_ms, seed=seed, bar_ms=bar_ms)
+    btc = synth_bars(end_ms=decision_ts_ms, seed=seed + 11, drift=0.03, bar_ms=bar_ms)
+    px = float(bars["close"].iloc[-1]) if entry is None else float(entry)
+    sgn = 1.0 if side.upper() == "LONG" else -1.0
+    snap = build_snapshot(
+        symbol=symbol, market_type="USDM_PERP", timeframe="4h", side=side, decision_ts_ms=decision_ts_ms,
+        bars=bars, source=source, btc_bars=btc,
+        funding={"rate": 0.0001 * sgn, "z": strength * sgn},
+        micro={"oi_change_pct": 1.2, "spread_pct": 0.02, "depth_ratio": 1.1, "est_slippage_pct": 0.03,
+               "data_freshness_s": 12.0, "liquidity_ok": True, "basis_pct": 0.05},
+        decision={"consensus_score": strength * sgn, "consensus_conf": 0.5 + 0.3 * abs(strength),
+                  "n_dissent": 1 if strength > 0 else 4, "n_vetoes": 0,
+                  "head_confidence": 0.5 + 0.3 * abs(strength), "risk_allowed": True,
+                  "adx": 20.0 + 20.0 * strength, "trend_strength": strength},
+        plan={"setup_type": "pullback", "expected_r": 1.2 + strength, "p_win": 0.54, "expected_cost_pct": 0.18,
+              "entry": px, "stop": px * (0.97 if side.upper() == "LONG" else 1.03),
+              "targets": [px * (1.05 if side.upper() == "LONG" else 0.95),
+                          px * (1.09 if side.upper() == "LONG" else 0.91)],
+              "rr": 2.1, "leverage": 1, "notional": 15.0, "margin": 15.0},
+        portfolio={"btc_regime": "NEUTRAL", "breadth": 0.5, "risk_on": True, "cluster_exposure": 0.2,
+                   "direction": sgn, "notional": 30.0, "open_risk_pct": 2.0, "drawdown_pct": 1.5,
+                   "pnl_today_r": 0.1, "pnl_week_r": -0.2, "long_exposure": 15.0, "short_exposure": 15.0},
+        pattern={"n": 40, "p_win": 0.52, "expectancy_r": 0.1, "profit_factor": 1.05, "ci_low": -0.05,
+                 "distance": 0.4, "fallback_level": 1},
+        agents={a: {"bias": strength * sgn, "confidence": 0.5 + 0.3 * abs(strength)} for a in
+                ("trend", "momentum", "volatility", "volume_flow", "liquidity", "derivatives")},
+        run_id="fixture", seed=seed, strict=True)
+    return snap.to_dict()
+
+
+def sparse_features() -> dict:
+    """Core-4 öncesi hafızanın şekli: pratikte yalnız expected_r/p_win dolu."""
+    return {"expected_r": 1.97, "p_win": 0.5, "leverage": 1}
+
+
+def pytest_configure(config):
+    """`slow` işareti kayıtlı olsun — 100k saklama benchmark'ı bununla etiketlenir.
+
+    VARSAYILAN OLARAK DESELECT EDİLMEZ: kayıpsız saklama garantisi her regresyonda ölçülür;
+    yerelde hızlı bir tur isteyen `-m "not slow"` verebilir.
+    """
+    config.addinivalue_line("markers", "slow: uzun süren ölçüm/benchmark testi")

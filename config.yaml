@@ -13,17 +13,57 @@ exchange:
   history_days: 730
   cache_dir: "data"
 
+# ANALIZ kapsami (V16: 10 -> 40). GIRIS evreni ayri bolumdedir (`entry_universe`) ve AYNI listedir.
+# SECIM OLCUTLERI (2026-09-18 taze universe.json, sonuclara BAKILMADAN yazildi):
+#   1) Binance USDT perpetual (market_type futures|both), borsa filtreleri DOGRULANMIS
+#   2) listeleme yasi >= 747 gun — en az BIR tam olcum penceresi (P3) kapansin
+#   3) spread <= %0,06 — kayma varsayimimiz 3 bps; bunun cok ustu olcumu bozar
+#   4) ASCII sembol — dogrulanmamis/okunamayan sembol alinmaz
+#   5) 24s hacme gore ilk 40; mevcut on coinin HEPSI listede kaldi (olcum surekliligi)
+# PENCERE KAPSAMI — backtest TEK sayi olarak sunulmaz, pencere basina coin sayisi yazilir:
+#   P1 (2020-11->) 22 coin · P2 (2022-09->) 27 coin · P3 (2024-09->) 40 coin
+# Elenenler ornegi: HYPE/AVA/PUMP/TRUMP/PAXG (yas), DRIFT (spread %0,125), 龙虾 (ASCII disi).
 coins:
   - BTC/USDT
   - ETH/USDT
+  - ZEC/USDT
   - SOL/USDT
-  - BNB/USDT
+  - NEAR/USDT
+  - UNI/USDT
   - XRP/USDT
-  - ADA/USDT
+  - ONE/USDT
+  - BNB/USDT
+  - ARB/USDT
   - DOGE/USDT
-  - AVAX/USDT
+  - LSK/USDT
+  - SUI/USDT
+  - ENA/USDT
+  - G/USDT
+  - WLD/USDT
+  - ADA/USDT
+  - ONDO/USDT
+  - 1000PEPE/USDT
+  - COTI/USDT
   - LINK/USDT
+  - REZ/USDT
+  - DASH/USDT
+  - AAVE/USDT
+  - TAO/USDT
+  - BCH/USDT
+  - AVAX/USDT
   - DOT/USDT
+  - FIL/USDT
+  - APT/USDT
+  - SYN/USDT
+  - LTC/USDT
+  - XLM/USDT
+  - INJ/USDT
+  - FET/USDT
+  - TRX/USDT
+  - XMR/USDT
+  - 1000SHIB/USDT
+  - OP/USDT
+  - KSM/USDT
 
 backtest:
   fee_pct: 0.10             # Binance spot taker (%)
@@ -38,7 +78,7 @@ backtest:
   min_oos_trades: 8
 
 risk:
-  starting_equity_usdt: 50      # 50 USDT ile başla
+  starting_equity_usdt: 100     # PAPER katkı sermayesi (2026-08-26: 50→100; mevcut defter dosyaları kendi tabanını taşır)
   risk_per_trade_pct: 2.0       # işlem başına risk (%) — küçük hesap için 2
   atr_stop_mult: 2.5
   max_position_pct: 30          # tek coine max sermaye (%) → 15 USDT
@@ -46,8 +86,15 @@ risk:
   btc_regime_filter: true
   min_confidence_to_buy: 55
 
+# TARAYICI — sabit giriş evreni açıkken KAPALI (2026-09-11).
+# Neden: tarayıcı sembol başına İKİ REST isteği yapar (4h + 1d mumları). 160 sembolde
+# tarama başına 320 istek, 15 dk kadans + `--scan-every 2` ile günde ~15.360 istek eder.
+# `entry_universe.scanner_feeds_entries: false` olduğu için bu isteklerin ürünü artık
+# hiçbir girişe dönüşmez; yalnız panelin tarayıcı sayfasını besler.
+# Geri açmak tek satırdır: `enabled: true`. O zaman `state/universe_eval.json` yeniden
+# tazelenir ve tarama adayları panelde görünür (giriş yine yalnız evrende açılır).
 scanner:
-  enabled: true
+  enabled: false
   min_volume_usdt: 20000000     # 24s hacim ≥ 20M USDT olan Binance USDT perpetual'ları tara
   flag_score: 60                # işaretleme eşiği (0-100)
   top_n: 12                     # derin ajan analizine giden setup sayısı
@@ -56,7 +103,7 @@ scanner:
 
 futures:
   enabled: true                 # yönetici planlarını kağıt futures defterinde simüle et
-  starting_equity_usdt: 50
+  starting_equity_usdt: 100     # PAPER katkı sermayesi (2026-08-26: 50→100; risk oranları AYNI, %6 bütçe tabana ölçeklenir)
   max_positions: 3
   min_pwin: 0.45                # öğrenen model hazırsa: P(kazanç) bunun altındaysa işlem açma
 
@@ -70,3 +117,507 @@ obsidian:
   git_sync: false              # true: her turdan sonra kasa klasörünü git commit+push et (bulutta çalışırken PC/telefon Obsidian Git ile çeker)
 
 state_dir: "state"
+
+# ============================================================
+#  v3 bölümleri (geriye uyumlu; eksik anahtarlar güvenli varsayılana düşer, riskle ilgili hatalı değerlerde program BAŞLAMAZ)
+# ============================================================
+app:
+  name: trading2
+  version: "3.0"
+  timezone_display: Europe/Istanbul
+
+mode:
+  mode: PAPER                  # OBSERVE | PAPER | TESTNET | SHADOW_LIVE (LIVE_LIMITED/LIVE bu sürümde kapalı). Geçişler yalnız `mode-transition` ile, manuel.
+  live_trading: false          # ALLOW_LIVE_TRADING env + typed token olmadan hiçbir zaman gerçek emir yok
+  withdrawals: false           # desteklenmiyor
+  account_label: default
+
+markets:
+  spot_enabled: true
+  futures_enabled: true
+  quote_assets: [USDT]
+  allow_usdc: false
+
+universe:                      # dinamik Binance spot + USDⓈ-M perpetual evreni (python -m tradingbot universe)
+  min_quote_volume_24h: 20000000
+  max_spread_pct: 0.2
+  min_depth_0_5pct_usdt: 50000
+  min_listing_age_days: 60
+  max_symbols: 200
+  refresh_minutes: 360
+  # KANIT ONARIMI V1.1 (2026-09-09): yalniz-vadeli (spot'ta listesiz) kesit 87 kurulumda -0.24R, spot kripto LONG +0.155R.
+  # Yasak DEGIL: olculen ~0.37R acik yumusak ceza olarak dusulur; aday degerlendirilir, zayifsa arastirma boyutunda acilir.
+  futures_only_penalty_r: 0.35
+  spot_listing_ttl_minutes: 1440
+  tier2_top: 30
+  tier3_top: 10
+
+data:
+  primary: binance             # Binance resmi market-data endpointleri; TradingView/ccxt yedek + karşılaştırma
+  fallback: [tradingview, ccxt]
+  max_candle_age_bars: 2
+  max_ticker_age_s: 120
+  max_clock_drift_ms: 5000
+  max_price_divergence_pct: 0.5
+  rate_budget_safety: 0.7
+
+# ============================================================
+#  TARIHSEL ARSIV + BENZERLIK INDEKSI — OTOMATIK ARTIMLI YENILEME (2026-09-11)
+#  Worker arka planda yalnizca YENI KAPANMIS barlari ceker ve indeksi yeniden kurup
+#  ATOMIK yayimlar. Tur bu ise blok OLMAZ, dolayisiyla stop/TP yonetimi gecikmez.
+#  Butun gecmis her seferinde indirilmez: baslangic manifestteki son bardir.
+#  Ilk kapsama AYRI bir istir: `python -m tradingbot history-collect ...` (bir kez).
+# ============================================================
+history:
+  enabled: true
+  auto_refresh: true
+  refresh_minutes: 15           # arka plan periyodu
+  refresh_timeframes: [4h, 1h, 1d]   # '4h' zorunlu: pattern indeksi bu seriden kurulur
+  refresh_max_requests: 24      # tur basina istek tavani (rate-limit korumasi)
+  refresh_max_symbols: 16       # BELLEK TAVANI: yeniden kurulumda eski+yeni indeks birlikte yasar
+
+coin_heads:
+  enabled: true                # false → eski (v2) motor
+  consensus_threshold: 0.22
+  min_confidence: 0.25
+  min_expected_r: 1.5          # maliyet SONRASI beklenen R
+  max_workers: 4
+  decision_ttl_minutes: 240
+  funding_horizon_bars: 12
+
+llm:
+  provider: noop               # noop | anthropic (ANTHROPIC_API_KEY env; anahtar asla config/log/Obsidian'a yazılmaz)
+  mode: POSTMORTEM_ONLY        # OFF | POSTMORTEM_ONLY | ADVISORY | VETO_ONLY | RESEARCH_COUNCIL — LLM asla emir açamaz
+  model_cheap: claude-haiku-4-5-20251001
+  model_strong: claude-opus-5
+  daily_usd_budget: 2.0
+  daily_token_budget: 400000
+  per_tour_candidates: 3
+  max_output_tokens: 1200
+
+futures_v3:
+  margin_mode: isolated
+  leverage_default: 1
+  leverage_max_paper_research: 2
+  tp1_fraction: 0.5
+  ambiguity_policy: worst_case # aynı tikte stop+hedef → stop
+  liq_fee_pct: 0.5
+  # KANIT ONARIMI V1.1 (2026-09-09): SHORT kesiti LONG'a gore ~0.6R geride (n=13, ince). Yasak DEGIL: yumusak ceza,
+  # kucuk orneklem icin 0.50R'ye cekildi; net beklentisi pozitif SHORT en kotu arastirma boyutunda acilir.
+  short_penalty_r: 0.50
+  # MFE +1.0R'ye ulasinca stop gercek basa-basa tasinir (TP1 beklenmez). 12 acik pozisyonun 9'unda stop hic tasinmamisti.
+  breakeven_at_mfe_r: 1.0
+  # FUNDING (2026-09-22): beş futures defteri GERÇEKLEŞMİŞ settlement oranı + settlement mark'ı ile tahakkuk eder
+  # (funding_settlement_v2). Anlık `funding_pct` geçmiş settlement'lara artık UYGULANMAZ; bilinmeyen dönem bekler.
+  realized_funding_source: true
+
+execution:
+  gateway: paper               # paper | binance_spot_testnet | binance_futures_testnet (testnet_enabled + env anahtarları gerekir); live KAPALI
+  testnet_enabled: false
+  reconcile_on_start: true
+  # YÜRÜTME HASSASİYETİ (bkz. tradingbot/execspec.py, deploy/config.paper-precision.example.yaml)
+  # true: DOĞRULANMIŞ fiyat/miktar adımı olmayan sembolde YENİ GİRİŞ açılmaz (UNRESOLVED_PRECISION).
+  # Açık pozisyonların koruyucu çıkışları ETKİLENMEZ (`tick()` kural çözümü çağırmaz).
+  # Ölçüm 2026-09-08: varsayılan 0.01 tick TRX'te plan geometrisini 2.0000R → 1.2775R'ye düşürüyordu;
+  # resmi USDⓈ-M kuralıyla (tick 0.00001) aynı kayma altında 1.9270R. 11/11 açık pozisyon ve
+  # 40/40 güncel aday resmi kurala çözülüyor, yani bu bayrak hiçbir mevcut adayı engellemiyor.
+  require_verified_precision: true
+  filters_max_age_hours: 24    # symbol_filters.json bundan eskiyse tur başında exchangeInfo (ağırlık 1)
+  filters_refresh_on_start: true
+
+fees:                          # PAPER'da versiyonlu tarife; API bağlanınca gerçek hesap komisyonu alınabilir (FeeSource)
+  spot_maker_pct: 0.10
+  spot_taker_pct: 0.10
+  futures_maker_pct: 0.02
+  futures_taker_pct: 0.05
+  slippage_bps: 3.0
+  bnb_discount: false
+  source: config
+
+tax_policy:                    # Vergi ≠ borsa komisyonu. Doğrulanmamış oran uydurulmaz: varsayılan kesinti 0.
+  enabled: false
+  status: UNVERIFIED_OR_NOT_EFFECTIVE
+  jurisdiction: TR
+  accounting_method: FIFO
+  source_url: https://www.tbmm.gov.tr/Haber/Detay?Id=24224a43-2062-4397-8761-019d2b9e0bd5
+  source_checked_at: "2026-03-26"
+  manually_confirmed: false
+
+risk_profiles:
+  profile: PAPER_RESEARCH      # PAPER_RESEARCH (mevcut %2 davranışı AYNEN) | TESTNET | SHADOW_LIVE | LIVE_LIMITED
+  overrides: {}                # ör. {daily_loss_stop_pct: 2.0, max_drawdown_kill_pct: 8.0}
+  i_understand: false
+
+# Dinamik futures kaldıracı — YALNIZ PAPER. Bu dosyada TEK `leverage:` bölümü olmalıdır
+# (yinelenen anahtar `load_config` içinde fail-closed reddedilir).
+# KALDIRAÇ RİSKİ ARTIRMAZ: notional risk bütçesi + stop mesafesinden gelir; kaldıraç yalnızca
+# `initial_margin = notional / leverage` değerini belirler. Stopta beklenen azami USDT zararı
+# 2x–5x arasında AYNIDIR. Zayıf aday `min_leverage` ile AÇILMAZ → NO_TRADE.
+leverage:
+  enabled: true                # PAPER araştırma profilinde açık
+  paper_only: true             # LIVE/TESTNET'te açılamaz; `mode != PAPER` iken config FAIL verir
+  min_leverage: 2              # 1x yeni futures girişi YASAK (min < 2 → ConfigError)
+  max_leverage: 5              # MUTLAK üst sınır (max > 5 → ConfigError)
+
+# ============================================================
+#  SABIT GIRIS EVRENI (2026-09-11)
+#  Yeni USDⓈ-M perpetual girisi YALNIZ bu listede acilir. Liste disindaki ACIK
+#  pozisyonlarin fiyat takibi, stop/TP yonetimi ve kapanisi AYNEN surer — liste
+#  degisti diye pozisyon KAPATILMAZ (bkz. tradingbot/entry_universe.py).
+#  Sozlesme kimlikleri Binance USDⓈ-M exchangeInfo'dan dogrulandi (2026-09-11):
+#  hepsi status=TRADING, contractType=PERPETUAL, quote=USDT.
+#  enabled=true iken bos liste ConfigError'dur (fail-closed).
+# ============================================================
+entry_universe:
+  enabled: true
+  symbols:
+    - BTC/USDT        # P1+P2+P3
+    - ETH/USDT        # P1+P2+P3
+    - ZEC/USDT        # P1+P2+P3
+    - SOL/USDT        # P1+P2+P3
+    - NEAR/USDT       # P1+P2+P3
+    - UNI/USDT        # P1+P2+P3
+    - XRP/USDT        # P1+P2+P3
+    - ONE/USDT        # P2+P3
+    - BNB/USDT        # P1+P2+P3
+    - ARB/USDT        # P3
+    - DOGE/USDT       # P1+P2+P3
+    - LSK/USDT        # P3
+    - SUI/USDT        # P3
+    - ENA/USDT        # P3
+    - G/USDT          # P3
+    - WLD/USDT        # P3
+    - ADA/USDT        # P1+P2+P3
+    - ONDO/USDT       # P3
+    - 1000PEPE/USDT   # P3
+    - COTI/USDT       # P2+P3
+    - LINK/USDT       # P1+P2+P3
+    - REZ/USDT        # P3
+    - DASH/USDT       # P1+P2+P3
+    - AAVE/USDT       # P1+P2+P3
+    - TAO/USDT        # P3
+    - BCH/USDT        # P1+P2+P3
+    - AVAX/USDT       # P1+P2+P3
+    - DOT/USDT        # P1+P2+P3
+    - FIL/USDT        # P1+P2+P3
+    - APT/USDT        # P3
+    - SYN/USDT        # P3
+    - LTC/USDT        # P1+P2+P3
+    - XLM/USDT        # P1+P2+P3
+    - INJ/USDT        # P2+P3
+    - FET/USDT        # P3
+    - TRX/USDT        # P1+P2+P3
+    - XMR/USDT        # P1+P2+P3
+    - 1000SHIB/USDT   # P2+P3
+    - OP/USDT         # P2+P3
+    - KSM/USDT        # P1+P2+P3
+  allow_long: true
+  allow_short: true
+  analyze_outside: false        # tur kapsami = evren ∪ acik pozisyonlar
+  scanner_feeds_entries: false  # tarama baglam icin surer, GIRIS adayi uretmez
+
+learning_v3:
+  enabled: true
+  min_samples_train: 40
+  holdout_frac: 0.2
+  half_life_days: 60
+  calibrator: platt
+  shadow_trades: true
+  # GUVENLIK: otomatik CHAMPION terfisi HICBIR modda yapilmaz. true verilirse config
+  # PAPER_AUTO_PROMOTION_FORBIDDEN ile fail-closed reddedilir (bkz. config_v3.validate_v3).
+  auto_promote_in_paper: false  # terfi her zaman acik manuel operator onayiyla
+
+storage:
+  sqlite_enabled: true
+  db_filename: tradingbot.db
+  parquet_dir: candles
+  backups_dir: backups
+  keep_hourly: 24
+  keep_daily: 7
+  keep_weekly: 4
+
+obsidian_v3:
+  coin_heads_enabled: true
+  prune_stale_hours: 48
+  signals_retention_days: 30
+  signals_max_files: 200
+
+dashboard:
+  enabled: true
+  host: 127.0.0.1              # public bind için auth token env + HTTPS/tünel zorunlu
+  port: 8080
+  auth_token_env: TRADINGBOT_DASHBOARD_TOKEN
+  allow_insecure_public: false
+  max_bars: 600
+
+monitoring:
+  json_logs: true
+  log_dir: logs
+  heartbeat_stale_s: 2400
+  telegram_enabled: false
+  discord_enabled: false
+
+security:
+  live_confirmation_required: true
+  redact_logs: true
+
+# ---- MUM ONAYI (V4, 2026-09-12) --------------------------------------------------------
+# Operatör kararı: klasik mum formasyonları giriş karar yolunda AKTİF. Seçili varyant karşı
+# formasyon vetosu: son KAPANMIŞ 4h barda adayın yönüne KARŞI şekil varsa giriş açılmaz.
+# Diğer üç varyant (c1_4h, c2_4h_confirm, c4_1d) her adayda gölge olarak karar kaydına yazılır.
+# Ölçüm: research/entry_v1/out/DENEY_V4.md — hiçbir varyant iki pencerede doğrulanmadı.
+# ENFORCE yalnız PAPER/TESTNET'te açılabilir; LIVE modda config reddedilir.
+entry_selectivity:
+  candle_confirmation_mode: ENFORCE          # OFF | SHADOW | ENFORCE
+  candle_confirmation_variant: c3_4h_veto    # c1_4h | c2_4h_confirm | c3_4h_veto | c4_1d
+  # GRAFİK FORMASYONU ONAYI (V5): çift dip/tepe, üçlü, OBO, üçgen, bayrak; yalnız KIRILIŞLA teyitli.
+  # Önce SHADOW: her adayda dört varyantın hükmü ve taze formasyon listesi kaydedilir, karar değişmez.
+  # Ölçüm: research/entry_v1/out/DENEY_V5.md. ENFORCE açmak operatör kararıdır.
+  chart_confirmation_mode: SHADOW            # OFF | SHADOW | ENFORCE
+  chart_confirmation_variant: p2_4h_veto     # p1_4h_confirm | p2_4h_veto | p3_1d_confirm | p4_1d_veto
+  # PİYASA REJİMİ KAPISI (V7, 2026-09-13): BTC günlük close > EMA200 ise UP. Seçili varyant r1: yalnız
+  # LONG ve yalnız UP rejiminde giriş; SHORT hiç açılmaz. Ölçüm: research/entry_v1/out/DENEY_V7.md —
+  # üç pencerede de temeli geçti (işlem başına +0,19R / +0,15R / +0,09R, düşüş yarıya indi) ama 2022
+  # sonrası hâlâ negatif: KAYIP AZALTICI, doğrulanmış kârlı kural değil. Operatör kararıyla ENFORCE.
+  regime_gate_mode: ENFORCE                  # OFF | SHADOW | ENFORCE
+  regime_gate_variant: r1_long_only_uptrend  # r1_long_only_uptrend | r2_no_trade_downtrend | r3_follow_regime
+
+# ---- TEK KURALLI TREND STRATEJİSİ — KÂĞIT İLERİ TEST (V10, 2026-09-13) ----------------------
+# Ana botun YANINDA, AYRI 100 USDT sanal defter. Kural: BTC 1d close > EMA200 iken, 1d close > EMA200
+# olan coinde LONG (piyasa); close < EMA200 → kapat; felaket stopu close − 3×ATR14(1d); kaldıraç 1.
+# Ölçüm: research/entry_v1/out/DENEY_V9.md (T2 +107% / +34% / +10%, maksDD %22). Gerçek para YOK;
+# LIVE modda config reddedilir. Ana botun defteri/öğrenicisi/kararları etkilenmez.
+strategy_paper:
+  enabled: true
+  name: t2_trend_regime
+  # BAKIYE 200 (2026-09-21, kullanici karari + OLCUM): 100 USDT'de pozisyonlar borsa
+  # minimumlarina takiliyordu. Olculdu (40 coin, 6 pencere): MIN_ORDER_CONFLICT 587 -> 0,
+  # MIN_NOTIONAL 593 -> 238. Denenen butun ayarlar icinde GERCEKTEN bir kisiti acan tek sey.
+  starting_equity_usdt: 200
+  atr_mult: 3.0
+  breakeven_at_mfe_r: 0.0
+  state_dir: strategy_paper
+  rule_params:
+    # IHTIYAC KADAR KALDIRAC (2026-09-21, kullanici talimati: "1x sakin olmasin").
+    # `leverage` TABAN, `leverage_max` TAVAN. Uygulayici kaldiraci ancak islemin notional'i
+    # tek pozisyon tavanina (equity x %30 x kaldirac) sigmiyorsa ve ANCAK gerektigi kadar
+    # yukseltir. Stopu dar olan islem ayni hareketten daha cok R uretir ve tam da tavana
+    # takilan odur. Kaldirac islem basina RISKI ARTIRMAZ (risk stop mesafesiyle belirlenir);
+    # likidasyonu yaklastirir, bu yuzden gerekmedikce yukseltilmez.
+    # Olculdu (620 kapanis): L2'de mesru likidasyon 0/620 (stop maks %39,7 < likidasyon %49,80),
+    # L3'te 9, L5'te 54 -> tavan 4 secildi.
+    leverage: 2
+    leverage_max: 4
+  # GIRIS KAYMASI KAPISI: 0 = KAPALI. Mekanizma yazildi ve testli ama esik degeri HENUZ
+  # OLCULMEDI; olculmeden acilmaz (bkz. apply_action GIRIS KAYMASI KAPISI).
+  max_entry_drift_pct: 0.0
+  # V12 (DENEY_V11): ikinci defter — 28 günlük zaman serisi momentumu (m2), T2 ile yan yana ileri test.
+  extra:
+    - name: m2_tsmom28
+      starting_equity_usdt: 200          # bkz. ana defterdeki BAKIYE 200 gerekcesi
+      atr_mult: 3.0
+      breakeven_at_mfe_r: 0.0
+      state_dir: strategy_paper_m2
+      rule_params:
+        leverage: 2                      # bkz. ana defterdeki IHTIYAC KADAR KALDIRAC gerekcesi
+        leverage_max: 4
+      max_entry_drift_pct: 0.0
+    # V15 (BOX THEORY): üçüncü defter — önceki günün aralığını 5m'de soluklayan gün içi kural.
+    # Kuralın giriş/stop tanımı videodan BİREBİR; çıkış videoda YOKTUR → `exit_kind` bir SEÇİMDİR ve
+    # burada araştırma süpürmesinin sonucu yazılır. Süpürme bitene kadar defter KAPALI kalır:
+    # ölçülmemiş bir çıkışla canlı ileri test başlatmak, sonucu yorumlanamaz kılar.
+    # OLCUM SONUCU (DENEY_V15, 10 coin, 3 pencere, 42 kol, ~1,1M tetik):
+    #   HICBIR kol karar kuralini gecmedi. En iyi konfigurasyonda bile net beklenti
+    #   P1 -0,0805R / P2 +0,0050R / P3 -0,0785R. Brut (maliyetsiz) sinyal de sifir civarinda,
+    #   yani acik maliyet degil; altinda tasiyacak avantaj YOK.
+    # DEFTER YINE DE ACIK: bu bir ILERI TEST defteridir, kar beklentisi DEGIL. Amaci canli
+    #   davranisin backtest'le tutup tutmadigini olcmek ve paneli beslemek. PAPER, gercek para YOK.
+    #   Kapatmak tek satirdir: enabled: false.
+    - name: b1_box_fade
+      enabled: true
+      starting_equity_usdt: 200          # bkz. T2 defterindeki BAKIYE 200 gerekcesi
+      breakeven_at_mfe_r: 0.0
+      state_dir: strategy_paper_box
+      rule_params:
+        near_frac: 0.10          # kenar bandı = kutu yüksekliğinin %10'u
+        trigger: break_prev      # kırmızı/yeşil mum ÖNCEKİ mumun ucunu kırmalı
+        long_stop: day_low       # video birebir (simetrik okuma: prev_candle)
+        # SECIM KURALI: hicbir kol pozitif olmadigi icin "kazanan" yok; EN KOTU PENCERESI EN IYI
+        # olan kol secildi (box_mid: -0,0805R). Bu bir kar iddiasi degil, en az kotu olanin adidir.
+        exit_kind: box_mid
+        exit_r: 2.0
+        # ZORUNLU ESIK: uretim tek-coin tavani, stop >= risk%/(%30 x kaldirac) = %2,22 istiyor.
+        # Bu esik OLMADAN defter her sinyali MAX_POSITION_PCT ile reddeder ve SESSIZCE OLU kalir
+        # (olculdu: 143/143 ret). Esikle islemlerin %99,5'i boyutlandirilabiliyor.
+        min_stop_pct: 2.22
+        eod_close: true
+        allow_long: true
+        allow_short: true
+        # KALDIRAC ARITMETIGI (olculdu, varsayilmadi): tek coin tavani
+        #   notional <= ozkaynak * max_position_pct/100 * max(kaldirac,1)
+        # 5m stopu dar oldugu icin notional = risk% / stop% buyuk cikar. risk %2, tavan %30, stop %2,8 ->
+        # notional ozkaynagin %71'i -> kaldirac 1'de MAX_POSITION_PCT ile REDDEDILIR. Gereken: L >= 2,38.
+        # Kaldirac burada RISKI ARTIRMAZ (islem basina risk yine %2, stop mesafesiyle belirlenir); yalnizca
+        # gunluk-stop icin tasarlanmis notional tavanini gun ici stopla uyumlu hale getirir.
+        leverage: 3
+        # IHTIYAC KADAR KALDIRAC TAVANI (2026-09-21): yukaridaki aritmetik kaldiraci SABIT 3
+        # tutuyordu. Tavan, uygulayicinin kaldiraci ANCAK GEREKTIGI KADAR (ve en fazla 4)
+        # yukseltmesine izin verir; genis stoplu islemler 3 ile kalir, gereksiz likidasyon
+        # yakinligi olusmaz.
+        leverage_max: 4
+    # 4H TREND TAKIBI — GOZLEM DEFTERI (2026-09-25, kullanici onayi). KANITLANMADI: sinyal laboratuvarinin
+    # algoritma kosusunda (GitHub run 36150821072) siki testi GECEMEDI, en yakin aday oldu (kesif +0,42R,
+    # dogrulama +0,05R ve araligi sifiri kapsiyor). Amac canli davranisi OLCMEK; kar beklentisi degil.
+    # Kural sabit (laboratuvarla birebir): 4h kapanis onceki 20 barin tepesini ilk kez asar -> LONG;
+    # stop 2xATR14; kapanis onceki 10 barin dibinin altina inince cik; en cok 300 bar. Ayrinti:
+    # docs/DONCHIAN_TREND_4H.md. PAPER, gercek para YOK, kaldirac 1. Kapatmak: enabled: false.
+    - name: d4_donchian_20_10
+      enabled: true
+      starting_equity_usdt: 200          # bkz. T2 defterindeki BAKIYE 200 gerekcesi
+      breakeven_at_mfe_r: 0.0
+      state_dir: strategy_paper_trend4h
+      # Laboratuvarin 30 coininden turun zaten cektigi 23'u (kalan 7'si giris evreninde degil; veri yok).
+      symbols: [BTC/USDT, ETH/USDT, SOL/USDT, BNB/USDT, XRP/USDT, DOGE/USDT, ADA/USDT, AVAX/USDT, LINK/USDT,
+                LTC/USDT, DOT/USDT, NEAR/USDT, TRX/USDT, BCH/USDT, UNI/USDT, FIL/USDT, XLM/USDT, AAVE/USDT,
+                APT/USDT, ARB/USDT, OP/USDT, INJ/USDT, SUI/USDT]
+      rule_params:
+        leverage: 1              # tavani asan islem REDDEDILMEZ, tavana kucultulur (risk butcenin altinda kalir)
+        entry_window_min: 60     # sinyal kapanisindan 60 dk icinde girilmezse sinyal kacmis sayilir
+      max_entry_drift_pct: 0.0
+    # C4 · MUM VARYASYONLARI (4h) — YALNIZ kullanıcının gönderdiği mum varyasyonlarını işler. PAPER, gerçek para YOK,
+    # kaldıraç 1. Liste BOŞ başlar; bir varyasyon ancak çeviri onayı + laboratuvar kaydı (definition_sha eşleşir) +
+    # kullanıcı onayı ile eklenir (docs/CANDLE_VARIATIONS_4H.md). Liste sırası = öncelik. Kapatmak: önce variations: []
+    # (açık pozisyonlar kendi stop/hedef/zamanıyla kapansın), sonra enabled: false (kapalı defterde pozisyon DONAR).
+    - name: c4_candle_variations
+      enabled: true
+      starting_equity_usdt: 200
+      breakeven_at_mfe_r: 0.0
+      state_dir: strategy_paper_candle4h
+      symbols: [BTC/USDT, ETH/USDT, SOL/USDT, BNB/USDT, XRP/USDT, DOGE/USDT, ADA/USDT, AVAX/USDT, LINK/USDT,
+                LTC/USDT, DOT/USDT, NEAR/USDT, TRX/USDT, BCH/USDT, UNI/USDT, FIL/USDT, XLM/USDT, AAVE/USDT,
+                APT/USDT, ARB/USDT, OP/USDT, INJ/USDT, SUI/USDT]
+      rule_params:
+        leverage: 1
+        entry_window_min: 60
+        variations:                # 2026-09-27 kullanıcı onayı: GÖZLEM (kanıtlanmadı; laboratuvar 36277302747). Sıra = öncelik.
+          - CV001_BREAKOUT20_TREND_VOL_L
+          - CV002_BREAKOUT20_TREND_VOL_S
+          - CV003_PULLBACK_ENGULF_L
+          - CV004_PULLBACK_ENGULF_S
+          - CV005_SUPPORT_HARAMI_L
+          - CV006_RESIST_HARAMI_S
+          - CV007_SWEEP_REJECT_ENGULF_L
+          - CV008_SWEEP_REJECT_ENGULF_S
+      max_entry_drift_pct: 0.0
+    # C4S · MUM VARYASYONLARI (4h, SIKI) — C4'ün AYNI kuralı, AYNI 23 coin; tek fark kapının okuduğu hüküm: sıkı GÜÇLÜ
+    # ADAY şartı (laboratuvar kaydının verdict_strict alanı). Yalnız o şartı geçen varyasyonlar girer; gözlem onayı
+    # (ZAYIF İZ vb.) bu deftere varyasyon SOKMAZ. Amaç C4 ile karşılaştırma: aynı sinyaller, daha sıkı eleme. Kullanıcı
+    # onayı yine şarttır; buradaki her kimlik C4 listesinde de durur. Kapatmak: C4 ile aynı (docs/CANDLE_VARIATIONS_4H.md).
+    - name: c4s_candle_variations_strict
+      enabled: true
+      starting_equity_usdt: 200
+      breakeven_at_mfe_r: 0.0
+      state_dir: strategy_paper_candle4h_strict
+      symbols: [BTC/USDT, ETH/USDT, SOL/USDT, BNB/USDT, XRP/USDT, DOGE/USDT, ADA/USDT, AVAX/USDT, LINK/USDT,
+                LTC/USDT, DOT/USDT, NEAR/USDT, TRX/USDT, BCH/USDT, UNI/USDT, FIL/USDT, XLM/USDT, AAVE/USDT,
+                APT/USDT, ARB/USDT, OP/USDT, INJ/USDT, SUI/USDT]
+      rule_params:
+        leverage: 1
+        entry_window_min: 60
+        variations: []
+        verdict_mode: strict
+      max_entry_drift_pct: 0.0
+
+structures:                    # ORTAK YAPI KATALOĞU (2026-09-22) — beş bot aynı mum/grafik analizini okur
+  # Politika: docs/structures/POLITIKA_MATRISI_v1.md (kodlamadan önce yazıldı; eşikler sonuçlara göre seçilmedi).
+  # ENFORCE = yapı gerçekten giriş zamanlamasını, beklemeyi, plan iptalini ve açık pozisyon yönetimini etkiler (PAPER).
+  # Kârlılık iddiası YOK: bu sürüm izlenebilir karar entegrasyonudur; ölçüm eski sürümlerden AYRI tutulur.
+  enabled: true
+  policy_version: structures_v1.7
+  main: ENFORCE
+  t2_trend_regime: ENFORCE
+  m2_tsmom28: ENFORCE
+  # Box (2026-09-27, kullanıcı kararı B): SHADOW — yapı analizi kaydedilir ama giriş/stop'a KARIŞMAZ. Box laboratuvarda
+  # yapı katmanı OLMADAN test edildi; ENFORCE giriş ve stop'u test edilmemiş bir sürümle değiştiriyordu. Geri almak: ENFORCE.
+  b1_box_fade: SHADOW
+  pattern_trader: ENFORCE
+
+pattern_trader:                # FORMASYON PAPER TRADER V1 — yeni listeleme öncelikli mum formasyonu defteri (AYRI, sanal)
+  enabled: true                # LIVE/LIVE_LIMITED'da ConfigError (PAPER/TESTNET/OBSERVE/SHADOW_LIVE serbest; gerçek emir YOK); ana bot ve T2/M2 defterlerine DOKUNMAZ
+  starting_equity_usdt: 100    # sanal bakiye (ana portföyle TOPLANMAZ)
+  state_dir: pattern_trader
+  max_open_positions: 3
+  families: [A_TREND_PULLBACK, B_LEVEL_REVERSAL, C_COMPRESSION_BREAKOUT]   # yalnız protocol: classic iken
+  # PROTOKOL v3 (2026-09-25, kullanıcı onayı): 15m formasyon girişleri KAPALI; tek sinyal = 4h "üç beyaz asker" + RSI14>70
+  # → LONG (sinyal laboratuvarı: 30 coin, 4 yıl, 1.412 kombinasyondan sıkı testi geçen tek sonuç; kâr garantisi değil).
+  # Geri almak için: protocol: classic. Ayrıntı: docs/PATTERN_TRADER_V3.md
+  protocol: momentum_4h_v3
+  symbols: []                  # boş → laboratuvarda test edilen 30 coin (strategy_v3.V3_SYMBOLS)
+  stop_buffer_atr: 0.25        # sürümlü plan geometrisi (sonuçlara göre AYARLANMAZ)
+  min_rr_after_cost: 1.5
+  fallback_rr: 2.0
+  measured_move_mult: 2.0
+  max_hold_bars: 96            # 15m × 96 = 24 saat zaman stopu
+  cooldown_bars_after_loss: 8
+  min_quote_volume_24h: 5000000   # yaş filtresi YOK: yeni listelenen coin de işlenebilir olmalı
+  max_spread_pct: 0.15
+  min_depth_0_5pct_usdt: 20000
+  max_symbols_per_cycle: 40    # tarama bütçesi (istek ağırlığı RateBudget ile ayrıca sınırlı)
+  scan_seconds: 60
+  universe_refresh_minutes: 30
+
+# ---- ÖĞRENME MODU (2026-09-28, öğrenme modu) — YALNIZ PAPER --------------------------------------------------
+# Amaç: her bot (ana bot, T2, M2, Box, D4, C4, formasyon) mümkün olan en çok işleme girsin; ortak öğrenme katmanı
+# R deneyimi toplasın. Yalnız ölçümü bozmayan sınırlar gevşer (toplam açık risk %6 → 100, adet/marj darboğazı, Box
+# min stop 2,22 → 0,32, kapıların girişi gölgede); veri kimliği, R geometrisi, çift sayım, 60 dk giriş pencereleri,
+# sembol başına tek pozisyon ve borsa filtreleri AYNEN kalır. Tek kaynak: `tradingbot/learning_mode.py`.
+# * YALNIZ PAPER: mode=PAPER + gateway=paper + testnet kapalı + risk profili PAPER_RESEARCH değilse ConfigError; çalışma
+#   anında mod kapısı düşerse "ÖĞRENME MODU ASKIDA" olur ve bütün botlar bugünkü (baseline) kurallarla sürer.
+# * BOYUT: işlem başı hedef risk %0,5 (bugün %2) → işlem başına USDT ≈ 1/4'e iner; R (kâr/zarar ÷ ilk stop riski)
+#   ölçekten bağımsızdır ve DEĞİŞMEZ. Karşılaştırma R ile yapılır; öğrenme dönemindeki USDT eski USDT ile kıyaslanmaz.
+#   Eşzamanlı pozisyonlar defter başına `slots` ile sınırlıdır (Σ marj ≤ %95 özkaynak, likidasyon ≥ 2 × stop mesafesi).
+# * KAPATMAK: `enabled: false` + worker'ı yeniden başlat (ya da env TRADINGBOT_LEARNING_MODE=off; env yalnız kapatır).
+#   Açık pozisyonlar kendi stop/hedef/kaldıracıyla kapanır (zorla kapanış yok); toplam açık risk %6'nın altına inene
+#   kadar TOTAL_OPEN_RISK yeni girişleri durdurabilir — beklenen davranıştır.
+# * `learning_mode_since` (state/learning_mode.json) ilk aktif anı tutar; panel ve bot karnesi öncesi/sonrası ayırır.
+learning_mode:
+  enabled: true
+  risk_per_trade_pct: 0.5
+  max_total_open_risk_pct: 100
+  margin_reserve_pct: 5
+  liq_buffer_mult: 2.0
+  min_notional_bump: true
+  counterfactual: true
+  counterfactual_max_pending: 2000
+  books:
+    main:                         {enabled: true, slots: 20, leverage_max: 5}   # 5 = kademe tavanı (profil 5); likidasyon tamponu ayrıca kısar
+    t2_trend_regime:              {enabled: true, slots: 40, leverage_max: 4}
+    m2_tsmom28:                   {enabled: true, slots: 40, leverage_max: 4}
+    b1_box_fade:                  {enabled: true, slots: 40, leverage_max: 4, min_stop_pct: 0.32}   # 2026-09-30: 20→40 (kullanıcı onayı; ~570 sinyal teminat dolduğu için kaçtı)
+    d4_donchian_20_10:            {enabled: true, slots: 20, leverage_max: 3, symbols: universe}
+    c4_candle_variations:         {enabled: true, slots: 20, leverage_max: 3, symbols: universe}
+    c4s_candle_variations_strict: {enabled: false}
+    pattern_trader:               {enabled: true, slots: 30, leverage_max: 3}
+  strategy_overrides:
+    regime_gate_shadow: true
+    candle_veto_shadow: true
+    structures_entry_shadow: [main, t2_trend_regime, m2_tsmom28]
+    economics_exploration: true
+    leverage_confidence_fallback: true
+
+# ---- ORTAK DENEYİM KATMANI v1 (2026-09-29) — YALNIZ KAYIT, YALNIZ PAPER --------------------------------------------
+# Tek hafıza: ana bot, T2, M2, Box, D4, C4, C4S ve formasyon defterlerinin gerçek işlemleri (giriş + sonuç) ve açılmayan
+# geçerli sinyallerin karşı-olgusalları, girişteki DURUM anlık görüntüsüyle (4h trend/oynaklık/yapı/hacim, 1h, BTC)
+# state/shared_experience/ altına yazılır. KARAR DEĞİŞMEZ: katman hiçbir deftere/plana/öğreniciye yazmaz; arızası turu
+# durdurmaz (devre kesici). Kod varsayılanı KAPALI; mod yalnız OFF | RECORD. Soru: "bu durumda bu kurulumla daha önce
+# kazandık mı?" → python -m tradingbot shared-experience-report (ayrı aşama). Ayrıntı: docs/ortak_deneyim/SPEC_V1.md
+# * KAPATMAK: `enabled: false` (ya da `mode: OFF`) + worker'ı yeniden başlat, ya da env TRADINGBOT_SHARED_EXPERIENCE=off
+#   (env yalnız kapatır). Durum dosyası/geçmiş silinmez; geri almada state/shared_experience/ zararsız kalır.
+# * GÖLGE DANIŞMAN (2026-09-30; docs/ortak_deneyim/DANISMAN_V1.md): her yeni giriş/olsaydı sinyali için ortak hafızanın
+#   cevabı (GİR / GİRME / NÖTR / VERİ AZ) state/shared_experience/advice/ altına YALNIZ KAYDEDİLİR; hiçbir karar DEĞİŞMEZ,
+#   GİR girişi zorlamaz/boyutu büyütmez. Kapatmak: `advisor_mode: OFF` + restart, ya da env
+#   TRADINGBOT_SHARED_EXPERIENCE_ADVISOR=off (env yalnız kapatır). advice/ klasörü silinmez (doğum/üst işaret oradan).
+shared_experience:
+  enabled: true
+  mode: RECORD
+  advisor_mode: RECORD

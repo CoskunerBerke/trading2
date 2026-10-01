@@ -4,7 +4,6 @@ from __future__ import annotations
 import json
 import logging
 import time
-from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -19,6 +18,10 @@ from .technical import TECHNICAL_AGENTS
 log = logging.getLogger(__name__)
 
 FRAME_SPECS = {"1d": 420, "4h": 730, "1h": 30}   # zaman dilimi → geriye dönük gün
+#: V15: kural defterlerinin isteyebileceği EK dilimler → geriye dönük gün. Box kuralı yalnız ÖNCEKİ
+#: günün kutusunu ve BUGÜNÜN 5m barlarını okur; 3 gün hem günün tamamını hem yeniden başlatmayı karşılar.
+#: Hiçbir defter istemezse bu dilimler HİÇ çekilmez (davranış birebir eski).
+EXTRA_FRAME_DAYS = {"5m": 3, "15m": 10}
 
 
 class AgentRunner:
@@ -32,6 +35,31 @@ class AgentRunner:
         self.manager = CoinManagerAgent()
         self.chief = ChiefAgent(max_concurrent=cfg.risk.max_open_positions)
         self.last_frames: dict[str, dict] = {}
+        #: ORTAK YAPI: motor her sembol için çerçeve piyasasını `run_symbol`dan ÖNCE yazar (provenans); ajanlar ortak
+        #: analizi AYNI piyasa kimliğiyle ister (aynı analiz nesnesi). Mod config'ten (`structures.main`).
+        self.frame_markets: dict[str, str] = {}
+        _st = getattr(getattr(cfg, "v3", None), "structures", None)
+        self.structures_mode = _st.mode_for("main") if _st is not None else "OFF"
+
+    def ensure_timeframes(self, timeframes) -> list[str]:
+        """Verilen dilimleri çekilenler kümesine EKLER (varsa dokunmaz). Döner: gerçekten eklenenler.
+
+        Neden gerekli: kâğıt defterin kuralı 5m okuyor ama çerçeveyi motor çekmiyorsa defter her turda
+        `DATA_FRAME_MISSING_5M` alır ve HİÇ işlem açmaz — sessiz bir "çalışıyor ama ölü" durumu. Dilim
+        listesi kural kaydından gelir (`paper_rules.rule_timeframes`), buradan sabitlenmez.
+        """
+        added = []
+        for tf in timeframes:
+            tf = str(tf)
+            if tf in self.markets:
+                continue
+            days = EXTRA_FRAME_DAYS.get(tf)
+            if days is None:
+                raise ValueError("bu dilim için geriye dönük gün tanımlı değil: %r (EXTRA_FRAME_DAYS)" % tf)
+            self.markets[tf] = MarketData(self.cfg.exchange.candidates, tf, days, self.cfg.cache_path,
+                                          source=self.cfg.exchange.source, tv_exchange=self.cfg.exchange.tv_exchange)
+            added.append(tf)
+        return added
 
     def set_weights(self, weights: dict | None) -> None:
         self.manager = CoinManagerAgent(weights or None)
@@ -57,7 +85,8 @@ class AgentRunner:
         live = self.live.snapshot(symbol)
         ctx = CoinContext(symbol=symbol, frames=frames, live=live, analysis=analysis,
                           equity_usdt=self.cfg.risk.starting_equity_usdt, risk_pct=self.cfg.risk.risk_per_trade_pct,
-                          atr_stop_mult=self.cfg.risk.atr_stop_mult)
+                          atr_stop_mult=self.cfg.risk.atr_stop_mult, frame_market=self.frame_markets.get(symbol),
+                          structures_mode=str(getattr(self, "structures_mode", "OFF") or "OFF"))
         reports = [a.run(ctx) for a in self.agents]
         brief = self.manager.decide(ctx, reports)
         brief.generated_at = datetime.now(timezone.utc).isoformat(timespec="seconds")

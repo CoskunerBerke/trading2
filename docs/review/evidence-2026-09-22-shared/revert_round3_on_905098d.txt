@@ -1,0 +1,20 @@
+# Tur-3 doÄŸrulayÄ±cÄ± gerileme testleri, DÃœZELTME Ã–NCESÄ° commit 905098d Ã¼zerinde (izole worktree, 2026-09-23)
+# komut: python -m pytest -q -p no:cacheprovider tests/test_structures_verifier_findings_v1.py -k r3 --tb=line
+
+E   AssertionError: ('NO_EFFECT', 'NO_OPPOSING_AFTER_ENTRY')
+E   AssertionError: seviye kümeden çýktýktan SONRA baþlayan olay kayýt üretmez
+E   AssertionError: assert 'CANCEL' == 'ENTER'
+E   AttributeError: type object 'PatternBook' has no attribute '_record_confirmed_now'
+E   RuntimeError: boom
+E   AssertionError: assert ('CANCEL', 'B...IDE_BREAKOUT') == ('NO_EFFECT', 'NO_STRUCTURE')
+E   AssertionError: assert ('EXPIRED' == 'EXPIRED'
+E   assert False
+FAILED tests/test_structures_verifier_findings_v1.py::test_r3_1_box_exits_an_open_fade_on_an_outside_breakout_confirmed_after_entry_even_when_the_record_is_stale
+FAILED tests/test_structures_verifier_findings_v1.py::test_r3_2_levels_are_point_in_time_and_superseded_triangles_end_instead_of_vanishing
+FAILED tests/test_structures_verifier_findings_v1.py::test_r3_3_4_sibling_cancels_do_not_overwrite_the_entry_row_and_watcher_exits_carry_no_foreign_analysis
+FAILED tests/test_structures_verifier_findings_v1.py::test_r3_5_a_triggered_v2_plan_opens_only_while_its_record_is_confirmed_in_this_scan
+FAILED tests/test_structures_verifier_findings_v1.py::test_r3_6_the_structure_error_fallback_is_shared_by_live_and_replay
+FAILED tests/test_structures_verifier_findings_v1.py::test_r3_7_box_shadow_records_the_same_cancel_as_enforce_after_an_outside_breakout
+FAILED tests/test_structures_verifier_findings_v1.py::test_r3_8_an_expired_record_publishes_the_moment_it_expired_as_its_validity_end
+FAILED tests/test_structures_verifier_findings_v1.py::test_r3_9_cached_records_carry_the_callers_moment_and_source
+8 failed, 18 deselected in 0.72s

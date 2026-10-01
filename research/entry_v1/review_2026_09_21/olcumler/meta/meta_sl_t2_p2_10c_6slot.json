@@ -1,0 +1,116 @@
+{
+ "run_id": "sl_t2_p2_10c_6slot",
+ "from": "2022-09-01",
+ "to": "2024-08-31",
+ "gate": false,
+ "symbols_requested": [
+  "BTC/USDT",
+  "ETH/USDT",
+  "SOL/USDT",
+  "XRP/USDT",
+  "BNB/USDT",
+  "DOGE/USDT",
+  "LINK/USDT",
+  "AAVE/USDT",
+  "AVAX/USDT",
+  "LTC/USDT"
+ ],
+ "symbols_loaded": [
+  "AAVE/USDT",
+  "AVAX/USDT",
+  "BNB/USDT",
+  "BTC/USDT",
+  "DOGE/USDT",
+  "ETH/USDT",
+  "LINK/USDT",
+  "LTC/USDT",
+  "SOL/USDT",
+  "XRP/USDT"
+ ],
+ "symbols_skipped": {},
+ "universe_complete": true,
+ "n_symbols_loaded": 10,
+ "strategy": true,
+ "no_breakeven": true,
+ "exclude": [],
+ "history_root": "C:\\Users\\berke\\research\\bn_archive\\history",
+ "trigger": false,
+ "veto": false,
+ "candidate_order": true,
+ "risk_pct": 1.0,
+ "stride": 1,
+ "elapsed_s": 184.2,
+ "n_decisions": 43810,
+ "n_actionable": 11199,
+ "n_opened": 70,
+ "determinism_hash": "2d200143f0ac612c57c9ef128b494ddde672275c47609d45f968f700e8f80dad",
+ "rejections": {
+  "total": 11129,
+  "by_reason": {
+   "MIN_NOTIONAL": 4329,
+   "STEP_ZERO_QTY": 3418,
+   "MIN_ORDER_CONFLICT": 2094,
+   "MAX_POSITION_PCT": 9,
+   "STRATEGY_BAD_STOP": 2,
+   "TOTAL_OPEN_RISK": 1277
+  },
+  "by_symbol": {
+   "LTC/USDT": {
+    "MIN_NOTIONAL": 1078,
+    "MIN_ORDER_CONFLICT": 290,
+    "MAX_POSITION_PCT": 3,
+    "STRATEGY_BAD_STOP": 1,
+    "TOTAL_OPEN_RISK": 18
+   },
+   "ETH/USDT": {
+    "MIN_NOTIONAL": 2405,
+    "MIN_ORDER_CONFLICT": 71,
+    "MAX_POSITION_PCT": 2,
+    "TOTAL_OPEN_RISK": 219
+   },
+   "BTC/USDT": {
+    "STEP_ZERO_QTY": 2753,
+    "MIN_ORDER_CONFLICT": 8,
+    "MIN_NOTIONAL": 2,
+    "MAX_POSITION_PCT": 4,
+    "TOTAL_OPEN_RISK": 347
+   },
+   "AAVE/USDT": {
+    "STEP_ZERO_QTY": 394,
+    "MIN_ORDER_CONFLICT": 360
+   },
+   "DOGE/USDT": {
+    "MIN_ORDER_CONFLICT": 68,
+    "MIN_NOTIONAL": 7
+   },
+   "AVAX/USDT": {
+    "MIN_ORDER_CONFLICT": 618,
+    "STEP_ZERO_QTY": 271,
+    "TOTAL_OPEN_RISK": 347
+   },
+   "LINK/USDT": {
+    "MIN_NOTIONAL": 806,
+    "MIN_ORDER_CONFLICT": 497,
+    "TOTAL_OPEN_RISK": 346,
+    "STRATEGY_BAD_STOP": 1
+   },
+   "SOL/USDT": {
+    "MIN_ORDER_CONFLICT": 175,
+    "MIN_NOTIONAL": 31
+   },
+   "XRP/USDT": {
+    "MIN_ORDER_CONFLICT": 7
+   }
+  }
+ },
+ "funding_coverage": {
+  "queries": 4570,
+  "answered": 4570,
+  "unknown": 0,
+  "complete": true,
+  "answered_fraction": 1.0,
+  "missing_series": [],
+  "tolerance_ms": 120000,
+  "source": "history store: futures/<symbol>/funding (Binance fundingRate arşivi)"
+ }
+}

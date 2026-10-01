@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+from .core import ConfigError
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config.yaml"
@@ -94,6 +97,7 @@ class BotConfig:
     learning: LearningConfig = field(default_factory=LearningConfig)
     state_dir: str = "state"
     project_root: Path = PROJECT_ROOT
+    v3: Any = None            # config_v3.V3Config (mode PAPER varsayılan; yeni bölümler)
 
     @property
     def state_path(self) -> Path:
@@ -105,6 +109,36 @@ class BotConfig:
         p = Path(self.exchange.cache_dir)
         return p if p.is_absolute() else self.project_root / p
 
+    @property
+    def data_root(self) -> Path:
+        """`TRADINGBOT_DATA` verilirse (VPS/Docker) state/market/vault/backups/logs bu kökün altındadır."""
+        env = os.environ.get("TRADINGBOT_DATA")
+        return Path(env) if env else self.project_root
+
+    @property
+    def backups_path(self) -> Path:
+        env = os.environ.get("TRADINGBOT_BACKUPS_DIR")
+        if env:
+            return Path(env)
+        sub = self.v3.storage.backups_dir if self.v3 else "backups"
+        return self.data_root / sub
+
+    @property
+    def logs_path(self) -> Path:
+        env = os.environ.get("TRADINGBOT_LOG_DIR")
+        if env:
+            return Path(env)
+        sub = self.v3.monitoring.log_dir if self.v3 else "logs"
+        return self.data_root / sub
+
+    @property
+    def db_path(self) -> Path:
+        return self.state_path / (self.v3.storage.db_filename if self.v3 else "tradingbot.db")
+
+    @property
+    def mode(self) -> str:
+        return self.v3.mode.mode if self.v3 else "PAPER"
+
 
 def _build(cls, data: dict[str, Any] | None):
     data = data or {}
@@ -112,12 +146,40 @@ def _build(cls, data: dict[str, Any] | None):
     return cls(**allowed)
 
 
+class _NoDuplicateKeyLoader(yaml.SafeLoader):
+    """YAML yinelenen anahtarlarda FAIL-CLOSED.
+
+    `yaml.safe_load` yinelenen bir eslemede SESSIZCE SONUNCUYU kabul eder. Bu, guvenlik anlami
+    tasiyan bir bolumun (or. ikinci bir `leverage:`) ilkini gorunmez bicimde ezmesine izin verir:
+    dosyada `enabled: false` yazarken calisan deger `true` olabilir. Program baslamamalidir.
+    """
+
+    def construct_mapping(self, node, deep=False):  # noqa: D102
+        seen: set = set()
+        for key_node, _ in node.value:
+            key = self.construct_object(key_node, deep=deep)
+            try:
+                dup = key in seen
+            except TypeError:                       # hashlenemeyen anahtar — PyYAML zaten hata verir
+                dup = False
+            if dup:
+                raise ConfigError(f"config.yaml yinelenen anahtar: {key!r} "
+                                  f"(satir {key_node.start_mark.line + 1}) — sessiz ezme yasak")
+            seen.add(key)
+        return super().construct_mapping(node, deep=deep)
+
+
+def load_yaml_strict(text: str) -> dict[str, Any]:
+    """Yinelenen anahtari reddeden YAML yukleyici — TEK kanonik giris noktasi."""
+    return yaml.load(text, Loader=_NoDuplicateKeyLoader) or {}      # noqa: S506 — SafeLoader turevi
+
+
 def load_config(path: str | os.PathLike | None = None) -> BotConfig:
     cfg_path = Path(path) if path else DEFAULT_CONFIG_PATH
     raw: dict[str, Any] = {}
     if cfg_path.exists():
         with open(cfg_path, "r", encoding="utf-8") as fh:
-            raw = yaml.safe_load(fh) or {}
+            raw = load_yaml_strict(fh.read())
     cfg = BotConfig(
         exchange=_build(ExchangeConfig, raw.get("exchange")),
         coins=list(raw.get("coins") or []),
@@ -136,4 +198,23 @@ def load_config(path: str | os.PathLike | None = None) -> BotConfig:
         cfg.obsidian.vault_path = env_vault
     if os.environ.get("TRADINGBOT_VAULT_GIT_SYNC", "").lower() in ("1", "true", "yes"):
         cfg.obsidian.git_sync = True
+    # TRADINGBOT_DATA (VPS/Docker): state ve cache bu kökün altına taşınır (config'te mutlak yol yoksa)
+    env_data = os.environ.get("TRADINGBOT_DATA")
+    if env_data:
+        if not Path(cfg.state_dir).is_absolute():
+            cfg.state_dir = str(Path(env_data) / "state")
+        if not Path(cfg.exchange.cache_dir).is_absolute():
+            cfg.exchange.cache_dir = str(Path(env_data) / "market")
+        if not env_vault and cfg.obsidian.vault_path.startswith("C:/Users/berke"):
+            cfg.obsidian.vault_path = str(Path(env_data) / "vault")
+    # ince ayar env'leri (systemd/compose): TRADINGBOT_STATE_DIR / TRADINGBOT_CACHE_DIR
+    if os.environ.get("TRADINGBOT_STATE_DIR"):
+        cfg.state_dir = os.environ["TRADINGBOT_STATE_DIR"]
+    if os.environ.get("TRADINGBOT_CACHE_DIR"):
+        cfg.exchange.cache_dir = os.environ["TRADINGBOT_CACHE_DIR"]
+    # v3 bölümleri (typed + doğrulama; risk-kritik hata → ConfigError, program başlamaz)
+    from .config_v3 import load_v3
+    cfg.v3 = load_v3(raw)
+    for w in cfg.v3.warnings:
+        logging.getLogger("tradingbot.config").warning("config: %s", w)
     return cfg

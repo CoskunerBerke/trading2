@@ -1,0 +1,3 @@
+A (fiyat)  erken: funding=-0.094000 net=-6.094000 çıkış=stop cüzdan=993.906000 | geç: funding=-0.1000000 net=-6.1000000 cüzdan=993.9000000 | aynı=False
+B (miktar)  erken: funding=-0.100000 net=-0.100000 çıkış=manuel cüzdan=999.900000 | geç: funding=-0.050000 net=-0.050000 cüzdan=999.950000 | aynı=False
+SONUÇ: TUTARSIZ (3)

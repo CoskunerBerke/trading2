@@ -1,0 +1,10 @@
+# DATA PIPELINE
+
+- **Sağlayıcılar** (`market/providers.py`): `BinanceSpotProvider` (api.binance.com), `BinanceFuturesProvider` (fapi.binance.com: klines, ticker24h, bookTicker, depth, premiumIndex, fundingRate, openInterest, OI hist, LSR, taker ratio, server time), `TradingViewProvider` (mevcut anonim WS, yalnız mumlar), `CcxtFallbackProvider`, `MockProvider`, `ReplayProvider` (asla gelecek satır döndürmez).
+- **Rate limit** (`market/ratelimit.py`): host bazlı ağırlık bütçesi (`X-MBX-USED-WEIGHT-1M` okunur), 429/418 cooldown, exponential backoff + jitter. `market/http.py`: 5xx/timeout retry.
+- **MarketFeed** (`market/feed.py`): sağlayıcı önceliği, açık mumun düşürülmesi, artımlı önbellek (`storage.CandleStore` Parquet/CSV), `LiveSnapshot` (ticker/book/spread/depth/mark/index/funding/OI/LSR/taker, tazelik), `clock_drift_ms`.
+- **Kalite kapısı** (`market/quality.py`): `MISSING_BARS, DUPLICATE_BARS, UNSORTED, UNCLOSED_LAST_BAR, ZERO_PRICE, STALE_CANDLE, INSUFFICIENT_BARS, STALE_TICKER, WIDE_SPREAD, PRICE_DIVERGENCE, MARK_LAST_DIVERGENCE, CLOCK_DRIFT` → `OK | DATA_DEGRADED | DATA_INVALID`. DATA_INVALID → Coin Head `NO_TRADE_DATA_INVALID`.
+- **Universe** (`market/universe.py`, `python -m tradingbot universe`): spot (status TRADING, quote USDT/[USDC], stable/leveraged token dışlama, hacim/spread/depth/listing yaşı) + USDⓈ-M perpetual (contractType PERPETUAL, onboardDate); `merged` spot/futures ayrı işaretlenir → `state/universe.json`. Spot-only coin futures'ta, futures-only coin spot'ta işlem görmez.
+- **Üç aşama**: Tier-1 ucuz özellikler (`market/scanner_fast.py` + legacy `scanner.py`), Tier-2 aday (~30), Tier-3 derin Coin Head (~10). LLM yalnız kısa listede.
+- **Zaman**: içeride UTC (`core.timeutil`), Europe/Istanbul yalnız gösterim. Funding settlement 00/08/16 UTC.
+- Mevcut motor (`engine_v3`) legacy veri yolunu (TradingView + ccxt) korur; Binance resmi provider'lar `collect`/`universe` komutlarında ve MarketFeed üzerinden kullanılabilir. Tam geçiş için `data.primary: binance` ile feed entegrasyonu bir sonraki adım (bkz. Bilinen sınırlamalar, README).

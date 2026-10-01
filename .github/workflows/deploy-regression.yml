@@ -1,0 +1,286 @@
+# VPS deployment regresyonları + öğrenme hattı testleri — Ubuntu'da sandbox setup + systemd-analyze +
+# preflight matrisi, ardından FeatureSnapshotV3 / train-serve paritesi / politika değerlendirmesi.
+# Secrets kullanmaz; yalnız okuma izni; gerçek servis/network trading başlatmaz.
+name: deploy-regression
+
+on:
+  push:
+    branches:
+      - feature/trading-v3-paper-testnet
+      - feature/quant-evaluation-v1
+      - feature/ten-coin-focus-v1
+    paths:
+      - "deploy/**"
+      - "tradingbot/**"
+      - "tests/**"
+      - "scripts/**"
+      - "requirements.txt"
+      - "ruff.toml"
+      - ".github/workflows/deploy-regression.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0        # sandbox testi repo'yu yerelden clone eder; branch ref'leri gerekir
+      - name: Materialize branch (sandbox test yerel clone için adlandırılmış branch ister)
+        run: git checkout -B "${GITHUB_REF_NAME}"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest
+      - name: ShellCheck (deploy scripts)
+        run: |
+          sudo apt-get update -y && sudo apt-get install -y shellcheck
+          shellcheck -S warning deploy/setup_vps_v3.sh deploy/preflight.sh deploy/replay_runner.sh
+      - name: Deploy regression tests
+        run: |
+          set +e
+          python -m pytest tests/test_deploy_vps.py tests/test_replay_runner.py -v --tb=short > pytest.out 2>&1
+          rc=$?
+          cat pytest.out
+          if [ "$rc" -ne 0 ]; then
+            # Hata özetini GitHub annotation olarak yayınla (log erişimi olmadan da görünür)
+            summary=$(tail -n 60 pytest.out | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
+            echo "::error title=pytest failure::${summary}"
+          fi
+          exit $rc
+
+  learning-tests:
+    # Öğrenme hattı CI'da GERÇEKTEN koşar. Her dosya ayrı step: hangi testin çalıştığı log'a
+    # bakmadan da görünür (yerel "331 passed" tek başına kanıt sayılmaz).
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0        # rollback kanıtı pre-68b63f4 commit'ini worktree'ye çıkarır
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          # httpx requirements'ta yok ama starlette TestClient onu ister; kurulmazsa dashboard/telemetri
+          # doğrulamaları sessizce SKIP olurdu — CI'da gerçekten koşmaları için açıkça kuruluyor.
+          pip install pytest ruff httpx
+      - name: Prepare annotating test runner
+        run: |
+          cat > /tmp/run.sh <<'EOS'
+          #!/usr/bin/env bash
+          # Her adımın hatasını GitHub annotation'ı olarak yayınlar; log erişimi olmadan da okunur.
+          title="$1"; shift
+          set +e
+          python -m pytest "$@" > /tmp/out.txt 2>&1
+          rc=$?
+          cat /tmp/out.txt
+          if [ "$rc" -ne 0 ]; then
+            summary=$(tail -n 80 /tmp/out.txt | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
+            echo "::error title=${title}::${summary}"
+          fi
+          exit $rc
+          EOS
+          chmod +x /tmp/run.sh
+      - name: Environment report (skip'lerin sessizce gizlenmediğini görmek için)
+        run: |
+          python -c "import sys, numpy, pandas; print('python', sys.version); print('numpy', numpy.__version__, 'pandas', pandas.__version__)"
+          python -c "import fastapi, httpx; print('fastapi', fastapi.__version__, 'httpx', httpx.__version__)"
+      - name: FeatureSnapshotV3 şema + leakage + coverage gate
+        run: /tmp/run.sh "test_feature_snapshot" tests/test_feature_snapshot.py -v --tb=short -rs
+      - name: Train/serve paritesi + ajan eşlemesi + gerçek replay-call coverage
+        run: /tmp/run.sh "test_prediction_parity" tests/test_prediction_parity.py -v --tb=short -rs
+      - name: UÇTAN UCA öğrenme döngüsü (senaryo → attribution → aday → OOS → araştırma → dashboard)
+        run: /tmp/run.sh "test_end_to_end_learning" tests/test_end_to_end_learning.py -v --tb=short -rs
+      - name: Fırsat puanı + sabit işlem kotasının kaldırılması
+        run: /tmp/run.sh "test_opportunity_and_limits" tests/test_opportunity_and_limits.py -v --tb=short -rs
+      - name: Kota/starvation regresyonu (boş seçim reddi)
+        run: |
+          n=$(python -m pytest tests/test_opportunity_and_limits.py --collect-only -q 2>/dev/null | grep -c "::")
+          echo "toplanan test: $n"
+          if [ "$n" -lt 20 ]; then echo "::error::kota/firsat testleri toplanmadi ($n)"; exit 1; fi
+          /tmp/run.sh "quota-starvation" tests/test_opportunity_and_limits.py -v --tb=short \
+            -k "starve or starvation or quota or counter_blocked or capacity or ranked or duplicate"
+      - name: Karar kapıları sözleşmesi (HARD/SOFT sınıflandırması)
+        run: |
+          /tmp/run.sh "decision-gates" tests/test_opportunity_and_limits.py -v --tb=short \
+            -k "gate_contract or zero_stop or paper_uses_risk_budget or conservative_profiles or llm_budget"
+      - name: RİSK KAPASİTESİ SIRASI — gerçek motor davranışı (statik arama DEĞİL)
+        # Zorunlu adım. Tetiklenmeyen/duplicate/reddedilen adayların kapasite tüketmediğini,
+        # RiskEngine'in NİHAİ boyutu gördüğünü, red-team sert/yumuşak ayrımını ve kayıtsız kapı
+        # kodunun fail-closed olduğunu GERÇEK tur sürerek kanıtlar. continue-on-error YOK.
+        run: /tmp/run.sh "test_risk_capacity_and_gates" tests/test_risk_capacity_and_gates.py -v --tb=short -rs
+      - name: Risk kapasitesi testleri gerçekten toplanıyor mu (boş seçim reddi)
+        run: |
+          n=$(python -m pytest tests/test_risk_capacity_and_gates.py --collect-only -q 2>/dev/null | grep -c "::")
+          echo "toplanan test: $n"
+          if [ "$n" -lt 20 ]; then echo "::error::risk kapasite davranis testleri toplanmadi ($n)"; exit 1; fi
+          /tmp/run.sh "capacity-order" tests/test_risk_capacity_and_gates.py -v --tb=short \
+            -k "untriggered or duplicate or rejected_fill or half_percent or final_size or soft_penalty or ceiling or fail_closed or zero_size or counter_blocked or telemetry or funnel"
+      - name: ÜRETİM EŞDEĞERLİĞİ — fill önizlemesi = gerçek fill + LLM advisory hard veto veremez
+        # Zorunlu adım. Futures LONG/SHORT ve spot BUY için önizleme fiyatının defterde gerçekleşen
+        # fill'e (bid/ask spread, price-tick, qty-step dahil) birebir eşit olduğunu ve LLM
+        # advisory'nin merkezi gate registry'sini atlayarak hard veto ÜRETEMEDİĞİNİ kanıtlar.
+        run: /tmp/run.sh "test_fill_preview_and_llm_advisory" tests/test_fill_preview_and_llm_advisory.py -v --tb=short -rs
+      - name: Önizleme/LLM testleri gerçekten toplanıyor mu (boş seçim reddi)
+        run: |
+          n=$(python -m pytest tests/test_fill_preview_and_llm_advisory.py --collect-only -q 2>/dev/null | grep -c "::")
+          echo "toplanan test: $n"
+          if [ "$n" -lt 12 ]; then echo "::error::onizleme/LLM testleri toplanmadi ($n)"; exit 1; fi
+      - name: PAPER'da gizli adet kotası yok (üretim varsayılanlarıyla)
+        # `cfg.futures.max_positions` üretimdeki 3 değerinde kalır; PAPER_RESEARCH profili adet
+        # limiti tanımlamadığı için defter `None` ile kurulur. 12 × %0.5 fırsat %6 kapasiteyi
+        # doldurur, 13. aday ADET değil TOTAL_OPEN_RISK nedeniyle reddedilir.
+        run: |
+          /tmp/run.sh "paper-no-count-cap" tests/test_risk_capacity_and_gates.py -v --tb=short             -k "production_defaults or no_position_count_cap or none_cap_survives or conservative_profiles_still or twelve_half_percent"
+      - name: REPLAY ↔ CANLI PAPER cap paritesi + state/rollback geriye uyumluluğu
+        # Zorunlu adım. (1) Canlı motor ve HistoricalReplay defterlerinin adet-kotası davranışının
+        # TEK ortak sözleşmeden (`risk.enforces_position_cap`) geldiğini, (2) ledger JSON'unun
+        # DAİMA integer kaldığını ve pre-68b63f4 kodunun onu okuyabildiğini (geçici worktree +
+        # sentetik temp state ile dört CLI komutu) kanıtlar. continue-on-error YOK.
+        run: /tmp/run.sh "test_cap_parity_and_rollback" tests/test_cap_parity_and_rollback.py -v --tb=short -rs
+      - name: Cap-parite/rollback testleri gerçekten toplanıyor ve KOŞUYOR mu (boş seçim + skip reddi)
+        run: |
+          n=$(python -m pytest tests/test_cap_parity_and_rollback.py --collect-only -q 2>/dev/null | grep -c "::")
+          echo "toplanan test: $n"
+          if [ "$n" -lt 12 ]; then echo "::error::cap-parite/rollback testleri toplanmadi ($n)"; exit 1; fi
+          # Rollback kanıtı SKIP edilirse adım düşer: shallow clone'da worktree kurulamaz.
+          python -m pytest tests/test_cap_parity_and_rollback.py -q -rs             -k "pre_fix_cli_commands" > /tmp/rb.txt 2>&1 || { cat /tmp/rb.txt; exit 1; }
+          cat /tmp/rb.txt
+          if grep -qE "^SKIPPED|1 skipped" /tmp/rb.txt; then
+            echo "::error::rollback CLI kaniti SKIP edildi — gecerli sayilmaz"; exit 1
+          fi
+      - name: GÖZLEMLENEBİLİRLİK — kanonik PnL, panel görünümü, 2x–5x kaldıraç, Telegram
+        # Zorunlu adım. Panel/Telegram PnL eşitliği, aday↔açık pozisyon ayrımı, canlı/bayat veri
+        # davranışı, kaldıracın risk bütçesini büyütmemesi ve token sızıntısı olmaması kanıtlanır.
+        # Gerçek Telegram ağı KULLANILMAZ (fake transport). continue-on-error YOK.
+        run: |
+          /tmp/run.sh "observability" tests/test_pnl_and_dashboard_views.py             tests/test_leverage_and_notify.py tests/test_dashboard_live.py             tests/test_observability_safety.py -v --tb=short -rs
+      - name: Gözlemlenebilirlik testleri gerçekten toplanıyor mu (boş seçim reddi)
+        run: |
+          n=$(python -m pytest tests/test_pnl_and_dashboard_views.py tests/test_leverage_and_notify.py                 tests/test_dashboard_live.py tests/test_observability_safety.py                 --collect-only -q 2>/dev/null | grep -c "::")
+          echo "toplanan test: $n"
+          if [ "$n" -lt 70 ]; then echo "::error::gozlemlenebilirlik testleri toplanmadi ($n)"; exit 1; fi
+      - name: Kaldıraç risk bütçesini büyütmüyor + PAPER güvenliği
+        run: |
+          /tmp/run.sh "leverage-risk-invariant" tests/test_leverage_and_notify.py             tests/test_observability_safety.py -v --tb=short             -k "never_increases or margin_equals or max_loss_at_stop or risk_at_stop or paper_mode or live_order or risk_ceilings or secret"
+      - name: TELEGRAM SERTLEŞTİRME — config bağları, otomatik retry, kilit dışı gönderim, harici alarm
+        # Zorunlu adım. Y-1/Y-2/O-3/O-4/O-5 regresyonları. Gerçek Telegram ağı KULLANILMAZ.
+        run: /tmp/run.sh "notify-hardening" tests/test_notify_hardening.py -v --tb=short -rs
+      - name: Sertleştirme testleri gerçekten toplanıyor mu (boş seçim reddi)
+        run: |
+          n=$(python -m pytest tests/test_notify_hardening.py --collect-only -q 2>/dev/null | grep -c "::")
+          echo "toplanan test: $n"
+          if [ "$n" -lt 30 ]; then echo "::error::sertlestirme testleri toplanmadi ($n)"; exit 1; fi
+      - name: systemd unit doğrulaması (OnFailure hook + oneshot alert)
+        run: |
+          systemd-analyze verify deploy/tradingbot-alert@.service 2>&1 | tee /tmp/sa.txt || true
+          if grep -qiE "(not found|invalid|failed to)" /tmp/sa.txt; then
+            echo "::error::alert unit dogrulanamadi"; cat /tmp/sa.txt; exit 1
+          fi
+          grep -q "OnFailure=tradingbot-alert@%n.service" deploy/tradingbot-worker.service             || { echo "::error::worker unit OnFailure hook icermiyor"; exit 1; }
+      - name: GERÇEK RUNTIME araştırma döngüsü (boş defterden motor turlarıyla)
+        # Zorunlu adım. Boş test seçimi pytest exit-5 ile adımı DÜŞÜRÜR; continue-on-error yok.
+        run: /tmp/run.sh "test_research_runtime_e2e" tests/test_research_runtime_e2e.py -v --tb=short -rs
+      - name: Runtime E2E gerçekten test topluyor mu (boş seçim reddi)
+        run: |
+          n=$(python -m pytest tests/test_research_runtime_e2e.py --collect-only -q 2>/dev/null | grep -c "::")
+          echo "toplanan test: $n"
+          if [ "$n" -lt 10 ]; then echo "::error::runtime E2E testleri toplanmadi ($n)"; exit 1; fi
+      - name: Otomatik PAPER terfisi kapalı (regresyon kapısı)
+        run: |
+          /tmp/run.sh "auto-promotion-disabled" \
+            tests/test_prediction_parity.py tests/test_end_to_end_learning.py -v --tb=short \
+            -k "auto_promot or candidate_never_enters or sparse_memory or worker_loop_never or shipped_config or manual_promotion"
+      - name: Model şeması uyuşmazlığı fail-closed (LearnerV2)
+        run: /tmp/run.sh "test_learn" tests/test_learn.py -v --tb=short -rs
+      - name: Politika walk-forward (fold-seçilmiş aday, OOS kırılımı)
+        run: /tmp/run.sh "test_policy_eval" tests/test_policy_eval.py -v --tb=short -rs
+      - name: Araştırma katmanı güvenlik sözleşmesi (risk artıramaz, CHAMPION üretemez)
+        run: |
+          /tmp/run.sh "research-safety" tests/test_end_to_end_learning.py -v --tb=short \
+            -k "research_layer_cannot or rejected_offline or research_only_verdict or degrading or never_counted_twice"
+      - name: Config fail-closed + otomatik terfi yasağı
+        run: |
+          python - <<'EOS'
+          import io, sys, yaml
+          from tradingbot.config_v3 import ConfigError, load_v3
+          raw = yaml.safe_load(io.open("config.yaml", encoding="utf-8"))
+          assert raw["learning_v3"]["auto_promote_in_paper"] is False, "config.yaml otomatik terfiye izin veriyor"
+          assert load_v3(raw).learning_v3.auto_promote_in_paper is False
+          try:
+              load_v3(dict(raw, learning_v3=dict(raw["learning_v3"], auto_promote_in_paper=True)))
+          except ConfigError as exc:
+              assert "PAPER_AUTO_PROMOTION_FORBIDDEN" in str(exc), exc
+              print("OK: PAPER_AUTO_PROMOTION_FORBIDDEN fail-closed")
+              sys.exit(0)
+          print("HATA: auto_promote_in_paper=true reddedilmedi", file=sys.stderr)
+          sys.exit(1)
+          EOS
+      - name: Replay araştırma hattı
+        run: /tmp/run.sh "replay-research" tests/test_replay_research.py tests/test_replay_learning.py -v --tb=short -rs
+      - name: Dashboard (telemetri uçları)
+        run: /tmp/run.sh "test_dashboard" tests/test_dashboard.py -v --tb=short -rs
+      - name: Lint (ruff)
+        run: ruff check tradingbot tests
+      - name: Tam test paketi
+        run: /tmp/run.sh "full-suite" tests/ -q -rs
+
+  quant-evaluation-tests:
+    # Quant Evaluation V1 kapsam kapısı — YALNIZ `feature/quant-evaluation-v1` dalında koşar.
+    # Mevcut iki job'ın kapsamadığı üç boşluğu kapatır: (1) `ruff check .` (eski adım yalnız
+    # `tradingbot tests` bakıyordu, `scripts/` linte girmiyordu), (2) `compileall` hiç yoktu,
+    # (3) tam suite sayıları log erişimi olmadan görünmüyordu → özet satırı `::notice`
+    # annotation'ı olarak yayımlanır ve API'den okunabilir.
+    # Public-data smoke CI'da ÇALIŞTIRILMAZ (ağ gerektirir); suite ağsızdır.
+    # `feature/ten-coin-focus-v1` de bu kapiya alindi: diger iki job `ruff check .`,
+    # `compileall` ve tam suite sayilarini KAPSAMIYOR; sabit evren surumu bunlarsiz
+    # dagitilmamali.
+    if: github.ref == 'refs/heads/feature/quant-evaluation-v1' || github.ref == 'refs/heads/feature/ten-coin-focus-v1'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          # httpx requirements'ta yok; kurulmazsa dashboard testleri sessizce SKIP olurdu.
+          pip install pytest ruff httpx
+      - name: Lint (ruff check .)
+        run: ruff check .
+      - name: Compile check (compileall)
+        run: python -m compileall -q tradingbot tests scripts
+      - name: Quant testleri gerçekten toplanıyor mu (boş seçim reddi)
+        run: |
+          n=$(python -m pytest tests -q --collect-only 2>/dev/null | grep -c "test_quant_")
+          echo "toplanan quant testi: $n"
+          echo "::notice title=quant-collected::${n} quant testi toplandi"
+          if [ "$n" -lt 150 ]; then echo "::error::quant testleri toplanmadi ($n)"; exit 1; fi
+      - name: Tam test paketi (özet annotation olarak yayımlanır)
+        run: |
+          set +e
+          python -m pytest -q tests -rs > /tmp/full.txt 2>&1
+          rc=$?
+          cat /tmp/full.txt
+          summary=$(grep -aE "[0-9]+ (passed|failed|error)" /tmp/full.txt | tail -n 1)
+          echo "::notice title=full-suite-summary::${summary}"
+          if [ "$rc" -ne 0 ]; then
+            detail=$(tail -n 60 /tmp/full.txt | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
+            echo "::error title=full-suite failure::${detail}"
+          fi
+          exit $rc

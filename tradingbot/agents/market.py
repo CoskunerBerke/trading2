@@ -63,7 +63,10 @@ class BinanceLive:
             out["errors"].append(f"orderbook: {exc}")
         try:
             fr = self._fut.fetch_funding_rate(fut_sym)
-            out["funding"] = {"rate": fr.get("fundingRate"), "mark": fr.get("markPrice"), "next": fr.get("fundingDatetime")}
+            # `ts` (2026-09-16): borsanin mark fiyati zaman damgasi (ccxt `timestamp`, UTC ms) — kagit defter fiyat yasi bununla
+            # olculur; yoksa snapshot'in alinma zamani (`out["ts"]`, epoch sn) kaynak zamani sayilir (strategy_paper.verified_price).
+            out["funding"] = {"rate": fr.get("fundingRate"), "mark": fr.get("markPrice"), "next": fr.get("fundingDatetime"),
+                              "ts": fr.get("timestamp")}
         except Exception as exc:  # noqa: BLE001
             out["errors"].append(f"funding: {exc}")
         try:

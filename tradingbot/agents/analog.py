@@ -17,7 +17,7 @@ import numpy as np
 import pandas as pd
 
 from .. import indicators as ind
-from .base import Agent, AgentReport, CoinContext, fmt_px
+from .base import Agent, AgentReport, CoinContext
 
 CFG = {"1d": {"W": 20, "H": 5, "w": 0.45}, "4h": {"W": 30, "H": 6, "w": 0.35}, "1h": {"W": 36, "H": 12, "w": 0.20}}
 TF_TR = {"1d": "günlük", "4h": "4 saatlik", "1h": "saatlik"}

@@ -1,0 +1,10 @@
+kod: 9095ce6574f458e873bf28d707fabe30ab787dc4
+A) 2x LONG, stop 2400 (likidasyondan YAKIN); bar likidasyonun 50 altinda KAPANIYOR (test senaryo 1)
+   stop=2400 liq=1506.02 izole_marj=99.00 tick={'last': 1456.02, 'mark': 1456.02, 'low': 1456.02}
+   -> sebep=stop cikis=1456.02 net_pnl=-102.05 R=-2.577
+B) ayni pozisyon; bar ici dip likidasyonun 50 altinda ama kapanis 2450 (stopun USTUNDE)
+   stop=2400 liq=1506.02 izole_marj=99.00 tick={'last': 2450.0, 'mark': 2450.0, 'low': 1456.02}
+   -> sebep=stop cikis=2400.00 net_pnl=-39.78 R=-1.004
+C) karsilastirma: stop 100 (likidasyon YAKIN); ayni bar -> likidasyon yolu
+   stop=100 liq=1506.02 izole_marj=99.00 tick={'last': 1456.02, 'mark': 1456.02, 'low': 1456.02}
+   -> sebep=likidasyon cikis=1506.02 net_pnl=-99.10 R=-0.518

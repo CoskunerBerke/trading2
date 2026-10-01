@@ -1,0 +1,28 @@
+
+[1] spot defteri değişimi önbelleği geçersizleştirmiyor mu?
+   alış emri durumu=OrderStatus.FILLED pozisyon=2.0
+   1. istek: origin=panel-ephemeral live.source=portfolio.json analysis.position.qty=2.0 entry=var
+   satış sonrası StateReader.spot_positions()=[]
+   2. istek: origin=panel-cache live.position=None payload.position={} analysis.position.qty=2.0 entry=var aynı analysis_id=True live.source=portfolio.json
+  BULGU_VAR  tam satış sonrası analiz hâlâ 2 birim açık pozisyon çiziyor
+  BULGU_VAR  live.source spot_ledger.json kullanılırken portfolio.json diyor
+
+[2] geçici analizde canlı fiyat/K-Z donuyor mu?
+   4h 1. istek: origin=panel-ephemeral live.mark=201.0 mark.price=201.0 label=İşaret fiyatı 201 · açık K/Z +2 USDT
+   4h 2. istek: origin=panel-cache stored=False live.mark=240.0 son mum close=240.0 mark.price=201.0 label=İşaret fiyatı 201 · açık K/Z +2 USDT
+  BULGU_VAR  4h: çizilen işaret fiyatı 240 değil (donmuş)
+   1h 1. istek: origin=panel-ephemeral live.mark=201.0 mark.price=201.0 label=İşaret fiyatı 201 · açık K/Z +2 USDT
+   1h 2. istek: origin=panel-cache stored=False live.mark=240.0 son mum close=240.0 mark.price=201.0 label=İşaret fiyatı 201 · açık K/Z +2 USDT
+  BULGU_VAR  1h: çizilen işaret fiyatı 240 değil (donmuş)
+
+[3] T2/M2 kaydı spot mumları futures olarak etiketliyor mu? (gerçek motor turu, SPOT provenans)
+   provenance={'ETH/USDT': 'SPOT', 'SOL/USDT': 'SPOT'}
+   main|SPOT|ETH/USDT|4h: identity.market_type=SPOT source.bar_market=SPOT last_close=535.1200736288996
+   strategy_paper|USDM_PERP|ETH/USDT|4h: identity.market_type=USDM_PERP source.bar_market=SPOT last_close=535.1200736288996
+   strategy_paper_m2|USDM_PERP|ETH/USDT|4h: identity.market_type=USDM_PERP source.bar_market=SPOT last_close=535.1200736288996
+   main|SPOT|SOL/USDT|4h: identity.market_type=SPOT source.bar_market=SPOT last_close=2504.80326907074
+   strategy_paper|USDM_PERP|SOL/USDT|4h: identity.market_type=USDM_PERP source.bar_market=SPOT last_close=2504.80326907074
+   strategy_paper_m2|USDM_PERP|SOL/USDT|4h: identity.market_type=USDM_PERP source.bar_market=SPOT last_close=2504.80326907074
+   config.json skipped=None
+   T2 pozisyonları (işlem yolu, değişmemeli)=['ETH/USDT', 'SOL/USDT']
+  BULGU_VAR  4 T2/M2 kaydı SPOT mumlarını USDM_PERP kimliğiyle taşıyor

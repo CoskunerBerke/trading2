@@ -1,0 +1,52 @@
+
+
+
+[1] desteklenen zaman dilimleri analizde çöküyor mu?
+   tf=15m: HTTP 200  analysis=var  
+   tf= 1h: HTTP 200  analysis=var  
+   tf= 4h: HTTP 200  analysis=var  
+   tf= 1d: HTTP 200  analysis=var  
+   tf= 1w: HTTP 200  analysis=var  
+   closed_bars_at(15m): OK
+   closed_bars_at(1w): OK
+  BULGU_YOK  1h futures grafiği (mum CSV mevcut) 200 dönmüyor
+
+[2] kayıtlı analizde spot/futures ayrımı kayboluyor mu?
+   requested_market=spot  analysis_origin=panel-ephemeral  analysis.identity.market_type=SPOT
+   futures giriş öğesi (kind=entry) spot analizinde: yok;  payload.position={}
+   spot history listesinde futures analysis_id: yok
+   futures analysis_id spot isteğinde: HTTP 404
+  BULGU_YOK  spot isteği futures kaydını/pozisyonunu taşıyor
+
+[3A] aynı mum içinde pozisyon kapanınca canlı grafik eski kalıyor mu? (panel önbelleği)
+   1. istek kaynak=panel-ephemeral  2. istek kaynak=panel-ephemeral
+   2. payload.position={}  2. analysis.position.id=None
+   2. analizde 'entry' (açık giriş) öğesi: yok; 'trade_exit' öğesi: var
+  BULGU_YOK  kapanmış pozisyon panel önbelleğinden açık gösteriliyor
+
+[3A'] aynı senaryo motor kaydı (store latest) ile
+   kaynak=panel-ephemeral historical=False payload.position={} analysis.position.id=None
+   engine_record: matches_now=False diff=['config farklı', 'defter/karar durumu farklı (pozisyon, miktar, stop, hedef, kapanış, plan ya da hüküm)']
+  BULGU_YOK  motorun eski kaydı 'şimdi' görünümünde açık pozisyon gösteriyor
+
+[3B] miktar/hedef değişimi aynı analysis_id'de kayboluyor mu?
+   kayıt dosyası sayısı=2
+   elements farklı=True  analysis_id aynı=False  ikinci save written=True  saklanan qty=1.0 targets=[130.0]
+  BULGU_YOK  miktar/hedef değişimi tekilleştirme yüzünden kayboluyor
+
+[5] pivot teyit zamanı bir mum erken mi?
+   pivot index=3 teyit index=6  confirmed_at_ts=1700100800000  bar6 açılış=1700086400000  bar6 kapanış=1700100800000
+   öğe confirmed_at=1700100800000 anchors[0].confirmed_at=1700100800000
+  BULGU_YOK  confirmed_at = teyit barının AÇILIŞI (kapanıştan 4 saat erken)
+
+[6] arşivde olan eski mumlar için 'veri yok' mu?
+   n=50: HTTP 200 bars=50 error=None
+        max(t) <= analiz son bar: True
+   n=300: HTTP 200 bars=300 error=None
+        max(t) <= analiz son bar: True
+  BULGU_YOK  dosyada bulunan tarih için 404 'arşivde yok'
+
+[K] JS kimlik alanı: build_snapshot kökte analysis_id, JS identity.analysis_id okuyor mu?
+   snapshot.analysis_id=aa7636b05a5ef542  snapshot.identity.analysis_id=None
+   CHART_JS 'a.analysis_id' (identity üzerinden) okuma sayısı: 0
+  BULGU_YOK  JS kimliği identity altında arıyor, snapshot kökte taşıyor

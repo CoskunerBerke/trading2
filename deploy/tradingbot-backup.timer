@@ -1,0 +1,15 @@
+# Saat başı yedek (+ günlük/haftalık türleri `backup` komutu kendi içinde tarih kuralına göre üretir).
+# sudo systemctl enable --now tradingbot-backup.timer ; systemctl list-timers tradingbot*
+[Unit]
+Description=Trading Bot v3 hourly backup timer
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=1h
+OnCalendar=hourly
+RandomizedDelaySec=5min
+Persistent=true
+Unit=tradingbot-backup.service
+
+[Install]
+WantedBy=timers.target

@@ -56,6 +56,7 @@ should be read as a claim of profitability.
 | [ogrenme_modu/SPEC.md](ogrenme_modu/SPEC.md) *(English)* | Learning mode implementation spec: which limits may be relaxed in paper and which must stay. |
 | [ogrenme_modu/CONTRACT.md](ogrenme_modu/CONTRACT.md) *(English)* | Build contract for learning mode release L1 (takes precedence over the spec). |
 | [ogrenme_modu/DURUM.md](ogrenme_modu/DURUM.md) | Status log of learning mode L1: what was built, review findings and deployment notes. |
+| [BOX_CF_GAP_AUDIT.md](BOX_CF_GAP_AUDIT.md) | Read-only audit script that measures where the gap between the Box book's counterfactual and real net R comes from (hypotheses H1–H10), and how to run it on the VPS. |
 | [ortak_deneyim/SPEC_V1.md](ortak_deneyim/SPEC_V1.md) *(English)* | Shared experience layer, phase 1: rows, situation snapshot, store and report design. |
 | [ortak_deneyim/KARARLAR.md](ortak_deneyim/KARARLAR.md) *(English, quotes the user's Turkish request)* | Binding decisions that answer the open questions of the shared experience spec. |
 | [ortak_deneyim/DANISMAN_V1.md](ortak_deneyim/DANISMAN_V1.md) | Pre-registration of the shadow advisor `advisor_v1`: rule, seals and walk-forward evaluation. |

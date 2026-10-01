@@ -43,9 +43,12 @@ def _index(hist, drop_last: int):
 def _set_optimizations(mp, on: bool) -> None:
     """Bütün tur hızlandırmalarının geri dönüş anahtarları (AÇIK = üretim varsayılanı)."""
     import tradingbot.chart_analysis_store as CAS
+    import tradingbot.learn.entry_snapshot as ES
     from tradingbot.engine_v3 import TradingEngineV3
     mp.setattr(TradingEngineV3, "EVIDENCE_PREWARM", bool(on))      # C2: kanıt ön ısıtması
     mp.setattr(CAS, "BATCH_INDEX_WRITES", bool(on))                # C3: grafik analizi indeksi tur başına bir kez
+    mp.setattr(ES, "LINKS_MEMO", bool(on))                         # C4: trade_links imza memosu
+    mp.setattr(TradingEngineV3, "EXIT_EVAL_MEMO", bool(on))        # C4: kapanmış işlem çıkış değerlendirmesi memosu
 
 
 def _run(root: Path, monkeypatch, *, optimized: bool, wait_prewarm: bool = True, tours: int = 5) -> dict:
@@ -64,6 +67,14 @@ def _run(root: Path, monkeypatch, *, optimized: bool, wait_prewarm: bool = True,
         mp.setattr("tradingbot.pattern_trader.scheduler.PatternScanner.start", lambda self: None)
         mp.setattr("tradingbot.box_timer.BoxTimer.start", lambda self: None)
         _set_optimizations(mp, optimized)
+        import tradingbot.learn.exit_eval as EE
+        n_eval = {"k": 0}
+        _real_eval = EE.evaluate_trade
+
+        def _counting_eval(**kw):
+            n_eval["k"] += 1
+            return _real_eval(**kw)
+        mp.setattr(EE, "evaluate_trade", _counting_eval)
         ov = G._overrides(lm=True, xp={"enabled": False, "mode": "OFF"})
         ov["chart_analysis"] = {"enabled": True}             # gösterim katmanı da karşılaştırmaya girsin
         with time_machine.travel(G.T0, tick=False) as clock:
@@ -116,7 +127,8 @@ def _run(root: Path, monkeypatch, *, optimized: bool, wait_prewarm: bool = True,
         for k in ("rss_mb", "hwm_mb"):
             mem.pop(k, None)
     files["state/health.json"] = json.dumps(h, sort_keys=True).encode("utf-8")
-    return {"files": files, "eng": eng, "versions": versions}
+    return {"files": files, "eng": eng, "versions": versions, "exit_evals": n_eval["k"],
+            "closes": len(eng.ledger2.history)}
 
 
 def _diff(a: dict, b: dict) -> list[str]:
@@ -148,6 +160,9 @@ def test_tours_across_index_publishes_are_byte_identical_with_optimizations_on(t
     eng = on["eng"]
     books = {b.key: (len(b.ledger.positions), len(b.ledger.history)) for b in eng.strategy_books}
     assert sum(sum(v) for v in books.values()) > 0, books
+    # çıkış değerlendirmesi memosu gerçekten çalıştı: kapanmış ana defter işlemleri KAPALI'da her turda yeniden oynatıldı
+    assert on["closes"] == off["closes"] > 0
+    assert on["exit_evals"] < off["exit_evals"], (on["exit_evals"], off["exit_evals"])
 
 
 def test_tours_are_identical_when_the_prewarm_is_still_running_at_tour_start(tmp_path, tmp_path_factory, monkeypatch, _cache):

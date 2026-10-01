@@ -4997,10 +4997,31 @@ class TradingEngineV3(TradingEngine):
             log.warning("pozisyon yolu kaydedilemedi: %s", exc)
             return {}
 
+    #: Kapanmış işlem çıkış değerlendirmesi memosu (2026-10-01). False → her turda bütün kapanışlar yeniden oynatılır (eski yol).
+    EXIT_EVAL_MEMO = True
+    #: Memoda tutulan değerlendirmeden atılan alan: politika aksiyon listesi (raporda ve özette OKUNMAZ, en büyük alan).
+    _EXIT_EVAL_SLIM_DROP = ("actions",)
+
+    def _exit_eval_memo_key(self, c: dict, path: list, cfg_key: str) -> tuple | None:
+        """(işlem, config+maliyet, kapanış kaydı özeti, fiyat yolu özeti). Girdi BİREBİR aynıysa sonuç da aynıdır
+        (`evaluate_trade` saf fonksiyondur). Özet pickle baytlarından: eşit ama farklı paylaşımlı nesne yalnız ISKALAMA
+        üretir (güvenli yön); farklı içerik aynı özeti VEREMEZ. Özet çıkarılamazsa None (memo kullanılmaz)."""
+        try:
+            import hashlib
+            import pickle
+            h = lambda o: hashlib.blake2b(pickle.dumps(o, protocol=4), digest_size=16).hexdigest()  # noqa: E731
+            return (str(c.get("trade_id")), cfg_key, h(c), len(path), h(path))
+        except Exception:  # noqa: BLE001 — özetlenemeyen girdi eski yoldan hesaplanır
+            return None
+
     def _write_exit_eval(self, now) -> dict:
         """Kapanmış işlemler için champion/challenger karşı-olgusal raporunu yazar.
 
         Tam yol olmayan işlemler `NO_COMPLETE_PATH` ile geçilir; sahte karşılaştırma YAPILMAZ.
+
+        MEMO (2026-10-01): kapanmış işlemin kaydı ve fiyat yolu donmuştur; her turda bütün kapanışları yeniden oynatmak
+        (83 işlem / 55 MB yolda ~13 sn) aynı sonucu üretir. Sonuç (kapanış, config, yol) özetiyle tutulur ve yalnız yeni
+        ya da değişmiş kapanış yeniden oynatılır. Rapor yalnız gösterimdir; hiçbir karar bu dosyayı okumaz.
         """
         store = getattr(self, "path_store", None)
         if store is None or self.exit_policy_cfg is None:
@@ -5012,11 +5033,38 @@ class TradingEngineV3(TradingEngine):
             # yalnız bu kapanışın yolu ayrıştırılır (artımlı dizin; eski `paths_by_trade().get(...) or []` ile aynı) —
             # öğrenmede dosya ~60 kat hızlı büyür, bütün yollar her turda belleğe alınmaz (2026-09-28, üçüncü tur)
             _tp = store.trade_path if hasattr(store, "trade_path") else (lambda t, _p=store.paths_by_trade(): _p.get(t) or [])
-            evals = [evaluate_trade(trade_id=c["trade_id"], path=_tp(c["trade_id"]),
-                                    close=c, cfg=self.exit_policy_cfg,
-                                    fee_rate=_ex.eval_fee_rate,
-                                    slip_rate=_ex.eval_slippage_rate)
-                     for c in canonical_closes(self.ledger2.history)]
+            memo = self.__dict__.get("_exit_eval_memo")
+            if memo is None or not getattr(self, "EXIT_EVAL_MEMO", False):
+                memo = self.__dict__["_exit_eval_memo"] = {}
+            cfg_key = None
+            if getattr(self, "EXIT_EVAL_MEMO", False):
+                try:
+                    import json as _json
+                    cfg_key = _json.dumps({"cfg": self.exit_policy_cfg.to_dict(), "fee": _ex.eval_fee_rate,
+                                          "slip": _ex.eval_slippage_rate}, sort_keys=True, default=repr)
+                except Exception:  # noqa: BLE001 — config özetlenemezse memo kullanılmaz
+                    cfg_key = None
+            used: dict = {}
+            evals = []
+            for c in canonical_closes(self.ledger2.history):
+                path = _tp(c["trade_id"])
+                key = self._exit_eval_memo_key(c, path, cfg_key) if cfg_key is not None else None
+                hit = memo.get(key) if key is not None else None
+                if hit is None:
+                    hit = evaluate_trade(trade_id=c["trade_id"], path=path,
+                                         close=c, cfg=self.exit_policy_cfg,
+                                         fee_rate=_ex.eval_fee_rate,
+                                         slip_rate=_ex.eval_slippage_rate)
+                    if key is not None:
+                        slim = dict(hit)
+                        slim["results"] = {p: {k: v for k, v in r.items() if k not in self._EXIT_EVAL_SLIM_DROP}
+                                           for p, r in (hit.get("results") or {}).items()}
+                        used[key] = slim
+                elif key is not None:
+                    used[key] = hit
+                evals.append(hit)
+            memo.clear()                              # yalnız bu turun kapanışları tutulur (bellek kapanış sayısıyla sınırlı)
+            memo.update(used)
             doc = aggregate(evals, cfg=self.exit_policy_cfg, now=now)
             doc["run_id"] = self.run_id
             doc["exit_action_mode"] = getattr(self.exit_executor, "mode", "SHADOW")

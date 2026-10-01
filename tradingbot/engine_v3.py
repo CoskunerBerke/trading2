@@ -902,7 +902,18 @@ class TradingEngineV3(TradingEngine):
         kurulursa (yeni süreç ya da yeniden yükleme) anahtar değişir ve kanıt yeniden hesaplanır.
         Bayatlık kapısı önbellekten ÖNCE çalışır: eski bir cevap, veri bayatladıktan sonra
         döndürülmez.
+
+        Geçen süre (önbellek isabeti dahil) turun `pattern_evidence` alt fazına eklenir (yalnız ölçüm).
         """
+        _t0 = time.time()
+        try:
+            return self._pattern_evidence_cached(symbol, now_ms)
+        finally:
+            _ph = getattr(self, "_tour_phases", None)
+            if _ph is not None:
+                _ph.add_sub("pattern_evidence", time.time() - _t0)
+
+    def _pattern_evidence_cached(self, symbol: str, now_ms: int) -> dict | None:
         eng = self._load_pattern_engine()
         if eng is None or (symbol, "futures", "4h") not in eng.candles:
             return None
@@ -1404,6 +1415,9 @@ class TradingEngineV3(TradingEngine):
     # ------------------------------------------------------------------ TUR
     def tour(self, *, do_scan: bool = True, symbols_override: list[str] | None = None, charts: bool = True, obsidian: bool = True) -> dict:
         t0 = time.time()
+        # FAZ SÜRELERİ (yalnız ölçüm): her numaralı adımın sonunda `_ph.lap(...)`; health.json["phases"] + "tur fazları" satırı
+        from .ops.tour_phases import TourPhases
+        self._tour_phases = _ph = TourPhases()
         self.run_id = run_id_now()
         self._tour_no += 1
         now = utc_now()
@@ -1448,6 +1462,7 @@ class TradingEngineV3(TradingEngine):
         self.ensure_symbol_filters()
         # 0.7) KANIT ONARIMI V1.1: spot listeleme onbellegi (ceza acikken, gunde ~1 istek)
         self.ensure_spot_listing()
+        _ph.lap("prep")
         # 1) TARA (legacy tier-1)
         scan = None
         if self.scanner and do_scan and symbols_override is None:
@@ -1502,6 +1517,7 @@ class TradingEngineV3(TradingEngine):
         _perp_tfs = tuple(dict.fromkeys(tuple(self.PERP_BASE_TIMEFRAMES) + tuple(getattr(self, "_book_timeframes", ()))))
         self._frame_provenance = {}
         self._entry_data_blocked: set[str] = set()
+        _ph.lap("scan")
         # 2) legacy ajanlar → brief + raporlar
         self.runner.set_weights(self.learner.learned_agent_weights())
         analyses = self._load_last_analyses()
@@ -1559,6 +1575,7 @@ class TradingEngineV3(TradingEngine):
         trips = self.risk.evaluate_kill_triggers(state, {"stale_data": False})
         if trips:
             log.error("KILL SWITCH tetiklendi: %s", trips)
+        _ph.lap("symbols")
         # 3) COIN HEADS
         btc_frames = self.runner.last_frames.get("BTC/USDT")
         eth_frames = self.runner.last_frames.get("ETH/USDT")
@@ -1674,6 +1691,7 @@ class TradingEngineV3(TradingEngine):
         # Yetkili chief karari: `d.opportunity` artik dolu, siralama/izinler dogru edge ile kurulur.
         chief = self.chief_mgr.decide(list(decisions.values()), _chief_state, btc_regime=_btc_reg)
         self.registry.chief = chief.to_dict()
+        _ph.lap("coin_heads")
         # 4) RİSK + TETİK + PAPER EXECUTION
         opened: list[str] = []
         risk_log: list[dict] = []
@@ -1685,6 +1703,7 @@ class TradingEngineV3(TradingEngine):
                 sym = desc.split(" ")[0]
                 if sym in marks:
                     marks[sym] = TickData(last=marks[sym].last, mark=marks[sym].mark, ts=marks[sym].ts)
+        _ph.lap("execute")
         # 5) İZLE: tick (bar_advance yeni 4h bar kapanışında)
         # FUNDING (2026-09-22): önce AĞ adımı (defter kilidi dışında) — gerçekleşmiş settlement satırları çekilir ve
         # kapanmış işlemlerin bekleyen funding'i uzlaştırılır; sonra tick YALNIZ bellekten okur. Anlık `funding_pct`
@@ -1745,10 +1764,12 @@ class TradingEngineV3(TradingEngine):
             write_watermark(st, tick_now, self.run_id or None)      # süreç canlı ve koruyucu yol koştu (monoton)
             self._main_price_gaps = dict(vgaps)
             self._main_after_tick(tinfo, tick_records, tick_now, "tour")
+        _ph.lap("main_tick")
         # 6b) STRATEJİ KÂĞIT DEFTERİ (V10): ana defterden SONRA, aynı marks/funding/bar ilerlemesiyle.
         self._strategy_paper_tour(symbols, marks, marks_f, funding, bar_advance, now)
         self.spot2.tick(marks_f, now)
         self.spot2.save(st / "spot_ledger.json")
+        _ph.lap("strategy_books")
         self._notify_closed(records, now)
         lessons = []
         for rec in records:
@@ -1814,20 +1835,24 @@ class TradingEngineV3(TradingEngine):
                 log.info("araştırma adayı PAPER_RESEARCH_ACTIVE: %s", _res["activated"])
         except Exception as exc:  # noqa: BLE001 — araştırma katmanı işlem akışını DURDURAMAZ
             log.warning("araştırma döngüsü atlandı: %s", exc)
+        _ph.lap("learning")
         # 7) görseller (legacy)
         chart_paths = {}
         if charts:
             for b in briefs:
                 if b.verdict != "BEKLE" or b.symbol in self.ledger2.positions or b.symbol in core_set or b.scan_score:
                     chart_paths[b.symbol] = self._chart(b)
+        _ph.lap("charts")
         # 8) durum dosyaları
         self.last_decisions = {s: d.to_dict(include_reports=False) for s, d in decisions.items()}
         self.registry.save(st, self.run_id)
         state = self._portfolio_state(marks_f)      # tur sonu: fill/çıkış sonrası güncel birleşik durum
         self._persist_risk_state(state, risk_log, now)
+        _ph.lap("state")
         # 8b) GRAFIK ANALIZI (CHART ANALYSIS V1): karar kaydi (risk.json) ve planlar yazildiktan SONRA;
         #     salt gosterim kaydi — defter/ogrenme/kapi DEGISMEZ, ariza turu durdurmaz.
         self._chart_analysis_tour(symbols, marks_f, now)
+        _ph.lap("chart_analysis")
         # 8c) FORMASYON PAPER TRADER: tarayici arka planda calisir; burada yalniz baslatma + ekonomik rapor yazilir.
         self._pattern_trader_tour(now)
         # Karar günlüğü: DEĞERLENDİRİLEN HER aday (kabul/red/veto) tek seferde yazılır.
@@ -1841,13 +1866,17 @@ class TradingEngineV3(TradingEngine):
         # Fiyat yolu: TUR tick'i 1h bar uçlarını da taşır (`_marks`), bu yüzden `bar_extremes`.
         from .learn.position_path import TICK_BAR_EXTREMES
         self._record_position_path(marks, decisions, now, tick_kind=TICK_BAR_EXTREMES)
+        _ph.lap("journal")
         self._write_exit_eval(now)
+        _ph.lap("exit_eval")
         self._write_entry_eval(now)
+        _ph.lap("entry_eval")
         # KANIT ONARIMI V1: ufku dolan adaylar etiketlenir (ayri dosya, salt ekleme, fail-safe).
         self._label_entry_outcomes(now)
         # KARLILIK DENEYI — IZOLE PAPER. Kanonik hicbir seyi degistirmez; yalnizca kendi
         # olay defterine ve kitabina yazar. Ariza turu DURDURMAZ.
         self._run_profitability_experiment(now)
+        _ph.lap("experiment")
         # BELLEK: aday snapshot memosu SON TUKETICIDEN SONRA birakilir.
         # `_write_entry_eval` (yukarida) ve `_run_profitability_experiment` (hemen ustte)
         # ayni turda `by_candidate()` cagirir. Birakma bu ikisinin ARASINA konursa son
@@ -1865,16 +1894,20 @@ class TradingEngineV3(TradingEngine):
             alerts.append(f"{'✅' if l['won'] else '❌'} KAPANDI {l['symbol']} {l['side']} {l['r']:+.2f}R ({l['exit']}) — {l['why'][0][:120]}")
         for code in trips:
             alerts.append(f"🛑 KILL SWITCH: {code}")
+        _ph.lap("wrap_up")
         # 9) Obsidian
         if obsidian:
             self._write_obsidian(briefs, legacy_chief, alerts, scan, chart_paths, analyses)
             self._write_obsidian_v3(decisions, chief, briefs, state, chart_paths, alerts)
             if self.cfg.obsidian.git_sync:
                 self._git_sync()
+        _ph.lap("obsidian")
         # 10) health
         health = {"state": "KILL_SWITCH" if self.killswitch.active else "HEALTHY", "at": iso(now), "run_id": self.run_id, "seconds": round(time.time() - t0, 1),
                   "symbols": len(symbols), "decisions": len(decisions), "opened": len(opened), "closed": len(records), "kill_trips": trips,
-                  "mode": self.mode_state.mode.value, "profile": self.profile.name}
+                  "mode": self.mode_state.mode.value, "profile": self.profile.name,
+                  # FAZ SÜRELERİ (2026-10-01; yalnız ölçüm): toplamı `seconds`a eşit, hiçbir karar okumaz
+                  "phases": _ph.as_health()}
         _lm = getattr(self, "lm", None)
         if _lm is not None and _lm.enabled:     # ÖĞRENME MODU (2026-09-28): kapalıyken health.json bit-aynı
             # reason: ACTIVE | LEARNING_MODE_SUSPENDED:<neden>; learning_mode_since: İLK aktif an (kalıcı, panel/karne ayrımı)
@@ -1890,6 +1923,7 @@ class TradingEngineV3(TradingEngine):
             except Exception as exc:  # noqa: BLE001 — sağlık özeti turu durdurmaz
                 health["shared_experience"] = {"state": "HEALTH_ERROR", "error": str(exc)[:120]}
         atomic_write_json(st / "health.json", health)
+        log.info("%s", _ph.log_line())
         self._notify_health(str(health.get("state") or "UNKNOWN"), str(health.get("summary") or ""), now)
         self._notify_maintenance(health, now)
         self._persist_funnel(now, len(records))

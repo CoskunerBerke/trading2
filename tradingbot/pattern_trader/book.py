@@ -1488,9 +1488,11 @@ class PatternBook:
         try:
             # NET ETİKET (2026-09-29, maliyet sapması): formasyon defterinin KENDİ modeli (TP1 = tamamı, funding tahminsiz)
             from ..learning_cf import ExecModel
+            # `real_history` (2026-10-01, cf_aux_v1, yalnız kayıt): aşma tahmini bu defterin gerçek stop çıkışlarından
             return int(cf.label_pending({symbol: dict(bars_by_tf or {})}, now, exec_model=ExecModel.of_ledger(self.ledger),
                                         filters_for=lambda s: self.filters_cache.get(s, MarketType.USDM_PERP),
-                                        funding_lookup=getattr(self, "funding_rates", None)))
+                                        funding_lookup=getattr(self, "funding_rates", None),
+                                        real_history=lambda: self.ledger.history))
         except Exception as exc:  # noqa: BLE001 — etiket arızası taramayı ETKİLEMEZ
             log.warning("formasyon karşı-olgusal etiketi başarısız (%s): %s", symbol, exc)
             return 0

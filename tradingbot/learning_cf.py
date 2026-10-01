@@ -43,6 +43,11 @@ SEVİYEDEN (+ defterin çıkış kayması) dolar; yalnız bar stopun ÖTESİNDE 
 geçilen stop seviyede dolar. Kalan iyimserlik iki kaynaklıdır: (1) canlı izleyicinin iki 60 sn fiyatı arasında seviyeyi
 AŞMASI (seviyeden dolum bunu yüklemez), (2) yukarıdaki belirsiz barlar.
 Eski `cf_label_v2` kayıtları sürümlerini KORUR (yeniden oynatılmaz; üretimde v2 kaydı yoktur — v2 hiç dağıtılmadı).
+
+YARDIMCI ETİKETLER — `cf_aux_v1` (2026-10-01, YALNIZ KAYIT): yukarıdaki iki iyimserlik (seviyeden stop dolumu ve hiç
+yürünmeyen giriş barı) `r_net`e UYGULANMAZ; yeni etiketlenen net sonuca ayrı bir `aux` sözlüğü olarak ölçülür
+(`learning_cf_aux`): `r_net_entry_bar`, `overshoot_pct_est`, `r_net_sampled_est`, `r_net_conservative`. `r_net` ve diğer
+alanlar araştırma eşleşmesi ile ortak deneyim katmanına bayt bayt aynı gider.
 """
 from __future__ import annotations
 
@@ -645,7 +650,8 @@ def approx_net_r(t: ShadowTrade, outcome: dict[str, Any], *, model: ExecModel,
 
 def label_records(trades: list[ShadowTrade], frames_by_symbol: dict[str, dict[str, Any]] | None,
                   now: datetime, *, exec_model: ExecModel | None = None, filters_for: Callable[[str], Any] | None = None,
-                  funding_lookup: Any = None, _cache: dict | None = None) -> tuple[int, list[ShadowTrade]]:
+                  funding_lookup: Any = None, _cache: dict | None = None,
+                  aux: Any = None) -> tuple[int, list[ShadowTrade]]:
     """Bekleyen kayıtları (outcome None) YALNIZ `now` anında kapanmış barlarla etiketler; kayıtları yerinde günceller.
 
     Kesinleşme: stop/hedef (önce stop) ya da ufuk penceresinin son barı kapanmış VE veri pencereyi kapsıyor. Ufuk +
@@ -654,12 +660,19 @@ def label_records(trades: list[ShadowTrade], frames_by_symbol: dict[str, dict[st
 
     `exec_model` (2026-09-29): verilirse kesinleşen her etikete `net_outcome` (v3: net R, maliyet parçaları) eklenir;
     `filters_for(symbol)` defterin filtre önbelleği, `funding_lookup` defterin gerçekleşmiş funding kaynağıdır (yan
-    etkisiz okunur). None → çıktı v1 ile BİT-AYNI."""
+    etkisiz okunur). None → çıktı v1 ile BİT-AYNI.
+
+    `aux` (2026-10-01, `cf_aux_v1`, YALNIZ KAYIT): `learning_cf_aux.AuxPass` (defterin gerçek geçmişi + önbellek); net
+    etiketlenen her kayda `outcome["aux"]` eklenir (giriş barı denetimi, örneklenmiş stop dolumu tahmini). Mevcut alanlar
+    ve `r_net` DEĞİŞMEZ. Verilmezse geçmişsiz bir geçiş kullanılır (aşma tahmini null); `exec_model` None iken hiç yazılmaz."""
     now = _aware(now)
     now_ms = int(now.timestamp() * 1000)
     n = 0
     stale: list[ShadowTrade] = []
     cache: dict[tuple, tuple[pd.DataFrame, tuple] | None] = _cache if _cache is not None else {}
+    if exec_model is not None and aux is None:
+        from .learning_cf_aux import AuxPass
+        aux = AuxPass()
     for t in trades:
         if t.outcome is not None:
             continue
@@ -688,6 +701,11 @@ def label_records(trades: list[ShadowTrade], frames_by_symbol: dict[str, dict[st
                         # NET ETİKET (2026-09-29): aynı barlar, defterin kendi modeli; brüt alanlar v1 anlamıyla kalır
                         out.update(net_outcome(v, df, res, model=exec_model, filters=_filters_of(filters_for, t.symbol),
                                                funding_lookup=funding_lookup))
+                        # YARDIMCI ETİKET (2026-10-01, cf_aux_v1): yalnız YENİ anahtar; yukarıdaki alanlar aynen kalır
+                        ax = aux.build(v, arr, out, model=exec_model, filters=_filters_of(filters_for, t.symbol),
+                                       funding_lookup=funding_lookup)
+                        if ax is not None:
+                            out["aux"] = ax
                     t.outcome, t.labeled_at = out, iso(now)
                     n += 1
                     continue
@@ -720,6 +738,8 @@ class CounterfactualRecorder:
         #: Düşürülen kayıtların anahtarları (süreç içi, sınırlı): aynı bar yeniden kaydı tekrar tetiklemesin.
         self._gone: deque[tuple] = deque(maxlen=self.max_pending * 2)
         self._dirty = False
+        #: `cf_aux_v1` aşma tahmininin geçişler arası önbelleği (2026-10-01; süreç içi, diske yazılmaz).
+        self._aux_cache: dict = {}
 
     # ------------------------------------------------------------ kimlik
     def _key(self, signal_key, symbol, direction, variation) -> tuple:
@@ -827,13 +847,18 @@ class CounterfactualRecorder:
 
     def label_pending(self, frames_by_symbol: dict[str, dict[str, Any]], now: datetime, *,
                       exec_model: ExecModel | None = None, filters_for: Callable[[str], Any] | None = None,
-                      funding_lookup: Any = None) -> int:
+                      funding_lookup: Any = None, real_history: Callable[[], Any] | None = None) -> int:
         """Bekleyen kayıtları yalnız KAPANMIŞ barlarla etiketler (`label_records`). Döner: bu çağrıda etiketlenen sayı.
         `exec_model` (2026-09-29): yeni etiketlere NET eklenir ve eski (v1) etiketliler TEMBEL doldurulur (`relabel_net`,
-        çağrı başına en çok `RELABEL_MAX_PER_CALL`); None → eski davranış (bit-aynı)."""
+        çağrı başına en çok `RELABEL_MAX_PER_CALL`); None → eski davranış (bit-aynı). `real_history` (2026-10-01,
+        `cf_aux_v1`): defterin gerçek kapanışlarını döndüren çağrılabilir (aşma tahmini; yalnız kayıt)."""
         cache: dict = {}
+        aux = None
+        if exec_model is not None:
+            from .learning_cf_aux import AuxPass
+            aux = AuxPass(real_history, cache=self._aux_cache)
         n, stale = label_records(self.sb.trades, frames_by_symbol, now, exec_model=exec_model, filters_for=filters_for,
-                                 funding_lookup=funding_lookup, _cache=cache)
+                                 funding_lookup=funding_lookup, _cache=cache, aux=aux)
         if n:
             self._dirty = True
         if exec_model is not None:

@@ -2,7 +2,7 @@
 
 A 24/7 research bot that runs eight crypto strategy books side by side **with simulated (paper) money only**, records every trade and every signal it did *not* take, and measures after fees, funding and slippage what actually worked.
 
-[![CI: chart-analysis](https://github.com/CoskunerBerke/trading2/actions/workflows/chart-analysis.yml/badge.svg?branch=claude/gifted-knuth-0ehpcs)](https://github.com/CoskunerBerke/trading2/actions/workflows/chart-analysis.yml)
+[![CI: chart-analysis](https://github.com/CoskunerBerke/trading2/actions/workflows/chart-analysis.yml/badge.svg?event=pull_request)](https://github.com/CoskunerBerke/trading2/actions/workflows/chart-analysis.yml)
 ![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)
 ![pandas](https://img.shields.io/badge/pandas-150458?logo=pandas&logoColor=white)
 ![NumPy](https://img.shields.io/badge/NumPy-013243?logo=numpy&logoColor=white)
@@ -18,9 +18,9 @@ A 24/7 research bot that runs eight crypto strategy books side by side **with si
 > **Important:** this bot never sends real orders and needs no exchange API keys. All results are paper-only
 > (simulated), and so far they are **statistically inconclusive**. Nothing in this repository is financial advice.
 
-> **Branches:** this README describes the development line the author's paper bot is deployed from (developed on
-> `claude/gifted-knuth-0ehpcs`, pull request #1). Some other branches hold older snapshots (for example the early v2
-> multi-coin bot) or finished experiments.
+> **Branches:** this README describes the development line the author's paper bot is deployed from (developed in
+> [pull request #1](https://github.com/CoskunerBerke/trading2/pull/1)). Some other branches hold older snapshots (for
+> example the early v2 multi-coin bot) or finished experiments.
 
 ![Read-only dashboard: account cards, 1h BTC chart with the paper position's entry, stop and target, open positions and recent closes](docs/screenshots/dashboard-overview.png)
 
@@ -57,7 +57,7 @@ What makes it more than a toy bot:
   health checks and a read-only web dashboard.
 
 At a glance (counted from this repository): about 100,000 lines of Python in `tradingbot/` (276 modules),
-**4,072 automated tests** in 222 test files that run offline, and 60+ design documents and research notes in `docs/`
+**4,082 automated tests** in 222 test files that run offline, and 60+ design documents and research notes in `docs/`
 (mostly Turkish).
 
 ## Features
@@ -212,7 +212,7 @@ same `python -m tradingbot` commands for an activated environment (the Windows s
 ```bash
 git clone https://github.com/CoskunerBerke/trading2.git
 cd trading2
-git checkout claude/gifted-knuth-0ehpcs            # development branch; skip if it is already the default branch
+git fetch origin pull/1/head:pr-1 && git checkout pr-1   # development line (PR #1); skip if it is already on the default branch
 
 python3.12 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt                   # dev tools: pip install -r requirements-dev.txt
@@ -277,7 +277,7 @@ python -m pytest -q tests          # full suite, offline (about 19 minutes)
 ruff check .                       # lint gate defined in ruff.toml
 ```
 
-- The full suite has **4,072 tests**. Run on 2026-10-01 on a 4-core Linux machine: 4,065 passed, 7 skipped, about
+- The full suite has **4,082 tests**. Run on 2026-10-01 on a 4-core Linux machine: 4,075 passed, 7 skipped, about
   19 minutes. The skipped tests need the author's local research package or archive files, an opt-in benchmark
   (`TRADINGBOT_BENCH_1M=1`), or a fixture case that did not come up in that run.
 - Tests need no network: exchanges, Telegram and archives are faked, and an autouse fixture in
@@ -286,9 +286,10 @@ ruff check .                       # lint gate defined in ruff.toml
 - [`ruff.toml`](ruff.toml) enables correctness rules only (syntax errors, undefined names, redefinitions, misplaced
   `return`/`continue`); the code base intentionally uses long lines.
 - **CI:** the [`chart-analysis`](.github/workflows/chart-analysis.yml) workflow runs on pull requests into
-  `work/runtime-fixes-v1`, so every push to this branch's open pull request is checked. On Ubuntu it runs Ruff and
-  83 of the 222 test files (1,435 tests: accounting, funding, the dashboard, strategy books, learning mode, shared
-  experience, the shadow advisor); on Windows it runs the measurement-script tests. The full suite is run locally.
+  `work/runtime-fixes-v1` (the development line's pull request #1 is one), so every push to it is checked. On Ubuntu
+  it runs Ruff and 84 of the 222 test files (1,449 tests: accounting, funding, the dashboard, strategy books, learning
+  mode, shared experience, the shadow advisor); on Windows it runs the measurement-script tests. The full suite is run
+  locally.
   `deploy-regression` and `signal-lab` are separate workflows for older feature branches and for lab runs.
 
 ## Deployment
@@ -356,9 +357,9 @@ fonlama ve kayma düşüldükten sonra neyin işe yarayıp yaramadığını öl�
 > **Önemli:** Bot gerçek emir göndermez ve borsa API anahtarı istemez. Sonuçlar yalnızca kâğıt işlemdir ve şu ana kadar
 > **istatistiksel olarak kesin değildir**. Bu depodaki hiçbir şey yatırım tavsiyesi değildir.
 
-> **Dallar:** Bu README, yazarın kâğıt botunun dağıtıldığı geliştirme hattını anlatır (`claude/gifted-knuth-0ehpcs`
-> dalında, 1 numaralı pull request'te geliştirildi). Diğer dalların bir kısmı eski sürümleri (ör. ilk v2 çoklu coin botu)
-> ya da bitmiş deneyleri içerir.
+> **Dallar:** Bu README, yazarın kâğıt botunun dağıtıldığı geliştirme hattını anlatır
+> ([1 numaralı pull request](https://github.com/CoskunerBerke/trading2/pull/1)'te geliştirildi). Diğer dalların bir kısmı
+> eski sürümleri (ör. ilk v2 çoklu coin botu) ya da bitmiş deneyleri içerir.
 
 [Ekran görüntüleri](#screenshots) **sentetik demo verisiyle, yalnız kâğıt işlem** olarak alınmıştır
 (`scripts/demo_panel_state.py`: tohumlu rastgele yürüyüş mumları, gerçek muhasebe koduyla oynatılan demo defterler);
@@ -382,7 +383,7 @@ her geçerli sinyalin değişmez kaydını tutar. Amaç getiri vaat etmek değil
   sağlık kontrolleri ve salt okunur web paneli.
 
 Kısaca (bu depodan sayıldı): `tradingbot/` altında yaklaşık 100.000 satır Python (276 modül), ağsız çalışan 222 test
-dosyasında **4.072 otomatik test** ve `docs/` altında 60'tan fazla tasarım belgesi ve araştırma notu.
+dosyasında **4.082 otomatik test** ve `docs/` altında 60'tan fazla tasarım belgesi ve araştırma notu.
 
 ### Özellikler
 
@@ -449,7 +450,7 @@ Python 3.12 gerekir. Komutlar Linux'ta temiz bir klondan çalıştırıldı. Win
 ```bash
 git clone https://github.com/CoskunerBerke/trading2.git
 cd trading2
-git checkout claude/gifted-knuth-0ehpcs   # geliştirme dalı; zaten varsayılan dalsa atlayın
+git fetch origin pull/1/head:pr-1 && git checkout pr-1   # geliştirme hattı (PR #1); varsayılan dalda zaten varsa atlayın
 python3.12 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 export TRADINGBOT_DATA="$PWD/data"     # state, önbellek ve Obsidian kasası git dışı data/ altında kalsın
@@ -485,15 +486,15 @@ python -m pytest -q tests
 ruff check .
 ```
 
-Tam pakette **4.072 test** var (2026-10-01, 4 çekirdekli Linux makine: 4.065 geçti, 7 atlandı, yaklaşık 19
+Tam pakette **4.082 test** var (2026-10-01, 4 çekirdekli Linux makine: 4.075 geçti, 7 atlandı, yaklaşık 19
 dakika). Atlananlar yazarın yerel araştırma paketini ya da arşiv dosyalarını, isteğe bağlı bir ölçümü
 (`TRADINGBOT_BENCH_1M=1`) veya o koşuda oluşmayan bir fixture durumunu gerektirir. Testler ağ gerektirmez: borsa, Telegram
 ve arşivler sahtedir; [`tests/conftest.py`](tests/conftest.py) içindeki otomatik fixture, test sahtesini vermediyse botun
 HTTP istemcisini ve motorun ccxt borsasını ağsız makinedeki gibi hemen düşürür.
 CI'daki [`chart-analysis`](.github/workflows/chart-analysis.yml) iş akışı `work/runtime-fixes-v1` dalına açılan pull
-request'lerde çalışır; bu dalın açık pull request'ine yapılan her push denetlenir. Ubuntu'da Ruff'ı ve 222 test dosyasından
-83'ünü (1.435 test: muhasebe, fonlama, panel, strateji defterleri, öğrenme modu, ortak deneyim, gölge danışman), Windows'ta
-ölçüm betiği testlerini koşar. Tam paket yerelde çalıştırılır.
+request'lerde çalışır (geliştirme hattının 1 numaralı pull request'i de bunlardandır); ona yapılan her push denetlenir.
+Ubuntu'da Ruff'ı ve 222 test dosyasından 84'ünü (1.449 test: muhasebe, fonlama, panel, strateji defterleri, öğrenme modu,
+ortak deneyim, gölge danışman), Windows'ta ölçüm betiği testlerini koşar. Tam paket yerelde çalıştırılır.
 
 ### Dağıtım
 

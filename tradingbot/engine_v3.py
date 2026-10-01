@@ -163,6 +163,10 @@ def chart_rule_inputs(book: dict, *, tf: str, bars: list, frames: dict | None, a
     return out, (bars if (tf == "4h" and name in paper_rules.DONCHIAN_VARIANTS) else None)
 
 
+#: `_evidence_cache()` tembel kurulumu için (kısmi motor nesnesi: yenileyici iş parçacığı ve tur aynı anda isteyebilir).
+_EVIDENCE_CACHE_INIT_LOCK = __import__("threading").Lock()
+
+
 class TradingEngineV3(TradingEngine):
     def __init__(self, cfg: BotConfig):
         super().__init__(cfg)
@@ -261,9 +265,11 @@ class TradingEngineV3(TradingEngine):
         #: Süreç başlangıcı (ms): bundan ÖNCE açılmış ve bar imleci olmayan ana defter pozisyonu eski yolla izlenmişti
         #: (`_main_closed_bars` geçişi). Bu süreçte açılan pozisyon imleç sözleşmesiyle baştan izlenir.
         self._started_ms = int(utc_now().timestamp() * 1000)
-        # Pattern kaniti onbellegi: anahtar (sembol, indeks son bari). Indeks tur icinde
-        # degismedigi icin ayni cevap yeniden hesaplanmaz (olculdu: sorgu basina 12,6 sn).
-        self._pattern_cache: dict[tuple, dict] = {}
+        # Pattern kaniti onbellegi: anahtar (sembol, indeks surumu, indeks son bari). Indeks tur icinde
+        # degismedigi icin ayni cevap yeniden hesaplanmaz (olculdu: sorgu basina 12,6 sn). Is parcacigi
+        # guvenli: yayim sonrasi on isitma (`_on_pattern_index_published`) ayni onbellege yazar.
+        from .patterns.evidence_cache import EvidenceCache
+        self._pattern_cache = EvidenceCache()
         # Arka plan arsiv/indeks yenileyicisi (kapaliysa None). Ilk turda baslatilir.
         self._refresher = None
         # YÜRÜTME HASSASİYETİ: yapılandırma defterin kapısını belirler (varsayılan KAPALI → davranış
@@ -828,7 +834,9 @@ class TradingEngineV3(TradingEngine):
                               max_symbols=int(hc.refresh_max_symbols),
                               # Indeks YALNIZ 4h serisinden kurulur (`_build_pattern_index`),
                               # bu yuzden yeniden kurulumu yalniz 4h ilerlemesi tetikler.
-                              index_timeframes=("4h",))
+                              index_timeframes=("4h",),
+                              # Yayim ANI degismez; yayimdan SONRA kanit on isitmasi kuyruga alinir.
+                              on_publish=self._on_pattern_index_published)
 
     def _load_pattern_engine(self):
         """Karar yolunun gördüğü indeks. Yenileyici açıksa YAYIMLANMIŞ paketten gelir.
@@ -889,6 +897,79 @@ class TradingEngineV3(TradingEngine):
         b = r.bundle if r is not None else None
         return int(b.version) if b is not None else 0
 
+    def _pattern_engine_and_version(self):
+        """(motor, sürüm) — yenileyici açıkken İKİSİ DE AYNI paketten, TEK okumayla.
+
+        Eskiden motor ve sürüm iki ayrı okumayla alınıyordu; arada bir yayım olursa ESKİ motorun kanıtı YENİ
+        sürümün anahtarıyla önbelleğe girebilirdi. Yenileyici kapalıyken eski yol aynen: `_load_pattern_engine()`, sürüm 0.
+        """
+        r = getattr(self, "_refresher", None)
+        if r is None:
+            return self._load_pattern_engine(), 0
+        b = r.bundle                          # tek okuma: motor ve sürüm aynı paketten
+        return (None, 0) if b is None else (b.engine, int(b.version))
+
+    def _evidence_cache(self):
+        c = self.__dict__.get("_pattern_cache")
+        if c is None or not hasattr(c, "get_or_compute"):
+            from .patterns.evidence_cache import EvidenceCache
+            with _EVIDENCE_CACHE_INIT_LOCK:
+                c = self.__dict__.get("_pattern_cache")
+                if c is None or not hasattr(c, "get_or_compute"):
+                    c = self.__dict__["_pattern_cache"] = EvidenceCache()
+        return c
+
+    @staticmethod
+    def _evidence_query(eng, symbol: str) -> dict:
+        """TEK kanıt fonksiyonu: tur ve ön ısıtma AYNI motorla AYNI çağrıyı yapar (sorgu anı = indeksin kendi son barı)."""
+        return {side: eng.query(symbol, "futures", "4h", side, k=60) for side in ("LONG", "SHORT")}
+
+    #: Yayım sonrası kanıt ön ısıtması. False → bugünkü davranış (yayımdan sonraki ilk tur kanıtı kendisi hesaplar).
+    #: Karar girdisi DEĞİLDİR: iki yol aynı motor + aynı fonksiyonla bit-aynı kanıt üretir (test kilitli).
+    EVIDENCE_PREWARM = True
+
+    def _evidence_prewarm_order(self, eng) -> list[str]:
+        """Ön ısıtma sırası = turun sorgu sırası (giriş evreni sırası), sonra indeksteki diğer 4h futures serileri."""
+        cands = getattr(eng, "candles", None) or {}
+        eu = self.cfg.v3.entry_universe
+        base = list(eu.symbols) if eu.enabled else list(self.cfg.coins)
+        rest = [k[0] for k in list(cands) if isinstance(k, tuple) and len(k) == 3 and k[1] == "futures" and k[2] == "4h"]
+        return [s for s in dict.fromkeys(base + rest) if (s, "futures", "4h") in cands]
+
+    def _on_pattern_index_published(self, bundle) -> None:
+        """Yenileyici iş parçacığında, YAYIMDAN SONRA çağrılır. Yalnız işi kuyruğa koyar ve HEMEN döner; ASLA istisna atmaz.
+
+        Bayat seri (son bar > 3 bar eski) ısıtılmaz: tur o sembol için zaten kanıt vermez. Atlanan her sembolü tur
+        bugünkü gibi kendisi hesaplar; atlamak yalnız hızı etkiler, sonucu değil.
+        """
+        if not getattr(self, "EVIDENCE_PREWARM", False):
+            return
+        try:
+            eng = getattr(bundle, "engine", None)
+            if eng is None:
+                return
+            version = int(bundle.version)
+            now_ms = int(time.time() * 1000)
+            keys = []
+            for sym in self._evidence_prewarm_order(eng):
+                df = eng.candles[(sym, "futures", "4h")]
+                if df is None or not len(df):
+                    continue
+                last_ts = int(df["timestamp"].iloc[-1])
+                if now_ms - last_ts > 3 * 14_400_000:
+                    continue
+                keys.append((sym, version, last_ts))
+            if not keys:
+                return
+
+            def _current(b, _self=self) -> bool:
+                r = getattr(_self, "_refresher", None)
+                return r is not None and r.bundle is b
+
+            self._evidence_cache().request_prewarm(bundle, keys, self._evidence_query, _current)
+        except Exception as exc:  # noqa: BLE001 — ön ısıtma kurulamazsa tur bugünkü gibi hesaplar
+            log.warning("pattern kanıtı ön ısıtması kurulamadı (tur kendisi hesaplar): %s", exc)
+
     def _pattern_evidence(self, symbol: str, now_ms: int) -> dict | None:
         """Sembol için LONG/SHORT kanıtı; veri 3 bardan eskiyse (bayat) kanıt verilmez. state/evidence/<sym>.json'a paket + açıklama yazılır.
 
@@ -914,36 +995,32 @@ class TradingEngineV3(TradingEngine):
                 _ph.add_sub("pattern_evidence", time.time() - _t0)
 
     def _pattern_evidence_cached(self, symbol: str, now_ms: int) -> dict | None:
-        eng = self._load_pattern_engine()
+        eng, version = self._pattern_engine_and_version()
         if eng is None or (symbol, "futures", "4h") not in eng.candles:
             return None
         try:
             last_ts = int(eng.candles[(symbol, "futures", "4h")]["timestamp"].iloc[-1])
             if now_ms - last_ts > 3 * 14_400_000:
                 return None
-            cache = getattr(self, "_pattern_cache", None)
-            if cache is None:
-                cache = self._pattern_cache = {}
+            cache = self._evidence_cache()
             # ANAHTAR = (sembol, indeks sürümü, indeksin son barı). Sürüm, arka planda yeni
             # bir indeks YAYIMLANDIĞINDA artar; böylece yenileme önbelleği kesin olarak
             # geçersiz kılar. Son bar ayrıca tutulur: sürüm hiç artmasa bile (yenileyici
-            # kapalı) yeni veriyle kurulmuş bir indeks eski cevabı ALAMAZ.
-            version = self._pattern_index_version()
+            # kapalı) yeni veriyle kurulmuş bir indeks eski cevabı ALAMAZ. Motor ve sürüm
+            # AYNI paketten gelir (`_pattern_engine_and_version`).
             key = (symbol, version, last_ts)
-            hit = cache.get(key)
-            if hit is not None:
-                return hit
-            if cache and any(k[1] != version for k in cache):
-                # Eski sürüm girdileri erişilemez; bellekte de tutulmaz.
-                for k in [k for k in cache if k[1] != version]:
-                    cache.pop(k, None)
-            from .patterns import explain_tr, packet_from_query
-            ev = {side: eng.query(symbol, "futures", "4h", side, k=60) for side in ("LONG", "SHORT")}
-            packets = {side: packet_from_query(r, decision_id=stable_id("evidence", self.run_id, symbol, side), timestamp=iso(utc_now()), timeframes=["4h"]) for side, r in ev.items()}
-            atomic_write_json(self.cfg.state_path / "evidence" / f"{symbol.replace('/', '_')}.json",
-                              {"symbol": symbol, "run_id": self.run_id, "generated_at": iso(utc_now()), "packets": {s: p.to_dict() for s, p in packets.items()},
-                               "explanation_tr": {s: explain_tr(p) for s, p in packets.items()}, "neighbors": {s: r.get("neighbors", [])[:10] for s, r in ev.items()}}, indent=1)
-            cache[key] = ev
+            cache.prune_older(version)              # eski sürüm girdileri erişilemez; bellekte de tutulmaz
+            # İsabet yoksa hesapla. Yayım sonrası ön ısıtma bu anahtarı o an hesaplıyorsa tur bekler ve AYNI sonucu alır.
+            ent = cache.get_or_compute(key, lambda: self._evidence_query(eng, symbol))
+            ev = ent.ev
+            if not ent.written:
+                # Panel dosyası bu sürüm için turun İLK kullanımında, turun kimliğiyle yazılır (bugünkü gibi bir kez).
+                from .patterns import explain_tr, packet_from_query
+                packets = {side: packet_from_query(r, decision_id=stable_id("evidence", self.run_id, symbol, side), timestamp=iso(utc_now()), timeframes=["4h"]) for side, r in ev.items()}
+                atomic_write_json(self.cfg.state_path / "evidence" / f"{symbol.replace('/', '_')}.json",
+                                  {"symbol": symbol, "run_id": self.run_id, "generated_at": iso(utc_now()), "packets": {s: p.to_dict() for s, p in packets.items()},
+                                   "explanation_tr": {s: explain_tr(p) for s, p in packets.items()}, "neighbors": {s: r.get("neighbors", [])[:10] for s, r in ev.items()}}, indent=1)
+                ent.written = True
             return ev
         except Exception as exc:  # noqa: BLE001
             log.warning("%s pattern kanıtı üretilemedi: %s", symbol, exc)

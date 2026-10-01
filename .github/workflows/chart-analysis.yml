@@ -108,7 +108,7 @@ jobs:
             tests/test_shared_experience_advisor_eval_v1.py tests/test_shared_experience_advisor_no_decision_change_v1.py \
             tests/test_shared_experience_advisor_budget_v1.py tests/test_shared_experience_advisor_config_v1.py \
             tests/test_dashboard_advisor_card_v1.py tests/test_shared_experience_advisor_ops_v1.py tests/test_restore_sh_v1.py \
-            tests/test_demo_panel_state_script.py \
+            tests/test_demo_panel_state_script.py tests/test_dashboard_state_types.py \
             -q --tb=short > pytest.out 2>&1
           rc=$?
           cat pytest.out

@@ -589,8 +589,7 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
     def _strategy_docs() -> list[dict]:
         """Tüm strateji kâğıt defterlerinin özetleri (ana + extra). İndeks yoksa yalnız ana dosya."""
         docs = []
-        idx = read_json(state.state_dir / "strategy_paper_index.json", default=None) or {}
-        files = [b.get("summary_file") for b in (idx.get("books") or []) if isinstance(b, dict) and b.get("summary_file")]
+        files = [b.get("summary_file") for b in state.strategy_index_books() if b.get("summary_file")]
         if "strategy_paper.json" not in files:
             files.insert(0, "strategy_paper.json")
         for fn in files:
@@ -2776,7 +2775,8 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
         bars = closed_bars_at([{"timestamp": int(t), "open": float(o), "high": float(h), "low": float(l), "close": float(c)}
                                for t, o, h, l, c in zip(df["timestamp"], df["open"], df["high"], df["low"], df["close"])], as_of_ms=now_ms, tf=tf) if df is not None else []
         last_ts = int(bars[-1]["timestamp"]) if bars else None
-        cfgj = read_json(state.state_dir / "chart_analysis" / "config.json", default=None) or {}
+        cfgj = read_json(state.state_dir / "chart_analysis" / "config.json", default=None)
+        cfgj = cfgj if isinstance(cfgj, dict) else {}
         gates = cfgj.get("gates") or {"candle_mode": None, "candle_variant": None, "chart_mode": None, "chart_variant": None,
                                        "regime_mode": None, "regime_variant": None, "chart_fresh_within": 3}
         cfgd = cfgj.get("cfg") or {}

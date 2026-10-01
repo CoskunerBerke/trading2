@@ -418,12 +418,18 @@ class StateReader:
                         "targets": [], "opened_at": p.get("entry_time") or p.get("opened_at"), "leverage": 1, "market_type": "SPOT"})
         return out
 
+    def strategy_index_books(self) -> list[dict]:
+        """strategy_paper_index.json'daki `books` girdileri (yalniz sozlukler). Dosya yok/bozuk ya da GECERLI JSON ama
+        yanlis turdeyse (liste/sayi/metin; `books` liste degilse) bos liste: sayfalar ana defterle acilir, 500 vermez."""
+        idx = read_json(self.state_dir / "strategy_paper_index.json", default=None)
+        books = idx.get("books") if isinstance(idx, dict) else None
+        return [b for b in books if isinstance(b, dict)] if isinstance(books, list) else []
+
     def books(self) -> list[dict]:
         """Defter kayit listesi: ana bot + strategy_paper_index.json'daki kagit defterler (kimlik = state dizini)."""
         out = [{"book_id": "main", "name": "main", "label": "Ana bot", "state_dir": None}]
-        idx = read_json(self.state_dir / "strategy_paper_index.json", default=None) or {}
         seen = {"main"}
-        for b in (idx.get("books") or []):
+        for b in self.strategy_index_books():
             if not isinstance(b, dict):
                 continue
             key = str(b.get("key") or "")

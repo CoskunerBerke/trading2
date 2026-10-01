@@ -2,7 +2,7 @@
 
 A 24/7 research bot that runs eight crypto strategy books side by side **with simulated (paper) money only**, records every trade and every signal it did *not* take, and measures after fees, funding and slippage what actually worked.
 
-[![CI: chart-analysis](https://github.com/CoskunerBerke/trading2/actions/workflows/chart-analysis.yml/badge.svg?event=pull_request)](https://github.com/CoskunerBerke/trading2/actions/workflows/chart-analysis.yml)
+[![CI: chart-analysis](https://github.com/CoskunerBerke/trading2/actions/workflows/chart-analysis.yml/badge.svg?branch=main)](https://github.com/CoskunerBerke/trading2/actions/workflows/chart-analysis.yml)
 ![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)
 ![pandas](https://img.shields.io/badge/pandas-150458?logo=pandas&logoColor=white)
 ![NumPy](https://img.shields.io/badge/NumPy-013243?logo=numpy&logoColor=white)
@@ -18,7 +18,7 @@ A 24/7 research bot that runs eight crypto strategy books side by side **with si
 > **Important:** this bot never sends real orders and needs no exchange API keys. All results are paper-only
 > (simulated), and so far they are **statistically inconclusive**. Nothing in this repository is financial advice.
 
-> **Branches:** this README describes the development line the author's paper bot is deployed from (developed in
+> **Branches:** `main` holds the development line the author's paper bot is deployed from (developed in
 > [pull request #1](https://github.com/CoskunerBerke/trading2/pull/1)). Some other branches hold older snapshots (for
 > example the early v2 multi-coin bot) or finished experiments.
 
@@ -212,7 +212,6 @@ same `python -m tradingbot` commands for an activated environment (the Windows s
 ```bash
 git clone https://github.com/CoskunerBerke/trading2.git
 cd trading2
-git fetch origin pull/1/head:pr-1 && git checkout pr-1   # development line (PR #1); skip if it is already on the default branch
 
 python3.12 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt                   # dev tools: pip install -r requirements-dev.txt
@@ -285,8 +284,8 @@ ruff check .                       # lint gate defined in ruff.toml
   test did not give them a fake, as on an offline machine.
 - [`ruff.toml`](ruff.toml) enables correctness rules only (syntax errors, undefined names, redefinitions, misplaced
   `return`/`continue`); the code base intentionally uses long lines.
-- **CI:** the [`chart-analysis`](.github/workflows/chart-analysis.yml) workflow runs on pull requests into
-  `work/runtime-fixes-v1` (the development line's pull request #1 is one), so every push to it is checked. On Ubuntu
+- **CI:** the [`chart-analysis`](.github/workflows/chart-analysis.yml) workflow runs on every push to `main` and on
+  pull requests into `work/runtime-fixes-v1` (the development line's pull request #1 is one). On Ubuntu
   it runs Ruff and 84 of the 222 test files (1,449 tests: accounting, funding, the dashboard, strategy books, learning
   mode, shared experience, the shadow advisor); on Windows it runs the measurement-script tests. The full suite is run
   locally.
@@ -357,7 +356,7 @@ fonlama ve kayma düşüldükten sonra neyin işe yarayıp yaramadığını öl�
 > **Önemli:** Bot gerçek emir göndermez ve borsa API anahtarı istemez. Sonuçlar yalnızca kâğıt işlemdir ve şu ana kadar
 > **istatistiksel olarak kesin değildir**. Bu depodaki hiçbir şey yatırım tavsiyesi değildir.
 
-> **Dallar:** Bu README, yazarın kâğıt botunun dağıtıldığı geliştirme hattını anlatır
+> **Dallar:** `main`, yazarın kâğıt botunun dağıtıldığı geliştirme hattını içerir
 > ([1 numaralı pull request](https://github.com/CoskunerBerke/trading2/pull/1)'te geliştirildi). Diğer dalların bir kısmı
 > eski sürümleri (ör. ilk v2 çoklu coin botu) ya da bitmiş deneyleri içerir.
 
@@ -450,7 +449,6 @@ Python 3.12 gerekir. Komutlar Linux'ta temiz bir klondan çalıştırıldı. Win
 ```bash
 git clone https://github.com/CoskunerBerke/trading2.git
 cd trading2
-git fetch origin pull/1/head:pr-1 && git checkout pr-1   # geliştirme hattı (PR #1); varsayılan dalda zaten varsa atlayın
 python3.12 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 export TRADINGBOT_DATA="$PWD/data"     # state, önbellek ve Obsidian kasası git dışı data/ altında kalsın
@@ -491,8 +489,8 @@ dakika). Atlananlar yazarın yerel araştırma paketini ya da arşiv dosyaların
 (`TRADINGBOT_BENCH_1M=1`) veya o koşuda oluşmayan bir fixture durumunu gerektirir. Testler ağ gerektirmez: borsa, Telegram
 ve arşivler sahtedir; [`tests/conftest.py`](tests/conftest.py) içindeki otomatik fixture, test sahtesini vermediyse botun
 HTTP istemcisini ve motorun ccxt borsasını ağsız makinedeki gibi hemen düşürür.
-CI'daki [`chart-analysis`](.github/workflows/chart-analysis.yml) iş akışı `work/runtime-fixes-v1` dalına açılan pull
-request'lerde çalışır (geliştirme hattının 1 numaralı pull request'i de bunlardandır); ona yapılan her push denetlenir.
+CI'daki [`chart-analysis`](.github/workflows/chart-analysis.yml) iş akışı `main`'e yapılan her push'ta ve
+`work/runtime-fixes-v1` dalına açılan pull request'lerde (geliştirme hattının 1 numaralı pull request'i de bunlardandır) çalışır.
 Ubuntu'da Ruff'ı ve 222 test dosyasından 84'ünü (1.449 test: muhasebe, fonlama, panel, strateji defterleri, öğrenme modu,
 ortak deneyim, gölge danışman), Windows'ta ölçüm betiği testlerini koşar. Tam paket yerelde çalıştırılır.
 

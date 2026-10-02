@@ -269,6 +269,14 @@ def test_config_switch_defaults_to_open_validates_and_reaches_every_book_view():
     off.refresh()
     assert off.extra_entries == "open" and "extra_entries" not in off.book("main").to_dict()
     assert "extra_entries" not in off.status()
+    # motorun karar kimliği (`config_hash`, karar günlüğü satırları): varsayılan `open` özete girmez, `record_selectivity` girer
+    from types import SimpleNamespace
+
+    import tradingbot.engine_v3 as EV
+
+    def h(raw):
+        return EV.TradingEngineV3.config_hash(SimpleNamespace(cfg=SimpleNamespace(v3=load_v3(raw))))
+    assert h({}) == h({"learning_mode": {"extra_entries": "open"}}) != h({"learning_mode": {"extra_entries": REC}})
 
 
 # ============================================================================ 3) ANA BOT

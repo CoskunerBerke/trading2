@@ -22,6 +22,9 @@ Soru tek: "Hangi bot, bugüne kadar kapattığı işlemlerde para kazandırdı v
 * KARŞI-OLGUSAL NET R (2026-09-29): karşı-olgusal ort. R, aralık ve hüküm yalnız NET etiketli kayıtlardan (`r_net`,
   `cf_label_v2`: defterin ücret/kayma/funding modeliyle aynı barlarda yeniden oynatma) — gerçek işlemlerle aynı taban.
   Brüt ortalama (`mean_r_gross`) yalnız bilgi; net'i olmayan eski kayıtlar ve kapalı-biçim tahminleri ayrı sayılır.
+* İHTİYATLI KARŞI-OLGUSAL (2026-10-01, `cf_aux_v1`, yalnız bilgi): net ortalamanın YANINDA, yardımcı etiketi olan
+  kayıtların `outcome.aux.r_net_conservative` ortalaması (giriş barı denetimi + gerçek defterin örneklenmiş stop dolumu
+  tahmini) ve kapsamı `n`. Mevcut sayılar (ortalama, aralık, hüküm) DEĞİŞMEZ; alanı olmayan eski kayıtlar kapsama girmez.
 
 Kullanım:
     python scripts/bot_scorecard.py --state <state klasörü> [--since 2026-09-01] [--learning-since <ISO>] [--out karne.json]
@@ -219,6 +222,10 @@ def counterfactual_card(path: Path, *, book: str | None = None) -> dict[str, Any
     v1c = [_num(t["outcome"].get("r_net_approx")) for t in lab if _num(t["outcome"].get("r_net")) is None]
     v1c = [x for x in v1c if x is not None]
     costs = [c for c in (_num(t["outcome"].get("cost_r")) for t in net) if c is not None]
+    # İHTİYATLI (2026-10-01, cf_aux_v1): yalnız `aux` taşıyan net kayıtlar; hesaplanamayan (null) kayıt kapsam dışı
+    aux = [t for t in net if isinstance(t["outcome"].get("aux"), dict)]
+    cons = [(float(t["outcome"]["r_net"]), c) for t in aux
+            if (c := _num(t["outcome"]["aux"].get("r_net_conservative"))) is not None]
     return {"file": str(path), "recorded": len(rows), "labeled": len(lab), "pending": len(rows) - len(lab),
             "approx": sum(1 for t in lab if t.get("approx")), "r_basis": "net", "n_net": st["n"],
             "mean_r": st["mean_r"], "ci95_mean_r": st["ci95_mean_r"], "sum_r": st["sum_r"], "win_rate": st["win_rate"],
@@ -228,7 +235,9 @@ def counterfactual_card(path: Path, *, book: str | None = None) -> dict[str, Any
             "n_gross_only_v1": len(lab) - len(net) - len(v1c), "n_approx_v1c": len(v1c),
             "mean_r_net_approx_v1c": round(sum(v1c) / len(v1c), 4) if v1c else None,
             "n_net_funding_incomplete": sum(1 for t in net if t["outcome"].get("funding_complete") is False),
-            "in_pnl": False}
+            "in_pnl": False, "n_aux": len(aux), "n_conservative": len(cons),
+            "mean_r_conservative": round(sum(c for _r, c in cons) / len(cons), 4) if cons else None,
+            "mean_r_net_conservative_rows": round(sum(r for r, _c in cons) / len(cons), 4) if cons else None}
 
 
 def learning_split(path: Path, *, learning_since_iso: str, since: str | None = None, cf_path: Path | None = None,
@@ -354,11 +363,17 @@ def render_learning(card: dict[str, Any]) -> list[str]:
         # NET TABAN (2026-09-29): ort.R net etiketlilerden; brüt yalnız parantezde (maliyet öncesi, kıyas için)
         cf_txt = (f"{cf['labeled']}/{cf['recorded']} etiketli · net {cf.get('n_net', 0)} · ort.R {_fmt(cf['mean_r'])} "
                   f"(brüt {_fmt(cf.get('mean_r_gross'))})" if cf else "—")
+        if cf:
+            # İHTİYATLI (2026-10-01, cf_aux_v1): kapsam n ve aynı kayıtların net ortalaması (kıyas aynı kümede)
+            cf_txt += (f" · ihtiyatlı {_fmt(cf.get('mean_r_conservative'))} (n={cf.get('n_conservative', 0)}, "
+                       f"aynı kayıtlarda net {_fmt(cf.get('mean_r_net_conservative_rows'))})")
         lines.append(f"{b['name']:<14}{_nr(b['before']):>16}{_nr(b['after']):>16}{_nr(b[POLICY]):>14}{_nr(b[LEARNING_EXTRA]):>16}"
                      f"  {cf_txt}")
     lines.append("   " + lm["note_tr"])
     lines.append("   Karşı-olgusal ort.R NETtir (defterin ücret/kayma/funding modeliyle aynı barlarda yeniden oynatma, "
                  "cf_label_v2); brüt değer yalnız bilgi. Net'i olmayan eski (brüt) kayıtlar ortalamaya girmez.")
+    lines.append("   «ihtiyatlı»: cf_aux_v1 yardımcı etiketi (giriş barındaki stop fitili + gerçek defterin örneklenmiş stop "
+                 "dolumu tahmini) — yalnız bilgi, hüküm ve ortalama DEĞİŞMEZ; n = bu değeri olan kayıt sayısı.")
     lines.append("")
     return lines
 

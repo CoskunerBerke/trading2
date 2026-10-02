@@ -4081,12 +4081,19 @@ class TradingEngineV3(TradingEngine):
         if not rows and not old:
             return 0
         from .learning_cf import ExecModel, label_records, outcome_r, relabel_net
+        from .learning_cf_aux import AuxPass
         xm = ExecModel.of_ledger(self.ledger2)
         ff = (lambda s: self.filters.get(s, MarketType.USDM_PERP))
         fl = getattr(self, "funding_rates", None)
         frames = {s: (self.runner.last_frames.get(s) or {}) for s in {t.symbol for t in rows + old}}
         cache: dict = {}
-        n, stale = (label_records(rows, frames, now, exec_model=xm, filters_for=ff, funding_lookup=fl, _cache=cache)
+        # YARDIMCI ETİKET (2026-10-01, cf_aux_v1, yalnız kayıt): aşma tahmini ana defterin gerçek stop çıkışlarından;
+        # `outcome_r` (araştırma eşleşmesi) aşağıda AYNI `r_net`i okur
+        if not isinstance(getattr(self, "_cf_aux_cache", None), dict):
+            self._cf_aux_cache: dict = {}
+        aux = AuxPass(lambda: self.ledger2.history, cache=self._cf_aux_cache)
+        n, stale = (label_records(rows, frames, now, exec_model=xm, filters_for=ff, funding_lookup=fl, _cache=cache,
+                                  aux=aux)
                     if rows else (0, []))
         rc = (relabel_net(old, frames, now, exec_model=xm, filters_for=ff, funding_lookup=fl, _cache=cache)
               if old else {})

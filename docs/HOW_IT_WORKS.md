@@ -78,7 +78,9 @@ in [the learning-mode table](#effective-rules-per-book-under-the-committed-confi
 
 ## 2. Architecture
 
-One worker process owns all paper ledgers. Inside it, the main *tour* loop runs on the main thread and four background
+One worker process owns all paper ledgers: those of the eight books, plus the small spot paper portfolio of the legacy v2
+walk-forward cycle (`portfolio.json`, [3.1](#31-the-watch-loop-and-one-tour)).
+Inside it, the main *tour* loop runs on the main thread and four background
 threads take the work that must not wait for a slow tour. A separate dashboard process only reads the state directory.
 
 ```mermaid
@@ -100,6 +102,7 @@ flowchart TB
             SB["Strategy books<br/>T2, M2, B1, D4, C4, C4S"]
             PT["Formasyon book"]
         end
+        LEG["Legacy v2 spot cycle<br/>once per new 4h bar, own portfolio.json"]
         REC["Record-only layers<br/>counterfactuals, shared experience, shadow advisor"]
     end
     STATE[("State directory<br/>JSON / JSONL ledgers and logs")]
@@ -117,6 +120,7 @@ flowchart TB
     LOOP --> MAIN
     LOOP --> MSPOT
     LOOP --> SB
+    LOOP --> LEG
     BOX --> SB
     SCAN --> PT
     PM --> MAIN
@@ -155,7 +159,10 @@ flowchart TB
 `state/.lock`, refuses to start if `state/worker_authority.json` names another host, registers a cooperative-stop token,
 starts the protective monitor and then loops. Each iteration may run the legacy v2 spot walk-forward cycle once per new
 4h bar (it re-optimises indicator families per coin and writes `signals.json`, whose out-of-sample edge the main bot's
-red team reads), runs one tour, and then waits in 2-second steps: a heartbeat every ~30 s, a stop-request check every
+red team reads; it also trades its own legacy spot paper portfolio, `portfolio.json`, on the 40 config coins: BUY on a
+buy signal, or one at most two bars late, with a validated out-of-sample edge and confidence ≥ `min_confidence_to_buy`
+(55), SELL on a stop hit or an exit signal, and a trailing ATR stop while held; [`decision.py`](../tradingbot/decision.py),
+[`cli.py` `run_cycle`](../tradingbot/cli.py)), runs one tour, and then waits in 2-second steps: a heartbeat every ~30 s, a stop-request check every
 step, and, while the monitor thread is alive, learning from the closes it queued
 ([`cli.py` `cmd_watch`](../tradingbot/cli.py)). An exception inside a tour is logged and written to `health.json` as
 `DEGRADED`; it does not end the loop.
@@ -310,6 +317,7 @@ written atomically (temporary file and rename, [`core`](../tradingbot/core)); lo
 
 | File or folder | Contents | Written by |
 |---|---|---|
+| `portfolio.json`, `signals.json` | Legacy v2 spot cycle: its own paper portfolio (cash, units, stops, history) and the latest per-coin signals; not part of the eight books | [`cli.py` `run_cycle`](../tradingbot/cli.py), [`decision.py`](../tradingbot/decision.py) |
 | `futures_ledger.json`, `spot_ledger.json` | Main bot's paper ledgers (wallet, open positions, closed history) | [`FuturesLedgerV2.save`](../tradingbot/accounting/futures_ledger.py), [`SpotLedger`](../tradingbot/accounting/spot_ledger.py) |
 | `<state_dir>/futures_ledger.json` | One ledger per strategy book (`strategy_paper`, `strategy_paper_m2`, `strategy_paper_box`, `strategy_paper_trend4h`, `strategy_paper_candle4h`, `strategy_paper_candle4h_strict`) and `pattern_trader/` | [`StrategyBook`](../tradingbot/strategy_paper.py), [`PatternBook`](../tradingbot/pattern_trader/book.py) |
 | `<state_dir>/counterfactual_trades.json` | Pending and labelled counterfactuals of that book (learning mode) | [`CounterfactualRecorder`](../tradingbot/learning_cf.py) |
@@ -448,7 +456,8 @@ valid ([`coinhead/head.py` `CoinHead.decide`](../tradingbot/coinhead/head.py)).
 
 #### Win probability and the economics inputs
 
-**`p_win`.** The coin head's own prior (`0.5 + 0.25 × confidence`) is replaced before any economic decision, in
+**`p_win`.** The coin head's own prior (`0.5 + 0.25 × confidence` when the consensus score reaches `consensus_threshold`, 0.22 in
+absolute value, otherwise 0.5) is replaced before any economic decision, in
 [`TradingEngineV3.tour`](../tradingbot/engine_v3.py):
 
 - If a *champion* probability model exists, `p = w × p_cal + (1 − w) × prior` with `w = n_train / (n_train + 30)`
@@ -628,7 +637,7 @@ Under the committed learning-mode config, D4 and C4 enter on the 23 coins plus t
 |---|---|---|---|---|---|
 | T2 ([`ema200_trend.py` `decide`](../tradingbot/ema200_trend.py)) | 1d, BTC 1d | Last closed daily close > EMA200 and BTC regime UP (BTC daily close > its EMA200) → LONG at the verified perp price | close − 3 × ATR14(1d) | Daily close ≤ EMA200, or the stop | 2, raised only as far as needed (max 4) to fit the single-position cap |
 | M2 (same module, `m2_tsmom28`) | 1d, BTC 1d | Close > close 28 days earlier and BTC regime UP → LONG | close − 3 × ATR14(1d) | Close ≤ close 28 days earlier, or the stop | 2 → 4 as needed |
-| B1 Box ([`box_theory.py` `decide`](../tradingbot/box_theory.py)) | 1d, 5m | Box = previous UTC day's high/low. If the last two closed 5m candles touched the top 10% band → SHORT on a red candle closing below the previous candle's low; bottom band → LONG on a green candle closing above the previous high | SHORT: previous candle's high; LONG: the day's low so far | Target at box mid (`exit_kind: box_mid`), stop, or flat at the end of the signal's UTC day | 3 → 4 as needed; stops narrower than 2.22% are skipped (0.32% under learning mode) |
+| B1 Box ([`box_theory.py` `decide`](../tradingbot/box_theory.py)) | 1d, 5m | Box = previous UTC day's high/low. If any of the last two closed 5m candles touched the top 10% band and none touched the bottom band → SHORT on a red candle closing below the previous candle's low; the mirror case → LONG on a green candle closing above the previous high; a window that touched both bands is treated as the middle (no trade) | SHORT: previous candle's high; LONG: the day's low so far | Target at box mid (`exit_kind: box_mid`), stop, or flat at the end of the signal's UTC day | 3 → 4 as needed; stops narrower than 2.22% are skipped (0.32% under learning mode) |
 | D4 ([`donchian_trend.py` `decide`](../tradingbot/donchian_trend.py)) | 4h | Close breaks above the previous 20-bar high for the first time → LONG, only within 60 min of the signal close and if the stop distance is 0.1–10 ATR | close − 2 × ATR14(4h) | 4h close below the previous 10-bar low, 300-bar time limit, or the stop | 1; oversized trades are shrunk to the cap, not rejected |
 | C4 / C4S ([`candle_book.py` `decide`](../tradingbot/candle_book.py)) | 4h, last 500 bars with volume | First enabled variation (config order) whose detector matches on the last closed bar and whose gate passes; 60 min entry window | From the variation's detector | Target `target_r × risk` measured from the actual entry, the stop, or `max_hold_bars` | 1 |
 
@@ -997,7 +1006,9 @@ navigation plus per-coin and per-trade detail pages), a JSON API, `/health/live`
 `/metrics` and server-sent events on `/events`; Plotly is served locally. A middleware answers anything other than GET
 or HEAD with 405, checks a bearer token or cookie with `secrets.compare_digest` when a token is configured, and sets
 `Cache-Control: no-store` and `X-Content-Type-Options: nosniff`. Configuration refuses a non-loopback host without a
-token ([`dashboard/config.py`](../tradingbot/dashboard/config.py)). Unknown values are shown as "Veri yok" (no data),
+token unless `allow_insecure_public` is set ([`dashboard/config.py`](../tradingbot/dashboard/config.py)). Note that the
+"Spot defteri" page (`/portfolio/spot`) and the spot equity in the summary read the legacy v2 `portfolio.json`, not the
+main bot's `spot_ledger.json`. Unknown values are shown as "Veri yok" (no data),
 never as zero.
 
 ### 5.12 Operations
@@ -1215,7 +1226,8 @@ sinyal laboratuvarında keşif/doğrulama ayrımı, gün kümeli aralıklar, pla
 kâğıt işlemdir ve şu ana kadar istatistiksel olarak kesin değildir.
 
 - **Mimari:** tek worker süreci; ana tur döngüsü + koruyucu izleyici, Box zamanlayıcısı, Formasyon tarayıcısı ve indeks
-  yenileyici iş parçacıkları; ayrı, salt okunur panel süreci.
+  yenileyici iş parçacıkları; ayrı, salt okunur panel süreci. Eski v2 spot döngüsü her yeni 4h barda sekiz defterden
+  ayrı, kendi küçük spot kâğıt portföyünü (`portfolio.json`) işletir; paneldeki "Spot defteri" sayfası bu portföyü gösterir.
 - **Muhasebe:** izole marj, komisyon, 3 bps kayma, borsa filtreleri, gerçekleşmiş fonlama, ihtiyatlı likidasyon sırası,
   stop taşıma düzeltmesi.
 - **Öğrenme modu (açık):** yalnız PAPER; slot sayısı K ile boyut, marj ≤ %95, likidasyon ≥ 2 × stop, politika rezervi;

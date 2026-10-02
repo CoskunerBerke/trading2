@@ -3371,7 +3371,8 @@ class TradingEngineV3(TradingEngine):
         def _symbols() -> list[str]:
             return list(book.symbols) if book.symbols else (list(_eu.symbols) if _eu.enabled else [])
         # ÖĞRENME MODU (2026-09-28, öğrenme modu — C2): zamanlayıcı kapıyı HER 5m geçişinde kendisi tazeler ve defterin
-        # o geçişlik görünümünü (min_stop_pct 0,32, slot, kaldıraç) verir. Anahtar kapalıyken None → kurulum bit-aynı.
+        # o geçişlik görünümünü (min_stop_pct 0,5 — 2026-10-03'e kadar 0,32 —, slot, kaldıraç) verir. Anahtar kapalıyken
+        # None → kurulum bit-aynı.
         _lm = getattr(self, "lm", None)
         _lkw = {"learning": _lm} if (_lm is not None and bool(getattr(_lm, "enabled", False))) else {}
         t = BoxTimer(book=book, provider_factory=self._futures_provider_factory, state_path=self.cfg.state_path,

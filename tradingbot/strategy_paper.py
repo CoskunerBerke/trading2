@@ -1188,7 +1188,8 @@ class StrategyBook:
 
     # ------------------------------------------------------------------ öğrenme modu (2026-09-28)
     def _learning_params(self, bl: Any) -> Any:
-        """Box: öğrenme `min_stop_pct` (0,32) ile AYRI parametre nesnesi — taban nesne değişmez; diğer aileler taban."""
+        """Box: öğrenme `min_stop_pct` (0,5; 2026-10-03'e kadar 0,32) ile AYRI parametre nesnesi — taban nesne değişmez;
+        diğer aileler taban."""
         msp = getattr(bl, "min_stop_pct", None)
         if self.rule.family != "box" or msp is None:
             return self.rule_params
@@ -1407,8 +1408,9 @@ class StrategyBook:
         """SPEC A15 "+CF" (2026-09-28, öğrenme modu; ikinci doğrulama turu): sembolde pozisyon AÇIKKEN TABAN kuralın (kendi
         parametreleriyle — Box'ta taban `min_stop_pct`) TAZE giriş sinyali POSITION_OPEN karşı-olgusalı olur: tabanın
         alacağı sinyal, öğrenme defterinde daha önce açılmış (ör. dar stoplu) bir işlem sembolü tuttuğu için kaybolmasın.
-        Öğrenme parametresiyle (Box 0,32) doğan dar stoplu sinyaller açık sembolde YAZILMAZ: 24 saatlik uçtan uca koşuda
-        Box'ta günde ~511 kayıt ediyordu (tabanınki ~47) — aynı hareketin ardışık barları, dosya/bellek yükü. Yalnız OLAY
+        Öğrenme parametresiyle (Box 0,5; 2026-10-03'e kadar 0,32) doğan dar stoplu sinyaller açık sembolde YAZILMAZ: 24
+        saatlik uçtan uca koşuda Box'ta günde ~511 kayıt ediyordu (tabanınki ~47) — aynı hareketin ardışık barları,
+        dosya/bellek yükü. Yalnız OLAY
         tabanlı aileler (Box, D4); mum ailesi `_cf_candle`da. Trend ailesinin girişi bir DURUM koşuludur (pozisyon boyunca
         her bar doğru) → tutulan işlemin günlük tekrarı olurdu, yazılmaz. Açık pozisyonun KENDİ (ya da daha eski) sinyali
         kaydedilmez. Öğrenme parametresi (`_learning_params`) bilerek KULLANILMAZ.

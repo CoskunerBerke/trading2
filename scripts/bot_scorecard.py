@@ -25,15 +25,25 @@ Soru tek: "Hangi bot, bugüne kadar kapattığı işlemlerde para kazandırdı v
 * İHTİYATLI KARŞI-OLGUSAL (2026-10-01, `cf_aux_v1`, yalnız bilgi): net ortalamanın YANINDA, yardımcı etiketi olan
   kayıtların `outcome.aux.r_net_conservative` ortalaması (giriş barı denetimi + gerçek defterin örneklenmiş stop dolumu
   tahmini) ve kapsamı `n`. Mevcut sayılar (ortalama, aralık, hüküm) DEĞİŞMEZ; alanı olmayan eski kayıtlar kapsama girmez.
+* KAYDA ALINAN EKSTRA (2026-10-03, sahip kararı): öğrenme modunun `extra_entries: record_selectivity` kipinde AÇILMAYAN
+  seçicilik-ekstra adaylar (karşı-olgusal ilk nedeni `LEARNING_RECORD_ONLY`) defter başına AYRI sınıf: kayıt sayısı ve
+  etiketlendikçe net R. «karşı-olgusal» sütunu bunları İÇERMEZ. P&L'e GİRMEZ.
+* AYLIK HEDEF (2026-10-03, yalnız rapor): sahibin hedefi her algoritmanın kendi kâğıt bakiyesinde ayda en az +%1 net.
+  Defter başına içinde bulunulan UTC takvim ayında (bugüne kadar) ve son 30 günde KAPANAN işlemlerin net sonucu (ücret,
+  kayma ve funding SONRASI) başlangıç bakiyesinin %'si olarak, işlem sayısı ve hedefe uzaklık. Açık pozisyonların
+  gerçekleşmemiş sonucu dahil DEĞİLDİR. Bu bir ölçümdür; kâr iddiası ya da garantisi değildir. Yalnız komut satırı
+  (`main`) yazar; `scorecard()` sözlüğü değişmez.
 
 Kullanım:
     python scripts/bot_scorecard.py --state <state klasörü> [--since 2026-09-01] [--learning-since <ISO>] [--out karne.json]
+        [--now <ISO, aylık hedefin «şimdi»si; varsayılan UTC şimdi>]
 """
 from __future__ import annotations
 
 import argparse
 import json
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -60,6 +70,11 @@ LEARNING_SINCE_FILE = "learning_mode.json"
 CF_FILE = "counterfactual_trades.json"
 MAIN_SHADOW_FILE = "shadow_book.json"
 POLICY, LEARNING_EXTRA = "policy", "learning_extra"
+#: KAYDA ALINAN EKSTRA (2026-10-03): karşı-olgusalın ilk nedeni (`learning_mode.LEARNING_RECORD_ONLY`) ve karne sınıfı.
+RECORD_ONLY_REASON = "LEARNING_RECORD_ONLY"
+RECORDED_EXTRA = "recorded_extra"
+#: AYLIK HEDEF (2026-10-03, sahip): ayda en az +%1 net (kendi kâğıt bakiyesinde). Yalnız rapor.
+MONTHLY_TARGET_PCT = 1.0
 
 
 def _configure_console() -> None:
@@ -200,9 +215,16 @@ def _slice(trades: list) -> dict[str, Any]:
             "win_rate": st["win_rate"], "verdict": verdict(st), "net_usdt": round(sum(float(t.pnl) for t in trades), 4)}
 
 
-def counterfactual_card(path: Path, *, book: str | None = None) -> dict[str, Any] | None:
+def is_record_only(t: dict[str, Any]) -> bool:
+    """Karşı-olgusal kayıt bir KAYDA ALINAN EKSTRA mı (ilk neden `LEARNING_RECORD_ONLY`)?"""
+    rs = t.get("reason_not_opened")
+    return isinstance(rs, list) and bool(rs) and str(rs[0]) == RECORD_ONLY_REASON
+
+
+def counterfactual_card(path: Path, *, book: str | None = None, record_only: bool | None = None) -> dict[str, Any] | None:
     """Karşı-olgusal kayıtların R özeti — P&L'e GİRMEZ (USDT alanı bilerek yok). `book` verilirse yalnız o defterin
     kayıtları (ana botun `shadow_book.json`u öğrenme öncesi gölgeleri de taşır). Dosya/kayıt yoksa None.
+    `record_only` (2026-10-03): None → bütün kayıtlar; False → kayda alınan ekstralar HARİÇ; True → YALNIZ onlar.
 
     NET TABAN (2026-09-29, maliyet sapması): `mean_r`, aralık, kazanma oranı ve hüküm YALNIZ net etiketli (`r_net`,
     `cf_label_v2`) kayıtlardan — gerçek işlemlerin net R'siyle aynı tabanda. Brüt ortalama (`mean_r_gross`, bütün etiketli
@@ -213,6 +235,8 @@ def counterfactual_card(path: Path, *, book: str | None = None) -> dict[str, Any
     except (OSError, ValueError):
         return None
     rows = [t for t in ((d or {}).get("trades") or []) if isinstance(t, dict) and (book is None or t.get("book") == book)]
+    if record_only is not None:
+        rows = [t for t in rows if is_record_only(t) == bool(record_only)]
     if not rows:
         return None
     lab = [t for t in rows if isinstance(t.get("outcome"), dict) and _num(t["outcome"].get("r_multiple")) is not None]
@@ -259,7 +283,10 @@ def learning_split(path: Path, *, learning_since_iso: str, since: str | None = N
     return {"before": _slice(before), "after": _slice(after),
             POLICY: _slice([t for t in after if learning_class(t) == POLICY]),
             LEARNING_EXTRA: _slice([t for t in after if learning_class(t) == LEARNING_EXTRA]),
-            "counterfactual": counterfactual_card(cf_path, book=cf_book) if cf_path is not None else None}
+            "counterfactual": (counterfactual_card(cf_path, book=cf_book, record_only=False)
+                               if cf_path is not None else None),
+            RECORDED_EXTRA: (counterfactual_card(cf_path, book=cf_book, record_only=True)
+                             if cf_path is not None else None)}
 
 
 def scorecard(state: Path, *, since: str | None = None, learning_since_iso: str | None = None) -> dict[str, Any]:
@@ -289,8 +316,85 @@ def scorecard(state: Path, *, since: str | None = None, learning_since_iso: str 
             "since": lsi, "source": src, "books": split,
             "note_tr": ("R esastır. learning_mode_since sonrası USDT sonuçları öğrenme ölçeğindedir (%0,5 risk, slot boyutu) ve "
                         "öncesiyle KIYASLANMAZ. Politika: taban kurallar da açardı; öğrenme-ekstra: yalnız öğrenme modu açtı; "
-                        "karşı-olgusal: açılmayan geçerli sinyalin etiketli sonucu — P&L'e GİRMEZ.")}
+                        "kayda alınan ekstra: taban kuralların sinyali reddedeceği için AÇILMAYIP yalnız kaydedilen öğrenme "
+                        "adayı (LEARNING_RECORD_ONLY); karşı-olgusal: açılmayan diğer geçerli sinyallerin etiketli sonucu — "
+                        "ikisi de P&L'e GİRMEZ.")}
     return card
+
+
+def _month_start(now: datetime) -> datetime:
+    return now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+
+def _window(trades: list, start: datetime, end: datetime, equity: float) -> dict[str, Any]:
+    """[start, end] içinde KAPANAN işlemler: sayı, net USDT (ücret + kayma + funding SONRASI), başlangıç bakiyesinin %'si,
+    hedefe uzaklık (yüzde puan; + üstünde, − altında), ücret ve funding toplamı."""
+    sel = []
+    for t in trades:
+        at = _ts(t.closed_at)
+        if at is not None and start <= at <= end:
+            sel.append(t)
+    net = sum(float(t.pnl) for t in sel)
+    pct = round(net / equity * 100.0, 4) if equity else None
+    return {"from": start.isoformat(), "to": end.isoformat(), "n": len(sel), "net_usdt": round(net, 4),
+            "net_pct": pct, "fees_usdt": round(sum(float(t.fees) for t in sel), 4),
+            "funding_usdt": round(sum(float(t.funding) for t in sel), 4),
+            "target_pct": MONTHLY_TARGET_PCT,
+            "gap_to_target_pct": (round(pct - MONTHLY_TARGET_PCT, 4) if pct is not None else None)}
+
+
+def monthly_target(state: Path, *, now: datetime | None = None) -> dict[str, Any]:
+    """AYLIK HEDEF RAPORU (2026-10-03, yalnız rapor): defter başına içinde bulunulan UTC takvim ayı (bugüne kadar) ve son
+    30 gün. Kaynak defterin kapanan işlemleri (`TradeRecord.pnl` = ücret, kayma ve funding SONRASI net); oran defterin
+    BAŞLANGIÇ bakiyesine göre. Açık pozisyonlar dahil değil. Salt okunur."""
+    now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    books: dict[str, Any] = {}
+    for sub, path in find_books(state).items():
+        key = sub or "main"
+        try:
+            led = FuturesLedgerV2.load(path)
+            eq = float(led.starting_equity)
+            hist = list(led.history)
+            books[key] = {"name": BOOKS.get(sub, sub), "starting_equity": eq, "open_positions": len(led.positions),
+                          "month": _window(hist, _month_start(now), now, eq),
+                          "last_30d": _window(hist, now - timedelta(days=30), now, eq)}
+        except Exception as exc:  # noqa: BLE001 — bozuk bir defter diğerlerini durdurmaz
+            books[key] = {"name": BOOKS.get(sub, sub), "error": f"{type(exc).__name__}: {exc}"}
+    return {"now": now.isoformat(), "month": now.strftime("%Y-%m"), "target_pct": MONTHLY_TARGET_PCT, "books": books,
+            "note_tr": ("Sahibin hedefi: her algoritma kendi kâğıt bakiyesinde ayda en az +%1 net. Bu bölüm yalnız ölçümdür: "
+                        "kapanan işlemlerin ücret, kayma ve funding sonrası net sonucu, defterin başlangıç bakiyesine oranı. "
+                        "Açık pozisyonların gerçekleşmemiş sonucu dahil değildir. PAPER sonucudur; kâr iddiası ya da "
+                        "garantisi değildir.")}
+
+
+def _gap_txt(w: dict[str, Any]) -> str:
+    g = w.get("gap_to_target_pct")
+    if g is None:
+        return "—"
+    if g >= 0:
+        return f"hedefin {g:.2f} puan üstünde"
+    return f"hedefe {-g:.2f} puan var"
+
+
+def render_monthly(card: dict[str, Any]) -> list[str]:
+    """AYLIK HEDEF bölümü (yalnız `main()` hesaplatırsa; aksi halde satır yok)."""
+    mt = card.get("monthly_target")
+    if not mt:
+        return []
+    lines = [f"AYLIK HEDEF (+%{mt['target_pct']:.0f}/ay, yalnız rapor) · ay {mt['month']} (UTC, bugüne kadar) ve son 30 gün · "
+             f"şimdi {mt['now'][:16]}",
+             f"{'bot':<14}{'bu ay işlem':>12}{'bu ay net %':>13}  {'hedefe uzaklık':<26}{'30 gün işlem':>13}"
+             f"{'30 gün net %':>14}  hedefe uzaklık"]
+    for key, b in mt["books"].items():
+        if "error" in b:
+            lines.append(f"{b['name']:<14} OKUNAMADI: {b['error']}")
+            continue
+        m, l30 = b["month"], b["last_30d"]
+        lines.append(f"{b['name']:<14}{m['n']:>12}{_fmt(m['net_pct']):>13}  {_gap_txt(m):<26}{l30['n']:>13}"
+                     f"{_fmt(l30['net_pct']):>14}  {_gap_txt(l30)}")
+    lines.append("   " + mt["note_tr"])
+    lines.append("")
+    return lines
 
 
 def _fmt(v, nd=2) -> str:
@@ -335,6 +439,7 @@ def render(card: dict[str, Any]) -> str:
                          f"kazanma {_fmt(v['win_rate'] * 100 if v['win_rate'] is not None else None, 0)}% · {v['verdict']}{lab}"
                          + (" · " + ", ".join(v["flags"]) if v.get("flags") else ""))
     lines += render_learning(card)
+    lines += render_monthly(card)
     lines.append(f"Hüküm kuralı: {card['min_trades_for_verdict']} işlemden az → VERİ YETERSİZ; ortalama R'nin %95 aralığı tamamen 0'ın "
                  "altında → ZARARDA, tamamen üstünde → KÂRDA; değilse BELİRSİZ. PAPER sonucu, kâr garantisi değildir.")
     return "\n".join(lines)
@@ -347,6 +452,13 @@ def _nr(b: dict[str, Any] | None) -> str:
     return f"{b.get('n', 0)} / {_fmt(b.get('mean_r'))}"
 
 
+def _rec_txt(c: dict[str, Any] | None) -> str:
+    """«kayda alınan ekstra» hücresi: kayıt sayısı / net ort. R (net etiketli yoksa —)."""
+    if not c:
+        return "0 / —"
+    return f"{c.get('recorded', 0)} / {_fmt(c.get('mean_r'))}"
+
+
 def render_learning(card: dict[str, Any]) -> list[str]:
     """ÖĞRENME MODU ayrımı (yalnız `learning_mode_since` biliniyorsa; aksi halde hiç satır yok → çıktı AYNEN eskisi)."""
     lm = card.get("learning_mode")
@@ -354,7 +466,8 @@ def render_learning(card: dict[str, Any]) -> list[str]:
         return []
     lines = [f"ÖĞRENME MODU AYRIMI · learning_mode_since {lm['since']} ({lm['source']}) · R esas; sonrası USDT öğrenme ölçeğinde, "
              "öncesiyle KIYASLANMAZ",
-             f"{'bot':<14}{'önce n/ort.R':>16}{'sonra n/ort.R':>16}{'politika':>14}{'öğrenme-ekstra':>16}  karşı-olgusal (P&L dışı) — net R"]
+             f"{'bot':<14}{'önce n/ort.R':>16}{'sonra n/ort.R':>16}{'politika':>14}{'öğrenme-ekstra':>16}"
+             f"{'kayda alınan ekstra':>22}  karşı-olgusal (P&L dışı) — net R"]
     for key, b in lm["books"].items():
         if "error" in b:
             lines.append(f"{b['name']:<14} OKUNAMADI: {b['error']}")
@@ -368,8 +481,10 @@ def render_learning(card: dict[str, Any]) -> list[str]:
             cf_txt += (f" · ihtiyatlı {_fmt(cf.get('mean_r_conservative'))} (n={cf.get('n_conservative', 0)}, "
                        f"aynı kayıtlarda net {_fmt(cf.get('mean_r_net_conservative_rows'))})")
         lines.append(f"{b['name']:<14}{_nr(b['before']):>16}{_nr(b['after']):>16}{_nr(b[POLICY]):>14}{_nr(b[LEARNING_EXTRA]):>16}"
-                     f"  {cf_txt}")
+                     f"{_rec_txt(b.get(RECORDED_EXTRA)):>22}  {cf_txt}")
     lines.append("   " + lm["note_tr"])
+    lines.append("   «kayda alınan ekstra»: kayıt sayısı / etiketlenenlerin NET ort. R (karşı-olgusalla aynı net taban; "
+                 "etiket yoksa —). Bu adaylar açılmadı; bakiyeye dokunmaz.")
     lines.append("   Karşı-olgusal ort.R NETtir (defterin ücret/kayma/funding modeliyle aynı barlarda yeniden oynatma, "
                  "cf_label_v2); brüt değer yalnız bilgi. Net'i olmayan eski (brüt) kayıtlar ortalamaya girmez.")
     lines.append("   «ihtiyatlı»: cf_aux_v1 yardımcı etiketi (giriş barındaki stop fitili + gerçek defterin örneklenmiş stop "
@@ -386,15 +501,23 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out", default=None, help="ayrıntılı JSON raporu")
     ap.add_argument("--learning-since", default=None,
                     help="öğrenme modu başlangıcı (ISO); verilmezse state/learning_mode.json okunur")
+    ap.add_argument("--now", default=None, help="aylık hedef raporunun «şimdi»si (ISO, UTC); verilmezse şu an")
     a = ap.parse_args(argv)
     state = Path(a.state)
     if not state.is_dir():
         print(f"state klasörü yok: {state}", file=sys.stderr)
         return 2
+    now = _ts(a.now) if a.now else None
+    if a.now and now is None:
+        print(f"--now çözülemedi: {a.now}", file=sys.stderr)
+        return 2
+    if now is not None and now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
     card = scorecard(state, since=a.since, learning_since_iso=a.learning_since)
     if not card["books"]:
         print(f"{state} altında {LEDGER_FILE} bulunamadı", file=sys.stderr)
         return 2
+    card["monthly_target"] = monthly_target(state, now=now)
     print(render(card))
     if a.out:
         Path(a.out).write_text(json.dumps(card, ensure_ascii=False, indent=1), encoding="utf-8")

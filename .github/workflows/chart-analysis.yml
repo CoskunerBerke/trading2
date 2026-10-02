@@ -33,6 +33,10 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+        with:
+          # öğrenme-ekstra kipi çok turlu kanıtı (tests/test_learning_record_only_tours.py) `open` kipini taban commit 943345c ile
+          # bayt bayt karşılaştırır: `git archive 943345c` geçmiş ister (sığ klonda o karşılaştırma SKIP olurdu)
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -92,6 +96,7 @@ jobs:
             tests/test_runtime_fixes_v1.py \
             tests/test_protective_monitor_v1.py \
             tests/test_measure_protective_monitor_script.py tests/test_bot_scorecard_script.py tests/test_signal_lab.py \
+            tests/test_bot_scorecard_record_only_monthly.py \
             tests/test_box_cf_gap_audit_script.py \
             tests/test_pattern_trader_momentum_v3.py tests/test_donchian_trend_book.py \
             tests/test_candle_dsl.py tests/test_candle_variations_book.py tests/test_candle_strict_book.py \
@@ -100,6 +105,7 @@ jobs:
             tests/test_crowd_features.py tests/test_crowd_data.py tests/test_crowd_lab.py \
             tests/test_learning_provenance_engine.py \
             tests/test_learning_cf_net.py tests/test_learning_cf_path_v3.py tests/test_learning_cf_aux.py \
+            tests/test_learning_record_only_extras.py tests/test_learning_record_only_tours.py \
             tests/test_closed_bar_after_stop_move_v1.py \
             tests/test_shared_experience_situation_v1.py tests/test_shared_experience_parity_v1.py \
             tests/test_shared_experience_store_v1.py tests/test_shared_experience_join_v1.py \
@@ -143,7 +149,7 @@ jobs:
           pip install -r requirements.txt
           pip install pytest httpx
       - name: Measurement script tests (Windows)
-        run: python -m pytest tests/test_measure_protective_monitor_script.py tests/test_bot_scorecard_script.py tests/test_signal_lab.py -q --tb=short -rs
+        run: python -m pytest tests/test_measure_protective_monitor_script.py tests/test_bot_scorecard_script.py tests/test_bot_scorecard_record_only_monthly.py tests/test_signal_lab.py -q --tb=short -rs
       - name: index-check + preflight (Windows console)
         shell: pwsh
         run: |

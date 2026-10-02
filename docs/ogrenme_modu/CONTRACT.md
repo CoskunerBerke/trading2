@@ -34,12 +34,12 @@ This contract sits on top of SPEC.md in the same folder. Where the two differ, t
 | S1 | Main regime gate: ENFORCE → SHADOW while learning is active. |
 | S2 | Main candle veto: ENFORCE → SHADOW while learning is active. |
 | S3 / S4 | Structures for main, T2 and M2: **entries** SHADOW while learning is active (no WAIT / WAIT_TRIGGER / entry CANCEL / entry-geometry rewrite; the rule's own entry and stop are used). Management (structure exits, stop tightening) stays as configured (ENFORCE). If entry and management cannot be separated cleanly for a bot, stop and report; do not silently go full SHADOW. |
-| S5 | Economics gate: RESEARCH_SIZE_ONLY and NEGATIVE_NET_EDGE open as exploration trades, tagged `exploration=RESEARCH_SIZE` or `NEG_EDGE`. `short_penalty_r` and `futures_only_penalty_r` are recorded as features and not applied. ZERO_STOP_DISTANCE and UNKNOWN_GATE_CODE stay. |
+| S5 | Economics gate: RESEARCH_SIZE_ONLY and NEGATIVE_NET_EDGE open as exploration trades, tagged `exploration=RESEARCH_SIZE` or `NEG_EDGE` (2026-10-03: with `extra_entries: record_selectivity` they are recorded as `LEARNING_RECORD_ONLY` counterfactuals instead; see "Extras by cause"). `short_penalty_r` and `futures_only_penalty_r` are recorded as features and not applied. ZERO_STOP_DISTANCE and UNKNOWN_GATE_CODE stay. |
 | S7 | Leverage CONFIDENCE_BELOW_BASE falls back to 2x (tag `LEARNING_MIN_LEVERAGE_FALLBACK`). |
 | B1 | Leverage fallback set, per SPEC. |
 | S9 | Formasyon entry universe = protocol 30 ∪ main entry universe (40), tagged `in_lab_universe`. |
 | C9 | D4, C4 and C4S symbols = book list ∪ main entry universe, tagged `in_lab_universe`. |
-| C1 / S16 | Box `min_stop_pct` = 0.32 while learning is active. |
+| C1 / S16 | Box `min_stop_pct` = 0.32 while learning is active. **2026-10-03 (owner): 0.5** (stops below 0.5% produce no signal; `BOX_MIN_STOP_PCT` entries stay real). |
 | C10 | C4: `also_matched` variations and variations blocked by an open position produce counterfactual records. No book split. |
 | C11 | C4S: learning `enabled: false` (it stays the strict control). |
 | D1, D2/D3, D5, D6, D7, D16, D17, D18 | As SPEC. |
@@ -234,6 +234,16 @@ Config (`config_v3.LearningModeSection`, top-level key `learning_mode`):
 - Validation errors are ConfigError (SPEC §2.1 list), including unknown keys under `learning_mode`.
 - Code default: `enabled: false`.
 
+### Extras by cause (2026-10-03, owner decision)
+
+| Item | Rule |
+|---|---|
+| Classification | `learning_mode.classify_unlock_codes(codes)` → `policy` (no code) / `capacity` (every code in `UNLOCK_CAPACITY` or `UNLOCK_BOX_EXCEPTION`) / `selectivity` (any other code, including unknown codes and `BASELINE_UNKNOWN`). Capacity is exact-match only; selectivity prefixes `CANDLE_VETO`, `REGIME_VETO`, `STRUCTURE`, `LEVERAGE_GATE_BLOCKED`. |
+| Switch | `learning_mode.extra_entries: open | record_selectivity`, code default `open` (today's behaviour), validated. Committed config: `record_selectivity`. Kill switch: `open` + worker restart. |
+| Record only | With `record_selectivity`, an entry with any selectivity code is not opened where the open decision is final (after sizing, policy reserve and every gate) and is recorded in the book's counterfactual recorder with reason `LEARNING_RECORD_ONLY`, the codes after it in `reason_not_opened`, and `features.learning_record_only`. Capacity, Box-exception and policy entries open exactly as before. |
+| Downstream | Record-only counterfactuals never become research-policy `BLOCKED` observations and never enter the experience pool. Shared-experience rows carry them (reason family `GATE`); sealed files unchanged. The bot scorecard shows them as their own class. |
+| Proof | With `open`, every state file is byte-identical to `943345c` over five real tours in two scenarios (`tests/test_learning_record_only_tours.py`). |
+
 ## config.yaml values for L1 (stage C writes them)
 
 ```yaml
@@ -246,11 +256,12 @@ learning_mode:
   min_notional_bump: true
   counterfactual: true
   counterfactual_max_pending: 2000
+  extra_entries: record_selectivity   # 2026-10-03 (owner); kill switch: open
   books:
     main:                         {enabled: true, slots: 20, leverage_max: 5}   # 2026-09-28: kademe tavanı (6fb39cd)
     t2_trend_regime:              {enabled: true, slots: 40, leverage_max: 4}
     m2_tsmom28:                   {enabled: true, slots: 40, leverage_max: 4}
-    b1_box_fade:                  {enabled: true, slots: 40, leverage_max: 4, min_stop_pct: 0.32}   # 2026-09-30: 20→40 (kullanıcı onayı)
+    b1_box_fade:                  {enabled: true, slots: 40, leverage_max: 4, min_stop_pct: 0.5}   # 2026-09-30: 20→40 (kullanıcı onayı); 2026-10-03: 0.32→0.5
     d4_donchian_20_10:            {enabled: true, slots: 20, leverage_max: 3, symbols: universe}
     c4_candle_variations:         {enabled: true, slots: 20, leverage_max: 3, symbols: universe}
     c4s_candle_variations_strict: {enabled: false}

@@ -110,10 +110,16 @@ futures entry (the main bot's spot buys are not gated by this check or by the un
   Formasyon book has its own background scanner.
 - **Learning mode is on in the committed config**, so these are the rules actually running:
   - every book except C4S sizes from equal slots at 0.5% risk;
-  - the main bot opens negative-edge and research-size candidates as tagged exploration trades;
-  - the main bot only records its regime gate, candle veto and blocking structure decisions, so it can open SHORTs and
-    enter while BTC is below its EMA200;
-  - Box accepts stops down to 0.32%, and D4 and C4 enter on the whole universe.
+  - learning-extra entries are split by cause (since 2026-10-03, `learning_mode.extra_entries: record_selectivity`): an
+    entry that only an account/book capacity limit or an order-size rule would have stopped (total open risk, position
+    count, margin, minimum order) opens for real; an entry the baseline rules would reject as a signal (negative edge,
+    research size, regime gate, candle veto, blocking structure, leverage NO_TRADE, book universe, Formasyon's R/R floor,
+    or any unclassified code) is not opened and is recorded as a counterfactual with reason `LEARNING_RECORD_ONLY`;
+    `extra_entries: open` switches back;
+  - the main bot still evaluates its regime gate, candle veto and blocking structure decisions in shadow, but a candidate
+    they would block is recorded instead of opened;
+  - Box accepts stops down to 0.5% (0.32% until 2026-10-03) and those entries open for real; D4 and C4 scan the whole
+    universe, but entries outside their own lab coins are recorded only.
 - **Time-critical work runs off the tour:** a protective monitor thread checks every open futures position about once a
   minute against a verified perpetual mark, and a Box timer thread evaluates each closed 5-minute candle. The main bot's
   spot holdings have no stop orders, are not monitored and are never sold by the worker (a known gap).
@@ -468,10 +474,15 @@ yalnız kapanmış barlarla karar verir; perpetual mumları o tur için doğrula
   ortak bir uygulayıcıyı paylaşır; Formasyon defterinin kendi arka plan tarayıcısı vardır.
 - **Depodaki config'te öğrenme modu açık**, yani çalışan kurallar şunlardır:
   - C4S dışındaki her defter %0,5 riskle eşit slotlardan boyutlanır;
-  - ana bot negatif beklentili ve araştırma boyutlu adayları etiketli keşif işlemi olarak açar;
-  - ana bot rejim kapısını, mum vetosunu ve engelleyen yapı kararlarını yalnız kaydeder, bu yüzden SHORT açabilir ve BTC
-    EMA200 altındayken girebilir;
-  - Box %0,32'ye kadar dar stopları kabul eder, D4 ve C4 evrenin tamamında girer.
+  - öğrenme-ekstra girişler nedenine göre ayrılır (2026-10-03'ten beri, `learning_mode.extra_entries: record_selectivity`):
+    yalnız hesap/defter kapasitesi ya da emir boyutu kuralının durduracağı giriş (toplam açık risk, adet, marj, en küçük
+    emir) gerçek açılır; taban kuralların SİNYALİ reddedeceği giriş (negatif beklenti, araştırma boyutu, rejim kapısı, mum
+    vetosu, engelleyen yapı, kaldıraç NO_TRADE'i, defter evreni, Formasyon R/R tabanı ya da sınıflanamayan kod) açılmaz,
+    `LEARNING_RECORD_ONLY` nedenli karşı-olgusal olarak kaydedilir; `extra_entries: open` eski davranışa döndürür;
+  - ana bot rejim kapısını, mum vetosunu ve engelleyen yapı kararlarını gölgede değerlendirmeye devam eder, ama bunların
+    durduracağı aday açılmaz, kaydedilir;
+  - Box %0,5'e kadar dar stopları kabul eder (2026-10-03'e kadar %0,32) ve bu girişler gerçek açılır; D4 ve C4 evrenin
+    tamamını tarar, ama kendi laboratuvar coinleri dışındaki girişler yalnız kaydedilir.
 - **Zaman açısından kritik işler turun dışında:** koruyucu izleyici iş parçacığı açık vadeli pozisyonları yaklaşık dakikada
   bir doğrulanmış perpetual fiyatla denetler; Box zamanlayıcısı her kapanan 5 dakikalık mumu değerlendirir. Ana botun spot
   pozisyonlarında stop emri yoktur, izlenmezler ve worker onları hiç satmaz (bilinen açık).

@@ -1,5 +1,60 @@
 # Öğrenme modu L1: durum kaydı (güncelleme 2026-09-28 ~07:00 UTC)
 
+## 2026-10-03 — Öğrenme-ekstra girişler nedenine göre: seçicilik-ekstra YALNIZ KAYIT, Box stop tabanı %0,5 (kodlandı, dağıtılmadı)
+
+**Karar (sahip, 2026-10-03).** Hedef: her algoritma kendi kâğıt bakiyesinde ayda en az +%1 net. Öğrenme modu kalır (açık/kapalı
+ve diğer bütün öğrenme değerleri aynı); yalnız taban kuralların AÇMAYACAĞI "öğrenme-ekstra" girişler (`learning_unlocked_by`
+dolu) NEDENİNE göre ayrılır:
+
+- **(A) Kapasite-ekstra → bugünkü gibi GERÇEK açılır.** Sinyal taban kurallarından geçer; onu yalnız hesap/defter kapasitesi
+  ya da emir boyutu kuralı durdururdu: TOTAL_OPEN_RISK, MAX_POSITIONS (defterin adet tavanı dahil), MAX_POSITION_PCT,
+  INSUFFICIENT_MARGIN (politika rezervi nedeni dahil), MIN_NOTIONAL / MIN_QTY / STEP_ZERO_QTY / MAX_QTY,
+  (NO_TRADE_)MIN_ORDER_CONFLICT, LEVERAGE_TOO_HIGH, Formasyon RISK_ABOVE_CAP_AFTER_ROUNDING, MARGIN_UTILIZATION,
+  SPOT_ALLOCATION, CLUSTER_CAP, ALTCOIN_EXPOSURE ve doluluk kodları.
+- **(B) Seçicilik-ekstra → AÇILMAZ, "olsaydı" kaydı olur.** Taban SİNYALİ reddederdi: NEGATIVE_NET_EDGE, RESEARCH_SIZE_ONLY,
+  SIZE_MULTIPLIER_ZERO, STRUCTURE:* / STRUCTURE_*, CANDLE_VETO:*, REGIME_VETO:*, LEVERAGE_GATE_BLOCKED:* (taban hiçbir
+  kaldıraçta açmazdı), BOOK_UNIVERSE / NOT_IN_PROTOCOL_UNIVERSE, Formasyon RR_BELOW_MIN_*, COOLDOWN_AFTER_LOSS, THIN_DEPTH,
+  LIQUIDITY_UNKNOWN / DEPTH_UNKNOWN, RiskEngine'in işlem durdurma kodları ve güvenle sınıflanamayan HER kod (BASELINE_UNKNOWN
+  dahil). Bir girişte tek bir (B) kodu yeterlidir. Kayıt: neden `LEARNING_RECORD_ONLY`, ardından ayrılan kodlar
+  (`reason_not_opened`), `features.learning_record_only` (kodlar, sınıf ve adayın kullanacağı notional/kaldıraç/risk/boyut
+  kuralı); defterin mevcut karşı-olgusal kayıtçısına gider (ana bot gölge defteri, strateji defterleri ve Formasyon
+  `CounterfactualRecorder`), diğer karşı-olgusallar gibi sonradan net R ile etiketlenir; bekleyen tavanı (2000) aynıdır.
+- **(C) Box istisnası:** BOX_MIN_STOP_PCT (stop tabanın %2,22'sinin altında ama öğrenme tabanının üstünde) GERÇEK kalır.
+  Box öğrenme stop tabanı `min_stop_pct` 0,32 → **0,5**: %0,5'ten dar stoplu sinyal hiç üretilmez.
+
+Sınıf tablosu tek yerdedir: `tradingbot/learning_mode.py` `classify_unlock_codes` (`UNLOCK_CAPACITY`, `UNLOCK_BOX_EXCEPTION`,
+`UNLOCK_SELECTIVITY`, önek kuralları; her kodun gerekçesi yorumda). `tests/test_learning_record_only_extras.py` tabloyu sabitler
+ve kodu üreten yerleri AST ile tarar: sınıfsız yeni kod testi düşürür.
+
+**Kanıt (VPS, öğrenme dönemi, kapanan işlemler; PAPER ölçümü, kâr iddiası değil).** Seçicilik-ekstra her yerde ~0 ya da eksi:
+ana bot NEGATIVE_NET_EDGE 86 işlem −0,04R, STRUCTURE:OPPOSING_CONFIRMED 76 işlem −0,06R, CANDLE_VETO 30 işlem −0,09R; M2
+STRUCTURE_OPPOSING_CONFIRMED 22 işlem +0,006R; BOOK_UNIVERSE C4 −0,32R, D4 −0,91R. Kapasite-ekstra: M2 TOTAL_OPEN_RISK 10 işlem
++0,15R. Box: stop < %0,5 72 işlem −0,56R; %0,5–1 176 işlem +0,17R.
+
+**Nerede uygulanır.** Açılış kararının KESİNLEŞTİĞİ yerde (boyut, politika rezervi, öğrenme RiskEngine'i ve diğer bütün
+kapılardan SONRA): ana bot `_execute_locked` (risk onayından sonra), strateji defterleri `strategy_paper._open_learning`,
+Formasyon `pattern_trader.learning.open_learning` (plan REJECTED olur). Açılmaya devam eden girişlerin boyutu ve kapıları
+bugünküyle aynıdır. Açık pozisyonlara dokunulmaz (zorla kapanış yok); değişiklik yalnız yeni girişler içindir.
+
+**Aşağı akış.** Yalnız-kayıt karşı-olgusallar araştırma politikasına (BLOCKED gözlemi) ve deneyim havuzuna (learning
+influence) GİRMEZ — tek karar değişikliği "seçicilik-ekstra artık açılmaz"dır. Mühürlü ortak deneyim toplayıcısı onları kod
+değişmeden `xp_cf` satırı olarak taşır (neden ailesi GATE, `rows.py`; mühürlü dosyalar ve danışman mühür SHA'ları değişmedi).
+Bot karnesi (`scripts/bot_scorecard.py`) defter başına «kayda alınan ekstra» sınıfını (kayıt sayısı, etiketlendikçe net R)
+politika / öğrenme-ekstra / karşı-olgusal yanında ayrı gösterir ve aylık hedef bölümünü yazar: içinde bulunulan UTC ayı ve son
+30 günde kapanan işlemlerin ücret, kayma ve funding sonrası neti (başlangıç bakiyesinin %'si), işlem sayısı ve +%1 hedefe
+uzaklık — yalnız rapor.
+
+**Geri dönüş anahtarı (kill switch).** `config.yaml` → `learning_mode.extra_entries: open` + worker'ı yeniden başlat: bütün
+öğrenme-ekstra girişler yine açılır (kod varsayılanı `open`). `open` kipinde her karar ve `state/` altındaki her dosya `943345c`
+ile bayt bayt aynıdır (`tests/test_learning_record_only_tours.py`, iki senaryo, beş gerçek tur, `git archive 943345c` ile
+karşılaştırma). Box tabanını eski haline almak ayrı bir değerdir (`books.b1_box_fade.min_stop_pct: 0.32`). Not: bu config
+(`extra_entries` anahtarı) eski kodla YÜKLENMEZ (bilinmeyen anahtar ConfigError) — geri alma kod + config birlikte yapılır.
+
+**Bilinen sınır.** Aynı sinyal anahtarı için defterde bekleyen bir karşı-olgusal zaten varsa (ör. önceki turda kill switch ya
+da kapasite yüzünden kaydedildi) kayıtçının tekillik kuralı yeni kaydı yazmaz; eski neden kalır ve sinyal yine bir kez sayılır.
+
+## Önceki kayıtlar (en yeni üstte)
+
 **DAĞITILDI (2026-09-30 20:05 UTC, kullanıcı):** VPS `f6e6119` → `188cf22` (`tb-deploy-188cf22.sh --detach`). Kuru çalışma ve dağıtım 42/42 değişmez; iki doğrulanmış yedek (`tradingbot-manual-20260930T195506Z`, `…T195948Z`); karşı-olgusal net dolgu aday 0 (NO_CHANGE); worker 60 sn kararlı, bellek 491M (tepe 645M), panel 87M. Dağıtım öncesi worker 3,9G (tepe 4,8G, dosya önbelleği dahil). Gölge danışman ilk RECORD turunda advice/ açar ve ~1000 satırlık depoya bir-iki turda yetişir. Not: systemd her stop/start'ta "unit file … changed on disk; run daemon-reload" uyarısı verdi (dağıtımdan önce de vardı; etkin MemoryMax 6G).
 
 **DAĞITIMA HAZIR (2026-09-30 ~14:10 UTC):** kod `188cf22` = gölge danışman v1 yalnız KAYIT (`55179f4`, mühür ADVISOR_SHA `8a89fd7e69a2d33b` / WF_SHA `b34d6b7a313d24d1`) + `config.yaml` `advisor_mode: RECORD` (`1933343`) + `deploy/restore.sh` düzeltmesi (`27c6d12`, `188cf22`: geri yüklenen state servis kullanıcısına verilir; boru/SSH kopması/Ctrl+C dayanıklı). Betik `deploy/releases/tb-deploy-188cf22.sh` (`ff029e5`, sha256 `f894802b…753a65b`), 42 değişmez; iki inceleme turu + düzeltme; yalnız yerel sahte VPS'te uçtan uca denendi (gerçek VPS'te değil). Danışman hiçbir kararı değiştirmez; VPS deposu küçük (~1000 satır) olduğu için yetişme 1-2 tur. Ayrıca araştırma: kalabalık laboratuvarı fut_v2 → 8 hipotezin hiçbiri aday değil (docs/CROWD_LAB_FUT_V2.md).

@@ -171,10 +171,20 @@ step, and, while the monitor thread is alive, learning from the closes it queued
 plus 15 minutes. A tour runs on the main thread and walks every universe symbol and every book. Only the coin-head step
 (the newer specialists plus the head's decision) fans out, to a pool of `coin_heads.max_workers` = 4 threads
 ([`coinhead/registry.py` `CoinHeadRegistry.run_many`](../tradingbot/coinhead/registry.py)). Each tour writes its duration
-to `health.json` (`seconds`), and the Box timer's module docstring records one production measurement of 1,414 s for 41
+to `health.json` (`seconds`) and, per numbered step, to `health.json` `phases` with one "tur fazları" log line
+([`ops/tour_phases.py`](../tradingbot/ops/tour_phases.py)), and the Box timer's module docstring records one production measurement of 1,414 s for 41
 symbols. At that length a new main-bot decision comes roughly every 39 minutes (1,414 s + 900 s). That interval is
 longer than the 15-minute window in which a 5-minute candle counts as fresh, and far too long for stop checks. That is
 why the Box rule and position protection run on their own threads (sections 3.2 and 3.3) instead of inside the tour.
+
+**Keeping tours short (decision-neutral).** When the history-index refresher publishes a new similar-pattern index, the
+pattern-evidence cache key (symbol, index version, last bar) changes and the next tour would recompute every kNN query
+on the main thread. After each publish, and never before it, a single background worker now computes that evidence with
+the published index, the tour's own function and the same inputs, and seeds the cache under that version; a tour that
+asks for a symbol being computed waits for the same result ([`patterns/evidence_cache.py`](../tradingbot/patterns/evidence_cache.py)).
+The chart-analysis index is written once per tour instead of once per new analysis, and the closed-trade exit
+evaluation and the entry-snapshot trade links are memoised. Tests pin that ledgers and decisions are identical with these
+changes on and off.
 
 **Threads and locks.** The tour, the protective monitor (every 60 s), the Box timer (polls every 15 s) and the
 Formasyon scanner (60 s cycles) all write to paper ledgers; the history-index refresher does not. The rule for every
@@ -903,6 +913,19 @@ by the favourable extreme makes the order ambiguous (`intrabar_ambiguous_bars`).
 `cf_label_v1` records are lazily backfilled when the bars still cover their window, otherwise left for an offline script
 ([`scripts/cf_backfill_net.py`](../scripts/cf_backfill_net.py)). Only labels with a net R enter net statistics.
 
+**Conservative side labels (`cf_aux_v1`, record-only).** A counterfactual stop is filled at its level, while a real stop
+is filled at the first sampled mark beyond it, and the labeller never walks the entry bar. Both make counterfactuals look
+slightly better than real execution on tight stops. Neither is applied to `r_net`, which research policy and the shared
+experience layer consume unchanged. Instead each newly labelled record gets an `outcome.aux` dictionary
+([`learning_cf_aux.py`](../tradingbot/learning_cf_aux.py)): `r_net_entry_bar` (a stop touched in the part of the entry
+bar after entry, costed through the same net path), `overshoot_pct_est` (median stop overshoot of the book's own real
+stop exits, at least 10 observations, else null), `r_net_sampled_est` and `r_net_conservative` (both applied). Values
+that cannot be computed are null. [`scripts/bot_scorecard.py`](../scripts/bot_scorecard.py) prints the conservative
+mean and its coverage next to the counterfactual mean, and the read-only
+[`scripts/box_cf_gap_audit.py`](../scripts/box_cf_gap_audit.py) ([docs](BOX_CF_GAP_AUDIT.md)) decomposes the Box
+counterfactual-versus-real gap into stop width, cost, day clustering, held-position records, overshoot, entry bar,
+crowding, end-of-day/funding, wrong-side targets and price source, with day-clustered intervals.
+
 ### 5.8 Shared experience and the shadow advisor
 
 **Collector and store.** At the end of every tour,
@@ -1104,14 +1127,14 @@ What the tests pin down, by kind:
   ([`test_ops.py`](../tests/test_ops.py), [`test_restore_sh_v1.py`](../tests/test_restore_sh_v1.py),
   [`test_deploy_vps.py`](../tests/test_deploy_vps.py), [`test_security_chaos.py`](../tests/test_security_chaos.py)).
 
-**Counts from a run made for this document** (2026-10-01, Python 3.12, 4-core Linux container,
-`python -m pytest -q tests`): 4,082 tests collected in 222 test files; 4,075 passed, 7 skipped, 0 failed, in 1,339 s
-(about 22 minutes, on a machine that was running another test suite at the same time). Skipped tests need the
+**Counts from the latest full run** (2026-10-02, Python 3.12, 4-core Linux container,
+`python -m pytest -q tests`): 4,161 tests collected in 229 test files; 4,153 passed, 8 skipped, 0 failed, in 1,307 s
+(about 22 minutes, on a machine that was running other work at the same time). Skipped tests need the
 author's local research package or archive files, an opt-in benchmark (`TRADINGBOT_BENCH_1M=1`), or a fixture case that
 did not occur in the run.
 `ruff check .` uses only correctness rules ([`ruff.toml`](../ruff.toml)). CI
-([`chart-analysis.yml`](../.github/workflows/chart-analysis.yml)) runs Ruff and 84 of the 222 test files on Ubuntu
-(1,449 tests when collected at this commit) and the measurement-script tests on Windows; the full suite is run locally.
+([`chart-analysis.yml`](../.github/workflows/chart-analysis.yml)) runs Ruff and 91 of the 229 test files on Ubuntu
+(1,528 tests when collected at this commit) and the measurement-script tests on Windows; the full suite is run locally.
 
 ## 8. Limitations, known gaps and next steps
 
@@ -1243,7 +1266,7 @@ kâğıt işlemdir ve şu ana kadar istatistiksel olarak kesin değildir.
   tetikleyen bir yol yoktur.
 - **Kesinti politikası:** 2 saatten uzun kesintide aradaki barlar uygulanmaz, kesinti kaydedilir; geçmiş uzlaştırma
   yalnız ayrı simülasyondur.
-- **Testler:** ağsız; bu belge için yapılan koşuda 4.082 test, 4.075 geçti, 7 atlandı, 0 başarısız.
+- **Testler:** ağsız; bu belge için yapılan koşuda 4.161 test, 4.153 geçti, 8 atlandı, 0 başarısız.
 - **Okuma sırası:** `config.yaml` → `cli.py` → `engine_v3.py` → `coinhead/` → `opportunity.py` ve `risk/engine.py` →
   `accounting/futures_ledger.py` → `strategy_paper.py` → kural modülleri → iş parçacıkları → öğrenme katmanları →
   `signal_lab.py`.

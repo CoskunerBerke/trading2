@@ -9,10 +9,14 @@
   nedeni LEARNING_RECORD_ONLY olan karşı-olgusal olur (ayrılan kodlar + kullanacağı öğrenme boyutu); kapasite kodlu ve
   politika adayları `open` kipindekiyle BİREBİR aynı açılır. Box: öğrenme stop tabanı 0,5 (config.yaml) → %0,4 stop sinyal
   üretmez, %0,6 stop BOX_MIN_STOP_PCT ile GERÇEK açılır.
+* AYNI SİNYALİN ÖNCEKİ KAYDI: başka nedenli BEKLEYEN kayıt yalnız-kayda dönüşür (`open`da açılış onu düşürürdü); sayaç
+  KAYIT sayar, `rejections` tur başına olay, ana huni tur başına aşama.
 * AŞAĞI AKIŞ: ayrılan kayıtlar araştırma politikasına (BLOCKED gözlemi) ve deneyim havuzuna GİRMEZ; mühürlü ortak deneyim
-  toplayıcısı onları kod değişmeden `xp_cf` satırı olarak taşır (neden ailesi GATE: `rows.py`, mühürsüz).
-* CONFIG: kip doğrulaması (kod varsayılanı `open`). Karne: `test_bot_scorecard_record_only_monthly.py`; `open` kipinin
-  çok turlu bit-aynılığı: `test_learning_record_only_tours.py`.
+  toplayıcısı onları kod değişmeden `xp_cf` satırı olarak taşır (neden ailesi GATE: `rows.py`, mühürsüz) ve motorun
+  `config_hash`ını taşır; karar günlüğünde SHADOW / `learning_record_only`.
+* CONFIG: kip doğrulaması (kod varsayılanı `open`; `record_selectivity` karşı-olgusal kaydı ister). Karne:
+  `test_bot_scorecard_record_only_monthly.py`; `open` kipinin çok turlu ve doğrudan yol bit-aynılığı (943345c'ye karşı):
+  `test_learning_record_only_tours.py`.
 """
 from __future__ import annotations
 
@@ -279,6 +283,51 @@ def test_config_switch_defaults_to_open_validates_and_reaches_every_book_view():
     assert h({}) == h({"learning_mode": {"extra_entries": "open"}}) != h({"learning_mode": {"extra_entries": REC}})
 
 
+def test_record_selectivity_requires_counterfactual_recording():
+    """Kayıt kipi karşı-olgusal kapalıyken adayı sessizce kaybederdi → açık ConfigError; `open` kipi etkilenmez."""
+    with pytest.raises(ConfigError, match="counterfactual: true"):
+        load_v3({"learning_mode": {"extra_entries": REC, "counterfactual": False}})
+    assert load_v3({"learning_mode": {"extra_entries": "open", "counterfactual": False}}).learning_mode.counterfactual is False
+    assert load_v3({"learning_mode": {"counterfactual": False}}).learning_mode.extra_entries == "open"
+
+
+def test_decision_journal_classifies_record_only_as_a_learning_shadow():
+    from tradingbot.learn.decision_journal import SHADOW, classify_outcome
+    got = classify_outcome({"block_code": RO, "learning_record_only": {"codes": ["NEGATIVE_NET_EDGE"]}},
+                           is_actionable=True, has_valid_plan=True, shadowed=False)
+    assert got == (SHADOW, "learning_record_only", RO)
+
+
+def test_shared_experience_collector_carries_the_engines_config_hash_in_every_mode(tmp_path, monkeypatch):
+    """Mühürlü toplayıcı motorun önbelleğini okur, yoksa kendi formülüne düşer (o formül `open`ı düşmez). Motor özeti
+    toplayıcıdan ÖNCE hesaplar → xp satırlarının `config_hash`ı `open`/yok kipinde 943345c'ninkiyle aynı kalır."""
+    from dataclasses import asdict
+    from types import SimpleNamespace
+
+    import tradingbot.engine_v3 as EV
+    from tradingbot.core import payload_hash
+    from tradingbot.shared_experience.collector import SharedExperienceCollector
+    monkeypatch.setattr(SharedExperienceCollector, "step", lambda self, *a, **k: None)
+
+    class _Eng:
+        config_hash = EV.TradingEngineV3.config_hash
+        _shared_experience_step = EV.TradingEngineV3._shared_experience_step
+
+    hashes = {}
+    for name, sec in (("absent", {}), ("open", {"extra_entries": "open"}), ("rec", {"extra_entries": REC})):
+        eng = _Eng()
+        eng.cfg = SimpleNamespace(v3=load_v3({"shared_experience": {"enabled": True, "mode": "RECORD"}, "learning_mode": sec}),
+                                  state_path=tmp_path / name / "state", cache_path=None, code_sha="test")
+        eng._shared_experience_step([], {}, [], utc_now())        # ilk tur: karar listesi boş
+        xp = eng.__dict__["_shared_xp"]
+        assert isinstance(xp, SharedExperienceCollector) and xp.config_hash == eng.config_hash(), name
+        hashes[name] = xp.config_hash
+    head = asdict(load_v3({}))
+    head.pop("shared_experience")
+    head["learning_mode"].pop("extra_entries")                   # 943345c'nin V3Config alanları
+    assert hashes["absent"] == hashes["open"] == payload_hash(head) != hashes["rec"]
+
+
 # ============================================================================ 3) ANA BOT
 def _lm_rec(**kw) -> dict:
     d = LMM._lm(**kw)
@@ -373,6 +422,42 @@ def test_main_record_only_counterfactual_is_superseded_when_the_signal_later_ope
     eng.run_id = "run_2"
     opened, _ = eng._execute(decisions, chief, briefs, None, marks, now)
     assert len(opened) == 1 and LMM._main_cfs(eng) == [] and eng._funnel["counterfactual_superseded"] == 1
+
+
+def test_main_pending_counterfactual_of_the_same_signal_becomes_record_only(tmp_path, monkeypatch):
+    """Tur 1 kill switch → KILL_SWITCH_ACTIVE karşı-olgusalı; tur 2 (aynı sinyal) seçicilik-ekstra. `open`: açılır, eski kayıt
+    düşer (supersede). `record_selectivity`: açılmaz; tekillik yeni kaydı engeller → ESKİ kayıt yalnız-kayda dönüşür (normal
+    karşı-olgusal gibi etiketlenip araştırma/deneyim/karneye girmesin). Huni anahtarı her turdaki olayı sayar."""
+    now = utc_now().replace(microsecond=0)
+    out = {}
+    for name, lm in (("open", LMM._lm()), ("rec", _lm_rec())):
+        eng = LMM._eng(tmp_path / name, monkeypatch, lm)
+        eng.killswitch.trip("MANUAL", "test")
+        decisions, chief, briefs, marks = LMM._cands(eng, LMM.SYMS[:1], opp=LMM.NEG)
+        assert eng._execute(decisions, chief, briefs, None, marks, now)[0] == []
+        assert [t.reason_not_opened[0] for t in LMM._main_cfs(eng)] == ["KILL_SWITCH_ACTIVE"], name
+        eng.killswitch.reset("test", "reset")
+        funnels = []
+        for k in (2, 3):
+            eng.run_id = "run_%d" % k
+            opened, risk_log = eng._execute(decisions, chief, briefs, None, marks, now)
+            funnels.append(dict(eng._funnel))
+        out[name] = (eng, opened, funnels, LMM._log(risk_log, LMM.SYMS[0]))
+    eng, _opened, _f, _e = out["open"]
+    assert LMM.SYMS[0] in eng.ledger2.positions and LMM._main_cfs(eng) == [] and eng.shadow.meta.get("lm_superseded") == 1
+    eng, opened, funnels, e = out["rec"]
+    assert opened == [] and eng.ledger2.positions == {} and e["block_code"] == RO
+    (cf,) = LMM._main_cfs(eng)
+    assert cf.reason_not_opened[0] == RO and "NEGATIVE_NET_EDGE" in cf.reason_not_opened
+    assert "KILL_SWITCH_ACTIVE" in cf.reason_not_opened and cf.outcome is None
+    ro = cf.features[LM.RECORD_ONLY_FEATURE]
+    assert ro["retagged_from"] == "KILL_SWITCH_ACTIVE" and ro["book"] == "main" and ro["notional"] > 0
+    assert eng.shadow.meta.get("lm_retagged") == 1 and not eng.shadow.meta.get("lm_superseded")
+    assert [f["learning_record_only"] for f in funnels] == [1, 1], "huni: her turdaki olay (diğer aşamalar gibi)"
+    assert [f["counterfactual_recorded"] for f in funnels] == [0, 0], "yeni kayıt yazılmadı"
+    from tradingbot.learn.shadow import ShadowBook
+    (disk,) = [t for t in ShadowBook(eng.shadow.path).trades if t.book == "main"]
+    assert disk.reason_not_opened == cf.reason_not_opened
 
 
 def test_record_only_counterfactuals_never_feed_the_research_policy(tmp_path, monkeypatch):
@@ -472,6 +557,63 @@ def test_t2_structure_shadow_extra_is_recorded_with_the_rules_own_geometry(tmp_p
     assert t.reason_not_opened[:2] == [RO, "STRUCTURE_WAIT_TRIGGER"]
     assert t.features["structure"]["action"] == "WAIT_TRIGGER" and t.stop > 0
     assert book.structure_decisions[LB.SYM]["applied"] == "REJECTED"
+
+
+def test_book_record_only_counter_counts_records_and_rejections_count_tours(tmp_path):
+    """Aynı günlük barda dört tur: TEK kayıt, sayaç 1 (kayıt sayar); `rejections` diğer ret nedenleri gibi tur başına olay."""
+    flag, _brk = LB._trend_rows()
+    fbs, now_ms, px = LB._trend_fbs(flag), LB._asof(flag), float(flag[-1]["close"])
+    book = LB._book(tmp_path, "t2_trend_regime", mode="ENFORCE")
+    for k in range(4):
+        book.run_id = "RUN-%d" % k
+        LB._step(book, fbs, now_ms=now_ms + k * 900_000, px=px, learning=LB._bl("t2_trend_regime", extra_entries=REC),
+                 structures_entry_shadow=True)
+    assert len(book.cf.sb.trades) == 1 and book.rejections[RO] == 4
+    assert book.learning_counters["learning_record_only"] == 1 and book.learning_counters["counterfactual_recorded"] == 1
+
+
+def test_book_pending_counterfactual_of_the_same_signal_becomes_record_only(tmp_path):
+    """D4: tur 1 kill switch → iki sembolde KILL_SWITCH_ACTIVE kaydı; tur 2: evren içi sembol açılır (kaydı düşer, iki kipte
+    aynı); evren dışı (BOOK_UNIVERSE) `open`da açılır, `record_selectivity`de açılmaz ve ESKİ kaydı yalnız-kayda dönüşür."""
+    syms = [LB.SYM, "SOL/USDT"]
+    fbs = LB._d4_fbs(tuple(syms))
+    out = {}
+    for mode in (LM.EXTRA_OPEN, REC):
+        lrn = LB._bl("d4_donchian_20_10", extra_entries=mode)
+        book = LB._book(tmp_path / mode, "d4_donchian_20_10", symbols=[LB.SYM])
+        book.risk.ks.trip("TEST", "manual trip")
+        LB._step(book, fbs, now_ms=LB.NOW_H4, px=104.1, symbols=syms, learning=lrn)
+        assert sorted((t.symbol, t.reason_not_opened) for t in book.cf.sb.trades) == \
+            [("ETH/USDT", ["KILL_SWITCH_ACTIVE"]), ("SOL/USDT", ["KILL_SWITCH_ACTIVE"])], mode
+        book.risk.ks.reset("test", "reset")
+        for k in (1, 2):
+            LB._step(book, fbs, now_ms=LB.NOW_H4 + k * 15 * 60_000, px=104.1, symbols=syms, learning=lrn)
+        out[mode] = book
+    o, r = out[LM.EXTRA_OPEN], out[REC]
+    assert set(o.ledger.positions) == set(syms) and o.cf.sb.trades == [] and o.cf.stats()["superseded"] == 2
+    assert set(r.ledger.positions) == {LB.SYM} and r.cf.stats()["superseded"] == 1
+    (t,) = r.cf.sb.trades
+    assert t.symbol == "SOL/USDT" and t.reason_not_opened[0] == RO and t.outcome is None
+    assert "BOOK_UNIVERSE" in t.reason_not_opened and "KILL_SWITCH_ACTIVE" in t.reason_not_opened
+    assert t.features[LM.RECORD_ONLY_FEATURE]["retagged_from"] == "KILL_SWITCH_ACTIVE"
+    assert r.cf.recorded_total == 2, "dönüşüm yeni kayıt değildir"
+    assert r.learning_counters["learning_record_only"] == 1 and r.rejections[RO] == 2
+    disk = json.loads((r.state_dir / "counterfactual_trades.json").read_text(encoding="utf-8"))
+    (d,) = disk["trades"]
+    assert d["reason_not_opened"] == t.reason_not_opened
+
+
+def test_retag_leaves_labelled_and_already_record_only_records_alone():
+    t = ShadowTrade(id="x", plan_id="k", symbol="ETH/USDT", market_type="USDM_PERP", direction="LONG", created_at="2026-10-01",
+                    entry=100.0, stop=95.0, targets=[], horizon_bars=6, variant="as_planned",
+                    reason_not_opened=["INSUFFICIENT_MARGIN"], label_ts="2026-10-02", features=None)
+    info = {"reason": RO, "codes": ["BOOK_UNIVERSE", "TOTAL_OPEN_RISK"]}
+    assert LM.retag_as_record_only(t, info) is True
+    assert t.reason_not_opened == [RO, "BOOK_UNIVERSE", "TOTAL_OPEN_RISK", "INSUFFICIENT_MARGIN"]
+    assert t.features[LM.RECORD_ONLY_FEATURE] == dict(info, retagged_from="INSUFFICIENT_MARGIN")
+    assert LM.retag_as_record_only(t, info) is False, "zaten yalnız-kayıt"
+    t2 = dataclasses.replace(t, reason_not_opened=["MIN_NOTIONAL"], outcome={"r_multiple": 1.0}, features=None)
+    assert LM.retag_as_record_only(t2, info) is False and t2.reason_not_opened == ["MIN_NOTIONAL"], "etiketli kayda dokunmaz"
 
 
 # Box: 1d kutu 110/90; son 5m mumu kırmızı ve önceki mumun dibini kırar → SHORT, stop = önceki mumun tepesi.

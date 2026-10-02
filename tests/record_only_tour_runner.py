@@ -6,12 +6,13 @@ paketi aynı süreçte yan yana içe aktarılamaz. Koşucu `--tree`in `tradingbo
 koyar (ağacın kendi test düzeneği: `test_engine_v3._engine`, `test_strategy_paper_engine_v1._install`, ortak deneyim altın
 testinin `_overrides`/`_DetOS`/`T0`), saati dondurur, kimlikleri deterministik yapar, ağı kapatır (conftest'teki koruma) ve
 GERÇEK `TradingEngineV3.tour`u beş tur koşar: ana bot, T2/M2/D4 kâğıt defterleri, Formasyon defteri, öğrenme modu AÇIK, ana
-bot ve T2/M2'de yapı girişi gölgede (config.yaml gibi); tur 0 kill switch, tur 1 sıfırlama, tur 3 fiyat oynaması. İki senaryo:
+bot ve T2/M2'de yapı girişi gölgede (config.yaml gibi), ortak deneyim katmanı RECORD (`--xp`; xp satırları, imleç ve danışman
+dosyaları da karşılaştırılır); tur 0 kill switch, tur 1 sıfırlama, tur 3 fiyat oynaması. İki senaryo:
 `books` (BTC yükselişte: T2/M2 politika ve TOTAL_OPEN_RISK kapasite-ekstra işlemleri) ve `main_gates` (BTC düşüşte, rejim ve
 mum kapıları ENFORCE → öğrenmede gölgede: ana botta REGIME_VETO seçicilik-ekstra). Çıktı: `state/` altındaki her dosyanın
-sha256'sı (koşu kökü `<ROOT>` ile değiştirilmiş; `health.json` süreç belleği ölçümü ve `heartbeat.json` pid'i düşülmüş) ve karar
-özeti (defter başına pozisyon/işlem etiketleri, karşı-olgusal nedenleri). pytest bu dosyayı toplamaz (adı `test_` ile
-başlamaz).
+sha256'sı (koşu kökü `<ROOT>` ile değiştirilmiş; `health.json` süreç belleği ve katman süresi ölçümleri, xp `status.json` süre
+özetleri ve `heartbeat.json` pid'i düşülmüş) ve karar özeti (defter başına pozisyon/işlem etiketleri, karşı-olgusal
+nedenleri). pytest bu dosyayı toplamaz (adı `test_` ile başlamaz).
 """
 from __future__ import annotations
 
@@ -55,6 +56,8 @@ def main(argv=None) -> int:
     ap.add_argument("--scenario", default="books", choices=("books", "main_gates"),
                     help="books: BTC yükselişte (T2/M2 politika + kapasite-ekstra); main_gates: BTC düşüşte, rejim ve mum "
                          "kapıları ENFORCE → öğrenmede gölgede, ana botta REGIME_VETO seçicilik-ekstra")
+    ap.add_argument("--xp", default="RECORD", choices=("OFF", "RECORD"),
+                    help="ortak deneyim katmanı (RECORD: xp satırları ve danışman meta dosyaları da karşılaştırılır)")
     ap.add_argument("--out", required=True)
     a = ap.parse_args(argv)
     tree = Path(a.tree).resolve()
@@ -96,7 +99,7 @@ def main(argv=None) -> int:
     random.seed(7)
     mp.setattr("tradingbot.pattern_trader.scheduler.PatternScanner.start", lambda self: None)
     mp.setattr("tradingbot.box_timer.BoxTimer.start", lambda self: None)
-    ov = copy.deepcopy(G._overrides(lm=True, xp={"enabled": False, "mode": "OFF"}))
+    ov = copy.deepcopy(G._overrides(lm=True, xp={"enabled": a.xp == "RECORD", "mode": a.xp}))
     ov["learning_mode"]["strategy_overrides"]["structures_entry_shadow"] = ["main", "t2_trend_regime", "m2_tsmom28"]
     gates = a.scenario == "main_gates"
     if gates:
@@ -138,13 +141,29 @@ def main(argv=None) -> int:
             if isinstance(mem, dict):
                 for k in ("rss_mb", "hwm_mb"):
                     mem.pop(k, None)
+            if isinstance(h.get("shared_experience"), dict):  # katman adımının süresi ölçümdür (ms), karar değil
+                h["shared_experience"].pop("step_ms", None)
+            data = json.dumps(h, sort_keys=True).encode("utf-8")
+        elif rel == "state/shared_experience/status.json":   # aynı süre ölçümünün özetleri
+            h = json.loads(data)
+            for k in ("step_ms_last", "step_ms_p50", "step_ms_p95"):
+                h.pop(k, None)
             data = json.dumps(h, sort_keys=True).encode("utf-8")
         elif rel == "state/heartbeat.json":                  # süreç kimliği (pid) alt süreçten alt sürece değişir
             h = json.loads(data)
             h.pop("pid", None)
             data = json.dumps(h, sort_keys=True).encode("utf-8")
         files[rel] = hashlib.sha256(data).hexdigest()
-    Path(a.out).write_text(json.dumps({"files": files, "facts": _facts(eng)}, sort_keys=True), encoding="utf-8")
+    facts = _facts(eng)
+    xp_rows = root / "state" / "shared_experience" / "experience.jsonl"
+    if xp_rows.exists():                                     # xp satırları: tür sayıları + karşı-olgusal satırlarının nedenleri
+        rows = [json.loads(x) for x in xp_rows.read_text(encoding="utf-8").splitlines() if x.strip()]
+        kinds: dict = {}
+        for r in rows:
+            kinds[str(r.get("kind"))] = kinds.get(str(r.get("kind")), 0) + 1
+        facts["xp"] = {"kinds": kinds, "cf": sorted([str(r.get("book")), str(r.get("symbol")), list(r.get("reasons") or [])]
+                                                    for r in rows if r.get("kind") == "xp_cf")}
+    Path(a.out).write_text(json.dumps({"files": files, "facts": facts}, sort_keys=True), encoding="utf-8")
     return 0
 
 

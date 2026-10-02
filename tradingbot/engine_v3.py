@@ -4821,6 +4821,14 @@ class TradingEngineV3(TradingEngine):
         try:
             if xp is None:
                 from .shared_experience.collector import SharedExperienceCollector
+                # Karar kimliği (`config_hash`) toplayıcıdan ÖNCE hesaplanır: mühürlü toplayıcı önbelleği okur, yoksa kendi
+                # formülüne düşer — o formül öğrenme-ekstra kipinin kod varsayılanını (`open`) düşmez (2026-10-03). İlk turun
+                # karar listesi boşsa önbellek henüz dolmamış olurdu; böylece xp satırları motorun özetini taşır. Özet
+                # hesaplanamazsa (etiket yalnız) toplayıcı kurulumu yine denenir.
+                try:
+                    self.config_hash()
+                except Exception:  # noqa: BLE001
+                    pass
                 xp = self.__dict__["_shared_xp"] = SharedExperienceCollector.from_engine(self)
             xp.step(self, risk_log=risk_log, decisions=decisions, briefs=briefs, now=now)
         except Exception as exc:  # noqa: BLE001 — kayıt katmanı ASLA turu durdurmaz

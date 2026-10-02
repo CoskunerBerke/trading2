@@ -736,6 +736,10 @@ class LearningModeSection:
     min_notional_bump: bool = True            # min-notional'a çıkarma (yalnız %2 tavan ve serbest marj içinde)
     counterfactual: bool = True               # açılmayan sinyal için karşı-olgusal kayıt
     counterfactual_max_pending: int = 2000    # defter başına bekleyen kayıt tavanı
+    # 2026-10-03 (sahip kararı): öğrenme-ekstra girişler. `open` (kod varsayılanı) = bugünkü davranış, hepsi açılır;
+    # `record_selectivity` = seçicilik-ekstra (taban sinyali reddederdi) AÇILMAZ, "olsaydı" kaydı olur; kapasite-ekstra ve
+    # Box BOX_MIN_STOP_PCT gerçek açılır. Sınıf tablosu `learning_mode.classify_unlock_codes`. Kill switch: `open`.
+    extra_entries: str = "open"
     books: dict[str, Any] = field(default_factory=dict)               # ad → BookLearningCfg (doğrulamada normalize)
     strategy_overrides: dict[str, Any] = field(default_factory=dict)  # yalnız OVERRIDE_KEYS
 
@@ -1265,12 +1269,17 @@ def _validate_learning_mode(cfg: V3Config, profile) -> None:
     Her zaman: tipler, sınırlar, defter adları, bilinmeyen alt anahtar ve ezme anahtarları. Yalnız `enabled=true`
     iken: mode=PAPER, gateway=paper, testnet kapalı, risk profili PAPER_RESEARCH ve kaldıraç ≤ profil tavanı.
     `books` değerleri `BookLearningCfg`'ye normalize edilir (idempotent: ikinci doğrulama aynı sonucu verir)."""
-    from .learning_mode import BOOK_NAMES, LIST_OVERRIDE_KEYS, OVERRIDE_KEYS, SYMBOLS_UNIVERSE, BookLearningCfg
+    from .learning_mode import (BOOK_NAMES, EXTRA_ENTRIES_MODES, LIST_OVERRIDE_KEYS, OVERRIDE_KEYS, SYMBOLS_UNIVERSE,
+                                BookLearningCfg)
     from .structures.catalog import BOT_KEYS as _ST_BOTS
     lm = cfg.learning_mode
     for _f in ("enabled", "min_notional_bump", "counterfactual"):
         if not isinstance(getattr(lm, _f), bool):
             raise ConfigError(f"learning_mode.{_f} true/false olmalı (verilen: {getattr(lm, _f)!r})")
+    # öğrenme-ekstra giriş kipi (2026-10-03): yalnız `open` | `record_selectivity` (yazım hatası sessizce `open` olmasın)
+    if not (isinstance(lm.extra_entries, str) and lm.extra_entries in EXTRA_ENTRIES_MODES):
+        raise ConfigError(f"learning_mode.extra_entries yalnız {' | '.join(EXTRA_ENTRIES_MODES)} olabilir "
+                          f"(verilen: {lm.extra_entries!r})")
     if lm.enabled:
         # YALNIZ PAPER: üç bağımsız katmanın ilki (ikincisi çalışma zamanı mode_gate, üçüncüsü `learning.on` korumaları).
         _m = str(getattr(cfg.mode, "mode", "") or "").upper()

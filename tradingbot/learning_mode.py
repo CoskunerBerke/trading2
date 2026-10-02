@@ -87,6 +87,8 @@ COUNTERFACTUAL_OK: frozenset[str] = frozenset({
     "COSTS_EXCEED_EDGE", "KILL_SWITCH_ACTIVE",
     # C4: `also_matched` varyasyonları
     "ALSO_MATCHED",
+    # seçicilik-ekstra girişi YALNIZ KAYIT (2026-10-03, sahip kararı): sinyal ve geometri geçerli, açılmadı
+    "LEARNING_RECORD_ONLY",
 })
 #: ASLA kayıt yazılmaz: veri/geometri güvenilmez, R tanımsız ya da aynı gözlem ikinci kez sayılır.
 COUNTERFACTUAL_NEVER: frozenset[str] = frozenset({
@@ -122,6 +124,166 @@ def counterfactual_ok(reason: str) -> bool:
     if segs[0] in COUNTERFACTUAL_OK:
         return True
     return r.startswith(_CF_OK_PREFIXES)
+
+
+# ---------------------------------------------------------------------------- öğrenme-ekstra girişlerin sınıfı
+# 2026-10-03 (sahip kararı; her algoritma kendi kâğıt bakiyesinde ayda en az +%1 net hedefler): öğrenme-ekstra giriş
+# (`learning_unlocked_by` dolu) NEDENİNE göre ayrılır. Öğrenme dönemi kanıtı (VPS, kapanan işlemler): seçicilik-ekstra
+# girişler her yerde ~0 ya da eksi (ana bot NEGATIVE_NET_EDGE 86 işlem −0,04R, STRUCTURE:OPPOSING_CONFIRMED 76 −0,06R,
+# CANDLE_VETO 30 −0,09R; M2 STRUCTURE_OPPOSING_CONFIRMED 22 +0,006R; BOOK_UNIVERSE C4 −0,32R, D4 −0,91R); kapasite-ekstra
+# M2 TOTAL_OPEN_RISK 10 işlem +0,15R; Box stop < %0,5 72 işlem −0,56R, %0,5–1 176 işlem +0,17R.
+#
+# * KAPASİTE (A): sinyal taban kurallarından GEÇER; yalnız hesap/defter kapasitesi ya da emir boyutu kapısı durdururdu →
+#   bugünkü gibi GERÇEK açılır.
+# * SEÇİCİLİK (B): taban SİNYALİ reddederdi (ekonomi, yapı, mum/rejim vetosu, kaldıraç seçicisinin NO_TRADE'i, defter
+#   evreni, R/R tabanı …) ya da kod güvenle sınıflanamıyor (BASELINE_UNKNOWN dahil, bilinmeyen her kod) → AÇILMAZ;
+#   `LEARNING_RECORD_ONLY` nedenli karşı-olgusal ("olsaydı") olarak kaydedilir. Bir girişte TEK bir (B) kodu yeterlidir.
+# * BOX İSTİSNASI (C): BOX_MIN_STOP_PCT (stop tabanın %2,22'sinin altında ama öğrenme tabanının üstünde) GERÇEK kalır.
+#
+# Sınıf, kapının KODDA ne anlama geldiğinden türetilir (aşağıdaki yorumlar). Kodu üreten yerler: `engine_v3` ana giriş
+# yolu (`lm_unlocked`, `_lm_baseline_blockers` → taban `RiskEngine.evaluate`), `strategy_paper._learning_tags` /
+# `_baseline_blocks` / `_ledger_preview`, `pattern_trader.book` (`unlocked`, `_open_learning`). Tablo testi
+# (`tests/test_learning_record_only_extras.py`) bu yerleri tarar: sınıfsız yeni kod testi düşürür.
+EXTRA_OPEN = "open"
+EXTRA_RECORD_SELECTIVITY = "record_selectivity"
+EXTRA_ENTRIES_MODES = (EXTRA_OPEN, EXTRA_RECORD_SELECTIVITY)
+#: Kod varsayılanı: bugünkü davranış (her öğrenme-ekstra açılır). config.yaml `record_selectivity` seçer.
+DEFAULT_EXTRA_ENTRIES = EXTRA_OPEN
+#: Açılmayan seçicilik-ekstra adayın karşı-olgusal nedeni (`reason_not_opened[0]`); ardından ayrılan kodlar gelir.
+LEARNING_RECORD_ONLY = "LEARNING_RECORD_ONLY"
+#: Karşı-olgusal kaydın `features` anahtarı: ayrılan kodlar, sınıf ve adayın kullanacağı öğrenme parametreleri.
+RECORD_ONLY_FEATURE = "learning_record_only"
+CLASS_POLICY, CLASS_CAPACITY, CLASS_SELECTIVITY = "policy", "capacity", "selectivity"
+UNLOCK_CLASSES = (CLASS_POLICY, CLASS_CAPACITY, CLASS_SELECTIVITY)
+
+#: (A) KAPASİTE — sinyal geçer, yalnız hesap/defter kapasitesi ya da emir boyutu durdururdu. YALNIZ tam eşleşme.
+UNLOCK_CAPACITY: frozenset[str] = frozenset({
+    # RiskEngine: TOTAL_OPEN_RISK = adayın piyasa kovasındaki açık stop riski + bu işlem > equity × tavan (%6) — hesap
+    # kapasitesi; öğrenme profili tavanı 100'e çıkarır, sinyal yargılanmaz.
+    "TOTAL_OPEN_RISK",
+    # RiskEngine: MAX_POSITIONS / MAX_POSITIONS_MARKET = açık pozisyon ADEDİ ≥ profil tavanı (PAPER_RESEARCH'te yok);
+    # defter ön-izlemesi `ledger.can_open` ve Formasyon `R_MAX_POSITIONS` = defterin pozisyon adedi tavanı — kapasite.
+    "MAX_POSITIONS", "MAX_POSITIONS_MARKET",
+    # RiskEngine: MAX_POSITION_PCT = notional > equity × %30 × kaldıraç — tek işlemin BOYUT tavanı.
+    "MAX_POSITION_PCT",
+    # RiskEngine: MIN_ORDER_CONFLICT = taban boyut borsanın en küçük emrinin altında (risk büyütülmez) — emir boyutu.
+    # NO_TRADE_MIN_ORDER_CONFLICT = coin head planı tabanda aynı nedenle vetolardı (B5; `plan.learning_min_notional_bump`).
+    "MIN_ORDER_CONFLICT", "NO_TRADE_MIN_ORDER_CONFLICT",
+    # INSUFFICIENT_MARGIN = taban boyutunun marjı taban görünümünün serbest marjını aşar (ana bot `_lm_baseline_blockers`,
+    # defter ön-izlemesi `_ledger_preview`; politika rezervi nedeni de bu koddur) — hesap kapasitesi.
+    "INSUFFICIENT_MARGIN",
+    # `_ledger_preview` borsa miktar kuralları: adıma yuvarlanan miktar 0 / min miktarın altı / piyasa emri tavanının üstü
+    # / min-notional'ın altı — emir boyutu (öğrenme boyutu min-notional'a çıkarır ya da küçültür; sinyal aynı).
+    "STEP_ZERO_QTY", "MIN_QTY", "MAX_QTY", "MIN_NOTIONAL",
+    # `_ledger_preview`: taban kaldıracı sembolün borsa kaldıraç tavanını aşar — emir kurulumu (öğrenme kaldıracı
+    # borsa tavanıyla sınırlar); sinyal yargılanmaz.
+    "LEVERAGE_TOO_HIGH",
+    # Formasyon: tick ızgarası gerçekleşme fiyatını stoptan uzaklaştırınca TABAN boyutu risk bütçesini aşardı; öğrenme
+    # boyutu gerçekleşme fiyatıyla kurar (risk bütçede, R aynı). R/R tabanı ayrı koddur (RR_BELOW_MIN_AFTER_ROUNDING).
+    "RISK_ABOVE_CAP_AFTER_ROUNDING",
+    # RiskEngine: MARGIN_UTILIZATION = kullanılan marj + bu işlemin marjı > equity tavanı — hesap marj kapasitesi.
+    "MARGIN_UTILIZATION",
+    # RiskEngine: SPOT_ALLOCATION = spot notional maruziyeti tavanı (ana bot %30, öğrenme 100) — hesap kapasitesi.
+    "SPOT_ALLOCATION",
+    # RiskEngine: CLUSTER_CAP = aynı kümede aynı yönde pozisyon ADEDİ tavanı; ALTCOIN_EXPOSURE = altcoin notional
+    # maruziyeti tavanı — portföy kapasitesi (PAPER_RESEARCH'te yok); sinyal yargılanmaz.
+    "CLUSTER_CAP", "ALTCOIN_EXPOSURE",
+    # RiskEngine: RISK_PER_TRADE ve LEVERAGE_CAP yalnız KÜÇÜLTÜR (her zaman geçer) — boyut tavanı; bugün kod olarak çıkmaz.
+    "RISK_PER_TRADE", "LEVERAGE_CAP",
+    # Doluluk: sembolün tek pozisyon yuvası dolu (RiskEngine ALREADY_OPEN_SAME_SYMBOL, `ledger.can_open` ALREADY_OPEN) ya
+    # da aynı coinde ters maruziyet (OPPOSITE_EXPOSURE_CONFLICT) — hesap/defter yuvası, sinyal değil. Taban görünümü
+    # öğrenme defterinin alt kümesi olduğundan bugün öğrenme-ekstra kodu olarak ULAŞILAMAZ (öğrenme defteri de durur).
+    "ALREADY_OPEN_SAME_SYMBOL", "ALREADY_OPEN", "OPPOSITE_EXPOSURE_CONFLICT",
+})
+#: (C) BOX İSTİSNASI — `strategy_paper._learning_tags`: Box stopu tabanın `min_stop_pct`inin (%2,22) altında ama öğrenme
+#: tabanının (config `learning_mode.books.b1_box_fade.min_stop_pct`, %0,5) üstünde. Sahip kararıyla GERÇEK açılır (A gibi):
+#: öğrenme tabanının altındaki stoplar kural tarafından hiç üretilmez (`box_theory` `min_stop_pct`).
+UNLOCK_BOX_EXCEPTION: frozenset[str] = frozenset({"BOX_MIN_STOP_PCT"})
+#: (B) SEÇİCİLİK — taban SİNYALİ reddederdi. Bu liste belgeleme ve tablo testi içindir; listede OLMAYAN her kod da
+#: (önek kuralına uymasa bile) seçicilik sayılır (fail-closed).
+UNLOCK_SELECTIVITY: frozenset[str] = frozenset({
+    # Ana bot ekonomi kapısı: maliyet/belirsizlik sonrası muhafazakâr kenar ≤ 0 (NEGATIVE_NET_EDGE) ya da yalnız nokta
+    # tahmini pozitif (RESEARCH_SIZE_ONLY) — sinyalin kendisi reddedilir (S5 keşfi).
+    "NEGATIVE_NET_EDGE", "RESEARCH_SIZE_ONLY",
+    # Ana bot: fırsat × şef × araştırma boyut çarpanı 0 → taban emir AÇMAZDI (B3; sinyalin kendisi elenir).
+    "SIZE_MULTIPLIER_ZERO",
+    # Strateji defterleri: sembol defterin KENDİ laboratuvar evreninde değil (D4/C4 `symbols: universe`); Formasyon:
+    # protokol evreni dışında — taban bu sembolde sinyal almazdı.
+    "BOOK_UNIVERSE", "NOT_IN_PROTOCOL_UNIVERSE",
+    # Formasyon: maliyet sonrası R/R (girişte / tick yuvarlamasından sonra) protokol tabanının altında — sinyal kalitesi.
+    "RR_BELOW_MIN_AT_ENTRY", "RR_BELOW_MIN_AFTER_ROUNDING",
+    # Formasyon: zarardan sonra sembol bekleme süresi — taban bu sembolde sinyali almazdı (protokol kuralı).
+    "COOLDOWN_AFTER_LOSS",
+    # Formasyon: 0,5% derinliği tabanın 20.000 USDT eşiğinin altında (THIN_DEPTH) ya da likidite/derinlik tetikte
+    # ölçülemedi (bekleme kodları LIQUIDITY_UNKNOWN / DEPTH_UNKNOWN) — piyasa kalitesi kapısı, hesap kapasitesi değil.
+    "THIN_DEPTH", "LIQUIDITY_UNKNOWN", "DEPTH_UNKNOWN",
+    # RiskEngine hesap-geneli işlem durdurma: kill switch, günlük/haftalık zarar, azami düşüş, ardışık zarar / sembol
+    # bekleme süreleri — taban hiç işlem açmazdı; kapasite değil (öğrenme profili aynı kuralları taşır).
+    "KILL_SWITCH_ACTIVE", "DAILY_LOSS", "WEEKLY_LOSS", "MAX_DRAWDOWN", "CONSEC_LOSS_COOLDOWN", "SYMBOL_COOLDOWN",
+    # RiskEngine sinyal/piyasa kapıları: stop yok, spotta short, spread tavanı, en küçük beklenen R.
+    "STOP_PRESENT", "SPOT_NO_SHORT", "SPREAD", "MIN_EXPECTED_R",
+    # RiskEngine LIQ_BUFFER: taban kaldıracında likidasyon mesafesi < k × stop — taban bu kaldıraçta açmazdı ve RiskEngine
+    # daha düşüğünü denemez (kaldıraç seçicisinin NO_TRADE'i gibi; PAPER_RESEARCH'te yok).
+    "LIQ_BUFFER",
+    # `_ledger_preview`: dolum fiyatı ≤ 0 — veri; `_baseline_blocks`: nedeni boş ret (RISK_DENIED) ve taban kararı
+    # hesaplanamadı (BASELINE_UNKNOWN) — taban kararı bilinmiyor, güvenle kapasite denemez.
+    "BAD_PRICE", "RISK_DENIED", "BASELINE_UNKNOWN",
+})
+#: (B) önek kuralları: ana bot mum/rejim vetosu (`CANDLE_VETO:<neden>`, `REGIME_VETO:<neden>`), yapı kapısı (`STRUCTURE:<kod>`,
+#: defterler `STRUCTURE_<kod>`), kaldıraç seçicisinin NO_TRADE'i (`LEVERAGE_GATE_BLOCKED:<taban başarısızlıkları>`: taban hiçbir
+#: kaldıraçta açmazdı; B1/S7 öğrenmede 2x düşüş).
+UNLOCK_SELECTIVITY_PREFIXES: tuple[str, ...] = ("CANDLE_VETO", "REGIME_VETO", "STRUCTURE", "LEVERAGE_GATE_BLOCKED")
+
+
+def classify_unlock_code(code: Any) -> str:
+    """Tek `learning_unlocked_by` kodu → CLASS_CAPACITY | CLASS_SELECTIVITY. Kapasite ve Box istisnası YALNIZ tam
+    eşleşmedir (`CODE:detay` biçimi kapasite sayılmaz); geri kalan her şey — bilinen seçicilik kodu, önek kuralı ya da
+    bilinmeyen kod — seçiciliktir (fail-closed)."""
+    c = str(code or "").strip().upper()
+    if c in UNLOCK_CAPACITY or c in UNLOCK_BOX_EXCEPTION:
+        return CLASS_CAPACITY
+    return CLASS_SELECTIVITY
+
+
+def classify_unlock_codes(codes: Iterable[Any] | None) -> str:
+    """Bir girişin `learning_unlocked_by` listesi → CLASS_POLICY (boş: taban da açardı) | CLASS_CAPACITY (her kod
+    kapasite ya da Box istisnası) | CLASS_SELECTIVITY (en az bir seçicilik/bilinmeyen kod)."""
+    cs = [c for c in (codes or ()) if str(c or "").strip()]
+    if not cs:
+        return CLASS_POLICY
+    return CLASS_SELECTIVITY if any(classify_unlock_code(c) == CLASS_SELECTIVITY for c in cs) else CLASS_CAPACITY
+
+
+def selectivity_codes(codes: Iterable[Any] | None) -> list[str]:
+    """Listedeki seçicilik (ve bilinmeyen) kodları, sırası ve tekilliği korunarak."""
+    return list(dict.fromkeys(str(c) for c in (codes or ())
+                              if str(c or "").strip() and classify_unlock_code(c) == CLASS_SELECTIVITY))
+
+
+def extra_entries_mode(learning: Any) -> str:
+    """Defter görünümünün (`BookLearning`) ekstra giriş kipi; alan yoksa/geçersizse kod varsayılanı (`open`)."""
+    v = str(getattr(learning, "extra_entries", DEFAULT_EXTRA_ENTRIES) or DEFAULT_EXTRA_ENTRIES)
+    return v if v in EXTRA_ENTRIES_MODES else DEFAULT_EXTRA_ENTRIES
+
+
+def record_only(codes: Iterable[Any] | None, learning: Any) -> dict[str, Any] | None:
+    """Açılış kararı KESİNLEŞTİĞİ yerde çağrılır. None → aç (bugünkü yol, bit-aynı). Sözlük → AÇMA, karşı-olgusal kaydet:
+    {"reason", "codes" (bütün kodlar), "selectivity_codes", "class", "mode"}. Yalnız öğrenme açık VE kip
+    `record_selectivity` VE en az bir seçicilik kodu varken sözlük döner; `open` kipinde hiçbir şey hesaplanmaz."""
+    if learning is None or not bool(getattr(learning, "on", False)) \
+            or extra_entries_mode(learning) != EXTRA_RECORD_SELECTIVITY:
+        return None
+    cs = list(dict.fromkeys(str(c) for c in (codes or ()) if str(c or "").strip()))
+    if classify_unlock_codes(cs) != CLASS_SELECTIVITY:
+        return None
+    return {"reason": LEARNING_RECORD_ONLY, "codes": cs, "selectivity_codes": selectivity_codes(cs),
+            "class": CLASS_SELECTIVITY, "mode": EXTRA_RECORD_SELECTIVITY}
+
+
+def is_record_only_cf(reasons: Any) -> bool:
+    """Karşı-olgusal kayıt (`reason_not_opened`) bir seçicilik-ekstra YALNIZ KAYIT adayı mı (ilk neden)?"""
+    rs = list(reasons or []) if isinstance(reasons, (list, tuple)) else []
+    return bool(rs) and str(rs[0]) == LEARNING_RECORD_ONLY
 
 
 # ---------------------------------------------------------------------------- yapılandırma nesneleri
@@ -168,9 +330,14 @@ class BookLearning:
     hard_cap_pct: float = HARD_CAP_PCT
     #: öğrenme RiskEngine profilinin toplam açık risk tavanı (config `max_total_open_risk_pct`; defterler de uyar)
     max_total_open_risk_pct: float = DEFAULT_MAX_TOTAL_OPEN_RISK_PCT
+    #: öğrenme-ekstra giriş kipi (config `extra_entries`; 2026-10-03): `open` | `record_selectivity`
+    extra_entries: str = DEFAULT_EXTRA_ENTRIES
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        d = asdict(self)
+        if d.get("extra_entries") == DEFAULT_EXTRA_ENTRIES:
+            d.pop("extra_entries")              # kod varsayılanında özet/risk.json bit-aynı (2026-10-03)
+        return d
 
 
 def _utc_now() -> datetime:
@@ -250,6 +417,13 @@ class LearningMode:
     def max_pending(self) -> int:
         return int(self._sec("counterfactual_max_pending", DEFAULT_MAX_PENDING))
 
+    @property
+    def extra_entries(self) -> str:
+        """Öğrenme-ekstra giriş kipi (2026-10-03): `open` (kod varsayılanı, bugünkü davranış) | `record_selectivity`.
+        Geçersiz değer config doğrulamasında ConfigError'dur; burada savunma olarak varsayılana düşer."""
+        v = str(self._sec("extra_entries", DEFAULT_EXTRA_ENTRIES))
+        return v if v in EXTRA_ENTRIES_MODES else DEFAULT_EXTRA_ENTRIES
+
     # ------------------------------------------------------------ çalışma zamanı kapısı
     def active(self) -> tuple[bool, str]:
         """(aktif mi, neden). Kapalı → (False, DISABLED); kapı düşerse (False, LEARNING_MODE_SUSPENDED:<neden>)."""
@@ -284,8 +458,11 @@ class LearningMode:
     def status(self) -> dict:
         """{enabled, active, reason, since, books}: sağlık/panel için. `since` son durum değişiminin zamanı."""
         with self._lock:
-            return {"enabled": self.enabled, "active": self._on, "reason": self._reason, "since": self._since,
-                    "books": sorted(n for n, b in self._books.items() if b.enabled)}
+            out = {"enabled": self.enabled, "active": self._on, "reason": self._reason, "since": self._since,
+                   "books": sorted(n for n, b in self._books.items() if b.enabled)}
+        if self.extra_entries != DEFAULT_EXTRA_ENTRIES:
+            out["extra_entries"] = self.extra_entries   # kod varsayılanında alan yok → sağlık dosyası bit-aynı
+        return out
 
     # ------------------------------------------------------------ okuyucular
     def book_cfg(self, name: str) -> BookLearningCfg:
@@ -304,7 +481,7 @@ class LearningMode:
                             max_pending=self.max_pending,
                             min_stop_pct=(None if bc.min_stop_pct is None else float(bc.min_stop_pct)),
                             symbols=bc.symbols, hard_cap_pct=HARD_CAP_PCT,
-                            max_total_open_risk_pct=self.max_total_open_risk_pct)
+                            max_total_open_risk_pct=self.max_total_open_risk_pct, extra_entries=self.extra_entries)
 
     def override(self, key: str, default):
         """Strateji ezmesi: yalnız AKTİFKEN config değeri, aksi halde `default`. Bilinmeyen anahtar KeyError."""
@@ -704,7 +881,11 @@ def baseline_spot_delta(state: Any, spot_by_symbol: dict[str, Any] | None) -> fl
     return delta
 
 
-__all__ = ["BOOK_NAMES", "OVERRIDE_KEYS", "LIST_OVERRIDE_KEYS", "SIZE_SLOT", "SIZE_BUMP", "SIZE_SHRUNK", "SIZE_RULES",
+__all__ = ["CLASS_CAPACITY", "CLASS_POLICY", "CLASS_SELECTIVITY", "DEFAULT_EXTRA_ENTRIES", "EXTRA_ENTRIES_MODES",
+           "EXTRA_OPEN", "EXTRA_RECORD_SELECTIVITY", "LEARNING_RECORD_ONLY", "RECORD_ONLY_FEATURE", "UNLOCK_BOX_EXCEPTION",
+           "UNLOCK_CAPACITY", "UNLOCK_CLASSES", "UNLOCK_SELECTIVITY", "UNLOCK_SELECTIVITY_PREFIXES", "classify_unlock_code",
+           "classify_unlock_codes", "extra_entries_mode", "is_record_only_cf", "record_only", "selectivity_codes",
+           "BOOK_NAMES", "OVERRIDE_KEYS", "LIST_OVERRIDE_KEYS", "SIZE_SLOT", "SIZE_BUMP", "SIZE_SHRUNK", "SIZE_RULES",
            "HARD_CAP_PCT", "RISK_NOTIONAL_ROUND_TOL", "SYMBOLS_UNIVERSE", "STATE_DISABLED", "STATE_ACTIVE", "SUSPENDED_PREFIX",
            "LEVERAGE_FALLBACK", "LEVERAGE_FALLBACK_REASON", "COUNTERFACTUAL_OK", "COUNTERFACTUAL_NEVER",
            "BookLearningCfg", "BookLearning", "LearningMode", "FitResult", "profile_for", "fit_size",

@@ -881,10 +881,18 @@ How a trade's R is measured does not change.
   The candidate goes to the book's existing counterfactual recorder with reason `LEARNING_RECORD_ONLY`, the diverted
   codes after it in `reason_not_opened`, and `features.learning_record_only` (codes, class, and the notional, leverage,
   risk and size rule it would have used): the main bot's shadow book, the strategy books' `CounterfactualRecorder`, and
-  Formasyon's recorder (the plan is rejected). It is labelled later like any other counterfactual. **Kill switch:**
-  `extra_entries: open` and a worker restart restores today's behaviour; with `open` every decision and state file is
-  byte-identical to `943345c` ([`tests/test_learning_record_only_tours.py`](../tests/test_learning_record_only_tours.py)).
-  Open positions are never closed by the switch.
+  Formasyon's recorder (the plan is rejected). It is labelled later like any other counterfactual. If a pending record
+  of the same signal key already exists with another reason (for example the previous tour's kill switch or margin
+  block), that record is converted in place to `LEARNING_RECORD_ONLY` (old reason kept after the codes,
+  `retagged_from`), because with `open` the opening would have superseded it. The book counter `learning_record_only`
+  counts records (new or converted); the main bot's funnel key counts each tour's diversions like every funnel stage;
+  the decision journal classes the candidate as `SHADOW`, stage `learning_record_only`. `record_selectivity` requires
+  `counterfactual: true` (the config loader rejects the combination with recording off). Because a diverted extra never
+  becomes a real trade, the research policy also gets no observation from it. **Kill switch:** `extra_entries: open` and
+  a worker restart restores today's behaviour; with `open` every decision and state file is byte-identical to `943345c`
+  over real tours (shared-experience rows included) and direct runs of every entry path
+  ([`tests/test_learning_record_only_tours.py`](../tests/test_learning_record_only_tours.py)). Open positions are never
+  closed by the switch.
 
 #### Effective rules per book under the committed config
 

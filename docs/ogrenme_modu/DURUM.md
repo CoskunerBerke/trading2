@@ -37,7 +37,9 @@ Formasyon `pattern_trader.learning.open_learning` (plan REJECTED olur). Açılma
 bugünküyle aynıdır. Açık pozisyonlara dokunulmaz (zorla kapanış yok); değişiklik yalnız yeni girişler içindir.
 
 **Aşağı akış.** Yalnız-kayıt karşı-olgusallar araştırma politikasına (BLOCKED gözlemi) ve deneyim havuzuna (learning
-influence) GİRMEZ — tek karar değişikliği "seçicilik-ekstra artık açılmaz"dır. Mühürlü ortak deneyim toplayıcısı onları kod
+influence) GİRMEZ — tek karar değişikliği "seçicilik-ekstra artık açılmaz"dır. Bunun doğal sonucu: açılmayan ekstra gerçek
+işlem olmadığı için araştırma politikası o işlemlerden de gözlem almaz (`open` kipinde açılan ekstranın kapanışı gözlem
+olurdu). Karar günlüğünde aday `SHADOW` sınıfı, `learning_record_only` aşamasıyla yazılır. Mühürlü ortak deneyim toplayıcısı onları kod
 değişmeden `xp_cf` satırı olarak taşır (neden ailesi GATE, `rows.py`; mühürlü dosyalar ve danışman mühür SHA'ları değişmedi).
 Bot karnesi (`scripts/bot_scorecard.py`) defter başına «kayda alınan ekstra» sınıfını (kayıt sayısı, etiketlendikçe net R)
 politika / öğrenme-ekstra / karşı-olgusal yanında ayrı gösterir ve aylık hedef bölümünü yazar: içinde bulunulan UTC ayı ve son
@@ -46,12 +48,27 @@ uzaklık — yalnız rapor.
 
 **Geri dönüş anahtarı (kill switch).** `config.yaml` → `learning_mode.extra_entries: open` + worker'ı yeniden başlat: bütün
 öğrenme-ekstra girişler yine açılır (kod varsayılanı `open`). `open` kipinde her karar ve `state/` altındaki her dosya `943345c`
-ile bayt bayt aynıdır (`tests/test_learning_record_only_tours.py`, iki senaryo, beş gerçek tur, `git archive 943345c` ile
-karşılaştırma). Box tabanını eski haline almak ayrı bir değerdir (`books.b1_box_fade.min_stop_pct: 0.32`). Not: bu config
+ile bayt bayt aynıdır (`tests/test_learning_record_only_tours.py`, `git archive 943345c` ile karşılaştırma): iki senaryoda beş
+gerçek tur (ortak deneyim katmanı RECORD, xp satırları dahil) ve turlarda boşta kalan yolların doğrudan koşusu (D4 evren dışı
+ve kapasite, T2 kapasite ve yapı gölgesi, Box %0,4/%0,6 stop × taban 0,32/0,5, Formasyon R/R tabanı, politika, tick
+yuvarlaması ve tarama, ana bot seçicilik/kapasite/politika, kill switch sonrası aynı sinyal). Box tabanını eski haline almak ayrı bir değerdir (`books.b1_box_fade.min_stop_pct: 0.32`). Not: bu config
 (`extra_entries` anahtarı) eski kodla YÜKLENMEZ (bilinmeyen anahtar ConfigError) — geri alma kod + config birlikte yapılır.
 
-**Bilinen sınır.** Aynı sinyal anahtarı için defterde bekleyen bir karşı-olgusal zaten varsa (ör. önceki turda kill switch ya
-da kapasite yüzünden kaydedildi) kayıtçının tekillik kuralı yeni kaydı yazmaz; eski neden kalır ve sinyal yine bir kez sayılır.
+**Aynı sinyalin önceki kaydı.** Aynı sinyal anahtarı için defterde başka nedenle yazılmış BEKLEYEN bir karşı-olgusal zaten
+varsa (ör. önceki turda kill switch ya da marj yüzünden kaydedildi) tekillik kuralı yeni kaydı yazmaz; o kayıt yalnız-kayda
+DÖNÜŞÜR: ilk neden `LEARNING_RECORD_ONLY` olur, ayrılan kodlar ve eski neden arkasında kalır, `features.learning_record_only`
+eklenir (`retagged_from`: eski neden; ana botta `meta.lm_retagged` sayar). `open` kipinde açılış o kaydı düşürürdü
+(supersede); dönüşüm sayesinde eski kayıt normal karşı-olgusal gibi etiketlenip karneye, deneyim havuzuna ya da araştırmaya
+girmez. Etiketlenmiş kayda dokunulmaz.
+
+**Sayaçlar.** Defter sayacı `learning_record_only` (strateji defterleri ve Formasyon) KAYIT sayar: yeni ya da dönüşen kayıt;
+aynı sinyalin sonraki turları sayılmaz. `rejections[LEARNING_RECORD_ONLY]` diğer ret nedenleri gibi her turdaki olayı sayar.
+Ana botun huni anahtarı `learning_record_only` diğer huni aşamaları gibi O TURUN olayıdır (yalnız `record_selectivity` iken
+yazılır); yazılan kayıt `counterfactual_recorded`dadır.
+
+**Doğrulama.** `extra_entries` yalnız `open` | `record_selectivity` olabilir (yazım hatası ConfigError). `record_selectivity`
+`counterfactual: true` ister: karşı-olgusal kapalıyken aday ne açılır ne kaydedilirdi — açık ConfigError (sessizce `open`a
+düşmek de sahip kararını çiğnerdi).
 
 ## Önceki kayıtlar (en yeni üstte)
 

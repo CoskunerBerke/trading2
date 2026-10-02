@@ -37,7 +37,7 @@ from .learning_mode import (BASELINE_SIZE_KEY, BOOK_NAMES as _LM_BOOK_NAMES, EXT
                             RECORD_ONLY_FEATURE, SIZE_BUMP, SIZE_SHRUNK, SYMBOLS_UNIVERSE, LearningMode, OPEN_FRAC_KEY,
                             baseline_size_tag, baseline_spot_delta, baseline_view, counterfactual_ok, extra_entries_mode,
                             fit_with_reserve, is_record_only_cf, learning_tags, leverage_fallback, policy_reserve_usdt,
-                            record_only as lm_record_only)
+                            record_only as lm_record_only, retag_as_record_only)
 from .learning_basis import (BASIS_LEARNING as LM_BASIS_LEARNING, BASIS_POLICY as LM_BASIS_POLICY,
                              ECONOMICS_CODES as _LM_ECON_CODES, economics_codes as lm_economics_codes)
 from .market.quality import DataQualityConfig, DataQualityGate
@@ -2526,21 +2526,27 @@ class TradingEngineV3(TradingEngine):
             # bugünkü gibi uygulandı. Kip `record_selectivity` iken taban kuralların SİNYALİ reddedeceği aday (en az bir
             # seçicilik kodu) AÇILMAZ; nedeni LEARNING_RECORD_ONLY olan karşı-olgusal olur (ayrılan kodlar + kullanacağı
             # öğrenme parametreleri). `open` kipinde `lm_record_only` None döner → yol bit-aynı.
+            # Huni anahtarı diğer huni aşamaları gibi BU TURUN olayını sayar (aynı sinyal sonraki turda yine sayılır); yazılan
+            # kayıt `counterfactual_recorded`dadır. Aynı sinyalin başka nedenli bekleyen kaydı varsa (ör. önceki turun
+            # INSUFFICIENT_MARGIN'i) tekillik yeni kaydı engeller; o kayıt yalnız-kayda dönüşür (`open`da açılış onu düşürürdü).
             _lm_div = lm_record_only(lm_unlocked, bl) if bl is not None else None
             if _lm_div is not None:
                 funnel["learning_record_only"] = int(funnel.get("learning_record_only", 0)) + 1
                 entry["block_code"] = LEARNING_RECORD_ONLY
                 entry["learning_record_only"] = dict(_lm_div)
-                self._lm_counterfactual(
-                    bl, sym=sym, market=market, d=d, plan=plan, b=b, reason=LEARNING_RECORD_ONLY,
-                    reasons=list(_lm_div["codes"]), now=now, entry=entry,
-                    extra={RECORD_ONLY_FEATURE: dict(
-                        _lm_div, book="main", market_type=market, size_rule=lm_fit.size_rule,
-                        notional=final_notional, leverage=int(plan_leverage), risk_usdt=final_risk_usdt,
-                        execution_entry=round(exec_entry, 10), slots=int(bl.slots), risk_pct=float(bl.risk_pct),
-                        exploration=lm_exploration,
-                        leverage_fallback=(LEVERAGE_FALLBACK_REASON if lm_lev_fb is not None else None),
-                        policy_basis=(lm_econ or {}).get("policy_basis"))})
+                _lm_ro_info = dict(
+                    _lm_div, book="main", market_type=market, size_rule=lm_fit.size_rule,
+                    notional=final_notional, leverage=int(plan_leverage), risk_usdt=final_risk_usdt,
+                    execution_entry=round(exec_entry, 10), slots=int(bl.slots), risk_pct=float(bl.risk_pct),
+                    exploration=lm_exploration,
+                    leverage_fallback=(LEVERAGE_FALLBACK_REASON if lm_lev_fb is not None else None),
+                    policy_basis=(lm_econ or {}).get("policy_basis"))
+                if not self._lm_counterfactual(
+                        bl, sym=sym, market=market, d=d, plan=plan, b=b, reason=LEARNING_RECORD_ONLY,
+                        reasons=list(_lm_div["codes"]), now=now, entry=entry,
+                        extra={RECORD_ONLY_FEATURE: _lm_ro_info}):
+                    self._lm_cf_retag_record_only(bl, sym=sym, market=market, d=d, plan=plan, b=b, info=_lm_ro_info,
+                                                  entry=entry)
                 continue
             funnel["capacity_approved"] += 1
             # ÖĞRENME: bu işlemin etiketleri (defter meta/özellikleri + karar günlüğü satırı)
@@ -4198,6 +4204,32 @@ class TradingEngineV3(TradingEngine):
         self._lm_cf_forget(pend[:over])
         self._lm_cf_meta_add("lm_dropped", over)
         return over
+
+    def _lm_cf_retag_record_only(self, bl, *, sym: str, market: str, d, plan, b, info: dict,
+                                 entry: dict | None = None) -> int:
+        """Seçicilik-ekstra YALNIZ KAYIT (2026-10-03): aynı sinyalin (anahtar/sembol/yön) BAŞKA nedenle yazılmış BEKLEYEN ana
+        karşı-olgusalı LEARNING_RECORD_ONLY nedenine dönüşür (`learning_mode.retag_as_record_only`). `open` kipinde giriş
+        açılınca `_lm_cf_supersede` o kaydı düşürürdü; kayıt kipinde tekillik yeni kaydı engellediği için eski kayıt normal
+        karşı-olgusal gibi etiketlenip araştırma/deneyim/karne sayımına girmesin. `meta.lm_retagged` sayar. Döner: sayı."""
+        if bl is None or not bl.counterfactual:
+            return 0
+        try:
+            sig = self._signal_id(sym, market, d, plan, b)
+            dirn = str(d.direction or "").upper()
+            n = 0
+            for t in self.shadow.trades:
+                if t.book == "main" and str(t.plan_id) == str(sig) and t.symbol == sym \
+                        and str(t.direction).upper() == dirn and retag_as_record_only(t, info):
+                    n += 1
+            if n:
+                self._lm_cf_meta_add("lm_retagged", n)
+                self.shadow.save()
+                if entry is not None and isinstance(entry.get("counterfactual"), dict):
+                    entry["counterfactual"]["retagged"] = n
+            return n
+        except Exception as exc:  # noqa: BLE001 — bakım arızası kararı ETKİLEMEZ
+            log.warning("%s yalnız-kayıt dönüşümü yapılamadı: %s", sym, exc)
+            return 0
 
     def _lm_cf_supersede(self, sig: str, sym: str, direction: str) -> int:
         """Aynı sinyal (anahtar/sembol/yön) sonradan GERÇEK işlem olarak açıldı: ana karşı-olgusal kaydı düşer

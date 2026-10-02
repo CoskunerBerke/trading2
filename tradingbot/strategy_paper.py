@@ -1369,12 +1369,19 @@ class StrategyBook:
                 why = str((self.last_actions.get(sym) or {}).get("reason") or "")
                 ro = (a.get("_learning") or {}).get("record_only") if isinstance(a.get("_learning"), dict) else None
                 if why == LEARNING_RECORD_ONLY and isinstance(ro, dict):
-                    # seçicilik-ekstra YALNIZ KAYIT (2026-10-03): neden + ayrılan kodlar + kullanacağı öğrenme boyutu
-                    self._count("learning_record_only")
-                    self._cf_record(sym, a, why, price=price, now=now, verdict=verdict,
-                                    variation=(a.get("lab_algo") if fam_candle else None),
-                                    extra_features={RECORD_ONLY_FEATURE: dict(ro)},
-                                    extra_reasons=list(ro.get("codes") or []))
+                    # seçicilik-ekstra YALNIZ KAYIT (2026-10-03): neden + ayrılan kodlar + kullanacağı öğrenme boyutu.
+                    # Aynı sinyalin başka nedenli bekleyen kaydı varsa o kayıt dönüşür (`open`da açılış onu düşürürdü).
+                    # Sayaç KAYIT sayar (yeni ya da dönüşen); aynı sinyalin sonraki turları sayılmaz. `rejections` ise
+                    # diğer ret nedenleri gibi her turdaki olayı sayar.
+                    var = a.get("lab_algo") if fam_candle else None
+                    ok = self._cf_record(sym, a, why, price=price, now=now, verdict=verdict, variation=var,
+                                         extra_features={RECORD_ONLY_FEATURE: dict(ro)},
+                                         extra_reasons=list(ro.get("codes") or []))
+                    if not ok and self.cf is not None:
+                        ok = self.cf.retag_record_only(signal_key=_signal_key(a), symbol=sym, variation=var,
+                                                       direction=str(a.get("direction") or "LONG"), info=dict(ro)) > 0
+                    if ok:
+                        self._count("learning_record_only")
                 elif counterfactual_ok(why):
                     self._cf_record(sym, a, why, price=price, now=now, verdict=verdict,
                                     variation=(a.get("lab_algo") if fam_candle else None))

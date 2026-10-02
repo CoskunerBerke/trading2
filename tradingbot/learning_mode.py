@@ -286,6 +286,29 @@ def is_record_only_cf(reasons: Any) -> bool:
     return bool(rs) and str(rs[0]) == LEARNING_RECORD_ONLY
 
 
+#: Yeniden etiketlenen kaydın `reason_not_opened` uzunluk tavanı (kayıtçının ek neden tavanıyla aynı: 1 + 15).
+RETAG_MAX_REASONS = 16
+
+
+def retag_as_record_only(trade: Any, info: dict[str, Any]) -> bool:
+    """Aynı sinyalin (anahtar/sembol/yön) BAŞKA nedenle yazılmış, henüz ETİKETLENMEMİŞ karşı-olgusalı seçicilik-ekstra
+    YALNIZ KAYIT adayına dönüşür (2026-10-03). `open` kipinde bu kayıt giriş açılınca düşerdi (supersede); kayıt kipinde
+    giriş açılmaz ve tekillik yeni kaydı engeller — eski kayıt normal karşı-olgusal gibi etiketlenip sayılmasın diye ilk
+    neden LEARNING_RECORD_ONLY olur, ayrılan kodlar ve eski nedenler arkasında kalır; özelliklere `learning_record_only`
+    (+ `retagged_from`: eski ilk neden) eklenir. Etiketli ya da zaten yalnız-kayıt olan kayda dokunmaz. Döner: değişti mi."""
+    if trade is None or getattr(trade, "outcome", None) is not None:
+        return False
+    old = [str(x) for x in (getattr(trade, "reason_not_opened", None) or [])]
+    if old[:1] == [LEARNING_RECORD_ONLY]:
+        return False
+    codes = [str(c) for c in (info.get("codes") or [])]
+    trade.reason_not_opened = list(dict.fromkeys([LEARNING_RECORD_ONLY] + codes + old))[:RETAG_MAX_REASONS]
+    feats = dict(getattr(trade, "features", None) or {})
+    feats[RECORD_ONLY_FEATURE] = dict(info, retagged_from=(old[0] if old else None))
+    trade.features = feats
+    return True
+
+
 # ---------------------------------------------------------------------------- yapılandırma nesneleri
 @dataclass(frozen=True)
 class BookLearningCfg:

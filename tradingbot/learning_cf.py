@@ -68,7 +68,7 @@ from .accounting.funding import FundingSchedule
 from .accounting.models import MarketType, SymbolFilters
 from .core import D, from_iso, iso, stable_id
 from .learn.shadow import ShadowBook, ShadowTrade, label_with_candles
-from .learning_mode import counterfactual_ok
+from .learning_mode import counterfactual_ok, retag_as_record_only
 from .timeframes import TF_MS
 
 LABEL_TARGET_STOP_TIME = "TARGET_STOP_TIME"
@@ -841,6 +841,25 @@ class CounterfactualRecorder:
         if n:
             self.sb.trades = keep
             self.superseded += n
+            self._dirty = True
+        return n
+
+    def retag_record_only(self, *, signal_key: str | None, symbol: str, direction: str, variation: str | None = None,
+                          info: dict[str, Any]) -> int:
+        """Seçicilik-ekstra YALNIZ KAYIT (2026-10-03): aynı sinyalin (defter, anahtar, sembol, yön, varyasyon) BAŞKA nedenle
+        yazılmış BEKLEYEN kaydı varken tekillik yeni kaydı engeller; o kayıt `learning_mode.retag_as_record_only` ile
+        LEARNING_RECORD_ONLY nedenine dönüşür (`open` kipinde giriş açılınca `supersede` ile düşerdi). Yeni kayıt YAZILMAZ,
+        `recorded_total` değişmez. Döner: dönüşen kayıt sayısı."""
+        if not signal_key:
+            return 0
+        key = self._key(signal_key, symbol, str(direction or "").upper(), variation)
+        n = 0
+        for t in self.sb.trades:
+            if self._key(t.signal_key or t.plan_id, t.symbol, t.direction, t.variation) == key \
+                    and retag_as_record_only(t, info):
+                t.features = _clean(t.features)
+                n += 1
+        if n:
             self._dirty = True
         return n
 

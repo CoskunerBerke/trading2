@@ -1133,10 +1133,17 @@ class PatternBook:
                 # oynatma onu İKİNCİ kez kaydırırdı (eski `quantized_entry` kayıtlarını `learning_cf.net_outcome` ayrıca tanır).
                 ro = (pl.get("learning") or {}).get("record_only")
                 if why == LEARNING_RECORD_ONLY and isinstance(ro, dict):
-                    # seçicilik-ekstra YALNIZ KAYIT (2026-10-03): neden + ayrılan kodlar + kullanacağı öğrenme boyutu
-                    self.learning_counters["learning_record_only"] = int(self.learning_counters.get("learning_record_only", 0)) + 1
-                    self._cf_record(pl, why, entry=mark, at=cf_at, extra={"entry_ref": "mark", RECORD_ONLY_FEATURE: dict(ro)},
-                                    extra_reasons=list(ro.get("codes") or []))
+                    # seçicilik-ekstra YALNIZ KAYIT (2026-10-03): neden + ayrılan kodlar + kullanacağı öğrenme boyutu. Aynı
+                    # planın başka nedenli bekleyen kaydı varsa o kayıt dönüşür. Sayaç KAYIT sayar (yeni ya da dönüşen).
+                    ok = self._cf_record(pl, why, entry=mark, at=cf_at,
+                                         extra={"entry_ref": "mark", RECORD_ONLY_FEATURE: dict(ro)},
+                                         extra_reasons=list(ro.get("codes") or []))
+                    if not ok and self.cf is not None:
+                        ok = self.cf.retag_record_only(signal_key=str(pl["plan_id"]), symbol=symbol,
+                                                       direction=str(pl.get("side") or ""), info=dict(ro)) > 0
+                    if ok:
+                        self.learning_counters["learning_record_only"] = \
+                            int(self.learning_counters.get("learning_record_only", 0)) + 1
                 else:
                     self._cf_record(pl, why, entry=mark, at=cf_at, extra={"entry_ref": "mark"})
                 return r

@@ -1269,8 +1269,8 @@ def _validate_learning_mode(cfg: V3Config, profile) -> None:
     Her zaman: tipler, sınırlar, defter adları, bilinmeyen alt anahtar ve ezme anahtarları. Yalnız `enabled=true`
     iken: mode=PAPER, gateway=paper, testnet kapalı, risk profili PAPER_RESEARCH ve kaldıraç ≤ profil tavanı.
     `books` değerleri `BookLearningCfg`'ye normalize edilir (idempotent: ikinci doğrulama aynı sonucu verir)."""
-    from .learning_mode import (BOOK_NAMES, EXTRA_ENTRIES_MODES, LIST_OVERRIDE_KEYS, OVERRIDE_KEYS, SYMBOLS_UNIVERSE,
-                                BookLearningCfg)
+    from .learning_mode import (BOOK_NAMES, EXTRA_ENTRIES_MODES, EXTRA_RECORD_SELECTIVITY, LIST_OVERRIDE_KEYS,
+                                OVERRIDE_KEYS, SYMBOLS_UNIVERSE, BookLearningCfg)
     from .structures.catalog import BOT_KEYS as _ST_BOTS
     lm = cfg.learning_mode
     for _f in ("enabled", "min_notional_bump", "counterfactual"):
@@ -1280,6 +1280,12 @@ def _validate_learning_mode(cfg: V3Config, profile) -> None:
     if not (isinstance(lm.extra_entries, str) and lm.extra_entries in EXTRA_ENTRIES_MODES):
         raise ConfigError(f"learning_mode.extra_entries yalnız {' | '.join(EXTRA_ENTRIES_MODES)} olabilir "
                           f"(verilen: {lm.extra_entries!r})")
+    # `record_selectivity` seçicilik-ekstrayı AÇMAZ, "olsaydı" kaydına çevirir; karşı-olgusal kapalıyken kayıt da yazılmaz →
+    # aday sessizce kaybolurdu (öğrenme verisi akmaz). Sessizce `open`a düşmek de sahip kararını çiğner → açık hata.
+    if lm.extra_entries == EXTRA_RECORD_SELECTIVITY and not lm.counterfactual:
+        raise ConfigError("learning_mode.extra_entries: record_selectivity, counterfactual: true ister (seçicilik-ekstra "
+                          "aday açılmaz ve yalnız karşı-olgusal olarak kaydedilir); ya counterfactual: true yapın ya da "
+                          "extra_entries: open seçin")
     if lm.enabled:
         # YALNIZ PAPER: üç bağımsız katmanın ilki (ikincisi çalışma zamanı mode_gate, üçüncüsü `learning.on` korumaları).
         _m = str(getattr(cfg.mode, "mode", "") or "").upper()

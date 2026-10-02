@@ -72,6 +72,9 @@ _BLOCK_MAP: dict[str, tuple[str, str]] = {
     "RISK_CAPACITY_BLOCKED": (RISK_REJECTED, "risk_engine_capacity"),
     "RISK_ENGINE_BLOCKED": (RISK_REJECTED, "risk_engine"),
     "EXCHANGE_REJECTED": (OPEN_FAILED, "ledger_open"),
+    # ÖĞRENME-EKSTRA YALNIZ KAYIT (2026-10-03, `learning_mode.LEARNING_RECORD_ONLY`): risk kapılarından geçen seçicilik-ekstra
+    # aday açılmadı, karşı-olgusal ("olsaydı") olarak kaydedildi → gölge sınıfı, kendi aşaması. Yalnız `record_selectivity`.
+    "LEARNING_RECORD_ONLY": (SHADOW, "learning_record_only"),
 }
 #: Tur genelinde girişleri durduran kapılar (aday bazlı red DEĞİL).
 _HALT_REASONS = {"RISK_STATE_PERSIST_FAILED", "SHUTDOWN_REQUESTED", "GAP_RECONCILE_PENDING"}

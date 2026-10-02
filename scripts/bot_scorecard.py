@@ -27,7 +27,8 @@ Soru tek: "Hangi bot, bugüne kadar kapattığı işlemlerde para kazandırdı v
   tahmini) ve kapsamı `n`. Mevcut sayılar (ortalama, aralık, hüküm) DEĞİŞMEZ; alanı olmayan eski kayıtlar kapsama girmez.
 * KAYDA ALINAN EKSTRA (2026-10-03, sahip kararı): öğrenme modunun `extra_entries: record_selectivity` kipinde AÇILMAYAN
   seçicilik-ekstra adaylar (karşı-olgusal ilk nedeni `LEARNING_RECORD_ONLY`) defter başına AYRI sınıf: kayıt sayısı ve
-  etiketlendikçe net R. «karşı-olgusal» sütunu bunları İÇERMEZ. P&L'e GİRMEZ.
+  etiketlendikçe net R. «karşı-olgusal» sütunu bunları İÇERMEZ. P&L'e GİRMEZ. Sayı KAYIT sayısıdır, açılmış ekstra işlem
+  sayısıyla bire bir kıyaslanmaz (T2/M2'de koşul sürdükçe her günlük bar yeni kayıttır).
 * AYLIK HEDEF (2026-10-03, yalnız rapor): sahibin hedefi her algoritmanın kendi kâğıt bakiyesinde ayda en az +%1 net.
   Defter başına içinde bulunulan UTC takvim ayında (bugüne kadar) ve son 30 günde KAPANAN işlemlerin net sonucu (ücret,
   kayma ve funding SONRASI) başlangıç bakiyesinin %'si olarak, işlem sayısı ve hedefe uzaklık. Açık pozisyonların
@@ -484,7 +485,9 @@ def render_learning(card: dict[str, Any]) -> list[str]:
                      f"{_rec_txt(b.get(RECORDED_EXTRA)):>22}  {cf_txt}")
     lines.append("   " + lm["note_tr"])
     lines.append("   «kayda alınan ekstra»: kayıt sayısı / etiketlenenlerin NET ort. R (karşı-olgusalla aynı net taban; "
-                 "etiket yoksa —). Bu adaylar açılmadı; bakiyeye dokunmaz.")
+                 "etiket yoksa —). Bu adaylar açılmadı; bakiyeye dokunmaz. Sayı KAYIT sayısıdır, işlem sayısıyla bire bir "
+                 "kıyaslanmaz: trend defterlerinde (T2/M2) koşul sürdükçe aynı adayın her yeni günlük barı yeni kayıttır "
+                 "(açılsaydı tek işlem olurdu).")
     lines.append("   Karşı-olgusal ort.R NETtir (defterin ücret/kayma/funding modeliyle aynı barlarda yeniden oynatma, "
                  "cf_label_v2); brüt değer yalnız bilgi. Net'i olmayan eski (brüt) kayıtlar ortalamaya girmez.")
     lines.append("   «ihtiyatlı»: cf_aux_v1 yardımcı etiketi (giriş barındaki stop fitili + gerçek defterin örneklenmiş stop "

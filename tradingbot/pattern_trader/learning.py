@@ -25,7 +25,8 @@ from typing import Any
 from ..accounting import SizeSpec
 from ..accounting.models import AmountType
 from ..learning_cf import STALE_GRACE_BARS
-from ..learning_mode import BASELINE_SIZE_KEY, RISK_NOTIONAL_ROUND_TOL, SIZE_BUMP, SIZE_SHRUNK, fit_with_reserve
+from ..learning_mode import (BASELINE_SIZE_KEY, LEARNING_RECORD_ONLY, RISK_NOTIONAL_ROUND_TOL, SIZE_BUMP, SIZE_SHRUNK,
+                             fit_with_reserve, record_only)
 from ..timeframes import tf_ms
 from .data import BARS_PER_TF
 
@@ -144,6 +145,16 @@ def open_learning(*, act: dict[str, Any], symbol: str, price: float, fill_price:
         qty = _floor_qty(notional, fill, filters.qty_step)
     if qty <= 0:
         return LearningOpen(None, "STEP_ZERO_QTY", info)
+    # SEÇİCİLİK-EKSTRA YALNIZ KAYIT (2026-10-03, sahip kararı): açılış kararı burada KESİN (boyut, derinlik, rezerv, risk
+    # kapıları bugünkü gibi). Kip `record_selectivity` ve en az bir seçicilik kodu → AÇILMAZ; defter karşı-olgusalı
+    # (`PatternBook._try_open`) ayrılan kodları ve bu boyutu taşır. `open` kipinde None → yol bit-aynı.
+    div = record_only(unlocked, learning)
+    if div is not None:
+        info["record_only"] = dict(div, book=str(learning.name), size_rule=fit.size_rule,
+                                   notional=round(float(qty) * fill, 6), leverage=int(lev),
+                                   risk_usdt=round(float(qty) * abs(fill - stop), 6), slots=int(learning.slots),
+                                   risk_pct=float(learning.risk_pct), equity_basis=E)
+        return LearningOpen(None, LEARNING_RECORD_ONLY, info)
     data_src = {"market": data.market, "source": data.source, "tour_id": data.tour_id, "bars": dict(data.bars), "btc": dict(data.btc)}
     feats = {"regime": act.get("regime"), "market_type": "USDM_PERP", "strategy": act.get("name"),
              "expected_r": float(act.get("expected_r") or 0.0), "p_win": None, "data_source": data_src,

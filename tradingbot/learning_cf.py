@@ -748,8 +748,11 @@ class CounterfactualRecorder:
     # ------------------------------------------------------------ kayıt
     def record(self, *, signal_key: str, symbol: str, direction: str, entry: float, stop: float, targets: list[float],
                reason: str, created_at: datetime, tf_minutes: int, horizon_bars: int, label_kind: str,
-               features: dict | None = None, variation: str | None = None, rule_version: str | None = None) -> bool:
-        """Kaydedildiyse True. False: geçersiz geometri/girdi, neden karşı-olgusala uygun değil, ya da tekrar."""
+               features: dict | None = None, variation: str | None = None, rule_version: str | None = None,
+               extra_reasons: list[str] | None = None) -> bool:
+        """Kaydedildiyse True. False: geçersiz geometri/girdi, neden karşı-olgusala uygun değil, ya da tekrar.
+        `extra_reasons` (2026-10-03, seçicilik YALNIZ KAYIT): ilk nedenden SONRA `reason_not_opened`a eklenen ayrılan kodlar
+        (en çok 15); verilmezse kayıt bit-aynı (`[reason]`). Okuyucular yalnız ilk nedene bakar."""
         if not signal_key or not symbol or not counterfactual_ok(reason):
             return False
         side = str(direction or "").upper()
@@ -785,7 +788,8 @@ class CounterfactualRecorder:
         st_rec = ShadowTrade(
             id="cf_" + stable_id("cf", *key), plan_id=str(signal_key), symbol=str(symbol), market_type="USDM_PERP",
             direction=side, created_at=iso(created), entry=px, stop=st, targets=tgts, horizon_bars=int(horizon),
-            variant="as_planned", reason_not_opened=[str(reason)],
+            variant="as_planned",
+            reason_not_opened=[str(reason)] + [str(x) for x in (extra_reasons or []) if str(x) != str(reason)][:15],
             label_ts=iso(created + timedelta(minutes=tf * horizon)), tf_minutes=tf, leverage=1.0,
             book=self.book_name, signal_key=str(signal_key), variation=(str(variation) if variation else None),
             label_kind=kind, features=_clean(dict(features)) if features else None, learning_unlocked=False,

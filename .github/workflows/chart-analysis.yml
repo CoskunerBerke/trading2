@@ -92,13 +92,15 @@ jobs:
             tests/test_runtime_fixes_v1.py \
             tests/test_protective_monitor_v1.py \
             tests/test_measure_protective_monitor_script.py tests/test_bot_scorecard_script.py tests/test_signal_lab.py \
+            tests/test_box_cf_gap_audit_script.py \
             tests/test_pattern_trader_momentum_v3.py tests/test_donchian_trend_book.py \
             tests/test_candle_dsl.py tests/test_candle_variations_book.py tests/test_candle_strict_book.py \
             tests/test_signal_lab_strict.py tests/test_extract_lab_records.py \
             tests/test_futures_lab.py tests/test_futures_data.py tests/test_futures_features.py \
             tests/test_crowd_features.py tests/test_crowd_data.py tests/test_crowd_lab.py \
             tests/test_learning_provenance_engine.py \
-            tests/test_learning_cf_net.py tests/test_learning_cf_path_v3.py tests/test_closed_bar_after_stop_move_v1.py \
+            tests/test_learning_cf_net.py tests/test_learning_cf_path_v3.py tests/test_learning_cf_aux.py \
+            tests/test_closed_bar_after_stop_move_v1.py \
             tests/test_shared_experience_situation_v1.py tests/test_shared_experience_parity_v1.py \
             tests/test_shared_experience_store_v1.py tests/test_shared_experience_join_v1.py \
             tests/test_shared_experience_collector_v1.py tests/test_shared_experience_no_decision_change_v1.py \
@@ -110,6 +112,8 @@ jobs:
             tests/test_shared_experience_advisor_budget_v1.py tests/test_shared_experience_advisor_config_v1.py \
             tests/test_dashboard_advisor_card_v1.py tests/test_shared_experience_advisor_ops_v1.py tests/test_restore_sh_v1.py \
             tests/test_demo_panel_state_script.py tests/test_dashboard_state_types.py \
+            tests/test_tour_phases_v1.py tests/test_evidence_prewarm_v1.py tests/test_tour_perf_no_decision_change_v1.py \
+            tests/test_chart_analysis_batch_index_v1.py tests/test_report_memos_v1.py \
             -q --tb=short > pytest.out 2>&1
           rc=$?
           cat pytest.out

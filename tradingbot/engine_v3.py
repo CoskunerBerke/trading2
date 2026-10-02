@@ -163,6 +163,10 @@ def chart_rule_inputs(book: dict, *, tf: str, bars: list, frames: dict | None, a
     return out, (bars if (tf == "4h" and name in paper_rules.DONCHIAN_VARIANTS) else None)
 
 
+#: `_evidence_cache()` tembel kurulumu için (kısmi motor nesnesi: yenileyici iş parçacığı ve tur aynı anda isteyebilir).
+_EVIDENCE_CACHE_INIT_LOCK = __import__("threading").Lock()
+
+
 class TradingEngineV3(TradingEngine):
     def __init__(self, cfg: BotConfig):
         super().__init__(cfg)
@@ -261,9 +265,11 @@ class TradingEngineV3(TradingEngine):
         #: Süreç başlangıcı (ms): bundan ÖNCE açılmış ve bar imleci olmayan ana defter pozisyonu eski yolla izlenmişti
         #: (`_main_closed_bars` geçişi). Bu süreçte açılan pozisyon imleç sözleşmesiyle baştan izlenir.
         self._started_ms = int(utc_now().timestamp() * 1000)
-        # Pattern kaniti onbellegi: anahtar (sembol, indeks son bari). Indeks tur icinde
-        # degismedigi icin ayni cevap yeniden hesaplanmaz (olculdu: sorgu basina 12,6 sn).
-        self._pattern_cache: dict[tuple, dict] = {}
+        # Pattern kaniti onbellegi: anahtar (sembol, indeks surumu, indeks son bari). Indeks tur icinde
+        # degismedigi icin ayni cevap yeniden hesaplanmaz (olculdu: sorgu basina 12,6 sn). Is parcacigi
+        # guvenli: yayim sonrasi on isitma (`_on_pattern_index_published`) ayni onbellege yazar.
+        from .patterns.evidence_cache import EvidenceCache
+        self._pattern_cache = EvidenceCache()
         # Arka plan arsiv/indeks yenileyicisi (kapaliysa None). Ilk turda baslatilir.
         self._refresher = None
         # YÜRÜTME HASSASİYETİ: yapılandırma defterin kapısını belirler (varsayılan KAPALI → davranış
@@ -828,7 +834,9 @@ class TradingEngineV3(TradingEngine):
                               max_symbols=int(hc.refresh_max_symbols),
                               # Indeks YALNIZ 4h serisinden kurulur (`_build_pattern_index`),
                               # bu yuzden yeniden kurulumu yalniz 4h ilerlemesi tetikler.
-                              index_timeframes=("4h",))
+                              index_timeframes=("4h",),
+                              # Yayim ANI degismez; yayimdan SONRA kanit on isitmasi kuyruga alinir.
+                              on_publish=self._on_pattern_index_published)
 
     def _load_pattern_engine(self):
         """Karar yolunun gördüğü indeks. Yenileyici açıksa YAYIMLANMIŞ paketten gelir.
@@ -889,6 +897,79 @@ class TradingEngineV3(TradingEngine):
         b = r.bundle if r is not None else None
         return int(b.version) if b is not None else 0
 
+    def _pattern_engine_and_version(self):
+        """(motor, sürüm) — yenileyici açıkken İKİSİ DE AYNI paketten, TEK okumayla.
+
+        Eskiden motor ve sürüm iki ayrı okumayla alınıyordu; arada bir yayım olursa ESKİ motorun kanıtı YENİ
+        sürümün anahtarıyla önbelleğe girebilirdi. Yenileyici kapalıyken eski yol aynen: `_load_pattern_engine()`, sürüm 0.
+        """
+        r = getattr(self, "_refresher", None)
+        if r is None:
+            return self._load_pattern_engine(), 0
+        b = r.bundle                          # tek okuma: motor ve sürüm aynı paketten
+        return (None, 0) if b is None else (b.engine, int(b.version))
+
+    def _evidence_cache(self):
+        c = self.__dict__.get("_pattern_cache")
+        if c is None or not hasattr(c, "get_or_compute"):
+            from .patterns.evidence_cache import EvidenceCache
+            with _EVIDENCE_CACHE_INIT_LOCK:
+                c = self.__dict__.get("_pattern_cache")
+                if c is None or not hasattr(c, "get_or_compute"):
+                    c = self.__dict__["_pattern_cache"] = EvidenceCache()
+        return c
+
+    @staticmethod
+    def _evidence_query(eng, symbol: str) -> dict:
+        """TEK kanıt fonksiyonu: tur ve ön ısıtma AYNI motorla AYNI çağrıyı yapar (sorgu anı = indeksin kendi son barı)."""
+        return {side: eng.query(symbol, "futures", "4h", side, k=60) for side in ("LONG", "SHORT")}
+
+    #: Yayım sonrası kanıt ön ısıtması. False → bugünkü davranış (yayımdan sonraki ilk tur kanıtı kendisi hesaplar).
+    #: Karar girdisi DEĞİLDİR: iki yol aynı motor + aynı fonksiyonla bit-aynı kanıt üretir (test kilitli).
+    EVIDENCE_PREWARM = True
+
+    def _evidence_prewarm_order(self, eng) -> list[str]:
+        """Ön ısıtma sırası = turun sorgu sırası (giriş evreni sırası), sonra indeksteki diğer 4h futures serileri."""
+        cands = getattr(eng, "candles", None) or {}
+        eu = self.cfg.v3.entry_universe
+        base = list(eu.symbols) if eu.enabled else list(self.cfg.coins)
+        rest = [k[0] for k in list(cands) if isinstance(k, tuple) and len(k) == 3 and k[1] == "futures" and k[2] == "4h"]
+        return [s for s in dict.fromkeys(base + rest) if (s, "futures", "4h") in cands]
+
+    def _on_pattern_index_published(self, bundle) -> None:
+        """Yenileyici iş parçacığında, YAYIMDAN SONRA çağrılır. Yalnız işi kuyruğa koyar ve HEMEN döner; ASLA istisna atmaz.
+
+        Bayat seri (son bar > 3 bar eski) ısıtılmaz: tur o sembol için zaten kanıt vermez. Atlanan her sembolü tur
+        bugünkü gibi kendisi hesaplar; atlamak yalnız hızı etkiler, sonucu değil.
+        """
+        if not getattr(self, "EVIDENCE_PREWARM", False):
+            return
+        try:
+            eng = getattr(bundle, "engine", None)
+            if eng is None:
+                return
+            version = int(bundle.version)
+            now_ms = int(time.time() * 1000)
+            keys = []
+            for sym in self._evidence_prewarm_order(eng):
+                df = eng.candles[(sym, "futures", "4h")]
+                if df is None or not len(df):
+                    continue
+                last_ts = int(df["timestamp"].iloc[-1])
+                if now_ms - last_ts > 3 * 14_400_000:
+                    continue
+                keys.append((sym, version, last_ts))
+            if not keys:
+                return
+
+            def _current(b, _self=self) -> bool:
+                r = getattr(_self, "_refresher", None)
+                return r is not None and r.bundle is b
+
+            self._evidence_cache().request_prewarm(bundle, keys, self._evidence_query, _current)
+        except Exception as exc:  # noqa: BLE001 — ön ısıtma kurulamazsa tur bugünkü gibi hesaplar
+            log.warning("pattern kanıtı ön ısıtması kurulamadı (tur kendisi hesaplar): %s", exc)
+
     def _pattern_evidence(self, symbol: str, now_ms: int) -> dict | None:
         """Sembol için LONG/SHORT kanıtı; veri 3 bardan eskiyse (bayat) kanıt verilmez. state/evidence/<sym>.json'a paket + açıklama yazılır.
 
@@ -902,37 +983,44 @@ class TradingEngineV3(TradingEngine):
         kurulursa (yeni süreç ya da yeniden yükleme) anahtar değişir ve kanıt yeniden hesaplanır.
         Bayatlık kapısı önbellekten ÖNCE çalışır: eski bir cevap, veri bayatladıktan sonra
         döndürülmez.
+
+        Geçen süre (önbellek isabeti dahil) turun `pattern_evidence` alt fazına eklenir (yalnız ölçüm).
         """
-        eng = self._load_pattern_engine()
+        _t0 = time.time()
+        try:
+            return self._pattern_evidence_cached(symbol, now_ms)
+        finally:
+            _ph = getattr(self, "_tour_phases", None)
+            if _ph is not None:
+                _ph.add_sub("pattern_evidence", time.time() - _t0)
+
+    def _pattern_evidence_cached(self, symbol: str, now_ms: int) -> dict | None:
+        eng, version = self._pattern_engine_and_version()
         if eng is None or (symbol, "futures", "4h") not in eng.candles:
             return None
         try:
             last_ts = int(eng.candles[(symbol, "futures", "4h")]["timestamp"].iloc[-1])
             if now_ms - last_ts > 3 * 14_400_000:
                 return None
-            cache = getattr(self, "_pattern_cache", None)
-            if cache is None:
-                cache = self._pattern_cache = {}
+            cache = self._evidence_cache()
             # ANAHTAR = (sembol, indeks sürümü, indeksin son barı). Sürüm, arka planda yeni
             # bir indeks YAYIMLANDIĞINDA artar; böylece yenileme önbelleği kesin olarak
             # geçersiz kılar. Son bar ayrıca tutulur: sürüm hiç artmasa bile (yenileyici
-            # kapalı) yeni veriyle kurulmuş bir indeks eski cevabı ALAMAZ.
-            version = self._pattern_index_version()
+            # kapalı) yeni veriyle kurulmuş bir indeks eski cevabı ALAMAZ. Motor ve sürüm
+            # AYNI paketten gelir (`_pattern_engine_and_version`).
             key = (symbol, version, last_ts)
-            hit = cache.get(key)
-            if hit is not None:
-                return hit
-            if cache and any(k[1] != version for k in cache):
-                # Eski sürüm girdileri erişilemez; bellekte de tutulmaz.
-                for k in [k for k in cache if k[1] != version]:
-                    cache.pop(k, None)
-            from .patterns import explain_tr, packet_from_query
-            ev = {side: eng.query(symbol, "futures", "4h", side, k=60) for side in ("LONG", "SHORT")}
-            packets = {side: packet_from_query(r, decision_id=stable_id("evidence", self.run_id, symbol, side), timestamp=iso(utc_now()), timeframes=["4h"]) for side, r in ev.items()}
-            atomic_write_json(self.cfg.state_path / "evidence" / f"{symbol.replace('/', '_')}.json",
-                              {"symbol": symbol, "run_id": self.run_id, "generated_at": iso(utc_now()), "packets": {s: p.to_dict() for s, p in packets.items()},
-                               "explanation_tr": {s: explain_tr(p) for s, p in packets.items()}, "neighbors": {s: r.get("neighbors", [])[:10] for s, r in ev.items()}}, indent=1)
-            cache[key] = ev
+            cache.prune_older(version)              # eski sürüm girdileri erişilemez; bellekte de tutulmaz
+            # İsabet yoksa hesapla. Yayım sonrası ön ısıtma bu anahtarı o an hesaplıyorsa tur bekler ve AYNI sonucu alır.
+            ent = cache.get_or_compute(key, lambda: self._evidence_query(eng, symbol))
+            ev = ent.ev
+            if not ent.written:
+                # Panel dosyası bu sürüm için turun İLK kullanımında, turun kimliğiyle yazılır (bugünkü gibi bir kez).
+                from .patterns import explain_tr, packet_from_query
+                packets = {side: packet_from_query(r, decision_id=stable_id("evidence", self.run_id, symbol, side), timestamp=iso(utc_now()), timeframes=["4h"]) for side, r in ev.items()}
+                atomic_write_json(self.cfg.state_path / "evidence" / f"{symbol.replace('/', '_')}.json",
+                                  {"symbol": symbol, "run_id": self.run_id, "generated_at": iso(utc_now()), "packets": {s: p.to_dict() for s, p in packets.items()},
+                                   "explanation_tr": {s: explain_tr(p) for s, p in packets.items()}, "neighbors": {s: r.get("neighbors", [])[:10] for s, r in ev.items()}}, indent=1)
+                ent.written = True
             return ev
         except Exception as exc:  # noqa: BLE001
             log.warning("%s pattern kanıtı üretilemedi: %s", symbol, exc)
@@ -1404,6 +1492,9 @@ class TradingEngineV3(TradingEngine):
     # ------------------------------------------------------------------ TUR
     def tour(self, *, do_scan: bool = True, symbols_override: list[str] | None = None, charts: bool = True, obsidian: bool = True) -> dict:
         t0 = time.time()
+        # FAZ SÜRELERİ (yalnız ölçüm): her numaralı adımın sonunda `_ph.lap(...)`; health.json["phases"] + "tur fazları" satırı
+        from .ops.tour_phases import TourPhases
+        self._tour_phases = _ph = TourPhases()
         self.run_id = run_id_now()
         self._tour_no += 1
         now = utc_now()
@@ -1448,6 +1539,7 @@ class TradingEngineV3(TradingEngine):
         self.ensure_symbol_filters()
         # 0.7) KANIT ONARIMI V1.1: spot listeleme onbellegi (ceza acikken, gunde ~1 istek)
         self.ensure_spot_listing()
+        _ph.lap("prep")
         # 1) TARA (legacy tier-1)
         scan = None
         if self.scanner and do_scan and symbols_override is None:
@@ -1502,6 +1594,7 @@ class TradingEngineV3(TradingEngine):
         _perp_tfs = tuple(dict.fromkeys(tuple(self.PERP_BASE_TIMEFRAMES) + tuple(getattr(self, "_book_timeframes", ()))))
         self._frame_provenance = {}
         self._entry_data_blocked: set[str] = set()
+        _ph.lap("scan")
         # 2) legacy ajanlar → brief + raporlar
         self.runner.set_weights(self.learner.learned_agent_weights())
         analyses = self._load_last_analyses()
@@ -1559,6 +1652,7 @@ class TradingEngineV3(TradingEngine):
         trips = self.risk.evaluate_kill_triggers(state, {"stale_data": False})
         if trips:
             log.error("KILL SWITCH tetiklendi: %s", trips)
+        _ph.lap("symbols")
         # 3) COIN HEADS
         btc_frames = self.runner.last_frames.get("BTC/USDT")
         eth_frames = self.runner.last_frames.get("ETH/USDT")
@@ -1674,6 +1768,7 @@ class TradingEngineV3(TradingEngine):
         # Yetkili chief karari: `d.opportunity` artik dolu, siralama/izinler dogru edge ile kurulur.
         chief = self.chief_mgr.decide(list(decisions.values()), _chief_state, btc_regime=_btc_reg)
         self.registry.chief = chief.to_dict()
+        _ph.lap("coin_heads")
         # 4) RİSK + TETİK + PAPER EXECUTION
         opened: list[str] = []
         risk_log: list[dict] = []
@@ -1685,6 +1780,7 @@ class TradingEngineV3(TradingEngine):
                 sym = desc.split(" ")[0]
                 if sym in marks:
                     marks[sym] = TickData(last=marks[sym].last, mark=marks[sym].mark, ts=marks[sym].ts)
+        _ph.lap("execute")
         # 5) İZLE: tick (bar_advance yeni 4h bar kapanışında)
         # FUNDING (2026-09-22): önce AĞ adımı (defter kilidi dışında) — gerçekleşmiş settlement satırları çekilir ve
         # kapanmış işlemlerin bekleyen funding'i uzlaştırılır; sonra tick YALNIZ bellekten okur. Anlık `funding_pct`
@@ -1745,10 +1841,12 @@ class TradingEngineV3(TradingEngine):
             write_watermark(st, tick_now, self.run_id or None)      # süreç canlı ve koruyucu yol koştu (monoton)
             self._main_price_gaps = dict(vgaps)
             self._main_after_tick(tinfo, tick_records, tick_now, "tour")
+        _ph.lap("main_tick")
         # 6b) STRATEJİ KÂĞIT DEFTERİ (V10): ana defterden SONRA, aynı marks/funding/bar ilerlemesiyle.
         self._strategy_paper_tour(symbols, marks, marks_f, funding, bar_advance, now)
         self.spot2.tick(marks_f, now)
         self.spot2.save(st / "spot_ledger.json")
+        _ph.lap("strategy_books")
         self._notify_closed(records, now)
         lessons = []
         for rec in records:
@@ -1814,20 +1912,24 @@ class TradingEngineV3(TradingEngine):
                 log.info("araştırma adayı PAPER_RESEARCH_ACTIVE: %s", _res["activated"])
         except Exception as exc:  # noqa: BLE001 — araştırma katmanı işlem akışını DURDURAMAZ
             log.warning("araştırma döngüsü atlandı: %s", exc)
+        _ph.lap("learning")
         # 7) görseller (legacy)
         chart_paths = {}
         if charts:
             for b in briefs:
                 if b.verdict != "BEKLE" or b.symbol in self.ledger2.positions or b.symbol in core_set or b.scan_score:
                     chart_paths[b.symbol] = self._chart(b)
+        _ph.lap("charts")
         # 8) durum dosyaları
         self.last_decisions = {s: d.to_dict(include_reports=False) for s, d in decisions.items()}
         self.registry.save(st, self.run_id)
         state = self._portfolio_state(marks_f)      # tur sonu: fill/çıkış sonrası güncel birleşik durum
         self._persist_risk_state(state, risk_log, now)
+        _ph.lap("state")
         # 8b) GRAFIK ANALIZI (CHART ANALYSIS V1): karar kaydi (risk.json) ve planlar yazildiktan SONRA;
         #     salt gosterim kaydi — defter/ogrenme/kapi DEGISMEZ, ariza turu durdurmaz.
         self._chart_analysis_tour(symbols, marks_f, now)
+        _ph.lap("chart_analysis")
         # 8c) FORMASYON PAPER TRADER: tarayici arka planda calisir; burada yalniz baslatma + ekonomik rapor yazilir.
         self._pattern_trader_tour(now)
         # Karar günlüğü: DEĞERLENDİRİLEN HER aday (kabul/red/veto) tek seferde yazılır.
@@ -1841,13 +1943,17 @@ class TradingEngineV3(TradingEngine):
         # Fiyat yolu: TUR tick'i 1h bar uçlarını da taşır (`_marks`), bu yüzden `bar_extremes`.
         from .learn.position_path import TICK_BAR_EXTREMES
         self._record_position_path(marks, decisions, now, tick_kind=TICK_BAR_EXTREMES)
+        _ph.lap("journal")
         self._write_exit_eval(now)
+        _ph.lap("exit_eval")
         self._write_entry_eval(now)
+        _ph.lap("entry_eval")
         # KANIT ONARIMI V1: ufku dolan adaylar etiketlenir (ayri dosya, salt ekleme, fail-safe).
         self._label_entry_outcomes(now)
         # KARLILIK DENEYI — IZOLE PAPER. Kanonik hicbir seyi degistirmez; yalnizca kendi
         # olay defterine ve kitabina yazar. Ariza turu DURDURMAZ.
         self._run_profitability_experiment(now)
+        _ph.lap("experiment")
         # BELLEK: aday snapshot memosu SON TUKETICIDEN SONRA birakilir.
         # `_write_entry_eval` (yukarida) ve `_run_profitability_experiment` (hemen ustte)
         # ayni turda `by_candidate()` cagirir. Birakma bu ikisinin ARASINA konursa son
@@ -1865,16 +1971,20 @@ class TradingEngineV3(TradingEngine):
             alerts.append(f"{'✅' if l['won'] else '❌'} KAPANDI {l['symbol']} {l['side']} {l['r']:+.2f}R ({l['exit']}) — {l['why'][0][:120]}")
         for code in trips:
             alerts.append(f"🛑 KILL SWITCH: {code}")
+        _ph.lap("wrap_up")
         # 9) Obsidian
         if obsidian:
             self._write_obsidian(briefs, legacy_chief, alerts, scan, chart_paths, analyses)
             self._write_obsidian_v3(decisions, chief, briefs, state, chart_paths, alerts)
             if self.cfg.obsidian.git_sync:
                 self._git_sync()
+        _ph.lap("obsidian")
         # 10) health
         health = {"state": "KILL_SWITCH" if self.killswitch.active else "HEALTHY", "at": iso(now), "run_id": self.run_id, "seconds": round(time.time() - t0, 1),
                   "symbols": len(symbols), "decisions": len(decisions), "opened": len(opened), "closed": len(records), "kill_trips": trips,
-                  "mode": self.mode_state.mode.value, "profile": self.profile.name}
+                  "mode": self.mode_state.mode.value, "profile": self.profile.name,
+                  # FAZ SÜRELERİ (2026-10-01; yalnız ölçüm): toplamı `seconds`a eşit, hiçbir karar okumaz
+                  "phases": _ph.as_health()}
         _lm = getattr(self, "lm", None)
         if _lm is not None and _lm.enabled:     # ÖĞRENME MODU (2026-09-28): kapalıyken health.json bit-aynı
             # reason: ACTIVE | LEARNING_MODE_SUSPENDED:<neden>; learning_mode_since: İLK aktif an (kalıcı, panel/karne ayrımı)
@@ -1890,6 +2000,7 @@ class TradingEngineV3(TradingEngine):
             except Exception as exc:  # noqa: BLE001 — sağlık özeti turu durdurmaz
                 health["shared_experience"] = {"state": "HEALTH_ERROR", "error": str(exc)[:120]}
         atomic_write_json(st / "health.json", health)
+        log.info("%s", _ph.log_line())
         self._notify_health(str(health.get("state") or "UNKNOWN"), str(health.get("summary") or ""), now)
         self._notify_maintenance(health, now)
         self._persist_funnel(now, len(records))
@@ -3315,6 +3426,7 @@ class TradingEngineV3(TradingEngine):
         ca = getattr(self.cfg.v3, "chart_analysis", None)
         if ca is None or not getattr(ca, "enabled", False):
             return
+        store = None
         try:
             from .candle_confirmation import closed_bars
             from .chart_analysis import (BOOK_MAIN, HISTORY_TAIL, bars_from_frame, build_snapshot, closed_bars_at, code_sha, config_hash,
@@ -3347,6 +3459,8 @@ class TradingEngineV3(TradingEngine):
                               "rule_params": dict(getattr(getattr(b, "spec", None), "rule_params", None) or {})})
             scope = list(dict.fromkeys(list(symbols) + [s for b in books for s in list(b["ledger"].positions)]))
             written = 0
+            # TOPLU İNDEKS (2026-10-01): kayıt dosyaları hemen yazılır; index.json bu döngünün sonunda TEK kez yazılır.
+            store.begin_batch()
             for sym in scope:
                 fr = self.runner.last_frames.get(sym) or {}
                 df = fr.get(tf)
@@ -3414,6 +3528,7 @@ class TradingEngineV3(TradingEngine):
                                           source={"frames": "runner.last_frames", "provenance": prov, "bar_market": bar_market, "daily_market": bar_market,
                                                   "btc_market": btc_market, "btc_market_ok": (btc_market == "USDM_PERP") if not is_main else None})
                     written += int(bool(store.save(snap).get("written")))
+            store.end_batch()
             if skipped:
                 cfg_doc["skipped"] = skipped
                 atomic_write_json(self.cfg.state_path / DIRNAME / "config.json", cfg_doc)
@@ -3423,6 +3538,13 @@ class TradingEngineV3(TradingEngine):
                 log.info("grafik analizi: %d yeni analiz ani kaydedildi", written)
         except Exception as exc:  # noqa: BLE001 -- gosterim katmani ana turu ASLA durdurmaz
             log.warning("grafik analizi turu basarisiz (ana tur ETKILENMEZ): %s", exc)
+        finally:
+            if store is not None:
+                # İstisna yolunda: o ana kadar kaydedilen analizlerin indeksi (bugünkü kayıt-kayıt yazımdaki gibi) kalıcı olur.
+                try:
+                    store.end_batch()
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("grafik analizi indeksi yazılamadı (ana tur ETKILENMEZ): %s", exc)
 
     # ------------------------------------------------------------------ FORMASYON PAPER TRADER V1
     def _pattern_feed(self):
@@ -4081,12 +4203,19 @@ class TradingEngineV3(TradingEngine):
         if not rows and not old:
             return 0
         from .learning_cf import ExecModel, label_records, outcome_r, relabel_net
+        from .learning_cf_aux import AuxPass
         xm = ExecModel.of_ledger(self.ledger2)
         ff = (lambda s: self.filters.get(s, MarketType.USDM_PERP))
         fl = getattr(self, "funding_rates", None)
         frames = {s: (self.runner.last_frames.get(s) or {}) for s in {t.symbol for t in rows + old}}
         cache: dict = {}
-        n, stale = (label_records(rows, frames, now, exec_model=xm, filters_for=ff, funding_lookup=fl, _cache=cache)
+        # YARDIMCI ETİKET (2026-10-01, cf_aux_v1, yalnız kayıt): aşma tahmini ana defterin gerçek stop çıkışlarından;
+        # `outcome_r` (araştırma eşleşmesi) aşağıda AYNI `r_net`i okur
+        if not isinstance(getattr(self, "_cf_aux_cache", None), dict):
+            self._cf_aux_cache: dict = {}
+        aux = AuxPass(lambda: self.ledger2.history, cache=self._cf_aux_cache)
+        n, stale = (label_records(rows, frames, now, exec_model=xm, filters_for=ff, funding_lookup=fl, _cache=cache,
+                                  aux=aux)
                     if rows else (0, []))
         rc = (relabel_net(old, frames, now, exec_model=xm, filters_for=ff, funding_lookup=fl, _cache=cache)
               if old else {})
@@ -4875,10 +5004,31 @@ class TradingEngineV3(TradingEngine):
             log.warning("pozisyon yolu kaydedilemedi: %s", exc)
             return {}
 
+    #: Kapanmış işlem çıkış değerlendirmesi memosu (2026-10-01). False → her turda bütün kapanışlar yeniden oynatılır (eski yol).
+    EXIT_EVAL_MEMO = True
+    #: Memoda tutulan değerlendirmeden atılan alan: politika aksiyon listesi (raporda ve özette OKUNMAZ, en büyük alan).
+    _EXIT_EVAL_SLIM_DROP = ("actions",)
+
+    def _exit_eval_memo_key(self, c: dict, path: list, cfg_key: str) -> tuple | None:
+        """(işlem, config+maliyet, kapanış kaydı özeti, fiyat yolu özeti). Girdi BİREBİR aynıysa sonuç da aynıdır
+        (`evaluate_trade` saf fonksiyondur). Özet pickle baytlarından: eşit ama farklı paylaşımlı nesne yalnız ISKALAMA
+        üretir (güvenli yön); farklı içerik aynı özeti VEREMEZ. Özet çıkarılamazsa None (memo kullanılmaz)."""
+        try:
+            import hashlib
+            import pickle
+            h = lambda o: hashlib.blake2b(pickle.dumps(o, protocol=4), digest_size=16).hexdigest()  # noqa: E731
+            return (str(c.get("trade_id")), cfg_key, h(c), len(path), h(path))
+        except Exception:  # noqa: BLE001 — özetlenemeyen girdi eski yoldan hesaplanır
+            return None
+
     def _write_exit_eval(self, now) -> dict:
         """Kapanmış işlemler için champion/challenger karşı-olgusal raporunu yazar.
 
         Tam yol olmayan işlemler `NO_COMPLETE_PATH` ile geçilir; sahte karşılaştırma YAPILMAZ.
+
+        MEMO (2026-10-01): kapanmış işlemin kaydı ve fiyat yolu donmuştur; her turda bütün kapanışları yeniden oynatmak
+        (83 işlem / 55 MB yolda ~13 sn) aynı sonucu üretir. Sonuç (kapanış, config, yol) özetiyle tutulur ve yalnız yeni
+        ya da değişmiş kapanış yeniden oynatılır. Rapor yalnız gösterimdir; hiçbir karar bu dosyayı okumaz.
         """
         store = getattr(self, "path_store", None)
         if store is None or self.exit_policy_cfg is None:
@@ -4890,11 +5040,38 @@ class TradingEngineV3(TradingEngine):
             # yalnız bu kapanışın yolu ayrıştırılır (artımlı dizin; eski `paths_by_trade().get(...) or []` ile aynı) —
             # öğrenmede dosya ~60 kat hızlı büyür, bütün yollar her turda belleğe alınmaz (2026-09-28, üçüncü tur)
             _tp = store.trade_path if hasattr(store, "trade_path") else (lambda t, _p=store.paths_by_trade(): _p.get(t) or [])
-            evals = [evaluate_trade(trade_id=c["trade_id"], path=_tp(c["trade_id"]),
-                                    close=c, cfg=self.exit_policy_cfg,
-                                    fee_rate=_ex.eval_fee_rate,
-                                    slip_rate=_ex.eval_slippage_rate)
-                     for c in canonical_closes(self.ledger2.history)]
+            memo = self.__dict__.get("_exit_eval_memo")
+            if memo is None or not getattr(self, "EXIT_EVAL_MEMO", False):
+                memo = self.__dict__["_exit_eval_memo"] = {}
+            cfg_key = None
+            if getattr(self, "EXIT_EVAL_MEMO", False):
+                try:
+                    import json as _json
+                    cfg_key = _json.dumps({"cfg": self.exit_policy_cfg.to_dict(), "fee": _ex.eval_fee_rate,
+                                          "slip": _ex.eval_slippage_rate}, sort_keys=True, default=repr)
+                except Exception:  # noqa: BLE001 — config özetlenemezse memo kullanılmaz
+                    cfg_key = None
+            used: dict = {}
+            evals = []
+            for c in canonical_closes(self.ledger2.history):
+                path = _tp(c["trade_id"])
+                key = self._exit_eval_memo_key(c, path, cfg_key) if cfg_key is not None else None
+                hit = memo.get(key) if key is not None else None
+                if hit is None:
+                    hit = evaluate_trade(trade_id=c["trade_id"], path=path,
+                                         close=c, cfg=self.exit_policy_cfg,
+                                         fee_rate=_ex.eval_fee_rate,
+                                         slip_rate=_ex.eval_slippage_rate)
+                    if key is not None:
+                        slim = dict(hit)
+                        slim["results"] = {p: {k: v for k, v in r.items() if k not in self._EXIT_EVAL_SLIM_DROP}
+                                           for p, r in (hit.get("results") or {}).items()}
+                        used[key] = slim
+                elif key is not None:
+                    used[key] = hit
+                evals.append(hit)
+            memo.clear()                              # yalnız bu turun kapanışları tutulur (bellek kapanış sayısıyla sınırlı)
+            memo.update(used)
             doc = aggregate(evals, cfg=self.exit_policy_cfg, now=now)
             doc["run_id"] = self.run_id
             doc["exit_action_mode"] = getattr(self.exit_executor, "mode", "SHADOW")

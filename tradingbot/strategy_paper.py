@@ -1500,9 +1500,10 @@ class StrategyBook:
             # NET ETİKET (2026-09-29, maliyet sapması): defterin KENDİ yürütme modeli (ücret/kayma/TP1/başa-baş/funding),
             # filtre önbelleği ve gerçekleşmiş funding kaynağı; eski (brüt) etiketler tembel doldurulur
             from .learning_cf import ExecModel
+            # `real_history` (2026-10-01, cf_aux_v1, yalnız kayıt): aşma tahmini bu defterin gerçek stop çıkışlarından
             n = self.cf.label_pending(frames_by_symbol or {}, now, exec_model=ExecModel.of_ledger(self.ledger),
                                       filters_for=lambda s: self.filters_cache.get(s, MarketType.USDM_PERP),
-                                      funding_lookup=self.funding_rates)
+                                      funding_lookup=self.funding_rates, real_history=lambda: self.ledger.history)
             if n:
                 self._count("counterfactual_labeled", n)
             self.cf.sync_book_counters(self.learning_counters)

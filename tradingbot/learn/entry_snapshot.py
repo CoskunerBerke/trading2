@@ -32,6 +32,8 @@ from ..core import iso, stable_id, utc_now
 log = logging.getLogger(__name__)
 
 SCHEMA_VERSION = "entry_snapshot_v1"
+#: False → `trade_links()` her çağrıda sıcak dosyayı baştan ayrıştırır (eski yol; acil geri dönüş anahtarı).
+LINKS_MEMO = True
 
 #: Arşiv akış kimliği — `journal_archive.SegmentArchive(stream_id=...)`.
 ENTRY_ARCHIVE_STREAM_ID = "entry_snapshot"
@@ -324,6 +326,11 @@ class EntrySnapshotStore:
         #: SEÇİLİ aday memosu (`by_candidate(only=...)`) — (imza, kimlik kümesi) ile geçerli; yalnız istenen satırlar.
         self._bo_key: tuple[Any, frozenset[str]] | None = None
         self._bo_cache: dict[str, dict[str, Any]] | None = None
+        #: SICAK `trade_links` memosu (2026-10-01) — `by_candidate` gibi (mtime_ns, boyut) imzasıyla geçerli. Motor
+        #: tur başına üç kez çağırıyordu (giriş yazımı, giriş değerlendirmesi, kârlılık deneyi) ve her biri ~700 MB'lık
+        #: sıcak dosyayı baştan ayrıştırıyordu (~7 sn). Değer küçüktür (işlem → aday kimliği); turlar arasında tutulur.
+        self._tl_sig: tuple[int, int] | None = None
+        self._tl_cache: dict[str, str] | None = None
 
     def iter_hot_rows(self) -> Iterable[dict[str, Any]]:
         """YALNIZ sıcak dosya. Rotasyondan sonra burada olmayan satırlar arşivdedir.
@@ -587,13 +594,24 @@ class EntrySnapshotStore:
             return False
 
     def trade_links(self, *, include_archive: bool = False) -> dict[str, str]:
-        """`trade_id → candidate_id`. Varsayılan SICAK; arşiv açıkça istenir."""
+        """`trade_id → candidate_id`. Varsayılan SICAK; arşiv açıkça istenir.
+
+        SICAK yol memolanır: dosya imzası (mtime_ns, boyut) değişmedikçe yeniden ayrıştırılmaz. İmza taramadan ÖNCE
+        alınır: tarama sırasında eklenen satır imzayı değiştirir, eski memo bir sonraki çağrıda kullanılmaz. Çağırana
+        KOPYA verilir (çağıran dönen sözlüğe ekleme yapıyor)."""
         out: dict[str, str] = {}
         if include_archive:
             out.update(self._archive_index()[1])
+            sig = None
+        else:
+            sig = self._hot_signature() if LINKS_MEMO else None
+            if sig is not None and sig == self._tl_sig and self._tl_cache is not None:
+                return dict(self._tl_cache)
         for r in self.iter_hot_rows():
             if r.get("kind") == "link" and r.get("trade_id"):
                 out.setdefault(str(r["trade_id"]), str(r["candidate_id"]))
+        if sig is not None:
+            self._tl_sig, self._tl_cache = sig, dict(out)
         return out
 
     # ------------------------------------------------------------------ rotasyon

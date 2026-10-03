@@ -69,11 +69,15 @@ def _filters(raw: Any) -> dict[str, Any]:
 
 
 def discover(provider: Any, *, now_ms: int, min_quote_volume_24h: float, max_spread_pct: float,
-             previous: dict[str, Any] | None = None) -> dict[str, Any]:
+             previous: dict[str, Any] | None = None, carry_volume: bool = False) -> dict[str, Any]:
     """Tek keşif turu (SAF; sağlayıcı duck-typed: `exchange_info()`, `ticker24h()`, isteğe bağlı `book_tickers()`).
 
     Döner: {schema_version, generated_at, as_of_ms, source, entries: {symbol: entry}, counts, changes, errors}.
-    `previous` verilirse `first_seen_at` korunur ve yeni listeleme / delist / durum değişimi olayları üretilir."""
+    `previous` verilirse `first_seen_at` korunur ve yeni listeleme / delist / durum değişimi olayları üretilir.
+
+    `carry_volume` (2026-09-28, öğrenme modu, D18): hacim ölçülemezse (ticker24h arızası) `previous`taki hacim taşınır
+    ve kayıt `volume_carried=True` (+ kaynağın anı) ile etiketlenir; giriş anı likiditesi zaten yeniden ölçülür.
+    False (varsayılan) → çıktı bit-aynı (VOLUME_UNKNOWN karartması)."""
     errors: list[str] = []
     try:
         rows = list(provider.exchange_info() or [])
@@ -116,6 +120,12 @@ def discover(provider: Any, *, now_ms: int, min_quote_volume_24h: float, max_spr
         t = tick.get(raw) or {}
         b = books.get(raw) or {}
         vol = _f(t.get("quoteVolume")) if t else None
+        carried, carried_from = False, None
+        if vol is None and carry_volume:
+            _pv = prev_entries.get(sym) or {}
+            if _f(_pv.get("quote_volume_24h")) is not None:
+                vol, carried = _f(_pv.get("quote_volume_24h")), True
+                carried_from = int(_pv.get("volume_carried_from_ms") or _pv.get("as_of_ms") or 0) or None
         spread = _spread(b.get("bidPrice") or t.get("bidPrice"), b.get("askPrice") or t.get("askPrice"))
         reason = ""
         if quote != "USDT":
@@ -142,6 +152,10 @@ def discover(provider: Any, *, now_ms: int, min_quote_volume_24h: float, max_spr
                         "quote_volume_24h": vol, "last_price": _f(t.get("lastPrice")), "spread_pct": round(spread, 5) if spread is not None else None,
                         "spread_known": spread is not None, "filters": _filters(s.get("filters")),
                         "eligible": reason == "", "reason": reason, "first_seen_at": prev.get("first_seen_at") or now_iso, "last_seen_at": now_iso}
+        if carry_volume:
+            entries[sym]["volume_carried"] = carried
+            if carried:
+                entries[sym]["volume_carried_from_ms"] = carried_from
     # değişimler: yeni listeleme (önceki evrende yok), delist/durum (önceki TRADING → şimdi değil ya da listede yok)
     changes: dict[str, list] = {"new_listings": [], "delisted": [], "status_changes": []}
     if previous is not None:

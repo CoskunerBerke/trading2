@@ -3,6 +3,8 @@
   doctor · migrate · collect · analyze(v3) · paper-status · spot-status · futures-status · replay · backtest(futures)
   validate-model · model-status · risk-status · health · reconcile · dashboard · export-trades · export-tax · mode-status
   mode-transition · killswitch-reset · backup · restore · universe
+  shared-experience-report · shared-experience-status (ortak deneyim; salt okur, 2026-09-29)
+  shared-experience-advisor (gölge danışman walk-forward / verify / ask / replay; salt okur, 2026-09-29)
 Gerçek emir komutu YOKTUR; LIVE yolu bu sürümde kapalıdır.
 """
 from __future__ import annotations
@@ -872,6 +874,168 @@ def cmd_learning_reconcile(cfg: BotConfig, args) -> int:
     return 0 if manifest["idempotent"] else 1
 
 
+def cmd_outage_simulate(cfg: BotConfig, args) -> int:
+    """İzleme kesintisini geçmiş mumlarla AYRI SİMÜLASYON olarak oynatır (2026-09-24). Girdi, kesinti kaydedilirken
+    yazılan defter anlık görüntüsüdür; canlı PAPER defteri, bakiye ve öğrenme DEĞİŞMEZ. Sonuç
+    `state/outage_simulations/<defter>-<başlangıç>.json` (etiket SIMULATION_NOT_APPLIED_TO_PAPER_LEDGER)."""
+    from .accounting import FuturesLedgerV2
+    from .core import from_iso, read_json
+    from .ops.gap import simulate_outage
+    from .strategy_paper import MONITORING_GAPS_FILE
+    st = cfg.state_path
+    rows = []
+    p = st / MONITORING_GAPS_FILE
+    if p.exists():
+        for line in p.read_text(encoding="utf-8").splitlines():
+            try:
+                r = json.loads(line)
+            except (ValueError, TypeError):
+                continue
+            if isinstance(r, dict) and r.get("kind") == "MONITORING_GAP" and r.get("book") == args.book:
+                rows.append(r)
+    if not rows:
+        print(f"'{args.book}' defteri için kayıtlı izleme kesintisi yok ({p}).")
+        return 1
+    gap = rows[-1]
+    src = gap.get("simulation_input")
+    if not src or not (st / src).exists():
+        print(f"kesinti {gap.get('from')} → {gap.get('to')} için simülasyon girdisi yok (eski kayıt); simülasyon yapılamaz.")
+        return 1
+    led = FuturesLedgerV2.from_dict(read_json(st / src))
+
+    def factory():
+        from .market.http import HttpClient
+        from .market.providers import BinanceFuturesProvider
+        from .market.ratelimit import BudgetPool
+        return BinanceFuturesProvider(HttpClient(BinanceFuturesProvider.base_url, BudgetPool().get("fapi.binance.com")))
+    doc = simulate_outage(led, start=from_iso(gap["from"]), end=from_iso(args.until or gap["to"]), provider_factory=factory,
+                          state_dir=st, book_key=args.book)
+    rep = doc["report"]
+    print(f"SİMÜLASYON ({doc['label']}): {args.book} {gap['from']} → {args.until or gap['to']} · durum {rep['status']} · "
+          f"{rep['bars_replayed']} bar · simüle kapanış {len(doc['simulated_closes'])} → {doc['path']}")
+    return 0
+
+
+# ------------------------------------------------------------------ ortak deneyim katmanı (2026-09-29)
+def _xp_root(cfg: BotConfig, args) -> Path:
+    """Ortak deneyim deposunun kökü (2026-09-29): `--root` > `--state-dir`/<state_dir> > `state/<state_dir>`.
+    `state_dir` yapılandırmanın `shared_experience.state_dir` alanıdır (varsayılan `shared_experience`)."""
+    if getattr(args, "root", None):
+        return Path(args.root)
+    st = Path(args.state_dir) if getattr(args, "state_dir", None) else cfg.state_path
+    sec = getattr(getattr(cfg, "v3", None), "shared_experience", None)
+    return st / str(getattr(sec, "state_dir", None) or "shared_experience")
+
+
+def cmd_shared_experience_report(cfg: BotConfig, args) -> int:
+    """ORTAK DENEYİM RAPORU (2026-09-29): "bu durumda, bu kurulumda daha önce kazandık mı kaybettik mi?".
+
+    SALT OKUR — ayrı süreç, motor kurulmaz, ağ yok (yalnız depo dosyaları; `--live` Formasyon CSV önbelleğini okur).
+    Yazdığı TEK şey `--out` / `--summary-out` ile açıkça verilen dosyalardır. Tanımlayıcıdır; karar değildir."""
+    from .shared_experience import report as xr
+    try:
+        dims = xr.parse_situation(args.situation)
+        for d in xr.DIMS:
+            v = getattr(args, "dim_" + d, None)
+            if v:
+                dims[d] = v
+        q = xr.Query(book=args.book, setup=args.setup, side=args.side, family=args.family, group_by=args.group_by,
+                     dims=dims, kind=args.kind, cohort=args.cohort, cf_reason_family=args.cf_reason_family,
+                     origin=args.origin, snapshot=args.snapshot, min_n=args.min_n, shrink_k=args.shrink_k,
+                     backoff=not args.no_backoff, cells=args.cells, cells_min=args.cells_min,
+                     focus_coin=args.coin).validate()
+        snap_doc = None
+        if args.snapshot_json:
+            snap_doc = json.loads(Path(args.snapshot_json).read_text(encoding="utf-8"))
+            if not isinstance(snap_doc, dict):
+                raise xr.ReportError("--snapshot-json bir JSON nesnesi olmalı")
+        doc = xr.run(_xp_root(cfg, args), q, since=args.since, until=args.until, for_symbol=args.for_symbol,
+                     snapshot_doc=snap_doc, live=args.live, csv_dir=cfg.cache_path, with_summary=bool(args.summary_out))
+    except (xr.ReportError, OSError, ValueError) as exc:
+        print(f"⛔ ortak deneyim raporu: {exc}")
+        return 2
+    summ = doc.pop("summary", None)
+    adv_text = None
+    if getattr(args, "advisor", False):
+        # GÖLGE DANIŞMAN (2026-09-29): walk-forward özeti rapora EKLENİR (salt okur; tanımlayıcı)
+        from .shared_experience import advisor_eval as ae
+        try:
+            wf = ae.run_walkforward(_xp_root(cfg, args))
+        except (xr.ReportError, OSError, ValueError) as exc:
+            print(f"⛔ gölge danışman özeti: {exc}")
+            return 2
+        doc["advisor_walkforward"] = ae.summary(wf)
+        adv_text = ae.render_tr(wf)
+    text = json.dumps(doc, ensure_ascii=False, indent=1, sort_keys=True) if args.json else xr.render_tr(doc)
+    if adv_text is not None and not args.json:
+        text = text + "\n\n" + adv_text
+    print(text)
+    if args.out:
+        Path(args.out).write_text(text + "\n", encoding="utf-8")
+    if args.summary_out and summ is not None:
+        from .core import atomic_write_text
+        atomic_write_text(Path(args.summary_out), json.dumps(summ, ensure_ascii=False, indent=1, sort_keys=True))
+    return 0
+
+
+def cmd_shared_experience_status(cfg: BotConfig, args) -> int:
+    """Ortak deneyim katmanı durumu (2026-09-29): status.json + imleç + arşiv + defter başına 24 sa / 7 gün kapsamı ve
+    VERİ YOK bayrakları + geri alma tetikleri. SALT OKUR (motor yok, ağ yok)."""
+    from .shared_experience import report as xr
+    doc = xr.status_doc(_xp_root(cfg, args))
+    print(json.dumps(doc, ensure_ascii=False, indent=1, sort_keys=True) if args.json else xr.render_status_tr(doc))
+    return 0
+
+
+def cmd_shared_experience_advisor(cfg: BotConfig, args) -> int:
+    """GÖLGE DANIŞMAN (2026-09-29): "GİRME dediklerini atlasaydık net R artar mıydı?" — önceden kayıtlı walk-forward
+    (`docs/ortak_deneyim/DANISMAN_V1.md`), canlı ↔ çevrimdışı doğrulama, "şu an ne derdi?" sorusu ve yeniden oynatma.
+
+    SALT OKUR — ayrı süreç, motor kurulmaz, ağ yok. Yazdığı TEK şey `--out` / `--summary-out` / `--replay-out` ile açıkça
+    verilen dosyalardır (tavsiye deposuna ASLA yazmaz). Ara bakış KANIT DEĞİLDİR; hiçbir karar değişmez."""
+    from .shared_experience import advisor_eval as ae
+    from .shared_experience import report as xr
+    root = _xp_root(cfg, args)
+    if not root.is_dir():
+        print(f"⛔ gölge danışman: ortak deneyim deposu yok ({root}) — katman kapalı ya da hiç çalışmadı")
+        return 2
+    try:
+        if args.mode == "verify":
+            doc = ae.verify(root)
+        elif args.mode == "ask":
+            if not (args.for_symbol and args.setup and args.side and args.book):
+                raise xr.ReportError("--mode ask için --book, --for-symbol, --setup ve --side gerekir")
+            doc = ae.ask(root, book=args.book, setup=args.setup, side=args.side, symbol=args.for_symbol, live=args.live,
+                         csv_dir=cfg.cache_path)
+        elif args.mode == "replay":
+            if not args.replay_out:
+                raise xr.ReportError("--mode replay için --replay-out gerekir (tavsiye deposuna ASLA yazılmaz)")
+            doc = ae.replay(root, args.replay_out)
+        else:
+            doc = ae.run_walkforward(root, eligibility=args.eligible, since=args.since, until=args.until,
+                                     with_looks=args.looks, clock=args.clock, book=args.book, family=args.family,
+                                     cohort=args.cohort, boot=not args.no_boot,
+                                     invariants_green=True if args.invariants_green else None)
+    except (xr.ReportError, OSError, ValueError) as exc:
+        print(f"⛔ gölge danışman: {exc}")
+        return 2
+    text = json.dumps(doc, ensure_ascii=False, indent=1, sort_keys=True) if args.json else ae.render_tr(doc)
+    print(text)
+    if args.out:
+        Path(args.out).write_text(text + "\n", encoding="utf-8")
+    if args.summary_out and args.mode == "walkforward":
+        from .core import atomic_write_text
+        atomic_write_text(Path(args.summary_out), json.dumps(ae.summary(doc), ensure_ascii=False, indent=1,
+                                                             sort_keys=True))
+    return 0
+
+
+def _xp_args(s: argparse.ArgumentParser) -> None:
+    s.add_argument("--root", default=None, help="depo klasörü (varsayılan state/<shared_experience.state_dir>)")
+    s.add_argument("--state-dir", dest="state_dir", default=None, help="state kökü (varsayılan yapılandırmadaki)")
+    s.add_argument("--json", action="store_true", help="makine-okunur JSON (metinle aynı içerik)")
+
+
 def cmd_authority(cfg: BotConfig, args) -> int:
     """Tek yetkili worker markörü: --claim bu makineye alır, --release kaldırır, varsayılan durumu basar."""
     from .ops.authority import check, claim, current_host, read_authority, release
@@ -1047,6 +1211,10 @@ def cmd_futures_backtest(cfg: BotConfig, args) -> int:
 
 # ------------------------------------------------------------------ parser kaydı
 def register(sub: argparse._SubParsersAction) -> None:
+    s = sub.add_parser("outage-simulate", help="İzleme kesintisini geçmiş mumlarla AYRI simülasyon olarak oynat (canlı defter değişmez)")
+    s.add_argument("--book", default="main", help="defter anahtarı (main | strateji defteri dizini | formasyon defteri)")
+    s.add_argument("--until", default=None, help="bitiş (ISO; varsayılan: kesinti kaydının sonu)")
+    s.set_defaults(fn=cmd_outage_simulate)
     s = sub.add_parser("doctor", help="Ortam/durum sağlık kontrolü"); s.add_argument("--quick", action="store_true")
     s.add_argument("--json", action="store_true", help="makine-okunur structured sonuç (exit kodu aynı)"); s.set_defaults(fn=cmd_doctor)
     s = sub.add_parser("preflight", help="Systemd başlangıç ön kontrolü: yalnız-bayat-heartbeat'e izin, geri kalan fail-closed")
@@ -1174,6 +1342,78 @@ def register(sub: argparse._SubParsersAction) -> None:
     s.add_argument("--state-dir", dest="state_dir", default=None)
     s.add_argument("--manifest-out", dest="manifest_out", default=None, help="audit manifest JSON yolu")
     s.set_defaults(fn=cmd_learning_reconcile)
+    # ORTAK DENEYİM KATMANI v1 (2026-09-29): salt-okur rapor + durum (ayrı süreç; motor/ağ yok)
+    s = sub.add_parser("shared-experience-report",
+                       help="Ortak deneyim: bu durumda bu kurulumda daha önce kazandık mı? (tanımlayıcı; karar yok)")
+    _xp_args(s)
+    s.add_argument("--book", default=None, help="defter anahtarı ya da adı (ör. strategy_paper_box / b1_box_fade)")
+    s.add_argument("--setup", default=None, help="setup_type (ör. box_fade, trend, candle:CV001, A_TREND_PULLBACK)")
+    s.add_argument("--side", default=None, choices=["LONG", "SHORT"])
+    s.add_argument("--family", default=None, choices=["TREND", "FADE", "BREAKOUT", "CANDLE_PATTERN", "MOMENTUM"])
+    s.add_argument("--group-by", dest="group_by", default="both", choices=["setup", "family", "both"])
+    s.add_argument("--trend", dest="dim_trend", default=None, choices=["UP", "DOWN", "RANGE", "UNKNOWN"])
+    s.add_argument("--vol", dest="dim_vol", default=None, choices=["LOW", "NORMAL", "HIGH", "UNKNOWN"])
+    s.add_argument("--btc", dest="dim_btc", default=None, choices=["UP", "DOWN", "RANGE", "UNKNOWN"])
+    s.add_argument("--volume", dest="dim_volume", default=None, choices=["LOW", "NORMAL", "HIGH", "UNKNOWN"])
+    s.add_argument("--structure", dest="dim_structure", default=None, choices=["HH_HL", "LH_LL", "MIXED", "UNKNOWN"])
+    s.add_argument("--situation", default=None, help="boyut=değer listesi, ör. trend=UP,vol=HIGH,btc=UP")
+    s.add_argument("--for-symbol", "--like", dest="for_symbol", default=None,
+                   help="bu durumu daha önce gördük mü: sembolün depodaki son anlık görüntüsü (ya da --live)")
+    s.add_argument("--live", action="store_true", help="--for-symbol için AĞSIZ canlı anlık görüntü (Formasyon CSV önbelleği)")
+    s.add_argument("--snapshot-json", dest="snapshot_json", default=None, help="situation_v1 anlık görüntüsü JSON dosyası")
+    s.add_argument("--coin", default=None, help="kısmi havuz odağı (varsayılan --for-symbol)")
+    s.add_argument("--kind", default="both", choices=["real", "cf", "both"])
+    s.add_argument("--cohort", default="all", choices=["all", "policy", "extra", "pre"])
+    s.add_argument("--cf-reason-family", dest="cf_reason_family", default=None,
+                   choices=["CAPACITY", "EXCHANGE", "OCCUPANCY", "PARITY", "GATE", "LIQUIDITY", "OTHER"])
+    s.add_argument("--since", default=None, help="karar anı alt sınırı (ISO)")
+    s.add_argument("--until", default=None, help="karar anı üst sınırı (ISO, hariç)")
+    s.add_argument("--origin", default="all", choices=["all", "live"])
+    s.add_argument("--snapshot", default="ok", choices=["ok", "ok+partial", "any"])
+    s.add_argument("--min-n", dest="min_n", type=int, default=30, help="hüküm eşiği (karne ile aynı: 30; en az 10)")
+    s.add_argument("--shrink-k", dest="shrink_k", type=float, default=20.0, help="coin başına kısmi havuz k (varsayılan 20)")
+    s.add_argument("--no-backoff", dest="no_backoff", action="store_true", help="geri çekilme seviyelerini gösterme")
+    s.add_argument("--cells", action="store_true", help="her tam hücre (nerede kazandık haritası)")
+    s.add_argument("--cells-min", dest="cells_min", type=int, default=10)
+    s.add_argument("--out", default=None, help="çıktının kopyası (yazdığı TEK dosya)")
+    s.add_argument("--summary-out", dest="summary_out", default=None,
+                   help="panel kartı özeti (ör. state/shared_experience/report_summary.json). Otomatik yazan YOK "
+                        "(2026-09-29): elle ya da ayrı kurulan düşük öncelikli bir zamanlayıcıyla çalıştırın")
+    s.add_argument("--advisor", action="store_true",
+                   help="gölge danışmanın walk-forward özetini rapora ekle (salt okur; tanımlayıcı)")
+    s.set_defaults(fn=cmd_shared_experience_report)
+    # GÖLGE DANIŞMAN (2026-09-29): salt-okur walk-forward / doğrulama / soru / yeniden oynatma (ayrı süreç; motor/ağ yok)
+    s = sub.add_parser("shared-experience-advisor",
+                       help="Gölge danışman: GİRME'yi atlasaydık net R artar mıydı? (yalnız KAYIT; karar değişmez)")
+    _xp_args(s)
+    s.add_argument("--mode", default="walkforward", choices=["walkforward", "verify", "ask", "replay"])
+    s.add_argument("--eligible", default="prospective", choices=["prospective", "live", "all"])
+    s.add_argument("--clock", default="avail", choices=["avail", "event"],
+                   help="event = RETRO keşif (kanıt değil; kural değiştirilemez)")
+    s.add_argument("--since", default=None, help="hedef as_of alt sınırı (ISO; katlama daima deponun başından)")
+    s.add_argument("--until", default=None, help="hedef as_of üst sınırı (ISO, hariç)")
+    s.add_argument("--book", default=None, help="defter anahtarı ya da adı (ask için zorunlu)")
+    s.add_argument("--family", default=None, choices=["TREND", "FADE", "BREAKOUT", "CANDLE_PATTERN", "MOMENTUM"])
+    s.add_argument("--cohort", default="all", choices=["all", "policy", "extra", "pre", "cf"])
+    s.add_argument("--looks", action="store_true", help="L1/L2/L3 bakışları: NOT_REACHED | PENDING | PASS(Lk) | FAIL")
+    s.add_argument("--invariants-green", dest="invariants_green", action="store_true",
+                   help="pencere boyunca sürüm --check değişmezlerinin yeşil olduğunu operatör BEYAN eder (bütünlük)")
+    s.add_argument("--for-symbol", dest="for_symbol", default=None, help="ask: sembol (ör. SOL/USDT)")
+    s.add_argument("--setup", default=None, help="ask: setup_type (ör. box_fade, trend)")
+    s.add_argument("--side", default=None, choices=["LONG", "SHORT"])
+    s.add_argument("--live", action="store_true", help="ask: AĞSIZ canlı anlık görüntü (Formasyon CSV önbelleği)")
+    s.add_argument("--no-boot", dest="no_boot", action="store_true", help="bootstrap aralıklarını atla (hızlı bakış)")
+    s.add_argument("--out", default=None, help="çıktının kopyası")
+    s.add_argument("--summary-out", dest="summary_out", default=None,
+                   help="panel kartı özeti (ör. state/shared_experience/advice/walkforward_summary.json); otomatik "
+                        "yazan YOK — elle ya da ayrı zamanlayıcıyla")
+    s.add_argument("--replay-out", dest="replay_out", default=None,
+                   help="replay: yeniden hesaplanan tavsiye satırları (JSONL; tavsiye deposuna ASLA yazılmaz)")
+    s.set_defaults(fn=cmd_shared_experience_advisor)
+    s = sub.add_parser("shared-experience-status",
+                       help="Ortak deneyim katmanı durumu + defter başına 24 sa/7 gün kapsamı (salt okur)")
+    _xp_args(s)
+    s.set_defaults(fn=cmd_shared_experience_status)
     s = sub.add_parser("authority", help="Tek yetkili worker markörü (split-brain koruması): --claim / --release / durum")
     s.add_argument("--claim", action="store_true"); s.add_argument("--release", action="store_true"); s.add_argument("--note", default="")
     s.set_defaults(fn=cmd_authority)

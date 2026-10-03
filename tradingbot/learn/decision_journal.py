@@ -72,6 +72,9 @@ _BLOCK_MAP: dict[str, tuple[str, str]] = {
     "RISK_CAPACITY_BLOCKED": (RISK_REJECTED, "risk_engine_capacity"),
     "RISK_ENGINE_BLOCKED": (RISK_REJECTED, "risk_engine"),
     "EXCHANGE_REJECTED": (OPEN_FAILED, "ledger_open"),
+    # ÖĞRENME-EKSTRA YALNIZ KAYIT (2026-10-03, `learning_mode.LEARNING_RECORD_ONLY`): risk kapılarından geçen seçicilik-ekstra
+    # aday açılmadı, karşı-olgusal ("olsaydı") olarak kaydedildi → gölge sınıfı, kendi aşaması. Yalnız `record_selectivity`.
+    "LEARNING_RECORD_ONLY": (SHADOW, "learning_record_only"),
 }
 #: Tur genelinde girişleri durduran kapılar (aday bazlı red DEĞİL).
 _HALT_REASONS = {"RISK_STATE_PERSIST_FAILED", "SHUTDOWN_REQUESTED", "GAP_RECONCILE_PENDING"}
@@ -86,9 +89,22 @@ def classify_outcome(entry: dict[str, Any] | None, *, is_actionable: bool | None
     yalnız TEK nihai sınıf üretilir (aşama geçmişi ayrı alanda tutulur).
     """
     e = entry or {}
-    if e.get("executed_notional") is not None:
-        return ACCEPTED, "ledger_open", None
     code = str(e.get("block_code") or "")
+    # P0 (2026-09-28, öğrenme modu): motor `executed_notional`ı defter açılışından ÖNCE yazar; bu yüzden eskiden her
+    # EXCHANGE_REJECTED satırı ACCEPTED sayılıyordu (WIP handoff'taki 52 "kabul"ün 45'i). ACCEPTED yalnız başarılı
+    # dolumdan sonra; defter/borsa reddi (block_code ya da `exec_reject`) OPEN_FAILED'dır.
+    open_failed = code == "EXCHANGE_REJECTED" or bool(e.get("exec_reject"))
+    # SPOT istisnası (2026-09-28, öğrenme modu): baseline spot dalı `str(OrderStatus.FILLED)` ('OrderStatus.FILLED')
+    # okuduğu için DOLAN emri EXCHANGE_REJECTED yazar; o anda defterin `last_reject_reason`ı BOŞTUR (defter reddetmedi,
+    # varlık gerçekten alındı). Bu satır P0 öncesi gibi ACCEPTED kalır; kök düzeltme (durum DEĞERİ karşılaştırması)
+    # kapalıyken davranışı değiştirdiği için ayrı onay konusudur.
+    if (open_failed and code == "EXCHANGE_REJECTED" and str(verdict or "").upper() == "SPOT_LONG"
+            and "exec_reject" in e and not e.get("exec_reject") and e.get("executed_notional") is not None):
+        open_failed = False
+    if e.get("executed_notional") is not None and not open_failed:
+        return ACCEPTED, "ledger_open", None
+    if open_failed:
+        return OPEN_FAILED, "ledger_open", code or "EXCHANGE_REJECTED"
     if code in _BLOCK_MAP:
         cls, stage = _BLOCK_MAP[code]
         # Chief'in SERT red-team veto'su ayrı sınıftır (yumuşak sıralama reddinden farklı).
@@ -225,6 +241,8 @@ def build_decision_record(*, run_id: str, cycle_id: Any, symbol: str, direction:
         "block_code": _s(e.get("block_code")),
         "risk_allowed": e.get("risk_allowed"),
         "risk_reasons": [str(x)[:60] for x in (e.get("risk_reasons") or [])][:MAX_REASONS] or None,
+        # P0 (2026-09-28, öğrenme modu): defterin/borsanın ret nedeni (`last_reject_reason`) — eskiden yazılıp atılıyordu.
+        "exec_reject": (_s(e.get("exec_reject")) or "")[:80] or None,
         "size_multiplier_total": _f(e.get("size_multiplier_total")),
         "planned_notional": _f(e.get("final_notional")) or _f(e.get("plan_notional")),
         "applied_risk_usdt": _f(e.get("applied_risk_usdt")),
@@ -302,6 +320,8 @@ def why_summary_tr(rec: dict[str, Any]) -> str:
     desc = _KIND_TR.get(kind, kind or "sonuç yok")
     parts.append(f"Sonuç: {desc}" + (f" [{stage}]" if stage else "")
                  + (f" — {reason}." if reason else "."))
+    if kind == OPEN_FAILED and rec.get("exec_reject"):
+        parts.append(f"Defter/borsa reddi: {rec.get('exec_reject')}.")
     li = rec.get("learning_influence") or {}
     n_exp = li.get("n_experience")
     if n_exp:

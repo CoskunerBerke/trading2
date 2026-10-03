@@ -1,6 +1,12 @@
 """Offline gap reconciliation — worker kapalıyken kaçan stop/TP/likidasyon/funding olaylarını
 arşiv mumlarıyla OLAY-ZAMANI sırasında uzlaştırır.
 
+POLİTİKA DEĞİŞİKLİĞİ (2026-09-24): canlı motor bu uzlaştırıcıyı ARTIK CANLI PAPER DEFTERİNE UYGULAMAZ. Ana defter de
+kâğıt defterlerle aynı kesinti politikasını izler (`engine_v3.ensure_gap_reconciled`: kesinti kaydı + ilk güncel fiyat
+gözlemi; aralıktaki barlar uygulanmaz). Geçmiş uzlaştırma yalnız `simulate_outage` ile defterin KOPYASINDA, ayrı ve
+`SIMULATION` etiketli bir dosyaya yazılır (`python -m tradingbot outage-simulate`). Sınıfın kendisi (birim testli çekirdek)
+değişmedi; `simulate=True` ile hiçbir canlı dosyaya (defter, watermark, gap_status) yazmaz.
+
 Kurallar (fail-closed):
 * Yapay fiyat/mum/fill üretilmez; yalnız borsadan çekilen kapanmış mumlar defterin mevcut
   `tick()` yoluna (worst-case intrabar: LİKİDASYON > STOP > TP) bar bar verilir.
@@ -42,6 +48,11 @@ def read_watermark(state_dir: Path | str) -> datetime | None:
 
 
 def write_watermark(state_dir: Path | str, when: datetime, run_id: str | None = None) -> None:
+    """Son koruyucu gözlem anı. MONOTON (2026-09-24): tur ve koruyucu izleyici ayrı iş parçacıklarından yazar; daha eski bir
+    an (ör. turun başlangıç saati) sonradan yazılsa damga GERİ gitmez."""
+    cur = read_watermark(state_dir)
+    if cur is not None and cur >= when:
+        return
     atomic_write_json(Path(state_dir) / WATERMARK_FILE, {"last_exit_check_utc": iso(when), "run_id": run_id or ""})
 
 
@@ -108,16 +119,26 @@ class GapReconciler:
 
     def __init__(self, ledger: Any, ledger_path: Path, state_dir: Path,
                  provider_factory: Callable[[], Any], *, min_gap_s: float = MIN_GAP_S,
-                 now_fn: Callable[[], datetime] = utc_now):
+                 now_fn: Callable[[], datetime] = utc_now, simulate: bool = False,
+                 window_start: datetime | None = None):
         self.ledger = ledger
         self.ledger_path = Path(ledger_path)
         self.state_dir = Path(state_dir)
         self.provider_factory = provider_factory
         self.min_gap_s = float(min_gap_s)
         self.now_fn = now_fn
+        #: SİMÜLASYON: defter KOPYASI üzerinde koşar; defter/watermark/gap_status YAZILMAZ (bkz. `simulate_outage`)
+        self.simulate = bool(simulate)
+        self.window_start = window_start
+
+    def _persist(self, write: Callable[[], Any]) -> None:
+        if not self.simulate:
+            write()
 
     # ------------------------------------------------------------------ pencere
     def _window_start(self) -> datetime | None:
+        if self.window_start is not None:
+            return self.window_start
         wm = read_watermark(self.state_dir)
         if wm is not None:
             return wm
@@ -183,14 +204,14 @@ class GapReconciler:
         positions = dict(getattr(self.ledger, "positions", {}) or {})
         if start is None:
             # İlk kurulum: pencere bilinemez → dürüstçe bootstrap (tick yok, fill yok), watermark başlat.
-            write_watermark(self.state_dir, now, run_id)
-            atomic_write_json(self.state_dir / GAP_STATUS_FILE, {"status": "OK", "at": iso(now), "note": "bootstrap: watermark yoktu"})
+            self._persist(lambda: write_watermark(self.state_dir, now, run_id))
+            self._persist(lambda: atomic_write_json(self.state_dir / GAP_STATUS_FILE, {"status": "OK", "at": iso(now), "note": "bootstrap: watermark yoktu"}))
             rep.status, rep.reason = "NOOP", "watermark yok — bootstrap"
             return rep
         gap_s = (now - start).total_seconds()
         if gap_s < self.min_gap_s or not positions:
-            write_watermark(self.state_dir, now, run_id)
-            atomic_write_json(self.state_dir / GAP_STATUS_FILE, {"status": "OK", "at": iso(now), "gap_s": round(gap_s, 1)})
+            self._persist(lambda: write_watermark(self.state_dir, now, run_id))
+            self._persist(lambda: atomic_write_json(self.state_dir / GAP_STATUS_FILE, {"status": "OK", "at": iso(now), "gap_s": round(gap_s, 1)}))
             rep.status, rep.reason = "NOOP", f"pencere {gap_s:.0f}s (<{self.min_gap_s:.0f}s) ya da açık pozisyon yok"
             return rep
 
@@ -229,9 +250,9 @@ class GapReconciler:
             # ALL-OR-NOTHING: hiçbir tick atılmaz, watermark İLERLEMEZ → ikinci denemede aynı pencere yeniden ele alınır.
             rep.status, rep.blocked = "GAP_AMBIGUOUS", True
             rep.reason = "veri eksik/belirsiz — yapay fill üretilmedi; yeni girişler durduruldu, kullanıcı müdahalesi gerekli"
-            atomic_write_json(self.state_dir / GAP_STATUS_FILE,
-                              {"status": "GAP_AMBIGUOUS", "at": iso(now), "window": [iso(start), iso(now)], "tf": tf,
-                               "ambiguous": rep.ambiguous, "note": rep.reason})
+            self._persist(lambda: atomic_write_json(self.state_dir / GAP_STATUS_FILE,
+                                                    {"status": "GAP_AMBIGUOUS", "at": iso(now), "window": [iso(start), iso(now)], "tf": tf,
+                                                     "ambiguous": rep.ambiguous, "note": rep.reason}))
             log.error("GAP_AMBIGUOUS: %s", rep.ambiguous)
             return rep
 
@@ -266,12 +287,12 @@ class GapReconciler:
             if not self.ledger.positions:
                 break
 
-        self.ledger.save(self.ledger_path)
-        write_watermark(self.state_dir, now, run_id)
-        atomic_write_json(self.state_dir / GAP_STATUS_FILE,
-                          {"status": "OK", "at": iso(now), "window": [iso(start), iso(now)], "tf": tf,
-                           "bars_replayed": rep.bars_replayed, "closed": [r.id for r in rep.closed],
-                           "decisions": rep.decisions})
+        self._persist(lambda: self.ledger.save(self.ledger_path))
+        self._persist(lambda: write_watermark(self.state_dir, now, run_id))
+        self._persist(lambda: atomic_write_json(self.state_dir / GAP_STATUS_FILE,
+                                                {"status": "OK", "at": iso(now), "window": [iso(start), iso(now)], "tf": tf,
+                                                 "bars_replayed": rep.bars_replayed, "closed": [r.id for r in rep.closed],
+                                                 "decisions": rep.decisions}))
         if rep.closed:
             log.info("gap-reconcile: %d bar / %d kapanış: %s", rep.bars_replayed, len(rep.closed), "; ".join(rep.decisions))
         else:
@@ -279,5 +300,29 @@ class GapReconciler:
         return rep
 
 
+SIMULATION_DIR = "outage_simulations"
+SIMULATION_LABEL = "SIMULATION_NOT_APPLIED_TO_PAPER_LEDGER"
+
+
+def simulate_outage(ledger: Any, *, start: datetime, end: datetime | None = None, provider_factory: Callable[[], Any],
+                    state_dir: Path | str, book_key: str = "main", ledger_factory: Callable[[dict], Any] | None = None) -> dict:
+    """GEÇMİŞ UZLAŞTIRMA — AYRI SİMÜLASYON (2026-09-24). Kesinti penceresi arşiv mumlarıyla olay-zamanında, defterin
+    KOPYASINDA oynatılır; sonuç `state/outage_simulations/<defter>-<başlangıç>.json` dosyasına `SIMULATION` etiketiyle
+    yazılır. Canlı defter, watermark ve gap_status DEĞİŞMEZ; hiçbir kapanış PAPER defterine girmez."""
+    end = end or utc_now()
+    copy = ledger_factory(ledger.to_dict()) if ledger_factory is not None else type(ledger).from_dict(ledger.to_dict())
+    rec = GapReconciler(copy, Path(state_dir) / SIMULATION_DIR / "ledger_copy.json", Path(state_dir), provider_factory,
+                        min_gap_s=0.0, now_fn=lambda: end, simulate=True, window_start=start).reconcile(None)
+    doc = {"label": SIMULATION_LABEL, "book": book_key, "window": [iso(start), iso(end)], "generated_at": iso(utc_now()),
+           "applied_to_ledger": False, "report": rec.to_dict(),
+           "simulated_closes": [r.to_legacy_dict() if hasattr(r, "to_legacy_dict") else str(r) for r in rec.closed],
+           "note_tr": "Bu dosya bir SİMÜLASYONDUR: kesinti aralığında geçmiş mumlarla ne olabileceğini gösterir. Canlı PAPER "
+                      "defterine, bakiyeye ya da öğrenmeye UYGULANMADI."}
+    out = Path(state_dir) / SIMULATION_DIR / ("%s-%s.json" % (book_key, iso(start).replace(":", "").replace("+", "_")))
+    atomic_write_json(out, doc)
+    doc["path"] = str(out)
+    return doc
+
+
 __all__ = ["GapReconciler", "GapReport", "read_watermark", "write_watermark", "read_gap_status",
-           "choose_timeframe", "WATERMARK_FILE", "GAP_STATUS_FILE", "MIN_GAP_S"]
+           "choose_timeframe", "WATERMARK_FILE", "GAP_STATUS_FILE", "MIN_GAP_S", "SIMULATION_LABEL", "simulate_outage"]

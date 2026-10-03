@@ -36,8 +36,10 @@ from .templates import (HEADS_TABLE_CLS, POS_TABLE_CLS, age_text, badge, card, c
                         money_html_text, page, pct, pnl_cell, render_any, sample_banner, table,
                         challenger_blocks, observation_block, quality_block,
                         retention_block,
-                        calibration_block, verdict_badge, verdict_kind, weight_table)
+                        calibration_block, verdict_badge, verdict_kind, weight_table,
+                        experience_layer_card, advisor_card)
 from . import terminal as term
+from . import learning_view as lv
 
 log = logging.getLogger(__name__)
 _PLOTLY_CACHE: dict[str, bytes] = {}
@@ -130,8 +132,34 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
         resp.headers.setdefault("X-Content-Type-Options", "nosniff")
         return resp
 
+    def _lm_banner() -> str:
+        """ÖĞRENME MODU (2026-09-28): her sayfanın başındaki şerit; anahtar hiç açılmadıysa "" (sayfa bit-aynı)."""
+        try:
+            return lv.banner_html(lv.learning_status(state))
+        except Exception:  # noqa: BLE001 — şerit arızası sayfayı düşürmez
+            return ""
+
+    def _lm_section() -> str:
+        try:
+            return lv.section_html(state)
+        except Exception:  # noqa: BLE001
+            return ""
+
+    def _xp_card() -> str:
+        """ORTAK DENEYİM (2026-09-29): salt okur kart; katman hiç çalışmadıysa "" (sayfa bit-aynı). Arızası sayfayı düşürmez.
+        GÖLGE DANIŞMAN kartı hemen altında (durum dosyası yoksa "")."""
+        try:
+            out = experience_layer_card(state.shared_experience())
+        except Exception:  # noqa: BLE001
+            out = ""
+        try:
+            out += advisor_card(state.shared_experience_advisor())
+        except Exception:  # noqa: BLE001
+            pass
+        return out
+
     def _page(title: str, body: str, active: str, extra_head: str = "") -> HTMLResponse:
-        return HTMLResponse(page(title, body, active, brand=cfg.title, extra_head=extra_head, token_qs=token_qs))
+        return HTMLResponse(page(title, _lm_banner() + body, active, brand=cfg.title, extra_head=extra_head, token_qs=token_qs))
 
     # ------------------------------------------------------------------ static
     @app.get("/static/plotly.min.js")
@@ -175,7 +203,9 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
         base = _default_coin(book_id, coin)
         # `c.display` ZATEN bicimlenmis metindir; ikinci kez para bicimlendirmesine SOKULMAZ.
         # `id="sumgrid"` ve hemen ardindan gelen `<div class="grid">` sozlesmesi KORUNUR (HTML-API paritesi testi).
-        detail = '<details class="section"><summary>Kâr / zarar özeti ve teknik kartlar</summary><div>'
+        # ÖĞRENME MODU (2026-09-28): defter başına slot/Σmarj/karşı-olgusal tablosu — anahtar hiç açılmadıysa "" (bit-aynı)
+        detail = _lm_section() + _xp_card()      # ORTAK DENEYİM (2026-09-29): katman yoksa ""
+        detail += '<details class="section"><summary>Kâr / zarar özeti ve teknik kartlar</summary><div>'
         detail += '<div class="grid" id="sumgrid">' + "".join(
             card(c.title, card_value(c), c.sub, cid="sc-" + c.key) for c in vm["cards"]) + "</div>"
         detail += '<div class="grid">' + "".join([
@@ -559,8 +589,7 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
     def _strategy_docs() -> list[dict]:
         """Tüm strateji kâğıt defterlerinin özetleri (ana + extra). İndeks yoksa yalnız ana dosya."""
         docs = []
-        idx = read_json(state.state_dir / "strategy_paper_index.json", default=None) or {}
-        files = [b.get("summary_file") for b in (idx.get("books") or []) if isinstance(b, dict) and b.get("summary_file")]
+        files = [b.get("summary_file") for b in state.strategy_index_books() if b.get("summary_file")]
         if "strategy_paper.json" not in files:
             files.insert(0, "strategy_paper.json")
         for fn in files:
@@ -604,6 +633,9 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
             body += f'<div class="grid">{card("Özkaynak", fmt(sm.get("equity_mtm"), 2) + " USDT")}{card("Başlangıç", fmt(sp.get("starting_equity"), 2))}'
             body += f'{card("BTC rejimi", esc(str(sp.get("regime") or "?")))}{card("Kural", esc(str(sp.get("name") or "")), "ATR çarpanı " + esc(str(sp.get("atr_mult"))))}'
             body += f'{card("Sayaçlar", esc(str(sp.get("counters") or {})))}</div>'
+            if isinstance(sp.get("learning"), dict):         # ÖĞRENME MODU (2026-09-28): yalnız defter öğrenme gördüyse
+                _bid = str(sp.get("key") or "strategy_paper")
+                body += lv.book_badge_html(lv.book_row(state, {"book_id": _bid, "label": str(sp.get("name") or _bid)}))
             pos = [{"symbol": s, **v} for s, v in (sp.get("positions") or {}).items()]
             body += "<h3>Açık pozisyonlar</h3>" + (render_any(pos) if pos else '<div class="card mut">açık pozisyon yok</div>')
             hist = sp.get("history_tail") or []
@@ -728,7 +760,10 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
             body += "<h2>Doldurmalar</h2>" + render_any(t["fills"])
         if t.get("features"):
             body += "<h2>Giriş özellikleri</h2>" + render_any(t["features"])
-        mem = [m for m in state.tail_jsonl("trade_memory", 2000) if str(m.get("trade_id") or m.get("id")) == trade_id]
+        # 512M panel (2026-09-28, öğrenme modu; dördüncü doğrulama turu): kuyruk akışla okunur, yalnız bu işlemin satırları
+        # tutulur (eskiden 2000 tam ayrıştırılmış satır listesi); sonuç aynı
+        mem = state.tail_jsonl("trade_memory", 2000, needle=trade_id,
+                               project=lambda m: m if str(m.get("trade_id") or m.get("id")) == trade_id else None)
         if mem:
             body += "<h2>Post-mortem / hafıza</h2>" + render_any(mem)
         return _page(f"İşlem {trade_id[:20]}", body, "/trades")
@@ -2031,7 +2066,10 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
             return JSONResponse({"available": False,
                                  "reason": ("entry_selectivity.json yok — worker bu sürümle "
                                             "tur tamamlamadı")})
-        rows = state.tail_jsonl("entry_snapshot", 4000)
+        # yalnız aşağıda okunan alanlar tutulur (satır ~36 KB; 4000 satır tam ayrıştırılınca 512M panel için ağır —
+        # 2026-09-28, öğrenme modu; dördüncü doğrulama turu); sayılar ve kümeler aynı
+        rows = state.tail_jsonl("entry_snapshot", 4000,
+                                project=lambda r: {k: r[k] for k in ("candidate_id", "kind", "trade_id") if k in r})
         cand = {str(r.get("candidate_id")) for r in rows
                 if r.get("candidate_id") and r.get("kind") != "link"}
         linked = {str(r.get("trade_id")) for r in rows
@@ -2099,6 +2137,22 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
             body += "<h2>Kill switch nedenleri</h2>" + render_any(ks["reasons"])
         if ks.get("audit"):
             body += "<h3>Denetim izi (son 30)</h3>" + render_any(list(ks["audit"])[-30:][::-1])
+        _lmr = r.get("learning_mode") if isinstance(r.get("learning_mode"), dict) else None
+        if _lmr:
+            # ÖĞRENME MODU (2026-09-28): ana botun GERÇEKTE uyguladığı bütçe — %6 taban profil ile karıştırılmasın
+            _rp, _bk = _lmr.get("risk_profile") or {}, _lmr.get("book") or {}
+            _row = lv.book_row(state, {"book_id": "main", "label": "Ana bot"}) or {}
+            _mf = _row.get("margin_frac")
+            body += ("<h2>Öğrenme risk bütçesi (ana bot)</h2><div class=\"grid\">"
+                     + card("Toplam açık risk tavanı", "%" + fmt(_rp.get("max_total_open_risk_pct"), 0),
+                            "taban profil %6 — öğrenme süresince " + fmt(_lmr.get("max_total_open_risk_usdt"), 2) + " USDT")
+                     + card("İşlem başı risk", "%" + fmt(_bk.get("risk_pct"), 2),
+                            "tavan %" + fmt(_rp.get("risk_per_trade_cap_pct"), 2) + " (min. tutara çıkarma bu tavan içinde)")
+                     + card("Slot", "%d / %s" % (int(_row.get("slots_used") or 0), esc(_bk.get("slots", "—"))),
+                            "slot marjı " + fmt(_lmr.get("slot_margin_usdt"), 2) + " USDT")
+                     + card("Σmarj / E", (("%.0f%%" % (_mf * 100)) if _mf is not None else "—"),
+                            "E = " + fmt(_lmr.get("equity_basis"), 2) + " USDT (başlangıç özkaynağı) · rezerv %" + fmt(_bk.get("reserve_pct"), 0))
+                     + "</div>")
         body += "<h2>Risk profili</h2>" + (kv_table(r.get("profile") or {}) if r.get("profile") else '<div class="card mut">risk.json yok</div>')
         body += "<h2>Maruziyet</h2>" + kv_table({k: v for k, v in exp.items() if k != "positions"})
         if exp.get("positions"):
@@ -2112,6 +2166,15 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
         h = state.get("health") or {}
         hb = state.get("heartbeat") or {}
         body = f'<div class="grid">{card("Durum", health_badge(h.get("state", "UNKNOWN")), esc(h.get("summary") or ""))}{card("Kalp atışı", age_text(state.heartbeat_age()) + " önce", esc(hb.get("ts") or ""))}{card("Son tur", age_text(state.last_run_age()) + " önce")}{card("PID", esc(hb.get("pid") or "-"))}{card("run_id", esc(hb.get("run_id") or "-"))}</div>'
+        _lms = lv.learning_status(state)
+        if _lms is not None:
+            # ÖĞRENME MODU (2026-09-28): durum (ACTIVE | LEARNING_MODE_SUSPENDED:<neden>) + ilk aktif an
+            body += ('<div class="grid">'
+                     + card("Öğrenme modu", badge("AKTİF", "ok") if _lms["active"] else
+                            (badge("ASKIDA", "warn") if _lms["enabled"] else badge("KAPALI", "info")), esc(_lms.get("reason") or ""))
+                     + card("learning_mode_since", fmt_utc(_lms.get("since")), "ilk aktif an — yeniden başlatmada korunur")
+                     + card("Son durum değişimi", fmt_utc(_lms.get("state_since")), esc(", ".join(_lms.get("books") or [])))
+                     + "</div>")
         chk = h.get("checks") or []
         body += "<h2>Kontroller</h2>" + table(["Kontrol", "Durum", "Detay", "Önem"], [[esc(c.get("name")), badge("ok", "ok") if c.get("ok") else badge("HATA", "bad"), esc(json.dumps(c.get("detail"), ensure_ascii=False) if isinstance(c.get("detail"), (dict, list)) else c.get("detail")), esc(c.get("severity"))] for c in chk], empty="health.json yok")
         body += "<h2>State dosyaları</h2>" + table(["Dosya", "Yaş"], [[esc(STATE_FILES.get(k, k)), age_text(time.time() - m)] for k, m in sorted(state.mtimes().items())])
@@ -2145,6 +2208,13 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
                         "yalnız gözlem — karar kapısı DEĞİL")
                  + card("İşlem kotası", "YOK", "günlük/tur başına sabit sayı limiti yok")
                  + '</div>')
+        _lmf = {k: _fr.get(k) for k in lv.FUNNEL_KEYS if k in _fr}
+        if _lmf:
+            # ÖĞRENME MODU (2026-09-28): ana botun öğrenme huni anahtarları — yalnız öğrenme aktif turda yazılır
+            _roll = _df.get("rolling_24h") or {}
+            body += ('<div class="grid">' + "".join(
+                card(lv.FUNNEL_TR.get(k, k), str(int(_lmf.get(k) or 0)), "24s: %s" % esc(_roll.get(k, "—")))
+                for k in lv.FUNNEL_KEYS if k in _lmf) + "</div>")
         body += '<p class="small mut">Uçlar: <a href="/health/live">/health/live</a> · <a href="/health/ready">/health/ready</a> · <a href="/metrics">/metrics</a> · <a href="/api/overview">/api/overview</a></p>'
         return _page("Sağlık", body, "/health")
 
@@ -2705,7 +2775,8 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
         bars = closed_bars_at([{"timestamp": int(t), "open": float(o), "high": float(h), "low": float(l), "close": float(c)}
                                for t, o, h, l, c in zip(df["timestamp"], df["open"], df["high"], df["low"], df["close"])], as_of_ms=now_ms, tf=tf) if df is not None else []
         last_ts = int(bars[-1]["timestamp"]) if bars else None
-        cfgj = read_json(state.state_dir / "chart_analysis" / "config.json", default=None) or {}
+        cfgj = read_json(state.state_dir / "chart_analysis" / "config.json", default=None)
+        cfgj = cfgj if isinstance(cfgj, dict) else {}
         gates = cfgj.get("gates") or {"candle_mode": None, "candle_variant": None, "chart_mode": None, "chart_variant": None,
                                        "regime_mode": None, "regime_variant": None, "chart_fresh_within": 3}
         cfgd = cfgj.get("cfg") or {}
@@ -2751,7 +2822,11 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
                         continue
                     _idf = candles.load(base, _tf, market, n=600)
                     if _idf is not None:
-                        intraday = paper_rules.intraday_rows({_tf: _idf}, tf=_tf, now_ms=now_ms, tail=400)
+                        if bname in paper_rules.CANDLE_VARIANTS:
+                            # mum varyasyonları: kuralın KENDİ okuması (son 500 kapanmış 4h bar, hacim dahil)
+                            intraday = paper_rules.intraday_for(bname, {_tf: _idf}, now_ms) or []
+                        else:
+                            intraday = paper_rules.intraday_rows({_tf: _idf}, tf=_tf, now_ms=now_ms, tail=400)
             # kapanmis islem kuyrugu motorla AYNI uzunlukta (parmak izi paritesi); spot yalniz ana botun spot defterinden
             hist = state.book_history(book_id, sym, limit=HISTORY_TAIL) if market == "futures" else (state.spot_history(sym, limit=HISTORY_TAIL) if book_id == BOOK_MAIN else [])
             ef = state.book_entry_features(book_id, (pos or {}).get("id")) if pos else None
@@ -2917,6 +2992,18 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
             raise HTTPException(404, "dosya yok")
         return JSONResponse(d)
 
+    @app.get("/api/shared-experience-advisor")
+    def api_shared_experience_advisor():
+        """GÖLGE DANIŞMAN (2026-09-29): kartın verisi (advisor_status.json + walk-forward özeti; salt okur, O(1))."""
+        d = state.shared_experience_advisor()
+        return JSONResponse({"available": d is not None, **(d or {})})
+
+    @app.get("/api/shared-experience")
+    def api_shared_experience():
+        """ORTAK DENEYİM (2026-09-29): kartın verisi (status.json + rapor özeti; salt okur, O(1))."""
+        d = state.shared_experience()
+        return JSONResponse({"available": d is not None, **(d or {})})
+
     @app.get("/api/evidence/{base}")
     def api_evidence(base: str):
         """Tarihsel benzer olay kanıtı (state/evidence/<SYM>_USDT.json): paketler + deterministik açıklama."""
@@ -2985,6 +3072,14 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
                 "health": ov["health"], "summary": ov["health_summary"],
                 "heartbeat_age_s": ov["heartbeat_age_s"], "last_run_age_s": ov["last_run_age_s"],
                 "price_age_s": ov["price_age_s"], "killswitch": ov["killswitch"], "mode": ov["mode"]}
+
+    @app.get("/api/learning-mode")
+    def api_learning_mode():
+        """ÖĞRENME MODU (2026-09-28): genel durum + defter rozetleri (slot, Σmarj/E, karşı-olgusal). Salt okunur."""
+        safe, reasons = json_safe(lv.api_payload(state))
+        if reasons:
+            safe["unavailable_reason"] = dict(reasons)
+        return JSONResponse(safe)
 
     @app.get("/api/overview")
     def api_overview():

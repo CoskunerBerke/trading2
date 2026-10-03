@@ -44,8 +44,12 @@ def _ov(box_enabled: bool = True) -> dict:
 
 
 def _now_ms() -> int:
-    """Son 5m barı TAM kapanmış olacak şekilde bir 'şimdi': bar sınırının 30 sn sonrası."""
-    return ((int(time.time() * 1000) // M5) * M5) + 30_000
+    """Son 5m barı TAM kapanmış olacak şekilde bir 'şimdi': bar sınırının 30 sn sonrası.
+
+    UTC gününün ilk saatinde bir saat geri alınır: aksi halde `_m5_frame`'in "bugünün" mumları gece yarısını
+    aşıp dünkü güne düşer ve kutu kurulumu kaybolur (CI 2026-09-30 00:01 UTC'de böyle düştü)."""
+    now = ((int(time.time() * 1000) // M5) * M5) + 30_000
+    return now - 3_600_000 if now % DAY < 3_600_000 else now
 
 
 def _daily_frame(now_ms: int, high: float, low: float) -> pd.DataFrame:

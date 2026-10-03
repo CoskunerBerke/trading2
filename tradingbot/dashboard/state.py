@@ -3,8 +3,9 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Iterator
 
 from ..core import from_iso, read_json, utc_now
 
@@ -47,7 +48,183 @@ STATE_FILES: dict[str, str] = {
     "profitability_experiment_v1_2": "profitability_experiment_v1_2.json",
     # LLM alt sisteminin GERÇEK durumu (DISABLED / NOT_CONFIGURED / NO_CALLS / ACTIVE).
     "llm_status": "llm_status.json",
+    # ÖĞRENME MODU (2026-09-28, öğrenme modu): ilk aktif an (`learning_mode_since`) — öncesi/sonrası ayrımı (salt okunur).
+    "learning_mode": "learning_mode.json",
 }
+#: Üst düzeyi liste olabilen state dosyaları (`StateReader.orders` iki biçimi de okur); diğerleri daima JSON nesnesidir.
+_LIST_STATE_FILES = frozenset({"orders"})
+#: ORTAK DENEYİM KATMANI v1 (2026-09-29): panel kartı YALNIZ iki küçük dosyayı okur — toplayıcının `status.json`ı ve CLI
+#: taramasının `report_summary.json`ı (`shared-experience-report --summary-out`, ayrı süreç). Panel paketi İÇE AKTARMAZ
+#: (yalnız motor ve CLI aktarır — AST testi); ad ve şerit sabitleri `shared_experience.report` ile test eşitliğine bağlı.
+#: Depo taranmaz; her dosya ≤ `XP_MAX_BYTES` (512M panelde sınırsız okuma YOK), bozuksa kopyalanmadan yok sayılır.
+XP_DIR = "shared_experience"
+XP_STATUS_FILE = "status.json"
+XP_SUMMARY_FILE = "report_summary.json"
+XP_SUMMARY_SCHEMA = "shared_experience_summary_v1"
+XP_BANNER_TR = "tanımlayıcı; karar yok; kanıt değil"
+XP_MAX_BYTES = 1 << 20
+XP_TOP_CELLS = 10
+
+
+#: GÖLGE DANIŞMAN (2026-09-29): kart YALNIZ iki dosyayı okur — danışmanın `advice/advisor_status.json`ı (≤ 256 KB) ve
+#: CLI taramasının `advice/walkforward_summary.json`ı (≤ 4 MB, isteğe bağlı). Panel paketi İÇE AKTARMAZ; ad, şema ve şerit
+#: sabitleri `shared_experience.advisor_live` / `advisor_eval` ile test eşitliğine bağlı. Durum dosyası yoksa kart YOK.
+XP_ADVICE_DIR = "advice"
+XP_ADV_STATUS_FILE = "advisor_status.json"
+XP_ADV_STATUS_SCHEMA = "shared_experience_advisor_status_v1"
+XP_ADV_SUMMARY_FILE = "walkforward_summary.json"
+XP_ADV_SUMMARY_SCHEMA = "shared_experience_advisor_summary_v1"
+XP_ADV_BANNER_TR = ("yalnız KAYIT — karar değişmez; ara bakış kanıt değildir; başarı yalnız önceden kayıtlı bakışlarda "
+                    "(L1/L2/L3)")
+XP_ADV_STATUS_MAX = 256 * 1024
+XP_ADV_SUMMARY_MAX = 4 * 1024 * 1024
+XP_ADV_LABELS = ("GIR", "NOTR", "GIRME", "VERI_AZ")
+
+
+def _xp_json(path: Path, max_bytes: int | None = None) -> dict | None:
+    """Salt-okur küçük JSON (2026-09-29): yok / büyük / bozuk → None. `read_json`in aksine bozuk dosyayı KOPYALAMAZ."""
+    try:
+        if path.stat().st_size > (XP_MAX_BYTES if max_bytes is None else max_bytes):
+            return None
+        d = json.loads(path.read_bytes())
+    except (OSError, ValueError):
+        return None
+    return d if isinstance(d, dict) else None
+
+
+def _xp_col(d: Any) -> dict[str, Any]:
+    d = d if isinstance(d, dict) else {}
+    return {k: d.get(k) for k in ("n", "n_final", "win_rate", "mean_r", "tier", "verdict", "verdict_tr")}
+
+
+#: `str.splitlines()`in `\n` DIŞINDAKİ satır sınırlarının UTF-8 baytları: \r \v \f \x1c–\x1e, NEL, U+2028/U+2029. Bir bayt
+#: satırında bunlardan hiçbiri yoksa satır tam BİR metin satırıdır (`errors="replace"` bu karakterleri başka bayttan üretmez).
+_EXTRA_BREAKS = (b"\r", b"\x0b", b"\x0c", b"\x1c", b"\x1d", b"\x1e", b"\xc2\x85", b"\xe2\x80\xa8", b"\xe2\x80\xa9")
+
+
+def _byte_lines(fh, start: int, end: int) -> Iterator[bytes]:
+    """[start, end) aralığının bayt satırları (`\\n` dahil; sondaki parça sonsuz olabilir). `end`in ötesi OKUNMAZ (yazıcı
+    bu arada eklese de iki geçiş aynı aralığı görür)."""
+    fh.seek(start)
+    pos = start
+    while pos < end:
+        raw = fh.readline(end - pos)
+        if not raw:
+            return
+        pos += len(raw)
+        yield raw
+
+
+def _n_text_lines(raw: bytes) -> int:
+    """Bir bayt satırının `decode("utf-8", "replace").splitlines()` satır sayısı (dolu satır için en az 1)."""
+    if not any(b in raw for b in _EXTRA_BREAKS):         # bayt araması (memchr); düzenli ifade ~10× yavaş
+        return 1
+    return len(raw.decode("utf-8", errors="replace").splitlines())
+
+
+def _tail_start(fh, end: int, n: int, block: int) -> int:
+    """[c, end) en az `n` bayt satırı tutan EN KISA sonek: c dosya başı ya da bir `\\n` baytının hemen sonrası. Sondan
+    geriye sabit boy bloklarla yalnız `\\n` sayılır; bellekte bir blok durur."""
+    if end <= 0:
+        return 0
+    fh.seek(end - 1)
+    k = n if fh.read(1) != b"\n" else n + 1          # sondan k'ıncı `\n`in hemen sonrası
+    pos, step = end, max(1, int(block))
+    while pos > 0:
+        size = min(step, pos)
+        pos -= size
+        fh.seek(pos)
+        buf = fh.read(size)
+        if len(buf) != size:                        # dosya bu arada kısaldı: baştan akış (sonuç yine tutarlı)
+            return 0
+        c = buf.count(b"\n")
+        if c >= k:
+            i = size
+            for _ in range(k):
+                i = buf.rfind(b"\n", 0, i)
+            return pos + i + 1
+        k -= c
+    return 0
+
+
+def _tail_text(path: Path, n: int, *, block: int, keep: Callable[[bytes], bool] | None = None) -> Iterator[str]:
+    """`tail_lines`in akışlı çekirdeği. `keep(raw) is False` → bu bayt satırının metin satırları ÜRETİLMEZ (çözülmez de);
+    yalnız `tail_jsonl`in `needle` süzgeci kullanır (çağıran zaten eşleşmeyen satırı atar)."""
+    with open(path, "rb") as fh:
+        end = fh.seek(0, 2)
+        start = _tail_start(fh, end, n, block)
+        # 1. geçiş: aralıktaki metin satırı sayısı (yalnız sayım; satır tutulmaz). Kesimden sonra en az n satır var;
+        # fazlası `\n` dışı satır sınırlarından gelir ve BAŞTAN atlanır (`[-n:]`).
+        skip = max(0, sum(_n_text_lines(raw) for raw in _byte_lines(fh, start, end)) - n)
+        for raw in _byte_lines(fh, start, end):
+            drop = 0
+            if skip:
+                k = _n_text_lines(raw)
+                if k <= skip:
+                    skip -= k
+                    continue
+                drop, skip = skip, 0
+            if keep is not None and not keep(raw):
+                continue
+            parts = raw.decode("utf-8", errors="replace").splitlines()
+            yield from (parts[drop:] if drop else parts)
+
+
+def iter_tail_lines(path: Path, n: int, *, block: int = 1 << 20) -> Iterator[str]:
+    """`path.read_text(encoding="utf-8", errors="replace").splitlines()[-n:]` ile BİREBİR aynı satırlar, aynı sırada — AKIŞLA
+    (2026-09-28, öğrenme modu; dördüncü doğrulama turu). Üçüncü turdaki `tail_lines` sonek büyüdükçe tamponu yeniden çözüp
+    bölüyordu: tampon + kopya + metin + iki satır listesi aynı anda → tepe ≈ 7× dosya (eski `read_text` yolu ≈ 4×); 512M
+    panel `/api/coin-memory` isteğinde trade_memory ~52 MB'ta ölüyordu (eskisi ~67 MB).
+
+    Kesim yalnız bir `\\n` baytından SONRA yapılır: UTF-8'de bu bayt her zaman karakter ve satır sınırıdır, çözücü orada
+    sıfırlanır → kesimden sonraki bayt satırlarının `splitlines()` parçaları tam dosyanın son satırlarıyla aynıdır. Önce
+    geriye doğru yalnız `\\n` sayılarak kesim bulunur, sonra aralık iki kez satır satır okunur (sayım + üretim). Bellekte
+    yalnız bir blok / bir satır durur. `n <= 0` → eski ifade aynen."""
+    if n <= 0:
+        yield from path.read_text(encoding="utf-8", errors="replace").splitlines()[-n:]
+        return
+    yield from _tail_text(path, n, block=block)
+
+
+def tail_lines(path: Path, n: int, *, block: int = 1 << 20) -> list[str]:
+    """`path.read_text(encoding="utf-8", errors="replace").splitlines()[-n:]` ile BİREBİR aynı liste (`iter_tail_lines`).
+    Tepe bellek yalnız dönen satırlardır (2026-09-28, öğrenme modu; dördüncü doğrulama turu)."""
+    return list(iter_tail_lines(path, n, block=block))
+
+
+#: `needle` süzgecinin güvenli olduğu değerler: düz ASCII kimlik/sembol (JSON kaçışı gerektirmez).
+_PLAIN_NEEDLE = re.compile(r"[A-Za-z0-9_./:-]+")
+
+
+def _needle_filter(needle: str | None) -> Callable[[bytes], bool] | None:
+    """Bayt satırı ön süzgeci (2026-09-28, öğrenme modu; dördüncü doğrulama turu): `needle` baytları YOKSA ve satırda hiç `\\`
+    yoksa o satırdaki hiçbir JSON değeri `str(değer) == needle` olamaz → satır çözülmez/ayrıştırılmaz. Gerekçe: kaçışsız JSON
+    dizesinin karakterleri metinde aynen durur; `errors="replace"` geçerli baytları bire bir çözer. Dize olmayan değerlerin
+    `str()`i (int → aynı rakamlar; float → '.', 'e', 'inf', 'nan'; bool/None → True/False/None; liste/sözlük → köşeli/kıvrık
+    parantez) yalnız düz tamsayı biçiminde eşleşebilir, o da metinde aynen durur. Bu koşulu garanti etmeyen `needle` (boş,
+    düz olmayan karakter, True/False/None, tamsayı olmayan sayı biçimi) → süzgeç YOK (tam ayrıştırma)."""
+    if not needle or not _PLAIN_NEEDLE.fullmatch(needle) or needle in ("None", "True", "False"):
+        return None
+    try:
+        float(needle)
+    except ValueError:
+        pass
+    else:
+        if not needle.isdigit():
+            return None
+    nb = needle.encode("ascii")
+    return lambda raw: nb in raw or b"\\" in raw
+
+
+def iter_text_lines(path: Path):
+    """`path.read_text(encoding="utf-8", errors="replace").splitlines()` ile AYNI satırlar, aynı sırada — ama akışla (dosya
+    metin olarak belleğe alınmaz; 2026-09-28, öğrenme modu — üçüncü doğrulama turu). Her bayt satırı (`\\n`e kadar) ayrı
+    çözülür ve `splitlines()` ile bölünür: `\\n` her zaman karakter ve satır sınırıdır, çözücü orada sıfırlanır."""
+    with open(path, "rb") as fh:
+        for raw in fh:
+            yield from raw.decode("utf-8", errors="replace").splitlines()
+
+
 JSONL_FILES: dict[str, str] = {"llm_calls": "llm_calls.jsonl", "trade_memory": "trade_memory.jsonl", "signals_log": "signals_log.jsonl",
                                "decision_journal": "decision_journal.jsonl",
                                "position_path": "position_path.jsonl",
@@ -89,33 +266,54 @@ class StateReader:
 
     # ---- ham okuma
     def get(self, name: str) -> Any:
+        """State dosyası (üst düzey JSON nesnesi). Dosya yok/bozuk ya da GEÇERLİ JSON ama yanlış üst düzey türdeyse
+        (liste/sayı/metin; yalnız `orders` liste olabilir) None: sayfalar «Veri yok» basar, 500 vermez."""
         fn = STATE_FILES.get(name)
         if not fn:
             return None
-        return read_json(self.state_dir / fn, default=None)
+        d = read_json(self.state_dir / fn, default=None)
+        if isinstance(d, dict) or (isinstance(d, list) and name in _LIST_STATE_FILES):
+            return d
+        return None
 
-    def tail_jsonl(self, name: str, n: int = 200) -> list[dict]:
+    def tail_jsonl(self, name: str, n: int = 200, *, needle: str | None = None,
+                   project: Callable[[dict], Any] | None = None) -> list:
+        """Son `n` satırın sözlük olan JSON'ları (eski: `read_text().splitlines()[-n:]`; okunamazsa []). Satırlar AKIŞLA
+        ayrıştırılır (2026-09-28, öğrenme modu; dördüncü doğrulama turu): bellekte satır listesi yok, yalnız sonuç.
+
+        * `project`: her sözlüğe ayrıştırıldığı anda uygulanır; None dönerse satır atlanır → tüketici yalnız gereken alanları
+          tutar (ör. 4000 satırlık `trade_memory` kuyruğunda ~74 KB'lık giriş satırlarının tamamı değil).
+        * `needle`: `_needle_filter` — `str(alan) == needle` süzgeci uygulayan çağıran için, eşleşemeyecek satırlar hiç
+          ayrıştırılmaz. Sonuç, çağıranın süzgecinden sonra eskisiyle AYNIDIR (yalnız eski yolun JSONDecodeError DIŞI bir
+          istisna fırlatacağı satırda — ör. 4300+ haneli tamsayı — o satır artık atlanabilir).
+        Varsayılanlarla (ikisi de None) çıktı eskisiyle BİREBİR aynıdır."""
         fn = JSONL_FILES.get(name)
         if not fn:
             return []
         p = self.state_dir / fn
         if not p.exists():
             return []
+        out: list = []
         try:
-            lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
+            lines = (_tail_text(p, n, block=1 << 20, keep=_needle_filter(needle)) if n > 0
+                     else iter_tail_lines(p, n))
+            for ln in lines:
+                ln = ln.strip()
+                if not ln:
+                    continue
+                try:
+                    d = json.loads(ln)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(d, dict):
+                    if project is None:
+                        out.append(d)
+                    else:
+                        v = project(d)
+                        if v is not None:
+                            out.append(v)
         except OSError:
             return []
-        out: list[dict] = []
-        for ln in lines[-n:]:
-            ln = ln.strip()
-            if not ln:
-                continue
-            try:
-                d = json.loads(ln)
-                if isinstance(d, dict):
-                    out.append(d)
-            except json.JSONDecodeError:
-                continue
         return out
 
     def mtimes(self) -> dict[str, float]:
@@ -220,12 +418,18 @@ class StateReader:
                         "targets": [], "opened_at": p.get("entry_time") or p.get("opened_at"), "leverage": 1, "market_type": "SPOT"})
         return out
 
+    def strategy_index_books(self) -> list[dict]:
+        """strategy_paper_index.json'daki `books` girdileri (yalniz sozlukler). Dosya yok/bozuk ya da GECERLI JSON ama
+        yanlis turdeyse (liste/sayi/metin; `books` liste degilse) bos liste: sayfalar ana defterle acilir, 500 vermez."""
+        idx = read_json(self.state_dir / "strategy_paper_index.json", default=None)
+        books = idx.get("books") if isinstance(idx, dict) else None
+        return [b for b in books if isinstance(b, dict)] if isinstance(books, list) else []
+
     def books(self) -> list[dict]:
         """Defter kayit listesi: ana bot + strategy_paper_index.json'daki kagit defterler (kimlik = state dizini)."""
         out = [{"book_id": "main", "name": "main", "label": "Ana bot", "state_dir": None}]
-        idx = read_json(self.state_dir / "strategy_paper_index.json", default=None) or {}
         seen = {"main"}
-        for b in (idx.get("books") or []):
+        for b in self.strategy_index_books():
             if not isinstance(b, dict):
                 continue
             key = str(b.get("key") or "")
@@ -234,7 +438,10 @@ class StateReader:
             seen.add(key)
             name = str(b.get("name") or key)
             label = {"t2_trend_regime": "T2 · EMA200 trend", "m2_tsmom28": "M2 · 28g momentum",
-                     "b1_box_fade": "B1 · Box (önceki gün aralığı, 5m)"}.get(name, name)
+                     "b1_box_fade": "B1 · Box (önceki gün aralığı, 5m)",
+                     "d4_donchian_20_10": "D4 · 4h trend takibi (gözlem, kanıtlanmadı)",
+                     "c4_candle_variations": "C4 · Mum varyasyonları (4h, PAPER)",
+                     "c4s_candle_variations_strict": "C4S · Mum varyasyonları 4h (sıkı, PAPER)"}.get(name, name)
             out.append({"book_id": key, "name": name, "label": label, "state_dir": key, "summary_file": b.get("summary_file")})
         if len(out) == 1 and (self.state_dir / "strategy_paper" / "futures_ledger.json").exists():
             sp = self.get("strategy_paper") or {}
@@ -347,7 +554,8 @@ class StateReader:
             return None
         if b["book_id"] == "main":
             return self.get("futures_ledger")
-        return read_json(self.state_dir / b["state_dir"] / "futures_ledger.json", default=None)
+        d = read_json(self.state_dir / b["state_dir"] / "futures_ledger.json", default=None)
+        return d if isinstance(d, dict) else None
 
     def book_position(self, book_id: str, symbol: str) -> dict | None:
         led = self.book_ledger(book_id) or {}
@@ -384,7 +592,7 @@ class StateReader:
         if not p.exists():
             return None
         try:
-            for ln in p.read_text(encoding="utf-8", errors="replace").splitlines():
+            for ln in iter_text_lines(p):
                 if trade_id not in ln:
                     continue
                 try:
@@ -732,7 +940,20 @@ class StateReader:
         mfes: list[float] = []
         exits: dict[str, int] = {}
         first = last = None
-        for row in self.tail_jsonl("trade_memory", 4000):
+
+        def _mem_row(row: dict) -> dict | None:
+            # 512M panel (2026-09-28, öğrenme modu; dördüncü doğrulama turu): yalnız bu sembolün satırları ve aşağıda okunan
+            # alanlar tutulur — 4000 satırlık kuyrukta tam ayrıştırılmış ~74 KB'lık giriş satırları BİRİKMEZ (sonuç aynı)
+            if str(row.get("symbol") or "") != sym:
+                return None
+            keep = {k: row[k] for k in ("symbol", "kind", "recorded_at") if k in row}
+            if "outcome" in row:
+                o = row["outcome"]
+                keep["outcome"] = ({k: o[k] for k in ("r_multiple", "mae_pct", "mfe_pct", "exit_reason") if k in o}
+                                   if isinstance(o, dict) else o)
+            return keep
+
+        for row in self.tail_jsonl("trade_memory", 4000, needle=sym, project=_mem_row):
             if str(row.get("symbol") or "") != sym:
                 continue
             if row.get("kind") == "exit":
@@ -764,8 +985,12 @@ class StateReader:
         sh_lab = [t for t in sh_rows if isinstance(t.get("outcome"), dict)]
         sh_rs = [_num((t.get("outcome") or {}).get("r_multiple")) for t in sh_lab]
         sh_rs = [r for r in sh_rs if r is not None]
+        # NET (2026-09-29, maliyet sapması): `avg_r` brüt kalır (eski gölgeler yalnız brüt); net etiketli (cf_label_v2)
+        # karşı-olgusalların ortalaması ayrıca — ikisi tek ortalamada KARIŞTIRILMAZ
+        sh_net = [r for r in (_num((t.get("outcome") or {}).get("r_net")) for t in sh_lab) if r is not None]
         out["shadow"] = {"n": len(sh_rows), "labeled": len(sh_lab),
                          "avg_r": round(sum(sh_rs) / len(sh_rs), 4) if sh_rs else None,
+                         "avg_r_net": round(sum(sh_net) / len(sh_net), 4) if sh_net else None, "n_net": len(sh_net),
                          "weight": "shadow_weight×fidelity (gerçekten DAİMA düşük)"}
         # --- tam-geçmiş toplamları (aggregates.json — L3 sembol, L2 sembol|yön|setup)
         try:
@@ -803,7 +1028,8 @@ class StateReader:
         except Exception:  # noqa: BLE001
             pass
         # --- son karar etkisi + tarih aralığı + tutarlılık
-        for row in reversed(self.tail_jsonl("decision_journal", 2000)):
+        for row in reversed(self.tail_jsonl("decision_journal", 2000, needle=sym,
+                                            project=lambda r: r if r.get("symbol") == sym else None)):
             if row.get("symbol") == sym and row.get("learning_influence"):
                 out["last_influence"] = row["learning_influence"]
                 out["last_decision_ts"] = row.get("decision_ts")
@@ -816,6 +1042,87 @@ class StateReader:
             out["consistency"] = round(abs(2 * pos / len(all_rs) - 1), 4)
         out["available"] = bool(rs or sh_rows or out["aggregate"])
         return out
+
+    def shared_experience(self) -> dict[str, Any] | None:
+        """ORTAK DENEYİM kartı (2026-09-29) — O(1), salt okur: sayımlar + son toplama adımı (`status.json`) ve son rapor
+        taraması + en çok gözlemli hücreler (`report_summary.json`). Katman hiç çalışmadıysa None (kart basılmaz)."""
+        d = self.state_dir / XP_DIR
+        st = _xp_json(d / XP_STATUS_FILE)
+        if st is None:
+            return None
+        c = st.get("counters") if isinstance(st.get("counters"), dict) else {}
+        store = st.get("store") if isinstance(st.get("store"), dict) else {}
+        sm = _xp_json(d / XP_SUMMARY_FILE)
+        if sm is not None and sm.get("schema") != XP_SUMMARY_SCHEMA:
+            sm = None
+        try:
+            disk_mb = round(float(store.get("disk_bytes") or 0) / 1048576.0, 2)
+        except (TypeError, ValueError):
+            disk_mb = None
+        cells = []
+        for cell in ((sm or {}).get("top_cells") or [])[:XP_TOP_CELLS]:
+            if isinstance(cell, dict):
+                cells.append({"group": cell.get("group"), "book_name": cell.get("book_name"),
+                              "setup_type": cell.get("setup_type"), "side": cell.get("side"),
+                              "dims": dict(cell.get("dims") or {}), "real": _xp_col(cell.get("real")),
+                              "cf": _xp_col(cell.get("cf"))})
+        counts = (sm or {}).get("counts") if isinstance((sm or {}).get("counts"), dict) else {}
+        return {"banner": XP_BANNER_TR, "state": st.get("state"), "last_step_at": st.get("last_step_at"),
+                "steps": st.get("steps"), "step_ms_p50": st.get("step_ms_p50"), "step_ms_p95": st.get("step_ms_p95"),
+                "drafts": st.get("drafts"), "rows_total": c.get("rows_total"),
+                "rows_by_kind": dict(c.get("rows_by_kind") or {}), "rows_by_book": dict(c.get("rows_by_book") or {}),
+                "snapshot_status_mix": dict(c.get("snapshot_status_mix") or {}), "errors_total": c.get("errors_total"),
+                "breaker_tripped": bool((st.get("breaker") or {}).get("tripped")) if isinstance(st.get("breaker"), dict) else False,
+                "disk_mb": disk_mb, "hot_lines": store.get("hot_lines"),
+                "last_sweep_at": (sm or {}).get("generated_at"), "sweep_params": (sm or {}).get("params"),
+                "sweep_counts": {k: counts.get(k) for k in ("real_closed_net", "real_open", "cf_net", "cf_net_a15",
+                                                           "cf_gross_legacy", "cf_pending")} if counts else None,
+                "top_cells": cells}
+
+    def shared_experience_advisor(self) -> dict[str, Any] | None:
+        """GÖLGE DANIŞMAN kartı (2026-09-29) — O(1), salt okur: `advice/advisor_status.json` (24 sa halka, koşan
+        walk-forward) + son CLI taraması (`advice/walkforward_summary.json`). Durum dosyası yoksa None (kart basılmaz)."""
+        d = self.state_dir / XP_DIR / XP_ADVICE_DIR
+        st = _xp_json(d / XP_ADV_STATUS_FILE, XP_ADV_STATUS_MAX)
+        if st is None or st.get("schema") != XP_ADV_STATUS_SCHEMA:
+            return None
+        sm = _xp_json(d / XP_ADV_SUMMARY_FILE, XP_ADV_SUMMARY_MAX)
+        if sm is not None and sm.get("schema") != XP_ADV_SUMMARY_SCHEMA:
+            sm = None
+        ring = st.get("ring_24h") if isinstance(st.get("ring_24h"), dict) else {}
+        running = st.get("running") if isinstance(st.get("running"), dict) else {}
+        books: list[dict[str, Any]] = []
+        names = sorted(set(ring) | {k for k in running if k != "ALL"})
+        for b in names:
+            r = ring.get(b) if isinstance(ring.get(b), dict) else {}
+            real = r.get("real") if isinstance(r.get("real"), dict) else {}
+            cf = r.get("cf") if isinstance(r.get("cf"), dict) else {}
+            run = running.get(b) if isinstance(running.get(b), dict) else {}
+            sb = ((sm or {}).get("by_book") or {}).get(b) if isinstance((sm or {}).get("by_book"), dict) else None
+            books.append({"book": b, "real": {k: real.get(k, 0) for k in XP_ADV_LABELS + ("LATE", "NO_GROUP")},
+                          "cf": {k: cf.get(k, 0) for k in XP_ADV_LABELS},
+                          "running": {k: run.get(k) for k in ("N_T", "N_G", "U_mean", "U_sum100", "delta")},
+                          "sweep": ({k: sb.get(k) for k in ("n_T", "n_G", "U_mean", "U_mean_ci", "delta", "delta_ci")}
+                                    if isinstance(sb, dict) else None)})
+        fold = st.get("fold") if isinstance(st.get("fold"), dict) else {}
+        pos = st.get("position") if isinstance(st.get("position"), dict) else {}
+        lk = (sm or {}).get("looks") if isinstance((sm or {}).get("looks"), dict) else None
+        # (2026-09-30) kayıt engeli / bekleyen segment görünür olsun (yalnız okunur; alan yoksa None)
+        rec = st.get("record") if isinstance(st.get("record"), dict) else {}
+        sg = st.get("segments") if isinstance(st.get("segments"), dict) else {}
+        warns = [str(x) for x in st.get("warnings")] if isinstance(st.get("warnings"), list) else []
+        return {"banner": XP_ADV_BANNER_TR, "state": st.get("state"), "mode": st.get("mode"),
+                "advisor_sha": st.get("advisor_sha"), "last_step_at": st.get("last_step_at"),
+                "step_ms_p95": st.get("step_ms_p95"), "index_mb": st.get("index_mb"), "lag_rows": pos.get("lag_rows"),
+                "advisor_born_at": st.get("advisor_born_at"), "errors": st.get("errors"),
+                "breaker_tripped": bool((st.get("breaker") or {}).get("tripped")) if isinstance(st.get("breaker"), dict)
+                else False, "pending_contexts": fold.get("pending_contexts"),
+                "running_all": running.get("ALL") if isinstance(running.get("ALL"), dict) else None, "books": books,
+                "last_sweep_at": (sm or {}).get("generated_at"), "sweep_primary": (sm or {}).get("primary"),
+                "looks": lk,
+                "record": {k: rec.get(k) for k in ("blocked", "emitted", "written", "retry_pending", "dropped")},
+                "waiting_segment": sg.get("waiting") if isinstance(sg.get("waiting"), dict) else None,
+                "segments_bad": sg.get("segments_bad"), "warnings": warns[:10]}
 
     def learning_research(self) -> dict[str, Any]:
         """PAPER araştırma politikası özeti — hangi aday aktif, neyi değiştirdi, sonucu ne.

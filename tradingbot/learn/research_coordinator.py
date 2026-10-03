@@ -105,15 +105,25 @@ def _ms(v: Any) -> int | None:
         return None
 
 
+#: Araştırma hattının (kapsam, atıf, politika değerlendirmesi) HİÇ okumadığı ağır giriş yükleri: coin head kararı ve şef
+#: raporu (satır başına ~64 KB / 73 KB). Satır okunurken düşer (2026-09-28, öğrenme modu; üçüncü doğrulama turu).
+RESEARCH_DROP_KEYS = frozenset({"decision", "chief"})
+
+
+def research_row(row: dict) -> dict:
+    return {k: v for k, v in row.items() if k not in RESEARCH_DROP_KEYS}
+
+
 def join_live_rows(memory_path: Path | str) -> list[dict]:
     """Canlı LIVE_PAPER hafızasını `trade_id` üzerinden entry+outcome olarak birleştirir.
 
     `TradeMemory.trades(closed_only=True)` join'i yapar; burada yalnız walk-forward için gereken
     kronolojik alanlar eklenir ve zamanı çözülemeyen kayıtlar DIŞLANIR (uydurma zaman yok).
+    Ağır yükler (`RESEARCH_DROP_KEYS`) satır okunurken düşer — hattın çıktısı aynı, tepe bellek ~1/6.
     """
     mem = TradeMemory(Path(memory_path), source="LIVE_PAPER")
     rows = []
-    for r in mem.trades(closed_only=True):
+    for r in mem.trades(closed_only=True, project=research_row):
         out = r.get("outcome") or {}
         o = _ms(out.get("opened_at") or r.get("recorded_at"))
         c = _ms(out.get("closed_at") or r.get("recorded_at"))
@@ -274,4 +284,4 @@ class ResearchCoordinator:
 
 
 __all__ = ["CoordinatorConfig", "DEFAULT_BAR_MS", "ResearchCoordinator", "STATE_FILENAME",
-           "anchored_bounds", "join_live_rows", "mode_gate"]
+           "RESEARCH_DROP_KEYS", "anchored_bounds", "join_live_rows", "mode_gate", "research_row"]

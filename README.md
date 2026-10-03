@@ -58,7 +58,7 @@ What makes it more than a toy bot:
   health checks and a read-only web dashboard.
 
 At a glance (counted from this repository): about 100,000 lines of Python in `tradingbot/` (276 modules),
-**4,161 automated tests** in 229 test files that run offline, and 60+ design documents and research notes in `docs/`
+**4,213 automated tests** in 232 test files that run offline, and 60+ design documents and research notes in `docs/`
 (mostly Turkish).
 
 ## Features
@@ -318,7 +318,7 @@ python -m pytest -q tests          # full suite, offline (about 20 minutes)
 ruff check .                       # lint gate defined in ruff.toml
 ```
 
-- The full suite has **4,161 tests**. Run on 2026-10-02 on a shared 4-core Linux machine: 4,153 passed, 8 skipped,
+- The full suite has **4,213 tests**. Run on 2026-10-03 on a shared 4-core Linux machine: 4,205 passed, 8 skipped,
   in about 22 minutes. The skipped tests need the author's local research package or archive files, an opt-in benchmark
   (`TRADINGBOT_BENCH_1M=1`), or a fixture case that did not come up in that run.
 - Tests need no network: exchanges, Telegram and archives are faked, and an autouse fixture in
@@ -329,7 +329,7 @@ ruff check .                       # lint gate defined in ruff.toml
 - **CI:** the [`chart-analysis`](.github/workflows/chart-analysis.yml) workflow runs on pushes to `main` that change code,
   tests, `requirements.txt`, `config.yaml` or the workflow, and on pull requests into `work/runtime-fixes-v1` (the
   development line's pull request #1 is one) or `work/entry-research-v1`. On Ubuntu
-  it runs Ruff and 91 of the 229 test files (1,528 tests: accounting, funding, the dashboard, strategy books, learning
+  it runs Ruff and 94 of the 232 test files (1,580 tests: accounting, funding, the dashboard, strategy books, learning
   mode, shared experience, the shadow advisor); on Windows it runs the measurement-script tests. The full suite is run
   locally.
   `deploy-regression` and `signal-lab` are separate workflows for older feature branches and for lab runs.
@@ -426,8 +426,8 @@ her geçerli sinyalin değişmez kaydını tutar. Amaç getiri vaat etmek değil
 - **7/24 çalışır:** sertleştirilmiş systemd birimleri, sağlama toplamlı yedekler, otomatik geri almalı sürüm betikleri,
   sağlık kontrolleri ve salt okunur web paneli.
 
-Kısaca (bu depodan sayıldı): `tradingbot/` altında yaklaşık 100.000 satır Python (276 modül), ağsız çalışan 229 test
-dosyasında **4.161 otomatik test** ve `docs/` altında 60'tan fazla tasarım belgesi ve araştırma notu.
+Kısaca (bu depodan sayıldı): `tradingbot/` altında yaklaşık 100.000 satır Python (276 modül), ağsız çalışan 232 test
+dosyasında **4.213 otomatik test** ve `docs/` altında 60'tan fazla tasarım belgesi ve araştırma notu.
 
 ### Özellikler
 
@@ -568,7 +568,7 @@ python -m pytest -q tests
 ruff check .
 ```
 
-Tam pakette **4.161 test** var (2026-10-02, paylaşılan 4 çekirdekli Linux makine: 4.153 geçti, 8 atlandı, yaklaşık
+Tam pakette **4.213 test** var (2026-10-03, paylaşılan 4 çekirdekli Linux makine: 4.205 geçti, 8 atlandı, yaklaşık
 22 dakika). Atlananlar yazarın yerel araştırma paketini ya da arşiv dosyalarını, isteğe bağlı bir ölçümü
 (`TRADINGBOT_BENCH_1M=1`) veya o koşuda oluşmayan bir fixture durumunu gerektirir. Testler ağ gerektirmez: borsa, Telegram
 ve arşivler sahtedir; [`tests/conftest.py`](tests/conftest.py) içindeki otomatik fixture, test sahtesini vermediyse botun
@@ -577,7 +577,7 @@ CI'daki [`chart-analysis`](.github/workflows/chart-analysis.yml) iş akışı `m
 `requirements.txt`'yi, `config.yaml`'ı ya da iş akışının kendisini değiştiren push'larda ve `work/runtime-fixes-v1`
 (geliştirme hattının 1 numaralı pull request'i de bunlardandır) ya da `work/entry-research-v1` dalına açılan pull
 request'lerde çalışır.
-Ubuntu'da Ruff'ı ve 229 test dosyasından 91'ini (1.528 test: muhasebe, fonlama, panel, strateji defterleri, öğrenme modu,
+Ubuntu'da Ruff'ı ve 232 test dosyasından 94'ünü (1.580 test: muhasebe, fonlama, panel, strateji defterleri, öğrenme modu,
 ortak deneyim, gölge danışman), Windows'ta ölçüm betiği testlerini koşar. Tam paket yerelde çalıştırılır.
 
 ### Dağıtım

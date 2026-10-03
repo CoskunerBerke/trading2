@@ -1181,14 +1181,14 @@ What the tests pin down, by kind:
   ([`test_ops.py`](../tests/test_ops.py), [`test_restore_sh_v1.py`](../tests/test_restore_sh_v1.py),
   [`test_deploy_vps.py`](../tests/test_deploy_vps.py), [`test_security_chaos.py`](../tests/test_security_chaos.py)).
 
-**Counts from the latest full run** (2026-10-02, Python 3.12, 4-core Linux container,
-`python -m pytest -q tests`): 4,161 tests collected in 229 test files; 4,153 passed, 8 skipped, 0 failed, in 1,307 s
+**Counts from the latest full run** (2026-10-03, Python 3.12, 4-core Linux container,
+`python -m pytest -q tests`): 4,213 tests collected in 232 test files; 4,205 passed, 8 skipped, 0 failed, in 1,343 s
 (about 22 minutes, on a machine that was running other work at the same time). Skipped tests need the
 author's local research package or archive files, an opt-in benchmark (`TRADINGBOT_BENCH_1M=1`), or a fixture case that
 did not occur in the run.
 `ruff check .` uses only correctness rules ([`ruff.toml`](../ruff.toml)). CI
-([`chart-analysis.yml`](../.github/workflows/chart-analysis.yml)) runs Ruff and 91 of the 229 test files on Ubuntu
-(1,528 tests when collected at this commit) and the measurement-script tests on Windows; the full suite is run locally.
+([`chart-analysis.yml`](../.github/workflows/chart-analysis.yml)) runs Ruff and 94 of the 232 test files on Ubuntu
+(1,580 tests when collected at this commit) and the measurement-script tests on Windows; the full suite is run locally.
 
 ## 8. Limitations, known gaps and next steps
 
@@ -1325,7 +1325,7 @@ kâğıt işlemdir ve şu ana kadar istatistiksel olarak kesin değildir.
   tetikleyen bir yol yoktur.
 - **Kesinti politikası:** 2 saatten uzun kesintide aradaki barlar uygulanmaz, kesinti kaydedilir; geçmiş uzlaştırma
   yalnız ayrı simülasyondur.
-- **Testler:** ağsız; bu belge için yapılan koşuda 4.161 test, 4.153 geçti, 8 atlandı, 0 başarısız.
+- **Testler:** ağsız; bu belge için yapılan koşuda 4.213 test, 4.205 geçti, 8 atlandı, 0 başarısız.
 - **Okuma sırası:** `config.yaml` → `cli.py` → `engine_v3.py` → `coinhead/` → `opportunity.py` ve `risk/engine.py` →
   `accounting/futures_ledger.py` → `strategy_paper.py` → kural modülleri → iş parçacıkları → öğrenme katmanları →
   `signal_lab.py`.

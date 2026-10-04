@@ -4,19 +4,26 @@
 
     python scripts/gold_lab.py                                   # bütün bölümler (main, venue, dukascopy, existing)
     python scripts/gold_lab.py --section main --jobs 3           # yalnız ana seri (PAXGUSDT spot; 32 birincil hücre)
-    python scripts/gold_lab.py --section venue                   # Binance vadeli XAUUSDT / PAXGUSDT (bilgi)
-    python scripts/gold_lab.py --section dukascopy --duka-root <ayna>   # Dukascopy XAUUSD (kapsama ≥ %95 ise)
+    python scripts/gold_lab.py --section venue                   # Binance vadeli XAUUSDT / PAXGUSDT (bilgi; main gerekir)
+    python scripts/gold_lab.py --section dukascopy --duka-root <ayna>   # Dukascopy XAUUSD (kapsama ≥ %95 ise; main gerekir)
     python scripts/gold_lab.py --section existing --jobs 4       # mevcut laboratuvar setleri (KEŞİF)
     python scripts/gold_lab.py --offline                         # indirme yok; yalnız önbellek
 
+Bölümler ayrı koşulabilir: aynı --out klasöründe aynı mühür, ayar ve pencereli önceki rapor varsa yeni bölümler onunla
+birleşir (koşulmayan bölümler korunur); farklı mühürlü rapor varsa HATA (başka --out seçin). venue ve dukascopy'nin notları
+('mekânda tutmadı', 'uzun geçmişte tutmadı') ana seri hücrelerine dayanır: ana seri aynı koşuda ya da aynı --out'taki önceki
+raporda yoksa bu bölümler koşmaz (HATA). Yani önce --section main, sonra aynı --out ile --section venue / dukascopy.
+
 Veri yalnız data.binance.vision arşivinden (REST yok) ve yerel Dukascopy aynasından okunur; fiyat verisi depoya yüklenmez.
-Çıktı: <out>/gold_lab_report.json, <out>/gold_lab_events.csv.gz, <out>/gold_lab_report.md.
+Çıktı: <out>/gold_lab_report.json, <out>/gold_lab_report.md, bölüm başına <out>/gold_lab_events_<bölüm>.csv.gz.
 """
 from __future__ import annotations
 
 import argparse
+import lzma
 import os
 import sys
+import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -49,8 +56,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         report = G.run(sections=sections, cache_dir=Path(a.cache), out_dir=Path(a.out), cfg=L.LabConfig(), offline=a.offline,
                        jobs=a.jobs, duka_root=a.duka_root)
-    except (ValueError, ConnectionError, G.GoldDataError) as exc:
-        print(f"\nHATA: {exc}", file=sys.stderr)
+    except (ValueError, OSError, zipfile.BadZipFile, lzma.LZMAError, G.GoldDataError) as exc:   # OSError ⊃ ConnectionError
+        print(f"\nHATA ({type(exc).__name__}): {exc}", file=sys.stderr)
         return 2
     print(f"koşulan bölümler: {', '.join(report['sections'])} · {report.get('seconds')} sn")
     if report.get("main"):
@@ -58,7 +65,8 @@ def main(argv: list[str] | None = None) -> int:
     if (report.get("dukascopy") or {}).get("status") == "yapılamadı":
         print(f"Dukascopy: yapılamadı — {report['dukascopy']['tr']}")
     out = Path(a.out)
-    print(f"ayrıntı: {out / 'gold_lab_report.json'} · {out / 'gold_lab_report.md'} · {out / 'gold_lab_events.csv.gz'}")
+    evs = " · ".join(str(out / G.events_file(s)) for s in report["sections"])
+    print(f"ayrıntı: {out / G.REPORT_JSON} · {out / G.REPORT_MD} · olaylar: {evs}")
     return 0
 
 

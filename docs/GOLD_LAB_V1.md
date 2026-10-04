@@ -7,7 +7,7 @@ kodda `tradingbot/gold_lab.py` içindeki `GOLD_REGISTRY`'de tutulur. Bu kayıtta
 testle sabitlenir. Biri değişirse mühür değişir: o yeni sürümdür, yeni deneme sayısıdır ve bu belge güncellenir. Sayımlar ya
 da sonuçlar görüldükten sonra kural, eşik, dilim ya da dönem GEVŞETİLMEZ.
 
-Ön kayıt mührü: GOLD_REGISTRY_SHA = 4bec7df7721ea240
+Ön kayıt mührü: GOLD_REGISTRY_SHA = ee32a9db510f41cd
 
 ## Soru
 

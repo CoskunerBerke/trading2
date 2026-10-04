@@ -30,6 +30,7 @@ import lzma
 import math
 import re
 import time
+import zipfile
 from collections import Counter
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import asdict
@@ -148,9 +149,12 @@ READINGS_TR = (
     "harcanmaz; EMA_X_SWING'de ayrıca i−9..i (10 bar) bulunmalı",
     "SMC_BOS_OB: H ve swing düşük, BOS barı i itibarıyla son teyitli olanlardır; order block arama aralığı [swing düşük barı, i−1] "
     "(BOS barı i 'BOS'tan önceki' olmadığı için hariç); bölge = o mumun [low, high] (fitilden fitile); giriş penceresi i+1..i+20; "
-    "her barda önce giriş koşulu, sonra iptal (close < OB_low) denetlenir; aynı anda birden çok bekleyen kurulum olabilir",
-    "'aynı order block'tan en çok bir işlem' = en çok bir GİRİŞ SİNYALİ (olay): simülasyonda atlanan sinyal (CHASE vb.) de hakkı "
-    "harcar; harcanmış order block'a yeni kurulum açılmaz",
+    "her barda önce giriş koşulu, sonra iptal (close < OB_low) denetlenir; aynı anda birden çok bekleyen kurulum olabilir; aynı "
+    "order block'un kurulumları aynı barda dokunursa o barda en çok BİR sinyal",
+    "'aynı order block'tan en çok bir işlem' = harfiyen İŞLEM: sinyal signal_lab.simulate'te (laboratuvar ayarı, varyantın RR'si ve "
+    "süresi) işleme dönüşürse order block harcanır; atlanan sinyal (CHASE, STOP_TOO_CLOSE/FAR, NO_FUTURE_DATA) harcamaz ve aynı "
+    "order block'a sonraki bir BOS kurulumu yeniden sinyal verebilir; harcanmışlık karar barında denetlenir ve yalnız ÖNCEKİ "
+    "barların sinyallerini görür (işleme dönüşüp dönüşmediği giriş barının açılışında bellidir; geleceğe bakmaz)",
     "SMC_SWEEP: 'aynı pivot en çok bir kez' = pivot başına en çok bir sinyal (sinyal anında harcanır)",
     "SMC_CHOCH: 'azalan' kesin (H_son < H_önceki, L_son < L_önceki); pivot başına sınır yok (her uygun kırılım bir sinyal)",
     "SMC_FVG: gövde = close − open (bar m−1), ATR(m−1) laboratuvarın ATR14'ü; giriş penceresi m+1..m+20; FVG başına en çok bir "
@@ -161,20 +165,25 @@ READINGS_TR = (
     "swing yok) plasebo olayı yok ve PLACEBO_<ad>:NO_STOP sayılır; p = gerçek sinyal (simülasyondan önceki olay) sayısı / "
     "serinin bar sayısı — seri başına sabittir (gelecekteki sinyal sayısını da içerir; belgeye göre bilinçli)",
     "pencere: barın açılış zamanı [başlangıç günü 00:00 UTC, bitiş günü + 1 gün 00:00 UTC) aralığında (bitiş günü dahil)",
-    "aylık ölçü: işlemin ayı = t_ms'nin (karar anı = giriş anı) UTC takvim ayı; OOS ayları = kesimin (aggregate cutoff_ms) düştüğü "
-    "aydan serinin son barının ayına kadar BÜTÜN takvim ayları (ilk ay kısmi); işlemsiz ay 0 R; ay kümeli bootstrap "
-    "bootstrap_iters tekrar, tohum MONTH_SEED, en az 5 ay",
+    "aylık ölçü: işlemin ayı = t_ms'nin (karar anı = giriş anı) UTC takvim ayı; hedef yalnız TAM doğrulama aylarıyla ölçülür: ay "
+    "başı > kesim (aggregate cutoff_ms) VE ayın her karar anında işlem açılabilir (ay sonu ≤ son açılabilir karar anı + dilim; son "
+    "açılabilir karar anı = ts[n−1−süre] + dilim, signal_lab.simulate'in NO_FUTURE_DATA sınırı); kesimin düştüğü kısmi ay ve "
+    "serinin sonundaki kısa ay hedefe girmez, R'leri ve işlem sayıları bilgi olarak raporlanır (edge_months); işlemsiz tam ay 0 R; "
+    "ay kümeli bootstrap bootstrap_iters tekrar, tohum MONTH_SEED, en az 5 ay; ≥ +%1 karşılaştırması yuvarlanmamış değerle",
     "eşzamanlılık: işlem aralığı [ts[i+1], ts[i+hold] + dilim) (çıkış barının kapanışı); en çok = süpürme çizgisi (aynı anda "
     "önce çıkış); ortalama = OOS penceresi [kesim, serinin sonu] üzerinde zaman ağırlıklı açık işlem sayısı",
-    "iki yön birlikte: hedefi karşılıyor = birleşik OOS aylık ortalama ≥ +%1 VE İKİ yönün de sıkı hükmü GÜÇLÜ ADAY; sonuç cümlesi "
-    "32 birincil hücreye göre yazılır, iki yön satırı ayrıca belirtilir",
+    "iki yön birlikte: hedefi karşılıyor = birleşik OOS aylık ortalama ≥ +%1 VE İKİ yönün de sıkı hükmü GÜÇLÜ ADAY; sonuç cümlesi: "
+    "hedefi karşılayan tek yönlü hücreler (varsa iki yön satırları ayrıca); yalnız iki yön satırı karşılıyorsa 'hiçbir tek yönlü "
+    "hücre karşılamadı; iki yön birlikte karşılayan: …'; ikisi de yoksa '" + NO_TARGET_TR + "' (çelişkili cümle yazılmaz)",
     "mekân ve uzun geçmiş notları ana serinin STANDART hükmü GÜÇLÜ ADAY olan hücreler içindir; mekân: n ≥ 20 ve ort.R ≤ 0 → "
-    "'mekânda tutmadı'; Dukascopy: OOS ort.R ≤ 0 → 'uzun geçmişte tutmadı'",
-    "Dukascopy kapsaması = manifest'te status 200 kaydı olan Pzt–Cum günleri / pencere içindeki bütün Pzt–Cum günleri (tatil "
-    "404'leri eksik sayılır); Pazar dosyaları okunur ama oranda yoktur",
+    "'mekânda tutmadı'; Dukascopy: OOS ort.R ≤ 0 → 'uzun geçmişte tutmadı'; notlar raporun ana seri bölümünden hesaplanır (aynı "
+    "koşu ya da aynı klasördeki aynı mühür, ayar ve pencereli önceki rapor); ana seri yoksa mekân ve Dukascopy bölümü KOŞMAZ (hata)",
+    "Dukascopy kapsaması = indirilmiş Pzt–Cum günleri / pencere içindeki bütün Pzt–Cum günleri; gün indirilmiş sayılır: manifest'te "
+    "status 200 ve bayt > 0 kaydı var VE dosya aynada boş olmayan bir dosya olarak duruyor (tatil 404'leri eksik sayılır); Pazar "
+    "dosyaları okunur ama oranda yoktur; okunan dilimlerden biri boşsa bölüm yine 'yapılamadı'",
     "Dukascopy barları: hacmi 0 olan 1 DAKİKALIK barlar yeniden örneklemeden ÖNCE atılır; OHLC'si tutarsız (düşük > min(açılış, "
-    "kapanış) ya da yüksek < max(açılış, kapanış)) ya da 100–20 000 dışında olan 1 dakikalık satır atılır ve sayılır; Cumartesi "
-    "okunmaz",
+    "kapanış) ya da yüksek < max(açılış, kapanış)) ya da 100–20 000 dışında olan 1 dakikalık satır atılır ve sayılır; kayıt "
+    "saniyesi [0, 86400) dışında ya da kesin artan olmayan dosya HATA; Cumartesi okunmaz",
     "aday oranı: laboratuvarın candidate_rate'i (bütün bağlam dilimleri) ve aynı tanımla yalnız birincil (HEPSİ) hücreler",
     "maker duyarlılığı: aynı işlemler maker maliyetiyle (%0,02 + 0 bps) yeniden fiyatlanır (r_maker); hükme girmez",
     "mevcut setler: katalog + ek sinyaller + algoritmalar dilim başına tek process_series koşusu ve tek aggregate (signal_lab.run "
@@ -396,22 +405,28 @@ def _frame(df: pd.DataFrame) -> tuple[np.ndarray, ...]:
 
 
 # ---------------------------------------------------------------------------- olaylar (LONG kuralı; SHORT aynada)
-def _bos_ob(Op, H, Lw, C, last_h, last_l, ok, atr, add) -> None:
+def _bos_ob(Op, H, Lw, C, last_h, last_l, ok, atr, add, traded) -> None:
+    """`traded(i, stop, tetik)`: bu sinyal `signal_lab.simulate`'te işleme dönüşür mü (giriş i+1 açılışında belli olur).
+    Order block yalnız İŞLEME dönüşen sinyalle harcanır; harcanmışlık sonraki barların kararlarında denetlenir."""
     n = len(C)
     lb = np.maximum.accumulate(np.where(C < Op, np.arange(n), -1)) if n else np.zeros(0, dtype=np.int64)
-    used: set[int] = set()
+    used: set[int] = set()                                      # işleme dönüşmüş order block'lar
     pending: list[tuple[int, int]] = []
     for i in range(1, n):
         if pending:
-            keep = []
+            keep: list[tuple[int, int]] = []
+            fired: set[int] = set()                             # bu barda sinyal veren order block'lar
             for st, ob in pending:
                 if i > st + SETUP_BARS:
                     continue                                    # pencere doldu
                 zlo, zhi = Lw[ob], H[ob]
                 if Lw[i] <= zhi and C[i] >= zlo:                # İLK dokunuş: karar burada
-                    if ob not in used and ok[i]:
-                        add("SMC_BOS_OB", i, zlo - BUF_ATR * atr[i], zhi)
-                        used.add(ob)
+                    if ob not in used and ob not in fired and ok[i]:
+                        stop = zlo - BUF_ATR * atr[i]
+                        add("SMC_BOS_OB", i, stop, zhi)
+                        fired.add(ob)
+                        if traded(i, stop, zhi):
+                            used.add(ob)
                     continue
                 if C[i] < zlo:                                  # girişten önce bölgenin altında kapanış → iptal
                     continue
@@ -423,7 +438,7 @@ def _bos_ob(Op, H, Lw, C, last_h, last_l, ok, atr, add) -> None:
         hv = H[jh]
         if C[i] > hv and C[i - 1] <= hv:                        # BOS
             jl, ob = last_l[i], lb[i - 1]
-            if jl >= 0 and ob >= jl and ob not in used:
+            if jl >= 0 and ob >= jl:
                 pending.append((i, int(ob)))
 
 
@@ -468,9 +483,10 @@ def _fvg(Op, H, Lw, C, ok, atr, add) -> None:
 
 
 def gold_events(df: pd.DataFrame, symbol: str, tf: str, *, atr: np.ndarray | None = None,
-                names: Iterable[str] | None = None) -> list[L.Event]:
+                names: Iterable[str] | None = None, cfg: L.LabConfig | None = None) -> list[L.Event]:
     """Varyant olayları (aile "gold"); karar i barının kapanışında (t_ms = ts[i] + dilim). Hedef None: simulate RR × gerçek
-    girişteki riski uygular. SHORT = aynada LONG."""
+    girişteki riski uygular. SHORT = aynada LONG. `cfg` (varsayılan LabConfig()) yalnız SMC_BOS_OB'nin "order block başına
+    en çok bir İŞLEM" kuralı içindir: sinyalin işleme dönüşüp dönüşmediği `process` ile aynı ayarla sınanır."""
     names = list(names) if names is not None else names_for_tf(tf)
     bad = [x for x in names if x not in RULES or tf not in RULES[x]["tfs"]]
     if bad:
@@ -481,6 +497,8 @@ def gold_events(df: pd.DataFrame, symbol: str, tf: str, *, atr: np.ndarray | Non
     with np.errstate(invalid="ignore"):
         ok = np.isfinite(atr) & (atr > 0)
     sess = in_session(ts + step)
+    arr = {"open": o, "high": h, "low": lo, "close": c}
+    ob_cfg = variant_cfg(cfg or L.LabConfig(), "SMC_BOS_OB", tf) if "SMC_BOS_OB" in names else None
     out: list[L.Event] = []
     for side, s in ((LONG, 1.0), (SHORT, -1.0)):
         Op, H, Lw, C = _view(o, h, lo, c, s)
@@ -489,6 +507,11 @@ def gold_events(df: pd.DataFrame, symbol: str, tf: str, *, atr: np.ndarray | Non
             if name in names:
                 out.append(L.Event(symbol, tf, FAMILY, name, _side, int(i), int(ts[i]) + step, float(_s * stop_long),
                                    trigger=float(_s * trig_long), target=None))
+
+        def traded(i: int, stop_long: float, trig_long: float, _side: str = side, _s: float = s) -> bool:
+            ev = L.Event(symbol, tf, FAMILY, "SMC_BOS_OB", _side, int(i), int(ts[i]) + step, float(_s * stop_long),
+                         trigger=float(_s * trig_long), target=None)
+            return not L.simulate(ev, arr, atr, ob_cfg)
         if any(x in EMA_NAMES for x in names) and n:
             e20, e50 = ema(C, EMA_FAST), ema(C, EMA_SLOW)
             cross = np.zeros(n, dtype=bool)
@@ -511,7 +534,7 @@ def gold_events(df: pd.DataFrame, symbol: str, tf: str, *, atr: np.ndarray | Non
             last_h, prev_h = confirmed(ph)
             last_l, prev_l = confirmed(pl)
             if "SMC_BOS_OB" in names:
-                _bos_ob(Op, H, Lw, C, last_h, last_l, ok, atr, add)
+                _bos_ob(Op, H, Lw, C, last_h, last_l, ok, atr, add, traded)
             if "SMC_SWEEP" in names:
                 _sweep(H, Lw, C, last_l, ok, atr, add)
             if "SMC_CHOCH" in names:
@@ -599,7 +622,7 @@ def process(df: pd.DataFrame, symbol: str, tf: str, cfg: L.LabConfig, *, names: 
     step = tf_ms(tf)
     ind = L.indicators(df)
     atr = ind["atr"]
-    real = gold_events(df, symbol, tf, atr=atr, names=names)
+    real = gold_events(df, symbol, tf, atr=atr, names=names, cfg=cfg)
     sig = Counter((e.name, e.side) for e in real)
     no_stop: dict[str, int] = {}
     plac, probs = placebo_events(df, symbol, tf, sig, atr=atr, p=placebo_p, names=names, skipped=no_stop)
@@ -607,9 +630,11 @@ def process(df: pd.DataFrame, symbol: str, tf: str, cfg: L.LabConfig, *, names: 
     for nm in names:
         for key in (nm, PLACEBO_PREFIX + nm):
             counts[key] = {s: {"signals": 0, "trades": 0, "skipped": {}} for s in SIDES}
-    for k, v in no_stop.items():
+    for k, v in no_stop.items():                          # plasebo çekilişi oldu ama stop yok: sinyal sayılır, atlanır
         pname, side, why = k.split(":")
-        counts[pname][side]["skipped"][why] = counts[pname][side]["skipped"].get(why, 0) + v
+        cnt = counts[pname][side]
+        cnt["signals"] += v
+        cnt["skipped"][why] = cnt["skipped"].get(why, 0) + v
     done: list[L.Event] = []
     makers: list[float | None] = []
     for ev in real + plac:
@@ -639,9 +664,13 @@ def process(df: pd.DataFrame, symbol: str, tf: str, cfg: L.LabConfig, *, names: 
         d["exit_ms"] = int(ts[j + ev.hold - 1]) + step
         d["r_maker"] = rm
         out.append(d)
-    meta = {"symbol": symbol, "tf": tf, "bars": int(len(df)), "first": int(ts[0]) if len(ts) else None,
-            "last": int(ts[-1]) if len(ts) else None, "signals": len(real), "placebo_signals": len(plac), "trades": len(out),
-            "counts": counts, "placebo_p": {f"{k[0]}|{k[1]}": round(v, 8) for k, v in probs.items()}}
+    n = len(ts)
+    holds = {nm: int(RULES[nm]["max_hold_bars"][tf]) for nm in names}
+    meta = {"symbol": symbol, "tf": tf, "bars": int(n), "first": int(ts[0]) if n else None,
+            "last": int(ts[-1]) if n else None, "signals": len(real), "placebo_signals": len(plac) + sum(no_stop.values()),
+            "trades": len(out), "counts": counts, "placebo_p": {f"{k[0]}|{k[1]}": round(v, 8) for k, v in probs.items()},
+            # son açılabilir karar anı (simulate: i + 1 + süre ≤ n) — aylık ölçünün tam ayları için
+            "last_open_ms": {nm: int(ts[n - 1 - hd]) + step if n - 1 - hd >= 0 else None for nm, hd in holds.items()}}
     return out, meta
 
 
@@ -674,19 +703,43 @@ def concurrency(rows: list[Mapping[str, Any]], t0: float, t1: float) -> dict[str
     return {"max": int(mx), "mean": round(tot / span, 4) if span > 0 else None}
 
 
-def monthly_stats(rows: list[Mapping[str, Any]], cutoff: float, last_ms: int, *, iters: int, key: str = "r") -> dict[str, Any]:
-    """OOS (t_ms > kesim) işlemlerinin takvim ayı başına toplam R'si; kesimin ayından serinin son ayına kadar her ay (işlemsiz
-    ay 0). Aylık % = ay R × risk; ay kümeli bootstrap %95 aralığı (MONTH_SEED); ≥ +%1 ay payı; eşzamanlılık."""
-    months = month_keys(int(cutoff), int(last_ms))
-    sums = dict.fromkeys(months, 0.0)
+def month_bounds(mk: str) -> tuple[int, int]:
+    """"YYYY-MM" → [ay başı, sonraki ay başı) ms (UTC)."""
+    a = day_ms(mk + "-01")
+    return a, L._next_month(a)
+
+
+def monthly_stats(rows: list[Mapping[str, Any]], cutoff: float, last_ms: int, *, iters: int, key: str = "r",
+                  open_end_ms: int | None = None) -> dict[str, Any]:
+    """Hedef ölçüsü yalnız TAM doğrulama (OOS) takvim aylarıyla: ay başı > kesim VE ay sonu ≤ `open_end_ms` (son açılabilir
+    karar anı + dilim; verilmezse serinin sonu last_ms + 1). Tam ay başına OOS (t_ms > kesim) işlemlerin toplam R'si (işlemsiz
+    ay 0); aylık % = ay R × risk; ay kümeli bootstrap %95 aralığı (MONTH_SEED); ≥ +%1 ay payı. Kısmi kenar ayları (kesimin ayı,
+    serinin sonundaki kısa ay) hedefe girmez: R'leri, işlem sayıları ve OOS payları `edge_months`'ta (bilgi). Eşzamanlılık bütün
+    OOS işlemleri üzerinde [kesim, serinin sonu] (bilgi). `mean_pct_month_exact` yuvarlanmamıştır; hedef onunla sınanır."""
+    cut = float(cutoff)
+    end = int(open_end_ms) if open_end_ms is not None else int(last_ms) + 1
+    allm = month_keys(int(cutoff), int(last_ms))
+    bounds = {k: month_bounds(k) for k in allm}
+    full = [k for k in allm if bounds[k][0] > cut and bounds[k][1] <= end]
+    sums = dict.fromkeys(full, 0.0)
     hits: Counter = Counter()
-    oos = [e for e in rows if e.get(key) is not None and math.isfinite(float(e[key])) and float(e["t_ms"]) > float(cutoff)]
+    edge: dict[str, dict[str, Any]] = {}
+    for k in allm:
+        if k not in sums:
+            a, b = bounds[k]
+            share = max(0.0, min(b, end) - max(a, cut)) / (b - a)
+            edge[k] = {"r": 0.0, "trades": 0, "oos_share": round(share, 4)}
+    oos = [e for e in rows if e.get(key) is not None and math.isfinite(float(e[key])) and float(e["t_ms"]) > cut]
     for e in oos:
         mk = month_key(int(e["t_ms"]))
-        sums[mk] = sums.get(mk, 0.0) + float(e[key])
-        hits[mk] += 1
-    keys = sorted(sums)
-    vals = np.array([sums[k] for k in keys], dtype=float)
+        if mk in sums:
+            sums[mk] += float(e[key])
+            hits[mk] += 1
+        else:
+            ed = edge.setdefault(mk, {"r": 0.0, "trades": 0, "oos_share": None})
+            ed["r"] += float(e[key])
+            ed["trades"] += 1
+    vals = np.array([sums[k] for k in full], dtype=float)
     mcount = int(len(vals))
     mean_r = float(vals.mean()) if mcount else None
     ci = None
@@ -694,21 +747,27 @@ def monthly_stats(rows: list[Mapping[str, Any]], cutoff: float, last_ms: int, *,
         idx = np.random.default_rng(MONTH_SEED).integers(0, mcount, size=(iters, mcount))
         means = vals[idx].mean(axis=1)
         ci = [round(float(np.quantile(means, 0.025)) * RISK_PCT, 4), round(float(np.quantile(means, 0.975)) * RISK_PCT, 4)]
-    return {"months": mcount, "first_month": keys[0] if keys else None, "last_month": keys[-1] if keys else None,
-            "trades": len(oos), "months_without_trades": int(sum(1 for k in keys if not hits[k])),
+    return {"months": mcount, "first_month": full[0] if full else None, "last_month": full[-1] if full else None,
+            "trades": int(sum(hits.values())), "oos_trades": len(oos),
+            "months_without_trades": int(sum(1 for k in full if not hits[k])),
             "mean_r_month": None if mean_r is None else round(mean_r, 4),
             "mean_pct_month": None if mean_r is None else round(mean_r * RISK_PCT, 4),
+            "mean_pct_month_exact": None if mean_r is None else mean_r * RISK_PCT,
             "mean_pct_month_risk1": None if mean_r is None else round(mean_r * RISK_PCT_INFO, 4),
             "ci95_pct_month": ci,
             "share_months_ge_target": round(float(np.mean(vals * RISK_PCT >= TARGET_PCT_MONTH)), 4) if mcount else None,
-            "concurrency": concurrency(oos, float(cutoff), float(last_ms)),
-            "monthly_r": {k: round(float(sums[k]), 4) for k in keys}}
+            "concurrency": concurrency(oos, cut, float(last_ms)),
+            "monthly_r": {k: round(float(sums[k]), 4) for k in full},
+            "edge_months": {k: {**v, "r": round(float(v["r"]), 4)} for k, v in sorted(edge.items())},
+            "open_end": _iso(end)}
 
 
 def meets_target(mon: Mapping[str, Any] | None, strict_verdicts: Iterable[str]) -> bool:
+    """OOS tam ay ortalaması (YUVARLANMAMIŞ, risk %0,5) ≥ +%1 VE bütün sıkı hükümler GÜÇLÜ ADAY."""
     sv = list(strict_verdicts)
-    return bool(mon and mon.get("mean_pct_month") is not None and float(mon["mean_pct_month"]) >= TARGET_PCT_MONTH
-                and sv and all(v == L.V_STRONG for v in sv))
+    x = (mon or {}).get("mean_pct_month_exact")
+    return bool(x is not None and math.isfinite(float(x)) and float(x) >= TARGET_PCT_MONTH and sv
+                and all(v == L.V_STRONG for v in sv))
 
 
 # ---------------------------------------------------------------------------- rapor: ana seri
@@ -739,6 +798,13 @@ def _last_ms(metas: list[dict]) -> dict[str, int]:
     return out
 
 
+def _open_end(metas: list[dict], tf: str, name: str) -> int | None:
+    """Varyantın son açılabilir karar anı + dilim (aylık ölçünün tam ay sınırı); bilinmiyorsa None (= serinin sonu)."""
+    vals = [int(m["last_open_ms"][name]) + tf_ms(tf) for m in metas
+            if m.get("tf") == tf and (m.get("last_open_ms") or {}).get(name) is not None]
+    return max(vals) if vals else None
+
+
 def _period_stats(rows: list[Mapping[str, Any]], cut: float | None, cfg: L.LabConfig) -> dict[str, dict]:
     """Grubu olmayan hücre (aggregate 10 işlemin altındaki grubu yazmaz) için aynı kesimle IS/OOS özeti (n tutarlı kalsın)."""
     out = {}
@@ -763,12 +829,14 @@ def main_report(events: list[dict], metas: list[dict], cfg: L.LabConfig) -> dict
     for name, rule in RULES.items():
         for tf in rule["tfs"]:
             per_side = {}
+            oe = _open_end(metas, tf, name)
             for side in SIDES:
                 g = hep.get((tf, FAMILY, name, side))
                 pg = hep.get((tf, PLACEBO_FAMILY, PLACEBO_PREFIX + name, side))
                 rows = [e for e in events if e["tf"] == tf and e["family"] == FAMILY and e["name"] == name and e["side"] == side]
-                mon = monthly_stats(rows, cut[tf], last[tf], iters=cfg.bootstrap_iters) if tf in cut and tf in last else None
-                mk = monthly_stats(rows, cut[tf], last[tf], iters=cfg.bootstrap_iters, key="r_maker") if mon else None
+                mon = monthly_stats(rows, cut[tf], last[tf], iters=cfg.bootstrap_iters, open_end_ms=oe) \
+                    if tf in cut and tf in last else None
+                mk = monthly_stats(rows, cut[tf], last[tf], iters=cfg.bootstrap_iters, key="r_maker", open_end_ms=oe) if mon else None
                 oos_m = [float(e["r_maker"]) for e in rows if e.get("r_maker") is not None and tf in cut and e["t_ms"] > cut[tf]]
                 verdict = g["verdict"] if g else L.V_THIN
                 strict = g.get("verdict_strict", verdict) if g else L.V_THIN
@@ -785,7 +853,8 @@ def main_report(events: list[dict], metas: list[dict], cfg: L.LabConfig) -> dict
                 cells.append(cell)
                 per_side[side] = cell
             rows = [e for e in events if e["tf"] == tf and e["family"] == FAMILY and e["name"] == name]
-            mon = monthly_stats(rows, cut[tf], last[tf], iters=cfg.bootstrap_iters) if tf in cut and tf in last else None
+            mon = monthly_stats(rows, cut[tf], last[tf], iters=cfg.bootstrap_iters, open_end_ms=oe) \
+                if tf in cut and tf in last else None
             stricts = [per_side[s]["verdict_strict"] for s in SIDES]
             both.append({"tf": tf, "name": name, "monthly": mon, "verdict_strict": stricts,
                          "meets_target": meets_target(mon, stricts)})
@@ -793,13 +862,7 @@ def main_report(events: list[dict], metas: list[dict], cfg: L.LabConfig) -> dict
     pl = [g for g in hep.values() if g["family"] == PLACEBO_FAMILY and g["verdict"] != L.V_THIN]
     hit = [c for c in cells if c["meets_target"]]
     hit_both = [b for b in both if b["meets_target"]]
-    if hit:
-        concl = ("hedefi karşılayan hücre: " + ", ".join(f"{c['tf']} {c['name']} {c['side']}" for c in hit)
-                 + " — " + GOLD_REGISTRY["outcome_tr"]["some"])
-    else:
-        concl = "hiçbir birincil hücre hedefi karşılamadı: " + NO_TARGET_TR
-    if hit_both:
-        concl += " · iki yön birlikte hedefi karşılayan: " + ", ".join(f"{b['tf']} {b['name']}" for b in hit_both)
+    concl = conclusion_tr(hit, hit_both)
     return {"cells": cells, "both_sides": both, "tested": agg.get("tested", 0),
             "candidate_rate": agg.get("candidate_rate"),
             "candidate_rate_primary": {"real": _rate(real), "placebo": _rate(pl), "real_tested": len(real),
@@ -807,7 +870,21 @@ def main_report(events: list[dict], metas: list[dict], cfg: L.LabConfig) -> dict
                                        "strong": sum(1 for c in cells if c["verdict"] == L.V_STRONG),
                                        "strict_strong": sum(1 for c in cells if c["verdict_strict"] == L.V_STRONG)},
             "cutoff_ms": {k: int(v) for k, v in cut.items()}, "last_ms": last, "tf_summary": agg.get("tf_summary"),
-            "groups": agg.get("groups") or [], "meets_target_any": bool(hit), "conclusion_tr": concl}
+            "groups": agg.get("groups") or [], "meets_target_any": bool(hit), "meets_target_both_any": bool(hit_both),
+            "conclusion_tr": concl}
+
+
+def conclusion_tr(hit: list[Mapping[str, Any]], hit_both: list[Mapping[str, Any]]) -> str:
+    """Sonuç cümlesi: "kazandırmadı" yalnız ne tek yönlü bir hücre ne de bir iki yön satırı hedefi karşılıyorsa yazılır."""
+    both = ", ".join(f"{b['tf']} {b['name']}" for b in hit_both)
+    if hit:
+        concl = ("hedefi karşılayan hücre: " + ", ".join(f"{c['tf']} {c['name']} {c['side']}" for c in hit)
+                 + " — " + GOLD_REGISTRY["outcome_tr"]["some"])
+        return concl + (" · iki yön birlikte hedefi karşılayan: " + both if hit_both else "")
+    if hit_both:
+        return ("hiçbir tek yönlü birincil hücre hedefi karşılamadı; iki yön birlikte hedefi karşılayan: " + both + " — "
+                + GOLD_REGISTRY["outcome_tr"]["some"])
+    return "hiçbir birincil hücre (iki yön birlikte de) hedefi karşılamadı: " + NO_TARGET_TR
 
 
 # ---------------------------------------------------------------------------- rapor: mekân, uzun geçmiş, mevcut setler
@@ -833,15 +910,13 @@ def venue_report(events: list[dict], metas: list[dict], cfg: L.LabConfig, main: 
                     rs = np.array([float(e["r"]) for e in sel], dtype=float)
                     st = L.r_stats(rs, cfg.bootstrap_iters, days=np.array([int(e["t_ms"]) // DAY_MS for e in sel])) if len(rs) else {"n": 0}
                     fr = [float(e["funding_r"]) for e in sel if e.get("funding_r") is not None and math.isfinite(float(e["funding_r"]))]
-                    mc = _main_cell(main, tf, name, side)
-                    note = NOTE_VENUE if (mc and mc["verdict"] == L.V_STRONG and st.get("n", 0) >= VENUE_MIN_N
-                                          and st.get("mean_r") is not None and st["mean_r"] <= 0) else ""
+                    note = note_venue(_main_cell(main, tf, name, side), st)
                     rows.append({"symbol": sym, "tf": tf, "name": name, "side": side, "all": st,
                                  "funding_r": {"mean": round(float(np.mean(fr)), 4) if fr else None, "known": len(fr),
                                                "unknown": len(sel) - len(fr)},
                                  "placebo_mean_r": round(float(np.mean(pl)), 4) if pl else None, "placebo_n": len(pl),
                                  "counts": _counts([m for m in metas if m["symbol"] == sym], tf, name, side), "note": note})
-    return {"rows": rows, "notes": [r for r in rows if r["note"]], "split": False}
+    return {"rows": rows, "notes": [r for r in rows if r["note"]], "split": False, "notes_evaluated": bool(main)}
 
 
 def duka_report(events: list[dict], metas: list[dict], cfg: L.LabConfig, main: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -857,14 +932,43 @@ def duka_report(events: list[dict], metas: list[dict], cfg: L.LabConfig, main: M
                 rows = [e for e in events if e["tf"] == tf and e["family"] == FAMILY and e["name"] == name and e["side"] == side]
                 ps = {"IS": g["IS"], "OOS": g["OOS"]} if g else _period_stats(rows, cut.get(tf), cfg)
                 oos = ps["OOS"]
-                mc = _main_cell(main, tf, name, side)
-                note = NOTE_DUKA if (mc and mc["verdict"] == L.V_STRONG and oos.get("mean_r") is not None and oos["mean_r"] <= 0) else ""
+                note = note_duka(_main_cell(main, tf, name, side), oos)
                 cells.append({"tf": tf, "name": name, "side": side, "IS": _brief(ps["IS"]), "OOS": _brief(oos),
                               "vs_placebo": g.get("vs_placebo") if g else None, "verdict": g["verdict"] if g else L.V_THIN,
                               "verdict_strict": g.get("verdict_strict") if g else L.V_THIN,
                               **_counts(metas, tf, name, side), "note": note})
-    return {"status": "koşuldu", "cells": cells, "notes": [c for c in cells if c["note"]],
+    return {"status": "koşuldu", "cells": cells, "notes": [c for c in cells if c["note"]], "notes_evaluated": bool(main),
             "cutoff_ms": agg.get("cutoff_ms") or {}, "candidate_rate": agg.get("candidate_rate")}
+
+
+def note_venue(mc: Mapping[str, Any] | None, st: Mapping[str, Any]) -> str:
+    """Ana seride (standart hüküm) GÜÇLÜ ADAY hücre, mekânda n ≥ 20 iken ort.R ≤ 0 → 'mekânda tutmadı'."""
+    ok = mc and mc.get("verdict") == L.V_STRONG and int(st.get("n") or 0) >= VENUE_MIN_N and st.get("mean_r") is not None
+    return NOTE_VENUE if ok and float(st["mean_r"]) <= 0 else ""
+
+
+def note_duka(mc: Mapping[str, Any] | None, oos: Mapping[str, Any]) -> str:
+    """Ana seride (standart hüküm) GÜÇLÜ ADAY hücre, Dukascopy OOS ort.R ≤ 0 → 'uzun geçmişte tutmadı'."""
+    ok = mc and mc.get("verdict") == L.V_STRONG and oos.get("mean_r") is not None
+    return NOTE_DUKA if ok and float(oos["mean_r"]) <= 0 else ""
+
+
+def apply_notes(report: dict[str, Any]) -> None:
+    """Mekân ve Dukascopy notlarını raporun KENDİ ana seri bölümünden (yeniden) hesaplar: bölümler ayrı koşularda birleşse de
+    notlar her zaman rapordaki ana seriye dayanır."""
+    main = report.get("main")
+    ven = report.get("venue")
+    if ven:
+        for r in ven.get("rows") or []:
+            r["note"] = note_venue(_main_cell(main, r["tf"], r["name"], r["side"]), r.get("all") or {})
+        ven["notes"] = [r for r in ven.get("rows") or [] if r["note"]]
+        ven["notes_evaluated"] = bool(main)
+    duka = report.get("dukascopy")
+    if duka and duka.get("status") == "koşuldu":
+        for c in duka.get("cells") or []:
+            c["note"] = note_duka(_main_cell(main, c["tf"], c["name"], c["side"]), c.get("OOS") or {})
+        duka["notes"] = [c for c in duka.get("cells") or [] if c["note"]]
+        duka["notes_evaluated"] = bool(main)
 
 
 EXISTING_SETS = ("lab", "variations")
@@ -1005,17 +1109,27 @@ def load_spot(symbol: str, tf: str, start_ms: int, end_ms: int, get: Callable[[s
     kesin kırpılır, tekrarlar atılır, sıralanır."""
     sym = symbol.replace("/", "").upper()
     parts, fallback, missing = [], [], []
+
+    def fetch(url: str) -> pd.DataFrame | None:
+        data = get(url)
+        if data is None:
+            return None
+        try:
+            return parse_spot_zip(data, tf)
+        except (ValueError, zipfile.BadZipFile) as exc:
+            raise GoldDataError(f"bozuk spot arşivi: {url}: {exc} (önbellekteki dosyayı silip yeniden indirin)") from exc
+
     for mon in _months(start_ms, end_ms):
         stamp = pd.Timestamp(mon, unit="ms", tz="UTC").strftime("%Y-%m")
-        data = get(spot_url(sym, tf, stamp))
-        if data is not None:
-            parts.append(parse_spot_zip(data, tf))
+        df = fetch(spot_url(sym, tf, stamp))
+        if df is not None:
+            parts.append(df)
             continue
         got, day = 0, max(mon, start_ms - start_ms % DAY_MS)
         while day < min(L._next_month(mon), end_ms):
-            d = get(spot_url(sym, tf, pd.Timestamp(day, unit="ms", tz="UTC").strftime("%Y-%m-%d")))
+            d = fetch(spot_url(sym, tf, pd.Timestamp(day, unit="ms", tz="UTC").strftime("%Y-%m-%d")))
             if d is not None:
-                parts.append(parse_spot_zip(d, tf))
+                parts.append(d)
                 got += 1
             day += DAY_MS
         (fallback if got else missing).append({"month": stamp, "days": got})
@@ -1083,7 +1197,10 @@ def decode_bi5(data: bytes, day_start_ms: int) -> pd.DataFrame:
     if len(raw) % DUKA_DTYPE.itemsize:
         raise ValueError(f"bi5 uzunluğu {len(raw)} 24'ün katı değil")
     a = np.frombuffer(raw, dtype=DUKA_DTYPE)
-    return pd.DataFrame({"timestamp": int(day_start_ms) + a["t"].astype(np.int64) * 1000,
+    t = a["t"].astype(np.int64)
+    if len(t) and (t.min() < 0 or t.max() >= 86_400 or np.any(np.diff(t) <= 0)):
+        raise ValueError(f"bi5 kayıt saniyeleri [0, 86400) dışında ya da kesin artan değil ({t.min()}..{t.max()})")
+    return pd.DataFrame({"timestamp": int(day_start_ms) + t * 1000,
                          "open": a["o"].astype(float) / DUKA_DIV, "high": a["h"].astype(float) / DUKA_DIV,
                          "low": a["l"].astype(float) / DUKA_DIV, "close": a["c"].astype(float) / DUKA_DIV,
                          "volume": a["v"].astype(float)})
@@ -1113,8 +1230,20 @@ def resample(df: pd.DataFrame, tf: str) -> pd.DataFrame:
                          "close": c[en], "volume": np.add.reduceat(v, st), "close_time": b[st] + step - 1})
 
 
+DUKA_COVERAGE_BASIS_TR = ("Pzt–Cum günleri; gün indirilmiş sayılır: manifest'te status 200 ve bayt > 0 VE dosya aynada boş "
+                          "olmayan bir dosya")
+
+
+def _positive(x: Any) -> bool:
+    try:
+        return float(x) > 0
+    except (TypeError, ValueError):
+        return False
+
+
 def duka_coverage(root: Path | str, start: str, end: str) -> dict[str, Any]:
-    """Kapsama = manifest'te status 200 kaydı olan Pzt–Cum günleri / pencere içindeki bütün Pzt–Cum günleri."""
+    """Kapsama = indirilmiş Pzt–Cum günleri / pencere içindeki bütün Pzt–Cum günleri. Gün indirilmiş sayılır: manifest'te
+    status 200 ve bayt > 0 kaydı var VE `duka_path` boş olmayan bir dosya (manifest tek başına yetmez)."""
     man = Path(root) / "manifest.jsonl"
     ok: set[str] = set()
     status: Counter = Counter()
@@ -1124,16 +1253,23 @@ def duka_coverage(root: Path | str, start: str, end: str) -> dict[str, Any]:
                 r = json.loads(line)
             except ValueError:
                 continue
+            if not isinstance(r, dict):
+                continue
             status[str(r.get("status"))] += 1
-            if r.get("status") == 200:
+            if r.get("status") == 200 and _positive(r.get("bytes")):
                 ok.add(str(r.get("date")))
     d0, d1 = date.fromisoformat(start), date.fromisoformat(end)
     wk = [d0 + timedelta(days=k) for k in range((d1 - d0).days + 1)]
     wk = [d for d in wk if d.weekday() < 5]
-    got = sum(1 for d in wk if d.isoformat() in ok)
+    man_ok = [d for d in wk if d.isoformat() in ok]
+    got = 0
+    for d in man_ok:
+        p = duka_path(root, d)
+        got += int(p.is_file() and p.stat().st_size > 0)
     cov = got / len(wk) if wk else 0.0
-    return {"weekdays": len(wk), "weekdays_ok": got, "coverage": round(cov, 6), "threshold": DUKA_COVERAGE_MIN,
-            "enough": cov >= DUKA_COVERAGE_MIN, "manifest": man.exists(), "status_counts": dict(status)}
+    return {"weekdays": len(wk), "weekdays_manifest_ok": len(man_ok), "weekdays_file_missing": len(man_ok) - got,
+            "weekdays_ok": got, "coverage": round(cov, 6), "threshold": DUKA_COVERAGE_MIN, "enough": cov >= DUKA_COVERAGE_MIN,
+            "manifest": man.exists(), "status_counts": dict(status), "basis_tr": DUKA_COVERAGE_BASIS_TR}
 
 
 def load_dukascopy(root: Path | str, start: str, end: str, tfs: Iterable[str]) -> tuple[dict[str, pd.DataFrame], dict]:
@@ -1150,7 +1286,10 @@ def load_dukascopy(root: Path | str, start: str, end: str, tfs: Iterable[str]) -
         if not p.exists():
             q["days_missing_file"] += 1
             continue
-        m1 = decode_bi5(p.read_bytes(), day_ms(d.isoformat()))
+        try:
+            m1 = decode_bi5(p.read_bytes(), day_ms(d.isoformat()))
+        except (ValueError, lzma.LZMAError, OSError) as exc:
+            raise GoldDataError(f"Dukascopy dosyası okunamadı: {p}: {exc}") from exc
         q["days_read"] += 1
         q["rows_1m"] += len(m1)
         if not len(m1):
@@ -1162,9 +1301,18 @@ def load_dukascopy(root: Path | str, start: str, end: str, tfs: Iterable[str]) -
         m1 = m1[vol & good]
         for tf in tfs:
             parts[tf].append(resample(m1, tf))
-    out = {tf: (pd.concat([x for x in v if len(x)]).sort_values("timestamp").reset_index(drop=True) if any(len(x) for x in v)
-                else resample(pd.DataFrame(columns=["timestamp", "open", "high", "low", "close", "volume"]), tf))
-           for tf, v in parts.items()}
+    out: dict[str, pd.DataFrame] = {}
+    q["bars_duplicate"] = {}
+    for tf, v in parts.items():
+        if any(len(x) for x in v):
+            df = pd.concat([x for x in v if len(x)]).sort_values("timestamp", kind="mergesort")
+            n0 = len(df)
+            df = df.drop_duplicates("timestamp", keep="first").reset_index(drop=True)
+            q["bars_duplicate"][tf] = int(n0 - len(df))
+        else:
+            df = resample(pd.DataFrame(columns=["timestamp", "open", "high", "low", "close", "volume"]), tf)
+            q["bars_duplicate"][tf] = 0
+        out[tf] = df
     s_ms, e_ms = window_ms(start, end)
     q["series"] = {tf: series_quality(df, tf, s_ms, e_ms) for tf, df in out.items()}
     return out, q
@@ -1240,43 +1388,111 @@ def _clean(x: Any) -> Any:
 
 EVENT_COLS = ["section", "symbol", "tf", "family", "name", "side", "i", "t_ms", "entry_ms", "exit_ms", "stop", "trigger", "r",
               "r_maker", "cost_r", "exit_reason", "hold", "funding_r", "ctx"]
+REPORT_JSON, REPORT_MD = "gold_lab_report.json", "gold_lab_report.md"
+#: bölümün rapordaki veri anahtarları (yeniden koşulunca eskileri silinir; spot anahtarları yüklenince yenilenir)
+_DATA_OWNER = (("venue", ("futures ", "funding ")), ("dukascopy", ("dukascopy",)))
+
+
+def events_file(section: str) -> str:
+    """Bölüm başına olay dosyası: ayrı koşular birbirinin olaylarını silmez."""
+    return f"gold_lab_events_{section}.csv.gz"
 
 
 def write_events(path: Path, events: list[dict]) -> None:
-    with gzip.open(path, "wt", newline="", encoding="utf-8") as fh:
+    tmp = path.with_name(path.name + ".part")
+    with gzip.open(tmp, "wt", newline="", encoding="utf-8") as fh:
         w = csv.writer(fh)
         w.writerow(EVENT_COLS)
         for e in events:
             w.writerow([json.dumps(e.get("ctx") or {}, ensure_ascii=False) if c == "ctx" else e.get(c) for c in EVENT_COLS])
+    tmp.replace(path)
+
+
+def _write_text(path: Path, text: str) -> None:
+    tmp = path.with_name(path.name + ".part")
+    tmp.write_text(text, encoding="utf-8")
+    tmp.replace(path)
+
+
+def _as_json(x: Any) -> Any:
+    """JSON gidiş-dönüşü (önceki raporla karşılaştırma için)."""
+    return json.loads(json.dumps(_clean(x), ensure_ascii=False))
+
+
+def prior_report(out_dir: Path | str, cfg_d: Mapping[str, Any], windows: Mapping[str, Any]) -> dict[str, Any] | None:
+    """<out>/gold_lab_report.json varsa ve AYNI mühür, ayar ve veri pencereleriyle yazılmışsa onu döner (yeni bölümler onunla
+    birleşir); farklıysa GoldDataError: başka koşulların raporu sessizce ezilmez ya da karıştırılmaz."""
+    p = Path(out_dir) / REPORT_JSON
+    if not p.exists():
+        return None
+    try:
+        rep = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise GoldDataError(f"{p}: önceki rapor okunamadı ({exc}); başka bir --out seçin ya da dosyayı kaldırın") from exc
+    why = []
+    if not isinstance(rep, dict) or rep.get("kind") != "GOLD_LAB":
+        why.append("altın laboratuvarı raporu değil")
+    else:
+        if rep.get("registry_sha") != GOLD_REGISTRY_SHA:
+            why.append(f"mühür {rep.get('registry_sha')} ≠ {GOLD_REGISTRY_SHA}")
+        if rep.get("config") != _as_json(cfg_d):
+            why.append("laboratuvar ayarı farklı")
+        if rep.get("data_windows") != _as_json(windows):
+            why.append("veri pencereleri farklı")
+    if why:
+        raise GoldDataError(f"{p}: önceki rapor bu koşuyla birleştirilemez ({'; '.join(why)}); başka bir --out seçin ya da eski "
+                            "raporu kaldırın")
+    return rep
 
 
 def run(*, sections: Iterable[str], cache_dir: Path | str, out_dir: Path | str, cfg: L.LabConfig | None = None,
         fetch: Callable[[str], bytes | None] | None = None, offline: bool = False, jobs: int = 1,
         duka_root: Path | str | None = None, now_ms: int | None = None, log: Callable[[str], None] = print,
         data_windows: Mapping[str, Any] | None = None) -> dict[str, Any]:
-    """Bölümleri koşar ve <out>/gold_lab_report.json, gold_lab_events.csv.gz, gold_lab_report.md yazar. `fetch`: arşiv
-    indiricisi (testte sahte; None → signal_lab._http_get); `offline`: yalnız önbellek. `data_windows`: yalnız testler için
-    pencere değiştirme (CLI vermez; ön kayıtlı pencere GOLD_REGISTRY['data'])."""
+    """Bölümleri koşar; <out>/gold_lab_report.json, <out>/gold_lab_report.md ve bölüm başına
+    <out>/gold_lab_events_<bölüm>.csv.gz yazar. Aynı klasörde aynı mühür, ayar ve pencereli önceki rapor varsa yeni bölümler
+    onunla BİRLEŞİR (bu koşuda koşulmayan bölümler ve olay dosyaları korunur); farklıysa HATA. Mekân ve Dukascopy notları
+    ana seri hücrelerine dayanır: ana seri ne bu koşuda ne önceki raporda varsa bu bölümler KOŞMAZ (GoldDataError); notlar
+    yazmadan önce raporun ana seri bölümünden yeniden hesaplanır (`apply_notes`). `fetch`: arşiv indiricisi (testte sahte;
+    None → signal_lab._http_get); `offline`: yalnız önbellek. `data_windows`: yalnız testler için pencere değiştirme (CLI
+    vermez; ön kayıtlı pencere GOLD_REGISTRY['data']); kullanılan pencere ve `windows_overridden` rapora yazılır."""
     cfg = cfg or L.LabConfig()
     secs = list(SECTIONS) if "all" in set(sections) else [s for s in SECTIONS if s in set(sections)]
     bad = [s for s in sections if s not in SECTIONS + ("all",)]
     if bad or not secs:
         raise ValueError(f"bilinmeyen bölüm: {', '.join(bad) or '(boş)'} (geçerli: {', '.join(SECTIONS)}, all)")
     now_ms = int(now_ms if now_ms is not None else time.time() * 1000)
-    win = json.loads(json.dumps(GOLD_REGISTRY["data"]))
+    reg_win = json.loads(json.dumps(GOLD_REGISTRY["data"]))
+    win = json.loads(json.dumps(reg_win))
     for k, v in (data_windows or {}).items():
         win[k].update(v)
-    cache = ArchiveCache(cache_dir, fetch=fetch, offline=offline, now_ms=now_ms)
+    overridden = win != reg_win
     out_dir = Path(out_dir)
+    cfg_d = asdict(cfg)
+    prior = prior_report(out_dir, cfg_d, win)
+    if {"venue", "dukascopy"} & set(secs) and "main" not in secs and not (prior or {}).get("main"):
+        raise GoldDataError(f"mekân ve Dukascopy notları ('{NOTE_VENUE}', '{NOTE_DUKA}') ana serinin GÜÇLÜ ADAY hücrelerine "
+                            f"dayanır: aynı koşuya main ekleyin ya da önce aynı --out klasörüne --section main koşun ({out_dir})")
+    cache = ArchiveCache(cache_dir, fetch=fetch, offline=offline, now_ms=now_ms)
     out_dir.mkdir(parents=True, exist_ok=True)
     t0 = time.time()
-    cfg_d = asdict(cfg)
-    report: dict[str, Any] = {"kind": "GOLD_LAB", "version": GOLD_VERSION, "registry_sha": GOLD_REGISTRY_SHA, "doc": GOLD_DOC,
-                              "sections": secs, "config": cfg_d, "cost_round_trip_pct": round(2 * cfg.cost_per_side * 100, 3),
-                              "generated_at": _iso(now_ms), "data": {}, "readings_tr": list(READINGS_TR),
-                              "note_tr": "Geçmiş test (PAPER değil, canlı değil); kâr garantisi değildir. Hüküm yalnız ana "
-                                         "seriden (32 birincil hücre); mekân, uzun geçmiş ve mevcut setler bilgi/keşiftir."}
-    all_events: list[dict] = []
+    report: dict[str, Any] = {k: v for k, v in (prior or {}).items() if k not in secs}
+    report.update({"kind": "GOLD_LAB", "version": GOLD_VERSION, "registry_sha": GOLD_REGISTRY_SHA, "doc": GOLD_DOC,
+                   "config": cfg_d, "cost_round_trip_pct": round(2 * cfg.cost_per_side * 100, 3), "generated_at": _iso(now_ms),
+                   "data_windows": win, "windows_overridden": overridden, "readings_tr": list(READINGS_TR),
+                   "note_tr": "Geçmiş test (PAPER değil, canlı değil); kâr garantisi değildir. Hüküm yalnız ana seriden (32 "
+                              "birincil hücre); mekân, uzun geçmiş ve mevcut setler bilgi/keşiftir."})
+    data = dict(report.get("data") or {})
+    for sec, prefixes in _DATA_OWNER:
+        if sec in secs:
+            data = {k: v for k, v in data.items() if not k.startswith(prefixes)}
+    report["data"] = data
+    runs: dict[str, Any] = dict(report.get("section_runs") or {})
+    ev_by_sec: dict[str, list[dict]] = {s: [] for s in secs}
+
+    def done(sec: str, t_sec: float) -> None:
+        runs[sec] = {"generated_at": _iso(now_ms), "seconds": round(time.time() - t_sec, 1)}
+
     spot: dict[str, pd.DataFrame] = {}
     if "main" in secs or "existing" in secs:
         mw = win["main"]
@@ -1291,8 +1507,8 @@ def run(*, sections: Iterable[str], cache_dir: Path | str, out_dir: Path | str, 
                 raise GoldDataError(f"spot {mw['symbol']} {tf} serisi boş (pencere {mw['start']} → {mw['end']})")
             spot[tf] = df
             report["data"][f"spot {mw['symbol']} {tf}"] = q
-    main = None
     if "main" in secs:
+        ts0 = time.time()
         tfs = GOLD_REGISTRY["sections"]["main"]["tfs"]
         res = _map(_gold_task, [(spot[tf], win["main"]["symbol"], tf, cfg_d, None) for tf in tfs], jobs)
         evs = [e for r in res for e in r[0]]
@@ -1300,9 +1516,11 @@ def run(*, sections: Iterable[str], cache_dir: Path | str, out_dir: Path | str, 
         main = main_report(evs, metas, cfg)
         main["series"] = metas
         report["main"] = main
-        all_events += [{**e, "section": "main"} for e in evs]
+        ev_by_sec["main"] = [{**e, "section": "main"} for e in evs]
         log(f"ana seri: {sum(1 for e in evs if e['family'] == FAMILY)} işlem · {main['conclusion_tr']}")
+        done("main", ts0)
     if "venue" in secs:
+        ts0 = time.time()
         vw = win["venue"]
         evs, metas = [], []
         for sym, (a, b) in vw["symbols"].items():
@@ -1319,10 +1537,12 @@ def run(*, sections: Iterable[str], cache_dir: Path | str, out_dir: Path | str, 
             for ev_, me_ in _map(_gold_task, tasks, jobs):
                 evs += ev_
                 metas.append(me_)
-        report["venue"] = venue_report(evs, metas, cfg, main)
+        report["venue"] = venue_report(evs, metas, cfg, report.get("main"))
         report["venue"]["series"] = metas
-        all_events += [{**e, "section": "venue"} for e in evs]
+        ev_by_sec["venue"] = [{**e, "section": "venue"} for e in evs]
+        done("venue", ts0)
     if "dukascopy" in secs:
+        ts0 = time.time()
         dw = win["dukascopy"]
         root = Path(duka_root) if duka_root is not None else Path(cache_dir) / "dukascopy"
         cov = duka_coverage(root, dw["start"], dw["end"])
@@ -1330,27 +1550,39 @@ def run(*, sections: Iterable[str], cache_dir: Path | str, out_dir: Path | str, 
         if not cov["enough"]:
             report["dukascopy"] = {"status": "yapılamadı", "coverage": cov,
                                    "tr": f"kapsama %{100 * cov['coverage']:.1f} < %{100 * DUKA_COVERAGE_MIN:.0f}; hüküm ana seriden"}
-            log(f"Dukascopy: yapılamadı (kapsama %{100 * cov['coverage']:.1f})")
         else:
             frames, q = load_dukascopy(root, dw["start"], dw["end"], GOLD_REGISTRY["sections"]["dukascopy"]["tfs"])
             report["data"]["dukascopy"] = q
-            res = _map(_gold_task, [(frames[tf], dw["symbol"], tf, cfg_d, None) for tf in frames if len(frames[tf])], jobs)
-            evs = [e for r in res for e in r[0]]
-            metas = [r[1] for r in res]
-            report["dukascopy"] = {**duka_report(evs, metas, cfg, main), "coverage": cov, "series": metas}
-            all_events += [{**e, "section": "dukascopy"} for e in evs]
+            empty = [tf for tf, f in frames.items() if not len(f)]
+            if empty:
+                report["dukascopy"] = {"status": "yapılamadı", "coverage": cov,
+                                       "tr": f"okunan bar yok ({', '.join(empty)}); hüküm ana seriden"}
+            else:
+                res = _map(_gold_task, [(frames[tf], dw["symbol"], tf, cfg_d, None) for tf in frames], jobs)
+                evs = [e for r in res for e in r[0]]
+                metas = [r[1] for r in res]
+                report["dukascopy"] = {**duka_report(evs, metas, cfg, report.get("main")), "coverage": cov, "series": metas}
+                ev_by_sec["dukascopy"] = [{**e, "section": "dukascopy"} for e in evs]
+        log(f"Dukascopy: {report['dukascopy']['status']} (kapsama %{100 * cov['coverage']:.1f})")
+        done("dukascopy", ts0)
     if "existing" in secs:
+        ts0 = time.time()
         tfs = sorted({t for k in ("catalog", "extras", "algos", "variations") for t in GOLD_REGISTRY["sections"]["existing"][k]}, key=tf_ms)
         res = _map(_existing_task, [(spot[tf], win["main"]["symbol"], tf, cfg_d) for tf in tfs], jobs)
         by_set = {k: [e for r in res for e in r[0][k]] for k in EXISTING_SETS}
         report["existing"] = existing_report(by_set, [m for r in res for m in r[1]], cfg)
-        all_events += [{**e, "section": f"existing:{k}"} for k, evs in by_set.items() for e in evs]
+        ev_by_sec["existing"] = [{**e, "section": f"existing:{k}"} for k, evs in by_set.items() for e in evs]
+        done("existing", ts0)
+    apply_notes(report)
+    report["sections"] = [s for s in SECTIONS if s in report]
+    report["section_runs"] = runs
     report["seconds"] = round(time.time() - t0, 1)
     report["archive_requests"] = cache.requests
     report = _clean(report)
-    (out_dir / "gold_lab_report.json").write_text(json.dumps(report, ensure_ascii=False, indent=1), encoding="utf-8")
-    write_events(out_dir / "gold_lab_events.csv.gz", all_events)
-    (out_dir / "gold_lab_report.md").write_text(render_md(report), encoding="utf-8")
+    for sec in secs:
+        write_events(out_dir / events_file(sec), ev_by_sec[sec])
+    _write_text(out_dir / REPORT_JSON, json.dumps(report, ensure_ascii=False, indent=1))
+    _write_text(out_dir / REPORT_MD, render_md(report))
     return report
 
 
@@ -1365,12 +1597,37 @@ def _ci(ci: Any) -> str:
     return f"[{ci[0]:+.2f}, {ci[1]:+.2f}]" if ci else "—"
 
 
+def _cuts(cut: Mapping[str, Any] | None) -> str:
+    """Dilim başına keşif/doğrulama kesimi (UTC, dakikaya kadar)."""
+    items = sorted((cut or {}).items(), key=lambda kv: tf_ms(kv[0]))
+    return " · ".join(f"{tf} {(_iso(v) or '—')[:16].replace('T', ' ')} UTC" for tf, v in items) or "—"
+
+
+def _windows_line(win: Mapping[str, Any] | None) -> str:
+    win = win or {}
+    m, d = win.get("main") or {}, win.get("dukascopy") or {}
+    ven = ", ".join(f"{k} {a} → {b}" for k, (a, b) in ((win.get("venue") or {}).get("symbols") or {}).items())
+    return f"ana {m.get('start')} → {m.get('end')} · mekân {ven or '—'} · Dukascopy {d.get('start')} → {d.get('end')}"
+
+
+def _cov_line(cov: Mapping[str, Any]) -> str:
+    return (f"kapsaması %{100 * float(cov.get('coverage') or 0):.1f} ({cov.get('weekdays_ok', 0)}/{cov.get('weekdays', 0)} Pzt–Cum "
+            f"günü; eşik %{100 * DUKA_COVERAGE_MIN:.0f}; manifest 200 ama dosya yok: {cov.get('weekdays_file_missing', 0)}; taban: "
+            f"{cov.get('basis_tr') or DUKA_COVERAGE_BASIS_TR})")
+
+
 def render_md(report: Mapping[str, Any]) -> str:
     """Kısa, düz Türkçe rapor."""
     out = [f"# Altın laboratuvarı — {report.get('version')} raporu", "",
            f"Ön kayıt mührü `GOLD_REGISTRY_SHA = {report.get('registry_sha')}` · belge `{report.get('doc')}` · bölümler: "
            f"{', '.join(report.get('sections') or [])} · gidiş-dönüş maliyet %{report.get('cost_round_trip_pct')}", "",
            "Geçmiş test; PAPER değil, canlı değil. Kâr garantisi değildir. Hüküm yalnız ana seriden verilir.", ""]
+    if report.get("windows_overridden"):
+        out += ["**UYARI: veri pencereleri ön kayıttan FARKLI (yalnız test için); bu rapor ön kayıtlı koşu DEĞİLDİR.** Kullanılan "
+                f"pencereler: {_windows_line(report.get('data_windows'))}", ""]
+    runs = report.get("section_runs") or {}
+    if runs:
+        out += ["Bölüm koşuları: " + " · ".join(f"{s} {r.get('generated_at')} ({r.get('seconds')} sn)" for s, r in runs.items()), ""]
     main = report.get("main")
     if main:
         out += ["## Sonuç", "", f"- {main.get('conclusion_tr')}", ""]
@@ -1384,11 +1641,25 @@ def render_md(report: Mapping[str, Any]) -> str:
             out.append(f"| {k} | {q.get('bars')} | {q.get('first') or '—'} | {q.get('last') or '—'} | "
                        f"{'—' if mr is None else f'%{100 * mr:.2f}'} | {q.get('n_gaps_over_24h', 0)} |")
         out.append("")
+        if data.get("dukascopy coverage"):
+            out += [f"- Dukascopy {_cov_line(data['dukascopy coverage'])}."]
+        dq = data.get("dukascopy")
+        if dq:
+            out += [f"- Dukascopy okuma: okunan gün {dq.get('days_read', 0)} · dosyası olmayan gün {dq.get('days_missing_file', 0)} · "
+                    f"1 dakikalık satır {dq.get('rows_1m', 0)} · hacmi 0 atılan {dq.get('rows_vol0', 0)} · tutarsız ya da makul "
+                    f"aralık dışı atılan {dq.get('rows_bad', 0)} · yinelenen bar {sum((dq.get('bars_duplicate') or {}).values())}."]
+        if data.get("dukascopy coverage") or dq:
+            out.append("")
     if main:
         out += ["## Ana seri — 32 birincil hücre (bağlam HEPSİ)", "",
-                "Aylık %: doğrulama (OOS) döneminde takvim ayı başına toplam R × 0,5 (işlem başına risk %0,5); ay kümeli %95 aralık.", "",
-                "| dilim | varyant | yön | işlem keşif/doğr. | ort.R keşif/doğr. | plaseboya göre | hüküm | sıkı | aylık % | %95 | ≥%1 ay "
-                "| eşzamanlı en çok/ort. | hedef |", "|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
+                f"Keşif/doğrulama kesimi (signal_lab.aggregate; her dilimde dönemin ilk 2/3'ü; belgedeki tarih kaba tahmindir, geçerli "
+                f"olan budur): {_cuts(main.get('cutoff_ms'))}.", "",
+                "Aylık %: yalnız TAM doğrulama ayları (kesimin düştüğü kısmi ay ve serinin sonunda işlem açılamayan kısa ay hariç; "
+                "R'leri JSON'da `edge_months`); ay başına toplam R × 0,5 (işlem başına risk %0,5); ay kümeli %95 aralık. %1 risk ve "
+                "maker maliyeti (%0,02 + 0 bps) yalnız bilgidir.", "",
+                "| dilim | varyant | yön | işlem keşif/doğr. | ort.R keşif/doğr. | plaseboya göre | hüküm | sıkı | tam ay | aylık % | %95 "
+                "| %1 risk | maker | ≥%1 ay | eşzamanlı en çok/ort. | hedef |",
+                "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
         for c in main.get("cells") or []:
             mon = c.get("monthly") or {}
             vs = c.get("vs_placebo")
@@ -1397,15 +1668,17 @@ def render_md(report: Mapping[str, Any]) -> str:
             out.append(f"| {c['tf']} | {c['name']} | {c['side']} | {c['IS'].get('n', 0)}/{c['OOS'].get('n', 0)} | "
                        f"{_f(c['IS'].get('mean_r'), 3)}/{_f(c['OOS'].get('mean_r'), 3)} | "
                        f"{(_f(vs.get('IS')) + '/' + _f(vs.get('OOS'))) if vs else '—'} | {c['verdict']} | {c['verdict_strict']} | "
-                       f"{_f(mon.get('mean_pct_month'))} | {_ci(mon.get('ci95_pct_month'))} | "
+                       f"{mon.get('months', 0)} | {_f(mon.get('mean_pct_month'))} | {_ci(mon.get('ci95_pct_month'))} | "
+                       f"{_f(mon.get('mean_pct_month_risk1'))} | {_f((c.get('maker_info') or {}).get('mean_pct_month'))} | "
                        f"{'—' if sh is None else f'%{100 * sh:.0f}'} | {conc.get('max', '—')}/{_f(conc.get('mean'), 2, False)} | "
                        f"{'EVET' if c.get('meets_target') else 'hayır'} |")
-        out += ["", "### İki yön birlikte", "", "| dilim | varyant | aylık % | %95 | ≥%1 ay | sıkı (LONG/SHORT) | hedef |",
-                "|---|---|---|---|---|---|---|"]
+        out += ["", "### İki yön birlikte", "", "| dilim | varyant | tam ay | aylık % | %95 | %1 risk | ≥%1 ay | sıkı (LONG/SHORT) | hedef |",
+                "|---|---|---|---|---|---|---|---|---|"]
         for b in main.get("both_sides") or []:
             mon = b.get("monthly") or {}
             sh = mon.get("share_months_ge_target")
-            out.append(f"| {b['tf']} | {b['name']} | {_f(mon.get('mean_pct_month'))} | {_ci(mon.get('ci95_pct_month'))} | "
+            out.append(f"| {b['tf']} | {b['name']} | {mon.get('months', 0)} | {_f(mon.get('mean_pct_month'))} | "
+                       f"{_ci(mon.get('ci95_pct_month'))} | {_f(mon.get('mean_pct_month_risk1'))} | "
                        f"{'—' if sh is None else f'%{100 * sh:.0f}'} | {'/'.join(b.get('verdict_strict') or [])} | "
                        f"{'EVET' if b.get('meets_target') else 'hayır'} |")
         cr, crp = main.get("candidate_rate") or {}, main.get("candidate_rate_primary") or {}
@@ -1417,6 +1690,8 @@ def render_md(report: Mapping[str, Any]) -> str:
     ven = report.get("venue")
     if ven:
         out += ["## Mekân denetimi — Binance vadeli (bilgi, dönem bölünmeden)", "",
+                f"'{NOTE_VENUE}' notu: " + ("ana seri hücrelerinden hesaplandı (ana seride GÜÇLÜ ADAY, burada n ≥ 20 ve ort.R ≤ 0)."
+                                            if ven.get("notes_evaluated") else "DEĞERLENDİRİLMEDİ (raporda ana seri yok)."), "",
                 "| sembol | dilim | varyant | yön | n | ort.R | kazanma | fonlama R | plasebo ort.R | not |", "|---|---|---|---|---|---|---|---|---|---|"]
         for r in ven.get("rows") or []:
             st = r.get("all") or {}
@@ -1430,10 +1705,12 @@ def render_md(report: Mapping[str, Any]) -> str:
         out += ["## Uzun geçmiş — Dukascopy XAUUSD (koşullu)", ""]
         cov = duka.get("coverage") or {}
         if duka.get("status") != "koşuldu":
-            out += [f"Yapılamadı: Pzt–Cum günlerinin %{100 * float(cov.get('coverage') or 0):.1f}'i indi (eşik %{100 * DUKA_COVERAGE_MIN:.0f}). "
-                    "Hüküm ana seriden verilir.", ""]
+            out += [f"Yapılamadı: {duka.get('tr')}. Dukascopy {_cov_line(cov)}. Hüküm ana seriden verilir.", ""]
         else:
-            out += [f"Kapsama %{100 * float(cov.get('coverage') or 0):.1f}.", "",
+            out += [f"Dukascopy {_cov_line(cov)}.", "",
+                    f"Keşif/doğrulama kesimi: {_cuts(duka.get('cutoff_ms'))}.", "",
+                    f"'{NOTE_DUKA}' notu: " + ("ana seri hücrelerinden hesaplandı (ana seride GÜÇLÜ ADAY, burada doğrulama ort.R ≤ 0)."
+                                               if duka.get("notes_evaluated") else "DEĞERLENDİRİLMEDİ (raporda ana seri yok)."), "",
                     "| dilim | varyant | yön | işlem keşif/doğr. | ort.R keşif/doğr. | hüküm | sıkı | not |", "|---|---|---|---|---|---|---|---|"]
             for c in duka.get("cells") or []:
                 out.append(f"| {c['tf']} | {c['name']} | {c['side']} | {c['IS'].get('n', 0)}/{c['OOS'].get('n', 0)} | "
@@ -1463,9 +1740,10 @@ def render_md(report: Mapping[str, Any]) -> str:
     return "\n".join(out)
 
 
-__all__ = ["ArchiveCache", "FAMILY", "GOLD_REGISTRY", "GOLD_REGISTRY_SHA", "GOLD_VERSION", "GoldDataError", "PLACEBO_PREFIX",
-           "READINGS_TR", "RULES", "SECTIONS", "bi5_sanity", "concurrency", "confirmed", "decode_bi5", "duka_coverage", "duka_path",
-           "duka_report", "EXISTING_SETS", "existing_report", "gold_events", "htf_side", "in_session", "load_dukascopy", "load_funding",
-           "load_futures", "load_spot", "main_report", "meets_target", "monthly_stats", "names_for_tf", "parse_spot_zip",
-           "placebo_events", "process", "render_md", "resample", "run", "series_quality", "swing_pivots", "variant_cfg",
-           "venue_report", "window_ms"]
+__all__ = ["ArchiveCache", "EXISTING_SETS", "FAMILY", "GOLD_REGISTRY", "GOLD_REGISTRY_SHA", "GOLD_VERSION", "GoldDataError",
+           "PLACEBO_PREFIX", "READINGS_TR", "REPORT_JSON", "REPORT_MD", "RULES", "SECTIONS", "apply_notes", "bi5_sanity",
+           "conclusion_tr", "concurrency", "confirmed", "decode_bi5", "duka_coverage", "duka_path", "duka_report", "events_file",
+           "existing_report", "gold_events", "htf_side", "in_session", "load_dukascopy", "load_funding", "load_futures", "load_spot",
+           "main_report", "meets_target", "month_bounds", "monthly_stats", "names_for_tf", "note_duka", "note_venue",
+           "parse_spot_zip", "placebo_events", "prior_report", "process", "render_md", "resample", "run", "series_quality",
+           "swing_pivots", "variant_cfg", "venue_report", "window_ms"]

@@ -1,10 +1,12 @@
 # -*- coding: utf-8 -*-
 """Altın laboratuvarı gold_v1 (docs/GOLD_LAB_V1.md; 2026-10-04): ön kayıt mührü ve kaydın belgeyi kapsaması, pivot teyit
 gecikmesi, GELECEĞE BAKMAMA (her varyant), 16 varyantın elle kurulmuş serilerde belgeye uygun stop/tetikle tetiklenmesi,
-SHORT = LONG'un aynası, HTF'nin son KAPANMIŞ 4h barı, seans sınırları, SMC iptal ve order block / pivot başına tek sinyal,
-plasebo (belirlenimci, anahtar, oran, stop), varyant başına RR/süre, aylık ölçü (işlemsiz ay, eşzamanlılık, aggregate kesimi),
-spot mikro saniye, Dukascopy bi5 çözümü ve kapsama, uçtan uca (sahte arşiv, ağ YOK) ve komut satırı.
-Yalnız sentetik veri; gerçek altın fiyatı YOK."""
+SHORT = LONG'un aynası, HTF'nin son KAPANMIŞ 4h barı, seans sınırları, SMC iptal, pencere sonları ve arama aralıkları, order
+block başına tek İŞLEM, pivot başına tek sinyal ve yalnız SON teyitli pivot, plasebo (belirlenimci, anahtar, oran, stop),
+varyant başına RR/süre, aylık ölçü (yalnız tam doğrulama ayları, işlemsiz ay, yuvarlanmamış hedef, eşzamanlılık, aggregate
+kesimi), sonuç cümlesi, mekân ve uzun geçmiş notları, spot mikro saniye, Dukascopy bi5 çözümü, kayıt saniyeleri ve kapsama
+(manifest + dosya), uçtan uca (sahte arşiv ve sentetik Dukascopy aynası, ağ YOK), ayrı bölüm koşularının birleşmesi ve komut
+satırı. Yalnız sentetik veri; gerçek altın fiyatı YOK."""
 from __future__ import annotations
 
 import dataclasses
@@ -35,7 +37,7 @@ DAY = 86_400_000
 
 #: ön kayıt mührü — bir kural sabiti, kural metni, plasebo tanımı, maliyet/istatistik ayarı, veri penceresi ya da okunuş
 #: değişirse bu test KIRILIR (yeni sürüm + belge + yeni deneme sayısı; sonuç görüldükten sonra gevşetme YOK)
-PINNED_SHA = "4bec7df7721ea240"
+PINNED_SHA = "ee32a9db510f41cd"
 
 
 # ---------------------------------------------------------------------------- yardımcılar
@@ -254,7 +256,7 @@ def test_ema_family_fires_with_doc_stops_triggers_and_filters(tf, period):
     assert all(math.isclose(e.stop, next(s.stop for s in sw if (s.i, s.side) == (e.i, e.side)), abs_tol=0) for e in htf)
 
 
-def _bos_rows(n=150):
+def _bos_rows(n=200):
     rows = flat(n)
     rows[60] = [100, 103, 99, 100]                          # swing yüksek H = 103
     rows[70] = [100, 101, 97, 100]                          # swing düşük
@@ -370,6 +372,94 @@ def test_smc_fvg_fires_cancels_and_needs_displacement(tf):
     assert evs_of(frame(rows, tf), tf, "SMC_FVG", "LONG") == []
 
 
+@pytest.mark.parametrize("tf", ["1h", "4h"])
+def test_smc_fvg_entry_window_ends_at_m_plus_20(tf):
+    for touch, fired in ((102, True), (103, False)):        # m = 82 → pencere m+1..m+20 = 83..102
+        rows = _fvg_rows()
+        for k in range(83, len(rows)):
+            rows[k] = [104, 105, 103, 104]
+        rows[touch] = [104, 104, 101.2, 102]
+        ev = evs_of(frame(rows, tf), tf, "SMC_FVG", "LONG")
+        assert ([e.i for e in ev] == [touch]) is fired, touch
+        assert fired or ev == []
+
+
+@pytest.mark.parametrize("tf", ["1h", "4h"])
+def test_smc_bos_ob_one_trade_per_order_block_a_skipped_signal_does_not_spend_it(tf):
+    rows = _bos_rows()
+    rows[86] = [104, 104.1, 100.5, 104]                     # 85'in girişi 104 (tetik 101'den > 1 ATR uzak → CHASE); bu bar
+    #                                                         aynı zamanda ikinci BOS (close 104 > 103, close[85] = 102)
+    rows[96] = [101, 104.3, 100.5, 104]                     # üçüncü BOS, aynı order block (75)
+    df = frame(rows, tf)
+    atr = atr_of(df)
+    assert 104 - 101 > atr[85]
+    ev = evs_of(df, tf, "SMC_BOS_OB", "LONG")
+    arr = {k: df[k].to_numpy(dtype=float) for k in ("open", "high", "low", "close")}
+    vc = G.variant_cfg(L.LabConfig(), "SMC_BOS_OB", tf)
+    why = [L.simulate(dataclasses.replace(e), arr, atr, vc) for e in ev]
+    # 85 işleme dönüşmedi → order block (75) harcanmadı → 86'daki BOS'un kurulumu 87'de sinyal verir ve İŞLEME dönüşür;
+    # 96'daki üçüncü BOS aynı order block'a: artık harcanmış → 97'de dokunuşta sinyal YOK
+    assert [e.i for e in ev] == [85, 87] and why == ["CHASE", ""] and {e.trigger for e in ev} == {101.0}
+    # gold_events, process ile aynı ayarla sınar: cfg'de kovalama sınırı genişse 85 işlemdir ve tek sinyal odur
+    wide = L.LabConfig(chase_atr=5.0)
+    assert [e.i for e in G.gold_events(df, "SYN", tf, cfg=wide) if e.name == "SMC_BOS_OB" and e.side == "LONG"] == [85]
+    # rastgele seride: aynı order block'tan (aynı tetik = OB ucu) en çok BİR işlem; işlem varsa o blokun son sinyalidir
+    for seed in (3, 4):
+        d2 = synth(3000, tf, seed)
+        a2 = {k: d2[k].to_numpy(dtype=float) for k in ("open", "high", "low", "close")}
+        at2 = atr_of(d2)
+        groups: dict = {}
+        for e in G.gold_events(d2, "SYN", tf):
+            if e.name == "SMC_BOS_OB":
+                groups.setdefault((e.side, e.trigger), []).append(L.simulate(dataclasses.replace(e), a2, at2, vc) == "")
+        assert groups and all(sum(g) <= 1 and (not any(g) or g[-1]) for g in groups.values())
+
+
+@pytest.mark.parametrize("tf", ["1h", "4h"])
+def test_smc_bos_ob_search_range_is_swing_low_bar_to_the_bar_before_bos(tf):
+    rows = _bos_rows()
+    rows[75] = [100, 101, 99, 100]                          # 75 artık ayı değil
+    rows[70] = [100.5, 101, 97, 99.5]                       # swing düşük barının KENDİSİ ayı → aralıkta (dahil) → OB [97, 101]
+    df = frame(rows, tf)
+    ev = evs_of(df, tf, "SMC_BOS_OB", "LONG")
+    assert [(e.i, e.trigger) for e in ev] == [(85, 101.0)] and math.isclose(ev[0].stop, 97 - 0.1 * atr_of(df)[85], abs_tol=1e-12)
+    rows = _bos_rows()
+    rows[75] = [100, 101, 99, 100]
+    rows[69] = [100.5, 101, 99, 99.5]                       # ayı mum swing düşükten (70) ÖNCE → aralık dışı → kurulum yok
+    assert evs_of(frame(rows, tf), tf, "SMC_BOS_OB", "LONG") == []
+    rows = _bos_rows()
+    rows[75] = [100, 101, 99, 100]
+    rows[80] = [104.8, 105, 99.5, 104]                      # BOS barı ayı ama 'BOS'tan önceki' değil → kurulum yok
+    assert evs_of(frame(rows, tf), tf, "SMC_BOS_OB", "LONG") == []
+    rows = _bos_rows()
+    rows[80] = [104.8, 105, 99.5, 104]                      # 75 yine ayı: OB 75 (BOS barı 80 değil) → 85'te tetik 101
+    assert [(e.i, e.trigger) for e in evs_of(frame(rows, tf), tf, "SMC_BOS_OB", "LONG")] == [(85, 101.0)]
+
+
+@pytest.mark.parametrize("tf", ["1h", "4h"])
+def test_smc_choch_ascending_highs_give_no_signal(tf):
+    rows = flat(120)
+    rows[60] = [100, 106, 99, 100]
+    rows[65] = [100, 101, 94, 100]
+    rows[70] = [100, 107, 99, 100]                          # yüksekler YÜKSELEN: 106 → 107 (düşükler azalan)
+    rows[75] = [100, 101, 93, 100]
+    rows[85] = [100, 108, 99, 107.5]                        # close > 107 ve close[84] ≤ 107
+    assert evs_of(frame(rows, tf), tf, "SMC_CHOCH", "LONG") == []
+    rows[70] = [100, 104, 99, 100]                          # yüksekler azalan → aynı kırılım sinyal
+    assert [e.i for e in evs_of(frame(rows, tf), tf, "SMC_CHOCH", "LONG")] == [85]
+
+
+@pytest.mark.parametrize("tf", ["1h", "4h"])
+def test_smc_sweep_looks_only_at_the_last_confirmed_pivot(tf):
+    rows = flat(140)
+    rows[100] = [100, 101, 97, 100]                         # eski pivot S1 = 97
+    rows[110] = [96, 96.5, 95, 96]                          # yeni pivot S2 = 95 (kapanış 96 < 97: S1'i süpürmez)
+    rows[120] = [100, 101, 96, 100]                         # S1'i süpürür (96 < 97 < 100) ama son teyitli pivot S2 → YOK
+    assert 120 not in [e.i for e in evs_of(frame(rows, tf), tf, "SMC_SWEEP", "LONG")]
+    rows[120] = [100, 101, 94.5, 100]                       # S2'yi süpürür → sinyal
+    assert 120 in [e.i for e in evs_of(frame(rows, tf), tf, "SMC_SWEEP", "LONG")]
+
+
 def test_every_one_of_the_16_variants_fires_on_both_sides():
     seen = set()
     for tf, df in (("15m", sine(4000, "15m", 240)), ("1h", sine(1500, "1h", 120)), ("1h", synth(3000, "1h", 5)),
@@ -467,9 +557,14 @@ def test_process_applies_each_variants_rr_and_hold_and_counts(monkeypatch):
             assert e["entry_ms"] == e["t_ms"] and e["exit_ms"] == e["t_ms"] + e["hold"] * tf_ms(tf)
             assert e["r_maker"] is not None and e["r_maker"] > e["r"]
         for nm in G.names_for_tf(tf):
-            for s in ("LONG", "SHORT"):
-                c = meta["counts"][nm][s]
-                assert c["signals"] == c["trades"] + sum(c["skipped"].values())
+            for key_ in (nm, "PLACEBO_" + nm):              # plaseboda NO_STOP da sinyal sayılır: sinyal = işlem + atlanan
+                for s in ("LONG", "SHORT"):
+                    c = meta["counts"][key_][s]
+                    assert c["signals"] == c["trades"] + sum(c["skipped"].values()), (tf, key_, s)
+            hold = G.RULES[nm]["max_hold_bars"][tf]         # son açılabilir karar anı = ts[n−1−süre] + dilim
+            assert meta["last_open_ms"][nm] == meta["first"] + (meta["bars"] - 1 - hold) * tf_ms(tf) + tf_ms(tf)
+        assert meta["placebo_signals"] == sum(sum(meta["counts"]["PLACEBO_" + nm][s]["signals"] for s in ("LONG", "SHORT"))
+                                              for nm in G.names_for_tf(tf))
     want = {(n, tf): {(r["rr"], r["max_hold_bars"][tf])} for n, r in G.RULES.items() for tf in r["tfs"]}
     assert seen == want
     assert G.variant_cfg(L.LabConfig(), "PLACEBO_SMC_FVG", "4h").max_hold_bars == 30
@@ -479,32 +574,55 @@ def _ev(t, r, hold_h=48, tf="1h", name="SMC_SWEEP", side="LONG"):
     return {"tf": tf, "family": "gold", "name": name, "side": side, "t_ms": t, "r": r, "entry_ms": t, "exit_ms": t + hold_h * HOUR}
 
 
-def test_monthly_metric_counts_zero_months_share_and_concurrency():
+def test_monthly_metric_uses_only_full_oos_months_counts_zero_months_share_and_concurrency():
     ms = lambda s: G.day_ms(s)  # noqa: E731
     cut, last = ms("2024-01-15"), ms("2024-05-01") - 1
     rows = [_ev(ms("2024-01-10"), 5.0), _ev(ms("2024-01-20"), 2.0), _ev(ms("2024-03-05"), -1.0),
             _ev(ms("2024-03-06"), 0.5, hold_h=12)]
     m = G.monthly_stats(rows, cut, last, iters=200)
-    assert m["months"] == 4 and m["monthly_r"] == {"2024-01": 2.0, "2024-02": 0.0, "2024-03": -0.5, "2024-04": 0.0}
-    assert m["trades"] == 3 and m["months_without_trades"] == 2
-    assert math.isclose(m["mean_r_month"], 0.375) and math.isclose(m["mean_pct_month"], 0.1875)
-    assert math.isclose(m["mean_pct_month_risk1"], 0.375) and m["share_months_ge_target"] == 0.25 and m["ci95_pct_month"] is None
-    conc = m["concurrency"]
+    # ocak kısmi (kesim 15'inde): hedefe girmez, R'si bilgi olarak edge_months'ta
+    assert m["months"] == 3 and m["monthly_r"] == {"2024-02": 0.0, "2024-03": -0.5, "2024-04": 0.0}
+    assert (m["first_month"], m["last_month"], m["trades"], m["oos_trades"], m["months_without_trades"]) == ("2024-02", "2024-04", 2, 3, 2)
+    assert m["edge_months"] == {"2024-01": {"r": 2.0, "trades": 1, "oos_share": round(17 / 31, 4)}}
+    assert math.isclose(m["mean_r_month"], round(-0.5 / 3, 4)) and math.isclose(m["mean_pct_month_exact"], -0.25 / 3)
+    assert math.isclose(m["mean_pct_month_risk1"], round(-0.5 / 3, 4)) and m["share_months_ge_target"] == 0.0 and m["ci95_pct_month"] is None
+    conc = m["concurrency"]                                 # eşzamanlılık bütün OOS işlemleri üzerinde (bilgi)
     assert conc["max"] == 2 and math.isclose(conc["mean"], round((48 + 48 + 12) * HOUR / (last - cut), 4))
     # uç uca işlemler eşzamanlı değildir (önce çıkış)
     assert G.concurrency([_ev(0, 1, 2), _ev(2 * HOUR, 1, 2)], 0, 4 * HOUR)["max"] == 1
+    # serinin sonunda işlem açılamayan günler: nisan artık tam ay değil (son açılabilir karar anı + dilim = 30 nisan)
+    m_end = G.monthly_stats(rows, cut, last, iters=200, open_end_ms=ms("2024-04-30"))
+    assert list(m_end["monthly_r"]) == ["2024-02", "2024-03"] and m_end["edge_months"]["2024-04"]["oos_share"] == round(29 / 30, 4)
+    assert m_end["open_end"] == "2024-04-30T00:00:00Z"
     rows += [_ev(ms(f"2024-0{k}-02"), 1.0) for k in (2, 4)]
     m2 = G.monthly_stats(rows, cut, ms("2024-08-01") - 1, iters=300)
     m3 = G.monthly_stats(rows, cut, ms("2024-08-01") - 1, iters=300)
-    assert m2["months"] == 7 and m2["ci95_pct_month"] == m3["ci95_pct_month"] and m2["ci95_pct_month"][0] <= m2["mean_pct_month"]
-    assert G.meets_target({"mean_pct_month": 1.0}, [L.V_STRONG]) and not G.meets_target({"mean_pct_month": 0.99}, [L.V_STRONG])
-    assert not G.meets_target({"mean_pct_month": 3.0}, [L.V_WEAK]) and not G.meets_target({"mean_pct_month": 3.0}, [L.V_STRONG, L.V_WEAK])
+    assert m2["months"] == 6 and m2["ci95_pct_month"] == m3["ci95_pct_month"] and m2["ci95_pct_month"][0] <= m2["mean_pct_month"]
+    # hedef YUVARLANMAMIŞ değerle: ay başına 1,99992 R → %0,99996 (4 basamakta 1,0 görünür) → hedef DEĞİL
+    near = [_ev(ms(f"2024-0{k}-10"), 1.99992) for k in range(2, 8)]
+    mn = G.monthly_stats(near, cut, ms("2024-08-01") - 1, iters=100)
+    assert mn["mean_pct_month"] == 1.0 and mn["mean_pct_month_exact"] < 1.0 and not G.meets_target(mn, [L.V_STRONG])
+    assert G.meets_target({"mean_pct_month_exact": 1.0}, [L.V_STRONG]) and not G.meets_target({"mean_pct_month_exact": 0.9999}, [L.V_STRONG])
+    assert not G.meets_target({"mean_pct_month": 3.0}, [L.V_STRONG])                    # yuvarlanmış alan tek başına yetmez
+    assert not G.meets_target({"mean_pct_month_exact": 3.0}, [L.V_WEAK])
+    assert not G.meets_target({"mean_pct_month_exact": 3.0}, [L.V_STRONG, L.V_WEAK]) and not G.meets_target(None, [L.V_STRONG])
+
+
+def test_conclusion_never_says_no_profit_while_a_both_sides_row_meets_the_target():
+    cell = {"tf": "1h", "name": "SMC_SWEEP", "side": "LONG"}
+    row = {"tf": "1h", "name": "EMA_X_ATR"}
+    assert G.conclusion_tr([], []).endswith(G.NO_TARGET_TR)
+    only_both = G.conclusion_tr([], [row])
+    assert G.NO_TARGET_TR not in only_both and "iki yön birlikte hedefi karşılayan: 1h EMA_X_ATR" in only_both
+    assert "yalnız PAPER" in only_both
+    both = G.conclusion_tr([cell], [row])
+    assert both.startswith("hedefi karşılayan hücre: 1h SMC_SWEEP LONG") and "1h EMA_X_ATR" in both and G.NO_TARGET_TR not in both
 
 
 def test_main_report_has_32_cells_and_uses_the_aggregate_cutoff():
     cfg = L.LabConfig(bootstrap_iters=200)
     evs, metas = [], []
-    for tf, n in (("15m", 6000), ("1h", 3000), ("4h", 1500)):
+    for tf, n in (("15m", 15000), ("1h", 3000), ("4h", 1500)):     # her dilimde en az bir TAM doğrulama ayı
         e, m = G.process(synth(n, tf, 51), "SYN", tf, cfg)
         evs += e
         metas.append(m)
@@ -513,17 +631,34 @@ def test_main_report_has_32_cells_and_uses_the_aggregate_cutoff():
     assert rep["cutoff_ms"] == agg["cutoff_ms"] and len(rep["cells"]) == 32 and len(rep["both_sides"]) == 16
     assert [(c["tf"], c["name"], c["side"]) for c in rep["cells"]] == [
         (tf, n, s) for n, r in G.RULES.items() for tf in r["tfs"] for s in ("LONG", "SHORT")]
+    meta = {m["tf"]: m for m in metas}
     checked = 0
     for c in rep["cells"]:
+        mon = c["monthly"]
         if c["OOS"].get("n"):
-            assert c["monthly"]["trades"] == c["OOS"]["n"], (c["tf"], c["name"], c["side"])
+            assert mon["oos_trades"] == c["OOS"]["n"], (c["tf"], c["name"], c["side"])
+            assert mon["trades"] + sum(v["trades"] for v in mon["edge_months"].values()) == mon["oos_trades"]
             checked += 1
+        # tam aylar: ay başı > kesim, ay sonu ≤ son açılabilir karar anı + dilim (simulate'in NO_FUTURE_DATA sınırı)
+        step, hold = tf_ms(c["tf"]), G.RULES[c["name"]]["max_hold_bars"][c["tf"]]
+        first, n = meta[c["tf"]]["first"], meta[c["tf"]]["bars"]          # boşluksuz seri: ts[k] = first + k × dilim
+        open_end = first + (n - 1 - hold) * step + step + step           # son açılabilir karar anı (ts[n−1−süre] + dilim) + dilim
+        assert mon["open_end"] == G._iso(open_end) and mon["months"] >= 1
+        a, _ = G.month_bounds(mon["first_month"])
+        _, b = G.month_bounds(mon["last_month"])
+        cut = rep["cutoff_ms"][c["tf"]]
+        assert a > cut and b <= open_end and G.month_key(int(cut)) in mon["edge_months"]
         assert c["verdict"] in G.GOLD_REGISTRY["stats"]["verdicts"] and c["meets_target"] in (True, False)
         assert c["IS"]["n"] + c["OOS"]["n"] == c["trades"], (c["tf"], c["name"], c["side"])     # 10 işlemin altında da tutarlı
         assert c["signals"] >= c["trades"] and (c["placebo"] is None or "OOS" in c["placebo"])
     assert checked >= 20 and isinstance(rep["conclusion_tr"], str) and rep["candidate_rate_primary"]["real_tested"] >= 0
     md = G.render_md({"version": "gold_v1", "registry_sha": PINNED_SHA, "sections": ["main"], "main": rep, "data": {}})
     assert PINNED_SHA in md and "32 birincil hücre" in md and md.count("\n| 15m | EMA_X_SWING |") == 3
+    for tf, cut in rep["cutoff_ms"].items():                # kesim tarihleri, %1 risk ve maker sütunları raporda
+        assert f"{tf} {G._iso(cut)[:16].replace('T', ' ')} UTC" in md
+    assert "| %1 risk | maker |" in md and "TAM doğrulama ayları" in md and "UYARI" not in md
+    c0 = rep["cells"][0]
+    assert f"| {G._f(c0['monthly']['mean_pct_month_risk1'])} | {G._f(c0['maker_info']['mean_pct_month'])} |" in md
 
 
 # ---------------------------------------------------------------------------- veri: spot, Dukascopy
@@ -617,15 +752,48 @@ def test_dukascopy_decode_resample_and_coverage(tmp_path):
     assert (b0["open"], b0["high"], b0["low"], b0["close"], b0["volume"]) == (2050.123, 2050.7, 2049.9, 2050.1, 0.75)
     h4 = frames["4h"][frames["4h"]["timestamp"] < d0 + DAY].iloc[0]
     assert (h4["timestamp"], h4["open"], h4["close"], h4["high"]) == (d0, 2050.123, 2052.5, 2052.6)
+    # kapsama: manifest'te 200 + bayt > 0 VE dosya diskte (manifest tek başına yetmez)
     man = root / "manifest.jsonl"
-    lines = [{"date": "2024-01-01", "status": 404}, {"date": "2024-01-02", "status": 200}, {"date": "2024-01-03", "status": 200},
-             {"date": "2024-01-04", "status": 0}, {"date": "2024-01-04", "status": 200}, {"date": "2024-01-05", "status": 503},
-             {"date": "2024-01-07", "status": 200}]
+    lines = [{"date": "2024-01-01", "status": 404, "bytes": 0}, {"date": "2024-01-02", "status": 200, "bytes": 99},
+             {"date": "2024-01-03", "status": 200, "bytes": 99}, {"date": "2024-01-04", "status": 0},
+             {"date": "2024-01-04", "status": 200, "bytes": 99}, {"date": "2024-01-05", "status": 200, "bytes": 0},
+             {"date": "2024-01-07", "status": 200, "bytes": 99}, [1, 2]]
     man.write_text("\n".join(json.dumps(x) for x in lines) + "\nbozuk satır\n", encoding="utf-8")
+    p5 = G.duka_path(root, pd.Timestamp("2024-01-05").date())
+    p5.parent.mkdir(parents=True, exist_ok=True)
+    p5.write_bytes(data)                                    # dosya var ama manifest bayt 0 → sayılmaz
     cov = G.duka_coverage(root, "2024-01-01", "2024-01-07")
-    assert (cov["weekdays"], cov["weekdays_ok"], cov["coverage"], cov["enough"]) == (5, 3, 0.6, False)
+    assert (cov["weekdays"], cov["weekdays_manifest_ok"], cov["weekdays_file_missing"], cov["weekdays_ok"]) == (5, 3, 2, 1)
+    assert (cov["coverage"], cov["enough"]) == (0.2, False) and "dosya" in cov["basis_tr"]
+    for d in ("2024-01-03", "2024-01-04"):
+        p = G.duka_path(root, pd.Timestamp(d).date())
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(data if d == "2024-01-03" else b"")   # boş dosya indirilmiş sayılmaz
+    cov = G.duka_coverage(root, "2024-01-01", "2024-01-07")
+    assert (cov["weekdays_ok"], cov["weekdays_file_missing"], cov["coverage"]) == (2, 1, 0.4)
+    G.duka_path(root, pd.Timestamp("2024-01-04").date()).write_bytes(data)
     full = G.duka_coverage(root, "2024-01-02", "2024-01-04")
     assert full["coverage"] == 1.0 and full["enough"]
+
+
+def test_dukascopy_record_times_are_validated_and_bad_files_name_their_path(tmp_path):
+    d0 = G.day_ms("2024-01-02")
+    ok = (0, 2050000, 2050000, 2049000, 2051000, 1.0)
+    for bad in ([ok, (86_400, 2050000, 2050000, 2049000, 2051000, 1.0)],     # gün dışı saniye
+                [(-60, 2050000, 2050000, 2049000, 2051000, 1.0), ok],        # negatif saniye
+                [(60, 2050000, 2050000, 2049000, 2051000, 1.0), ok],         # artmıyor
+                [ok, ok]):                                                    # yineleniyor
+        with pytest.raises(ValueError):
+            G.decode_bi5(bi5(bad), d0)
+    assert len(G.decode_bi5(bi5([ok, (86_340, 2050000, 2050000, 2049000, 2051000, 1.0)]), d0)) == 2
+    root = tmp_path / "duka"
+    p = G.duka_path(root, pd.Timestamp("2024-01-02").date())
+    p.parent.mkdir(parents=True)
+    p.write_bytes(b"bozuk lzma")
+    with pytest.raises(G.GoldDataError, match="BID_candles_min_1.bi5"):
+        G.load_dukascopy(root, "2024-01-02", "2024-01-02", ["1h"])
+    with pytest.raises(G.GoldDataError, match="PAXGUSDT-1h-2024-01.zip"):
+        G.load_spot("PAXGUSDT", "1h", *G.window_ms("2024-01-01", "2024-01-02"), lambda url: b"zip degil")
 
 
 # ---------------------------------------------------------------------------- uçtan uca (sahte arşiv, ağ YOK)
@@ -684,13 +852,18 @@ def test_end_to_end_offline_no_network_and_cli(tmp_path, monkeypatch):
     rows = rep["venue"]["rows"]
     assert {r["symbol"] for r in rows} == {"XAUUSDT", "PAXGUSDT"} and len(rows) == 64
     assert any((r["funding_r"] or {}).get("known") for r in rows)
+    assert rep["venue"]["notes_evaluated"] is True and set(rep["section_runs"]) == {"main", "venue", "dukascopy"}
+    # test pencereleri ön kayıtlı değil: rapor bunu söyler
+    assert rep["windows_overridden"] is True and rep["data_windows"]["main"]["start"] == "2024-01-01"
     js = json.loads((out / "gold_lab_report.json").read_text(encoding="utf-8"))
     md = (out / "gold_lab_report.md").read_text(encoding="utf-8")
-    assert js["registry_sha"] == PINNED_SHA and PINNED_SHA in md and "yapılamadı" in md.lower()
-    with gzip.open(out / "gold_lab_events.csv.gz", "rt", encoding="utf-8") as fh:
-        head = fh.readline().strip().split(",")
-        n_rows = sum(1 for _ in fh)
-    assert head == G.EVENT_COLS and n_rows > 100
+    assert js["registry_sha"] == PINNED_SHA and PINNED_SHA in md and "yapılamadı" in md.lower() and "UYARI" in md
+    for sec, more in (("main", 100), ("venue", 100), ("dukascopy", -1)):   # bölüm başına olay dosyası
+        with gzip.open(out / G.events_file(sec), "rt", encoding="utf-8") as fh:
+            head = fh.readline().strip().split(",")
+            n_rows = sum(1 for _ in fh)
+        assert head == G.EVENT_COLS and (n_rows > more if more > 0 else n_rows == 0), sec
+    assert not list(out.glob("*.part"))
     n_asked = len(asked)
     rep2 = G.run(sections=["main"], cache_dir=tmp_path / "cache", out_dir=tmp_path / "out2", cfg=cfg, offline=True, now_ms=now,
                  log=lambda s: None, data_windows=dw)
@@ -702,6 +875,160 @@ def test_end_to_end_offline_no_network_and_cli(tmp_path, monkeypatch):
     spec.loader.exec_module(cli)
     assert cli.main(["--section", "main", "--offline", "--cache", str(tmp_path / "c2"), "--out", str(tmp_path / "o2")]) == 2
     assert cli.main(["--section", "nope", "--cache", str(tmp_path / "c2"), "--out", str(tmp_path / "o2")]) == 2
+
+
+def test_note_rules_for_venue_and_dukascopy():
+    strong, weak = {"verdict": L.V_STRONG}, {"verdict": L.V_WEAK}
+    assert G.note_venue(strong, {"n": 20, "mean_r": 0.0}) == G.note_venue(strong, {"n": 40, "mean_r": -0.1}) == G.NOTE_VENUE
+    assert G.note_venue(strong, {"n": 19, "mean_r": -0.5}) == G.note_venue(strong, {"n": 25, "mean_r": 0.01}) == ""
+    assert G.note_venue(weak, {"n": 50, "mean_r": -1.0}) == G.note_venue(None, {"n": 50, "mean_r": -1.0}) == ""
+    assert G.note_venue(strong, {"n": 0}) == ""
+    assert G.note_duka(strong, {"n": 3, "mean_r": 0.0}) == G.note_duka(strong, {"n": 30, "mean_r": -0.2}) == G.NOTE_DUKA
+    assert G.note_duka(strong, {"n": 30, "mean_r": 0.1}) == G.note_duka(strong, {"n": 0}) == G.note_duka(weak, {"mean_r": -1}) == ""
+    # mekân raporu: ana seride GÜÇLÜ ADAY hücre, burada n = 20 ve ort.R < 0 → not; n = 19 → not yok; ana seri yok → değerlendirilmedi
+    cfg = L.LabConfig(bootstrap_iters=100)
+    evs = [{"symbol": "XAUUSDT", "tf": "1h", "name": "SMC_SWEEP", "side": "LONG", "family": "gold", "r": r, "t_ms": T0 + k * DAY,
+            "funding_r": None} for k, r in enumerate([-0.5] * 12 + [0.4] * 8)]
+    metas = [{"symbol": "XAUUSDT", "tf": "1h", "counts": {}}]
+    main = {"cells": [{"tf": "1h", "name": "SMC_SWEEP", "side": "LONG", "verdict": L.V_STRONG}]}
+    pick = lambda v: next(r for r in v["rows"] if (r["tf"], r["name"], r["side"]) == ("1h", "SMC_SWEEP", "LONG"))  # noqa: E731
+    v = G.venue_report(evs, metas, cfg, main)
+    assert pick(v)["note"] == G.NOTE_VENUE and v["notes"] == [pick(v)] and v["notes_evaluated"] is True
+    assert G.venue_report(evs[1:], metas, cfg, main)["notes"] == []
+    none = G.venue_report(evs, metas, cfg, None)
+    assert none["notes"] == [] and none["notes_evaluated"] is False
+    # apply_notes notları raporun KENDİ ana serisinden yeniden hesaplar
+    rep = {"main": {"cells": [dict(main["cells"][0], verdict=L.V_WEAK)]}, "venue": v}
+    G.apply_notes(rep)
+    assert rep["venue"]["notes"] == [] and pick(rep["venue"])["note"] == ""
+    # Dukascopy raporu: gerçek işlemler; ana seride bütün hücreler GÜÇLÜ ADAY → not = doğrulama ort.R ≤ 0 olan hücreler
+    ev4, m4 = G.process(synth(3000, "4h", 5), "XAUUSD", "4h", cfg)
+    all_strong = {"cells": [{"tf": tf, "name": n, "side": s, "verdict": L.V_STRONG} for n, r in G.RULES.items() for tf in r["tfs"]
+                            for s in ("LONG", "SHORT")]}
+    d = G.duka_report(ev4, [m4], cfg, all_strong)
+    want = [(c["tf"], c["name"], c["side"]) for c in d["cells"] if c["OOS"].get("mean_r") is not None and c["OOS"]["mean_r"] <= 0]
+    assert want and [(c["tf"], c["name"], c["side"]) for c in d["notes"]] == want and d["notes_evaluated"] is True
+    assert all(c["note"] == (G.NOTE_DUKA if (c["tf"], c["name"], c["side"]) in want else "") for c in d["cells"])
+    assert G.duka_report(ev4, [m4], cfg, None)["notes"] == []
+
+
+def _duka_mirror(root: Path, start: str, end: str, *, seed: int = 7, files: bool = True) -> int:
+    """Sentetik Dukascopy aynası (gerçek fiyat DEĞİL): Cumartesi hariç her gün 1440 dakikalık rastgele yürüyüş bi5 + manifest."""
+    rnd = np.random.default_rng(seed)
+    d, d1 = pd.Timestamp(start).date(), pd.Timestamp(end).date()
+    px, lines, days = 2000.0, [], 0
+    while d <= d1:
+        if d.weekday() != 5:
+            c = px * np.exp(np.cumsum(rnd.normal(0, 0.0004, 1440)))
+            o = np.r_[px, c[:-1]]
+            rec = np.zeros(1440, dtype=G.DUKA_DTYPE)
+            rec["t"] = np.arange(1440) * 60
+            rec["o"], rec["c"] = np.round(o * 1000), np.round(c * 1000)
+            rec["h"] = np.round(np.maximum(o, c) * (1 + rnd.uniform(0, 3e-4, 1440)) * 1000)
+            rec["l"] = np.round(np.minimum(o, c) * (1 - rnd.uniform(0, 3e-4, 1440)) * 1000)
+            rec["v"] = rnd.uniform(0.1, 2.0, 1440)
+            px = float(c[-1])
+            data = lzma.compress(rec.tobytes(), format=lzma.FORMAT_ALONE, preset=1)
+            if files:
+                p = G.duka_path(root, d)
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_bytes(data)
+            lines.append({"date": d.isoformat(), "status": 200, "bytes": len(data)})
+            days += 1
+        d += pd.Timedelta(days=1)
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "manifest.jsonl").write_text("\n".join(json.dumps(x) for x in lines) + "\n", encoding="utf-8")
+    return days
+
+
+def test_sections_run_separately_merge_into_one_report_keep_main_and_the_notes(tmp_path, monkeypatch):
+    def boom(*a, **k):
+        raise AssertionError("ağ kullanılmamalı")
+    monkeypatch.setattr(L, "_http_get", boom)
+    monkeypatch.setattr(urllib.request, "urlopen", boom)
+    windows = {"main": ("2024-01-01", "2024-03-31"), "venue": {"XAUUSDT": ("2024-02-01", "2024-03-31"),
+                                                              "PAXGUSDT": ("2024-01-01", "2024-03-31")}}
+    files = _fake_archive(windows)
+    root = tmp_path / "duka"
+    assert _duka_mirror(root, "2024-01-01", "2024-03-31") == 78        # 91 gün − 13 Cumartesi
+    dw = {"main": {"start": windows["main"][0], "end": windows["main"][1]},
+          "venue": {"symbols": {k: list(v) for k, v in windows["venue"].items()}},
+          "dukascopy": {"start": "2024-01-01", "end": "2024-03-31"}}
+    cfg = L.LabConfig(bootstrap_iters=100)
+    out = tmp_path / "out"
+    kw = dict(cache_dir=tmp_path / "cache", out_dir=out, cfg=cfg, fetch=files.get, now_ms=G.day_ms("2024-06-01"),
+              log=lambda s: None, data_windows=dw, duka_root=root)
+    # ana seri olmadan mekân / Dukascopy KOŞMAZ: notlar ana serinin GÜÇLÜ ADAY hücrelerine dayanır
+    for sec in ("venue", "dukascopy"):
+        with pytest.raises(G.GoldDataError, match="main"):
+            G.run(sections=[sec], **kw)
+    assert not (out / G.REPORT_JSON).exists()
+    r1 = G.run(sections=["main"], **kw)
+    r2 = G.run(sections=["dukascopy"], **kw)                            # ayrı koşu, aynı --out
+    assert r2["sections"] == ["main", "dukascopy"] and r2["main"] == json.loads(json.dumps(r1["main"]))
+    d = r2["dukascopy"]
+    assert d["status"] == "koşuldu" and len(d["cells"]) == 32 and d["notes_evaluated"] is True
+    assert d["coverage"]["coverage"] == 1.0 and d["coverage"]["weekdays_ok"] == 65 and r2["data"]["dukascopy"]["days_read"] == 78
+    assert sum(c["trades"] for c in d["cells"]) > 100 and set(d["cutoff_ms"]) == {"15m", "1h", "4h"}
+    assert set(r2["section_runs"]) == {"main", "dukascopy"}
+    for sec in ("main", "dukascopy"):
+        assert (out / G.events_file(sec)).exists()
+    md = (out / G.REPORT_MD).read_text(encoding="utf-8")
+    assert "## Ana seri" in md and "## Uzun geçmiş" in md and "Dukascopy kapsaması %100.0 (65/65" in md and "okunan gün 78" in md
+    # ana seride GÜÇLÜ ADAY hücre → not, rapordaki ana seriden okunur (ayrı koşuda da)
+    js = json.loads((out / G.REPORT_JSON).read_text(encoding="utf-8"))
+    for c in js["main"]["cells"]:
+        c["verdict"] = L.V_STRONG
+    (out / G.REPORT_JSON).write_text(json.dumps(js, ensure_ascii=False), encoding="utf-8")
+    r3 = G.run(sections=["dukascopy", "venue"], **kw)
+    want = [(c["tf"], c["name"], c["side"]) for c in r3["dukascopy"]["cells"] if c["OOS"].get("mean_r") is not None
+            and c["OOS"]["mean_r"] <= 0]
+    assert want and [(c["tf"], c["name"], c["side"]) for c in r3["dukascopy"]["notes"]] == want
+    vrows = r3["venue"]["rows"]
+    vwant = [r for r in vrows if r["all"].get("n", 0) >= 20 and r["all"]["mean_r"] <= 0]
+    assert vwant and r3["venue"]["notes"] == vwant and all(r["note"] == G.NOTE_VENUE for r in vwant)
+    assert r3["sections"] == ["main", "venue", "dukascopy"] and G.NOTE_DUKA in (out / G.REPORT_MD).read_text(encoding="utf-8")
+    # ana seri yeniden koşulunca saklı mekân/Dukascopy notları YENİ ana seriden yeniden hesaplanır; olay dosyaları korunur
+    r4 = G.run(sections=["main"], **kw)
+    cell = {(c["tf"], c["name"], c["side"]): c for c in r4["main"]["cells"]}
+    assert all(c["note"] == G.note_duka(cell[(c["tf"], c["name"], c["side"])], c["OOS"]) for c in r4["dukascopy"]["cells"])
+    assert all(r["note"] == G.note_venue(cell[(r["tf"], r["name"], r["side"])], r["all"]) for r in r4["venue"]["rows"])
+    assert r4["sections"] == ["main", "venue", "dukascopy"] and all((out / G.events_file(s)).exists() for s in r4["sections"])
+    # kapsama yalnız manifest'e dayanmaz: dosyasız ayna → yapılamadı (eski Dukascopy okuma verisi rapordan düşer)
+    bare = tmp_path / "bare"
+    _duka_mirror(bare, "2024-01-01", "2024-03-31", files=False)
+    r5 = G.run(sections=["dukascopy"], **{**kw, "duka_root": bare})
+    assert r5["dukascopy"]["status"] == "yapılamadı" and r5["dukascopy"]["coverage"]["weekdays_file_missing"] == 65
+    assert "dukascopy" not in r5["data"] and r5["data"]["dukascopy coverage"]["coverage"] == 0.0 and r5["main"]
+    with gzip.open(out / G.events_file("dukascopy"), "rt", encoding="utf-8") as fh:
+        assert len(fh.read().strip().splitlines()) == 1                # yalnız başlık: eski olaylar kalmaz
+    # farklı mühür, ayar ya da pencereyle yazılmış rapor ezilmez, karıştırılmaz
+    with pytest.raises(G.GoldDataError, match="ayar"):
+        G.run(sections=["main"], **{**kw, "cfg": L.LabConfig(bootstrap_iters=101)})
+    with pytest.raises(G.GoldDataError, match="pencere"):
+        G.run(sections=["main"], **{**kw, "data_windows": {**dw, "dukascopy": {"start": "2024-01-02", "end": "2024-03-31"}}})
+    js = json.loads((out / G.REPORT_JSON).read_text(encoding="utf-8"))
+    js["registry_sha"] = "0" * 16
+    (out / G.REPORT_JSON).write_text(json.dumps(js), encoding="utf-8")
+    with pytest.raises(G.GoldDataError, match="mühür"):
+        G.run(sections=["main"], **kw)
+    (out / G.REPORT_JSON).write_text("{bozuk", encoding="utf-8")
+    with pytest.raises(G.GoldDataError, match="okunamadı"):
+        G.run(sections=["main"], **kw)
+
+
+def test_cli_turns_archive_and_io_errors_into_exit_code_2(tmp_path, monkeypatch, capsys):
+    spec = importlib.util.spec_from_file_location("gold_cli", ROOT / "scripts" / "gold_lab.py")
+    cli = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cli)
+    for exc in (zipfile.BadZipFile("bozuk zip"), lzma.LZMAError("bozuk lzma"), OSError(2, "yok", "/ayna/x.bi5"),
+                G.GoldDataError("veri yok"), ValueError("hatalı")):
+        def boom(_e=exc, **kw):
+            raise _e
+        monkeypatch.setattr(G, "run", boom)
+        assert cli.main(["--section", "main", "--cache", str(tmp_path), "--out", str(tmp_path / "o")]) == 2
+        err = capsys.readouterr().err
+        assert f"HATA ({type(exc).__name__})" in err and str(exc) in err
 
 
 def test_existing_section_runs_the_unchanged_lab_sets_on_the_documented_timeframes(monkeypatch):

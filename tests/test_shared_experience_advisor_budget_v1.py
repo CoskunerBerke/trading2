@@ -509,19 +509,21 @@ def test_collector_step_metrics_exclude_the_advisor_time(tmp_path, monkeypatch):
     eng, xp, tour = _collector_world(tmp_path, advisor_budget_ms=2000, advisor_catch_up_budget_ms=2000)
     orig = AL.LiveAdvisor._flush_advice
 
+    # Danışman 500 ms uyur; toplayıcının kendi adımı yavaş CI makinesinde ~120 ms'yi bulabilir (2026-10-04: 117,9 ms
+    # ile eski 100 ms eşiği düştü). step_ms danışmanı içerseydi ≥ 500 olurdu → 400 ms eşiği ayrımı korur, payı büyütür.
     def slow(self):
-        time.sleep(0.12)
+        time.sleep(0.5)
         return orig(self)
     monkeypatch.setattr(AL.LiveAdvisor, "_flush_advice", slow)
     for k in range(6):
         res = tour(k)
-        assert res["advisor_ms"] >= 120 and res["step_ms"] < 100, res
+        assert res["advisor_ms"] >= 500 and res["step_ms"] < 400, res
     st = json.loads((xp.root / "status.json").read_text(encoding="utf-8"))
     h = xp.health()
-    assert st["step_ms_p95"] < 100 and st["step_ms_p50"] < 100 and h["step_ms"] < 100, (st["step_ms_p95"], h)
-    assert h["advisor"]["step_ms"] >= 120 and h["advisor"]["step_ms_p95"] >= 120
+    assert st["step_ms_p95"] < 400 and st["step_ms_p50"] < 400 and h["step_ms"] < 400, (st["step_ms_p95"], h)
+    assert h["advisor"]["step_ms"] >= 500 and h["advisor"]["step_ms_p95"] >= 500
     adv_st = json.loads((xp.root / "advice" / AL.STATUS_FILE).read_text(encoding="utf-8"))
-    assert adv_st["step_ms_p95"] >= 120
+    assert adv_st["step_ms_p95"] >= 500
 
 
 def test_collector_overrun_still_counts_its_own_time(tmp_path, monkeypatch):

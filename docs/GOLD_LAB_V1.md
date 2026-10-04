@@ -7,6 +7,8 @@ kodda `tradingbot/gold_lab.py` içindeki `GOLD_REGISTRY`'de tutulur. Bu kayıtta
 testle sabitlenir. Biri değişirse mühür değişir: o yeni sürümdür, yeni deneme sayısıdır ve bu belge güncellenir. Sayımlar ya
 da sonuçlar görüldükten sonra kural, eşik, dilim ya da dönem GEVŞETİLMEZ.
 
+Ön kayıt mührü: GOLD_REGISTRY_SHA = 4bec7df7721ea240
+
 ## Soru
 
 1. Instagram'daki "15 dakikalık grafikte 20/50 EMA kesişimi, 1:2,5 risk/ödül" sistemi altında maliyet sonrası kazandırıyor

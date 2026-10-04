@@ -31,6 +31,10 @@ deploy/env
 signal_lab_data/
 signal_lab_out/
 
+# altın laboratuvarı (gold_v1): arşiv önbelleği, Dukascopy aynası ve raporlar (yerel; fiyat verisi depoya girmez)
+gold_lab_data/
+gold_lab_out/
+
 # yerel sanal ortam ve demo panel çıktısı (scripts/demo_panel_state.py varsayılan klasörü)
 .venv/
 demo-panel/

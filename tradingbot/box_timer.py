@@ -51,7 +51,8 @@ class BoxTimer:
                  settle_ms: int = SETTLE_MS, learning: Any = None) -> None:
         self.book = book
         #: ÖĞRENME MODU (2026-09-28, öğrenme modu): `LearningMode` ya da None. Kapı HER değerlendirme geçişinde BİR kez
-        #: yenilenir (`refresh`); defter o geçişin değişmez görünümünü (`book(ad)`: min_stop_pct 0,32, slot, kaldıraç) alır.
+        #: yenilenir (`refresh`); defter o geçişin değişmez görünümünü (`book(ad)`: min_stop_pct 0,5 — 2026-10-03'e kadar
+        #: 0,32 —, slot, kaldıraç) alır.
         #: None ya da kapalı → davranış ve durum dosyası bit-bit eskisi gibi.
         self.learning = learning
         self.last_learning: dict[str, Any] | None = None

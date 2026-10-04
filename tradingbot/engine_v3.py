@@ -32,10 +32,12 @@ from .engine import TradingEngine
 from .entry_universe import GATE_CODE as ENTRY_UNIVERSE_GATE, entry_block_reason
 from .learn import LearnConfig, LearnerV2, ModelRegistry, ShadowBook, TradeMemory
 from .learning import features_from_brief
-from .learning_mode import (BASELINE_SIZE_KEY, BOOK_NAMES as _LM_BOOK_NAMES, LEVERAGE_FALLBACK_REASON,
-                            OVERRIDE_KEYS as _LM_OVERRIDE_KEYS, SIZE_BUMP, SIZE_SHRUNK, SYMBOLS_UNIVERSE, LearningMode,
-                            OPEN_FRAC_KEY, baseline_size_tag, baseline_spot_delta, baseline_view, counterfactual_ok,
-                            fit_with_reserve, learning_tags, leverage_fallback, policy_reserve_usdt)
+from .learning_mode import (BASELINE_SIZE_KEY, BOOK_NAMES as _LM_BOOK_NAMES, EXTRA_RECORD_SELECTIVITY,
+                            LEARNING_RECORD_ONLY, LEVERAGE_FALLBACK_REASON, OVERRIDE_KEYS as _LM_OVERRIDE_KEYS,
+                            RECORD_ONLY_FEATURE, SIZE_BUMP, SIZE_SHRUNK, SYMBOLS_UNIVERSE, LearningMode, OPEN_FRAC_KEY,
+                            baseline_size_tag, baseline_spot_delta, baseline_view, counterfactual_ok, extra_entries_mode,
+                            fit_with_reserve, is_record_only_cf, learning_tags, leverage_fallback, policy_reserve_usdt,
+                            record_only as lm_record_only, retag_as_record_only)
 from .learning_basis import (BASIS_LEARNING as LM_BASIS_LEARNING, BASIS_POLICY as LM_BASIS_POLICY,
                              ECONOMICS_CODES as _LM_ECON_CODES, economics_codes as lm_economics_codes)
 from .market.quality import DataQualityConfig, DataQualityGate
@@ -105,6 +107,8 @@ _CAPACITY_CODES = ("TOTAL_OPEN_RISK", "MARGIN_UTILIZATION", "MAX_POSITIONS", "MA
 _LM_FUNNEL_KEYS = ("learning_opened", "learning_unlocked", "learning_exploration", "learning_leverage_fallback",
                    "min_notional_bumped", "shrunk_to_margin", "counterfactual_recorded", "counterfactual_dropped",
                    "counterfactual_superseded")
+#: Seçicilik-ekstra YALNIZ KAYIT sayacı (2026-10-03) — yalnız kip `record_selectivity` iken eklenir (`open`da huni bit-aynı).
+_LM_RECORD_FUNNEL_KEYS = ("learning_record_only",)
 _LM_STRUCTURE_HARD = ("STRUCTURE_FRAME_MARKET_MISMATCH", "STRUCTURE_ERROR")
 #: Ana öğrenme karşı-olgusallarının etiket yedeği (`shadow_book.json`u eski kod yeniden yazınca etiketler buradan döner).
 SHADOW_TAGS_FILE = "shadow_book_learning_tags.json"
@@ -2078,6 +2082,9 @@ class TradingEngineV3(TradingEngine):
         if bl is not None:
             for _k in _LM_FUNNEL_KEYS:
                 funnel[_k] = 0
+            if extra_entries_mode(bl) == EXTRA_RECORD_SELECTIVITY:
+                for _k in _LM_RECORD_FUNNEL_KEYS:
+                    funnel[_k] = 0
         self._opportunity_cost = []
         # GİRİŞ SEÇİCİLİĞİ: sıralamaya giren adayların KARAR ANI girdileri. Snapshot tur SONUNDA
         # (baseline kararı belli olunca) tek seferde yazılır; hiçbir sonuç alanı GİRMEZ.
@@ -2513,6 +2520,33 @@ class TradingEngineV3(TradingEngine):
                     self._shadow_add({"plan_id": stable_id("plan", self.run_id, sym), "symbol": sym, "market_type": market, "direction": d.direction, "entry": plan.entry,
                                      "stop": plan.stop, "targets": plan.targets, "horizon_bars": plan.time_horizon_bars, "leverage": plan.size.leverage},
                                     list(rd.reasons), now=now)
+                continue
+            # ---------------------------------------------------------------- 7b) ÖĞRENME-EKSTRA: SEÇİCİLİK YALNIZ KAYIT
+            # (2026-10-03, sahip kararı) Açılış kararı burada KESİNDİR: boyut, politika rezervi ve bütün kapılar yukarıda
+            # bugünkü gibi uygulandı. Kip `record_selectivity` iken taban kuralların SİNYALİ reddedeceği aday (en az bir
+            # seçicilik kodu) AÇILMAZ; nedeni LEARNING_RECORD_ONLY olan karşı-olgusal olur (ayrılan kodlar + kullanacağı
+            # öğrenme parametreleri). `open` kipinde `lm_record_only` None döner → yol bit-aynı.
+            # Huni anahtarı diğer huni aşamaları gibi BU TURUN olayını sayar (aynı sinyal sonraki turda yine sayılır); yazılan
+            # kayıt `counterfactual_recorded`dadır. Aynı sinyalin başka nedenli bekleyen kaydı varsa (ör. önceki turun
+            # INSUFFICIENT_MARGIN'i) tekillik yeni kaydı engeller; o kayıt yalnız-kayda dönüşür (`open`da açılış onu düşürürdü).
+            _lm_div = lm_record_only(lm_unlocked, bl) if bl is not None else None
+            if _lm_div is not None:
+                funnel["learning_record_only"] = int(funnel.get("learning_record_only", 0)) + 1
+                entry["block_code"] = LEARNING_RECORD_ONLY
+                entry["learning_record_only"] = dict(_lm_div)
+                _lm_ro_info = dict(
+                    _lm_div, book="main", market_type=market, size_rule=lm_fit.size_rule,
+                    notional=final_notional, leverage=int(plan_leverage), risk_usdt=final_risk_usdt,
+                    execution_entry=round(exec_entry, 10), slots=int(bl.slots), risk_pct=float(bl.risk_pct),
+                    exploration=lm_exploration,
+                    leverage_fallback=(LEVERAGE_FALLBACK_REASON if lm_lev_fb is not None else None),
+                    policy_basis=(lm_econ or {}).get("policy_basis"))
+                if not self._lm_counterfactual(
+                        bl, sym=sym, market=market, d=d, plan=plan, b=b, reason=LEARNING_RECORD_ONLY,
+                        reasons=list(_lm_div["codes"]), now=now, entry=entry,
+                        extra={RECORD_ONLY_FEATURE: _lm_ro_info}):
+                    self._lm_cf_retag_record_only(bl, sym=sym, market=market, d=d, plan=plan, b=b, info=_lm_ro_info,
+                                                  entry=entry)
                 continue
             funnel["capacity_approved"] += 1
             # ÖĞRENME: bu işlemin etiketleri (defter meta/özellikleri + karar günlüğü satırı)
@@ -3337,7 +3371,8 @@ class TradingEngineV3(TradingEngine):
         def _symbols() -> list[str]:
             return list(book.symbols) if book.symbols else (list(_eu.symbols) if _eu.enabled else [])
         # ÖĞRENME MODU (2026-09-28, öğrenme modu — C2): zamanlayıcı kapıyı HER 5m geçişinde kendisi tazeler ve defterin
-        # o geçişlik görünümünü (min_stop_pct 0,32, slot, kaldıraç) verir. Anahtar kapalıyken None → kurulum bit-aynı.
+        # o geçişlik görünümünü (min_stop_pct 0,5 — 2026-10-03'e kadar 0,32 —, slot, kaldıraç) verir. Anahtar kapalıyken
+        # None → kurulum bit-aynı.
         _lm = getattr(self, "lm", None)
         _lkw = {"learning": _lm} if (_lm is not None and bool(getattr(_lm, "enabled", False))) else {}
         t = BoxTimer(book=book, provider_factory=self._futures_provider_factory, state_path=self.cfg.state_path,
@@ -3869,7 +3904,7 @@ class TradingEngineV3(TradingEngine):
         recent = [h for h in hist if str(h.get("at", "")) >= cutoff]
         # ÖĞRENME MODU (2026-09-28): öğrenme anahtarları yalnız bu turda varsa kayan pencereye eklenir (kapalıyken bit-aynı)
         roll = {k: sum(int(h.get(k, 0) or 0) for h in recent)
-                for k in list(_FUNNEL_KEYS) + ["closed"] + [k for k in _LM_FUNNEL_KEYS if k in f]}
+                for k in list(_FUNNEL_KEYS) + ["closed"] + [k for k in _LM_FUNNEL_KEYS + _LM_RECORD_FUNNEL_KEYS if k in f]}
         denom = max(1, f.get("actionable", 0))
         atomic_write_json(self._funnel_path, {
             "schema": "decision_funnel_v1", "at": iso(now), "run": f,
@@ -4171,6 +4206,32 @@ class TradingEngineV3(TradingEngine):
         self._lm_cf_meta_add("lm_dropped", over)
         return over
 
+    def _lm_cf_retag_record_only(self, bl, *, sym: str, market: str, d, plan, b, info: dict,
+                                 entry: dict | None = None) -> int:
+        """Seçicilik-ekstra YALNIZ KAYIT (2026-10-03): aynı sinyalin (anahtar/sembol/yön) BAŞKA nedenle yazılmış BEKLEYEN ana
+        karşı-olgusalı LEARNING_RECORD_ONLY nedenine dönüşür (`learning_mode.retag_as_record_only`). `open` kipinde giriş
+        açılınca `_lm_cf_supersede` o kaydı düşürürdü; kayıt kipinde tekillik yeni kaydı engellediği için eski kayıt normal
+        karşı-olgusal gibi etiketlenip araştırma/deneyim/karne sayımına girmesin. `meta.lm_retagged` sayar. Döner: sayı."""
+        if bl is None or not bl.counterfactual:
+            return 0
+        try:
+            sig = self._signal_id(sym, market, d, plan, b)
+            dirn = str(d.direction or "").upper()
+            n = 0
+            for t in self.shadow.trades:
+                if t.book == "main" and str(t.plan_id) == str(sig) and t.symbol == sym \
+                        and str(t.direction).upper() == dirn and retag_as_record_only(t, info):
+                    n += 1
+            if n:
+                self._lm_cf_meta_add("lm_retagged", n)
+                self.shadow.save()
+                if entry is not None and isinstance(entry.get("counterfactual"), dict):
+                    entry["counterfactual"]["retagged"] = n
+            return n
+        except Exception as exc:  # noqa: BLE001 — bakım arızası kararı ETKİLEMEZ
+            log.warning("%s yalnız-kayıt dönüşümü yapılamadı: %s", sym, exc)
+            return 0
+
     def _lm_cf_supersede(self, sig: str, sym: str, direction: str) -> int:
         """Aynı sinyal (anahtar/sembol/yön) sonradan GERÇEK işlem olarak açıldı: ana karşı-olgusal kaydı düşer
         (`meta.lm_superseded`) — aynı gözlem hem dolum hem "açılmadı" olarak sayılmaz."""
@@ -4228,6 +4289,10 @@ class TradingEngineV3(TradingEngine):
             from .learn.research_policy import BLOCKED
             for sh in rows:
                 if sh.outcome is None:
+                    continue
+                if is_record_only_cf(sh.reason_not_opened):
+                    # SEÇİCİLİK YALNIZ KAYIT (2026-10-03): araştırma politikası girdisi DEĞİLDİR (eşleşmiş BLOCKED gözlemi
+                    # yazılmaz) — tek karar değişikliği "seçicilik-ekstra artık açılmaz" olsun. Bekleyen eşleşme yoktur.
                     continue
                 for pending in self.research.pop_pending_for_trade(sh.id):
                     dec = dict(pending.get("decision") or {})
@@ -4789,6 +4854,14 @@ class TradingEngineV3(TradingEngine):
         try:
             if xp is None:
                 from .shared_experience.collector import SharedExperienceCollector
+                # Karar kimliği (`config_hash`) toplayıcıdan ÖNCE hesaplanır: mühürlü toplayıcı önbelleği okur, yoksa kendi
+                # formülüne düşer — o formül öğrenme-ekstra kipinin kod varsayılanını (`open`) düşmez (2026-10-03). İlk turun
+                # karar listesi boşsa önbellek henüz dolmamış olurdu; böylece xp satırları motorun özetini taşır. Özet
+                # hesaplanamazsa (etiket yalnız) toplayıcı kurulumu yine denenir.
+                try:
+                    self.config_hash()
+                except Exception:  # noqa: BLE001
+                    pass
                 xp = self.__dict__["_shared_xp"] = SharedExperienceCollector.from_engine(self)
             xp.step(self, risk_log=risk_log, decisions=decisions, briefs=briefs, now=now)
         except Exception as exc:  # noqa: BLE001 — kayıt katmanı ASLA turu durdurmaz
@@ -4859,6 +4932,10 @@ class TradingEngineV3(TradingEngine):
                 # ORTAK DENEYİM (2026-09-29): yalnız-KAYIT katmanının bölümü karar kimliğine GİRMEZ — özet OFF/RECORD'da
                 # ve bölümden önceki kodla (HEAD) aynı kalır; karar günlüğü satırları katman açılınca değişmez.
                 _d.pop("shared_experience", None)
+                # ÖĞRENME-EKSTRA KİPİ (2026-10-03): kod varsayılanı (`open`) karar kimliğine GİRMEZ — özet bu alandan önceki
+                # kodla (943345c) aynı kalır; `record_selectivity` karar değiştirdiği için özete girer.
+                if (_d.get("learning_mode") or {}).get("extra_entries") == "open":
+                    _d["learning_mode"].pop("extra_entries", None)
                 h = payload_hash(_d)
         except Exception:  # noqa: BLE001
             h = None

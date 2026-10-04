@@ -30,8 +30,8 @@ from ..accounting.funding import FundingSchedule
 from ..core import atomic_write_json, iso, read_json, utc_now
 from ..learn import TradeMemory
 from ..learn.candle_context import CandleContextConfig, detect_trend
-from ..learning_mode import (STATE_ACTIVE, STATE_DISABLED, SUSPENDED_PREFIX, LearningMode, baseline_view,
-                             learning_tags, policy_reserve_usdt)
+from ..learning_mode import (LEARNING_RECORD_ONLY, RECORD_ONLY_FEATURE, STATE_ACTIVE, STATE_DISABLED, SUSPENDED_PREFIX,
+                             LearningMode, baseline_view, learning_tags, policy_reserve_usdt)
 from ..risk import RiskEngine, build_state
 from ..strategy_paper import (PAPER_MARKET, DataVerdict, _baseline_blocks, apply_action, apply_closed_bars_to_ledger,
                               monitoring_gap_on_resume, parse_ts_ms)
@@ -1131,7 +1131,21 @@ class PatternBook:
                 # KARŞI-OLGUSAL GİRİŞ (2026-09-29, inceleme bulgusu): diğer nedenler gibi REFERANS fiyat (mark) yazılır;
                 # `qmark` zaten defterin dolum fiyatıdır (kayma + tick; özellikte `rr_at_entry.quantized_entry`) — net yeniden
                 # oynatma onu İKİNCİ kez kaydırırdı (eski `quantized_entry` kayıtlarını `learning_cf.net_outcome` ayrıca tanır).
-                self._cf_record(pl, why, entry=mark, at=cf_at, extra={"entry_ref": "mark"})
+                ro = (pl.get("learning") or {}).get("record_only")
+                if why == LEARNING_RECORD_ONLY and isinstance(ro, dict):
+                    # seçicilik-ekstra YALNIZ KAYIT (2026-10-03): neden + ayrılan kodlar + kullanacağı öğrenme boyutu. Aynı
+                    # planın başka nedenli bekleyen kaydı varsa o kayıt dönüşür. Sayaç KAYIT sayar (yeni ya da dönüşen).
+                    ok = self._cf_record(pl, why, entry=mark, at=cf_at,
+                                         extra={"entry_ref": "mark", RECORD_ONLY_FEATURE: dict(ro)},
+                                         extra_reasons=list(ro.get("codes") or []))
+                    if not ok and self.cf is not None:
+                        ok = self.cf.retag_record_only(signal_key=str(pl["plan_id"]), symbol=symbol,
+                                                       direction=str(pl.get("side") or ""), info=dict(ro)) > 0
+                    if ok:
+                        self.learning_counters["learning_record_only"] = \
+                            int(self.learning_counters.get("learning_record_only", 0)) + 1
+                else:
+                    self._cf_record(pl, why, entry=mark, at=cf_at, extra={"entry_ref": "mark"})
                 return r
         if act.get("_notional_scaled"):
             pl["size_scaled_to_cap"] = dict(act["_notional_scaled"])
@@ -1321,7 +1335,8 @@ class PatternBook:
         lvl = (pl.get("trigger") or {}).get("level")
         return (float(lvl), "trigger_level") if lvl is not None else (None, "none")
 
-    def _cf_record(self, pl: dict[str, Any], reason: str, *, entry: Any, at: datetime, extra: dict[str, Any] | None = None) -> bool:
+    def _cf_record(self, pl: dict[str, Any], reason: str, *, entry: Any, at: datetime, extra: dict[str, Any] | None = None,
+                   extra_reasons: list[str] | None = None) -> bool:
         """Açılmayan geçerli sinyal → karşı-olgusal kayıt (yalnız öğrenme aktif + `counterfactual`). Sinyal anahtarı =
         plan kimliği (turlar boyunca sabit, P1); geometri/neden süzgeci ve tekillik kayıtçıdadır. Asla işlem ETKİLEMEZ."""
         lm = self.learning if self.learning_on else None
@@ -1349,7 +1364,8 @@ class PatternBook:
             ok = self._cf_recorder(lm).record(signal_key=str(pl["plan_id"]), symbol=sym, direction=side, entry=e, stop=stop,
                                               targets=[target], reason=str(reason), created_at=at, tf_minutes=tf_min,
                                               horizon_bars=horizon, label_kind=LABEL_TARGET_STOP_TIME, features=feats,
-                                              rule_version=pl.get("version"))
+                                              rule_version=pl.get("version"),
+                                              **({"extra_reasons": list(extra_reasons)} if extra_reasons else {}))
         except Exception as exc:  # noqa: BLE001 — karşı-olgusal arızası planı/defteri ETKİLEMEZ
             log.warning("formasyon karşı-olgusalı yazılamadı (%s %s): %s", pl.get("symbol"), reason, exc)
             return False
@@ -1460,6 +1476,8 @@ class PatternBook:
                             depth=depth, unlocked=tags, reserve_usdt=p_res, baseline_size=bsize)
         pl["learning"] = dict(res.info.get("meta") or {}, fit=res.info.get("fit"), min_depth_0_5pct=res.info.get("min_depth_0_5pct"))
         if res.pos is None:
+            if isinstance(res.info.get("record_only"), dict):
+                pl["learning"]["record_only"] = dict(res.info["record_only"])   # seçicilik YALNIZ KAYIT (2026-10-03)
             return None, res.reason
         meta = res.pos.meta.get("learning") or {}
         if "RR_BELOW_MIN_AT_ENTRY" in unlocked or "RR_BELOW_MIN_AFTER_ROUNDING" in unlocked:

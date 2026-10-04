@@ -69,12 +69,18 @@ baseline. Each difference that changes what a book can open is stated next to th
 in [the learning-mode table](#effective-rules-per-book-under-the-committed-config). In short:
 
 - Every book in learning mode sizes from equal slots at a 0.5% target risk.
-- The main bot records its edge-based size multipliers without using them, and opens negative-edge and research-size
-  candidates as tagged exploration trades.
-- The main bot's regime gate, candle veto and blocking structure decisions only record, which allows SHORT entries and
-  entries while BTC is below its EMA200. T2 and M2 also only record blocking structure decisions.
-- Box accepts stops down to 0.32% instead of 2.22%.
-- D4 and C4 enter on the whole 40-coin universe, and Formasyon on its 30 lab coins plus that universe.
+- Learning-extra entries are split by cause (since 2026-10-03, `learning_mode.extra_entries: record_selectivity`). An
+  entry that only an account or book capacity limit or an order-size rule would have stopped (total open risk, position
+  counts, margin, minimum order) opens for real. An entry the baseline rules would reject *as a signal* is not opened
+  and is recorded as a counterfactual with reason `LEARNING_RECORD_ONLY`
+  ([`classify_unlock_codes`](../tradingbot/learning_mode.py)).
+- The main bot records its edge-based size multipliers without using them. Candidates the baseline economics view
+  would reject (negative edge, research size), and candidates its regime gate, candle veto or blocking structure
+  decisions would stop, are evaluated as before but recorded instead of opened. T2 and M2 record (rather than open)
+  entries their blocking structure decisions would stop.
+- Box accepts stops down to 0.5% instead of 2.22% (0.32% until 2026-10-03); those entries open for real.
+- D4 and C4 scan the whole 40-coin universe, and Formasyon its 30 lab coins plus that universe; entries outside a book's
+  own lab universe are recorded only.
 
 ## 2. Architecture
 
@@ -647,7 +653,7 @@ Under the committed learning-mode config, D4 and C4 enter on the 23 coins plus t
 |---|---|---|---|---|---|
 | T2 ([`ema200_trend.py` `decide`](../tradingbot/ema200_trend.py)) | 1d, BTC 1d | Last closed daily close > EMA200 and BTC regime UP (BTC daily close > its EMA200) → LONG at the verified perp price | close − 3 × ATR14(1d) | Daily close ≤ EMA200, or the stop | 2, raised only as far as needed (max 4) to fit the single-position cap |
 | M2 (same module, `m2_tsmom28`) | 1d, BTC 1d | Close > close 28 days earlier and BTC regime UP → LONG | close − 3 × ATR14(1d) | Close ≤ close 28 days earlier, or the stop | 2 → 4 as needed |
-| B1 Box ([`box_theory.py` `decide`](../tradingbot/box_theory.py)) | 1d, 5m | Box = previous UTC day's high/low. If any of the last two closed 5m candles touched the top 10% band and none touched the bottom band → SHORT on a red candle closing below the previous candle's low; the mirror case → LONG on a green candle closing above the previous high; a window that touched both bands is treated as the middle (no trade) | SHORT: previous candle's high; LONG: the day's low so far | Target at box mid (`exit_kind: box_mid`), stop, or flat at the end of the signal's UTC day | 3 → 4 as needed; stops narrower than 2.22% are skipped (0.32% under learning mode) |
+| B1 Box ([`box_theory.py` `decide`](../tradingbot/box_theory.py)) | 1d, 5m | Box = previous UTC day's high/low. If any of the last two closed 5m candles touched the top 10% band and none touched the bottom band → SHORT on a red candle closing below the previous candle's low; the mirror case → LONG on a green candle closing above the previous high; a window that touched both bands is treated as the middle (no trade) | SHORT: previous candle's high; LONG: the day's low so far | Target at box mid (`exit_kind: box_mid`), stop, or flat at the end of the signal's UTC day | 3 → 4 as needed; stops narrower than 2.22% are skipped (0.5% under learning mode) |
 | D4 ([`donchian_trend.py` `decide`](../tradingbot/donchian_trend.py)) | 4h | Close breaks above the previous 20-bar high for the first time → LONG, only within 60 min of the signal close and if the stop distance is 0.1–10 ATR | close − 2 × ATR14(4h) | 4h close below the previous 10-bar low, 300-bar time limit, or the stop | 1; oversized trades are shrunk to the cap, not rejected |
 | C4 / C4S ([`candle_book.py` `decide`](../tradingbot/candle_book.py)) | 4h, last 500 bars with volume | First enabled variation (config order) whose detector matches on the last closed bar and whose gate passes; 60 min entry window | From the variation's detector | Target `target_r × risk` measured from the actual entry, the stop, or `max_hold_bars` | 1 |
 
@@ -694,7 +700,7 @@ Details that are easy to miss:
 - **Under learning mode** every one of these books except C4S sizes with [`fit_size`](../tradingbot/learning_mode.py) at a 0.5% target
   risk instead of the baseline sizing above. The slot counts and leverage caps are T2 40 and 4x, M2 40 and 4x, Box 40
   and 4x, D4 20 and 3x, C4 20 and 3x. The risk engine is a copy of the profile with total open risk at 100%, the 2%
-  per-trade cap kept. Box uses its learning `min_stop_pct` of 0.32% ([`StrategyBook._learning_params`](../tradingbot/strategy_paper.py)).
+  per-trade cap kept. Box uses its learning `min_stop_pct` of 0.5% ([`StrategyBook._learning_params`](../tradingbot/strategy_paper.py)).
   Apart from that minimum stop and the structure and universe changes above, the entry rules, data checks, entry
   windows and exits are unchanged.
 - An optional entry-drift gate exists in `apply_action` but is off (`max_entry_drift_pct: 0.0`) because its threshold
@@ -846,19 +852,60 @@ How a trade's R is measured does not change.
   would have stopped it. Learning-extra entries see free margin reduced by a reserve of two slots (capped at 10% of
   equity), so exploration cannot crowd out a policy trade
   ([`policy_reserve_usdt`, `fit_with_reserve`](../tradingbot/learning_mode.py)).
+- **Extras by cause (2026-10-03, owner decision).** The owner wants every book to aim for at least +1% net per month on
+  its own paper balance. During the learning period, closed learning-extra trades unlocked by *selectivity* were about
+  zero or negative everywhere (main bot `NEGATIVE_NET_EDGE` 86 trades −0.04R, `STRUCTURE:OPPOSING_CONFIRMED` 76 −0.06R,
+  `CANDLE_VETO` 30 −0.09R; M2 `STRUCTURE_OPPOSING_CONFIRMED` 22 +0.006R; `BOOK_UNIVERSE` C4 −0.32R, D4 −0.91R), while
+  *capacity*-unlocked M2 `TOTAL_OPEN_RISK` trades made +0.15R over 10 trades and Box stops of 0.5–1% made +0.17R over 176
+  trades against −0.56R over 72 for stops below 0.5%. These are paper measurements, not a profitability claim.
+  [`classify_unlock_codes`](../tradingbot/learning_mode.py) therefore puts every `learning_unlocked_by` code in one of
+  three classes:
+  - **capacity** (`UNLOCK_CAPACITY`): the signal passes the baseline rules and only an account/book capacity or
+    order-size gate would block it: `TOTAL_OPEN_RISK`, `MAX_POSITIONS`, `MAX_POSITIONS_MARKET`, `MAX_POSITION_PCT`,
+    `MARGIN_UTILIZATION`, `SPOT_ALLOCATION`, `CLUSTER_CAP`, `ALTCOIN_EXPOSURE`, `INSUFFICIENT_MARGIN` (including the
+    policy-reserve case), `MIN_ORDER_CONFLICT`, `NO_TRADE_MIN_ORDER_CONFLICT`, `MIN_NOTIONAL`, `MIN_QTY`, `STEP_ZERO_QTY`,
+    `MAX_QTY`, `LEVERAGE_TOO_HIGH`, Formasyon's `RISK_ABOVE_CAP_AFTER_ROUNDING`, the never-failing `RISK_PER_TRADE` and
+    `LEVERAGE_CAP`, and the occupancy codes `ALREADY_OPEN`, `ALREADY_OPEN_SAME_SYMBOL`, `OPPOSITE_EXPOSURE_CONFLICT`;
+  - **Box exception** (`UNLOCK_BOX_EXCEPTION`): `BOX_MIN_STOP_PCT`, a Box stop below the baseline 2.22% but at or above
+    the learning floor of 0.5%, behaves like capacity;
+  - **selectivity** (everything else): the baseline would reject the signal itself: `NEGATIVE_NET_EDGE`,
+    `RESEARCH_SIZE_ONLY`, `SIZE_MULTIPLIER_ZERO`, `CANDLE_VETO:*`, `REGIME_VETO:*`, `STRUCTURE:*` / `STRUCTURE_*`,
+    `LEVERAGE_GATE_BLOCKED:*` (no tradeable leverage), `BOOK_UNIVERSE`, `NOT_IN_PROTOCOL_UNIVERSE`, Formasyon's
+    `RR_BELOW_MIN_*`, `COOLDOWN_AFTER_LOSS`, `THIN_DEPTH`, `LIQUIDITY_UNKNOWN`, `DEPTH_UNKNOWN`, the RiskEngine stops
+    (`KILL_SWITCH_ACTIVE`, loss limits, cool-downs, spread, minimum expected R, liquidation buffer, missing stop, spot
+    SHORT), `BAD_PRICE`, `RISK_DENIED`, `BASELINE_UNKNOWN`, and any code not in the table.
+
+  With `learning_mode.extra_entries: record_selectivity` (committed config; code default `open`), an entry whose codes
+  include any selectivity code is not opened. The check sits where the decision to open is final — after sizing, the
+  policy reserve, the learning RiskEngine and every other gate — so entries that still open are sized exactly as before.
+  The candidate goes to the book's existing counterfactual recorder with reason `LEARNING_RECORD_ONLY`, the diverted
+  codes after it in `reason_not_opened`, and `features.learning_record_only` (codes, class, and the notional, leverage,
+  risk and size rule it would have used): the main bot's shadow book, the strategy books' `CounterfactualRecorder`, and
+  Formasyon's recorder (the plan is rejected). It is labelled later like any other counterfactual. If a pending record
+  of the same signal key already exists with another reason (for example the previous tour's kill switch or margin
+  block), that record is converted in place to `LEARNING_RECORD_ONLY` (old reason kept after the codes,
+  `retagged_from`), because with `open` the opening would have superseded it. The book counter `learning_record_only`
+  counts records (new or converted); the main bot's funnel key counts each tour's diversions like every funnel stage;
+  the decision journal classes the candidate as `SHADOW`, stage `learning_record_only`. `record_selectivity` requires
+  `counterfactual: true` (the config loader rejects the combination with recording off). Because a diverted extra never
+  becomes a real trade, the research policy also gets no observation from it. **Kill switch:** `extra_entries: open` and
+  a worker restart restores today's behaviour; with `open` every decision and state file is byte-identical to `943345c`
+  over real tours (shared-experience rows included) and direct runs of every entry path
+  ([`tests/test_learning_record_only_tours.py`](../tests/test_learning_record_only_tours.py)). Open positions are never
+  closed by the switch.
 
 #### Effective rules per book under the committed config
 
 | Book | Slots, leverage cap | What changes from the baseline |
 |---|---|---|
-| Main bot | 20, 5x | Regime gate and candle veto record instead of block, so SHORTs and entries while BTC is below EMA200 are possible. Blocking structure entry decisions record only (frame mismatch and analysis errors still block). Research-size and negative-edge candidates open as exploration trades. SHORT and futures-only penalties are recorded, not applied. Size multipliers are recorded; size comes from `fit_size`. Leverage-gate failures on stop distance, depth or confidence fall back to 2x. A head plan is not vetoed for a minimum-order conflict within the 2% cap. Total open risk and spot allocation caps are 100% |
-| T2 | 40, 4x | `fit_size` sizing; blocking structure entry decisions record only. The BTC regime condition of the rule stays |
+| Main bot | 20, 5x | Regime gate and candle veto are evaluated in shadow; a candidate they would block is recorded (`LEARNING_RECORD_ONLY`), not opened. Blocking structure entry decisions: the same (frame mismatch and analysis errors still block). Candidates the baseline economics view rejects (research size, negative edge) are recorded, not opened (the learning world's `exploration` tag stays in the record). SHORT and futures-only penalties are recorded, not applied. Size multipliers are recorded; size comes from `fit_size`. Leverage-gate failures on stop distance, depth or confidence fall back to 2x, but such a candidate is recorded only. A head plan is not vetoed for a minimum-order conflict within the 2% cap (opens: capacity). Total open risk and spot allocation caps are 100% (opens: capacity) |
+| T2 | 40, 4x | `fit_size` sizing; capacity extras open; an entry its blocking structure decision would stop is recorded only. The BTC regime condition of the rule stays |
 | M2 | 40, 4x | Same as T2 |
-| B1 Box | 40, 4x | `fit_size` sizing; minimum stop 0.32% instead of 2.22%. Structures were already SHADOW |
-| D4 | 20, 3x | `fit_size` sizing; entries on the whole 40-coin universe, tagged `in_lab_universe` |
+| B1 Box | 40, 4x | `fit_size` sizing; minimum stop 0.5% instead of 2.22% (`BOX_MIN_STOP_PCT` entries open for real; stops below 0.5% produce no signal). Structures were already SHADOW |
+| D4 | 20, 3x | `fit_size` sizing; scans the whole 40-coin universe; entries outside its own lab coins (`BOOK_UNIVERSE`) are recorded only |
 | C4 | 20, 3x | Same as D4 |
 | C4S | not in learning mode | Baseline rules, own 23 coins; its variation list is empty, so it opens nothing |
-| Formasyon | 30, 3x | `fit_size` sizing; no position-count cap, no cool-down after a loss, no minimum R/R after costs; universe of 30 lab coins plus the 40-coin universe (47 symbols) |
+| Formasyon | 30, 3x | `fit_size` sizing; no position-count cap (opens: capacity); a cool-down after a loss, an R/R below the protocol minimum, thin or unmeasured depth, or a symbol outside the protocol universe make the entry record-only; universe of 30 lab coins plus the 40-coin universe (47 symbols) |
 
 Every book in learning mode also records each valid signal it could not open as a counterfactual (section 5.7).
 
@@ -889,7 +936,11 @@ them.
 Results are compared in R, which is scale-free, never in USDT. The bot scorecard
 ([`scripts/bot_scorecard.py`](../scripts/bot_scorecard.py)) splits each book's trades into "before learning mode" and
 "after", using the first activation time in `learning_mode.json`, and then splits "after" into policy trades (empty
-`learning_unlocked_by`) and learning-extra trades. The dashboard's learning view
+`learning_unlocked_by`) and learning-extra trades. Since 2026-10-03 it also shows each book's record-only extras
+(«kayda alınan ekstra»: record count and their net R once labelled) as their own class, outside the counterfactual
+column, and its command line prints a monthly-target section (report only): per book, the net result of trades closed
+in the current UTC calendar month so far and in the last 30 days, after fees, slippage and funding, as a percentage of
+the book's starting balance, with the trade count and the distance to the +1%/month target. The dashboard's learning view
 ([`dashboard/learning_view.py`](../tradingbot/dashboard/learning_view.py)) shows slot usage per book, counts open
 learning-extra positions and labels each trade as policy or learning-extra.
 
@@ -900,7 +951,10 @@ stores it as a hypothetical trade, but only for reasons where the signal itself 
 (`counterfactual_ok`: capacity, exchange rules, occupancy, gate vetoes, lab-parity rejections). Data problems, broken
 stop geometry, duplicates and missing triggers never produce a record. The record key is the rule's per-bar signal key,
 not the tour id, so a signal blocked for 16 tours is still one record; if the same signal later opens for real, the
-pending record is superseded. Pending records are capped (2000 per book, oldest dropped and counted). These records are
+pending record is superseded. Pending records are capped (2000 per book, oldest dropped and counted). Record-only
+learning extras (`LEARNING_RECORD_ONLY`, section 5.6) use the same recorders, keys and caps, but are never turned into
+research-policy `BLOCKED` observations and never enter the experience pool, so they change no decision input; the shared
+experience collector carries them as `xp_cf` rows (reason family `GATE`). These records are
 written only while a book is in learning mode; with learning mode off, the main bot keeps its older shadow trades for
 blocked candidates, and the strategy books record no new ones (pending ones are still labelled).
 
@@ -1127,14 +1181,14 @@ What the tests pin down, by kind:
   ([`test_ops.py`](../tests/test_ops.py), [`test_restore_sh_v1.py`](../tests/test_restore_sh_v1.py),
   [`test_deploy_vps.py`](../tests/test_deploy_vps.py), [`test_security_chaos.py`](../tests/test_security_chaos.py)).
 
-**Counts from the latest full run** (2026-10-02, Python 3.12, 4-core Linux container,
-`python -m pytest -q tests`): 4,161 tests collected in 229 test files; 4,153 passed, 8 skipped, 0 failed, in 1,307 s
+**Counts from the latest full run** (2026-10-03, Python 3.12, 4-core Linux container,
+`python -m pytest -q tests`): 4,213 tests collected in 232 test files; 4,205 passed, 8 skipped, 0 failed, in 1,343 s
 (about 22 minutes, on a machine that was running other work at the same time). Skipped tests need the
 author's local research package or archive files, an opt-in benchmark (`TRADINGBOT_BENCH_1M=1`), or a fixture case that
 did not occur in the run.
 `ruff check .` uses only correctness rules ([`ruff.toml`](../ruff.toml)). CI
-([`chart-analysis.yml`](../.github/workflows/chart-analysis.yml)) runs Ruff and 91 of the 229 test files on Ubuntu
-(1,528 tests when collected at this commit) and the measurement-script tests on Windows; the full suite is run locally.
+([`chart-analysis.yml`](../.github/workflows/chart-analysis.yml)) runs Ruff and 94 of the 232 test files on Ubuntu
+(1,580 tests when collected at this commit) and the measurement-script tests on Windows; the full suite is run locally.
 
 ## 8. Limitations, known gaps and next steps
 
@@ -1236,11 +1290,15 @@ dağılır. Bu yüzden koruyucu izleyici (vadeli pozisyonlar için) ve Box zaman
 ağ çağrıları kilitsiz yapılır, her defter kısa bir kilitli bölümde güncellenir ve yavaş bir tur stopları geciktirmez.
 
 Depodaki `config.yaml` dosyasında öğrenme modu açıktır (`learning_mode.enabled: true`). Çalışan sistemi baseline değil
-öğrenme modu kuralları yönetir. Ana botta boyut slotlardan gelir ve çarpanlar yalnız kaydedilir. Negatif beklentili ve
-araştırma boyutlu adaylar keşif işlemi olarak açılır. SHORT ve yalnız-vadeli cezaları uygulanmaz. Rejim kapısı, mum
-vetosu ve engelleyen yapı kararları yalnız kayıt tutar; bu yüzden SHORT ve BTC EMA200 altındayken giriş mümkündür. Box
-asgari stopu %2,22 yerine %0,32'dir. D4 ve C4 40 coinlik evrenin tamamında, Formasyon 30 laboratuvar coini ile bu evrenin
-birleşiminde (47 sembol) girer. C4S öğrenme modunun dışındadır.
+öğrenme modu kuralları yönetir. Ana botta boyut slotlardan gelir ve çarpanlar yalnız kaydedilir. 2026-10-03'ten beri
+öğrenme-ekstra girişler nedenine göre ayrılır (`extra_entries: record_selectivity`): yalnız hesap/defter kapasitesi ya da
+emir boyutu kuralının durduracağı giriş (toplam açık risk, adet, marj, en küçük emir) gerçek açılır; taban kuralların
+SİNYALİ reddedeceği giriş (negatif beklenti, araştırma boyutu, rejim kapısı, mum vetosu, engelleyen yapı, kaldıraç
+NO_TRADE'i, defter evreni, Formasyon R/R tabanı, sınıflanamayan kod) açılmaz, `LEARNING_RECORD_ONLY` nedenli
+karşı-olgusal olarak kaydedilir. SHORT ve yalnız-vadeli cezaları uygulanmaz. Box asgari stopu %2,22 yerine %0,5'tir
+(2026-10-03'e kadar %0,32); bu girişler gerçek açılır. D4 ve C4 40 coinlik evrenin tamamını, Formasyon 30 laboratuvar
+coini ile bu evrenin birleşimini (47 sembol) tarar; defterin kendi evreni dışındaki giriş yalnız kaydedilir. C4S öğrenme
+modunun dışındadır. Geri dönüş anahtarı: `extra_entries: open`.
 
 Açılamayan geçerli sinyaller karşı-olgusal olarak kaydedilir ve defterin kendi maliyet modeliyle net R olarak
 etiketlenir. Ortak deneyim katmanı ve gölge danışman yalnız kayıt tutar; danışmanın kuralı ve değerlendirme protokolü
@@ -1254,7 +1312,8 @@ kâğıt işlemdir ve şu ana kadar istatistiksel olarak kesin değildir.
 - **Muhasebe:** izole marj, komisyon, 3 bps kayma, borsa filtreleri, gerçekleşmiş fonlama, ihtiyatlı likidasyon sırası,
   stop taşıma düzeltmesi.
 - **Öğrenme modu (açık):** yalnız PAPER; slot sayısı K ile boyut, marj ≤ %95, likidasyon ≥ 2 × stop, politika rezervi;
-  işlemler politika / öğrenme-ekstra ve keşif olarak etiketlenir, raporlar bunları ayırır.
+  işlemler politika / öğrenme-ekstra ve keşif olarak etiketlenir; seçicilik-ekstra adaylar açılmaz, kayda alınır; karne
+  bunları ayrı sınıf olarak ve defter başına aylık +%1 hedefe uzaklığı (yalnız rapor) gösterir.
 - **Ana botun `p_win`'i:** terfi etmiş bir şampiyon model yoksa hiyerarşik önsel ile eski öğrenicinin ortalaması; model
   eğitimi en az 40 kapanış ister ve terfi elle yapılır.
 - **Bilinen açık:** ana botun spot alımları için stop emri konmaz, koruyucu izleyici spot defterini izlemez ve worker
@@ -1266,7 +1325,7 @@ kâğıt işlemdir ve şu ana kadar istatistiksel olarak kesin değildir.
   tetikleyen bir yol yoktur.
 - **Kesinti politikası:** 2 saatten uzun kesintide aradaki barlar uygulanmaz, kesinti kaydedilir; geçmiş uzlaştırma
   yalnız ayrı simülasyondur.
-- **Testler:** ağsız; bu belge için yapılan koşuda 4.161 test, 4.153 geçti, 8 atlandı, 0 başarısız.
+- **Testler:** ağsız; bu belge için yapılan koşuda 4.213 test, 4.205 geçti, 8 atlandı, 0 başarısız.
 - **Okuma sırası:** `config.yaml` → `cli.py` → `engine_v3.py` → `coinhead/` → `opportunity.py` ve `risk/engine.py` →
   `accounting/futures_ledger.py` → `strategy_paper.py` → kural modülleri → iş parçacıkları → öğrenme katmanları →
   `signal_lab.py`.

@@ -27,9 +27,10 @@ from .accounting.futures_ledger import exit_decision
 from .candle_confirmation import closed_bars
 from .core import atomic_write_json, from_iso, iso, quantize_qty, utc_now
 from .learn import TradeMemory
-from .learning_mode import (BASELINE_SIZE_KEY, DEFAULT_MAX_TOTAL_OPEN_RISK_PCT, RISK_NOTIONAL_ROUND_TOL, SIZE_BUMP,
-                            SIZE_SHRUNK, baseline_size_tag, baseline_view, counterfactual_ok, fit_with_reserve,
-                            learning_tags, policy_reserve_usdt, profile_for)
+from .learning_mode import (BASELINE_SIZE_KEY, DEFAULT_MAX_TOTAL_OPEN_RISK_PCT, LEARNING_RECORD_ONLY,
+                            RECORD_ONLY_FEATURE, RISK_NOTIONAL_ROUND_TOL, SIZE_BUMP, SIZE_SHRUNK, baseline_size_tag,
+                            baseline_view, counterfactual_ok, fit_with_reserve, learning_tags, policy_reserve_usdt,
+                            profile_for, record_only)
 from .regime_gate import BTC_SYMBOL
 from .risk import RiskEngine, build_state, enforces_position_cap
 from . import paper_rules
@@ -567,6 +568,16 @@ def _open_learning(act: dict[str, Any], *, symbol: str, direction: str, entry: f
     lev = int(rd.adjusted_leverage or fit.leverage)
     if notional <= 0:
         reject(symbol, "ZERO_NOTIONAL")
+        return "REJECTED"
+    # SEÇİCİLİK-EKSTRA YALNIZ KAYIT (2026-10-03, sahip kararı): açılış kararı burada KESİN (boyut, politika rezervi, risk
+    # kapıları bugünkü gibi uygulandı). Kip `record_selectivity` ve en az bir seçicilik kodu → AÇILMAZ; çağıranın
+    # karşı-olgusal kaydı (`StrategyBook._learning_after`) ayrılan kodları ve öğrenme boyutunu taşır. `open` → None, bit-aynı.
+    div = record_only(unlocked, learning)
+    if div is not None:
+        tags["record_only"] = dict(div, book=str(getattr(learning, "name", "")), size_rule=fit.size_rule,
+                                   notional=round(notional, 6), leverage=int(lev), risk_usdt=round(fit.risk_usdt, 6),
+                                   slots=int(learning.slots), risk_pct=float(learning.risk_pct), equity_basis=E)
+        reject(symbol, LEARNING_RECORD_ONLY)
         return "REJECTED"
     feats, data_src = _entry_features(act, data)
     feats["learning"] = dict(lrn)
@@ -1177,7 +1188,8 @@ class StrategyBook:
 
     # ------------------------------------------------------------------ öğrenme modu (2026-09-28)
     def _learning_params(self, bl: Any) -> Any:
-        """Box: öğrenme `min_stop_pct` (0,32) ile AYRI parametre nesnesi — taban nesne değişmez; diğer aileler taban."""
+        """Box: öğrenme `min_stop_pct` (0,5; 2026-10-03'e kadar 0,32) ile AYRI parametre nesnesi — taban nesne değişmez;
+        diğer aileler taban."""
         msp = getattr(bl, "min_stop_pct", None)
         if self.rule.family != "box" or msp is None:
             return self.rule_params
@@ -1275,7 +1287,7 @@ class StrategyBook:
 
     def _cf_record(self, sym: str, act: dict[str, Any], reason: str, *, price: float, now: datetime,
                    verdict: DataVerdict, variation: str | None = None, rule_version: str | None = None,
-                   extra_features: dict[str, Any] | None = None) -> bool:
+                   extra_features: dict[str, Any] | None = None, extra_reasons: list[str] | None = None) -> bool:
         """Açılmayan geçerli sinyalin karşı-olgusal kaydı (P1: anahtar = barın sinyal kimliği, tur kimliği DEĞİL).
         Etiket türü: mum/Box TARGET_STOP_TIME (kuralın kendi hedef/stop/zaman çıkışı), D4/T2/M2 HORIZON (yaklaşık)."""
         from .learning_cf import HORIZON_BARS, LABEL_HORIZON, LABEL_TARGET_STOP_TIME
@@ -1321,7 +1333,8 @@ class StrategyBook:
         ok = self.cf.record(signal_key=key, symbol=sym, direction=direction, entry=entry, stop=stop, targets=targets,
                             reason=str(reason), created_at=now, tf_minutes=tf_ms(tf) // 60_000, horizon_bars=int(horizon),
                             label_kind=kind, features=feats, variation=variation,
-                            rule_version=rule_version or act.get("lab_algo") or act.get("params_label") or self.name)
+                            rule_version=rule_version or act.get("lab_algo") or act.get("params_label") or self.name,
+                            **({"extra_reasons": list(extra_reasons)} if extra_reasons else {}))
         if ok:
             self._count("counterfactual_recorded")
         return ok
@@ -1355,7 +1368,22 @@ class StrategyBook:
             fam_candle = self.rule.family == "candle"
             if res == "REJECTED" and is_open:
                 why = str((self.last_actions.get(sym) or {}).get("reason") or "")
-                if counterfactual_ok(why):
+                ro = (a.get("_learning") or {}).get("record_only") if isinstance(a.get("_learning"), dict) else None
+                if why == LEARNING_RECORD_ONLY and isinstance(ro, dict):
+                    # seçicilik-ekstra YALNIZ KAYIT (2026-10-03): neden + ayrılan kodlar + kullanacağı öğrenme boyutu.
+                    # Aynı sinyalin başka nedenli bekleyen kaydı varsa o kayıt dönüşür (`open`da açılış onu düşürürdü).
+                    # Sayaç KAYIT sayar (yeni ya da dönüşen); aynı sinyalin sonraki turları sayılmaz. `rejections` ise
+                    # diğer ret nedenleri gibi her turdaki olayı sayar.
+                    var = a.get("lab_algo") if fam_candle else None
+                    ok = self._cf_record(sym, a, why, price=price, now=now, verdict=verdict, variation=var,
+                                         extra_features={RECORD_ONLY_FEATURE: dict(ro)},
+                                         extra_reasons=list(ro.get("codes") or []))
+                    if not ok and self.cf is not None:
+                        ok = self.cf.retag_record_only(signal_key=_signal_key(a), symbol=sym, variation=var,
+                                                       direction=str(a.get("direction") or "LONG"), info=dict(ro)) > 0
+                    if ok:
+                        self._count("learning_record_only")
+                elif counterfactual_ok(why):
                     self._cf_record(sym, a, why, price=price, now=now, verdict=verdict,
                                     variation=(a.get("lab_algo") if fam_candle else None))
             elif not pos_open and not is_open and counterfactual_ok(str(a.get("reason") or "")) \
@@ -1380,8 +1408,9 @@ class StrategyBook:
         """SPEC A15 "+CF" (2026-09-28, öğrenme modu; ikinci doğrulama turu): sembolde pozisyon AÇIKKEN TABAN kuralın (kendi
         parametreleriyle — Box'ta taban `min_stop_pct`) TAZE giriş sinyali POSITION_OPEN karşı-olgusalı olur: tabanın
         alacağı sinyal, öğrenme defterinde daha önce açılmış (ör. dar stoplu) bir işlem sembolü tuttuğu için kaybolmasın.
-        Öğrenme parametresiyle (Box 0,32) doğan dar stoplu sinyaller açık sembolde YAZILMAZ: 24 saatlik uçtan uca koşuda
-        Box'ta günde ~511 kayıt ediyordu (tabanınki ~47) — aynı hareketin ardışık barları, dosya/bellek yükü. Yalnız OLAY
+        Öğrenme parametresiyle (Box 0,5; 2026-10-03'e kadar 0,32) doğan dar stoplu sinyaller açık sembolde YAZILMAZ: 24
+        saatlik uçtan uca koşuda Box'ta günde ~511 kayıt ediyordu (tabanınki ~47) — aynı hareketin ardışık barları,
+        dosya/bellek yükü. Yalnız OLAY
         tabanlı aileler (Box, D4); mum ailesi `_cf_candle`da. Trend ailesinin girişi bir DURUM koşuludur (pozisyon boyunca
         her bar doğru) → tutulan işlemin günlük tekrarı olurdu, yazılmaz. Açık pozisyonun KENDİ (ya da daha eski) sinyali
         kaydedilmez. Öğrenme parametresi (`_learning_params`) bilerek KULLANILMAZ.

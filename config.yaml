@@ -569,8 +569,9 @@ pattern_trader:                # FORMASYON PAPER TRADER V1 — yeni listeleme ö
 # ---- ÖĞRENME MODU (2026-09-28, öğrenme modu) — YALNIZ PAPER --------------------------------------------------
 # Amaç: her bot (ana bot, T2, M2, Box, D4, C4, formasyon) mümkün olan en çok işleme girsin; ortak öğrenme katmanı
 # R deneyimi toplasın. Yalnız ölçümü bozmayan sınırlar gevşer (toplam açık risk %6 → 100, adet/marj darboğazı, Box
-# min stop 2,22 → 0,32, kapıların girişi gölgede); veri kimliği, R geometrisi, çift sayım, 60 dk giriş pencereleri,
-# sembol başına tek pozisyon ve borsa filtreleri AYNEN kalır. Tek kaynak: `tradingbot/learning_mode.py`.
+# min stop 2,22 → 0,5 (2026-10-03; önce 0,32), kapıların girişi gölgede); veri kimliği, R geometrisi, çift sayım,
+# 60 dk giriş pencereleri, sembol başına tek pozisyon ve borsa filtreleri AYNEN kalır. Tek kaynak:
+# `tradingbot/learning_mode.py`.
 # * YALNIZ PAPER: mode=PAPER + gateway=paper + testnet kapalı + risk profili PAPER_RESEARCH değilse ConfigError; çalışma
 #   anında mod kapısı düşerse "ÖĞRENME MODU ASKIDA" olur ve bütün botlar bugünkü (baseline) kurallarla sürer.
 # * BOYUT: işlem başı hedef risk %0,5 (bugün %2) → işlem başına USDT ≈ 1/4'e iner; R (kâr/zarar ÷ ilk stop riski)
@@ -580,6 +581,14 @@ pattern_trader:                # FORMASYON PAPER TRADER V1 — yeni listeleme ö
 #   Açık pozisyonlar kendi stop/hedef/kaldıracıyla kapanır (zorla kapanış yok); toplam açık risk %6'nın altına inene
 #   kadar TOTAL_OPEN_RISK yeni girişleri durdurabilir — beklenen davranıştır.
 # * `learning_mode_since` (state/learning_mode.json) ilk aktif anı tutar; panel ve bot karnesi öncesi/sonrası ayırır.
+# * EKSTRA GİRİŞLER (2026-10-03, sahip kararı; hedef: her algoritma kendi kâğıt bakiyesinde ayda en az +%1 net):
+#   `extra_entries: record_selectivity` → taban kuralların SİNYALİ reddedeceği öğrenme-ekstra adaylar (ekonomi, yapı,
+#   mum/rejim vetosu, kaldıraç NO_TRADE'i, defter evreni, Formasyon R/R tabanı; bilinmeyen kod da) AÇILMAZ, nedeni
+#   LEARNING_RECORD_ONLY olan "olsaydı" kaydı olur (bakiyeye dokunmaz). Yalnız kapasite/emir boyutu kapısının durduracağı
+#   adaylar (TOTAL_OPEN_RISK, adet, marj, min-notional, ...) ve Box'ın %2,22 altı stopu (BOX_MIN_STOP_PCT) GERÇEK açılır.
+#   Kanıt ve sınıf tablosu: docs/ogrenme_modu/DURUM.md (2026-10-03), `tradingbot/learning_mode.py`. Açık pozisyonlara
+#   dokunulmaz. KILL SWITCH: `extra_entries: open` + worker'ı yeniden başlat (bütün öğrenme-ekstralar yine açılır).
+#   Box öğrenme stop tabanı 0,32 → 0,5 (stop < %0,5 sinyal hiç üretilmez; kanıt: < %0,5 72 işlem −0,56R).
 learning_mode:
   enabled: true
   risk_per_trade_pct: 0.5
@@ -589,11 +598,12 @@ learning_mode:
   min_notional_bump: true
   counterfactual: true
   counterfactual_max_pending: 2000
+  extra_entries: record_selectivity   # open | record_selectivity (2026-10-03; kill switch: open)
   books:
     main:                         {enabled: true, slots: 20, leverage_max: 5}   # 5 = kademe tavanı (profil 5); likidasyon tamponu ayrıca kısar
     t2_trend_regime:              {enabled: true, slots: 40, leverage_max: 4}
     m2_tsmom28:                   {enabled: true, slots: 40, leverage_max: 4}
-    b1_box_fade:                  {enabled: true, slots: 40, leverage_max: 4, min_stop_pct: 0.32}   # 2026-09-30: 20→40 (kullanıcı onayı; ~570 sinyal teminat dolduğu için kaçtı)
+    b1_box_fade:                  {enabled: true, slots: 40, leverage_max: 4, min_stop_pct: 0.5}   # 2026-09-30: 20→40 (kullanıcı onayı; ~570 sinyal teminat dolduğu için kaçtı); 2026-10-03: stop tabanı 0,32→0,5 (sahip kararı)
     d4_donchian_20_10:            {enabled: true, slots: 20, leverage_max: 3, symbols: universe}
     c4_candle_variations:         {enabled: true, slots: 20, leverage_max: 3, symbols: universe}
     c4s_candle_variations_strict: {enabled: false}

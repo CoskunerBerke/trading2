@@ -179,6 +179,7 @@ def test_engine_config_hash_is_unchanged_by_the_advisor_fields():
     absent, rec, adv = _load(None), _load(ON), _load(ADV)
     other = _load(dict(ADV, advisor_budget_ms=900, advisor_snapshot_every_steps=500, advice_max_total_mb=4000))
     head_fields = {k: v for k, v in asdict(absent).items() if k != "shared_experience"}
+    head_fields["learning_mode"].pop("extra_entries")   # 2026-10-03: kod varsayılanı `open` karar kimliğine girmez
     assert h(absent) == h(rec) == h(adv) == h(other) == payload_hash(head_fields)
 
 

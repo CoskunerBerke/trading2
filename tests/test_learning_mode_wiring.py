@@ -260,10 +260,12 @@ def test_chief_capacity_rule_text():
 CONTRACT_SECTION = {
     "enabled": True, "risk_per_trade_pct": 0.5, "max_total_open_risk_pct": 100, "margin_reserve_pct": 5,
     "liq_buffer_mult": 2.0, "min_notional_bump": True, "counterfactual": True, "counterfactual_max_pending": 2000,
+    # 2026-10-03 (sahip kararı): seçicilik-ekstra yalnız kayıt; Box öğrenme stop tabanı 0,32 → 0,5
+    "extra_entries": "record_selectivity",
     "books": {"main": {"enabled": True, "slots": 20, "leverage_max": 5},
               "t2_trend_regime": {"enabled": True, "slots": 40, "leverage_max": 4},
               "m2_tsmom28": {"enabled": True, "slots": 40, "leverage_max": 4},
-              "b1_box_fade": {"enabled": True, "slots": 40, "leverage_max": 4, "min_stop_pct": 0.32},
+              "b1_box_fade": {"enabled": True, "slots": 40, "leverage_max": 4, "min_stop_pct": 0.5},
               "d4_donchian_20_10": {"enabled": True, "slots": 20, "leverage_max": 3, "symbols": "universe"},
               "c4_candle_variations": {"enabled": True, "slots": 20, "leverage_max": 3, "symbols": "universe"},
               "c4s_candle_variations_strict": {"enabled": False},
@@ -280,7 +282,8 @@ def test_config_yaml_section_is_exactly_the_contract_and_validates(monkeypatch):
     cfg = load_config(ROOT / "config.yaml")
     lm = cfg.v3.learning_mode
     assert lm.enabled is True and lm.risk_per_trade_pct == 0.5 and lm.max_total_open_risk_pct == 100
-    assert lm.books["b1_box_fade"].min_stop_pct == 0.32 and lm.books["c4s_candle_variations_strict"].enabled is False
+    assert lm.books["b1_box_fade"].min_stop_pct == 0.5 and lm.books["c4s_candle_variations_strict"].enabled is False
+    assert lm.extra_entries == "record_selectivity"
     assert lm.books["d4_donchian_20_10"].symbols == "universe" and lm.books["pattern_trader"].slots == 30
     assert not any("learning_mode" in w for w in cfg.v3.warnings)
     txt = (ROOT / "config.yaml").read_text(encoding="utf-8")

@@ -23,6 +23,9 @@ from typing import Any, Iterable
 
 from .features import build_features, feature_names, to_vector
 
+#: `learning_mode.LEARNING_RECORD_ONLY` (test eşitliği korur; içe aktarma döngüsü olmasın diye burada sabit).
+RECORD_ONLY_REASON = "LEARNING_RECORD_ONLY"
+
 SCHEMA_VERSION = "experience_pool_v1"
 
 REAL_PAPER, SHADOW = "REAL_PAPER", "SHADOW"
@@ -223,12 +226,17 @@ def shadow_experiences(trades: Iterable[dict[str, Any]], *, as_of_ms: int | None
     * `outcome` YOKSA (etiketlenmemiş) havuza GİRMEZ.
     * `labeled_at` > `as_of_ms` ise GİRMEZ (gelecekte etiketlenmiş sonuç sızamaz).
     * Ağırlık `weight × fidelity` — gerçek fill'den DAİMA düşüktür.
+    * İlk nedeni LEARNING_RECORD_ONLY olan kayıt (öğrenme modunun seçicilik-ekstra YALNIZ KAYIT adayı, 2026-10-03) havuza
+      GİRMEZ: bu kayıtlar karar girdisi değildir (tek karar değişikliği "seçicilik-ekstra artık açılmaz" kalsın).
     """
     out: list[Experience] = []
     for t in trades:
         o = t.get("outcome")
         if not isinstance(o, dict) or not o:
             continue                                   # ETİKETSİZ → dışarıda
+        rno = t.get("reason_not_opened")
+        if isinstance(rno, (list, tuple)) and rno and str(rno[0]) == RECORD_ONLY_REASON:
+            continue                                   # seçicilik YALNIZ KAYIT → karar girdisi değil
         labeled = _ms(t.get("labeled_at")) or _ms(t.get("label_ts"))
         if as_of_ms is not None and (labeled is None or labeled > int(as_of_ms)):
             continue                                   # no-lookahead

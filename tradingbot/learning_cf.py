@@ -68,7 +68,7 @@ from .accounting.funding import FundingSchedule
 from .accounting.models import MarketType, SymbolFilters
 from .core import D, from_iso, iso, stable_id
 from .learn.shadow import ShadowBook, ShadowTrade, label_with_candles
-from .learning_mode import counterfactual_ok
+from .learning_mode import counterfactual_ok, retag_as_record_only
 from .timeframes import TF_MS
 
 LABEL_TARGET_STOP_TIME = "TARGET_STOP_TIME"
@@ -748,8 +748,11 @@ class CounterfactualRecorder:
     # ------------------------------------------------------------ kayıt
     def record(self, *, signal_key: str, symbol: str, direction: str, entry: float, stop: float, targets: list[float],
                reason: str, created_at: datetime, tf_minutes: int, horizon_bars: int, label_kind: str,
-               features: dict | None = None, variation: str | None = None, rule_version: str | None = None) -> bool:
-        """Kaydedildiyse True. False: geçersiz geometri/girdi, neden karşı-olgusala uygun değil, ya da tekrar."""
+               features: dict | None = None, variation: str | None = None, rule_version: str | None = None,
+               extra_reasons: list[str] | None = None) -> bool:
+        """Kaydedildiyse True. False: geçersiz geometri/girdi, neden karşı-olgusala uygun değil, ya da tekrar.
+        `extra_reasons` (2026-10-03, seçicilik YALNIZ KAYIT): ilk nedenden SONRA `reason_not_opened`a eklenen ayrılan kodlar
+        (en çok 15); verilmezse kayıt bit-aynı (`[reason]`). Okuyucular yalnız ilk nedene bakar."""
         if not signal_key or not symbol or not counterfactual_ok(reason):
             return False
         side = str(direction or "").upper()
@@ -785,7 +788,8 @@ class CounterfactualRecorder:
         st_rec = ShadowTrade(
             id="cf_" + stable_id("cf", *key), plan_id=str(signal_key), symbol=str(symbol), market_type="USDM_PERP",
             direction=side, created_at=iso(created), entry=px, stop=st, targets=tgts, horizon_bars=int(horizon),
-            variant="as_planned", reason_not_opened=[str(reason)],
+            variant="as_planned",
+            reason_not_opened=[str(reason)] + [str(x) for x in (extra_reasons or []) if str(x) != str(reason)][:15],
             label_ts=iso(created + timedelta(minutes=tf * horizon)), tf_minutes=tf, leverage=1.0,
             book=self.book_name, signal_key=str(signal_key), variation=(str(variation) if variation else None),
             label_kind=kind, features=_clean(dict(features)) if features else None, learning_unlocked=False,
@@ -837,6 +841,25 @@ class CounterfactualRecorder:
         if n:
             self.sb.trades = keep
             self.superseded += n
+            self._dirty = True
+        return n
+
+    def retag_record_only(self, *, signal_key: str | None, symbol: str, direction: str, variation: str | None = None,
+                          info: dict[str, Any]) -> int:
+        """Seçicilik-ekstra YALNIZ KAYIT (2026-10-03): aynı sinyalin (defter, anahtar, sembol, yön, varyasyon) BAŞKA nedenle
+        yazılmış BEKLEYEN kaydı varken tekillik yeni kaydı engeller; o kayıt `learning_mode.retag_as_record_only` ile
+        LEARNING_RECORD_ONLY nedenine dönüşür (`open` kipinde giriş açılınca `supersede` ile düşerdi). Yeni kayıt YAZILMAZ,
+        `recorded_total` değişmez. Döner: dönüşen kayıt sayısı."""
+        if not signal_key:
+            return 0
+        key = self._key(signal_key, symbol, str(direction or "").upper(), variation)
+        n = 0
+        for t in self.sb.trades:
+            if self._key(t.signal_key or t.plan_id, t.symbol, t.direction, t.variation) == key \
+                    and retag_as_record_only(t, info):
+                t.features = _clean(t.features)
+                n += 1
+        if n:
             self._dirty = True
         return n
 

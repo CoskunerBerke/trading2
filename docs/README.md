@@ -69,6 +69,8 @@ should be read as a claim of profitability.
 | [FUTURES_OI_FUNDING_LAB.md](FUTURES_OI_FUNDING_LAB.md) | Pre-registered open-interest and funding lab (`fut_v1`) with its seal. |
 | [GOLD_LAB_V1.md](GOLD_LAB_V1.md) | Pre-registered gold lab (`gold_v1`): the 20/50 EMA and order-block/FVG/sweep/CHoCH rules on PAXG/XAU, with its seal. |
 | [GOLD_LAB_V1_RESULTS.md](GOLD_LAB_V1_RESULTS.md) | gold_v1 results: no cell met the +1%/month target; 0 strong candidates in 32 cells. |
+| [M2_AGGRESSIVE_V1.md](M2_AGGRESSIVE_V1.md) | Pre-registered M2X aggressive paper book (`m2x_v1`): copies M2's trades with 2% risk, open-risk caps, a crash budget, a drawdown ladder and a -50% entry halt; off by default. |
+| [M2_AGGRESSIVE_V1_SIM.md](M2_AGGRESSIVE_V1_SIM.md) | m2x_v1 simulation results on 2023-01 to 2026-09 archives (M2, M2X v1, proportional copy, information arms, policy-replay bootstrap); no halt in the history, figures are past data only. |
 | [quant_evaluation_v1.md](quant_evaluation_v1.md) | Inventory and design of the offline quant evaluation package. |
 | [ENTRY_SELECTIVITY_CHALLENGER_V1.md](ENTRY_SELECTIVITY_CHALLENGER_V1.md) | Five shadow challenger families that ask "what if this family had blocked the entry?". |
 | [WEEKLY_MARKET_STRUCTURE_V1.md](WEEKLY_MARKET_STRUCTURE_V1.md) | Two further shadow challenger families: weekly structure and contextual price action. |

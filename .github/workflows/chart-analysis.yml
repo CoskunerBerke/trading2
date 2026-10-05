@@ -126,6 +126,7 @@ jobs:
             tests/test_research_engine_archive.py tests/test_research_engine_daily_target.py \
             tests/test_research_engine_night.py tests/test_research_engine_backup.py \
             tests/test_research_engine_contract.py tests/test_research_engine_standalone.py \
+            tests/test_research_engine_release.py \
             -q --tb=short > pytest.out 2>&1
           rc=$?
           cat pytest.out

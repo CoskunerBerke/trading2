@@ -10,19 +10,19 @@
 #   klasörlerine (engine-app, birim dosyaları, deploy-logs/engine-*) yazar.
 #
 # Kullanım (VPS'te, sahip çalıştırır; dosya adı tb-engine-<hedefin ilk 7 hanesi>.sh):
-#   sudo bash tb-engine-4856112.sh --dry-run    # yalnız denetim, hedef kod GEÇİCİ klonda (yalnız deploy-logs'a kayıt)
-#   sudo bash tb-engine-4856112.sh              # dağıt: klon + dizin + kapılı birim kurulumu + elle smoke
-#   sudo bash tb-engine-4856112.sh --check      # 14 gün her gün (yalnız deploy-logs/engine-<sha7>-samples.jsonl'a yazar)
-#   sudo bash tb-engine-4856112.sh --ab-report  # 14. geceden sonra bir kez: AÇIK/KAPALI geceler aynı saat penceresinde
-#   sudo bash tb-engine-4856112.sh --rollback   # zamanlayıcı + servis + engine-app kaldırılır; data/research KALIR
+#   sudo bash tb-engine-778b90f.sh --dry-run    # yalnız denetim, hedef kod GEÇİCİ klonda (yalnız deploy-logs'a kayıt)
+#   sudo bash tb-engine-778b90f.sh              # dağıt: klon + dizin + kapılı birim kurulumu + elle smoke
+#   sudo bash tb-engine-778b90f.sh --check      # 14 gün her gün (yalnız deploy-logs/engine-<sha7>-samples.jsonl'a yazar)
+#   sudo bash tb-engine-778b90f.sh --ab-report  # 14. geceden sonra bir kez: AÇIK/KAPALI geceler aynı saat penceresinde
+#   sudo bash tb-engine-778b90f.sh --rollback   # zamanlayıcı + servis + engine-app kaldırılır; data/research KALIR
 # Çıkış: 0 tamam · 1 durdu (ön denetimde: hiçbir şey değişmedi) · 2 smoke geçmedi ya da saati değil (zamanlayıcı KAPALI)
 #   · 3 reload sonrası MemoryMax kayması (motor birimleri geri alındı) · 4 dağıtıldı ama bir değişmez KALDI.
 #
-# DAEMON-RELOAD GÜVENLİĞİ (§9.3): depodaki worker birimi MemoryMax=4G der, VPS'te 6G override vardır. daemon-reload
-#   (enable/disable'ın örtük reload'u dahil) YALNIZ reload_gate'ten geçer: worker ve dashboard NeedDaemonReload=no ve
-#   worker MemoryMax=6G; reload'dan SONRA 6G yeniden doğrulanır, değilse motor birimleri geri alınır ve betik durur.
-#   setup_vps_v3.sh ASLA çalıştırılmaz; systemctl set-property / edit / revert kullanılmaz.
-# SAAT: dağıtım (ve smoke) UTC 00:00–04:00 (gece birimi penceresi) ve 4h yayın pencerelerinde (hh:00–hh:35, hh 4'ün
+# DAEMON-RELOAD GÜVENLİĞİ (§9.3): depodaki worker birimi MemoryMax=4G der, VPS'te 6G override vardır. daemon-reload (enable/
+#   disable'ın örtük reload'u dahil) YALNIZ reload_gate'ten geçer: worker ve dashboard NeedDaemonReload=no ve worker 6G;
+#   reload'dan SONRA 6G yeniden doğrulanır, değilse motor birimleri geri alınır ve betik durur. setup_vps_v3.sh ASLA
+#   çalıştırılmaz; systemctl set-property / edit / revert kullanılmaz.
+# SAAT: dağıtım, smoke ve kuru çalışma UTC 00:00–04:00 (gece birimi) ve 4h yayın pencerelerinde (hh:00–hh:35, hh 4'ün
 #   katı; +5 dk pay) BAŞLAMAZ; başka bir sürümün 7 günlük --check penceresi içinde (deploy-logs/*-restart-at.txt) DURUR.
 # KAPATMA (anında, veri yerinde kalır): sudo systemctl disable --now tradingbot-engine-night.timer
 #   (disable örtük reload yapar: önce  systemctl show tradingbot-worker -p NeedDaemonReload  → no olmalı; değilse yalnız
@@ -32,15 +32,17 @@
 #   veri reddi oranı worker'da zaman damgalı tutulmaz (birikimli sayaç + son değerler): --ab-report bunları --check
 #   örnekleri arasındaki artıştan ve aradaki TEK A/B gecesine göre KABA gruplar (gece + gündüz); tur süreleri, 418/429,
 #   PAPER_RESEARCH_ACTIVE ve tur hataları ise worker günlüğünden her gece 01:37–03:40 UTC penceresinde TAM ölçülür.
+#   A/B KAPALI gecesi = S0 + S1s (yalnız ölçülmüş anlık görüntü; §7.1 W(D) için; night.py madde 2); A/B dönemi motor
+#   KOD özetine bağlıdır (selfcheck madde 5). K6 --check'te otomatiktir. Ağır adımlar nice 19 + ionice idle (§2.9).
 set -Eeuo pipefail
 
-TIP="48561123f0895d518b91b18249b05bbbcfcff90e"    # P1a kod commit'i (impl/system)
+TIP="778b90f9f06ade8cad8883a5e507a72cc5fbc3f5"    # P1a kod commit'i (impl/system; 1. inceleme turu düzeltmeleri)
 T7="${TIP:0:7}"
 BRANCH_REF="refs/heads/impl/system"
 REPO_URL="${TB_ENGINE_REPO_URL:-https://github.com/CoskunerBerke/trading2.git}"   # içerik TAM SHA'ya bağlıdır
 SVC_SHA256="0db7a26a2a2c955ef3d9cdb83834f816c0556752233a8f312b3ffbbd7ca89b2e"   # deploy/tradingbot-engine-night.service @TIP
 TMR_SHA256="59fa82a34182f1e8c50377d6633191881a2250e640098cf8c369a5cff46b6ed6"   # deploy/tradingbot-engine-night.timer @TIP
-INV_TESTS=26                                     # bağımsız koşucunun alt kümesi (kabul 1–8, 13, 14)
+INV_TESTS=33                                     # bağımsız koşucunun alt kümesi (kabul 1–8, 13, 14)
 
 BASE="${TRADINGBOT_BASE:-/opt/tradingbot}"
 APP="$BASE/app"; ENG="$BASE/engine-app"; VENV="$BASE/venv"; DATA="$BASE/data"; STATE="$DATA/state"; RES="$DATA/research"
@@ -60,6 +62,7 @@ as_svc() { sudo -u "$SVC_USER" "$@"; }
 svc() { local d="$1"; shift; as_svc env -i -C "$d" PATH=/usr/local/bin:/usr/bin:/bin HOME="$BASE" LANG=C.UTF-8 TZ=UTC \
           PYTHONDONTWRITEBYTECODE=1 "$@"; }
 gitx() { local d="$1"; shift; svc "$d" GIT_TERMINAL_PROMPT=0 git "$@"; }
+LOW=(nice -n 19); if command -v ionice >/dev/null 2>&1; then LOW+=(ionice -c3 -t); fi   # ağır adımlar: CPU/IO en düşük
 sc_show() { systemctl show "$1" -p "$2" --value 2>/dev/null || true; }
 cleanup() { if [[ -n "$TMP" && "$TMP" == /tmp/tb-engine-* && -d "$TMP" ]]; then rm -rf -- "$TMP"; fi; }
 on_err() { printf '\nDUR: beklenmeyen hata (satır %s). Bu çalıştırmada değişen: %s\n' "$1" "${CHANGED[*]:-hiçbir şey}" >&2
@@ -67,7 +70,6 @@ on_err() { printf '\nDUR: beklenmeyen hata (satır %s). Bu çalıştırmada değ
            exit 1; }
 trap cleanup EXIT
 trap 'on_err $LINENO' ERR
-
 # inv AD 0|1 AÇIKLAMA — adlandırılmış değişmez. gate: aynı, ama dağıtımda ilk KALDI'da durur (hiçbir şey değişmeden).
 inv() {
   INV_N=$((INV_N + 1))
@@ -75,7 +77,6 @@ inv() {
   else printf '   [KALDI] #%02d %-24s %s\n' "$INV_N" "$1" "$3"; INV_FAIL+=("$1"); fi
 }
 gate() { inv "$@"; if [[ "$2" != 0 && "$MODE" == deploy ]]; then die "$1: $3. HİÇBİR ŞEYE DOKUNULMADI"; fi; }
-
 [[ "$TIP" =~ ^[0-9a-f]{40}$ ]] || die "TIP tam bir commit SHA'sı değil"
 [[ "$MODE" =~ ^(deploy|--dry-run|--check|--ab-report|--rollback)$ ]] \
   || die "bilinmeyen seçenek: $MODE (--dry-run | --check | --ab-report | --rollback | seçeneksiz = dağıt)"
@@ -110,36 +111,30 @@ read -r -d '' PYTOOL <<'PY' || true
 import ast, hashlib, json, math, os, pwd, re, subprocess, sys, time
 from datetime import datetime, timedelta, timezone
 UTC = timezone.utc
-STAGES = ("S0", "S1a", "S3", "S7", "S7b")
+STAGES = ("S0", "S1s", "S1a", "S3", "S7", "S7b")
 ACCEPT = [1, 2, 3, 4, 5, 6, 7, 8, 13, 14]
-
 def rj(p):
     try:
         with open(p, encoding="utf-8") as fh:
             return json.load(fh)
     except (OSError, ValueError):
         return None
-
 def ep(s):
     try:
         t = datetime.fromisoformat(str(s).replace("Z", "+00:00"))
     except (TypeError, ValueError):
         return None
     return (t if t.tzinfo else t.replace(tzinfo=UTC)).timestamp()
-
 def iv(x):
     try:
         return int(x)
     except (TypeError, ValueError):
         return None
-
 def f(x, nd=1):
     return "—" if x is None else ("%.*f" % (nd, x)).replace(".", ",")
-
 def pct(v, q):
     v = sorted(v)
     return v[max(0, math.ceil(q * len(v)) - 1)] if v else None
-
 def runs(res):
     d = os.path.join(res, "runs")
     try:
@@ -147,21 +142,22 @@ def runs(res):
     except OSError:
         return []
     return [r for r in (rj(os.path.join(d, n, "run_status.json")) for n in names) if isinstance(r, dict)]
-
-def release_day(res, tip):
+def epoch(res, tip):
+    """Hedef SHA'nın A/B dönem satırı (dönem = motor kod özeti; aynı kodla yeniden sabitlenen SHA eski dönemdedir)."""
     try:
         with open(os.path.join(res, "runs", "engine_epochs.jsonl"), encoding="utf-8") as fh:
-            for ln in fh:
-                try:
-                    r = json.loads(ln)
-                except ValueError:
-                    continue
-                if r.get("engine_sha") == tip:
-                    return r.get("first_seen_day")
-    except OSError:
-        pass
-    return None
-
+            rows = [json.loads(ln) for ln in fh if ln.strip()]
+    except (OSError, ValueError):
+        return None
+    return next((r for r in rows if r.get("engine_sha") == tip), None)
+def release_day(res, tip):
+    r = epoch(res, tip) or {}
+    return r.get("epoch_day") or r.get("first_seen_day")
+def mine(res, tip):
+    """Bu sürümün (aynı motor kodunun) çalıştırmaları."""
+    code = (epoch(res, tip) or {}).get("code_hash")
+    return [r for r in runs(res) if (r.get("shas") or {}).get("engine") == tip
+            or (code and (r.get("shas") or {}).get("engine_code") == code)]
 def jscan(since, until=None, unit="tradingbot-worker.service"):
     """Worker günlüğü (short-unix; akış halinde okunur): tur süreleri + olay sayıları; okunamazsa None. Günlükte her kayıt
     hem METİN hem JSON basılabilir: ikisi ayrı sayılır, büyüğü alınır."""
@@ -190,25 +186,20 @@ def jscan(since, until=None, unit="tradingbot-worker.service"):
     out = {n: max(cnt.get((n, "t"), 0), cnt.get((n, "j"), 0)) for n in ("rest418429", "research_active", "tour_error")}
     out["tours"] = tours
     return out if pr.wait() == 0 else None
-
 def c_paper(state):
     p = os.path.join(state, "mode.json")
     if not os.path.exists(p):
-        print("state/mode.json yok → worker varsayılanı PAPER")
-        return 0
+        return print("state/mode.json yok → worker varsayılanı PAPER") or 0
     d = rj(p)
     if not isinstance(d, dict):
-        print("state/mode.json OKUNAMADI")
-        return 1
+        return print("state/mode.json OKUNAMADI") or 1
     print("mode=%s live_order_path_enabled=%s" % (d.get("mode"), d.get("live_order_path_enabled")))
     return 0 if d.get("mode") == "PAPER" and d.get("live_order_path_enabled") is not True else 1
-
 def c_runner(path, n):
     d = rj(path) or {}
     print("%s geçti · %s kaldı · %s atlandı · kabul %s" % (d.get("passed"), d.get("failed"), d.get("skipped"),
                                                           d.get("acceptance_passed")))
     return 0 if (d.get("failed"), d.get("skipped"), d.get("passed"), d.get("acceptance_passed")) == (0, 0, int(n), ACCEPT) else 1
-
 def _imports(node, top_only):
     for ch in ast.iter_child_nodes(node):
         if top_only and isinstance(ch, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
@@ -220,7 +211,6 @@ def _imports(node, top_only):
             yield mod
             yield from (mod + "." + a.name for a in ch.names)
         yield from _imports(ch, top_only)
-
 def c_ast(tree):
     bad = []
     red = os.path.join(tree, "tradingbot", "research_engine")
@@ -236,12 +226,10 @@ def c_ast(tree):
         bad += ["%s (üst düzey): %s" % (fn, n) for n in _imports(t, True) if "research_engine" in n]
     print("yasak import yok" if not bad else "YASAK: " + "; ".join(bad[:5]))
     return 1 if bad else 0
-
 def c_lastrun(res):
     st = rj(os.path.join(res, "summary", "run_status.json")) or {}
     print(st.get("run_id") or "")
     return 0
-
 def c_smoke(res, tip, pre, t0, user):
     st = rj(os.path.join(res, "summary", "run_status.json")) or {}
     rid, sc, bad = st.get("run_id"), st.get("selfcheck") or {}, []
@@ -249,12 +237,10 @@ def c_smoke(res, tip, pre, t0, user):
         rid, st.get("result"), st.get("exit_code"), " ".join(st.get("plan") or []), ", ".join(st.get("flags") or []) or "—"))
     for k, v in sorted(((sc.get("isolation") or {}).get("checks") or {}).items()):
         print("     öz-denetim %-26s %s %s" % (k, v.get("status"), v.get("errno") or ""))
-    if not rid or rid == pre or (ep(st.get("started_at")) or 0) < float(t0) - 5:
-        bad.append("smoke'un yeni run_status.json'u yok")
-    if sc.get("status") != "OK":
-        bad.append("öz-denetim %s" % sc.get("status"))
-    # Sürüm günü tam plan (SUCCESS). Aynı SHA'nın A/B penceresinde YENİDEN dağıtımda KAPALI gün kuralı smoke'ta da
-    # uygulanır (yalnız S0 [+ S1a]): sonuç AB_OFF* kabul, ama planlanan HER aşama OK ve plana göre dosyalar şart.
+    bad += ["smoke'un yeni run_status.json'u yok"] if (not rid or rid == pre or (ep(st.get("started_at")) or 0) < float(t0) - 5) else []
+    bad += ["öz-denetim %s" % sc.get("status")] if sc.get("status") != "OK" else []
+    # Sürüm günü tam plan (SUCCESS). Aynı kodun A/B penceresinde YENİDEN dağıtımda KAPALI gün kuralı smoke'ta da
+    # uygulanır (S0 + S1s [+ S1a]): sonuç AB_OFF* kabul, ama planlanan HER aşama OK ve plana göre dosyalar şart.
     day, plan, ab = str(st.get("started_at"))[:10], st.get("plan") or [], (sc.get("ab") or {}).get("status")
     okres = st.get("result") == "SUCCESS" or (st.get("result") == ab and ab in ("AB_OFF", "AB_OFF_ZORUNLU_ARŞİV"))
     if not okres or st.get("exit_code") != 0:
@@ -262,34 +248,26 @@ def c_smoke(res, tip, pre, t0, user):
     for s in plan:
         if ((st.get("stages") or {}).get(s) or {}).get("status") != "OK":
             bad.append("aşama %s: %s" % (s, ((st.get("stages") or {}).get(s) or {}).get("status")))
-    if (st.get("shas") or {}).get("engine") != tip:
-        bad.append("engine SHA %s ≠ hedef" % (st.get("shas") or {}).get("engine"))
+    bad += ["engine SHA %s ≠ hedef" % (st.get("shas") or {}).get("engine")] if (st.get("shas") or {}).get("engine") != tip else []
     want = {"S0": ["summary/run_status.json", "runs/%s/run_status.json" % rid, "runs/engine_epochs.jsonl"],
-            "S1a": ["snapshots/%s.json.gz" % day], "S3": ["summary/daily_target.json"],
+            "S1s": ["snapshots/%s.json.gz" % day], "S1a": ["snapshots/%s.json.gz" % day], "S3": ["summary/daily_target.json"],
             "S7": ["summary/digest_tr.md", "summary/engine_summary.json"],
             "S7b": ["backup/research-small-%s.tar.gz" % day, "backup/research-small-%s.tar.gz.sha256" % day]}
     need = [n for s in STAGES if s in plan or s == "S0" for n in want[s]]
     bad += ["beklenen dosya yok: " + n for n in need if not os.path.isfile(os.path.join(res, n))]
-    if release_day(res, tip) is None:
-        bad.append("runs/engine_epochs.jsonl hedef SHA'yı içermiyor")
+    bad += ["runs/engine_epochs.jsonl hedef SHA'yı içermiyor"] if release_day(res, tip) is None else []
     uid, foreign = pwd.getpwnam(user).pw_uid, []
     for dp, dn, fn in os.walk(res):
         foreign += [os.path.join(dp, x) for x in dn + fn if os.lstat(os.path.join(dp, x)).st_uid != uid]
     if foreign:
         bad.append("%d dosya/klasör %s'a ait değil (ör. %s)" % (len(foreign), user, foreign[0]))
-    for b in bad:
-        print("     KALDI: " + b)
+    print("".join("     KALDI: %s\n" % b for b in bad), end="")
     return 1 if bad else 0
-
 def c_sample(state, samples, nr, pid, memmax):
     bt = rj(os.path.join(state, "box_timer.json")) or {}
     pm = rj(os.path.join(state, "protective_monitor.json")) or {}
     tours = drej = dvm = 0
-    try:
-        names = sorted(os.listdir(state))
-    except OSError:
-        names = []
-    for n in names:
+    for n in (sorted(os.listdir(state)) if os.path.isdir(state) else []):
         p = os.path.join(state, n)
         if not n.endswith(".json") or not os.path.isfile(p) or os.path.getsize(p) > 20_000_000:
             continue
@@ -309,22 +287,18 @@ def c_sample(state, samples, nr, pid, memmax):
     except OSError as exc:
         print("   ölçüm örneği yazılamadı: %s" % exc)
     return s
-
 def c_baseline(path, tip, app_sha, nr, pid, memmax, rid, state, samples):
     b = {"schema": "tb_engine_deploy_v1", "tip": tip, "app_sha": app_sha, "deployed_at": int(time.time()),
          "worker": {"nrestarts": iv(nr), "pid": iv(pid), "memmax": iv(memmax)}, "smoke_run_id": rid}
     with open(path, "w", encoding="utf-8") as fh:
-        json.dump(b, fh, indent=1)
-        fh.write("\n")
+        fh.write(json.dumps(b, indent=1) + "\n")
     c_sample(state, samples, nr, pid, memmax)
     return 0
-
 def mark(flag):
     return "[ölçülemedi]" if flag is None else ("[DİKKAT]" if flag else "[tamam]")
-
 def c_check(res, state, tip, baseline, samples, memmax, nr, pid):
     b = rj(baseline) or {}
-    allr = [r for r in runs(res) if (r.get("shas") or {}).get("engine") == tip]
+    allr = mine(res, tip)
     rs = allr[-15:]
     print("-- son çalıştırmalar (bu sürüm; en çok 15)")
     for r in rs:
@@ -334,8 +308,7 @@ def c_check(res, state, tip, baseline, samples, memmax, nr, pid):
             ((r.get("selfcheck") or {}).get("ab") or {}).get("status"),
             ("%s MB (%s × MemoryMax)" % (f((res_.get("memory_peak_bytes") or 0) / 1048576, 0), f(res_.get("memory_peak_ratio"), 2)))
             if res_.get("memory_peak_bytes") else "—"))
-    if not rs:
-        print("   (bu sürümün çalıştırması yok)")
+    print("   (bu sürümün çalıştırması yok)") if not rs else None
     print("-- P1a VPS kabul ölçütleri (§10; [DİKKAT] = bana iletin)")
     sm = next((r for r in rs if r.get("run_id") == b.get("smoke_run_id")), None)
     print("   %-13s K1 elle smoke: %s" % (mark(None if sm is None else sm.get("result") != "SUCCESS"),
@@ -355,8 +328,7 @@ def c_check(res, state, tip, baseline, samples, memmax, nr, pid):
     fail = sum(1 for r in rs if r.get("result") in ("FAILED", "NOT_PAPER", "DISK_REFUSE"))
     print("   %-13s K3 INCONSISTENT %d · ISOLATION_BROKEN %d · SKEW %d · FAILED/NOT_PAPER/DISK %d" % (
         mark(bool(inc or iso_ or skew or fail) if rs else None), inc, iso_, skew, fail))
-    pk = [(r.get("resources") or {}).get("memory_peak_ratio") for r in rs]
-    pk = [x for x in pk if isinstance(x, (int, float))]
+    pk = [x for x in ((r.get("resources") or {}).get("memory_peak_ratio") for r in rs) if isinstance(x, (int, float))]
     print("   %-13s K5 motor memory.peak en çok %s × MemoryMax (ölçüt ≤ 0,8)" % (mark(max(pk) > 0.8 if pk else None),
                                                                               f(max(pk) if pk else None, 2)))
     bdir = os.path.join(res, "backup")
@@ -375,13 +347,21 @@ def c_check(res, state, tip, baseline, samples, memmax, nr, pid):
     n7b = sum(1 for r in rs if ((r.get("stages") or {}).get("S7b") or {}).get("status") == "OK")
     print("   %-13s K7 araştırma yedeği: son %s sha256 %s · S7b OK çalıştırma %d" % (
         mark(None if vb is None else not vb), arcs[-1] if arcs else "—", {None: "—", True: "doğrulandı", False: "TUTMADI"}[vb], n7b))
-    last = next((r for r in reversed(rs) if ((r.get("stages") or {}).get("S1a") or {}).get("status") == "OK"), None)
+    s1 = lambda r: ((r.get("stages") or {}).get("S1a") or {}).get("result") or ((r.get("stages") or {}).get("S1s") or {}).get("result")
+    last = next((r for r in reversed(rs) if s1(r)), None)
+    lr = s1(last) if last else {}
+    fl = set(lr.get("flags") or [])
+    miss = [k for k, v in (lr.get("books") or {}).items() if v.get("status") != "OK"]
+    age = (lr.get("ledger_freshness") or {}).get("age_s")
+    print("   %-13s defter okuma: %s · en yeni updated_at %s sa önce · %s" % (
+        mark(bool(miss or fl & {"LEDGER_STALE", "NO_LEDGERS", "LEDGER_MISSING"}) if lr else None),
+        ", ".join(sorted(fl & {"LEDGER_STALE", "NO_LEDGERS", "LEDGER_MISSING"})) or "bayrak yok",
+        f(age / 3600.0 if age is not None else None, 1), ("sorunlu: " + ", ".join(miss)) if miss else "hepsi OK"))
     rot = []
-    for k, v in (((last or {}).get("stages", {}).get("S1a", {}).get("result") or {}).get("books") or {}).items():
+    for k, v in ((lr or {}).get("books") or {}).items():
         rot += [(d, "%s/%s" % (k, kk)) for kk, d in (v.get("rotation_days") or {}).items() if isinstance(d, (int, float))]
-    rmin = min(rot) if rot else None
-    print("   %-13s K8 rotasyon payı en az %s gün (%s; ölçüt ≥ 3)" % (mark(rmin[0] < 3 if rmin else None),
-                                                                    f(rmin[0] if rmin else None, 1), rmin[1] if rmin else "—"))
+    rmin = min(rot) if rot else (None, "—")
+    print("   %-13s K8 rotasyon payı en az %s gün (%s; ölçüt ≥ 3)" % (mark(rmin[0] < 3 if rot else None), f(rmin[0], 1), rmin[1]))
     js = jscan(max(b.get("deployed_at") or 0, int(time.time()) - 86400)) or {}
     print("   %-13s 418/429 (worker günlüğü, son 24 sa) %s · PAPER_RESEARCH_ACTIVE %s (raporlanır) · tur hatası %s" % (
         mark(js["rest418429"] > 0 if js else None), js.get("rest418429", "—"), js.get("research_active", "—"),
@@ -390,26 +370,46 @@ def c_check(res, state, tip, baseline, samples, memmax, nr, pid):
     print("   %-13s worker: NRestarts dağıtımda %s → şimdi %s · MemoryMax %s (6G = 6442450944) · PID %s → %s" % (
         mark((iv(memmax) != 6442450944) or (iv(nr) != w.get("nrestarts") if w else None)), w.get("nrestarts"), nr, memmax,
         w.get("pid"), pid))
-    print("   K4 (A/B) ve K6 (scorecard --daily = engine-status): aşağıdaki komutlar")
     c_sample(state, samples, nr, pid, memmax)
     return 0
-
+def c_k6(eng, sc):
+    """VPS kabul 6: aynı tanımlı görünümler (kayıt: closed_at günü; cüzdan: ts günü) ARŞİVİN kapsadığı son gün − 2'ye
+    kadar eşit olmalı (geç fonlama o zamana dek yerleşir); gerçekleşmemiş sütunu karşılaştırılmaz (farklı an)."""
+    e, s_ = rj(eng) or {}, (rj(sc) or {}).get("daily_target") or {}
+    upto = e.get("archived_through")
+    if not e.get("books") or not s_.get("books") or not upto:
+        print("   %-13s K6 scorecard --daily = engine-status --daily: karşılaştırılamadı" % mark(None))
+        return 0
+    cut = (datetime.strptime(upto, "%Y-%m-%d") - timedelta(days=2)).strftime("%Y-%m-%d")
+    days = [d for d in e.get("days") or [] if d <= cut and d in (s_.get("days") or [])]
+    bad = ["%s: betikte yok" % b for b in e["books"] if b not in s_["books"] or "error" in s_["books"][b]]
+    bad += ["%s: motorda yok" % b for b, x in s_["books"].items() if b not in e["books"] and "error" not in x]
+    for b, eb in e["books"].items():
+        sd = (s_["books"].get(b) or {}).get("days") or {}
+        for d in days:
+            er, sr = eb["days"][d]["rec"], (sd.get(d) or {}).get("rec") or {}
+            bad += ["%s %s kayıt.%s %s≠%s" % (b, d, k, er.get(k), sr.get(k)) for k in ("n", "net", "fees", "funding", "slippage")
+                    if abs((er.get(k) or 0) - (sr.get(k) or 0)) > 1e-6]
+            ew, sw = eb["days"][d]["wal_ts"], (sd.get(d) or {}).get("wal_ts") or {}
+            if ew.get("complete") and sw.get("complete") and abs((ew.get("net") or 0) - (sw.get("net") or 0)) > 1e-6:
+                bad.append("%s %s cüzdan %s≠%s" % (b, d, ew.get("net"), sw.get("net")))
+    print("   %-13s K6 scorecard --daily = engine-status --daily: %d defter × %d gün (≤ %s; arşiv %s'e kadar)%s" % (
+        mark(bool(bad) if days else None), len(e["books"]), len(days), cut, upto, (" — FARK: " + "; ".join(bad[:4])) if bad else ""))
+    return 0
 def c_ab(res, tip, baseline, samples, memmax, nr, emem):
     b = rj(baseline) or {}
     rel = release_day(res, tip)
     print("-- A/B geceleri (§2.9; gece = 01:37–03:40 UTC, AÇIK ve KAPALI aynı pencere)")
     if rel is None:
-        print("   sürüm günü kaydı yok (runs/engine_epochs.jsonl) — A/B kurulamaz")
-        return 1
+        return print("   sürüm günü kaydı yok (runs/engine_epochs.jsonl) — A/B kurulamaz") or 1
     byday = {}
-    for r in runs(res):
+    for r in mine(res, tip):
         t = ep(r.get("started_at"))
-        if t is not None and (r.get("shas") or {}).get("engine") == tip:
+        if t is not None:
             d = datetime.fromtimestamp(t, UTC)
             if (d.hour, d.minute) >= (1, 30) and (d.hour, d.minute) < (3, 40):
                 byday.setdefault(d.strftime("%Y-%m-%d"), r)
-    g = {"ON": {"tours": [], "rest": 0, "ra": 0, "err": 0, "n": 0, "peak": []},
-         "OFF": {"tours": [], "rest": 0, "ra": 0, "err": 0, "n": 0, "peak": []}}
+    g = {k: {"tours": [], "rest": 0, "ra": 0, "err": 0, "n": 0, "peak": []} for k in ("ON", "OFF")}
     nights, gone = [], 0
     for i in range(1, 15):
         d0 = datetime.strptime(rel, "%Y-%m-%d").replace(tzinfo=UTC) + timedelta(days=i)
@@ -420,16 +420,13 @@ def c_ab(res, tip, baseline, samples, memmax, nr, emem):
         ab = ((r or {}).get("selfcheck") or {}).get("ab") or {}
         st = ab.get("status") or ("AB_ON" if d0.timetuple().tm_yday % 2 == 0 else "AB_OFF")
         js = jscan(s, e)
-        plan = (r or {}).get("plan") or []       # AÇIK = tam plan; KAPALI = yalnız S0 (SKEW/kilit/yalıtım geceleri dışarıda)
-        key = {("AB_ON", 5): "ON", ("AB_OFF", 1): "OFF"}.get((st, len(plan))) if r is not None else None
+        plan = tuple((r or {}).get("plan") or [])   # AÇIK = tam plan; KAPALI = S0 + S1s (SKEW/kilit/yalıtım dışarıda)
+        key = {("AB_ON", STAGES[:1] + STAGES[2:]): "ON", ("AB_OFF", ("S0", "S1s")): "OFF"}.get((st, plan)) if r is not None else None
         nights.append((day, st, (r or {}).get("result") or ("çalıştırma kaydı yok" if r is None else "?"), js, key))
         if key and js is not None:
             gg = g[key]
-            gg["n"] += 1
-            gg["tours"] += js["tours"]
-            gg["rest"] += js["rest418429"]
-            gg["ra"] += js["research_active"]
-            gg["err"] += js["tour_error"]
+            gg["n"], gg["tours"], gg["rest"] = gg["n"] + 1, gg["tours"] + js["tours"], gg["rest"] + js["rest418429"]
+            gg["ra"], gg["err"] = gg["ra"] + js["research_active"], gg["err"] + js["tour_error"]
             pk = ((r or {}).get("resources") or {}).get("memory_peak_ratio")
             if isinstance(pk, (int, float)):
                 gg["peak"].append(pk)
@@ -497,9 +494,8 @@ def c_ab(res, tip, baseline, samples, memmax, nr, emem):
     if any(x[1] is True for x in res4):
         print("   >>> en az bir ölçüt KALDI: bu çıktıyı bana iletin (kapatma: sudo systemctl disable --now tradingbot-engine-night.timer)")
     return 0
-
 CMDS = {"paper": c_paper, "runner": c_runner, "ast": c_ast, "lastrun": c_lastrun, "smoke": c_smoke, "check": c_check,
-        "ab": c_ab, "baseline": c_baseline}
+        "ab": c_ab, "baseline": c_baseline, "k6": c_k6}
 r = CMDS[sys.argv[1]](*sys.argv[2:])
 sys.exit(r if isinstance(r, int) else 0)
 PY
@@ -565,8 +561,13 @@ if [[ "$MODE" == --check ]]; then
   say "kabul ölçütleri"
   rpy check "$RES" "$STATE" "$TIP" "$BASELINE" "$SAMPLES" "$(sc_show "$WORKER" MemoryMax)" "$(sc_show "$WORKER" NRestarts)" \
     "$(sc_show "$WORKER" MainPID)" || echo "   (ölçüt raporu hata verdi)"
-  echo "   K4: 14. geceden sonra  sudo bash $0 --ab-report"
-  echo "   K6: sudo -u $SVC_USER $VENV/bin/python $ENG/scripts/bot_scorecard.py --state $STATE --daily --days 30"
+  TMP="$(mktemp -d /tmp/tb-engine-k6.XXXXXX)"; chown "$SVC_USER:$SVC_GROUP" "$TMP"   # K6 (salt-okunur; geçici, silinir)
+  svc "$ENG" TRADINGBOT_DATA="$DATA" TRADINGBOT_STATE_DIR="$STATE" "${LOW[@]}" "$VENV/bin/python" -s -m tradingbot \
+    engine-status --daily --json --days 10 > "$TMP/e.json" 2>/dev/null || true
+  svc "$ENG" "${LOW[@]}" "$VENV/bin/python" -s scripts/bot_scorecard.py --state "$STATE" --daily --days 10 --out "$TMP/s.json" \
+    >/dev/null 2>&1 || true
+  rpy k6 "$TMP/e.json" "$TMP/s.json" || echo "   (K6 hata verdi)"
+  echo "   K4: 14. geceden sonra  sudo bash $0 --ab-report · tablo: engine-status --daily ve bot_scorecard.py --daily"
   echo "   kapatma: sudo systemctl disable --now $TMR (önce NeedDaemonReload=no); tam geri alma: sudo bash $0 --rollback"
   exit 0
 fi
@@ -612,9 +613,11 @@ if [[ "$MODE" == deploy && "$ENG_NOW" == "$TIP" && -f "$SD/$SVC" && "$(systemctl
    && [[ "$(sha256sum < "$SD/$SVC" | cut -d' ' -f1)" == "$SVC_SHA256" ]]; then
   echo "   zaten dağıtılmış ($T7; zamanlayıcı açık). Durum: sudo bash $0 --check"; exit 0
 fi
+SLOTS="Uygun aralıklar (UTC): 04:40–07:40, 08:40–11:40, 12:40–15:40, 16:40–19:40, 20:40–23:40"
 if time_ok 20; then ok "saat uygun ($WHY)"
-elif [[ "$MODE" == deploy ]]; then die "şimdi dağıtılmaz: $WHY. Uygun aralıklar (UTC): 04:40–07:40, 08:40–11:40, 12:40–15:40, 16:40–19:40, 20:40–23:40. HİÇBİR ŞEYE DOKUNULMADI"
-else warn "dağıtım şu an BAŞLAMAZ: $WHY (kuru çalışma sürer)"; fi
+elif [[ "$MODE" == deploy ]]; then die "şimdi dağıtılmaz: $WHY. $SLOTS. HİÇBİR ŞEYE DOKUNULMADI"
+elif time_ok 5; then warn "dağıtım şu an BAŞLAMAZ: $WHY (kuru çalışma sürer, düşük öncelikle)"
+else die "kuru çalışma da şimdi yapılmaz: $WHY (derleme ve koşucu worker turlarıyla çekişmesin; §2.9). $SLOTS. HİÇBİR ŞEYE DOKUNULMADI"; fi
 id -u "$SVC_USER" >/dev/null 2>&1 && [[ -x "$VENV/bin/python" ]] && rc=0 || rc=1
 gate "servis-kullanıcısı" "$rc" "$SVC_USER var, $VENV/bin/python çalıştırılabilir"
 out="$(rpy paper "$STATE" 2>&1)" && rc=0 || rc=1
@@ -671,16 +674,16 @@ if command -v systemd-analyze >/dev/null 2>&1; then
   out="$(grep "$UNIT" <<<"$out" | head -n 3 || true)"
 else rc=1; out="systemd-analyze yok"; fi
 inv "systemd-analyze-verify" "$rc" "${out:-temiz}"
-out="$(svc "$W" "$VENV/bin/python" -s -m compileall -q tradingbot scripts 2>&1 | tail -n 3)" && rc=0 || rc=1
+out="$(svc "$W" "${LOW[@]}" "$VENV/bin/python" -s -m compileall -q tradingbot scripts 2>&1 | tail -n 3)" && rc=0 || rc=1
 inv "compileall" "$rc" "${out:-tradingbot/ + scripts/ önceden derlendi}"
 
 say "3/9 bağımsız değişmezler (pytest YOK; ayrı süreç, servis ortamı aktarılmadan, ağ kapalı)"
-svc "$W" "$VENV/bin/python" -s tests/standalone/run_engine_invariants.py --tree "$W" --forbid-pytest --json "$TMP/inv.json" \
+svc "$W" "${LOW[@]}" "$VENV/bin/python" -s tests/standalone/run_engine_invariants.py --tree "$W" --forbid-pytest --json "$TMP/inv.json" \
   | sed 's/^/   /' || true
 out="$(rpy runner "$TMP/inv.json" "$INV_TESTS" 2>&1)" && rc=0 || rc=1
 inv "bağımsız-koşucu" "$rc" "$out (beklenen $INV_TESTS/$INV_TESTS)"
 out="$(rpy ast "$W" 2>&1)" && rc=0 || rc=1
-if o2="$(svc "$W" "$VENV/bin/python" -s -c 'import resource as r, sys, tradingbot.cli
+if o2="$(svc "$W" "${LOW[@]}" "$VENV/bin/python" -s -c 'import resource as r, sys, tradingbot.cli
 print("cli import RSS %d MB" % (r.getrusage(r.RUSAGE_SELF).ru_maxrss // 1024))
 sys.exit(any(m.startswith("tradingbot.research_engine") for m in sys.modules))' 2>&1)"; then out="$out; $o2"
 else rc=1; out="$out; tradingbot.cli import'u motoru yükledi ya da düştü: ${o2:0:200}"; fi
@@ -713,7 +716,7 @@ else
   install -d -o "$SVC_USER" -g "$SVC_GROUP" -m 0750 "$ENG"; make_clone "$ENG"
 fi
 CHANGED+=("engine-app=$T7")
-svc "$ENG" "$VENV/bin/python" -s -m compileall -q tradingbot scripts >/dev/null
+svc "$ENG" "${LOW[@]}" "$VENV/bin/python" -s -m compileall -q tradingbot scripts >/dev/null
 [[ "$(gitx "$ENG" rev-parse HEAD)" == "$TIP" && -z "$(gitx "$ENG" status --porcelain)" ]] && rc=0 || rc=1
 inv "engine-app-sabit" "$rc" "$ENG HEAD = $T7, temiz, önceden derlendi"
 (( rc == 0 )) || die "engine-app sabitlenemedi"

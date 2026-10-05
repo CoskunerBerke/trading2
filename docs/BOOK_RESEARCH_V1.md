@@ -9,7 +9,7 @@ tutulacak. Bu kayıttan hesaplanan mühür `BOOK_REGISTRY_SHA` bir testle sabitl
 Biri değişirse mühür değişir: o yeni sürümdür (book_v2), yeni deneme sayısıdır ve bu belge güncellenir. Sayımlar ya da
 sonuçlar görüldükten sonra kural, eşik, dilim, evren ya da dönem GEVŞETİLMEZ.
 
-Ön kayıt mührü: `BOOK_REGISTRY_SHA = 2a3cecc16e0a85c1`
+Ön kayıt mührü: `BOOK_REGISTRY_SHA = 37dd3f2854c890ad` (Değişiklik 1'den sonra, §16; eski: `2a3cecc16e0a85c1`)
 
 Belgenin commit'i kuralları dondurur. Mühür yalnız kodun bu belgeye sadakatini sabitler. Kod yazılırken bir belirsizlik
 çıkarsa okunuşu `readings_tr`'ye yazılır ve belgeye eklenir; okunuş sonuç görülmeden yapılır ve kuralı gevşetemez.
@@ -102,14 +102,17 @@ Bunun dört sonucu var:
 | Her coinin 4h serisi | `open_time ≥ 1640995200000` (2022-01-01 00:00) ya da listeleme, hangisi sonraysa | `open_time < PRICE_END` |
 | Her coinin 1d serisi (D4 1d sinyalleri ve `COIN_UP`) | `open_time ≥ 1577836800000` (2020-01-01 00:00) ya da listeleme | `open_time < PRICE_END` |
 | BTCUSDT 1d (`BTC_UP` / `BTC_DOWN`) | `open_time ≥ 1577836800000` (2020-01-01 00:00) | `open_time < PRICE_END` |
-| Fonlama uzlaşmaları | `funding_time ≥ 1669852800000` (2022-12-01 00:00) | `funding_time < 1790899200000` (2026-10-02 00:00) |
+| Fonlama uzlaşmaları | `funding_time ≥ 1669852800000` (2022-12-01 00:00) | `funding_time < 1790812800000` (2026-10-01 00:00; Değişiklik 1, §16 — eski: `1790899200000`, 2026-10-02 00:00) |
 
-- **`PRICE_END = 1790812800000` (2026-10-01 00:00 UTC).** Bütün çıkışlar, süre sınırları ve `DATA_END` bu tek sınırla
-  verilir. Son 4h barın açılışı 2026-09-30 20:00, son 1d barın açılışı 2026-09-30'dur; ikisi de 2026-10-01 00:00'da kapanır.
-- **Karar penceresi:** karar anı t (bar kapanışı = `open_time` + dilim) için `1672531200000 ≤ t < 1790812800000`
-  (2023-01-01 00:00 ≤ t < 2026-10-01 00:00).
-- **Fonlama penceresi** `PRICE_END`'den sonra en az bir uzlaşma içerir (2026-10 aylık dosyasındaki uzlaşmalar). Böylece
-  veri sonunda kapanan işlemin de "çıkıştan sonraki uzlaşma" şartı sağlanır (§5.2).
+- **`PRICE_END = 1790726400000` (2026-09-30 00:00 UTC; Değişiklik 1, §16 — eski: `1790812800000`, 2026-10-01 00:00 UTC).**
+  Bütün çıkışlar, süre sınırları ve `DATA_END` bu tek sınırla verilir. Son 4h barın açılışı 2026-09-29 20:00, son 1d barın
+  açılışı 2026-09-29'dur; ikisi de 2026-09-30 00:00'da kapanır. (Eski: son 4h bar 2026-09-30 20:00, son 1d bar 2026-09-30;
+  ikisi de 2026-10-01 00:00'da kapanır.)
+- **Karar penceresi:** karar anı t (bar kapanışı = `open_time` + dilim) için `1672531200000 ≤ t < 1790726400000`
+  (2023-01-01 00:00 ≤ t < 2026-09-30 00:00; Değişiklik 1 — eski: `t < 1790812800000`, 2026-10-01 00:00).
+- **Fonlama penceresi** `PRICE_END`'den sonra en az bir uzlaşma içerir (2026-09 aylık dosyasındaki 2026-09-30 00:00, 08:00 ve
+  16:00 uzlaşmaları; Değişiklik 1 — eski: 2026-10 aylık dosyasındaki uzlaşmalar). Böylece veri sonunda kapanan işlemin de
+  "çıkıştan sonraki uzlaşma" şartı sağlanır (§5.2).
 - **Göstergelerin tohumu bu sınırlardan başlar.** ATR14, RSI14, EMA (EWM) ve `atr_med` serinin ilk barından hesaplanır;
   `i ≥ 210` sayımı ve C4'ün 500 barlık penceresi bu ilk bara göre yapılır. `COIN_UP` ve `BTC_UP`'ın `regime_gate.ema_last`
   tohumu ilgili 1d serisinin ilk 200 kapanışıdır (2020-01-01 ya da listeleme).
@@ -436,9 +439,9 @@ aynı fonlamayla (§5.2) geçer.
 ## 8. İstatistik ve hüküm (sonuçtan önce sabit)
 
 - **Dönemler (sabit tarih, 2/3 değil):** keşif (IS) = karar anı 2023-01-01 ≤ t < 2025-01-01 (`1672531200000 ≤ t <
-  1735689600000`); doğrulama (OOS) = 2025-01-01 ≤ t < 2026-10-01. Laboratuvarın `aggregate` fonksiyonu KULLANILMAZ (2/3 kesimi
-  ve yön başına gruplaması yüzünden). İstatistik fonksiyonları (`r_stats`, `replicated`, `verdict`, `diff_ci`,
-  `verdict_strict`) DEĞİŞMEDEN, hücrenin işlem kümesiyle doğrudan çağrılır.
+  1735689600000`); doğrulama (OOS) = 2025-01-01 ≤ t < 2026-09-30 (Değişiklik 1, §16 — eski: t < 2026-10-01). Laboratuvarın
+  `aggregate` fonksiyonu KULLANILMAZ (2/3 kesimi ve yön başına gruplaması yüzünden). İstatistik fonksiyonları (`r_stats`,
+  `replicated`, `verdict`, `diff_ci`, `verdict_strict`) DEĞİŞMEDEN, hücrenin işlem kümesiyle doğrudan çağrılır.
 - **Kümeleme günü:** gün = t_ms // 86.400.000 (karar anının UTC günü; laboratuvarın tanımı).
 - **Havuzlu hücre istatistiği:** iki yönlü hücrede iki yönün işlemleri tek kümede birleştirilir; `r_stats` bu kümeyle, gün
   kümeli çağrılır. Plasebo kümesi, her biri kendi p'siyle seçilmiş yön plasebolarının birleşimidir. C4'te havuzlu hücre §6.2'nin
@@ -805,8 +808,8 @@ PIT dışlama listesi için `data.binance.vision` USDⓈ-M aylık kline klasörl
 
 ```text
 1. anahtarlar: signal_lab._h ile; <sembol> 'BTC/USDT' biçimi (laboratuvar ve evren listesi yazımı), <dilim> '4h'/'1d', <kimlik> varyant kimliği (ör. D4_00_BASE; PLACEBO_ öneki YOK), <yön> LONG/SHORT, zaman damgası = barın AÇILIŞ zamanı (ms tamsayı)
-2. karar anı t = sinyal barının open_time + dilim (laboratuvarın t_ms'i); dönem t ile: keşif 2023-01-01 ≤ t < 2025-01-01, doğrulama 2025-01-01 ≤ t < 2026-10-01; karar penceresi dışındaki sinyal (ısınma) işlem ve plasebo üretmez
-3. pencere kırpması: barın open_time'ı [ilk bar sınırı, PRICE_END) aralığında; 4h 2022-01-01, 1d 2020-01-01 (coinler ve BTC); fonlama uzlaşma zamanı [2022-12-01, 2026-10-02); fonlama yalnız aylık fundingRate dosyalarından, 2022-12 … 2026-10 (arşivde günlük fundingRate klasörü yok, 2026-10-05 S3 listesi); PRICE_END sonrası uzlaşmalar 2026-10 dosyasındandır (ay dosyası ay bitince yayımlanır)
+2. karar anı t = sinyal barının open_time + dilim (laboratuvarın t_ms'i); dönem t ile: keşif 2023-01-01 ≤ t < 2025-01-01, doğrulama 2025-01-01 ≤ t < 2026-09-30; karar penceresi dışındaki sinyal (ısınma) işlem ve plasebo üretmez
+3. pencere kırpması: barın open_time'ı [ilk bar sınırı, PRICE_END) aralığında; 4h 2022-01-01, 1d 2020-01-01 (coinler ve BTC); fonlama uzlaşma zamanı [2022-12-01, 2026-10-01); fonlama yalnız aylık fundingRate dosyalarından, 2022-12 … 2026-09 (arşivde günlük fundingRate klasörü yok, 2026-10-05 S3 listesi); PRICE_END sonrası uzlaşmalar (2026-09-30 00:00, 08:00, 16:00) 2026-09 dosyasındandır (ay dosyası ay bitince yayımlanır)
 4. temiz pencere: bozuk bar = candle_lab.valid_ends tanımı (sonlu olmayan OHLC, h < max(o,c), l > min(o,c), sonlu olmayan ya da negatif hacim); boşluk = ardışık iki açılış farkı ≠ dilim; i'de biten w barlık pencere temiz = i−w+1..i barlarının hiçbiri bozuk değil VE pencere içindeki her ardışık çift boşluksuz (pencerenin ilk barından önceki boşluk sayılmaz; valid_ends ile aynı); D4 w = 210 (4h ve 1d), Formasyon w = 300, C4 valid_ends (500), BTC_UP/COIN_UP için 1d w = 200
 5. BTC_UP/BTC_DOWN/COIN_UP: kullanılan 1d bar k = open_time + 1 gün ≤ t olan son bar; EMA200 = regime_gate.btc_regime ile aynı: serinin ilk barından k'ye kadar SONLU kapanışlar üzerinde regime_gate.ema_last (ilk 200 kapanışın SMA'sıyla tohum); close[k] > EMA → UP, değilse DOWN; close[k] sonlu değil, sonlu kapanış < 200, k'de biten 200 barlık 1d pencere temiz değil ya da k barı t'den önceki son 24 saatte kapanmamış (1d seride t'ye değen boşluk; bayat değer kullanılmaz) ise BİLİNMİYOR → giriş yok, plasebo yok; REGIME_FOLLOW = LONG için BTC_UP, SHORT için BTC_DOWN
 6. VOL_OK = signal_lab.context'in volatilite kovası 'düşük' ya da 'normal' (ATR%/atr_med ≤ 1,25; tam seri); VOL_CONFIRM = hacim kovası 'yüksek(>1.5x)' (v[i] / önceki 20 bar ortalaması > 1,5); kova 'bilinmiyor' → geçmez
@@ -840,6 +843,81 @@ PIT dışlama listesi için `data.binance.vision` USDⓈ-M aylık kline klasörl
 34. PIT eksik veri: evrendeki (ay, sembol) çifti eksik = o aydaki 4h bar sayısı < 0,90 × 6 × o aydaki 1d bar sayısı (1d bar > 0); eksik çift payı > %5 ya da liste alınamazsa PIT DOĞRULANAMADI; işlem karar ayının evrenindeyse sayılır
 35. bayt kanıtı: penceredeki her satır '%d,%r,%r,%r,%r,%r\n' (open_time, açılış, yüksek, düşük, kapanış, hacim; Python repr) metninin sha256'sı; fonlama dosyası baytlarının sha256'sı
 36. yeniden adlandırma: yalnız bugünkü sembolün arşivi kullanılır, eski sembolün geçmişi birleştirilmez; bilinen durum G/USDT (Galxe GAL → Gravity G, 2024; GALUSDT geçmişi kullanılmaz, G'nin ilk barı kalite raporunda görünür)
-37. veri hatası → koşu durur, rapor yazılmaz, deneme ERROR; aynı kodla yeniden denenir (§0.6): bir sembolün mum ya da fonlama dosyası indirilemedi ya da okunamadı; BTC 1d serisi ya da birincil/bilgi evreninde bir coinin 4h serisi (ve yüklendiyse 1d serisi) PRICE_END'e ulaşmıyor (DELISTED yalnız PIT kipinde olur); PRICE_END'e ulaşan bir sembolün [PRICE_END, 2026-10-02) aralığında fonlama uzlaşması yok (2026-10 dosyası henüz yayımlanmadı); arşivde hiç verisi olmayan coin dışarıda kalır ve sonuçta yazılır (§11.6); PIT kipinde 1d serisi defter seçiminden bağımsız yüklenir (eksik çift denetimi) ve yüklenmemiş seçili sembolün her evren ayı eksik çift sayılır; aynı --out'taki önceki koşunun işlemleriyle birleştirme, yalnız-rapor ve PIT sonucunun birincil rapora yazılması aynı kod ağacını (git HEAD:tradingbot, HEAD:scripts) ve temiz çalışma ağacını ister; açık izinle yapılan birleştirme rapora yazılır
+37. veri hatası → koşu durur, rapor yazılmaz, deneme ERROR; aynı kodla yeniden denenir (§0.6): bir sembolün mum ya da fonlama dosyası indirilemedi ya da okunamadı; BTC 1d serisi ya da birincil/bilgi evreninde bir coinin 4h serisi (ve yüklendiyse 1d serisi) PRICE_END'e ulaşmıyor (DELISTED yalnız PIT kipinde olur); PRICE_END'e ulaşan bir sembolün [PRICE_END, 2026-10-01) aralığında fonlama uzlaşması yok (2026-09 dosyası yok ya da eksik); arşivde hiç verisi olmayan coin dışarıda kalır ve sonuçta yazılır (§11.6); PIT kipinde 1d serisi defter seçiminden bağımsız yüklenir (eksik çift denetimi) ve yüklenmemiş seçili sembolün her evren ayı eksik çift sayılır; aynı --out'taki önceki koşunun işlemleriyle birleştirme, yalnız-rapor ve PIT sonucunun birincil rapora yazılması aynı kod ağacını (git HEAD:tradingbot, HEAD:scripts) ve temiz çalışma ağacını ister; açık izinle yapılan birleştirme rapora yazılır
 38. PIT dışlama listesi (tam; taban adları, sonuna USDT eklenir): endeks: BTCDOM, DEFI, FOOTBALL, BLUEBIRD; stabil: USDC, BUSD, TUSD, FDUSD, USDP, DAI, USDE, PYUSD, RLUSD, USD1, EUR, AEUR; emtia_doviz: XAU, XAG, XPT, XPD, XAUT, PAXG, COPPER, NATGAS, CL, BZ, USDBRL; hisse_etf_halka_arz_oncesi: AAOI, AAPL, ACN, ADBE, ALAB, AMAT, AMD, AMZN, ANET, ANTHROPIC, APLD, APP, ARM, ASML, ASTS, AVGO, AXTI, BABA, BITO, BMNR, BRKB, BYD, CBRS, CIEN, COHR, COIN, COST, CRCL, CRDO, CRM, CRWD, CRWV, CSCO, CSOPSAMSUNG2L, CSOPSKHYNIX2L, CVNA, CXMT, DDOG, DELL, DIS, DJT, DKNG, DRAM, EBAY, EWJ, EWY, EWZ, FLNC, GDX, GEV, GLW, GME, GOOGL, GTLB, HANA, HANMI, HIMS, HK0625, HK0700, HK0992, HK1810, HOOD, HPE, HUT, HYUNDAI, IBM, INTC, IONQ, IREN, IWM, JPM, KLAC, KODEX200, KUAISHOU, LGELECTRONICS, LITE, LLY, LRCX, MARA, MDB, MEITUAN, META, MINIMAX, MRK, MRNA, MRVL, MSFT, MSTR, MU, MUU, NAVER, NBIS, NFLX, NKE, NOK, NOW, NVDA, NVDL, NVO, OKLO, OPENAI, ORCL, PANW, PDD, PLTR, POPMART, PYPL, QCOM, QQQ, RDDT, RIVN, RKLB, SAMSUNG, SAMSUNGEM, SHOP, SKHY, SKHYNIX, SLX, SMCI, SMH, SNDK, SNOW, SOFI, SONY, SOXL, SOXS, SPCX, SPY, SQQQ, STRC, TEM, TENCENT, TQQQ, TSLA, TSLL, TSM, TTWO, TXN, TZA, UBER, UNH, UNITREE, URNM, UVXY, WDC, WMT, XBI, XLE, XOM, ZHIPU, ZHONGJI; ayrıca alt çizgili her sembol ve USDT ile bitmeyen her sembol
+```
+
+## 16. Değişiklik 1 (2026-10-05, hiçbir sonuç görülmeden)
+
+**Ne değişti:** yalnız iki sabit, `PRICE_END` ve `FUNDING_END`, birer gün geri alındı. Onlara bağlı metinler (§4.1, §8 dönem
+tanımı, okunuş 2, 3 ve 37) yeni değerlerle yazıldı. Eski değerler aşağıda ve değiştirilen her yerde "eski" diye duruyor.
+
+| Ne | Eski | Yeni |
+|---|---|---|
+| `PRICE_END` | `1790812800000` (2026-10-01 00:00 UTC) | `1790726400000` (2026-09-30 00:00 UTC) |
+| `FUNDING_END` | `1790899200000` (2026-10-02 00:00 UTC) | `1790812800000` (2026-10-01 00:00 UTC) |
+| Doğrulama (OOS) karar anı | 2025-01-01 ≤ t < 2026-10-01 | 2025-01-01 ≤ t < 2026-09-30 |
+| Son 4h bar / son 1d bar (açılış) | 2026-09-30 20:00 / 2026-09-30 | 2026-09-29 20:00 / 2026-09-29 |
+| Fonlama dosyaları (aylık) | 2022-12 … 2026-10 | 2022-12 … 2026-09 |
+| `PRICE_END` sonrası uzlaşmalar | 2026-10-01 00:00, 08:00, 16:00 (2026-10 dosyası) | 2026-09-30 00:00, 08:00, 16:00 (2026-09 dosyası) |
+| Mühür (`BOOK_REGISTRY_SHA`) | `2a3cecc16e0a85c1` | `37dd3f2854c890ad` |
+
+**Neden:** ön kaydın fonlama kapsamı kuralı (§4.1, §5.2, okunuş 3 ve 37) `PRICE_END`'den sonra en az bir fonlama uzlaşması
+ister. Veri sonunda kapanan (`DATA_END`) işlemin fonlaması buna dayanır: `funding_carry` çıkıştan sonraki uzlaşmayı görmezse NaN
+verir. Eski `PRICE_END` ile bu uzlaşmalar yalnız 2026-10 aylık `fundingRate` dosyasında bulunur. Arşivde günlük fonlama klasörü
+yoktur ve 2026-10 dosyası ay bitince, 2026-11 başında yayımlanır. İlk dondurulmuş deneme (`13a1209454e5`, 2026-10-05 11:53 UTC,
+kod `1f3b19f`, mühür `2a3cecc16e0a85c1`) bu kuralla ilk coinde durdu; işlem üretme adımına geçmedi. Hiçbir sinyal sayısı, R,
+kazanma oranı, aylık % ya da plasebo sonucu hesaplanmadı ve görülmedi (`docs/BOOK_RESEARCH_V1_RESULTS.md` §1–§2). Sahip sonucu
+2026-11'i beklemeden istedi.
+
+**Neden en küçük değişiklik bu:**
+
+- Kuralın kendisi korunur: `PRICE_END`'den sonra en az bir uzlaşma, `FUNDING_END = PRICE_END + 1 gün`, istenen son fonlama
+  dosyası `PRICE_END`'in ayı. Yalnız sınır bir gün geri gider.
+- `PRICE_END` UTC gece yarısına hizalı kalmalıdır: son 1d barın kapanışı `PRICE_END`'e denk gelir ve bar ay sınırını aşmaz
+  (§4.1, §8.1). 2026-09 dosyasında `PRICE_END` sonrası uzlaşma bırakan en geç gece yarısı 2026-09-30 00:00'dır.
+  [2026-09-30 00:00, 2026-10-01 00:00) aralığında 00:00, 08:00 ve 16:00 uzlaşmaları 23 coinin hepsinde 2026-09 dosyasında
+  vardır. Bu, önbellekteki dosyalarla yapılan bir kapsam sayımıdır (§0.4); sinyal ya da sonuç içermez.
+- `FUNDING_END` de bir gün geri alınır. Yalnız `PRICE_END`'i değiştirmek de kapıyı geçirirdi, ama koşucu yayımlanmamış 2026-10
+  dosyasını yine isteyip "eksik" yazardı. Fonlama dosyası kümesi ve bayt kanıtı da koşunun tarihine bağlı olurdu (§4.1:
+  pencere çalıştırma tarihine bağlı değildir).
+- Daha büyük seçenekler alınmadı. `PRICE_END`'i 2026-09-01'e almak doğrulamadan bir ay atardı. Fonlama kapsamı kuralını
+  kaldırmak ya da `DATA_END` fonlamasını NaN doldurmasına bırakmak bir kuralın anlamını değiştirirdi. Fonlamayı fapi'den almak
+  veri kaynağını değiştirirdi (fapi bu ortamdan 451 döner).
+
+**Değişmeyenler:** varyantlar, süzgeçler, plasebo, istatistik, çoklu test, kapasite, aylık ölçü, evrenler, PIT kuralı, tohumlar,
+eşikler ve sürüm adı (`book_v1`). Ay listeleri aynıdır: doğrulama 2025-01 … 2026-09 (21 ay), keşif 2023-01 … 2024-12 (24 ay), PIT
+ay başları 2023-01 … 2026-09. Tek etki: 2026-09 doğrulama ayı 30 değil 29 karar günü içerir (2026-09-30'da karar anı yoktur).
+Veri sonunda açık kalan işlemler 2026-09-30 00:00'da `DATA_END` ile kapanır ve yine 2026-09'a yazılır. O andaki uzlaşma tutma
+süresine girer (ts[j] < t ≤ çıkış). 08:00 uzlaşması "çıkıştan sonraki uzlaşma" şartını sağlar.
+
+**Sürüm ve deneme sayısı:** belgenin başı ve §0.6 mührü değiştiren ya da dondurulmuş koşu başladıktan sonra yapılan her kod
+değişikliğini yeni sürüm (book_v2) sayar. O kuralın amacı, sonucu görülmüş bir koşunun sonradan ayarlanmasını önlemektir.
+Burada hiçbir sonuç hesaplanmadı. Sahip bu dar değişikliği book_v1 içinde "Değişiklik 1" olarak kabul etti. Bu yüzden:
+
+- Sürüm adı `book_v1` kalır. Mühür yenilenir. Eski mühür, eski ve yeni değerlerle birlikte kayıtta `amendments[0]` olarak durur
+  ve yeni mührün parçasıdır.
+- Deneme sayısı değişmez: 32 varyant, 54 birincil hücre (§13).
+- Durmuş deneme `13a1209454e5` deneme kaydında ERROR olarak kalır. Sonraki denemeler yeni mühürle kaydedilir.
+- Bundan sonra pencere, kural ya da eşik değişikliği book_v2'dir. Bu istisna bir daha kullanılmaz.
+
+**Bayt kanıtı:** pencere bir gün kısaldığı için seri özetleri değişir. Ara durum belgesinin §3.1 özetleri eski pencereye
+(2026-10-01'e kadar) aittir ve yeni koşuyla karşılaştırılamaz. Yeni koşu yeni pencerenin özetlerini yazar.
+
+**Değişen yerler:**
+
+- Belge: üstteki mühür satırı, §4.1 tablosunun fonlama satırı ve `PRICE_END`, karar penceresi ve fonlama penceresi maddeleri,
+  §8'in dönem tanımı (eski değerler yanlarında), §15'te okunuş 2, 3 ve 37 (eski metinleri aşağıda).
+- Kod: `tradingbot/book_lab.py`: `PRICE_END_MS`, `FUNDING_END_MS`, `READINGS_TR` 2, 3 ve 37, `load_funding`'in belge dizesi. Kayda
+  `amendments` girdisi eklendi.
+- Testler: `tests/test_book_lab.py`: sabitlenmiş mühür, pencere sabitleri ve dönem sınırları. Yeni denetim: fonlama penceresi
+  `PRICE_END`'den bir gün sonra biter ve istenen son dosya 2026-09'dur.
+- §2, §3 ve §14'teki tarihler o günün kaydıdır; değiştirilmedi. Çelişki olursa bu bölüm geçerlidir.
+
+Eski okunuşlar (aynen):
+
+```text
+2. karar anı t = sinyal barının open_time + dilim (laboratuvarın t_ms'i); dönem t ile: keşif 2023-01-01 ≤ t < 2025-01-01, doğrulama 2025-01-01 ≤ t < 2026-10-01; karar penceresi dışındaki sinyal (ısınma) işlem ve plasebo üretmez
+3. pencere kırpması: barın open_time'ı [ilk bar sınırı, PRICE_END) aralığında; 4h 2022-01-01, 1d 2020-01-01 (coinler ve BTC); fonlama uzlaşma zamanı [2022-12-01, 2026-10-02); fonlama yalnız aylık fundingRate dosyalarından, 2022-12 … 2026-10 (arşivde günlük fundingRate klasörü yok, 2026-10-05 S3 listesi); PRICE_END sonrası uzlaşmalar 2026-10 dosyasındandır (ay dosyası ay bitince yayımlanır)
+37. veri hatası → koşu durur, rapor yazılmaz, deneme ERROR; aynı kodla yeniden denenir (§0.6): bir sembolün mum ya da fonlama dosyası indirilemedi ya da okunamadı; BTC 1d serisi ya da birincil/bilgi evreninde bir coinin 4h serisi (ve yüklendiyse 1d serisi) PRICE_END'e ulaşmıyor (DELISTED yalnız PIT kipinde olur); PRICE_END'e ulaşan bir sembolün [PRICE_END, 2026-10-02) aralığında fonlama uzlaşması yok (2026-10 dosyası henüz yayımlanmadı); arşivde hiç verisi olmayan coin dışarıda kalır ve sonuçta yazılır (§11.6); PIT kipinde 1d serisi defter seçiminden bağımsız yüklenir (eksik çift denetimi) ve yüklenmemiş seçili sembolün her evren ayı eksik çift sayılır; aynı --out'taki önceki koşunun işlemleriyle birleştirme, yalnız-rapor ve PIT sonucunun birincil rapora yazılması aynı kod ağacını (git HEAD:tradingbot, HEAD:scripts) ve temiz çalışma ağacını ister; açık izinle yapılan birleştirme rapora yazılır
 ```

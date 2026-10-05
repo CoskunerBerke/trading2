@@ -6,6 +6,14 @@
 **Bu belgede hiçbir sonuç yoktur.** Hiçbir sinyal sayısı, R, kazanma oranı ya da aylık % hesaplanmadı. Belge yalnız koşu
 denemesini (§0.7) ve veri kapsamını (§0.4) kayda geçirir. Koşu tamamlanınca bu dosya sonuçlarla yeniden yazılır.
 
+**Değişiklik 1 (2026-10-05, hiçbir sonuç görülmeden; ön kayıt §16):** `PRICE_END` 2026-10-01 00:00'dan 2026-09-30 00:00'a,
+`FUNDING_END` 2026-10-02 00:00'dan 2026-10-01 00:00'a alındı. Doğrulama artık 2025-01-01 ≤ t < 2026-09-30'dur. Fonlama
+dosyaları 2022-12 … 2026-09'dur. `PRICE_END` sonrası uzlaşmalar (2026-09-30 00:00, 08:00, 16:00) yayımlanmış 2026-09
+dosyasındadır. Böylece aşağıdaki durma nedeni ortadan kalkar ve koşu 2026-11'i beklemez. Başka hiçbir kural, eşik, evren ya da
+ay listesi değişmedi; deneme sayısı aynı. Yeni mühür `BOOK_REGISTRY_SHA = 37dd3f2854c890ad` (eski `2a3cecc16e0a85c1`), yeni kod
+ağacı `ea36b877ac6fbc97` (eski `0504c721cd5acab9`). Aşağıdaki §1–§3 ilk denemenin ve eski pencerenin kaydıdır; olduğu gibi
+bırakıldı. Yeni plan §7'de.
+
 ## 1. Sonuç
 
 **Dondurulmuş koşu bugün hüküm veremez. İlk deneme ön kayıtlı veri kuralıyla durdu.**
@@ -51,6 +59,12 @@ Kanıt (2026-10-05, S3 ad listesi): `data/futures/um/monthly/fundingRate/BTCUSDT
 Denemeden sonra, koşucunun veri adımı donmuş kütüphane fonksiyonlarıyla aynen tekrarlandı (`load_klines`, `load_funding`,
 `series_quality`, `coverage`, `data_problem`; sinyal, plasebo ya da işlem hesabı yok). Amaç: veri sorununu bugünden görmek ve
 önbelleği ısıtmak. Zaman 2026-10-05 11:55 UTC, 4.071 arşiv isteği. Fiyat verisi depoya yüklenmedi.
+
+Not (Değişiklik 1): bu bölüm eski pencereyle (`PRICE_END` 2026-10-01) sayıldı. Aynı sayım yeni pencereyle, önbellekten ve ağsız
+tekrarlandı (sinyal yok). Sonuç: 23 coinin hepsinde veri sorunu yok. Her coinde 4h serisi 6 bar, 1d serisi 1 bar kısa (2026-09-30
+günü pencere dışında). Son 4h bar 2026-09-29 20:00, son 1d bar 2026-09-29. `PRICE_END` sonrası uzlaşma her coinde 3'tür
+(2026-09-30 00:00, 08:00, 16:00; 2026-09 dosyasından). 2026-10 dosyası artık istenmez. Bozuk bar 0. Aşağıdaki tablo ve §3.1
+özetleri eski pencereye aittir; yeni koşunun özetleriyle karşılaştırılmaz.
 
 Bulgular:
 
@@ -159,6 +173,8 @@ Tablo sonradan gelirse kapasite bölümü aynı kodla `--report-only --filters` 
 - Ön kayıtlı deneme sayısı değişmedi: 32 varyant, 54 birincil hücre, 1 kontrol (§13).
 - Bu deneme hiçbir hücre hesaplamadı; yeniden deneme yeni deneme değildir (§0.6: veri hatası aynı kodla yeniden denenir).
 - §3'teki sayım sinyal saymaz; ön kaydın izin verdiği kapsam ve kalite sayımıdır (§0.4).
+- Değişiklik 1 (ön kayıt §16) deneme sayısını değiştirmez. Hiçbir sonuç görülmeden yapıldı; durmuş deneme `13a1209454e5` kayıtta
+  ERROR olarak kalır, sonraki denemeler yeni mühürle (`37dd3f2854c890ad`) kaydedilir.
 
 ## 6. Ana bot (§9, ön kayıtlı)
 
@@ -171,6 +187,18 @@ Tablo sonradan gelirse kapasite bölümü aynı kodla `--report-only --filters` 
   incelemeden geçmesi gerekir (§9.3).
 
 ## 7. Yeniden deneme
+
+Değişiklik 1'den sonraki plan:
+
+1. Koşu bugün yapılabilir; 2026-10 fonlama dosyası beklenmez. Gereken bütün dosyalar (fiyat 2026-09'a kadar, fonlama
+   2022-12 … 2026-09) yayımlanmış ve önbellekte.
+2. Değişiklik 1 commit'inin temiz kod ağacıyla (`ea36b877ac6fbc97`), aynı komut ve aynı `--out` (deneme kaydı sürer; o dizinde
+   önceki koşunun meta dosyası yok, mühür çakışması olmaz). Sahibin filtre tablosu varsa `--filters` ile verilir; yoksa
+   kapasiteli ölçü ve hedef hükmü "FİLTRE BEKLİYOR" olur (§4).
+3. Kural, eşik, dönem ya da evren başka değişmez. Seri özetleri yeni pencereye göre yeniden yazılır (§3.1'dekiler eski
+   penceredir).
+
+Eski plan (Değişiklik 1'den önce, artık geçersiz):
 
 1. 23 coinin `<SEMBOL>-fundingRate-2026-10.zip` dosyası arşive gelince (2026-11 başı beklenir). Denetim: S3 listesi
    `data/futures/um/monthly/fundingRate/<SEMBOL>/`.

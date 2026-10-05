@@ -41,7 +41,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 SCRIPT = ROOT / "deploy" / "releases" / "tb-engine-4962209.sh"
 #: Betiğin kayıtlı sha256'sı (sürüm notu ve sahibe verilen değer; betik değişirse bu da bilinçli değişir).
-SCRIPT_SHA256 = "dfae5291866bd487ebad98cf7e2ff89e82319834e481052cb933b5007f71677d"
+SCRIPT_SHA256 = "f9aab6eb2b61aacd37eac037c9730c51b829335416f0bb5f86f70bd73a84fc9d"
 TEXT = SCRIPT.read_text(encoding="utf-8")
 TIP = re.search(r'^TIP="([0-9a-f]{40})"', TEXT, re.M).group(1)
 APP_SHA = "f8b05fb27310238c764ac7dad23221d84f7c0b6d"      # VPS'te çalışan app (hedefin atası)
@@ -244,14 +244,14 @@ STUBS = {
 
 @pytest.fixture(scope="module")
 def source(tmp_path_factory):
-    """Yerel çıplak kaynak depo: impl/system = hedef, app-main = VPS app'i (f8b05fb)."""
+    """Yerel çıplak kaynak depo: claude/gifted-knuth-0ehpcs = hedef, app-main = VPS app'i (f8b05fb)."""
     if not (GIT and _has(TIP) and _has(APP_SHA)):
         pytest.skip("hedef/app commit'leri yok")
     d = tmp_path_factory.mktemp("src")
     src = d / "src.git"
     assert _git("init", "-q", "--bare", str(src)).returncode == 0
     assert _git("fetch", "-q", "--no-tags", str(ROOT), "+HEAD:refs/heads/scratch", cwd=src).returncode == 0
-    assert _git("update-ref", "refs/heads/impl/system", TIP, cwd=src).returncode == 0
+    assert _git("update-ref", "refs/heads/claude/gifted-knuth-0ehpcs", TIP, cwd=src).returncode == 0
     assert _git("update-ref", "refs/heads/app-main", APP_SHA, cwd=src).returncode == 0
     assert _git("update-ref", "-d", "refs/heads/scratch", cwd=src).returncode == 0
     return src

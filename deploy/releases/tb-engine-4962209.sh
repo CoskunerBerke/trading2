@@ -38,7 +38,7 @@ set -Eeuo pipefail
 
 TIP="49622093a3d3bc334b454b4df2dcdb4e53eb5144"    # P1a kod commit'i (1. inceleme turu + ayna defter M2X günlük hedef dışı)
 T7="${TIP:0:7}"
-BRANCH_REF="refs/heads/impl/system"
+BRANCH_REF="refs/heads/claude/gifted-knuth-0ehpcs"
 REPO_URL="${TB_ENGINE_REPO_URL:-https://github.com/CoskunerBerke/trading2.git}"   # içerik TAM SHA'ya bağlıdır
 SVC_SHA256="0db7a26a2a2c955ef3d9cdb83834f816c0556752233a8f312b3ffbbd7ca89b2e"   # deploy/tradingbot-engine-night.service @TIP
 TMR_SHA256="59fa82a34182f1e8c50377d6633191881a2250e640098cf8c369a5cff46b6ed6"   # deploy/tradingbot-engine-night.timer @TIP

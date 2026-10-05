@@ -214,16 +214,18 @@ def read_ledger(book: str, kind: str, path: Path | str, *, clock: Callable[[], d
         return LedgerRead(book, kind, str(p), LEDGER_UNREADABLE, clock(), error=f"{type(exc).__name__}: {exc}")
     read_at = clock()
     raw = text.encode("utf-8")
-    sha = hashlib.sha256(raw).hexdigest()
+    sha, size = hashlib.sha256(raw).hexdigest(), len(raw)
+    del raw                                      # bellek: dosya boyunda geçici kopya hemen bırakılır (gece birimi 512M)
     try:
         d = json.loads(text)
     except ValueError as exc:
-        return LedgerRead(book, kind, str(p), LEDGER_UNREADABLE, read_at, sha, len(raw), error=f"JSON çözülemedi: {exc}")
+        return LedgerRead(book, kind, str(p), LEDGER_UNREADABLE, read_at, sha, size, error=f"JSON çözülemedi: {exc}")
+    del text
     why = _validate(kind, d)
     sv = d.get("schema_version") if isinstance(d, dict) else None
     if why:
-        return LedgerRead(book, kind, str(p), LEDGER_SCHEMA_UNKNOWN, read_at, sha, len(raw), sv, error=why)
-    return LedgerRead(book, kind, str(p), LEDGER_OK, read_at, sha, len(raw), sv, doc=d)
+        return LedgerRead(book, kind, str(p), LEDGER_SCHEMA_UNKNOWN, read_at, sha, size, sv, error=why)
+    return LedgerRead(book, kind, str(p), LEDGER_OK, read_at, sha, size, sv, doc=d)
 
 
 def read_all(state: Path | str, *, clock: Callable[[], datetime] = utc_now) -> dict[str, LedgerRead]:

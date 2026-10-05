@@ -1,4 +1,5 @@
-"""S1a — kapanış arşivi, cüzdan hareketi arşivi, gecelik ölçülmüş anlık görüntü ve uzlaştırma (§4.2, §3.6, §10 P1a).
+"""S1a — kapanış arşivi, cüzdan hareketi arşivi, gecelik ölçülmüş anlık görüntü ve uzlaştırma (§4.2, §3.6, §10 P1a);
+S1s — A/B KAPALI gecelerinin YALNIZ anlık görüntüsü (§2.9 ↔ §7.1 okuması, aşağıda madde 7).
 
 Kaynaklar (hepsi `ledgers.read_ledger` ile salt-okunur): her vadeli defterin `futures_ledger.json`'ı ve ana botun
 `state/spot_ledger.json`'ı (`main_spot`). Çıktılar yalnız `data/research` altındadır:
@@ -9,16 +10,18 @@ Kaynaklar (hepsi `ledgers.read_ledger` ile salt-okunur): her vadeli defterin `fu
   anahtarla `rev+1` satırı eklenir. Ayrıca kayıt başına bir kez `row="derived"` satırı (`closes_derived`:
   `min_to_next_funding`, `decision_delay_s`); ham kayıt birebir kalır, türetilmiş alanlar ayrı satırdadır.
 * `entries/<defter>/YYYY-MM.jsonl.gz` — `entries[]` cüzdan hareketleri (FEE, PNL, FUNDING — "late funding" ve
-  "funding reversal" dahil —, TRANSFER, LIQ_FEE, TAX, SLIPPAGE_INFO), her biri ilk görüldüğü okumanın `observed_at`
-  damgasıyla. Anahtar `sha256(defter|ts|kind|ref_id|amount|note)#tekrar`; yeniden çalıştırma 0 satır ekler.
+  "funding reversal" dahil —, TRANSFER, LIQ_FEE, TAX, SLIPPAGE_INFO), her biri ilk GÖRÜLDÜĞÜ okumanın `observed_at`
+  damgasıyla (ve arşive yazıldığı anın `archived_at`'iyle). Anahtar `sha256(defter|ts|kind|ref_id|amount|note)#tekrar`;
+  yeniden çalıştırma 0 satır ekler. `entries/<defter>/anchor.json` — hizalama çapası (madde 8).
 * `snapshots/YYYY-MM-DD.json.gz` — gecelik ÖLÇÜLMÜŞ anlık görüntü (`MEASURED`): vadeli `wallet_balance` + açık
   pozisyonlar (miktar, giriş, `last_price`, gerçekleşmemiş), spot `cash`/`locked_cash`/`assets`/lotlar + mark kaynağı ve
-  yaşı, ledger `seq`/`updated_at`, okuma zamanı; ayrıca o pencerenin uzlaştırması, rotasyon payı ve geri yükleme izi.
+  yaşı, ledger `seq`/`updated_at`, okuma zamanı, ledger kuyrukları (`tails`; madde 7); ayrıca o pencerenin
+  uzlaştırması, rotasyon payı ve geri yükleme izi.
 
 Okumalar ve belge ile kodun karşılaştırılması (belgenin niyetine göre; ayrıntı ilgili fonksiyonlarda):
 
-1. **Segment ayı = satırın arşive yazıldığı (gözlendiği) UTC ayıdır**, kaydın kapanış ayı değil. Böylece geçmiş aylar
-   gerçekten mühürlü kalır; geç gelen revizyon yeni aya eklenir. Kapanış günü her satırda `record.closed_at`'tedir.
+1. **Segment ayı = satırın arşive yazıldığı UTC ayıdır**, kaydın kapanış ayı değil. Böylece geçmiş aylar gerçekten
+   mühürlü kalır; geç gelen revizyon yeni aya eklenir. Kapanış günü her satırda `record.closed_at`'tedir.
 2. **"Son 14 günde kapananlar her gece yeniden eşitlenir"** — motor, ledger'ın ELİNDE TUTTUĞU bütün kayıtları her gece
    karşılaştırır (14 günü kapsayan bir üst küme; 5000 kayıtta milisaniyeler). 14 günden eski bir kayıtta değişiklik
    görülürse ayrıca sayılır (`revised_older_than_resync`).
@@ -35,7 +38,38 @@ Okumalar ve belge ile kodun karşılaştırılması (belgenin niyetine göre; ay
 6. **Geri yükleme** (§3.6): ledger `seq`'inin bir önceki anlık görüntüye göre azalması VEYA veri kökünde o anlık
    görüntüden yeni bir `state.pre-restore-*` klasörü; hangisinin görüldüğü kayda yazılır. O zaman ledger'da artık
    bulunmayan (ve rotasyonla açıklanamayan) arşiv kayıtları `RESTORED_AWAY` satırı alır (silinmez), pencere
-   `RESTORED` olur ve `INCONSISTENT` verilmez. Kanıt yokken kaybolan kayıt `INCONSISTENT`tir.
+   `RESTORED` olur ve `INCONSISTENT` verilmez. Kanıt yokken kaybolan kayıt `INCONSISTENT`tir. S1s gecesinde görülen
+   kanıt anlık görüntüye `restore_pending` olarak yazılır ve ertesi arşiv gecesi onu da sayar.
+7. **A/B KAPALI geceleri ve W(D) (§2.9 ↔ §7.1).** §2.9 KAPALI gecede "S0'dan sonra AB_OFF yazıp çıkar" der; ama §7.1'in
+   MTM günü W(D) = (S(D), S(D+1)] her takvim gününün ölçülmüş anlık görüntüsünü ister. Harfiyen uygulansa her motor
+   sürümünden sonraki ~14 gün EKSİK olurdu (sahibin ana ölçümü). Okuma: KAPALI gecede yalnız **S1s** çalışır —
+   ledger'lar salt-okunur okunur, `snapshots/` altına TEK küçük dosya yazılır (arşiv, S3, S7, S7b YOK). Anlık görüntü
+   her defterin son `SNAP_TAIL` hareket tabanını ve kayıt anahtarını (`tails`) ve `archived: false` taşır. Ertesi arşiv
+   gecesi yeni hareketlerin/kapanışların her birini, o kuyrukların ledger listesindeki konumuna göre İLK GÖRÜLDÜĞÜ
+   okumaya atar (`observed_at` = S1s okuma anı; `archived_at` = arşive yazıldığı an). Böylece pencere eşitlikleri
+   (Δcüzdan = gözlenen hareketler; spot nakit eşitliği) KAPALI gecelerin iki yanında da tutar ve günler KESİN
+   olabilir. Kuyruk bulunamazsa (araya > 2000 hareket girdiyse) bölünme kaybolur (`OBSERVATION_SPLIT_LOST`) ve o
+   pencerelerin MTM eşitliği tutmaz → EKSİK (dürüst). KAPALI gecenin kendi penceresinin spot NAKİT eşitliği yazılmaz;
+   vadeli cüzdan ve spot defter-değeri eşitliği S3'ün MTM eşitliğiyle her pencerede denetlenir.
+8. **Hizalama çapası** (§4.2 "arşivin son 50 hareketi ledger'da aranır"). Her arşiv çalıştırması sonunda ledger'ın SON
+   50 hareket tabanı `entries/<defter>/anchor.json`'a yazılır (arşivdeki satır sayısıyla birlikte; sayı tutmuyorsa çapa
+   eskidir ve arşivin kendi kuyruğu kullanılır). Normal gecelerde ikisi aynıdır; geri yüklemeden sonra arşivin son
+   50'si ledger'dan silinen (`RESTORED_AWAY`) hareketleri içerir ve ≥ 50 yeni hareket gelene kadar her gece
+   `ENTRIES_REWIND` olurdu. Çapa yeniden yüklenmiş ledger'ın kuyruğudur: geri yükleme gecesinden sonraki gece hizalama
+   yine `OK`'dir.
+9. **Bellek** (§2.5: gece birimi `MemoryHigh=400M`, `MemoryMax=512M`; VPS kabul 5: tepe ≤ 0,8 × MemoryMax). Defterler
+   TEK TEK işlenir: oku → arşivle → anlık görüntü gövdesini kur → belgeyi bırak (vadeli defterlerden yalnız spot
+   `PERP_PROXY` mark'ları için küçük bir sembol → `last_price` haritası tutulur; spot en son işlenir). Arşiv okunurken
+   tam izdüşüm yalnız ledger'ın elinde tuttuğu anahtarlar için tutulur; segmentler akışla yeniden yazılır.
+   Ölçüm (`tests/test_research_engine_memory.py`: ayrı süreç, üretim yolu `import tradingbot.cli` ≈ 100 MiB pandas
+   dahil, 8 vadeli defter + spot, her biri 5000 kayıt / 2000 hareket, ledger'lar toplam ≈ 98 MB; iki tam gece): tepe
+   RSS önceki sürümde ≈ 450 MiB idi (bütün belgeler aynı anda bellekte; MemoryHigh 400M'in üstü, 0,8 × MemoryMax'ın
+   üstü), bu sürümde ≈ 175–180 MiB'dir; test bütçesi 0,6 × MemoryMax = 307 MiB (kalan pay cgroup `memory.peak`'in
+   saydığı sayfa önbelleği içindir). Birim sınırları (`MemoryHigh=400M`, `MemoryMax=512M`) bu yüzden değişmez.
+10. **Defter okuma güvenceleri.** Daha önce arşivlenmiş (veya önceki anlık görüntüde olan) bir defterin ledger'ı bu
+   gece yoksa `LEDGER_MISSING` (anlık görüntüde `status: MISSING`; o geçiş penceresi EKSİK); hiç ledger bulunamazsa
+   `NO_LEDGERS`; okunan ledger'ların EN YENİ `updated_at`'i 6 saatten eskiyse `LEDGER_STALE` (worker duruk ya da yanlış
+   state klasörü). `--check` bunları `[DİKKAT]` gösterir.
 """
 from __future__ import annotations
 
@@ -55,6 +89,7 @@ from .ledgers import (
     BOOK_MAIN_FUT,
     KIND_FUTURES,
     KIND_SPOT,
+    LEDGER_MISSING,
     LedgerRead,
     dec,
     dec_or_none,
@@ -66,21 +101,29 @@ from .ledgers import (
     symbol_key,
     utc_now,
 )
-from .paths import EnginePaths, gzip_bytes, json_line, read_json_gz, read_jsonl_gz
+from .paths import EnginePaths, json_line, read_json_gz, read_jsonl_gz
 
 CLOSES_SCHEMA = "closes_v1"
 DERIVED_SCHEMA = "closes_derived_v1"
 ENTRIES_SCHEMA = "entries_v1"
 SNAPSHOT_SCHEMA = "snapshot_v1"
+ANCHOR_SCHEMA = "entries_anchor_v1"
+ANCHOR_FILE = "anchor.json"
 
 #: accounting varsayılanları (futures_ledger.py / spot_ledger.py `history_keep` / `entries_keep`).
 HISTORY_KEEP = 5000
 ENTRIES_KEEP = 2000
 #: hizalama penceresi (§4.2): arşivin son 50 hareketi ledger listesinde aranır.
 ALIGN_TAIL = 50
+#: anlık görüntüde defter başına tutulan ledger kuyruğu (ilk gözlem anı atfı; okuma 7).
+SNAP_TAIL = 16
+#: S1a'nın geriye bakıp arşivlenmemiş (S1s) anlık görüntüleri aradığı en çok gün.
+PENDING_LOOKBACK = 14
 RESYNC_DAYS = 14
 MARGIN_WARN_DAYS = 3.0
 RATE_WINDOW_DAYS = 7
+#: okunan ledger'ların en yenisi bundan eskiyse `LEDGER_STALE` (okuma 10).
+STALE_AFTER = timedelta(hours=6)
 #: uzlaştırma toleransı (USDT).
 TOL = Decimal("1e-6")
 #: spot mark kaynakları (§7.1): position_path ≤ 60 dk; HistoryStore son kapanmış bar (≤ 24 saat, yaşı yazılır).
@@ -89,6 +132,7 @@ POSITION_PATH_FUTURE_TOL = timedelta(minutes=2)
 HISTORY_BAR_MAX_AGE = timedelta(hours=24)
 POSITION_PATH_TAIL_BYTES = 4 << 20
 
+MODE_ARCHIVE, MODE_SNAPSHOT = "archive", "snapshot_only"
 ST_ACTIVE, ST_RESTORED_AWAY = "ACTIVE", "RESTORED_AWAY"
 #: hareket hizalama sonuçları
 ALIGN_OK, ALIGN_BASELINE, ALIGN_GAP, ALIGN_REWIND = "OK", "BASELINE", "ENTRIES_GAP", "ENTRIES_REWIND"
@@ -99,6 +143,9 @@ F_INCONSISTENT, F_RESTORE_EVENT, F_ENTRIES_GAP, F_ROTATION_WARN = "INCONSISTENT"
 #: ledger'ın en eski kaydı bu gece ilk kez görüldü ve arşivde önceki kayıtlar vardı: iki gece arasında > 5000 kapanış;
 #: aradaki kayıtlar rotasyonla arşive hiç girmeden düşmüş olabilir.
 F_HISTORY_GAP = "HISTORY_GAP"
+#: okuma 10 ve 7
+F_LEDGER_MISSING, F_NO_LEDGERS, F_LEDGER_STALE = "LEDGER_MISSING", "NO_LEDGERS", "LEDGER_STALE"
+F_SPLIT_LOST = "OBSERVATION_SPLIT_LOST"
 #: mark kaynakları
 MARK_LEDGER, MARK_LEDGER_ENTRY = "LEDGER_MARK", "LEDGER_ENTRY_NO_MARK"
 MARK_POSITION_PATH, MARK_HISTORY_BAR, MARK_PERP_PROXY = "POSITION_PATH", "HISTORY_SPOT_BAR", "PERP_PROXY"
@@ -205,13 +252,15 @@ def _provenance_decisions(state: Path, ids: set[str]) -> dict[str, datetime]:
 
 
 # ============================================================================ arşiv okuma
-@dataclass
+@dataclass(slots=True)
 class CloseState:
+    """Bir kayıt anahtarının arşivdeki son durumu. `proj` yalnız istenen anahtarlar için tutulur (bellek; okuma 9);
+    diğerlerinde `None`'dır ve gerekirse `latest_rows_for` ile diskten okunur."""
     rev: int
     sha: str
     status: str
     ord: int
-    proj: dict
+    proj: dict | None
     first_observed_at: str
     observed_at: str
 
@@ -246,9 +295,11 @@ def iter_rows(d: Path) -> Iterator[dict]:
 
 
 def load_book_archive(paths: EnginePaths, book: str, *, ts_filter: set[str] | None = None,
-                      window_from: datetime | None = None, include_entries: bool = True) -> BookArchive:
+                      window_from: datetime | None = None, include_entries: bool = True,
+                      keep_proj: set[str] | None = None) -> BookArchive:
     """Arşivi akışla oku. `ts_filter`: tekrar sayımı yalnız bu `ts` değerlerindeki tabanlar için tutulur (hafıza).
-    `window_from`: bu andan SONRA gözlenen hareket/kapanış satırlarının toplamı (cüzdan uzlaştırması için)."""
+    `window_from`: bu andan SONRA gözlenen hareket/kapanış satırlarının toplamı (cüzdan uzlaştırması için).
+    `keep_proj`: verilirse tam izdüşüm yalnız bu anahtarlar için tutulur (diğerleri `proj=None`; okuma 9)."""
     a = BookArchive(book=book)
     for row in iter_rows(paths.book_closes_dir(book)):
         if row.get("row") == "derived":
@@ -257,16 +308,20 @@ def load_book_archive(paths: EnginePaths, book: str, *, ts_filter: set[str] | No
         k = str(row.get("trade_key"))
         a.close_rows += 1
         prev = a.closes.get(k)
-        st = CloseState(rev=int(row.get("rev", 0)), sha=str(row.get("content_sha", "")), status=str(row.get("status", ST_ACTIVE)),
-                        ord=int(row.get("ord", 0)), proj=row.get("proj") or (prev.proj if prev else {}),
-                        first_observed_at=prev.first_observed_at if prev else str(row.get("observed_at", "")),
-                        observed_at=str(row.get("observed_at", "")))
+        rp = row.get("proj") or None
+        if window_from is not None and prev is None and rp:
+            obs = parse_ts(row.get("observed_at"))
+            if obs is not None and obs > window_from and rp.get("cost") is not None:
+                a.window_new_close_cost += dec(rp.get("cost"))
+        if keep_proj is not None and k not in keep_proj:
+            proj = None
+        else:
+            proj = rp or (prev.proj if prev else {})
+        st = CloseState(int(row.get("rev", 0)), str(row.get("content_sha", "")), str(row.get("status", ST_ACTIVE)),
+                        int(row.get("ord", 0)), proj, prev.first_observed_at if prev else str(row.get("observed_at", "")),
+                        str(row.get("observed_at", "")))
         a.closes[k] = st
         a.max_ord = max(a.max_ord, st.ord)
-        if window_from is not None and prev is None:
-            obs = parse_ts(row.get("observed_at"))
-            if obs is not None and obs > window_from and st.proj.get("cost") is not None:
-                a.window_new_close_cost += dec(st.proj.get("cost"))
     for row in (iter_rows(paths.book_entries_dir(book)) if include_entries else ()):
         e = row.get("entry") if isinstance(row.get("entry"), dict) else {}
         base = str(row.get("key", "")).split("#", 1)[0]
@@ -291,8 +346,23 @@ def load_book_archive(paths: EnginePaths, book: str, *, ts_filter: set[str] | No
     return a
 
 
-def latest_closes(paths: EnginePaths, book: str) -> dict[str, CloseState]:
-    return load_book_archive(paths, book, include_entries=False).closes
+def latest_closes(paths: EnginePaths, book: str, keys: set[str] | None = None) -> dict[str, CloseState]:
+    """Anahtar → son durum. `keys` verilirse yalnız o anahtarların izdüşümü tutulur (diğerleri `proj=None`)."""
+    return load_book_archive(paths, book, include_entries=False, keep_proj=keys).closes
+
+
+def latest_rows_for(paths: EnginePaths, book: str, keys: set[str]) -> dict[str, dict]:
+    """Verilen anahtarların SON kapanış satırı (izdüşüm ve içerik sha'sı için; yalnız seyrek yollar, ör. RESTORED_AWAY)."""
+    out: dict[str, dict] = {}
+    if not keys:
+        return out
+    for row in iter_rows(paths.book_closes_dir(book)):
+        k = str(row.get("trade_key"))
+        if row.get("row") == "derived" or k not in keys:
+            continue
+        prev = out.get(k)
+        out[k] = {"proj": row.get("proj") or (prev or {}).get("proj") or {}, "content_sha": row.get("content_sha")}
+    return out
 
 
 def archived_books(paths: EnginePaths) -> list[str]:
@@ -317,13 +387,50 @@ def load_snapshot(paths: EnginePaths, day: str) -> dict | None:
     return read_json_gz(p)
 
 
-def load_snapshots(paths: EnginePaths) -> list[dict]:
+#: `load_snapshots(light=True)`: okuyucuların (S3, durum) gerekmeyen ağır alanları (kuyruklar) bellekte tutulmaz.
+_HEAVY_BODY_KEYS = ("tails",)
+
+
+def load_snapshots(paths: EnginePaths, *, light: bool = False) -> list[dict]:
     out = []
     for d in snapshot_days(paths):
         s = load_snapshot(paths, d)
         if isinstance(s, dict):
+            if light:
+                for body in (s.get("books") or {}).values():
+                    if isinstance(body, dict):
+                        for k in _HEAVY_BODY_KEYS:
+                            body.pop(k, None)
             out.append(s)
     return out
+
+
+def body_archived(body: dict) -> bool:
+    """Anlık görüntü gövdesi bir arşiv çalıştırmasınca mı yazıldı? (Eski gövdelerde alan yoktur → arşiv.)"""
+    return bool(body.get("archived", True))
+
+
+def trailing_bodies(paths: EnginePaths, days: list[str], books: Iterable[str], *,
+                    lookback: int = PENDING_LOOKBACK) -> tuple[dict[str, list[dict]], dict[str, dict | None]]:
+    """Defter başına (son arşiv çalıştırmasından SONRAKİ arşivlenmemiş [S1s] OK gövdeler [eskiden yeniye], son
+    ARŞİVLENMİŞ OK gövde). En yeni anlık görüntüden geriye, en çok `lookback` gün; OK olmayan gövdeler atlanır."""
+    pending: dict[str, list[dict]] = {b: [] for b in books}
+    base: dict[str, dict | None] = {b: None for b in books}
+    open_ = set(pending)
+    for d in reversed(days[-lookback:] if lookback > 0 else []):
+        if not open_:
+            break
+        snap = load_snapshot(paths, d) or {}
+        for b in list(open_):
+            body = (snap.get("books") or {}).get(b)
+            if not isinstance(body, dict) or body.get("status") != "OK":
+                continue
+            if body_archived(body):
+                base[b] = body
+                open_.discard(b)
+            else:
+                pending[b].insert(0, body)
+    return pending, base
 
 
 # ============================================================================ spot mark kaynakları (§7.1)
@@ -416,29 +523,37 @@ def _history_spot_bar(market: Path, symbol: str, ref: datetime) -> tuple[Decimal
     return best[1], datetime.fromtimestamp(best[0] / 1000, tz=timezone.utc)
 
 
+PerpProxies = dict[str, tuple[Decimal, "datetime | None"]]
+
+
+def collect_perp_proxies(doc: dict, proxies: PerpProxies) -> PerpProxies:
+    """Bir vadeli ledger'ın açık pozisyonlarının `last_price`'ını (sembol anahtarıyla) haritaya ekle; aynı sembolde
+    `updated_at`'i daha yeni olan defter kazanır (§7.1 kaynak 3). Yalnız bu küçük harita tutulur (okuma 9)."""
+    upd = parse_ts(doc.get("updated_at"))
+    for p in (doc.get("positions") or {}).values():
+        if not isinstance(p, dict):
+            continue
+        lp = dec_or_none(p.get("last_price"))
+        k = symbol_key(p.get("symbol"))
+        if lp is None or lp <= 0 or not k:
+            continue
+        cur = proxies.get(k)
+        if cur is None or (upd is not None and (cur[1] is None or upd > cur[1])):
+            proxies[k] = (lp, upd)
+    return proxies
+
+
 def spot_marks(paths: EnginePaths, symbols: Iterable[str], ref: datetime,
-               futures_docs: dict[str, dict]) -> dict[str, dict[str, Any]]:
+               proxies: PerpProxies | None = None) -> dict[str, dict[str, Any]]:
     """Spot varlıkların mark'ı, mühürlü sırayla (§7.1): (1) `position_path.jsonl` ≤ 60 dk, (2) worker HistoryStore'unda
     son kapanmış spot barı, (3) aynı sembolün herhangi bir vadeli ledger'daki `last_price`'ı (`PERP_PROXY`, en yeni
-    `updated_at`). Hiçbiri yoksa mark yoktur (o defterin MTM'i EKSİK)."""
+    `updated_at`; `collect_perp_proxies`). Hiçbiri yoksa mark yoktur (o defterin MTM'i EKSİK)."""
     syms = sorted({str(s) for s in symbols if s})
     out: dict[str, dict[str, Any]] = {}
     if not syms:
         return out
     pp = _position_path_marks(paths.state, ref)
-    proxies: dict[str, tuple[Decimal, datetime | None]] = {}
-    for _b, doc in sorted(futures_docs.items()):
-        upd = parse_ts(doc.get("updated_at"))
-        for p in (doc.get("positions") or {}).values():
-            if not isinstance(p, dict):
-                continue
-            lp = dec_or_none(p.get("last_price"))
-            k = symbol_key(p.get("symbol"))
-            if lp is None or lp <= 0 or not k:
-                continue
-            cur = proxies.get(k)
-            if cur is None or (upd is not None and (cur[1] is None or upd > cur[1])):
-                proxies[k] = (lp, upd)
+    proxies = proxies or {}
     for s in syms:
         k = symbol_key(s)
         if k in pp:
@@ -564,28 +679,117 @@ def rotation_margin(times: list[datetime | None], *, keep: int, new_since_last: 
             "warn": bool(days is not None and days < MARGIN_WARN_DAYS) or remaining <= 0}
 
 
+def ledger_tails(book: str, hist: list[dict], ents: list[dict], bases: list[str] | None = None) -> dict[str, Any]:
+    """Anlık görüntüye yazılan ledger kuyrukları (okuma 7): son `SNAP_TAIL` hareket tabanı ve kayıt anahtarı."""
+    eb = bases[-SNAP_TAIL:] if bases is not None else [entry_base(book, e) for e in ents[-SNAP_TAIL:]]
+    return {"entries": list(eb), "n_entries": len(ents),
+            "history": [trade_key(book, h) for h in hist[-SNAP_TAIL:]], "n_history": len(hist)}
+
+
+def _tail_pos(seq: list[str], tail: list[str] | None, n_at: Any) -> int | None:
+    """Bir okumadaki kuyruğun bugünkü listede bittiği konum (o okumada liste boşsa −1; bulunamazsa None)."""
+    try:
+        if int(n_at or 0) == 0:
+            return -1
+    except (TypeError, ValueError):
+        return None
+    if not tail:
+        return None
+    return _find_tail(seq, list(tail))
+
+
+def _attribute(seq: list[str], idxs: list[int], points: list[tuple[list[str] | None, Any]]) -> tuple[list[int], bool]:
+    """Yeni öğelerin (artan `idxs`) her biri için ilk göründüğü okuma: `points` (eskiden yeniye; her biri o okumadaki
+    kuyruk ve uzunluk) içindeki sıra, ya da −1 (bu okuma). Dönen: (sıralar, bölünme kayboldu mu)."""
+    pos: list[int | None] = []
+    last = -1
+    lost = False
+    for tail, n in points:
+        q = _tail_pos(seq, tail, n)
+        if q is None:
+            lost = True
+            pos.append(None)
+            continue
+        q = max(q, last)
+        last = q
+        pos.append(q)
+    out = []
+    for i in idxs:
+        k = -1
+        for j, q in enumerate(pos):
+            if q is not None and i <= q:
+                k = j
+                break
+        out.append(k)
+    return out, bool(lost and idxs and points)
+
+
+def _read_anchor(paths: EnginePaths, book: str) -> dict | None:
+    p = paths.book_entries_dir(book) / ANCHOR_FILE
+    try:
+        with open(p, "r", encoding="utf-8") as fh:
+            d = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    return d if isinstance(d, dict) and d.get("schema") == ANCHOR_SCHEMA else None
+
+
+def _new_since_base(book: str, hist: list[dict], ents: list[dict], bases: list[str], anchor: dict | None,
+                    base: dict | None) -> tuple[int, int, str]:
+    """Son ARŞİV çalıştırmasından beri ledger'a eklenen (henüz arşivlenmemiş) kapanış ve hareket sayısı (rotasyon payı
+    için; S1s ve `rotation_status`). Hareket: çapa → son arşivlenmiş gövdenin kuyruğu → zaman damgası; kapanış: son
+    arşivlenmiş gövdenin kuyruğu → `closed_at`. Defter hiç arşivlenmemişse ledger'daki her şey arşivlenmemiştir
+    (muhafazakâr: pay en küçük)."""
+    tails = (base or {}).get("tails") or {}
+    base_at = parse_ts((base or {}).get("read_at")) if base else None
+    q = _find_tail(bases, list(anchor.get("bases") or [])) if anchor and anchor.get("bases") else None
+    src = "anchor"
+    if q is None and base:
+        q, src = _tail_pos(bases, tails.get("entries"), tails.get("n_entries")), "base_tail"
+    if q is not None:
+        new_e = len(ents) - 1 - q
+    elif base_at is not None:
+        new_e, src = sum(1 for e in ents if (parse_ts(e.get("ts")) or base_at) > base_at), "ts"
+    else:
+        new_e, src = len(ents), "never_archived"
+    keys = [trade_key(book, h) for h in hist]
+    qh = _tail_pos(keys, tails.get("history"), tails.get("n_history")) if base else None
+    if qh is not None:
+        new_h = len(hist) - 1 - qh
+    elif base_at is not None:
+        new_h = sum(1 for h in hist if (parse_ts(h.get("closed_at")) or base_at) > base_at)
+    else:
+        new_h = len(hist)
+    return max(0, new_h), max(0, new_e), src
+
+
+def book_rotation(hist: list[dict], ents: list[dict], *, new_h: int, new_e: int, ref: datetime) -> dict[str, Any]:
+    return {"history": rotation_margin([parse_ts(h.get("closed_at")) for h in hist], keep=HISTORY_KEEP,
+                                       new_since_last=new_h, ref=ref),
+            "entries": rotation_margin([parse_ts(e.get("ts")) for e in ents], keep=ENTRIES_KEEP,
+                                       new_since_last=new_e, ref=ref)}
+
+
 def rotation_status(paths: EnginePaths, *, now: datetime | None = None) -> dict[str, Any]:
-    """Arşivlemeden, salt-okunur rotasyon payı (§4.2 --check; §2.9 A/B: herhangi bir defterin payı 3 günden azsa KAPALI
-    gecede de S1a çalışır → `AB_OFF_ZORUNLU_ARŞİV`). "Son arşivden beri yeni öğe" son anlık görüntünün okuma anından
-    sonraki kapanış/hareket sayısıyla yaklaşıklanır (zaman damgası; arşiv okunmaz)."""
+    """Arşivlemeden, salt-okunur rotasyon payı (§4.2 --check; §2.9 A/B istisnası). "Son arşivden beri yeni öğe"
+    `_new_since_base` ile (çapa / son arşivlenmiş anlık görüntünün kuyruğu) bulunur. Defterler tek tek okunur."""
     now = now or utc_now()
-    days = snapshot_days(paths)
-    last = (load_snapshot(paths, days[-1]) or {}).get("books", {}) if days else {}
+    found = find_ledgers(paths.state)
+    _pending, base = trailing_bodies(paths, snapshot_days(paths), list(found))
     books: dict[str, Any] = {}
     min_days: float | None = None
-    for b, (kind, p) in find_ledgers(paths.state).items():
+    for b, (kind, p) in found.items():
         rd = read_ledger(b, kind, p, clock=lambda: now)
         if not rd.ok:
             books[b] = {"status": rd.status}
             continue
         doc = rd.doc or {}
-        since = parse_ts((last.get(b) or {}).get("read_at"))
-        h_t = [parse_ts(h.get("closed_at")) for h in doc.get("history") or [] if isinstance(h, dict)]
-        e_t = [parse_ts(e.get("ts")) for e in doc.get("entries") or [] if isinstance(e, dict)]
-        new_h = sum(1 for t in h_t if t is not None and since is not None and t > since) if since else len(h_t)
-        new_e = sum(1 for t in e_t if t is not None and since is not None and t > since) if since else 0
-        m = {"history": rotation_margin(h_t, keep=HISTORY_KEEP, new_since_last=new_h, ref=now),
-             "entries": rotation_margin(e_t, keep=ENTRIES_KEEP, new_since_last=new_e, ref=now)}
+        hist = [h for h in (doc.get("history") or []) if isinstance(h, dict)]
+        ents = [e for e in (doc.get("entries") or []) if isinstance(e, dict)]
+        bases = [entry_base(b, e) for e in ents]
+        new_h, new_e, _src = _new_since_base(b, hist, ents, bases, _read_anchor(paths, b), base.get(b))
+        m = book_rotation(hist, ents, new_h=new_h, new_e=new_e, ref=now)
+        del rd, doc
         books[b] = {"status": "OK", **m}
         for x in m.values():
             if x["days"] is not None:
@@ -596,18 +800,25 @@ def rotation_status(paths: EnginePaths, *, now: datetime | None = None) -> dict[
 
 # ============================================================================ yazım
 def _append_segment(paths: EnginePaths, d: Path, month: str, rows: list[dict]) -> Path | None:
+    """Ay segmentine satır ekle: eski segment AÇILIP akışla kopyalanır, yeni satırlar eklenir, bütün dosya atomik ve
+    deterministik gzip olarak yeniden yazılır (yarım ekleme segmenti bozamaz); `.sha256` yan dosyası güncellenir."""
     if not rows:
         return None
     seg = d / f"{month}.jsonl.gz"
-    old = b""
-    if seg.exists():
-        with gzip.open(seg, "rb") as fh:
-            old = fh.read()
-        if old and not old.endswith(b"\n"):
-            old += b"\n"
-    blob = gzip_bytes(old + "".join(json_line(r) for r in rows).encode("utf-8"))
-    paths.write_bytes(seg, blob)
-    paths.write_text(seg.with_name(seg.name + ".sha256"), hashlib.sha256(blob).hexdigest() + "\n")
+
+    def _chunks() -> Iterator[bytes]:
+        last = b"\n"
+        if seg.exists():
+            with gzip.open(seg, "rb") as fh:
+                for chunk in iter(lambda: fh.read(1 << 20), b""):
+                    last = chunk[-1:]
+                    yield chunk
+        if last != b"\n":
+            yield b"\n"
+        for r in rows:
+            yield json_line(r).encode("utf-8")
+    sha = paths.write_gzip_stream(seg, _chunks())
+    paths.write_text(seg.with_name(seg.name + ".sha256"), sha + "\n")
     return seg
 
 
@@ -693,6 +904,7 @@ class BookResult:
     restored_away: int = 0
     vanished: int = 0
     new_entries: int = 0
+    attributed_earlier: int = 0
     align: str | None = None
     restore: dict | None = None
     recon_wallet: dict | None = None
@@ -705,10 +917,47 @@ class BookResult:
         return {k: getattr(self, k) for k in self.__dataclass_fields__}
 
 
+def _restore_evidence(paths: EnginePaths, doc: dict, prev: dict | None, pending: Iterable[dict]) -> list[str]:
+    """Geri yükleme kanıtı (okuma 6): arşivlenmemiş S1s gövdelerinin `restore_pending`'i + bir önceki anlık görüntüye
+    göre `seq` azalması + o okumadan sonra beliren `state.pre-restore-*` klasörü."""
+    evidence: list[str] = []
+    for p in pending:
+        evidence.extend(str(x) for x in (p.get("restore_pending") or []))
+    if isinstance(prev, dict) and prev.get("status") == "OK":
+        try:
+            if int(doc.get("seq") or 0) < int(prev.get("seq") or 0):
+                evidence.append("SEQ_DECREASED")
+        except (TypeError, ValueError):
+            pass
+        dirs = _pre_restore_dirs(paths.data, parse_ts(prev.get("read_at")))
+        if dirs:
+            evidence.append("PRE_RESTORE_DIR:" + ",".join(dirs))
+    return list(dict.fromkeys(evidence))
+
+
+def _spot_held_symbols(doc: dict) -> list[str]:
+    quote = str(doc.get("quote_asset") or "USDT").upper()
+    return [s for s in (doc.get("lots") or {})] + [f"{a}/{quote}" for src in (doc.get("assets") or {}, doc.get("locked_assets") or {})
+                                                   for a, v in src.items() if dec(v) != 0]
+
+
+def _book_state(paths: EnginePaths, rd: LedgerRead, proxies: PerpProxies | None) -> dict[str, Any]:
+    doc, now = rd.doc or {}, rd.read_at
+    if rd.kind == KIND_FUTURES:
+        state = futures_state(doc, now)
+    else:
+        state = spot_state(doc, spot_marks(paths, _spot_held_symbols(doc), now, proxies), now)
+    state.update({"status": "OK", "read_at": iso(now), "path": rd.path, "sha256": rd.sha256,
+                  "schema_version": rd.schema_version})
+    return state
+
+
 def archive_book(paths: EnginePaths, rd: LedgerRead, prev: dict | None, *, run_id: str,
-                 futures_docs: dict[str, dict]) -> BookResult:
+                 perp_proxies: PerpProxies | None = None, pending: Iterable[dict] = (),
+                 base: dict | None = None) -> BookResult:
     """Tek defterin S1a işi: kapanış + hareket arşivi, durum, uzlaştırma, rotasyon payı, geri yükleme tespiti.
-    `prev`: bir önceki anlık görüntüdeki bu defterin gövdesi (yoksa None)."""
+    `prev`: en son anlık görüntüdeki bu defterin gövdesi; `pending`: son arşiv çalıştırmasından sonraki arşivlenmemiş
+    (S1s) OK gövdeler (eskiden yeniye; okuma 7); `base`: son arşivlenmiş OK gövde (yoksa None)."""
     res = BookResult(book=rd.book, kind=rd.kind, status=rd.status, read=rd.meta())
     if not rd.ok:
         res.flags.append(rd.status)
@@ -716,77 +965,86 @@ def archive_book(paths: EnginePaths, rd: LedgerRead, prev: dict | None, *, run_i
     doc, kind, book, now = rd.doc or {}, rd.kind, rd.book, rd.read_at
     hist = [h for h in (doc.get("history") or []) if isinstance(h, dict)]
     ents = [e for e in (doc.get("entries") or []) if isinstance(e, dict)]
+    pending = [p for p in pending if isinstance(p, dict) and p.get("status") == "OK"]
+    pts_t = [parse_ts(p.get("read_at")) for p in pending]
+    base_ok = isinstance(base, dict) and base.get("status") == "OK"
+    base_at = parse_ts(base.get("read_at")) if base_ok else None
     prev_ok = isinstance(prev, dict) and prev.get("status") == "OK"
     prev_at = parse_ts(prev.get("read_at")) if prev_ok else None
+    last_obs = pts_t[-1] if pts_t else (prev_at or base_at)
+    held_keys = [trade_key(book, h) for h in hist]
     ts_set = {str(e.get("ts", "")) for e in ents}
-    arch = load_book_archive(paths, book, ts_filter=ts_set, window_from=prev_at)
+    arch = load_book_archive(paths, book, ts_filter=ts_set, window_from=prev_at, keep_proj=set(held_keys))
     month = now.strftime("%Y-%m")
     obs = iso(now)
 
     # ---- geri yükleme kanıtı
-    evidence = []
-    if prev_ok:
-        try:
-            if int(doc.get("seq") or 0) < int(prev.get("seq") or 0):
-                evidence.append("SEQ_DECREASED")
-        except (TypeError, ValueError):
-            pass
-        dirs = _pre_restore_dirs(paths.data, prev_at)
-        if dirs:
-            evidence.append("PRE_RESTORE_DIR:" + ",".join(dirs))
+    evidence = _restore_evidence(paths, doc, prev, pending)
     restore = bool(evidence)
     if restore:
-        res.restore = {"evidence": evidence, "prev_seq": prev.get("seq"), "seq": doc.get("seq"), "at": obs}
+        res.restore = {"evidence": evidence, "prev_seq": (prev or {}).get("seq"), "seq": doc.get("seq"), "at": obs}
         res.flags.append(F_RESTORE_EVENT)
 
     # ---- kapanışlar
     rows: list[dict] = []
     derived: list[dict] = []
-    held_keys: list[str] = []
     resync_from = now - timedelta(days=RESYNC_DAYS)
     new_main_ids: set[str] = set()
     next_ord = arch.max_ord
     had_closes = bool(arch.closes)
     new_keys: set[str] = set()
-    for rec in hist:
-        k = trade_key(book, rec)
-        held_keys.append(k)
-        sha = canonical_sha(rec)
+    new_idx: list[int] = []
+    for i, rec in enumerate(hist):
+        if abs(dec(rec.get("fees")) - (dec(rec.get("entry_fee")) + dec(rec.get("exit_fee")))) > TOL:
+            res.fee_identity_violations += 1        # ücret özdeşliği her işlemde (§4.2), değişmeyenler dahil
+        k = held_keys[i]
         cur = arch.closes.get(k)
-        proj = project(rec, kind)
-        if not proj["fee_identity_ok"]:
-            res.fee_identity_violations += 1
         if cur is None:
-            next_ord += 1
-            closed = parse_ts(rec.get("closed_at"))
-            late = bool(prev_at is not None and closed is not None and closed <= prev_at)
-            res.late_appearances += int(late)
-            res.new_closes += 1
-            rows.append({"schema": CLOSES_SCHEMA, "row": "close", "book": book, "trade_key": k, "rev": 0, "status": ST_ACTIVE,
-                         "observed_at": obs, "run_id": run_id, "ord": next_ord, "content_sha": sha, "changed": [],
-                         "late": late, "position_group": position_group(book, rec, kind), "proj": proj, "record": rec})
-            arch.closes[k] = CloseState(0, sha, ST_ACTIVE, next_ord, proj, obs, obs)
-            new_keys.add(k)
-            if k not in arch.derived_keys:
-                mtnf, src = min_to_next_funding(rec, kind)
-                derived.append({"schema": DERIVED_SCHEMA, "row": "derived", "book": book, "trade_key": k, "observed_at": obs,
-                                "min_to_next_funding": mtnf, "min_to_next_funding_source": src,
-                                "decision_delay_s": None, "decision_delay_source": "NOT_APPLICABLE" if kind == KIND_SPOT else "MISSING"})
-                if book == BOOK_MAIN_FUT:
-                    new_main_ids.add(str(rec.get("id", "")))
-        elif cur.sha != sha or cur.status != ST_ACTIVE:
-            changed = sorted(f for f in proj if proj.get(f) != cur.proj.get(f)) or ["record"]
-            if cur.status != ST_ACTIVE:
-                changed.append("status")
-            closed = parse_ts(rec.get("closed_at"))
-            if closed is not None and closed < resync_from:
-                res.revised_older_than_resync += 1
-            res.revised += 1
-            rows.append({"schema": CLOSES_SCHEMA, "row": "close", "book": book, "trade_key": k, "rev": cur.rev + 1,
-                         "status": ST_ACTIVE, "observed_at": obs, "run_id": run_id, "ord": cur.ord, "content_sha": sha,
-                         "changed": changed, "late": False, "position_group": position_group(book, rec, kind), "proj": proj,
-                         "record": rec})
-            arch.closes[k] = CloseState(cur.rev + 1, sha, ST_ACTIVE, cur.ord, proj, cur.first_observed_at, obs)
+            new_idx.append(i)
+            continue
+        sha = canonical_sha(rec)
+        if cur.sha == sha and cur.status == ST_ACTIVE:
+            continue
+        proj = project(rec, kind)
+        changed = sorted(f for f in proj if proj.get(f) != (cur.proj or {}).get(f)) or ["record"]
+        if cur.status != ST_ACTIVE:
+            changed.append("status")
+        closed = parse_ts(rec.get("closed_at"))
+        if closed is not None and closed < resync_from:
+            res.revised_older_than_resync += 1
+        res.revised += 1
+        rows.append({"schema": CLOSES_SCHEMA, "row": "close", "book": book, "trade_key": k, "rev": cur.rev + 1,
+                     "status": ST_ACTIVE, "observed_at": obs, "archived_at": obs, "run_id": run_id, "ord": cur.ord,
+                     "content_sha": sha, "changed": changed, "late": False,
+                     "position_group": position_group(book, rec, kind), "proj": proj, "record": rec})
+        arch.closes[k] = CloseState(cur.rev + 1, sha, ST_ACTIVE, cur.ord, proj, cur.first_observed_at, obs)
+    h_att, lost_h = _attribute(held_keys, new_idx, [((p.get("tails") or {}).get("history"),
+                                                     (p.get("tails") or {}).get("n_history")) for p in pending])
+    for i, katt in zip(new_idx, h_att):
+        rec, k = hist[i], held_keys[i]
+        sha, proj = canonical_sha(rec), project(rec, kind)
+        next_ord += 1
+        closed = parse_ts(rec.get("closed_at"))
+        seen_at = pts_t[katt] if katt >= 0 else now
+        prior = (pts_t[katt - 1] if katt >= 1 else base_at) if katt >= 0 else last_obs
+        late = bool(prior is not None and closed is not None and closed <= prior)
+        res.late_appearances += int(late)
+        res.new_closes += 1
+        res.attributed_earlier += int(katt >= 0)
+        o = iso(seen_at) if seen_at is not None else obs
+        rows.append({"schema": CLOSES_SCHEMA, "row": "close", "book": book, "trade_key": k, "rev": 0, "status": ST_ACTIVE,
+                     "observed_at": o, "archived_at": obs, "run_id": run_id, "ord": next_ord, "content_sha": sha,
+                     "changed": [], "late": late, "position_group": position_group(book, rec, kind), "proj": proj,
+                     "record": rec})
+        arch.closes[k] = CloseState(0, sha, ST_ACTIVE, next_ord, proj, o, o)
+        new_keys.add(k)
+        if k not in arch.derived_keys:
+            mtnf, src = min_to_next_funding(rec, kind)
+            derived.append({"schema": DERIVED_SCHEMA, "row": "derived", "book": book, "trade_key": k, "observed_at": obs,
+                            "min_to_next_funding": mtnf, "min_to_next_funding_source": src,
+                            "decision_delay_s": None, "decision_delay_source": "NOT_APPLICABLE" if kind == KIND_SPOT else "MISSING"})
+            if book == BOOK_MAIN_FUT:
+                new_main_ids.add(str(rec.get("id", "")))
     if new_main_ids:
         dec_ts = _provenance_decisions(paths.state, new_main_ids)
         for d in derived:
@@ -808,102 +1066,161 @@ def archive_book(paths: EnginePaths, rd: LedgerRead, prev: dict | None, *, run_i
         first_ord = None
     else:
         first_ord = arch.closes[held_keys[0]].ord
+    away: list[tuple[str, CloseState]] = []
     for k, st in sorted(arch.closes.items(), key=lambda kv: kv[1].ord):
         if k in held or st.status != ST_ACTIVE:
             continue
         if first_ord is not None and st.ord <= first_ord:
             continue                                    # rotasyonla düşmüş (ledger'ın en eski kaydından önce)
-        if restore:
+        away.append((k, st))
+    if away and restore:
+        latest = latest_rows_for(paths, book, {k for k, _st in away})
+        for k, st in away:
+            lr = latest.get(k) or {}
+            proj = lr.get("proj") or st.proj or {}
             res.restored_away += 1
             rows.append({"schema": CLOSES_SCHEMA, "row": "close", "book": book, "trade_key": k, "rev": st.rev + 1,
-                         "status": ST_RESTORED_AWAY, "observed_at": obs, "run_id": run_id, "ord": st.ord,
-                         "content_sha": st.sha, "changed": ["status"], "late": False, "position_group": None,
-                         "proj": st.proj, "record": None})
-            arch.closes[k] = CloseState(st.rev + 1, st.sha, ST_RESTORED_AWAY, st.ord, st.proj, st.first_observed_at, obs)
-        else:
-            res.vanished += 1
+                         "status": ST_RESTORED_AWAY, "observed_at": obs, "archived_at": obs, "run_id": run_id,
+                         "ord": st.ord, "content_sha": lr.get("content_sha") or st.sha, "changed": ["status"],
+                         "late": False, "position_group": None, "proj": proj, "record": None})
+            arch.closes[k] = CloseState(st.rev + 1, st.sha, ST_RESTORED_AWAY, st.ord, None, st.first_observed_at, obs)
+    elif away:
+        res.vanished += len(away)
     if res.vanished:
         res.flags.append(F_INCONSISTENT)
 
-    # ---- hareketler (hizalama)
+    # ---- hareketler (hizalama: çapa → arşiv kuyruğu → taban sayımı; okuma 8)
     bases = [entry_base(book, e) for e in ents]
     refmap = dict(arch.refmap)
     refmap.update(_ref_symbols(doc, kind))
-    new_idx: list[int]
-    if arch.entries_count == 0 and not prev_ok:
-        # ilk gözlem: ledger'daki hareketler ilk anlık görüntüden ÖNCEdir (hiçbir pencereye girmez)
-        res.align, new_idx = ALIGN_BASELINE, list(range(len(ents)))
+    e_points = [((p.get("tails") or {}).get("entries"), (p.get("tails") or {}).get("n_entries")) for p in pending]
+    e_idx: list[int]
+    pre_upto = -1                                   # bu konuma kadarki hareketler ilk gözlemden ÖNCEdir (pre_archive)
+    if arch.entries_count == 0 and not base_ok:
+        # ilk gözlem: ledger'daki hareketler ilk anlık görüntüden ÖNCEdir (hiçbir pencereye girmez). İlk gözlem bir S1s
+        # anlık görüntüsü idiyse onun kuyruğuna kadarkiler öncedir, sonrakiler sonraki pencerelere atanır.
+        res.align, e_idx = ALIGN_BASELINE, list(range(len(ents)))
+        if e_points:
+            q0 = _tail_pos(bases, e_points[0][0], e_points[0][1])
+            pre_upto = len(ents) - 1 if q0 is None else q0
+            if q0 is None:
+                res.flags.append(F_SPLIT_LOST)
+        else:
+            pre_upto = len(ents) - 1
     elif arch.entries_count == 0:
-        # önceki anlık görüntü var ama arşivde hareket yok: önceki okumada ledger'da hareket yoksa hepsi yenidir;
-        # varsa arşiv o hareketleri hiç almamıştır → boşluk
-        res.align = ALIGN_OK if int(prev.get("n_entries") or 0) == 0 else ALIGN_GAP
-        new_idx = list(range(len(ents)))
+        # son arşivlenmiş gövde var ama arşivde hareket yok: o okumada ledger'da hareket yoksa hepsi yenidir; varsa arşiv
+        # o hareketleri hiç almamıştır → boşluk
+        # (o okumada 0 hareket vardı ama ledger şimdi DOLU ise aradaki en eskiler rotasyonla düşmüş olabilir → boşluk)
+        res.align = ALIGN_OK if int(base.get("n_entries") or 0) == 0 and len(ents) < ENTRIES_KEEP else ALIGN_GAP
+        e_idx = list(range(len(ents)))
         if res.align == ALIGN_GAP:
             res.flags.append(F_ENTRIES_GAP)
     else:
-        tail = arch.entries_tail[-min(ALIGN_TAIL, len(arch.entries_tail)):]
-        p = _find_tail(bases, tail)
+        anchor = _read_anchor(paths, book)
+        tails = []
+        if anchor and anchor.get("bases") and int(anchor.get("archive_count") or -1) == arch.entries_count:
+            tails.append(list(anchor["bases"]))
+        tails.append(arch.entries_tail[-min(ALIGN_TAIL, len(arch.entries_tail)):])
+        p = None
+        for t in tails:
+            p = _find_tail(bases, t)
+            if p is not None:
+                break
         if p is not None:
-            res.align, new_idx = ALIGN_OK, list(range(p + 1, len(ents)))
+            res.align, e_idx = ALIGN_OK, list(range(p + 1, len(ents)))
         else:
             seen: Counter = Counter()
-            new_idx = []
+            e_idx = []
             known_any = False
             for i, b in enumerate(bases):
                 if arch.base_counts.get(b, 0) > seen[b]:
                     known_any = True
                 else:
-                    new_idx.append(i)
+                    e_idx.append(i)
                 seen[b] += 1
             res.align = ALIGN_REWIND if known_any else ALIGN_GAP
             res.flags.append(F_ENTRIES_GAP)
+    e_att, lost_e = _attribute(bases, e_idx, e_points)
+    if lost_h or lost_e:
+        res.flags.append(F_SPLIT_LOST)
     erows = []
     counts = Counter(arch.base_counts)
-    for j, i in enumerate(new_idx):
+    for j, (i, katt) in enumerate(zip(e_idx, e_att)):
         e, b = ents[i], bases[i]
         occ = counts[b]
         counts[b] += 1
-        erows.append({"schema": ENTRIES_SCHEMA, "book": book, "key": f"{b}#{occ}", "observed_at": obs, "run_id": run_id,
-                      "pre_archive": res.align == ALIGN_BASELINE, "gap_before": bool(j == 0 and res.align in (ALIGN_GAP, ALIGN_REWIND)),
+        seen_at = pts_t[katt] if katt >= 0 else now
+        res.attributed_earlier += int(katt >= 0)
+        erows.append({"schema": ENTRIES_SCHEMA, "book": book, "key": f"{b}#{occ}",
+                      "observed_at": iso(seen_at) if seen_at is not None else obs, "archived_at": obs, "run_id": run_id,
+                      "pre_archive": i <= pre_upto, "gap_before": bool(j == 0 and res.align in (ALIGN_GAP, ALIGN_REWIND)),
                       "symbol": _entry_symbol(e, refmap), "entry": e})
-    res.new_entries = len(erows)
+    res.new_entries = sum(1 for r in erows if not r["pre_archive"]) if res.align == ALIGN_BASELINE else len(erows)
 
-    # ---- yaz
+    # ---- yaz (segmentler, sonra çapa: çapa yalnız arşivdeki satır sayısıyla tutarlıysa kullanılır)
     _append_segment(paths, paths.book_closes_dir(book), month, rows + derived)
     _append_segment(paths, paths.book_entries_dir(book), month, erows)
+    paths.write_json(paths.book_entries_dir(book) / ANCHOR_FILE,
+                     {"schema": ANCHOR_SCHEMA, "book": book, "bases": bases[-ALIGN_TAIL:], "n_entries": len(ents),
+                      "archive_count": arch.entries_count + len(erows), "observed_at": obs, "run_id": run_id})
 
     # ---- durum (anlık görüntü gövdesi)
-    if kind == KIND_FUTURES:
-        state = futures_state(doc, now)
-    else:
-        quote = str(doc.get("quote_asset") or "USDT").upper()
-        held_syms = [s for s in (doc.get("lots") or {})] + [f"{a}/{quote}" for src in (doc.get("assets") or {}, doc.get("locked_assets") or {})
-                                                           for a, v in src.items() if dec(v) != 0]
-        state = spot_state(doc, spot_marks(paths, held_syms, now, futures_docs), now)
-    state.update({"status": "OK", "read_at": obs, "path": rd.path, "sha256": rd.sha256, "schema_version": rd.schema_version})
+    state = _book_state(paths, rd, perp_proxies)
+    state.update({"archived": True, "tails": ledger_tails(book, hist, ents, bases)})
     res.state = state
+
+    # ---- cüzdan görünümü uzlaştırması (S_prev, S_now]; sonra arşiv özeti bırakılır (bellek)
+    res.recon_wallet = reconcile_wallet(kind, prev if prev_ok else None, state, arch, erows, rows, align=res.align,
+                                        restore=restore)
+    if res.recon_wallet["status"] == RECON_INCONSISTENT:
+        res.flags.append(F_INCONSISTENT)
+    arch.closes.clear()
+    del arch
 
     # ---- kayıt görünümü uzlaştırması (diskten yeniden okunan arşiv ↔ ledger; elde tutulan pencerede, ay başına)
     res.recon_record = reconcile_records(paths, book, kind, hist)
     if res.recon_record["status"] != RECON_OK:
         res.flags.append(F_INCONSISTENT)
 
-    # ---- cüzdan görünümü uzlaştırması (S_prev, S_now]
-    res.recon_wallet = reconcile_wallet(kind, prev if prev_ok else None, state, arch, erows, rows, align=res.align,
-                                        restore=restore)
-    if res.recon_wallet["status"] == RECON_INCONSISTENT:
-        res.flags.append(F_INCONSISTENT)
-
     # ---- rotasyon payı
-    res.rotation = {
-        "history": rotation_margin([parse_ts(h.get("closed_at")) for h in hist], keep=HISTORY_KEEP,
-                                   new_since_last=res.new_closes, ref=now),
-        "entries": rotation_margin([parse_ts(e.get("ts")) for e in ents], keep=ENTRIES_KEEP,
-                                   new_since_last=res.new_entries if res.align != ALIGN_BASELINE else 0, ref=now)}
+    res.rotation = book_rotation(hist, ents, new_h=res.new_closes,
+                                 new_e=res.new_entries if res.align != ALIGN_BASELINE else 0, ref=now)
     if res.rotation["history"]["warn"] or res.rotation["entries"]["warn"]:
         res.flags.append(F_ROTATION_WARN)
     state.update({"recon": res.recon_wallet, "align": res.align, "restore": res.restore, "rotation": res.rotation,
                   "flags": sorted(set(res.flags))})
+    res.flags = sorted(set(res.flags))
+    return res
+
+
+def snapshot_book(paths: EnginePaths, rd: LedgerRead, prev: dict | None, *, perp_proxies: PerpProxies | None = None,
+                  pending: Iterable[dict] = (), base: dict | None = None) -> BookResult:
+    """S1s (okuma 7): arşivlemeden yalnız ölçülmüş anlık görüntü gövdesi + kuyruklar + rotasyon payı + geri yükleme
+    kanıtı (`restore_pending`). Arşive, çapaya ve hiçbir başka dosyaya dokunmaz."""
+    res = BookResult(book=rd.book, kind=rd.kind, status=rd.status, read=rd.meta())
+    if not rd.ok:
+        res.flags.append(rd.status)
+        return res
+    doc, book, now = rd.doc or {}, rd.book, rd.read_at
+    hist = [h for h in (doc.get("history") or []) if isinstance(h, dict)]
+    ents = [e for e in (doc.get("entries") or []) if isinstance(e, dict)]
+    bases = [entry_base(book, e) for e in ents]
+    evidence = _restore_evidence(paths, doc, prev, ())
+    if evidence:
+        res.restore = {"evidence": evidence, "prev_seq": (prev or {}).get("seq"), "seq": doc.get("seq"), "at": iso(now),
+                       "pending": True}
+        res.flags.append(F_RESTORE_EVENT)
+    base_ok = isinstance(base, dict) and base.get("status") == "OK"
+    new_h, new_e, src = _new_since_base(book, hist, ents, bases, _read_anchor(paths, book), base if base_ok else None)
+    res.rotation = book_rotation(hist, ents, new_h=new_h, new_e=new_e, ref=now)
+    res.rotation["since_source"] = src
+    if res.rotation["history"]["warn"] or res.rotation["entries"]["warn"]:
+        res.flags.append(F_ROTATION_WARN)
+    state = _book_state(paths, rd, perp_proxies)
+    state.update({"archived": False, "tails": ledger_tails(book, hist, ents, bases), "recon": None, "align": None,
+                  "restore": None, "restore_pending": evidence or None, "rotation": res.rotation,
+                  "flags": sorted(set(res.flags))})
+    res.state = state
     res.flags = sorted(set(res.flags))
     return res
 
@@ -914,7 +1231,8 @@ _RECORD_SUMS = ("pnl", "fees", "funding", "slippage")
 def reconcile_records(paths: EnginePaths, book: str, kind: str, hist: list[dict]) -> dict[str, Any]:
     """Kayıt görünümü değişmezi (§4.2): ledger'ın ELİNDE TUTTUĞU pencerede, ay başına Σ arşiv (son rev, diskten yeniden
     okunmuş) = Σ ledger `TradeRecord` (pnl, ücret, fonlama, kayma; tolerans 1e-6) ve kayıt sayısı."""
-    arch = latest_closes(paths, book)
+    keys = {trade_key(book, rec) for rec in hist}
+    arch = latest_closes(paths, book, keys)
     led: dict[str, dict[str, Decimal]] = {}
     arc: dict[str, dict[str, Decimal]] = {}
     missing = 0
@@ -943,7 +1261,8 @@ def reconcile_records(paths: EnginePaths, book: str, kind: str, hist: list[dict]
 def reconcile_wallet(kind: str, prev: dict | None, state: dict, arch: BookArchive, erows: list[dict], crows: list[dict], *,
                      align: str | None, restore: bool) -> dict[str, Any]:
     """Cüzdan görünümü değişmezi (§4.2) penceresi (S_prev, S_now]: vadeli Δwallet_balance = Σ gözlenen hareketler;
-    spot Δ(cash+locked) = Σ hareketler + Σ yeni satışların maliyeti ve ΔB = Σ TRANSFER dışı hareketler (okuma 3)."""
+    spot Δ(cash+locked) = Σ hareketler + Σ yeni satışların maliyeti ve ΔB = Σ TRANSFER dışı hareketler (okuma 3).
+    Bu gece arşive yazılan ama ilk gözlemi S_prev ya da daha önce olan satırlar (okuma 7) pencereye girmez."""
     if prev is None:
         return {"status": RECON_NO_PREV}
     win = {"from": prev.get("read_at"), "to": state.get("read_at")}
@@ -951,8 +1270,16 @@ def reconcile_wallet(kind: str, prev: dict | None, state: dict, arch: BookArchiv
         return {**win, "status": RECON_RESTORED}
     if align == ALIGN_GAP:
         return {**win, "status": RECON_GAP}
-    obs = arch.window_entry_sum + sum((dec(r["entry"].get("amount")) for r in erows), Decimal(0))
-    obs_nt = arch.window_entry_nontransfer_sum + sum((dec(r["entry"].get("amount")) for r in erows
+    prev_at = parse_ts(prev.get("read_at"))
+
+    def _inside(r: dict) -> bool:
+        if r.get("pre_archive"):
+            return False
+        t = parse_ts(r.get("observed_at"))
+        return prev_at is None or (t is not None and t > prev_at)
+    new_e = [r for r in erows if _inside(r)]
+    obs = arch.window_entry_sum + sum((dec(r["entry"].get("amount")) for r in new_e), Decimal(0))
+    obs_nt = arch.window_entry_nontransfer_sum + sum((dec(r["entry"].get("amount")) for r in new_e
                                                       if str(r["entry"].get("kind")) != "TRANSFER"), Decimal(0))
     if kind == KIND_FUTURES:
         delta = dec(state.get("wallet_balance")) - dec(prev.get("wallet_balance"))
@@ -961,7 +1288,8 @@ def reconcile_wallet(kind: str, prev: dict | None, state: dict, arch: BookArchiv
         return {**win, "status": RECON_OK if ok else RECON_INCONSISTENT, "delta": dstr(delta), "observed": dstr(obs),
                 "diff": dstr(diff), "tolerance": dstr(TOL)}
     cost = arch.window_new_close_cost + sum((dec((r.get("proj") or {}).get("cost")) for r in crows
-                                             if r.get("rev") == 0 and r.get("status") == ST_ACTIVE), Decimal(0))
+                                             if r.get("rev") == 0 and r.get("status") == ST_ACTIVE and _inside(r)),
+                                            Decimal(0))
     dcash = (dec(state.get("cash")) + dec(state.get("locked_cash"))) - (dec(prev.get("cash")) + dec(prev.get("locked_cash")))
     dbook = dec(state.get("book_value")) - dec(prev.get("book_value"))
     diff_cash = dcash - (obs + cost)
@@ -972,12 +1300,14 @@ def reconcile_wallet(kind: str, prev: dict | None, state: dict, arch: BookArchiv
             "observed_non_transfer": dstr(obs_nt), "diff_book_value": dstr(diff_book), "tolerance": dstr(TOL)}
 
 
-# ============================================================================ S1a orkestrasyonu
-def run_s1a(paths: EnginePaths, *, now: datetime | None = None, run_id: str | None = None,
-            clock: Callable[[], datetime] | None = None) -> dict[str, Any]:
-    """S1a: bütün defterler için arşiv + anlık görüntü + uzlaştırma. Anlık görüntü dosyası o UTC günü için YOKSA
-    yazılır (günün ilk başarılı okuması ölçümdür; aynı gün yeniden çalıştırma onu değiştirmez, yeni hareketleri ise
-    gözlem damgasıyla sonraki pencereye ekler). Dönen sözlük `run_status.json`'a girer."""
+# ============================================================================ S1a / S1s orkestrasyonu
+def _ordered(found: dict[str, tuple[str, Path]]) -> list[tuple[str, tuple[str, Path]]]:
+    """Vadeli defterler önce (bulunduğu sırayla), spot EN SON (PERP_PROXY mark'ları vadeli defterlerden toplanır)."""
+    return sorted(found.items(), key=lambda kv: kv[1][0] == KIND_SPOT)
+
+
+def _drive(paths: EnginePaths, *, now: datetime | None, run_id: str | None, clock: Callable[[], datetime] | None,
+           snapshot_only: bool) -> dict[str, Any]:
     if clock is None:
         # Üretimde okuma anı GERÇEK saattir (`observed_at` = dosyanın okunduğu an); `now` verilirse (test/sahte VPS)
         # bütün okumalar o ana sabitlenir.
@@ -988,32 +1318,87 @@ def run_s1a(paths: EnginePaths, *, now: datetime | None = None, run_id: str | No
     day = now.strftime("%Y-%m-%d")
     days = snapshot_days(paths)
     prev_snap = load_snapshot(paths, days[-1]) if days else None
-    reads = {b: read_ledger(b, kind, p, clock=clock) for b, (kind, p) in find_ledgers(paths.state).items()}
-    fut_docs = {b: r.doc for b, r in reads.items() if r.ok and r.kind == KIND_FUTURES and r.doc is not None}
-    books: dict[str, BookResult] = {}
     prev_books = (prev_snap or {}).get("books") or {}
-    for b, rd in reads.items():
-        books[b] = archive_book(paths, rd, prev_books.get(b), run_id=run_id, futures_docs=fut_docs)
+    found = find_ledgers(paths.state)
+    pending, base = trailing_bodies(paths, days, list(found))
+    proxies: PerpProxies = {}
+    books: dict[str, BookResult] = {}
+    newest: datetime | None = None
+    for b, (kind, p) in _ordered(found):
+        rd = read_ledger(b, kind, p, clock=clock)
+        if rd.ok:
+            upd = parse_ts((rd.doc or {}).get("updated_at"))
+            if upd is not None and (newest is None or upd > newest):
+                newest = upd
+            if kind == KIND_FUTURES:
+                collect_perp_proxies(rd.doc or {}, proxies)
+        if snapshot_only:
+            books[b] = snapshot_book(paths, rd, prev_books.get(b), perp_proxies=proxies, pending=pending[b], base=base[b])
+        else:
+            books[b] = archive_book(paths, rd, prev_books.get(b), run_id=run_id, perp_proxies=proxies, pending=pending[b],
+                                    base=base[b])
+        rd.doc = None                       # okuma 9: belge bırakılır, bir sonraki defter okunur
+        del rd
+    # okuma 10: daha önce görülen (arşivlenmiş ya da önceki anlık görüntüde OK/MISSING) ama bu gece ledger'ı olmayan defter
+    known = set(archived_books(paths)) | {b for b, x in prev_books.items()
+                                         if isinstance(x, dict) and x.get("status") in ("OK", LEDGER_MISSING)}
+    for b in sorted(known - set(found)):
+        meta = {"book": b, "kind": (prev_books.get(b) or {}).get("kind"), "status": LEDGER_MISSING, "read_at": iso(now),
+                "error": "ledger dosyası yok (daha önce görülmüştü)"}
+        books[b] = BookResult(book=b, kind=str(meta["kind"] or "?"), status=LEDGER_MISSING, read=meta,
+                              flags=[F_LEDGER_MISSING])
+    run_flags = {f for r in books.values() for f in r.flags}
+    if not found:
+        run_flags.add(F_NO_LEDGERS)
+    stale = None
+    if newest is not None:
+        stale = {"newest_updated_at": iso(newest), "age_s": round((now - newest).total_seconds(), 1),
+                 "limit_s": STALE_AFTER.total_seconds()}
+        if now - newest > STALE_AFTER:
+            run_flags.add(F_LEDGER_STALE)
     snap_written = False
     if not paths.snapshot_file(day).exists():
         snap = {"schema": SNAPSHOT_SCHEMA, "engine": ENGINE_VERSION, "day": day, "taken_at": iso(now), "run_id": run_id,
-                "label": "MEASURED", "prev_day": days[-1] if days else None,
+                "label": "MEASURED", "mode": MODE_SNAPSHOT if snapshot_only else MODE_ARCHIVE,
+                "prev_day": days[-1] if days else None, "flags": sorted(run_flags), "ledger_freshness": stale,
                 "books": {b: (r.state if r.state is not None else {**r.read, "status": r.status}) for b, r in books.items()}}
         paths.write_json_gz(paths.snapshot_file(day), snap)
         snap_written = True
-    flags = sorted({f for r in books.values() for f in r.flags})
-    return {"stage": "S1a", "day": day, "run_id": run_id, "snapshot_written": snap_written,
+    flags = sorted(run_flags)
+    rot = [x["days"] for r in books.values() for k, x in (r.rotation or {}).items()
+           if k in ("history", "entries") and isinstance(x, dict) and x.get("days") is not None]
+    return {"stage": "S1s" if snapshot_only else "S1a", "mode": MODE_SNAPSHOT if snapshot_only else MODE_ARCHIVE,
+            "day": day, "run_id": run_id, "snapshot_written": snap_written,
             "prev_snapshot_day": days[-1] if days else None, "flags": flags,
             "inconsistent": F_INCONSISTENT in flags, "restore_events": [b for b, r in books.items() if r.restore],
+            "ledger_freshness": stale, "rotation_min_days": min(rot) if rot else None,
             "books": {b: r.to_dict() for b, r in books.items()}}
 
 
-__all__ = ["ALIGN_BASELINE", "ALIGN_GAP", "ALIGN_OK", "ALIGN_REWIND", "BookArchive", "BookResult", "CLOSES_SCHEMA",
-           "CloseState", "DERIVED_SCHEMA", "ENTRIES_KEEP", "ENTRIES_SCHEMA", "F_ENTRIES_GAP", "F_INCONSISTENT",
-           "F_HISTORY_GAP", "F_RESTORE_EVENT", "F_ROTATION_WARN", "HISTORY_KEEP", "MARGIN_WARN_DAYS", "MARK_HISTORY_BAR", "MARK_LEDGER",
-           "MARK_PERP_PROXY", "MARK_POSITION_PATH", "PNL_KINDS", "RECON_GAP", "RECON_INCONSISTENT", "RECON_NO_PREV",
-           "RECON_OK", "RECON_RESTORED", "SNAPSHOT_SCHEMA", "ST_ACTIVE", "ST_RESTORED_AWAY", "TOL", "archive_book",
-           "archived_books", "canonical_sha", "entry_base", "futures_state", "iter_rows", "latest_closes",
-           "load_book_archive", "load_snapshot", "load_snapshots", "min_to_next_funding", "position_group", "project",
-           "reconcile_records", "reconcile_wallet", "rotation_margin", "rotation_status", "run_s1a", "segment_files", "snapshot_days",
-           "spot_marks", "spot_state", "trade_key"]
+def run_s1a(paths: EnginePaths, *, now: datetime | None = None, run_id: str | None = None,
+            clock: Callable[[], datetime] | None = None) -> dict[str, Any]:
+    """S1a: bütün defterler için arşiv + anlık görüntü + uzlaştırma. Anlık görüntü dosyası o UTC günü için YOKSA
+    yazılır (günün ilk başarılı okuması ölçümdür; aynı gün yeniden çalıştırma onu değiştirmez, yeni hareketleri ise
+    gözlem damgasıyla sonraki pencereye ekler). Dönen sözlük `run_status.json`'a girer."""
+    return _drive(paths, now=now, run_id=run_id, clock=clock, snapshot_only=False)
+
+
+def run_s1s(paths: EnginePaths, *, now: datetime | None = None, run_id: str | None = None,
+            clock: Callable[[], datetime] | None = None) -> dict[str, Any]:
+    """S1s (A/B KAPALI gece; okuma 7): yalnız ölçülmüş anlık görüntü (o UTC günü için yoksa) + rotasyon payı; arşiv
+    YAZILMAZ. `rotation_min_days` 3'ün altındaysa gece birimi aynı gece S1a'yı da çalıştırır (`AB_OFF_ZORUNLU_ARŞİV`)."""
+    return _drive(paths, now=now, run_id=run_id, clock=clock, snapshot_only=True)
+
+
+__all__ = ["ALIGN_BASELINE", "ALIGN_GAP", "ALIGN_OK", "ALIGN_REWIND", "ANCHOR_FILE", "BookArchive", "BookResult",
+           "CLOSES_SCHEMA", "CloseState", "DERIVED_SCHEMA", "ENTRIES_KEEP", "ENTRIES_SCHEMA", "F_ENTRIES_GAP",
+           "F_HISTORY_GAP", "F_INCONSISTENT", "F_LEDGER_MISSING", "F_LEDGER_STALE", "F_NO_LEDGERS", "F_RESTORE_EVENT",
+           "F_ROTATION_WARN", "F_SPLIT_LOST", "HISTORY_KEEP", "MARGIN_WARN_DAYS", "MARK_HISTORY_BAR", "MARK_LEDGER",
+           "MARK_PERP_PROXY", "MARK_POSITION_PATH", "MODE_ARCHIVE", "MODE_SNAPSHOT", "PNL_KINDS", "RECON_GAP",
+           "RECON_INCONSISTENT", "RECON_NO_PREV", "RECON_OK", "RECON_RESTORED", "SNAPSHOT_SCHEMA", "SNAP_TAIL",
+           "STALE_AFTER", "ST_ACTIVE", "ST_RESTORED_AWAY", "TOL", "archive_book", "archived_books", "body_archived",
+           "book_rotation", "canonical_sha", "collect_perp_proxies", "entry_base", "futures_state", "iter_rows",
+           "latest_closes", "latest_rows_for", "ledger_tails", "load_book_archive", "load_snapshot", "load_snapshots",
+           "min_to_next_funding", "position_group", "project", "reconcile_records", "reconcile_wallet",
+           "rotation_margin", "rotation_status", "run_s1a", "run_s1s", "segment_files", "snapshot_book", "snapshot_days",
+           "spot_marks", "spot_state", "trade_key", "trailing_bodies"]

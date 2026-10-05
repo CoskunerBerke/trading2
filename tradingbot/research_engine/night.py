@@ -1,14 +1,25 @@
-"""Gece birimi orkestrasyonu (`engine-night`; §2.2, §2.4, §2.9, §6.1) — P1a İSKELETİ: S0, S1a, S3, S7, S7b.
+"""Gece birimi orkestrasyonu (`engine-night`; §2.2, §2.4, §2.9, §6.1) — P1a İSKELETİ: S0, S1a (S1s), S3, S7, S7b.
 
 Akış (her çalıştırma; ağsız, AI yok, karar-nötr):
 
-1. **S0** (`selfcheck`): PAPER doğrulaması → `analysis.lock` (alınamazsa beklemeden `SKIPPED_LOCKED`, çıkış 0) → disk
-   koruması (20 GB / 10 GB boş; `DISK_REFUSE` ise hiçbir aşama çalışmaz) → çalışma zamanı yalıtım öz-denetimi (tutmazsa
-   `ISOLATION_BROKEN`, sıfırdan farklı çıkış = uyarı birimi) → SKEW (iki SHA + ata) → yedek birimi çakışması → canlı
-   config sha'sı → A/B takvimi.
+0. **root reddi** (hiçbir şey yazılmadan): süreç root ise ve araştırma kökü (ya da var olan en yakın üst klasörü)
+   root'a ait değilse çalıştırma `ROOT_REFUSED` (çıkış 6) ile durur ve nedeni stderr'e yazar. Birim `User=tradingbot`
+   ile çalışır; elle `sudo python -m tradingbot engine-night` root'a ait `runs/<id>/` ve 0600 `summary/run_status.json`
+   bırakır, `engine-status` ve `prune_runs` onları okuyamaz/silemezdi.
+1. **S0** (`selfcheck`): PAPER doğrulaması (state klasörü gerçek bir worker state'i olmalı) → `analysis.lock`
+   (alınamazsa beklemeden `SKIPPED_LOCKED`, çıkış 0) → disk koruması (20 GB / 10 GB boş; `DISK_REFUSE` ise hiçbir aşama
+   çalışmaz) → çalışma zamanı yalıtım öz-denetimi (tutmazsa `ISOLATION_BROKEN`, sıfırdan farklı çıkış = uyarı birimi)
+   → SKEW (iki SHA + ata) → yedek birimi çakışması → canlı config sha'sı → A/B takvimi (dönem = motor KOD özeti;
+   `selfcheck` madde 5).
 2. **Plan:** normal gece S0, S1a, S3, S7, S7b. SKEW gecesi yalnız S0, S1a, S7 (belge §2.3 ve P1a kabul 13 aynen:
-   S7b de çalışmaz; arşiv bir sonraki SKEW'siz gecenin yedeğine girer). A/B KAPALI gece yalnız S0
-   (`AB_OFF`); KAPALI gece ama rotasyon payı < 3 gün ise S0 + S1a (`AB_OFF_ZORUNLU_ARŞİV`, gece karşılaştırmadan çıkar).
+   S7b de çalışmaz; arşiv bir sonraki SKEW'siz gecenin yedeğine girer). A/B KAPALI gece S0 + **S1s** (`AB_OFF`).
+   **Okuma (§2.9 ↔ §7.1):** §2.9 KAPALI gecede "S0'dan sonra AB_OFF yazıp çıkar" der; ama §7.1'in MTM günü W(D) her
+   takvim gününün ölçülmüş anlık görüntüsünü ister ve harfiyen okuma her motor sürümünden sonraki ~14 günü EKSİK
+   yapardı (sahibin ana ölçümü; §7.3 bakışı 60 günde ≥ 40 KESİN gün ister). S1s yalnız ledger'ları salt-okunur okur
+   ve TEK küçük anlık görüntü dosyası yazar; arşiv, S3, S7, S7b çalışmaz (bunlar AÇIK gecelerle karşılaştırılan iştir).
+   Ertesi arşiv gecesi S1s anına kadar görülen hareketleri o ana atar (`closes` okuma 7), böylece KAPALI gecelerin iki
+   yanındaki günler de KESİN olabilir. S1s bir defterin rotasyon payını 3 günün altında bulursa aynı gece S1a da
+   çalışır: S0 + S1s + S1a (`AB_OFF_ZORUNLU_ARŞİV`, gece karşılaştırmadan çıkar).
    `run_status.json` bir AŞAMA değildir, çalıştırmanın kaydıdır; her sonuçta (kilit atlaması dahil) yazılır.
 3. **Son tarih:** iç son tarih = başlangıç + 2 sa 3 dk (01:37 → 03:40; `TimeoutStartSec=2h15min` sert durması 03:52);
    başlangıç 00:00–03:40 UTC arasındaysa ayrıca o günün 03:40'ı. Her aşama başlamadan bakar; geçmişse aşama
@@ -21,7 +32,11 @@ Akış (her çalıştırma; ağsız, AI yok, karar-nötr):
 
 Çıkış kodları: 0 = SUCCESS / SKEW / AB_OFF / AB_OFF_ZORUNLU_ARŞİV / SKIPPED_LOCKED / DEADLINE (planlı bir aşama iç son
 tarih yüzünden atlandı; ertesi gece tamamlanır); 1 = FAILED (bir aşama istisna attı; uyarı birimi); 3 =
-ISOLATION_BROKEN; 4 = NOT_PAPER; 5 = DISK_REFUSE. SKEW sıfırla çıkar (belge yalnız "yazılır" der; `--check` gösterir).
+ISOLATION_BROKEN; 4 = NOT_PAPER; 5 = DISK_REFUSE; 6 = ROOT_REFUSED (hiçbir şey yazılmadı). SKEW sıfırla çıkar (belge
+yalnız "yazılır" der; `--check` gösterir).
+
+Disk koruması gerçek `statvfs` ile ölçülür; `run_night(free_bytes=…)` yalnız sahte VPS/test içindir (ölçümün yerine
+geçer, eşikler aynıdır). Üretim yolu (`engine-night` CLI'si) bu argümanı hiç vermez.
 
 Bu modül ağ kullanan hiçbir modülü (P1b `datastore`, `pit_universe`) import etmez (import grafiği testi).
 """
@@ -46,10 +61,12 @@ from .paths import DISK_REFUSE, DISK_WARN, EnginePaths, disk_guard
 
 RUN_SCHEMA = "engine_run_status_v1"
 STAGES = ("S0", "S1a", "S3", "S7", "S7b")
+STAGE_SNAPSHOT = "S1s"
+ALL_STAGES = ("S0", STAGE_SNAPSHOT, "S1a", "S3", "S7", "S7b")
 PLAN_FULL = STAGES
 PLAN_SKEW = ("S0", "S1a", "S7")
-PLAN_AB_OFF = ("S0",)
-PLAN_AB_OFF_FORCED = ("S0", "S1a")
+PLAN_AB_OFF = ("S0", STAGE_SNAPSHOT)
+PLAN_AB_OFF_FORCED = ("S0", STAGE_SNAPSHOT, "S1a")
 
 #: §2.2: 01:37 başlangıç, iç son tarih 03:40, sert durma 03:52 (`TimeoutStartSec=2h15min`).
 DEADLINE_AFTER = timedelta(hours=2, minutes=3)
@@ -60,8 +77,9 @@ RUN_ID_RE = re.compile(r"^\d{8}T\d{6}Z(-\d+)?$")
 R_SUCCESS, R_SKEW, R_AB_OFF, R_AB_OFF_FORCED = "SUCCESS", "SKEW", "AB_OFF", "AB_OFF_ZORUNLU_ARŞİV"
 R_SKIPPED_LOCKED, R_ISOLATION_BROKEN, R_NOT_PAPER, R_DISK_REFUSE, R_FAILED, R_RUNNING, R_DEADLINE = (
     SKIPPED_LOCKED, "ISOLATION_BROKEN", "NOT_PAPER", "DISK_REFUSE", "FAILED", "RUNNING", "DEADLINE")
+R_ROOT_REFUSED = "ROOT_REFUSED"
 EXIT_CODES = {R_SUCCESS: 0, R_SKEW: 0, R_AB_OFF: 0, R_AB_OFF_FORCED: 0, R_SKIPPED_LOCKED: 0, R_DEADLINE: 0, R_FAILED: 1,
-              R_ISOLATION_BROKEN: 3, R_NOT_PAPER: 4, R_DISK_REFUSE: 5}
+              R_ISOLATION_BROKEN: 3, R_NOT_PAPER: 4, R_DISK_REFUSE: 5, R_ROOT_REFUSED: 6}
 
 ST_OK, ST_FAILED, ST_NOT_PLANNED, ST_SKIPPED_DEADLINE, ST_SKIPPED = "OK", "FAILED", "NOT_PLANNED", "SKIPPED_DEADLINE", "SKIPPED"
 F_DEADLINE, F_STAGE_FAILED = "DEADLINE", "STAGE_FAILED"
@@ -132,15 +150,18 @@ def _compact_s1a(r: dict[str, Any]) -> dict[str, Any]:
         books[b] = {"status": x.get("status"), "kind": x.get("kind"), "new_closes": x.get("new_closes", 0),
                     "revised": x.get("revised", 0), "new_entries": x.get("new_entries", 0), "align": x.get("align"),
                     "restored_away": x.get("restored_away", 0), "vanished": x.get("vanished", 0),
+                    "attributed_earlier": x.get("attributed_earlier", 0),
                     "recon_record": (x.get("recon_record") or {}).get("status"),
                     "recon_wallet": (x.get("recon_wallet") or {}).get("status"),
                     "rotation_days": {k: (rot.get(k) or {}).get("days") for k in ("history", "entries")},
                     "rotation_warn": any((rot.get(k) or {}).get("warn") for k in ("history", "entries")),
                     "held": {k: (rot.get(k) or {}).get("held") for k in ("history", "entries")},
                     "flags": x.get("flags") or []}
-    return {"day": r.get("day"), "snapshot_written": r.get("snapshot_written"),
+    return {"mode": r.get("mode"), "day": r.get("day"), "snapshot_written": r.get("snapshot_written"),
             "prev_snapshot_day": r.get("prev_snapshot_day"), "flags": r.get("flags") or [],
-            "inconsistent": r.get("inconsistent"), "restore_events": r.get("restore_events") or [], "books": books}
+            "inconsistent": r.get("inconsistent"), "restore_events": r.get("restore_events") or [],
+            "ledger_freshness": r.get("ledger_freshness"), "rotation_min_days": r.get("rotation_min_days"),
+            "books": books}
 
 
 def _new_run_id(paths: EnginePaths, start: datetime) -> str:
@@ -180,16 +201,36 @@ def read_last_status(paths: EnginePaths) -> dict | None:
         return None
 
 
+def root_refusal(paths: EnginePaths) -> str | None:
+    """Madde 0: root olarak, root'a ait OLMAYAN bir araştırma köküne yazılmaz. Dönen: ret nedeni ya da None."""
+    geteuid = getattr(os, "geteuid", None)
+    if geteuid is None or geteuid() != 0:
+        return None
+    p = paths.research
+    while not p.exists() and p.parent != p:
+        p = p.parent
+    try:
+        owner = p.stat().st_uid
+    except OSError:
+        return None
+    if owner == 0:
+        return None
+    return (f"root olarak çalıştırılmaz: {p} uid {owner}'e ait (root yazımı gece biriminin okuyamayacağı/silemeyeceği "
+            f"dosyalar bırakırdı). Birimle çalıştırın: sudo systemctl start tradingbot-engine-night.service")
+
+
 # ============================================================================ çalıştırma
 class _Night:
     def __init__(self, paths: EnginePaths, *, now: datetime | None, app_dir: Path, engine_dir: Path,
                  env: Mapping[str, str], probes: SC.Probes | None, runner: Callable[..., Any] | None,
                  sleep: Callable[[float], None] | None, declared_instrument: str | None,
-                 backup_wait_s: float | None) -> None:
+                 backup_wait_s: float | None, free_bytes: int | None = None) -> None:
         self.paths, self.fixed_now = paths, now
         self.app_dir, self.engine_dir, self.env = Path(app_dir), Path(engine_dir), env
         self.probes, self.runner, self.sleep = probes, runner, sleep
         self.declared_instrument = declared_instrument
+        self.free_bytes = free_bytes
+        self.ab_first: str | None = None
         self.backup_wait_s = SC.BACKUP_WAIT_MAX_S if backup_wait_s is None else backup_wait_s
         self.mono0, self.cpu0 = time.monotonic(), _cpu()
         self.start = now or utc_now()
@@ -284,7 +325,7 @@ class _Night:
                 rec["status"] = stop
             return stop
 
-        disk = disk_guard(self.paths)
+        disk = disk_guard(self.paths, free_bytes=self.free_bytes) if self.free_bytes is not None else disk_guard(self.paths)
         sc["disk"] = disk
         if disk["status"] == DISK_REFUSE:
             return _close(R_DISK_REFUSE)
@@ -299,8 +340,9 @@ class _Night:
         self.paths.ensure_tree()
         skew = SC.check_skew(self.app_dir, self.engine_dir, **({"runner": self.runner} if self.runner else {}))
         sc["skew"] = skew
+        code = SC.engine_code_hash()
         self.status["shas"] = {"app": skew.get("app_sha"), "engine": skew.get("engine_sha"),
-                               "relation": skew.get("relation")}
+                               "relation": skew.get("relation"), "engine_code": code}
         kw: dict[str, Any] = {"max_wait_s": self.backup_wait_s}
         if self.runner:
             kw["runner"] = self.runner
@@ -324,19 +366,14 @@ class _Night:
             self.flags.add(F_CONFIG_CHANGED)
         day = self.start.strftime("%Y-%m-%d")
         eng = skew.get("engine_sha")
-        first = SC.register_epoch(self.paths, eng, self.start, self.run_id or "") if eng else None
+        first = SC.register_epoch(self.paths, eng, self.start, self.run_id or "", code_hash=code)
+        self.ab_first = first
+        # KAPALI gecede rotasyon payı S1s'in kendi okumasından gelir (ledger'lar bir kez okunur); zorunlu arşiv kararı
+        # S1s'ten sonra verilir (`_after_s1s`).
         ab = SC.ab_decision(day, first, rotation_min_days=None)
-        if ab["status"] == SC.AB_OFF:
-            # KAPALI gece: rotasyon payı (salt-okunur ledger okuması) yalnız burada gerekir (§2.9 istisnası)
-            from .closes import rotation_status
-            rot = rotation_status(self.paths, now=self.clock())
-            sc["rotation_for_ab"] = {"min_days": rot.get("min_days"), "warn": rot.get("warn")}
-            ab = SC.ab_decision(day, first, rotation_min_days=rot.get("min_days"))
         sc["ab"] = ab
         if ab["status"] == SC.AB_OFF:
             self.plan = PLAN_AB_OFF
-        elif ab["status"] == SC.AB_OFF_FORCED:
-            self.plan = PLAN_AB_OFF_FORCED
         elif skew["status"] != SC.OK:
             self.plan = PLAN_SKEW
         else:
@@ -347,6 +384,13 @@ class _Night:
 
     # ---------------------------------------------------------------- ana akış
     def run(self) -> dict[str, Any]:
+        why = root_refusal(self.paths)
+        if why:
+            print(f"engine-night: {why}", file=sys.stderr)
+            self.status.update(result=R_ROOT_REFUSED, exit_code=EXIT_CODES[R_ROOT_REFUSED], error=why,
+                               finished_at=iso(self.clock()), resources=resources(self.cpu0, self.mono0))
+            self.stages["S0"] = {"status": R_ROOT_REFUSED, "reason": why}
+            return self.status
         paper = SC.check_paper(self.paths.state, self.env)
         self.status["selfcheck"]["paper"] = paper
         try:
@@ -383,6 +427,9 @@ class _Night:
                 return self.finish(stop)
             self._write(final=False)
             now_arg = self.fixed_now
+            if STAGE_SNAPSHOT in self.plan:
+                self.stage(STAGE_SNAPSHOT, lambda: self._s1s(now_arg))
+                self._after_s1s()
             self.stage("S1a", lambda: self._s1a(now_arg))
             s1_failed = self.stages.get("S1a", {}).get("status") == ST_FAILED
             self.stage("S3", lambda: self._s3(now_arg), skip_reason="S1a başarısız" if s1_failed else None)
@@ -406,6 +453,24 @@ class _Night:
             lk.release()
 
     # ---------------------------------------------------------------- aşama gövdeleri
+    def _s1s(self, now: datetime | None) -> dict[str, Any]:
+        from .closes import run_s1s
+        r = run_s1s(self.paths, now=now, run_id=self.run_id)
+        self.flags.update(r.get("flags") or [])
+        return _compact_s1a(r)
+
+    def _after_s1s(self) -> None:
+        """KAPALI gece: S1s'in ölçtüğü rotasyon payı 3 günün altındaysa aynı gece S1a da çalışır (§2.9 istisnası)."""
+        res = (self.stages.get(STAGE_SNAPSHOT) or {}).get("result") or {}
+        sc = self.status["selfcheck"]
+        rmin = res.get("rotation_min_days")
+        sc["rotation_for_ab"] = {"min_days": rmin, "source": STAGE_SNAPSHOT}
+        ab = SC.ab_decision(self.start.strftime("%Y-%m-%d"), self.ab_first, rotation_min_days=rmin)
+        if ab["status"] == SC.AB_OFF_FORCED:
+            sc["ab"] = ab
+            self.plan = PLAN_AB_OFF_FORCED
+            self._write(final=False)
+
     def _s1a(self, now: datetime | None) -> dict[str, Any]:
         from .closes import run_s1a
         r = run_s1a(self.paths, now=now, run_id=self.run_id)
@@ -435,18 +500,20 @@ class _Night:
 def run_night(paths: EnginePaths | None = None, *, now: datetime | None = None, app_dir: Path | str = SC.APP_DIR,
               engine_dir: Path | str | None = None, env: Mapping[str, str] | None = None, probes: SC.Probes | None = None,
               runner: Callable[..., Any] | None = None, sleep: Callable[[float], None] | None = None,
-              declared_instrument: str | None = None, backup_wait_s: float | None = None) -> dict[str, Any]:
+              declared_instrument: str | None = None, backup_wait_s: float | None = None,
+              free_bytes: int | None = None) -> dict[str, Any]:
     """Bir gece çalıştırması. `now` verilirse (test/sahte VPS) bütün okumalar ve zaman damgaları o ana sabitlenir;
-    `probes`/`runner`/`sleep` öz-denetim denemelerinin yerine-geçenleridir. Dönen: `run_status` sözlüğü."""
+    `probes`/`runner`/`sleep` öz-denetim denemelerinin, `free_bytes` disk ölçümünün (yalnız boş alan; eşikler aynı)
+    yerine-geçenleridir. Dönen: `run_status` sözlüğü."""
     env = os.environ if env is None else env
     paths = paths or EnginePaths.from_env(env)
     n = _Night(paths, now=now, app_dir=Path(app_dir), engine_dir=Path(engine_dir or SC.ENGINE_DIR_DEFAULT), env=env,
                probes=probes, runner=runner, sleep=sleep, declared_instrument=declared_instrument,
-               backup_wait_s=backup_wait_s)
+               backup_wait_s=backup_wait_s, free_bytes=free_bytes)
     return n.run()
 
 
-__all__ = ["DEADLINE_AFTER", "EXIT_CODES", "KEEP_RUNS", "PLAN_AB_OFF", "PLAN_AB_OFF_FORCED", "PLAN_FULL", "PLAN_SKEW",
-           "RUN_SCHEMA", "R_AB_OFF", "R_AB_OFF_FORCED", "R_DEADLINE", "R_DISK_REFUSE", "R_FAILED", "R_ISOLATION_BROKEN",
-           "R_NOT_PAPER", "R_SKEW", "R_SKIPPED_LOCKED", "R_SUCCESS", "STAGES", "compute_deadline", "prune_runs",
-           "read_last_status", "resources", "run_night"]
+__all__ = ["ALL_STAGES", "DEADLINE_AFTER", "EXIT_CODES", "KEEP_RUNS", "PLAN_AB_OFF", "PLAN_AB_OFF_FORCED", "PLAN_FULL",
+           "PLAN_SKEW", "RUN_SCHEMA", "R_AB_OFF", "R_AB_OFF_FORCED", "R_DEADLINE", "R_DISK_REFUSE", "R_FAILED",
+           "R_ISOLATION_BROKEN", "R_NOT_PAPER", "R_ROOT_REFUSED", "R_SKEW", "R_SKIPPED_LOCKED", "R_SUCCESS", "STAGES",
+           "STAGE_SNAPSHOT", "compute_deadline", "prune_runs", "read_last_status", "resources", "root_refusal", "run_night"]

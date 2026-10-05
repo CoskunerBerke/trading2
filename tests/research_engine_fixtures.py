@@ -51,6 +51,8 @@ class FakeVps:
         self.data = root / "data"
         self.state = self.data / "state"
         self.state.mkdir(parents=True, exist_ok=True)
+        # worker'ın mod dosyası (VPS'te vardır; S0 boş/yanlış state klasörünü PAPER saymaz)
+        (self.state / "mode.json").write_text('{"mode": "PAPER", "live_order_path_enabled": false}', encoding="utf-8")
         self.paths = EnginePaths.for_state(self.state)
         self.futs: dict[str, FuturesLedgerV2] = {}
         self.spot_led: SpotLedger | None = None
@@ -103,6 +105,8 @@ class FakeVps:
 SHA_APP = "a" * 40
 SHA_ENGINE = "b" * 40
 MEM_MAX = 536870912
+#: sahte VPS'in boş disk alanı (50 GB; eşik 10 GB)
+FREE_BYTES = 50 * 10**9
 
 
 def fake_repo(root: Path, sha: str) -> Path:
@@ -162,8 +166,10 @@ class FakeHost:
         self.slept.append(s)
 
     def kw(self) -> dict:
+        """`free_bytes`: disk ölçümünün yerine-geçeni (testler sunucunun gerçek boş alanından bağımsız; gerçek `statvfs`
+        yolu yalnız `test_disk_guard_real_statvfs_path_*` testinde sınanır)."""
         return {"app_dir": self.app, "engine_dir": self.engine, "probes": self.probes(), "runner": self.runner,
-                "sleep": self.sleep, "env": {"ALLOW_LIVE_TRADING": "false"}}
+                "sleep": self.sleep, "env": {"ALLOW_LIVE_TRADING": "false"}, "free_bytes": FREE_BYTES}
 
 
 def run_engine_night(v: FakeVps, host: FakeHost, when: datetime, *, save: bool = True, **extra) -> dict:
@@ -174,5 +180,5 @@ def run_engine_night(v: FakeVps, host: FakeHost, when: datetime, *, save: bool =
     return N.run_night(v.paths, now=when, **{**host.kw(), **extra})
 
 
-__all__ = ["FakeHost", "FakeVps", "MEM_MAX", "NIGHT", "Proc", "SHA_APP", "SHA_ENGINE", "UTC", "at", "fake_repo",
+__all__ = ["FREE_BYTES", "FakeHost", "FakeVps", "MEM_MAX", "NIGHT", "Proc", "SHA_APP", "SHA_ENGINE", "UTC", "at", "fake_repo",
            "night_of", "run_engine_night", "trade"]

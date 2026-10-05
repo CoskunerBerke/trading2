@@ -71,6 +71,44 @@ def test_rows_stay_provisional_three_days_then_final_and_look_only_on_look_night
     assert not T.is_look_night("2026-11-20", ["2026-10", "2026-11"])
 
 
+def test_short_or_long_window_is_not_a_day_and_never_a_target_day(tmp_path):
+    """W(D) ≈ 24 sa (§7.1): sürüm günü smoke'u (20:00) ya da zamanlayıcı dışı elle çalıştırma kısa/uzun pencere kurar;
+    20–28 sa dışındaki pencere EKSİK (PENCERE_SÜRESİ), KESİN olmaz, isabet değerlendirilmez, "HEDEF GÜNÜ" yazılmaz."""
+    v = FakeVps(tmp_path)
+    led = v.fut()
+    v.night(at("2026-10-06", 20))                                 # smoke 20:00 UTC
+    trade(led, "ETH/USDT", at("2026-10-06", 21), 100.0, 115.0, notional="500", lev=5)
+    for d in ("2026-10-07", "2026-10-08", "2026-10-09", "2026-10-10", "2026-10-11"):
+        v.night(night_of(d))
+    rows = v.rows()
+    r = rows["2026-10-06"]
+    assert r["window"]["hours"] == pytest.approx(5.667, abs=1e-3) and r["window"]["ok"] is False
+    assert r["status"] == "EKSİK" and "PENCERE_SÜRESİ" in r["status_reason"] and r["hit"] is None
+    assert all("PENCERE_SÜRESİ" in b["status_reason"] for b in r["books"].values())
+    assert r["total"]["r_mtm"] > 1.0, "kurgu: kısa pencerede büyük kazanç"
+    assert rows["2026-10-07"]["status"] == "KESİN" and rows["2026-10-07"]["window"]["hours"] == 24.0
+    head = T.render_brief({d: rows[d] for d in rows if d <= "2026-10-06"}, None, {}, today="2026-10-07")
+    assert "karşılaştırılmaz" in head[2] and "PENCERE_SÜRESİ" in head[2] and "üstünde" not in head[2]
+    full = T.render_brief(rows, None, {}, today="2026-10-11")
+    kes = [ln for ln in full if ln.startswith("Son kesin gün")]
+    assert kes and "10-06" not in kes[0] and "evet" not in kes[0], "kısa pencere asla HEDEF GÜNÜ değildir"
+    # uzun pencere (bir gece atlandı + ertesi gün öğlen elle çalıştırma): 32 sa
+    v2 = FakeVps(tmp_path / "uzun")
+    v2.night(night_of("2026-10-01"))
+    v2.night(at("2026-10-02", 10))
+    assert v2.rows()["2026-10-01"]["status"] == "EKSİK" and v2.rows()["2026-10-01"]["window"]["hours"] == pytest.approx(32.333, abs=1e-3)
+
+
+def test_turkish_lowercase_label_has_no_combining_dot():
+    assert T.tr_lower("KESİN · REVİZE (RESTORE)") == "kesin · revize (restore)"
+    assert T.tr_lower("EKSİK") == "eksik" and "\u0307" not in T.tr_lower("GEÇİCİ KESİN EKSİK REVİZE")
+    row = {"day": "2026-10-01", "status": "KESİN", "revised": True, "revision_reason": [], "final_on": "2026-10-04",
+           "window": {"from": "2026-10-01T01:40:00+00:00", "to": "2026-10-02T01:40:00+00:00"},
+           "total": {"r_mtm": 0.5, "r_realized": 0.4, "u_end": 0.0, "u_end_pct": 0.0}}
+    head = T.render_brief({"2026-10-01": row}, None, {}, today="2026-10-02")
+    assert "(kesin · revize)" in head[1] and "\u0307" not in "\n".join(head), head
+
+
 def _two_book_state(tmp_path):
     """İki defter: ana bot (büyük bakiye) ve M2 (küçük bakiye). Enstrüman A=SOL yalnız küçük defterde büyük yüzdeyle,
     B=BTC yalnız büyük defterde daha büyük USDT ile — "en iyi enstrüman" hüküm paydasıyla (E_total) B olmalı."""
@@ -238,6 +276,55 @@ def test_kanitlandi_negative_controls():
     assert dec["family_size"] == 2
 
 
+def test_kanitlandi_needs_the_realized_day_share_too_and_descriptive_scopes_have_no_verdict():
+    rng = random.Random(5)
+    rows = _synthetic_rows(rng, 70, strong=True)
+    for r in rows.values():
+        r["status"], r["stream"] = "KESİN", T.STREAM_LIVE
+        r["total"]["r_mtm"] = r["total"]["r_mtm"] if r["total"]["r_mtm"] is not None else 3.0
+        r["total"]["n_trades"] = 2
+    look = add_days(max(rows), 1)
+    ok = T.look_verdicts(rows, look_day=look, look_night=True, b=2000)["scopes"]["total"]
+    assert ok["verdict"] == T.V_PROVEN and ok["max_day_share_realized"] <= 0.25
+    # MTM serisi düzgün, ama yalnız-gerçekleşmiş seride tek gün toplamın > %25'i (geri kalan günler ~0): "aynı koşul" yok
+    days = sorted(rows)
+    spike_r = {d: {**r, "total": {**r["total"], "r_realized": (400.0 if d == days[-3] else 0.05)}} for d, r in rows.items()}
+    out = T.look_verdicts(spike_r, look_day=look, look_night=True, b=2000)["scopes"]["total"]
+    assert out["max_day_share_realized"] > 0.25 and out["verdict"] != T.V_PROVEN
+    dec = T.look_verdicts(rows, look_day=look, look_night=True, declared_instrument="BTCUSDT", b=2000)
+    for sc, o in dec["scopes"].items():
+        if o["eligible"]:
+            assert o["verdict"] in (T.V_PROVEN, T.V_ONTRACK, T.V_BELOW, T.V_THIN)
+        else:
+            assert o["verdict"] is None and o["mean_pct"] is not None, f"{sc}: yalnız tanımlayıcı (§7.3)"
+    assert {s for s, o in dec["scopes"].items() if o["eligible"]} == {"total", "inst:BTCUSDT"}
+
+
+def test_monthly_target_per_instrument_and_total_from_kesin_days(tmp_path):
+    """§7.5: motor aylık ölçüyü toplam + enstrüman (+ altın) için KESİN MTM günlerinden raporlar; hüküm kelimesi yok."""
+    v = FakeVps(tmp_path)
+    led = v.fut()
+    v.night(night_of("2026-10-01"))
+    for d in range(1, 9):
+        trade(led, ["ETH/USDT", "BTC/USDT"][d % 2], at(f"2026-10-{d:02d}", 3), 100.0, 101.0)
+        v.night(night_of(f"2026-10-{d + 1:02d}"))
+    rows = v.rows()
+    m = T.monthly_stats(rows)["2026-10"]
+    kes = [r for d, r in rows.items() if r["status"] == "KESİN"]
+    assert m["n_kesin"] == len(kes) == 6 and m["n_gecici"] == 2 and m["target_pct"] == 1.0
+    exp = sum(r["total"]["pnl_mtm"] for r in kes)
+    assert m["pnl_mtm_usdt"] == pytest.approx(exp, abs=1e-8)
+    assert m["pct_of_start"] == pytest.approx(exp / kes[0]["total"]["e_start"] * 100, rel=1e-6)
+    assert set(m["instruments"]) == {"ETHUSDT", "BTCUSDT"}
+    assert sum(x["pnl_mtm"] for x in m["instruments"].values()) == pytest.approx(exp, abs=1e-8)
+    assert m["gold"]["pnl_mtm"] == 0.0 and "30 katıdır" in m["note_tr"]
+    lines = T.render_monthly(T.monthly_stats(rows))
+    assert lines[0].startswith("Aylık 2026-10") and "hüküm değildir" in lines[0] and "ETHUSDT" in lines[1]
+    _no_forbidden(lines)
+    summ = __import__("json").loads((v.paths.summary / "daily_target.json").read_text(encoding="utf-8"))
+    assert summ["monthly"]["2026-10"]["n_kesin"] == 6
+
+
 def test_holm_wilson_and_block_bootstrap_basics():
     assert T.holm({"a": 0.01, "b": 0.04, "c": 0.03}) == pytest.approx({"a": 0.03, "c": 0.06, "b": 0.06})
     lo, hi = T.wilson(5, 10)
@@ -289,6 +376,14 @@ def test_scorecard_daily_equals_engine_views_spot_and_all_mark_sources(tmp_path)
             assert eb["days"][d]["rec"] == sb["days"][d]["rec"], (b, d)
             assert eb["days"][d]["wal_ts"] == sb["days"][d]["wal_ts"], (b, d)
     assert eng["books"]["main_spot"]["unrealized_now"] is not None and eng["books"]["main_spot"]["days"]["2026-10-03"]["rec"]["n"] == 1
+    # VPS kabul 6: `engine-status --daily` aynı tanımlı tabloyu basar; gün satırları betiğinkiyle aynı sayılar
+    from tradingbot.research_engine.summary import daily_view_lines
+    mine = daily_view_lines(v.paths, days=5, now=now)
+    theirs = S.render_daily({"daily_target": sc})
+    pick = lambda ls: [ln.split()[:3] for ln in ls if ln[:4] == "2026"]          # gün, kayıt net, işlem
+    assert pick(mine) == pick(theirs) and len(pick(mine)) == 5, (mine, theirs)
+    wal = lambda ls: [ln.split()[3] for ln in ls if ln[:4] == "2026"]            # cüzdan net (ts günü)
+    assert wal(mine) == wal(theirs)
     # mark eksikse ikisi de "yok" der (ertesi gece; aynı UTC gününün ilk anlık görüntüsü ölçümdür, yeniden yazılmaz)
     sp.market_buy("XRP/USDT", qty=D("10"), ref_price=D("1"), now=at("2026-10-04", 2))
     nxt = night_of("2026-10-05")

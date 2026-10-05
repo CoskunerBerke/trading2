@@ -6,10 +6,13 @@
   gerçekleşmiş sayının yanında açık pozisyonların gerçekleşmemiş kârı yazar; `HEDEF GÜNÜ` yalnız KESİN bir MTM gününün
   satırında ve "başarı değildir" notuyla görünür. `TUTTU` hiçbir yerde yazılmaz. k*/kaldıraç satırı YOKTUR (§7.6).
 * `engine_summary.json` ≤ 256 KB (panel P5'te yalnız JSON olarak okur; şema sabiti `SUMMARY_SCHEMA`).
-* `engine-status --brief` ≤ 60 satır: son çalıştırma, öz-denetim sonucu, SKEW, A/B durumu, rotasyon payları, günlük hedef
-  tablosu (GEÇİCİ/KESİN). `engine-status` (ayrıntılı) aşama hatalarını, defter uzlaştırmasını, son çalıştırmaları ve 14
-  günlük tabloyu ekler. Durum komutu SALT-OKUNURDUR: kilit almaz, hiçbir şey yazmaz, ledger okumaz; yalnız
-  `data/research` altındaki son çıktıları okur.
+* `engine-status --brief` ≤ 60 satır: son çalıştırma, öz-denetim sonucu, SKEW, A/B durumu, defter okuma güvenceleri
+  (`LEDGER_MISSING` / `LEDGER_STALE`), rotasyon payları, günlük hedef tablosu (GEÇİCİ/KESİN) ve aylık ölçü (§7.5).
+  `engine-status` (ayrıntılı) aşama hatalarını, defter uzlaştırmasını, son çalıştırmaları ve 14 günlük tabloyu ekler.
+  `engine-status --daily [--days N]` `scripts/bot_scorecard.py --daily` ile AYNI tanımlı tabloyu basar
+  (`daily_target.ledger_day_views`; VPS kabul 6: kayıt ve defter-zaman-damgalı cüzdan sütunları karşılaştırılır).
+  Durum komutu SALT-OKUNURDUR: kilit almaz, hiçbir şey yazmaz, ledger okumaz; yalnız `data/research` altındaki son
+  çıktıları okur.
 
 Bütün metin Türkçe ve şablondandır (LLM yok); sayılar Türkçe ondalık virgülüyle yazılır.
 """
@@ -26,7 +29,10 @@ from .daily_target import (
     MIN_KESIN_DAYS,
     TGT_VERSION,
     latest_rows,
+    ledger_day_views,
     render_brief,
+    render_ledger_views,
+    render_monthly,
     render_table,
 )
 from .ledgers import book_name, iso, parse_ts, utc_now
@@ -128,7 +134,7 @@ def target_summary(paths: EnginePaths) -> dict | None:
 # ============================================================================ satırlar
 def _stage_line(st: dict) -> str:
     parts = []
-    for name in ("S0", "S1a", "S3", "S7", "S7b"):
+    for name in ("S0", "S1s", "S1a", "S3", "S7", "S7b"):
         s = (st.get("stages") or {}).get(name)
         if not s:
             continue
@@ -177,7 +183,7 @@ def _ab_line(st: dict) -> str:
         return "A/B: —"
     w = ab.get("window") or [None, None]
     win = f" (pencere {str(w[0])[5:]} → {str(w[1])[5:]})" if w[0] else ""
-    names = {"AB_ON": "AÇIK gece", "AB_OFF": "KAPALI gece (S0 sonrası çıkış)",
+    names = {"AB_ON": "AÇIK gece", "AB_OFF": "KAPALI gece (S0 + yalnız ölçülmüş anlık görüntü S1s)",
              "AB_OFF_ZORUNLU_ARŞİV": "KAPALI gece, ZORUNLU ARŞİV (rotasyon payı < 3 gün; karşılaştırma dışı)",
              "AB_OUTSIDE": "pencere dışı", "AB_RELEASE_DAY": "sürüm günü (A/B dışı, tam çalışma)"}
     night = f" {ab.get('night')}/14" if ab.get("night") else ""
@@ -218,6 +224,32 @@ def _resource_line(st: dict) -> str:
     cpu = (r.get("cpu_self_s") or 0) + (r.get("cpu_children_s") or 0)
     return (f"Kaynak: CPU {_f(cpu, 1)} sn · {mem} · disk: araştırma kökü {_gb(d.get('research_bytes'))}, boş "
             f"{_gb(d.get('free_bytes'))} ({d.get('status', '?')})")
+
+
+def _ledger_line(st: dict | None) -> str:
+    """Defter okuma güvenceleri (closes okuma 10): en yeni ledger yaşı, kaybolan defterler, okunamayanlar."""
+    stages = (st or {}).get("stages") or {}
+    r = ((stages.get("S1a") or {}).get("result") or (stages.get("S1s") or {}).get("result") or {})
+    if not r:
+        return "Defter okuma: bu çalıştırmada ledger okunmadı"
+    fl = set(r.get("flags") or [])
+    fr = r.get("ledger_freshness") or {}
+    books = r.get("books") or {}
+    miss = sorted(b for b, x in books.items() if x.get("status") == "MISSING")
+    bad = sorted(f"{b} {x.get('status')}" for b, x in books.items() if x.get("status") not in ("OK", "MISSING"))
+    age = fr.get("age_s")
+    parts = [f"{len(books) - len(miss)} defter okundu",
+             f"en yeni updated_at {_f(age / 3600.0, 1)} sa önce" if age is not None else "updated_at yok"]
+    if "LEDGER_STALE" in fl:
+        parts.append("LEDGER_STALE (≥ 6 sa: worker duruk ya da yanlış state klasörü)")
+    if miss:
+        parts.append("LEDGER_MISSING: " + ", ".join(book_name(b) for b in miss))
+    if "NO_LEDGERS" in fl:
+        parts.append("NO_LEDGERS")
+    if bad:
+        parts.append("okunamayan: " + ", ".join(bad))
+    warn = bool({"LEDGER_STALE", "NO_LEDGERS", "LEDGER_MISSING"} & fl or miss or bad)
+    return ("Defter okuma: DİKKAT — " if warn else "Defter okuma: ") + " · ".join(parts)
 
 
 def _flags_line(st: dict) -> str:
@@ -293,6 +325,7 @@ def _target_lines(paths: EnginePaths, *, days: int, today: str | None) -> list[s
     lines += ["  " + h for h in head]
     if latest:
         lines += ["  " + t for t in render_table(latest, days=days)]
+    lines += ["  " + m for m in render_monthly(ts.get("monthly"))]
     return lines
 
 
@@ -306,7 +339,7 @@ def status_lines(paths: EnginePaths, *, brief: bool = True, now: datetime | None
     mid: list[str] = []
     if st:
         mid = [_selfcheck_line(st), _skew_line(st), _ab_line(st), _backup_unit_line(st), _config_line(st),
-               _resource_line(st), _flags_line(st)]
+               _resource_line(st), _ledger_line(st), _flags_line(st)]
         books = _books_lines(last_with_stage(paths, "S1a", st), detail=not brief, current_id=st.get("run_id"))
         bline = [_backup_line(st, last_with_stage(paths, "S7b", st))]
     else:
@@ -323,6 +356,11 @@ def status_lines(paths: EnginePaths, *, brief: bool = True, now: datetime | None
     if not brief:
         lines += _detail_lines(paths, st)
     return lines
+
+
+def daily_view_lines(paths: EnginePaths, *, days: int = 7, now: datetime | None = None) -> list[str]:
+    """`engine-status --daily`: `scorecard --daily` ile aynı tanımlı tablo (salt-okunur; `ledger_day_views`)."""
+    return render_ledger_views(ledger_day_views(paths, days=days, now=now))
 
 
 def _detail_lines(paths: EnginePaths, st: dict | None) -> list[str]:
@@ -362,11 +400,12 @@ def digest_text(paths: EnginePaths, st: dict, *, now: datetime | None = None) ->
         first = _run_header(st, None)[0].replace("Son çalıştırma: ", "")
     run = ["## Çalıştırma", "", "- " + first, "- " + _stage_line(st).strip(),
            "- " + _selfcheck_line(st), "- " + _skew_line(st), "- " + _ab_line(st), "- " + _backup_unit_line(st),
-           "- " + _config_line(st), "- " + _resource_line(st), "- " + _flags_line(st), ""]
+           "- " + _config_line(st), "- " + _resource_line(st), "- " + _ledger_line(st), "- " + _flags_line(st), ""]
     sections.append(("run", run))
     books = _books_lines(last_with_stage(paths, "S1a", st), current_id=st.get("run_id"))
     sections.append(("arc", ["## Arşiv", "", "```", *books, "```", "", _backup_line(None, last_with_stage(paths, "S7b", st)),
                              ""]))
+    sections.append(("mon", ["## Aylık hedef (§7.5)", "", *render_monthly(ts.get("monthly")), ""]))
     sections.append(("note", ["## Not", "", TARGET_NOTE,
                               f"Hüküm için en az {MIN_KESIN_DAYS} KESİN gün gerekir; ara görünüm hüküm değildir.", ""]))
     text = "\n".join(line for _, ls in sections for line in ls)
@@ -403,7 +442,8 @@ def summary_doc(paths: EnginePaths, st: dict, *, now: datetime | None = None) ->
     return {"schema": SUMMARY_SCHEMA, "engine": ENGINE_VERSION, "generated_at": iso(now), "banner": BANNER,
             "run": run, "archive": s1,
             "daily_target": {"tgt": TGT_VERSION, "computed_at": ts.get("computed_at"), "header_tr": ts.get("header_tr"),
-                             "rows": ts.get("rows") or [], "rolling": ts.get("rolling"), "last_look": ts.get("last_look")},
+                             "rows": ts.get("rows") or [], "rolling": ts.get("rolling"), "last_look": ts.get("last_look"),
+                             "monthly": ts.get("monthly")},
             "backup": ((st.get("stages") or {}).get("S7b") or {}).get("result")}
 
 
@@ -448,5 +488,5 @@ def claim_word_violations(lines: list[str]) -> list[str]:
 
 
 __all__ = ["BANNER", "DIGEST_MAX_BYTES", "STATUS_MAX_LINES", "SUMMARY_MAX_BYTES", "SUMMARY_SCHEMA", "claim_word_violations",
-           "digest_text", "last_status", "last_with_stage", "latest_attempt", "recent_attempts", "status_lines", "summary_doc",
+           "daily_view_lines", "digest_text", "last_status", "last_with_stage", "latest_attempt", "recent_attempts", "status_lines", "summary_doc",
            "write_summary"]

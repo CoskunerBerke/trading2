@@ -341,6 +341,88 @@ def test_restore_marks_restored_away_not_inconsistent(tmp_path):
     assert C.F_HISTORY_GAP not in r["books"]["main_fut"]["flags"]
 
 
+def test_after_restore_alignment_reanchors_and_days_become_final_again(tmp_path):
+    """Geri yüklemeden sonraki gecelerde hizalama çapası (closes okuma 8) yeniden yüklenmiş ledger'ın kuyruğudur:
+    sakin bir defterde (gecede 1 işlem) bile ertesi gece hizalama OK, uzlaştırma OK ve günler yeniden KESİN olur
+    (önceden ≥ 50 yeni hareket gelene kadar her gece ENTRIES_REWIND + RESTORED + EKSİK idi)."""
+    v = FakeVps(tmp_path)
+    led = v.fut()
+    v.night(night_of("2026-09-10"))
+    for i in range(3):
+        trade(led, "ETH/USDT", at("2026-09-10", 3 + i), 100.0, 102.0)
+    v.night(night_of("2026-09-11"))
+    backup = json.loads(v.fut_path().read_text(encoding="utf-8"))
+    for i in range(2):
+        trade(led, "BTC/USDT", at("2026-09-11", 5 + i), 100.0, 97.0)
+    v.night(night_of("2026-09-12"))
+    v.fut_path().write_text(json.dumps(backup), encoding="utf-8")              # yalnız SEQ_DECREASED kanıtı
+    from tradingbot.accounting import FuturesLedgerV2
+    led = FuturesLedgerV2.load(v.fut_path())
+    v.futs[""] = led
+    trade(led, "SOL/USDT", at("2026-09-12", 13), 100.0, 101.0)
+    b = v.night(night_of("2026-09-13"))[0]["books"]["main_fut"]
+    assert b["align"] == C.ALIGN_REWIND and b["recon_wallet"]["status"] == C.RECON_RESTORED and b["restored_away"] == 2
+    anchor = json.loads((v.paths.book_entries_dir("main_fut") / C.ANCHOR_FILE).read_text(encoding="utf-8"))
+    assert len(anchor["bases"]) == len(led.entries) and anchor["archive_count"] == len(_entry_rows(v, "main_fut"))
+    for d in range(13, 20):
+        trade(led, "SOL/USDT", at(f"2026-09-{d}", 5), 100.0, 101.0)
+        b = v.night(night_of(f"2026-09-{d + 1}"))[0]["books"]["main_fut"]
+        assert b["align"] == C.ALIGN_OK and b["recon_wallet"]["status"] == "OK" and b["new_entries"] == 3, (d, b["flags"])
+        assert C.F_ENTRIES_GAP not in b["flags"] and C.F_INCONSISTENT not in b["flags"]
+    rows = v.rows()
+    assert rows["2026-09-12"]["status"] == "EKSİK" and "RESTORE" in rows["2026-09-12"]["status_reason"]
+    for d in range(13, 17):
+        assert rows[f"2026-09-{d}"]["status"] == "KESİN", (d, rows[f"2026-09-{d}"]["status_reason"])
+    # çapa yoksa arşivin kendi kuyruğu kullanılır (geri yüklemeden sonra o kuyruk silinen hareketleri taşır → REWIND,
+    # tekrar sayımıyla yine yalnız yeniler eklenir); ertesi gece çapa yeniden yazıldığı için OK
+    (v.paths.book_entries_dir("main_fut") / C.ANCHOR_FILE).unlink()
+    trade(led, "SOL/USDT", at("2026-09-20", 5), 100.0, 101.0)
+    b = v.night(night_of("2026-09-21"))[0]["books"]["main_fut"]
+    assert b["align"] == C.ALIGN_REWIND and b["new_entries"] == 3
+    trade(led, "SOL/USDT", at("2026-09-21", 5), 100.0, 101.0)
+    b = v.night(night_of("2026-09-22"))[0]["books"]["main_fut"]
+    assert b["align"] == C.ALIGN_OK and b["new_entries"] == 3
+    # eski çapa (arşivdeki satır sayısı tutmuyor: ör. segment yazıldı, çapa yazılmadan çalıştırma öldü) kullanılmaz:
+    # yeniden çalıştırma hiçbir hareketi İKİNCİ kez eklemez
+    a2 = json.loads((v.paths.book_entries_dir("main_fut") / C.ANCHOR_FILE).read_text(encoding="utf-8"))
+    a2["archive_count"], a2["bases"] = 1, a2["bases"][:-6]
+    (v.paths.book_entries_dir("main_fut") / C.ANCHOR_FILE).write_text(json.dumps(a2), encoding="utf-8")
+    n0 = len(_entry_rows(v, "main_fut"))
+    r = v.s1a(night_of("2026-09-22") + timedelta(minutes=5))
+    assert r["books"]["main_fut"]["new_entries"] == 0 and len(_entry_rows(v, "main_fut")) == n0
+
+
+def test_missing_stale_and_absent_ledgers_are_flagged_and_never_silently_measured(tmp_path):
+    """closes okuma 10: daha önce görülen defterin ledger'ı yoksa LEDGER_MISSING (geçiş penceresi EKSİK, sonraki
+    pencerelerde defter yok sayılır); hiç ledger yoksa NO_LEDGERS; en yeni updated_at > 6 sa ise LEDGER_STALE."""
+    v = FakeVps(tmp_path)
+    led, m2 = v.fut(), v.fut("strategy_paper_m2")
+    trade(led, "ETH/USDT", at("2026-09-01", 3), 100.0, 101.0)
+    trade(m2, "BTC/USDT", at("2026-09-01", 3), 100.0, 101.0)
+    r1, _ = v.night(night_of("2026-09-02"))
+    assert not {C.F_LEDGER_MISSING, C.F_LEDGER_STALE, C.F_NO_LEDGERS} & set(r1["flags"])
+    assert r1["ledger_freshness"]["age_s"] == 60.0
+    del v.futs["strategy_paper_m2"]
+    v.fut_path("strategy_paper_m2").unlink()
+    trade(led, "ETH/USDT", at("2026-09-02", 3), 100.0, 101.0)
+    for d in (3, 4, 5, 6):
+        r1, _ = v.night(night_of(f"2026-09-0{d}"))
+        assert C.F_LEDGER_MISSING in r1["flags"] and r1["books"]["strategy_paper_m2"]["status"] == "MISSING"
+    assert C.load_snapshot(v.paths, "2026-09-03")["books"]["strategy_paper_m2"]["status"] == "MISSING"
+    rows = v.rows()
+    assert rows["2026-09-02"]["status"] == "EKSİK" and "DEFTER_MISSING" in rows["2026-09-02"]["status_reason"]
+    assert rows["2026-09-03"]["status"] == "KESİN" and "strategy_paper_m2" not in rows["2026-09-03"]["books"], \
+        "iki uçta da yok: defter o pencerede yok sayılır (bayrak sürer)"
+    # bayat: worker 7 saattir yazmıyor
+    v.save(night_of("2026-09-07") - timedelta(hours=7))
+    r1 = v.s1a(night_of("2026-09-07"))
+    assert C.F_LEDGER_STALE in r1["flags"] and r1["ledger_freshness"]["age_s"] == 7 * 3600
+    # hiç ledger yok (yanlış ama var olan bir state klasörü)
+    v2 = FakeVps(tmp_path / "bos")
+    r2 = v2.s1a(night_of("2026-09-02"))
+    assert r2["flags"] == [C.F_NO_LEDGERS] and r2["books"] == {}
+
+
 # ============================================================================ kabul 16: rotasyon payı
 def test_rotation_margin_and_three_day_warning(tmp_path):
     ref = at("2026-09-10", 1, 40)

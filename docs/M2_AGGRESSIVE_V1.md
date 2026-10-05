@@ -792,3 +792,94 @@ Opsiyonlar:
 - **İlk açılıştaki ısınma — kabul.** İlk 28 gün "ısınma" etiketli; bu dönemde hüküm benzeri ifade yok (§3.5, §4).
 - **`m2x-resume` kontrol dosyası şeması — kabul.** Tek kullanım, yalnız `HALTED` iken, dönem sayacı ve `resume_history`
   (§2.8, §4.1).
+
+## 7. Uygulama (2026-10-05, `impl/m2x`; v1 sayıları DEĞİŞMEDİ)
+
+Bu bölüm ön kaydın §5 adım 1–4'ünün nasıl kodlandığını yazar. Politika sayıları ve mühür (`M2X_POLICY_SHA =
+dfc2f68d2cdf4035`) aynıdır. Simülasyonla aynı politika kodu kullanılır: canlı defter `m2x_policy` fonksiyonlarını çağırır
+ve `tests/test_m2x_book_v1.py` aynı akışta simülasyonun `M2xRunner`ıyla aynı girişleri, boyutları, kaldıraçları,
+kapanışları ve kademe yolunu üretir.
+
+### 7.1 Dosyalar
+
+| Dosya | İş |
+|---|---|
+| `tradingbot/m2x_book.py` | `M2xBook`: yakalama (`capture_parent_step`), tur (`tour_step`, §1.4 sırası), izleyici (`protect`), durum, kontrol dosyası, özet; `write_resume_request`, `check_lines` |
+| `tradingbot/engine_v3.py` | `engine.m2x_book` (ayrı öznitelik), M2'nin adımında yakalama, bütün defterlerden SONRA tur, `m2x` fazı, izleyici tutamacı EN SONDA, `config_hash`'te bölüm düşürme |
+| `tradingbot/config_v3.py` | `m2x_aggressive` bölümü, doğrulama, `TRADINGBOT_M2X=off` |
+| `tradingbot/shared_experience/collector.py` | yedek karar kimliğinde bölüm düşürme |
+| `tradingbot/cli_v3.py` | `m2x-resume --i-reviewed --note "<neden>"` |
+| `scripts/bot_scorecard.py` | `MIRROR_BOOKS`, ayrı M2X bölümü (günlük ve aylık hedef satırları), `--m2x-check` |
+| `tradingbot/dashboard/m2x_view.py`, `app.py`, `state.py` | M2X kartı (salt okuma, düğme yok), defter etiketi |
+| `config.yaml` | `m2x_aggressive: {enabled: false, …}` |
+
+State: `state/strategy_paper_m2x/` altında `futures_ledger.json`, `m2x_state.json` (politika durumu, günlük görüntüler,
+sayaçlar), `m2x_events.jsonl` (giriş / atlama / kapanış / gözlem / yeniden başlatma kaydı, yalnız ekleme),
+`m2x_control.json` (sahip isteği); özet `state/strategy_paper_m2x.json`; indeks girdisi `kind: mirror`.
+
+### 7.2 Açma, kapatma, yeniden başlatma
+
+- **Açmak (sahip, dağıtımda):** `config.yaml` → `m2x_aggressive.enabled: true`, worker'ı yeniden başlat. Kod ve config
+  varsayılanı KAPALI; kapalıyken motor M2X'i hiç kurmaz (dosya, indeks girdisi, faz yok).
+- **Yeni girişi durdurmak:** `new_entries: false` + restart. Açık pozisyonlar M2 ile çıkar.
+- **Kapatmak:** pozisyonlar bitince `enabled: false` + restart, ya da env `TRADINGBOT_M2X=off` (yalnız kapatır; başka
+  değer ConfigError). Kapalı defterde açık pozisyon DONAR (C4 notuyla aynı).
+- **−%50 durdurmadan sonra:** VPS'te `python -m tradingbot m2x-resume --i-reviewed --note "<neden>"`. İstek tek
+  kullanımlıktır; worker sonraki turda yalnız `HALTED` ve dönem eşleşirse kabul eder (dönem +1, P := Pₖ := E, kademe K3).
+  Sonuç `m2x.resume_history`de ve karnede görünür.
+- **Durum:** `python scripts/bot_scorecard.py --state <state>` (M2X bölümü en sonda) ya da yalnız iki satır:
+  `--m2x-check --config config.yaml`.
+
+### 7.3 Ön kayıttan kodlama kararları (sayı değişikliği DEĞİL)
+
+1. **RiskEngine kopyası kurulmadı.** `PAPER_RESEARCH` kopyasının (`max_total_open_risk_pct: 100`) M2X'te tutacağı
+   kapılar `plan_entry`de aynı değerlerle zaten var: işlem tavanı %2 (`hard_cap_pct`), tek pozisyon %30
+   (`max_position_pct`), kaldıraç ≤ min(4, profil 5, borsa). Simülasyon da RiskEngine'siz koştu; ikinci bir kapı
+   simülasyonla canlıyı ayırırdı. Profilin ilk kapısı olan kill switch açıkça uygulanır: motorun kill switch'i
+   devredeyken yeni giriş yok (`M2X_KILL_SWITCH`; M2 de açamaz, aynı turdaki yarış için).
+2. **Gözlem ve veri boşluğu (§2.7) canlıda:** O1, `last_snapshot_day`den farklı UTC gününün ilk turudur; boşlukta
+   görüntü aynı gün sonraki turda yeniden denenir. Görüntüsüz geçen günler bir sonraki görüntüde `observe(...,
+   data_gap=True)` ile işlenir (yukarı çıkış sayacı sıfırlanır, U serisine boş değer). Boşluk ölçüsü: her açık M2X
+   sembolünde bu defterde EN SON UYGULANAN doğrulanmış mark'ın (tur ya da izleyici) yaşı ≤ 180 sn.
+3. **Kaçırılan tur (§1.3):** yakalanan aday aynı turda işlenmezse sonraki turda `MISSED_PARENT_TOUR` sayılır, girilmez.
+   Yeniden başlatmadan sonra, M2X'in son işlediği turdan sonra açılmış ve eşlenmemiş M2 pozisyonları bir kez aynı nedenle
+   sayılır.
+4. **Kural çıkışı yakalama:** M2'nin adımında kapanan pozisyon ancak kaydının kapanış zamanı adımın `now`una eşitse kural
+   çıkışı sayılır (adım sırasında izleyicinin kapattığı pozisyon kural çıkışı diye eşlenmez; o yol yetim mutabakatıdır).
+5. **STOP_SYNC (§1.3):** M2 eşinin stopu değişirse M2X aynı turda eşler (`meta.m2x_stop_sync`, sayaç `stop_syncs`).
+   Bugünkü config'te M2 stop taşımaz.
+6. **Ayrışma ve parite (§1.4):** her M2X kapanışı M2'nin aynı işleminin kaydıyla eşlenir: eşleşen işlem başına R farkı,
+   likidasyon ayrışması (M2X likide, M2 başka nedenle) ve R maliyeti, ters durum (`m2_liquidated_only`), yetim kapanışı,
+   bracket nedeniyle kaldıraç indirimi, defterin marja küçültmesi ayrı sayılır.
+7. **İzleme kesintisi kayıtları** (`monitoring_gaps.jsonl`, ilk-gözlem satırları, kesinti simülasyon girdisi) M2X'in
+   KENDİ klasörüne yazılır; state kökündeki ortak kesinti dosyalarına M2X satırı girmez (§1.7 listesinden daha sıkı).
+8. **Zaman alanları:** doğum (`created_at`, U'nun başlangıcı, ısınma) ilk turun karar saatidir, duvar saati değil.
+9. **Panel ve `--check`'teki anlık düşüş** yalnız gösterimdir ve zirvenin üstünde 0 yazılır; kademe, zirve ve DUR yalnız
+   gözlem noktalarında değişir.
+10. **config doğrulaması:** `policy_version` kodun sürümüyle, `starting_equity_usdt` ön kayıtla (200) AYNI olmalıdır;
+    `parent` v1'de yalnız `m2_tsmom28`; `state_dir` düz ve başka defterle çakışmayan ad; bilinmeyen anahtar ConfigError.
+
+### 7.4 Yalıtım kanıtı (testler)
+
+`tests/test_m2x_book_v1.py` (CI listesinde):
+
+- Bölüm YOK == `enabled: false`: gerçek motor turu (T2/M2/D4 + formasyon, öğrenme açık) bütün state dosyaları ve
+  `health.json` bayt bayt aynı.
+- `enabled: true` (öğrenme açık ve kapalı): karar dosyalarının hepsi bayt bayt aynı; farklar yalnız indeks girdisi
+  (en sonda, `kind: mirror`), `health.json`daki `m2x` faz süresi ve M2X'in kendi dosyaları. `strategy_books`, tur kapsamı,
+  izleyici tutamaç sırası (M2X en sonda) aynı.
+- Canlı sağlayıcı çağrıları (sayı, sembol, sıra) M2X açık/kapalı aynı; AST: M2X modülü fiyat/ağ/funding yenilemesi
+  çağırmaz, M2'ye yazan yöntem çağırmaz.
+- İzleyici geçişi: fiyat partisi aynı, M2 ve bütün diğer defter dosyaları aynı; `protective_monitor.json` yalnız M2X
+  anahtarları kadar farklı.
+- `config_hash`: bölüm açık/kapalı/yok aynı; config.yaml ile `1c2c6e2`'nin bölümsüz değeri (`4387f914…`) aynı; ortak
+  deneyim yedek özeti aynı.
+
+### 7.5 Açık işler
+
+- Ön kayıt §5 adım 0 (VPS'ten M2 kanıt kırılımı) ve §3.3 E2 (canlı parite) VPS kopyası gerektirir; bu çalışma alanında
+  yapılmadı.
+- Bir sonraki sürüm betiği: `book_snapshot`ta M2X satırı "ayna" etiketiyle, değişmez sayımlarına katılmadan;
+  `--check`te `scripts/bot_scorecard.py --state "$STATE" --m2x-check --config config.yaml` satırları (§4.3).
+- P1a ekibine (öğrenme motoru, `impl/system`): `kind: mirror` defterler toplamlara ve "pozitif defter" sayımına
+  katılmamalı (§1.6.6).

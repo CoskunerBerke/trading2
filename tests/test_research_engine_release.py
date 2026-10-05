@@ -38,9 +38,9 @@ import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-SCRIPT = ROOT / "deploy" / "releases" / "tb-engine-4856112.sh"
+SCRIPT = ROOT / "deploy" / "releases" / "tb-engine-778b90f.sh"
 #: Betiğin kayıtlı sha256'sı (sürüm notu ve sahibe verilen değer; betik değişirse bu da bilinçli değişir).
-SCRIPT_SHA256 = "26a0199edfd1bf05088084812060fbf9ef9c8823b6f13b93e42beddace3e161b"
+SCRIPT_SHA256 = "26fa8cf12cc423001acf1feba46aab7519ae2ba04d95c26b1d06d41d14e103a6"
 TEXT = SCRIPT.read_text(encoding="utf-8")
 TIP = re.search(r'^TIP="([0-9a-f]{40})"', TEXT, re.M).group(1)
 APP_SHA = "f8b05fb27310238c764ac7dad23221d84f7c0b6d"      # VPS'te çalışan app (hedefin atası)
@@ -83,7 +83,7 @@ def test_script_pins_match_the_code_commit():
     runner = subprocess.run([GIT, "show", f"{TIP}:tests/standalone/run_engine_invariants.py"], cwd=str(ROOT),
                             capture_output=True, text=True).stdout
     n = len(re.findall(r'^\s+\(\d+, "test_research_engine_\w+",', runner, re.M))
-    assert re.search(rf"^INV_TESTS={n}\b", TEXT, re.M) and n == 26
+    assert re.search(rf"^INV_TESTS={n}\b", TEXT, re.M) and n == 33
 
 
 def test_script_never_mutates_worker_or_dashboard_statically():
@@ -211,7 +211,8 @@ if verb == "start" and tg[0] == SVC:
                    memory_max=lambda env: {"status": "MATCH", "expected": 536870912, "actual": 536870912},
                    writable=lambda d: {"path": str(d), "status": "WRITABLE_OK"})
     st = N.run_night(EnginePaths(data=BASE / "data", state=BASE / "data" / "state"), app_dir=BASE / "app",
-                     engine_dir=eng, env={"ALLOW_LIVE_TRADING": "false"}, probes=pr, backup_wait_s=0)
+                     engine_dir=eng, env={"ALLOW_LIVE_TRADING": "false"}, probes=pr, backup_wait_s=0,
+                     free_bytes=int(os.environ.get("FAKE_FREE_BYTES", "50000000000")))   # disk: sunucudan bağımsız
     rc = int(st.get("exit_code") or 0)
     S.update(result="success" if rc == 0 else "exit-code", ems=rc); save()
     sys.exit(0 if rc == 0 else 1)
@@ -231,6 +232,9 @@ if f and "short-unix" in a:
 '''
 STUBS = {
     "sudo": '#!/usr/bin/env bash\necho "sudo $*" >> "$FAKE_STATE/sudo.log"\n[ "$1" = "-u" ] && shift 2\nexec "$@"\n',
+    # betiğin disk kapısı (`df -B1 --output=avail`): sunucunun gerçek boş alanından bağımsız (FAKE_FREE_BYTES)
+    "df": '#!/usr/bin/env bash\nif [ -n "${FAKE_FREE_BYTES:-}" ] && [ "$1" = "-B1" ] && [ "$2" = "--output=avail" ]; then\n'
+          '  printf "Avail\\n%s\\n" "$FAKE_FREE_BYTES"; exit 0; fi\nexec @DF@ "$@"\n',
     "nproc": '#!/usr/bin/env bash\necho "${FAKE_NPROC:-4}"\n',
     "date": '#!/usr/bin/env bash\nif [ -n "${FAKE_UTC_HM:-}" ] && [ "$*" = "-u +%H:%M" ]; then echo "$FAKE_UTC_HM"; exit 0; fi\n'
             'exec @DATE@ "$@"\n',
@@ -274,7 +278,8 @@ class Sandbox:
         (stub / "systemctl").write_text(SYSTEMCTL.replace("@PY@", sys.executable), encoding="utf-8")
         (stub / "journalctl").write_text(JOURNALCTL.replace("@PY@", sys.executable), encoding="utf-8")
         for name, body in STUBS.items():
-            (stub / name).write_text(body.replace("@DATE@", shutil.which("date") or "/bin/date"), encoding="utf-8")
+            (stub / name).write_text(body.replace("@DATE@", shutil.which("date") or "/bin/date")
+                                     .replace("@DF@", shutil.which("df") or "/bin/df"), encoding="utf-8")
         for p in [py, *stub.iterdir()]:
             p.chmod(0o755)
         assert _git("clone", "-q", "--no-local", "--single-branch", "--branch", "app-main", str(src),
@@ -299,7 +304,7 @@ class Sandbox:
                          "TRADINGBOT_SYSTEMD_DIR": str(self.sd), "TRADINGBOT_USER": pwd.getpwuid(os.getuid()).pw_name,
                          "TRADINGBOT_GROUP": grp.getgrgid(os.getgid()).gr_name, "TB_ENGINE_ALLOW_NON_ROOT": "1",
                          "TB_ENGINE_REPO_URL": str(src), "FAKE_STATE": str(self.fake), "FAKE_UTC_HM": "10:00",
-                         "FAKE_NPROC": "4", **env})
+                         "FAKE_NPROC": "4", "FAKE_FREE_BYTES": "50000000000", **env})
 
     def run(self, *args: str, **env) -> subprocess.CompletedProcess:
         cp = subprocess.run([BASH, str(SCRIPT), *args], env={**self.env, **env}, cwd=str(self.tmp), capture_output=True,
@@ -338,7 +343,7 @@ def test_dry_run_checks_everything_and_changes_nothing(tmp_path, source):
     for name in ("kaynak-TIP", "app-SHA-ata", "birim-sha256", "birim-sözleşmesi", "systemd-analyze-verify", "compileall",
                  "bağımsız-koşucu", "yalıtım-AST", "engine-status-kuru", "worker-MemoryMax=6G", "tradingbot-worker-NDR=no"):
         assert re.search(rf"\[tamam\] #\d+ {re.escape(name)}", cp.out), name
-    assert "26 geçti · 0 kaldı · 0 atlandı" in cp.out
+    assert "33 geçti · 0 kaldı · 0 atlandı" in cp.out
     sb.untouched()
     _no_forbidden(sb)
     assert len(list(Path("/tmp").glob("tb-engine-*"))) == before, "geçici klon silinmeli"
@@ -381,11 +386,14 @@ def test_deploy_smoke_then_timer_check_ab_report_and_rollback_keeps_research(tmp
     d0, n0 = _tree_digest(sb.res), len(samples.read_text(encoding="utf-8").splitlines())
     ck = sb.run("--check")
     assert ck.returncode == 0, ck.out[-4000:]
-    for s in ("iki SHA: app f8b05fb · engine-app 4856112", "SKEW yok", "GECE ÖĞRENME MOTORU", "GÜNLÜK HEDEF",
-              "K1 elle smoke", "K2 ilk arşiv", "K8 rotasyon payı", "--ab-report"):
+    for s in ("iki SHA: app f8b05fb · engine-app 778b90f", "SKEW yok", "GECE ÖĞRENME MOTORU", "GÜNLÜK HEDEF",
+              "K1 elle smoke", "K2 ilk arşiv", "K8 rotasyon payı", "--ab-report", "defter okuma", "Aylık"):
         assert s in ck.out, s
     assert not claim_word_violations(ck.out.splitlines()), claim_word_violations(ck.out.splitlines())
     assert "[tamam]       K1" in ck.out and "[tamam]       K2" in ck.out
+    assert re.search(r"\[tamam\]\s+K6 scorecard --daily = engine-status --daily: 3 defter × \d+ gün", ck.out), ck.out[-3000:]
+    assert re.search(r"\[DİKKAT\]\s+defter okuma: LEDGER_STALE", ck.out), "sahte state'in ledger'ları eski (09-02)"
+    assert not list(Path("/tmp").glob("tb-engine-k6.*")), "K6 geçici klasörü silinir"
     ab = sb.run("--ab-report")
     assert ab.returncode == 0 and "A/B geceleri" in ab.out and "ARA GÖRÜNÜM" in ab.out, ab.out[-3000:]
     assert not claim_word_violations(ab.out.splitlines())
@@ -411,7 +419,7 @@ def test_deploy_smoke_then_timer_check_ab_report_and_rollback_keeps_research(tmp
     today = datetime.now(timezone.utc).date()
     ep = sb.res / "runs" / "engine_epochs.jsonl"
     rows = [json.loads(x) for x in ep.read_text(encoding="utf-8").splitlines() if x.strip()]
-    rows[0]["first_seen_day"] = (today - timedelta(days=1)).isoformat()
+    rows[0]["first_seen_day"] = rows[0]["epoch_day"] = (today - timedelta(days=1)).isoformat()
     ep.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
     re2 = sb.run()
     assert re2.returncode == 0 and "DAĞITILDI" in re2.out, re2.out[-4000:]
@@ -421,6 +429,56 @@ def test_deploy_smoke_then_timer_check_ab_report_and_rollback_keeps_research(tmp
     else:
         assert st2["result"] == st2["selfcheck"]["ab"]["status"] in ("AB_OFF", "AB_OFF_ZORUNLU_ARŞİV")
     _no_forbidden(sb)
+
+
+@needs_sandbox
+@pytest.mark.parametrize("hm", ["02:10", "16:20"])
+def test_dry_run_is_refused_inside_the_night_and_4h_windows(tmp_path, source, hm):
+    """Kuru çalışma derler ve 33 testlik koşucuyu koşar: gece birimi penceresinde (00:00–04:00 UTC) ve 4h yayın
+    pencerelerinde worker turlarıyla çekişmesin diye başlamaz (§2.9); ağır adımlar her durumda nice 19 + ionice idle."""
+    sb = Sandbox(tmp_path, source, FAKE_UTC_HM=hm)
+    cp = sb.run("--dry-run")
+    assert cp.returncode == 1 and "kuru çalışma da şimdi yapılmaz" in cp.out and "HİÇBİR ŞEYE DOKUNULMADI" in cp.out, cp.out[-2000:]
+    assert "bağımsız-koşucu" not in cp.out, "koşucu hiç başlamadı"
+    sb.untouched()
+    _no_forbidden(sb)
+
+
+def test_heavy_steps_run_at_lowest_cpu_and_io_priority():
+    assert re.search(r'^LOW=\(nice -n 19\); if command -v ionice .* LOW\+=\(ionice -c3 -t\)', TEXT, re.M)
+    for step in ('-s -m compileall -q tradingbot scripts', '-s tests/standalone/run_engine_invariants.py',
+                 "-s -c 'import resource as r, sys, tradingbot.cli", '-s scripts/bot_scorecard.py'):
+        lines = [ln for ln in TEXT.splitlines() if step in ln and "$VENV/bin/python" in ln]
+        assert lines and all('"${LOW[@]}" "$VENV/bin/python"' in ln for ln in lines), step
+
+
+def test_k6_compares_record_and_wallet_views_up_to_archive_day_minus_two(tmp_path):
+    days = [f"2026-10-0{d}" for d in range(1, 6)]
+
+    def book(net2: float, wal4: float = 0.5) -> dict:
+        return {"days": {d: {"rec": {"n": 1, "net": net2 if d == "2026-10-02" else 0.25, "fees": 0.1, "funding": 0.0,
+                                     "slippage": 0.0},
+                             "wal_ts": {"net": wal4 if d == "2026-10-04" else 0.5, "transfer": 0.0, "complete": True}}
+                         for d in days}}
+
+    def run(eb: dict, sb: dict, *, upto: str = "2026-10-05") -> str:
+        e, s_ = tmp_path / "e.json", tmp_path / "s.json"
+        e.write_text(json.dumps({"days": days, "archived_through": upto, "books": eb}), encoding="utf-8")
+        s_.write_text(json.dumps({"daily_target": {"days": days, "books": sb}}), encoding="utf-8")
+        cp = _tool(tmp_path, "k6", str(e), str(s_))
+        assert cp.returncode == 0, cp.stderr
+        return cp.stdout
+    out = run({"main_fut": book(1.0)}, {"main_fut": book(1.0)})
+    assert "[tamam]" in out and "1 defter × 3 gün (≤ 2026-10-03; arşiv 2026-10-05'e kadar)" in out, out
+    out = run({"main_fut": book(1.0)}, {"main_fut": book(1.5)})
+    assert "[DİKKAT]" in out and "main_fut 2026-10-02 kayıt.net 1.0≠1.5" in out, out
+    out = run({"main_fut": book(1.0)}, {"main_fut": book(1.0, wal4=9.0)})
+    assert "[tamam]" in out, "arşiv günü − 2'den sonraki fark (geç fonlama/bu geceki kapanış) karşılaştırılmaz"
+    out = run({"main_fut": book(1.0), "main_spot": book(0.0)}, {"main_fut": book(1.0)})
+    assert "[DİKKAT]" in out and "main_spot: betikte yok" in out
+    out = run({"main_fut": book(1.0)}, {"main_fut": book(1.0), "strategy_paper": book(0.0)})
+    assert "[DİKKAT]" in out and "strategy_paper: motorda yok" in out
+    assert "[ölçülemedi]" in run({}, {"main_fut": book(1.0)}) and "[ölçülemedi]" in run({"main_fut": book(1.0)}, {}, upto=None)
 
 
 @needs_sandbox
@@ -527,7 +585,7 @@ def _epoch(res: Path, day: str) -> None:
 
 
 def _files(res: Path, day: str, plan) -> None:
-    names = {"S1a": [f"snapshots/{day}.json.gz"], "S3": ["summary/daily_target.json"],
+    names = {"S1s": [f"snapshots/{day}.json.gz"], "S1a": [f"snapshots/{day}.json.gz"], "S3": ["summary/daily_target.json"],
              "S7": ["summary/digest_tr.md", "summary/engine_summary.json"],
              "S7b": [f"backup/research-small-{day}.tar.gz", f"backup/research-small-{day}.tar.gz.sha256"]}
     for s in plan:
@@ -552,16 +610,17 @@ def test_smoke_acceptance_rules(tmp_path):
         return _tool(tmp_path, "smoke", str(res), TIP, pre, str(t0), user)
 
     assert case("ok").returncode == 0
-    # A/B penceresinde yeniden dağıtım, KAPALI gün: yalnız S0 planı ve sonucu AB_OFF → kabul
-    assert case("ab_off", plan=("S0",), result="AB_OFF", ab="AB_OFF", files=("S0",)).returncode == 0
-    assert case("ab_forced", plan=("S0", "S1a"), result="AB_OFF_ZORUNLU_ARŞİV", ab="AB_OFF_ZORUNLU_ARŞİV",
-                files=("S0", "S1a")).returncode == 0
+    # A/B penceresinde yeniden dağıtım, KAPALI gün: S0 + S1s planı ve sonucu AB_OFF → kabul (anlık görüntü şart)
+    assert case("ab_off", plan=("S0", "S1s"), result="AB_OFF", ab="AB_OFF", files=("S0", "S1s")).returncode == 0
+    assert case("ab_forced", plan=("S0", "S1s", "S1a"), result="AB_OFF_ZORUNLU_ARŞİV", ab="AB_OFF_ZORUNLU_ARŞİV",
+                files=("S0", "S1s", "S1a")).returncode == 0
     for name, kw in (("skew", {"plan": ("S0", "S1a", "S7"), "result": "SKEW", "files": ("S0", "S1a", "S7")}),
                      ("no_backup", {"files": ("S0", "S1a", "S3", "S7")}),
                      ("iso", {"result": "ISOLATION_BROKEN", "sc_status": "ISOLATION_BROKEN"}),
                      ("stale", {"pre": "R1"}), ("old", {"t0": now + 600}),
                      ("other_sha", {"engine": "c" * 40}),
-                     ("ab_off_mismatch", {"plan": ("S0",), "result": "AB_OFF", "ab": "AB_ON", "files": ("S0",)})):
+                     ("ab_off_mismatch", {"plan": ("S0", "S1s"), "result": "AB_OFF", "ab": "AB_ON", "files": ("S0", "S1s")}),
+                     ("ab_off_no_snapshot", {"plan": ("S0", "S1s"), "result": "AB_OFF", "ab": "AB_OFF", "files": ("S0",)})):
         cp = case(name, **kw)
         assert cp.returncode == 1 and "KALDI:" in cp.stdout, (name, cp.stdout + cp.stderr)
 
@@ -581,7 +640,7 @@ def _ab_fixture(tmp_path: Path, on_tour_s: float, *, rest_on: int = 0) -> tuple[
         d0 = rel + timedelta(days=i)
         on = d0.timetuple().tm_yday % 2 == 0
         _run_status(res, d0.strftime("%Y%m%dT013700Z"), d0.strftime("%Y-%m-%dT01:37:00Z"),
-                    result="SUCCESS" if on else "AB_OFF", plan=("S0", "S1a", "S3", "S7", "S7b") if on else ("S0",),
+                    result="SUCCESS" if on else "AB_OFF", plan=("S0", "S1a", "S3", "S7", "S7b") if on else ("S0", "S1s"),
                     ab="AB_ON" if on else "AB_OFF", peak=0.35 if on else 0.05)
         for k in range(6):
             t = d0 + timedelta(hours=1, minutes=45 + 20 * k)

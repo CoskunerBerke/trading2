@@ -34,6 +34,12 @@ Soru tek: "Hangi bot, bugüne kadar kapattığı işlemlerde para kazandırdı v
   kayma ve funding SONRASI) başlangıç bakiyesinin %'si olarak, işlem sayısı ve hedefe uzaklık. Açık pozisyonların
   gerçekleşmemiş sonucu dahil DEĞİLDİR. Bu bir ölçümdür; kâr iddiası ya da garantisi değildir. Yalnız komut satırı
   (`main`) yazar; `scorecard()` sözlüğü değişmez.
+* M2X AYNA DEFTERİ (2026-10-05, docs/M2_AGGRESSIVE_V1.md §4.2): `MIRROR_BOOKS` (M2'nin gerçek işlemlerinin kopyası) ana
+  tabloya, öğrenme ayrımına ve AYLIK HEDEF'e GİRMEZ (glob'dan dışlanır); çıktının SONUNDA ayrı bölümde, bağımsız hüküm
+  sütunu OLMADAN gösterilir: kapanmış işlem sayısı ve ortalama R (bilgi), gerçekleşmiş net, mark'a göre özkaynak, zirve ve
+  düşüş, kademe ve risk, açık risk / tavan, kriz kaybı / bütçe, bugün / ay / 30 gün yüzdeleri (düşüşün YANINDA), günlük ve
+  aylık hedef satırları (yalnız rapor), durum, atlanma ve ayrışma sayıları, kopyalanan / atlanan M2 işlemlerinin M2'deki
+  ortalama R'si. Dosya yoksa (defter hiç açılmadıysa) karne çıktısı AYNEN eskisidir. Yalnız `main` yazar.
 
 Kullanım:
     python scripts/bot_scorecard.py --state <state klasörü> [--since 2026-09-01] [--learning-since <ISO>] [--out karne.json]
@@ -76,6 +82,11 @@ RECORD_ONLY_REASON = "LEARNING_RECORD_ONLY"
 RECORDED_EXTRA = "recorded_extra"
 #: AYLIK HEDEF (2026-10-03, sahip): ayda en az +%1 net (kendi kâğıt bakiyesinde). Yalnız rapor.
 MONTHLY_TARGET_PCT = 1.0
+#: GÜNLÜK HEDEF (öğrenme motoru tasarımı §1.1: günde en az +%1). Yalnız M2X bölümünde, yalnız rapor.
+DAILY_TARGET_PCT = 1.0
+#: AYNA DEFTERLER (2026-10-05): klasör → görünen ad. Ana tabloya / AYLIK HEDEF'e / pozitif defter sayımına GİRMEZ.
+MIRROR_BOOKS = {"strategy_paper_m2x": "M2X agresif (M2 kopyası, PAPER)"}
+MIRROR_EVENTS_FILE = "m2x_events.jsonl"
 
 
 def _configure_console() -> None:
@@ -94,6 +105,8 @@ def find_books(state: Path) -> dict[str, Path]:
         if p.exists():
             out[sub] = p
     for p in sorted(state.glob(f"*/{LEDGER_FILE}")):
+        if p.parent.name in MIRROR_BOOKS:      # ayna defter: ayrı bölümde (kendi hükmü yok; kopyadır, yeni kanıt değil)
+            continue
         out.setdefault(p.parent.name, p)
     return out
 
@@ -398,6 +411,156 @@ def render_monthly(card: dict[str, Any]) -> list[str]:
     return lines
 
 
+def _read_json(path: Path) -> Any:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def _mean(xs: list[float]) -> float | None:
+    return round(sum(xs) / len(xs), 4) if xs else None
+
+
+def mirror_card(state: Path, sub: str, *, now: datetime | None = None) -> dict[str, Any] | None:
+    """Ayna defter kartı (M2X; yalnız rapor, hüküm YOK). Defter dosyası yoksa None (karne aynen eskisi)."""
+    path = state / sub / LEDGER_FILE
+    if not path.exists():
+        return None
+    now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    name = MIRROR_BOOKS.get(sub, sub)
+    try:
+        led = FuturesLedgerV2.load(path)
+    except Exception as exc:  # noqa: BLE001
+        return {"name": name, "error": f"{type(exc).__name__}: {exc}"}
+    summ = _read_json(state / f"{sub}.json")
+    m = (summ or {}).get("m2x") if isinstance(summ, dict) else None
+    m = m if isinstance(m, dict) else {}
+    hist = sorted(led.history, key=lambda t: str(t.closed_at))
+    st = _r_stats([float(t.r_multiple) for t in hist])
+    eq = float(led.starting_equity)
+    card: dict[str, Any] = {
+        "name": name, "ledger": str(path), "summary_found": bool(m), "starting_equity": eq,
+        "wallet_balance": round(float(led.wallet_balance), 4),
+        "realised_pct": round((float(led.wallet_balance) / eq - 1) * 100, 4) if eq else None,
+        "closed": len(hist), "open_positions": len(led.positions), "mean_r": st["mean_r"], "win_rate": st["win_rate"],
+        "net_usdt": round(sum(float(t.pnl) for t in hist), 4),
+        "month": _window(hist, _month_start(now), now, eq), "last_30d": _window(hist, now - timedelta(days=30), now, eq),
+        "m2x": {k: m.get(k) for k in ("equity_mtm", "peak", "dd_pct", "tier_peak", "tier_dd_pct", "tier", "risk_pct",
+                                      "open_risk_cap_pct", "open_risk_mark_pct", "open_risk_entry_pct", "crash_loss_pct",
+                                      "crash_budget_pct", "binding_cap", "today_pct", "mtd_pct", "last30_pct",
+                                      "realised_mtd_pct", "realised_last30_pct", "status", "halted", "halt", "warmup",
+                                      "days_live", "epoch", "epoch_pct", "total_pct", "skips", "divergences", "entries",
+                                      "parity", "daily_dist", "new_entries", "parent", "resume_history", "resume_cmd",
+                                      "last_snapshot_day", "marks_fresh", "policy_version", "policy_sha")},
+        "summary_generated_at": (summ or {}).get("generated_at") if isinstance(summ, dict) else None}
+    # kopyalanan / atlanan M2 işlemlerinin M2'deki R'si (karar kaydı + M2 defteri; yalnız KAPANMIŞ M2 işlemleri)
+    ev_path = state / sub / MIRROR_EVENTS_FILE
+    parent_key = str(((m.get("parent") or {}) if isinstance(m.get("parent"), dict) else {}).get("key") or "strategy_paper_m2")
+    if not parent_key or not all(ch.isalnum() or ch == "_" for ch in parent_key):
+        parent_key = "strategy_paper_m2"      # özetten gelen ad yalnız düz klasör adı olabilir (yol dışına çıkılmaz)
+    m2_path = state / parent_key / LEDGER_FILE
+    groups: dict[str, list[str]] = {"full": [], "scaled": [], "skipped": []}
+    if ev_path.exists():
+        try:
+            for line in ev_path.read_text(encoding="utf-8").splitlines():
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(row, dict) or not row.get("m2_id"):
+                    continue
+                if row.get("kind") == "entry":
+                    groups["full" if row.get("full") else "scaled"].append(str(row["m2_id"]))
+                elif row.get("kind") == "skip":
+                    groups["skipped"].append(str(row["m2_id"]))
+        except OSError:
+            pass
+    m2_r: dict[str, float] = {}
+    if m2_path.exists():
+        try:
+            m2_r = {str(h.id): float(h.r_multiple) for h in FuturesLedgerV2.load(m2_path).history}
+        except Exception:  # noqa: BLE001 — M2 defteri okunamazsa bu satır boş kalır
+            m2_r = {}
+    copied = {}
+    for g, ids in groups.items():
+        rs = [m2_r[i] for i in dict.fromkeys(ids) if i in m2_r]
+        copied[g] = {"n_events": len(set(ids)), "n_closed_in_m2": len(rs), "mean_r_in_m2": _mean(rs)}
+    card["m2_trades"] = copied
+    return card
+
+
+def mirror_cards(state: Path, *, now: datetime | None = None) -> dict[str, Any]:
+    out = {}
+    for sub in MIRROR_BOOKS:
+        c = mirror_card(state, sub, now=now)
+        if c is not None:
+            out[sub] = c
+    return out
+
+
+def render_mirror(card: dict[str, Any]) -> list[str]:
+    """M2X bölümü (çıktının SONUNDA; yalnız ayna defter dosyası varsa). Bağımsız hüküm sütunu YOK."""
+    mb = card.get("mirror_books")
+    if not mb:
+        return []
+    lines: list[str] = []
+    for sub, c in mb.items():
+        lines.append("")
+        lines.append("M2X AGRESİF (M2 kopyası, PAPER) — hüküm yok: kopyadır, yeni kanıt değildir"
+                     + (f" · özet {str(c.get('summary_generated_at'))[:16]} (mark yüzdeleri o andan)"
+                        if c.get("summary_generated_at") else " · özet YOK (mark yüzdeleri —)"))
+        if "error" in c:
+            lines.append(f"   {c['name']}: OKUNAMADI: {c['error']}")
+            continue
+        m = c.get("m2x") or {}
+        halted = bool(m.get("halted"))
+        warm = " · ISINMA (ilk 28 gün; hüküm benzeri ifade yok)" if m.get("warmup") else ""
+        lines.append(f"{'!! ' if halted else '   '}durum: {m.get('status') or '—'} · kademe {m.get('tier') or '—'} "
+                     f"(işlem başı risk %{_fmt(m.get('risk_pct'))}, açık risk tavanı %{_fmt(m.get('open_risk_cap_pct'), 0)})"
+                     + (" · YENİ GİRİŞ KAPALI" if m.get("new_entries") is False else "")
+                     + (" · M2 KAPALI (PARENT_DISABLED)" if isinstance(m.get("parent"), dict) and m["parent"].get("enabled") is False else "")
+                     + warm)
+        if halted:
+            h = m.get("halt") or {}
+            lines.append(f"!! DURDURULDU {str(h.get('at') or '')[:16]}: sahip incelemesi gerekli — {m.get('resume_cmd')}")
+        lines.append(f"   kapanmış {c['closed']} işlem · ort. R {_fmt(c['mean_r'])} (bilgi) · gerçekleşmiş net "
+                     f"{c['net_usdt']:+.2f} USDT (%{_fmt(c['realised_pct'])}) · bakiye {c['wallet_balance']:.2f} / "
+                     f"{c['starting_equity']:.2f} · açık {c['open_positions']}")
+        lines.append(f"   özkaynak (mark) {_fmt(m.get('equity_mtm'))} · zirve {_fmt(m.get('peak'))} · düşüş %{_fmt(m.get('dd_pct'))} · "
+                     f"kademe zirvesi {_fmt(m.get('tier_peak'))} (düşüş %{_fmt(m.get('tier_dd_pct'))}) · "
+                     f"dönem {m.get('epoch') if m.get('epoch') is not None else '—'}")
+        lines.append(f"   açık risk %{_fmt(m.get('open_risk_mark_pct'))} mark / %{_fmt(m.get('open_risk_entry_pct'))} giriş "
+                     f"(tavan %{_fmt(m.get('open_risk_cap_pct'), 0)}) · kriz kaybı %{_fmt(m.get('crash_loss_pct'))} · "
+                     f"kriz bütçesi %{_fmt(m.get('crash_budget_pct'))} · bağlayan tavan {m.get('binding_cap') or '—'}")
+        mo, l30 = c["month"], c["last_30d"]
+        lines.append(f"   bugün %{_fmt(m.get('today_pct'))} · ay başından %{_fmt(m.get('mtd_pct'))} (mark) / "
+                     f"%{_fmt(mo['net_pct'])} gerçekleşmiş ({mo['n']} işlem) · son 30 gün %{_fmt(m.get('last30_pct'))} (mark) / "
+                     f"%{_fmt(l30['net_pct'])} gerçekleşmiş ({l30['n']} işlem) — düşüş %{_fmt(m.get('dd_pct'))} ile birlikte okunur")
+        dd = m.get("daily_dist") or {}
+        lines.append(f"   GÜNLÜK HEDEF (+%{DAILY_TARGET_PCT:.0f}/gün, yalnız rapor): bugün %{_fmt(m.get('today_pct'))} · son "
+                     f"{dd.get('n', 0)} günde ≥ +%1: {dd.get('ge_plus1', 0)} gün, ≤ −%1: {dd.get('le_minus1', 0)} gün, "
+                     f"medyan gün %{_fmt(dd.get('median_pct'))}")
+        lines.append(f"   AYLIK HEDEF (+%{MONTHLY_TARGET_PCT:.0f}/ay, yalnız rapor): bu ay gerçekleşmiş %{_fmt(mo['net_pct'])} "
+                     f"({_gap_txt(mo)}) · mark %{_fmt(m.get('mtd_pct'))} · son 30 gün gerçekleşmiş %{_fmt(l30['net_pct'])} "
+                     f"({_gap_txt(l30)})")
+        sk = m.get("skips") or {}
+        dv = m.get("divergences") or {}
+        en = m.get("entries") or {}
+        lines.append(f"   girişler {en.get('n', 0)} (tam {en.get('full', 0)}, küçültülmüş {en.get('scaled', 0)}) · atlanan "
+                     f"{sum(int(v) for v in sk.values())}"
+                     + (" (" + ", ".join(f"{k} {v}" for k, v in sorted(sk.items(), key=lambda kv: -int(kv[1]))[:6]) + ")" if sk else "")
+                     + " · ayrışma " + (", ".join(f"{k} {v}" for k, v in sorted(dv.items())) if dv else "yok"))
+        mt = c.get("m2_trades") or {}
+        cell = lambda g: (f"{mt[g]['n_closed_in_m2']}/{mt[g]['n_events']} · {_fmt(mt[g]['mean_r_in_m2'])}"  # noqa: E731
+                          if g in mt else "—")
+        lines.append(f"   M2'deki R (kapanmış/toplam · ort. R; bilgi): tam boy kopyalanan {cell('full')} · küçültülen "
+                     f"{cell('scaled')} · atlanan {cell('skipped')}")
+        lines.append("   Not: M2X, M2'nin gerçek işlemlerinin daha büyük boyutlu kopyasıdır; ayrı hüküm verilmez ve hiçbir "
+                     "«pozitif defter» sayımına girmez. −%50 zarar tavanı DEĞİL, yeni giriş durdurmasıdır. PAPER sonucu.")
+    return lines
+
+
 def _fmt(v, nd=2) -> str:
     return "—" if v is None else (f"{v:.{nd}f}" if isinstance(v, (int, float)) else str(v))
 
@@ -443,6 +606,7 @@ def render(card: dict[str, Any]) -> str:
     lines += render_monthly(card)
     lines.append(f"Hüküm kuralı: {card['min_trades_for_verdict']} işlemden az → VERİ YETERSİZ; ortalama R'nin %95 aralığı tamamen 0'ın "
                  "altında → ZARARDA, tamamen üstünde → KÂRDA; değilse BELİRSİZ. PAPER sonucu, kâr garantisi değildir.")
+    lines += render_mirror(card)
     return "\n".join(lines)
 
 
@@ -496,6 +660,26 @@ def render_learning(card: dict[str, Any]) -> list[str]:
     return lines
 
 
+def m2x_check(state: Path, config: str | None = None) -> int:
+    """`deploy --check` için M2X satırları (docs/M2_AGGRESSIVE_V1.md §4.3) — salt okunur; durdurmada satır `!!` ile başlar."""
+    from tradingbot.m2x_book import check_lines
+    sec = None
+    if config:
+        try:
+            import yaml
+            raw = yaml.safe_load(Path(config).read_text(encoding="utf-8")) or {}
+            sec = raw.get("m2x_aggressive") if isinstance(raw, dict) else None
+            sec = sec if isinstance(sec, dict) else {"enabled": False}
+        except Exception as exc:  # noqa: BLE001
+            print(f"   m2x_aggressive (config): OKUNAMADI ({type(exc).__name__}: {exc})")
+    for sub in MIRROR_BOOKS:
+        doc = _read_json(state / f"{sub}.json")
+        for line in check_lines(doc if isinstance(doc, dict) else None, sec):
+            print("   " + line)
+        sec = None
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     _configure_console()
     ap = argparse.ArgumentParser(description="Beş kâğıt defterin maliyet sonrası karnesi (salt okunur).")
@@ -505,11 +689,16 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--learning-since", default=None,
                     help="öğrenme modu başlangıcı (ISO); verilmezse state/learning_mode.json okunur")
     ap.add_argument("--now", default=None, help="aylık hedef raporunun «şimdi»si (ISO, UTC); verilmezse şu an")
+    ap.add_argument("--m2x-check", dest="m2x_check", action="store_true",
+                    help="yalnız M2X `deploy --check` satırları (config özeti + durum satırı; karne basılmaz)")
+    ap.add_argument("--config", default=None, help="--m2x-check için config.yaml (config özeti satırı)")
     a = ap.parse_args(argv)
     state = Path(a.state)
     if not state.is_dir():
         print(f"state klasörü yok: {state}", file=sys.stderr)
         return 2
+    if a.m2x_check:
+        return m2x_check(state, a.config)
     now = _ts(a.now) if a.now else None
     if a.now and now is None:
         print(f"--now çözülemedi: {a.now}", file=sys.stderr)
@@ -521,6 +710,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{state} altında {LEDGER_FILE} bulunamadı", file=sys.stderr)
         return 2
     card["monthly_target"] = monthly_target(state, now=now)
+    mb = mirror_cards(state, now=now)
+    if mb:                                   # M2X (2026-10-05): yalnız ayna defter varsa (yoksa çıktı AYNEN eskisi)
+        card["mirror_books"] = mb
     print(render(card))
     if a.out:
         Path(a.out).write_text(json.dumps(card, ensure_ascii=False, indent=1), encoding="utf-8")

@@ -177,7 +177,8 @@ def test_engine_config_hash_ignores_the_record_only_section():
         return E.TradingEngineV3.config_hash(SimpleNamespace(cfg=SimpleNamespace(v3=v3)))
     absent, off, rec = _load(None), _load({"enabled": False, "mode": "OFF"}), _load(ON)
     other = _load(dict(ON, max_rows_per_tour=50, tour_budget_s=0.5, state_dir="xp2"))
-    head_fields = {k: v for k, v in asdict(absent).items() if k != "shared_experience"}   # HEAD'in V3Config alanları
+    # HEAD'in V3Config alanları (M2X 2026-10-05: ayna defterin bölümü de karar kimliğine GİRMEZ)
+    head_fields = {k: v for k, v in asdict(absent).items() if k not in ("shared_experience", "m2x_aggressive")}
     head_fields["learning_mode"].pop("extra_entries")   # 2026-10-03: kod varsayılanı `open` karar kimliğine girmez
     assert h(absent) == h(off) == h(rec) == h(other) == payload_hash(head_fields)
     assert h(_load(None, mode={"mode": "OBSERVE"})) != h(absent), "karar ayarı değişince özet DEĞİŞİR (boş özet değil)"

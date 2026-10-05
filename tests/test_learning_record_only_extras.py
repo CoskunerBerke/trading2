@@ -324,6 +324,7 @@ def test_shared_experience_collector_carries_the_engines_config_hash_in_every_mo
         hashes[name] = xp.config_hash
     head = asdict(load_v3({}))
     head.pop("shared_experience")
+    head.pop("m2x_aggressive")                                   # M2X (2026-10-05): karar kimliğine GİRMEZ
     head["learning_mode"].pop("extra_entries")                   # 943345c'nin V3Config alanları
     assert hashes["absent"] == hashes["open"] == payload_hash(head) != hashes["rec"]
 

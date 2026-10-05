@@ -75,6 +75,35 @@ def cmd_killswitch_reset(cfg: BotConfig, args) -> int:
     return 0
 
 
+def cmd_m2x_resume(cfg: BotConfig, args) -> int:
+    """M2X SAHİP YENİDEN BAŞLATMASI (2026-10-05; docs/M2_AGGRESSIVE_V1.md §2.8): −%50 durdurmasından sonra yeni girişleri
+    yalnız sahip açar. Komut YALNIZ kontrol dosyasına tek kullanımlık istek yazar (`state/<state_dir>/m2x_control.json`);
+    worker sonraki turda istek yalnız `HALTED` iken ve dönem eşleşirse kabul eder (dönem +1, zirve := özkaynak, kademe K3).
+    Defterin kendisine ve durum dosyasına dokunmaz; panelde düğme yoktur."""
+    from .m2x_book import write_resume_request
+    if not getattr(args, "i_reviewed", False):
+        print("⛔ m2x-resume: önce durdurmayı inceleyin ve --i-reviewed ile onaylayın (--note \"<neden>\" zorunlu)")
+        return 2
+    note = str(getattr(args, "note", "") or "").strip()
+    if not note:
+        print("⛔ m2x-resume: --note \"<neden>\" zorunlu (yeniden başlatma geçmişine yazılır)")
+        return 2
+    sec = getattr(cfg.v3, "m2x_aggressive", None)
+    state_dir = str(getattr(sec, "state_dir", "strategy_paper_m2x") or "strategy_paper_m2x")
+    res = write_resume_request(cfg.state_path, state_dir=state_dir, note=note)
+    req = res["request"]
+    print("M2X yeniden başlatma isteği yazıldı: request_id=%s dönem=%s → %s"
+          % (req["request_id"], req["epoch_expected"], cfg.state_path / state_dir / "m2x_control.json"))
+    if not res["state_found"]:
+        print("⚠️  M2X durum dosyası bulunamadı: defter hiç çalışmamış olabilir; worker isteği REJECTED_NOT_HALTED yazar.")
+    elif not res["halted"]:
+        print("⚠️  M2X şu an DURDURULMUŞ değil: worker isteği REJECTED_NOT_HALTED olarak tüketir.")
+    if sec is not None and not bool(getattr(sec, "enabled", False)):
+        print("⚠️  m2x_aggressive.enabled=false: defter yüklenmiyor; istek defter açılınca işlenir.")
+    print("Sonuç sonraki turda: state/%s.json → m2x.resume_history (ve karne M2X bölümü)." % state_dir)
+    return 0
+
+
 def cmd_health(cfg: BotConfig, args) -> int:
     hb = read_json(cfg.state_path / "heartbeat.json", default={})
     health = read_json(cfg.state_path / "health.json", default={})
@@ -1230,6 +1259,10 @@ def register(sub: argparse._SubParsersAction) -> None:
     s = sub.add_parser("model-status", help="Model registry + öğrenme özeti"); s.set_defaults(fn=cmd_model_status)
     s = sub.add_parser("risk-status", help="Risk profili, kill switch, exposure"); s.set_defaults(fn=cmd_risk_status)
     s = sub.add_parser("killswitch-reset", help="Kill switch manuel reset (denetim kaydı)"); s.add_argument("--operator", required=True); s.add_argument("--note", required=True); s.set_defaults(fn=cmd_killswitch_reset)
+    s = sub.add_parser("m2x-resume", help="M2X −%%50 durdurmasından sonra yeni girişleri aç (yalnız sahip; tek kullanımlık istek)")
+    s.add_argument("--i-reviewed", dest="i_reviewed", action="store_true", help="durdurmayı inceledim")
+    s.add_argument("--note", required=True, help="neden (yeniden başlatma geçmişine yazılır)")
+    s.set_defaults(fn=cmd_m2x_resume)
     s = sub.add_parser("health", help="Sağlık durumu (heartbeat yaşı)"); s.set_defaults(fn=cmd_health)
     def _hist_args(s):
         s.add_argument("--market", choices=["spot", "futures", "both"], default="both"); s.add_argument("--symbols", nargs="*", default=None)

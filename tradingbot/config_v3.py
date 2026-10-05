@@ -800,6 +800,23 @@ class SharedExperienceSection:
 
 
 @dataclass
+class M2xAggressiveSection:
+    """M2X — AGRESİF M2 KÂĞIT DEFTERİ (2026-10-05; ön kayıt docs/M2_AGGRESSIVE_V1.md). PAPER. Kod varsayılanı KAPALI.
+
+    M2'nin (`m2_tsmom28`) GERÇEKTEN açtığı işlemleri kendi defterinde (`state/<state_dir>/`) `m2x_policy.M2X_POLICY_V1`
+    boyutuyla kopyalar: işlem başı risk, açık risk tavanı, kriz bütçesi, düşüş merdiveni (histerezisli), −%50'de yeni giriş
+    durdurması (yalnız sahip `m2x-resume` ile açar). Sayılar config'te DEĞİL, kodda (mühürlü); bu bölüm yalnız anahtarları
+    taşır. Bölüm karar kimliğine (`config_hash`) GİRMEZ. Bilinmeyen anahtar ConfigError. Env `TRADINGBOT_M2X=off` yalnız
+    KAPATABİLİR. LIVE/LIVE_LIMITED modda `enabled: true` ConfigError."""
+    enabled: bool = False               # KILL SWITCH — sahip dağıtımda açar
+    new_entries: bool = True            # false → yeni giriş yok (M2X_NEW_ENTRIES_OFF); açık pozisyonlar M2 ile çıkar
+    parent: str = "m2_tsmom28"          # v1'de yalnız M2
+    state_dir: str = "strategy_paper_m2x"
+    starting_equity_usdt: float = 200.0     # ön kayıtla aynı olmalı (M2X_POLICY_V1)
+    policy_version: str = "m2x_v1"      # kodun sürümüyle aynı olmalı; değişiklik = yeni ön kayıt (m2x_v2)
+
+
+@dataclass
 class V3Config:
     app: AppConfig = field(default_factory=AppConfig)
     mode: ModeConfig = field(default_factory=ModeConfig)
@@ -833,6 +850,7 @@ class V3Config:
     structures: StructuresSection = field(default_factory=StructuresSection)
     learning_mode: LearningModeSection = field(default_factory=LearningModeSection)
     shared_experience: SharedExperienceSection = field(default_factory=SharedExperienceSection)
+    m2x_aggressive: M2xAggressiveSection = field(default_factory=M2xAggressiveSection)
     warnings: list[str] = field(default_factory=list)
 
 
@@ -851,7 +869,8 @@ _SECTIONS = {"app": AppConfig, "mode": ModeConfig, "markets": MarketsConfig, "un
              "pattern_trader": PatternTraderSection,
              "structures": StructuresSection,
              "learning_mode": LearningModeSection,
-             "shared_experience": SharedExperienceSection}
+             "shared_experience": SharedExperienceSection,
+             "m2x_aggressive": M2xAggressiveSection}
 
 VALID_MODES = ("OBSERVE", "PAPER", "TESTNET", "SHADOW_LIVE", "LIVE_LIMITED", "LIVE")
 VALID_LLM_MODES = ("OFF", "POSTMORTEM_ONLY", "ADVISORY", "VETO_ONLY", "RESEARCH_COUNCIL")
@@ -881,6 +900,16 @@ def load_v3(raw: dict[str, Any]) -> V3Config:
         if _xp_unknown:
             raise ConfigError("shared_experience: bilinmeyen anahtar(lar): %s (geçerli: %s)"
                               % (", ".join(_xp_unknown), ", ".join(sorted(_xp_allowed))))
+    # M2X (2026-10-05): aynı kural — bilinmeyen anahtar / sözlük olmayan bölüm ConfigError (`enable: true` sessiz geçmesin).
+    _mx_raw = raw.get("m2x_aggressive")
+    if _mx_raw is not None:
+        if not isinstance(_mx_raw, dict):
+            raise ConfigError("m2x_aggressive bir sözlük olmalı (ör. {enabled: false})")
+        _mx_allowed = {f.name for f in fields(M2xAggressiveSection)}
+        _mx_unknown = sorted(str(k) for k in _mx_raw if k not in _mx_allowed)
+        if _mx_unknown:
+            raise ConfigError("m2x_aggressive: bilinmeyen anahtar(lar): %s (geçerli: %s)"
+                              % (", ".join(_mx_unknown), ", ".join(sorted(_mx_allowed))))
     for name, cls in _SECTIONS.items():
         val = raw.get(name)
         if name == "mode" and isinstance(val, str):        # `mode: PAPER` kısa yazımı
@@ -931,6 +960,14 @@ def load_v3(raw: dict[str, Any]) -> V3Config:
             log.warning("shared_experience.advisor_mode env override: -> OFF (TRADINGBOT_SHARED_EXPERIENCE_ADVISOR=%s)",
                         env_adv)
         cfg.shared_experience.advisor_mode = "OFF"
+    # M2X ENV (2026-10-05): VPS drop-in yalnız KAPATABİLİR (açma yolu yok); başka her değer fail-closed.
+    env_mx = os.environ.get("TRADINGBOT_M2X", "").strip().lower()
+    if env_mx:
+        if env_mx not in ("off", "false", "0", "disabled"):
+            raise ConfigError(f"TRADINGBOT_M2X geçersiz: {env_mx!r} — env yalnız kapatabilir (off)")
+        if cfg.m2x_aggressive.enabled is True:
+            log.warning("m2x_aggressive env override: enabled -> false (TRADINGBOT_M2X=%s)", env_mx)
+        cfg.m2x_aggressive.enabled = False
     validate_v3(cfg)
     return cfg
 
@@ -1253,6 +1290,8 @@ def validate_v3(cfg: V3Config) -> None:
     _validate_learning_mode(cfg, _prof)
     # ORTAK DENEYİM KATMANI (2026-09-29): tip/aralık/mod/yol denetimi (kapalıyken de).
     _validate_shared_experience(cfg)
+    # M2X (2026-10-05): tip/ad/sürüm/yol denetimi (kapalıyken de); açıkken yalnız PAPER-dışı-olmayan modlarda.
+    _validate_m2x(cfg)
 
 
 def _is_int(v: Any) -> bool:
@@ -1378,6 +1417,41 @@ _XP_ADV_INT_RANGES = {"advisor_budget_ms": (20, 2000), "advisor_catch_up_budget_
                       "advisor_rebuild_rows_per_step": (500, 50000),
                       "advisor_snapshot_every_steps": (5, 1000), "advisor_max_index_mb": (16, 512),
                       "advice_hot_max_lines": (500, 50000), "advice_max_total_mb": (32, 4096)}
+
+
+def _validate_m2x(cfg: V3Config) -> None:
+    """M2X doğrulaması (2026-10-05, ön kayıt docs/M2_AGGRESSIVE_V1.md §2.9–2.10) — fail-closed, kapalıyken de denetlenir.
+
+    Sayılar kodda (`m2x_policy.M2X_POLICY_V1`, mühürlü): `policy_version` ve `starting_equity_usdt` koddakiyle AYNI
+    olmalıdır (config'ten sayı değiştirmek ön kaydı sessizce bozardı). `parent` v1'de yalnız `m2_tsmom28`. `state_dir`
+    state kökü altında düz, başka defterle çakışmayan bir ad. YALNIZ PAPER: LIVE/LIVE_LIMITED modda `enabled: true`
+    ConfigError (strateji defterlerinin kapısıyla aynı)."""
+    mx = getattr(cfg, "m2x_aggressive", None)
+    if mx is None:
+        return
+    from .m2x_policy import M2X_POLICY_V1, POLICY_VERSION
+    for _f in ("enabled", "new_entries"):
+        if not isinstance(getattr(mx, _f), bool):
+            raise ConfigError(f"m2x_aggressive.{_f} true/false olmalı (verilen: {getattr(mx, _f)!r})")
+    if mx.policy_version != POLICY_VERSION:
+        raise ConfigError(f"m2x_aggressive.policy_version kodun sürümüyle aynı olmalı: {POLICY_VERSION!r} "
+                          f"(verilen: {mx.policy_version!r}; değişiklik = yeni ön kayıt)")
+    if mx.parent != "m2_tsmom28":
+        raise ConfigError(f"m2x_aggressive.parent v1'de yalnız 'm2_tsmom28' olabilir (verilen: {mx.parent!r})")
+    _se = float(M2X_POLICY_V1["starting_equity_usdt"])
+    if not (_is_num(mx.starting_equity_usdt) and float(mx.starting_equity_usdt) == _se):
+        raise ConfigError(f"m2x_aggressive.starting_equity_usdt ön kayıtla aynı olmalı: {_se:g} "
+                          f"(verilen: {mx.starting_equity_usdt!r})")
+    sd = mx.state_dir
+    taken = {str(cfg.strategy_paper.state_dir), str(cfg.pattern_trader.state_dir), str(cfg.shared_experience.state_dir)}
+    taken |= {str(ex.get("state_dir") or "") for ex in (cfg.strategy_paper.extra or []) if isinstance(ex, dict)}
+    if (not isinstance(sd, str) or not sd.strip() or sd != sd.strip() or "/" in sd or "\\" in sd or ".." in sd
+            or ":" in sd or sd in taken or not all(ch.isalnum() or ch == "_" for ch in sd)):
+        raise ConfigError(f"m2x_aggressive.state_dir state kökü altında düz, benzersiz bir ad olmalı (harf/rakam/_; "
+                          f"verilen: {sd!r})")
+    if mx.enabled and str(getattr(cfg.mode, "mode", "") or "").upper() in ("LIVE", "LIVE_LIMITED"):
+        raise ConfigError("M2X_PAPER_ONLY: m2x_aggressive.enabled yalnız PAPER/TESTNET/OBSERVE/SHADOW_LIVE modda "
+                          "(gerçek para YOK)")
 
 
 def _validate_shared_experience(cfg: V3Config) -> None:

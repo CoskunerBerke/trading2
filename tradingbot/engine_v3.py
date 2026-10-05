@@ -412,6 +412,22 @@ class TradingEngineV3(TradingEngine):
             log.info("STRATEJI KAGIT DEFTERI: name=%s atr_mult=%s baslangic=%s USDT state=%s",
                      _book.name, _book.atr_mult, float(_book.ledger.starting_equity), _book.state_dir)
         self.strategy_book = self.strategy_books[0] if self.strategy_books else None     # geriye uyumlu ad
+        # M2X AYNA DEFTERİ (2026-10-05; docs/M2_AGGRESSIVE_V1.md): M2'nin GERÇEK işlemlerini kendi defterinde daha büyük
+        # boyutla kopyalar. AYRI öznitelik — `strategy_books`a GİRMEZ (tur kapsamı, funding yenilemesi, grafik analizi,
+        # ortak deneyim, öğrenme görünümleri ve çıkış izleyicisi listeleri M2X açıkken de AYNI kalır). Kapalıyken None.
+        self.m2x_book = None
+        _mx = getattr(v3, "m2x_aggressive", None)
+        if _mx is not None and bool(getattr(_mx, "enabled", False)):
+            try:
+                from .m2x_book import M2xBook
+                self.m2x_book = M2xBook(cfg, section=_mx, filters_cache=self.filters, profile=self.profile,
+                                        funding_rates=self.funding_rates, killswitch=self.killswitch)
+                log.info("M2X AYNA DEFTERI: parent=%s baslangic=%s USDT state=%s politika=%s",
+                         self.m2x_book.parent_name, float(self.m2x_book.ledger.starting_equity), self.m2x_book.state_dir,
+                         _mx.policy_version)
+            except Exception as exc:  # noqa: BLE001 — M2X kurulamazsa hiçbir defter ETKİLENMEZ
+                log.warning("M2X ayna defteri kurulamadı (diğer defterler etkilenmez): %s", exc)
+                self.m2x_book = None
         # V15: defterlerin kuralı 1d dışında dilim istiyorsa (box → 5m) motor onu GERÇEKTEN çeker. Aksi halde
         # defter her turda FRAME_MISSING alır ve hiç işlem açmaz. Liste kural kaydından; burada sabit yok.
         try:
@@ -1278,6 +1294,10 @@ class TradingEngineV3(TradingEngine):
         out += [BookHandle(b) for b in (getattr(self, "strategy_books", None) or [])]
         if getattr(self, "pattern_book", None) is not None:
             out.append(BookHandle(self.pattern_book))
+        # M2X (2026-10-05): EN SONA — sembolleri M2'ninkilerin alt kümesi; izleyicinin fiyat partisi ve diğer defterlerin
+        # sırası değişmez.
+        if getattr(self, "m2x_book", None) is not None:
+            out.append(BookHandle(self.m2x_book))
         return out
 
     def ensure_protective_monitor(self, *, interval_s: float = 60.0, start: bool = True, price_fn=None, clock_ms=None,
@@ -1294,6 +1314,8 @@ class TradingEngineV3(TradingEngine):
                 b.observer = obs
             if getattr(self, "pattern_book", None) is not None:
                 self.pattern_book.observer = obs
+            if getattr(self, "m2x_book", None) is not None:
+                self.m2x_book.observer = obs
             mon = ProtectiveMonitor(handles_fn=self._protective_handles,
                                     price_fn=price_fn or perp_price_fn(self._monitor_provider_factory),
                                     state_path=self.cfg.state_path, interval_s=float(interval_s), observer=obs, waiter=waiter, **kw)
@@ -3426,6 +3448,7 @@ class TradingEngineV3(TradingEngine):
         if pgaps:
             log.warning("kagit defter: %d sembol icin gecerli/guncel perp fiyati YOK (tick yok): %s", len(pgaps),
                         ", ".join("%s=%s" % (s, g.get("reason")) for s, g in sorted(pgaps.items()))[:300])
+        _mx = getattr(self, "m2x_book", None)
         for book, syms, lkw in plan:
             try:
                 book.run_id = str(getattr(self, "run_id", "") or "")
@@ -3434,6 +3457,15 @@ class TradingEngineV3(TradingEngine):
                 held_before, t_before = book.held_ids(), _wall_ms()
                 book.step(symbols=list(syms), frames_by_symbol=frames, marks=pmarks, marks_f=pmarks_f, now=now,
                           provenance_by_symbol=self._frame_provenance, data_gaps=pgaps, **lkw)
+                if _mx is not None and book.name == _mx.parent_name:
+                    # M2X (2026-10-05): M2'nin bu adımda açtıkları / kural ile kapattıkları YALNIZ OKUNUR (M2'ye yazılmaz)
+                    try:
+                        _bl = lkw.get("learning")
+                        _mx.capture_parent_step(book, held_before, now=now, regime={
+                            "learning_on": bool(_bl is not None and getattr(_bl, "on", False)),
+                            "extra_entries": (getattr(_lm, "extra_entries", None) if _lm_on else None)})
+                    except Exception as exc:  # noqa: BLE001 — M2X arızası M2'yi ETKİLEMEZ
+                        log.warning("M2X: M2 adımı yakalanamadı (M2 etkilenmez): %s", exc)
                 self._protective_new_positions(book.key, held_before.values(), book.held_ids(), t_before)
                 # 2) gecmis OHLC: kapanmis 1h barlarin uclari — yalniz pozisyon acilisindan SONRA acilmis, tuketilmemis barlar
                 #    (bu adimda acilan pozisyon icin hicbir bar uygun degildir: giris oncesi fitil yeni pozisyonu stop'lamaz;
@@ -3447,6 +3479,21 @@ class TradingEngineV3(TradingEngine):
                 index.append({"key": book.key, "name": book.name, "summary_file": book.summary_file})
             except Exception as exc:  # noqa: BLE001 — bir defterin arızası ne ana botu ne diğer defteri ETKİLER
                 log.warning("strateji kagit defteri turu basarisiz (%s): %s", book.key, exc)
+        if _mx is not None:
+            # M2X (2026-10-05): EN SON — bütün defterlerden SONRA, indeks yazımından ÖNCE; YALNIZ turun pmarks/pbars'ı
+            # (kendi fiyat/ağ çağrısı yok). Süre kendi fazında (`m2x`). Arızası hiçbir defteri etkilemez.
+            _ph = getattr(self, "_tour_phases", None)
+            if _ph is not None:
+                _ph.lap("strategy_books")
+            try:
+                _parent = next((b for b in all_books if b.name == _mx.parent_name), None)
+                _mx.tour_step(_parent, now=now, tick_now=tick_now, pmarks=pmarks, pmarks_f=pmarks_f, pbars=pbars,
+                              bar_advance=bar_advance, wall_ms=_wall_ms)
+                index.append(_mx.index_entry())
+            except Exception as exc:  # noqa: BLE001
+                log.warning("M2X ayna defteri turu basarisiz (diğer defterler etkilenmez): %s", exc)
+            if _ph is not None:
+                _ph.lap("m2x")
         try:
             from .strategy_paper import INDEX_FILE
             atomic_write_json(self.cfg.state_path / INDEX_FILE, {"generated_at": iso(now), "books": index})
@@ -4932,6 +4979,9 @@ class TradingEngineV3(TradingEngine):
                 # ORTAK DENEYİM (2026-09-29): yalnız-KAYIT katmanının bölümü karar kimliğine GİRMEZ — özet OFF/RECORD'da
                 # ve bölümden önceki kodla (HEAD) aynı kalır; karar günlüğü satırları katman açılınca değişmez.
                 _d.pop("shared_experience", None)
+                # M2X (2026-10-05): ayna defterin bölümü karar kimliğine GİRMEZ — M2X hiçbir mevcut defterin kararını
+                # değiştirmez; özet bölümden önceki kodla (1c2c6e2) aynı kalır, `enabled: false/true` iken de.
+                _d.pop("m2x_aggressive", None)
                 # ÖĞRENME-EKSTRA KİPİ (2026-10-03): kod varsayılanı (`open`) karar kimliğine GİRMEZ — özet bu alandan önceki
                 # kodla (943345c) aynı kalır; `record_selectivity` karar değiştirdiği için özete girer.
                 if (_d.get("learning_mode") or {}).get("extra_entries") == "open":

@@ -65,6 +65,7 @@ should be read as a claim of profitability.
 
 | Document | What it covers |
 |---|---|
+| [SYSTEM_LEARNING_ENGINE_V1.md](SYSTEM_LEARNING_ENGINE_V1.md) | Design of the continuous, record-only learning engine on the VPS: data stored once, full trade journal, why-won/why-lost attribution, nightly walk-forward, measured daily +1% target, phased delivery. |
 | [CROWD_LAB_FUT_V2.md](CROWD_LAB_FUT_V2.md) | Pre-registered crowd lab (taker flow, open interest, long/short ratios, funding): "follow or fade the crowd". |
 | [FUTURES_OI_FUNDING_LAB.md](FUTURES_OI_FUNDING_LAB.md) | Pre-registered open-interest and funding lab (`fut_v1`) with its seal. |
 | [GOLD_LAB_V1.md](GOLD_LAB_V1.md) | Pre-registered gold lab (`gold_v1`): the 20/50 EMA and order-block/FVG/sweep/CHoCH rules on PAXG/XAU, with its seal. |

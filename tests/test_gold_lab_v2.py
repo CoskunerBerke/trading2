@@ -676,22 +676,308 @@ def test_c_sizing_caps_total_weight_in_entry_order_and_reports_only_for_strict_s
     assert math.isclose(c["oos_mean_pct_month"], 2 * 1.0 * 0.01 * 100 / 12)                      # Σ f × g × 100, f = 1 + 1 + 0
 
 
+def _ccell(name, cl, main, strict, meets, fam="A", verdict=None):
+    return {"name": name, "cell": cl, "main": main, "verdict": verdict or strict, "verdict_strict": strict, "meets_target": meets,
+            "family": fam, "note": "", "monthly": {"mean_pct_month": 1.2, "ci95_pct_month": [0.3, 2.1], "share_months_ge_target": 0.55},
+            "higher_risk": {"drawdown_r": {"all": 12.0, "oos": 6.0}}}
+
+
+def _vrow(name, cl, n=12, net=0.4, gross=0.5, fund=-0.1, series="XAUUSDT vadeli"):
+    return {"name": name, "cell": cl, "series": series, "all": {"n": n, "mean_r": net}, "gross": {"mean_r": gross}, "funding_r_mean": fund,
+            "note": ""}
+
+
 def test_conclusion_follows_the_recommendation_rule():
-    def cell(name, cl, main, strict, meets, fam="A"):
-        return {"name": name, "cell": cl, "main": main, "verdict": strict, "verdict_strict": strict, "meets_target": meets, "family": fam,
-                "note": ""}
-    rep = {"A": {"status": "koşuldu", "cells": [cell("A_DONCH_20_10", "LONG", True, L.V_STRONG, True)], "candidate_rate": {"placebo": 0.0}},
-           "B": {"status": "koşuldu", "cells": [], "candidate_rate": {"placebo": 0.0}}}
-    assert V.conclusion(rep)["recommend"] == ["A_DONCH_20_10 LONG"]
+    rep = {"A": {"status": "koşuldu", "cells": [_ccell("A_DONCH_20_10", "LONG", True, L.V_STRONG, True)], "candidate_rate": {"placebo": 0.0}},
+           "B": {"status": "koşuldu", "cells": [], "candidate_rate": {"placebo": 0.0}},
+           "venue": {"rows": [_vrow("A_DONCH_20_10", "LONG"), _vrow("A_DONCH_20_10", "İKİ YÖN", net=-3.0)], "notes_evaluated": True}}
+    c = V.conclusion(rep)
+    assert c["recommend"] == ["A_DONCH_20_10 LONG"]
+    line = c["lines"][0]
+    # öneri satırı belgenin istediği içeriği taşır: %95 aralık, en derin düşüş, mekân fonlama etkisi, kazanan laneti
+    assert line.startswith("ÖNERİ (yalnız PAPER, yalnız-kayıt; sahip onayı olmadan hiçbir şey açılmaz): A_DONCH_20_10 LONG — ")
+    for part in ("%95 aralık [+0.30, +2.10]", "%0,5 riskte bütün hüküm serisi %6.0, doğrulama %3.0",
+                 "XAUUSDT vadeli: n 12, ort.R brüt +0.500 → net +0.400 (gerçek fonlama ort. -0.100 R)",
+                 V.GOLD_V2_REGISTRY["higher_risk"]["curse_tr"], "garanti değildir"):
+        assert part in line, part
+    assert "-3.000" not in line                                                    # yalnız hücrenin kendi satırları
+    # (iii) ailenin plasebo aday oranı 0 değil ya da TANIMSIZ → öneri yok, nedeni açık
     rep["A"]["candidate_rate"]["placebo"] = 0.1
     c = V.conclusion(rep)
-    assert not c["recommend"] and "öneri şartı tutmadı" in c["lines"][0]
-    rep["A"]["cells"] = [cell("A_TSMOM_28", "LONG", True, L.V_STRONG, False), cell("A_SMA10M", "LONG", False, L.V_STRONG, True)]
+    assert not c["recommend"] and "öneri şartı tutmadı" in c["lines"][0] and "plasebo aday oranı 0.1" in c["lines"][0]
+    rep["A"]["candidate_rate"]["placebo"] = None
+    c = V.conclusion(rep)
+    assert not c["recommend"] and "hesaplanamadı" in c["lines"][0] and "(iii)" in c["lines"][0]
+    rep["A"]["candidate_rate"]["placebo"] = 0.0
+    # (iv) mekân satırı yok (venue koşulmadı) → ölçülemedi, öneri yok; 'mekânda tutmadı' notu → öneri yok
+    c = V.conclusion({**rep, "venue": None})
+    assert not c["recommend"] and "venue bölümü koşulmadı" in c["lines"][0] and "(iv)" in c["lines"][0]
+    rep["A"]["cells"][0]["note"] = V.NOTE_VENUE
+    c = V.conclusion(rep)
+    assert not c["recommend"] and V.NOTE_VENUE in c["lines"][0]
+    # ANA hedefin altında; ikincil hücreler: hedefi karşılasa da karşılamasa da yalnız gold_v3, öneri DEĞİL
+    rep["A"]["cells"] = [_ccell("A_TSMOM_28", "LONG", True, L.V_STRONG, False), _ccell("A_SMA10M", "LONG", False, L.V_STRONG, True)]
     lines = V.conclusion(rep)["lines"]
     assert any("kenar var, hedefin altında" in x for x in lines) and any("gold_v3" in x and "öneri DEĞİL" in x for x in lines)
+    assert any("A_SMA10M LONG (ikincil): sıkı GÜÇLÜ ADAY, hedefi karşılıyor" in x and "zayıf kanıt" in x for x in lines)
+    rep["A"]["cells"] = [_ccell("A_DONCH_20_10", "LONG", True, L.V_WEAK, False), _ccell("A_TSMOM_1M", "LONG", False, L.V_STRONG, False),
+                         _ccell("A_TSMOM_3M", "LONG", False, L.V_WEAK, False, verdict=L.V_STRONG)]
+    rep["B"]["cells"] = [_ccell("B_WKND_REV_ALL", "İKİ YÖN", True, L.V_WEAK, False, fam="B"),
+                         _ccell("B_WKND_REV_050", "LONG", False, L.V_STRONG, False, fam="B")]
+    lines = V.conclusion(rep)["lines"]
+    a1 = next(x for x in lines if x.startswith("A_TSMOM_1M LONG (ikincil)"))
+    assert "sıkı GÜÇLÜ ADAY, hedefin altında" in a1 and "ANA hücreleri sıkı GÜÇLÜ ADAY değilken: kanıt değil" in a1 and "gold_v3" in a1
+    a3 = next(x for x in lines if x.startswith("A_TSMOM_3M LONG (ikincil)"))
+    assert f"standart GÜÇLÜ ADAY (sıkı: {L.V_WEAK})" in a3 and "öneri DEĞİL" in a3
+    b1 = next(x for x in lines if x.startswith("B_WKND_REV_050 LONG (ikincil)"))
+    assert "tarama yapıntısı, kanıt değil" in b1 and "gold_v3" in b1
+    assert lines[-1] == V.NO_TARGET_TR and not any(x.startswith("B_WKND_REV_ALL") or x.startswith("A_DONCH_20_10") for x in lines)
     rep["A"] = {"status": "yapılamadı (kapsama)", "cells": []}
+    rep["B"]["cells"] = []
     lines = V.conclusion(rep)["lines"]
     assert lines[0].startswith("Aile A: yapılamadı (kapsama)") and lines[-1] == V.NO_TARGET_TR
+
+
+def test_venue_note_marks_only_standard_strong_cells_with_n20_and_nonpositive_net():
+    cA = {"name": "A_DONCH_20_10", "cell": "LONG", "verdict": L.V_STRONG, "verdict_strict": L.V_WEAK, "note": "eski"}
+    cA2 = {"name": "A_TSMOM_28", "cell": "LONG", "verdict": L.V_WEAK, "verdict_strict": L.V_WEAK, "note": ""}
+    cB = {"name": "B_WKND_REV_ALL", "cell": "İKİ YÖN", "verdict": L.V_STRONG, "verdict_strict": L.V_STRONG, "note": ""}
+    rows = [_vrow("A_DONCH_20_10", "LONG", n=20, net=0.0), _vrow("A_DONCH_20_10", "LONG", n=40, net=0.2, series="PAXGUSDT vadeli"),
+            _vrow("A_TSMOM_28", "LONG", n=50, net=-0.5), _vrow("B_WKND_REV_ALL", "İKİ YÖN", n=19, net=-1.0),
+            _vrow("B_WKND_REV_ALL", "LONG", n=60, net=-1.0)]
+    rep = {"A": {"cells": [cA, cA2]}, "B": {"cells": [cB]}, "venue": {"rows": rows}}
+    V.apply_notes(rep)
+    # STANDART hüküm GÜÇLÜ ADAY + bir vadeli satırda n ≥ 20 ve net ≤ 0 → not (sıkı hüküm aranmaz); n = 19, ZAYIF hüküm ya da başka
+    # hücrenin satırı not düşürmez
+    assert (cA["note"], cA2["note"], cB["note"]) == (V.NOTE_VENUE, "", "")
+    assert [r["note"] for r in rows] == [V.NOTE_VENUE, "", "", "", ""] and rep["venue"]["notes"] == [rows[0]] and rep["venue"]["notes_evaluated"]
+    rep2 = {"A": {"cells": [{**cA, "note": "eski"}]}}
+    V.apply_notes(rep2)
+    assert rep2["A"]["cells"][0]["note"] == ""                                     # mekân bölümü yoksa not yok (ve eski not silinir)
+
+
+def _md_cell(name, cl, main, fam="A"):
+    months = [f"2015-{m:02d}" for m in range(1, 13)]
+    rows = _mrows(months, 0.5)
+    mon = {"months": 12, "mean_pct_month": 0.25, "mean_pct_month_exact": 0.25, "ci95_pct_month": [0.1, 0.4], "share_months_ge_target": 0.0,
+           "concurrency": {"max": 4, "mean": 0.5}, "monthly_r": {k: 0.5 for k in months}}
+    return {"name": name, "cell": cl, "main": main, "family": fam, "IS": {"n": 40, "mean_r": 0.3}, "OOS": {"n": 30, "mean_r": 0.2},
+            "verdict": L.V_STRONG, "verdict_strict": L.V_STRONG, "meets_target": False, "monthly": mon,
+            "higher_risk": V.higher_risk(L.V_STRONG, mon, rows, rows, 0.1), "concurrency_all": {"max": 5, "mean": 0.75}, "note": ""}
+
+
+def test_markdown_prints_higher_risk_numbers_concurrency_month_skips_and_the_data_disclosure():
+    rep = {"version": "gold_v2", "registry_sha": PINNED_SHA,
+           "A": {"status": "koşuldu", "cells": [_md_cell("A_DONCH_20_10", "LONG", True), _md_cell("A_TSMOM_1M", "LONG", False)],
+                 "counts": {"gold2|A_TSMOM_1M|AY": {"skipped": {"SONRAKİ_AY_KULLANILAMAZ": 2, "ISINMA": 1}}}},
+           "venue": {"rows": []}}
+    md = V.render_md(rep)
+    for name in ("A_DONCH_20_10", "A_TSMOM_1M"):                                   # ANA ve ikincil sıkı GÜÇLÜ ADAY hücreleri
+        line = next(x for x in md.splitlines() if x.startswith(f"- {name} LONG — daha yüksek risk"))
+        for part in ("X = %2.00", "toplam açık risk = en çok 4 eşzamanlı işlem × X = %8.00 (PAPER_RESEARCH tavanı %6.0, öğrenme modu %100.0) — İŞARETLİ",
+                     "plasebo üstü fazlayla X = 2.50%", "aylık fazla R 0.400", "yön kayması payı 0.20",
+                     "en derin düşüş X riskte bütün hüküm serisi %0.0, doğrulama %0.0", "ima edilen kaldıraç medyan 1.00, en çok 1.00",
+                     V.GOLD_V2_REGISTRY["higher_risk"]["curse_tr"]):
+            assert part in line, (name, part)
+    assert "- A_TSMOM_1M aylık karar atlamaları (bilgi; bütün hüküm serisi): SONRAKİ_AY_KULLANILAMAZ 2 · SONRAKİ_AY_YOK 0" in md
+    assert "### Eşzamanlı açık işlem (bilgi)" in md and "| A_DONCH_20_10 | LONG | 5 / 0.75 | 4 / 0.50 |" in md
+    assert "## Ön kayıttan önce veriden görülenler" in md and all(x in md for x in V.DISCLOSURE_TR) and "2010-01 saatlik" in md
+    assert V.VENUE_FUNDING_NOTE_TR in md and "ESŞ_ADAY_YOK" in md and "'EŞ_ADAY_YOK'tur" in md
+    # sıkı GÜÇLÜ ADAY olmayan hücrede sayı basılmaz
+    weak = {**_md_cell("A_TSMOM_28", "LONG", True), "verdict": L.V_WEAK, "verdict_strict": L.V_WEAK, "higher_risk": {"text": "kenar yok"}}
+    md2 = V.render_md({"A": {"status": "koşuldu", "cells": [weak]}})
+    assert "daha yüksek risk (bilgi" not in md2 and "kenar yok" in md2
+
+
+# ---------------------------------------------------------------------------- bilgi satırları ve sayımlar (hükme girmez)
+def test_info_placebo_a_draws_every_warm_bar_with_the_gold_v1_key_and_stays_out_of_the_verdict():
+    h, D, H4, mt, per, counts, rows = _a_rows(names=("A_DONCH_20_10",))
+    sigs = V.rule_signals("A_DONCH_20_10", D, D)
+    pl = V.info_placebos("A_DONCH_20_10", sigs, D)
+    with np.errstate(invalid="ignore"):
+        cand = np.flatnonzero((D["segpos"] >= 210) & np.isfinite(D["atr"]) & (D["atr"] > 0))
+    for side, s in (("LONG", 1.0), ("SHORT", -1.0)):
+        p = sum(1 for x in sigs if x[1] == side) / len(cand)
+        want = [int(gi) for gi in cand if zlib.crc32(f"XAUUSD|1d|A_DONCH_20_10|{side}|{int(D['ts'][gi])}".encode()) / 2 ** 32 < p]
+        got = [x for x in pl if x[1] == side]
+        assert want and [x[0] for x in got] == want
+        for gi, _sd, stop, spec, tag in got:
+            assert tag == side and spec == V.VARIANTS["A_DONCH_20_10"]["exit"] and math.isclose(stop, D["close"][gi] - s * 2.0 * D["atr"][gi])
+    real, plc, inf = V.cell_rows(rows, "A_DONCH_20_10", "LONG")
+    assert inf and {e["family"] for e in inf} == {V.INFO_FAMILY} and {e["family"] for e in plc} == {V.PLACEBO_FAMILY}
+    ic = counts.get(V.INFO_FAMILY, "INFO_A_DONCH_20_10", ["LONG", "SHORT"])
+    assert ic["signals"] == len(pl) and ic["trades"] == sum(1 for e in rows if e["family"] == V.INFO_FAMILY)
+
+
+def test_info_placebo_b_skips_missing_bars_and_volume_zero_hours():
+    h, d = V.synthetic_paxg_hourly("2024-01-01", "2024-06-30", 22)
+    rnd = np.random.default_rng(5)
+    h = h.drop(index=rnd.choice(np.arange(24 * 20, len(h)), 40, replace=False)).reset_index(drop=True)
+    h.loc[rnd.choice(np.arange(len(h)), 300, replace=False), "volume"] = 0.0
+    H, Dd = b_frames(h, d)
+    name, N = "B_WKND_REV_ALL", 23
+    sigs = [(None, "LONG", 0.0)] * 300 + [(None, "SHORT", 0.0)] * 200          # yalnız oran için (p = sinyal / aday)
+    c = V.Counts()
+    rows = V.b_info_rows(name, H, Dd, sigs, CFG, {"ALL": V.win_ms("2024-01-01", "2024-06-30")}, c, symbol=V.PAXG)
+    jd = np.searchsorted(Dd["cms"], H["cms"], side="right") - 1
+    atr_d = np.where(jd >= 0, Dd["atr"][np.maximum(jd, 0)], np.nan)
+    with np.errstate(invalid="ignore"):
+        cand = np.flatnonzero(np.isfinite(atr_d) & (atr_d > 0))
+    drawn = 0
+    for side, k in (("LONG", 300), ("SHORT", 200)):
+        drawn += sum(1 for gi in cand if zlib.crc32(f"PAXGUSDT|1h|{name}|{side}|{int(H['ts'][gi])}".encode()) / 2 ** 32 < k / len(cand))
+    ic = c.get(V.INFO_FAMILY, "INFO_" + name, ["LONG", "SHORT"])
+    sk = ic["skipped"]
+    assert sk["EKSİK_BAR"] > 0 and sk["HACİMSİZ"] > 0
+    assert ic["signals"] + sk["EKSİK_BAR"] + sk["HACİMSİZ"] == drawn            # her çekilen saat ya olay ya da sayılı atlama
+    assert rows and {e["family"] for e in rows} == {V.INFO_FAMILY}
+    for e in rows:
+        gi = e["i"]
+        assert H["volume"][gi] > 0 and H["ts"][gi + 1 + N] - H["ts"][gi] == (N + 1) * HOUR and e["exit_ms"] <= H["ts"][gi + 1 + N]
+        assert math.isclose(abs(e["stop"] - H["close"][gi]), atr_d[gi])
+
+
+def test_kesildi_mark_to_market_info_value():
+    o = np.array([100.0, 100.0, 101.0, 102.0, 103.0])
+    hi, lo, c = o + 1.0, o - 1.0, o + 0.5
+    cps = CFG.cost_per_side
+    assert math.isclose(V._mtm(o, hi, lo, c, 1.0, 95.0, 5.0, CFG), (103.5 - 100.0 - (100.0 + 103.5) * cps) / 5.0)   # stop yok → son kapanış
+    lo1 = lo.copy()
+    lo1[1] = 94.0
+    assert math.isclose(V._mtm(o, hi, lo1, c, 1.0, 95.0, 5.0, CFG), (95.0 - 100.0 - 195.0 * cps) / 5.0)             # giriş barında stop
+    o3, lo3 = o.copy(), lo.copy()
+    o3[3], lo3[3] = 90.0, 89.0
+    assert math.isclose(V._mtm(o3, hi, lo3, c, 1.0, 95.0, 5.0, CFG), (90.0 - 100.0 - 190.0 * cps) / 5.0)            # boşlukla açılış
+    hi2 = hi.copy()
+    hi2[2] = 106.0
+    assert math.isclose(V._mtm(o, hi2, lo, c, -1.0, 105.0, 5.0, CFG), (100.0 - 105.0 - 205.0 * cps) / 5.0)          # SHORT stop
+    assert V._mtm(o[:1], hi[:1], lo[:1], c[:1], 1.0, 95.0, 5.0, CFG) is None
+    assert V._mtm(o, hi, lo, c, 1.0, 99.6, 5.0, CFG) is None and V._mtm(o, hi, lo, c, 1.0, 49.0, 5.0, CFG) is None   # risk ≤ 0,1 / > 10 ATR
+    assert V._mtm(o, hi, lo, c, 1.0, 95.0, float("nan"), CFG) is None
+    # simulate_one: son segmentte veri biterse KESİLDİ ve piyasaya göre R (_mtm) döner; sayım hücreye yazılır
+    h = V.synthetic_duka_hourly("2009-01-01", "2010-06-30", 23)
+    D, _ = a_frames(h)
+    gi = D["n"] - 5
+    stop = float(D["close"][gi] - 9.0 * D["atr"][gi])
+    why, row, mtm = V.simulate_one(D, gi, "LONG", stop, {"kind": "hold", "bars": 10}, float(D["atr"][gi]), CFG, family=V.FAMILY, name="x",
+                                   cell="LONG", period="IS")
+    sl = slice(gi, D["n"])
+    assert why == "KESİLDİ" and row is None
+    assert math.isclose(mtm, V._mtm(D["open"][sl], D["high"][sl], D["low"][sl], D["close"][sl], 1.0, stop, float(D["atr"][gi]), CFG))
+    cn = V.Counts()
+    cn.result(V.FAMILY, "x", "LONG", why, mtm)
+    cn.result(V.FAMILY, "x", "SHORT", "KESİLDİ", None)
+    g = cn.get(V.FAMILY, "x", ["LONG", "SHORT"])
+    assert g["skipped"]["KESİLDİ"] == 2 and g["kesildi_mtm"] == {"n": 1, "mean_r": round(mtm, 4)}
+
+
+def test_matched_placebo_counts_no_candidate_as_es_aday_yok():
+    h, D, H4, mt, per, counts, rows = _a_rows(names=("A_DONCH_20_10",))
+    real = [{"t_ms": 0, "side": "LONG", "exit_reason": "TIME", "hold": 5, "max_bars": 5, "period": "BOŞ", "ts_i": 1},
+            {"t_ms": 0, "side": "LONG", "exit_reason": "TIME", "hold": 10 ** 6, "max_bars": 10 ** 6, "period": "OOS", "ts_i": 2},
+            {"t_ms": 0, "side": "SHORT", "exit_reason": "TIME", "hold": 5, "max_bars": 5, "period": "OOS", "ts_i": 3}]
+    c = V.Counts()
+    pl = V.matched_placebos("A_DONCH_20_10", real, D, {**per, "BOŞ": (0, 1)}, c)
+    assert len(pl) == 5 and {x[1] for x in pl} == {"SHORT"}
+    assert c.get(V.PLACEBO_FAMILY, "PLACEBO_A_DONCH_20_10", ["LONG"])["skipped"] == {"EŞ_ADAY_YOK": 10}
+    assert c.get(V.PLACEBO_FAMILY, "PLACEBO_A_DONCH_20_10", ["SHORT"])["skipped"] == {}
+
+
+def test_duka_frames_count_short_sessions_and_flag_weekend_hours():
+    h = V.synthetic_duka_hourly("2009-03-02", "2009-04-30", 24)
+    _, _, info0 = V.duka_frames(h)
+    assert info0["short_session_list"] == ["2009-05-01"]                          # pencere 2009-04-30 20:00 NY'de biter: 2 saatlik gün
+    dn, _, _ = V.ny_parts(h["timestamp"].to_numpy())
+    on_wed = np.flatnonzero(dn == V.dnum_of(date(2009, 3, 11)))
+    h1 = h.drop(index=on_wed[5:]).reset_index(drop=True)                          # o işlem gününde 5 saat kalır
+    _, _, info = V.duka_frames(h1)
+    assert info["short_session_days"] == 2 and info["short_session_list"] == ["2009-03-11", "2009-05-01"]
+    assert info["weekend_hours"] == 0 and info["weekend_weeks"] == 0 and not info["weekend_flag"]
+    sat = V.ny_to_utc_ms(np.full(5, V.dnum_of(date(2009, 3, 14))), 8) + np.arange(5) * HOUR   # Cumartesi 08–12 NY → D Cumartesi
+    extra = pd.DataFrame({"timestamp": sat, "open": 1000.0, "high": 1001.0, "low": 999.0, "close": 1000.5, "volume": 1.0})
+    h2 = pd.concat([h1, extra]).sort_values("timestamp").reset_index(drop=True)
+    D, _, info = V.duka_frames(h2)
+    assert info["weekend_hours"] == 5 and info["weekend_weeks"] == 1 and info["weeks"] >= 9 and info["weekend_flag"]
+    assert all(V.weekday(d) < 5 for d in D["dnum"])                               # hafta sonu saatleri günlük seriye girmez
+
+
+def test_day_file_info_reports_month_end_close_difference_medians(tmp_path):
+    y = 2010
+    recs, last = [], {}
+    for d in range(365):
+        day = date(y, 1, 1) + pd.Timedelta(days=d).to_pytimedelta()
+        px = 1000.0 + d
+        if day.weekday() >= 5:
+            recs.append((d * 86400, round(px * 1000), round(px * 1000), round(px * 1000), round(px * 1000), 0.0))   # kapalı: atılır
+        else:
+            recs.append((d * 86400, round(px * 1000), round((px + 1) * 1000), round((px - 2) * 1000), round((px + 2) * 1000), 1.0))
+            last[V.mi_of(y, day.month)] = px + 1
+    p = V.duka_day_path(tmp_path, y)
+    p.parent.mkdir(parents=True)
+    p.write_bytes(bi5(recs))
+    deltas = [0.25] * 3 + [0.5] * 4 + [-1.0] * 5
+    mclose = {mi: last[mi] - dl for mi, dl in zip(sorted(last), deltas)}
+    mclose[V.mi_of(2011, 1)] = 5000.0                                              # günlük dosyası yok → karşılaştırılmaz
+    info = V.day_file_info(tmp_path, [2010, 2011], mclose)
+    assert info["years_read"] == 1 and info["months_compared"] == 12
+    assert info["median_diff"] == 0.25 and info["median_abs_diff"] == 0.5
+
+
+def test_venue_rows_take_signals_from_spot_and_trade_on_venue_bars():
+    h, d = V.synthetic_paxg_hourly("2023-01-01", "2024-12-31", 25)
+    Ds = V.add_indicators(V.binance_frame(d, "1d", symbol=V.PAXG), ann=V.ANN_BINANCE)
+    F4 = V.add_indicators(V.binance_frame(_bars(h, 4 * HOUR), "4h", symbol=V.PAXG))
+    sp = [(int(Ds["ts"][gi]), sd) for gi, sd, _st, _x in V.rule_signals("A_DONCH_20_10", Ds, Ds, same_seg=False)]
+    v0 = V.day_ms("2024-03-01")
+    in_win = [t for t, _ in sp if t >= v0]
+    assert len(in_win) >= 3
+    hv = h[h["timestamp"] >= v0].copy()
+    hv[["open", "high", "low", "close"]] *= 1.001
+    dv = daily_of(hv)
+    dv = dv[~dv["timestamp"].isin(in_win[:2])].reset_index(drop=True)            # iki sinyal günü vadelide yok
+    Dv = V.binance_frame(dv, "1d", symbol="XAUUSDT")
+    V1 = V.venue_frame_a(Ds, Dv)
+    pos = {int(t): k for k, t in enumerate(Ds["ts"])}
+    for k in range(Dv["n"]):
+        j = pos[int(Dv["ts"][k])]
+        assert V1["atr"][k] == Ds["atr"][j] or (np.isnan(V1["atr"][k]) and np.isnan(Ds["atr"][j]))
+        assert V1["sclose"][k] == Ds["close"][j] and V1["segpos"][k] == Ds["segpos"][j] and V1["close"][k] == Dv["close"][k]
+    Dmiss = V.binance_frame(pd.DataFrame({**{c: [1.0] for c in ("open", "high", "low", "close", "volume")},
+                                          "timestamp": [V.day_ms("2030-01-01")]}), "1d", symbol="XAUUSDT")
+    Vm = V.venue_frame_a(Ds, Dmiss)
+    assert np.isnan(Vm["atr"][0]) and Vm["segpos"][0] == -1 and Vm["spot_idx"][0] == -1
+    # kural varyantı: sinyal ve stop spot'tan, giriş ve çıkış vadeli barında; vadelide karşılığı olmayan karar MEKÂN_BAR_YOK
+    c = V.Counts()
+    rows = V.venue_rows_a("A_DONCH_20_10", F4, Ds, V.venue_frame_a(F4, V.binance_frame(_bars(hv, 4 * HOUR), "4h", symbol="XAUUSDT")),
+                          V1, CFG, c, None)
+    vts = set(Dv["ts"].tolist())
+    real = [e for e in rows if e["family"] == V.FAMILY]
+    assert real and all(e["symbol"] == "XAUUSDT" and e["period"] == "ALL" for e in real)
+    assert c.get(V.FAMILY, "A_DONCH_20_10", ["LONG", "SHORT"])["skipped"]["MEKÂN_BAR_YOK"] == sum(1 for t, _ in sp if t not in vts)
+    for e in real:
+        j = pos[e["ts_i"]]
+        s = 1.0 if e["side"] == "LONG" else -1.0
+        assert (e["ts_i"], e["side"]) in sp and math.isclose(e["stop"], Ds["close"][j] - s * 2.0 * Ds["atr"][j])
+        assert e["entry_ms"] == Dv["ts"][e["i"] + 1] and e["entry_px"] == Dv["open"][e["i"] + 1]
+    assert any(e["family"] == V.PLACEBO_FAMILY for e in rows)
+    # aylık varyant: ay yapısı vadelinin; month_end = vadeli m+1 ayının son barının kapanışı
+    c2 = V.Counts()
+    rows_m = V.venue_rows_a("A_TSMOM_1M", F4, Ds, V1, V1, CFG, c2, None)
+    mtv = V.month_table(Dv)
+    real_m = [e for e in rows_m if e["family"] == V.FAMILY]
+    assert real_m and {e["exit_kind"] for e in real_m} <= {"MONTH_END", "STOP"} and any(e["exit_kind"] == "MONTH_END" for e in real_m)
+    for e in real_m:
+        m = int(Dv["mi"][e["i"]])
+        nxt = mtv[m + 1]
+        assert e["i"] == mtv[m]["last"] and e["entry_ms"] == Dv["ts"][nxt["first"]] and e["max_bars"] == nxt["n"]
+        assert e["ts_i"] == Dv["ts"][e["i"]] and e["ts_i"] in {int(Ds["ts"][gi]) for gi, *_ in V.monthly_signals("A_TSMOM_1M", Ds, V.month_table(Ds))[0]}
+        if e["exit_kind"] == "MONTH_END":
+            assert e["exit_ms"] == Dv["cms"][nxt["last"]] and e["hold"] == nxt["n"]
+        else:
+            assert e["exit_ms"] <= Dv["cms"][nxt["last"]]
+    msigs, _, _ = V.monthly_signals("A_TSMOM_1M", Ds, V.month_table(Ds))
+    sk = c2.get(V.FAMILY, "A_TSMOM_1M", ["LONG", "SHORT"])
+    assert sk["signals"] + sk["skipped"].get("MEKÂN_BAR_YOK", 0) == len(msigs) and sk["skipped"]["MEKÂN_BAR_YOK"] > 0
 
 
 # ---------------------------------------------------------------------------- ayna hazır, anlık görüntü
@@ -811,6 +1097,9 @@ def test_end_to_end_offline_no_network_all_sections_and_cli(tmp_path, no_network
     assert rep["conclusion"]["lines"]
     md = (out / V.REPORT_MD).read_text(encoding="utf-8")
     assert PINNED_SHA in md and "## ANA hücreler" in md and "UYARI" in md and "## İkincil hücreler" in md and "Bilgi eki" in md
+    assert rep["disclosure_tr"] == list(V.DISCLOSURE_TR) and "## Ön kayıttan önce veriden görülenler" in md and "2010-01 saatlik" in md
+    assert "### Eşzamanlı açık işlem (bilgi)" in md and "- A_TSMOM_12M aylık karar atlamaları" in md and "KISMİ_GÜN 1 (serinin ilk ayının" in md
+    assert V.VENUE_FUNDING_NOTE_TR in md
     for sec in rep["sections"]:
         with gzip.open(out / V.events_file(sec), "rt", encoding="utf-8") as fh:
             head = fh.readline().strip().split(",")
@@ -860,6 +1149,13 @@ def test_family_a_is_not_run_when_the_timestamp_check_or_coverage_fails(tmp_path
     monkeypatch.setattr(V, "run_family_a", touching)
     with pytest.raises(V.GoldDataError, match="değişti"):
         V.run(sections=["A"], out_dir=tmp_path / "o3", duka_root=r3, duka_log=lp3, **kw)
+
+
+def test_default_output_folder_is_gitignored():
+    """Olay dosyaları giriş/stop fiyatı (Dukascopy ve Binance türevi) içerir: varsayılan --out klasörü depoya girmemeli."""
+    assert 'default=str(ROOT / "gold_lab_v2_out")' in (ROOT / "scripts" / "gold_lab_v2.py").read_text(encoding="utf-8")
+    ign = (ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
+    assert "gold_lab_v2_out/" in ign and "gold_lab_data/" in ign
 
 
 def test_lab_modules_unchanged_by_gold_lab_v2_import():

@@ -631,3 +631,24 @@ shared_experience:
   enabled: true
   mode: RECORD
   advisor_mode: RECORD
+
+# ---- M2X — AGRESİF M2 KÂĞIT DEFTERİ (2026-10-05) — YALNIZ PAPER, KOD VE CONFIG VARSAYILANI KAPALI ------------------
+# M2'nin (m2_tsmom28) GERÇEKTEN açtığı işlemleri kendi 200 USDT'lik kâğıt defterinde (state/strategy_paper_m2x/) daha büyük
+# boyutla kopyalar. Sinyal ve çıkış M2'nin; boyut ve risk freni M2X'in. Ön kayıt: docs/M2_AGGRESSIVE_V1.md (sayılar orada
+# ve kodda, tradingbot/m2x_policy.py M2X_POLICY_V1, mühürlü — config'ten DEĞİŞTİRİLMEZ). Simülasyon:
+# docs/M2_AGGRESSIVE_V1_SIM.md. Kademeler (zirveden düşüş): <%15 → işlem başı %2,0, açık risk tavanı %20; %15–25 → %1,0 / %12;
+# %25–35 → %0,5 / %6; %35–50 → yeni giriş yok; ≥%50 → DURDURULDU (−%50 zarar tavanı DEĞİL, yeni giriş durdurması).
+# Yukarı çıkış tek kademe, 5 ardışık günlük görüntüyle. Kriz bütçesi: girişten sonra her pozisyon %50 düşse bile özkaynak
+# zirvenin yarısının altına inmez. Mevcut defterlerin (M2 dahil) hiçbir kararını/defterini/öğrenmesini DEĞİŞTİRMEZ;
+# bölüm config_hash'e GİRMEZ.
+# * AÇMAK (sahip, dağıtımda): `enabled: true` + worker'ı yeniden başlat.
+# * KAPATMAK: önce `new_entries: false` (yeni giriş yok, açık pozisyonlar M2 ile çıkar), pozisyonlar bitince
+#   `enabled: false` + restart; ya da env TRADINGBOT_M2X=off (env yalnız kapatır). Kapalı defterde açık pozisyon DONAR.
+# * DURDURMADAN SONRA: python -m tradingbot m2x-resume --i-reviewed --note "<neden>" (yalnız sahip; tek kullanımlık).
+m2x_aggressive:
+  enabled: false                # KILL SWITCH — sahip dağıtımda açar; LIVE modda true ConfigError
+  new_entries: true
+  parent: m2_tsmom28
+  state_dir: strategy_paper_m2x
+  starting_equity_usdt: 200
+  policy_version: m2x_v1        # sayılar kodda M2X_POLICY_V1 + mühür testi; değişiklik = m2x_v2 + yeni ön kayıt

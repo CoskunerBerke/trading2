@@ -178,7 +178,8 @@ def test_engine_config_hash_is_unchanged_by_the_advisor_fields():
         return E.TradingEngineV3.config_hash(SimpleNamespace(cfg=SimpleNamespace(v3=v3)))
     absent, rec, adv = _load(None), _load(ON), _load(ADV)
     other = _load(dict(ADV, advisor_budget_ms=900, advisor_snapshot_every_steps=500, advice_max_total_mb=4000))
-    head_fields = {k: v for k, v in asdict(absent).items() if k != "shared_experience"}
+    # M2X (2026-10-05): ayna defterin bölümü de karar kimliğine GİRMEZ (bölümden önceki kodun alan kümesi)
+    head_fields = {k: v for k, v in asdict(absent).items() if k not in ("shared_experience", "m2x_aggressive")}
     head_fields["learning_mode"].pop("extra_entries")   # 2026-10-03: kod varsayılanı `open` karar kimliğine girmez
     head_fields["history"].pop("evidence_subprocess")   # 2026-10-05: karar-nötr alt süreç anahtarı karar kimliğine girmez
     assert h(absent) == h(rec) == h(adv) == h(other) == payload_hash(head_fields)

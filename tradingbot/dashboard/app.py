@@ -40,6 +40,7 @@ from .templates import (HEADS_TABLE_CLS, POS_TABLE_CLS, age_text, badge, card, c
                         experience_layer_card, advisor_card)
 from . import terminal as term
 from . import learning_view as lv
+from . import m2x_view
 
 log = logging.getLogger(__name__)
 _PLOTLY_CACHE: dict[str, bytes] = {}
@@ -616,6 +617,9 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
             name = esc(str(sp.get("name") or ""))
             sub = (f'rejim {esc(str(sp.get("regime") or "?"))} · {npos} açık · {c.get("closed", 0)} kapanış · '
                    f'<a href="/portfolio/strategy">ayrıntı</a>')
+            if isinstance(sp.get("m2x"), dict):          # M2X (2026-10-05): ayna defter — kademe/düşüş/durum
+                name = esc(m2x_view.LABEL)
+                sub = m2x_view.overview_sub(sp)
             cards += card(f"{name} özkaynak", fmt(eq, 2) + " USDT", sub)
             cards += card(f"{name} kâr/zarar", pnl_cell(pnl) if pnl is not None else "Veri yok",
                           f'başlangıç {fmt(start, 2)} USDT · defter {esc(str(sp.get("key") or "strategy_paper"))}')
@@ -629,6 +633,13 @@ def create_app(state_dir: Path | str, data_dir: Path | str, vault_dir: Path | st
         body = ""
         for sp in docs:
             sm = sp.get("summary") or {}
+            if isinstance(sp.get("m2x"), dict):
+                # M2X AYNA DEFTERİ (2026-10-05; §4.4): kural defteri değil — kendi kartı (salt okuma, düğme yok)
+                body += f'<h2>{esc(m2x_view.LABEL)} — defter {esc(str(sp.get("key") or ""))}</h2>'
+                body += m2x_view.section_html(sp)
+                hist = sp.get("history_tail") or []
+                body += "<h3>Kapanan işlemler</h3>" + (_trades_table(hist[::-1]) if hist else '<div class="card mut">kapanmış işlem yok</div>')
+                continue
             body += f'<h2>{esc(str(sp.get("name") or ""))} — defter {esc(str(sp.get("key") or "strategy_paper"))}</h2>'
             body += f'<div class="grid">{card("Özkaynak", fmt(sm.get("equity_mtm"), 2) + " USDT")}{card("Başlangıç", fmt(sp.get("starting_equity"), 2))}'
             body += f'{card("BTC rejimi", esc(str(sp.get("regime") or "?")))}{card("Kural", esc(str(sp.get("name") or "")), "ATR çarpanı " + esc(str(sp.get("atr_mult"))))}'

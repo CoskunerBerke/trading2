@@ -831,6 +831,24 @@ def _td(price: float, ts_ms: int):
     return TickData(last=Decimal(repr(float(price))), mark=Decimal(repr(float(price))), ts=_iso_ms(ts_ms))
 
 
+def _filter_kw(filt) -> dict[str, float]:
+    """`plan_entry`e borsa filtreleri — M2 defterinin `fit_size` çağrısıyla aynı (en küçük emir, miktar adımı, en küçük
+    miktar; §2.6). 2026-10-05 düzeltmesi: adım ve en küçük miktar verilmiyordu; çıkarılmış notional defterde adıma AŞAĞI
+    yuvarlanınca en küçük emrin altına (4,999… < 5) düşüyor ve her çıkarma defterce reddediliyordu."""
+    return {"min_notional": float(filt.min_notional), "qty_step": float(filt.qty_step), "min_qty": float(filt.min_qty)}
+
+
+def _size_spec(pl: Any):
+    """Defter emri: çıkarılmış (BUMP) giriş planın adıma YUKARI yuvarlanmış MİKTARIyla açılır (§2.6; notional'dan miktarın
+    yeniden türetilmesi aşağı yuvarlamayla en küçük emrin altına düşebilir). Diğer girişler notional'la (değişmedi)."""
+    from decimal import Decimal
+    from .accounting import AmountType, SizeSpec
+    from .learning_mode import SIZE_BUMP
+    if pl.size_rule == SIZE_BUMP:
+        return SizeSpec(Decimal(repr(float(pl.qty))), AmountType.QUANTITY, int(pl.leverage))
+    return SizeSpec(Decimal(repr(float(pl.notional))), AmountType.NOTIONAL, int(pl.leverage))
+
+
 class M2xRunner:
     """M2X ayna defteri (§1.2–1.4, §2): M2'nin GERÇEKTEN açtığı işlemleri kendi `FuturesLedgerV2` defterinde `m2x_policy`
     boyutuyla kopyalar. Tur sırası §1.4: M2 kural çıkışını eşle → kapanmış 1h bar uçları → tik → yetim mutabakatı →
@@ -992,7 +1010,6 @@ class M2xRunner:
 
     def _entries(self, t_ms: int, *, marks, opens, m2_open, e, data_gap, o_now, c_now, new_entries) -> tuple[str, int]:
         from decimal import Decimal
-        from .accounting import AmountType, SizeSpec
         led = self.ledger
         alive = []
         for c in sorted(opens, key=lambda x: int(x.get("order") or 0)):
@@ -1021,7 +1038,7 @@ class M2xRunner:
             filt = self.filters.get(c["symbol"])
             fill = float(led.market_fill_price(c["symbol"], "LONG", Decimal(repr(float(c["ref"]))), filters=filt))
             pl = P.plan_entry(equity=e, fill=fill, stop=float(c["stop"]), risk_usdt=d, tier_risk_pct=r_pct, available=1e18,
-                              min_notional=float(filt.min_notional), knobs=self.k)
+                              knobs=self.k, **_filter_kw(filt))
             if not pl.ok:
                 self._skip(c, pl.reason or "M2X_PLAN", t_ms, stage="full")
                 continue
@@ -1041,8 +1058,8 @@ class M2xRunner:
                 continue
             filt = self.filters.get(c["symbol"])
             pl = P.plan_entry(equity=e, fill=fill, stop=float(c["stop"]), risk_usdt=scale * d, tier_risk_pct=r_pct,
-                              available=float(led.available), min_notional=float(filt.min_notional), knobs=self.k,
-                              min_risk_usdt=float(P.M2X_POLICY_V1["min_scale"]) * d)
+                              available=float(led.available), knobs=self.k,
+                              min_risk_usdt=float(P.M2X_POLICY_V1["min_scale"]) * d, **_filter_kw(filt))
             if not pl.ok:
                 if pl.reason == P.SKIP_MARGIN:
                     binding = "MARGIN"
@@ -1056,8 +1073,7 @@ class M2xRunner:
             if c_new > h_cl + 1e-9:
                 self._skip(c, P.SKIP_CL, t_ms, lam=lam)
                 continue
-            pos = led.open(c["symbol"], "LONG", Decimal(repr(float(c["ref"]))),
-                           SizeSpec(Decimal(repr(pl.notional)), AmountType.NOTIONAL, int(pl.leverage)),
+            pos = led.open(c["symbol"], "LONG", Decimal(repr(float(c["ref"]))), _size_spec(pl),
                            stop=Decimal(repr(float(c["stop"]))), filters=filt, tick=_td(c["ref"], t_ms), now=_dt(t_ms),
                            setup_type="trend", trigger_text="M2X_MIRROR", features={"m2x": {"m2_id": c["id"]}},
                            meta={"m2x": {"m2_id": c["id"], "tier": self.st.tier_name}}, allow_shrink=True)

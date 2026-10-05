@@ -6,8 +6,10 @@ temiz pencere = candle_lab.valid_ends), GELECEĞE BAKMAMA (her varyantın sinyal
 değiştirilmiş tam seride aynı), simülatörün signal_lab.simulate / simulate_rule paritesi ve DATA_END/DELISTED örnekleri,
 maliyet, plasebo (belirlenimci, anahtar, dönem oranı, q havuzu yalnız önceki isabetlerden), C4 tekilleştirme örnekleri,
 fonlama (funding_carry + NaN doldurma), aylık ölçü (işlemsiz ay, çıkış ayı, aralık), kapasite (elle hesaplanmış BUMP/NO_BUMP,
-slot, aynı sembol, çıkışla boşalan slot, sıra), hedef şartları, Holm, PIT (havuz, sıralama, liste), uçtan uca kuru koşu
-(sahte arşiv, ağ YOK) ve komut satırı. Yalnız sentetik veri."""
+slot, aynı sembol, çıkışla boşalan slot, sıra, TOTAL_RISK), hedef şartları, Holm, §8.5 basamakları ve aday oranı, sansür /
+BAD_BAR payı, plasebo karşılaştırma eşiği, Formasyon SHORT ve D4_08 kuralları, PIT (havuz, sıralama, liste, eksik çift),
+yalnız aylık fonlama dosyaları ve PRICE_END sonrası uzlaşma, veri hatasında koşunun durması, kod durumu (aynı kod olmadan
+birleştirme yok), belirlenimci işlem dosyası, uçtan uca kuru koşu (sahte arşiv, ağ YOK) ve komut satırı. Yalnız sentetik veri."""
 from __future__ import annotations
 
 import copy
@@ -37,7 +39,9 @@ H4 = 4 * HOUR
 
 #: ön kayıt mührü — bir varyant tanımı, süzgeç, plasebo, istatistik/kapasite/aylık ayarı, veri penceresi, evren, PIT kuralı
 #: ya da okunuş değişirse bu test KIRILIR (book_v2 + belge + yeni deneme sayısı; sonuç görüldükten sonra gevşetme YOK)
-PINNED_SHA = "81bc20c17ea05d92"
+PINNED_SHA = "2a3cecc16e0a85c1"
+#: testlerde sabit kod durumu (temiz ağaç); gerçek koşuda `git_state`
+CODE = {"commit": "c0ffee", "code_tree": "t1", "dirty": False}
 
 
 def ms(s: str) -> int:
@@ -364,8 +368,11 @@ def test_formasyon_base_equals_catalog_step1_plus_rsi_and_the_live_v3_plans():
         for p in plans:
             bot[end - 1] = (p["stop"], p["trigger"]["level"])
     assert {e.i: (round(e.stop, 10), round(e.trigger, 10)) for e in hits} == bot
+    from tradingbot.pattern_trader.strategy_v3 import V3_SIGNAL
     sp = B.FM_VARIANTS["FM_00_BASE"]
-    assert (sp["exit"], sp["risk_atr"], sp["chase_atr"]) == ({"kind": "target", "rr": 2.0, "max_bars": 24}, [0.1, 5.0], 1.0)
+    assert sp["exit"] == {"kind": "target", "rr": V3_SIGNAL["target_rr"], "max_bars": V3_SIGNAL["hold_bars"]}
+    assert sp["risk_atr"] == [V3_SIGNAL["min_risk_atr"], V3_SIGNAL["max_risk_atr"]] and sp["chase_atr"] == V3_SIGNAL["chase_atr"]
+    assert sp["signals"]["LONG"] == {"name": V3_SIGNAL["name"], "rsi_op": ">", "rsi": V3_SIGNAL["rsi_min"]} and V3_SIGNAL["side"] == "LONG"
 
 
 # ---------------------------------------------------------------------------- simülatör
@@ -549,6 +556,12 @@ def test_no_lookahead_raw_signals_for_every_variant_including_1d_and_rare_ones()
             assert {"D4_02_COIN_UP", "D4_04_VOL_CONFIRM", "D4_11_BTC_COIN_UP", "FM_00_BASE", "FM_02_COIN_UP",
                     "FM_03_VOL_OK", "FM_04_VOL_CONFIRM"} <= {v for v, _ in fired}
             assert ("FM_09_REGIME_BOTH", "SHORT") in fired and ("FM_09_REGIME_BOTH", "LONG") in fired
+            # Formasyon SHORT (FM_09) = katalogun THREE_BLACK_CROWS SHORT kayıtları + RSI14 < 30 + tetik + ATR + 300 barlık temiz pencere
+            spec9 = {**B.VARIANTS["FM_09_REGIME_BOTH"], "filters": []}
+            got9 = [e.i for e in B.fm_raw(Sf, recs_f, spec9, mf, B.SHORT)[0]]
+            want9 = sorted(e.i for e in recs_f if e.name == "THREE_BLACK_CROWS" and e.side == "SHORT" and e.trigger is not None
+                           and Sf.atr_ok[e.i] and Sf.clean(300)[e.i] and Sf.ind["rsi"][e.i] < 30)
+            assert got9 == want9 and want9
     # C4: tespit + rejim süzgeci + tekilleştirme (C4_06'nın DSL bağlamı dahil)
     t_cut = int(df4["timestamp"].iloc[cut4])
     fut = df4.copy()
@@ -820,6 +833,329 @@ def test_holm_and_multiple_test_pvalue():
     assert B.mt_pvalue(plac, real, iters=2000) > 0.99
 
 
+# ---------------------------------------------------------------------------- basamaklar, hücre ölçüleri, fonlama dosyaları
+def test_capacity_total_risk_rejection_and_reject_order(monkeypatch):
+    """TOTAL_RISK: açık risk + nominal yeni risk (0,005 × E) > E → ret; sıra SAME_SYMBOL, SLOTS_FULL, TOTAL_RISK, sonra fit_size."""
+    from types import SimpleNamespace
+    from tradingbot import learning_mode as LM
+    calls = []
+
+    def fake_fit(**kw):
+        calls.append(kw)
+        return SimpleNamespace(ok=True, reason=None, risk_usdt=150.0, margin=0.0, size_rule="FIT")
+    monkeypatch.setattr(LM, "fit_size", fake_fit)
+    t = ms("2025-03-01")
+    rows = [("A/USDT", t, t + 10 * H4, 100.0, 96.0, 1.0), ("B/USDT", t + H4, t + 10 * H4, 100.0, 96.0, 1.0),
+            ("C/USDT", t + 2 * H4, t + 10 * H4, 100.0, 96.0, 1.0), ("A/USDT", t + 3 * H4, t + 10 * H4, 100.0, 96.0, 1.0),
+            ("D/USDT", t + 10 * H4, t + 12 * H4, 100.0, 96.0, 1.0)]
+    res = B.capacity_run(_cands(rows), "D4", "D4_00_BASE", table=None, bump=False)
+    # A kabul (0 + 1 ≤ 200), B kabul (150 + 1 ≤ 200), C ret (300 + 1 > 200), A ikinci kez SAME_SYMBOL (TOTAL_RISK'ten önce);
+    # D çıkışların kapandığı anda kabul
+    assert res["rejected"] == {"TOTAL_RISK": 1, "SAME_SYMBOL": 1} and list(res["accepted"]["symbol"]) == ["A/USDT", "B/USDT", "D/USDT"]
+    assert len(calls) == 3                                                           # retlerde fit_size çağrılmaz
+    assert B.capacity_run(_cands(rows), "D4", "D4_00_BASE", table=None, bump=False, slots=1)["rejected"] == \
+        {"SLOTS_FULL": 2, "SAME_SYMBOL": 1}                                           # SLOTS_FULL TOTAL_RISK'ten önce
+
+
+def _cell_rows(vid, kind, side, period, n, r=0.5, reason="STOP", t0=None, step=DAY, nan_funding=False):
+    t0 = (ms("2023-03-01") if period == "IS" else ms("2025-03-01")) if t0 is None else t0
+    out = []
+    for k in range(n):
+        t = t0 + k * step
+        out.append({"symbol": "X/USDT", "tf": "4h", "book": B.VARIANTS[vid]["book"], "variant": vid, "kind": kind, "side": side,
+                    "name": "N", "i": 1000 + k, "t_ms": t, "period": B.period_of(t), "entry": 100.0, "stop": 98.0, "risk": 2.0,
+                    "exit_px": 101.0, "reason": reason, "r": float("nan") if reason == "BAD_BAR" else r + 0.01 * (k % 7),
+                    "cost_r": 0.08, "hold": 3, "entry_ms": t, "exit_ms": t + 3 * H4, "exit_bar_ms": t + 2 * H4, "gap_cross": False,
+                    "gap_hours": 0.0, "scopes": "", "funding_raw": None if nan_funding else -0.01, "funding_nan": nan_funding,
+                    "funding_r": -0.01, "ctx": {"hacim": "normal", "rsi": "50-70", "trend": "yukarı", "volatilite": "normal"},
+                    "mtm": {}})
+    return out
+
+
+def test_evaluate_cell_censor_and_bad_bar_shares_and_flags():
+    vid = "D4_01_BTC_UP"
+    rows = (_cell_rows(vid, "real", "LONG", "IS", 20) + _cell_rows(vid, "real", "LONG", "IS", 1, reason="DATA_END", t0=ms("2024-06-01"))
+            + _cell_rows(vid, "real", "LONG", "OOS", 26) + _cell_rows(vid, "real", "LONG", "OOS", 4, reason="DATA_END", t0=ms("2026-09-01"))
+            + _cell_rows(vid, "real", "LONG", "OOS", 1, reason="DELISTED", t0=ms("2026-08-01"))
+            + _cell_rows(vid, "real", "LONG", "OOS", 1, reason="BAD_BAR", t0=ms("2026-07-01"))
+            + _cell_rows(vid, "placebo", "LONG", "IS", 25, r=0.0) + _cell_rows(vid, "placebo", "LONG", "OOS", 25, r=0.0))
+    T = B.trades_frame(rows)
+    T["rf"] = T["r"] + T["funding_r"]
+    c = B.evaluate_cell(T, f"{vid}|LONG", L.LabConfig())
+    # sansür payı = DATA_END / BAD_BAR olmayan gerçek işlemler (dönem karar anına göre); DELISTED sansüre girmez, ayrıca sayılır
+    assert c["censor_share"] == {"IS": round(1 / 21, 6), "OOS": round(4 / 31, 6)} and c["counts"]["delisted"] == 1
+    assert c["bad_share"] == round(1 / 53, 6) and c["counts"]["bad_bar"] == 1                 # BAD_BAR payı bütün gerçek işlemlerde
+    assert c["flags"] == [B.ST_CENSOR, B.ST_BAD]
+    assert c["counts"]["real"] == {"IS": 21, "OOS": 31} and c["counts"]["placebo"] == {"IS": 25, "OOS": 25}
+    # eşiğin altı: sansür %10 ve BAD_BAR %1 tam sınırda geçer (> ile işaretlenir)
+    rows2 = (_cell_rows(vid, "real", "LONG", "OOS", 99) + _cell_rows(vid, "real", "LONG", "OOS", 11, reason="DATA_END", t0=ms("2026-09-01"))
+             + _cell_rows(vid, "real", "LONG", "OOS", 1, reason="BAD_BAR", t0=ms("2026-07-01"))
+             + _cell_rows(vid, "placebo", "LONG", "OOS", 25, r=0.0))
+    T2 = B.trades_frame(rows2)
+    T2["rf"] = T2["r"] + T2["funding_r"]
+    c2 = B.evaluate_cell(T2, f"{vid}|LONG", L.LabConfig())
+    assert c2["censor_share"]["OOS"] == 0.1 and c2["bad_share"] == round(1 / 111, 6) and c2["flags"] == []
+
+
+def test_side_stats_vs_placebo_needs_placebo_n_20_in_both_periods():
+    cfg = L.LabConfig()
+    vid = "D4_01_BTC_UP"
+
+    def frame(rows):
+        T = B.trades_frame(rows)
+        T["rf"] = T["r"] + T["funding_r"]
+        return T
+    real = frame(_cell_rows(vid, "real", "LONG", "IS", 25, r=0.4) + _cell_rows(vid, "real", "LONG", "OOS", 25, r=0.6))
+    for n_is, n_oos, ok in ((20, 19, False), (19, 20, False), (20, 20, True)):
+        plac = frame(_cell_rows(vid, "placebo", "LONG", "IS", n_is, r=0.1) + _cell_rows(vid, "placebo", "LONG", "OOS", n_oos, r=0.0))
+        st = B.side_stats(real, plac, "r", cfg)
+        assert (st["vs_placebo"] is not None) is ok, (n_is, n_oos)
+        if ok:
+            assert st["vs_placebo"]["OOS"] == round(st["OOS"]["mean_r"] - st["placebo"]["OOS"]["mean_r"], 4)
+            assert st["vs_placebo"]["IS"] == round(st["IS"]["mean_r"] - st["placebo"]["IS"]["mean_r"], 4)
+            assert st["vs_placebo"]["placebo_n"] == [20, 20] and st["vs_placebo"]["ci95"]["OOS"] is not None
+    # gerçek tarafta bir dönem boşsa karşılaştırma yok
+    only_oos = frame(_cell_rows(vid, "real", "LONG", "OOS", 25, r=0.6))
+    plac = frame(_cell_rows(vid, "placebo", "LONG", "IS", 30, r=0.1) + _cell_rows(vid, "placebo", "LONG", "OOS", 30, r=0.0))
+    assert B.side_stats(only_oos, plac, "r", cfg)["vs_placebo"] is None
+
+
+def _fake_cell(cid, *, real_cand=False, plac_cand=False, thin=False):
+    vid, scope = cid.split("|")
+    s = {"verdict": L.V_THIN if thin else L.V_WEAK, "verdict_strict": L.V_WEAK, "replicated": real_cand, "IS": {"mean_r": 0.1},
+         "OOS": {"mean_r": 0.1}, "placebo_verdict": L.V_WEAK, "placebo_replicated": plac_cand, "placebo": {"IS": {"mean_r": 0.1}}}
+    return {"cell": cid, "variant": vid, "scope": scope, "book": B.VARIANTS[vid]["book"], "flags": [],
+            "counts": {"real": {"IS": 0, "OOS": 0}, "placebo": {"IS": 0, "OOS": 0}},
+            "stats": {"unfunded": s, "funded": copy.deepcopy(s)}}
+
+
+def _report_with(monkeypatch, *, meets, pvals, real_cand=(), plac_cand=(), thin=(), books=B.BOOKS):
+    monkeypatch.setattr(B, "evaluate_cell", lambda T, cid, cfg: _fake_cell(cid, real_cand=cid in real_cand, plac_cand=cid in plac_cand,
+                                                                           thin=cid in thin))
+    monkeypatch.setattr(B, "target_status", lambda c, cells: {"meets": c["cell"] in meets, "failed": [] if c["cell"] in meets else ["2:X"],
+                                                              "status": B.ST_MEETS if c["cell"] in meets else B.ST_NOT_MEETS})
+    tag = lambda cid: pd.DataFrame({"reason": ["STOP"], "cid": [cid]})  # noqa: E731
+    monkeypatch.setattr(B, "cell_frames", lambda T, cid: (tag(cid), tag(cid)))
+    monkeypatch.setattr(B, "mt_pvalue", lambda real, plac: pvals.get(real["cid"].iloc[0], 0.9))
+    return B.build_report(B.trades_frame([]), L.LabConfig(), universe="primary", filters=None, books=books)
+
+
+def test_build_report_steps_holm_candidate_rate_and_book_notes(monkeypatch):
+    """§8.5 basamakları build_report içinde: Holm, aday oranı (gerçek ≤ plasebo → TESADÜFLE AÇIKLANABİLİR), taban / veri
+    gözetlemeli dışlama, PIT TEYİDİ BEKLİYOR; eksik hücre kümesinde çoklu test yapılmaz; §8.4 defter notu."""
+    meets = {"D4_01_BTC_UP|LONG", "D4_00_BASE|LONG", "C4_07_TREND_ONLY|BOTH", "D4_02_COIN_UP|LONG", "FM_01_BTC_UP|LONG"}
+    pvals = {"D4_01_BTC_UP|LONG": 1e-5, "D4_00_BASE|LONG": 1e-5, "C4_07_TREND_ONLY|BOTH": 1e-5, "D4_02_COIN_UP|LONG": 0.04}
+    real_cand = set(B.PRIMARY_CELLS[:10])
+    rep = _report_with(monkeypatch, meets=meets, pvals=pvals, real_cand=real_cand)
+    f = {c: rep["cells"][c]["final"] for c in meets}
+    assert f == {"D4_01_BTC_UP|LONG": B.ST_PIT_WAIT, "D4_00_BASE|LONG": B.ST_BASE, "C4_07_TREND_ONLY|BOTH": B.ST_BASE,
+                 "D4_02_COIN_UP|LONG": B.ST_MT_FAIL, "FM_01_BTC_UP|LONG": B.ST_MT_FAIL}
+    assert rep["holm"]["rejected"] == sorted(["D4_01_BTC_UP|LONG", "D4_00_BASE|LONG", "C4_07_TREND_ONLY|BOTH"])  # 0,04 > 0,05/51
+    assert rep["candidate_rate"] == {"real": round(10 / 54, 4), "placebo": 0.0} and rep["chance_explains"] is False
+    assert rep["cells"]["D4_03_VOL_OK|LONG"]["final"] == B.ST_NOT_MEETS and rep["cells"]["FM_CTRL_NO_RSI|LONG"]["final"].startswith("KONTROL")
+    assert rep["conclusion_tr"].startswith("HEDEFİ KARŞILAYIP çoklu testi geçen ve PIT teyidi bekleyen hücre: D4_01_BTC_UP|LONG "
+                                           "(D4 defterinin 13 varyantından biri; defterin 15 birincil hücresi var)")
+    assert rep["meets_target_detail"]["C4_07_TREND_ONLY|BOTH"] == "C4 defterinin 9 varyantından biri; defterin 27 birincil hücresi var"
+    assert rep["meets_target_detail"]["FM_01_BTC_UP|LONG"] == "Formasyon defterinin 10 varyantından biri; defterin 12 birincil hücresi var"
+    assert "Hedefi karşılayan hücreler (§8.4)" in B.render_md({**rep, "version": "book_v1"})
+    # gerçek aday oranı ≤ plasebo oranı (eşitlik dahil) → geçen her hücre TESADÜFLE AÇIKLANABİLİR; VERİ AZ paydadan çıkar
+    plac_cand = set(B.PRIMARY_CELLS[20:30])
+    rep = _report_with(monkeypatch, meets=meets, pvals=pvals, real_cand=real_cand, plac_cand=plac_cand)
+    assert rep["chance_explains"] is True and rep["candidate_rate"]["real"] == rep["candidate_rate"]["placebo"]
+    assert {c: rep["cells"][c]["final"] for c in meets if pvals.get(c, 1) < 1e-3} == {
+        "D4_01_BTC_UP|LONG": B.ST_CHANCE, "D4_00_BASE|LONG": B.ST_CHANCE, "C4_07_TREND_ONLY|BOTH": B.ST_CHANCE}
+    assert rep["conclusion_tr"].startswith("Hiçbir hücre ÖNERİ ADAYI değil. HEDEFİ KARŞILAYIP sonraki basamakta elenen: ")
+    assert "D4_01_BTC_UP|LONG (D4 defterinin 13 varyantından biri" in rep["conclusion_tr"] and B.NO_TARGET_TR not in rep["conclusion_tr"]
+    thin = set(B.PRIMARY_CELLS[40:])
+    rep = _report_with(monkeypatch, meets=meets, pvals=pvals, real_cand=real_cand, plac_cand=plac_cand, thin=thin)
+    assert rep["candidate_rate"]["real"] == round(10 / 40, 4)
+    # yalnız bir defter: 54 hücrenin hepsi yok → çoklu test yapılmaz, hedefi karşılayan hücre öneriye ilerleyemez
+    rep = _report_with(monkeypatch, meets=meets, pvals=pvals, real_cand=real_cand, books=["D4"])
+    assert rep["complete"] is False and rep["cells"]["D4_01_BTC_UP|LONG"]["final"] == B.ST_MT_INCOMPLETE
+    assert rep["cells"]["D4_01_BTC_UP|LONG"]["multiple"]["holm_pass"] is None
+    # hiçbir hücre hedefi karşılamıyorsa ön kayıtlı metin
+    rep = _report_with(monkeypatch, meets=set(), pvals=pvals)
+    assert rep["conclusion_tr"].startswith(f"Hiçbir hücre ÖNERİ ADAYI değil: {B.NO_TARGET_TR}")
+
+
+def test_final_status_order():
+    meets = {"meets": True, "status": B.ST_MEETS}
+    fs = B.final_status
+    assert fs({"meets": False, "status": B.ST_FUND_MISSING}, "D4_01_BTC_UP|LONG", complete=True, holm_pass=True, chance=False) == \
+        (B.ST_FUND_MISSING, [])
+    assert fs(meets, "D4_01_BTC_UP|LONG", complete=False, holm_pass=True, chance=False) == (B.ST_MT_INCOMPLETE, ["2"])
+    assert fs(meets, "D4_01_BTC_UP|LONG", complete=True, holm_pass=False, chance=False) == (B.ST_MT_FAIL, ["2"])
+    assert fs(meets, "D4_01_BTC_UP|LONG", complete=True, holm_pass=True, chance=True) == (B.ST_CHANCE, ["2"])
+    for cid in ("D4_00_BASE|LONG", "C4_00_BASE|SHORT", "FM_00_BASE|LONG", "C4_07_TREND_ONLY|LONG"):
+        assert fs(meets, cid, complete=True, holm_pass=True, chance=False) == (B.ST_BASE, ["3"])
+    assert fs(meets, "FM_09_REGIME_BOTH|BOTH", complete=True, holm_pass=True, chance=False) == (B.ST_PIT_WAIT, ["4"])
+
+
+def test_cell_counts_no_real_risk_share_denominators():
+    cv_l = "CV001_BREAKOUT20_TREND_VOL_L"
+    meta = {"X/USDT": {
+        "C4": {"counts": {"C4_00_BASE": {"cvs": {cv_l: {"detected": 3, "real": {"skipped": {"CHASE": 1}}, "placebo": {
+            "drawn": 5, "produced_all": 8, "skipped": {"BAD_BAR": 1},
+            "variation_events_skipped": {f"PLACEBO_{cv_l}:NO_REAL_RISK": 2, f"PLACEBO_{cv_l}:BAD_STOP": 1}}}}}}},
+        "D4": {"counts": {"D4_00_BASE|LONG": {"real": {"raw_all": 7, "unclean_window": 1}, "placebo": {
+            "drawn": 10, "skipped": {"NO_REAL_RISK": 0}}}}},
+        "FM": {"counts": {"FM_00_BASE|LONG": {"real": {"raw_all": 4}, "placebo": {"drawn": 10, "skipped": {"NO_REAL_RISK": 4}}}}}}}
+    c = B.cell_counts(meta, "C4_00_BASE|LONG")
+    # C4: payda = üretilen (süzgeçten önce) + NO_REAL_RISK + BAD_STOP = 11 (D4/Formasyon'daki çekilen barla aynı anlam)
+    assert c["placebo_selected"] == 11 and c["no_real_risk_share"] == round(2 / 11, 6) and c["placebo_drawn"] == 5
+    assert c["placebo_skipped"] == {"BAD_BAR": 1, "NO_REAL_RISK": 2, "BAD_STOP": 1} and c["real_skipped"] == {"CHASE": 1}
+    assert B.cell_counts(meta, "C4_00_BASE|SHORT")["placebo_selected"] == 0               # SHORT CV yok
+    f = B.cell_counts(meta, "FM_00_BASE|LONG")
+    assert f["placebo_selected"] == f["placebo_drawn"] == 10 and f["no_real_risk_share"] == 0.4
+    assert B.cell_counts(meta, "D4_00_BASE|LONG")["no_real_risk_share"] == 0.0
+
+
+def test_load_funding_monthly_only_post_end_and_window_clip(mini):
+    """Yalnız aylık dosyalar (arşivde günlük fundingRate yok); PRICE_END'in ayı da istenir (PRICE_END sonrası uzlaşma);
+    pencere [FUNDING_START, FUNDING_END) kırpılır; eksik aylar yazılır."""
+    a = "SYNUSDT"
+    url = lambda mk: f"{L.ARCHIVE_BASE}/monthly/fundingRate/{a}/{a}-fundingRate-{mk}.zip"  # noqa: E731
+    files = {url("2022-03"): funding_zip(B.month_start_ms("2022-03"), extra=[(MINI["FUNDING_START_MS"] - 8 * HOUR, 0.5)]),
+             url("2022-05"): funding_zip(B.month_start_ms("2022-05")), url("2022-06"): funding_zip(B.month_start_ms("2022-06")),
+             url("2022-07"): funding_zip(B.month_start_ms("2022-07"))}
+    asked = []
+    raw, info = B.load_funding("SYN/USDT", lambda u: (asked.append(u), files.get(u))[1])
+    assert asked == [url(mk) for mk in ("2022-03", "2022-04", "2022-05", "2022-06", "2022-07")]
+    assert info["missing"] == ["2022-04"] and set(info["files_sha256"]) == {url(mk) for mk in ("2022-03", "2022-05", "2022-06", "2022-07")}
+    assert raw["f_t"].min() == MINI["FUNDING_START_MS"] and raw["f_t"].max() < MINI["FUNDING_END_MS"] and 0.5 not in raw["f_rate"]
+    assert info["post_end"] == 3 and info["rows"] == 31 * 3 + 31 * 3 + 30 * 3 + 3
+    assert np.all(np.diff(raw["f_t"]) > 0)
+    # PRICE_END ayının dosyası yoksa (henüz yayımlanmadı) PRICE_END sonrası uzlaşma yok → koşu veri hatasıyla durur
+    del files[url("2022-07")]
+    _, info2 = B.load_funding("SYN/USDT", files.get)
+    assert info2["post_end"] == 0 and info2["missing"] == ["2022-04", "2022-07"]
+    df = flat_series(N4, t0=T0)
+    assert "2022-07" in B.data_problem("SYN/USDT", df, None, info2, strict=True)
+    assert B.data_problem("SYN/USDT", df, None, info, strict=True) is None
+    early = df.iloc[:-1]
+    assert "PRICE_END'den önce" in B.data_problem("SYN/USDT", early, None, info, strict=True)
+    assert B.data_problem("SYN/USDT", early, None, info2, strict=False) is None          # PIT: DELISTED, fonlama sonu gerekmez
+    assert "1d" in B.data_problem("SYN/USDT", df, df.iloc[:0], info, strict=True)
+
+
+def test_funding_after_price_end_comes_from_the_month_file_and_makes_data_end_funded(mini):
+    """PRICE_END'de kapanan (DATA_END) işlemin fonlaması: PRICE_END ayının dosyasındaki uzlaşmalarla NaN değil; o dosya
+    olmadan NaN (koşu bu durumda zaten başlamaz)."""
+    df = synth(N4, "4h", T0, seed=61)
+    S = B.Series(df, "4h")
+    cfg = L.LabConfig()
+    i = N4 - 3
+    tr, why = B.simulate_trade(S, i, "LONG", float(S.c[i]) - 3 * float(S.ind["atr"][i]), {"kind": "target", "rr": 9.0, "max_bars": 24},
+                               (0.1, 9.0), float(S.ind["atr"][i]), cfg)
+    assert why == "" and tr["reason"] == "DATA_END"
+    a = "SYNUSDT"
+    files = {f"{L.ARCHIVE_BASE}/monthly/fundingRate/{a}/{a}-fundingRate-{mk}.zip": funding_zip(B.month_start_ms(mk))
+             for mk in ("2022-03", "2022-04", "2022-05", "2022-06", "2022-07")}
+    for keep_july, nan in ((True, False), (False, True)):
+        fs = dict(files) if keep_july else {k: v for k, v in files.items() if not k.endswith("2022-07.zip")}
+        raw, _ = B.load_funding("SYN/USDT", fs.get)
+        rows = [B._row("SYN/USDT", S, "D4", "D4_00_BASE", "real", "LONG", "X", tr, cfg)]
+        B.apply_funding(rows, S, raw)
+        assert rows[0]["funding_nan"] is nan
+
+
+def test_write_trades_is_byte_deterministic_and_hashes_the_csv_text(tmp_path, world):
+    import gzip
+    T = B.trades_frame(world["base"][:300])
+    h1 = B.write_trades(tmp_path / "a.csv.gz", T)
+    h2 = B.write_trades(tmp_path / "b.csv.gz", T)
+    a, b = (tmp_path / "a.csv.gz").read_bytes(), (tmp_path / "b.csv.gz").read_bytes()
+    assert a == b and h1 == h2 == hashlib.sha256(gzip.decompress(a)).hexdigest()
+    back = B.read_trades(tmp_path / "a.csv.gz")
+    assert len(back) == len(T) == 300 and np.allclose(back["r"], T["r"].astype(float), equal_nan=True)
+
+
+def test_pit_missing_pairs_counts_a_not_loaded_symbol_as_missing():
+    m = B.month_start_ms("2023-03")
+    d1 = pd.DataFrame({"timestamp": m + DAY * np.arange(31)})
+    d4 = pd.DataFrame({"timestamp": m + H4 * np.arange(31 * 6)})
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(B, "PIT_MONTHS", ["2023-03"])
+        r = B.pit_missing_pairs({"2023-03": ["A/USDT", "C/USDT"]}, {"A/USDT": d4}, {"A/USDT": d1})
+    assert r["pairs"] == 2 and r["missing"] == 1 and r["ok"] is False and r["rows"][0]["symbol"] == "C/USDT"
+
+
+def test_formasyon_short_side_is_three_black_crows_with_strict_rsi_below_30():
+    """FM_09 SHORT: katalogun THREE_BLACK_CROWS SHORT kaydı + RSI14 < 30 kesin (30 geçmez, NaN geçmez), tetik şart, ATR ve temiz
+    pencere; LONG adı/yönü SHORT'a karışmaz."""
+    df = synth(700, "4h", ms("2024-01-01"), seed=33, vol=0.012)
+    S = B.Series(df, "4h")
+    spec = {**B.FM_VARIANTS["FM_09_REGIME_BOTH"], "filters": []}
+    S.ind["rsi"] = rsi = np.array(S.ind["rsi"], dtype=float, copy=True)          # yazılabilir kopya (RSI değerleri elle)
+    vals = {400: 29.0, 410: 30.0, 420: float("nan"), 430: 29.99, 440: 10.0, 450: 20.0, 460: 75.0}
+    for i, v in vals.items():
+        rsi[i] = v
+
+    def ev(i, name, side, trig=True):
+        a = float(S.ind["atr"][i])
+        return L.Event("X/USDT", "4h", "catalog", name, side, i, int(S.ts[i]) + H4, float(S.c[i]) + (a if side == "SHORT" else -a),
+                       trigger=float(S.c[i]) if trig else None)
+    recs = [ev(400, "THREE_BLACK_CROWS", "SHORT"), ev(410, "THREE_BLACK_CROWS", "SHORT"), ev(420, "THREE_BLACK_CROWS", "SHORT"),
+            ev(430, "THREE_BLACK_CROWS", "SHORT"), ev(440, "THREE_BLACK_CROWS", "SHORT", trig=False),
+            ev(450, "THREE_WHITE_SOLDIERS", "SHORT"), ev(460, "THREE_WHITE_SOLDIERS", "LONG")]
+    masks = B._masks(S, None, None)
+    hits, _, _ = B.fm_raw(S, recs, spec, masks, B.SHORT)
+    assert [e.i for e in hits] == [400, 430]
+    assert [e.i for e in B.fm_raw(S, recs, spec, masks, B.LONG)[0]] == [460]
+    assert spec["signals"]["SHORT"] == {"name": "THREE_BLACK_CROWS", "rsi_op": "<", "rsi": 30.0}
+    # SHORT plasebo stop'u koruyucu tarafta (yukarıda): kayıt stop'u c[i] + 1 ATR → q = s × (c[i] − stop) / ATR = 1 → c[j] + ATR[j]
+    rsi[300:] = 20.0
+    many = [ev(i, "THREE_BLACK_CROWS", "SHORT") for i in range(300, 690, 5)]
+    down = B._masks(S, np.full(S.n, -1, dtype=np.int8), None)
+    rows, meta = B.fm_series_rows("X/USDT", S, down, L.LabConfig(), ["FM_09_REGIME_BOTH"], recs=many)
+    pl = [r for r in rows if r["side"] == "SHORT" and r["kind"] == "placebo"]
+    assert len(pl) >= 5 and len([r for r in rows if r["side"] == "SHORT" and r["kind"] == "real"]) >= 20
+    for r in pl:
+        j = r["i"]
+        assert math.isclose(r["stop"], float(S.c[j]) + float(S.ind["atr"][j]), rel_tol=1e-12) and r["name"] == "PLACEBO_THREE_BLACK_CROWS"
+    assert meta["FM_09_REGIME_BOTH|LONG"]["real"]["raw_all"] == 0                       # BTC_DOWN'da LONG yok (REGIME_FOLLOW)
+
+
+def test_d4_08_entry_is_the_55_bar_breakout_and_exit_is_the_20_bar_low():
+    df = synth(900, "1d", ms("2022-01-01"), seed=52, vol=0.03, legs=35, leg_drift=0.012, spike=0.2)
+    S = B.Series(df, "1d")
+    cfg = L.LabConfig()
+    spec = B.D4_VARIANTS["D4_08_1D_55_20"]
+    raw, _, _ = B.d4_raw(S, spec, B._masks(S, None, None), B.LONG)
+    h, lo, c, a = S.h, S.l, S.c, S.ind["atr"]
+    n = S.n
+    hi55 = np.array([h[i - 55:i].max() if i >= 55 else np.nan for i in range(n)])
+    lo20 = np.array([lo[i - 20:i].min() if i >= 20 else np.nan for i in range(n)])
+    clean = S.clean(210)
+    want = [i for i in range(210, n) if c[i] > hi55[i] and c[i - 1] <= hi55[i - 1] and S.atr_ok[i] and clean[i]]
+    assert [int(i) for i in raw] == want and len(want) >= 3
+    checked = 0
+    for i in raw:
+        j, stop = i + 1, float(c[i] - 2.0 * a[i])
+        tr, why = B.simulate_trade(S, i, B.LONG, stop, spec["exit"], tuple(spec["risk_atr"]), float(a[i]), cfg)
+        if why:
+            continue
+        exp = None
+        for k in range(j, min(n, j + 300)):
+            if lo[k] <= stop:
+                exp = ("STOP", k)
+                break
+            if c[k] < lo20[k]:
+                exp = ("RULE", k + 1) if k + 1 < n else ("DELISTED", k)
+                break
+        if exp is None:
+            exp = ("TIME", j + 299) if j + 300 <= n else ("DELISTED", n - 1)
+        assert (tr["reason"], tr["xb"]) == exp, i
+        checked += 1
+    assert checked >= 3 and spec["exit"] == {"kind": "channel", "ref": {"LONG": "lo20"}, "max_bars": 300}
+
+
+def test_book_note_counts_hypothesis_variants_and_primary_cells():
+    assert B.book_note("D4_10_1D_REGIME_BOTH|SHORT") == "D4 defterinin 13 varyantından biri; defterin 15 birincil hücresi var"
+    assert B.book_note("C4_01_REGIME|BOTH") == "C4 defterinin 9 varyantından biri; defterin 27 birincil hücresi var"
+    assert B.book_note("FM_00_BASE|LONG") == "Formasyon defterinin 10 varyantından biri; defterin 12 birincil hücresi var"
+
+
 # ---------------------------------------------------------------------------- PIT
 def test_pit_pool_ranking_listing_and_missing_pairs():
     names = ["BTCUSDT", "BTCUSDT_210326", "ETHBUSD", "AERGOUSDTSETTLED", "TSLAUSDT", "BTCDOMUSDT", "USDCUSDT", "XAUUSDT",
@@ -872,8 +1208,18 @@ def kline_zip(df, header=True, micro=False):
     return buf.getvalue()
 
 
-def fake_archive(frames, funding_syms, rate=0.0001):
-    """{(sembol, dilim): df} → URL → zip (aylık); fonlama aylık dosyaları + gün dosyası; bilinmeyen dosya None (404)."""
+def funding_zip(m0, rate=0.0001, extra=()):
+    """Bir ayın 8 saatlik uzlaşmaları (aylık dosya biçimi); `extra`: eklenecek (zaman, oran) satırları."""
+    buf = io.BytesIO()
+    rows = [(m0 + k * 8 * HOUR, rate) for k in range(31 * 3) if m0 + k * 8 * HOUR < L._next_month(m0)] + list(extra)
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("f.csv", "calc_time,funding_interval_hours,last_funding_rate\n" + "\n".join(f"{t},8,{r}" for t, r in rows))
+    return buf.getvalue()
+
+
+def fake_archive(frames, funding_syms, rate=0.0001, last_funding_month="2022-07"):
+    """{(sembol, dilim): df} → URL → zip (aylık); fonlama YALNIZ aylık dosyalar (gerçek arşiv gibi: günlük fundingRate yok),
+    PRICE_END'in ayı dahil; bilinmeyen dosya None (404)."""
     files = {}
     for (sym, tf), df in frames.items():
         a = B.archive_symbol(sym)
@@ -881,29 +1227,28 @@ def fake_archive(frames, funding_syms, rate=0.0001):
             files[f"{L.ARCHIVE_BASE}/monthly/klines/{a}/{tf}/{a}-{tf}-{mon}.zip"] = kline_zip(g, header=(mon > "2022-03"))
     for sym in funding_syms:
         a = B.archive_symbol(sym)
-        for mon in B._month_range("2022-01", "2022-06"):
-            m0 = B.month_start_ms(mon)
-            buf = io.BytesIO()
-            with zipfile.ZipFile(buf, "w") as zf:
-                zf.writestr("f.csv", "calc_time,funding_interval_hours,last_funding_rate\n" + "\n".join(
-                    f"{m0 + k * 8 * HOUR},8,{rate}" for k in range(31 * 3) if m0 + k * 8 * HOUR < L._next_month(m0)))
-            files[f"{L.ARCHIVE_BASE}/monthly/fundingRate/{a}/{a}-fundingRate-{mon}.zip"] = buf.getvalue()
-        buf = io.BytesIO()
-        with zipfile.ZipFile(buf, "w") as zf:
-            zf.writestr("f.csv", "calc_time,funding_interval_hours,last_funding_rate\n" + "\n".join(
-                f"{MINI['PRICE_END_MS'] + k * 8 * HOUR},8,{rate}" for k in range(3)))
-        files[f"{L.ARCHIVE_BASE}/daily/fundingRate/{a}/{a}-fundingRate-2022-07-01.zip"] = buf.getvalue()
+        for mon in B._month_range("2022-01", last_funding_month):
+            files[f"{L.ARCHIVE_BASE}/monthly/fundingRate/{a}/{a}-fundingRate-{mon}.zip"] = funding_zip(B.month_start_ms(mon), rate)
     return files
 
 
-def test_end_to_end_dry_run_offline_report_only_no_network_and_cli(tmp_path, monkeypatch, mini):
+def _no_network(monkeypatch):
     def boom(*a, **k):
         raise AssertionError("ağ kullanılmamalı")
     monkeypatch.setattr(L, "_http_get", boom)
     monkeypatch.setattr(urllib.request, "urlopen", boom)
+
+
+def _mini_frames():
     df4, df1, btc1 = world_frames()
     btc4 = synth(N4, "4h", T0, seed=71, vol=0.01, legs=50, leg_drift=0.003)
-    frames = {("BTC/USDT", "4h"): btc4, ("BTC/USDT", "1d"): btc1, ("SYN/USDT", "4h"): df4, ("SYN/USDT", "1d"): df1}
+    return {("BTC/USDT", "4h"): btc4, ("BTC/USDT", "1d"): btc1, ("SYN/USDT", "4h"): df4, ("SYN/USDT", "1d"): df1}
+
+
+def test_end_to_end_dry_run_offline_report_only_no_network_and_cli(tmp_path, monkeypatch, mini):
+    _no_network(monkeypatch)
+    frames = _mini_frames()
+    df4 = frames[("SYN/USDT", "4h")]
     files = fake_archive(frames, ["BTC/USDT", "SYN/USDT"])
     asked = []
     fetch = lambda url: (asked.append(url), files.get(url))[1]  # noqa: E731
@@ -913,9 +1258,11 @@ def test_end_to_end_dry_run_offline_report_only_no_network_and_cli(tmp_path, mon
     out, cache = tmp_path / "out", tmp_path / "cache"
     now = ms("2022-08-01")
     rep = B.run(cache_dir=cache, out_dir=out, books=B.BOOKS, filters_path=flt, fetch=fetch, now_ms=now, log=lambda s: None,
-                symbols_override=["BTC/USDT", "SYN/USDT"])
+                symbols_override=["BTC/USDT", "SYN/USDT", "NODATA/USDT"], code_state=CODE)
     assert rep["registry_sha"] == PINNED_SHA and rep["symbols_overridden"] is True and rep["complete"] is True
     assert set(rep["cells"]) == set(B.ALL_CELLS) and len(rep["cells"]) == 55
+    # arşivde hiç verisi olmayan coin dışarıda kalır ve sonuçta yazılır (§11.6); kod durumu rapora yazılır
+    assert rep["empty_symbols"] == ["NODATA/USDT"] and "NODATA/USDT" in rep["conclusion_tr"] and rep["code"] == CODE
     c = rep["cells"]["D4_00_BASE|LONG"]
     assert c["counts"]["real"]["IS"] + c["counts"]["real"]["OOS"] > 0 and "BUMP" in c["capacity"]
     assert all(cc["final"] for cc in rep["cells"].values()) and rep["conclusion_tr"]
@@ -924,27 +1271,47 @@ def test_end_to_end_dry_run_offline_report_only_no_network_and_cli(tmp_path, mon
     assert q["SYN/USDT 4h"]["bars"] == N4 and q["SYN/USDT 4h"]["missing_ratio"] == 0.0 and q["SYN/USDT 4h"]["bad_bars"] == 0
     assert q["SYN/USDT 4h"]["sha256"] == B.series_digest(df4) and q["BTC/USDT 1d"]["first"] == "2020-11-27T00:00:00Z"
     assert rep["funding"]["SYN/USDT"]["rows"] > 0 and rep["funding_files_sha256"]["SYN/USDT"]
+    assert rep["funding"]["SYN/USDT"]["post_end"] == 3 and "2022-07" not in rep["funding"]["SYN/USDT"]["missing"]
     assert rep["coverage"]["OOS"]["coins_full"] == 2
     js = json.loads((out / "book_lab_report.json").read_text(encoding="utf-8"))
     md = (out / "book_lab_report.md").read_text(encoding="utf-8")
     assert js["registry_sha"] == PINNED_SHA and PINNED_SHA in md and "UYARI" in md and "| D4_00_BASE|LONG |" in md
+    assert "kod ağacı `t1`" in md and "temiz" in md
     T = B.read_trades(out / "book_lab_trades.csv.gz")
     assert set(T["book"]) == {"D4", "C4", "FM"} and {"real", "placebo", "labplacebo"} <= set(T["kind"])
     assert (T["period"].isin(["IS", "OOS"])).all() and not list(out.glob("*.part"))
-    assert all(u.startswith(L.ARCHIVE_BASE) for u in asked)
+    # işlem dosyasının özeti sıkıştırılmamış metnindir (gzip başlığından bağımsız)
+    import gzip
+    assert rep["trades_sha256"] == hashlib.sha256(gzip.decompress((out / "book_lab_trades.csv.gz").read_bytes())).hexdigest()
+    assert all(u.startswith(L.ARCHIVE_BASE) and "/daily/fundingRate/" not in u for u in asked)
     # kayıtlı işlemlerden yalnız rapor: aynı hücre sonuçları (belirlenimci); filtre tablosu yoksa FİLTRE BEKLİYOR
     n_asked = len(asked)
-    rep2 = B.run(cache_dir=cache, out_dir=out, filters_path=flt, report_only=True, log=lambda s: None, now_ms=now)
+    rep2 = B.run(cache_dir=cache, out_dir=out, filters_path=flt, report_only=True, log=lambda s: None, now_ms=now, code_state=CODE)
     assert len(asked) == n_asked
     strip = lambda r: {k: {kk: vv for kk, vv in v.items() if kk != "info"} for k, v in r["cells"].items()}  # noqa: E731
     assert strip(rep2) == strip(rep)
-    rep3 = B.run(cache_dir=cache, out_dir=out, report_only=True, log=lambda s: None, now_ms=now)
-    assert all(cc["capacity"] == {"status": B.ST_FILTER_WAIT} for cc in rep3["cells"].values())
-    assert any(cc["final"] == B.ST_FILTER_WAIT or "1:" in " ".join(cc["target"]["failed"]) for k, cc in rep3["cells"].items()
+    # başka kod durumunda birleştirme / yalnız rapor YOK (açık izinle olur ve rapora yazılır); kirli ağaç da reddedilir
+    import shutil
+    cc = tmp_path / "out_code"
+    shutil.copytree(out, cc)
+    other = {**CODE, "code_tree": "t2", "commit": "beef"}
+    with pytest.raises(B.BookDataError, match="kod durumunda"):
+        B.run(cache_dir=cache, out_dir=cc, report_only=True, log=lambda s: None, now_ms=now, code_state=other)
+    with pytest.raises(B.BookDataError, match="kod durumunda"):
+        B.run(cache_dir=cache, out_dir=cc, report_only=True, log=lambda s: None, now_ms=now, code_state={**CODE, "dirty": True})
+    with pytest.raises(B.BookDataError, match="kod durumunda"):
+        B.run(cache_dir=cache, out_dir=cc, books=["D4"], offline=True, log=lambda s: None, now_ms=now, code_state=other,
+              symbols_override=["BTC/USDT", "SYN/USDT"])
+    ro = B.run(cache_dir=cache, out_dir=cc, report_only=True, log=lambda s: None, now_ms=now, code_state=other, allow_code_change=True)
+    assert ro["code_overrides"][0]["before"] == CODE and ro["code_overrides"][0]["now"] == other
+    assert "açık izinle" in (cc / "book_lab_report.md").read_text(encoding="utf-8")
+    rep3 = B.run(cache_dir=cache, out_dir=out, report_only=True, log=lambda s: None, now_ms=now, code_state=CODE)
+    assert all(cc_["capacity"] == {"status": B.ST_FILTER_WAIT} for cc_ in rep3["cells"].values())
+    assert any(cc_["final"] == B.ST_FILTER_WAIT or "1:" in " ".join(cc_["target"]["failed"]) for k, cc_ in rep3["cells"].items()
                if k in B.PRIMARY_CELLS)
     # çevrimdışı tekrar: önbellekten, aynı işlemler; yalnız D4 yeniden üretilir, diğer defterler korunur
     rep4 = B.run(cache_dir=cache, out_dir=tmp_path / "out2", books=["D4"], filters_path=flt, offline=True, now_ms=now,
-                 log=lambda s: None, symbols_override=["BTC/USDT", "SYN/USDT"])
+                 log=lambda s: None, symbols_override=["BTC/USDT", "SYN/USDT"], code_state=CODE)
     assert len(asked) == n_asked and rep4["complete"] is False and set(rep4["books"]) == {"D4"}
     T4 = B.read_trades(tmp_path / "out2" / "book_lab_trades.csv.gz")
     a = T[T["book"] == "D4"].sort_values(["variant", "kind", "symbol", "t_ms", "side"]).reset_index(drop=True)
@@ -952,37 +1319,115 @@ def test_end_to_end_dry_run_offline_report_only_no_network_and_cli(tmp_path, mon
     assert a[["variant", "kind", "symbol", "t_ms", "r", "funding_r"]].equals(b[["variant", "kind", "symbol", "t_ms", "r", "funding_r"]])
     # farklı mühürlü önceki koşu ezilmez
     meta = json.loads((out / "book_lab_meta.json").read_text(encoding="utf-8"))
+    assert meta["code"] == CODE and meta["trades_sha256_basis"]
     meta["registry_sha"] = "0" * 16
     (tmp_path / "out3").mkdir()
     (tmp_path / "out3" / "book_lab_meta.json").write_text(json.dumps(meta), encoding="utf-8")
     with pytest.raises(B.BookDataError, match="mühür"):
-        B.run(cache_dir=cache, out_dir=tmp_path / "out3", offline=True, log=lambda s: None, now_ms=now)
+        B.run(cache_dir=cache, out_dir=tmp_path / "out3", offline=True, log=lambda s: None, now_ms=now, code_state=CODE)
     # PIT kipi: sahte liste, yalnız D4 (hız); PIT sonucu birincil rapora yazılır
     lst = '<ListBucketResult><IsTruncated>false</IsTruncated>' + "".join(
         f"<CommonPrefixes><Prefix>data/futures/um/monthly/klines/{s}/</Prefix></CommonPrefixes>"
         for s in ("BTCUSDT", "SYNUSDT", "TSLAUSDT")) + "</ListBucketResult>"
     rp = B.run(cache_dir=cache, out_dir=out, universe="pit", books=["D4"], fetch=fetch, list_text=lambda u: lst, now_ms=now,
-               log=lambda s: None)
+               log=lambda s: None, code_state=CODE)
     assert rp["universe"] == "pit" and rp["pit"]["excluded"] == {"TSLAUSDT": "hisse_etf_halka_arz_oncesi"}
     assert set(rp["pit"]["selected"]) == {"BTC/USDT", "SYN/USDT"} and rp["pit"]["missing_pairs"]["ok"] is True
-    assert all("pit_check" in cc and "NO_BUMP" in cc["capacity"] and "BUMP" not in cc["capacity"] for cc in rp["cells"].values())
+    assert rp["pit"]["missing_pairs"]["pairs"] > 0
+    assert all("pit_check" in cc_ and "NO_BUMP" in cc_["capacity"] and "BUMP" not in cc_["capacity"] for cc_ in rp["cells"].values())
     assert (out / "book_lab_report_pit.json").exists() and (cache / "pit_listing.json").exists()
-    rep5 = B.run(cache_dir=cache, out_dir=out, filters_path=flt, report_only=True, log=lambda s: None, now_ms=now)
+    rep5 = B.run(cache_dir=cache, out_dir=out, filters_path=flt, report_only=True, log=lambda s: None, now_ms=now, code_state=CODE)
     assert "PIT teyidi" in (out / "book_lab_report.md").read_text(encoding="utf-8") and rep5["conclusion_tr"]
+    assert "pit_not_applied" not in rep5
 
 
-def test_apply_pit_promotes_only_waiting_cells():
-    rep = {"universe": "primary", "cells": {"D4_01_BTC_UP|LONG": {"final": B.ST_PIT_WAIT}, "D4_02_COIN_UP|LONG": {"final": B.ST_PIT_WAIT},
-                                            "D4_00_BASE|LONG": {"final": B.ST_BASE}}}
-    pit = {"registry_sha": B.BOOK_REGISTRY_SHA, "cells": {
+def test_pit_run_with_only_c4_still_checks_missing_pairs_from_1d(tmp_path, monkeypatch, mini):
+    """Yalnız C4 (1d kullanmayan defter) PIT kipinde de eksik çift denetimi 1d serisiyle yapılır (her hücre PIT DOĞRULANAMADI
+    olmaz); sembol görevleri burada boş (yalnız veri ve evren aşaması sınanır)."""
+    _no_network(monkeypatch)
+    files = fake_archive(_mini_frames(), ["BTC/USDT", "SYN/USDT"])
+    seen = []
+    monkeypatch.setattr(B, "_symbol_task", lambda args: (seen.append((args[0], args[2] is not None)), ([], {"symbol": args[0]}))[1])
+    lst = '<ListBucketResult><IsTruncated>false</IsTruncated>' + "".join(
+        f"<CommonPrefixes><Prefix>data/futures/um/monthly/klines/{s}/</Prefix></CommonPrefixes>"
+        for s in ("BTCUSDT", "SYNUSDT")) + "</ListBucketResult>"
+    rp = B.run(cache_dir=tmp_path / "c", out_dir=tmp_path / "o", universe="pit", books=["C4"], fetch=files.get,
+               list_text=lambda u: lst, now_ms=ms("2022-08-01"), log=lambda s: None, code_state=CODE)
+    mp_ = rp["pit"]["missing_pairs"]
+    assert mp_["pairs"] > 0 and mp_["missing"] == 0 and mp_["ok"] is True
+    assert all(c["pit_check"]["status"] != B.ST_PIT_UNVERIFIED for c in rp["cells"].values())
+    # görevlere 1d yalnız defter kullanıyorsa gider (C4 sonuçları 1d'den bağımsız)
+    assert sorted(seen) == [("BTC/USDT", False), ("SYN/USDT", False)]
+
+
+def test_data_errors_stop_the_run_before_any_output(tmp_path, monkeypatch, mini):
+    """İndirme hatası, PRICE_END'den önce biten seri (birincil/bilgi) ve PRICE_END sonrası fonlama yokluğu → BookDataError;
+    eksik evrenle rapor YAZILMAZ. PIT kipinde erken biten seri (DELISTED) hata değildir."""
+    _no_network(monkeypatch)
+    frames = _mini_frames()
+    now = ms("2022-08-01")
+    syms = ["BTC/USDT", "SYN/USDT"]
+    monkeypatch.setattr(B, "_symbol_task", lambda args: ([], {"symbol": args[0]}))
+
+    def go(name, files, **kw):
+        out = tmp_path / name
+        with pytest.raises(B.BookDataError) as ei:
+            B.run(cache_dir=tmp_path / f"c_{name}", out_dir=out, books=["D4"], fetch=files.get if isinstance(files, dict) else files,
+                  now_ms=now, log=lambda s: None, symbols_override=syms, code_state=CODE, **kw)
+        assert not list(out.glob("book_lab_*"))                                       # hiçbir çıktı yok
+        return str(ei.value)
+
+    files = fake_archive(frames, syms)
+
+    def flaky(url):                                                                   # tek sembolde ağ hatası (art arda değil)
+        if "/SYNUSDT/4h/" in url and url.endswith("2022-05.zip"):
+            raise ConnectionError("arşiv indirilemedi: test")
+        return files.get(url)
+    msg = go("net", flaky)
+    assert "SYN/USDT" in msg and "ConnectionError" in msg
+    short = dict(frames)
+    short[("SYN/USDT", "4h")] = frames[("SYN/USDT", "4h")].iloc[:-30].reset_index(drop=True)
+    assert "PRICE_END'den önce" in go("early", fake_archive(short, syms))
+    short1 = dict(frames)
+    short1[("SYN/USDT", "1d")] = frames[("SYN/USDT", "1d")].iloc[:-3].reset_index(drop=True)
+    assert "1d serisi PRICE_END'e ulaşmıyor" in go("early1", fake_archive(short1, syms))
+    msg = go("nofund", fake_archive(frames, syms, last_funding_month="2022-06"))
+    assert "fonlama" in msg and "2022-07" in msg
+    # PIT: erken biten seri hata değil (DELISTED); PRICE_END'e ulaşan sembolde fonlama yine şart
+    lst = '<ListBucketResult><IsTruncated>false</IsTruncated>' + "".join(
+        f"<CommonPrefixes><Prefix>data/futures/um/monthly/klines/{s}/</Prefix></CommonPrefixes>"
+        for s in ("BTCUSDT", "SYNUSDT")) + "</ListBucketResult>"
+    early_all = dict(frames)
+    early_all[("SYN/USDT", "4h")] = frames[("SYN/USDT", "4h")].iloc[:-30].reset_index(drop=True)
+    early_all[("SYN/USDT", "1d")] = frames[("SYN/USDT", "1d")].iloc[:-5].reset_index(drop=True)
+    rp = B.run(cache_dir=tmp_path / "c_pit", out_dir=tmp_path / "pit", universe="pit", books=["D4"],
+               fetch=fake_archive(early_all, ["BTC/USDT"]).get, list_text=lambda u: lst, now_ms=now, log=lambda s: None,
+               code_state=CODE)
+    assert rp["universe"] == "pit" and rp["data_quality"]["SYN/USDT 4h"]["ends_at_price_end"] is False
+
+
+def test_apply_pit_promotes_only_waiting_cells_and_only_from_the_same_code():
+    def fresh():
+        return {"universe": "primary", "code": CODE, "cells": {
+            "D4_01_BTC_UP|LONG": {"final": B.ST_PIT_WAIT}, "D4_02_COIN_UP|LONG": {"final": B.ST_PIT_WAIT},
+            "D4_00_BASE|LONG": {"final": B.ST_BASE}}}
+    pit = {"registry_sha": B.BOOK_REGISTRY_SHA, "code": CODE, "cells": {
         "D4_01_BTC_UP|LONG": {"pit_check": {"pass": True, "status": B.ST_PIT_PASS}},
         "D4_02_COIN_UP|LONG": {"pit_check": {"pass": False, "status": B.ST_PIT_FAIL}},
         "D4_00_BASE|LONG": {"pit_check": {"pass": True, "status": B.ST_PIT_PASS}}}}
+    rep = fresh()
     B.apply_pit(rep, pit)
     assert [rep["cells"][k]["final"] for k in ("D4_01_BTC_UP|LONG", "D4_02_COIN_UP|LONG", "D4_00_BASE|LONG")] == \
         [B.ST_CANDIDATE, B.ST_PIT_FAIL, B.ST_BASE]
-    assert rep["conclusion_tr"].startswith("ÖNERİ ADAYI: D4_01_BTC_UP|LONG")
+    # §8.4: aday hangi defterin kaç varyantından biri
+    assert rep["conclusion_tr"].startswith("ÖNERİ ADAYI: D4_01_BTC_UP|LONG (D4 defterinin 13 varyantından biri")
     assert B.pit_check({"capacity": {}, "stats": {}}, verified=False)["status"] == B.ST_PIT_UNVERIFIED
+    # PIT raporu başka kod ağacından ya da kirli ağaçtan → yazılmaz, hücre beklemede kalır
+    for code in ({**CODE, "code_tree": "t2"}, {**CODE, "dirty": True}, None):
+        rep = fresh()
+        B.apply_pit(rep, {**pit, "code": code})
+        assert rep["cells"]["D4_01_BTC_UP|LONG"]["final"] == B.ST_PIT_WAIT and "kod" in rep["pit_not_applied"]
+    assert not B.code_match(CODE, {**CODE, "dirty": None}) and B.code_match(CODE, dict(CODE))
 
 
 def test_cli_offline_without_cache_fails_cleanly_and_logs_the_attempt(tmp_path, capsys):
@@ -995,9 +1440,14 @@ def test_cli_offline_without_cache_fails_cleanly_and_logs_the_attempt(tmp_path, 
     lines = [json.loads(x) for x in (out / "book_lab_attempts.jsonl").read_text(encoding="utf-8").splitlines()]
     assert [x["status"] for x in lines] == ["STARTED", "ERROR"] and lines[0]["attempt"] == lines[1]["attempt"]
     assert lines[1]["registry_sha"] == PINNED_SHA and "çevrimdışı" in lines[1]["error"]
+    assert {"commit", "code_tree", "dirty"} <= set(lines[0]) and lines[0]["code_tree"]           # kod durumu kayıtta
     assert PINNED_SHA in capsys.readouterr().out
     with pytest.raises(SystemExit):
-        cli.main(["--universe", "yok"])
+        cli.main(["--universe", "yok", "--cache", "c", "--out", "o"])
+    with pytest.raises(SystemExit):                                                   # --cache / --out zorunlu (depo içine yazılmaz)
+        cli.main(["--offline"])
+    st = B.git_state(ROOT)
+    assert st["commit"] and len(st["code_tree"]) == 16 and isinstance(st["dirty"], bool)
 
 
 def test_import_makes_no_network_call():

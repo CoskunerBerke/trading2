@@ -9,7 +9,7 @@ tutulacak. Bu kayıttan hesaplanan mühür `BOOK_REGISTRY_SHA` bir testle sabitl
 Biri değişirse mühür değişir: o yeni sürümdür (book_v2), yeni deneme sayısıdır ve bu belge güncellenir. Sayımlar ya da
 sonuçlar görüldükten sonra kural, eşik, dilim, evren ya da dönem GEVŞETİLMEZ.
 
-Ön kayıt mührü: `BOOK_REGISTRY_SHA = 81bc20c17ea05d92`
+Ön kayıt mührü: `BOOK_REGISTRY_SHA = 2a3cecc16e0a85c1`
 
 Belgenin commit'i kuralları dondurur. Mühür yalnız kodun bu belgeye sadakatini sabitler. Kod yazılırken bir belirsizlik
 çıkarsa okunuşu `readings_tr`'ye yazılır ve belgeye eklenir; okunuş sonuç görülmeden yapılır ve kuralı gevşetemez.
@@ -93,7 +93,7 @@ Bunun dört sonucu var:
 ### 4.1 Kaynak ve dondurulmuş pencere
 
 - **Kaynak:** yalnız `data.binance.vision` USDⓈ-M arşivi (`signal_lab.ArchiveProvider`). fapi/api.binance.com bu ortamdan 451
-  döner. Fonlama: `futures_data.FUNDING_URL` (aylık `fundingRate` dosyaları) ve 2026-10-01 için `FUNDING_DAILY_URL`.
+  döner. Fonlama: yalnız `futures_data.FUNDING_URL` (aylık `fundingRate` dosyaları; arşivde günlük fonlama dosyası yoktur).
 - **Pencere çalıştırma tarihine bağlı değildir.** `signal_lab.load_series` pencereyi `now_ms − days` ile seçer; bu yüzden
   koşucu seriyi şu sabit sınırlara kırpar (UTC, ms, bar açılış zamanı = `open_time`):
 
@@ -108,8 +108,8 @@ Bunun dört sonucu var:
   verilir. Son 4h barın açılışı 2026-09-30 20:00, son 1d barın açılışı 2026-09-30'dur; ikisi de 2026-10-01 00:00'da kapanır.
 - **Karar penceresi:** karar anı t (bar kapanışı = `open_time` + dilim) için `1672531200000 ≤ t < 1790812800000`
   (2023-01-01 00:00 ≤ t < 2026-10-01 00:00).
-- **Fonlama penceresi** `PRICE_END`'den sonra en az bir uzlaşma içerir (2026-10-01'in günlük dosyası). Böylece veri sonunda
-  kapanan işlemin de "çıkıştan sonraki uzlaşma" şartı sağlanır (§5.2).
+- **Fonlama penceresi** `PRICE_END`'den sonra en az bir uzlaşma içerir (2026-10 aylık dosyasındaki uzlaşmalar). Böylece
+  veri sonunda kapanan işlemin de "çıkıştan sonraki uzlaşma" şartı sağlanır (§5.2).
 - **Göstergelerin tohumu bu sınırlardan başlar.** ATR14, RSI14, EMA (EWM) ve `atr_med` serinin ilk barından hesaplanır;
   `i ≥ 210` sayımı ve C4'ün 500 barlık penceresi bu ilk bara göre yapılır. `COIN_UP` ve `BTC_UP`'ın `regime_gate.ema_last`
   tohumu ilgili 1d serisinin ilk 200 kapanışıdır (2020-01-01 ya da listeleme).
@@ -806,7 +806,7 @@ PIT dışlama listesi için `data.binance.vision` USDⓈ-M aylık kline klasörl
 ```text
 1. anahtarlar: signal_lab._h ile; <sembol> 'BTC/USDT' biçimi (laboratuvar ve evren listesi yazımı), <dilim> '4h'/'1d', <kimlik> varyant kimliği (ör. D4_00_BASE; PLACEBO_ öneki YOK), <yön> LONG/SHORT, zaman damgası = barın AÇILIŞ zamanı (ms tamsayı)
 2. karar anı t = sinyal barının open_time + dilim (laboratuvarın t_ms'i); dönem t ile: keşif 2023-01-01 ≤ t < 2025-01-01, doğrulama 2025-01-01 ≤ t < 2026-10-01; karar penceresi dışındaki sinyal (ısınma) işlem ve plasebo üretmez
-3. pencere kırpması: barın open_time'ı [ilk bar sınırı, PRICE_END) aralığında; 4h 2022-01-01, 1d 2020-01-01 (coinler ve BTC); fonlama uzlaşma zamanı [2022-12-01, 2026-10-02); fonlama aylık dosyalardan, yayımlanmamış ay ve 2026-10 için gün dosyalarından
+3. pencere kırpması: barın open_time'ı [ilk bar sınırı, PRICE_END) aralığında; 4h 2022-01-01, 1d 2020-01-01 (coinler ve BTC); fonlama uzlaşma zamanı [2022-12-01, 2026-10-02); fonlama yalnız aylık fundingRate dosyalarından, 2022-12 … 2026-10 (arşivde günlük fundingRate klasörü yok, 2026-10-05 S3 listesi); PRICE_END sonrası uzlaşmalar 2026-10 dosyasındandır (ay dosyası ay bitince yayımlanır)
 4. temiz pencere: bozuk bar = candle_lab.valid_ends tanımı (sonlu olmayan OHLC, h < max(o,c), l > min(o,c), sonlu olmayan ya da negatif hacim); boşluk = ardışık iki açılış farkı ≠ dilim; i'de biten w barlık pencere temiz = i−w+1..i barlarının hiçbiri bozuk değil VE pencere içindeki her ardışık çift boşluksuz (pencerenin ilk barından önceki boşluk sayılmaz; valid_ends ile aynı); D4 w = 210 (4h ve 1d), Formasyon w = 300, C4 valid_ends (500), BTC_UP/COIN_UP için 1d w = 200
 5. BTC_UP/BTC_DOWN/COIN_UP: kullanılan 1d bar k = open_time + 1 gün ≤ t olan son bar; EMA200 = regime_gate.btc_regime ile aynı: serinin ilk barından k'ye kadar SONLU kapanışlar üzerinde regime_gate.ema_last (ilk 200 kapanışın SMA'sıyla tohum); close[k] > EMA → UP, değilse DOWN; close[k] sonlu değil, sonlu kapanış < 200, k'de biten 200 barlık 1d pencere temiz değil ya da k barı t'den önceki son 24 saatte kapanmamış (1d seride t'ye değen boşluk; bayat değer kullanılmaz) ise BİLİNMİYOR → giriş yok, plasebo yok; REGIME_FOLLOW = LONG için BTC_UP, SHORT için BTC_DOWN
 6. VOL_OK = signal_lab.context'in volatilite kovası 'düşük' ya da 'normal' (ATR%/atr_med ≤ 1,25; tam seri); VOL_CONFIRM = hacim kovası 'yüksek(>1.5x)' (v[i] / önceki 20 bar ortalaması > 1,5); kova 'bilinmiyor' → geçmez
@@ -840,5 +840,6 @@ PIT dışlama listesi için `data.binance.vision` USDⓈ-M aylık kline klasörl
 34. PIT eksik veri: evrendeki (ay, sembol) çifti eksik = o aydaki 4h bar sayısı < 0,90 × 6 × o aydaki 1d bar sayısı (1d bar > 0); eksik çift payı > %5 ya da liste alınamazsa PIT DOĞRULANAMADI; işlem karar ayının evrenindeyse sayılır
 35. bayt kanıtı: penceredeki her satır '%d,%r,%r,%r,%r,%r\n' (open_time, açılış, yüksek, düşük, kapanış, hacim; Python repr) metninin sha256'sı; fonlama dosyası baytlarının sha256'sı
 36. yeniden adlandırma: yalnız bugünkü sembolün arşivi kullanılır, eski sembolün geçmişi birleştirilmez; bilinen durum G/USDT (Galxe GAL → Gravity G, 2024; GALUSDT geçmişi kullanılmaz, G'nin ilk barı kalite raporunda görünür)
-37. PIT dışlama listesi (tam; taban adları, sonuna USDT eklenir): endeks: BTCDOM, DEFI, FOOTBALL, BLUEBIRD; stabil: USDC, BUSD, TUSD, FDUSD, USDP, DAI, USDE, PYUSD, RLUSD, USD1, EUR, AEUR; emtia_doviz: XAU, XAG, XPT, XPD, XAUT, PAXG, COPPER, NATGAS, CL, BZ, USDBRL; hisse_etf_halka_arz_oncesi: AAOI, AAPL, ACN, ADBE, ALAB, AMAT, AMD, AMZN, ANET, ANTHROPIC, APLD, APP, ARM, ASML, ASTS, AVGO, AXTI, BABA, BITO, BMNR, BRKB, BYD, CBRS, CIEN, COHR, COIN, COST, CRCL, CRDO, CRM, CRWD, CRWV, CSCO, CSOPSAMSUNG2L, CSOPSKHYNIX2L, CVNA, CXMT, DDOG, DELL, DIS, DJT, DKNG, DRAM, EBAY, EWJ, EWY, EWZ, FLNC, GDX, GEV, GLW, GME, GOOGL, GTLB, HANA, HANMI, HIMS, HK0625, HK0700, HK0992, HK1810, HOOD, HPE, HUT, HYUNDAI, IBM, INTC, IONQ, IREN, IWM, JPM, KLAC, KODEX200, KUAISHOU, LGELECTRONICS, LITE, LLY, LRCX, MARA, MDB, MEITUAN, META, MINIMAX, MRK, MRNA, MRVL, MSFT, MSTR, MU, MUU, NAVER, NBIS, NFLX, NKE, NOK, NOW, NVDA, NVDL, NVO, OKLO, OPENAI, ORCL, PANW, PDD, PLTR, POPMART, PYPL, QCOM, QQQ, RDDT, RIVN, RKLB, SAMSUNG, SAMSUNGEM, SHOP, SKHY, SKHYNIX, SLX, SMCI, SMH, SNDK, SNOW, SOFI, SONY, SOXL, SOXS, SPCX, SPY, SQQQ, STRC, TEM, TENCENT, TQQQ, TSLA, TSLL, TSM, TTWO, TXN, TZA, UBER, UNH, UNITREE, URNM, UVXY, WDC, WMT, XBI, XLE, XOM, ZHIPU, ZHONGJI; ayrıca alt çizgili her sembol ve USDT ile bitmeyen her sembol
+37. veri hatası → koşu durur, rapor yazılmaz, deneme ERROR; aynı kodla yeniden denenir (§0.6): bir sembolün mum ya da fonlama dosyası indirilemedi ya da okunamadı; BTC 1d serisi ya da birincil/bilgi evreninde bir coinin 4h serisi (ve yüklendiyse 1d serisi) PRICE_END'e ulaşmıyor (DELISTED yalnız PIT kipinde olur); PRICE_END'e ulaşan bir sembolün [PRICE_END, 2026-10-02) aralığında fonlama uzlaşması yok (2026-10 dosyası henüz yayımlanmadı); arşivde hiç verisi olmayan coin dışarıda kalır ve sonuçta yazılır (§11.6); PIT kipinde 1d serisi defter seçiminden bağımsız yüklenir (eksik çift denetimi) ve yüklenmemiş seçili sembolün her evren ayı eksik çift sayılır; aynı --out'taki önceki koşunun işlemleriyle birleştirme, yalnız-rapor ve PIT sonucunun birincil rapora yazılması aynı kod ağacını (git HEAD:tradingbot, HEAD:scripts) ve temiz çalışma ağacını ister; açık izinle yapılan birleştirme rapora yazılır
+38. PIT dışlama listesi (tam; taban adları, sonuna USDT eklenir): endeks: BTCDOM, DEFI, FOOTBALL, BLUEBIRD; stabil: USDC, BUSD, TUSD, FDUSD, USDP, DAI, USDE, PYUSD, RLUSD, USD1, EUR, AEUR; emtia_doviz: XAU, XAG, XPT, XPD, XAUT, PAXG, COPPER, NATGAS, CL, BZ, USDBRL; hisse_etf_halka_arz_oncesi: AAOI, AAPL, ACN, ADBE, ALAB, AMAT, AMD, AMZN, ANET, ANTHROPIC, APLD, APP, ARM, ASML, ASTS, AVGO, AXTI, BABA, BITO, BMNR, BRKB, BYD, CBRS, CIEN, COHR, COIN, COST, CRCL, CRDO, CRM, CRWD, CRWV, CSCO, CSOPSAMSUNG2L, CSOPSKHYNIX2L, CVNA, CXMT, DDOG, DELL, DIS, DJT, DKNG, DRAM, EBAY, EWJ, EWY, EWZ, FLNC, GDX, GEV, GLW, GME, GOOGL, GTLB, HANA, HANMI, HIMS, HK0625, HK0700, HK0992, HK1810, HOOD, HPE, HUT, HYUNDAI, IBM, INTC, IONQ, IREN, IWM, JPM, KLAC, KODEX200, KUAISHOU, LGELECTRONICS, LITE, LLY, LRCX, MARA, MDB, MEITUAN, META, MINIMAX, MRK, MRNA, MRVL, MSFT, MSTR, MU, MUU, NAVER, NBIS, NFLX, NKE, NOK, NOW, NVDA, NVDL, NVO, OKLO, OPENAI, ORCL, PANW, PDD, PLTR, POPMART, PYPL, QCOM, QQQ, RDDT, RIVN, RKLB, SAMSUNG, SAMSUNGEM, SHOP, SKHY, SKHYNIX, SLX, SMCI, SMH, SNDK, SNOW, SOFI, SONY, SOXL, SOXS, SPCX, SPY, SQQQ, STRC, TEM, TENCENT, TQQQ, TSLA, TSLL, TSM, TTWO, TXN, TZA, UBER, UNH, UNITREE, URNM, UVXY, WDC, WMT, XBI, XLE, XOM, ZHIPU, ZHONGJI; ayrıca alt çizgili her sembol ve USDT ile bitmeyen her sembol
 ```

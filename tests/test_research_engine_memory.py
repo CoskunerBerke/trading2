@@ -40,15 +40,25 @@ from datetime import datetime, timezone
 from research_engine_fixtures import FakeHost, FREE_BYTES
 from tradingbot.research_engine import night as N, selfcheck as SC
 from tradingbot.research_engine.paths import EnginePaths
+def _peak():
+    # Bu sürecin kendi tepe RSS'i (VmHWM, exec ile sıfırlanır). ru_maxrss Linux'ta fork+exec'te ebeveynin tepesini
+    # taşır: tam test koşusunda büyük pytest sürecinin ~650 MiB'ı çocuğa yazılıyordu (2026-10-06).
+    try:
+        for line in open("/proc/self/status", encoding="ascii"):
+            if line.startswith("VmHWM:"):
+                return int(line.split()[1]) * 1024
+    except OSError:
+        pass
+    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024
 data = Path(sys.argv[2])
 paths = EnginePaths(data=data, state=data / "state")
 host = FakeHost(data.parent)
 # A/B penceresi dışı (iki gece de tam plan: S0, S1a, S3, S7, S7b)
 SC.register_epoch(paths, "b" * 40, datetime(2020, 1, 1, tzinfo=timezone.utc), "mem", code_hash=SC.engine_code_hash())
-out = {"rss_after_import": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024}
+out = {"rss_after_import": _peak()}
 for i, when in enumerate(("2026-10-01T01:40:00+00:00", "2026-10-02T01:40:00+00:00")):
     st = N.run_night(paths, now=datetime.fromisoformat(when), **host.kw())
-    out[f"night{i + 1}"] = {"result": st["result"], "rss": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024,
+    out[f"night{i + 1}"] = {"result": st["result"], "rss": _peak(),
                             "stages": {k: v.get("status") for k, v in st["stages"].items()},
                             "new_closes": sum(b.get("new_closes", 0) for b in
                                               ((st["stages"].get("S1a") or {}).get("result") or {}).get("books", {}).values())}

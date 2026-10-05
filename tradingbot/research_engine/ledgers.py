@@ -135,6 +135,18 @@ def book_name(book: str) -> str:
     return BOOK_NAMES.get(book, book)
 
 
+#: AYNA DEFTERLER (2026-10-06; `scripts/bot_scorecard.py` `MIRROR_BOOKS` ile AYNI anahtarlar — test): başka bir defterin
+#: gerçek işlemlerinin kopyası (M2X = M2'nin kopyası, docs/M2_AGGRESSIVE_V1.md §4.2). Arşiv (`find_ledgers`, S1a) onları
+#: da KAYDEDER; günlük hedefin toplamına, gruplarına, enstrümanlarına, en iyi enstrümanına ve hükümlerine GİRMEZ (aynı
+#: işlemleri iki kez sayardı), ayrı bölümde yalnız bilgi olarak gösterilir. Motor `scripts/`ten bağımsız kalsın diye
+#: liste burada tanımlıdır.
+MIRROR_BOOKS: dict[str, str] = {"strategy_paper_m2x": "M2X agresif (M2 kopyası, PAPER)"}
+
+
+def is_mirror(book: str) -> bool:
+    return book in MIRROR_BOOKS
+
+
 def book_group(book: str) -> str:
     """Rapor grubu: ana botun iki alt defteri "main" altında toplanır."""
     return BOOK_MAIN if book in (BOOK_MAIN_FUT, BOOK_MAIN_SPOT) else book
@@ -234,6 +246,6 @@ def read_all(state: Path | str, *, clock: Callable[[], datetime] = utc_now) -> d
 
 __all__ = ["BOOK_MAIN", "BOOK_MAIN_FUT", "BOOK_MAIN_SPOT", "BOOK_NAMES", "FUTURES_FILE", "GOLD_BASES", "KIND_FUTURES",
            "KIND_SPOT", "KNOWN_BOOK_DIRS", "KNOWN_SCHEMA_VERSIONS", "LEDGER_MISSING", "LEDGER_OK", "LEDGER_SCHEMA_UNKNOWN",
-           "LEDGER_UNREADABLE", "LedgerRead", "SPOT_FILE", "UTC", "add_days", "book_group", "book_id_for_dir", "book_name",
-           "day_of", "day_start", "dec", "dec_or_none", "dstr", "find_ledgers", "is_gold", "iso", "parse_day", "parse_ts",
+           "LEDGER_UNREADABLE", "LedgerRead", "MIRROR_BOOKS", "SPOT_FILE", "UTC", "add_days", "book_group", "book_id_for_dir", "book_name",
+           "day_of", "day_start", "dec", "dec_or_none", "dstr", "find_ledgers", "is_gold", "is_mirror", "iso", "parse_day", "parse_ts",
            "read_all", "read_ledger", "symbol_key", "utc_now"]

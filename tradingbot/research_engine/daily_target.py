@@ -14,6 +14,11 @@ da 28 saatten uzun bir pencere bir "gün" değildir: `EKSİK (PENCERE_SÜRESİ)`
 
 Görünümler (defter, ana bot grubu, toplam, enstrüman, altın toplamı):
 
+* **Ayna defterler** (`ledgers.MIRROR_BOOKS`, 2026-10-06; M2X = M2'nin gerçek işlemlerinin kopyası): arşivde VARDIR
+  ama toplam, grup, enstrüman, altın, en iyi enstrüman, şans oranı ve hükümlere GİRMEZ (aynı işlemleri iki kez sayardı;
+  `scripts/bot_scorecard.py --daily` de `find_books` ile dışlar). Satırda ayrı `mirror_books` anahtarında, kendi
+  defterine göre, yalnız bilgi olarak yazılır (hüküm yok). Ayna defter yoksa satırlar ve çıktılar öncekiyle aynıdır.
+
 * **Kayıt görünümü** `pnl_rec(D)`: UTC günü D'de (`closed_at`) kapanan kayıtların SON revizyonlu Σ `TradeRecord.pnl`'i
   (vadeli + spot). Geç fonlama `closed_at` gününe yazılır ve o günü REVİZE eder. Açıklama içindir; hüküm vermez.
 * **Cüzdan görünümü** `pnl_wal(W)`: W içinde GÖZLENEN (`observed_at`) PNL + FEE + FUNDING + LIQ_FEE + TAX
@@ -75,6 +80,7 @@ from .closes import (
 from .ledgers import (
     KIND_SPOT,
     LEDGER_MISSING,
+    MIRROR_BOOKS,
     add_days,
     book_group,
     book_name,
@@ -83,6 +89,7 @@ from .ledgers import (
     dec,
     dec_or_none,
     is_gold,
+    is_mirror,
     iso,
     parse_day,
     parse_ts,
@@ -366,10 +373,12 @@ def build_rows(paths: EnginePaths, *, now: datetime | None = None, backfill_days
         return []
     run_day = day_of(now)
     snap_by_day = {s["day"]: s for s in snaps}
-    books = sorted({b for s in snaps for b in (s.get("books") or {})})
+    every = sorted({b for s in snaps for b in (s.get("books") or {})})
+    books = [b for b in every if not is_mirror(b)]
+    mirrors = [b for b in every if is_mirror(b)]       # ayna: yalnız bilgi (toplama ve hükme girmez)
     scans_e: dict[str, dict] = {}
     scans_r: dict[str, dict] = {}
-    for b in books:
+    for b in every:
         times, tdays = book_times(snaps, b)
         scans_e[b] = scan_entries(paths, b, times, tdays)
         scans_r[b] = scan_closes(paths, b)
@@ -378,9 +387,9 @@ def build_rows(paths: EnginePaths, *, now: datetime | None = None, backfill_days
     d = add_days(first, -backfill_days)
     while d < last:
         if d < first:
-            r = _pre_row(d, books, scans_r, scans_e, snap_by_day[first], run_day)
+            r = _pre_row(d, books, scans_r, scans_e, snap_by_day[first], run_day, mirrors)
         else:
-            r = _window_row(d, books, scans_r, scans_e, snap_by_day, run_day, prev_rows or {})
+            r = _window_row(d, books, scans_r, scans_e, snap_by_day, run_day, prev_rows or {}, mirrors)
         if r is not None:
             rows.append(r)
         d = add_days(d, 1)
@@ -439,13 +448,14 @@ def _book_scope(b: str, day: str, b0: dict, b1: dict, rec: dict, w: dict | None,
 
 
 def _window_row(day: str, books: list[str], scans_r: dict, scans_e: dict, snap_by_day: dict, run_day: str,
-                prev_rows: dict[str, dict]) -> dict | None:
+                prev_rows: dict[str, dict], mirrors: Iterable[str] = ()) -> dict | None:
     s0, s1 = snap_by_day.get(day), snap_by_day.get(add_days(day, 1))
     total = _scope_empty()
     total_status, total_reasons = KESIN, []
     groups: dict[str, dict[str, Any]] = {}
     group_status: dict[str, tuple[str, list[str]]] = {}
     books_out: dict[str, dict[str, Any]] = {}
+    mirror_out: dict[str, dict[str, Any]] = {}
     inst_acc: dict[str, dict[str, Any]] = {}
     added: list[str] = []
     trades: list[tuple[str, float, float]] = []
@@ -457,7 +467,9 @@ def _window_row(day: str, books: list[str], scans_r: dict, scans_e: dict, snap_b
         t0, t1 = parse_ts(s0.get("taken_at")), parse_ts(s1.get("taken_at"))
         hours = round((t1 - t0).total_seconds() / 3600.0, 3) if t0 and t1 else None
     win_bad = hours is None or not (WINDOW_MIN_H <= hours <= WINDOW_MAX_H)
-    for b in books:
+    for b in [*books, *mirrors]:
+        mir = is_mirror(b)                       # ayna defter: yalnız `mirror_out`a yazılır, hiçbir toplama girmez
+        dst = mirror_out if mir else books_out
         rec = scans_r[b].get(day) or _new_ragg()
         b0 = ((s0 or {}).get("books") or {}).get(b)
         b1 = ((s1 or {}).get("books") or {}).get(b)
@@ -465,14 +477,15 @@ def _window_row(day: str, books: list[str], scans_r: dict, scans_e: dict, snap_b
             if rec["n"]:
                 sc = _scope_empty()
                 sc["pnl_rec"], sc["n_trades"], sc["mtm_ok"] = rec["pnl"], rec["n"], False
-                books_out[b] = _scope_out(sc, status=EKSIK, reasons=["ANLIK_GÖRÜNTÜ_YOK"])
+                dst[b] = _scope_out(sc, status=EKSIK, reasons=["ANLIK_GÖRÜNTÜ_YOK"])
             continue
         ok0 = isinstance(b0, dict) and b0.get("status") == "OK"
         ok1 = isinstance(b1, dict) and b1.get("status") == "OK"
         gone0 = not isinstance(b0, dict) or b0.get("status") == LEDGER_MISSING
         gone1 = not isinstance(b1, dict) or b1.get("status") == LEDGER_MISSING
         if gone0 and ok1:
-            added.append(b)                      # yeni (ya da geri gelen) defter: bu pencerenin paydasına girmez
+            if not mir:
+                added.append(b)                  # yeni (ya da geri gelen) defter: bu pencerenin paydasına girmez
             continue
         if gone0 and gone1:
             continue                             # iki uçta da yok: bu pencerede defter yoktur (LEDGER_MISSING bayrağı ayrı)
@@ -483,7 +496,9 @@ def _window_row(day: str, books: list[str], scans_r: dict, scans_e: dict, snap_b
                 why = ["DEFTER_YOK" if not isinstance(b1, dict) else f"DEFTER_{LEDGER_MISSING}"]
             else:
                 why = [f"DEFTER_{(b1 if not ok1 else b0).get('status') or 'YOK'}"]
-            books_out[b] = _scope_out(sc, status=EKSIK, reasons=why)
+            dst[b] = _scope_out(sc, status=EKSIK, reasons=why)
+            if mir:
+                continue
             total_status, total_reasons = EKSIK, total_reasons + why
             total["mtm_ok"] = False                  # okunamayan defter varken toplam MTM yüzdesi yazılmaz (kısmi olurdu)
             g = book_group(b)
@@ -494,8 +509,10 @@ def _window_row(day: str, books: list[str], scans_r: dict, scans_e: dict, snap_b
         sc, st, rs, by_inst = _book_scope(b, day, b0, b1, rec, scans_e[b]["win"].get(day), scans_e[b], run_day)
         if win_bad:
             st, rs = EKSIK, rs + ["PENCERE_SÜRESİ"]
-        books_out[b] = {**_scope_out(sc, status=st, reasons=rs), "kind": b1.get("kind"),
-                        "mark_source": b1.get("mark_source"), "e_end": _fl(dec_or_none(b1.get("equity")))}
+        dst[b] = {**_scope_out(sc, status=st, reasons=rs), "kind": b1.get("kind"),
+                  "mark_source": b1.get("mark_source"), "e_end": _fl(dec_or_none(b1.get("equity")))}
+        if mir:
+            continue
         if sc["mtm_ok"]:
             e_books[b] = sc["e_start"]
         _scope_add(total, sc)
@@ -535,7 +552,7 @@ def _window_row(day: str, books: list[str], scans_r: dict, scans_e: dict, snap_b
         row.update({"status": EKSIK, "status_reason": ["ANLIK_GÖRÜNTÜ_YOK"], "data_completeness": "MISSING",
                     "total": _scope_out(sc, status=EKSIK, reasons=["ANLIK_GÖRÜNTÜ_YOK"]), "books": books_out, "groups": {},
                     "instruments": {}, "best_instrument": None, "gold": None, "chance": None, "hit": None})
-        return row
+        return _with_mirrors(row, mirror_out)
     if win_bad:
         total_status, total_reasons = EKSIK, total_reasons + ["PENCERE_SÜRESİ"]
     total_out = _scope_out(total, status=total_status, reasons=total_reasons)
@@ -595,10 +612,19 @@ def _window_row(day: str, books: list[str], scans_r: dict, scans_e: dict, snap_b
                       "single_inst": row["best_instrument"]["inst"] if sh else None}
     else:
         row["hit"] = None
+    return _with_mirrors(row, mirror_out)
+
+
+def _with_mirrors(row: dict, mirror_out: dict[str, dict[str, Any]]) -> dict:
+    """Ayna defterlerin bilgi kapsamı (kendi defterine göre; hüküm yok). Ayna yoksa anahtar hiç yazılmaz (satır
+    öncekiyle bayt bayt aynı kalır)."""
+    if mirror_out:
+        row["mirror_books"] = {b: {**v, "name": MIRROR_BOOKS.get(b, b), "verdict": None} for b, v in sorted(mirror_out.items())}
     return row
 
 
-def _pre_row(day: str, books: list[str], scans_r: dict, scans_e: dict, first_snap: dict, run_day: str) -> dict | None:
+def _pre_row(day: str, books: list[str], scans_r: dict, scans_e: dict, first_snap: dict, run_day: str,
+             mirrors: Iterable[str] = ()) -> dict | None:
     """P1a'dan önceki gün: ölçülmüş anlık görüntü yoktur. Kayıt görünümü ve defter-zaman-damgalı cüzdan görünümü
     (hareketler arşivde duruyorsa `RECONSTRUCTED`, düşmüşse yok) yazılır; MTM yoktur, gün asla KESİN değildir."""
     any_data = False
@@ -607,15 +633,17 @@ def _pre_row(day: str, books: list[str], scans_r: dict, scans_e: dict, first_sna
     complete = True
     den = D0
     books_out = {}
-    for b in books:
+    mirror_out: dict[str, dict[str, Any]] = {}
+    for b in [*books, *mirrors]:
+        mir = is_mirror(b)                       # ayna defter: yalnız bilgi; toplama, paydaya ve tamlığa girmez
         rec = scans_r[b].get(day) or _new_ragg()
         se = scans_e[b]
         w = se["walts"].get(day)
         fb = (first_snap.get("books") or {}).get(b) or {}
-        if rec["n"] or w:
+        if (rec["n"] or w) and not mir:
             any_data = True
         ok = _walts_complete(se, day)
-        complete = complete and ok
+        complete = complete and (ok or mir)
         sc = _scope_empty()
         sc["mtm_ok"] = False
         sc["pnl_rec"], sc["n_trades"], sc["fees"], sc["funding"] = rec["pnl"], rec["n"], rec["fees"], rec["funding"]
@@ -629,19 +657,22 @@ def _pre_row(day: str, books: list[str], scans_r: dict, scans_e: dict, first_sna
                 if dd >= day:
                     later += agg["pnl"] + (agg["transfer"] if fb.get("kind") != KIND_SPOT else D0) + agg["other"]
             e_rec = base - later
-            den += e_rec
-        _scope_add(total, sc)
+            if not mir:
+                den += e_rec
+        if not mir:
+            _scope_add(total, sc)
         if rec["n"] or w:
-            books_out[b] = {**_scope_out(sc, status=EKSIK, reasons=["P1A_ÖNCESİ"]), "e_reconstructed": _fl(e_rec),
+            (mirror_out if mir else books_out)[b] = {**_scope_out(sc, status=EKSIK, reasons=["P1A_ÖNCESİ"]), "e_reconstructed": _fl(e_rec),
                             "wallet_view": "RECONSTRUCTED" if ok else "MISSING"}
     if not any_data:
         return None
     out = _scope_out(total, status=EKSIK, reasons=["P1A_ÖNCESİ"])
     out["r_realized"] = _pct(total["pnl_wal"], den) if complete and den > 0 else None
-    return {"schema": ROW_SCHEMA, "tgt": TGT_VERSION, "stream": STREAM_LIVE, "day": day, "window": None,
-            "final_on": None, "books_added": [], "status": EKSIK, "status_reason": ["P1A_ÖNCESİ"],
-            "data_completeness": "RECONSTRUCTED_REALIZED_ONLY" if complete else "MISSING", "total": out, "books": books_out,
-            "groups": {}, "instruments": {}, "best_instrument": None, "gold": None, "chance": None, "hit": None}
+    return _with_mirrors({"schema": ROW_SCHEMA, "tgt": TGT_VERSION, "stream": STREAM_LIVE, "day": day, "window": None,
+                          "final_on": None, "books_added": [], "status": EKSIK, "status_reason": ["P1A_ÖNCESİ"],
+                          "data_completeness": "RECONSTRUCTED_REALIZED_ONLY" if complete else "MISSING", "total": out,
+                          "books": books_out, "groups": {}, "instruments": {}, "best_instrument": None, "gold": None,
+                          "chance": None, "hit": None}, mirror_out)
 
 
 # ============================================================================ revizyon ve yazım
@@ -1131,6 +1162,13 @@ def render_table(latest: dict[str, dict], *, days: int = 7) -> list[str]:
         for g, gv in sorted((r.get("groups") or {}).items()):
             lines.append(f"   {book_name(g):<30}{gv.get('status', ''):<9}MTM {fmt_pct(gv.get('r_mtm'))} · gerçekleşmiş "
                          f"{fmt_pct(gv.get('r_realized'))} · açık gerçekleşmemiş {fmt_num(gv.get('u_end'))} USDT")
+        mb = r.get("mirror_books") or {}
+        if mb:
+            lines.append("  ayna defterler (bilgi; kopya — toplama, en iyi enstrümana ve hükme girmez; kendi defterine göre):")
+        for b, mv in mb.items():
+            lines.append(f"   {str(mv.get('name') or b)[:29]:<30}{mv.get('status', ''):<9}MTM {fmt_pct(mv.get('r_mtm'))} · "
+                         f"gerçekleşmiş {fmt_pct(mv.get('r_realized'))} · kayıt {fmt_num(mv.get('pnl_rec'))} USDT "
+                         f"({mv.get('n_trades', 0)} işlem)")
     return lines
 
 
@@ -1147,6 +1185,7 @@ def ledger_day_views(paths: EnginePaths, *, days: int, now: datetime | None = No
     snaps = load_snapshots(paths, light=True)
     last = snaps[-1] if snaps else {"books": {}}
     out: dict[str, Any] = {"days": day_list, "books": {}}
+    mirrors: dict[str, Any] = {}
     for b, st in sorted((last.get("books") or {}).items()):
         if st.get("status") != "OK":
             continue
@@ -1159,13 +1198,17 @@ def ledger_day_views(paths: EnginePaths, *, days: int, now: datetime | None = No
             bd[d] = {"rec": {"n": r["n"], "net": _fl(r["pnl"]), "fees": _fl(r["fees"]), "funding": _fl(r["funding"]),
                              "slippage": _fl(r["slippage"])},
                      "wal_ts": {"net": _fl(w["pnl"]), "transfer": _fl(w["transfer"]), "complete": _walts_complete(se, d)}}
-        out["books"][b] = {"kind": st.get("kind"), "unrealized_now": _fl(dec_or_none(st.get("unrealized"))), "days": bd}
+        # ayna defter (betik `find_books` ile dışlar): eşitlik tablosuna ve gün toplamlarına girmez, ayrı bilgi
+        (mirrors if is_mirror(b) else out["books"])[b] = {"kind": st.get("kind"),
+                                                          "unrealized_now": _fl(dec_or_none(st.get("unrealized"))), "days": bd}
     out["snapshot_day"] = last.get("day")
     out["snapshot_taken_at"] = last.get("taken_at")
     # arşivin kapsadığı son gün (A/B KAPALI gecelerinin S1s anlık görüntüleri arşivlemez): karşılaştırma bundan önceki
     # günlerde anlamlıdır (sürüm betiğinin K6'sı ≤ bu gün − 2'yi karşılaştırır: geç fonlama o zamana dek yerleşir)
     arch = [s_["day"] for s_ in snaps if s_.get("mode", "archive") != "snapshot_only"]
     out["archived_through"] = arch[-1] if arch else None
+    if mirrors:
+        out["mirror_books"] = mirrors
     return out
 
 
@@ -1195,6 +1238,14 @@ def render_ledger_views(views: dict[str, Any]) -> list[str]:
         rc = sum(x["rec"]["n"] for x in v["days"].values())
         wn = sum((x["wal_ts"]["net"] or 0.0) for x in v["days"].values())
         lines.append(f"{book_name(b)[:29]:<30}{f2(rn) + f' ({rc})':>20}{f2(wn):>13}{f2(v.get('unrealized_now')):>37}")
+    mb = views.get("mirror_books") or {}
+    if mb:
+        lines.append("ayna defterler (bilgi; kopya — yukarıdaki toplamlara girmez; hüküm yok):")
+    for b, v in mb.items():
+        rn = sum((x["rec"]["net"] or 0.0) for x in v["days"].values())
+        rc = sum(x["rec"]["n"] for x in v["days"].values())
+        wn = sum((x["wal_ts"]["net"] or 0.0) for x in v["days"].values())
+        lines.append(f"{MIRROR_BOOKS.get(b, b)[:29]:<30}{f2(rn) + f' ({rc})':>20}{f2(wn):>13}{f2(v.get('unrealized_now')):>37}")
     return lines
 
 

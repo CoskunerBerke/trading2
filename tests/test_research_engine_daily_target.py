@@ -121,6 +121,54 @@ def _two_book_state(tmp_path):
     return v
 
 
+def _mirror_state(root, *, with_m2x: bool):
+    """Ana bot + M2 (+ isteğe bağlı M2X ayna defteri: M2'nin işlemlerinin büyük kopyası). M2X sayılsaydı en iyi enstrüman
+    SOL olurdu ve toplam ikiye katlanırdı."""
+    v = FakeVps(root)
+    big, small = v.fut(equity="10000"), v.fut("strategy_paper_m2", equity="100")
+    mx = v.fut("strategy_paper_m2x", equity="1000") if with_m2x else None
+    v.night(night_of("2026-10-01"))
+    trade(big, "BTC/USDT", at("2026-10-01", 3), 100.0, 104.0, notional="1500", lev=3)
+    trade(small, "SOL/USDT", at("2026-10-01", 3), 100.0, 106.0, notional="100", lev=2)
+    if mx is not None:
+        trade(mx, "SOL/USDT", at("2026-10-01", 3), 100.0, 106.0, notional="2000", lev=3)
+    r1, _ = v.night(night_of("2026-10-02"))
+    return v, r1
+
+
+def test_mirror_books_list_equals_scorecard_mirror_books():
+    """Motor ayna listesini `scripts/`ten bağımsız tanımlar; betikle aynı anahtarlar olmalıdır."""
+    from tradingbot.research_engine.ledgers import MIRROR_BOOKS, is_mirror
+    assert set(MIRROR_BOOKS) == set(S.MIRROR_BOOKS) and is_mirror("strategy_paper_m2x") and not is_mirror("strategy_paper_m2")
+
+
+def test_m2x_ledger_is_archived_but_not_counted_in_totals_best_instrument_or_verdicts(tmp_path):
+    vm, r1m = _mirror_state(tmp_path / "m", with_m2x=True)
+    v0, _r10 = _mirror_state(tmp_path / "o", with_m2x=False)
+    mx = "strategy_paper_m2x"
+    # arşiv M2X'i de kaydeder (S1a defter listesi ve kapanış arşivi)
+    assert mx in r1m["books"] and r1m["books"][mx]["status"] == "OK" and r1m["books"][mx]["new_closes"] == 1
+    assert T.scan_closes(vm.paths, mx)["2026-10-01"]["n"] == 1
+    rm, r0 = vm.rows(), v0.rows()
+    assert set(rm) == set(r0)
+    drop = T._VOLATILE + ("mirror_books",)
+    for d in rm:
+        assert T._strip(rm[d], drop) == T._strip(r0[d], drop), d          # toplam, gruplar, enstrümanlar, şans, isabet aynı
+        assert "mirror_books" not in r0[d]
+    row = rm["2026-10-01"]
+    assert mx not in row["books"] and mx not in row["groups"] and row["best_instrument"]["inst"] == "BTCUSDT"
+    assert row["total"]["n_trades"] == 2
+    mb = row["mirror_books"][mx]
+    assert mb["verdict"] is None and mb["n_trades"] == 1 and mb["name"].startswith("M2X") and mb["r_mtm"] > 1.0
+    look = T.look_verdicts(rm, look_day="2026-11-04", look_night=True)
+    assert not any(mx in k for k in look["scopes"]), "ayna defterin hükmü yok"
+    # tablo: ayna defter ayrı bilgi satırıdır; geri kalan satırlar ayna yokkenkiyle aynı
+    tm, t0 = T.render_table(rm), T.render_table(r0)
+    assert [ln for ln in tm if "ayna" not in ln and "M2X" not in ln] == t0
+    assert any("M2X" in ln for ln in tm) and not any("ayna" in ln or "M2X" in ln for ln in t0)
+    assert T.render_brief(rm, None, {}) == T.render_brief(r0, None, {})
+
+
 def test_best_instrument_uses_verdict_denominator_and_both_denominators_are_labelled(tmp_path):
     v = _two_book_state(tmp_path)
     row = v.rows()["2026-10-01"]
@@ -335,14 +383,26 @@ def test_holm_wilson_and_block_bootstrap_basics():
 
 # ============================================================================ kabul 7: scorecard --daily == daily_target
 def test_scorecard_daily_equals_engine_views_spot_and_all_mark_sources(tmp_path):
+    _scorecard_equality(tmp_path, with_m2x=False)
+
+
+def test_scorecard_daily_equals_engine_views_with_m2x_mirror_ledger_present(tmp_path):
+    """M2X ayna defteri varken de eşitlik tutar: iki taraf da onu tablodan dışlar; motor ayrı bilgi bölümünde gösterir."""
+    _scorecard_equality(tmp_path, with_m2x=True)
+
+
+def _scorecard_equality(tmp_path, *, with_m2x: bool):
     v = FakeVps(tmp_path)
     main, m2 = v.fut(), v.fut("strategy_paper_m2", equity="300")
+    m2x = v.fut("strategy_paper_m2x", equity="300") if with_m2x else None   # ayna: iki tarafta da eşitliğe girmez
     sp = v.spot(cash="3000")
     now = night_of("2026-10-04")
     for d in (1, 2, 3):
         day = f"2026-10-0{d}"
         trade(main, "ETH/USDT", at(day, 3), 100.0, 101.0 + d)
         trade(m2, "BTC/USDT", at(day, 5), 100.0, 98.0)
+        if m2x is not None:
+            trade(m2x, "BTC/USDT", at(day, 5), 100.0, 98.0, notional="400")
     sp.market_buy("ETH/USDT", qty=D("2"), ref_price=D("100"), now=at("2026-10-02", 4))
     sp.market_buy("BTC/USDT", qty=D("1"), ref_price=D("200"), now=at("2026-10-02", 4))
     sp.market_buy("SOL/USDT", qty=D("3"), ref_price=D("50"), now=at("2026-10-02", 4))
@@ -369,6 +429,7 @@ def test_scorecard_daily_equals_engine_views_spot_and_all_mark_sources(tmp_path)
     eng = T.ledger_day_views(v.paths, days=5, now=now)
     sc = S.daily_report(v.state, days=5, now=now)
     assert set(eng["books"]) == set(sc["books"]) == {"main_fut", "main_spot", "strategy_paper_m2"}
+    assert ("mirror_books" in eng) == with_m2x and (not with_m2x or set(eng["mirror_books"]) == {"strategy_paper_m2x"})
     for b, eb in eng["books"].items():
         sb = sc["books"][b]
         assert eb["unrealized_now"] == sb["unrealized_now"], b
@@ -384,6 +445,7 @@ def test_scorecard_daily_equals_engine_views_spot_and_all_mark_sources(tmp_path)
     assert pick(mine) == pick(theirs) and len(pick(mine)) == 5, (mine, theirs)
     wal = lambda ls: [ln.split()[3] for ln in ls if ln[:4] == "2026"]            # cüzdan net (ts günü)
     assert wal(mine) == wal(theirs)
+    assert any(ln.startswith("M2X") for ln in mine) == with_m2x and not any("ayna" in ln for ln in mine if not with_m2x)
     # mark eksikse ikisi de "yok" der (ertesi gece; aynı UTC gününün ilk anlık görüntüsü ölçümdür, yeniden yazılmaz)
     sp.market_buy("XRP/USDT", qty=D("10"), ref_price=D("1"), now=at("2026-10-04", 2))
     nxt = night_of("2026-10-05")

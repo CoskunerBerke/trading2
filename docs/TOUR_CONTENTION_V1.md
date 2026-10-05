@@ -2,6 +2,8 @@
 
 Tarih: 2026-10-05 · Taban: `1c2c6e2` (VPS'te çalışan `f8b05fb` + sonraki araştırma/belge/test commit'leri) ·
 Dal: `impl/tourfix` · Düzeltme turu 1: iki mercekli denetimin bulguları (§3.1 fork asılması, §6 OOM, §5 saat-duvarı).
+Düzeltme turu 2: kapanış alt süreci beklemez (§3.3), alt süreç devralınan tanımlayıcıları tutmaz (§3.2), işaret dosyası
+yedeğe girmez (§3.1), geri alma sinyalleri ve kalan karar riski (§5, §9).
 
 Bu bir **karar-nötr performans onarımıdır**: strateji, eşik, defter, boyut ve config değeri değişmez. Yeni indeksin
 yayımlandığı kod noktası ve kuralı, turun indeks sürümünü okuma kuralı, kanıt önbelleğinin anahtarı ve kanıtın kendisi
@@ -171,12 +173,17 @@ felaket olurdu. Önlemler:
   sürecin kaydını görünce alt süreci **o makinede kapalı tutar** (her yayımda yeniden asılma/yeniden başlatma döngüsü
   olmaz), başlangıçta ve ilk yayımda birer uyarı yazar ve süreç içi yolla devam eder. Sahip dosyayı silince bir sonraki
   yayımda yeniden denenir (yeniden başlatma gerekmez). Worker fork'un ~10 ms'lik penceresinde başka bir nedenle
-  öldürülürse (OOM, SIGKILL) dosya yanlışlıkla kalabilir: sonuç yalnız bugünkü süreç içi yoldur.
+  öldürülürse (OOM, SIGKILL) dosya yanlışlıkla kalabilir: sonuç yalnız bugünkü süreç içi yoldur. Dosya **makine
+  durumudur, veri değil**: yedeğe alınmaz (`ops/backup.py` `MACHINE_MARKERS`; eski bir yedekten dönüp alt süreci sessizce
+  kapalı tutmaz) ve geri yüklemede makinedeki kopya yeni state'e taşınır (geri yükleme asılmayı yeniden denetmez).
 - **Değişmez + izin listesi testi:** worker'da hiçbir iş parçacığı çok iş parçacıklı seviye-3 BLAS (matris-matris
   çarpımı, `np.linalg` ayrıştırması) koşmaz. `tests/test_evidence_subprocess_v1.py`
   `test_no_new_blas_call_site_appears_in_runtime_code_without_reviewing_the_fork_hazard`, `tradingbot/` altındaki
   BLAS'a gidebilen her çağrıyı (AST) gerekçeli bir izin listesiyle karşılaştırır; yeni bir çağrı bu riski
-  değerlendirmeden eklenemez. (pandas/scipy iç çağrıları taranamaz; onlar için deadman vardır.)
+  değerlendirmeden eklenemez. **Sınırı:** tarama yalnız `tradingbot/` kodunu görür; üçüncü taraf kütüphanelerin iç
+  çağrıları (pandas, matplotlib, scipy) taranmaz. Onların bir iş parçacığında çok iş parçacıklı seviye-3 BLAS koşturup
+  koşturmadığı bilinmiyor; bilinen tek kanıt matris-vektör yüküyle 2.700 fork'ta asılma görülmemesidir. Bunlar için
+  güvence yalnız deadman'dir (§5 "Kalan karar riski").
 - **Teşhis:** yenileyici başlarken bir satır, OpenBLAS'ın iş parçacığı sayısını yazar (`pattern kanıtı sorguları: ALT
   SÜREÇTE (…; OpenBLAS iş parçacığı N; fork koruması 30 sn)`). N = 1 → havuz yok, bu risk yok.
 
@@ -193,13 +200,55 @@ felaket olurdu. Önlemler:
   başlatılan worker'ı bekletmesini önler (test: `test_the_child_exits_on_parent_death_even_without_pdeathsig`).
 - Alt süreç **SIGTERM'i yok sayar**: birim `KillMode=control-group` olsa bile (depodaki birim `mixed`) systemd'nin
   SIGTERM'i alt süreci öldürüp worker'ın son turunu süreç içi yola düşürmez; kapatmayı ebeveyn yapar (SIGKILL,
-  PDEATHSIG ve boru EOF'u yine geçerli).
+  PDEATHSIG ve boru EOF'u yine geçerli). Bunun kapanışa etkisi ve önlemi §3.3'tedir.
+- **Devralınan tanımlayıcılar** (düzeltme turu 2): `fork` ebeveynin bütün açık tanımlayıcılarını kopyalar (`O_CLOEXEC`
+  exec olmadan işlemez): HTTP keep-alive soketleri (ebeveyn kapatınca alt süreç çıkana dek FIN gitmez), tekil kilit
+  dosyası ve o an bir `subprocess` çağrısının oluşturma penceresindeki boru uçları — ör. turun kasa `git` senkronunda
+  (`engine._git_sync`, `add`/`commit`/`pull` zaman aşımsız) `git`'in stdout yazma ucu alt süreçte kalırsa ebeveynin
+  `communicate`'i alt süreç çıkana dek (dakikalar) EOF görmezdi. Alt süreç ilk iş olarak 0–2 ve kendi borusu dışındaki
+  her tanımlayıcıyı `/dev/null`'un bir kopyasıyla değiştirir (`dup2`: numara dolu kalır, devralınan bir nesnenin sonradan
+  yanlış dosyayı kapatması olmaz). Sorgu hiçbir tanımlayıcı kullanmaz (salt bellek). Bu `multiprocessing`'in bekçi
+  borusunu da kapattığı için ebeveyn alt sürecin bitişini `waitpid` yoklamasıyla bekler (`join(timeout)` bekçi erken EOF
+  verince süresiz beklerdi). Testler: `test_the_child_keeps_no_inherited_descriptor_of_the_parent`,
+  `test_close_is_bounded_although_the_child_dropped_the_multiprocessing_sentinel`.
 - `nice +10` (worker `Nice=5` → 15) ve `oom_score_adj=1000` (cgroup OOM'unda çekirdek önce alt süreci seçer; birimin ne
   yapacağı için §6'ya bakın).
 - Fork'tan sonraki her arıza (başlamama, ölüm, asılma, protokol) loglanır ve o işin kalanı bugünkü süreç içi yolla
   hesaplanır; tur o sembolü bugünkü gibi kendisi hesaplar. Alt süreçte bir sembolün hesabı istisna verirse tur o
   sembolü süreç içi yeniden hesaplar (bugünkü istisna ya da sonuç birebir); ön ısıtma yalnız loglar (bugünkü gibi).
 - **Yalnız Linux:** başka platformda alt süreç hiç denenmez (uyarısız bugünkü yol). Üretim Linux'tur.
+
+### 3.3 Kapanış alt süreci beklemez (düzeltme turu 2, denetim bulgusu)
+
+Alt süreç SIGTERM'i yok saydığı için (§3.2) ilk sürümde süreç çıkışı **bütün ön ısıtma işini** bekliyordu:
+`multiprocessing`'in `atexit` kancası (`util._exit_function`) daemon alt sürece SIGTERM yollar ve onu **zaman aşımsız**
+`join` eder; ebeveynin ön ısıtma iş parçacığı çıkış sırasında da sorgu yollamayı sürdürdüğü için alt süreç EOF görmez.
+`watch`'ın kapanışı da önbelleği durdurmuyordu. Denetimin yeniden üretimi: 10 sembol × 2 sn'lik işte çıkış 21,2 sn
+(süreç içi yol 2,3 sn); `watch` tarzı SIGTERM bayrağıyla 10 sn/sembolde 61 sn sonra hâlâ yaşıyordu. VPS'te (sembol başına
+~25 sn, yayım başına 7–14 dk iş) iş sürerken her `systemctl stop/restart` `TimeoutStopSec=90`'ı aşıp SIGKILL ile biterdi
+(sonuç `timeout`; birim büyük olasılıkla `failed` olur, `OnFailure` uyarısı tetiklenir) — bir sonraki sürümün dağıtımı ve
+bu sürümün geri alınması dahil.
+
+Önlem, iki katman:
+
+1. `watch` kapanışı izleyiciyi durdurduktan sonra, kilit ve instance kaydı bırakılmadan önce
+   `TradingEngineV3.stop_pattern_evidence()` → `EvidenceCache.stop(2.0)` çağırır: canlı alt süreç SIGKILL ile öldürülür,
+   işçi en çok 2 sn beklenir (süreç içi hesaplayan işçi beklenmez; daemon'dur). `stop()` **kalıcıdır**: kapanış sırasında
+   gelen bir yayım işçiyi yeniden başlatıp fork etmez.
+2. Her çıkış yolu için (ana iş parçacığının dönmesi, yakalanmamış istisna, tek tur `tour` komutu): ilk fork'ta,
+   `multiprocessing.util` içe aktarıldıktan **sonra** bir `atexit` kancası kaydedilir. `atexit` ters sırada koştuğu için
+   kanca `multiprocessing`'inkinden **önce** koşar: yeni fork'u kapatır (`exiting()`), canlı alt süreçleri SIGKILL ile
+   öldürür ve en çok 2 sn biçer. Öldürülen alt süreç arıza sayılmaz (uyarı yok) ve iş süreç içi yola düşmez.
+
+Ölçüm (yerel, denetimin betikleri): ana iş parçacığı dönünce çıkış ~0,45 sn (önce: 5 sembol × 2 sn'lik işin sonuna dek,
+toplam 10,5 sn), `watch` tarzı SIGTERM'den çıkışa 0,2 sn (önce: 61 sn sonra hâlâ canlı); alt süreç ebeveynle birlikte
+biter. Testler: `test_process_exit_never_waits_for_the_prewarm_job_and_leaves_no_child`
+(ana iş parçacığı döner / SIGTERM / `stop()`, iş 200 sn, eşik 10 sn — eski kodda 120 sn zaman aşımına düşer),
+`test_the_exit_hook_kills_live_children_and_refuses_new_forks`,
+`test_a_stop_that_lands_inside_the_fork_window_closes_the_new_child_and_computes_nothing` (fork sırasında gelen `stop()`:
+yeni alt süreç kapatılır, sembol süreç içi hesaplanmaz),
+`test_watch_shutdown_stops_the_pattern_evidence_before_releasing_the_lock`. Geri dönüş anahtarı kapalıyken (alt süreç
+yok) kanca hiç kaydedilmez; `watch` kapanışındaki `stop()` süreç içi bir sembol hesaplanıyorsa en çok 2 sn bekler.
 
 ## 4. Neden indeks kurulumu süreçte kaldı
 
@@ -218,6 +267,14 @@ henüz ölçülmedi (§2.4); kalan risk §9'da.
 | Kanıt değeri | aynı motor/fonksiyon/girdi; pickle float'ı kayıpsız taşır; serileştirilmiş `==` ve nesne `==` | `test_child_evidence_is_bit_identical_to_in_process_and_files_match` |
 | Karar kimliği (`config_hash`, karar günlüğü/provenans satırlarına yazılır) | yeni anahtar iki değerinde de karar-nötr → özetten çıkarılır (ortak deneyim bölümüyle aynı kural); özet bu alandan önceki kodla aynı. Görünürlük için etkin değer başlangıçta bir kez loglanır; tırnaklı `"false"` gibi bool olmayan değer config doğrulamasında reddedilir | `test_the_switch_is_not_part_of_the_decision_identity`, `test_the_switch_is_linux_only_bool_only_and_logged_at_startup`, `test_learning_record_only_tours.py` (`943345c` ile bayt bayt) |
 | Bütün durum dosyaları | gerçek `tour()` × 5, iki yayım; alt süreç AÇIK (ön ısıtma bitmiş / tur başlarken sürüyor / **ön ısıtma hiç hesaplamıyor, turun bütün ıskaları alt süreçte**), süreç içi, ön ısıtma KAPALI → `state/` bayt bayt aynı | `test_tour_perf_no_decision_change_v1.py` (4 karşılaştırma) |
+
+**Kalan karar riski — deadman yeniden başlatması.** Alt süreç varsayılan AÇIK'tır ve kararları değiştirebileceği
+TEK yol §3.1'deki deadman olayıdır: fork asılırsa worker sonlandırılır ve yeniden başlar. Bugün worker hiç fork etmediği
+için bu olay bugün **olamaz**. Yeniden başlatma boşluk mutabakatı ve uzun bir ilk tur getirir (Box bir 5m mumu kaçırabilir);
+yani o saatlerde hangi turun ne zaman koştuğu değişir. Olasılığı iki şeye dayanır: izin listesi testi (yalnız
+`tradingbot/` kodunu tarar; pandas/matplotlib iç çağrıları görünmez) ve matris-vektör yüküyle 2.700 fork'ta asılma
+görülmemesi (ölçüm, kanıt değil). Olursa işaret dosyası alt süreci o makinede kapatır (ikinci olay olmaz). Riski tamamen
+kaldıran `OPENBLAS_NUM_THREADS=1` ayrı bir karar-nötrlük kanıtı ister (§10). Sahip için geri alma sinyalleri: §9.
 
 **Saat-duvarı zamanı — sahibin değerlendirmesine.** Kod ve kurallar aynı; zamanlama aynı değil ve olamaz:
 
@@ -327,6 +384,18 @@ Dağıtım sonrası bakılacaklar (hiçbiri burada VPS'te ölçülmedi):
    (§4); ön ısıtmanın çekişmesi gider ama ilk tur olağandan **uzun kalabilir ve bir Box mumu kaçabilir** (bugünkü
    3.763,7 sn'lik ilk tur ön ısıtmayla açıklanmıyordu). Bu, bu değişikliğin geri alma nedeni sayılmamalı; ölçüt 1'deki
    karşılaştırmadır.
+8. Kapanış (§3.3): `systemctl stop/restart` bir ön ısıtma işi sürerken bile birkaç saniyede biter; günlükte
+   `State 'stop-sigterm' timed out` / `Killing process` YOK; `İzleme temiz durduruldu` satırı var.
+
+**Geri alma sinyalleri** (sürüm notuna ve bir sonraki `--check`'e; herhangi biri görülürse anahtar kapatılır ya da geri
+alınır):
+
+- Günlükte worker için `code=killed, status=14/ALRM` — deadman fork asılmasında worker'ı sonlandırdı (§3.1, §5 "Kalan
+  karar riski"). Tek olay bile sinyaldir: bugün olamayan bir yeniden başlatmadır.
+- `state/pattern_evidence_fork.marker` dosyasının varlığı — aynı olayın kalıcı izi (alt süreç o makinede artık kapalı).
+- Bir `systemctl stop/restart`'ın `timeout` sonucu ya da `stop-sigterm timed out` — §3.3'ün önlediği kapanış beklemesi.
+- Ölçüt 3'teki `pattern kanıtı alt süre…` uyarıları ya da ön ısıtma satırında `süreç içi Y` > 0 (alt süreç arızası; karar
+  değişmez ama tasarım çalışmıyor demektir).
 
 ## 10. Bilinçli olarak yapılmayanlar / öneriler (ayrı iş, sahip onayı)
 
@@ -340,7 +409,8 @@ Dağıtım sonrası bakılacaklar (hiçbiri burada VPS'te ölçülmedi):
   başlatmaya çevirir; birim + kod değişikliği.
 - **Sonraki sürüm betiğinin `--check`'i:** `pattern kanıtı alt süre` satırlarını say/göster; ön ısıtma satırındaki
   `(alt süreç pid …; alt süreçte X, süreç içi Y sembol)` ekini raporla (Y > 0 → alt süreç bir işte arızalandı);
-  `status=14/ALRM` ve işaret dosyasını ara; bellek tetiğini `hwm_mb` yerine cgroup `MemoryPeak`/`memory.peak`'e dayandır;
+  `status=14/ALRM` ve işaret dosyasını **geri alma tetiği** olarak ara (§9 "Geri alma sinyalleri"); kapanış süresini ve
+  `stop-sigterm timed out`'u raporla; bellek tetiğini `hwm_mb` yerine cgroup `MemoryPeak`/`memory.peak`'e dayandır;
   yayım satırındaki `kurulum S sn`'yi tur fazlarıyla birlikte göster; 4h-kapanışı turlarını yayımın tur ortasına düşüp
   düşmediğine göre ayır.
 - **`health.json`'a alt süreç sayaçları:** `EvidenceCache.stats` (`child_*`) bugün yalnız bellekte. `health.json` bayt

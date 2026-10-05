@@ -23,6 +23,9 @@ olmayan (ya da sha256'sı tutmayan) ortak deneyim / tavsiye segmentlerini, kenar
 (`state.pre-restore-<ts>`) sha256 doğrulamasıyla geri kopyalar (segmentler değişmez ve içerik adlıdır; aynı ad + aynı sha256 =
 aynı bayt). Hâlâ eksik kalanlar sonuçta `xp_segments.missing` olarak listelenir; danışman o segmentte ATLAMAZ, bekler
 (`WAITING_SEGMENTS`) — eksikler en yeni UTC-00 / günlük yedekten elle kopyalanır.
+
+MAKİNE İŞARETLERİ (2026-10-05): `MACHINE_MARKERS` (kanıt alt sürecinin fork işaret dosyası) veri değil, bu makinenin
+çalışma durumudur: yedeğe alınmaz; geri yüklemede mevcut state'teki kopya yeni state'e taşınır.
 """
 from __future__ import annotations
 
@@ -42,6 +45,12 @@ from ..core import StorageError
 KINDS = ("hourly", "daily", "weekly", "manual")
 _SKIP_SUFFIXES = {".lock", ".tmp"}
 _SKIP_PREFIXES = ("state.pre-restore-",)
+#: MAKİNEYE ÖZGÜ çalışma işaretleri (veri değil): yedeğe GİRMEZ; geri yüklemede mevcut state'teki kopya korunur.
+#: `pattern_evidence_fork.marker` (2026-10-05): kanıt alt sürecinin fork'u bu makinede asılıp worker deadman'le
+#: sonlandırıldı → alt süreç bu makinede kapalı. Yedekten dönmesi alt süreci sessizce kapalı tutar; geri yüklemede
+#: kaybolması asılmayı yeniden denetir. Ad `patterns.evidence_child.MARKER_NAME` ile test eşitliğine bağlı (paket içe
+#: aktarılmaz).
+MACHINE_MARKERS = ("pattern_evidence_fork.marker",)
 #: Saatlik yedeğin yalnız UTC 00 saatinde taşıdığı değişmez segment klasörü (2026-09-29; `shared_experience.state_dir`
 #: varsayılanı). Başka bir `state_dir` seçilirse klasör her yedekte taşınır (davranış eskisi gibi).
 XP_SEGMENTS_REL = "shared_experience/archive/segments/"
@@ -104,6 +113,8 @@ def _copy_tree_state(state_dir: Path, staging: Path, *, skip_dirs: tuple[str, ..
             continue
         rel = p.relative_to(state_dir)
         if any(str(rel).startswith(pre) for pre in _SKIP_PREFIXES) or p.suffix in _SKIP_SUFFIXES or ".tmp-" in p.name:
+            continue
+        if rel.as_posix() in MACHINE_MARKERS:
             continue
         if skip_dirs and any(rel.as_posix().startswith(d) for d in skip_dirs):
             if skipped is not None:
@@ -305,6 +316,13 @@ def restore_backup(archive: Path | str, state_dir: Path | str, dry_run: bool = F
             os.replace(tmp_root / "vault", vault_out)
     finally:
         shutil.rmtree(tmp_root, ignore_errors=True)
+    for name in MACHINE_MARKERS:                   # makineye özgü işaret makinede kalır (yedekte yoktur)
+        src = (pre / name) if pre is not None else None
+        try:
+            if src is not None and src.is_file() and not (state_dir / name).exists():
+                shutil.copy2(src, state_dir / name)
+        except OSError:
+            pass
     try:
         xp_segs = _xp_segments_copy_back(state_dir, pre)
     except Exception as exc:  # noqa: BLE001 — geri yükleme tamamlandı; yalnız rapor

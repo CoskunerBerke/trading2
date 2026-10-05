@@ -17,6 +17,9 @@ Kanıt sorguları (yayım sonrası ön ısıtma ve o sırada turun ıskaları) `
 9. Alt süreç ebeveyn ölünce PDEATHSIG olmadan da çıkar (boru EOF), SIGTERM'i yok sayar.
 10. Geri dönüş anahtarının yolu bugünkü log satırını yazar, ek kilit almaz; alt süreçli işin satırı işin kendi kaydından
     yazılır. Anahtar yalnız gerçek bool ve yalnız Linux'ta etkili; etkin değer başlangıçta loglanır.
+11. Kapanış ön ısıtma işini BEKLEMEZ (ana iş parçacığı dönünce, SIGTERM'le, `watch`'ın `stop`'uyla): alt süreç öldürülür,
+    kapanıştan sonra yeni fork yok. Alt süreç ebeveynin soket/boru/dosya tanımlayıcılarını tutmaz; `close` bekçi
+    borusuna güvenmeden zaman aşımına uyar. Fork işaret dosyası makineye özgüdür: yedeğe girmez, geri yüklemede kalır.
 
 Alt süreç `fork` ile ebeveynin bellek görüntüsünü aldığı için ölçüm vekili (`_Probe`) her iki süreçte de çalışır;
 çağrılar süreç kimliğiyle bir dosyaya yazılır (iş parçacığı adı alt süreçte de ön ısıtma işçisinin adıdır, ayırt etmez).
@@ -734,10 +737,14 @@ def test_a_fork_that_hangs_is_ended_by_the_deadman_and_the_restarted_worker_keep
 
 def test_with_a_real_multithreaded_blas_job_in_flight_a_fork_never_freezes_the_worker(tmp_path):
     """GERÇEK tehlike: başka bir iş parçacığı çok iş parçacıklı matris çarpımı koşarken art arda fork. Her koşu ya
-    biter ya da deadman worker'ı sonlandırır — SÜRESİZ DONMA YOK (zaman aşımı testi düşürür). Tek çekirdekte OpenBLAS
-    havuzu yoktur, koşu biter."""
+    biter ya da deadman worker'ı sonlandırır — SÜRESİZ DONMA YOK (zaman aşımı testi düşürür). OpenBLAS havuzu yoksa
+    (tek iş parçacığı ya da OpenBLAS değil) asılma oluşamaz: test bir şey sınamadan geçmesin diye ATLANIR (deadman'i
+    `test_a_fork_that_hangs_is_ended_by_the_deadman...` benzetimle her makinede sınar)."""
     import signal
     import subprocess
+    n_blas = EC.blas_threads()
+    if n_blas is None or n_blas <= 1:
+        pytest.skip(f"OpenBLAS iş parçacığı havuzu yok ({n_blas}): gerçek fork asılması bu makinede oluşamaz")
     marker = tmp_path / EC.MARKER_NAME
     body = (
         "import numpy as np\n"
@@ -982,3 +989,245 @@ def test_no_new_blas_call_site_appears_in_runtime_code_without_reviewing_the_for
     extra = found - Counter(_BLAS_ALLOWED)
     assert not extra, ("worker koduna yeni BLAS çağrısı: fork asılma riskini değerlendir (evidence_child başlığı) ve "
                        f"_BLAS_ALLOWED'a gerekçesiyle ekle: {dict(extra)}")
+
+
+# ------------------------------------------------------------------ 14) kapanış alt süreci beklemez (düzeltme turu 2)
+_EXIT_BODY = (
+    "import logging\n"
+    "logging.basicConfig(level=logging.WARNING)\n"
+    "from tradingbot.patterns.evidence_cache import EvidenceCache\n"
+    "class Eng: pass\n"
+    "class B:\n"
+    "    engine = Eng(); version = 3\n"
+    "def compute(eng, sym):\n"
+    "    time.sleep(5.0); return {'s': sym}\n"                     # iş: 40 sembol × 5 sn = 200 sn
+    "stop = threading.Event()\n"
+    "signal.signal(signal.SIGTERM, lambda *a: stop.set())\n"        # `watch`'ın SIGTERM bayrağı
+    "cache = EvidenceCache()\n"
+    "cache.request_prewarm(B(), [(f'S{i}', 3, 1) for i in range(40)], compute, lambda b: True, use_child=True)\n"
+    "end = time.monotonic() + 30\n"
+    "while cache._child is None and time.monotonic() < end:\n"
+    "    time.sleep(0.01)\n"
+    "print('child', cache._child.pid, flush=True)\n")
+_EXIT_TAILS = {
+    # ana iş parçacığı hemen döner: yalnız çıkış kancası korur
+    "return": "",
+    # SIGTERM bayrağı → döngü biter → `stop()` ÇAĞRILMADAN çıkış (çıkış kancası korur)
+    "sigterm": "while not stop.is_set():\n    time.sleep(0.05)\n",
+    # `watch` kapanışı: SIGTERM → `stop()` (TradingEngineV3.stop_pattern_evidence) → sonra gelen yayım fork ETMEZ
+    "stop": ("while not stop.is_set():\n    time.sleep(0.05)\n"
+             "t = time.monotonic()\n"
+             "cache.stop(2.0)\n"
+             "print('stopped', round(time.monotonic() - t, 2), cache._child is None, flush=True)\n"
+             "cache.request_prewarm(B(), [('X', 4, 1)], compute, lambda b: True, use_child=True)\n"
+             "time.sleep(0.5)\n"
+             "print('after', cache._thread.is_alive(), cache._job, cache.stats['child_started'], flush=True)\n"),
+}
+
+
+@pytest.mark.parametrize("how", sorted(_EXIT_TAILS))
+def test_process_exit_never_waits_for_the_prewarm_job_and_leaves_no_child(tmp_path, how):
+    """Denetim bulgusu (düzeltme turu 2): alt süreç SIGTERM'i yok sayar; `multiprocessing`'in çıkış kancası daemon alt
+    sürece SIGTERM yollayıp ZAMAN AŞIMSIZ `join` ettiği için süreç çıkışı bütün ön ısıtma işini bekliyordu (VPS'te
+    7–14 dk → `systemctl stop` 90 sn'yi aşıp SIGKILL). Artık ana iş parçacığı dönünce, SIGTERM'le ya da `stop()` ile süreç
+    birkaç saniyede çıkar, alt süreç öldürülür ve arıza uyarısı/süreç içi yedek yol YOKTUR."""
+    import signal
+    import subprocess
+    p = subprocess.Popen([sys.executable, "-c", _script(_EXIT_BODY + _EXIT_TAILS[how], tmp_path / "m")],
+                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        line = p.stdout.readline()
+        assert line.startswith("child "), (line, p.stderr.read() if p.poll() is not None else "")
+        child = int(line.split()[1])
+        assert _pid_alive(child)
+        t0 = time.monotonic()
+        if how != "return":
+            p.send_signal(signal.SIGTERM)
+        out, err = p.communicate(timeout=120)
+        took = time.monotonic() - t0
+    finally:
+        if p.poll() is None:
+            p.kill()
+    assert p.returncode == 0, (p.returncode, err[-2000:])
+    assert took < 10, f"çıkış {took:.1f} sn sürdü (ön ısıtma işi 200 sn)"
+    assert not _pid_alive(child), "alt süreç ebeveynden sonra yaşamamalı"
+    assert "arızalandı" not in err and "süreç içi hesaplanıyor" not in err, err[-2000:]
+    if how == "stop":
+        stopped = [ln for ln in out.splitlines() if ln.startswith("stopped ")]
+        assert stopped and float(stopped[0].split()[1]) < 3.0 and stopped[0].endswith("True"), out
+        assert "after False None 1" in out, f"stop() sonrası yayım işçiyi yeniden başlatmamalı / fork etmemeli: {out}"
+
+
+def test_the_exit_hook_kills_live_children_and_refuses_new_forks(tmp_path):
+    """Çıkış kancası (`multiprocessing.util` içe aktarıldıktan sonra, ilk fork'ta bir kez kaydedilir): canlı alt süreci
+    öldürür ve biçer; ardından fork yapılmaz (`exiting()`)."""
+    import subprocess
+    body = (
+        "from tradingbot.patterns import evidence_child as EC\n"
+        "class E: pass\n"
+        "e = E()\n"
+        "c = EC.EvidenceChild.start(e, lambda eng, s: {'x': 1.0}, version=1)\n"
+        "pid = c.pid\n"
+        "EC._kill_live_children_at_exit()\n"
+        "gone = not os.path.exists(f'/proc/{pid}')\n"
+        "print('gone', gone, EC.exiting(), flush=True)\n"
+        "try:\n"
+        "    EC.EvidenceChild.start(e, lambda eng, s: {'x': 1.0}, version=2)\n"
+        "    print('forked', flush=True)\n"
+        "except EC.EvidenceChildError as exc:\n"
+        "    print('refused', exc, flush=True)\n")
+    p = subprocess.run([sys.executable, "-c", _script(body, tmp_path / "m")], capture_output=True, text=True, timeout=60)
+    assert p.returncode == 0, p.stderr[-2000:]
+    assert "gone True True" in p.stdout, p.stdout
+    assert "refused süreç kapanıyor" in p.stdout and "forked" not in p.stdout, p.stdout
+
+
+
+def test_a_stop_that_lands_inside_the_fork_window_closes_the_new_child_and_computes_nothing(tmp_path, hist, monkeypatch,
+                                                                                             caplog):
+    """`stop()` alt süreç atanmadan (fork/el sıkışması sırasında) gelirse `kill` onu göremez: işçi atamadan SONRA
+    kapanışı görür, yeni alt süreci kapatır ve sembolü süreç içi HESAPLAMAZ (kapanışı GIL için yarışarak geciktirmez);
+    uyarı yazılmaz, alt süreç kalmaz."""
+    real = _build_index(hist)
+    idx = _Probe(real, tmp_path)
+    cache = EvidenceCache()
+    real_start = EC.EvidenceChild.start.__func__
+    started = []
+
+    def start(cls, *a, **k):
+        cache._stop.set()                                         # `stop()` tam fork penceresinde
+        c = real_start(cls, *a, **k)
+        started.append(c.pid)
+        return c
+    monkeypatch.setattr(EC.EvidenceChild, "start", classmethod(start))
+    keys = [(s, 1, int(real.candles[(s, "futures", "4h")]["timestamp"].iloc[-1])) for s in SYMS]
+    with caplog.at_level(logging.INFO, logger="tradingbot.patterns.evidence_cache"):
+        cache.request_prewarm(_bundle(idx), keys, TradingEngineV3._evidence_query, lambda b: True, use_child=True)
+        end = time.monotonic() + 60
+        while not started and time.monotonic() < end:
+            time.sleep(0.01)
+        cache._thread.join(60)
+    assert started and not cache._thread.is_alive()
+    assert not _pid_alive(started[0]) and cache._child is None and cache.stats["child_started"] == 0
+    assert idx.calls() == [], "kapanışta hiçbir sembol (alt süreçte ya da süreç içi) hesaplanmamalı"
+    assert not [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any("kapanışta bırakıldı" in r.getMessage() for r in caplog.records)
+    assert not EC.parent_gc_frozen()
+
+def test_watch_shutdown_stops_the_pattern_evidence_before_releasing_the_lock(tmp_path, monkeypatch):
+    """`watch` kapanışı izleyiciden sonra kanıt ön ısıtmasını durdurur (alt süreci öldürür) — kilit ve instance kaydı
+    bırakılmadan ÖNCE. Gerçek motorda: önbellek yoksa hiçbir şey yapmaz; varsa kalıcı durdurur."""
+    import argparse
+
+    import test_protective_monitor_v1 as PM
+
+    from tradingbot import cli
+    from tradingbot.config import BotConfig
+    cfg = BotConfig()
+    cfg.project_root = tmp_path
+
+    class _Eng(PM._WatchEngine):
+        def stop_pattern_evidence(self):
+            self.calls.append(("stop_evidence", (cfg.state_path / ".lock").exists()))
+
+    fake = _Eng(monitor_ok=True)
+    monkeypatch.setattr(cli, "_make_engine", lambda c, legacy=False: fake)
+    monkeypatch.setattr(cli, "_print_tour", lambda s: None)
+    monkeypatch.setattr(cli.time, "sleep", lambda s: None)
+    args = argparse.Namespace(interval=1, scan_every=1, no_obsidian=True, no_wfo=True, exit_every=60, legacy=False,
+                              families=None, no_paper=True)
+    assert cli.cmd_watch(cfg, args) == 0
+    assert fake.calls[-3:] == ["stop_monitor", "drain", ("stop_evidence", True)], fake.calls[-4:]
+    assert not (cfg.state_path / ".lock").exists()
+
+    eng = TE._engine(tmp_path / "real", monkeypatch)
+    eng.__dict__.pop("_pattern_cache", None)
+    eng.stop_pattern_evidence()                                   # önbellek yok: hata yok, kurulmaz
+    assert "_pattern_cache" not in eng.__dict__
+    cache = eng._evidence_cache()
+    eng.stop_pattern_evidence()
+    assert cache._closed and cache._stop.is_set()
+
+
+def test_the_child_keeps_no_inherited_descriptor_of_the_parent(tmp_path, hist):
+    """Denetim bulgusu: `fork` ebeveynin bütün tanımlayıcılarını kopyalar (HTTP soketleri, kilit dosyası, `subprocess`
+    penceresindeki boru uçları). Alt süreç bunları /dev/null'a çevirir: ebeveyn soketi kapatınca karşı uç HEMEN EOF görür,
+    boru yazma ucunu kapatınca okuyan EOF görür (kasa `git`'inin `communicate`'i alt süreci beklemez). Kanıt aynı."""
+    import select
+    import socket
+    real = _build_index(hist)
+    q = TradingEngineV3._evidence_query
+    a, b = socket.socketpair()
+    r, w = os.pipe()
+    fh = open(tmp_path / "held.txt", "w", encoding="utf-8")     # noqa: SIM115
+    c = EC.EvidenceChild.start(real, q, version=1)
+    try:
+        for fd in (a.fileno(), w, fh.fileno()):
+            assert os.readlink(f"/proc/{c.pid}/fd/{fd}") == "/dev/null", fd
+        targets = [os.readlink(f"/proc/{c.pid}/fd/{n}") for n in os.listdir(f"/proc/{c.pid}/fd") if int(n) > 2]
+        assert sum(t.startswith("socket:") for t in targets) == 1, targets     # yalnız kendi borusu
+        assert not any(t.startswith("pipe:") for t in targets), targets
+        a.close()
+        b.settimeout(5)
+        assert b.recv(1) == b"", "ebeveynin kapattığı soket alt süreçte açık kalmamalı"
+        os.close(w)
+        w = None
+        assert select.select([r], [], [], 5)[0] == [r] and os.read(r, 1) == b"", "boru yazma ucu alt süreçte kalmamalı"
+        for s in SYMS:
+            assert _ser(c.compute(s)) == _ser(q(real, s))
+    finally:
+        pid = c.pid
+        c.close()
+        for x in (b, fh):
+            x.close()
+        os.close(r)
+        if w is not None:
+            os.close(w)
+        if a.fileno() >= 0:
+            a.close()
+    assert not _pid_alive(pid)
+
+
+def test_close_is_bounded_although_the_child_dropped_the_multiprocessing_sentinel():
+    """Alt süreç `multiprocessing`'in bekçi borusunu da /dev/null'a çevirir → bekçi hemen EOF verir ve `join(timeout)`
+    süresiz `waitpid`'e düşerdi. `close` `waitpid` yoklamasıyla bekler: ("stop",)'u okumayan (hesapta) alt süreç
+    `timeout` sonra öldürülür, `close` birkaç saniyede döner."""
+    from multiprocessing.connection import wait
+
+    class E:
+        pass
+
+    c = EC.EvidenceChild.start(E(), lambda eng, s: time.sleep(60) or {}, version=1)
+    pid = c.pid
+    assert wait([c._proc.sentinel], 2.0), "bekçi erken EOF verir (bu yüzden join(timeout) kullanılmaz)"
+    assert c.alive
+    c._conn.send(("q", "S"))                                      # alt süreç 60 sn hesapta: ("stop",) okunmaz
+    time.sleep(0.2)
+    t0 = time.monotonic()
+    c.close(timeout=0.5)
+    assert time.monotonic() - t0 < 5
+    assert not _pid_alive(pid) and not EC.parent_gc_frozen()
+
+
+def test_the_fork_marker_is_machine_state_not_backed_up_and_stays_on_the_machine_across_a_restore(tmp_path):
+    """İşaret dosyası (deadman olayı → alt süreç bu makinede kapalı) veri değil makine durumudur: yedeğe girmez (eski
+    bir yedekten dönüp alt süreci sessizce kapalı tutmaz); geri yüklemede mevcut state'teki kopya korunur."""
+    import tarfile
+
+    from tradingbot.ops import backup as BK
+    assert BK.MACHINE_MARKERS == (EC.MARKER_NAME,)
+    st = tmp_path / "state"
+    st.mkdir()
+    (st / "futures_ledger.json").write_text("{}", encoding="utf-8")
+    (st / EC.MARKER_NAME).write_text("1:1 1700000000\n", encoding="ascii")
+    res = BK.run_backup(st, tmp_path / "backups", "manual")
+    with tarfile.open(res.archive, "r:gz") as tar:
+        names = tar.getnames()
+    assert any(n.endswith("futures_ledger.json") for n in names)
+    assert not any(EC.MARKER_NAME in n for n in names), names
+    BK.restore_backup(res.archive, st)
+    assert (st / EC.MARKER_NAME).read_text(encoding="ascii") == "1:1 1700000000\n", "makinedeki işaret kalır"
+    (st / EC.MARKER_NAME).unlink()
+    time.sleep(1.05)                                              # `state.pre-restore-<ts>` saniye çözünürlüklü
+    BK.restore_backup(res.archive, st)
+    assert not (st / EC.MARKER_NAME).exists(), "yedekten işaret gelmez"

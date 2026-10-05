@@ -63,6 +63,19 @@ tutan tek bir C çağrısı ve iş boyunca tam ikinci kopya). `fork` indeksin ay
   ve alt süreç çıkar); Linux'ta ayrıca `PR_SET_PDEATHSIG=SIGKILL` (aksi hâlde devraldığı tekil kilit dosyası
   tanımlayıcısı yeniden başlatılan worker'ı bekletebilirdi). SIGTERM'i YOK SAYAR: birim `KillMode=control-group` olsa
   bile worker son turunu alt süreçle bitirir; kapatmayı ebeveyn yapar (SIGKILL ve PDEATHSIG yine geçerlidir).
+* KAPANIŞ alt süreci BEKLEMEZ (düzeltme turu 2, denetim bulgusu): alt süreç SIGTERM'i yok saydığı için
+  `multiprocessing`'in çıkış kancası (`util._exit_function`: daemon alt sürece SIGTERM, sonra ZAMAN AŞIMSIZ `join`) bütün
+  ön ısıtma işini (VPS'te 7–14 dk) beklerdi → `systemctl stop` 90 sn'yi aşıp SIGKILL/`timeout` olurdu. İki katman:
+  `watch` kapanışı `EvidenceCache.stop()` ile alt süreci öldürür; her çıkış yolu için de ilk fork'ta, `multiprocessing.util`
+  içe aktarıldıktan SONRA bir `atexit` kancası kaydedilir (`atexit` ters sırada koşar → onunkinden ÖNCE): kanca yeni fork'u
+  kapatır (`exiting()`), canlı alt süreçleri SIGKILL ile öldürüp en çok `EXIT_REAP_S` bekler.
+* DEVRALINAN TANIMLAYICILAR (düzeltme turu 2): `fork` ebeveynin bütün açık tanımlayıcılarını kopyalar (O_CLOEXEC exec
+  olmadan işlemez): HTTP soketleri, tekil kilit dosyası, o an `subprocess` penceresindeki boru uçları (ör. kasa
+  `git`'inin stdout yazma ucu: ebeveynin `communicate`'i alt süreç çıkana dek EOF görmezdi). Alt süreç ilk iş olarak
+  0–2 ve kendi borusu dışındaki her tanımlayıcıyı `/dev/null`'un bir kopyasıyla DEĞİŞTİRİR (`dup2`: numara dolu kalır,
+  devralınan nesnelerin sonradan yanlış dosyayı kapatması olmaz; ebeveynin dosya/soket/boru nesnelerine başvuru kalmaz).
+  Sorgu hiçbir tanımlayıcı kullanmaz (salt bellek). Bu, `multiprocessing`'in bekçi borusunu da kapatır: ebeveyn alt
+  sürecin bitişini bekçi borusundan değil `waitpid` ile yoklayarak bekler (`_reap`; `join(timeout)` kullanılmaz).
 * Bellek: alt sürecin GC'si `gc.freeze()` ile ebeveynden gelen nesneleri DOLAŞMAZ; ebeveyn de çocuk yaşarken kendi
   GC'sini dondurur (`_freeze_parent_gc`) — yoksa ebeveynin tam toplaması bütün kapsayıcı başlıklarına yazar ve ortak
   sayfaları kopyalatır (ölçüldü: 335 MB'lık süreçte +68 MB; dondurunca 0). Kalan kopya, sorgunun dokunduğu nesnelerin
@@ -85,6 +98,7 @@ girmez.
 """
 from __future__ import annotations
 
+import atexit
 import contextlib
 import gc
 import os
@@ -297,12 +311,50 @@ def parent_gc_frozen() -> bool:
         return _FREEZE_DEPTH > 0
 
 
+# ------------------------------------------------------------------ kapanış: canlı alt süreç kaydı + atexit kancası
+#: Canlı (başlatılmış, kapatılmamış) alt süreçler. Fork + kayıt ve çıkış kancasının kapatması aynı kilit altında:
+#: kanca koştuktan sonra yeni alt süreç doğmaz, kancanın göremediği alt süreç kalmaz.
+_LIVE: set = set()
+_LIVE_LOCK = threading.Lock()
+_EXITING = False
+_EXIT_HOOK = False
+
+
+def exiting() -> bool:
+    """Süreç çıkıyor mu (çıkış kancası koştu): yeni fork yapılmaz; öldürülen alt süreç arıza sayılmaz."""
+    return _EXITING
+
+
+def _ensure_exit_hook() -> None:
+    """İlk fork'ta BİR kez: çıkış kancasını `multiprocessing.util` içe aktarıldıktan SONRA kaydet. `atexit` kancaları ters
+    sırada koşar; bizimki `multiprocessing`'in `_exit_function`'ından (daemon alt sürece SIGTERM + zaman aşımsız `join`)
+    ÖNCE koşar ve alt süreci öldürmüş olur. Alt süreç hiç kurulmayan süreçte (anahtar kapalı, Linux dışı) kayıt yok."""
+    global _EXIT_HOOK
+    import multiprocessing.util  # noqa: F401 — `_exit_function` kaydı bizimkinden ÖNCE olsun
+    with _LIVE_LOCK:
+        if not _EXIT_HOOK:
+            atexit.register(_kill_live_children_at_exit)
+            _EXIT_HOOK = True
+
+
+def _kill_live_children_at_exit() -> None:
+    """`atexit`: yeni fork'u kapat, canlı alt süreçleri SIGKILL ile öldür ve en çok `EXIT_REAP_S` bekle (biçerek)."""
+    global _EXITING
+    with _LIVE_LOCK:
+        _EXITING = True
+        live = list(_LIVE)
+    for c in live:
+        c.kill()
+    for c in live:
+        c._reap(EvidenceChild.EXIT_REAP_S)
+
+
 # ------------------------------------------------------------------ alt süreç tarafı
-def _private_kb() -> int | None:
-    """Bu sürecin özel (paylaşılmayan) belleği, KB (Linux smaps_rollup; yoksa None)."""
+def _private_kb(pid: int | str = "self") -> int | None:
+    """Bir sürecin (varsayılan: bu süreç) özel (paylaşılmayan) belleği, KB (Linux smaps_rollup; yoksa None)."""
     try:
         tot = 0
-        with open("/proc/self/smaps_rollup", encoding="ascii") as fh:
+        with open(f"/proc/{pid}/smaps_rollup", encoding="ascii") as fh:
             for line in fh:
                 if line.startswith(("Private_Clean:", "Private_Dirty:")):
                     tot += int(line.split()[1])
@@ -340,13 +392,37 @@ def _die_with_parent(parent_pid: int) -> None:
         os._exit(0)
 
 
+def _drop_inherited_fds(keep: set[int], sink_fd: int) -> int:
+    """ALT SÜREÇTE: 0–2 ve `keep` dışındaki her açık tanımlayıcıyı `sink_fd`'nin (/dev/null) bir kopyasıyla değiştir.
+
+    `dup2` numarayı DOLU tutar: devralınan bir Python dosya/soket nesnesi sonradan kapanırsa yalnız /dev/null kopyasını
+    kapatır (yeni açılan bir dosyayı değil). Ebeveynin soketleri (kapatınca FIN gider), boruları (`subprocess`'in
+    `communicate`'i EOF görür) ve kilit dosyası bu süreçte tutulmaz. Dönen: değiştirilen sayısı. /proc yoksa 0."""
+    try:
+        fds = sorted(int(n) for n in os.listdir("/proc/self/fd"))
+    except (OSError, ValueError):
+        return 0
+    n = 0
+    for fd in fds:
+        if fd <= 2 or fd in keep:
+            continue
+        try:
+            os.fstat(fd)                                    # listelemenin kendi (artık kapalı) tanımlayıcısı atlanır
+            os.dup2(sink_fd, fd, inheritable=False)
+            n += 1
+        except OSError:
+            pass
+    return n
+
+
 def _child_main(engine: Any, compute: Callable[[Any, str], dict], conn: Any, nice: int, oom_score_adj: int,
                 parent_pid: int = 0, parent_end: Any = None) -> None:
     """Alt süreç döngüsü: ("q", sembol) → ("ok", sembol, kanıt, özel_kb) | ("err", sembol, metin, özel_kb).
 
     YALNIZ saf hesap: loglama, uyarı, akış yazımı YOK (bkz. modül başlığı). Boru kapanınca ya da ("stop",) gelince çıkar.
     `parent_end`: fork'ta devralınan EBEVEYN boru ucu. İlk iş kapatılır: yoksa ebeveyn ölse bile borunun bir ucu bu
-    süreçte açık kalır, `recv` hiç EOF görmez ve alt süreç (PDEATHSIG yoksa) ortada kalır.
+    süreçte açık kalır, `recv` hiç EOF görmez ve alt süreç (PDEATHSIG yoksa) ortada kalır. Ardından devralınan diğer
+    tanımlayıcılar /dev/null'a çevrilir (`_drop_inherited_fds`; modül başlığı "DEVRALINAN TANIMLAYICILAR").
     """
     import warnings
     if parent_end is not None:
@@ -358,7 +434,8 @@ def _child_main(engine: Any, compute: Callable[[Any, str], dict], conn: Any, nic
     try:
         sink = open(os.devnull, "w", encoding="utf-8")     # noqa: SIM115 — süreç ömrü boyunca açık kalır
         sys.stdout = sys.stderr = sink
-    except OSError:
+        _drop_inherited_fds({conn.fileno(), sink.fileno()}, sink.fileno())
+    except (OSError, ValueError):
         pass
     warnings.simplefilter("ignore")
     # SIGINT/SIGTERM YOK SAYILIR: `KillMode=control-group` birimde systemd SIGTERM'i bütün sürece yollar; worker son
@@ -423,6 +500,9 @@ class EvidenceChild:
     #: OOM'da çekirdek önce alt süreci seçsin (ebeveyn değil). Yükseltmek yetki istemez. Birimin kendisi ne yapar:
     #: systemd varsayılanı `OOMPolicy=stop` bütün birimi durdurur (modül başlığı, "Bellek").
     OOM_SCORE_ADJ = 1000
+    #: Süreç çıkarken (atexit) SIGKILL'lenen alt sürecin biçilmesi için en çok bekleme (sn). SIGKILL'lenen süreç
+    #: milisaniyeler içinde biter; pay yalnız aşırı yüklü makine içindir.
+    EXIT_REAP_S = 2.0
 
     def __init__(self, engine: Any, version: int) -> None:
         self.version = int(version)
@@ -442,7 +522,8 @@ class EvidenceChild:
         """`fork` ile alt süreci başlat ve "hazır" el sıkışmasını bekle. Başarısızlık → `EvidenceChildError`.
 
         Fork deadman altında yapılır (`FORK_DEADMAN_S`); `marker` verilirse fork süresince işaret dosyası durur (asılıp
-        sonlandırılan worker'ı yeniden başlayan worker tanır: `fork_hung_before`)."""
+        sonlandırılan worker'ı yeniden başlayan worker tanır: `fork_hung_before`). Süreç çıkıyorsa (`exiting()`) fork
+        yapılmaz; başlayan alt süreç çıkış kancasının kaydına fork'la AYNI kilit altında girer."""
         if not supported():
             raise EvidenceChildError(f"platform desteklenmiyor: {sys.platform}")
         import multiprocessing as mp
@@ -450,6 +531,7 @@ class EvidenceChild:
             ctx = mp.get_context("fork")
         except ValueError as exc:                  # platform fork vermiyor
             raise EvidenceChildError(f"fork yok: {exc}") from exc
+        _ensure_exit_hook()
         try:
             self = cls(engine, version)
         except TypeError as exc:                   # zayıf referans desteklemeyen motor: güçlü referans TUTULMAZ
@@ -462,13 +544,18 @@ class EvidenceChild:
             proc = ctx.Process(target=_child_main, name="pattern-evidence-child", daemon=True,
                                args=(engine, compute, child_conn, cls.NICE, cls.OOM_SCORE_ADJ, os.getpid(),
                                      parent_conn))
-            with _fork_deadman(cls.FORK_DEADMAN_S):
-                marked = _mark(marker)
-                try:
-                    proc.start()                   # start() hedef/argüman referanslarını bırakır (motor tutulmaz)
-                finally:
-                    if marked:                     # deadman süreci sonlandırdıysa buraya gelinmez: dosya kalır
-                        _unmark(marker)
+            with _LIVE_LOCK:
+                if _EXITING:
+                    raise EvidenceChildError("süreç kapanıyor; fork yapılmadı")
+                with _fork_deadman(cls.FORK_DEADMAN_S):
+                    marked = _mark(marker)
+                    try:
+                        proc.start()               # start() hedef/argüman referanslarını bırakır (motor tutulmaz)
+                    finally:
+                        if marked:                 # deadman süreci sonlandırdıysa buraya gelinmez: dosya kalır
+                            _unmark(marker)
+                self._proc = proc                  # çıkış kancası artık görür (kill → bekleyen el sıkışması EOF)
+                _LIVE.add(self)
         except BaseException as exc:
             child_conn.close()
             parent_conn.close()
@@ -479,7 +566,7 @@ class EvidenceChild:
                 raise EvidenceChildError(f"alt süreç başlatılamadı: {type(exc).__name__}: {exc}") from exc
             raise
         child_conn.close()
-        self._proc, self._conn = proc, parent_conn
+        self._conn = parent_conn
         try:
             msg = self._recv(cls.START_TIMEOUT_S, what="hazır el sıkışması")
             if not (isinstance(msg, tuple) and len(msg) == 2 and msg[0] == "ready"):
@@ -521,14 +608,9 @@ class EvidenceChild:
                     c.send(("stop",))
                 except (OSError, EOFError, ValueError):
                     pass
-            if p is not None:
-                try:
-                    p.join(timeout)
-                    if p.is_alive():
-                        p.kill()
-                        p.join(timeout)
-                except (OSError, ValueError, AssertionError):
-                    pass
+            if p is not None and not self._reap(timeout):
+                self.kill()
+                self._reap(timeout)
         finally:
             if c is not None:
                 try:
@@ -541,7 +623,27 @@ class EvidenceChild:
                 except (ValueError, AttributeError):
                     pass
             self._proc = None
+            with _LIVE_LOCK:
+                _LIVE.discard(self)
             self._release_freeze()
+
+    def _reap(self, timeout: float) -> bool:
+        """Alt süreç bitene (ve biçilene) dek en çok `timeout` sn bekle; bitti mi. `waitpid` yoklaması: alt süreç
+        `multiprocessing`'in bekçi borusunu da /dev/null'a çevirdiği için (`_drop_inherited_fds`) `join(timeout)`'a
+        güvenilmez — bekçi erken EOF verir ve `join` süresiz `waitpid`'e düşer."""
+        p = self._proc
+        if p is None:
+            return True
+        end = time.monotonic() + max(0.0, float(timeout))
+        while True:
+            try:
+                if not p.is_alive():
+                    return True
+            except (ValueError, AssertionError):          # başka iş parçacığı kapattı / bu süreç ebeveyn değil
+                return True
+            if time.monotonic() >= end:
+                return False
+            time.sleep(0.01)
 
     def _release_freeze(self) -> None:
         if self._frozen:
@@ -617,4 +719,4 @@ class EvidenceChild:
 
 
 __all__ = ["MARKER_NAME", "EvidenceChild", "EvidenceChildComputeError", "EvidenceChildError", "blas_threads",
-           "deadman_unavailable", "fork_hung_before", "parent_gc_frozen", "supported"]
+           "deadman_unavailable", "exiting", "fork_hung_before", "parent_gc_frozen", "supported"]

@@ -46,6 +46,12 @@ ve koruyucu izleyiciden çalıyordu (ölçüm ve mekanizma: `evidence_child` ba�
 
 Geri dönüş: `history.evidence_subprocess: false` → `use_child` hiç verilmez, alt süreç kurulmaz, ön ısıtma bugünkü
 kodun yolunu birebir izler (aynı kilitler, aynı log satırı).
+
+KAPANIŞ (düzeltme turu 2): `stop()` KALICIDIR — `watch` kapanışında çağrılır (`TradingEngineV3.stop_pattern_evidence`),
+alt süreci öldürür, işçiyi en çok `timeout` bekler; sonra gelen yayım (`request_prewarm`) işçiyi yeniden BAŞLATMAZ
+(kapanırken yeni fork yok). Süreç çıkarken (`evidence_child.exiting()`; atexit kancası alt süreci öldürmüştür) öldürülen
+alt süreç arıza sayılmaz, iş sessizce bırakılır ve süreç içi yola düşülmez (çıkışı GIL için yarışarak geciktirmesin).
+Tur ıskası her durumda bugünkü gibi hesaplanır (alt süreç yoksa süreç içi).
 """
 from __future__ import annotations
 
@@ -55,7 +61,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable
 
-from .evidence_child import EvidenceChild, EvidenceChildComputeError, EvidenceChildError, fork_hung_before
+from .evidence_child import EvidenceChild, EvidenceChildComputeError, EvidenceChildError, exiting, fork_hung_before
 
 log = logging.getLogger(__name__)
 
@@ -101,6 +107,8 @@ class EvidenceCache:
         #: YALNIZ `compute_lock` altında ya da ön ısıtma işçisinde değişir.
         self._job_rec: dict | None = None
         self._blocked_logged = False
+        #: `stop()` çağrıldı: kalıcı (işçi yeniden başlatılmaz). `_lock` altında yazılır.
+        self._closed = False
 
     # ------------------------------------------------------------------ önbellek
     def get(self, key: Key) -> EvidenceEntry | None:
@@ -156,7 +164,7 @@ class EvidenceCache:
                 self.stats["child_in_process_fallbacks"] += 1
                 log.warning("pattern kanıtı alt süreçte hesaplanamadı (%s: %s); tur süreç içi hesaplıyor", symbol, exc)
             except EvidenceChildError as exc:
-                stopping = self._stop.is_set()
+                stopping = self._stopping()
                 self._child_failed(exc, quiet=stopping)     # kapanışta öldürülen alt süreç arıza sayılmaz
                 if stopping and origin != "tour":
                     raise _Stopping() from exc
@@ -191,15 +199,24 @@ class EvidenceCache:
                             "dosyayı silin (worker yeniden başlatma gerekmez).", blocked)
             return False
         self.stats["child_blocked"] = ""
+        if self._stopping():                        # kapanış: fork yok, uyarı yok (çağıran işi bırakır)
+            return False
         try:
             child = EvidenceChild.start(bundle.engine, compute, version=int(getattr(bundle, "version", 0) or 0),
                                         marker=self.fork_marker)
         except EvidenceChildError as exc:
+            if self._stopping():                    # çıkış kancası fork'u kapattı: arıza değil
+                return False
             self.stats["child_failures"] += 1
             self.stats["child_last_error"] = str(exc)[:300]
             log.warning("pattern kanıtı alt süreci başlatılamadı (süreç içi hesaplanıyor): %s", exc)
             return False
         self._child = child
+        if self._stopping():                        # `stop()` fork sırasında geldi ve alt süreci göremedi: kapat
+            self._child = None
+            child.kill()
+            child.close()
+            return False
         self.stats["child_started"] += 1
         if self._job_rec is not None:
             self._job_rec["pid"] = child.pid
@@ -241,6 +258,10 @@ class EvidenceCache:
         (bkz. modül başlığı); False → bugünkü süreç içi yol."""
         job = (bundle, list(keys), compute, is_current, bool(use_child))
         with self._lock:
+            if self._closed:                        # `stop()` sonrası (kapanış): yeni iş/fork yok; tur kendisi hesaplar
+                log.debug("pattern kanıtı ön ısıtması kapalı (durduruldu); sürüm %s ısıtılmıyor",
+                          getattr(bundle, "version", None))
+                return
             self._job = job
             self._wake.set()
             if self._thread is None or not self._thread.is_alive():
@@ -249,14 +270,24 @@ class EvidenceCache:
                 self._thread.start()
 
     def stop(self, timeout: float = 5.0) -> None:
+        """KALICI durdurma (kapanış): yeni iş kabul edilmez, canlı alt süreç hemen öldürülür (bekleyen alım EOF görür;
+        kapatmayı işçi yapar), işçi en çok `timeout` sn beklenir. O an süreç içi bir sembol hesaplıyorsa süre dolunca
+        bırakılır — daemon iş parçacığıdır, süreçle biter."""
+        with self._lock:
+            self._closed = True
+            self._job = None
         self._stop.set()
         self._wake.set()
-        child = self._child
+        child = self._child                         # `_start_child` atamadan SONRA `_stopping()`'e bakar: kaçmaz
         if child is not None:
-            child.kill()                            # bekleyen alım EOF görür; kapatmayı işçi yapar
+            child.kill()
         t = self._thread
-        if t is not None and t.is_alive():
+        if t is not None and t.is_alive() and t is not threading.current_thread():
             t.join(timeout=timeout)
+
+    def _stopping(self) -> bool:
+        """Kapanış: `stop()` çağrıldı ya da süreç çıkıyor (alt süreç çıkış kancasıyla öldürüldü)."""
+        return self._stop.is_set() or exiting()
 
     def wait_idle(self, timeout: float = 30.0) -> bool:
         """Testler/ölçüm için: bekleyen ve koşan iş bitene kadar bekle."""
@@ -292,7 +323,7 @@ class EvidenceCache:
                     self._running = False
 
     def _superseded(self, bundle: Any, is_current: Callable[[Any], bool]) -> bool:
-        return self._stop.is_set() or self._wake.is_set() or not is_current(bundle)
+        return self._stopping() or self._wake.is_set() or not is_current(bundle)
 
     def _run(self, bundle: Any, keys: list[Key], compute: Callable[[Any, str], dict],
              is_current: Callable[[Any], bool], use_child: bool = False) -> None:
@@ -318,8 +349,12 @@ class EvidenceCache:
         for key in keys:
             if self._superseded(bundle, is_current):
                 self.stats["aborted"] += 1
-                log.info("pattern kanıtı ön ısıtması bırakıldı: sürüm %d yerine daha yeni yayım var (%d/%d sembol hazır)",
-                         version, done + cached, len(keys))
+                if self._stopping():
+                    log.info("pattern kanıtı ön ısıtması kapanışta bırakıldı: sürüm %d (%d/%d sembol hazır)",
+                             version, done + cached, len(keys))
+                else:
+                    log.info("pattern kanıtı ön ısıtması bırakıldı: sürüm %d yerine daha yeni yayım var (%d/%d sembol "
+                             "hazır)", version, done + cached, len(keys))
                 return
             if self.get(key) is not None:
                 cached += 1
@@ -332,7 +367,8 @@ class EvidenceCache:
                     continue                        # döngü başında bırakılır
                 if use_child and not child_tried:
                     child_tried = True              # iş başına bir deneme; arızadan sonra iş süreç içi sürer
-                    self._start_child(bundle, compute)
+                    if not self._start_child(bundle, compute) and self._stopping():
+                        continue                    # kapanış fork sırasında geldi: süreç içi hesaplanmaz, döngü başında bırakılır
                 try:
                     if use_child:
                         ev, in_child = self._compute(bundle.engine, key[0], compute, origin="prewarm")

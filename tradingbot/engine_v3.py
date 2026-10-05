@@ -934,6 +934,15 @@ class TradingEngineV3(TradingEngine):
         except Exception:  # noqa: BLE001 — config'siz kısmi nesne: işaretsiz (deadman yine korur)
             return None
 
+    def stop_pattern_evidence(self, timeout: float = 2.0) -> None:
+        """Kapanışta (`watch`): ön ısıtma işçisini KALICI durdur, canlı kanıt alt sürecini öldür, işçiyi en çok `timeout`
+        sn bekle (bkz. `patterns/evidence_cache` "KAPANIŞ"). Alt süreç SIGTERM'i yok saydığından bu olmasa süreç çıkışı
+        `multiprocessing`'in zaman aşımsız `join`'inde ön ısıtma işinin sonunu beklerdi (çıkış kancası da korur). Karar
+        girdisi DEĞİLDİR: kapanıştan sonra tur yoktur. Önbellek hiç kurulmadıysa hiçbir şey yapmaz."""
+        c = self.__dict__.get("_pattern_cache")
+        if c is not None and hasattr(c, "stop"):
+            c.stop(timeout)
+
     @staticmethod
     def _evidence_query(eng, symbol: str) -> dict:
         """TEK kanıt fonksiyonu: tur ve ön ısıtma AYNI motorla AYNI çağrıyı yapar (sorgu anı = indeksin kendi son barı)."""

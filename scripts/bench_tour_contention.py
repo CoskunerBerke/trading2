@@ -167,11 +167,23 @@ def run(mode, eng, net, tmpdir):
                      "max": round(1000 * lags[-1], 1)}
     if cache is not None:
         res["prewarm_still_running"] = bool(cache._running)
-        res["child_private_mb"] = None if cache._child is None or cache._child.private_kb_max is None \
-            else round(cache._child.private_kb_max / 1024.0, 1)
+        if mode == "child":
+            res["child_private_mb"] = _child_private_mb(cache)
         cache.stop()
         cache._close_child()
     return res
+
+
+def _child_private_mb(cache) -> float | None:
+    """Alt sürecin özel belleği (MB): ölçümün SONUNDA /proc/<pid>/smaps_rollup'tan doğrudan okunur (ilk sembolün cevabı
+    ölçüm bitmeden gelmezse alt sürecin kendi bildirdiği değer henüz yoktur) ve bildirilen en yüksekle birleştirilir.
+    Ön ısıtma ölçümden önce bittiyse (alt süreç kapandı) None."""
+    from tradingbot.patterns.evidence_child import _private_kb
+    child = cache._child
+    if child is None or not child.pid:
+        return None
+    kbs = [k for k in (_private_kb(child.pid), child.private_kb_max) if isinstance(k, int)]
+    return round(max(kbs) / 1024.0, 1) if kbs else None
 
 
 def main(argv=None) -> int:

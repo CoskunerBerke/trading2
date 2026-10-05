@@ -370,6 +370,12 @@ def cmd_watch(cfg: BotConfig, args) -> int:
             eng.drain_protective_closes()
         except Exception as exc:  # noqa: BLE001
             log.warning("koruyucu izleyici kapatılırken hata: %s", exc)
+    # pattern kanıtı alt süreci (2026-10-05) SIGTERM'i yok sayar: kapanış onu ÖLDÜRÜR, ön ısıtma işinin sonunu beklemez
+    if hasattr(eng, "stop_pattern_evidence"):
+        try:
+            eng.stop_pattern_evidence()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("pattern kanıtı ön ısıtması kapatılırken hata: %s", exc)
     coop = watcher.requested()
     try:
         from .core import atomic_write_json, iso

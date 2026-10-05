@@ -195,13 +195,17 @@ idle 4-core machine: GIL-releasing tour work ran 30–145 times slower while a p
 machine under heavy load (load average 6–7) only 1.0–2.7 times; with the child about 1 time in every run). That this
 explains the VPS's long tours is a hypothesis to check after deployment. The child sees the published index through
 copy-on-write memory, so engine, function and inputs are the tour's own and the evidence is bit-identical; while it
-lives, a tour cache miss is sent to it too. It exits when the prewarm job ends or a newer index is published. A child
-failure after the fork is logged and the work falls back to today's in-process path, with two exceptions. If the fork
-itself hangs (OpenBLAS's pre-fork handler can deadlock while another thread runs a multithreaded BLAS job), a 30-second
-timer whose default action ends the process terminates the worker, systemd restarts it, and a marker file in `state/`
-keeps the child off on that machine until the owner deletes it. And under systemd's default `OOMPolicy=stop`, an
-out-of-memory kill of the child stops the whole unit, the same as an out-of-memory kill today. Only Linux uses the
-child. `history.evidence_subprocess: false` restores the in-process path exactly
+lives, a tour cache miss is sent to it too. It exits when the prewarm job ends or a newer index is published, and the
+worker kills it on shutdown instead of waiting for the job (the `watch` shutdown stops the prewarm, and an exit hook
+covers every other way out). Right after the fork the child points every inherited descriptor except its own pipe at
+`/dev/null`, so it holds none of the worker's sockets, pipes or lock file. A child failure after the fork is logged and
+the work falls back to today's in-process path, with two exceptions. If the fork itself hangs (OpenBLAS's pre-fork
+handler can deadlock while another thread runs a multithreaded BLAS job), a 30-second timer whose default action ends
+the process terminates the worker, systemd restarts it, and a marker file in `state/` keeps the child off on that
+machine until the owner deletes it (the marker is machine state: backups skip it and a restore keeps the machine's
+copy). And under systemd's default `OOMPolicy=stop`, an out-of-memory kill of the child stops the whole unit, the same
+as an out-of-memory kill today. Only Linux uses the child. `history.evidence_subprocess: false` restores the in-process
+path exactly
 ([`patterns/evidence_child.py`](../tradingbot/patterns/evidence_child.py), [TOUR_CONTENTION_V1.md](TOUR_CONTENTION_V1.md)).
 The chart-analysis index is written once per tour instead of once per new analysis, and the closed-trade exit
 evaluation and the entry-snapshot trade links are memoised. Tests pin that ledgers and decisions are identical with these

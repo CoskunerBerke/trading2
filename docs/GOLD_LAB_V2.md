@@ -11,7 +11,7 @@ hesaplanan mühür `GOLD_V2_REGISTRY_SHA` bir testle sabitlenir. Biri değişirs
 sayısıdır ve bu belge güncellenir. Sonuç görüldükten sonra kural, eşik, dönem, stop ya da çıkış GEVŞETİLMEZ.
 gold_v1'in kaydı (`GOLD_REGISTRY`, mühür `ee32a9db510f41cd`) değişmez.
 
-Ön kayıt mührü: GOLD_V2_REGISTRY_SHA = (uygulama commit'inde doldurulur)
+Ön kayıt mührü: GOLD_V2_REGISTRY_SHA = 72182fc4343f9e3f
 
 ### Bu belge yazılırken veriden ne görüldü (biçim doğrulaması)
 

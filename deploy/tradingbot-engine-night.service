@@ -1,0 +1,75 @@
+# Trading Bot — sürekli öğrenme motoru GECE birimi (P1a; docs/SYSTEM_LEARNING_ENGINE_V1.md §2.2–§2.5, §2.8, §9.3).
+# AĞSIZ (PrivateNetwork=yes), KAYIT-YALNIZ, KARAR-NÖTR: yalnız /opt/tradingbot/data/research'e yazar; state, market ve
+# app ağacı çekirdek düzeyinde salt-okunurdur. Her çalıştırma S0'da bunu kendisi DENER (state/market/app'e yazma reddi,
+# soket reddi, cgroup memory.max = ENGINE_EXPECTED_MEMORY_MAX); biri tutmazsa ISOLATION_BROKEN ile sıfırdan farklı çıkar.
+# Kod ayrı, sabitlenmiş klondan çalışır (/opt/tradingbot/engine-app; git worktree DEĞİL); worker ve config değişmez.
+#
+# Kurulum YALNIZ motor sürüm betiğiyle ve kapılıdır (§9.3): NeedDaemonReload=no + worker MemoryMax=6G önce/sonra,
+# data/research (+ locks/, backup/) `install -d -o tradingbot -g tradingbot -m0750`, install -m0644, daemon-reload,
+# ELLE SMOKE (`systemctl start tradingbot-engine-night.service`; çıkış 0 + run_status öz-denetim OK) — geçmezse
+# zamanlayıcı ETKİNLEŞTİRİLMEZ. Anında durdurma: `sudo systemctl disable --now tradingbot-engine-night.timer`.
+#
+# OnFailure (tradingbot-alert@%n.service) bu dosyada YOKTUR: yalnız uyarı birimi VPS'te varsa (P0 denetimi) sürüm betiği
+# bir drop-in ile ekler. nproc < 4 ise CPUQuota=60% de drop-in ile gelir (§2.5). MemoryHigh/MemoryMax P0'da kesinleşir;
+# MemoryMax değişirse ENGINE_EXPECTED_MEMORY_MAX aynı bayt değeriyle değişmelidir (birim sözleşme testi eşitliği denetler).
+[Unit]
+Description=Trading Bot research engine — night unit (P1a, network-less, record-only)
+Documentation=file:///opt/tradingbot/engine-app/docs/SYSTEM_LEARNING_ENGINE_V1.md
+After=local-fs.target
+
+[Service]
+Type=oneshot
+User=tradingbot
+Group=tradingbot
+WorkingDirectory=/opt/tradingbot/engine-app
+# Ortam: EnvironmentFile YOK (sır yok). Yalnız bu satırlar (§2.3; sözleşme testi listeyi aynen denetler).
+Environment=TRADINGBOT_DATA=/opt/tradingbot/data
+Environment=TRADINGBOT_STATE_DIR=/opt/tradingbot/data/state
+Environment=ALLOW_LIVE_TRADING=false
+Environment=TZ=UTC
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONIOENCODING=utf-8
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=ENGINE_EXPECTED_MEMORY_MAX=536870912
+# `-s -m`: kullanıcı site-packages yok; `-m` çalışma dizinini sys.path'e ekler (tradingbot venv'e kurulu DEĞİL).
+# `-I` KULLANILMAZ: hem PYTHONPATH'i hem çalışma dizinini yok sayar ve import'lar kırılır.
+ExecStart=/opt/tradingbot/venv/bin/python -s -m tradingbot engine-night
+# 01:37 + 2h15min = 03:52 sert durma; iç son tarih 03:40 (04:00 yayın penceresinden önce).
+TimeoutStartSec=2h15min
+
+# --- kaynak (§2.5): worker'dan sonra gelir, bellek darlığında önce motor ölür
+Nice=19
+CPUWeight=10
+CPUQuota=100%
+IOSchedulingClass=idle
+IOWeight=10
+OOMScoreAdjust=1000
+MemoryHigh=400M
+MemoryMax=512M
+
+# --- yalıtım (§2.1, §2.8)
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateNetwork=yes
+ReadWritePaths=/opt/tradingbot/data/research
+ReadOnlyPaths=/opt/tradingbot/data /opt/tradingbot/app
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+AmbientCapabilities=
+UMask=0027

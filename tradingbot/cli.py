@@ -512,6 +512,11 @@ def main(argv: list[str] | None = None) -> int:
             pass
     args = build_parser().parse_args(argv)
     _setup_logging(args.verbose)
+    if getattr(args, "engine_no_config", False):
+        # Sürekli öğrenme motoru komutları (engine-*; docs/SYSTEM_LEARNING_ENGINE_V1.md §2.3): config YÜKLENMEZ.
+        # `load_v3` bilinmeyen anahtarda ConfigError atar; sabitlenmiş engine-app bir app sürümünün yeni anahtarıyla
+        # kırılmasın diye motor canlı config'i yalnız ham YAML olarak okur. Diğer komutların yolu değişmez.
+        return int(args.fn(None, args))
     from .core import ConfigError
     try:
         cfg = load_config(args.config)

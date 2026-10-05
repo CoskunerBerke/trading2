@@ -99,4 +99,80 @@ class FakeVps:
         return T.latest_rows(self.paths)
 
 
-__all__ = ["FakeVps", "NIGHT", "UTC", "at", "night_of", "trade"]
+# ============================================================================ gece birimi (S0) yerine-geçenleri
+SHA_APP = "a" * 40
+SHA_ENGINE = "b" * 40
+MEM_MAX = 536870912
+
+
+def fake_repo(root: Path, sha: str) -> Path:
+    """`.git/HEAD` → `refs/heads/main` → sha (selfcheck.read_git_head'in okuduğu en küçük düzen)."""
+    (root / ".git" / "refs" / "heads").mkdir(parents=True, exist_ok=True)
+    (root / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+    (root / ".git" / "refs" / "heads" / "main").write_text(sha + "\n", encoding="utf-8")
+    return root
+
+
+class Proc:
+    def __init__(self, rc: int, out: str = "", err: str = ""):
+        self.returncode, self.stdout, self.stderr = rc, out, err
+
+
+class FakeHost:
+    """S0'ın dış dünyası: yalıtım denemeleri, `git merge-base`, `systemctl is-active` ve uyku. Varsayılan: sağlam bir
+    gece birimi (state/market/app yazma EROFS, soket ENETUNREACH, memory.max eşit, app SHA'sı engine'in atası, yedek
+    birimi boşta)."""
+
+    def __init__(self, root: Path, *, git_rc: int = 0, backup_states: list[str] | None = None, write_status: str = "DENIED",
+                 socket_status: str = "DENIED", memory_status: str = "MATCH", app_sha: str = SHA_APP,
+                 engine_sha: str = SHA_ENGINE, config_text: str | None = None):
+        from tradingbot.research_engine import selfcheck as SC
+        self.SC = SC
+        self.app = fake_repo(root / "app", app_sha)
+        self.engine = fake_repo(root / "engine-app", engine_sha)
+        (self.app / "config.yaml").write_text(config_text if config_text is not None else
+                                              "risk: {starting_equity_usdt: 1000}\n"
+                                              "learning_mode: {extra_entries: record_selectivity}\n", encoding="utf-8")
+        self.git_rc, self.backup_states = git_rc, list(backup_states or ["inactive"])
+        self.write_status, self.socket_status, self.memory_status = write_status, socket_status, memory_status
+        self.calls: list[list[str]] = []
+        self.slept: list[float] = []
+
+    def probes(self):
+        SC = self.SC
+
+        def wd(d):
+            return {"path": str(d), "status": self.write_status, "errno": "EROFS" if self.write_status == "DENIED" else None}
+        return SC.Probes(write_denied=wd,
+                         socket_denied=lambda: {"status": self.socket_status, "errno": "ENETUNREACH"},
+                         memory_max=lambda env: {"status": self.memory_status, "expected": MEM_MAX,
+                                                 "actual": MEM_MAX if self.memory_status == "MATCH" else 2 * MEM_MAX},
+                         writable=lambda d: {"path": str(d), "status": "WRITABLE_OK"})
+
+    def runner(self, cmd, **kw):
+        self.calls.append(list(cmd))
+        if cmd[0] == "systemctl":
+            st = self.backup_states.pop(0) if len(self.backup_states) > 1 else self.backup_states[0]
+            return Proc(0 if st in ("active", "activating") else 3, st + "\n")
+        if cmd[0] == "git":
+            return Proc(self.git_rc, "", "fatal: Not a valid commit name" if self.git_rc not in (0, 1) else "")
+        raise AssertionError(f"beklenmeyen komut {cmd}")
+
+    def sleep(self, s: float) -> None:
+        self.slept.append(s)
+
+    def kw(self) -> dict:
+        return {"app_dir": self.app, "engine_dir": self.engine, "probes": self.probes(), "runner": self.runner,
+                "sleep": self.sleep, "env": {"ALLOW_LIVE_TRADING": "false"}}
+
+
+def run_engine_night(v: FakeVps, host: FakeHost, when: datetime, *, save: bool = True, **extra) -> dict:
+    """Sahte VPS'te bir tam gece (`night.run_night`): ledger'ları kaydet, sonra S0 → S1a → S3 → S7 → S7b."""
+    from tradingbot.research_engine import night as N
+    if save:
+        v.save(when - timedelta(minutes=1))
+    return N.run_night(v.paths, now=when, **{**host.kw(), **extra})
+
+
+__all__ = ["FakeHost", "FakeVps", "MEM_MAX", "NIGHT", "Proc", "SHA_APP", "SHA_ENGINE", "UTC", "at", "fake_repo",
+           "night_of", "run_engine_night", "trade"]

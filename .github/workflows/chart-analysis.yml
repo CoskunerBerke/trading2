@@ -15,6 +15,8 @@ on:
     paths:
       - "tradingbot/**"
       - "tests/**"
+      - "deploy/tradingbot-engine-night.*"
+      - "scripts/bot_scorecard.py"
       - "requirements.txt"
       - "config.yaml"
       - ".github/workflows/chart-analysis.yml"
@@ -120,6 +122,9 @@ jobs:
             tests/test_demo_panel_state_script.py tests/test_dashboard_state_types.py \
             tests/test_tour_phases_v1.py tests/test_evidence_prewarm_v1.py tests/test_tour_perf_no_decision_change_v1.py \
             tests/test_chart_analysis_batch_index_v1.py tests/test_report_memos_v1.py \
+            tests/test_research_engine_archive.py tests/test_research_engine_daily_target.py \
+            tests/test_research_engine_night.py tests/test_research_engine_backup.py \
+            tests/test_research_engine_contract.py tests/test_research_engine_standalone.py \
             -q --tb=short > pytest.out 2>&1
           rc=$?
           cat pytest.out

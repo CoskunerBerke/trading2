@@ -1209,6 +1209,56 @@ def cmd_futures_backtest(cfg: BotConfig, args) -> int:
     return 0
 
 
+# ------------------------------------------------------------------ sürekli öğrenme motoru (P1a; docs/SYSTEM_LEARNING_ENGINE_V1.md)
+# `research_engine` YALNIZ bu işleyicilerin içinde (tembel) import edilir: worker `python -m tradingbot watch`'ı `cli`
+# üzerinden çalıştırır ve `cli.py` her çağrıda bu modülü yükler (§2.8; AST testi üst düzey import'u yasaklar).
+# Bu komutlar `engine_no_config=True` taşır: `cli.main` onlar için `load_config`/`load_v3`'ü HİÇ çağırmaz (§2.3) ve
+# işleyiciye `cfg=None` geçer; motor canlı config'i yalnız ham YAML olarak okur (`research_engine/rawconfig.py`).
+def cmd_engine_night(cfg, args) -> int:
+    from .research_engine.night import run_night
+    kw = {}
+    if args.app_dir:
+        kw["app_dir"] = Path(args.app_dir)
+    if args.engine_dir:
+        kw["engine_dir"] = Path(args.engine_dir)
+    st = run_night(**kw)
+    print(f"engine-night {st.get('run_id')}: {st.get('result')} (çıkış {st.get('exit_code')}) · plan "
+          f"{' '.join(st.get('plan') or [])} · bayraklar {', '.join(st.get('flags') or []) or '—'}")
+    return int(st.get("exit_code") or 0)
+
+
+def cmd_engine_status(cfg, args) -> int:
+    from .research_engine.paths import EnginePaths
+    from .research_engine.summary import last_status, status_lines
+    paths = EnginePaths.from_env()
+    if args.json:
+        _p(last_status(paths) or {})
+        return 0
+    print("\n".join(status_lines(paths, brief=bool(args.brief))))
+    return 0
+
+
+def cmd_engine_restore(cfg, args) -> int:
+    from .research_engine.backup import RestoreRefused, restore
+    from .research_engine.paths import EnginePaths
+    paths = EnginePaths.from_env()
+    try:
+        rep = restore(paths, args.archive, apply=bool(args.yes), expected_sha=args.sha256)
+    except RestoreRefused as exc:
+        print(f"⛔ engine-restore reddedildi: {exc}")
+        return 2
+    _p(rep)
+    if not rep["verify"]["ok"]:
+        print(f"⛔ arşiv doğrulanamadı: {rep.get('error')}")
+        return 2
+    if rep["dry_run"]:
+        print(f"KURU ÇALIŞTIRMA: hiçbir şey değişmedi. Uygulamak için --yes; mevcut içerik "
+              f"{rep['aside']} altına taşınır (silinmez; locks/ ve backup/ yerinde kalır).")
+    else:
+        print(f"Geri yüklendi. Önceki içerik: {rep['aside']}")
+    return 0
+
+
 # ------------------------------------------------------------------ parser kaydı
 def register(sub: argparse._SubParsersAction) -> None:
     s = sub.add_parser("outage-simulate", help="İzleme kesintisini geçmiş mumlarla AYRI simülasyon olarak oynat (canlı defter değişmez)")
@@ -1438,4 +1488,19 @@ def register(sub: argparse._SubParsersAction) -> None:
         s.add_argument(f"--{_k}", action="store_true", help=f"{_k} yedeği")
     s.set_defaults(fn=cmd_backup)
     s = sub.add_parser("restore", help="Yedekten geri yükle"); s.add_argument("archive"); s.add_argument("--yes", action="store_true"); s.set_defaults(fn=cmd_restore)
+    # SÜREKLİ ÖĞRENME MOTORU P1a: ağsız, kayıt-yalnız; config yüklenmez (engine_no_config), research_engine tembel import
+    s = sub.add_parser("engine-night", help="Öğrenme motoru gece çalıştırması (S0 öz-denetim, S1a arşiv, S3 günlük hedef, "
+                                            "S7 özet, S7b yedek; yalnız data/research'e yazar)")
+    s.add_argument("--app-dir", dest="app_dir", default=None, help="app ağacı (varsayılan /opt/tradingbot/app; sahte VPS için)")
+    s.add_argument("--engine-dir", dest="engine_dir", default=None, help="engine-app ağacı (varsayılan: çalışan kod)")
+    s.set_defaults(fn=cmd_engine_night, engine_no_config=True)
+    s = sub.add_parser("engine-status", help="Öğrenme motoru durumu (salt-okunur; kilit almaz): son çalıştırma, öz-denetim, "
+                                             "SKEW, A/B, rotasyon payı, günlük hedef")
+    s.add_argument("--brief", action="store_true", help="≤ 60 satır"); s.add_argument("--json", action="store_true", help="son run_status.json")
+    s.set_defaults(fn=cmd_engine_status, engine_no_config=True)
+    s = sub.add_parser("engine-restore", help="Araştırma yedeğinden geri yükle (varsayılan KURU; --yes uygular, mevcut içerik "
+                                              "research.pre-restore-<ts> olarak saklanır)")
+    s.add_argument("archive"); s.add_argument("--yes", action="store_true")
+    s.add_argument("--sha256", default=None, help="yan dosya yoksa beklenen sha256")
+    s.set_defaults(fn=cmd_engine_restore, engine_no_config=True)
     s = sub.add_parser("universe", help="Dinamik spot+futures evrenini yenile → state/universe.json"); s.set_defaults(fn=cmd_universe)

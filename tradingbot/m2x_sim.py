@@ -1603,6 +1603,25 @@ def m2_points(stream: dict[str, Any]) -> tuple[list[tuple[int, float]], list[tup
     return pts, [(int(t), float(e)) for t, e in stream.get("hourly_equity") or []]
 
 
+def stop_at_level_sensitivity(closes: list[dict[str, Any]], stops: dict[str, float], *, taker: float = 0.0005,
+                              slip_bps: float = 3.0) -> dict[str, Any]:
+    """§3.2: ihtiyatlı likidasyon (`INTRABAR_ORDER_UNOBSERVED`, alternatif `STOP_AT_LEVEL`) yerine stop seviyesinden
+    dolum varsayılsaydı R farkı (yaklaşık: stop × (1 − kayma), giriş/çıkış ücreti %0,05, funding aynen)."""
+    n, diff = 0, 0.0
+    for c in closes:
+        if c.get("basis") != "INTRABAR_ORDER_UNOBSERVED":
+            continue
+        st = stops.get(c.get("id") or "")
+        q, e = float(c.get("qty") or 0.0), float(c.get("entry") or 0.0)
+        if st is None or q <= 0 or e <= st:
+            continue
+        alt = st * (1.0 - slip_bps / 10_000.0)
+        pnl = q * (alt - e) - taker * q * (e + alt) + float(c.get("funding") or 0.0)
+        diff += pnl / (q * (e - st)) - float(c["r"])
+        n += 1
+    return {"n": n, "sum_r_gain_if_stop_at_level": round(diff, 4)}
+
+
 def m2_trade_stats(stream: dict[str, Any]) -> dict[str, Any]:
     opens = {e["id"]: e for e in stream["events"] if e["kind"] == "open"}
     closes = [e for e in stream["events"] if e["kind"] == "close"]
@@ -1625,6 +1644,9 @@ def m2_trade_stats(stream: dict[str, Any]) -> dict[str, Any]:
     out["by_year"] = {y: {"n": len(v), "mean_r": float(np.mean(v))} for y, v in sorted(by_year.items())}
     n_open = np.array([d["n_open"] for d in stream["days"]], dtype=float)
     out["open_positions"] = {"mean": float(n_open.mean()), "median": float(np.median(n_open)), "max": int(n_open.max())}
+    stops = {i: float(o["stop"]) for i, o in opens.items() if o.get("stop") is not None}
+    cl2 = [dict(c, qty=opens[c["id"]]["qty"], entry=opens[c["id"]]["fill"]) for c in closes if c["id"] in opens]
+    out["stop_at_level_sensitivity"] = stop_at_level_sensitivity(cl2, stops)
     return out
 
 
@@ -1714,7 +1736,7 @@ def m2x_details(res: dict[str, Any], stream: dict[str, Any], m2_or: dict[int, fl
     skip_ids = [x["m2_id"] for x in res["skips"]]
     n_cand = len(res["entries"]) + len(res["skips"])
     # eşleşen işlem başına M2X R − M2 R; likidasyon ayrışması
-    diffs, liq_div, liq_cost, liqs = [], 0, [], 0
+    diffs, liq_div, liq_cost, liqs, m2_liq_only = [], 0, [], 0, 0
     m2_close = {e["id"]: e for e in stream["events"] if e["kind"] == "close"}
     for c in res["closes"]:
         if c["reason"] == "likidasyon":
@@ -1726,6 +1748,8 @@ def m2x_details(res: dict[str, Any], stream: dict[str, Any], m2_or: dict[int, fl
             if c["reason"] == "likidasyon" and m2c is not None and m2c["reason"] != "likidasyon":
                 liq_div += 1
                 liq_cost.append(c["r"] - r_m2[mid])
+            if c["reason"] != "likidasyon" and m2c is not None and m2c["reason"] == "likidasyon":
+                m2_liq_only += 1
     dd_a = np.array(diffs) if diffs else np.array([0.0])
     or_ratio = []
     for s in snaps:
@@ -1759,6 +1783,12 @@ def m2x_details(res: dict[str, Any], stream: dict[str, Any], m2_or: dict[int, fl
             "matched_r_diff": {"n": len(diffs), "mean": float(dd_a.mean()), "median": float(np.median(dd_a)),
                                "p05": float(np.quantile(dd_a, 0.05)), "p95": float(np.quantile(dd_a, 0.95))},
             "m2x_closed": {"n": len(res["closes"]), "mean_r": float(np.mean([c["r"] for c in res["closes"]])) if res["closes"] else None},
+            "stop_at_level_sensitivity": stop_at_level_sensitivity(
+                [dict(c, id=c.get("m2_id")) for c in res["closes"]],
+                {i: float(o["stop"]) for i, o in opens.items() if o.get("stop") is not None}),
+            "m2_liquidated_m2x_not": m2_liq_only,
+            "divergence_share_bcd": ((res["divergence"].get("orphan", 0) + m2_liq_only) / len(res["closes"]))
+            if res["closes"] else None,
             "total_fees": res["total_fees"], "total_funding": res["total_funding"],
             "warmup_until": _iso_ms(DECISION_START_MS + int(P.M2X_POLICY_V1["warmup_days"]) * DAY_MS)}
 

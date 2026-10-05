@@ -4,9 +4,13 @@ Akışlar asla toplanmaz: bu modül yalnız `LIVE_PAPER` akışını üretir (me
 `main_spot`). `PROSPECTIVE_REPLAY`, `EXPLORATION_FWD`, `BACKTEST` satırları (P3/P4) aynı hüküm fonksiyonuna "canlı
 değil" olarak girer ve ASLA `KANITLANDI` üretemez (`look_verdicts`).
 
-Gün ve pencere (§7.1): `S(D)`, D gününün gece çalıştırmasında alınan ölçülmüş anlık görüntüdür (`closes.run_s1a`).
-P1a'nın MTM günü `W(D) = (S(D), S(D+1)]`'dir; satır iki anlık görüntü zamanını yazar. Ardışık iki takvim gününün anlık
-görüntüsü yoksa W(D) yoktur ve gün `EKSİK`tir (sıfır sayılmaz).
+Gün ve pencere (§7.1): `S(D)`, D gününün gece çalıştırmasında alınan ölçülmüş anlık görüntüdür (`closes.run_s1a`; A/B
+KAPALI gecelerinde `closes.run_s1s`). P1a'nın MTM günü `W(D) = (S(D), S(D+1)]`'dir; satır iki anlık görüntü zamanını ve
+pencere uzunluğunu yazar. Ardışık iki takvim gününün anlık görüntüsü yoksa W(D) yoktur ve gün `EKSİK`tir (sıfır
+sayılmaz). **Okuma (pencere uzunluğu):** belge W(D)'yi "≈ D 01:40 → D+1 01:40" (24 saat) tanımlar; anlık görüntü ise
+o UTC gününün İLK çalıştırmasında alınır (sürüm günü elle smoke, zamanlayıcı dışı elle çalıştırma). 20 saatten kısa ya
+da 28 saatten uzun bir pencere bir "gün" değildir: `EKSİK (PENCERE_SÜRESİ)`; böyle bir pencere ne KESİN olur ne
+`HEDEF GÜNÜ` sayılır (ölçülür, iddia edilmez).
 
 Görünümler (defter, ana bot grubu, toplam, enstrüman, altın toplamı):
 
@@ -28,9 +32,17 @@ tamamlanana kadar `GEÇİCİ`; 7 gün sonra kapsama hâlâ eksikse `EKSİK (fonl
 Revizyonlar `target/daily.jsonl`'a yalnız EKLENİR (`rev`); sayılar ilk yayımdan farklıysa satır görünür `REVİZE` taşır.
 **Hükümler yalnız KESİN günleri kullanır.**
 
+Aylık hedef (§7.5): `scripts/bot_scorecard.py` "AYLIK HEDEF" bloğu defter başına (spot dahil) kalır; motor AYNI
+aylık ölçüyü toplam, enstrüman ve altın için KESİN MTM günlerinden raporlar (`monthly_stats`: ay içindeki KESİN
+günlerin Σ MTM USDT'si ÷ ayın ilk KESİN gününün `E_total`'ı; ayrıca bileşik toplam). EKSİK/GEÇİCİ günler sayılmaz ve
+sayıları yazılır. Hüküm değildir; günlük hedefin aylık hedefin ~30 katı olduğu yanında yazılır.
+
 Hükümler (§7.3): yalnız aylık kayıtlı bakış gecesinde (her ayın 3. UTC gününden sonraki ilk gece), son 60 takvim
 gününün KESİN günleriyle; `p_tgt` = H0 "ortalama günlük % ≤ %1,00" için 5 günlük blok-bootstrap tek yönlü p; hükme
-uygun BÜTÜN kapsamlarda Holm; `α_bakış = 0,05/12`. Bootstrap çekim sayısı 20 000'dir: en küçük ulaşılabilir p
+uygun BÜTÜN kapsamlarda Holm; `α_bakış = 0,05/12`. "Yalnız-gerçekleşmiş (cüzdan görünümü) hesapla da aynı koşul"
+iki parçalıdır: yalnız-gerçekleşmiş seride de Holm-düzeltmeli p ≤ `α_bakış` VE tek gün pencere toplamının ≤ %25'i.
+Bildirilmiş bir enstrüman varken diğer kapsamlar YALNIZ TANIMLAYICIDIR: istatistikleri yazılır, hüküm kelimesi
+(`verdict`) `None`'dır. Bootstrap çekim sayısı 20 000'dir: en küçük ulaşılabilir p
 (1/20 001), ~50 kapsamlı Holm ailesinde `α_bakış`ın altında kalabilsin diye (5 000 çekimle `KANITLANDI` yapı gereği
 imkânsız olurdu). Bakışlar arasında yalnız "ara görünüm" yazılır; ara görünümde hüküm kelimesi kullanılmaz.
 
@@ -55,13 +67,14 @@ from .closes import (
     RECON_GAP,
     RECON_INCONSISTENT,
     RECON_RESTORED,
+    ST_ACTIVE,
     ST_RESTORED_AWAY,
     iter_rows,
-    latest_closes,
     load_snapshots,
 )
 from .ledgers import (
     KIND_SPOT,
+    LEDGER_MISSING,
     add_days,
     book_group,
     book_name,
@@ -102,6 +115,10 @@ BACKFILL_DAYS = 30
 ROLLING_WINDOWS = (7, 30, 60, 90)
 TOL = Decimal("1e-6")
 D0 = Decimal(0)
+#: W(D) uzunluğu (saat): bunun dışındaki pencere bir "gün" değildir → EKSİK (PENCERE_SÜRESİ).
+WINDOW_MIN_H, WINDOW_MAX_H = 20.0, 28.0
+MONTHLY_TARGET_PCT = 1.0
+MONTHLY_RATIO_NOTE = "günlük +%1 hedefi aylık +%1 hedefinin ~30 katıdır (30 günde ×1,348)"
 
 GECICI, KESIN, EKSIK, REVIZE = "GEÇİCİ", "KESİN", "EKSİK", "REVİZE"
 _STATUS_RANK = {KESIN: 0, GECICI: 1, EKSIK: 2}
@@ -128,6 +145,11 @@ def _pct(num: Decimal | None, den: Decimal | None) -> float | None:
     if num is None or den is None or den <= 0:
         return None
     return round(float(num / den * 100), 6)
+
+
+def tr_lower(text: str) -> str:
+    """Türkçe küçük harf: 'İ' → 'i', 'I' → 'ı' (str.lower 'İ'yi birleşik noktalı 'i̇' yapar)."""
+    return str(text).replace("İ", "i").replace("I", "ı").lower()
 
 
 def _worst(*statuses: str) -> str:
@@ -163,17 +185,34 @@ def _new_ragg() -> dict[str, Any]:
 
 
 # ============================================================================ arşiv taramaları
+#: kayıt görünümünün izdüşümden kullandığı alanlar (bellek: anahtar başına yalnız bunlar tutulur; closes okuma 9)
+_CP_KEYS = ("closed_at", "pnl", "gross", "fees", "funding", "slippage", "r", "venue", "funding_complete", "inst", "symbol")
+
+
+def _latest_compact(paths: EnginePaths, book: str) -> dict[str, tuple[int, str, dict]]:
+    """Arşivi akışla oku; anahtar başına (rev, durum, küçük izdüşüm) — son satır kazanır."""
+    out: dict[str, tuple[int, str, dict]] = {}
+    for row in iter_rows(paths.book_closes_dir(book)):
+        if row.get("row") == "derived":
+            continue
+        k = str(row.get("trade_key"))
+        p = row.get("proj")
+        prev = out.get(k)
+        cp = {x: p.get(x) for x in _CP_KEYS} if p else (prev[2] if prev else {})
+        out[k] = (int(row.get("rev", 0)), str(row.get("status", ST_ACTIVE)), cp)
+    return out
+
+
 def scan_closes(paths: EnginePaths, book: str) -> dict[str, dict[str, Any]]:
     """Kayıt görünümü: UTC kapanış günü → toplamlar (son revizyon; RESTORED_AWAY ayrı sayılır)."""
     out: dict[str, dict[str, Any]] = {}
-    for _k, st in latest_closes(paths, book).items():
-        p = st.proj or {}
+    for _k, (rev, status, p) in _latest_compact(paths, book).items():
         t = parse_ts(p.get("closed_at"))
         if t is None:
             continue
         agg = out.setdefault(day_of(t), _new_ragg())
         pnl = dec(p.get("pnl"))
-        if st.status == ST_RESTORED_AWAY:
+        if status == ST_RESTORED_AWAY:
             agg["restored_away_n"] += 1
             agg["restored_away_pnl"] += pnl
             continue
@@ -192,7 +231,7 @@ def scan_closes(paths: EnginePaths, book: str) -> dict[str, dict[str, Any]]:
             agg["n_r_missing"] += 1
         if p.get("venue") != "spot" and p.get("funding_complete") is not True:
             agg["funding_pending"] += 1
-        if st.rev > 0:
+        if rev > 0:
             agg["revised_records"] += 1
         inst = p.get("inst") or symbol_key(p.get("symbol")) or "?"
         bi = agg["by_inst"].setdefault(inst, {"pnl": D0, "n": 0})
@@ -322,7 +361,7 @@ def build_rows(paths: EnginePaths, *, now: datetime | None = None, backfill_days
                prev_rows: dict[str, dict] | None = None) -> list[dict]:
     """Bütün günlerin `tgt_v1` satırlarını arşiv ve anlık görüntülerden yeniden hesapla (saf okuma)."""
     now = now or utc_now()
-    snaps = load_snapshots(paths)
+    snaps = load_snapshots(paths, light=True)
     if not snaps:
         return []
     run_day = day_of(now)
@@ -375,7 +414,7 @@ def _book_scope(b: str, day: str, b0: dict, b1: dict, rec: dict, w: dict | None,
     rc = (b1.get("recon") or {}).get("status")
     if rc == RECON_GAP or day in scan_e["win_gap"]:
         status, reasons = EKSIK, reasons + ["ENTRIES_GAP"]
-    if rc == RECON_RESTORED or b1.get("restore"):
+    if rc == RECON_RESTORED or b1.get("restore") or b1.get("restore_pending"):
         status, reasons = EKSIK, reasons + ["RESTORE"]
     if rc == RECON_INCONSISTENT:
         status, reasons = EKSIK, reasons + ["INCONSISTENT"]
@@ -413,6 +452,11 @@ def _window_row(day: str, books: list[str], scans_r: dict, scans_e: dict, snap_b
     e_books: dict[str, Decimal] = {}
     if s0 is None or s1 is None:
         total_status, total_reasons = EKSIK, ["ANLIK_GÖRÜNTÜ_YOK"]
+    hours = None
+    if s0 is not None and s1 is not None:
+        t0, t1 = parse_ts(s0.get("taken_at")), parse_ts(s1.get("taken_at"))
+        hours = round((t1 - t0).total_seconds() / 3600.0, 3) if t0 and t1 else None
+    win_bad = hours is None or not (WINDOW_MIN_H <= hours <= WINDOW_MAX_H)
     for b in books:
         rec = scans_r[b].get(day) or _new_ragg()
         b0 = ((s0 or {}).get("books") or {}).get(b)
@@ -425,15 +469,20 @@ def _window_row(day: str, books: list[str], scans_r: dict, scans_e: dict, snap_b
             continue
         ok0 = isinstance(b0, dict) and b0.get("status") == "OK"
         ok1 = isinstance(b1, dict) and b1.get("status") == "OK"
-        if b0 is None and ok1:
-            added.append(b)                      # yeni defter: bu pencerenin paydasına girmez
+        gone0 = not isinstance(b0, dict) or b0.get("status") == LEDGER_MISSING
+        gone1 = not isinstance(b1, dict) or b1.get("status") == LEDGER_MISSING
+        if gone0 and ok1:
+            added.append(b)                      # yeni (ya da geri gelen) defter: bu pencerenin paydasına girmez
             continue
-        if b0 is None and b1 is None:
-            continue
+        if gone0 and gone1:
+            continue                             # iki uçta da yok: bu pencerede defter yoktur (LEDGER_MISSING bayrağı ayrı)
         if not (ok0 and ok1):
             sc = _scope_empty()
             sc["mtm_ok"] = False
-            why = [f"DEFTER_{(b1 or {}).get('status') or (b0 or {}).get('status') or 'YOK'}"]
+            if gone1:
+                why = ["DEFTER_YOK" if not isinstance(b1, dict) else f"DEFTER_{LEDGER_MISSING}"]
+            else:
+                why = [f"DEFTER_{(b1 if not ok1 else b0).get('status') or 'YOK'}"]
             books_out[b] = _scope_out(sc, status=EKSIK, reasons=why)
             total_status, total_reasons = EKSIK, total_reasons + why
             total["mtm_ok"] = False                  # okunamayan defter varken toplam MTM yüzdesi yazılmaz (kısmi olurdu)
@@ -443,6 +492,8 @@ def _window_row(day: str, books: list[str], scans_r: dict, scans_e: dict, snap_b
             group_status[g] = (EKSIK, gs[1] + why)
             continue
         sc, st, rs, by_inst = _book_scope(b, day, b0, b1, rec, scans_e[b]["win"].get(day), scans_e[b], run_day)
+        if win_bad:
+            st, rs = EKSIK, rs + ["PENCERE_SÜRESİ"]
         books_out[b] = {**_scope_out(sc, status=st, reasons=rs), "kind": b1.get("kind"),
                         "mark_source": b1.get("mark_source"), "e_end": _fl(dec_or_none(b1.get("equity")))}
         if sc["mtm_ok"]:
@@ -469,8 +520,8 @@ def _window_row(day: str, books: list[str], scans_r: dict, scans_e: dict, snap_b
             a["n_entries"] += v.get("n_entries") or 0
     e_total = total["e_start"] if total["mtm_ok"] else None
     row: dict[str, Any] = {"schema": ROW_SCHEMA, "tgt": TGT_VERSION, "stream": STREAM_LIVE, "day": day,
-                           "window": ({"from": (s0 or {}).get("taken_at"), "to": (s1 or {}).get("taken_at")}
-                                      if s0 and s1 else None),
+                           "window": ({"from": (s0 or {}).get("taken_at"), "to": (s1 or {}).get("taken_at"),
+                                       "hours": hours, "ok": not win_bad} if s0 and s1 else None),
                            "final_on": add_days(day, FINAL_AFTER_DAYS), "books_added": added}
     if s0 is None or s1 is None:
         sc = _scope_empty()
@@ -485,6 +536,8 @@ def _window_row(day: str, books: list[str], scans_r: dict, scans_e: dict, snap_b
                     "total": _scope_out(sc, status=EKSIK, reasons=["ANLIK_GÖRÜNTÜ_YOK"]), "books": books_out, "groups": {},
                     "instruments": {}, "best_instrument": None, "gold": None, "chance": None, "hit": None})
         return row
+    if win_bad:
+        total_status, total_reasons = EKSIK, total_reasons + ["PENCERE_SÜRESİ"]
     total_out = _scope_out(total, status=total_status, reasons=total_reasons)
     row["status"] = total_status
     row["status_reason"] = total_out["status_reason"]
@@ -808,10 +861,16 @@ def look_verdicts(rows_by_day: dict[str, dict], *, look_day: str, look_night: bo
         mean = round(statistics.fmean(s["x"]), 6) if s["x"] else None
         tot = sum(s["x"])
         share = (max(s["x"]) / tot) if (s["x"] and tot > 0) else None
+        xr = s["xr"]
+        tot_r = sum(xr) if xr and all(v == v for v in xr) else None
+        share_r = (max(xr) / tot_r) if (tot_r is not None and tot_r > 0) else None
         enough = n >= MIN_KESIN_DAYS and s["n_trades"] >= MIN_TRADES
         proven = (stream == STREAM_LIVE and sc in elig and enough and ph.get(sc, 1.0) <= ALPHA_LOOK
-                  and prh.get(sc, 1.0) <= ALPHA_LOOK and share is not None and share <= MAX_DAY_SHARE)
-        if not enough:
+                  and prh.get(sc, 1.0) <= ALPHA_LOOK and share is not None and share <= MAX_DAY_SHARE
+                  and share_r is not None and share_r <= MAX_DAY_SHARE)
+        if sc not in elig:
+            v = None                              # yalnız tanımlayıcı kapsam: istatistik var, hüküm kelimesi yok
+        elif not enough:
             v = V_THIN
         elif proven:
             v = V_PROVEN
@@ -823,7 +882,8 @@ def look_verdicts(rows_by_day: dict[str, dict], *, look_day: str, look_night: bo
                    "gap_to_target_pct": round(mean - TARGET_PCT, 6) if mean is not None else None,
                    "ci95": boot_ci(s["x"], seed=_seed(TGT_VERSION, "ci", look_day, sc)) if n >= 2 else None,
                    "p_tgt": ps.get(sc), "p_holm": ph.get(sc), "p_realized": prs.get(sc), "p_realized_holm": prh.get(sc),
-                   "max_day_share": round(share, 4) if share is not None else None}
+                   "max_day_share": round(share, 4) if share is not None else None,
+                   "max_day_share_realized": round(share_r, 4) if share_r is not None else None}
     return {"look": True, "look_day": look_day, "stream": stream, "window": [lo, add_days(look_day, -1)],
             "alpha_look": ALPHA_LOOK, "family_size": len(elig), "declared_instrument": declared_instrument,
             "live": stream == STREAM_LIVE, "scopes": out}
@@ -894,13 +954,85 @@ def run_s3(paths: EnginePaths, *, now: datetime | None = None, run_id: str | Non
         paths.append_jsonl(paths.target_looks, [look])
     end = max(latest) if latest else None
     rolling = {n: rolling_stats(latest, end_day=end, n=n) for n in ROLLING_WINDOWS} if end else {}
+    monthly = monthly_stats(latest)
     summary = {"schema": "tgt_v1_summary", "tgt": TGT_VERSION, "computed_at": iso(now), "run_id": run_id,
                "rows": [latest[d] for d in sorted(latest)[-14:]], "rolling": rolling, "last_look": last_look(paths),
+               "monthly": {m: monthly[m] for m in sorted(monthly)[-3:]},
                "header_tr": render_brief(latest, last_look(paths), rolling, today=run_day)}
     paths.write_json(paths.summary / "daily_target.json", summary)
     return {"stage": "S3", "rows": len(rows), "appended": appended, "new_rev_days": sorted(r["day"] for r in new if r.get("rev")),
             "revised_days": sorted(r["day"] for r in new if r.get("revised")),
             "look": bool(look), "latest_day": end}
+
+
+# ============================================================================ aylık (§7.5)
+def monthly_stats(latest: dict[str, dict]) -> dict[str, dict[str, Any]]:
+    """Aylık hedef ölçüsü (§7.5; modül başı): UTC ayı başına KESİN MTM günlerinin Σ MTM USDT'si ÷ ayın ilk KESİN gününün
+    `E_total`'ı (toplam, enstrüman, altın), bileşik toplam ve gün sayıları. Hüküm değildir."""
+    acc: dict[str, dict[str, Any]] = {}
+    for d in sorted(latest):
+        r = latest[d]
+        a = acc.setdefault(d[:7], {"rows": 0, "kesin": 0, "eksik": 0, "gecici": 0, "pnl": 0.0, "e0": None, "comp": 1.0,
+                                   "inst": {}, "gold": 0.0, "gold_ok": True, "first": None, "last": None})
+        a["rows"] += 1
+        st = r.get("status")
+        t = r.get("total") or {}
+        if st == EKSIK:
+            a["eksik"] += 1
+        elif st == GECICI:
+            a["gecici"] += 1
+        if st != KESIN or t.get("r_mtm") is None or t.get("pnl_mtm") is None or not t.get("e_start"):
+            continue
+        a["kesin"] += 1
+        a["first"] = a["first"] or d
+        a["last"] = d
+        if a["e0"] is None:
+            a["e0"] = float(t["e_start"])
+        a["pnl"] += float(t["pnl_mtm"])
+        a["comp"] *= 1 + float(t["r_mtm"]) / 100.0
+        for inst, v in (r.get("instruments") or {}).items():
+            if inst != "?" and v.get("pnl_mtm") is not None:
+                a["inst"][inst] = a["inst"].get(inst, 0.0) + float(v["pnl_mtm"])
+        g = (r.get("gold") or {}).get("pnl_mtm")
+        if g is None:
+            a["gold_ok"] = False
+        else:
+            a["gold"] += float(g)
+    out: dict[str, dict[str, Any]] = {}
+    for m, a in acc.items():
+        e0 = a["e0"]
+        pct = round(a["pnl"] / e0 * 100.0, 6) if e0 else None
+        insts = {k: {"pnl_mtm": round(v, 8), "pct_of_start": round(v / e0 * 100.0, 6) if e0 else None}
+                 for k, v in sorted(a["inst"].items(), key=lambda kv: -abs(kv[1]))}
+        out[m] = {"month": m, "rows": a["rows"], "n_kesin": a["kesin"], "n_eksik": a["eksik"], "n_gecici": a["gecici"],
+                  "kesin_from": a["first"], "kesin_to": a["last"], "e_total_start": e0,
+                  "pnl_mtm_usdt": round(a["pnl"], 8), "pct_of_start": pct,
+                  "compounded_pct": round((a["comp"] - 1) * 100.0, 6) if a["kesin"] else None,
+                  "target_pct": MONTHLY_TARGET_PCT,
+                  "gap_to_target_pct": round(pct - MONTHLY_TARGET_PCT, 6) if pct is not None else None,
+                  "instruments": insts,
+                  "gold": {"pnl_mtm": round(a["gold"], 8) if a["gold_ok"] else None,
+                           "pct_of_start": round(a["gold"] / e0 * 100.0, 6) if (e0 and a["gold_ok"]) else None},
+                  "note_tr": MONTHLY_RATIO_NOTE}
+    return out
+
+
+def render_monthly(monthly: dict[str, dict] | None, *, top: int = 4) -> list[str]:
+    """Aylık hedef satırı (yalnız ölçüm; hüküm kelimesi yok): en yeni ay."""
+    if not monthly:
+        return ["Aylık (§7.5): henüz KESİN gün yok"]
+    m = monthly[max(monthly)]
+    if not m.get("n_kesin"):
+        return [f"Aylık {m['month']} (§7.5): KESİN gün yok ({m.get('rows', 0)} satır; EKSİK {m.get('n_eksik', 0)}, "
+                f"GEÇİCİ {m.get('n_gecici', 0)}) — ölçüm yok"]
+    side = "üstünde" if (m.get("pct_of_start") or 0) >= MONTHLY_TARGET_PCT else "altında"
+    ins = " · ".join(f"{k} {fmt_pct(v.get('pct_of_start'))}" for k, v in list((m.get("instruments") or {}).items())[:top])
+    gold = (m.get("gold") or {}).get("pct_of_start")
+    return [f"Aylık {m['month']} (§7.5; yalnız KESİN MTM günleri {m['n_kesin']}/{m['rows']}, EKSİK {m['n_eksik']}): toplam "
+            f"{fmt_pct(m.get('pct_of_start'))} (ay başı sermayesine göre; bileşik {fmt_pct(m.get('compounded_pct'))}) · "
+            f"ayda +%1'e göre {side} (ölçüm; hüküm değildir)",
+            f"  enstrümanlar (payda: toplam sermaye): {ins or '—'} · altın {fmt_pct(gold) if gold else 'işlem yok'} · "
+            f"{MONTHLY_RATIO_NOTE}"]
 
 
 # ============================================================================ metin (§7.7)
@@ -945,9 +1077,13 @@ def render_brief(latest: dict[str, dict], look: dict | None, rolling: dict | Non
             lines.append(f"  en iyi enstrüman {bi['inst']} {fmt_pct(bi['r_inst'])} (payda: {DENOM_TOTAL}; {DENOM_BOOK} "
                          f"{fmt_pct(bi.get('r_book_inst'))}) · beklenen şans oranı "
                          f"{fmt_share(ch)} ({CHANCE_HEADLINE})")
-        side = "üstünde" if t["r_mtm"] >= TARGET_PCT else "altında"
-        tail = f"geçici; kesinleşme {r.get('final_on', '')[5:]}" if r.get("status") == GECICI else lab.lower()
-        lines.append(f"  %1'e göre: {side} ({tail})")
+        if r.get("status") == EKSIK:
+            why = ", ".join(r.get("status_reason") or []) or "veri eksik"
+            lines.append(f"  %1'e göre: karşılaştırılmaz (eksik: {why}; gün sayılmaz)")
+        else:
+            side = "üstünde" if t["r_mtm"] >= TARGET_PCT else "altında"
+            tail = f"geçici; kesinleşme {r.get('final_on', '')[5:]}" if r.get("status") == GECICI else tr_lower(lab)
+            lines.append(f"  %1'e göre: {side} ({tail})")
     else:
         why = ", ".join(r.get("status_reason") or []) or "veri yok"
         lines.append(f"{head} ({lab}: {why}): yalnız gerçekleşmiş {fmt_pct(t.get('r_realized'))} · kayıt görünümü "
@@ -1008,7 +1144,7 @@ def ledger_day_views(paths: EnginePaths, *, days: int, now: datetime | None = No
     now = now or utc_now()
     end = day_of(now)
     day_list = [add_days(end, -i) for i in range(days)][::-1]
-    snaps = load_snapshots(paths)
+    snaps = load_snapshots(paths, light=True)
     last = snaps[-1] if snaps else {"books": {}}
     out: dict[str, Any] = {"days": day_list, "books": {}}
     for b, st in sorted((last.get("books") or {}).items()):
@@ -1024,12 +1160,48 @@ def ledger_day_views(paths: EnginePaths, *, days: int, now: datetime | None = No
                              "slippage": _fl(r["slippage"])},
                      "wal_ts": {"net": _fl(w["pnl"]), "transfer": _fl(w["transfer"]), "complete": _walts_complete(se, d)}}
         out["books"][b] = {"kind": st.get("kind"), "unrealized_now": _fl(dec_or_none(st.get("unrealized"))), "days": bd}
+    out["snapshot_day"] = last.get("day")
+    out["snapshot_taken_at"] = last.get("taken_at")
+    # arşivin kapsadığı son gün (A/B KAPALI gecelerinin S1s anlık görüntüleri arşivlemez): karşılaştırma bundan önceki
+    # günlerde anlamlıdır (sürüm betiğinin K6'sı ≤ bu gün − 2'yi karşılaştırır: geç fonlama o zamana dek yerleşir)
+    arch = [s_["day"] for s_ in snaps if s_.get("mode", "archive") != "snapshot_only"]
+    out["archived_through"] = arch[-1] if arch else None
     return out
+
+
+def render_ledger_views(views: dict[str, Any]) -> list[str]:
+    """`engine-status --daily`: `scripts/bot_scorecard.py --daily` ile AYNI tanımlı tablo (VPS kabul 6). Kayıt
+    görünümü (`closed_at` günü) ve defter-zaman-damgalı cüzdan görünümü (`ts` günü) sütun sütun karşılaştırılabilir;
+    gerçekleşmemiş motorun SON anlık görüntüsündendir (betik ŞİMDİ'yi yazar — o sütun karşılaştırılmaz). Son gece
+    arşivinden sonra kapananlar / gelen geç fonlama yalnız betikte görünür (ertesi gece burada da görünür)."""
+    days = views.get("days") or []
+    books = views.get("books") or {}
+
+    def f2(x: float | None) -> str:                     # betiğin `_fmt`'i ile aynı biçim (satır satır karşılaştırma)
+        return "—" if x is None else f"{x:.2f}"
+    lines = [f"GÜNLÜK HEDEF — scorecard --daily ile aynı tanım (motor arşivi; son anlık görüntü "
+             f"{_hm(views.get('snapshot_taken_at'))} UTC) · yalnız ölçüm; hüküm yok · sayı biçimi betikle aynı",
+             f"{'gün':<12}{'kayıt net USDT':>15}{'işlem':>7}{'cüzdan net USDT':>17}  not"]
+    for d in days[::-1]:
+        rn = sum((b["days"][d]["rec"]["net"] or 0.0) for b in books.values())
+        rc = sum(b["days"][d]["rec"]["n"] for b in books.values())
+        wn = sum((b["days"][d]["wal_ts"]["net"] or 0.0) for b in books.values())
+        comp = all(b["days"][d]["wal_ts"]["complete"] for b in books.values())
+        lines.append(f"{d:<12}{f2(rn):>15}{rc:>7}{f2(wn):>17}  "
+                     + ("yalnız gerçekleşmiş" if comp else "cüzdan hareketleri eksik (rotasyon/boşluk)"))
+    lines.append(f"{'defter':<30}{'kayıt net (işlem)':>20}{'cüzdan net':>13}{'açık gerçekleşmemiş (anlık görüntü)':>37}")
+    for b, v in books.items():
+        rn = sum((x["rec"]["net"] or 0.0) for x in v["days"].values())
+        rc = sum(x["rec"]["n"] for x in v["days"].values())
+        wn = sum((x["wal_ts"]["net"] or 0.0) for x in v["days"].values())
+        lines.append(f"{book_name(b)[:29]:<30}{f2(rn) + f' ({rc})':>20}{f2(wn):>13}{f2(v.get('unrealized_now')):>37}")
+    return lines
 
 
 __all__ = ["ALPHA_LOOK", "BOOT_P", "EKSIK", "FORBIDDEN_ON_REALIZED", "GECICI", "KESIN", "LOOK_SCHEMA", "MIN_KESIN_DAYS",
            "MIN_TRADES", "REVIZE", "ROW_SCHEMA", "SCOPE_GOLD", "SCOPE_TOTAL", "STREAMS", "STREAM_LIVE", "TARGET_PCT",
            "TGT_VERSION", "V_BELOW", "V_DAY", "V_ONTRACK", "V_PROVEN", "V_THIN", "block_bootstrap_means", "boot_ci",
            "build_rows", "chance_rate", "fingerprint", "holm", "is_look_night", "latest_rows", "ledger_day_views",
-           "look_verdicts", "merge_rows", "numeric_fingerprint", "p_tgt", "render_brief", "render_table", "rolling_stats",
-           "row_label", "run_s3", "scan_closes", "scan_entries", "scope_ids", "scope_value", "wilson"]
+           "look_verdicts", "merge_rows", "monthly_stats", "numeric_fingerprint", "p_tgt", "render_brief",
+           "render_ledger_views", "render_monthly", "render_table", "rolling_stats", "row_label", "run_s3", "scan_closes",
+           "scan_entries", "scope_ids", "scope_value", "tr_lower", "wilson", "WINDOW_MAX_H", "WINDOW_MIN_H"]

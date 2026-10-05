@@ -316,10 +316,38 @@ def test_engine_night_cli_skips_load_config_and_stops_when_unsandboxed(tmp_path,
         def close(self):
             pass
     monkeypatch.setattr(socket, "socket", NoNet)
+    import tradingbot.research_engine.night as N
+    from tradingbot.research_engine import paths as P
+    real_guard = P.disk_guard
+    # disk: sunucunun gerçek boş alanından bağımsız (gerçek statvfs yolu test_research_engine_night'ta ayrıca sınanır)
+    monkeypatch.setattr(N, "disk_guard", lambda paths, **kw: real_guard(paths, **{**kw, "free_bytes": 50 * P.GB}))
     rc = cli.main(["engine-night", "--app-dir", str(tmp_path / "app")])
     out = capsys.readouterr().out
     assert rc == 3 and "ISOLATION_BROKEN" in out, "birim dışında (yazılabilir state, ortam yok) çalıştırma durur"
     rs = json.loads((v.data / "research" / "summary" / "run_status.json").read_text(encoding="utf-8"))
-    assert rs["selfcheck"]["isolation"]["broken"] == ["write_denied_state", "write_denied_market", "memory_max"]
+    assert rs["selfcheck"]["isolation"]["broken"] == ["write_denied_state", "write_denied_market", "write_denied_app",
+                                                      "memory_max"], "app ağacı YOK: yanlış yol bozuk sayılır"
     assert sorted(p.name for p in v.state.iterdir()) == ["mode.json"], "deneme dosyaları silindi; state'e başka yazım yok"
     assert not (v.data / "market").exists() or not list((v.data / "market").iterdir())
+
+
+def test_engine_status_daily_cli_prints_the_scorecard_view_and_writes_nothing(tmp_path, monkeypatch, capsys):
+    """VPS kabul 6: `engine-status --daily` scorecard --daily ile aynı tanımlı tabloyu basar (salt-okunur; config yok)."""
+    import tradingbot.cli as cli
+    from research_engine_fixtures import at, night_of, trade
+    monkeypatch.setattr(cli, "load_config", lambda *a, **k: (_ for _ in ()).throw(AssertionError("config yüklenmez")))
+    v = FakeVps(tmp_path)
+    trade(v.fut(), "ETH/USDT", at("2026-10-01", 3), 100.0, 101.0)
+    v.night(night_of("2026-10-01"))
+    v.night(night_of("2026-10-02"))
+    monkeypatch.setenv("TRADINGBOT_DATA", str(v.data))
+    monkeypatch.setenv("TRADINGBOT_STATE_DIR", str(v.state))
+    before = {p: p.read_bytes() for p in v.data.rglob("*") if p.is_file()}
+    assert cli.main(["engine-status", "--daily", "--days", "400"]) == 0
+    out = capsys.readouterr().out
+    assert "scorecard --daily ile aynı tanım" in out and "2026-10-01" in out and "Ana bot · vadeli" in out
+    assert cli.main(["engine-status", "--daily", "--json", "--days", "400"]) == 0
+    doc = json.loads(capsys.readouterr().out)
+    assert doc["books"]["main_fut"]["days"]["2026-10-01"]["rec"]["n"] == 1
+    assert cli.main(["engine-status", "--daily", "--days", "0"]) == 2
+    assert {p: p.read_bytes() for p in v.data.rglob("*") if p.is_file()} == before, "salt-okunur"

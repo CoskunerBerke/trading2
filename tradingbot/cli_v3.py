@@ -1229,8 +1229,18 @@ def cmd_engine_night(cfg, args) -> int:
 
 def cmd_engine_status(cfg, args) -> int:
     from .research_engine.paths import EnginePaths
-    from .research_engine.summary import last_status, status_lines
+    from .research_engine.summary import daily_view_lines, last_status, status_lines
     paths = EnginePaths.from_env()
+    if args.daily:
+        if args.days < 1:
+            print("--days en az 1 olmalı")
+            return 2
+        if args.json:
+            from .research_engine.daily_target import ledger_day_views
+            _p(ledger_day_views(paths, days=args.days))
+            return 0
+        print("\n".join(daily_view_lines(paths, days=args.days)))
+        return 0
     if args.json:
         _p(last_status(paths) or {})
         return 0
@@ -1496,7 +1506,9 @@ def register(sub: argparse._SubParsersAction) -> None:
     s.set_defaults(fn=cmd_engine_night, engine_no_config=True)
     s = sub.add_parser("engine-status", help="Öğrenme motoru durumu (salt-okunur; kilit almaz): son çalıştırma, öz-denetim, "
                                              "SKEW, A/B, rotasyon payı, günlük hedef")
-    s.add_argument("--brief", action="store_true", help="≤ 60 satır"); s.add_argument("--json", action="store_true", help="son run_status.json")
+    s.add_argument("--brief", action="store_true", help="≤ 60 satır"); s.add_argument("--json", action="store_true", help="son run_status.json (--daily ile: günlük görünümler)")
+    s.add_argument("--daily", action="store_true", help="scorecard --daily ile aynı tanımlı günlük tablo (VPS kabul 6)")
+    s.add_argument("--days", type=int, default=7, help="--daily için gün sayısı (UTC, bugün dahil; varsayılan 7)")
     s.set_defaults(fn=cmd_engine_status, engine_no_config=True)
     s = sub.add_parser("engine-restore", help="Araştırma yedeğinden geri yükle (varsayılan KURU; --yes uygular, mevcut içerik "
                                               "research.pre-restore-<ts> olarak saklanır)")

@@ -54,8 +54,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def _no_ab(v: FakeVps) -> None:
-    """A/B penceresini dışarıda bırak (motor SHA'sı çok önce görülmüş): çok geceli testler her gece tam çalışır."""
-    SC.register_epoch(v.paths, SHA_ENGINE, at("2020-01-01"), "test")
+    """A/B penceresini dışarıda bırak (motor kodu çok önce görülmüş): çok geceli testler her gece tam çalışır."""
+    SC.register_epoch(v.paths, SHA_ENGINE, at("2020-01-01"), "test", code_hash=SC.engine_code_hash())
 
 
 def _files(root: Path) -> dict[str, bytes]:
@@ -193,7 +193,8 @@ def test_full_night_writes_only_under_research_and_opens_ledgers_read_only(tmp_p
         assert (research / rel).exists(), rel
     rs = json.loads((research / "summary" / "run_status.json").read_text(encoding="utf-8"))
     assert rs["result"] == "SUCCESS" and rs["exit_code"] == 0 and rs["selfcheck"]["status"] == "OK"
-    assert rs["shas"] == {"app": SHA_APP, "engine": SHA_ENGINE, "relation": "ANCESTOR"}
+    assert rs["shas"] == {"app": SHA_APP, "engine": SHA_ENGINE, "relation": "ANCESTOR", "engine_code": SC.engine_code_hash()}
+    assert len(rs["shas"]["engine_code"]) == 64
     assert rs["config"]["sha256"] and rs["data_seal"] is None and rs["schema"] == N.RUN_SCHEMA
     for s in N.STAGES:
         assert rs["stages"][s]["duration_s"] >= 0 and "cpu_s" in rs["stages"][s]
@@ -322,7 +323,11 @@ def test_s0_skew_runs_only_s0_s1a_s7(tmp_path):
 
 def test_s0_paper_check_variants(tmp_path):
     st_dir = tmp_path / "state"
+    assert SC.check_paper(st_dir, {})["source"] == "state_missing", "state klasörü yok → PAPER doğrulanamaz"
     st_dir.mkdir()
+    r = SC.check_paper(st_dir, {})
+    assert r["status"] == SC.NOT_PAPER and r["source"] == "state_empty", "boş klasör (yanlış yol?) fail-closed"
+    (st_dir / "futures_ledger.json").write_text("{}", encoding="utf-8")
     assert SC.check_paper(st_dir, {})["status"] == "OK" and SC.check_paper(st_dir, {})["source"] == "default_missing"
     (st_dir / "mode.json").write_text('{"mode": "PAPER", "live_order_path_enabled": false}', encoding="utf-8")
     assert SC.check_paper(st_dir, {})["status"] == "OK"
@@ -361,30 +366,54 @@ def test_real_probe_functions(tmp_path, monkeypatch):
     import socket as _socket
 
     class Sock:
-        mode = "unreach"
+        """mode: (IPv4 davranışı, IPv6 davranışı); errno, "timeout", "ok" ya da ("socket", errno) = soket oluşturulamaz."""
+        mode = (errno.ENETUNREACH, errno.ENETUNREACH)
+        seen: list = []
 
-        def __init__(self, *a, **k):
-            pass
+        def __init__(self, family, *a, **k):
+            self.family = family
+            m = Sock.mode[0 if family == _socket.AF_INET else 1]
+            if isinstance(m, tuple):
+                raise OSError(m[1], os.strerror(m[1]))
 
         def settimeout(self, t):
             assert t == SC.SOCKET_PROBE_TIMEOUT_S
 
         def connect(self, addr):
-            assert addr == ("1.1.1.1", 443), "DNS'siz genel IP"
-            if Sock.mode == "unreach":
-                raise OSError(errno.ENETUNREACH, "Network is unreachable")
-            if Sock.mode == "timeout":
+            Sock.seen.append((self.family, addr))
+            m = Sock.mode[0 if self.family == _socket.AF_INET else 1]
+            if m == "timeout":
                 raise _socket.timeout("timed out")
+            if m != "ok":
+                raise OSError(m, os.strerror(m))
 
         def close(self):
             pass
     monkeypatch.setattr(_socket, "socket", Sock)
-    assert SC.probe_socket_denied()["status"] == SC.P_DENIED and SC.probe_socket_denied()["errno"] == "ENETUNREACH"
-    Sock.mode = "timeout"
-    assert SC.probe_socket_denied()["status"] == SC.P_TIMEOUT
-    Sock.mode = "ok"
-    assert SC.probe_socket_denied()["status"] == SC.P_CONNECTED
+    r = SC.probe_socket_denied()
+    assert r["status"] == SC.P_DENIED and r["errno"] == "ENETUNREACH" and r["v6"]["status"] == SC.P_DENIED
+    assert (_socket.AF_INET, ("1.1.1.1", 443)) in Sock.seen and (_socket.AF_INET6, ("2606:4700:4700::1111", 443)) in Sock.seen, \
+        "DNS'siz genel IPv4 VE IPv6 adresi"
+    want = {(errno.EPERM, errno.ENETUNREACH): SC.P_DENIED, (errno.EACCES, errno.EACCES): SC.P_DENIED,
+            (errno.ENETUNREACH, ("socket", errno.EAFNOSUPPORT)): SC.P_DENIED,    # IPv6'sız çekirdek / RestrictAddressFamilies
+            (errno.ECONNREFUSED, errno.ENETUNREACH): SC.P_ERROR,                # bir yol var (REJECT / yerel yönlendirici)
+            (errno.EHOSTUNREACH, errno.ENETUNREACH): SC.P_ERROR,
+            (errno.ENETUNREACH, "ok"): SC.P_CONNECTED,                          # yalnız IPv6 ile ulaşılan sunucu
+            (errno.ENETUNREACH, "timeout"): SC.P_TIMEOUT,
+            ("timeout", errno.ENETUNREACH): SC.P_TIMEOUT, ("ok", errno.ENETUNREACH): SC.P_CONNECTED}
+    for mode, status in want.items():
+        Sock.mode = mode
+        assert SC.probe_socket_denied()["status"] == status, (mode, SC.probe_socket_denied())
     monkeypatch.undo()
+    v = FakeVps(tmp_path / "iso")
+    host = FakeHost(tmp_path / "iso")
+    pr = host.probes()
+    pr.socket_denied = lambda: {"status": SC.P_ERROR, "errno": "ECONNREFUSED"}
+    assert SC.run_isolation(v.paths, app_dir=host.app, probes=pr)["broken"] == ["socket_denied"]
+    pr = host.probes()
+    pr.write_denied = lambda d: {"path": str(d), "status": SC.P_ABSENT}
+    assert SC.run_isolation(v.paths, app_dir=host.app, probes=pr)["broken"] == ["write_denied_state", "write_denied_app"], \
+        "yok olan state/app yanlış yoldur (bozuk); yok olan data/market korunacak bir şey değildir"
     # cgroup v2 / v1 / sınırsız / ortam yok
     cg = tmp_path / "cg"
     (cg / "system.slice" / "tradingbot-engine-night.service").mkdir(parents=True)
@@ -538,11 +567,77 @@ def test_deadline_and_stage_failure_and_disk_refuse(tmp_path, monkeypatch):
     assert st["stages"]["S7"]["status"] == "OK" and st["stages"]["S7b"]["status"] == "OK", "özet ve yedek yine yazılır"
     v = FakeVps(tmp_path / "x")
     host = FakeHost(tmp_path / "x")
-    monkeypatch.setattr(N, "disk_guard", lambda paths: {"status": P.DISK_REFUSE, "reasons": ["test"]})
+    monkeypatch.setattr(N, "disk_guard", lambda paths, **kw: {"status": P.DISK_REFUSE, "reasons": ["test"]})
     st = run_engine_night(v, host, night_of("2026-09-02"))
     monkeypatch.undo()
     assert st["result"] == N.R_DISK_REFUSE and st["exit_code"] == 5 and set(st["stages"]) == {"S0"}
     assert not (v.paths.closes).exists()
+
+
+def test_disk_guard_real_statvfs_path_refuses_and_passes(tmp_path, monkeypatch):
+    """Diğer testler `free_bytes` yerine-geçeniyle sunucunun boş alanından bağımsızdır; gerçek `statvfs` yolu (üretim
+    `engine-night` bunu kullanır) burada sınanır: ölçülen boş alan < 10 GB → DISK_REFUSE, ≥ 10 GB → çalışır."""
+    calls: list[str] = []
+
+    class Vfs:
+        def __init__(self, free):
+            self.f_bavail, self.f_frsize = free // 4096, 4096
+
+    for free, want in ((9 * P.GB, N.R_DISK_REFUSE), (11 * P.GB, N.R_SUCCESS)):
+        v = FakeVps(tmp_path / str(free))
+        host = FakeHost(tmp_path / str(free))
+        monkeypatch.setattr(os, "statvfs", lambda p, _f=free: (calls.append(str(p)), Vfs(_f))[1])
+        kw = {k: x for k, x in host.kw().items() if k != "free_bytes"}
+        st = N.run_night(v.paths, now=night_of("2026-09-02"), **kw)
+        monkeypatch.undo()
+        assert st["result"] == want and st["selfcheck"]["disk"]["free_bytes"] == free // 4096 * 4096, st["selfcheck"]
+    assert calls, "gerçek yol os.statvfs'i çağırdı"
+    real = P.disk_guard(FakeVps(tmp_path / "r").paths)
+    assert isinstance(real["free_bytes"], int) and real["free_bytes"] > 0, "gerçek statvfs bir sayı döndürür"
+
+
+def test_root_run_against_a_non_root_research_root_is_refused_before_any_write(tmp_path, monkeypatch, capsys):
+    v = FakeVps(tmp_path)
+    host = FakeHost(tmp_path)
+    research = v.data / "research"
+    research.mkdir()
+    if os.geteuid() == 0:
+        os.chown(research, 65534, 65534)          # araştırma kökü servis kullanıcısına ait (VPS'teki gibi)
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    before = _files(v.data)
+    st = run_engine_night(v, host, night_of("2026-09-02"), save=False)
+    assert st["result"] == N.R_ROOT_REFUSED and st["exit_code"] == 6 and st["run_id"] is None
+    assert "root olarak çalıştırılmaz" in capsys.readouterr().err
+    assert _files(v.data) == before and not any(research.iterdir()), "hiçbir şey yazılmadı (runs/, kilit, run_status)"
+    monkeypatch.undo()
+    if os.geteuid() == 0:
+        os.chown(research, 0, 0)
+        st = run_engine_night(v, host, night_of("2026-09-02"), save=False)
+        assert st["result"] == N.R_SUCCESS, "root'a ait kök (geliştirme makinesi) reddedilmez"
+    assert N.root_refusal(P.EnginePaths.for_state(tmp_path / "yok" / "state")) is None or os.geteuid() == 0
+
+
+def test_wrong_state_dir_stops_not_paper_and_ledger_flags_show_in_status(tmp_path):
+    v = FakeVps(tmp_path)
+    host = FakeHost(tmp_path)
+    _books(v, "2026-09-01")
+    bad = P.EnginePaths(data=v.data, state=v.data / "stat")                 # yazım hatası: klasör yok
+    st = N.run_night(bad, now=night_of("2026-09-02"), **host.kw())
+    assert st["result"] == N.R_NOT_PAPER and st["selfcheck"]["paper"]["source"] == "state_missing"
+    assert not (v.data / "research" / "snapshots").exists() or not list((v.data / "research" / "snapshots").iterdir())
+    (v.data / "stat").mkdir()
+    st = N.run_night(bad, now=night_of("2026-09-02"), **host.kw())
+    assert st["result"] == N.R_NOT_PAPER and st["selfcheck"]["paper"]["source"] == "state_empty"
+    _no_ab(v)
+    st = run_engine_night(v, host, night_of("2026-09-02"))
+    assert st["result"] == N.R_SUCCESS
+    v.fut_path("strategy_paper_box").unlink()
+    del v.futs["strategy_paper_box"]
+    st = run_engine_night(v, host, night_of("2026-09-03"))
+    assert st["result"] == N.R_SUCCESS and C.F_LEDGER_MISSING in st["flags"]
+    lines = SM.status_lines(v.paths, brief=True, now=night_of("2026-09-03"))
+    led = [ln for ln in lines if ln.startswith("Defter okuma")]
+    assert led and "DİKKAT" in led[0] and "LEDGER_MISSING: Box" in led[0], led
 
 
 def test_config_change_flag_and_runs_retention(tmp_path):
@@ -579,36 +674,112 @@ def test_ab_calendar_decisions():
     assert nights.count(SC.AB_ON) == 7 and nights.count(SC.AB_OFF) == 7, "14 gece: 7 AÇIK + 7 KAPALI"
 
 
-def test_ab_off_night_runs_only_s0_and_forced_archive_when_margin_low(tmp_path):
+def test_ab_off_night_takes_only_the_snapshot_and_forced_archive_when_margin_low(tmp_path):
+    """KAPALI gece (§2.9 ↔ §7.1 okuması, night.py madde 2): yalnız S0 + S1s — arşiv, S3, S7, S7b YOK; o günün ölçülmüş
+    anlık görüntüsü yazılır, ertesi AÇIK gece hareketleri S1s anına atar, KAPALI gecelerin iki yanındaki günler KESİN olur."""
+    from tradingbot.accounting import AmountType, SizeSpec
     v = FakeVps(tmp_path / "a")
     host = FakeHost(tmp_path / "a")
+    m2 = v.fut("strategy_paper_m2")                      # açık ETH pozisyonu: spot ETH'nin mark'ı (PERP_PROXY)
+    assert m2.open("ETH/USDT", "LONG", P_D("100"), SizeSpec(P_D("50"), AmountType.NOTIONAL, 1), stop=P_D("90"),
+                   now=at("2026-08-31", 1)) is not None
+
+    def _mark(day: str) -> None:
+        m2.tick({"ETH/USDT": P_D("100.5")}, now_utc=at(day, 23))
     _books(v, "2026-08-31")
+    _mark("2026-08-31")
     st0 = run_engine_night(v, host, night_of("2026-09-01"))
     assert st0["selfcheck"]["ab"]["status"] == SC.AB_RELEASE_DAY and st0["result"] == N.R_SUCCESS, "sürüm günü tam"
     digest0 = (v.paths.summary / "digest_tr.md").read_bytes()
-    closes0 = _files(v.paths.closes)
-    _books(v, "2026-09-01", spot=False)
+    closes0, entries0 = _files(v.paths.closes), _files(v.paths.entries)
+    target0 = v.paths.target_daily.read_bytes()
+    _books(v, "2026-09-01")
+    _mark("2026-09-01")
     st1 = run_engine_night(v, host, night_of("2026-09-02"))
-    assert st1["result"] == N.R_AB_OFF and tuple(st1["plan"]) == N.PLAN_AB_OFF and st1["exit_code"] == 0
-    assert not (v.paths.snapshots / "2026-09-02.json.gz").exists() and _files(v.paths.closes) == closes0
-    assert (v.paths.summary / "digest_tr.md").read_bytes() == digest0
+    assert st1["result"] == N.R_AB_OFF and tuple(st1["plan"]) == N.PLAN_AB_OFF == ("S0", "S1s") and st1["exit_code"] == 0
+    assert {k: x["status"] for k, x in st1["stages"].items()} == {"S0": "OK", "S1s": "OK", "S1a": "NOT_PLANNED",
+                                                                  "S3": "NOT_PLANNED", "S7": "NOT_PLANNED",
+                                                                  "S7b": "NOT_PLANNED"}
+    assert _files(v.paths.closes) == closes0 and _files(v.paths.entries) == entries0, "arşiv yazılmaz (çapa dahil)"
+    assert v.paths.target_daily.read_bytes() == target0 and (v.paths.summary / "digest_tr.md").read_bytes() == digest0
+    assert not list(v.paths.backup.glob("research-small-2026-09-02*")), "S7b yok"
+    snap = C.load_snapshot(v.paths, "2026-09-02")
+    assert snap["mode"] == C.MODE_SNAPSHOT and snap["taken_at"] == night_of("2026-09-02").isoformat()
+    body = snap["books"]["main_fut"]
+    assert body["archived"] is False and body["tails"]["n_entries"] > 0 and len(body["tails"]["entries"]) <= C.SNAP_TAIL
     assert json.loads((v.paths.summary / "run_status.json").read_text())["result"] == "AB_OFF"
-    st2 = run_engine_night(v, host, night_of("2026-09-03"))
-    assert st2["selfcheck"]["ab"]["status"] == SC.AB_ON and st2["result"] == N.R_SUCCESS
-    assert len(C.latest_closes(v.paths, "main_fut")) == 2, "KAPALI gecenin kapanışı AÇIK gecede arşivlendi"
-    # rotasyon payı < 3 gün: KAPALI gecede de S1a
+    for d in range(2, 8):
+        _books(v, f"2026-09-0{d}")
+        _mark(f"2026-09-0{d}")
+        st = run_engine_night(v, host, night_of(f"2026-09-0{d + 1}"))
+        want = SC.AB_ON if SC.ab_parity_on(f"2026-09-0{d + 1}") else SC.AB_OFF
+        assert st["selfcheck"]["ab"]["status"] == want and st["result"] in (N.R_SUCCESS, N.R_AB_OFF), st["stages"]
+        if want == SC.AB_ON:
+            b1 = st["stages"]["S1a"]["result"]["books"]
+            assert b1["main_fut"]["attributed_earlier"] > 0, "KAPALI gecede görülen hareketler S1s anına atandı"
+            for b in ("main_fut", "main_spot", "strategy_paper_box"):
+                assert b1[b]["recon_wallet"] == "OK" and b1[b]["align"] == C.ALIGN_OK, (b, b1[b])
+    assert not SC.ab_parity_on("2026-09-08"), "kurgu: son gece KAPALI"
+    assert len(C.latest_closes(v.paths, "main_fut")) == 7, "08-31…09-06 kapanışları (KAPALI gecelerinkiler AÇIK gecede)"
+    off = [r for r in C.iter_rows(v.paths.book_entries_dir("main_fut")) if r["observed_at"] != r["archived_at"]]
+    assert off and all(r["observed_at"] in {night_of(f"2026-09-0{d}").isoformat() for d in (2, 4, 6)} for r in off)
+    rows = v.rows()
+    for d in range(1, 5):
+        r = rows[f"2026-09-0{d}"]
+        assert r["status"] == "KESİN", (d, r["status_reason"])
+        assert r["window"]["ok"] and 23.9 < r["window"]["hours"] < 24.1
+        for b in ("main_fut", "strategy_paper_box"):
+            bk = r["books"][b]
+            assert bk["n_trades"] == 1 and abs(bk["pnl_wal"] - bk["pnl_rec"]) <= 1e-9, (d, b, bk)
+    # rotasyon payı < 3 gün: KAPALI gecede S1s'ten sonra S1a da (zorunlu arşiv; karşılaştırma dışı)
     v = FakeVps(tmp_path / "b")
     host = FakeHost(tmp_path / "b")
     run_engine_night(v, host, night_of("2026-09-01"))
     led = v.fut(equity="100000")
     t0 = night_of("2026-09-01") + timedelta(hours=1)
-    for i in range(700):
+    for i in range(600):                       # 600 × 3 = 1800 hareket (< 2000: hiçbiri rotasyonla düşmedi)
         trade(led, "ETH/USDT", t0 + timedelta(seconds=90 * i), 100.0, 100.3, hold=timedelta(seconds=20))
     st = run_engine_night(v, host, night_of("2026-09-02"))
-    assert st["result"] == N.R_AB_OFF_FORCED and tuple(st["plan"]) == N.PLAN_AB_OFF_FORCED
-    assert st["selfcheck"]["rotation_for_ab"]["min_days"] < 3
-    assert st["stages"]["S1a"]["status"] == "OK" and st["stages"]["S3"]["status"] == "NOT_PLANNED"
-    assert len(C.latest_closes(v.paths, "main_fut")) == 700
+    assert st["result"] == N.R_AB_OFF_FORCED and tuple(st["plan"]) == N.PLAN_AB_OFF_FORCED == ("S0", "S1s", "S1a")
+    assert st["selfcheck"]["rotation_for_ab"]["min_days"] < 3 and st["selfcheck"]["ab"]["status"] == SC.AB_OFF_FORCED
+    assert st["stages"]["S1s"]["status"] == "OK" and st["stages"]["S1a"]["status"] == "OK"
+    assert st["stages"]["S3"]["status"] == "NOT_PLANNED"
+    assert len(C.latest_closes(v.paths, "main_fut")) == 600
+    b = st["stages"]["S1a"]["result"]["books"]["main_fut"]
+    assert b["recon_wallet"] == "OK" and b["attributed_earlier"] == 600 + 1800, "hepsi S1s anında görülmüştü"
+
+
+def test_ab_epoch_follows_engine_code_not_the_app_repin_sha(tmp_path):
+    """§2.9 "her motor sürümünden sonra": app sürümünün engine-app'i aynı motor koduyla yeniden sabitlemesi (yeni HEAD
+    SHA'sı) yeni bir 14 gecelik A/B açmaz; motor kodu değişirse açar (selfcheck madde 5)."""
+    v = FakeVps(tmp_path)
+    code = SC.engine_code_hash()
+    assert code and len(code) == 64 and SC.engine_code_hash() == code
+    assert SC.register_epoch(v.paths, SHA_ENGINE, at("2026-09-01", 14), "r1", code_hash=code) == "2026-09-01"
+    assert SC.register_epoch(v.paths, "c" * 40, at("2026-09-20", 14), "r2", code_hash=code) == "2026-09-01", \
+        "aynı kodla yeniden sabitleme: eski dönem"
+    rows = SC.load_epochs(v.paths)
+    assert [(r["engine_sha"], r["epoch_day"], r["first_seen_day"]) for r in rows] == [
+        (SHA_ENGINE, "2026-09-01", "2026-09-01"), ("c" * 40, "2026-09-01", "2026-09-20")]
+    assert SC.ab_decision("2026-09-21", "2026-09-01", rotation_min_days=None)["status"] == SC.AB_OUTSIDE
+    assert SC.register_epoch(v.paths, "d" * 40, at("2026-09-22", 14), "r3", code_hash="e" * 64) == "2026-09-22", \
+        "motor kodu değişti: yeni dönem"
+    assert SC.register_epoch(v.paths, "c" * 40, at("2026-09-23", 14), "r4", code_hash=code) == "2026-09-01"
+    assert len(SC.load_epochs(v.paths)) == 3, "aynı (kod, SHA) ikinci kez yazılmaz"
+    root = tmp_path / "code"
+    (root / "tradingbot" / "research_engine").mkdir(parents=True)
+    (root / "tradingbot" / "research_engine" / "a.py").write_text("x = 1\n", encoding="utf-8")
+    h1 = SC.engine_code_hash(root)
+    (root / "tradingbot" / "research_engine" / "a.py").write_text("x = 2\n", encoding="utf-8")
+    assert SC.engine_code_hash(root) != h1 and SC.engine_code_hash(tmp_path / "bos") is None
+    # gece: app yeniden sabitlemesi (yeni engine SHA'sı, aynı kod) A/B'yi yeniden başlatmaz
+    v2 = FakeVps(tmp_path / "n")
+    host = FakeHost(tmp_path / "n")
+    st = run_engine_night(v2, host, night_of("2026-09-01"))
+    assert st["selfcheck"]["ab"]["status"] == SC.AB_RELEASE_DAY and st["shas"]["engine_code"] == code
+    host2 = FakeHost(tmp_path / "n2", engine_sha="f" * 40)
+    st = run_engine_night(v2, host2, night_of("2026-09-25"))
+    assert st["selfcheck"]["ab"]["status"] == SC.AB_OUTSIDE and st["result"] == N.R_SUCCESS
 
 
 # ============================================================================ kabul 5 (metin) + 17 (boyut)

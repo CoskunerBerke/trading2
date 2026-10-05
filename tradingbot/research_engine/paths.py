@@ -187,6 +187,32 @@ class EnginePaths:
             buf.write(json_line(r))
         return self.write_bytes(path, gzip_bytes(buf.getvalue().encode("utf-8")))
 
+    def write_gzip_stream(self, path: Path | str, chunks: Iterable[bytes]) -> str:
+        """`chunks`ı (ham baytlar) deterministik gzip olarak (mtime=0, ad alanı yok, düzey 6) AKIŞLA yaz; bellekte bütün
+        dosya kurulmaz. Atomik (aynı klasörde geçici dosya + `fsync` + `os.replace`). Dönen: SIKIŞTIRILMIŞ baytların
+        sha256'sı. Aynı ham içerik `gzip_bytes` ile aynı baytları verir (deflate çıktısı parçalamadan bağımsızdır)."""
+        p = self.require_research(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(prefix=f".{p.name}.", suffix=".tmp", dir=str(p.parent))
+        h = hashlib.sha256()
+        try:
+            with os.fdopen(fd, "wb") as fh:
+                sink = _HashingSink(fh, h)
+                with gzip.GzipFile(filename="", fileobj=sink, mode="wb", mtime=0, compresslevel=6) as gz:
+                    for c in chunks:
+                        if c:
+                            gz.write(c)
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(tmp, p)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+        return h.hexdigest()
+
     def append_jsonl(self, path: Path | str, rows: Iterable[Mapping[str, Any]]) -> int:
         """Düz `.jsonl` dosyasına satır ekle (hedef günlük satırları gibi küçük, yalnız-eklenen dosyalar). Bütün dosya
         yeniden yazılır (atomik); var olan satırlar AYNEN korunur. Dönen: eklenen satır sayısı."""
@@ -199,6 +225,20 @@ class EnginePaths:
             old += b"\n"
         self.write_bytes(p, old + new.encode("utf-8"))
         return new.count("\n")
+
+
+class _HashingSink:
+    """Yazılan baytları hem dosyaya yazan hem sha256'ya ekleyen en küçük dosya benzeri (GzipFile için; `name` yok)."""
+
+    def __init__(self, fh, h) -> None:
+        self._fh, self._h = fh, h
+
+    def write(self, b) -> int:
+        self._h.update(b)
+        return self._fh.write(b)
+
+    def flush(self) -> None:
+        self._fh.flush()
 
 
 def _safe_name(book: str) -> str:

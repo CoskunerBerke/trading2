@@ -38,8 +38,10 @@ HOUR = 3_600_000
 H4 = 4 * HOUR
 
 #: ön kayıt mührü — bir varyant tanımı, süzgeç, plasebo, istatistik/kapasite/aylık ayarı, veri penceresi, evren, PIT kuralı
-#: ya da okunuş değişirse bu test KIRILIR (book_v2 + belge + yeni deneme sayısı; sonuç görüldükten sonra gevşetme YOK)
-PINNED_SHA = "2a3cecc16e0a85c1"
+#: ya da okunuş değişirse bu test KIRILIR (book_v2 + belge + yeni deneme sayısı; sonuç görüldükten sonra gevşetme YOK).
+#: Değişiklik 1 (2026-10-05, hiçbir sonuç görülmeden; belge §16): PRICE_END 2026-10-01 → 2026-09-30, FUNDING_END 2026-10-02 →
+#: 2026-10-01; eski mühür 2a3cecc16e0a85c1.
+PINNED_SHA = "37dd3f2854c890ad"
 #: testlerde sabit kod durumu (temiz ağaç); gerçek koşuda `git_state`
 CODE = {"commit": "c0ffee", "code_tree": "t1", "dirty": False}
 
@@ -211,9 +213,18 @@ def test_constants_windows_universes_and_capacity_match_the_bot():
     from tradingbot import strategy_paper as SP
     from tradingbot.pattern_trader.strategy_v3 import V3_SYMBOLS
     from tradingbot.risk.profiles import PROFILES
-    assert B.START_4H_MS == ms("2022-01-01") and B.START_1D_MS == ms("2020-01-01") and B.PRICE_END_MS == ms("2026-10-01")
+    assert B.START_4H_MS == ms("2022-01-01") and B.START_1D_MS == ms("2020-01-01") and B.PRICE_END_MS == ms("2026-09-30")
     assert B.DECISION_START_MS == ms("2023-01-01") and B.IS_END_MS == ms("2025-01-01")
-    assert B.FUNDING_START_MS == ms("2022-12-01") and B.FUNDING_END_MS == ms("2026-10-02")
+    assert B.FUNDING_START_MS == ms("2022-12-01") and B.FUNDING_END_MS == ms("2026-10-01")
+    # Değişiklik 1 (§16): fonlama penceresi PRICE_END'den bir gün sonra biter ve yalnız yayımlanmış 2026-09 dosyasına kadar ister
+    assert B.FUNDING_END_MS - B.PRICE_END_MS == DAY
+    assert B._month_range(B.month_key(B.FUNDING_START_MS), B.month_key(B.FUNDING_END_MS - 1))[-1] == "2026-09"
+    am = B.BOOK_REGISTRY["amendments"]
+    assert [a["id"] for a in am] == [1] and am[0]["before_any_outcome"] is True and am[0]["old"]["seal"] == "2a3cecc16e0a85c1"
+    assert am[0]["old"]["price_end_ms"] == ms("2026-10-01") and am[0]["old"]["funding_end_ms"] == ms("2026-10-02")
+    assert am[0]["new"] == {"price_end_ms": B.PRICE_END_MS, "funding_end_ms": B.FUNDING_END_MS}
+    doc = (ROOT / "docs" / "BOOK_RESEARCH_V1.md").read_text(encoding="utf-8")
+    assert "## 16. Değişiklik 1 (2026-10-05, hiçbir sonuç görülmeden)" in doc
     assert len(B.PRIMARY_UNIVERSE) == 23 and set(B.PRIMARY_UNIVERSE) == set(V3_SYMBOLS) & set(B.INFO_UNIVERSE)
     assert len(B.INFO_UNIVERSE) == 40 == len(set(B.INFO_UNIVERSE))
     assert B.CAP_COMMON["hard_cap_pct"] == LM.HARD_CAP_PCT and B.CAP_COMMON["mmr"] == SP.LEARNING_MMR
@@ -225,13 +236,13 @@ def test_constants_windows_universes_and_capacity_match_the_bot():
 def test_split_dates_and_month_lists():
     assert B.period_of(ms("2022-12-31") + 20 * HOUR) is None                       # ısınma
     assert B.period_of(ms("2023-01-01")) == "IS" and B.period_of(ms("2025-01-01") - 1) == "IS"
-    assert B.period_of(ms("2025-01-01")) == "OOS" and B.period_of(ms("2026-10-01") - 1) == "OOS"
-    assert B.period_of(ms("2026-10-01")) is None
+    assert B.period_of(ms("2025-01-01")) == "OOS" and B.period_of(ms("2026-09-30") - 1) == "OOS"
+    assert B.period_of(ms("2026-09-30")) is None                                    # Değişiklik 1 (eski sınır 2026-10-01)
     # 2024-12-31 20:00'de açılan 4h barın kararı 2025-01-01 00:00'dadır → doğrulama
     assert B.period_of(ms("2024-12-31") + 20 * HOUR + H4) == "OOS"
     assert len(B.IS_MONTHS) == 24 and B.IS_MONTHS[0] == "2023-01" and B.IS_MONTHS[-1] == "2024-12"
     assert len(B.OOS_MONTHS) == 21 and B.OOS_MONTHS[0] == "2025-01" and B.OOS_MONTHS[-1] == "2026-09"
-    assert B.month_key(ms("2026-10-01") - 1) == "2026-09"
+    assert B.month_key(ms("2026-09-30") - 1) == "2026-09"
 
 
 # ---------------------------------------------------------------------------- yeniden yazılan parçaların eşdeğerliği

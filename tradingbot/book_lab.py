@@ -58,11 +58,14 @@ TF4, TF1 = "4h", "1d"
 # ---------------------------------------------------------------------------- sabit veri pencereleri (§4.1; UTC ms)
 START_4H_MS = 1_640_995_200_000          # 2022-01-01 00:00 — her coinin 4h serisi (ya da listeleme)
 START_1D_MS = 1_577_836_800_000          # 2020-01-01 00:00 — her coinin ve BTC'nin 1d serisi (ya da listeleme)
-PRICE_END_MS = 1_790_812_800_000         # 2026-10-01 00:00 — bütün çıkışlar, süre sınırları ve DATA_END
+#: Değişiklik 1 (2026-10-05, hiçbir sonuç görülmeden; belge §16): PRICE_END ve FUNDING_END birer gün geri alındı (2026-10
+#: aylık fundingRate dosyası 2026-11'e kadar yayımlanmaz). Eski: PRICE_END 1_790_812_800_000 (2026-10-01 00:00), FUNDING_END
+#: 1_790_899_200_000 (2026-10-02 00:00).
+PRICE_END_MS = 1_790_726_400_000         # 2026-09-30 00:00 — bütün çıkışlar, süre sınırları ve DATA_END
 DECISION_START_MS = 1_672_531_200_000    # 2023-01-01 00:00 — karar penceresi başı
 IS_END_MS = 1_735_689_600_000            # 2025-01-01 00:00 — keşif / doğrulama sınırı
 FUNDING_START_MS = 1_669_852_800_000     # 2022-12-01 00:00
-FUNDING_END_MS = 1_790_899_200_000       # 2026-10-02 00:00 (PRICE_END'den sonra en az bir uzlaşma)
+FUNDING_END_MS = 1_790_812_800_000       # 2026-10-01 00:00 (PRICE_END'den sonra en az bir uzlaşma; 2026-09 dosyasında)
 
 # ---------------------------------------------------------------------------- ön kayıtlı sabitler
 COST_STOP_MIN = 0.016                    # COST_STOP: |giriş − stop| / giriş ≥ %1,6
@@ -302,11 +305,11 @@ READINGS_TR = (
     "anahtarlar: signal_lab._h ile; <sembol> 'BTC/USDT' biçimi (laboratuvar ve evren listesi yazımı), <dilim> '4h'/'1d', <kimlik> "
     "varyant kimliği (ör. D4_00_BASE; PLACEBO_ öneki YOK), <yön> LONG/SHORT, zaman damgası = barın AÇILIŞ zamanı (ms tamsayı)",
     "karar anı t = sinyal barının open_time + dilim (laboratuvarın t_ms'i); dönem t ile: keşif 2023-01-01 ≤ t < 2025-01-01, "
-    "doğrulama 2025-01-01 ≤ t < 2026-10-01; karar penceresi dışındaki sinyal (ısınma) işlem ve plasebo üretmez",
+    "doğrulama 2025-01-01 ≤ t < 2026-09-30; karar penceresi dışındaki sinyal (ısınma) işlem ve plasebo üretmez",
     "pencere kırpması: barın open_time'ı [ilk bar sınırı, PRICE_END) aralığında; 4h 2022-01-01, 1d 2020-01-01 (coinler ve BTC); "
-    "fonlama uzlaşma zamanı [2022-12-01, 2026-10-02); fonlama yalnız aylık fundingRate dosyalarından, 2022-12 … 2026-10 (arşivde "
-    "günlük fundingRate klasörü yok, 2026-10-05 S3 listesi); PRICE_END sonrası uzlaşmalar 2026-10 dosyasındandır (ay dosyası "
-    "ay bitince yayımlanır)",
+    "fonlama uzlaşma zamanı [2022-12-01, 2026-10-01); fonlama yalnız aylık fundingRate dosyalarından, 2022-12 … 2026-09 (arşivde "
+    "günlük fundingRate klasörü yok, 2026-10-05 S3 listesi); PRICE_END sonrası uzlaşmalar (2026-09-30 00:00, 08:00, 16:00) 2026-09 "
+    "dosyasındandır (ay dosyası ay bitince yayımlanır)",
     "temiz pencere: bozuk bar = candle_lab.valid_ends tanımı (sonlu olmayan OHLC, h < max(o,c), l > min(o,c), sonlu olmayan ya da "
     "negatif hacim); boşluk = ardışık iki açılış farkı ≠ dilim; i'de biten w barlık pencere temiz = i−w+1..i barlarının hiçbiri "
     "bozuk değil VE pencere içindeki her ardışık çift boşluksuz (pencerenin ilk barından önceki boşluk sayılmaz; valid_ends ile "
@@ -394,8 +397,8 @@ READINGS_TR = (
     "(Galxe GAL → Gravity G, 2024; GALUSDT geçmişi kullanılmaz, G'nin ilk barı kalite raporunda görünür)",
     "veri hatası → koşu durur, rapor yazılmaz, deneme ERROR; aynı kodla yeniden denenir (§0.6): bir sembolün mum ya da fonlama "
     "dosyası indirilemedi ya da okunamadı; BTC 1d serisi ya da birincil/bilgi evreninde bir coinin 4h serisi (ve yüklendiyse 1d "
-    "serisi) PRICE_END'e ulaşmıyor (DELISTED yalnız PIT kipinde olur); PRICE_END'e ulaşan bir sembolün [PRICE_END, 2026-10-02) "
-    "aralığında fonlama uzlaşması yok (2026-10 dosyası henüz yayımlanmadı); arşivde hiç verisi olmayan coin dışarıda kalır ve "
+    "serisi) PRICE_END'e ulaşmıyor (DELISTED yalnız PIT kipinde olur); PRICE_END'e ulaşan bir sembolün [PRICE_END, 2026-10-01) "
+    "aralığında fonlama uzlaşması yok (2026-09 dosyası yok ya da eksik); arşivde hiç verisi olmayan coin dışarıda kalır ve "
     "sonuçta yazılır (§11.6); PIT kipinde 1d serisi defter seçiminden bağımsız yüklenir (eksik çift denetimi) ve yüklenmemiş "
     "seçili sembolün her evren ayı eksik çift sayılır; aynı --out'taki önceki koşunun işlemleriyle birleştirme, yalnız-rapor ve "
     "PIT sonucunun birincil rapora yazılması aynı kod ağacını (git HEAD:tradingbot, HEAD:scripts) ve temiz çalışma ağacını "
@@ -502,6 +505,12 @@ def _registry() -> dict[str, Any]:
         "trials": {"version": VERSION, "variants": 32, "primary_cells": len(PRIMARY_CELLS), "control_cells": len(CONTROL_CELLS),
                    "tr": "book_v1: 32 varyant, 54 birincil hücre (D4 13/15, C4 9/27, Formasyon 10/12) + 1 kontrol + ana bot Q1"},
         "readings_tr": list(READINGS_TR),
+        "amendments": [{"id": 1, "date": "2026-10-05", "before_any_outcome": True, "doc_section": "§16",
+                        "tr": "PRICE_END ve FUNDING_END birer gün geri alındı (yalnız bu iki sabit ve onlara bağlı okunuş metinleri); "
+                              "neden: 2026-10 aylık fundingRate dosyası 2026-11'e kadar yayımlanmaz, arşivde günlük fonlama yok, ilk "
+                              "dondurulmuş deneme 13a1209454e5 hiçbir sonuç hesaplanmadan bu kural yüzünden durdu",
+                        "old": {"price_end_ms": 1_790_812_800_000, "funding_end_ms": 1_790_899_200_000, "seal": "2a3cecc16e0a85c1"},
+                        "new": {"price_end_ms": PRICE_END_MS, "funding_end_ms": FUNDING_END_MS}}],
     }
 
 
@@ -1251,8 +1260,8 @@ def series_quality(df: pd.DataFrame, tf: str, start_ms: int, end_ms: int | None 
 
 
 def load_funding(symbol: str, get: Callable[[str], bytes | None]) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Fonlama: yalnız aylık `fundingRate` dosyaları, FUNDING_START ayı … FUNDING_END'in ayı (2022-12 … 2026-10; arşivde günlük
-    fonlama klasörü YOK, PRICE_END sonrası uzlaşmalar 2026-10 dosyasındadır); [FUNDING_START, FUNDING_END) aralığına kırpılır.
+    """Fonlama: yalnız aylık `fundingRate` dosyaları, FUNDING_START ayı … FUNDING_END'in ayı (2022-12 … 2026-09; arşivde günlük
+    fonlama klasörü YOK, PRICE_END sonrası uzlaşmalar 2026-09 dosyasındadır); [FUNDING_START, FUNDING_END) aralığına kırpılır.
     Döner ({"f_t", "f_rate"}, bilgi); bilgi["post_end"] = [PRICE_END, FUNDING_END) aralığındaki uzlaşma sayısı (PRICE_END'e
     ulaşan seride 0 ise `run` veri hatasıyla durur)."""
     from . import futures_data as FD

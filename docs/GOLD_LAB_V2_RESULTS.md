@@ -11,7 +11,7 @@ sırasında kod ve ön kayıt değiştirilmedi.
 
 ## Kısa sonuç
 
-- **Aile A (günlük/4h trend takibi, Dukascopy XAUUSD 2006–2020): henüz koşulmadı.** Dukascopy aynası hâlâ iniyor (aşağıda).
+- **Aile A (günlük/4h trend takibi, Dukascopy XAUUSD 2006–2020): koşuldu (2026-10-05 13:10 UTC), GÜÇLÜ ADAY yok.** gold_v1'in iki izi hiç kullanılmamış doğrulamada tutmadı; ayrıntı "Aile A sonuçları" bölümünde.
   Bu bir "yapılamadı" hükmü değildir: kapsama ve zaman damgası denetimleri daha hiç yapılmadı. A'nın 16 hücresi, iki ANA
   hücre (`A_DONCH_20_10` LONG, `A_TSMOM_28` LONG) dahil, bekliyor. Gold_v2'nin önceden belirlenmiş birinci sorusu bu yüzden
   henüz cevapsız.
@@ -24,7 +24,7 @@ sırasında kod ve ön kayıt değiştirilmedi.
   bulunamadı.** Aile A'nın sonucu gelince bu cümle yeniden yazılır.
 - **Öneri yok.** Hiçbir defter, strateji ya da ayar değişmedi.
 
-## Aile A — neden henüz koşulmadı
+## Aile A — ilk koşuda neden koşulmadı (tarihçe)
 
 - Ön kayıt kuralı: A yalnız ayna işi bitince koşar. Ayna işinin günlüğünde "hourly mirror pass finished" satırı olmalı,
   aynada `.part` dosyası olmamalı ve ayna kökünü kullanan bir süreç çalışmamalı (`mirror_ready`).
@@ -50,8 +50,8 @@ Hüküm fonlamasız R ile verilir (laboratuvar tanımı). Hedef ve "daha yüksek
 
 | hücre | işlem keşif / doğr. | ort. R keşif / doğr. | ort. R_fon keşif / doğr. | hüküm plasebosu ort. R keşif / doğr. | plaseboya göre fark | fark %95 keşif | fark %95 doğr. | hüküm | sıkı |
 |---|---|---|---|---|---|---|---|---|---|
-| `A_DONCH_20_10` LONG | henüz koşulmadı | | | | | | | — | — |
-| `A_TSMOM_28` LONG | henüz koşulmadı | | | | | | | — | — |
+| `A_DONCH_20_10` LONG | "Aile A sonuçları" bölümünde (koşuldu) | | | | | | | — | — |
+| `A_TSMOM_28` LONG | "Aile A sonuçları" bölümünde (koşuldu) | | | | | | | — | — |
 | `B_WKND_REV_ALL` İKİ YÖN | 163 / 142 | −0,041 / −0,055 | −0,040 / −0,052 | −0,1275 / −0,2005 | +0,09 / +0,15 | [−0,05, +0,23] | [−0,03, +0,33] | KANIT YOK | KANIT YOK |
 
 **`B_WKND_REV_ALL` İKİ YÖN, aylık hedef ölçüsü (doğrulama, %0,5 risk):**
@@ -72,6 +72,73 @@ Hüküm fonlamasız R ile verilir (laboratuvar tanımı). Hedef ve "daha yüksek
 Aynı anda, aynı tutuşla, rastgele yönde giren hüküm plasebosu daha çok kaybetti (keşif −0,13, doğrulama −0,20 R; plasebo
 hücresinin hükmü KAYBETTİRİR). Gerçek işlemlerin plasebodan iyi olması bir geri dönüş izi olabilir; ama fark iki dönemde de
 istatistik olarak sıfırdan ayrılmıyor ve gerçek işlemlerin kendisi zararda. Para kazandıran bir kural değildir.
+
+
+## Aile A sonuçları (ayna tamamlandıktan sonra, 2026-10-05 13:10 UTC koşusu)
+
+Aynı dondurulmuş kod (`046c5b1`, mühür `72182fc4343f9e3f`), aynı komut, `--sections A,seen`. Dukascopy aynası `hourly mirror pass finished` satırıyla bitti (249 saatlik ay + 20 yıllık günlük dosya; 2026 günlük dosyası henüz yok, 404). Kod ve ön kayıt değiştirilmedi; B, mekân ve ayar bölümlerinin sayıları önceki koşuyla aynı kaldı.
+
+**Sonuç:** aile A'nın 16 hücresinde GÜÇLÜ ADAY yok (standart ve sıkı). İki ana sorunun cevabı: gold_v1'deki iki iz hiç kullanılmamış 2014–2020 doğrulamasında tutmadı. `A_DONCH_20_10` LONG fonlamasız ortalamada ZAYIF İZ verdi (doğrulama +0,181 R), ama fonlama vekiliyle doğrulama −0,257 R ve aylık −%0,12; `A_TSMOM_28` LONG KANIT YOK. Hiçbir hücre +%1/ay hedefine yaklaşmadı.
+
+### Veri denetimi (aile A)
+
+- Ayna: kesim anı 2026-10-05T13:10:32+00:00 · manifest sha256 c923f05156cae1c6… · 190 dosya (özet b1082173622752f5…) · koşu sonunda aynı.
+- Zaman damgası denetimi IS: 415/417 hafta beklenen kümede (pay 0.9952; eşik 0.9) → geçti.
+- Zaman damgası denetimi OOS: 336/343 hafta beklenen kümede (pay 0.9796; eşik 0.9) → geçti.
+- Kapsama IS: kullanılabilir ay 96/96 (1.0); ≥ 20 barlı Pzt–Cum günü 2080/2087 (0.9966) → geçti; eşik altı aylar: —.
+- Kapsama OOS: kullanılabilir ay 79/79 (1.0); ≥ 20 barlı Pzt–Cum günü 1678/1718 (0.9767) → geçti; eşik altı aylar: —.
+
+### ANA hücreler (aile A)
+
+| varyant | hücre | işlem keşif/doğr. | ort.R keşif/doğr. | ort.R_fon keşif/doğr. | plaseboya göre | fark %95 doğr. | hüküm | sıkı | tam ay | aylık % (R_fon, %0,5) | %95 | ≥%1 ay | hedef | daha yüksek risk |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| A_DONCH_20_10 | LONG | 120/73 | +0.458/+0.181 | +0.077/-0.257 | +0.24/+0.09 | [-0.38, +0.55] | ZAYIF İZ | ZAYIF İZ | 78 | -0.12 | [-0.31, +0.11] | %5 | hayır | kenar yok |
+| A_TSMOM_28 | LONG | 68/81 | +0.198/-0.009 | +0.057/-0.140 | +0.09/-0.03 | [-0.24, +0.23] | KANIT YOK | KANIT YOK | 78 | -0.07 | [-0.15, +0.03] | %3 | hayır | kenar yok |
+
+- A_DONCH_20_10 LONG: ort.R'nin ay kümeli %95 aralığı (bilgi) keşif [-0.10, +1.01] · doğrulama [-0.33, +0.74]; fonlamasız aylık % (bilgi) +0.08 [-0.15, +0.37].
+- A_TSMOM_28 LONG: ort.R'nin ay kümeli %95 aralığı (bilgi) keşif [-0.04, +0.49] · doğrulama [-0.18, +0.21]; fonlamasız aylık % (bilgi) -0.00 [-0.10, +0.12].
+- Aile A: aday oranı (iki dönemde aralık 0'ın üstünde) gerçek 0.0 · hüküm plasebosu 0.0 (16/16 hücre hükme girdi); GÜÇLÜ ADAY 0, sıkı 0.
+- Toplam: aday oranı gerçek 0.0 · plasebo 0.0 (24 hücre; sıkı GÜÇLÜ ADAY 0).
+
+### İkincil hücreler (aile A)
+
+| varyant | hücre | işlem keşif/doğr. | ort.R keşif/doğr. | ort.R_fon keşif/doğr. | plaseboya göre | fark %95 doğr. | hüküm | sıkı | tam ay | aylık % (R_fon, %0,5) | %95 | ≥%1 ay | hedef | daha yüksek risk |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| A_DONCH_20_10 | İKİ YÖN | 181/138 | +0.181/-0.046 | +0.003/-0.057 | +0.07/-0.07 | [-0.34, +0.22] | KANIT YOK | KANIT YOK | 78 | -0.05 | [-0.35, +0.31] | %10 | hayır | kenar yok |
+| A_TSMOM_28 | İKİ YÖN | 137/162 | +0.055/-0.086 | +0.035/-0.091 | +0.06/-0.06 | [-0.19, +0.09] | KANIT YOK | KANIT YOK | 78 | -0.09 | [-0.23, +0.04] | %5 | hayır | kenar yok |
+| A_DONCH_55_20 | LONG | 79/43 | +0.722/-0.112 | +0.115/-0.708 | +0.45/-0.18 | [-0.66, +0.39] | KANIT YOK | KANIT YOK | 78 | -0.20 | [-0.35, -0.03] | %4 | hayır | kenar yok |
+| A_DONCH_55_20 | İKİ YÖN | 106/79 | +0.505/-0.222 | +0.147/-0.292 | +0.40/-0.19 | [-0.54, +0.17] | KANIT YOK | KANIT YOK | 78 | -0.15 | [-0.36, +0.11] | %8 | hayır | kenar yok |
+| A_TSMOM_1M | LONG | 51/42 | +0.133/+0.104 | +0.030/-0.043 | +0.15/+0.04 | [-0.27, +0.35] | ZAYIF İZ | ZAYIF İZ | 78 | -0.01 | [-0.07, +0.05] | %0 | hayır | kenar yok |
+| A_TSMOM_1M | İKİ YÖN | 95/78 | +0.024/+0.012 | +0.015/+0.001 | -0.12/+0.03 | [-0.20, +0.23] | KANIT YOK | KANIT YOK | 78 | +0.00 | [-0.07, +0.08] | %0 | hayır | kenar yok |
+| A_TSMOM_3M | LONG | 58/43 | +0.123/-0.024 | +0.017/-0.171 | -0.06/-0.14 | [-0.41, +0.16] | KANIT YOK | KANIT YOK | 78 | -0.05 | [-0.10, +0.01] | %0 | hayır | kenar yok |
+| A_TSMOM_3M | İKİ YÖN | 93/78 | +0.063/-0.102 | +0.034/-0.119 | -0.06/-0.09 | [-0.29, +0.10] | KANIT YOK | KANIT YOK | 78 | -0.06 | [-0.13, +0.02] | %0 | hayır | kenar yok |
+| A_TSMOM_12M | LONG | 67/40 | +0.156/+0.056 | +0.051/-0.085 | -0.05/-0.06 | [-0.36, +0.24] | ZAYIF İZ | ZAYIF İZ | 78 | -0.02 | [-0.07, +0.04] | %0 | hayır | kenar yok |
+| A_TSMOM_12M | İKİ YÖN | 84/78 | +0.151/-0.034 | +0.088/-0.033 | +0.32/+0.01 | [-0.20, +0.23] | KANIT YOK | KANIT YOK | 78 | -0.02 | [-0.09, +0.06] | %0 | hayır | kenar yok |
+| A_SMA10M | LONG | 64/46 | +0.165/+0.048 | +0.055/-0.100 | +0.14/-0.02 | [-0.25, +0.24] | ZAYIF İZ | ZAYIF İZ | 78 | -0.03 | [-0.09, +0.03] | %0 | hayır | kenar yok |
+| A_SMA10M | İKİ YÖN | 87/78 | +0.136/-0.032 | +0.080/-0.063 | -0.00/-0.02 | [-0.22, +0.19] | KANIT YOK | KANIT YOK | 78 | -0.03 | [-0.10, +0.04] | %0 | hayır | kenar yok |
+| A_4H_DONCH_D200 | LONG | 429/240 | -0.008/-0.196 | -0.151/-0.371 | -0.00/-0.10 | [-0.35, +0.17] | KANIT YOK | KANIT YOK | 78 | -0.55 | [-1.05, +0.04] | %6 | hayır | kenar yok |
+| A_4H_DONCH_D200 | İKİ YÖN | 561/399 | -0.008/-0.210 | -0.096/-0.256 | +0.04/-0.05 | [-0.22, +0.15] | KAYBETTİRİR | KAYBETTİRİR | 78 | -0.63 | [-1.21, +0.05] | %13 | hayır | kenar yok |
+
+### Görülmüş veri — Dukascopy 2020-08 → 2026-09 (bilgi, hüküm DEĞİL)
+
+| seri | varyant | hücre | n | ort.R | ort.R_fon / net | plasebo ort. | fark | fark %95 | not |
+|---|---|---|---|---|---|---|---|---|---|
+| XAUUSD Dukascopy (görülmüş) | A_DONCH_20_10 | LONG | 78 | +0.118 | -0.194 | +0.313 | -0.195 | [-0.60, +0.21] |  |
+| XAUUSD Dukascopy (görülmüş) | A_DONCH_20_10 | İKİ YÖN | 114 | -0.092 | -0.231 | +0.147 | -0.239 | [-0.51, +0.05] |  |
+| XAUUSD Dukascopy (görülmüş) | A_TSMOM_28 | LONG | 58 | +0.324 | +0.173 | +0.191 | +0.133 | [-0.24, +0.60] |  |
+| XAUUSD Dukascopy (görülmüş) | A_TSMOM_28 | İKİ YÖN | 116 | +0.095 | +0.064 | +0.022 | +0.073 | [-0.14, +0.31] |  |
+| XAUUSD Dukascopy (görülmüş) | A_DONCH_55_20 | LONG | 60 | +1.291 | +0.646 | +0.781 | +0.510 | [-0.51, +1.62] |  |
+| XAUUSD Dukascopy (görülmüş) | A_DONCH_55_20 | İKİ YÖN | 74 | +0.898 | +0.426 | +0.577 | +0.321 | [-0.53, +1.31] |  |
+| XAUUSD Dukascopy (görülmüş) | A_TSMOM_1M | LONG | 40 | +0.205 | +0.089 | +0.157 | +0.048 | [-0.33, +0.40] |  |
+| XAUUSD Dukascopy (görülmüş) | A_TSMOM_1M | İKİ YÖN | 72 | +0.078 | +0.065 | -0.021 | +0.099 | [-0.13, +0.34] |  |
+| XAUUSD Dukascopy (görülmüş) | A_TSMOM_3M | LONG | 45 | +0.228 | +0.110 | +0.097 | +0.131 | [-0.15, +0.45] |  |
+| XAUUSD Dukascopy (görülmüş) | A_TSMOM_3M | İKİ YÖN | 70 | +0.126 | +0.092 | -0.009 | +0.135 | [-0.10, +0.37] |  |
+| XAUUSD Dukascopy (görülmüş) | A_TSMOM_12M | LONG | 47 | +0.186 | +0.070 | +0.126 | +0.061 | [-0.23, +0.37] |  |
+| XAUUSD Dukascopy (görülmüş) | A_TSMOM_12M | İKİ YÖN | 61 | +0.092 | +0.031 | -0.051 | +0.143 | [-0.10, +0.39] |  |
+| XAUUSD Dukascopy (görülmüş) | A_SMA10M | LONG | 49 | +0.141 | +0.022 | +0.246 | -0.105 | [-0.42, +0.21] |  |
+| XAUUSD Dukascopy (görülmüş) | A_SMA10M | İKİ YÖN | 64 | +0.050 | -0.015 | +0.009 | +0.041 | [-0.20, +0.27] |  |
+| XAUUSD Dukascopy (görülmüş) | A_4H_DONCH_D200 | LONG | 308 | +0.159 | -0.011 | +0.015 | +0.144 | [-0.17, +0.47] |  |
+| XAUUSD Dukascopy (görülmüş) | A_4H_DONCH_D200 | İKİ YÖN | 405 | +0.056 | -0.047 | -0.047 | +0.103 | [-0.15, +0.36] |  |
 
 ## İkincil hücreler (aile B)
 
@@ -168,7 +235,7 @@ Bu dönem gold_v1'de günlük/4h trend kuralları için zaten görülmüştü; b
   durmanın kendisiydi.
 - Fonlama vekili long trend işlemlerinin kazancının büyük kısmını alıyor (örnek: `A_DONCH_20_10` LONG +0,222 R → R_fon
   −0,043 R). Vadeli bir defterde bu maliyet gerçektir.
-- Dukascopy 2020-08 → 2026-09 görülmüş satırları henüz koşulmadı (aynaya bağlı).
+- Dukascopy 2020-08 → 2026-09 görülmüş satırları "Aile A sonuçları" bölümünde.
 
 ### Mekân — Binance vadeli, gerçek fonlama (XAUUSDT 2025-12-11 → 2026-09-30, PAXGUSDT 2025-03-27 → 2026-09-30)
 

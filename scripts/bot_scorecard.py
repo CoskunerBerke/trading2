@@ -33,32 +33,46 @@ Soru tek: "Hangi bot, bugüne kadar kapattığı işlemlerde para kazandırdı v
   Defter başına içinde bulunulan UTC takvim ayında (bugüne kadar) ve son 30 günde KAPANAN işlemlerin net sonucu (ücret,
   kayma ve funding SONRASI) başlangıç bakiyesinin %'si olarak, işlem sayısı ve hedefe uzaklık. Açık pozisyonların
   gerçekleşmemiş sonucu dahil DEĞİLDİR. Bu bir ölçümdür; kâr iddiası ya da garantisi değildir. Yalnız komut satırı
-  (`main`) yazar; `scorecard()` sözlüğü değişmez.
+  (`main`) yazar; `scorecard()` sözlüğü değişmez. Ana botun spot defteri (`state/spot_ledger.json`) varsa
+  "Ana bot · spot" satırı olarak bu bloğa da girer (sürekli öğrenme motoru tasarımı §7.5).
+* GÜNLÜK HEDEF (`--daily [--days N]`, sürekli öğrenme motoru tasarımı §7.7, yalnız ölçüm): son N UTC günü için defter
+  başına ve toplamda (1) KAYIT görünümü: o gün (`closed_at`) kapanan kayıtların net sonucu, (2) CÜZDAN görünümü:
+  hareketin kendi zaman damgasının o gününe düşen PNL + FEE + FUNDING + LIQ_FEE + TAX hareketleri (TRANSFER ayrı;
+  hareketler ledger'ın 2000'lik rotasyonuyla düşmüşse gün `eksik`), (3) açık pozisyonların ŞİMDİKİ gerçekleşmemiş
+  sonucu (`LEDGER_MARK`: vadeli defterin kendi `last_price`'ı; spot için mark zinciri position_path ≤ 60 dk →
+  HistoryStore son kapanmış spot barı ≤ 24 saat → aynı sembolün vadeli `last_price`'ı). Spot dahildir. Hesap motordan
+  BAĞIMSIZDIR (worker'ın kendi muhasebe sınıflarıyla, salt okunur): sahip motor olmadan doğrulayabilsin diye; aynı
+  tanımlı sayılar motorun `daily_target.ledger_day_views` çıktısıyla eşit olmalıdır (test). Bu çıktı hüküm VERMEZ:
+  gün satırları yalnız gerçekleşmiş sonuçtur; gün hükmü yalnız motorun ölçülmüş anlık görüntülerle hesapladığı ve
+  kesinleşmiş (KESİN) MTM günlerinde, hedef hükmü yalnız aylık kayıtlı bakışta verilir (`engine-status`).
+* D4 etiketi (2026-10-05): eski "Trend 4h (gözlem, kanıtlanmadı)" etiketi defterin gerçek adıyla "D4 Donchian 4h".
 
 Kullanım:
     python scripts/bot_scorecard.py --state <state klasörü> [--since 2026-09-01] [--learning-since <ISO>] [--out karne.json]
-        [--now <ISO, aylık hedefin «şimdi»si; varsayılan UTC şimdi>]
+        [--now <ISO, aylık/günlük hedefin «şimdi»si; varsayılan UTC şimdi>] [--daily [--days N]]
 """
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from tradingbot.accounting import FuturesLedgerV2  # noqa: E402
+from tradingbot.accounting import FuturesLedgerV2, SpotLedger  # noqa: E402
 from tradingbot.core import from_iso  # noqa: E402
 from tradingbot.pattern_trader.report import MIN_TRADES_FOR_VERDICT, _funding_coverage, _r_stats  # noqa: E402
 
 LEDGER_FILE = "futures_ledger.json"
 #: defter klasörü (state altında) → görünen ad; "" = ana bot (state kökündeki defter)
 BOOKS = {"": "Ana bot", "strategy_paper": "T2", "strategy_paper_m2": "M2 (TSMOM28)", "strategy_paper_box": "Box",
-         "pattern_trader": "Formasyon", "strategy_paper_trend4h": "Trend 4h (gözlem, kanıtlanmadı)",
+         "pattern_trader": "Formasyon", "strategy_paper_trend4h": "D4 Donchian 4h",
          "strategy_paper_candle4h": "C4 Mum varyasyonları (PAPER)",
          "strategy_paper_candle4h_strict": "C4S Mum varyasyonları 4h (sıkı, PAPER)"}
 V_THIN, V_LOSS, V_WIN, V_OPEN = "VERİ YETERSİZ", "ZARARDA (kanıtlı)", "KÂRDA (kanıtlı, PAPER)", "BELİRSİZ"
@@ -76,6 +90,19 @@ RECORD_ONLY_REASON = "LEARNING_RECORD_ONLY"
 RECORDED_EXTRA = "recorded_extra"
 #: AYLIK HEDEF (2026-10-03, sahip): ayda en az +%1 net (kendi kâğıt bakiyesinde). Yalnız rapor.
 MONTHLY_TARGET_PCT = 1.0
+#: GÜNLÜK HEDEF (2026-10-05, motor tasarımı §7.7): ana botun spot defteri ve günlük ölçüm (yalnız gerçekleşmiş + şimdiki
+#: gerçekleşmemiş; hüküm yok).
+SPOT_FILE = "spot_ledger.json"
+DAILY_TARGET_PCT = 1.0
+DAILY_PNL_KINDS = ("PNL", "FEE", "FUNDING", "LIQ_FEE", "TAX")
+ENTRIES_KEEP = 2000
+DAILY_NAMES = {"main_fut": "Ana bot · vadeli", "main_spot": "Ana bot · spot"}
+#: spot mark zinciri (motorla aynı mühürlü kural; kod bağımsız)
+PATH_MARK_MAX_AGE = timedelta(minutes=60)
+PATH_MARK_FUTURE_TOL = timedelta(minutes=2)
+PATH_TAIL_BYTES = 4 << 20
+BAR_MARK_MAX_AGE = timedelta(hours=24)
+BAR_TF_MS = {"1m": 60_000, "5m": 300_000, "15m": 900_000, "1h": 3_600_000, "4h": 14_400_000, "1d": 86_400_000}
 
 
 def _configure_console() -> None:
@@ -361,11 +388,314 @@ def monthly_target(state: Path, *, now: datetime | None = None) -> dict[str, Any
                           "last_30d": _window(hist, now - timedelta(days=30), now, eq)}
         except Exception as exc:  # noqa: BLE001 — bozuk bir defter diğerlerini durdurmaz
             books[key] = {"name": BOOKS.get(sub, sub), "error": f"{type(exc).__name__}: {exc}"}
+    sp = state / SPOT_FILE
+    if sp.exists():                       # ana botun spot defteri (motor tasarımı §7.5); yoksa blok AYNEN eskisi
+        try:
+            sled = SpotLedger.load(sp)
+            eq = float(sled.starting_equity)
+            hist = list(sled.history)
+            books["main_spot"] = {"name": DAILY_NAMES["main_spot"], "starting_equity": eq, "open_positions": len(sled.positions()),
+                                  "month": _window(hist, _month_start(now), now, eq),
+                                  "last_30d": _window(hist, now - timedelta(days=30), now, eq)}
+        except Exception as exc:  # noqa: BLE001
+            books["main_spot"] = {"name": DAILY_NAMES["main_spot"], "error": f"{type(exc).__name__}: {exc}"}
     return {"now": now.isoformat(), "month": now.strftime("%Y-%m"), "target_pct": MONTHLY_TARGET_PCT, "books": books,
             "note_tr": ("Sahibin hedefi: her algoritma kendi kâğıt bakiyesinde ayda en az +%1 net. Bu bölüm yalnız ölçümdür: "
                         "kapanan işlemlerin ücret, kayma ve funding sonrası net sonucu, defterin başlangıç bakiyesine oranı. "
                         "Açık pozisyonların gerçekleşmemiş sonucu dahil değildir. PAPER sonucudur; kâr iddiası ya da "
                         "garantisi değildir.")}
+
+
+# ============================================================================ GÜNLÜK HEDEF (--daily; yalnız ölçüm)
+def daily_books(state: Path) -> dict[str, tuple[str, Path]]:
+    """Günlük ölçümün defterleri: `find_books` (vadeli) + ana botun `spot_ledger.json`'ı. Anahtarlar motorla aynı:
+    ana botun vadelisi `main_fut`, spotu `main_spot`, diğerleri klasör adı."""
+    out = {("main_fut" if not sub else sub): ("futures", p) for sub, p in find_books(state).items()}
+    if (state / SPOT_FILE).exists():
+        out["main_spot"] = ("spot", state / SPOT_FILE)
+    return out
+
+
+def _inst(symbol: Any) -> str:
+    s_ = str(symbol or "").upper().strip()
+    if ":" in s_:
+        s_ = s_.split(":", 1)[0]
+    return s_.replace("/", "").replace("_", "").replace("-", "")
+
+
+def _f8(x: Decimal | None) -> float | None:
+    return None if x is None else round(float(x), 8)
+
+
+def _path_marks(state: Path, now: datetime) -> dict[str, tuple[Decimal, datetime]]:
+    """position_path.jsonl kuyruğu (son 4 MB): sembol başına `now − 60 dk … now + 2 dk` içindeki en son mark."""
+    p = state / "position_path.jsonl"
+    out: dict[str, tuple[Decimal, datetime]] = {}
+    if not p.exists():
+        return out
+    with open(p, "rb") as fh:
+        fh.seek(0, os.SEEK_END)
+        size = fh.tell()
+        fh.seek(max(0, size - PATH_TAIL_BYTES))
+        lines = fh.read().decode("utf-8", errors="replace").splitlines()
+    if size > PATH_TAIL_BYTES and lines:
+        lines = lines[1:]
+    for line in lines:
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(row, dict):
+            continue
+        t = _ts(row.get("ts"))
+        try:
+            m = Decimal(str(row.get("mark")))
+        except (ArithmeticError, ValueError, TypeError):
+            continue
+        k = _inst(row.get("symbol"))
+        if t is None or not k or not m.is_finite() or m <= 0 or not (now - PATH_MARK_MAX_AGE <= t <= now + PATH_MARK_FUTURE_TOL):
+            continue
+        if k not in out or t >= out[k][1]:
+            out[k] = (m, t)
+    return out
+
+
+def _bar_mark(data_root: Path, symbol: str, now: datetime) -> tuple[Decimal, datetime] | None:
+    """Worker HistoryStore'unda son KAPANMIŞ spot barı (≤ 24 saat). Ad adayları: 'ETH_USDT' sonra 'ETHUSDT'; tf 1m→1d;
+    kapanışı en yeni olan (eşitlikte ilk aday)."""
+    root = data_root / "market" / "history"
+    if not (root / "spot").exists():
+        return None
+    from tradingbot.history.store import HistoryStore  # noqa: PLC0415 — yalnız gerektiğinde (pandas)
+    store = HistoryStore(root)
+    now_ms = int(now.timestamp() * 1000)
+    max_age = int(BAR_MARK_MAX_AGE.total_seconds() * 1000)
+    names = []
+    for n in (str(symbol), _inst(symbol)):
+        if n not in names:
+            names.append(n)
+    best: tuple[int, Decimal] | None = None
+    for name in names:
+        for tf, step in BAR_TF_MS.items():
+            if not store.series_dir("spot", name, tf).is_dir():
+                continue
+            try:
+                df = store.read("spot", name, tf, since_ms=now_ms - max_age - step, until_ms=now_ms)
+            except Exception:  # noqa: BLE001
+                continue
+            rows = [(int(t) + step, c) for t, c in zip(df["timestamp"], df["close"])
+                    if int(t) + step <= now_ms and now_ms - (int(t) + step) <= max_age]
+            if not rows:
+                continue
+            ct, close = max(rows, key=lambda r: r[0])
+            try:
+                price = Decimal(str(close))
+            except (ArithmeticError, ValueError):
+                continue
+            if not price.is_finite() or price <= 0:
+                continue
+            if best is None or ct > best[0]:
+                best = (ct, price)
+    if best is None:
+        return None
+    return best[1], datetime.fromtimestamp(best[0] / 1000, tz=timezone.utc)
+
+
+def _spot_marks(state: Path, symbols: list[str], now: datetime, futs: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Spot mark zinciri (motor tasarımı §7.1): (1) position_path ≤ 60 dk, (2) HistoryStore son kapanmış spot barı,
+    (3) aynı sembolün vadeli `last_price`'ı (`PERP_PROXY`, en yeni `updated_at`). Hiçbiri yoksa mark yok."""
+    pp = _path_marks(state, now)
+    prox: dict[str, tuple[Decimal, datetime | None]] = {}
+    for _k, led in sorted(futs.items()):
+        upd = _ts(led.updated_at)
+        for pos in led.positions.values():
+            lp = pos.last_price
+            k = _inst(pos.symbol)
+            if lp is None or lp <= 0 or not k:
+                continue
+            cur = prox.get(k)
+            if cur is None or (upd is not None and (cur[1] is None or upd > cur[1])):
+                prox[k] = (lp, upd)
+    out: dict[str, dict[str, Any]] = {}
+    for sym in sorted(set(symbols)):
+        k = _inst(sym)
+        if k in pp:
+            out[sym] = {"price": pp[k][0], "source": "POSITION_PATH", "age_s": round((now - pp[k][1]).total_seconds(), 1)}
+            continue
+        bm = _bar_mark(state.parent, sym, now)
+        if bm is not None:
+            out[sym] = {"price": bm[0], "source": "HISTORY_SPOT_BAR", "age_s": round((now - bm[1]).total_seconds(), 1)}
+            continue
+        if k in prox:
+            out[sym] = {"price": prox[k][0], "source": "PERP_PROXY",
+                        "age_s": round((now - prox[k][1]).total_seconds(), 1) if prox[k][1] else None}
+            continue
+        out[sym] = {"price": None, "source": "MISSING", "age_s": None}
+    return out
+
+
+def _spot_base(sym: str, quote: str) -> str:
+    s_ = sym.upper()
+    if "/" in s_:
+        return s_.split("/", 1)[0]
+    k = _inst(s_)
+    return k[: -len(quote)] if k.endswith(quote) and len(k) > len(quote) else k
+
+
+def _spot_now(state: Path, sled: Any, now: datetime, futs: dict[str, Any]) -> dict[str, Any]:
+    """Spot defterin şimdiki değeri: B = nakit + kilitli + Σ lot × maliyet; E = nakit + kilitli + Σ varlık × mark;
+    gerçekleşmemiş U = E − B (brüt; vadeli LEDGER_MARK ile aynı tanım). Bir mark eksikse U yok."""
+    quote = sled.quote_asset.upper()
+    lots_cost = {sym: sum((l.qty * l.cost_basis for l in ls), Decimal(0)) for sym, ls in sled.lots.items()}
+    base_to_sym = {_spot_base(sym, quote): sym for sym in sled.lots}
+    held: dict[str, Decimal] = {}
+    totals: dict[str, Decimal] = {}
+    for src in (sled.assets, sled.locked_assets):
+        for a, q in src.items():
+            totals[a.upper()] = totals.get(a.upper(), Decimal(0)) + q
+    for a, q in totals.items():
+        if q != 0:
+            held[base_to_sym.get(a, f"{a}/{quote}")] = q
+    marks = _spot_marks(state, list(sled.lots) + [f"{a}/{quote}" for src in (sled.assets, sled.locked_assets)
+                                                  for a, q in src.items() if q != 0], now, futs)
+    book_value = sled.cash + sled.locked_cash + sum(lots_cost.values(), Decimal(0))
+    eq, complete = sled.cash + sled.locked_cash, True
+    for sym, q in held.items():
+        px = (marks.get(sym) or {}).get("price")
+        if px is None:
+            complete = False
+            continue
+        eq += q * px
+    return {"book_value": book_value, "unrealized": (eq - book_value) if complete else None,
+            "marks": {k: {**v, "price": _f8(v["price"])} for k, v in marks.items() if k in held}}
+
+
+def daily_report(state: Path, *, days: int = 7, now: datetime | None = None) -> dict[str, Any]:
+    """GÜNLÜK HEDEF ölçümü (salt okunur, motordan bağımsız). Son `days` UTC günü (bugün dahil) için defter başına:
+    kayıt görünümü (`closed_at` günü), defter-zaman-damgalı cüzdan görünümü (hareketin `ts` günü; ledger 2000 hareketle
+    dolu ise ve gün en eski hareketten önce başlıyorsa `complete=False`), gün başı gerçekleşmiş bakiye (vadeli cüzdan;
+    spot defter değeri — hareketlerden geriye doğru) ve şimdiki gerçekleşmemiş (`LEDGER_MARK`). Hüküm YOKTUR."""
+    now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    end = now.date()
+    day_list = [(end - timedelta(days=i)).isoformat() for i in range(days)][::-1]
+    loaded: dict[str, tuple[str, Any]] = {}
+    books: dict[str, Any] = {}
+    for key, (kind, path) in daily_books(state).items():
+        name = DAILY_NAMES.get(key) or BOOKS.get(key, key)
+        try:
+            loaded[key] = (kind, FuturesLedgerV2.load(path) if kind == "futures" else SpotLedger.load(path))
+        except Exception as exc:  # noqa: BLE001 — bozuk bir defter diğerlerini durdurmaz
+            books[key] = {"name": name, "kind": kind, "error": f"{type(exc).__name__}: {exc}"}
+    futs = {k: led for k, (kind, led) in loaded.items() if kind == "futures"}
+    tot = {d: {"rec_n": 0, "rec_net": Decimal(0), "wal_net": Decimal(0), "den": Decimal(0), "complete": True} for d in day_list}
+    for key, (kind, led) in loaded.items():
+        name = DAILY_NAMES.get(key) or BOOKS.get(key, key)
+        rec: dict[str, dict[str, Any]] = {}
+        for t in led.history:
+            at = _ts(t.closed_at)
+            if at is None:
+                continue
+            r = rec.setdefault(at.astimezone(timezone.utc).date().isoformat(),
+                               {"n": 0, "net": Decimal(0), "fees": Decimal(0), "funding": Decimal(0), "slippage": Decimal(0)})
+            r["n"] += 1
+            r["net"] += t.pnl
+            r["fees"] += t.fees
+            r["funding"] += t.funding if kind == "futures" else Decimal(0)
+            r["slippage"] += t.slippage_cost
+        wal: dict[str, dict[str, Decimal]] = {}
+        ent_ts = []
+        for e in led.entries:
+            at = _ts(e.ts)
+            if at is None:
+                continue
+            ent_ts.append((at, e))
+            w = wal.setdefault(at.astimezone(timezone.utc).date().isoformat(), {"net": Decimal(0), "transfer": Decimal(0)})
+            k = e.kind.value
+            if k in DAILY_PNL_KINDS:
+                w["net"] += e.amount
+            elif k == "TRANSFER":
+                w["transfer"] += e.amount
+        rotated = len(led.entries) >= ENTRIES_KEEP
+        first_ts = min((a for a, _e in ent_ts), default=None)
+        if kind == "futures":
+            base_now = led.wallet_balance
+            unreal = Decimal(0)
+            for pos in led.positions.values():
+                px = pos.last_price if (pos.last_price is not None and pos.last_price > 0) else pos.entry_avg
+                unreal += (px - pos.entry_avg) * pos.qty * pos.side.sign
+            marks: dict[str, Any] = {}
+            mark_src = "LEDGER_MARK"
+        else:
+            sn = _spot_now(state, led, now, futs)
+            base_now, unreal, marks, mark_src = sn["book_value"], sn["unrealized"], sn["marks"], "SPOT_MARK_CHAIN"
+        bd = {}
+        for d in day_list:
+            start = datetime.fromisoformat(d).replace(tzinfo=timezone.utc)
+            complete = (not rotated) or (first_ts is not None and first_ts < start)
+            r = rec.get(d) or {"n": 0, "net": Decimal(0), "fees": Decimal(0), "funding": Decimal(0), "slippage": Decimal(0)}
+            w = wal.get(d) or {"net": Decimal(0), "transfer": Decimal(0)}
+            later = sum((e.amount for a, e in ent_ts if a >= start and (kind == "futures" or e.kind.value != "TRANSFER")),
+                        Decimal(0))
+            den = (base_now - later) if complete else None
+            bd[d] = {"rec": {"n": r["n"], "net": _f8(r["net"]), "fees": _f8(r["fees"]), "funding": _f8(r["funding"]),
+                             "slippage": _f8(r["slippage"])},
+                     "wal_ts": {"net": _f8(w["net"]), "transfer": _f8(w["transfer"]), "complete": complete},
+                     "day_start_balance": _f8(den),
+                     "realized_pct": round(float(w["net"] / den * 100), 6) if (complete and den and den > 0) else None}
+            tt = tot[d]
+            tt["rec_n"] += r["n"]
+            tt["rec_net"] += r["net"]
+            tt["wal_net"] += w["net"]
+            if complete and den is not None:
+                tt["den"] += den
+            else:
+                tt["complete"] = False
+        books[key] = {"name": name, "kind": kind, "unrealized_now": _f8(unreal), "mark_source": mark_src, "marks": marks,
+                      "open_positions": len(led.positions) if kind == "futures" else len(led.positions()), "days": bd}
+    total = {d: {"rec_n": v["rec_n"], "rec_net": _f8(v["rec_net"]), "wal_net": _f8(v["wal_net"]), "complete": v["complete"],
+                 "realized_pct": (round(float(v["wal_net"] / v["den"] * 100), 6) if (v["complete"] and v["den"] > 0) else None)}
+             for d, v in tot.items()}
+    un = [b.get("unrealized_now") for b in books.values() if "error" not in b]
+    return {"now": now.isoformat(), "days": day_list, "target_pct": DAILY_TARGET_PCT, "books": books, "total": total,
+            "unrealized_now_total": round(sum(un), 8) if un and all(u is not None for u in un) else None,
+            "note_tr": ("Yalnız ölçüm. Gün satırları GERÇEKLEŞMİŞ sonuçtur (kayıt görünümü: o gün kapanan kayıtlar; cüzdan "
+                        "görünümü: hareketin defterdeki zaman damgası); her birinin yanında açık pozisyonların ŞİMDİKİ "
+                        "gerçekleşmemiş sonucu yazar. Gün ve hedef hükmü bu çıktıda VERİLMEZ: o, motorun ölçülmüş gece anlık "
+                        "görüntüleriyle hesaplanan ve kesinleşmiş (KESİN) MTM günlerinde ve aylık kayıtlı bakışta verilir "
+                        "(engine-status). Payda: gün başı gerçekleşmiş bakiye (hareketlerden geriye doğru). PAPER sonucudur; "
+                        "kâr iddiası ya da garantisi değildir.")}
+
+
+def render_daily(card: dict[str, Any]) -> list[str]:
+    """GÜNLÜK HEDEF bölümü (yalnız `--daily` ile)."""
+    dt = card.get("daily_target")
+    if not dt:
+        return []
+    un = dt.get("unrealized_now_total")
+    lines = [f"GÜNLÜK HEDEF (+%{dt['target_pct']:.0f}/gün, yalnız ölçüm; hüküm yok) · son {len(dt['days'])} gün (UTC) · "
+             f"şimdi {dt['now'][:16]} · spot dahil · açık gerçekleşmemiş şimdi {_fmt(un)} USDT (LEDGER_MARK)",
+             f"{'gün':<12}{'kayıt net USDT':>15}{'işlem':>7}{'cüzdan net USDT':>17}{'gün başı bakiyeye %':>21}  not"]
+    for d in dt["days"][::-1]:
+        t = dt["total"][d]
+        pct = t.get("realized_pct")
+        lines.append(f"{d:<12}{_fmt(t['rec_net']):>15}{t['rec_n']:>7}{_fmt(t['wal_net']):>17}"
+                     f"{(_fmt(pct) + '%') if pct is not None else '—':>21}  "
+                     + ("yalnız gerçekleşmiş" if t["complete"] else "cüzdan hareketleri eksik (rotasyon)"))
+    lines.append(f"{'defter':<20}{'kayıt net (işlem)':>20}{'cüzdan net':>13}{'açık gerçekleşmemiş şimdi':>28}  mark")
+    for key, b in dt["books"].items():
+        if "error" in b:
+            lines.append(f"{b['name']:<20} OKUNAMADI: {b['error']}")
+            continue
+        rn = sum(v["rec"]["net"] for v in b["days"].values())
+        rc = sum(v["rec"]["n"] for v in b["days"].values())
+        wn = sum(v["wal_ts"]["net"] for v in b["days"].values())
+        mk = ", ".join(f"{s_} {v['source']}" + (f" {round(v['age_s'] / 60)} dk" if v.get("age_s") is not None else "")
+                       for s_, v in (b.get("marks") or {}).items())
+        lines.append(f"{b['name']:<20}{_fmt(rn) + f' ({rc})':>20}{_fmt(wn):>13}{_fmt(b['unrealized_now']):>28}  "
+                     f"{b['mark_source']}{(' · ' + mk) if mk else ''}")
+    lines.append("   " + dt["note_tr"])
+    lines.append("")
+    return lines
 
 
 def _gap_txt(w: dict[str, Any]) -> str:
@@ -441,6 +771,7 @@ def render(card: dict[str, Any]) -> str:
                          + (" · " + ", ".join(v["flags"]) if v.get("flags") else ""))
     lines += render_learning(card)
     lines += render_monthly(card)
+    lines += render_daily(card)
     lines.append(f"Hüküm kuralı: {card['min_trades_for_verdict']} işlemden az → VERİ YETERSİZ; ortalama R'nin %95 aralığı tamamen 0'ın "
                  "altında → ZARARDA, tamamen üstünde → KÂRDA; değilse BELİRSİZ. PAPER sonucu, kâr garantisi değildir.")
     return "\n".join(lines)
@@ -504,7 +835,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out", default=None, help="ayrıntılı JSON raporu")
     ap.add_argument("--learning-since", default=None,
                     help="öğrenme modu başlangıcı (ISO); verilmezse state/learning_mode.json okunur")
-    ap.add_argument("--now", default=None, help="aylık hedef raporunun «şimdi»si (ISO, UTC); verilmezse şu an")
+    ap.add_argument("--now", default=None, help="aylık/günlük hedef raporunun «şimdi»si (ISO, UTC); verilmezse şu an")
+    ap.add_argument("--daily", action="store_true", help="GÜNLÜK HEDEF bölümü (yalnız ölçüm; spot dahil; hüküm yok)")
+    ap.add_argument("--days", type=int, default=7, help="--daily için gün sayısı (UTC, bugün dahil; varsayılan 7)")
     a = ap.parse_args(argv)
     state = Path(a.state)
     if not state.is_dir():
@@ -521,6 +854,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{state} altında {LEDGER_FILE} bulunamadı", file=sys.stderr)
         return 2
     card["monthly_target"] = monthly_target(state, now=now)
+    if a.daily:
+        if a.days < 1:
+            print("--days en az 1 olmalı", file=sys.stderr)
+            return 2
+        card["daily_target"] = daily_report(state, days=a.days, now=now)
     print(render(card))
     if a.out:
         Path(a.out).write_text(json.dumps(card, ensure_ascii=False, indent=1), encoding="utf-8")

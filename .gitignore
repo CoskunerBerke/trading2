@@ -35,6 +35,10 @@ signal_lab_out/
 gold_lab_data/
 gold_lab_out/
 
+# defter araştırması (book_v1): arşiv önbelleği ve raporlar (yerel; fiyat verisi depoya girmez)
+book_lab_data/
+book_lab_out/
+
 # yerel sanal ortam ve demo panel çıktısı (scripts/demo_panel_state.py varsayılan klasörü)
 .venv/
 demo-panel/

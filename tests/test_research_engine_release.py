@@ -38,9 +38,9 @@ import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-SCRIPT = ROOT / "deploy" / "releases" / "tb-engine-778b90f.sh"
+SCRIPT = ROOT / "deploy" / "releases" / "tb-engine-beba65d.sh"
 #: Betiğin kayıtlı sha256'sı (sürüm notu ve sahibe verilen değer; betik değişirse bu da bilinçli değişir).
-SCRIPT_SHA256 = "26fa8cf12cc423001acf1feba46aab7519ae2ba04d95c26b1d06d41d14e103a6"
+SCRIPT_SHA256 = "02e3dfbdbeb860bbada90f74e8a37c6373112cb7683e914e4d1339010a0d2814"
 TEXT = SCRIPT.read_text(encoding="utf-8")
 TIP = re.search(r'^TIP="([0-9a-f]{40})"', TEXT, re.M).group(1)
 APP_SHA = "f8b05fb27310238c764ac7dad23221d84f7c0b6d"      # VPS'te çalışan app (hedefin atası)
@@ -386,7 +386,7 @@ def test_deploy_smoke_then_timer_check_ab_report_and_rollback_keeps_research(tmp
     d0, n0 = _tree_digest(sb.res), len(samples.read_text(encoding="utf-8").splitlines())
     ck = sb.run("--check")
     assert ck.returncode == 0, ck.out[-4000:]
-    for s in ("iki SHA: app f8b05fb · engine-app 778b90f", "SKEW yok", "GECE ÖĞRENME MOTORU", "GÜNLÜK HEDEF",
+    for s in ("iki SHA: app f8b05fb · engine-app beba65d", "SKEW yok", "GECE ÖĞRENME MOTORU", "GÜNLÜK HEDEF",
               "K1 elle smoke", "K2 ilk arşiv", "K8 rotasyon payı", "--ab-report", "defter okuma", "Aylık"):
         assert s in ck.out, s
     assert not claim_word_violations(ck.out.splitlines()), claim_word_violations(ck.out.splitlines())

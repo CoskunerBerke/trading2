@@ -10,11 +10,11 @@
 #   klasörlerine (engine-app, birim dosyaları, deploy-logs/engine-*) yazar.
 #
 # Kullanım (VPS'te, sahip çalıştırır; dosya adı tb-engine-<hedefin ilk 7 hanesi>.sh):
-#   sudo bash tb-engine-778b90f.sh --dry-run    # yalnız denetim, hedef kod GEÇİCİ klonda (yalnız deploy-logs'a kayıt)
-#   sudo bash tb-engine-778b90f.sh              # dağıt: klon + dizin + kapılı birim kurulumu + elle smoke
-#   sudo bash tb-engine-778b90f.sh --check      # 14 gün her gün (yalnız deploy-logs/engine-<sha7>-samples.jsonl'a yazar)
-#   sudo bash tb-engine-778b90f.sh --ab-report  # 14. geceden sonra bir kez: AÇIK/KAPALI geceler aynı saat penceresinde
-#   sudo bash tb-engine-778b90f.sh --rollback   # zamanlayıcı + servis + engine-app kaldırılır; data/research KALIR
+#   sudo bash tb-engine-beba65d.sh --dry-run    # yalnız denetim, hedef kod GEÇİCİ klonda (yalnız deploy-logs'a kayıt)
+#   sudo bash tb-engine-beba65d.sh              # dağıt: klon + dizin + kapılı birim kurulumu + elle smoke
+#   sudo bash tb-engine-beba65d.sh --check      # 14 gün her gün (yalnız deploy-logs/engine-<sha7>-samples.jsonl'a yazar)
+#   sudo bash tb-engine-beba65d.sh --ab-report  # 14. geceden sonra bir kez: AÇIK/KAPALI geceler aynı saat penceresinde
+#   sudo bash tb-engine-beba65d.sh --rollback   # zamanlayıcı + servis + engine-app kaldırılır; data/research KALIR
 # Çıkış: 0 tamam · 1 durdu (ön denetimde: hiçbir şey değişmedi) · 2 smoke geçmedi ya da saati değil (zamanlayıcı KAPALI)
 #   · 3 reload sonrası MemoryMax kayması (motor birimleri geri alındı) · 4 dağıtıldı ama bir değişmez KALDI.
 #
@@ -36,7 +36,7 @@
 #   KOD özetine bağlıdır (selfcheck madde 5). K6 --check'te otomatiktir. Ağır adımlar nice 19 + ionice idle (§2.9).
 set -Eeuo pipefail
 
-TIP="778b90f9f06ade8cad8883a5e507a72cc5fbc3f5"    # P1a kod commit'i (impl/system; 1. inceleme turu düzeltmeleri)
+TIP="beba65d6284b325fe446653b4cdfb78f302d8a0c"    # P1a kod commit'i (impl/system; 1. inceleme turu düzeltmeleri)
 T7="${TIP:0:7}"
 BRANCH_REF="refs/heads/impl/system"
 REPO_URL="${TB_ENGINE_REPO_URL:-https://github.com/CoskunerBerke/trading2.git}"   # içerik TAM SHA'ya bağlıdır

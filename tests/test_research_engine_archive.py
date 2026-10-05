@@ -517,6 +517,9 @@ def test_find_ledgers_covers_scorecard_find_books_plus_spot(tmp_path):
             (st / "spot_ledger.json").write_text("{}", encoding="utf-8")
         mine = L.find_ledgers(st)
         theirs = {("main_fut" if not k else k): p for k, p in S.find_books(st).items()}
+        # M2X gibi ayna defterler karnenin ana tablosundan dışlanır; motor arşivi onları da kaydeder
+        theirs.update({k: st / k / "futures_ledger.json" for k in getattr(S, "MIRROR_BOOKS", {})
+                       if (st / k / "futures_ledger.json").exists()})
         assert {k: p for k, (kind, p) in mine.items() if kind == "futures"} == theirs
         assert ("main_spot" in mine) == spot
 

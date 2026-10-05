@@ -190,12 +190,18 @@ the published index, the tour's own function and the same inputs, and seeds the 
 asks for a symbol being computed waits for the same result ([`patterns/evidence_cache.py`](../tradingbot/patterns/evidence_cache.py)).
 Since 2026-10-05 those queries run in one short-lived child process forked from the worker, so they no longer hold the
 worker's GIL: the query loop calls `np.corrcoef` per indexed event, which drops and retakes the GIL so often that the
-tour, the Box timer and the protective monitor could not get it back for tens to hundreds of milliseconds at a time
-(measured locally: GIL-releasing tour work ran 30–145 times slower while a prewarm ran in-process, 0.8–1.1 times with the
-child). The child sees the published index through copy-on-write memory, so engine, function and inputs are the tour's
-own and the evidence is bit-identical; while it lives, a tour cache miss is sent to it too. It exits when the prewarm
-job ends or a newer index is published; any child failure is logged and the work falls back to today's in-process
-path. `history.evidence_subprocess: false` restores the in-process path
+tour, the Box timer and the protective monitor could wait tens to hundreds of milliseconds to get it back (measured on an
+idle 4-core machine: GIL-releasing tour work ran 30–145 times slower while a prewarm ran in-process; on the same kind of
+machine under heavy load (load average 6–7) only 1.0–2.7 times; with the child about 1 time in every run). That this
+explains the VPS's long tours is a hypothesis to check after deployment. The child sees the published index through
+copy-on-write memory, so engine, function and inputs are the tour's own and the evidence is bit-identical; while it
+lives, a tour cache miss is sent to it too. It exits when the prewarm job ends or a newer index is published. A child
+failure after the fork is logged and the work falls back to today's in-process path, with two exceptions. If the fork
+itself hangs (OpenBLAS's pre-fork handler can deadlock while another thread runs a multithreaded BLAS job), a 30-second
+timer whose default action ends the process terminates the worker, systemd restarts it, and a marker file in `state/`
+keeps the child off on that machine until the owner deletes it. And under systemd's default `OOMPolicy=stop`, an
+out-of-memory kill of the child stops the whole unit, the same as an out-of-memory kill today. Only Linux uses the
+child. `history.evidence_subprocess: false` restores the in-process path exactly
 ([`patterns/evidence_child.py`](../tradingbot/patterns/evidence_child.py), [TOUR_CONTENTION_V1.md](TOUR_CONTENTION_V1.md)).
 The chart-analysis index is written once per tour instead of once per new analysis, and the closed-trade exit
 evaluation and the entry-snapshot trade links are memoised. Tests pin that ledgers and decisions are identical with these
@@ -1317,9 +1323,9 @@ kâğıt işlemdir ve şu ana kadar istatistiksel olarak kesin değildir.
 
 - **Mimari:** tek worker süreci; ana tur döngüsü + koruyucu izleyici, Box zamanlayıcısı, Formasyon tarayıcısı ve indeks
   yenileyici iş parçacıkları; ayrı, salt okunur panel süreci. Yeni indeks yayımından sonraki pattern kanıtı sorguları
-  worker'dan `fork` edilen kısa ömürlü bir alt süreçte koşar ve worker'ın GIL'ini turdan almaz (geri dönüş:
-  `history.evidence_subprocess: false`). Eski v2 spot döngüsü her yeni 4h barda sekiz defterden
-  ayrı, kendi küçük spot kâğıt portföyünü (`portfolio.json`) işletir; paneldeki "Spot defteri" sayfası bu portföyü gösterir.
+  worker'dan `fork` edilen kısa ömürlü bir alt süreçte koşar ve worker'ın GIL'ini turdan almaz (fork'un kendisi asılırsa
+  30 sn'lik zamanlayıcı worker'ı sonlandırır, systemd yeniden başlatır; geri dönüş: `history.evidence_subprocess:
+  false`). Eski v2 spot döngüsü her yeni 4h barda sekiz defterden ayrı, kendi küçük spot kâğıt portföyünü (`portfolio.json`) işletir; paneldeki "Spot defteri" sayfası bu portföyü gösterir.
 - **Muhasebe:** izole marj, komisyon, 3 bps kayma, borsa filtreleri, gerçekleşmiş fonlama, ihtiyatlı likidasyon sırası,
   stop taşıma düzeltmesi.
 - **Öğrenme modu (açık):** yalnız PAPER; slot sayısı K ile boyut, marj ≤ %95, likidasyon ≥ 2 × stop, politika rezervi;

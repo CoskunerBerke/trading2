@@ -274,6 +274,7 @@ class TradingEngineV3(TradingEngine):
         # guvenli: yayim sonrasi on isitma (`_on_pattern_index_published`) ayni onbellege yazar.
         from .patterns.evidence_cache import EvidenceCache
         self._pattern_cache = EvidenceCache()
+        self._pattern_cache.fork_marker = self._evidence_fork_marker()      # kanıt alt süreci fork işareti (yalnız teşhis)
         # Arka plan arsiv/indeks yenileyicisi (kapaliysa None). Ilk turda baslatilir.
         self._refresher = None
         # YÜRÜTME HASSASİYETİ: yapılandırma defterin kapısını belirler (varsayılan KAPALI → davranış
@@ -884,6 +885,7 @@ class TradingEngineV3(TradingEngine):
         r.start()
         log.info("indeks yenileyicisi başladı: her %.0f dk, en fazla %d sembol",
                  r.interval_s / 60.0, r.max_symbols)
+        self._log_evidence_subprocess_setting()
         return r.status()
 
     def index_refresh_status(self) -> dict:
@@ -921,7 +923,16 @@ class TradingEngineV3(TradingEngine):
                 c = self.__dict__.get("_pattern_cache")
                 if c is None or not hasattr(c, "get_or_compute"):
                     c = self.__dict__["_pattern_cache"] = EvidenceCache()
+                    c.fork_marker = self._evidence_fork_marker()
         return c
+
+    def _evidence_fork_marker(self):
+        """Kanıt alt sürecinin fork işaret dosyası (`state/`; bkz. `patterns/evidence_child`). Kısmi nesnede None."""
+        try:
+            from .patterns.evidence_child import MARKER_NAME
+            return self.cfg.state_path / MARKER_NAME
+        except Exception:  # noqa: BLE001 — config'siz kısmi nesne: işaretsiz (deadman yine korur)
+            return None
 
     @staticmethod
     def _evidence_query(eng, symbol: str) -> dict:
@@ -935,11 +946,36 @@ class TradingEngineV3(TradingEngine):
     def _evidence_subprocess_on(self) -> bool:
         """Kanıt sorguları alt süreçte mi (`history.evidence_subprocess`, varsayılan AÇIK; bkz. `patterns/evidence_child`).
         Karar girdisi DEĞİLDİR: yalnız sorgunun hangi süreçte koştuğunu seçer; kanıt bit-aynıdır (test kilitli).
-        Kısmi motor nesnesinde (config yok) KAPALI = bugünkü süreç içi yol."""
+        Kısmi motor nesnesinde (config yok), değer gerçek `true` değilse ve Linux dışında KAPALI = bugünkü süreç içi yol
+        (sessizce)."""
         try:
-            return bool(getattr(self.cfg.v3.history, "evidence_subprocess", False))
+            on = getattr(self.cfg.v3.history, "evidence_subprocess", False) is True
         except AttributeError:
             return False
+        if not on:
+            return False
+        from .patterns.evidence_child import supported
+        return supported()
+
+    def _log_evidence_subprocess_setting(self) -> None:
+        """Başlangıçta BİR kez: kanıt sorgularının nerede koşacağı (anahtar karar kimliğine girmediği için görünür olsun)
+        ve fork asılma riskinin bu makinede var olup olmadığı (OpenBLAS iş parçacığı sayısı > 1)."""
+        try:
+            from .patterns import evidence_child as EC
+            raw = getattr(self.cfg.v3.history, "evidence_subprocess", None)
+            if self._evidence_subprocess_on():
+                n = EC.blas_threads()
+                log.info("pattern kanıtı sorguları: ALT SÜREÇTE (history.evidence_subprocess=%s; OpenBLAS iş parçacığı "
+                         "%s%s; fork koruması %.0f sn)", raw, "?" if n is None else n,
+                         " — fork asılma riski yok" if n == 1 else "", EC.EvidenceChild.FORK_DEADMAN_S)
+                blocked = EC.fork_hung_before(self._evidence_fork_marker())
+                if blocked:
+                    log.warning("pattern kanıtı alt süreci bu makinede KAPALI kalacak: %s", blocked)
+            else:
+                why = "platform Linux değil" if raw is True else f"history.evidence_subprocess={raw}"
+                log.info("pattern kanıtı sorguları: süreç içinde (%s)", why)
+        except Exception as exc:  # noqa: BLE001 — yalnız bilgi satırı
+            log.debug("kanıt alt süreci ayarı loglanamadı: %s", exc)
 
     def _evidence_prewarm_order(self, eng) -> list[str]:
         """Ön ısıtma sırası = turun sorgu sırası (giriş evreni sırası), sonra indeksteki diğer 4h futures serileri."""

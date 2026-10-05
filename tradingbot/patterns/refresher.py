@@ -181,6 +181,7 @@ class IndexRefresher:
                     log.warning("arşiv güncellemesi başarısız (eski indeks korunuyor): %s", exc)
             if not advanced:
                 return {"skipped": "archive_unchanged", "index_version": getattr(self._bundle, "version", None)}
+            _t_build = time.monotonic()             # yalnız ölçüm (yayım satırı): kurulumun tur/Box ile çakışma süresi
             try:
                 engine, last_ts = self._build_fn(syms)
             except Exception as exc:  # noqa: BLE001 — kurulum patlarsa ESKI paket korunur
@@ -200,8 +201,8 @@ class IndexRefresher:
             self.last_success_at = new.built_at
             if not (self.last_update or {}).get("errors"):
                 self.last_error = ""
-            log.info("pattern indeksi yenilendi: sürüm %d, %d olay, %d seri",
-                     new.version, new.events, new.series)
+            log.info("pattern indeksi yenilendi: sürüm %d, %d olay, %d seri, kurulum %.1f sn",
+                     new.version, new.events, new.series, time.monotonic() - _t_build)
             self._notify_published(new)
             return {"published": True, "index_version": new.version, "events": new.events}
         finally:

@@ -37,11 +37,15 @@ ve koruyucu izleyiciden çalıyordu (ölçüm ve mekanizma: `evidence_child` ba�
 * (4) İş bitince ya da daha yeni yayım görülünce alt süreç KAPATILIR; ebeveyn motora yalnız zayıf referans tutar. Alt
   süreç yaşarken yazınca-kopyala sayfaların bir kısmı (ölçülen ≈ indeksin yarısı) iki süreçte ayrı durur; süreç
   kapanınca geri verilir.
-* (5) Alt süreç arızası (başlamama, ölüm/OOM, zaman aşımı) loglanır; o işin kalanı ve tur bugünkü süreç içi yolla
+* (5) Alt süreç arızası (başlamama, ölüm, zaman aşımı) loglanır; o işin kalanı ve tur bugünkü süreç içi yolla
   hesaplanır. Alt süreçte bir sembolün hesabı istisna verirse tur o sembolü süreç içi yeniden hesaplar (bugünkü
-  istisna/sonuç birebir), ön ısıtma yalnız loglar.
+  istisna/sonuç birebir), ön ısıtma yalnız loglar. İKİ İSTİSNA bu "yalnız loglanır" kuralının dışındadır (ayrıntı
+  `evidence_child` başlığı): (a) fork'un kendisi asılırsa deadman worker'ı SONLANDIRIR (systemd yeniden başlatır) —
+  süresiz donmanın yerine; (b) systemd'nin varsayılan `OOMPolicy=stop`'unda alt sürecin OOM'u bütün birimi durdurur
+  (bugünkü bir OOM ile aynı). (a)'dan sonra işaret dosyası (`fork_marker`) alt süreci o makinede kapalı tutar.
 
-Geri dönüş: `history.evidence_subprocess: false` → `use_child` hiç verilmez, alt süreç kurulmaz (bugünkü yol).
+Geri dönüş: `history.evidence_subprocess: false` → `use_child` hiç verilmez, alt süreç kurulmaz, ön ısıtma bugünkü
+kodun yolunu birebir izler (aynı kilitler, aynı log satırı).
 """
 from __future__ import annotations
 
@@ -51,7 +55,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable
 
-from .evidence_child import EvidenceChild, EvidenceChildComputeError, EvidenceChildError
+from .evidence_child import EvidenceChild, EvidenceChildComputeError, EvidenceChildError, fork_hung_before
 
 log = logging.getLogger(__name__)
 
@@ -87,10 +91,16 @@ class EvidenceCache:
                                       # alt süreç (yalnız teşhis; karar girdisi DEĞİL)
                                       "child_started": 0, "child_computed": 0, "child_failures": 0,
                                       "child_in_process_fallbacks": 0, "child_private_mb_max": None,
-                                      "child_last_error": ""}
+                                      "child_last_error": "", "child_blocked": ""}
         #: Canlı alt süreç (yalnız bir ön ısıtma işi süresince). YALNIZ `compute_lock` altında atanır/kullanılır/kapatılır;
         #: `stop()` kilitsiz yalnız öldürür.
         self._child: EvidenceChild | None = None
+        #: Fork işaret dosyası (motor `state/` altında verir; None → işaretsiz, deadman yine korur). Bkz. `evidence_child`.
+        self.fork_marker: Any = None
+        #: Koşan alt süreçli ön ısıtma işinin kaydı (log satırı için): alt süreç pid'i, özel belleği, kim kaç sembol hesapladı.
+        #: YALNIZ `compute_lock` altında ya da ön ısıtma işçisinde değişir.
+        self._job_rec: dict | None = None
+        self._blocked_logged = False
 
     # ------------------------------------------------------------------ önbellek
     def get(self, key: Key) -> EvidenceEntry | None:
@@ -130,12 +140,16 @@ class EvidenceCache:
         Alt süreçte hesap istisnası: tur (`origin="tour"`) süreç içi yeniden hesaplar (bugünkü istisna ya da sonuç
         birebir); ön ısıtma (`origin="prewarm"`) istisnayı yükseltir ve `_run` bugünkü gibi yalnız loglar.
         """
+        return self._compute(engine, symbol, fn, origin=origin)[0]
+
+    def _compute(self, engine: Any, symbol: str, fn: Callable[[Any, str], dict], *, origin: str) -> tuple[dict, bool]:
+        """`compute` + kanıtın alt süreçte mi (True) süreç içinde mi (False) hesaplandığı (yalnız log kaydı için)."""
         child = self._child
         if child is not None and child.serves(engine):
             try:
                 ev = child.compute(symbol)
                 self.stats["child_computed"] += 1
-                return ev
+                return ev, True
             except EvidenceChildComputeError as exc:
                 if origin != "tour":
                     raise
@@ -147,12 +161,39 @@ class EvidenceCache:
                 if stopping and origin != "tour":
                     raise _Stopping() from exc
                 self.stats["child_in_process_fallbacks"] += 1
-        return fn(engine, symbol)
+            finally:
+                self._note_child_memory(child)
+        return fn(engine, symbol), False
+
+    def _note_child_memory(self, child: EvidenceChild) -> None:
+        """Alt sürecin o ana kadarki en yüksek özel belleğini işin kaydına ve istatistiğe yaz (yalnız teşhis)."""
+        kb = child.private_kb_max
+        if kb is None:
+            return
+        rec = self._job_rec
+        if rec is not None and rec.get("pid") == child.pid:
+            rec["kb"] = kb if rec.get("kb") is None else max(rec["kb"], kb)
+        mb = round(kb / 1024.0, 1)
+        prev = self.stats["child_private_mb_max"]
+        self.stats["child_private_mb_max"] = mb if prev is None else max(prev, mb)
 
     def _start_child(self, bundle: Any, compute: Callable[[Any, str], dict]) -> bool:
-        """`compute_lock` ALTINDA: yayımlanmış paketin motoru için alt süreci kur. Başarısızlık loglanır → False."""
+        """`compute_lock` ALTINDA: yayımlanmış paketin motoru için alt süreci kur. Başarısızlık loglanır → False.
+
+        Önceki bir worker alt süreci fork ederken asılıp sonlandırıldıysa (işaret dosyası) HİÇ denenmez: bu makinede
+        fork asılma riski gerçekleşmiştir; sahip dosyayı silene kadar süreç içi yol (uyarı süreç başına bir kez)."""
+        blocked = fork_hung_before(self.fork_marker)
+        if blocked:
+            self.stats["child_blocked"] = blocked[:300]
+            if not self._blocked_logged:
+                self._blocked_logged = True
+                log.warning("pattern kanıtı alt süreci KAPALI (süreç içi hesaplanıyor): %s. Yeniden denemek için "
+                            "dosyayı silin (worker yeniden başlatma gerekmez).", blocked)
+            return False
+        self.stats["child_blocked"] = ""
         try:
-            child = EvidenceChild.start(bundle.engine, compute, version=int(getattr(bundle, "version", 0) or 0))
+            child = EvidenceChild.start(bundle.engine, compute, version=int(getattr(bundle, "version", 0) or 0),
+                                        marker=self.fork_marker)
         except EvidenceChildError as exc:
             self.stats["child_failures"] += 1
             self.stats["child_last_error"] = str(exc)[:300]
@@ -160,6 +201,8 @@ class EvidenceCache:
             return False
         self._child = child
         self.stats["child_started"] += 1
+        if self._job_rec is not None:
+            self._job_rec["pid"] = child.pid
         return True
 
     def _child_failed(self, exc: Exception, *, quiet: bool = False) -> None:
@@ -179,10 +222,7 @@ class EvidenceCache:
             child, self._child = self._child, None
         if child is None:
             return
-        if child.private_kb_max is not None:
-            mb = round(child.private_kb_max / 1024.0, 1)
-            prev = self.stats["child_private_mb_max"]
-            self.stats["child_private_mb_max"] = mb if prev is None else max(prev, mb)
+        self._note_child_memory(child)
         child.close()
 
     def __len__(self) -> int:
@@ -256,10 +296,15 @@ class EvidenceCache:
 
     def _run(self, bundle: Any, keys: list[Key], compute: Callable[[Any, str], dict],
              is_current: Callable[[Any], bool], use_child: bool = False) -> None:
+        if not use_child:                           # geri dönüş anahtarı: bugünkü yol birebir (ek kilit/log yok)
+            self._run_keys(bundle, keys, compute, is_current, False)
+            return
+        self._job_rec = {"pid": None, "kb": None, "child": 0, "inproc": 0}
         try:
-            self._run_keys(bundle, keys, compute, is_current, use_child)
+            self._run_keys(bundle, keys, compute, is_current, True)
         finally:
             self._close_child()                     # alt süreç yalnız iş süresince yaşar (bellek iade)
+            self._job_rec = None
 
     def _run_keys(self, bundle: Any, keys: list[Key], compute: Callable[[Any, str], dict],
                   is_current: Callable[[Any], bool], use_child: bool) -> None:
@@ -289,8 +334,10 @@ class EvidenceCache:
                     child_tried = True              # iş başına bir deneme; arızadan sonra iş süreç içi sürer
                     self._start_child(bundle, compute)
                 try:
-                    ev = self.compute(bundle.engine, key[0], compute, origin="prewarm") if use_child \
-                        else compute(bundle.engine, key[0])
+                    if use_child:
+                        ev, in_child = self._compute(bundle.engine, key[0], compute, origin="prewarm")
+                    else:
+                        ev, in_child = compute(bundle.engine, key[0]), False
                 except _Stopping:
                     self.stats["aborted"] += 1
                     return
@@ -301,15 +348,30 @@ class EvidenceCache:
                     continue
                 self.put(key, ev, source="prewarm")
                 done += 1
+                rec = self._job_rec
+                if rec is not None:
+                    rec["child" if in_child else "inproc"] += 1
         self.stats["computed"] += done
         self.stats["already_cached"] += cached
         self.stats["last_seconds"] = round(time.monotonic() - t0, 1)
-        child = self._child
-        where = ("alt süreç pid %s, özel bellek %s MB" % (child.pid, "?" if child.private_kb_max is None
-                                                            else round(child.private_kb_max / 1024.0))
-                 if child is not None else "süreç içi")
+        if not use_child:
+            log.info("pattern kanıtı ön ısıtıldı: sürüm %d, %d sembol hesaplandı, %d zaten hazırdı, %.1f sn",
+                     version, done, cached, self.stats["last_seconds"])
+            return
         log.info("pattern kanıtı ön ısıtıldı: sürüm %d, %d sembol hesaplandı, %d zaten hazırdı, %.1f sn (%s)",
-                 version, done, cached, self.stats["last_seconds"], where)
+                 version, done, cached, self.stats["last_seconds"], self._job_where())
+
+    def _job_where(self) -> str:
+        """Alt süreçli işin log eki — işin KENDİ kaydından (alt süreç iş ortasında arızalansa da doğru)."""
+        rec = self._job_rec or {}
+        n_child, n_in = int(rec.get("child") or 0), int(rec.get("inproc") or 0)
+        if rec.get("pid"):
+            kb = rec.get("kb")
+            mem = "?" if kb is None else str(round(kb / 1024.0))
+            return f"alt süreç pid {rec['pid']}, özel bellek {mem} MB; alt süreçte {n_child}, süreç içi {n_in} sembol"
+        if n_in:
+            return f"alt süreç kurulamadı; süreç içi {n_in} sembol"
+        return "alt süreç gerekmedi"
 
 
 __all__ = ["EvidenceCache", "EvidenceEntry"]

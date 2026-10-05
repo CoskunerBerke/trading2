@@ -433,8 +433,9 @@ class HistorySection:
     refresh_max_symbols: int = 16
     #: PATTERN KANITI ALT SÜRECİ (2026-10-05): yayım sonrası kanıt sorguları (ve o sırada turun ıskaları) `fork` ile
     #: ayrılan tek bir alt süreçte koşar; worker'ın GIL'ini turdan/Box zamanlayıcısından çalmaz. KARAR GİRDİSİ DEĞİL:
-    #: yayım anı, sürüm, anahtar ve kanıt aynıdır; bu yüzden karar kimliğine (`config_hash`) de girmez.
-    #: `false` → bugünkü süreç içi yol (geri dönüş anahtarı).
+    #: yayım noktası ve kuralı, sürüm okuma kuralı, anahtar ve kanıt aynıdır (saat-duvarı zamanlaması değişir); bu
+    #: yüzden karar kimliğine (`config_hash`) girmez — etkin değer başlangıçta bir kez loglanır. Yalnız true/false
+    #: (`validate_v3`). Yalnız Linux'ta etkili. `false` → bugünkü süreç içi yol (geri dönüş anahtarı).
     #: Ayrıntı: tradingbot/patterns/evidence_child.py, docs/TOUR_CONTENTION_V1.md.
     evidence_subprocess: bool = True
 
@@ -1057,6 +1058,9 @@ def validate_v3(cfg: V3Config) -> None:
         raise ConfigError("news.context_window_hours pozitif olmalı")
     # ARSIV/INDEKS YENILEME: sayisal alanlar sessiz varsayilana DUSMEZ.
     _hc = cfg.history
+    # Kanıt alt süreci anahtarı: YAML'da tırnaklı "false" bir dizgedir ve doğru-değerli sayılırdı → yalnız true/false.
+    if not isinstance(_hc.evidence_subprocess, bool):
+        raise ConfigError(f"history.evidence_subprocess true/false olmalı (verilen: {_hc.evidence_subprocess!r})")
     if _hc.auto_refresh:
         if _hc.refresh_minutes < 1:
             raise ConfigError("history.refresh_minutes >= 1 olmalı")

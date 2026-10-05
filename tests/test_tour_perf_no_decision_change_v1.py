@@ -9,7 +9,8 @@ karar günlüğü, karşı-olgusal kayıtlar, kanıt dosyaları, health.json …
 
 AÇIK koşu iki biçimde: ön ısıtma her turdan önce BİTMİŞ ve ön ısıtma tur başlarken HÂLÂ KOŞUYOR (bekleme yok).
 AÇIK koşu üretim varsayılanıyla kanıt sorgularını ALT SÜREÇTE yapar (`history.evidence_subprocess`, 2026-10-05);
-geri dönüş anahtarıyla süreç içi ön ısıtma da ayrıca karşılaştırılır.
+geri dönüş anahtarıyla süreç içi ön ısıtma da ayrıca karşılaştırılır. Bir AÇIK koşuda ön ısıtma alt süreci kurar ama
+HİÇ hesaplamaz: turun bütün ıskaları `EvidenceCache.compute` → alt süreç yolundan geçer (tur boruda bekler).
 """
 from __future__ import annotations
 
@@ -53,7 +54,8 @@ def _set_optimizations(mp, on: bool) -> None:
     mp.setattr(TradingEngineV3, "EXIT_EVAL_MEMO", bool(on))        # C4: kapanmış işlem çıkış değerlendirmesi memosu
 
 
-def _run(root: Path, monkeypatch, *, optimized: bool, wait_prewarm: bool = True, tours: int = 5) -> dict:
+def _run(root: Path, monkeypatch, *, optimized: bool, wait_prewarm: bool = True, tours: int = 5,
+         hold_prewarm: bool = False) -> dict:
     import test_engine_v3 as E
     import test_shared_experience_no_decision_change_v1 as G
     import test_strategy_paper_engine_v1 as SP
@@ -69,6 +71,24 @@ def _run(root: Path, monkeypatch, *, optimized: bool, wait_prewarm: bool = True,
         mp.setattr("tradingbot.pattern_trader.scheduler.PatternScanner.start", lambda self: None)
         mp.setattr("tradingbot.box_timer.BoxTimer.start", lambda self: None)
         _set_optimizations(mp, optimized)
+        held = {"tours": 0}
+        if hold_prewarm:
+            import time as _t
+
+            from tradingbot.patterns.evidence_cache import EvidenceCache
+
+            def _held_run_keys(self, bundle, keys, compute, is_current, use_child):
+                """Ön ısıtma alt süreci kurar, HİÇ hesaplamaz ve sonraki tur bitene kadar canlı tutar: turun ıskaları
+                alt sürece gider. (Saat dondurulmuş: `monotonic` ilerlemez → gerçek uykuyla sınırlı bekleme.)"""
+                assert use_child, "üretim varsayılanı alt süreç olmalı"
+                start = held["tours"]                 # alt süreç kurulmadan ÖNCE: tur `_child`'ı görür görmez başlar
+                with self.compute_lock:
+                    self._start_child(bundle, compute)
+                for _ in range(6000):
+                    if held["tours"] > start or self._stop.is_set():
+                        return
+                    _t.sleep(0.1)
+            mp.setattr(EvidenceCache, "_run_keys", _held_run_keys)
         import tradingbot.learn.exit_eval as EE
         n_eval = {"k": 0}
         _real_eval = EE.evaluate_trade
@@ -94,7 +114,25 @@ def _run(root: Path, monkeypatch, *, optimized: bool, wait_prewarm: bool = True,
                                update_fn=lambda s, n: {"advanced": True}, interval_s=10 ** 9,
                                on_publish=eng._on_pattern_index_published)
             eng._refresher = r                                # iş parçacığı başlatılmaz; yayımları test sürer
+
+            def _await_child():
+                """`hold_prewarm`: yayım bir ön ısıtma işi kurduysa tur başlamadan alt süreci canlı olsun (ıskalar ona
+                gitsin). İş yoksa (ısıtılacak güncel seri yok — tur da o sürümde kanıt vermez) beklenmez."""
+                if not hold_prewarm:
+                    return
+                c = eng._evidence_cache()
+                for _ in range(6000):
+                    ch = c._child
+                    if ch is not None and ch.serves(r.bundle.engine):
+                        return
+                    with c._lock:
+                        busy = c._job is not None or c._wake.is_set() or c._running
+                    if not busy:
+                        return
+                    __import__("time").sleep(0.01)
+                raise AssertionError(("alt süreç kurulmadı", c.stats))
             r.refresh_once()                                  # sürüm 1 — ilk turdan önce
+            _await_child()
             px = {s: float(fr["4h"]["close"].iloc[-1]) for s, fr in eng._fake_live._frames.items()}
             versions = []
             try:
@@ -110,9 +148,13 @@ def _run(root: Path, monkeypatch, *, optimized: bool, wait_prewarm: bool = True,
                             eng._fake_live.price[s] = px[s] * (0.85 if k % 2 == 0 else 1.2)
                     eng._fake_live._now_s = __import__("time").time()
                     eng.tour(do_scan=False, obsidian=False, charts=False)
+                    held["tours"] += 1
                     versions.append(r.bundle.version)
                     if i in (0, 2):
+                        if hold_prewarm:                      # önceki iş (ve alt süreci) kapansın, sonra yayım
+                            assert eng._evidence_cache().wait_idle(120)
                         r.refresh_once()                      # yeni sürüm: sonraki tur yeni indeksin kanıtını görür
+                        _await_child()
                     clock.shift(timedelta(minutes=10))
             finally:
                 eng._evidence_cache().stop()
@@ -155,9 +197,10 @@ def test_tours_across_index_publishes_are_byte_identical_with_optimizations_on(t
     on = _run(tmp_path / "run", monkeypatch, optimized=True)
     assert on["versions"] == off["versions"] == [1, 2, 2, 3, 3]
     assert _diff(on, off) == []
-    # üretim varsayılanı: kanıt sorguları alt süreçte koştu (2026-10-05)
+    # üretim varsayılanı: kanıt sorguları alt süreçte koştu (2026-10-05; alt süreç yolu yalnız Linux'ta)
     st = on["eng"]._evidence_cache().stats
-    assert st["child_started"] >= 1 and st["child_computed"] >= 1 and st["child_failures"] == 0, st
+    if sys.platform.startswith("linux"):
+        assert st["child_started"] >= 1 and st["child_computed"] >= 1 and st["child_failures"] == 0, st
     # anlamlı senaryo: kanıt üretildi, defterlerde etkinlik var, grafik analizi yazıldı
     files = on["files"]
     assert any(k.startswith("state/evidence/") for k in files)
@@ -186,3 +229,20 @@ def test_tours_are_identical_with_the_in_process_prewarm_kill_switch(tmp_path, t
     assert _diff(on, off) == []
     st = on["eng"]._evidence_cache().stats
     assert st["child_started"] == 0 and st["computed"] >= 1, st
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="alt süreç yolu Linux fork ister")
+def test_tours_are_identical_when_the_tours_own_misses_are_served_by_the_child(tmp_path, tmp_path_factory, monkeypatch,
+                                                                               _cache):
+    """Ön ısıtma alt süreci kurar ama HİÇ hesaplamaz: yayımdan sonraki turun BÜTÜN ıskaları `cache.compute` → alt süreç
+    (tur boruda bekler). Durum dosyaları yine bayt bayt aynı; hiçbir ıska süreç içine düşmez."""
+    off = _baseline(tmp_path_factory, monkeypatch, _cache)
+    on = _run(tmp_path / "run", monkeypatch, optimized=True, wait_prewarm=False, hold_prewarm=True)
+    assert on["versions"] == off["versions"] == [1, 2, 2, 3, 3]
+    assert _diff(on, off) == []
+    st = on["eng"]._evidence_cache().stats
+    assert st["computed"] == 0, ("ön ısıtma hiç hesaplamamalı", st)
+    # sürüm 1'in serileri bayat (ısıtılmaz, tur da kanıt vermez); sürüm 2 ve 3'ün turları ıskalarını alt sürece yollar
+    assert st["child_started"] == 2 and st["child_failures"] == 0 and st["child_in_process_fallbacks"] == 0, st
+    assert st["child_computed"] >= 2, ("turun ıskaları alt süreçte hesaplanmalı", st)
+    assert any(k.startswith("state/evidence/") for k in on["files"])

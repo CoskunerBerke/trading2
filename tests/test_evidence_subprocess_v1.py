@@ -11,6 +11,12 @@ Kanıt sorguları (yayım sonrası ön ısıtma ve o sırada turun ıskaları) `
 5. Yayım anı ve sürüm görünürlüğü değişmez (fork yenileyici iş parçacığında değil, ön ısıtma işçisinde olur).
 6. Ebeveynde ek indeks kopyası yok; eski motor serbest kalır; ebeveyn GC dondurması iş bitince kalkar.
 7. Sentetik ölçüm: alt süreç ön ısıtması sürerken turun numpy/pandas işi ve 1 ms'lik periyodik iş parçacığı yavaşlamaz.
+8. Fork'un KENDİSİ asılırsa (OpenBLAS fork öncesi kancası; gerçek tetikle de sınanır) worker süresiz DONMAZ: deadman
+   (SIGALRM, varsayılan eylem) onu sonlandırır, işaret dosyası kalır ve yeniden başlayan worker alt süreci denemez.
+   SIGALRM başka bir amaçla kullanılıyorsa fork yapılmaz. Worker kodunda yeni BLAS çağrısı izin listesi testini kırar.
+9. Alt süreç ebeveyn ölünce PDEATHSIG olmadan da çıkar (boru EOF), SIGTERM'i yok sayar.
+10. Geri dönüş anahtarının yolu bugünkü log satırını yazar, ek kilit almaz; alt süreçli işin satırı işin kendi kaydından
+    yazılır. Anahtar yalnız gerçek bool ve yalnız Linux'ta etkili; etkin değer başlangıçta loglanır.
 
 Alt süreç `fork` ile ebeveynin bellek görüntüsünü aldığı için ölçüm vekili (`_Probe`) her iki süreçte de çalışır;
 çağrılar süreç kimliğiyle bir dosyaya yazılır (iş parçacığı adı alt süreçte de ön ısıtma işçisinin adıdır, ayırt etmez).
@@ -643,3 +649,336 @@ def test_the_switch_is_not_part_of_the_decision_identity(tmp_path, monkeypatch):
         eng.__dict__.pop("_config_hash_cache", None)
         hashes.add(eng.config_hash())
     assert hashes == {want}
+
+
+# ------------------------------------------------------------------ 10) fork'un KENDİSİ asılırsa: deadman + işaret dosyası
+REPO = str(Path(__file__).resolve().parent.parent)
+TESTS = str(Path(__file__).resolve().parent)
+
+
+def _script(body: str, marker: Path) -> str:
+    return ("import os, sys, time, threading, signal\n"
+            f"sys.path.insert(0, {REPO!r}); sys.path.insert(0, {TESTS!r})\n"
+            f"MARKER = {str(marker)!r}\n" + body)
+
+
+def test_a_fork_that_hangs_is_ended_by_the_deadman_and_the_restarted_worker_keeps_the_child_off(tmp_path, hist,
+                                                                                                caplog, monkeypatch):
+    """Fork öncesi kanca asılırsa (OpenBLAS'ın havuz kapatması gibi) worker SÜRESİZ donmaz: SIGALRM'nin varsayılan
+    eylemi onu sonlandırır (systemd yeniden başlatır). İşaret dosyası kalır; yeniden başlayan worker alt süreci hiç
+    denemez (bir kez uyarır, süreç içi hesaplar); dosya silinince yeniden dener."""
+    import signal
+    import subprocess
+    marker = tmp_path / EC.MARKER_NAME
+    body = (
+        "hang = threading.Event()\n"
+        # evidence_child'dan ÖNCE kaydedilir → CPython 'before' kancalarını ters sırada koşar → deadman kurulduktan
+        # SONRA asılır (gerçekte asılan OpenBLAS'ın C kancası zaten bütün Python kancalarından sonra koşar)
+        "os.register_at_fork(before=lambda: hang.is_set() and time.sleep(120))\n"
+        "from test_patterns import _candles\n"
+        "from tradingbot.patterns import SimilarPatternEngine\n"
+        "from tradingbot.patterns import evidence_child as EC\n"
+        "from tradingbot.engine_v3 import TradingEngineV3\n"
+        "e = SimilarPatternEngine(min_sample=30, horizon=24)\n"
+        "e.add_series('ETH/USDT', 'futures', '4h', _candles(300, seed=3, tf_ms=14_400_000))\n"
+        "EC.EvidenceChild.FORK_DEADMAN_S = 1.0\n"
+        "c = EC.EvidenceChild.start(e, TradingEngineV3._evidence_query, version=1, marker=MARKER)\n"
+        "c.close()\n"
+        "print('healthy', os.path.exists(MARKER), signal.getitimer(signal.ITIMER_REAL)[0], flush=True)\n"
+        "hang.set()\n"
+        "EC.EvidenceChild.start(e, TradingEngineV3._evidence_query, version=2, marker=MARKER)\n"
+        "print('UNREACHABLE', flush=True)\n")
+    t0 = time.monotonic()
+    p = subprocess.run([sys.executable, "-c", _script(body, marker)], capture_output=True, text=True, timeout=90)
+    took = time.monotonic() - t0
+    assert p.returncode == -signal.SIGALRM, (p.returncode, p.stdout, p.stderr[-2000:])
+    assert "healthy False 0.0" in p.stdout, "sağlam fork işaret ya da zamanlayıcı bırakmaz"
+    assert "UNREACHABLE" not in p.stdout
+    assert took < 60, took
+    assert marker.exists(), "deadman'in sonlandırdığı fork işaret dosyasını bırakır"
+
+    # yeniden başlayan worker: alt süreç HİÇ denenmez, uyarı bir kez, kanıt süreç içi ve aynı
+    real = _build_index(hist)
+    eng = _engine(tmp_path, monkeypatch)
+    eng.cfg.state_path.mkdir(parents=True, exist_ok=True)
+    marker2 = eng._evidence_fork_marker()
+    assert marker2 == eng.cfg.state_path / EC.MARKER_NAME
+    marker2.write_bytes(marker.read_bytes())
+    calls = []
+    real_start = EC.EvidenceChild.start.__func__
+    monkeypatch.setattr(EC.EvidenceChild, "start",
+                        classmethod(lambda cls, *a, **k: calls.append(1) or real_start(cls, *a, **k)))
+    idx = _Probe(real, tmp_path)
+    r = _refresher(eng, [idx, _Probe(real, tmp_path)])
+    with caplog.at_level(logging.WARNING, logger="tradingbot.patterns.evidence_cache"):
+        r.refresh_once()
+        cache = eng._evidence_cache()
+        assert cache.wait_idle(120)
+        r.refresh_once()                                          # ikinci yayım: yine kapalı, ikinci uyarı yok
+        assert cache.wait_idle(120)
+    assert calls == [], "işaret varken fork denenmemeli"
+    warns = [rec.getMessage() for rec in caplog.records if "alt süreci KAPALI" in rec.getMessage()]
+    assert len(warns) == 1 and "fork ederken sonlandı" in warns[0], warns
+    assert "fork ederken sonlandı" in cache.stats["child_blocked"] and cache.stats["child_started"] == 0
+    now = _now_for(real)
+    for s in SYMS:
+        assert _ser(eng._pattern_evidence(s, now)) == _ser(TradingEngineV3._evidence_query(real, s))
+    marker2.unlink()                                              # sahip dosyayı siler → bir sonraki yayımda yeniden
+    builds = [_build_index(hist, drop_last=1)]
+    r._build_fn = lambda syms: (builds.pop(0), {})
+    r.refresh_once()
+    assert cache.wait_idle(120)
+    assert calls == [1] and cache.stats["child_started"] == 1 and cache.stats["child_blocked"] == ""
+    assert not marker2.exists()
+
+
+def test_with_a_real_multithreaded_blas_job_in_flight_a_fork_never_freezes_the_worker(tmp_path):
+    """GERÇEK tehlike: başka bir iş parçacığı çok iş parçacıklı matris çarpımı koşarken art arda fork. Her koşu ya
+    biter ya da deadman worker'ı sonlandırır — SÜRESİZ DONMA YOK (zaman aşımı testi düşürür). Tek çekirdekte OpenBLAS
+    havuzu yoktur, koşu biter."""
+    import signal
+    import subprocess
+    marker = tmp_path / EC.MARKER_NAME
+    body = (
+        "import numpy as np\n"
+        "from tradingbot.patterns import evidence_child as EC\n"
+        "EC.EvidenceChild.FORK_DEADMAN_S = 2.0\n"
+        "A = np.random.default_rng(0).random((300, 300))\n"
+        "A @ A\n"
+        "def work():\n"
+        "    while True:\n"
+        "        A @ A\n"
+        "threading.Thread(target=work, daemon=True).start()\n"
+        "class E: pass\n"
+        "e = E()\n"
+        "for i in range(60):\n"
+        "    c = EC.EvidenceChild.start(e, lambda eng, s: {'x': 1.0}, version=i, marker=MARKER)\n"
+        "    assert c.compute('S') == {'x': 1.0}\n"
+        "    c.close()\n"
+        "print('completed', EC.blas_threads(), flush=True)\n")
+    t0 = time.monotonic()
+    p = subprocess.run([sys.executable, "-c", _script(body, marker)], capture_output=True, text=True, timeout=180)
+    took = time.monotonic() - t0
+    print(f"\ngerçek BLAS + fork: çıkış {p.returncode}, {took:.1f} sn, {p.stdout.strip()!r}")
+    assert p.returncode in (0, -signal.SIGALRM), (p.returncode, p.stdout, p.stderr[-2000:])
+    if p.returncode == 0:
+        assert "completed" in p.stdout and not marker.exists()
+    else:
+        assert marker.exists(), "deadman'in sonlandırdığı fork işaret dosyasını bırakır"
+
+
+def test_the_deadman_refuses_to_fork_when_sigalrm_is_taken_and_leaves_no_timer(hist):
+    """SIGALRM'yi başka biri kullanıyorsa fork YAPILMAZ (asılı fork'u sonlandıramazdık / başkasının zamanlayıcısını
+    bozardık); sağlam fork'tan sonra zamanlayıcı kalmaz; başka fork'lar (bayraksız) zamanlayıcı kurmaz."""
+    import signal
+    real = _build_index(hist)
+    q = TradingEngineV3._evidence_query
+    assert EC.deadman_unavailable() is None
+    c = EC.EvidenceChild.start(real, q, version=1)
+    try:
+        assert signal.getitimer(signal.ITIMER_REAL) == (0.0, 0.0)
+        assert _ser(c.compute("ETH/USDT")) == _ser(q(real, "ETH/USDT"))
+    finally:
+        c.close()
+    EC._deadman_before_fork()                                     # bayraksız fork (başka kod): zamanlayıcı YOK
+    assert signal.getitimer(signal.ITIMER_REAL) == (0.0, 0.0)
+    old = signal.signal(signal.SIGALRM, lambda *a: None)
+    try:
+        assert "işleyicisi" in (EC.deadman_unavailable() or "")
+        with pytest.raises(EC.EvidenceChildError, match="fork koruması kurulamadı"):
+            EC.EvidenceChild.start(real, q, version=1)
+    finally:
+        signal.signal(signal.SIGALRM, old)
+    signal.setitimer(signal.ITIMER_REAL, 1000.0)
+    try:
+        assert "ITIMER_REAL" in (EC.deadman_unavailable() or "")
+        with pytest.raises(EC.EvidenceChildError, match="fork koruması kurulamadı"):
+            EC.EvidenceChild.start(real, q, version=1)
+        assert signal.getitimer(signal.ITIMER_REAL)[0] > 900, "başkasının zamanlayıcısı bozulmamalı"
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+    assert not EC.parent_gc_frozen()
+
+
+def test_the_fork_marker_records_this_process_and_recognises_another(tmp_path):
+    m = tmp_path / EC.MARKER_NAME
+    assert EC.fork_hung_before(None) is None and EC.fork_hung_before(m) is None
+    assert EC._mark(m) and m.exists()
+    assert EC.fork_hung_before(m) is None and not m.exists(), "bu sürecin kendi kalıntısı sessizce silinir"
+    m.write_text("12345:999 1700000000\n", encoding="ascii")
+    msg = EC.fork_hung_before(m)
+    assert msg and "pid 12345" in msg and "2023-11-14 22:13:20 UTC" in msg and m.exists()
+    pid, start = EC._self_identity().split(":")
+    m.write_text(f"{pid}:{int(start) + 1} 1700000000\n", encoding="ascii")      # aynı pid, başka süreç (pid yeniden)
+    assert EC.fork_hung_before(m), "pid yeniden kullanılsa da önceki süreç tanınır"
+    assert not EC._mark(tmp_path / "yok" / "m"), "yazılamazsa False (deadman yine korur)"
+
+
+def test_the_child_exits_on_parent_death_even_without_pdeathsig(tmp_path):
+    """Alt süreç devraldığı ebeveyn boru ucunu kapatır: ebeveyn ölünce `recv` EOF görür ve çıkar — PR_SET_PDEATHSIG
+    olmasa da (Linux dışı / prctl başarısız). Yoksa devraldığı tekil kilit tanımlayıcısıyla ortada kalırdı."""
+    import signal
+    import subprocess
+    body = (
+        "from test_patterns import _candles\n"
+        "from tradingbot.patterns import SimilarPatternEngine\n"
+        "from tradingbot.patterns import evidence_child as EC\n"
+        "from tradingbot.engine_v3 import TradingEngineV3\n"
+        "EC._PRCTL = lambda *a: 0\n"                                  # PDEATHSIG YOK
+        "e = SimilarPatternEngine(min_sample=30, horizon=24)\n"
+        "e.add_series('ETH/USDT', 'futures', '4h', _candles(300, seed=3, tf_ms=14_400_000))\n"
+        "c = EC.EvidenceChild.start(e, TradingEngineV3._evidence_query, version=1)\n"
+        "print(c.pid, flush=True)\n"
+        "time.sleep(120)\n")
+    helper = subprocess.Popen([sys.executable, "-c", _script(body, tmp_path / "m")], stdout=subprocess.PIPE,
+                              stderr=subprocess.DEVNULL, text=True)
+    try:
+        line = helper.stdout.readline()
+        assert line.strip().isdigit(), line
+        grandchild = int(line)
+        assert _pid_alive(grandchild)
+        helper.send_signal(signal.SIGKILL)
+        helper.wait(10)
+        end = time.monotonic() + 10
+        while _pid_alive(grandchild) and time.monotonic() < end:
+            time.sleep(0.05)
+        assert not _pid_alive(grandchild), "ebeveyni ölen alt süreç (PDEATHSIG'siz) boru EOF'uyla çıkmalı"
+    finally:
+        if helper.poll() is None:
+            helper.kill()
+
+
+def test_the_child_ignores_sigterm_so_a_control_group_stop_does_not_break_the_final_tour(hist):
+    import signal
+    real = _build_index(hist)
+    q = TradingEngineV3._evidence_query
+    c = EC.EvidenceChild.start(real, q, version=1)
+    try:
+        os.kill(c.pid, signal.SIGTERM)
+        time.sleep(0.3)
+        assert c.alive, "SIGTERM alt süreci öldürmemeli (kapatmayı ebeveyn yapar)"
+        assert _ser(c.compute("SOL/USDT")) == _ser(q(real, "SOL/USDT"))
+    finally:
+        pid = c.pid
+        c.close()
+    assert not _pid_alive(pid)
+
+
+# ------------------------------------------------------------------ 11) log satırları ve geri dönüş anahtarının yolu
+def test_the_kill_switch_path_logs_todays_line_and_takes_no_extra_lock(hist, caplog):
+    import re
+    real = _build_index(hist)
+    cache = EvidenceCache()
+    closes = []
+    cache._close_child = lambda: closes.append(1)
+    keys = [(s, 1, int(real.candles[(s, "futures", "4h")]["timestamp"].iloc[-1])) for s in SYMS]
+    with caplog.at_level(logging.INFO, logger="tradingbot.patterns.evidence_cache"):
+        cache.request_prewarm(_bundle(real), keys, TradingEngineV3._evidence_query, lambda b: True)
+        assert cache.wait_idle(120)
+    cache.stop()
+    msgs = [rec.getMessage() for rec in caplog.records if "ön ısıtıldı" in rec.getMessage()]
+    assert len(msgs) == 1 and re.fullmatch(r"pattern kanıtı ön ısıtıldı: sürüm 1, 3 sembol hesaplandı, 0 zaten hazırdı, "
+                                           r"\d+\.\d sn", msgs[0]), msgs
+    assert closes == [], "geri dönüş anahtarında iş sonu kapatma (ek compute_lock) YOK"
+    assert cache.stats["child_started"] == 0
+
+
+def test_the_child_job_log_line_counts_child_and_in_process_symbols_from_the_job_record(tmp_path, monkeypatch, hist,
+                                                                                         caplog):
+    """Alt süreç iş ortasında arızalansa da satır işin kendi kaydından yazılır: pid, bellek, kim kaç sembol."""
+    import re
+    real = _build_index(hist)
+    idx = _Probe(real, tmp_path, crash="SOL/USDT")
+    eng = _engine(tmp_path, monkeypatch)
+    r = _refresher(eng, [idx])
+    with caplog.at_level(logging.INFO, logger="tradingbot.patterns.evidence_cache"):
+        r.refresh_once()
+        assert eng._evidence_cache().wait_idle(120)
+    msgs = [rec.getMessage() for rec in caplog.records if "ön ısıtıldı" in rec.getMessage()]
+    assert len(msgs) == 1, msgs
+    m = re.search(r"\(alt süreç pid (\d+), özel bellek (\d+|\?) MB; alt süreçte 1, süreç içi 2 sembol\)$", msgs[0])
+    assert m, msgs[0]
+    assert msgs[0].startswith("pattern kanıtı ön ısıtıldı: sürüm 1, 3 sembol hesaplandı, 0 zaten hazırdı, ")
+
+
+# ------------------------------------------------------------------ 12) anahtar: yalnız Linux, yalnız gerçek bool, görünür
+def test_the_switch_is_linux_only_bool_only_and_logged_at_startup(tmp_path, monkeypatch, caplog):
+    from tradingbot.core.errors import ConfigError
+    with pytest.raises(ConfigError, match="evidence_subprocess"):
+        load_v3({"history": {"evidence_subprocess": "false"}})              # tırnaklı YAML değeri: açık hata
+    eng = TE._engine(tmp_path, monkeypatch)
+    assert eng._evidence_subprocess_on() is True
+    with caplog.at_level(logging.INFO, logger="tradingbot.engine_v3"):
+        eng._log_evidence_subprocess_setting()
+    line = [rec.getMessage() for rec in caplog.records if "pattern kanıtı sorguları" in rec.getMessage()]
+    assert line and "ALT SÜREÇTE" in line[0] and "OpenBLAS iş parçacığı" in line[0], line
+    eng.cfg.state_path.mkdir(parents=True, exist_ok=True)
+    eng._evidence_fork_marker().write_text("1:1 1700000000\n", encoding="ascii")
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger="tradingbot.engine_v3"):
+        eng._log_evidence_subprocess_setting()
+    assert any("KAPALI kalacak" in rec.getMessage() for rec in caplog.records)
+    eng.cfg.v3.history.evidence_subprocess = "false"                         # doğrulamayı atlamış değer: AÇMAZ
+    assert eng._evidence_subprocess_on() is False
+    eng.cfg.v3.history.evidence_subprocess = True
+    monkeypatch.setattr(EC, "supported", lambda: False)
+    assert eng._evidence_subprocess_on() is False
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger="tradingbot.engine_v3"):
+        eng._log_evidence_subprocess_setting()
+    assert any("süreç içinde (platform Linux değil)" in rec.getMessage() for rec in caplog.records)
+    n = EC.blas_threads()
+    assert n is None or n >= 1
+
+
+def test_the_publish_line_reports_the_index_build_time(tmp_path, monkeypatch, hist, caplog):
+    import re
+    real = _build_index(hist)
+    eng = _engine(tmp_path, monkeypatch, child=False)
+    r = _refresher(eng, [real])
+    with caplog.at_level(logging.INFO, logger="tradingbot.patterns.refresher"):
+        assert r.refresh_once().get("published")
+    msgs = [rec.getMessage() for rec in caplog.records if "pattern indeksi yenilendi" in rec.getMessage()]
+    assert msgs and re.fullmatch(r"pattern indeksi yenilendi: sürüm 1, \d+ olay, 3 seri, kurulum \d+\.\d sn", msgs[0])
+    assert eng._evidence_cache().wait_idle(120)
+
+
+# ------------------------------------------------------------------ 13) değişmez: worker'da yeni BLAS çağrısı yok
+#: Worker kodundaki BLAS'a gidebilen çağrılar (AST taraması). Hepsi fork anında tehlikesiz sınıfta: vektör/matris-vektör
+#: (seviye 1–2), küçük `corrcoef`/`cov`, tamsayı çarpımı (BLAS'a gitmez), pandas `rolling.cov` (BLAS'a gitmez). YENİ
+#: bir satır eklemeden önce: çok iş parçacıklı seviye-3 BLAS (matris-matris, `np.linalg` ayrıştırması) başka bir iş
+#: parçacığında fork'la çakışırsa worker'ı deadman sonlandırır (`evidence_child` başlığı). Bunu değerlendirip listeye ekle.
+_BLAS_ALLOWED = {
+    ("tradingbot/agents/analog.py", "np.dot"): 1,                    # 1-B nokta çarpımı (W noktalı)
+    ("tradingbot/agents/analog.py", "np.linalg.norm"): 1,            # vektör normu
+    ("tradingbot/coinhead/specialists.py", "np.corrcoef"): 1,        # 2×120
+    ("tradingbot/coinhead/specialists.py", "np.cov"): 1,             # 2×120
+    ("tradingbot/learn/model.py", "@"): 3,                           # LogisticModel: matris-vektör (gemv)
+    ("tradingbot/learn/retrieval.py", "@"): 1,                       # matris-vektör
+    ("tradingbot/learn/retrieval.py", "np.linalg.norm"): 2,          # satır normları / vektör normu
+    ("tradingbot/patterns/engine.py", "np.corrcoef"): 1,             # 2×16 yol (sorgu döngüsü)
+    ("tradingbot/patterns/features.py", "cov"): 1,                   # pandas rolling cov (BLAS değil)
+    ("tradingbot/shared_experience/advisor_eval.py", "@"): 2,        # int64 × int64 (BLAS değil)
+}
+_BLAS_NAMES = {"dot", "matmul", "vdot", "inner", "outer", "tensordot", "einsum", "cov", "corrcoef", "polyfit", "lstsq",
+               "solve", "inv", "pinv", "svd", "eig", "eigh", "eigvals", "qr", "cholesky", "det", "norm", "multi_dot",
+               "matrix_power", "slogdet", "kron"}
+
+
+def test_no_new_blas_call_site_appears_in_runtime_code_without_reviewing_the_fork_hazard():
+    import ast
+    from collections import Counter
+    root = Path(REPO)
+    found: Counter = Counter()
+    for p in sorted((root / "tradingbot").rglob("*.py")):
+        rel = p.relative_to(root).as_posix()
+        for node in ast.walk(ast.parse(p.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.BinOp) and isinstance(node.op, ast.MatMult):
+                found[(rel, "@")] += 1
+            elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in _BLAS_NAMES:
+                base = ast.unparse(node.func.value)
+                name = f"{base}.{node.func.attr}" if base.startswith(("np", "numpy", "scipy")) else node.func.attr
+                found[(rel, name)] += 1
+    extra = found - Counter(_BLAS_ALLOWED)
+    assert not extra, ("worker koduna yeni BLAS çağrısı: fork asılma riskini değerlendir (evidence_child başlığı) ve "
+                       f"_BLAS_ALLOWED'a gerekçesiyle ekle: {dict(extra)}")

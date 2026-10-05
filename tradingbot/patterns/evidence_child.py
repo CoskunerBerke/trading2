@@ -1,15 +1,17 @@
 """PATTERN KANITI ALT SÜRECİ (2026-10-05) — kNN kanıt sorguları worker'ın GIL'ini PAYLAŞMAZ.
 
-Sorun (VPS günlüğü, 2026-10-02..05; yerelde sentetik ölçümle yeniden üretildi): 4h kapanışından sonra yenileyici yeni
-indeksi yayımlayınca ön ısıtma işçisi (`evidence_cache`) worker SÜRECİNİN İÇİNDE dakikalarca kNN sorgusu koşar. Sorgu
-döngüsü olay başına `np.corrcoef` çağırır; bu çağrı BLAS içinde GIL'i çok kısa aralıklarla bırakıp geri alır. CPython'da
-GIL bekleyen iş parçacığı ancak 5 ms boyunca hiç el değiştirmezse "bırak" ister; sık bırak-al yapan bir iş parçacığı bu
-sayacı sürekli tazelediği için diğer iş parçacıkları (tur, Box zamanlayıcısı, koruyucu izleyici) GIL'i ancak yarışı
-şans eseri kazanınca alır. Ölçüm (yerel, 4 çekirdek, aynı kod): arka planda sorgu koşarken 1 ms uyuyan bir iş
-parçacığının GIL'i geri alma gecikmesi p50 36 ms / en çok 370 ms (sorgu yokken 0,1 ms; saf Python yükte 5 ms). Turun
-numpy/pandas, soket ve dosya ağırlıklı adımları 33–145 kat, saf Python adımları ~10 kat yavaşladı — VPS'teki 43 dk'lık
-turlar (semboller 544 sn, yürütme 856 sn) ve Box'ın kaçırdığı 5m mum bununla tutarlıdır. Alt süreçle aynı ölçüm
-0,8–1,1 kat. Ayrıntı: docs/TOUR_CONTENTION_V1.md.
+Sorun (VPS günlüğü, 2026-10-02..05): 4h kapanışından sonra yenileyici yeni indeksi yayımlayınca ön ısıtma işçisi
+(`evidence_cache`) worker SÜRECİNİN İÇİNDE dakikalarca kNN sorgusu koşar. Sorgu döngüsü olay başına `np.corrcoef`
+çağırır; bu çağrı GIL'i çok kısa aralıklarla bırakıp geri alır. CPython'da GIL bekleyen iş parçacığı ancak 5 ms boyunca
+hiç el değiştirmezse "bırak" ister; sık bırak-al yapan bir iş parçacığı bu sayacı sürekli tazelediği için diğer iş
+parçacıkları (tur, Box zamanlayıcısı, koruyucu izleyici) GIL'i ancak yarışı şans eseri kazanınca alır. Yerel ölçüm
+(BOŞTAKİ 4 çekirdekli makine, aynı kod): sorgu koşarken 1 ms uyuyan iş parçacığının GIL'i geri alma gecikmesi p50 36 ms /
+en çok 370 ms (sorgu yokken 0,1 ms; saf Python yükte 5 ms); turun numpy/pandas, soket ve dosya adımları 33–145 kat, saf
+Python adımları ~10 kat yavaşladı. Aynı betik başka işlerle YÜKLÜ aynı makinede (yük ortalaması 6–7) süreç içi yol için
+yalnız 1,0–2,7 kat verdi: açlığın şiddeti çekirdek sayısına ve makinenin yüküne güçlü biçimde bağlıdır. Alt süreç yolu
+her koşuda ~1 kat. VPS'teki 43 dk'lık turların (semboller 544 sn, yürütme 856 sn) ve Box'ın kaçırdığı 5m mumun bu
+mekanizmayla açıklanması bir HİPOTEZDİR (VPS'in çekirdek sayısı ve yükü bilinmiyor); dağıtımdan sonra
+docs/TOUR_CONTENTION_V1.md §9 ile doğrulanır.
 
 Çözüm: sorgular `fork` ile ayrılan TEK bir alt süreçte koşar. Alt süreç yayımlanmış paketin motorunu kopyalamadan
 (yazınca-kopyala sayfalar) görür; yani motor, fonksiyon (`TradingEngineV3._evidence_query`) ve girdiler turunkiyle AYNI
@@ -22,35 +24,80 @@ olduğunun kanıtı yok) ya da ebeveynden pickle ile almalıdır (152k olayda y�
 tutan tek bir C çağrısı ve iş boyunca tam ikinci kopya). `fork` indeksin aynı bellek görüntüsünü bedelsiz verir.
 
 Çok iş parçacıklı süreçte `fork` riskleri ve önlemler:
-* Alt süreç yalnız saf hesap yapar: loglamaz, uyarı basmaz (`warnings` susturulur), stdout/stderr /dev/null'a
-  yönlenir — başka bir iş parçacığının `fork` anında tuttuğu akış/log kilidine hiç dokunmaz. İçe aktarma kilidini
-  CPython `fork` sırasında yeniden kurar.
-* Asılma ya da ölüm ebeveyni bekletmez: hazır el sıkışması (`START_TIMEOUT_S`); istek sürerken alt süreç
+
+* FORK'UN KENDİSİ ASILABİLİR. CPython `fork()`'u GIL'i tutarak çağırır; libc önce yüklü kütüphanelerin fork öncesi
+  kancalarını koşturur. OpenBLAS'ın kancası (`blas_thread_shutdown_`) kendi iş parçacığı havuzunu kapatıp `pthread_join`
+  ile bekler; o anda BAŞKA bir iş parçacığı çok iş parçacıklı bir BLAS işi yürütüyorsa havuz iş parçacığı kapatma
+  işaretini kaçırır ve join SONSUZA DEK bekler. Yerelde yeniden üretildi: arka planda 300×300 matris çarpımı koşarken
+  her denemede birkaç saniye içinde asıldı. GIL fork eden iş parçacığında kaldığı için tur, Box zamanlayıcısı ve koruyucu
+  izleyici de donar; bu anda hiçbir Python zaman aşımı (aşağıdakiler dahil) çalışamaz. Önlemler:
+
+  - DEADMAN (`FORK_DEADMAN_S`): yalnız bu modülün fork'u süresince süreç zamanlayıcısı (ITIMER_REAL) kurulur
+    (`os.register_at_fork` kancası, iş parçacığına özel bayrakla; başka fork'lara dokunmaz) ve fork dönünce söndürülür.
+    Fork asılırsa SIGALRM'nin VARSAYILAN eylemi worker'ı sonlandırır — bunu çekirdek yapar, GIL gerekmez — ve systemd
+    `Restart=on-failure` onu yeniden başlatır (günlükte `status=14/ALRM`). Süresiz donma yerine tek bir yeniden başlatma
+    (ilk tur uzun sürer; Box mumu kaçabilir). SIGALRM başka bir amaçla kullanılıyorsa (işleyici kurulu, engelli ya da
+    zamanlayıcı kurulu) fork HİÇ yapılmaz: bugünkü süreç içi yol.
+  - İŞARET DOSYASI (`state/pattern_evidence_fork.marker`): fork'tan hemen önce yazılır, fork dönünce silinir. Yeniden
+    başlayan worker dosyayı başka bir pid'le bulursa önceki worker fork'ta asılıp sonlandırılmıştır: alt süreç o makinede
+    KAPALI kalır (her yayımda yeniden asılma / yeniden başlatma döngüsü olmaz) ve bir kez uyarı loglanır. Sahip dosyayı
+    silince yeniden denenir.
+  - DEĞİŞMEZ: worker'da hiçbir iş parçacığı çok iş parçacıklı seviye-3 BLAS (matris-matris çarpımı, `np.linalg`
+    ayrıştırmaları) koşmaz. Bugünkü kodda yalnız vektör / matris-vektör çarpımı, küçük `corrcoef`/`cov` ve tamsayı
+    çarpımı vardır; bağımsız denetimde matris-vektör yüküyle 2.700 fork'ta asılma görülmedi (risk gizli, sıfır değil).
+    Yeni bir BLAS çağrısı `tests/test_evidence_subprocess_v1.py`'deki izin listesi testini kırar: bu risk
+    değerlendirilmeden eklenemez. Risk yalnız OpenBLAS havuzu birden çok iş parçacıklıysa (çok çekirdekli makine)
+    vardır; yenileyicinin başlangıç satırı sayıyı yazar (`blas_threads`).
+  - ÖNERİ (bu işin kapsamı DIŞINDA): worker'a `OPENBLAS_NUM_THREADS=1` havuzu ve riski tamamen kaldırır; ama
+    matris-vektör / nokta çarpımlarının toplama sırasını değiştirebilir (karar girdisi olan olasılıklarda son bit) →
+    ayrı bir karar-nötrlük kanıtı ve sahip onayı ister.
+
+* Fork'tan sonra alt süreç yalnız saf hesap yapar: loglamaz, uyarı basmaz (`warnings` susturulur), stdout/stderr
+  /dev/null'a yönlenir — başka bir iş parçacığının `fork` anında tuttuğu akış/log kilidine hiç dokunmaz. İçe aktarma
+  kilidini CPython `fork` sırasında yeniden kurar.
+* Asılan ya da ölen ALT SÜREÇ ebeveyni bekletmez: hazır el sıkışması (`START_TIMEOUT_S`); istek sürerken alt süreç
   `STALL_TIMEOUT_S` boyunca HİÇ CPU harcamazsa (kilitlenme: hesap yapan süreç CPU harcar, kilitte bekleyen harcamaz)
-  öldürülür; ayrıca istek başına üst sınır (`REQUEST_TIMEOUT_S`); boru kapanınca (ölüm/OOM) anında
-  `EvidenceChildError`. Çağıran bugünkü süreç içi yola düşer.
-* Alt süreç ebeveynden uzun yaşamaz: Linux'ta `PR_SET_PDEATHSIG=SIGKILL` (ebeveyn ölünce çekirdek öldürür; aksi hâlde
-  devraldığı tekil kilit dosyası tanımlayıcısı yeniden başlatılan worker'ı bekletebilirdi), ayrıca boru kapanınca çıkar.
+  öldürülür; ayrıca istek başına üst sınır (`REQUEST_TIMEOUT_S`); boru kapanınca (ölüm) anında `EvidenceChildError`.
+  Çağıran bugünkü süreç içi yola düşer.
+* Alt süreç ebeveynden uzun yaşamaz: devraldığı EBEVEYN boru ucunu ilk iş olarak kapatır (ebeveyn ölünce boru EOF verir
+  ve alt süreç çıkar); Linux'ta ayrıca `PR_SET_PDEATHSIG=SIGKILL` (aksi hâlde devraldığı tekil kilit dosyası
+  tanımlayıcısı yeniden başlatılan worker'ı bekletebilirdi). SIGTERM'i YOK SAYAR: birim `KillMode=control-group` olsa
+  bile worker son turunu alt süreçle bitirir; kapatmayı ebeveyn yapar (SIGKILL ve PDEATHSIG yine geçerlidir).
 * Bellek: alt sürecin GC'si `gc.freeze()` ile ebeveynden gelen nesneleri DOLAŞMAZ; ebeveyn de çocuk yaşarken kendi
   GC'sini dondurur (`_freeze_parent_gc`) — yoksa ebeveynin tam toplaması bütün kapsayıcı başlıklarına yazar ve ortak
   sayfaları kopyalatır (ölçüldü: 335 MB'lık süreçte +68 MB; dondurunca 0). Kalan kopya, sorgunun dokunduğu nesnelerin
   başvuru sayaçlarından gelir: ölçülen alt süreç özel belleği ≈ indeks boyutunun %49'u (50,7k olay ≈ 233 MB indeks →
-  113 MB). Alt süreç OOM'da ÖNCE ölsün diye `oom_score_adj=1000`, CPU'da turu itmesin diye `nice +10` alır.
-* Platform `fork` vermiyorsa (Windows) ya da `fork` başarısızsa: hata loglanır, yol bugünkü süreç içi hesaptır.
+  113 MB). Alt süreç `oom_score_adj=1000` (cgroup OOM'unda çekirdek ÖNCE onu seçer) ve CPU'da turu itmesin diye
+  `nice +10` alır. DİKKAT: systemd'nin varsayılan `OOMPolicy=stop`'u birimdeki HERHANGİ bir sürecin OOM ile
+  öldürülmesinde bütün birimi durdurur (`Restart=on-failure` yeniden başlatır). Yani alt sürecin OOM'u bugünkü bir OOM
+  ile aynı sonucu verir; worker süreç içi yola DÜŞMEZ. "Alt süreç ölür, worker sürer" davranışı birime
+  `OOMPolicy=continue` ister (işletim değişikliği; sahip onayı). `oom_score_adj` yine de worker'ın kendisinin yazma
+  ortasında çekirdekçe öldürülmesini önler (birim düzenli durur).
+* Yalnız Linux (`supported`): başka platformda alt süreç hiç denenmez (sessizce bugünkü süreç içi yol). `fork`
+  başarısızsa: hata loglanır, yol bugünkü süreç içi hesaptır.
 
-Karar-nötrlük: yayım anı, hangi turun hangi sürümü gördüğü (tek okuma), önbellek anahtarı ve kanıt DEĞİŞMEZ; bu modül
-yalnız sorgunun hangi süreçte koştuğunu değiştirir. Geri dönüş anahtarı: `history.evidence_subprocess: false` →
-bugünkü süreç içi yol (alt süreç hiç kurulmaz). Anahtar iki değerinde de karar-nötr olduğu için karar kimliğine
-(`TradingEngineV3.config_hash`) girmez.
+Karar-nötrlük: yayım NOKTASI ve kuralı (yenileyicinin kodu ve iş parçacığı), turun sürümü okuma kuralı (tek okuma),
+önbellek anahtarı ve kanıt DEĞİŞMEZ; bu modül yalnız sorgunun hangi süreçte koştuğunu değiştirir. Saat-duvarı zamanı
+(turların ve yayımların ne zaman bittiği) bugün de yüke bağlıdır ve bu değişiklikle değişir — amaç budur; bkz.
+docs/TOUR_CONTENTION_V1.md §5. Geri dönüş anahtarı: `history.evidence_subprocess: false` → bugünkü süreç içi yol (alt
+süreç hiç kurulmaz). Anahtar iki değerinde de karar-nötr olduğu için karar kimliğine (`TradingEngineV3.config_hash`)
+girmez.
 """
 from __future__ import annotations
 
+import contextlib
 import gc
 import os
+import signal
+import sys
 import threading
 import time
 import weakref
+from pathlib import Path
 from typing import Any, Callable
+
+#: Fork işaret dosyasının adı (worker'ın `state/` dizininde; bkz. modül başlığı "İŞARET DOSYASI").
+MARKER_NAME = "pattern_evidence_fork.marker"
 
 
 class EvidenceChildError(RuntimeError):
@@ -59,6 +106,163 @@ class EvidenceChildError(RuntimeError):
 
 class EvidenceChildComputeError(RuntimeError):
     """Alt süreç sağlam; sembolün kanıt hesabı alt süreçte istisna verdi (metin taşınır)."""
+
+
+def supported() -> bool:
+    """Alt süreç yolu yalnız Linux'ta (fork + /proc + prctl). Başka platformda çağıran sessizce süreç içi hesaplar."""
+    return sys.platform.startswith("linux")
+
+
+# ------------------------------------------------------------------ fork koruması (deadman)
+#: Yalnız bu modülün fork'u süresince, YALNIZ fork eden iş parçacığında dolu (saniye). `os.fork` kancaları buna bakar;
+#: başka kodun fork'una (bugün worker'da yok) dokunulmaz.
+_FORK_GUARD = threading.local()
+_DEADMAN_LOCK = threading.Lock()
+
+
+def _deadman_before_fork() -> None:
+    """`os.fork` öncesi kanca: GIL tutulurken, C kütüphanelerinin fork öncesi kancalarından (OpenBLAS) ÖNCE koşar."""
+    s = getattr(_FORK_GUARD, "seconds", 0.0)
+    if s:
+        signal.setitimer(signal.ITIMER_REAL, s)
+
+
+def _deadman_after_fork_parent() -> None:
+    """Fork döndü (başarılı ya da başarısız): zamanlayıcıyı söndür."""
+    if getattr(_FORK_GUARD, "seconds", 0.0):
+        signal.setitimer(signal.ITIMER_REAL, 0)
+
+
+def _deadman_after_fork_child() -> None:
+    """Alt süreç: zamanlayıcı fork'ta ALT SÜRECE GEÇMEZ (çekirdek sıfırlar); bayrak da temizlenir."""
+    _FORK_GUARD.seconds = 0.0
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(before=_deadman_before_fork, after_in_parent=_deadman_after_fork_parent,
+                        after_in_child=_deadman_after_fork_child)
+
+
+def deadman_unavailable() -> str | None:
+    """Deadman kurulamıyorsa nedeni (o zaman fork YAPILMAZ: süreç içi yol); kurulabiliyorsa None.
+
+    SIGALRM'nin eylemi VARSAYILAN (süreci sonlandır) olmalı, engellenmemeli ve ITIMER_REAL başka biri tarafından kurulu
+    olmamalı — aksi hâlde asılı fork'u ne sonlandırabiliriz ne de başkasının zamanlayıcısını bozmadan kurabiliriz."""
+    if not hasattr(signal, "setitimer") or not hasattr(os, "register_at_fork"):
+        return "platform ITIMER_REAL / register_at_fork vermiyor"
+    try:
+        if signal.getsignal(signal.SIGALRM) != signal.SIG_DFL:
+            return "SIGALRM'nin işleyicisi var (varsayılan eylem worker'ı sonlandırmaz)"
+        if signal.SIGALRM in signal.pthread_sigmask(signal.SIG_BLOCK, []):
+            return "SIGALRM engelli"
+        if signal.getitimer(signal.ITIMER_REAL)[0] > 0:
+            return "ITIMER_REAL başka bir amaçla kurulu"
+    except (OSError, ValueError, AttributeError) as exc:
+        return f"SIGALRM denetlenemedi ({type(exc).__name__})"
+    return None
+
+
+@contextlib.contextmanager
+def _fork_deadman(seconds: float):
+    """Gövdedeki fork `seconds` içinde dönmezse SIGALRM (varsayılan eylem) worker'ı sonlandırır. Kurulamazsa
+    `EvidenceChildError` (fork yapılmaz)."""
+    with _DEADMAN_LOCK:
+        why = deadman_unavailable()
+        if why:
+            raise EvidenceChildError(f"fork koruması kurulamadı ({why}); fork yapılmadı")
+        _FORK_GUARD.seconds = float(seconds)
+        try:
+            yield
+        finally:
+            _FORK_GUARD.seconds = 0.0
+            try:
+                signal.setitimer(signal.ITIMER_REAL, 0)     # fork hiç olmadıysa da kalıntı bırakma (yukarıda boştu)
+            except (OSError, ValueError):
+                pass
+
+
+# ------------------------------------------------------------------ fork işaret dosyası
+def _self_identity() -> str:
+    """Bu sürecin kimliği: pid + çekirdeğin verdiği başlangıç zamanı (pid yeniden kullanılsa da ayırt eder)."""
+    try:
+        with open("/proc/self/stat", encoding="ascii") as fh:
+            start = fh.read().rsplit(")", 1)[1].split()[19]
+    except (OSError, IndexError):
+        start = "0"
+    return f"{os.getpid()}:{start}"
+
+
+def _mark(path: Path | None) -> bool:
+    """Fork'tan hemen önce: "bu süreç şu an fork ediyor". Yazılamazsa False (deadman yine korur)."""
+    if path is None:
+        return False
+    try:
+        with open(path, "w", encoding="ascii") as fh:
+            fh.write(f"{_self_identity()} {int(time.time())}\n")
+        return True
+    except OSError:
+        return False
+
+
+def _unmark(path: Path | None) -> None:
+    if path is None:
+        return
+    with contextlib.suppress(OSError):
+        os.unlink(path)
+
+
+def fork_hung_before(path: Path | None) -> str | None:
+    """Önceki bir worker alt süreci fork ederken sonlandırıldıysa (işaret dosyası BAŞKA bir sürecin kimliğiyle duruyor)
+    açıklama; değilse None. Bu sürecin kendi kalıntısı (olmamalı) sessizce silinir. Dosya okunamıyorsa fail-safe:
+    açıklama (alt süreç kapalı kalır)."""
+    if path is None:
+        return None
+    try:
+        parts = Path(path).read_text(encoding="ascii", errors="replace").split()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        return f"fork işaret dosyası okunamadı ({type(exc).__name__}: {path})"
+    ident = parts[0] if parts else "?"
+    if ident == _self_identity():
+        _unmark(path)
+        return None
+    at = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else None
+    when = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(at)) if at is not None else "?"
+    return (f"önceki worker (pid {ident.split(':')[0]}) {when} anında pattern kanıtı alt sürecini fork ederken "
+            f"sonlandı (fork asılması → deadman); işaret dosyası: {path}")
+
+
+# ------------------------------------------------------------------ teşhis
+def blas_threads() -> int | None:
+    """numpy'nin yüklediği OpenBLAS'ın iş parçacığı sayısı (yalnız teşhis). 1 → havuz yok, fork asılma riski yok;
+    bilinmiyorsa (OpenBLAS değil, Linux değil) None. EBEVEYNDE çağrılır; yüklü kütüphaneyi `RTLD_NOLOAD` ile bulur,
+    hiçbir şey yüklemez ve hiçbir ayarı değiştirmez."""
+    if not supported():
+        return None
+    try:
+        import ctypes
+
+        import numpy  # noqa: F401 — kütüphane yüklü olsun (worker'da zaten yüklü)
+        paths: list[str] = []
+        with open("/proc/self/maps", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                parts = line.split(maxsplit=5)
+                if len(parts) == 6:
+                    p = parts[5].strip()
+                    if "openblas" in os.path.basename(p).lower() and p not in paths:
+                        paths.append(p)
+        for p in paths:
+            lib = ctypes.CDLL(p, mode=getattr(os, "RTLD_NOLOAD", 0))
+            for name in ("scipy_openblas_get_num_threads64_", "scipy_openblas_get_num_threads",
+                         "openblas_get_num_threads64_", "openblas_get_num_threads"):
+                fn = getattr(lib, name, None)
+                if fn is not None:
+                    fn.restype = ctypes.c_int
+                    return int(fn())
+    except Exception:  # noqa: BLE001 — yalnız teşhis
+        return None
+    return None
 
 
 # ------------------------------------------------------------------ ebeveyn GC dondurma (iç içe güvenli)
@@ -119,14 +323,13 @@ def _resolve_prctl() -> None:
     try:
         import ctypes
         _PRCTL = ctypes.CDLL(None, use_errno=True).prctl
-    except Exception:  # noqa: BLE001 — desteklenmiyorsa boru kapanışı yine çıkarır
+    except Exception:  # noqa: BLE001 — desteklenmiyorsa boru kapanışı (EOF) yine çıkarır
         _PRCTL = None
 
 
 def _die_with_parent(parent_pid: int) -> None:
     """Linux: ebeveyn (fork eden iş parçacığı — ömür boyu yaşayan ön ısıtma işçisi) ölünce SIGKILL al. En iyi çaba;
     yalnız ebeveynde önceden çözülmüş işlevi çağırır."""
-    import signal
     fn = _PRCTL
     if fn is not None:
         try:
@@ -138,14 +341,17 @@ def _die_with_parent(parent_pid: int) -> None:
 
 
 def _child_main(engine: Any, compute: Callable[[Any, str], dict], conn: Any, nice: int, oom_score_adj: int,
-                parent_pid: int = 0) -> None:
+                parent_pid: int = 0, parent_end: Any = None) -> None:
     """Alt süreç döngüsü: ("q", sembol) → ("ok", sembol, kanıt, özel_kb) | ("err", sembol, metin, özel_kb).
 
     YALNIZ saf hesap: loglama, uyarı, akış yazımı YOK (bkz. modül başlığı). Boru kapanınca ya da ("stop",) gelince çıkar.
+    `parent_end`: fork'ta devralınan EBEVEYN boru ucu. İlk iş kapatılır: yoksa ebeveyn ölse bile borunun bir ucu bu
+    süreçte açık kalır, `recv` hiç EOF görmez ve alt süreç (PDEATHSIG yoksa) ortada kalır.
     """
-    import signal
-    import sys
     import warnings
+    if parent_end is not None:
+        with contextlib.suppress(OSError):
+            parent_end.close()
     if parent_pid:
         _die_with_parent(parent_pid)
     gc.freeze()                                    # ebeveynden gelen nesneler bu sürecin GC'sinde dolaşılmaz
@@ -155,9 +361,11 @@ def _child_main(engine: Any, compute: Callable[[Any, str], dict], conn: Any, nic
     except OSError:
         pass
     warnings.simplefilter("ignore")
-    for sig, act in ((signal.SIGINT, signal.SIG_IGN), (signal.SIGTERM, signal.SIG_DFL)):
+    # SIGINT/SIGTERM YOK SAYILIR: `KillMode=control-group` birimde systemd SIGTERM'i bütün sürece yollar; worker son
+    # turunu bitirirken alt süreç ölmesin (kapatmayı ebeveyn yapar; SIGKILL, PDEATHSIG ve boru EOF'u yine geçerli).
+    for sig in (signal.SIGINT, signal.SIGTERM):
         try:
-            signal.signal(sig, act)
+            signal.signal(sig, signal.SIG_IGN)
         except (OSError, ValueError):
             pass
     if nice:
@@ -197,7 +405,10 @@ class EvidenceChild:
     """Bir yayımlanmış motor için TEK alt süreç. İş parçacığı güvenli DEĞİLDİR: çağıran (`EvidenceCache`) bütün
     kullanımı kendi hesaplama kilidi altında sıralar; yalnız `kill()` kilitsiz çağrılabilir."""
 
-    #: Alt süreç "hazır" demezse (asılı `fork`) bu kadar beklenir.
+    #: Fork çağrısının kendisi (fork öncesi kancalar dahil) bu kadar sürede dönmezse SIGALRM worker'ı SONLANDIRIR
+    #: (deadman; bkz. modül başlığı). Olağan fork 8–16 ms; pay, bellek baskısında yavaş fork'u öldürmemek için geniş.
+    FORK_DEADMAN_S = 30.0
+    #: Alt süreç fork'tan sonra "hazır" demezse bu kadar beklenir (ebeveyn bu sırada GIL tutmaz).
     START_TIMEOUT_S = 30.0
     #: İstek sürerken alt süreç bu kadar süre HİÇ CPU harcamazsa asılı sayılır ve öldürülür (Linux /proc; yoksa
     #: yalnız üst sınır geçerli). Yavaş ama çalışan (CPU kotası/nice ile kısılmış) alt süreç CPU harcadığı için
@@ -209,7 +420,8 @@ class EvidenceChild:
     REQUEST_TIMEOUT_S = 1800.0
     #: Alt sürecin göreli önceliği (yalnız hız). Worker `Nice=5` ile koşar → alt süreç 15.
     NICE = 10
-    #: OOM'da önce alt süreç ölsün (ebeveyn değil). Yükseltmek yetki istemez.
+    #: OOM'da çekirdek önce alt süreci seçsin (ebeveyn değil). Yükseltmek yetki istemez. Birimin kendisi ne yapar:
+    #: systemd varsayılanı `OOMPolicy=stop` bütün birimi durdurur (modül başlığı, "Bellek").
     OOM_SCORE_ADJ = 1000
 
     def __init__(self, engine: Any, version: int) -> None:
@@ -225,8 +437,14 @@ class EvidenceChild:
 
     # ---------------------------------------------------------------- yaşam döngüsü
     @classmethod
-    def start(cls, engine: Any, compute: Callable[[Any, str], dict], *, version: int) -> "EvidenceChild":
-        """`fork` ile alt süreci başlat ve "hazır" el sıkışmasını bekle. Başarısızlık → `EvidenceChildError`."""
+    def start(cls, engine: Any, compute: Callable[[Any, str], dict], *, version: int,
+              marker: Path | None = None) -> "EvidenceChild":
+        """`fork` ile alt süreci başlat ve "hazır" el sıkışmasını bekle. Başarısızlık → `EvidenceChildError`.
+
+        Fork deadman altında yapılır (`FORK_DEADMAN_S`); `marker` verilirse fork süresince işaret dosyası durur (asılıp
+        sonlandırılan worker'ı yeniden başlayan worker tanır: `fork_hung_before`)."""
+        if not supported():
+            raise EvidenceChildError(f"platform desteklenmiyor: {sys.platform}")
         import multiprocessing as mp
         try:
             ctx = mp.get_context("fork")
@@ -242,12 +460,21 @@ class EvidenceChild:
         self._frozen = True
         try:
             proc = ctx.Process(target=_child_main, name="pattern-evidence-child", daemon=True,
-                               args=(engine, compute, child_conn, cls.NICE, cls.OOM_SCORE_ADJ, os.getpid()))
-            proc.start()                           # start() hedef/argüman referanslarını bırakır (motor tutulmaz)
+                               args=(engine, compute, child_conn, cls.NICE, cls.OOM_SCORE_ADJ, os.getpid(),
+                                     parent_conn))
+            with _fork_deadman(cls.FORK_DEADMAN_S):
+                marked = _mark(marker)
+                try:
+                    proc.start()                   # start() hedef/argüman referanslarını bırakır (motor tutulmaz)
+                finally:
+                    if marked:                     # deadman süreci sonlandırdıysa buraya gelinmez: dosya kalır
+                        _unmark(marker)
         except BaseException as exc:
             child_conn.close()
             parent_conn.close()
             self._release_freeze()
+            if isinstance(exc, EvidenceChildError):
+                raise
             if isinstance(exc, Exception):
                 raise EvidenceChildError(f"alt süreç başlatılamadı: {type(exc).__name__}: {exc}") from exc
             raise
@@ -389,4 +616,5 @@ class EvidenceChild:
         return msg[2]
 
 
-__all__ = ["EvidenceChild", "EvidenceChildComputeError", "EvidenceChildError", "parent_gc_frozen"]
+__all__ = ["MARKER_NAME", "EvidenceChild", "EvidenceChildComputeError", "EvidenceChildError", "blas_threads",
+           "deadman_unavailable", "fork_hung_before", "parent_gc_frozen", "supported"]

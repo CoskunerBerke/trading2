@@ -20,6 +20,10 @@ Kanıt sorguları (yayım sonrası ön ısıtma ve o sırada turun ıskaları) `
 11. Kapanış ön ısıtma işini BEKLEMEZ (ana iş parçacığı dönünce, SIGTERM'le, `watch`'ın `stop`'uyla): alt süreç öldürülür,
     kapanıştan sonra yeni fork yok. Alt süreç ebeveynin soket/boru/dosya tanımlayıcılarını tutmaz; `close` bekçi
     borusuna güvenmeden zaman aşımına uyar. Fork işaret dosyası makineye özgüdür: yedeğe girmez, geri yüklemede kalır.
+12. BELLEK (düzeltme turu 3): eski sürümün alt süreci yeni yayım ANINDA ölür (uçuştaki tur süreç içi aynı kanıtı alır);
+    fork anında canlı olan eski indeks ebeveynde bırakılınca alt süreç öldürülüp yeniden kurulur — eski indeksin
+    sayfaları alt süreçte KALMAZ (ölçüm testi, kancasız kontrol koluyla); bellek payı daralınca fork yok / alt süreç
+    öldürülür ve iş süreç içi sürer. Hepsinde kanıt aynı, arıza sayılmaz (bellek koruması uyarı yazar).
 
 Alt süreç `fork` ile ebeveynin bellek görüntüsünü aldığı için ölçüm vekili (`_Probe`) her iki süreçte de çalışır;
 çağrılar süreç kimliğiyle bir dosyaya yazılır (iş parçacığı adı alt süreçte de ön ısıtma işçisinin adıdır, ayırt etmez).
@@ -1231,3 +1235,323 @@ def test_the_fork_marker_is_machine_state_not_backed_up_and_stays_on_the_machine
     time.sleep(1.05)                                              # `state.pre-restore-<ts>` saniye çözünürlüklü
     BK.restore_backup(res.archive, st)
     assert not (st / EC.MARKER_NAME).exists(), "yedekten işaret gelmez"
+
+
+# ------------------------------------------------------------------ 14) bellek (düzeltme turu 3)
+class _Big:
+    """Eski indeks vekili: büyük, yerleşik (sayfaları dokunulmuş) bir dizi. Zayıf referans destekler."""
+
+    def __init__(self, mb: int):
+        import numpy as np
+        self.arr = np.ones(mb * 131_072)                            # mb × 1 MiB float64, hepsi yazılmış
+
+
+def _sleepy(seconds: float):
+    def fn(eng, sym):
+        time.sleep(seconds)
+        return {"LONG": {"sym": sym, "n": 1}, "SHORT": {"sym": sym, "n": 2}}
+    return fn
+
+
+def _wait(pred, timeout=30.0, step=0.01) -> bool:
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        if pred():
+            return True
+        time.sleep(step)
+    return pred()
+
+
+def test_a_newer_publish_kills_the_old_child_at_once_not_at_the_symbol_boundary(tmp_path, monkeypatch, hist, caplog):
+    """Eski sürümün alt süreci yeni yayım ANINDA öldürülür (sembol sınırı beklenmez): yazınca-kopyala sayfaları ve
+    ebeveynin bıraktığı eski indeks sayfaları hemen iade edilir. Arıza sayılmaz; eski iş süreç içine DÜŞMEZ."""
+    v1_real, v2_real = _build_index(hist, drop_last=1), _build_index(hist)
+    v1 = _Probe(v1_real, tmp_path, gate="ETH/USDT")                # v1'in alt süreci ETH'de kapıda bekler (açılmaz)
+    eng = _engine(tmp_path, monkeypatch)
+    r = _refresher(eng, [v1, v2_real])
+    with caplog.at_level(logging.INFO, logger="tradingbot.patterns.evidence_cache"):
+        r.refresh_once()
+        assert v1.wait_entered()
+        cache = eng._evidence_cache()
+        pid_v1 = cache._child.pid
+        t0 = time.monotonic()
+        r.refresh_once()                                          # sürüm 2 yayımı
+        assert _wait(lambda: not _pid_alive(pid_v1), timeout=5.0), "eski alt süreç yayım anında ölmeli"
+        killed_in = time.monotonic() - t0
+        assert cache.wait_idle(120)
+    assert killed_in < 3.0, killed_in
+    assert cache.stats["child_superseded_kills"] == 1 and cache.stats["child_failures"] == 0, cache.stats
+    assert not v1.parent_calls(), "eski iş süreç içi yola düşmemeli"
+    assert not any(c[1] in ("SOL/USDT", "AVAX/USDT") for c in v1.calls())
+    assert not any("arızalandı" in rec.getMessage() for rec in caplog.records)
+    info = [rec.getMessage() for rec in caplog.records if "daha yeni yayımla hemen kapatıldı" in rec.getMessage()]
+    assert info and not any(m.startswith("pattern kanıtı alt süre") for m in info), "bilgi satırı sorun önekini taşımaz"
+    assert {k[1] for k in cache.keys()} == {2} and cache._child is None
+    now = _now_for(v2_real)
+    for s in SYMS:
+        assert _ser(eng._pattern_evidence(s, now)) == _ser(TradingEngineV3._evidence_query(v2_real, s))
+
+
+def test_a_tour_in_flight_in_the_stale_child_recomputes_in_process_with_the_same_result(tmp_path, hist, caplog):
+    """Tur eski motorun alt sürecinde beklerken yeni yayım alt süreci öldürür: tur o sembolü süreç içi (bugünkü yol)
+    hesaplar, AYNI kanıtı alır; arıza uyarısı yok."""
+    real = _build_index(hist)
+    idx = _Probe(real, tmp_path, gate="ETH/USDT")
+    cache = EvidenceCache()
+    with cache.compute_lock:
+        assert cache._start_child(_bundle(idx), TradingEngineV3._evidence_query)
+        pid = cache._child.pid
+    key = ("ETH/USDT", 1, 0)
+    out = {}
+
+    def tour():
+        out["ev"] = cache.get_or_compute(key, lambda: cache.compute(idx, "ETH/USDT", TradingEngineV3._evidence_query)).ev
+    t = threading.Thread(target=tour, name="tour")
+    with caplog.at_level(logging.WARNING, logger="tradingbot.patterns.evidence_cache"):
+        t.start()
+        assert idx.wait_entered(), "tur isteği alt süreçte kapıda"
+        cache.note_published(object.__new__(type("E", (), {})), 2)   # başka motorun yayımı
+        t.join(30)
+    assert not t.is_alive(), "tur kapı açılmadan bitmeli (alt süreç öldürüldü, süreç içi hesap)"
+    assert _ser(out["ev"]) == _ser(TradingEngineV3._evidence_query(real, "ETH/USDT"))
+    assert {c[1] for c in idx.parent_calls()} == {"ETH/USDT"}
+    assert not _pid_alive(pid) and cache._child is None
+    assert cache.stats["child_failures"] == 0 and cache.stats["child_superseded_kills"] == 1
+    assert not any("arızalandı" in rec.getMessage() for rec in caplog.records)
+    assert not EC.parent_gc_frozen()
+
+
+def test_an_old_index_dropped_after_the_fork_kills_and_reforks_the_child_same_evidence(tmp_path, hist, caplog):
+    """Fork anında canlı olan eski motor (turun uçuştaki çağrısı) ebeveynde bırakılınca alt süreç HEMEN öldürülür ve
+    aynı motor için yeniden kurulur: eski indeksin sayfaları alt süreçte kalmaz. Uçuştaki sembol yeni alt süreçte
+    yeniden istenir; kanıt aynı, arıza yok."""
+    real = _build_index(hist)
+    old = _build_index(hist, drop_last=2)
+    idx = _Probe(real, tmp_path, gate="SOL/USDT")
+    cache = EvidenceCache()
+    cache.track_engine(old)
+    keys = [(s, 1, 0) for s in SYMS]
+    with caplog.at_level(logging.INFO, logger="tradingbot.patterns.evidence_cache"):
+        cache.request_prewarm(_bundle(idx), keys, TradingEngineV3._evidence_query, lambda b: True, use_child=True)
+        assert idx.wait_entered(), "ilk alt süreç SOL'de kapıda"
+        pid_a = cache._child.pid
+        idx.entered.unlink()
+        del old                                                   # tur çağrısı bitti: eski motor ebeveynde serbest
+        gc.collect()
+        assert _wait(lambda: not _pid_alive(pid_a), timeout=5.0), "eski indeksi devralan alt süreç hemen ölmeli"
+        assert idx.wait_entered(), "yeni alt süreç SOL'ü yeniden istedi"
+        pid_b = cache._child.pid
+        idx.open_gate()
+        assert cache.wait_idle(120)
+    assert pid_b != pid_a
+    assert cache.stats["child_reforks"] == 1 and cache.stats["child_failures"] == 0, cache.stats
+    assert cache.stats["child_in_process_fallbacks"] == 0 and not idx.parent_calls()
+    info = [rec.getMessage() for rec in caplog.records if "yeniden kuruldu" in rec.getMessage()]
+    assert len(info) == 1 and not info[0].startswith("pattern kanıtı alt süre"), info
+    assert not any("arızalandı" in rec.getMessage() for rec in caplog.records)
+    line = [rec.getMessage() for rec in caplog.records if "ön ısıtıldı" in rec.getMessage()]
+    assert line and line[0].endswith("; eski indeks için yeniden fork 1)"), line
+    for s in SYMS:
+        assert _ser(cache.get((s, 1, 0)).ev) == _ser(TradingEngineV3._evidence_query(real, s))
+    assert cache._child is None and not EC.parent_gc_frozen()
+
+
+@pytest.mark.parametrize("track", [False, True], ids=["eski_davranis_kanca_yok", "duzeltme"])
+def test_the_child_does_not_keep_a_dropped_old_index_resident(track):
+    """ÖLÇÜM (denetim bulgusu, düzeltme turu 3): fork anında ebeveynde canlı olan eski indeks sonra bırakılırsa
+    sayfaları alt sürecin ÖZEL belleğine dönüşür (kanca yokken: ≈ indeks boyutu). Kanca alt süreci öldürüp yeniden
+    kurar; yeni alt süreç eski indeksi içermez."""
+    big_mb = 160
+    old = _Big(big_mb)
+    new = _Big(1)
+    cache = EvidenceCache()
+    if track:
+        cache.track_engine(old)
+    keys = [(f"S{i}", 1, 0) for i in range(200)]
+    try:
+        cache.request_prewarm(_bundle(new), keys, _sleepy(0.2), lambda b: True, use_child=True)
+        assert _wait(lambda: cache._child is not None and cache._child.pid, timeout=30)
+        pid_a = cache._child.pid
+        time.sleep(0.5)
+        before = EC._private_kb(pid_a)
+        del old
+        gc.collect()
+        if track:
+            assert _wait(lambda: cache._child is not None and cache._child.pid not in (None, pid_a), timeout=10)
+        time.sleep(1.0)
+        child = cache._child
+        after = EC._private_kb(child.pid)
+        assert before is not None and after is not None
+        if track:
+            assert child.pid != pid_a and not _pid_alive(pid_a)
+            assert after < 40 * 1024, ("yeni alt süreç eski indeksi tutmamalı", before, after)
+        else:
+            assert child.pid == pid_a
+            assert after - before > 0.8 * big_mb * 1024, ("kanca yokken eski indeks alt süreçte kalır", before, after)
+    finally:
+        cache.stop()
+        cache._close_child()
+
+
+def _headroom_seq(values):
+    """`memory_headroom_mb` vekili: sırayla değer verir, sonuncuyu tekrarlar."""
+    vals = list(values)
+
+    def fn():
+        return vals.pop(0) if len(vals) > 1 else vals[0]
+    return fn
+
+
+def test_the_memory_guard_kills_the_child_and_the_job_finishes_in_process_same_evidence(tmp_path, monkeypatch,
+                                                                                         hist, caplog):
+    """Alt süreç yaşarken bellek payı öldürme eşiğinin altına inerse alt süreç öldürülür (uyarı); işin kalanı süreç
+    içi (bugünkü yol) — kanıt aynı. Alt süreç cgroup'u MemoryMax'a ASLA itmesin."""
+    monkeypatch.setattr(EC.EvidenceChild, "MEMORY_CHECK_S", 0.01)
+    monkeypatch.setattr(EC, "memory_headroom_mb", _headroom_seq([(5000.0, "test"), (100.0, "cgroup /test")]))
+    real = _build_index(hist)
+    idx = _Probe(real, tmp_path, gate="ETH/USDT")                 # ilk istek kapıda: pay denetimi kesin koşar
+    eng = _engine(tmp_path, monkeypatch)
+    r = _refresher(eng, [idx])
+    with caplog.at_level(logging.INFO, logger="tradingbot.patterns.evidence_cache"):
+        r.refresh_once()
+        cache = eng._evidence_cache()
+        assert cache.wait_idle(120)
+    assert cache.stats["child_memory_kills"] == 1 and cache.stats["child_failures"] == 0, cache.stats
+    warn = [rec.getMessage() for rec in caplog.records if rec.levelno >= logging.WARNING]
+    assert any("bellek koruması nedeniyle kapatıldı" in m and "cgroup /test payı 100 MB < 512 MB" in m for m in warn), warn
+    assert {c[1] for c in idx.parent_calls()} == set(SYMS), "işin kalanı süreç içi"
+    line = [rec.getMessage() for rec in caplog.records if "ön ısıtıldı" in rec.getMessage()]
+    assert line and "alt süreçte 0, süreç içi 3 sembol; bellek koruması)" in line[0], line
+    now = _now_for(real)
+    for s in SYMS:
+        assert _ser(eng._pattern_evidence(s, now)) == _ser(TradingEngineV3._evidence_query(real, s))
+
+
+def test_no_fork_when_the_memory_headroom_is_short_same_evidence(tmp_path, monkeypatch, hist, caplog):
+    def boom(*a, **k):
+        raise AssertionError("pay yetersizken fork yapılmamalı")
+    monkeypatch.setattr(EC, "memory_headroom_mb", lambda: (1000.0, "cgroup /test"))
+    monkeypatch.setattr(EC.EvidenceChild, "_pin", boom)
+    real = _build_index(hist)
+    idx = _Probe(real, tmp_path)
+    eng = _engine(tmp_path, monkeypatch)
+    r = _refresher(eng, [idx])
+    with caplog.at_level(logging.INFO, logger="tradingbot.patterns.evidence_cache"):
+        r.refresh_once()
+        cache = eng._evidence_cache()
+        assert cache.wait_idle(120)
+    assert cache.stats["child_started"] == 0 and cache.stats["child_memory_refusals"] == 1
+    assert cache.stats["child_failures"] == 0
+    assert any("alt süreci başlatılmadı — bellek payı yetersiz (cgroup /test: 1000 MB < 1536 MB)" in rec.getMessage()
+               for rec in caplog.records)
+    assert not idx.child_calls() and len(idx.parent_calls()) == 2 * len(SYMS)
+    line = [rec.getMessage() for rec in caplog.records if "ön ısıtıldı" in rec.getMessage()]
+    assert line and line[0].endswith("(alt süreç kurulamadı; süreç içi 3 sembol; bellek payı yetersiz)"), line
+    now = _now_for(real)
+    for s in SYMS:
+        assert _ser(eng._pattern_evidence(s, now)) == _ser(TradingEngineV3._evidence_query(real, s))
+
+
+def test_the_headroom_reader_handles_cgroup_v2_and_v1_and_excludes_page_cache(tmp_path):
+    def w(path: Path, text: str):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="ascii")
+    v2 = tmp_path / "v2"
+    svc = v2 / "system.slice" / "tradingbot-worker.service"
+    w(svc / "memory.max", "6442450944\n")
+    w(svc / "memory.current", "5000000000\n")
+    w(svc / "memory.stat", "anon 3400000000\nfile 1600000000\nactive_file 1000000000\ninactive_file 500000000\n")
+    w(v2 / "system.slice" / "memory.max", "max\n")
+    w(v2 / "system.slice" / "memory.current", "9000000000\n")
+    got = EC._cgroup_headrooms("0::/system.slice/tradingbot-worker.service\n", str(v2))
+    assert got == [(6442450944 - (5000000000 - 1500000000), "cgroup /system.slice/tradingbot-worker.service")]
+    v1 = tmp_path / "v1"
+    w(v1 / "memory" / "a" / "b" / "memory.limit_in_bytes", "2147483648\n")
+    w(v1 / "memory" / "a" / "b" / "memory.usage_in_bytes", "1500000000\n")
+    w(v1 / "memory" / "a" / "b" / "memory.stat", "cache 600000000\ntotal_active_file 200000000\n"
+                                                 "total_inactive_file 100000000\n")
+    w(v1 / "memory" / "a" / "memory.limit_in_bytes", "9223372036854771712\n")      # sınırsız → atlanır
+    w(v1 / "memory" / "a" / "memory.usage_in_bytes", "1600000000\n")
+    got = EC._cgroup_headrooms("4:memory:/a/b\n3:cpuset:/\n", str(v1))
+    assert got == [(2147483648 - (1500000000 - 300000000), "cgroup /a/b")]
+    assert EC._cgroup_headrooms("0::/yok\n", str(tmp_path / "bos")) == []
+    assert EC._cgroup_headrooms(None) == []
+    head = EC.memory_headroom_mb()                                # bu Linux makinesinde en az MemAvailable okunur
+    assert head is not None and head[0] > 0 and isinstance(head[1], str)
+
+
+def test_a_tour_holding_the_old_index_while_the_new_child_forks_triggers_one_refork(tmp_path, monkeypatch, hist):
+    """Motor düzeyinde gerçek akış: tur sürüm 1 ile kanıt çağrısının içindeyken (panel yazımı) sürüm 2 yayımlanır ve
+    ön ısıtma alt süreci fork edilir — sürüm 1 o an ebeveynde canlıdır. Tur çağrısı bitip sürüm 1 serbest kalınca alt
+    süreç öldürülür ve sürüm 2 için yeniden kurulur. Kanıt aynı; arıza yok; eski motor ebeveynde tutulmaz."""
+    from tradingbot import engine_v3 as E3
+    gate, entered = tmp_path / "tour-gate", tmp_path / "tour-entered"
+    real_write = E3.atomic_write_json
+
+    def slow_write(path, *a, **k):
+        if threading.current_thread().name == "tour":
+            entered.touch()
+            _wait(gate.exists, timeout=60)
+        return real_write(path, *a, **k)
+    monkeypatch.setattr(E3, "atomic_write_json", slow_write)
+    v2_real = _build_index(hist)
+    v2 = _Probe(v2_real, tmp_path, gate="AVAX/USDT")
+    builds = [_build_index(hist, drop_last=1), v2]
+    eng = _engine(tmp_path, monkeypatch)
+    r = _refresher(eng, builds)
+    monkeypatch.setattr(eng, "EVIDENCE_PREWARM", False)
+    r.refresh_once()                                              # sürüm 1 (ön ısıtmasız): tur kendisi hesaplar
+    ref_v1 = weakref.ref(r.bundle.engine)
+    monkeypatch.setattr(eng, "EVIDENCE_PREWARM", True)
+    now = _now_for(v2_real)
+    t = threading.Thread(target=lambda: eng._pattern_evidence("ETH/USDT", now), name="tour")
+    t.start()
+    assert _wait(entered.exists), "tur sürüm 1 kanıtını hesapladı, panel yazımında (motoru tutuyor)"
+    r.refresh_once()                                              # sürüm 2 yayımı → ön ısıtma → fork (sürüm 1 canlı)
+    cache = eng._evidence_cache()
+    assert v2.wait_entered(), "sürüm 2 alt süreci AVAX'ta kapıda"
+    assert ref_v1() is not None and cache.stats["child_started"] == 1
+    v2.entered.unlink()
+    gate.touch()                                                  # tur çağrısı biter → sürüm 1 serbest
+    t.join(60)
+    assert not t.is_alive()
+    assert _wait(lambda: cache.stats["child_reforks"] == 1, timeout=10), cache.stats
+    assert v2.wait_entered(), "yeni alt süreç AVAX'ı yeniden istedi"
+    v2.open_gate()
+    assert cache.wait_idle(120)
+    gc.collect()
+    assert ref_v1() is None, "eski motor ebeveynde tutulmamalı"
+    assert cache.stats["child_started"] == 2 and cache.stats["child_failures"] == 0, cache.stats
+    assert not v2.parent_calls(), "sürüm 2 hep alt süreçte"
+    for s in SYMS:
+        assert _ser(eng._pattern_evidence(s, now)) == _ser(TradingEngineV3._evidence_query(v2_real, s))
+    assert cache._child is None and not EC.parent_gc_frozen()
+
+
+def test_a_retention_kill_during_the_fork_handshake_reforks_once_and_is_not_a_failure(tmp_path, hist, monkeypatch,
+                                                                                       caplog):
+    """Eski motor tam el sıkışması sırasında serbest kalırsa (alt süreç öldürülür) iş süreç içine düşmez: bir kez daha
+    fork edilir (eski motor artık yok). Kanıt aynı, arıza yok."""
+    real = _build_index(hist)
+    idx = _Probe(real, tmp_path)
+    cache = EvidenceCache()
+    orig = EC.EvidenceChild._recv
+    hits = []
+
+    def recv(self, timeout, *, what, stall=None):
+        if what == "hazır el sıkışması" and not hits:
+            hits.append(1)
+            self.retire(EC.RETIRE_RETAINED)
+        return orig(self, timeout, what=what, stall=stall)
+    monkeypatch.setattr(EC.EvidenceChild, "_recv", recv)
+    with caplog.at_level(logging.WARNING, logger="tradingbot.patterns.evidence_cache"):
+        with cache.compute_lock:
+            assert cache._start_child(_bundle(idx), TradingEngineV3._evidence_query)
+            ev = cache.compute(idx, "ETH/USDT", TradingEngineV3._evidence_query)
+    cache._close_child()
+    assert hits == [1]
+    assert cache.stats["child_reforks"] == 1 and cache.stats["child_failures"] == 0, cache.stats
+    assert cache.stats["child_in_process_fallbacks"] == 0 and not idx.parent_calls()
+    assert _ser(ev) == _ser(TradingEngineV3._evidence_query(real, "ETH/USDT"))
+    assert not [rec for rec in caplog.records if rec.levelno >= logging.WARNING]
+    assert not EC.parent_gc_frozen()

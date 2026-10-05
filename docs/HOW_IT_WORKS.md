@@ -195,9 +195,14 @@ idle 4-core machine: GIL-releasing tour work ran 30–145 times slower while a p
 machine under heavy load (load average 6–7) only 1.0–2.7 times; with the child about 1 time in every run). That this
 explains the VPS's long tours is a hypothesis to check after deployment. The child sees the published index through
 copy-on-write memory, so engine, function and inputs are the tour's own and the evidence is bit-identical; while it
-lives, a tour cache miss is sent to it too. It exits when the prewarm job ends or a newer index is published, and the
-worker kills it on shutdown instead of waiting for the job (the `watch` shutdown stops the prewarm, and an exit hook
-covers every other way out). Right after the fork the child points every inherited descriptor except its own pipe at
+lives, a tour cache miss is sent to it too. It exits when the prewarm job ends, is killed the moment a newer index is
+published, and the worker kills it on shutdown instead of waiting for the job (the `watch` shutdown stops the prewarm,
+and an exit hook covers every other way out). Memory is the binding constraint on the VPS, so the child never keeps an
+old index alive: if an older index was still referenced at fork time (a tour's in-flight evidence call) and the worker
+frees it later, its pages would become the child's private memory, so the child is killed at that moment and forked
+again. A memory guard refuses the fork when less than 1.5 GB of headroom is left (the cgroup limit minus non-cache
+usage, or the system's available memory) and kills the child below 512 MB; the job then finishes in-process. None of
+these kills changes the evidence. Right after the fork the child points every inherited descriptor except its own pipe at
 `/dev/null`, so it holds none of the worker's sockets, pipes or lock file. A child failure after the fork is logged and
 the work falls back to today's in-process path, with two exceptions. If the fork itself hangs (OpenBLAS's pre-fork
 handler can deadlock while another thread runs a multithreaded BLAS job), a 30-second timer whose default action ends
@@ -1328,8 +1333,8 @@ kâğıt işlemdir ve şu ana kadar istatistiksel olarak kesin değildir.
 - **Mimari:** tek worker süreci; ana tur döngüsü + koruyucu izleyici, Box zamanlayıcısı, Formasyon tarayıcısı ve indeks
   yenileyici iş parçacıkları; ayrı, salt okunur panel süreci. Yeni indeks yayımından sonraki pattern kanıtı sorguları
   worker'dan `fork` edilen kısa ömürlü bir alt süreçte koşar ve worker'ın GIL'ini turdan almaz (fork'un kendisi asılırsa
-  30 sn'lik zamanlayıcı worker'ı sonlandırır, systemd yeniden başlatır; geri dönüş: `history.evidence_subprocess:
-  false`). Eski v2 spot döngüsü her yeni 4h barda sekiz defterden ayrı, kendi küçük spot kâğıt portföyünü (`portfolio.json`) işletir; paneldeki "Spot defteri" sayfası bu portföyü gösterir.
+  30 sn'lik zamanlayıcı worker'ı sonlandırır, systemd yeniden başlatır; alt süreç eski indeksi tutmaz ve bellek payı
+  daralınca kapatılır; geri dönüş: `history.evidence_subprocess: false`). Eski v2 spot döngüsü her yeni 4h barda sekiz defterden ayrı, kendi küçük spot kâğıt portföyünü (`portfolio.json`) işletir; paneldeki "Spot defteri" sayfası bu portföyü gösterir.
 - **Muhasebe:** izole marj, komisyon, 3 bps kayma, borsa filtreleri, gerçekleşmiş fonlama, ihtiyatlı likidasyon sırası,
   stop taşıma düzeltmesi.
 - **Öğrenme modu (açık):** yalnız PAPER; slot sayısı K ile boyut, marj ≤ %95, likidasyon ≥ 2 × stop, politika rezervi;

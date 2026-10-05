@@ -17,6 +17,13 @@ yalnız geçici dizine yazılır.
 Kullanım:  python scripts/bench_tour_contention.py [--bars 1500] [--modes none,inproc,child]
 `--bars` sembol başına 4h bar (16 sembol); 1500 ≈ 22k olay. VPS'teki worker'ın yanında koşturmak onunla CPU yarıştırır;
 ayrı bir makinede ya da worker durdurulmuşken koşturun. Ayrıntı ve yerel sonuçlar: docs/TOUR_CONTENTION_V1.md.
+
+BELLEK (düzeltme turu 3):  python scripts/bench_tour_contention.py --memory [--bars 1500]
+Her durum ayrı bir yorumlayıcıda: iki indeks (eski + yeni) bellekteyken yeni indeksin ön ısıtması başlar; eski indeks
+fork'tan ÖNCE (`child-between`: yayım turlar arasında) ya da SONRA (`child-mid-*`: yayım turun uçuştaki kanıt
+çağrısına denk geldi) bırakılır. Ebeveyn + alt sürecin toplam PSS'i (MB) ve alt sürecin özel belleği (USS) her adımda
+/proc/<pid>/smaps_rollup'tan okunur. `child-mid-nofix`: eski motor önbelleğe bildirilmez (ölüm kancası yok = düzeltme
+turu 3'ten önceki davranış); `child-mid-fix`: bugünkü kod; `inproc-mid`: geri dönüş anahtarı (süreç içi).
 """
 from __future__ import annotations
 
@@ -186,11 +193,122 @@ def _child_private_mb(cache) -> float | None:
     return round(max(kbs) / 1024.0, 1) if kbs else None
 
 
+# ------------------------------------------------------------------ bellek ölçümü (düzeltme turu 3)
+MEMORY_CASES = ("inproc-mid", "child-between", "child-mid-nofix", "child-mid-fix")
+
+
+def _smaps(pid="self") -> dict:
+    out = {}
+    with open(f"/proc/{pid}/smaps_rollup", encoding="ascii") as fh:
+        for ln in fh:
+            p = ln.split()
+            if len(p) >= 2 and p[0].endswith(":") and p[1].isdigit():
+                out[p[0][:-1]] = int(p[1])
+    return out
+
+
+def _mem_point(cache) -> dict:
+    s = _smaps()
+    pt = {"parent_pss_mb": round(s["Pss"] / 1024), "total_pss_mb": None}
+    tot = s["Pss"]
+    c = cache._child if cache is not None else None
+    if c is not None and c.pid:
+        try:
+            cs = _smaps(c.pid)
+            tot += cs["Pss"]
+            pt["child_pid"] = c.pid
+            pt["child_uss_mb"] = round((cs.get("Private_Clean", 0) + cs.get("Private_Dirty", 0)) / 1024)
+        except OSError:
+            pass
+    pt["total_pss_mb"] = round(tot / 1024)
+    return pt
+
+
+def _wait_entries(cache, n, timeout=600.0) -> None:
+    end = time.monotonic() + timeout
+    while len(cache) < n and time.monotonic() < end:
+        time.sleep(0.05)
+
+
+def memory_case(case: str, bars: int) -> dict:
+    """Tek bir bellek durumu (ayrı yorumlayıcıda çağrılır; bkz. modül başlığı "BELLEK")."""
+    import gc
+
+    from tradingbot.engine_v3 import TradingEngineV3
+    from tradingbot.patterns.evidence_cache import EvidenceCache
+    gc.collect()
+    p0 = _smaps()["Pss"]
+    old = build_index(bars)
+    new = build_index(bars)
+    gc.collect()
+    out: dict = {"case": case, "events_per_index": len(new.events),
+                 "index_mb": round((_smaps()["Pss"] - p0) / 2048), "points": {}}
+    pts = out["points"]
+    pts["1 iki indeks (eski + yeni)"] = _mem_point(None)
+    cache = EvidenceCache()
+    if case == "child-between":
+        del old
+        gc.collect()
+        pts["2 eski indeks fork'tan ÖNCE bırakıldı"] = _mem_point(None)
+    elif case == "child-mid-fix":
+        cache.track_engine(old)                   # bugünkü kod: yayımlanan her motor bilinir
+    bundle = type("B", (), {"engine": new, "version": 2})()
+    cache.request_prewarm(bundle, [(s, 2, 0) for s in SYMS], TradingEngineV3._evidence_query, lambda b: True,
+                          use_child=(case != "inproc-mid"))
+    _wait_entries(cache, 2)
+    pts["3 ön ısıtma: 2 sembol"] = _mem_point(cache)
+    if case != "child-between":
+        del old
+        gc.collect()
+        time.sleep(1.0)
+        pts["4 eski indeks bırakıldı (+1 sn)"] = _mem_point(cache)
+        _wait_entries(cache, 4)
+        pts["5 +2 sembol"] = _mem_point(cache)
+    for _ in range(3):
+        w_numpy()
+        w_py()
+    pts["6 tur benzeri iş"] = _mem_point(cache)
+    cache.wait_idle(1800)
+    out["job_private_mb_max"] = cache.stats.get("child_private_mb_max")
+    out["reforks"] = cache.stats.get("child_reforks")
+    cache.stop()
+    cache._close_child()
+    gc.collect()
+    pts["7 iş bitti"] = _mem_point(None)
+    return out
+
+
+def memory_main(bars: int) -> int:
+    import subprocess
+    for case in MEMORY_CASES:
+        r = subprocess.run([sys.executable, __file__, "--memory-case", case, "--bars", str(bars)],
+                           capture_output=True, text=True, timeout=3600)
+        line = [ln for ln in r.stdout.splitlines() if ln.startswith("{")]
+        if r.returncode != 0 or not line:
+            print(case, "HATA", r.returncode, r.stderr[-2000:], flush=True)
+            continue
+        res = json.loads(line[-1])
+        print(f"\n{case}: {res['events_per_index']} olay/indeks, indeks ≈ {res['index_mb']} MB, iş boyunca alt süreç "
+              f"özel belleği en çok {res.get('job_private_mb_max')} MB, yeniden fork {res.get('reforks')}", flush=True)
+        for k, v in res["points"].items():
+            print(f"  {k:<40} toplam PSS {v['total_pss_mb']:>5} MB  (ebeveyn {v['parent_pss_mb']} MB"
+                  + (f", alt süreç USS {v['child_uss_mb']} MB pid {v['child_pid']}" if "child_uss_mb" in v else "")
+                  + ")", flush=True)
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--bars", type=int, default=1500)
     ap.add_argument("--modes", default="none,inproc,child")
+    ap.add_argument("--memory", action="store_true", help="bellek ölçümü (her durum ayrı yorumlayıcıda)")
+    ap.add_argument("--memory-case", choices=MEMORY_CASES, help=argparse.SUPPRESS)
     a = ap.parse_args(argv)
+    if a.memory_case:
+        print(json.dumps(memory_case(a.memory_case, a.bars), ensure_ascii=False), flush=True)
+        return 0
+    if a.memory:
+        return memory_main(a.bars)
     t0 = time.perf_counter()
     eng = build_index(a.bars)
     print(f"indeks: {len(eng.events)} olay, kurulum {time.perf_counter() - t0:.1f} sn", flush=True)

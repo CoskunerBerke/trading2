@@ -10,14 +10,14 @@ en çok 370 ms (sorgu yokken 0,1 ms; saf Python yükte 5 ms); turun numpy/pandas
 Python adımları ~10 kat yavaşladı. Aynı betik başka işlerle YÜKLÜ aynı makinede (yük ortalaması 6–7) süreç içi yol için
 yalnız 1,0–2,7 kat verdi: açlığın şiddeti çekirdek sayısına ve makinenin yüküne güçlü biçimde bağlıdır. Alt süreç yolu
 her koşuda ~1 kat. VPS'teki 43 dk'lık turların (semboller 544 sn, yürütme 856 sn) ve Box'ın kaçırdığı 5m mumun bu
-mekanizmayla açıklanması bir HİPOTEZDİR (VPS'in çekirdek sayısı ve yükü bilinmiyor); dağıtımdan sonra
+mekanizmayla açıklanması bir HİPOTEZDİR (VPS 4 vCPU — sahibin aktardığı; yükü bilinmiyor); dağıtımdan sonra
 docs/TOUR_CONTENTION_V1.md §9 ile doğrulanır.
 
 Çözüm: sorgular `fork` ile ayrılan TEK bir alt süreçte koşar. Alt süreç yayımlanmış paketin motorunu kopyalamadan
 (yazınca-kopyala sayfalar) görür; yani motor, fonksiyon (`TradingEngineV3._evidence_query`) ve girdiler turunkiyle AYNI
 nesnelerdir, kanıt bit-bit aynıdır (pickle float'ı kayıpsız taşır; test kilitli). Ebeveyn yalnız boru üzerinden sonucu
-bekler — beklerken GIL'i tutmaz. Alt süreç yalnız bir ön ısıtma işi süresince yaşar (iş bitince ya da daha yeni yayım
-gelince kapanır) ve o süre içinde turun önbellek ıskaları da ona gider (`EvidenceCache.compute`).
+bekler — beklerken GIL'i tutmaz. Alt süreç yalnız bir ön ısıtma işi süresince yaşar (iş bitince kapanır; daha yeni yayım
+gelince HEMEN öldürülür) ve o süre içinde turun önbellek ıskaları da ona gider (`EvidenceCache.compute`).
 
 Neden `fork` (spawn/forkserver değil): yeni süreç indeksi ya diskten yeniden kurmalı (40+ sn CPU, yayımlananla aynı
 olduğunun kanıtı yok) ya da ebeveynden pickle ile almalıdır (152k olayda yüzlerce MB, ebeveynde GIL'i saniyelerce
@@ -76,16 +76,28 @@ tutan tek bir C çağrısı ve iş boyunca tam ikinci kopya). `fork` indeksin ay
   devralınan nesnelerin sonradan yanlış dosyayı kapatması olmaz; ebeveynin dosya/soket/boru nesnelerine başvuru kalmaz).
   Sorgu hiçbir tanımlayıcı kullanmaz (salt bellek). Bu, `multiprocessing`'in bekçi borusunu da kapatır: ebeveyn alt
   sürecin bitişini bekçi borusundan değil `waitpid` ile yoklayarak bekler (`_reap`; `join(timeout)` kullanılmaz).
-* Bellek: alt sürecin GC'si `gc.freeze()` ile ebeveynden gelen nesneleri DOLAŞMAZ; ebeveyn de çocuk yaşarken kendi
-  GC'sini dondurur (`_freeze_parent_gc`) — yoksa ebeveynin tam toplaması bütün kapsayıcı başlıklarına yazar ve ortak
-  sayfaları kopyalatır (ölçüldü: 335 MB'lık süreçte +68 MB; dondurunca 0). Kalan kopya, sorgunun dokunduğu nesnelerin
-  başvuru sayaçlarından gelir: ölçülen alt süreç özel belleği ≈ indeks boyutunun %49'u (50,7k olay ≈ 233 MB indeks →
-  113 MB). Alt süreç `oom_score_adj=1000` (cgroup OOM'unda çekirdek ÖNCE onu seçer) ve CPU'da turu itmesin diye
-  `nice +10` alır. DİKKAT: systemd'nin varsayılan `OOMPolicy=stop`'u birimdeki HERHANGİ bir sürecin OOM ile
-  öldürülmesinde bütün birimi durdurur (`Restart=on-failure` yeniden başlatır). Yani alt sürecin OOM'u bugünkü bir OOM
-  ile aynı sonucu verir; worker süreç içi yola DÜŞMEZ. "Alt süreç ölür, worker sürer" davranışı birime
-  `OOMPolicy=continue` ister (işletim değişikliği; sahip onayı). `oom_score_adj` yine de worker'ın kendisinin yazma
-  ortasında çekirdekçe öldürülmesini önler (birim düzenli durur).
+* BELLEK (düzeltme turu 3; ölçümler docs/TOUR_CONTENTION_V1.md §6). Alt sürecin özel belleği iki kaynaktan gelir:
+  (a) YAZINCA-KOPYALA: alt süreç sorguda dokunduğu nesnelerin başvuru sayaçlarına yazar, o sayfalar kopyalanır —
+  ölçülen ≈ indeks boyutunun %48–64'ü. Alt sürecin GC'si `gc.freeze()` ile ebeveynden gelen nesneleri dolaşmaz;
+  ebeveyn de alt süreç yaşarken kendi GC'sini dondurur (`_freeze_parent_gc`; yoksa ebeveynin tam toplaması ortak
+  sayfaları kopyalatır: 335 MB'lık süreçte +68 MB, dondurunca 0). (b) DEVRALINIP BIRAKILAN SAYFALAR (denetim bulgusu):
+  fork anında ebeveynde canlı olan her nesnenin sayfaları alt süreçte de eşlenir; ebeveyn o nesneyi SONRA bırakırsa
+  fiziksel sayfalar alt sürecin ÖZEL belleği olur. Yayım turun uçuştaki kanıt çağrısına denk gelirse fork anında ESKİ
+  indeks canlıdır → önlem olmadan alt süreç işin sonuna dek koca bir eski indeks taşırdı (ölçüldü: 101 MB'lık indekste
+  alt süreç USS 56 → 144 MB). Üç önlem:
+  - Fork anında canlı olan eski motorlara ÖLÜM KANCASI (`start(watch=…)`, `_pin_callback`): eski motor ebeveynde
+    serbest kalırken — içeriği bırakılmadan ÖNCE — alt süreç öldürülür (`RETIRE_RETAINED`); `EvidenceCache` aynı motor
+    için yeniden fork eder (eski motor artık yok → yeni alt süreç onu içermez) ve uçuştaki sembolü yeniden ister.
+  - Daha yeni yayımda eski sürümün alt süreci yayım ANINDA öldürülür (`RETIRE_SUPERSEDED`; sembol sınırı beklenmez).
+  - BELLEK KORUMASI: fork ancak en dar bellek payı (`memory_headroom_mb`: cgroup sınırı − dosya önbelleği hariç
+    kullanım, ya da sistem MemAvailable) `MEMORY_FORK_HEADROOM_MB` üstündeyse yapılır; alt süreç yaşarken pay
+    `MEMORY_CHECK_S`'de bir okunur ve `MEMORY_KILL_HEADROOM_MB` altına inerse alt süreç öldürülür (`RETIRE_MEMORY`,
+    uyarı) ve iş süreç içi sürer. Böylece alt süreç cgroup'u `MemoryMax`'a İTEMEZ: sınıra yaklaşılırsa ilk giden odur.
+  Bilinçli öldürmeler arıza sayılmaz; kanıt her yolda aynı fonksiyon + aynı motorla hesaplanır (bit-aynı). Alt süreç
+  `oom_score_adj=1000` (OOM'da çekirdek ÖNCE onu seçer) ve CPU'da turu itmesin diye `nice +10` alır. DİKKAT:
+  systemd'nin varsayılan `OOMPolicy=stop`'u birimdeki HERHANGİ bir sürecin OOM ile öldürülmesinde bütün birimi durdurur
+  (`Restart=on-failure` yeniden başlatır); bellek koruması bu yüzden OOM'dan ÖNCE davranır. "Alt süreç ölür, worker
+  sürer" davranışı birime `OOMPolicy=continue` ister (işletim değişikliği; sahip onayı).
 * Yalnız Linux (`supported`): başka platformda alt süreç hiç denenmez (sessizce bugünkü süreç içi yol). `fork`
   başarısızsa: hata loglanır, yol bugünkü süreç içi hesaptır.
 
@@ -113,9 +125,24 @@ from typing import Any, Callable
 #: Fork işaret dosyasının adı (worker'ın `state/` dizininde; bkz. modül başlığı "İŞARET DOSYASI").
 MARKER_NAME = "pattern_evidence_fork.marker"
 
+#: Alt sürecin BİLİNÇLİ olarak öldürülme nedenleri (`EvidenceChild.retired`; arıza DEĞİL, arıza sayacı yok — bellek
+#: koruması uyarı yazar). Bkz. modül başlığı "BELLEK".
+RETIRE_SUPERSEDED = "daha yeni yayım"          # eski sürümün alt süreci: yeni yayım ANINDA öldürülür
+RETIRE_RETAINED = "eski indeks bırakıldı"       # fork anında canlı olan eski motor ebeveynde serbest kaldı → yeniden fork
+RETIRE_MEMORY = "bellek koruması"               # cgroup/sistem bellek payı eşiğin altına indi → iş süreç içi sürer
+
 
 class EvidenceChildError(RuntimeError):
     """Alt süreç kullanılamaz: başlamadı, öldü, zaman aşımı ya da protokol hatası. Çağıran süreç içi yola düşer."""
+
+
+class EvidenceChildMemoryError(EvidenceChildError):
+    """Bellek payı fork için yetersiz: alt süreç HİÇ kurulmadı (çağıran süreç içi yola düşer)."""
+
+
+class EvidenceChildRetainedError(EvidenceChildError):
+    """El sıkışması sürerken fork anında canlı olan eski motor serbest kaldı ve alt süreç öldürüldü (arıza değil):
+    çağıran hemen yeniden fork edebilir — eski motor artık yoktur."""
 
 
 class EvidenceChildComputeError(RuntimeError):
@@ -277,6 +304,97 @@ def blas_threads() -> int | None:
     except Exception:  # noqa: BLE001 — yalnız teşhis
         return None
     return None
+
+
+# ------------------------------------------------------------------ bellek payı (cgroup + sistem)
+_CG_UNLIMITED = 1 << 60                          # cgroup v1'in "sınır yok" değeri (≈ 2^63, sayfaya yuvarlanmış) bunun üstü
+
+
+def _read_text(path: str) -> str | None:
+    try:
+        with open(path, encoding="ascii", errors="replace") as fh:
+            return fh.read()
+    except OSError:
+        return None
+
+
+def _stat_kv(text: str | None) -> dict[str, int]:
+    out: dict[str, int] = {}
+    for line in (text or "").splitlines():
+        parts = line.split()
+        if len(parts) == 2 and parts[1].isdigit():
+            out[parts[0]] = int(parts[1])
+    return out
+
+
+def _cgroup_headrooms(proc_cgroup: str | None, sys_root: str = "/sys/fs/cgroup") -> list[tuple[int, str]]:
+    """Bu sürecin cgroup'unda ve atalarında SINIRI OLAN her düzey için (pay bayt, ad).
+
+    pay = sınır − (kullanım − dosya önbelleği). Dosya önbelleği (active_file + inactive_file) çıkarılır: çekirdek onu
+    OOM'dan ÖNCE geri alır; yedekleme gibi büyük dosya işleri sayacı şişirir ama OOM getirmez. cgroup v2
+    (`memory.max`/`memory.current`/`memory.stat`) ve v1 (`memory.limit_in_bytes`/`memory.usage_in_bytes`/
+    `total_*_file`) okunur. Okunamayan ya da sınırsız düzey atlanır."""
+    out: list[tuple[int, str]] = []
+    for line in (proc_cgroup or "").splitlines():
+        parts = line.strip().split(":", 2)
+        if len(parts) != 3:
+            continue
+        hid, ctrls, path = parts
+        if hid == "0" and ctrls == "":
+            base, v2 = sys_root, True
+        elif "memory" in ctrls.split(","):
+            base, v2 = os.path.join(sys_root, "memory"), False
+        else:
+            continue
+        rel = path.strip("/")
+        while True:
+            d = os.path.join(base, rel) if rel else base
+            if v2:
+                lim_s = (_read_text(os.path.join(d, "memory.max")) or "").strip()
+                cur_s = (_read_text(os.path.join(d, "memory.current")) or "").strip()
+                lim = int(lim_s) if lim_s.isdigit() else None
+                st = _stat_kv(_read_text(os.path.join(d, "memory.stat"))) if lim is not None else {}
+                files = st.get("active_file", 0) + st.get("inactive_file", 0)
+            else:
+                lim_s = (_read_text(os.path.join(d, "memory.limit_in_bytes")) or "").strip()
+                cur_s = (_read_text(os.path.join(d, "memory.usage_in_bytes")) or "").strip()
+                lim = int(lim_s) if lim_s.isdigit() and int(lim_s) < _CG_UNLIMITED else None
+                st = _stat_kv(_read_text(os.path.join(d, "memory.stat"))) if lim is not None else {}
+                files = (st.get("total_active_file", st.get("active_file", 0))
+                         + st.get("total_inactive_file", st.get("inactive_file", 0)))
+            if lim is not None and cur_s.isdigit():
+                used = max(0, int(cur_s) - files)
+                out.append((lim - used, f"cgroup {'/' + rel if rel else '/'}"))
+            if not rel:
+                break
+            rel = os.path.dirname(rel)
+    return out
+
+
+def memory_headroom_mb() -> tuple[float, str] | None:
+    """En dar bellek payı (MB) ve kaynağı: bu sürecin cgroup zincirindeki sınırlar (`_cgroup_headrooms`) ve sistemin
+    `MemAvailable`'ı (takas yok: sistem OOM'u da birimi durdurur). Hiçbiri okunamazsa None (koruma devre dışı kalır;
+    yalnız /proc'suz ortamda). Ucuzdur (birkaç küçük dosya); alt süreç yaşarken saniyede bir okunur."""
+    cands = _cgroup_headrooms(_read_text("/proc/self/cgroup"))
+    for line in (_read_text("/proc/meminfo") or "").splitlines():
+        if line.startswith("MemAvailable:"):
+            try:
+                cands.append((int(line.split()[1]) * 1024, "sistem MemAvailable"))
+            except (IndexError, ValueError):
+                pass
+            break
+    if not cands:
+        return None
+    b, where = min(cands)
+    return b / (1024.0 * 1024.0), where
+
+
+def _headroom_or_none() -> tuple[float, str] | None:
+    """`memory_headroom_mb`, ama hiçbir koşulda istisna atmaz (okuma hatası → None = koruma o an devre dışı)."""
+    try:
+        return memory_headroom_mb()
+    except Exception:  # noqa: BLE001 — teşhis okuması kanıt hesabını bozmaz
+        return None
 
 
 # ------------------------------------------------------------------ ebeveyn GC dondurma (iç içe güvenli)
@@ -478,6 +596,20 @@ def _child_main(engine: Any, compute: Callable[[Any, str], dict], conn: Any, nic
 
 
 # ------------------------------------------------------------------ ebeveyn tarafı
+def _pin_callback(wself: "weakref.ref[EvidenceChild]") -> Callable[[Any], None]:
+    """Fork anında canlı olan ESKİ bir motorun ölüm kancası (weakref geri çağrısı). Kilitsiz ve istisnasız: motoru
+    bırakan iş parçacığında (çoğunlukla tur), motorun içeriği serbest kalmadan ÖNCE koşar. Alt süreç o motorun
+    sayfalarını fork'tan devraldı; ebeveyn onları bırakınca sayfalar alt sürecin ÖZEL belleği olurdu (ölçüm: indeks
+    boyutu kadar). Alt süreç hemen öldürülür; yeniden fork'u `EvidenceCache` bir sonraki istekte yapar."""
+    owner = os.getpid()
+
+    def _cb(_ref: Any) -> None:
+        c = wself()
+        if c is not None and c._armed and owner == os.getpid():
+            c.retire(RETIRE_RETAINED)
+    return _cb
+
+
 class EvidenceChild:
     """Bir yayımlanmış motor için TEK alt süreç. İş parçacığı güvenli DEĞİLDİR: çağıran (`EvidenceCache`) bütün
     kullanımı kendi hesaplama kilidi altında sıralar; yalnız `kill()` kilitsiz çağrılabilir."""
@@ -503,6 +635,15 @@ class EvidenceChild:
     #: Süreç çıkarken (atexit) SIGKILL'lenen alt sürecin biçilmesi için en çok bekleme (sn). SIGKILL'lenen süreç
     #: milisaniyeler içinde biter; pay yalnız aşırı yüklü makine içindir.
     EXIT_REAP_S = 2.0
+    #: BELLEK KORUMASI (düzeltme turu 3; modül başlığı "BELLEK"). Alt süreç yaşarken en dar bellek payı
+    #: (`memory_headroom_mb`: cgroup sınırı − dosya önbelleği hariç kullanım, ya da sistem MemAvailable) bu değerin
+    #: altına inerse alt süreç öldürülür ve iş süreç içi sürer (bugünkü yol; kanıt aynı). Pay en çok
+    #: `MEMORY_CHECK_S`'de bir okunur; alt sürecin kendi büyümesi (yazınca-kopyala) dakikalara yayılır.
+    MEMORY_KILL_HEADROOM_MB = 512.0
+    #: Fork ancak pay bu değerin üstündeyse yapılır (alt sürecin büyüyeceği yer + öldürme eşiği); değilse fork YOK.
+    MEMORY_FORK_HEADROOM_MB = 1536.0
+    #: Bellek payının okunma aralığı (sn), istek ve el sıkışması beklenirken.
+    MEMORY_CHECK_S = 1.0
 
     def __init__(self, engine: Any, version: int) -> None:
         self.version = int(version)
@@ -514,16 +655,30 @@ class EvidenceChild:
         self.computed = 0
         self.private_kb_max: int | None = None
         self.started_at = time.monotonic()
+        #: Bilinçli öldürme nedeni (`RETIRE_*`); boşsa alt süreç arızasızdır. Kilitsiz yazılır (`retire`).
+        self.retired = ""
+        self.retired_detail = ""
+        #: Fork anında canlı olan eski motorların ölüm kancaları (`_pin_callback`); yalnız `_armed` iken etkili.
+        self._pins: list = []
+        self._armed = False
+        #: Fork'tan hemen önce ölçülen bellek payı (MB; yalnız teşhis) ve son pay okumasının anı (monotonic).
+        self.headroom_mb_at_fork: float | None = None
+        self._mem_at = time.monotonic()
 
     # ---------------------------------------------------------------- yaşam döngüsü
     @classmethod
     def start(cls, engine: Any, compute: Callable[[Any, str], dict], *, version: int,
-              marker: Path | None = None) -> "EvidenceChild":
+              marker: Path | None = None, watch: Any = ()) -> "EvidenceChild":
         """`fork` ile alt süreci başlat ve "hazır" el sıkışmasını bekle. Başarısızlık → `EvidenceChildError`.
 
         Fork deadman altında yapılır (`FORK_DEADMAN_S`); `marker` verilirse fork süresince işaret dosyası durur (asılıp
         sonlandırılan worker'ı yeniden başlayan worker tanır: `fork_hung_before`). Süreç çıkıyorsa (`exiting()`) fork
-        yapılmaz; başlayan alt süreç çıkış kancasının kaydına fork'la AYNI kilit altında girer."""
+        yapılmaz; başlayan alt süreç çıkış kancasının kaydına fork'la AYNI kilit altında girer.
+
+        BELLEK: bellek payı `MEMORY_FORK_HEADROOM_MB`'in altındaysa fork YAPILMAZ (`EvidenceChildMemoryError`).
+        `watch`: ebeveynin bildiği ESKİ motorların ZAYIF referansları (güçlü referans tutulmaz). Fork anında canlı
+        olanlara ölüm kancası kurulur: biri ebeveynde serbest kalınca alt süreç `RETIRE_RETAINED` ile hemen öldürülür
+        (o motorun sayfaları alt süreçte kalıp özel belleğe dönüşmesin)."""
         if not supported():
             raise EvidenceChildError(f"platform desteklenmiyor: {sys.platform}")
         import multiprocessing as mp
@@ -531,11 +686,17 @@ class EvidenceChild:
             ctx = mp.get_context("fork")
         except ValueError as exc:                  # platform fork vermiyor
             raise EvidenceChildError(f"fork yok: {exc}") from exc
+        head = _headroom_or_none()
+        if head is not None and head[0] < cls.MEMORY_FORK_HEADROOM_MB:
+            raise EvidenceChildMemoryError(f"bellek payı yetersiz ({head[1]}: {head[0]:.0f} MB < "
+                                           f"{cls.MEMORY_FORK_HEADROOM_MB:.0f} MB); fork yapılmadı")
         _ensure_exit_hook()
         try:
             self = cls(engine, version)
         except TypeError as exc:                   # zayıf referans desteklemeyen motor: güçlü referans TUTULMAZ
             raise EvidenceChildError(f"motor zayıf referans desteklemiyor: {exc}") from exc
+        self.headroom_mb_at_fork = None if head is None else round(head[0], 1)
+        self._pin(engine, watch)
         _resolve_prctl()
         parent_conn, child_conn = ctx.Pipe(duplex=True)
         _freeze_parent_gc()
@@ -549,6 +710,7 @@ class EvidenceChild:
                     raise EvidenceChildError("süreç kapanıyor; fork yapılmadı")
                 with _fork_deadman(cls.FORK_DEADMAN_S):
                     marked = _mark(marker)
+                    self._armed = True             # bundan sonra ölen eski motor alt süreçte kalmış olabilir
                     try:
                         proc.start()               # start() hedef/argüman referanslarını bırakır (motor tutulmaz)
                     finally:
@@ -557,6 +719,7 @@ class EvidenceChild:
                 self._proc = proc                  # çıkış kancası artık görür (kill → bekleyen el sıkışması EOF)
                 _LIVE.add(self)
         except BaseException as exc:
+            self._disarm()
             child_conn.close()
             parent_conn.close()
             self._release_freeze()
@@ -572,6 +735,13 @@ class EvidenceChild:
             if not (isinstance(msg, tuple) and len(msg) == 2 and msg[0] == "ready"):
                 raise EvidenceChildError(f"beklenmeyen el sıkışması: {msg!r}"[:200])
             self.pid = int(msg[1])
+        except EvidenceChildError as exc:
+            self.close()
+            if self.retired == RETIRE_MEMORY:      # el sıkışması sırasında bellek koruması: fork reddiyle aynı
+                raise EvidenceChildMemoryError(str(exc)) from exc
+            if self.retired == RETIRE_RETAINED:    # eski motor el sıkışması sırasında öldü: yeniden fork edilebilir
+                raise EvidenceChildRetainedError(str(exc)) from exc
+            raise
         except BaseException:
             self.close()
             raise
@@ -586,8 +756,40 @@ class EvidenceChild:
             return False
 
     def serves(self, engine: Any) -> bool:
-        """Bu alt süreç `engine` için mi kuruldu ve canlı mı (kimlik karşılaştırması; sürüm karışamaz)."""
-        return self.alive and self._engine_ref() is engine
+        """Bu alt süreç `engine` için mi kuruldu, canlı mı ve bilinçli öldürülmedi mi (kimlik karşılaştırması; sürüm
+        karışamaz)."""
+        return not self.retired and self.alive and self._engine_ref() is engine
+
+    def engine_is(self, engine: Any) -> bool:
+        """Bu alt süreç `engine` için mi kuruldu (canlılıktan bağımsız; yalnız kimlik)."""
+        return self._engine_ref() is engine
+
+    def _pin(self, engine: Any, watch: Any) -> None:
+        """Fork'tan ÖNCE: `watch`'taki canlı eski motorlara ölüm kancası kur (kendi motoru hariç). Güçlü referans
+        TUTULMAZ; kancalar `_armed` olana dek (fork'tan hemen önce) etkisizdir — fork'tan önce ölen motor alt sürece
+        hiç geçmez."""
+        cb = _pin_callback(weakref.ref(self))
+        for r in watch or ():
+            e = r() if callable(r) else None
+            if e is not None and e is not engine:
+                try:
+                    self._pins.append(weakref.ref(e, cb))
+                except TypeError:
+                    pass
+            e = None
+        del cb
+
+    def _disarm(self) -> None:
+        self._armed = False
+        self._pins = []
+
+    def retire(self, reason: str, detail: str = "") -> None:
+        """Kilitsiz, her iş parçacığından: alt süreci BİLİNÇLİ olarak hemen öldür (`RETIRE_*`; arıza değildir). İlk
+        neden kalır. Bekleyen `compute` EOF görür; çağıran `retired`'a bakıp arıza saymaz."""
+        if not self.retired:
+            self.retired_detail = str(detail)[:300]
+            self.retired = str(reason)
+        self.kill()
 
     def kill(self) -> None:
         """Kilitsiz, her iş parçacığından: alt süreci hemen öldür (bekleyen `compute` EOF görür)."""
@@ -602,6 +804,7 @@ class EvidenceChild:
         """Alt süreci kapat (önce kibarca, sonra SIGKILL), boruyu kapat, ebeveyn GC dondurmasını bırak. Tekrar çağrılabilir."""
         p, c = self._proc, self._conn
         self._conn = None
+        self._disarm()
         try:
             if c is not None:
                 try:
@@ -663,8 +866,22 @@ class EvidenceChild:
         except (OSError, ValueError, IndexError):
             return None
 
+    def _memory_check(self, what: str) -> None:
+        """En çok `MEMORY_CHECK_S`'de bir: bellek payı öldürme eşiğinin altındaysa alt süreci `RETIRE_MEMORY` ile öldür
+        → `EvidenceChildError`. Her istekten önce ve istek beklenirken çağrılır."""
+        now = time.monotonic()
+        if now - self._mem_at < self.MEMORY_CHECK_S:
+            return
+        self._mem_at = now
+        head = _headroom_or_none()
+        if head is not None and head[0] < self.MEMORY_KILL_HEADROOM_MB:
+            msg = (f"{what}: {head[1]} payı {head[0]:.0f} MB < {self.MEMORY_KILL_HEADROOM_MB:.0f} MB "
+                   "(alt süreç öldürüldü)")
+            self.retire(RETIRE_MEMORY, msg)
+            raise EvidenceChildError(f"bellek koruması — {msg}")
+
     def _recv(self, timeout: float, *, what: str, stall: float | None = None) -> Any:
-        """Zaman aşımlı, ölüm ve asılma algılayan alım. Beklerken GIL tutulmaz (poll = select)."""
+        """Zaman aşımlı, ölüm, asılma ve bellek payı algılayan alım. Beklerken GIL tutulmaz (poll = select)."""
         c, p = self._conn, self._proc
         if c is None or p is None:
             raise EvidenceChildError("alt süreç kapalı")
@@ -678,13 +895,14 @@ class EvidenceChild:
                 self.kill()
                 raise EvidenceChildError(f"{what}: {timeout:.0f} sn içinde cevap yok (alt süreç öldürüldü)")
             try:
-                if c.poll(min(1.0, remaining)):
+                if c.poll(min(self.MEMORY_CHECK_S, 1.0, remaining)):
                     return c.recv()
             except (EOFError, OSError) as exc:
                 raise EvidenceChildError(f"{what}: alt süreç bağlantısı koptu ({type(exc).__name__}; "
                                          f"exitcode {getattr(p, 'exitcode', None)})") from exc
             if not p.is_alive():
                 raise EvidenceChildError(f"{what}: alt süreç öldü (exitcode {p.exitcode})")
+            self._memory_check(what)
             if stall is not None and ticks is not None:
                 cur = self._cpu_ticks()
                 if cur is not None and cur != ticks:
@@ -700,6 +918,7 @@ class EvidenceChild:
         c = self._conn
         if c is None or not self.alive:
             raise EvidenceChildError("alt süreç canlı değil")
+        self._memory_check(f"{symbol} kanıtı")
         try:
             c.send(("q", str(symbol)))
         except (OSError, EOFError, ValueError) as exc:
@@ -718,5 +937,7 @@ class EvidenceChild:
         return msg[2]
 
 
-__all__ = ["MARKER_NAME", "EvidenceChild", "EvidenceChildComputeError", "EvidenceChildError", "blas_threads",
-           "deadman_unavailable", "exiting", "fork_hung_before", "parent_gc_frozen", "supported"]
+__all__ = ["MARKER_NAME", "RETIRE_MEMORY", "RETIRE_RETAINED", "RETIRE_SUPERSEDED", "EvidenceChild",
+           "EvidenceChildComputeError", "EvidenceChildError", "EvidenceChildMemoryError", "EvidenceChildRetainedError",
+           "blas_threads",
+           "deadman_unavailable", "exiting", "fork_hung_before", "memory_headroom_mb", "parent_gc_frozen", "supported"]

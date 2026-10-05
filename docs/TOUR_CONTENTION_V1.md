@@ -4,6 +4,10 @@ Tarih: 2026-10-05 · Taban: `1c2c6e2` (VPS'te çalışan `f8b05fb` + sonraki ara
 Dal: `impl/tourfix` · Düzeltme turu 1: iki mercekli denetimin bulguları (§3.1 fork asılması, §6 OOM, §5 saat-duvarı).
 Düzeltme turu 2: kapanış alt süreci beklemez (§3.3), alt süreç devralınan tanımlayıcıları tutmaz (§3.2), işaret dosyası
 yedeğe girmez (§3.1), geri alma sinyalleri ve kalan karar riski (§5, §9).
+Düzeltme turu 3: BELLEK (§6 baştan yazıldı, denetim bulgusu doğrulandı): fork anında canlı olan eski indeks ebeveynde
+bırakılınca alt süreçte kalıyordu (≈ bir indeks boyutu) → alt süreç öldürülüp yeniden kurulur; eski sürümün alt süreci
+yeni yayım ANINDA öldürülür; cgroup/sistem bellek payı koruması alt süreci `MemoryMax`'tan önce öldürür (§3.4). Sahibin
+aktardığı VPS gerçekleri (4 vCPU, RAM, `MemoryMax`, `MemoryPeak`, `hwm`) belgeye işlendi; sürüm notu metni §9.1.
 
 Bu bir **karar-nötr performans onarımıdır**: strateji, eşik, defter, boyut ve config değeri değişmez. Yeni indeksin
 yayımlandığı kod noktası ve kuralı, turun indeks sürümünü okuma kuralı, kanıt önbelleğinin anahtarı ve kanıtın kendisi
@@ -13,7 +17,8 @@ sahibin değerlendirmesi için §5'te açıkça yazılıdır.
 
 Bu belgedeki sayılar yerel makinelerde ölçülmüştür (4 çekirdek, Python 3.12, ağ yok). VPS'te ölçülmüş değildir; VPS'te
 neyin doğrulanacağı §9'dadır. §2'deki büyük yavaşlama oranları **boştaki** makineden gelir; aynı betik yüklü makinede
-çok daha küçük oranlar verdi (§2.2). VPS'teki uzun turların bu mekanizmayla açıklanması bir **hipotezdir**.
+çok daha küçük oranlar verdi (§2.2). VPS'teki uzun turların bu mekanizmayla açıklanması bir **hipotezdir**. VPS'in
+çekirdek sayısı artık biliniyor (sahibin aktardığı: 4 vCPU — yerel ölçüm makinesiyle aynı); yükü bilinmiyor.
 
 ---
 
@@ -85,8 +90,8 @@ yük ortalaması 2–3,5, `--bars 800`, 10.736 olay): süreç içi 8,6× / 42× 
 gecikmesi p90 67 ms / en çok 379 ms; alt süreç 1,08× / 0,73× / 0,93× / 1,37×, p90 0,9 ms. Yani yukarıdaki 33–145× boştaki
 ya da az yüklü makineye özgüdür ve ağır yükte yeniden üretilmez; her koşuda yeniden üretilen sonuç **alt süreç yolunun
 ~1×** olmasıdır (ön ısıtmanın çekişme payı ortadan kalkar). Bu payın VPS'teki 5× (semboller) ve 33×'ü (yürütme) açıklayıp
-açıklamadığı VPS'in çekirdek sayısına ve yüküne bağlıdır; ikisi de bilinmiyor → dağıtım sonrası §9.1/§9.5 ile
-doğrulanacak bir hipotez.
+açıklamadığı VPS'in yüküne bağlıdır (çekirdek sayısı 4 vCPU, sahibin aktardığı; yükü bilinmiyor) → dağıtım sonrası §9
+ölçüt 1 ve 5 ile doğrulanacak bir hipotez.
 
 Tekrar çalıştırmak için ağsız betik: `python scripts/bench_tour_contention.py --modes none,inproc,child` (sentetik veri,
 geçici dizin; worker'ın yanında koşturmayın, CPU yarıştırır). Aynı mekanizmanın hızlı bir sürümü
@@ -134,7 +139,10 @@ satırı) + `refresher.py` (yalnız yayım satırına kurulum süresi) + `config
 4. Alt süreç yaşarken turun önbellek ıskası da ona gider (`EvidenceCache.compute`, `compute_lock` altında): tur boruda
    bekler, GIL Box zamanlayıcısına ve koruyucu izleyiciye kalır. Alt süreç yalnız kendi motorunun sorgusunu yapar
    (kimlik denetimi); başka sürümü okuyan tur bugünkü gibi süreç içi hesaplar.
-5. İş bitince ya da daha yeni yayım görülünce (sembol sınırında) alt süreç kapatılır.
+5. İş bitince alt süreç kapatılır. Daha yeni yayımda eski sürümün alt süreci yayım ANINDA öldürülür (düzeltme turu 3;
+   önceden sembol sınırında kapanıyordu); uçuştaki tur isteği o sembolü süreç içi hesaplar (aynı kanıt), ön ısıtma eski
+   işi bırakır.
+6. Bellek (düzeltme turu 3, §3.4 ve §6): fork anında canlı olan eski motorlara ölüm kancası; bellek payı koruması.
 
 Neden `fork` (spawn/forkserver değil): yeni bir süreç indeksi ya arşivden yeniden kurmalı (40+ sn CPU ve yayımlananla
 aynı olduğunun garantisi yok) ya da ebeveynden pickle ile almalıdır (`PatternEvent` başına ayrı Python nesneleri:
@@ -250,6 +258,46 @@ yeni alt süreç kapatılır, sembol süreç içi hesaplanmaz),
 `test_watch_shutdown_stops_the_pattern_evidence_before_releasing_the_lock`. Geri dönüş anahtarı kapalıyken (alt süreç
 yok) kanca hiç kaydedilmez; `watch` kapanışındaki `stop()` süreç içi bir sembol hesaplanıyorsa en çok 2 sn bekler.
 
+### 3.4 Bellek önlemleri (düzeltme turu 3, denetim bulgusu)
+
+Ayrıntı ve ölçüm §6'da. Üç önlem, hepsi `evidence_cache.py` + `evidence_child.py` içinde:
+
+1. **Eski indeksin ölüm kancası + yeniden fork.** Ebeveynin gördüğü her motor zayıf referansla bilinir
+   (`EvidenceCache.track_engine`: yayım kancası `note_published`, `request_prewarm` ve turun ıskası). Fork anında hâlâ
+   canlı olan eski motorlara ölüm kancası kurulur (`EvidenceChild.start(watch=…)`). Eski motor ebeveynde serbest
+   kalırken — kanca motorun içeriği bırakılmadan ÖNCE koşar — alt süreç öldürülür (`RETIRE_RETAINED`); bir sonraki
+   istekte (`_child_for`, `compute_lock` altında, hangi iş parçacığı isterse) aynı motor için yeniden fork edilir ve
+   uçuştaki sembol yeni alt süreçte yeniden istenir. Yeni alt süreç eski indeksi içermez (o anda ebeveynde yoktur). Eski
+   motor tam el sıkışması sırasında ölürse fork bir kez daha yapılır. İş başına en çok 4 yeniden fork; sonra işin kalanı
+   süreç içi (uyarı). Bilgi satırı: `pattern kanıtı: alt süreç yeniden kuruldu — …`; ön ısıtma satırında `; eski indeks
+   için yeniden fork R` eki.
+2. **Eski sürümün alt süreci yayım ANINDA ölür** (`note_published` / `request_prewarm` → `_retire_stale_child`,
+   yenileyici iş parçacığında, kilitsiz — `stop()` gibi yalnız öldürür). Bilgi satırı: `pattern kanıtı: eski sürümün
+   alt süreci (sürüm N) daha yeni yayımla hemen kapatıldı (sürüm M)`. Bedeli: o an alt süreçte bekleyen bir tur isteği
+   varsa tur o sembolü süreç içi hesaplar (bugünkü yol: aynı kanıt, VPS'te ~25 sn ve o süre için bugünkü GIL
+   çekişmesi); ön ısıtmanın uçuştaki eski sembolü atılır (eski sürüm zaten bırakılıyordu).
+3. **Bellek payı koruması.** Pay = en dar olan: cgroup zincirindeki her sınır için `sınır − (kullanım − dosya
+   önbelleği)` (v2: `memory.max`, `memory.current`, `memory.stat` `active_file + inactive_file`; v1 karşılıkları) ve
+   sistemin `MemAvailable`'ı (takas yok). Dosya önbelleği çıkarılır: çekirdek onu OOM'dan önce geri alır (saatlik
+   yedek gibi büyük dosya işleri sayacı şişirir ama OOM getirmez). Fork yalnız pay ≥ 1.536 MB iken yapılır
+   (`MEMORY_FORK_HEADROOM_MB`; değilse uyarı `pattern kanıtı alt süreci başlatılmadı — bellek payı yetersiz (…)` ve iş
+   süreç içi). Alt süreç yaşarken pay her istekten önce ve istek beklenirken saniyede bir okunur; 512 MB'ın
+   (`MEMORY_KILL_HEADROOM_MB`) altına inerse alt süreç öldürülür (`RETIRE_MEMORY`, uyarı `pattern kanıtı alt süreci
+   bellek koruması nedeniyle kapatıldı (…)`) ve işin kalanı süreç içi sürer.
+
+Bilinçli öldürmelerin hiçbiri arıza sayılmaz (arıza sayacı ve `arızalandı` uyarısı yok); bilgi satırları
+`pattern kanıtı alt süre…` önekini KULLANMAZ (o önek §9 ölçüt 3'te sorun satırlarınındır), bellek koruması uyarıları
+kullanır. Kanıt her yolda aynı fonksiyon + aynı motorla hesaplanır. Testler (`tests/test_evidence_subprocess_v1.py`
+bölüm 14): `test_a_newer_publish_kills_the_old_child_at_once_not_at_the_symbol_boundary`,
+`test_a_tour_in_flight_in_the_stale_child_recomputes_in_process_with_the_same_result`,
+`test_an_old_index_dropped_after_the_fork_kills_and_reforks_the_child_same_evidence`,
+`test_a_tour_holding_the_old_index_while_the_new_child_forks_triggers_one_refork` (motor düzeyinde gerçek akış),
+`test_the_child_does_not_keep_a_dropped_old_index_resident` (ölçüm; kancasız kontrol kolu eski indeksin alt süreçte
+kaldığını gösterir), `test_the_memory_guard_kills_the_child_and_the_job_finishes_in_process_same_evidence`,
+`test_no_fork_when_the_memory_headroom_is_short_same_evidence`,
+`test_the_headroom_reader_handles_cgroup_v2_and_v1_and_excludes_page_cache`,
+`test_a_retention_kill_during_the_fork_handshake_reforks_once_and_is_not_a_failure`.
+
 ## 4. Neden indeks kurulumu süreçte kaldı
 
 Kurulumu alt sürece taşımak motoru ebeveyne geri taşımayı gerektirir (≈150k olay pickle'ı: ebeveynde saniyelerce GIL,
@@ -267,6 +315,7 @@ henüz ölçülmedi (§2.4); kalan risk §9'da.
 | Kanıt değeri | aynı motor/fonksiyon/girdi; pickle float'ı kayıpsız taşır; serileştirilmiş `==` ve nesne `==` | `test_child_evidence_is_bit_identical_to_in_process_and_files_match` |
 | Karar kimliği (`config_hash`, karar günlüğü/provenans satırlarına yazılır) | yeni anahtar iki değerinde de karar-nötr → özetten çıkarılır (ortak deneyim bölümüyle aynı kural); özet bu alandan önceki kodla aynı. Görünürlük için etkin değer başlangıçta bir kez loglanır; tırnaklı `"false"` gibi bool olmayan değer config doğrulamasında reddedilir | `test_the_switch_is_not_part_of_the_decision_identity`, `test_the_switch_is_linux_only_bool_only_and_logged_at_startup`, `test_learning_record_only_tours.py` (`943345c` ile bayt bayt) |
 | Bütün durum dosyaları | gerçek `tour()` × 5, iki yayım; alt süreç AÇIK (ön ısıtma bitmiş / tur başlarken sürüyor / **ön ısıtma hiç hesaplamıyor, turun bütün ıskaları alt süreçte**), süreç içi, ön ısıtma KAPALI → `state/` bayt bayt aynı | `test_tour_perf_no_decision_change_v1.py` (4 karşılaştırma) |
+| Bellek önlemleri (düzeltme turu 3) | eski alt süreci yayımda öldürmek, eski indeks bırakılınca yeniden fork, bellek koruması: yalnız kanıtın HANGİ süreçte hesaplandığını seçer; tur o sembolü süreç içi (aynı fonksiyon + motor) ya da yeni alt süreçte hesaplar; yayım noktası, sürüm okuma kuralı, anahtar değişmez | §3.4'teki testler (her birinde kanıt süreç içi hesapla bayt bayt karşılaştırılır) |
 
 **Kalan karar riski — deadman yeniden başlatması.** Alt süreç varsayılan AÇIK'tır ve kararları değiştirebileceği
 TEK yol §3.1'deki deadman olayıdır: fork asılırsa worker sonlandırılır ve yeniden başlar. Bugün worker hiç fork etmediği
@@ -289,43 +338,161 @@ kaldıran `OPENBLAS_NUM_THREADS=1` ayrı bir karar-nötrlük kanıtı ister (§1
   değişikliği yok" kuralına uygun olup olmadığına sahip karar verir; uygun görmezse `history.evidence_subprocess: false`
   bugünkü zamanlamaya döner.
 
-## 6. Bellek
+## 6. Bellek (düzeltme turu 3'te baştan yazıldı)
+
+Bellek VPS'te bağlayıcı kısıttır. Bu bölümün önceki sürümü alt sürecin maliyetini yalnız yazınca-kopyala payıyla
+(≈0,35 GB) veriyordu. Denetim, yayım bir turun ortasına düşünce alt sürecin ESKİ indeksi de taşıdığını ölçtü (≈ bir
+indeks boyutu daha, işin sonuna dek). Bulgu burada yeniden üretildi (§6.4), önlendi (§3.4, §6.3) ve sayılar yeniden
+ölçüldü.
+
+### 6.1 VPS gerçekleri (sahibin aktardığı, 2026-10-05; salt okunur)
+
+| | |
+|---|---|
+| CPU / RAM | 4 vCPU; 7.751 MB RAM, takas YOK (sayfa önbelleğiyle ~4,4 GB kullanılabilir) |
+| Worker cgroup | `MemoryMax` 6 GiB (6.442 MB); `MemoryPeak` 5,45 GB — sayfa önbelleği DAHİL cgroup tepesi |
+| Worker süreci | `health.json` `hwm_mb` ~3,5 GB RSS (~9 sa sonra; eski + yeni indeksin birlikte durduğu kurulumlar dahil) |
+| Diğer | panel ~90 MB; saatlik yedek geçici olarak birkaç GB DİSK ister; worker birimine varsayılan `OOMPolicy=stop` uygulanır |
+| İndeks | 89 futures 4h serisinden yeniden kuruluyor; olay sayısı yayım satırında (`… olay, … seri`) |
+
+Önceki sürümdeki "bugünkü tepe ~4,5 GB" bir tahmindi; ölçülen süreç RSS tepesi ~3,5 GB'dır.
+
+### 6.2 Alt süreç neden özel bellek taşır: iki kaynak
+
+**(a) Yazınca-kopyala.** Alt süreç sorguda dokunduğu nesnelerin başvuru sayaçlarına yazar; o sayfalar kopyalanır.
+Ölçülen: indeks boyutunun %48–64'ü (küçük indekste oran büyür, çünkü alt sürecin kendi taban belleği de sayılır).
+Alt sürecin GC'si `gc.freeze()` ile ebeveynden gelen nesneleri dolaşmaz. Ebeveyn de alt süreç yaşarken kendi GC'sini
+dondurur; dondurulmazsa ebeveynin tam toplaması ortak sayfaları kopyalatır (335 MB'lık süreçte +68 MB).
+
+**(b) Devralınıp sonradan bırakılan sayfalar (denetim bulgusu, doğrulandı).** `fork` anında ebeveynde canlı olan her
+nesnenin fiziksel sayfaları alt süreçte de eşlenir. Ebeveyn o nesneyi SONRA bırakırsa sayfalar serbest kalmaz; alt
+sürecin özel belleği olur ve cgroup'ta sayılır. Bunun için sorgu gerekmez: ölçümde alt sürecin USS'i eski indeks
+bırakıldığı anda 106 → 280 MB oldu (§6.4).
+
+Ne zaman olur? Tur pattern kanıtını sembol başına bir `_pattern_evidence` çağrısıyla alır: paketi o çağrıda okur ve
+motoru çağrı bitene dek tutar. Iska varsa bu süre hesabı ve panel yazımını kapsar; süreç içi bir eski sürüm ıskası
+VPS'te ~25 sn sürer. Yayım bu pencereye denk gelirse ön ısıtma yeni sürüm için fork ettiğinde eski indeks canlıdır. Tur
+çağrısı bitince eski indeks ebeveynde serbest kalır ve önlem olmasa işin sonuna dek (7–14 dk) alt süreçte kalırdı.
+
+Denetim notu "tur paketi bir kez okur ve turun sonuna dek tutar" diyordu. Kodda okuma sembol başınadır, yani pencere
+tek bir kanıt çağrısıdır. Etkisi yine de aynıdır: işin geri kalanında ≈ bir indeks.
+
+Yayım turların arasına düşerse eski paket yayım anında bırakılır ve motor, başvuru sayımıyla hemen serbest kalır (GC
+gerekmez). Alt süreç bu durumda eski indeksi hiç görmez.
+
+### 6.3 Önlemler (ayrıntı §3.4)
+
+1. **Ölüm kancası ve yeniden fork.** Fork anında canlı olan eski motorlara kanca kurulur. Kanca, motorun içeriği
+   bırakılmadan ÖNCE koşar ve alt süreci SIGKILL ile öldürür; alt sürecin eski indeks yüzünden büyümesine fırsat
+   kalmaz. Ardından aynı motor için yeniden fork edilir; yeni alt süreç eski indeksi içermez. Bedeli: uçuştaki bir
+   sembolün alt süreçte yeniden hesabı (en çok ~25 sn CPU) ve bir fork (8–16 ms).
+2. **Eski sürümün alt süreci yayım ANINDA ölür.** Yazınca-kopyala sayfaları hemen iade edilir. İki alt süreç hiçbir
+   zaman bir arada yaşamaz.
+3. **Bellek payı koruması.** Alt süreç ancak yeterli bellek payı varken kurulur ve pay daralırsa öldürülür (eşikler
+   §6.5'te). Bu, tahminlerden bağımsız bir sınırdır.
+
+### 6.4 Ölçüm (yerel)
+
+Komut: `python scripts/bench_tour_contention.py --memory --bars N`. Her durum ayrı bir yorumlayıcıda koşar. İki indeks
+(eski + yeni) bellekteyken yeni indeksin ön ısıtması başlar. Toplam PSS = ebeveyn + alt süreç; paylaşılan bir sayfa iki
+sürece bölünür, yani çift sayım yoktur. Değerler MB'dır. M, işin log satırındaki "özel bellek M MB" değeridir (alt
+sürecin iş boyunca bildirdiği en yüksek USS).
+
+`--bars 3000` (45.936 olay/indeks, indeks ≈ 201 MB):
+
+| Durum | iki indeks | ön ısıtma 2 sembol | eski indeks bırakıldı (+1 sn) | +2 sembol | tur benzeri iş | alt süreç USS | M |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| süreç içi (anahtar kapalı) | 480 | 489 | 431 | 430 | 431 | — | — |
+| alt süreç, yayım turlar ARASINDA (eski fork'tan önce bırakıldı) | 482 → 425 | 523 | — | — | 532 | 113 | 114,1 |
+| alt süreç, yayım tur ORTASINDA, kancasız (düzeltme turu 3'ten önceki kod) | 480 | 585 | **705** | 701 | **705** | **285** | **289,2** |
+| alt süreç, yayım tur ORTASINDA, bugünkü kod | 467 | 574 | 433 (yeni pid, USS 23) | 518 | 524 | 115 | 115,6 |
+
+`--bars 1500` (21.936 olay/indeks, indeks ≈ 101 MB):
+
+| Durum | iki indeks | ön ısıtma 2 sembol | eski indeks bırakıldı (+1 sn) | +2 sembol | tur benzeri iş | alt süreç USS | M |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| süreç içi | 284 | 290 | 278 | 278 | 278 | — | — |
+| alt süreç, turlar arasında | 284 → 277 | 334 | — | — | 343 | 63 | 64,1 |
+| alt süreç, tur ortasında, kancasız | 276 | 334 | **414** | 413 | **417** | **149** | **149,9** |
+| alt süreç, tur ortasında, bugünkü kod | 276 | 334 | 294 (yeni pid, USS 25) | 336 | 342 | 64 | 64,6 |
+
+Okuma:
+
+- Kancasız kodda eski indeks bırakılınca toplam bellek düşmedi, arttı (+120 MB / +80 MB). Alt süreç M ≈ 1,4 × indeks
+  taşıdı: yazınca-kopyala payı artı eski indeksin ≈ %90'ı. Denetimin ölçümü (≈ bir indeksin %90'ı) yeniden üretildi.
+- Bugünkü kodda tur ortası yayım, turlar arası yayımla aynıdır (524 / 532 MB; M 115,6 / 114,1). Alt süreç öldürülüp
+  yeniden kurulduğu an USS 23–25 MB'a iner.
+- Alt sürecin süreç içi yola göre ek maliyeti, iş sürerken: +93…+101 MB (201 MB'lık indekste, ≈ %50) ve +64 MB (101
+  MB'lık indekste). İş bitince sıfırdır.
+- Tur ortası yayımın kısa bir anı (eski indeks hâlâ turun çağrısındayken: "ön ısıtma 2 sembol" sütunu) iki indeksi ve
+  alt süreci birlikte gösterir (574–585 MB). Bu, tur çağrısı bitene dek sürer ve en çok bir kanıt çağrısı uzunluğundadır.
+
+Önceki turların ölçümleri hâlâ geçerlidir:
 
 | Ölçü (yerel) | Değer |
 |---|---|
-| İndeks boyutu | ≈4,5 KB/olay (50,7k olay ≈ 233 MB; 100,3k olay ≈ 453 MB) |
+| İndeks boyutu | ≈ 4,4–4,6 KB/olay (21,9k olay ≈ 101 MB; 45,9k ≈ 201 MB; 50,7k ≈ 233 MB; 100,3k ≈ 453 MB) |
 | `fork` süresi | 8 ms (341 MB süreç), 16 ms (561 MB süreç) |
-| Alt süreç özel belleği (USS), bir tam sorgu turundan sonra | indeksin %48–49'u (113 MB / 233 MB; 217 MB / 453 MB) |
-| Gerçek uygulama, 100,3k olay, alt süreç 3 sembol hesaplarken ebeveyn tur benzeri iş + 17 tam `gc.collect()` | alt süreç özel belleği en çok 226 MB (%50); ebeveyn RSS 700 → 716 MB |
+| Alt süreç USS, bir tam sorgu turundan sonra (büyük indeks) | indeksin %48–49'u (113 / 233 MB; 217 / 453 MB) |
 | Ebeveyn GC'si dondurulmazsa, ebeveynin tam toplaması sırasında ek kopya | +68 MB (335 MB süreç); dondurulunca 0 |
 | Ebeveynin ayırdığı bellek (alt süreç yolu, tracemalloc) | indeks boyutunun < %10'u (test eşiği) |
 
-Neden kopya oluşuyor: alt süreç sorgu sırasında dokunduğu her nesnenin başvuru sayacına yazar; o nesnelerin sayfaları
-kopyalanır. Alt süreç `gc.freeze()` ile ebeveynden gelen nesneleri GC'de dolaşmaz; ebeveyn de alt süreç yaşarken kendi
-GC'sini dondurur (iç içe güvenli sayaç; yalnız GC zamanlamasını etkiler, hiçbir değeri değil) ve son alt süreç kapanınca
-çözer.
+Testler: `test_the_child_does_not_keep_a_dropped_old_index_resident`. Bu test kancasız kontrol kolunda 160 MB'lık eski
+nesnenin alt süreçte kaldığını (> %80), düzeltmede yeni alt sürecin 40 MB'ın altında kaldığını gösterir. Diğer testler
+§3.4'te.
 
-VPS'e ölçekleme (tahmin, ölçüm değil): ~152k olay ≈ 0,7 GB indeks → alt süreç ≈ 0,35 GB, yalnız ön ısıtma süresince
-(yayım başına ~7 dk; CPU kotası altında en çok ~14 dk), kapanınca iade edilir. Bugünkü tepe (yeniden kurulumda eski +
-yeni indeks, ~4,5 GB) alt süreç yaşarken genellikle oluşmaz: alt süreç yayımdan SONRA kurulur ve bir sonraki kurulum en
-erken bir sonraki yenileme döngüsündedir. Çakışırsa tahmin ≈4,5 + 0,35 GB < 6 GB `MemoryMax` (ölçülmemiş tahmin).
+### 6.5 VPS'e ölçekleme (tahmin, ölçüm değil) ve güvenlik sınırı
 
-**OOM'da ne olur (düzeltildi).** Önceki sürüm "alt süreç ölür, worker süreç içi yola düşer" diyordu; bu systemd'nin
-varsayılanında **doğru değil**. Depodaki birimde `OOMPolicy=` yok → `DefaultOOMPolicy=stop`: cgroup'taki HERHANGİ bir
-süreç (`oom_score_adj=1000` ile önce seçilen alt süreç dahil) çekirdeğin OOM öldürücüsüyle öldürülürse systemd bütün
-birimi durdurur (sonuç `oom-kill`) ve `Restart=on-failure` yeniden başlatır — bugünkü bir OOM ile aynı sonuç (30 sn
-bekleme, tam indeks kurulumu, uzun ilk tur). Alt sürecin yeni olan tek katkısı yayım başına 7–14 dk boyunca ≈0,35 GB ek
-bellektir. `oom_score_adj=1000` yine de işe yarar: öldürülen worker değil alt süreç olur, worker birim durdurulurken
-düzenli kapanır (yazma ortasında çekirdekçe öldürülmez). "Alt süreç ölür, worker sürer" davranışı istenirse VPS
-drop-in'ine `OOMPolicy=continue` eklenmelidir — yalnız işletim, karar-nötr, **sahip onayı ister** (öneri, §10).
+- **İndeks boyutu.** I ≈ olay × 4,5 KB. Kodun notundaki 138.891 olay için I ≈ 0,62 GB. Sahip gerçek olay sayısını yayım
+  satırından okur ve buna göre düzeltir.
+- **Alt sürecin özel belleği.** Bugünkü kodla M ≈ 0,5–0,6 × I ≈ 0,3–0,4 GB. Bu, yayımın tur ortasına ya da turlar
+  arasına düşmesinden bağımsızdır. Düzeltme turu 3'ten önceki kodla tur ortası yayımda M ≈ 1,4 × I ≈ 0,9 GB olurdu
+  (denetimin ≈0,85 GB'ı).
+- **Tepe.** Alt süreç yalnız bir yayımdan SONRA ve iş süresince (7–14 dk) yaşar. Worker'ın RSS tepesi (~3,5 GB, eski ve
+  yeni indeksin birlikte durduğu kurulum) yayımdan ÖNCE oluşur. İkisi ancak bir sonraki kurulum, önceki işin alt süreci
+  hâlâ yaşarken başlarsa çakışır. Aynı 4h kapanışının ikinci yayımı ~20 dk sonra gelir ve iş normalde ondan önce biter.
+  Çakışırsa toplam ≈ 3,5 + 0,4 ≈ 3,9 GB anonim bellek olur. `MemoryMax` 6 GiB (6,44 GB) olduğundan pay ≈ 2,5 GB kalır.
+  İki alt süreç hiçbir zaman bir arada yaşamaz (§6.3/2).
+- **`MemoryPeak` 5,45 GB.** Bu değer sayfa önbelleğini içerir. Çekirdek sayfa önbelleğini OOM'dan önce geri alır;
+  dolayısıyla anonim belleğin sınıra bu kadar yakın olduğu anlamına gelmez. Koruma da sayfa önbelleğini saymaz.
+- **Güvenlik sınırı: bellek payı koruması.** Tahmin yanlış çıksa bile koruma geçerlidir.
+  - Pay, en dar olan değerdir: her cgroup sınırı için `sınır − (kullanım − dosya önbelleği)`, ayrıca sistemin
+    `MemAvailable`'ı.
+  - Fork yalnız pay ≥ 1.536 MB iken yapılır.
+  - Alt süreç yaşarken pay her istekten önce ve istek beklenirken saniyede bir okunur. 512 MB'ın altına inerse alt süreç
+    öldürülür ve iş süreç içi yolla tamamlanır (bugünkü yol, ek bellek yok).
+  - Böylece alt süreç cgroup'u `MemoryMax`'a itemez: sınıra yaklaşılırsa ilk giden odur.
+  - Varsayımı: bellek bir saniyede 512 MB'tan hızlı büyümez. Alt sürecin kendi büyümesi (yazınca-kopyala) dakikalara
+    yayılır; ölçümde birkaç MB/sn. Eski indeks kaynağı ise kancayla anında kapanır.
+  - Worker'ın KENDİ büyümesine karşı koruma bugünkü kadardır; bu değişiklik onu değiştirmez.
+- **Kalan küçük kaynak.** Ebeveynin fork'tan sonra bıraktığı geçici tur verisi de alt süreçte kalır (ölçüm: tur benzeri
+  iş +6–9 MB). Bunun için yeniden fork yapılmaz; koruma sınırlar.
 
-İzleme notu: `health.json` `hwm_mb` (VmHWM) yalnız worker sürecini ölçer; alt süreci İÇERMEZ — `f8b05fb`'nin `--check`
-bellek tetiği alt sürecin belleğini görmez. Cgroup toplamı için `systemctl show tradingbot-worker -p MemoryPeak` (ya da
-`MemoryCurrent` örnekleri) okunmalı; bir sonraki sürüm betiğinin bellek tetiği buna dayanmalı (§10).
+Sonuç: güvenlik ölçüm ve çalışma anı koruması ile gösterildiği için anahtar varsayılan AÇIK kalır. Sahip yine de
+`history.evidence_subprocess: false` ile kapatabilir.
+
+### 6.6 OOM'da ne olur
+
+Önceki sürüm "alt süreç ölür, worker süreç içi yola düşer" diyordu; bu, systemd'nin varsayılanında **doğru değil**.
+Depodaki birimde `OOMPolicy=` yok, dolayısıyla `DefaultOOMPolicy=stop` geçerlidir: cgroup'taki HERHANGİ bir süreç
+(`oom_score_adj=1000` ile önce seçilen alt süreç dahil) çekirdeğin OOM öldürücüsüyle öldürülürse systemd bütün birimi
+durdurur (sonuç `oom-kill`). `Restart=on-failure` birimi yeniden başlatır. Sonuç bugünkü bir OOM ile aynıdır: 30 sn
+bekleme, tam indeks kurulumu, uzun ilk tur. Bu yüzden bellek payı koruması alt süreci OOM'dan ÖNCE öldürür (§6.5).
+`oom_score_adj=1000` yine de işe yarar: öldürülen worker değil alt süreç olur ve worker birim durdurulurken düzenli
+kapanır (yazma ortasında çekirdekçe öldürülmez). "Alt süreç ölür, worker sürer" davranışı istenirse VPS drop-in'ine
+`OOMPolicy=continue` eklenmelidir. Bu yalnız işletim değişikliğidir, karar-nötrdür ve **sahip onayı ister** (öneri,
+§10).
+
+### 6.7 İzleme notu
+
+`health.json` `hwm_mb` (VmHWM) yalnız worker sürecini ölçer; alt süreci İÇERMEZ. `f8b05fb`'nin `--check` bellek
+tetiği bu yüzden alt sürecin belleğini görmez. Alt sürecin belleği ön ısıtma satırındaki M'dir. Cgroup toplamı için
+`systemctl show tradingbot-worker -p MemoryPeak` (ya da `MemoryCurrent` örnekleri) okunmalıdır; bir sonraki sürüm
+betiğinin bellek tetiği buna dayanmalıdır (§10).
 
 ## 7. CPU
 
-Depodaki birim `CPUQuota=150%` der (VPS'te farklı olabilir; VPS'in çekirdek sayısını bilmiyorum). Alt süreç ve tur
+Depodaki birim `CPUQuota=150%` der (VPS'te farklı olabilir; VPS 4 vCPU — sahibin aktardığı). Alt süreç ve tur
 aynı cgroup'tadır: ikisi de CPU'ya doymuşken toplam 1,5 çekirdeğe kısılırlar, yani tur CPU'ya bağlı adımlarında en kötü
 ~0,75 çekirdek alır (≈1,3×). Alt sürecin `nice +10`'u tek çekirdekte turu öne alır; kotada yalnız hız etkilenir, sonuç
 değil.
@@ -372,14 +539,25 @@ Dağıtım sonrası bakılacaklar (hiçbiri burada VPS'te ölçülmedi):
 3. Her yayımdan sonra `pattern indeksi yenilendi: sürüm N, … olay, … seri, kurulum S sn` (kurulumun turla çakışma
    süresi) ve `pattern kanıtı ön ısıtıldı: sürüm N, … sn (alt süreç pid P, özel bellek M MB; alt süreçte X, süreç içi Y
    sembol)` — Y = 0 beklenir. `pattern kanıtı alt süre` ile başlayan satır (`alt süreci başlatılamadı` / `arızalandı` /
-   `alt süreçte hesaplanamadı` / `alt süreci KAPALI`) YOK. Not: `f8b05fb`'nin `--check`'i bu yeni uyarıları ne sayar ne
-   gösterir (yalnız `pattern kanıtı ön ısıt` ve `PREWARM_ERR_RE`'yi okur); bir sonraki sürüm betiği bunları saymalı (§10).
+   `alt süreçte hesaplanamadı` / `alt süreci KAPALI` / `alt süreci başlatılmadı — bellek payı yetersiz` / `alt süreci
+   bellek koruması nedeniyle kapatıldı` / `alt süreci bu işte … kez yeniden kuruldu`) YOK. Beklenen, sorun OLMAYAN bilgi
+   satırları (önekleri bilerek farklı): `pattern kanıtı: eski sürümün alt süreci (sürüm N) daha yeni yayımla hemen
+   kapatıldı` — bir yayım önceki iş sürerken gelince; `pattern kanıtı: alt süreç yeniden kuruldu — …` ve ön ısıtma
+   satırında `; eski indeks için yeniden fork R` — yayım turun uçuştaki kanıt çağrısına denk gelince (§6.2). Not:
+   `f8b05fb`'nin `--check`'i bu yeni satırları ne sayar ne gösterir (yalnız `pattern kanıtı ön ısıt` ve `PREWARM_ERR_RE`'yi
+   okur); bir sonraki sürüm betiği bunları saymalı (§10).
 4. Deadman olayı: günlükte `status=14/ALRM` ve `state/pattern_evidence_fork.marker` dosyası YOK. Varsa: fork asıldı,
    worker bir kez yeniden başladı ve alt süreç o makinede kapalı; karar sahibin (§10'daki `OPENBLAS_NUM_THREADS=1`
    önerisi ya da anahtarı kapatmak). Dosya silinince bir sonraki yayımda yeniden denenir.
 5. Box `missed_bars` artmıyor, `lag_max_s` olağan.
-6. Cgroup bellek tepesi (`MemoryPeak`) ve alt sürecin özel belleği (log satırındaki M) — tahmin ≈0,35 GB.
-   `health.json` `hwm_mb` alt süreci içermez (§6).
+6. Bellek (§6.5): ön ısıtma satırındaki M (alt sürecin iş boyunca en yüksek özel belleği). Tahmin, I ≈ 0,62 GB'lık
+   indeks için M ≈ 0,3–0,4 GB (≈ 0,5–0,6 × I); yayım tur ORTASINA da turlar ARASINA da düşse aynı (eski indeks artık alt
+   süreçte kalmaz). İki durumun M'si ayrı ayrı karşılaştırılır: tur ortası yayımın işi `; eski indeks için yeniden fork
+   R` ekini taşır. M ≈ 1,4 × I (≈ 0,9 GB) görülürse eski indeks alt süreçte kalmış demektir: §6.3'ün önlemi çalışmıyor →
+   sinyal.
+   Cgroup tepesi `systemctl show tradingbot-worker -p MemoryPeak -p MemoryCurrent` (sayfa önbelleği DAHİL; bugün 5,45 GB);
+   `health.json` `hwm_mb` alt süreci içermez (bugün ~3,5 GB). Bellek koruması uyarısı (ölçüt 3) bu sürümde
+   beklenmez; görülürse pay 512 MB'ın altına inmiş demektir (alt süreç değil, worker'ın kendisi büyümüştür).
 7. Yeniden başlatma sonrası ilk tur — dağıtımın kendi yeniden başlatması dahil: ilk indeks kurulumu hâlâ süreç içidir
    (§4); ön ısıtmanın çekişmesi gider ama ilk tur olağandan **uzun kalabilir ve bir Box mumu kaçabilir** (bugünkü
    3.763,7 sn'lik ilk tur ön ısıtmayla açıklanmıyordu). Bu, bu değişikliğin geri alma nedeni sayılmamalı; ölçüt 1'deki
@@ -395,7 +573,37 @@ alınır):
 - `state/pattern_evidence_fork.marker` dosyasının varlığı — aynı olayın kalıcı izi (alt süreç o makinede artık kapalı).
 - Bir `systemctl stop/restart`'ın `timeout` sonucu ya da `stop-sigterm timed out` — §3.3'ün önlediği kapanış beklemesi.
 - Ölçüt 3'teki `pattern kanıtı alt süre…` uyarıları ya da ön ısıtma satırında `süreç içi Y` > 0 (alt süreç arızası; karar
-  değişmez ama tasarım çalışmıyor demektir).
+  değişmez ama tasarım çalışmıyor demektir). Bellek koruması uyarıları da buraya girer: karar değişmez, alt süreç
+  zaten kapatılmıştır; ama worker'ın bellek payının daraldığını söyler → `MemoryPeak`/`MemoryCurrent` ile bakılır.
+- Ölçüt 6'da M ≈ 1,4 × I (≈ 0,9 GB; eski indeks alt süreçte kalmış) ya da `MemoryPeak`'in bugünkü 5,45 GB'ı belirgin
+  aşması.
+
+### 9.1 Sürüm notuna girecek metin (denetim: saat-duvarı paragrafı geri alma sinyallerinin YANINDA)
+
+Sürüm notu sahibe şu iki parçayı **birlikte** göstermelidir; biri olmadan öteki eksik kalır:
+
+> **Saat-duvarı zamanı — sahibin değerlendirmesine (§5, aynen).** Kod ve kurallar aynı; zamanlama aynı değil ve olamaz:
+>
+> - Turlar coin head'e ve sona daha erken ulaşır; Box zamanlayıcısının daha az mum kaçırması beklenir. Bunlar bugüne
+>   göre **amaçlanan davranış değişiklikleridir** (karar mantığı değil, zamanlama).
+> - 4h kapanışından sonraki **ikinci yayım** (ör. sürüm 7, 07:33:49) bugün süreç içi sürüm 6 ön ısıtmasıyla GIL için
+>   yarışan bir kurulumun sonunda geliyordu. Yenileyicinin bekleme aralığı kurulum bittikten sonra başladığı için, ön
+>   ısıtma alt süreçteyken kurulum daha hızlı bitip ikinci yayım saat olarak **daha erken** gelebilir.
+> - Bu ikisi birlikte, belli bir turun bir yayımdan önce mi sonra mı okuduğunu — yani saat-duvarı açısından hangi turun
+>   hangi sürümü gördüğünü — değiştirebilir. Bugün de aynı şey makinenin yüküne göre değişir (aynı kod, farklı gün,
+>   farklı zamanlama); hiçbir yayım bilerek ertelenmez ya da öne alınmaz ve okuma kuralı aynıdır. Bunun "karar
+>   değişikliği yok" kuralına uygun olup olmadığına sahip karar verir; uygun görmezse `history.evidence_subprocess:
+>   false` bugünkü zamanlamaya döner.
+>
+> **Geri alma sinyalleri (§9).** `status=14/ALRM` · `state/pattern_evidence_fork.marker` · kapanışta `timeout` /
+> `stop-sigterm timed out` · `pattern kanıtı alt süre…` uyarıları (bellek koruması dahil) ya da `süreç içi Y` > 0 ·
+> ön ısıtma satırında M ≈ 0,9 GB (≈ 1,4 × indeks) ya da `MemoryPeak`'in 5,45 GB'ı belirgin aşması. Herhangi biri →
+> anahtarı kapat (`history.evidence_subprocess: false`, worker yeniden başlatılır) ya da geri al.
+>
+> **Bellek (§6, ölçülen yerel, VPS için tahmin).** Alt süreç yalnız bir ön ısıtma işi süresince (yayım başına 7–14 dk)
+> ≈ 0,5–0,6 × indeks ek bellek tutar (VPS'te ≈ 0,3–0,4 GB); eski indeksi tutmaz (yayımı tur ortasına düşen işlerde de).
+> Bellek payı 1,5 GB'ın altındaysa kurulmaz, 512 MB'ın altına inerse kapatılır (cgroup `MemoryMax` ve sistem belleği;
+> sayfa önbelleği sayılmaz). Kanıt ve kararlar her durumda aynıdır.
 
 ## 10. Bilinçli olarak yapılmayanlar / öneriler (ayrı iş, sahip onayı)
 
@@ -412,7 +620,8 @@ alınır):
   `status=14/ALRM` ve işaret dosyasını **geri alma tetiği** olarak ara (§9 "Geri alma sinyalleri"); kapanış süresini ve
   `stop-sigterm timed out`'u raporla; bellek tetiğini `hwm_mb` yerine cgroup `MemoryPeak`/`memory.peak`'e dayandır;
   yayım satırındaki `kurulum S sn`'yi tur fazlarıyla birlikte göster; 4h-kapanışı turlarını yayımın tur ortasına düşüp
-  düşmediğine göre ayır.
+  düşmediğine göre ayır; ön ısıtma satırındaki M'yi ve `; eski indeks için yeniden fork R` / `; bellek koruması` /
+  `; bellek payı yetersiz` eklerini raporla (M ≈ 1,4 × indeks → eski indeks alt süreçte kalmış: geri alma tetiği).
 - **`health.json`'a alt süreç sayaçları:** `EvidenceCache.stats` (`child_*`) bugün yalnız bellekte. `health.json` bayt
   bayt karşılaştırılan altın testlere girdiği için bu iş o testlerin bilinçli güncellenmesini ister; bu turda günlük
   satırlarıyla yetinildi.

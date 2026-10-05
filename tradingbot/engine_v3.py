@@ -1006,6 +1006,12 @@ class TradingEngineV3(TradingEngine):
             eng = getattr(bundle, "engine", None)
             if eng is None:
                 return
+            if self._evidence_subprocess_on():
+                # Alt süreç yolu (ısıtılacak sembol olmasa da): yayımlanan motor ZAYIF referansla bilinir ve başka motorun
+                # canlı alt süreci HEMEN öldürülür. Sonraki fork anında hâlâ canlı olan eski motor (ör. turun uçuştaki
+                # çağrısı) ebeveynde bırakılınca alt süreç yeniden kurulur: eski indeksin sayfalarını tutmaz
+                # (`patterns/evidence_cache` "BELLEK"). Karar girdisi değil: kanıt her yolda aynı fonksiyon + motorla.
+                self._evidence_cache().note_published(eng, bundle.version)
             version = int(bundle.version)
             now_ms = int(time.time() * 1000)
             keys = []

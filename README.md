@@ -57,8 +57,8 @@ What makes it more than a toy bot:
 - **Runs 24/7.** systemd units with hardening, backups with checksums, versioned deploy scripts with automatic rollback,
   health checks and a read-only web dashboard.
 
-At a glance (counted from this repository): about 100,000 lines of Python in `tradingbot/` (276 modules),
-**4,213 automated tests** in 232 test files that run offline, and 60+ design documents and research notes in `docs/`
+At a glance (counted from this repository): about 105,000 lines of Python in `tradingbot/` (281 modules),
+**4,312 automated tests** in 234 test files that run offline, and 60+ design documents and research notes in `docs/`
 (mostly Turkish).
 
 ## Features
@@ -318,7 +318,8 @@ python -m pytest -q tests          # full suite, offline (about 20 minutes)
 ruff check .                       # lint gate defined in ruff.toml
 ```
 
-- The full suite has **4,213 tests**. Run on 2026-10-03 on a shared 4-core Linux machine: 4,205 passed, 8 skipped,
+- The full suite has **4,312 tests** (collected 2026-10-05). Last full run, 2026-10-03 (4,213 tests then) on a shared
+  4-core Linux machine: 4,205 passed, 8 skipped,
   in about 22 minutes. The skipped tests need the author's local research package or archive files, an opt-in benchmark
   (`TRADINGBOT_BENCH_1M=1`), or a fixture case that did not come up in that run.
 - Tests need no network: exchanges, Telegram and archives are faked, and an autouse fixture in
@@ -426,8 +427,8 @@ her geçerli sinyalin değişmez kaydını tutar. Amaç getiri vaat etmek değil
 - **7/24 çalışır:** sertleştirilmiş systemd birimleri, sağlama toplamlı yedekler, otomatik geri almalı sürüm betikleri,
   sağlık kontrolleri ve salt okunur web paneli.
 
-Kısaca (bu depodan sayıldı): `tradingbot/` altında yaklaşık 100.000 satır Python (276 modül), ağsız çalışan 232 test
-dosyasında **4.213 otomatik test** ve `docs/` altında 60'tan fazla tasarım belgesi ve araştırma notu.
+Kısaca (bu depodan sayıldı): `tradingbot/` altında yaklaşık 105.000 satır Python (281 modül), ağsız çalışan 234 test
+dosyasında **4.312 otomatik test** ve `docs/` altında 60'tan fazla tasarım belgesi ve araştırma notu.
 
 ### Özellikler
 

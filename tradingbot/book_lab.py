@@ -304,7 +304,9 @@ READINGS_TR = (
     "karar anı t = sinyal barının open_time + dilim (laboratuvarın t_ms'i); dönem t ile: keşif 2023-01-01 ≤ t < 2025-01-01, "
     "doğrulama 2025-01-01 ≤ t < 2026-10-01; karar penceresi dışındaki sinyal (ısınma) işlem ve plasebo üretmez",
     "pencere kırpması: barın open_time'ı [ilk bar sınırı, PRICE_END) aralığında; 4h 2022-01-01, 1d 2020-01-01 (coinler ve BTC); "
-    "fonlama uzlaşma zamanı [2022-12-01, 2026-10-02); fonlama aylık dosyalardan, yayımlanmamış ay ve 2026-10 için gün dosyalarından",
+    "fonlama uzlaşma zamanı [2022-12-01, 2026-10-02); fonlama yalnız aylık fundingRate dosyalarından, 2022-12 … 2026-10 (arşivde "
+    "günlük fundingRate klasörü yok, 2026-10-05 S3 listesi); PRICE_END sonrası uzlaşmalar 2026-10 dosyasındandır (ay dosyası "
+    "ay bitince yayımlanır)",
     "temiz pencere: bozuk bar = candle_lab.valid_ends tanımı (sonlu olmayan OHLC, h < max(o,c), l > min(o,c), sonlu olmayan ya da "
     "negatif hacim); boşluk = ardışık iki açılış farkı ≠ dilim; i'de biten w barlık pencere temiz = i−w+1..i barlarının hiçbiri "
     "bozuk değil VE pencere içindeki her ardışık çift boşluksuz (pencerenin ilk barından önceki boşluk sayılmaz; valid_ends ile "
@@ -390,6 +392,14 @@ READINGS_TR = (
     "metninin sha256'sı; fonlama dosyası baytlarının sha256'sı",
     "yeniden adlandırma: yalnız bugünkü sembolün arşivi kullanılır, eski sembolün geçmişi birleştirilmez; bilinen durum G/USDT "
     "(Galxe GAL → Gravity G, 2024; GALUSDT geçmişi kullanılmaz, G'nin ilk barı kalite raporunda görünür)",
+    "veri hatası → koşu durur, rapor yazılmaz, deneme ERROR; aynı kodla yeniden denenir (§0.6): bir sembolün mum ya da fonlama "
+    "dosyası indirilemedi ya da okunamadı; BTC 1d serisi ya da birincil/bilgi evreninde bir coinin 4h serisi (ve yüklendiyse 1d "
+    "serisi) PRICE_END'e ulaşmıyor (DELISTED yalnız PIT kipinde olur); PRICE_END'e ulaşan bir sembolün [PRICE_END, 2026-10-02) "
+    "aralığında fonlama uzlaşması yok (2026-10 dosyası henüz yayımlanmadı); arşivde hiç verisi olmayan coin dışarıda kalır ve "
+    "sonuçta yazılır (§11.6); PIT kipinde 1d serisi defter seçiminden bağımsız yüklenir (eksik çift denetimi) ve yüklenmemiş "
+    "seçili sembolün her evren ayı eksik çift sayılır; aynı --out'taki önceki koşunun işlemleriyle birleştirme, yalnız-rapor ve "
+    "PIT sonucunun birincil rapora yazılması aynı kod ağacını (git HEAD:tradingbot, HEAD:scripts) ve temiz çalışma ağacını "
+    "ister; açık izinle yapılan birleştirme rapora yazılır",
     "PIT dışlama listesi (tam; taban adları, sonuna USDT eklenir): " + "; ".join(f"{k}: {', '.join(v)}" for k, v in PIT_EXCLUDE.items())
     + "; ayrıca alt çizgili her sembol ve USDT ile bitmeyen her sembol",
 )
@@ -470,7 +480,7 @@ def _registry() -> dict[str, Any]:
                   "pit_pass_tr": ["(a) PIT kapasiteli doğrulama aylık ≥ +1,0 fonlamalı ve fonlamasız (NO_BUMP, min-notional 0)",
                                   "(b) fonlamalı doğrulama (gerçek − plasebo) nokta tahmini > 0",
                                   "(c) standart hüküm (fonlamasız ve fonlamalı) KAYBETTİRİR değil"]},
-        "data": {"source": "data.binance.vision USDⓈ-M (signal_lab.ArchiveProvider); fonlama futures_data.FUNDING_URL/FUNDING_DAILY_URL",
+        "data": {"source": "data.binance.vision USDⓈ-M (signal_lab.ArchiveProvider); fonlama futures_data.FUNDING_URL (yalnız aylık)",
                  "start_4h_ms": START_4H_MS, "start_1d_ms": START_1D_MS, "price_end_ms": PRICE_END_MS,
                  "funding": [FUNDING_START_MS, FUNDING_END_MS], "clean_bars": {"D4": CLEAN_D4, "FM": CLEAN_FM, "regime_1d": CLEAN_REGIME},
                  "d4_min_i": D4_MIN_I},
@@ -1032,7 +1042,8 @@ def c4_series_rows(symbol: str, S: Series, masks: Mapping[str, np.ndarray], cfg:
             pl = [e for e in evs if e.family == "placebo" and dm[e.i]]
             vc = CL.vcfg(cfg, var)
             exit_spec = {"kind": "target", "rr": float(var.target_r), "max_bars": int(var.max_hold_bars)}
-            pl_cnt: dict[str, Any] = {"drawn": len(pl), "variation_events_skipped": dict(sk)}
+            pl_cnt: dict[str, Any] = {"drawn": len(pl), "produced_all": sum(1 for e in evs if e.family == "placebo"),
+                                      "variation_events_skipped": dict(sk)}
             items = [(int(e.i), float(e.stop), None, float(atr_sig[e.i])) for e in pl]
             rows += _sim_rows(S, symbol, "C4", vid, "placebo", side, "PLACEBO_" + cv, items, exit_spec,
                               (vc.min_risk_atr, vc.max_risk_atr), cfg, cost_stop, None, pl_cnt)
@@ -1239,49 +1250,27 @@ def series_quality(df: pd.DataFrame, tf: str, start_ms: int, end_ms: int | None 
             "sha256": series_digest(df)}
 
 
-def load_funding(symbol: str, get: Callable[[str], bytes | None], now_ms: int | None = None) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Fonlama: [2022-12, 2026-09] aylık dosyalar (yayımlanmamış ay — son 40 gün içinde biten — için o ayın gün dosyaları;
-    `signal_lab.ArchiveProvider` ile aynı kural) + 2026-10-01 gün dosyası; [FUNDING_START, FUNDING_END) aralığına kırpılır.
-    Döner ({"f_t", "f_rate"}, bilgi)."""
+def load_funding(symbol: str, get: Callable[[str], bytes | None]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Fonlama: yalnız aylık `fundingRate` dosyaları, FUNDING_START ayı … FUNDING_END'in ayı (2022-12 … 2026-10; arşivde günlük
+    fonlama klasörü YOK, PRICE_END sonrası uzlaşmalar 2026-10 dosyasındadır); [FUNDING_START, FUNDING_END) aralığına kırpılır.
+    Döner ({"f_t", "f_rate"}, bilgi); bilgi["post_end"] = [PRICE_END, FUNDING_END) aralığındaki uzlaşma sayısı (PRICE_END'e
+    ulaşan seride 0 ise `run` veri hatasıyla durur)."""
     from . import futures_data as FD
     sym = archive_symbol(symbol)
-    now = int(now_ms if now_ms is not None else time.time() * 1000)
-    recent = L._month_start(now - (now % DAY_MS) - 40 * DAY_MS)
-    frames, files, missing, daily = [], {}, [], []
-    for mk in _month_range(month_key(FUNDING_START_MS), month_key(PRICE_END_MS - 1)):
+    frames, files, missing = [], {}, []
+    for mk in _month_range(month_key(FUNDING_START_MS), month_key(FUNDING_END_MS - 1)):
         url = FD.FUNDING_URL.format(sym=sym, month=mk)
         data = get(url)
-        if data is not None:
-            frames.append(FD.parse_funding_zip(data))
-            files[url] = hashlib.sha256(data).hexdigest()
+        if data is None:
+            missing.append(mk)                          # listeleme öncesi, eksik ya da (son ay) henüz yayımlanmadı
             continue
-        if month_start_ms(mk) < recent:
-            missing.append(mk)                          # ay dosyası yayımlanmış olmalıydı: yok (listeleme öncesi ya da eksik)
-            continue
-        got, day = 0, month_start_ms(mk)
-        while day < L._next_month(month_start_ms(mk)):
-            u = FD.FUNDING_DAILY_URL.format(sym=sym, day=pd.Timestamp(day, unit="ms", tz="UTC").strftime("%Y-%m-%d"))
-            d = get(u)
-            if d is not None:
-                frames.append(FD.parse_funding_zip(d))
-                files[u] = hashlib.sha256(d).hexdigest()
-                got += 1
-            day += DAY_MS
-        (daily if got else missing).append(mk)
-    day = PRICE_END_MS
-    while day < FUNDING_END_MS:
-        u = FD.FUNDING_DAILY_URL.format(sym=sym, day=pd.Timestamp(day, unit="ms", tz="UTC").strftime("%Y-%m-%d"))
-        d = get(u)
-        if d is not None:
-            frames.append(FD.parse_funding_zip(d))
-            files[u] = hashlib.sha256(d).hexdigest()
-        else:
-            missing.append(_iso(day)[:10])
-        day += DAY_MS
+        frames.append(FD.parse_funding_zip(data))
+        files[url] = hashlib.sha256(data).hexdigest()
     f = pd.concat(frames) if frames else pd.DataFrame({"t_ms": np.array([], dtype=np.int64), "rate": np.array([], dtype=float)})
     f = f[(f["t_ms"] >= FUNDING_START_MS) & (f["t_ms"] < FUNDING_END_MS)].drop_duplicates("t_ms").sort_values("t_ms")
     raw = {"f_t": f["t_ms"].to_numpy(dtype=np.int64), "f_rate": f["rate"].to_numpy(dtype=float)}
-    return raw, {"rows": int(len(f)), "missing": missing, "daily_fallback_months": daily, "files_sha256": files}
+    post = int(((raw["f_t"] >= PRICE_END_MS) & (raw["f_t"] < FUNDING_END_MS)).sum())
+    return raw, {"rows": int(len(f)), "missing": missing, "post_end": post, "files_sha256": files}
 
 
 # ---------------------------------------------------------------------------- PIT evreni (§4.3)
@@ -1349,14 +1338,20 @@ def pit_universe(pool: list[str], qv_loader: Callable[[str], pd.DataFrame]) -> d
 
 def pit_missing_pairs(universe: Mapping[str, list[str]], frames4: Mapping[str, pd.DataFrame | None],
                       frames1: Mapping[str, pd.DataFrame | None]) -> dict[str, Any]:
-    """Eksik çift: o aydaki 4h bar < 0,90 × 6 × o aydaki 1d bar (1d bar > 0)."""
+    """Eksik çift: o aydaki 4h bar < 0,90 × 6 × o aydaki 1d bar (1d bar > 0). 1d serisi YÜKLENMEMİŞ seçili sembol (denetlenemez)
+    her evren ayında eksik çift sayılır (fail-closed)."""
     pairs = miss = 0
     rows = []
     for mk, syms in universe.items():
         a, b = month_start_ms(mk), L._next_month(month_start_ms(mk))
         for s in syms:
             d1, d4 = frames1.get(s), frames4.get(s)
-            n1 = int(((d1["timestamp"] >= a) & (d1["timestamp"] < b)).sum()) if d1 is not None and len(d1) else 0
+            if d1 is None:
+                pairs += 1
+                miss += 1
+                rows.append({"month": mk, "symbol": s, "bars_4h": None, "bars_1d": None, "not_loaded": True})
+                continue
+            n1 = int(((d1["timestamp"] >= a) & (d1["timestamp"] < b)).sum()) if len(d1) else 0
             if n1 == 0:
                 continue
             pairs += 1
@@ -1755,9 +1750,15 @@ def pit_check(cell: Mapping[str, Any], verified: bool = True) -> dict[str, Any]:
 
 
 def apply_pit(rep: dict[str, Any], pit_rep: Mapping[str, Any] | None) -> None:
-    """Birincil raporda PIT TEYİDİ BEKLİYOR hücrelerine aynı mühürlü PIT raporunun sonucunu yazar (§8.5.4)."""
+    """Birincil raporda PIT TEYİDİ BEKLİYOR hücrelerine aynı mühürlü ve AYNI KODLA (kod ağacı aynı, iki ağaç temiz) üretilmiş
+    PIT raporunun sonucunu yazar (§8.5.4); kod farklıysa yazmaz ve nedenini `pit_not_applied`e koyar."""
     if not pit_rep or pit_rep.get("registry_sha") != BOOK_REGISTRY_SHA:
         return
+    if not code_match(pit_rep.get("code"), rep.get("code")):
+        rep["pit_not_applied"] = (f"PIT raporu başka kod durumunda üretildi (PIT {pit_rep.get('code')}, birincil {rep.get('code')}); "
+                                  "aynı kodla PIT teyidi yeniden koşulmalı")
+        return
+    rep.pop("pit_not_applied", None)
     for cid, c in (rep.get("cells") or {}).items():
         if c.get("final") != ST_PIT_WAIT:
             continue
@@ -1769,13 +1770,36 @@ def apply_pit(rep: dict[str, Any], pit_rep: Mapping[str, Any] | None) -> None:
     rep["conclusion_tr"] = conclusion_tr(rep)
 
 
+ST_MT_INCOMPLETE = "ÇOKLU TEST YAPILAMADI (54 hücrenin hepsi yok)"
+
+
+def final_status(target: Mapping[str, Any], cid: str, *, complete: bool, holm_pass: bool, chance: bool) -> tuple[str, list[str]]:
+    """§8.5 basamakları (birincil evren): 1 hedef → 2 çoklu test ve aday oranı → 3 taban / veri gözetlemeli değil → 4 PIT
+    teyidi bekliyor (PIT sonucu `apply_pit` ile yazılır). Döner (durum, elendiği basamak)."""
+    vid = cid.split("|")[0]
+    if not target["meets"]:
+        return target["status"], []
+    if not complete:
+        return ST_MT_INCOMPLETE, ["2"]
+    if not holm_pass:
+        return ST_MT_FAIL, ["2"]
+    if chance:
+        return ST_CHANCE, ["2"]
+    if vid in BASE_VARIANTS or vid in SNOOPED_VARIANTS:
+        return ST_BASE, ["3"]
+    return ST_PIT_WAIT, ["4"]
+
+
 def cell_counts(series_meta: Mapping[str, Any] | None, cid: str) -> dict[str, Any]:
     """Sembol sayımlarından hücre toplamı: ham sinyal, temiz pencere yüzünden düşen tespit, atlama nedenleri, plasebo çekilişi
-    ve NO_REAL_RISK / BAD_STOP payı."""
+    ve NO_REAL_RISK payı. Payın paydası (`placebo_selected`) bütün defterlerde risk geometrisi kurulmadan ÖNCE seçilen plasebo
+    sayısıdır: D4/Formasyon'da çekilen bar; C4'te variation_events'in ürettiği plasebo + NO_REAL_RISK + BAD_STOP (hepsi tespit
+    anı süzgecinden önce)."""
     vid, scope = cid.split("|")
     book = VARIANTS[vid]["book"]
     sides = VARIANTS[vid]["sides"] if scope == "BOTH" else [scope]
-    out: dict[str, Any] = {"real_raw": 0, "unclean_window": 0, "real_skipped": {}, "placebo_drawn": 0, "placebo_skipped": {}}
+    out: dict[str, Any] = {"real_raw": 0, "unclean_window": 0, "real_skipped": {}, "placebo_drawn": 0, "placebo_selected": 0,
+                           "placebo_skipped": {}}
     seen: set[str] = set()
     for sym, per_book in (series_meta or {}).items():
         m = (per_book or {}).get(book) or {}
@@ -1789,8 +1813,10 @@ def cell_counts(series_meta: Mapping[str, Any] | None, cid: str) -> dict[str, An
                     continue
                 pl = c.get("placebo") or {}
                 out["placebo_drawn"] += int(pl.get("drawn") or 0)
-                for k, v in list((pl.get("skipped") or {}).items()) + [(k.split(":")[-1], v) for k, v in
-                                                                         (pl.get("variation_events_skipped") or {}).items()]:
+                vsk = {k.split(":")[-1]: int(v) for k, v in (pl.get("variation_events_skipped") or {}).items()}
+                out["placebo_selected"] += (int(pl.get("produced_all", pl.get("drawn")) or 0) + vsk.get("NO_REAL_RISK", 0)
+                                            + vsk.get("BAD_STOP", 0))
+                for k, v in list((pl.get("skipped") or {}).items()) + list(vsk.items()):
                     out["placebo_skipped"][k] = out["placebo_skipped"].get(k, 0) + int(v)
                 for k, v in ((c.get("real") or {}).get("skipped") or {}).items():
                     out["real_skipped"][k] = out["real_skipped"].get(k, 0) + int(v)
@@ -1802,11 +1828,12 @@ def cell_counts(series_meta: Mapping[str, Any] | None, cid: str) -> dict[str, An
             out["real_raw"] += int(r.get("raw_all") or 0)
             out["unclean_window"] += int(r.get("unclean_window") or 0)
             out["placebo_drawn"] += int(pl.get("drawn") or 0)
+            out["placebo_selected"] += int(pl.get("drawn") or 0)
             for k, v in (r.get("skipped") or {}).items():
                 out["real_skipped"][k] = out["real_skipped"].get(k, 0) + int(v)
             for k, v in (pl.get("skipped") or {}).items():
                 out["placebo_skipped"][k] = out["placebo_skipped"].get(k, 0) + int(v)
-    d = out["placebo_drawn"]
+    d = out["placebo_selected"]
     out["no_real_risk_share"] = round(out["placebo_skipped"].get("NO_REAL_RISK", 0) / d, 6) if d else None
     return out
 
@@ -1860,55 +1887,64 @@ def build_report(T: pd.DataFrame, cfg: L.LabConfig, *, universe: str, filters: M
         c["multiple"] = {"p": pvals[cid], "holm_pass": bool(rej.get(cid)) if complete else None, "complete": complete}
         if universe == "pit":
             continue
-        t = c["target"]
-        vid = cid.split("|")[0]
-        steps = []
-        if not t["meets"]:
-            final = t["status"]
-        elif not complete:
-            final, steps = "ÇOKLU TEST YAPILAMADI (54 hücrenin hepsi yok)", ["2"]
-        elif not rej.get(cid):
-            final, steps = ST_MT_FAIL, ["2"]
-        elif chance:
-            final, steps = ST_CHANCE, ["2"]
-        elif vid in BASE_VARIANTS or vid in SNOOPED_VARIANTS:
-            final, steps = ST_BASE, ["3"]
-        else:
-            final, steps = ST_PIT_WAIT, ["4"]
-        c["final"] = final
-        c["failed_steps"] = steps
+        c["final"], c["failed_steps"] = final_status(c["target"], cid, complete=complete, holm_pass=bool(rej.get(cid)),
+                                                     chance=chance)
     for cid in CONTROL_CELLS:
         if cid in cells:
             cells[cid]["final"] = "KONTROL (hipotez değil)"
+    meets = [c for c in prim if (cells[c].get("target") or {}).get("meets")]
+    for c in meets:
+        cells[c]["book_note"] = book_note(c)
     rep: dict[str, Any] = {"universe": universe, "cells": cells, "complete": complete, "candidate_rate": cr,
                            "chance_explains": bool(chance), "holm": {"alpha": HOLM_ALPHA, "rejected": sorted(k for k, v in rej.items() if v)},
                            "strict_strong": [c for c in prim if cells[c]["stats"]["unfunded"]["verdict_strict"] == V_STRONG],
-                           "meets_target": [c for c in prim if (cells[c].get("target") or {}).get("meets")]}
+                           "meets_target": meets, "meets_target_detail": {c: book_note(c) for c in meets}}
     if pit_meta is not None:
         rep["pit"] = dict(pit_meta)
     rep["conclusion_tr"] = conclusion_tr(rep)
     return rep
 
 
+BOOK_NAME_TR = {"D4": "D4", "C4": "C4", "FM": "Formasyon"}
+
+
+def book_note(cid: str) -> str:
+    """§8.4: hedefi karşılayan hücrenin yanında hangi defterin kaç varyantından biri olduğu."""
+    book = VARIANTS[cid.split("|")[0]]["book"]
+    nv = sum(1 for d in VARIANTS.values() if d["book"] == book and not d.get("control"))
+    nc = sum(1 for c in PRIMARY_CELLS if VARIANTS[c.split("|")[0]]["book"] == book)
+    return f"{BOOK_NAME_TR[book]} defterinin {nv} varyantından biri; defterin {nc} birincil hücresi var"
+
+
+def _with_notes(cids: Iterable[str]) -> str:
+    return ", ".join(f"{c} ({book_note(c)})" for c in cids)
+
+
 def conclusion_tr(rep: Mapping[str, Any]) -> str:
     cells = rep["cells"]
+    empty = list(rep.get("empty_symbols") or [])
+    tail = f" · Arşivde verisi olmayan coin (§11.6, dışarıda): {', '.join(empty)}" if empty else ""
     if rep["universe"] == "pit":
         ok = [c for c in PRIMARY_CELLS if c in cells and cells[c].get("pit_check", {}).get("pass")]
-        return "PIT evreninde geçiş ölçütünü sağlayan hücre: " + (", ".join(ok) if ok else "yok")
+        return "PIT evreninde geçiş ölçütünü sağlayan hücre: " + (_with_notes(ok) if ok else "yok") + tail
     finals = Counter(cells[c].get("final") for c in PRIMARY_CELLS if c in cells)
     cand = [c for c in PRIMARY_CELLS if c in cells and cells[c].get("final") == ST_CANDIDATE]
     wait = [c for c in PRIMARY_CELLS if c in cells and cells[c].get("final") == ST_PIT_WAIT]
+    meets = [c for c in PRIMARY_CELLS if c in cells and (cells[c].get("target") or {}).get("meets")]
     if cand:
-        return "ÖNERİ ADAYI: " + ", ".join(cand) + " — " + BOOK_REGISTRY["outcome_tr"]["some"]
+        return "ÖNERİ ADAYI: " + _with_notes(cand) + " — " + BOOK_REGISTRY["outcome_tr"]["some"] + tail
     if wait:
-        return ("HEDEFİ KARŞILAYIP çoklu testi geçen ve PIT teyidi bekleyen hücre: " + ", ".join(wait)
-                + " — öneri değildir; aynı kodla PIT teyidi koşulmalı")
+        return ("HEDEFİ KARŞILAYIP çoklu testi geçen ve PIT teyidi bekleyen hücre: " + _with_notes(wait)
+                + " — öneri değildir; aynı kodla PIT teyidi koşulmalı" + tail)
     parts = ", ".join(f"{k}: {v}" for k, v in sorted(finals.items(), key=lambda kv: -kv[1]))
     fw = [c for c in PRIMARY_CELLS if c in cells and cells[c].get("final") == ST_FILTER_WAIT]
     if fw:
         return (f"Hedef hükmü verilmedi — {ST_FILTER_WAIT}: kapasite filtre tablosu yok; kapasite dışındaki şartları geçen hücre: "
-                + ", ".join(fw) + f". Diğerleri — {parts}")
-    return f"Hiçbir hücre ÖNERİ ADAYI değil: {NO_TARGET_TR}. Elendikleri basamaklar — {parts}"
+                + ", ".join(fw) + f". Diğerleri — {parts}" + tail)
+    if meets:
+        return ("Hiçbir hücre ÖNERİ ADAYI değil. HEDEFİ KARŞILAYIP sonraki basamakta elenen: "
+                + "; ".join(f"{c} ({book_note(c)}) → {cells[c].get('final')}" for c in meets) + f". Basamaklar — {parts}" + tail)
+    return f"Hiçbir hücre ÖNERİ ADAYI değil: {NO_TARGET_TR}. Elendikleri basamaklar — {parts}" + tail
 
 
 # ---------------------------------------------------------------------------- olay dosyası
@@ -1926,15 +1962,32 @@ def trades_frame(rows: list[dict]) -> pd.DataFrame:
     return df
 
 
-def write_trades(path: Path, T: pd.DataFrame) -> None:
+class _HashingWriter:
+    """csv.writer hedefi: metni UTF-8 olarak gzip'e yazar ve SIKIŞTIRILMAMIŞ baytların sha256'sını tutar."""
+
+    def __init__(self, fh: Any):
+        self.fh, self.h = fh, hashlib.sha256()
+
+    def write(self, s: str) -> int:
+        b = s.encode("utf-8")
+        self.h.update(b)
+        self.fh.write(b)
+        return len(s)
+
+
+def write_trades(path: Path, T: pd.DataFrame) -> str:
+    """İşlem dosyası (gzip; başlıkta zaman damgası ve dosya adı YOK → aynı içerik aynı bayt). Döner: sıkıştırılmamış CSV
+    metninin sha256'sı (koşu kanıtı; gzip baytları kanıt sayılmaz, §4.1)."""
     tmp = path.with_name(path.name + ".part")
-    with gzip.open(tmp, "wt", newline="", encoding="utf-8") as fh:
-        w = csv.writer(fh)
+    with open(tmp, "wb") as raw, gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=0) as gz:
+        hw = _HashingWriter(gz)
+        w = csv.writer(hw)
         w.writerow(TRADE_COLS)
         for rec in T[TRADE_COLS].to_dict("records"):
             w.writerow([json.dumps(rec[c] or {}, ensure_ascii=False, sort_keys=True) if c in ("ctx", "mtm")
                         else ("" if rec[c] is None or (isinstance(rec[c], float) and math.isnan(rec[c])) else rec[c]) for c in TRADE_COLS])
     tmp.replace(path)
+    return hw.h.hexdigest()
 
 
 def read_trades(path: Path) -> pd.DataFrame:
@@ -1993,13 +2046,36 @@ def _map(fn: Callable[[tuple], Any], tasks: list[tuple], jobs: int) -> list[Any]
     return [fn(t) for t in tasks]
 
 
+CODE_PATHS = ("tradingbot", "scripts")
+
+
+def git_state(root: Path | None = None) -> dict[str, Any]:
+    """Kod durumu: HEAD commit'i, kod ağacı özeti (git HEAD:tradingbot ve HEAD:scripts ağaçları; belge commit'i değiştirmez) ve
+    bu yollarda commit edilmemiş değişiklik var mı (`git status --porcelain`, izlenmeyen dosyalar dahil). git yoksa None."""
+    cwd = str(root or Path(__file__).resolve().parents[1])
+
+    def g(*args: str) -> str | None:
+        try:
+            r = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, timeout=20)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        return r.stdout.strip() if r.returncode == 0 else None
+
+    trees = [g("rev-parse", f"HEAD:{p}") for p in CODE_PATHS]
+    status = g("status", "--porcelain", "--", *CODE_PATHS)
+    return {"commit": g("rev-parse", "HEAD") or None,
+            "code_tree": None if any(not t for t in trees) else hashlib.sha256("|".join(trees).encode()).hexdigest()[:16],
+            "dirty": None if status is None else bool(status)}
+
+
 def git_commit(root: Path | None = None) -> str | None:
-    try:
-        r = subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(root or Path(__file__).resolve().parents[1]), capture_output=True,
-                           text=True, timeout=10)
-        return r.stdout.strip() or None
-    except (OSError, subprocess.SubprocessError):
-        return None
+    return git_state(root)["commit"]
+
+
+def code_match(a: Mapping[str, Any] | None, b: Mapping[str, Any] | None) -> bool:
+    """İki koşu aynı kodla mı: kod ağacı biliniyor ve aynı, iki çalışma ağacı da temiz (dirty is False)."""
+    return (bool(a) and bool(b) and a.get("code_tree") is not None and a.get("code_tree") == b.get("code_tree")
+            and a.get("dirty") is False and b.get("dirty") is False)
 
 
 def _prior_meta(out_dir: Path, universe: str) -> dict[str, Any] | None:
@@ -2012,15 +2088,42 @@ def _prior_meta(out_dir: Path, universe: str) -> dict[str, Any] | None:
     return m
 
 
+def _reaches_end(df: pd.DataFrame | None, tf: str) -> bool:
+    return df is not None and len(df) > 0 and int(df["timestamp"].iloc[-1]) + tf_ms(tf) >= PRICE_END_MS
+
+
+def data_problem(symbol: str, df4: pd.DataFrame, df1: pd.DataFrame | None, finfo: Mapping[str, Any], *,
+                 strict: bool) -> str | None:
+    """Koşuyu durduran veri sorunu (okunuş: veri hatası) ya da None. `strict`: birincil/bilgi evreni (seri PRICE_END'e ulaşmalı).
+    Arşivde hiç verisi olmayan coin burada sorun sayılmaz (çağıran dışarıda bırakır ve raporlar)."""
+    has4, has1 = df4 is not None and len(df4) > 0, df1 is not None and len(df1) > 0
+    if strict:
+        if not has4 and has1:
+            return f"veri {symbol}: 4h serisi boş ama 1d serisi var (tutarsız arşiv)"
+        if has4 and not _reaches_end(df4, TF4):
+            return f"veri {symbol}: 4h serisi PRICE_END'den önce bitiyor (son bar {_iso(df4['timestamp'].iloc[-1])})"
+        if has4 and df1 is not None and not _reaches_end(df1, TF1):
+            return (f"veri {symbol}: 1d serisi PRICE_END'e ulaşmıyor (son bar "
+                    f"{_iso(df1['timestamp'].iloc[-1]) if has1 else 'yok'})")
+    if (_reaches_end(df4, TF4) or _reaches_end(df1, TF1)) and not int(finfo.get("post_end") or 0):
+        return (f"fonlama {symbol}: [PRICE_END, {_iso(FUNDING_END_MS)}) aralığında uzlaşma yok — "
+                f"{month_key(PRICE_END_MS)} aylık fundingRate dosyası henüz yayımlanmamış olabilir (arşivde günlük fonlama yok)")
+    return None
+
+
 def run(*, cache_dir: Path | str, out_dir: Path | str, universe: str = "primary", books: Iterable[str] = BOOKS,
         filters_path: Path | str | None = None, offline: bool = False, jobs: int = 1, fetch: Callable[[str], bytes | None] | None = None,
         now_ms: int | None = None, log: Callable[[str], None] = print, report_only: bool = False,
-        symbols_override: Iterable[str] | None = None, list_text: Callable[[str], str] | None = None) -> dict[str, Any]:
+        symbols_override: Iterable[str] | None = None, list_text: Callable[[str], str] | None = None,
+        code_state: Mapping[str, Any] | None = None, allow_code_change: bool = False) -> dict[str, Any]:
     """Koşu: veri (sabit pencereler) → sembol görevleri (işlemler) → hücreler, kapasite, hedef, çoklu test, basamaklar → rapor.
     Çıktılar: <out>/book_lab_report[_<evren>].json/.md, book_lab_trades[_<evren>].csv.gz, book_lab_meta[_<evren>].json.
     `books`: yalnız bu defterlerin işlemleri yeniden üretilir; aynı mühürlü önceki koşunun diğer defter işlemleri korunur.
     `report_only`: veri ve olay üretimi yok; kayıtlı işlemlerden rapor (filtre tablosu sonradan geldiğinde kapasite). `fetch`
-    ve `list_text`: testte sahte indiriciler. `symbols_override`: YALNIZ testler için evreni değiştirir (rapora yazılır)."""
+    ve `list_text`: testte sahte indiriciler. `symbols_override`: YALNIZ testler için evreni değiştirir (rapora yazılır).
+    Veri hatası (okunuş "veri hatası") → BookDataError; hiçbir çıktı yazılmaz. `code_state`: kod durumu (yoksa `git_state`);
+    aynı --out'taki önceki koşu başka kod ağacındaysa ya da ağaçlardan biri kirliyse koşu durur (`allow_code_change` açık izin,
+    rapora yazılır)."""
     if universe not in UNIVERSES:
         raise ValueError(f"bilinmeyen evren: {universe} (geçerli: {', '.join(UNIVERSES)})")
     books = [b for b in BOOKS if b in set(books)]
@@ -2032,10 +2135,19 @@ def run(*, cache_dir: Path | str, out_dir: Path | str, universe: str = "primary"
     out_dir.mkdir(parents=True, exist_ok=True)
     sfx = _suffix(universe)
     prior = _prior_meta(out_dir, universe)
+    code = dict(code_state) if code_state is not None else git_state()
     t0 = time.time()
     cache = ZipCache(cache_dir, fetch=fetch, offline=offline, now_ms=now_ms)
     meta: dict[str, Any] = dict(prior or {})
-    meta.update({"registry_sha": BOOK_REGISTRY_SHA, "version": VERSION, "universe": universe})
+    if prior is not None and not code_match(prior.get("code"), code):
+        msg = (f"{out_dir}: önceki koşu başka kod durumunda ya da kirli ağaçta (önce {prior.get('code')}, şimdi {code}); "
+               "birleştirme ve yalnız-rapor yapılmaz — başka bir --out seçin")
+        if not allow_code_change:
+            raise BookDataError(msg)
+        log("UYARI: " + msg + " (açık izinle sürüyor; rapora yazılır)")
+        meta["code_overrides"] = list(meta.get("code_overrides") or []) + [{"before": prior.get("code"), "now": code,
+                                                                             "at": _iso(now_ms)}]
+    meta.update({"registry_sha": BOOK_REGISTRY_SHA, "version": VERSION, "universe": universe, "code": code})
     pit_membership = None
     trades_path = out_dir / TRADES_FILE.format(suffix=sfx)
     if report_only:
@@ -2054,37 +2166,44 @@ def run(*, cache_dir: Path | str, out_dir: Path | str, universe: str = "primary"
         if symbols_override is not None:
             syms = list(symbols_override)
             meta["symbols_overridden"] = True
-        need1 = any(VARIANTS[v]["tf"] == TF1 for v in VARIANTS if VARIANTS[v]["book"] in books) or \
+        use1 = any(VARIANTS[v]["tf"] == TF1 for v in VARIANTS if VARIANTS[v]["book"] in books) or \
             any("COIN_UP" in VARIANTS[v]["filters"] for v in VARIANTS if VARIANTS[v]["book"] in books)
-        frames4, frames1, quality, fund_info = {}, {}, {}, {}
-        btc1 = load_klines(BTC_SYMBOL, TF1, START_1D_MS, PRICE_END_MS, cache.get, now_ms)
-        if not len(btc1):
-            raise BookDataError("BTCUSDT 1d serisi boş: BTC_UP/BTC_DOWN hesaplanamaz")
+        need1 = use1 or universe == "pit"                 # PIT: eksik çift denetimi her defter seçiminde 1d ister
+        strict = universe != "pit"                        # birincil/bilgi: seri PRICE_END'e ulaşmalı (DELISTED yalnız PIT'te)
+        frames4, frames1, quality, fund_info, empty = {}, {}, {}, {}, []
+        try:
+            btc1 = load_klines(BTC_SYMBOL, TF1, START_1D_MS, PRICE_END_MS, cache.get, now_ms)
+        except (ConnectionError, OSError, ValueError, zipfile.BadZipFile) as exc:
+            raise BookDataError(f"veri {BTC_SYMBOL} 1d: {type(exc).__name__}: {str(exc)[:200]} — koşu ÇALIŞTIRILMADI") from exc
+        if not _reaches_end(btc1, TF1):
+            raise BookDataError(f"BTCUSDT 1d serisi boş ya da PRICE_END'e ulaşmıyor: BTC_UP/BTC_DOWN hesaplanamaz ({len(btc1)} bar)")
         quality[f"{BTC_SYMBOL} {TF1}"] = series_quality(btc1, TF1, START_1D_MS)
         btc_daily = regime_daily(btc1)
         tasks = []
-        fails = 0
         for s in syms:
             try:
                 df4 = load_klines(s, TF4, START_4H_MS, PRICE_END_MS, cache.get, now_ms)
                 df1 = (btc1 if s == BTC_SYMBOL else load_klines(s, TF1, START_1D_MS, PRICE_END_MS, cache.get, now_ms)) if need1 else None
-                fraw, finfo = load_funding(s, cache.get, now_ms)
-                fails = 0
+                fraw, finfo = load_funding(s, cache.get)
             except (ConnectionError, OSError, ValueError, zipfile.BadZipFile) as exc:
-                fails += 1
                 log(f"veri {s}: HATA {type(exc).__name__}: {str(exc)[:160]}")
-                if fails >= 3:
-                    raise BookDataError(f"art arda {fails} sembolün verisi alınamadı; koşu ÇALIŞTIRILMADI") from exc
-                quality[f"{s} error"] = {"error": f"{type(exc).__name__}: {str(exc)[:200]}"}
-                continue
+                raise BookDataError(f"veri {s}: {type(exc).__name__}: {str(exc)[:200]} — koşu ÇALIŞTIRILMADI (eksik evrenle rapor "
+                                    "üretilmez; aynı kodla yeniden denenir, §0.6)") from exc
             frames4[s], frames1[s] = df4, df1
             quality[f"{s} {TF4}"] = series_quality(df4, TF4, START_4H_MS)
             if df1 is not None:
                 quality[f"{s} {TF1}"] = series_quality(df1, TF1, START_1D_MS)
             fund_info[s] = finfo
             log(f"veri {s}: 4h {len(df4)} bar · 1d {0 if df1 is None else len(df1)} bar · fonlama {finfo['rows']} uzlaşma")
-            tasks.append((s, df4 if len(df4) else None, df1 if df1 is not None and len(df1) else None, btc_daily, fraw, tuple(books),
-                          dataclasses.asdict(cfg), None))
+            if not len(df4) and (df1 is None or not len(df1)):
+                empty.append(s)                           # arşivde verisi yok: dışarıda kalır, sonuçta yazılır (§11.6)
+                continue
+            problem = data_problem(s, df4, df1, finfo, strict=strict)
+            if problem:
+                raise BookDataError(problem + " — koşu ÇALIŞTIRILMADI; aynı kodla yeniden denenir (§0.6)")
+            d1 = df1 if use1 and df1 is not None and len(df1) else None
+            tasks.append((s, df4 if len(df4) else None, d1, btc_daily, fraw, tuple(books), dataclasses.asdict(cfg), None))
+        meta["empty_symbols"] = empty
         if universe == "pit":
             meta["pit"]["missing_pairs"] = pit_missing_pairs(pit_membership, frames4, frames1)
         res = _map(_symbol_task, tasks, jobs)
@@ -2108,8 +2227,8 @@ def run(*, cache_dir: Path | str, out_dir: Path | str, universe: str = "primary"
         meta["coverage"] = coverage(frames4)
         meta["books_done"] = sorted(set(meta.get("books_done") or []) | set(books))
         meta["archive_requests"] = cache.requests
-        write_trades(trades_path, T)
-        meta["trades_sha256"] = hashlib.sha256(trades_path.read_bytes()).hexdigest()
+        meta["trades_sha256"] = write_trades(trades_path, T)
+        meta["trades_sha256_basis"] = "sıkıştırılmamış CSV metni"
     syms_u = list(PRIMARY_UNIVERSE if universe == "primary" else INFO_UNIVERSE)
     filters = None if universe == "pit" else load_filters(filters_path, syms_u if not meta.get("symbols_overridden")
                                                           else sorted(set(T["symbol"])) if len(T) else [])
@@ -2123,7 +2242,9 @@ def run(*, cache_dir: Path | str, out_dir: Path | str, universe: str = "primary"
                 "funding_files_sha256": {s: f.get("files_sha256") for s, f in (meta.get("funding") or {}).items()},
                 "coverage": meta.get("coverage"), "series_counts": meta.get("series"), "trades_sha256": meta.get("trades_sha256"),
                 "symbols_overridden": bool(meta.get("symbols_overridden")), "seconds": round(time.time() - t0, 1),
-                "readings_tr": list(READINGS_TR)})
+                "readings_tr": list(READINGS_TR), "code": meta.get("code"), "code_overrides": meta.get("code_overrides") or [],
+                "empty_symbols": meta.get("empty_symbols") or []})
+    rep["conclusion_tr"] = conclusion_tr(rep)
     for cid, c in rep["cells"].items():
         c["counts_detail"] = cell_counts(meta.get("series"), cid)
     rep["digest_changes"] = meta.get("digest_changes") or {}
@@ -2228,7 +2349,19 @@ def render_md(rep: Mapping[str, Any], others: Mapping[str, Any] | None = None) -
            "Geçmiş test; PAPER değil, canlı değil. Kâr garantisi değildir. Hiçbir defter, strateji ya da config değişmedi.", ""]
     if rep.get("symbols_overridden"):
         out += ["**UYARI: evren ön kayıttan FARKLI (yalnız test için); bu rapor ön kayıtlı koşu DEĞİLDİR.**", ""]
+    code = rep.get("code") or {}
+    out += [f"Kod: commit `{str(code.get('commit'))[:12]}` · kod ağacı `{code.get('code_tree')}` · çalışma ağacı "
+            + ("temiz" if code.get("dirty") is False else "**KİRLİ ya da bilinmiyor (ön kayıtlı koşu sayılmaz)**"), ""]
+    if rep.get("code_overrides"):
+        out += ["**UYARI: önceki koşu başka kod durumundaydı; birleştirme açık izinle yapıldı:** "
+                + "; ".join(f"{o.get('at')}: {o.get('before')} → {o.get('now')}" for o in rep["code_overrides"]), ""]
     out += ["## Sonuç", "", f"- {rep.get('conclusion_tr')}", ""]
+    if rep.get("meets_target_detail"):
+        out += ["- Hedefi karşılayan hücreler (§8.4): " + "; ".join(f"{c} — {n}" for c, n in rep["meets_target_detail"].items()), ""]
+    if rep.get("pit_not_applied"):
+        out += [f"- PIT sonucu yazılmadı: {rep['pit_not_applied']}", ""]
+    if rep.get("empty_symbols"):
+        out += [f"- Arşivde verisi olmayan coin (dışarıda): {', '.join(rep['empty_symbols'])}", ""]
     flt = rep.get("filters") or {}
     if u != "pit":
         out += [f"- Kapasite filtre tablosu: " + (f"verified_at {flt.get('verified_at')} · sha256 {flt.get('sha256')}" if flt.get("ok")
@@ -2266,9 +2399,10 @@ def render_md(rep: Mapping[str, Any], others: Mapping[str, Any] | None = None) -
                    f"{su['verdict_strict']} | {sf['verdict']} / {sf['verdict_strict']} | {_f(mp)} | {capt} | {ci_b} | "
                    f"{'—' if pv is None else format(float(pv), '.4f')} | {state} |")
     out += ["", "### Hücre ayrıntısı", "",
-            "Sansür payı (DATA_END) keşif/doğrulama; BAD_BAR payı; gerçek işlemlerde NaN fonlama payı (doğrulama); plasebo çekilişi ve "
-            "NO_REAL_RISK payı; kapasite (BUMP): kabul/aday, çıkarılan, ret nedenleri, eşzamanlı en çok; kapasiteli keşif aylık % "
-            "(fonlamalı, BUMP/NO_BUMP); hedef şartlarından düşenler.", "",
+            "Sansür payı (DATA_END) keşif/doğrulama; BAD_BAR payı; gerçek işlemlerde NaN fonlama payı (doğrulama); simüle edilen "
+            "plasebo ve NO_REAL_RISK payı (payda: risk geometrisinden önce seçilen plasebo; C4'te üretilen + NO_REAL_RISK + BAD_STOP); "
+            "kapasite (BUMP): kabul/aday, çıkarılan, ret nedenleri, eşzamanlı en çok; kapasiteli keşif aylık % (fonlamalı, "
+            "BUMP/NO_BUMP); hedef şartlarından düşenler.", "",
             "| hücre | sansür | BAD_BAR | NaN fonlama | plasebo / NO_REAL_RISK | kapasite BUMP | keşif aylık kap. | düşen şartlar |",
             "|---|---|---|---|---|---|---|---|"]
     for cid, c in (rep.get("cells") or {}).items():
@@ -2311,14 +2445,17 @@ def render_md(rep: Mapping[str, Any], others: Mapping[str, Any] | None = None) -
                                                                      for k, v in rep["digest_changes"].items()] + [""]
     if rep.get("attempts"):
         out += ["## Koşu denemeleri (§0.7)", ""] + [f"- {a.get('attempt')} · {a.get('started_at')} · {a.get('status')} · commit "
-                                                    f"{str(a.get('commit'))[:12]} · mühür {a.get('registry_sha')}"
+                                                    f"{str(a.get('commit'))[:12]} · kod ağacı {a.get('code_tree')}"
+                                                    + ("" if a.get("dirty") is False else " · KİRLİ/bilinmiyor")
+                                                    + f" · mühür {a.get('registry_sha')}"
                                                     + (f" · {a.get('error')}" if a.get("error") else "") for a in rep["attempts"]] + [""]
     out += ["Belirsiz kuralların okunuşu `BOOK_REGISTRY['readings_tr']` içindedir (mühre dahil).", ""]
     return "\n".join(out)
 
 
 __all__ = ["BOOK_REGISTRY", "BOOK_REGISTRY_SHA", "BOOKS", "BookDataError", "C4_VARIANTS", "CV_ORDER", "D4_VARIANTS", "FM_VARIANTS",
-           "PRIMARY_CELLS", "PRIMARY_UNIVERSE", "INFO_UNIVERSE", "READINGS_TR", "Series", "VARIANTS", "ZipCache", "build_report",
-           "c4_series_rows", "capacity_run", "clean_ends", "d4_series_rows", "fm_series_rows", "holm", "load_filters", "load_funding",
-           "load_klines", "month_key", "monthly", "mt_pvalue", "period_of", "pit_pool", "pit_universe", "process_symbol",
-           "regime_daily", "regime_values", "render_md", "run", "series_quality", "simulate_trade"]
+           "PRIMARY_CELLS", "PRIMARY_UNIVERSE", "INFO_UNIVERSE", "READINGS_TR", "Series", "VARIANTS", "ZipCache", "book_note",
+           "build_report", "c4_series_rows", "capacity_run", "clean_ends", "code_match", "conclusion_tr", "d4_series_rows",
+           "data_problem", "final_status", "fm_series_rows", "git_state", "holm", "load_filters", "load_funding", "load_klines",
+           "month_key", "monthly", "mt_pvalue", "period_of", "pit_missing_pairs", "pit_pool", "pit_universe", "process_symbol",
+           "read_trades", "regime_daily", "regime_values", "render_md", "run", "series_quality", "simulate_trade", "write_trades"]

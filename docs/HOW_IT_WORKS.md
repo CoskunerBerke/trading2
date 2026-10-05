@@ -188,6 +188,15 @@ pattern-evidence cache key (symbol, index version, last bar) changes and the nex
 on the main thread. After each publish, and never before it, a single background worker now computes that evidence with
 the published index, the tour's own function and the same inputs, and seeds the cache under that version; a tour that
 asks for a symbol being computed waits for the same result ([`patterns/evidence_cache.py`](../tradingbot/patterns/evidence_cache.py)).
+Since 2026-10-05 those queries run in one short-lived child process forked from the worker, so they no longer hold the
+worker's GIL: the query loop calls `np.corrcoef` per indexed event, which drops and retakes the GIL so often that the
+tour, the Box timer and the protective monitor could not get it back for tens to hundreds of milliseconds at a time
+(measured locally: GIL-releasing tour work ran 30–145 times slower while a prewarm ran in-process, 0.8–1.1 times with the
+child). The child sees the published index through copy-on-write memory, so engine, function and inputs are the tour's
+own and the evidence is bit-identical; while it lives, a tour cache miss is sent to it too. It exits when the prewarm
+job ends or a newer index is published; any child failure is logged and the work falls back to today's in-process
+path. `history.evidence_subprocess: false` restores the in-process path
+([`patterns/evidence_child.py`](../tradingbot/patterns/evidence_child.py), [TOUR_CONTENTION_V1.md](TOUR_CONTENTION_V1.md)).
 The chart-analysis index is written once per tour instead of once per new analysis, and the closed-trade exit
 evaluation and the entry-snapshot trade links are memoised. Tests pin that ledgers and decisions are identical with these
 changes on and off.
@@ -1307,7 +1316,9 @@ sinyal laboratuvarında keşif/doğrulama ayrımı, gün kümeli aralıklar, pla
 kâğıt işlemdir ve şu ana kadar istatistiksel olarak kesin değildir.
 
 - **Mimari:** tek worker süreci; ana tur döngüsü + koruyucu izleyici, Box zamanlayıcısı, Formasyon tarayıcısı ve indeks
-  yenileyici iş parçacıkları; ayrı, salt okunur panel süreci. Eski v2 spot döngüsü her yeni 4h barda sekiz defterden
+  yenileyici iş parçacıkları; ayrı, salt okunur panel süreci. Yeni indeks yayımından sonraki pattern kanıtı sorguları
+  worker'dan `fork` edilen kısa ömürlü bir alt süreçte koşar ve worker'ın GIL'ini turdan almaz (geri dönüş:
+  `history.evidence_subprocess: false`). Eski v2 spot döngüsü her yeni 4h barda sekiz defterden
   ayrı, kendi küçük spot kâğıt portföyünü (`portfolio.json`) işletir; paneldeki "Spot defteri" sayfası bu portföyü gösterir.
 - **Muhasebe:** izole marj, komisyon, 3 bps kayma, borsa filtreleri, gerçekleşmiş fonlama, ihtiyatlı likidasyon sırası,
   stop taşıma düzeltmesi.

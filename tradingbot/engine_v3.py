@@ -932,6 +932,15 @@ class TradingEngineV3(TradingEngine):
     #: Karar girdisi DEĞİLDİR: iki yol aynı motor + aynı fonksiyonla bit-aynı kanıt üretir (test kilitli).
     EVIDENCE_PREWARM = True
 
+    def _evidence_subprocess_on(self) -> bool:
+        """Kanıt sorguları alt süreçte mi (`history.evidence_subprocess`, varsayılan AÇIK; bkz. `patterns/evidence_child`).
+        Karar girdisi DEĞİLDİR: yalnız sorgunun hangi süreçte koştuğunu seçer; kanıt bit-aynıdır (test kilitli).
+        Kısmi motor nesnesinde (config yok) KAPALI = bugünkü süreç içi yol."""
+        try:
+            return bool(getattr(self.cfg.v3.history, "evidence_subprocess", False))
+        except AttributeError:
+            return False
+
     def _evidence_prewarm_order(self, eng) -> list[str]:
         """Ön ısıtma sırası = turun sorgu sırası (giriş evreni sırası), sonra indeksteki diğer 4h futures serileri."""
         cands = getattr(eng, "candles", None) or {}
@@ -970,7 +979,8 @@ class TradingEngineV3(TradingEngine):
                 r = getattr(_self, "_refresher", None)
                 return r is not None and r.bundle is b
 
-            self._evidence_cache().request_prewarm(bundle, keys, self._evidence_query, _current)
+            self._evidence_cache().request_prewarm(bundle, keys, self._evidence_query, _current,
+                                                   use_child=self._evidence_subprocess_on())
         except Exception as exc:  # noqa: BLE001 — ön ısıtma kurulamazsa tur bugünkü gibi hesaplar
             log.warning("pattern kanıtı ön ısıtması kurulamadı (tur kendisi hesaplar): %s", exc)
 
@@ -1015,7 +1025,12 @@ class TradingEngineV3(TradingEngine):
             key = (symbol, version, last_ts)
             cache.prune_older(version)              # eski sürüm girdileri erişilemez; bellekte de tutulmaz
             # İsabet yoksa hesapla. Yayım sonrası ön ısıtma bu anahtarı o an hesaplıyorsa tur bekler ve AYNI sonucu alır.
-            ent = cache.get_or_compute(key, lambda: self._evidence_query(eng, symbol))
+            # Alt süreç açıkken ıska, bu motor için canlı alt süreç varsa ona gider (tur boruda bekler, GIL'i Box
+            # zamanlayıcısına ve koruyucu izleyiciye bırakır); yoksa ya da arızalıysa bugünkü gibi süreç içi.
+            if self._evidence_subprocess_on():
+                ent = cache.get_or_compute(key, lambda: cache.compute(eng, symbol, self._evidence_query))
+            else:
+                ent = cache.get_or_compute(key, lambda: self._evidence_query(eng, symbol))
             ev = ent.ev
             if not ent.written:
                 # Panel dosyası bu sürüm için turun İLK kullanımında, turun kimliğiyle yazılır (bugünkü gibi bir kez).
@@ -4936,6 +4951,9 @@ class TradingEngineV3(TradingEngine):
                 # kodla (943345c) aynı kalır; `record_selectivity` karar değiştirdiği için özete girer.
                 if (_d.get("learning_mode") or {}).get("extra_entries") == "open":
                     _d["learning_mode"].pop("extra_entries", None)
+                # PATTERN KANITI ALT SÜRECİ (2026-10-05): iki değeri de karar-nötrdür (yalnız sorgunun hangi süreçte
+                # koştuğunu seçer) → karar kimliğine GİRMEZ; özet bu alandan önceki kodla aynı kalır.
+                (_d.get("history") or {}).pop("evidence_subprocess", None)
                 h = payload_hash(_d)
         except Exception:  # noqa: BLE001
             h = None

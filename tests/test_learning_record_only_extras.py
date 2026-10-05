@@ -325,6 +325,7 @@ def test_shared_experience_collector_carries_the_engines_config_hash_in_every_mo
     head = asdict(load_v3({}))
     head.pop("shared_experience")
     head["learning_mode"].pop("extra_entries")                   # 943345c'nin V3Config alanları
+    head["history"].pop("evidence_subprocess")                   # 2026-10-05: karar-nötr anahtar karar kimliğine girmez
     assert hashes["absent"] == hashes["open"] == payload_hash(head) != hashes["rec"]
 
 

@@ -179,6 +179,7 @@ def test_engine_config_hash_ignores_the_record_only_section():
     other = _load(dict(ON, max_rows_per_tour=50, tour_budget_s=0.5, state_dir="xp2"))
     head_fields = {k: v for k, v in asdict(absent).items() if k != "shared_experience"}   # HEAD'in V3Config alanları
     head_fields["learning_mode"].pop("extra_entries")   # 2026-10-03: kod varsayılanı `open` karar kimliğine girmez
+    head_fields["history"].pop("evidence_subprocess")   # 2026-10-05: karar-nötr alt süreç anahtarı karar kimliğine girmez
     assert h(absent) == h(off) == h(rec) == h(other) == payload_hash(head_fields)
     assert h(_load(None, mode={"mode": "OBSERVE"})) != h(absent), "karar ayarı değişince özet DEĞİŞİR (boş özet değil)"
 

@@ -8,6 +8,8 @@ kanıtını görür. Hızlandırmalar AÇIK ve KAPALI koşulur; `state/` altınd
 karar günlüğü, karşı-olgusal kayıtlar, kanıt dosyaları, health.json …) BAYT BAYT aynı olmalıdır.
 
 AÇIK koşu iki biçimde: ön ısıtma her turdan önce BİTMİŞ ve ön ısıtma tur başlarken HÂLÂ KOŞUYOR (bekleme yok).
+AÇIK koşu üretim varsayılanıyla kanıt sorgularını ALT SÜREÇTE yapar (`history.evidence_subprocess`, 2026-10-05);
+geri dönüş anahtarıyla süreç içi ön ısıtma da ayrıca karşılaştırılır.
 """
 from __future__ import annotations
 
@@ -153,6 +155,9 @@ def test_tours_across_index_publishes_are_byte_identical_with_optimizations_on(t
     on = _run(tmp_path / "run", monkeypatch, optimized=True)
     assert on["versions"] == off["versions"] == [1, 2, 2, 3, 3]
     assert _diff(on, off) == []
+    # üretim varsayılanı: kanıt sorguları alt süreçte koştu (2026-10-05)
+    st = on["eng"]._evidence_cache().stats
+    assert st["child_started"] >= 1 and st["child_computed"] >= 1 and st["child_failures"] == 0, st
     # anlamlı senaryo: kanıt üretildi, defterlerde etkinlik var, grafik analizi yazıldı
     files = on["files"]
     assert any(k.startswith("state/evidence/") for k in files)
@@ -169,3 +174,15 @@ def test_tours_are_identical_when_the_prewarm_is_still_running_at_tour_start(tmp
     off = _baseline(tmp_path_factory, monkeypatch, _cache)
     on = _run(tmp_path / "run", monkeypatch, optimized=True, wait_prewarm=False)
     assert _diff(on, off) == []
+
+
+def test_tours_are_identical_with_the_in_process_prewarm_kill_switch(tmp_path, tmp_path_factory, monkeypatch, _cache):
+    """Geri dönüş anahtarı (`history.evidence_subprocess: false`): ön ısıtma bugünkü gibi süreç içi; sonuç yine aynı."""
+    from tradingbot.engine_v3 import TradingEngineV3
+    off = _baseline(tmp_path_factory, monkeypatch, _cache)
+    with monkeypatch.context() as mp:
+        mp.setattr(TradingEngineV3, "_evidence_subprocess_on", lambda self: False)
+        on = _run(tmp_path / "run", monkeypatch, optimized=True)
+    assert _diff(on, off) == []
+    st = on["eng"]._evidence_cache().stats
+    assert st["child_started"] == 0 and st["computed"] >= 1, st

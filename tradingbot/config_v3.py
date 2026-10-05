@@ -431,6 +431,12 @@ class HistorySection:
     #: Indekse alinacak azami sembol — BELLEK TAVANI. Onceki OOM tam Tier-A indeksindendi;
     #: yeniden kurulum sirasinda eski ve yeni indeks birlikte yasar, bu yuzden kume baglanir.
     refresh_max_symbols: int = 16
+    #: PATTERN KANITI ALT SÜRECİ (2026-10-05): yayım sonrası kanıt sorguları (ve o sırada turun ıskaları) `fork` ile
+    #: ayrılan tek bir alt süreçte koşar; worker'ın GIL'ini turdan/Box zamanlayıcısından çalmaz. KARAR GİRDİSİ DEĞİL:
+    #: yayım anı, sürüm, anahtar ve kanıt aynıdır; bu yüzden karar kimliğine (`config_hash`) de girmez.
+    #: `false` → bugünkü süreç içi yol (geri dönüş anahtarı).
+    #: Ayrıntı: tradingbot/patterns/evidence_child.py, docs/TOUR_CONTENTION_V1.md.
+    evidence_subprocess: bool = True
 
 
 @dataclass

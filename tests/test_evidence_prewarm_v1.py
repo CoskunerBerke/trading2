@@ -81,6 +81,10 @@ class _Gated:
 
 def _engine(tmp_path, monkeypatch, symbols):
     eng = TE._engine(tmp_path, monkeypatch, symbols=list(symbols))
+    # Bu dosya SÜREÇ İÇİ ön ısıtmayı kilitler (kapı ve sayaç iş parçacığı adına bakar). Bu yol geri dönüş anahtarının
+    # (`history.evidence_subprocess: false`) ve alt süreç arızasındaki yedeğin yoludur; alt süreç yolu aynı
+    # değişmezlerle tests/test_evidence_subprocess_v1.py'de sınanır.
+    eng.cfg.v3.history.evidence_subprocess = False
     return eng
 
 

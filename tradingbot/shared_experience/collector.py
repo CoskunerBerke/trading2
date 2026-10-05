@@ -589,6 +589,7 @@ class SharedExperienceCollector:
                 if getattr(eng.cfg, "v3", None) is not None:
                     _d = asdict(eng.cfg.v3)
                     _d.pop("shared_experience", None)         # motorun `config_hash()` kuralıyla AYNI (karar kimliği)
+                    (_d.get("history") or {}).pop("evidence_subprocess", None)     # karar-nötr (2026-10-05)
                     cfg_hash = payload_hash(_d)
             except Exception:  # noqa: BLE001 — (2026-09-29) etiket yalnız; hesaplanamazsa boş kalır
                 cfg_hash = None

@@ -348,7 +348,11 @@ yan yana verir.
 **Taban çizgisi karışıklığı (wt-tourfix).** Paralel tur düzeltmesi (`34ae8d2`, çatallanmış kNN alt süreci) tur
 sürelerini ve worker bellek profilini değiştirecek. Bu yüzden:
 - P0 tur p50/p95, `memory.peak` ve Box zamanlayıcı tabanı **her worker sürümünden sonra** yeniden alınır;
-- motor sürümü, başka bir sürümün 7 günlük `--check` penceresi içinde dağıtılmaz;
+- ~~motor sürümü, başka bir sürümün 7 günlük `--check` penceresi içinde dağıtılmaz;~~ (eski metin, tarihçe için)
+  **Değişiklik (2026-10-06, sahip kararı: "3 temiz gün sonra"):** motor sürümü, başka bir sürümün yeniden başlatmasından
+  (`deploy-logs/*-restart-at.txt`) en az **3 gün** sonra VE o sürümün ilk iki `--check` çıktısı temiz olduysa
+  dağıtılabilir. 3 günü sürüm betiği zorlar (`3g-pencere-dışı` kapısı); iki temiz `--check` sahip + inceleyici
+  yargısıdır (betik denetlemez). Motorun kendi etkisini A/B geceleri yine ölçer;
 - motorun etkisi yalnız A/B gecelerine göre değerlendirilir.
 
 ---
@@ -1110,6 +1114,14 @@ iki anlık görüntü zamanını yazar.
   iki anlık görüntü zamanı, mark kaynağı.
 - **Kesinleşme (§4.2):** satır en az 3 gün ve fonlama kapsaması tamamlanana kadar GEÇİCİ'dir; hükümler yalnız KESİN
   günleri kullanır. Verisi eksik gün **EKSİK** işaretlenir ve hükümlerden çıkarılır; sıfır sayılmaz.
+- **Ayna defterler (Değişiklik 2026-10-06).** M2X agresif defteri (`state/strategy_paper_m2x/`) M2'nin gerçek
+  işlemlerinin kopyasıdır (docs/M2_AGGRESSIVE_V1.md §4.2). Arşiv (S1a) onu da kaydeder; ama toplam, ana bot grubu,
+  defter grupları, enstrümanlar, altın, en iyi enstrüman, şans oranı ve hükümler onu SAYMAZ (aynı işlemler iki kez
+  sayılırdı). Satırda ayrı `mirror_books` anahtarında kendi defterine göre yalnız bilgi olarak yazılır (`verdict` yok);
+  `engine-status` tablosunda ve `engine-status --daily`'de ayrı "ayna defterler" bölümündedir.
+  `scripts/bot_scorecard.py --daily` de onu `find_books` ile dışlar (K6 eşitliği korunur). Liste motorun içinde
+  tanımlıdır (`research_engine/ledgers.MIRROR_BOOKS`; betiğin `MIRROR_BOOKS` anahtarlarıyla eşitliği testlidir). Ayna
+  defter yoksa satırlar ve çıktılar öncekiyle bayt bayt aynıdır.
 
 **Altın.** Bugün hiçbir canlı defter altın işlemiyor. `LIVE_PAPER`'da altın satırı "işlem yok" yazar. Altın
 `EXPLORATION_FWD` (P3) ve `PROSPECTIVE_REPLAY` (P4) akışlarında, "canlı değil" etiketiyle görünür; sahip bir altın
@@ -1339,7 +1351,10 @@ aynı fikrin yeniden test edilmemesinden (deneme defteri) ve verinin yeniden ind
 ## 10. Aşamalı teslim
 
 Her aşama tek bir dry-run, tek bir deploy ve günlük `--check` ile yürütülür. Sahip her VPS komutunu kendisi çalıştırır.
-Hiçbir motor aşaması başka bir sürümün 7 günlük `--check` penceresi içinde dağıtılmaz (§2.9).
+~~Hiçbir motor aşaması başka bir sürümün 7 günlük `--check` penceresi içinde dağıtılmaz (§2.9).~~ (eski metin)
+**Değişiklik (2026-10-06, sahip kararı: "3 temiz gün sonra"):** hiçbir motor aşaması başka bir sürümün yeniden
+başlatmasından 3 günden önce ve o sürümün ilk iki `--check` çıktısı temiz olmadan dağıtılmaz (3 günü betik zorlar; iki
+temiz `--check` sahip + inceleyici yargısı; motorun etkisi yine A/B gecelerinde ölçülür; §2.9).
 
 ### P0 — VPS bilgileri ve taban çizgisi (salt-okunur; kod yok)
 
@@ -1673,7 +1688,7 @@ kuralını raporlar; karar sahibindir.
 | Worker yavaşlaması veya OOM (RAM/vCPU bilinmiyor) | P0 boyutlandırma (gece + doldurma birlikte); Nice 19, CPUWeight 10, IO idle, OOMScoreAdjust 1000; pencereler; A/B gecelerinde tur p95 ≤ +%5 |
 | CPU/IO çekişmesinin Box zamanlayıcısını ve koruyucu izleyiciyi geciktirmesi | A/B gecelerinde Box kaçan bar oranı ve koruyucu izleyici gecikmesi KAPALI tabanı içinde olmalı (§2.9) |
 | Paylaşılan IP REST ağırlığı ve yasağı | P1a ağsız; P1b'de arşiv-önce, güvenlik payı 0,1, başlık takibi, 418/429'da durma, **worker son 60 dk'da 429/418 aldıysa REST yok**; kabulde worker 418/429 = 0 ve ret oranı değişmez |
-| Taban çizgisi karışıklığı (wt-tourfix ve diğer worker sürümleri) | taban her worker sürümünden sonra yeniden alınır; başka sürümün 7 günlük penceresinde motor dağıtılmaz; etki yalnız A/B ile ölçülür |
+| Taban çizgisi karışıklığı (wt-tourfix ve diğer worker sürümleri) | taban her worker sürümünden sonra yeniden alınır; ~~başka sürümün 7 günlük penceresinde motor dağıtılmaz~~ **Değişiklik (2026-10-06, sahip kararı):** başka sürümün yeniden başlatmasından en az 3 gün sonra ve o sürümün ilk iki `--check`'i temizse (3 günü betik zorlar); etki yalnız A/B ile ölçülür |
 | App ↔ engine-app sürüm kayması | `load_config`/`load_v3` yok, ham YAML; S0 SKEW denetimi; her app sürüm betiği engine-app'i yeniden sabitler; ayrı klon (worktree değil) |
 | Yalıtımın sessizce bozulması (yanlış birim dosyası, systemd sürümü) | S0 çalışma zamanı denemeleri (state'e yazma, soket, `memory.max`); `ISOLATION_BROKEN` ile durma; sahte VPS'in doğrulayamadıkları açıkça listeli |
 | `daemon-reload` kayması (4G ↔ 6G) | kapılı kurulum, önce/sonra 6G doğrulaması, otomatik geri alma; elle smoke çalıştırma; P1a/P1b'den sonra birim dosyası değişmez |

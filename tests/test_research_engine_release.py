@@ -15,7 +15,8 @@ bağlıdır), app klonu VPS'te çalışan `f8b05fb`'dedir. Sahte `systemctl`:
 
 Kanıtlananlar: kuru çalışma hiçbir şey değiştirmez; dağıtımda data/research İLK başlatmadan ÖNCE doğru sahiplik ve 0750
 ile vardır, reload → smoke → zamanlayıcı sırası, smoke başarısızsa zamanlayıcı AÇILMAZ, reload sonrası 6G kayması geri
-alınır, güvensiz ön koşullar (NeedDaemonReload=yes, saat penceresi, 7 günlük pencere, PAPER değil, app ata değil)
+alınır, güvensiz ön koşullar (NeedDaemonReload=yes, saat penceresi, başka sürümün yeniden başlatmasından
+3 gün geçmemesi (2026-10-06 sahip kararı; önceden 7 gün), PAPER değil, app ata değil)
 hiçbir şeye dokunmadan durdurur, `--check`/`--ab-report` araştırma ağacını değiştirmez ve yalnız-gerçekleşmiş satırda
 iddia kelimesi basmaz, geri alma zamanlayıcıyı/servisi ve klonu kaldırır, data/research'ü bayt bayt bırakır.
 """
@@ -38,9 +39,9 @@ import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-SCRIPT = ROOT / "deploy" / "releases" / "tb-engine-beba65d.sh"
+SCRIPT = ROOT / "deploy" / "releases" / "tb-engine-4962209.sh"
 #: Betiğin kayıtlı sha256'sı (sürüm notu ve sahibe verilen değer; betik değişirse bu da bilinçli değişir).
-SCRIPT_SHA256 = "02e3dfbdbeb860bbada90f74e8a37c6373112cb7683e914e4d1339010a0d2814"
+SCRIPT_SHA256 = "dfae5291866bd487ebad98cf7e2ff89e82319834e481052cb933b5007f71677d"
 TEXT = SCRIPT.read_text(encoding="utf-8")
 TIP = re.search(r'^TIP="([0-9a-f]{40})"', TEXT, re.M).group(1)
 APP_SHA = "f8b05fb27310238c764ac7dad23221d84f7c0b6d"      # VPS'te çalışan app (hedefin atası)
@@ -335,14 +336,19 @@ def _at(log: list[str], prefix: str) -> int:
 @needs_sandbox
 def test_dry_run_checks_everything_and_changes_nothing(tmp_path, source):
     sb = Sandbox(tmp_path, source)
+    # başka sürümün yeniden başlatması 3 gün + 10 dk önce: pencere dışı (2026-10-06 sahip kararı; önceden 7 gün)
+    (sb.base / "deploy-logs").mkdir()
+    (sb.base / "deploy-logs" / "8db1faf-restart-at.txt").write_text(f"{int(time.time()) - 3 * 86400 - 600}\nx\n")
     before = len(list(Path("/tmp").glob("tb-engine-*")))
     cp = sb.run("--dry-run")
     assert cp.returncode == 0, cp.out[-6000:]
     m = re.search(r"KURU ÇALIŞMA: (\d+)/(\d+) değişmez geçti", cp.out)
     assert m and m.group(1) == m.group(2) == "17", cp.out[-3000:]
     for name in ("kaynak-TIP", "app-SHA-ata", "birim-sha256", "birim-sözleşmesi", "systemd-analyze-verify", "compileall",
-                 "bağımsız-koşucu", "yalıtım-AST", "engine-status-kuru", "worker-MemoryMax=6G", "tradingbot-worker-NDR=no"):
+                 "bağımsız-koşucu", "yalıtım-AST", "engine-status-kuru", "worker-MemoryMax=6G", "tradingbot-worker-NDR=no",
+                 "3g-pencere-dışı"):
         assert re.search(rf"\[tamam\] #\d+ {re.escape(name)}", cp.out), name
+    assert "8db1faf-restart-at.txt 3 gün önce (≥ 3;" in cp.out, cp.out[-3000:]
     assert "33 geçti · 0 kaldı · 0 atlandı" in cp.out
     sb.untouched()
     _no_forbidden(sb)
@@ -386,7 +392,7 @@ def test_deploy_smoke_then_timer_check_ab_report_and_rollback_keeps_research(tmp
     d0, n0 = _tree_digest(sb.res), len(samples.read_text(encoding="utf-8").splitlines())
     ck = sb.run("--check")
     assert ck.returncode == 0, ck.out[-4000:]
-    for s in ("iki SHA: app f8b05fb · engine-app beba65d", "SKEW yok", "GECE ÖĞRENME MOTORU", "GÜNLÜK HEDEF",
+    for s in ("iki SHA: app f8b05fb · engine-app 4962209", "SKEW yok", "GECE ÖĞRENME MOTORU", "GÜNLÜK HEDEF",
               "K1 elle smoke", "K2 ilk arşiv", "K8 rotasyon payı", "--ab-report", "defter okuma", "Aylık"):
         assert s in ck.out, s
     assert not claim_word_violations(ck.out.splitlines()), claim_word_violations(ck.out.splitlines())
@@ -526,11 +532,14 @@ def test_unsafe_preconditions_refuse_before_any_change(tmp_path, source, case):
     sb = Sandbox(tmp_path, source, **env)
     if case == "release_window":
         (sb.base / "deploy-logs").mkdir()
-        (sb.base / "deploy-logs" / "34ae8d2-restart-at.txt").write_text(f"{int(time.time()) - 3 * 86400}\nx\n")
+        # 3 günden 10 dk eksik: hâlâ pencere içinde (2026-10-06 sahip kararı: 3 gün; önceden 7 gün)
+        (sb.base / "deploy-logs" / "34ae8d2-restart-at.txt").write_text(f"{int(time.time()) - 3 * 86400 + 600}\nx\n")
     if case == "not_paper":
         (sb.state / "mode.json").write_text('{"mode": "LIVE"}', encoding="utf-8")
     cp = sb.run()
     assert cp.returncode == 1 and "HİÇBİR ŞEYE DOKUNULMADI" in cp.out, cp.out[-3000:]
+    if case == "release_window":
+        assert "DUR: 3g-pencere-dışı" in cp.out and "(≥ 3;" in cp.out, cp.out[-3000:]
     sb.untouched()
     _no_forbidden(sb)
 

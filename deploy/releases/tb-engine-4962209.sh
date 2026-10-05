@@ -10,11 +10,11 @@
 #   klasörlerine (engine-app, birim dosyaları, deploy-logs/engine-*) yazar.
 #
 # Kullanım (VPS'te, sahip çalıştırır; dosya adı tb-engine-<hedefin ilk 7 hanesi>.sh):
-#   sudo bash tb-engine-beba65d.sh --dry-run    # yalnız denetim, hedef kod GEÇİCİ klonda (yalnız deploy-logs'a kayıt)
-#   sudo bash tb-engine-beba65d.sh              # dağıt: klon + dizin + kapılı birim kurulumu + elle smoke
-#   sudo bash tb-engine-beba65d.sh --check      # 14 gün her gün (yalnız deploy-logs/engine-<sha7>-samples.jsonl'a yazar)
-#   sudo bash tb-engine-beba65d.sh --ab-report  # 14. geceden sonra bir kez: AÇIK/KAPALI geceler aynı saat penceresinde
-#   sudo bash tb-engine-beba65d.sh --rollback   # zamanlayıcı + servis + engine-app kaldırılır; data/research KALIR
+#   sudo bash tb-engine-4962209.sh --dry-run    # yalnız denetim, hedef kod GEÇİCİ klonda (yalnız deploy-logs'a kayıt)
+#   sudo bash tb-engine-4962209.sh              # dağıt: klon + dizin + kapılı birim kurulumu + elle smoke
+#   sudo bash tb-engine-4962209.sh --check      # 14 gün her gün (yalnız deploy-logs/engine-<sha7>-samples.jsonl'a yazar)
+#   sudo bash tb-engine-4962209.sh --ab-report  # 14. geceden sonra bir kez: AÇIK/KAPALI geceler aynı saat penceresinde
+#   sudo bash tb-engine-4962209.sh --rollback   # zamanlayıcı + servis + engine-app kaldırılır; data/research KALIR
 # Çıkış: 0 tamam · 1 durdu (ön denetimde: hiçbir şey değişmedi) · 2 smoke geçmedi ya da saati değil (zamanlayıcı KAPALI)
 #   · 3 reload sonrası MemoryMax kayması (motor birimleri geri alındı) · 4 dağıtıldı ama bir değişmez KALDI.
 #
@@ -23,7 +23,7 @@
 #   reload'dan SONRA 6G yeniden doğrulanır, değilse motor birimleri geri alınır ve betik durur. setup_vps_v3.sh ASLA
 #   çalıştırılmaz; systemctl set-property / edit / revert kullanılmaz.
 # SAAT: dağıtım, smoke ve kuru çalışma UTC 00:00–04:00 (gece birimi) ve 4h yayın pencerelerinde (hh:00–hh:35, hh 4'ün
-#   katı; +5 dk pay) BAŞLAMAZ; başka bir sürümün 7 günlük --check penceresi içinde (deploy-logs/*-restart-at.txt) DURUR.
+#   katı; +5 dk pay) BAŞLAMAZ; başka sürümün yeniden başlatmasından (deploy-logs/*-restart-at.txt) 3 gün geçmeden DURUR.
 # KAPATMA (anında, veri yerinde kalır): sudo systemctl disable --now tradingbot-engine-night.timer
 #   (disable örtük reload yapar: önce  systemctl show tradingbot-worker -p NeedDaemonReload  → no olmalı; değilse yalnız
 #   sudo systemctl stop tradingbot-engine-night.timer  yeterlidir). Tam geri alma: bu betiğin --rollback'i.
@@ -36,7 +36,7 @@
 #   KOD özetine bağlıdır (selfcheck madde 5). K6 --check'te otomatiktir. Ağır adımlar nice 19 + ionice idle (§2.9).
 set -Eeuo pipefail
 
-TIP="beba65d6284b325fe446653b4cdfb78f302d8a0c"    # P1a kod commit'i (impl/system; 1. inceleme turu düzeltmeleri)
+TIP="49622093a3d3bc334b454b4df2dcdb4e53eb5144"    # P1a kod commit'i (1. inceleme turu + ayna defter M2X günlük hedef dışı)
 T7="${TIP:0:7}"
 BRANCH_REF="refs/heads/impl/system"
 REPO_URL="${TB_ENGINE_REPO_URL:-https://github.com/CoskunerBerke/trading2.git}"   # içerik TAM SHA'ya bağlıdır
@@ -639,11 +639,11 @@ for fm in "$LOGDIR"/*-restart-at.txt; do
   e="$(sed -n 1p "$fm" 2>/dev/null || true)"
   if [[ "$e" =~ ^[0-9]+$ ]] && (( e > last )); then last="$e"; lastf="$fm"; fi
 done
-age=$(( $(date +%s) - last )); (( age >= 7 * 86400 )) && rc=0 || rc=1
-if [[ -n "$lastf" ]]; then out="son sürüm yeniden başlatması $(basename "$lastf") $((age / 86400)) gün önce (≥ 7; §2.9)"
-  (( rc == 0 )) || out+="; en erken $(date -u -d "@$((last + 7 * 86400))" '+%F %H:%M') UTC"
-else out="deploy-logs'ta sürüm kaydı yok"; fi
-gate "7g-pencere-dışı" "$rc" "$out"
+age=$(( $(date +%s) - last )); (( age >= 3 * 86400 )) && rc=0 || rc=1   # sahip kararı 2026-10-06 "3 temiz gün sonra" (önceden 7)
+if [[ -n "$lastf" ]]; then out="son sürüm yeniden başlatması $(basename "$lastf") $((age / 86400)) gün önce (≥ 3; §2.9; ilk iki --check temiz olmalı)"
+  (( rc == 0 )) || out+="; en erken $(date -u -d "@$((last + 3 * 86400))" '+%F %H:%M') UTC"
+else out="deploy-logs'ta sürüm kaydı yok"; fi   # o sürümün ilk iki --check'i temiz mi: sahip + inceleyici yargısı
+gate "3g-pencere-dışı" "$rc" "$out"
 ram_kb="$(awk '/^MemTotal:/{print $2}' /proc/meminfo)"; dm="$(sc_show "$DASH" MemoryMax)"; [[ "$dm" =~ ^[0-9]+$ ]] || dm=536870912
 need=$(( MEM_EXPECT + dm + ENGINE_MEM + 1073741824 ))
 if (( ram_kb * 1024 >= need )); then ok "bellek bütçesi: worker 6G + panel $(numfmt --to=iec "$dm") + motor 512M + 1G ≤ RAM $(numfmt --to=iec $((ram_kb * 1024)))"

@@ -102,7 +102,7 @@ jobs:
             tests/test_candle_dsl.py tests/test_candle_variations_book.py tests/test_candle_strict_book.py \
             tests/test_signal_lab_strict.py tests/test_extract_lab_records.py \
             tests/test_futures_lab.py tests/test_futures_data.py tests/test_futures_features.py \
-            tests/test_crowd_features.py tests/test_crowd_data.py tests/test_crowd_lab.py tests/test_gold_lab.py tests/test_gold_lab_v2.py \
+            tests/test_crowd_features.py tests/test_crowd_data.py tests/test_crowd_lab.py tests/test_gold_lab.py tests/test_gold_lab_v2.py tests/test_book_lab.py \
             tests/test_learning_provenance_engine.py \
             tests/test_learning_cf_net.py tests/test_learning_cf_path_v3.py tests/test_learning_cf_aux.py \
             tests/test_learning_record_only_extras.py tests/test_learning_record_only_tours.py \

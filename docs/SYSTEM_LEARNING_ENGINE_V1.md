@@ -1,25 +1,33 @@
 # Sürekli Öğrenme Motoru v1 (`research_engine`) — tasarım
 
-**Durum:** TASARIM (kod yok). Bu belge, VPS üzerinde sürekli çalışan, kayıt-yalnız (record-only) bir öğrenme ve araştırma
+**Durum:** TASARIM (kod yok), **ikinci hakem turundan sonra revize edildi** (hakem kararı: "REVISE — yazıldığı gibi
+onaylama/uygulama"). Bu belge, VPS üzerinde sürekli çalışan, kayıt-yalnız (record-only) bir öğrenme ve araştırma
 motorunu tanımlar. Kod tabanı `1c2c6e2` (dev hattı) üzerinden okunarak yazıldı; VPS `f8b05fb` çalıştırıyor (aynı kod,
-sonraki araştırma/test commitleri hariç).
+sonraki araştırma/test commitleri hariç). Hakemin her zorunlu maddesinin nerede karşılandığı ve reddedilen tek alt
+iddianın gerekçesi §14'tedir.
 
 **Kısa özet:** Veri VPS'e **bir kez** indirilir ve her gün yalnız eksik kısım eklenir. Her gece, AI kullanmadan ve ağ
 erişimi olmadan:
-- her defterin her işlemi tüm maliyetleriyle günlüğe yazılır;
+- her defterin (vadeli **ve** ana botun spot defteri) her işlemi ve her cüzdan hareketi tüm maliyetleriyle arşivlenir;
 - her işlem için "neden kaybetti / neden kazandı / nasıl kâra dönebilirdi" hesaplanır;
-- bilinen tüm yöntemler ve varyasyonları walk-forward ile yeniden test edilir;
-- iyi görünenler önce kendi kâğıt defterlerinde **kayıt-yalnız** ileriye dönük denenir;
+- bilinen tüm yöntemler ve varyasyonları walk-forward ile yeniden test edilir ve **mühür sonrası ileri veride**
+  kendiliğinden izlenir (keşif katmanı);
+- iyi görünenler önce kendi kâğıt defterlerinde **kayıt-yalnız ileri yeniden oynatma** ile denenir;
 - kanıtlananlar sahibe (berke) **yazılı öneri** olarak sunulur.
 
 Günlük +%1 hedefi her enstrüman (altın dahil) ve toplam için **ölçülür**; kanıt olmadan hiçbir yerde "tuttu" denmez.
 Mevcut defterlerin hiçbir kararı değişmez. Her şey PAPER'dır.
 
+**İlk aşama küçüldü:** P1 ikiye bölündü. **P1a** ağsızdır ve karar-nötrdür; sahte VPS'te sınanabilir: kapanış + cüzdan
+hareketi arşivi (vadeli + spot), gecelik ölçülmüş anlık görüntü, günlük hedef (gerçekleşmiş + defterin kendi mark'ıyla
+MTM), `scorecard --daily`, `engine-status` ve yalnız gece birimi. **P1b** veri deposunu, tohumlamayı, ilk doldurmayı ve
+ağlı veri birimini getirir (§10).
+
 Temel: hakemlerin seçtiği Tasarım 1 ("reuse-first", iki gece birimi, sabitlenmiş ayrı checkout). Tasarım 2'den
 replay-fidelity kapısı, kural bağlamının yeniden kurulması (rehydration), EX_ANTE/HINDSIGHT ayrımı, önceden kayıtlı
 bakışlar (looks) ve sıkı hedef hükmü alındı. Tasarım 3'ten çekirdek düzeyinde ağ yalıtımı (`PrivateNetwork=yes`), ertesi
-gün arşiv uzlaştırması, evren anlık görüntüleri ve k*/iflas tablosu alındı. Hakemlerin "mutlaka düzelt" listesindeki her
-madde §9 ve ilgili bölümlerde kapatıldı (bkz. §13).
+gün arşiv uzlaştırması, evren anlık görüntüleri ve k*/iflas tablosu alındı. Birinci hakem turunun "mutlaka düzelt"
+listesi §13'te, ikinci turun zorunlu maddeleri §14'te kapatıldı.
 
 ---
 
@@ -29,12 +37,12 @@ madde §9 ve ilgili bölümlerde kapatıldı (bkz. §13).
 
 | Sahibin isteği | Karşılığı |
 |---|---|
-| "Her seferinde bir şeyleri indirip token yiyoruz" | Veri VPS'te kalıcı (`data/research/store`, `archive_cache`); günlük yalnız ek; gece işi deterministik Python; AI yalnız ≤8 KB özet okur (§8). |
-| Mevcut coinleri ve altını çok iyi öğrenen ve iyi işlem yapan sistem | Strateji kütüphanesi + gece walk-forward + kayıt-yalnız ileri adaylar + işlem dersleri (§5, §6). |
-| Günde en az +%1 (tek coin/altın **veya** toplam) | Her gün, her enstrüman, her defter ve toplam için ölçülür; hükümler istatistik kuralına bağlı (§7). |
-| Her işlemde her şeyi kaydet (gelir, ücret, kayma, fonlama, giriş yeri, büyüklük, kaldıraç, taktik, varyasyon) | İşlem günlüğü `tj_v1`, her alan kaynak etiketli (§4). |
+| "Her seferinde bir şeyleri indirip token yiyoruz" | Veri VPS'te kalıcı (`data/research/store`, `archive_cache`); günlük yalnız ek; gece işi deterministik Python; AI yalnız ≤8 KB özet okur. Kod değişikliklerinin gerçek token maliyeti ayrıca dürüstçe yazılır (§8). |
+| Mevcut coinleri ve altını çok iyi öğrenen ve iyi işlem yapan sistem | Strateji kütüphanesi + gece walk-forward + **keşif katmanı** (her varyant, altın dahil, mühür sonrası ileri veride kendiliğinden izlenir) + kayıt-yalnız ileri adaylar + işlem dersleri (§5, §6). |
+| Günde en az +%1 (tek coin/altın **veya** toplam) | Her gün, her enstrüman, her defter ve toplam için ölçülür; gün satırı kesinleşmeden hüküm yok; hükümler yalnız kayıtlı bakışlarda ve çoklu test düzeltmesiyle (§7). |
+| Her işlemde her şeyi kaydet (gelir, ücret, kayma, fonlama, giriş yeri, büyüklük, kaldıraç, taktik, varyasyon) | İşlem günlüğü `tj_v1`, her alan kaynak etiketli (§4); P1a'dan itibaren ham kapanış ve cüzdan hareketi arşivi. |
 | Kaybedince neden ve nasıl kâra dönebilirdi; kazanınca neden | Kural kodları + karşı-olgusal yeniden oynatma + istatistikle desteklenen dersler (§5). |
-| VPS'te sürekli çalışan motor; iyi olan önce kayıt-yalnız denensin, kanıtlanan bana onaya gelsin | İki systemd zamanlayıcısı; kayıt-yalnız adaylar; terfi kapısı → yazılı öneri → sahip onayı → normal sürüm (§6.7, §9). |
+| VPS'te sürekli çalışan motor; iyi olan önce kayıt-yalnız denensin, kanıtlanan bana onaya gelsin | systemd zamanlayıcıları; keşif katmanı (her şey denenir, hiçbir şey terfi etmez); kayıt-yalnız ileri adaylar; terfi kapısı → yazılı öneri → sahip onayı → normal sürüm (§6.6–§6.8, §9). |
 
 ### 1.2 Bugünkü kanıt (PAPER, maliyet sonrası)
 
@@ -45,8 +53,9 @@ madde §9 ve ilgili bölümlerde kapatıldı (bkz. §13).
 | D4 Donchian 4h | −0,89R / 13 | negatif |
 | C4 mum varyasyonları | −0,09R / 16 | negatif |
 | Formasyon | −0,48R / 13 | negatif |
-| Box | stop < %0,5: −0,56R / 72; stop %0,5–1: +0,17R / 176 | karışık |
+| Box | stop < %0,5: −0,56R / 72; stop %0,5–1: +0,17R / 176 (2026-10-03'ten beri canlı kural: en az stop %0,5) | karışık |
 | gold_v1 laboratuvarı | 32 hücrede 0 güçlü aday; hiçbir hücre **ayda** +%1'e ulaşmadı | — |
+| gold_v2 laboratuvarı (wt-gold2 `db1828e`) | aile B (PAXG hafta sonu dönüşü): kanıt yok, doğrulamada −0,055R; aile A (Dukascopy 2006–2020) henüz koşulmadı | — |
 | crowd lab fut_v2 | 8 hipotezde 0 | — |
 
 ### 1.3 Hedefin büyüklüğü
@@ -56,17 +65,18 @@ madde §9 ve ilgili bölümlerde kapatıldı (bkz. §13).
 - İşlem başına %0,5 riskle günde +%1, defter başına **her gün net +2R** demektir. Bugünkü en iyi defter işlem başına
   +0,12R yapıyor.
 - Kaldıraç veya risk artırmak tek tek +%1 günleri mekanik olarak üretebilir, ama iflas riskini de büyütür. Motor bunu
-  yalnız "HİPOTETİK" etiketli bir satırda, düşüş ve iflas olasılığıyla birlikte gösterir (§7.6). Bunu asla başarı
-  olarak sunmaz.
+  yalnız lider tablosunda ve önerilerde, "HİPOTETİK" etiketli bir satırda, düşüş ve iflas olasılığıyla birlikte
+  gösterir (§7.6). Özet başlığında ve `--check` özetinde göstermez; bunu asla başarı olarak sunmaz.
 
 ### 1.4 Gerçekçi beklenti
 
 - **Kesin olanlar:** veri bir kez iner; rutin öğrenme 0 AI token harcar; her işlem tüm alanlarıyla kaydedilir; her
   kazanç ve kayıp kanıtla açıklanır; hiçbir defter sahibin yazılı onayı olmadan değişmez; "bugün +%1 yaptık mı, nerede,
-  gerçek mi?" sorusuna her gün dürüst cevap verilir.
+  gerçek mi?" sorusuna her gün dürüst cevap verilir (gün kesinleşene kadar "GEÇİCİ" etiketiyle).
 - **Muhtemel olanlar:** kütüphanenin büyük kısmı walk-forward'da elenir (bu, sistemin çalıştığını gösterir). Varsa
   birkaç taktik maliyet sonrası işlem başına +0,05…+0,2R civarı küçük bir avantaj gösterebilir. İlk 3–6 ayda toplam
-  günlük getirinin ortalaması büyük olasılıkla −%0,1 ile +%0,1 arasında kalır.
+  günlük getirinin ortalaması büyük olasılıkla −%0,1 ile +%0,1 arasında kalır. Kapı A çok sıkıdır (geçmiş
+  laboratuvarlarda 0/32, 0/8, 0/40); bu yüzden "gerçekten dene" isteği Kapı A'yı beklemeden keşif katmanında karşılanır.
 - **Beklenmeyen:** kanıtlı, sürdürülebilir +%1/gün. Tek coinde +%1 günleri **olacaktır**; ancak 40+ enstrüman arasında
   seçim ve şans yüzünden bunlar kanıt değildir. Motor bunları "HEDEF GÜNÜ" olarak sayar, başarı olarak saymaz.
 
@@ -77,49 +87,75 @@ madde §9 ve ilgili bölümlerde kapatıldı (bkz. §13).
 ### 2.1 İlkeler
 
 1. **Worker'a dokunulmaz.** Worker, defterler, `config.yaml` ve `/opt/tradingbot/app` değişmez. Motor ayrı bir
-   checkout'tan, ayrı cgroup'larda çalışır.
+   klondan (`/opt/tradingbot/engine-app`), ayrı cgroup'larda çalışır.
 2. **Tek yön.** işlemler → günlük → atıf → dersler → önceden kayıtlı aday → kayıt-yalnız ileri test → öneri → sahip
    onayı → normal sürüm. Motorun hiçbir karar yoluna yazma yolu yoktur.
 3. **State salt-okunur.** Motor `data/state` ve `data/market` altına hiç yazmaz; bu çekirdek düzeyinde
    (`ProtectSystem=strict` + yalnız `ReadWritePaths=/opt/tradingbot/data/research`) garanti edilir.
-4. **Ağ yalnız veri biriminde.** Gece araştırma birimi `PrivateNetwork=yes` ile çalışır: araştırma sırasında indirme
-   çekirdek düzeyinde imkânsızdır.
-5. **Mühürlü ön kayıt.** Her eşik, ızgara, kapı ve hedef kuralı koda ve bu belgeye sha ile sabitlenir; değişiklik =
+4. **Ağ yalnız veri biriminde (P1b'den).** Gece birimi `PrivateNetwork=yes` ile çalışır: araştırma sırasında indirme
+   çekirdek düzeyinde imkânsızdır. P1a'da ağlı birim hiç yoktur.
+5. **Kendini doğrulayan yalıtım.** Çekirdek ayarlarına güvenmekle yetinilmez: her çalıştırma S0'da yalıtımın gerçekten
+   yürürlükte olduğunu dener (state'e yazma reddedilmeli, gece biriminde soket açılamamalı, cgroup bellek sınırı
+   beklenen değerde olmalı); biri tutmazsa çalıştırma durur (§2.8).
+6. **Dolaylı kanallar ölçülür.** Motor hiçbir karar dosyasına yazmasa da paylaşılan IP (418/429), CPU/IO çekişmesi
+   (Box zamanlayıcısı, koruyucu izleyici) ve mevcut ResearchCoordinator dolaylı karar değişikliği yaratabilir. Bunlar
+   kabul ölçütlerinde açıkça ölçülür (§2.9).
+7. **Mühürlü ön kayıt.** Her eşik, ızgara, kapı ve hedef kuralı koda ve bu belgeye sha ile sabitlenir; değişiklik =
    yeni sürüm + yeni deneme sayımı.
-6. **Dürüst etiket.** Her alan MEASURED / RECONSTRUCTED / MODELED / MISSING olarak etiketlenir; eksik gün EKSİK olarak
-   görünür, sıfır sayılmaz.
+8. **Dürüst etiket.** Her alan MEASURED / RECONSTRUCTED / MODELED / MISSING olarak etiketlenir; eksik gün EKSİK, henüz
+   kesinleşmemiş gün GEÇİCİ olarak görünür, sıfır sayılmaz.
 
 ### 2.2 Süreçler ve zamanlama (VPS saati Europe/Istanbul; tüm `OnCalendar` satırları açıkça `UTC` yazar)
 
-| Birim | Ne zaman | Ağ | Ne yapar | Kaynak |
-|---|---|---|---|---|
-| `tradingbot-worker` | sürekli (değişmez) | var | turlar (~20,5 dk'da bir, ~5,5 dk), defterler | 6G (VPS override) |
-| `tradingbot-dashboard` | sürekli (P1'de değişmez) | — | panel | 512M |
-| **YENİ** `tradingbot-engine-data.service` + `.timer` | `OnCalendar=*-*-* 00:41:00 UTC`, `TimeoutStartSec=50min` (sert durma 01:31) | **var** (tek ağlı birim) | arşiv-önce veri ekleme, REST kuyruğu, arşiv uzlaştırma, evren anlık görüntüsü, `data_status.json` | MemoryHigh 0,8G / MemoryMax 1G (P0'da kesinleşir) |
-| **YENİ** `tradingbot-engine-night.service` + `.timer` | `OnCalendar=*-*-* 01:37:00 UTC`, iç son tarih 03:40, `TimeoutStartSec=2h15min` (sert durma 03:52) | **yok** (`PrivateNetwork=yes`) | S0–S8 aşamaları (§6.1) | MemoryHigh 1,2G / MemoryMax 1,5G (P0'da kesinleşir) |
-| `tb-engine-backfill` (geçici `systemd-run`) | bir kez, sahip başlatır | var | ilk doldurma; kaldığı yerden devam eder | MemoryMax 1G |
+| Birim | Aşama | Ne zaman | Ağ | Ne yapar | Kaynak |
+|---|---|---|---|---|---|
+| `tradingbot-worker` | — | sürekli (değişmez) | var | turlar (~20,5 dk'da bir, ~5,5 dk), defterler | 6G (VPS override) |
+| `tradingbot-dashboard` | — | sürekli (P1'de değişmez) | — | panel | 512M |
+| **YENİ** `tradingbot-engine-night.service` + `.timer` | **P1a** | `OnCalendar=*-*-* 01:37:00 UTC`, iç son tarih 03:40, `TimeoutStartSec=2h15min` (sert durma 03:52) | **yok** (`PrivateNetwork=yes`) | S0–S7b aşamaları (§6.1); P1a'da yalnız S0, S1a, S3, S7, S7b | P1a: MemoryHigh 0,4G / MemoryMax 0,5G; P2+: 1,2G / 1,5G (P0'da kesinleşir) |
+| **YENİ** `tradingbot-engine-data.service` + `.timer` | P1b | `OnCalendar=*-*-* 00:41:00 UTC`, `TimeoutStartSec=50min` (sert durma 01:31) | **var** (tek ağlı birim) | arşiv-önce veri ekleme, REST kuyruğu (koruma şartlı), arşiv uzlaştırma, evren anlık görüntüsü, `data_status.json` | MemoryHigh 0,8G / MemoryMax 1G (P0'da kesinleşir) |
+| `tb-engine-backfill` (geçici `systemd-run`) | P1b | bir kez, sahip başlatır | var | ilk doldurma; kaldığı yerden devam eder; ilerleme ve tahmini bitişi `data_status.json`'a yazar | MemoryMax 1G |
 
 Zamanlama kuralları (birim sözleşme testiyle zorunlu):
 - `OnCalendar` her satırında `UTC` yazmalıdır. Yoksa zamanlayıcılar 3 saat kayar ve 04:00 yayın penceresine düşer.
-- Hiçbir motor işi hh∈{00,04,08,12,16,20} için hh:00–hh:35 aralığında (4h indeks yayın pencereleri) ve hh:00–hh:06
-  aralığında (saatlik yedekler) **başlamaz**. Gece biriminin iç son tarihi (03:40) 04:00 penceresinden önce biter.
-- İlk doldurma 2–4 saat sürebilir. Bu yüzden kendi saatine bakar ve 4h pencerelerinde (hh:00–hh:35) **kendini duraklatır**.
+- Hiçbir motor zamanlayıcısı hh∈{00,04,08,12,16,20} için hh:00–hh:35 aralığında (4h indeks yayın pencereleri)
+  **başlamaz**. Gece biriminin iç son tarihi (03:40) 04:00 penceresinden önce biter.
+- **Yedekle çakışma saatle değil durumla denetlenir.** Yedek zamanlayıcısı `OnCalendar=hourly` +
+  `OnUnitActiveSec=1h` + `RandomizedDelaySec=5min` + `OnBootSec=10min` kullanır; açılıştan sonra herhangi bir dakikaya
+  kayabilir. Bu yüzden S0 `systemctl is-active tradingbot-backup.service` sorar; aktifse 30 sn aralıkla en fazla 15 dk
+  bekler, sonra devam eder ve `BACKUP_OVERLAP` yazar.
+- İlk doldurma (P1b) uzun sürer. Kaba tahmin: vadeli `metrics` yalnız **günlük** zip'tir (≈ 45 sembol × ≈ 1.400 gün
+  ≈ 60 bin dosya, her biri `.CHECKSUM` ile iki istek), kline aylık zip'leri ≈ 14 bin dosyadır; toplam ≈ 150 bin istek.
+  Sıralı ve 4h pencerelerinde duraklayarak bu **10–24 saat**, muhtemelen iki takvim günü sürer. Doldurma kendi saatine
+  bakar, 4h pencerelerinde (hh:00–hh:35) **kendini duraklatır** ve ilerlemeyi (`done/total`, son 1 saatin hızı,
+  tahmini bitiş) `data_status.json`'a yazar.
 - `Persistent=false`: kaçırılan çalıştırma açılışta telafi edilmez (açılıştaki ilk turla çakışmasın diye).
 
-### 2.3 Ayrı, sabitlenmiş checkout; config ve ortam
+### 2.3 Ayrı, sabitlenmiş klon; config ve sürüm kayması
 
-- Kod `/opt/tradingbot/engine-app` altından çalışır. Bu, aynı deponun etiketli bir SHA'da sabitlenmiş ayrı bir
-  checkout'udur. Motor sürümleri `/opt/tradingbot/app`'e ff-merge **yapılmaz**. Böylece worker durmaz, yeniden başlamaz
-  ve 44 dakikalık ilk tura girmez.
-- Venv paylaşılır (`/opt/tradingbot/venv`); yeni bağımlılık yok (pandas, numpy, pyarrow mevcut). `tradingbot` venv'e
-  pip ile kurulu **değildir**. Bu yüzden `ExecStart=/opt/tradingbot/venv/bin/python -s -m tradingbot ...` ve
+- Kod `/opt/tradingbot/engine-app` altından çalışır. Bu, aynı deponun etiketli bir SHA'da sabitlenmiş **ayrı bir
+  klonudur** (`git worktree` değildir). Böylece app sürüm betiklerinin temiz-ağaç denetimleri ve `worktree remove
+  --force` adımları motoru hiç etkilemez. Motor sürümleri `/opt/tradingbot/app`'e ff-merge **yapılmaz**. Böylece worker
+  durmaz, yeniden başlamaz ve 44 dakikalık ilk tura girmez.
+- Venv paylaşılır (`/opt/tradingbot/venv`); yeni bağımlılık yok (pandas, numpy, pyarrow, PyYAML mevcut). `tradingbot`
+  venv'e pip ile kurulu **değildir**. Bu yüzden `ExecStart=/opt/tradingbot/venv/bin/python -s -m tradingbot ...` ve
   `WorkingDirectory=/opt/tradingbot/engine-app` kullanılır: `-m` çalışma dizinini `sys.path`'e ekler. `python -I`
   **kullanılmaz**, çünkü `-I` hem `PYTHONPATH`'i hem çalışma dizinini yok sayar ve import'lar kırılır. Birim sözleşme
   testi bunu da denetler.
-- **Config kayması:** `config.DEFAULT_CONFIG_PATH = PROJECT_ROOT/config.yaml` olduğu için ayrı checkout kendi
-  `config.yaml`'ını yükler. Motor bu yüzden canlı config'i **açık yolla ve salt-okunur** yükler:
-  `--config /opt/tradingbot/app/config.yaml`. Bu dosyanın sha256'sını her çalıştırmada `run_status.json`'a yazar.
-  Varsayılan yolla yüklemeyi reddeden bir test vardır.
+- **Config: `load_config` / `load_v3` hiç çağrılmaz.** `config_v3.load_v3`, `learning_mode` ve `shared_experience`
+  bölümlerindeki bilinmeyen anahtarda `ConfigError` atar (config_v3.py:863–883). Sabitlenmiş eski bir motor, yeni bir app
+  sürümünün eklediği anahtar yüzünden her gece kırılırdı (tersi de olabilir). Bu yüzden motor canlı config'i yalnız
+  **ham YAML** olarak okur: `rawconfig.py`, `/opt/tradingbot/app/config.yaml`'ı salt-okunur açar, baytların sha256'sını
+  `run_status.json`'a yazar ve `yaml.safe_load` ile yalnız ihtiyaç duyduğu birkaç anahtarı hoşgörülü biçimde çeker
+  (bilinmeyen anahtar yok sayılır, eksik anahtar `None` olur). İhtiyaç listesi koddadır ve testlidir: defter
+  `enabled`/`min_stop_pct`, `learning_mode.extra_entries`, `risk.starting_equity_usdt`. Bir AST testi
+  `research_engine`'in `config.load_config`, `config_v3.load_v3` veya `config_v3` import etmesini yasaklar.
+- **Sürüm kayması (SKEW) denetimi.** S0, çalışan app'in SHA'sını (`/opt/tradingbot/app/.git` altından salt-okunur
+  okunur) ve engine-app SHA'sını karşılaştırır: app SHA'sı engine-app SHA'sının atası veya kendisi olmalıdır
+  (`git -c safe.directory=/opt/tradingbot/engine-app -C /opt/tradingbot/engine-app merge-base --is-ancestor`). Değilse
+  `SKEW` yazılır ve o gece yalnız S0, S1a (arşiv; rotasyon kaybı olmasın diye) ve S7 çalışır.
+- **Yeniden sabitleme kuralı.** Bundan sonraki her app sürüm betiği, aynı çalıştırmada engine-app'i yeni app SHA'sına
+  (veya onu içeren motor etiketine) yeniden sabitler ve `--check`'te iki SHA'yı da yazar. Bu kural `docs/OPERATIONS.md`
+  sürüm listesine ve sürüm betiği şablonuna eklenir.
 - **Ortam:** `EnvironmentFile` yoktur (sır yok). Yalnız şu `Environment=` satırları vardır:
   - `TRADINGBOT_DATA=/opt/tradingbot/data`
   - `TRADINGBOT_STATE_DIR=/opt/tradingbot/data/state`
@@ -127,21 +163,33 @@ Zamanlama kuralları (birim sözleşme testiyle zorunlu):
   - `TZ=UTC`
   - `PYTHONUNBUFFERED=1`
   - `PYTHONIOENCODING=utf-8`
-- Her çalıştırma S0'da PAPER modunu doğrular (mod durumu salt-okunur okunur). PAPER değilse veya okunamıyorsa çıkar.
+  - `PYTHONDONTWRITEBYTECODE=1` (engine-app salt-okunur; sürüm betiği ayrıca `compileall` ile önceden derler)
+  - `ENGINE_EXPECTED_MEMORY_MAX=<bayt>` (S0 cgroup denetimi için; birim dosyasındaki `MemoryMax` ile aynı sayı, sözleşme
+    testi eşitliği denetler)
+- Her çalıştırma S0'da PAPER modunu doğrular (`state/mode.json` salt-okunur `json` ile okunur). PAPER değilse veya
+  okunamıyorsa çıkar.
 
 ### 2.4 Kilit ve çakışma kuralları
 
-- **Tek bir motor-geneli kilit** vardır: `data/research/locks/engine.lock` (fcntl, `SingletonLock` deseni). Data, night,
-  backfill ve sahibin elle çalıştırdığı her `engine-*` komutu bu kilidi alır.
+- **İki ayrı motor kilidi** vardır (fcntl, `SingletonLock` deseni):
+  - `data/research/locks/data.lock`: veri birimi, ilk doldurma ve sahibin elle çalıştırdığı `engine-data` komutları;
+  - `data/research/locks/analysis.lock`: gece birimi ve elle `engine-night`.
+  Tek bir motor-geneli kilit olsaydı, saatlerce süren ilk doldurma gece birimini `SKIPPED_LOCKED` yapar, kapanış
+  arşivi durur ve rotasyon kalıcı veri kaybına yol açabilirdi.
 - Kilidi alamayan birim bekleme yapmaz: `SKIPPED_LOCKED` sonucu yazar ve 0 koduyla çıkar. Bu, `--check`'te görünür.
-- Zaman ayrımı ek güvencedir: data en geç 01:31'de biter, night 01:37'de başlar. Tasarım gereği iki zamanlayıcı birimi
-  aynı anda çalışmaz. Bu yüzden bellek bütçesinde yalnız **en büyük** motor biriminin `MemoryMax`'ı hesaba girer.
+- Gece birimi store'u (P1b+) yalnız son tamamlanmış veri çalıştırmasının `data_seal`'ında listelenen ay parçalarıyla
+  okur. Okuduğu parçanın checksum'ı mühürdekinden farklıysa (o sırada doldurma yazıyorsa) o seri o gece `DATA_MOVING`
+  ile atlanır; çalıştırma durmaz.
+- Veri birimi en geç 01:31'de biter, gece birimi 01:37'de başlar; bu iki zamanlayıcı birimi aynı anda çalışmaz. Ama
+  ilk doldurma gece birimiyle aynı anda çalışabilir. Bu yüzden bellek bütçesine **gece birimi + doldurma** birlikte
+  girer (§2.5).
 - Motor worker kilidini **hiç** almaz. Worker'ın HistoryStore'una (`data/market/history`) **hiç** yazmaz: ayrı kök
-  kullanılır, worker'ın IndexRefresher'ı ile yarış yapı gereği yoktur.
+  kullanılır, worker'ın IndexRefresher'ı ile yazma yarışı yapı gereği yoktur (tohumlamadaki okuma yarışı §3.2).
+- `engine-status` salt-okunurdur ve kilit almaz.
 
 ### 2.5 Kaynak sınırları
 
-Her iki birim için ortak sınırlar:
+Motor birimleri için ortak sınırlar:
 
 | Ayar | Değer |
 |---|---|
@@ -151,17 +199,25 @@ Her iki birim için ortak sınırlar:
 | `CPUQuota` | `100%` (`nproc` < 4 ise `60%`) |
 | `IOSchedulingClass` / `IOWeight` | `idle` / `10` |
 | `OOMScoreAdjust` | `1000`: bellek darlığında çekirdek önce motoru öldürür |
-| Dosya sistemi | `ProtectSystem=strict`, `ReadWritePaths=/opt/tradingbot/data/research`, `ReadOnlyPaths=/opt/tradingbot/data /opt/tradingbot/app` |
+| Dosya sistemi | `ProtectSystem=strict`, `PrivateTmp=yes`, `ReadWritePaths=/opt/tradingbot/data/research`, `ReadOnlyPaths=/opt/tradingbot/data /opt/tradingbot/app` |
+| Ağ | gece birimi `PrivateNetwork=yes`; veri birimi ağlı |
+| Günlük okuma | yalnız veri biriminde `SupplementaryGroups=systemd-journal` (worker 429/418 korumasını okumak için, §3.4) |
 | Diğer | `Type=oneshot`, `Persistent=false` |
 | `OnFailure` | `tradingbot-alert@%n.service`, yalnız o birim VPS'te varsa (P0 denetimi) |
 
-**P0 bellek kuralı:** worker MemoryMax 6G + dashboard 0,5G + en büyük motor birimi ≤ fiziksel RAM − 1G. Sığmazsa
-`MemoryHigh` düşürülür; `OOMScoreAdjust=1000` motorun önce ölmesini garanti eder.
+- `PrivateTmp=yes` zorunludur: `ProtectSystem=strict` `/tmp`'yi de salt-okunur yapar ve `tempfile` salt-okunur çalışma
+  dizinine düşerdi.
+- `/opt/tradingbot/data/research` sürüm betiği tarafından ilk başlatmadan **önce** `tradingbot` sahipliğiyle (0750)
+  oluşturulur. Yoksa systemd `ReadWritePaths` bağlamasını kuramaz ve birim `226/NAMESPACE` ile düşer.
 
-**Kabul ölçütü (her aşamada):**
-- Motor çalışırken worker tur p95 süresi, P0 taban çizgisinin en fazla +%5 üstünde kalır.
+**P0 bellek kuralı:** worker MemoryMax 6G + dashboard 0,5G + gece birimi MemoryMax + doldurma/veri birimi MemoryMax
+≤ fiziksel RAM − 1G. Sığmazsa `MemoryHigh` düşürülür; `OOMScoreAdjust=1000` motorun önce ölmesini garanti eder.
+
+**Kabul ölçütü (her aşamada; ayrıntı §2.9):**
+- Motor açık gecelerde worker tur p95 süresi, motor kapalı gecelere göre en fazla +%5 üstünde kalır (A/B geceleri).
 - Worker `NRestarts` değişmez.
 - Motor cgroup'unun `memory.peak` değeri ≤ 0,8 × MemoryMax olur.
+- Dolaylı kanal ölçütleri (§2.9) tutar.
 
 ### 2.6 Bileşenler
 
@@ -169,67 +225,131 @@ Paket `tradingbot/research_engine/`; Türkçe docstring'ler; bu belge.
 
 | Modül | Yeni / yeniden kullanım | Görev | Aşama |
 |---|---|---|---|
-| `paths.py`, `lock.py` | YENİ | kök düzeni, disk koruması (araştırma kökü ≤ 20 GB, boş disk ≥ 10 GB, yoksa çalışmayı reddet), motor kilidi | P1 |
-| `store.py` (`ResearchStore`) | `history/store.HistoryStore`'u ALT SINIF olarak kullanır | ay-parçası checksum'ı, seri başına kilit, yeni türler `metrics_5m`, `duka_1h`, `duka_1m` | P1 |
-| `universe.py` | `universe.json` salt-okunur + YENİ | araştırma evreni U_R, günlük evren ve `exchangeInfo` anlık görüntüsü | P1 |
-| `datastore.py` | `HistoryCollector`, `IncrementalUpdater`, `ArchiveClient`, `RateBudget`/`BudgetPool` | spec listesi, seri başına yeniden deneme/yakalama, düşük REST bütçesi, arşiv uzlaştırma, `data_status.json` + `data_seal` | P1 |
-| `seed.py` | YENİ | worker deposundaki mevcut parquet'leri salt-okunur kopyala + doğrula (yeniden indirme yok) | P1 |
-| `provider.py` (`StoreProvider`) | YENİ (~80 satır) | `.klines(symbol, interval, limit, start_ms, end_ms)` ile ağsız bar; parite testi | P1 |
-| `closes.py` | `FuturesLedgerV2.load` (saf okuma) | ham kapanış arşivi: her kapanmış `TradeRecord`'un birebir kopyası, revizyonlu | P1 |
-| `daily_target.py` | `bot_scorecard.find_books`, `_window` | günlük hedef ölçümü (P1: gerçekleşmiş; P2: MTM) | P1/P2 |
-| `summary.py` | YENİ | `engine_status`, `digest_tr.md`, `engine_summary.json` (boyut sınırlı) | P1 |
-| `journal.py` | ledger + shared_experience + trade_memory + provenance + position_path + plans + CF kayıtları | işlem günlüğü `tj_v1` | P2 |
+| `paths.py`, `lock.py` | YENİ | kök düzeni, disk koruması (araştırma kökü ≤ 20 GB, boş disk ≥ 10 GB, yoksa çalışmayı reddet), `data.lock` / `analysis.lock` | P1a |
+| `selfcheck.py` | YENİ | S0 çalışma zamanı iddiaları: PAPER, yalıtım (state'e yazma reddi, soket reddi, cgroup `memory.max`), SKEW, yedek çakışması | P1a |
+| `rawconfig.py` | YENİ | hoşgörülü ham YAML okuma, config sha'sı, ihtiyaç listesi | P1a |
+| `ledgers.py` | YENİ (saf JSON okuma) | `futures_ledger.json` ve `spot_ledger.json` ham, salt-okunur okuma; `schema_version` denetimi (fail-closed) | P1a |
+| `closes.py` | YENİ | ham kapanış arşivi (vadeli + spot `history[]`), cüzdan hareketi arşivi (`entries[]`), gecelik ölçülmüş anlık görüntü, `rev`, rotasyon payı, uzlaştırma, `RESTORED` | P1a |
+| `daily_target.py` | `bot_scorecard.find_books`/`_window` mantığı (spot eklenerek) | günlük hedef: kayıt görünümü, cüzdan görünümü, `LEDGER_MARK` MTM; GEÇİCİ/KESİN; REVİZE; kayıtlı bakış hükümleri | P1a |
+| `summary.py` | YENİ | `engine_status`, `digest_tr.md`, `engine_summary.json` (boyut sınırlı) | P1a |
+| `backup.py` | YENİ | küçük araştırma alt ağaçlarının günlük sıkıştırılmış yedeği + doğrulama | P1a |
+| `night.py` | `replay/pipeline.py` + `deploy/replay_runner.sh` desenleri | aşama orkestrasyonu, son tarih, A/B takvimi, telemetri | P1a (iskelet) |
+| `store.py` (`ResearchStore`) | `history/store.HistoryStore`'u ALT SINIF olarak kullanır | ay-parçası checksum'ı, satır kaynağı ve öncelik, kurtarma, seri kilidi, yeni türler `metrics_5m`, `duka_1h`, `duka_1m` | P1b |
+| `universe.py` | `universe.json` salt-okunur + YENİ | araştırma evreni U_R, günlük evren ve `exchangeInfo` anlık görüntüsü | P1b |
+| `datastore.py` | `HistoryCollector`, `IncrementalUpdater`, `ArchiveClient`, `RateBudget`/`BudgetPool` | spec listesi, seri başına yeniden deneme/yakalama, düşük REST bütçesi, worker 429/418 koruması, arşiv uzlaştırma, `data_status.json` + `data_seal` | P1b |
+| `seed.py` | YENİ | worker deposundaki mevcut parquet'leri tutarlı biçimde salt-okunur kopyala + doğrula | P1b |
+| `provider.py` (`StoreProvider`) | YENİ (~80 satır) | `.klines(symbol, interval, limit, start_ms, end_ms)` ile ağsız bar; parite testi | P1b |
+| `journal.py` | ledger + shared_experience + trade_memory + provenance + position_path + plans + CF kayıtları + P1a arşivi | işlem günlüğü `tj_v1` | P2 |
 | `pathrec.py` | `learning_cf` bar içi sıra kuralı | 1m/5m yol yeniden kurma | P2 |
-| `rehydrate.py` | kuralların saf fonksiyonları (`box_theory`, `donchian_trend`, `candle_book`, `ema200_trend`, `paper_rules`) | defterlerin kapanışta düşürdüğü sinyal bağlamını yeniden kurma (1 tick eşleşme) | P2 |
+| `rehydrate.py` | kuralların saf fonksiyonları (`box_theory`, `donchian_trend`, `candle_book`, `ema200_trend`, `paper_rules`) | defterlerin kapanışta düşürdüğü **hedefleri ve sinyal bağlamını** yeniden kurma (stop ölçülmüştür; 1 tick denetimi) | P2 |
 | `fidelity.py` | `learning_cf.ExecModel.of_ledger`, `_net_replay` | gerçek işlemin yeniden oynatma doğruluğu (≤ 0,05R) | P2 |
 | `attribution.py`, `cfgrid.py` | `learn/labels`, `learn/postmortem` kodları, `learning_cf._decompose`, `learning_cf_aux` | kural kodları, karşı-olgusal ızgara, ayrıştırma | P2 |
-| `lessons.py` | `learn/lesson_store` (`build_lesson`, `transition`, `SegmentArchive`; ilk gerçek çağıranlar) | ders deposu, ayrı kök | P3 |
-| `trials.py` | YENİ | deneme defteri (`trials.jsonl`) | P3 |
+| `lessons.py` | `learn/lesson_store` (`build_lesson`, `transition`) + `learn/journal_archive.SegmentArchive` | ders deposu, ayrı kök | P3 |
+| `trials.py` | YENİ | deneme defteri (`trials.jsonl`), bakış kaydı, bekletme okuma kaydı | P3 |
+| `pit_universe.py` | YENİ (veri biriminde) | data.binance.vision listelerinden zaman noktasında (point-in-time) evren: delist olanlar dahil, listeleme/delist tarihleri | P3 |
 | `library/` | kural fonksiyonları, `signal_lab`, `candle_lab`, `gold_lab(_v2)`, `book_lab` tanımları | strateji kütüphanesi `LIB_v1` | P3 |
-| `wf.py`, `cscv.py` | `quant/walkforward` (`make_folds`, `leakage_check`, `fold_report`, `run_three_way`), `quant/execution_scenarios`, `validation.deflated_sharpe` / `probabilistic_sharpe` | gece walk-forward; PBO için YENİ CSCV | P3 |
-| `prospective.py` | `FuturesLedgerV2`, `ExecModel`, `learning_mode.fit_size` | kayıt-yalnız ileri adaylar | P4 |
+| `wf.py`, `cscv.py` | `quant/walkforward` (`make_folds(validation_days>0)`, `run_three_way`, `leakage_check`, `fold_report`), `quant/execution_scenarios`, `validation.deflated_sharpe` / `probabilistic_sharpe` | gece walk-forward; PBO için YENİ CSCV | P3 |
+| `explore.py` | YENİ | keşif katmanı: her varyantın mühür sonrası ileri OOS sonucu (§6.8) | P3 |
+| `prospective.py` | `FuturesLedgerV2`, `ExecModel`, `learning_mode.fit_size` | kayıt-yalnız ileri yeniden oynatma adayları | P4 |
 | `promotion.py` | `quant/champion.evaluate_challenger`, `research_policy` eşli istatistikleri | mühürlü terfi kapısı `PROMOTION_REGISTRY` | P4 |
-| `night.py` | `replay/pipeline.py` + `deploy/replay_runner.sh` desenleri | aşama orkestrasyonu, son tarih, telemetri | P1 (iskelet) |
-| CLI (`cli_v3`) | YENİ alt komutlar | `engine-data`, `engine-night`, `engine-status [--brief]`, `engine-query <konu>` | P1/P3 |
+| CLI (`cli_v3`) | YENİ alt komutlar, **tembel import** | `engine-night`, `engine-status [--brief]` (P1a); `engine-data {--backfill,--update,--status}` (P1b); `engine-query <konu>` (P2/P3) | P1a+ |
 
 ### 2.7 Veri akışı
 
 ```
-data.binance.vision / fapi (düşük bütçe)          [engine-data 00:41 UTC, AĞLI]
+data.binance.vision / fapi (düşük bütçe)          [engine-data 00:41 UTC, AĞLI, P1b]
         │
         ▼
 research/archive_cache  ──►  research/store (ResearchStore)  ──►  data_status.json + data_seal
                                          │
 ════════════════════ PrivateNetwork=yes ═╪═══════ [engine-night 01:37–03:40 UTC] ═════════
                                          ▼
-state/** (SALT-OKUNUR) ─► S1 kapanış arşivi + günlük tj_v1 ─► yol + rehydrate + fidelity
+state/** (SALT-OKUNUR) ─► S1a kapanış + cüzdan hareketi arşivi + gecelik anlık görüntü (P1a)
+   (vadeli + spot)                       │
+                                         ▼
+                         S1b günlük tj_v1 + yol + rehydrate + fidelity (P2)
                                          │
                                          ▼
                          S2 atıf (kodlar + cfgrid) ─► S6 dersler (önceden kayıtlı bakışlar)
                                          │                       │
 S4 kütüphane walk-forward ◄──────────────┘     ders → aday spec ─┘
         │                                                 │
+        ├──► keşif katmanı (mühür sonrası ileri OOS; terfi yok)
         ▼                                                 ▼
-  trials.jsonl ──► Kapı A ──► S5 kayıt-yalnız ileri aday (kendi kâğıt defteri) ──► Kapı B
+  trials.jsonl ──► Kapı A (kayıtlı bakış) ──► S5 kayıt-yalnız ileri yeniden oynatma ──► Kapı B
                                                                                      │
-S3 günlük hedef ──► S7 özet (digest_tr.md, engine_summary.json)       Kapı C: ÖNERİ dosyası
+S3 günlük hedef (P1a) ──► S7 özet (digest_tr.md, engine_summary.json) Kapı C: ÖNERİ dosyası
                                                                                      │
                                                     SAHİP ONAYI ─► normal sürüm (yeni kâğıt defter)
 ```
 
 ### 2.8 Yalıtım ve doğrulama
 
-- **AST testi:** Hiçbir karar modülü (`engine_v3`, `strategy_paper*`, `pattern_trader`, `coinhead`, `learn/*`,
-  `economics_gate`, `risk/*`, `shared_experience/*`, `dashboard/*`) `research_engine`'i import etmez.
+- **AST testi (karar modülleri → motor yasak).** Şu modüllerin hiçbiri `research_engine`'i import etmez: `engine_v3`,
+  `engine.py`, `strategy_paper*`, `box_timer`, `box_theory`, `protective_monitor`, `paper_rules`, `candle_book`,
+  `donchian_trend`, `ema200_trend`, `pattern_trader/*`, `coinhead/*`, `learn/*`, `economics_gate`, `execution/*`,
+  `accounting/*`, `risk/*`, `shared_experience/*`, `dashboard/*`.
+- **CLI tembel import.** Worker `python -m tradingbot watch`'ı `cli` üzerinden çalıştırır ve `cli.py` her çağrıda
+  `cli_v3.register`'ı yükler (cli.py:500). Bu yüzden `cli.py` ve `cli_v3.py`'de **üst düzey** `research_engine` import'u
+  yasaktır; motor alt komutları modülü yalnız kendi işleyicileri içinde import eder. AST testi bunu denetler.
+- **Motor → yasaklı modüller.** `research_engine` şunları import etmez: `config.load_config`, `config_v3` (§2.3),
+  `sqlite3` (§4.1). Ağ kullanan modüller (`datastore.py`, `pit_universe.py`) yalnız veri biriminin giriş noktasından
+  import edilir; gece biriminin import grafiği bunları içermez (test).
 - **Dashboard sınırı:** Dashboard motor çıktılarını yalnız JSON olarak okur. Şema sabitleri, eşitlik testleriyle
   eşleştirilir; import yoktur (shared_experience sözleşmesiyle aynı).
 - **Dosya açma modu denetimi:** Sahte bir state ile tam bir gece çalıştırılır; `open`/`os.replace`/`Path.write_*`
   monkeypatch'lenir. Testin kanıtladıkları: `data/research` dışına hiç yazma olmaz ve tüm ledger'lar `"r"` modunda
   açılır.
+- **İkinci savunma hattı (özellik testi).** Rastgele üretilmiş sahte state ağaçlarında motor, `bot_scorecard.find_books`
+  ile eşleşen hiçbir yola (`state/futures_ledger.json`, `state/*/futures_ledger.json`) ve `state/spot_ledger.json`'a
+  asla yazmaz; çekirdekteki `ReadOnlyPaths`'ten bağımsız olarak.
+- **Çalışma zamanı öz-denetimi (S0; biri tutmazsa çalıştırma `ISOLATION_BROKEN` ile durur, uyarı birimi tetiklenir):**
+  1. `data/state`, `data/market` ve `/opt/tradingbot/app` altında `O_CREAT|O_EXCL` ile benzersiz bir deneme dosyası
+     açmak `EROFS` veya `EACCES` ile **başarısız olmalıdır**. Beklenmedik biçimde başarılı olursa dosya hemen silinir
+     ve çalıştırma durur.
+  2. Gece biriminde bir genel IP'ye (`1.1.1.1:443`, DNS'siz) `socket.connect` 2 sn içinde **başarısız olmalıdır**.
+  3. Birimin kendi cgroup'unun `memory.max` değeri (`/proc/self/cgroup` → `/sys/fs/cgroup/.../memory.max`)
+     `ENGINE_EXPECTED_MEMORY_MAX`'e eşit olmalıdır.
+  4. `/tmp`'ye yazılabilmeli (`PrivateTmp`), `data/research`'e yazılabilmelidir.
 - **Ledger parmak izi gece değişmezi DEĞİLDİR.** `ops/fingerprint.py` `fingerprint_v1` açık pozisyonları da hash'ler ve
   canlı worker bunları her turda değiştirir. Bu yüzden gece öncesi/sonrası parmak izi her gece yanlış alarm verirdi.
-  Parmak izi yalnız **sürüm (deploy) anında** kullanılır. Gece güvencesi çekirdekten (`ReadOnlyPaths`) ve yukarıdaki
-  açma modu testinden gelir.
+  Parmak izi yalnız **sürüm (deploy) anında** kullanılır. Gece güvencesi çekirdekten (`ReadOnlyPaths`), S0 öz-denetiminden
+  ve yukarıdaki açma modu testinden gelir.
+
+**Sahte VPS ile gerçek VPS'in sınırı (açıkça):**
+
+| Doğrulanan | Sahte VPS (yerel harness) | Yalnız gerçek VPS |
+|---|---|---|
+| Betik akışı (`--dry-run` / deploy / `--check` / geri alma), dosya düzeni, birim dosyası **içeriği** (sözleşme testi), kapılı kurulum mantığı (sahte `systemctl`), bağımsız değişmez koşucuları | ✔ | — |
+| Arşiv doğruluğu, rotasyon, `rev`, RESTORED, günlük hedef sayıları, `scorecard --daily` eşitliği, idempotans | ✔ | — |
+| `PrivateNetwork`, `ProtectSystem`/`ReadOnlyPaths` gerçekten uygulanıyor mu | — | ✔ (S0 öz-denetimi + elle smoke çalıştırma) |
+| `MemoryMax`, `OOMScoreAdjust`, cgroup `memory.peak`, `CPUWeight`/IO etkisi | — | ✔ |
+| Zamanlayıcının UTC'de ateşlenmesi, `226/NAMESPACE` olmaması, `SupplementaryGroups` ile günlük okuma | — | ✔ |
+| Worker etkisi: tur p95, Box kaçan bar, koruyucu izleyici gecikmesi, 418/429, ret oranları | — | ✔ (A/B geceleri, §2.9) |
+
+### 2.9 Dolaylı karar kanalları ve A/B geceleri
+
+Motor hiçbir karar dosyasına yazmaz; ama şu kanallar defterlerin kararını **dolaylı** değiştirebilir. Her biri kabulde
+ölçülür:
+
+| Kanal | Nasıl karar değiştirir | Önlem | Kabul ölçütü |
+|---|---|---|---|
+| Paylaşılan IP, REST 418/429 | motorun yol açtığı bir yasak worker'ın veri çekimini düşürür; defterler girişi reddeder/atlar | P1a'da motor ağsız; P1b'de bütçe ≤ 0,1, başlık takibi, **worker son 60 dk'da 429/418 aldıysa REST adımı tamamen atlanır** (§3.4) | motor açık dönemde worker 429/418 sayısı = 0; `DATA_VERDICT_MISSING` / bayat veri retlerinin oranı motor kapalı gecelerle aynı (fark CI'ı 0'ı içerir) |
+| CPU/IO çekişmesi | Box 5 dk zamanlayıcı iş parçacığı ve koruyucu izleyici zamana bağlı karar verir; gecikirlerse karar değişir | Nice 19, CPUWeight 10, IO idle, `--jobs 1` | Box kaçan bar oranı (`--check`'in zaten örneklediği `$T7-box-samples.txt`) ve koruyucu izleyici gecikmesi (`state/protective_monitor.json` `last_run.at` yaşı ve `duration_p50_s`, motorun çalıştığı dakikalarda örneklenir) motor kapalı gecelerin tabanı içinde |
+| ResearchCoordinator | mevcut sistem, ana bot girişlerinde politikayı kendiliğinden etkinleştirebilir (`engine_v3:1915`, `PAPER_RESEARCH_ACTIVE`) | motor onun dosyalarını okumaz/yazmaz; sahibin P0 kararı (§9.1) | `PAPER_RESEARCH_ACTIVE` etkinleştirme sayısı `--check`'te raporlanır; motor açık/kapalı gecelerde fark beklenmez |
+
+**A/B geceleri.** Motorun etkisi bayat bir ön tabanla değil, eşleşmiş gecelerle ölçülür. Her motor sürümünden sonraki
+14 gecede, mühürlü bir takvimle (UTC tarihinin gün-yıl sırası çiftse AÇIK, tekse KAPALI) gece birimi KAPALI gecelerde
+S0'dan sonra `AB_OFF` yazıp çıkar. İstisna: herhangi bir ledger'ın rotasyon payı 3 günden azsa S1a yine çalışır ve o gece
+karşılaştırmadan çıkarılır (`AB_OFF_ZORUNLU_ARŞİV`). Sürüm betiğinin `--ab-report` komutu tur p50/p95, `memory.peak`,
+Box kaçan bar, koruyucu izleyici gecikmesi, 418/429 ve ret oranlarını aynı saat penceresinde AÇIK ve KAPALI geceler için
+yan yana verir.
+
+**Taban çizgisi karışıklığı (wt-tourfix).** Paralel tur düzeltmesi (`34ae8d2`, çatallanmış kNN alt süreci) tur
+sürelerini ve worker bellek profilini değiştirecek. Bu yüzden:
+- P0 tur p50/p95, `memory.peak` ve Box zamanlayıcı tabanı **her worker sürümünden sonra** yeniden alınır;
+- motor sürümü, başka bir sürümün 7 günlük `--check` penceresi içinde dağıtılmaz;
+- motorun etkisi yalnız A/B gecelerine göre değerlendirilir.
 
 ---
 
@@ -237,41 +357,73 @@ S3 günlük hedef ──► S7 özet (digest_tr.md, engine_summary.json)       K
 
 ### 3.1 Kök düzeni: `/opt/tradingbot/data/research/`
 
-State altında olmadığı için saatlik yedekleri şişirmez.
+State altında olmadığı için saatlik yedekleri şişirmez. Küçük ve yeri doldurulamaz alt ağaçların kendi günlük yedeği
+vardır (§3.6).
 
-| Yol | İçerik | Saklama |
-|---|---|---|
-| `store/<market>/<SYM>/<tf>/<YYYY>/<MM>.parquet` + `manifest.json` | mumlar, fonlama, `metrics_5m`, Dukascopy | sonsuza dek (değişmez geçmiş) |
-| `archive_cache/<host>/<url yolu>` (+ `.missing`) | data.binance.vision zip aynası (`gold_lab.ArchiveCache` / `book_lab.ZipCache` düzeni, bayt-özdeş) | ≥5m zip'ler sonsuza dek; 1m zip'ler doğrulanmış alımdan sonra silinir (checksum manifestte kalır) |
-| `dukascopy/XAUUSD/...` + `manifest.jsonl` | Dukascopy XAUUSD BID (yalnız tarihsel) | sonsuza dek |
-| `universe/YYYY-MM-DD.json`, `exchangeinfo/YYYY-MM-DD.json.gz` | günlük evren ve listeleme/delist anlık görüntüsü | sonsuza dek |
-| `closes/<book>/YYYY-MM.jsonl.gz` | ham kapanış arşivi (P1) | sonsuza dek, mühürlü segmentler |
-| `journal/tj_v1/YYYY-MM.jsonl(.gz)` | işlem günlüğü (P2) | sonsuza dek |
-| `paths/YYYY-MM/<trade_key>.parquet` | yeniden kurulmuş yollar | sonsuza dek (küçük) |
-| `attribution/YYYY-MM.jsonl.gz` | kodlar + ızgara | sonsuza dek |
-| `lessons/`, `trials/trials.jsonl`, `library/registry.json` | dersler, denemeler, mühürlü kütüphane | sonsuza dek |
-| `backtests/<tarih>/` | walk-forward ayrıntısı | 14 gece |
-| `prospective/<aday_id>/` | aday defterleri | sonsuza dek |
-| `proposals/<id>.json` + `.tr.md` | öneriler | sonsuza dek |
-| `target/daily.jsonl` | günlük hedef satırları | sonsuza dek |
-| `summary/` | `data_status.json`, `run_status.json`, `daily_target.json`, `engine_summary.json` (≤ 256 KB), `digest_tr.md` (≤ 8 KB) | en son |
-| `runs/<run_id>/run_status.json` | çalıştırma geçmişi | son 30 |
-| `locks/engine.lock` | motor kilidi | — |
+| Yol | İçerik | Saklama | Aşama |
+|---|---|---|---|
+| `closes/<book>/YYYY-MM.jsonl.gz` | ham kapanış arşivi: vadeli defterler + `main_spot` (ana botun `spot_ledger.json`'ı) | sonsuza dek, mühürlü segmentler | P1a |
+| `entries/<book>/YYYY-MM.jsonl.gz` | cüzdan hareketi arşivi (`entries[]`: FEE, PNL, FUNDING — "late funding" ve "funding reversal" dahil —, TRANSFER, LIQ_FEE, TAX, SLIPPAGE_INFO) | sonsuza dek | P1a |
+| `snapshots/YYYY-MM-DD.json.gz` | gecelik ölçülmüş anlık görüntü: her defterin `wallet_balance` (spot: `cash`, `locked_cash`, `assets`), açık pozisyonlar (miktar, giriş, `last_price`, gerçekleşmemiş), ledger `seq`/`updated_at`, okuma zamanı | sonsuza dek (küçük) | P1a |
+| `target/daily.jsonl` | günlük hedef satırları (yalnız eklenir; `rev`) | sonsuza dek | P1a |
+| `summary/` | `run_status.json`, `daily_target.json`, `engine_summary.json` (≤ 256 KB), `digest_tr.md` (≤ 8 KB); P1b'den `data_status.json` | en son | P1a |
+| `runs/<run_id>/run_status.json` | çalıştırma geçmişi | son 30 | P1a |
+| `backup/research-small-YYYY-MM-DD.tar.gz` + `.sha256` | küçük alt ağaçların günlük yedeği (§3.6) | 7 günlük + 4 haftalık | P1a |
+| `locks/data.lock`, `locks/analysis.lock` | motor kilitleri | — | P1a |
+| `store/<market>/<SYM>/<tf>/<YYYY>/<MM>.parquet` + `.sha256` yan dosyası + `manifest.json` (+ satır kaynağı sütunu `_src`) | mumlar, fonlama, `metrics_5m`, Dukascopy | sonsuza dek (değişmez geçmiş) | P1b |
+| `archive_cache/<host>/<url yolu>` (+ `.missing`) | data.binance.vision zip aynası (`gold_lab.ArchiveCache` / `book_lab.ZipCache` düzeni, bayt-özdeş) | ≥5m zip'ler sonsuza dek; 1m zip'ler doğrulanmış alımdan sonra silinir (checksum manifestte kalır) | P1b |
+| `dukascopy/XAUUSD/...` + `manifest.jsonl` | Dukascopy XAUUSD BID (yalnız tarihsel; hazır bir aynadan içe alınır) | sonsuza dek | P1b+ |
+| `universe/YYYY-MM-DD.json`, `exchangeinfo/YYYY-MM-DD.json.gz` | günlük evren ve listeleme/delist anlık görüntüsü | sonsuza dek | P1b |
+| `pit_universe/listings.json` | zaman noktasında evren (delist dahil, listeleme/delist tarihleri) | sonsuza dek | P3 |
+| `journal/tj_v1/YYYY-MM.jsonl(.gz)` | işlem günlüğü | sonsuza dek | P2 |
+| `paths/YYYY-MM/<trade_key>.parquet` | yeniden kurulmuş yollar | sonsuza dek (küçük) | P2 |
+| `attribution/YYYY-MM.jsonl.gz` | kodlar + ızgara | sonsuza dek | P2 |
+| `lessons/`, `trials/trials.jsonl`, `library/registry.json`, `library/config_epochs.json` | dersler, denemeler (bakışlar dahil), mühürlü kütüphane, config dönemleri | sonsuza dek | P3 |
+| `explore/<lib_version>/<variant>/<SYM>.jsonl` | keşif katmanı ileri OOS sonuçları | sonsuza dek | P3 |
+| `backtests/<tarih>/` | walk-forward ayrıntısı | 14 gece | P3 |
+| `prospective/<aday_id>/` | aday defterleri | sonsuza dek | P4 |
+| `proposals/<id>.json` + `.tr.md`, `approvals/approvals.jsonl` | öneriler, sahip kararları | sonsuza dek | P4 |
 
-### 3.2 `ResearchStore` (HistoryStore alt sınıfı; worker deposu etkilenmez)
+### 3.2 `ResearchStore` (P1b; HistoryStore alt sınıfı; worker deposu etkilenmez)
 
 - **Ay-parçası checksum'ı.** `HistoryStore._recompute` (store.py:215) her yazımda tüm seriyi yeniden okur. 5m/1m
-  doldurmada bu O(n²) olur. Alt sınıf yalnız dokunulan ayın parça checksum'ını günceller. Tam seri checksum'ı gecede
-  bir kez, data biriminin sonunda hesaplanır.
-- **Kilit.** Seri başına fcntl kilidi vardır (motor-geneli kilidin içinde, ek güvence).
+  doldurmada bu O(n²) olur. Alt sınıf yalnız dokunulan ayın parça checksum'ını günceller ve parçanın yanına bir
+  `.sha256` yan dosyası yazar.
+- **`data_seal` tam store'u yeniden okumaz.** Gecelik tam `canonical_checksum` (to_csv) 3–4 GB'lık depoda her gece
+  yapılmaz. `data_seal` = sıralı `(seri, ay, parça checksum'ı)` listesinin sha256'sıdır. Tam kanonik checksum yalnız
+  haftalık örneklemle (her hafta serilerin 1/7'si) ve istendiğinde hesaplanır.
+- **Satır kaynağı ve öncelik.** `HistoryStore.write` aynı zaman damgasında **son** gelen satırı tutar
+  (store.py:177–186). Sonra gelen bir REST yazımı arşivle doğrulanmış barı ezebilirdi. Alt sınıf her satırın kaynağını
+  (`_src` ∈ {`archive`, `archive_unverified`, `rest`, `seed`}) tutar ve öncelik uygular: `archive` > `seed` >
+  `archive_unverified` > `rest`. Düşük öncelikli bir satır yüksek öncelikli olanı **asla** ezmez. Yüksek öncelikli satır
+  düşük öncelikliyi ezerken önce fark çıkarılır ve `runs/` altına yazılır (beklenen: 0).
+- **CHECKSUM'sız zip doğrulanmış sayılmaz.** `ArchiveClient.fetch_month`, `.CHECKSUM` dosyası yoksa zip'i yine kabul
+  eder (collector.py:111 `if chk:`). Motor bu durumda satırları `archive_unverified` işaretler; `data_status`'ta ayrı
+  sayılır ve sonraki gecelerde checksum yeniden aranır. Doğrulanmış sayımlara ve parite kapısına girmez.
+- **Kurtarma ile gerçek bozulma ayrıdır.** Yazım sırası: parça (`os.replace`) → parça `.sha256` → manifest. Birim
+  `TimeoutStartSec` ile parça yazıldıktan sonra ama manifest kaydedilmeden öldürülürse `validate()` uyuşmazlık görür.
+  - Parça okunabiliyor ve kendi `.sha256`'sıyla tutuyorsa durum `MANIFEST_LAG`'dir: manifest atomik parçalardan
+    yeniden hesaplanır, o ay arşivden yeniden çekilip karşılaştırılır; seri devam eder.
+  - Parça okunamıyor veya `.sha256`'sıyla tutmuyorsa durum `CORRUPT`'tur: parça karantinaya alınır, o ay yeniden
+    çekilir. Seri yalnız aynı ay iki ardışık gece yeniden çekilemezse durur (fail-closed) ve `--check` bunu gösterir.
+- **Fonlama aralığı veriden.** `step_ms_for("funding")` 8 saati sabit kodlar (store.py:51), oysa birçok USDⓈ-M sembolü
+  4 saatte veya 1 saatte bir uzlaşır. Alt sınıf fonlama aralığını sembol ve ay başına veriden (ardışık uzlaşma zaman
+  damgalarının medyan farkı) kaydeder ve boşlukları bu aralıkla hesaplar. Geriye testler fonlamayı sabit aralıkla değil,
+  serideki **gerçek uzlaşma zaman damgalarında** fiyatlar.
+- **Kilit.** Seri başına fcntl kilidi vardır (`data.lock`'un içinde, ek güvence).
 - **Yeni türler.**
   - `metrics_5m`: `[timestamp, oi, oi_usdt, top_acct_ls, top_pos_ls, global_ls, taker_ls_vol]`; `futures_data` /
     `crowd_data` önbelleklerinin yerini alır.
   - `duka_1h`, `duka_1m`: `[timestamp, open, high, low, close, volume_proxy]`.
-- **Yalnız kapanmış barlar** yazılır. µs→ms normalizasyonu yapılır (PAXG spot 2025+). Checksum uyuşmazlığında bozuk
-  parça işaretlenir ve o seri durur (fail-closed).
-- **İlk tohum.** Worker'ın `data/market/history` altındaki mevcut parquet'leri salt-okunur kopyalanır (cp, ardından
-  validate). Böylece worker'ın elindeki seriler (örn. 89 vadeli 4h serisi) yeniden indirilmez.
+- **Yalnız kapanmış barlar** yazılır.
+- **µs→ms normalizasyonu tüm spot serilerde.** Binance spot arşivi 2025'ten itibaren zaman damgalarını mikrosaniye
+  verir. Normalizasyon yalnız PAXG'ye değil, 2025+ **bütün** spot serilerine (BTC/ETH spot bağlamı dahil) uygulanır;
+  birim, değerin büyüklüğünden değil arşiv yolundan (spot) ve tarihten belirlenir ve testlidir.
+- **İlk tohum (tutarlı kopya).** Worker'ın `data/market/history` altındaki mevcut parquet'leri salt-okunur kopyalanır,
+  böylece worker'ın elindeki seriler (örn. 89 vadeli 4h serisi) yeniden indirilmez. Worker'ın IndexRefresher'ı kopya
+  sırasında yazıyor olabilir. Bu yüzden seri başına: manifest okunur → parçalar kopyalanır → manifest yeniden okunur;
+  manifest değiştiyse veya `validate()` uyuşmazlık verirse o seri bir kez yeniden kopyalanır, yine olmazsa o seri arşivden
+  yeniden indirilir. Tohumlama hiçbir koşulda tüm işi başarısız saymaz.
 
 ### 3.3 Kapsam (araştırma evreni U_R)
 
@@ -281,10 +433,17 @@ State altında olmadığı için saatlik yedekleri şişirmez.
 | **Altın vadeli** | **XAUUSDT** (2025-12-01'den), **PAXGUSDT** (2025-03-01'den) | 1m–1d + fonlama | listelenme |
 | Altın spot | PAXGUSDT | 5m, 1h, 4h, 1d | 2020-08 |
 | Spot bağlam | BTCUSDT, ETHUSDT | 1h, 1d | 2020 |
-| Dukascopy | XAUUSD BID | 1h (2006+), isteğe bağlı 1m (2019+) | yalnız VPS erişebiliyorsa (P0); değilse sahip bir kez kendi PC'sinde indirip `scp` ile taşır |
-| 1m (yol için) | son 120 günde **herhangi bir defterin veya adayın** işlem yaptığı her sembol + iki altın vadelisi | 1m | son 400 gün, **tembel** (yalnız gerektiğinde) |
+| Spot (ana bot) | ana botun son 180 günde spot işlem yaptığı semboller | 1m (tembel, P2), 1h | son 400 gün |
+| Dukascopy | XAUUSD BID | 1h (2006+), isteğe bağlı 1m (2019+) | yalnız **hazır bir aynadan** içe alınır (`gold_lab.duka_path` düzeni, `duka_coverage` ile doğrulanır). v1'de indirici yazılmaz; gold_v2'nin ayna işi VPS'te veya sahibin PC'sinde bittiyse tarball `scp` ile taşınır. Yoksa "yapılamadı" yazar. |
+| 1m (yol için) | son 120 günde **herhangi bir defterin veya adayın** işlem yaptığı her sembol + iki altın vadelisi | 1m | son 400 gün, **tembel** (yalnız gerektiğinde, P2) |
 
-Not: `config.yaml` PAXG'yi yaş filtresiyle işlem evreninden çıkarır. Altın, araştırma evrenine **açıkça** eklenir.
+Notlar:
+- `config.yaml` PAXG'yi yaş filtresiyle işlem evreninden çıkarır. Altın, araştırma evrenine **açıkça** eklenir.
+- **Hayatta kalma yanlılığı.** U_R bugünkü `universe.json` ve son işlem görenlerdir; `exchangeInfo` anlık görüntüleri
+  ancak bugünden başlar. Bu evren tek-enstrüman taktikleri için kabul edilir ama **kesitsel ve portföy taktikleri
+  (XSEC) için güçlü biçimde yanlıdır**. P3'te `pit_universe.py`, data.binance.vision listelerinden (delist olmuş
+  semboller hâlâ listelidir) ilk/son aylık zip'e göre listeleme ve delist tarihlerini çıkarır. Bu zaman noktasında evren
+  kurulana kadar XSEC taktikleri **Kapı A'ya uygun değildir** (yalnız uyarıyla gösterilmez, kapıdan dışlanır).
 
 **Boyut tahmini (~45 B/satır).** Toplam ≈ 3–4 GB parquet + ≈ 2–5 GB zip. Kalem kalem:
 
@@ -295,25 +454,30 @@ Not: `config.yaml` PAXG'yi yaş filtresiyle işlem evreninden çıkarır. Altın
 | 1h / 4h / 1d | ≈ 0,15 GB |
 | `metrics_5m` | ≈ 1,2 GB |
 | 1m | ≈ 0,5 GB |
+| P1a arşivleri (closes, entries, snapshots) | yılda < 0,2 GB |
 
 Disk 72 GB, %38 dolu. Araştırma kökü için sınırlar: 15 GB'ta uyarı, 20 GB'ta çalışmayı reddet.
 
-### 3.4 Günlük ekleme (`engine-data --update`, 00:41 UTC)
+### 3.4 Günlük ekleme (`engine-data --update`, 00:41 UTC, P1b)
 
 1. **Önce arşiv.** Eksik aylık zip'ler (ayın 2–4'ünde yayımlanır) ve dünün günlük zip'leri indirilir: klines (tüm
-   zaman dilimleri), fundingRate, metrics. `.CHECKSUM` doğrulanır.
-2. **REST kuyruğu.** Henüz arşivde olmayan son saatlerin **kapanmış** barları REST ile alınır. Bu barlar manifestte
-   `source=rest` olarak işaretlenir.
-3. **Arşiv uzlaştırma.** Günlük zip yayımlanınca REST'ten gelen barlar checksum doğrulanmış arşiv barlarıyla
-   değiştirilir. Fark satır satır `runs/`'a yazılır (beklenen: 0).
-4. **Anlık görüntü.** Evren ve `exchangeInfo` (listeleme/delist) günlük olarak kaydedilir. Hayatta kalma yanlılığı
-   bugünden itibaren düzeltilebilir hale gelir.
-5. **Hata yalıtımı.** Her seri 3 denemeli, titreşimli (jitter) bir yeniden denemeye sarılır ve istisnası yakalanır.
+   zaman dilimleri), fundingRate, metrics. `.CHECKSUM` doğrulanır; yoksa satırlar `archive_unverified` olur (§3.2).
+2. **Worker REST koruması.** REST'e dokunmadan önce veri birimi worker'ın son 60 dakikalık günlüğünü okur
+   (`journalctl -u tradingbot-worker --since -60min`, `SupplementaryGroups=systemd-journal` ile salt-okunur) ve
+   `market/http.py`'nin 429/418 satırlarını sayar (metin kalıbı testte sabittir). Sayı > 0 ise veya günlük
+   okunamıyorsa REST adımı **tamamen atlanır** (`REST_GUARD_SKIP` / `REST_GUARD_UNKNOWN`); o gece yalnız arşiv
+   kullanılır.
+3. **REST kuyruğu.** Koruma geçerse, henüz arşivde olmayan son saatlerin **kapanmış** barları REST ile alınır ve
+   `_src=rest` olarak işaretlenir.
+4. **Arşiv uzlaştırma.** Günlük zip yayımlanınca REST'ten gelen barlar checksum doğrulanmış arşiv barlarıyla
+   değiştirilir (öncelik kuralı, §3.2). Fark satır satır `runs/`'a yazılır (beklenen: 0).
+5. **Anlık görüntü.** Evren ve `exchangeInfo` (listeleme/delist) günlük olarak kaydedilir.
+6. **Hata yalıtımı.** Her seri 3 denemeli, titreşimli (jitter) bir yeniden denemeye sarılır ve istisnası yakalanır.
    Bir serinin hatası o seriyi `STALE` yapar; çalıştırmayı durdurmaz. Bu, `history-collect`'in ilk hatada durma
    açığını kapatır.
-6. **Mühür.** `data_status.json` (şema `engine_data_status_v1`) her seri için `last_ts`, `rows`, `gaps`, `quality` ve
-   `stale` alanlarını yazar. `data_seal` tüm manifest checksum'larının sha256'sıdır. Sonraki her çıktı bu mührü anar;
-   her sonuç mühürden yeniden üretilebilir.
+7. **Mühür.** `data_status.json` (şema `engine_data_status_v1`) her seri için `last_ts`, `rows`, `gaps` (veriden
+   gelen fonlama aralığıyla), `quality`, `unverified_rows` ve `stale` alanlarını yazar. `data_seal` parça
+   checksum'larının sha256'sıdır (§3.2). Sonraki her çıktı bu mührü anar; her sonuç mühürden yeniden üretilebilir.
 
 **REST bütçesi (paylaşılan IP).** Worker `rate_budget_safety=0.7` (config_v3:86) ile 2400/dk fapi limitinin %70'ini
 kullanır. `BudgetPool` süreç başınadır; bu yüzden motorun payı ayrıca sınırlanmalıdır:
@@ -322,6 +486,7 @@ kullanır. `BudgetPool` süreç başınadır; bu yüzden motorun payı ayrıca s
 |---|---|
 | Motor güvenlik payı | **≤ 0,1** (≤ 240 ağırlık/dk); tüm seriler tek `BudgetPool` paylaşır |
 | Öncelik | geçmiş aylar için REST yok, önce arşiv (CDN ağırlık harcamaz) |
+| Worker koruması | worker son 60 dk'da 429/418 aldıysa veya günlük okunamıyorsa REST yok |
 | Başlık takibi | her yanıtta `X-MBX-USED-WEIGHT-1M` okunur; IP limitinin %50'sine ulaşınca bekler |
 | Ret kodları | 418/429 gelince REST adımı durur, ilgili seriler `STALE` olur, kayıt düşülür |
 | Saatlik REST kuyruğu | yok (gece-önce tasarım) |
@@ -331,21 +496,55 @@ Tipik günlük maliyet birkaç yüz ağırlıktır.
 ### 3.5 `StoreProvider` ve laboratuvarlar
 
 - `StoreProvider`, `.klines(symbol, interval, limit, start_ms, end_ms)` imzasını uygular (`signal_lab.ArchiveProvider`
-  ile aynı 7 sütun + `is_closed`; geniş şema varyantı taker alanlarını da verir). Ayrıca `funding_frame()` sağlar.
+  ile aynı 7 sütun + `is_closed`; geniş şema varyantı taker alanlarını da verir). Ayrıca `funding_frame()` sağlar
+  (gerçek uzlaşma zaman damgalarıyla).
 - **Parite kapısı.** Mühürlü bir laboratuvar `StoreProvider`'a ancak şu koşulla geçer: 3 sembol × 3 tf × 6 ay için
   float64 ve zaman damgası bayt eşitliği **ve** `book_lab` `series_digest` eşitliği sağlanmalı (REST kaynaklı kuyruk
-  barları dahil). O zamana kadar mühürlü laboratuvarlar `--cache /opt/tradingbot/data/research/archive_cache --offline`
-  ile çalışır. Baytlar özdeş olduğu için sha256 digest'leri geçerli kalır.
+  barları dahil; `archive_unverified` satırlar pariteye girmez). O zamana kadar mühürlü laboratuvarlar `--cache
+  /opt/tradingbot/data/research/archive_cache --offline` ile çalışır. Baytlar özdeş olduğu için sha256 digest'leri geçerli
+  kalır.
+
+### 3.6 Araştırma yedeği ve geri yükleme
+
+- Saatlik yedek yalnız state ve vault'u kapsar (`tradingbot-backup.service`
+  `ReadOnlyPaths=/opt/tradingbot/data/state /opt/tradingbot/data/vault`). Oysa P1a'dan sonra `data/research/closes` ve
+  `entries`, rotasyonla ledger'dan düşen kayıtların **tek kopyasıdır**; `trials.jsonl`, dersler, öneriler ve sahip
+  onayları da yalnız orada yaşar.
+- Bu yüzden gece biriminin son aşaması (S7b) şu küçük alt ağaçların sıkıştırılmış günlük yedeğini alır:
+  `closes/`, `entries/`, `snapshots/`, `target/`, `trials/`, `lessons/`, `library/`, `explore/`, `prospective/`,
+  `proposals/`, `approvals/`, `summary/`, son 30 `runs/`. **Dışarıda kalanlar:** `store/`, `archive_cache/`,
+  `dukascopy/`, `backtests/`, `paths/` (yeniden üretilebilir). Arşiv `.sha256` ile yazılır ve hemen yeniden okunarak
+  doğrulanır; 7 günlük + 4 haftalık tutulur. `docs/BACKUP_RESTORE.md`'deki "VPS dışına taşıyın" adımı
+  `data/research/backup/`'ı da kapsayacak biçimde güncellenir.
+- **Motor geri yüklemesi:** `engine-restore <arşiv>` kuru çalıştırma; `--yes` ile uygular, mevcut ağaç
+  `research.pre-restore-<ts>` olarak kenara alınır (asla silinmez).
+- **State geri yüklemesinden sonra.** State eski bir yedekten geri yüklenirse ledger'lar geri sarılır; arşiv, ledger'ın
+  artık tutmadığı kayıtları taşır. Motor bunu ledger `seq`'inin bir önceki anlık görüntüye göre **azalmasından** ve veri
+  kökünde yeni bir `state.pre-restore-<ts>` klasörü belirmesinden anlar. Bu durumda:
+  - geri yükleme noktasından sonra kapanmış ve ledger'da artık bulunmayan arşiv kayıtları `RESTORED_AWAY` işaretlenir
+    (silinmez, uzlaştırmadan çıkarılır, ayrı sayılır);
+  - etkilenen günler `REVİZE (RESTORE)` olur;
+  - uzlaştırma bu kayıtlar için `INCONSISTENT` vermez; `RESTORE_EVENT` satırı `run_status.json`'a ve özete yazılır.
 
 ---
 
-## 4. İşlem günlüğü şeması (`tj_v1`)
+## 4. İşlem günlüğü şeması (`tj_v1`) ve kapanış arşivi
 
 ### 4.1 Kaynaklar (hepsi salt-okunur)
 
-- Her defterin `futures_ledger.json` `history[]` kayıtları: kanonik para. `TradeRecord`'da `pnl` = `net_pnl`, ve
-  `fees`, `entry_fee`, `exit_fee`, `funding_paid`, `funding_received`, `slippage_cost`, `spread_cost`, `gross_pnl`,
-  `fills[]`, `leverage`, `liquidation_price`, `quantity`, `effective_notional/margin` alanları vardır.
+- **Vadeli defterler:** her defterin `futures_ledger.json` `history[]` kayıtları: kanonik para. `TradeRecord`'da `pnl`
+  = `net_pnl`, ve `fees`, `entry_fee`, `exit_fee`, `funding_paid`, `funding_received`, `slippage_cost`, `spread_cost`,
+  `gross_pnl`, `fills[]`, `leverage`, `liquidation_price`, `quantity`, `effective_notional/margin` alanları vardır.
+  `FuturesLedgerV2` her açılışta `features.initial_stop` (futures_ledger.py:409, `setdefault`) ve her kapanışta
+  `features.risk_usdt` (futures_ledger.py:567) yazar; ana bot için `initial_stop` ayrıca motor tarafından plandan
+  konur (engine_v3.py:2244).
+- **Ana botun spot defteri:** `state/spot_ledger.json` (engine_v3.py:262 yükler, 1852 kaydeder). Ana bot spotta gerçekten
+  işlem yapar (engine_v3.py:2654/2657 `self.spot2.market_buy`). `SpotLedger` de `TradeRecord` tutar, aynı
+  `history_keep=5000` / `entries_keep=2000` rotasyonuyla (spot_ledger.py:75). Spot kaydında `venue=spot`, kaldıraç 1,
+  fonlama yoktur. **Fark:** spot kaydı `features` taşımaz (spot_ledger.py:458; `r_multiple` 0 kalır) ve her satış
+  dolumu ayrı bir kayıttır (`id = <emir>-<n>`); kısmi satışlar ayrı satırlar olarak gelir.
+- **Cüzdan hareketleri:** her iki ledger türünün `entries[]` listesi (§4.2).
+- **Açık pozisyonlar:** vadeli `positions[]` (`last_price` dahil); spot `lots`/`assets`/`cash`.
 - `shared_experience` satırları `xp_entry` / `xp_outcome` / `xp_cf`: `situation_v1`, R cinsinden maliyet, kohort.
 - `trade_memory.jsonl`: ana bot ajan bağlamı; strateji defterlerinde ema200/atr14.
 - `entry_provenance.jsonl`: `decision_id`, `code_sha`.
@@ -353,53 +552,100 @@ Tipik günlük maliyet birkaç yüz ağırlıktır.
 - `pattern_trader/plans.json`: Formasyon planları.
 - `counterfactual_trades.json`, `shadow_book.json` ve arşivleri.
 - Motorun kendi aday defterleri (P4).
+- **SQLite okunmaz.** `state/tradingbot.db` WAL kipindedir (storage/db.py:68); `ReadOnlyPaths` altındaki bir okuyucu
+  `-shm` dosyasını oluşturamaz. Motor SQLite'a hiç dokunmaz (AST testi `sqlite3` import'unu yasaklar). İleride gerekirse
+  yalnız bir kopyası `mode=ro&immutable=1` ile açılır.
 
-### 4.2 Satır kimliği, revizyon, rotasyon
+Bütün ledger okumaları ham JSON'dur (`ledgers.py`); dosya `"r"` ile açılır, `schema_version` bilinen değerlerden biri
+değilse o defter o gece `SCHEMA_UNKNOWN` ile atlanır (fail-closed). Kitap listesi `bot_scorecard.find_books` mantığıyla
+bulunur **ve** `state/spot_ledger.json` açıkça eklenir (`find_books` yalnız `futures_ledger.json`'ı tarar).
 
-- `trade_key = book|trade_id|opened_at`. Satırlar yalnız eklenir. Bir kapanmış kaydın içeriği değişirse
-  (`settle_late_funding` geç fonlama yazar), aynı anahtarla `rev+1` satırı eklenir. Son 7 günde kapananlar her gece
-  yeniden eşitlenir.
-- **Rotasyon.** Ledger `history_keep=5000` sınırını aşınca en eskileri atar (futures_ledger:573). Ham kapanış arşivi
-  (P1) her gece her kapanmış kaydın birebir kopyasını alır; bu yüzden rotasyon artık veri kaybettirmez. İlk sınıra
-  Box ulaşacak. `--check`, her defter için "rotasyona kalan kayıt" payını gösterir; pay 1 günlük kapanışın altına
-  inerse uyarır.
-- **Uzlaştırma değişmezi.** Ledger'ın **elinde tuttuğu pencerede**, defter ve ay başına Σ günlük `net_pnl` = Σ ledger
-  `TradeRecord.pnl` (tolerans 1e-6 USDT) olmalıdır. Aynı eşitlik ücret, fonlama ve kayma toplamları için de aranır.
-  Kayıt sayısı eşitliği de aranır. Uyuşmazlıkta o gece `INCONSISTENT` işaretlenir; ders ve öneri yazılmaz.
+### 4.2 Satır kimliği, arşiv, rotasyon, kesinleşme
+
+- **Kayıt anahtarı.** `trade_key = book|trade_id|opened_at`. Ana bot iki alt deftere ayrılır: `main_fut`
+  (`state/futures_ledger.json`) ve `main_spot` (`state/spot_ledger.json`); raporlarda ikisi "Ana bot" altında birlikte ve
+  ayrı satırlar olarak görünür. Spot kısmi satışları kendi kayıt kimlikleriyle ayrı anahtar alır; `position_group =
+  main_spot|sembol|opened_at` ile gruplanır.
+- **Kapanış arşivi (P1a).** Her gece her kapanmış kaydın birebir kopyası `closes/` altına eklenir. Satırlar yalnız
+  eklenir. Bir kapanmış kaydın içeriği değişirse (`settle_late_funding` geç fonlama yazar, koruyucu izleyici geriye
+  tarihli kapanış yazar), aynı anahtarla `rev+1` satırı eklenir. Son 14 günde kapananlar her gece yeniden eşitlenir.
+- **Cüzdan hareketi arşivi (P1a).** `FuturesLedgerV2` ve `SpotLedger` `entries[]`'i `entries_keep=2000`'de kırpar
+  (futures_ledger.py:239, :267). Her işlem en az 3 hareket, açıkken her fonlama uzlaşması için bir hareket daha yazar;
+  yani cüzdan hareketleri `history`'den (5000) çok daha önce düşer. Oysa geriye doğru `E_book` ve cüzdan görünümü tam bu
+  hareketlere dayanır. Bu yüzden `closes.py` her gece `entries[]`'i de arşivler:
+  - anahtar = `sha256(book|ts|kind|ref_id|amount|note)` + aynı anahtarın kaçıncı tekrarı olduğu; idempotent;
+  - hizalama: arşivin son 50 hareketinin dizisi ledger'daki listede aranır; bulunamazsa (arada rotasyon olmuşsa) aradaki
+    boşluk `ENTRIES_GAP` olarak işaretlenir ve o pencerenin cüzdan görünümü EKSİK olur;
+  - her hareket ilk görüldüğü gecenin `observed_at` damgasını taşır (cüzdan görünümü bununla günlere atanır, §7.1).
+- **Gecelik ölçülmüş anlık görüntü (P1a).** Her gece S1a, her defter için `wallet_balance` (spot: `cash`,
+  `locked_cash`, `assets`) ve açık pozisyonları (miktar, giriş, `last_price`, gerçekleşmemiş kâr) ile ledger `seq` ve
+  `updated_at`'i `snapshots/` altına yazar (`MEASURED`, okuma zamanıyla). P1a'dan önceki günler için bu yoktur: o
+  günler, hareketleri hâlâ ledger'da duruyorsa `RECONSTRUCTED`, düşmüşse `EKSİK` etiketlenir; asla "kesin" sayılmaz.
+- **Rotasyon payı.** `--check` her defter için iki pay gösterir: (a) `history` için rotasyona kalan kayıt sayısı ve
+  bunun ortalama günlük kapanışa göre gün karşılığı, (b) `entries` için aynı hesap. Herhangi biri 3 günün altına inerse
+  uyarı verir. İlk sınıra `entries` ile Box ulaşacak.
+- **Gün satırları kesin değildir (GEÇİCİ → KESİN).**
+  - `settle_late_funding` (futures_ledger.py:772–840) kapanmış bir kaydın `pnl`/fonlamasını sonradan değiştirir ve
+    FUNDING hareketini **o anın** zaman damgasıyla yazar.
+  - Koruyucu izleyici `closed_at`'i bar kapanışına geri tarihleyebilir (f8b05fb betik notları;
+    docs/PROTECTIVE_MONITOR_V1.md).
+  - TP1 kısmi çıkışları, ortada henüz bir `TradeRecord` yokken cüzdanı değiştirir.
+  - `features.funding_coverage` bekleyen uzlaşma gösterebilir.
+  Bu yüzden her gün satırı en az **3 gün** ve o günün kayıtlarının fonlama kapsaması tamamlanana kadar `GEÇİCİ` kalır.
+  7 gün sonra kapsama hâlâ eksikse gün `EKSİK (fonlama)` olur ve hükümlerden çıkar. Revizyonlar yalnız eklenir (`rev`)
+  ve satırda görünür `REVİZE` işareti taşır. **Hükümler yalnız KESİN günleri kullanır.**
+- **Geç fonlama hangi güne yazılır (tutarlı kural).** Kayıt görünümünde kaydın `closed_at` gününe (o günün satırı
+  revize edilir); cüzdan görünümünde hareketin gözlendiği pencereye. Hedef hükmü cüzdan/MTM görünümünü kullanır
+  (§7.1); kayıt görünümü açıklama içindir.
+- **Uzlaştırma değişmezleri.**
+  - Kayıt görünümü: ledger'ın **elinde tuttuğu pencerede**, defter ve ay başına Σ arşiv `net_pnl` (son rev) = Σ ledger
+    `TradeRecord.pnl` (tolerans 1e-6 USDT); ücret, fonlama ve kayma toplamları ve kayıt sayısı için de aynısı.
+  - Cüzdan görünümü: iki ardışık anlık görüntü arasında `wallet_balance` farkı = o arada gözlenen hareketlerin toplamı
+    (1e-6). Spot için `cash` farkı ile spot hareketleri aynı biçimde.
+  - Uyuşmazlıkta o gece `INCONSISTENT` işaretlenir; ders ve öneri yazılmaz. Geri yükleme kaynaklı farklar `RESTORED`
+    olarak ayrılır (§3.6).
 - **Ücret özdeşliği.** `fees == entry_fee + exit_fee` her işlemde denetlenir. `learn/labels.label_outcome`
   (labels.py:45), `entry_fee` varken `fees + entry_fee + exit_fee` toplayarak ücreti iki kez sayar. Motor bu fonksiyonu
   olduğu gibi **kullanmaz**; kendi hesabını yapar ve bunun için bir regresyon testi vardır. Worker içindeki düzeltme
   ayrı, onaylı bir iştir (P6).
+- **Ucuz türetilmiş alanlar (P1a).** Kapanış arşivinin yanında küçük bir `closes_derived` satırı tutulur:
+  `min_to_next_funding` (açılış anında, kayıttaki `funding_hours_utc`'den) ve provenance karar zamanı varsa
+  `decision_delay_s`. Ham arşiv birebir kalır; türetilmiş alanlar ayrı satırdadır.
 
 ### 4.3 Alanlar (sahibin listesi kalın)
 
-Her alanın yanında `field_source` ∈ {`MEASURED`, `RECONSTRUCTED`, `MODELED`, `MISSING`} tutulur.
+Her alanın yanında `field_source` ∈ {`MEASURED`, `RECONSTRUCTED`, `MODELED`, `MISSING`, `NOT_APPLICABLE`} tutulur.
 
 | Grup | Alanlar |
 |---|---|
-| Kimlik | `schema`, `trade_key`, `rev`, `source` (`LIVE_PAPER` / `PROSPECTIVE_PAPER` / `BACKTEST` / `COUNTERFACTUAL`; asla karıştırılmaz), `book`, `book_name`, `trade_id`, `decision_id`, `code_sha`, `config_hash` |
+| Kimlik | `schema`, `trade_key`, `rev`, `source` (`LIVE_PAPER` / `PROSPECTIVE_REPLAY` / `EXPLORATION_FWD` / `BACKTEST` / `COUNTERFACTUAL`; asla karıştırılmaz), `book`, `book_name`, `trade_id`, `decision_id`, `code_sha`, `config_hash`, `config_epoch` |
 | Enstrüman | **`symbol`**, `instrument_class` (`COIN` / `GOLD`), `venue` (`UM_futures` / `spot`), `side` |
 | **Taktik ve varyasyon** | **`tactic`** (`setup_type`/strateji; Box/D4/C4 için düzeltilmiş), `family` (TREND / MOMENTUM / FADE / BREAKOUT / CANDLE_PATTERN / CARRY / XSEC / SEASONAL / MAIN_ENSEMBLE), **`variation_id`**, `params_hash` (C4: `definition_sha`; T2/M2/Box/D4: kural modülü kaynağı + parametrelerin hash'i, P6'ya kadar), `cohort` (POLICY / CAPACITY / SELECTIVITY / UNTAGGED), `record_only`, `learning_unlocked_by[]` |
-| Zaman | `signal_ts`, `opened_at`, `closed_at`, `hold_hours`, `bars_held`, `decision_delay_s` |
+| Zaman | `signal_ts`, `opened_at`, `closed_at`, `closed_at_backdated` (bool), `hold_hours`, `bars_held`, `decision_delay_s` |
 | **Giriş yeri** | `ref_price`, **`entry_fill`** (VWAP), `entry_slip_bps`, `range_pos_20` (0–1), `dist_20d_high_atr`, `dist_20d_low_atr`, `dist_ema200_atr`, `dist_level_atr` (kutu kenarı / kanal / tetik), `session` (ASIA / LONDON / NY / WEEKEND), `utc_hour`, `weekday`, `funding_rate_at_entry`, `min_to_next_funding`, `situation_entry` (`situation_v1`) |
-| **Büyüklük ve kaldıraç** | **`qty`**, **`notional`**, `margin`, **`leverage`**, `liquidation_price`, `liq_distance_in_stops`, `risk_usdt`, `risk_pct_of_equity`, `equity_at_entry`, `size_rule` (SLOT / BUMP_MIN_NOTIONAL / SHRUNK_TO_MARGIN) |
+| **Büyüklük ve kaldıraç** | **`qty`**, **`notional`**, `margin`, **`leverage`** (spot: 1, `MEASURED`), `liquidation_price` (spot: `NOT_APPLICABLE`), `liq_distance_in_stops`, `risk_usdt`, `risk_pct_of_equity`, `equity_at_entry`, `size_rule` (SLOT / BUMP_MIN_NOTIONAL / SHRUNK_TO_MARGIN) |
 | Plan | `initial_stop`, `stop_dist_pct`, `stop_dist_atr`, `targets[]`, `tp1_fraction`, `breakeven_at_mfe_r`, `max_hold`, `planned_rr_after_cost` |
 | Çıkış | `exit_price` (dolumların VWAP'ı), `exit_reason`, `exit_basis` (LEVEL / GAP), `tp1_done`, `fills[]` (tür, zaman, miktar, fiyat, ücret, kayma) |
-| **Gelir ve maliyet** | **`gross_pnl`**, **`entry_fee`**, **`exit_fee`**, **`slippage_cost`** (MODELED), **`spread_cost`** (defterde 0 → `MODELED_ZERO`; ayrıca kaydedilmemiş tahmin `spread_est`), **`funding_paid`**, **`funding_received`**, `funding_net`, `funding_complete`, **`net_pnl`**, `net_r`, `gross_r`, `cost_r{fee, slippage, funding}`, `pnl_pct_book_equity`, `pnl_pct_total_equity` |
+| **Gelir ve maliyet** | **`gross_pnl`**, **`entry_fee`**, **`exit_fee`**, **`slippage_cost`** (MODELED), **`spread_cost`** (defterde 0 → `MODELED_ZERO`; ayrıca kaydedilmemiş tahmin `spread_est`), **`funding_paid`**, **`funding_received`** (spot: `NOT_APPLICABLE`), `funding_net`, `funding_complete`, **`net_pnl`**, `net_r`, `gross_r`, `cost_r{fee, slippage, funding}`, `pnl_pct_book_equity`, `pnl_pct_total_equity` |
 | Yol | `mfe_r`, `mae_r`, `t_mfe`, `t_mae`, `order` (MFE_FIRST / MAE_FIRST), `time_to_1r`, `giveback_r`, `capture_ratio`, `path_source` (POSITION_PATH / STORE_1M / STORE_5M / EXTREMES_ONLY), `ambiguous_bars` |
 | Bağlam | `situation_exit` (aynı saf fonksiyon ve `SCHEMA_SHA` ile store barlarından yeniden hesaplanır), `btc_ctx_entry/exit`, `oi_change_24h`, `taker_ratio`, ana bot ajan eğilimleri/uyarıları (varsa), `signal_ctx{}` (yeniden kurulmuş kural bağlamı), altına özgü: oturum, PAXG/XAU bazı |
 | Atıf (P2) | `codes_loss[]`, `codes_win[]`, `primary_code`, `fidelity{ok, delta_r}`, `cf_grid_ref`, `lesson_ids[]` |
 | Köken | `sources[{file, offset/row_id}]`, `data_seal`, `missing_fields[]`, `journal_version` |
 
-**`TradeRecord`'da olmayanlar.** `initial_stop` ve `targets` ledger kaydında **yoktur** (accounting/models.py:457).
-Kaynak sırası şöyledir:
-1. `xp_entry` / provenance;
-2. kural bağlamının yeniden kurulması (§5.2); bu yalnız giriş referansı ve ilk stop ledger ile **1 tick** içinde
-   eşleşirse kabul edilir;
-3. hiçbiri yoksa `MISSING`.
-
-`MISSING` stop'u olan işlemin net R'ı yeniden hesaplanmaz; işlem karşı-olgusal ızgaraya ve ayrıştırmaya **girmez**.
-Asla tahminle doldurulmaz.
+**Stop ve R paydası (ölçülmüş).**
+- Vadeli kayıtlarda `initial_stop` = `features.initial_stop` ve `risk_usdt` = `features.risk_usdt`; ikisi de
+  **MEASURED**'dır.
+- **R paydası her yerde `features.risk_usdt`'tir:** ledger'ın kendi `r_multiple`'ı ve `settle_late_funding`'in R'ı
+  yeniden hesaplaması da bunu kullanır (futures_ledger.py:567 yorumu). Böylece motorun R'ı ledger'ınkiyle tutarlı kalır;
+  geç fonlama sonrası `net_r` aynı payda ile yeniden hesaplanır.
+- **`MISSING` yalnız** bu özellikleri taşımayan eski (legacy) kayıtlar içindir; o kayıtlarda net R yeniden hesaplanmaz,
+  işlem karşı-olgusal ızgaraya ve ayrıştırmaya **girmez**. Asla tahminle doldurulmaz.
+- **Spot kayıtları** `features` taşımaz: stop ve risk, varsa `trade_memory`/provenance'tan alınır (`MEASURED`, kaynak
+  dosyasıyla); yoksa `MISSING`. Spot işlemleri USDT ve % toplamlarına (günlük hedef) her durumda tam girer; yalnız R
+  tabanlı istatistiklerden, sayısı gösterilerek, dışarıda kalabilir.
+- **`targets` ledger kaydında yoktur** (`TradeRecord` alanı değildir; açık `Position` taşır ama kapanışta düşer).
+  Hedefler ve sinyal bağlamı için kaynak sırası: 1) `xp_entry` / provenance; 2) kural bağlamının yeniden kurulması
+  (§5.2); 3) hiçbiri yoksa `MISSING`.
 
 ---
 
@@ -410,32 +656,37 @@ Asla tahminle doldurulmaz.
 - Kaynak: 1m barlar, yoksa 5m. Ana bot için ayrıca `position_path`.
 - Bar içi sıra `learning_cf` kuralıdır: açılış → ters → lehte → kapanış.
 - Yol, `opened_at`'tan `closed_at`'a kadar kurulur; üstüne çıkış sonrası 48 barlık kuyruk eklenir (STOPPED_THEN_REVERSED
-  için).
+  için). Geriye tarihli kapanışlarda (`closed_at_backdated`) yol kaydedilen `closed_at`'e göre kurulur.
 - Etiket her zaman `RECONSTRUCTED`'dır. Belirsiz bar içi sıraya sahip işlemler sayılır ve sıraya dayanan kodlardan
   dışlanır.
 
 ### 5.2 Kural bağlamını yeniden kurma (`rehydrate`)
 
-Strateji defterleri kapanışta bağlamı düşürür. Motor, defterin deterministik kural fonksiyonunu store barları üzerinde
-`signal_ts` anına göre yeniden çalıştırır ve şunları geri kazanır:
+Strateji defterleri kapanışta hedefleri ve sinyal bağlamını düşürür; ilk stop ise ölçülmüştür (§4.3). Motor,
+defterin deterministik kural fonksiyonunu store barları üzerinde `signal_ts` anına göre yeniden çalıştırır ve yalnız
+şunları geri kazanır:
 
 | Defter | Geri kazanılan bağlam |
 |---|---|
-| Box | `box_high` / `box_low` / `box_mid`, konum, gün aralığı, `params_label` |
-| D4 | `channel_high20`, ATR sınırları |
-| T2 / M2 | `ema200`, `atr14` |
-| C4 | sinyal bloğu |
+| Box | `box_high` / `box_low` / `box_mid`, konum, gün aralığı, `params_label`, hedefler |
+| D4 | `channel_high20`, ATR sınırları, hedefler |
+| T2 / M2 | `ema200`, `atr14`, hedefler |
+| C4 | sinyal bloğu, hedefler |
 
-Kabul koşulu: yeniden hesaplanan giriş referansı ve ilk stop ledger ile 1 tick içinde eşleşmelidir. Eşleşmezse
-`RECONSTRUCT_FAILED` yazılır; tahmin edilmez. Hedef: Box, D4, T2, M2, C4 için eşleşme oranı ≥ %95.
+**Kabul koşulu (denetim, kaynak değil):** yeniden hesaplanan giriş referansı ledger girişiyle **ve** yeniden hesaplanan
+ilk stop ölçülmüş `features.initial_stop` ile 1 tick içinde eşleşmelidir. Eşleşme yeniden kurmanın doğru bar ve doğru
+parametrelerle yapıldığını kanıtlar; stop değeri her durumda ölçülmüş olandır. Eşleşmezse `RECONSTRUCT_FAILED` yazılır,
+hedefler ve `signal_ctx` `MISSING` kalır; tahmin edilmez. Hedef: Box, D4, T2, M2, C4 için eşleşme oranı ≥ %95 (config
+dönemi başına ayrı raporlanır, §6.2).
 
 ### 5.3 Yeniden oynatma doğruluğu (fidelity) kapısı
 
 Her gerçek işlem, defterin kendi `ExecModel.of_ledger(book)` maliyet modeliyle (cf_label_v3 ile aynı kod yolu) atılabilir
-bir `FuturesLedgerV2` içinde gerçek yol üzerinde yeniden oynatılır.
+bir `FuturesLedgerV2` içinde gerçek yol üzerinde yeniden oynatılır. R paydası her iki tarafta da kaydın
+`features.risk_usdt`'idir.
 - `|r_replay − r_actual| ≤ 0,05R` ise işlem karşı-olgusal ayrıştırmaya girer.
-- Değilse işlem yalnız kural kodları alır. Nedeni (yol boşluğu, belirsiz bar, farklı dolum tabanı) sayılır ve özette
-  gösterilir.
+- Değilse işlem yalnız kural kodları alır. Nedeni (yol boşluğu, belirsiz bar, farklı dolum tabanı, geriye tarihli
+  kapanış) sayılır ve özette gösterilir.
 - Hedef doğruluk oranı ≥ %90'dır.
 
 ### 5.4 Kural kodları (`attribution_v1`, eşikler mühürlü)
@@ -482,7 +733,7 @@ Tek işlem kodu **gözlemdir**, neden kanıtı değildir. Kanıt yalnız toplu i
 
 Bir taktiğin her işlemi **aynı** ızgarayla oynatılır, böylece karşılaştırmalar eşli (paired) olur ve seçilmiş
 (cherry-picked) olmaz. Her varyant aynı gerçek yol, aynı `ExecModel` ve aynı `_net_replay` ile oynatılır. USDT riski
-sabit tutulur; büyüklük stop mesafesine uyarlanır. Yaklaşık 24 varyant:
+(`features.risk_usdt`) sabit tutulur; büyüklük stop mesafesine uyarlanır. Yaklaşık 24 varyant:
 
 | Eksen | Varyantlar | Etiket |
 |---|---|---|
@@ -531,7 +782,8 @@ kovasının beklenen R'ı. Bu, "doğru taktik, yanlış rejim" kaybını şanss�
   - Wilson aralıklı kazanma oranı;
   - ebeveyn hücreye doğru `HierarchicalRate` büzülmesi (alpha 10);
   - gün kümelenmeli bootstrap CI95 (sabit tohum, 5000 yeniden örnekleme);
-  - her EX_ANTE varyant için gerçeğe göre **eşli** delta R ve kendi gün kümelenmeli CI'ı.
+  - her EX_ANTE varyant için gerçeğe göre **eşli** delta R ve kendi gün kümelenmeli CI'ı;
+  - §6.4'teki tek istatistik `p_day` (tek yönlü, gün kümelenmeli bootstrap).
 - **Ders türleri:**
   1. IZGARA: "T taktiği için V varyantı ortalama net R'ı Δ artırır".
   2. FİLTRE: "X kovasında T'yi atla"; eşsizdir, Δ = −Σ R.
@@ -539,26 +791,31 @@ kovasının beklenen R'ı. Bu, "doğru taktik, yanlış rejim" kaybını şanss�
   4. AYRIM: kazananı kaybedenden ayıran giriş özellikleri. Yalnız walk-forward OOS AUC CI > 0,5 ise raporlanır.
 - **Gerçek ve CF kanıtı ayrı tutulur.** CF, `cf_aux_v1` `r_net_conservative` kullanır; ağırlığı gösterilir, sessizce
   birleştirilmez.
+- **Kohort ve config dönemi.** Dersler yalnız aynı config dönemi içindeki işlemlerden hesaplanır veya dönem bir tabaka
+  olarak açıkça modele girer (§6.2); politika (POLICY) ve öğrenme-ekstra kohortları karıştırılmaz.
 - **Uygunluk:** n ≥ 30 ve ≥ 10 farklı gün.
 - **Çoklu test:** BH-FDR aile tanımı (hangi hücreler × varyantlar tek bakışta test edilir) mühürlü kayıtta **önceden**
   sabitlenir; q = 0,10. Kümülatif deneme sayısı `trials.jsonl`'dan raporlanır.
 - **İsteğe bağlı durma kontrolü.** Dersler her gece durum **değiştirmez**. Gece değerleri "ara görünüm" olarak gösterilir.
   - Durum değişikliği yalnız **önceden kayıtlı bakışlarda** olur: hücrenin n'i 30, 60, 120 ve 240'ı geçtiğinde.
   - Alfa bakışlara bölünür: 0,05 toplam = 0,01 / 0,01 / 0,015 / 0,015.
+  - Her bakış `trials.jsonl`'a bir satır olarak yazılır.
 - **İleri doğrulama.** Bir bulgu T_k anında hash'lenip `RESEARCH_HYPOTHESIS` olarak kaydedilir. Doğrulama **yalnız T_k'dan
-  sonra kapanan** işlemlerle yapılır. Gereken: aynı işaret, doğrulama bakışında CI alt sınırı > 0, ve ≥ 3 aylık katmanın
-  ≥ 2/3'ünde işaret tutarlılığı.
+  sonra kapanan** işlemlerle yapılır. Gereken: aynı işaret, doğrulama bakışında `p_day` ≤ o bakışın alfası, ve ≥ 3 aylık
+  katmanın ≥ 2/3'ünde işaret tutarlılığı.
 
 ### 5.8 Ders deposu ve yaşam döngüsü
 
-- `learn/lesson_store` kullanılır (`lesson_v2` şeması, `build_lesson`, `transition()`, `SegmentArchive`). Bunlar bu
-  fonksiyonların ilk gerçek çağıranlarıdır. Kök ayrıdır (`data/research/lessons`); `state/lesson_archive`'a dokunulmaz.
+- `learn/lesson_store` kullanılır (`lesson_v2` şeması, `build_lesson`, `transition()`); segment arşivi için
+  `learn/journal_archive.SegmentArchive` kullanılır (onu zaten `pattern_trader/book.py:1317` çağırıyor). `build_lesson` ve
+  `transition` için motor ilk gerçek çağıran olur. Kök ayrıdır (`data/research/lessons`); `state/lesson_archive`'a
+  dokunulmaz.
 - Bağlam anahtarları genişletilir: `B|` defter, `I|` enstrüman, `A|` sınıf (COIN/GOLD), `T|` taktik, `V|` varyasyon,
-  `C|` atıf kodu, `X|` durum kovası.
+  `C|` atıf kodu, `X|` durum kovası, `E|` config dönemi.
 - Ders alanları:
   - `lesson_id`, `scope{}`, `observation_tr` (şablondan üretilir, LLM yok), `mechanism_code`;
-  - `evidence{n, n_days, mean_r, ci95, effect_delta_r, q_bh, look_no, discovery_window, validation_window, data_seal,
-    registry_sha}`;
+  - `evidence{n, n_days, mean_r, ci95, p_day, effect_delta_r, q_bh, look_no, discovery_window, validation_window,
+    data_seal, registry_sha, config_epoch}`;
   - karşı kanıt sayısı, inceleme için 3 en iyi + 3 en kötü `trade_key`, `status_history[]` (yalnız eklenir),
     `linked_candidate_id`.
 - Durumlar:
@@ -584,18 +841,27 @@ Ortaya çıkan aday spec mühürlenir. Spec şunları sabitler:
 - hedef defter/taktik ve tam parametre farkı;
 - ölçüt (işlem başına net R **ve** gün başına özsermaye %'si);
 - en az ileri n ve süre;
-- alfa;
+- alfa ve bakış takvimi;
 - durdurma kuralı.
 
 Her spec yeni bir kütüphane sürümü ve yeni bir `trial_id`'dir. Aday, değişmemiş orijinalin yanında kayıt-yalnız ileri
-test edilir (§6.6). Hiçbir şey otomatik uygulanmaz.
+yeniden oynatmayla test edilir (§6.6). Zaten canlı olan bir kural (örn. Box en az stop %0,5, `record_selectivity`)
+aday olarak üretilmez; dönüşüm listesi canlı config'in ham anahtarlarına karşı denetlenir. Hiçbir şey otomatik
+uygulanmaz.
 
-### 5.10 Akıl sağlığı testleri (mevcut kanıtın yeniden üretilmesi)
+### 5.10 Akıl sağlığı testleri (geçmiş kanıtın config dönemine bölünerek yeniden üretilmesi)
 
-- Box: stop < %0,5 için 72 işlem −0,56R; %0,5–1 için 176 işlem +0,17R. Beklenen ders: "Box: stop < %0,5 kaybettiriyor
-  (STOP_TOO_TIGHT / TIGHT_STOP_COST_MULTIPLIER)". Beklenen aday: "Box en az stop %0,5".
-- M2 kapasite ekstraları +0,15R.
-- Seçicilik ekstraları negatif; bu, mevcut `record_selectivity` ayarını doğrular.
+Bunlar **aday değil**, tarihsel yeniden üretimdir. Her biri config dönemine (§6.2) bölünerek raporlanır; dönem
+sınırını aşan bir karşılaştırma yapılmaz.
+
+- **Box, dönem `min_stop_pct=0,32` (2026-10-03 öncesi):** stop < %0,5 için 72 işlem −0,56R; %0,5–1 için 176 işlem
+  +0,17R yeniden üretilmeli. Beklenen ders: "Box: stop < %0,5 kaybettiriyordu (STOP_TOO_TIGHT /
+  TIGHT_STOP_COST_MULTIPLIER)". Bu ders zaten sahip kararıyla uygulanmıştır (`books.b1_box_fade.min_stop_pct: 0.5`,
+  2026-10-03); motor bunu aday üretmez, yalnız "uygulanmış karar, ileri izleme" olarak yeni dönemi izler.
+- **M2 kapasite ekstraları** +0,15R (öğrenme-ekstra kohortu, dönem başına).
+- **Seçicilik ekstraları** negatif (2026-10-03 öncesi dönem); bu, sonradan canlıya alınmış `learning_mode.extra_entries:
+  record_selectivity` kararını doğrular. Yeni dönemde seçicilik ekstraları açılmaz, yalnız kaydedilir; motor bunları
+  karşı-olgusal kayıtlardan izler.
 
 ---
 
@@ -605,15 +871,16 @@ test edilir (§6.6). Hiçbir şey otomatik uygulanmaz.
 
 | Aşama | İş | İlk aşama |
 |---|---|---|
-| S0 ön kontrol | PAPER doğrulaması; motor kilidi; disk; `data_status` tazeliği (eskiyse yalnız S1–S3 ve S7 çalışır, diğerleri `DATA_STALE`); canlı config sha'sı | P1 |
-| S1a kapanış arşivi | ledger'lardan yeni ve revize kapanışlar; uzlaştırma | P1 |
+| S0 ön kontrol | PAPER doğrulaması (`state/mode.json`); `analysis.lock`; disk; **çalışma zamanı yalıtım öz-denetimi** (§2.8; tutmazsa `ISOLATION_BROKEN` ile dur); **SKEW** denetimi (tutmazsa yalnız S0/S1a/S7); yedek birimi aktif mi (§2.2); A/B takvimi (`AB_OFF`, §2.9); P1b'den `data_status` tazeliği (eskiyse yalnız S1, S3 ve S7 çalışır, diğerleri `DATA_STALE`); canlı config sha'sı | P1a |
+| S1a kapanış + hareket arşivi + anlık görüntü | vadeli **ve spot** ledger'lardan yeni ve revize kapanışlar; `entries[]` arşivi; gecelik ölçülmüş anlık görüntü; uzlaştırma; rotasyon payı; geri yükleme tespiti | P1a |
 | S1b günlük + yol + rehydrate + fidelity | `tj_v1` | P2 |
 | S2 atıf | kodlar + `cfgrid_v1` + ayrıştırma | P2 |
-| S3 günlük hedef | dünün kesin satırları; kayan hükümler | P1 (gerçekleşmiş), P2 (MTM) |
-| S4 walk-forward | tüm varyasyonlar için artımlı son katman + 7 parçadan birinin tam yeniden hesabı (kütüphane haftada bir tam taranır) | P3 |
+| S3 günlük hedef | yeni günün **GEÇİCİ** satırı; 3+ günlük satırların kesinleşmesi veya `REVİZE`; yalnız kayıtlı bakış gecelerinde hükümler | P1a (gerçekleşmiş + `LEDGER_MARK` MTM), P2 (00:00 UTC MTM) |
+| S4 walk-forward + keşif | tüm varyasyonlar için artımlı son katman + 7 parçadan birinin tam yeniden hesabı (kütüphane haftada bir tam taranır); **keşif katmanının** yeni kapanmış barlarda adımı (§6.8) | P3 |
 | S5 ileri adaylar | her aktif aday yeni kapanmış barlarda adım atar | P4 |
 | S6 dersler, denemeler, kapı | önceden kayıtlı bakışlar, BH, durum geçişleri, öneriler | P3/P4 |
-| S7 özet | `digest_tr.md`, `engine_summary.json`, `run_status.json` (aşama süreleri, CPU, tepe bellek) | P1 |
+| S7 özet | `digest_tr.md`, `engine_summary.json`, `run_status.json` (aşama süreleri, CPU, tepe bellek, iki SHA, config sha, `data_seal`) | P1a |
+| S7b araştırma yedeği | küçük alt ağaçların günlük sıkıştırılmış yedeği ve doğrulaması (§3.6) | P1a |
 
 Her aşama son tarihe bakar ve iş kuyruğuna kontrol noktası yazar; biten iş kalırsa ertesi gece devam eder.
 Shared-experience `--summary-out` raporları motor biriminden **çalıştırılmaz**, çünkü onlar `state/` altına yazar. İstenirse
@@ -627,45 +894,70 @@ exit_rules, max_hold}`. Parametre ızgarası sınırlıdır (sürüm başına ai
 | Kaynak | İçerik |
 |---|---|
 | Mevcut defterler (birebir kopya) | T2 EMA200 trend, M2 TSMOM28 (14/28/56), Box fade (stop genişliği kovaları), D4 Donchian 20/10 (+55/20, ATR çıkışları), C4/C4S CV001–CV008, Formasyon aileleri (belleğe sığarsa; yoksa yalnız ileri). Ana bot topluluğu ucuza yeniden oynatılamaz; yalnız canlı ölçülür. |
-| Laboratuvarlar | `signal_lab` kuralları, `futures_lab` fut_v1, `crowd_lab` fut_v2, `gold_v1` hücreleri, `gold_v2` (günlük/4h trend, PAXG hafta sonu dönüşü), `book_lab` D4/C4/Formasyon varyantları. Yalnız yayımlanmış kayıtları alınır; mühürlü bir laboratuvar aynı mühürle yeniden **çalıştırılmaz**. |
-| Klasik aileler | çok ufuklu TSMOM (7/14/28/56/84 g, oynaklık hedefli); Donchian 20/55; EMA/SMA kesişimi; Keltner/ATR kırılımı; BB-genişliği sıkışma kırılımı; RSI2/Bollinger aralık dönüşü (yalnız düşük ER20 rejiminde); aşırı fonlama fade/carry; OI–fiyat uyumsuzluğu; kesitsel momentum (40 coin, 7/28 g sıralama, üst-k long / alt-k short, haftalık, BTC-beta nötr: "toplam" hedefi için portföy taktiği); kesitsel 1 günlük dönüş; BTC–ETH spread z-skoru |
-| Altına özgü | XAUUSDT Londra/NY açılış kırılımı, Asya kayması; PAXG pazar açılış boşluğu, pazartesi dönüşü; ay sonu; altın günlük trend; altın/BTC oran trendi |
+| Laboratuvarlar | `signal_lab` kuralları, `futures_lab` fut_v1, `crowd_lab` fut_v2, `gold_v1` hücreleri, `gold_v2` aile A (günlük/4h trend; sonuçlar yayımlanınca), `book_lab` D4/C4/Formasyon varyantları. Yalnız yayımlanmış kayıtları alınır; mühürlü bir laboratuvar aynı mühürle yeniden **çalıştırılmaz**. **gold_v2 aile B (PAXG hafta sonu dönüşü)** "kanıt yok" yayımlandı (wt-gold2 `db1828e`); sonuçları öncül deneme olarak içe alınır, aday listesine konmaz; yeniden girişi yalnız yeni bir LIB sürümü ve Kapı A üzerinden olur. |
+| Klasik aileler | çok ufuklu TSMOM (7/14/28/56/84 g, oynaklık hedefli); Donchian 20/55; EMA/SMA kesişimi; Keltner/ATR kırılımı; BB-genişliği sıkışma kırılımı; RSI2/Bollinger aralık dönüşü (yalnız düşük ER20 rejiminde); aşırı fonlama fade/carry; OI–fiyat uyumsuzluğu; BTC–ETH spread z-skoru |
+| Kesitsel / portföy (XSEC) | kesitsel momentum (40 coin, 7/28 g sıralama, üst-k long / alt-k short, haftalık, BTC-beta nötr: "toplam" hedefi için portföy taktiği); kesitsel 1 günlük dönüş. **Zaman noktasında evren (P3, §3.3) kurulana kadar Kapı A'ya uygun değildir**; keşif katmanında "HAYATTA KALAN EVREN — kapıya kapalı" etiketiyle izlenir. |
+| Altına özgü | XAUUSDT Londra/NY açılış kırılımı, Asya kayması; PAXG pazar açılış boşluğu; ay sonu; altın günlük trend; altın/BTC oran trendi |
 | Örtüler (bir seferde bir faktör) | ATR iz süren, chandelier, zaman stopu, TP merdiveni; büyüklük: sabit %0,5 risk (`learning_mode.fit_size`), oynaklık hedefi; kaldıraç büyüklükten türetilir, likidasyon mesafesi ≥ 2 × stop |
 | Dersten türeyen | §5.9 |
-| Yeni fikirler | AI veya sahip, `library/` altına kayıt girdisi ekleyen bir **kod PR'ı** açar; mühür ve deneme sayımı otomatik artar |
+| Yeni fikirler | AI veya sahip, `library/` altına kayıt girdisi ekleyen bir **kod PR'ı** açar; yeni fikirler **ayda bir LIB sürümünde toplanır** (§8); mühür ve deneme sayımı otomatik artar |
 
-**Kopya pariteleri.** Bir defter kopyası lider tablosuna veya atıf tabanına ancak şu koşulla girer: canlı dönemi
-yeniden oynatınca canlı defterin girişlerinin ≥ %95'ini (aynı bar, aynı yön) üretmeli ve eşleşen işlemlerde medyan
-|ΔR| ≤ 0,05 olmalı. Kopyalar `strategy_paper.apply_action` ile oynatılır; yürütme canlı defterlerle aynıdır.
+**Config dönemleri.** `library/config_epochs.json` (mühürlü), canlı defterlerin parametrelerinin geçerli olduğu
+aralıkları tutar. Kaynaklar: dağıtılmış her sürüm SHA'sındaki `config.yaml`'ın git geçmişi (`deploy/releases/` listesi)
+ve belgelenmiş sahip kararları. Örnek sınırlar: 2026-09-30 Box `slots` 20→40; 2026-10-03 Box `min_stop_pct` 0,32→0,5 ve
+`learning_mode.extra_entries: record_selectivity`. Her gece `rawconfig` canlı config sha'sını son dönemle karşılaştırır;
+yeni bir sha görülürse yeni dönem açılır ve özette görünür.
+
+**Kopya paritesi (kohort ve dönem başına).** Canlı defterler gerçekten işlem açan öğrenme-modu kapasite ekstraları
+içerir; oysa `strategy_paper.apply_action` yeniden oynatmada öğrenmeye her zaman `None` geçer (strategy_paper.py:637).
+Politika da tarihin ortasında değişti. Bu yüzden:
+- parite **yalnız POLICY kohortu** girişleri üzerinde ölçülür (öğrenme-ekstra, CAPACITY ve SELECTIVITY kohortları
+  dışarıda);
+- parite **her config dönemi için ayrı**, o dönemin parametreleriyle ölçülür;
+- kapı: ≥ 20 POLICY girişi olan **her** dönemde, canlı girişlerin ≥ %95'i yeniden üretilmeli (aynı bar, aynı yön) ve
+  eşleşen işlemlerde medyan |ΔR| ≤ 0,05 olmalı; < 20 girişli dönemler raporlanır ama kapıya girmez;
+- slot/teminat dolu olduğu için açılamayan politika girişleri ayrıca sayılır ve pariteden önce açıklanır.
+Bir defter kopyası lider tablosuna veya atıf tabanına ancak bu koşulla girer. Kopyalar `strategy_paper.apply_action` ile
+oynatılır; yürütme canlı defterlerle aynıdır.
 
 ### 6.3 Walk-forward protokolü (`PROMOTION_REGISTRY`'de mühürlü)
 
 | Konu | Kural |
 |---|---|
-| Katmanlar | `quant/walkforward.make_folds`, `validation_days > 0` ile üç yollu düzen; çapalı ve kayan. ≥ 1h taktikler: eğitim ≥ 365 g, test 90 g. 5m/15m taktikler: eğitim 120 g, doğrulama 30 g, test 14 g. Altın vadelileri: eğitim ≥ 180 g; uzun vekil olarak PAXG spot 2020+ ve Dukascopy (gold_v2 ön kaydına uygun: 2006–2020 keşif, 2020→ doğrulama) |
+| Katmanlar | `quant/walkforward.make_folds(validation_days > 0)` ile üç yollu düzen ve `run_three_way` (walkforward.py:320) sözleşmesi; çapalı ve kayan. ≥ 1h taktikler: eğitim ≥ 365 g, test 90 g. 5m/15m taktikler: eğitim 120 g, doğrulama 30 g, test 14 g. Altın vadelileri: eğitim ≥ 180 g; uzun vekil olarak PAXG spot 2020+ ve Dukascopy (gold_v2 ön kaydına uygun: 2006–2020 keşif, 2020→ doğrulama) |
 | Arındırma | purge/embargo = sinyal tf'sinin 1 barı + `max_hold` |
-| Kilitli bekletme | son 90 gün (`holdout_days`), yalnız Kapı A incelemesinde **bir kez** açılır; okuma koruması enstrümanlıdır |
+| Kayan "kilitli bekletme" yok | Önceki taslaktaki "son 90 gün, bir kez açılır" kuralı kaldırıldı: pencere kaydığı ve Kapı A'ya ulaşan her spec onu okuduğu için tek kullanımlık değildi. Yerine **mühür sonrası ileri veri** kullanılır: bir spec'in mühür anından (`T_seal`) sonra kapanan barlar, hiçbir spec seçiminde ve parametre aramasında görülmemiş tek veridir; bu veri keşif katmanında birikir (§6.8) ve Kapı A'nın tersine dönme denetimi olarak okunur (§6.7). Her okuma `trials.jsonl`'a yazılır. |
 | Parametre seçimi | yalnız eğitimde, ADVERSE maliyette en yüksek ortalama net R'a göre; sonra doğrulama ve test için dondurulur |
-| Maliyet | base = taker %0,05 × 2 + 3 bps kayma + gerçek fonlama; adverse = 2× kayma + 1 tick spread; stress = 3× kayma + %0,02 ek ücret |
+| Maliyet | base = taker %0,05 × 2 + 3 bps kayma + gerçek fonlama (gerçek uzlaşma zaman damgalarında); adverse = 2× kayma + 1 tick spread; stress = 3× kayma + %0,02 ek ücret |
 | Sızıntı | `leakage_check` geçmezse parça atılır (`LEAK`) |
 | Önbellek | sonuçlar (spec_sha, data_seal_month) ile anahtarlanır; her gece yalnız yeni katman hesaplanır |
 | Kaynak | `--jobs 1` (nproc ≥ 4 ise 2); bir seferde tek enstrüman × tf; < 1 GB |
 
-### 6.4 Çoklu test ve deneme defteri
+### 6.4 Çoklu test, tek istatistik ve deneme defteri
 
+- **Tek istatistik `p_day`.** Kapı A, Kapı B, Kapı C ve ders bakışları aynı istatistiği kullanır: H0 "ortalama net R
+  ≤ 0" için, **ADVERSE** maliyetle, **gün kümelenmeli** (günler yeniden örneklenir) tek yönlü bootstrap p-değeri (sabit
+  tohum, 10.000 yeniden örnekleme, sıfır-ortalamaya kaydırılmış dağılım). CI'lar yalnız gösterim içindir; kapılar
+  `p_day` ve bakış alfasıyla karar verir.
 - **`trials.jsonl`** yalnız eklenir, asla silinmez. Laboratuvarlar ve motor tarafından değerlendirilen her
-  spec × varyant × enstrüman × katman için bir satır tutulur: `registry_sha`, `data_seal`, `code_sha`, parametreler,
-  pencere, n, ortalama R, CI, hüküm, `cumulative_N`.
+  spec × varyant × enstrüman × katman için ve **her bakış** için bir satır tutulur: `registry_sha`, `data_seal`,
+  `code_sha`, parametreler, pencere, n, ortalama R, `p_day`, hüküm, `look_no`, `cumulative_N`, ileri veri okuması
+  (`fwd_read`) varsa onun kaydı.
 - **Geçmiş laboratuvar sonuçları** öncül deneme olarak içe alınır: `gold_v1` 0/32, crowd `fut_v2` 0/8, `book_v1`,
-  `gold_v2`. Böylece N'e sayılırlar ve körlemesine yeniden çalıştırılmazlar.
+  `gold_v2` (aile B 0/8 dahil). Böylece N'e sayılırlar ve körlemesine yeniden çalıştırılmazlar.
 - **Deflated Sharpe:** mevcut `tradingbot/validation.py` `deflated_sharpe` (satır 252) ve `probabilistic_sharpe`
-  **yeniden kullanılır**, N `trials.jsonl`'daki aile sayısıdır.
+  **yeniden kullanılır**. N, aile sayısı **değil**, `trials.jsonl`'daki **kümülatif varyant denemesi sayısıdır** (ham N;
+  başlık bunu kullanır). Korelasyon kümelemesiyle belgelenmiş bir etkin N (günlük getirilerin |ρ| > 0,7 hiyerarşik
+  kümelemesi; yöntem mühürlü) yalnız ikincil sütun olarak gösterilir ve hiçbir kapıda kullanılmaz.
+- **Kayıtlı bakışlar.** Kapı A her gece yeniden değerlendirilmez (bu, büyüyen veride isteğe bağlı durma olurdu). Kapı A
+  yalnız **ayda bir**, her ayın 5'inden sonraki ilk gecede (aylık arşivler yayımlandıktan sonra) değerlendirilir; her
+  değerlendirme `trials.jsonl`'a `look_no` ile yazılır. Arada gece değerleri yalnız "ara görünüm"dür.
 - **PBO henüz yok.** `quant/walkforward.fold_report` her zaman `pbo=None` döndürür (`pbo_state =
   "requires_candidate_matrix"` / `"not_computable"`). Varyant × katman matrisi üzerinde CSCV (16 blok) **yeni yazılır**
   ve önce cevabı bilinen sentetik veride test edilir. O zamana kadar PBO "hesaplanamaz" sayılır ve PBO gerektiren her
   kapı **kapalı kalır** (fail-closed).
 - Ek denetimler:
-  - BH-FDR (q = 0,10), aile kayıtta sabit;
+  - BH-FDR (q = 0,10), aile = o bakışta değerlendirilen bütün spec × enstrüman satırları; aile tanımı kayıtta sabit;
   - plasebo: zaman kaydırılmış veya işaret çevrilmiş sinyaller, aynı tutma süresiyle, geçmemeli;
   - haftalık White/Hansen SPA, "hiçbir şey yapma" ve "BTC/XAU al-tut" ölçütlerine karşı (P3 sonu, isteğe bağlı).
 
@@ -673,7 +965,7 @@ yeniden oynatınca canlı defterin girişlerinin ≥ %95'ini (aynı bar, aynı y
 
 Ham getiriyle değil DSR ile sıralanır. Her varyant × enstrüman ve varyant portföyü için şunlar gösterilir:
 - OOS n;
-- ortalama net R ve gün kümelenmeli CI;
+- ortalama net R, gün kümelenmeli CI ve `p_day`;
 - katmanların pozitif payı;
 - PBO (veya "hesaplanamaz");
 - plasebo farkı;
@@ -681,65 +973,78 @@ Ham getiriyle değil DSR ile sıralanır. Her varyant × enstrüman ve varyant p
 - en büyük düşüş;
 - günlük ortalama % (%0,5 riskte);
 - P(gün ≥ +%1);
-- k* ve iflas olasılığı (§7.6);
-- mevcut defterlerle korelasyon.
+- k* ve iflas olasılığı (§7.6; HİPOTETİK etiketiyle, **yalnız burada ve önerilerde**);
+- mevcut defterlerle korelasyon;
+- mühür sonrası ileri sonuç (keşif katmanından, §6.8).
 
-Hayatta kalma yanlılığı uyarısı ("hayatta kalan evren") her satırda durur. Gün gün evren anlık görüntüleri biriktikçe
-bu uyarı daralır.
+Hayatta kalma yanlılığı uyarısı ("hayatta kalan evren") her satırda durur; XSEC satırları zaman noktasında evren
+kurulana kadar "kapıya kapalı" yazar. Lider tablosunun ayrı bir **KEŞİF** bölümü vardır (§6.8).
 
-### 6.6 Kayıt-yalnız ileri adaylar (P4)
+### 6.6 Kayıt-yalnız ileri yeniden oynatma adayları (P4)
 
+- **Adı ve etiketi.** Bunlar canlı kâğıt işlem **değildir**: motor, depolanmış barlar üzerinde gece gece adım atar ve
+  dolumları modeller. Akış adı `PROSPECTIVE_REPLAY`, Türkçe etiketi "ileri yeniden oynatma (örneklem dışı) — gerçek
+  defter değil"dir.
 - Kapı A'yı geçen her varyant veya dersten türeyen aday, kendi atılabilir kâğıt defterini alır:
   `research/prospective/<id>/futures_ledger.json`. Defter worker'la aynı ücret/kayma/fonlama/likidasyon modelini
   kullanır.
 - Kurallar, adım atılacak barlar oluşmadan **önce** mühürlenir. Her gece, son çalıştırmadan beri kapanmış barlarda adım
   atılır; kararlar yalnız `close_time < adım zamanı` olan barları kullanır, dolum sonraki barın açılışında olur. Bu
   gerçek bir örneklem dışı testtir ve 1 günlük gecikmesi kaydedilir.
+- **Gerçekleşen maliyet = modellenen maliyet** (yapı gereği). Bu yüzden "gerçekleşen/modellenen maliyet oranı" bir kanıt
+  değildir ve kapıda kullanılmaz; yerine sonuç ADVERSE ve STRESS maliyet senaryolarında ileri pencerede ayakta kalmalıdır
+  (§6.7 Kapı B).
 - En fazla 20–40 aktif aday olur; gecede < 5 dk sürer.
-- **Altın ilk kez burada işlem görür.** XAUUSDT/PAXGUSDT adayları, altının ilk kâğıt kaydını verir.
-- Aday sonuçları canlı defter toplamına **asla** eklenmez. Panel ve özet onları "kayıt-yalnız aday — gerçek defter
+- XAUUSDT/PAXGUSDT adayları, keşif katmanından sonra altının ikinci kayıt-yalnız kaydını verir.
+- Aday sonuçları canlı defter toplamına **asla** eklenmez. Panel ve özet onları "ileri yeniden oynatma — gerçek defter
   değil" etiketiyle gösterir.
 - Önceden kayıtlı durdurma (yalnız sabit bakışlarda): ≥ 30 işlemden sonra ortalama R < −0,10; kayan 60 günlük ortalama
   R CI üst sınırı < 0; düşüş > 2 × geriye-test p95 düşüşü; günlük net R üzerinde CUSUM alarmı (h = 4σ).
 - **İsteğe bağlı saatlik adım (sonraki aşama).** Gece yolu VPS'te kararlı hale gelince, 5m taktiklerin gecikmesini
-  azaltmak için ayrı bir saatlik birim değerlendirilir. Bu birim ağsız olur ve gece birimiyle kilidi paylaşır (§2.4).
-  Bellek toplamı P0 kuralına göre yeniden hesaplanır.
+  azaltmak için ayrı bir saatlik birim değerlendirilir. Bu birim ağsız olur ve `analysis.lock`'u gece birimiyle paylaşır
+  (§2.4). Bellek toplamı P0 kuralına göre yeniden hesaplanır.
 
 ### 6.7 Terfi kapısı (`PROMOTION_REGISTRY`, ilk veri çalıştırmasından **önce** sha testte ve bu belgede sabitlenir)
 
-**Kapı A — çevrimdışı.** Hepsi gerekli:
-- ADVERSE maliyette OOS net ortalama R > 0 ve gün kümelenmeli CI95 alt sınırı > 0;
+**Kapı A — çevrimdışı; yalnız aylık kayıtlı bakışta.** Hepsi gerekli:
+- walk-forward OOS'ta `p_day` (ADVERSE) o bakışın BH ailesinde anlamlı (q = 0,10);
 - ≥ 100 OOS işlem ve ≥ 2 takvim yılı (altın vadelileri: ≥ 60 işlem ve ≥ 9 ay, `KISA_GEÇMİŞ` işaretli);
 - katmanların ≥ %60'ı pozitif;
 - PBO < 0,25 (hesaplanamazsa geçmez);
-- DSR olasılığı ≥ 0,95;
-- BH anlamlı;
+- DSR olasılığı ≥ 0,95, N = kümülatif ham varyant denemesi sayısı (§6.4);
 - plasebo farkı CI alt sınırı > 0;
-- kilitli bekletmede ortalama R ≥ 0;
+- **mühür sonrası ileri veri** (keşif katmanı): ≥ 60 gün (5m/15m taktikler: ≥ 30 gün) ve ≥ 20 işlem; ADVERSE
+  maliyette ortalama net R ≥ 0. Bu bir tersine dönme denetimidir, anlamlılık testi değildir; okuması `trials.jsonl`'a
+  yazılır;
 - tek bir enstrüman kârın en fazla %50'si olabilir (tasarım gereği tek enstrümanlı taktikler hariç; altında XAU ve PAXG
-  arasında tutarlılık aranır).
+  arasında tutarlılık aranır);
+- XSEC ailesi değilse veya zaman noktasında evren kurulmuşsa;
+- canlı bir defterin kopyası veya türevi ise kıyas aynı config dönemi içinde yapılır.
 
-Geçerse bir kayıt-yalnız ileri aday doğar. Bu otomatiktir, çünkü yalnız motorun kendi defterine yazar.
+Geçerse bir kayıt-yalnız ileri yeniden oynatma adayı doğar. Bu otomatiktir, çünkü yalnız motorun kendi defterine yazar.
 
-**Kapı B — ileri, kayıt-yalnız.** Hepsi gerekli:
-- ≥ 28 gün **ve** ≥ 50 kapanmış işlem (yavaş taktikler: ≥ 90 gün ve ≥ 30 işlem; altın: ≥ 60 gün ve ≥ 30 işlem);
-- ortalama net R > 0 ve Kapı A OOS CI'ının içinde (sapma denetimi);
-- son bakışta CI alt sınırı > −0,05R (n ≥ 100 ise > 0);
+**Kapı B — ileri, kayıt-yalnız; yalnız kayıtlı bakışlarda.** Bakışlar: 50, 100 ve 150 kapanmış işlem (yavaş taktikler
+ve altın: 30, 60, 90), alfa 0,01 / 0,015 / 0,025 (toplam 0,05). Bir bakışta hepsi gerekli:
+- en az süre: ≥ 28 gün (yavaş taktikler: ≥ 90 gün; altın: ≥ 60 gün);
+- ileri pencerede `p_day` (ADVERSE) ≤ bakışın alfası (yani pozitifliğin kanıtı; eski "CI alt sınırı > −0,05R" kuralı
+  kaldırıldı);
+- ileri pencerede STRESS maliyetiyle ortalama net R > 0 (maliyet senaryolarında ayakta kalma);
+- ortalama net R, Kapı A OOS CI'ının içinde (sapma denetimi);
 - düşüş ≤ 1,5 × geriye-test p95 düşüşü ve ≤ aday özsermayesinin %8'i;
 - likidasyon yok;
-- gerçekleşen maliyet ≤ 1,3 × modellenen maliyet;
-- fidelity ≥ %90;
+- nedensellik (zaman yolculuğu) testi geçer;
 - `DATA_STALE` günleri ≤ %10.
 
 **Kapı C — öneri.**
-- Öneriler ayda bir topluca hazırlanır: her ayın ilk UTC pazartesisi, o ayın Kapı B geçenlerine Holm (α = 0,05)
-  uygulanır.
-- Her öneri için `proposals/<id>.json` ve `.tr.md` yazılır. İçerik: kanıt paketi, kilitli bekletme sonucu, tam
+- Öneriler ayda bir topluca hazırlanır: her ayın ilk UTC pazartesisi. Aile = o ay herhangi bir Kapı B bakışı olan
+  **bütün** adaylar (yalnız geçenler değil); her birinin son bakıştaki `p_day`'ine Holm (aile genelinde α = 0,05)
+  uygulanır. Öneri için hem Kapı B hem Holm geçmelidir.
+- Her öneri için `proposals/<id>.json` ve `.tr.md` yazılır. İçerik: kanıt paketi, mühür sonrası ileri sonuç, tam
   kod/config farkı, işlem başı risk (başlangıç %0,25), kaldıraç tavanı, beklenen günlük % katkısı ve CI'ı, k* tablosu,
   önceden kararlaştırılmış durdurma kuralı, geri alma adımları.
 - Boş bir ay için dürüstçe "öneri yok" yazılır.
-- **Sahip karar verir.** Onay `engine-query --approve <id> --operator berke` ile kaydedilir. Onay tek başına canlıda
-  hiçbir şeyi değiştirmez; ayrı bir normal sürüm hazırlanır.
+- **Sahip karar verir.** Onay `engine-query --approve <id> --operator berke` ile kaydedilir (`approvals/approvals.jsonl`).
+  Onay tek başına canlıda hiçbir şeyi değiştirmez; ayrı bir normal sürüm hazırlanır.
 - Tercih edilen biçim **yeni bir kâğıt defterdir** (`strategy_paper_<id>`). Mevcut bir defterin değişmesi ayrı ve açık bir
   onay gerektirir.
 
@@ -747,63 +1052,118 @@ Geçerse bir kayıt-yalnız ileri aday doğar. Bu otomatiktir, çünkü yalnız 
 uyarısı verir. Otomatik geri alma yoktur; sahip karar verir. Mevcut defterler için de aynı kurallarla yalnız
 **düşürme önerisi** yazılır.
 
+### 6.8 Keşif katmanı (mühür sonrası ileri OOS; P3'ten itibaren; kayıt-yalnız, terfi yok)
+
+Sahibin "taktikleri ve varyasyonları gerçekten dene" isteği Kapı A'yı beklemez. Kapı A geçmiş laboratuvarlarda
+0/32, 0/8 ve 0/40 verdi; yalnız kapıya bağlı bir sistem neredeyse hiçbir şeyi ileride denemezdi.
+
+- **Kapsam:** `LIB_v1`'deki **her** varyant × uygun her enstrüman (altın dahil: XAUUSDT, PAXGUSDT vadeli, PAXG spot).
+- **Veri:** yalnız o LIB sürümünün mühür anından (`T_seal`) sonra kapanan barlar. Bu veri hiçbir seçimde görülmemiştir.
+- **Adım:** S4'te, yalnız yeni kapanmış barlarda, ileri yeniden oynatma ile aynı nedensellik kuralları (karar yalnız
+  kapanmış barlarla, dolum sonraki barın açılışında), base/ADVERSE/STRESS maliyetle. Her varyant × enstrüman için %0,5
+  sabit riskli sanal bir defter tutulur (günlük % için). Ek CPU yalnız yeni barlar kadardır; disk küçüktür.
+- **Çıktı (varyant × enstrüman başına):** n, ortalama net R (üç maliyetle), kümülatif R, %0,5 riskte günlük % serisi,
+  P(gün ≥ +%1), en büyük düşüş, mühürden bu yana gün sayısı. `source = EXPLORATION_FWD`.
+- **Gösterim:** lider tablosunun KEŞİF bölümü; `engine-query explore [--gold] [--variant <id>]`; özet yalnız şunu yazar:
+  ileri verisi olan varyant sayısı, medyan varyantın sonucu ve "N varyant arasından en iyi 5 — seçim yanlılığı, kanıt
+  değil" başlıklı kısa bir liste. Altın satırları ayrı gösterilir.
+- **Sınırlar:** keşif hiçbir şeyi terfi ettirmez, hiçbir hüküm kelimesi (`KANITLANDI`, `TUTTU`) üretmez, canlı toplama
+  girmez. Kapı A, keşif verisini yalnız kendi aylık bakışında tersine dönme denetimi olarak okur (§6.7). Terfi yolu
+  ayrıdır.
+- **Yeni LIB sürümleri** kendi `T_seal`'ından itibaren aynı biçimde birikir; eski sürümün ileri verisi yeni sürümün
+  seçiminde kullanılmışsa yeni sürüm için "görülmüş" sayılır.
+
 ---
 
 ## 7. Günlük ve aylık hedef ölçümü
 
-### 7.1 Tanımlar (`tgt_v1`, mühürlü; gün = 00:00–24:00 UTC)
+### 7.1 Tanımlar (`tgt_v1`, mühürlü)
 
-Üç akış vardır ve **asla toplanmaz**:
-- `LIVE_PAPER`: 8 mevcut defter;
-- `PROSPECTIVE_PAPER`: motor adayları;
+Dört akış vardır ve **asla toplanmaz**:
+- `LIVE_PAPER`: 8 mevcut defter (ana bot = `main_fut` + `main_spot`);
+- `PROSPECTIVE_REPLAY`: motorun ileri yeniden oynatma adayları;
+- `EXPLORATION_FWD`: keşif katmanı;
 - `BACKTEST`: walk-forward OOS.
+
+**Anlık görüntü ve pencere.** `S(D)`, D gününün gece çalıştırmasında (~01:37–01:45 UTC) alınan ölçülmüş anlık
+görüntüdür (§4.2). P1a'nın MTM günü `W(D) = (S(D), S(D+1)]` penceresidir (≈ D 01:40 → D+1 01:40 UTC); satır her zaman
+iki anlık görüntü zamanını yazar.
 
 | Büyüklük | Tanım |
 |---|---|
-| Gerçekleşmiş gün P&L | `pnl_real(kapsam, D)` = D içinde kapanan işlemlerin Σ `TradeRecord.pnl`'i (giriş/çıkış ücreti, modellenmiş kayma ve net fonlama dahil). Kesindir. |
-| MTM gün P&L (P2) | `pnl_mtm = pnl_real + ΔU`. U = 00:00 UTC'de açık pozisyonların gerçekleşmemiş kârı. Açık pozisyonlar `fills[]`'tan kalan miktarla kurulur (`opened_at ≤ t < closed_at`). Fiyat, store'un 00:00'daki 1m kapanışıdır; tarihsel mark fiyatı saklanmadığı için `LAST_PRICE_PROXY` etiketlidir. |
-| Gün başı özsermaye | `E_book(D)` **geriye doğru** kurulur: bugünkü cüzdan bakiyesinden D'den sonra gerçekleşen P&L ve cüzdan hareketleri çıkarılır (kapanış arşivi ve ledger kayıtları), üstüne 00:00'daki MTM eklenir. `starting_equity + geçmiş` ile ileri doğru kurmak rotasyonla kaybolan kayıtlar yüzünden yanlış olur. Açık pozisyon fonlamasının cüzdana yazılma anı bir fixture testiyle doğrulanır (§12). |
-| Toplam | `r_total(D) = Σ pnl / Σ E_book` (LIVE_PAPER) |
-| Defter | `r_book(D) = pnl_book / E_book` |
-| Enstrüman (katkı) | `r_inst(D) = Σ_defterler pnl(enstrüman) / E_total` (her coin, XAUUSDT, PAXGUSDT; altın toplamı ayrıca) |
-| Defter × enstrüman | `r_book_inst(D) = pnl / E_book` ("defter bazında" ikincil satır) |
+| Kayıt görünümü (gerçekleşmiş) | `pnl_rec(kapsam, D)` = UTC günü D'de (`closed_at`) kapanan kayıtların son revizyonlu Σ `TradeRecord.pnl`'i (vadeli + spot; giriş/çıkış ücreti, modellenmiş kayma ve net fonlama dahil). Geç fonlama `closed_at` gününe yazılır ve o günü REVİZE eder. **Açıklama içindir; hüküm vermez.** |
+| Cüzdan görünümü (gerçekleşmiş) | `pnl_wal(kapsam, W)` = W içinde **gözlenen** (`observed_at`) cüzdan hareketlerinin toplamı: PNL, FEE, FUNDING ("late funding" ve "funding reversal" dahil), LIQ_FEE, TAX. TRANSFER P&L değildir, özsermaye düzeltmesi olarak ayrı tutulur. TP1 kısmi çıkışları burada, kayıt oluşmadan önce görünür. Geç fonlama gözlendiği pencereye yazılır. |
+| Gerçekleşmemiş (`LEDGER_MARK`) | `U(S)` = anlık görüntüde açık pozisyonların gerçekleşmemiş kârı, **ledger'ın kendi** `positions[].last_price`'ıyla (store gerekmez). Spot varlıkların mark kaynağı sırası P1a'da bir fixture ile sabitlenir: (1) ana botun `position_path.jsonl`'ındaki ≤ 60 dk'lık son anlık görüntü, (2) worker HistoryStore'unda varsa son kapanmış spot barı (salt-okunur), (3) aynı sembolün herhangi bir vadeli ledger'daki `last_price`'ı (`PERP_PROXY`). Hiçbiri yoksa o defterin MTM'i `EKSİK`'tir. Mark kaynağı ve yaşı satırda yazar. |
+| MTM gün P&L (hüküm görünümü) | `pnl_mtm(W) = E(S(D+1)) − E(S(D)) − TRANSFER(W) = pnl_wal(W) + ΔU`. Uzlaştırma bu eşitliği her gece 1e-6 ile denetler (§4.2). |
+| Gün başı özsermaye | `E_book(S)` = `wallet_balance + U(S)` (spot: `cash + locked_cash + Σ assets × mark`), P1a'dan itibaren **MEASURED**. Ana bot = iki alt defterin toplamı. P1a'dan önceki günler: arşivlenmiş hareketler kapsıyorsa geriye doğru `RECONSTRUCTED`, kapsamıyorsa `EKSİK`; asla "kesin" değil. |
+| UTC günü MTM (P2) | `E(00:00 D)` = 00:00'daki cüzdan (arşivlenmiş hareketlerden) + store'un 00:00 1m kapanışıyla `U` (`LAST_PRICE_PROXY`). 14 gün boyunca W-günüyle yan yana gösterilir; sonra başlık UTC gününe geçer ve sürüm `tgt_v2` olarak mühürlenir. |
+| Toplam | `r_total = Σ pnl_mtm / Σ E_book` (LIVE_PAPER) |
+| Defter | `r_book = pnl_mtm_book / E_book` |
+| Enstrüman — toplam payda | `r_inst = Σ_defterler pnl_mtm(enstrüman) / E_total`: "toplam sermayeye katkı" (her coin, XAUUSDT, PAXGUSDT; altın toplamı ayrıca) |
+| Enstrüman — defter payda | `r_book_inst = pnl_mtm(defter, enstrüman) / E_book`: "kendi defterinin sermayesine göre" |
 | Marj üzerinden getiri | yalnız dipnot: "kaldıraçlı, hedef değil" |
 
-Her satır şunları da taşır: işlem sayısı, ücret/kayma/fonlama toplamları, Σ net R, 00:00'da açık pozisyonlar,
-`data_completeness`. Verisi eksik gün **EKSİK** işaretlenir ve hükümlerden çıkarılır; sıfır sayılmaz.
+- Enstrüman MTM'i: hareketin `ref_id`'si pozisyon/kayıt üzerinden sembole bağlanır; bağlanamayan hareket "enstrüman
+  bilinmiyor" satırına gider ve sayısı gösterilir.
+- Her satır şunları da taşır: işlem sayısı, ücret/kayma/fonlama toplamları, Σ net R (vadeli; R'sı olmayan spot işlem
+  sayısı ayrıca), anlık görüntüde açık pozisyonlar, `data_completeness`, durum (`GEÇİCİ` / `KESİN` / `REVİZE` / `EKSİK`),
+  iki anlık görüntü zamanı, mark kaynağı.
+- **Kesinleşme (§4.2):** satır en az 3 gün ve fonlama kapsaması tamamlanana kadar GEÇİCİ'dir; hükümler yalnız KESİN
+  günleri kullanır. Verisi eksik gün **EKSİK** işaretlenir ve hükümlerden çıkarılır; sıfır sayılmaz.
 
-**Altın.** Bugün hiçbir canlı defter altın işlemiyor. `LIVE_PAPER`'da altın satırı "işlem yok" yazar. Altın yalnız
-ayrı `PROSPECTIVE_PAPER` akışında görünür, ta ki sahip bir altın defterini onaylayana kadar.
+**Altın.** Bugün hiçbir canlı defter altın işlemiyor. `LIVE_PAPER`'da altın satırı "işlem yok" yazar. Altın
+`EXPLORATION_FWD` (P3) ve `PROSPECTIVE_REPLAY` (P4) akışlarında, "canlı değil" etiketiyle görünür; sahip bir altın
+defterini onaylayana kadar böyle kalır.
 
-### 7.2 Gün isabeti
+### 7.2 Gün isabeti (yalnız KESİN günler, MTM görünümü)
 
 - `TOTAL_HIT(D) := r_total(D) ≥ %1,00`.
-- `SINGLE_HIT(D) := max_i r_inst(D) ≥ %1,00` (hangi enstrüman olduğu yazılır).
+- `SINGLE_HIT(D) := max_i r_inst(D) ≥ %1,00` (hangi enstrüman olduğu yazılır). **Payda:** sahip §12 soru 12'yi
+  cevaplayana kadar hüküm paydası `E_total`'dır (`r_inst`); `r_book_inst` her zaman yanında etiketiyle gösterilir.
+  Özetteki "en iyi enstrüman" **hükümle aynı paydayı** kullanır.
 - `DAY_HIT(D) := TOTAL_HIT veya SINGLE_HIT` (sahibin "veya"sı açık hale getirilmiştir).
-- **Seçim yanlılığı koruması.** ~42 enstrümanın maksimumu şansla şişer. Her gün o günün işlem sonuçlarının işaretleri
-  rastgele çevrilerek (1000 çekim) "bir enstrümanın şansla +%1'e ulaşma olasılığı" hesaplanır ve gözlenen isabet oranının
-  yanında **beklenen şans oranı** olarak gösterilir.
+- **Seçim yanlılığı koruması.** ~42 enstrümanın maksimumu şansla şişer. Her gün o günün işlem sonuçlarıyla (1000 çekim)
+  "bir enstrümanın şansla +%1'e ulaşma olasılığı" hesaplanır ve gözlenen isabet oranının yanında **beklenen şans
+  oranı** olarak gösterilir. İki sıfır hipotezi vardır:
+  - **başlık (muhafazakâr):** net sonuçların işaretleri rastgele çevrilir (net sonuçların sıfır etrafında simetrik
+    olduğu varsayılır); bu, şans oranını daha yüksek verir;
+  - **ikincil (maliyet bilinçli):** brüt sonuçların işaretleri çevrilir, sonra gerçek maliyet düşülür (dağılım ortalama
+    maliyet kadar negatife kayar).
+  Başlığın hangisini kullandığı satırda yazar.
 
 ### 7.3 Hüküm kuralları (mühürlü, Türkçe, aynen gösterilir)
 
+**Kayıtlı bakışlar.** Hükümler her gün yeniden hesaplanmaz (bu, kayan pencerede tekrarlı test olurdu). Hüküm yalnız
+**aylık bakışta** üretilir: her ayın 3. UTC gününden sonraki ilk gece (önceki ayın günleri kesinleşmiş olsun diye). Pencere
+= son 60 KESİN gün.
+
+**İstatistik.** `p_tgt` = H0 "ortalama günlük % ≤ %1,00" için 5 günlük blok-bootstrap tek yönlü p-değeri (MTM
+görünümü). Bakış alfası `α_bakış = 0,05 / 12` (yıllık 0,05 hata bütçesi 12 aylık bakışa eşit bölünür).
+
+**Hüküm ailesi ve Holm.** Holm düzeltmesi bakıştaki **bütün hüküme uygun kapsamlar** üzerinde uygulanır, yalnız
+enstrümanlar arasında değil:
+- sahip §12 soru 4'te önceden bir enstrüman bildirdiyse hükme uygun kapsamlar yalnız {toplam, bildirilen enstrüman}'dır;
+  diğer defter ve enstrümanlar yalnız tanımlayıcıdır;
+- bildirmediyse hükme uygun kapsamlar: toplam + 8 defter + bütün enstrümanlar + altın toplamı.
+
 | Hüküm | Koşul |
 |---|---|
-| `HEDEF GÜNÜ` | tek bir günde `DAY_HIT`. Sayılır, **asla başarı denmez**. |
-| `HEDEF KANITLANDI (PAPER)` | kapsam için **hepsi**: kayan 60 günlük ortalama günlük %'nin blok-bootstrap (5 günlük bloklar) **CI95 alt sınırı ≥ %1,00**; 60 günde ≥ 40 tam gün; ≥ 30 kapanmış işlem; tek bir gün pencere toplamının en fazla %25'i; ayrıca yalnız-gerçekleşmiş hesapla da aynı koşul sağlanmalı. |
-| `HEDEF YOLUNDA (umut verici)` | nokta ortalaması ≥ %1,00, ama CI alt sınırı < %1,00 |
+| `HEDEF GÜNÜ` | tek bir KESİN günde `DAY_HIT`. Sayılır, **asla başarı denmez**. |
+| `HEDEF KANITLANDI (PAPER)` | bakış gecesinde, hükme uygun bir kapsam için **hepsi**: Holm-düzeltmeli `p_tgt` ≤ `α_bakış` (eşdeğer olarak Holm-düzeltmeli tek yönlü güven sınırı ≥ %1,00); 60 günde ≥ 40 tam KESİN gün; ≥ 30 kapanmış işlem; tek bir gün pencere toplamının en fazla %25'i; ayrıca yalnız-gerçekleşmiş (cüzdan görünümü) hesapla da aynı koşul sağlanmalı. |
+| `HEDEF YOLUNDA (umut verici)` | bakışta nokta ortalaması ≥ %1,00, ama KANITLANDI koşulları sağlanmıyor |
 | `HEDEFİN ALTINDA` | diğer durumlar (açık fark ile) |
 | `VERİ YETERSİZ` | asgari koşullar sağlanmıyor |
 
-- **Tek enstrüman yolu.** Bir enstrüman ancak şu iki yoldan biriyle `KANITLANDI` olabilir:
-  1. **önceden seçilmişse**: sahip enstrümanı kayıtta önceden bildirir (§12);
-  2. veya tüm enstrümanlar arasında Holm düzeltmesinden sonra kendi 60 günlük CI alt sınırı ≥ %1,00 ise.
-  Geriye dönük "en iyi enstrüman" yalnız Holm düzeltmeli gösterilir.
-- `PROSPECTIVE_PAPER` ve `BACKTEST` aynı tabloyu büyük bir "canlı değil" etiketiyle alır; **asla** `KANITLANDI`
-  üretemez.
-- Bu kuralların hepsi bir özellik testiyle (property test) korunur: 40 tam günden az veya CI alt sınırı < %1 iken
-  `KANITLANDI` çıkamaz.
+- **Bakışlar arası.** Özet "son bakış hükmü (tarih)" ile birlikte "ara görünüm: 60g ort. x% [CI …] — hüküm değildir"
+  yazar; ara görünümde hüküm kelimesi kullanılmaz.
+- Geriye dönük "en iyi enstrüman" yalnız Holm düzeltmeli gösterilir.
+- `PROSPECTIVE_REPLAY`, `EXPLORATION_FWD` ve `BACKTEST` aynı tabloyu büyük bir "canlı değil" etiketiyle alır; **asla**
+  `KANITLANDI` üretemez.
+- Bu kuralların hepsi bir özellik testiyle (property test) korunur: `KANITLANDI` yalnız bakış gecesinde, yalnız KESİN
+  günlerle, yalnız hükme uygun kapsamda ve yalnız `LIVE_PAPER`'da çıkabilir; 40 KESİN günden az iken, Holm-düzeltmeli
+  `p_tgt` > `α_bakış` iken veya yalnız-gerçekleşmiş satırdan asla çıkamaz.
 
-### 7.4 Kayan istatistikler (7/30/60/90 gün)
+### 7.4 Kayan istatistikler (7/30/60/90 gün; yalnız KESİN günler, ara görünüm)
 
 - isabet günü sayısı ve oranı (Wilson CI) ile beklenen şans oranı;
 - aritmetik ve geometrik (bileşik) ortalama;
@@ -815,7 +1175,7 @@ ayrı `PROSPECTIVE_PAPER` akışında görünür, ta ki sahip bir altın defteri
 ### 7.5 Aylık hedef
 
 - Mevcut `bot_scorecard.py` "AYLIK HEDEF" bloğu korunur: ayda en az +%1 net, her defter kendi kâğıt bakiyesinde
-  (`MONTHLY_TARGET_PCT = 1.0`).
+  (`MONTHLY_TARGET_PCT = 1.0`). Ana botun spot defteri bu bloğa eklenir.
 - Motor aynı aylık hesabı enstrüman ve toplam için de raporlar.
 - Günlük hedef aylık hedefin ~30 katıdır. Bu oran raporda açıkça yazılır.
 
@@ -826,18 +1186,31 @@ Her lider tablosu varyantı ve kanıtlı her kapsam için şunlar hesaplanır:
 - k* altında benzetilen en büyük düşüş;
 - bir yıl içinde %50 düşüş olasılığı (günlük getirilerin blok bootstrap'i).
 
-Bu satır "HİPOTETİK — gerçekleşmedi" etiketiyle gösterilir. "Kaldıracı artır" cevabının iflas maliyetini görünür kılar.
-Motor kaldıraç değişikliğini **asla** önermez.
+Bu satır "HİPOTETİK — gerçekleşmedi" etiketiyle **yalnız lider tablosunda ve öneri belgelerinde** gösterilir; özet
+başlığında, `engine-status --brief`'te ve `--check` özetinde yer almaz. Böylece sahibin ilk okuduğu şey asla "kaldıracı
+artır" olmaz. Tablo, "kaldıracı artır" cevabının iflas maliyetini görünür kılar. Motor kaldıraç değişikliğini **asla**
+önermez.
 
 ### 7.7 Nerede görünür
 
 | Yer | Ne zaman | İçerik |
 |---|---|---|
-| `scripts/bot_scorecard.py --daily [--days N] [--out]` | **P1** | yalnız-gerçekleşmiş, salt-okunur, doğrudan ledger'lardan bağımsız hesap (sahip motor olmadan doğrulayabilsin diye); "GÜNLÜK HEDEF" bloğu "AYLIK HEDEF"in yanında; eski D4 etiketi ("Trend 4h …") "D4 Donchian 4h" olarak düzeltilir. Engine-app checkout'undan çalışır, app sürümü gerekmez. |
-| `engine-status --brief` | **P1** | ≤ 60 satır: veri tazeliği, son çalıştırma, günlük hedef tablosu |
-| Sürüm betiği `--check` › "GECE ÖĞRENME MOTORU" › "GÜNLÜK HEDEF" | **P1** | son 7 gün toplam + defter, en iyi enstrüman ve şans oranı, 30/60 g hükümleri |
-| `digest_tr.md` başlık satırı | P1 | "Dün: toplam +x,xx% (hedef %1: TUTMADI/TUTTU); en iyi enstrüman Y +z,zz% (şans oranı …); 60g ort. … [CI …] → HEDEFİN ALTINDA" |
-| Panel `/hedef` ("Günlük hedef ve öğrenme") | **bir sonraki normal worker/dashboard sürümüyle** | tablo + 90 günlük çubuk grafik (r_total ve en iyi enstrüman, %1 çizgisine karşı), altın satırı, ayrı aday bölümü, rapor yaşı, "> 24s ESKİ RAPOR", şerit "tanımlayıcı; karar yok; kanıt değil; PAPER" |
+| `scripts/bot_scorecard.py --daily [--days N] [--out]` | **P1a** | gerçekleşmiş (kayıt + cüzdan görünümü) ve gerçekleşmemiş (`LEDGER_MARK`) yan yana; salt-okunur, motordan bağımsız hesap (sahip motor olmadan doğrulayabilsin diye); **`state/spot_ledger.json` dahil** ("Ana bot · spot" satırı); "GÜNLÜK HEDEF" bloğu "AYLIK HEDEF"in yanında; eski D4 etiketi ("Trend 4h …") "D4 Donchian 4h" olarak düzeltilir. Engine-app klonundan çalışır, app sürümü gerekmez. |
+| `engine-status --brief` | **P1a** | ≤ 60 satır: son çalıştırma, öz-denetim sonucu, SKEW, rotasyon payları, günlük hedef tablosu (GEÇİCİ/KESİN), A/B durumu; P1b'den veri tazeliği |
+| Motor sürüm betiği `--check` › "GECE ÖĞRENME MOTORU" › "GÜNLÜK HEDEF" | **P1a** | son 7 gün toplam + defter (durum etiketiyle), en iyi enstrüman (hüküm paydasıyla) ve şans oranı, son bakış hükmü; k* yok |
+| `digest_tr.md` başlık satırları | P1a | aşağıdaki biçim |
+| Panel `/hedef` ("Günlük hedef ve öğrenme") | **bir sonraki normal worker/dashboard sürümüyle** | tablo + 90 günlük çubuk grafik (r_total ve en iyi enstrüman, %1 çizgisine karşı), altın satırı, ayrı aday ve keşif bölümleri, rapor yaşı, "> 24s ESKİ RAPOR", şerit "tanımlayıcı; karar yok; kanıt değil; PAPER" |
+
+**Özet başlık biçimi (P1a).** Yalnız-gerçekleşmiş bir satırda `TUTTU` veya `HEDEF GÜNÜ` kelimesi **asla** kullanılmaz;
+her gerçekleşmiş sayının yanında açık pozisyonların gerçekleşmemiş kârı yazar.
+
+```
+Dün (GEÇİCİ · W 10-04 01:41 → 10-05 01:40 UTC): MTM toplam +x,xx% (LEDGER_MARK) · gerçekleşmiş +y,yy% · açık gerçekleşmemiş −z USDT (−w,ww%)
+  en iyi enstrüman Y +a,aa% (payda: toplam sermaye; kendi defterine göre +b,bb%) · beklenen şans oranı %c (işaret çevirme)
+  %1'e göre: altında (geçici; kesinleşme 10-07)
+Son kesin gün 10-01: MTM +… → HEDEF GÜNÜ: hayır
+Son bakış 10-04: toplam → VERİ YETERSİZ (12 KESİN gün / 40) · ara görünüm 60g ort. … [CI …] — hüküm değildir
+```
 
 Panel sayfası dashboard'un çalıştığı `/opt/tradingbot/app`'ten servis edilir. Bu yüzden motor-yalnız bir sürümle
 gelemez. Worker çalışırken app ağacını ff-merge etmek güvensizdir, çünkü `engine_v3` modülleri tembel import eder ve
@@ -851,13 +1224,14 @@ Sayfanın davranışı:
 - Dosya yoksa kart çıkmaz ve sayfa bayt-özdeş kalır.
 - Dashboard birimi zaten `ReadOnlyPaths=/opt/tradingbot/data` ile çalışır.
 
-Bir kabul testi `daily_target` ile `scorecard --daily`'nin aynı sayıyı verdiğini denetler.
+Bir kabul testi `daily_target` ile `scorecard --daily`'nin aynı sayıları (kayıt, cüzdan, gerçekleşmemiş; spot dahil)
+verdiğini denetler.
 
 ---
 
-## 8. Token planı
+## 8. Token planı (dürüst)
 
-**Hedef:** rutin öğrenme 0 AI token ve 0 tekrarlı indirme.
+**Hedef:** rutin öğrenme 0 AI token ve 0 tekrarlı indirme. Kod değişiklikleri ucuz değildir; bu ayrıca yazılır.
 
 1. **Veri kalıcı.** Tüm veri VPS'te kalır (`store`, `archive_cache`, `dukascopy`). İlk doldurmadan sonra yalnız günlük
    fark iner. Rutin iş için GitHub Actions laboratuvar çalıştırmaları ve scratchpad önbellekleri bırakılır.
@@ -866,24 +1240,31 @@ Bir kabul testi `daily_target` ile `scorecard --daily`'nin aynı sayıyı verdi�
 3. **AI yalnız şunları okur** (sahip yapıştırır):
    - `engine-status --brief` (≤ 60 satır) veya `summary/digest_tr.md` (≤ 8 KB, ≈ 2,5k token);
    - belirli bir soru için `engine-query <konu>` (≤ 4 KB / ≤ 150 satır): `lessons --scope`, `trials --like <fikir>`,
-     `challenger <id>`, `proposal <id>`, `day <tarih>`, `trade <trade_key>`, `why-lost <defter>`;
+     `explore`, `challenger <id>`, `proposal <id>`, `day <tarih>`, `trade <trade_key>`, `why-lost <defter>`;
    - bir önerinin `PROPOSAL.tr.md`'si (≤ 10 KB).
    AI ham günlüğü, yolları, geriye-test ayrıntısını veya store'u **asla** okumaz.
 4. **Önce deneme defteri.** Bir AI oturumu yeni bir şey önermeden önce `engine-query trials --like <fikir>` çalıştırır;
    aynı mühürle zaten test edilmiş fikri yeniden önermez. Bu kural `CLAUDE.md`/belgelere yazılır.
-5. **AI'nın görevleri yalnız şunlardır:**
-   - haftalık özet ve öneri incelemesi (oturum başına ≈ 10–40k token);
-   - yeni kütüphane girdisi veya atıf kodu yazan küçük kod PR'ları (≈ 50–150k token / fikir);
-   - Türkçe öneri belgeleri;
-   - `run_status.json`'dan arıza teşhisi.
-6. **Oturum kuralları.** Claude oturumları piyasa verisi **indirmez**; testler `tests/fixtures` altındaki küçük
+5. **Gerçek maliyetler:**
+   - haftalık özet okuma: ≈ 5k token/hafta (gerçekçi);
+   - haftalık özet ve öneri incelemesi oturumu: ≈ 10–40k token;
+   - **her kod sürümü** (yeni kütüphane girdisi, atıf kodu, motor aşaması): kod PR'ı + bu projenin çok turlu karşıt
+     incelemeleri + sahte VPS geçişi + sürüm betiği; gözlenen maliyet **sürüm başına ≈ 10⁵–10⁶+ token**'dır (önceki
+     taslaktaki "50–150k / fikir" tahmini gerçekçi değildi);
+   - Türkçe öneri belgeleri ve `run_status.json`'dan arıza teşhisi: oturum başına ≈ 10–50k.
+6. **Kadans ve bütçe.**
+   - Yeni fikirler tek tek PR olmaz; **ayda bir LIB sürümünde** toplanır (`LIB_v1`, `LIB_v1.1`, …).
+   - Sürüm başına bütçe: ≤ 1,5M token (inceleme turları dahil); aşılırsa kapsam küçültülür, inceleme atlanmaz.
+   - Motor aşamaları (P1a, P1b, P2, …) birer sürümdür ve her biri bu bütçeye tabidir.
+7. **Oturum kuralları.** Claude oturumları piyasa verisi **indirmez**; testler `tests/fixtures` altındaki küçük
    sentetik verilerle çalışır. Gerçek veri gerektiren laboratuvarlar VPS'te sahibin komutuyla
    (`--cache /opt/tradingbot/data/research/archive_cache --offline`) veya kayıt girdisi eklendikten sonra gece
    çalıştırıcısıyla koşar.
-7. **Boyut sınırları.** Özet ve sorgu çıktı boyut sınırları testlerle zorlanır.
+8. **Boyut sınırları.** Özet ve sorgu çıktı boyut sınırları testlerle zorlanır.
 
-**Beklenen tasarruf:** oturum başına O(100k–1M token + indirme süresi) yerine haftada O(5k token) okuma, artı gerçek
-yeni fikir oturumları.
+**Beklenen tasarruf (dürüst):** rutin "ne oldu, neden" soruları için oturum başına O(100k–1M token + indirme süresi)
+yerine haftada O(5k token) okuma. Yeni fikirler ise ucuzlamaz: ayda bir LIB sürümü ≈ 10⁵–10⁶ token tutar. Kazanç,
+aynı fikrin yeniden test edilmemesinden (deneme defteri) ve verinin yeniden indirilmemesinden gelir.
 
 ---
 
@@ -893,49 +1274,63 @@ yeni fikir oturumları.
 
 | Öğe | Durum | Onay |
 |---|---|---|
-| Veri deposu, günlük, atıf, dersler (`APPLIED_BOUNDED` hariç), lider tablosu, günlük hedef | kayıt-yalnız; hiçbir karar yolu okumaz (AST testi) | sürüm onayı (her sürüm gibi) |
-| İleri adaylar (motorun kendi kâğıt defterleri) | kayıt-yalnız; canlı toplamlara eklenmez | Kapı A'dan otomatik doğar; `PROMOTION_REGISTRY` metni sahibin onayıyla mühürlenir (P4 öncesi) |
+| Kapanış/hareket arşivi, anlık görüntüler, veri deposu, günlük, atıf, dersler (`APPLIED_BOUNDED` hariç), lider tablosu, keşif katmanı, günlük hedef | kayıt-yalnız; hiçbir karar yolu okumaz (AST testi) | sürüm onayı (her sürüm gibi) |
+| İleri yeniden oynatma adayları (motorun kendi kâğıt defterleri) | kayıt-yalnız; canlı toplamlara eklenmez | Kapı A'dan otomatik doğar; `PROMOTION_REGISTRY` metni sahibin onayıyla mühürlenir (P4 öncesi) |
 | Öneri dosyaları | yalnız metin + kanıt | — |
 | Yeni kâğıt defter (onaylı öneriden) | canlı PAPER | **sahibin açık onayı** + normal sürüm |
 | Mevcut bir defterin herhangi bir kararı | — | **ayrı, açık sahip onayı**; motor bunu asla otomatik yapmaz |
 | Worker'a kayıt-yalnız alan ekleme (P6) | karar değişmez | **sahibin açık onayı** (worker kodu değişir, yeniden başlatma gerekir) |
 | Telegram "günlük rapor hazır" | kapalı | config değişikliği → onay |
-| `research_enabled=True` (ResearchCoordinator) | **mevcut sistem**: `engine_v3:1915` ana bot girişlerinde filtre/küçültme politikasını otomatik etkinleştirebilir (`PAPER_RESEARCH_ACTIVE`) | **P0'da sahibin açık kararı**: önceden onaylı mı, yoksa ayrı onaylı bir değişiklikle kapatılsın mı. Motor buna dokunmaz. Bu karar verilmeden "hiçbir şey otomatik uygulanmaz" iddiası tüm sistem için doğru değildir. |
+| `research_enabled=True` (ResearchCoordinator) | **mevcut sistem**: `engine_v3:1915` ana bot girişlerinde filtre/küçültme politikasını otomatik etkinleştirebilir (`PAPER_RESEARCH_ACTIVE`) | **P0'da sahibin açık kararı**: önceden onaylı mı, yoksa ayrı onaylı bir değişiklikle kapatılsın mı. Motor buna dokunmaz; etkinleştirme sayısı `--check`'te raporlanır (§2.9). Bu karar verilmeden "hiçbir şey otomatik uygulanmaz" iddiası tüm sistem için doğru değildir. |
 
 ### 9.2 Sert kurallar (testlerle)
 
 | Kural | Nasıl korunur |
 |---|---|
-| Yalnız PAPER | S0 doğrular; `ALLOW_LIVE_TRADING=false` |
+| Yalnız PAPER | S0 doğrular (`state/mode.json`); `ALLOW_LIVE_TRADING=false` |
 | Sır yok | `EnvironmentFile` yok; özetlerde sır yok |
-| State'e yazma yok | çekirdek (`ReadOnlyPaths`) + açma modu denetimi |
+| State'e yazma yok | çekirdek (`ReadOnlyPaths`) + **S0 çalışma zamanı denemesi** + açma modu denetimi + `find_books`/spot yolları özellik testi |
+| Ağ yalnız veri biriminde | `PrivateNetwork=yes` gece biriminde; birim sözleşme testi; **S0 soket denemesi** |
+| Bellek sınırı gerçekten uygulanıyor | S0 cgroup `memory.max` denetimi |
 | Worker deposuna yazma yok | ayrı `ResearchStore` kökü |
-| Config değişmez | sürüm değişmezi: `config.yaml` baytları değişmemiş olmalı |
-| Ağ yalnız data biriminde | `PrivateNetwork=yes` gece biriminde; birim sözleşme testi |
-| Zaman pencereleri | `OnCalendar` UTC ve pencere dışı; birim sözleşme testi |
-| Mühürler | `attribution_v1`, `cfgrid_v1`, `LIB_v1`, `PROMOTION_REGISTRY`, `tgt_v1` sha'ları testte ve bu belgede sabit; sha değişirse CI kırılır |
+| Config değişmez ve kayma motoru kırmaz | sürüm değişmezi: `config.yaml` baytları değişmemiş olmalı; motor `load_config`/`load_v3` çağırmaz (AST testi); SKEW denetimi |
+| Karar modülleri motoru import etmez | genişletilmiş AST listesi (§2.8); `cli.py`/`cli_v3.py`'de üst düzey import yok |
+| SQLite'a dokunulmaz | `sqlite3` import yasağı (AST) |
+| Zaman pencereleri | `OnCalendar` UTC ve 4h pencereleri dışı; birim sözleşme testi; yedek çakışması durumla denetlenir |
+| Mühürler | `attribution_v1`, `cfgrid_v1`, `LIB_v1`, `PROMOTION_REGISTRY`, `tgt_v1`, `config_epochs` sha'ları testte ve bu belgede sabit; sha değişirse CI kırılır |
 
-### 9.3 Birim kurulum güvenliği (daemon-reload)
+### 9.3 Birim kurulum güvenliği (daemon-reload) ve ilk çalıştırma
 
 - Depodaki worker birimi `MemoryMax=4G` der; VPS'te 6G override vardır. `daemon-reload` (`enable`'ın örtük reload'u
   dahil) bu kaymayı uygulayabilir.
 - Kurulum adımı bu yüzden kapılıdır:
   1. worker ve dashboard için `NeedDaemonReload=no` ve worker `MemoryMax=6G` doğrulanır;
-  2. `install -m0644` ile birimler kurulur;
-  3. `daemon-reload` yapılır;
-  4. `MemoryMax=6G` **yeniden** doğrulanır (değilse betik hemen geri alır ve durur);
-  5. `enable --now` zamanlayıcılar;
-  6. `is-enabled` ve `is-active` doğrulanır.
+  2. `/opt/tradingbot/engine-app` ayrı klon olarak kurulur veya sabitlenir; `python -m compileall` ile önceden derlenir;
+  3. `/opt/tradingbot/data/research` (ve `locks/`, `backup/`) `install -d -o tradingbot -g tradingbot -m0750` ile
+     oluşturulur (yoksa `226/NAMESPACE`);
+  4. `install -m0644` ile birimler kurulur;
+  5. `daemon-reload` yapılır;
+  6. `MemoryMax=6G` **yeniden** doğrulanır (değilse betik hemen geri alır ve durur);
+  7. **elle smoke çalıştırma:** `systemctl start tradingbot-engine-night.service` (P1b'de veri birimi için de) bir kez
+     elle çalıştırılır; çıkış kodu 0, `run_status.json`'da öz-denetim `OK`, `226/NAMESPACE` yok, beklenen dosyalar
+     oluşmuş olmalıdır; değilse zamanlayıcı **etkinleştirilmez**;
+  8. ancak bundan sonra `enable --now` zamanlayıcılar;
+  9. `is-enabled` ve `is-active` doğrulanır.
 - `setup_vps_v3.sh` asla yeniden çalıştırılmaz.
-- P1'de iki birim **bir kez** kurulur. Sonraki aşamalar yalnız engine-app sabitini (pin) taşır; birim dosyası
-  değişmezse yeniden reload gerekmez.
+- P1a'da gece birimi, P1b'de veri birimi **bir kez** kurulur. Sonraki aşamalar yalnız engine-app sabitini (pin) taşır;
+  birim dosyası değişmezse yeniden reload gerekmez.
+- **VPS'te pytest yoktur.** Sürüm betiğinin `--dry-run`'ı depo testlerini koşamaz; f8b05fb'nin #46–#48 değişmezleri gibi
+  **bağımsız koşucular** (ayrı süreç, servis ortamı aktarılmadan, küçük yerine-geçenlerle) kullanılır.
+- **Küçük, ayrılmış sürüm betiği.** 4.716 satırlık `tb-deploy-f8b05fb.sh` kopyalanmaz. Motorun kendi betiği
+  (`deploy/releases/tb-engine-<sha7>.sh`) yalnız motor adımlarını içerir: `--dry-run`, deploy, `--check`, `--ab-report`,
+  `--rollback`; hedef < ~800 satır.
 
 ### 9.4 Kapatma düğmeleri
 
-- Anında durdurma: `sudo systemctl disable --now tradingbot-engine-data.timer tradingbot-engine-night.timer`.
-  Veri yerinde kalır.
-- Tam geri alma: zamanlayıcıları kapat, birim dosyalarını sil, (kapılı) `daemon-reload`, `/opt/tradingbot/engine-app`'i
-  kaldır.
+- Anında durdurma: `sudo systemctl disable --now tradingbot-engine-night.timer` (P1b'den sonra
+  `tradingbot-engine-data.timer` da). Veri yerinde kalır.
+- Tam geri alma: zamanlayıcıları kapat, birim dosyalarını sil, (kapılı) `daemon-reload`, `/opt/tradingbot/engine-app`
+  klonunu kaldır. `data/research` kalır (sahip isterse ayrıca silinir; önce yedeği alınır).
 - Disk koruması: 20 GB üstünde motor kendiliğinden çalışmayı reddeder.
 - Tek bir adayı durdurmak: `engine-query --retire <id> --operator berke`.
 
@@ -944,11 +1339,12 @@ yeni fikir oturumları.
 ## 10. Aşamalı teslim
 
 Her aşama tek bir dry-run, tek bir deploy ve günlük `--check` ile yürütülür. Sahip her VPS komutunu kendisi çalıştırır.
+Hiçbir motor aşaması başka bir sürümün 7 günlük `--check` penceresi içinde dağıtılmaz (§2.9).
 
 ### P0 — VPS bilgileri ve taban çizgisi (salt-okunur; kod yok)
 
 **Teslimatlar:** aşağıdaki salt-okunur kontrol listesi ve sahip çıktıları yapıştırdıktan sonra kaydedilen
-değerler.
+değerler. **Taban çizgisi her worker sürümünden sonra (örn. wt-tourfix `34ae8d2` dağıtılınca) yeniden alınır.**
 
 ```
 nproc; free -m; df -h /opt; timedatectl | grep -i zone
@@ -956,119 +1352,184 @@ systemctl show tradingbot-worker -p MemoryMax,MemoryPeak,CPUQuotaPerSecUSec,Need
 systemctl show tradingbot-dashboard -p MemoryPeak,NeedDaemonReload
 cat /sys/fs/cgroup/system.slice/tradingbot-worker.service/memory.peak
 systemctl cat tradingbot-alert@.service >/dev/null 2>&1 && echo ALERT_VAR || echo ALERT_YOK
+systemctl cat tradingbot-backup.timer | grep -E 'OnCalendar|OnUnitActiveSec|RandomizedDelaySec|OnBootSec'
+getent group systemd-journal
+git -C /opt/tradingbot/app rev-parse HEAD
 sudo du -sh /opt/tradingbot/data/market/history
 sudo find /opt/tradingbot/data/market/history -name manifest.json | awk -F/ '{print $(NF-3),$(NF-1)}' | sort | uniq -c | head -60
+sudo ls -la /opt/tradingbot/data/state/spot_ledger.json /opt/tradingbot/data/state/*/futures_ledger.json
 sudo -u tradingbot -H bash -c 'cd /opt/tradingbot/app && /opt/tradingbot/venv/bin/python -m tradingbot research-status; /opt/tradingbot/venv/bin/python -m tradingbot model-status; /opt/tradingbot/venv/bin/python -m tradingbot mode-status'
+sudo head -c 1500 /opt/tradingbot/data/state/protective_monitor.json; echo
 curl -sI https://data.binance.vision/data/futures/um/monthly/klines/XAUUSDT/1h/XAUUSDT-1h-2026-08.zip | head -1
 curl -sI https://datafeed.dukascopy.com/datafeed/XAUUSD/2024/00/02/BID_candles_min_1.bi5 | head -1
-sudo journalctl -u tradingbot-worker --since "-24h" | grep -i "tur" | tail -80   # tur süreleri, p50/p95 taban çizgisi
+sudo journalctl -u tradingbot-worker --since "-24h" | grep -i "tur" | tail -80        # tur süreleri, p50/p95 taban çizgisi
+sudo journalctl -u tradingbot-worker --since "-7d" -o cat | grep -cE '(^| )(429|418) https?://'   # 418/429 tabanı
+sudo journalctl -u tradingbot-worker --since "-7d" -o cat | grep -c 'PAPER_RESEARCH_ACTIVE'        # ResearchCoordinator
 ```
 
 **Kabul:**
 - değerler kaydedildi;
-- birim belleği formülle hesaplandı (§2.5);
-- Dukascopy yolu seçildi (doğrudan VPS veya bir kerelik tarball);
+- birim belleği formülle hesaplandı (§2.5; gece + doldurma birlikte);
+- Dukascopy yolu seçildi (hazır ayna VPS'te mi, tarball mı, "yapılamadı" mı);
 - `alert@` var/yok bilgisi kaydedildi;
-- tur p50/p95 taban çizgisi kaydedildi;
+- tur p50/p95, Box kaçan bar oranı, koruyucu izleyici gecikmesi, 418/429 ve `DATA_VERDICT_MISSING`/bayat ret oranı
+  tabanları kaydedildi (A/B gecelerinin KAPALI tarafı bunları her sürümde yeniden ölçer);
 - **ResearchCoordinator kararı yazılı olarak verildi.**
 
 **Sahip:** komutları çalıştırır, çıktıyı yapıştırır, sabit sınırları (bellek, pencereler, 20 GB) onaylar.
 
-### P1 — Veri temeli + gerçekleşmiş günlük hedef + kapanış arşivi (YAKINDA DAĞITILABİLİR, KARAR-NÖTR)
+### P1a — Kapanış/hareket arşivi + günlük hedef + gece birimi (AĞSIZ, KARAR-NÖTR, SAHTE VPS'TE SINANABİLİR)
 
 **Kapsam (tam):**
 
 | Dosya | İçerik |
 |---|---|
-| `tradingbot/research_engine/__init__.py`, `paths.py`, `lock.py` | kök düzeni, disk koruması, motor-geneli fcntl kilidi (`SKIPPED_LOCKED`) |
-| `research_engine/store.py` | `ResearchStore(HistoryStore)`: ay-parçası checksum'ı + gecelik tam checksum, seri kilidi, `metrics_5m` / `duka_1h` / `duka_1m` türleri, yalnız kapanmış bar, µs→ms |
-| `research_engine/universe.py` | U_R (40 giriş evreni ∪ BTC/ETH ∪ son 180 günde işlem görenler ∪ XAUUSDT, PAXGUSDT vadeli, PAXGUSDT spot); günlük evren + `exchangeInfo` anlık görüntüsü |
-| `research_engine/seed.py` | worker deposunu salt-okunur kopyala + doğrula |
-| `research_engine/datastore.py` | arşiv-önce ekleme, seri başına 3 deneme + yakalama (`STALE`), tek `BudgetPool` güvenlik 0,1, `X-MBX-USED-WEIGHT-1M` takibi (%50'de bekle), 418/429'da REST'i durdur, REST kuyruğu `source=rest`, ertesi gün arşiv uzlaştırma + fark kaydı, `data_status.json` + `data_seal`, ilk doldurmada 4h pencerelerinde kendini duraklatma |
-| `research_engine/provider.py` | `StoreProvider` + fixture üzerinde parite testi (laboratuvarlar bu aşamada **geçirilmez**; `archive_cache --offline` kullanırlar) |
-| `research_engine/closes.py` | ham kapanış arşivi: her defterin kapanmış `TradeRecord`'larının birebir kopyası, `rev`, son 7 günün yeniden eşitlenmesi; elde tutulan pencerede uzlaştırma (Σ pnl, ücret, fonlama, kayma, sayı) |
-| `research_engine/daily_target.py` | **yalnız gerçekleşmiş** günlük hedef (defter, enstrüman, toplam; altın "işlem yok"); geriye doğru `E_book`; EKSİK günler; §7.3 hükümleri (bu aşamada MTM yok, bu yüzden hüküm "gerçekleşmiş" etiketli) |
-| `research_engine/summary.py`, `night.py` (iskelet) | S0, S1a, S3, S7; `run_status.json` (aşama süreleri, CPU, tepe bellek, config sha, data_seal) |
-| `tradingbot/cli_v3.py` | `engine-data {--backfill,--update,--status}`, `engine-night`, `engine-status [--brief]`; `--config` zorunlu açık yol |
-| `scripts/bot_scorecard.py` | `--daily [--days N]` (bağımsız, salt-okunur) + D4 etiketi düzeltmesi |
-| `deploy/tradingbot-engine-data.{service,timer}`, `deploy/tradingbot-engine-night.{service,timer}` | §2.2–2.5 ayarları; gece biriminde `PrivateNetwork=yes` |
-| `deploy/releases/tb-engine-<sha7>.sh` | `tb-deploy-f8b05fb.sh` iskeleti: `--dry-run` / deploy / `--check`; worktree testleri; engine-app checkout'unu kur veya sabitle; kapılı birim kurulumu (§9.3); ilk doldurma komutunu yazdırır; adlandırılmış değişmezler |
-| `docs/SYSTEM_LEARNING_ENGINE_V1.md` (bu belge) | "Veri" ve "P1 işletim" bölümleri güncellenir |
+| `tradingbot/research_engine/__init__.py`, `paths.py`, `lock.py` | kök düzeni, disk koruması, `analysis.lock` (`data.lock` yalnız tanımlı) ve `SKIPPED_LOCKED` |
+| `research_engine/selfcheck.py` | S0: PAPER (`state/mode.json`), yalıtım denemeleri (state/market/app'e yazma reddi, soket reddi, cgroup `memory.max`, `/tmp` yazılabilir), SKEW (iki SHA, ata denetimi), yedek birimi aktif mi, A/B takvimi |
+| `research_engine/rawconfig.py` | hoşgörülü ham YAML okuma, config sha'sı, ihtiyaç listesi; `load_config`/`load_v3` yok |
+| `research_engine/ledgers.py` | `futures_ledger.json` + `state/spot_ledger.json` ham salt-okunur okuma, `schema_version` denetimi |
+| `research_engine/closes.py` | vadeli + spot `history[]` arşivi (`rev`, son 14 günün yeniden eşitlenmesi, geriye tarihli kapanış); `entries[]` arşivi (anahtarlı, idempotent, hizalama, `ENTRIES_GAP`); gecelik ölçülmüş anlık görüntü; uzlaştırma (kayıt ve cüzdan görünümü); rotasyon payı; geri yükleme tespiti (`RESTORED_AWAY`); `closes_derived` (`min_to_next_funding`, `decision_delay_s`) |
+| `research_engine/daily_target.py` | kayıt görünümü (UTC günü), cüzdan görünümü (gözlem penceresi), `LEDGER_MARK` gerçekleşmemiş ve MTM; GEÇİCİ/KESİN/REVİZE/EKSİK; iki payda; şans oranı (iki sıfır hipotezi); aylık bakış hükümleri (Holm, `α_bakış`) |
+| `research_engine/summary.py`, `backup.py`, `night.py` (iskelet) | S0, S1a, S3, S7, S7b; `run_status.json` (aşama süreleri, CPU, tepe bellek, iki SHA, config sha); özet başlık biçimi (§7.7); araştırma yedeği |
+| `tradingbot/cli_v3.py` | `engine-night`, `engine-status [--brief]`, `engine-restore`; **tembel import** |
+| `scripts/bot_scorecard.py` | `--daily [--days N]` (bağımsız, salt-okunur; kayıt + cüzdan + gerçekleşmemiş; **spot dahil**) + D4 etiketi düzeltmesi |
+| `deploy/tradingbot-engine-night.{service,timer}` | §2.2–2.5 ayarları; `PrivateNetwork=yes`, `PrivateTmp=yes`, `PYTHONDONTWRITEBYTECODE=1`, `ENGINE_EXPECTED_MEMORY_MAX` |
+| `deploy/releases/tb-engine-<sha7>.sh` | **küçük, ayrılmış betik** (< ~800 satır): `--dry-run` / deploy / `--check` / `--ab-report` / `--rollback`; ayrı klon kur/sabitle + `compileall`; `data/research` dizinini oluştur; kapılı birim kurulumu ve elle smoke çalıştırma (§9.3); bağımsız değişmez koşucuları (pytest yok); adlandırılmış değişmezler |
+| `tests/` + `tests/standalone/` | depo testleri + VPS'te koşan bağımsız koşucular |
+| `docs/SYSTEM_LEARNING_ENGINE_V1.md` (bu belge), `docs/BACKUP_RESTORE.md`, `docs/OPERATIONS.md` | "P1a işletim" bölümü; araştırma yedeğinin VPS dışına taşınması; app sürümlerinde engine-app'i yeniden sabitleme kuralı |
 
-**P1'de olmayanlar:**
-- worker / app / dashboard / config değişikliği;
-- panel sayfası;
-- günlük `tj_v1`, atıf, kütüphane, adaylar.
+**P1a'da olmayanlar:** ağ; store, tohum, evren, veri birimi, ilk doldurma; worker / app / dashboard / config değişikliği;
+panel sayfası; günlük `tj_v1`, atıf, kütüphane, adaylar.
 
 **Depo kabul testleri:**
-1. Sahte sağlayıcıyla idempotent yeniden çalıştırma 0 satır ekler ve checksum'lar özdeş kalır.
-2. Parça checksum'ı ile tam checksum tutarlıdır.
-3. Yalnız kapanmış bar yazılır.
-4. Bir serinin hatası diğerlerini durdurmaz.
-5. 418/429 REST adımını durdurur.
-6. Bütçe hiçbir zaman 0,1 payı aşmaz.
-7. Arşiv uzlaştırma REST barlarını değiştirir ve farkı kaydeder.
-8. Birim sözleşmesi:
-   - `OnCalendar` `UTC` içerir ve hh%4==0 için hh:00–hh:35'te, ayrıca hh:00–hh:06'da başlamaz;
+1. Kapanış arşivi: 5000 `history` rotasyonunu atlatır (sentetik ledger); geç fonlama `rev+1` ve `REVİZE` üretir;
+   geriye tarihli `closed_at` önceki günün satırını revize eder; kayıt görünümü uzlaştırması 1e-6.
+2. **Spot:** sentetik bir `spot_ledger.json` satışı arşivde (`main_spot`) ve `r_total`'da görünür; kaldıraç 1, fonlama
+   `NOT_APPLICABLE`; kısmi satışlar ayrı satır, aynı `position_group`.
+3. Hareket arşivi: 2000 `entries` rotasyonunu atlatır; yeniden çalıştırma 0 satır ekler; FEE/PNL/FUNDING ("late
+   funding", "funding reversal")/TRANSFER/LIQ_FEE arşivlenir; hizalama kaybında `ENTRIES_GAP` ve o pencere EKSİK.
+4. Anlık görüntü: iki anlık görüntü arasında cüzdan farkı = gözlenen hareketlerin toplamı (1e-6); spot `cash` için de.
+5. Günlük hedef: satır 3 gün ve fonlama kapsaması tamamlanana kadar GEÇİCİ; revizyon yalnız eklenir ve `REVİZE` görünür;
+   hüküm yalnız bakış gecesinde; **yalnız-gerçekleşmiş satırlarda `TUTTU`/`HEDEF GÜNÜ` metni hiç geçmez** (özet,
+   status ve `--check` çıktıları üzerinde metin testi); iki payda etiketli; "en iyi enstrüman" hüküm paydasıyla.
+6. `KANITLANDI` özellik testi (§7.3).
+7. `daily_target` ile `scorecard --daily` aynı sayıları verir (kayıt, cüzdan, gerçekleşmemiş; spot dahil).
+8. Geri yükleme: `seq` azalınca `RESTORED_AWAY`, `INCONSISTENT` yok.
+9. Birim sözleşmesi (gece birimi):
+   - `OnCalendar` `UTC` içerir ve hh%4==0 için hh:00–hh:35'te başlamaz;
    - `Nice=19`, `CPUWeight=10`, `IOSchedulingClass=idle`, `OOMScoreAdjust=1000`;
-   - `ReadWritePaths` yalnız `data/research`;
-   - gece biriminde `PrivateNetwork=yes`;
-   - `EnvironmentFile` yok;
-   - `TRADINGBOT_DATA` açık;
-   - `python -s -m`, `-I` yok;
-   - `WorkingDirectory=/opt/tradingbot/engine-app`.
-9. `systemd-analyze verify` ve `shellcheck` temiz; sahte `systemctl` ile sandbox kurulumu.
-10. AST yalıtımı.
-11. Sahte state üzerinde tam çalıştırma: yazmalar yalnız `data/research` altında; ledger'lar `"r"` modunda açılıyor.
-12. Kapanış arşivi:
-    - 5000 rotasyonunu atlatır (sentetik ledger);
-    - geç fonlama `rev+1` üretir;
-    - uzlaştırma 1e-6.
-13. `daily_target` ile `scorecard --daily` aynı sayıyı verir.
-14. `KANITLANDI` özellik testi.
-15. Config varsayılan yolla yüklenmez.
+   - `ReadWritePaths` yalnız `data/research`; `PrivateNetwork=yes`; `PrivateTmp=yes`;
+   - `EnvironmentFile` yok; `TRADINGBOT_DATA` açık; `PYTHONDONTWRITEBYTECODE=1`;
+   - `ENGINE_EXPECTED_MEMORY_MAX` = `MemoryMax` (bayt);
+   - `python -s -m`, `-I` yok; `WorkingDirectory=/opt/tradingbot/engine-app`.
+10. `systemd-analyze verify` ve `shellcheck` temiz; sahte `systemctl` ile sandbox kurulumu: dizin oluşturma, smoke
+    çalıştırma başarısızsa zamanlayıcının etkinleşmediği, geri alma.
+11. AST yalıtımı: genişletilmiş liste (§2.8); `cli.py`/`cli_v3.py`'de üst düzey `research_engine` import'u yok;
+    `research_engine` `config_v3`/`load_config`/`sqlite3` import etmez.
+12. Sahte state üzerinde tam çalıştırma: yazmalar yalnız `data/research` altında; ledger'lar `"r"` modunda açılıyor;
+    `find_books` yolları ve `state/spot_ledger.json` için özellik testi.
+13. S0 öz-denetimi: yazılabilir state, açık soket veya yanlış `memory.max` benzetildiğinde `ISOLATION_BROKEN` ile durur;
+    SKEW benzetildiğinde yalnız S0/S1a/S7 çalışır.
+14. `rawconfig`: `learning_mode`/`shared_experience`'ta bilinmeyen anahtar motoru kırmaz; sha kaydedilir.
+15. Araştırma yedeği: içerik (dahil/hariç listesi), sha doğrulaması, saklama; `engine-restore` kuru çalıştırma.
+16. Rotasyon payı hesabı ve 3 gün uyarısı; A/B takvimi ve `AB_OFF_ZORUNLU_ARŞİV`.
+17. Özet ≤ 8 KB, status ≤ 60 satır.
+18. Bağımsız koşucular, depo testlerinin VPS'te koşan alt kümesini (1–8, 13, 14) pytest olmadan çalıştırır.
 
-**VPS kabul ölçütleri:**
-1. İlk doldurma tamamlanır.
-2. `data_status` her planlanan seriyi `last_ts ≤ 26 saat` ile gösterir. XAUUSDT, PAXGUSDT vadeli ve PAXGUSDT spot buna
-   dahildir; Dukascopy ya hazırdır ya "yapılamadı" yazar.
-3. Boşluklar dürüstçe sayılır.
-4. İlk 3 gece arşiv uzlaştırma farkı 0'dır (veya açıklanmıştır).
-5. Kapanış arşivi kayıt sayısı = her defterde ledger'ın elde tuttuğu history.
-6. 7 gün boyunca:
-   - worker tur p95 ≤ taban + %5;
-   - `NRestarts` değişmez;
-   - worker `MemoryMax` hâlâ 6G;
-   - 418/429 yok;
-   - motor `memory.peak` ≤ 0,8 × MemoryMax.
-7. Disk kullanımı tahminin ±%30'u içindedir.
-8. `scorecard --daily` ile `engine-status` aynı sayıyı verir.
+**VPS kabul ölçütleri (yalnız gerçek VPS'te doğrulanabilenler §2.8 tablosunda):**
+1. Elle smoke çalıştırma başarılı: öz-denetim `OK` (state'e yazma `EROFS`/`EACCES`, soket reddedildi, `memory.max`
+   doğru), `226/NAMESPACE` yok.
+2. İlk gece: kapanış arşivi kayıt sayısı = her defterde (`main_spot` dahil) ledger'ın elde tuttuğu `history`; hareket
+   arşivi ve anlık görüntü yazıldı.
+3. 14 gece boyunca `INCONSISTENT` yok (veya açıklanmış), `ISOLATION_BROKEN` yok, `SKEW` yok (bir app sürümü olduysa
+   engine-app yeniden sabitlendi).
+4. A/B raporu (`--ab-report`): AÇIK gecelerde tur p95 ≤ KAPALI + %5; `NRestarts` değişmez; worker `MemoryMax` hâlâ 6G;
+   Box kaçan bar oranı ve koruyucu izleyici gecikmesi KAPALI tabanı içinde; 418/429 = 0; `DATA_VERDICT_MISSING`/bayat
+   ret oranı değişmez; `PAPER_RESEARCH_ACTIVE` sayısı raporlandı.
+5. Motor `memory.peak` ≤ 0,8 × MemoryMax.
+6. `scorecard --daily` ile `engine-status` aynı sayıları verir.
+7. Araştırma yedeği her gece yazıldı ve doğrulandı.
+8. Bütün defterlerde rotasyon payı ≥ 3 gün (değilse uyarı gereği yapıldı).
 
 **Sahibin VPS adımları:**
 
 ```
 sudo bash tb-engine-<sha7>.sh --dry-run
-sudo bash tb-engine-<sha7>.sh            # worker durmaz; birimler kapılı kurulur
-# İlk doldurma (betik bu komutu yazdırır; 4h pencerelerinde kendini duraklatır; hata olursa aynı komutla devam):
-sudo systemd-run --unit=tb-engine-backfill --uid=tradingbot --gid=tradingbot \
-  -p WorkingDirectory=/opt/tradingbot/engine-app -p MemoryMax=1G -p Nice=19 -p CPUWeight=10 \
-  -p IOSchedulingClass=idle -p OOMScoreAdjust=1000 \
-  -p Environment=TRADINGBOT_DATA=/opt/tradingbot/data -p Environment=ALLOW_LIVE_TRADING=false -p Environment=TZ=UTC \
-  /opt/tradingbot/venv/bin/python -s -m tradingbot engine-data --backfill --config /opt/tradingbot/app/config.yaml
-sudo bash tb-engine-<sha7>.sh --check     # 7 gün boyunca her gün
+sudo bash tb-engine-<sha7>.sh            # worker durmaz; klon + dizin + kapılı birim + elle smoke; smoke geçmezse zamanlayıcı açılmaz
+sudo bash tb-engine-<sha7>.sh --check     # 14 gün boyunca her gün
+sudo bash tb-engine-<sha7>.sh --ab-report # 14. günden sonra bir kez
 sudo -u tradingbot /opt/tradingbot/venv/bin/python /opt/tradingbot/engine-app/scripts/bot_scorecard.py \
   --state /opt/tradingbot/data/state --daily --days 30
 ```
 
-Dukascopy VPS'ten erişilemiyorsa: sahip `scripts/dukascopy_mirror.py`'yi bir kez kendi PC'sinde çalıştırır ve tarball'ı
-`data/research/dukascopy` altına `scp` eder.
+### P1b — Veri deposu, tohum, ilk doldurma ve veri birimi
 
-### P2 — İşlem günlüğü, yol, rehydrate, fidelity, atıf, MTM günlük hedef, özet
+**Kapsam:**
+
+| Dosya | İçerik |
+|---|---|
+| `research_engine/store.py` | `ResearchStore(HistoryStore)`: ay-parçası checksum'ı + `.sha256` yan dosyası, parça checksum'larından `data_seal`, satır kaynağı `_src` ve öncelik (archive > seed > archive_unverified > rest), fark kaydı, `MANIFEST_LAG` kurtarma / `CORRUPT` karantina, veriden fonlama aralığı, seri kilidi, `metrics_5m` / `duka_1h` / `duka_1m`, yalnız kapanmış bar, 2025+ bütün spot serilerinde µs→ms |
+| `research_engine/universe.py` | U_R (40 giriş evreni ∪ BTC/ETH ∪ son 180 günde işlem görenler ∪ ana botun spot sembolleri ∪ XAUUSDT, PAXGUSDT vadeli, PAXGUSDT spot); günlük evren + `exchangeInfo` anlık görüntüsü |
+| `research_engine/seed.py` | worker deposunu tutarlı biçimde kopyala (manifest → parçalar → manifest), uyuşmazlıkta yeniden kopyala veya yeniden indir |
+| `research_engine/datastore.py` | arşiv-önce ekleme, `.CHECKSUM` yoksa `archive_unverified`, worker 429/418 günlük koruması, seri başına 3 deneme + yakalama (`STALE`), tek `BudgetPool` güvenlik 0,1, `X-MBX-USED-WEIGHT-1M` takibi (%50'de bekle), 418/429'da REST'i durdur, REST kuyruğu `_src=rest`, ertesi gün arşiv uzlaştırma + fark kaydı, `data_status.json` + `data_seal`, ilk doldurmada ilerleme/ETA ve 4h pencerelerinde kendini duraklatma; hazır Dukascopy aynasını içe alma (`--import-dukascopy <dizin>`) |
+| `research_engine/provider.py` | `StoreProvider` + fixture üzerinde parite testi (laboratuvarlar bu aşamada **geçirilmez**) |
+| `tradingbot/cli_v3.py` | `engine-data {--backfill,--update,--status,--import-dukascopy}` (tembel import) |
+| `deploy/tradingbot-engine-data.{service,timer}` | §2.2–2.5; ağlı; `SupplementaryGroups=systemd-journal`; `data.lock` |
+| `tb-engine-<sha7>.sh` (yeni sürüm) | veri birimini kapılı kurar, elle smoke çalıştırır; `--backfill` alt komutu ilk doldurmayı birimle **aynı** özelliklerle (`ProtectSystem=strict`, `PrivateTmp=yes`, `ReadWritePaths`, `ReadOnlyPaths`, Nice/CPU/IO/OOM, `SupplementaryGroups`, ortam) `systemd-run` ile başlatır |
+
+`scripts/dukascopy_mirror.py` adlı bir dosya hiçbir çalışma ağacında yoktur; önceki taslaktaki referans kaldırıldı.
+v1'de Dukascopy indirici yazılmaz; yalnız hazır bir ayna içe alınır (§3.3).
+
+**Depo kabul testleri:**
+1. Sahte sağlayıcıyla idempotent yeniden çalıştırma 0 satır ekler ve checksum'lar özdeş kalır.
+2. Parça checksum'ı ile `data_seal` tutarlıdır; `data_seal` hesabı tam store'u okumaz (okuma sayacı testi).
+3. Yalnız kapanmış bar yazılır.
+4. Bir serinin hatası diğerlerini durdurmaz.
+5. 418/429 REST adımını durdurur; worker günlüğünde son 60 dk'da 429/418 varsa veya günlük okunamıyorsa REST hiç
+   çağrılmaz.
+6. Bütçe hiçbir zaman 0,1 payı aşmaz.
+7. Arşiv uzlaştırma REST barlarını değiştirir ve farkı kaydeder; REST yazımı arşiv barını asla ezmez (öncelik testi);
+   `.CHECKSUM`'sız zip `archive_unverified` olur ve doğrulanmış sayılmaz.
+8. Parça yazıldıktan sonra manifest kaydedilmeden öldürülen çalıştırma `MANIFEST_LAG` ile kendiliğinden düzelir; bozuk
+   parça karantinaya alınıp yeniden çekilir; seri yalnız iki ardışık başarısız geceden sonra durur.
+9. Fonlama aralığı veriden çıkarılır (8h/4h/1h fixture'ları); boşluklar bu aralıkla sayılır.
+10. 2025+ bütün spot serilerinde (BTC/ETH dahil) µs→ms.
+11. Eşzamanlı yazıcı benzetimiyle tohumlama tutarlı kopya üretir veya yeniden indirir; asla tümden başarısız olmaz.
+12. Veri birimi sözleşmesi: UTC, pencere dışı; `SupplementaryGroups=systemd-journal` yalnız veri biriminde; `PrivateTmp`;
+    `ReadWritePaths` yalnız `data/research`.
+13. İlk doldurma ilerleme ve ETA yazar; 4h pencerelerinde durur.
+14. `StoreProvider` fixture paritesi.
+15. Gece birimi doldurma sürerken `SKIPPED_LOCKED` olmaz (ayrı kilitler); okuduğu parça değişmişse `DATA_MOVING`.
+
+**VPS kabul ölçütleri:**
+1. İlk doldurma tamamlanır (ilerleme/ETA görünür; başka bir sürümün `--check` penceresi dışında başlatılır).
+2. `data_status` her planlanan seriyi `last_ts ≤ 26 saat` ile gösterir. XAUUSDT, PAXGUSDT vadeli ve PAXGUSDT spot buna
+   dahildir; Dukascopy ya hazırdır ya "yapılamadı" yazar.
+3. Boşluklar gerçek fonlama aralıklarıyla dürüstçe sayılır; `archive_unverified` satır sayısı raporlanır.
+4. İlk 3 gece arşiv uzlaştırma farkı 0'dır (veya açıklanmıştır).
+5. 14 gecelik A/B: P1a'nın bütün ölçütleri **ve** veri birimi ile doldurma pencerelerinde worker 418/429 = 0,
+   `DATA_VERDICT_MISSING`/bayat ret oranı değişmez.
+6. Veri birimi ve doldurma için `memory.peak` ≤ 0,8 × MemoryMax; gece birimi doldurma yüzünden hiç `SKIPPED_LOCKED`
+   olmaz.
+7. Disk kullanımı tahminin ±%30'u içindedir.
+
+**Sahibin VPS adımları:**
+
+```
+sudo bash tb-engine-<sha7>.sh --dry-run
+sudo bash tb-engine-<sha7>.sh            # veri birimi kapılı kurulur + elle smoke
+sudo bash tb-engine-<sha7>.sh --backfill  # ilk doldurma, birimle aynı yalıtımla; hata olursa aynı komutla devam
+sudo bash tb-engine-<sha7>.sh --check     # 14 gün boyunca her gün
+sudo bash tb-engine-<sha7>.sh --ab-report
+```
+
+### P2 — İşlem günlüğü, yol, rehydrate, fidelity, atıf, UTC günü MTM, özet
 
 **Teslimatlar:**
-- `journal.py` (`tj_v1`), `pathrec.py`, `rehydrate.py`, `fidelity.py`, `attribution.py` (`attribution_v1` mühürlü),
-  `cfgrid.py` (`cfgrid_v1` mühürlü; EX_ANTE/HINDSIGHT; eşleşmiş rastgele kontrol; medyan referanslı ayrıştırma);
-- MTM günlük hedef (`LAST_PRICE_PROXY`), şans oranı permütasyonu, k*/iflas tablosu;
+- `journal.py` (`tj_v1`, vadeli + spot, P1a arşivinden), `pathrec.py`, `rehydrate.py` (hedefler + sinyal bağlamı; stop
+  ölçülmüş), `fidelity.py`, `attribution.py` (`attribution_v1` mühürlü), `cfgrid.py` (`cfgrid_v1` mühürlü;
+  EX_ANTE/HINDSIGHT; eşleşmiş rastgele kontrol; medyan referanslı ayrıştırma);
+- UTC günü MTM (`LAST_PRICE_PROXY`, store 1m), 14 gün W-günüyle yan yana, sonra `tgt_v2`;
 - `digest_tr.md` tam sürüm;
 - `engine-query` (`trade`, `why-lost`, `day`);
 - gece S1b, S2;
@@ -1077,64 +1538,78 @@ Dukascopy VPS'ten erişilemiyorsa: sahip `scripts/dukascopy_mirror.py`'yi bir ke
 Birim dosyası değişmez; yalnız sabit taşınır.
 
 **Kabul:**
-1. Her defterin her `TradeRecord`'u günlükte tam bir kez bulunur; Σ net_pnl, ücret, fonlama ve kayma 1e-6 ile eşittir.
-2. Sahibin her alanı ya doludur ya `MISSING`/`MODELED` etiketlidir.
+1. Her defterin (spot dahil) her `TradeRecord`'u günlükte tam bir kez bulunur; Σ net_pnl, ücret, fonlama ve kayma
+   1e-6 ile eşittir.
+2. Sahibin her alanı ya doludur ya `MISSING`/`MODELED`/`NOT_APPLICABLE` etiketlidir.
 3. Ücret özdeşliği ve çift sayım regresyon testi geçer.
-4. Fidelity ≥ %90; başarısızlıklar nedenleriyle listelenir.
-5. Rehydrate eşleşmesi Box/D4/T2/M2/C4'te ≥ %95.
-6. Her kod ve ayrıştırma için sentetik yol altın testleri geçer (ayrıştırma ± artık = net_R).
-7. Aynı mühür aynı bayt-özdeş çıktıyı verir.
-8. İleriye bakma (lookahead) yoktur: `regime_fit` `as_of < opened_at`.
-9. MTM `E_book` 00:00 test anlık görüntüsüyle %0,01 içinde eşleşir.
-10. Box stop-genişliği bulgusu gerçek veriden yeniden üretilir.
-11. Özet ≤ 8 KB, sorgular ≤ 150 satır.
-12. 3 ardışık gece 03:40'tan önce `SUCCESS`; tur etkisi ≤ %5.
+4. R paydası `features.risk_usdt`; motorun `net_r`'ı ledger `r_multiple` ile eşit (1e-9; geç fonlama sonrası da).
+5. Fidelity ≥ %90; başarısızlıklar nedenleriyle listelenir.
+6. Rehydrate eşleşmesi (giriş ve ölçülmüş stop'a 1 tick) Box/D4/T2/M2/C4'te, config dönemi başına ≥ %95.
+7. Her kod ve ayrıştırma için sentetik yol altın testleri geçer (ayrıştırma ± artık = net_R).
+8. Aynı mühür aynı bayt-özdeş çıktıyı verir.
+9. İleriye bakma (lookahead) yoktur: `regime_fit` `as_of < opened_at`.
+10. UTC günü MTM, W-günü `LEDGER_MARK` ile yan yana; 00:00 cüzdanı arşivlenmiş hareketlerle 1e-6 tutar.
+11. Box stop-genişliği bulgusu, eski config döneminde gerçek veriden yeniden üretilir (§5.10).
+12. Özet ≤ 8 KB, sorgular ≤ 150 satır.
+13. 3 ardışık gece 03:40'tan önce `SUCCESS`; A/B'de tur etkisi ≤ %5.
 
 **Sahip:** dry-run, deploy (worker durmaz), günlük `--check`. İlk haftalık özeti isteğe bağlı olarak bir AI
 incelemesine yapıştırır.
 
-### P3 — Strateji kütüphanesi, walk-forward, denemeler, CSCV/PBO, dersler
+### P3 — Strateji kütüphanesi, walk-forward, keşif katmanı, denemeler, CSCV/PBO, dersler, zaman noktasında evren
 
 **Teslimatlar:**
-- `library/` (`LIB_v1` mühürlü; ön kayıt metni bu belgede ve testte, ilk VPS çalıştırmasından önce);
-- `wf.py` (7 parçalı rotasyon, kilitli bekletme okuma koruması);
+- `library/` (`LIB_v1` mühürlü; ön kayıt metni bu belgede ve testte, ilk VPS çalıştırmasından önce) ve
+  `library/config_epochs.json`;
+- `wf.py` (7 parçalı rotasyon; `make_folds(validation_days>0)` + `run_three_way`);
+- `explore.py` (keşif katmanı, §6.8);
 - `cscv.py` (PBO);
-- `trials.py` (geçmiş laboratuvar sonuçları içe alınmış);
+- `trials.py` (geçmiş laboratuvar sonuçları içe alınmış; bakış ve ileri veri okuması kaydı; kümülatif N);
+- `pit_universe.py` (veri biriminde; delist dahil listeleme/delist tarihleri);
 - `lessons.py` (ayrı kök, genişletilmiş anahtarlar, önceden kayıtlı bakışlar, alfa harcama);
-- lider tablosu;
-- `engine-query lessons|trials`.
+- lider tablosu (KEŞİF bölümüyle);
+- `engine-query lessons|trials|explore`.
 
 **Kabul:**
-1. Kopya paritesi: M2/T2/D4/C4 için ≥ %95 sinyal, medyan |ΔR| ≤ 0,05.
+1. Kopya paritesi: M2/T2/D4/C4 için, **yalnız POLICY girişleri** ve ≥ 20 girişli **her config dönemi** için ≥ %95 sinyal,
+   medyan |ΔR| ≤ 0,05.
 2. `leakage_check` geçer.
 3. Dikilmiş avantajlı sentetik veri Kapı A'yı geçer; rastgele yürüyüş ve plasebo geçemez (200 boş denemede yanlış pozitif
    ≤ q).
 4. CSCV cevabı bilinen veride doğrudur.
-5. Bilinen laboratuvar sonuçları tolerans içinde yeniden üretilir (gold_v1 0/32, crowd fut_v2 0/8).
-6. Deneme sayacı hiç azalmaz; mühür artırılmadan spec değişikliği CI'ı kırar.
-7. Ders durumu yalnız kayıtlı bakışta değişir (özellik testi).
-8. Tam kütüphane taraması 7 gecede, son tarih içinde biter.
+5. Bilinen laboratuvar sonuçları tolerans içinde yeniden üretilir (gold_v1 0/32, crowd fut_v2 0/8, gold_v2 aile B).
+6. Deneme sayacı hiç azalmaz; mühür artırılmadan spec değişikliği CI'ı kırar; DSR N = kümülatif ham N.
+7. Kapı A ve ders durumu yalnız kayıtlı bakışta değişir (özellik testi); her bakış `trials.jsonl`'da.
+8. Keşif katmanı yalnız `T_seal` sonrası barları kullanır (zaman yolculuğu testi); çıktısında hüküm kelimesi yoktur.
+9. Zaman noktasında evren, bilinen bir delist sembolü (fixture) doğru tarihlerle içerir; kurulmadan XSEC Kapı A'ya
+   giremez.
+10. Tam kütüphane taraması 7 gecede, son tarih içinde biter; keşif adımı gecede < 10 dk.
 
-**Sahip:** deploy; ilk Kapı A tablosunu okur (beklenen: çoğu spec elenir).
+**Sahip:** deploy; ilk Kapı A bakış tablosunu ve KEŞİF bölümünü okur (beklenen: çoğu spec elenir; keşif her şeyi
+gösterir ama hiçbirini kanıt saymaz).
 
-### P4 — Kayıt-yalnız ileri adaylar (kripto + altın) ve terfi kapısı
+### P4 — Kayıt-yalnız ileri yeniden oynatma adayları (kripto + altın) ve terfi kapısı
 
 **Teslimatlar:**
-- `prospective.py` (≤ 20–40 aday, nedensel adım, önceden kayıtlı durdurma, CUSUM);
-- `promotion.py` (`PROMOTION_REGISTRY`; metni **sahip onaylar**, sha testte ve belgede sabitlenir);
+- `prospective.py` (≤ 20–40 aday, nedensel adım, önceden kayıtlı durdurma, CUSUM; `PROSPECTIVE_REPLAY` etiketi);
+- `promotion.py` (`PROMOTION_REGISTRY`; metni **sahip onaylar**, sha testte ve belgede sabitlenir; Kapı A/B/C `p_day`);
 - aylık Holm öneri toplu işi;
 - `engine-query --approve|--reject|--retire --operator berke`;
-- ilk adaylar:
-  - ders kaynaklı klonlar (örn. "Box en az stop %0,5", "D4 55/20", "seçicilik ekstraları olmayan ana bot");
+- ilk aday havuzu — **hepsi yalnız Kapı A'yı kayıtlı bakışta geçerse aday olur**:
+  - ders kaynaklı klonlar, canlıda zaten olmayanlar (örn. "D4 55/20");
   - M2 varyantları;
-  - XAUUSDT/PAXGUSDT altın trend ve hafta sonu adayları.
+  - XAUUSDT/PAXGUSDT altın trend adayları (gold_v2 aile A yayımlandıktan sonra, onun sonucuna göre).
+- **Listeden çıkarılanlar:** "Box en az stop %0,5" (f8b05fb'de canlı: `books.b1_box_fade.min_stop_pct: 0.5`);
+  "seçicilik ekstraları olmayan ana bot" (canlı: `learning_mode.extra_entries: record_selectivity`); PAXG hafta sonu
+  dönüşü (gold_v2 aile B kanıt yok, `db1828e`). Bunlar yeniden ancak yeni bir LIB sürümü ve Kapı A ile girebilir.
 
 **Kabul:**
 1. Aday defterleri yalıtılmıştır: `research/prospective` dışına yazma yoktur.
 2. Zaman yolculuğu fixture'ıyla nedensellik testi geçer.
 3. Her aday işleminin tam `tj_v1` satırı ve atfı vardır.
-4. Durdurma yalnız kayıtlı bakışta tetiklenir.
-5. Öneri yalnız tüm Kapı B koşulları sağlanınca üretilir (altın test).
+4. Durdurma ve Kapı B yalnız kayıtlı bakışta tetiklenir.
+5. Öneri yalnız tüm Kapı B koşulları ve Kapı C Holm'u sağlanınca üretilir (altın test); Kapı B'de gerçekleşen/modellenen
+   maliyet oranı kullanılmaz.
 6. Aday sonuçları canlı toplama asla eklenmez.
 7. Runner `APPLIED_BOUNDED` yazamaz.
 
@@ -1144,10 +1619,11 @@ incelemesine yapıştırır.
 
 **Teslimatlar:**
 - `StateReader` araştırma özeti kökü;
-- `/hedef` ve `/ders` sayfaları ve `NAV_MORE` girdisi;
+- `/hedef` ve `/ders` sayfaları (aday ve keşif bölümleri ayrı) ve `NAV_MORE` girdisi;
 - GET-only, 405, dosya yok, eski dosya testleri.
 
-**Kabul:** sayfa dosya yokken bayt-özdeş; 405 testleri; boyut sınırı; "> 24s ESKİ RAPOR" notu.
+**Kabul:** sayfa dosya yokken bayt-özdeş; 405 testleri; boyut sınırı; "> 24s ESKİ RAPOR" notu; GEÇİCİ/KESİN etiketleri
+görünür.
 
 **Sahip:** normal sürümün parçası olarak onaylar (worker boşta durdurulup başlatılır).
 
@@ -1156,6 +1632,7 @@ incelemesine yapıştırır.
 **Teslimatlar:**
 - `TradeRecord`'a eklemeli `meta` / `targets`, ya da defter başına `closed_meta.jsonl` yan dosyası (karar anlık
   görüntüsü, risk anlık görüntüsü, `be_by_mfe`, D4/C4 sinyal bloğu, Box bağlamı, ilk hedefler);
+- spot kayıtlarına `features.initial_stop` ve `features.risk_usdt` (bugün spot kaydı `features` taşımıyor);
 - strateji defterleri doğru `setup_type` ile `trade_memory` çıkış satırı yazar;
 - `xp_outcome` `exit_price` / `tp1_done` / `fills` yayar;
 - `label_outcome` çift ücret düzeltmesi;
@@ -1168,7 +1645,7 @@ incelemesine yapıştırır.
 - 48+ mevcut değişmez geçer;
 - eski ledger'lar yüklenir;
 - tur süresi ve bellek ±%5;
-- günlükte ilgili alanlar `RECONSTRUCTED` → `MEASURED` olur.
+- günlükte ilgili alanlar `RECONSTRUCTED`/`MISSING` → `MEASURED` olur.
 
 **Sahip:** açık onay; normal sürüm, boşta durdurma ve yeniden başlatma; 3 gün `--check`.
 
@@ -1184,26 +1661,39 @@ kuralını raporlar; karar sahibindir.
 
 | Risk | Azaltma |
 |---|---|
-| Aşırı uydurma ve çoklu test: yüzlerce varyant × 45 enstrüman şanslı kazananlar üretir | mühürlü kayıtlar; kilitli bekletme; BH; kümülatif N ile DSR; CSCV PBO; plasebo; önceden kayıtlı bakışlar; zorunlu ileri Kapı B; aylık Holm. Yine de Kapı A geçenlerin çoğunun Kapı B'de düşmesi beklenir. |
-| İsteğe bağlı durma (her gece yeniden test) | durum değişikliği yalnız kayıtlı bakışlarda, alfa harcamalı; gece değerleri "ara görünüm" |
-| Hedef baskısı: +%1/gün için kaldıraç/risk artırma isteği | işlem başına sabit %0,5 riskte net R ile puanlama; düşüş isabet oranının yanında; k*/iflas tablosu; kaldıraç değişikliği asla otomatik önerilmez |
-| "Bugün bir coin +%1 yaptı" yanılgısı | şans oranı permütasyonu, Holm, önceden seçilmiş enstrüman kuralı, 60 günlük CI alt sınırı ≥ %1 |
-| Worker yavaşlaması veya OOM (RAM/vCPU bilinmiyor) | P0 boyutlandırma; Nice 19, CPUWeight 10, IO idle, OOMScoreAdjust 1000; pencereler; kabulde tur p95 ≤ +%5 |
-| `daemon-reload` kayması (4G ↔ 6G) | kapılı kurulum, önce/sonra 6G doğrulaması, otomatik geri alma; P1'den sonra birim dosyası değişmez |
+| Aşırı uydurma ve çoklu test: yüzlerce varyant × 45 enstrüman şanslı kazananlar üretir | mühürlü kayıtlar; kümülatif ham N ile DSR; tek istatistik `p_day`; Kapı A yalnız aylık bakışta; BH; CSCV PBO; plasebo; mühür sonrası ileri veri (kayan bekletme yerine); zorunlu ileri Kapı B (alfa harcamalı); aylık Holm. Yine de Kapı A geçenlerin çoğunun Kapı B'de düşmesi beklenir. |
+| İsteğe bağlı durma (her gece yeniden test) | ders, Kapı A, Kapı B ve hedef hükümleri yalnız kayıtlı bakışlarda, alfa harcamalı; gece değerleri "ara görünüm" |
+| Hedef hükmünün tekrarlı testi (kayan 60 gün × ~50 kapsam) | aylık bakış, `α_bakış = 0,05/12`, hükme uygun bütün kapsamlarda Holm, yalnız KESİN günler |
+| Hedef baskısı: +%1/gün için kaldıraç/risk artırma isteği | işlem başına sabit %0,5 riskte net R ile puanlama; düşüş isabet oranının yanında; k*/iflas tablosu yalnız lider tablosunda ve önerilerde; kaldıraç değişikliği asla otomatik önerilmez |
+| "Bugün bir coin +%1 yaptı" yanılgısı | şans oranı (muhafazakâr işaret çevirme başlıkta, maliyet bilinçli ikincil), Holm, önceden seçilmiş enstrüman kuralı, iki payda etiketli |
+| Yalnız-gerçekleşmiş başlığın yanıltması | P1a'dan itibaren `LEDGER_MARK` MTM; gerçekleşmiş sayının yanında her zaman açık gerçekleşmemiş; yalnız-gerçekleşmiş satırda `TUTTU`/`HEDEF GÜNÜ` yok (metin testi) |
+| Gün satırlarının sonradan değişmesi (geç fonlama, geriye tarihli kapanış, TP1, eksik fonlama kapsaması) | GEÇİCİ → KESİN (≥ 3 gün + kapsama), yalnız eklenen `rev`, görünür `REVİZE`, hükümler yalnız KESİN günlerde; geç fonlamanın gün ataması kayıt ve cüzdan görünümünde ayrı ve tutarlı |
+| Ana botun spot defterinin unutulması | `state/spot_ledger.json` açıkça arşivde, günlükte, hedefte ve `scorecard --daily`'de; kabul testi |
+| Cüzdan hareketlerinin rotasyonla kaybı (`entries_keep=2000`) | gecelik hareket arşivi, hizalama ve `ENTRIES_GAP`; ölçülmüş anlık görüntü; `--check`'te rotasyon payı; ayrı kilitler sayesinde doldurma arşivi durduramaz |
+| Worker yavaşlaması veya OOM (RAM/vCPU bilinmiyor) | P0 boyutlandırma (gece + doldurma birlikte); Nice 19, CPUWeight 10, IO idle, OOMScoreAdjust 1000; pencereler; A/B gecelerinde tur p95 ≤ +%5 |
+| CPU/IO çekişmesinin Box zamanlayıcısını ve koruyucu izleyiciyi geciktirmesi | A/B gecelerinde Box kaçan bar oranı ve koruyucu izleyici gecikmesi KAPALI tabanı içinde olmalı (§2.9) |
+| Paylaşılan IP REST ağırlığı ve yasağı | P1a ağsız; P1b'de arşiv-önce, güvenlik payı 0,1, başlık takibi, 418/429'da durma, **worker son 60 dk'da 429/418 aldıysa REST yok**; kabulde worker 418/429 = 0 ve ret oranı değişmez |
+| Taban çizgisi karışıklığı (wt-tourfix ve diğer worker sürümleri) | taban her worker sürümünden sonra yeniden alınır; başka sürümün 7 günlük penceresinde motor dağıtılmaz; etki yalnız A/B ile ölçülür |
+| App ↔ engine-app sürüm kayması | `load_config`/`load_v3` yok, ham YAML; S0 SKEW denetimi; her app sürüm betiği engine-app'i yeniden sabitler; ayrı klon (worktree değil) |
+| Yalıtımın sessizce bozulması (yanlış birim dosyası, systemd sürümü) | S0 çalışma zamanı denemeleri (state'e yazma, soket, `memory.max`); `ISOLATION_BROKEN` ile durma; sahte VPS'in doğrulayamadıkları açıkça listeli |
+| `daemon-reload` kayması (4G ↔ 6G) | kapılı kurulum, önce/sonra 6G doğrulaması, otomatik geri alma; elle smoke çalıştırma; P1a/P1b'den sonra birim dosyası değişmez |
 | Saat dilimi (VPS Europe/Istanbul) | her `OnCalendar`'da `UTC`; test |
-| Paylaşılan IP REST ağırlığı | arşiv-önce; güvenlik payı 0,1; başlık takibi; 418/429'da durma; saatlik REST yok |
-| Maliyetler modellenmiş, ölçülmemiş (3 bps sabit kayma, sıfır spread, stop seviyesinde dolum) | ADVERSE/STRESS kapıda; `cf_aux_v1` muhafazakâr R; kaydedilmemiş spread tahmini ayrıca; ileri aşamada gerçekleşen/modellenen maliyet oranı |
-| Kısa altın geçmişi (XAUUSDT 2025-12, PAXG vadeli 2025-03; ince likidite; Dukascopy OTC bid farklı) | `KISA_GEÇMİŞ` işareti; daha sıkı Kapı B; uzun vekiller ayrı etiketli; gold_v1 zaten 0/32 buldu |
-| Hayatta kalma yanlılığı (evren bugünün listesi) | günlük evren ve `exchangeInfo` anlık görüntüleri; arşivde varsa delist semboller; her raporda uyarı |
-| Yeniden kurma hataları (bağlam, yol) | 1 tick eşleşme; fidelity kapısı; `RECONSTRUCT_FAILED` ve `MISSING` görünür; P6 bunları ölçüme çevirir |
-| Küçük örneklemler (D4 13, M2 49) | dersler aylarca `OBSERVATION`'da kalır; CF kanıtı ayrı ve muhafazakâr; adaylar örneklemi defterlere dokunmadan büyütür; "VERİ YETERSİZ" görünür kalır |
-| Ledger rotasyonu ve geç fonlama | gecelik kapanış arşivi; `rev`; elde tutulan pencerede uzlaştırma; `--check` rotasyon payı |
+| Maliyetler modellenmiş, ölçülmemiş (3 bps sabit kayma, sıfır spread, stop seviyesinde dolum) | ADVERSE/STRESS kapıda; `cf_aux_v1` muhafazakâr R; kaydedilmemiş spread tahmini ayrıca; ileri yeniden oynatmada gerçekleşen = modellenen olduğu dürüstçe yazılır ve kanıt sayılmaz |
+| Kısa altın geçmişi (XAUUSDT 2025-12, PAXG vadeli 2025-03; ince likidite; Dukascopy OTC bid farklı) | `KISA_GEÇMİŞ` işareti; daha sıkı Kapı B; uzun vekiller ayrı etiketli; gold_v1 0/32 ve gold_v2 aile B kanıt yok; keşif katmanında yine de izlenir |
+| Hayatta kalma yanlılığı (evren bugünün listesi) | P3'te zaman noktasında evren (delist dahil); o zamana kadar XSEC Kapı A'ya kapalı; diğer satırlarda uyarı |
+| Config dönemi değişiklikleri (Box stop tabanı, seçicilik) | `config_epochs`; parite ve dersler dönem başına; dönem sınırını aşan karşılaştırma yok |
+| Yeniden kurma hataları (bağlam, yol) | stop ölçülmüş; rehydrate yalnız hedef ve bağlam, 1 tick denetimli; fidelity kapısı; `RECONSTRUCT_FAILED` ve `MISSING` görünür; P6 bunları ölçüme çevirir |
+| Küçük örneklemler (D4 13, M2 49) | dersler aylarca `OBSERVATION`'da kalır; CF kanıtı ayrı ve muhafazakâr; adaylar ve keşif örneklemi defterlere dokunmadan büyütür; "VERİ YETERSİZ" görünür kalır |
 | Dosyalar arası tutarsız okuma (worker `os.replace` ile yazar) | anahtarlı, idempotent birleştirme; sonraki gece `rev+1` ile tamamlama |
+| Store bozulması veya yarım yazım | parça `.sha256`; `MANIFEST_LAG` kurtarma ile `CORRUPT` karantina ayrımı; satır kaynağı önceliği; doğrulanmamış zip ayrı sayılır |
 | Mühür değişikliği (arşiv yeniden yayımı, REST düzeltmesi) | her çıktı `data_seal` anar; uzlaştırma farkı kaydedilir |
+| Araştırma verisinin tek kopya olması | S7b günlük küçük yedek, doğrulama, VPS dışına taşıma; `engine-restore` |
+| State geri yüklemesi | `seq` azalması ve `state.pre-restore-*` ile tespit; `RESTORED_AWAY`, `REVİZE (RESTORE)`; `INCONSISTENT` değil |
 | Disk büyümesi | 14 günlük geriye-test ayrıntısı; 1m zip silme; 20 GB sınırı; state altında hacimli bir şey yok |
-| Mevcut otomatik öğrenici (ResearchCoordinator) | P0'da sahibin kararı; motor dokunmaz |
-| İki kod sürümü aynı makinede (app ve engine-app) | motor state'i yalnız kararlı şemalarla okur (`schema_version` denetimi fail-closed); `--check` iki SHA'yı da yazar |
-| Sahibin iş yükü | aşama başına tek betik; `--dry-run` / `--check`; tek komutluk kapatma; kısa özet |
+| Mevcut otomatik öğrenici (ResearchCoordinator) | P0'da sahibin kararı; motor dokunmaz; etkinleştirme sayısı `--check`'te |
+| Keşif katmanında "en iyi varyant" yanılgısı | "N varyant arasından en iyi 5 — seçim yanlılığı, kanıt değil" başlığı; medyan varyant da gösterilir; hüküm kelimesi yok; terfi yok |
+| Kod değişikliklerinin token maliyeti | ayda bir LIB sürümü; sürüm başına ≤ 1,5M token bütçesi; deneme defteri tekrarı önler (§8) |
+| Sahibin iş yükü | aşama başına tek küçük betik; `--dry-run` / `--check` / `--ab-report`; tek komutluk kapatma; kısa özet |
 
 ---
 
@@ -1211,11 +1701,16 @@ kuralını raporlar; karar sahibindir.
 
 1. **ResearchCoordinator** (`research_enabled=True`): mevcut otomatik filtre/küçültme etkinleştirmesi önceden onaylı mı,
    yoksa ayrı onaylı bir değişiklikle kapatılsın mı?
-2. **RAM / vCPU:** P0 çıktısına göre motor birimleri için `MemoryMax` ve `CPUQuota` değerleri.
-3. **Dukascopy:** VPS'ten erişilebiliyor mu? Erişilemiyorsa bir kerelik tarball'ı sahip mi taşıyacak?
-4. **Tek enstrüman hedefi:** "en az bir coin veya altın" için önceden bir enstrüman bildirilsin mi (örn. XAUUSDT veya
-   BTCUSDT)? Bildirilirse o enstrüman Holm düzeltmesi olmadan değerlendirilir; diğerleri Holm'lu kalır.
-5. **Gün sınırı:** UTC gün mü kullanılsın (önerilen; 4h yayın düzeniyle uyumlu), yoksa İstanbul günü mü?
+2. **RAM / vCPU:** P0 çıktısına göre motor birimleri için `MemoryMax` ve `CPUQuota` değerleri (gece + doldurma birlikte).
+3. **Dukascopy:** gold_v2'nin ayna işi bittiğinde hazır bir ayna VPS'te olacak mı, yoksa sahip bir kerelik tarball'ı mı
+   taşıyacak? İkisi de yoksa altının uzun vekili "yapılamadı" kalır.
+4. **Tek enstrüman hedefi:** "en az bir coin veya altın" için önceden bir enstrüman bildirilsin mi? Bildirilirse hükme
+   uygun kapsamlar {toplam, o enstrüman} olur (Holm bu ikisi arasında); bildirilmezse bütün kapsamlar Holm'lu kalır.
+   **Öneri:** toplam (varsayılan) veya BTCUSDT. XAUUSDT önerilmez: yalnız ~10 aylık geçmişi ve ince likiditesi var;
+   2027'den önce 60 günlük güven sınırına dürüstçe ulaşamaz.
+5. **Gün sınırı:** UTC gün mü kullanılsın (önerilen; 4h yayın düzeniyle uyumlu), yoksa İstanbul günü mü? Not: P1a'nın MTM
+   günü geçici olarak gece anlık görüntüsünden gece anlık görüntüsüne (≈ 01:40 → 01:40 UTC) ölçülür; P2'de UTC gününe
+   geçilir.
 6. **Kapı metni:** `PROMOTION_REGISTRY` eşikleri (§6.7) bu haliyle onaylanıyor mu? Onay P4'ten önce gerekir.
 7. **Altın defteri:** Bir altın adayı Kapı B'yi geçerse yeni bir altın kâğıt defteri kabul edilir mi? Hangi risk
    tavanıyla (öneri: %0,25)?
@@ -1223,33 +1718,114 @@ kuralını raporlar; karar sahibindir.
    istenir mi?
 9. **Telegram:** "günlük rapor hazır" bildirimi istenir mi? Config değişikliği gerektirir.
 10. **P6:** Worker'a kayıt-yalnız alan ekleme (kararı değiştirmeyen, yeniden başlatma gerektiren) ne zaman yapılsın?
-11. **Açık pozisyon fonlaması:** `FuturesLedgerV2` açık pozisyondaki fonlamayı cüzdana anında mı yazıyor? Geriye doğru
-    `E_book` hesabının bunu tam yakalayıp yakalamadığı P2 fixture testiyle doğrulanacak; uyuşmazsa satır `TAHMİN`
-    etiketlenir.
+11. **A/B geceleri:** her motor sürümünden sonraki 14 gecede motorun günaşırı kapalı kalması (arşiv yalnız rotasyon payı
+    3 günün altındaysa çalışır) kabul mü? Bu, motorun etkisini ölçmenin tek dürüst yoludur.
+12. **Günlük hedefin paydası:** "bir coin veya altın günde +%1" derken kastedilen **toplam sermayeye göre** mi
+    (`r_inst = enstrüman P&L / E_total`), yoksa **o enstrümana / onu işleyen deftere ayrılan sermayeye göre** mi
+    (`r_book_inst = P&L / E_book`)? İkisi de etiketiyle gösterilir; cevaba kadar hüküm paydası `E_total`'dır ve özetteki
+    "en iyi enstrüman" aynı paydayı kullanır.
+13. **Araştırma yedeği:** mevcut VPS dışı yedek akışı `data/research/backup/`'ı da taşıyacak biçimde genişletilsin mi?
+
+Önceki taslaktaki "açık pozisyon fonlaması cüzdana anında mı yazılıyor?" sorusu artık açık değildir: P1a'dan itibaren
+FUNDING hareketleri arşivlenir ve iki anlık görüntü arasındaki cüzdan eşitliği her gece ölçülür.
 
 ---
 
-## 13. Hakem "mutlaka düzelt" listesinin kapanışı
+## 13. Birinci hakem turunun "mutlaka düzelt" listesinin kapanışı
 
-| Madde | Nerede |
-|---|---|
-| Gece öncesi/sonrası ledger parmak izi değişmezi kaldırıldı; çekirdek + açma modu denetimi | §2.8 |
-| Panel yalnız normal app sürümüyle; o zamana kadar `--check` / `engine-status` / `scorecard --daily` | §7.7, P5 |
-| REST bütçesi ≤ 0,1, başlık takibi, 418/429, saatlik REST yok | §3.4 |
-| Tek motor kilidi, `SKIPPED_LOCKED`, zaman ayrımı, bellek kuralı | §2.4, §2.5 |
-| Rotasyon ve geç fonlama; elde tutulan pencerede uzlaştırma; geriye doğru `E_book` | §4.2, §7.1 |
-| Hedef hükmü: CI alt sınırı ≥ %1,00, ≥ 40 tam gün / 60, ≥ 30 işlem, %25 yoğunlaşma | §7.3 |
-| İsteğe bağlı durma: kayıtlı bakışlar, alfa harcama, sabit BH ailesi | §5.7 |
-| State'e yazma yok (shared-experience özetleri motor biriminden çalışmaz) | §2.1, §6.1 |
-| Birim kayması kapısı (`NeedDaemonReload=no`, 6G önce/sonra), `setup_vps_v3.sh` yok | §9.3 |
-| `OnCalendar` UTC + pencere testi | §2.2, P1 testleri |
-| ResearchCoordinator için P0 sahip kararı | §9.1, P0, §12 |
-| PBO yok → CSCV yazılır; o zamana kadar kapı kapalı | §6.4 |
-| `python -I` yok; `-s -m` + `WorkingDirectory` | §2.3 |
-| Config kayması: açık `--config` yolu, sha kaydı; `TRADINGBOT_DATA` açık | §2.3 |
-| `TradeRecord`'da `initial_stop` / `targets` yok → xp / provenance / 1 tick rehydrate; yoksa `MISSING` ve ızgara dışı | §4.3, §5.2 |
-| `label_outcome` çift ücret: yeniden kullanılmaz; regresyon testi | §4.2 |
-| Altın: `LIVE_PAPER`'da "işlem yok", yalnız aday akışında | §7.1 |
-| Rotasyon riski `--check`'te | §4.2 |
-| MTM `LAST_PRICE_PROXY`; EKSİK günler hariç | §7.1 |
-| Paylaşılan IP: tek `BudgetPool`, düşük pay, seri başına yeniden deneme | §3.4 |
+| Madde | Nerede | İkinci turda değişti mi |
+|---|---|---|
+| Gece öncesi/sonrası ledger parmak izi değişmezi kaldırıldı; çekirdek + açma modu denetimi | §2.8 | + S0 çalışma zamanı öz-denetimi |
+| Panel yalnız normal app sürümüyle; o zamana kadar `--check` / `engine-status` / `scorecard --daily` | §7.7, P5 | — |
+| REST bütçesi ≤ 0,1, başlık takibi, 418/429, saatlik REST yok | §3.4 | + worker 429/418 günlük koruması |
+| Tek motor kilidi, `SKIPPED_LOCKED`, zaman ayrımı, bellek kuralı | §2.4, §2.5 | **iki kilit** (`data.lock`, `analysis.lock`); bellek kuralında gece + doldurma |
+| Rotasyon ve geç fonlama; elde tutulan pencerede uzlaştırma; geriye doğru `E_book` | §4.2, §7.1 | + hareket arşivi, ölçülmüş anlık görüntü; GEÇİCİ/KESİN |
+| Hedef hükmü: CI alt sınırı ≥ %1,00, ≥ 40 tam gün / 60, ≥ 30 işlem, %25 yoğunlaşma | §7.3 | + aylık bakış, `α_bakış`, bütün kapsamlarda Holm |
+| İsteğe bağlı durma: kayıtlı bakışlar, alfa harcama, sabit BH ailesi | §5.7, §6.4 | + Kapı A/B bakışları, tek istatistik |
+| State'e yazma yok (shared-experience özetleri motor biriminden çalışmaz) | §2.1, §6.1 | — |
+| Birim kayması kapısı (`NeedDaemonReload=no`, 6G önce/sonra), `setup_vps_v3.sh` yok | §9.3 | + dizin oluşturma, elle smoke çalıştırma |
+| `OnCalendar` UTC + pencere testi | §2.2, P1a testleri | yedek çakışması saatle değil durumla |
+| ResearchCoordinator için P0 sahip kararı | §9.1, P0, §12 | + `--check`'te etkinleştirme sayısı |
+| PBO yok → CSCV yazılır; o zamana kadar kapı kapalı | §6.4 | — |
+| `python -I` yok; `-s -m` + `WorkingDirectory` | §2.3 | — |
+| Config kayması | §2.3 | **açık `--config` ile `load_config` yerine ham YAML; SKEW denetimi; yeniden sabitleme kuralı** |
+| `initial_stop` / R paydası | §4.3, §5.2, §5.3 | **düzeltildi:** vadeli kayıtlarda `features.initial_stop` ve `features.risk_usdt` ölçülmüştür; R paydası `risk_usdt`; rehydrate yalnız hedef ve sinyal bağlamı (stop'a 1 tick denetimi); `MISSING` yalnız eski kayıtlar ve özelliksiz spot kayıtları |
+| `label_outcome` çift ücret: yeniden kullanılmaz; regresyon testi | §4.2 | — |
+| Altın: `LIVE_PAPER`'da "işlem yok", yalnız aday akışında | §7.1 | + keşif katmanı |
+| Rotasyon riski `--check`'te | §4.2 | + `entries` rotasyon payı |
+| MTM `LAST_PRICE_PROXY`; EKSİK günler hariç | §7.1 | P1a'da `LEDGER_MARK`, P2'de `LAST_PRICE_PROXY` |
+| Paylaşılan IP: tek `BudgetPool`, düşük pay, seri başına yeniden deneme | §3.4 | + worker koruması |
+
+---
+
+## 14. Eleştiriye yanıt (ikinci hakem turu, karar "REVISE")
+
+Her zorunlu madde kod üzerinde yeniden doğrulandı. Tek bir alt iddia dışında hepsi kabul edildi ve uygulandı.
+
+### 14.1 Zorunlu maddeler
+
+| # | Madde | Durum | Nerede |
+|---|---|---|---|
+| 1 | Spot defter eksik (`state/spot_ledger.json`; engine_v3.py:262, 2654/2657; spot_ledger.py:75) | **kabul** | §4.1, §4.2, §7.1, §7.5, §7.7, P1a kapsamı ve test 2 |
+| 2 | "`initial_stop` TradeRecord'da yok" iddiası yanlış (futures_ledger.py:409, :567; engine_v3.py:2244) | **kabul**, bir inceltmeyle: iddia `FuturesLedgerV2` kayıtları için doğrudur; `SpotLedger` kayıtları `features` taşımaz (spot_ledger.py:458), bu yüzden spot stop/risk `trade_memory`/provenance'tan alınır veya `MISSING` olur ve P6'da ölçüme çevrilir | §4.3, §5.2, §5.3, §13, P2 kabul 4, P6 |
+| 3 | `entries[]` 2000'de döner; geriye doğru `E_book` girdisini kaybeder | **kabul** | §3.1, §4.2, §7.1, P1a test 3–4 |
+| 4 | Gün satırları kesin değil | **kabul** | §4.2, §6.1 S3, §7.1, §7.3 |
+| 5 | MTM'siz P1 başlığı yanıltıcı | **kabul** (iki seçeneğin ikisi birden: `LEDGER_MARK` MTM **ve** her gerçekleşmiş sayının yanında gerçekleşmemiş; yalnız-gerçekleşmiş satırda hüküm kelimesi yok) | §7.1, §7.7, P1a test 5 |
+| 6 | Config/sürüm kayması (config_v3.py:863–883) | **kabul** | §2.3, §6.1 S0, §9.2, P1a test 13–14, `docs/OPERATIONS.md` |
+| 7 | Yalıtım çalışma zamanında kendini doğrulamalı; sahte VPS sınırı yazılmalı | **kabul** | §2.5, §2.8 (tablo dahil), §9.3, P1a |
+| 8 | Dolaylı karar kanalları (418/429, CPU/IO) | **kabul**; ResearchCoordinator da aynı tabloya eklendi | §2.9, §3.4, P1a/P1b VPS kabulü |
+| 9 | wt-tourfix ile taban karışıklığı | **kabul** | §2.9, P0, §10 girişi |
+| 10 | P1 küçük değil; böl | **kabul**: P1a/P1b; iki kilit; bağımsız koşucular; küçük betik; `dukascopy_mirror.py` referansı kaldırıldı | §2.4, §9.3, §10 |
+| 11 | Store doğruluğu (a–g) | **kabul**, yedi alt maddenin hepsi | §3.2, §3.4, P1b testleri |
+| 12 | Hayatta kalma yanlılığı | **kabul**: zaman noktasında evren P3'te; o zamana kadar XSEC Kapı A'ya kapalı | §3.3, §6.2, §6.7, P3 |
+| 13 | Çoklu test / veri madenciliği (a–e) | **kabul**. (c) için iki seçenekten "mühür sonrası ileri veri" seçildi: geçmiş veri laboratuvarlarca zaten görüldüğünden sabit bir takvim bekletmesi de gerçekten görülmemiş olmazdı | §6.3, §6.4, §6.7, §7.3 |
+| 14 | İleriye dönük ≠ canlı kâğıt | **kabul**: `PROSPECTIVE_REPLAY` adı; maliyet oranı kapıdan çıktı, yerine ADVERSE/STRESS | §4.3, §6.6, §6.7, §7.1 |
+| 15 | Kopya paritesi tanımsız | **kabul**: POLICY kohortu ve config dönemi başına | §5.7, §6.2, P3 kabul 1 |
+| 16 | Bayat/çelişen adaylar | **kabul**: üçü de P4 listesinden çıktı; §5.10 dönem bölünmüş tarihsel yeniden üretim oldu | §1.2, §5.9, §5.10, §6.2, P4 |
+| 17 | "Gerçekten dene" isteği karşılanmıyor | **kabul**: keşif katmanı | §1.1, §1.4, §6.8, P3 |
+| 18 | Günlük hedef paydası belirsiz | **kabul** | §7.1, §7.2, §12 soru 12 |
+| 19 | Yedekleme ve geri yükleme | **kabul** | §3.6, §6.1 S7b, P1a test 8 ve 15 |
+| 20 | AST yalıtım kapsamı | **kabul** | §2.8, P1a test 11 |
+| 21 | Token planı gerçekçiliği | **kabul** | §8 |
+| 22 | Belge referans düzeltmeleri | **kısmen kabul** (aşağıda) | §2.2, §2.6, §4.1, §5.8, §6.3 |
+
+**Madde 22 ayrıntısı:**
+- `SegmentArchive`'in yeri `learn/journal_archive` (journal_archive.py:145) ve `pattern_trader/book.py:1317` onu zaten
+  çağırıyor: **kabul**, düzeltildi (§2.6, §5.8).
+- Yedek zamanlayıcısı hh:00–hh:06'ya bağlı değil: **kabul**; saat penceresi yerine `systemctl is-active
+  tradingbot-backup.service` (§2.2).
+- `state/tradingbot.db` WAL kipinde: **kabul**; motor SQLite'a hiç dokunmaz (§4.1, §9.2).
+- **"`quant/walkforward`'ta `run_three_way` yok" — REDDEDİLDİ.** Fonksiyon vardır: `tradingbot/quant/walkforward.py:320`
+  `def run_three_way(plan, assignment, *, fit_fn, candidates_fn, select_fn, evaluate_fn, ...)`, `f4190bc` ("feat(quant):
+  explicit three-way train/validation/test walk-forward") ile eklendi ve `1c2c6e2`'de mevcuttur. Hakemin önerdiği
+  `make_folds(validation_days>0)` de doğrudur ve ikisi birlikte kullanılır: `make_folds` üç yollu pencereleri üretir,
+  `run_three_way` her adımın yalnız kendi verisini görmesini kod düzeyinde zorlar. Belge iki referansı da tutar (§2.6,
+  §6.3).
+
+### 14.2 İsteğe bağlı maddeler
+
+| Madde | Durum | Nerede |
+|---|---|---|
+| k*/iflas tablosu başlıklardan ve `--check`'ten çıksın | kabul | §1.3, §6.5, §7.6, §7.7 |
+| Şans oranı için maliyet bilinçli sıfır hipotezi; başlığın hangisini kullandığı yazılsın | kabul (başlık muhafazakâr işaret çevirme) | §7.2 |
+| P1'de `decision_delay_s` ve sonraki fonlamaya uzaklık | kabul (`closes_derived`) | §4.2 |
+| engine-app ayrı klon olsun, worktree değil | kabul | §2.3, §9.3 |
+| İlk doldurma tahmini (`metrics` yalnız günlük zip) ve ilerleme/ETA | kabul (10–24 saat) | §2.2, P1b |
+| Tek enstrüman için XAUUSDT yerine BTCUSDT veya toplam öner | kabul | §12 soru 4 |
+| `find_books` yollarına asla yazmama özellik testi | kabul (spot yolu da eklendi) | §2.8, P1a test 12 |
+
+### 14.3 Son Faz-1 kapsamı (P1a)
+
+Ağsız, karar-nötr ve sahte VPS'te sınanabilir:
+- `research_engine/{__init__, paths, lock, selfcheck, rawconfig, ledgers, closes, daily_target, summary, backup, night}.py`;
+- vadeli **ve spot** kapanış arşivi, `entries[]` arşivi, gecelik ölçülmüş anlık görüntü, `rev`/`REVİZE`, `RESTORED_AWAY`,
+  rotasyon payı;
+- günlük hedef: kayıt görünümü, cüzdan görünümü, `LEDGER_MARK` MTM, GEÇİCİ/KESİN, iki payda, aylık bakış hükümleri;
+- `scripts/bot_scorecard.py --daily` (spot dahil) ve D4 etiketi;
+- `engine-night`, `engine-status [--brief]`, `engine-restore` (tembel import);
+- yalnız `tradingbot-engine-night.{service,timer}`;
+- küçük `tb-engine-<sha7>.sh` (`--dry-run`/deploy/`--check`/`--ab-report`/`--rollback`, ayrı klon, dizin oluşturma,
+  kapılı kurulum, elle smoke çalıştırma, bağımsız koşucular).
+
+P1a'da olmayanlar: ağ, store, tohum, evren, veri birimi, ilk doldurma (hepsi P1b); worker/app/dashboard/config
+değişikliği; panel; `tj_v1`, atıf, kütüphane, adaylar.

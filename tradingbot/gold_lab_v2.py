@@ -1575,7 +1575,9 @@ def higher_risk(strict: str, mon: Mapping[str, Any] | None, all_rows: list[Mappi
                          "drift_share": float(np.mean(pk)) / mean_r}
     else:
         out["excess"] = {"text": "plasebo karşılaştırması yok"}
-    dd_all, dd_oos = max_drawdown(all_rows) * X, max_drawdown(oos_rows) * X
+    ddr_all, ddr_oos = max_drawdown(all_rows), max_drawdown(oos_rows)
+    dd_all, dd_oos = ddr_all * X, ddr_oos * X
+    out["drawdown_r"] = {"all": ddr_all, "oos": ddr_oos}
     out["drawdown_pct"] = {"all": dd_all, "oos": dd_oos, "flag": dd_all > DD_FLAG_PCT}
     if dd_all > DD_FLAG_PCT:
         flags.append(f"en derin düşüş %{dd_all:.1f} > %{DD_FLAG_PCT:.0f}")
@@ -1870,8 +1872,41 @@ def apply_notes(report: dict[str, Any]) -> None:
 
 
 # ---------------------------------------------------------------------------- sonuç
+def _num(x: Any, nd: int = 2) -> str:
+    return "—" if x is None else f"{float(x):.{nd}f}"
+
+
+def venue_effect(report: Mapping[str, Any], name: str, cell: str) -> list[dict[str, Any]]:
+    """Hücrenin vadeli mekân satırları: n, brüt ve net (gerçek fonlamalı) ort. R, ortalama gerçek fonlama (R)."""
+    out = []
+    for r in ((report.get("venue") or {}).get("rows") or []):
+        if r.get("name") != name or r.get("cell") != cell:
+            continue
+        st, g = r.get("all") or {}, r.get("gross") or {}
+        out.append({"series": r.get("series"), "n": int(st.get("n") or 0), "gross_mean_r": g.get("mean_r"), "net_mean_r": st.get("mean_r"),
+                    "funding_r_mean": r.get("funding_r_mean"), "note": r.get("note") or ""})
+    return out
+
+
+def recommendation_detail(report: Mapping[str, Any], c: Mapping[str, Any]) -> str:
+    """Öneri satırının içeriği (belge 'Öneri kuralı'): %95 aralık, en derin düşüş, vadeli mekândaki gerçek fonlama etkisi, kazanan
+    laneti notu."""
+    mon = c.get("monthly") or {}
+    ddr = (c.get("higher_risk") or {}).get("drawdown_r") or {}
+    dd_all = None if ddr.get("all") is None else float(ddr["all"]) * G.RISK_PCT
+    dd_oos = None if ddr.get("oos") is None else float(ddr["oos"]) * G.RISK_PCT
+    ven = venue_effect(report, c["name"], c["cell"])
+    vtxt = "; ".join(f"{v['series']}: n {v['n']}, ort.R brüt {_fmt(v['gross_mean_r'], 3)} → net {_fmt(v['net_mean_r'], 3)} (gerçek "
+                     f"fonlama ort. {_fmt(v['funding_r_mean'], 3)} R)" for v in ven) or "satır yok"
+    return (f"doğrulama ort. aylık {_fmt(mon.get('mean_pct_month'))}% (R_fon, %0,5 risk) · %95 aralık {_ci(mon.get('ci95_pct_month'))} · "
+            f"≥ +%1 ay payı {_num(mon.get('share_months_ge_target'))} · en derin düşüş (birikimli R_fon, bileşiksiz) %0,5 riskte bütün "
+            f"hüküm serisi %{_num(dd_all, 1)}, doğrulama %{_num(dd_oos, 1)} · vadeli mekân (gerçek fonlama; hüküm DEĞİL): {vtxt} · "
+            f"{GOLD_V2_REGISTRY['higher_risk']['curse_tr']}; ulaşılacağı garanti değildir")
+
+
 def conclusion(report: Mapping[str, Any]) -> dict[str, Any]:
-    """Öneri kuralı (belgenin 'Sonuç ve sonraki adım'ı)."""
+    """Öneri kuralı (belgenin 'Sonuç ve sonraki adım'ı). Bir şart ölçülemiyorsa (ailenin plasebo aday oranı tanımsız ya da
+    hücrenin vadeli mekân satırı yok) tutmuş SAYILMAZ: öneri yapılmaz ve nedeni açıkça yazılır."""
     lines, rec = [], []
     fam_status = {f: (report.get(f) or {}).get("status") for f in ("A", "B")}
     for f in ("A", "B"):
@@ -1879,26 +1914,42 @@ def conclusion(report: Mapping[str, Any]) -> dict[str, Any]:
         if st and st != "koşuldu":
             lines.append(f"Aile {f}: {st} — " + ("PAXG/XAUUSDT satırları onun yerine geçmez" if f == "A" else "hüküm yok"))
     cells = [c for f in ("A", "B") for c in ((report.get(f) or {}).get("cells") or [])]
+    main_pass = {f: any(c["main"] and c["verdict_strict"] == L.V_STRONG for c in cells if c["family"] == f) for f in ("A", "B")}
     for c in cells:
         fam = report.get(c["family"]) or {}
         prate = (fam.get("candidate_rate") or {}).get("placebo")
         ok_pl = prate is not None and prate == 0
-        ok_pl = ok_pl or (prate is None)
         if c["main"] and c["verdict_strict"] == L.V_STRONG:
-            if c["meets_target"] and ok_pl and not c.get("note"):
+            ok_ven = bool(venue_effect(report, c["name"], c["cell"]))
+            if c["meets_target"] and ok_pl and ok_ven and not c.get("note"):
                 rec.append(c)
-                lines.append(f"ÖNERİ (yalnız PAPER, yalnız-kayıt; sahip onayı olmadan hiçbir şey açılmaz): {c['name']} {c['cell']}")
+                lines.append(f"ÖNERİ (yalnız PAPER, yalnız-kayıt; sahip onayı olmadan hiçbir şey açılmaz): {c['name']} {c['cell']} — "
+                             + recommendation_detail(report, c))
             elif c["meets_target"]:
                 why = []
-                if not ok_pl:
+                if prate is None:
+                    why.append(f"aile {c['family']} hüküm plasebo aday oranı hesaplanamadı (plasebo hücrelerinin hepsi VERİ AZ): şart "
+                               "(iii) ölçülemedi")
+                elif not ok_pl:
                     why.append(f"aile {c['family']} plasebo aday oranı {prate}")
+                if not ok_ven:
+                    why.append("hücrenin vadeli mekân satırı yok (venue bölümü koşulmadı ya da vadeli seri boş): şart (iv) ve mekân fonlama etkisi "
+                               "ölçülemedi")
                 if c.get("note"):
                     why.append(c["note"])
                 lines.append(f"{c['name']} {c['cell']}: hedefi karşılıyor ama öneri şartı tutmadı ({'; '.join(why)})")
             else:
                 lines.append(f"{c['name']} {c['cell']}: kenar var, hedefin altında")
-        elif not c["main"] and c["meets_target"]:
-            lines.append(f"{c['name']} {c['cell']} (ikincil): hedefi karşılıyor — yalnız yeni bir ön kayıt (gold_v3) gerekir; öneri DEĞİL")
+        elif not c["main"] and L.V_STRONG in (c["verdict_strict"], c["verdict"]):
+            if c["family"] == "B" and not main_pass["B"]:
+                ctx = "B_WKND_REV_ALL İKİ YÖN sıkı GÜÇLÜ ADAY değilken: tarama yapıntısı, kanıt değil"
+            elif c["family"] == "A" and not main_pass["A"]:
+                ctx = "A'nın ANA hücreleri sıkı GÜÇLÜ ADAY değilken: kanıt değil"
+            else:
+                ctx = "ikincil hücreden tek aday 56 altın hücresi içinde zayıf kanıttır"
+            vd = "sıkı GÜÇLÜ ADAY" if c["verdict_strict"] == L.V_STRONG else f"standart GÜÇLÜ ADAY (sıkı: {c['verdict_strict']})"
+            tgt = "hedefi karşılıyor" if c["meets_target"] else "hedefin altında"
+            lines.append(f"{c['name']} {c['cell']} (ikincil): {vd}, {tgt} — {ctx}; yalnız yeni bir ön kayıt (gold_v3) gerekir; öneri DEĞİL")
     if not rec and not any(c["meets_target"] for c in cells):
         lines.append(NO_TARGET_TR)
     return {"lines": lines, "recommend": [f"{c['name']} {c['cell']}" for c in rec]}
@@ -2053,6 +2104,7 @@ def run(*, sections: Iterable[str], cache_dir: Path | str, out_dir: Path | str, 
     report.update({"kind": "GOLD_LAB_V2", "version": GOLD2_VERSION, "registry_sha": GOLD_V2_REGISTRY_SHA, "doc": GOLD2_DOC,
                    "config": cfg_d, "cost_round_trip_pct": round(2 * cfg.cost_per_side * 100, 3), "generated_at": _iso(now_ms),
                    "windows": win, "windows_overridden": overridden, "readings_tr": list(READINGS_TR),
+                   "disclosure_tr": list(DISCLOSURE_TR), "limits_tr": list(LIMITS_TR),
                    "note_tr": "Geçmiş test (PAPER değil, canlı değil); kâr garantisi değildir. Hüküm yalnız aile A (Dukascopy "
                               "2006–2020) ve aile B (PAXG spot) hüküm hücrelerinden; görülmüş, mekân, SHORT, bilgi plaseboları ve C "
                               "bilgidir."})
@@ -2280,6 +2332,41 @@ _CELL_HEAD = ["| varyant | hücre | işlem keşif/doğr. | ort.R keşif/doğr. |
               "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
 
 
+def _hr_detail(c: Mapping[str, Any]) -> list[str]:
+    """'Daha yüksek risk' satırının sayıları (belge maddeleri 4–8); X yalnız sıkı GÜÇLÜ ADAY hücrelerde vardır."""
+    hr = c.get("higher_risk") or {}
+    if hr.get("X") is None:
+        return []
+    tor, ex, dd, lev = (hr.get(k) or {} for k in ("total_open_risk_pct", "excess", "drawdown_pct", "leverage"))
+    mark = " — İŞARETLİ"
+    return [f"- {c['name']} {c['cell']} — daha yüksek risk (bilgi; kenar değildir), X = %{hr['X']:.2f}: toplam açık risk = en çok "
+            f"{tor.get('max_concurrent')} eşzamanlı işlem × X = %{_num(tor.get('value'))} (PAPER_RESEARCH tavanı %{OPEN_RISK_CAP:.1f}, "
+            f"öğrenme modu %{OPEN_RISK_LEARNING:.1f}){mark if tor.get('flag') else ''} · plasebo üstü fazla: {ex.get('text', '—')}; aylık "
+            f"fazla R {_num(ex.get('mean_r_month'), 3)}; yön kayması payı {_num(ex.get('drift_share'))} · en derin düşüş X riskte bütün "
+            f"hüküm serisi %{_num(dd.get('all'), 1)}{mark if dd.get('flag') else ''}, doğrulama %{_num(dd.get('oos'), 1)} · ima edilen "
+            f"kaldıraç medyan {_num(lev.get('median'))}, en çok {_num(lev.get('max'))}{mark if lev.get('over_paper') else ''} · "
+            f"{hr.get('curse_tr', '')}"]
+
+
+MONTH_SKIPS = ("SONRAKİ_AY_KULLANILAMAZ", "SONRAKİ_AY_YOK", "AY_KULLANILAMAZ", "ISINMA", "GERİ_BAKIŞ_AYI")
+
+
+def _month_skip_lines(report: Mapping[str, Any]) -> list[str]:
+    """Aylık varyantların karar atlamaları (bilgi; bütün hüküm serisi): m+1'in kullanılabilirliğine bağlı atlamalar dahil."""
+    cnt = (report.get("A") or {}).get("counts") or {}
+    out = []
+    for name in A_NAMES:
+        if VARIANTS[name]["entry"] not in MONTHLY:
+            continue
+        sk = (cnt.get(f"{FAMILY}|{name}|AY") or {}).get("skipped") or {}
+        out.append(f"- {name} aylık karar atlamaları (bilgi; bütün hüküm serisi): " + " · ".join(f"{k} {int(sk.get(k, 0))}" for k in MONTH_SKIPS))
+    if out:
+        out.append("- SONRAKİ_AY_KULLANILAMAZ: m+1 ayı kullanılamadığı (kapsama, ay sonu şartı, bitişiklik ya da segment) için m ayında karar "
+                   "verilmedi. Fiyat kullanılmaz ama karar anından sonraki verinin DURUMUNA bağlıdır; ön kayıtlıdır ve plaseboya aynısı "
+                   "uygulanır.")
+    return out
+
+
 def render_md(report: Mapping[str, Any]) -> str:
     """Kısa, düz Türkçe rapor: önce ANA hücreler, sonra ikincil hücreler, sonra bilgi eki."""
     out = [f"# Altın laboratuvarı — {report.get('version')} raporu", "",
@@ -2303,10 +2390,15 @@ def render_md(report: Mapping[str, Any]) -> str:
                 rr = c.get("monthly_r") or {}
                 out.append(f"- {c['name']} {c['cell']}: ort.R'nin ay kümeli %95 aralığı (bilgi) keşif {_ci(mc.get('IS'))} · doğrulama "
                            f"{_ci(mc.get('OOS'))}; fonlamasız aylık % (bilgi) {_p(rr.get('mean_pct_month'))} {_ci(rr.get('ci95_pct_month'))}.")
+                out += _hr_detail(c)
         out += ["", "Hüküm fonlamasız R ile (laboratuvar tanımı); hedef ve 'daha yüksek risk' yalnız R_fon ile (fonlama vekili 8 saatte "
                 "%0,01). Ortalamanın %1'e tam yetmesi, gerçek ortalamanın %1'in altında olma olasılığının kabaca %50 olduğu anlamına "
                 "gelir. Aylık varyantlarda karar ayına yazma, işlemi tutulduğu aydan bir ay ÖNCE raporlar.", ""]
         out += ["## İkincil hücreler", ""] + _CELL_HEAD + [_cell_line(c) for c in cells if not c["main"]] + [""]
+        sec_hr = [x for c in cells if not c["main"] for x in _hr_detail(c)]
+        ms = _month_skip_lines(report)
+        if sec_hr or ms:
+            out += sec_hr + ms + [""]
         out += ["## Çoklu deneme", ""]
         for f in ("A", "B"):
             cr = (report.get(f) or {}).get("candidate_rate")
@@ -2350,7 +2442,8 @@ def render_md(report: Mapping[str, Any]) -> str:
             out.append(f"- Seri: {fr.get('hours')} saat, {fr.get('days')} işlem günü, {fr.get('bars_4h')} 4h bar, {fr.get('segments')} segment; "
                        f"BOŞLUK_GERİ_BAKIŞ {fr.get('gap_lookback')}; hafta sonu saatleri {fr.get('weekend_hours')} "
                        f"({fr.get('weekend_weeks')}/{fr.get('weeks')} hafta{' — İŞARETLİ' if fr.get('weekend_flag') else ''}); kısa seans "
-                       f"günü {fr.get('short_session_days')}; KISMİ_GÜN {fr.get('partial_days')}; günlük dosya ay sonu fark medyanı "
+                       f"günü {fr.get('short_session_days')}; KISMİ_GÜN {fr.get('partial_days')} (serinin ilk ayının ilk işlem günü her zaman sayılır: "
+                       f"önceki ayın dosyası okunmaz; beklenen, bilgi); günlük dosya ay sonu fark medyanı "
                        f"{(fr.get('day_file') or {}).get('median_diff')} (mutlak {(fr.get('day_file') or {}).get('median_abs_diff')}).")
             out.append("")
     b = report.get("B")
@@ -2392,6 +2485,15 @@ def render_md(report: Mapping[str, Any]) -> str:
             sk, psk = rc.get("skipped") or {}, pc.get("skipped") or {}
             out.append(f"| {c['name']} | {c['cell']} | {sk.get('KESİLDİ', 0)}/{psk.get('KESİLDİ', 0)} | {sk.get('BOŞLUK_TUTUŞ', 0)}/"
                        f"{psk.get('BOŞLUK_TUTUŞ', 0)} | {_p((rc.get('kesildi_mtm') or {}).get('mean_r'), 3)} |")
+        out += ["", "- Not: giriş barı (karar barından sonraki bar) dilimin son barıysa simulate_rule 'gelecek veri yok' der; o barda stop "
+                "görülse bile işlem KESİLDİ (son segmentte) ya da BOŞLUK_TUTUŞ sayılır. Laboratuvarın kuralıdır, plaseboya aynısı uygulanır; "
+                "ileriye bakma değildir.", ""]
+        out += ["### Eşzamanlı açık işlem (bilgi)", "", "| varyant | hücre | bütün hüküm serisi en çok / zaman ağırlıklı ort. | doğrulama en çok / ort. |",
+                "|---|---|---|---|"]
+        for c in cells:
+            ca = c.get("concurrency_all") or {}
+            co = (c.get("monthly") or {}).get("concurrency") or {}
+            out.append(f"| {c['name']} | {c['cell']} | {ca.get('max', 0)} / {_num(ca.get('mean'))} | {co.get('max', 0)} / {_num(co.get('mean'))} |")
         out.append("")
         cs = [c for c in cells if (c.get("c_sizing") or {}).get("text") == "bilgi (C)"]
         out += ["### C — oynaklık hedefli boyut (bilgi, ayrı hipotez DEĞİL)", ""]
@@ -2416,11 +2518,14 @@ def render_md(report: Mapping[str, Any]) -> str:
             out.append(f"| {r['series']} ({r.get('label')}) | {r['name']} | {r['cell']} | {st.get('n', 0)} | {_p(g.get('mean_r'), 3)} | {_p(second, 3)} | "
                        f"{_p(pl.get('mean_r'), 3)} | {_p(r.get('diff'), 3)} | {_ci(r.get('diff_ci'))} | {r.get('note') or ''} |")
         out.append("")
+        if sec == "venue":
+            out += [f"- {VENUE_FUNDING_NOTE_TR}", ""]
     cal = report.get("calib")
     if cal:
         out += ["### Sentetik ayar (rastgele yürüyüş)", "",
                 f"- {cal.get('worlds')} dünya · hücre başına GÜÇLÜ ADAY {cal.get('strong_rate_per_cell')} · sıkı {cal.get('strict_rate_per_cell')} · "
                 f"24 hücrede beklenen {cal.get('expected_per_24')}.", ""]
+    out += ["## Ön kayıttan önce veriden görülenler (biçim doğrulaması; belgedeki açıklamanın tekrarı)", ""] + [f"- {x}" for x in DISCLOSURE_TR] + [""]
     out += ["## Notlar ve bilinen sınırlar", ""] + [f"- {x}" for x in LIMITS_TR] + [""]
     out += ["Belirsiz kuralların okunuşu `GOLD_V2_REGISTRY['readings_tr']` içindedir (mühre dahil).", ""]
     return "\n".join(out)
@@ -2439,7 +2544,37 @@ LIMITS_TR = (
     "Aile A'nın önseli yayımlanmış trend takibi kanıtıyla (yaklaşık 2016'ya kadar) örtüşür; doğrulama 'bu depoda görülmemiş veride, tek "
     "varlıkta, botun maliyetiyle' bir sınamadır.",
     "'Daha yüksek risk' satırı ve C, hükmü veren aynı doğrulama ortalamasından türer (kazanan laneti); yalnız bilgidir, kenar değildir.",
+    "Aylık varyantlarda m ayının kararı m+1 ayının kullanılabilir olmasına bağlıdır (fiyat değil, veri durumu); ön kayıtlıdır, plaseboya "
+    "aynısı uygulanır; atlama sayısı (SONRAKİ_AY_KULLANILAMAZ) ikincil hücrelerin altında yazılır.",
+    "Zaman damgası ya da kapsama denetimi geçmezse koşu GoldDataError ile durmak yerine aile A'yı 'yapılamadı' diye yazar ve varyantları "
+    "hiç koşmaz; sonuç belgedekiyle aynıdır (aile A'da hüküm hücresi yok; görülmüş/mekân satırları onun yerine geçmez).",
+    "Mühürlü okunuşlardan birinde (maruziyet eşli plasebo seçimi) atlama etiketi 'ESŞ_ADAY_YOK' diye yanlış yazılmıştır; kodun saydığı "
+    "etiket 'EŞ_ADAY_YOK'tur. Mühür değişmesin diye metin düzeltilmedi.",
+    "Öneri kuralının bir şartı ölçülemiyorsa (ailenin hüküm plasebo aday oranı tanımsız ya da hücrenin vadeli mekân satırı yok) şart "
+    "tutmuş SAYILMAZ; öneri yapılmaz ve nedeni sonuçta yazılır.",
 )
+
+#: Belgenin "Bu belge yazılırken veriden ne görüldü" bölümü (belge: "bu açıklama sonuç raporunda tekrarlanır").
+DISCLOSURE_TR = (
+    "Dukascopy dosya biçimi 2026-10-05 05:20–05:21 UTC'de aynanın DIŞINDA bir klasöre (scratchpad/gold/duka_h) indirilen deneme "
+    "dosyalarıyla doğrulandı. Çözülen dosyalar yalnız ikidir: 2010-01 saatlik (2010/00/BID_candles_hour_1.bi5, 744 kayıt) ve 2010 "
+    "günlük (2010/BID_candles_day_1.bi5, 365 kayıt); her birinin ilk iki ve son kaydı fiyatlarıyla ekrana basıldı.",
+    "Görülenler: 2010-01-01 00:00 ve 01:00 UTC saatlik barları (≈ 1.096 USD), 2010-01-31 23:00 UTC (Pazar) saatlik barı (kapanış "
+    "≈ 1.083, hacim > 0), 2010-01-01 günlük barı (açılış ≈ 1.096), 2010-01-02 günlük barı (Cumartesi; düz, hacim 0) ve 2010-12-31 "
+    "günlük barı (kapanış ≈ 1.420). Bundan 2010'un yönü (≈ +%30) ve Ocak 2010'un yönü (≈ −%1) bilinir; ikisi de keşif dönemindedir. "
+    "Doğrulama dönemine (2014-01 → 2020-07) ait hiçbir fiyat görülmedi. İkisi de kamuya açık bilgidir.",
+    "Aynı anda indirilen 2006-06 saatlik dosyası (2006/05/BID_candles_hour_1.bi5) çözülmedi; 2015/00/BID_candles_day_1.bi5 isteği 503 "
+    "döndü (çözülmedi).",
+    "gold_v1 sırasında (2026-10-04) dakikalık biçimi doğrulamak için 2006-01-01 (Pazar; düz, hacim 0) ve 2006-01-03 dakikalık dosyaları "
+    "çözüldü; ilk üç / son iki kayıt ve sütunların en küçük/en büyük değerleri basıldı (2006-01-03 gün içi ≈ 516–535 USD). gold_v1'in "
+    "Dukascopy bölümü kapsama eşiğine takıldığı için (%2,4) hiç koşmadı ve hiçbir olay üretmedi.",
+    "Aynanın geri kalanından ön kayıttan önce yalnız manifest (indirme durumu, bayt) okundu; hiçbir getiri dizisi, gösterge, sinyal, "
+    "işlem ya da R hesaplanmadı. Bu dosyalar hükümden çıkarılmaz (birkaç fiyat seviyesi kuralların sonucunu belirlemez).",
+)
+
+VENUE_FUNDING_NOTE_TR = ("Not: vadeli satırlarda gerçek fonlama (futures_lab.funding_carry) stopla kapanan işlemde pencereyi stop barının "
+                         "AÇILIŞINDA kapatır; fonlama vekili (R_fon) stop barının KAPANIŞINDA. Fark en çok bir barın fonlamasıdır; yalnız "
+                         "bilgi satırlarını etkiler, hükme girmez.")
 
 
 __all__ = ["A_NAMES", "B_NAMES", "BOTH_CELL", "CELLS", "Counts", "FAMILY", "GOLD2_VERSION", "GOLD_V2_REGISTRY", "GOLD_V2_REGISTRY_SHA",

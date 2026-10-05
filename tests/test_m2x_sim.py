@@ -279,6 +279,31 @@ def test_crash_budget_binds_with_wide_stops():
     assert s["equity"] - 0.5 * s["peak"] - s["cl"] >= -1e-6
 
 
+def test_min_notional_bump_opens_at_the_smallest_order():
+    """§2.6: risk boyutu en küçük emrin altında kalan aday en küçük emre ÇIKARILIR (miktar adıma YUKARI) ve defter onu
+    reddetmez. 2026-10-05 düzeltmesi: miktar adımı ve en küçük miktar `fit_size`a verilmiyordu; çıkarılmış notional
+    defterde adıma AŞAĞI yuvarlanınca 4,999… < 5 olup her çıkarma `M2X_LEDGER_MIN_NOTIONAL` ile reddediliyordu."""
+    run = S.M2xRunner(S.ARMS["p"], params=S.LedgerParams(), record_hourly=False)
+    # (p) K1: risk = %20 / 28 ≈ %0,714 → d ≈ 1,43 USDT. X: s ≈ %30 → notional ≈ 4,76 < 5; ETH (varsayım 20): s ≈ %10 → ≈ 14,3 < 20
+    opens = [_cand(1, "X/USDT", stop=0.7), _cand(2, "ETH/USDT", stop=0.9)]
+    run.on_tour(S.BOOT_BASE_MS, marks={"X/USDT": 1.0, "ETH/USDT": 1.0}, rule_closes=[], opens=opens,
+                m2_open={"X/USDT": "M1", "ETH/USDT": "M2"}, u=0.0)
+    assert not run.skips
+    assert {e["symbol"]: e["size_rule"] for e in run.entries} == {"X/USDT": "BUMP_MIN_NOTIONAL", "ETH/USDT": "BUMP_MIN_NOTIONAL"}
+    e0 = run.snapshots[-1]["equity"]
+    cap = min(2 * P.Knobs(proportional_n=28).tier_risk_pct(0), 2.0) / 100.0 * e0
+    for sym, mn in (("X/USDT", 5.0), ("ETH/USDT", 20.0)):
+        p = run.ledger.positions[sym]
+        notional = float(p.qty) * float(p.entry_avg)
+        assert mn <= notional < mn * (1 + 1e-9)                    # en küçük emir; fazlası değil
+        assert next(e for e in run.entries if e["symbol"] == sym)["risk_usdt"] <= cap * (1 + 1e-9)
+    # tavanı aşan çıkarma açılmaz, politika nedeniyle atlanır (defter reddi değil)
+    run2 = S.M2xRunner(S.ARMS["p"], params=S.LedgerParams(), record_hourly=False)
+    run2.on_tour(S.BOOT_BASE_MS, marks={"ETH/USDT": 1.0}, rule_closes=[], opens=[_cand(3, "ETH/USDT", stop=0.8)],
+                 m2_open={"ETH/USDT": "M3"}, u=0.0)
+    assert not run2.entries and [s["reason"] for s in run2.skips] == [P.SKIP_MIN_NOTIONAL]
+
+
 def test_ladder_cuts_risk_and_halt_stops_entries():
     run = S.M2xRunner(S.ARMS["b"], params=S.LedgerParams(), record_hourly=False)
     t = S.BOOT_BASE_MS

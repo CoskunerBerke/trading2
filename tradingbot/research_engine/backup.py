@@ -6,7 +6,10 @@ yedeğini alır:
 
 * **Dahil** (`INCLUDE`): `closes/`, `entries/`, `snapshots/`, `target/`, `trials/`, `lessons/`, `library/`, `explore/`,
   `prospective/`, `proposals/`, `approvals/`, `summary/` ve son 30 `runs/<run_id>/` (+ `runs/` kökündeki küçük
-  kayıt dosyaları, ör. A/B dönem kaydı `engine_epochs.jsonl`).
+  kayıt dosyaları, ör. A/B dönem kaydı `engine_epochs.jsonl`). **P1b eki:** `universe/` (günlük evren) ve
+  `exchangeinfo/` (günlük listeleme/delist görüntüsü) — küçüktür (günde birkaç on KB) ve yeniden ÜRETİLEMEZ: o günün
+  borsa durumunun tek kaydıdır (geçmiş `exchangeInfo` sonradan çekilemez; P3'ün zaman noktasında evreni bunlara
+  dayanır). Veri biriminin çalıştırma kayıtları (`runs/data/`) girmez (yeniden üretilebilir tanı kaydı).
 * **Hariç** (`EXCLUDE`, yeniden üretilebilir): `store/`, `archive_cache/`, `dukascopy/`, `backtests/`, `paths/`; ayrıca
   `backup/` (yedeğin kendisi) ve `locks/`. Listede olmayan bir üst klasör de alınmaz (bilinmeyen = dahil değil).
 
@@ -47,7 +50,7 @@ from .lock import analysis_lock
 from .paths import EnginePaths, sha256_file
 
 INCLUDE: tuple[str, ...] = ("closes", "entries", "snapshots", "target", "trials", "lessons", "library", "explore",
-                            "prospective", "proposals", "approvals", "summary")
+                            "prospective", "proposals", "approvals", "summary", "universe", "exchangeinfo")
 RUNS_DIR = "runs"
 RUNS_KEEP = 30
 EXCLUDE: tuple[str, ...] = ("store", "archive_cache", "dukascopy", "backtests", "paths")

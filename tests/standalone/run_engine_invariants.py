@@ -1,8 +1,12 @@
 # -*- coding: utf-8 -*-
-"""BAĞIMSIZ KOŞUCU — sürekli öğrenme motoru P1a (docs/SYSTEM_LEARNING_ENGINE_V1.md §9.3, §10 P1a kabul 18).
+"""BAĞIMSIZ KOŞUCU — sürekli öğrenme motoru P1a + P1b (docs/SYSTEM_LEARNING_ENGINE_V1.md §9.3, §10 P1a kabul 18).
 
-VPS'te pytest YOKTUR. Motor sürüm betiğinin `--dry-run`'ı ve `--check`'i depo testlerinin VPS'te anlamlı alt kümesini
-(kabul 1–8, 13, 14) bu dosyayla, pytest OLMADAN, AYRI bir süreçte koşar:
+VPS'te pytest YOKTUR. Motor sürüm betiğinin `--dry-run`'ı (ve dağıtımın ön denetimi) depo testlerinin VPS'te anlamlı
+alt kümesini bu dosyayla, pytest OLMADAN, AYRI bir süreçte koşar: P1a kabul 1–8, 13, 14 ve (P1b'den) P1b depo kabul
+testleri 1–11, 13–15. İki aşamanın kabul numaraları çakışmasın diye P1b'ninkiler **100 eklenerek** yazılır (101 = P1b
+kabul 1, …, 115 = P1b kabul 15). P1b kabul 12 (veri birimi sözleşmesi) birim DOSYASI testidir; sürüm betiği aynı
+satırları kendi `unit_contract`'ıyla ve sha256 sabitiyle denetler. Parametreli testler (ör. P1b kabul 5'in günlük
+koruması ve 418/429 varyantları) bu koşucuda koşamaz; kabul 5'in alt kümesi sabitlenmiş metin kalıbı testidir:
 
     /opt/tradingbot/venv/bin/python -s tests/standalone/run_engine_invariants.py --tree /opt/tradingbot/engine-app
 
@@ -39,7 +43,7 @@ import traceback
 import types
 from pathlib import Path
 
-#: (kabul no, modül, test) — VPS'te koşan alt küme (P1a kabul 18: 1–8, 13, 14).
+#: (kabul no, modül, test) — VPS'te koşan alt küme (P1a kabul 18: 1–8, 13, 14; P1b: 100 + kabul no).
 SUBSET: tuple[tuple[int, str, str], ...] = (
     (1, "test_research_engine_archive", "test_closes_archive_survives_5000_history_rotation_and_reconciles"),
     (1, "test_research_engine_archive", "test_late_funding_appends_rev_and_marks_day_revized_append_only"),
@@ -76,8 +80,34 @@ SUBSET: tuple[tuple[int, str, str], ...] = (
     (13, "test_research_engine_night", "test_root_run_against_a_non_root_research_root_is_refused_before_any_write"),
     (13, "test_research_engine_night", "test_disk_guard_real_statvfs_path_refuses_and_passes"),
     (14, "test_research_engine_daily_target", "test_rawconfig_tolerates_unknown_keys_and_records_sha"),
+    # ---- P1b (100 + P1b depo kabul no)
+    (101, "test_research_engine_datastore", "test_rerun_with_fake_provider_adds_zero_rows_and_keeps_checksums_and_seal"),
+    (101, "test_research_engine_store", "test_rewriting_the_same_rows_adds_nothing_and_keeps_files_and_seal"),
+    (102, "test_research_engine_store", "test_part_checksums_sidecars_manifest_and_seal_agree_and_seal_reads_no_part"),
+    (103, "test_research_engine_store", "test_only_closed_bars_and_points_are_written"),
+    (104, "test_research_engine_datastore", "test_one_series_failure_does_not_stop_the_others_and_is_retried_with_jitter"),
+    (105, "test_research_engine_datastore", "test_worker_rate_line_pattern_is_pinned_to_http_py_format_strings"),
+    (106, "test_research_engine_datastore", "test_engine_rest_share_never_exceeds_a_tenth_of_the_ip_limit"),
+    (106, "test_research_engine_datastore", "test_data_run_rest_weight_stays_within_share_end_to_end"),
+    (107, "test_research_engine_store",
+     "test_priority_rest_never_overwrites_archive_archive_replaces_rest_and_diffs_are_recorded"),
+    (107, "test_research_engine_datastore", "test_archive_reconciliation_replaces_rest_bars_and_records_the_diff"),
+    (107, "test_research_engine_datastore",
+     "test_zip_without_checksum_is_unverified_not_counted_and_upgraded_when_checksum_appears"),
+    (108, "test_research_engine_store",
+     "test_manifest_lag_heals_corrupt_is_quarantined_and_halt_needs_two_consecutive_failed_nights"),
+    (108, "test_research_engine_datastore",
+     "test_manifest_lag_heals_corrupt_part_is_refetched_and_series_halts_only_after_two_failed_nights"),
+    (109, "test_research_engine_store", "test_funding_interval_is_derived_from_data_and_gaps_use_it"),
+    (110, "test_research_engine_store", "test_microseconds_to_ms_for_every_2025_plus_spot_series_by_path_and_date"),
+    (111, "test_research_engine_parity_seed",
+     "test_seed_makes_a_consistent_copy_or_redownloads_and_never_writes_the_worker_store"),
+    (113, "test_research_engine_datastore", "test_backfill_writes_progress_and_eta_and_pauses_in_4h_windows"),
+    (113, "test_research_engine_datastore", "test_update_stops_starting_series_after_its_deadline"),
+    (114, "test_research_engine_parity_seed", "test_store_provider_fixture_parity_with_archive_provider"),
+    (115, "test_research_engine_datastore", "test_night_is_not_skipped_locked_during_backfill_and_reads_only_sealed_parts"),
 )
-ACCEPTANCE = (1, 2, 3, 4, 5, 6, 7, 8, 13, 14)
+ACCEPTANCE = (1, 2, 3, 4, 5, 6, 7, 8, 13, 14, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 113, 114, 115)
 _NOTSET = object()
 
 
@@ -364,7 +394,7 @@ def run(tree: Path, tmp_root: Path, *, only: set[int] | None = None) -> list[dic
 
 
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(description="Öğrenme motoru P1a bağımsız değişmez koşucusu (pytest yok)")
+    ap = argparse.ArgumentParser(description="Öğrenme motoru P1a + P1b bağımsız değişmez koşucusu (pytest yok)")
     ap.add_argument("--tree", default=str(Path(__file__).resolve().parents[2]), help="kod ağacı (engine-app) kökü")
     ap.add_argument("--tmp", default=None, help="geçici kök (varsayılan: yeni tempfile klasörü; sonunda silinir)")
     ap.add_argument("--keep", action="store_true", help="geçici klasörü silme")

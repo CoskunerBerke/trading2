@@ -43,7 +43,8 @@ tetiklenir). Denetimler (her biri saf bir fonksiyondur; testler `Probes`/`runner
    AÇIK, tekse KAPALI. **Okuma (motor sürümü):** §2.9 "her motor sürümünden sonra" der; `docs/OPERATIONS.md` ise her
    APP sürümünün engine-app'i yeni app SHA'sına yeniden sabitlemesini ister. HEAD SHA'sına bağlansaydı her app sürümü
    yeni bir 14 gecelik A/B (7 KAPALI gece) açardı. Bu yüzden dönem, ÇALIŞAN motor kodunun içerik özetine bağlanır
-   (`engine_code_hash`: `tradingbot/research_engine/*.py` + gece birimi dosyalarının sha256'sı): yalnız motoru
+   (`engine_code_hash`: `tradingbot/research_engine/*.py` + gece ve (P1b'den) veri birimi dosyalarının sha256'sı;
+   veri birimi de motorun çalışma ayarıdır, gece birimi gibi sayılır): yalnız motoru
    değiştiren bir sürüm yeni dönem açar; aynı kodla yeniden sabitlenen SHA eski dönemin günüyle kayda eklenir.
    **Okuma (pencerenin başı):** motor bir kod özetini ilk kez gördüğü günü `runs/engine_epochs.jsonl`'a yazar (yalnız
    eklenir; her yeni SHA ayrı satır, `epoch_day` = o kodun ilk görüldüğü gün). O gün sürüm günüdür ve o günün
@@ -101,7 +102,8 @@ EPOCHS_FILE = "engine_epochs.jsonl"
 EPOCH_SCHEMA = "engine_epoch_v2"
 #: motor kod özetine giren dosyalar (çalışan kod kökünden göreli; madde 5)
 ENGINE_CODE_GLOBS = ("tradingbot/research_engine/*.py", "deploy/tradingbot-engine-night.service",
-                     "deploy/tradingbot-engine-night.timer")
+                     "deploy/tradingbot-engine-night.timer", "deploy/tradingbot-engine-data.service",
+                     "deploy/tradingbot-engine-data.timer")
 
 # ---- sonuç kodları
 OK = "OK"

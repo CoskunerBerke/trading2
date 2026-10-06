@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# trading2 — VPS dağıtımı (PAPER; gerçek para YOK). Hedef: TIP değişkeni (dal claude/gifted-knuth-0ehpcs).
+# trading2 — VPS dağıtımı (PAPER; gerçek para YOK). Hedef: TIP değişkeni (dal impl/knn-fast; sonra PR dalına alınır).
 # Ön koşul: VPS'te çalışan kod 8db1faf (pattern kanıtı alt süreci; 2026-10-05 dağıtımı, tb-deploy-8db1faf.sh: 51/51
 # değişmez) ya da onun soyu (hedefin atası). Daha eskiyse HİÇBİR ŞEYE dokunmadan durur. Bu betiği ve aşağıdaki HER komutu
 # VPS'te SİZ çalıştırırsınız (betik kendiliğinden ya da uzaktan çalışmaz); "sahte VPS'te denendi" notları yerel denemedir,
@@ -119,13 +119,13 @@
 #   KOD VE CONFIG BİRLİKTE: izlenen config.yaml 8db1faf'taki haline döner (m2x_aggressive bölümü yok — 8db1faf o anahtarı
 #   TANIMAZ) ve dağıtım öncesi kill switch satırı (evidence_subprocess: false) AYNEN geri konur: 8db1faf'ta alt süreç
 #   varsayılan AÇIKTIR, satır olmadan alt süreç geri gelir. Bu sürümün kill switch'ini (evidence_fast_knn) uyguladıysanız
-#   8db1faf o anahtarı TANIMAZ (ConfigError, worker BAŞLAMAZ) ve git checkout "yerel değişiklik" diye REDDEDER: önce
+#   8db1faf o anahtarı bilinmeyen anahtar olarak UYARIYLA yok sayar, ama git checkout "yerel değişiklik" diye REDDEDER: önce
 #   sudo -u tradingbot git -C /opt/tradingbot/app checkout -- config.yaml
 #   deploy/restore.sh iki sürümde AYNI. 8db1faf bu sürümün yazdıklarını tolere eder (bu sürüm state'e yeni dosya yazmaz;
 #   M2X kapalı). engine-app'e DOKUNMAYIN: 8db1faf hedefin atasıdır (app ⊑ engine-app, SKEW yok).
 #
 # Kod kaynağı: herkese açık GitHub deposu (bu sürüm için bundle YOK; betiğin yanında bundle varsa durur)
-# (commit önce TAM SHA ile istenir, olmazsa PR dalı claude/gifted-knuth-0ehpcs getirilip commit onun içinde aranır;
+# (commit önce TAM SHA ile istenir, olmazsa impl/knn-fast dalı getirilip commit onun içinde aranır;
 # içerik commit kimliğine bağlıdır ve doğrulanır). VPS'te (dosya adı tb-deploy-<hedefin ilk 7 hanesi>.sh):
 #   sudo bash tb-deploy-db5db96.sh --dry-run   # kontroller + yeni kodun AYRI kopyada sınanması (preflight, 56 değişmez);
 #                                               # çalışan kod/state/servis/config DEĞİŞMEZ
@@ -159,7 +159,7 @@ set -Eeuo pipefail
 TIP="db5db96ead8ef13d7a7ece0c79ed9b0182ac2f5f"
 BUNDLE_SHA256=""                          # bu sürüm için bundle yok (GitHub kaynağı)
 # PR dalı: hedef bu dala ileri sarılır. Getirme önce TAM SHA ile; olmazsa bu dal getirilir ve commit onun içinde aranır.
-BRANCH_REF="refs/heads/claude/gifted-knuth-0ehpcs"
+BRANCH_REF="refs/heads/impl/knn-fast"   # TIP bu dalda; dağıtım bitene kadar dal SİLİNMEZ
 # VPS'te çalışan sürüm (2026-10-05 dağıtımı, tb-deploy-8db1faf.sh: 51/51): 8db1faf — pattern kanıtı alt süreci (sahip
 # 2026-10-06 13:56 UTC'de config satırıyla kapattı). Çalışan HEAD bunun kendisi ya da soyundan olmalı (ve hedefin atası);
 # daha eski kod reddedilir. Geri alma hedefi = çalışan HEAD (VPS'te 8db1faf).
@@ -1621,7 +1621,7 @@ engine_state() {    # --check / kuru çalışma: iki SHA ve SKEW ilişkisi (salt
   return 0
 }
 engine_repin() {
-  local st now why=""
+  local st now why="" comp_bad=0
   ENG_CMD="sudo -u $SVC_USER git -C $ENG fetch -q $APP refs/deploy/$T7 && sudo -u $SVC_USER git -C $ENG -c advice.detachedHead=false checkout -q --detach $TIP && sudo -u $SVC_USER env -C $ENG nice -n 19 $VENV/bin/python -s -m compileall -q tradingbot scripts"
   if [[ ! -e "$ENG" ]]; then echo "   engine-app yok ($ENG) — öğrenme motoru P1a kurulu değil; sabitleme gerekmez" || true; return 0; fi
   if [[ ! -d "$ENG/.git" || -L "$ENG" || "$(stat -c %U "$ENG" 2>/dev/null || true)" != "$SVC_USER" ]]; then
@@ -1652,10 +1652,10 @@ engine_repin() {
       why="engine-app checkout başarısız"
     else
       as_svc env -C "$ENG" nice -n 19 "$VENV/bin/python" -s -m compileall -q tradingbot scripts >/dev/null 2>&1 \
-        || echo "   UYARI: engine-app compileall başarısız (motor yine çalışır; ilk gecede derler)" || true
+        || { comp_bad=1; echo "   UYARI: engine-app compileall başarısız (motor yine çalışır; birim ProtectSystem=strict olduğundan önbellek yazamaz, her gece derlenmemiş kodla biraz yavaş başlar)"; } || true
       if [[ "$(as_svc git -C "$ENG" rev-parse HEAD 2>/dev/null || true)" == "$TIP" \
             && -z "$(as_svc git -C "$ENG" status --porcelain 2>/dev/null || echo x)" ]]; then
-        ok "engine-app ${now:0:7} → $T7 (AYNI motor kodu; yeni A/B dönemi yok; önceden derlendi)"
+        ok "engine-app ${now:0:7} → $T7 (AYNI motor kodu; yeni A/B dönemi yok; $([[ ${comp_bad:-0} == 1 ]] && echo "DERLENEMEDİ" || echo "önceden derlendi"))"
         engine_state
         return 0
       fi
@@ -5790,8 +5790,8 @@ ESKİ KODA (${PREV:0:7}) dönmek (yalnız gerekirse; betiğin kendi geri alma ad
   sudo -u $SVC_USER git -C $APP checkout -q -B $BRANCH_NOW ${PREV:0:7}     # (dal yoksa: checkout ${PREV:0:7})
   $RB_CFG_LINE
   sudo systemctl start $WORKER; sudo systemctl restart $DASH
-  ${PREV:0:7} bu sürümün kill switch anahtarını (history.evidence_fast_knn) ve m2x_aggressive bölümünü TANIMAZ (bilinmeyen
-  anahtar → ConfigError, worker BAŞLAMAZ) → ikinci satır şart. ${PREV:0:7} bu sürümün yazdıklarını tolere eder (bu sürüm
+  ${PREV:0:7} bu sürümün kill switch anahtarını (history.evidence_fast_knn) ve m2x_aggressive bölümünü bilinmeyen anahtar
+  olarak UYARIYLA yok sayar; ama git checkout yerel değişikliği REDDEDER → ikinci satır şart. ${PREV:0:7} bu sürümün yazdıklarını tolere eder (bu sürüm
   state'e yeni dosya yazmaz; M2X kapalı). restore.sh iki sürümde aynıdır. engine-app'e DOKUNMAYIN (${PREV:0:7} hedefin
   atası: app ⊑ engine-app, SKEW yok). 3b0ae8e'ye ASLA dönmeyin: OOM döngüsü geri gelir (OOM onarımı d8b0c8c).
 Yedekler: saatlik yedek shared_experience/archive/segments'ı ve advice/archive/segments'ı yalnız UTC 00'da, türetilmiş

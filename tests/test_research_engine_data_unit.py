@@ -126,8 +126,13 @@ def test_journal_group_only_in_the_data_unit():
         assert has == (p == DSERVICE), f"{p.name}: SupplementaryGroups={groups}"
 
 
-#: iki motor biriminin BİLEREK farklı olduğu satırlar; geri kalan her [Service] satırı bayt bayt aynıdır
-DIFFER = {"ExecStart", "TimeoutStartSec", "MemoryHigh", "MemoryMax", "PrivateNetwork", "SupplementaryGroups"}
+#: iki motor biriminin BİLEREK farklı olduğu satırlar; geri kalan her [Service] satırı bayt bayt aynıdır.
+#: `InaccessiblePaths` (2026-10-06) yalnız AĞLI veri birimindedir: gece birimi P1a'ya bayt bayt sabittir (ağsızdır;
+#: sır okuyabilse de dışarı çıkaramaz) ve bu sürüm onu yeniden kurmaz.
+DIFFER = {"ExecStart", "TimeoutStartSec", "MemoryHigh", "MemoryMax", "PrivateNetwork", "SupplementaryGroups",
+          "InaccessiblePaths"}
+#: veri biriminin erişemeyeceği sır yolları (deploy/setup_vps_v3.sh ve worker/yedek birimlerinden doğrulandı)
+SECRET_PATHS = {"/opt/tradingbot/env", "/opt/tradingbot/.ssh", "/opt/tradingbot/data/vault", "/opt/tradingbot/data/backups"}
 
 
 def test_data_and_night_units_share_every_isolation_and_resource_line_except_network():
@@ -136,12 +141,36 @@ def test_data_and_night_units_share_every_isolation_and_resource_line_except_net
         {k: v for k, v in n.items() if k not in DIFFER | {"Environment"}}
     strip = lambda env: [e for e in env if not e.startswith("ENGINE_EXPECTED_MEMORY_MAX=")]  # noqa: E731
     assert strip(d["Environment"]) == strip(n["Environment"]), "ortam satırları aynı (yalnız bellek beklentisi farklı)"
-    assert set(d) ^ set(n) == {"PrivateNetwork", "SupplementaryGroups"}
+    assert set(d) ^ set(n) == {"PrivateNetwork", "SupplementaryGroups", "InaccessiblePaths"}
     assert n["PrivateNetwork"] == ["yes"] and "PrivateNetwork" not in d
     dt, nt = parse_unit(DTIMER), parse_unit(NTIMER)
     assert set(dt["Timer"]) == set(nt["Timer"]) and dt["Install"] == nt["Install"]
     for k in ("AccuracySec", "Persistent"):
         assert dt["Timer"][k] == nt["Timer"][k]
+
+
+def test_secret_paths_are_inaccessible_to_the_networked_data_unit():
+    """Ağlı tek birim: worker ortam dosyası (`EnvironmentFile=-/opt/tradingbot/env`, 0600; setup_vps_v3 `ENVFILE`), dağıtım
+    anahtarı (`/opt/tradingbot/.ssh`; servis kullanıcısının HOME'u /opt/tradingbot, ProtectHome kapsamaz), vault ve
+    saatlik yedekler (vault'u kopyalar) çekirdek düzeyinde erişilemez; `-` öneki yoksa sorun çıkarmaz. Okunması GEREKEN
+    yollar (state salt-okunur, araştırma kökü yazılır, engine-app, venv, app) bunların altında değildir."""
+    s = parse_unit(DSERVICE)["Service"]
+    raw = " ".join(s["InaccessiblePaths"]).split()
+    assert all(x.startswith("-/") for x in raw), raw
+    paths = {x[1:] for x in raw}
+    assert paths == SECRET_PATHS, paths
+    setup = (ROOT / "deploy" / "setup_vps_v3.sh").read_text(encoding="utf-8")
+    assert 'ENVFILE="$BASE/env"' in setup and '"$DATA/vault"' in setup and '"$BASE/.ssh"' in setup
+    worker = parse_unit(ROOT / "deploy" / "tradingbot-worker.service")["Service"]
+    assert worker["EnvironmentFile"] == ["-/opt/tradingbot/env"]
+    backup = parse_unit(ROOT / "deploy" / "tradingbot-backup.service")["Service"]
+    assert "/opt/tradingbot/data/vault" in " ".join(backup["ReadOnlyPaths"]) and backup["ReadWritePaths"] == ["/opt/tradingbot/data/backups"]
+    needed = ["/opt/tradingbot/data/state", "/opt/tradingbot/data/market", "/opt/tradingbot/data/research",
+              "/opt/tradingbot/engine-app", "/opt/tradingbot/venv", "/opt/tradingbot/app"]
+    for n in needed:
+        assert not any(n == p or n.startswith(p + "/") for p in paths), n
+    assert one(s, "ProtectHome") == "yes", "/home, /root, /run/user ayrıca kapalı"
+    assert "InaccessiblePaths" not in parse_unit(NSERVICE)["Service"], "gece birimi P1a'ya sabit (yeniden kurulmaz)"
 
 
 def test_data_deadline_constants_match_the_unit():
@@ -178,7 +207,7 @@ def test_engine_code_hash_covers_the_data_unit_files(tmp_path):
         shutil.copy(ROOT / rel, tree / rel)
     h0 = SC.engine_code_hash(tree)
     p = tree / "deploy" / "tradingbot-engine-data.service"
-    p.write_text(p.read_text(encoding="utf-8").replace("MemoryHigh=800M", "MemoryHigh=700M"), encoding="utf-8")
+    p.write_text(p.read_text(encoding="utf-8").replace("MemoryHigh=512M", "MemoryHigh=500M"), encoding="utf-8")
     assert h0 and SC.engine_code_hash(tree) != h0, "veri birimi değişirse yeni A/B dönemi"
 
 

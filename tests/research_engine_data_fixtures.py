@@ -109,6 +109,12 @@ class FakeBinance:
         self.bad_checksum: set[str] = set()          # URL alt dizgeleri: .CHECKSUM yanlış
         self.fail: dict[str, int] = {}               # URL alt dizgesi → kaç kez 503
         self.fail_always: set[str] = set()           # URL alt dizgesi → hep 503
+        self.status_for: dict[str, int] = {}         # URL alt dizgesi → bu HTTP durumu (ör. 403 CDN engeli)
+        #: delist: "market/SEMBOL" → delist anı (ms). Arşiv o ana kadar veri verir; REST `-1121 Invalid symbol`;
+        #: vadeli exchangeInfo `SETTLING` (+ deliveryDate) ya da `delisted_absent` ise listede hiç yok
+        self.delisted: dict[str, int] = {}
+        self.delisted_absent = False
+        self.delisted_in_exchangeinfo = True         # False: exchangeInfo hâlâ TRADING der (yalnız REST -1121 bilir)
         self.funding_interval_h: dict[str, int] = {}
         self.rest_status: int = 200
         self.rest_status_after: int | None = None    # bu kadar REST isteğinden sonra rest_status
@@ -134,6 +140,9 @@ class FakeBinance:
                 return HttpResponse(503, {}, b"unavailable")
         if any(k in url for k in self.fail_always):
             return HttpResponse(503, {}, b"unavailable")
+        for k, code in self.status_for.items():
+            if k in url:
+                return HttpResponse(int(code), {}, b"<Error><Code>AccessDenied</Code></Error>")
         if url.startswith("https://data.binance.vision/"):
             body = self.archive(url[len("https://data.binance.vision"):])
             return HttpResponse(200, {}, body) if body is not None else HttpResponse(404, {}, b"<Error>NoSuchKey</Error>")
@@ -146,7 +155,17 @@ class FakeBinance:
             hdr["x-mbx-used-weight-1m"] = str(self.used_weight(self.rest_calls))
         if st != 200:
             return HttpResponse(st, hdr, b'{"code":-1003,"msg":"Too many requests"}')
+        if self._rest_invalid_symbol(url, dict(params or {})):
+            return HttpResponse(400, hdr, b'{"code":-1121,"msg":"Invalid symbol."}')
         return HttpResponse(200, hdr, json.dumps(self.rest(url, dict(params or {}))).encode("utf-8"))
+
+    def _rest_invalid_symbol(self, url: str, p: dict) -> bool:
+        market = "spot" if url.startswith("https://api.binance.com") else "futures"
+        if p.get("symbol") and f"{market}/{p['symbol']}" in self.delisted:
+            return True
+        if p.get("symbols"):
+            return any(f"spot/{s}" in self.delisted for s in json.loads(p["symbols"]))
+        return False
 
     # ------------------------------------------------------------------ arşiv
     _RE = re.compile(r"^/data/(?P<seg>spot|futures/um)/(?P<kind>monthly|daily)/(?P<ds>[A-Za-z]+)/(?P<sym>[A-Z0-9]+)/"
@@ -188,6 +207,11 @@ class FakeBinance:
         lo = self.first(market, sym)
         if b <= lo:
             return None
+        hi = self.delisted.get(f"{market}/{sym}")
+        if hi is not None:
+            if a >= hi:
+                return None
+            b = min(b, hi)
         a2 = max(a, lo)
         csvname = name[:-4] + ".csv"
         if ds in ("klines", "markPriceKlines", "premiumIndexKlines"):
@@ -269,11 +293,19 @@ class FakeBinance:
                 t += 300_000
             return out
         if path == "/fapi/v1/exchangeInfo":
-            return {"symbols": [{"symbol": k.split("/")[1], "status": "TRADING", "contractType": "PERPETUAL",
-                                 "onboardDate": v, "deliveryDate": 4133404800000, "quoteAsset": "USDT"}
-                                for k, v in self.listing.items() if k.startswith("futures/")]}
+            out = []
+            for k, v in self.listing.items():
+                if not k.startswith("futures/"):
+                    continue
+                dl = self.delisted.get(k) if self.delisted_in_exchangeinfo else None
+                if dl is not None and self.delisted_absent:
+                    continue
+                out.append({"symbol": k.split("/")[1], "status": "SETTLING" if dl is not None else "TRADING",
+                            "contractType": "PERPETUAL", "onboardDate": v,
+                            "deliveryDate": dl if dl is not None else 4133404800000, "quoteAsset": "USDT"})
+            return {"symbols": out}
         if path == "/api/v3/exchangeInfo":
-            syms = json.loads(p.get("symbols") or "[]")
+            syms = json.loads(p.get("symbols") or "[]") or ([p["symbol"]] if p.get("symbol") else [])
             return {"symbols": [{"symbol": s, "status": "TRADING", "baseAsset": s[:-4], "quoteAsset": "USDT"} for s in syms]}
         return []
 
@@ -291,17 +323,27 @@ class Proc:
 
 
 class FakeJournal:
-    """`journalctl` yerine-geçeni. `lines` worker günlüğü; `rc`/`err` okunamayan günlük benzetimi."""
+    """`journalctl` yerine-geçeni. `lines` worker günlüğü; `rc`/`err` okunamayan günlük benzetimi. `clock` verilirse
+    her okumanın (sahte) anı `times`'a yazılır; `then` = (n, satırlar): n. okumadan SONRA günlük bu satırları verir
+    (ör. REST sürerken worker 429 almaya başlar)."""
 
-    def __init__(self, lines: list[str] | None = None, *, rc: int = 0, err: str = ""):
+    def __init__(self, lines: list[str] | None = None, *, rc: int = 0, err: str = "", clock: "FakeClock | None" = None,
+                 then: tuple[int, list[str]] | None = None):
         self.lines = list(lines if lines is not None else ["tur 41 tamam: 40 sembol", "tur 42 tamam: 40 sembol"])
         self.rc, self.err = rc, err
         self.calls: list[list[str]] = []
+        self.clock, self.then = clock, then
+        self.times: list[datetime] = []
 
     def __call__(self, cmd, **kw):
         self.calls.append(list(cmd))
         assert cmd[0] == "journalctl", cmd
-        return Proc(self.rc, "\n".join(self.lines) + ("\n" if self.lines else ""), self.err)
+        if self.clock is not None:
+            self.times.append(self.clock.now())
+        lines = self.lines
+        if self.then is not None and len(self.calls) > self.then[0]:
+            lines = list(self.then[1])
+        return Proc(self.rc, "\n".join(lines) + ("\n" if lines else ""), self.err)
 
 
 class DataEnv:
@@ -328,8 +370,8 @@ class DataEnv:
             flt = lambda s: s.key in keys  # noqa: E731
         return DS.run_data(self.paths, mode=mode, clock=self.clock.now, sleep=self.clock.sleep, http=self.fb,
                            runner=kw.pop("runner", self.journal), probes=kw.pop("probes", self.host.probes()),
-                           env={"ALLOW_LIVE_TRADING": "false"}, app_dir=self.host.app, free_bytes=50 * 10 ** 9,
-                           plan_filter=flt, **kw)
+                           env={"ALLOW_LIVE_TRADING": "false"}, app_dir=self.host.app,
+                           free_bytes=kw.pop("free_bytes", 50 * 10 ** 9), plan_filter=flt, **kw)
 
     def store(self):
         from tradingbot.research_engine.store import ResearchStore

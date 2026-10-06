@@ -100,12 +100,12 @@ def read_consistent(series_dir: Path, kind: str, *, hook: Callable[[Path, int], 
             continue
         try:
             df = _parse(_read_bytes(p), p.name)
-        except Exception as exc:  # noqa: BLE001 — okunamayan parça: kopya tutarsız
+            for c in cols:
+                if c not in df.columns:
+                    df[c] = float("nan")
+            df["timestamp"] = df["timestamp"].astype("int64")      # NaN / metin zaman damgası → tutarsız kopya
+        except Exception as exc:  # noqa: BLE001 — okunamayan ya da çözülemeyen parça: kopya tutarsız
             raise Inconsistent(f"parça okunamadı {p.parent.name}/{p.name}: {type(exc).__name__}") from exc
-        for c in cols:
-            if c not in df.columns:
-                df[c] = float("nan")
-        df["timestamp"] = df["timestamp"].astype("int64")
         frames.append((f"{y:04d}/{mo:02d}", df[cols]))
     if hook is not None:
         hook(series_dir, attempt)
@@ -153,6 +153,9 @@ def seed_series(store: ResearchStore, worker_root: Path | str, market: str, symb
             continue
         except OSError as exc:
             reasons.append(f"deneme {attempt}: okunamadı: {exc}"[:200])
+            continue
+        except Exception as exc:  # noqa: BLE001 — beklenmeyen hata da tutarsız kopya sayılır (tohum işi durdurmaz)
+            reasons.append(f"deneme {attempt}: {type(exc).__name__}: {exc}"[:200])
             continue
         rows = 0
         try:

@@ -268,6 +268,24 @@ def test_entry_universe_falls_back_to_frame_provenance_then_flags_missing(tmp_pa
     assert syms == ["ARBUSDT", "BTCUSDT"] and info["source"].startswith("state/frame_provenance.json")
 
 
+def test_entry_universe_list_is_used_only_when_enabled(tmp_path):
+    """Worker `entry_universe.symbols`'ı YALNIZ `enabled: true` iken giriş evreni sayar (`engine_v3`: `_eu.symbols if
+    _eu.enabled`; varsayılan false) ve kapalıyken `frame_provenance.json`'a boş liste yazar. Motor da öyle yapar."""
+    v = FakeVps(tmp_path / "v")
+    for name, cfg in (("off", CONFIG_ONE.replace("enabled: true", "enabled: false")),
+                      ("missing", CONFIG_ONE.replace("  enabled: true\n", ""))):
+        host = FakeHost(tmp_path / name, config_text=cfg)
+        syms, info = U.entry_universe(v.paths, host.app)
+        assert syms == [] and info["source"] == "none" and "ignored" in info and info["enabled"] in (False, None), (name, info)
+        doc = U.build_universe(v.paths, now=utc(2026, 10, 6), app_dir=host.app)
+        assert U.F_ENTRY_MISSING in doc["flags"] and "SOLUSDT" not in doc["futures"] and "BTCUSDT" in doc["futures"]
+    (v.state / "frame_provenance.json").write_text(json.dumps({"entry_universe": []}), encoding="utf-8")   # worker: kapalı
+    assert U.entry_universe(v.paths, FakeHost(tmp_path / "off2", config_text=CONFIG_ONE.replace(
+        "enabled: true", "enabled: false")).app)[0] == []
+    syms, info = U.entry_universe(v.paths, FakeHost(tmp_path / "on", config_text=CONFIG_ONE).app)
+    assert syms == ["BTCUSDT", "SOLUSDT"] and info["enabled"] is True
+
+
 def test_rawconfig_reads_the_entry_universe_tolerantly(tmp_path):
     from tradingbot.research_engine import rawconfig as RC
     p = tmp_path / "c.yaml"

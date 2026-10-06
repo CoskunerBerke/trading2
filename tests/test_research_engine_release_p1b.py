@@ -48,9 +48,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_research_engine_contract import parse_unit  # noqa: E402
 from test_research_engine_release import JOURNALCTL, STUBS, _git, _has, _tree_digest, own_tmp, stub_body  # noqa: E402
 
-SCRIPT = ROOT / "deploy" / "releases" / "tb-engine-008e602.sh"
+SCRIPT = ROOT / "deploy" / "releases" / "tb-engine-1b1feb9.sh"
 #: Betiğin kayıtlı sha256'sı (sürüm notu ve sahibe verilen değer; betik değişirse bu da bilinçli değişir).
-SCRIPT_SHA256 = "d90137f9f08a2e8d2d9ece27435f212ba74e376219d303869f722ebe4cc41397"
+SCRIPT_SHA256 = "6eeeb34411a08c43cc25c5ed124b3292b3189619b8bfb1e52055dcd445f73405"
 P1A_SCRIPT = ROOT / "deploy" / "releases" / "tb-engine-4962209.sh"
 TEXT = SCRIPT.read_text(encoding="utf-8")
 TIP = re.search(r'^TIP="([0-9a-f]{40})"', TEXT, re.M).group(1)
@@ -342,6 +342,35 @@ def test_data_check_reports_backfill_progress_freshness_gold_and_disk(tmp_path):
     del ser["futures/XAUUSDT/1d"]
     (res / "summary" / "data_status.json").write_text(json.dumps(ds), encoding="utf-8")
     assert "altın EKSİK futures/XAUUSDT" in run("inactive")
+
+
+def test_data_check_shows_memory_high_throttling_per_run_and_for_the_running_backfill(tmp_path):
+    """Yeniden doğrulama küçüğü 4 (2026-10-06): `MemoryHigh=512M` kısması `memory.peak`'te görünmez. `--check` veri
+    çalıştırması satırında ve V6'da `data_run.json`'un `memory.events` high sayısını, süren doldurmada geçici birimin
+    cgroup'undan okunan sayıyı yazar (bilgi); `--backfill` görünümü de aynı sayıyı tepe belleğin yanında basar."""
+    res = tmp_path / "research"
+    now = datetime.now(UTC)
+    base = tmp_path / "deploy.json"
+    base.write_text(json.dumps({"tip": TIP, "deployed_at": int(now.timestamp()) - 3600, "started_at": int(now.timestamp()) - 3700}),
+                    encoding="utf-8")
+    rid = _data_fixture(res, started=(now - timedelta(minutes=30)).isoformat())
+    p = res / "runs" / "data" / rid / "data_run.json"
+    d = json.loads(p.read_text(encoding="utf-8"))
+    d["resources"].update(memory_high_events=12, memory_high_bytes=536870912)
+    p.write_text(json.dumps(d), encoding="utf-8")
+
+    def dcheck(bf_state, peak, high):
+        cp = _tool(tmp_path, "dcheck", str(res), TIP, str(base), "1000", "1073741824", bf_state, peak, "5400000000",
+                   "40000000000", SCRIPT.name, high)
+        assert cp.returncode == 0, cp.stderr
+        return cp.stdout
+    out = dcheck("inactive", "0", "")
+    assert re.search(rf"{rid} +update .*tepe bellek 238 MB \(0,23 × MemoryMax\) · high 12", out), out
+    assert re.search(r"V6 veri/doldurma memory.peak en çok 0,23 × MemoryMax .* MemoryHigh kısması \(memory\.events high\) "
+                     r"en çok 12 \(bilgi", out), out
+    assert "en çok 57 (bilgi" in dcheck("active", str(300 << 20), "57"), "süren doldurmanın cgroup sayısı"
+    cp = _tool(tmp_path, "bf", str(res), "active", str(300 << 20), "1073741824", SCRIPT.name, "57")
+    assert "memory.peak 300 MB (≤ 0,8 × 1024 MB) · MemoryHigh kısması (memory.events high) 57" in cp.stdout, cp.stdout
 
 
 def test_p1a_ab_window_warning(tmp_path):
@@ -879,6 +908,41 @@ def test_error_after_pin_reverts_engine_app_check_survives_du_backfill_disk_gate
     assert sb.unit_files() == sorted([SVC, TMR])
     rb = sb.run("--rollback")
     assert rb.returncode == 0 and "GERİ ALINDI (P1a)" in rb.out and sb.eng_head() == P1A_TIP, rb.out[-3000:]
+    _no_forbidden(sb)
+
+
+@needs_sandbox
+def test_half_done_pin_is_reverted_and_a_failed_revert_is_reported_honestly(tmp_path, source, p1a_template):
+    """Yeniden doğrulama küçükleri 2–3 (2026-10-06), sahte VPS'te:
+    * adım 7'de checkout olur ama compileall düşerse `engine-app=` değişikliği ÖNCEDEN kaydedildiği için `on_err`
+      engine-app'i önceki sabitine döndürür (önceden kayıt pin_eng'den SONRAydı: smoke edilmemiş kod P1a gece
+      zamanlayıcısıyla kalıyordu);
+    * `on_err`'in `set +e`'si altında geri sabitleme düşerse `revert_eng` gerçek çıkışı döndürür: "geri döndürülemedi"
+      + `--rollback` talimatı basılır, "döndürüldü" DENMEZ. `$(…)` içindeki bir hatada `on_err` yalnız üst kabukta bir kez
+      çalışır (önceden alt kabukta da çalışıp geri sabitlemeyi iki kez deniyor, çelişen iki "DUR" bloğu basıyordu)."""
+    sb = _from_template(tmp_path, p1a_template, source)
+    py, eng = sb.base / "venv" / "bin" / "python", (sb.base / "engine-app").resolve()
+    fail, cnt, dlast = sb.fake / "compile_fail_at", sb.fake / "compile_count", sb.fake / "py_fail_dlast"
+    py.write_text(f'#!/usr/bin/env bash\nif [ "$3" = compileall ] && [ "$(pwd -P)" = "{eng}" ] && [ -e "{fail}" ]; then\n'
+                  f'  n=$(( $(cat "{cnt}" 2>/dev/null || echo 0) + 1 )); echo "$n" > "{cnt}"\n'
+                  f'  if grep -qx "$n" "{fail}"; then echo "sahte compileall hatası" >&2; exit 7; fi\nfi\n'
+                  f'if [ -e "{dlast}" ] && [ "$4" = dlast ]; then exit 7; fi\nexec "{sys.executable}" "$@"\n', encoding="utf-8")
+    fail.write_text("1\n", encoding="utf-8")                    # engine-app'teki 1. derleme = TIP sabitlemesi düşer
+    n0 = len(sb.log())
+    cp = sb.run()
+    assert cp.returncode == 1 and "beklenmeyen hata" in cp.out and "engine-app önceki sabitine döndürüldü (4962209)" in cp.out, \
+        cp.out[-4000:]
+    assert sb.eng_head() == P1A_TIP and not [ln for ln in sb.log()[n0:] if ln.startswith("enable")]
+    assert not sb.state_json()["enabled"].get(DTMR) and sb.state_json()["enabled"][TMR] is True
+    # sabitleme geçer, sonra beklenmeyen hata (dlast) ve GERİ sabitlemenin derlemesi düşer (engine-app'te 2. derleme)
+    cnt.unlink()
+    fail.write_text("2\n", encoding="utf-8")
+    dlast.write_text("1", encoding="utf-8")
+    cp = sb.run()
+    assert cp.returncode == 1 and cp.out.count("beklenmeyen hata") == 1, cp.out[-4000:]
+    assert "UYARI: engine-app geri döndürülemedi" in cp.out and "--rollback" in cp.out, cp.out[-4000:]
+    assert "önceki sabitine döndürüldü" not in cp.out and "önceki sabitine döndü (" not in cp.out, cp.out[-4000:]
+    assert not [ln for ln in sb.log()[n0:] if ln.startswith("enable")]
     _no_forbidden(sb)
 
 

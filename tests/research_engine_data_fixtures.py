@@ -115,6 +115,7 @@ class FakeBinance:
         self.delisted: dict[str, int] = {}
         self.delisted_absent = False
         self.delisted_in_exchangeinfo = True         # False: exchangeInfo hâlâ TRADING der (yalnız REST -1121 bilir)
+        self.spot_status: dict[str, str] = {}        # spot sembol → exchangeInfo durumu (ör. geçici "BREAK"); yoksa TRADING
         self.funding_interval_h: dict[str, int] = {}
         self.rest_status: int = 200
         self.rest_status_after: int | None = None    # bu kadar REST isteğinden sonra rest_status
@@ -306,7 +307,8 @@ class FakeBinance:
             return {"symbols": out}
         if path == "/api/v3/exchangeInfo":
             syms = json.loads(p.get("symbols") or "[]") or ([p["symbol"]] if p.get("symbol") else [])
-            return {"symbols": [{"symbol": s, "status": "TRADING", "baseAsset": s[:-4], "quoteAsset": "USDT"} for s in syms]}
+            return {"symbols": [{"symbol": s, "status": self.spot_status.get(s, "TRADING"), "baseAsset": s[:-4],
+                                 "quoteAsset": "USDT"} for s in syms]}
         return []
 
     # ------------------------------------------------------------------ sorgular

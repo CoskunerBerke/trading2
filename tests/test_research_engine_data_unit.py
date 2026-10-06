@@ -132,7 +132,8 @@ def test_journal_group_only_in_the_data_unit():
 DIFFER = {"ExecStart", "TimeoutStartSec", "MemoryHigh", "MemoryMax", "PrivateNetwork", "SupplementaryGroups",
           "InaccessiblePaths"}
 #: veri biriminin erişemeyeceği sır yolları (deploy/setup_vps_v3.sh ve worker/yedek birimlerinden doğrulandı)
-SECRET_PATHS = {"/opt/tradingbot/env", "/opt/tradingbot/.ssh", "/opt/tradingbot/data/vault", "/opt/tradingbot/data/backups"}
+SECRET_PATHS = {"/opt/tradingbot/env", "/opt/tradingbot/env.d", "/opt/tradingbot/.ssh", "/opt/tradingbot/data/vault",
+                "/opt/tradingbot/data/backups"}
 
 
 def test_data_and_night_units_share_every_isolation_and_resource_line_except_network():
@@ -150,8 +151,8 @@ def test_data_and_night_units_share_every_isolation_and_resource_line_except_net
 
 
 def test_secret_paths_are_inaccessible_to_the_networked_data_unit():
-    """Ağlı tek birim: worker ortam dosyası (`EnvironmentFile=-/opt/tradingbot/env`, 0600; setup_vps_v3 `ENVFILE`), dağıtım
-    anahtarı (`/opt/tradingbot/.ssh`; servis kullanıcısının HOME'u /opt/tradingbot, ProtectHome kapsamaz), vault ve
+    """Ağlı tek birim: worker ortam dosyası (`EnvironmentFile=-/opt/tradingbot/env`, 0600; setup_vps_v3 `ENVFILE`), uyarı
+    biriminin Telegram ortamı (`/opt/tradingbot/env.d`), dağıtım anahtarı (`/opt/tradingbot/.ssh`; servis kullanıcısının HOME'u /opt/tradingbot, ProtectHome kapsamaz), vault ve
     saatlik yedekler (vault'u kopyalar) çekirdek düzeyinde erişilemez; `-` öneki yoksa sorun çıkarmaz. Okunması GEREKEN
     yollar (state salt-okunur, araştırma kökü yazılır, engine-app, venv, app) bunların altında değildir."""
     s = parse_unit(DSERVICE)["Service"]
@@ -163,6 +164,13 @@ def test_secret_paths_are_inaccessible_to_the_networked_data_unit():
     assert 'ENVFILE="$BASE/env"' in setup and '"$DATA/vault"' in setup and '"$BASE/.ssh"' in setup
     worker = parse_unit(ROOT / "deploy" / "tradingbot-worker.service")["Service"]
     assert worker["EnvironmentFile"] == ["-/opt/tradingbot/env"]
+    # yeniden doğrulama küçüğü 6 (2026-10-06): depodaki HER birimin ortam dosyası (ör. tradingbot-alert@'in Telegram
+    # ortamı `env.d/telegram.env`) erişilemeyen bir yolun altındadır
+    envfiles = {e.lstrip("-") for u in sorted((ROOT / "deploy").glob("*.service"))
+                for e in parse_unit(u).get("Service", {}).get("EnvironmentFile", [])}
+    assert "/opt/tradingbot/env.d/telegram.env" in envfiles, envfiles
+    for f in envfiles:
+        assert any(f == p or f.startswith(p + "/") for p in paths), f"{f}: veri birimi okuyabilir"
     backup = parse_unit(ROOT / "deploy" / "tradingbot-backup.service")["Service"]
     assert "/opt/tradingbot/data/vault" in " ".join(backup["ReadOnlyPaths"]) and backup["ReadWritePaths"] == ["/opt/tradingbot/data/backups"]
     needed = ["/opt/tradingbot/data/state", "/opt/tradingbot/data/market", "/opt/tradingbot/data/research",

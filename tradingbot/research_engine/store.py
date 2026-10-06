@@ -1025,7 +1025,8 @@ def _unrle(runs: list) -> list[int]:
 def funding_gaps(diffs: list[int], half: int = FUNDING_IV_HALF_WINDOW) -> tuple[int, int | None]:
     """Madde 5 (2026-10-06 düzeltmesi): her fark, kendisi dahil ±`half` komşu farkın medyanı olan YEREL aralığa
     bölünür; boşluk `max(0, round(fark / yerel) − 1)`. Ay içinde aralık değişimi (8h → 4h) sahte boşluk üretmez; bir
-    eksik uzlaşma her rejimde 1 sayılır. Dönen: (boşluk, son farkın yerel aralığı)."""
+    eksik uzlaşma her rejimde 1 sayılır. Yalnız İKİ fark varsa (yeni listelenmiş sembolün ilk üç uzlaşması) yerel aralık
+    küçük olandır: ortalama (8h + 16h → 12h) baştaki eksik uzlaşmayı 0 sayardı. Dönen: (boşluk, son farkın yerel aralığı)."""
     n = len(diffs)
     if not n:
         return 0, None
@@ -1033,7 +1034,7 @@ def funding_gaps(diffs: list[int], half: int = FUNDING_IV_HALF_WINDOW) -> tuple[
     for i in range(n):
         w = sorted(diffs[max(0, i - half): i + half + 1])
         k = len(w)
-        iv = w[k // 2] if k % 2 else (w[k // 2 - 1] + w[k // 2]) // 2
+        iv = w[k // 2] if k % 2 else (w[0] if k == 2 else (w[k // 2 - 1] + w[k // 2]) // 2)
         if iv > 0:
             gaps += max(0, round(diffs[i] / iv) - 1)
         last = iv

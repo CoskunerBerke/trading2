@@ -134,7 +134,7 @@ def target_summary(paths: EnginePaths) -> dict | None:
 # ============================================================================ satırlar
 def _stage_line(st: dict) -> str:
     parts = []
-    for name in ("S0", "S1s", "S1a", "S3", "S7", "S7b"):
+    for name in ("S0", "S1s", "S1a", "S3", "S1b", "S2", "S7", "S7b"):
         s = (st.get("stages") or {}).get(name)
         if not s:
             continue
@@ -257,6 +257,21 @@ def _flags_line(st: dict) -> str:
     return "Bayraklar: " + (", ".join(fl) if fl else "—")
 
 
+def _p2_lines(st: dict) -> list[str]:
+    """P2b tek satır: günlük (S1b) ve atıf (S2) — satır, bekleyen iş, fidelity kapısı, ızgara."""
+    stages = st.get("stages") or {}
+    b, a = stages.get("S1b") or {}, stages.get("S2") or {}
+    if not b and not a:
+        return []
+    r1, r2 = b.get("result") or {}, a.get("result") or {}
+    j, fd = r1.get("journal") or {}, r1.get("fidelity") or {}
+    rate = fd.get("rate")
+    fdt = "—" if rate is None else f"%{_f(rate * 100, 1)} ({'geçti' if fd.get('gate_pass') else 'KALDI'})"
+    return [f"P2: S1b {b.get('status', '—')} günlük {j.get('rows', '—')} satır (bekleyen {j.get('pending') or 0}) · "
+            f"uzlaştırma {(r1.get('reconcile') or {}).get('status', '—')} · fidelity {fdt} · S2 {a.get('status', '—')} atıf "
+            f"{r2.get('rows', '—')} satır (bekleyen {r2.get('pending') or 0}) · ızgara OK {(r2.get('grid') or {}).get('OK', 0)}"]
+
+
 def _data_lines(st: dict) -> list[str]:
     """P1b'den veri tazeliği (S0'ın `check_data_status` sonucu); veri birimi hiç çalışmadıysa satır yok."""
     ds = (st.get("selfcheck") or {}).get("data") or {}
@@ -350,7 +365,7 @@ def status_lines(paths: EnginePaths, *, brief: bool = True, now: datetime | None
     mid: list[str] = []
     if st:
         mid = [_selfcheck_line(st), _skew_line(st), _ab_line(st), _backup_unit_line(st), _config_line(st),
-               _resource_line(st), _ledger_line(st), *_data_lines(st), _flags_line(st)]
+               _resource_line(st), _ledger_line(st), *_data_lines(st), *_p2_lines(st), _flags_line(st)]
         books = _books_lines(last_with_stage(paths, "S1a", st), detail=not brief, current_id=st.get("run_id"))
         bline = [_backup_line(st, last_with_stage(paths, "S7b", st))]
     else:
@@ -392,8 +407,37 @@ def _detail_lines(paths: EnginePaths, st: dict | None) -> list[str]:
 
 
 # ============================================================================ digest_tr.md (≤ 8 KB)
+def _p2_sections(paths: EnginePaths, st: dict, now: datetime, max_trades: int) -> list[tuple[str, list[str]]]:
+    """P2b bölümleri (`report.digest_sections`); okunamazsa tek satırlık not (özet yine yazılır)."""
+    try:
+        from .report import digest_sections
+        return digest_sections(paths, st, now=now, max_trades_per_book=max_trades)
+    except Exception as exc:  # noqa: BLE001 — P2 bölümü arızası özeti düşürmez; nedeni yazılır
+        return [("p2_day", ["## Neden kaybetti / kazandı", "", f"(P2 bölümü üretilemedi: {type(exc).__name__}: {exc})"[:300], ""])]
+
+
+def _utc_lines(paths: EnginePaths, now: datetime) -> list[str]:
+    try:
+        from .report import utc_day_lines
+        return utc_day_lines(paths, now=now)
+    except Exception as exc:  # noqa: BLE001
+        return [f"UTC günü: okunamadı ({type(exc).__name__})"]
+
+
 def digest_text(paths: EnginePaths, st: dict, *, now: datetime | None = None) -> str:
+    """`digest_tr.md` tam sürüm (P2b): hedef başlığı (+ UTC günü), dün kapanan işlemler defter defter (neden kodu,
+    maliyet, geriye dönük kâra dönen hücreler), son 7 günün kayıp kodları, defter başına en iyi EX_ANTE sabit hücre,
+    veri/doğruluk sağlığı, çalıştırma ve arşiv. ≤ 8 KB: önce arşiv tablosu, sonra 7 günlük tablo, sonra P2 ayrıntısı
+    kısalır; en sonda sert kesim."""
     now = now or utc_now()
+    for max_trades in (6, 3, 1):
+        text = _digest_text(paths, st, now=now, max_trades=max_trades)
+        if not text.endswith("(8 KB sınırı: kısaltıldı)\n"):
+            return text
+    return text
+
+
+def _digest_text(paths: EnginePaths, st: dict, *, now: datetime, max_trades: int) -> str:
     today = now.strftime("%Y-%m-%d")
     ts = target_summary(paths) or {}
     latest = latest_rows(paths)
@@ -401,7 +445,8 @@ def digest_text(paths: EnginePaths, st: dict, *, now: datetime | None = None) ->
     sections: list[tuple[str, list[str]]] = []
     sections.append(("", [f"# Gece öğrenme motoru — özet {today}", "",
                           f"{BANNER} · {ENGINE_VERSION} · çalıştırma {st.get('run_id')}", ""]))
-    sections.append(("tgt", ["## Günlük hedef (" + TGT_VERSION + ")", "", *head, ""]))
+    sections.append(("tgt", ["## Günlük hedef (" + TGT_VERSION + ")", "", *head, *_utc_lines(paths, now), ""]))
+    sections += _p2_sections(paths, st, now, max_trades)
     if latest:
         sections.append(("tbl", ["## Son 7 gün", "", "```", *render_table(latest, days=7), "```", ""]))
     if st.get("result") == "RUNNING":
@@ -422,8 +467,8 @@ def digest_text(paths: EnginePaths, st: dict, *, now: datetime | None = None) ->
     text = "\n".join(line for _, ls in sections for line in ls)
     if len(text.encode("utf-8")) <= DIGEST_MAX_BYTES:
         return text
-    # sınır: önce arşiv tablosu, sonra 7 günlük tablo kısalır; en sonda sert kesim
-    for drop in ("arc", "tbl"):
+    # sınır: önce arşiv tablosu, sonra 7 günlük tablo, sonra P2 ayrıntısı kısalır; en sonda sert kesim
+    for drop in ("arc", "tbl", "p2_exante", "p2_why", "mon"):
         sections = [(k, ls if k != drop else ls[:1] + ["", "(boyut sınırı: kısaltıldı — engine-status)", ""])
                     for k, ls in sections]
         text = "\n".join(line for _, ls in sections for line in ls)
@@ -455,7 +500,26 @@ def summary_doc(paths: EnginePaths, st: dict, *, now: datetime | None = None) ->
             "daily_target": {"tgt": TGT_VERSION, "computed_at": ts.get("computed_at"), "header_tr": ts.get("header_tr"),
                              "rows": ts.get("rows") or [], "rolling": ts.get("rolling"), "last_look": ts.get("last_look"),
                              "monthly": ts.get("monthly")},
-            "backup": ((st.get("stages") or {}).get("S7b") or {}).get("result")}
+            "backup": ((st.get("stages") or {}).get("S7b") or {}).get("result"),
+            "p2": _p2_summary(paths, st)}
+
+
+def _p2_summary(paths: EnginePaths, st: dict) -> dict[str, Any]:
+    """P2b'nin panel/araç için küçük JSON özeti (S1b/S2 sonuçları, kayıt sha'ları, UTC günü başlık durumu)."""
+    stages = st.get("stages") or {}
+    out: dict[str, Any] = {"s1b": (stages.get("S1b") or {}).get("result"), "s2": (stages.get("S2") or {}).get("result")}
+    try:
+        from .analysis import build_status
+        from .attribution import ATTRIBUTION_SHA
+        from .cfgrid import CFGRID_SHA
+        b = build_status(paths) or {}
+        out["attribution"] = {"rows": b.get("rows"), "primary": b.get("primary"), "grid": b.get("grid"),
+                              "attribution_sha": ATTRIBUTION_SHA, "cfgrid_sha": CFGRID_SHA}
+        from .utc_day import tgt_v2_status
+        out["utc_day"] = tgt_v2_status(paths)
+    except Exception as exc:  # noqa: BLE001 — özet JSON'u P2 okuması arızasında da yazılır
+        out["error"] = f"{type(exc).__name__}: {exc}"[:200]
+    return out
 
 
 def _bounded_json(doc: dict[str, Any]) -> bytes:
@@ -465,6 +529,9 @@ def _bounded_json(doc: dict[str, Any]) -> bytes:
         rows = rows[1:]
         doc["daily_target"]["rows"] = rows
         doc["daily_target"]["rows_truncated"] = True
+        raw = (json.dumps(doc, ensure_ascii=False, indent=1) + "\n").encode("utf-8")
+    if len(raw) > SUMMARY_MAX_BYTES:
+        doc["p2"] = {"truncated": True}
         raw = (json.dumps(doc, ensure_ascii=False, indent=1) + "\n").encode("utf-8")
     if len(raw) > SUMMARY_MAX_BYTES:
         doc["archive"] = {"truncated": True}

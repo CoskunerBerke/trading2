@@ -10,7 +10,8 @@ yedeğini alır:
   `exchangeinfo/` (günlük listeleme/delist görüntüsü) — küçüktür (günde birkaç on KB) ve yeniden ÜRETİLEMEZ: o günün
   borsa durumunun tek kaydıdır (geçmiş `exchangeInfo` sonradan çekilemez; P3'ün zaman noktasında evreni bunlara
   dayanır). Veri biriminin çalıştırma kayıtları (`runs/data/`) girmez (yeniden üretilebilir tanı kaydı).
-* **Hariç** (`EXCLUDE`, yeniden üretilebilir): `store/`, `archive_cache/`, `dukascopy/`, `backtests/`, `paths/`; ayrıca
+* **Hariç** (`EXCLUDE`, yeniden üretilebilir): `store/`, `archive_cache/`, `dukascopy/`, `backtests/`, `paths/` ve (P2b)
+  `journal/`, `attribution/` (arşiv + state yan kaynakları + mühürlü depodan bayt-özdeş yeniden kurulur); ayrıca
   `backup/` (yedeğin kendisi) ve `locks/`. Listede olmayan bir üst klasör de alınmaz (bilinmeyen = dahil değil).
 
 Biçim: `backup/research-small-YYYY-MM-DD.tar.gz` + `.sha256` (`sha256sum -c` biçimi: `<hex>  <ad>`). Arşiv önce aynı
@@ -54,7 +55,9 @@ INCLUDE: tuple[str, ...] = ("closes", "entries", "snapshots", "target", "trials"
                             "prospective", "proposals", "approvals", "summary", "universe", "exchangeinfo")
 RUNS_DIR = "runs"
 RUNS_KEEP = 30
-EXCLUDE: tuple[str, ...] = ("store", "archive_cache", "dukascopy", "backtests", "paths")
+#: P2b eki (2026-10-06): `journal/` (tj_v1) ve `attribution/` arşivden (`closes/`), state yan kaynaklarından ve mühürlü
+#: depodan YENİDEN ÜRETİLEBİLİR (aynı mühür → bayt-özdeş); `paths/` gibi yedeğe girmez.
+EXCLUDE: tuple[str, ...] = ("store", "archive_cache", "dukascopy", "backtests", "paths", "journal", "attribution")
 #: yedeğe hiç girmeyen ve geri yüklemede yerinde kalan klasörler
 NEVER: tuple[str, ...] = ("backup", "locks")
 KEEP_DAILY, KEEP_WEEKLY = 7, 4

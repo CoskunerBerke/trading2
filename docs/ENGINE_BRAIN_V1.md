@@ -169,8 +169,9 @@ keşif katmanında izlenir; kısa geçmişle coin satırı açılmaz.
   sayılar mühürden sonra küçültülemez.
 - Keşif katmanı ayrıca 3.745 seri izler (§5.1): 45 × 40 + 13 × 40 + 35 × 40 + 5 + 2 + 18. Bunlar v1'in kapısına girmez,
   ama **bir sonraki LIB sürümü mühürlenirken** N'e eklenir (görülmüş sayılır).
-- Rationale: 106 varyant ana belgenin aile listesinin tamamıdır; coin'e özel arama 1.081 ham denemeyle en büyük kalemdir ve
-  DSR eşiğini ≈ 3,54'ten 3,66'ya çıkarır (logaritmik). Kapsamlar sonuçlara bakılmadan sabitlendi.
+- Gerekçe: 106 varyant ana belgenin aile listesinin tamamıdır; coin'e özel arama 1.081 ham denemeyle en büyük kalemdir ve
+  DSR eşiğini ≈ 3,59'dan (N = 3.432) 3,66'ya (N = 4.513) çıkarır; artış logaritmiktir, yani coin başına aramanın istatistik
+  bedeli küçüktür, asıl bedeli coin başına az işlemdir (§1.2). Kapsamlar sonuçlara bakılmadan sabitlendi.
 
 ### 2.6 Öncül denemeler (içe alınır, yeniden satılmaz)
 
@@ -284,3 +285,171 @@ geçen satır `PASS_A` → §6.1 doğum kuyruğu. Ara gecelerde hüküm kelimesi
 OOS ≥ 100 işlem ve ≥ 2 takvim yılı (altın ≥ 60 ve ≥ 9 ay); pozitif katman ≥ %60; PBO < 0,25; DSR ≥ 0,95; plasebo CI alt > 0;
 ileri okuma yukarıdaki gibi; tek enstrüman payı ≤ %50 (coin satırında küme tutarlılığı); XSEC yalnız PIT ile; kopya/türev
 kıyası aynı config dönemi içinde.
+
+---
+
+## 4. Dersler: atıftan önceden kayıtlı aday kurala
+
+### 4.1 Atıf → ders istatistiği (ana belge §5.7; S6, `lessons.py`)
+
+- **Girdi:** P2b'nin `attribution/YYYY-MM.jsonl.gz` satırları (kodlar, `cfgrid_v1` hücreleri, R ayrıştırması) ve `tj_v1`
+  (kohort, config dönemi, giriş kovası). Gerçek işlem kanıtı (`REAL`) ve karşı-olgusal kanıt (`CF`, `cf_aux_v1`
+  muhafazakâr R) ayrı satırdır, birleştirilmez; POLICY ve öğrenme-ekstra kohortları karışmaz; hücreler config dönemi
+  içinde hesaplanır.
+- **Hücreler** (geri çekilme düzeyleri; çapraz derinlik ≤ 2): L0 defter; L1 defter × taktik; L2 L1 × enstrüman; L3 L1 ×
+  durum kovası (`situation_v1` 4h trend × 4h oynaklık); L4 L1 × enstrüman × kova. Veri olan en kaba düzey kullanılır.
+- **Hücre istatistikleri:** n ve gün sayısı, ortalama net R, Wilson kazanma oranı, ebeveyne `HierarchicalRate` büzülmesi
+  (alpha 10), gün kümelenmeli CI95 (5.000, sabit tohum), her EX_ANTE `cfgrid_v1` hücresi için gerçeğe göre eşli ΔR ve CI'ı,
+  `p_day` (§3.6).
+- **Ders türleri ve v1 karşılığı:** IZGARA (EX_ANTE hücre ΔR > 0) ve FİLTRE (hücrede atla, eşli Δ = −r) aday üretebilir.
+  MALİYET yalnız raporlanır (`cfgrid_v1`'de fonlamadan kaçınma hücresi yok; limit giriş worker'ın taker yürütmesini
+  değiştirir; ikisi de `cfgrid_v2` ister). AYRIM (kazananı kaybedenden ayıran özellik) yalnız walk-forward OOS AUC CI > 0,5
+  ise raporlanır, v1'de aday üretmez.
+- **Uygunluk:** n ≥ 30 ve ≥ 10 farklı gün.
+- **Bakışlar:** hücrenin n'i 30, 60, 120, 240'ı geçtiği gece; alfa 0,01 / 0,01 / 0,015 / 0,015. Her bakış `LESSON_LOOK`
+  satırıdır. BH ailesi (q = 0,10) = o gece bakışı olan **bütün** (hücre, ders türü/EX_ANTE hücresi) çiftleri; gecelik üst
+  sınır 2.000 çift (n'i büyük olan önce, sonra `cell_id`), sığmayan ertesi geceye kalır ve sayılır.
+- **İleri doğrulama:** bulgu T_k anında hash'lenir (`RESEARCH_HYPOTHESIS`); doğrulama yalnız T_k'dan sonra kapanan
+  işlemlerle, hücrenin bir sonraki bakışında: aynı işaret, `p_day` ≤ o bakışın alfası, ≥ 3 aylık katmanın ≥ 2/3'ünde işaret
+  tutarlılığı.
+
+### 4.2 Ders deposu ve yaşam döngüsü (ana belge §5.8)
+
+- `learn/lesson_store` (`lesson_v2`, `build_lesson`, `transition`) + `learn/journal_archive.SegmentArchive`; kök
+  `data/research/lessons`; anahtarlar `B| I| A| T| V| C| X| E|`; `state/lesson_archive`'a dokunulmaz.
+- Durumlar: `OBSERVATION` → `RESEARCH_HYPOTHESIS` → `VALIDATED_POLICY_CANDIDATE` → (`APPLIED_BOUNDED` yalnız sahibin
+  `engine-query --approve` komutu ve normal sürümle, yalnız **mevcut defter** değişikliğinde) | `REJECTED` | `RETIRED`.
+  Otomatik terfi bir ders durumu **değildir**: dersten türeyen aday otomatik defter olursa ders `VALIDATED_POLICY_CANDIDATE`
+  kalır ve `linked_promo_id` alır. Gece çalıştırıcısı `APPLIED_BOUNDED` yazamaz (test).
+- `RETIRED`: sonraki bakışta işaret döndü; ya da `attribution_v1`/`cfgrid_v1`/veri mührü değişikliği dersin işlemlerini
+  geçersizleştirdi (yeniden hesaplanır, yeni `LESSON_LOOK` satırları).
+- P2b'nin geçici `regime_fit` önceli (`JOURNAL_PRIOR`) ders deposu kurulunca `LESSON_PRIOR`'a geçer (`as_of < opened_at`).
+
+### 4.3 Dersten önceden kayıtlı aday kurala (ana belge §5.9; tek otomatik fikir üreticisi)
+
+| Doğrulanmış ders | Dönüşüm (mühürlü liste) | Aday spec ve kapsamı | Tekilleştirme |
+|---|---|---|---|
+| FİLTRE: taban T, kova X'te kaybettiriyor | T4 `EXCLUDE_REGIME(X)` | T + "X'te giriş yok", `POOLED_OWN` | O ailesindeki `F_ER`/`F_BTC`/`F_VOL` ile `spec_sha` aynıysa yeni deneme yok, o satıra bağlanır |
+| FİLTRE: taban T, enstrüman c'de kaybettiriyor | T1 `CELL_FILTER(I=c)` | T'nin kümesi − {c}, `POOLED_OWN` | — |
+| "T yalnız c'de kazanıyor" | dönüşüm yok | zaten LIB_v1 satırı `COIN:c` | yeni deneme yok |
+| IZGARA stop ekseni ({0,75; 1; 1,5; 2} × ATR) | T2 `STOP_FLOOR(k)` | T + stop kuralı, ders hücresinin kapsamı | — |
+| IZGARA çıkış ekseni (1R/2R/3R, 2 ATR iz, hedefsiz + zaman) | T3 `EXIT_VARIANT(e)` | T + çıkış, ders hücresinin kapsamı | `X_*` ile `spec_sha` aynıysa bağlanır |
+| MALİYET, AYRIM | v1'de yok | — | — |
+
+- Dönüşüm kodu LIB_v1 mührünün parçasıdır; türeyen spec'ler `library/derived_specs.jsonl`'a (yalnız eklenir) motorun
+  kendisince yazılır ve ayda bir `LIB_v1.<AAAA-AA>` olarak mühürlenir (her ayın 1'inden sonraki ilk gece; aylık üst sınır
+  20 spec, düşük q ve büyük |Δ| önce). İnsan PR'ı gerekmez; yeni aile/dönüşüm türü ise kod PR'ıdır (yeni LIB sürümü).
+- Her spec'in kendi `T_seal`'ı vardır; Kapı A'nın ileri okuma şartı (≥ 60 gün) yüzünden dersten türeyen aday en erken
+  mühründen ~2 ay sonra kapıyı geçebilir. Canlıda zaten olan kural (ham config'e karşı denetim; örn. Box en az stop %0,5)
+  aday olmaz. Hiçbir dönüşüm mevcut defteri değiştirmez; geçen aday yalnız **yeni** defter olabilir (§7).
+
+### 4.4 Her adımın deneme maliyeti
+
+| Adım | `trials.jsonl` | N'e etkisi |
+|---|---|---|
+| Atıf (S2), ders ara görünümü | yok | yok (hüküm yok) |
+| Ders bakışı | 1 `LESSON_LOOK` / (hücre, tür) / bakış | `N_lesson_cum` +1 |
+| Türeyen spec | 1 `SPEC` / spec (+ ızgara seçeneği varsa `OPTION`) | `N_raw_cum` +1 (+ seçenekler) |
+| Kapı A bakışı | 1 `LOOK_A` / satır / ay | yok (BH + DSR + ileri okuma öder) |
+| Keşif okuması (insan/AI'ın "en iyi 5"i görmesi) | sürüm mühründe `EXPLORE_SEEN` | sonraki sürümde `N_explore_cum` += seri sayısı |
+| Kapı B bakışı | 1 `LOOK_B` / aday / bakış | yok (alfa harcaması öder) |
+| Holm | 1 `HOLM` / aday / ay | yok (aile hatası öder) |
+
+---
+
+## 5. Keşif katmanı, gece planı ve kaynaklar
+
+### 5.1 Keşif katmanı (ana belge §6.8; `explore.py`, S4x)
+
+- **Seriler (3.745):** 45 bağımsız kripto varyantı × giriş evreninin 40 coin'i (1.800); 13 kopya × 40 (520); 35 örtü × 40
+  (1.400); XSEC 5; spread 2; altın 6 × {XAUUSDT, PAXGUSDT vadeli, PAXG spot} (18).
+- **Veri:** yalnız açılışı `T_SEAL_MS`'den (mühür commit'inin UTC zamanı, kayıtta) sonra olan, arşivle doğrulanmış, mühürlü
+  barlar; göstergeler öncesindeki barlarla ısınır (seçim yok). `DATA_MOVING`/`DATA_STALE` serisi o gece atlanır.
+- **Durum:** seri başına `explore/<lib>/<variant>/<SYM>.state.json` (gösterge durumu, açık pozisyon, son bar) ve
+  `<SYM>.jsonl` (işlemler; üç maliyetle günlük özsermaye, 1 USDT risk / 200 USDT taban). Artımlı adım baştan hesapla
+  bayt-özdeştir (test).
+- **Çıktı ve gösterim:** ana belge §6.8 aynen; `engine-query explore [--gold] [--variant <id>]`; özette yalnız "ileri verili
+  seri sayısı, medyan serinin sonucu, '3.745 seri arasından en iyi 5 — seçim yanlılığı, kanıt değil'". Hüküm kelimesi
+  üretmez (metin testi), terfi ettirmez, canlı toplama girmez. Kapı A yalnız satırın kendi ileri birleşimini okur (§3.7).
+
+### 5.2 Gece planı (P3 + P4 + P7b; 01:37 → iç son tarih 03:40 UTC)
+
+| Sıra | Aşama | Bütçe | Not |
+|---|---|---|---|
+| 1 | S0, S1s, S1a, S3 | P1a/P2 gibi | değişmez |
+| 2 | S1b, S2 | P2b rezervleri | değişmez |
+| 3 | **S4x** keşif adımı | ≤ 10 dk | yalnız yeni barlar |
+| 4 | **S5** P4 adayları | ≤ 5 dk | ≤ 30 aday |
+| 5 | **S5r** otomatik defter izleme (P7b) | ≤ 3 dk | SAPMA, parite, kalp atışı (§7.7) |
+| 6 | **S4w** walk-forward kuyruğu | son tarih − 25 dk'ya kadar | ilk kurulum birikmesi, aylık ek, haftalık 1/7 doğrulama |
+| 7 | **S6** dersler, denemeler, kapılar | ≤ 10 dk; Kapı A gecesi ≤ 40 dk (S4w o gece kısılır); Holm gecesi + 5 dk | son tarih − 8 dk'da durur |
+| 8 | S7, S7b | değişmez | `trials/`, `explore/`, `prospective/`, `promotions/`, `lessons/`, `library/` yedekte |
+
+- İleri veri aşamaları (S4x, S5, S5r) zamana duyarlı ve ucuzdur; önce koşar. S4w kalan süreyi kullanır.
+- A/B KAPALI, SKEW ve `DATA_STALE` gecelerinde S4x/S5/S4w çalışmaz; ilk AÇIK gece bütün birikmiş barları işler.
+- İlk doldurma birimi (`tb-engine-backfill`) etkinken S4w `BACKFILL_ACTIVE` ile atlanır (bellek toplamı).
+- WF önbelleği `backtests/cache/<spec_sha>/<kapsam>/<veri_ay_mührü>.parquet` (işlem listesi + günlük getiri); ay parçasının
+  mührü değişince geçersizleşir. Haftalık rotasyon her gece 1/7'yi sıfırdan hesaplar ve karşılaştırır (bayt farkı →
+  `WF_CACHE_MISMATCH`, seri yeniden kurulur).
+
+### 5.3 Kaynaklar (dürüst öneri)
+
+- **Bellek.** VPS 4 vCPU / 7,7 GB; worker en çok ≈ 5,5 GB (6 GiB cgroup); panel ≤ 0,5 GB; gece birimi bugün `MemoryHigh=400M` /
+  `MemoryMax=512M` (P2 ölçülen tepe 283 MiB). P3 eki: tek seri × dilim bellekte (5m 3 yıl ≈ 20 MB ham, pandas ile ≈ 60 MB),
+  CSCV matrisi < 1 MB, bootstrap parçası 16 MB, keşif akışla → beklenen tepe ≈ 400–450 MiB. **Karar kuralı (önceden):** P3g
+  büyük sentetik dünyada (P2b dünyası + P3 yükü) `VmHWM` ≤ 350 MiB ise 400M/512M kalır; değilse `MemoryHigh=640M` /
+  `MemoryMax=800M` (`ENGINE_EXPECTED_MEMORY_MAX=838860800`) — tek seferlik, §9.3'teki kapılı birim kurulumuyla. Worker tepesinde
+  boş ≈ 7,7 − 5,5 − 0,5 − 0,5 ≈ 1,2 GB ≥ 0,8 GB; ilk doldurma S4w ile aynı anda koşmaz; `OOMScoreAdjust=1000` aynı. İç
+  koruma: RSS > 0,7 × MemoryMax → çalışan S4w/S6 işi kontrol noktası yazar ve durur (`MEMORY_GUARD`); S1a/S3/S7b asla.
+- **CPU:** `CPUQuota=100%`, `--jobs 1`, `Nice=19`, `CPUWeight=10`, IO `idle` (değişmez).
+- **Süre:** S4w gecede ≈ 60–80 dk. İlk tam kurulum (106 varyant × uygun seriler × bütün geçmiş) tahmini ≈ 8 çekirdek-saat
+  (sandbox) × 3 (VPS) ≈ 24 saat → ≈ 18–24 AÇIK gece (A/B dönüşümlü olduğundan ≈ 5–6 takvim haftası). Sonrası: aylık ek ≈ 1
+  gece, haftalık doğrulama 7 gece. **Ana belge P3 kabul 10'un okunuşu:** "tam tarama 7 gecede" kararlı durumdaki doğrulama
+  rotasyonudur; ilk kurulum `WF_BACKLOG done/total, ETA` olarak görünür; bitmemiş satır Kapı A'da `HESAPLANMADI` (geçmedi
+  değil, BH ailesinde değil). Gerçek hız P3b'de ölçülür; tahmin tutmazsa bu satır güncellenir.
+- **Disk:** trials ≤ 50 MB/yıl, keşif ≈ 200 MB/yıl, WF önbelleği ≈ 0,5 GB, 14 gecelik ayrıntı ≈ 0,3 GB, adaylar ≈ 50 MB, PIT 1d
+  ≈ 0,1 GB → ≤ 1,5 GB (15/20 GB sınırlarının içinde).
+- **Kabul (VPS, 14 A/B gecesi):** tur p95 ≤ KAPALI + %5; `NRestarts` değişmez; `memory.peak` ≤ 0,8 × MemoryMax; Box kaçan
+  bar ve koruyucu izleyici gecikmesi KAPALI tabanında; 418/429 = 0.
+
+---
+
+## 6. P4: kayıt-yalnız ileri adaylar ve Kapı B
+
+### 6.1 Doğum ve kapasite
+
+- Kapı A bakışında her `PASS_A` satırı bir aday doğurur: `cand_<lib>_<row_id>_<sha6>` (`BIRTH` satırı). Dondurulanlar:
+  varyant ve parametreler (`COIN_FIT`'te son katmanın seçimi), kapsamın sembol listesi, maliyet modeli, büyüklük (200 USDT,
+  işlem başı %0,5 = 1 USDT), durdurma kuralları, bakış takvimi (sınıfa göre), Kapı A OOS CI'ı ve geriye-test p95 düşüşü.
+- En çok 30 etkin aday. Fazlası kuyruğa girer (önce düşük q, sonra düşük `p_day`); iki Kapı A bakışında yer bulamayan kuyruk
+  girdisi düşer ve bir sonraki bakışta yeniden nitelenmelidir.
+
+### 6.2 Adım (S5, `prospective.py`)
+
+- Aday başına `prospective/<id>/futures_ledger.json` (`FuturesLedgerV2`; worker'ın `FeeSchedule`, kayma, bracket,
+  likidasyon ayarları), `scenarios.jsonl` (ADVERSE/STRESS yeniden maliyet) ve `tj_v1` biçimli satırlar
+  (`source=PROSPECTIVE_REPLAY`); atıf (S2) bunlara da uygulanır.
+- Barlar: yalnız arşivle doğrulanmış, mühürlü kapanmış barlar (`SealedReader`; gecikme ≤ ~26 saat, kaydedilir). Karar
+  `close_time < adım` barlarıyla, dolum sonraki barın açılışında + kayma; stop/hedef yolu depoda varsa 1m/5m'den, yoksa
+  sinyal diliminde ters-önce; fonlama gerçek uzlaşmalarda. Worker'ın tur gecikmesi (≤ ~20,5 dk) bilgi sütunu `exec_delay`
+  olarak ayrıca modellenir; kapıya girmez, terfi sonrası parite beklentisini verir.
+- Nedensellik: kesik veriyle ve tam veriyle adım atan iki koşu ortak dönemde bayt-özdeş karar verir (zaman yolculuğu testi).
+
+### 6.3 Kapı B bakışları ve aylık Holm (ana belge §6.7, aynen)
+
+- Bakışlar: 5m–4h taktikleri 50/100/150 kapanmış işlem; 1d taktikleri ve altın 30/60/90; alfa 0,01 / 0,015 / 0,025. En az
+  süre 28 gün (1d: 90; altın: 60). Bir bakışta hepsi: `p_day` (ADVERSE, ileri pencere) ≤ bakış alfası; STRESS ortalaması
+  > 0; ortalama Kapı A OOS CI'ı içinde; düşüş ≤ 1,5 × geriye-test p95 ve ≤ özsermayenin %8'i; likidasyon yok; nedensellik
+  testi geçer; `DATA_STALE` günleri ≤ %10 → `PASS_B`. Yalnız `p_day` eksikse ve son bakış değilse aday sürer.
+- Durdurma (yalnız bakışlarda; ana belge §6.6): ≥ 30 işlemden sonra ortalama R < −0,10; kayan 60 günlük ortalama R CI üst
+  sınırı < 0; düşüş > 2 × geriye-test p95; günlük net R CUSUM (h = 4σ) → `STOPPED`. Son bakışta geçmeyen → `FAILED_B`.
+- **Holm ayı (okunuş kesinleştirmesi):** toplu iş her ayın ilk UTC pazartesisi gecesi; aile = bir önceki toplu iş gecesinden
+  bu geceye kadar herhangi bir Kapı B bakışı olan **bütün** adaylar; her birinin p'si o aralıktaki son bakışının `p_day`'i;
+  Holm, aile genelinde α = 0,05. `PASS_B` ∧ Holm → `PROMOTABLE` (her aile üyesi için `HOLM` satırı).
+
+### 6.4 Yönlendirme ve etiket
+
+- `PROMOTABLE` ve otomatik katalogda (§7.5) → terfi manifesti (§7.3). Katalog dışı (5m, altın, fonlama, XSEC, spread,
+  `K_BOX`, `K_FM` ve bunların örtüleri) → ana belge §6.7 Kapı C yazılı önerisi (`proposals/<id>.json` + `.tr.md`), sahip
+  onayı, normal sürüm. Sahip kararındaki "o yazılana kadar Kapı C geçerlidir" hükmü bu adaylar için sürer.
+- Etiket her yerde "ileri yeniden oynatma — gerçek defter değil"; canlı toplamlara asla girmez; `engine-query candidates`.

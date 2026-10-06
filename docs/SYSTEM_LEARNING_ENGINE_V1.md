@@ -1553,6 +1553,74 @@ sudo bash tb-engine-<sha7>.sh --check     # 14 gün boyunca her gün
 sudo bash tb-engine-<sha7>.sh --ab-report
 ```
 
+#### P1b uygulama notları (2026-10-06)
+
+Belgenin açık bıraktığı ya da kodla çeliştiği yerlerde uygulamanın seçtiği yorumlar (mühürlü/kayıtlı metin
+değişmedi; ayrıntı modül başlıklarındadır: `research_engine/{store,datastore,universe,seed,provider}.py`):
+
+1. **Arşiv önbelleği düzeni.** Dosyalar `archive_cache/archive/<sunucu>/<url yolu>` altındadır (§3.1 tablosu
+   `archive_cache/<sunucu>/…` der). Laboratuvarların `ZipCache`/`ArchiveCache`'i `--cache` kökünün altına `archive/`
+   ekler; §3.5'teki `--cache /opt/tradingbot/data/research/archive_cache --offline` komutu ancak bu düzenle bayt-özdeş
+   dosyaları bulur. 1m zip'leri doğrulanmış alımdan sonra silinir; sha256'ları seri manifestinin dosya defterinde
+   (`files`) kalır.
+2. **Yeniden kullanım sınırı.** `HistoryStore` alt sınıf olarak, `BudgetPool`/`RateBudget` olduğu gibi kullanıldı.
+   `ArchiveClient`/`HistoryCollector`/`IncrementalUpdater`/`HttpClient` kullanılmadı: `.CHECKSUM`'sız zip'i doğrulanmış
+   sayarlar, µs'yi değerin büyüklüğünden çözerler, ilk hatada dururlar ve 429'u yeniden denerler — §3.2/§3.4'le çelişir.
+   Mantık `datastore`'da bu kurallarla yeniden yazıldı; worker modülleri değişmedi.
+3. **Giriş evreni (40).** `state/universe.json` borsadaki bütün uygun sembolleri (≈ 200) taşır; 40'lık liste
+   `config.yaml → entry_universe.symbols`'tır. Motor bunu ham YAML'dan okur (`rawconfig` ihtiyaç listesine
+   `entry_universe.enabled/symbols` eklendi); okunamazsa `state/frame_provenance.json`, o da yoksa bileşen boş ve
+   `ENTRY_UNIVERSE_YOK` bayrağı. `state/universe.json`'un küçük kopyası günlük `universe/AAAA-AA-GG.json`'a girer.
+   İşlem görenler: P1a kapanış arşivi + ledger `history[]`/açık pozisyon-lot + `state/**/counterfactual_trades.json` ve
+   `state/shadow_book.json` (son 180 gün).
+4. **Altın vadeli 1m** P1b'de `max(başlangıç, şimdi − 400 gün)`'den doldurulur (§3.3'ün "1m–1d" satırı ile "1m tembel,
+   P2" satırının birleşimi); diğer sembollerin 1m'i P2'de tembeldir.
+5. **Mark/premium 1h** türleri `markpx_1h`, `premium_1h` (`markPriceKlines`/`premiumIndexKlines`; sütunlar
+   `timestamp, open, high, low, close`); worker'ın `mark_1h` türüyle karışmasın diye ayrı adlıdır.
+6. **Fonlama.** data.binance.vision'da `daily/fundingRate` yoktur (2026-10-06 yoklaması 404): içinde bulunulan ay ve
+   aylık zip'i henüz yayımlanmamış önceki ay REST `fundingRate`'ten gelir (tek istek, ağırlık 1, ≤ ~62 gün). Aralık:
+   dakikaya yuvarlanmış ardışık farkların medyanı; boşluk `round(fark/aralık) − 1` (`calc_time` +0…+26 ms oynar).
+   Nokta türlerinde (fonlama, `metrics_5m`) REST/tohum ↔ arşiv zaman damgası ±60 sn içindeki aynı değerli ikiz fark
+   sayılmaz; fonlamada yalnız `rate` karşılaştırılır (`mark` yalnız REST'te vardır).
+7. **REST kuyruğu.** Yalnız arşiv tabanı olan seriler; kline/mark/premium ve `metrics_5m` için en çok son 2 gün,
+   fonlama için yukarıdaki pencere. `metrics_5m` REST eşlemesi `crowd_data.COLUMN_MAP`'tir (orada da "VPS'te
+   doğrulanacak" diye işaretli); doğrulanmış gün zip'i kendi gününü yetkili olarak kapsar, arşivde olmayan REST satırları
+   kaldırılır ve fark olarak `runs/data/<id>/diffs.jsonl.gz`'a yazılır. 403/451 (erişim engeli) de 418/429 gibi REST
+   adımını durdurur. Spot IP limiti `ratelimit`'in muhafazakâr 1200'üdür (pay 120). Jeton kovasının üstüne KAYAN 60 sn
+   penceresi konuldu (kova tek başına bir dakikada iki kapasiteye izin verirdi).
+8. **`--update` tabansız seriyi atlar** (`NO_BASELINE`); ilk kapsama `--backfill`'in işidir. Böylece boş depoda veri
+   biriminin elle smoke çalıştırması dakikalar sürer. Tohum yalnız `--backfill`'de, yalnız BOŞ araştırma serisine ve
+   yalnız kline türleri + fonlama için yapılır; worker manifestinde `bad_chunks` varsa kopya tutarsız sayılır
+   (yeniden indirme). Satır sayısı tam olan tohum ayları yeniden indirilmez.
+9. **Kurtarma tespiti** ucuzdur: yazımdan önce `.inflight.json` işareti, her gece parça `stat`'ı (boyut, mtime_ns)
+   manifestle karşılaştırılır; sha256 yalnız şüphede okunur. Haftalık örneklem: Pazar günleri, kararlı özeti
+   `% 7 == ISO hafta % 7` olan seriler derin denetlenir (7 haftada bütün depo). "İki ardışık gece" = başarısız yeniden
+   çekimin iki ardışık UTC takvim günü (ağ hatası da sayılır); `MANIFEST_LAG` ayının yeniden çekim hatası seriyi
+   durdurmaz. Duran seriye yeni satır eklenmez ama yeniden çekim her gece denenir; başarılı olunca seri devam eder.
+10. **Mühür.** Parça listesi `store/_seal/<data_seal>.json.gz`'dadır (son 5 tutulur; `store/` yedeğe girmez,
+    yeniden üretilebilir). `summary/data_status.json` son TAMAMLANMIŞ çalıştırmanın mührünü ve sürüyorsa `running`
+    altında ilerlemeyi taşır. Gece birimi S0'da bu dosyayı düz JSON olarak okur (`selfcheck.check_data_status`; P1b
+    modülleri import edilmez) ve `data_seal`'ı `run_status.json`'a yazar; mühür 26 saatten eskiyse `DATA_STALE`
+    bayrağı. P1b'de gece aşamalarının hiçbiri depoyu okumadığından plan değişmez (S7b dahil).
+11. **Veri birimi S0'ı**: root reddi, PAPER, `data.lock` (alınamazsa `SKIPPED_LOCKED`, çıkış 0, `data_status.json`'a
+    dokunulmaz), disk koruması, yalıtım (state/market/app'e yazma reddi, `memory.max` = `ENGINE_EXPECTED_MEMORY_MAX`,
+    `/tmp` ve araştırma kökü yazılabilir; soket denemesi `NOT_APPLICABLE`). Çalıştırma kaydı `runs/data/<run_id>/`
+    (gece biriminin `runs/<run_id>/` desenine uymaz; son 60 tutulur). Çıkış: 0 SUCCESS/PARTIAL/DEADLINE/SKIPPED_LOCKED,
+    1 FAILED, 2 Dukascopy YAPILAMADI, 3 ISOLATION_BROKEN, 4 NOT_PAPER, 5 DISK_REFUSE, 6 ROOT_REFUSED.
+12. **4h penceresi kuralı** her ağ isteğinden önce uygulanır (doldurma ve elle çalıştırmalar; 00:41 zamanlayıcısı
+    pencereye hiç girmez). `--update` iç son tarihi başlangıç + 45 dk, 00:00–01:26 arasında başladıysa en geç 01:26.
+13. **Listelenme**: en son `exchangeinfo/*.json.gz`'deki `onboardDate`; yoksa aylık 1d zip'lerinde ikili arama
+    (`store/_meta/listings.json`). `exchangeInfo` anlık görüntüsü vadeli için tam liste (ağırlık 1), spot için U_R'nin
+    spot sembolleriyle (`symbols=`, ağırlık 20); REST koruması geçerse günde bir kez.
+14. **Dukascopy** içe alma: `.part` yok, her dosya LZMA + kayıt denetiminden geçer, kaynak iki geçişli sha256 ile
+    değişmemiş olmalı; biri tutmazsa "yapılamadı" ve depoya hiçbir satır yazılmaz (önceki başarılı içe alma yerinde
+    kalır, `last_attempt` not edilir). Kaynağın yayımlanmış checksum'ı olmadığından satırlar `archive_unverified`'dır.
+    Günlük (yıllık) dosya yalnız denetlenir ve kopyalanır; 1m dosyaları varsa `duka_1m`'e girer. Aynanın
+    `manifest.jsonl`'u isteğe bağlıdır (eksik kayıt sayılır, ölümcül değil).
+15. **Depo kabul testi 12** (veri birimi sözleşmesi) birim dosyalarıyla birlikte sürüm/birim aşamasında yazılır; bu
+    aşamanın testleri 1–11 ve 13–15'tir. `ENGINE_VERSION` `research_engine_v1_p1b` oldu; motor kod özeti değiştiği için
+    sürümden sonra yeni bir A/B dönemi açılır (§2.9, beklenen).
+
 ### P2 — İşlem günlüğü, yol, rehydrate, fidelity, atıf, UTC günü MTM, özet
 
 **Teslimatlar:**

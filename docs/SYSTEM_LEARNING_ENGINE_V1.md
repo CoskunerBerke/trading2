@@ -1907,6 +1907,129 @@ bağlantısı) bu notların üstüne kurulur.
     `learn.shadow` + `accounting` (cf_label_v3 kod yolu), `indicators`, `shared_experience`, `learning_mode` — hepsi
     salt-okunur hesap.
 
+
+#### P2b uygulama notları (2026-10-06)
+
+P2b (atıf, karşı-olgusal ızgara, R ayrıştırması, özet, sorgu, S1b/S2 bağlantısı) için belgenin açık bıraktığı yerlerde
+uygulamanın seçtiği yorumlar (yukarıdaki 1–12'nin devamı). Mühürlü/kayıtlı metin DEĞİŞMEDİ; ayrıntı modül başlıklarındadır:
+`research_engine/{attribution,cfgrid,analysis,report,query}.py`, `night.py`, `journal.py` (P2b ekleri).
+
+13. **Mühürler (§9.2).** `attribution_v1` = `ATTRIBUTION_SHA` `3f4596e37822f1603db6c296937005d45bcfd0215a18f1dc993ba535a0236626`; `cfgrid_v1` = `CFGRID_SHA`
+    `4a96df71a989bcf9c5f81317c01e534920105ced1785dc9389240502abc9454d` (tanım sözlükleri `ATTRIBUTION_SPEC` / `CFGRID_SPEC`, sha'lar `tests/test_research_engine_attribution.py`
+    ve `tests/test_research_engine_cfgrid.py`'de sabit; değişiklik = `_v2` + yeni deneme sayımı). Kayıtlar gerçek bir
+    işlem sonucu görülmeden, yalnız sentetik altın yollarla yazıldı. Tasarım sırasında TEK tanım değişti: `NOISE_LOSS`
+    (aşağıda madde 14), altın yolu yazılırken tanımın mantıken boş olduğu görüldüğü için (sonuç görülerek değil).
+14. **Atıf kodlarının okuması (§5.4 özet tablosu).** Sonuç sınıfı `net_r > 0` → kazanç kodları, aksi halde kayıp kodları;
+    R'siz satırda `net_pnl` işareti, R gerektiren kod `not_evaluable` (tahmin yok). `r_gross` = kayma ÖNCESİ brüt
+    (`gross_r + slippage_in_fills`; kayma dolumun içindedir, yoksa `COST_KILLED_SLIPPAGE` hiç oluşamazdı); `cost_R` = ücret
+    + kayma + net fonlama; `funding_R` = −fonlama maliyeti. Sıraya dayanan kodlar (LATE_ENTRY'nin MAE kolu, LUCKY_WIN,
+    TREND_CONTINUATION, CLEAN_ENTRY) yol bar değilse ya da bar içi sıra belirsizse (`order_ambiguous` / `ambiguous_bars > 0`,
+    P2 notu 2) değerlendirilmez. GIVEBACK'in `capture < 0,3` kolu yalnız MFE ≥ 0,3R iken (aksi halde her kayıp bu kodu
+    alırdı; 0,3 belgenin WRONG_DIRECTION eşiğidir). STOPPED_THEN_REVERSED: "orijinal hedef" `targets[0]`, hedefsiz
+    kuralda (T2/M2/D4) +1R; ufuk = kuyruk (48 bar) ∩ kuralın tutma sınırı. STOP_TOO_TIGHT'ın gürültü bandı: aynı defterin
+    bu işlem AÇILMADAN önce kapanmış son 200 kazancının |MAE %| medyanı (n ≥ 30); ATR kolu giriş diliminde (`ENTRY_TF`:
+    T2/M2 1d, Box 5m, D4/C4/Formasyon/ana bot 4h). LATE_ENTRY dolum kolu kuralın `signal_close`'u ve ATR'si (rehydrate).
+    BREAKEVEN_SAVED = başa-baş stop çıkışı (kazanç). AGAINST_BTC = giriş anı BTC 4h trendi yöne ters VE BTC giriş→çıkış
+    aleyhte (5m kapanışları). VOL_SPIKE = giriş diliminde ATR%(çıkış) ≥ 1,5 × ATR%(giriş). Ana bot kodları provenance
+    `entry_features`'tan (`n_dissent ≥ 1`; `n_dissent + n_vetoes ≥ 5`, postmortem eşiği; `rr < 2`, yoksa provenance
+    stop/hedefinden). **NOISE_LOSS:** "|net_R| maliyet bandında"nın harfiyen okuması (net ∈ [−cost_R, 0]) yalnız r_gross ≥ 0
+    iken mümkündür ve r_gross > 0 işlem zaten COST_KILLED alır — kod yalnız r_gross = 0'da oluşurdu; bant bu yüzden brüt
+    hareket üzerindedir: başka kayıp kodu yok ve |r_gross| ≤ cost_R. Hiç kod tutmazsa birincil kod `None`
+    ("SINIFLANMADI"; sayılır, uydurulmaz). Birincil öncelik: likidasyon, boşluk, maliyet, stop-sonra-dönüş, yön, dar stop,
+    geç giriş, geri verme, … (`LOSS_PRIORITY` / `WIN_PRIORITY`; şans kodları kazançta önce — dürüstlük).
+15. **Izgara (§5.5).** 18 hücre, her biri gerçek işlemden TEK eksende ayrılır (belge "yaklaşık 24"): giriş (gerçek; 1 bar
+    — giriş diliminde — gecikmeli; referans − 0,25 ATR limit, 1 bar geçerli, dolmazsa R = 0 `MISSED`), stop {0,75; 1;
+    1,5; 2} × ATR14, çıkış (tek hedef 1R/2R/3R; 2×ATR iz süren stop; hedefsiz + zaman stopu), yönetim (TP1 %50 açık/kapalı;
+    1R'da başa-baş açık/kapalı), yarı kaldıraç, atla. Hepsi EX_ANTE; işlem başına en iyi hücre `hindsight_best` (HINDSIGHT,
+    "kural değil") ve "kâra dönen hücreler" de HINDSIGHT etiketlidir. Ufuk: gerçek çıkış seviyeyle olduysa yol sonu
+    (kuyruk) ∩ tutma sınırı; kural/zaman çıkışıysa gerçek çıkış anı (kuralın kararı yeniden üretilmez, zamanı korunur).
+    Yeniden oynatma `learning_cf._net_replay`; iz süren stop ve gerçek kaldıraç için döngünün kancalı KOPYASI
+    (`cfgrid._replay_ext`) — kancasız hâli `_net_replay` ile bayt-özdeş (test). Fonlama kaydın kendi uzlaşmaları
+    (`fidelity.RecordedFunding`, günlüğe `cf_inputs` olarak taşınır), sonrası depo fonlaması. Sıralama `cf_aux_v1`
+    `r_net_conservative` (`learning_cf_aux.AuxPass`; aşma geçmişi aynı defterin ÖNCEKİ kapanmış kayıtlarından); hesaplanamazsa
+    `r_net` ("r_rank_src" yazar). Yol 480 barı aşarsa daha kaba dilime birleştirilir (aynı gerçek yol; `baseline_gap_r`
+    gösterir). Izgaraya yalnız fidelity'yi geçen vadeli işlemler girer (§5.3).
+16. **Eşleşmiş rastgele kontrol.** "Aynı saat dilimi" = aynı UTC gün saati: k = 1…120 gün önceki aynı an (işlem
+    penceresinden önce biten); "aynı durum kovası" = `situation_v1`'in 4h trend × 4h oynaklık rejimi (aynı saf fonksiyon,
+    `_tf_block(full=False)`); 20 seçim sabit tohumla (`sha256(trade_key|cfgrid_v1)`); giriş = o andaki son kapanmış 5m
+    kapanışı, stop aynı yüzde, hedefler aynı R katları, çıkış aynı süre, 5m barlar (1m tembeldir, geçmişte yoktur).
+    10'dan az eşleşme → `RC_TOO_FEW` (sinyal bileşeni eksik). `signal_excess_R` = gerçek net R − kontrol net R medyanı.
+17. **R ayrıştırması (§5.6).** G = kayma öncesi brüt R (dolum riskine göre, günlüğün tanımıyla aynı). Sıralı zincir:
+    X1 = EX_ANTE hücrelerin (atla hariç) G medyanı ("nötr yürütme"), X2 = girişi gerçek hücrelerin medyanı, X3 = girişi
+    ve stopu gerçek hücrelerin medyanı, X4 = taban hücre, B = kontrol medyanı, G_lev = taban hücre gerçek kaldıraç/tutarla:
+    signal = X1 − B, timing = X2 − X1, stop = X3 − X2, exit = X4 − X3, size_lev = G_lev − X4, cost = net − G_gerçek
+    (ölçülen). Zincir teleskopiktir: artık = B (formülün adlandırmadığı rastgele/piyasa tabanı) + (G_gerçek − G_lev)
+    (yeniden oynatma farkı); ikisi `residual_parts`'ta ayrı yazılır; eksik bileşen 0 sayılmaz (`missing`, artıkta kalır).
+    `regime_fit`: ders deposu P3'te; o zamana kadar aynı defter × taktik × giriş kovasının, işlem AÇILMADAN önce kapanmış
+    günlük satırlarından ortalama net R'ı (`JOURNAL_PRIOR`, n ≥ 10; kabul 9 ile uyumlu).
+18. **Günlük ekleri (P2a üstüne).** `JOURNAL_VERSION` `tj_v1/p2b.1` (satırlar bir kez yeniden kurulur): `cf_inputs`
+    (kaydın fonlama uzlaşmaları, watermark, fonlama saatleri, gerçek stop aşma yüzdesi) ve `agents_ctx.entry_features`
+    (provenance giriş kararı: `n_dissent`, `n_vetoes`, `rr`, `consensus_score`, `risk_allowed`). Kurulum kaldığı yerden
+    devam eder: değişen satırlar EN YENİ ay ve ay içinde en yeni kapanış önce kurulur, ay dosyası doğrusal birleşimle
+    yazılır (madde 25), bütçe bitince kalan satırların eski hâli kalır (`pending`); adım adım kurulum tek seferlikle
+    bayt-özdeştir (test). `load_records` yalnız istenen arşiv satırlarını ayrıştırır.
+    Özet ve uzlaştırma bütün satırları bellekte tutmaz (küçük izdüşümler). S1b sonucu uzlaştırmayı da taşır
+    (`JOURNAL_INCONSISTENT`, `FIDELITY_BELOW_TARGET` bayrakları). S2 de akışla çalışır: günlük iki kez okunur (izdüşüm +
+    özet; sonra yalnız hesaplanacak satırlar, en yeni AY önce, ay içinde dosya sırası), bellekte en çok 1.000 yeni satır;
+    "öncekiler" (gürültü bandı, aşma geçmişi, `regime_fit`) defter başına önek yapılarından O(log n) bulunur — liste
+    tanımlarıyla eşitliği testlidir; depo parça önbelleği 32 parça.
+19. **Gece (§6.1).** Plan S0, S1a, S3, S1b, S2, S7, S7b. S3 S1b'den önce: S1b/S2'ye bağlı değildir ve sahibin ana ölçümü
+    uzun aşamaların payına bağlı kalmaz. UTC günü MTM S3'ün içinde (`utc_day.run_utc_day`, mühürlü depo); arızası tgt_v1
+    sonucunu silmez, aşamayı FAILED yapar (`UTC_DAY_FAILED`). S1b iç son tarih − 42 dk'da, S2 − 12 dk'da durur
+    (`S1B_RESERVE`, `S2_RESERVE`; pay < 60 sn ise `SKIPPED_DEADLINE`); kalan iş ertesi gece (`S1B_BACKLOG`/`S2_BACKLOG`,
+    sonuç SUCCESS kalır). Gece penceresi DIŞINDA başlayan çalıştırmada (elle / sürüm smoke'u; 03:40 UTC sonrası) S1b ve
+    S2 en çok 8'er dakika çalışır (`DAYTIME_STAGE_BUDGET_S`): ilk kurulum smoke'u saatlerce uzatmaz, kalan iş gece
+    birimine kalır. Veri mührü eskiyse (§6.1 S0 "yalnız S1, S3 ve S7") S2 `SKIPPED (DATA_STALE)`; S1a, S1b, S3, S7 ve
+    — depoyu okumayan — S7b yedeği çalışır (arşivin tek kopyası yedeksiz kalmasın). A/B KAPALI ve SKEW gecelerinin planı
+    değişmedi (S1b/S2 yok). Tek işlemin S2 arızası aşamayı düşürmez: satır kodsuz ve nedeniyle yazılır (ızgara
+    `ERROR:<tür>`, `S2_TRADE_ERRORS` bayrağı). `analysis.lock` P1a'daki gibi tüm gece tutulur; `engine-query` kilit almaz, hiçbir şey yazmaz.
+20. **Yalıtım (§2.8).** Gece import grafiği artık mühürlü depo okuyucusunu (`store`, `provider`, `pathrec`) içerir; §2.8
+    yalnız ağ modüllerini (`datastore`, `pit_universe`) dışlar — P1a/P1b gece grafiği testleri buna göre daraltıldı
+    (P2 notu 12). Paket dışı import beyaz listesine `cfgrid` (`learning_cf`, `learning_cf_aux`, `learn.shadow`,
+    `accounting`, `core`, `shared_experience`) ve `analysis` (`indicators`) eklendi; hepsi salt-okunur hesap.
+21. **Yedek (§3.6).** `journal/` ve `attribution/` `backup.EXCLUDE`'a eklendi: arşivden (`closes/`), state yan
+    kaynaklarından ve mühürlü depodan bayt-özdeş yeniden kurulur. Uyarı: yan kaynaklar (provenance, `trade_memory`,
+    `xp_entry`) state'ten dönerse yeniden kurulan eski satırlarda o alanlar MISSING olur; sahip isterse `journal/` sonradan
+    INCLUDE'a alınabilir (ay dosyaları deterministik, ≈ satır başına 8–10 KB ham).
+22. **Özet ve sorgu (§7.7, §8).** `digest_tr.md` tam sürüm: hedef başlığı (+ UTC günü satırı, 14 gün yan yana), dün
+    kapanan işlemler defter defter (birincil kod + diğer kodlar, maliyet R, kayıplarda HINDSIGHT "kâra dönen hücreler"),
+    son 7 günün birincil kayıp kodları, defter başına en iyi EX_ANTE sabit hücre (BÜTÜN işlemlerde aynı hücrenin eşli
+    farkı, muhafazakâr R; "ara görünüm, ders değil"), veri/doğruluk sağlığı (günlük, uzlaştırma, fidelity, rehydrate
+    dönem başına, yol kaynağı, S2, mühürler, veri mührü), çalıştırma, arşiv. ≤ 8 KB: önce arşiv tablosu, 7 günlük
+    tablo, EX_ANTE, kod ve aylık bölümler kısalır; yine sığmazsa işlem satırları defter başına 6 → 3 → 1'e iner; en
+    sonda sert kesim. `engine_summary.json` `p2` bloğu; `engine-status` tek "P2:" satırı (S1b/S2, bekleyen iş, fidelity).
+    `engine-query trade <id> | why-lost [--book B] [--days N] | day <YYYY-MM-DD>`: Türkçe, ≤ 150 satır ve ≤ 4 KB (§8);
+    işlem kimliği defter başına sayaç olduğundan (`F00001` her defterde) birden çok eşleşmede tam `trade_key` istenir.
+23. **Zamanlama (kabul 13).** Gerçekçi boyutta sentetik dünya (`tests/research_engine_p2b_fixtures.big_world`: 2.000
+    işlem — Box 1.000, ana bot 300, T2 200, M2 200, D4 160, C4 140 —, 90 günlük 1m yol, 125 günlük 5m geçmiş, gerçek
+    `FuturesLedgerV2` kayıtları) bu ortamda (4 çekirdek, başka işlerle paylaşımlı) ölçüldü: İLK tam gece (bütün arşivin
+    günlüğü + atıfı) 1.649 sn ≈ 27,5 dk — S1b 296 sn (0,15 sn/işlem), S2 1.350 sn (0,68 sn/işlem; 18 hücre + 20 rastgele
+    giriş ≈ 30 yeniden oynatma/işlem; 32 işlem fidelity'yi geçemediği için ızgara dışı), diğer aşamalar < 2 sn; ertesi
+    (artımlı) gece 11,3 sn. Gece penceresi (01:37 → 03:40; S1b 02:58'e, S2 03:28'e kadar) bu boyutu bir gecede bitirir;
+    VPS 3 kat yavaş olsa da (≈ 15 + 68 dk) sığar, daha yavaşsa iş kaldığı yerden ertesi geceye yayılır
+    (`S1B_BACKLOG`/`S2_BACKLOG`). CI testi ölçeklenmiş dünyayla (≈ 120 işlem) işlem başına süreyi ölçer ve 2.000 × 3 pay
+    ile pencereye sığdığını denetler; tam ölçüm `ENGINE_P2_TIMING_FULL=1`. A/B tur etkisi (≤ %5) yalnız VPS'te ölçülür:
+    P2 sürümünden sonraki 14 gecede sürüm betiğinin `--ab-report`'u AÇIK/KAPALI geceleri (S1b/S2'nin en ağır olduğu ilk
+    geceler dahil) yan yana verir; `--check` "GECE ÖĞRENME MOTORU" bölümü S1b/S2 süre, bekleyen iş ve bayraklarını
+    gösterir.
+24. **§5.10 Box bulgusu (kabul 11).** Gerçek veri testte yoktur: test, eski dönemde (E0) gerçek bulgunun sayılarıyla
+    (72 işlem stop < %0,5, 176 işlem %0,5–1) iki kovanın brüt avantajı AYNI tanımlı sentetik bir dünyayı motorun gerçek
+    boru hattından geçirir; dar kova negatif, %0,5–1 pozitif ve dar kovanın kayıplarında `TIGHT_STOP_COST_MULTIPLIER`
+    baskın çıkar. Gerçek sayılar (−0,56R / +0,17R) VPS'te `attribution/_build.json` `sanity_5_10_box_stop_width`
+    bloğunda (dönem başına kova) görülür; motor bu uygulanmış karar için aday üretmez.
+25. **Bellek.** Gece birimi `MemoryHigh=400M` / `MemoryMax=512M` DEĞİŞTİRİLMEDİ (P2 teslimatı "Birim dosyası değişmez";
+    §2.2'nin "P2+: 1,2G / 1,5G (P0'da kesinleşir)" satırıyla çelişki sürüm ajanına bildirildi; 7,7 GiB'lık VPS'te sınır
+    toplamı zaten aşıktır, §2.5 bellek kararı). Ölçümler (`VmHWM`, ayrı süreç, üretim import yolu): rotasyon
+    tavanlarında (9 defter × 5.000 kayıt = 45 bin işlem, depo yok) iki tam gece 265 MiB (bütçe 0,6 × MemoryMax = 307
+    MiB; P1a ≈ 180); gerçekçi depolu dünyada (2.000 işlem, 1m yol) 283 MiB (import sonrası 106 MiB; aynı süreçte iki
+    gecenin tepesi). Önlemler: S1b/S2 bütün satırları bellekte tutmaz — ay dosyaları `journal.MonthWriter` ile (1.000
+    satırlık sıralı geçici parçalar `.spill-*` + k-yollu birleşim; doğrusal, deterministik gzip), özetler ve uzlaştırma
+    akışla, `scan_archive` yalnız sıra/ay alanlarını, spot kayıtları bellekte tutulmaz, depo parça önbelleği S1b/S2'de
+    32 parça; özet ve sorgular akışla (son 30 gün tek geçiş).
+26. **Sürüm.** `ENGINE_VERSION` bu aşamada değişmedi (`research_engine_v1_p1b`); sürüm ajanı P2 için yükseltir (motor
+    kod özeti değiştiği için yeni A/B dönemi açılır, §2.9, beklenen). Bilinen `learn/labels.py` ücret çift sayımı
+    (labels.py:45) olduğu gibi duruyor (P6; motor o fonksiyonu kullanmaz).
+
 ### P3 — Strateji kütüphanesi, walk-forward, keşif katmanı, denemeler, CSCV/PBO, dersler, zaman noktasında evren
 
 **Teslimatlar:**

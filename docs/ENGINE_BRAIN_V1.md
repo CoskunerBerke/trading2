@@ -38,15 +38,16 @@ kapalı bir katalogdaki kuralları, sert tavanlarla, mevcut defterlere hiçbir y
   (+0,12R / 49 işlem). Bu motor bunları yeniden satmaz; deneme olarak sayar (§2.6).
 - **Kapı A çok sıkıdır ve sıkı kalır.** Kümülatif N ≈ 4.513 iken DSR eşiği, satırlar arası günlük Sharpe sapmasının ≈ 3,66
   katıdır (N = 500'de 3,05; 10.000'de 3,86). Coin'e özel arama eşiği logaritmik büyütür; bedeli budur.
-- **En erken tarihler** (LIB_v1 mührü 2026-10-25 varsayımıyla; §8.3): 5m/15m taktikleri için en erken otomatik defter
-  ≈ 2027-02-02 (ama 5m taktikleri `AUTO_v1`'de otomatiğe uygun değildir, §7.5), 4h/1d taktikleri için ≈ 2027-03-02.
-  Tek coinde günlük taktik ≥ 100 OOS işlem kuralı yüzünden çoğu zaman yıllarca "VERİ YETERSİZ" kalır.
+- **En erken tarihler** (LIB_v1 mührü 2026-10-25 varsayımıyla; §8.3): 4h/1d adayı için en erken otomatik defter
+  ≈ 2027-03-02. 5m adayı en erken 2027-02-01 Holm'una yetişir ama `AUTO_v1`'de otomatiğe uygun değildir (yazılı öneri, §6.4).
+  Tek coinde günlük taktik ≥ 100 OOS işlem kuralı yüzünden çoğu zaman yıllarca "VERİ YETERSİZ" kalır; coin'e özel otomatik
+  defter gerçekçi olarak 4h taktiklerinden ve büyük olasılıkla 2027'nin ikinci yarısından önce değil gelir.
 - **En olası sonuç:** ilk 6 ayda **0** otomatik defter. Bir şey geçerse beklenen avantaj küçüktür (işlem başı +0,05…+0,2R);
   1 USDT riskle (§7.6) günde birkaç sent–1 USDT eder. **Otomatik defterler +%1/gün hedefini tutturmaz**; amaçları coin'e
   özel fikirleri güvenle ileriye denemektir.
-- **Yanlış terfi:** aylık Holm aile hatası 0,05'tir; hiçbir yerde gerçek avantaj yokken bile yılda en çok ≈ 0,6 yanlış
-  terfi üst sınırı vardır (gerçekte daha küçük olması beklenir ama ölçülemez). Bu yüzden tavanlar, otomatik emeklilik ve
-  "kanıt değil, ileri test" etiketi zorunludur (§7).
+- **Yanlış terfi:** aylık Holm, bir ayda en az bir yanlış terfi olasılığını ≤ 0,05 tutar; hiçbir yerde gerçek avantaj
+  yokken bile on iki ayda "yanlış terfili ay" sayısının beklentisi ≤ 0,6'dır (üst sınır; gerçekte daha küçük olması
+  beklenir ama ölçülemez). Bu yüzden tavanlar, otomatik emeklilik ve "kanıt değil, ileri test" etiketi zorunludur (§7).
 - **"İnsandan zeki" iddiası yoktur.** Motorun üstünlüğü disiplindir: izin verilen her şeyi dener, her denemeyi sayar,
   başarısız fikri unutmaz, her kazancı/kaybı kanıtla açıklar ve kendi hatasını otomatik kapatır.
 
@@ -109,7 +110,7 @@ ER20 = 20 barlık verim oranı (Kaufman); ATR = ATR14 (sinyal dilimi). "Oto" = o
 | I | BTC–ETH spread | `BTCETH_Z_{2.0,2.5}`: log oranın 20 günlük z'si; z = 0'da çık; en çok 72 saat; iki bacak | 1h | 2 | hayır |
 | J | Kesitsel (XSEC) | `XS_MOM_{7,28}_k{3,5}` (haftalık, üst-k long / alt-k short, BTC-beta nötr), `XS_REV_1D_k5` | 1d | 5 | hayır |
 | G | Altına özgü | `G_LDN_ORB` (07:00–08:00 UTC aralık kırılımı 12:00'ye kadar, 16:00'da çık), `G_NY_ORB` (13:00–14:00 aralığı, 20:00'de çık), `G_ASIA_DRIFT` (önceki gün yönünde 23:00 → 07:00), `G_MONTH_END` (ayın son 2 UTC günü long), `G_XAU_BTC_{28,56}` (XAU/BTC oranı momentumu > 0 iken long) | 1h, 1d | 6 | hayır (veri) |
-| O | Örtüler (bir seferde bir faktör) | taban {T2, M2, BOX, D4, C4} × {`F_ER` (trend tabanında ER20 ≥ 0,3, Box'ta < 0,3), `F_BTC` (BTC 4h rejimi aynı yön), `F_VOL` (ATR% ≤ son 120 barın %80'liği), `X_TRAIL2` (+1R'den sonra 2 ATR iz süren), `X_CHAN3` (chandelier 3 × ATR22), `X_TIME` (`max_hold`'un yarısı; Box: 48 × 5m), `X_TPL` (1R/2R/3R'de üçte bir)} | tabanınki | 35 | T2/M2/D4/C4 × {F_ER, F_BTC, F_VOL, X_TRAIL2, X_CHAN3, X_TIME} = 24 |
+| O | Örtüler (bir seferde bir faktör) | taban {T2, M2, BOX, D4, C4} × {`F_ER` (T2/M2/D4/C4'te ER20 ≥ 0,3, Box'ta < 0,3), `F_BTC` (BTC 4h rejimi aynı yön), `F_VOL` (ATR% ≤ son 120 barın %80'liği), `X_TRAIL2` (+1R'den sonra 2 ATR iz süren), `X_CHAN3` (chandelier 3 × ATR22), `X_TIME` (`max_hold`'un yarısı; Box: 48 × 5m), `X_TPL` (1R/2R/3R'de üçte bir)} | tabanınki | 35 | T2/M2/D4/C4 × {F_ER, F_BTC, F_VOL, X_TRAIL2, X_CHAN3, X_TIME} = 24 |
 
 **Toplam benzersiz varyant: 13 + 10 + 8 + 7 + 4 + 4 + 7 + 5 + 2 + 5 + 6 + 35 = 106.** Aile başına üst sınır (ana belge §6.2,
 "≤ 8–12") O ailesinde taban başına 7 olarak uygulanır (beş ayrı alt aile). Örtüler yalnız bu beş canlı tabana uygulanır
@@ -134,8 +135,8 @@ keşif katmanında izlenir; kısa geçmişle coin satırı açılmaz.
 
 ### 2.4 Coin'e özel uzmanlaşmanın aşırı uydurmayı sınırlayan kuralları (mühürlü)
 
-1. **En az veri (çıktıya kör).** Bir coin `COIN_FIT`/`COIN` satırı alabilmek için: P23'te; ilk test katmanından önce ≥ 730
-   gün (1h ve üstü) veya ≥ 240 gün (5m) geçmiş; boşluk ≤ %1 ve arşivle doğrulanmış satır payı ≥ %99; varyantın (veya aile
+1. **En az veri (çıktıya kör).** Bir coin `COIN_FIT`/`COIN` satırı alabilmek için: P23'te; mühürden önce ≥ 730 gün
+   (1h ve üstü) veya ≥ 240 gün (5m) geçmiş; boşluk ≤ %1 ve arşivle doğrulanmış satır payı ≥ %99; varyantın (veya aile
    ızgarasının medyanının) mühür öncesi tüm pencerede o coin'de **ürettiği işlem sayısı** ≥ 100. Sayım yalnız girişleri
    sayar, sonuçlara bakmaz; ilk gece hesaplanıp `trials.jsonl`'a yazılır ve donar.
 2. **Hiyerarşik büzülme (seçim).** `COIN_FIT`'te coin c için varyant v'nin eğitim puanı
@@ -261,7 +262,7 @@ eksik dönemdeki işlem `FUNDING_GAP` ile işaretlenir ve o işlem kapı istatis
 - **DSR:** `validation.deflated_sharpe(sr, n_trials=N, T, skew, kurt, sr_var=...)`; sr = OOS günlük getirinin (1 USDT risk,
   200 USDT tabanı; pozisyonsuz gün 0) Sharpe'ı, T = OOS gün sayısı, çarpıklık/basıklık ampirik; **`sr_var` = o bakışın
   ailesindeki satırların günlük Sharpe'larının varyansı, tabanı 1/(T−1)** (fonksiyonun 0,01 varsayılan tabanı kullanılmaz:
-  günlük SR için ≈ 6 yıllık Sharpe eşiği demekti; bu bir okunuş kesinleştirmesidir, gevşetme değildir — DSR tanımı
+  günlük SR için yıllık ≈ 7 Sharpe eşiği demekti; bu bir okunuş kesinleştirmesidir, gevşetme değildir — DSR tanımı
   Bailey–López de Prado'nun denemeler arası varyansıdır). Etkin N (|ρ| > 0,7 hiyerarşik kümeleme) yalnız ikincil sütun.
 - **PBO (CSCV, `cscv.py` yeni):** seçim grubu matrisi = gün × yapılandırma (OOS günlük getiri), S = 16 eşit blok, C(16,8) =
   12.870 bölünmenin hepsi; PBO = IS-en-iyi yapılandırmanın OOS göreli sırasının logit ≤ 0 olduğu bölünme payı. **Seçim
@@ -271,9 +272,12 @@ eksik dönemdeki işlem `FUNDING_GAP` ile işaretlenir ve o işlem kapı istatis
 - **Plasebo (laboratuvar geleneği):** her gerçek işlem için K = 5 rastgele işlem: aynı sembol, aynı yön, aynı tutuş süresi
   (bar), aynı ATR katı stop, giriş zamanı aynı test katmanında kuralın sinyal vermediği barlardan (gerçek işlemlerin ±
   tutuşu hariç) düzgün; tohum sha256(`row_id|trade_key|k`). Plasebo farkı = gerçek − plasebo ortalaması, gün kümelenmeli
-  %95 CI; Kapı A alt sınır > 0 ister. İşaret çevrilmiş sinyal yalnız gösterilir.
+  %95 CI; Kapı A alt sınır > 0 ister (laboratuvarların SIKI GÜÇLÜ ADAY şartının karşılığı). İşaret çevrilmiş sinyal yalnız
+  gösterilir. Lider tablosu her satıra laboratuvar hükmünü de (GÜÇLÜ ADAY / ZAYIF İZ / KANIT YOK / KAYBETTİRİR / VERİ AZ,
+  standart ve sıkı; `signal_lab.verdict`/`verdict_strict`) yalnız gösterim sütunu olarak yazar: geçmiş sonuçlarla aynı dil.
 - **Sentetik boş dünya testi (kabul):** 200 rastgele yürüyüş dünyasında (aynı satır yapısı) Kapı A geçme oranı ≤ q;
-  dikilmiş avantajlı dünyada geçer.
+  dikilmiş avantajlı dünyada geçer. Laboratuvar ölçümüne göre rastgele yürüyüşte grupların %6–11'i ZAYIF İZ, %0–0,5'i GÜÇLÜ
+  ADAY çıkar; Kapı A'nın boş dünyadaki oranı bunun altında olmalıdır (raporlanır).
 
 ### 3.7 Kapı A bakışı (ana belge §6.7 aynen; yordam)
 
@@ -398,7 +402,7 @@ kıyası aynı config dönemi içinde.
   `MemoryMax=512M` (P2 ölçülen tepe 283 MiB). P3 eki: tek seri × dilim bellekte (5m 3 yıl ≈ 20 MB ham, pandas ile ≈ 60 MB),
   CSCV matrisi < 1 MB, bootstrap parçası 16 MB, keşif akışla → beklenen tepe ≈ 400–450 MiB. **Karar kuralı (önceden):** P3g
   büyük sentetik dünyada (P2b dünyası + P3 yükü) `VmHWM` ≤ 350 MiB ise 400M/512M kalır; değilse `MemoryHigh=640M` /
-  `MemoryMax=800M` (`ENGINE_EXPECTED_MEMORY_MAX=838860800`) — tek seferlik, §9.3'teki kapılı birim kurulumuyla. Worker tepesinde
+  `MemoryMax=800M` (`ENGINE_EXPECTED_MEMORY_MAX=838860800`) — tek seferlik, ana belge §9.3'teki kapılı birim kurulumuyla. Worker tepesinde
   boş ≈ 7,7 − 5,5 − 0,5 − 0,5 ≈ 1,2 GB ≥ 0,8 GB; ilk doldurma S4w ile aynı anda koşmaz; `OOMScoreAdjust=1000` aynı. İç
   koruma: RSS > 0,7 × MemoryMax → çalışan S4w/S6 işi kontrol noktası yazar ve durur (`MEMORY_GUARD`); S1a/S3/S7b asla.
 - **CPU:** `CPUQuota=100%`, `--jobs 1`, `Nice=19`, `CPUWeight=10`, IO `idle` (değişmez).
@@ -438,19 +442,22 @@ kıyası aynı config dönemi içinde.
 ### 6.3 Kapı B bakışları ve aylık Holm (ana belge §6.7, aynen)
 
 - Bakışlar: 5m–4h taktikleri 50/100/150 kapanmış işlem; 1d taktikleri ve altın 30/60/90; alfa 0,01 / 0,015 / 0,025. En az
-  süre 28 gün (1d: 90; altın: 60). Bir bakışta hepsi: `p_day` (ADVERSE, ileri pencere) ≤ bakış alfası; STRESS ortalaması
-  > 0; ortalama Kapı A OOS CI'ı içinde; düşüş ≤ 1,5 × geriye-test p95 ve ≤ özsermayenin %8'i; likidasyon yok; nedensellik
-  testi geçer; `DATA_STALE` günleri ≤ %10 → `PASS_B`. Yalnız `p_day` eksikse ve son bakış değilse aday sürer.
+  süre 28 gün (1d: 90; altın: 60). Bir bakışta hepsi: `p_day` (ADVERSE, ileri pencere) ≤ bakış alfası; STRESS
+  ortalaması sıfırdan büyük; ortalama Kapı A OOS CI'ı içinde; düşüş ≤ 1,5 × geriye-test p95 ve ≤ özsermayenin %8'i; likidasyon yok; nedensellik
+  testi geçer; `DATA_STALE` günleri ≤ %10 → `PASS_B`. Yalnız `p_day` şartı tutmuyorsa ve son bakış değilse aday sürer.
 - Durdurma (yalnız bakışlarda; ana belge §6.6): ≥ 30 işlemden sonra ortalama R < −0,10; kayan 60 günlük ortalama R CI üst
   sınırı < 0; düşüş > 2 × geriye-test p95; günlük net R CUSUM (h = 4σ) → `STOPPED`. Son bakışta geçmeyen → `FAILED_B`.
 - **Holm ayı (okunuş kesinleştirmesi):** toplu iş her ayın ilk UTC pazartesisi gecesi; aile = bir önceki toplu iş gecesinden
   bu geceye kadar herhangi bir Kapı B bakışı olan **bütün** adaylar; her birinin p'si o aralıktaki son bakışının `p_day`'i;
   Holm, aile genelinde α = 0,05. `PASS_B` ∧ Holm → `PROMOTABLE` (her aile üyesi için `HOLM` satırı).
+- **Kapı A'nın aylık tekrarı nihai hatayı neden şişirmez:** Kapı A yalnız süzgeçtir; doğrulayıcı test Kapı B'dir ve yalnız
+  adayın doğumundan **sonra** gelen, hiçbir seçimde görülmemiş veriyle yapılır, alfa bakışlara bölünür ve aylık Holm aile
+  hatasını sınırlar. Kapı A'nın yanlış pozitifi yalnız bir P4 yuvasına mal olur.
 
 ### 6.4 Yönlendirme ve etiket
 
-- `PROMOTABLE` ve otomatik katalogda (§7.5) → terfi manifesti (§7.3). Katalog dışı (5m, altın, fonlama, XSEC, spread,
-  `K_BOX`, `K_FM` ve bunların örtüleri) → ana belge §6.7 Kapı C yazılı önerisi (`proposals/<id>.json` + `.tr.md`), sahip
+- `PROMOTABLE` ve otomatik katalogda (§7.5) → terfi manifesti (§7.3). Katalog dışı (1h/5m dilimli varyantlar, altın,
+  fonlama, XSEC, spread, `K_BOX`, `K_FM`, Box örtüleri, `X_TPL` örtüleri) → ana belge §6.7 Kapı C yazılı önerisi (`proposals/<id>.json` + `.tr.md`), sahip
   onayı, normal sürüm. Sahip kararındaki "o yazılana kadar Kapı C geçerlidir" hükmü bu adaylar için sürer.
 - Etiket her yerde "ileri yeniden oynatma — gerçek defter değil"; canlı toplamlara asla girmez; `engine-query candidates`.
 
@@ -470,6 +477,10 @@ kıyası aynı config dönemi içinde.
   kod çalıştırma yoktur.
 - **Bedeli (dürüst):** yeni aile, yeni dönüşüm türü ya da yeni veri girdisi bir worker sürümü ister. Katalog içindeki her
   terfi sürüm istemez.
+- **Ana belgeyle ilişki:** sahip kararındaki "ayrıca ve ön kayıtla yazılacak" tasarım budur. Ana belge §2.1 ilke 2 ("motorun
+  hiçbir karar yoluna yazma yolu yoktur") bu karar için daralır: motorun tek yazma yolu **yeni** oto defterlerin manifestidir;
+  mevcut defterlere hiçbir yol yoktur (AST + bayt testi, §7.8). Mühür S2 ve `AUTO_v1` canlıya çıkana kadar Kapı C'nin öneri +
+  onay yolu geçerlidir.
 
 ### 7.2 Akış
 
@@ -513,7 +524,7 @@ birim anahtarı okuyamaz).
 | 2 | anahtar okunur; `kid` eşit; HMAC eşit (sabit zamanlı karşılaştırma) | `REJECT_NO_KEY` / `REJECT_SIG` |
 | 3 | `created_at` ≤ şimdi + 5 dk; `valid_until` > şimdi | `REJECT_TIME` / `EXPIRED` |
 | 4 | `registry_sha`, `catalog_sha`, `auto_policy_sha`, `lib_sha` worker'da derlenmiş sabitlere eşit | `REJECT_SKEW` |
-| 5 | `variant_id` katalogda; örtüler numaralı alanlarda; `scope_id` çözümü = `symbols`; semboller ⊆ P23 ∩ ham config `entry_universe.symbols`; dilimler ⊆ {1d, 4h} | `REJECT_CATALOG` |
+| 5 | `variant_id` katalogda; örtüler numaralı alanlarda; `scope_id` çözümü = `symbols`; semboller ⊆ config `entry_universe.symbols` (turun zaten çektiği 40 sembol; P23 bunun alt kümesi); dilimler ⊆ {1d, 4h} | `REJECT_CATALOG` |
 | 6 | `sizing` = politika sabitleri (birebir) | `REJECT_SIZING` |
 | 7 | `evidence` alanlarının her biri kayıt eşiklerini sağlar (Kapı A, Kapı B, Holm `p_adj` ≤ 0,05); `max_corr_with_active` ≤ 0,7 | `REJECT_EVIDENCE` |
 | 8 | `promo_id` daha önce kabul/red/emekli/veto edilmemiş | `REJECT_DUPLICATE` |
@@ -527,11 +538,14 @@ Kabul: `accepted.json` (manifest + `accepted_at` + `activate_at` = +24 s), boş 
 - **Katalog `AUTO_CATALOG_V1` (64 varyant):** B 10, C 8, D 7 + `K_D4`, E 2 (4h), F1 2 (4h), `K_T2`, `K_M2`, `K_C4_CV001…008`,
   O'nun T2/M2/D4/C4 × {`F_ER`, `F_BTC`, `F_VOL`, `X_TRAIL2`, `X_CHAN3`, `X_TIME`} = 24. Ölçüt: worker turunun **zaten
   çektiği** veri yeter (1d 420 gün, 4h 730 gün; 1h yalnız 30 gün, 5m yalnız 3 gün → dışarıda); girdiler OHLCV + BTC 4h
-  (fonlama/OI yok); semboller P23 (tur kapsamında); çıkış stop/hedef/kapanmış barda `CLOSE`/`MOVE_STOP` ile ifade edilir
+  (fonlama/OI yok); semboller giriş evreninde (tur kapsamında; T2/M2 kopyaları 40, diğerleri P23 ve alt kümeleri); çıkış stop/hedef/kapanmış barda `CLOSE`/`MOVE_STOP` ile ifade edilir
   (TP merdiveni kısmi çıkış ister → dışarıda). Gerekçe: worker'ın kendi veri çekmesi yeni ağ yolu ve mevcut defterlerin
   önbelleğiyle etkileşim demekti (M2X §1.6 madde 3).
 - **Tur içinde:** `_strategy_paper_tour`'un en sonunda, M2X'ten sonra, indeks yazımından önce; kendi fazı `auto`; defter
   başına `try/except`; faz bütçesi 5 sn (aşılırsa kalan oto defterler o tur atlanır, `AUTO_TIME_BUDGET`).
+- **Giriş penceresi:** sinyal kapanışından 60 dk (D4 ile aynı); pencere kaçarsa giriş yok (`MISSED_WINDOW`), aynı sinyalle
+  ikinci giriş yok (`one_entry_per_signal`). Çekirdeğin "sonraki bar açılışı" dolumuyla fark P4'te `exec_delay` olarak ölçülür
+  ve S5r paritesinin toleransına girer.
 - **Girdiler yalnız turun hazırladıkları:** `runner.last_frames` (salt okunur), `pmarks`/`pmarks_f`/`pgaps`, `pbars`
   (kapanmış 1h uçları), `funding_rates` (yalnız arama), `_frame_provenance`. Fiyatı/çerçevesi olmayan sembolde giriş yok
   (`AUTO_NO_MARK` / `DATA_FRAME_MISSING_*`).
@@ -550,7 +564,7 @@ Kabul: `accepted.json` (manifest + `accepted_at` + `activate_at` = +24 s), boş 
 | Tek-coin defter / aynı coin / aynı aile | ≤ 2 / ≤ 1 / ≤ 2 | coin'e özel defterlerde yoğunlaşma; çeşitlilik |
 | Başlangıç özsermayesi | 400 USDT | %0,25 = 1 USDT: P4 adayı (200 × %0,5), keşif ve canlı defterlerle aynı mutlak risk → aynı min-notional ve yuvarlama davranışı (soru S8) |
 | İşlem başı risk | %0,25 sabit | sahip kararı; öğrenme modu, slot, min-notional yükseltmesi yok |
-| Kaldıraç | ≤ 3; likidasyon mesafesi ≥ 2 × stop | canlı defterlerin tavanlarının altı |
+| Kaldıraç | ≤ 3; likidasyon mesafesi ≥ 2 × stop | canlı defterlerin tavanlarını (3–5) aşmaz |
 | Defter açık riski | ≤ özsermayenin %2'si (8 işlem) | |
 | Bütün oto defterler açık riski | ≤ toplam oto özsermayenin %1,5'i | aynı anda dolu dört defter olmaz |
 | Sembol başına (oto toplamı) | ≤ 2 USDT açık risk; defter başına sembolde 1 pozisyon | korelasyon |
@@ -565,8 +579,8 @@ Kabul: `accepted.json` (manifest + `accepted_at` + `activate_at` = +24 s), boş 
 
 - **Worker'da (her tur):** düşüş kuralları; KILL (sonraki turda yeni giriş yok, açık oto pozisyonlar tur fiyatıyla kapanır,
   soru S3); BEKLEMEDE'de `--veto`; 3 ardışık tur istisnası → `DURAKLADI_ERROR` (pozisyonlar izleyiciyle korunur), 24 saat
-  sürerse `EMEKLİ_ERROR`; kuralın çerçevesi 3 ardışık karar anında yok → `DURAKLADI_DATA`; `ENGINE_SILENT`; manifestin
-  `catalog_sha`'sı yeni worker sürümünün kataloğuna eşit değil → `EMEKLİ_SKEW`.
+  sürerse `EMEKLİ_ERROR`; kuralın çerçevesi 3 ardışık karar anında yok → `DURAKLADI_DATA` (7 gün sürerse `EMEKLİ_DATA`);
+  `ENGINE_SILENT`; manifestin `catalog_sha`'sı yeni worker sürümünün kataloğuna eşit değil → `EMEKLİ_SKEW`.
 - **Motorda (S5r, her gece hesap; karar yalnız bakışlarda: n = 30, 60, 100, sonra her 50 işlem):** ana belge §6.6 durdurma
   kümesi aynen (≥ 30 işlemden sonra ortalama R < −0,10; kayan 60 günlük ortalama R CI üst < 0; düşüş > 2 × geriye-test p95;
   günlük net R CUSUM h = 4σ) → `SAPMA_STAT`; n ≥ 60'ta canlı ortalama R < Kapı A OOS CI alt sınırı → `SAPMA_DIST`; parite:
@@ -618,7 +632,7 @@ Kabul: `accepted.json` (manifest + `accepted_at` + `activate_at` = +24 s), boş 
   kalp atışı yaşı; etkin/bekleyen/emekli sayısı ve tavanlar; defter başına `promo_id`, varyant, kapsam, durum, açılış, işlem
   sayısı, net R, özsermaye, düşüş, açık risk, son durum nedeni; son 7 günün red/bekleme nedenleri.
 - **`digest_tr.md`** (≤ 10 satır): aynı özet + sabit uyarı: "Bu defterler 4.513+ deneme arasından seçildi; ileri testtir,
-  kanıt değil. Hiçbir yerde avantaj yoksa bile yılda ≈ 0,6'ya kadar yanlış terfi olabilir."
+  kanıt değil. Hiçbir yerde avantaj yoksa bile ayda ≤ %5 olasılıkla yanlış terfi olabilir."
 - **Günlük hedef:** ayrı `AUTO_PAPER` akışı, yalnız tanımlayıcı (hüküm ailesine girmez); `tgt_v1`'in `LIVE_PAPER` başlığı
   değişmez; "toplam (oto dahil)" bilgi satırı (soru S4).
 - **Günlük/atıf/dersler (P7b):** motorun `ledgers.py`'sine `state/auto_paper/*/futures_ledger.json` ayrı akış olarak eklenir
@@ -656,6 +670,7 @@ Kabul: `accepted.json` (manifest + `accepted_at` + `activate_at` = +24 s), boş 
 | LIVE moda geçiş | `ConfigError`; `AutoBook` kurulmaz |
 | Motorun sahip kill/veto'sunu geri alması | imkânsız: `state` motor birimlerinde çekirdek düzeyinde salt-okunur |
 | Katalog değişen worker sürümü | eski defterler `EMEKLİ_SKEW` |
+| Giriş evreni değişti, oto defterin sembolü artık turda yok | o sembolde fiyat/çerçeve yok → giriş yok; açık pozisyonu izleyici korur; 7 gün sürerse `EMEKLİ_DATA` |
 
 ### 7.13 Dürüst etiket
 

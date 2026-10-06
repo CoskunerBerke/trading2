@@ -1994,6 +1994,8 @@ uygulamanın seçtiği yorumlar (yukarıdaki 1–12'nin devamı). Mühürlü/kay
 
 ### P3 — Strateji kütüphanesi, walk-forward, keşif katmanı, denemeler, CSCV/PBO, dersler, zaman noktasında evren
 
+**Ayrıntılı tasarım ve ön kayıt (2026-10-06):** `docs/ENGINE_BRAIN_V1.md` (P3, P4 ve sahip kararıyla otomatik PAPER terfisi).
+
 **Teslimatlar:**
 - `library/` (`LIB_v1` mühürlü; ön kayıt metni bu belgede ve testte, ilk VPS çalıştırmasından önce) ve
   `library/config_epochs.json`;

@@ -27,7 +27,8 @@ Akış (her çalıştırma; ağsız, AI yok, karar-nötr):
    (S1a ledger'ın elde tuttuğu her şeyi her gece yeniden karşılaştırır), ayrı bir iş kuyruğu gerekmez.
 4. **Telemetri** (`run_status.json`, şema `engine_run_status_v1`): aşama başına durum, süre ve CPU; toplam CPU
    (süreç + alt süreçler), tepe bellek (cgroup `memory.peak`; yoksa `ru_maxrss`), `memory.max` ve oranı, iki SHA, ata
-   ilişkisi, canlı config sha'sı (değişti mi), `data_seal` (P1b'ye kadar `null`), bayraklar. Son 30 çalıştırma
+   ilişkisi, canlı config sha'sı (değişti mi), `data_seal` (P1b'den: veri biriminin son TAMAMLANMIŞ mührü,
+   `selfcheck.check_data_status`; mühür 26 saatten eskiyse `DATA_STALE` bayrağı), bayraklar. Son 30 çalıştırma
    `runs/<run_id>/run_status.json` altında tutulur; en sonuncusu `summary/run_status.json`'dadır.
 
 Çıkış kodları: 0 = SUCCESS / SKEW / AB_OFF / AB_OFF_ZORUNLU_ARŞİV / SKIPPED_LOCKED / DEADLINE (planlı bir aşama iç son
@@ -364,6 +365,11 @@ class _Night:
             self.flags.add(F_CONFIG_UNREADABLE)
         if changed:
             self.flags.add(F_CONFIG_CHANGED)
+        ds = SC.check_data_status(self.paths, self.start)
+        sc["data"] = ds
+        self.status["data_seal"] = ds.get("data_seal")
+        if ds["status"] in (SC.DATA_STALE, SC.DATA_UNREADABLE):
+            self.flags.add(SC.DATA_STALE)
         day = self.start.strftime("%Y-%m-%d")
         eng = skew.get("engine_sha")
         first = SC.register_epoch(self.paths, eng, self.start, self.run_id or "", code_hash=code)

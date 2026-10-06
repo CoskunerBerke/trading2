@@ -302,8 +302,11 @@ class Probes:
 
 
 def run_isolation(paths: EnginePaths, *, app_dir: Path | str = APP_DIR, env: Mapping[str, str] | None = None,
-                  probes: Probes | None = None) -> dict[str, Any]:
-    """§2.8 öz-denetiminin dört maddesi. Dönen `status`: OK | ISOLATION_BROKEN; `broken` bozuk denemelerin adları."""
+                  probes: Probes | None = None, expect_no_network: bool = True) -> dict[str, Any]:
+    """§2.8 öz-denetiminin dört maddesi. Dönen `status`: OK | ISOLATION_BROKEN; `broken` bozuk denemelerin adları.
+    `expect_no_network=False` yalnız AĞLI veri birimi içindir (P1b `engine-data`, §2.2): soket denemesi yapılmaz ve
+    `NOT_APPLICABLE` yazılır; diğer üç madde (state/market/app'e yazma reddi, `memory.max`, yazılabilir `/tmp` ve
+    araştırma kökü) aynen uygulanır."""
     pr = probes or Probes()
     env = os.environ if env is None else env
     checks: dict[str, Any] = {}
@@ -314,10 +317,13 @@ def run_isolation(paths: EnginePaths, *, app_dir: Path | str = APP_DIR, env: Map
         ok = (P_DENIED, P_ABSENT) if name == "market" else (P_DENIED,)     # state ve app VAR OLMALI (madde 2a)
         if r.get("status") not in ok:
             broken.append(f"write_denied_{name}")
-    r = pr.socket_denied()
-    checks["socket_denied"] = r
-    if r.get("status") != P_DENIED:
-        broken.append("socket_denied")
+    if expect_no_network:
+        r = pr.socket_denied()
+        checks["socket_denied"] = r
+        if r.get("status") != P_DENIED:
+            broken.append("socket_denied")
+    else:
+        checks["socket_denied"] = {"status": "NOT_APPLICABLE", "reason": "veri birimi ağlıdır (§2.2); soket denenmez"}
     r = pr.memory_max(env)
     checks["memory_max"] = r
     if r.get("status") != P_MATCH:
@@ -333,6 +339,43 @@ def run_isolation(paths: EnginePaths, *, app_dir: Path | str = APP_DIR, env: Map
         if r.get("status") != P_WRITABLE_OK:
             broken.append(f"writable_{name}")
     return {"status": ISOLATION_BROKEN if broken else OK, "broken": broken, "checks": checks}
+
+
+# ============================================================================ 2b. veri tazeliği (P1b)
+DATA_STALE = "DATA_STALE"
+DATA_NONE, DATA_UNREADABLE = "NONE", "UNREADABLE"
+#: VPS kabul 2: her planlanan seri `last_ts ≤ 26 saat`; gece biriminin gözünde mühür bundan eskiyse veri bayattır.
+DATA_STALE_AFTER_H = 26
+
+
+def check_data_status(paths: EnginePaths, now: datetime) -> dict[str, Any]:
+    """S0 (P1b'den): `summary/data_status.json`'un son TAMAMLANMIŞ mührü ve yaşı (salt-okunur `open(..., "r")`; veri
+    biriminin ağlı modülleri import EDİLMEZ). Dönen `status`: NONE (dosya yok; P1b öncesi) | OK | DATA_STALE (mühür
+    26 saatten eski ya da hiç yok) | UNREADABLE. Gece biriminin P1b'deki aşamalarının hiçbiri depoyu okumaz; bayat veri
+    yalnız `DATA_STALE` bayrağı olarak yazılır (depoyu okuyan aşamalar P3'ten itibaren bu durumda atlanır)."""
+    p = paths.summary / "data_status.json"
+    if not p.exists():
+        return {"status": DATA_NONE, "data_seal": None}
+    try:
+        with open(p, "r", encoding="utf-8") as fh:
+            d = json.load(fh)
+    except (OSError, ValueError) as exc:
+        return {"status": DATA_UNREADABLE, "data_seal": None, "error": f"{type(exc).__name__}: {exc}"[:200]}
+    if not isinstance(d, dict):
+        return {"status": DATA_UNREADABLE, "data_seal": None, "error": "kök bir JSON nesnesi değil"}
+    seal = d.get("data_seal")
+    sealed_at = d.get("sealed_at")
+    age_h = None
+    try:
+        if sealed_at:
+            t = datetime.fromisoformat(str(sealed_at).replace("Z", "+00:00"))
+            age_h = round((now - t).total_seconds() / 3600.0, 2)
+    except (TypeError, ValueError):
+        age_h = None
+    fresh = bool(seal) and age_h is not None and age_h <= DATA_STALE_AFTER_H
+    tot = d.get("totals") if isinstance(d.get("totals"), dict) else {}
+    return {"status": OK if fresh else DATA_STALE, "data_seal": seal, "sealed_at": sealed_at, "age_h": age_h,
+            "seal_file": d.get("seal_file"), "stale_series": tot.get("stale"), "running": bool(d.get("running"))}
 
 
 # ============================================================================ 3. SKEW

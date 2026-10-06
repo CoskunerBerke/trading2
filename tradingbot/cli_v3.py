@@ -1242,7 +1242,7 @@ def cmd_futures_backtest(cfg: BotConfig, args) -> int:
     return 0
 
 
-# ------------------------------------------------------------------ sürekli öğrenme motoru (P1a; docs/SYSTEM_LEARNING_ENGINE_V1.md)
+# ------------------------------------------------------------------ sürekli öğrenme motoru (P1a/P1b; docs/SYSTEM_LEARNING_ENGINE_V1.md)
 # `research_engine` YALNIZ bu işleyicilerin içinde (tembel) import edilir: worker `python -m tradingbot watch`'ı `cli`
 # üzerinden çalıştırır ve `cli.py` her çağrıda bu modülü yükler (§2.8; AST testi üst düzey import'u yasaklar).
 # Bu komutlar `engine_no_config=True` taşır: `cli.main` onlar için `load_config`/`load_v3`'ü HİÇ çağırmaz (§2.3) ve
@@ -1279,6 +1279,44 @@ def cmd_engine_status(cfg, args) -> int:
         return 0
     print("\n".join(status_lines(paths, brief=bool(args.brief))))
     return 0
+
+
+def cmd_engine_data(cfg, args) -> int:
+    """P1b veri birimi: `--update` (00:41 UTC birimi), `--backfill` (ilk doldurma), `--import-dukascopy <dizin>`,
+    `--status` (salt-okunur). Ağlı tek motor modülü (`research_engine.datastore`) YALNIZ burada, tembel import edilir."""
+    from .research_engine.paths import EnginePaths
+    paths = EnginePaths.from_env()
+    if args.status:
+        from .research_engine.datastore import read_data_status, status_lines
+        if args.json:
+            _p(read_data_status(paths) or {})
+            return 0
+        print("\n".join(status_lines(paths)))
+        return 0
+    from .research_engine.datastore import MODE_BACKFILL, MODE_DUKA, MODE_UPDATE, run_data
+    kw = {}
+    if args.app_dir:
+        kw["app_dir"] = Path(args.app_dir)
+    if args.seed_from:
+        kw["seed_root"] = Path(args.seed_from)
+    if args.import_dukascopy:
+        mode = MODE_DUKA
+        kw["dukascopy_dir"] = Path(args.import_dukascopy)
+    elif args.backfill:
+        mode = MODE_BACKFILL
+    else:
+        mode = MODE_UPDATE
+    st = run_data(paths, mode=mode, **kw)
+    if args.json:
+        _p(st)
+    tail = ""
+    if mode == MODE_DUKA:
+        du = st.get("dukascopy") or {}
+        tail = f" · Dukascopy {du.get('status')}" + (f": {du.get('reason')}" if du.get("reason") else "")
+    print(f"engine-data {mode} {st.get('run_id')}: {st.get('result')} (çıkış {st.get('exit_code')}) · REST "
+          f"{(st.get('rest') or {}).get('guard')} · fark {(st.get('diffs') or {}).get('count')} · bayraklar "
+          f"{', '.join(st.get('flags') or []) or '—'}{tail}")
+    return int(st.get("exit_code") or 0)
 
 
 def cmd_engine_restore(cfg, args) -> int:
@@ -1547,6 +1585,20 @@ def register(sub: argparse._SubParsersAction) -> None:
     s.add_argument("--daily", action="store_true", help="scorecard --daily ile aynı tanımlı günlük tablo (VPS kabul 6)")
     s.add_argument("--days", type=int, default=7, help="--daily için gün sayısı (UTC, bugün dahil; varsayılan 7)")
     s.set_defaults(fn=cmd_engine_status, engine_no_config=True)
+    # SÜREKLİ ÖĞRENME MOTORU P1b: veri birimi (tek ağlı motor komutu); config yüklenmez, research_engine tembel import
+    s = sub.add_parser("engine-data", help="Öğrenme motoru veri birimi (arşiv-önce; yalnız data/research'e yazar): "
+                                           "--update | --backfill | --status | --import-dukascopy <dizin>")
+    g = s.add_mutually_exclusive_group(required=True)
+    g.add_argument("--update", action="store_true", help="günlük ekleme (00:41 UTC birimi; tabansız seri atlanır)")
+    g.add_argument("--backfill", action="store_true", help="ilk doldurma (tohum + arşiv; kaldığı yerden devam eder)")
+    g.add_argument("--status", action="store_true", help="data_status özeti (salt-okunur; kilit almaz)")
+    g.add_argument("--import-dukascopy", dest="import_dukascopy", metavar="DIZIN", default=None,
+                   help="hazır Dukascopy XAUUSD aynasını içe al (indirici yok; tutmazsa 'yapılamadı')")
+    s.add_argument("--app-dir", dest="app_dir", default=None, help="app ağacı (varsayılan /opt/tradingbot/app)")
+    s.add_argument("--seed-from", dest="seed_from", default=None,
+                   help="worker HistoryStore kökü (varsayılan $TRADINGBOT_DATA/market/history; salt-okunur)")
+    s.add_argument("--json", action="store_true", help="çıktıyı JSON olarak da bas")
+    s.set_defaults(fn=cmd_engine_data, engine_no_config=True)
     s = sub.add_parser("engine-restore", help="Araştırma yedeğinden geri yükle (varsayılan KURU; --yes uygular, mevcut içerik "
                                               "research.pre-restore-<ts> olarak saklanır)")
     s.add_argument("archive"); s.add_argument("--yes", action="store_true")

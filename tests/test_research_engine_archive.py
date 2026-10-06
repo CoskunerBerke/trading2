@@ -552,15 +552,22 @@ _FORBIDDEN_IMPORTS = ("config_v3", "sqlite3", "requests", "socket", "urllib", "h
 
 def test_research_engine_imports_no_config_loader_no_sqlite_no_network():
     pkg = ROOT / "tradingbot" / "research_engine"
-    # Tek istisna: S0'ın soket RET denemesi (§2.8 madde 2) `socket`'i yalnız `selfcheck.probe_socket_denied` içinde
-    # import eder; ayrıntılı beyaz liste testi tests/test_research_engine_contract.py'dedir.
+    # İki istisna: S0'ın soket RET denemesi (§2.8 madde 2) `socket`'i yalnız `selfcheck.probe_socket_denied` içinde ve
+    # P1b veri birimi `urllib`'i yalnız `datastore.urllib_http` içinde import eder; ayrıntılı beyaz liste testleri
+    # tests/test_research_engine_contract.py ve tests/test_research_engine_p1b_contract.py'dedir.
     sc = ast.parse((pkg / "selfcheck.py").read_text(encoding="utf-8"))
     probe = next(n for n in sc.body if isinstance(n, ast.FunctionDef) and n.name == "probe_socket_denied")
+    ds = ast.parse((pkg / "datastore.py").read_text(encoding="utf-8"))
+    http_fn = next(n for n in ds.body if isinstance(n, ast.FunctionDef) and n.name == "urllib_http")
     for f in sorted(pkg.glob("*.py")):
         tree = ast.parse(f.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if (f.name == "selfcheck.py" and isinstance(node, ast.Import) and [a.name for a in node.names] == ["socket"]
                     and probe.lineno <= node.lineno <= probe.end_lineno):
+                continue
+            if (f.name == "datastore.py" and isinstance(node, ast.Import)
+                    and all(a.name.split(".")[0] == "urllib" for a in node.names)
+                    and http_fn.lineno <= node.lineno <= http_fn.end_lineno):
                 continue
             names = []
             if isinstance(node, ast.Import):

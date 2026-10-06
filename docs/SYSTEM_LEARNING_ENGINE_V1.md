@@ -1751,6 +1751,14 @@ yerine, `git mv`). Motor kod özeti ve veri birimi dosyası değişti: sürümde
     girmez). Gece birimine `InaccessiblePaths` eklenmedi (P1a'ya bayt bayt sabit; ağsız). Yedek dal
     (`refs/heads/claude/gifted-knuth-0ehpcs`) TIP'i henüz içermez: dağıtımdan önce PR dalı ileri sarılır (betik içeriği
     tam SHA ile getirir).
+20. **2026-10-06, yeniden doğrulama küçükleri** (930118f'in son doğrulaması GEÇTİ; 7 küçük bulgu kapatıldı, kod `1b1feb9`,
+    betik `tb-engine-1b1feb9.sh` `git mv` ile `tb-engine-008e602.sh`'nin yerine): araştırma sınırındaki red tahminle değil
+    `du` yeniden ölçümüyle verilir; adım 7'de `engine-app=` değişikliği sabitlemeden ÖNCE kaydedilir, `revert_eng`
+    gerçek çıkışı döndürür ("geri döndürülemedi" dürüstçe yazılır) ve `on_err` `$(…)` içindeki hatada yalnız üst kabukta
+    bir kez çalışır; `data_run.json` `memory.events` high ve `memory.high` tutar, `--check` V6/`--backfill` bunu basar
+    (bilgi); TRADING-dışı durum açık kanıt yoksa ancak art arda iki `exchangeInfo` görüntüsünde `DELISTED` olur, bilinen
+    delist spot semboller toplu isteğe konmaz; veri birimi `InaccessiblePaths`'e `/opt/tradingbot/env.d` eklendi (sha256
+    `d6bf3108…`); yalnız iki fonlama farkı varken yerel aralık küçük olandır.
 
 ### P2 — İşlem günlüğü, yol, rehydrate, fidelity, atıf, UTC günü MTM, özet
 

@@ -124,6 +124,47 @@ class EnginePaths:
     def analysis_lock(self) -> Path:
         return self.locks / "analysis.lock"
 
+    # ------------------------------------------------------------------ P1b veri deposu (§3.1; ağaçlar tembel oluşur)
+    @property
+    def store(self) -> Path:
+        """`ResearchStore` kökü: `store/<market>/<SYM>/<tf>/<YYYY>/<MM>.parquet` (+ `.sha256`, `manifest.json`)."""
+        return self.research / "store"
+
+    @property
+    def archive_cache(self) -> Path:
+        """data.binance.vision aynası. Dosyalar `archive_cache/archive/<sunucu>/<url yolu>` altındadır: laboratuvarların
+        `--cache <kök>` düzeni (`gold_lab.ArchiveCache` / `book_lab.ZipCache` kökün altına `archive/` ekler), böylece
+        `--cache …/research/archive_cache --offline` bayt-özdeş dosyaları bulur (§3.5)."""
+        return self.research / "archive_cache"
+
+    @property
+    def dukascopy(self) -> Path:
+        return self.research / "dukascopy"
+
+    @property
+    def universe_dir(self) -> Path:
+        return self.research / "universe"
+
+    @property
+    def exchangeinfo_dir(self) -> Path:
+        return self.research / "exchangeinfo"
+
+    @property
+    def data_status(self) -> Path:
+        """`engine-data` mührü ve seri durumu (şema `engine_data_status_v1`)."""
+        return self.summary / "data_status.json"
+
+    @property
+    def data_runs(self) -> Path:
+        """Veri çalıştırmalarının kaydı ve fark dosyaları: `runs/data/<run_id>/`. Gece biriminin `runs/<run_id>/`
+        desenine uymaz; `night.prune_runs` ve S7b yedeği onlara dokunmaz (veri birimi kendi saklamasını yapar)."""
+        return self.runs / "data"
+
+    @property
+    def worker_history(self) -> Path:
+        """Worker'ın HistoryStore kökü (`data/market/history`; SALT OKUNUR, yalnız tohumlamada okunur)."""
+        return self.market / "history"
+
     def book_closes_dir(self, book: str) -> Path:
         return self.closes / _safe_name(book)
 

@@ -127,6 +127,8 @@ jobs:
             tests/test_research_engine_night.py tests/test_research_engine_backup.py \
             tests/test_research_engine_contract.py tests/test_research_engine_standalone.py \
             tests/test_research_engine_release.py tests/test_research_engine_memory.py \
+            tests/test_research_engine_store.py tests/test_research_engine_datastore.py \
+            tests/test_research_engine_parity_seed.py tests/test_research_engine_p1b_contract.py \
             tests/test_m2x_policy.py tests/test_m2x_sim.py tests/test_m2x_book_v1.py \
             -q --tb=short > pytest.out 2>&1
           rc=$?

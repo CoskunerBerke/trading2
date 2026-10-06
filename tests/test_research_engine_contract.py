@@ -11,8 +11,9 @@ P1a depo kabul testleri 9, 10 ve 11).
   betiği olmadığı için uygulanmaz (sürüm betiği aşaması).
 * 11: AST yalıtımı — karar modülleri `research_engine`'i import etmez; `cli.py`/`cli_v3.py`'de ÜST DÜZEY
   `research_engine` import'u yoktur (gerçek bir alt süreçte `import tradingbot.cli` motoru yüklemez); `research_engine`
-  `config_v3`/`load_config`/`sqlite3` ve ağ modüllerini import etmez (tek istisna: `selfcheck.probe_socket_denied`'in
-  RET denemesi); gece biriminin import grafiği P1b'nin ağlı modüllerini içermez; engine-* komutları config yüklemez.
+  `config_v3`/`load_config`/`sqlite3` ve ağ modüllerini import etmez (istisnalar: `selfcheck.probe_socket_denied`'in
+  RET denemesi ve P1b veri biriminin `datastore.urllib_http`'si); gece biriminin import grafiği P1b'nin ağlı modüllerini
+  içermez; engine-* komutları (P1b `engine-data` dahil) config yüklemez.
 """
 from __future__ import annotations
 
@@ -220,7 +221,7 @@ def test_cli_modules_have_no_top_level_research_engine_import_and_handlers_impor
     tree = ast.parse((ROOT / "tradingbot" / "cli_v3.py").read_text(encoding="utf-8"))
     lazy = {fn.name for fn in ast.walk(tree) if isinstance(fn, ast.FunctionDef)
             and any("research_engine" in n for _, n in _imports(fn))}
-    assert lazy == {"cmd_engine_night", "cmd_engine_status", "cmd_engine_restore"}, lazy
+    assert lazy == {"cmd_engine_night", "cmd_engine_status", "cmd_engine_restore", "cmd_engine_data"}, lazy
 
 
 def test_importing_cli_does_not_load_research_engine_in_a_real_process():
@@ -244,9 +245,17 @@ def _socket_probe_lines() -> range:
     return range(fn.lineno, fn.end_lineno + 1)
 
 
+def _data_unit_http_lines() -> range:
+    """P1b: ağ kullanan TEK motor yolu `datastore.urllib_http` (veri birimi; §2.8)."""
+    tree = ast.parse((PKG / "datastore.py").read_text(encoding="utf-8"))
+    fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "urllib_http")
+    return range(fn.lineno, fn.end_lineno + 1)
+
+
 def test_research_engine_import_whitelist_and_forbidden_modules():
     stdlib = set(sys.stdlib_module_names)
     probe = _socket_probe_lines()
+    http_fn = _data_unit_http_lines()
     for f in sorted(PKG.glob("*.py")):
         tree = ast.parse(f.read_text(encoding="utf-8"))
         for node, name in _imports(tree):
@@ -257,7 +266,9 @@ def test_research_engine_import_whitelist_and_forbidden_modules():
             top = name.split(".")[0]
             parts = set(name.split("."))
             if f.name == "selfcheck.py" and name == "socket" and node.lineno in probe:
-                continue                                       # tek istisna: soket RET denemesi (§2.8 madde 2)
+                continue                                       # istisna 1: soket RET denemesi (§2.8 madde 2)
+            if f.name == "datastore.py" and name.split(".")[0] == "urllib" and node.lineno in http_fn:
+                continue                                       # istisna 2 (P1b): veri biriminin HTTP GET'i
             assert not parts & _FORBIDDEN_TOP, f"{f.name}:{node.lineno}: yasaklı import {name}"
             assert top in stdlib or top in {"yaml", "pandas"}, f"{f.name}: izin dışı import {name}"
             assert top != "tradingbot", f"{f.name}: paket dışı tradingbot import'u {name} (motor kendi kendine yeter)"

@@ -9,7 +9,8 @@ yok sayılır, eksik anahtar `None` olur, tip uyuşmazlığı `None` olur (istis
 İhtiyaç listesi (`NEEDS`, testli; §2.3): defter `enabled` / `min_stop_pct`, `learning_mode.extra_entries`,
 `risk.starting_equity_usdt`. Defterlerin state klasörü ve başlangıç bakiyesi de (`strategy_paper`, `.extra[]`,
 `pattern_trader`) yalnız GÖSTERİM ve config dönemi için okunur; hiçbir hesap bunlara dayanmaz (bakiye ölçülmüş
-anlık görüntüden gelir).
+anlık görüntüden gelir). P1b: `entry_universe.enabled` / `entry_universe.symbols` yalnız araştırma evreninin (U_R,
+§3.3) "40 giriş evreni" bileşeni için okunur (veri birimi; hiçbir karar yolu bu değeri motordan almaz).
 
 Bu modül `config_v3`'ü ve `config.load_config`'i import ETMEZ (AST testi).
 """
@@ -33,6 +34,7 @@ NEEDS: tuple[str, ...] = (
     "strategy_paper.extra[].name", "strategy_paper.extra[].enabled", "strategy_paper.extra[].state_dir",
     "strategy_paper.extra[].starting_equity_usdt", "strategy_paper.extra[].rule_params.min_stop_pct",
     "pattern_trader.enabled", "pattern_trader.state_dir", "pattern_trader.starting_equity_usdt",
+    "entry_universe.enabled", "entry_universe.symbols",
 )
 
 
@@ -88,8 +90,12 @@ def _str(x: Any) -> str | None:
 
 def extract(doc: Any) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
     """Ayrıştırılmış YAML belgesinden ihtiyaç listesini hoşgörülü çek. Dönen: (düz değerler, defterler)."""
+    syms = _get(doc, "entry_universe", "symbols")
     values = {"risk.starting_equity_usdt": _num(_get(doc, "risk", "starting_equity_usdt")),
-              "learning_mode.extra_entries": _str(_get(doc, "learning_mode", "extra_entries"))}
+              "learning_mode.extra_entries": _str(_get(doc, "learning_mode", "extra_entries")),
+              "entry_universe.enabled": _bool(_get(doc, "entry_universe", "enabled")),
+              "entry_universe.symbols": ([x for x in syms if isinstance(x, str) and x.strip()]
+                                         if isinstance(syms, list) else None)}
     books: dict[str, dict[str, Any]] = {}
 
     def _book(name: str | None) -> dict[str, Any] | None:

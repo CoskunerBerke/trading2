@@ -257,6 +257,17 @@ def _flags_line(st: dict) -> str:
     return "Bayraklar: " + (", ".join(fl) if fl else "—")
 
 
+def _data_lines(st: dict) -> list[str]:
+    """P1b'den veri tazeliği (S0'ın `check_data_status` sonucu); veri birimi hiç çalışmadıysa satır yok."""
+    ds = (st.get("selfcheck") or {}).get("data") or {}
+    if ds.get("status") in (None, "NONE"):
+        return []
+    seal = str(ds.get("data_seal") or "—")[:12]
+    run = " · ilk doldurma sürüyor" if ds.get("running") else ""
+    return [f"Veri: {ds.get('status')} · data_seal {seal} · mühür yaşı {ds.get('age_h')} sa · bayat seri "
+            f"{ds.get('stale_series')}{run} (ayrıntı: engine-data --status)"]
+
+
 def _books_lines(st: dict | None, *, detail: bool = False, current_id: str | None = None) -> list[str]:
     s1 = (((st or {}).get("stages") or {}).get("S1a") or {}).get("result") or {}
     books = s1.get("books") or {}
@@ -339,7 +350,7 @@ def status_lines(paths: EnginePaths, *, brief: bool = True, now: datetime | None
     mid: list[str] = []
     if st:
         mid = [_selfcheck_line(st), _skew_line(st), _ab_line(st), _backup_unit_line(st), _config_line(st),
-               _resource_line(st), _ledger_line(st), _flags_line(st)]
+               _resource_line(st), _ledger_line(st), *_data_lines(st), _flags_line(st)]
         books = _books_lines(last_with_stage(paths, "S1a", st), detail=not brief, current_id=st.get("run_id"))
         bline = [_backup_line(st, last_with_stage(paths, "S7b", st))]
     else:

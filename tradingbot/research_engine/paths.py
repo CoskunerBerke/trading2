@@ -165,6 +165,31 @@ class EnginePaths:
         """Worker'ın HistoryStore kökü (`data/market/history`; SALT OKUNUR, yalnız tohumlamada okunur)."""
         return self.market / "history"
 
+    # ------------------------------------------------------------------ P2 (§3.1; ağaçlar tembel oluşur, P1A_SUBDIRS değişmez)
+    @property
+    def journal(self) -> Path:
+        """İşlem günlüğü kökü: `journal/tj_v1/YYYY-MM.jsonl.gz` (+ `_index.json.gz`, `_build.json`)."""
+        return self.research / "journal"
+
+    @property
+    def journal_tj(self) -> Path:
+        return self.journal / "tj_v1"
+
+    @property
+    def paths_root(self) -> Path:
+        """Yeniden kurulmuş fiyat yolları: `paths/YYYY-MM/<trade_key güvenli ad>.parquet` (yeniden üretilebilir; yedeğe
+        girmez) ve tembel 1m ihtiyaç dosyası `paths/needs_1m.json` (gece birimi yazar, veri birimi okur)."""
+        return self.research / "paths"
+
+    @property
+    def needs_1m(self) -> Path:
+        return self.paths_root / "needs_1m.json"
+
+    @property
+    def target_daily_utc(self) -> Path:
+        """UTC günü MTM satırları (`tgt_v2_utc_day`; yalnız eklenir, `rev`) — W-günü `daily.jsonl`'ın yanında."""
+        return self.target / "daily_utc.jsonl"
+
     def book_closes_dir(self, book: str) -> Path:
         return self.closes / _safe_name(book)
 

@@ -10,7 +10,7 @@ olan** geçerlidir. Bu belgenin §2–§7'si P3a mühür commit'inde (§8.2) kod
 **Sahip kararları (2026-10-06).** (1) Kapı A + Kapı B + aylık Holm'u geçen aday, terfi başına onay sorulmadan **yeni bir
 PAPER defteri** olarak açılır; gerçek para asla; mevcut defterler değişmez; işlem başı risk %0,25; önceden kayıtlı durdurma
 ve SAPMA izlemesiyle defter kendini kapatır; sahip her açılışı/kapanışı özetten ve `--check`'ten görür ve tek komutla
-kapatır. Metin ana belge §6.7'deki tarihli "Değişiklik"tir (commit `ec44ce3`, PR dalı `claude/gifted-knuth-0ehpcs`; bu
+kapatır. Metin ana belge §6.7'deki tarihli "Değişiklik"tir (commit `ec44ce3`, PR dalında; bu
 dalda henüz yok). (2) Kapılar ve eşikler bu karardan sonra **gevşetilmez** (§8.2'deki "asla gevşetme" testi).
 
 **Kısa özet.** Motor her gece, ağsız ve AI'sız, 106 önceden yazılmış varyantı coin coin, küme küme ve havuzda dener (818

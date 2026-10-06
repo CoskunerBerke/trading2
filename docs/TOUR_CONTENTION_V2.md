@@ -125,6 +125,10 @@ sorgu başına ~152k demetlik aday listesi tutuyordu (geçici, ~14 MB); hızlı 
 yeni motor kısa süre birlikte yaşar: en çok ~2 × 27 MB. Worker'ın 6 GiB'lık cgroup'unda (RSS 2,6–3,5 GB) bu %1'in altında;
 alt süreç yolunun (V1) 0,5–1,5 GB'lık özel belleğiyle karşılaştırılamayacak kadar küçük.
 
+VPS'e ölçekleme (tahmin): eski yol orada sembol başına ~75 sn ölçüldü; hızlı yolun maliyeti ~152k satırlık 1. aşama
+(onlarca ms) + ~100–300 eski-kod mesafesi (sorgu başına onlarca ms) + motor başına bir kez dizi kurulumu (birkaç sn).
+Yayım başına ön ısıtma ~1.000 sn yerine birkaç saniye beklenir; yeni sürümü bekleyen tur artık beklemez.
+
 ### 5.1 Bellek ve tazelik (gözden geçirme notu)
 
 * **Bellek kimde, ne kadar, ne zaman gider.** Diziler motor nesnesinin özniteliğidir (`_knn_ix`); motorla birlikte
@@ -144,10 +148,6 @@ alt süreç yolunun (V1) 0,5–1,5 GB'lık özel belleğiyle karşılaştırıla
   kod bunu yapmaz; yapılırsa `history.evidence_fast_knn: false` ya da yeni bir motor gerekir. Sürüm sınırı: tur ve ön
   ısıtma motoru `IndexRefresher.bundle`'dan alır, yani her sürümün kendi dizisi vardır; eski sürümün dizisi yeni sürümün
   sorgusuna hiç girmez (motorlar dizi paylaşmaz).
-
-VPS'e ölçekleme (tahmin): eski yol orada sembol başına ~75 sn ölçüldü; hızlı yolun maliyeti ~152k satırlık 1. aşama
-(onlarca ms) + ~100–300 eski-kod mesafesi (sorgu başına onlarca ms) + motor başına bir kez dizi kurulumu (birkaç sn).
-Yayım başına ön ısıtma ~1.000 sn yerine birkaç saniye beklenir; yeni sürümü bekleyen tur artık beklemez.
 
 ## 6. Testler
 

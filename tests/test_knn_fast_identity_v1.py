@@ -360,8 +360,9 @@ def test_lossy_timestamp_columns_never_enter_the_fast_path(spy):
     ts[2] = pd.NA                                                   # hiçbir olayın çıkış barı değil (olaylar idx ≥ 128)
     df["timestamp"] = ts
     eng.candles[key] = df
-    assert df["timestamp"].to_numpy().dtype == np.float64            # kayıplı dönüşümün kendisi (pandas)
-    assert int(df["timestamp"].to_numpy()[300]) != int(df["timestamp"].iloc[300])
+    raw = df["timestamp"].to_numpy()
+    if raw.dtype == np.float64:                                      # pandas ≥ 2.2: kayıplı dönüşümün kendisi
+        assert int(raw[300]) != int(df["timestamp"].iloc[300])        # (eski pandas object döndürür; o da reddedilir)
     with pytest.raises(TypeError):
         PE._ts_values(df["timestamp"])
     evs = [e for e in eng.events if e.symbol == "C/USDT" and "LONG" in e.outcomes]

@@ -284,6 +284,52 @@ def test_funding_interval_is_derived_from_data_and_gaps_use_it(tmp_path):
     assert S.step_ms(S.FUNDING) is None
 
 
+def test_funding_gaps_follow_a_mid_month_interval_change(tmp_path):
+    """P1b kabul 9 (güçlendirilmiş; düzensiz aralık): aralık ay İÇİNDE değişirse (13'üne kadar 8h, sonra 4h) ayın tek
+    medyanı 36 sahte boşluk sayıyordu (kalite 0,8). Boşluk artık yerel aralıkla (±3 komşu farkın medyanı) ve bütün
+    seri üzerinde (ay sınırı dahil, parça okumadan) sayılır: değişim boşluk değildir, her rejimde bir eksik uzlaşma 1'dir."""
+    def fts(*segs: tuple[int, int, int]) -> list[int]:
+        out: list[int] = []
+        for a, b, hours in segs:
+            out += [t + (len(out) % 27) for t in range(a, b, hours * H)]   # calc_time +0…+26 ms
+        return out
+
+    def wr(st, sym, ts):
+        st.write("futures", sym, S.FUNDING, pd.DataFrame({"timestamp": ts, "rate": [1e-4] * len(ts)}), src=S.SRC_ARCHIVE)
+        return st.manifest("futures", sym, S.FUNDING)
+    st = mkstore(tmp_path, OCT)
+    mid = ms(utc(2026, 9, 13))
+    ts = fts((SEP, mid, 8), (mid, OCT, 4))
+    m = wr(st, "ALTUSDT", ts)
+    assert m.gap_count == 0 and m.quality_score == 1.0, (m.gap_count, m.quality_score)
+    assert m.interval_ms == 4 * H, "manifestin aralığı serinin EN SON yerel aralığı"
+    assert m.part_meta["2026/09"]["interval_ms"] in (4 * H, 8 * H), "parçanın kendi medyanı (§3.2) kayıtlı kalır"
+    # her rejimde bir eksik uzlaşma: tam 2 boşluk
+    ts2 = list(ts)
+    i8 = next(i for i, t in enumerate(ts2) if t >= SEP + 3 * 24 * H)
+    i4 = next(i for i, t in enumerate(ts2) if t >= mid + 5 * 24 * H)
+    del ts2[i4]
+    del ts2[i8]
+    m = wr(mkstore(tmp_path / "b", OCT), "ALTUSDT", ts2)
+    assert m.gap_count == 2 and m.quality_score == round(len(ts2) / (len(ts2) + 2), 4)
+    # değişim ay sınırında ve ayın İLK uzlaşmalarında (önceki ayın kuyruğu parça okumadan dikkate alınır); yazım sırası
+    # (önce Eylül sonra Ağustos) sonucu değiştirmez
+    for order in ((AUG, SEP), (SEP, AUG)):
+        st3 = mkstore(tmp_path / f"c{order[0]}", OCT)
+        sep8 = SEP + 8 * H                                         # 4h rejimi 1 Eylül 08:00'de başlar
+        ts3 = fts((AUG, sep8, 8), (sep8, OCT, 4))
+        for a in order:
+            b = SEP if a == AUG else OCT
+            m = wr(st3, "BBBUSDT", [t for t in ts3 if a <= t < b])
+        assert m.gap_count == 0 and m.row_count == len(ts3), (order, m.gap_count)
+    # 1h → 8h (ters yön) ve uzun bir boşluk (3 gün, 8h rejiminde 9 eksik uzlaşma)
+    st4 = mkstore(tmp_path / "d", OCT)
+    ts4 = fts((AUG, AUG + 10 * 24 * H, 1), (AUG + 10 * 24 * H, OCT, 8))
+    hole = [t for t in ts4 if not (ms(utc(2026, 9, 10)) < t < ms(utc(2026, 9, 13)))]
+    m = wr(st4, "CCCUSDT", hole)
+    assert m.gap_count == len(ts4) - len(hole) and m.interval_ms == 8 * H, (m.gap_count, len(ts4) - len(hole))
+
+
 # ============================================================================ kabul 10
 def spot_zip(sym: str, tf: str, start: int, n: int, step: int, *, us: bool) -> bytes:
     rows = [kline_row(sym, start + i * step, step, us=us) for i in range(n)]

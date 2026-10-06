@@ -237,9 +237,24 @@ STUBS = {
     "df": '#!/usr/bin/env bash\nif [ -n "${FAKE_FREE_BYTES:-}" ] && [ "$1" = "-B1" ] && [ "$2" = "--output=avail" ]; then\n'
           '  printf "Avail\\n%s\\n" "$FAKE_FREE_BYTES"; exit 0; fi\nexec @DF@ "$@"\n',
     "nproc": '#!/usr/bin/env bash\necho "${FAKE_NPROC:-4}"\n',
+    # betiğin geçici klasörleri (`mktemp -d /tmp/tb-engine-…`): yalnız BU testin oluşturdukları sayılır (genel /tmp sayımı
+    # aynı anda koşan başka bir çalıştırmanın dosyalarıyla kırılıyordu)
+    "mktemp": '#!/usr/bin/env bash\nout="$(@MKTEMP@ "$@")" || exit $?\n'
+              'if [ -n "${FAKE_STATE:-}" ]; then printf "%s\\n" "$out" >> "$FAKE_STATE/mktemp.log"; fi\nprintf "%s\\n" "$out"\n',
     "date": '#!/usr/bin/env bash\nif [ -n "${FAKE_UTC_HM:-}" ] && [ "$*" = "-u +%H:%M" ]; then echo "$FAKE_UTC_HM"; exit 0; fi\n'
             'exec @DATE@ "$@"\n',
 }
+
+
+def stub_body(body: str) -> str:
+    return (body.replace("@DATE@", shutil.which("date") or "/bin/date").replace("@DF@", shutil.which("df") or "/bin/df")
+            .replace("@MKTEMP@", shutil.which("mktemp") or "/bin/mktemp"))
+
+
+def own_tmp(fake: Path) -> list[Path]:
+    """Betiğin BU sandbox'ta `mktemp` ile oluşturduğu geçici klasörler (sahte `mktemp`in kaydı)."""
+    p = fake / "mktemp.log"
+    return [Path(x) for x in p.read_text(encoding="utf-8").split()] if p.exists() else []
 
 
 @pytest.fixture(scope="module")
@@ -279,8 +294,7 @@ class Sandbox:
         (stub / "systemctl").write_text(SYSTEMCTL.replace("@PY@", sys.executable), encoding="utf-8")
         (stub / "journalctl").write_text(JOURNALCTL.replace("@PY@", sys.executable), encoding="utf-8")
         for name, body in STUBS.items():
-            (stub / name).write_text(body.replace("@DATE@", shutil.which("date") or "/bin/date")
-                                     .replace("@DF@", shutil.which("df") or "/bin/df"), encoding="utf-8")
+            (stub / name).write_text(stub_body(body), encoding="utf-8")
         for p in [py, *stub.iterdir()]:
             p.chmod(0o755)
         assert _git("clone", "-q", "--no-local", "--single-branch", "--branch", "app-main", str(src),
@@ -339,7 +353,6 @@ def test_dry_run_checks_everything_and_changes_nothing(tmp_path, source):
     # başka sürümün yeniden başlatması 3 gün + 10 dk önce: pencere dışı (2026-10-06 sahip kararı; önceden 7 gün)
     (sb.base / "deploy-logs").mkdir()
     (sb.base / "deploy-logs" / "8db1faf-restart-at.txt").write_text(f"{int(time.time()) - 3 * 86400 - 600}\nx\n")
-    before = len(list(Path("/tmp").glob("tb-engine-*")))
     cp = sb.run("--dry-run")
     assert cp.returncode == 0, cp.out[-6000:]
     m = re.search(r"KURU ÇALIŞMA: (\d+)/(\d+) değişmez geçti", cp.out)
@@ -352,7 +365,9 @@ def test_dry_run_checks_everything_and_changes_nothing(tmp_path, source):
     assert "33 geçti · 0 kaldı · 0 atlandı" in cp.out
     sb.untouched()
     _no_forbidden(sb)
-    assert len(list(Path("/tmp").glob("tb-engine-*"))) == before, "geçici klon silinmeli"
+    made = own_tmp(sb.fake)
+    assert made and all(p.name.startswith("tb-engine-") for p in made), made
+    assert not [p for p in made if p.exists()], "geçici klon silinmeli"
 
 
 @needs_sandbox
@@ -399,7 +414,8 @@ def test_deploy_smoke_then_timer_check_ab_report_and_rollback_keeps_research(tmp
     assert "[tamam]       K1" in ck.out and "[tamam]       K2" in ck.out
     assert re.search(r"\[tamam\]\s+K6 scorecard --daily = engine-status --daily: 3 defter × \d+ gün", ck.out), ck.out[-3000:]
     assert re.search(r"\[DİKKAT\]\s+defter okuma: LEDGER_STALE", ck.out), "sahte state'in ledger'ları eski (09-02)"
-    assert not list(Path("/tmp").glob("tb-engine-k6.*")), "K6 geçici klasörü silinir"
+    k6 = [p for p in own_tmp(sb.fake) if p.name.startswith("tb-engine-k6.")]
+    assert k6 and not [p for p in k6 if p.exists()], "K6 geçici klasörü silinir"
     ab = sb.run("--ab-report")
     assert ab.returncode == 0 and "A/B geceleri" in ab.out and "ARA GÖRÜNÜM" in ab.out, ab.out[-3000:]
     assert not claim_word_violations(ab.out.splitlines())

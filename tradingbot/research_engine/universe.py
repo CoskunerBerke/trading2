@@ -13,7 +13,8 @@ U_R (belge §3.3 tablosu, AYNEN; her sembolün neden evrende olduğu `roles` ala
 **Okumalar:**
 1. *Giriş evreni (40).* Belge "(40, `universe.json`)" der; ama `state/universe.json` borsadaki bütün uygun sembolleri
    (≈ 200) taşır, 40'lık giriş evreni ise `config.yaml → entry_universe.symbols`'tır (worker `frame_provenance.json`'a da
-   yazar). Motor bu listeyi ham YAML'dan okur (`rawconfig`, ihtiyaç listesine eklendi); okunamazsa
+   yazar). Motor bu listeyi ham YAML'dan, YALNIZ `entry_universe.enabled: true` iken okur (worker da yalnız o zaman
+   kullanır; 2026-10-06 inceleme düzeltmesi) (`rawconfig`, ihtiyaç listesine eklendi); okunamazsa
    `state/frame_provenance.json`'daki `entry_universe`'e düşer; ikisi de yoksa bileşen boş kalır ve `ENTRY_UNIVERSE_YOK`
    bayrağı yazılır (sessizce başka liste kullanılmaz). `state/universe.json` salt-okunur okunur ve günlük anlık
    görüntüye (uygunluk, eleme nedeni, yaş) kopyalanır — "günlük evren" budur.
@@ -112,15 +113,20 @@ def _read_json_r(p: Path) -> Any:
 
 
 def entry_universe(paths: EnginePaths, app_dir: Path | str) -> tuple[list[str], dict[str, Any]]:
-    """40'lık giriş evreni (okuma 1). Dönen: (ham semboller, kaynak bilgisi)."""
+    """40'lık giriş evreni (okuma 1). Dönen: (ham semboller, kaynak bilgisi). Liste YALNIZ `entry_universe.enabled`
+    true iken giriş evrenidir (worker da öyle kullanır: `engine_v3` `_eu.symbols if _eu.enabled`; varsayılan false).
+    Kapalıyken (ya da anahtar yoksa) config listesi KULLANILMAZ; worker'ın `frame_provenance.json`'u da o durumda boş
+    liste yazar → bileşen boş ve `ENTRY_UNIVERSE_YOK` (işlem görenler yine U_R'ye girer)."""
     rc = read_raw_config(Path(app_dir) / "config.yaml")
+    enabled = rc.values.get("entry_universe.enabled") if rc.ok else None
     syms = rc.values.get("entry_universe.symbols") if rc.ok else None
-    info: dict[str, Any] = {"config_path": rc.path, "config_ok": rc.ok, "config_sha256": rc.sha256,
-                            "enabled": rc.values.get("entry_universe.enabled") if rc.ok else None}
-    if syms:
+    info: dict[str, Any] = {"config_path": rc.path, "config_ok": rc.ok, "config_sha256": rc.sha256, "enabled": enabled}
+    if syms and enabled is True:
         out = list(dict.fromkeys(symbol_key(s) for s in syms))
         info.update(source="config.yaml entry_universe.symbols", count=len(out))
         return out, info
+    if syms:
+        info["ignored"] = "config.yaml entry_universe.enabled true değil: liste giriş evreni değil (worker da kullanmaz)"
     fp = _read_json_r(paths.state / "frame_provenance.json")
     eu = fp.get("entry_universe") if isinstance(fp, dict) else None
     if isinstance(eu, list) and eu:
@@ -325,6 +331,21 @@ def write_exchangeinfo_snapshot(paths: EnginePaths, day: str, doc: dict[str, Any
     return p
 
 
+def latest_exchangeinfo(paths: EnginePaths) -> dict[str, Any] | None:
+    """En son okunabilen `exchangeinfo/*.json.gz` belgesi (delist kararı için); yoksa None."""
+    d = paths.exchangeinfo_dir
+    if not d.is_dir():
+        return None
+    for p in sorted(d.glob("*.json.gz"), reverse=True):
+        try:
+            doc = read_json_gz(p)
+        except (OSError, ValueError):
+            continue
+        if isinstance(doc, dict):
+            return doc
+    return None
+
+
 def latest_onboard_dates(paths: EnginePaths) -> dict[str, int]:
     """En son `exchangeinfo/*.json.gz`'den vadeli sembol → onboardDate (ms). Yoksa boş."""
     d = paths.exchangeinfo_dir
@@ -350,5 +371,5 @@ def latest_onboard_dates(paths: EnginePaths) -> dict[str, int]:
 __all__ = ["BTC_ETH", "DATASETS", "EXCHANGEINFO_SCHEMA", "FUTURES_FLOOR", "FUT_TFS", "F_ENTRY_MISSING", "GOLD_1M_DAYS",
            "GOLD_FUTURES", "GOLD_FUT_TFS", "GOLD_SPOT", "GOLD_SPOT_TFS", "MAIN_SPOT_DAYS", "METRICS_FLOOR", "SPOT_CONTEXT",
            "SeriesSpec", "TRADED_DAYS", "UNIVERSE_SCHEMA", "build_universe", "compact_exchange_info", "day_ms",
-           "entry_universe", "latest_onboard_dates", "plan_series", "snapshot_doc", "traded_symbols",
+           "entry_universe", "latest_exchangeinfo", "latest_onboard_dates", "plan_series", "snapshot_doc", "traded_symbols",
            "universe_json_snapshot", "write_exchangeinfo_snapshot", "write_universe_snapshot"]

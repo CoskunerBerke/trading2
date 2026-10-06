@@ -20,6 +20,14 @@
 # OnFailure ve nproc < 4 için CPUQuota=60% bu dosyada YOKTUR: gerekirse sürüm betiği drop-in ile ekler (§2.5).
 # MemoryHigh/MemoryMax P0'da kesinleşir (ölçülen tepe ≈ 227 MiB); MemoryMax değişirse ENGINE_EXPECTED_MEMORY_MAX aynı
 # bayt değeriyle değişmelidir (birim sözleşme testi eşitliği denetler; değilse öz-denetim çıkış 3).
+# §2.5 KARARI (2026-10-06): MemoryMax toplamı (worker 6G + panel 0,5G + gece 0,5G + veri/doldurma 1G = 8 GiB) 7,7 GiB'lık
+# VPS'te RAM − 1G'ye sığmaz (worker + panel tek başına 6,5 GiB) → belge gereği MemoryHigh düşürüldü: 800M → 512M (ölçülen
+# tepenin ≈ 2,3 katı; üstünde çekirdek MOTORU geri kazanır/yavaşlatır), MemoryMax 1G kalır, OOMScoreAdjust=1000.
+# Sırlar (2026-10-06): ağlı TEK birim olduğu için aynı kullanıcının okuyabildiği sır yolları çekirdek düzeyinde
+# erişilemez (InaccessiblePaths; "-" = yoksa sorun değil): /opt/tradingbot/env (worker ortam dosyası, 0600),
+# .ssh (dağıtım anahtarı; kullanıcının HOME'u /opt/tradingbot), data/vault ve data/backups (saatlik yedek vault'u da
+# kopyalar). /home, /root, /run/user zaten ProtectHome=yes ile kapalı. Motor bunların hiçbirini okumaz; state yine
+# salt-okunur okunur, yazım yalnız data/research.
 [Unit]
 Description=Trading Bot research engine — data unit (P1b, networked, record-only)
 Documentation=file:///opt/tradingbot/engine-app/docs/SYSTEM_LEARNING_ENGINE_V1.md
@@ -53,7 +61,7 @@ CPUQuota=100%
 IOSchedulingClass=idle
 IOWeight=10
 OOMScoreAdjust=1000
-MemoryHigh=800M
+MemoryHigh=512M
 MemoryMax=1G
 
 # --- yalıtım (§2.1, §2.8): gece birimiyle aynı, YALNIZ PrivateNetwork yok (tek ağlı birim)
@@ -63,6 +71,7 @@ ProtectHome=yes
 PrivateTmp=yes
 ReadWritePaths=/opt/tradingbot/data/research
 ReadOnlyPaths=/opt/tradingbot/data /opt/tradingbot/app
+InaccessiblePaths=-/opt/tradingbot/env -/opt/tradingbot/.ssh -/opt/tradingbot/data/vault -/opt/tradingbot/data/backups
 PrivateDevices=yes
 ProtectKernelTunables=yes
 ProtectKernelModules=yes

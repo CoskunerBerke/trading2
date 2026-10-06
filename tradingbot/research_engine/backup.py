@@ -22,8 +22,9 @@ hafta için. Yalnız `research-small-YYYY-MM-DD.tar.gz(.sha256)` adlı dosyalar 
 
 **Geri yükleme** (`engine-restore <arşiv>`): varsayılan KURU çalıştırmadır (doğrula + üyeleri ve kenara alınacakları
 listele; hiçbir şey değişmez). `--yes` ile: komut araştırma kökünün sahibi olarak çalışmıyorsa reddedilir (VPS'te
-`sudo -u tradingbot`; root ile yazılan dosyalara gece birimi yazamazdı), `analysis.lock` alınır (gece birimi
-çalışıyorsa reddedilir), mevcut ağacın
+`sudo -u tradingbot`; root ile yazılan dosyalara gece birimi yazamazdı), `analysis.lock` VE (P1b'den, 2026-10-06)
+`data.lock` alınır (gece birimi, veri birimi ya da ilk doldurma çalışıyorsa reddedilir: `store/` ve `archive_cache/` de
+kenara alınır, eşzamanlı yazıcı kalmamalı), mevcut ağacın
 içerik alt klasörleri `data/research.pre-restore-<ts>/` altına TAŞINIR (asla silinmez), arşiv önce araştırma kökünde
 geçici bir klasöre açılır ve üst klasörler tek tek yerine konur. **Okuma:** belge "mevcut ağaç `research.pre-restore-<ts>`
 olarak kenara alınır" der; `locks/` (geri yükleme sırasında tutulan kilidin dosyası; taşınsaydı eşzamanlı bir gece
@@ -46,7 +47,7 @@ from pathlib import Path
 from typing import Any
 
 from .ledgers import iso, utc_now
-from .lock import analysis_lock
+from .lock import analysis_lock, data_lock
 from .paths import EnginePaths, sha256_file
 
 INCLUDE: tuple[str, ...] = ("closes", "entries", "snapshots", "target", "trials", "lessons", "library", "explore",
@@ -321,6 +322,17 @@ def restore(paths: EnginePaths, archive: Path | str, *, apply: bool = False, exp
     lk = analysis_lock(paths)
     if not lk.try_acquire():
         raise RestoreRefused("analysis.lock tutuluyor: gece birimi çalışıyor; bitince yeniden deneyin")
+    # P1b (2026-10-06): store/ ve archive_cache/ de kenara alınır; veri birimi ya da ilk doldurma yazarken taşınırsa
+    # eşzamanlı bir yazıcı kalırdı → data.lock da alınır (ikisi birden; biri tutuluyorsa hiçbir şey taşınmaz)
+    dk = data_lock(paths)
+    try:
+        got_data = dk.try_acquire()
+    except OSError:
+        got_data = False
+    if not got_data:
+        lk.release()
+        raise RestoreRefused("data.lock tutuluyor: veri birimi ya da ilk doldurma çalışıyor (sudo systemctl stop "
+                             "tb-engine-backfill.service; 00:41 veri birimi bitsin); sonra yeniden deneyin")
     try:
         aside = aside_dir(paths, ts)
         if aside.exists():
@@ -351,6 +363,7 @@ def restore(paths: EnginePaths, archive: Path | str, *, apply: bool = False, exp
         rep.update(applied=True, moved_aside=moved, placed=placed, aside=str(aside))
         return rep
     finally:
+        dk.release()
         lk.release()
 
 

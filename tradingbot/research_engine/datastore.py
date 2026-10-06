@@ -19,20 +19,32 @@ worker REST koruması → REST kuyruğu → `exchangeInfo` anlık görüntüsü 
    `archive_unverified` yazılır ve sonraki gecelerde checksum yeniden aranır (bulunursa aynı satırlar `archive`a
    yükselir). Checksum tutmazsa zip önbelleğe alınmaz, parça fail-closed işaretlenir (`mark_bad_chunk`). Önbellek
    düzeni `archive_cache/archive/<sunucu>/<url yolu>` (+ `.CHECKSUM`, `.missing`): `gold_lab.ArchiveCache` /
-   `book_lab.ZipCache` ile bayt-özdeştir; 404 yalnız dönemi 10 günden eskiyse kalıcı (`.missing`) sayılır. 1m zip'leri
-   doğrulanmış alımdan sonra silinir; sha256'ları seri manifestinin dosya defterinde (`files`) kalır.
+   `book_lab.ZipCache` ile bayt-özdeştir; YALNIZ 404 "dosya yok"tur ve yalnız dönemi 10 günden eskiyse kalıcı
+   (`.missing`) sayılır. 403/451 (CDN/WAF erişim engeli) "yok" DEĞİLDİR: arşiv adımı o çalıştırmada durur
+   (`ARCHIVE_HALTED_<kod>`, kalan seriler `STALE`), kalıcı işaret yazılmaz; 5xx/408/429 geçicidir (yeniden denenir).
+   1m zip'leri doğrulanmış alımdan sonra silinir; sha256'ları seri manifestinin dosya defterinde (`files`) kalır. Bir
+   ayın gün zip'leri o ayın yazımı tamamlanınca "bitti" sayılır (yarıda kalan geçici hata bütün ayı yeniden dener;
+   önbellekteki zip'ler yeniden indirilmez). `--update` 62 günlük pencerenin DIŞINDAKİ açık dönemleri (eksik ya da
+   doğrulanmamış ay/gün) de onarır (çalıştırma başına en çok `REPAIR_MAX_TASKS` görev); kalan boşluk `holes` ve
+   `ARCHIVE_HOLES` olarak dürüstçe yazılır (sonuç `PARTIAL`).
 2. **Worker REST koruması** (`check_worker_journal`): REST'e dokunmadan önce `journalctl -u tradingbot-worker
    --since=-60min` okunur ve `market/http.py`'nin 429/418 satırları sayılır (`WORKER_RATE_LINE_RE`, metin kalıbı
    testte http.py'nin biçim dizgelerine karşı sabitlenir). Sayı > 0 → `REST_GUARD_SKIP`; günlük okunamıyorsa (çıkış
    kodu ≠ 0, yetki ipucu, ya da 60 dakikada HİÇ satır yok — worker ~20 dakikada bir tur yazar, boş çıktı "okuyamadım"
-   demektir) → `REST_GUARD_UNKNOWN`. İkisinde de REST adımı TAMAMEN atlanır.
+   demektir) → `REST_GUARD_UNKNOWN`. İkisinde de REST adımı TAMAMEN atlanır. Koruma HER REST kullanımından hemen önce
+   yeniden okunur (`exchangeInfo`, REST kuyruğunun başı) ve REST sürerken sonucu `GUARD_MAX_AGE_S`'den eski olmaz;
+   bayatlayınca yeniden okunur, geçmezse kalan REST tamamen atlanır (ilk doldurmada arşiv adımı saatler sürer).
 3. **REST kuyruğu.** Yalnız arşiv tabanı olan serilerde, son satırdan sonraki KAPANMIŞ barlar (en çok son 2 gün;
-   fonlama 7 gün) `_src=rest` olarak yazılır. Geçmiş aylar için REST yoktur.
+   fonlama 7 gün) `_src=rest` olarak yazılır. "Kapanmış" isteğin GÖNDERİLDİĞİ ana göredir (bar kapanışı ≤ gönderim;
+   yanıt geç gelse bile oluşmakta olan bar yazılmaz). Geçmiş aylar için REST yoktur. Delist olmuş sembollerde REST
+   yoktur (`DELISTED`: `exchangeInfo` durumu TRADING değil / listede yok, ya da REST `-1121 Invalid symbol`); veri
+   delist anına kadar kalır, seri bayat ya da `PARTIAL` sayılmaz, ayrı raporlanır.
 4. **Bütçe** (`EngineBudget`): tek `BudgetPool(safety=0,1)`; ayrıca motorun kendi ağırlığı KAYAN 60 sn penceresinde
    ≤ 0,1 × IP limiti (fapi 2400 → 240; spot için `ratelimit`in muhafazakâr 1200'ü → 120) — jeton kovası tek başına bir
    dakikada iki kapasiteye izin verirdi. Her yanıtta `X-MBX-USED-WEIGHT-1M` okunur; IP limitinin %50'sine ulaşınca bir
-   sonraki dakika başına kadar beklenir. 418/429 (ve erişim engeli 403/451) gelince REST adımı DURUR, kalan seriler
-   REST'siz kalır, `REST_HALTED_<kod>` yazılır. Saatlik REST kuyruğu yoktur.
+   sonraki dakika başına kadar beklenir; bütçe bekledikten sonra saat penceresi YENİDEN denetlenir (bekleme isteği 4h
+   penceresine taşıyamaz). 418/429 (ve erişim engeli 403/451) gelince REST adımı DURUR, kalan seriler REST'siz kalır ve
+   `STALE` olur (§3.4 tablosu), `REST_HALTED_<kod>` yazılır. Saatlik REST kuyruğu yoktur.
 5. **Arşiv uzlaştırma.** Gün/ay zip'i yayımlanınca REST satırları doğrulanmış arşiv satırlarıyla değişir (öncelik
    kuralı) ve fark satır satır `runs/data/<run_id>/diffs.jsonl.gz`'a yazılır (beklenen 0).
 6. **Hata yalıtımı.** Her seri 3 denemeli, titreşimli yeniden denemeye sarılır ve istisnası yakalanır; hata o seriyi
@@ -45,7 +57,15 @@ worker REST koruması → REST kuyruğu → `exchangeInfo` anlık görüntüsü 
    denetlenir, pencere içindeyse hh:36'ya kadar beklenir (`PAUSED_4H_WINDOW` ilerlemeye yazılır). Zamanlayıcı birimi
    00:41'de başlar ve 50 dk sert sınırı olduğundan pencereye hiç girmez; kural ilk doldurma ve elle çalıştırmalar
    içindir. `--update`'in iç son tarihi başlangıç + 45 dk ve 00:00–01:26 arasında başladıysa o günün 01:26'sıdır
-   (01:31 sert durma, 01:37 gece birimi); son tarihten sonra yeni seri başlatılmaz (`DEADLINE`, çıkış 0).
+   (01:31 sert durma, 01:37 gece birimi); son tarihten sonra yeni seri başlatılmaz (`DEADLINE`, çıkış 0). Ağsız ağır
+   adımlar da (kurtarma, tohum) pencerede bekler: tohum worker deposunu okur, IndexRefresher o pencerede yazar.
+9. **Disk (2026-10-06).** P1a kapanış arşivi (gece S1a, yeniden üretilemez) depo ya da zip aynası yüzünden ASLA aç
+   kalmaz: veri birimi gece biriminin reddinden (boş < 10 GB, araştırma ≥ 20 GB) `DATA_DISK_MARGIN` (3 GB) ÖNCE durur.
+   Denetim başlangıçta ve DÖNGÜNÜN İÇİNDE (her ağ isteğinden ve her tohum serisinden önce; `statvfs` ucuzdur,
+   araştırma boyutu boş alan düşüşüyle tahmin edilir ve yarım saatte bir yeniden ölçülür) yapılır; sınır aşılırsa
+   çalıştırma `DISK_REFUSE` (çıkış 5) ile durur, yazılmış veri mühürlenir. Boş/kullanılan alan ilerlemede görünür.
+10. **Durdurma.** SIGTERM (`systemctl stop`) `STOPPED` (çıkış 1) olarak kayda geçer: `data_status.json`'da bayat
+   `running` kalmaz; mühür yenilenmez. SIGKILL sonrası kalan `running` bloğu okuyucularda süreç yoksa "DURDU" yazılır.
 
 Dukascopy (`import_dukascopy`): v1'de indirici YOKTUR. Hazır ayna (`<kök>/XAUUSD/<YYYY>/<MM0>/BID_candles_hour_1.bi5`
 aylık saatlik; `<kök>/XAUUSD/<YYYY>/BID_candles_day_1.bi5` yıllık günlük; isteğe bağlı
@@ -67,9 +87,11 @@ import os
 import random
 import re
 import shutil
+import signal
 import struct
 import subprocess
 import sys
+import threading
 import time
 import traceback
 import zipfile
@@ -86,13 +108,14 @@ from . import ENGINE_VERSION
 from . import selfcheck as SC
 from .lock import SKIPPED_LOCKED, data_lock
 from .night import root_refusal
-from .paths import DISK_REFUSE, DISK_WARN, EnginePaths, disk_guard, gzip_bytes, json_line
-from .seed import ST_REDOWNLOAD, ST_SEEDED, seed_series
+from .paths import (DISK_OK, DISK_REFUSE, DISK_WARN, GB, MIN_FREE_BYTES, REFUSE_RESEARCH_BYTES, WARN_RESEARCH_BYTES, EnginePaths,
+                    dir_size_bytes, disk_guard, gzip_bytes, json_line)
+from .seed import ST_ERROR, ST_REDOWNLOAD, ST_SEEDED, seed_series
 from .store import (DUKA_1H, DUKA_1M, FUNDING, MARKPX_1H, METRICS_5M, METRICS_COLS, PREMIUM_1H, PX_COLS, SERIES_HALTED,
                     SRC_ARCHIVE, SRC_REST, SRC_UNVERIFIED, ArchiveUnitError, ResearchStore, iso_ms,
                     month_bounds_ym, normalize_archive_ts, step_ms)
-from .universe import (SeriesSpec, build_universe, compact_exchange_info, latest_onboard_dates, plan_series, snapshot_doc,
-                       universe_json_snapshot, write_exchangeinfo_snapshot, write_universe_snapshot)
+from .universe import (SeriesSpec, build_universe, compact_exchange_info, latest_exchangeinfo, latest_onboard_dates, plan_series,
+                       snapshot_doc, universe_json_snapshot, write_exchangeinfo_snapshot, write_universe_snapshot)
 
 UTC = timezone.utc
 DATA_STATUS_SCHEMA = "engine_data_status_v1"
@@ -110,6 +133,10 @@ HEADER_PAUSE_SHARE = 0.5
 IP_LIMITS: dict[str, int] = dict(DEFAULT_WEIGHTS_PER_MINUTE)
 WINDOW_S = 60.0
 HALT_CODES = frozenset({418, 429, 403, 451})
+#: arşiv (CDN) erişim engeli: "dosya yok" (404) DEĞİLDİR; arşiv adımı durur, kalıcı `.missing` yazılmaz
+ARCHIVE_HALT_CODES = frozenset({403, 451})
+#: REST `{"code": -1121, "msg": "Invalid symbol."}`: sembol borsada yok (delist)
+INVALID_SYMBOL_CODE = -1121
 
 #: §3.4 madde 2: worker koruması
 WORKER_UNIT = "tradingbot-worker"
@@ -119,11 +146,15 @@ WORKER_RATE_LINE_RE = re.compile(r"\b(?P<code>429|418) (?P<url>https?://\S+) —
 JOURNAL_UNREADABLE_RE = re.compile(r"(No journal files were (found|opened)|Permission denied|not seeing messages from "
                                    r"other users|Failed to )", re.IGNORECASE)
 GUARD_OK, GUARD_SKIP, GUARD_UNKNOWN, GUARD_NOT_RUN = "REST_GUARD_OK", "REST_GUARD_SKIP", "REST_GUARD_UNKNOWN", "NOT_RUN"
+#: koruma sonucunun REST sırasında en çok yaşı (sn); bayatlayınca günlük yeniden okunur (§3.4 madde 2)
+GUARD_MAX_AGE_S = 300.0
 
 RETRIES = 3
 RETRY_BASE_S = 2.0
 KEEP_404_DAYS = 10
 UPDATE_LOOKBACK_DAYS = 62
+#: `--update`: pencere DIŞINDAKİ açık dönemlerin (eksik/doğrulanmamış ay ya da gün) çalıştırma başına onarım sınırı
+REPAIR_MAX_TASKS = 200
 REST_LOOKBACK_MS = 2 * 86_400_000
 STALE_AFTER_H = 26
 DEADLINE_AFTER = timedelta(minutes=45)
@@ -135,6 +166,12 @@ KEEP_DATA_RUNS = 60
 KEEP_SEALS = 5
 DEEP_SAMPLE_WEEKDAY = 6                          # Pazar: serilerin 1/7'si derin denetlenir (§3.2)
 DAY_MS = 86_400_000
+#: disk (madde 9): veri birimi gece biriminin `DISK_REFUSE` sınırlarından bu kadar ÖNCE durur
+DATA_DISK_MARGIN = 3 * GB
+DATA_MIN_FREE_BYTES = MIN_FREE_BYTES + DATA_DISK_MARGIN                  # boş < 13 GB → dur (gece: 10 GB)
+DATA_REFUSE_RESEARCH_BYTES = REFUSE_RESEARCH_BYTES - DATA_DISK_MARGIN    # araştırma ≥ 17 GB → dur (gece: 20 GB)
+DATA_WARN_RESEARCH_BYTES = WARN_RESEARCH_BYTES
+DISK_REMEASURE_S = 1800.0
 LISTING_KIND = "1d"
 #: arşivdeki sürekli sözleşme başlangıcı (vadeli listelenme yoklamasının alt sınırı)
 FUTURES_ARCHIVE_FLOOR_MS = 1_567_296_000_000     # 2019-09-01
@@ -144,10 +181,14 @@ R_SUCCESS, R_PARTIAL, R_DEADLINE, R_FAILED = "SUCCESS", "PARTIAL", "DEADLINE", "
 R_SKIPPED_LOCKED, R_ISOLATION_BROKEN, R_NOT_PAPER, R_DISK_REFUSE, R_ROOT_REFUSED = (
     SKIPPED_LOCKED, "ISOLATION_BROKEN", "NOT_PAPER", "DISK_REFUSE", "ROOT_REFUSED")
 R_DUKA_DONE, R_DUKA_FAILED = "HAZIR", "YAPILAMADI"
-EXIT_CODES = {R_SUCCESS: 0, R_PARTIAL: 0, R_DEADLINE: 0, R_SKIPPED_LOCKED: 0, R_FAILED: 1, R_DUKA_FAILED: 2,
+R_STOPPED = "STOPPED"
+EXIT_CODES = {R_SUCCESS: 0, R_PARTIAL: 0, R_DEADLINE: 0, R_SKIPPED_LOCKED: 0, R_FAILED: 1, R_STOPPED: 1, R_DUKA_FAILED: 2,
               R_DUKA_DONE: 0, R_ISOLATION_BROKEN: 3, R_NOT_PAPER: 4, R_DISK_REFUSE: 5, R_ROOT_REFUSED: 6}
 S_OK, S_STALE, S_NO_BASELINE, S_HALTED, S_SKIPPED_DEADLINE = "OK", "STALE", "NO_BASELINE", "HALTED", "SKIPPED_DEADLINE"
+#: delist (terminal, bayat sayılmaz) ve disk durması
+S_DELISTED, S_SKIPPED_DISK = "DELISTED", "SKIPPED_DISK"
 F_REST_GUARD_SKIP, F_REST_GUARD_UNKNOWN = GUARD_SKIP, GUARD_UNKNOWN
+F_ARCHIVE_HOLES, F_DELISTED = "ARCHIVE_HOLES", "DELISTED"
 #: dosya defteri durumları: doğrulandı / doğrulanamadı (CHECKSUM yok) / kalıcı eksik (404) / checksum tutmadı / kısmi ay
 FS_VERIFIED, FS_UNVERIFIED, FS_MISSING, FS_BAD, FS_PARTIAL = "v", "u", "m", "x", "p"
 
@@ -169,11 +210,45 @@ class RestHalted(RuntimeError):
 
 
 class RestError(RuntimeError):
-    """Kalıcı REST hatası (4xx): yalnız o seri."""
+    """Kalıcı REST hatası (4xx): yalnız o seri. `code` Binance hata kodudur (`-1121` = sembol yok/delist)."""
+
+    def __init__(self, msg: str, status: int | None = None, code: int | None = None):
+        super().__init__(msg)
+        self.status, self.code = status, code
+
+
+class RestGuardStop(RuntimeError):
+    """Madde 2: göndermeden hemen önce yeniden okunan worker günlüğü koruması geçmedi; kalan REST bu çalıştırmada
+    TAMAMEN atlanır (STALE değil: o gece yalnız arşiv)."""
+
+    def __init__(self, status: str):
+        super().__init__(f"REST koruması: {status}")
+        self.status = status
+
+
+class ArchiveHalted(RuntimeError):
+    """Arşiv (CDN) 403/451: arşiv adımı bu çalıştırmada durur; kalıcı "eksik" işareti YAZILMAZ."""
+
+    def __init__(self, status: int, url: str = ""):
+        super().__init__(f"arşiv erişimi engellendi: HTTP {status} {url[:120]}")
+        self.status = int(status)
 
 
 class DeadlineReached(RuntimeError):
     """İç son tarih geçti: yeni seri başlatılmaz."""
+
+
+class DiskRefused(RuntimeError):
+    """Madde 9: boş alan ya da araştırma kökü veri biriminin sınırında; çalıştırma `DISK_REFUSE` ile durur."""
+
+    def __init__(self, disk: dict):
+        super().__init__("; ".join(disk.get("reasons") or []) or "disk sınırı")
+        self.disk = disk
+
+
+class StopRequested(BaseException):
+    """SIGTERM (`systemctl stop`): `STOPPED` olarak kayda geçer (madde 10). BaseException: seri düzeyindeki
+    `except Exception` blokları onu yutmaz."""
 
 
 # ============================================================================ zaman
@@ -306,6 +381,8 @@ class ArchiveMirror:
         self.timeout = timeout
         self.stats = {"requests": 0, "bytes": 0, "ok": 0, "verified": 0, "unverified": 0, "missing": 0, "mismatch": 0,
                       "cache_hits": 0, "deleted_1m": 0}
+        #: 403/451 sonrası bu çalıştırmada başka arşiv isteği YAPILMAZ (RestClient.halted gibi)
+        self.halted: ArchiveHalted | None = None
 
     def path(self, url: str) -> Path:
         return self.root / url.split("://", 1)[-1].split("?", 1)[0]
@@ -324,14 +401,22 @@ class ArchiveMirror:
         return ms_of(datetime(y, mo, d, tzinfo=UTC)) + DAY_MS
 
     def _get(self, url: str) -> bytes | None:
+        """200 → baytlar; YALNIZ 404 → None ("dosya yok"; laboratuvarlarla aynı: `signal_lab._http_get`,
+        `gold_lab.ArchiveCache`). 403/451 → `ArchiveHalted` (erişim engeli; "yok" sayılmaz, kalıcı işaret yazılmaz);
+        5xx/408/429 ve diğerleri → `TransientError`."""
+        if self.halted is not None:
+            raise self.halted
         self.gate()
         self.stats["requests"] += 1
         r = self.http(url, None, self.timeout)
         if r.status == 200:
             self.stats["bytes"] += len(r.body)
             return r.body
-        if r.status in (403, 404):
+        if r.status == 404:
             return None
+        if r.status in ARCHIVE_HALT_CODES:
+            self.halted = ArchiveHalted(r.status, url)
+            raise self.halted
         if r.status >= 500 or r.status in (408, 429):
             raise TransientError(f"arşiv HTTP {r.status}: {url}")
         raise TransientError(f"arşiv beklenmeyen HTTP {r.status}: {url}")
@@ -568,7 +653,9 @@ class EngineBudget:
     def cap(self, host: str) -> float:
         return self.limit(host) * self.safety
 
-    def acquire(self, host: str, weight: int) -> None:
+    def acquire(self, host: str, weight: int, gate: Callable[[], None] | None = None) -> None:
+        """Payı ayır. `gate` (saat penceresi + son tarih + disk) her beklemeden SONRA yeniden çağrılır: bütçe beklemesi
+        isteği 4h penceresine taşıyamaz. Kayan pencereye yazılan an GÖNDERİM anıdır (son kapı denetiminden sonra)."""
         host = host.lower()
         weight = max(1, int(weight))
         cap = self.cap(host)
@@ -576,6 +663,8 @@ class EngineBudget:
             raise ValueError(f"tek istek ağırlığı {weight} motor payını ({cap:.0f}) aşıyor")
         dq = self._win.setdefault(host, deque())
         while True:
+            if gate is not None:
+                gate()
             t = self.clock_s()
             hu = self._hdr.get(host)
             if hu and hu[1] >= HEADER_PAUSE_SHARE * self.limit(host):
@@ -593,7 +682,9 @@ class EngineBudget:
                 self.sleep(max(0.01, dq[0][0] + WINDOW_S - t + 0.01))
                 continue
             break
-        self.pool.get(host, self.limit(host)).acquire(weight)
+        slept = self.pool.get(host, self.limit(host)).acquire(weight)
+        if gate is not None and slept:
+            gate()                                   # jeton kovası uyuttuysa pencere/son tarih yeniden
         t = self.clock_s()
         dq.append((t, weight))
         self.sent.append((host, t, weight))
@@ -635,15 +726,21 @@ class RestClient:
         self.http, self.budget, self.gate, self.timeout = http, budget, gate, timeout
         self.halted: RestHalted | None = None
         self.stats = {"requests": 0, "errors": 0}
+        #: son isteğin GÖNDERİLDİĞİ an (ms): "yalnız kapanmış bar" bu ana göre uygulanır (madde 3)
+        self.last_sent_ms: int | None = None
+        #: göndermeden HEMEN önce (bütçe ve kapıdan sonra) çağrılır: worker günlüğü korumasının tazeliği (madde 2)
+        self.pre_send: Callable[[], None] | None = None
 
     def get(self, base: str, path: str, params: Mapping[str, Any], weight: int) -> Any:
         if self.halted is not None:
             raise self.halted
-        self.gate()
         host = base.split("://", 1)[-1].split("/", 1)[0]
-        self.budget.acquire(host, weight)
+        self.budget.acquire(host, weight, gate=self.gate)
+        if self.pre_send is not None:
+            self.pre_send()
         url = base + path
         self.stats["requests"] += 1
+        self.last_sent_ms = int(self.budget.clock_s() * 1000)
         r = self.http(url, {k: v for k, v in params.items() if v is not None}, self.timeout)
         self.budget.on_response(host, r.headers)
         if r.status == 200:
@@ -657,7 +754,13 @@ class RestClient:
             raise self.halted
         if r.status >= 500:
             raise TransientError(f"REST HTTP {r.status}: {url}")
-        raise RestError(f"REST HTTP {r.status}: {url}: {r.body[:160]!r}")
+        code = None
+        try:
+            j = json.loads((r.body or b"").decode("utf-8", "replace"))
+            code = int(j.get("code")) if isinstance(j, dict) and j.get("code") is not None else None
+        except (ValueError, TypeError):
+            code = None
+        raise RestError(f"REST HTTP {r.status}: {url}: {r.body[:160]!r}", status=r.status, code=code)
 
 
 # ============================================================================ worker REST koruması
@@ -902,21 +1005,20 @@ def _duka_import(paths: EnginePaths, root: Path, stage: Path, *, store: Research
     changed = [str(Path(k).relative_to(root)) for k, v in sha1.items() if _sha_file(Path(k)) != v]
     if changed:
         raise DukaError(f"ayna içe alma sırasında değişti: {len(changed)} dosya (ör. {changed[0]})")
-    # 4) yerine koy (eski kopya ancak yenisi hazırken kaldırılır)
-    dest = paths.dukascopy / DUKA_SYMBOL
-    old = paths.dukascopy / f".old-{now.strftime('%Y%m%dT%H%M%SZ')}"
-    if dest.exists():
-        os.replace(paths.require_research(dest), paths.require_research(old))
-    os.replace(paths.require_research(stage / DUKA_SYMBOL), paths.require_research(dest))
-    if old.exists():
-        shutil.rmtree(paths.require_research(old), ignore_errors=True)
-    paths.write_bytes(paths.dukascopy / "manifest.jsonl", "".join(json_line({**ln, "imported_at": now.isoformat()})
-                                                                  for ln in lines).encode("utf-8"))
-    # 5) depoya yaz (kopyadan; ay ay; kaynak checksum'ı yayımlanmadığı için archive_unverified)
+    # 4) depo satırları ÖNCE geçici bir depoda kurulur (mevcut seri kopyalanır, aynı öncelik/birleştirme kurallarıyla
+    #    yazılır): bir yazım hatası asıl depoya HİÇBİR satır bırakmaz (2026-10-06 düzeltmesi; önceden yerine koyma
+    #    sonrası yazım yarıda kalırsa önceki HAZIR içe almanın yanında yarım satırlar kalabiliyordu)
+    sroot = stage / ".store"
+    sst = ResearchStore(sroot, provider=store.provider, clock_ms=store.clock_ms, guard=paths.require_research)
+    tfs = (DUKA_1H, DUKA_1M)
+    for tf in tfs:
+        cur = store.series_dir("dukascopy", DUKA_SYMBOL, tf)
+        if cur.is_dir():
+            shutil.copytree(cur, paths.require_research(sst.series_dir("dukascopy", DUKA_SYMBOL, tf)))
     rows_written = {DUKA_1H: 0, DUKA_1M: 0}
-    copied = duka_files(paths.dukascopy)
+    staged = duka_files(stage)
     now_ms = ms_of(now)
-    for kind, tf, unit_files in (("hour", DUKA_1H, copied["hour"]), ("min", DUKA_1M, copied["min"])):
+    for kind, tf, unit_files in (("hour", DUKA_1H, staged["hour"]), ("min", DUKA_1M, staged["min"])):
         by_month: dict[str, list[tuple]] = {}
         for p, key, start, span, unit in unit_files:
             with open(p, "rb") as fh:
@@ -924,9 +1026,32 @@ def _duka_import(paths: EnginePaths, root: Path, stage: Path, *, store: Research
             by_month.setdefault(key[:7], []).extend(kept)
             if kind == "hour" or len(by_month) > 1:
                 for mk in sorted(by_month)[:-1] if kind == "min" else sorted(by_month):
-                    rows_written[tf] += _duka_write(store, tf, by_month.pop(mk), now_ms)
+                    rows_written[tf] += _duka_write(sst, tf, by_month.pop(mk), now_ms)
         for mk in sorted(by_month):
-            rows_written[tf] += _duka_write(store, tf, by_month.pop(mk), now_ms)
+            rows_written[tf] += _duka_write(sst, tf, by_month.pop(mk), now_ms)
+    # 5) yerine koy (yalnız yeniden adlandırma; eski kopya ancak yenisi yerindeyken kaldırılır)
+    stamp = now.strftime('%Y%m%dT%H%M%SZ')
+    dest = paths.dukascopy / DUKA_SYMBOL
+    old = paths.dukascopy / f".old-{stamp}"
+    if dest.exists():
+        os.replace(paths.require_research(dest), paths.require_research(old))
+    os.replace(paths.require_research(stage / DUKA_SYMBOL), paths.require_research(dest))
+    if old.exists():
+        shutil.rmtree(paths.require_research(old), ignore_errors=True)
+    for tf in tfs:
+        new_dir = sst.series_dir("dukascopy", DUKA_SYMBOL, tf)
+        if not new_dir.is_dir():
+            continue
+        cur = store.series_dir("dukascopy", DUKA_SYMBOL, tf)
+        cur.parent.mkdir(parents=True, exist_ok=True)
+        prev = cur.with_name(f".{tf}.old-{stamp}")
+        if cur.exists():
+            os.replace(paths.require_research(cur), paths.require_research(prev))
+        os.replace(paths.require_research(new_dir), paths.require_research(cur))
+        if prev.exists():
+            shutil.rmtree(paths.require_research(prev), ignore_errors=True)
+    paths.write_bytes(paths.dukascopy / "manifest.jsonl", "".join(json_line({**ln, "imported_at": now.isoformat()})
+                                                                  for ln in lines).encode("utf-8"))
     years: dict[str, dict[str, Any]] = {}
     for ln in lines:
         if ln["kind"] == "hour":
@@ -979,6 +1104,8 @@ class Task:
     refetch: bool = False
     recheck: bool = False
     done: bool = False
+    failed: bool = False               # kalıcı hata (checksum / bozuk / denemeler tükendi): `holes`'a sayılır
+    at: str = ""                       # doğrulanmamış dosyanın son deneme anı (onarım sırası)
 
 
 class DataRun:
@@ -989,7 +1116,8 @@ class DataRun:
                  sleep: Callable[[float], None] | None = None, http: Http | None = None,
                  runner: Callable[..., Any] | None = None, probes: SC.Probes | None = None,
                  env: Mapping[str, str] | None = None, app_dir: Path | str = SC.APP_DIR,
-                 seed_root: Path | str | None = None, free_bytes: int | None = None, rng: random.Random | None = None,
+                 seed_root: Path | str | None = None, free_bytes: int | Callable[[], int] | None = None,
+                 rng: random.Random | None = None,
                  dukascopy_dir: Path | str | None = None, seed_hook: Callable[[Path, int], None] | None = None,
                  progress_every_s: float = PROGRESS_EVERY_S,
                  plan_filter: Callable[[SeriesSpec], bool] | None = None) -> None:
@@ -1002,6 +1130,7 @@ class DataRun:
         self.env = os.environ if env is None else env
         self.app_dir = Path(app_dir)
         self.seed_root = Path(seed_root) if seed_root is not None else paths.worker_history
+        #: boş alan: None → `statvfs`; sayı ya da çağrılabilir (yalnız test/sahte VPS)
         self.free_bytes = free_bytes
         self.rng = rng or random.Random()
         self.dukascopy_dir = dukascopy_dir
@@ -1015,6 +1144,7 @@ class DataRun:
         self.store = ResearchStore.for_paths(paths, clock_ms=lambda: ms_of(self.clock()))
         self.budget = EngineBudget(clock_s=lambda: self.clock().timestamp(), sleep=self.sleep)
         self.rest = RestClient(self.http, self.budget, gate=self.gate)
+        self.rest.pre_send = self._rest_guard_gate
         self.mirror = ArchiveMirror(paths, self.http, now_ms=lambda: ms_of(self.clock()), gate=self.gate)
         self.run_id: str | None = None
         self.flags: set[str] = set()
@@ -1028,6 +1158,16 @@ class DataRun:
         self.listings: dict[str, int | None] = ({k: (v or {}).get("listing_ms") for k, v in cache.items()}
                                                 if isinstance(cache, dict) else {})
         self.plan_keys: set[str] = set()
+        #: REST koruması (madde 2): son okumanın sonucu ve anı (sn)
+        self._guard_status: str = GUARD_NOT_RUN
+        self._guard_at: float | None = None
+        #: delist (terminal) semboller: "market/SEMBOL" → {since_ms, source, at}
+        self.delisted: dict[str, dict[str, Any]] = self._load_delisted()
+        #: seri → kalan açık dönem sayısı (onarılamadı ya da sınır)
+        self.holes: dict[str, int] = {}
+        #: disk (madde 9): son ölçüm (araştırma baytı, boş bayt, an) ve son durum
+        self._disk_base: tuple[int, int | None, float] | None = None
+        self._in_run = False
         self.status: dict[str, Any] = {"schema": DATA_RUN_SCHEMA, "engine": ENGINE_VERSION, "mode": mode,
                                        "run_id": None, "started_at": self.start.isoformat(), "finished_at": None,
                                        "deadline": self.deadline.isoformat() if self.deadline else None,
@@ -1035,22 +1175,81 @@ class DataRun:
                                        "selfcheck": {}, "rest": {"guard": GUARD_NOT_RUN}, "archive": {}, "seed": {},
                                        "recovery": {}, "diffs": {"count": 0}, "universe": {}, "exchangeinfo": {}}
 
-    # ---------------------------------------------------------------- saat, pencere, son tarih
+    # ---------------------------------------------------------------- saat, pencere, son tarih, disk
     def gate(self) -> None:
-        """Her ağ isteğinden önce (madde 8): son tarih geçtiyse `DeadlineReached`; 4h penceresindeyse beklenir."""
+        """Her ağ isteğinden önce (madde 8–9): son tarih geçtiyse `DeadlineReached`; disk veri biriminin sınırındaysa
+        `DiskRefused`; 4h penceresindeyse beklenir (beklemeden sonra hepsi yeniden denetlenir)."""
         while True:
             now = self.clock()
             if self.deadline is not None and now > self.deadline:
                 raise DeadlineReached(f"iç son tarih {self.deadline.isoformat()} geçti")
-            if not in_publication_window(now):
-                if self.progress.get("paused"):
-                    self.progress.update(paused=False, pause_reason=None, resume_at=None)
+            self.disk_check()
+            if not self._pause_if_window(now):
                 return
-            resume = window_resume_at(now)
-            self.progress.update(paused=True, pause_reason="PAUSED_4H_WINDOW", resume_at=resume.isoformat())
-            self.flags.add("PAUSED_4H_WINDOW")
-            self.write_status(final=False)
-            self.sleep(max(1.0, (resume - now).total_seconds()))
+
+    def pause_window(self) -> None:
+        """Ağsız ağır adımlar (kurtarma, tohum) için: 4h penceresindeyse bitene kadar bekle (son tarih denetimi yok)."""
+        while self._pause_if_window(self.clock()):
+            pass
+
+    def _pause_if_window(self, now: datetime) -> bool:
+        if not in_publication_window(now):
+            if self.progress.get("paused"):
+                self.progress.update(paused=False, pause_reason=None, resume_at=None)
+            return False
+        resume = window_resume_at(now)
+        self.progress.update(paused=True, pause_reason="PAUSED_4H_WINDOW", resume_at=resume.isoformat())
+        self.flags.add("PAUSED_4H_WINDOW")
+        self.write_status(final=False)
+        self.sleep(max(1.0, (resume - now).total_seconds()))
+        return True
+
+    def _free_now(self) -> int | None:
+        fb = self.free_bytes
+        if callable(fb):
+            return int(fb())
+        if fb is not None:
+            return int(fb)
+        probe = self.paths.research if self.paths.research.exists() else self.paths.data
+        try:
+            st = os.statvfs(probe)
+            return int(st.f_bavail * st.f_frsize)
+        except (OSError, AttributeError):
+            return None
+
+    def disk_view(self, *, remeasure: bool = False) -> dict[str, Any]:
+        """Madde 9: boş alan (ucuz `statvfs`) + araştırma kökü tahmini = son ölçüm + o andan beri boş alandaki düşüş
+        (başkasının tükettiği alan da araştırmaya yazılır: muhafazakâr); `DISK_REMEASURE_S`'de bir yeniden ölçülür."""
+        t = self.clock().timestamp()
+        free = self._free_now()
+        if remeasure or self._disk_base is None or t - self._disk_base[2] >= DISK_REMEASURE_S:
+            self._disk_base = (dir_size_bytes(self.paths.research), free, t)
+        used0, free0, _ = self._disk_base
+        used = used0 + (max(0, int(free0) - int(free)) if (free0 is not None and free is not None) else 0)
+        status, reasons = DISK_OK, []
+        if used >= DATA_REFUSE_RESEARCH_BYTES:
+            status = DISK_REFUSE
+            reasons.append(f"araştırma kökü ≈ {used / GB:.2f} GB ≥ {DATA_REFUSE_RESEARCH_BYTES / GB:.0f} GB (veri birimi "
+                           f"sınırı; gece birimi {REFUSE_RESEARCH_BYTES / GB:.0f} GB'ta reddeder)")
+        elif used >= DATA_WARN_RESEARCH_BYTES:
+            status = DISK_WARN
+            reasons.append(f"araştırma kökü ≈ {used / GB:.2f} GB ≥ {DATA_WARN_RESEARCH_BYTES / GB:.0f} GB (uyarı)")
+        if free is not None and free < DATA_MIN_FREE_BYTES:
+            status = DISK_REFUSE
+            reasons.append(f"boş disk {free / GB:.2f} GB < {DATA_MIN_FREE_BYTES / GB:.0f} GB (veri birimi sınırı; gece "
+                           f"birimi {MIN_FREE_BYTES / GB:.0f} GB'ta reddeder)")
+        return {"status": status, "research_bytes": int(used), "free_bytes": free,
+                "refuse_research_bytes": DATA_REFUSE_RESEARCH_BYTES, "min_free_bytes": DATA_MIN_FREE_BYTES,
+                "night_refuse_research_bytes": REFUSE_RESEARCH_BYTES, "night_min_free_bytes": MIN_FREE_BYTES,
+                "reasons": reasons, "at": self.clock().isoformat()}
+
+    def disk_check(self) -> None:
+        d = self.disk_view()
+        self.progress["disk"] = {k: d[k] for k in ("status", "research_bytes", "free_bytes", "at")}
+        if d["status"] == DISK_WARN:
+            self.flags.add("DISK_WARN")
+        if d["status"] == DISK_REFUSE:
+            raise DiskRefused(d)
 
     def tick(self, n: int = 1) -> None:
         """İlerleme: bir görev bitti (madde 7, `done/total`, son 1 saatin hızı, tahmini bitiş)."""
@@ -1082,7 +1281,7 @@ class DataRun:
         now_ms = ms_of(self.clock())
         table: dict[str, Any] = {}
         tot = {"series": 0, "planned": 0, "rows": 0, "unverified_rows": 0, "rest_rows": 0, "seed_rows": 0,
-               "archive_rows": 0, "stale": 0, "halted": 0, "no_baseline": 0}
+               "archive_rows": 0, "stale": 0, "halted": 0, "no_baseline": 0, "delisted": 0, "holes": 0}
         keys = sorted(set(plan_keys) | {self.store.series_key(m, s, t) for m, s, t in self.store.series()})
         for key in keys:
             market, sym, tf = key.split("/", 2)
@@ -1094,14 +1293,17 @@ class DataRun:
                 last_close = m.last_ts_ms + (step if (step and tf != METRICS_5M) else 0)
             age_h = round((now_ms - last_close) / 3_600_000, 2) if last_close is not None else None
             historical = market == "dukascopy"
+            dl = self.delisted.get(f"{market}/{sym}")
             st = run.get("status")
             if m.status == SERIES_HALTED:
                 st = S_HALTED
+            elif dl is not None and st in (None, S_OK, S_DELISTED, S_NO_BASELINE):
+                st = S_DELISTED                      # terminal: veri delist anına kadar; bayat sayılmaz (madde 3)
             elif not m.row_count:
                 st = st or S_NO_BASELINE
             elif st in (None, S_OK):
                 st = S_STALE if (not historical and age_h is not None and age_h > STALE_AFTER_H) else (st or S_OK)
-            stale = st in (S_STALE, S_HALTED, S_NO_BASELINE, S_SKIPPED_DEADLINE)
+            stale = st in (S_STALE, S_HALTED, S_NO_BASELINE, S_SKIPPED_DEADLINE, S_SKIPPED_DISK)
             src = dict(m.src_rows or {})
             row = {"planned": key in plan_keys, "status": st, "stale": bool(stale and not historical),
                    "last_ts": iso_ms(m.last_ts_ms), "last_ts_ms": m.last_ts_ms, "age_h": age_h, "rows": m.row_count,
@@ -1112,7 +1314,11 @@ class DataRun:
                 row["interval_ms"] = m.interval_ms
             if m.halted_reason:
                 row["halted_reason"] = m.halted_reason
-            for k in ("error", "rows_new", "rest_rows", "archive_files"):
+            if dl is not None:
+                row["delisted"] = dl
+            if self.holes.get(key):
+                row["holes"] = int(self.holes[key])
+            for k in ("error", "rows_new", "rest_rows", "archive_files", "rest_skipped"):
                 if run.get(k):
                     row[k] = run[k]
             table[key] = row
@@ -1126,6 +1332,8 @@ class DataRun:
             tot["stale"] += int(row["stale"])
             tot["halted"] += int(st == S_HALTED)
             tot["no_baseline"] += int(st == S_NO_BASELINE)
+            tot["delisted"] += int(st == S_DELISTED)
+            tot["holes"] += int(row.get("holes") or 0)
         return table, tot
 
     def write_status(self, *, final: bool, seal: tuple[str, str] | None = None) -> None:
@@ -1154,6 +1362,7 @@ class DataRun:
             doc["running"] = {**last, "pid": os.getpid(), "progress": self._progress_view()}
         doc["series"] = table
         doc["totals"] = tot
+        doc["delisted"] = dict(sorted(self.delisted.items()))
         doc["dukascopy"] = read_duka_status(self.paths)
         self.paths.write_json(self.paths.data_status, doc)
         self.prev = doc if final else prev
@@ -1195,7 +1404,8 @@ class DataRun:
         except Exception:  # noqa: BLE001
             pass
         seal = None
-        if result in (R_SUCCESS, R_PARTIAL, R_DEADLINE, R_DUKA_DONE, R_DUKA_FAILED) and self.run_id is not None:
+        sealable = (R_SUCCESS, R_PARTIAL, R_DEADLINE, R_DUKA_DONE, R_DUKA_FAILED) + ((R_DISK_REFUSE,) if self._in_run else ())
+        if result in sealable and self.run_id is not None:   # disk durması: yazılmış veri tutarlıdır, mühürlenir
             try:
                 seal = self._seal()
             except Exception as exc:  # noqa: BLE001 — mühür yazılamazsa önceki mühür kalır
@@ -1250,7 +1460,11 @@ class DataRun:
         return None
 
     def checks(self) -> str | None:
-        disk = disk_guard(self.paths, free_bytes=self.free_bytes) if self.free_bytes is not None else disk_guard(self.paths)
+        # madde 9: veri biriminin KENDİ (daha dar) sınırları: gece biriminin reddinden 3 GB önce
+        disk = disk_guard(self.paths, warn_bytes=DATA_WARN_RESEARCH_BYTES, refuse_bytes=DATA_REFUSE_RESEARCH_BYTES,
+                          min_free_bytes=DATA_MIN_FREE_BYTES, free_bytes=self._free_now())
+        self._disk_base = (int(disk["research_bytes"]), disk.get("free_bytes"), self.clock().timestamp())
+        disk["night_refuse_research_bytes"], disk["night_min_free_bytes"] = REFUSE_RESEARCH_BYTES, MIN_FREE_BYTES
         self.status["disk"] = disk
         if disk["status"] == DISK_REFUSE:
             return R_DISK_REFUSE
@@ -1279,6 +1493,7 @@ class DataRun:
         if not got:
             self.status["reason"] = f"data.lock tutuluyor (pid {lk.read_pid() or '?'})"
             return self.finish(R_SKIPPED_LOCKED)
+        prev_term = self._install_sigterm()
         try:
             stop = self.checks()
             if stop:
@@ -1287,12 +1502,38 @@ class DataRun:
                 if self.mode == MODE_DUKA:
                     return self.finish(self._run_duka())
                 return self.finish(self._run_data())
+            except StopRequested:
+                self.flags.add(R_STOPPED)
+                self.status["reason"] = "SIGTERM (systemctl stop): durduruldu; kaldığı yerden sürdürülür"
+                return self.finish(R_STOPPED)
             except Exception as exc:  # noqa: BLE001 — beklenmeyen hata: kayda geçer, sıfırdan farklı çıkış
                 self.status.update(error=_err(exc), traceback_tail="".join(traceback.format_exception(
                     type(exc), exc, exc.__traceback__)[-3:])[-1500:])
                 return self.finish(R_FAILED)
         finally:
+            self._restore_sigterm(prev_term)
             lk.release()
+
+    # ---------------------------------------------------------------- SIGTERM (madde 10)
+    def _on_sigterm(self, signum: int, frame: Any) -> None:
+        raise StopRequested()
+
+    def _install_sigterm(self) -> Any:
+        if threading.current_thread() is not threading.main_thread():
+            return None
+        try:
+            return signal.signal(signal.SIGTERM, self._on_sigterm)
+        except (ValueError, OSError):
+            return None
+
+    @staticmethod
+    def _restore_sigterm(prev: Any) -> None:
+        if prev is None:
+            return
+        try:
+            signal.signal(signal.SIGTERM, prev)
+        except (ValueError, OSError, TypeError):
+            pass
 
     def _run_duka(self) -> str:
         if not self.dukascopy_dir:
@@ -1303,38 +1544,37 @@ class DataRun:
         return R_DUKA_DONE if r.get("status") == R_DUKA_DONE else R_DUKA_FAILED
 
     def _run_data(self) -> str:
-        # 1) kurtarma (bütün mevcut seriler; ucuz) + haftalık derin örneklem
-        self.progress["phase"] = "recovery"
-        self._recovery_pass()
-        # 2) evren
-        self.progress["phase"] = "universe"
-        doc = build_universe(self.paths, now=self.clock(), app_dir=self.app_dir)
-        plan = plan_series(doc, now=self.clock())
-        if self.plan_filter is not None:
-            plan = [s for s in plan if self.plan_filter(s)]
-        self.plan_keys = {s.key for s in plan}
-        uj = universe_json_snapshot(self.paths)
-        up = write_universe_snapshot(self.paths, snapshot_doc(doc, plan, uj))
-        self.flags.update(doc.get("flags") or [])
-        self.status["universe"] = {"file": str(up.relative_to(self.paths.research)), "series": len(plan),
-                                   "futures": len(doc.get("futures") or {}), "gold_futures": len(doc.get("gold_futures") or {}),
-                                   "main_spot": len(doc.get("main_spot") or {}),
-                                   "entry_source": (doc.get("entry_universe") or {}).get("source")}
-        plan.sort(key=lambda s: (KIND_ORDER.get(s.kind, 99), s.market, s.symbol))
-        deadline_hit = False
+        self._in_run = True
+        plan: list[SeriesSpec] = []
+        stop: str | None = None
         try:
-            # 3) REST koruması (exchangeInfo ve REST kuyruğu ondan sonra)
-            guard = check_worker_journal(self.runner)
-            self.status["rest"] = {"guard": guard["status"], "journal": guard}
-            if guard["status"] != GUARD_OK:
-                self.flags.add(guard["status"])
-            onboard = latest_onboard_dates(self.paths)
-            if guard["status"] == GUARD_OK:
-                onboard = self._exchangeinfo() or onboard
+            # 1) kurtarma (bütün mevcut seriler; ucuz) + haftalık derin örneklem
+            self.progress["phase"] = "recovery"
+            self._recovery_pass()
+            # 2) evren
+            self.progress["phase"] = "universe"
+            doc = build_universe(self.paths, now=self.clock(), app_dir=self.app_dir)
+            plan = plan_series(doc, now=self.clock())
+            if self.plan_filter is not None:
+                plan = [s for s in plan if self.plan_filter(s)]
+            self.plan_keys = {s.key for s in plan}
+            uj = universe_json_snapshot(self.paths)
+            up = write_universe_snapshot(self.paths, snapshot_doc(doc, plan, uj))
+            self.flags.update(doc.get("flags") or [])
+            self.status["universe"] = {"file": str(up.relative_to(self.paths.research)), "series": len(plan),
+                                       "futures": len(doc.get("futures") or {}),
+                                       "gold_futures": len(doc.get("gold_futures") or {}),
+                                       "main_spot": len(doc.get("main_spot") or {}),
+                                       "entry_source": (doc.get("entry_universe") or {}).get("source")}
+            plan.sort(key=lambda s: (KIND_ORDER.get(s.kind, 99), s.market, s.symbol))
+            # 3) REST koruması → exchangeInfo (günlük, REST'e dokunmadan HEMEN önce okunur) → delist durumu
+            if self._guard_ok("exchangeinfo", force=True):
+                self._exchangeinfo()
+            self._update_delisted(plan)
             # 4) backfill: listelenme + tohum
             if self.mode == MODE_BACKFILL:
                 self.progress["phase"] = "listing"
-                self._resolve_listings(plan, onboard)
+                self._resolve_listings(plan, latest_onboard_dates(self.paths))
                 self.progress["phase"] = "seed"
                 self._seed(plan)
             # 5) arşiv görevleri ve işleme
@@ -1346,19 +1586,28 @@ class DataRun:
                     work.append((spec, tasks))
             self.progress["total"] = sum(len(t) for _, t in work)
             self.write_status(final=False)
-            for spec, tasks in work:
-                self._archive_series(spec, tasks)
-            # 6) REST kuyruğu
+            self._archive_pass(work)
+            # 6) REST kuyruğu: koruma burada YENİDEN okunur (ilk doldurmada arşiv adımı saatler sürer)
             self.progress["phase"] = "rest"
-            if guard["status"] == GUARD_OK:
-                self._rest_step(plan)
+            self._rest_step(plan)
+            # 7) --update: 62 günlük pencerenin dışındaki açık dönemler (sınırlı onarım)
+            if self.mode == MODE_UPDATE:
+                self.progress["phase"] = "repair"
+                self._repair_pass(plan)
         except DeadlineReached as exc:
-            deadline_hit = True
+            stop = R_DEADLINE
             self.flags.add("DEADLINE")
             self.status["deadline_reason"] = str(exc)
             for spec in plan:
                 self.series.setdefault(spec.key, {"status": S_SKIPPED_DEADLINE})
-        # 7) farklar
+        except DiskRefused as exc:
+            stop = R_DISK_REFUSE
+            self.flags.add(R_DISK_REFUSE)
+            self.status["disk_stop"] = exc.disk
+            self.status["reason"] = f"disk sınırı (kapanış arşivi önce gelir): {exc}"[:300]
+            for spec in plan:
+                self.series.setdefault(spec.key, {"status": S_SKIPPED_DISK, "error": f"disk: {exc}"[:300]})
+        # 8) farklar
         diffs, n = self.store.drain_diffs()
         self.status["diffs"] = {"count": n, "file": None, "kept": len(diffs)}
         if n:
@@ -1367,16 +1616,52 @@ class DataRun:
             self.status["diffs"]["file"] = str(rel.relative_to(self.paths.research))
             self.flags.add("DATA_DIFF")
         self.status["archive"] = dict(self.mirror.stats)
+        if self.mirror.halted is not None:
+            self.status["archive"]["halted"] = self.mirror.halted.status
         self.status["rest"].update(requests=self.rest.stats["requests"], errors=self.rest.stats["errors"],
                                    halted=self.rest.halted.status if self.rest.halted else None)
         self.progress["phase"] = "done"
         if any(v.get("status") == S_HALTED for v in self.series.values()) or any(
                 self.store.manifest(*k.split("/", 2)).status == SERIES_HALTED for k in self.plan_keys):
             self.flags.add("SERIES_HALTED")
-        if deadline_hit:
-            return R_DEADLINE
+        dl = sorted({k.rsplit("/", 1)[0] for k in self.plan_keys} & set(self.delisted))
+        if dl:
+            self.flags.add(F_DELISTED)
+            self.status["delisted"] = dl
+        holes = {k: v for k, v in sorted(self.holes.items()) if v}
+        if holes:
+            self.flags.add(F_ARCHIVE_HOLES)
+            self.status["holes"] = {"series": len(holes), "periods": sum(holes.values()),
+                                    "top": dict(sorted(holes.items(), key=lambda kv: -kv[1])[:20])}
+        if stop:
+            return stop
         bad = [k for k, v in self.series.items() if v.get("status") in (S_STALE, S_HALTED) and v.get("error")]
-        return R_PARTIAL if (bad or self.rest.halted or "SERIES_HALTED" in self.flags) else R_SUCCESS
+        return R_PARTIAL if (bad or self.rest.halted or self.mirror.halted or "SERIES_HALTED" in self.flags
+                             or holes) else R_SUCCESS
+
+    # ---------------------------------------------------------------- REST koruması (madde 2)
+    def _guard_ok(self, why: str, *, force: bool = False) -> bool:
+        """Worker günlüğü koruması: `force` ya da sonuç `GUARD_MAX_AGE_S`'den eskiyse günlük YENİDEN okunur. Her okuma
+        `rest.checks`'e yazılır; son sonuç `rest.guard`'dır. REST yalnız son okuma `REST_GUARD_OK` ise kullanılır."""
+        t = self.clock().timestamp()
+        if force or self._guard_at is None or t - self._guard_at > GUARD_MAX_AGE_S:
+            g = check_worker_journal(self.runner)
+            self._guard_at = self.clock().timestamp()
+            self._guard_status = g["status"]
+            rest = self.status["rest"]
+            rest["guard"], rest["journal"] = g["status"], g
+            checks = rest.setdefault("checks", [])
+            checks.append({"at": self.clock().isoformat(), "why": why, "status": g["status"], "hits": g["hits"]})
+            del checks[:-50]
+            if g["status"] != GUARD_OK:
+                self.flags.add(g["status"])
+        return self._guard_status == GUARD_OK
+
+    def _rest_guard_gate(self) -> None:
+        """Her REST gönderiminden hemen önce: koruma sonucu `GUARD_MAX_AGE_S`'den eskiyse günlük yeniden okunur; geçmezse
+        `RestGuardStop` (kalan REST atlanır). Tek bir seri birçok istek yapabildiği için seri başına denetim yetmez."""
+        if not self._guard_ok("rest"):
+            raise RestGuardStop(self._guard_status)
 
     # ---------------------------------------------------------------- kurtarma
     def _recovery_pass(self) -> None:
@@ -1385,6 +1670,7 @@ class DataRun:
         isoweek = now.isocalendar()[1]
         deep_day = self.mode == MODE_UPDATE and now.weekday() == DEEP_SAMPLE_WEEKDAY
         for market, sym, tf in self.store.series():
+            self.pause_window()                       # ağsız ama diske dokunur: 4h penceresinde bekler (madde 8)
             key = self.store.series_key(market, sym, tf)
             rec["checked"] += 1
             try:
@@ -1415,32 +1701,120 @@ class DataRun:
         self.status["recovery"] = rec
 
     # ---------------------------------------------------------------- exchangeInfo (REST, korumalı)
-    def _exchangeinfo(self) -> dict[str, int] | None:
+    def _exchangeinfo(self) -> None:
         day = self.night
         p = self.paths.exchangeinfo_dir / f"{day}.json.gz"
         if p.exists():
             self.status["exchangeinfo"] = {"status": "OK", "file": str(p.relative_to(self.paths.research)), "cached": True}
-            return latest_onboard_dates(self.paths)
+            return
         try:
             fut = self.rest.get(FAPI_BASE, "/fapi/v1/exchangeInfo", {}, 1)
             spot_syms = sorted(self._spot_symbols())
-            spot = self.rest.get(SPOT_BASE, "/api/v3/exchangeInfo",
-                                 {"symbols": json.dumps(spot_syms, separators=(",", ":"))}, 20) if spot_syms else {}
+            spot = self._spot_exchangeinfo(spot_syms) if spot_syms else None
         except RestHalted as exc:
             self.status["exchangeinfo"] = {"status": f"REST_HALTED_{exc.status}"}
             self.flags.add(f"REST_HALTED_{exc.status}")
-            return None
+            return
+        except RestGuardStop as exc:
+            self.status["exchangeinfo"] = {"status": exc.status}
+            return
         except (RestError, TransientError) as exc:
             self.status["exchangeinfo"] = {"status": "ERROR", "error": _err(exc)}
-            return None
-        doc = compact_exchange_info((fut or {}).get("symbols"), (spot or {}).get("symbols") if spot else None)
+            return
+        doc = compact_exchange_info((fut or {}).get("symbols"), spot)
         write_exchangeinfo_snapshot(self.paths, day, doc)
         self.status["exchangeinfo"] = {"status": "OK", "file": str(p.relative_to(self.paths.research)),
                                        "futures": len(doc.get("futures") or []), "spot": len(doc.get("spot") or [])}
-        return latest_onboard_dates(self.paths)
+
+    def _spot_exchangeinfo(self, syms: list[str]) -> list[dict]:
+        """Spot `exchangeInfo?symbols=[…]`; listedeki tek bir sembol borsada yoksa Binance İSTEĞİN TAMAMINI `-1121` ile
+        reddeder: o zaman semboller tek tek sorulur ve yok olanlar `INVALID_SYMBOL` durumuyla kaydedilir (delist)."""
+        try:
+            d = self.rest.get(SPOT_BASE, "/api/v3/exchangeInfo", {"symbols": json.dumps(syms, separators=(",", ":"))}, 20)
+            return list((d or {}).get("symbols") or [])
+        except RestError as exc:
+            if exc.code != INVALID_SYMBOL_CODE:
+                raise
+        out: list[dict] = []
+        for s in syms:
+            try:
+                d = self.rest.get(SPOT_BASE, "/api/v3/exchangeInfo", {"symbol": s}, 20)
+                out += list((d or {}).get("symbols") or [])
+            except RestError as exc:
+                if exc.code != INVALID_SYMBOL_CODE:
+                    raise
+                out.append({"symbol": s, "status": "INVALID_SYMBOL"})
+        return out
 
     def _spot_symbols(self) -> set[str]:
         return {k.split("/")[1] for k in self.plan_keys if k.startswith("spot/")}
+
+    # ---------------------------------------------------------------- delist (terminal durum; madde 3)
+    def _delisted_path(self) -> Path:
+        return self.paths.store / "_meta" / "delisted.json"
+
+    def _load_delisted(self) -> dict[str, dict[str, Any]]:
+        d = _read_json(self._delisted_path())
+        return {str(k): dict(v) for k, v in d.items() if isinstance(v, dict)} if isinstance(d, dict) else {}
+
+    def _save_delisted(self) -> None:
+        self.paths.write_json(self._delisted_path(), dict(sorted(self.delisted.items())))
+
+    def _mark_delisted(self, market: str, symbol: str, source: str, detail: str = "") -> None:
+        key = f"{market}/{symbol}"
+        if key in self.delisted:
+            return
+        m_last = [self.store.manifest(market, symbol, s.kind).last_ts_ms for s in self._plan_specs(market, symbol)]
+        last = max((x for x in m_last if x is not None), default=None)
+        self.delisted[key] = {"since_ms": None, "since": None, "last_ts": iso_ms(last), "source": source,
+                              "detail": detail[:160], "at": self.clock().isoformat()}
+        self._save_delisted()
+
+    def _plan_specs(self, market: str, symbol: str) -> list[SeriesSpec]:
+        return [SeriesSpec(*k.split("/", 2), 0) for k in sorted(self.plan_keys) if k.startswith(f"{market}/{symbol}/")]
+
+    def _update_delisted(self, plan: list[SeriesSpec]) -> None:
+        """En son `exchangeinfo/*.json.gz`'ye göre: vadeli tam listede YOK ya da durumu TRADING değil → delist; spot
+        sorgulanan sembolün durumu TRADING değil (ya da `INVALID_SYMBOL`) → delist. TRADING görünen sembolün delist kaydı
+        kalkar (yeniden listeleme). Vadeli "listede yok" kararı yalnız liste sağlamsa (BTCUSDT içeriyorsa) verilir."""
+        doc = latest_exchangeinfo(self.paths)
+        if not isinstance(doc, dict):
+            return
+        now = ms_of(self.clock())
+        maps: dict[str, dict[str, dict] | None] = {}
+        for market in ("futures", "spot"):
+            rows = doc.get(market)
+            maps[market] = ({str(r["symbol"]): r for r in rows if isinstance(r, dict) and r.get("symbol")}
+                            if isinstance(rows, list) else None)
+        fut_full = bool(maps["futures"]) and "BTCUSDT" in (maps["futures"] or {})
+        changed = False
+        for key in sorted({f"{s.market}/{s.symbol}" for s in plan}):
+            market, sym = key.split("/", 1)
+            mp = maps.get(market)
+            if mp is None:
+                continue
+            r = mp.get(sym)
+            if r is None and (market == "spot" or not fut_full):
+                continue                               # spot: yalnız sorulan semboller listededir; sorulmadı ≠ delist
+            st = (r or {}).get("status")
+            if st == "TRADING":
+                if key in self.delisted:
+                    self.delisted.pop(key)
+                    changed = True
+                continue
+            if key in self.delisted:
+                continue
+            since = None
+            try:
+                dd = int((r or {}).get("deliveryDate") or 0)
+                since = dd if 0 < dd <= now else None
+            except (TypeError, ValueError):
+                since = None
+            self.delisted[key] = {"since_ms": since, "since": iso_ms(since), "source": f"exchangeInfo:{st or 'LISTEDE_YOK'}",
+                                  "snapshot": doc.get("day"), "at": self.clock().isoformat()}
+            changed = True
+        if changed:
+            self._save_delisted()
 
     # ---------------------------------------------------------------- listelenme (backfill)
     def _listings_path(self) -> Path:
@@ -1465,6 +1839,10 @@ class DataRun:
                 continue
             try:
                 ms = self._probe_listing(spec)
+            except ArchiveHalted as exc:
+                self.flags.add("LISTING_PROBE_FAILED")
+                self.series.setdefault(f"{k}/*", {"error": _err(exc)})
+                break                                 # arşiv engelli: başka yoklama isteği yapılmaz
             except (TransientError, ArchiveUnitError, ValueError, zipfile.BadZipFile) as exc:
                 self.flags.add("LISTING_PROBE_FAILED")
                 self.series.setdefault(f"{k}/*", {"error": _err(exc)})
@@ -1509,14 +1887,21 @@ class DataRun:
 
     # ---------------------------------------------------------------- tohum (backfill)
     def _seed(self, plan: list[SeriesSpec]) -> None:
-        out = {"seeded": 0, "redownload": 0, "absent": 0, "other": 0, "rows": 0, "series": {}}
+        """Tohumlama hiçbir koşulda bütün işi başarısız saymaz (§3.2): bir serinin BEKLENMEYEN hatası da (ör. worker
+        parçasında NaN zaman damgası) o seriyi `ERROR` yapar ve seri arşivden indirilir."""
+        out = {"seeded": 0, "redownload": 0, "absent": 0, "error": 0, "other": 0, "rows": 0, "series": {}}
         if not self.seed_root.is_dir():
             out["note"] = f"worker deposu yok: {self.seed_root}"
             self.status["seed"] = out
             return
         for spec in plan:
-            r = seed_series(self.store, self.seed_root, spec.market, spec.symbol, spec.kind, now_ms=ms_of(self.clock()),
-                            hook=self.seed_hook)
+            self.pause_window()                       # worker deposunu okur: IndexRefresher 4h penceresinde yazar
+            self.disk_check()
+            try:
+                r = seed_series(self.store, self.seed_root, spec.market, spec.symbol, spec.kind,
+                                now_ms=ms_of(self.clock()), hook=self.seed_hook)
+            except Exception as exc:  # noqa: BLE001 — tohum çalıştırmayı durdurmaz; seri arşivden gelir
+                r = {"series": spec.key, "status": ST_ERROR, "reason": f"tohum: {_err(exc)}"}
             s = r.get("status")
             if s == ST_SEEDED:
                 out["seeded"] += 1
@@ -1527,6 +1912,9 @@ class DataRun:
             elif s == "ABSENT":
                 out["absent"] += 1
                 continue
+            elif s == ST_ERROR:
+                out["error"] += 1
+                self.flags.add("SEED_ERROR")
             else:
                 out["other"] += 1
             out["series"][spec.key] = {k: v for k, v in r.items() if k in ("status", "attempt", "rows", "reasons", "reason")}
@@ -1537,14 +1925,18 @@ class DataRun:
         st = step_ms(spec.kind)
         return (b - a) // st if st and spec.kind != METRICS_5M else None
 
-    def _series_tasks(self, spec: SeriesSpec) -> list[Task] | None:
-        """Bu seri için gereken arşiv dosyaları. None: seri bu çalıştırmada atlanır (durumu `self.series`'te)."""
+    def _series_tasks(self, spec: SeriesSpec, *, repair: bool = False) -> list[Task] | None:
+        """Bu seri için gereken arşiv dosyaları. None: seri bu çalıştırmada atlanır (durumu `self.series`'te).
+        `repair=True` (yalnız `--update`): 62 günlük pencereden ÖNCEKİ, defteri kapanmamış dönemler — eksik ay/gün ya da
+        doğrulanmamış (`u`) dosya; pencere içi ve yeniden çekim kuyruğundaki aylar ana geçiştedir."""
         m = self.store.manifest(spec.market, spec.symbol, spec.kind)
         key = spec.key
-        if m.status == SERIES_HALTED and not m.refetch:
+        if repair and (self.mode != MODE_UPDATE or not m.row_count or m.status == SERIES_HALTED):
+            return []
+        if not repair and m.status == SERIES_HALTED and not m.refetch:
             self.series[key] = {"status": S_HALTED}
             return None
-        if self.mode == MODE_UPDATE and not m.row_count and not m.refetch:
+        if not repair and self.mode == MODE_UPDATE and not m.row_count and not m.refetch:
             self.series[key] = {"status": S_NO_BASELINE}
             return None
         now = ms_of(self.clock())
@@ -1554,7 +1946,11 @@ class DataRun:
         if self.mode == MODE_UPDATE:
             lo = max(start, month_start_ms(now - UPDATE_LOOKBACK_DAYS * DAY_MS))
         refetch = set(m.refetch)
-        months = sorted(set(months_between(lo, today)) | {month_bounds_ym(ym)[0] for ym in refetch})
+        if repair:
+            months = [a for a in months_between(start, lo) if ym_key(a) not in refetch]
+            refetch = set()
+        else:
+            months = sorted(set(months_between(lo, today)) | {month_bounds_ym(ym)[0] for ym in refetch})
         tasks: list[Task] = []
         halted = m.status == SERIES_HALTED
         for a in months:
@@ -1568,11 +1964,12 @@ class DataRun:
             ms_ = mstamp(a)
             complete = b <= today
             if spec.dataset != "metrics" and complete:
-                st = (m.files.get(ms_) or {}).get("st")
+                fe = m.files.get(ms_) or {}
+                st = fe.get("st")
                 if st in (FS_VERIFIED, FS_MISSING) and not rf:
                     continue
                 if st == FS_UNVERIFIED and not rf:
-                    tasks.append(Task(ms_, a, b, recheck=True))
+                    tasks.append(Task(ms_, a, b, recheck=True, at=str(fe.get("at") or "")))
                     continue
                 if not rf and self._seed_complete(m, ym, spec, a, b):
                     continue
@@ -1586,9 +1983,11 @@ class DataRun:
             d = max(a, day_floor_ms(start))
             while d < min(b, today):
                 ds = dstamp(d)
-                st = (m.files.get(ds) or {}).get("st")
+                fe = m.files.get(ds) or {}
+                st = fe.get("st")
                 if rf or st not in (FS_VERIFIED, FS_MISSING):
-                    tasks.append(Task(ds, d, d + DAY_MS, refetch=rf, recheck=st == FS_UNVERIFIED))
+                    tasks.append(Task(ds, d, d + DAY_MS, refetch=rf, recheck=st == FS_UNVERIFIED,
+                                      at=str(fe.get("at") or "")))
                 d += DAY_MS
         return tasks
 
@@ -1600,6 +1999,28 @@ class DataRun:
             return False
         src = pm.get("src") or {}
         return int(pm.get("rows") or 0) == (b - a) // st and set(src) == {"seed"}
+
+    def _repair_pass(self, plan: list[SeriesSpec]) -> None:
+        """`--update` (BLOCKER düzeltmesi, 2026-10-06): pencere DIŞINDAKİ açık dönemler. Önce hiç kapsanmamış dönemler,
+        sonra doğrulanmamış dosyaların checksum'ı (en uzun süredir denenmeyen önce); en çok `REPAIR_MAX_TASKS` görev.
+        Sığmayanlar seri başına `holes`'a yazılır (dürüst durum: `ARCHIVE_HOLES`, sonuç `PARTIAL`)."""
+        cand: list[tuple[tuple, SeriesSpec, Task]] = []
+        for i, spec in enumerate(plan):
+            for t in self._series_tasks(spec, repair=True) or []:
+                cand.append(((1 if t.recheck else 0, t.at if t.recheck else "", i, t.start), spec, t))
+        if not cand:
+            return
+        cand.sort(key=lambda x: x[0])
+        take, over = cand[:REPAIR_MAX_TASKS], cand[REPAIR_MAX_TASKS:]
+        for _k, spec, _t in over:
+            self.holes[spec.key] = self.holes.get(spec.key, 0) + 1
+        by: dict[str, tuple[SeriesSpec, list[Task]]] = {}
+        for _k, spec, t in take:
+            by.setdefault(spec.key, (spec, []))[1].append(t)
+        work = [(spec, sorted(ts, key=lambda t: t.start)) for spec, ts in by.values()]
+        self.status["repair"] = {"tasks": len(take), "series": len(work), "left": len(over)}
+        self.progress["total"] = int(self.progress.get("total", 0)) + len(take)
+        self._archive_pass(work)
 
     # ---------------------------------------------------------------- arşiv işleme
     def _retry(self, fn: Callable[[], Any]) -> Any:
@@ -1614,6 +2035,31 @@ class DataRun:
         assert last is not None
         raise last
 
+    def _archive_pass(self, work: list[tuple[SeriesSpec, list[Task]]]) -> None:
+        for i, (spec, tasks) in enumerate(work):
+            try:
+                self._archive_series(spec, tasks)
+            except ArchiveHalted as exc:
+                self._archive_halted(exc, work[i:])
+                return
+
+    def _archive_halted(self, exc: ArchiveHalted, rest: list[tuple[SeriesSpec, list[Task]]]) -> None:
+        """403/451: arşiv adımı bu çalıştırmada durur; kalan seriler `STALE` (dönemleri "eksik" SAYILMAZ, kalıcı işaret
+        yazılmaz — sonraki çalıştırma aynı dosyaları yeniden dener)."""
+        self.flags.add(f"ARCHIVE_HALTED_{exc.status}")
+        self.status["archive_halted"] = {"status": exc.status, "error": str(exc)[:200], "at": self.clock().isoformat()}
+        for spec, tasks in rest:
+            rec = self.series.setdefault(spec.key, {"status": S_OK})
+            if not tasks and rec.get("status") in (None, S_OK):
+                continue
+            left = [t for t in tasks if not t.done]
+            if left or rec.get("status") in (None, S_OK):
+                rec.update(status=S_STALE, error=f"arşiv erişimi engellendi (HTTP {exc.status}); dönemler eksik "
+                                                  f"sayılmadı, sonraki çalıştırmada yeniden denenir")
+            for t in left:
+                t.done = True
+            self.tick(len(left))
+
     def _archive_series(self, spec: SeriesSpec, tasks: list[Task]) -> None:
         key = spec.key
         rec = self.series.setdefault(key, {"status": S_OK})
@@ -1621,7 +2067,7 @@ class DataRun:
             return
         try:
             self._retry(lambda: self._archive_tasks(spec, tasks, rec))
-        except (DeadlineReached, RestHalted):
+        except (DeadlineReached, RestHalted, DiskRefused, ArchiveHalted):
             raise
         except Exception as exc:  # noqa: BLE001 — bir serinin hatası diğerlerini durdurmaz (madde 6)
             rec.update(status=S_STALE, error=_err(exc))
@@ -1629,16 +2075,20 @@ class DataRun:
             self.tick(len(left))
             failed_months = sorted({ym_key(t.start) for t in left if t.refetch})
             for t in left:
-                t.done = True
+                t.done, t.failed = True, True
             for ym in failed_months:                  # ağ hatasıyla yeniden çekilemeyen ay da başarısız gece sayılır
                 try:
                     self.store.refetch_result(spec.market, spec.symbol, spec.kind, ym, ok=False, night=self.night,
                                               reason=_err(exc))
                 except Exception:  # noqa: BLE001
                     pass
+        n_failed = sum(1 for t in tasks if t.failed)
+        if n_failed:
+            self.holes[key] = self.holes.get(key, 0) + n_failed
 
     def _archive_tasks(self, spec: SeriesSpec, tasks: list[Task], rec: dict[str, Any]) -> None:
-        """Görevleri ay ay işle: bir ayın gün dosyaları tek yazımda (yetkili aralık listesiyle) birleşir."""
+        """Görevleri ay ay işle: bir ayın gün dosyaları tek yazımda (yetkili aralık listesiyle) birleşir. Bir ay ancak
+        YAZIMI tamamlanınca "bitti" sayılır: yeniden deneme yarım kalan ayı baştan alır (önbellekten)."""
         by_month: dict[int, list[Task]] = {}
         for t in tasks:
             if t.done:
@@ -1662,18 +2112,23 @@ class DataRun:
         if f.status == "missing":
             recent = t.end > ms_of(self.clock()) - KEEP_404_DAYS * DAY_MS
             if recent and spec.dataset != "fundingRate":
-                # aylık zip henüz yayımlanmadı: o ayın gün zip'leri (madde 1)
+                # aylık zip henüz yayımlanmadı: o ayın gün zip'leri (madde 1). Yeniden çekimde ayın BÜTÜN günleri
+                # (defterden bağımsız) istenir ve sonucu gün yığını kaydeder (önceden burada her durumda "başarısız"
+                # yazılıyordu: gün zip'lerinden kurulan ay iki gece sonra sahte HALTED olurdu)
                 start = max(t.start, day_floor_ms(self._effective_start(spec)))
-                days = [Task(dstamp(d), d, d + DAY_MS) for d in range(start, t.end, DAY_MS)]
-                m = self.store.manifest(spec.market, spec.symbol, spec.kind)
-                days = [x for x in days if (m.files.get(x.period) or {}).get("st") not in (FS_VERIFIED, FS_MISSING)]
-                self._daily_batch(spec, t.start, days, rec, count=False)
+                days = [Task(dstamp(d), d, d + DAY_MS, refetch=t.refetch) for d in range(start, t.end, DAY_MS)]
+                if not t.refetch:
+                    m = self.store.manifest(spec.market, spec.symbol, spec.kind)
+                    days = [x for x in days if (m.files.get(x.period) or {}).get("st") not in (FS_VERIFIED, FS_MISSING)]
+                t.failed = bool(self._daily_batch(spec, t.start, days, rec, count=False))
             elif not recent:
                 self.store.note_files(spec.market, spec.symbol, spec.kind,
                                       {t.period: {"st": FS_MISSING, "at": self.clock().isoformat()}})
-            if t.refetch:
-                self.store.refetch_result(spec.market, spec.symbol, spec.kind, ym, ok=False, night=self.night,
-                                          reason="arşivde yok")
+                if t.refetch:
+                    self.store.refetch_result(spec.market, spec.symbol, spec.kind, ym, ok=False, night=self.night,
+                                              reason="arşivde yok")
+            # yakın dönem fonlama: aylık zip henüz yok, gün zip'i hiç yok; içinde bulunulan + önceki ay REST'ten gelir.
+            # Yeniden çekim kuyruğunda bekler (başarısız gece SAYILMAZ); aylık zip yayımlanınca tamamlanır.
             self._done(t)
             return
         if f.status == "mismatch":
@@ -1682,6 +2137,7 @@ class DataRun:
             if t.refetch:
                 self.store.refetch_result(spec.market, spec.symbol, spec.kind, ym, ok=False, night=self.night,
                                           reason="checksum tutmadı")
+            t.failed = True
             self._done(t)
             return
         try:
@@ -1692,6 +2148,7 @@ class DataRun:
             if t.refetch:
                 self.store.refetch_result(spec.market, spec.symbol, spec.kind, ym, ok=False, night=self.night,
                                           reason=_err(exc))
+            t.failed = True
             self._done(t)
             return
         src = SRC_ARCHIVE if f.verified else SRC_UNVERIFIED
@@ -1723,7 +2180,11 @@ class DataRun:
             self.store._save_manifest(m)
 
     def _daily_batch(self, spec: SeriesSpec, month_a: int, tasks: list[Task], rec: dict[str, Any], *,
-                     count: bool = True) -> None:
+                     count: bool = True) -> int:
+        """Bir ayın gün zip'leri tek yazımda. BLOCKER düzeltmesi (2026-10-06): görevler YAZIM TAMAMLANDIKTAN SONRA
+        "bitti" işaretlenir; araya giren geçici hata (`TransientError`) bütün ayı yeniden denetir (zip'ler önbellekte)
+        — önceden yazılmamış günler "bitti" sayılıp kayboluyor ve çalıştırma yine SUCCESS diyordu. Dönen: kalıcı hatalı
+        (checksum tutmadı / bozuk) gün sayısı."""
         verified: list[pd.DataFrame] = []
         unverified: list[pd.DataFrame] = []
         ranges: list[tuple[int, int]] = []
@@ -1731,7 +2192,7 @@ class DataRun:
         files_u: dict[str, dict] = {}
         now = ms_of(self.clock())
         refetch_any = any(t.refetch for t in tasks)
-        failed = False
+        failed = 0
         urls_1m: list[str] = []
         for t in tasks:
             url = archive_url(spec, t.period)
@@ -1739,15 +2200,12 @@ class DataRun:
             if f.status == "missing":
                 if t.end < now - KEEP_404_DAYS * DAY_MS:
                     files[t.period] = {"st": FS_MISSING, "at": self.clock().isoformat()}
-                if count:
-                    self._done(t)
                 continue
             if f.status == "mismatch":
                 self.store.mark_bad_chunk(spec.market, spec.symbol, spec.kind, f"archive:{t.period}", "checksum_mismatch")
                 rec.update(status=S_STALE, error=f"checksum tutmadı: {t.period}")
-                failed = True
-                if count:
-                    self._done(t)
+                failed += 1
+                t.failed = True
                 continue
             try:
                 df = parse_archive(spec, f.data or b"", t.start, t.end)
@@ -1755,9 +2213,8 @@ class DataRun:
                 self.store.mark_bad_chunk(spec.market, spec.symbol, spec.kind, f"archive:{t.period}",
                                           f"corrupt: {exc}"[:180])
                 rec.update(status=S_STALE, error=f"bozuk arşiv {t.period}: {_err(exc)}")
-                failed = True
-                if count:
-                    self._done(t)
+                failed += 1
+                t.failed = True
                 continue
             info = {"st": FS_VERIFIED if f.verified else FS_UNVERIFIED, "sha": f.sha, "rows": int(len(df)),
                     "at": self.clock().isoformat()}
@@ -1770,8 +2227,6 @@ class DataRun:
             else:
                 unverified.append(df)
                 files_u[t.period] = info
-            if count:
-                self._done(t)
         rows_new = 0
         if unverified:
             rows_new += self.store.write(spec.market, spec.symbol, spec.kind, pd.concat(unverified, ignore_index=True),
@@ -1793,6 +2248,11 @@ class DataRun:
             ym = ym_key(month_a)
             self.store.refetch_result(spec.market, spec.symbol, spec.kind, ym, ok=not failed and bool(verified),
                                       night=self.night, reason=None if verified else "gün zip'leri doğrulanamadı")
+        for t in tasks:                               # ancak şimdi: ayın yazımı tamamlandı
+            t.done = True
+            if count:
+                self.tick()
+        return failed
 
     def _maybe_compact_month(self, spec: SeriesSpec, a: int) -> None:
         """Biten bir ayın bütün günleri doğrulandı/kalıcı eksikse gün damgaları tek ay damgasına sıkıştırılır (manifest
@@ -1820,14 +2280,36 @@ class DataRun:
             self.store._save_manifest(m)
 
     # ---------------------------------------------------------------- REST kuyruğu (madde 3)
+    def _rest_halted_series(self, rec: dict[str, Any]) -> None:
+        """§3.4 tablosu: 418/429 (403/451) → REST adımı durur, ilgili seriler `STALE` olur, kayıt düşülür."""
+        code = self.rest.halted.status if self.rest.halted is not None else "?"
+        rec["rest_skipped"] = f"REST_HALTED_{code}"
+        if rec.get("status") in (None, S_OK):
+            rec.update(status=S_STALE, error=f"REST_HALTED_{code}: REST adımı durdu, kuyruk alınmadı (§3.4)")
+
     def _rest_step(self, plan: list[SeriesSpec]) -> None:
+        todo: list[tuple[SeriesSpec, Any]] = []
         for spec in plan:
-            if self.rest.halted is not None:
-                self.series.setdefault(spec.key, {"status": S_OK})["rest_skipped"] = f"REST_HALTED_{self.rest.halted.status}"
-                continue
-            rec = self.series.setdefault(spec.key, {"status": S_OK})
             m = self.store.manifest(spec.market, spec.symbol, spec.kind)
             if not m.row_count or m.status == SERIES_HALTED:
+                continue
+            if f"{spec.market}/{spec.symbol}" in self.delisted:
+                self.series.setdefault(spec.key, {"status": S_OK})["rest_skipped"] = S_DELISTED
+                continue
+            todo.append((spec, m))
+        if not todo:
+            return
+        if not self._guard_ok("rest", force=True):    # §3.4 madde 2: REST'e dokunmadan HEMEN önce
+            for spec, _m in todo:
+                self.series.setdefault(spec.key, {"status": S_OK})["rest_skipped"] = self._guard_status
+            return
+        for i, (spec, m) in enumerate(todo):
+            rec = self.series.setdefault(spec.key, {"status": S_OK})
+            if self.rest.halted is not None:
+                self._rest_halted_series(rec)
+                continue
+            if f"{spec.market}/{spec.symbol}" in self.delisted:      # bu adımda -1121 ile delist bulundu
+                rec["rest_skipped"] = S_DELISTED
                 continue
             try:
                 n = self._retry(lambda: self._rest_series(spec, m.last_ts_ms))
@@ -1836,8 +2318,19 @@ class DataRun:
             except RestHalted as exc:
                 self.flags.add(f"REST_HALTED_{exc.status}")
                 rec.update(rest_error=_err(exc))
-            except DeadlineReached:
+                self._rest_halted_series(rec)
+            except RestGuardStop:                     # sonuç bayatladı, yeniden okundu, geçmedi: kalan REST atlanır
+                for spec2, _m2 in todo[i:]:
+                    self.series.setdefault(spec2.key, {"status": S_OK})["rest_skipped"] = self._guard_status
+                return
+            except (DeadlineReached, DiskRefused):
                 raise
+            except RestError as exc:
+                if exc.code == INVALID_SYMBOL_CODE:   # sembol borsada yok: delist (terminal; veri o ana kadar kalır)
+                    self._mark_delisted(spec.market, spec.symbol, f"rest:{INVALID_SYMBOL_CODE}", str(exc))
+                    rec["rest_skipped"] = S_DELISTED
+                    continue
+                rec.update(status=S_STALE, error=f"REST: {_err(exc)}")
             except Exception as exc:  # noqa: BLE001 — bir serinin REST hatası diğerlerini durdurmaz
                 rec.update(status=S_STALE, error=f"REST: {_err(exc)}")
 
@@ -1871,14 +2364,16 @@ class DataRun:
             lim = int(max(1, min(maxlim, need)))
             data = self.rest.get(base, path, {"symbol": spec.symbol, "interval": interval, "startTime": cur,
                                               "endTime": now - 1, "limit": lim}, kline_weight(spec.market, lim))
+            sent = int(self.rest.last_sent_ms or now)
             if not data:
                 break
             df = _rest_klines_frame(data, spec.kind)
-            df = df[df["timestamp"] >= cur]
+            # yalnız İSTEK GÖNDERİLDİĞİNDE kapanmış barlar (yanıt gecikse bile oluşmakta olan bar yazılmaz)
+            df = df[(df["timestamp"] >= cur) & (df["timestamp"] + step <= sent)]
             if not len(df):
                 break
             rows_new += int(self.store.write(spec.market, spec.symbol, spec.kind, df, src=SRC_REST,
-                                             chunk_id=f"rest:{cur}")["rows_new"])
+                                             chunk_id=f"rest:{cur}", now_ms=sent)["rows_new"])
             last = int(df["timestamp"].max())
             if last + step <= cur:
                 break
@@ -1890,6 +2385,7 @@ class DataRun:
     def _rest_funding(self, spec: SeriesSpec, start: int, now: int) -> int:
         data = self.rest.get(FAPI_BASE, "/fapi/v1/fundingRate", {"symbol": spec.symbol, "startTime": start,
                                                                  "endTime": now, "limit": 1000}, 1)
+        sent = int(self.rest.last_sent_ms or now)
         rows = [r for r in (data or []) if isinstance(r, dict) and r.get("fundingTime")]
         if not rows:
             return 0
@@ -1897,8 +2393,8 @@ class DataRun:
                            "rate": [_f(str(r.get("fundingRate"))) for r in rows],
                            "mark": [_f(str(r["markPrice"])) if r.get("markPrice") not in (None, "") else float("nan")
                                     for r in rows]})
-        return int(self.store.write("futures", spec.symbol, FUNDING, df, src=SRC_REST, chunk_id=f"rest:funding:{start}")
-                   ["rows_new"])
+        return int(self.store.write("futures", spec.symbol, FUNDING, df, src=SRC_REST, chunk_id=f"rest:funding:{start}",
+                                    now_ms=sent)["rows_new"])
 
     #: metrics_5m REST eşlemesi (`crowd_data.COLUMN_MAP` ile aynı; VPS'te arşiv uzlaştırmasıyla doğrulanır: fark → runs/)
     METRICS_REST = (("/futures/data/openInterestHist", {"oi": "sumOpenInterest", "oi_usdt": "sumOpenInterestValue"}),
@@ -1912,12 +2408,15 @@ class DataRun:
         if start > now - 300_000:
             return 0
         acc: dict[int, dict[str, float]] = {}
+        first_sent: int | None = None
         for path, cmap in self.METRICS_REST:
             cur, guard = start, 0
             while cur <= now and guard < 20:
                 guard += 1
                 data = self.rest.get(FAPI_BASE, path, {"symbol": spec.symbol, "period": "5m", "startTime": cur,
                                                        "endTime": now, "limit": 500}, 1)
+                if first_sent is None:
+                    first_sent = int(self.rest.last_sent_ms or now)
                 rows = [r for r in (data or []) if isinstance(r, dict) and r.get("timestamp") is not None]
                 if not rows:
                     break
@@ -1935,8 +2434,10 @@ class DataRun:
         ts = sorted(acc)
         df = pd.DataFrame({"timestamp": pd.Series(ts, dtype="int64"),
                            **{c: [acc[t].get(c, float("nan")) for t in ts] for c in METRICS_COLS[1:]}})
+        # beş uç noktanın İLKİ gönderildiğinde var olan noktalar: sonradan gelen bir uç noktanın tek başına getirdiği
+        # (öteki sütunları boş) en yeni nokta yazılmaz
         return int(self.store.write("futures", spec.symbol, METRICS_5M, df, src=SRC_REST,
-                                    chunk_id=f"rest:metrics:{start}")["rows_new"])
+                                    chunk_id=f"rest:metrics:{start}", now_ms=first_sent or now)["rows_new"])
 
 
 def _rest_klines_frame(data: list, kind: str) -> pd.DataFrame:
@@ -1967,6 +2468,32 @@ def run_data(paths: EnginePaths | None = None, *, mode: str, env: Mapping[str, s
     return DataRun(paths, mode=mode, env=env, **kw).run()
 
 
+def _pid_alive(pid: Any) -> bool | None:
+    """True/False; bilinemiyorsa None (başka kullanıcının süreci → canlı sayılır)."""
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return None
+    if pid <= 0:
+        return None
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return None
+    return True
+
+
+def _gb(x: Any) -> str:
+    try:
+        return f"{int(x) / GB:.1f} GB".replace(".", ",")
+    except (TypeError, ValueError):
+        return "—"
+
+
 def read_data_status(paths: EnginePaths) -> dict[str, Any] | None:
     d = _read_json(paths.data_status)
     return d if isinstance(d, dict) else None
@@ -1986,13 +2513,26 @@ def status_lines(paths: EnginePaths, *, now: datetime | None = None, limit: int 
     run = d.get("running")
     if run:
         p = run.get("progress") or {}
-        out.append(f"SÜRÜYOR: {run.get('run_id')} {run.get('mode')} · aşama {p.get('phase')} · {p.get('done')}/{p.get('total')} "
+        alive = _pid_alive(run.get("pid"))
+        head = "SÜRÜYOR" if alive is not False else (f"DURDU (süreç {run.get('pid')} yok; son güncelleme "
+                                                     f"{str(d.get('updated_at'))[:16]}; kaldığı yerden sürdürülür)")
+        out.append(f"{head}: {run.get('run_id')} {run.get('mode')} · aşama {p.get('phase')} · {p.get('done')}/{p.get('total')} "
                    f"· hız {p.get('rate_per_h_1h')}/sa · tahmini bitiş {p.get('eta')}"
-                   + (f" · DURAKLADI ({p.get('pause_reason')}, {p.get('resume_at')}'e kadar)" if p.get("paused") else ""))
+                   + (f" · DURAKLADI ({p.get('pause_reason')}, {p.get('resume_at')}'e kadar)" if p.get("paused") and alive
+                      is not False else ""))
+        dk = p.get("disk") or {}
+        if dk:
+            out.append(f"Disk (çalışırken): boş {_gb(dk.get('free_bytes'))} · araştırma ≈ {_gb(dk.get('research_bytes'))} · "
+                       f"veri birimi durur: boş < {_gb(DATA_MIN_FREE_BYTES)} ya da araştırma ≥ {_gb(DATA_REFUSE_RESEARCH_BYTES)} "
+                       f"(gece birimi {_gb(MIN_FREE_BYTES)} / {_gb(REFUSE_RESEARCH_BYTES)})")
     t = d.get("totals") or {}
     out.append(f"Seriler: {t.get('series')} (planlı {t.get('planned')}) · bayat {t.get('stale')} · durmuş {t.get('halted')} "
-               f"· tabansız {t.get('no_baseline')} · satır {t.get('rows')} (doğrulanmamış {t.get('unverified_rows')}, "
-               f"REST {t.get('rest_rows')}, tohum {t.get('seed_rows')})")
+               f"· tabansız {t.get('no_baseline')} · delist {t.get('delisted', 0)} · açık dönem {t.get('holes', 0)} · satır "
+               f"{t.get('rows')} (doğrulanmamış {t.get('unverified_rows')}, REST {t.get('rest_rows')}, tohum {t.get('seed_rows')})")
+    dls = d.get("delisted") or {}
+    if dls:
+        out.append("Delist (terminal; veri delist anına kadar, bayat sayılmaz): " + ", ".join(
+            f"{k} ({(v or {}).get('source')})" for k, v in list(dls.items())[:8]) + (" …" if len(dls) > 8 else ""))
     rest = lr.get("rest") or {}
     out.append(f"REST: koruma {rest.get('guard')} · istek {rest.get('requests')} · durdu {rest.get('halted')} · "
                f"fark {((lr.get('diffs') or {}).get('count'))}")

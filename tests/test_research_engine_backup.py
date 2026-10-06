@@ -160,6 +160,28 @@ def test_engine_restore_dry_run_changes_nothing_and_apply_moves_aside(tmp_path):
         B.aside_dir(v.paths, "../../etc")
 
 
+def test_engine_restore_apply_refuses_while_the_data_unit_holds_data_lock(tmp_path):
+    """P1b (2026-10-06): geri yükleme `store/` ve `archive_cache/`'i de kenara alır; veri birimi ya da ilk doldurma
+    `data.lock`'u tutarken hiçbir şey taşınmaz (eşzamanlı yazıcı kalmaz) ve gece kilidi de bırakılır."""
+    v, host, st = _night_with_backup(tmp_path)
+    arch = v.paths.backup / st["stages"]["S7b"]["result"]["file"]
+    dlk = LK.data_lock(v.paths)
+    assert dlk.try_acquire()
+    before = _tree(v.data)
+    try:
+        with pytest.raises(B.RestoreRefused, match="data.lock"):
+            B.restore(v.paths, arch, apply=True, now=datetime(2026, 9, 2, 12, tzinfo=UTC))
+    finally:
+        dlk.release()
+    assert _tree(v.data) == before and not list(v.data.glob("research.pre-restore-*"))
+    nlk = LK.analysis_lock(v.paths)
+    assert nlk.try_acquire(), "reddedilen geri yükleme gece kilidini bırakır"
+    nlk.release()
+    rep = B.restore(v.paths, arch, apply=True, now=datetime(2026, 9, 2, 12, 5, tzinfo=UTC))
+    assert rep["applied"] is True
+    assert LK.data_lock(v.paths).try_acquire() and LK.analysis_lock(v.paths).try_acquire(), "iki kilit de bırakıldı"
+
+
 def test_engine_restore_apply_refuses_when_not_the_research_root_owner(tmp_path, monkeypatch):
     v, host, st = _night_with_backup(tmp_path)
     arch = v.paths.backup / st["stages"]["S7b"]["result"]["file"]

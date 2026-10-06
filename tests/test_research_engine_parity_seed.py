@@ -126,6 +126,42 @@ def test_seed_makes_a_consistent_copy_or_redownloads_and_never_writes_the_worker
     assert eth[KLINE_COLS].reset_index(drop=True).equals(exp[KLINE_COLS].reset_index(drop=True))
 
 
+def test_seed_never_fails_the_whole_backfill_on_unexpected_worker_data(tmp_path, monkeypatch):
+    """§3.2 "tohumlama hiçbir koşulda tüm işi başarısız saymaz": worker parçasında NaN zaman damgası (önceden
+    `astype("int64")` try dışındaydı → bütün ilk doldurma FAILED) ve tohumlayıcının beklenmeyen bir hatası o seriyi
+    yeniden indirmeye düşürür; ilk doldurma SUCCESS ve seriler arşivden gelir."""
+    listing = {f"futures/{s}": ms(utc(2026, 8, 20)) for s in ("BTCUSDT", "ETHUSDT", "SOLUSDT")}
+    only = {"futures/BTCUSDT/4h", "futures/ETHUSDT/4h", "futures/SOLUSDT/4h"}
+    e = DataEnv(tmp_path, start=START, listing=listing, only=only)
+    wroot = e.paths.worker_history
+    w = HistoryStore(wroot)
+    a, b = ms(utc(2026, 8, 20)), ms(utc(2026, 10, 6))
+    for sym in ("BTC/USDT", "ETH/USDT", "SOL/USDT"):
+        w.write("futures", sym, "4h", worker_bars(sym.replace("/", ""), "4h", a, b), source="rest")
+    p = wroot / "futures" / "BTC_USDT" / "4h" / "2026" / "09.parquet"
+    df = pd.read_parquet(p)
+    df["timestamp"] = df["timestamp"].astype(float)
+    df.loc[2, "timestamp"] = float("nan")
+    df.to_parquet(p, index=False)
+    real = DS.seed_series
+
+    def flaky(store, root, market, symbol, kind, **kw):
+        if symbol == "ETHUSDT":
+            raise RuntimeError("beklenmeyen tohum hatası (benzetim)")
+        return real(store, root, market, symbol, kind, **kw)
+    monkeypatch.setattr(DS, "seed_series", flaky)
+    st = e.run("backfill")
+    assert st["result"] == DS.R_SUCCESS and st["exit_code"] == 0, st.get("error")
+    seeds = st["seed"]["series"]
+    assert seeds["futures/BTCUSDT/4h"]["status"] == SEED.ST_REDOWNLOAD and "parça okunamadı" in seeds["futures/BTCUSDT/4h"]["reasons"][0]
+    assert seeds["futures/ETHUSDT/4h"]["status"] == SEED.ST_ERROR and "beklenmeyen" in seeds["futures/ETHUSDT/4h"]["reason"]
+    assert seeds["futures/SOLUSDT/4h"]["status"] == SEED.ST_SEEDED and "SEED_ERROR" in st["flags"]
+    rows = e.status()["series"]
+    for k in only:
+        assert rows[k]["status"] == DS.S_OK and rows[k]["rows"] == (b - a) // TF["4h"], (k, rows[k])
+    assert set(e.store().manifest("futures", "BTCUSDT", "4h").src_rows) == {"archive"}
+
+
 def test_worker_symbol_dir_candidates():
     assert SEED.worker_symbol_dirs("BTCUSDT") == ["BTC_USDT", "BTC_USDT-USDT", "BTCUSDT"]
     assert SEED.worker_symbol_dirs("1000PEPEUSDT")[0] == "1000PEPE_USDT"

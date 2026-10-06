@@ -30,8 +30,13 @@ Kurallar (belge §3.2; her biri testli):
      ay manifestten ve arşiv dosya defterinden (`files`) çıkarılır ve `refetch`e girer. Seri yalnız AYNI ay iki ARDIŞIK
      gece yeniden çekilemezse durur (`HALTED`, fail-closed); başarılı yeniden çekim durmayı kaldırır.
 5. **Fonlama aralığı veriden.** `step_ms_for("funding")` 8 saati sabit kodlar; burada ay başına ardışık uzlaşma zaman
-   damgası farklarının (dakikaya yuvarlanmış) medyanı `interval_ms` olarak kaydedilir ve boşluklar o aralıkla sayılır
-   (`round(fark / aralık) − 1`; Binance `calc_time`'ı ±1 ms oynar, taban bölme bir eksik uzlaşmayı kaçırırdı).
+   damgası farklarının (dakikaya yuvarlanmış) medyanı parçanın `interval_ms`'i olarak kaydedilir. **Boşluklar
+   (2026-10-06 inceleme düzeltmesi) YEREL aralıkla sayılır:** her fark, kendisi dahil ±3 komşu farkın medyanına
+   bölünür (`round(fark / yerel aralık) − 1`; Binance `calc_time`'ı ±ms oynar, taban bölme bir eksik uzlaşmayı
+   kaçırırdı). Aralık ay içinde değişirse (ör. 13'üne kadar 8h, sonra 4h) ayın tek medyanı sahte boşluk sayardı.
+   Parça başına farkların sıkıştırılmış dizisi (`diffs`, [fark, adet] koşuları) `part_meta`'da tutulur; seri boşluğu
+   parça OKUNMADAN bütün seri üzerinde (ay sınırları dahil) bu dizilerden hesaplanır. Manifestin `interval_ms`'i serinin
+   EN SON yerel aralığıdır.
 6. **Seri kilidi.** Her yazım seri klasöründeki `.lock` üzerinde fcntl kilidi alır (`data.lock`'un içinde ek güvence).
 7. **Yeni türler.** `metrics_5m` (`METRICS_COLS`), `duka_1h` / `duka_1m` (`DUKA_COLS`), vadeli mark ve premium endeks
    1h mumları (`markpx_1h`, `premium_1h`; `PX_COLS`). Kline türleri HistoryStore'un geniş şemasını (`KLINE_COLS`),
@@ -419,7 +424,7 @@ class ResearchStore(HistoryStore):
         if step:
             return int(sum(max(0, (b - a) // step - 1) for a, b in zip(ts, ts[1:])))
         if interval:
-            return int(sum(max(0, round((b - a) / interval) - 1) for a, b in zip(ts, ts[1:])))
+            return funding_gaps(_minute_diffs(ts))[0]
         return 0
 
     def _part_meta(self, df: pd.DataFrame, kind: str, sha: str, p: Path) -> dict[str, Any]:
@@ -427,9 +432,12 @@ class ResearchStore(HistoryStore):
         src = {k: int(v) for k, v in df[SRC_COL].value_counts().items()} if SRC_COL in df.columns else {}
         interval = self._funding_interval(ts) if kind == FUNDING else None
         st = p.stat()
-        return {"rows": len(ts), "first": ts[0] if ts else None, "last": ts[-1] if ts else None,
-                "gaps": self._gaps(ts, step_ms(kind), interval), "interval_ms": interval, "src": src, "sha": sha,
-                "size": int(st.st_size), "mtime_ns": int(st.st_mtime_ns)}
+        out = {"rows": len(ts), "first": ts[0] if ts else None, "last": ts[-1] if ts else None,
+               "gaps": self._gaps(ts, step_ms(kind), interval), "interval_ms": interval, "src": src, "sha": sha,
+               "size": int(st.st_size), "mtime_ns": int(st.st_mtime_ns)}
+        if kind == FUNDING:
+            out["diffs"] = _rle(_minute_diffs(ts))
+        return out
 
     def _recompute(self, m: Manifest) -> None:  # type: ignore[override]
         """Seri özetini `part_meta`'dan kur (parça OKUNMAZ; madde 1–2)."""
@@ -439,6 +447,8 @@ class ResearchStore(HistoryStore):
         step = step_ms(m.timeframe)
         gaps, prev_last, interval = 0, None, None
         src: dict[str, int] = {}
+        fdiffs: list[int] = []                   # fonlama: bütün serinin dakikaya yuvarlanmış farkları (ay sınırı dahil)
+        rle_ok = True
         for k in keys:
             pm = m.part_meta[k]
             gaps += int(pm.get("gaps") or 0)
@@ -447,11 +457,22 @@ class ResearchStore(HistoryStore):
                 d = int(pm["first"]) - int(prev_last)
                 if step:
                     gaps += max(0, d // step - 1)
+                elif m.timeframe == FUNDING:
+                    fdiffs += _minute_diffs([int(prev_last), int(pm["first"])])
                 elif interval:
                     gaps += max(0, round(d / interval) - 1)
+            if m.timeframe == FUNDING:
+                if isinstance(pm.get("diffs"), list):
+                    fdiffs += _unrle(pm["diffs"])
+                else:
+                    rle_ok = False
             prev_last = pm.get("last")
             for s, n in (pm.get("src") or {}).items():
                 src[s] = src.get(s, 0) + int(n)
+        if m.timeframe == FUNDING and rle_ok:
+            # madde 5: yerel aralıkla, bütün seri üzerinde (ay içi aralık değişimi ve ay sınırı sahte boşluk üretmez)
+            gaps, last_iv = funding_gaps(fdiffs)
+            interval = last_iv or interval
         m.row_count = rows
         m.first_ts_ms = int(m.part_meta[keys[0]]["first"]) if keys else None
         m.last_ts_ms = int(m.part_meta[keys[-1]]["last"]) if keys else None
@@ -966,6 +987,59 @@ class ResearchStore(HistoryStore):
         return {"ok": ok, "states": chk["states"], "canonical": canon, "rows": rows}
 
 
+#: fonlama boşluğunda yerel aralık penceresi: farkın kendisi + iki yanında bu kadar komşu fark (madde 5)
+FUNDING_IV_HALF_WINDOW = 3
+
+
+def _minute_diffs(ts: list[int]) -> list[int]:
+    """Ardışık uzlaşma farkları, dakikaya yuvarlanmış (`calc_time` ±ms oynar); sıfır ve negatif fark atılır."""
+    out = []
+    for a, b in zip(ts, ts[1:]):
+        d = round((int(b) - int(a)) / 60_000) * 60_000
+        if d > 0:
+            out.append(int(d))
+    return out
+
+
+def _rle(xs: list[int]) -> list[list[int]]:
+    out: list[list[int]] = []
+    for x in xs:
+        if out and out[-1][0] == x:
+            out[-1][1] += 1
+        else:
+            out.append([int(x), 1])
+    return out
+
+
+def _unrle(runs: list) -> list[int]:
+    out: list[int] = []
+    for r in runs:
+        try:
+            d, n = int(r[0]), int(r[1])
+        except (TypeError, ValueError, IndexError):
+            continue
+        out += [d] * max(0, n)
+    return out
+
+
+def funding_gaps(diffs: list[int], half: int = FUNDING_IV_HALF_WINDOW) -> tuple[int, int | None]:
+    """Madde 5 (2026-10-06 düzeltmesi): her fark, kendisi dahil ±`half` komşu farkın medyanı olan YEREL aralığa
+    bölünür; boşluk `max(0, round(fark / yerel) − 1)`. Ay içinde aralık değişimi (8h → 4h) sahte boşluk üretmez; bir
+    eksik uzlaşma her rejimde 1 sayılır. Dönen: (boşluk, son farkın yerel aralığı)."""
+    n = len(diffs)
+    if not n:
+        return 0, None
+    gaps, last = 0, None
+    for i in range(n):
+        w = sorted(diffs[max(0, i - half): i + half + 1])
+        k = len(w)
+        iv = w[k // 2] if k % 2 else (w[k // 2 - 1] + w[k // 2]) // 2
+        if iv > 0:
+            gaps += max(0, round(diffs[i] / iv) - 1)
+        last = iv
+    return int(gaps), (int(last) if last else None)
+
+
 def _nearest(sorted_ts: list[int], t: int, tol: int) -> int | None:
     i = bisect.bisect_left(sorted_ts, t)
     best = None
@@ -988,5 +1062,5 @@ __all__ = ["ArchiveUnitError", "DUKA_1H", "DUKA_1M", "DUKA_COLS", "FUNDING", "KI
            "METRICS_COLS", "POINT_KINDS", "PREMIUM_1H", "PRIORITY", "PX_COLS", "ResearchManifest", "ResearchStore",
            "SERIES_HALTED", "SERIES_OK", "SOURCES", "SPOT_US_FROM_MS", "SRC_ARCHIVE", "SRC_COL", "SRC_REST", "SRC_SEED",
            "SRC_UNVERIFIED", "ST_CORRUPT", "ST_MANIFEST_LAG", "ST_MISSING", "ST_OK", "STORE_SCHEMA", "TF_MS",
-           "TS_US_GUARD", "archive_ts_divisor", "cols_for", "iso_ms", "month_bounds_ym", "normalize_archive_ts",
+           "TS_US_GUARD", "archive_ts_divisor", "cols_for", "funding_gaps", "iso_ms", "month_bounds_ym", "normalize_archive_ts",
            "step_ms", "ym_of_ms", "HAS_PARQUET"]

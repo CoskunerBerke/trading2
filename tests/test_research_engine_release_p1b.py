@@ -46,7 +46,7 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_research_engine_contract import parse_unit  # noqa: E402
-from test_research_engine_release import JOURNALCTL, STUBS, _git, _has, _tree_digest  # noqa: E402
+from test_research_engine_release import JOURNALCTL, STUBS, _git, _has, _tree_digest, own_tmp, stub_body  # noqa: E402
 
 SCRIPT = ROOT / "deploy" / "releases" / "tb-engine-8d0a531.sh"
 #: Betiğin kayıtlı sha256'sı (sürüm notu ve sahibe verilen değer; betik değişirse bu da bilinçli değişir).
@@ -529,8 +529,7 @@ class Sandbox:
         (self.stub / "fakeengine.py").write_text(FAKEENGINE, encoding="utf-8")
         (self.stub / "journalctl").write_text(JOURNALCTL.replace("@PY@", sys.executable), encoding="utf-8")
         for name, body in STUBS.items():
-            (self.stub / name).write_text(body.replace("@DATE@", shutil.which("date") or "/bin/date")
-                                          .replace("@DF@", shutil.which("df") or "/bin/df"), encoding="utf-8")
+            (self.stub / name).write_text(stub_body(body), encoding="utf-8")
         for p in [py, *self.stub.iterdir()]:
             p.chmod(0o755)
         assert _git("clone", "-q", "--no-local", "--single-branch", "--branch", "app-main", str(src),
@@ -650,7 +649,7 @@ def test_dry_run_checks_everything_and_changes_nothing(tmp_path, source, p1a_tem
     sb = _from_template(tmp_path, p1a_template, source)
     (sb.base / "deploy-logs" / "8db1faf-restart-at.txt").write_text(f"{int(time.time()) - 3 * 86400 - 600}\nx\n")
     snap = sb.snap()
-    before = len(list(Path("/tmp").glob("tb-engine-*")))
+    made0 = len(own_tmp(sb.fake))
     cp = sb.run("--dry-run")
     assert cp.returncode == 0, cp.out[-6000:]
     m = re.search(r"KURU ÇALIŞMA: (\d+)/(\d+) değişmez geçti", cp.out)
@@ -664,7 +663,9 @@ def test_dry_run_checks_everything_and_changes_nothing(tmp_path, source, p1a_tem
     assert re.search(r"UYARI\s+P1a A/B penceresi \(sürüm günü \d{4}-\d\d-\d\d\): 0/14 gece geçti — P1b yeni bir A/B", cp.out)
     sb.untouched_since(snap)
     _no_forbidden(sb)
-    assert len(list(Path("/tmp").glob("tb-engine-*"))) == before, "geçici klon silinmeli"
+    made = own_tmp(sb.fake)[made0:]
+    assert made and all(p.name.startswith("tb-engine-") for p in made), made
+    assert not [p for p in made if p.exists()], "geçici klon silinmeli (yalnız bu sandbox'ın klasörleri sayılır)"
 
 
 @needs_sandbox

@@ -1654,6 +1654,104 @@ değişmedi; ayrıntı modül başlıklarındadır: `research_engine/{store,data
       taşır (yeni A/B dönemi bu betikle ölçülür) ve veri bölümünü (V1–V7, veri/doldurma pencereleri) ekler; yine de
       tb-deploy-*'nin dörtte birinden küçüktür. Sandbox testi `tests/test_research_engine_release_p1b.py`.
 
+#### Değişiklik/uygulama notu (2026-10-06, inceleme düzeltmeleri)
+
+`impl/engine-p1b` @ 42666a8'in iki incelemesinin (doğruluk: 1 BLOCKER, 4 MAJOR; güvenlik/işletim: 3 MAJOR) bulguları
+düzeltildi. Mühürlü/kayıtlı metin DEĞİŞMEDİ; yukarıdaki 1–20 numaralı notlar o günün kaydıdır, bu not onları günceller.
+Kod commit'i (yeni TIP) `008e602`; sürüm betiği artık `deploy/releases/tb-engine-008e602.sh` (`tb-engine-8d0a531.sh`'nin
+yerine, `git mv`). Motor kod özeti ve veri birimi dosyası değişti: sürümden sonra yeni bir A/B dönemi açılır (beklenen).
+
+1. **Gün zip yığını (BLOCKER).** Bir ayın gün zip'lerinden biri geçici hata verince önceki günler "bitti" sayılıp hiç
+   yazılmadan kayboluyor, çalıştırma yine SUCCESS diyordu; `--update` 62 gün geriye baktığından daha eski aylar kalıcı boş
+   kalıyordu. Artık görevler AYIN YAZIMI tamamlanınca "bitti" olur; yeniden deneme ayı baştan alır (zip'ler önbellekten,
+   yeniden indirilmez). Denemeler tükenirse seri `STALE` olur ve açık dönemler `holes` olarak sayılır (`ARCHIVE_HOLES`,
+   sonuç `PARTIAL`). `--update` pencerenin DIŞINDAKİ açık dönemleri (defteri kapanmamış ay/gün ve doğrulanmamış `u`
+   dosyalar — §3.2 "sonraki gecelerde checksum yeniden aranır") çalıştırma başına en çok 200 görevle onarır (önce hiç
+   kapsanmamışlar, sonra en uzun süredir denenmeyen doğrulamalar); sığmayan kısım `holes`'a yazılır.
+2. **REST'te "kapanmış bar" isteğin GÖNDERİLDİĞİ ana göredir** (önceden yazım anına göre: 00:44:59,8'de giden 0,4 sn'lik
+   istek 00:40 barını `_src=rest` yazıyordu). `metrics_5m`'de yalnız beş uç noktanın ilki gönderildiğinde var olan
+   noktalar yazılır (yarım satır yok).
+3. **Worker günlüğü koruması** (§3.4 madde 2) REST'ten hemen önce yeniden okunur ve her REST gönderiminden önce sonucu
+   300 sn'den (`GUARD_MAX_AGE_S`) eski olamaz; önceden çalıştırma başında bir kez okunuyordu (ilk doldurmada REST adımı
+   10–20 saat sonra geliyordu). Geçmezse kalan REST tamamen atlanır (`REST_GUARD_SKIP`/`REST_GUARD_UNKNOWN`; o gece
+   yalnız arşiv, seriler `STALE` yapılmaz). Her okuma `rest.checks`'e yazılır.
+4. **Arşiv 403/451** "dosya yok" değildir (laboratuvarlar gibi yalnız 404 eksiktir): arşiv adımı o çalıştırmada durur
+   (`ARCHIVE_HALTED_<kod>`), kalıcı `.missing` ya da manifest `m` YAZILMAZ, kalan seriler `STALE`, sonraki çalıştırma aynı
+   dosyaları dener. 5xx/408/429 geçicidir.
+5. **Fonlama boşlukları yerel aralıkla** sayılır: her fark kendisi dahil ±3 komşu farkın medyanına bölünür, bütün seri
+   üzerinde ve ay sınırları dahil (parça başına fark koşuları `part_meta.diffs`'te; parça okunmaz). Ay içinde 8h → 4h
+   değişimi önceden 36 sahte boşluk (kalite 0,8) sayıyordu (uygulama notu 6'nın "ayın medyanı" kuralı). Parçanın
+   `interval_ms`'i ayın medyanı olarak kalır (§3.2); manifestinki serinin EN SON yerel aralığıdır. Kalan sınır: serinin
+   ilk üç uzlaşmasında aralık değişirse (önceki veri yok) bir sahte boşluk sayılabilir.
+6. **Delist (terminal `DELISTED`).** Vadeli `exchangeInfo`'da durum TRADING değil ya da (sağlam) tam listede yok; spot
+   `symbols=[…]` isteği `-1121` ile bütünüyle reddedilirse semboller tek tek sorulur ve yok olanlar `INVALID_SYMBOL`
+   yazılır; ya da REST `-1121 Invalid symbol`. Veri delist anına kadar kalır, REST çağrılmaz, seri bayat ya da `PARTIAL`
+   sayılmaz; `data_status.delisted`, `totals.delisted`, `engine-data --status` ve `--check` V2'de ayrı raporlanır.
+   `exchangeInfo` sembolü yeniden TRADING gösterirse kayıt kalkar. Kayıt `store/_meta/delisted.json`. Önceden delist
+   olmuş bir sembol her gece `STALE` → sonsuza dek `PARTIAL` ve V2/V3/V7 hiç değerlendirilmiyordu.
+7. **Disk önceliği: P1a kapanış arşivi (gece S1a, yeniden üretilemez) depo ya da zip aynası yüzünden ASLA aç kalmaz.**
+   Veri birimi ve ilk doldurma boş < 13 GB ya da araştırma kökü ≥ 17 GB'ta durur (`DATA_DISK_MARGIN` = 3 GB; gece
+   biriminin reddi 10 / 20 GB). Denetim başlangıçta VE döngünün içinde yapılır (her ağ isteğinden ve her tohum serisinden
+   önce; `statvfs` ucuzdur, araştırma boyutu son ölçüm + boş alandaki düşüşle muhafazakâr tahmin edilir, 30 dk'da bir
+   yeniden ölçülür); sınırda çalıştırma `DISK_REFUSE` (çıkış 5) ile durur, o ana kadar yazılan veri mühürlenir, kalan
+   seriler `SKIPPED_DISK`. İlerlemede (`running.progress.disk`) boş/kullanılan alan; `--check`'te "disk şimdi" satırı.
+   `--backfill` kapısı smoke'un `universe/<gün>.json` seri listesinden tahminle (× 1,3 − mevcut) ve veri biriminin
+   sınırlarıyla (boş ≥ 13 GB + ihtiyaç, araştırma + ihtiyaç ≤ 17 GB) çalışır.
+8. **Bütçe beklemesinden sonra** saat penceresi, son tarih ve disk yeniden denetlenir (bekleme isteği 4h penceresine
+   taşıyamaz; kayan pencereye yazılan an gönderim anıdır).
+9. **REST durması** (418/429/403/451) ilgili serileri `STALE` yapar (§3.4 tablosu "ilgili seriler STALE olur").
+10. **Sahte HALTED:** önceki ay CORRUPT ve aylık zip'i henüz yokken ay gün zip'lerinden (yeniden çekimde defterden
+    bağımsız BÜTÜN günler) kurulur ve bu başarılı yeniden çekimdir; önceden her durumda "başarısız gece" yazılıyor, iki
+    gece sonra seri sahte `HALTED` oluyordu. Yakın dönem fonlama ayı (gün zip'i yok) kuyrukta bekler, başarısız sayılmaz.
+11. **Tohum** (§3.2 "hiçbir koşulda tüm işi başarısız saymaz"): NaN zaman damgası (önceden `astype` try dışındaydı →
+    bütün ilk doldurma FAILED) ve beklenmeyen her hata o seriyi yeniden indirmeye düşürür (`SEED_ERROR`). Tohum ve
+    kurtarma da 4h pencerelerinde bekler (tohum worker deposunu okur; IndexRefresher o pencerede yazar).
+12. **Dukascopy içe alma:** depo satırları önce geçici bir depoda (mevcut seri kopyalanarak, aynı kurallarla) kurulur; yer
+    değiştirme yalnız yeniden adlandırmadır. Önceden yerine koymadan sonra depo yazımı yarıda kalırsa önceki HAZIR içe
+    almanın yanında yarım satırlar kalıyordu.
+13. **Giriş evreni** listesi yalnız `entry_universe.enabled: true` iken kullanılır (worker gibi; varsayılan false;
+    kapalıyken `frame_provenance.json` da boş liste yazar → `ENTRY_UNIVERSE_YOK`, işlem görenler yine U_R'dedir).
+14. **SIGTERM** (`systemctl stop`) `STOPPED` (çıkış 1) olarak kayda geçer; `data_status.json`'da bayat `running` bloğu
+    kalmaz, mühür yenilenmez. SIGKILL sonrası kalan blokta süreç yoksa okuyucu "DURDU (süreç … yok)" yazar.
+15. **`engine-restore --yes`** `analysis.lock`'un yanında `data.lock`'u da alır (`store/` ve `archive_cache/` de kenara
+    alınır; veri birimi ya da ilk doldurma yazarken eşzamanlı yazıcı kalmamalı).
+16. **Veri birimi dosyası** (`deploy/tradingbot-engine-data.service`, sha256 `9a01ba82…`): ağlı TEK birim olduğundan aynı
+    kullanıcının okuyabildiği sır yolları çekirdek düzeyinde erişilemez:
+    `InaccessiblePaths=-/opt/tradingbot/env -/opt/tradingbot/.ssh -/opt/tradingbot/data/vault -/opt/tradingbot/data/backups`
+    (yollar `deploy/setup_vps_v3.sh` — `ENVFILE`, `$BASE/.ssh`, `$DATA/vault` — ile worker ve yedek birimlerinden; servis
+    kullanıcısının HOME'u `/opt/tradingbot` olduğundan `ProtectHome=yes` bunları kapsamıyordu; saatlik yedek vault'u da
+    kopyalar; `/home`, `/root`, `/run/user` zaten `ProtectHome` ile kapalı; `-` = yoksa sorun değil). Motor bunların
+    hiçbirini okumaz; state salt-okunur okunur, yazım yalnız `data/research`. Gece birimi P1a'ya bayt bayt sabittir ve
+    değişmedi (ağsızdır; okuyabileceği sırrı dışarı çıkaramaz). **§2.5 bellek kararı (kayıt):** MemoryMax toplamı
+    worker 6G + panel 0,5G + gece 0,5G + veri/doldurma 1G = 8 GiB, 7,7 GiB'lık VPS'te RAM − 1G'ye (6,7 GiB) HİÇBİR motor
+    değeriyle sığmaz (worker + panel tek başına 6,5 GiB). Belgenin kuralı gereği `MemoryHigh` düşürüldü: veri birimi ve
+    ilk doldurma 800M → **512M** (ölçülen tepe ≈ 227 MiB; ≈ 2,3 kat pay; üstünde çekirdek motoru geri kazanır/yavaşlatır,
+    worker'ı değil), gece birimi zaten 400M; `MemoryMax` (1G) ve `ENGINE_EXPECTED_MEMORY_MAX` aynı; `OOMScoreAdjust=1000`
+    motorun önce ölmesini sağlar. Betiğin bellek uyarısı bu kararı yazar ve durdurmaz (toplam, gerçek kullanım değil
+    sınır toplamıdır; worker'ın ölçülen tepesi ≈ 3,1 GB); gerçek etki VPS kabul 6 (`memory.peak`) ve A/B (NRestarts, tur
+    p95) ile ölçülür. Betiğin ağır adımları ayrıca `choom -n 1000` ile koşar (önceden `oom_score_adj` 0).
+17. **Tahminler (düzeltildi).** `metrics` 2021-12-01'den ~45 sembolde ≈ 159 bin istek (gün zip'i + `.CHECKSUM`); aylık
+    kline/mark/premium/fonlama ≈ 40 bin; toplam ≈ **200 bin istek** (§2.2'nin "≈ 150 bin"i ve önceki betiğin "~170 bin"i
+    düşüktü), 4h duraklamaları dahil ≈ 13–32 saat. Disk ≈ **6 GB** (parquet ≈ 3,1 + zip ≈ 2,3 + ≈ 0,5 GB blok payı: ≈ 200
+    bin küçük dosya, `du -sb` görmez). Betik ve `--check` artık blok baytını (`du -sB1`) ölçer ve ilk doldurma tahminini
+    smoke'un evren listesinden seri başına kurar (evren sınırsızdır; ~45 sembol sabiti değil).
+18. **Sürüm betiği** `tb-engine-008e602.sh`: hedef commit, birimler kurulmadan ÖNCE geçici klondan engine-app nesnelerine
+    eklenir (önceden birimler kurulup reload edildikten SONRA GitHub'dan getiriliyordu; getirme hatası "hiçbir şey
+    değişmedi" diyordu); adım 7'den sonra beklenmeyen bir hata engine-app'i önceki sabitine döndürür (veri zamanlayıcısı
+    henüz açılmadıysa; smoke edilmemiş kod P1a gece zamanlayıcısıyla kalmaz); `--rollback` engine-app'i geri
+    sabitleyemezse (gece penceresi, app ata değil, yerel değişiklik) ya da reload atlanırsa BAŞARI demez: çıkış 4 ve
+    "GERİ ALMA YARIM KALDI"; `--check`'te `du`/pipefail hatası (doldurma sürerken silinen dosya → "N\n0") giderildi,
+    "disk şimdi" ve IO zamanlayıcısı satırları eklendi; V1 betiğin adını yazar (`<betik>` değil). Bağımsız koşucu 57 test
+    (kabul 103/104/105/109'un güçlendirilmiş testleri eklendi). Betik 1.200 satırdır.
+19. **Bilerek yapılmayanlar (gerekçe).** İlk doldurmaya süre sınırı (`RuntimeMaxSec`) konmadı: kaldığı yerden sürer, gece
+    birimi ayrı kilitle etkilenmez, P1b'de gece aşamaları depoyu okumadığından uzun doldurmadaki `DATA_STALE` yalnız
+    bayraktır; bir sınır meşru bir doldurmayı öldürüp yeniden başlatmaktan başka bir şey yapmazdı. Zip önbelleğinin fsync
+    sayısı azaltılmadı (atomik yazım sözleşmesi; IO etkisi A/B'de ölçülür, `--check` IO zamanlayıcısını gösterir).
+    Dukascopy 1h boşlukları hafta sonu/tatil saatlerini de sayar (tarihsel seridir; tazelik ve V3 kabul ölçütlerine
+    girmez). Gece birimine `InaccessiblePaths` eklenmedi (P1a'ya bayt bayt sabit; ağsız). Yedek dal
+    (`refs/heads/claude/gifted-knuth-0ehpcs`) TIP'i henüz içermez: dağıtımdan önce PR dalı ileri sarılır (betik içeriği
+    tam SHA ile getirir).
+
 ### P2 — İşlem günlüğü, yol, rehydrate, fidelity, atıf, UTC günü MTM, özet
 
 **Teslimatlar:**

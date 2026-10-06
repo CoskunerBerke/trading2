@@ -51,6 +51,10 @@ kapalı bir katalogdaki kuralları, sert tavanlarla, mevcut defterlere hiçbir y
 - **"İnsandan zeki" iddiası yoktur.** Motorun üstünlüğü disiplindir: izin verilen her şeyi dener, her denemeyi sayar,
   başarısız fikri unutmaz, her kazancı/kaybı kanıtla açıklar ve kendi hatasını otomatik kapatır.
 
+**Sahip hedefi (2026-10-06):** toplamda (overall) her gün ≥ %1 **veya** ay sonunda ≥ %30. Motor bunu her gün ve her ay
+sonunda ölçer ve açıkça yazar (ana belge §1.1 notu). Lider tablosu ve adaylar "hedefe beklenen günlük % katkısı ve CI'ı" ile
+de sıralanır (§6.7 Kapı C içeriği), ama terfi kararı yalnız mühürlü kapılarla verilir; hedef yüzünden eşik gevşetilmez.
+
 ### 1.3 Sahibin isteği → bileşen
 
 Sahibin sözü (aynen): *"ben istiyorum ki kendi beyini olsun ve insandan daha zekice düşünüp neden zarar veya kar ettiğini

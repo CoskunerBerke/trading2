@@ -44,6 +44,13 @@ listesi §13'te, ikinci turun zorunlu maddeleri §14'te kapatıldı.
 | Kaybedince neden ve nasıl kâra dönebilirdi; kazanınca neden | Kural kodları + karşı-olgusal yeniden oynatma + istatistikle desteklenen dersler (§5). |
 | VPS'te sürekli çalışan motor; iyi olan önce kayıt-yalnız denensin, kanıtlanan bana onaya gelsin | systemd zamanlayıcıları; keşif katmanı (her şey denenir, hiçbir şey terfi etmez); kayıt-yalnız ileri adaylar; terfi kapısı → yazılı öneri → sahip onayı → normal sürüm (§6.6–§6.8, §9). |
 
+**Sahip hedefi (2026-10-06, sahibin sözleriyle):** "bizim amacımız her gün overall da %1 kar veya daha fazla etmek veya
+bir ayın sonunda %30 veya daha fazla kar etmek". Bu, günlük %1 hedefinin (yukarıda) yanına **aylık toplam ≥ %30** ölçüsünü
+ekler: her takvim ayı sonunda bütün defterlerin (otomatik PAPER defterleri ayrı satır ve "oto dahil" satırıyla) toplam net
+kârı, ayın başındaki toplam özsermayeye oranla. Yalnız ölçüdür; kapı, eşik ya da risk kuralı bu hedef yüzünden gevşetilmez.
+Dürüst not: %30/ay ≈ günde ~%0,9–1 bileşik demektir; bugünkü PAPER kanıtında buna yaklaşan defter yoktur (en iyisi M2).
+Hedefe ulaşıp ulaşılmadığı her ay sonunda açıkça "ULAŞILDI / ULAŞILMADI" diye yazılır.
+
 ### 1.2 Bugünkü kanıt (PAPER, maliyet sonrası)
 
 | Kapsam | Ölçülen | Günlük karşılığı |

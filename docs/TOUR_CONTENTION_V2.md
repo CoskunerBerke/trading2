@@ -8,6 +8,11 @@ mesafeler, istatistik, kodlar — eski olay-başına döngüyle **bit bit aynıd
 defter, config değeri, indeks içeriği, yayım kodu ve kuralı, önbellek anahtarı değişmez. Geri dönüş anahtarı:
 `history.evidence_fast_knn: false` (§7).
 
+Gözden geçirme turu 1 (2026-10-06, hüküm GEÇTİ, 4 küçük bulgu — hepsi kapatıldı): zaman damgası sütunu yalnız KAYIPSIZ
+int64 dönüşümüyle (§3, §4.1; denetçinin yeniden üretimi test oldu), herhangi bir dizi kurulumu düşerse motor bir kez
+işaretlenir (§3), anahtar kanıt motoru kuran HER yere ulaşır (§7), bellek ve tazelik notu (§5.1). Aynı turda pattern
+kanıtı ALT SÜRECİ (V1) varsayılan KAPALI oldu (§9).
+
 ---
 
 ## 1. VPS gerçekleri (sahibin günlüğü, 2026-10-06, `8db1faf`)
@@ -49,9 +54,14 @@ atanması ve başlangıç log satırı (`engine_v3.py`), karar kimliğinden dü�
   hesaplanıp bir yığına konur ve eski TAM sıralamanın sırasıyla üretilir; seçim ESKİ döngüdür (`_select` — eski satırlar
   aynen; eski yol da artık aynı iki fonksiyonu çağırır). Seçim `k`'ya ulaşınca hesap durur.
 * **Yedek:** sorgu yolu iyi koşullu değilse (sabit/neredeyse sabit fiyat), |z| ≥ 10^30 ise ya da hızlı yolda
-  beklenmeyen bir istisna olursa o sorgu eski döngüyle yapılır (aynı sonuç ya da aynı istisna). Dizi kurulamazsa (ör.
-  bellek) o motorda bir daha denenmez. Uyarı motor başına bir kez, yalnız motoru kuran süreçte:
-  `pattern kNN hızlı yolu … ; eski döngü kullanılıyor (kanıt aynı, yalnız yavaş)`.
+  beklenmeyen bir istisna olursa o sorgu eski döngüyle yapılır (aynı sonuç ya da aynı istisna). Sorgunun ihtiyaç duyduğu
+  dizilerden HERHANGİ biri (motor başına ortak kısım, yön, pencere) kurulamazsa — bellek, kayıplı zaman damgası sütunu,
+  bozuk bir olay — motor bir kez işaretlenir ve o motorda bir daha DENENMEZ: sonraki sorgular diziyi yeniden kurmaya
+  çalışıp düşmez, doğrudan eski döngüye gider (`_knn_arrays`; gözden geçirme bulgusu: önce yalnız ortak kısmın arızası
+  önbelleğe alınıyordu, yön/pencere arızası her sorguda ~152k olayı yeniden geziyordu). İşaret motorla birlikte gider
+  (sonraki yayımın motoru yeniden dener). Uyarı motor başına bir kez, yalnız motoru kuran süreçte:
+  `pattern kNN hızlı yolu kurulamadı; eski döngü kullanılıyor (kanıt aynı, yalnız yavaş): …` (sorgu arızasında
+  `… bir sorguda başarısız; …`).
 
 ## 4. Kesinlik kanıtı
 
@@ -60,8 +70,13 @@ Gösterim: C = eski döngünün süzgecinden geçen adaylar; d(c) = eski kodun m
 olay listesi sırasını korur: eski sıralama tam olarak κ sırasıdır.
 
 1. **Süzgeç aynı.** Hızlı yolun aday kümesi C'dir: aynı yüklemler, önceden çıkarılmış aynı değerler (`e.cutoff_ts`,
-   aynı mum sütunundan `int(ts[exit_idx])` — `iloc` ile aynı değer; yalnız sayısal sütun, değilse eski döngü; dizge
-   eşitliği kodlarla). Mesafesi hesaplanan her aday eski Python yüklemiyle (çıkış damgası dışında) yeniden denetlenir
+   aynı mum sütunundan `int(ts[exit_idx])` — `iloc` ile aynı değer; dizge eşitliği kodlarla). Zaman damgası dizisi
+   (`_ts_values`) YALNIZ kayıpsız int64 dönüşümüyle kurulur: sütunun kendi dtype'ı numpy tamsayısı (uint değerleri int64'e
+   sığar) ya da her değeri sonlu, tam sayı ve |v| < 2^63 olan numpy kayan noktası; `to_numpy()` dtype'ı değiştirmemeli.
+   Başka her şey (pandas genişletme tipleri, object, tarih) → eski döngü. Gözden geçirme bulgusu: NA'lı `Int64` sütunu
+   `to_numpy()` ile float64'e döner ve 2^53 üstünü yuvarlar; eski kodun `iloc`'u tam değeri verir → 1. aşamanın çıkış
+   süzgeci farklı aday seçebilirdi (2. aşama çıkışı yeniden denetlemez). Denetçinin yeniden üretiminde eski `_ts_values`
+   ile 24/24 sorgu farklı, düzeltmeyle 0/24 (motor eski döngüye düşer). Üretimde mum sütunu int64'tür. Mesafesi hesaplanan her aday eski Python yüklemiyle (çıkış damgası dışında) yeniden denetlenir
    (ayrışma → eski döngü).
 2. **Sıra aynı.** `_knn_ordered` yığının en küçüğü x'i ancak d(x) < lo(sıradaki hesaplanmamış aday) iken verir.
    Hesaplanmamış her c için d(c) ≥ lo(c) ≥ o lo > d(x), yani κ(c) > κ(x); hesaplanmış olanlar yığında ve κ ≥ κ(x).
@@ -110,6 +125,26 @@ sorgu başına ~152k demetlik aday listesi tutuyordu (geçici, ~14 MB); hızlı 
 yeni motor kısa süre birlikte yaşar: en çok ~2 × 27 MB. Worker'ın 6 GiB'lık cgroup'unda (RSS 2,6–3,5 GB) bu %1'in altında;
 alt süreç yolunun (V1) 0,5–1,5 GB'lık özel belleğiyle karşılaştırılamayacak kadar küçük.
 
+### 5.1 Bellek ve tazelik (gözden geçirme notu)
+
+* **Bellek kimde, ne kadar, ne zaman gider.** Diziler motor nesnesinin özniteliğidir (`_knn_ix`); motorla birlikte
+  serbest kalır (dış referans yok; test `test_extra_memory_is_bounded_and_freed_with_the_engine`). Kalıcı ek: olay başına
+  100 B + sorgulanan yön başına 9 B + pencere başına 66 B (üretim çağrısı: pencere 64, iki yön → 184 B/olay, 152,5k olayda
+  ~27 MB). Yayım anında eski motor, ona referans tutan son tur/ön ısıtma işi bitene dek yaşar: en çok ~2 × 27 MB, birkaç
+  dakika. Kurulum anındaki geçici tepe ~32 MB (parça parça, `KNN_CHUNK`). Alt süreç açıkken (varsayılan KAPALI, §9): fork anında
+  motorun dizileri kuruluysa alt süreç onları yazınca-kopyala ile paylaşır; kurulu değilse kendi kopyasında kurar (alt
+  sürecin özel belleğine ~27 MB) ve iş bitince alt süreçle birlikte gider. Kurulum düşerse (ör. `MemoryError`) motor işaretlenir, ikinci
+  deneme yapılmaz (§3).
+* **Tazelik.** Diziler bir indeks SÜRÜMÜNÜN (motor nesnesinin) içeriğinden türetilir; üretimde yayımlanan motor bir daha
+  değiştirilmez (yeni veri = yeni motor = yeni diziler). Geçerlilik anahtarı (`_knn_key`) olay listesini (nesne, uzunluk,
+  son olay), ölçekleyiciyi (`_mu`, `_sd` nesneleri) ve mum tablolarını (DataFrame nesneleri) kimlikle izler: `add_series`,
+  yeni ölçekleyici ya da bir mum tablosunun DEĞİŞTİRİLMESİ dizileri yeniden kurdurur. Görmediği tek şey yerinde
+  değiştirmedir — mevcut bir olayın `snap`/`path`/`outcomes`'ının ya da mum DataFrame'inin hücrelerinin yayımdan sonra
+  yerinde değiştirilmesi (denetçi sentetik olarak gösterdi: bayat dizi farklı sonuç verir). Üretimde ve testlerde hiçbir
+  kod bunu yapmaz; yapılırsa `history.evidence_fast_knn: false` ya da yeni bir motor gerekir. Sürüm sınırı: tur ve ön
+  ısıtma motoru `IndexRefresher.bundle`'dan alır, yani her sürümün kendi dizisi vardır; eski sürümün dizisi yeni sürümün
+  sorgusuna hiç girmez (motorlar dizi paylaşmaz).
+
 VPS'e ölçekleme (tahmin): eski yol orada sembol başına ~75 sn ölçüldü; hızlı yolun maliyeti ~152k satırlık 1. aşama
 (onlarca ms) + ~100–300 eski-kod mesafesi (sorgu başına onlarca ms) + motor başına bir kez dizi kurulumu (birkaç sn).
 Yayım başına ön ısıtma ~1.000 sn yerine birkaç saniye beklenir; yeni sürümü bekleyen tur artık beklemez.
@@ -127,6 +162,11 @@ Yayım başına ön ısıtma ~1.000 sn yerine birkaç saniye beklenir; yeni sür
   motorla birlikte serbest kalması; config (yalnız bool), karar kimliği, kurulumdaki atama, başlangıç log satırı; depodaki
   tur/alt süreç testlerinin indeks verisinde yeniden oynatma; GERÇEK turlar (`test_tour_perf_no_decision_change_v1`
   düzeneği: 5 tur, iki yayım, süreç içi ön ısıtma = VPS ayarı) hızlı yol ile eski döngü arasında `state/` bayt bayt aynı.
+* Gözden geçirme turu 1 (2026-10-06) testleri: `test_lossy_timestamp_columns_never_enter_the_fast_path` (denetçinin
+  yeniden üretimi: NA'lı `Int64` sütunu; eski `_ts_values` ile 24/24 sorgu farklıydı), kayıpsız/kayıplı dtype tabloları
+  (`int64/int32/uint64/float64/float32` kabul ve `iloc`'a eşit; NA'sız `Int64`, object, NaN, kesirli, uint taşması,
+  tarih, 2^63 ret), `test_an_array_build_failure_is_cached_per_engine_and_warned_once` (yön ve pencere dizisi arızası
+  bir kez; eski kodla 6 kurulum denemesi), `test_the_cli_pattern_engine_applies_the_switch`.
 * Mevcut karar-nötrlük testleri değişmeden geçer: `test_tour_perf_no_decision_change_v1.py` (5 gerçek tur, iki yayım,
   `state/` bayt bayt), `test_evidence_subprocess_v1.py`, `test_evidence_prewarm_v1.py`, `test_pattern_evidence_cache.py`,
   `test_patterns.py`. Karar kimliği özetini "alan eklenmeden önceki" haliyle karşılaştıran dört testte yeni anahtar da
@@ -139,8 +179,18 @@ history:
   evidence_fast_knn: false   # varsayılan true; yalnız true/false (tırnaklı "false" config doğrulamasında reddedilir)
 ```
 
-`false` → `SimilarPatternEngine.fast_query = False` (`_build_pattern_index`'te atanır): eski olay-başına döngü (aynı
-`_pair_dist`/`_select` satırları), dizi kurulmaz. Anahtar iki değerinde de bit-aynı kanıt verdiği için karar kimliğine
+`false` → `SimilarPatternEngine.fast_query = False`: eski olay-başına döngü (aynı `_pair_dist`/`_select` satırları),
+dizi kurulmaz. Anahtar, kanıt için `SimilarPatternEngine` kuran HER yerde atanır (gözden geçirme bulgusu; depoda
+`SimilarPatternEngine(` yalnız bu ikisinde ve iki ölçüm betiğinde geçer):
+
+* worker: `TradingEngineV3._build_pattern_index` — turlar, ön ısıtma, (açıksa) alt süreç (fork edilen AYNI motor nesnesi,
+  özniteliğiyle birlikte) ve yenileyicinin her yayımı (her sürüm bu kurucudan geçer);
+* CLI: `cli_v3._pattern_engine` — `pattern-query`, `evidence-show --live` ve `historical-replay` (ReplayEngine kendi
+  motorunu kurmaz, kendisine verilen bu motoru sorgular);
+* `scripts/bench_knn_query.py` / `scripts/bench_tour_contention.py` ölçüm betikleridir; karşılaştırma için iki yolu
+  kendileri seçer (config okumaz).
+
+Sınıf varsayılanı (`SimilarPatternEngine.fast_query = True`) yalnız config'siz kullanımlar (testler, betikler) içindir. Anahtar iki değerinde de bit-aynı kanıt verdiği için karar kimliğine
 (`config_hash`) girmez; etkin değer başlangıçta bir kez loglanır: `pattern kanıtı kNN sorgusu: HIZLI yol
 (history.evidence_fast_knn=True; …)` ya da `… ESKİ olay-başına döngü (…)`. Worker yeniden başlatılınca geçerli.
 
@@ -151,6 +201,11 @@ history:
 2. `pattern kNN hızlı yolu` ile başlayan uyarı YOK. Varsa kanıt yine aynıdır ama yol yavaştır (S yine büyük) → bildir.
 3. Bellek: motor başına ~27 MB kalıcı ek dizi (pencere 64, iki yön); yayım anında eski ve yeni motor birlikte
    yaşarken ~54 MB. `MemoryPeak`'te belirgin artış beklenmez (alt süreç kapalıyken).
+
+Dağıtım betiğinin `--check`'i (bölüm "PATTERN KANITI HIZLI kNN") bunları otomatik çıkarır: yayım başına ön ısıtma
+saniyesi ve sembol sayısı, yayımdan sonraki turların `pattern kanıtı` faz süresi, başlangıç satırı, hızlı yol uyarıları,
+worker belleği ↔ `MemoryMax`. Beklenen VPS sinyali: yayımla çakışan turlar ~5–6 dk (bugün 23–36 dk), ön ısıtma birkaç sn
+(bugün ~1.000 sn).
 
 Riskler (sahibin değerlendirmesine):
 
@@ -164,3 +219,24 @@ Riskler (sahibin değerlendirmesine):
 * Kanıt §4'ün varsayımlarına dayanır: IEEE-754 float64/float32 (x86-64/ARM64), numpy'nin float32 dönüşümünün en
   yakına yuvarlaması. Testler bunu her koşuda sınar (alt sınırın geçerliliği, kullanılan pay < %75).
 * İlk sorgu motor başına dizi kurulumunu öder (152k olayda yerelde birkaç sn; ön ısıtma iş parçacığında).
+
+## 9. Pattern kanıtı alt süreci (V1) varsayılan KAPALI (2026-10-06)
+
+`history.evidence_subprocess` kod varsayılanı `true` → `false`. Neden (VPS, `8db1faf`, §1): alt süreç worker cgroup'unda
+0,5–1,5 GB özel bellek tuttu (cgroup tepesi 5.957/6.144 MB, %97) ve turları KISALTMADI — tur yeni sürümün kanıtını
+bekliyordu ve kanıt iki yolda da sembol başına ~75 sn sürüyordu. Hızlı kNN ile ön ısıtma birkaç saniyedir; GIL'i paylaşan
+süre de o kadar kısalır, alt süreç fayda getirmeden bellek ikiye katlar. Sahip anahtarı 13:56 UTC'de config.yaml'a
+`evidence_subprocess: false` satırıyla kapatmıştı; yeni varsayılan bu durumu config satırı olmadan sürdürür.
+
+* Anahtar çalışmaya devam eder: `evidence_subprocess: true` (Linux) alt süreç yolunu aynen açar (V1'in bütün testleri
+  açık koşuda sürer: `tests/test_evidence_subprocess_v1.py` yardımcısı değeri açıkça verir;
+  `test_tours_are_identical_with_the_child_switch_on`, `…_tours_own_misses_are_served_by_the_child`).
+* Karar kimliğine (`config_hash`) iki değerinde de girmez (değişmedi; `test_the_switch_is_not_part_of_the_decision_identity`).
+* Başlangıç satırı varsayılanda: `pattern kanıtı sorguları: süreç içinde (history.evidence_subprocess=False)`.
+* Değişen testler: `test_the_switch_defaults_on_and_config_can_turn_it_off` → `…_defaults_off_and_config_can_turn_it_on`;
+  `test_the_switch_is_linux_only_bool_only_and_logged_at_startup` (varsayılan satırı + açık `true`);
+  `test_tour_perf_no_decision_change_v1`: üretim varsayılanı koşusu artık süreç içi (`child_started == 0`), eski "süreç
+  içi kill switch" koşusu yerine alt süreç AÇIK koşu (`child=True`), tur ıskalarını alt sürece yollayan koşu `child=True`.
+* VPS'teki config.yaml'da sahibin eklediği `evidence_subprocess: false` satırı yeni kodla da geçerlidir (aynı değer) ama
+  dağıtım betiği temiz ağaç ister: betik o satırı (YALNIZ o satırı) tanır, doğrulanmış yedekten sonra geri alır ve geri
+  almada aynen yerine koyar.

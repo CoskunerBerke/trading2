@@ -972,10 +972,10 @@ class TradingEngineV3(TradingEngine):
     EVIDENCE_PREWARM = True
 
     def _evidence_subprocess_on(self) -> bool:
-        """Kanıt sorguları alt süreçte mi (`history.evidence_subprocess`, varsayılan AÇIK; bkz. `patterns/evidence_child`).
-        Karar girdisi DEĞİLDİR: yalnız sorgunun hangi süreçte koştuğunu seçer; kanıt bit-aynıdır (test kilitli).
-        Kısmi motor nesnesinde (config yok), değer gerçek `true` değilse ve Linux dışında KAPALI = bugünkü süreç içi yol
-        (sessizce)."""
+        """Kanıt sorguları alt süreçte mi (`history.evidence_subprocess`, 2026-10-06'dan beri varsayılan KAPALI; bkz.
+        `patterns/evidence_child`, docs/TOUR_CONTENTION_V2.md). Karar girdisi DEĞİLDİR: yalnız sorgunun hangi süreçte
+        koştuğunu seçer; kanıt bit-aynıdır (test kilitli). Yalnız açık `true` + Linux açar; kısmi motor nesnesinde (config
+        yok), değer gerçek `true` değilse ve Linux dışında KAPALI = süreç içi yol (sessizce)."""
         try:
             on = getattr(self.cfg.v3.history, "evidence_subprocess", False) is True
         except AttributeError:

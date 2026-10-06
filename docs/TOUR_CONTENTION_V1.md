@@ -9,6 +9,13 @@ bırakılınca alt süreçte kalıyordu (≈ bir indeks boyutu) → alt süreç 
 yeni yayım ANINDA öldürülür; cgroup/sistem bellek payı koruması alt süreci `MemoryMax`'tan önce öldürür (§3.4). Sahibin
 aktardığı VPS gerçekleri (4 vCPU, RAM, `MemoryMax`, `MemoryPeak`, `hwm`) belgeye işlendi; sürüm notu metni §9.1.
 
+> **DURUM 2026-10-06 — alt süreç yolu VARSAYILAN KAPALI** (`history.evidence_subprocess` kod varsayılanı `false`;
+> docs/TOUR_CONTENTION_V2.md §9). VPS'te (`8db1faf`, 2026-10-06) alt süreç worker cgroup'unda 0,5–1,5 GB özel bellek tuttu
+> (cgroup tepesi 5.957/6.144 MB, %97) ve turları KISALTMADI: tur yeni indeks sürümünün kanıtını bekliyordu ve kanıtın
+> kendisi sembol başına ~75 sn sürüyordu (iki yolda da). Sahip anahtarı 13:56 UTC'de kapattı; kök neden hızlı kNN sorgusuyla
+> (`history.evidence_fast_knn`, V2) çözüldü. Bu belgedeki alt süreç yolu, anahtar açıkça `true` yapılırsa aynen çalışır
+> (testler kilitli); config_hash'e yine girmez. Aşağıdaki "geri dönüş anahtarı `false`" ifadeleri artık varsayılanı anlatır.
+
 Bu bir **karar-nötr performans onarımıdır**: strateji, eşik, defter, boyut ve config değeri değişmez. Yeni indeksin
 yayımlandığı kod noktası ve kuralı, turun indeks sürümünü okuma kuralı, kanıt önbelleğinin anahtarı ve kanıtın kendisi
 aynıdır; değişen tek şey kNN kanıt sorgularının **hangi süreçte** koştuğudur. Geri dönüş anahtarı:
@@ -516,8 +523,15 @@ yolu her durumda ~1×'tir.
 
 ```yaml
 history:
-  evidence_subprocess: false   # varsayılan true; yalnız true/false (tırnaklı "false" config doğrulamasında reddedilir)
+  evidence_subprocess: false   # 2026-10-05: varsayılan true idi → 2026-10-06'dan beri VARSAYILAN false (satır gerekmez);
+                               # alt süreci açmak: true. Yalnız true/false (tırnaklı değer config doğrulamasında reddedilir)
 ```
+
+**2026-10-06 notu:** kod varsayılanı `false` oldu (yukarıdaki DURUM notu; V2 §9). `false` yolu aşağıda anlatılan süreç
+içi yoldur ve artık üretim yoludur; alt süreç yalnız `evidence_subprocess: true` ile (Linux) kurulur. Test adı
+`test_tours_are_identical_with_the_in_process_prewarm_kill_switch` → `test_tours_are_identical_with_the_child_switch_on`
+(alt süreç açık koşu), `test_the_switch_defaults_on_and_config_can_turn_it_off` →
+`test_the_switch_defaults_off_and_config_can_turn_it_on`.
 
 `false` iken `request_prewarm(..., use_child=False)` çağrılır ve tur ıskası doğrudan `_evidence_query` ile hesaplanır —
 2026-10-01'den beri koşan süreç içi yolun kendisi: aynı kilitler (iş sonunda ek `compute_lock` alımı yok), aynı log

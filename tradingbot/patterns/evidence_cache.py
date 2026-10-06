@@ -54,8 +54,9 @@ motor için YENİDEN fork eder (iş başına en çok `MAX_REFORKS`), uçuştaki 
 payı daralırsa (`evidence_child` "BELLEK KORUMASI") alt süreç kurulmaz ya da öldürülür ve işin kalanı süreç içi sürer
 (uyarı). Bu öldürmelerin hiçbiri arıza sayılmaz ve kanıtı değiştirmez: her yolda aynı fonksiyon + aynı motor.
 
-Geri dönüş: `history.evidence_subprocess: false` → `use_child` hiç verilmez, alt süreç kurulmaz, ön ısıtma bugünkü
-kodun yolunu birebir izler (aynı kilitler, aynı log satırı).
+Anahtar: `history.evidence_subprocess` — 2026-10-06'dan beri VARSAYILAN KAPALI (docs/TOUR_CONTENTION_V2.md): `false`
+→ `use_child` hiç verilmez, alt süreç kurulmaz, ön ısıtma süreç içi yolu birebir izler (aynı kilitler, aynı log satırı).
+Alt süreç yolu yalnız açık `true` ile (Linux) kurulur; o yolun sözleşmesi aşağıda aynen geçerlidir.
 
 KAPANIŞ (düzeltme turu 2): `stop()` KALICIDIR — `watch` kapanışında çağrılır (`TradingEngineV3.stop_pattern_evidence`),
 alt süreci öldürür, işçiyi en çok `timeout` bekler; sonra gelen yayım (`request_prewarm`) işçiyi yeniden BAŞLATMAZ

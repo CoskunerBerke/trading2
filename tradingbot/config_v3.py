@@ -431,13 +431,14 @@ class HistorySection:
     #: Indekse alinacak azami sembol — BELLEK TAVANI. Onceki OOM tam Tier-A indeksindendi;
     #: yeniden kurulum sirasinda eski ve yeni indeks birlikte yasar, bu yuzden kume baglanir.
     refresh_max_symbols: int = 16
-    #: PATTERN KANITI ALT SÜRECİ (2026-10-05): yayım sonrası kanıt sorguları (ve o sırada turun ıskaları) `fork` ile
-    #: ayrılan tek bir alt süreçte koşar; worker'ın GIL'ini turdan/Box zamanlayıcısından çalmaz. KARAR GİRDİSİ DEĞİL:
-    #: yayım noktası ve kuralı, sürüm okuma kuralı, anahtar ve kanıt aynıdır (saat-duvarı zamanlaması değişir); bu
-    #: yüzden karar kimliğine (`config_hash`) girmez — etkin değer başlangıçta bir kez loglanır. Yalnız true/false
-    #: (`validate_v3`). Yalnız Linux'ta etkili. `false` → bugünkü süreç içi yol (geri dönüş anahtarı).
-    #: Ayrıntı: tradingbot/patterns/evidence_child.py, docs/TOUR_CONTENTION_V1.md.
-    evidence_subprocess: bool = True
+    #: PATTERN KANITI ALT SÜRECİ (2026-10-05): `true` iken yayım sonrası kanıt sorguları (ve o sırada turun ıskaları)
+    #: `fork` ile ayrılan tek bir alt süreçte koşar. VARSAYILAN KAPALI (2026-10-06): VPS'te alt süreç worker cgroup'unda
+    #: 0,5–1,5 GB özel bellek tuttu (cgroup tepesi %97 MemoryMax) ve turları kısaltmadı (tur yeni sürümün kanıtını
+    #: BEKLİYORDU); kökü hızlı kNN sorgusu (`evidence_fast_knn`, docs/TOUR_CONTENTION_V2.md) çözer. KARAR GİRDİSİ DEĞİL:
+    #: yayım noktası ve kuralı, sürüm okuma kuralı, anahtar ve kanıt iki değerde de aynıdır; karar kimliğine
+    #: (`config_hash`) girmez — etkin değer başlangıçta bir kez loglanır. Yalnız true/false (`validate_v3`). Yalnız
+    #: Linux'ta etkili. `false` → süreç içi yol. Ayrıntı: tradingbot/patterns/evidence_child.py, docs/TOUR_CONTENTION_V1.md.
+    evidence_subprocess: bool = False
     #: HIZLI kNN KANIT SORGUSU (2026-10-06): `SimilarPatternEngine.query` olay başına Python döngüsü yerine iki aşamalı
     #: kesin yolu kullanır (vektörel ön süzgeç + eski mesafenin kanıtlı alt sınırı; mesafe yalnız gereken adaylarda ESKİ
     #: kodla, adaylar eski sıralamanın sırasıyla ESKİ seçim döngüsüne). KARAR GİRDİSİ DEĞİL: dönen kanıt eski döngüyle

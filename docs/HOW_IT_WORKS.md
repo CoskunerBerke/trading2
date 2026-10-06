@@ -188,8 +188,14 @@ pattern-evidence cache key (symbol, index version, last bar) changes and the nex
 on the main thread. After each publish, and never before it, a single background worker now computes that evidence with
 the published index, the tour's own function and the same inputs, and seeds the cache under that version; a tour that
 asks for a symbol being computed waits for the same result ([`patterns/evidence_cache.py`](../tradingbot/patterns/evidence_cache.py)).
-Since 2026-10-05 those queries run in one short-lived child process forked from the worker, so they no longer hold the
-worker's GIL: the query loop calls `np.corrcoef` per indexed event, which drops and retakes the GIL so often that the
+Since 2026-10-06 the query itself is fast and exact: a vectorised pre-filter with a proven lower bound of the old
+distance picks the few hundred candidates whose distance the old code computes, in exactly the old order, so the result is
+bit-identical to the old per-event loop while a symbol takes a fraction of a second instead of about 75 s on the VPS
+(`history.evidence_fast_knn`, default on; `false` restores the old loop; [TOUR_CONTENTION_V2.md](TOUR_CONTENTION_V2.md)).
+The forked child process described next exists since 2026-10-05 but is OFF by default since 2026-10-06
+(`history.evidence_subprocess: true` turns it on): on the VPS it held 0.5–1.5 GB of private memory and did not shorten
+the tours, because the tour was waiting for the new version's evidence. With the child on, the queries run in one
+short-lived child process forked from the worker, so they no longer hold the worker's GIL: the query loop calls `np.corrcoef` per indexed event, which drops and retakes the GIL so often that the
 tour, the Box timer and the protective monitor could wait tens to hundreds of milliseconds to get it back (measured on an
 idle 4-core machine: GIL-releasing tour work ran 30–145 times slower while a prewarm ran in-process; on the same kind of
 machine under heavy load (load average 6–7) only 1.0–2.7 times; with the child about 1 time in every run). That this
@@ -209,8 +215,8 @@ handler can deadlock while another thread runs a multithreaded BLAS job), a 30-s
 the process terminates the worker, systemd restarts it, and a marker file in `state/` keeps the child off on that
 machine until the owner deletes it (the marker is machine state: backups skip it and a restore keeps the machine's
 copy). And under systemd's default `OOMPolicy=stop`, an out-of-memory kill of the child stops the whole unit, the same
-as an out-of-memory kill today. Only Linux uses the child. `history.evidence_subprocess: false` restores the in-process
-path exactly
+as an out-of-memory kill today. Only Linux uses the child. `history.evidence_subprocess: false` (the default since
+2026-10-06) is the in-process path
 ([`patterns/evidence_child.py`](../tradingbot/patterns/evidence_child.py), [TOUR_CONTENTION_V1.md](TOUR_CONTENTION_V1.md)).
 The chart-analysis index is written once per tour instead of once per new analysis, and the closed-trade exit
 evaluation and the entry-snapshot trade links are memoised. Tests pin that ledgers and decisions are identical with these
@@ -1332,9 +1338,11 @@ kâğıt işlemdir ve şu ana kadar istatistiksel olarak kesin değildir.
 
 - **Mimari:** tek worker süreci; ana tur döngüsü + koruyucu izleyici, Box zamanlayıcısı, Formasyon tarayıcısı ve indeks
   yenileyici iş parçacıkları; ayrı, salt okunur panel süreci. Yeni indeks yayımından sonraki pattern kanıtı sorguları
-  worker'dan `fork` edilen kısa ömürlü bir alt süreçte koşar ve worker'ın GIL'ini turdan almaz (fork'un kendisi asılırsa
-  30 sn'lik zamanlayıcı worker'ı sonlandırır, systemd yeniden başlatır; alt süreç eski indeksi tutmaz ve bellek payı
-  daralınca kapatılır; geri dönüş: `history.evidence_subprocess: false`). Eski v2 spot döngüsü her yeni 4h barda sekiz defterden ayrı, kendi küçük spot kâğıt portföyünü (`portfolio.json`) işletir; paneldeki "Spot defteri" sayfası bu portföyü gösterir.
+  2026-10-06'dan beri hızlı ve kesin kNN yoluyla koşar (eski olay-başına döngüyle bit-aynı sonuç, sembol başına ~75 sn
+  yerine saniyenin altında; geri dönüş: `history.evidence_fast_knn: false`). Sorguları worker'dan `fork` edilen kısa
+  ömürlü bir alt süreçte koşturan yol (fork'un kendisi asılırsa 30 sn'lik zamanlayıcı worker'ı sonlandırır, systemd yeniden
+  başlatır; alt süreç eski indeksi tutmaz ve bellek payı daralınca kapatılır) 2026-10-06'dan beri varsayılan KAPALIDIR
+  (`history.evidence_subprocess: true` açar). Eski v2 spot döngüsü her yeni 4h barda sekiz defterden ayrı, kendi küçük spot kâğıt portföyünü (`portfolio.json`) işletir; paneldeki "Spot defteri" sayfası bu portföyü gösterir.
 - **Muhasebe:** izole marj, komisyon, 3 bps kayma, borsa filtreleri, gerçekleşmiş fonlama, ihtiyatlı likidasyon sırası,
   stop taşıma düzeltmesi.
 - **Öğrenme modu (açık):** yalnız PAPER; slot sayısı K ile boyut, marj ≤ %95, likidasyon ≥ 2 × stop, politika rezervi;

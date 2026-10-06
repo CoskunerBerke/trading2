@@ -1160,6 +1160,8 @@ class DataRun:
         self.listings: dict[str, int | None] = ({k: (v or {}).get("listing_ms") for k, v in cache.items()}
                                                 if isinstance(cache, dict) else {})
         self.plan_keys: set[str] = set()
+        #: P2 tembel 1m seri anahtarları (planlı DEĞİL; tazelik ölçütüne girmez — `lazy1m`)
+        self.lazy_keys: set[str] = set()
         #: REST koruması (madde 2): son okumanın sonucu ve anı (sn)
         self._guard_status: str = GUARD_NOT_RUN
         self._guard_at: float | None = None
@@ -1301,7 +1303,8 @@ class DataRun:
             if m.last_ts_ms is not None:
                 last_close = m.last_ts_ms + (step if (step and tf != METRICS_5M) else 0)
             age_h = round((now_ms - last_close) / 3_600_000, 2) if last_close is not None else None
-            historical = market == "dukascopy"
+            lazy = tf == "1m" and key not in plan_keys          # P2 tembel 1m: yalnız istenen günler, bayat sayılmaz
+            historical = market == "dukascopy" or lazy
             dl = self.delisted.get(f"{market}/{sym}")
             st = run.get("status")
             if m.status == SERIES_HALTED:
@@ -1321,6 +1324,8 @@ class DataRun:
                    "refetch": list(m.refetch), "series_seal": m.series_seal}
             if tf == FUNDING:
                 row["interval_ms"] = m.interval_ms
+            if lazy:
+                row["lazy"] = True
             if m.halted_reason:
                 row["halted_reason"] = m.halted_reason
             if dl is not None:
@@ -1362,7 +1367,8 @@ class DataRun:
                        sealed_parts=self.status.get("sealed_parts"))
         last = {k: self.status.get(k) for k in ("run_id", "mode", "started_at", "finished_at", "result", "exit_code",
                                                 "deadline", "flags", "rest", "archive", "seed", "recovery", "diffs",
-                                                "universe", "exchangeinfo", "selfcheck_status", "disk", "budget")}
+                                                "universe", "exchangeinfo", "selfcheck_status", "disk", "budget",
+                                                "lazy_1m")}
         if final:
             doc["last_run"] = last
             doc["running"] = None
@@ -1601,6 +1607,9 @@ class DataRun:
             # 6) REST kuyruğu: koruma burada YENİDEN okunur (ilk doldurmada arşiv adımı saatler sürer)
             self.progress["phase"] = "rest"
             self._rest_step(plan)
+            # 6b) P2 tembel 1m: yalnız gece biriminin istediği günlerin arşiv gün zip'leri (REST YOK; `lazy1m`)
+            self.progress["phase"] = "lazy_1m"
+            self._lazy_1m_pass()
             # 7) --update: 62 günlük pencerenin dışındaki açık dönemler (sınırlı onarım)
             if self.mode == MODE_UPDATE:
                 self.progress["phase"] = "repair"
@@ -2032,6 +2041,37 @@ class DataRun:
             return False
         src = pm.get("src") or {}
         return int(pm.get("rows") or 0) == (b - a) // st and set(src) == {"seed"}
+
+    def _lazy_1m_pass(self) -> None:
+        """P2 tembel 1m (§3.3; `lazy1m`): gece biriminin `paths/needs_1m.json`'da istediği günlerin yalnız arşiv GÜN
+        zip'leri; P1b kuralları aynen (`_archive_pass`: `gate` = 4h penceresi/son tarih/disk, `.CHECKSUM`, doğrulanmış 1m
+        zip'inin silinmesi, seri başına yeniden deneme). REST yok; zaten doğrulanmış/kalıcı eksik gün yeniden istenmez.
+        Seriler planlı değildir (tazelik ölçütüne girmez)."""
+        from .lazy1m import ROLE_LAZY_1M, lazy_plan, read_needs
+        needs = read_needs(self.paths)
+        if needs is None:
+            self.status["lazy_1m"] = {"needs": None}
+            return
+        plan = lazy_plan(needs, now_ms=ms_of(self.clock()), plan_keys=self.plan_keys, delisted=set(self.delisted))
+        work: list[tuple[SeriesSpec, list[Task]]] = []
+        skipped = 0
+        for market, sym, days in plan:
+            spec = SeriesSpec(market, sym, "1m", days[0][1], False, (ROLE_LAZY_1M,))
+            m = self.store.manifest(market, sym, "1m")
+            tasks = []
+            for stamp, a, b in days:
+                st = (m.files.get(stamp) or {}).get("st")
+                if st in (FS_VERIFIED, FS_MISSING) or (m.files.get(stamp[:7]) or {}).get("st") == FS_VERIFIED:
+                    skipped += 1
+                    continue
+                tasks.append(Task(stamp, a, b, recheck=st == FS_UNVERIFIED))
+            if tasks:
+                self.lazy_keys.add(spec.key)
+                work.append((spec, tasks))
+        self.status["lazy_1m"] = {"needs_generated_at": needs.get("generated_at"), "series": len(work),
+                                  "days": sum(len(t) for _s, t in work), "already_have": skipped}
+        self.progress["total"] = int(self.progress.get("total", 0)) + sum(len(t) for _s, t in work)
+        self._archive_pass(work)
 
     def _repair_pass(self, plan: list[SeriesSpec]) -> None:
         """`--update` (BLOCKER düzeltmesi, 2026-10-06): pencere DIŞINDAKİ açık dönemler. Önce hiç kapsanmamış dönemler,

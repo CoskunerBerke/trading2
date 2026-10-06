@@ -36,7 +36,16 @@ PKG = ROOT / "tradingbot" / "research_engine"
 NET = {"urllib", "http", "socket", "requests", "ssl", "aiohttp", "httpx", "websocket", "websockets", "ccxt", "ftplib", "smtplib"}
 #: paket DIŞI import izinleri (modül → izinli `tradingbot.*` modülleri)
 OUTSIDE_OK = {"store.py": {"tradingbot.history.store"}, "seed.py": {"tradingbot.history.store"},
-              "datastore.py": {"tradingbot.market.ratelimit"}}
+              "datastore.py": {"tradingbot.market.ratelimit"},
+              # P2a (§5.2, §5.3, §4.3): kayıtlı işlemin bağlamı defterin KENDİ saf kural fonksiyonlarıyla yeniden kurulur,
+              # yeniden oynatma `cf_label_v3`'ün kod yoludur (`learning_cf`), situation_v1 ortak deneyimin saf fonksiyonudur.
+              # Hepsi salt-okunur hesaptır (karar yolu motoru import etmez: test_research_engine_contract).
+              "rehydrate.py": {"tradingbot.indicators", "tradingbot.paper_rules", "tradingbot.ema200_trend", "tradingbot.box_theory",
+                               "tradingbot.donchian_trend", "tradingbot.candle_book", "tradingbot.candle_dsl",
+                               "tradingbot.candle_variations", "tradingbot.candle_confirmation"},
+              "fidelity.py": {"tradingbot.accounting", "tradingbot.accounting.funding", "tradingbot.core", "tradingbot.learn.shadow",
+                              "tradingbot.learning_cf"},
+              "journal.py": {"tradingbot.indicators", "tradingbot.learning_mode", "tradingbot.shared_experience"}}
 
 
 def _imports(path: Path) -> list[tuple[ast.AST, str, int]]:
@@ -68,9 +77,10 @@ def test_only_datastore_reaches_the_network_and_outside_imports_are_whitelisted(
                     assert ok, f"{f.name}:{node.lineno}: ağ modülü {mod}"
                 assert top != "subprocess" or f.name in ("selfcheck.py", "datastore.py"), f"{f.name}: subprocess"
             elif level >= 2:
-                full = "tradingbot." + mod
-                seen_outside.setdefault(f.name, set()).add(full)
-                assert full in OUTSIDE_OK.get(f.name, set()), f"{f.name}:{node.lineno}: paket dışı import {full}"
+                # `from .. import x, y` → tradingbot.x, tradingbot.y (P2a; modül adı yoksa içe aktarılan adlar modüldür)
+                for full in (["tradingbot." + mod] if mod else ["tradingbot." + a.name for a in node.names]):
+                    seen_outside.setdefault(f.name, set()).add(full)
+                    assert full in OUTSIDE_OK.get(f.name, set()), f"{f.name}:{node.lineno}: paket dışı import {full}"
     assert seen_outside == OUTSIDE_OK, seen_outside
 
 

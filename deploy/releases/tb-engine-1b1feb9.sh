@@ -11,28 +11,24 @@
 # NE YAPMAZ: worker'ı ve dashboard'ı DURDURMAZ / YENİDEN BAŞLATMAZ; /opt/tradingbot/app, config.yaml, state, defterler ve
 #   worker'ın HistoryStore'u (data/market) DEĞİŞMEZ; gece birimi dosyalarına dokunulmaz. Motor yalnız data/research'e
 #   yazar. Betik yalnız kendi klasörlerine (engine-app, veri birimi dosyaları, deploy-logs/engine-*) yazar.
-#
 # EN ERKEN DAĞITIM (sahip kararı 2026-10-06 "3 temiz gün sonra"; §2.9, §10): başka bir sürümün yeniden başlatmasından
 #   (deploy-logs/*-restart-at.txt) en az 3 GÜN sonra VE o sürümün ilk iki --check çıktısı temizse. 3 günü betik zorlar
 #   (3g-pencere-dışı kapısı; --backfill'in başlatılması da, VPS kabul 1); iki temiz --check sahip + inceleyici
 #   yargısıdır. P1a'nın 14 gecelik A/B'si bitmeden dağıtılırsa UYARI basılır (motor kodu değişir: yeni A/B dönemi).
-#
 # SAHİBİN ADIMLARI (VPS'te, sırayla; dosya adı tb-engine-<hedefin ilk 7 hanesi>.sh):
-#   1) sudo bash tb-engine-008e602.sh --dry-run    # yalnız denetim; hedef kod GEÇİCİ klonda; hiçbir şey değişmez
-#   2) sudo bash tb-engine-008e602.sh              # dağıt: kapılı veri birimi + engine-app sabiti + iki elle smoke
-#   3) sudo bash tb-engine-008e602.sh --backfill   # ilk doldurma (~45 sembolde ≈ 200 bin istek, ≈ 13–32 sa, ≈ 6 GB;
+#   1) sudo bash tb-engine-1b1feb9.sh --dry-run    # yalnız denetim; hedef kod GEÇİCİ klonda; hiçbir şey değişmez
+#   2) sudo bash tb-engine-1b1feb9.sh              # dağıt: kapılı veri birimi + engine-app sabiti + iki elle smoke
+#   3) sudo bash tb-engine-1b1feb9.sh --backfill   # ilk doldurma (~45 sembolde ≈ 200 bin istek, ≈ 13–32 sa, ≈ 6 GB;
 #                                                  #   disk kapısı smoke'un universe/<gün>.json seri sayısından);
 #                                                  #   yeniden çalıştırınca ilerleme/ETA/disk; durmuşsa kaldığı yerden
-#   4) sudo bash tb-engine-008e602.sh --check      # 14 gün her gün (gece + veri bölümü)
-#   5) sudo bash tb-engine-008e602.sh --ab-report  # 14. geceden sonra bir kez
-#   Geri alma: --rollback (veri birimi + ilk doldurma kalkar, engine-app P1a'ya döner; data/research KALIR);
-#   tam kaldırma ardından: sudo bash tb-engine-4962209.sh --rollback
+#   4) sudo bash tb-engine-1b1feb9.sh --check      # 14 gün her gün (gece + veri bölümü)
+#   5) sudo bash tb-engine-1b1feb9.sh --ab-report  # 14. geceden sonra bir kez
+#   Geri alma: --rollback (veri birimi + ilk doldurma kalkar, engine-app P1a'ya döner; data/research KALIR); tam kaldırma ardından: sudo bash tb-engine-4962209.sh --rollback
 # Çıkış: 0 tamam · 1 durdu (ön denetimde: hiçbir şey değişmedi) · 2 smoke geçmedi ya da saati değil (veri zamanlayıcısı
 #   KAPALI, engine-app önceki sabitine döndü) · 3 reload sonrası MemoryMax kayması (veri birimleri geri alındı)
 #   · 4 dağıtıldı ama bir değişmez KALDI / --rollback YARIM KALDI (neden yazılır; aynı komutla yeniden).
 # DİSK (P1a kapanış arşivi önce gelir): veri birimi ve ilk doldurma boş < 13 GB ya da data/research ≥ 17 GB'ta DÖNGÜ
 #   İÇİNDE kendiliğinden durur (DISK_REFUSE); gece biriminin reddi 10 / 20 GB'tır, arada 3 GB pay kalır.
-#
 # DAEMON-RELOAD GÜVENLİĞİ (§9.3): depodaki worker birimi MemoryMax=4G der, VPS'te 6G override vardır. daemon-reload (enable/
 #   disable'ın örtük reload'u dahil) YALNIZ reload_gate'ten geçer: worker ve dashboard NeedDaemonReload=no ve worker 6G;
 #   reload'dan SONRA 6G yeniden doğrulanır, değilse veri birimleri geri alınır ve betik durur. setup_vps_v3.sh ASLA
@@ -43,14 +39,14 @@
 #   =no; değilse yalnız stop yeter) · ilk doldurma: sudo systemctl stop tb-engine-backfill.service (--backfill sürdürür).
 set -Eeuo pipefail
 
-TIP="008e602528fc8af0053baa038ef6f5321d8b0449"    # P1b kod commit'i + inceleme düzeltmeleri (2026-10-06; 8d0a531'in yerine)
+TIP="1b1feb9b88558c8ca9b5a95e0f9b96e1f21a5261"    # P1b kodu + inceleme + yeniden doğrulama düzeltmeleri (2026-10-06; 008e602'nin yerine)
 T7="${TIP:0:7}"
 P1A_TIP="49622093a3d3bc334b454b4df2dcdb4e53eb5144" # P1a (tb-engine-4962209.sh): ön koşul ve --rollback hedefi
 BRANCH_REF="refs/heads/claude/gifted-knuth-0ehpcs"
 REPO_URL="${TB_ENGINE_REPO_URL:-https://github.com/CoskunerBerke/trading2.git}"   # içerik TAM SHA'ya bağlıdır
 SVC_SHA256="0db7a26a2a2c955ef3d9cdb83834f816c0556752233a8f312b3ffbbd7ca89b2e"    # gece .service @TIP (= P1a)
 TMR_SHA256="59fa82a34182f1e8c50377d6633191881a2250e640098cf8c369a5cff46b6ed6"    # gece .timer @TIP (= P1a)
-DSVC_SHA256="9a01ba829415f64ebbb9fa3d1701b45351b867d4dd730138d3691c286728c94d"   # deploy/tradingbot-engine-data.service
+DSVC_SHA256="d6bf310855443cfc383b3bdda7268f3d110c8df353c3799938ba465f1ce56c1b"   # deploy/tradingbot-engine-data.service
 DTMR_SHA256="7522cc40270e5cecf2a65039ba67302329a07866f01fde943adb81c495441c65"   # deploy/tradingbot-engine-data.timer
 INV_TESTS=57                                     # bağımsız koşucu: P1a kabul 1–8, 13, 14 + P1b 101–111, 113–115
 ENGINE_VER="research_engine_v1_p1b"
@@ -83,7 +79,7 @@ sc_show() { systemctl show "$1" -p "$2" --value 2>/dev/null || true; }
 sc_state() { systemctl "$1" "$2" 2>/dev/null || true; }
 fsha() { if [[ -f "$1" ]]; then sha256sum < "$1" | cut -d' ' -f1; fi; }
 cleanup() { if [[ -n "$TMP" && "$TMP" == /tmp/tb-engine-* && -d "$TMP" ]]; then rm -rf -- "$TMP"; fi; }
-on_err() { trap - ERR; set +e
+on_err() { (( BASH_SUBSHELL == 0 )) || exit 1; trap - ERR; set +e   # $(…) içindeki hata: yalnız üst kabuk bir kez işler
            printf '\nDUR: beklenmeyen hata (satır %s). Bu çalıştırmada değişen: %s\n' "$1" "${CHANGED[*]:-hiçbir şey}" >&2
            if [[ " ${CHANGED[*]} " == *" engine-app="* && " ${CHANGED[*]} " != *" veri zamanlayıcısı "* ]]; then
              if ( revert_eng ) >&2; then printf '   engine-app önceki sabitine döndürüldü (%s)\n' "${ENG_PREV:0:7}" >&2
@@ -163,8 +159,9 @@ def mark(flag):
     return {None: "[ölçülemedi]", True: "[DİKKAT]", False: "[tamam]", "bilgi": "[bilgi]"}[flag]
 def line(flag, txt):
     print("   %-13s %s" % (mark(flag), txt))
-def mb(rr):
-    return ("%s MB (%s × MemoryMax)" % (f(rr["memory_peak_bytes"] / 1048576, 0), f(rr.get("memory_peak_ratio"), 2))
+def mb(rr):     # tepe bellek; veri/doldurmada + MemoryHigh kısması (memory.events high)
+    hi = "" if (rr or {}).get("memory_high_events") is None else " · high %d" % rr["memory_high_events"]
+    return ("%s MB (%s × MemoryMax)%s" % (f(rr["memory_peak_bytes"] / 1048576, 0), f(rr.get("memory_peak_ratio"), 2), hi)
             if (rr or {}).get("memory_peak_bytes") else "—")
 def runs(res):
     d = os.path.join(res, "runs")
@@ -507,14 +504,14 @@ def c_est(res, fallback):
             return 0
     print("%d 0 sabit-tahmin" % int(fallback))
     return 0
-def c_bf(res, bf_state, peak, dmem, me="tb-engine-<sha7>.sh"):
+def c_bf(res, bf_state, peak, dmem, me="tb-engine-<sha7>.sh", high=""):
     flag, txt, _done = bf_view(res, bf_state, me)
     line(flag, "ilk doldurma: " + txt)
     if iv(peak):
-        line(iv(peak) > 0.8 * int(dmem), "tb-engine-backfill cgroup memory.peak %s MB (≤ 0,8 × %s MB)" % (
-            f(iv(peak) / 1048576, 0), f(int(dmem) / 1048576, 0)))
+        line(iv(peak) > 0.8 * int(dmem), "tb-engine-backfill cgroup memory.peak %s MB (≤ 0,8 × %s MB) · MemoryHigh kısması "
+             "(memory.events high) %s" % (f(iv(peak) / 1048576, 0), f(int(dmem) / 1048576, 0), iv(high) if iv(high) is not None else "—"))
     return 0
-def c_dcheck(res, tip, baseline, res_b, dmem, bf_state, peak, est, free_b="", me="tb-engine-<sha7>.sh"):
+def c_dcheck(res, tip, baseline, res_b, dmem, bf_state, peak, est, free_b="", me="tb-engine-<sha7>.sh", bf_high=""):
     b = rj(baseline) or {}
     t0 = (b.get("started_at") or b.get("deployed_at") or 0) - 60
     ds = rj(os.path.join(res, "summary", "data_status.json")) or {}
@@ -562,8 +559,10 @@ def c_dcheck(res, tip, baseline, res_b, dmem, bf_state, peak, est, free_b="", me
     if iv(peak):
         pks.append(iv(peak) / float(dmem))
     sk = [r.get("run_id") for r in runs(res) if r.get("result") == "SKIPPED_LOCKED" and (ep(r.get("started_at")) or 0) >= t0]
+    hi = [x for x in [(r.get("resources") or {}).get("memory_high_events") for r in rs] + [iv(bf_high)] if isinstance(x, int)]
     line(None if not pks and not sk else (bool(sk) or max(pks or [0]) > 0.8), "V6 veri/doldurma memory.peak en çok %s × "
-         "MemoryMax (≤ 0,8) · gece SKIPPED_LOCKED %d (0 olmalı)" % (f(max(pks) if pks else None, 2), len(sk)))
+         "MemoryMax (≤ 0,8) · gece SKIPPED_LOCKED %d (0 olmalı) · MemoryHigh kısması (memory.events high) en çok %s (bilgi; "
+         "sayfa önbelleği dahil, A/B tur p95 ile okunur)" % (f(max(pks) if pks else None, 2), len(sk), max(hi) if hi else "—"))
     rb, e = iv(res_b) or 0, float(est)
     line(None if not done else not (0.7 * e <= rb <= 1.3 * e), "V7 disk: data/research %s GB · tahmin %s GB ±%%30%s" % (
         f(rb / 1e9, 2), f(e / 1e9, 1), "" if done else " (ilk doldurma bitince karşılaştırılır)"))
@@ -769,12 +768,12 @@ make_clone() {  # $1: VAR OLAN boş klasör (servis kullanıcısına ait). Yerel
   fetch_tip "$1"
   gitx "$1" -c advice.detachedHead=false checkout -q --detach "$TIP"
 }
-pin_eng() {     # $1: SHA — engine-app'i sabitle + önceden derle (gece/veri birimi çalışırken çağrılmaz)
-  fetch_tip "$ENG" "$1"; gitx "$ENG" -c advice.detachedHead=false checkout -q --detach "$1"
-  svc "$ENG" "${LOW[@]}" "$VENV/bin/python" -s -m compileall -q tradingbot scripts >/dev/null
+pin_eng() {     # $1: SHA — engine-app'i sabitle + önceden derle (gece/veri birimi çalışırken çağrılmaz); çıkış = gerçek sonuç
+  fetch_tip "$ENG" "$1" && gitx "$ENG" -c advice.detachedHead=false checkout -q --detach "$1" \
+    && svc "$ENG" "${LOW[@]}" "$VENV/bin/python" -s -m compileall -q tradingbot scripts >/dev/null
 }
-revert_eng() {  # smoke geçmezse: gece birimi bilinen-iyi (önceki) kodla sürsün
-  if [[ -n "$ENG_PREV" && "$ENG_PREV" != "$TIP" ]]; then pin_eng "$ENG_PREV"; echo "   engine-app önceki sabitine döndü (${ENG_PREV:0:7})"; fi
+revert_eng() {  # smoke geçmezse / hata: gece birimi bilinen-iyi (önceki) kodla sürsün; çıkış GERÇEK sonuçtur (on_err'in set +e'sinde de)
+  if [[ -n "$ENG_PREV" && "$ENG_PREV" != "$TIP" ]]; then pin_eng "$ENG_PREV" || return 1; echo "   engine-app önceki sabitine döndü (${ENG_PREV:0:7})"; fi
 }
 unit_contract() {   # $1: ağaç. sha sabitlemesinin üstüne ikinci savunma: §2.2–§2.5 anahtar satırları (gece + veri)
   local s="$1/deploy/$SVC" t="$1/deploy/$TMR" ds="$1/deploy/$DSVC" dt="$1/deploy/$DTMR" u
@@ -783,7 +782,7 @@ unit_contract() {   # $1: ağaç. sha sabitlemesinin üstüne ikinci savunma: §
     && grep -qx 'ExecStart=/opt/tradingbot/venv/bin/python -s -m tradingbot engine-night' "$s" || return 1
   grep -qx 'OnCalendar=\*-\*-\* 00:41:00 UTC' "$dt" && ! grep -q '^PrivateNetwork' "$ds" \
     && grep -qx 'SupplementaryGroups=systemd-journal' "$ds" && grep -qx 'MemoryMax=1G' "$ds" && grep -qx 'MemoryHigh=512M' "$ds" \
-    && grep -q '^InaccessiblePaths=.*-/opt/tradingbot/env .*-/opt/tradingbot/data/vault' "$ds" \
+    && grep -q '^InaccessiblePaths=.*-/opt/tradingbot/env -/opt/tradingbot/env\.d .*-/opt/tradingbot/data/vault' "$ds" \
     && grep -qx "Environment=ENGINE_EXPECTED_MEMORY_MAX=$DATA_MEM" "$ds" && grep -qx 'TimeoutStartSec=50min' "$ds" \
     && grep -qx 'ExecStart=/opt/tradingbot/venv/bin/python -s -m tradingbot engine-data --update' "$ds" || return 1
   for u in "$s" "$ds"; do
@@ -813,6 +812,7 @@ undo_data() {       # VERİ birimlerini kaldır (zamanlayıcı reload'suz kapat�
 }
 worker_now() { printf '%s %s' "$(sc_show "$WORKER" MainPID)" "$(sc_show "$WORKER" NRestarts)"; }
 bf_peak() { cat "/sys/fs/cgroup/system.slice/$BF/memory.peak" 2>/dev/null || echo 0; }
+bf_high() { awk '$1 == "high" {print $2}' "/sys/fs/cgroup/system.slice/$BF/memory.events" 2>/dev/null || true; }
 
 # ================================================================== --check / --ab-report (salt-okunur; yalnız örnek eklenir)
 if [[ "$MODE" == --check ]]; then
@@ -850,7 +850,7 @@ if [[ "$MODE" == --check ]]; then
   free_b="$({ df -B1 --output=avail "$BASE" 2>/dev/null || true; } | awk 'NR==2{print $1+0}')"
   read -r est_b _ <<<"$(rpy est "$RES" "$DISK_EST" 2>/dev/null || echo "$DISK_EST")"
   rpy dcheck "$RES" "$TIP" "$BASELINE" "${res_b:-0}" "$DATA_MEM" "$(sc_state is-active "$BF")" "$(bf_peak)" "${est_b:-$DISK_EST}" \
-    "${free_b:-}" "$(basename "$0")" || echo "   (veri ölçüt raporu hata verdi)"
+    "${free_b:-}" "$(basename "$0")" "$(bf_high)" || echo "   (veri ölçüt raporu hata verdi)"
   echo "   14. geceden sonra  sudo bash $0 --ab-report · ilk doldurma ilerlemesi: sudo bash $0 --backfill"
   echo "   kapatma: sudo systemctl disable --now $DTMR (önce NeedDaemonReload=no); geri alma: sudo bash $0 --rollback"
   exit 0
@@ -928,7 +928,7 @@ if [[ "$MODE" == --backfill ]]; then
   say "İLK DOLDURMA — $BF (veri biriminin [Service] özellikleri AYNEN; süre sınırı yok; kaldığı yerden devam eder)"
   bst="$(sc_state is-active "$BF")"
   if [[ "$bst" =~ ^(active|activating)$ ]]; then
-    rpy bf "$RES" "$bst" "$(bf_peak)" "$DATA_MEM" "$(basename "$0")"
+    rpy bf "$RES" "$bst" "$(bf_peak)" "$DATA_MEM" "$(basename "$0")" "$(bf_high)"
     echo "   durdurma (sonra --backfill ile devam): sudo systemctl stop $BF · ayrıntı: sudo bash $0 --check"; exit 0
   fi
   eng="$(gitx "$ENG" rev-parse HEAD 2>/dev/null || echo yok)"
@@ -962,7 +962,7 @@ if [[ "$MODE" == --backfill ]]; then
   CHANGED+=("$BF başlatıldı")
   sleep 5
   bst="$(sc_state is-active "$BF")"
-  rpy bf "$RES" "$bst" "$(bf_peak)" "$DATA_MEM" "$(basename "$0")"
+  rpy bf "$RES" "$bst" "$(bf_peak)" "$DATA_MEM" "$(basename "$0")" "$(bf_high)"
   if [[ "$bst" == failed ]]; then
     journalctl -u "$BF" -n 30 --no-pager 2>/dev/null | sed 's/^/   | /' || true
     die "ilk doldurma hemen düştü (Result=$(sc_show "$BF" Result), çıkış $(sc_show "$BF" ExecMainStatus)). Çıktıyı bana iletin"
@@ -1133,7 +1133,7 @@ inv "birim-yüklendi" "$rc" "$DSVC MemoryMax=$(sc_show "$DSVC" MemoryMax) · $DT
 
 say "7/10 engine-app ayrı klonu ${ENG_PREV:0:7} → $T7 + compileall"
 [[ "$(stat -c %U "$ENG")" == "$SVC_USER" ]] || die "$ENG $SVC_USER'a ait değil"
-pin_eng "$TIP"; CHANGED+=("engine-app=$T7")
+CHANGED+=("engine-app=$T7"); pin_eng "$TIP"   # ÖNCE kaydet: yarım kalan sabitleme (checkout oldu, derleme düştü) de geri alınır
 [[ "$(gitx "$ENG" rev-parse HEAD)" == "$TIP" && -z "$(gitx "$ENG" status --porcelain)" ]] && rc=0 || rc=1
 inv "engine-app-sabit" "$rc" "$ENG HEAD = $T7, temiz, önceden derlendi"
 (( rc == 0 )) || { revert_eng; die "engine-app sabitlenemedi" 2; }

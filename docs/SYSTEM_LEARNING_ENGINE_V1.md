@@ -1642,6 +1642,32 @@ değişmedi; ayrıntı modül başlıklarındadır: `research_engine/{store,data
 19. **S7b yedeği** `universe/` ve `exchangeinfo/`'yu da alır (§3.6 P1b eki; mühürlü metin değil, `backup.INCLUDE`):
     küçüktür (günde birkaç on KB) ve yeniden ÜRETİLEMEZ; geri yükleme de bunları kapsar. `store/`, `archive_cache/`,
     `store/_meta`, `runs/data/` yeniden üretilebilir ve girmez.
+20. **Sürüm betiği** `deploy/releases/tb-engine-8d0a531.sh` (P1b; TIP 8d0a531, P1a betiğinin kapıları aynen: PAPER,
+    root, saat pencereleri, başka sürümün yeniden başlatmasından 3 gün, app ⊑ hedef, disk, worker 6G, doğrulanmış son
+    araştırma yedeği, kapılı reload). Kararlar:
+    - **Ön koşul P1a:** gece birimi dosyaları P1a'nınkiyle bayt bayt aynı, gece zamanlayıcısı açık ve aktif, engine-app
+      4962209 ya da torunu (hedefin torunuysa betik geri sarmaz); değilse hiçbir şeye dokunmadan durur. Gece birimi
+      dosyaları değişmediği için yeniden kurulmaz.
+    - **Sıra:** veri birimi dosyaları → kapılı reload → engine-app yeniden sabitleme → veri smoke'u (`engine-data
+      --update`; boş depoda tabansız seriler atlanır, dakikalar sürer) → gece smoke'u (yeni kod; S0 veri mührünü görmeli)
+      → veri zamanlayıcısı. Reload engine-app'ten ÖNCE yapılır: reload kapısı ya da 6G kayması engine-app'e dokunmadan
+      geri alınır. Smoke geçmezse veri zamanlayıcısı açılmaz VE engine-app önceki sabitine döner (gece birimi bilinen-iyi
+      kodla sürer). Veri smoke'u `REST_GUARD_UNKNOWN`'ı (worker günlüğü okunamadı → `SupplementaryGroups` ya da yetki)
+      kabul ETMEZ: §2.8'in "yalnız gerçek VPS" satırındaki günlük okuma böylece dağıtımda doğrulanır.
+    - **`--backfill`:** `systemd-run --unit=tb-engine-backfill`, özellikler KURULU veri biriminin (+ drop-in) [Service]
+      satırlarından aynen türetilir; yalnız `Type=exec` (oneshot systemd-run'ı saatlerce bekletirdi), `ExecStart` (komut
+      `engine-data --backfill`) ve `TimeoutStartSec` (süre sınırı yok) farklıdır. [Unit] satırları (OnFailure drop-in'i)
+      geçici birime taşınmaz; izleme `--check`'tedir. Sürerken yeniden çalıştırmak ilerlemeyi/ETA'yı gösterir (yeniden
+      başlatmaz); düşmüşse sıfırlanıp sürdürülür. 3 gün kuralı, saat, PAPER, disk (boş ≥ 10 GB + tahminin %130'u − mevcut)
+      ve veri biriminin boşta olması kapıdır. Geçici birimin bu özellikleri kabul etmesi yalnız gerçek VPS'te görülür
+      (systemd ≥ 245 denetlenir; kabul edilmezse hiçbir şey başlamaz).
+    - **`--rollback` = P1a'ya dönüş** (veri birimi + ilk doldurma kalkar, engine-app 4962209'a döner, gece birimi ve
+      `data/research` kalır); tam kaldırma ardından P1a betiğinin `--rollback`'idir.
+    - **`--import-dukascopy` geçişi YOK:** belge bunu sürüm betiğinden istemez (yalnız `engine-data` alt komutu); hazır
+      ayna yokken VPS kabul 2 "yapılamadı" ile karşılanır.
+    - **Sapma:** betik ~1.140 satırdır (§9.3 hedefi "< ~800"): P1a'nın gece `--check`/`--ab-report`/K6'sını aynen
+      taşır (yeni A/B dönemi bu betikle ölçülür) ve veri bölümünü (V1–V7, veri/doldurma pencereleri) ekler; yine de
+      tb-deploy-*'nin dörtte birinden küçüktür. Sandbox testi `tests/test_research_engine_release_p1b.py`.
 
 ### P2 — İşlem günlüğü, yol, rehydrate, fidelity, atıf, UTC günü MTM, özet
 

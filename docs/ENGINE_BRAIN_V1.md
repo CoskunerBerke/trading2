@@ -453,3 +453,279 @@ kıyası aynı config dönemi içinde.
   `K_BOX`, `K_FM` ve bunların örtüleri) → ana belge §6.7 Kapı C yazılı önerisi (`proposals/<id>.json` + `.tr.md`), sahip
   onayı, normal sürüm. Sahip kararındaki "o yazılana kadar Kapı C geçerlidir" hükmü bu adaylar için sürer.
 - Etiket her yerde "ileri yeniden oynatma — gerçek defter değil"; canlı toplamlara asla girmez; `engine-query candidates`.
+
+---
+
+## 7. Otomatik PAPER terfisi (sahip kararı 2026-10-06)
+
+### 7.1 Seçim: mühürlü, imzalı manifest + derlenmiş kapalı katalog (kural dili yok)
+
+- **Seçilen:** worker yalnız `AUTO_v1` sürümünde derlenmiş `strategy_lib` fonksiyonlarını, `AUTO_CATALOG_V1`'de sayılmış
+  parametre demetleriyle çalıştırır. Manifest kod, ifade, dosya yolu ya da serbest parametre taşımaz; yalnız katalogdan bir
+  `variant_id`, kapalı bir `scope_id`, numaralandırılmış örtü alanları (§4.3 dönüşümleri: kova ∈ `situation_v1` kümesi,
+  coin ∈ P23, stop k ∈ {0,75; 1; 1,5; 2}, çıkış ∈ sabit liste) ve politikanın sabitlediği sayıları seçer.
+- **Neden kural dili (DSL) değil:** (a) yorumlayıcı worker'da yeni bir yürütme yüzeyidir; (b) anlamının motor çekirdeğiyle
+  bayt bayt aynı olması ayrıca kanıtlanmalıdır; (c) serbest birleşimler hiç test edilmemiş kurallar üretir ve deneme sayısını
+  tanımsız bırakır. Katalogda **test edilen kod çalışan koddur** (aynı modül), olası davranışlar sonlu ve mühürlüdür, keyfi
+  kod çalıştırma yoktur.
+- **Bedeli (dürüst):** yeni aile, yeni dönüşüm türü ya da yeni veri girdisi bir worker sürümü ister. Katalog içindeki her
+  terfi sürüm istemez.
+
+### 7.2 Akış
+
+```
+motor S6 (Holm gecesi)                         worker (her turun sonu, "auto" fazı)
+  PROMOTABLE ∧ katalogda ─► promotions/inbox/<promo_id>.json ─► doğrula (§7.4) ─► red: state/auto_paper/rejects.jsonl
+                                                               └► kabul: state/auto_paper/<promo_id>/accepted.json
+                                                                   BEKLEMEDE (veto penceresi 24 s) ─► AKTİF ─► DURAKLADI ─► EMEKLİ
+motor ertesi gece: state/auto_paper/acks.jsonl (salt-okunur) ─► manifest promotions/archive/'a, trials: PROMOTE
+motor S5r: SAPMA ─► promotions/retire/<promo_id>.json ─► worker uygular ("şüphede dur": iyi biçimli geri çekme imzasız da kabul)
+sahip: python -m tradingbot auto-paper --kill | --unkill | --veto <id> | --retire <id> | --status  (yalnız state/auto_paper/)
+```
+
+Yazma alanları ayrıdır: motor yalnız `data/research/promotions/`'a, worker yalnız `state/auto_paper/`'a yazar. Sahibin kill/veto
+dosyaları `state/` altındadır; motor birimleri `state`'i çekirdek düzeyinde salt-okunur gördüğü için **motor bir kill'i
+asla geri alamaz**.
+
+### 7.3 Manifest şeması `auto_promo_v1` (kanonik JSON: sıralı anahtar, `(",", ":")`, UTF-8; ≤ 32 KB)
+
+`{schema, promo_id, created_at, valid_until (+14 g), lib_version, lib_sha, catalog_sha, registry_sha, auto_policy_sha,
+engine_code_sha, trials_head_sha, candidate_id, row_id, variant_id, family, overlays{…}, scope_id, symbols[],
+timeframes[], sizing{starting_equity_usdt: 400, risk_pct: 0.25, leverage_max: 3}, retire_params{a_ci95_mean_r[2],
+bt_p95_dd_r, b_mean_r, cusum_h_sigma: 4}, evidence{gate_a{q_bh, n_oos, years, pos_fold_share, pbo, dsr, N, sr_var,
+placebo_ci_lo, fwd_days, fwd_n, fwd_mean_adverse, top_share|cluster_coherence_r}, gate_b{look_no, n, days, p_day, alpha,
+stress_mean_r, mean_in_a_ci, dd_r, dd_pct, liquidations, causality_ok, stale_share}, holm{m, rank, p, p_adj, alpha}},
+max_corr_with_active, kid, sig}`. `promo_id` = `auto_<lib>_<variant_id>_<scope>_<sha8>` (sha8 = kanonik gövde − `sig`'in
+sha256'sı). `sig` = HMAC-SHA256(anahtar, kanonik gövde − `sig`); `kid` = sha256(anahtar)[:12].
+
+**Anahtar ve tehdit modeli (dürüst).** Anahtar `/opt/tradingbot/data/keys/promotion_hmac.key` (32 rastgele bayt, 0440
+`tradingbot`; `AUTO_v1` betiği yoksa üretir). Gece birimi (`ReadOnlyPaths=/opt/tradingbot/data`) imzalar, worker doğrular.
+İmza bütünlük ve kaynak sağlar (kısmi yazım, elle düzenleme, motor dışı kod yolları); **ele geçirilmiş bir motora karşı
+koruma değildir** (aynı kullanıcı, aynı güven alanı). Asıl güvence, manifest doğru olsa da olmasa da geçerli olan katalog +
+sert tavanlar + PAPER'dır (§7.6). P4b ile veri birimine `InaccessiblePaths=-/opt/tradingbot/data/keys` eklenir (ağlı tek
+birim anahtarı okuyamaz).
+
+### 7.4 Worker doğrulaması (sıralı; ilk hata red nedenidir, manifest dosyasına dokunulmaz)
+
+| # | Denetim | Sonuç |
+|---|---|---|
+| 1 | boyut ≤ 32 KB, JSON, şema `auto_promo_v1`, anahtar kümesi **tam** (bilinmeyen anahtar = red) | `REJECT_SCHEMA` |
+| 2 | anahtar okunur; `kid` eşit; HMAC eşit (sabit zamanlı karşılaştırma) | `REJECT_NO_KEY` / `REJECT_SIG` |
+| 3 | `created_at` ≤ şimdi + 5 dk; `valid_until` > şimdi | `REJECT_TIME` / `EXPIRED` |
+| 4 | `registry_sha`, `catalog_sha`, `auto_policy_sha`, `lib_sha` worker'da derlenmiş sabitlere eşit | `REJECT_SKEW` |
+| 5 | `variant_id` katalogda; örtüler numaralı alanlarda; `scope_id` çözümü = `symbols`; semboller ⊆ P23 ∩ ham config `entry_universe.symbols`; dilimler ⊆ {1d, 4h} | `REJECT_CATALOG` |
+| 6 | `sizing` = politika sabitleri (birebir) | `REJECT_SIZING` |
+| 7 | `evidence` alanlarının her biri kayıt eşiklerini sağlar (Kapı A, Kapı B, Holm `p_adj` ≤ 0,05); `max_corr_with_active` ≤ 0,7 | `REJECT_EVIDENCE` |
+| 8 | `promo_id` daha önce kabul/red/emekli/veto edilmemiş | `REJECT_DUPLICATE` |
+| 9 | kapasite: etkin + bekleyen < 4; tek-coin ≤ 2; aynı coin ≤ 1; aynı aile ≤ 2 | `WAITLIST` (red değil; `valid_until`'a kadar bekler) |
+| 10 | config ve `state/mode.json` PAPER; `auto_paper.enabled`; KILL yok; env kapatmamış; motor kalp atışı ≤ 72 saat (`data/research/summary/run_status.json`) | `HOLD` (tekrar denenir) |
+
+Kabul: `accepted.json` (manifest + `accepted_at` + `activate_at` = +24 s), boş `futures_ledger.json`, `acks.jsonl` satırı.
+
+### 7.5 `AutoBook` çalışması (`tradingbot/autobook/`)
+
+- **Katalog `AUTO_CATALOG_V1` (64 varyant):** B 10, C 8, D 7 + `K_D4`, E 2 (4h), F1 2 (4h), `K_T2`, `K_M2`, `K_C4_CV001…008`,
+  O'nun T2/M2/D4/C4 × {`F_ER`, `F_BTC`, `F_VOL`, `X_TRAIL2`, `X_CHAN3`, `X_TIME`} = 24. Ölçüt: worker turunun **zaten
+  çektiği** veri yeter (1d 420 gün, 4h 730 gün; 1h yalnız 30 gün, 5m yalnız 3 gün → dışarıda); girdiler OHLCV + BTC 4h
+  (fonlama/OI yok); semboller P23 (tur kapsamında); çıkış stop/hedef/kapanmış barda `CLOSE`/`MOVE_STOP` ile ifade edilir
+  (TP merdiveni kısmi çıkış ister → dışarıda). Gerekçe: worker'ın kendi veri çekmesi yeni ağ yolu ve mevcut defterlerin
+  önbelleğiyle etkileşim demekti (M2X §1.6 madde 3).
+- **Tur içinde:** `_strategy_paper_tour`'un en sonunda, M2X'ten sonra, indeks yazımından önce; kendi fazı `auto`; defter
+  başına `try/except`; faz bütçesi 5 sn (aşılırsa kalan oto defterler o tur atlanır, `AUTO_TIME_BUDGET`).
+- **Girdiler yalnız turun hazırladıkları:** `runner.last_frames` (salt okunur), `pmarks`/`pmarks_f`/`pgaps`, `pbars`
+  (kapanmış 1h uçları), `funding_rates` (yalnız arama), `_frame_provenance`. Fiyatı/çerçevesi olmayan sembolde giriş yok
+  (`AUTO_NO_MARK` / `DATA_FRAME_MISSING_*`).
+- **Yürütme diğer defterlerle aynı:** `strategy_lib` niyeti → `strategy_paper.verify_paper_data` → `apply_action(learning=None)`
+  → `apply_closed_bars` → `tick` → kayıt. Kendi `FuturesLedgerV2`'si (`state/auto_paper/<promo_id>/futures_ledger.json`;
+  ücret/kayma/bracket/likidasyon config'teki gibi), kendi `RiskEngine`'i (profil kopyası + §7.6 tavanları) ve **bellek içi,
+  kalıcı olmayan özel `KillSwitch`'i**. Kayıt `features.auto = {promo_id, variant_id, lib_sha, catalog_sha}` taşır.
+- **Koruyucu izleyici:** oto tutamaçları listenin EN SONUNA eklenir (M2X'ten sonra); izleyici tek toplu `premiumIndex`
+  kullandığı için diğer defterlerin fiyat partisi değişmez.
+
+### 7.6 Sert tavanlar `AUTO_POLICY_V1` (worker kodunda sabit, mühürlü; config yalnız daha sıkı yapabilir)
+
+| Tavan | Değer | Gerekçe |
+|---|---|---|
+| Etkin + bekleyen defter | ≤ 4 | izlenebilirlik; yanlış terfi bedelini sınırlar (soru S1) |
+| Tek-coin defter / aynı coin / aynı aile | ≤ 2 / ≤ 1 / ≤ 2 | coin'e özel defterlerde yoğunlaşma; çeşitlilik |
+| Başlangıç özsermayesi | 400 USDT | %0,25 = 1 USDT: P4 adayı (200 × %0,5), keşif ve canlı defterlerle aynı mutlak risk → aynı min-notional ve yuvarlama davranışı (soru S8) |
+| İşlem başı risk | %0,25 sabit | sahip kararı; öğrenme modu, slot, min-notional yükseltmesi yok |
+| Kaldıraç | ≤ 3; likidasyon mesafesi ≥ 2 × stop | canlı defterlerin tavanlarının altı |
+| Defter açık riski | ≤ özsermayenin %2'si (8 işlem) | |
+| Bütün oto defterler açık riski | ≤ toplam oto özsermayenin %1,5'i | aynı anda dolu dört defter olmaz |
+| Sembol başına (oto toplamı) | ≤ 2 USDT açık risk; defter başına sembolde 1 pozisyon | korelasyon |
+| Günlük yeni giriş | ≤ 10 / defter / UTC günü | kaçak döngü koruması |
+| Min-notional | < 5 USDT → ret | riski büyütmez |
+| Düşüş | zirveden −%6 → yeni giriş yok (`DURAKLADI_DD`); −%10 → hepsi kapanır, `EMEKLİ_DD` | Kapı B sınırı 200'ün %8'i = 16 USDT = 400'ün %4'ü; −%6 bunun 1,5, −%10 2,5 katı (test edilen dağılımın dışı) |
+| Motor kalp atışı | > 72 saat → yeni giriş yok (`ENGINE_SILENT`) | SAPMA izlemesi çalışmıyorsa açılmaz |
+| Mod | yalnız PAPER; LIVE/LIVE_LIMITED'da `auto_paper.enabled: true` = `ConfigError` | gerçek para asla |
+| Genel kapatma | `state/auto_paper/KILL` (sahip komutu), env `TRADINGBOT_AUTO_PAPER=off`, `auto_paper.enabled: false` | KILL yeniden başlatma istemez |
+
+### 7.7 Emeklilik (otomatik) ve SAPMA
+
+- **Worker'da (her tur):** düşüş kuralları; KILL (sonraki turda yeni giriş yok, açık oto pozisyonlar tur fiyatıyla kapanır,
+  soru S3); BEKLEMEDE'de `--veto`; 3 ardışık tur istisnası → `DURAKLADI_ERROR` (pozisyonlar izleyiciyle korunur), 24 saat
+  sürerse `EMEKLİ_ERROR`; kuralın çerçevesi 3 ardışık karar anında yok → `DURAKLADI_DATA`; `ENGINE_SILENT`; manifestin
+  `catalog_sha`'sı yeni worker sürümünün kataloğuna eşit değil → `EMEKLİ_SKEW`.
+- **Motorda (S5r, her gece hesap; karar yalnız bakışlarda: n = 30, 60, 100, sonra her 50 işlem):** ana belge §6.6 durdurma
+  kümesi aynen (≥ 30 işlemden sonra ortalama R < −0,10; kayan 60 günlük ortalama R CI üst < 0; düşüş > 2 × geriye-test p95;
+  günlük net R CUSUM h = 4σ) → `SAPMA_STAT`; n ≥ 60'ta canlı ortalama R < Kapı A OOS CI alt sınırı → `SAPMA_DIST`; parite:
+  motor oto defterin kuralını depolanmış barlarda gölge olarak oynatır, ≥ 20 girişte sinyal eşleşmesi < %90 ya da eşleşenlerde
+  medyan |ΔR| > 0,10 → `SAPMA_PARITY`. Motor geri çekme isteği yazar, worker uygular.
+- **Kapanış biçimi:** SAPMA/SKEW/veto/hata → yeni giriş yok, açık pozisyonlar kendi kurallarıyla çıkar, 7 gün sonra kalanlar tur
+  fiyatıyla kapanır. Düşüş −%10 ve KILL → sonraki turda hepsi kapanır. Emekli defter silinmez, aynı `promo_id` asla yeniden
+  açılmaz (yeni kanıt = yeni aday = yeni `promo_id`).
+
+### 7.8 Yalıtım değişmezleri (M2X §1.6 deseni; hepsi testli)
+
+1. Ayrı öznitelik `engine.auto_books`; `strategy_books`, `_strategy_open_symbols`, `_funding_step`, `_chart_analysis_tour`,
+   ortak deneyim `build_adapters`, `_lm_refresh`/`_lm_books`, `_strategy_paper_exit_check`, Box zamanlayıcısı listelerine girmez.
+2. Sıra en son; kendi fazı; arızası hiçbir defteri etkilemez.
+3. Kendi fiyat/ağ çağrısı yok: casus testi `runner.live.snapshot`, sağlayıcı, `FundingRates.refresh`, `_paper_marks`,
+   `exit_check` çağrılarının sayısı, sembolleri ve sırası oto açık/kapalı aynıdır; oto kodu sıfır çağrı yapar.
+4. `config_hash()` ve `SharedExperienceCollector.from_engine` özetinden `auto_paper` bölümü düşer (`m2x_aggressive` gibi);
+   değer testte sabit (bölümsüz kodun aynı config'teki değerine eşit).
+5. Kayıtlar değişmez: `paper_rules.spec_for`, `learning_mode.BOOK_NAMES`, `shared_experience.rows.BOOKS`,
+   `bot_scorecard.BOOKS`/`MIRROR_BOOKS`, `strategy_paper_index.json` (oto girdisi yok; ayrı `state/auto_paper/index.json`).
+6. Globlayıcılar: oto defterler iki düzey derindedir; `state/*/futures_ledger.json` onları görmez (karne, `book_snapshot`,
+   motor `find_books`); okuyan her yer ayrı ve açık bölümle okur.
+7. Paylaşılan değiştirilebilir durum yok: paylaşılan `KillSwitch` asla `trip` edilmez (casus); ama paylaşılan kill etkinse oto
+   defterler de giriş açmaz (dur yönü). TradeMemory, öğrenici, danışman, CF kaydı, yapı deposu, karar günlüğü yok.
+8. Yazma yalnız `state/auto_paper/**` (açma modu testi); `data/research/promotions` yalnız okunur.
+9. AST: `tradingbot/autobook/` `research_engine`'i, `execution/*`'u ve ağ modüllerini import etmez; `engine_v3` onu tembel
+   import eder; `strategy_lib` saf kalır.
+10. **Bayt testi** (`tests/record_only_tour_runner.py`): sabit saat, sahte sağlayıcı; kabul edilmiş bir manifestle oto açık
+    ve kapalı iki koşu. İzin verilen farkların TAM listesi: `state/auto_paper/**`; `protective_monitor.json`'daki oto anahtarları;
+    oto defterli ilk-gözlem boşluk satırları; tur fazı süreleri ve `auto` fazı. Geri kalan her şey bayt bayt aynıdır (config_hash,
+    karar günlükleri, `chart_analysis`, ortak deneyim ve danışman, öğrenme görünümü, CF'ler, yapı deposu, ana defter, T2/M2/Box/
+    D4/C4/C4S/M2X defterleri ve özetleri, `strategy_paper_index.json`, `killswitch.json`, health'in süre dışı alanları). "Etkin
+    ama manifest yok" koşusu kapalıyla (faz süresi hariç) aynıdır.
+
+### 7.9 Tek seferlik worker sürümü `AUTO_v1`
+
+- **İçerik:** `tradingbot/strategy_lib/` (P3b'de yazılır; worker ilk kez import eder), `tradingbot/autobook/{policy, catalog,
+  manifest, verify, book, cli}.py`, `config_v3`'e katı anahtarlı `auto_paper` bölümü (`enabled`, `max_books` ≤ 4, `veto_hours`
+  ≥ 24, `key_path`), `engine_v3` kancaları (kurulum, tur sonu, izleyici tutamaçları, config_hash düşürme, faz), karnede
+  OTOMATİK bölümü, `auto-paper` alt komutu, anahtar üretimi, sürüm betiği (`--dry-run`, deploy = worker boşta durdur/başlat,
+  `--check`, `--rollback`; 3 gün kuralı), testler (§8.1 P7a).
+- **Sonra:** terfiler sürüm istemez. Sürüm isteyenler: yeni aile/dönüşüm türü, 1h/5m/altın/fonlama verisi, katalog değişikliği
+  (katalog sha'sı değişince eski oto defterler `EMEKLİ_SKEW`; sessiz kayma yok).
+- Mevcut defterlerin herhangi bir değişikliği bu yoldan **asla** yapılmaz (ana belge §9.1 değişmez).
+
+### 7.10 İzleme
+
+- **`--check`** ("OTOMATİK PAPER DEFTERLERİ"; AUTO_v1 betiği ve sonraki her worker/motor betiği): KILL, anahtar `kid`, motor
+  kalp atışı yaşı; etkin/bekleyen/emekli sayısı ve tavanlar; defter başına `promo_id`, varyant, kapsam, durum, açılış, işlem
+  sayısı, net R, özsermaye, düşüş, açık risk, son durum nedeni; son 7 günün red/bekleme nedenleri.
+- **`digest_tr.md`** (≤ 10 satır): aynı özet + sabit uyarı: "Bu defterler 4.513+ deneme arasından seçildi; ileri testtir,
+  kanıt değil. Hiçbir yerde avantaj yoksa bile yılda ≈ 0,6'ya kadar yanlış terfi olabilir."
+- **Günlük hedef:** ayrı `AUTO_PAPER` akışı, yalnız tanımlayıcı (hüküm ailesine girmez); `tgt_v1`'in `LIVE_PAPER` başlığı
+  değişmez; "toplam (oto dahil)" bilgi satırı (soru S4).
+- **Günlük/atıf/dersler (P7b):** motorun `ledgers.py`'sine `state/auto_paper/*/futures_ledger.json` ayrı akış olarak eklenir
+  (S1a arşiv, S1b `tj_v1`, S2 atıf) → "neden kazandı/kaybetti" oto defterlerde de çalışır.
+- `engine-query auto [<promo_id>]`, `python -m tradingbot auto-paper --status` (salt-okunur).
+
+### 7.11 Geri alma
+
+1. Anında: `sudo -u tradingbot … python -m tradingbot auto-paper --kill --operator berke --note "<neden>"` (yeniden başlatma yok).
+2. Tek defter: `--retire <promo_id>`; bekleyen: `--veto <promo_id>`.
+3. Config: `auto_paper.enabled: false` + yeniden başlatma (açık oto pozisyonlar DONAR; bu yüzden önce kill).
+4. Kod: AUTO_v1 betiğinin `--rollback`'i (önceki worker sürümü); `state/auto_paper` kalır, okunmaz.
+5. Motor: `engine-query auto --pause-promotions --operator berke` (yeni manifest yazılmaz) ya da gece zamanlayıcısını kapatmak
+   (72 saat sonra `ENGINE_SILENT` oto girişleri de durdurur).
+
+### 7.12 Arıza kipleri ve sınırlama
+
+| Arıza | Sınırlama |
+|---|---|
+| Kısmi/bozuk manifest | atomik yazım; §7.4-1 `REJECT_SCHEMA`; motor ertesi gece yeniden yazar |
+| İmza bozuk / anahtar yok / anahtar değişti | `REJECT_SIG`/`NO_KEY` (fail-closed); motor `kid` farkını görür, bekleyenleri yeniden imzalar; etkin defterler sürer |
+| Motor ile worker sürüm kayması | `REJECT_SKEW`; `--check` ve özet uyarısı |
+| Motor kapıyı yanlış değerlendirdi (alanlar tutarsız) | §7.4-7 `REJECT_EVIDENCE` |
+| Motor kapıyı yanlış değerlendirdi (alanlar tutarlı ama yanlış) / yanlış pozitif aday | yakalanmaz; katalog + %0,25 + açık risk tavanları + −%6/−%10 + SAPMA sınırlar; en kötü ≈ 40 USDT kâğıt kayıp / defter |
+| Uzun kesintiden sonra eski manifest | `valid_until` 14 gün → `EXPIRED` |
+| Kapasite dolu, korelasyonlu aday | `WAITLIST`; motor etkin oto defterle günlük getiri korelasyonu > 0,7 olanı bekletir |
+| State geri yüklemesi | görülmüş-kimlik listesi state'tedir; motor manifesti arşivlediyse yeniden kabul yok; arşivlenmeden önceki geri yüklemede aynı `promo_id` yeniden kabul edilirse `RESTORE_REACCEPT` dönemi ayrı izlenir |
+| `AutoBook` istisnası, süre aşımı | defter başına `try/except`; 3 ardışık → `DURAKLADI_ERROR`; 5 sn faz bütçesi; bayt testi diğer defterlerin değişmediğini kanıtlar |
+| Fiyat/çerçeve yok | giriş yok; açık pozisyonu izleyici (toplu `premiumIndex`) korur |
+| Kaçak döngü | günlük 10 giriş, sembolde 1 pozisyon, açık risk tavanları |
+| Paylaşılan kill tetiklenmesi | özel `KillSwitch`; casus testi |
+| Motor durdu | 72 saat sonra `ENGINE_SILENT` |
+| Gece/veri birimi ele geçirildi, sahte manifest | imza durdurmaz (aynı güven alanı); katalog + tavanlar + PAPER; veri birimi anahtarı göremez (P4b) |
+| Worker yürütmesi motor çekirdeğinden ayrıştı | S5r parite → `SAPMA_PARITY` |
+| LIVE moda geçiş | `ConfigError`; `AutoBook` kurulmaz |
+| Motorun sahip kill/veto'sunu geri alması | imkânsız: `state` motor birimlerinde çekirdek düzeyinde salt-okunur |
+| Katalog değişen worker sürümü | eski defterler `EMEKLİ_SKEW` |
+
+### 7.13 Dürüst etiket
+
+Her yerde "OTOMATİK PAPER — ileri test, kanıt değil"; oto defterler `KANITLANDI`/`TUTTU` üretmez (`AUTO_PAPER` hüküm ailesinde
+değildir, metin testi); k*/kaldıraç satırı oto defterler için de yalnız lider tablosundadır; motor kaldıraç artırmayı asla
+önermez.
+
+---
+
+## 8. Yapım planı, mühür planı ve dağıtım sırası
+
+### 8.1 Ajan boyutunda adımlar ve kabul testleri
+
+| Adım | Teslimat | Kabul testleri (depo; sentetik veri, ağ yok) |
+|---|---|---|
+| **P3a** mühürler ve defter | `research_engine/registry.py` (`LIB_V1`, `WF_PROTOCOL_V1`, `STATS_V1`, `LESSON_REGISTRY_V1`, `PIT_RULES_V1`, `T_SEAL_MS`), `prior_trials.json`, `trials.py`, `library/config_epochs.json` üreticisi (git geçmişi + belgelenmiş sahip kararları), `engine-query trials` | sha'lar sabit; her alan değişikliği sha'yı değiştirir (özellik testi); yalnız ekleme + zincir; sayaçlar azalmaz; öncül = 2.775; `spec_sha` tekilleştirme; bütçe tablosu (818 / 1.738) koddan yeniden üretilir; "asla gevşetme" iskeleti |
+| **P3b** kütüphane + çekirdek | `tradingbot/strategy_lib/` (B…O, kopyalar canlı fonksiyonlardan), `research_engine/kernel.py` | aile başına altın sentetik yollar; §2.1 parite (a) ve (b) (fixture ledger'lar, dönem başına); `strategy_lib` saflığı (AST: G/Ç, saat, ağ yok); belirlenimcilik; hız ölçümü (§5.3 tahmini güncellenir) |
+| **P3c** PIT evren | `pit_universe.py` (veri birimi), `engine-data --backfill-pit` | delist olmuş sembollü S3 listesi fixture'ı doğru tarihler; gün d'de PIT evren; PIT yokken XSEC kapıya kapalı; P1b pencere/disk/`.CHECKSUM` kuralları; gece import grafiği `pit_universe`'ı içermez |
+| **P3d** walk-forward + istatistik | `wf.py`, `stats.py`, `cscv.py`, `placebo.py` | `leakage_check`, ambargo; `COIN_FIT` üç yollu (`run_three_way` her adımın yalnız kendi verisini görür); maliyet senaryoları; `p_day` başvuru uygulamasıyla eşit; BH; DSR ampirik `sr_var`; CSCV bilinen cevap (gürültü → PBO 0,5 ± 0,1; dikilmiş avantaj → < 0,1); plasebo tohum belirlenimciliği; dikilmiş avantaj Kapı A'yı geçer, 200 boş dünyada geçme ≤ q; Kapı A yalnız bakış gecesinde (özellik) |
+| **P3e** keşif + lider tablosu | `explore.py`, lider tablosu KEŞİF bölümü, `engine-query explore` | zaman yolculuğu (yalnız ≥ `T_SEAL_MS`); artımlı = baştan; hüküm kelimesi yok; 3.745 seri; ölçekli dünyada ≤ 10 dk |
+| **P3f** dersler | `lessons.py`, `derived_specs.jsonl`, aylık `LIB_v1.<ay>` | bakış yalnız eşiklerde; alfa bölünmesi; BH ailesi; ileri doğrulama yalnız T_k sonrası; geçişler; runner `APPLIED_BOUNDED` yazamaz; dönüşüm → spec + O ile tekilleştirme; canlı kural dışlama; §5.10 dönem başına yeniden üretim |
+| **P3g** gece + kaynak + sürüm | `night.py` S4x/S4w/S6 planı, bütçeler, `MEMORY_GUARD`, gerekirse birim dosyası, `tb-engine-<sha7>.sh` | büyük sentetik dünyada tam gece pencere içinde; `VmHWM` ölçümü ve §5.3 karar kuralı; Kapı A gecesi planı; birim sözleşmesi (`ENGINE_EXPECTED_MEMORY_MAX` = `MemoryMax`); bağımsız koşucu alt kümesi |
+| **P4a** adaylar + kapılar | `prospective.py`, `promotion.py` (Kapı A doğumu, Kapı B, durdurma, Holm ayı), Kapı C önerileri | ana belge P4 kabul 1–7; Holm ayı tanımı; kapasite/kuyruk; yönlendirme (katalog içi → manifest, dışı → öneri) |
+| **P4b** manifestler | manifest yazıcı (kanonik, HMAC, atomik), geri çekme istekleri, ack okuma/arşiv, `--pause-promotions`, `engine-query auto`, veri birimi `InaccessiblePaths` keys | altın manifest baytları; imza; eksik bir koşulda manifest **hiç** yazılmaz; anahtar değişince yeniden imza |
+| **P7a** worker `AUTO_v1` | §7.9 | doğrulayıcı matrisi (her red nedeni); tavanlar; emeklilik yolları; kill/veto/unkill; yalıtım casusları; bayt testi; config_hash sabiti; LIVE `ConfigError`; geri yükleme; karne; `--check` |
+| **P7b** motorda oto izleme | `ledgers.py` oto akışı, S5r (SAPMA, parite, CUSUM, kalp atışı), özet, `AUTO_PAPER` hedef akışı | SAPMA yalnız bakışlarda; parite fixture'ı; geri çekme isteği biçimi; özet ≤ 8 KB |
+
+### 8.2 Mühür planı
+
+| Mühür | İçerik | Ne zaman | Nerede sabitlenir |
+|---|---|---|---|
+| **S1** | `LIB_V1` (106 varyant, kapsamlar, P23, kümeler, §2.4 kuralları, örtüler, §4.3 dönüşümleri), `WF_PROTOCOL_V1`, `STATS_V1`, `LESSON_REGISTRY_V1`, `PIT_RULES_V1`, `PRIOR_TRIALS_V1`, `CONFIG_EPOCHS_V1`, `T_SEAL_MS` | P3a commit'i; **P3 kodunun hiçbir gerçek veri koşusundan önce** (hedef ≤ 2026-10-25) | `tests/test_research_engine_registry.py` + bu tabloya aynı commit'te sha değerleri |
+| **S2** | `PROMOTION_REGISTRY_V1` (ana belge §6.7 + §3.7 yordamı + §6.3 Holm ayı + §6.4 yönlendirme), `AUTO_POLICY_V1`, `AUTO_CATALOG_V1`, `MANIFEST_SCHEMA_V1` | P4a commit'i, P4 dağıtımından önce, **sahibin kapı metni onayından sonra** | motor ve worker testlerinde aynı sabitler (eşitlik testi) |
+
+- "Gerçek veri koşusu": VPS'te S4/S5'in herhangi bir çalışması, P3 koduyla herhangi bir laboratuvar ya da elle geriye-test.
+  P3b'nin hız ölçümü yalnız sentetik veriyle yapılır. Mühür commit'inin zamanı `T_SEAL_MS`'dir; ileri veri saati dağıtımdan
+  bağımsız olarak burada başlar (veri birimi mühürden sonraki barları zaten saklar).
+- **Asla gevşetme testi** (sahip kararı 2): `PROMOTION_REGISTRY` ve `AUTO_POLICY`'deki her eşik için yön tablosu (ör. q ≤, PBO <,
+  DSR ≥, risk ≤, defter sayısı ≤); sonraki her sürümün değeri v1'den gevşekse CI kırılır.
+- Mühürden sonra her değişiklik: `_v2`, yeni `SPEC`/`OPTION` satırları, bu belgeye tarihli "Değişiklik" notu.
+
+### 8.3 Dağıtım sırası (sahip her VPS komutunu kendisi çalıştırır)
+
+| Adım | En erken | Koşul |
+|---|---|---|
+| P1a | ≈ 2026-10-09 | planlandığı gibi |
+| Hızlı kNN worker sürümü | ≥ 2026-10-12 | P0 tabanları sonra yeniden alınır |
+| P1b + ilk doldurma | kNN yeniden başlatmasından ≥ 3 gün ve iki temiz `--check` sonra (≈ 2026-10-15/16) | doldurma 13–32 saat |
+| P2 | doldurma bitti ve P1b'nin ilk `--check`'leri temiz (≈ 2026-10-20) | 14 gece A/B |
+| **Mühür S1** | ≈ 2026-10-25 (dağıtımdan bağımsız) | gerçek veri koşusu yok |
+| P3 (P3b–P3g) | P2'den sonra (≈ 2026-11 ortası) | ilk WF kurulumu ≈ 5–6 hafta |
+| P4 (P4a–P4b) + **mühür S2** | ilk Kapı A bakışından önce (≤ 2026-12-05) | sahip kapı metnini onaylar |
+| P7b motorda oto izleme | AUTO_v1'den önce | `ENGINE_SILENT` şartı |
+| **AUTO_v1 worker sürümü** | ≈ 2027-01, en erken Holm (2027-02-01) öncesi; başka sürümün yeniden başlatmasından ≥ 3 gün | normal worker sürümü |
+
+En erken olaylar: ilk Kapı A bakışı 2026-12-06 (yalnız 5m/15m; ileri 30 gün) ve 2027-01-06 (diğerleri); 4h/1d adayı için en
+erken Holm 2027-03-01, en erken otomatik defter ≈ 2027-03-02 (24 saat veto penceresiyle).
+
+---
+
+## 9. Sahibe sorular (her biri için önerilen varsayılan)
+
+| # | Soru | Önerilen varsayılan |
+|---|---|---|
+| S1 | Aynı anda en çok kaç otomatik PAPER defteri? | **4** (tek-coin ≤ 2, aynı coin ≤ 1, aynı aile ≤ 2) |
+| S2 | Yeni otomatik defter ilk işlemden önce 24 saat "BEKLEMEDE" kalsın mı (onay değil, yalnız `--veto` fırsatı)? | **Evet, 24 saat** |
+| S3 | `--kill` açık oto pozisyonları sonraki turda kapatsın mı, yoksa yalnız yeni girişi mi durdursun? | **Kapatsın** (PAPER; temiz durum) |
+| S4 | Otomatik defterler günlük hedefin başlık toplamına girsin mi? | **Hayır**: ayrı `AUTO_PAPER` satırı + "toplam (oto dahil)" bilgi satırı; `tgt_v1` değişmez; 60 gün sonra yeniden sorulur |
+| S5 | `AUTO_v1`'de 5m, 1h, altın ve fonlama taktikleri otomatiğe uygun değil (worker verisi yok); bunlar yazılı öneri + onayla ilerlesin mi? | **Evet**; ayrı bir veri sürümü (`AUTO_v1.1`) ancak A/B ölçümüyle ve sizin kararınızla |
+| S6 | Gece birimi belleği, P3 ölçümü 350 MiB'ı aşarsa 512M → 800M'e çıksın mı? | **Evet**, yalnız §5.3 kuralı tetiklenirse |
+| S7 | §2 bütçesi (106 varyant, 818 satır, 1.738 ham deneme), §6.3/§3.7 okunuşları ve §7.6 tavanları mühürlensin mi (S1 ve S2)? | **Evet, yazıldığı gibi** (ana belge §12 soru 6'nın cevabı da budur) |
+| S8 | Otomatik defter başlangıcı 400 USDT, işlem başı %0,25 (= 1 USDT, canlı defterlerle aynı mutlak risk) olsun mu? | **Evet** |
+| S9 | Terfi/emeklilik Telegram bildirimi? | **Hayır** (config değişikliği gerekir; `--check` ve özet yeterli) |

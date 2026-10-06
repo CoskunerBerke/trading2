@@ -35,6 +35,10 @@ NEEDS: tuple[str, ...] = (
     "strategy_paper.extra[].starting_equity_usdt", "strategy_paper.extra[].rule_params.min_stop_pct",
     "pattern_trader.enabled", "pattern_trader.state_dir", "pattern_trader.starting_equity_usdt",
     "entry_universe.enabled", "entry_universe.symbols",
+    # P2 (rehydrate, §5.2): kural geometrisinin parametreleri — yalnız kayıtlı işlemin hedefini/bağlamını yeniden kurmak
+    # için okunur; hiçbir karar yolu bu değerleri motordan almaz.
+    "strategy_paper.atr_mult", "strategy_paper.rule_params",
+    "strategy_paper.extra[].atr_mult", "strategy_paper.extra[].rule_params",
 )
 
 
@@ -88,6 +92,20 @@ def _str(x: Any) -> str | None:
     return x if isinstance(x, str) else None
 
 
+def _plain(x: Any) -> dict[str, Any] | None:
+    """Kural parametre sözlüğü (P2 rehydrate): yalnız düz skaler/liste değerler, anahtar sırasıyla; değilse None."""
+    if not isinstance(x, dict):
+        return None
+    out: dict[str, Any] = {}
+    for k in sorted(x, key=str):
+        v = x[k]
+        if isinstance(v, (str, int, float, bool)) or v is None:
+            out[str(k)] = v
+        elif isinstance(v, list) and all(isinstance(i, (str, int, float, bool)) for i in v):
+            out[str(k)] = list(v)
+    return out
+
+
 def extract(doc: Any) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
     """Ayrıştırılmış YAML belgesinden ihtiyaç listesini hoşgörülü çek. Dönen: (düz değerler, defterler)."""
     syms = _get(doc, "entry_universe", "symbols")
@@ -114,6 +132,8 @@ def extract(doc: Any) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
         b["state_dir"] = _str(sp.get("state_dir"))
         b["enabled"] = _bool(sp.get("enabled"))
         b["starting_equity_usdt"] = _num(sp.get("starting_equity_usdt"))
+        b["atr_mult"] = _num(sp.get("atr_mult"))
+        b["rule_params"] = _plain(sp.get("rule_params"))
         extra = sp.get("extra")
         for ex in (extra if isinstance(extra, list) else []):
             if not isinstance(ex, dict):
@@ -126,6 +146,8 @@ def extract(doc: Any) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
             eb["enabled"] = True if en is None else en          # `extra` girdisinde enabled yazılmamışsa açık
             eb["starting_equity_usdt"] = _num(ex.get("starting_equity_usdt"))
             eb["rule_min_stop_pct"] = _num(_get(ex, "rule_params", "min_stop_pct"))
+            eb["atr_mult"] = _num(ex.get("atr_mult"))
+            eb["rule_params"] = _plain(ex.get("rule_params"))
     pt = _get(doc, "pattern_trader")
     if isinstance(pt, dict):
         b = _book("pattern_trader")

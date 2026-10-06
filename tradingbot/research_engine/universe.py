@@ -331,19 +331,28 @@ def write_exchangeinfo_snapshot(paths: EnginePaths, day: str, doc: dict[str, Any
     return p
 
 
-def latest_exchangeinfo(paths: EnginePaths) -> dict[str, Any] | None:
-    """En son okunabilen `exchangeinfo/*.json.gz` belgesi (delist kararı için); yoksa None."""
+def recent_exchangeinfo(paths: EnginePaths, n: int = 2) -> list[dict[str, Any]]:
+    """En son okunabilen `n` `exchangeinfo/*.json.gz` belgesi, yeniden eskiye (delist kararı iki ardışık görüntü ister)."""
     d = paths.exchangeinfo_dir
+    out: list[dict[str, Any]] = []
     if not d.is_dir():
-        return None
+        return out
     for p in sorted(d.glob("*.json.gz"), reverse=True):
         try:
             doc = read_json_gz(p)
         except (OSError, ValueError):
             continue
         if isinstance(doc, dict):
-            return doc
-    return None
+            out.append(doc)
+            if len(out) >= n:
+                break
+    return out
+
+
+def latest_exchangeinfo(paths: EnginePaths) -> dict[str, Any] | None:
+    """En son okunabilen `exchangeinfo/*.json.gz` belgesi; yoksa None."""
+    docs = recent_exchangeinfo(paths, 1)
+    return docs[0] if docs else None
 
 
 def latest_onboard_dates(paths: EnginePaths) -> dict[str, int]:
@@ -371,5 +380,5 @@ def latest_onboard_dates(paths: EnginePaths) -> dict[str, int]:
 __all__ = ["BTC_ETH", "DATASETS", "EXCHANGEINFO_SCHEMA", "FUTURES_FLOOR", "FUT_TFS", "F_ENTRY_MISSING", "GOLD_1M_DAYS",
            "GOLD_FUTURES", "GOLD_FUT_TFS", "GOLD_SPOT", "GOLD_SPOT_TFS", "MAIN_SPOT_DAYS", "METRICS_FLOOR", "SPOT_CONTEXT",
            "SeriesSpec", "TRADED_DAYS", "UNIVERSE_SCHEMA", "build_universe", "compact_exchange_info", "day_ms",
-           "entry_universe", "latest_exchangeinfo", "latest_onboard_dates", "plan_series", "snapshot_doc", "traded_symbols",
-           "universe_json_snapshot", "write_exchangeinfo_snapshot", "write_universe_snapshot"]
+           "entry_universe", "latest_exchangeinfo", "latest_onboard_dates", "plan_series", "recent_exchangeinfo", "snapshot_doc",
+           "traded_symbols", "universe_json_snapshot", "write_exchangeinfo_snapshot", "write_universe_snapshot"]

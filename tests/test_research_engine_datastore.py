@@ -647,6 +647,48 @@ def test_delisted_symbol_is_terminal_not_partial_and_reported_separately(tmp_pat
     assert e.status()["delisted"]["futures/SOLUSDT"]["source"] == "exchangeInfo:LISTEDE_YOK"
 
 
+def test_brief_non_trading_status_needs_two_snapshots_and_known_delisted_spot_stays_out_of_the_bulk_call(tmp_path):
+    """Yeniden doğrulama küçüğü 5 (2026-10-06): görüntü anında kısa süre TRADING-dışı bir sembol (spot `BREAK`) tek
+    görüntüyle `DELISTED` olup o geceki bayatlığı saklıyordu (görüntüler durursa daha uzun). Artık açık kanıt (`-1121`,
+    geçmiş teslim tarihi, tam listede yok) yoksa ART ARDA İKİ görüntü gerekir; arada TRADING görülürse sayaç sıfırlanır.
+    Bilinen delist spot sembol toplu `symbols=[…]` isteğine konmaz (her gece bütün isteği `-1121`'e düşürüp sembol
+    başına 20 ağırlıklı tekil sorgulara katlamaz); yalnız o tek tek sorulur."""
+    keys = {"futures/BTCUSDT/1h", "spot/BTCUSDT/1h", "spot/ETHUSDT/1h"}
+    e = env(tmp_path / "a", only=keys)
+
+    def night(day, status=None, mode="update"):
+        e.clock.t = utc(2026, 10, day, 0, 41)
+        e.fb.spot_status = {"ETHUSDT": status} if status else {}
+        st = e.run(mode)
+        assert st["result"] == DS.R_SUCCESS, (day, st["flags"], st.get("error"))
+        return st, e.status()
+    st, d = night(6, "BREAK", mode="backfill")
+    assert "spot/ETHUSDT" not in d["delisted"] and st.get("delist_pending") == ["spot/ETHUSDT"], (d["delisted"], st.get("delist_pending"))
+    assert d["series"]["spot/ETHUSDT/1h"]["status"] != DS.S_DELISTED and DS.F_DELISTED not in st["flags"]
+    st, d = night(7)                                               # yeniden TRADING: sayaç sıfırlanır
+    assert "spot/ETHUSDT" not in d["delisted"] and not st.get("delist_pending")
+    st, d = night(8, "BREAK")
+    assert "spot/ETHUSDT" not in d["delisted"], "TRADING'den sonraki ilk BREAK görüntüsü delist değildir"
+    st, d = night(9, "BREAK")                                      # art arda ikinci görüntü
+    dl = d["delisted"]["spot/ETHUSDT"]
+    assert dl["source"] == "exchangeInfo:BREAK" and dl["snapshot"] == "2026-10-09" and dl["confirmed_by"] == "2026-10-08", dl
+    assert d["series"]["spot/ETHUSDT/1h"]["status"] == DS.S_DELISTED
+    st, d = night(10)                                              # yeniden listelendi
+    assert "spot/ETHUSDT" not in d["delisted"] and d["series"]["spot/ETHUSDT/1h"]["status"] != DS.S_DELISTED
+
+    # bilinen delist spot sembol toplu isteğin DIŞINDA
+    e = env(tmp_path / "b", only={"futures/BTCUSDT/1h", "spot/BTCUSDT/1h", "spot/PAXGUSDT/1h"})
+    e.fb.delisted = {"spot/PAXGUSDT": ms(utc(2026, 9, 20))}
+    assert e.run("backfill")["result"] == DS.R_SUCCESS
+    assert e.status()["delisted"]["spot/PAXGUSDT"]["source"] == "exchangeInfo:INVALID_SYMBOL"
+    n0 = len(e.fb.log)
+    e.clock.t = utc(2026, 10, 7, 0, 41)
+    assert e.run("update")["result"] == DS.R_SUCCESS
+    calls = [p for _, u, p in e.fb.log[n0:] if u.endswith("/api/v3/exchangeInfo")]
+    assert calls == [{"symbols": '["BTCUSDT"]'}, {"symbol": "PAXGUSDT"}], calls
+    assert "spot/PAXGUSDT" in e.status()["delisted"]
+
+
 def test_archive_403_is_an_access_block_not_a_missing_file(tmp_path):
     """HTTP 403 (CDN/WAF) "dosya yok" DEĞİLDİR (laboratuvarlar da yalnız 404'ü eksik sayar): arşiv adımı o çalıştırmada
     durur, kalıcı `.missing` ya da manifest `m` yazılmaz, kalan seriler `STALE`, sonuç `PARTIAL`; erişim gelince aynı
@@ -730,6 +772,39 @@ def test_disk_is_checked_inside_the_loop_and_the_data_unit_stops_well_before_the
     assert st["result"] == DS.R_DISK_REFUSE and "araştırma kökü" in " ".join(st["disk_stop"]["reasons"])
 
 
+def test_research_limit_is_remeasured_before_refusing_so_a_foreign_free_space_drop_is_no_disk_refuse(tmp_path, monkeypatch):
+    """Yeniden doğrulama küçüğü 1 (2026-10-06): araştırma boyutu tahmini = son `du` + o andan beri boş alandaki düşüş
+    (başka süreçler dahil). 12 GB araştırma + 5 GB'lık worker yedeği sıçraması tahmini 17 GB'a iter; red tahminle değil
+    yeniden ölçümle verilir (uzun doldurma sahte `DISK_REFUSE` ile durmaz). Araştırma gerçekten sınırdaysa ölçüm de
+    söyler ve durur; boş alan sınırı (13 GB) her zaman ölçülen değerdir, `du` beklemez."""
+    from tradingbot.research_engine.paths import GB
+    e = env(tmp_path)
+    free, size, du = {"b": 40 * GB}, {"b": 12 * GB}, []
+
+    def fake_du(root):
+        du.append(root)
+        return size["b"]
+    monkeypatch.setattr(DS, "dir_size_bytes", fake_du)
+    run = DS.DataRun(e.paths, mode=DS.MODE_BACKFILL, clock=e.clock.now, sleep=e.clock.sleep, http=e.fb,
+                     free_bytes=lambda: free["b"])
+    assert run.disk_view()["status"] == "OK" and len(du) == 1
+    free["b"] -= 5 * GB                                            # worker yedeği: araştırma kökü büyümedi
+    d = run.disk_view()
+    assert d["status"] == "OK" and d["research_bytes"] == 12 * GB and len(du) == 2, (d, len(du))
+    run.disk_check()                                               # DiskRefused yok: doldurma sürer
+    free["b"] -= 1 * GB                                            # yeni taban: küçük düşüş yeniden ölçtürmez
+    assert run.disk_view()["research_bytes"] == 13 * GB and len(du) == 2
+    size["b"], free["b"] = 17_500_000_000, free["b"] - 4 * GB      # araştırma GERÇEKTEN sınırda: ölçüm de söyler
+    d = run.disk_view()
+    assert d["status"] == "REFUSE" and d["research_bytes"] == 17_500_000_000 and "araştırma kökü" in " ".join(d["reasons"])
+    with pytest.raises(DS.DiskRefused):
+        run.disk_check()
+    size["b"], free["b"], n = 1 * GB, DS.DATA_MIN_FREE_BYTES - 1, len(du)
+    run._disk_base = (1 * GB, free["b"], e.clock.now().timestamp())
+    d = run.disk_view()
+    assert d["status"] == "REFUSE" and "boş disk" in " ".join(d["reasons"]) and len(du) == n, "boş alan sınırı ölçülendir"
+
+
 def test_previous_month_rebuilt_from_day_zips_is_a_successful_refetch_not_a_failed_night(tmp_path):
     """Önceki ay CORRUPT ve aylık zip'i henüz yok: ay gün zip'lerinden kurulur → yeniden çekim BAŞARILIDIR (önceden her
     durumda "başarısız gece" yazılıyor, iki gece sonra seri sahte HALTED oluyordu)."""
@@ -747,6 +822,30 @@ def test_previous_month_rebuilt_from_day_zips_is_a_successful_refetch_not_a_fail
         assert "SERIES_HALTED" not in st["flags"] and st["result"] == DS.R_SUCCESS
         assert e.store().read("futures", "BTCUSDT", "1h", ms(utc(2026, 9, 1)), ms(utc(2026, 9, 30, 23))).equals(sep)
     assert not [u for _, u, _ in e.fb.log if "BTCUSDT-1h-2026-09.zip" in u and e.fb.archive(u[len("https://data.binance.vision"):])]
+
+
+def test_data_run_records_memory_high_throttling_next_to_the_peak(tmp_path, monkeypatch):
+    """Yeniden doğrulama küçüğü 4 (2026-10-06): veri birimi/doldurma `MemoryHigh=512M` ile koşar; `memory.peak` ≤ 0,8 ×
+    MemoryMax ölçütü (V6) çekirdeğin kısmasını GÖREMEZ. `data_run.json` `resources`'a kendi cgroup'unun `memory.events`
+    sayaçları (`high` = kısma sayısı) ve `memory.high` sınırı yazılır; okunamazsa alanlar None (çalıştırma etkilenmez)."""
+    rel = "system.slice/tb-engine-backfill.service"
+    cg, proc = tmp_path / "cg", tmp_path / "proc_cgroup"
+    (cg / rel).mkdir(parents=True)
+    (cg / rel / "memory.high").write_text("536870912\n", encoding="utf-8")
+    (cg / rel / "memory.events").write_text("low 0\nhigh 37\nmax 0\noom 0\noom_kill 0\n", encoding="utf-8")
+    proc.write_text(f"0::/{rel}\n", encoding="utf-8")
+    got = SC.own_cgroup_memory_events(proc, cg)
+    assert got == {"memory_high_bytes": 536870912, "memory_high_events": 37,
+                   "memory_events": {"low": 0, "high": 37, "max": 0, "oom": 0, "oom_kill": 0}}, got
+    none = {"memory_high_bytes": None, "memory_events": None, "memory_high_events": None}
+    assert SC.own_cgroup_memory_events(tmp_path / "yok", cg) == none
+    real = SC.own_cgroup_memory_events
+    monkeypatch.setattr(SC, "own_cgroup_memory_events", lambda: real(proc, cg))
+    e = env(tmp_path / "e", only={"futures/BTCUSDT/1h"})
+    st = e.run("backfill")
+    rec = json.loads((e.paths.data_runs / st["run_id"] / "data_run.json").read_text(encoding="utf-8"))
+    assert rec["resources"]["memory_high_events"] == 37 and rec["resources"]["memory_high_bytes"] == 536870912, rec["resources"]
+    assert "memory_peak_bytes" in rec["resources"] and "wall_s" in rec["resources"]
 
 
 def test_sigterm_is_recorded_as_stopped_and_no_stale_running_block_remains(tmp_path):

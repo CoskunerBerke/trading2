@@ -330,6 +330,22 @@ def test_funding_gaps_follow_a_mid_month_interval_change(tmp_path):
     assert m.gap_count == len(ts4) - len(hole) and m.interval_ms == 8 * H, (m.gap_count, len(ts4) - len(hole))
 
 
+def test_funding_gap_in_the_first_settlements_of_a_new_listing_is_counted(tmp_path):
+    """Yeniden doğrulama küçüğü 7 (2026-10-06): yalnız iki fark varken (yeni listelenmiş sembolün ilk üç uzlaşması) iki
+    farkın ortalaması (8h + 16h → 12h) baştaki eksik uzlaşmayı 0 sayıyordu; yerel aralık artık küçük olandır. Daha uzun
+    serilerde ve aralık değişiminde sonuç aynıdır (yukarıdaki test)."""
+    assert S.funding_gaps([8 * H, 16 * H]) == (1, 8 * H)
+    assert S.funding_gaps([16 * H, 8 * H]) == (1, 8 * H)
+    assert S.funding_gaps([8 * H, 8 * H]) == (0, 8 * H) and S.funding_gaps([8 * H]) == (0, 8 * H)
+    assert S.funding_gaps([8 * H, 16 * H, 8 * H]) == (1, 8 * H), "üç farkta tek medyan (değişmedi)"
+    st = mkstore(tmp_path, OCT)
+    t0 = ms(utc(2026, 9, 20, 8))
+    ts = [t0, t0 + 8 * H, t0 + 24 * H]                              # 16:00 uzlaşması eksik
+    st.write("futures", "NEWUSDT", S.FUNDING, pd.DataFrame({"timestamp": ts, "rate": [1e-4] * 3}), src=S.SRC_ARCHIVE)
+    m = st.manifest("futures", "NEWUSDT", S.FUNDING)
+    assert m.gap_count == 1 and m.quality_score == 0.75 and m.interval_ms == 8 * H, (m.gap_count, m.quality_score)
+
+
 # ============================================================================ kabul 10
 def spot_zip(sym: str, tf: str, start: int, n: int, step: int, *, us: bool) -> bytes:
     rows = [kline_row(sym, start + i * step, step, us=us) for i in range(n)]

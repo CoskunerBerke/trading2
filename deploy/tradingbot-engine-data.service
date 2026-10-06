@@ -24,10 +24,10 @@
 # VPS'te RAM − 1G'ye sığmaz (worker + panel tek başına 6,5 GiB) → belge gereği MemoryHigh düşürüldü: 800M → 512M (ölçülen
 # tepenin ≈ 2,3 katı; üstünde çekirdek MOTORU geri kazanır/yavaşlatır), MemoryMax 1G kalır, OOMScoreAdjust=1000.
 # Sırlar (2026-10-06): ağlı TEK birim olduğu için aynı kullanıcının okuyabildiği sır yolları çekirdek düzeyinde
-# erişilemez (InaccessiblePaths; "-" = yoksa sorun değil): /opt/tradingbot/env (worker ortam dosyası, 0600),
-# .ssh (dağıtım anahtarı; kullanıcının HOME'u /opt/tradingbot), data/vault ve data/backups (saatlik yedek vault'u da
-# kopyalar). /home, /root, /run/user zaten ProtectHome=yes ile kapalı. Motor bunların hiçbirini okumaz; state yine
-# salt-okunur okunur, yazım yalnız data/research.
+# erişilemez (InaccessiblePaths; "-" = yoksa sorun değil): /opt/tradingbot/env (worker ortam dosyası, 0600), env.d
+# (tradingbot-alert@ biriminin Telegram ortamı), .ssh (dağıtım anahtarı; kullanıcının HOME'u /opt/tradingbot),
+# data/vault ve data/backups (saatlik yedek vault'u da kopyalar). /home, /root, /run/user zaten ProtectHome=yes ile
+# kapalı. Motor bunların hiçbirini okumaz; state yine salt-okunur okunur, yazım yalnız data/research.
 [Unit]
 Description=Trading Bot research engine — data unit (P1b, networked, record-only)
 Documentation=file:///opt/tradingbot/engine-app/docs/SYSTEM_LEARNING_ENGINE_V1.md
@@ -71,7 +71,7 @@ ProtectHome=yes
 PrivateTmp=yes
 ReadWritePaths=/opt/tradingbot/data/research
 ReadOnlyPaths=/opt/tradingbot/data /opt/tradingbot/app
-InaccessiblePaths=-/opt/tradingbot/env -/opt/tradingbot/.ssh -/opt/tradingbot/data/vault -/opt/tradingbot/data/backups
+InaccessiblePaths=-/opt/tradingbot/env -/opt/tradingbot/env.d -/opt/tradingbot/.ssh -/opt/tradingbot/data/vault -/opt/tradingbot/data/backups
 PrivateDevices=yes
 ProtectKernelTunables=yes
 ProtectKernelModules=yes

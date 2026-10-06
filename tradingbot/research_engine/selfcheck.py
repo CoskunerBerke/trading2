@@ -264,6 +264,36 @@ def own_cgroup_memory_max(proc_cgroup: Path | str = "/proc/self/cgroup",
     return None, None, "cgroup bellek dosyası bulunamadı"
 
 
+def own_cgroup_memory_events(proc_cgroup: Path | str = "/proc/self/cgroup",
+                             cgroup_root: Path | str = "/sys/fs/cgroup") -> dict[str, Any]:
+    """Kendi cgroup'unun (v2) `memory.events` sayaçları (low/high/max/oom/oom_kill) ve `memory.high` sınırı. `high` =
+    MemoryHigh aşıldığı için çekirdeğin süreci yavaşlatıp geri kazanıma zorladığı kez (sayfa önbelleği dahil);
+    `memory.peak` bunu göstermez. Okunamayan alan None."""
+    out: dict[str, Any] = {"memory_high_bytes": None, "memory_events": None, "memory_high_events": None}
+    try:
+        lines = Path(proc_cgroup).read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return out
+    rel = next((p[2].strip().lstrip("/") for p in (ln.split(":", 2) for ln in lines)
+                if len(p) == 3 and p[0] == "0" and p[1] == ""), None)
+    if rel is None:
+        return out
+    d = Path(cgroup_root) / rel
+    try:
+        txt = (d / "memory.high").read_text(encoding="utf-8").strip()
+        out["memory_high_bytes"] = None if txt == "max" else int(txt)
+    except (OSError, ValueError):
+        pass
+    try:
+        rows = [ln.split() for ln in (d / "memory.events").read_text(encoding="utf-8").splitlines()]
+    except OSError:
+        return out
+    ev = {r[0]: int(r[1]) for r in rows if len(r) == 2 and r[1].isdigit()}
+    if ev:
+        out["memory_events"], out["memory_high_events"] = ev, ev.get("high")
+    return out
+
+
 def probe_memory_max(env: Mapping[str, str] | None = None, **kw: Any) -> dict[str, Any]:
     """`memory.max` = `ENGINE_EXPECTED_MEMORY_MAX` mı? Dönen `status`: MATCH | MISMATCH | NO_ENV | UNREADABLE."""
     env = os.environ if env is None else env
@@ -638,6 +668,6 @@ __all__ = ["AB_NIGHTS", "AB_OFF", "AB_OFF_FORCED", "AB_ON", "AB_OUTSIDE", "AB_RE
            "BACKUP_STATE_UNKNOWN", "BACKUP_UNIT", "BUSY_STATES", "ENGINE_DIR_DEFAULT", "ENV_EXPECTED_MEMORY_MAX",
            "ISOLATION_BROKEN", "NET_DENIED_ERRNOS", "NOT_PAPER", "OK", "Probes", "SKEW", "ab_decision", "ab_parity_on",
            "backup_unit_state", "check_backup_overlap", "check_paper", "check_skew", "engine_code_hash", "epoch_key",
-           "first_seen_day", "is_ancestor", "load_epochs",
+           "first_seen_day", "is_ancestor", "load_epochs", "own_cgroup_memory_events",
            "own_cgroup_memory_max", "probe_memory_max", "probe_socket_denied", "probe_writable", "probe_write_denied",
            "read_git_head", "register_epoch", "run_isolation"]

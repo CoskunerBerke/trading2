@@ -37,8 +37,9 @@ worker REST koruması → REST kuyruğu → `exchangeInfo` anlık görüntüsü 
 3. **REST kuyruğu.** Yalnız arşiv tabanı olan serilerde, son satırdan sonraki KAPANMIŞ barlar (en çok son 2 gün;
    fonlama 7 gün) `_src=rest` olarak yazılır. "Kapanmış" isteğin GÖNDERİLDİĞİ ana göredir (bar kapanışı ≤ gönderim;
    yanıt geç gelse bile oluşmakta olan bar yazılmaz). Geçmiş aylar için REST yoktur. Delist olmuş sembollerde REST
-   yoktur (`DELISTED`: `exchangeInfo` durumu TRADING değil / listede yok, ya da REST `-1121 Invalid symbol`); veri
-   delist anına kadar kalır, seri bayat ya da `PARTIAL` sayılmaz, ayrı raporlanır.
+   yoktur (`DELISTED`: REST/spot `-1121 Invalid symbol`, vadeli teslim tarihi geçmiş ya da tam listede yok; başka
+   TRADING-dışı durum, ör. geçici `BREAK`, ancak art arda iki `exchangeInfo` görüntüsünde); veri delist anına kadar
+   kalır, seri bayat ya da `PARTIAL` sayılmaz, ayrı raporlanır.
 4. **Bütçe** (`EngineBudget`): tek `BudgetPool(safety=0,1)`; ayrıca motorun kendi ağırlığı KAYAN 60 sn penceresinde
    ≤ 0,1 × IP limiti (fapi 2400 → 240; spot için `ratelimit`in muhafazakâr 1200'ü → 120) — jeton kovası tek başına bir
    dakikada iki kapasiteye izin verirdi. Her yanıtta `X-MBX-USED-WEIGHT-1M` okunur; IP limitinin %50'sine ulaşınca bir
@@ -62,8 +63,9 @@ worker REST koruması → REST kuyruğu → `exchangeInfo` anlık görüntüsü 
 9. **Disk (2026-10-06).** P1a kapanış arşivi (gece S1a, yeniden üretilemez) depo ya da zip aynası yüzünden ASLA aç
    kalmaz: veri birimi gece biriminin reddinden (boş < 10 GB, araştırma ≥ 20 GB) `DATA_DISK_MARGIN` (3 GB) ÖNCE durur.
    Denetim başlangıçta ve DÖNGÜNÜN İÇİNDE (her ağ isteğinden ve her tohum serisinden önce; `statvfs` ucuzdur,
-   araştırma boyutu boş alan düşüşüyle tahmin edilir ve yarım saatte bir yeniden ölçülür) yapılır; sınır aşılırsa
-   çalıştırma `DISK_REFUSE` (çıkış 5) ile durur, yazılmış veri mühürlenir. Boş/kullanılan alan ilerlemede görünür.
+   araştırma boyutu boş alan düşüşüyle tahmin edilir, yarım saatte bir ve araştırma sınırında reddetmeden önce
+   yeniden ölçülür) yapılır; sınır aşılırsa çalıştırma `DISK_REFUSE` (çıkış 5) ile durur, yazılmış veri mühürlenir.
+   Boş/kullanılan alan ilerlemede görünür.
 10. **Durdurma.** SIGTERM (`systemctl stop`) `STOPPED` (çıkış 1) olarak kayda geçer: `data_status.json`'da bayat
    `running` kalmaz; mühür yenilenmez. SIGKILL sonrası kalan `running` bloğu okuyucularda süreç yoksa "DURDU" yazılır.
 
@@ -114,7 +116,7 @@ from .seed import ST_ERROR, ST_REDOWNLOAD, ST_SEEDED, seed_series
 from .store import (DUKA_1H, DUKA_1M, FUNDING, MARKPX_1H, METRICS_5M, METRICS_COLS, PREMIUM_1H, PX_COLS, SERIES_HALTED,
                     SRC_ARCHIVE, SRC_REST, SRC_UNVERIFIED, ArchiveUnitError, ResearchStore, iso_ms,
                     month_bounds_ym, normalize_archive_ts, step_ms)
-from .universe import (SeriesSpec, build_universe, compact_exchange_info, latest_exchangeinfo, latest_onboard_dates, plan_series,
+from .universe import (SeriesSpec, build_universe, compact_exchange_info, latest_onboard_dates, plan_series, recent_exchangeinfo,
                        snapshot_doc, universe_json_snapshot, write_exchangeinfo_snapshot, write_universe_snapshot)
 
 UTC = timezone.utc
@@ -1219,13 +1221,20 @@ class DataRun:
 
     def disk_view(self, *, remeasure: bool = False) -> dict[str, Any]:
         """Madde 9: boş alan (ucuz `statvfs`) + araştırma kökü tahmini = son ölçüm + o andan beri boş alandaki düşüş
-        (başkasının tükettiği alan da araştırmaya yazılır: muhafazakâr); `DISK_REMEASURE_S`'de bir yeniden ölçülür."""
+        (başkasının tükettiği alan da araştırmaya yazılır: muhafazakâr); `DISK_REMEASURE_S`'de bir yeniden ölçülür.
+        Araştırma sınırındaki red TAHMİNLE verilmez, önce yeniden ölçülür: başka bir sürecin tükettiği alan (ör. worker
+        yedeği) uzun bir doldurmayı sahte `DISK_REFUSE` ile durdurmaz. Boş alan sınırı her zaman ölçülen değerdir."""
         t = self.clock().timestamp()
         free = self._free_now()
-        if remeasure or self._disk_base is None or t - self._disk_base[2] >= DISK_REMEASURE_S:
-            self._disk_base = (dir_size_bytes(self.paths.research), free, t)
-        used0, free0, _ = self._disk_base
-        used = used0 + (max(0, int(free0) - int(free)) if (free0 is not None and free is not None) else 0)
+        fresh = remeasure or self._disk_base is None or t - self._disk_base[2] >= DISK_REMEASURE_S
+        for _pass in range(2):
+            if fresh:
+                self._disk_base = (dir_size_bytes(self.paths.research), free, t)
+            used0, free0, _at = self._disk_base
+            used = used0 + (max(0, int(free0) - int(free)) if (free0 is not None and free is not None) else 0)
+            if used < DATA_REFUSE_RESEARCH_BYTES or fresh:
+                break
+            fresh = True                                 # tahmin sınırda: reddetmeden önce `du` ile yeniden ölç
         status, reasons = DISK_OK, []
         if used >= DATA_REFUSE_RESEARCH_BYTES:
             status = DISK_REFUSE
@@ -1400,7 +1409,9 @@ class DataRun:
         self.status["wall_s"] = round(time.monotonic() - self.mono0, 3)
         try:
             from .night import resources
-            self.status["resources"] = resources({"self": 0.0, "children": 0.0, "maxrss_bytes": 0.0}, self.mono0)
+            # + MemoryHigh kısması (`memory.events` high) ve sınırı: `memory.peak` kısmayı göstermez (--check V6)
+            self.status["resources"] = {**resources({"self": 0.0, "children": 0.0, "maxrss_bytes": 0.0}, self.mono0),
+                                        **SC.own_cgroup_memory_events()}
         except Exception:  # noqa: BLE001
             pass
         seal = None
@@ -1728,15 +1739,21 @@ class DataRun:
 
     def _spot_exchangeinfo(self, syms: list[str]) -> list[dict]:
         """Spot `exchangeInfo?symbols=[…]`; listedeki tek bir sembol borsada yoksa Binance İSTEĞİN TAMAMINI `-1121` ile
-        reddeder: o zaman semboller tek tek sorulur ve yok olanlar `INVALID_SYMBOL` durumuyla kaydedilir (delist)."""
-        try:
-            d = self.rest.get(SPOT_BASE, "/api/v3/exchangeInfo", {"symbols": json.dumps(syms, separators=(",", ":"))}, 20)
-            return list((d or {}).get("symbols") or [])
-        except RestError as exc:
-            if exc.code != INVALID_SYMBOL_CODE:
-                raise
-        out: list[dict] = []
-        for s in syms:
+        reddeder: o zaman semboller tek tek sorulur ve yok olanlar `INVALID_SYMBOL` durumuyla kaydedilir (delist). Bilinen
+        delist semboller toplu isteğe KONMAZ (her gece bütün isteği düşürüp sorguyu sembol başına 20 ağırlığa
+        katlamasın); yalnız onlar tek tek sorulur (yeniden listelenme görünür kalır)."""
+        gone = [s for s in syms if f"spot/{s}" in self.delisted]
+        live = [s for s in syms if s not in gone]
+        one, out = gone, []
+        if live:
+            try:
+                d = self.rest.get(SPOT_BASE, "/api/v3/exchangeInfo", {"symbols": json.dumps(live, separators=(",", ":"))}, 20)
+                out = list((d or {}).get("symbols") or [])
+            except RestError as exc:
+                if exc.code != INVALID_SYMBOL_CODE:
+                    raise
+                one = sorted(syms)
+        for s in one:
             try:
                 d = self.rest.get(SPOT_BASE, "/api/v3/exchangeInfo", {"symbol": s}, 20)
                 out += list((d or {}).get("symbols") or [])
@@ -1773,46 +1790,62 @@ class DataRun:
     def _plan_specs(self, market: str, symbol: str) -> list[SeriesSpec]:
         return [SeriesSpec(*k.split("/", 2), 0) for k in sorted(self.plan_keys) if k.startswith(f"{market}/{symbol}/")]
 
+    @staticmethod
+    def _exinfo_state(doc: Mapping[str, Any], market: str, sym: str) -> tuple[str | None, dict | None]:
+        """Bir `exchangeinfo` görüntüsünde sembolün durumu: ("TRADING" | "OFF" | None = bilgi yok, satır). Spot yalnız
+        sorulan sembolleri içerir (sorulmadı ≠ delist); vadeli "listede yok" yalnız liste sağlamsa (BTCUSDT içeriyorsa)."""
+        rows = doc.get(market)
+        if not isinstance(rows, list):
+            return None, None
+        mp = {str(r["symbol"]): r for r in rows if isinstance(r, dict) and r.get("symbol")}
+        r = mp.get(sym)
+        if r is None and (market == "spot" or "BTCUSDT" not in mp):
+            return None, None
+        return ("TRADING" if (r or {}).get("status") == "TRADING" else "OFF"), r
+
     def _update_delisted(self, plan: list[SeriesSpec]) -> None:
-        """En son `exchangeinfo/*.json.gz`'ye göre: vadeli tam listede YOK ya da durumu TRADING değil → delist; spot
-        sorgulanan sembolün durumu TRADING değil (ya da `INVALID_SYMBOL`) → delist. TRADING görünen sembolün delist kaydı
-        kalkar (yeniden listeleme). Vadeli "listede yok" kararı yalnız liste sağlamsa (BTCUSDT içeriyorsa) verilir."""
-        doc = latest_exchangeinfo(self.paths)
-        if not isinstance(doc, dict):
+        """En son iki `exchangeinfo/*.json.gz`'ye göre. AÇIK delist kanıtı (spot `INVALID_SYMBOL` = `-1121`, vadeli teslim
+        tarihi geçmiş ya da tam listede YOK) → hemen delist; başka TRADING-dışı durum (ör. spot `BREAK`: geçici durdurma)
+        ancak ART ARDA İKİ görüntüde görülürse delist — tek görüntü o geceki bayatlığı saklamaz, görüntüler günlerce
+        gelmezse de tek eski görüntü delist kararı vermez (yalnız `delist_pending`'e yazılır). TRADING görünen sembolün
+        delist kaydı kalkar (yeniden listeleme)."""
+        docs = recent_exchangeinfo(self.paths, 2)
+        if not docs:
             return
+        doc, prev = docs[0], (docs[1] if len(docs) > 1 else None)
         now = ms_of(self.clock())
-        maps: dict[str, dict[str, dict] | None] = {}
-        for market in ("futures", "spot"):
-            rows = doc.get(market)
-            maps[market] = ({str(r["symbol"]): r for r in rows if isinstance(r, dict) and r.get("symbol")}
-                            if isinstance(rows, list) else None)
-        fut_full = bool(maps["futures"]) and "BTCUSDT" in (maps["futures"] or {})
-        changed = False
+        changed, pending = False, []
         for key in sorted({f"{s.market}/{s.symbol}" for s in plan}):
             market, sym = key.split("/", 1)
-            mp = maps.get(market)
-            if mp is None:
+            state, r = self._exinfo_state(doc, market, sym)
+            if state is None:
                 continue
-            r = mp.get(sym)
-            if r is None and (market == "spot" or not fut_full):
-                continue                               # spot: yalnız sorulan semboller listededir; sorulmadı ≠ delist
-            st = (r or {}).get("status")
-            if st == "TRADING":
+            if state == "TRADING":
                 if key in self.delisted:
                     self.delisted.pop(key)
                     changed = True
                 continue
             if key in self.delisted:
                 continue
+            st = (r or {}).get("status")
             since = None
             try:
                 dd = int((r or {}).get("deliveryDate") or 0)
                 since = dd if 0 < dd <= now else None
             except (TypeError, ValueError):
                 since = None
+            explicit = r is None or st == "INVALID_SYMBOL" or since is not None
+            twice = prev is not None and self._exinfo_state(prev, market, sym)[0] == "OFF"
+            if not (explicit or twice):
+                pending.append(key)                    # tek görüntü: henüz delist değil (bayatlık görünür kalır)
+                continue
             self.delisted[key] = {"since_ms": since, "since": iso_ms(since), "source": f"exchangeInfo:{st or 'LISTEDE_YOK'}",
                                   "snapshot": doc.get("day"), "at": self.clock().isoformat()}
+            if not explicit:
+                self.delisted[key]["confirmed_by"] = prev.get("day")
             changed = True
+        if pending:
+            self.status["delist_pending"] = pending
         if changed:
             self._save_delisted()
 

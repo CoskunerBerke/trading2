@@ -48,9 +48,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_research_engine_contract import parse_unit  # noqa: E402
 from test_research_engine_release import JOURNALCTL, STUBS, _git, _has, _tree_digest, own_tmp, stub_body  # noqa: E402
 
-SCRIPT = ROOT / "deploy" / "releases" / "tb-engine-8d0a531.sh"
+SCRIPT = ROOT / "deploy" / "releases" / "tb-engine-008e602.sh"
 #: Betiğin kayıtlı sha256'sı (sürüm notu ve sahibe verilen değer; betik değişirse bu da bilinçli değişir).
-SCRIPT_SHA256 = "0ffabdd7c8449c16a7a7aeb6925665735c818d6824c7ab35589f2756961e825f"
+SCRIPT_SHA256 = "d90137f9f08a2e8d2d9ece27435f212ba74e376219d303869f722ebe4cc41397"
 P1A_SCRIPT = ROOT / "deploy" / "releases" / "tb-engine-4962209.sh"
 TEXT = SCRIPT.read_text(encoding="utf-8")
 TIP = re.search(r'^TIP="([0-9a-f]{40})"', TEXT, re.M).group(1)
@@ -107,7 +107,7 @@ def test_script_pins_match_the_code_commit():
             assert re.search(rf'^{var}="{want}"', p1a, re.M), f"{var}: gece birimi P1a'dakiyle aynı (yeniden kurulmaz)"
     runner = _blob(TIP, "tests/standalone/run_engine_invariants.py").decode("utf-8")
     n = len(re.findall(r'^\s+\(\d+, "test_research_engine_\w+",', runner, re.M))
-    assert re.search(rf"^INV_TESTS={n}\b", TEXT, re.M) and n == 53
+    assert re.search(rf"^INV_TESTS={n}\b", TEXT, re.M) and n == 57
     acc = re.search(r"^ACCEPTANCE = \(([^)]*)\)", runner, re.M).group(1)
     assert re.search(r"^ACCEPT = \[" + re.escape(acc) + r"\]$", TEXT, re.M), "betiğin kabul listesi = koşucununki"
     ver = re.search(r'^ENGINE_VERSION = "([^"]+)"', _blob(TIP, "tradingbot/research_engine/__init__.py").decode(), re.M).group(1)
@@ -147,6 +147,38 @@ def test_heavy_steps_run_at_lowest_cpu_and_io_priority():
                  "-s -c 'import resource as r, sys, tradingbot.cli", '-s scripts/bot_scorecard.py'):
         lines = [ln for ln in TEXT.splitlines() if step in ln and "$VENV/bin/python" in ln]
         assert lines and all('"${LOW[@]}" "$VENV/bin/python"' in ln for ln in lines), step
+
+
+def test_disk_limits_estimate_and_memory_decision_match_the_engine():
+    """Betiğin veri disk sınırları = motorunkiler (gece biriminin reddinden 3 GB önce); yedek tahmin ≈ 6 GB (~45 sembol:
+    parquet + zip + blok payı); §2.5 bellek kararı kayıtlı ve TIP'teki veri biriminde uygulanmış; ağır adımlar OOM'da
+    önce seçilir (`choom -n 1000`)."""
+    from tradingbot.research_engine import datastore as DS
+    from tradingbot.research_engine import paths as P
+    vals = {k: int(re.search(rf"\b{k}=(\d+)", TEXT).group(1)) for k in ("DATA_FREE_MIN", "DATA_RES_MAX", "DISK_EST")}
+    assert vals["DATA_FREE_MIN"] == DS.DATA_MIN_FREE_BYTES and vals["DATA_RES_MAX"] == DS.DATA_REFUSE_RESEARCH_BYTES
+    assert DS.DATA_MIN_FREE_BYTES >= P.MIN_FREE_BYTES + 3 * P.GB and vals["DISK_EST"] == 6_000_000_000
+    tool = _pytool()
+    est = eval(re.search(r"^EST_B = (\{[^}]*\})", tool, re.M).group(1))      # noqa: S307 — sabit sözlük
+    per_symbol = sum(est[k] for k in ("5m", "15m", "1h", "4h", "1d", "funding", "metrics_5m", "markpx_1h", "premium_1h"))
+    assert abs(45 * per_symbol - 6.0e9) < 0.3e9, 45 * per_symbol
+    assert "KAYITLI KARAR (2026-10-06)" in TEXT and "800M → 512M" in TEXT
+    unit = _blob(TIP, "deploy/tradingbot-engine-data.service").decode()
+    assert "\nMemoryHigh=512M\n" in unit and "\nMemoryMax=1G\n" in unit
+    assert re.search(r"^if command -v choom >/dev/null 2>&1; then LOW\+=\(choom -n 1000 --\); fi", TEXT, re.M)
+
+
+def test_backfill_disk_estimate_is_sized_from_the_universe_snapshot(tmp_path):
+    res = tmp_path / "research"
+    cp = _tool(tmp_path, "est", str(res), "6000000000")
+    assert cp.returncode == 0 and cp.stdout.split() == ["6000000000", "0", "sabit-tahmin"]
+    (res / "universe").mkdir(parents=True)
+    keys = [f"futures/S{i}USDT/{k}" for i in range(90) for k in ("5m", "15m", "1h", "4h", "1d", "funding", "metrics_5m",
+                                                                 "markpx_1h", "premium_1h")]
+    (res / "universe" / "2026-10-05.json").write_text(json.dumps({"series": keys[:9]}), encoding="utf-8")
+    (res / "universe" / "2026-10-06.json").write_text(json.dumps({"series": keys}), encoding="utf-8")
+    b, n, src = _tool(tmp_path, "est", str(res), "6000000000").stdout.split()
+    assert int(n) == 810 and src == "universe/2026-10-06.json" and 11.5e9 < int(b) < 12.5e9, (b, n, src)
 
 
 # ============================================================================ gömülü araçlar (deterministik, dağıtımsız)
@@ -263,8 +295,9 @@ def test_data_check_reports_backfill_progress_freshness_gold_and_disk(tmp_path):
                                   "eta": "2026-10-07T03:10:00+00:00", "paused": True, "resume_at": "2026-10-06T12:36:00+00:00"}}
     (res / "summary" / "data_status.json").write_text(json.dumps(ds), encoding="utf-8")
 
-    def run(bf_state, res_b="1000", peak="0"):
-        cp = _tool(tmp_path, "dcheck", str(res), TIP, str(base), res_b, "1073741824", bf_state, peak, "5400000000")
+    def run(bf_state, res_b="1000", peak="0", free_b="40000000000"):
+        cp = _tool(tmp_path, "dcheck", str(res), TIP, str(base), res_b, "1073741824", bf_state, peak, "5400000000", free_b,
+                   SCRIPT.name)
         assert cp.returncode == 0, cp.stderr
         assert not claim_word_violations(cp.stdout.splitlines())
         return cp.stdout
@@ -273,8 +306,16 @@ def test_data_check_reports_backfill_progress_freshness_gold_and_disk(tmp_path):
                      r"son 1 sa hızı 9000\.0/sa · tahmini bitiş 2026-10-07T03:10 · DURAKLADI \(4h penceresi, 12:36'e kadar\)", out), out
     assert re.search(r"\[ölçülemedi\]\s+V7 disk: .*ilk doldurma bitince", out), out
     assert re.search(r"\[tamam\]\s+V6 veri/doldurma memory.peak en çok 0,29 × MemoryMax", out), out
+    assert re.search(r"\[tamam\]\s+disk şimdi: boş 40,0 GB · data/research 0,0 GB .*boş < 13 GB ya da ≥ 17 GB", out), out
+    ds["running"]["progress"]["disk"] = {"free_bytes": 14_200_000_000, "research_bytes": 3_100_000_000, "at": "2026-10-06T11:05:00+00:00"}
+    (res / "summary" / "data_status.json").write_text(json.dumps(ds), encoding="utf-8")
+    out = run("active", free_b="14200000000")
+    assert "disk (doldurmanın ölçümü 11:05): boş 14,2 GB, araştırma ≈ 3,1 GB" in out, out
+    assert re.search(r"\[DİKKAT\]\s+disk şimdi: boş 14,2 GB", out), "veri biriminin 13 GB sınırına yaklaşıyor"
     out = run("inactive")
-    assert re.search(r"\[DİKKAT\]\s+V1 ilk doldurma: 20261006T080000Z DURDU \(süreç yok\) — bitmedi; kaldığı yerden", out), out
+    assert re.search(r"\[DİKKAT\]\s+V1 ilk doldurma: 20261006T080000Z DURDU \(süreç yok\) — bitmedi; kaldığı yerden: "
+                     rf"sudo bash {re.escape(SCRIPT.name)} --backfill", out), out
+    assert "<betik>" not in out
     # tamamlanmış doldurma: tazelik, altın serileri, disk ±%30
     dr = res / "runs" / "data" / "20261006T080000Z" / "data_run.json"
     d = json.loads(dr.read_text(encoding="utf-8"))
@@ -285,14 +326,15 @@ def test_data_check_reports_backfill_progress_freshness_gold_and_disk(tmp_path):
            for s in ("BTCUSDT", "XAUUSDT", "PAXGUSDT")}
     ser["spot/PAXGUSDT/1d"] = {"planned": True, "stale": False, "age_h": 30.5, "gaps": 2}
     ser["futures/OLDUSDT/1d"] = {"planned": False, "stale": True, "age_h": 900.0}
-    ds.update(series=ser, totals={"unverified_rows": 17, "rest_rows": 5, "seed_rows": 0},
+    ser["futures/GONEUSDT/1d"] = {"planned": True, "stale": False, "age_h": 400.0, "status": "DELISTED"}
+    ds.update(series=ser, totals={"unverified_rows": 17, "rest_rows": 5, "seed_rows": 0, "holes": 3},
               dukascopy={"status": "YAPILAMADI", "reason": "hazır ayna içe alınmadı"})
     (res / "summary" / "data_status.json").write_text(json.dumps(ds), encoding="utf-8")
     out = run("inactive", res_b=str(int(5.0e9)))
     assert re.search(r"\[tamam\]\s+V1 ilk doldurma: TAMAMLANDI 20261006T080000Z", out), out
-    assert re.search(r"\[DİKKAT\]\s+V2 tazelik: planlı 4 seri, last_ts ≤ 26 sa 3 — eski: spot/PAXGUSDT/1d 30 sa · altın tamam · "
-                     r"Dukascopy YAPILAMADI", out), out
-    assert re.search(r"\[bilgi\]\s+V3 boşluk 2 \(1 seride; .*archive_unverified satır 17", out), out
+    assert re.search(r"\[DİKKAT\]\s+V2 tazelik: planlı 4 seri, last_ts ≤ 26 sa 3 · delist 1 \(terminal, ayrı: futures/GONEUSDT\) — "
+                     r"eski: spot/PAXGUSDT/1d 30 sa · altın tamam · Dukascopy YAPILAMADI", out), out
+    assert re.search(r"\[bilgi\]\s+V3 boşluk 2 \(1 seride; .*açık dönem 3 · archive_unverified satır 17", out), out
     assert re.search(r"\[tamam\]\s+V7 disk: data/research 5,00 GB · tahmin 5,4 GB ±%30", out), out
     assert re.search(r"\[tamam\]\s+V4 arşiv uzlaştırma farkı ilk 1/3 gecede 0", out), out
     out = run("inactive", res_b=str(int(9e9)))
@@ -658,7 +700,7 @@ def test_dry_run_checks_everything_and_changes_nothing(tmp_path, source, p1a_tem
                  "birim-sha256", "birim-sözleşmesi", "systemd-analyze-verify", "systemd-run", "compileall", "bağımsız-koşucu",
                  "yalıtım-AST", "status-kuru", "worker-MemoryMax=6G", "tradingbot-worker-NDR=no", "motor-boşta"):
         assert re.search(rf"\[tamam\] #\d+ {re.escape(name)}", cp.out), name
-    assert "53 geçti · 0 kaldı · 0 atlandı" in cp.out
+    assert "57 geçti · 0 kaldı · 0 atlandı" in cp.out
     assert "8db1faf-restart-at.txt 3 gün önce (≥ 3;" in cp.out
     assert re.search(r"UYARI\s+P1a A/B penceresi \(sürüm günü \d{4}-\d\d-\d\d\): 0/14 gece geçti — P1b yeni bir A/B", cp.out)
     sb.untouched_since(snap)
@@ -677,7 +719,9 @@ def test_deploy_backfill_check_ab_report_and_rollback_to_p1a(tmp_path, source, p
     cp = sb.run()
     assert cp.returncode == 0, cp.out[-6000:]
     m = re.search(r"DAĞITILDI: (\d+)/(\d+) değişmez geçti", cp.out)
-    assert m and m.group(1) == m.group(2) == "32", cp.out[-3000:]
+    assert m and m.group(1) == m.group(2) == "33", cp.out[-3000:]
+    # hedef commit engine-app'e birimlere dokunulmadan ÖNCE eklendi (getirme düşerse hiçbir şey değişmemiş olur)
+    assert cp.out.index("TIP-engine-app'te") < cp.out.index("6/10 veri birimi"), cp.out[-3000:]
     log = sb.log()[n0:]
     _no_forbidden(sb)
     # §9.3 sırası: veri birimi dosyaları → kapılı reload → veri smoke → gece smoke (yeni kod) → ancak sonra enable --now
@@ -785,6 +829,57 @@ def test_deploy_backfill_check_ab_report_and_rollback_to_p1a(tmp_path, source, p
     # P1a betiği geri alınmış kurulumu hâlâ tanır (aynı gece birimi, aynı SHA)
     p1 = sb.run("--check", script=P1A_SCRIPT)
     assert p1.returncode == 0 and "engine-app 4962209" in p1.out, p1.out[-2000:]
+
+
+@needs_sandbox
+def test_error_after_pin_reverts_engine_app_check_survives_du_backfill_disk_gate_and_partial_rollback(tmp_path, source,
+                                                                                                    p1a_template):
+    """İnceleme düzeltmeleri (2026-10-06), sahte VPS'te:
+    * adım 7'den (engine-app sabitlendi) SONRA beklenmeyen hata → `on_err` engine-app'i önceki sabitine döndürür (veri
+      zamanlayıcısı açılmamıştır; smoke edilmemiş kod gece biriminde kalmaz);
+    * `--check`: doldurma sürerken `du` çıkış 1 verse de (silinen dosya) veri ölçütleri basılır (pipefail "N\\n0" yok);
+      "disk şimdi" ve IO zamanlayıcısı satırları;
+    * `--backfill` disk kapısı smoke'un `universe/<gün>.json` seri sayısından ve veri biriminin 13 GB sınırıyla;
+    * `--rollback` engine-app'i geri sabitleyemezse BAŞARI demez: çıkış 4, "GERİ ALMA YARIM KALDI"; uygun saatte tamamlanır."""
+    sb = _from_template(tmp_path, p1a_template, source)
+    py = sb.base / "venv" / "bin" / "python"
+    flag = sb.fake / "py_fail_dlast"
+    py.write_text(f'#!/usr/bin/env bash\nif [ -e "{flag}" ] && [ "$4" = dlast ]; then exit 7; fi\nexec "{sys.executable}" "$@"\n',
+                  encoding="utf-8")
+    flag.write_text("1", encoding="utf-8")
+    n0 = len(sb.log())
+    cp = sb.run()
+    assert cp.returncode == 1 and "beklenmeyen hata" in cp.out and "engine-app önceki sabitine döndürüldü (4962209)" in cp.out, \
+        cp.out[-4000:]
+    assert sb.eng_head() == P1A_TIP and not [ln for ln in sb.log()[n0:] if ln.startswith("enable")]
+    assert not sb.state_json()["enabled"].get(DTMR) and sb.state_json()["enabled"][TMR] is True
+    _no_forbidden(sb)
+    flag.unlink()
+    cp = sb.run()
+    assert cp.returncode == 0 and "DAĞITILDI" in cp.out and sb.eng_head() == TIP, cp.out[-4000:]
+    # --check: du çıkış 1 (doldurma sürerken silinen dosya) veri ölçütlerini düşürmez
+    (sb.stub / "du").write_text(f'#!/usr/bin/env bash\n{shutil.which("du") or "/usr/bin/du"} "$@"\nexit 1\n', encoding="utf-8")
+    (sb.stub / "du").chmod(0o755)
+    ck = sb.run("--check")
+    assert ck.returncode == 0 and "(veri ölçüt raporu hata verdi)" not in ck.out, ck.out[-4000:]
+    assert re.search(r"\[ölçülemedi\]\s+V7 disk: data/research \d", ck.out) and "disk şimdi: boş 50,0 GB" in ck.out, ck.out[-3000:]
+    assert "IO zamanlayıcı:" in ck.out and "<betik>" not in ck.out
+    assert f"sudo bash {SCRIPT.name} --backfill" in ck.out
+    # --backfill: tahmin evrenden (smoke'un 2 serisi ≈ 1,5 MB × 1,3) ve veri biriminin sınırıyla (≥ 13 GB + ihtiyaç)
+    bf = sb.run("--backfill", FAKE_FREE_BYTES=str(13_000_000_000 + 100_000))
+    assert bf.returncode == 1 and "DUR: disk" in bf.out and "(2 seri, universe/" in bf.out and "HİÇBİR ŞEYE DOKUNULMADI" in bf.out, \
+        bf.out[-3000:]
+    assert not sb.runs()
+    bf = sb.run("--backfill", FAKE_FREE_BYTES=str(13_000_000_000 + 3_000_000))
+    assert bf.returncode == 0 and len(sb.runs()) == 1, bf.out[-3000:]
+    # --rollback gece penceresinde: veri birimi kalkar ama engine-app yeniden sabitlenemez → YARIM (çıkış 4)
+    rb = sb.run("--rollback", FAKE_UTC_HM="02:10")
+    assert rb.returncode == 4 and "GERİ ALMA YARIM KALDI" in rb.out and "GERİ ALINDI (P1a)" not in rb.out, rb.out[-3000:]
+    assert "YARIM: engine-app 008e602'de kaldı" in rb.out.replace(TIP[:7], "008e602") and sb.eng_head() == TIP
+    assert sb.unit_files() == sorted([SVC, TMR])
+    rb = sb.run("--rollback")
+    assert rb.returncode == 0 and "GERİ ALINDI (P1a)" in rb.out and sb.eng_head() == P1A_TIP, rb.out[-3000:]
+    _no_forbidden(sb)
 
 
 @needs_sandbox

@@ -18,17 +18,20 @@
 #   yargısıdır. P1a'nın 14 gecelik A/B'si bitmeden dağıtılırsa UYARI basılır (motor kodu değişir: yeni A/B dönemi).
 #
 # SAHİBİN ADIMLARI (VPS'te, sırayla; dosya adı tb-engine-<hedefin ilk 7 hanesi>.sh):
-#   1) sudo bash tb-engine-8d0a531.sh --dry-run    # yalnız denetim; hedef kod GEÇİCİ klonda; hiçbir şey değişmez
-#   2) sudo bash tb-engine-8d0a531.sh              # dağıt: kapılı veri birimi + engine-app sabiti + iki elle smoke
-#   3) sudo bash tb-engine-8d0a531.sh --backfill   # ilk doldurma (10–20 sa, ~5,4 GB); yeniden çalıştırınca ilerleme
-#                                                  #   ve tahmini bitiş; durmuşsa kaldığı yerden devam eder
-#   4) sudo bash tb-engine-8d0a531.sh --check      # 14 gün her gün (gece + veri bölümü)
-#   5) sudo bash tb-engine-8d0a531.sh --ab-report  # 14. geceden sonra bir kez
+#   1) sudo bash tb-engine-008e602.sh --dry-run    # yalnız denetim; hedef kod GEÇİCİ klonda; hiçbir şey değişmez
+#   2) sudo bash tb-engine-008e602.sh              # dağıt: kapılı veri birimi + engine-app sabiti + iki elle smoke
+#   3) sudo bash tb-engine-008e602.sh --backfill   # ilk doldurma (~45 sembolde ≈ 200 bin istek, ≈ 13–32 sa, ≈ 6 GB;
+#                                                  #   disk kapısı smoke'un universe/<gün>.json seri sayısından);
+#                                                  #   yeniden çalıştırınca ilerleme/ETA/disk; durmuşsa kaldığı yerden
+#   4) sudo bash tb-engine-008e602.sh --check      # 14 gün her gün (gece + veri bölümü)
+#   5) sudo bash tb-engine-008e602.sh --ab-report  # 14. geceden sonra bir kez
 #   Geri alma: --rollback (veri birimi + ilk doldurma kalkar, engine-app P1a'ya döner; data/research KALIR);
 #   tam kaldırma ardından: sudo bash tb-engine-4962209.sh --rollback
 # Çıkış: 0 tamam · 1 durdu (ön denetimde: hiçbir şey değişmedi) · 2 smoke geçmedi ya da saati değil (veri zamanlayıcısı
 #   KAPALI, engine-app önceki sabitine döndü) · 3 reload sonrası MemoryMax kayması (veri birimleri geri alındı)
-#   · 4 dağıtıldı ama bir değişmez KALDI.
+#   · 4 dağıtıldı ama bir değişmez KALDI / --rollback YARIM KALDI (neden yazılır; aynı komutla yeniden).
+# DİSK (P1a kapanış arşivi önce gelir): veri birimi ve ilk doldurma boş < 13 GB ya da data/research ≥ 17 GB'ta DÖNGÜ
+#   İÇİNDE kendiliğinden durur (DISK_REFUSE); gece biriminin reddi 10 / 20 GB'tır, arada 3 GB pay kalır.
 #
 # DAEMON-RELOAD GÜVENLİĞİ (§9.3): depodaki worker birimi MemoryMax=4G der, VPS'te 6G override vardır. daemon-reload (enable/
 #   disable'ın örtük reload'u dahil) YALNIZ reload_gate'ten geçer: worker ve dashboard NeedDaemonReload=no ve worker 6G;
@@ -40,16 +43,16 @@
 #   =no; değilse yalnız stop yeter) · ilk doldurma: sudo systemctl stop tb-engine-backfill.service (--backfill sürdürür).
 set -Eeuo pipefail
 
-TIP="8d0a5317dffdb98fa736ca595db3ee10d2bce82c"    # P1b kod commit'i (veri birimi dosyaları + kabul 12 + koşucu P1b)
+TIP="008e602528fc8af0053baa038ef6f5321d8b0449"    # P1b kod commit'i + inceleme düzeltmeleri (2026-10-06; 8d0a531'in yerine)
 T7="${TIP:0:7}"
 P1A_TIP="49622093a3d3bc334b454b4df2dcdb4e53eb5144" # P1a (tb-engine-4962209.sh): ön koşul ve --rollback hedefi
 BRANCH_REF="refs/heads/claude/gifted-knuth-0ehpcs"
 REPO_URL="${TB_ENGINE_REPO_URL:-https://github.com/CoskunerBerke/trading2.git}"   # içerik TAM SHA'ya bağlıdır
 SVC_SHA256="0db7a26a2a2c955ef3d9cdb83834f816c0556752233a8f312b3ffbbd7ca89b2e"    # gece .service @TIP (= P1a)
 TMR_SHA256="59fa82a34182f1e8c50377d6633191881a2250e640098cf8c369a5cff46b6ed6"    # gece .timer @TIP (= P1a)
-DSVC_SHA256="bf2b97e5cf249b32f55b605e4d6bbb662550f99dafbbb1e4feb4432ec4466abd"   # deploy/tradingbot-engine-data.service
+DSVC_SHA256="9a01ba829415f64ebbb9fa3d1701b45351b867d4dd730138d3691c286728c94d"   # deploy/tradingbot-engine-data.service
 DTMR_SHA256="7522cc40270e5cecf2a65039ba67302329a07866f01fde943adb81c495441c65"   # deploy/tradingbot-engine-data.timer
-INV_TESTS=53                                     # bağımsız koşucu: P1a kabul 1–8, 13, 14 + P1b 101–111, 113–115
+INV_TESTS=57                                     # bağımsız koşucu: P1a kabul 1–8, 13, 14 + P1b 101–111, 113–115
 ENGINE_VER="research_engine_v1_p1b"
 
 BASE="${TRADINGBOT_BASE:-/opt/tradingbot}"
@@ -61,10 +64,11 @@ DSVC="tradingbot-engine-data.service"; DTMR="tradingbot-engine-data.timer"; BF="
 DDROPIN_DIR="$SD/$DSVC.d"; DDROPIN="$DDROPIN_DIR/50-tb-engine.conf"
 WORKER="tradingbot-worker.service"; DASH="tradingbot-dashboard.service"
 MEM_EXPECT=6442450944; ENGINE_MEM=536870912; DATA_MEM=1073741824   # worker 6G (override) · gece 512M · veri 1G
-DISK_EST=5400000000                              # ilk doldurma tahmini (~45 sembol: parquet ≈ 3,1 GB + zip ≈ 2,3 GB)
+DISK_EST=6000000000            # yedek tahmin (universe/<gün>.json yoksa): ~45 sembol parquet ≈ 3,1 + zip ≈ 2,3 + blok ≈ 0,5 GB
+DATA_FREE_MIN=13000000000; DATA_RES_MAX=17000000000  # = datastore.DATA_MIN_FREE_BYTES / DATA_REFUSE_RESEARCH_BYTES
 LOGDIR="$BASE/deploy-logs"; BASELINE="$LOGDIR/engine-$T7-deploy.json"; SAMPLES="$LOGDIR/engine-$T7-samples.jsonl"
 MODE="${1:-deploy}"; SMOKE_TIMEOUT=1800; DSMOKE_TIMEOUT=3300
-TMP=""; WHY=""; CHANGED=(); INV_N=0; INV_FAIL=(); ENG_PREV=""
+TMP=""; WHY=""; CHANGED=(); INV_N=0; INV_FAIL=(); ENG_PREV=""; UNDO_NOTE=""
 
 say()  { printf '\n== %s\n' "$*"; };          ok()  { printf '   OK  %s\n' "$*"; }
 warn() { printf '   UYARI  %s\n' "$*"; };       die() { printf '\nDUR: %s\n' "$1" >&2; exit "${2:-1}"; }
@@ -74,11 +78,17 @@ svc() { local d="$1"; shift; as_svc env -i -C "$d" PATH=/usr/local/bin:/usr/bin:
           PYTHONDONTWRITEBYTECODE=1 "$@"; }
 gitx() { local d="$1"; shift; svc "$d" GIT_TERMINAL_PROMPT=0 git "$@"; }
 LOW=(nice -n 19); if command -v ionice >/dev/null 2>&1; then LOW+=(ionice -c3 -t); fi   # ağır adımlar: CPU/IO en düşük
+if command -v choom >/dev/null 2>&1; then LOW+=(choom -n 1000 --); fi   # ve bellek darlığında önce onlar ölür (§2.5)
 sc_show() { systemctl show "$1" -p "$2" --value 2>/dev/null || true; }
 sc_state() { systemctl "$1" "$2" 2>/dev/null || true; }
 fsha() { if [[ -f "$1" ]]; then sha256sum < "$1" | cut -d' ' -f1; fi; }
 cleanup() { if [[ -n "$TMP" && "$TMP" == /tmp/tb-engine-* && -d "$TMP" ]]; then rm -rf -- "$TMP"; fi; }
-on_err() { printf '\nDUR: beklenmeyen hata (satır %s). Bu çalıştırmada değişen: %s\n' "$1" "${CHANGED[*]:-hiçbir şey}" >&2
+on_err() { trap - ERR; set +e
+           printf '\nDUR: beklenmeyen hata (satır %s). Bu çalıştırmada değişen: %s\n' "$1" "${CHANGED[*]:-hiçbir şey}" >&2
+           if [[ " ${CHANGED[*]} " == *" engine-app="* && " ${CHANGED[*]} " != *" veri zamanlayıcısı "* ]]; then
+             if ( revert_eng ) >&2; then printf '   engine-app önceki sabitine döndürüldü (%s)\n' "${ENG_PREV:0:7}" >&2
+             else printf '   UYARI: engine-app geri döndürülemedi: sudo bash %s --rollback\n' "$0" >&2; fi
+           fi
            if (( ${#CHANGED[@]} )); then printf '   Geri alma: sudo bash %s --rollback (data/research kalır)\n' "$0" >&2; fi
            exit 1; }
 trap cleanup EXIT
@@ -457,34 +467,54 @@ def c_check(res, state, tip, baseline, samples, memmax, nr, pid):
              w.get("nrestarts"), nr, memmax, w.get("pid"), pid))
     c_sample(state, samples, nr, pid, memmax)
     return 0
-def bf_view(res, bf_state):
+gb = lambda x: f(iv(x) / 1e9, 1) if iv(x) is not None else "—"  # noqa: E731
+def bf_view(res, bf_state, me="tb-engine-<sha7>.sh"):
     """İlk doldurma durumu: (bayrak, metin, tamamlandı mı)."""
     ds = rj(os.path.join(res, "summary", "data_status.json")) or {}
     run = ds.get("running") or {}
     bfs = [r for r in druns(res) if r.get("mode") == "backfill"]
     if bf_state in ("active", "activating", "reloading", "deactivating"):
         p = (run.get("progress") or {}) if run.get("mode") == "backfill" else {}
-        return None, "SÜRÜYOR (%s) · aşama %s · %s/%s görev · son 1 sa hızı %s/sa · tahmini bitiş %s%s" % (
+        dk = p.get("disk") or {}
+        return None, "SÜRÜYOR (%s) · aşama %s · %s/%s görev · son 1 sa hızı %s/sa · tahmini bitiş %s%s%s" % (
             run.get("run_id") or "başlıyor", p.get("phase") or "—", p.get("done", "—"), p.get("total", "—"),
             p.get("rate_per_h_1h") or "—", str(p.get("eta") or "—")[:16],
-            " · DURAKLADI (4h penceresi, %s'e kadar)" % str(p.get("resume_at"))[11:16] if p.get("paused") else ""), False
+            " · DURAKLADI (4h penceresi, %s'e kadar)" % str(p.get("resume_at"))[11:16] if p.get("paused") else "",
+            " · disk (doldurmanın ölçümü %s): boş %s GB, araştırma ≈ %s GB" % (str(dk.get("at"))[11:16], gb(dk.get("free_bytes")),
+                                                                         gb(dk.get("research_bytes"))) if dk else ""), False
     if not bfs:
-        return None, "başlatılmadı (sudo bash <betik> --backfill)", False
+        return None, "başlatılmadı (sudo bash %s --backfill)" % me, False
     z = bfs[-1]
     if z.get("result") == "SUCCESS":
         return False, "TAMAMLANDI %s (%s → %s)" % (z.get("run_id"), str(z.get("started_at"))[:16],
                                                  str(z.get("finished_at"))[:16]), True
-    return True, "%s %s — bitmedi; kaldığı yerden: sudo bash <betik> --backfill%s" % (
-        z.get("run_id"), z.get("result") if z.get("result") != "RUNNING" else "DURDU (süreç yok)",
-        (" · " + str(z.get("error"))[:100]) if z.get("error") else ""), False
-def c_bf(res, bf_state, peak, dmem):
-    flag, txt, _done = bf_view(res, bf_state)
+    return True, "%s %s — bitmedi; kaldığı yerden: sudo bash %s --backfill%s" % (
+        z.get("run_id"), z.get("result") if z.get("result") != "RUNNING" else "DURDU (süreç yok)", me,
+        (" · " + str(z.get("error") or z.get("reason") or "")[:100]) if (z.get("error") or z.get("reason")) else ""), False
+EST_B = {"5m": 40e6, "15m": 14e6, "1h": 5e6, "4h": 1.5e6, "1d": 0.5e6, "funding": 1e6, "metrics_5m": 60e6,
+         "markpx_1h": 5e6, "premium_1h": 5e6, "1m": 30e6}
+def c_est(res, fallback):
+    """--backfill disk kapısı ve V7: smoke'un en son universe/<gün>.json seri listesinden (seri başına parquet + zip + blok)."""
+    d = os.path.join(res, "universe")
+    try:
+        names = sorted(n for n in os.listdir(d) if re.match(r"^\d{4}-\d\d-\d\d\.json$", n))
+    except OSError:
+        names = []
+    for n in reversed(names):
+        keys = (rj(os.path.join(d, n)) or {}).get("series")
+        if isinstance(keys, list) and keys:
+            print("%d %d universe/%s" % (int(sum(EST_B.get(str(k).rsplit("/", 1)[-1], 5e6) for k in keys)), len(keys), n))
+            return 0
+    print("%d 0 sabit-tahmin" % int(fallback))
+    return 0
+def c_bf(res, bf_state, peak, dmem, me="tb-engine-<sha7>.sh"):
+    flag, txt, _done = bf_view(res, bf_state, me)
     line(flag, "ilk doldurma: " + txt)
     if iv(peak):
         line(iv(peak) > 0.8 * int(dmem), "tb-engine-backfill cgroup memory.peak %s MB (≤ 0,8 × %s MB)" % (
             f(iv(peak) / 1048576, 0), f(int(dmem) / 1048576, 0)))
     return 0
-def c_dcheck(res, tip, baseline, res_b, dmem, bf_state, peak, est):
+def c_dcheck(res, tip, baseline, res_b, dmem, bf_state, peak, est, free_b="", me="tb-engine-<sha7>.sh"):
     b = rj(baseline) or {}
     t0 = (b.get("started_at") or b.get("deployed_at") or 0) - 60
     ds = rj(os.path.join(res, "summary", "data_status.json")) or {}
@@ -497,23 +527,28 @@ def c_dcheck(res, tip, baseline, res_b, dmem, bf_state, peak, est):
             (r.get("diffs") or {}).get("count"), mb(r.get("resources"))))
     print("   (bu sürümün veri çalıştırması yok)") if not rs else None
     print("-- P1b VPS kabul ölçütleri (§10 P1b; [DİKKAT] = bana iletin)")
-    bflag, btxt, done = bf_view(res, bf_state)
+    bflag, btxt, done = bf_view(res, bf_state, me)
     line(bflag, "V1 ilk doldurma: " + btxt)
     ser = {k: v for k, v in (ds.get("series") or {}).items() if v.get("planned")}
-    old = sorted(((k, v) for k, v in ser.items() if v.get("stale") or v.get("age_h") is None or v["age_h"] > 26),
+    dl = sorted(k for k, v in ser.items() if v.get("status") == "DELISTED")     # terminal: tazelikten ayrı raporlanır
+    old = sorted(((k, v) for k, v in ser.items() if k not in dl and (v.get("stale") or v.get("age_h") is None
+                                                                   or v["age_h"] > 26)),
                  key=lambda kv: -(kv[1].get("age_h") or 1e9))
     miss = [g for g in ("futures/XAUUSDT", "futures/PAXGUSDT", "spot/PAXGUSDT") if not any(k.startswith(g + "/") for k in ser)]
     du = ds.get("dukascopy") or {}
-    line(None if not (done and ser) else bool(old or miss), "V2 tazelik: planlı %d seri, last_ts ≤ 26 sa %d%s · altın %s · "
-         "Dukascopy %s" % (len(ser), len(ser) - len(old), (" — eski: " + ", ".join(
+    line(None if not (done and ser) else bool(old or miss), "V2 tazelik: planlı %d seri, last_ts ≤ 26 sa %d%s%s · altın %s · "
+         "Dukascopy %s" % (len(ser) - len(dl), len(ser) - len(dl) - len(old),
+                           " · delist %d (terminal, ayrı: %s)" % (len(dl), ", ".join(sorted({k.rsplit("/", 1)[0] for k in dl})[:4]))
+                           if dl else "", (" — eski: " + ", ".join(
              "%s %s" % (k, "%s sa" % f(v["age_h"], 0) if v.get("age_h") is not None else v.get("status")) for k, v in old[:4]))
              if old else "", "tamam" if not miss else "EKSİK " + ", ".join(miss),
              "HAZIR" if du.get("status") == "HAZIR" else "YAPILAMADI (kabul edilir; §3.3: hazır ayna yok)"))
     tot = ds.get("totals") or {}
     gaps = sum(int(v.get("gaps") or 0) for v in ser.values())
-    line("bilgi" if done else None, "V3 boşluk %d (%d seride; fonlama gerçek aralıkla) · archive_unverified satır %s · REST %s · "
-         "tohum %s" % (gaps, sum(1 for v in ser.values() if v.get("gaps")), tot.get("unverified_rows"), tot.get("rest_rows"),
-                       tot.get("seed_rows")))
+    line("bilgi" if done else None, "V3 boşluk %d (%d seride; fonlama yerel gerçek aralıkla) · açık dönem %s · "
+         "archive_unverified satır %s · REST %s · tohum %s" % (gaps, sum(1 for v in ser.values() if v.get("gaps")),
+                                                             tot.get("holes", 0), tot.get("unverified_rows"),
+                                                             tot.get("rest_rows"), tot.get("seed_rows")))
     up = [r for r in rs if r.get("mode") == "update" and r.get("result") in ("SUCCESS", "PARTIAL", "DEADLINE")
           and r.get("run_id") != b.get("data_smoke_run_id")][:3]
     nd = sum(int((r.get("diffs") or {}).get("count") or 0) for r in up)
@@ -529,9 +564,13 @@ def c_dcheck(res, tip, baseline, res_b, dmem, bf_state, peak, est):
     sk = [r.get("run_id") for r in runs(res) if r.get("result") == "SKIPPED_LOCKED" and (ep(r.get("started_at")) or 0) >= t0]
     line(None if not pks and not sk else (bool(sk) or max(pks or [0]) > 0.8), "V6 veri/doldurma memory.peak en çok %s × "
          "MemoryMax (≤ 0,8) · gece SKIPPED_LOCKED %d (0 olmalı)" % (f(max(pks) if pks else None, 2), len(sk)))
-    rb, e = int(res_b or 0), float(est)
+    rb, e = iv(res_b) or 0, float(est)
     line(None if not done else not (0.7 * e <= rb <= 1.3 * e), "V7 disk: data/research %s GB · tahmin %s GB ±%%30%s" % (
         f(rb / 1e9, 2), f(e / 1e9, 1), "" if done else " (ilk doldurma bitince karşılaştırılır)"))
+    fb = iv(free_b)
+    line(None if fb is None else (fb < 15e9 or rb >= 16e9), "disk şimdi: boş %s GB · data/research %s GB (blok) — veri birimi/"
+         "doldurma kendiliğinden durur: boş < 13 GB ya da ≥ 17 GB; gece birimi 10 / 20 GB'ta (kapanış arşivi önce gelir)" % (
+             gb(fb), gb(rb)))
     z = next((r for r in reversed(rs) if r.get("mode") == "update"), None)
     if z:
         line(z.get("result") not in ("SUCCESS", "DEADLINE", "SKIPPED_LOCKED"), "son veri çalıştırması %s %s (çıkış %s) · REST %s · "
@@ -708,7 +747,7 @@ def c_bfprops(unit, dropin):
     print("\n".join("--property=%s=%s" % kv for kv in [("Type", "exec")] + props))
     return 0
 CMDS = {"paper": c_paper, "runner": c_runner, "ast": c_ast, "lastrun": c_lastrun, "dlast": c_dlast, "smoke": c_smoke,
-        "dsmoke": c_dsmoke, "check": c_check, "dcheck": c_dcheck, "bf": c_bf, "bfprops": c_bfprops, "bkok": c_bkok,
+        "dsmoke": c_dsmoke, "check": c_check, "dcheck": c_dcheck, "bf": c_bf, "bfprops": c_bfprops, "bkok": c_bkok, "est": c_est,
         "p1aab": c_p1aab, "ab": c_ab, "baseline": c_baseline, "k6": c_k6}
 r = CMDS[sys.argv[1]](*sys.argv[2:])
 sys.exit(r if isinstance(r, int) else 0)
@@ -716,8 +755,9 @@ PY
 rpy() { env -i PATH="$PATH" LANG=C.UTF-8 TZ=UTC "$VENV/bin/python" -I -c "$PYTOOL" "$@"; }
 
 # ------------------------------------------------------------------ klon yardımcıları (git servis kullanıcısıyla)
-fetch_tip() {   # $1: klon [$2: SHA]. SHA yalnız EKLENİR (çalışma ağacı değişmez); içerik commit kimliğine bağlıdır
-  local d="$1" s="${2:-$TIP}"
+fetch_tip() {   # $1: klon [$2: SHA] [$3: önce denenecek yerel depo]. SHA yalnız EKLENİR (çalışma ağacı değişmez)
+  local d="$1" s="${2:-$TIP}" src="${3:-}"
+  if [[ -n "$src" ]] && ! gitx "$d" cat-file -e "$s^{commit}" 2>/dev/null; then gitx "$d" fetch -q "$src" "$s" 2>/dev/null || true; fi
   if ! gitx "$d" cat-file -e "$s^{commit}" 2>/dev/null; then
     gitx "$d" fetch -q "$REPO_URL" "$s" 2>/dev/null || gitx "$d" fetch -q "$REPO_URL" "$BRANCH_REF" 2>/dev/null || true
   fi
@@ -742,7 +782,8 @@ unit_contract() {   # $1: ağaç. sha sabitlemesinin üstüne ikinci savunma: §
     && grep -qx "Environment=ENGINE_EXPECTED_MEMORY_MAX=$ENGINE_MEM" "$s" && ! grep -q '^SupplementaryGroups' "$s" \
     && grep -qx 'ExecStart=/opt/tradingbot/venv/bin/python -s -m tradingbot engine-night' "$s" || return 1
   grep -qx 'OnCalendar=\*-\*-\* 00:41:00 UTC' "$dt" && ! grep -q '^PrivateNetwork' "$ds" \
-    && grep -qx 'SupplementaryGroups=systemd-journal' "$ds" && grep -qx 'MemoryMax=1G' "$ds" \
+    && grep -qx 'SupplementaryGroups=systemd-journal' "$ds" && grep -qx 'MemoryMax=1G' "$ds" && grep -qx 'MemoryHigh=512M' "$ds" \
+    && grep -q '^InaccessiblePaths=.*-/opt/tradingbot/env .*-/opt/tradingbot/data/vault' "$ds" \
     && grep -qx "Environment=ENGINE_EXPECTED_MEMORY_MAX=$DATA_MEM" "$ds" && grep -qx 'TimeoutStartSec=50min' "$ds" \
     && grep -qx 'ExecStart=/opt/tradingbot/venv/bin/python -s -m tradingbot engine-data --update' "$ds" || return 1
   for u in "$s" "$ds"; do
@@ -766,7 +807,8 @@ undo_data() {       # VERİ birimlerini kaldır (zamanlayıcı reload'suz kapat�
   rm -f -- "$SD/$DSVC" "$SD/$DTMR" "$DDROPIN"
   if [[ -d "$DDROPIN_DIR" ]]; then rmdir -- "$DDROPIN_DIR" 2>/dev/null || true; fi
   if reload_gate; then systemctl daemon-reload; ok "daemon-reload (kapıdan geçti)"
-  else warn "daemon-reload ATLANDI: $WHY — veri birimi dosyaları silindi, zamanlayıcı durdu ve kapalı; veri birimi çalışmaz"; fi
+  else warn "daemon-reload ATLANDI: $WHY — veri birimi dosyaları silindi, zamanlayıcı durdu ve kapalı; veri birimi çalışmaz"
+    UNDO_NOTE="daemon-reload atlandı ($WHY): systemd silinen veri birimini reload'a dek bellekte tutar"; fi
   systemctl reset-failed "$DSVC" >/dev/null 2>&1 || true
 }
 worker_now() { printf '%s %s' "$(sc_show "$WORKER" MainPID)" "$(sc_show "$WORKER" NRestarts)"; }
@@ -786,6 +828,8 @@ if [[ "$MODE" == --check ]]; then
   done
   echo "   ilk doldurma ($BF): $(sc_state is-active "$BF") · worker: MemoryMax $(sc_show "$WORKER" MemoryMax)" \
        "· NeedDaemonReload $(sc_show "$WORKER" NeedDaemonReload) · NRestarts $(sc_show "$WORKER" NRestarts) — betik worker'a dokunmaz"
+  sch=""; for f in /sys/block/*/queue/scheduler; do d="${f#/sys/block/}"; d="${d%%/*}"; [[ -r "$f" && ! "$d" =~ ^(loop|ram) ]] && sch+="$d=$(sed -n 's/.*\[\(.*\)\].*/\1/p' "$f") "; done
+  echo "   IO zamanlayıcı: ${sch:-bilinmiyor}(IOSchedulingClass=idle/IOWeight yalnız bfq'da etkili; none/mq-deadline'de A/B tur p95'i ölçer)"
   say "engine-status --brief (≤ 60 satır; GECE ÖĞRENME MOTORU › GÜNLÜK HEDEF)"
   svc "$ENG" TRADINGBOT_DATA="$DATA" TRADINGBOT_STATE_DIR="$STATE" "$VENV/bin/python" -s -m tradingbot engine-status --brief \
     || echo "   (engine-status hata verdi)"
@@ -802,9 +846,11 @@ if [[ "$MODE" == --check ]]; then
     >/dev/null 2>&1 || true
   rpy k6 "$TMP/e.json" "$TMP/s.json" || echo "   (K6 hata verdi)"
   say "kabul ölçütleri — veri birimi ve ilk doldurma"
-  res_b="$(du -sb "$RES" 2>/dev/null | cut -f1 || echo 0)"
-  rpy dcheck "$RES" "$TIP" "$BASELINE" "${res_b:-0}" "$DATA_MEM" "$(sc_state is-active "$BF")" "$(bf_peak)" "$DISK_EST" \
-    || echo "   (veri ölçüt raporu hata verdi)"
+  res_b="$({ du -sB1 "$RES" 2>/dev/null || true; } | awk 'NR==1{print $1+0}')"
+  free_b="$({ df -B1 --output=avail "$BASE" 2>/dev/null || true; } | awk 'NR==2{print $1+0}')"
+  read -r est_b _ <<<"$(rpy est "$RES" "$DISK_EST" 2>/dev/null || echo "$DISK_EST")"
+  rpy dcheck "$RES" "$TIP" "$BASELINE" "${res_b:-0}" "$DATA_MEM" "$(sc_state is-active "$BF")" "$(bf_peak)" "${est_b:-$DISK_EST}" \
+    "${free_b:-}" "$(basename "$0")" || echo "   (veri ölçüt raporu hata verdi)"
   echo "   14. geceden sonra  sudo bash $0 --ab-report · ilk doldurma ilerlemesi: sudo bash $0 --backfill"
   echo "   kapatma: sudo systemctl disable --now $DTMR (önce NeedDaemonReload=no); geri alma: sudo bash $0 --rollback"
   exit 0
@@ -837,10 +883,12 @@ win3() {
   else out="deploy-logs'ta sürüm kaydı yok"; fi
   gate "3g-pencere-dışı" "$rc" "$out"
 }
-disk_gate() {   # $1: ek gereksinim (bayt) — motor koruması: boş ≥ 10G, data/research ≤ 20G
-  free_b="$(df -B1 --output=avail "$BASE" | tail -n 1 | tr -d ' ')"; res_b="$(du -sb "$RES" 2>/dev/null | cut -f1 || echo 0)"
-  (( free_b >= 10000000000 + ${1:-0} && ${res_b:-0} <= 20000000000 )) && rc=0 || rc=1
-  gate "disk" "$rc" "boş $(numfmt --to=si "$free_b") (≥ 10G + $(numfmt --to=si "${1:-0}")) · data/research $(numfmt --to=si "${res_b:-0}") (≤ 20G)"
+disk_gate() {   # $1: ek gereksinim (bayt) · $2: en az boş (gece birimi 10G) · $3: araştırma en çok (20G) · $4: not
+  local mf="${2:-10000000000}" mr="${3:-20000000000}"
+  free_b="$({ df -B1 --output=avail "$BASE" 2>/dev/null || true; } | awk 'NR==2{print $1+0}')"
+  res_b="$({ du -sB1 "$RES" 2>/dev/null || true; } | awk 'NR==1{print $1+0}')"
+  (( ${free_b:-0} >= mf + ${1:-0} && ${res_b:-0} + ${1:-0} <= mr )) && rc=0 || rc=1
+  gate "disk" "$rc" "boş $(numfmt --to=si "${free_b:-0}") (≥ $(numfmt --to=si "$mf") + $(numfmt --to=si "${1:-0}")) · data/research $(numfmt --to=si "${res_b:-0}") (+ ihtiyaç ≤ $(numfmt --to=si "$mr"))${4:+ · $4}"
 }
 
 if [[ "$MODE" == --rollback ]]; then
@@ -853,21 +901,25 @@ if [[ "$MODE" == --rollback ]]; then
   fi
   undo_data
   [[ ! -e "$SD/$DSVC" && ! -e "$SD/$DTMR" ]] || die "veri birimi dosyaları hâlâ duruyor"
+  PARTIAL=(); if [[ -n "$UNDO_NOTE" ]]; then PARTIAL+=("$UNDO_NOTE"); fi
   if [[ -d "$ENG/.git" && ! -L "$ENG" ]]; then
     cur="$(gitx "$ENG" rev-parse HEAD)"; app_sha="$(gitx "$APP" rev-parse HEAD 2>/dev/null || echo ?)"; time_ok 0 || true
     if [[ "$cur" == "$P1A_TIP" ]]; then ok "engine-app zaten P1a'da (${P1A_TIP:0:7})"
     elif [[ "$(sc_state is-active "$SVC")" =~ ^(active|activating)$ || "$WHY" == *"00:00–04:00"* ]]; then
-      warn "engine-app yeniden sabitlenmedi: gece birimi penceresi/çalışıyor ($WHY). Uygun saatte yeniden: sudo bash $0 --rollback"
+      PARTIAL+=("engine-app ${cur:0:7}'de kaldı: gece birimi penceresi/çalışıyor ($WHY)")
     elif ! gitx "$ENG" merge-base --is-ancestor "$app_sha" "$P1A_TIP" 2>/dev/null; then
-      warn "engine-app ${cur:0:7}'de BIRAKILDI: app ${app_sha:0:7}, ${P1A_TIP:0:7}'in atası değil (dönülse her gece SKEW olurdu)"
-    elif [[ -n "$(gitx "$ENG" status --porcelain)" ]]; then warn "engine-app'te yerel değişiklik var: yeniden sabitlenmedi"
+      PARTIAL+=("engine-app ${cur:0:7}'de BIRAKILDI: app ${app_sha:0:7}, ${P1A_TIP:0:7}'in atası değil (dönülse her gece SKEW olurdu)")
+    elif [[ -n "$(gitx "$ENG" status --porcelain)" ]]; then PARTIAL+=("engine-app'te yerel değişiklik var: yeniden sabitlenmedi")
     else pin_eng "$P1A_TIP"; ok "engine-app ${cur:0:7} → ${P1A_TIP:0:7} (P1a) + compileall; gece zamanlayıcısı açık kalır"; fi
   fi
   echo "   gece zamanlayıcısı: $(sc_state is-enabled "$TMR") / $(sc_state is-active "$TMR") · data/research:" \
-       "$(du -sh "$RES" 2>/dev/null | cut -f1 || echo yok) (DOKUNULMADI)"
+       "$({ du -sh "$RES" 2>/dev/null || true; } | awk 'NR==1{print $1}') (DOKUNULMADI)"
   read -r W_PID1 W_NR1 <<<"$(worker_now)"
   if [[ "$W_PID1 $W_NR1" == "$W_PID0 $W_NR0" ]]; then ok "worker dokunulmadı (PID $W_PID1, NRestarts $W_NR1)"
   else warn "worker PID/NRestarts değişti ($W_PID0/$W_NR0 → $W_PID1/$W_NR1) — betik worker'a dokunmaz; nedeni günlükte"; fi
+  if (( ${#PARTIAL[@]} )); then printf '   YARIM: %s\n' "${PARTIAL[@]}"   # yarım geri alma BAŞARI diye bildirilmez
+    echo "GERİ ALMA YARIM KALDI — P1a'ya TAM dönülmedi (veri birimi kaldırıldı, zamanlayıcısı kapalı). Nedeni giderip ya da uygun saatte AYNI komutla yeniden: sudo bash $0 --rollback"
+    exit 4; fi
   echo "GERİ ALINDI (P1a). Yeniden kurmak için: sudo bash $0 · tam kaldırma: sudo bash tb-engine-${P1A_TIP:0:7}.sh --rollback"
   exit 0
 fi
@@ -876,7 +928,7 @@ if [[ "$MODE" == --backfill ]]; then
   say "İLK DOLDURMA — $BF (veri biriminin [Service] özellikleri AYNEN; süre sınırı yok; kaldığı yerden devam eder)"
   bst="$(sc_state is-active "$BF")"
   if [[ "$bst" =~ ^(active|activating)$ ]]; then
-    rpy bf "$RES" "$bst" "$(bf_peak)" "$DATA_MEM"
+    rpy bf "$RES" "$bst" "$(bf_peak)" "$DATA_MEM" "$(basename "$0")"
     echo "   durdurma (sonra --backfill ile devam): sudo systemctl stop $BF · ayrıntı: sudo bash $0 --check"; exit 0
   fi
   eng="$(gitx "$ENG" rev-parse HEAD 2>/dev/null || echo yok)"
@@ -893,9 +945,11 @@ if [[ "$MODE" == --backfill ]]; then
   st="$(sc_state is-active "$DSVC")"; [[ ! "$st" =~ ^(active|activating)$ ]] && rc=0 || rc=1
   gate "veri-birimi-boşta" "$rc" "$DSVC ${st:-?} (00:41 çalıştırması bitsin; data.lock)"
   win3
-  res_b="$({ du -sb "$RES/store" "$RES/archive_cache" 2>/dev/null || true; } | awk '{s+=$1} END {print s+0}')"
-  need=$(( DISK_EST * 13 / 10 - res_b )); (( need > 0 )) || need=0
-  disk_gate "$need"
+  # disk: tahmin smoke'un universe/<gün>.json'undan × 1,3 − mevcut; VERİ biriminin sınırlarıyla (13G/17G; gece 10G/20G)
+  read -r est_b est_n est_src <<<"$(rpy est "$RES" "$DISK_EST")"
+  res_b="$({ du -sB1 "$RES/store" "$RES/archive_cache" 2>/dev/null || true; } | awk '$1 ~ /^[0-9]+$/ {s+=$1} END {print s+0}')"
+  need=$(( ${est_b:-$DISK_EST} * 13 / 10 - ${res_b:-0} )); (( need > 0 )) || need=0
+  disk_gate "$need" "$DATA_FREE_MIN" "$DATA_RES_MAX" "tahmin $(numfmt --to=si "${est_b:-$DISK_EST}") (${est_n:-0} seri, ${est_src:-?}) × 1,3 − mevcut"
   if [[ "$bst" == failed ]]; then
     echo "   önceki doldurma: Result=$(sc_show "$BF" Result) ExecMainStatus=$(sc_show "$BF" ExecMainStatus) — sıfırlanıp sürdürülür"
     systemctl reset-failed "$BF" || true
@@ -908,7 +962,7 @@ if [[ "$MODE" == --backfill ]]; then
   CHANGED+=("$BF başlatıldı")
   sleep 5
   bst="$(sc_state is-active "$BF")"
-  rpy bf "$RES" "$bst" "$(bf_peak)" "$DATA_MEM"
+  rpy bf "$RES" "$bst" "$(bf_peak)" "$DATA_MEM" "$(basename "$0")"
   if [[ "$bst" == failed ]]; then
     journalctl -u "$BF" -n 30 --no-pager 2>/dev/null | sed 's/^/   | /' || true
     die "ilk doldurma hemen düştü (Result=$(sc_show "$BF" Result), çıkış $(sc_show "$BF" ExecMainStatus)). Çıktıyı bana iletin"
@@ -961,7 +1015,7 @@ st="$(sc_state is-active "$SVC") $(sc_state is-active "$DSVC") $(sc_state is-act
 [[ ! "$st" =~ (^| )(active|activating)( |$) ]] && rc=0 || rc=1
 gate "motor-boşta" "$rc" "gece/veri/doldurma: $st (bir motor çalıştırması sürerken dağıtılmaz)"
 disk_gate 0
-(( free_b >= 10000000000 + DISK_EST * 13 / 10 )) || warn "ilk doldurma (~$(numfmt --to=si "$DISK_EST") ±%30) için boş alan dar: --backfill durur"
+(( ${free_b:-0} >= DATA_FREE_MIN + DISK_EST * 13 / 10 )) || warn "ilk doldurma (~$(numfmt --to=si "$DISK_EST") ±%30; kesin değer smoke'tan sonra evrenden) için boş alan dar: --backfill başlamaz"
 win3
 out="$(rpy bkok "$RES" 2>&1)" && rc=0 || rc=1
 gate "yedek-doğrulandı" "$rc" "$out"
@@ -970,7 +1024,8 @@ else ok "$out"; fi
 ram_kb="$(awk '/^MemTotal:/{print $2}' /proc/meminfo)"; dm="$(sc_show "$DASH" MemoryMax)"; [[ "$dm" =~ ^[0-9]+$ ]] || dm=536870912
 need=$(( MEM_EXPECT + dm + ENGINE_MEM + DATA_MEM + 1073741824 ))
 if (( ram_kb * 1024 >= need )); then ok "bellek: worker 6G + panel $(numfmt --to=iec "$dm") + gece 512M + veri/doldurma 1G + 1G ≤ RAM $(numfmt --to=iec $((ram_kb * 1024)))"
-else warn "bellek bütçesi aşılıyor (RAM $(numfmt --to=iec $((ram_kb * 1024)))): OOMScoreAdjust=1000 motoru önce öldürür; P0 kararı gerekir"; fi
+else warn "bellek (§2.5): MemoryMax toplamı + 1G = $(numfmt --to=iec "$need") > RAM $(numfmt --to=iec $((ram_kb * 1024))). KAYITLI KARAR (2026-10-06): veri/doldurma MemoryHigh 800M → 512M" \
+  "(ölçülen tepe ≈ 227 MiB; gece 400M), MemoryMax aynı, OOMScoreAdjust=1000 motoru önce öldürür; etki V6 + A/B'de ölçülür (bilgi)"; fi
 echo "   mevcut kurulum: engine-app ${ENG_NOW:-yok} · veri birimi $([[ -f "$SD/$DSVC" ]] && echo var || echo yok)" \
      "· veri zamanlayıcısı $(sc_state is-enabled "$DTMR") · data/research $(stat -c '%U %a' "$RES" 2>/dev/null || echo yok)"
 APP_SHA="$(gitx "$APP" rev-parse HEAD 2>/dev/null)" || die "çalışan app SHA'sı okunamadı ($APP, $SVC_USER ile git)"
@@ -1037,6 +1092,9 @@ if [[ "$MODE" == --dry-run ]]; then
 fi
 
 # ================================================================== DAĞITIM (yalnız motor; worker çalışmaya devam eder)
+# hedef commit engine-app'e ÖNCE eklenir (geçici klondan; çalışma ağacı değişmez): düşerse birimlere dokunulmamış olur
+fetch_tip "$ENG" "$TIP" "$W"
+inv "TIP-engine-app'te" 0 "hedef $T7 engine-app nesnelerinde (geçici klondan; HEAD henüz ${ENG_PREV:0:7})"
 say "5/10 data/research (P1a'dan; sahiplik ve 0750)"
 install -d -o "$SVC_USER" -g "$SVC_GROUP" -m 0750 "$RES" "$RES/locks" "$RES/backup"
 foreign="$(find "$RES" ! -user "$SVC_USER" -print -quit)"

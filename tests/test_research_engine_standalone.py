@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Sürekli öğrenme motoru P1a — bağımsız koşucu (docs/SYSTEM_LEARNING_ENGINE_V1.md §9.3; P1a depo kabul testi 18).
+"""Sürekli öğrenme motoru P1a + P1b — bağımsız koşucu (docs/SYSTEM_LEARNING_ENGINE_V1.md §9.3; P1a kabul testi 18).
 
-`tests/standalone/run_engine_invariants.py`, depo testlerinin VPS'te koşan alt kümesini (kabul 1–8, 13, 14) pytest
-OLMADAN çalıştırır. Bu test onu gerçek bir alt süreçte, servis ortamı aktarılmadan ve gerçek `pytest`/`_pytest` import'u
-YASAKKEN (`--forbid-pytest`) koşar; ayrıca yerine-geçenlerin (approx, raises, monkeypatch) ve eksik test adının FAIL
-sayıldığının birim testleri buradadır.
+`tests/standalone/run_engine_invariants.py`, depo testlerinin VPS'te koşan alt kümesini (P1a kabul 1–8, 13, 14; P1b
+kabul 1–11, 13–15, 100 eklenerek numaralı) pytest OLMADAN çalıştırır. Bu test onu gerçek bir alt süreçte, servis
+ortamı aktarılmadan ve gerçek `pytest`/`_pytest` import'u YASAKKEN (`--forbid-pytest`) koşar; ayrıca yerine-geçenlerin
+(approx, raises, monkeypatch) ve eksik test adının FAIL sayıldığının birim testleri buradadır.
 """
 from __future__ import annotations
 
@@ -37,7 +37,8 @@ def test_standalone_runner_passes_subset_without_pytest_in_a_clean_process(tmp_p
     res = json.loads(out.read_text(encoding="utf-8"))
     m = _load()
     assert res["failed"] == 0 and res["skipped"] == 0 and res["passed"] == len(m.SUBSET)
-    assert res["acceptance_passed"] == list(m.ACCEPTANCE) == [1, 2, 3, 4, 5, 6, 7, 8, 13, 14]
+    p1b = [100 + k for k in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15)]   # P1b kabul 12 = birim dosyası (betik)
+    assert res["acceptance_passed"] == list(m.ACCEPTANCE) == [1, 2, 3, 4, 5, 6, 7, 8, 13, 14] + p1b
     assert "ÖZET:" in cp.stdout
 
 

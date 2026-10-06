@@ -517,8 +517,10 @@ Tipik günlük maliyet birkaç yüz ağırlıktır.
 - Bu yüzden gece biriminin son aşaması (S7b) şu küçük alt ağaçların sıkıştırılmış günlük yedeğini alır:
   `closes/`, `entries/`, `snapshots/`, `target/`, `trials/`, `lessons/`, `library/`, `explore/`, `prospective/`,
   `proposals/`, `approvals/`, `summary/`, son 30 `runs/`. **Dışarıda kalanlar:** `store/`, `archive_cache/`,
-  `dukascopy/`, `backtests/`, `paths/` (yeniden üretilebilir). Arşiv `.sha256` ile yazılır ve hemen yeniden okunarak
-  doğrulanır; 7 günlük + 4 haftalık tutulur. `docs/BACKUP_RESTORE.md`'deki "VPS dışına taşıyın" adımı
+  `dukascopy/`, `backtests/`, `paths/` (yeniden üretilebilir). **P1b eki (2026-10-06):** `universe/` ve `exchangeinfo/`
+  (§3.1; günlük evren ve listeleme/delist anlık görüntüsü) da DAHİLDİR: küçüktür ve o günün borsa durumunun tek
+  kaydıdır, sonradan yeniden çekilemez; veri biriminin çalıştırma kayıtları (`runs/data/`) girmez. Arşiv `.sha256` ile
+  yazılır ve hemen yeniden okunarak doğrulanır; 7 günlük + 4 haftalık tutulur. `docs/BACKUP_RESTORE.md`'deki "VPS dışına taşıyın" adımı
   `data/research/backup/`'ı da kapsayacak biçimde güncellenir.
 - **Motor geri yüklemesi:** `engine-restore <arşiv>` kuru çalıştırma; `--yes` ile uygular, mevcut ağaç
   `research.pre-restore-<ts>` olarak kenara alınır (asla silinmez).
@@ -1605,6 +1607,26 @@ değişmedi; ayrıntı modül başlıklarındadır: `research_engine/{store,data
 15. **Depo kabul testi 12** (veri birimi sözleşmesi) birim dosyalarıyla birlikte sürüm/birim aşamasında yazılır; bu
     aşamanın testleri 1–11 ve 13–15'tir. `ENGINE_VERSION` `research_engine_v1_p1b` oldu; motor kod özeti değiştiği için
     sürümden sonra yeni bir A/B dönemi açılır (§2.9, beklenen).
+16. **Veri birimi dosyaları** (`deploy/tradingbot-engine-data.{service,timer}`, birim/sürüm aşaması): gece biriminin
+    bütün kaynak ve yalıtım satırları AYNEN (Nice/CPU/IO/OOM, `ProtectSystem=strict`, `PrivateTmp`, `ReadWritePaths`
+    yalnız `data/research`, `ReadOnlyPaths`, sistem çağrısı ve yetenek kısıtları, ortam listesi §2.3); farklar yalnız
+    `PrivateNetwork` YOK, `SupplementaryGroups=systemd-journal` (yalnız bu birimde), komut `engine-data --update`,
+    `TimeoutStartSec=50min` ve `MemoryHigh=800M` / `MemoryMax=1G` (ölçülen tepe ≈ 227 MiB; `ENGINE_EXPECTED_MEMORY_MAX
+    =1073741824`). `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6` ağa (data.binance.vision, fapi/api.binance.com) ve
+    DNS'e yeter; `After=`/`Wants=network-online.target`. Zamanlayıcı `*-*-* 00:41:00 UTC`, `AccuracySec=1min` (en geç
+    01:32 sert durma; gece birimi 01:37). Depo kabul testi 12 ve iki birimin satır paritesi
+    `tests/test_research_engine_data_unit.py`'dedir.
+17. **Motor kod özeti** (A/B dönemi, `selfcheck.ENGINE_CODE_GLOBS`) veri birimi dosyalarını da kapsar: P1a gece birimi
+    dosyalarını özete katıyordu; veri birimi de motorun çalışma ayarıdır (bellek, yalıtım, zaman), aynı muameleyi görür.
+    Yalnız bir app sürümünün yeniden sabitlemesi yine yeni dönem açmaz.
+18. **Bağımsız koşucu** (`tests/standalone/run_engine_invariants.py`) P1b depo kabul testlerinin VPS'te anlamlı alt
+    kümesini de koşar (1–11, 13–15; P1a numaralarıyla çakışmasın diye 100 eklenerek 101–115; toplam 53 test).
+    Parametreli testler koşucuda koşamaz: kabul 5'in günlük koruması ve 418/429 varyantları yalnız depoda koşar,
+    koşucudaki eşi `market/http.py` biçimine sabitlenmiş metin kalıbı testidir. Kabul 12 birim DOSYASI testidir; VPS'te
+    sürüm betiğinin birim sözleşmesi (anahtar satırlar) ve sha256 sabiti onun yerini tutar.
+19. **S7b yedeği** `universe/` ve `exchangeinfo/`'yu da alır (§3.6 P1b eki; mühürlü metin değil, `backup.INCLUDE`):
+    küçüktür (günde birkaç on KB) ve yeniden ÜRETİLEMEZ; geri yükleme de bunları kapsar. `store/`, `archive_cache/`,
+    `store/_meta`, `runs/data/` yeniden üretilebilir ve girmez.
 
 ### P2 — İşlem günlüğü, yol, rehydrate, fidelity, atıf, UTC günü MTM, özet
 

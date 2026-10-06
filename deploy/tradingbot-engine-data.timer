@@ -1,0 +1,16 @@
+# Trading Bot — sürekli öğrenme motoru VERİ birimi zamanlayıcısı (P1b; docs/SYSTEM_LEARNING_ENGINE_V1.md §2.2, §3.4).
+# VPS saati Europe/Istanbul'dur: OnCalendar AÇIKÇA UTC yazar (yoksa 3 saat kayar ve 04:00 yayın penceresine düşer).
+# 00:41 UTC: 00:00–00:35 4h yayın penceresinden SONRA başlar; sert durma 01:31 (TimeoutStartSec=50min), gece birimi
+# 01:37'de başlar — iki zamanlayıcı birimi aynı anda çalışmaz. Persistent=false: kaçırılan çalıştırma açılışta telafi
+# edilmez. Etkinleştirme yalnız sürüm betiğinin elle smoke çalıştırması geçtikten sonra (§9.3 adım 7–8).
+[Unit]
+Description=Trading Bot research engine — data timer (00:41 UTC)
+
+[Timer]
+OnCalendar=*-*-* 00:41:00 UTC
+AccuracySec=1min
+Persistent=false
+Unit=tradingbot-engine-data.service
+
+[Install]
+WantedBy=timers.target

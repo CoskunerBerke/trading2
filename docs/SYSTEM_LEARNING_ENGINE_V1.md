@@ -1831,6 +1831,82 @@ Birim dosyası değişmez; yalnız sabit taşınır.
 **Sahip:** dry-run, deploy (worker durmaz), günlük `--check`. İlk haftalık özeti isteğe bağlı olarak bir AI
 incelemesine yapıştırır.
 
+#### P2 uygulama notları (2026-10-06)
+
+P2a (günlük, yol, rehydrate, fidelity, UTC günü MTM, tembel 1m) için belgenin açık bıraktığı yerlerde uygulamanın
+seçtiği yorumlar. Mühürlü/kayıtlı metin DEĞİŞMEDİ; ayrıntı modül başlıklarındadır:
+`research_engine/{journal,pathrec,rehydrate,fidelity,utc_day,lazy1m}.py`. P2b (atıf, ızgara, özet, sorgu, S1b/S2
+bağlantısı) bu notların üstüne kurulur.
+
+1. **Yol penceresi (§5.1).** İşlem barları `opened < ts < closed` (bar açılışı): girişi içeren bar yolda DEĞİLDİR
+   (girişten önceki fiyatları taşır; `learning_cf._net_replay`'in `ts > created` kuralı), çıkışı içeren bar yoldadır;
+   kapanış tam bar sınırındaysa o anda BAŞLAYAN bar kuyruğun ilk barıdır. Kuyruk 48 bar (`phase=1`). Kaynak: 1m
+   eksiksizse 1m, değilse 5m eksiksizse 5m, ikisi de eksikse doluluğu yüksek olan (boşluk sayısı `gaps`), ana botta
+   sonra `position_path`, en son defterin uçları (`EXTREMES_ONLY`, sıra yok). Zamanlar (`t_mfe`, `t_mae`,
+   `time_to_1r`) açılıştan ucun oluştuğu barın KAPANIŞINA dakikadır. Depo mühürlü okunur (`SealedReader`) ve
+   `StoreProvider`'ın parite kapısıyla: `archive_unverified` satırlar kullanılmaz (o gün yolda eksik sayılır; doğrulama
+   gelince parça değişir ve satır yeniden kurulur). Dosya `paths/YYYY-MM/<anahtar>~<sha10>.parquet` (yeniden
+   üretilebilir, yedeğe girmez).
+2. **Belirsiz bar içi sıra.** MFE ve MAE aynı barda oluştuysa `order = MAE_FIRST` (kural sırası) ama
+   `order_ambiguous = true`; ilk işlem barı dışında iki koşan ucun AYNI barda yenilendiği barlar `ambiguous_bars`'ta
+   sayılır. P2b sıraya dayanan kodlarda bu işlemleri dışlar.
+3. **Rehydrate "giriş referansı" denetimi (§5.2).** Defter girişi canlı mark'tan yapılır; kural fiyatına eşit olamaz.
+   Denetim: (a) kaydın okuduğu sinyal barının (`data_source.bars[tf]`) depoda bulunması ve yeniden hesaplanan sinyal
+   barıyla aynı olması, (b) kuralın `signal_close`'unun işlem hafızasındaki ölçülmüş kopyasıyla 1 tick, (c) C4'te
+   `definition_sha` eşitliği ve formasyon uçlarının 1 tick, (d) girişin stopun doğru tarafında olması; ayrıca yeniden
+   hesaplanan ilk stop ölçülmüş `features.initial_stop` ile 1 tick. **Tick** = giriş dolum fiyatının yazıldığı ondalık
+   hassasiyet (defter `price_tick`'e kuantize eder; "216.60" → 0,01). Çerçeve canlı motorunkiyle aynı kurulur
+   (`PERP_FRAME_LIMITS` − oluşan bar; günlükte `ema200`/`atr14` aynı fonksiyonlar).
+4. **Box `min_stop_pct` bir filtredir** (geometri değil; dönemle değişti): rehydrate'te 0 alınır
+   (`filter_params_ignored`). Box `variation_id` bu yüzden filtre parametresi nötrlenmiş geometri etiketidir
+   (`params_label`, `_ms…` yok); T2/M2 `atr<çarpan>`, D4 `donchian_20_10`, C4 varyasyon kimliği. `params_hash` P6'ya
+   kadar `sha256(kural modülü kaynağı + parametreler)`, C4'te `definition_sha`. Parametreler canlı config'in HAM
+   YAML'ından okunur (`rawconfig` ihtiyaç listesine `strategy_paper[.extra[]].atr_mult/rule_params` eklendi).
+5. **Config dönemi (§6.2), P3'e kadar geçici.** `library/config_epochs.json` yokken dönem belgedeki sahip kararlarından
+   türetilir: 2026-09-30 (yalnız Box, `slots`) ve 2026-10-03 (bütün defterler); kimlik `E0` / `E<sınır günü>`, etiket
+   `RECONSTRUCTED`, kaynak `PROVISIONAL_DOC_BOUNDARIES`. Mühürlü dosya gelince o kullanılır (`LIBRARY_CONFIG_EPOCHS`).
+6. **Fidelity (§5.3).** Yeniden oynatmanın giriş referansı kaydın giriş dolumunun `ref_price`'ıdır (kaymayı defter yine
+   uygular); `_net_replay` R'yi kendi boyutunun riskine böldüğünden sonuç kaydın paydasına
+   `r_net × |dolum_replay − stop| / |dolum_gerçek − stop|` ile çevrilir. Funding kaydın KENDİ settlement'larıdır (oran +
+   mark; kayıtta olmayan dönem watermark'a kadar 0). Yürütme modeli ayarları ledger JSON'unun GÜNCEL alanlarıdır
+   (`ExecModel.of_ledger`'ın okuduğu alanlar). Oranın paydasına girmeyenler ayrı sayılır: `SPOT`, `NO_RISK`, `NO_PATH`,
+   `NO_EXEC_MODEL`, `TARGETS_MISSING` (hedefle çıkmış ama hedef bilinmiyor), `RECORD_UNREADABLE`. Başarısızlık nedenleri
+   (öncelik sırasıyla): `PATH_GAP`, `AMBIGUOUS_BAR`, `FILL_BASIS`, `EXIT_REASON_DIFFERS`, `BACKDATED_CLOSE`,
+   `ENTRY_FILL`, `REPLAY_ERROR`, `UNEXPLAINED`.
+7. **Günlük alanları (§4.3).** Ölçülmüş alanlardan saf aritmetikle türetilen değer `MEASURED`'dır; depo/kural girdisi
+   olan `RECONSTRUCTED`. `exit_basis`: `GAP` yalnız dolum seviyenin ÖTESİNDEyse (canlı izleyici seviyeyi tam gözlediyse
+   `LEVEL`), likidasyon tabanları `LIQUIDATION`, `exit_fill` yoksa ve hedef değilse `MARKET`. `session`: hafta sonu
+   `WEEKEND`, diğer günler ASIA [21:00, 07:00), LONDON [07:00, 13:00), NY [13:00, 21:00) UTC. `equity_at_entry`:
+   `features.learning.equity_basis` (MEASURED), yoksa girişten önceki son gece görüntüsü (RECONSTRUCTED).
+   `closed_at_backdated`: `exit_fill.first_source` (BAR_OPEN/UNKNOWN → geriye tarihli). `spread_est` kaydedilmediği için
+   `MISSING`. `RESTORED_AWAY` kayıtlar günlüğe girmez. Ay dosyası kaydın `closed_at` ayıdır; satırın `data_seal`'ı
+   okuduğu depo parçalarının `ResearchStore.seal_of`'udur; `_build.json` yalnız içeriği özetler (aynı mühür → aynı bayt).
+8. **İleriye bakma (kabul 9).** Giriş bağlamı `as_of = opened_at − 1 ms` ile yalnız o anda KAPANMIŞ barlardan
+   (`situation_v1`, BTC, 1d yer ölçüleri, fonlama, OI/taker); çıkış bağlamı `as_of = closed_at`. Spot işlemin yer
+   ölçüleri ve `situation_v1`'i depoda varsa aynı sembolün vadeli barlarından hesaplanır (alanın notunda "vadeli 1d
+   vekil"); yol ise spot barlarındandır.
+9. **Spot.** Stop ve R paydası ana botun provenance'ından (alış emri = ilk FIFO lotunun dolum kimliğinin emir kısmı,
+   `S000123-1` → `S000123`); yoksa R alanları `MISSING`. Fidelity'de `SPOT` (uygun değil).
+10. **Tembel 1m (§3.3).** Gece (S1b) yolu eksiksiz 1m olmayan işlemlerin günlerini `paths/needs_1m.json`'a yazar (son
+    120 günde kapanmış işlemler, son 400 gün, bugün hariç, en çok 400 gün — en yeni önce). Veri birimi REST adımından
+    sonra bu günlerin YALNIZ arşiv gün zip'lerini P1b kurallarıyla çeker (`.CHECKSUM`, pencereler, disk, yeniden deneme;
+    REST YOK); tembel seriler planlı değildir ve bayat sayılmaz (`lazy: true`); özet `data_status.last_run.lazy_1m`.
+11. **UTC günü (§7.1).** `W(T)` iki çapadan hesaplanır ve eşitliği denetlenir (`anchor_check`); ayrıca
+    `ΔW = Σ hareket` (`entries_check`). İlk çapadan önceki 00:00: çapada hareket listesi doluysa (rotasyon) ve elde kalan
+    en eski hareket T'den sonraysa `EKSİK` (`HAREKETLER_ARŞİVDEN_ÖNCE_DÖNDÜ`). 00:00'da açık pozisyon arşiv kaydından
+    (`opened ≤ T < closed`, miktar = ilk miktar − `ts ≤ T` çıkış dolumları), kayıt henüz arşivde yoksa çapadaki
+    pozisyondan; T ile çapa arasında kısmi çıkış varsa miktar bilinmez → `EKSİK` (`U_QTY_UNKNOWN`), kayıt arşive girince
+    satır `rev+1` ile düzelir. Satırlar ayrı dosyadadır (`target/daily_utc.jsonl`, yalnız eklenir); P1a `tgt_v1` satırları
+    ve başlığı değişmez. Başlık, W-günü satırıyla yan yana yayımlanmış (bugünden önceki) 14 günden sonra `tgt_v2`'ye
+    geçer; tanım `TGT_V2_SHA` ile mühürlüdür.
+12. **Bağlantılar (P2b).** `journal.run_s1b` ve `utc_day.run_utc_day` yazıldı ama gece birimine bağlanmadı (P2b). S1b
+    mühürlü depoyu okur (`provider`/`store`): §2.8 gece grafiğinden yalnız ağ modüllerini (`datastore`, `pit_universe`)
+    dışlar; P1b'nin gece import-grafiği testi `store`/`provider`'ı da dışladığından P2b bağlarken o testi §2.8'e göre
+    daraltmalıdır. Paket dışı import beyaz listesi (P1b sözleşme testi) P2 modülleri için genişletildi: kural
+    modülleri (`paper_rules`, `ema200_trend`, `box_theory`, `donchian_trend`, `candle_*`), `learning_cf` +
+    `learn.shadow` + `accounting` (cf_label_v3 kod yolu), `indicators`, `shared_experience`, `learning_mode` — hepsi
+    salt-okunur hesap.
+
 ### P3 — Strateji kütüphanesi, walk-forward, keşif katmanı, denemeler, CSCV/PBO, dersler, zaman noktasında evren
 
 **Teslimatlar:**

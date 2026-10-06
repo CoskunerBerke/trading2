@@ -1,4 +1,5 @@
-"""Gece birimi orkestrasyonu (`engine-night`; §2.2, §2.4, §2.9, §6.1) — P1a İSKELETİ: S0, S1a (S1s), S3, S7, S7b.
+"""Gece birimi orkestrasyonu (`engine-night`; §2.2, §2.4, §2.9, §6.1) — P1a iskeleti (S0, S1a (S1s), S3, S7, S7b) + P2b:
+S1b (günlük + yol + rehydrate + fidelity), S2 (atıf + cfgrid + ayrıştırma) ve S3'te UTC günü MTM.
 
 Akış (her çalıştırma; ağsız, AI yok, karar-nötr):
 
@@ -11,7 +12,11 @@ Akış (her çalıştırma; ağsız, AI yok, karar-nötr):
    çalışmaz) → çalışma zamanı yalıtım öz-denetimi (tutmazsa `ISOLATION_BROKEN`, sıfırdan farklı çıkış = uyarı birimi)
    → SKEW (iki SHA + ata) → yedek birimi çakışması → canlı config sha'sı → A/B takvimi (dönem = motor KOD özeti;
    `selfcheck` madde 5).
-2. **Plan:** normal gece S0, S1a, S3, S7, S7b. SKEW gecesi yalnız S0, S1a, S7 (belge §2.3 ve P1a kabul 13 aynen:
+2. **Plan:** normal gece S0, S1a, S3, S1b, S2, S7, S7b (P2b; S3 S1b'den önce: S1b/S2'ye bağlı değildir ve sahibin ana
+   ölçümü uzun aşamaların payına bağlı kalmaz). Veri mührü eskiyse (`DATA_STALE`, §6.1 S0 satırı "yalnız S1, S3 ve S7")
+   S2 `SKIPPED (DATA_STALE)` olur; S1 (S1a + S1b) ve S3 çalışır; S7b (yedek; depoyu okumaz) de çalışır — arşivin tek
+   kopyası yedeksiz kalmasın. S1b ve S2 iç son tarihten önce payla (`S1B_RESERVE`, `S2_RESERVE`) durur, kalan iş ertesi
+   gece sürer (`S1B_BACKLOG` / `S2_BACKLOG` bayrakları; sonuç SUCCESS kalır). SKEW gecesi yalnız S0, S1a, S7 (belge §2.3 ve P1a kabul 13 aynen:
    S7b de çalışmaz; arşiv bir sonraki SKEW'siz gecenin yedeğine girer). A/B KAPALI gece S0 + **S1s** (`AB_OFF`).
    **Okuma (§2.9 ↔ §7.1):** §2.9 KAPALI gecede "S0'dan sonra AB_OFF yazıp çıkar" der; ama §7.1'in MTM günü W(D) her
    takvim gününün ölçülmüş anlık görüntüsünü ister ve harfiyen okuma her motor sürümünden sonraki ~14 günü EKSİK
@@ -39,7 +44,8 @@ yalnız "yazılır" der; `--check` gösterir).
 Disk koruması gerçek `statvfs` ile ölçülür; `run_night(free_bytes=…)` yalnız sahte VPS/test içindir (ölçümün yerine
 geçer, eşikler aynıdır). Üretim yolu (`engine-night` CLI'si) bu argümanı hiç vermez.
 
-Bu modül ağ kullanan hiçbir modülü (P1b `datastore`, `pit_universe`) import etmez (import grafiği testi).
+Bu modül ağ kullanan hiçbir modülü (P1b `datastore`, `pit_universe`) import etmez (import grafiği testi; §2.8 yalnız
+bu ikisini dışlar — P2b'den itibaren gece grafiği mühürlü depo okuyucusunu (`store`/`provider`/`pathrec`) içerir).
 """
 from __future__ import annotations
 
@@ -61,9 +67,12 @@ from .lock import SKIPPED_LOCKED, analysis_lock
 from .paths import DISK_REFUSE, DISK_WARN, EnginePaths, disk_guard
 
 RUN_SCHEMA = "engine_run_status_v1"
-STAGES = ("S0", "S1a", "S3", "S7", "S7b")
+#: P2b: S1b (günlük + yol + rehydrate + fidelity) ve S2 (atıf + cfgrid + ayrıştırma) eklendi. S3 (P1a tgt_v1 + P2 UTC
+#: günü) S1b'den ÖNCE çalışır: ikisine bağlı değildir ve sahibin ana ölçümü uzun aşamaların son tarih payına bağlı kalmaz
+#: (modül başı madde 2).
+STAGES = ("S0", "S1a", "S3", "S1b", "S2", "S7", "S7b")
 STAGE_SNAPSHOT = "S1s"
-ALL_STAGES = ("S0", STAGE_SNAPSHOT, "S1a", "S3", "S7", "S7b")
+ALL_STAGES = ("S0", STAGE_SNAPSHOT, "S1a", "S3", "S1b", "S2", "S7", "S7b")
 PLAN_FULL = STAGES
 PLAN_SKEW = ("S0", "S1a", "S7")
 PLAN_AB_OFF = ("S0", STAGE_SNAPSHOT)
@@ -71,6 +80,14 @@ PLAN_AB_OFF_FORCED = ("S0", STAGE_SNAPSHOT, "S1a")
 
 #: §2.2: 01:37 başlangıç, iç son tarih 03:40, sert durma 03:52 (`TimeoutStartSec=2h15min`).
 DEADLINE_AFTER = timedelta(hours=2, minutes=3)
+#: P2b son tarih payları: S2 en geç iç son tarih − `S2_RESERVE`'de durur (S7 + S7b için), S1b en geç
+#: − `S1B_RESERVE`'de (S2'ye en az 30 dk). İkisi de kaldığı yerden ertesi gece sürer (§6.1 "biten iş kalırsa").
+S2_RESERVE = timedelta(minutes=12)
+S1B_RESERVE = timedelta(minutes=42)
+MIN_STAGE_BUDGET_S = 60.0
+#: Gece penceresi DIŞINDA (00:00–03:40 UTC dışı; elle/sürüm smoke çalıştırması) S1b ve S2 en çok bu kadar çalışır: ilk
+#: kurulum (bütün arşivin günlüğü + atıfı) smoke'u saatlerce uzatmasın; kalan iş gece birimine kalır.
+DAYTIME_STAGE_BUDGET_S = 8 * 60.0
 NIGHT_DEADLINE_HM = (3, 40)
 KEEP_RUNS = 30
 RUN_ID_RE = re.compile(r"^\d{8}T\d{6}Z(-\d+)?$")
@@ -86,6 +103,9 @@ ST_OK, ST_FAILED, ST_NOT_PLANNED, ST_SKIPPED_DEADLINE, ST_SKIPPED = "OK", "FAILE
 F_DEADLINE, F_STAGE_FAILED = "DEADLINE", "STAGE_FAILED"
 F_CONFIG_CHANGED, F_CONFIG_UNREADABLE = "CONFIG_CHANGED", "CONFIG_UNREADABLE"
 F_BACKUP_VERIFY_FAILED, F_SUMMARY_REFRESH_FAILED = "BACKUP_VERIFY_FAILED", "SUMMARY_REFRESH_FAILED"
+F_S1B_BACKLOG, F_S2_BACKLOG, F_UTC_DAY_FAILED = "S1B_BACKLOG", "S2_BACKLOG", "UTC_DAY_FAILED"
+F_JOURNAL_INCONSISTENT, F_FIDELITY_GATE = "JOURNAL_INCONSISTENT", "FIDELITY_BELOW_TARGET"
+F_S2_TRADE_ERRORS = "S2_TRADE_ERRORS"
 
 
 # ============================================================================ yardımcılar
@@ -282,15 +302,27 @@ class _Night:
         return self.status
 
     # ---------------------------------------------------------------- aşama
-    def stage(self, name: str, fn: Callable[[], dict[str, Any] | None], *, skip_reason: str | None = None) -> dict | None:
+    def budget_s(self, reserve: timedelta) -> float:
+        """Aşamanın duvar saati payı: (iç son tarih − `reserve`) − şimdi (saniye; S1b/S2 kaldığı yerden devam eder).
+        Gece penceresi dışında başlayan çalıştırmada en çok `DAYTIME_STAGE_BUDGET_S`."""
+        b = ((self.deadline - reserve) - self.clock()).total_seconds()
+        hh, mm = NIGHT_DEADLINE_HM
+        if self.start >= self.start.replace(hour=hh, minute=mm, second=0, microsecond=0):
+            b = min(b, DAYTIME_STAGE_BUDGET_S)
+        return b
+
+    def stage(self, name: str, fn: Callable[[], dict[str, Any] | None], *, skip_reason: str | None = None,
+              reserve: timedelta | None = None) -> dict | None:
         if name not in self.plan:
             self.stages[name] = {"status": ST_NOT_PLANNED}
             return None
         if skip_reason:
             self.stages[name] = {"status": ST_SKIPPED, "reason": skip_reason}
             return None
-        if self.clock() > self.deadline:
-            self.stages[name] = {"status": ST_SKIPPED_DEADLINE, "reason": f"iç son tarih {iso(self.deadline)} geçti"}
+        if self.clock() > self.deadline or (reserve is not None and self.budget_s(reserve) < MIN_STAGE_BUDGET_S):
+            why = (f"iç son tarih {iso(self.deadline)} geçti" if reserve is None else
+                   f"iç son tarih payı yok ({iso(self.deadline - reserve)} geçti; iş ertesi gece sürer)")
+            self.stages[name] = {"status": ST_SKIPPED_DEADLINE, "reason": why}
             self.flags.add(F_DEADLINE)
             return None
         t0, c0, at = time.monotonic(), _cpu(), self.clock()
@@ -439,6 +471,18 @@ class _Night:
             self.stage("S1a", lambda: self._s1a(now_arg))
             s1_failed = self.stages.get("S1a", {}).get("status") == ST_FAILED
             self.stage("S3", lambda: self._s3(now_arg), skip_reason="S1a başarısız" if s1_failed else None)
+            if self.stages.get("S3", {}).get("status") == ST_OK and ((self.stages["S3"].get("result") or {}).get(
+                    "utc_day") or {}).get("status") == ST_FAILED:
+                self.stages["S3"]["status"] = ST_FAILED
+                self.stages["S3"]["error"] = (self.stages["S3"]["result"]["utc_day"].get("error") or "")[:400]
+                self.flags.update({F_STAGE_FAILED, F_UTC_DAY_FAILED})
+            self.stage("S1b", lambda: self._s1b(now_arg), skip_reason="S1a başarısız" if s1_failed else None,
+                       reserve=S1B_RESERVE)
+            s1b_ok = self.stages.get("S1b", {}).get("status") == ST_OK
+            data_stale = SC.DATA_STALE in self.flags
+            self.stage("S2", lambda: self._s2(now_arg),
+                       skip_reason=("DATA_STALE (veri mührü eski; §6.1)" if data_stale else
+                                    None if s1b_ok else "S1b çalışmadı/başarısız"), reserve=S2_RESERVE)
             self.stage("S7", self._s7)
             self.stage("S7b", self._s7b)
             if any(s.get("status") == ST_FAILED for s in self.stages.values()):
@@ -484,8 +528,44 @@ class _Night:
         return _compact_s1a(r)
 
     def _s3(self, now: datetime | None) -> dict[str, Any]:
+        """S3: P1a günlük hedef (`tgt_v1`, W-günü `LEDGER_MARK`) + P2 UTC günü MTM (`utc_day`, mühürlü depo 00:00
+        kapanışı; W-günüyle yan yana). UTC günü arızası P1a sonucunu silmez: sonuç `utc_day.status = FAILED` ile yazılır
+        ve aşama FAILED işaretlenir (`run`)."""
         from .daily_target import run_s3
-        return run_s3(self.paths, now=now, run_id=self.run_id, declared_instrument=self.declared_instrument)
+        r = run_s3(self.paths, now=now, run_id=self.run_id, declared_instrument=self.declared_instrument)
+        try:
+            from .journal import open_store
+            from .utc_day import run_utc_day
+            src, sinfo = open_store(self.paths)
+            u = run_utc_day(self.paths, now=now, run_id=self.run_id, src=src)
+            r["utc_day"] = {"status": ST_OK, "store": sinfo, **u}
+        except Exception as exc:  # noqa: BLE001 — UTC günü arızası tgt_v1 satırlarını etkilemez; kayda geçer
+            r["utc_day"] = {"status": ST_FAILED, **_err_text(exc)}
+        return r
+
+    def _s1b(self, now: datetime | None) -> dict[str, Any]:
+        """S1b (§6.1): günlük `tj_v1` + yol + rehydrate + fidelity + tembel 1m ihtiyaç listesi (mühürlü depo)."""
+        from .journal import run_s1b
+        r = run_s1b(self.paths, now=now, run_id=self.run_id, app_dir=self.app_dir, budget_s=self.budget_s(S1B_RESERVE))
+        j = r.get("journal") or {}
+        if j.get("pending"):
+            self.flags.add(F_S1B_BACKLOG)
+        if (r.get("reconcile") or {}).get("status") == "INCONSISTENT":
+            self.flags.add(F_JOURNAL_INCONSISTENT)
+        fd = r.get("fidelity") or {}
+        if fd.get("eligible") and not fd.get("gate_pass"):
+            self.flags.add(F_FIDELITY_GATE)
+        return r
+
+    def _s2(self, now: datetime | None) -> dict[str, Any]:
+        """S2 (§6.1): atıf kodları (`attribution_v1`) + karşı-olgusal ızgara (`cfgrid_v1`) + R ayrıştırması."""
+        from .analysis import run_s2
+        r = run_s2(self.paths, now=now, run_id=self.run_id, budget_s=self.budget_s(S2_RESERVE))
+        if r.get("pending") or r.get("data_moving"):
+            self.flags.add(F_S2_BACKLOG)
+        if r.get("errors"):
+            self.flags.add(F_S2_TRADE_ERRORS)
+        return r
 
     def _s7(self) -> dict[str, Any]:
         from .summary import write_summary

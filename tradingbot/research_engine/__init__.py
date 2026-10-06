@@ -3,10 +3,12 @@ günlük hedef ölçümü (`closes`, `daily_target`) ile gece birimi çalışma 
 `summary` S7, `backup` S7b). P1b: araştırma veri deposu (`store.ResearchStore`, `HistoryStore` alt sınıfı), araştırma
 evreni U_R (`universe`), worker deposundan tutarlı tohum (`seed`), ağlı veri birimi (`datastore`: arşiv-önce ekleme,
 korumalı REST kuyruğu, `data_status.json` + `data_seal`, Dukascopy aynası içe alma) ve ağsız okuyucu
-(`provider.StoreProvider`, mühürlü okuma). Tasarım: `docs/SYSTEM_LEARNING_ENGINE_V1.md` (§2, §3, §4, §7, §9, §10
-P1a/P1b). Giriş noktaları yalnız `cli_v3`'ün `engine-night` / `engine-status [--brief]` / `engine-restore` /
-`engine-data` işleyicileridir (tembel import; config yüklenmez); birimler `deploy/tradingbot-engine-night.*` ve (P1b)
-`deploy/tradingbot-engine-data.*`.
+(`provider.StoreProvider`, mühürlü okuma). P2: işlem günlüğü `tj_v1` (`journal`, `pathrec`, `rehydrate`, `fidelity`,
+`utc_day`, `lazy1m`) ve "neden kaybetti / nasıl kâra dönebilirdi" (`attribution` `attribution_v1`, `cfgrid` `cfgrid_v1`,
+`analysis` S2, `report`/`query` özet ve `engine-query`). Tasarım: `docs/SYSTEM_LEARNING_ENGINE_V1.md` (§2, §3, §4, §5,
+§7, §9, §10 P1a/P1b/P2). Giriş noktaları yalnız `cli_v3`'ün `engine-night` / `engine-status [--brief]` /
+`engine-restore` / `engine-data` / `engine-query` işleyicileridir (tembel import; config yüklenmez); birimler
+`deploy/tradingbot-engine-night.*` ve (P1b) `deploy/tradingbot-engine-data.*`.
 
 İlkeler (belgeden, kodda zorlanır):
 
@@ -14,7 +16,7 @@ P1a/P1b). Giriş noktaları yalnız `cli_v3`'ün `engine-night` / `engine-status
   OKUR (ledger'lar `"r"` kipinde açılır, bkz. `ledgers.py`). Bütün yazımlar `data/research` altındadır
   (`paths.EnginePaths.write_*` bunu her yazımda denetler).
 * **Ağ yalnız veri biriminde.** Ağ kullanan TEK modül `datastore`'dur (P1b); gece birimi `PrivateNetwork=yes` ile
-  çalışır ve import grafiği `datastore`/`store`/`seed`/`provider`/`universe`'i içermez (test).
+  çalışır ve import grafiği `datastore`/`pit_universe`'i içermez (test; P2'den itibaren mühürlü depo okuyucusunu içerir).
 * **Yasaklı import'lar.** `config_v3`, `config.load_config` ve `sqlite3` bu paket tarafından import edilmez (AST testi);
   canlı config yalnız ham YAML olarak okunur (`rawconfig.py`). Karar modülleri bu paketi import etmez; `cli.py` /
   `cli_v3.py` paketi yalnız kendi işleyicileri içinde (tembel) import eder.

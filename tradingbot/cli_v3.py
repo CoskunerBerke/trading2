@@ -1281,6 +1281,16 @@ def cmd_engine_status(cfg, args) -> int:
     return 0
 
 
+def cmd_engine_query(cfg, args) -> int:
+    """`engine-query trade <id> | why-lost [--book B] [--days N] | day <YYYY-MM-DD>` (P2b; salt-okunur, kilit almaz;
+    ≤ 150 satır / ≤ 4 KB, Türkçe). Motor modülleri YALNIZ burada, tembel import edilir."""
+    from .research_engine.paths import EnginePaths
+    from .research_engine.query import run_query
+    lines, code = run_query(EnginePaths.from_env(), topic=args.topic, arg=args.arg, book=args.book, days=args.days)
+    print("\n".join(lines))
+    return code
+
+
 def cmd_engine_data(cfg, args) -> int:
     """P1b veri birimi: `--update` (00:41 UTC birimi), `--backfill` (ilk doldurma), `--import-dukascopy <dizin>`,
     `--status` (salt-okunur). Ağlı tek motor modülü (`research_engine.datastore`) YALNIZ burada, tembel import edilir."""
@@ -1575,7 +1585,7 @@ def register(sub: argparse._SubParsersAction) -> None:
     s = sub.add_parser("restore", help="Yedekten geri yükle"); s.add_argument("archive"); s.add_argument("--yes", action="store_true"); s.set_defaults(fn=cmd_restore)
     # SÜREKLİ ÖĞRENME MOTORU P1a: ağsız, kayıt-yalnız; config yüklenmez (engine_no_config), research_engine tembel import
     s = sub.add_parser("engine-night", help="Öğrenme motoru gece çalıştırması (S0 öz-denetim, S1a arşiv, S3 günlük hedef, "
-                                            "S7 özet, S7b yedek; yalnız data/research'e yazar)")
+                                            "S1b günlük, S2 atıf, S7 özet, S7b yedek; yalnız data/research'e yazar)")
     s.add_argument("--app-dir", dest="app_dir", default=None, help="app ağacı (varsayılan /opt/tradingbot/app; sahte VPS için)")
     s.add_argument("--engine-dir", dest="engine_dir", default=None, help="engine-app ağacı (varsayılan: çalışan kod)")
     s.set_defaults(fn=cmd_engine_night, engine_no_config=True)
@@ -1585,6 +1595,14 @@ def register(sub: argparse._SubParsersAction) -> None:
     s.add_argument("--daily", action="store_true", help="scorecard --daily ile aynı tanımlı günlük tablo (VPS kabul 6)")
     s.add_argument("--days", type=int, default=7, help="--daily için gün sayısı (UTC, bugün dahil; varsayılan 7)")
     s.set_defaults(fn=cmd_engine_status, engine_no_config=True)
+    # SÜREKLİ ÖĞRENME MOTORU P2b: atıf sorgusu (salt-okunur, kilit almaz, ≤ 150 satır); config yüklenmez, tembel import
+    s = sub.add_parser("engine-query", help="Öğrenme motoru sorgusu (salt-okunur): trade <id> | why-lost [--book B] "
+                                            "[--days N] | day <YYYY-MM-DD>")
+    s.add_argument("topic", choices=["trade", "why-lost", "day"])
+    s.add_argument("arg", nargs="?", default=None, help="trade: trade_key ya da işlem kimliği; day: YYYY-MM-DD")
+    s.add_argument("--book", default=None, help="why-lost: yalnız bu defter (klasör adı, ör. strategy_paper_box)")
+    s.add_argument("--days", type=int, default=7, help="why-lost: son N gün (varsayılan 7)")
+    s.set_defaults(fn=cmd_engine_query, engine_no_config=True)
     # SÜREKLİ ÖĞRENME MOTORU P1b: veri birimi (tek ağlı motor komutu); config yüklenmez, research_engine tembel import
     s = sub.add_parser("engine-data", help="Öğrenme motoru veri birimi (arşiv-önce; yalnız data/research'e yazar): "
                                            "--update | --backfill | --status | --import-dukascopy <dizin>")

@@ -43,7 +43,10 @@ from __future__ import annotations
 
 import gzip
 import hashlib
+import heapq
 import json
+import os
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -72,12 +75,18 @@ from .ledgers import (
     symbol_key,
     utc_now,
 )
-from .paths import EnginePaths, gzip_bytes, json_line
+from .paths import EnginePaths, gzip_bytes, json_line, sha256_file
 from .store import ResearchStore
 
 UTC = timezone.utc
+#: ay dosyasına akışla birleştirmeden önce bellekte tutulan en çok yeni satır (bellek bütçesi, §2.5)
+FLUSH_ROWS = 1000
+#: arşivden aynı anda okunan kayıt sayısı (`load_records`; büyük parça = segmentin daha az taranması)
+LOAD_CHUNK = 1000
+#: gece S1b'nin depo parça önbelleği (1m ay parçası ~2–3 MB; varsayılan 96 bellekte ~250 MB tutabilirdi)
+S1B_MAX_PARTS = 32
 JOURNAL_SCHEMA = "tj_v1"
-JOURNAL_VERSION = "tj_v1/p2a.1"
+JOURNAL_VERSION = "tj_v1/p2b.1"
 INDEX_SCHEMA = "tj_v1_index"
 BUILD_SCHEMA = "tj_v1_build"
 SOURCE_LIVE = "LIVE_PAPER"
@@ -134,6 +143,11 @@ _LIQ_BASES = ("FIRST_OBSERVATION_BEYOND_LIQUIDATION", "INTRABAR_ORDER_UNOBSERVED
               "SLIPPAGE_BEYOND_LIQUIDATION")
 DAY_MS, H4_MS, H1_MS = 86_400_000, 14_400_000, 3_600_000
 XP_DIR = "shared_experience"
+#: `scan_archive`'in tuttuğu izdüşüm alanları (sıra, ay, özet; bütün izdüşüm 45 bin kayıtta ~100 MB tutardı)
+LOC_PROJ_FIELDS = ("id", "symbol", "opened_at", "closed_at")
+#: ana botun giriş kararından (provenance `entry_features`, karar anı vektörü) günlüğe taşınan alanlar (P2b atıf kodları
+#: `DISSENT_WAS_RIGHT` / `TOO_MANY_WARNINGS` / `LOW_RR` kapanıştaki `last_decisions`'ı DEĞİL bunu kullanır, §5.4)
+ENTRY_DECISION_FEATURES = ("n_dissent", "n_vetoes", "rr", "consensus_score", "risk_allowed")
 XP_BOOK_TO_ENGINE = {"main": BOOK_MAIN_FUT}
 
 
@@ -225,7 +239,8 @@ class ArchiveLoc:
 
 
 def scan_archive(paths: EnginePaths, book: str) -> dict[str, ArchiveLoc]:
-    """Defterin arşivinden anahtar başına SON kapanış satırının yeri ve küçük izdüşümü (+ `closes_derived` satırı)."""
+    """Defterin arşivinden anahtar başına SON kapanış satırının yeri ve küçük izdüşümü (yalnız `LOC_PROJ_FIELDS`; bellek)
+    (+ `closes_derived` satırı)."""
     out: dict[str, ArchiveLoc] = {}
     derived: dict[str, dict] = {}
     for seg in segment_files(paths.book_closes_dir(book)):
@@ -238,7 +253,8 @@ def scan_archive(paths: EnginePaths, book: str) -> dict[str, ArchiveLoc]:
             if row.get("schema") != CLOSES_SCHEMA:
                 continue
             prev = out.get(k)
-            proj = row.get("proj") or (prev.proj if prev else {})
+            rp = row.get("proj")
+            proj = {f: rp.get(f) for f in LOC_PROJ_FIELDS} if isinstance(rp, dict) and rp else (prev.proj if prev else {})
             out[k] = ArchiveLoc(book, k, int(row.get("rev", 0)), str(row.get("status", ST_ACTIVE)), str(row.get("content_sha", "")),
                                 seg.name, n, proj, row.get("position_group") or (prev.position_group if prev else None))
     for k, d in derived.items():
@@ -255,10 +271,16 @@ def load_records(paths: EnginePaths, book: str, locs: dict[str, ArchiveLoc]) -> 
     out: dict[str, dict] = {}
     d = paths.book_closes_dir(book)
     for seg_name, lines in want.items():
-        for n, row in iter_gz_lines(d / seg_name):
-            k = lines.get(n)
-            if k is not None and isinstance(row.get("record"), dict):
-                out[k] = row["record"]
+        last = max(lines)
+        with gzip.open(d / seg_name, "rt", encoding="utf-8") as fh:      # yalnız istenen satırlar ayrıştırılır
+            for n, line in enumerate(fh, 1):
+                k = lines.get(n)
+                if k is not None and line.strip():
+                    row = json.loads(line)
+                    if isinstance(row.get("record"), dict):
+                        out[k] = row["record"]
+                if n >= last:
+                    break
     return out
 
 
@@ -902,9 +924,11 @@ def build_row(loc: ArchiveLoc, rec: dict, kind: str, ctx: BuildContext) -> dict[
             R.miss("taker_ratio", "depoda metrics_5m yok")
     if book in (BOOK_MAIN_FUT, BOOK_MAIN_SPOT):
         if prow:
+            efe = prow.get("entry_features") if isinstance(prow.get("entry_features"), dict) else {}
             R.set("agents_ctx", {"p_win": prow.get("entry_p_win"), "expected_r": prow.get("entry_expected_r"),
                                  "regime": prow.get("entry_regime"), "specialist_scores": prow.get("entry_specialist_scores"),
-                                 "risk_decision": prow.get("entry_risk_decision"), "policy_id": prow.get("entry_policy_id")},
+                                 "risk_decision": prow.get("entry_risk_decision"), "policy_id": prow.get("entry_policy_id"),
+                                 "entry_features": {k: efe.get(k) for k in ENTRY_DECISION_FEATURES if k in efe}},
                   MEASURED, "entry_provenance (giriş kararı)")
         else:
             R.miss("agents_ctx", "provenance satırı yok")
@@ -958,7 +982,38 @@ def build_row(loc: ArchiveLoc, rec: dict, kind: str, ctx: BuildContext) -> dict[
     row["store_parts"] = [list(p) for p in plist]
     row["field_source"] = {f: R.src[f] for f in ALL_FIELDS}
     row["field_notes"] = dict(sorted(R.notes.items()))
+    row["cf_inputs"] = cf_inputs(rec, kind)
     return row
+
+
+def cf_inputs(rec: dict, kind: str) -> dict[str, Any] | None:
+    """P2b karşı-olgusal ızgaranın kayıttan ihtiyaç duyduğu küçük, ÖLÇÜLMÜŞ girdiler (S2 arşiv kaydını yeniden okumasın):
+    kaydın KENDİ fonlama uzlaşmaları (`fidelity.RecordedFunding` girdisi: an, oran, settlement mark'ı; ters çevrilenler
+    hariç), watermark, sembolün fonlama saatleri ve gerçek stop çıkışının aşma yüzdesi (`learning_cf_aux` `cf_aux_v1`
+    tanımı: yalnız `GAP_FILL_AT_FIRST_OBSERVATION` + `first_source == PRICE`). Spot: None."""
+    if kind != KIND_FUTURES:
+        return None
+    f = rec.get("features") if isinstance(rec.get("features"), dict) else {}
+    sett = []
+    for r in f.get("funding_settlements") or []:
+        if not isinstance(r, dict) or r.get("reversed_at") or r.get("path") == "REVERSAL":
+            continue
+        t = parse_ts(r.get("settlement"))
+        if t is None or r.get("rate") is None:
+            continue
+        sett.append([iso(t), str(r.get("rate")), None if r.get("mark") is None else str(r.get("mark"))])
+    hours = f.get("funding_hours_utc") if isinstance(f.get("funding_hours_utc"), list) else None
+    ov = None
+    ef = f.get("exit_fill") if isinstance(f.get("exit_fill"), dict) else None
+    if (ef and ef.get("basis") == "GAP_FILL_AT_FIRST_OBSERVATION" and ef.get("first_source") == "PRICE"
+            and str(rec.get("exit_reason") or "") in ("stop", "başa-baş stop")):
+        first, stp, ent = dec_or_none(ef.get("first_price")), dec_or_none(ef.get("stop")), dec_or_none(rec.get("entry"))
+        if first is not None and stp is not None and ent is not None and ent > 0:
+            sg = 1 if str(rec.get("side") or "").upper() == "LONG" else -1
+            ov = _r6(float(sg * (stp - first) / ent * 100))
+    return {"funding_settlements": sorted(sett), "funding_settled_until": f.get("funding_settled_until"),
+            "funding_hours_utc": [int(h) for h in hours] if hours else None, "exit_overshoot_pct": ov,
+            "entry_ref": f.get("entry_ref")}
 
 
 # ============================================================================ derleme
@@ -998,6 +1053,11 @@ def _equity_points(paths: EnginePaths) -> list[tuple[datetime, dict[str, Decimal
 def _month_of(closed_at: Any) -> str:
     t = parse_ts(closed_at)
     return t.strftime("%Y-%m") if t is not None else "unknown"
+
+
+def _closed_iso(proj: dict) -> str:
+    t = parse_ts((proj or {}).get("closed_at"))
+    return iso(t) if t is not None else ""
 
 
 def _sort_key(row: dict) -> tuple[str, str]:
@@ -1087,9 +1147,15 @@ def _src_digest(src: PR.BarSource | None) -> str:
 
 def build_journal(paths: EnginePaths, *, now: datetime | None = None, src: PR.BarSource | None = None, rawconfig: Any = None,
                   books: Iterable[str] | None = None, write_paths: bool = True,
-                  progress: Callable[[str], None] | None = None) -> dict[str, Any]:
+                  progress: Callable[[str], None] | None = None, budget_s: float | None = None,
+                  max_rows: int | None = None) -> dict[str, Any]:
     """Günlüğü arşivden kur (artımlı): girdileri değişen satırlar yeniden hesaplanır, etkilenen ay dosyaları yeniden
-    yazılır. Dönen özet (`_build.json`): satır/ay sayıları, fidelity kapısı, rehydrate eşleşme oranları, depo mührü."""
+    yazılır. Dönen özet (`_build.json`): satır/ay sayıları, fidelity kapısı, rehydrate eşleşme oranları, depo mührü.
+
+    **Kaldığı yerden devam (P2b, gece son tarihi):** `budget_s` (duvar saati saniyesi) ya da `max_rows` verilirse
+    değişen satırlar EN YENİ kapanıştan geriye kurulur ve bütçe bitince durulur. Kurulamayan satırın eski hâli (varsa)
+    eski özetiyle AYNEN kalır (ertesi gece yeniden kurulur); hiç kurulmamış yeni kayıt dizine girmez (ertesi gece "yeni"
+    sayılır). Bekleyen sayısı dönen özette `pending`'dir (`_build.json` içerik özetine girmez)."""
     now = now or utc_now()
     all_books = sorted(set(books) if books is not None else
                        {p.name for p in paths.closes.iterdir() if p.is_dir()} if paths.closes.exists() else set())
@@ -1113,11 +1179,11 @@ def build_journal(paths: EnginePaths, *, now: datetime | None = None, src: PR.Ba
     eq_pts = _equity_points(paths)
     old_index = _read_index(paths)
     # yan kaynaklar: spot alış emirleri için kayıtların tamamı gerekir (FIFO lotu) → spot kayıtları her gece okunur (küçük)
-    spot_recs: dict[str, dict] = {}
+    spot_bo: dict[str, str | None] = {}                  # spot anahtarı → alış emri (kayıtlar bellekte tutulmaz)
     if BOOK_MAIN_SPOT in active:
-        spot_recs = load_records(paths, BOOK_MAIN_SPOT, active[BOOK_MAIN_SPOT])
-        for r in spot_recs.values():
+        for k, r in load_records(paths, BOOK_MAIN_SPOT, active[BOOK_MAIN_SPOT]).items():
             bo = spot_buy_order(r)
+            spot_bo[k] = bo
             if bo:
                 spot_buy_ids.add(bo)
     ids_for_sides = {b: set(v) for b, v in ids_by_book.items()}
@@ -1134,7 +1200,7 @@ def build_journal(paths: EnginePaths, *, now: datetime | None = None, src: PR.Ba
                     "mem": _sha(sides.memory(b, tid)[0]) if sides.memory(b, tid) else None,
                     "xp": _sha(sides.xp_entry(k)[0]) if sides.xp_entry(k) else None}
             if b == BOOK_MAIN_SPOT:
-                bo = spot_buy_order(spot_recs.get(k) or {})
+                bo = spot_bo.get(k)
                 side["prov"] = _sha(sides.provenance(bo)[0]) if bo and sides.provenance(bo) else None
             opened, closed = parse_ts(loc.proj.get("opened_at")), parse_ts(loc.proj.get("closed_at"))
             eq_at = _equity_at(ctx, b, opened)[2] if opened is not None else None
@@ -1146,64 +1212,206 @@ def build_journal(paths: EnginePaths, *, now: datetime | None = None, src: PR.Ba
             old = old_index.get(k)
             if old is None or old.get("digest") != dg or not month_file(paths, month).exists():
                 changed.setdefault(b, []).append(k)
-    removed = {k: v for k, v in old_index.items() if k not in new_index}
-    months_touched = {new_index[k]["month"] for ks in changed.values() for k in ks} | {v.get("month") for v in removed.values()}
-    months_touched.discard(None)
-    # ---- değişen satırları kur
-    new_rows: dict[str, dict[str, dict]] = {}
+    # ---- değişen satırları kur: EN YENİ ay önce, ay içinde en yeni kapanış önce; her ay bitince o ayın dosyası yazılır
+    # (bellekte en çok bir ayın yeni satırları durur). Bütçe/sınır bitince kalan satırlar bekler (ertesi gece).
     n_built = 0
-    for b, ks in sorted(changed.items()):
-        recs = spot_recs if b == BOOK_MAIN_SPOT else load_records(paths, b, {k: active[b][k] for k in ks})
-        for k in sorted(ks):
-            rec = recs.get(k)
-            if rec is None:
+    t_start = time.monotonic()
+    order = sorted(((_closed_iso(active[b][k].proj), k, b) for b, ks in changed.items() for k in ks), reverse=True)
+    by_month: dict[str, list[tuple[str, str]]] = {}
+    for _c, k, b in order:
+        by_month.setdefault(new_index[k]["month"], []).append((b, k))
+    pending: list[tuple[str, str]] = []
+    written: list[str] = []
+
+    def _over() -> bool:
+        return (budget_s is not None and time.monotonic() - t_start > budget_s) or (max_rows is not None and n_built >= max_rows)
+
+    clean_spills(paths, paths.journal_tj)
+    for month in sorted(by_month, reverse=True):
+        items = by_month[month]
+        writer = MonthWriter(paths, month_file(paths, month),
+                             lambda k, _m=month: k in new_index and new_index[k]["month"] == _m, _sort_key,
+                             flush_rows=FLUSH_ROWS)
+        n_month = 0
+        for i in range(0, len(items), LOAD_CHUNK):
+            part = items[i:i + LOAD_CHUNK]
+            if _over():
+                pending += part
                 continue
-            row = build_row(active[b][k], rec, kinds[b], ctx)
-            new_rows.setdefault(new_index[k]["month"], {})[k] = row
-            n_built += 1
-            if progress is not None and n_built % 500 == 0:
-                progress(f"journal {n_built}")
-    # ---- ay dosyaları: etkilenen ayları yeniden yaz (değişmeyen satırlar eski dosyadan aynen)
-    written = []
-    for month in sorted(months_touched):
-        rows: dict[str, dict] = {}
-        p = month_file(paths, month)
-        if p.exists():
-            for _n, row in iter_gz_lines(p):
-                k = str(row.get("trade_key"))
-                if k in new_index and new_index[k]["month"] == month:
-                    rows[k] = row
-        rows.update(new_rows.get(month, {}))
-        rows = {k: v for k, v in rows.items() if k in new_index and new_index[k]["month"] == month}
-        ordered = sorted(rows.values(), key=_sort_key)
-        if not ordered:
-            if p.exists():
-                p.unlink()
-            continue
-        data = gzip_bytes("".join(json_line(r) for r in ordered).encode("utf-8"))
-        if not (p.exists() and p.read_bytes() == data):
-            paths.write_bytes(p, data)
+            want: dict[str, list[str]] = {}
+            for b, k in part:
+                want.setdefault(b, []).append(k)
+            recs_by_book = {b: load_records(paths, b, {k: active[b][k] for k in ks}) for b, ks in want.items()}
+            for b, k in part:
+                if _over():
+                    pending.append((b, k))
+                    continue
+                rec = recs_by_book[b].get(k)
+                if rec is None:
+                    continue
+                writer.add(k, build_row(active[b][k], rec, kinds[b], ctx))
+                n_built += 1
+                n_month += 1
+                if progress is not None and n_built % 500 == 0:
+                    progress(f"journal {n_built}")
+            recs_by_book = {}
+        if n_month and writer.close():
+            written.append(month)
+        elif not n_month:
+            writer.buf = []
+    for b, k in pending:                                   # kurulamayan: eski satır ve eski özeti kalır (yoksa dizine girmez)
+        old = old_index.get(k)
+        if old is not None and month_file(paths, str(old.get("month"))).exists():
+            new_index[k] = old
+        else:
+            new_index.pop(k, None)
+    removed = {k: v for k, v in old_index.items() if k not in new_index}
+    # ---- satır düşen aylar (kaldırılan ya da ayı değişen anahtarların ESKİ ayı) süzülür; yazılan aylar zaten tamdır
+    months_drop = ({v.get("month") for v in removed.values()}
+                   | {v.get("month") for k, v in old_index.items() if k in new_index and new_index[k]["month"] != v.get("month")})
+    months_drop.discard(None)
+    for month in sorted(months_drop):
+        if _write_month(paths, month, {}, new_index) and month not in written:
             written.append(month)
     idx = {"schema": INDEX_SCHEMA, "journal_version": JOURNAL_VERSION, "keys": dict(sorted(new_index.items()))}
     paths.write_bytes(_index_path(paths), gzip_bytes(json.dumps(idx, ensure_ascii=False, separators=(",", ":"),
                                                                 sort_keys=False).encode("utf-8")))
-    rows_all = list(iter_journal(paths))
+    # özet iki akışla (bütün satırlar ya da izdüşümleri bellekte tutulmaz; kabul: 45 bin satırda bellek, §2.5)
+    acc = {"rows": 0, "owner_ok": True, "fee_bad": 0, "r_bad": 0, "paths": {}}
+
+    def _fd_rows() -> Iterator[dict]:
+        for r in iter_journal(paths):
+            acc["rows"] += 1
+            acc["owner_ok"] = acc["owner_ok"] and owner_fields_ok(r)
+            acc["fee_bad"] += 0 if r.get("fee_identity_ok") else 1
+            acc["r_bad"] += 1 if (r.get("r_check") and not r["r_check"]["ok"]) else 0
+            ps = r.get("path_source") or "MISSING"
+            acc["paths"][ps] = acc["paths"].get(ps, 0) + 1
+            yield _summary_proj(r)
+    fd_sum = FD.summarize(_fd_rows())
+    rh_sum = RH.match_stats(_summary_proj(r) for r in iter_journal(paths))
     # `_build.json` yalnız İÇERİĞİ özetler (aynı mühür + aynı girdiler → bayt-özdeş); çalıştırmaya özgü sayılar
     # (yeniden kurulan satır, yazılan ay, an) yalnız dönen özette
     content = {"schema": BUILD_SCHEMA, "journal_version": JOURNAL_VERSION, "store_seal": seal_d,
-               "rows": len(rows_all), "books": {b: len(active[b]) for b in all_books},
+               "rows": acc["rows"], "books": {b: len(active[b]) for b in all_books},
                "restored_away_excluded": restored,
-               "fidelity": FD.summarize(rows_all), "rehydrate": RH.match_stats(rows_all),
-               "owner_fields_ok": all(owner_fields_ok(r) for r in rows_all),
-               "fee_identity_violations": sum(1 for r in rows_all if not r.get("fee_identity_ok")),
-               "r_check_failures": sum(1 for r in rows_all if r.get("r_check") and not r["r_check"]["ok"]),
-               "path_sources": _count(r.get("path_source") or "MISSING" for r in rows_all),
+               "fidelity": fd_sum, "rehydrate": rh_sum,
+               "owner_fields_ok": acc["owner_ok"],
+               "fee_identity_violations": acc["fee_bad"],
+               "r_check_failures": acc["r_bad"],
+               "path_sources": dict(sorted(acc["paths"].items())),
                "data_moving": dict(sorted((src.moving if src is not None else {}).items()))}
     p = paths.journal_tj / "_build.json"
     data = (json.dumps(content, ensure_ascii=False, indent=1) + "\n").encode("utf-8")
     if not (p.exists() and p.read_bytes() == data):
         paths.write_bytes(p, data)
-    return {**content, "built_at": iso(now), "built_rows": n_built, "months_written": written, "removed": len(removed)}
+    return {**content, "built_at": iso(now), "built_rows": n_built, "months_written": sorted(written),
+            "removed": len(removed), "pending": len(pending)}
+
+
+def _summary_proj(r: dict) -> dict:
+    rh = r.get("rehydrate") or {}
+    fd = r.get("fidelity") or {}
+    return {"book": r.get("book"), "config_epoch": r.get("config_epoch"), "trade_key": r.get("trade_key"),
+            "fidelity": {k: fd.get(k) for k in ("status", "reasons", "primary_reason", "delta_r")},
+            "rehydrate": {"status": rh.get("status"), "reason": rh.get("reason")},
+            "_owner_ok": owner_fields_ok(r), "fee_identity_ok": r.get("fee_identity_ok"), "r_check": r.get("r_check"),
+            "path_source": r.get("path_source")}
+
+
+class MonthWriter:
+    """Ay dosyasının AKIŞLA yeniden yazımı, doğrusal maliyetle: yeni satırlar `flush_rows`'ta bir sıralı geçici parçaya
+    (`.spill-*`, aynı klasör) dökülür; kapanışta eski dosyanın tutulan ve yeniden kurulmamış satırları + parçalar tek
+    k-yollu birleşimle (`heapq.merge`, `sort_key`) yazılır. Bellekte en çok `flush_rows` yeni satır ve yeni anahtarlar
+    kümesi durur. Çıktı deterministik gzip'tir (`write_gzip_stream` = `gzip_bytes` baytları); içerik aynıysa dosyaya
+    dokunulmaz. Yarıda öldürülürse kalan `.spill-*` dosyaları bir sonraki çalıştırmada silinir (`clean_spills`)."""
+
+    def __init__(self, paths: EnginePaths, path: Path, keep: Callable[[str], bool], sort_key: Callable[[dict], Any], *,
+                 flush_rows: int = 1000) -> None:
+        self.paths, self.path, self.keep, self.sort_key, self.flush_rows = paths, path, keep, sort_key, flush_rows
+        self.buf: list[dict] = []
+        self.keys: set[str] = set()
+        self.spills: list[Path] = []
+
+    def add(self, key: str, row: dict) -> None:
+        if not self.keep(key):
+            return
+        self.keys.add(key)
+        self.buf.append(row)
+        if len(self.buf) >= self.flush_rows:
+            self._spill()
+
+    def _spill(self) -> None:
+        if not self.buf:
+            return
+        rows = sorted(self.buf, key=self.sort_key)
+        p = self.path.with_name(f".spill-{self.path.name[:-len('.jsonl.gz')]}-{len(self.spills):04d}.jsonl.gz")
+        self.paths.write_gzip_stream(p, (json_line(r).encode("utf-8") for r in rows))
+        self.spills.append(p)
+        self.buf = []
+
+    def close(self) -> bool:
+        """Birleştir ve yaz. Dönen: dosya değişti mi."""
+        mem = sorted(self.buf, key=self.sort_key)
+        self.buf = []
+        n = 0
+
+        def old_rows() -> Iterator[dict]:
+            if self.path.exists():
+                for _ln, row in iter_gz_lines(self.path):
+                    k = str(row.get("trade_key"))
+                    if k not in self.keys and self.keep(k):
+                        yield row
+
+        def spill_rows(p: Path) -> Iterator[dict]:
+            for _ln, row in iter_gz_lines(p):
+                yield row
+
+        def gen() -> Iterator[bytes]:
+            nonlocal n
+            for row in heapq.merge(old_rows(), *(spill_rows(p) for p in self.spills), iter(mem), key=self.sort_key):
+                n += 1
+                yield json_line(row).encode("utf-8")
+        tmp = self.path.with_name("." + self.path.name + ".merge")
+        try:
+            digest = self.paths.write_gzip_stream(tmp, gen())
+        finally:
+            for p in self.spills:
+                p.unlink(missing_ok=True)
+            self.spills = []
+        if n == 0:
+            tmp.unlink()
+            if self.path.exists():
+                self.path.unlink()
+                return True
+            return False
+        if self.path.exists() and sha256_file(self.path) == digest:
+            tmp.unlink()
+            return False
+        os.replace(self.paths.require_research(tmp), self.paths.require_research(self.path))
+        return True
+
+
+def clean_spills(paths: EnginePaths, root: Path) -> None:
+    """Yarıda kalmış birleşimlerin geçici dosyaları (`.spill-*`, `.*.merge`)."""
+    if root.is_dir():
+        for p in list(root.glob(".spill-*")) + list(root.glob(".*.merge")):
+            paths.require_research(p).unlink(missing_ok=True)
+
+
+def merge_sorted_month(paths: EnginePaths, path: Path, built: dict[str, dict], keep: Callable[[str], bool],
+                       sort_key: Callable[[dict], Any]) -> bool:
+    """Tek seferlik birleşim (`MonthWriter` ile): eski dosyanın tutulan satırları + `built`."""
+    w = MonthWriter(paths, path, keep, sort_key, flush_rows=10**9)
+    for k, r in built.items():
+        w.add(k, r)
+    return w.close()
+
+
+def _write_month(paths: EnginePaths, month: str, built: dict[str, dict], new_index: dict[str, dict]) -> bool:
+    """Günlük ay dosyası: hâlâ bu aya ait eski satırlar + yeni kurulanlar (`(closed_at, anahtar)` sırasında)."""
+    return merge_sorted_month(paths, month_file(paths, month), built,
+                              lambda k: k in new_index and new_index[k]["month"] == month, _sort_key)
 
 
 def _count(xs: Iterable[str]) -> dict[str, int]:
@@ -1230,7 +1438,8 @@ def owner_fields_ok(row: dict) -> bool:
 def reconcile_journal(paths: EnginePaths, rows: Iterable[dict] | None = None) -> dict[str, Any]:
     """Günlük ↔ arşiv (son rev, ACTIVE) ↔ ledger (elde tutulan pencere): her kayıt günlükte TAM BİR KEZ; Σ net_pnl,
     ücret, fonlama ve kayma 1e-6 ile eşit. Dönen: {"status": OK|INCONSISTENT, books: {...}}."""
-    rows = list(rows) if rows is not None else list(iter_journal(paths))
+    keep = ("trade_key", "book", "net_pnl", "fees_total", "funding_net", "slippage_cost")
+    rows = list(rows) if rows is not None else [{k: r.get(k) for k in keep} for r in iter_journal(paths)]
     by_book: dict[str, list[dict]] = {}
     for r in rows:
         by_book.setdefault(str(r.get("book")), []).append(r)
@@ -1295,13 +1504,16 @@ def open_store(paths: EnginePaths) -> tuple[PR.BarSource | None, dict[str, Any]]
 
 
 def run_s1b(paths: EnginePaths, *, now: datetime | None = None, run_id: str | None = None,
-            app_dir: Path | str | None = None) -> dict[str, Any]:
-    """S1b (§6.1): günlük + yol + rehydrate + fidelity, ardından tembel 1m ihtiyaç dosyası. Gece aşamasına P2b bağlar."""
+            app_dir: Path | str | None = None, budget_s: float | None = None) -> dict[str, Any]:
+    """S1b (§6.1): günlük + yol + rehydrate + fidelity, ardından tembel 1m ihtiyaç dosyası (gece aşaması `night._s1b`).
+    `budget_s`: gece son tarihine kalan süre payı (kaldığı yerden devam, `build_journal`)."""
     from .rawconfig import read_raw_config
     now = now or utc_now()
     src, sinfo = open_store(paths)
+    if src is not None:
+        src.max_parts = min(int(src.max_parts), S1B_MAX_PARTS)        # bellek bütçesi (§2.5); sonuç değişmez
     rc = read_raw_config(Path(app_dir) / "config.yaml") if app_dir is not None else read_raw_config()
-    summary = build_journal(paths, now=now, src=src, rawconfig=rc)
+    summary = build_journal(paths, now=now, src=src, rawconfig=rc, budget_s=budget_s)
     items = []
     for r in iter_journal(paths):
         if (r.get("path") or {}).get("tf") == "1m" and (r.get("path") or {}).get("complete"):
@@ -1313,9 +1525,14 @@ def run_s1b(paths: EnginePaths, *, now: datetime | None = None, run_id: str | No
                       "opened_ms": _ms(o), "closed_ms": _ms(c)})
     needs = PR.plan_needs(items, now=now, seal=(sinfo or {}).get("data_seal"))
     PR.write_needs(paths, needs)
-    return {"stage": "S1b", "run_id": run_id, "store": sinfo, "journal": {k: summary.get(k) for k in (
-        "rows", "built_rows", "months_written", "restored_away_excluded", "owner_fields_ok", "fee_identity_violations",
-        "r_check_failures", "path_sources")}, "fidelity": {k: summary["fidelity"].get(k) for k in (
+    if summary.get("pending"):
+        recon: dict[str, Any] = {"status": "PARTIAL_BUILD", "pending": summary.get("pending")}
+    else:
+        rc_full = reconcile_journal(paths)
+        recon = {"status": rc_full["status"], "books_not_ok": sorted(b for b, x in rc_full["books"].items() if not x["ok"])}
+    return {"stage": "S1b", "run_id": run_id, "store": sinfo, "reconcile": recon, "journal": {k: summary.get(k) for k in (
+        "rows", "built_rows", "pending", "months_written", "restored_away_excluded", "owner_fields_ok",
+        "fee_identity_violations", "r_check_failures", "path_sources", "data_moving")}, "fidelity": {k: summary["fidelity"].get(k) for k in (
             "eligible", "ok", "rate", "gate_pass", "failures_by_reason", "not_eligible")},
         "needs_1m": {"days_total": needs["days_total"], "capped": needs["capped"], "series": len(needs["series"])}}
 

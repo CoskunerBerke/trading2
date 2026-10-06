@@ -186,6 +186,12 @@ class EnginePaths:
         return self.paths_root / "needs_1m.json"
 
     @property
+    def attribution(self) -> Path:
+        """Atıf (P2b, §3.1): `attribution/YYYY-MM.jsonl.gz` (kodlar + ızgara + ayrıştırma; + `_index.json.gz`,
+        `_build.json`). Günlükten, yollardan ve mühürlü depodan YENİDEN ÜRETİLEBİLİR (yedeğe girmez, `backup.EXCLUDE`)."""
+        return self.research / "attribution"
+
+    @property
     def target_daily_utc(self) -> Path:
         """UTC günü MTM satırları (`tgt_v2_utc_day`; yalnız eklenir, `rev`) — W-günü `daily.jsonl`'ın yanında."""
         return self.target / "daily_utc.jsonl"

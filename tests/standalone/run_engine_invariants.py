@@ -1,10 +1,12 @@
 # -*- coding: utf-8 -*-
-"""BAĞIMSIZ KOŞUCU — sürekli öğrenme motoru P1a + P1b (docs/SYSTEM_LEARNING_ENGINE_V1.md §9.3, §10 P1a kabul 18).
+"""BAĞIMSIZ KOŞUCU — sürekli öğrenme motoru P1a + P1b + P2 (docs/SYSTEM_LEARNING_ENGINE_V1.md §9.3, §10 P1a kabul 18).
 
 VPS'te pytest YOKTUR. Motor sürüm betiğinin `--dry-run`'ı (ve dağıtımın ön denetimi) depo testlerinin VPS'te anlamlı
 alt kümesini bu dosyayla, pytest OLMADAN, AYRI bir süreçte koşar: P1a kabul 1–8, 13, 14 ve (P1b'den) P1b depo kabul
 testleri 1–11, 13–15. İki aşamanın kabul numaraları çakışmasın diye P1b'ninkiler **100 eklenerek** yazılır (101 = P1b
-kabul 1, …, 115 = P1b kabul 15). P1b kabul 12 (veri birimi sözleşmesi) birim DOSYASI testidir; sürüm betiği aynı
+kabul 1, …, 115 = P1b kabul 15); P2'ninkiler **200 eklenerek** (205 fidelity, 207 atıf/ızgara/ayrıştırma altın
+yolları + mühürler, 208 bayt-özdeşlik ve kaldığı yerden devam, 211 §5.10 Box bulgusu, 212 özet/sorgu sınırları, 213 gece
+S1b/S2 + son tarih payı + ölçeklenmiş zamanlama). P1b kabul 12 (veri birimi sözleşmesi) birim DOSYASI testidir; sürüm betiği aynı
 satırları kendi `unit_contract`'ıyla ve sha256 sabitiyle denetler. Parametreli testler (ör. P1b kabul 5'in günlük
 koruması ve 418/429 varyantları) bu koşucuda koşamaz; kabul 5'in alt kümesi sabitlenmiş metin kalıbı testidir:
 
@@ -111,8 +113,31 @@ SUBSET: tuple[tuple[int, str, str], ...] = (
     (113, "test_research_engine_datastore", "test_update_stops_starting_series_after_its_deadline"),
     (114, "test_research_engine_parity_seed", "test_store_provider_fixture_parity_with_archive_provider"),
     (115, "test_research_engine_datastore", "test_night_is_not_skipped_locked_during_backfill_and_reads_only_sealed_parts"),
+    # P2 (P2a + P2b; 200 + kabul no). Modül kapsamlı fixture kullanan P2a testleri (günlük `built`, UTC günü `sim`)
+    # koşucuda koşamaz; onların VPS eşi gecenin kendisidir (S1b/S3 sonuçları `run_status.json`'da, --check gösterir).
+    (205, "test_research_engine_pathrec_fidelity", "test_fidelity_failures_are_listed_with_their_reason"),
+    (207, "test_research_engine_pathrec_fidelity", "test_golden_long_path_metrics"),
+    (207, "test_research_engine_pathrec_fidelity", "test_golden_short_path_with_unobservable_intrabar_order"),
+    (207, "test_research_engine_attribution", "test_every_registered_code_has_a_golden_path"),
+    (207, "test_research_engine_attribution", "test_order_dependent_codes_are_excluded_on_ambiguous_or_barless_paths"),
+    (207, "test_research_engine_attribution", "test_r_less_rows_are_not_guessed"),
+    (207, "test_research_engine_attribution", "test_attribution_registry_is_sealed"),
+    (207, "test_research_engine_cfgrid", "test_replay_ext_without_hooks_equals_net_replay"),
+    (207, "test_research_engine_cfgrid", "test_golden_stopped_then_reversed_grid"),
+    (207, "test_research_engine_cfgrid", "test_golden_decomposition_chain_and_residual"),
+    (207, "test_research_engine_cfgrid", "test_random_control_same_time_of_day_same_bucket_deterministic"),
+    (207, "test_research_engine_cfgrid", "test_cfgrid_registry_is_sealed"),
+    (208, "test_research_engine_p2_night", "test_same_seal_gives_byte_identical_journal_paths_and_attribution"),
+    (208, "test_research_engine_p2_night", "test_resumed_builds_are_byte_identical_to_one_shot_builds"),
+    (211, "test_research_engine_p2_findings", "test_box_stop_width_finding_is_reproduced_per_config_epoch"),
+    (212, "test_research_engine_p2_night", "test_digest_and_queries_stay_bounded_on_a_heavy_day"),
+    (212, "test_research_engine_p2_night", "test_engine_query_cli_is_read_only_and_bounded"),
+    (213, "test_research_engine_p2_night", "test_full_p2_night_runs_s1b_s2_and_writes_bounded_turkish_digest"),
+    (213, "test_research_engine_p2_night", "test_no_stage_budget_left_skips_with_deadline_and_next_night_completes"),
+    (213, "test_research_engine_p2_night", "test_night_timing_scaled_synthetic_world_fits_the_deadline_for_2000_trades"),
 )
-ACCEPTANCE = (1, 2, 3, 4, 5, 6, 7, 8, 13, 14, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 113, 114, 115)
+ACCEPTANCE = (1, 2, 3, 4, 5, 6, 7, 8, 13, 14, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 113, 114, 115,
+              205, 207, 208, 211, 212, 213)
 _NOTSET = object()
 
 
@@ -399,7 +424,7 @@ def run(tree: Path, tmp_root: Path, *, only: set[int] | None = None) -> list[dic
 
 
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(description="Öğrenme motoru P1a + P1b bağımsız değişmez koşucusu (pytest yok)")
+    ap = argparse.ArgumentParser(description="Öğrenme motoru P1a + P1b + P2 bağımsız değişmez koşucusu (pytest yok)")
     ap.add_argument("--tree", default=str(Path(__file__).resolve().parents[2]), help="kod ağacı (engine-app) kökü")
     ap.add_argument("--tmp", default=None, help="geçici kök (varsayılan: yeni tempfile klasörü; sonunda silinir)")
     ap.add_argument("--keep", action="store_true", help="geçici klasörü silme")

@@ -306,6 +306,7 @@ def test_s0_skew_runs_only_s0_s1a_s7(tmp_path):
         assert st["result"] == N.R_SKEW and st["exit_code"] == 0 and SC.SKEW in st["flags"]
         assert tuple(st["plan"]) == N.PLAN_SKEW == ("S0", "S1a", "S7")
         assert {k: s["status"] for k, s in st["stages"].items()} == {"S0": "OK", "S1a": "OK", "S3": "NOT_PLANNED",
+                                                                     "S1b": "NOT_PLANNED", "S2": "NOT_PLANNED",   # P2b
                                                                      "S7": "OK", "S7b": "NOT_PLANNED"}
         assert st["selfcheck"]["skew"]["relation"] == ("NOT_ANCESTOR" if rc == 1 else "UNKNOWN")
         r = v.data / "research"
@@ -698,7 +699,8 @@ def test_ab_off_night_takes_only_the_snapshot_and_forced_archive_when_margin_low
     st1 = run_engine_night(v, host, night_of("2026-09-02"))
     assert st1["result"] == N.R_AB_OFF and tuple(st1["plan"]) == N.PLAN_AB_OFF == ("S0", "S1s") and st1["exit_code"] == 0
     assert {k: x["status"] for k, x in st1["stages"].items()} == {"S0": "OK", "S1s": "OK", "S1a": "NOT_PLANNED",
-                                                                  "S3": "NOT_PLANNED", "S7": "NOT_PLANNED",
+                                                                  "S3": "NOT_PLANNED", "S1b": "NOT_PLANNED",
+                                                                  "S2": "NOT_PLANNED", "S7": "NOT_PLANNED",   # P2b: S1b/S2
                                                                   "S7b": "NOT_PLANNED"}
     assert _files(v.paths.closes) == closes0 and _files(v.paths.entries) == entries0, "arşiv yazılmaz (çapa dahil)"
     assert v.paths.target_daily.read_bytes() == target0 and (v.paths.summary / "digest_tr.md").read_bytes() == digest0

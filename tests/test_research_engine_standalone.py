@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Sürekli öğrenme motoru P1a + P1b — bağımsız koşucu (docs/SYSTEM_LEARNING_ENGINE_V1.md §9.3; P1a kabul testi 18).
+"""Sürekli öğrenme motoru P1a + P1b + P2 — bağımsız koşucu (docs/SYSTEM_LEARNING_ENGINE_V1.md §9.3; P1a kabul testi 18).
 
 `tests/standalone/run_engine_invariants.py`, depo testlerinin VPS'te koşan alt kümesini (P1a kabul 1–8, 13, 14; P1b
 kabul 1–11, 13–15, 100 eklenerek numaralı) pytest OLMADAN çalıştırır. Bu test onu gerçek bir alt süreçte, servis
@@ -32,13 +32,14 @@ def test_standalone_runner_passes_subset_without_pytest_in_a_clean_process(tmp_p
            "TRADINGBOT_DATA": "/opt/tradingbot/data", "ENGINE_EXPECTED_MEMORY_MAX": "1"}    # koşucu bunları siler
     cp = subprocess.run([sys.executable, "-s", str(RUNNER), "--tree", str(ROOT), "--forbid-pytest", "--json", str(out),
                          "--tmp", str(tmp_path / "work")], capture_output=True, text=True, env=env, cwd=str(tmp_path),
-                        timeout=1200)
+                        timeout=2400)
     assert cp.returncode == 0, cp.stdout[-4000:] + cp.stderr[-2000:]
     res = json.loads(out.read_text(encoding="utf-8"))
     m = _load()
     assert res["failed"] == 0 and res["skipped"] == 0 and res["passed"] == len(m.SUBSET)
     p1b = [100 + k for k in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15)]   # P1b kabul 12 = birim dosyası (betik)
-    assert res["acceptance_passed"] == list(m.ACCEPTANCE) == [1, 2, 3, 4, 5, 6, 7, 8, 13, 14] + p1b
+    p2 = [200 + k for k in (5, 7, 8, 11, 12, 13)]          # P2: modül fixture'lı P2a testleri depoda; VPS eşi gecenin kendisi
+    assert res["acceptance_passed"] == list(m.ACCEPTANCE) == [1, 2, 3, 4, 5, 6, 7, 8, 13, 14] + p1b + p2
     assert "ÖZET:" in cp.stdout
 
 

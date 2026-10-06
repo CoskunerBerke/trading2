@@ -628,5 +628,6 @@ Sürüm notu sahibe şu iki parçayı **birlikte** göstermelidir; biri olmadan 
 - Sorgu döngüsünü vektörleştirmek (olay başına Python + `np.corrcoef` yerine toplu numpy) 12,6 sn'lik sorguyu büyük
   ölçüde kısaltır ve GIL sorununu kökten azaltır; ama kanıtın bit-aynı kaldığı ayrıca kanıtlanmalıdır (komşu
   sıralamasında eşitlik bozma, kayan nokta toplama sırası). Karar riski taşıdığı için bu işin kapsamı dışında bırakıldı.
+  → 2026-10-06: bit-aynılık kanıtıyla yapıldı, bkz. docs/TOUR_CONTENTION_V2.md (`history.evidence_fast_knn`).
 - İndeks kurulumu (`add_series`, satır başına `feats.iloc[i]`) da aynı şekilde hızlandırılabilir; yayım anını öne
   çekeceği için sahip onayı gerektirir.

@@ -132,6 +132,8 @@ jobs:
             tests/test_research_engine_data_unit.py tests/test_research_engine_release_p1b.py \
             tests/test_research_engine_journal.py tests/test_research_engine_rehydrate.py \
             tests/test_research_engine_pathrec_fidelity.py tests/test_research_engine_utc_day.py \
+            tests/test_research_engine_attribution.py tests/test_research_engine_cfgrid.py \
+            tests/test_research_engine_p2_night.py tests/test_research_engine_p2_findings.py \
             tests/test_m2x_policy.py tests/test_m2x_sim.py tests/test_m2x_book_v1.py \
             -q --tb=short > pytest.out 2>&1
           rc=$?

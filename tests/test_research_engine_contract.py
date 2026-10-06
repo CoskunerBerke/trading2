@@ -221,7 +221,7 @@ def test_cli_modules_have_no_top_level_research_engine_import_and_handlers_impor
     tree = ast.parse((ROOT / "tradingbot" / "cli_v3.py").read_text(encoding="utf-8"))
     lazy = {fn.name for fn in ast.walk(tree) if isinstance(fn, ast.FunctionDef)
             and any("research_engine" in n for _, n in _imports(fn))}
-    assert lazy == {"cmd_engine_night", "cmd_engine_status", "cmd_engine_restore", "cmd_engine_data"}, lazy
+    assert lazy == {"cmd_engine_night", "cmd_engine_status", "cmd_engine_restore", "cmd_engine_data", "cmd_engine_query"}, lazy
 
 
 def test_importing_cli_does_not_load_research_engine_in_a_real_process():
@@ -292,9 +292,12 @@ def _graph(start: str) -> set[str]:
 
 
 def test_night_import_graph_has_no_network_modules():
+    """§2.8: gece biriminin import grafiği ağ kullanan modülleri (`datastore`, `pit_universe`) İÇERMEZ. P2b'den itibaren
+    S1b/S2/UTC günü mühürlü depoyu (`store`/`provider`) okur; §2.8 bunları dışlamaz (P2 uygulama notları madde 12)."""
     g = _graph("night")
     assert {"selfcheck", "closes", "daily_target", "summary", "backup", "rawconfig", "ledgers", "paths", "lock"} <= g
-    assert not g & {"datastore", "pit_universe", "store", "seed", "provider", "universe"}, g
+    assert {"journal", "analysis", "attribution", "cfgrid", "utc_day", "report"} <= g
+    assert not g & {"datastore", "pit_universe"}, g
     for m in g:
         assert (PKG / f"{m}.py").exists()
 

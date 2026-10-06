@@ -45,7 +45,12 @@ OUTSIDE_OK = {"store.py": {"tradingbot.history.store"}, "seed.py": {"tradingbot.
                                "tradingbot.candle_variations", "tradingbot.candle_confirmation"},
               "fidelity.py": {"tradingbot.accounting", "tradingbot.accounting.funding", "tradingbot.core", "tradingbot.learn.shadow",
                               "tradingbot.learning_cf"},
-              "journal.py": {"tradingbot.indicators", "tradingbot.learning_mode", "tradingbot.shared_experience"}}
+              "journal.py": {"tradingbot.indicators", "tradingbot.learning_mode", "tradingbot.shared_experience"},
+              # P2b (§5.5, §5.6): ızgara aynı yeniden oynatma kod yolunu (`learning_cf._net_replay`, `cf_aux_v1`
+              # muhafazakâr R'si) ve situation_v1'in saf kova fonksiyonunu kullanır; S2 ATR'si kuralların `indicators`'ıdır.
+              "cfgrid.py": {"tradingbot.accounting", "tradingbot.core", "tradingbot.learn.shadow", "tradingbot.learning_cf",
+                            "tradingbot.learning_cf_aux", "tradingbot.shared_experience"},
+              "analysis.py": {"tradingbot.indicators"}}
 
 
 def _imports(path: Path) -> list[tuple[ast.AST, str, int]]:
@@ -104,7 +109,10 @@ def test_network_free_modules_never_import_the_data_unit():
     for m in ("night", "selfcheck", "summary", "backup", "closes", "daily_target", "store", "seed", "universe", "provider"):
         g = _graph(m)
         assert "datastore" not in g, (m, g)
-    assert not _graph("night") & {"store", "seed", "provider", "universe", "datastore"}
+    # §2.8: gece grafiği yalnız ağ modüllerini (`datastore`, `pit_universe`) dışlar; P2b'den itibaren mühürlü depo
+    # okuyucusunu (`store`/`provider`, S1b/S2/UTC günü) içerir (P2 uygulama notları madde 12)
+    assert not _graph("night") & {"datastore", "pit_universe"}
+    assert {"store", "provider", "journal", "analysis", "cfgrid", "attribution"} <= _graph("night")
     assert {"store", "universe", "seed", "night", "selfcheck"} <= _graph("datastore")
 
 
@@ -318,9 +326,14 @@ def test_night_records_the_data_seal_and_flags_stale_data(tmp_path):
     seal = e.status()["data_seal"]
     rs = run_engine_night(e.v, e.host, utc(2026, 10, 6, 1, 40))
     assert rs["data_seal"] == seal and rs["selfcheck"]["data"]["status"] == SC.OK and "DATA_STALE" not in rs["flags"]
-    assert rs["plan"] == ["S0", "S1a", "S3", "S7", "S7b"], "P1b'de depoyu okuyan aşama yok; plan değişmez"
+    # P2b (2026-10-06): plan S1b/S2'yi taşır (depoyu okuyan ilk aşamalar); taze mühürde ikisi de çalışır
+    assert rs["plan"] == ["S0", "S1a", "S3", "S1b", "S2", "S7", "S7b"]
+    assert rs["stages"]["S1b"]["status"] == "OK" and rs["stages"]["S2"]["status"] == "OK"
     rs = run_engine_night(e.v, e.host, utc(2026, 10, 8, 1, 40))      # mühür 49 saat önce
     assert rs["data_seal"] == seal and rs["selfcheck"]["data"]["status"] == SC.DATA_STALE and "DATA_STALE" in rs["flags"]
     assert rs["result"] == "SUCCESS"
+    # §6.1 S0: eski veride yalnız S1, S3 ve S7 (+ S7b yedeği) çalışır; S2 DATA_STALE ile atlanır
+    assert rs["stages"]["S1b"]["status"] == "OK" and rs["stages"]["S2"]["status"] == "SKIPPED"
+    assert "DATA_STALE" in rs["stages"]["S2"]["reason"]
     from tradingbot.research_engine.summary import status_lines
     assert any(ln.startswith("Veri: DATA_STALE") for ln in status_lines(e.paths, now=utc(2026, 10, 8, 2)))

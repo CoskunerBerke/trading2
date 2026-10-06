@@ -649,6 +649,7 @@ def test_the_switch_is_not_part_of_the_decision_identity(tmp_path, monkeypatch):
     if (d.get("learning_mode") or {}).get("extra_entries") == "open":
         d["learning_mode"].pop("extra_entries", None)
     d["history"].pop("evidence_subprocess")
+    d["history"].pop("evidence_fast_knn")   # 2026-10-06: hızlı kNN anahtarı da karar kimliğine girmez
     d.pop("m2x_aggressive", None)          # M2X ayna defteri de karar kimliğine girmez (config_hash ile aynı)
     want = payload_hash(d)
     hashes = set()

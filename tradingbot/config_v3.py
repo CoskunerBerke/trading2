@@ -438,6 +438,13 @@ class HistorySection:
     #: (`validate_v3`). Yalnız Linux'ta etkili. `false` → bugünkü süreç içi yol (geri dönüş anahtarı).
     #: Ayrıntı: tradingbot/patterns/evidence_child.py, docs/TOUR_CONTENTION_V1.md.
     evidence_subprocess: bool = True
+    #: HIZLI kNN KANIT SORGUSU (2026-10-06): `SimilarPatternEngine.query` olay başına Python döngüsü yerine iki aşamalı
+    #: kesin yolu kullanır (vektörel ön süzgeç + eski mesafenin kanıtlı alt sınırı; mesafe yalnız gereken adaylarda ESKİ
+    #: kodla, adaylar eski sıralamanın sırasıyla ESKİ seçim döngüsüne). KARAR GİRDİSİ DEĞİL: dönen kanıt eski döngüyle
+    #: bit-aynıdır (test kilitli); yayım kodu, indeks içeriği ve anahtar değişmez → karar kimliğine (`config_hash`)
+    #: girmez; etkin değer başlangıçta bir kez loglanır. Yalnız true/false. `false` → eski olay-başına döngü (geri dönüş
+    #: anahtarı; worker yeniden başlatılınca geçerli). Ayrıntı: tradingbot/patterns/engine.py, docs/TOUR_CONTENTION_V2.md.
+    evidence_fast_knn: bool = True
 
 
 @dataclass
@@ -1098,6 +1105,8 @@ def validate_v3(cfg: V3Config) -> None:
     # Kanıt alt süreci anahtarı: YAML'da tırnaklı "false" bir dizgedir ve doğru-değerli sayılırdı → yalnız true/false.
     if not isinstance(_hc.evidence_subprocess, bool):
         raise ConfigError(f"history.evidence_subprocess true/false olmalı (verilen: {_hc.evidence_subprocess!r})")
+    if not isinstance(_hc.evidence_fast_knn, bool):
+        raise ConfigError(f"history.evidence_fast_knn true/false olmalı (verilen: {_hc.evidence_fast_knn!r})")
     if _hc.auto_refresh:
         if _hc.refresh_minutes < 1:
             raise ConfigError("history.refresh_minutes >= 1 olmalı")

@@ -1052,6 +1052,14 @@ ve altın: 30, 60, 90), alfa 0,01 / 0,015 / 0,025 (toplam 0,05). Bir bakışta h
 - Tercih edilen biçim **yeni bir kâğıt defterdir** (`strategy_paper_<id>`). Mevcut bir defterin değişmesi ayrı ve açık bir
   onay gerektirir.
 
+**Değişiklik (2026-10-06, sahip kararı: "Otomatik, yalnız PAPER"):** Sahip, motorun her coin için kendi taktiğini
+bulup geliştirmesini ve kâr etmeye çalışmasını istiyor. Kapı A + Kapı B + Holm'u geçen aday, sahibe sorulmadan **yeni
+bir PAPER kâğıt defteri** olarak açılabilir (gerçek para asla; mevcut defterler değişmez; işlem başı risk %0,25 ile
+başlar; önceden kayıtlı durdurma kuralı ve "SAPMA" izlemesiyle defter kendini kapatır). Sahip her açılışı/kapanışı
+özetten ve `--check`'ten görür ve tek komutla kapatabilir. Bu otomasyonun nasıl kurulacağı (worker'ın motor terfilerini
+okuyan ayrı, kapılı PAPER defter yolu; sürüm ve geri alma) P3–P5 tasarımında ayrıca ve ön kayıtla yazılacak; o yazılana
+kadar Kapı C'nin öneri + onay yolu geçerlidir. Kapılar ve eşikler bu karardan sonra gevşetilmez.
+
 **Sürüm sonrası izleme.** Motor canlı defteri Kapı B dağılımına karşı puanlamaya devam eder ve gerekirse "SAPMA"
 uyarısı verir. Otomatik geri alma yoktur; sahip karar verir. Mevcut defterler için de aynı kurallarla yalnız
 **düşürme önerisi** yazılır.

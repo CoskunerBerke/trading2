@@ -215,11 +215,30 @@ def _unit_rows(p: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
 
 
 def _ts_values(s: pd.Series) -> np.ndarray:
-    """Mum zaman damgaları; `int(ts[i])` == eski `int(df["timestamp"].iloc[i])` olsun diye YALNIZ sayısal sütun."""
+    """Mum zaman damgaları int64 olarak — YALNIZ KAYIPSIZ dönüşümle, `int(ts[i])` == eski `int(df["timestamp"].iloc[i])`.
+
+    Kabul: sütunun KENDİ dtype'ı bir numpy tamsayısıdır (int*; uint* ise değerler int64'e sığar) ya da numpy kayan
+    noktasıdır ve her değer sonlu, tam sayı ve |v| < 2^63'tür (int64'e dönüşüm birebir). Başka her şey TypeError (→ bu
+    motorda eski döngü; kanıt aynı): pandas genişletme tipleri (ör. NA'lı `Int64` sütunu `to_numpy()` ile float64'e döner
+    ve 2^53 üstünü yuvarlar — eski kodun `iloc`'u ise tam değeri verir), object, tarih, bool. Gözden geçirme bulgusu
+    2026-10-06; test: tests/test_knn_fast_identity_v1.py `test_lossy_timestamp_columns_never_enter_the_fast_path`."""
+    dt = s.dtype
+    if not isinstance(dt, np.dtype) or dt.kind not in "iuf":
+        raise TypeError(f"timestamp sütunu kayıpsız int64'e çevrilemez (dtype {dt})")
     a = s.to_numpy()
-    if a.dtype.kind not in "iuf":
-        raise TypeError(f"timestamp sütunu sayısal değil ({a.dtype})")
-    return a
+    if a.dtype != dt:
+        raise TypeError(f"timestamp sütunu dönüştürüldü ({dt} → {a.dtype})")
+    if dt.kind == "i":
+        return a.astype(np.int64, copy=False)
+    if dt.kind == "u":
+        if a.size and int(a.max()) > int(np.iinfo(np.int64).max):
+            raise TypeError("timestamp sütunu int64 aralığını aşıyor (uint)")
+        return a.astype(np.int64)
+    with np.errstate(all="ignore"):
+        exact = bool(np.isfinite(a).all() and (np.floor(a) == a).all() and (np.abs(a) < 2.0 ** 63).all())
+    if not exact:
+        raise TypeError("timestamp sütunu kayan noktalı ve tam sayı değil / sonlu değil / int64 aralığı dışında")
+    return a.astype(np.int64)
 
 
 class _KnnIndex:
@@ -227,9 +246,10 @@ class _KnnIndex:
 
     Yayım anı ve indeks içeriği DEĞİŞMEZ (kurulum yayımdan sonra, ilk sorguda). Standart anlık görüntüler satır satır
     motorun KENDİ `_std` fonksiyonuyla hesaplanır (eski kodun gördüğü vektörler, bit bit), sonra float32'ye yuvarlanır.
-    Yön ve pencere dizileri istendikçe kurulur. Bellek: olay başına 100 B + sorgulanan her yön için 9 B + her pencere
-    için 66 B (152,5k olay, pencere 64, iki yön: ≈ 28 MB). Kilit YOK: iki iş parçacığı aynı anda kurarsa ikisi de aynı
-    diziyi kurar ve atama tektir (fork'ta kilitli devralınan kilit riski yok)."""
+    Yön ve pencere dizileri istendikçe kurulur; HERHANGİ bir dizinin kurulumu başarısız olursa motor işaretlenir ve o
+    motorda bir daha denenmez (`SimilarPatternEngine._knn_arrays`). Bellek: olay başına 100 B + sorgulanan her yön için
+    9 B + her pencere için 66 B (152,5k olay, pencere 64, iki yön: ≈ 28 MB). Kilit YOK: iki iş parçacığı aynı anda
+    kurarsa ikisi de aynı diziyi kurar ve atama tektir (fork'ta kilitli devralınan kilit riski yok)."""
 
     def __init__(self, eng: "SimilarPatternEngine"):
         ev = eng.events
@@ -334,7 +354,7 @@ class SimilarPatternEngine:
         self.candles: dict[tuple[str, str, str], pd.DataFrame] = {}
         # hızlı kNN: tembel diziler + yalnız teşhis sayaçları (karar girdisi DEĞİL)
         self._knn_ix: _KnnIndex | None = None
-        self._knn_broken = ""                 # dizi kurulumu bir kez başarısız → bu motorda eski döngü
+        self._knn_broken = ""                 # herhangi bir dizinin kurulumu bir kez başarısız → bu motorda eski döngü
         self._knn_pid = os.getpid()           # uyarı yalnız kuran süreçte (fork edilen kanıt alt süreci LOGLAMAZ)
         self._knn_warned = False
         self.knn_stats = {"fast": 0, "legacy": 0, "fallback": 0, "exact": 0, "error": ""}
@@ -531,6 +551,15 @@ class SimilarPatternEngine:
         except Exception:  # noqa: BLE001 — uyarı sorguyu asla bozmaz
             pass
 
+    def _knn_arrays(self, side: str, window: int) -> _KnnIndex:
+        """Sorgunun ihtiyaç duyduğu BÜTÜN diziler (motor başına ortak kısım + yön + pencere). Herhangi biri kurulamazsa
+        istisna yukarı çıkar ve çağıran motoru işaretler: bozuk bir olay/sütun her sorguda yeniden kurulum + düşüş
+        maliyeti ödetmez (gözden geçirme bulgusu 2026-10-06)."""
+        ix = self._knn_index()
+        ix.side(self, side)
+        ix.window(self, window)
+        return ix
+
     def _query_fast(self, symbol: str, side: str, qts: int, step: int, level: str, window: int, k: int, min_sep: int,
                     q_regime: str, cluster: str, qz: np.ndarray, qp: np.ndarray) -> list | None:
         """Hızlı yol: seçilenler ya da None (→ eski döngü; sonuç yine aynı). Hiçbir istisna dışarı sızmaz: arızada eski
@@ -539,9 +568,9 @@ class SimilarPatternEngine:
             self._knn_count("fallback")
             return None
         try:
-            ix = self._knn_index()
-        except Exception as exc:  # noqa: BLE001 — dizi kurulamadı (bellek, beklenmeyen veri): bu motorda eski döngü
-            self._knn_ix = None
+            ix = self._knn_arrays(side, window)
+        except Exception as exc:  # noqa: BLE001 — dizi kurulamadı (bellek, kayıplı zaman damgası, beklenmeyen veri):
+            self._knn_ix = None   # bu motorda bir daha DENENMEZ, eski döngü
             self._knn_broken = f"{type(exc).__name__}: {exc}"[:300]
             self._knn_count("fallback")
             self._knn_warn("kurulamadı", exc)

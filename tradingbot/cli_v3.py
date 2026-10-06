@@ -423,6 +423,10 @@ def _pattern_engine(cfg: BotConfig, args, *, market: str, tf: str, symbols: list
     eng = SimilarPatternEngine(min_sample=int(getattr(args, "min_sample", 30) or 30), horizon=int(getattr(args, "horizon", 24) or 24),
                                fee_pct=cfg.v3.fees.futures_taker_pct if market == "futures" else cfg.v3.fees.spot_taker_pct,
                                slippage_pct=cfg.v3.fees.slippage_bps / 100, clusters=_clusters(cfg))
+    # HIZLI kNN (2026-10-06): worker'ın kurucusuyla (`TradingEngineV3._build_pattern_index`) AYNI anahtar — pattern-query,
+    # evidence-show --live ve historical-replay (ReplayEngine bu motoru sorgular) da `history.evidence_fast_knn`'i izler.
+    # İki yol bit-aynı kanıt verir; yalnız açık `false` eski döngüye döner.
+    eng.fast_query = getattr(cfg.v3.history, "evidence_fast_knn", True) is not False
     n_ev = 0
     for m, sym, t in have:
         df = store.read(m, sym, t)

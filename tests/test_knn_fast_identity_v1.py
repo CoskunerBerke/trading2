@@ -348,6 +348,103 @@ def test_an_internal_error_falls_back_with_the_same_result_and_warns_once(spy, m
     assert not [r for r in caplog.records if "hızlı yolu" in r.getMessage()]
 
 
+def test_lossy_timestamp_columns_never_enter_the_fast_path(spy):
+    """Gözden geçirme bulgusu (2026-10-06; denetçinin yeniden üretimi): NA'lı pandas `Int64` zaman damgası sütunu
+    `to_numpy()` ile float64'e döner ve 2^53 üstü değerler YUVARLANIR → vektörel çıkış damgası eski `iloc` değerinden
+    ayrılır, 1. aşamanın çıkış süzgeci farklı aday kümesi seçerdi (2. aşama çıkışı yeniden denetlemez). Artık yalnız
+    kayıpsız int64 dönüşümü kabul edilir; değilse motor BİR KEZ işaretlenir ve her sorgu eski döngüyle (aynı sonuç)."""
+    eng = _adversarial()
+    key = ("C/USDT", "futures", "4h")
+    df = eng.candles[key].copy()
+    ts = pd.array([2 ** 60 + 2 * i + 1 for i in range(len(df))], dtype="Int64")
+    ts[2] = pd.NA                                                   # hiçbir olayın çıkış barı değil (olaylar idx ≥ 128)
+    df["timestamp"] = ts
+    eng.candles[key] = df
+    assert df["timestamp"].to_numpy().dtype == np.float64            # kayıplı dönüşümün kendisi (pandas)
+    assert int(df["timestamp"].to_numpy()[300]) != int(df["timestamp"].iloc[300])
+    with pytest.raises(TypeError):
+        PE._ts_values(df["timestamp"])
+    evs = [e for e in eng.events if e.symbol == "C/USDT" and "LONG" in e.outcomes]
+    tried = 0
+    for e in evs[len(evs) // 3: len(evs) // 3 + 12]:
+        qts = int(df["timestamp"].iloc[e.outcomes["LONG"].exit_idx])  # tam çıkış anında sorgu: sınır olayı
+        for level in ("same_coin", "auto"):
+            _res, path = _both(eng, spy, "C/USDT", "futures", "4h", "LONG", query_ts=qts, k=60, level=level,
+                               idx=min(e.idx + 30, len(df) - 2))
+            assert path == "fallback"
+            tried += 1
+    assert tried == 24 and eng.knn_stats["fast"] == 0 and eng._knn_ix is None
+    assert eng._knn_broken.startswith("TypeError") and "timestamp" in eng._knn_broken
+
+
+@pytest.mark.parametrize("kind", ["int64", "int32", "uint64", "float64", "float32"])
+def test_lossless_timestamp_dtypes_are_accepted_and_equal_the_old_lookup(kind):
+    s = pd.Series(np.array([1_700_000_000_000 + 14_400_000 * i for i in range(50)], dtype=np.int64))
+    if kind == "int32":
+        s = pd.Series(np.arange(50, dtype=np.int32) * 7 - 3)
+    elif kind == "float32":
+        s = pd.Series(np.arange(50, dtype=np.float32) * 4.0)
+    else:
+        s = s.astype(kind)
+    a = PE._ts_values(s)
+    assert a.dtype == np.int64 and [int(a[i]) for i in range(len(s))] == [int(s.iloc[i]) for i in range(len(s))]
+
+
+@pytest.mark.parametrize("bad", ["nullable_no_na", "object", "float_nan", "float_fraction", "uint_overflow", "datetime",
+                                 "float_huge"])
+def test_lossy_or_non_numeric_timestamp_dtypes_are_refused(bad):
+    base = np.array([1_700_000_000_000 + 14_400_000 * i for i in range(10)], dtype=np.int64)
+    s = {"nullable_no_na": lambda: pd.Series(pd.array(base, dtype="Int64")),
+         "object": lambda: pd.Series(base.astype(object)),
+         "float_nan": lambda: pd.Series(np.where(np.arange(10) == 3, np.nan, base.astype(float))),
+         "float_fraction": lambda: pd.Series(base.astype(float) + 0.5),
+         "uint_overflow": lambda: pd.Series(np.array([2 ** 63 + 5, 1], dtype=np.uint64)),
+         "datetime": lambda: pd.Series(pd.to_datetime(base, unit="ms")),
+         "float_huge": lambda: pd.Series(np.array([2.0 ** 63, 1.0]))}[bad]()
+    with pytest.raises(TypeError):
+        PE._ts_values(s)
+
+
+_REAL_TS_VALUES = PE._ts_values
+
+
+def test_an_array_build_failure_is_cached_per_engine_and_warned_once(spy, monkeypatch, caplog):
+    """Gözden geçirme bulgusu (2026-10-06): tembel yön/pencere dizisinin kurulumu (ör. bozuk bir olay ya da kayıplı zaman
+    damgası) düşerse motor İŞARETLENİR — sonraki sorgular diziyi yeniden kurmaya çalışıp düşmez, doğrudan eski döngüye
+    gider (sonuç aynı), uyarı motor başına bir kez."""
+    eng = _adversarial()
+    calls = []
+
+    def bad_ts(s):
+        calls.append(1)
+        raise TypeError("sentetik kayıplı zaman damgası")
+    monkeypatch.setattr(PE, "_ts_values", bad_ts)
+    with caplog.at_level(logging.WARNING, logger="tradingbot.patterns.engine"):
+        for s in ("A/USDT", "C/USDT", "A/USDT"):
+            for side in ("LONG", "SHORT"):
+                _res, path = _both(eng, spy, s, "futures", "4h", side, k=40)
+                assert path == "fallback"
+    assert calls == [1], "yön dizisi her sorguda yeniden kurulmamalı"
+    assert eng._knn_broken.startswith("TypeError") and eng._knn_ix is None and eng.knn_stats["fast"] == 0
+    assert len([r for r in caplog.records if "hızlı yolu kurulamadı" in r.getMessage()]) == 1
+    # pencere dizisi de aynı kurala uyar
+    eng2 = _adversarial()
+    wcalls = []
+    real_unit = PE._unit_rows
+
+    def bad_unit(p):
+        if p.shape[0] > 1:                                            # yalnız olay dizisi (sorgu yolu tek satır)
+            wcalls.append(1)
+            raise MemoryError("sentetik bellek")
+        return real_unit(p)
+    monkeypatch.setattr(PE, "_ts_values", _REAL_TS_VALUES)
+    monkeypatch.setattr(PE, "_unit_rows", bad_unit)
+    for s in ("A/USDT", "C/USDT"):
+        _res, path = _both(eng2, spy, s, "futures", "4h", "LONG", k=40)
+        assert path == "fallback"
+    assert wcalls == [1] and eng2._knn_broken.startswith("MemoryError") and eng2._knn_ix is None
+
+
 def test_the_arrays_follow_the_index_and_are_rebuilt_after_add_series(spy):
     eng = _adversarial()
     _both(eng, spy, "C/USDT", "futures", "4h", "LONG", k=60)
@@ -435,6 +532,40 @@ def test_the_index_builder_applies_the_switch_and_startup_logs_it(tmp_path, monk
             eng._log_evidence_fast_knn_setting()
         line = [r.getMessage() for r in caplog.records if "kNN sorgusu" in r.getMessage()]
         assert line and (("HIZLI" in line[0]) if on else ("ESKİ" in line[0])), line
+
+
+def test_the_cli_pattern_engine_applies_the_switch(tmp_path, monkeypatch):
+    """Gözden geçirme bulgusu (2026-10-06): anahtar kanıt için SimilarPatternEngine kuran HER yere ulaşır — worker
+    (`_build_pattern_index`, yukarıda) ve CLI'nin `_pattern_engine`'i: `pattern-query`, `evidence-show --live` ve
+    `historical-replay` (ReplayEngine kendisine verilen bu motoru sorgular; kendi motorunu kurmaz)."""
+    import inspect
+    import types
+
+    import tradingbot.history as H
+    from tradingbot import cli_v3
+    from tradingbot.config_v3 import load_v3
+    from tradingbot.replay import engine as RE
+    frames = {s: _candles(260, seed=60 + i, tf_ms=BAR_4H, start=1_700_000_000_000) for i, s in enumerate(("A/USDT", "C/USDT"))}
+
+    class _HS:
+        def __init__(self, root):
+            pass
+
+        def series(self):
+            return [("futures", s, "4h") for s in frames]
+
+        def read(self, market, symbol, tf, *a, **k):
+            return frames[symbol] if (market, tf) == ("futures", "4h") and symbol in frames else pd.DataFrame()
+    monkeypatch.setattr(H, "HistoryStore", _HS)
+    args = types.SimpleNamespace(min_sample=30, horizon=24, stride=1)
+    for raw, want in (({}, True), ({"history": {"evidence_fast_knn": True}}, True),
+                      ({"history": {"evidence_fast_knn": False}}, False)):
+        cfg = types.SimpleNamespace(cache_path=tmp_path, v3=load_v3(raw))
+        with np.errstate(all="ignore"):
+            _store, eng, n_ev = cli_v3._pattern_engine(cfg, args, market="futures", tf="4h")
+        assert n_ev > 0 and eng.fast_query is want, (raw, eng.fast_query)
+    src = inspect.getsource(RE)
+    assert "SimilarPatternEngine(" not in src and "self.pattern_engine.query(" in src
 
 
 # ------------------------------------------------------------------ 6) gerçek turlar: eski döngü ile hızlı yol, state/ bayt bayt

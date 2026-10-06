@@ -562,12 +562,12 @@ Kabul: `accepted.json` (manifest + `accepted_at` + `activate_at` = +24 s), boş 
 |---|---|---|
 | Etkin + bekleyen defter | ≤ 4 | izlenebilirlik; yanlış terfi bedelini sınırlar (soru S1) |
 | Tek-coin defter / aynı coin / aynı aile | ≤ 2 / ≤ 1 / ≤ 2 | coin'e özel defterlerde yoğunlaşma; çeşitlilik |
-| Başlangıç özsermayesi | 400 USDT | %0,25 = 1 USDT: P4 adayı (200 × %0,5), keşif ve canlı defterlerle aynı mutlak risk → aynı min-notional ve yuvarlama davranışı (soru S8) |
+| Başlangıç özsermayesi | ~~400 USDT~~ → **1.000 USDT** (sahip kararı 2026-10-06, S8) | %0,25 = 1 USDT: P4 adayı (200 × %0,5), keşif ve canlı defterlerle aynı mutlak risk → aynı min-notional ve yuvarlama davranışı (soru S8) |
 | İşlem başı risk | %0,25 sabit | sahip kararı; öğrenme modu, slot, min-notional yükseltmesi yok |
 | Kaldıraç | ≤ 3; likidasyon mesafesi ≥ 2 × stop | canlı defterlerin tavanlarını (3–5) aşmaz |
 | Defter açık riski | ≤ özsermayenin %2'si (8 işlem) | |
 | Bütün oto defterler açık riski | ≤ toplam oto özsermayenin %1,5'i | aynı anda dolu dört defter olmaz |
-| Sembol başına (oto toplamı) | ≤ 2 USDT açık risk; defter başına sembolde 1 pozisyon | korelasyon |
+| Sembol başına (oto toplamı) | ≤ 2 USDT açık risk (S8 kararıyla ölçeklenir: ≤ 5 USDT = 1.000 × %0,5); defter başına sembolde 1 pozisyon | korelasyon |
 | Günlük yeni giriş | ≤ 10 / defter / UTC günü | kaçak döngü koruması |
 | Min-notional | < 5 USDT → ret | riski büyütmez |
 | Düşüş | zirveden −%6 → yeni giriş yok (`DURAKLADI_DD`); −%10 → hepsi kapanır, `EMEKLİ_DD` | Kapı B sınırı 200'ün %8'i = 16 USDT = 400'ün %4'ü; −%6 bunun 1,5, −%10 2,5 katı (test edilen dağılımın dışı) |
@@ -732,6 +732,19 @@ erken Holm 2027-03-01, en erken otomatik defter ≈ 2027-03-02 (24 saat veto pen
 ---
 
 ## 9. Sahibe sorular (her biri için önerilen varsayılan)
+
+**Sahip kararları (2026-10-06, mühürden ÖNCE):**
+- **S5 — değişti:** 5m, 1h, altın ve fonlama taktikleri de **otomatik** yola girer; ayrı yazılı öneri ve sahip onayı
+  istenmez ("5. taktiği sen aç ve veri topla, zaten amacımız veri toplaman"). Bunlar P4 gölgesinde (motorun kendi kâğıt
+  kaydı) herkes gibi veri toplar ve Kapı A + B + Holm'u geçerse otomatik PAPER defteri olur. Worker'ın bu taktikler için
+  ek veri çekmesi (1h/5m barları, altın sembolleri, fonlama) `AUTO_v1` sürümüne eklenir; bunun worker'a yükü yine A/B ile
+  ÖLÇÜLÜR (onay değil, güvenlik ölçümü). Kapılar ve eşikler değişmez.
+- **S8 — değişti:** otomatik defter başlangıç özsermayesi **1.000 USDT** (400 değil); işlem başı risk %0,25 (= 2,5 USDT),
+  kaldıraç ≤ 3, düşüş −%6 yeni giriş durur / −%10 emeklilik AYNEN. USDT ile yazılmış tavanlar (sembol başına açık risk)
+  aynı oranla ölçeklenir; P4 adayıyla "aynı mutlak risk" gerekçesi artık geçmez (min-notional/yuvarlama farkı Kapı B
+  sapma denetiminde R ile ölçülür, USDT ile değil).
+- **S1, S2, S3, S4, S6, S7, S9:** önerilen varsayılanlar kabul (sahip yalnız S5 ve S8'i değiştirdi).
+
 
 | # | Soru | Önerilen varsayılan |
 |---|---|---|

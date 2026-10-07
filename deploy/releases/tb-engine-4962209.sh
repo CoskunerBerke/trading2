@@ -23,7 +23,7 @@
 #   reload'dan SONRA 6G yeniden doğrulanır, değilse motor birimleri geri alınır ve betik durur. setup_vps_v3.sh ASLA
 #   çalıştırılmaz; systemctl set-property / edit / revert kullanılmaz.
 # SAAT: dağıtım, smoke ve kuru çalışma UTC 00:00–04:00 (gece birimi) ve 4h yayın pencerelerinde (hh:00–hh:35, hh 4'ün
-#   katı; +5 dk pay) BAŞLAMAZ; başka sürümün yeniden başlatmasından (deploy-logs/*-restart-at.txt) 1 gün geçmeden DURUR (2026-10-07).
+#   katı; +5 dk pay) BAŞLAMAZ; başka sürümün yeniden başlatmasından (deploy-logs/*-restart-at.txt) 3 gün geçmeden DURUR.
 # KAPATMA (anında, veri yerinde kalır): sudo systemctl disable --now tradingbot-engine-night.timer
 #   (disable örtük reload yapar: önce  systemctl show tradingbot-worker -p NeedDaemonReload  → no olmalı; değilse yalnız
 #   sudo systemctl stop tradingbot-engine-night.timer  yeterlidir). Tam geri alma: bu betiğin --rollback'i.
@@ -639,11 +639,11 @@ for fm in "$LOGDIR"/*-restart-at.txt; do
   e="$(sed -n 1p "$fm" 2>/dev/null || true)"
   if [[ "$e" =~ ^[0-9]+$ ]] && (( e > last )); then last="$e"; lastf="$fm"; fi
 done
-age=$(( $(date +%s) - last )); (( age >= 1 * 86400 )) && rc=0 || rc=1   # sahip kararı 2026-10-07 "öğrenmeyi şimdi kur" (önceden 3, ondan önce 7)
-if [[ -n "$lastf" ]]; then out="son sürüm yeniden başlatması $(basename "$lastf") $((age / 86400)) gün önce (≥ 1; §2.9; sahip kararı 2026-10-07)"
-  (( rc == 0 )) || out+="; en erken $(date -u -d "@$((last + 1 * 86400))" '+%F %H:%M') UTC"
+age=$(( $(date +%s) - last )); (( age >= 3 * 86400 )) && rc=0 || rc=1   # sahip kararı 2026-10-06 "3 temiz gün sonra" (önceden 7)
+if [[ -n "$lastf" ]]; then out="son sürüm yeniden başlatması $(basename "$lastf") $((age / 86400)) gün önce (≥ 3; §2.9; ilk iki --check temiz olmalı)"
+  (( rc == 0 )) || out+="; en erken $(date -u -d "@$((last + 3 * 86400))" '+%F %H:%M') UTC"
 else out="deploy-logs'ta sürüm kaydı yok"; fi   # o sürümün ilk iki --check'i temiz mi: sahip + inceleyici yargısı
-gate "1g-pencere-dışı" "$rc" "$out"
+gate "3g-pencere-dışı" "$rc" "$out"
 ram_kb="$(awk '/^MemTotal:/{print $2}' /proc/meminfo)"; dm="$(sc_show "$DASH" MemoryMax)"; [[ "$dm" =~ ^[0-9]+$ ]] || dm=536870912
 need=$(( MEM_EXPECT + dm + ENGINE_MEM + 1073741824 ))
 if (( ram_kb * 1024 >= need )); then ok "bellek bütçesi: worker 6G + panel $(numfmt --to=iec "$dm") + motor 512M + 1G ≤ RAM $(numfmt --to=iec $((ram_kb * 1024)))"

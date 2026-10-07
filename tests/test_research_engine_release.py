@@ -348,7 +348,7 @@ def test_dry_run_checks_everything_and_changes_nothing(tmp_path, source):
                  "bağımsız-koşucu", "yalıtım-AST", "engine-status-kuru", "worker-MemoryMax=6G", "tradingbot-worker-NDR=no",
                  "1g-pencere-dışı"):
         assert re.search(rf"\[tamam\] #\d+ {re.escape(name)}", cp.out), name
-    assert "8db1faf-restart-at.txt 3 gün önce (≥ 3;" in cp.out, cp.out[-3000:]
+    assert "8db1faf-restart-at.txt 3 gün önce (≥ 1;" in cp.out, cp.out[-3000:]
     assert "33 geçti · 0 kaldı · 0 atlandı" in cp.out
     sb.untouched()
     _no_forbidden(sb)

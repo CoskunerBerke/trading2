@@ -8,7 +8,7 @@ Bütün komutları VPS'te sen çalıştırırsın (`ssh ubuntu@vps-5426050a.vps.
 - **Bot kendi başına işlem açar ve kapatır.** Senin bir şey yapman gerekmez. Botun kendi öğrenme modu zaten
   açık (`learning_mode`).
 - **Tur düzeltmesi şu an KAPALI.** 6 Ekim 16:55'te kapatma anahtarı uygulandı (`config.yaml` 172. satır:
-  `evidence_subprocess: false`). Bu satır kalsın, silme. Bazı turlar ~40 dk sürebilir ve `--check`
+  `evidence_subprocess: false`). Bu satır kalsın, silme (hızlı hesap kurulumu onu kendisi tanır ve güvenle kaldırır). Bazı turlar ~40 dk sürebilir ve `--check`
   "tur süresi [TETİKLENDİ]" diyebilir: bu **beklenen eski durum**, geri alma gerekmez.
 - **Öğrenme motoru (P1a)** kurulunca her gece 04:37'de (TR) kendi çalışır. Yapay zekâ ya da token kullanmaz.
   Her kapanan işlemi kaydeder ve her gün %1 hedefini ölçer. Botun kararlarına dokunmaz.
@@ -38,43 +38,33 @@ sha256 şu olmalı: `83a22ab55e2f8ba7a091f9806313e0c673252fa4c33256a7b510db89942
 | `[TETİKLENDİ] tur süresi` | — | **Beklenen** (tur düzeltmesi kapalı). Bir şey yapma |
 | `[tamam] Box kaçan bar` | tamam | tetiklenirse çıktıyı sakla, bir şey yapma |
 
-## 2. 9 Ekim — öğrenme motoru (P1a) kurulumu
+## 2. Kurulumlar
 
-**Önkoşul:** 7 ve 8 Ekim sabah kontrollerinde worker `active`, OOM kill 0 ve bellek `[tamam]`. Değilse kurma.
+**Öğrenme motoru (P1a): KURULDU — 7 Ekim 2026 21:20 (25/25, deneme SUCCESS).** Betik `~/tb-engine-4962209.sh`
+(sha256 `6a33bb9b9a0fbf49fb80ffb08162b13b92c4f6711226a2ef0a54ce0b56890da6`). Her gece 04:37'de kendi çalışır.
 
-**Saat (TR):** 09:10–10:30 ya da 11:45–14:30. Bu saatlerin dışında betik kendisi durur (gece 03:00–07:00,
-her 4 saatlik kapanıştan sonraki ilk 40 dk ve bir sonraki kapanışa 20 dk kala yasak). 9 Ekim 09:05'ten önce de durur
-(3 gün kuralı).
+**Hızlı formasyon hesabı (worker sürümü db5db96): 8 Ekim sabahı.** Uzun turları ve Box'un mum kaçırmasını düzeltir.
+Betik zaten `~/tb-deploy-db5db96.sh` (sha256 `d6a843e58d12bd8717b3d8866e204a40e6834c989b922631cdcd1fa6e298da11`); 7 Ekim
+akşamı deneme çalıştırması 56/56 geçti.
 
-1. İndir ve doğrula:
+1. Önce motorun ilk gecesine bak (bölüm 3). Sonuç `SUCCESS` ya da `AB_OFF` olmalı.
+2. Saat (TR): **07:40–09:30** (ya da 11:40–13:30). 03:00–07:39 arası başlatma.
+3. Kurulum (bağlantıdan bağımsız; ekran donsa ya da bağlantı kopsa da sürer):
    ```
-   cd ~ && curl -fsSLo tb-engine-4962209.sh https://raw.githubusercontent.com/CoskunerBerke/trading2/8d37d052886d039da8be9b24d4f0497d488c431b/deploy/releases/tb-engine-4962209.sh && sha256sum tb-engine-4962209.sh
+   sudo bash ~/tb-deploy-db5db96.sh --detach
    ```
-   sha256 tam olarak şu olmalı: `f9aab6eb2b61aacd37eac037c9730c51b829335416f0bb5f86f70bd73a84fc9d`
-   Farklıysa **dur**, hiçbir şey çalıştırma.
-
-2. Deneme (hiçbir şey değişmez):
+   Sonunda **"DAĞITIM TAMAM: 8db1faf → db5db96"** görünmeli. Hata olursa betik 8db1faf'a ve kapatma satırlı config'e
+   kendisi döner. Bağlantı koparsa: `sudo journalctl -u tb-deploy-db5db96 -o cat | tail -25`
+4. ~1 saat sonra ve bir sonraki 4 saatlik kapanıştan (11:00/15:00) sonra:
    ```
-   sudo bash ~/tb-engine-4962209.sh --dry-run > ~/engine-dryrun.txt 2>&1; echo "çıkış kodu: $?"; tail -30 ~/engine-dryrun.txt
+   sudo bash ~/tb-deploy-db5db96.sh --check > ~/check-knn-$(date +%F-%H%M).txt 2>&1; grep -E "\[(tamam|TETİKLENDİ|ölçülemedi)\]|HIZLI|ön ısıt" ~/check-knn-*.txt | tail -20
    ```
-   Çıkış kodu **0** olmalı ve `DUR:` satırı olmamalı. Değilse **dur**; dosyayı sakla.
+   Beklenen: "HIZLI yol", ön ısıtma birkaç saniye, çakışma turu ~5–6 dk `[tamam]`, Box kaçan bar 0.
+5. Kapatma (yalnız sorun olursa, **bir kez**): betiğin `--check` çıktısındaki `evidence_fast_knn: false` satırı.
 
-3. Kurulum:
-   ```
-   sudo bash ~/tb-engine-4962209.sh > ~/engine-deploy.txt 2>&1; echo "çıkış kodu: $?"; tail -40 ~/engine-deploy.txt
-   ```
+Bağlanırken kopmaması için PowerShell'de: `ssh -o ServerAliveInterval=30 ubuntu@vps-5426050a.vps.ovh.net`
 
-   | Çıkış kodu | Anlamı | Ne yaparsın |
-   |---|---|---|
-   | 0 | Kuruldu, deneme çalıştırması geçti, gece zamanlayıcısı açık | Hiçbir şey. Bitti |
-   | 1 | Ön denetimde durdu, **hiçbir şey değişmedi** | Dosyayı sakla, bekle |
-   | 2 | Deneme çalıştırması geçmedi ya da saat uygun değil; zamanlayıcı **kapalı** | Dosyayı sakla, bekle. Güvenli |
-   | 3 | Bellek ayarı kaydı; motor birimleri **geri alındı** | Dosyayı sakla, bekle |
-   | 4 | Kuruldu ama bir denetim kaldı | Motoru durdur (bölüm 4, "motor"), dosyayı sakla |
-
-   Worker ve panel bu kurulumda **durmaz ve yeniden başlamaz**.
-
-## 3. 10 Ekim'den itibaren her sabah — motor kontrolü
+## 3. 8 Ekim'den itibaren her sabah — motor kontrolü
 
 ```
 sudo bash ~/tb-engine-4962209.sh --check > ~/check-engine-$(date +%F).txt 2>&1; echo "çıkış kodu: $?"; tail -60 ~/check-engine-$(date +%F).txt

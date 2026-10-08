@@ -50,9 +50,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_research_engine_contract import parse_unit  # noqa: E402
 from test_research_engine_release import JOURNALCTL, STUBS, _git, _has, _tree_digest, own_tmp, stub_body  # noqa: E402
 
-SCRIPT = ROOT / "deploy" / "releases" / "tb-engine-57cfef1.sh"
+SCRIPT = ROOT / "deploy" / "releases" / "tb-engine-79b27cf.sh"
 #: Betiğin kayıtlı sha256'sı (sürüm notu ve sahibe verilen değer; betik değişirse bu da bilinçli değişir).
-SCRIPT_SHA256 = "241b5e0f1ee85be4ee0a7d51c507eb9ef251be7e7057242985f49bd630e4e235"
+SCRIPT_SHA256 = "4c01d85ce276552962a49e626d20b5bcbad408b5718a78e93b7b703c19e1b9b7"
 P1A_SCRIPT = ROOT / "deploy" / "releases" / "tb-engine-4962209.sh"
 TEXT = SCRIPT.read_text(encoding="utf-8")
 TIP = re.search(r'^TIP="([0-9a-f]{40})"', TEXT, re.M).group(1)
@@ -60,6 +60,9 @@ P1A_TIP = re.search(r'^P1A_TIP="([0-9a-f]{40})"', TEXT, re.M).group(1)
 APP_SHA = "f8b05fb27310238c764ac7dad23221d84f7c0b6d"      # P1a kurulurken VPS'te çalışan app (hedefin ve P1a'nın atası)
 #: VPS'te 2026-10-07 19:31 UTC'den beri app VE engine-app (hızlı kNN worker sürümü; P1a'nın torunu, motor kodu P1a'nınki)
 VPS_APP = "db5db96ead8ef13d7a7ece0c79ed9b0182ac2f5f"
+#: VPS'te 2026-10-08 23:45 TR'den beri kurulu P1b (yükseltme yolu testi bu betikle kurar)
+OLD_SCRIPT = ROOT / "deploy" / "releases" / "tb-engine-57cfef1.sh"
+OLD_TIP = "57cfef1471822a23d97f3813ed77330ef794edb8"
 BASH, GIT = shutil.which("bash"), shutil.which("git")
 SVC, TMR = "tradingbot-engine-night.service", "tradingbot-engine-night.timer"
 DSVC, DTMR, BF = "tradingbot-engine-data.service", "tradingbot-engine-data.timer", "tb-engine-backfill.service"
@@ -80,7 +83,7 @@ needs_sandbox = pytest.mark.skipif(
 def test_script_is_syntax_ok_recorded_and_states_the_rules():
     lines = TEXT.splitlines()
     # §9.3 "hedef < ~800 satır": P1b betiği P1a'nın gece --check/--ab-report'unu + veri bölümünü taşır (uygulama notu 20)
-    assert len(lines) <= 1200, "küçük, ayrılmış betik (tb-deploy-*'nin dörtte birinden az)"
+    assert len(lines) <= 1250, "küçük, ayrılmış betik (tb-deploy-*'nin dörtte birinden az; 79b27cf yükseltme yolu +30)"
     assert subprocess.run([BASH or "bash", "-n", str(SCRIPT)], capture_output=True).returncode == 0
     assert hashlib.sha256(SCRIPT.read_bytes()).hexdigest() == SCRIPT_SHA256
     assert SCRIPT.name == f"tb-engine-{TIP[:7]}.sh"
@@ -184,8 +187,14 @@ def test_backfill_disk_estimate_is_sized_from_the_universe_snapshot(tmp_path):
                                                                  "markpx_1h", "premium_1h")]
     (res / "universe" / "2026-10-05.json").write_text(json.dumps({"series": keys[:9]}), encoding="utf-8")
     (res / "universe" / "2026-10-06.json").write_text(json.dumps({"series": keys}), encoding="utf-8")
-    b, n, src = _tool(tmp_path, "est", str(res), "6000000000").stdout.split()
-    assert int(n) == 810 and src == "universe/2026-10-06.json" and 11.5e9 < int(b) < 12.5e9, (b, n, src)
+    b, n, src = _tool(tmp_path, "est", str(res), "6000000000").stdout.split(" ", 2)
+    assert int(n) == 810 and src.strip() == "universe/2026-10-06.json, 0 kısa" and 11.5e9 < int(b) < 12.5e9, (b, n, src)
+    # 79b27cf: `series_short` (son 400 gün) ince serileri kısa tabloyla sayılır — 30 tam + 60 kısa sembol
+    short = {k: "2025-09-03" for k in keys[30 * 9:] if k.rsplit("/", 1)[-1] in ("5m", "15m", "metrics_5m")}
+    (res / "universe" / "2026-10-07.json").write_text(json.dumps({"series": keys, "series_short": short}), encoding="utf-8")
+    b, n, src = _tool(tmp_path, "est", str(res), "6000000000").stdout.split(" ", 2)
+    full, part = 30 * 132e6, 60 * (132e6 - 114e6 + 26e6)
+    assert int(n) == 810 and src.strip() == "universe/2026-10-07.json, 180 kısa" and abs(int(b) - (full + part)) < 1e3, (b, n, src)
 
 
 # ============================================================================ gömülü araçlar (deterministik, dağıtımsız)
@@ -1083,4 +1092,40 @@ def test_vps_state_engine_app_at_a_p1a_descendant_deploys_after_one_day_and_roll
     assert again.returncode == 0 and "engine-app zaten P1a motor kodunda (db5db96)" in again.out, again.out[-3000:]
     p1 = sb.run("--check", script=P1A_SCRIPT)
     assert p1.returncode == 0 and "iki SHA: app db5db96 · engine-app db5db96" in p1.out and "SKEW yok" in p1.out, p1.out[-2000:]
+    _no_forbidden(sb)
+
+
+@needs_sandbox
+@pytest.mark.skipif(not _has(VPS_APP) or not _has(OLD_TIP), reason="db5db96/57cfef1 geçmişte yok (sığ klon)")
+def test_upgrade_over_the_installed_57cfef1_keeps_units_and_timer_and_never_reloads(tmp_path, source, p1a_template):
+    """VPS (2026-10-08 23:45 TR): 57cfef1 kurulu, veri zamanlayıcısı açık, ilk doldurma disk kapısında durdu. 79b27cf:
+    * birim dosyaları hedefle bayt bayt aynı → yeniden kurmaz; daemon-reload / enable / disable YOK;
+    * smoke geçmezse engine-app 57cfef1'e döner, veri zamanlayıcısı AÇIK kalır (önceki kurulum bozulmaz);
+    * geçerse engine-app 79b27cf, 33/33, zamanlayıcılar açık."""
+    sb = _from_template(tmp_path, p1a_template, source)
+    for d in ("app", "engine-app"):
+        repo = sb.base / d
+        assert _git("fetch", "-q", str(source), "refs/heads/app-db5db96", cwd=repo).returncode == 0
+        assert _git("-c", "advice.detachedHead=false", "checkout", "-q", "--detach", VPS_APP, cwd=repo).returncode == 0
+    (sb.base / "deploy-logs" / "db5db96-restart-at.txt").write_text(f"{int(time.time()) - 86400 - 600}\nx\n")
+    old = sb.run(script=OLD_SCRIPT)
+    assert old.returncode == 0 and "DAĞITILDI: 33/33" in old.out, old.out[-4000:]
+    assert sb.eng_head() == OLD_TIP and sb.state_json()["enabled"][DTMR] is True
+    units = {p.relative_to(sb.sd): p.read_bytes() for p in sb.sd.rglob("*") if p.is_file()}
+    n0 = len(sb.log())
+    bad = sb.run(FAKE_DATA_SMOKE="journal")
+    assert bad.returncode == 2 and "YÜKSELTME" in bad.out and "önceki kurulumdaki gibi AÇIK kalır" in bad.out, bad.out[-4000:]
+    assert sb.eng_head() == OLD_TIP and sb.state_json()["enabled"][DTMR] is True
+    cp = sb.run()
+    assert cp.returncode == 0, cp.out[-6000:]
+    m = re.search(r"DAĞITILDI: (\d+)/(\d+) değişmez geçti", cp.out)
+    assert m and m.group(1) == m.group(2) == "33" and "YÜKSELTME" in cp.out, cp.out[-3000:]
+    log = sb.log()[n0:]
+    assert not [ln for ln in log if ln.split()[0] in ("daemon-reload", "enable", "disable")], log
+    assert any(ln.startswith(f"start {DSVC}") for ln in log) and any(ln.startswith(f"start {SVC}") for ln in log)
+    assert {p.relative_to(sb.sd): p.read_bytes() for p in sb.sd.rglob("*") if p.is_file()} == units
+    st = sb.state_json()
+    assert sb.eng_head() == TIP and st["enabled"][DTMR] is True and st["enabled"][TMR] is True
+    again = sb.run()
+    assert again.returncode == 0 and "zaten dağıtılmış" in again.out, again.out[-2000:]
     _no_forbidden(sb)

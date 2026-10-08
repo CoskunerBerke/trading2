@@ -704,6 +704,14 @@ bir `FuturesLedgerV2` içinde gerçek yol üzerinde yeniden oynatılır. R payda
   kapanış) sayılır ve özette gösterilir.
 - Hedef doğruluk oranı ≥ %90'dır.
 
+**Değişiklik (2026-10-08, inceleme düzeltmesi; gerçek veriye uygulanmadan önce).** Canlı defter stopu seviyeden değil, seviyenin
+ötesindeki İLK gözlemden doldurur (60 sn fiyat örneği `GAP_FILL_AT_FIRST_OBSERVATION`/`PRICE`, kural barı açılışı,
+ihtiyatlı kapanış). Yeniden oynatma bunu MODELLER: stop, kaydın çıkış anından geriye bir kural dilimi penceresi (Box 5m;
+D4, C4, Formasyon, ana bot 4h; T2, M2 1d) içinde tetiklenirse dolum referansı kaydın gözlem fiyatıdır
+(`fill_model = RECORDED_FILL`; kayma modeli yine uygulanır). Örnekleme aşması böylece `FILL_BASIS` sayılmaz ve işlemi
+ızgaradan düşürmez (inceleme B1: Box stoplarının %0,32–1'i genişliğinde aşma tek başına > 0,05R idi). Pencere dışındaki
+eski bir fitil (örneklerin kaçırdığı) gerçek bir farktır ve `FILL_BASIS` olarak listelenir.
+
 ### 5.4 Kural kodları (`attribution_v1`, eşikler mühürlü)
 
 Kodlar yalnız işlemin **kendi** verisinden (yol, maliyet, bağlam) üretilir. Alternatif sonuçları kod tanımına
@@ -744,6 +752,44 @@ seçilir.
 
 Tek işlem kodu **gözlemdir**, neden kanıtı değildir. Kanıt yalnız toplu istatistikten gelir (§5.7).
 
+#### Değişiklik (2026-10-08, inceleme düzeltmesi; gerçek veriye uygulanmadan önce)
+
+`attribution_v1` 2026-10-06'da yalnız sentetik altın yollarla mühürlenmişti ve HİÇBİR gerçek işleme uygulanmadı (P2 VPS'e
+kurulmadı; depoda gerçek sonuç yoktur). 2026-10-07 incelemesi (karar FAIL) tanımda hatalar buldu; düzeltme ilk gerçek veri
+çalıştırmasından ÖNCE aynı sürüm adıyla yeniden mühürlendi. Hiçbir eşik gerçek bir sonuca bakılarak seçilmedi. Yukarıdaki
+tablo tarih olarak kalır; geçerli okuma aşağıdadır.
+
+- **Mühür:** `ATTRIBUTION_SHA` `3f4596e37822f1603db6c296937005d45bcfd0215a18f1dc993ba535a0236626` →
+  `914875a1f6631822585ffd5e67e7ffa9a721069e47b6df7a9a624a8a789a6d7f` (`tests/test_research_engine_attribution.py`'de sabit).
+- **`GAP_FILL` ve `exit_basis` (inceleme B1).** Eski okuma seviyenin ötesindeki her dolumu `GAP` sayıyordu; canlı defter
+  stopu her zaman seviyenin ötesindeki ilk 60 sn örnekten doldurduğu için neredeyse her stop birincil `GAP_FILL`
+  oluyordu. Yeni kural (`attribution.classify_exit_basis`, mühürlü): gözlemden dolan bir stop yalnız (a) bar yolunda
+  (1m/5m) stopa ilk ulaşan bar stopun ÖTESİNDE açıldıysa (piyasa boşluğu; ilk işlem barı hariç) ya da (b) seviye ötesi
+  dolum ≥ 0,25R ise (`GAP_OVERSHOOT_R`; belgenin TIME_DECAY / TIGHT_STOP_COST "maddi" eşiği) `GAP`'tir; seviye yolda sürekli
+  işlem gördüyse ve aşma < 0,25R ise `LEVEL` (mekanizma `SAMPLED`). Aşma günlükte `exit_overshoot_r` (MEASURED) ve
+  `exit_fill_detail`'de yazılır. Birincil öncelikte `GAP_FILL` karar kodlarının ARKASINA alındı: likidasyon, maliyet,
+  stop-sonra-dönüş, yön, dar stop, geç giriş, **boşluk**, geri verme, … (dolumun seviye ötesi kısmı kaybın yalnız aşma
+  payını açıklar).
+- **`LATE_ENTRY` MAE kolu (M2).** "MFE'den önce MAE_R > 0,7"nin harfiyen okuması: en iyi lehte uca İLK ulaşılan
+  gözlemden KESİN önceki gözlemlerde en kötü aleyhte < −0,7R VE MFE ≥ 0,3R (`LATE_ENTRY_MIN_MFE_R`; hiç lehte gitmeyen
+  işlem `WRONG_DIRECTION`'dır, iki kod MFE'ye göre ayrılır). Bar yolu ister, bar içi sıraya dayanmaz. Eski kol (`order =
+  MAE_FIRST` ve `mae_r < −0,7`) hiç lehte gitmeyen işlemlerde tetikleniyor, "önce −0,8R → MFE → stop" durumunu ise
+  kaçırıyordu.
+- **Yol gözlemleri (küçük).** Çıkışı içeren bar çıkış SONRASI fiyatları da taşır: MFE/MAE ve yol kodları çıkıştan önce
+  kapanmış işlem barlarını (`ts + adım ≤ closed_at`) ve son gözlem olarak çıkış dolumunu kullanır (`pathrec.pre_exit_obs`).
+  Yeniden oynatma (fidelity, ızgara) çıkış barını kullanmaya devam eder (stop orada tetiklenir).
+- **Okumalar tabloya alındı — sahip onayı bekleniyor.** P2 uygulama notu 14'teki okumalar tanımın parçasıdır: `NOISE_LOSS`
+  = başka kayıp kodu yok ve |r_gross| ≤ cost_R (harfiyen "|net_R| maliyet bandında" yalnız r_gross = 0'da oluşabilirdi);
+  `GIVEBACK`'in capture < 0,3 kolu yalnız MFE ≥ 0,3R iken; `LATE_ENTRY` yukarıdaki gibi. Sahip onaylamazsa değişiklik
+  `attribution_v2` + yeni deneme sayımıdır.
+
+| Kayıp kodu (2026-10-08) | Kural (özet) |
+|---|---|
+| `GAP_FILL` | `exit_basis = GAP` (bar açılışı boşluğu ya da seviye ötesi dolum ≥ 0,25R); birincil öncelikte geç girişin ardında |
+| `LATE_ENTRY` | dolum, sinyal kapanışının > 0,3 ATR ötesinde; veya MFE ≥ 0,3R ve MFE'den KESİN önceki gözlemlerde MAE_R < −0,7 |
+| `GIVEBACK` | MFE_R ≥ 1 ve net_R ≤ 0; veya MFE_R ≥ 0,3 ve capture < 0,3 |
+| `NOISE_LOSS` | başka kayıp kodu yok ve \|r_gross\| ≤ cost_R |
+
 ### 5.5 "Nasıl kâra dönebilirdi": karşı-olgusal ızgara (`cfgrid_v1`, mühürlü)
 
 Bir taktiğin her işlemi **aynı** ızgarayla oynatılır, böylece karşılaştırmalar eşli (paired) olur ve seçilmiş
@@ -769,6 +815,30 @@ Bir taktiğin her işlemi **aynı** ızgarayla oynatılır, böylece karşılaş
   rastgele giriş, aynı stop/çıkış ile oynatılır. `signal_excess_R` = gerçek − kontrol medyanı. Bu, "sinyalin bu durumda
   avantajı var mıydı?" sorusunu cevaplar.
 
+#### Değişiklik (2026-10-08, inceleme düzeltmesi; gerçek veriye uygulanmadan önce)
+
+`cfgrid_v1` de yalnız sentetik altın yollarla mühürlenmiş, gerçek veriye hiç uygulanmamıştı. 2026-10-07 incelemesinin
+bulgularıyla (M1, M3, B1, küçük "ufuk") aynı sürüm adıyla yeniden mühürlendi; eski metin yukarıda tarih olarak kalır.
+
+- **Mühür:** `CFGRID_SHA` `4a96df71a989bcf9c5f81317c01e534920105ced1785dc9389240502abc9454d` →
+  `7c299ae001aee643a76c697ee191026ba6cdb842e21c377d48ed86e0842adf68` (`tests/test_research_engine_cfgrid.py`'de sabit).
+- **Sıralama aynı ölçüyle (M3).** Bir işlemin hücreleri TEK ölçüyle sıralanır: sıralamaya giren her hücrenin `cf_aux_v1`
+  muhafazakâr R'si varsa o, yoksa HEPSİ için `r_net` (`rank_src`); aynı işlemde iki ölçü karışmaz. Defter görünümü (en iyi
+  sabit hücre) yalnız `cf_aux_v1` ile sıralanmış işlemleri kullanır (diğerleri sayılır, karışmaz).
+- **Kaldıraç önerisi yok (M3, §7.6).** "Yarı kaldıraç" hücresi (boyut ekseni) ızgarada ve `size_lev_R`'de kalır ama
+  sıralamaya, işlem başına en iyi hücreye (HINDSIGHT), "kâra dönen hücrelere" ve defter görünümüne GİRMEZ; kaldıraç
+  değişikliği hiçbir metinde "nasıl kâra dönebilirdi" olarak sunulmaz (kaldıraç HİPOTETİK).
+- **Defter görünümü dürüst (M3).** En iyi EX_ANTE sabit hücre yalnız n ≥ 30 ve ≥ 10 farklı gün olan hücreler arasından
+  (§5.7 uygunluk eşiği) ve yalnız ortalama eşli fark > 0 ise gösterilir; metin bunun "k sabit hücre arasından SEÇİM"
+  olduğunu (seçim yanlılığı; tek başına ders değil) yazar. Hiçbiri iyileştirmiyorsa "iyileştiren hücre yok" yazılır.
+- **Ufuk ex ante değildir (küçük; açıklama).** Hücreler giriş/stop/hedef/yönetim KURALI bakımından EX_ANTE'dir, ufuk
+  bakımından değil: kural/zaman çıkışında gerçek çıkış anı, seviye çıkışında yol sonu (gerçek kapanış + 48 bar) ∩ tutma
+  sınırı. Giriş diliminden kısa işlemlerde `E_DELAY1` `NO_BARS`'tır; sayılar `attribution/_build.json`'da
+  (`cells_not_ok`) ve özette görünür.
+- **Izgaraya giriş (B1).** Fidelity kaydın gözlemden stop dolumunu modeller (§5.3 notu); örnekleme aşması bir işlemi
+  ızgaradan düşürmez. Taban hücre (`E_ACTUAL`) seviyeden dolar; aşma `cf_aux_v1` muhafazakâr R'sinde ve `baseline_gap_r`'de
+  görünür.
+
 ### 5.6 R ayrıştırması (sıralı zincir, artık her zaman gösterilir)
 
 `net_R = signal_R + timing_R + stop_R + exit_R + size_lev_R + cost_R + artık`
@@ -786,6 +856,25 @@ Kalan fark `artık` olarak her zaman gösterilir, gizlenmez.
 
 Ayrıca `regime_fit` hesaplanır: işlem **açılmadan önce** mevcut derslerden (`as_of < opened_at`) taktik × durum
 kovasının beklenen R'ı. Bu, "doğru taktik, yanlış rejim" kaybını şanssızlıktan ayırır.
+
+#### Değişiklik (2026-10-08, inceleme düzeltmesi; gerçek veriye uygulanmadan önce)
+
+P2b'nin "sıralı zinciri" (zamanlama = medyan(15 hücre) − medyan(17), stop = medyan(11) − medyan(15), …) eksen etkilerini
+iki medyanın farkına indiriyordu ve harfiyen tanıma göre ~10 kat küçük çıkıyordu (inceleme M1: ortalama |zamanlama| 0,022
+yerine 0,197). Yukarıdaki tablo HARFİYEN uygulanır (`cfgrid.decompose`; `cfgrid_v1` mührüne dahil):
+
+| Bileşen | Hesap (G = kayma öncesi brüt R, dolum riskine göre) |
+|---|---|
+| `signal_R` | X1 − B; X1 = giriş/stop/çıkış/yönetim eksenlerinin bütün EX_ANTE hücrelerinin G medyanı ("nötr yürütme", 1x; boyut ve atla hariç), B = eşleşmiş rastgele giriş medyanı |
+| `timing_R` | G(gerçek) − giriş ekseninin ızgara medyanı (gerçek, 1 bar gecikmeli, −0,25 ATR limit) |
+| `stop_R` | G(gerçek) − stop ekseninin ızgara medyanı (gerçek, 0,75/1/1,5/2 × ATR14) |
+| `exit_R` | G(gerçek) − çıkış ekseninin ızgara medyanı (gerçek, 1R/2R/3R, 2×ATR iz süren, hedefsiz + zaman) |
+| `size_lev_R` | G(gerçek kaldıraç/tutar) − G(gerçek, 1x) |
+| `cost_R` | net_R − G(gerçek kayıt) (ölçülen) |
+
+Artık = net_R − Σ bileşenler, her zaman gösterilir; bütün girdiler varken artık = B + (G_gerçek − G_kaldıraçlı) +
+(Me + Ms + Mx − X1 − 2·G(gerçek)) — rastgele taban, yeniden oynatma farkı ve eksen medyanlarının toplanamazlığı
+(`residual_parts`). Eksik bileşen 0 sayılmaz (artığa kalır).
 
 ### 5.7 Ders istatistikleri
 
@@ -1810,7 +1899,9 @@ yerine, `git mv`). Motor kod özeti ve veri birimi dosyası değişti: sürümde
 - gece S1b, S2;
 - tembel 1m doldurma.
 
-Birim dosyası değişmez; yalnız sabit taşınır.
+Birim dosyası değişmez; yalnız sabit taşınır. **Değişiklik (2026-10-08, inceleme M6):** gece birimi P2'de
+`MemoryHigh=640M` / `MemoryMax=768M` (`ENGINE_EXPECTED_MEMORY_MAX=805306368`) olur; VPS'teki P1a birimi P2 sürüm betiği
+kurana kadar 400M/512M kalır (P2 uygulama notu 34).
 
 **Kabul:**
 1. Her defterin (spot dahil) her `TradeRecord`'u günlükte tam bir kez bulunur; Σ net_pnl, ücret, fonlama ve kayma
@@ -2029,6 +2120,87 @@ uygulamanın seçtiği yorumlar (yukarıdaki 1–12'nin devamı). Mühürlü/kay
 26. **Sürüm.** `ENGINE_VERSION` bu aşamada değişmedi (`research_engine_v1_p1b`); sürüm ajanı P2 için yükseltir (motor
     kod özeti değiştiği için yeni A/B dönemi açılır, §2.9, beklenen). Bilinen `learn/labels.py` ücret çift sayımı
     (labels.py:45) olduğu gibi duruyor (P6; motor o fonksiyonu kullanmaz).
+
+#### Değişiklik (2026-10-08, inceleme düzeltmesi; gerçek veriye uygulanmadan önce)
+
+2026-10-07 bağımsız incelemesi P2'yi (impl/engine-p2v2 @ cc88e9b) **FAIL** buldu: 1 BLOCKER (B1), 6 MAJOR (M1–M6) ve
+küçükler. P2, dağıtılmış db5db96 çizgisindeki P1b'nin üstüne (impl/engine-next) yeniden uygulandı ve aşağıdaki
+düzeltmelerle tamamlandı. Her madde önce BAŞARISIZ olan bir testle yazıldı (`tests/test_research_engine_p2_fixes.py`, 16
+test; eski kodda 16'sı da kalır), sonra düzeltildi. `attribution_v1` ve `cfgrid_v1` yalnız sentetik altın yollarla
+mühürlenmişti ve hiç gerçek veriye uygulanmamıştı; ilk gerçek veri çalıştırmasından ÖNCE yeniden mühürlendi (§5.4, §5.5,
+§5.6 "Değişiklik" blokları; eski metinler tarih olarak durur). Depoda gerçek işlem sonucu YOKTUR; hiçbir eşik bir sonuca
+bakılarak seçilmedi. Aşağıdaki maddeler yukarıdaki 1–26'yı (çelişen yerde) geçersiz kılar.
+
+27. **Mühürler.** `ATTRIBUTION_SHA` `3f4596e3…6626` → `914875a1f6631822585ffd5e67e7ffa9a721069e47b6df7a9a624a8a789a6d7f`;
+    `CFGRID_SHA` `4a96df71…454d` → `7c299ae001aee643a76c697ee191026ba6cdb842e21c377d48ed86e0842adf68`
+    (testlerde sabit; madde 13'ün değerleri tarihtir).
+28. **B1 — örnek dolumu boşluk değildir.** Canlı defter (`futures_ledger.exit_decision`) stopu seviyenin ötesindeki İLK
+    60 sn fiyat örneğinden doldurur (`GAP_FILL_AT_FIRST_OBSERVATION`/`PRICE`); P2 bunu `exit_basis = GAP` sayıyor, `GAP_FILL`
+    birincil öncelikte 2. olduğu için neredeyse her stop birincil `GAP_FILL` oluyordu, fidelity de seviyeden doldurduğu
+    için aşmayı > 0,05R `FILL_BASIS` farkı sayıp işlemi ızgaradan düşürüyordu (Box stopları %0,32–1). Düzeltme: (a) günlük
+    `exit_fill_detail` (gözlem fiyatı, seviye ötesi mi, aşma R, bar yolunda stopa ilk ulaşan bar ve stopun ötesinde açılıp
+    açılmadığı; `pathrec.stop_crossing`) ve `exit_overshoot_r` (MEASURED) yazar; `exit_basis` mühürlü
+    `attribution.classify_exit_basis`'ten: `GAP` yalnız bar açılışı boşluğu ya da aşma ≥ 0,25R, örnekleme aşması `LEVEL`
+    (`SAMPLED`); (b) `GAP_FILL` birincil öncelikte geç girişin ardında; (c) fidelity gözlem dolumunu kural dilimi
+    penceresinde modeller (`cfgrid._replay_ext(stop_fill=…)`, `RECORDED_FILL`; `fidelity_v2`). Test dünyası da gerçekçi
+    hâle getirildi: `walk_sampled` (60 sn örnek + kural diliminin bar tiki) — eski fikstür stopu seviyeye kırparak hatayı
+    gizliyordu; `big_world` ve §5.10 Box dünyası bununla kurulur.
+29. **M1 — R ayrıştırması harfiyen.** zamanlama/stop/çıkış = G(gerçek) − o eksenin ızgara medyanı (eksen gerçek hücreyi
+    içerir); sinyal = X1 (giriş/stop/çıkış/yönetim eksenlerinin EX_ANTE medyanı, 1x) − rastgele kontrol; artık parçaları
+    rastgele taban + yeniden oynatma farkı + eksen etkileşimi (§5.6 Değişiklik).
+30. **M2 — LATE_ENTRY MAE kolu** = MFE ≥ 0,3R ve MFE gözleminden KESİN önceki gözlemlerde en kötü aleyhte < −0,7R
+    (`path.mae_before_mfe_r`); hiç lehte gitmeyen işlem artık LATE_ENTRY almaz. **Yol penceresi (küçük):** MFE/MAE ve
+    yol ölçüleri çıkıştan önce kapanmış işlem barları + çıkış dolumu (`pathrec.pre_exit_obs`; çıkışı içeren bar çıkış
+    sonrası fiyat taşır); yeniden oynatmalar çıkış barını kullanmaya devam eder.
+31. **M3 — sıralama ve öneriler.** İşlem başına TEK ölçü (`grid.rank_src`: her sıralanan hücrenin `cf_aux_v1` R'si varsa
+    o, yoksa hepsi `r_net`); boyut/kaldıraç ekseni sıralamaya, HINDSIGHT en iyi hücreye, "kâra dönen hücrelere" ve defter
+    görünümüne girmez (kaldıraç önerilmez, §7.6); defter görünümü yalnız `cf_aux_v1` işlemleri, n ≥ 30 ve ≥ 10 gün, yalnız
+    iyileştiren hücre ve "k sabit hücre arasından SEÇİM" etiketiyle (`analysis.VariantAcc.best`; özet ve `why-lost` metni).
+32. **M4 — uzlaştırma S1a okumasına göre.** `reconcile_journal`'ın ledger kolu: S1a okumasından (`closes` çapası
+    `observed_at`) sonra kapanan kayıt `after_s1a`, sonra içeriği değişen kayıt (sha farklı ve ledger `updated_at` > S1a)
+    `revised_after_s1a` sayılır — tutarsızlık değildir (eskiden S1b sonunda canlı ledger yeniden okunduğu için ~5 gecede
+    bir sahte `JOURNAL_INCONSISTENT`). S1a okumasından önce kapanmış ama arşivde/günlükte olmayan kayıt hâlâ tutarsızlıktır.
+33. **M5 — artımlı kurulum dar.** Eski özet, satırın penceresiyle kesişen ay parçalarının sha'sıydı (1m dahil, [açılış −
+    420 g, kapanış + 3 g]): günlük ekleme o ayın parçasını değiştirdiği için bir eklemede 44/60 (S1b) ve 34/60 (S2) satır
+    yeniden kuruluyordu. Şimdi `pathrec.WindowDigest`: dilim başına okuma penceresi (`s1b_windows`, `s2_windows`; [açılış −
+    dilime göre geriye bakış, kapanış + 6 sa]); pencerenin tamamen kapsadığı ay için parça sha'sı, kısmen kapsadığı ay için
+    o parçanın penceredeki UTC günlerinin içerik özetleri (parça bir kez okunur; özetler parça sha'sıyla
+    `journal/tj_v1/_window_days.json.gz` ve `attribution/_window_days.json.gz`'de saklanır). Satırın kaydettiği
+    `data_seal`/`store_parts` da bu belirteçlerdir (artımlı ve tek seferlik kurulum bayt-özdeş kalır). Test: pencerelerden
+    sonra bir günlük ekleme 0 satır kurdurur; bir penceredeki tek bar değişikliği yalnız o satırları kurdurur.
+34. **M6 — bellek.** Gece birimi (bu depodaki P2 birimi) `MemoryHigh=640M`, `MemoryMax=768M`,
+    `ENGINE_EXPECTED_MEMORY_MAX=805306368`; S1b/S2 depo parça önbelleği 32 → 16. VPS'te kurulu P1a gece birimi P2 sürüm
+    betiği yenisini (kapılı daemon-reload, §9.3) kurana kadar 400M/512M kalır. Madde 25'in "birim değişmez" kararı bununla
+    değişti. Ölçüm (bu ortam, 4 çekirdek paylaşımlı; ayrı süreç, üretim import yolu, `VmHWM`): 400 işlemlik gerçekçi dünya
+    (10 gün 1m, 60 sn örnekli dolumlar) ilk gece 294 sn (S1b 64 sn, S2 229 sn), tepe 217 MiB (import sonrası 99 MiB),
+    ertesi gece (değişiklik yok) 1,8 sn / 110 MiB; 2.000 işlemlik dünya (madde 23'ün boyutu, 90 gün 1m) ilk gece
+    1.554 sn ≈ 25,9 dk (S1b 350 sn, S2 1.202 sn; fidelity 1.889/2.000 = %94,5 — nedenler EXIT_REASON_DIFFERS 102,
+    BACKDATED_CLOSE 81, FILL_BASIS 50, AMBIGUOUS_BAR 21; örneklerin kaçırdığı fitiller ve kural barı dolumları), tepe 310 MiB
+    (0,40 × 768 MiB; eski birimde 0,61 × 512 MiB, MemoryHigh 400M'e 90 MiB), ertesi gece (değişiklik yok) 7,7 sn / 131 MiB. VPS'te
+    `memory.peak` P2 sürümünün smoke'unda ve ilk iki gecede denetlenir (0,8 × MemoryMax = 614 MiB).
+35. **Küçükler.** S2 birikmiş işte ay içinde de EN YENİ kapanış önce (S1b gibi); kayıtta olmayan para alanları 0 diye
+    uydurulmaz, `MISSING` (ücret özdeşliği bilinmiyorsa `None`); `journal/` yedeğe dahil (`backup.INCLUDE`; yan kaynaklara
+    dayanır; ≈ 1,4 KB/satır gz), `attribution/` hariç kalır; `clean_spills` atomik yazımın öldürülmüş `.*.tmp` dosyalarını da
+    siler (günlük, atıf, `paths/` ay klasörleri); ızgara ufkunun ex ante olmadığı ve `E_DELAY1` `NO_BARS` sayıları
+    açıklanır (`cfgrid` spesifikasyonu `horizon_ex_ante: false`, `_build.json` `cells_not_ok`, özet satırı).
+36. **Sürümler.** `ENGINE_VERSION` `research_engine_v1_p1b` → `research_engine_v1_p2` (motor kod özeti değişir → yeni A/B
+    dönemi, §2.9); `JOURNAL_VERSION` `tj_v1/p2c.1`, `ANALYSIS_VERSION` `attr_v1/p2c.1`, `FIDELITY_VERSION` `fidelity_v2`
+    (VPS'te P2 verisi yoktur; ilk P2 gecesi her şeyi zaten kurar).
+37. **P2 sürüm betiğinin yapması gerekenler (henüz yazılmadı).** db5db96 çizgisinden (bu dalın başı) TIP sabitlemek;
+    `ENGINE_VER="research_engine_v1_p2"`; yeni gece birimini (640M/768M, `ENGINE_EXPECTED_MEMORY_MAX=805306368`) P1b
+    betiğinin kapılı daemon-reload düzeniyle kurmak ve worker `MemoryMax=6G` önce/sonra denetlemek; §2.5 RAM toplamı
+    uyarısını yeni değerle hesaplamak; smoke'ta S1b/S2'nin `DAYTIME_STAGE_BUDGET_S` (8 dk) ile sınırlı olduğunu ve ilk
+    tam kurulumun gece biriminde yayıldığını (`S1B_BACKLOG`/`S2_BACKLOG`) göstermek; `--check`'e P2 bölümü (S1b/S2 süre,
+    bekleyen iş, uzlaştırma `after_s1a`/`revised_after_s1a`, fidelity oranı ve nedenleri, `rank_src` dağılımı, mühür
+    sha'ları, `memory.peak` / 0,8 × MemoryMax); geri alma bir önceki motor sürümüne (birim 400M/512M'ye döner); bağımsız
+    koşucu P2 alt kümesini
+    (201, 205, 207, 208, 211, 212, 213) içerir; A/B tur etkisi ≤ %5 P2'den sonraki 14 gecede `--ab-report`.
+38. **Açık kalanlar (düzeltilmedi, kayıtlı).** (a) `NOISE_LOSS`, `GIVEBACK` MFE ≥ 0,3 koruması ve `LATE_ENTRY`
+    okumaları için sahip onayı (§5.4 Değişiklik). (b) §5.10: geçici 2026-09-30 dönem sınırı `min_stop_pct = 0,32`
+    rejimini ikiye böler; kabul 11 gerçek veride tek dönemde yeniden üretilemeyebilir (`library/config_epochs.json` P3'te
+    gelince düzelir). (c) Gece import grafiği `store` üzerinden `history.store`'u (sqlite3, `market.http`,
+    `history.collector`) çeker (§2.8'e uygun; ileride tembel import ya da test). (d) `regime_fit` önceki satırların net
+    R'ının son revizyonunu kullanır (geç fonlama; ihmal edilebilir).
 
 ### P3 — Strateji kütüphanesi, walk-forward, keşif katmanı, denemeler, CSCV/PBO, dersler, zaman noktasında evren
 

@@ -360,6 +360,8 @@ sürelerini ve worker bellek profilini değiştirecek. Bu yüzden:
   (`deploy-logs/*-restart-at.txt`) en az **3 gün** sonra VE o sürümün ilk iki `--check` çıktısı temiz olduysa
   dağıtılabilir. 3 günü sürüm betiği zorlar (`3g-pencere-dışı` kapısı); iki temiz `--check` sahip + inceleyici
   yargısıdır (betik denetlemez). Motorun kendi etkisini A/B geceleri yine ölçer;
+  **Değişiklik (2026-10-07, sahip kararı: "öğrenmeyi şimdi kur"):** pencere **1 gün** (`1g-pencere-dışı`; P1a betiği
+  `tb-engine-4962209.sh`, 2026-10-08'den P1b betiği `tb-engine-57cfef1.sh` de); iki temiz `--check` kuralı aynen kalır;
 - motorun etkisi yalnız A/B gecelerine göre değerlendirilir.
 
 ---
@@ -1372,6 +1374,8 @@ Her aşama tek bir dry-run, tek bir deploy ve günlük `--check` ile yürütül�
 **Değişiklik (2026-10-06, sahip kararı: "3 temiz gün sonra"):** hiçbir motor aşaması başka bir sürümün yeniden
 başlatmasından 3 günden önce ve o sürümün ilk iki `--check` çıktısı temiz olmadan dağıtılmaz (3 günü betik zorlar; iki
 temiz `--check` sahip + inceleyici yargısı; motorun etkisi yine A/B gecelerinde ölçülür; §2.9).
+**Değişiklik (2026-10-07, sahip kararı: "öğrenmeyi şimdi kur"; 2026-10-08 notu):** 3 gün yerine **1 gün** (P1a ve P1b
+betikleri zorlar); iki temiz `--check` kuralı değişmedi.
 
 ### P0 — VPS bilgileri ve taban çizgisi (salt-okunur; kod yok)
 
@@ -1774,6 +1778,25 @@ yerine, `git mv`). Motor kod özeti ve veri birimi dosyası değişti: sürümde
     (bilgi); TRADING-dışı durum açık kanıt yoksa ancak art arda iki `exchangeInfo` görüntüsünde `DELISTED` olur, bilinen
     delist spot semboller toplu isteğe konmaz; veri birimi `InaccessiblePaths`'e `/opt/tradingbot/env.d` eklendi (sha256
     `d6bf3108…`); yalnız iki fonlama farkı varken yerel aralık küçük olandır.
+21. **2026-10-08, VPS soyuna yeniden oynatma.** VPS'te çalışan soy: app `db5db96` (hızlı kesin kNN worker sürümü,
+    2026-10-07 19:31 UTC; `deploy-logs/db5db96-restart-at.txt`), P1a `tb-engine-4962209.sh` ile 2026-10-07 18:20 UTC'de
+    kuruldu (1 günlük pencere kapısı, sha256 `6a33bb9b…`) ve worker sürümü engine-app'i AYNI motor koduyla `db5db96`'ya
+    yeniden sabitledi. P1b'nin on commit'i (`94f764f` … `14500d4`, `8d37d05` tabanlı) bu soyun üstüne sırayla
+    `cherry-pick` edildi; çakışma çıkmadı (`test_research_engine_release.py`'de P1a'nın 1 gün beklentileri ile P1b'nin
+    "yalnız kendi geçici klasörlerini say" düzeltmesi birlikte durur). Kod TIP'i `57cfef1` (`1b1feb9`'un yeniden
+    oynatılmışı; `tradingbot/research_engine`, dört birim dosyası, bağımsız koşucu ve fikstürler `1b1feb9` ile bayt bayt
+    aynı, dolayısıyla birim sha256 sabitleri ve A/B motor kod özeti değişmez; `db5db96` hedefin atası). Betik
+    `git mv` ile `tb-engine-57cfef1.sh` (`tb-engine-1b1feb9.sh`'nin yerine). Betikteki iki değişiklik:
+    (a) **Pencere kapısı 1 gün** (`1g-pencere-dışı`): sahip kararı 2026-10-07 "öğrenmeyi şimdi kur" P1a betiğinde 3 günü
+    1 güne indirdi; aynı kural P1b'ye uygulandı (P1b betiğinde 3 gündü). İki temiz `--check` yine sahip + inceleyici
+    yargısıdır; `--backfill`'in başlatılması da aynı kapıya bağlıdır. VPS'teki `db5db96-restart-at.txt` (2026-10-07
+    ~19:31 UTC) ile en erken an 2026-10-08 ~19:31 UTC'dir; saat penceresiyle ilk uygun aralık 20:40–23:15 UTC.
+    (b) **`--rollback` hedefi P1a motor kodudur:** app `4962209`'un atasıysa `4962209` (değişmedi); app `4962209`'un
+    torunuysa ve `tradingbot/research_engine` + gece birimi dosyaları `4962209`'dakiyle AYNIysa app'in SHA'sı (VPS'te
+    `db5db96`). Önceki betik app `db5db96` iken `4962209`'a dönemez, "BIRAKILDI" deyip çıkış 4 ile YARIM kalırdı. Ön koşul
+    denetimi zaten engine-app'in `4962209`'un HERHANGİ bir torununda olmasını kabul ediyordu; sahte VPS'te app VE
+    engine-app `db5db96` iken 1 günden önce red, sonra dağıtım ve `db5db96`'ya geri alma testle kanıtlandı
+    (`test_vps_state_engine_app_at_a_p1a_descendant_deploys_after_one_day_and_rolls_back_to_it`). Betik 1.200 satır kaldı.
 
 ### P2 — İşlem günlüğü, yol, rehydrate, fidelity, atıf, UTC günü MTM, özet
 

@@ -52,7 +52,7 @@ from test_research_engine_release import JOURNALCTL, STUBS, _git, _has, _tree_di
 
 SCRIPT = ROOT / "deploy" / "releases" / "tb-engine-79b27cf.sh"
 #: Betiğin kayıtlı sha256'sı (sürüm notu ve sahibe verilen değer; betik değişirse bu da bilinçli değişir).
-SCRIPT_SHA256 = "4c01d85ce276552962a49e626d20b5bcbad408b5718a78e93b7b703c19e1b9b7"
+SCRIPT_SHA256 = "5f1d18886588c91712b92c482d0f07ba50f36ef8d5988df6bf6c7815b591f2e2"
 P1A_SCRIPT = ROOT / "deploy" / "releases" / "tb-engine-4962209.sh"
 TEXT = SCRIPT.read_text(encoding="utf-8")
 TIP = re.search(r'^TIP="([0-9a-f]{40})"', TEXT, re.M).group(1)
@@ -1101,8 +1101,11 @@ def test_upgrade_over_the_installed_57cfef1_keeps_units_and_timer_and_never_relo
     """VPS (2026-10-08 23:45 TR): 57cfef1 kurulu, veri zamanlayıcısı açık, ilk doldurma disk kapısında durdu. 79b27cf:
     * birim dosyaları hedefle bayt bayt aynı → yeniden kurmaz; daemon-reload / enable / disable YOK;
     * smoke geçmezse engine-app 57cfef1'e döner, veri zamanlayıcısı AÇIK kalır (önceki kurulum bozulmaz);
-    * geçerse engine-app 79b27cf, 33/33, zamanlayıcılar açık."""
-    sb = _from_template(tmp_path, p1a_template, source)
+    * geçerse engine-app 79b27cf, 33/33, zamanlayıcılar açık.
+    Uyarı birimi VAR ve nproc < 4: drop-in'in 1. satırı kuran sürümü (57cfef1) yazar, yükseltme yine tanınır (inceleme M1).
+    Smoke'lar bitmeden kesilen bir yükseltme (engine-app 79b27cf, zamanlayıcı açık, taban yok) "zaten dağıtılmış" sayılmaz
+    (inceleme M2)."""
+    sb = _from_template(tmp_path, p1a_template, source, FAKE_ALERT="1", FAKE_NPROC="2")
     for d in ("app", "engine-app"):
         repo = sb.base / d
         assert _git("fetch", "-q", str(source), "refs/heads/app-db5db96", cwd=repo).returncode == 0
@@ -1112,11 +1115,17 @@ def test_upgrade_over_the_installed_57cfef1_keeps_units_and_timer_and_never_relo
     assert old.returncode == 0 and "DAĞITILDI: 33/33" in old.out, old.out[-4000:]
     assert sb.eng_head() == OLD_TIP and sb.state_json()["enabled"][DTMR] is True
     units = {p.relative_to(sb.sd): p.read_bytes() for p in sb.sd.rglob("*") if p.is_file()}
+    dropin = sb.sd / f"{DSVC}.d" / "50-tb-engine.conf"
+    assert dropin.read_text(encoding="utf-8").startswith(f"# tb-engine-{OLD_TIP[:7]}:"), "57cfef1'in drop-in'i"
     n0 = len(sb.log())
     bad = sb.run(FAKE_DATA_SMOKE="journal")
     assert bad.returncode == 2 and "YÜKSELTME" in bad.out and "önceki kurulumdaki gibi AÇIK kalır" in bad.out, bad.out[-4000:]
     assert sb.eng_head() == OLD_TIP and sb.state_json()["enabled"][DTMR] is True
+    assert "--rollback ÇALIŞTIRMAYIN" in bad.out and "geri almak için" not in bad.out, bad.out[-3000:]
+    # smoke'lar bitmeden kesilmiş yükseltme: engine-app hedefte, zamanlayıcı açık, taban yok → yeniden dağıtılır
+    assert _git("-c", "advice.detachedHead=false", "checkout", "-q", "--detach", TIP, cwd=sb.base / "engine-app").returncode == 0
     cp = sb.run()
+    assert "zaten dağıtılmış" not in cp.out, cp.out[-3000:]
     assert cp.returncode == 0, cp.out[-6000:]
     m = re.search(r"DAĞITILDI: (\d+)/(\d+) değişmez geçti", cp.out)
     assert m and m.group(1) == m.group(2) == "33" and "YÜKSELTME" in cp.out, cp.out[-3000:]

@@ -66,6 +66,7 @@ Okumalar ve belge ile kodun karşılaştırılması (belgenin niyetine göre; ay
    RSS önceki sürümde ≈ 450 MiB idi (bütün belgeler aynı anda bellekte; MemoryHigh 400M'in üstü, 0,8 × MemoryMax'ın
    üstü), bu sürümde ≈ 175–180 MiB'dir; test bütçesi 0,6 × MemoryMax = 307 MiB (kalan pay cgroup `memory.peak`'in
    saydığı sayfa önbelleği içindir). Birim sınırları (`MemoryHigh=400M`, `MemoryMax=512M`) bu yüzden değişmez.
+   (P2, 2026-10-08 inceleme M6: S1b/S2 ile gece birimi `MemoryHigh=640M` / `MemoryMax=768M` olur; ölçüm P2 notu 34.)
 10. **Defter okuma güvenceleri.** Daha önce arşivlenmiş (veya önceki anlık görüntüde olan) bir defterin ledger'ı bu
    gece yoksa `LEDGER_MISSING` (anlık görüntüde `status: MISSING`; o geçiş penceresi EKSİK); hiç ledger bulunamazsa
    `NO_LEDGERS`; okunan ledger'ların EN YENİ `updated_at`'i 6 saatten eskiyse `LEDGER_STALE` (worker duruk ya da yanlış

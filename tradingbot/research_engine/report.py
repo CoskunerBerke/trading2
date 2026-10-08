@@ -88,6 +88,9 @@ def trade_line(r: dict, *, hindsight_cells: int = 3) -> str:
         s += " · +" + ",".join(others[:3])
     if cost is not None:
         s += f" · maliyet {fr(cost, 2, sign=False)}R"
+    ov = r.get("exit_overshoot_r")
+    if ov:
+        s += f" · stop aşımı {fr(ov, 2, sign=False)}R"
     if g.get("status") == "OK":
         hb = g.get("hindsight_best") or {}
         cells = [c for c in (g.get("profitable_cells_hindsight") or []) if c != "SKIP"]
@@ -177,17 +180,22 @@ def book_header(b: str, rs: list[dict]) -> str:
     return agg.header()
 
 
-def _ex_ante_text(best: tuple[str, dict] | None) -> str | None:
-    if best is None:
+def _ex_ante_text(best: dict[str, Any] | None) -> str | None:
+    """Defter görünümü satırı (2026-10-08, inceleme M3): k sabit hücre arasından SEÇİLMİŞ en iyi hücre (seçim yanlılığı
+    açıkça yazılır); hiçbiri iyileştirmiyorsa o söylenir; yetersiz veride satır yok. Boyut/kaldıraç hücresi hiç girmez."""
+    if not best or best.get("status") == "INSUFFICIENT":
         return None
-    vid, st = best
-    return (f"  EX_ANTE en iyi sabit hücre (tüm işlemlerde aynı; n={st['n']}, {st['n_days']} gün): {vid} — "
-            f"{VARIANT_TR.get(vid, vid)}: ort. ΔR {fr(st['mean_delta_r'])} (muhafazakâr) · daha iyi olduğu işlem payı "
-            f"%{round(st['share_better'] * 100)} — ara görünüm, ders değil")
+    if best.get("status") == "NO_IMPROVING":
+        return (f"  EX_ANTE: {best['k']} sabit hücrenin hiçbiri ortalamada iyileştirmiyor (eşli fark, muhafazakâr R; "
+                f"n ≥ {best['min_n']}, ≥ {best['min_days']} gün) — ara görünüm, ders değil")
+    vid, st = best["cell"], best["stats"]
+    return (f"  EX_ANTE SEÇİM ({best['k']} sabit hücre arasından en iyisi; seçim yanlılığı — tek başına ders değil): {vid} — "
+            f"{VARIANT_TR.get(vid, vid)}: ort. eşli ΔR {fr(st['mean_delta_r'])} (muhafazakâr, n={st['n']}, {st['n_days']} gün) · "
+            f"daha iyi olduğu işlem payı %{round(st['share_better'] * 100)} — ara görünüm, ders değil")
 
 
-def ex_ante_line(rows: Iterable[dict], *, min_n: int = 5) -> str | None:
-    return _ex_ante_text(AN.best_ex_ante(rows, min_n=min_n))
+def ex_ante_line(rows: Iterable[dict], **kw: Any) -> str | None:
+    return _ex_ante_text(AN.best_ex_ante(rows, **kw))
 
 
 def code_counts(rows: Iterable[dict], *, losses_only: bool = True) -> dict[str, int]:
@@ -243,8 +251,10 @@ def digest_sections(paths: Any, st: dict, *, now: datetime, max_trades_per_book:
     lines.append("")
     out.append(("p2_why", lines))
     lines = ["## Nasıl kâra dönebilirdi — sabit ızgara (EX_ANTE, son 30 gün)", "",
-             "Eşli fark: aynı hücre BÜTÜN işlemlerde (seçilmiş değil); sıralama cf_aux_v1 muhafazakâr R. Ders P3'te "
-             "(n ≥ 30, ≥ 10 gün, ileri doğrulama).", ""]
+             "Eşli fark: her hücre BÜTÜN işlemlerde aynı sabit kural; defter başına gösterilen hücre k hücre arasından "
+             "SEÇİLİR (seçim yanlılığı; tek başına ders değil). Yalnız muhafazakâr R (cf_aux_v1) hesaplanabilen işlemler; "
+             "kaldıraç/boyut bir öneri değildir (HİPOTETİK, §7.6). Ufuk ex ante değildir (gerçek çıkış anı / yol sonu). "
+             "Ders P3'te (n ≥ 30, ≥ 10 gün, ileri doğrulama).", ""]
     any_x = False
     for b, acc in sorted(var_acc.items()):
         ln = _ex_ante_text(acc.best())
@@ -253,7 +263,7 @@ def digest_sections(paths: Any, st: dict, *, now: datetime, max_trades_per_book:
             lines.append(f"- {book_name(b)}:")
             lines.append(ln)
     if not any_x:
-        lines.append("Henüz yeterli ızgara satırı yok (defter başına en az 5 işlem).")
+        lines.append("Henüz yeterli ızgara satırı yok (defter başına n ≥ 30 işlem ve ≥ 10 gün, muhafazakâr R'li).")
     lines.append("")
     out.append(("p2_exante", lines))
     out.append(("p2_health", health_lines(paths, st)))
@@ -294,7 +304,11 @@ def health_lines(paths: Any, st: dict) -> list[str]:
     lines.append(f"- S2 atıf: {s2.get('status', '—')}" + (f" ({s2.get('reason')})" if s2.get("reason") else "")
                  + f" · {ab.get('rows', '—')} satır · ızgara OK {g.get('OK', 0)} · uygun değil "
                  + (", ".join(f"{k[3:]} {v}" for k, v in g.items() if k.startswith("NE:")) or "—")
-                 + f" · bekleyen {r2.get('pending', 0) or 0} · attribution_v1 {str(ab.get('attribution_sha', AT.ATTRIBUTION_SHA))[:12]}"
+                 + f" · bekleyen {r2.get('pending', 0) or 0} · sıralama ölçüsü "
+                 + (", ".join(f"{k} {v}" for k, v in (ab.get("rank_src") or {}).items()) or "—")
+                 + (" · hücre yok: " + ", ".join(f"{k} {v}" for k, v in list((ab.get("cells_not_ok") or {}).items())[:4])
+                    if ab.get("cells_not_ok") else "")
+                 + f" · attribution_v1 {str(ab.get('attribution_sha', AT.ATTRIBUTION_SHA))[:12]}"
                  + f" · cfgrid_v1 {str(ab.get('cfgrid_sha', CG.CFGRID_SHA))[:12]}")
     ds = (st.get("selfcheck") or {}).get("data") or {}
     if ds.get("status") not in (None, "NONE"):
@@ -405,8 +419,8 @@ def query_trade(paths: Any, ident: str) -> list[str]:
                        f"{c.get('exit') or '—'} · {c.get('status')}")
         hb = g.get("hindsight_best") or {}
         if hb:
-            out.append(f"  HINDSIGHT en iyi hücre: {hb.get('cell')} {fr(hb.get('r_rank'))}R (gerçeğe göre {fr(hb.get('delta_vs_actual'))}R) "
-                       "— geriye dönük seçim, kural değil")
+            out.append(f"  HINDSIGHT en iyi hücre: {hb.get('cell')} {fr(hb.get('r_rank'))}R ({hb.get('rank_src')}; gerçeğe göre "
+                       f"{fr(hb.get('delta_vs_actual'))}R) — geriye dönük seçim, kural değil; kaldıraç hücresi sıralamaya girmez")
         pc = g.get("profitable_cells_hindsight") or []
         out.append("  Bu işlemde kâra dönen hücreler (HINDSIGHT): " + (", ".join(pc) if pc else "yok"))
         rc = g.get("random_control") or {}
@@ -415,10 +429,11 @@ def query_trade(paths: Any, ident: str) -> list[str]:
         d = g.get("decomposition") or {}
         comp = d.get("components") or {}
         out.append("")
-        out.append("R AYRIŞTIRMASI (§5.6; sıralı zincir): " + " + ".join(f"{t} {fr(comp.get(k))}" for k, t in COMP_TR)
+        out.append("R AYRIŞTIRMASI (§5.6; gerçek − eksen medyanı): " + " + ".join(f"{t} {fr(comp.get(k))}" for k, t in COMP_TR)
                    + f" + artık {fr(d.get('residual_R'))} = net {fr(d.get('net_R'))}")
         rp = d.get("residual_parts") or {}
         out.append(f"  artık = rastgele taban {fr(rp.get('random_baseline_R'))} + yeniden oynatma farkı {fr(rp.get('replay_gap_R'))}"
+                   f" + eksen etkileşimi {fr(rp.get('interaction_R'))}"
                    + (f" · eksik: {', '.join(d.get('missing') or [])}" if d.get("missing") else ""))
     rf = r.get("regime_fit") or {}
     out.append(f"regime_fit ({rf.get('source')}): {rf.get('status')} · n {rf.get('n')} · ort. {fr(rf.get('mean_r'))}R")

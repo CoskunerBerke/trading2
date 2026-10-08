@@ -5,8 +5,8 @@
 * Kanca kopyası (`_replay_ext`) kancasız çağrıldığında `learning_cf._net_replay` ile AYNI sonucu verir (aynı kod yolu).
 * Sentetik altın yol "stop oldu, sonra döndü": dar stoplu hücreler kaybeder, geniş stoplu hücreler kâra döner; en iyi
   hücre HINDSIGHT etiketlidir; limit dolmazsa R = 0 (`MISSED`).
-* Ayrıştırma: sıralı zincir bileşenleri hücre medyanlarından AYNEN hesaplanır ve `bileşenler + artık = net_R` (1e-6);
-  artık = rastgele taban + yeniden oynatma farkı.
+* Ayrıştırma (2026-10-08, inceleme M1): bileşenler = gerçek − o eksenin ızgara medyanı (harfiyen §5.6) ve
+  `bileşenler + artık = net_R` (1e-6); artık = rastgele taban + yeniden oynatma farkı + eksen etkileşimi.
 * Eşleşmiş rastgele kontrol: aynı gün saati, aynı kova, sabit tohum (aynı işlem → aynı seçim), 20 giriş.
 """
 from __future__ import annotations
@@ -20,8 +20,9 @@ import pandas as pd
 from tradingbot.research_engine import cfgrid as CG
 from tradingbot.research_engine import fidelity as FD
 
-#: §9.2 mühür: `cfgrid_v1` tanımının sha256'sı (P2 uygulama notlarında da yazılıdır). DEĞİŞİRSE CI kırılır.
-CFGRID_SHA_PINNED = "4a96df71a989bcf9c5f81317c01e534920105ced1785dc9389240502abc9454d"
+#: §9.2 mühür: `cfgrid_v1` tanımının sha256'sı (P2 uygulama notlarında da yazılıdır). DEĞİŞİRSE CI kırılır. Yeniden mühür
+#: 2026-10-08 (inceleme düzeltmesi, gerçek veriye uygulanmadan önce; eski 4a96df71…454d — belge §5.5 Değişiklik).
+CFGRID_SHA_PINNED = "7c299ae001aee643a76c697ee191026ba6cdb842e21c377d48ed86e0842adf68"
 UTC = timezone.utc
 T0 = int(datetime(2026, 9, 20, 10, 0, 0, 213000, tzinfo=UTC).timestamp() * 1000)
 M1, M5 = 60_000, 300_000
@@ -149,7 +150,8 @@ def _cells(gs: dict[str, float]) -> dict[str, CG.Cell]:
             for k, v in gs.items()}
 
 
-def test_golden_decomposition_chain_and_residual():
+def test_golden_decomposition_axis_medians_and_residual():
+    """2026-10-08 (inceleme M1): bileşenler = gerçek − o eksenin ızgara medyanı (harfiyen §5.6); artık her zaman gösterilir."""
     g = {vid: 0.0 for vid in CG.VARIANT_IDS}
     g.update({"E_ACTUAL": -1.0, "E_DELAY1": 0.4, "E_LIMIT_025": 0.6, "S_ATR075": -1.0, "S_ATR100": -1.0, "S_ATR150": 1.0,
               "S_ATR200": 0.75, "X_T1R": -1.0, "X_T2R": -1.0, "X_T3R": -1.0, "X_TRAIL2ATR": -0.5, "X_NONE_TIME": -1.0,
@@ -158,21 +160,22 @@ def test_golden_decomposition_chain_and_residual():
     p = plan(STOP_REVERSE, net_r=-1.07, gross_pre=-1.02)
     rc = {"status": "OK", "median_g": -0.2, "median_r_net": -0.25}
     d = CG.decompose(p, _cells(g), rc)
-    ex = [g[v] for v in CG.VARIANT_IDS if v != "SKIP"]
-    x1 = sorted(ex)[len(ex) // 2] if len(ex) % 2 else (sorted(ex)[len(ex) // 2 - 1] + sorted(ex)[len(ex) // 2]) / 2
+    ex = sorted(g[v[0]] for v in CG.VARIANTS if v[1] in ("entry", "stop", "exit", "manage"))
+    x1 = ex[len(ex) // 2] if len(ex) % 2 else (ex[len(ex) // 2 - 1] + ex[len(ex) // 2]) / 2
     c = d["components"]
-    assert d["chain"]["X1"] == round(x1, 6) and c["signal_R"] == round(x1 - (-0.2), 6)
-    assert d["chain"]["X2"] == -1.0 and c["timing_R"] == round(-1.0 - x1, 6)       # girişi gerçek hücrelerin medyanı
-    assert d["chain"]["X3"] == -1.0 and c["stop_R"] == 0.0 and c["exit_R"] == 0.0 and c["size_lev_R"] == 0.0
+    assert d["medians"]["X1"] == round(x1, 6) and c["signal_R"] == round(x1 - (-0.2), 6)
+    assert d["medians"]["entry"] == 0.4 and c["timing_R"] == -1.4                  # −1 − medyan(−1; 0,4; 0,6)
+    assert d["medians"]["stop"] == -1.0 and c["stop_R"] == 0.0                     # medyan(−1; −1; −1; 1; 0,75)
+    assert d["medians"]["exit"] == -1.0 and c["exit_R"] == 0.0 and c["size_lev_R"] == 0.0
     assert c["cost_R"] == round(-1.07 - (-1.02), 6)
     total = sum(v for v in c.values() if v is not None)
     assert abs(d["residual_R"] + total - (-1.07)) < 1e-9 and d["identity_ok"]
-    # artık = rastgele taban + yeniden oynatma farkı (zincir teleskopik)
     rp = d["residual_parts"]
-    assert abs(d["residual_R"] - (rp["random_baseline_R"] + rp["replay_gap_R"])) < 1e-6
+    assert abs(d["residual_R"] - (rp["random_baseline_R"] + rp["replay_gap_R"] + rp["interaction_R"])) < 1e-6
     # kontrol yoksa sinyal eksik ve artığa kalır (gizlenmez)
     d2 = CG.decompose(p, _cells(g), {"status": "RC_TOO_FEW"})
     assert d2["components"]["signal_R"] is None and d2["missing"] == ["signal_R"] and d2["identity_ok"]
+    assert d2["residual_parts"]["interaction_R"] is None
 
 
 # ============================================================================ eşleşmiş rastgele kontrol

@@ -83,10 +83,11 @@ UTC = timezone.utc
 FLUSH_ROWS = 1000
 #: arşivden aynı anda okunan kayıt sayısı (`load_records`; büyük parça = segmentin daha az taranması)
 LOAD_CHUNK = 1000
-#: gece S1b'nin depo parça önbelleği (1m ay parçası ~2–3 MB; varsayılan 96 bellekte ~250 MB tutabilirdi)
-S1B_MAX_PARTS = 32
+#: gece S1b'nin depo parça önbelleği (1m ay parçası ~2–3 MB; varsayılan 96 bellekte ~250 MB tutabilirdi); 2026-10-08
+#: (inceleme M6) 32 → 16
+S1B_MAX_PARTS = 16
 JOURNAL_SCHEMA = "tj_v1"
-JOURNAL_VERSION = "tj_v1/p2b.1"
+JOURNAL_VERSION = "tj_v1/p2c.1"   # 2026-10-08 inceleme düzeltmeleri (B1, M2, M5, küçükler)
 INDEX_SCHEMA = "tj_v1_index"
 BUILD_SCHEMA = "tj_v1_build"
 SOURCE_LIVE = "LIVE_PAPER"
@@ -109,7 +110,7 @@ FIELD_GROUPS: dict[str, tuple[str, ...]] = {
                  "risk_pct_of_equity", "equity_at_entry", "size_rule"),
     "plan": ("initial_stop", "stop_dist_pct", "stop_dist_atr", "targets", "tp1_fraction", "breakeven_at_mfe_r", "max_hold",
              "planned_rr_after_cost"),
-    "cikis": ("exit_price", "exit_reason", "exit_basis", "tp1_done", "fills"),
+    "cikis": ("exit_price", "exit_reason", "exit_basis", "exit_overshoot_r", "tp1_done", "fills"),
     "maliyet": ("gross_pnl", "entry_fee", "exit_fee", "slippage_cost", "spread_cost", "spread_est", "funding_paid",
                 "funding_received", "funding_net", "funding_complete", "net_pnl", "net_r", "gross_r", "cost_r",
                 "pnl_pct_book_equity", "pnl_pct_total_equity"),
@@ -138,9 +139,7 @@ BOOK_TACTIC: dict[str, tuple[str | None, str]] = {
     BOOK_MAIN_FUT: (None, "MAIN_ENSEMBLE"), BOOK_MAIN_SPOT: (None, "MAIN_ENSEMBLE"),
 }
 _TARGET_EXITS = ("hedef1", "hedef2")
-_GAP_BASES = ("GAP_FILL_AT_FIRST_OBSERVATION", "STOP_CLOSE_BEYOND_LEVEL_PRUDENT", "GAP_FILL_AT_BAR_OPEN")
-_LIQ_BASES = ("FIRST_OBSERVATION_BEYOND_LIQUIDATION", "INTRABAR_ORDER_UNOBSERVED", "LIQUIDATION_NEARER", "LIQUIDATION",
-              "SLIPPAGE_BEYOND_LIQUIDATION")
+_STOP_EXITS = ("stop", "başa-baş stop")
 DAY_MS, H4_MS, H1_MS = 86_400_000, 14_400_000, 3_600_000
 XP_DIR = "shared_experience"
 #: `scan_archive`'in tuttuğu izdüşüm alanları (sıra, ay, özet; bütün izdüşüm 45 bin kayıtta ~100 MB tutardı)
@@ -461,6 +460,7 @@ class BuildContext:
     equity_points: list[tuple[datetime, dict[str, Decimal | None], Decimal | None]]
     write_paths: bool = True
     stats: dict[str, int] = field(default_factory=dict)
+    wd: PR.WindowDigest | None = None
 
 
 def _equity_at(ctx: BuildContext, book: str, t: datetime) -> tuple[Decimal | None, Decimal | None, str | None]:
@@ -812,31 +812,35 @@ def build_row(loc: ArchiveLoc, rec: dict, kind: str, ctx: BuildContext) -> dict[
     R.set("exit_price", dstr(dec_or_none(rec.get("exit_price"))), MEASURED)
     xr = str(rec.get("exit_reason") or "")
     R.set("exit_reason", xr, MEASURED)
-    if ef and ef.get("basis"):
-        b = str(ef.get("basis"))
-        eb = "GAP" if b in _GAP_BASES else ("LIQUIDATION" if b in _LIQ_BASES else "LEVEL")
-        if eb == "GAP":                                    # dolum TAM seviyede (ötesinde değil): boşluk yok
-            fp = dec_or_none(ef.get("close_price") if b == "STOP_CLOSE_BEYOND_LEVEL_PRUDENT" else ef.get("first_price"))
-            if fp is not None and fp == dec_or_none(ef.get("stop")):
-                eb = "LEVEL"
-    elif xr in _TARGET_EXITS:
-        eb = "LEVEL"
+    rpu = (risk / qty) if (risk is not None and qty) else None
+    xd = exit_fill_detail(ef, exit_reason=xr, side=side, rpu=rpu, path=path)
+    R.set("exit_basis", xd["exit_basis"], MEASURED if xd["bar_open_gap"] is None else RECONSTRUCTED,
+          "exit_fill.basis + yol (attribution.classify_exit_basis)" if ef else "çıkış nedeni")
+    if xr in _STOP_EXITS and xd.get("overshoot_r") is not None:
+        R.set("exit_overshoot_r", xd["overshoot_r"], MEASURED, "yön·(stop − gözlem fiyatı) / birim risk (kayma öncesi)")
+    elif xr in _STOP_EXITS:
+        R.miss("exit_overshoot_r", "R paydası ya da exit_fill yok")
     else:
-        eb = "MARKET"
-    R.set("exit_basis", eb, MEASURED, "exit_fill.basis" if ef else "çıkış nedeni")
+        R.na("exit_overshoot_r", "stop çıkışı değil")
     R.set("tp1_done", bool(rec.get("tp1_done")), MEASURED)
     R.set("fills", [{"kind": f.get("kind"), "ts": f.get("ts"), "side": f.get("side"), "qty": f.get("qty"), "price": f.get("price"),
                      "ref_price": f.get("ref_price"), "fee": f.get("fee"), "slippage": f.get("slippage"),
                      "is_maker": bool(f.get("is_maker"))} for f in fills], MEASURED)
 
-    # ---- gelir ve maliyet
-    gross, ef_, xf = dec(rec.get("gross_pnl")), dec(rec.get("entry_fee")), dec(rec.get("exit_fee"))
-    fees, slip = dec(rec.get("fees")), dec(rec.get("slippage_cost"))
-    net = dec(rec.get("net_pnl")) if rec.get("net_pnl") is not None else dec(rec.get("pnl"))
-    R.set("gross_pnl", dstr(gross), MEASURED)
-    R.set("entry_fee", dstr(ef_), MEASURED)
-    R.set("exit_fee", dstr(xf), MEASURED)
-    R.set("slippage_cost", dstr(slip), MODELED, "defterin kayma modeli (sabit bps), dolum fiyatlarının içinde")
+    # ---- gelir ve maliyet (2026-10-08, inceleme küçüğü: kayıtta OLMAYAN para alanı 0 diye UYDURULMAZ → MISSING)
+    gross, ef_, xf = dec_or_none(rec.get("gross_pnl")), dec_or_none(rec.get("entry_fee")), dec_or_none(rec.get("exit_fee"))
+    fees, slip = dec_or_none(rec.get("fees")), dec_or_none(rec.get("slippage_cost"))
+    net = dec_or_none(rec.get("net_pnl")) if rec.get("net_pnl") is not None else dec_or_none(rec.get("pnl"))
+
+    def _money(fld: str, v: Decimal | None, label: str = MEASURED, note: str | None = None) -> None:
+        if v is None:
+            R.miss(fld, "eski kayıt: alan yok (0 diye doldurulmaz)")
+        else:
+            R.set(fld, dstr(v), label, note)
+    _money("gross_pnl", gross)
+    _money("entry_fee", ef_)
+    _money("exit_fee", xf)
+    _money("slippage_cost", slip, MODELED, "defterin kayma modeli (sabit bps), dolum fiyatlarının içinde")
     R.set("spread_cost", dstr(dec(rec.get("spread_cost"))), MODELED, "MODELED_ZERO: defter spread yazmaz")
     R.miss("spread_est", "kaydedilmemiş spread tahmini (dolumda canlı spread yok, P6)")
     if spot:
@@ -844,34 +848,37 @@ def build_row(loc: ArchiveLoc, rec: dict, kind: str, ctx: BuildContext) -> dict[
             R.na(fld, "spot")
         fund = Decimal(0)
     else:
-        fund = dec(rec.get("funding"))
-        R.set("funding_paid", dstr(dec(rec.get("funding_paid"))), MEASURED)
-        R.set("funding_received", dstr(dec(rec.get("funding_received"))), MEASURED)
-        R.set("funding_net", dstr(fund), MEASURED)
+        fund = dec_or_none(rec.get("funding"))
+        _money("funding_paid", dec_or_none(rec.get("funding_paid")))
+        _money("funding_received", dec_or_none(rec.get("funding_received")))
+        _money("funding_net", fund)
         cov = feats.get("funding_coverage") if isinstance(feats.get("funding_coverage"), dict) else {}
         if isinstance(cov.get("complete"), bool):
             R.set("funding_complete", cov["complete"], MEASURED)
         else:
             R.miss("funding_complete", "kayıtta funding_coverage yok")
-    R.set("net_pnl", dstr(net), MEASURED)
-    fee_ok = abs(fees - (ef_ + xf)) <= TOL
+    _money("net_pnl", net)
+    fee_ok = (abs(fees - (ef_ + xf)) <= TOL) if None not in (fees, ef_, xf) else None
     rmult = dec_or_none(rec.get("r_multiple")) if not spot else None
-    if risk is not None:
-        net_r, gross_r = net / risk, gross / risk
-        R.set("net_r", format(net_r, "f"), MEASURED, "net_pnl / risk_usdt")
-        R.set("gross_r", format(gross_r, "f"), MEASURED)
+    if risk is not None and net is not None:
+        R.set("net_r", format(net / risk, "f"), MEASURED, "net_pnl / risk_usdt")
+    else:
+        R.miss("net_r", "R paydası yok" if risk is None else "net_pnl yok")
+    if risk is not None and gross is not None:
+        R.set("gross_r", format(gross / risk, "f"), MEASURED)
+    else:
+        R.miss("gross_r", "R paydası yok" if risk is None else "gross_pnl yok (eski kayıt)")
+    if risk is not None and None not in (fees, fund, slip):
         fee_r, fund_r, slip_r = fees / risk, -fund / risk, slip / risk
         R.set("cost_r", {"fee": format(fee_r, "f"), "funding": format(fund_r, "f"), "slippage_in_fills": format(slip_r, "f"),
                          "total": format(fee_r + fund_r, "f")}, MEASURED, "pozitif = maliyet; kayma brüt içinde")
     else:
-        R.miss("net_r", "R paydası yok")
-        R.miss("gross_r", "R paydası yok")
-        R.miss("cost_r", "R paydası yok")
-    if eq_book is not None:
+        R.miss("cost_r", "R paydası yok" if risk is None else "ücret/fonlama/kayma alanı yok (eski kayıt)")
+    if eq_book is not None and net is not None:
         R.set("pnl_pct_book_equity", _r6(net / eq_book * 100), eq_lab)
     else:
         R.miss("pnl_pct_book_equity")
-    if eq_total is not None and eq_total > 0:
+    if eq_total is not None and eq_total > 0 and net is not None:
         R.set("pnl_pct_total_equity", _r6(net / eq_total * 100), RECONSTRUCTED, f"toplam özsermaye {eq_at}")
     else:
         R.miss("pnl_pct_total_equity")
@@ -954,16 +961,20 @@ def build_row(loc: ArchiveLoc, rec: dict, kind: str, ctx: BuildContext) -> dict[
         R.na("gold_ctx", "altın değil")
 
     # ---- atıf (P2a: fidelity)
+    from .attribution import DEFAULT_ENTRY_TF, ENTRY_TF, TF_MS
     fd = FD.replay(rec, kind=kind, bars=path.bars, tf=path.tf, path_gaps=path.gaps, targets=targets,
-                   targets_known=targets is not None, exec_par=xp_par, backdated=backdated, tick=RH.tick_of(rec))
+                   targets_known=targets is not None, exec_par=xp_par, backdated=backdated, tick=RH.tick_of(rec),
+                   rule_tf_ms=TF_MS[ENTRY_TF.get(book, DEFAULT_ENTRY_TF)])
     R.set("fidelity", fd, RECONSTRUCTED if fd.get("status") != FD.ST_NOT_ELIGIBLE else NOT_APPLICABLE,
           "learning_cf._net_replay, kaydın R paydası")
 
     # ---- köken
     R.set("sources", sources, MEASURED)
     plist = sorted(parts)
+    if plist and ctx.wd is not None and opened is not None and closed is not None:
+        plist = ctx.wd.row_tokens(plist, PR.s1b_windows(sym, market, _ms(opened), _ms(closed), gold=is_gold(inst)))
     R.set("data_seal", ResearchStore.seal_of(plist) if plist else None, RECONSTRUCTED if plist else MISSING,
-          "satırın okuduğu depo parçalarının mührü (ResearchStore.seal_of)")
+          "satırın okuma penceresindeki depo içeriğinin mührü (pathrec.WindowDigest belirteçleri; ResearchStore.seal_of)")
     R.set("journal_version", JOURNAL_VERSION, MEASURED)
     missing = sorted(f for f, lab in R.src.items() if lab == MISSING)
     R.set("missing_fields", missing, MEASURED)
@@ -972,18 +983,46 @@ def build_row(loc: ArchiveLoc, rec: dict, kind: str, ctx: BuildContext) -> dict[
     for fname in ALL_FIELDS:
         row[fname] = R.v.get(fname)
     row["kind"] = kind
-    row["fees_total"] = dstr(fees)
+    row["fees_total"] = dstr(fees) if fees is not None else None
     row["position_group"] = loc.position_group if spot else loc.key
     row["fee_identity_ok"] = fee_ok
     row["r_check"] = ({"ledger_r_multiple": dstr(rmult), "abs_diff": format(abs(net / risk - rmult), "f"),
-                       "ok": abs(net / risk - rmult) <= R_TOL} if (risk is not None and rmult is not None) else None)
+                       "ok": abs(net / risk - rmult) <= R_TOL} if (risk is not None and rmult is not None and net is not None)
+                      else None)
     row["path"] = {**path.summary(), "file": path_rel}
     row["rehydrate"] = rh.to_dict()
-    row["store_parts"] = [list(p) for p in plist]
+    row["store_parts"] = [list(p) for p in plist]                  # pencere belirteçleri (M5): (seri, ay, sha | d:gün özeti)
     row["field_source"] = {f: R.src[f] for f in ALL_FIELDS}
     row["field_notes"] = dict(sorted(R.notes.items()))
     row["cf_inputs"] = cf_inputs(rec, kind)
+    row["exit_fill_detail"] = xd if xd.get("basis") else None
     return row
+
+
+def exit_fill_detail(ef: dict | None, *, exit_reason: str, side: str, rpu: Decimal | None, path: PR.PathResult
+                     ) -> dict[str, Any]:
+    """Çıkış dolumunun ölçülmüş olguları ve sınıfı (2026-10-08, inceleme B1). Canlı defter stopu seviyenin ötesindeki İLK
+    gözlemden doldurur (`exit_fill.basis`: 60 sn örnek `GAP_FILL_AT_FIRST_OBSERVATION`, kural barı açılışı, ihtiyatlı
+    kapanış); bu bir piyasa boşluğu DEĞİLDİR, yolda seviye sürekli işlem gördüyse örnekleme aşmasıdır. Olgular: gözlem
+    fiyatı, seviyenin ötesinde mi, aşma (R), bar yolunda (1m/5m) stopa ilk ulaşan bar ve o barın stopun ötesinde açılıp
+    açılmadığı (`pathrec.stop_crossing`). Sınıf `attribution.classify_exit_basis`'tedir (mühürlü kural)."""
+    from .attribution import EXIT_OBSERVED_BASES, classify_exit_basis
+    b = str((ef or {}).get("basis") or "")
+    sg = Decimal(1) if str(side).upper() in ("LONG", "BUY") else Decimal(-1)
+    stop = dec_or_none((ef or {}).get("stop"))
+    ref = dec_or_none((ef or {}).get("close_price") if b == "STOP_CLOSE_BEYOND_LEVEL_PRUDENT" else (ef or {}).get("first_price"))
+    beyond = bool(b in EXIT_OBSERVED_BASES and stop is not None and ref is not None and sg * (stop - ref) > 0)
+    ov: float | None = None
+    if exit_reason in _STOP_EXITS and b and stop is not None and rpu is not None and rpu > 0:
+        ov = _r6(sg * (stop - ref) / rpu) if (beyond and ref is not None) else 0.0
+    t_cross, gap = None, None
+    if beyond and path.source in (PR.SRC_1M, PR.SRC_5M):
+        t_cross, gap = PR.stop_crossing(path.bars, side=side, stop=stop)
+    eb, mech = classify_exit_basis(b or None, beyond=beyond, overshoot_r=ov, bar_open_gap=gap,
+                                   target_exit=exit_reason in _TARGET_EXITS)
+    return {"basis": b or None, "first_source": (ef or {}).get("first_source"), "stop": dstr(stop), "fill_ref": dstr(ref),
+            "beyond_level": beyond, "overshoot_r": ov, "crossing_bar": t_cross, "bar_open_gap": gap, "mechanism": mech,
+            "exit_basis": eb}
 
 
 def cf_inputs(rec: dict, kind: str) -> dict[str, Any] | None:
@@ -1105,36 +1144,6 @@ def _input_digest(loc: ArchiveLoc, side: dict[str, Any], seal_listing_digest: st
                  "exec": exec_digest, "eq": eq_digest})
 
 
-#: satırın okuyabileceği seriler (yol, bağlam, rehydrate); artımlı özet için yalnız ay listesi okunur (parça okunmaz)
-_DIGEST_TFS = ("1m", "5m", "1h", "4h", "1d", "funding", "metrics_5m")
-
-
-def _parts_digest(src: PR.BarSource | None, symbol: str, market: str, opened: datetime | None, closed: datetime | None) -> str:
-    """Kaydın okuyabileceği depo ay parçalarının (seri, ay, sha) özeti: [açılış − 420 g, kapanış + 3 g] penceresiyle
-    kesişen aylar. Yeni gelen 1m günü (tembel doldurma), sonradan dolan seri ya da yeniden yazılan parça satırı yeniden
-    kurdurur; pencere dışındaki yeni barlar kurdurmaz (eski işlemler her gece yeniden hesaplanmaz)."""
-    if src is None or opened is None or closed is None:
-        return "no-store"
-    from .provider import raw_symbol
-    from .store import month_bounds_ym
-    a = int(opened.timestamp() * 1000) - 420 * DAY_MS
-    b = int(closed.timestamp() * 1000) + 3 * DAY_MS
-    sym = raw_symbol(symbol)
-    series = [("futures", sym, tf) for tf in _DIGEST_TFS] + [("futures", "BTCUSDT", "4h"), ("futures", "BTCUSDT", "1d")]
-    if market == "spot":
-        series += [("spot", sym, tf) for tf in ("1m", "5m", "1h", "1d")]
-    if is_gold(sym):
-        series += [("futures", "PAXGUSDT", "1h"), ("futures", "XAUUSDT", "1h")]
-    out = []
-    for mk, s, tf in series:
-        lst = src._listing(mk, s, tf)
-        for ym in sorted(lst):
-            lo, hi = month_bounds_ym(ym)
-            if hi > a and lo <= b:
-                out.append((mk, s, tf, ym, lst[ym]))
-    return _sha(out)
-
-
 def _src_digest(src: PR.BarSource | None) -> str:
     """Depo içerik özeti: mühürlü okuyucuda mühür; değilse manifestlerin parça listesinin özeti."""
     if src is None:
@@ -1189,8 +1198,9 @@ def build_journal(paths: EnginePaths, *, now: datetime | None = None, src: PR.Ba
     ids_for_sides = {b: set(v) for b, v in ids_by_book.items()}
     ids_for_sides[BOOK_MAIN_SPOT] = spot_buy_ids
     sides = SideSources(paths.state, ids_by_book=ids_for_sides, keys=keys)
+    wd = PR.WindowDigest(src, cache_file=paths.journal_tj / "_window_days.json.gz", paths=paths) if src is not None else None
     ctx = BuildContext(paths=paths, now=now, src=src, rawconfig=rawconfig, sides=sides, exec_by_book=exec_by_book,
-                       equity_points=eq_pts, write_paths=write_paths)
+                       equity_points=eq_pts, write_paths=write_paths, wd=wd)
     new_index: dict[str, dict] = {}
     changed: dict[str, list[str]] = {}
     for b in all_books:
@@ -1204,8 +1214,10 @@ def build_journal(paths: EnginePaths, *, now: datetime | None = None, src: PR.Ba
                 side["prov"] = _sha(sides.provenance(bo)[0]) if bo and sides.provenance(bo) else None
             opened, closed = parse_ts(loc.proj.get("opened_at")), parse_ts(loc.proj.get("closed_at"))
             eq_at = _equity_at(ctx, b, opened)[2] if opened is not None else None
-            pdg = _parts_digest(src, str(loc.proj.get("symbol") or ""), "spot" if kinds[b] == KIND_SPOT else "futures",
-                                opened, closed)
+            sym_p = str(loc.proj.get("symbol") or "")
+            pdg = (wd.digest(PR.s1b_windows(sym_p, "spot" if kinds[b] == KIND_SPOT else "futures", _ms(opened), _ms(closed),
+                                            gold=is_gold(symbol_key(sym_p))))
+                   if (src is not None and opened is not None and closed is not None) else "no-store")
             dg = _input_digest(loc, side, pdg, cfg_by_book[b], _sha(exec_by_book.get(b)), str(eq_at))
             month = _month_of(loc.proj.get("closed_at"))
             new_index[k] = {"digest": dg, "month": month, "book": b}
@@ -1227,6 +1239,9 @@ def build_journal(paths: EnginePaths, *, now: datetime | None = None, src: PR.Ba
         return (budget_s is not None and time.monotonic() - t_start > budget_s) or (max_rows is not None and n_built >= max_rows)
 
     clean_spills(paths, paths.journal_tj)
+    if paths.paths_root.is_dir():
+        for d in sorted(paths.paths_root.glob("????-??")):
+            clean_spills(paths, d)
     for month in sorted(by_month, reverse=True):
         items = by_month[month]
         writer = MonthWriter(paths, month_file(paths, month),
@@ -1273,6 +1288,8 @@ def build_journal(paths: EnginePaths, *, now: datetime | None = None, src: PR.Ba
     for month in sorted(months_drop):
         if _write_month(paths, month, {}, new_index) and month not in written:
             written.append(month)
+    if wd is not None:
+        wd.save()
     idx = {"schema": INDEX_SCHEMA, "journal_version": JOURNAL_VERSION, "keys": dict(sorted(new_index.items()))}
     paths.write_bytes(_index_path(paths), gzip_bytes(json.dumps(idx, ensure_ascii=False, separators=(",", ":"),
                                                                 sort_keys=False).encode("utf-8")))
@@ -1283,7 +1300,7 @@ def build_journal(paths: EnginePaths, *, now: datetime | None = None, src: PR.Ba
         for r in iter_journal(paths):
             acc["rows"] += 1
             acc["owner_ok"] = acc["owner_ok"] and owner_fields_ok(r)
-            acc["fee_bad"] += 0 if r.get("fee_identity_ok") else 1
+            acc["fee_bad"] += 1 if r.get("fee_identity_ok") is False else 0      # None = alan yok (eski kayıt), ihlal değil
             acc["r_bad"] += 1 if (r.get("r_check") and not r["r_check"]["ok"]) else 0
             ps = r.get("path_source") or "MISSING"
             acc["paths"][ps] = acc["paths"].get(ps, 0) + 1
@@ -1393,9 +1410,10 @@ class MonthWriter:
 
 
 def clean_spills(paths: EnginePaths, root: Path) -> None:
-    """Yarıda kalmış birleşimlerin geçici dosyaları (`.spill-*`, `.*.merge`)."""
+    """Yarıda kalmış birleşimlerin ve atomik yazımların geçici dosyaları (`.spill-*`, `.*.merge`, `.*.tmp` —
+    `write_bytes`/`write_gzip_stream`'in `os.replace`'ten önce öldürülen geçici dosyası; 2026-10-08 inceleme küçüğü)."""
     if root.is_dir():
-        for p in list(root.glob(".spill-*")) + list(root.glob(".*.merge")):
+        for p in list(root.glob(".spill-*")) + list(root.glob(".*.merge")) + list(root.glob(".*.tmp")):
             paths.require_research(p).unlink(missing_ok=True)
 
 
@@ -1435,9 +1453,24 @@ def owner_fields_ok(row: dict) -> bool:
 
 
 # ============================================================================ uzlaştırma (kabul 1)
+def _s1a_read_at(paths: EnginePaths, book: str) -> datetime | None:
+    """Defterin SON S1a arşiv okumasının anı (`closes` çapası `observed_at`; P1a). Yoksa None."""
+    from .closes import _read_anchor
+    a = _read_anchor(paths, book)
+    return parse_ts((a or {}).get("observed_at")) if a else None
+
+
 def reconcile_journal(paths: EnginePaths, rows: Iterable[dict] | None = None) -> dict[str, Any]:
     """Günlük ↔ arşiv (son rev, ACTIVE) ↔ ledger (elde tutulan pencere): her kayıt günlükte TAM BİR KEZ; Σ net_pnl,
-    ücret, fonlama ve kayma 1e-6 ile eşit. Dönen: {"status": OK|INCONSISTENT, books: {...}}."""
+    ücret, fonlama ve kayma 1e-6 ile eşit. Dönen: {"status": OK|INCONSISTENT, books: {...}}.
+
+    **Ledger kolu S1a OKUMASINA göredir (2026-10-08, inceleme M4).** Arşiv, S1a'nın ledger okumasının kopyasıdır
+    (`closes.reconcile_records` o okumada arşiv = ledger'ı denetler); S1b'nin sonunda ledger yeniden okununca S1a'dan
+    SONRA kapanan kayıt (henüz arşivde değil, `closed_at` > S1a okuması) ve S1a'dan sonra içeriği değişen kayıt (geç
+    fonlama / geriye tarihli kapanış: içerik sha'sı arşivinkinden farklı ve ledger `updated_at` > S1a okuması) tutarsızlık
+    DEĞİLDİR: sayılır (`after_s1a`, `revised_after_s1a`) ve ertesi gecenin S1a'sı arşive alır. Geri kalan kayıtlar birebir
+    denetlenir; S1a okumasından önce kapanmış ama arşivde/günlükte olmayan kayıt hâlâ `INCONSISTENT`'tir."""
+    from .closes import canonical_sha
     keep = ("trade_key", "book", "net_pnl", "fees_total", "funding_net", "slippage_cost")
     rows = list(rows) if rows is not None else [{k: r.get(k) for k in keep} for r in iter_journal(paths)]
     by_book: dict[str, list[dict]] = {}
@@ -1461,24 +1494,42 @@ def reconcile_journal(paths: EnginePaths, rows: Iterable[dict] | None = None) ->
             sums[name] = {"journal": dstr(js), "archive": dstr(asum), "ok": abs(js - asum) <= TOL}
         missing_in_journal = sorted(set(arch) - set(jmap))
         extra_in_journal = sorted(set(jmap) - set(arch))
-        led = {"held": None, "missing": None, "sums": None}
+        led: dict[str, Any] = {"held": None, "missing": None, "sums": None}
         found = find_ledgers(paths.state)
         if b in found:
             kind, p = found[b]
             rd = read_ledger(b, kind, p)
             if rd.ok:
+                as_of = _s1a_read_at(paths, b)
+                upd = parse_ts((rd.doc or {}).get("updated_at"))
+                changed_after = bool(as_of is not None and upd is not None and upd > as_of)
                 hist = [h for h in (rd.doc or {}).get("history") or [] if isinstance(h, dict)]
-                lk = [f"{b}|{h.get('id', '')}|{h.get('opened_at', '')}" for h in hist]
-                miss = [k for k in lk if k not in jmap]
-                lsum = {"net_pnl": sum((dec(h.get("pnl")) for h in hist), Decimal(0)),
-                        "fees": sum((dec(h.get("fees")) for h in hist), Decimal(0)),
-                        "funding": sum((dec(h.get("funding")) for h in hist), Decimal(0)),
-                        "slippage": sum((dec(h.get("slippage_cost")) for h in hist), Decimal(0))}
-                jsum = {"net_pnl": sum((dec(jmap[k].get("net_pnl")) for k in lk if k in jmap), Decimal(0)),
-                        "fees": sum((dec(jmap[k].get("fees_total")) for k in lk if k in jmap), Decimal(0)),
-                        "funding": sum((dec(jmap[k].get("funding_net")) for k in lk if k in jmap), Decimal(0)),
-                        "slippage": sum((dec(jmap[k].get("slippage_cost")) for k in lk if k in jmap), Decimal(0))}
-                led = {"held": len(lk), "missing": miss[:20], "n_missing": len(miss),
+                lk, after, revised, miss = [], 0, 0, []
+                for h in hist:
+                    k = f"{b}|{h.get('id', '')}|{h.get('opened_at', '')}"
+                    a = arch.get(k)
+                    if a is None:
+                        c = parse_ts(h.get("closed_at"))
+                        if as_of is not None and c is not None and c > as_of:
+                            after += 1                       # S1a okumasından SONRA kapandı: ertesi gece arşive girer
+                            continue
+                        miss.append(k)
+                        continue
+                    if changed_after and canonical_sha(h) != a.sha:
+                        revised += 1                         # S1a'dan sonra içeriği değişti (geç fonlama vb.)
+                        continue
+                    lk.append((k, h))
+                miss += [k for k, _h in lk if k not in jmap]
+                lsum = {"net_pnl": sum((dec(h.get("pnl")) for _k, h in lk), Decimal(0)),
+                        "fees": sum((dec(h.get("fees")) for _k, h in lk), Decimal(0)),
+                        "funding": sum((dec(h.get("funding")) for _k, h in lk), Decimal(0)),
+                        "slippage": sum((dec(h.get("slippage_cost")) for _k, h in lk), Decimal(0))}
+                jsum = {"net_pnl": sum((dec(jmap[k].get("net_pnl")) for k, _h in lk if k in jmap), Decimal(0)),
+                        "fees": sum((dec(jmap[k].get("fees_total")) for k, _h in lk if k in jmap), Decimal(0)),
+                        "funding": sum((dec(jmap[k].get("funding_net")) for k, _h in lk if k in jmap), Decimal(0)),
+                        "slippage": sum((dec(jmap[k].get("slippage_cost")) for k, _h in lk if k in jmap), Decimal(0))}
+                led = {"held": len(hist), "compared": len(lk), "as_of": iso(as_of) if as_of else None, "after_s1a": after,
+                       "revised_after_s1a": revised, "missing": miss[:20], "n_missing": len(miss),
                        "sums": {k: {"ledger": dstr(lsum[k]), "journal": dstr(jsum[k]), "ok": abs(lsum[k] - jsum[k]) <= TOL}
                                 for k in lsum}}
             rd.doc = None

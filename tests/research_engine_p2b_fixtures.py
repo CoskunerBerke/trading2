@@ -7,8 +7,9 @@
   günlük geçmişi); 1h/4h/1d hepsi 5m'den türetilir (dilimler tutarlı). Depo `ResearchStore.write` + mühür (veri biriminin
   biçimi), gece okuyucusu `SealedReader`.
 * İşlemler: gerçek `FuturesLedgerV2` defterlerinde (Box %50, ana bot vadeli %15, T2 %10, M2 %10, D4 %8, C4 %7) rastgele
-  açılış, defterin kendi `tick`iyle 1m yolu boyunca yürütülür (bar içi açılış → ters → lehte → kapanış; koruyucu izleyici
-  stopu seviyede yakalar), kural çıkışı tutma süresi sonunda `close_manual`. Hedefler girişteki `xp_entry` satırından
+  açılış, defterin kendi `tick`iyle CANLI izleme benzetimiyle yürütülür (2026-10-08: 60 sn fiyat örnekleri + kural
+  diliminin bar tiki; stop seviyenin ötesindeki ilk örnekten dolar — `walk_sampled`), kural çıkışı tutma süresi sonunda
+  `close_manual`. Hedefler girişteki `xp_entry` satırından
   (strateji defterleri) ya da provenance'tan (ana bot) — gerçekte de ÖLÇÜLMÜŞ kaynaklar bunlardır; böylece ızgaraya giren
   işlem oranı gerçekçi olur (rehydrate'in kendisi P2a testlerinde sınanır).
 """
@@ -22,7 +23,7 @@ from decimal import Decimal as D
 import numpy as np
 import pandas as pd
 
-from research_engine_p2_fixtures import KCOLS, M1, M5, STEP, StoreFixture, aggregate, dt_of, ms, walk_ledger
+from research_engine_p2_fixtures import KCOLS, M1, M5, STEP, StoreFixture, aggregate, dt_of, ms, walk_sampled
 
 from tradingbot.accounting import AmountType, FuturesLedgerV2, SizeSpec, SlippageModel
 from tradingbot.research_engine.ledgers import iso
@@ -40,6 +41,13 @@ MIX = {
     "strategy_paper_trend4h": (0.08, "ADA/USDT", ("LONG",), (240, 1440), (1.5, 3.0), (), "DONCHIAN_EXIT_LOW10"),
     "strategy_paper_candle4h": (0.07, "ADA/USDT", ("LONG", "SHORT"), (240, 1440), (1.0, 2.5), (1.5,), "TIME_STOP_6_BARS"),
 }
+
+
+#: canlı izleme benzetimi (2026-10-08, P2 incelemesi B1): 60 sn fiyat örnekleri + kural diliminin bar tiki (Box 5m, ana bot /
+#: D4 / C4 4h, T2 / M2 1d) — stop seviyenin ötesindeki ilk örnekten dolar (gerçek defter kuralı); eski kırpma (seviyeden
+#: dolum) gerçekçi değildi
+RULE_BAR_MS = {"strategy_paper_box": M5, "": 4 * STEP["1h"], "strategy_paper": STEP["1d"], "strategy_paper_m2": STEP["1d"],
+               "strategy_paper_trend4h": 4 * STEP["1h"], "strategy_paper_candle4h": 4 * STEP["1h"]}
 
 
 def _ohlc(rng: np.random.Generator, n: int, p0: float, vol: float, start_ms: int, step: int) -> pd.DataFrame:
@@ -125,7 +133,7 @@ def big_world(v, *, n_trades: int, days: int, history_days: int, seed: int = 5) 
                 pr["recorded_at"] = pos.opened_at
                 prov_rows.append(pr)
             until = (t // M1) * M1 + hold_ms
-            rec = walk_ledger(led, sym, m1, opened_ms=t, until_ms=until - M1)
+            rec = walk_sampled(led, sym, m1, opened_ms=t, until_ms=until - M1, bar_ms=RULE_BAR_MS[book])
             if rec is None:
                 px = m1[m1["timestamp"] == until - M1]["close"].iloc[0]
                 led.close_manual(sym, D(str(float(px))), reason=reason, now=dt_of(until))
@@ -158,7 +166,8 @@ def box_epoch_world(v, *, seed: int = 21, drift_bps: float = 0.4, vol: float = 0
     2026-09-30 öncesi; `min_stop_pct` 0,32) 72 işlem stop < %0,5 ve 176 işlem stop %0,5–1 (gerçek bulgunun sayıları).
     Her işlemin penceresinde fiyat işlem yönüne küçük bir kayma (`drift_bps`/dk) taşır — iki kovanın BRÜT avantajı aynı
     tanımlıdır; fark yalnız stop genişliğinden gelir (gürültüye dar stop + 1/stop ile ölçeklenen maliyet). İşlemler
-    gerçek `FuturesLedgerV2` ile 1m yolda yürütülür; kural çıkışı `BOX_EOD_FLAT`."""
+    gerçek `FuturesLedgerV2` ile 1m yolda canlı izleme benzetimiyle yürütülür (60 sn örnek + 5m bar tiki; 2026-10-08);
+    kural çıkışı `BOX_EOD_FLAT`."""
     rng = random.Random(seed)
     nrng = np.random.default_rng(seed)
     a = ms(datetime(2026, 6, 1, tzinfo=UTC))
@@ -206,7 +215,7 @@ def box_epoch_world(v, *, seed: int = 21, drift_bps: float = 0.4, vol: float = 0
         assert pos is not None, led.last_reject_reason
         xp_rows.append({"kind": "xp_entry", "trade_key": f"strategy_paper_box|{pos.id}|{pos.opened_at}", "targets": tg})
         until = (t // M1) * M1 + hold
-        if walk_ledger(led, "SOL/USDT", m1, opened_ms=t, until_ms=until - M1) is None:
+        if walk_sampled(led, "SOL/USDT", m1, opened_ms=t, until_ms=until - M1, bar_ms=M5) is None:
             px = float(m1[m1["timestamp"] == until - M1]["close"].iloc[0])
             led.close_manual("SOL/USDT", D(str(px)), reason="BOX_EOD_FLAT", now=dt_of(until))
     xp = v.state / "shared_experience" / "experience.jsonl"

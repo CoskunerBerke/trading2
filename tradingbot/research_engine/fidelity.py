@@ -3,8 +3,9 @@
 Her gerçek vadeli işlem, defterin KENDİ yürütme modeliyle (`learning_cf.ExecModel`; ücret tablosu, kayma, TP1 oranı,
 MFE başa-baş, TP maker, likidasyon, en-kötü-durum — ledger JSON'undan, `ExecModel.of_ledger`'ın okuduğu AYNI alanlar)
 atılabilir bir `FuturesLedgerV2` içinde gerçek yol üzerinde yeniden oynatılır. Kod yolu `cf_label_v3` ile AYNIDIR:
-`learning_cf._net_replay` (bar içi nedensel yol açılış → ters uç → lehte uç → kapanış, seviyeden stop dolumu, yalnız bar
-açılışında boşluk). Atılık defter hiçbir yere yazılmaz.
+`learning_cf._net_replay`'in kancalı kopyası `cfgrid._replay_ext` (kancasız hâli bayt-özdeş, test; bar içi nedensel yol
+açılış → ters uç → lehte uç → kapanış, seviyeden stop dolumu, yalnız bar açılışında boşluk) — tek kanca kaydın gözlemden
+stop dolumudur (aşağıda). Atılık defter hiçbir yere yazılmaz.
 
 * Girdiler: giriş referansı = kaydın giriş dolumunun `ref_price`'ı (canlı mark; defter kaymayı yine kendisi uygular),
   ilk stop = `features.initial_stop`, hedefler = günlüğün hedefleri (`xp_entry`/provenance ÖLÇÜLMÜŞ, yoksa rehydrate),
@@ -13,6 +14,12 @@ açılışında boşluk). Atılık defter hiçbir yere yazılmaz.
 * **R paydası iki tarafta da kaydın `features.risk_usdt`'idir.** `_net_replay` R'yi kendi (1000 USDT, 1x) boyutunun
   riskine böler; birim başına net aynı olduğundan gerçek paydaya `r_replay = r_net × |dolum_replay − stop| /
   |dolum_gerçek − stop|` ile çevrilir (gerçek risk = |dolum − ilk stop| × miktar, `futures_ledger._finalize`).
+* **Gözlemden dolum (2026-10-08, inceleme B1).** Canlı defter stopu seviyeden değil, seviyenin ötesindeki İLK gözlemden
+  doldurur (60 sn örnek `GAP_FILL_AT_FIRST_OBSERVATION`/`PRICE`, kural barı açılışı `…/BAR_OPEN`, ihtiyatlı kapanış
+  `STOP_CLOSE_BEYOND_LEVEL_PRUDENT`). Yeniden oynatma bunu MODELLER: stop, kaydın çıkış anından geriye bir kural dilimi
+  penceresi (`rule_tf_ms`; `(kapanış − pencere, kapanış]` ile kesişen bar) içinde tetiklenirse dolum referansı kaydın gözlem
+  fiyatıdır (`cfgrid._replay_ext(stop_fill=…)`, `fill_model = RECORDED_FILL`; kayma modeli yine uygulanır). Pencere dışında
+  (örneklerin kaçırdığı eski bir fitil) yeniden oynatma seviyeden doldurur ve fark gerçek bir farktır (`FILL_BASIS`).
 * `|r_replay − r_actual| ≤ 0,05R` → `ok` (işlem P2b'nin karşı-olgusal ayrıştırmasına girer). Değilse yalnız kural kodları
   alır ve nedenleri yazılır: `PATH_GAP` (yol boşluğu), `AMBIGUOUS_BAR` (belirsiz bar içi sıra), `FILL_BASIS` (farklı
   dolum tabanı: gerçek boşluk/kapanış dolumu ↔ yeniden oynatmada seviye), `EXIT_REASON_DIFFERS`, `BACKDATED_CLOSE`
@@ -31,7 +38,7 @@ import pandas as pd
 
 from .ledgers import dec, dec_or_none, iso, parse_ts
 
-FIDELITY_VERSION = "fidelity_v1"
+FIDELITY_VERSION = "fidelity_v2"   # 2026-10-08: gözlemden stop dolumu modellenir (B1)
 TOLERANCE_R = Decimal("0.05")
 TARGET_RATE = 0.90
 ST_OK, ST_FAIL, ST_NOT_ELIGIBLE = "OK", "FAILED", "NOT_ELIGIBLE"
@@ -42,6 +49,10 @@ NOT_ELIGIBLE = ("SPOT", "NO_RISK", "NO_PATH", "NO_EXEC_MODEL", "TARGETS_MISSING"
 _TARGET_EXITS = ("hedef1", "hedef2")
 _GAP_BASES = ("GAP_FILL_AT_FIRST_OBSERVATION", "STOP_CLOSE_BEYOND_LEVEL_PRUDENT", "FIRST_OBSERVATION_BEYOND_LIQUIDATION",
               "GAP_FILL_AT_BAR_OPEN")
+#: kaydın gözlemden (seviyenin ötesinde) dolan stop tabanları — yeniden oynatmada `RECORDED_FILL` ile modellenir
+_OBSERVED_STOP_BASES = ("GAP_FILL_AT_FIRST_OBSERVATION", "STOP_CLOSE_BEYOND_LEVEL_PRUDENT", "GAP_FILL_AT_BAR_OPEN")
+RECORDED_FILL = "RECORDED_FILL"
+_STOP_EXITS = ("stop", "başa-baş stop")
 EXEC_KEYS = ("fees", "slippage", "liq_params", "tp1_fraction", "breakeven_at_mfe_r", "tp_maker", "worst_case")
 
 
@@ -120,9 +131,31 @@ def _entry_fill(rec: dict) -> tuple[Decimal | None, Decimal | None]:
     return dec_or_none(fills[0].get("ref_price")), dec_or_none(fills[0].get("price"))
 
 
+def recorded_stop_fill(rec: dict, *, tf: str | None, rule_tf_ms: int | None) -> tuple[Any, str | None]:
+    """Kaydın gözlemden stop dolumunun yeniden oynatma kancası: (`stop_fill(bar açılışı ms)` | None, gözlem fiyatı)."""
+    f = rec.get("features") if isinstance(rec.get("features"), dict) else {}
+    ef = f.get("exit_fill") if isinstance(f.get("exit_fill"), dict) else {}
+    b = str(ef.get("basis") or "")
+    if str(rec.get("exit_reason") or "") not in _STOP_EXITS or b not in _OBSERVED_STOP_BASES:
+        return None, None
+    ref = dec_or_none(ef.get("close_price") if b == "STOP_CLOSE_BEYOND_LEVEL_PRUDENT" else ef.get("first_price"))
+    c = parse_ts(rec.get("closed_at"))
+    if ref is None or c is None:
+        return None, None
+    cm = int(c.timestamp() * 1000)
+    step = 60_000 if tf == "1m" else 300_000
+    win = max(int(rule_tf_ms or step), step)
+
+    def hook(bar_ts: int) -> Decimal | None:
+        return ref if (int(bar_ts) + step > cm - win and int(bar_ts) <= cm) else None
+    return hook, format(ref, "f")
+
+
 def replay(rec: dict, *, kind: str, bars: pd.DataFrame | None, tf: str | None, path_gaps: int, targets: list[float] | None,
-           targets_known: bool, exec_par: dict | None, backdated: bool = False, tick: Decimal | None = None) -> dict[str, Any]:
-    """Tek kaydın fidelity sonucu (§5.3). Dönen: {status, ok, delta_r, r_replay, r_actual, reasons, primary_reason, ...}."""
+           targets_known: bool, exec_par: dict | None, backdated: bool = False, tick: Decimal | None = None,
+           rule_tf_ms: int | None = None) -> dict[str, Any]:
+    """Tek kaydın fidelity sonucu (§5.3). Dönen: {status, ok, delta_r, r_replay, r_actual, reasons, primary_reason,
+    fill_model, ...}. `rule_tf_ms`: defterin kural (bar işleme) dilimi — gözlem dolumu modelleme penceresi."""
     out: dict[str, Any] = {"version": FIDELITY_VERSION, "status": ST_NOT_ELIGIBLE, "ok": False, "delta_r": None,
                            "r_replay": None, "r_actual": None, "reasons": [], "primary_reason": None,
                            "tolerance_r": format(TOLERANCE_R, "f")}
@@ -152,7 +185,7 @@ def replay(rec: dict, *, kind: str, bars: pd.DataFrame | None, tf: str | None, p
     if not targets_known and (exit_reason in _TARGET_EXITS or bool(rec.get("tp1_done"))):
         return _ne("TARGETS_MISSING")
     from ..learn.shadow import ShadowTrade
-    from ..learning_cf import _net_replay
+    from .cfgrid import _replay_ext
     hours = f.get("funding_hours_utc") if isinstance(f.get("funding_hours_utc"), list) else None
     model = exec_model(exec_par, hours=tuple(hours) if hours else None)
     view = ShadowTrade(id=str(rec.get("id")), plan_id=str(rec.get("id")), symbol=str(rec.get("symbol")), market_type="USDM_PERP",
@@ -162,9 +195,11 @@ def replay(rec: dict, *, kind: str, bars: pd.DataFrame | None, tf: str | None, p
     df = tb[["timestamp", "open", "high", "low", "close"]].reset_index(drop=True)
     r_actual = dec(rec.get("net_pnl")) / risk
     out["r_actual"] = format(r_actual, "f")
+    hook, rec_fill = recorded_stop_fill(rec, tf=tf, rule_tf_ms=rule_tf_ms)
+    out["recorded_fill"] = rec_fill
     try:
-        res = _net_replay(view, df, {"bars": int(len(df)), "exit_reason": exit_reason}, 0.0, model=model, filters=None,
-                          funding_lookup=RecordedFunding(rec))
+        res = _replay_ext(view, df, {"bars": int(len(df)), "exit_reason": exit_reason}, model=model,
+                          funding_lookup=RecordedFunding(rec), stop_fill=hook)
     except Exception as exc:  # noqa: BLE001 — yeniden oynatma arızası: başarısız sayılır (neden yazılır)
         out.update(status=ST_FAIL, reasons=["REPLAY_ERROR"], primary_reason="REPLAY_ERROR", error=f"{type(exc).__name__}: {exc}"[:200])
         return out
@@ -178,7 +213,9 @@ def replay(rec: dict, *, kind: str, bars: pd.DataFrame | None, tf: str | None, p
         out.update(status=ST_FAIL, reasons=["REPLAY_ERROR"], primary_reason="REPLAY_ERROR")
         return out
     delta = r_rep - r_actual
+    pb = str(res.get("net_exit_basis") or "")
     out.update(r_replay=format(r_rep.quantize(Decimal("1e-6")) + 0, "f"), delta_r=format(delta.quantize(Decimal("1e-6")) + 0, "f"),
+               fill_model={RECORDED_FILL: RECORDED_FILL, "GAP_FILL_AT_BAR_OPEN": "BAR_OPEN"}.get(pb, "LEVEL"),
                replay_exit_reason=res.get("net_exit_reason"), replay_exit_basis=res.get("net_exit_basis"),
                replay_entry_fill=format(ef_rep, "f"), intrabar_ambiguous_bars=int(res.get("intrabar_ambiguous_bars") or 0),
                bars=int(len(df)), tf=tf, exec_model=res.get("exec_model"))
@@ -190,8 +227,8 @@ def replay(rec: dict, *, kind: str, bars: pd.DataFrame | None, tf: str | None, p
         reasons.append("PATH_GAP")
     if int(res.get("intrabar_ambiguous_bars") or 0) > 0:
         reasons.append("AMBIGUOUS_BAR")
-    rb, pb = _exit_basis(rec), str(res.get("net_exit_basis") or "")
-    if (rb in _GAP_BASES) != (pb in _GAP_BASES) and (rb is not None or pb in _GAP_BASES):
+    rb = _exit_basis(rec)
+    if pb != RECORDED_FILL and (rb in _GAP_BASES) != (pb in _GAP_BASES) and (rb is not None or pb in _GAP_BASES):
         reasons.append("FILL_BASIS")
     if str(res.get("net_exit_reason") or "") != exit_reason and not (
             exit_reason not in ("stop", "başa-baş stop", "hedef1", "hedef2", "likidasyon")
@@ -245,5 +282,6 @@ def summarize(rows: Iterable[dict[str, Any]], *, target: float = TARGET_RATE) ->
             "by_book": {b: {**v, "rate": round(v["ok"] / v["n"], 4) if v["n"] else None} for b, v in sorted(by_book.items())}}
 
 
-__all__ = ["EXEC_KEYS", "FIDELITY_VERSION", "NOT_ELIGIBLE", "REASON_ORDER", "RecordedFunding", "ST_FAIL", "ST_NOT_ELIGIBLE",
-           "ST_OK", "TARGET_RATE", "TOLERANCE_R", "exec_model", "exec_params", "replay", "summarize"]
+__all__ = ["EXEC_KEYS", "FIDELITY_VERSION", "NOT_ELIGIBLE", "REASON_ORDER", "RECORDED_FILL", "RecordedFunding", "ST_FAIL",
+           "ST_NOT_ELIGIBLE", "ST_OK", "TARGET_RATE", "TOLERANCE_R", "exec_model", "exec_params", "recorded_stop_fill", "replay",
+           "summarize"]

@@ -178,36 +178,22 @@ def test_fidelity_gate_is_at_least_90_percent_on_the_live_replica(built):
 
 
 def test_fidelity_failures_are_listed_with_their_reason(tmp_path):
-    """Canlı izleyici stopun ÖTESİNDE gözlediği fiyattan doldurur (boşluk dolumu); yeniden oynatma seviyeden doldurur →
-    fark > 0,05R, neden `FILL_BASIS` olarak listelenir; kapı oranı düşer."""
-    w = World(tmp_path)
-    mk = world_markets()
-    sol = mk["SOLUSDT"]["1m"]
-    led = new_ledger()
-    w.v.futs[""] = led
-    keys = []
-    for k, (hh, clip) in enumerate(((3, False), (9, True))):
-        t = ms(utc(2026, 9, 29, hh, 11, 5))
-        e = price_at(sol, t)
-        stop, tgt = round(e * 0.9985, 2), [round(e * 1.03, 2)]
-        pos = led.open("SOL/USDT", "LONG", D(str(e)), SizeSpec(D("300"), AmountType.NOTIONAL, 3), stop=stop, targets=tgt, now=dt_of(t))
-        w.provenance(pos.id, "SOL/USDT", "LONG", stop=stop, targets=tgt, opened_at=pos.opened_at)
-        rec = run_trade(led, "SOL/USDT", sol, opened_ms=t, hold_ms=3 * H1, clip_stop=clip)
-        keys.append((f"main_fut|{rec.id}|{rec.opened_at}", rec.exit_reason))
-    assert [x[1] for x in keys] == ["stop", "stop"]
-    w.seal(frames={"SOLUSDT": mk["SOLUSDT"], "BTCUSDT": mk["BTCUSDT"]})
-    w.v.night(night_of("2026-10-06"))
-    s = J.build_journal(w.paths, now=NOW, src=w.source(), rawconfig=w.rc)
-    rows = {r["trade_key"]: r for r in J.iter_journal(w.paths)}
-    bad, good = rows[keys[0][0]], rows[keys[1][0]]
-    assert good["fidelity"]["status"] == "OK"
+    """Canlı izleyici stopu seviyenin ÖTESİNDEKİ ilk 60 sn örnekten doldurur; yeniden oynatma bunu kural dilimi penceresinde
+    modeller (`RECORDED_FILL`, 2026-10-08 inceleme B1) — örnekleme aşması artık FILL_BASIS değildir. Örneklerin kaçırdığı
+    ESKİ bir fitil (pencere dışında) gerçek bir farktır: yeniden oynatma o barda seviyeden durur, fark > 0,05R, neden
+    `FILL_BASIS` olarak listelenir; kapı oranı düşer."""
+    from test_research_engine_p2_fixes import _b1_world
+    _w, s, rows = _b1_world(tmp_path)
+    for k in ("A", "B", "C"):
+        assert rows[k]["fidelity"]["status"] == "OK" and rows[k]["fidelity"]["fill_model"] == "RECORDED_FILL", k
+    bad = rows["D"]
     f = bad["fidelity"]
     assert f["status"] == "FAILED" and abs(D(f["delta_r"])) > D("0.05")
     assert f["primary_reason"] == "FILL_BASIS" and f["replay_exit_basis"] == "STOP_AT_LEVEL"
-    assert bad["exit_basis"] == "GAP" and good["exit_basis"] == "LEVEL"
+    assert bad["exit_basis"] == "LEVEL" and rows["B"]["exit_basis"] == "GAP"
     fd = s["fidelity"]
-    assert (fd["eligible"], fd["ok"], fd["rate"], fd["gate_pass"]) == (2, 1, 0.5, False)
-    assert fd["failures"] == [{"trade_key": keys[0][0], "book": "main_fut", "delta_r": f["delta_r"], "reasons": f["reasons"],
+    assert (fd["eligible"], fd["ok"], fd["rate"], fd["gate_pass"]) == (4, 3, 0.75, False)
+    assert fd["failures"] == [{"trade_key": bad["trade_key"], "book": "main_fut", "delta_r": f["delta_r"], "reasons": f["reasons"],
                                "primary_reason": "FILL_BASIS"}]
     assert fd["failures_by_reason"]["FILL_BASIS"] == 1
 

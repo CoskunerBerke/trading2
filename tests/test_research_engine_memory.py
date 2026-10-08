@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Sürekli öğrenme motoru P1a — gece biriminin bellek bütçesi (docs/SYSTEM_LEARNING_ENGINE_V1.md §2.5; VPS kabul 5:
-motor `memory.peak` ≤ 0,8 × MemoryMax; birim `MemoryHigh=400M`, `MemoryMax=512M`).
+motor `memory.peak` ≤ 0,8 × MemoryMax; birim P1a'da `MemoryHigh=400M`, `MemoryMax=512M`; P2'den (inceleme M6, 2026-10-08)
+`MemoryHigh=640M`, `MemoryMax=768M`).
 
 Rotasyon tavanlarında (her vadeli defter 5000 `history` / 2000 `entries`, 8 vadeli defter + ana botun spot defteri)
 iki tam gece (`night.run_night`: S0 → S1a → S3 → S7 → S7b) AYRI bir süreçte, üretim import yoluyla (`import
@@ -24,7 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from research_engine_fixtures import FakeVps, at, iso, trade  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
-MEMORY_MAX = 536870912                       # deploy/tradingbot-engine-night.service MemoryMax=512M
+MEMORY_MAX = 805306368                       # deploy/tradingbot-engine-night.service MemoryMax=768M (P2, inceleme M6)
 BUDGET = int(0.6 * MEMORY_MAX)
 BOOKS = ("", "strategy_paper", "strategy_paper_m2", "strategy_paper_box", "pattern_trader", "strategy_paper_trend4h",
          "strategy_paper_candle4h", "strategy_paper_candle4h_strict")

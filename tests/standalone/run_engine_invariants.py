@@ -4,7 +4,7 @@
 VPS'te pytest YOKTUR. Motor sürüm betiğinin `--dry-run`'ı (ve dağıtımın ön denetimi) depo testlerinin VPS'te anlamlı
 alt kümesini bu dosyayla, pytest OLMADAN, AYRI bir süreçte koşar: P1a kabul 1–8, 13, 14 ve (P1b'den) P1b depo kabul
 testleri 1–11, 13–15. İki aşamanın kabul numaraları çakışmasın diye P1b'ninkiler **100 eklenerek** yazılır (101 = P1b
-kabul 1, …, 115 = P1b kabul 15); P2'ninkiler **200 eklenerek** (205 fidelity, 207 atıf/ızgara/ayrıştırma altın
+kabul 1, …, 115 = P1b kabul 15); P2'ninkiler **200 eklenerek** (201 uzlaştırma — S1a okumasına göre, 205 fidelity, 207 atıf/ızgara/ayrıştırma altın
 yolları + mühürler, 208 bayt-özdeşlik ve kaldığı yerden devam, 211 §5.10 Box bulgusu, 212 özet/sorgu sınırları, 213 gece
 S1b/S2 + son tarih payı + ölçeklenmiş zamanlama). P1b kabul 12 (veri birimi sözleşmesi) birim DOSYASI testidir; sürüm betiği aynı
 satırları kendi `unit_contract`'ıyla ve sha256 sabitiyle denetler. Parametreli testler (ör. P1b kabul 5'in günlük
@@ -124,7 +124,7 @@ SUBSET: tuple[tuple[int, str, str], ...] = (
     (207, "test_research_engine_attribution", "test_attribution_registry_is_sealed"),
     (207, "test_research_engine_cfgrid", "test_replay_ext_without_hooks_equals_net_replay"),
     (207, "test_research_engine_cfgrid", "test_golden_stopped_then_reversed_grid"),
-    (207, "test_research_engine_cfgrid", "test_golden_decomposition_chain_and_residual"),
+    (207, "test_research_engine_cfgrid", "test_golden_decomposition_axis_medians_and_residual"),
     (207, "test_research_engine_cfgrid", "test_random_control_same_time_of_day_same_bucket_deterministic"),
     (207, "test_research_engine_cfgrid", "test_cfgrid_registry_is_sealed"),
     (208, "test_research_engine_p2_night", "test_same_seal_gives_byte_identical_journal_paths_and_attribution"),
@@ -135,9 +135,27 @@ SUBSET: tuple[tuple[int, str, str], ...] = (
     (213, "test_research_engine_p2_night", "test_full_p2_night_runs_s1b_s2_and_writes_bounded_turkish_digest"),
     (213, "test_research_engine_p2_night", "test_no_stage_budget_left_skips_with_deadline_and_next_night_completes"),
     (213, "test_research_engine_p2_night", "test_night_timing_scaled_synthetic_world_fits_the_deadline_for_2000_trades"),
+    # P2 inceleme düzeltmeleri (2026-10-08; B1, M1–M6, küçükler) — `test_research_engine_p2_fixes`
+    (201, "test_research_engine_p2_fixes",
+     "test_m4_reconcile_uses_the_s1a_read_trades_closed_or_revised_later_are_not_inconsistent"),
+    (205, "test_research_engine_p2_fixes", "test_b1_fidelity_models_the_recorded_sample_fill_and_keeps_real_differences"),
+    (207, "test_research_engine_p2_fixes",
+     "test_b1_sampled_stop_fill_is_level_and_gap_needs_a_bar_open_gap_or_a_large_overshoot"),
+    (207, "test_research_engine_p2_fixes", "test_b1_gap_fill_is_not_the_primary_code_of_ordinary_stop_outs"),
+    (207, "test_research_engine_p2_fixes", "test_m1_decomposition_is_actual_minus_the_median_of_that_axis_grid"),
+    (207, "test_research_engine_p2_fixes",
+     "test_m2_late_entry_mae_arm_is_mae_before_the_mfe_not_a_never_favourable_trade"),
+    (207, "test_research_engine_p2_fixes", "test_m2_path_metrics_exclude_the_bar_that_contains_the_exit"),
+    (207, "test_research_engine_p2_fixes", "test_m3_trade_level_ranking_uses_one_measure_and_excludes_the_size_axis"),
+    (208, "test_research_engine_p2_fixes",
+     "test_m5_a_daily_append_after_every_window_rebuilds_nothing_but_a_change_inside_a_window_does"),
+    (208, "test_research_engine_p2_fixes", "test_minor_s2_builds_newest_first_within_a_month_under_backlog"),
+    (212, "test_research_engine_p2_fixes", "test_m3_book_view_needs_n30_and_10_days_and_never_offers_leverage"),
+    (212, "test_research_engine_p2_fixes", "test_m3_digest_text_labels_the_selection_and_never_mentions_leverage"),
+    (213, "test_research_engine_p2_fixes", "test_m6_p2_night_unit_memory_and_part_caches"),
 )
 ACCEPTANCE = (1, 2, 3, 4, 5, 6, 7, 8, 13, 14, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 113, 114, 115,
-              205, 207, 208, 211, 212, 213)
+              201, 205, 207, 208, 211, 212, 213)
 _NOTSET = object()
 
 

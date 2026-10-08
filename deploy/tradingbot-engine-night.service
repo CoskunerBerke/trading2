@@ -12,8 +12,12 @@
 # OnFailure (tradingbot-alert@%n.service) bu dosyada YOKTUR: yalnız uyarı birimi VPS'te varsa (P0 denetimi) sürüm betiği
 # bir drop-in ile ekler. nproc < 4 ise CPUQuota=60% de drop-in ile gelir (§2.5). MemoryHigh/MemoryMax P0'da kesinleşir;
 # MemoryMax değişirse ENGINE_EXPECTED_MEMORY_MAX aynı bayt değeriyle değişmelidir (birim sözleşme testi eşitliği denetler).
+# P2 (2026-10-08, inceleme M6): MemoryHigh 400M → 640M, MemoryMax 512M → 768M (ENGINE_EXPECTED_MEMORY_MAX=805306368).
+# Ölçülen gece tepesi P2'de 224–283 MiB (sentetik, 400–2.000 işlem; depo parça önbelleği 16), VPS tahmini ~1.100 işlemle
+# 330–420 MiB: 400M/512M'de MemoryHigh kısmasına ve ~0,8 × MemoryMax'a dayanırdı. Bu dosya YALNIZ P2 sürüm betiğiyle
+# (kapılı daemon-reload, §9.3) kurulur; o zamana kadar VPS'teki P1a gece birimi 400M/512M'de kalır.
 [Unit]
-Description=Trading Bot research engine — night unit (P1a, network-less, record-only)
+Description=Trading Bot research engine — night unit (P2, network-less, record-only)
 Documentation=file:///opt/tradingbot/engine-app/docs/SYSTEM_LEARNING_ENGINE_V1.md
 After=local-fs.target
 
@@ -30,7 +34,7 @@ Environment=TZ=UTC
 Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONIOENCODING=utf-8
 Environment=PYTHONDONTWRITEBYTECODE=1
-Environment=ENGINE_EXPECTED_MEMORY_MAX=536870912
+Environment=ENGINE_EXPECTED_MEMORY_MAX=805306368
 # `-s -m`: kullanıcı site-packages yok; `-m` çalışma dizinini sys.path'e ekler (tradingbot venv'e kurulu DEĞİL).
 # `-I` KULLANILMAZ: hem PYTHONPATH'i hem çalışma dizinini yok sayar ve import'lar kırılır.
 ExecStart=/opt/tradingbot/venv/bin/python -s -m tradingbot engine-night
@@ -44,8 +48,8 @@ CPUQuota=100%
 IOSchedulingClass=idle
 IOWeight=10
 OOMScoreAdjust=1000
-MemoryHigh=400M
-MemoryMax=512M
+MemoryHigh=640M
+MemoryMax=768M
 
 # --- yalıtım (§2.1, §2.8)
 NoNewPrivileges=yes

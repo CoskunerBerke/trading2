@@ -240,16 +240,47 @@ def walk_ledger(led: FuturesLedgerV2, sym: str, m1: pd.DataFrame, *, opened_ms: 
     return None
 
 
+def walk_sampled(led: FuturesLedgerV2, sym: str, m1: pd.DataFrame, *, opened_ms: int, until_ms: int,
+                 bar_ms: int | None = None, funding: Any = None):
+    """CANLI izleme benzetimi (2026-10-08, P2 incelemesi B1): koruyucu izleyicinin 60 sn fiyat ÖRNEKLERİ — her 1m barının
+    kapanışı tek fiyat-yalnız tick (`first_source = PRICE`): stop, seviyenin ÖTESİNDEKİ ilk örnekten dolar
+    (`GAP_FILL_AT_FIRST_OBSERVATION`, gerçek defterin `exit_decision` kuralı 2) — ve isteğe bağlı kural diliminin bar tiki
+    (`bar_ms`, ör. Box 5m: açılış/uçlar/kapanış; örneklerin kaçırdığı fitil stopu seviyeden yakalanır). Seviyeye kırpma YOK
+    (`walk_ledger(clip_stop=True)` gerçekçi değildir: canlı dolum seviyeden değil örnekten olur)."""
+    path = m1[(m1["timestamp"] > opened_ms) & (m1["timestamp"] <= until_ms)]
+    for t, c in zip(path["timestamp"], path["close"]):
+        if led.positions.get(sym) is None:
+            return None
+        at = dt_of(int(t) + M1)
+        recs = led.tick({sym: TickData(last=D(str(c)), mark=D(str(c)), ts=iso(at))}, now_utc=at, funding_rate_lookup=funding,
+                        bar_advance=True)
+        if recs:
+            return recs[-1]
+        end = int(t) + M1
+        if bar_ms and end % bar_ms == 0 and end - bar_ms > opened_ms:
+            seg = m1[(m1["timestamp"] >= end - bar_ms) & (m1["timestamp"] < end)]
+            last = D(str(float(seg["close"].iloc[-1])))
+            td = TickData(last=last, mark=last, high=D(str(float(seg["high"].max()))), low=D(str(float(seg["low"].min()))),
+                          open=D(str(float(seg["open"].iloc[0]))), ts=iso(at))
+            recs = led.tick({sym: td}, now_utc=at, funding_rate_lookup=funding)
+            if recs:
+                return recs[-1]
+    return None
+
+
 def close_at(led: FuturesLedgerV2, sym: str, m1: pd.DataFrame, at_ms: int, reason: str = "STRATEGY_EXIT"):
     """Kural çıkışı: `at`'de biten 1m barının kapanışından `close_manual`."""
     row = m1[m1["timestamp"] == at_ms - M1]
     return led.close_manual(sym, D(str(float(row["close"].iloc[0]))), reason=reason, now=dt_of(at_ms))
 
 
-def run_trade(led: FuturesLedgerV2, sym: str, m1: pd.DataFrame, *, opened_ms: int, hold_ms: int, **kw):
-    """Yolu `hold_ms` boyunca yürüt; stop/hedef gelmezse kural çıkışı (dakika sınırında `close_manual`)."""
+def run_trade(led: FuturesLedgerV2, sym: str, m1: pd.DataFrame, *, opened_ms: int, hold_ms: int, sampled: bool = False,
+              **kw):
+    """Yolu `hold_ms` boyunca yürüt; stop/hedef gelmezse kural çıkışı (dakika sınırında `close_manual`). `sampled`: canlı
+    60 sn örnek izleyicisi (`walk_sampled`; kural dilimi `bar_ms` kw'si ile)."""
     until = (opened_ms // M1) * M1 + hold_ms
-    rec = walk_ledger(led, sym, m1, opened_ms=opened_ms, until_ms=until - M1, **kw)
+    walk = walk_sampled if sampled else walk_ledger
+    rec = walk(led, sym, m1, opened_ms=opened_ms, until_ms=until - M1, **kw)
     return rec if rec is not None else close_at(led, sym, m1, until)
 
 
@@ -511,4 +542,4 @@ def standard_world(dst: Path) -> World:
 __all__ = ["D1", "H1", "H4", "LIVE_LIMITS", "M1", "M5", "RECENT_FROM", "RECENT_TO", "SEAL_AT", "STEP", "SettlementRates",
            "StoreFixture", "World", "aggregate", "close_at", "config_text", "dt_of", "from_rows", "live_frames", "market", "ms",
            "new_ledger", "open_trade", "price_at", "rule_params", "run_trade", "utc", "walk", "walk_ledger", "worker_decide",
-           "standard_world", "world_markets", "write_memory"]
+           "standard_world", "walk_sampled", "world_markets", "write_memory"]

@@ -38,7 +38,8 @@ def test_standalone_runner_passes_subset_without_pytest_in_a_clean_process(tmp_p
     m = _load()
     assert res["failed"] == 0 and res["skipped"] == 0 and res["passed"] == len(m.SUBSET)
     p1b = [100 + k for k in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15)]   # P1b kabul 12 = birim dosyası (betik)
-    p2 = [200 + k for k in (5, 7, 8, 11, 12, 13)]          # P2: modül fixture'lı P2a testleri depoda; VPS eşi gecenin kendisi
+    p2 = [200 + k for k in (1, 5, 7, 8, 11, 12, 13)]       # P2: modül fixture'lı P2a testleri depoda; VPS eşi gecenin kendisi
+    #                                                        (201: inceleme M4, uzlaştırma S1a okumasına göre — 2026-10-08)
     assert res["acceptance_passed"] == list(m.ACCEPTANCE) == [1, 2, 3, 4, 5, 6, 7, 8, 13, 14] + p1b + p2
     assert "ÖZET:" in cp.stdout
 

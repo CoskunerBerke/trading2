@@ -40,13 +40,15 @@ UTC = timezone.utc
 ATTR_SCHEMA = "attr_v1"
 INDEX_SCHEMA = "attr_v1_index"
 BUILD_SCHEMA = "attr_v1_build"
-ANALYSIS_VERSION = "attr_v1/p2b.1"
+ANALYSIS_VERSION = "attr_v1/p2c.1"   # 2026-10-08 inceleme düzeltmeleri (B1, M1–M3, M5)
 DAY_MS = 86_400_000
 TF_MS = CG.TF_MS
-#: S2'nin depo parça önbelleği üst sınırı (1m ay parçası ~2 MB; bellek bütçesi, §2.5)
-S2_MAX_PARTS = 32
+#: S2'nin depo parça önbelleği üst sınırı (1m ay parçası ~2 MB; bellek bütçesi, §2.5); 2026-10-08 (inceleme M6) 32 → 16
+S2_MAX_PARTS = 16
 #: atıf ay dosyasına akışla birleştirmeden önce bellekte tutulan en çok yeni satır
 FLUSH_ROWS = 1000
+#: S2 geçiş 2'de günlükten bir kerede okunan satır (en yeni kapanış önce; bellek: bir parça)
+S2_LOAD_CHUNK = 200
 
 
 def _canon(obj: Any) -> str:
@@ -199,7 +201,7 @@ def analyze_trade(row: dict, *, prior: "PriorCtx | list[dict]", sv: StoreView, e
     keep = ("trade_key", "book", "book_name", "symbol", "side", "tactic", "variation_id", "config_epoch", "opened_at",
             "closed_at", "exit_reason", "exit_basis", "net_pnl", "net_r", "gross_r", "cost_r", "fees_total", "funding_net",
             "slippage_cost", "mfe_r", "mae_r", "order", "capture_ratio", "path_source", "kind", "position_group", "rev",
-            "stop_dist_pct", "cohort")
+            "stop_dist_pct", "cohort", "exit_overshoot_r")
     return {"schema": ATTR_SCHEMA, **{k: row.get(k) for k in keep}, "fidelity": {k: (row.get("fidelity") or {}).get(k) for k in (
                 "status", "delta_r", "primary_reason")},
             "attribution": attr, "grid": grid, "regime_fit": rf, "analysis_version": ANALYSIS_VERSION}
@@ -304,25 +306,21 @@ def _prior_of(pidx: dict[str, BookPrior], row: dict) -> PriorCtx:
     return PriorCtx(bp, bp.k_of(row) if bp is not None else 0)
 
 
-def _store_digest(src: Any, row: dict) -> str:
-    """Satırın S2'de okuyabileceği depo ay parçaları (seri, ay, sha): [açılış − 125 g − 4h pencere, kapanış + 2 g]."""
-    if src is None:
-        return "no-store"
-    from .provider import raw_symbol
-    from .store import month_bounds_ym
+def _windows(row: dict) -> list[tuple[str, str, str, int, int]] | None:
     om, cm = _ms(row.get("opened_at")), _ms(row.get("closed_at"))
     if om is None or cm is None:
-        return "no-time"
-    a, b = om - (CG.RC_LOOKBACK_DAYS + 40) * DAY_MS - 230 * TF_MS["4h"], cm + 2 * DAY_MS
-    sym = raw_symbol(str(row.get("symbol") or ""))
-    out = []
-    for mk, s, tf in [("futures", sym, tf) for tf in ("1m", "5m", "1h", "4h", "1d", "funding")] + [("futures", "BTCUSDT", "5m")]:
-        lst = src._listing(mk, s, tf)
-        for ym in sorted(lst):
-            lo, hi = month_bounds_ym(ym)
-            if hi > a and lo <= b:
-                out.append((mk, s, tf, ym, lst[ym]))
-    return _sha(out)
+        return None
+    from .pathrec import s2_windows
+    return s2_windows(str(row.get("symbol") or ""), om, cm)
+
+
+def _store_digest(wd: Any, row: dict) -> str:
+    """Satırın S2'de okuyabileceği depo içeriğinin özeti (`pathrec.WindowDigest`, 2026-10-08 inceleme M5): pencere
+    `[açılış − dilime göre geriye bakış, kapanış + 6 sa]`; pencereden sonra eklenen günler satırı yeniden kurdurmaz."""
+    if wd is None:
+        return "no-store"
+    w = _windows(row)
+    return wd.digest(w) if w is not None else "no-time"
 
 
 def attr_month_file(paths: EnginePaths, month: str) -> Path:
@@ -375,14 +373,30 @@ def _proj(r: dict) -> dict:
             "cf_inputs": {"exit_overshoot_pct": ci.get("exit_overshoot_pct")}}
 
 
-def _journal_months_newest_first(paths: EnginePaths) -> Iterator[tuple[str, dict]]:
-    """(ay, satır) — en yeni AY önce; ay içinde dosya sırası (akış; bellekte tek satır)."""
+def _journal_lines(paths: EnginePaths) -> Iterator[tuple[str, int, dict]]:
+    """(ay, satır no, satır) — ay dosyası sırasıyla (akış; bellekte tek satır)."""
+    from .journal import iter_gz_lines
     root = paths.journal_tj
     if not root.is_dir():
         return
-    for p in sorted(root.glob("????-??.jsonl.gz"), reverse=True):
-        for r in _iter_gz(p):
-            yield p.name[:7], r
+    for p in sorted(root.glob("????-??.jsonl.gz")):
+        for n, r in iter_gz_lines(p):
+            yield p.name[:7], n, r
+
+
+def _rows_at(paths: EnginePaths, month: str, lines: set[int]) -> dict[int, dict]:
+    """Günlük ay dosyasından yalnız istenen satırlar (tek geçiş; diğerleri ayrıştırılmaz)."""
+    out: dict[int, dict] = {}
+    if not lines:
+        return out
+    last = max(lines)
+    with gzip.open(paths.journal_tj / f"{month}.jsonl.gz", "rt", encoding="utf-8") as fh:
+        for n, line in enumerate(fh, 1):
+            if n in lines and line.strip():
+                out[n] = json.loads(line)
+            if n >= last:
+                break
+    return out
 
 
 def _attr_sort_key(r: dict) -> tuple[str, str]:
@@ -398,9 +412,9 @@ def _write_attr_month(paths: EnginePaths, month: str, built: dict[str, dict], ne
 def run_s2(paths: EnginePaths, *, now: datetime | None = None, run_id: str | None = None, src: Any = None,
            budget_s: float | None = None, max_rows: int | None = None, open_src: bool = True) -> dict[str, Any]:
     """S2 (§6.1): kodlar + `cfgrid_v1` + ayrıştırma, artımlı. Dönen: özet (`_build.json` içeriği + çalıştırma sayıları).
-    Bellek: günlük iki kez AKIŞLA okunur (1: özet/izdüşüm, 2: yalnız hesaplanacak satırlar, en yeni ay önce); bir anda
-    en çok bir ayın satırları bellektedir; depo parça önbelleği sınırlıdır."""
-    from .journal import iter_journal, open_store
+    Bellek: günlük iki kez AKIŞLA okunur (1: özet/izdüşüm + satır yeri, 2: yalnız hesaplanacak satırlar, en yeni ay ve ay
+    içinde en yeni kapanış önce, `S2_LOAD_CHUNK`'lık parçalarla); depo parça önbelleği sınırlıdır."""
+    from .journal import open_store
     now = now or utc_now()
     sinfo: dict[str, Any] = {"status": "GIVEN" if src is not None else "NONE"}
     if src is None and open_src:
@@ -410,10 +424,14 @@ def run_s2(paths: EnginePaths, *, now: datetime | None = None, run_id: str | Non
     exec_by = _exec_by_book(paths)
     seal_d = str(getattr(src, "seal", None) or "no-store")
     old = _read_index(paths)
-    projs, digests = [], {}
-    for r in iter_journal(paths):                                # geçiş 1: izdüşüm + satır özeti
+    from .pathrec import WindowDigest
+    wd = WindowDigest(src, cache_file=paths.attribution / "_window_days.json.gz", paths=paths) if src is not None else None
+    projs, digests, where = [], {}, {}
+    for jm, ln, r in _journal_lines(paths):                     # geçiş 1: izdüşüm + satır özeti + yeri
         projs.append(_proj(r))
-        digests[str(r.get("trade_key"))] = (_sha(r), _store_digest(src, r))
+        k0 = str(r.get("trade_key"))
+        digests[k0] = (_sha(r), _store_digest(wd, r))
+        where[k0] = (jm, ln, _attr_sort_key(r))
     pidx = _prior_index(projs)
     new_index: dict[str, dict] = {}
     todo: set[str] = set()
@@ -443,17 +461,36 @@ def run_s2(paths: EnginePaths, *, now: datetime | None = None, run_id: str | Non
         if writer is not None and n_month and writer.close() and cur_month not in written:
             written.append(cur_month)
 
-    for month, r in _journal_months_newest_first(paths):        # geçiş 2: yalnız hesaplanacaklar, en yeni ay önce
-        k = str(r.get("trade_key"))
-        if k not in todo:
-            continue
+    # geçiş 2: yalnız hesaplanacaklar — en yeni AY önce, ay İÇİNDE de en yeni kapanış önce (2026-10-08, inceleme küçüğü:
+    # birikmiş işte dünün işlemleri bekletilmez; S1b ile aynı sıra). Satırlar `S2_LOAD_CHUNK`'lık parçalarla, yalnız
+    # istenen satır numaraları okunarak gelir (bellekte en çok bir parça).
+    order: dict[str, list[tuple[tuple[str, str], int, str]]] = {}
+    for k in todo:
+        jm, ln, sk = where[k]
+        order.setdefault(jm, []).append((sk, ln, k))
+
+    def _todo_rows() -> Iterator[tuple[str, str, dict | None]]:
+        for jm in sorted(order, reverse=True):
+            items = sorted(order[jm], reverse=True)
+            for i in range(0, len(items), S2_LOAD_CHUNK):
+                part = items[i:i + S2_LOAD_CHUNK]
+                if (budget_s is not None and time.monotonic() - t0 > budget_s) or (max_rows is not None and n_built >= max_rows):
+                    for _sk, _ln, k in part:
+                        yield jm, k, None
+                    continue
+                got = _rows_at(paths, jm, {ln for _sk, ln, _k in part})
+                for _sk, ln, k in part:
+                    yield jm, k, got.get(ln)
+
+    for month, k, r in _todo_rows():
         if month != cur_month:
             _close()
             cur_month, n_month = month, 0
             writer = MonthWriter(paths, attr_month_file(paths, month),
                                  lambda kk, _m=month: kk in new_index and new_index[kk]["month"] == _m, _attr_sort_key,
                                  flush_rows=FLUSH_ROWS)
-        if (budget_s is not None and time.monotonic() - t0 > budget_s) or (max_rows is not None and n_built >= max_rows):
+        if r is None or (budget_s is not None and time.monotonic() - t0 > budget_s) or (
+                max_rows is not None and n_built >= max_rows):
             pending.append(k)
             continue
         prior = _prior_of(pidx, r)
@@ -468,7 +505,10 @@ def run_s2(paths: EnginePaths, *, now: datetime | None = None, run_id: str | Non
             moving.append(k)
             continue
         from .store import ResearchStore
-        out["data_seal"] = ResearchStore.seal_of(sorted(sv.used)) if sv.used else None
+        used = sorted(sv.used)
+        if used and wd is not None and _windows(r) is not None:
+            used = wd.row_tokens(used, _windows(r))
+        out["data_seal"] = ResearchStore.seal_of(used) if used else None
         writer.add(k, out)
         n_month += 1
         n_built += 1
@@ -484,6 +524,8 @@ def run_s2(paths: EnginePaths, *, now: datetime | None = None, run_id: str | Non
     for month in sorted(drop):
         if _write_attr_month(paths, month, {}, new_index) and month not in written:
             written.append(month)
+    if wd is not None:
+        wd.save()
     idx = {"schema": INDEX_SCHEMA, "version": ANALYSIS_VERSION, "keys": dict(sorted(new_index.items()))}
     ip = paths.attribution / "_index.json.gz"
     idata = gzip_bytes(json.dumps(idx, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
@@ -509,6 +551,8 @@ def summarize(rows: Iterable[dict]) -> dict[str, Any]:
     codes: dict[str, int] = {}
     prim: dict[str, int] = {}
     grid: dict[str, int] = {}
+    rank: dict[str, int] = {}
+    cell_na: dict[str, int] = {}
     n = 0
     for r in rows:
         n += 1
@@ -520,8 +564,16 @@ def summarize(rows: Iterable[dict]) -> dict[str, Any]:
         g = r.get("grid") or {}
         key = "OK" if g.get("status") == "OK" else "NE:" + str(g.get("reason") or "?").split(":")[0]
         grid[key] = grid.get(key, 0) + 1
+        if g.get("status") == "OK":
+            rs = str(g.get("rank_src") or "?")
+            rank[rs] = rank.get(rs, 0) + 1
+            for c in g.get("cells") or []:
+                if c.get("status") not in ("OK", "MISSED"):                # ör. kısa işlemde E_DELAY1 NO_BARS (açıklanır)
+                    k = f"{c.get('id')}:{c.get('status')}"
+                    cell_na[k] = cell_na.get(k, 0) + 1
     return {"rows": n, "codes": dict(sorted(codes.items())), "primary": dict(sorted(prim.items())),
-            "grid": dict(sorted(grid.items()))}
+            "grid": dict(sorted(grid.items())), "rank_src": dict(sorted(rank.items())),
+            "cells_not_ok": dict(sorted(cell_na.items()))}
 
 
 #: §5.10 akıl sağlığı (tarihsel yeniden üretim; aday DEĞİL): Box stop genişliği kovaları (% giriş), config dönemine bölünmüş
@@ -567,29 +619,42 @@ def cell_map(row: dict) -> dict[str, dict]:
     return {c["id"]: c for c in ((row.get("grid") or {}).get("cells") or [])}
 
 
-def rank_r(c: dict | None) -> float | None:
+def cons_r(c: dict | None) -> float | None:
+    """Hücrenin `cf_aux_v1` muhafazakâr R'si (dolmuş ya da kaçan hücre); yoksa None (r_net'e DÜŞÜLMEZ — aynı ölçü)."""
     if not c or c.get("status") not in ("OK", "MISSED"):
         return None
-    return c.get("r_cons") if c.get("r_cons") is not None else c.get("r_net")
+    return c.get("r_cons")
+
+
+#: defter görünümünde karşılaştırılan sabit hücreler: EX_ANTE, taban dışı, sıralamadan dışlanan eksen (boyut) hariç
+RANKED_VARIANTS: tuple[str, ...] = tuple(v[0] for v in CG.VARIANTS if v[2] == CG.EX_ANTE and v[0] != "E_ACTUAL"
+                                         and v[1] not in CG.RANK_EXCLUDED_AXES)
 
 
 class VariantAcc:
-    """EX_ANTE varyant başına EŞLİ fark (hücre − taban) birikimi — akışla (bellekte satır tutulmaz)."""
+    """EX_ANTE sabit hücre başına EŞLİ fark (hücre − taban, AYNI işlem) birikimi — akışla (bellekte satır tutulmaz).
+    2026-10-08 (inceleme M3): yalnız `cf_aux_v1` ölçüsüyle sıralanmış işlemler (`grid.rank_src`; r_net'li işlemler
+    `excluded` sayılır, ölçüler karışmaz); boyut/kaldıraç ekseni hiç girmez (öneri değildir, §7.6)."""
 
     def __init__(self) -> None:
         self.acc: dict[str, list[float]] = {}            # vid → [n, toplam, daha iyi sayısı]
         self.days: dict[str, set[str]] = {}
+        self.used = 0
+        self.excluded = 0
 
     def add(self, r: dict) -> None:
-        cm = cell_map(r)
-        base = rank_r(cm.get("E_ACTUAL"))
-        if base is None:
+        g = r.get("grid") or {}
+        if g.get("status") != "OK":
             return
+        cm = cell_map(r)
+        base = cons_r(cm.get("E_ACTUAL"))
+        if g.get("rank_src") != CG.RANK_CONSERVATIVE or base is None:
+            self.excluded += 1
+            return
+        self.used += 1
         day = str(r.get("closed_at") or "")[:10]
-        for vid in CG.VARIANT_IDS:
-            if vid == "E_ACTUAL":
-                continue
-            v = rank_r(cm.get(vid))
+        for vid in RANKED_VARIANTS:
+            v = cons_r(cm.get(vid))
             if v is None:
                 continue
             a = self.acc.setdefault(vid, [0, 0.0, 0])
@@ -607,28 +672,34 @@ class VariantAcc:
                         "share_better": round(better / n, 3) + 0.0}
         return dict(sorted(out.items()))
 
-    def best(self, *, min_n: int = 5) -> tuple[str, dict] | None:
-        st = self.stats(min_n=min_n)
-        if not st:
-            return None
-        vid = max(st, key=lambda v: (st[v]["mean_delta_r"], v))
-        return vid, st[vid]
+    def best(self, *, min_n: int = CG.BOOK_VIEW_MIN_N, min_days: int = CG.BOOK_VIEW_MIN_DAYS) -> dict[str, Any]:
+        """Defter görünümü: n ≥ 30 ve ≥ 10 gün olan sabit hücreler (k tane) arasından en yüksek ortalama eşli farkı veren
+        hücre — bir SEÇİMDİR (k arasından en iyisi; seçim yanlılığı, tek başına ders değil). Hiçbiri ortalamada
+        iyileştirmiyorsa `NO_IMPROVING`; uygun hücre yoksa `INSUFFICIENT`."""
+        elig = {v: s for v, s in self.stats().items() if s["n"] >= min_n and s["n_days"] >= min_days}
+        out: dict[str, Any] = {"k": len(elig), "used": self.used, "excluded": self.excluded, "min_n": min_n,
+                               "min_days": min_days}
+        if not elig:
+            return {"status": "INSUFFICIENT", **out}
+        vid = max(elig, key=lambda v: (elig[v]["mean_delta_r"], v))
+        if elig[vid]["mean_delta_r"] <= 0:
+            return {"status": "NO_IMPROVING", **out}
+        return {"status": "SELECTED", "cell": vid, "stats": elig[vid], **out}
 
 
 def variant_stats(rows: Iterable[dict], *, min_n: int = 1) -> dict[str, dict[str, Any]]:
-    """EX_ANTE varyant başına EŞLİ fark (hücre − taban), sıralama muhafazakâr R ile (`r_rank`). Sabit ızgara noktası her
-    işlemde aynıdır → bu bir EX_ANTE kuralının ara görünümüdür (ders değil; ders P3'te, n ≥ 30 ve ≥ 10 gün)."""
+    """EX_ANTE sabit hücre başına EŞLİ fark (hücre − taban), muhafazakâr R (`cf_aux_v1`) ile; ara görünüm (ders P3'te)."""
     acc = VariantAcc()
     for r in rows:
         acc.add(r)
     return acc.stats(min_n=min_n)
 
 
-def best_ex_ante(rows: Iterable[dict], *, min_n: int = 5) -> tuple[str, dict] | None:
+def best_ex_ante(rows: Iterable[dict], **kw: Any) -> dict[str, Any]:
     acc = VariantAcc()
     for r in rows:
         acc.add(r)
-    return acc.best(min_n=min_n)
+    return acc.best(**kw)
 
 
 def iter_window(paths: EnginePaths, *, since: datetime, until: datetime) -> Iterator[dict]:
@@ -672,7 +743,7 @@ def build_status(paths: EnginePaths) -> dict | None:
         return None
 
 
-__all__ = ["ANALYSIS_VERSION", "ATTR_SCHEMA", "BookPrior", "PriorCtx", "StoreView", "VariantAcc", "analyze_trade", "atr_pct_at",
-           "attr_month_file", "best_ex_ante", "build_status", "cell_map", "grid_eligibility", "iter_attribution", "iter_window",
-           "load_window", "rank_r", "rows_in_day", "rows_since", "run_s2", "sanity_box_stop_width", "store_inputs", "summarize",
+__all__ = ["ANALYSIS_VERSION", "ATTR_SCHEMA", "BookPrior", "PriorCtx", "RANKED_VARIANTS", "StoreView", "VariantAcc",
+           "analyze_trade", "atr_pct_at", "attr_month_file", "best_ex_ante", "build_status", "cell_map", "cons_r",
+           "grid_eligibility", "iter_attribution", "iter_window", "load_window", "rows_in_day", "rows_since", "run_s2", "sanity_box_stop_width", "store_inputs", "summarize",
            "variant_stats"]

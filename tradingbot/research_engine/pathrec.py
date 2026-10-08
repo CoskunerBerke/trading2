@@ -198,40 +198,85 @@ def _q(x: Any) -> float | None:
     return round(v, 6) + 0.0
 
 
+def pre_exit_obs(bars: pd.DataFrame | None, *, closed_ms: int | None, step_ms: int, exit_price: Any = None
+                 ) -> list[tuple[int, float, float]]:
+    """Yolun ölçüm GÖZLEMLERİ (2026-10-08, inceleme küçüğü "yol penceresi çıkış barını içeriyor"): işlem barlarından
+    (`phase == 0`) yalnız çıkıştan ÖNCE kapanmış olanlar (`ts + adım ≤ closed`; çıkışı içeren bar çıkış SONRASI fiyatları da
+    taşır, ölçüye girmez) ve son gözlem olarak çıkış dolumu (`exit_price`). Her gözlem (bitiş anı ms, yüksek, düşük).
+    `closed_ms` None ise eski davranış: bütün işlem barları, çıkış gözlemi yok. Nokta yollarında (`step_ms = 0`) her nokta
+    `ts ≤ closed`'dur."""
+    out: list[tuple[int, float, float]] = []
+    if bars is not None and len(bars):
+        tb = bars[bars["phase"] == 0] if "phase" in bars.columns else bars
+        for t, h, lo in zip(tb["timestamp"].tolist(), tb["high"].tolist(), tb["low"].tolist()):
+            end = int(t) + int(step_ms)
+            if closed_ms is not None and end > int(closed_ms):
+                continue
+            out.append((end, float(h), float(lo)))
+    if closed_ms is not None and exit_price is not None:
+        x = float(exit_price)
+        out.append((int(closed_ms), x, x))
+    return out
+
+
+def stop_crossing(bars: pd.DataFrame | None, *, side: str, stop: Any) -> tuple[int | None, bool | None]:
+    """Bar yolunda stopa ilk ULAŞAN işlem barı (`phase == 0`, zaman sırası; LONG `low ≤ stop`, SHORT `high ≥ stop`) ve
+    o barın stopun ÖTESİNDE (kesin) açılıp açılmadığı — piyasa boşluğu. İlk işlem barının açılışı girişi içeren barın
+    devamıdır (geçiş o barda gözlenmedi): boşluk sayılmaz (`learning_cf` kuralı). Dönen (bar açılışı ms | None, boşluk |
+    None); yol stopa ulaşmıyorsa (None, None)."""
+    if bars is None or not len(bars) or stop is None:
+        return None, None
+    tb = bars[bars["phase"] == 0] if "phase" in bars.columns else bars
+    long = str(side).upper() in ("LONG", "BUY")
+    s = float(stop)
+    opens = tb["open"].tolist() if "open" in tb.columns else [None] * len(tb)
+    for i, (t, o, h, lo) in enumerate(zip(tb["timestamp"].tolist(), opens, tb["high"].tolist(), tb["low"].tolist())):
+        if (float(lo) <= s) if long else (float(h) >= s):
+            gap = bool(i > 0 and o is not None and ((float(o) < s) if long else (float(o) > s)))
+            return int(t), gap
+    return None, None
+
+
 def path_metrics(bars: pd.DataFrame | None, *, side: str, entry: Decimal, rpu: Decimal | None, opened_ms: int,
-                 exit_price: Decimal | None, step_ms: int) -> dict[str, Any]:
-    """İşlem barlarından (yalnız `phase == 0`) MFE/MAE ve türevleri. Fiyat hareketleri girişten (dolum VWAP'ı), R'ler
-    birim riske (`rpu`) bölünür; zamanlar dakika: açılıştan, ucun oluştuğu barın KAPANIŞINA kadar."""
+                 exit_price: Decimal | None, step_ms: int, closed_ms: int | None = None) -> dict[str, Any]:
+    """Yol gözlemlerinden (`pre_exit_obs`: çıkıştan önce kapanmış işlem barları + çıkış dolumu; `closed_ms` verilmezse eski
+    pencere) MFE/MAE ve türevleri. Fiyat hareketleri girişten (dolum VWAP'ı), R'ler birim riske (`rpu`) bölünür; zamanlar
+    dakika: açılıştan, ucun oluştuğu gözlemin BİTİŞİNE (barın kapanışı / çıkış anı). `mae_before_mfe_r` (2026-10-08, M2):
+    en iyi lehte uca İLK ulaşılan gözlemden KESİN önceki gözlemlerde en kötü aleyhte R (lehte hareket yoksa None)."""
     long = str(side).upper() in ("LONG", "BUY")
     sgn = Decimal(1) if long else Decimal(-1)
     out: dict[str, Any] = {"mfe_r": None, "mae_r": None, "mfe_pct": None, "mae_pct": None, "t_mfe": None, "t_mae": None,
                            "order": None, "order_ambiguous": None, "time_to_1r": None, "giveback_r": None,
-                           "capture_ratio": None, "exit_r_gross": None, "ambiguous_bars": 0}
-    tb = bars[bars["phase"] == 0] if bars is not None and len(bars) else None
-    if tb is None or not len(tb) or entry is None or entry <= 0:
+                           "capture_ratio": None, "exit_r_gross": None, "ambiguous_bars": 0, "mae_before_mfe_r": None,
+                           "n_obs": 0}
+    obs = pre_exit_obs(bars, closed_ms=closed_ms, step_ms=step_ms, exit_price=exit_price)
+    n_bar_obs = len(obs) - (1 if (closed_ms is not None and exit_price is not None) else 0)
+    if not obs or n_bar_obs <= 0 or entry is None or entry <= 0:
         return out
-    hi, lo, ts = tb["high"].tolist(), tb["low"].tolist(), tb["timestamp"].tolist()
     best = worst = Decimal(0)
     t_best = t_worst = None
     i_best = i_worst = None
     first_1r = None
     amb = 0
-    for i, (h, low_, t) in enumerate(zip(hi, lo, ts)):
+    worst_hist: list[Decimal] = []
+    for i, (t, h, low_) in enumerate(obs):
         fav = Decimal(repr(float(h if long else low_)))
         adv = Decimal(repr(float(low_ if long else h)))
         fm, am = sgn * (fav - entry), sgn * (adv - entry)
+        worst_hist.append(worst)                           # bu gözlemden ÖNCEKİ en kötü
         new_b, new_w = fm > best, am < worst
         if new_b:
             best, t_best, i_best = fm, int(t), i
         if new_w:
             worst, t_worst, i_worst = am, int(t), i
-        if new_b and new_w and i > 0:
+        if new_b and new_w and 0 < i < n_bar_obs:
             amb += 1
         if first_1r is None and rpu is not None and rpu > 0 and fm >= rpu:
             first_1r = int(t)
 
     def _mins(t: int | None) -> float | None:
-        return None if t is None else round((t + step_ms - opened_ms) / 60_000.0, 3)
+        return None if t is None else round((t - opened_ms) / 60_000.0, 3)
+    out["n_obs"] = len(obs)
     out["mfe_pct"] = _q(best / entry * 100)
     out["mae_pct"] = _q(worst / entry * 100)
     out["t_mfe"], out["t_mae"] = _mins(t_best), _mins(t_worst)
@@ -248,6 +293,8 @@ def path_metrics(bars: pd.DataFrame | None, *, side: str, entry: Decimal, rpu: D
     if rpu is not None and rpu > 0:
         mfe_r, mae_r = best / rpu, worst / rpu
         out["mfe_r"], out["mae_r"] = _q(mfe_r), _q(mae_r)
+        if i_best is not None:
+            out["mae_before_mfe_r"] = _q(worst_hist[i_best] / rpu)
         if exit_price is not None:
             xr = sgn * (exit_price - entry) / rpu
             out["exit_r_gross"] = _q(xr)
@@ -360,7 +407,8 @@ def reconstruct(rec: dict, *, trade_key: str, src: BarSource | None, market: str
         res.n_trade_bars, res.n_tail_bars, res.expected_trade_bars = nt, nl, exp
         res.gaps = max(0, exp - nt)
         res.parts = list(used)
-        res.metrics = path_metrics(bars, side=side, entry=entry, rpu=rpu, opened_ms=om, exit_price=exit_px, step_ms=TF_STEP[tf])
+        res.metrics = path_metrics(bars, side=side, entry=entry, rpu=rpu, opened_ms=om, exit_price=exit_px, step_ms=TF_STEP[tf],
+                                   closed_ms=cm)
         if res.gaps:
             res.status = "PATH_GAP"
         return res
@@ -373,7 +421,8 @@ def reconstruct(rec: dict, *, trade_key: str, src: BarSource | None, market: str
         if pp is not None and len(pp):
             res.source, res.tf, res.bars = SRC_POSITION_PATH, None, pp
             res.n_trade_bars = len(pp)
-            res.metrics = path_metrics(pp, side=side, entry=entry, rpu=rpu, opened_ms=om, exit_price=exit_px, step_ms=0)
+            res.metrics = path_metrics(pp, side=side, entry=entry, rpu=rpu, opened_ms=om, exit_price=exit_px, step_ms=0,
+                                       closed_ms=cm)
             res.status = "OK"
             return res
     # yalnız defterin uçları (sıra yok)
@@ -432,6 +481,194 @@ def read_path(paths: EnginePaths, rel: str) -> pd.DataFrame | None:
     if not p.exists():
         return None
     return pd.read_parquet(p)
+
+
+# ============================================================================ okuma penceresi içerik özeti (M5)
+DD_SCHEMA = "dd_v1"
+H_MS = 3_600_000
+#: satırın (günlük S1b / atıf S2) okuyabileceği en geç an: kapanış + 6 sa (5m kuyruğu 48 × 5m = 4 sa; bağlam ≤ kapanış)
+WINDOW_TAIL_MS = 6 * H_MS
+
+
+def day_digests(df: pd.DataFrame | None) -> dict[str, str]:
+    """Parçanın UTC gün başına içerik özeti (bütün sütunlar, `_src` dahil; deterministik): gün → 20 hex."""
+    if df is None or not len(df):
+        return {}
+    df = df.sort_values("timestamp", kind="mergesort").reset_index(drop=True)
+    dser = df["timestamp"].astype("int64") // DAY_MS
+    days = dser.to_numpy()
+    cols = sorted(str(c) for c in df.columns)
+    arrs = []
+    for c in cols:
+        v = df[c]
+        if pd.api.types.is_numeric_dtype(v) and not pd.api.types.is_bool_dtype(v):
+            arrs.append(("n", v.to_numpy(dtype="float64")))
+        else:
+            arrs.append(("s", v.astype(str).to_numpy()))
+    cut = [int(i) for i in (dser.diff().fillna(0) != 0).to_numpy().nonzero()[0]]
+    out: dict[str, str] = {}
+    for i0, i1 in zip([0] + cut, cut + [len(df)]):
+        h = hashlib.sha256(("|".join(cols)).encode("utf-8"))
+        for kind, arr in arrs:
+            h.update(arr[i0:i1].tobytes() if kind == "n" else "\x1f".join(arr[i0:i1].tolist()).encode("utf-8"))
+        out[datetime.fromtimestamp(int(days[i0]) * 86_400, tz=UTC).strftime("%Y-%m-%d")] = h.hexdigest()[:20]
+    return out
+
+
+class WindowDigest:
+    """Satırın OKUMA PENCERESİNDEKİ depo içeriğinin özeti (2026-10-08, inceleme M5). Eskiden artımlı özet, pencereyle
+    kesişen ay parçalarının sha'sıydı: günlük ekleme o ayın parçasını değiştirdiği için ay içindeki BÜTÜN satırlar her gece
+    yeniden kuruluyordu (bir eklemede 44/60). Şimdi: pencere `[a, b]` bir ay parçasını TAMAMEN kapsıyorsa parça sha'sı
+    (okuma yok), KISMEN kapsıyorsa o parçanın pencereyle kesişen UTC günlerinin içerik özetleri (`day_digests`; parça bir
+    kez okunur, özetler parça sha'sıyla `cache_file`'da saklanır). Pencereden SONRA eklenen günler, ayın geri kalanı ve
+    pencere dışındaki düzeltmeler satırı yeniden kurdurmaz; penceredeki her değişiklik (yeni bar, düzeltilmiş değer,
+    doğrulanan `archive_unverified` satırı, tembel 1m günü) kurdurur. Aynı içerik → aynı belirteç (satırın kaydettiği
+    `data_seal` de bu belirteçlerden: artımlı ve tek seferlik kurulum bayt-özdeş)."""
+
+    def __init__(self, src: Any, *, cache_file: Path | None = None, paths: EnginePaths | None = None) -> None:
+        self.src, self.cache_file, self.paths = src, cache_file, paths
+        self.cache: dict[str, dict[str, str]] = {}
+        self.used: set[str] = set()
+        self.reads = 0
+        self._dirty = False
+        self._lst: dict[tuple[str, str, str], dict[str, str]] = {}      # çalıştırma içi: seri → ay listesi
+        self._tok: dict[tuple[str, str, str, str, str], str] = {}        # (seri, ay, sha, gün0, gün1) → belirteç
+        if cache_file is not None and Path(cache_file).exists():
+            try:
+                from .paths import read_json_gz
+                d = read_json_gz(cache_file)
+                if isinstance(d, dict) and d.get("schema") == DD_SCHEMA and isinstance(d.get("parts"), dict):
+                    self.cache = {str(k): dict(v) for k, v in d["parts"].items() if isinstance(v, dict)}
+            except (OSError, ValueError, EOFError):
+                self.cache = {}
+
+    def _days(self, market: str, symbol: str, tf: str, ym: str, sha: str) -> dict[str, str] | None:
+        key = ResearchStore.series_key(market, symbol, tf)
+        ck = f"{key}|{ym}|{sha}"
+        self.used.add(ck)
+        hit = self.cache.get(ck)
+        if hit is not None:
+            return hit
+        a, b = month_bounds_ym(ym)
+        try:
+            frames = [df for _ym, df in self.src.reader.iter_parts(market, symbol, tf, a, b - 1, keep_src=True) if _ym == ym]
+        except DataMoving:
+            return None
+        self.reads += 1
+        dd = day_digests(frames[0] if frames else None)
+        self.cache[ck] = dd
+        self._dirty = True
+        return dd
+
+    def tokens(self, market: str, symbol: str, tf: str, a: int, b: int, *, only: set[str] | None = None
+               ) -> list[tuple[str, str, str]]:
+        """`[a, b]` (ms) ile kesişen ay parçalarının belirteçleri (seri, ay, sha | "d:" + gün özetleri). `only`: yalnız bu
+        ayları (satırın gerçekten okuduğu parçalar)."""
+        if self.src is None:
+            return []
+        sym = raw_symbol(symbol)
+        key = ResearchStore.series_key(market, sym, tf)
+        lk = (market, sym, tf)
+        if lk not in self._lst:
+            self._lst[lk] = dict(sorted(self.src._listing(market, sym, tf).items()))
+        out = []
+        for ym, sha in self._lst[lk].items():
+            if only is not None and ym not in only:
+                continue
+            lo, hi = month_bounds_ym(ym)
+            if hi <= a or lo > b:
+                continue
+            if lo >= a and hi - 1 <= b:
+                out.append((key, ym, sha))
+                continue
+            d0 = datetime.fromtimestamp(max(a, lo) // DAY_MS * 86_400, tz=UTC).strftime("%Y-%m-%d")
+            d1 = datetime.fromtimestamp(min(b, hi - 1) // DAY_MS * 86_400, tz=UTC).strftime("%Y-%m-%d")
+            tk = (key, ym, sha, d0, d1)
+            if tk not in self._tok:
+                dd = self._days(market, sym, tf, ym, sha)
+                if dd is None:
+                    out.append((key, ym, "DATA_MOVING"))
+                    continue
+                sel = [(d, h) for d, h in sorted(dd.items()) if d0 <= d <= d1]
+                self._tok[tk] = "d:" + hashlib.sha256(json.dumps(sel, separators=(",", ":")).encode("ascii")).hexdigest()
+            else:
+                self.used.add(f"{key}|{ym}|{sha}")
+            out.append((key, ym, self._tok[tk]))
+        return out
+
+    def digest(self, windows: Iterable[tuple[str, str, str, int, int]]) -> str:
+        toks = []
+        for mk, sym, tf, a, b in windows:
+            toks += self.tokens(mk, sym, tf, a, b)
+        return hashlib.sha256(json.dumps(toks, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+    def row_tokens(self, parts: Iterable[tuple[str, str, str]], windows: Iterable[tuple[str, str, str, int, int]]
+                   ) -> list[tuple[str, str, str]]:
+        """Satırın gerçekten okuduğu parçaların belirteçleri (kaydedilen `data_seal`): penceresi bilinen seride pencere
+        belirteci, bilinmeyende (beklenmez) parça sha'sı."""
+        win = {ResearchStore.series_key(mk, raw_symbol(sym), tf): (mk, sym, tf, a, b) for mk, sym, tf, a, b in windows}
+        by: dict[str, set[str]] = {}
+        raw: list[tuple[str, str, str]] = []
+        for key, ym, sha in parts:
+            if key in win:
+                by.setdefault(key, set()).add(ym)
+            else:
+                raw.append((key, ym, sha))
+        out = list(raw)
+        for key, yms in by.items():
+            mk, sym, tf, a, b = win[key]
+            got = self.tokens(mk, sym, tf, a, b, only=yms)
+            seen = {t[1] for t in got}
+            out += got + [(k, ym, s) for k, ym, s in parts if k == key and ym in yms and ym not in seen]
+        return sorted(set(out))
+
+    def save(self) -> None:
+        """Yalnız bu çalıştırmada kullanılan parçaların özetleri yazılır (dosya küçük kalır; değişmediyse dokunulmaz)."""
+        if self.cache_file is None or self.paths is None:
+            return
+        keep = {k: self.cache[k] for k in sorted(self.used) if k in self.cache}
+        if not self._dirty and set(keep) == set(self.cache):
+            return
+        from .paths import gzip_bytes
+        data = gzip_bytes(json.dumps({"schema": DD_SCHEMA, "parts": keep}, separators=(",", ":"), sort_keys=True).encode("utf-8"))
+        p = Path(self.cache_file)
+        if not (p.exists() and p.read_bytes() == data):
+            self.paths.write_bytes(p, data)
+        self.cache = keep
+
+
+#: S1b (günlük satırı) okuma pencereleri: dilim → girişten geriye bakış (ms). Kaynaklar: yol 1m/5m [açılış, kapanış +
+#: kuyruk]; rehydrate 5m 504 bar (~42 sa), 4h 704 bar (~117 g), 1d 404 bar; bağlam 1d 399 bar / 420 g, `situation_v1` 4h/1h
+#: (W = 200 + 6), BTC 4h, fonlama 10 g, metrics_5m 1 g + 2 sa; altın PAXG/XAU 1h 6 sa.
+S1B_LOOKBACK_MS = {"1m": DAY_MS, "5m": 3 * DAY_MS, "1h": 12 * DAY_MS, "4h": 125 * DAY_MS, "1d": 425 * DAY_MS,
+                   "funding": 15 * DAY_MS, "metrics_5m": 3 * DAY_MS}
+
+
+def s1b_windows(symbol: str, market: str, opened_ms: int, closed_ms: int, *, gold: bool = False
+                ) -> list[tuple[str, str, str, int, int]]:
+    sym = raw_symbol(symbol)
+    b = int(closed_ms) + WINDOW_TAIL_MS
+    w = [("futures", sym, tf, int(opened_ms) - lb, b) for tf, lb in S1B_LOOKBACK_MS.items()]
+    w += [("futures", "BTCUSDT", "4h", int(opened_ms) - 40 * DAY_MS, b),
+          ("futures", "BTCUSDT", "1d", int(opened_ms) - 425 * DAY_MS, b)]
+    if market == "spot":
+        w += [("spot", sym, tf, int(opened_ms) - S1B_LOOKBACK_MS[tf], b) for tf in ("1m", "5m", "1h", "1d")]
+    if gold:
+        w += [("futures", "PAXGUSDT", "1h", int(opened_ms) - DAY_MS, b), ("futures", "XAUUSDT", "1h", int(opened_ms) - DAY_MS, b)]
+    return sorted(set(w))
+
+
+#: S2 (atıf satırı) okuma pencereleri: giriş dilimi ATR'si (60 bar; 1d ~63 g), çıkış ATR'si, BTC 5m, giriş barı (yol
+#: dilimi), rastgele kontrol (5m, önceki 120 g), durum kovası (4h, 120 g + 220 bar), fonlama (önceki 122 g → ufuk)
+S2_LOOKBACK_MS = {"1m": DAY_MS, "5m": 125 * DAY_MS, "4h": 165 * DAY_MS, "1d": 70 * DAY_MS, "funding": 125 * DAY_MS}
+
+
+def s2_windows(symbol: str, opened_ms: int, closed_ms: int) -> list[tuple[str, str, str, int, int]]:
+    sym = raw_symbol(symbol)
+    b = int(closed_ms) + WINDOW_TAIL_MS
+    w = [("futures", sym, tf, int(opened_ms) - lb, b) for tf, lb in S2_LOOKBACK_MS.items()]
+    w.append(("futures", "BTCUSDT", "5m", int(opened_ms) - DAY_MS, b))
+    return sorted(set(w))
 
 
 # ============================================================================ tembel 1m ihtiyacı
@@ -505,5 +742,6 @@ def bar_close_at(src: BarSource | None, market: str, symbol: str, t_ms: int, *,
 
 __all__ = ["BarSource", "INTRABAR_ORDER", "LAZY_HISTORY_DAYS", "LAZY_MAX_DAYS", "LAZY_TRADE_DAYS", "NEEDS_SCHEMA", "PATH_COLS",
            "PATH_SCHEMA", "PathResult", "SRC_1M", "SRC_5M", "SRC_EXTREMES", "SRC_MISSING", "SRC_POSITION_PATH", "TAIL_BARS",
-           "bar_close_at", "path_bytes", "path_file", "path_metrics", "plan_needs", "read_needs", "read_path", "reconstruct",
-           "store_has_series", "trade_days", "write_needs", "write_path"]
+           "WindowDigest", "bar_close_at", "day_digests", "path_bytes", "path_file", "path_metrics", "plan_needs", "pre_exit_obs",
+           "read_needs", "read_path", "reconstruct", "s1b_windows", "s2_windows", "stop_crossing", "store_has_series",
+           "trade_days", "write_needs", "write_path"]

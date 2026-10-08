@@ -32,7 +32,8 @@ yalnız `journalctl -u tradingbot-worker` (salt-okunur, REST koruması) çağrı
 """
 from __future__ import annotations
 
-#: Motor şema/sürüm etiketleri (çıktılara yazılır).
-ENGINE_VERSION = "research_engine_v1_p1b"
+#: Motor şema/sürüm etiketleri (çıktılara yazılır). P2 (2026-10-08): `research_engine_v1_p2` — P2 sürüm betiği
+#: `ENGINE_VER`'i bununla sabitler; motor kod özeti değiştiği için yeni A/B dönemi açılır (§2.9, beklenen).
+ENGINE_VERSION = "research_engine_v1_p2"
 
 __all__ = ["ENGINE_VERSION"]

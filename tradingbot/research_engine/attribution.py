@@ -9,7 +9,9 @@ sonuçları kod tanımına GİRMEZ; onlar ayrı tutulur (`cfgrid`, §5.5). Bir i
 toplu istatistikten gelir, §5.7).
 
 Tanımlar `ATTRIBUTION_SPEC`'tedir; sha'sı (`ATTRIBUTION_SHA`) testte ve belgede sabittir — eşik/kural değişikliği =
-`attribution_v2` + yeni deneme sayımı (§2.1 madde 7). Belgenin özet tablosunun açık bıraktığı yerlerin OKUMASI (sonuçlar
+`attribution_v2` + yeni deneme sayımı (§2.1 madde 7). **İstisna (2026-10-08):** `attribution_v1` yalnız sentetik altın
+yollarla mühürlenmiş ve HİÇ gerçek veriye uygulanmamıştı; inceleme düzeltmeleri (B1, M2) ilk gerçek veri çalıştırmasından
+ÖNCE aynı sürüm adıyla yeniden mühürlendi (belge §5.4 "Değişiklik (2026-10-08 …)"; eski metin tarih olarak görünür). Belgenin özet tablosunun açık bıraktığı yerlerin OKUMASI (sonuçlar
 görülmeden, P2 uygulama notlarında da):
 
 * **Sonuç sınıfı:** `net_r > 0` → WIN (kazanç kodları), aksi halde LOSS (kayıp kodları). R'si olmayan satırda (eski kayıt,
@@ -26,7 +28,19 @@ görülmeden, P2 uygulama notlarında da):
 * **STOP_TOO_TIGHT gürültü bandı:** aynı defterin bu işlem AÇILMADAN ÖNCE kapanmış son 200 kazancının |MAE %|
   medyanı (en az 30 kazanç; yoksa yalnız ATR kolu). **Giriş dilimi** `ENTRY_TF` (kuralın karar dilimi).
 * **LATE_ENTRY** dolum kolu: dolum, sinyal kapanışının ALEYHTE yönde > 0,3 ATR (kuralın ATR'si, yoksa giriş dilimi
-  ATR14) ötesinde; sinyal kapanışı `signal_ctx.signal_close` (rehydrate) — yoksa yalnız MAE kolu.
+  ATR14) ötesinde; sinyal kapanışı `signal_ctx.signal_close` (rehydrate) — yoksa yalnız MAE kolu. **MAE kolu (Değişiklik
+  2026-10-08, inceleme M2):** "MFE'den önce MAE_R > 0,7"nin harfiyen okuması — en iyi lehte uca İLK ulaşılan gözlemden
+  KESİN önceki gözlemlerde en kötü aleyhte < −0,7R (`path.mae_before_mfe_r`; bar içi sıraya dayanmaz, bar yolu ister) VE
+  MFE ≥ 0,3R (hiç lehte gitmeyen işlem WRONG_DIRECTION'dır; iki kod MFE'ye göre ayrılır). Eski kol (`order ==
+  MAE_FIRST and mae_r < −0,7`) hiç lehte gitmeyen işlemlerde tetikleniyor, önce −0,8R sonra MFE sonra stop olan harfiyen
+  durumu ise kaçırıyordu.
+* **Yol gözlemleri (2026-10-08):** çıkışı içeren bar çıkış SONRASI fiyatları da taşır; MFE/MAE ve yol kodları çıkıştan
+  önce kapanmış işlem barlarını + çıkış dolumunu kullanır (`pathrec.pre_exit_obs`).
+* **`exit_basis` ve GAP_FILL (Değişiklik 2026-10-08, inceleme B1):** canlı defter stopu seviyenin ötesindeki İLK
+  gözlemden (60 sn örnek) doldurur — bu bir boşluk DEĞİLDİR. `classify_exit_basis`: `GAP` yalnız bar yolunda stopa ilk
+  ulaşan bar stopun ötesinde AÇILDIYSA (piyasa boşluğu) ya da seviye ötesi dolum ≥ 0,25R ise; aksi halde `LEVEL`
+  (mekanizma `SAMPLED`). GAP_FILL birincil öncelikte karar kodlarının (stop-sonra-dönüş, yön, dar stop, geç giriş)
+  arkasındadır.
 * **BREAKEVEN_SAVED:** çıkış nedeni başa-baş stop (fiyat MFE'den geri dönüp başa-baş seviyesine geldi) ve kazanç.
 * **AGAINST_BTC:** giriş anı BTC 4h trendi (`btc_ctx_entry.trend`) işlem yönüne ters (LONG↔DOWN, SHORT↔UP) VE BTC'nin
   giriş→çıkış hareketi işlem yönünün aleyhine.
@@ -75,11 +89,16 @@ TH: dict[str, float] = {
     "GIVEBACK_CAPTURE_MIN_MFE_R": 0.3, "TIME_DECAY_GROSS_R": 0.25, "TIGHT_STOP_COST_R": 0.25, "FUNDING_AGAINST_R": 0.1,
     "VOL_SPIKE_RATIO": 1.5, "CLEAN_ENTRY_MAE_R": 0.3, "TRAIL_CAPTURE": 0.6, "FUNDING_TAILWIND_R": 0.1,
     "COST_EFFICIENT_R": 0.05, "LUCKY_WIN_MAE_R": 0.8, "TOO_MANY_WARNINGS_N": 5, "LOW_RR": 2.0, "DISSENT_MIN": 1,
+    # Değişiklik 2026-10-08 (inceleme B1/M2; gerçek veriye uygulanmadan önce): örnek aşmasının "boşluk benzeri" sayıldığı
+    # eşik (R; TIME_DECAY / TIGHT_STOP_COST'un 0,25R "maddi" eşiği) ve LATE_ENTRY MAE kolunun MFE alt sınırı
+    # (WRONG_DIRECTION'ın 0,3R eşiği: iki kod MFE'ye göre ayrılır, GIVEBACK'in ikinci kolu gibi)
+    "GAP_OVERSHOOT_R": 0.25, "LATE_ENTRY_MIN_MFE_R": 0.3,
 }
 
 LOSS_RULES: dict[str, str] = {
     "LIQUIDATION_LEVERAGE": "exit_basis == LIQUIDATION or exit_reason == likidasyon (stoptan önce likidasyon)",
-    "GAP_FILL": "exit_basis == GAP",
+    "GAP_FILL": "exit_basis == GAP (classify_exit_basis: yolda bar açılışı boşluğu ya da seviye ötesi dolum >= 0.25R; "
+                "seviye sürekli işlem görüp dolum sonraki örnekten olduysa LEVEL)",
     "COST_KILLED_FEE": "r_gross_pre > 0 >= net_r; en büyük maliyet payı ücret",
     "COST_KILLED_FUNDING": "r_gross_pre > 0 >= net_r; en büyük maliyet payı fonlama",
     "COST_KILLED_SLIPPAGE": "r_gross_pre > 0 >= net_r; en büyük maliyet payı kayma",
@@ -88,7 +107,8 @@ LOSS_RULES: dict[str, str] = {
     "WRONG_DIRECTION": "mfe_r < 0.3 and exit_reason == stop",
     "STOP_TOO_TIGHT": "|entry - initial_stop| < 0.5 * ATR14(giriş dilimi) or stop_dist_pct < defter gürültü bandı "
                       "(önceki 200 kazancın |mae_pct| medyanı, n >= 30)",
-    "LATE_ENTRY": "dolum sinyal kapanışının aleyhte > 0.3 ATR ötesinde; or (order == MAE_FIRST and mae_r < -0.7)",
+    "LATE_ENTRY": "dolum sinyal kapanışının aleyhte > 0.3 ATR ötesinde; or (bar yolu, MFE >= 0.3R and MFE gözleminden "
+                  "KESİN önceki gözlemlerde en kötü aleyhte < -0.7R)",
     "GIVEBACK": "(mfe_r >= 1 and net_r <= 0) or (mfe_r >= 0.3 and capture_ratio < 0.3)",
     "PROFIT_NOT_TAKEN": "mfe_r >= TP1 mesafesi (R) and not tp1_done",
     "TIME_DECAY": "zaman çıkışı (TIME_STOP*, BOX_EOD_FLAT, horizon) and |r_gross_pre| < 0.25",
@@ -113,15 +133,34 @@ WIN_RULES: dict[str, str] = {
     "FUNDING_TAILWIND": "funding_R > +0.1",
     "COST_EFFICIENT": "cost_R < 0.05",
 }
+#: Değişiklik 2026-10-08 (B1): GAP_FILL karar kodlarının (stop-sonra-dönüş, yön, dar stop, geç giriş) ARKASINDA — dolumun
+#: seviye ötesi kısmı kaybın yalnız aşma payını açıklar; −1R'nin nedeni karar kodudur
 LOSS_PRIORITY: tuple[str, ...] = (
-    "LIQUIDATION_LEVERAGE", "GAP_FILL", "COST_KILLED_FEE", "COST_KILLED_FUNDING", "COST_KILLED_SLIPPAGE",
-    "STOPPED_THEN_REVERSED", "WRONG_DIRECTION", "STOP_TOO_TIGHT", "LATE_ENTRY", "GIVEBACK", "PROFIT_NOT_TAKEN",
+    "LIQUIDATION_LEVERAGE", "COST_KILLED_FEE", "COST_KILLED_FUNDING", "COST_KILLED_SLIPPAGE",
+    "STOPPED_THEN_REVERSED", "WRONG_DIRECTION", "STOP_TOO_TIGHT", "LATE_ENTRY", "GAP_FILL", "GIVEBACK", "PROFIT_NOT_TAKEN",
     "TIME_DECAY", "TIGHT_STOP_COST_MULTIPLIER", "FUNDING_AGAINST", "REGIME_SHIFT", "AGAINST_BTC", "VOL_SPIKE",
     "DISSENT_WAS_RIGHT", "TOO_MANY_WARNINGS", "LOW_RR", "NOISE_LOSS")
 WIN_PRIORITY: tuple[str, ...] = ("LUCKY_GAP", "LUCKY_WIN", "TREND_CONTINUATION", "MEAN_REVERSION_DONE", "BREAKEVEN_SAVED",
                                  "TRAIL_CAPTURE", "CLEAN_ENTRY", "FUNDING_TAILWIND", "COST_EFFICIENT")
-ORDER_CODES: tuple[str, ...] = ("LATE_ENTRY:MAE", "LUCKY_WIN", "TREND_CONTINUATION", "CLEAN_ENTRY")
+ORDER_CODES: tuple[str, ...] = ("LUCKY_WIN", "TREND_CONTINUATION", "CLEAN_ENTRY")
+#: bar yolu isteyen ama bar içi sıraya dayanmayan kol (MFE gözleminden KESİN önceki gözlemler; 2026-10-08, M2)
+PATH_CODES: tuple[str, ...] = ("LATE_ENTRY:MAE_BEFORE_MFE",)
 MAIN_BOOKS = ("main_fut", "main_spot")
+#: çıkış dolum tabanları (accounting.futures_ledger.exit_decision): seviyenin ötesinde bir GÖZLEMDEN dolanlar ve likidasyon
+EXIT_OBSERVED_BASES = ("GAP_FILL_AT_FIRST_OBSERVATION", "STOP_CLOSE_BEYOND_LEVEL_PRUDENT", "GAP_FILL_AT_BAR_OPEN")
+EXIT_LIQ_BASES = ("FIRST_OBSERVATION_BEYOND_LIQUIDATION", "INTRABAR_ORDER_UNOBSERVED", "LIQUIDATION_NEARER", "LIQUIDATION",
+                  "SLIPPAGE_BEYOND_LIQUIDATION")
+EXIT_BASIS_RULE = {
+    "LIQUIDATION": "exit_fill.basis likidasyon tabanı",
+    "GAP": "gözlemden dolan stop (EXIT_OBSERVED_BASES), dolum seviyenin ötesinde AND (bar yolunda stopu geçen ilk barın "
+           "açılışı stopun ötesinde ve ilk işlem barı değil [BAR_OPEN_GAP] OR aşma >= GAP_OVERSHOOT_R [SAMPLED/UNRESOLVED])",
+    "LEVEL": "seviyeden dolum; ya da gözlemden dolum, seviye yolda sürekli işlem gördü (geçiş barının açılışı stopun "
+             "berisinde) ve aşma < GAP_OVERSHOOT_R [SAMPLED: 60 sn örnek / kural barı açılışı / ihtiyatlı kapanış]; "
+             "hedef çıkışı",
+    "MARKET": "dolum tabanı yok ve hedef değil (kural/zaman/elle çıkış)",
+    "overshoot_r": "yön·(stop − gözlem fiyatı) / birim risk (kayma modeli öncesi; R paydası features.risk_usdt)",
+    "no_bar_path": "bar_open_gap bilinmez (UNRESOLVED): yalnız aşma eşiği",
+}
 
 ATTRIBUTION_SPEC: dict[str, Any] = {
     "id": ATTRIBUTION_VERSION, "outcome": "WIN if net_r > 0 else LOSS; no R -> sign(net_pnl), R codes not_evaluable",
@@ -133,6 +172,13 @@ ATTRIBUTION_SPEC: dict[str, Any] = {
               "time_prefix": list(TIME_EXIT_PREFIXES), "time": list(TIME_EXITS)},
     "bar_sources": list(BAR_SOURCES), "main_books": list(MAIN_BOOKS),
     "horizon": "tail bars (phase 1) with ts < opened + max_hold (Box: end of UTC day; bars x tf); unknown -> whole tail",
+    # Değişiklik 2026-10-08 (inceleme düzeltmesi; gerçek veriye uygulanmadan önce)
+    "path_codes": list(PATH_CODES), "exit_basis": EXIT_BASIS_RULE, "exit_observed_bases": list(EXIT_OBSERVED_BASES),
+    "exit_liq_bases": list(EXIT_LIQ_BASES),
+    "path_window": "path observations = trade bars (phase 0) with ts + step <= closed_at (the bar containing the exit is "
+                   "NOT a path observation: it carries post-exit prices) + the exit fill as the last observation",
+    "late_entry_mae": "worst adverse over observations strictly before the first observation reaching the max favourable; "
+                      "requires mfe_r >= LATE_ENTRY_MIN_MFE_R and a bar path (no intrabar order needed)",
 }
 ATTRIBUTION_SHA = hashlib.sha256(json.dumps(ATTRIBUTION_SPEC, sort_keys=True, ensure_ascii=False,
                                             separators=(",", ":")).encode("utf-8")).hexdigest()
@@ -253,6 +299,38 @@ def order_ok(row: dict) -> bool:
     return row.get("order") in ("MFE_FIRST", "MAE_FIRST")
 
 
+def classify_exit_basis(basis: str | None, *, beyond: bool, overshoot_r: float | None, bar_open_gap: bool | None,
+                        target_exit: bool) -> tuple[str, str]:
+    """`exit_basis` (§4.3 `LEVEL`/`GAP`; + `LIQUIDATION`, `MARKET`) ve dolum mekanizması — MÜHÜRLÜ kural
+    (`EXIT_BASIS_RULE`, 2026-10-08 inceleme B1). Girdiler günlüğün ölçtüğü olgulardır (`journal.exit_fill_detail`)."""
+    b = str(basis or "")
+    if b in EXIT_LIQ_BASES:
+        return "LIQUIDATION", "LIQUIDATION"
+    if b in EXIT_OBSERVED_BASES:
+        if not beyond:
+            return "LEVEL", "AT_LEVEL"
+        if bar_open_gap:
+            return "GAP", "BAR_OPEN_GAP"
+        mech = "SAMPLED" if bar_open_gap is False else "UNRESOLVED"
+        if overshoot_r is not None and overshoot_r >= TH["GAP_OVERSHOOT_R"]:
+            return "GAP", mech
+        return "LEVEL", mech
+    if b:
+        return "LEVEL", "AT_LEVEL"
+    return ("LEVEL", "TARGET") if target_exit else ("MARKET", "MARKET")
+
+
+def _obs(row: dict, bars: pd.DataFrame | None) -> list[tuple[int, float, float]]:
+    """Yol gözlemleri (`pathrec.pre_exit_obs`): çıkıştan önce kapanmış işlem barları + çıkış dolumu (satırda `path.tf` ve
+    `exit_price` yoksa eski pencere: bütün işlem barları)."""
+    from .pathrec import TF_STEP, pre_exit_obs
+    p = row.get("path") if isinstance(row.get("path"), dict) else {}
+    step = TF_STEP.get(str(p.get("tf")))
+    if step is None:
+        return pre_exit_obs(bars, closed_ms=None, step_ms=0)
+    return pre_exit_obs(bars, closed_ms=_ms(row.get("closed_at")), step_ms=step, exit_price=_f(row.get("exit_price")))
+
+
 def original_target_r(row: dict) -> float | None:
     """Orijinal hedefin R uzaklığı (girişten): `targets[0]`; hedefsiz kuralda (`targets == []`) +1R; bilinmiyorsa None."""
     t = row.get("targets")
@@ -287,18 +365,18 @@ def tail_reached_r(row: dict, bars: pd.DataFrame | None, level_r: float) -> bool
 
 
 def mae_before_1r(row: dict, bars: pd.DataFrame | None) -> float | None:
-    """+1R'a ilk ulaşılan bara kadar (o bar dahil; bar içi kural: ters uç önce) en kötü ters hareket (R); 1R yoksa None."""
+    """+1R'a ilk ulaşılan gözleme kadar (o gözlem dahil; bar içi kural: ters uç önce) en kötü ters hareket (R); 1R yoksa
+    None. Gözlemler `_obs` (çıkış barı hariç + çıkış dolumu)."""
     if bars is None or not len(bars):
         return None
     rpu, entry = rpu_of(row), _f(row.get("entry_fill"))
     if rpu is None or entry is None:
         return None
-    tb = bars[bars["phase"] == 0] if "phase" in bars.columns else bars
     sg = side_sign(row)
     worst = 0.0
-    for h, lo in zip(tb["high"].tolist(), tb["low"].tolist()):
-        adv = (float(lo) if sg > 0 else float(h))
-        fav = (float(h) if sg > 0 else float(lo))
+    for _t, h, lo in _obs(row, bars):
+        adv = lo if sg > 0 else h
+        fav = h if sg > 0 else lo
         worst = min(worst, sg * (adv - entry) / rpu)
         if sg * (fav - entry) / rpu >= 1.0:
             return worst
@@ -306,14 +384,14 @@ def mae_before_1r(row: dict, bars: pd.DataFrame | None) -> float | None:
 
 
 def reached_level(row: dict, bars: pd.DataFrame | None, level: float) -> bool | None:
-    """İşlem barlarının lehte ucu `level` fiyatına ulaştı mı."""
+    """Yol gözlemlerinin (`_obs`) lehte ucu `level` fiyatına ulaştı mı."""
     if bars is None or not len(bars):
         return None
-    tb = bars[bars["phase"] == 0] if "phase" in bars.columns else bars
-    if not len(tb):
+    ob = _obs(row, bars)
+    if not ob:
         return None
     sg = side_sign(row)
-    fav = float(tb["high"].max()) if sg > 0 else float(tb["low"].min())
+    fav = max(h for _t, h, _lo in ob) if sg > 0 else min(lo for _t, _h, lo in ob)
     return sg * (fav - level) >= 0
 
 
@@ -331,6 +409,7 @@ def attribute(row: dict, inp: AttrInputs | None = None) -> dict[str, Any]:
     cp = cost_parts(row)
     sg = side_sign(row)
     ord_ok = order_ok(row)
+    path_src = row.get("path_source") or ((row.get("path") or {}).get("path_source") if isinstance(row.get("path"), dict) else None)
     fired: dict[str, dict[str, Any]] = {}
     not_eval: list[str] = []
 
@@ -343,7 +422,8 @@ def attribute(row: dict, inp: AttrInputs | None = None) -> dict[str, Any]:
         if basis == "LIQUIDATION" or reason in LIQ_EXITS:
             fired["LIQUIDATION_LEVERAGE"] = {"exit_basis": basis, "exit_reason": reason}
         if basis == "GAP":
-            fired["GAP_FILL"] = {"exit_basis": basis}
+            d = row.get("exit_fill_detail") if isinstance(row.get("exit_fill_detail"), dict) else {}
+            fired["GAP_FILL"] = {"exit_basis": basis, "mechanism": d.get("mechanism"), "overshoot_r": _r6(d.get("overshoot_r"))}
         if need("COST_KILLED", has_r and cp["gross_pre"] is not None):
             if cp["gross_pre"] > 0 >= net:
                 parts = (("FEE", cp["fee"]), ("FUNDING", cp["funding"]), ("SLIPPAGE", cp["slippage"]))
@@ -382,11 +462,14 @@ def attribute(row: dict, inp: AttrInputs | None = None) -> dict[str, Any]:
             beyond = sg * (entry - float(sc)) / atr_l
             if beyond > TH["LATE_ENTRY_FILL_ATR"]:
                 late["fill_beyond_signal_atr"] = _r6(beyond)
-        if ord_ok and mae is not None and row.get("order") == "MAE_FIRST" and mae < -TH["LATE_ENTRY_MAE_R"]:
-            late["mae_r_before_mfe"] = mae
+        bar_path = path_src in BAR_SOURCES
+        mbm = _f((row.get("path") or {}).get("mae_before_mfe_r")) if isinstance(row.get("path"), dict) else None
+        if (bar_path and mfe is not None and mfe >= TH["LATE_ENTRY_MIN_MFE_R"] and mbm is not None
+                and mbm < -TH["LATE_ENTRY_MAE_R"]):
+            late["mae_r_before_mfe"] = mbm
         if late:
             fired["LATE_ENTRY"] = late
-        elif sc is None and not ord_ok:
+        elif sc is None and not bar_path:
             not_eval.append("LATE_ENTRY")
         if need("GIVEBACK", has_r and mfe is not None):
             if (mfe >= TH["GIVEBACK_MFE_R"] and net <= 0) or (
@@ -519,7 +602,7 @@ def registry() -> dict[str, Any]:
 
 #: Türkçe kısa açıklamalar (özet ve sorgu; şablon, LLM yok)
 CODE_TR: dict[str, str] = {
-    "LIQUIDATION_LEVERAGE": "stoptan önce likidasyon (kaldıraç)", "GAP_FILL": "stop boşlukla doldu",
+    "LIQUIDATION_LEVERAGE": "stoptan önce likidasyon (kaldıraç)", "GAP_FILL": "stop seviyenin ötesinde doldu (boşluk / büyük aşma)",
     "COST_KILLED_FEE": "brüt kârı ücret yedi", "COST_KILLED_FUNDING": "brüt kârı fonlama yedi",
     "COST_KILLED_SLIPPAGE": "brüt kârı kayma yedi", "STOPPED_THEN_REVERSED": "stop oldu, sonra hedefe döndü",
     "WRONG_DIRECTION": "yön yanlış (MFE < 0,3R, stop)", "STOP_TOO_TIGHT": "stop gürültüye göre dar",
@@ -535,7 +618,8 @@ CODE_TR: dict[str, str] = {
 }
 
 
-__all__ = ["ATTRIBUTION_SHA", "ATTRIBUTION_SPEC", "ATTRIBUTION_VERSION", "AttrInputs", "CODE_TR", "DEFAULT_ENTRY_TF", "ENTRY_TF",
-           "LOSS", "LOSS_PRIORITY", "LOSS_RULES", "ORDER_CODES", "TH", "WIN", "WIN_PRIORITY", "WIN_RULES", "attribute",
-           "closed_key", "cost_parts", "is_time_exit", "max_hold_end_ms", "noise_band", "order_ok", "original_target_r", "outcome_of",
-           "registry", "rpu_of", "side_sign"]
+__all__ = ["ATTRIBUTION_SHA", "ATTRIBUTION_SPEC", "ATTRIBUTION_VERSION", "AttrInputs", "CODE_TR", "DEFAULT_ENTRY_TF",
+           "ENTRY_TF", "EXIT_BASIS_RULE", "EXIT_LIQ_BASES", "EXIT_OBSERVED_BASES", "LOSS", "LOSS_PRIORITY",
+           "LOSS_RULES", "ORDER_CODES", "PATH_CODES", "TH", "WIN", "WIN_PRIORITY", "WIN_RULES", "attribute",
+           "classify_exit_basis", "closed_key", "cost_parts", "is_time_exit", "max_hold_end_ms", "noise_band",
+           "order_ok", "original_target_r", "outcome_of", "registry", "rpu_of", "side_sign"]

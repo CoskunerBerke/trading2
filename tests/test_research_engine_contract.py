@@ -131,7 +131,8 @@ def test_night_service_contract():
             assert env[k] == want, k
     mem_max = size_bytes(one(s, "MemoryMax"))
     assert int(env["ENGINE_EXPECTED_MEMORY_MAX"]) == mem_max, "ENGINE_EXPECTED_MEMORY_MAX = MemoryMax (bayt)"
-    assert size_bytes(one(s, "MemoryHigh")) < mem_max <= 512 << 20, "P1a: MemoryHigh 0,4G / MemoryMax 0,5G"
+    assert size_bytes(one(s, "MemoryHigh")) < mem_max <= 768 << 20, "P2 (inceleme M6): MemoryHigh 640M / MemoryMax 768M"
+    assert (one(s, "MemoryHigh"), one(s, "MemoryMax"), mem_max) == ("640M", "768M", 805306368)
     exe = one(s, "ExecStart").split()
     assert exe == ["/opt/tradingbot/venv/bin/python", "-s", "-m", "tradingbot", "engine-night"], exe
     assert "-I" not in exe and not any(a.startswith("-I") for a in exe)

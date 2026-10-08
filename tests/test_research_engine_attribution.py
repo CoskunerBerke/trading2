@@ -16,8 +16,9 @@ import pandas as pd
 from tradingbot.research_engine import attribution as AT
 from tradingbot.research_engine import pathrec as PR
 
-#: §9.2 mühür: `attribution_v1` tanımının sha256'sı (P2 uygulama notlarında da yazılıdır). DEĞİŞİRSE CI kırılır.
-ATTRIBUTION_SHA_PINNED = "3f4596e37822f1603db6c296937005d45bcfd0215a18f1dc993ba535a0236626"
+#: §9.2 mühür: `attribution_v1` tanımının sha256'sı (P2 uygulama notlarında da yazılıdır). DEĞİŞİRSE CI kırılır. Yeniden
+#: mühür 2026-10-08 (inceleme düzeltmesi, gerçek veriye uygulanmadan önce; eski 3f4596e3…6626 — belge §5.4 Değişiklik).
+ATTRIBUTION_SHA_PINNED = "914875a1f6631822585ffd5e67e7ffa9a721069e47b6df7a9a624a8a789a6d7f"
 OPENED = "2026-09-20T10:00:00+00:00"
 OPENED_MS = int(datetime.fromisoformat(OPENED).timestamp() * 1000)
 NEXT_DAY_MS = int(datetime(2026, 9, 21, tzinfo=timezone.utc).timestamp() * 1000)
@@ -44,10 +45,12 @@ def golden(bars: pd.DataFrame | None, *, exit_px: float, exit_reason: str = "sto
     sg = 1 if side == "LONG" else -1
     gross_r = sg * (exit_px - entry) - slip_r
     net_r = gross_r - fee_r - funding_r
+    closed = extra.pop("closed_at", "2026-09-20T14:00:00+00:00")
     m = PR.path_metrics(bars, side=side, entry=Decimal(str(entry)), rpu=Decimal(str(abs(entry - stop))), opened_ms=OPENED_MS,
-                        exit_price=Decimal(str(exit_px)), step_ms=M1) if bars is not None else {}
+                        exit_price=Decimal(str(exit_px)), step_ms=M1,
+                        closed_ms=int(datetime.fromisoformat(closed).timestamp() * 1000)) if bars is not None else {}
     row = {"trade_key": f"{book}|T1|{OPENED}", "book": book, "side": side, "symbol": "SOL/USDT", "opened_at": OPENED,
-           "closed_at": "2026-09-20T14:00:00+00:00", "entry_fill": f"{entry:.2f}", "ref_price": f"{entry:.2f}",
+           "closed_at": closed, "entry_fill": f"{entry:.2f}", "ref_price": f"{entry:.2f}", "exit_price": f"{exit_px:.2f}",
            "initial_stop": f"{stop:.2f}", "stop_dist_pct": abs(entry - stop) / entry * 100, "risk_usdt": "1", "qty": "1",
            "net_r": repr(net_r), "gross_r": repr(gross_r), "net_pnl": repr(net_r),
            "cost_r": {"fee": repr(fee_r), "funding": repr(funding_r), "slippage_in_fills": repr(slip_r),
@@ -55,7 +58,8 @@ def golden(bars: pd.DataFrame | None, *, exit_px: float, exit_reason: str = "sto
            "exit_reason": exit_reason, "exit_basis": exit_basis, "targets": targets if targets is not None else [],
            "tp1_done": False, "family": "FADE" if book == "strategy_paper_box" else "TREND",
            "path_source": "STORE_1M" if bars is not None else "MISSING",
-           "path": {"order_ambiguous": m.get("order_ambiguous"), "mae_pct": m.get("mae_pct"), "mfe_pct": m.get("mfe_pct")},
+           "path": {"order_ambiguous": m.get("order_ambiguous"), "mae_pct": m.get("mae_pct"), "mfe_pct": m.get("mfe_pct"),
+                    "mae_before_mfe_r": m.get("mae_before_mfe_r"), "tf": "1m" if bars is not None else None},
            "ambiguous_bars": m.get("ambiguous_bars", 0)}
     for k in ("mfe_r", "mae_r", "order", "capture_ratio", "giveback_r", "time_to_1r"):
         row[k] = m.get(k)
@@ -88,7 +92,13 @@ def test_golden_loss_codes_mechanical_and_cost():
     r = codes(golden(b, exit_px=97.5, exit_reason="likidasyon", exit_basis="LIQUIDATION"), bars=b)
     fired(r, "LIQUIDATION_LEVERAGE", primary=True)
     r = codes(golden(b, exit_px=98.6, exit_reason="stop", exit_basis="GAP"), bars=b)
-    fired(r, "GAP_FILL", primary=True)
+    fired(r, "GAP_FILL")                        # 2026-10-08 (B1): karar kodunun (yön, MFE 0,1R) ARKASINDA
+    assert r["primary_code"] == "WRONG_DIRECTION"
+    up_then_gap = bars_from([(100, 100.5, 99.9, 100.4), (100.4, 100.45, 98.5, 98.6)])
+    r = codes(golden(up_then_gap, exit_px=98.6, exit_reason="stop", exit_basis="GAP",
+                     exit_fill_detail={"mechanism": "BAR_OPEN_GAP", "overshoot_r": 0.4}), bars=up_then_gap)
+    fired(r, "GAP_FILL", primary=True)          # MFE 0,5R: yön/geç giriş yok → boşluk, geri vermeden önce
+    assert r["evidence"]["GAP_FILL"] == {"exit_basis": "GAP", "mechanism": "BAR_OPEN_GAP", "overshoot_r": 0.4}
     up = bars_from([(100, 100.2, 99.9, 100.05)])
     # brüt (kayma öncesi) > 0 ≥ net; alt tür en büyük maliyet payı
     r = codes(golden(up, exit_px=100.05, exit_reason="BOX_EOD_FLAT", fee_r=0.10, slip_r=0.0), bars=up)

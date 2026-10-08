@@ -33,17 +33,17 @@ fonlama kaydın KENDİ uzlaşmalarıdır (`fidelity.RecordedFunding`, kayıttan 
 * **Bar sınırı:** bir oynatmanın yolu `REPLAY_MAX_BARS`'ı aşarsa yol barları daha kaba dilime birleştirilir (aynı gerçek
   yol; 5m → 15m → 1h → 4h); taban hücrenin gerçekle farkı (`baseline_gap_r`) bunu görünür kılar.
 
-**R ayrıştırması (§5.6; sıralı zincir, artık her zaman gösterilir).** G = kayma ÖNCESİ brüt R (dolum riskine göre).
-`X1` = bütün EX_ANTE hücrelerin (atla hariç) G medyanı ("nötr yürütme"), `X2` = girişi gerçek olan hücrelerin medyanı,
-`X3` = girişi ve stopu gerçek olanların medyanı, `X4` = taban hücre (gerçek yürütme, 1x), `B` = rastgele kontrol G
-medyanı, `G_lev` = taban hücre gerçek kaldıraç/tutarla:
+**R ayrıştırması (§5.6; harfiyen tanım, 2026-10-08 inceleme M1; artık her zaman gösterilir).** G = kayma ÖNCESİ brüt R
+(dolum riskine göre). X1 = giriş/stop/çıkış/yönetim eksenlerinin bütün EX_ANTE hücrelerinin G medyanı ("nötr yürütme",
+1x), X4 = taban hücre (gerçek yürütme, 1x), Me/Ms/Mx = giriş/stop/çıkış EKSENİNİN ızgara medyanı (eksen gerçek hücreyi de
+içerir), B = rastgele kontrol G medyanı, G_lev = taban hücre gerçek kaldıraç/tutarla:
 
-    signal_R = X1 − B · timing_R = X2 − X1 · stop_R = X3 − X2 · exit_R = X4 − X3 · size_lev_R = G_lev − X4
+    signal_R = X1 − B · timing_R = X4 − Me · stop_R = X4 − Ms · exit_R = X4 − Mx · size_lev_R = G_lev − X4
     cost_R = net_R − G_gerçek (ölçülen ücret + kayma + fonlama) · artık = net_R − Σ(bileşenler)
 
-Zincir teleskopiktir: artık = `B` (rastgele taban; formülün adlandırmadığı piyasa payı) + (G_gerçek − G_lev) (yeniden
-oynatma farkı); ikisi `residual_parts`'ta AYRI yazılır. Eksik bileşen 0 sayılmaz: `missing` listesine girer ve artığa
-kalır. Tek işlemin ayrıştırması GÖZLEMDİR; kanıt toplu istatistikten gelir (§5.7).
+Bütün girdiler varken artık = B + (G_gerçek − G_lev) + (Me + Ms + Mx − X1 − 2·X4) (rastgele taban, yeniden oynatma farkı,
+eksen medyanlarının toplanamazlığı); üçü `residual_parts`'ta AYRI yazılır. Eksik bileşen 0 sayılmaz: `missing` listesine
+girer ve artığa kalır. Tek işlemin ayrıştırması GÖZLEMDİR; kanıt toplu istatistikten gelir (§5.7).
 
 `regime_fit` (§5.6): ders deposu P3'tedir; o gelene kadar aynı defter × taktik × giriş durum kovasının, bu işlem
 AÇILMADAN ÖNCE kapanmış günlük satırlarından ortalama net R'ı (`JOURNAL_PRIOR`, n ≥ 10; ileriye bakma yok).
@@ -83,6 +83,14 @@ TP1_FRACTION_ON = "0.5"
 BE_ON_R = "1"
 RC_N, RC_MIN, RC_LOOKBACK_DAYS, RC_TF = 20, 10, 120, "5m"
 REGIME_FIT_MIN_N = 10
+# ---- sıralama (2026-10-08, inceleme M3)
+RANK_CONSERVATIVE, RANK_NET = "cf_aux_v1", "r_net"
+#: sıralamaya, işlem başına en iyi hücreye ve defter görünümüne GİRMEYEN eksenler: boyut/kaldıraç bir yürütme önerisi
+#: değildir (kaldıraç HİPOTETİK, §7.6; R aynı kalır, yalnız likidasyon/marj etkisi `size_lev_R`'de)
+RANK_EXCLUDED_AXES = ("size",)
+#: defter görünümü (en iyi EX_ANTE sabit hücre): §5.7 uygunluk eşiği (n ≥ 30 ve ≥ 10 farklı gün); yalnız ortalamada
+#: iyileştiren hücre; "k hücre arasından seçim" etiketiyle
+BOOK_VIEW_MIN_N, BOOK_VIEW_MIN_DAYS = 30, 10
 LEVEL_EXITS = STOP_EXITS + BE_EXITS + TARGET_EXITS + LIQ_EXITS
 
 #: (kimlik, eksen, etiket, açıklama) — sıra = çıktı sırası
@@ -117,17 +125,32 @@ CFGRID_SPEC: dict[str, Any] = {
     "risk": "constant USDT risk; R per own |fill - stop| x qty", "horizon": "level exit -> min(path end, max_hold end); "
     "rule/time exit -> actual exit time", "limit": {"atr": LIMIT_ATR, "valid_bars_entry_tf": 1, "unfilled": "R=0 MISSED"},
     "delay_bars_entry_tf": 1, "stop_atr": list(STOP_ATR), "target_r": list(TARGET_R), "trail_atr": TRAIL_ATR,
-    "tp1_fraction_on": TP1_FRACTION_ON, "be_on_r": BE_ON_R, "ranking": "cf_aux_v1 r_net_conservative, else r_net (flag)",
+    "tp1_fraction_on": TP1_FRACTION_ON, "be_on_r": BE_ON_R,
+    "ranking": {"per_trade": "ONE measure per trade: cf_aux_v1 r_net_conservative if every rank-eligible cell has it, "
+                "else r_net for all cells (rank_src)", "rank_eligible": "EX_ANTE, axis not in excluded, status OK/MISSED",
+                "excluded_axes": list(RANK_EXCLUDED_AXES), "excluded_reason": "size/leverage is never a suggestion "
+                "(leverage HYPOTHETICAL, design 7.6); its effect is size_lev_R only",
+                "book_view": {"measure": "cf_aux_v1 only (r_net trades counted as excluded)", "pairing": "cell - E_ACTUAL "
+                              "same trade", "min_n": BOOK_VIEW_MIN_N, "min_days": BOOK_VIEW_MIN_DAYS,
+                              "only_improving": True, "label": "SELECTION: best of k fixed cells (selection bias; never a "
+                              "lesson by itself)"},
+                "amended": "2026-10-08 review M3"},
+    "horizon_ex_ante": False,
+    "horizon_note": "cells are EX_ANTE in entry/stop/target/management rules only: the horizon is the actual exit time for "
+                    "rule/time exits and the path end (actual close + 48 tail bars) capped by max_hold for level exits; "
+                    "E_DELAY1 has NO_BARS on trades shorter than one entry-tf bar (counted, disclosed)",
     "reference": "median, never max", "max_bars": REPLAY_MAX_BARS, "coarser": list(COARSER),
     "random_control": {"n": RC_N, "min": RC_MIN, "lookback_days": RC_LOOKBACK_DAYS, "tf": RC_TF, "time": "same UTC time of "
                        "day, k days earlier, window before opened", "bucket": "situation_v1 h4 trend x h4 vol_regime "
                        "(_tf_block full=False, W4H closed 4h bars)", "seed": "sha256(trade_key|cfgrid_v1)", "stop": "same "
                        "stop_dist_pct", "targets": "same R multiples", "exit": "same duration"},
-    "decomposition": {"G": "gross pre-slippage R on fill risk", "X1": "median G all EX_ANTE cells but SKIP",
-                      "X2": "median G cells with actual entry", "X3": "median G cells with actual entry and stop",
-                      "X4": "G(E_ACTUAL)", "B": "median G random control", "signal": "X1-B", "timing": "X2-X1",
-                      "stop": "X3-X2", "exit": "X4-X3", "size_lev": "G_lev-X4", "cost": "net-G_real",
-                      "residual": "net - sum = B + (G_real - G_lev)"},
+    "decomposition": {"G": "gross pre-slippage R on fill risk", "X1": "median G of EX_ANTE cells of the entry/stop/exit/"
+                      "manage axes (1x neutral execution; size and skip excluded)", "X4": "G(E_ACTUAL)",
+                      "axis_median": "median G of the axis cells incl. E_ACTUAL (entry: E_*; stop: S_*; exit: X_*)",
+                      "B": "median G random control", "signal": "X1-B", "timing": "X4-median(entry axis)",
+                      "stop": "X4-median(stop axis)", "exit": "X4-median(exit axis)", "size_lev": "G_lev-X4",
+                      "cost": "net-G_real", "residual": "net - sum (always shown) = B + (G_real - G_lev) + "
+                      "(Me + Ms + Mx - X1 - 2*X4) when all inputs exist", "amended": "2026-10-08 review M1 (spec-literal)"},
     "entry_tf": ENTRY_TF, "regime_fit": {"source": "JOURNAL_PRIOR until P3 lessons", "min_n": REGIME_FIT_MIN_N},
 }
 CFGRID_SHA = hashlib.sha256(json.dumps(CFGRID_SPEC, sort_keys=True, ensure_ascii=False,
@@ -255,10 +278,13 @@ def replay(view: Any, df: pd.DataFrame, *, model: Any, funding: Any, trail_atr: 
 
 
 def _replay_ext(view: Any, df: pd.DataFrame, gross: dict[str, Any], *, model: Any, funding_lookup: Any,
-                trail_atr: float | None = None, leverage: int = 1, notional: Decimal | None = None) -> dict[str, Any]:
-    """`learning_cf._net_replay` (cf_net_ledger_replay_v2) döngüsünün KOPYASI, iki kancayla: `trail_atr` (her işlenen
-    barın SONUNDA stop = en iyi uç ∓ trail_atr; yalnız lehte taşınır, sonraki barlardan itibaren etkili — nedensel) ve
-    `leverage`/`notional` (gerçek kaldıraçla likidasyon denetimi). Kancasız çağrı `_net_replay` ile aynı sonucu verir
+                trail_atr: float | None = None, leverage: int = 1, notional: Decimal | None = None,
+                stop_fill: Callable[[int], Any] | None = None) -> dict[str, Any]:
+    """`learning_cf._net_replay` (cf_net_ledger_replay_v2) döngüsünün KOPYASI, üç kancayla: `trail_atr` (her işlenen
+    barın SONUNDA stop = en iyi uç ∓ trail_atr; yalnız lehte taşınır, sonraki barlardan itibaren etkili — nedensel),
+    `leverage`/`notional` (gerçek kaldıraçla likidasyon denetimi) ve `stop_fill` (2026-10-08, B1; yalnız `fidelity`: stop bu
+    barda tetiklenirse `stop_fill(bar açılışı ms)` bir fiyat döndürürse dolum referansı o fiyattır — kaydın GÖZLEMDEN dolumu,
+    `RECORDED_FILL`; fiyat stopun ötesinde değilse kullanılmaz). Kancasız çağrı `_net_replay` ile aynı sonucu verir
     (`test_research_engine_cfgrid`)."""
     from ..accounting import EXIT_BE_STOP, EXIT_STOP, AmountType, SizeSpec, SlippageModel, TickData
     from ..core import D, from_iso, iso
@@ -304,7 +330,10 @@ def _replay_ext(view: Any, df: pd.DataFrame, gross: dict[str, Any], *, model: An
             at = odt if point == "open" else cdt
             price, rule = D(float(px)), None
             if p.stop is not None and _beyond(long, p.stop, price):
-                if point == "open" and not first_bar:
+                rf = stop_fill(int(t)) if stop_fill is not None else None          # KANCA: kaydın gözlem dolumu
+                if rf is not None and _beyond(long, p.stop, D(str(rf))):
+                    price, rule = D(str(rf)), "RECORDED_FILL"
+                elif point == "open" and not first_bar:
                     rule = "GAP_FILL_AT_BAR_OPEN"
                 else:
                     price, rule = p.stop, "STOP_AT_LEVEL"
@@ -455,14 +484,34 @@ class Cell:
     stop: float | None = None
     note: str | None = None
 
-    @property
-    def r_rank(self) -> float | None:
-        return self.r_cons if self.r_cons is not None else self.r_net
-
     def to_dict(self) -> dict[str, Any]:
         return {"id": self.id, "axis": self.axis, "label": self.label, "status": self.status, "r_net": _r6(self.r_net),
-                "r_cons": _r6(self.r_cons), "g": _r6(self.g), "r_rank_src": "cf_aux_v1" if self.r_cons is not None else "r_net",
-                "exit": self.exit_reason, "entry": _r6(self.entry), "stop": _r6(self.stop), "note": self.note}
+                "r_cons": _r6(self.r_cons), "g": _r6(self.g), "exit": self.exit_reason, "entry": _r6(self.entry),
+                "stop": _r6(self.stop), "note": self.note}
+
+
+# ============================================================================ sıralama (2026-10-08, inceleme M3)
+
+
+def rank_eligible(c: Cell) -> bool:
+    return c.label == EX_ANTE and c.axis not in RANK_EXCLUDED_AXES and c.status in ("OK", "MISSED")
+
+
+def rank_source(cells: dict[str, Cell]) -> str:
+    """İşlemin TEK sıralama ölçüsü: sıralamaya giren her hücrenin `cf_aux_v1` muhafazakâr R'si varsa o, yoksa HEPSİ için
+    `r_net` (aynı işlemde iki ölçü karışmaz)."""
+    elig = [c for c in cells.values() if rank_eligible(c)]
+    return RANK_CONSERVATIVE if elig and all(c.r_cons is not None for c in elig) else RANK_NET
+
+
+def rank_value(c: Cell, src: str) -> float | None:
+    return c.r_cons if src == RANK_CONSERVATIVE else c.r_net
+
+
+def profitable_cells(cells: dict[str, Cell], src: str) -> list[str]:
+    """Bu işlemde kâra dönen hücreler (HINDSIGHT): sıralamaya giren, dolmuş (`OK`) ve işlemin ölçüsüyle R > 0."""
+    return sorted(c.id for c in cells.values() if rank_eligible(c) and c.status == "OK" and c.id != "E_ACTUAL"
+                  and (rank_value(c, src) or 0) > 0)
 
 
 @dataclass
@@ -732,45 +781,72 @@ def random_control(plan: TradePlan, *, h4: pd.DataFrame | None, bars_5m: Callabl
 
 
 # ============================================================================ ayrıştırma
+def axis_cells(axis: str) -> tuple[str, ...]:
+    """Bir eksenin ızgara hücreleri (+ taban `E_ACTUAL`: eksenin "gerçek" noktası da o eksenin ızgarasındadır)."""
+    return tuple(dict.fromkeys(("E_ACTUAL",) + tuple(v[0] for v in VARIANTS if v[1] == axis)))
+
+
+NEUTRAL_AXES = ("entry", "stop", "exit", "manage")
+
+
 def decompose(plan: TradePlan, cells: dict[str, Cell], rc: dict[str, Any] | None) -> dict[str, Any]:
-    """§5.6 sıralı zincir (modül başı). Dönen: bileşenler, artık ve artığın parçaları; eksik bileşen listesi."""
+    """§5.6 R ayrıştırması — belgenin HARFİYEN tanımı (2026-10-08, inceleme M1; eski sıralı zincir eksen etkilerini
+    medyanların farkına indirgiyordu ve ~10 kat küçük çıkıyordu). G = kayma öncesi brüt R (dolum riskine göre):
+
+        signal_R = X1 − B   (X1: giriş/stop/çıkış/yönetim eksenlerinin bütün EX_ANTE hücrelerinin G medyanı — "nötr
+                             yürütme", 1x; B: eşleşmiş rastgele giriş kontrolünün G medyanı)
+        timing_R = X4 − medyan(giriş ekseni)   (stop ve çıkış sabit; eksen gerçek hücreyi de içerir)
+        stop_R   = X4 − medyan(stop ekseni)
+        exit_R   = X4 − medyan(çıkış ekseni)
+        size_lev_R = G_lev − X4   (gerçek kaldıraç/tutar − 1x)
+        cost_R   = net_R − G_gerçek   (ölçülen ücret + kayma + fonlama)
+        artık    = net_R − Σ bileşenler   (her zaman gösterilir)
+
+    Eksik bileşen 0 sayılmaz (`missing`, artığa kalır). Bütün girdiler varken artık = B + (G_gerçek − G_lev) +
+    (Me + Ms + Mx − X1 − 2·X4) — rastgele taban, yeniden oynatma farkı ve eksen medyanlarının toplanamazlığı
+    (`residual_parts`). Tek işlemin ayrıştırması GÖZLEMDİR; kanıt toplu istatistikten gelir (§5.7)."""
     def g(cid: str) -> float | None:
         c = cells.get(cid)
         return c.g if c is not None and c.status in ("OK", "MISSED") else None
-    all_ex = [g(c) for c in VARIANT_IDS if c != "SKIP"]
-    x1 = median([v for v in all_ex if v is not None])
-    x2 = median([g(c) for c in ENTRY_ACTUAL_CELLS if g(c) is not None])
-    x3 = median([g(c) for c in ENTRY_STOP_ACTUAL_CELLS if g(c) is not None])
+
+    def med_axis(axis: str) -> float | None:
+        return median([v for v in (g(c) for c in axis_cells(axis)) if v is not None])
+    neutral = [g(v[0]) for v in VARIANTS if v[2] == EX_ANTE and v[1] in NEUTRAL_AXES]
+    x1 = median([v for v in neutral if v is not None])
+    me, ms_, mx = med_axis("entry"), med_axis("stop"), med_axis("exit")
     x4 = g("E_ACTUAL")
     glev = g("Z_ACTUAL_LEV")
     b = (rc or {}).get("median_g") if (rc or {}).get("status") == "OK" else None
     greal = plan.gross_pre_r
+
+    def diff(a: float | None, c: float | None) -> float | None:
+        return _r6(a - c) if (a is not None and c is not None) else None
     comp: dict[str, float | None] = {
-        "signal_R": _r6(x1 - b) if (x1 is not None and b is not None) else None,
-        "timing_R": _r6(x2 - x1) if (x2 is not None and x1 is not None) else None,
-        "stop_R": _r6(x3 - x2) if (x3 is not None and x2 is not None) else None,
-        "exit_R": _r6(x4 - x3) if (x4 is not None and x3 is not None) else None,
-        "size_lev_R": _r6(glev - x4) if (glev is not None and x4 is not None) else None,
-        "cost_R": _r6(plan.net_r - greal) if greal is not None else None,
+        "signal_R": diff(x1, b), "timing_R": diff(x4, me), "stop_R": diff(x4, ms_), "exit_R": diff(x4, mx),
+        "size_lev_R": diff(glev, x4), "cost_R": _r6(plan.net_r - greal) if greal is not None else None,
     }
     missing = sorted(k for k, v in comp.items() if v is None)
     total = sum(v for v in comp.values() if v is not None)
     resid = _r6(plan.net_r - total)
-    parts = {"random_baseline_R": _r6(b), "replay_gap_R": _r6(greal - glev) if (greal is not None and glev is not None) else None}
+    full = None not in (b, greal, glev, me, ms_, mx, x1, x4)
+    parts = {"random_baseline_R": _r6(b), "replay_gap_R": diff(greal, glev),
+             "interaction_R": _r6(me + ms_ + mx - x1 - 2 * x4) if full else None}
     return {"net_R": _r6(plan.net_r), "components": comp, "residual_R": resid, "residual_parts": parts, "missing": missing,
-            "chain": {"B": _r6(b), "X1": x1, "X2": x2, "X3": x3, "X4": _r6(x4), "G_lev": _r6(glev), "G_real": _r6(greal)},
+            "medians": {"B": _r6(b), "X1": x1, "entry": me, "stop": ms_, "exit": mx, "X4": _r6(x4), "G_lev": _r6(glev),
+                        "G_real": _r6(greal)},
             "identity_ok": abs((resid or 0.0) + total - plan.net_r) <= 1e-6}
 
 
-def hindsight(cells: dict[str, Cell], actual: Cell | None) -> dict[str, Any] | None:
-    """İşlem başına en iyi hücre (HINDSIGHT): sıralama muhafazakâr R (`r_rank`)."""
-    ok = [c for c in cells.values() if c.label == EX_ANTE and c.status in ("OK", "MISSED") and c.r_rank is not None]
+def hindsight(cells: dict[str, Cell], actual: Cell | None, src: str) -> dict[str, Any] | None:
+    """İşlem başına en iyi hücre (HINDSIGHT): sıralamaya giren hücreler (boyut ekseni hariç), işlemin TEK ölçüsüyle."""
+    ok = [c for c in cells.values() if rank_eligible(c) and rank_value(c, src) is not None]
     if not ok:
         return None
-    best = max(ok, key=lambda c: (c.r_rank, c.id == "E_ACTUAL", c.id))
-    base = actual.r_rank if actual is not None else None
-    return {"label": HINDSIGHT, "cell": best.id, "r_rank": _r6(best.r_rank), "r_rank_src": best.to_dict()["r_rank_src"],
-            "delta_vs_actual": _r6(best.r_rank - base) if base is not None else None,
+    best = max(ok, key=lambda c: (rank_value(c, src), c.id == "E_ACTUAL", c.id))
+    base = rank_value(actual, src) if actual is not None else None
+    bv = rank_value(best, src)
+    return {"label": HINDSIGHT, "cell": best.id, "r_rank": _r6(bv), "rank_src": src,
+            "delta_vs_actual": _r6(bv - base) if base is not None else None,
             "note": "işlem başına en iyi hücre: geriye dönük seçim, kural DEĞİL; tek başına ders olmaz"}
 
 
@@ -778,14 +854,13 @@ def evaluate(env: GridEnv, rc: dict[str, Any] | None) -> dict[str, Any]:
     cells = run_grid(env)
     act = cells.get("E_ACTUAL")
     p = env.plan
-    profitable = sorted(c.id for c in cells.values() if c.label == EX_ANTE and c.status in ("OK",) and (c.r_rank or 0) > 0
-                        and c.id != "E_ACTUAL")
-    return {"version": CFGRID_VERSION, "registry_sha": CFGRID_SHA, "status": "OK", "tf": env.tf,
+    src = rank_source(cells)
+    return {"version": CFGRID_VERSION, "registry_sha": CFGRID_SHA, "status": "OK", "tf": env.tf, "rank_src": src,
             "plan": {"ref": _r6(p.ref), "stop": _r6(p.stop), "targets": [_r6(x) for x in p.targets], "level_exit": p.level_exit,
                      "horizon": _iso(p.horizon_ms), "entry_tf": p.entry_tf, "atr": _r6(p.atr), "leverage": p.leverage},
             "baseline_gap_r": _r6(act.r_net - p.net_r) if (act is not None and act.r_net is not None) else None,
             "cells": [cells[c].to_dict() for c in VARIANT_IDS if c in cells] + [cells["Z_ACTUAL_LEV"].to_dict()],
-            "hindsight_best": hindsight(cells, act), "profitable_cells_hindsight": profitable,
+            "hindsight_best": hindsight(cells, act, src), "profitable_cells_hindsight": profitable_cells(cells, src),
             "random_control": rc, "decomposition": decompose(p, cells, rc),
             "signal_excess_R": _r6(p.net_r - rc["median_r_net"]) if rc and rc.get("median_r_net") is not None else None}
 
@@ -832,7 +907,9 @@ def regime_fit_result(own: tuple, n: int, total: float) -> dict[str, Any]:
             "note": "ders deposu P3'te; şimdilik önceki günlük satırları (as_of < opened_at)"}
 
 
-__all__ = ["CFGRID_SHA", "CFGRID_SPEC", "CFGRID_VERSION", "Cell", "ChainFunding", "EX_ANTE", "GridEnv", "HINDSIGHT",
-           "REFERENCE", "RC_MIN", "RC_N", "REPLAY_MAX_BARS", "StoreFunding", "TradePlan", "VARIANTS", "VARIANT_IDS",
-           "bucket_at", "coarsen", "decompose", "evaluate", "gross_pre", "hindsight", "median", "overshoot_history",
-           "random_control", "rc_candidates", "rc_pick", "recorded_funding", "regime_fit", "replay", "run_grid", "trade_plan"]
+__all__ = ["BOOK_VIEW_MIN_DAYS", "BOOK_VIEW_MIN_N", "CFGRID_SHA", "CFGRID_SPEC", "CFGRID_VERSION", "Cell", "ChainFunding",
+           "EX_ANTE", "GridEnv", "HINDSIGHT", "RANK_CONSERVATIVE", "RANK_EXCLUDED_AXES", "RANK_NET", "REFERENCE", "RC_MIN", "RC_N",
+           "REPLAY_MAX_BARS", "StoreFunding", "TradePlan", "VARIANTS", "VARIANT_IDS", "axis_cells", "bucket_at", "coarsen",
+           "decompose", "evaluate", "gross_pre", "hindsight", "median", "overshoot_history", "profitable_cells",
+           "random_control", "rank_eligible", "rank_source", "rank_value", "rc_candidates", "rc_pick", "recorded_funding",
+           "regime_fit", "replay", "run_grid", "trade_plan"]

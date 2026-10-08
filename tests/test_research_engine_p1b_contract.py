@@ -251,9 +251,21 @@ def test_research_universe_follows_the_design_table(tmp_path):
     assert plan["spot/PAXGUSDT/5m"].start_ms == U.day_ms("2020-08-01") and plan["spot/BTCUSDT/1d"].start_ms == U.day_ms("2020-01-01")
     d0 = ms(now) - 400 * 86_400_000
     assert plan["spot/DOGEUSDT/1h"].start_ms == d0 - d0 % 86_400_000 and "spot/DOGEUSDT/1m" not in plan
+    # Değişiklik 2026-10-08: giriş evreni/BTC-ETH dışı vadelilerin (SOL: yalnız işlem, LINK: yalnız CF) ince serileri son 400 gün
+    short = {f"futures/{s}/{k}" for s in ("SOLUSDT", "LINKUSDT") for k in ("5m", "15m", "metrics_5m")}
+    for k in short:
+        assert plan[k].start_ms == d0 - d0 % 86_400_000 and plan[k].from_listing, k
+    for s in ("SOLUSDT", "LINKUSDT"):
+        for k in ("1h", "4h", "1d", "funding", "markpx_1h", "premium_1h"):
+            assert plan[f"futures/{s}/{k}"].start_ms == U.day_ms("2019-09-01"), (s, k)
+    for s in ("BTCUSDT", "ETHUSDT", "ZECUSDT"):
+        assert plan[f"futures/{s}/5m"].start_ms == U.day_ms("2019-09-01") and plan[f"futures/{s}/metrics_5m"].start_ms == U.day_ms("2021-12-01")
     snap = U.snapshot_doc(doc, list(plan.values()), U.universe_json_snapshot(v.paths))
     p = U.write_universe_snapshot(v.paths, snap)
-    assert p == v.paths.research / "universe" / "2026-10-06.json" and json.loads(p.read_text())["series_count"] == len(plan)
+    got = json.loads(p.read_text())
+    assert p == v.paths.research / "universe" / "2026-10-06.json" and got["series_count"] == len(plan)
+    assert set(got["series_short"]) == short and got["short_days"] == 400
+    assert set(got["series_short"].values()) == {U.datetime.fromtimestamp((d0 - d0 % 86_400_000) / 1000, U.UTC).strftime("%Y-%m-%d")}
 
 
 def test_entry_universe_falls_back_to_frame_provenance_then_flags_missing(tmp_path):

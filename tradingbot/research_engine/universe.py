@@ -61,6 +61,11 @@ METRICS_FLOOR = "2021-12-01"                 # `daily/metrics` arşivinin başla
 TRADED_DAYS = 180
 MAIN_SPOT_DAYS = 400
 GOLD_1M_DAYS = 400
+#: Giriş evreni ve BTC/ETH DIŞINDAKİ vadeliler (yalnız `islem_180g`/`cf_180g`): ince seriler (5m, 15m, metrics_5m) son
+#: bu kadar günden başlar; 1h/4h/1d, fonlama, işaret ve prim taban tarihten. Değişiklik 2026-10-08: ilk doldurma 1351
+#: seriyle disk sınırını (17 GB) aştı; 400 gün son 180 günün işlemlerini ve yol kaydını kapsar.
+EXTRA_FINE_DAYS = 400
+FINE_KINDS: tuple[str, ...] = ("5m", "15m", METRICS_5M)
 
 ROLE_ENTRY, ROLE_BTC_ETH, ROLE_TRADED, ROLE_CF = "giris_evreni", "btc_eth", "islem_180g", "cf_180g"
 ROLE_GOLD, ROLE_SPOT_CTX, ROLE_MAIN_SPOT = "altin", "spot_baglam", "ana_bot_spot"
@@ -265,12 +270,16 @@ def plan_series(doc: dict[str, Any], *, now: datetime) -> list[SeriesSpec]:
     def add(spec: SeriesSpec) -> None:
         out.setdefault(spec.key, spec)
 
+    xs = now_ms - EXTRA_FINE_DAYS * 86_400_000
+    xs -= xs % 86_400_000
     for s, roles in (doc.get("futures") or {}).items():
         r = tuple(roles)
+        core = bool({ROLE_ENTRY, ROLE_BTC_ETH} & set(roles))          # derin geçmiş yalnız giriş evreni + BTC/ETH
         for tf in FUT_TFS:
-            add(SeriesSpec("futures", s, tf, fl, True, r))
+            add(SeriesSpec("futures", s, tf, fl if core or tf not in FINE_KINDS else max(fl, xs), True, r))
         add(SeriesSpec("futures", s, FUNDING, fl, True, r))
-        add(SeriesSpec("futures", s, METRICS_5M, day_ms(METRICS_FLOOR), True, r))
+        m0 = day_ms(METRICS_FLOOR)
+        add(SeriesSpec("futures", s, METRICS_5M, m0 if core else max(m0, xs), True, r))
         add(SeriesSpec("futures", s, MARKPX_1H, fl, True, r))
         add(SeriesSpec("futures", s, PREMIUM_1H, fl, True, r))
     for s, roles in (doc.get("gold_futures") or {}).items():
@@ -299,9 +308,16 @@ def plan_series(doc: dict[str, Any], *, now: datetime) -> list[SeriesSpec]:
 
 
 def snapshot_doc(doc: dict[str, Any], plan: Iterable[SeriesSpec], uj: dict[str, Any]) -> dict[str, Any]:
-    """`universe/AAAA-AA-GG.json` içeriği: rol bazlı U_R, seri anahtarları ve `state/universe.json`'un günlük kopyası."""
+    """`universe/AAAA-AA-GG.json` içeriği: rol bazlı U_R, seri anahtarları, kısa ince seriler (`series_short`: anahtar →
+    başlangıç günü; dağıtım betiğinin disk tahmini bunları gün oranıyla ölçekler) ve `state/universe.json`'un günlük kopyası."""
+    plan = list(plan)
     keys = [s.key for s in plan]
-    return {**doc, "series_count": len(keys), "series": keys, "universe_json": uj}
+    xs = int(datetime.fromisoformat(str(doc["generated_at"])).timestamp() * 1000) - EXTRA_FINE_DAYS * 86_400_000
+    short = {s.key: datetime.fromtimestamp(s.start_ms / 1000, UTC).strftime("%Y-%m-%d") for s in plan
+             if s.market == "futures" and s.kind in FINE_KINDS and s.symbol not in (doc.get("gold_futures") or {})
+             and s.start_ms >= xs - 86_400_000}
+    return {**doc, "series_count": len(keys), "series": keys, "series_short": short, "short_days": EXTRA_FINE_DAYS,
+            "universe_json": uj}
 
 
 def write_universe_snapshot(paths: EnginePaths, doc: dict[str, Any]) -> Path:
@@ -377,7 +393,8 @@ def latest_onboard_dates(paths: EnginePaths) -> dict[str, int]:
     return {}
 
 
-__all__ = ["BTC_ETH", "DATASETS", "EXCHANGEINFO_SCHEMA", "FUTURES_FLOOR", "FUT_TFS", "F_ENTRY_MISSING", "GOLD_1M_DAYS",
+__all__ = ["BTC_ETH", "DATASETS", "EXCHANGEINFO_SCHEMA", "EXTRA_FINE_DAYS", "FINE_KINDS", "FUTURES_FLOOR", "FUT_TFS",
+           "F_ENTRY_MISSING", "GOLD_1M_DAYS",
            "GOLD_FUTURES", "GOLD_FUT_TFS", "GOLD_SPOT", "GOLD_SPOT_TFS", "MAIN_SPOT_DAYS", "METRICS_FLOOR", "SPOT_CONTEXT",
            "SeriesSpec", "TRADED_DAYS", "UNIVERSE_SCHEMA", "build_universe", "compact_exchange_info", "day_ms",
            "entry_universe", "latest_exchangeinfo", "latest_onboard_dates", "plan_series", "recent_exchangeinfo", "snapshot_doc",

@@ -2,8 +2,8 @@
 # trading2 — SÜREKLİ ÖĞRENME MOTORU P1b sürüm betiği (PAPER; gerçek para YOK). docs/SYSTEM_LEARNING_ENGINE_V1.md §2.2–§2.5,
 # §3.4, §9.3, §9.4, §10 P1b. KÜÇÜK ve AYRILMIŞ: yalnız motor adımları; P1a betiği tb-engine-4962209.sh temel alındı.
 #
-# ÖN KOŞUL — P1a KURULU: gece birimi dosyaları P1a'nınkiyle bayt bayt aynı, gece zamanlayıcısı açık ve aktif,
-#   /opt/tradingbot/engine-app 4962209'da ya da onun torununda. Değilse betik HİÇBİR ŞEYE DOKUNMADAN durur.
+# ÖN KOŞUL — P1a KURULU: gece birimi dosyaları P1a'nınkiyle bayt bayt aynı, gece zamanlayıcısı açık ve aktif, engine-app
+#   4962209'da ya da HERHANGİ bir torununda (VPS'te 2026-10-07'den beri db5db96). Değilse HİÇBİR ŞEYE DOKUNMADAN durur.
 # NE YAPAR: tradingbot-engine-data.{service,timer} birimlerini KAPILI kurar; engine-app AYRI klonunu hedef koda (TIP)
 #   yeniden sabitler + önceden derler; veri birimini (engine-data --update) ve gece birimini birer kez ELLE çalıştırır
 #   (smoke); ikisi de geçerse veri zamanlayıcısını (00:41 UTC) açar. --backfill ilk doldurmayı veri biriminin [Service]
@@ -11,19 +11,19 @@
 # NE YAPMAZ: worker'ı ve dashboard'ı DURDURMAZ / YENİDEN BAŞLATMAZ; /opt/tradingbot/app, config.yaml, state, defterler ve
 #   worker'ın HistoryStore'u (data/market) DEĞİŞMEZ; gece birimi dosyalarına dokunulmaz. Motor yalnız data/research'e
 #   yazar. Betik yalnız kendi klasörlerine (engine-app, veri birimi dosyaları, deploy-logs/engine-*) yazar.
-# EN ERKEN DAĞITIM (sahip kararı 2026-10-06 "3 temiz gün sonra"; §2.9, §10): başka bir sürümün yeniden başlatmasından
-#   (deploy-logs/*-restart-at.txt) en az 3 GÜN sonra VE o sürümün ilk iki --check çıktısı temizse. 3 günü betik zorlar
-#   (3g-pencere-dışı kapısı; --backfill'in başlatılması da, VPS kabul 1); iki temiz --check sahip + inceleyici
-#   yargısıdır. P1a'nın 14 gecelik A/B'si bitmeden dağıtılırsa UYARI basılır (motor kodu değişir: yeni A/B dönemi).
+# EN ERKEN DAĞITIM (sahip kararı 2026-10-07 "öğrenmeyi şimdi kur", P1a ile aynı; önceden 3, ondan önce 7 gün; §2.9, §10):
+#   başka bir sürümün yeniden başlatmasından (deploy-logs/*-restart-at.txt) en az 1 GÜN sonra VE o sürümün ilk iki --check
+#   çıktısı temizse. 1 günü betik zorlar (1g-pencere-dışı kapısı; --backfill'in başlatılması da); iki temiz --check sahip +
+#   inceleyici yargısıdır. P1a'nın 14 gecelik A/B'si bitmeden dağıtılırsa UYARI basılır (motor kodu değişir: yeni A/B dönemi).
 # SAHİBİN ADIMLARI (VPS'te, sırayla; dosya adı tb-engine-<hedefin ilk 7 hanesi>.sh):
-#   1) sudo bash tb-engine-1b1feb9.sh --dry-run    # yalnız denetim; hedef kod GEÇİCİ klonda; hiçbir şey değişmez
-#   2) sudo bash tb-engine-1b1feb9.sh              # dağıt: kapılı veri birimi + engine-app sabiti + iki elle smoke
-#   3) sudo bash tb-engine-1b1feb9.sh --backfill   # ilk doldurma (~45 sembolde ≈ 200 bin istek, ≈ 13–32 sa, ≈ 6 GB;
+#   1) sudo bash tb-engine-57cfef1.sh --dry-run    # yalnız denetim; hedef kod GEÇİCİ klonda; hiçbir şey değişmez
+#   2) sudo bash tb-engine-57cfef1.sh              # dağıt: kapılı veri birimi + engine-app sabiti + iki elle smoke
+#   3) sudo bash tb-engine-57cfef1.sh --backfill   # ilk doldurma (~45 sembolde ≈ 200 bin istek, ≈ 13–32 sa, ≈ 6 GB;
 #                                                  #   disk kapısı smoke'un universe/<gün>.json seri sayısından);
 #                                                  #   yeniden çalıştırınca ilerleme/ETA/disk; durmuşsa kaldığı yerden
-#   4) sudo bash tb-engine-1b1feb9.sh --check      # 14 gün her gün (gece + veri bölümü)
-#   5) sudo bash tb-engine-1b1feb9.sh --ab-report  # 14. geceden sonra bir kez
-#   Geri alma: --rollback (veri birimi + ilk doldurma kalkar, engine-app P1a'ya döner; data/research KALIR); tam kaldırma ardından: sudo bash tb-engine-4962209.sh --rollback
+#   4) sudo bash tb-engine-57cfef1.sh --check      # 14 gün her gün (gece + veri bölümü)
+#   5) sudo bash tb-engine-57cfef1.sh --ab-report  # 14. geceden sonra bir kez
+#   Geri alma: --rollback (veri birimi + ilk doldurma kalkar, engine-app P1a motor koduna döner: 4962209 ya da aynı motor kodlu app SHA'sı, VPS'te db5db96; data/research KALIR); tam kaldırma ardından: sudo bash tb-engine-4962209.sh --rollback
 # Çıkış: 0 tamam · 1 durdu (ön denetimde: hiçbir şey değişmedi) · 2 smoke geçmedi ya da saati değil (veri zamanlayıcısı
 #   KAPALI, engine-app önceki sabitine döndü) · 3 reload sonrası MemoryMax kayması (veri birimleri geri alındı)
 #   · 4 dağıtıldı ama bir değişmez KALDI / --rollback YARIM KALDI (neden yazılır; aynı komutla yeniden).
@@ -39,9 +39,9 @@
 #   =no; değilse yalnız stop yeter) · ilk doldurma: sudo systemctl stop tb-engine-backfill.service (--backfill sürdürür).
 set -Eeuo pipefail
 
-TIP="1b1feb9b88558c8ca9b5a95e0f9b96e1f21a5261"    # P1b kodu + inceleme + yeniden doğrulama düzeltmeleri (2026-10-06; 008e602'nin yerine)
+TIP="57cfef1471822a23d97f3813ed77330ef794edb8"    # P1b (1b1feb9 ile motor kodu AYNI) db5db96 soyunda (2026-10-08; 1b1feb9'un yerine)
 T7="${TIP:0:7}"
-P1A_TIP="49622093a3d3bc334b454b4df2dcdb4e53eb5144" # P1a (tb-engine-4962209.sh): ön koşul ve --rollback hedefi
+P1A_TIP="49622093a3d3bc334b454b4df2dcdb4e53eb5144" # P1a (tb-engine-4962209.sh): ön koşul (o ya da torunu) ve --rollback tabanı
 BRANCH_REF="refs/heads/claude/gifted-knuth-0ehpcs"
 REPO_URL="${TB_ENGINE_REPO_URL:-https://github.com/CoskunerBerke/trading2.git}"   # içerik TAM SHA'ya bağlıdır
 SVC_SHA256="0db7a26a2a2c955ef3d9cdb83834f816c0556752233a8f312b3ffbbd7ca89b2e"    # gece .service @TIP (= P1a)
@@ -869,19 +869,17 @@ LOG="$LOGDIR/engine-$T7-${MODE#--}-$(date -u +%Y%m%dT%H%M%SZ).log"
 exec > >(tee -a "$LOG") 2>&1
 echo "tb-engine-$T7 $MODE · $(date -u '+%F %T') UTC · kayıt: $LOG"
 read -r W_PID0 W_NR0 <<<"$(worker_now)"
-# 3 gün kuralı (§2.9 değişikliği 2026-10-06): son başka-sürüm yeniden başlatması
-win3() {
+win1() {   # 1 gün kuralı: son başka-sürüm yeniden başlatması (sahip kararı 2026-10-07 "öğrenmeyi şimdi kur"; önceden 3, ondan önce 7)
   local fm e last=0 lastf="" age
   for fm in "$LOGDIR"/*-restart-at.txt; do
-    [[ -f "$fm" ]] || continue
-    e="$(sed -n 1p "$fm" 2>/dev/null || true)"
+    [[ -f "$fm" ]] || continue; e="$(sed -n 1p "$fm" 2>/dev/null || true)"
     if [[ "$e" =~ ^[0-9]+$ ]] && (( e > last )); then last="$e"; lastf="$fm"; fi
   done
-  age=$(( $(date +%s) - last )); (( age >= 3 * 86400 )) && rc=0 || rc=1
-  if [[ -n "$lastf" ]]; then out="son sürüm yeniden başlatması $(basename "$lastf") $((age / 86400)) gün önce (≥ 3; §2.9; ilk iki --check temiz olmalı)"
-    (( rc == 0 )) || out+="; en erken $(date -u -d "@$((last + 3 * 86400))" '+%F %H:%M') UTC"
+  age=$(( $(date +%s) - last )); (( age >= 1 * 86400 )) && rc=0 || rc=1
+  if [[ -n "$lastf" ]]; then out="son sürüm yeniden başlatması $(basename "$lastf") $((age / 86400)) gün önce (≥ 1; §2.9; sahip kararı 2026-10-07; ilk iki --check temiz olmalı)"
+    (( rc == 0 )) || out+="; en erken $(date -u -d "@$((last + 1 * 86400))" '+%F %H:%M') UTC"
   else out="deploy-logs'ta sürüm kaydı yok"; fi
-  gate "3g-pencere-dışı" "$rc" "$out"
+  gate "1g-pencere-dışı" "$rc" "$out"
 }
 disk_gate() {   # $1: ek gereksinim (bayt) · $2: en az boş (gece birimi 10G) · $3: araştırma en çok (20G) · $4: not
   local mf="${2:-10000000000}" mr="${3:-20000000000}"
@@ -892,7 +890,7 @@ disk_gate() {   # $1: ek gereksinim (bayt) · $2: en az boş (gece birimi 10G) �
 }
 
 if [[ "$MODE" == --rollback ]]; then
-  say "GERİ ALMA (P1a'ya dönüş) — veri birimi + ilk doldurma kalkar, engine-app ${P1A_TIP:0:7}'e döner; gece birimi ve data/research KALIR"
+  say "GERİ ALMA (P1a'ya dönüş) — veri birimi + ilk doldurma kalkar, engine-app P1a motor koduna döner; gece birimi ve data/research KALIR"
   if [[ "$(sc_state is-active "$BF")" =~ ^(active|activating)$ ]]; then systemctl stop "$BF" || true; ok "ilk doldurma durduruldu ($BF)"; fi
   systemctl reset-failed "$BF" >/dev/null 2>&1 || true
   if [[ -f "$SD/$DSVC" || -f "$SD/$DTMR" ]]; then
@@ -904,13 +902,17 @@ if [[ "$MODE" == --rollback ]]; then
   PARTIAL=(); if [[ -n "$UNDO_NOTE" ]]; then PARTIAL+=("$UNDO_NOTE"); fi
   if [[ -d "$ENG/.git" && ! -L "$ENG" ]]; then
     cur="$(gitx "$ENG" rev-parse HEAD)"; app_sha="$(gitx "$APP" rev-parse HEAD 2>/dev/null || echo ?)"; time_ok 0 || true
-    if [[ "$cur" == "$P1A_TIP" ]]; then ok "engine-app zaten P1a'da (${P1A_TIP:0:7})"
+    back="$P1A_TIP"   # app P1a'nın torunu ve motor kodu (research_engine + gece birimi) AYNIysa app SHA'sı (VPS 2026-10-07: db5db96)
+    if [[ "$app_sha" =~ ^[0-9a-f]{40}$ ]] && { gitx "$ENG" cat-file -e "$app_sha^{commit}" 2>/dev/null || gitx "$ENG" fetch -q "$APP" "$app_sha" 2>/dev/null; } \
+       && gitx "$ENG" merge-base --is-ancestor "$P1A_TIP" "$app_sha" 2>/dev/null \
+       && gitx "$ENG" diff --quiet "$P1A_TIP" "$app_sha" -- tradingbot/research_engine "deploy/$SVC" "deploy/$TMR" 2>/dev/null; then back="$app_sha"; fi
+    if [[ "$cur" == "$back" ]]; then ok "engine-app zaten P1a motor kodunda (${back:0:7})"
     elif [[ "$(sc_state is-active "$SVC")" =~ ^(active|activating)$ || "$WHY" == *"00:00–04:00"* ]]; then
       PARTIAL+=("engine-app ${cur:0:7}'de kaldı: gece birimi penceresi/çalışıyor ($WHY)")
-    elif ! gitx "$ENG" merge-base --is-ancestor "$app_sha" "$P1A_TIP" 2>/dev/null; then
-      PARTIAL+=("engine-app ${cur:0:7}'de BIRAKILDI: app ${app_sha:0:7}, ${P1A_TIP:0:7}'in atası değil (dönülse her gece SKEW olurdu)")
+    elif ! gitx "$ENG" merge-base --is-ancestor "$app_sha" "$back" 2>/dev/null; then
+      PARTIAL+=("engine-app ${cur:0:7}'de BIRAKILDI: app ${app_sha:0:7}, ${back:0:7}'in atası değil ve P1a motor kodunu taşımıyor (dönülse her gece SKEW olurdu)")
     elif [[ -n "$(gitx "$ENG" status --porcelain)" ]]; then PARTIAL+=("engine-app'te yerel değişiklik var: yeniden sabitlenmedi")
-    else pin_eng "$P1A_TIP"; ok "engine-app ${cur:0:7} → ${P1A_TIP:0:7} (P1a) + compileall; gece zamanlayıcısı açık kalır"; fi
+    else pin_eng "$back"; ok "engine-app ${cur:0:7} → ${back:0:7} (P1a motor kodu) + compileall; gece zamanlayıcısı açık kalır"; fi
   fi
   echo "   gece zamanlayıcısı: $(sc_state is-enabled "$TMR") / $(sc_state is-active "$TMR") · data/research:" \
        "$({ du -sh "$RES" 2>/dev/null || true; } | awk 'NR==1{print $1}') (DOKUNULMADI)"
@@ -944,7 +946,7 @@ if [[ "$MODE" == --backfill ]]; then
   gate "worker-MemoryMax=6G" "$rc" "MemoryMax=${mm:-?}"
   st="$(sc_state is-active "$DSVC")"; [[ ! "$st" =~ ^(active|activating)$ ]] && rc=0 || rc=1
   gate "veri-birimi-boşta" "$rc" "$DSVC ${st:-?} (00:41 çalıştırması bitsin; data.lock)"
-  win3
+  win1
   # disk: tahmin smoke'un universe/<gün>.json'undan × 1,3 − mevcut; VERİ biriminin sınırlarıyla (13G/17G; gece 10G/20G)
   read -r est_b est_n est_src <<<"$(rpy est "$RES" "$DISK_EST")"
   res_b="$({ du -sB1 "$RES/store" "$RES/archive_cache" 2>/dev/null || true; } | awk '$1 ~ /^[0-9]+$/ {s+=$1} END {print s+0}')"
@@ -959,8 +961,7 @@ if [[ "$MODE" == --backfill ]]; then
   printf '   %s\n' "${PROPS[@]}"
   systemd-run --unit="$BF" --description="Trading Bot research engine — initial backfill (P1b, tb-engine-$T7)" \
     "${PROPS[@]}" "$VENV/bin/python" -s -m tradingbot engine-data --backfill || die "systemd-run $BF'yi başlatamadı (yukarıdaki hata)"
-  CHANGED+=("$BF başlatıldı")
-  sleep 5
+  CHANGED+=("$BF başlatıldı"); sleep 5
   bst="$(sc_state is-active "$BF")"
   rpy bf "$RES" "$bst" "$(bf_peak)" "$DATA_MEM" "$(basename "$0")" "$(bf_high)"
   if [[ "$bst" == failed ]]; then
@@ -1016,7 +1017,7 @@ st="$(sc_state is-active "$SVC") $(sc_state is-active "$DSVC") $(sc_state is-act
 gate "motor-boşta" "$rc" "gece/veri/doldurma: $st (bir motor çalıştırması sürerken dağıtılmaz)"
 disk_gate 0
 (( ${free_b:-0} >= DATA_FREE_MIN + DISK_EST * 13 / 10 )) || warn "ilk doldurma (~$(numfmt --to=si "$DISK_EST") ±%30; kesin değer smoke'tan sonra evrenden) için boş alan dar: --backfill başlamaz"
-win3
+win1
 out="$(rpy bkok "$RES" 2>&1)" && rc=0 || rc=1
 gate "yedek-doğrulandı" "$rc" "$out"
 if ! out="$(rpy p1aab "$RES" "$P1A_TIP" 2>&1)"; then warn "$out — P1b yeni bir A/B dönemi açar; P1a A/B raporu yarım kalır"
@@ -1175,8 +1176,7 @@ fi
 
 say "10/10 veri zamanlayıcısı (enable --now; örtük reload KAPIDAN)"
 reload_gate || { undo_data; revert_eng; die "enable öncesi reload kapısı: $WHY. Veri birimleri geri alındı" 3; }
-systemctl enable --now "$DTMR"
-CHANGED+=("veri zamanlayıcısı")
+systemctl enable --now "$DTMR"; CHANGED+=("veri zamanlayıcısı")
 mm="$(sc_show "$WORKER" MemoryMax)"
 if [[ "$mm" != "$MEM_EXPECT" ]]; then
   undo_data; revert_eng

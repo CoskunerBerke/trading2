@@ -5,9 +5,10 @@
 Betik SAHTE bir kökte (`TRADINGBOT_BASE`, `TRADINGBOT_SYSTEMD_DIR`), SAHTE `systemctl` ve SAHTE `systemd-run` ile koşulur;
 gerçek servis, gerçek systemd ve AĞ yoktur (veri birimi sahte data.binance.vision + sahte REST + sahte günlükle çalışır:
 `research_engine_data_fixtures`). Kaynak depo yerel bir çıplak depodur (`TB_ENGINE_REPO_URL`; PR dalı
-`claude/gifted-knuth-0ehpcs` = hedef); app klonu VPS'te çalışan `f8b05fb`'dedir. **Ön koşul P1a**, gerçek P1a betiği
-(`tb-engine-4962209.sh`) aynı sahte kökte bir kez dağıtılarak kurulur (modül başına bir şablon; her test kopyasını
-kullanır).
+`claude/gifted-knuth-0ehpcs` = hedef); app klonu P1a kurulurken VPS'te çalışan `f8b05fb`'dedir. **Ön koşul P1a**, gerçek
+P1a betiği (`tb-engine-4962209.sh`) aynı sahte kökte bir kez dağıtılarak kurulur (modül başına bir şablon; her test
+kopyasını kullanır). Bugünkü VPS durumu (2026-10-08: app VE engine-app `db5db96`, P1a'nın torunu, aynı motor kodu;
+`db5db96-restart-at.txt`) ayrı bir senaryoda kurulur.
 
 Sahte `systemctl`: worker ve dashboard için her DEĞİŞTİREN fiilde `FORBIDDEN` yazar ve 99 ile düşer (betiğin worker'a hiç
 dokunmadığı her senaryoda kanıtlanır); `start tradingbot-engine-data.service` DEPLOY EDİLEN engine-app kodunu
@@ -23,7 +24,8 @@ sıra reload → veri smoke → gece smoke → veri zamanlayıcısıdır; veri s
 kayması veri zamanlayıcısını AÇMAZ ve engine-app'i önceki sabitine döndürür; `--backfill` systemd-run'a veri biriminin
 [Service] satırlarını AYNEN verir (Type=exec, TimeoutStartSec yok), sürerken ikinci kez başlatmaz, ilerleme/ETA'yı
 gösterir, düşmüşse sıfırlayıp sürdürür; `--check`/`--ab-report` araştırma ağacını değiştirmez; `--rollback` veri birimini
-kaldırır, engine-app'i P1a'ya döndürür, gece birimini ve data/research'ü bayt bayt bırakır.
+kaldırır, engine-app'i P1a motor koduna (4962209 ya da aynı motor kodlu app SHA'sı, VPS'te db5db96) döndürür, gece birimini
+ve data/research'ü bayt bayt bırakır; başka sürümün yeniden başlatmasından 1 gün geçmeden dağıtmaz (sahip kararı 2026-10-07).
 """
 from __future__ import annotations
 
@@ -48,14 +50,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_research_engine_contract import parse_unit  # noqa: E402
 from test_research_engine_release import JOURNALCTL, STUBS, _git, _has, _tree_digest, own_tmp, stub_body  # noqa: E402
 
-SCRIPT = ROOT / "deploy" / "releases" / "tb-engine-1b1feb9.sh"
+SCRIPT = ROOT / "deploy" / "releases" / "tb-engine-57cfef1.sh"
 #: Betiğin kayıtlı sha256'sı (sürüm notu ve sahibe verilen değer; betik değişirse bu da bilinçli değişir).
-SCRIPT_SHA256 = "6eeeb34411a08c43cc25c5ed124b3292b3189619b8bfb1e52055dcd445f73405"
+SCRIPT_SHA256 = "241b5e0f1ee85be4ee0a7d51c507eb9ef251be7e7057242985f49bd630e4e235"
 P1A_SCRIPT = ROOT / "deploy" / "releases" / "tb-engine-4962209.sh"
 TEXT = SCRIPT.read_text(encoding="utf-8")
 TIP = re.search(r'^TIP="([0-9a-f]{40})"', TEXT, re.M).group(1)
 P1A_TIP = re.search(r'^P1A_TIP="([0-9a-f]{40})"', TEXT, re.M).group(1)
-APP_SHA = "f8b05fb27310238c764ac7dad23221d84f7c0b6d"      # VPS'te çalışan app (hedefin ve P1a'nın atası)
+APP_SHA = "f8b05fb27310238c764ac7dad23221d84f7c0b6d"      # P1a kurulurken VPS'te çalışan app (hedefin ve P1a'nın atası)
+#: VPS'te 2026-10-07 19:31 UTC'den beri app VE engine-app (hızlı kNN worker sürümü; P1a'nın torunu, motor kodu P1a'nınki)
+VPS_APP = "db5db96ead8ef13d7a7ece0c79ed9b0182ac2f5f"
 BASH, GIT = shutil.which("bash"), shutil.which("git")
 SVC, TMR = "tradingbot-engine-night.service", "tradingbot-engine-night.timer"
 DSVC, DTMR, BF = "tradingbot-engine-data.service", "tradingbot-engine-data.timer", "tb-engine-backfill.service"
@@ -84,7 +88,8 @@ def test_script_is_syntax_ok_recorded_and_states_the_rules():
         assert flag in TEXT
     assert re.search(r'^BRANCH_REF="refs/heads/claude/gifted-knuth-0ehpcs"$', TEXT, re.M), "PR dalı (impl/* yalnız yedek)"
     head = "\n".join(lines[:45])
-    assert "EN ERKEN DAĞITIM" in head and "en az 3 GÜN" in head and "restart-at.txt" in head
+    assert "EN ERKEN DAĞITIM" in head and "en az 1 GÜN" in head and "restart-at.txt" in head
+    assert '"öğrenmeyi şimdi kur"' in head, "1 gün: sahip kararı 2026-10-07 (P1a betiğiyle aynı)"
     steps = [re.search(rf"#\s+{i}\) sudo bash tb-engine-{TIP[:7]}\.sh {flag}", head)
              for i, flag in enumerate(("--dry-run", " *#", "--backfill", "--check", "--ab-report"), 1)]
     assert all(steps) and [m.start() for m in steps] == sorted(m.start() for m in steps), \
@@ -97,6 +102,8 @@ def test_script_pins_match_the_code_commit():
     assert _git("merge-base", "--is-ancestor", TIP, "HEAD").returncode == 0
     assert _git("merge-base", "--is-ancestor", P1A_TIP, TIP).returncode == 0, "P1a (4962209) hedefin atası (eski P1a testi geçer)"
     assert _git("merge-base", "--is-ancestor", APP_SHA, TIP).returncode == 0, "VPS app'i hedefin atası (SKEW yok)"
+    if _has(VPS_APP):                               # her yeni sürüm VPS'te çalışan db5db96'nın torunudur
+        assert _git("merge-base", "--is-ancestor", VPS_APP, TIP).returncode == 0, "db5db96 hedefin atası"
     p1a = P1A_SCRIPT.read_text(encoding="utf-8")
     assert re.search(rf'^TIP="{P1A_TIP}"', p1a, re.M), "P1A_TIP = P1a betiğinin hedefi"
     for var, path in (("SVC_SHA256", "deploy/tradingbot-engine-night.service"), ("TMR_SHA256", "deploy/tradingbot-engine-night.timer"),
@@ -578,6 +585,8 @@ def source(tmp_path_factory):
     assert _git("fetch", "-q", "--no-tags", str(ROOT), "+HEAD:refs/heads/scratch", cwd=src).returncode == 0
     assert _git("update-ref", "refs/heads/claude/gifted-knuth-0ehpcs", TIP, cwd=src).returncode == 0
     assert _git("update-ref", "refs/heads/app-main", APP_SHA, cwd=src).returncode == 0
+    if _has(VPS_APP):
+        assert _git("update-ref", "refs/heads/app-db5db96", VPS_APP, cwd=src).returncode == 0
     assert _git("update-ref", "-d", "refs/heads/scratch", cwd=src).returncode == 0
     return src
 
@@ -725,12 +734,12 @@ def test_dry_run_checks_everything_and_changes_nothing(tmp_path, source, p1a_tem
     assert cp.returncode == 0, cp.out[-6000:]
     m = re.search(r"KURU ÇALIŞMA: (\d+)/(\d+) değişmez geçti", cp.out)
     assert m and m.group(1) == m.group(2) == "22", cp.out[-3000:]
-    for name in ("P1a-kurulu", "günlük-grubu", "yedek-doğrulandı", "3g-pencere-dışı", "kaynak-TIP", "app-SHA-ata", "P1a-ata",
+    for name in ("P1a-kurulu", "günlük-grubu", "yedek-doğrulandı", "1g-pencere-dışı", "kaynak-TIP", "app-SHA-ata", "P1a-ata",
                  "birim-sha256", "birim-sözleşmesi", "systemd-analyze-verify", "systemd-run", "compileall", "bağımsız-koşucu",
                  "yalıtım-AST", "status-kuru", "worker-MemoryMax=6G", "tradingbot-worker-NDR=no", "motor-boşta"):
         assert re.search(rf"\[tamam\] #\d+ {re.escape(name)}", cp.out), name
     assert "57 geçti · 0 kaldı · 0 atlandı" in cp.out
-    assert "8db1faf-restart-at.txt 3 gün önce (≥ 3;" in cp.out
+    assert "8db1faf-restart-at.txt 3 gün önce (≥ 1;" in cp.out
     assert re.search(r"UYARI\s+P1a A/B penceresi \(sürüm günü \d{4}-\d\d-\d\d\): 0/14 gece geçti — P1b yeni bir A/B", cp.out)
     sb.untouched_since(snap)
     _no_forbidden(sb)
@@ -955,8 +964,8 @@ def test_unsafe_preconditions_refuse_before_any_change(tmp_path, source, p1a_tem
            "too_late": {"FAKE_UTC_HM": "19:30"}}.get(case, {})
     sb = _from_template(tmp_path, p1a_template, source, **env)
     if case == "release_window":
-        # 3 günden 10 dk eksik: hâlâ pencere içinde (2026-10-06 sahip kararı)
-        (sb.base / "deploy-logs" / "34ae8d2-restart-at.txt").write_text(f"{int(time.time()) - 3 * 86400 + 600}\nx\n")
+        # 1 günden 10 dk eksik: hâlâ pencere içinde (2026-10-07 sahip kararı; önceden 3 gün)
+        (sb.base / "deploy-logs" / "34ae8d2-restart-at.txt").write_text(f"{int(time.time()) - 1 * 86400 + 600}\nx\n")
     if case == "not_paper":
         (sb.state / "mode.json").write_text('{"mode": "LIVE"}', encoding="utf-8")
     if case == "night_timer_off":
@@ -983,7 +992,7 @@ def test_unsafe_preconditions_refuse_before_any_change(tmp_path, source, p1a_tem
     snap = sb.snap()
     cp = sb.run()
     assert cp.returncode == 1 and "HİÇBİR ŞEYE DOKUNULMADI" in cp.out, cp.out[-3000:]
-    want = {"release_window": "DUR: 3g-pencere-dışı", "night_timer_off": "DUR: P1a-kurulu", "engine_app_old": "DUR: P1a-kurulu",
+    want = {"release_window": "DUR: 1g-pencere-dışı", "night_timer_off": "DUR: P1a-kurulu", "engine_app_old": "DUR: P1a-kurulu",
             "no_backup": "DUR: yedek-doğrulandı", "bad_backup": "TUTMADI", "night_unit_changed": "P1a'nınki değil",
             "not_paper": "DUR: PAPER", "ndr": "NDR=no", "too_late": "sonraki 4h penceresine",
             "engine_app_newer": "daha yeni bir motor sürümü"}.get(case)
@@ -1025,4 +1034,53 @@ def test_memorymax_drift_after_reload_rolls_the_data_units_back(tmp_path, source
     log = sb.log()[n0:]
     assert not [ln for ln in log if ln.startswith(("start", "enable"))]
     assert sb.unit_files() == sorted([SVC, TMR]) and sb.eng_head() == P1A_TIP, "reload engine-app'ten önce: kod değişmedi"
+    _no_forbidden(sb)
+
+
+@needs_sandbox
+@pytest.mark.skipif(not _has(VPS_APP), reason="db5db96 geçmişte yok (sığ klon)")
+def test_vps_state_engine_app_at_a_p1a_descendant_deploys_after_one_day_and_rolls_back_to_it(tmp_path, source,
+                                                                                               p1a_template):
+    """Bugünkü VPS (2026-10-08): P1a 4962209 ile kuruldu, sonra worker sürümü db5db96 app'i ve AYNI motor koduyla
+    engine-app'i db5db96'ya taşıdı, `deploy-logs/db5db96-restart-at.txt` yazdı. P1b betiği:
+    * 1 gün dolmadan dağıtmaz (`1g-pencere-dışı`, en erken saati yazar) ve hiçbir şeye dokunmaz;
+    * 1 gün sonra P1a ön koşulunu engine-app db5db96 (4962209'un torunu) ile kabul eder ve dağıtır (app db5db96 ⊑ hedef);
+    * `--rollback` engine-app'i 4962209'a DEĞİL db5db96'ya döndürür (aynı P1a motor kodu; app db5db96 4962209'un atası
+      olmadığından 4962209 her gece SKEW olurdu ve eski betik YARIM kalırdı); P1a betiğinin `--check`'i kurulumu tanır."""
+    sb = _from_template(tmp_path, p1a_template, source)
+    for d in ("app", "engine-app"):
+        repo = sb.base / d
+        assert _git("fetch", "-q", str(source), "refs/heads/app-db5db96", cwd=repo).returncode == 0
+        assert _git("-c", "advice.detachedHead=false", "checkout", "-q", "--detach", VPS_APP, cwd=repo).returncode == 0
+    assert _git("diff", "--quiet", P1A_TIP, VPS_APP, "--", "tradingbot/research_engine", f"deploy/{SVC}",
+                f"deploy/{TMR}").returncode == 0, "db5db96'nın motor kodu P1a'nınki"
+    restart = sb.base / "deploy-logs" / "db5db96-restart-at.txt"
+    restart.write_text(f"{int(time.time()) - 86400 + 600}\nx\n")
+    snap = sb.snap()
+    cp = sb.run()
+    assert cp.returncode == 1 and "DUR: 1g-pencere-dışı" in cp.out and "HİÇBİR ŞEYE DOKUNULMADI" in cp.out, cp.out[-3000:]
+    assert "db5db96-restart-at.txt 0 gün önce (≥ 1;" in cp.out and "en erken" in cp.out, cp.out[-3000:]
+    assert re.search(r"\[tamam\] #\d+ P1a-kurulu .*engine-app db5db96 ⊒ 4962209", cp.out), cp.out[-3000:]
+    sb.untouched_since(snap)
+    restart.write_text(f"{int(time.time()) - 86400 - 600}\nx\n")
+    cp = sb.run()
+    assert cp.returncode == 0, cp.out[-6000:]
+    m = re.search(r"DAĞITILDI: (\d+)/(\d+) değişmez geçti", cp.out)
+    assert m and m.group(1) == m.group(2) == "33", cp.out[-3000:]
+    assert re.search(r"\[tamam\] #\d+ app-SHA-ata +çalışan app db5db96 hedefin atası", cp.out), cp.out[-3000:]
+    assert re.search(r"\[tamam\] #\d+ 1g-pencere-dışı +son sürüm yeniden başlatması db5db96-restart-at.txt 1 gün önce \(≥ 1;",
+                     cp.out), cp.out[-3000:]
+    assert sb.eng_head() == TIP and sb.unit_files() == sorted([SVC, TMR, DSVC, DTMR])
+    ck = sb.run("--check")
+    assert ck.returncode == 0 and f"iki SHA: app db5db96 · engine-app {TIP[:7]}" in ck.out and "SKEW yok" in ck.out, ck.out[-3000:]
+    d1 = _tree_digest(sb.res)
+    rb = sb.run("--rollback")
+    assert rb.returncode == 0 and "GERİ ALINDI (P1a)" in rb.out and "YARIM" not in rb.out, rb.out[-3000:]
+    assert f"engine-app {TIP[:7]} → db5db96 (P1a motor kodu)" in rb.out, rb.out[-3000:]
+    assert sb.eng_head() == VPS_APP and sb.unit_files() == sorted([SVC, TMR]) and _tree_digest(sb.res) == d1
+    assert sb.state_json()["enabled"][TMR] is True and sb.state_json()["active"][TMR] is True
+    again = sb.run("--rollback")
+    assert again.returncode == 0 and "engine-app zaten P1a motor kodunda (db5db96)" in again.out, again.out[-3000:]
+    p1 = sb.run("--check", script=P1A_SCRIPT)
+    assert p1.returncode == 0 and "iki SHA: app db5db96 · engine-app db5db96" in p1.out and "SKEW yok" in p1.out, p1.out[-2000:]
     _no_forbidden(sb)

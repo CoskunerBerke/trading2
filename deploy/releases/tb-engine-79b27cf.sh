@@ -69,7 +69,7 @@ DISK_EST=6000000000            # yedek tahmin (universe/<gün>.json yoksa): ~45 
 DATA_FREE_MIN=13000000000; DATA_RES_MAX=17000000000  # = datastore.DATA_MIN_FREE_BYTES / DATA_REFUSE_RESEARCH_BYTES
 LOGDIR="$BASE/deploy-logs"; BASELINE="$LOGDIR/engine-$T7-deploy.json"; SAMPLES="$LOGDIR/engine-$T7-samples.jsonl"
 MODE="${1:-deploy}"; SMOKE_TIMEOUT=1800; DSMOKE_TIMEOUT=3300
-TMP=""; WHY=""; NOTMR=""; UPG=0; CHANGED=(); INV_N=0; INV_FAIL=(); ENG_PREV=""; UNDO_NOTE=""
+TMP=""; WHY=""; NOTMR=""; RB_HINT=""; UPG=0; CHANGED=(); INV_N=0; INV_FAIL=(); ENG_PREV=""; UNDO_NOTE=""
 
 say()  { printf '\n== %s\n' "$*"; };          ok()  { printf '   OK  %s\n' "$*"; }
 warn() { printf '   UYARI  %s\n' "$*"; };       die() { printf '\nDUR: %s\n' "$1" >&2; exit "${2:-1}"; }
@@ -90,10 +90,14 @@ on_err() { (( BASH_SUBSHELL == 0 )) || exit 1; trap - ERR; set +e   # $(…) iç
              if ( revert_eng ) >&2; then printf '   engine-app önceki sabitine döndürüldü (%s)\n' "${ENG_PREV:0:7}" >&2
              else printf '   UYARI: engine-app geri döndürülemedi: sudo bash %s --rollback\n' "$0" >&2; fi
            fi
-           if (( ${#CHANGED[@]} )); then printf '   Geri alma: sudo bash %s --rollback (data/research kalır)\n' "$0" >&2; fi
+           if (( ${#CHANGED[@]} )); then
+             if [[ -n "$RB_HINT" ]]; then printf '   %s\n' "$RB_HINT" >&2
+             else printf '   Geri alma: sudo bash %s --rollback (data/research kalır)\n' "$0" >&2; fi
+           fi
            exit 1; }
 trap cleanup EXIT
 trap 'on_err $LINENO' ERR
+if [[ "$MODE" == deploy ]]; then trap 'on_err "$LINENO (sinyal)"' HUP INT TERM; fi   # bağlantı kopması / Ctrl-C: sabitleme smoke'suz kalmaz
 # inv AD 0|1 AÇIKLAMA — adlandırılmış değişmez. gate: aynı, ama dağıtımda ilk KALDI'da durur (hiçbir şey değişmeden).
 inv() {
   INV_N=$((INV_N + 1))
@@ -991,7 +995,7 @@ say "1/10 sunucu ve P1a ön koşulu (salt-okunur)"
 ENG_NOW=""; if [[ -d "$ENG/.git" ]]; then ENG_NOW="$(gitx "$ENG" rev-parse HEAD 2>/dev/null || echo ?)"; fi; ENG_PREV="$ENG_NOW"
 T_DEPLOY="$(date +%s)"
 if [[ "$MODE" == deploy && "$ENG_NOW" == "$TIP" && "$(fsha "$SD/$DSVC")" == "$DSVC_SHA256" \
-      && "$(sc_state is-enabled "$DTMR")" == enabled ]]; then
+      && "$(sc_state is-enabled "$DTMR")" == enabled && -f "$BASELINE" ]]; then   # taban yalnız iki smoke geçince yazılır
   echo "   zaten dağıtılmış ($T7; veri zamanlayıcısı açık). Durum: sudo bash $0 --check · ilk doldurma: sudo bash $0 --backfill"; exit 0
 fi
 SLOTS="Uygun aralıklar (UTC): 04:40–07:15, 08:40–11:15, 12:40–15:15, 16:40–19:15, 20:40–23:15"
@@ -1117,9 +1121,12 @@ inv "araştırma-kökü" "$rc" "$RES ($SVC_USER, 0750; locks/ backup/)${foreign:
 
 say "6/10 veri birimi (install -m0644) + KAPILI daemon-reload; gece birimi dosyaları DEĞİŞMEZ"
 dt="$(dropin_text)"; UPG=0
-if cmp -s "$W/deploy/$DSVC" "$SD/$DSVC" && cmp -s "$W/deploy/$DTMR" "$SD/$DTMR" && [[ "$dt" == "$(cat "$DDROPIN" 2>/dev/null || true)" ]] \
-   && [[ "$(sc_state is-enabled "$DTMR")" == enabled ]]; then
+nocomment() { sed '1{/^# tb-engine-[0-9a-f]\{7\}:/d;}'; }   # drop-in'in 1. satırı kuran sürümü yazar (57cfef1): içerik karşılaştırılır
+if cmp -s "$W/deploy/$DSVC" "$SD/$DSVC" && cmp -s "$W/deploy/$DTMR" "$SD/$DTMR" \
+   && [[ "$(printf '%s' "$dt" | nocomment)" == "$({ cat "$DDROPIN" 2>/dev/null || true; } | nocomment)" ]] \
+   && [[ "$(sc_state is-enabled "$DTMR")" == enabled && "$(sc_state is-active "$DTMR")" == active ]]; then
   UPG=1; NOTMR="veri zamanlayıcısı önceki kurulumdaki gibi AÇIK kalır (engine-app önceki sabitinde)"
+  RB_HINT="önceki P1b kurulumu (veri birimi + zamanlayıcı) yerinde; --rollback ÇALIŞTIRMAYIN (P1a'ya döndürür). Uygun saatte aynı komutla yeniden deneyin"
   ok "YÜKSELTME: veri birimi + drop-in kurulu ve hedefle bayt bayt aynı, zamanlayıcı açık → yeniden kurulmaz, daemon-reload YOK"
 fi
 if (( UPG )); then
@@ -1181,7 +1188,7 @@ if (( rc )); then
   journalctl -u "$DSVC" -n 40 --no-pager 2>/dev/null | sed 's/^/   | /' || true
   revert_eng
   die "veri smoke'u GEÇMEDİ → ${NOTMR:-veri zamanlayıcısı ETKİNLEŞTİRİLMEDİ} (birim kurulu, data/research kaldı). Çıktıyı bana iletin;
-  geri almak için: sudo bash $0 --rollback" 2
+  ${RB_HINT:-geri almak için: sudo bash $0 --rollback}" 2
 fi
 
 say "9/10 ELLE SMOKE (gece, yeni kod): systemctl start $SVC"

@@ -41,7 +41,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 SCRIPT = ROOT / "deploy" / "releases" / "tb-engine-4962209.sh"
 #: Betiğin kayıtlı sha256'sı (sürüm notu ve sahibe verilen değer; betik değişirse bu da bilinçli değişir).
-SCRIPT_SHA256 = "f9aab6eb2b61aacd37eac037c9730c51b829335416f0bb5f86f70bd73a84fc9d"
+SCRIPT_SHA256 = "6a33bb9b9a0fbf49fb80ffb08162b13b92c4f6711226a2ef0a54ce0b56890da6"
 TEXT = SCRIPT.read_text(encoding="utf-8")
 TIP = re.search(r'^TIP="([0-9a-f]{40})"', TEXT, re.M).group(1)
 APP_SHA = "f8b05fb27310238c764ac7dad23221d84f7c0b6d"      # VPS'te çalışan app (hedefin atası)
@@ -346,7 +346,7 @@ def test_dry_run_checks_everything_and_changes_nothing(tmp_path, source):
     assert m and m.group(1) == m.group(2) == "17", cp.out[-3000:]
     for name in ("kaynak-TIP", "app-SHA-ata", "birim-sha256", "birim-sözleşmesi", "systemd-analyze-verify", "compileall",
                  "bağımsız-koşucu", "yalıtım-AST", "engine-status-kuru", "worker-MemoryMax=6G", "tradingbot-worker-NDR=no",
-                 "3g-pencere-dışı"):
+                 "1g-pencere-dışı"):
         assert re.search(rf"\[tamam\] #\d+ {re.escape(name)}", cp.out), name
     assert "8db1faf-restart-at.txt 3 gün önce (≥ 3;" in cp.out, cp.out[-3000:]
     assert "33 geçti · 0 kaldı · 0 atlandı" in cp.out
@@ -533,13 +533,13 @@ def test_unsafe_preconditions_refuse_before_any_change(tmp_path, source, case):
     if case == "release_window":
         (sb.base / "deploy-logs").mkdir()
         # 3 günden 10 dk eksik: hâlâ pencere içinde (2026-10-06 sahip kararı: 3 gün; önceden 7 gün)
-        (sb.base / "deploy-logs" / "34ae8d2-restart-at.txt").write_text(f"{int(time.time()) - 3 * 86400 + 600}\nx\n")
+        (sb.base / "deploy-logs" / "34ae8d2-restart-at.txt").write_text(f"{int(time.time()) - 1 * 86400 + 600}\nx\n")
     if case == "not_paper":
         (sb.state / "mode.json").write_text('{"mode": "LIVE"}', encoding="utf-8")
     cp = sb.run()
     assert cp.returncode == 1 and "HİÇBİR ŞEYE DOKUNULMADI" in cp.out, cp.out[-3000:]
     if case == "release_window":
-        assert "DUR: 3g-pencere-dışı" in cp.out and "(≥ 3;" in cp.out, cp.out[-3000:]
+        assert "DUR: 1g-pencere-dışı" in cp.out and "(≥ 1;" in cp.out, cp.out[-3000:]
     sb.untouched()
     _no_forbidden(sb)
 

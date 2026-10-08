@@ -327,6 +327,7 @@ def test_shared_experience_collector_carries_the_engines_config_hash_in_every_mo
     head.pop("m2x_aggressive")                                   # M2X (2026-10-05): karar kimliğine GİRMEZ
     head["learning_mode"].pop("extra_entries")                   # 943345c'nin V3Config alanları
     head["history"].pop("evidence_subprocess")                   # 2026-10-05: karar-nötr anahtar karar kimliğine girmez
+    head["history"].pop("evidence_fast_knn")                     # 2026-10-06: hızlı kNN anahtarı (karar-nötr)
     assert hashes["absent"] == hashes["open"] == payload_hash(head) != hashes["rec"]
 
 

@@ -182,6 +182,7 @@ def test_engine_config_hash_is_unchanged_by_the_advisor_fields():
     head_fields = {k: v for k, v in asdict(absent).items() if k not in ("shared_experience", "m2x_aggressive")}
     head_fields["learning_mode"].pop("extra_entries")   # 2026-10-03: kod varsayılanı `open` karar kimliğine girmez
     head_fields["history"].pop("evidence_subprocess")   # 2026-10-05: karar-nötr alt süreç anahtarı karar kimliğine girmez
+    head_fields["history"].pop("evidence_fast_knn")     # 2026-10-06: hızlı kNN anahtarı (karar-nötr)
     assert h(absent) == h(rec) == h(adv) == h(other) == payload_hash(head_fields)
 
 

@@ -590,6 +590,7 @@ class SharedExperienceCollector:
                     _d = asdict(eng.cfg.v3)
                     _d.pop("shared_experience", None)         # motorun `config_hash()` kuralıyla AYNI (karar kimliği)
                     (_d.get("history") or {}).pop("evidence_subprocess", None)     # karar-nötr (2026-10-05)
+                    (_d.get("history") or {}).pop("evidence_fast_knn", None)       # karar-nötr (2026-10-06, hızlı kNN)
                     _d.pop("m2x_aggressive", None)            # M2X (2026-10-05): ayna defter karar kimliğine GİRMEZ
                     cfg_hash = payload_hash(_d)
             except Exception:  # noqa: BLE001 — (2026-09-29) etiket yalnız; hesaplanamazsa boş kalır

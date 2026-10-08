@@ -824,6 +824,7 @@ class TradingEngineV3(TradingEngine):
         eng = SimilarPatternEngine(min_sample=30, horizon=self.head_cfg.funding_horizon_bars * 2,
                                    fee_pct=self.head_cfg.fee_taker_pct,
                                    slippage_pct=self.head_cfg.slippage_pct, clusters=clusters)
+        eng.fast_query = self._evidence_fast_knn_on()      # sorgu yolu (karar-nötr; indeks içeriğine dokunmaz)
         btc = store.read("futures", "BTC/USDT", "4h")
         n = 0
         last_ts: dict[str, int] = {}
@@ -880,6 +881,7 @@ class TradingEngineV3(TradingEngine):
             self._pattern_engine = eng
             if eng is not None:
                 log.info("pattern index: %d olay, %d seri", len(eng.events), len(eng.candles))
+                self._log_evidence_fast_knn_setting()
         except Exception as exc:  # noqa: BLE001 — kanıt yoksa Coin Head kanıtsız çalışır (specialist usable=False)
             log.warning("pattern index kurulamadı: %s", exc)
             self._pattern_engine = None
@@ -902,6 +904,7 @@ class TradingEngineV3(TradingEngine):
         log.info("indeks yenileyicisi başladı: her %.0f dk, en fazla %d sembol",
                  r.interval_s / 60.0, r.max_symbols)
         self._log_evidence_subprocess_setting()
+        self._log_evidence_fast_knn_setting()
         return r.status()
 
     def index_refresh_status(self) -> dict:
@@ -969,10 +972,10 @@ class TradingEngineV3(TradingEngine):
     EVIDENCE_PREWARM = True
 
     def _evidence_subprocess_on(self) -> bool:
-        """Kanıt sorguları alt süreçte mi (`history.evidence_subprocess`, varsayılan AÇIK; bkz. `patterns/evidence_child`).
-        Karar girdisi DEĞİLDİR: yalnız sorgunun hangi süreçte koştuğunu seçer; kanıt bit-aynıdır (test kilitli).
-        Kısmi motor nesnesinde (config yok), değer gerçek `true` değilse ve Linux dışında KAPALI = bugünkü süreç içi yol
-        (sessizce)."""
+        """Kanıt sorguları alt süreçte mi (`history.evidence_subprocess`, 2026-10-06'dan beri varsayılan KAPALI; bkz.
+        `patterns/evidence_child`, docs/TOUR_CONTENTION_V2.md). Karar girdisi DEĞİLDİR: yalnız sorgunun hangi süreçte
+        koştuğunu seçer; kanıt bit-aynıdır (test kilitli). Yalnız açık `true` + Linux açar; kısmi motor nesnesinde (config
+        yok), değer gerçek `true` değilse ve Linux dışında KAPALI = süreç içi yol (sessizce)."""
         try:
             on = getattr(self.cfg.v3.history, "evidence_subprocess", False) is True
         except AttributeError:
@@ -1001,6 +1004,27 @@ class TradingEngineV3(TradingEngine):
                 log.info("pattern kanıtı sorguları: süreç içinde (%s)", why)
         except Exception as exc:  # noqa: BLE001 — yalnız bilgi satırı
             log.debug("kanıt alt süreci ayarı loglanamadı: %s", exc)
+
+    def _evidence_fast_knn_on(self) -> bool:
+        """kNN kanıt sorgusu hızlı yolda mı (`history.evidence_fast_knn`, varsayılan AÇIK; bkz. `patterns/engine.py`,
+        docs/TOUR_CONTENTION_V2.md). Karar girdisi DEĞİLDİR: iki yol bit-aynı kanıt verir (test kilitli). Yalnız açık
+        `false` kapatır (doğrulama bool dışını reddeder); kısmi motor nesnesinde (config yok) sınıf varsayılanı (AÇIK)."""
+        try:
+            return getattr(self.cfg.v3.history, "evidence_fast_knn", True) is not False
+        except AttributeError:
+            return True
+
+    def _log_evidence_fast_knn_setting(self) -> None:
+        """Başlangıçta BİR kez: kNN kanıt sorgusunun yolu (anahtar karar kimliğine girmediği için görünür olsun)."""
+        try:
+            raw = getattr(self.cfg.v3.history, "evidence_fast_knn", None)
+            if self._evidence_fast_knn_on():
+                log.info("pattern kanıtı kNN sorgusu: HIZLI yol (history.evidence_fast_knn=%s; sonuç eski döngüyle "
+                         "bit-aynı)", raw)
+            else:
+                log.info("pattern kanıtı kNN sorgusu: ESKİ olay-başına döngü (history.evidence_fast_knn=%s)", raw)
+        except Exception as exc:  # noqa: BLE001 — yalnız bilgi satırı
+            log.debug("kNN sorgu ayarı loglanamadı: %s", exc)
 
     def _evidence_prewarm_order(self, eng) -> list[str]:
         """Ön ısıtma sırası = turun sorgu sırası (giriş evreni sırası), sonra indeksteki diğer 4h futures serileri."""
@@ -5055,6 +5079,9 @@ class TradingEngineV3(TradingEngine):
                 # PATTERN KANITI ALT SÜRECİ (2026-10-05): iki değeri de karar-nötrdür (yalnız sorgunun hangi süreçte
                 # koştuğunu seçer) → karar kimliğine GİRMEZ; özet bu alandan önceki kodla aynı kalır.
                 (_d.get("history") or {}).pop("evidence_subprocess", None)
+                # HIZLI kNN (2026-10-06): iki değeri de bit-aynı kanıt verir (yalnız sorgunun nasıl hesaplandığını seçer)
+                # → karar kimliğine GİRMEZ; özet bu alandan önceki kodla aynı kalır.
+                (_d.get("history") or {}).pop("evidence_fast_knn", None)
                 h = payload_hash(_d)
         except Exception:  # noqa: BLE001
             h = None

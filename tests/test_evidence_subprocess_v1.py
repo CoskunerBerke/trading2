@@ -472,11 +472,18 @@ def test_kill_switch_off_never_forks_and_is_todays_path(tmp_path, monkeypatch, h
         assert _ser(eng._pattern_evidence(s, now)) == _ser(TradingEngineV3._evidence_query(real, s))
 
 
-def test_the_switch_defaults_on_and_config_can_turn_it_off(tmp_path, monkeypatch):
-    assert HistorySection().evidence_subprocess is True
-    assert TE._engine(tmp_path, monkeypatch)._evidence_subprocess_on() is True
+def test_the_switch_defaults_off_and_config_can_turn_it_on(tmp_path, monkeypatch):
+    """2026-10-06: varsayılan KAPALI (VPS'te alt süreç belleği ikiye katladı, turları kısaltmadı; kök neden hızlı kNN
+    sorgusuyla çözüldü — docs/TOUR_CONTENTION_V2.md). Açık `true` (Linux) alt süreç yolunu yine açar."""
+    assert HistorySection().evidence_subprocess is False
+    assert load_v3({}).history.evidence_subprocess is False
+    eng = TE._engine(tmp_path, monkeypatch)
+    assert eng.cfg.v3.history.evidence_subprocess is False and eng._evidence_subprocess_on() is False
+    assert load_v3({"history": {"evidence_subprocess": True}}).history.evidence_subprocess is True
     assert load_v3({"history": {"evidence_subprocess": False}}).history.evidence_subprocess is False
-    partial = TradingEngineV3.__new__(TradingEngineV3)            # config'siz kısmi nesne → bugünkü yol
+    eng.cfg.v3.history.evidence_subprocess = True                     # config'te açık `true` → alt süreç (Linux)
+    assert eng._evidence_subprocess_on() is EC.supported()
+    partial = TradingEngineV3.__new__(TradingEngineV3)            # config'siz kısmi nesne → süreç içi yol
     assert partial._evidence_subprocess_on() is False
 
 
@@ -649,6 +656,7 @@ def test_the_switch_is_not_part_of_the_decision_identity(tmp_path, monkeypatch):
     if (d.get("learning_mode") or {}).get("extra_entries") == "open":
         d["learning_mode"].pop("extra_entries", None)
     d["history"].pop("evidence_subprocess")
+    d["history"].pop("evidence_fast_knn")   # 2026-10-06: hızlı kNN anahtarı da karar kimliğine girmez
     d.pop("m2x_aggressive", None)          # M2X ayna defteri de karar kimliğine girmez (config_hash ile aynı)
     want = payload_hash(d)
     hashes = set()
@@ -919,7 +927,14 @@ def test_the_switch_is_linux_only_bool_only_and_logged_at_startup(tmp_path, monk
     with pytest.raises(ConfigError, match="evidence_subprocess"):
         load_v3({"history": {"evidence_subprocess": "false"}})              # tırnaklı YAML değeri: açık hata
     eng = TE._engine(tmp_path, monkeypatch)
+    assert eng._evidence_subprocess_on() is False                            # varsayılan (2026-10-06): süreç içi
+    with caplog.at_level(logging.INFO, logger="tradingbot.engine_v3"):
+        eng._log_evidence_subprocess_setting()
+    line = [rec.getMessage() for rec in caplog.records if "pattern kanıtı sorguları" in rec.getMessage()]
+    assert line == ["pattern kanıtı sorguları: süreç içinde (history.evidence_subprocess=False)"], line
+    eng.cfg.v3.history.evidence_subprocess = True                            # açık `true`
     assert eng._evidence_subprocess_on() is True
+    caplog.clear()
     with caplog.at_level(logging.INFO, logger="tradingbot.engine_v3"):
         eng._log_evidence_subprocess_setting()
     line = [rec.getMessage() for rec in caplog.records if "pattern kanıtı sorguları" in rec.getMessage()]

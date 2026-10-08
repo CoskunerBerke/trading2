@@ -104,9 +104,10 @@ tutan tek bir C çağrısı ve iş boyunca tam ikinci kopya). `fork` indeksin ay
 Karar-nötrlük: yayım NOKTASI ve kuralı (yenileyicinin kodu ve iş parçacığı), turun sürümü okuma kuralı (tek okuma),
 önbellek anahtarı ve kanıt DEĞİŞMEZ; bu modül yalnız sorgunun hangi süreçte koştuğunu değiştirir. Saat-duvarı zamanı
 (turların ve yayımların ne zaman bittiği) bugün de yüke bağlıdır ve bu değişiklikle değişir — amaç budur; bkz.
-docs/TOUR_CONTENTION_V1.md §5. Geri dönüş anahtarı: `history.evidence_subprocess: false` → bugünkü süreç içi yol (alt
-süreç hiç kurulmaz). Anahtar iki değerinde de karar-nötr olduğu için karar kimliğine (`TradingEngineV3.config_hash`)
-girmez.
+docs/TOUR_CONTENTION_V1.md §5. Anahtar: `history.evidence_subprocess` — 2026-10-06'dan beri VARSAYILAN KAPALI (VPS'te
+alt süreç 0,5–1,5 GB özel bellek tuttu ve turları kısaltmadı; kök neden hızlı kNN sorgusuyla çözüldü, bkz.
+docs/TOUR_CONTENTION_V2.md). `false` → süreç içi yol (alt süreç hiç kurulmaz); bu modül yalnız açık `true` ile (Linux)
+devreye girer. Anahtar iki değerinde de karar-nötr olduğu için karar kimliğine (`TradingEngineV3.config_hash`) girmez.
 """
 from __future__ import annotations
 

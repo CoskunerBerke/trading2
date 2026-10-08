@@ -181,6 +181,7 @@ def test_engine_config_hash_ignores_the_record_only_section():
     head_fields = {k: v for k, v in asdict(absent).items() if k not in ("shared_experience", "m2x_aggressive")}
     head_fields["learning_mode"].pop("extra_entries")   # 2026-10-03: kod varsayılanı `open` karar kimliğine girmez
     head_fields["history"].pop("evidence_subprocess")   # 2026-10-05: karar-nötr alt süreç anahtarı karar kimliğine girmez
+    head_fields["history"].pop("evidence_fast_knn")     # 2026-10-06: hızlı kNN anahtarı (karar-nötr)
     assert h(absent) == h(off) == h(rec) == h(other) == payload_hash(head_fields)
     assert h(_load(None, mode={"mode": "OBSERVE"})) != h(absent), "karar ayarı değişince özet DEĞİŞİR (boş özet değil)"
 

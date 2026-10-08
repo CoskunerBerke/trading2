@@ -8,9 +8,10 @@ kanıtını görür. Hızlandırmalar AÇIK ve KAPALI koşulur; `state/` altınd
 karar günlüğü, karşı-olgusal kayıtlar, kanıt dosyaları, health.json …) BAYT BAYT aynı olmalıdır.
 
 AÇIK koşu iki biçimde: ön ısıtma her turdan önce BİTMİŞ ve ön ısıtma tur başlarken HÂLÂ KOŞUYOR (bekleme yok).
-AÇIK koşu üretim varsayılanıyla kanıt sorgularını ALT SÜREÇTE yapar (`history.evidence_subprocess`, 2026-10-05);
-geri dönüş anahtarıyla süreç içi ön ısıtma da ayrıca karşılaştırılır. Bir AÇIK koşuda ön ısıtma alt süreci kurar ama
-HİÇ hesaplamaz: turun bütün ıskaları `EvidenceCache.compute` → alt süreç yolundan geçer (tur boruda bekler).
+AÇIK koşu üretim varsayılanıyla kanıt sorgularını SÜREÇ İÇİNDE yapar (`history.evidence_subprocess`, 2026-10-06'dan
+beri varsayılan KAPALI); alt süreç yolu (açık `true`) ayrıca karşılaştırılır. Bir AÇIK koşuda (alt süreç açık) ön ısıtma
+alt süreci kurar ama HİÇ hesaplamaz: turun bütün ıskaları `EvidenceCache.compute` → alt süreç yolundan geçer (tur boruda
+bekler).
 """
 from __future__ import annotations
 
@@ -55,7 +56,8 @@ def _set_optimizations(mp, on: bool) -> None:
 
 
 def _run(root: Path, monkeypatch, *, optimized: bool, wait_prewarm: bool = True, tours: int = 5,
-         hold_prewarm: bool = False) -> dict:
+         hold_prewarm: bool = False, child: bool | None = None) -> dict:
+    """`child`: None → üretim varsayılanı (`history.evidence_subprocess`), True/False → config'te açıkça o değer."""
     import test_engine_v3 as E
     import test_shared_experience_no_decision_change_v1 as G
     import test_strategy_paper_engine_v1 as SP
@@ -80,7 +82,7 @@ def _run(root: Path, monkeypatch, *, optimized: bool, wait_prewarm: bool = True,
             def _held_run_keys(self, bundle, keys, compute, is_current, use_child):
                 """Ön ısıtma alt süreci kurar, HİÇ hesaplamaz ve sonraki tur bitene kadar canlı tutar: turun ıskaları
                 alt sürece gider. (Saat dondurulmuş: `monotonic` ilerlemez → gerçek uykuyla sınırlı bekleme.)"""
-                assert use_child, "üretim varsayılanı alt süreç olmalı"
+                assert use_child, "alt süreç anahtarı açık olmalı (child=True)"
                 start = held["tours"]                 # alt süreç kurulmadan ÖNCE: tur `_child`'ı görür görmez başlar
                 with self.compute_lock:
                     self._start_child(bundle, compute)
@@ -102,6 +104,8 @@ def _run(root: Path, monkeypatch, *, optimized: bool, wait_prewarm: bool = True,
         with time_machine.travel(G.T0, tick=False) as clock:
             import pandas as pd
             eng = E._engine(root, mp, ov, symbols=4, equity=200.0, p_win=0.64)
+            if child is not None:
+                eng.cfg.v3.history.evidence_subprocess = bool(child)
             for fr in eng._fake_live._frames.values():
                 for tf, ms in (("4h", 14_400_000), ("1h", 3_600_000)):
                     fr[tf]["timestamp"] = fr[tf]["timestamp"] + ms
@@ -197,10 +201,10 @@ def test_tours_across_index_publishes_are_byte_identical_with_optimizations_on(t
     on = _run(tmp_path / "run", monkeypatch, optimized=True)
     assert on["versions"] == off["versions"] == [1, 2, 2, 3, 3]
     assert _diff(on, off) == []
-    # üretim varsayılanı: kanıt sorguları alt süreçte koştu (2026-10-05; alt süreç yolu yalnız Linux'ta)
+    # üretim varsayılanı (2026-10-06): kanıt sorguları SÜREÇ İÇİNDE (alt süreç anahtarı varsayılan KAPALI)
     st = on["eng"]._evidence_cache().stats
-    if sys.platform.startswith("linux"):
-        assert st["child_started"] >= 1 and st["child_computed"] >= 1 and st["child_failures"] == 0, st
+    assert on["eng"].cfg.v3.history.evidence_subprocess is False
+    assert st["child_started"] == 0 and st["computed"] >= 1, st
     # anlamlı senaryo: kanıt üretildi, defterlerde etkinlik var, grafik analizi yazıldı
     files = on["files"]
     assert any(k.startswith("state/evidence/") for k in files)
@@ -219,16 +223,15 @@ def test_tours_are_identical_when_the_prewarm_is_still_running_at_tour_start(tmp
     assert _diff(on, off) == []
 
 
-def test_tours_are_identical_with_the_in_process_prewarm_kill_switch(tmp_path, tmp_path_factory, monkeypatch, _cache):
-    """Geri dönüş anahtarı (`history.evidence_subprocess: false`): ön ısıtma bugünkü gibi süreç içi; sonuç yine aynı."""
-    from tradingbot.engine_v3 import TradingEngineV3
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="alt süreç yolu Linux fork ister")
+def test_tours_are_identical_with_the_child_switch_on(tmp_path, tmp_path_factory, monkeypatch, _cache):
+    """Alt süreç anahtarı açıkça `true` (2026-10-06'dan beri varsayılan KAPALI; anahtar çalışmaya devam eder): kanıt
+    sorguları alt süreçte koşar ve `state/` yine bayt bayt aynı."""
     off = _baseline(tmp_path_factory, monkeypatch, _cache)
-    with monkeypatch.context() as mp:
-        mp.setattr(TradingEngineV3, "_evidence_subprocess_on", lambda self: False)
-        on = _run(tmp_path / "run", monkeypatch, optimized=True)
+    on = _run(tmp_path / "run", monkeypatch, optimized=True, child=True)
     assert _diff(on, off) == []
     st = on["eng"]._evidence_cache().stats
-    assert st["child_started"] == 0 and st["computed"] >= 1, st
+    assert st["child_started"] >= 1 and st["child_computed"] >= 1 and st["child_failures"] == 0, st
 
 
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="alt süreç yolu Linux fork ister")
@@ -237,7 +240,7 @@ def test_tours_are_identical_when_the_tours_own_misses_are_served_by_the_child(t
     """Ön ısıtma alt süreci kurar ama HİÇ hesaplamaz: yayımdan sonraki turun BÜTÜN ıskaları `cache.compute` → alt süreç
     (tur boruda bekler). Durum dosyaları yine bayt bayt aynı; hiçbir ıska süreç içine düşmez."""
     off = _baseline(tmp_path_factory, monkeypatch, _cache)
-    on = _run(tmp_path / "run", monkeypatch, optimized=True, wait_prewarm=False, hold_prewarm=True)
+    on = _run(tmp_path / "run", monkeypatch, optimized=True, wait_prewarm=False, hold_prewarm=True, child=True)
     assert on["versions"] == off["versions"] == [1, 2, 2, 3, 3]
     assert _diff(on, off) == []
     st = on["eng"]._evidence_cache().stats

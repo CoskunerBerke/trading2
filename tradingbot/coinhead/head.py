@@ -212,13 +212,20 @@ class CoinHead:
                 plan.soft_flags.append("RR_BELOW_PREFERRED")
 
     def _size(self, plan: TradePlanV3, market: str, inp: CoinHeadInputs) -> None:
-        from ..risk.engine import size_position
+        from ..risk.engine import LEARNING_MIN_NOTIONAL_BUMP, size_position
         f = (inp.filters or {}).get(market, {}) or {}
         min_notional = float(f.get("min_notional", self.cfg.min_notional_spot if market == "spot" else self.cfg.min_notional_futures))
         max_lev = 1 if market == "spot" else int(f.get("max_leverage", self.cfg.max_leverage))
+        # ÖĞRENME MODU (2026-09-28, öğrenme modu) B5: motor yalnız öğrenme aktifken bu anahtarı koyar (yoksa None → bit-aynı).
+        # Min-notional çatışması %2 tavan içinde plan VETOSU üretmez; nihai boyut motorda `fit_size` ile seçilir.
+        _bump = f.get("learning_min_notional_bump_cap_pct")
         res = size_position(equity=self.cfg.equity_usdt, risk_pct=self.cfg.risk_pct, entry=plan.entry, stop=plan.stop, min_notional=min_notional,
                             max_leverage=max_lev, max_position_pct=30.0, liq_buffer_mult=3.0 if market == "futures" else None,
-                            requested_leverage=plan.size.leverage if market == "futures" else 1)
+                            requested_leverage=plan.size.leverage if market == "futures" else 1,
+                            min_notional_bump_cap_pct=(float(_bump) if _bump is not None else None))
+        if res.ok and _bump is not None and res.reason == LEARNING_MIN_NOTIONAL_BUMP:
+            # şemaya (asdict/to_dict) GİRMEYEN işaret: motor `learning_unlocked_by`a NO_TRADE_MIN_ORDER_CONFLICT yazar
+            plan.learning_min_notional_bump = True
         if not res.ok:
             plan.valid, plan.invalid_reason = False, res.reason
             plan.notional, plan.margin = res.notional, res.margin

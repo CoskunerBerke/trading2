@@ -1,0 +1,92 @@
+# Trading Bot — sürekli öğrenme motoru VERİ birimi (P1b; docs/SYSTEM_LEARNING_ENGINE_V1.md §2.2–§2.5, §2.8, §3.4, §9.3).
+# Motorun TEK AĞLI birimi: data.binance.vision (arşiv önce), fapi.binance.com ve api.binance.com (düşük bütçeli REST
+# kuyruğu, pay ≤ 0,1) ve DNS. KAYIT-YALNIZ, KARAR-NÖTR: yalnız /opt/tradingbot/data/research'e yazar; state, market
+# (worker'ın HistoryStore'u) ve app ağacı çekirdek düzeyinde salt-okunurdur. Her çalıştırma S0'da bunu kendisi DENER
+# (state/market/app'e yazma reddi, cgroup memory.max = ENGINE_EXPECTED_MEMORY_MAX, /tmp ve araştırma kökü yazılabilir;
+# soket denemesi YOK — ağ burada beklenir); biri tutmazsa ISOLATION_BROKEN (çıkış 3). Kilit: data.lock (gece biriminin
+# analysis.lock'undan AYRI); alınamazsa SKIPPED_LOCKED, çıkış 0 (ör. ilk doldurma sürerken).
+#
+# Worker REST koruması (§3.4 madde 2): REST'e dokunmadan önce `journalctl -u tradingbot-worker --since -60min` okunur;
+# bu yüzden SupplementaryGroups=systemd-journal ZORUNLUDUR (yalnız bu birimde; gece biriminde yok). Günlük okunamazsa
+# REST adımı tamamen atlanır (REST_GUARD_UNKNOWN; yalnız arşiv) — sürüm betiğinin smoke'u bunu kabul ETMEZ.
+#
+# Kurulum YALNIZ motor sürüm betiğiyle ve kapılıdır (§9.3): NeedDaemonReload=no + worker MemoryMax=6G önce/sonra,
+# install -m0644, daemon-reload, ELLE SMOKE (`systemctl start tradingbot-engine-data.service`; çıkış 0, öz-denetim OK,
+# günlük okundu) — geçmezse zamanlayıcı ETKİNLEŞTİRİLMEZ. İlk doldurma (`engine-data --backfill`) bu birimle DEĞİL,
+# sürüm betiğinin --backfill'i ile bu dosyanın [Service] özelliklerinin AYNISIYLA `systemd-run` geçici birimi olarak
+# çalışır (süre sınırı yok, kaldığı yerden devam eder). Anında durdurma:
+# `sudo systemctl disable --now tradingbot-engine-data.timer` (ilk doldurma: `sudo systemctl stop tb-engine-backfill`).
+#
+# OnFailure ve nproc < 4 için CPUQuota=60% bu dosyada YOKTUR: gerekirse sürüm betiği drop-in ile ekler (§2.5).
+# MemoryHigh/MemoryMax P0'da kesinleşir (ölçülen tepe ≈ 227 MiB); MemoryMax değişirse ENGINE_EXPECTED_MEMORY_MAX aynı
+# bayt değeriyle değişmelidir (birim sözleşme testi eşitliği denetler; değilse öz-denetim çıkış 3).
+# §2.5 KARARI (2026-10-06): MemoryMax toplamı (worker 6G + panel 0,5G + gece 0,5G + veri/doldurma 1G = 8 GiB) 7,7 GiB'lık
+# VPS'te RAM − 1G'ye sığmaz (worker + panel tek başına 6,5 GiB) → belge gereği MemoryHigh düşürüldü: 800M → 512M (ölçülen
+# tepenin ≈ 2,3 katı; üstünde çekirdek MOTORU geri kazanır/yavaşlatır), MemoryMax 1G kalır, OOMScoreAdjust=1000.
+# Sırlar (2026-10-06): ağlı TEK birim olduğu için aynı kullanıcının okuyabildiği sır yolları çekirdek düzeyinde
+# erişilemez (InaccessiblePaths; "-" = yoksa sorun değil): /opt/tradingbot/env (worker ortam dosyası, 0600), env.d
+# (tradingbot-alert@ biriminin Telegram ortamı), .ssh (dağıtım anahtarı; kullanıcının HOME'u /opt/tradingbot),
+# data/vault ve data/backups (saatlik yedek vault'u da kopyalar). /home, /root, /run/user zaten ProtectHome=yes ile
+# kapalı. Motor bunların hiçbirini okumaz; state yine salt-okunur okunur, yazım yalnız data/research.
+[Unit]
+Description=Trading Bot research engine — data unit (P1b, networked, record-only)
+Documentation=file:///opt/tradingbot/engine-app/docs/SYSTEM_LEARNING_ENGINE_V1.md
+After=local-fs.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=tradingbot
+Group=tradingbot
+SupplementaryGroups=systemd-journal
+WorkingDirectory=/opt/tradingbot/engine-app
+# Ortam: EnvironmentFile YOK (sır yok; motor yalnız herkese açık uç noktaları okur). Yalnız bu satırlar (§2.3).
+Environment=TRADINGBOT_DATA=/opt/tradingbot/data
+Environment=TRADINGBOT_STATE_DIR=/opt/tradingbot/data/state
+Environment=ALLOW_LIVE_TRADING=false
+Environment=TZ=UTC
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONIOENCODING=utf-8
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=ENGINE_EXPECTED_MEMORY_MAX=1073741824
+# `-s -m`: kullanıcı site-packages yok; `-m` çalışma dizinini sys.path'e ekler. `-I` KULLANILMAZ (§2.3).
+ExecStart=/opt/tradingbot/venv/bin/python -s -m tradingbot engine-data --update
+# 00:41 + 50min = 01:31 sert durma; iç son tarih başlangıç + 45 dk, en geç 01:26 (gece birimi 01:37'de başlar).
+TimeoutStartSec=50min
+
+# --- kaynak (§2.5): worker'dan sonra gelir, bellek darlığında önce motor ölür
+Nice=19
+CPUWeight=10
+CPUQuota=100%
+IOSchedulingClass=idle
+IOWeight=10
+OOMScoreAdjust=1000
+MemoryHigh=512M
+MemoryMax=1G
+
+# --- yalıtım (§2.1, §2.8): gece birimiyle aynı, YALNIZ PrivateNetwork yok (tek ağlı birim)
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/opt/tradingbot/data/research
+ReadOnlyPaths=/opt/tradingbot/data /opt/tradingbot/app
+InaccessiblePaths=-/opt/tradingbot/env -/opt/tradingbot/env.d -/opt/tradingbot/.ssh -/opt/tradingbot/data/vault -/opt/tradingbot/data/backups
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+AmbientCapabilities=
+UMask=0027

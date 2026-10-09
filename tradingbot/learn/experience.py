@@ -23,6 +23,9 @@ from typing import Any, Iterable
 
 from .features import build_features, feature_names, to_vector
 
+#: `learning_mode.LEARNING_RECORD_ONLY` (test eşitliği korur; içe aktarma döngüsü olmasın diye burada sabit).
+RECORD_ONLY_REASON = "LEARNING_RECORD_ONLY"
+
 SCHEMA_VERSION = "experience_pool_v1"
 
 REAL_PAPER, SHADOW = "REAL_PAPER", "SHADOW"
@@ -223,12 +226,17 @@ def shadow_experiences(trades: Iterable[dict[str, Any]], *, as_of_ms: int | None
     * `outcome` YOKSA (etiketlenmemiş) havuza GİRMEZ.
     * `labeled_at` > `as_of_ms` ise GİRMEZ (gelecekte etiketlenmiş sonuç sızamaz).
     * Ağırlık `weight × fidelity` — gerçek fill'den DAİMA düşüktür.
+    * İlk nedeni LEARNING_RECORD_ONLY olan kayıt (öğrenme modunun seçicilik-ekstra YALNIZ KAYIT adayı, 2026-10-03) havuza
+      GİRMEZ: bu kayıtlar karar girdisi değildir (tek karar değişikliği "seçicilik-ekstra artık açılmaz" kalsın).
     """
     out: list[Experience] = []
     for t in trades:
         o = t.get("outcome")
         if not isinstance(o, dict) or not o:
             continue                                   # ETİKETSİZ → dışarıda
+        rno = t.get("reason_not_opened")
+        if isinstance(rno, (list, tuple)) and rno and str(rno[0]) == RECORD_ONLY_REASON:
+            continue                                   # seçicilik YALNIZ KAYIT → karar girdisi değil
         labeled = _ms(t.get("labeled_at")) or _ms(t.get("label_ts"))
         if as_of_ms is not None and (labeled is None or labeled > int(as_of_ms)):
             continue                                   # no-lookahead
@@ -286,6 +294,23 @@ def experience_vector(e: Experience, rows_by_id: dict[str, dict[str, Any]],
     except Exception:  # noqa: BLE001
         v = [0.0] * len(names)
     return v, (math.sqrt(sum(x * x for x in v)) or 1.0)
+
+
+#: Havuzun HİÇ okumadığı ağır giriş yükleri (ajan/şef raporları, anlık görüntü, risk kararı; satır başına ~50–80 KB).
+#: Önbellek bunları TUTMAZ (2026-09-28, öğrenme modu — ikinci doğrulama turu: öğrenmede ana bot günde ~27 kapanış
+#: üretiyor, tam satırlar önbellekte sınırsız birikiyordu). Özellik yoksa satırın kendisi vektörlenir; `build_features`
+#: yalnız düz sayısal anahtarları okur, bu anahtarların hiçbiri onlardan değildir.
+_HEAVY_ROW_KEYS = frozenset({"decision", "chief", "snapshot", "risk_decision", "model_versions", "price_path"})
+
+
+def experience_row(row: dict[str, Any]) -> dict[str, Any]:
+    """`TradeMemory` satırının havuz için SINIRLI kopyası: `real_experiences`, `rows_by_identity` ve `experience_vector`
+    tam satırla BİREBİR aynı sonucu verir (ağır yükler ve dersler dışındaki postmortem alanları düşer)."""
+    out = {k: v for k, v in row.items() if k not in _HEAVY_ROW_KEYS}
+    pm = row.get("postmortem")
+    if isinstance(pm, dict) and pm:
+        out["postmortem"] = {"lesson_codes": pm.get("lesson_codes")}
+    return out
 
 
 def rows_by_identity(memory_rows: Iterable[dict[str, Any]]) -> dict[str, dict[str, Any]]:

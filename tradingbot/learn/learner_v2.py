@@ -60,6 +60,35 @@ class PredictionResult:
 LEARNING_SEMANTICS = "v2-multileaf"
 
 
+#: `train_challenger`in hafıza satırından okuduğu alanlar (`prediction_vector_from_row` → snapshot; etiket → outcome;
+#: yenilik ağırlığı → recorded_at). `TradeMemory.trades(project=…)` sözleşmesine uyar (outcome/postmortem korunur).
+TRAIN_ROW_KEYS = frozenset({"recorded_at", "snapshot", "outcome", "postmortem"})
+
+
+def train_row(row: dict[str, Any]) -> dict[str, Any]:
+    return {k: v for k, v in row.items() if k in TRAIN_ROW_KEYS}
+
+
+def outcome_keys(rec: dict[str, Any], decision_snapshot: dict | None = None) -> tuple[str, str, str, str]:
+    """Kapanışın istatistik anahtarları: (rejim, sembol, setup, yön). `on_trade_closed` ve öğrenme modunun taban
+    öğrenici görünümü (`learning_basis.PolicyBasis`) AYNI kuralı kullanır (2026-09-28, öğrenme modu)."""
+    f = rec.get("features") or {}
+    regime = str((decision_snapshot or {}).get("regime") or f.get("regime") or "")
+    symbol, setup, side = str(rec.get("symbol", "")), str(rec.get("setup_type", f.get("setup_type", "-"))), str(rec.get("side", f.get("direction", "")))
+    return regime, symbol, setup, side
+
+
+def add_outcome(win: HierarchicalRate, exp_r: HierarchicalRate, lab: dict[str, Any], *, regime: str, symbol: str,
+                setup: str, side: str) -> None:
+    """Tek kapanışın hiyerarşik kazanma oranı + beklenti R katkısı (`outcome_keys` anahtarlarıyla)."""
+    won = 1.0 if lab["won"] else 0.0
+    # TEK gozlem, IKI yaprak granulerligi (`SYM|setup` ve `SYM`). Tek cagri kullanilir:
+    # aksi halde ortak atalar (`""` global ve `regime:X`) ayni kapanis icin IKI KEZ
+    # sayilirdi (bkz. HierarchicalRate._keys_multi).
+    win.add(won, regime=regime or None, leaves=(f"{symbol}|{setup}", symbol))
+    exp_r.add(lab["r_multiple"], regime=regime or None, leaf=f"{setup}|{side}")
+
+
 class LearnerV2:
     def __init__(self, memory: TradeMemory, registry: ModelRegistry, cfg: LearnConfig | None = None, state_path: Path | str | None = None):
         self.memory = memory
@@ -153,15 +182,8 @@ class LearnerV2:
     def on_trade_closed(self, rec: dict[str, Any], decision_snapshot: dict | None = None, price_path: list[dict] | None = None) -> dict:
         lab = label_outcome(rec)
         pm = structured_postmortem(rec, decision_snapshot)
-        f = rec.get("features") or {}
-        regime = str((decision_snapshot or {}).get("regime") or f.get("regime") or "")
-        symbol, setup, side = str(rec.get("symbol", "")), str(rec.get("setup_type", f.get("setup_type", "-"))), str(rec.get("side", f.get("direction", "")))
-        won = 1.0 if lab["won"] else 0.0
-        # TEK gozlem, IKI yaprak granulerligi (`SYM|setup` ve `SYM`). Tek cagri kullanilir:
-        # aksi halde ortak atalar (`""` global ve `regime:X`) ayni kapanis icin IKI KEZ
-        # sayilirdi (bkz. HierarchicalRate._keys_multi).
-        self.win.add(won, regime=regime or None, leaves=(f"{symbol}|{setup}", symbol))
-        self.exp_r.add(lab["r_multiple"], regime=regime or None, leaf=f"{setup}|{side}")
+        regime, symbol, setup, side = outcome_keys(rec, decision_snapshot)
+        add_outcome(self.win, self.exp_r, lab, regime=regime, symbol=symbol, setup=setup, side=side)
         for a in pm.agents_right:
             self.agent_hit.add(1.0, regime=regime or None, leaf=a)
         for a in pm.agents_wrong:
@@ -182,7 +204,10 @@ class LearnerV2:
         return lesson
 
     def train_challenger(self, *, now: Any | None = None) -> dict | None:
-        rows = self.memory.trades(closed_only=True)
+        # yalnız okunan alanlar (anlık görüntü, sonuç, kayıt anı) satır satır tutulur — tam satırlar (ajan/şef raporları
+        # ~64 KB) aynı anda belleğe alınmaz; eğitim girdisi BİREBİR aynı (2026-09-28, öğrenme modu; üçüncü doğrulama turu)
+        rows = (self.memory.trades(closed_only=True, project=train_row) if isinstance(self.memory, TradeMemory)
+                else self.memory.trades(closed_only=True))
         n = len(rows)
         if n < self.cfg.min_samples_train:
             return None

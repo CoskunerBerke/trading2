@@ -477,7 +477,9 @@ def install_perp_frames(eng, monkeypatch, *, scale: float = 2.0) -> None:
         def snap(symbol):
             # dogrulanmis perp mark (funding.mark) de PERP olceginde: kagit defter fiyat yolu bunu okur (2026-09-16)
             d = orig_snap(symbol)
-            if symbol in scaled and isinstance(d, dict):
+            # 2026-09-24: sahte canli veri `price` verilen sembolde perp mark'i da o fiyata ceker (gercekte ikisi birlikte
+            # hareket eder); asagida `price` zaten PERP olceginde verildigi icin mark IKINCI kez olceklenmez.
+            if symbol in scaled and isinstance(d, dict) and symbol not in (getattr(live, "price", None) or {}):
                 d = dict(d)
                 f = dict(d.get("funding") or {})
                 if f.get("mark"):

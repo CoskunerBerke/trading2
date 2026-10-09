@@ -201,11 +201,8 @@ class PriceService:
 
     def marks(self, symbols: Any, *, now_ms: int | None = None) -> tuple[dict[str, Any], dict[str, float], dict[str, dict]]:
         """Çoklu sembol: (TickData sözlüğü, float fiyatlar, boşluklar) — `engine_v3._paper_marks` ile aynı biçim."""
-        from decimal import Decimal
-
-        from ..accounting import TickData
         from ..core import iso
-        from .universe import iso_ms
+        from ..protective_monitor import live_tick
         now = int(now_ms if now_ms is not None else self.clock_ms())
         out: dict[str, Any] = {}
         outf: dict[str, float] = {}
@@ -217,7 +214,7 @@ class PriceService:
                              "last_seen_mark": v["mark"] if v["mark"] > 0 else None}
                 continue
             px = float(v["mark"])
-            out[sym] = TickData(last=Decimal(str(px)), mark=Decimal(str(px)), ts=iso_ms(v["price_ts_ms"]) or iso())
+            out[sym] = live_tick(v)                       # kaynak (borsa) ve alınma zamanı ayrı alanlarda
             outf[sym] = px
         return out, outf, gaps
 

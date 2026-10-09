@@ -26,3 +26,20 @@ Trading_bot/Data Quality/
 *.pem
 *.key
 deploy/env
+
+# sinyal laboratuvarı: indirilen mumlar ve raporlar (yerel)
+signal_lab_data/
+signal_lab_out/
+
+# altın laboratuvarı (gold_v1, gold_v2): arşiv önbelleği, Dukascopy aynası, raporlar ve olay dosyaları (yerel; fiyat verisi depoya girmez)
+gold_lab_data/
+gold_lab_out/
+gold_lab_v2_out/
+
+# defter araştırması (book_v1): arşiv önbelleği ve raporlar (yerel; fiyat verisi depoya girmez)
+book_lab_data/
+book_lab_out/
+
+# yerel sanal ortam ve demo panel çıktısı (scripts/demo_panel_state.py varsayılan klasörü)
+.venv/
+demo-panel/

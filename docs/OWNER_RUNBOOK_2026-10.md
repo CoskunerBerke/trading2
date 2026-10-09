@@ -35,9 +35,10 @@ sudo bash ~/tb-deploy-db5db96.sh --check > ~/check-bot-$(date +%F).txt 2>&1; sed
 **Öğrenme motoru (P1a): KURULDU — 7 Ekim 2026 21:20 (25/25, deneme SUCCESS).** Betik `~/tb-engine-4962209.sh`
 (sha256 `6a33bb9b9a0fbf49fb80ffb08162b13b92c4f6711226a2ef0a54ce0b56890da6`). Her gece 04:37'de kendi çalışır.
 
-**Öğrenme motoru veri katmanı (P1b): 57cfef1 KURULDU — 8 Ekim 23:45 (33/33).** İlk doldurma (`--backfill`) disk
-kapısında durdu (hiçbir şey değişmedi); düzeltilmiş sürüm `tb-engine-79b27cf.sh` 57cfef1'in üstüne kurulur, sonra
-`--backfill`. Komutları Claude verir; saat (TR) 07:40–10:15, 11:40–14:15, 15:40–18:15, 19:40–22:15 ya da 23:40–02:15.
+**Öğrenme motoru veri katmanı (P1b): 79b27cf KURULDU — 9 Ekim sabahı (33/33, yükseltme yolu; 57cfef1 8 Ekim 23:45'te
+kurulmuştu).** Betik `~/tb-engine-79b27cf.sh` (sha256 `5f1d18886588c91712b92c482d0f07ba50f36ef8d5988df6bf6c7815b591f2e2`).
+İlk doldurma 9 Ekim sabahı başladı; saatler sürer. İlerleme (yeni doldurma başlatmaz, yalnız durumu gösterir):
+`sudo bash ~/tb-engine-79b27cf.sh --backfill 2>&1 | tail -6`
 
 **Hızlı formasyon hesabı (worker sürümü db5db96): KURULDU — 7 Ekim 22:31.** Aşağıdaki adımlar kayıt içindir. Uzun turları ve Box'un mum kaçırmasını düzeltir.
 Betik zaten `~/tb-deploy-db5db96.sh` (sha256 `d6a843e58d12bd8717b3d8866e204a40e6834c989b922631cdcd1fa6e298da11`); 7 Ekim
@@ -66,7 +67,7 @@ Bağlanırken kopmaması için PowerShell'de: `ssh -o ServerAliveInterval=30 ubu
 sudo bash ~/tb-engine-4962209.sh --check > ~/check-engine-$(date +%F).txt 2>&1; echo "çıkış kodu: $?"; tail -60 ~/check-engine-$(date +%F).txt
 ```
 
-P1b (79b27cf) kurulduktan sonra aynı kontrolü veri bölümüyle birlikte bu betik verir:
+9 Ekim'den itibaren aynı kontrolü veri bölümüyle birlikte bu betik verir (yukarıdakinin yerine):
 `sudo bash ~/tb-engine-79b27cf.sh --check > ~/check-engine-$(date +%F).txt 2>&1; echo "çıkış kodu: $?"; tail -80 ~/check-engine-$(date +%F).txt`
 
 - İlk 14 gecenin yarısında motor bilerek **kapalı** çalışır (tek/çift gün sırası). Bu gecelerde sonuç `AB_OFF`

@@ -38,7 +38,7 @@ sudo bash ~/tb-deploy-db5db96.sh --check > ~/check-bot-$(date +%F).txt 2>&1; sed
 **Öğrenme motoru veri katmanı (P1b): 79b27cf KURULDU — 9 Ekim sabahı (33/33, yükseltme yolu; 57cfef1 8 Ekim 23:45'te
 kurulmuştu).** Betik `~/tb-engine-79b27cf.sh` (sha256 `5f1d18886588c91712b92c482d0f07ba50f36ef8d5988df6bf6c7815b591f2e2`).
 İlk doldurma 9 Ekim sabahı başladı; saatler sürer. İlerleme ve bitiş (salt-okunur; hiçbir şey başlatmaz):
-`sudo bash ~/tb-engine-79b27cf.sh --check 2>&1 | grep -i 'ilk doldurma'` — sürerken "SÜRÜYOR …", bitince
+`sudo bash ~/tb-engine-79b27cf.sh --check 2>&1 | grep -i 'V1 ilk doldurma'` — sürerken "SÜRÜYOR …", bitince
 **"TAMAMLANDI …"** (`systemctl is-active tb-engine-backfill.service` → `inactive` yalnız sürecin durduğunu söyler). Bittikten sonra
 `--backfill` ÇALIŞTIRMA: yeni bir doldurma turu başlatır ve P2 kurulumu o tur bitene dek reddedilir. Yalnız `--check`
 "bitmedi; kaldığı yerden: … --backfill" yazarsa `--backfill` ile sürdür.

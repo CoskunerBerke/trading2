@@ -50,7 +50,15 @@ OUTSIDE_OK = {"store.py": {"tradingbot.history.store"}, "seed.py": {"tradingbot.
               # muhafazakâr R'si) ve situation_v1'in saf kova fonksiyonunu kullanır; S2 ATR'si kuralların `indicators`'ıdır.
               "cfgrid.py": {"tradingbot.accounting", "tradingbot.core", "tradingbot.learn.shadow", "tradingbot.learning_cf",
                             "tradingbot.learning_cf_aux", "tradingbot.shared_experience"},
-              "analysis.py": {"tradingbot.indicators"}}
+              "analysis.py": {"tradingbot.indicators"},
+              # P3b (ENGINE_BRAIN §2.1): çekirdek `strategy_lib` varyantlarını oynatır; büyüklük canlı `learning_mode.fit_size`,
+              # likidasyon defterin bracket formülüdür (`accounting`). Parite (a) başvurusu canlı kural fonksiyonlarını ve
+              # `strategy_paper.apply_action` + `FuturesLedgerV2`'yi çağırır (yalnız kabul/ölçüm koşusu; gece grafiğinde
+              # değil); (b) kohortu `learning_mode.classify_unlock_codes` ile okur. Hepsi salt-okunur hesaptır.
+              "kernel.py": {"tradingbot.accounting", "tradingbot.learning_mode", "tradingbot.strategy_lib"},
+              "parity.py": {"tradingbot.strategy_lib", "tradingbot.paper_rules", "tradingbot.structures", "tradingbot.box_theory",
+                            "tradingbot.pattern_trader", "tradingbot.accounting", "tradingbot.risk", "tradingbot.core",
+                            "tradingbot.learning_cf", "tradingbot.strategy_paper", "tradingbot.learning_mode"}}
 
 
 def _imports(path: Path) -> list[tuple[ast.AST, str, int]]:

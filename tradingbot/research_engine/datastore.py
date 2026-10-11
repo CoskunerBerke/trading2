@@ -497,11 +497,17 @@ class ArchiveMirror:
         self.stats["deleted_1m"] += 1
 
 
+def _pct(s: str) -> str:
+    """URL yol parçası: ASCII harf/rakam ve `-_.` aynen, gerisi UTF-8 yüzde kodu (urllib yalnız `urllib_http`'de)."""
+    return "".join(c if c.isascii() and (c.isalnum() or c in "-_.") else "".join(f"%{b:02X}" for b in c.encode("utf-8"))
+                   for c in s)
+
+
 def archive_url(spec: SeriesSpec, period: str) -> str:
     """`period` = 'YYYY-MM' (aylık) ya da 'YYYY-MM-DD' (günlük)."""
     kind = "monthly" if len(period) == 7 else "daily"
     seg = "spot" if spec.market == "spot" else "futures/um"
-    s, ds = spec.symbol, spec.dataset
+    s, ds = _pct(spec.symbol), spec.dataset      # ASCII olmayan semboller (ör. 牛来USDT) yüzde kodlanır (VPS 2026-10-11)
     if ds == "fundingRate":
         return f"{ARCHIVE_BASE}/{seg}/{kind}/fundingRate/{s}/{s}-fundingRate-{period}.zip"
     if ds == "metrics":
@@ -2470,6 +2476,9 @@ class DataRun:
                                     now_ms=sent)["rows_new"])
 
     #: metrics_5m REST eşlemesi (`crowd_data.COLUMN_MAP` ile aynı; VPS'te arşiv uzlaştırmasıyla doğrulanır: fark → runs/)
+    #: REST `/futures/data/*` noktası, arşivin `create_time` damgasından BİR 5 dk sonra damgalıdır: REST(t) = arşiv(t − 5 dk)
+    #: (VPS 2026-10-11: ilk gecenin 37.827 farkı, her sütunda tam bir kova kayma). REST satırı arşiv düzenine kaydırılır.
+    METRICS_REST_LAG_MS = 300_000
     METRICS_REST = (("/futures/data/openInterestHist", {"oi": "sumOpenInterest", "oi_usdt": "sumOpenInterestValue"}),
                     ("/futures/data/topLongShortAccountRatio", {"top_acct_ls": "longShortRatio"}),
                     ("/futures/data/topLongShortPositionRatio", {"top_pos_ls": "longShortRatio"}),
@@ -2483,7 +2492,7 @@ class DataRun:
         acc: dict[int, dict[str, float]] = {}
         first_sent: int | None = None
         for path, cmap in self.METRICS_REST:
-            cur, guard = start, 0
+            cur, guard = start + self.METRICS_REST_LAG_MS, 0            # REST düzeninde: arşivin `start`'ı REST'te start + 5 dk
             while cur <= now and guard < 20:
                 guard += 1
                 data = self.rest.get(FAPI_BASE, path, {"symbol": spec.symbol, "period": "5m", "startTime": cur,
@@ -2494,7 +2503,7 @@ class DataRun:
                 if not rows:
                     break
                 for r in rows:
-                    t = int(r["timestamp"])
+                    t = int(r["timestamp"]) - self.METRICS_REST_LAG_MS
                     d = acc.setdefault(t, {})
                     for col, fld in cmap.items():
                         d[col] = _f(str(r.get(fld))) if r.get(fld) not in (None, "") else float("nan")

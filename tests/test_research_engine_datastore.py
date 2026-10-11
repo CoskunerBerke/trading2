@@ -368,6 +368,31 @@ def test_archive_reconciliation_replaces_rest_bars_and_records_the_diff(tmp_path
     assert e.status()["series"]["futures/BTCUSDT/1h"]["gaps"] == 0
 
 
+def test_rest_metrics_are_shifted_to_the_archive_create_time_and_reconcile_without_diffs(tmp_path):
+    """VPS 2026-10-11: REST `/futures/data/*` noktası arşivden bir 5 dk sonra damgalı (REST(t) = arşiv(t − 5 dk)); 37.827
+    sahte fark. REST satırları arşiv düzenine kaydırılır: gün zip'i gelince fark 0 ve değerler aynı."""
+    e = env(tmp_path, only={"futures/BTCUSDT/metrics_5m"}, daily_lag_h=30)
+    e.run("backfill")
+    m = e.store().read_with_src("futures", "BTCUSDT", "metrics_5m")
+    rest = m[m[S.SRC_COL] == S.SRC_REST]
+    assert len(rest) >= 288, "son günler REST"
+    from research_engine_data_fixtures import metrics_vals
+    assert all(abs(float(o) - float(metrics_vals("BTCUSDT", int(ts))[0])) < 1e-9
+               for ts, o in zip(rest["timestamp"], rest["oi"])), "REST satırı arşivin damgasında (kayma yok)"
+    e.clock.t = utc(2026, 10, 7, 0, 41)
+    st = e.run("update")                                         # 4 Ekim gün zip'i yayımlandı → REST satırları archive'a
+    assert st["diffs"]["count"] == 0 and "DATA_DIFF" not in st["flags"], st["diffs"]
+    m = e.store().read_with_src("futures", "BTCUSDT", "metrics_5m")
+    day4 = m[(m["timestamp"] >= ms(utc(2026, 10, 4))) & (m["timestamp"] < ms(utc(2026, 10, 5)))]
+    assert set(day4[S.SRC_COL]) == {"archive"} and len(day4) == 288
+
+
+def test_archive_url_percent_encodes_non_ascii_symbols():
+    url = DS.archive_url(DS.SeriesSpec("futures", "牛来USDT", "1h", 0), "2026-10-09")
+    assert url.isascii() and "/%E7%89%9B%E6%9D%A5USDT/1h/%E7%89%9B%E6%9D%A5USDT-1h-2026-10-09.zip" in url
+    assert DS.archive_url(DS.SeriesSpec("futures", "BTCUSDT", "1h", 0), "2026-09").endswith("/BTCUSDT/1h/BTCUSDT-1h-2026-09.zip")
+
+
 def test_rest_tail_never_writes_a_bar_still_open_when_the_request_was_sent(tmp_path):
     """P1b kabul 3 (güçlendirilmiş, hareketli saat; REST yolu): "kapanmış" isteğin GÖNDERİLDİĞİ ana göredir. 00:44:59,8'de
     giden istek 0,4 sn sürerse yanıt 00:40 barını (00:45'te kapanır) içerir; yazım anında (00:45:00,2) bar kapanmış
@@ -396,7 +421,8 @@ def test_rest_tail_never_writes_a_bar_still_open_when_the_request_was_sent(tmp_p
     rest, sent = run_at(utc(2026, 10, 7, 0, 45, 0, 200000), "late", "futures/BTCUSDT/5m")
     assert int(rest["timestamp"].max()) == ms(utc(2026, 10, 7, 0, 40)), "gönderimde kapanmış bar yazılır"
     rest, sent = run_at(utc(2026, 10, 7, 0, 44, 59, 800000), "metrics", "futures/BTCUSDT/metrics_5m")
-    assert len(sent) >= 5 and int(rest["timestamp"].max()) == ms(utc(2026, 10, 7, 0, 40)), "00:45 noktası ilk istekte yoktu"
+    # REST 00:45 noktası ilk istekte yoktu; REST 00:40 = arşiv 00:35 (REST bir kova sonra damgalı, 2026-10-11) → en yeni 00:35
+    assert len(sent) >= 5 and int(rest["timestamp"].max()) == ms(utc(2026, 10, 7, 0, 35)), "00:45 noktası ilk istekte yoktu"
     assert rest[S.METRICS_COLS[1:]].notna().all().all(), "yarım (bazı uç noktaları boş) satır yazılmaz"
 
 

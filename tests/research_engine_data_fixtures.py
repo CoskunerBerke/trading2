@@ -286,7 +286,7 @@ class FakeBinance:
             out = []
             t = st
             while t <= end and len(out) < int(p.get("limit") or 30):
-                v = metrics_vals(sym, t)
+                v = metrics_vals(sym, t - 300_000)                # gerçek Binance: REST(t) = arşiv(t − 5 dk) (VPS 2026-10-11)
                 out.append({"symbol": sym, "timestamp": t, "sumOpenInterest": v[0], "sumOpenInterestValue": v[1],
                             "longShortRatio": {"topLongShortAccountRatio": v[2], "topLongShortPositionRatio": v[3],
                                                "globalLongShortAccountRatio": v[4]}.get(path.rsplit("/", 1)[1], v[2]),

@@ -2204,6 +2204,27 @@ bakılarak seçilmedi. Aşağıdaki maddeler yukarıdaki 1–26'yı (çelişen y
     `history.collector`) çeker (§2.8'e uygun; ileride tembel import ya da test). (d) `regime_fit` önceki satırların net
     R'ının son revizyonunu kullanır (geç fonlama; ihmal edilebilir).
 
+#### P2 sürüm notu (2026-10-11)
+
+39. **Sürüm betiği `deploy/releases/tb-engine-71dacca.sh`** (not 37'nin karşılığı; sha256 `docs/OPERATIONS.md` P2
+    bölümünde). TIP `71dacca` = P2 + 79b27cf (motor kodunda değişiklik yok); ön koşul P1b (79b27cf) kurulu: veri birimi
+    dosyaları bayt bayt aynı (yeniden kurulmaz, reload'a girmez), veri + gece zamanlayıcısı açık, gece birimi P1a'nın ya da
+    zaten P2'nin baytları, engine-app 79b27cf ⊑. Gece .service'i (640M/768M) önceki baytları `deploy-logs`'a yedeklenerek
+    kurulur, TEK kapılı daemon-reload (§9.3; worker 6G önce/sonra; kayma → önceki baytlar, çıkış 3); drop-in'ler içerik
+    aynıysa dokunulmaz. `ENGINE_VER="research_engine_v1_p2"`, `INV_TESTS=90` (koşucu P1a + P1b + P2 201–213; bu ortamda
+    ≈ 8 dk). Gece smoke'u: SUCCESS ve planda S1b + S2, `journal/tj_v1` ve `attribution/` yapı dosyaları, `digest_tr.md` ≤
+    8 KB, `attribution_v1`/`cfgrid_v1` mühürleri betiğe sabitlenmiş değerlerle (not 27) aynı, cgroup `memory.max` =
+    805306368 ve `memory.peak` ≤ 0,8 × MemoryMax (ölçülebildiğinde; not 34), sahiplik. Aynı kodun A/B KAPALI gününde
+    yeniden dağıtımda (S0 + S1s) P2 dosyaları + mühürler bu kodun önceki çalıştırmasından istenir. Smoke geçmezse ya da
+    sabitlemeden sonra hata/sinyal: önce engine-app önceki sabitine, SONRA gece birimi önceki baytlarına (kapılı reload);
+    P2 kodu 512M birimde kalmaz, engine-app geri dönemezse gece birimi P2'de bırakılır ve bu söylenir. `--rollback` bir önceki
+    sürüme, 79b27cf durumuna döner (engine-app 79b27cf, gece birimi P1a baytları; veri birimleri ve `data/research`
+    kalır); zincir `tb-engine-79b27cf.sh --rollback` → `tb-engine-4962209.sh --rollback`. Yorumlar: (a) kabul 13'ün "3
+    ardışık gece"si A/B penceresinde KAPALI geceler hariç sayılır (o gecelerin planı S1b/S2'siz, bilerek); (b)
+    uzlaştırmanın `after_s1a`/`revised_after_s1a` sayıları `run_status`'a girmediği için `--check` yalnız uzlaştırma
+    durumunu ve sorunlu defterleri gösterir (motor kodu değiştirilmedi); (c) kabul 8'in bayt-özdeşliği VPS'te ölçülemez
+    (koşucu 208), `--check` mühürlerin sabitle eşitliğini gösterir.
+
 ### P3 — Strateji kütüphanesi, walk-forward, keşif katmanı, denemeler, CSCV/PBO, dersler, zaman noktasında evren
 
 **Teslimatlar:**

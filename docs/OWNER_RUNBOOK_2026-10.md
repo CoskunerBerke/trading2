@@ -40,6 +40,16 @@ kurulmuştu).** Betik `~/tb-engine-79b27cf.sh` (sha256 `5f1d18886588c91712b92c48
 İlk doldurma 9 Ekim sabahı başladı; saatler sürer. İlerleme (yeni doldurma başlatmaz, yalnız durumu gösterir):
 `sudo bash ~/tb-engine-79b27cf.sh --backfill 2>&1 | tail -6`
 
+**Öğrenme motoru P2 (işlem günlüğü + "neden kaybetti / nasıl kâra dönerdi" atıfı): HAZIR, henüz KURULMADI.** Betik
+`~/tb-engine-71dacca.sh` (sha256 `8ffb4c2c1a51b4540ba095e3c645214f90e1714c68d2621343386f2a2c9d241f`). **Ne zaman:** ilk doldurma bittikten sonra
+(`--backfill` çıktısında "TAMAMLANDI"; sürerken betik kendisi reddeder). Saat (TR): 07:40–10:15, 11:40–14:15,
+15:40–18:15 ya da 19:40–22:15. **Nasıl:**
+1. `sudo bash ~/tb-engine-71dacca.sh --dry-run 2>&1 | tail -15` — sonda **"KURU ÇALIŞMA: 22/22 değişmez geçti"** (≈ 15–25 dk).
+2. `sudo bash ~/tb-engine-71dacca.sh 2>&1 | tail -15` — sonda **"DAĞITILDI: 33/33 değişmez geçti"**. Geçmezse betik
+   kendisi 79b27cf'ye döner ("--rollback GEREKMEZ" yazar); çıktıyı sakla ve bölüm 6'daki gibi ilet.
+3. Ertesi sabahtan itibaren bölüm 3'teki kontrolü bu betikle yap (`tb-engine-79b27cf.sh` yerine `tb-engine-71dacca.sh`).
+   İlk gecelerde `S1B_BACKLOG` / `S2_BACKLOG` görmek normaldir (geçmiş işlemlerin günlüğü birkaç geceye yayılır).
+
 **Hızlı formasyon hesabı (worker sürümü db5db96): KURULDU — 7 Ekim 22:31.** Aşağıdaki adımlar kayıt içindir. Uzun turları ve Box'un mum kaçırmasını düzeltir.
 Betik zaten `~/tb-deploy-db5db96.sh` (sha256 `d6a843e58d12bd8717b3d8866e204a40e6834c989b922631cdcd1fa6e298da11`); 7 Ekim
 akşamı deneme çalıştırması 56/56 geçti.

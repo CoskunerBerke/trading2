@@ -2208,10 +2208,10 @@ bakılarak seçilmedi. Aşağıdaki maddeler yukarıdaki 1–26'yı (çelişen y
 
 #### P2 sürüm notu (2026-10-11)
 
-39. **Sürüm betiği `deploy/releases/tb-engine-71dacca.sh`** (not 37'nin karşılığı; sha256 `docs/OPERATIONS.md` P2
-    bölümünde). TIP `71dacca` = P2 + 79b27cf (motor kodunda değişiklik yok); ön koşul P1b (79b27cf) kurulu: veri birimi
-    dosyaları bayt bayt aynı (yeniden kurulmaz, reload'a girmez), veri + gece zamanlayıcısı açık, gece birimi P1a'nın ya da
-    zaten P2'nin baytları, engine-app 79b27cf ⊑. Gece .service'i (640M/768M) önceki baytları `deploy-logs`'a yedeklenerek
+39. **Sürüm betiği `deploy/releases/tb-engine-44d5353.sh`** (not 37'nin karşılığı; sha256 `docs/OPERATIONS.md` P2
+    bölümünde). TIP `44d5353` = P2 + 79b27cf + veri düzeltmeleri `90a5648` (§3.3 Değişiklik 2026-10-11; P2 analiz kodu ve
+    mühürleri aynı); ön koşul P1b (79b27cf) kurulu: veri birimi dosyaları bayt bayt aynı (yeniden kurulmaz, reload'a
+    girmez), veri + gece zamanlayıcısı açık, gece birimi P1a'nın ya da zaten P2'nin baytları, engine-app 79b27cf ⊑. Gece .service'i (640M/768M) önceki baytları `deploy-logs`'a yedeklenerek
     kurulur, TEK kapılı daemon-reload (§9.3; worker 6G önce/sonra; kayma → önceki baytlar, çıkış 3); drop-in'ler içerik
     aynıysa dokunulmaz. `ENGINE_VER="research_engine_v1_p2"`, `INV_TESTS=90` (koşucu P1a + P1b + P2 201–213; bu ortamda
     ≈ 8 dk). Gece smoke'u: SUCCESS ve planda S1b + S2, `journal/tj_v1` ve `attribution/` yapı dosyaları, `digest_tr.md` ≤
@@ -2223,9 +2223,21 @@ bakılarak seçilmedi. Aşağıdaki maddeler yukarıdaki 1–26'yı (çelişen y
     sürüme, 79b27cf durumuna döner (engine-app 79b27cf, gece birimi P1a baytları; veri birimleri ve `data/research`
     kalır); zincir `tb-engine-79b27cf.sh --rollback` → `tb-engine-4962209.sh --rollback`. Yorumlar: (a) kabul 13'ün "3
     ardışık gece"si A/B penceresinde KAPALI geceler hariç sayılır (o gecelerin planı S1b/S2'siz, bilerek); (b)
-    uzlaştırmanın `after_s1a`/`revised_after_s1a` sayıları `run_status`'a girmediği için `--check` yalnız uzlaştırma
-    durumunu ve sorunlu defterleri gösterir (motor kodu değiştirilmedi); (c) kabul 8'in bayt-özdeşliği VPS'te ölçülemez
+    uzlaştırmanın `after_s1a`/`revised_after_s1a` sayıları `run_status`'a girmez; `--check` yalnız uzlaştırma durumunu ve
+    sorunlu defterleri gösterir. Bu bir SEÇİMDİR, engel değil: salt-okunur `journal.reconcile_journal(paths)` engine-app'te
+    vardır ve `svc` ile çağrılabilirdi, ama tüm günlüğü ve defterleri motor cgroup'u DIŞINDA (MemoryMax'sız) okur; MemoryMax
+    toplamı RAM'i zaten aşan VPS'te günlük `--check` hafif kalsın diye ertelendi; (c) kabul 8'in bayt-özdeşliği VPS'te ölçülemez
     (koşucu 208), `--check` mühürlerin sabitle eşitliğini gösterir.
+    **Düzeltme turu 1 (2026-10-11):** TIP `71dacca` → `44d5353` (`impl/data-fixes` birleştirildi: REST `metrics_5m`
+    arşivin `create_time`'ına hizalı, arşiv sembolleri yüzde kodlu; betik yeni TIP adıyla, birim sha256'ları, mühürler ve
+    `INV_TESTS=90` aynı). S2 `errors` motorda bir SAYIDIR (`--check` artık int okur; işlem hatası > 0
+    [DİKKAT]); kabul 13 takvim gecesiyle sayılır (sürüm günü + 1'den; A/B penceresinde tek gün-yıl sırası KAPALI; kaydı
+    olmayan gece başarısız); kabul 11 için `[bilgi]` satırı (`attribution/_build.json` `sanity_5_10_box_stop_width`,
+    dönem başına <0,5 / 0,5–1 kovaları; not 24'ün gerçek veri yeniden üretimi, geçti sayılmaz); saat payları başta ≥ 75 dk,
+    birimlerden hemen önce ≥ 50 dk, gece smoke'undan önce ≥ 30 dk; kopmuş boru/bağlantı geri dönüşü öldürmez (`trap ''
+    PIPE`, HUP/INT'e kapalı `tee -p`, `revert_eng` çıktı hatasında başarısızlık bildirmez); geri koyma reload'undan sonra
+    worker 6G denetlenir (kayma → çıkış 3); `--rollback` taban kaydını `.rolledback-<an>` yapar ve yarım kalırsa yazılan
+    birim dosyalarını ve yeniden çalıştırma komutunu basar.
 
 ### P3 — Strateji kütüphanesi, walk-forward, keşif katmanı, denemeler, CSCV/PBO, dersler, zaman noktasında evren
 

@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # trading2 — SÜREKLİ ÖĞRENME MOTORU P2 sürüm betiği (PAPER; gerçek para YOK). docs/SYSTEM_LEARNING_ENGINE_V1.md §2.2–§2.9,
 # §9.3, §10 P2 (+ P2 uygulama notları 1–38). KÜÇÜK ve AYRILMIŞ: yalnız motor adımları; tb-engine-79b27cf.sh temel alındı.
-# 71dacca (2026-10-11): P2 — işlem günlüğü (tj_v1), yol, rehydrate, fidelity, atıf (attribution_v1), karşı-olgusal ızgara
-#   (cfgrid_v1), R ayrıştırması, tam digest_tr.md, engine-query, gece S1b/S2, tembel 1m. 79b27cf'nin torunu; veri birimi
-#   dosyaları AYNI. Gece birimi P2'de MemoryHigh 640M / MemoryMax 768M (ENGINE_EXPECTED_MEMORY_MAX=805306368; not 34).
+# 44d5353 (2026-10-11): P2 — işlem günlüğü (tj_v1), yol, rehydrate, fidelity, atıf (attribution_v1), karşı-olgusal ızgara
+#   (cfgrid_v1), R ayrıştırması, tam digest_tr.md, engine-query, gece S1b/S2, tembel 1m; + veri düzeltmeleri (90a5648: REST
+#   metrics_5m arşivin create_time'ına hizalı, arşiv sembolleri yüzde kodlu). 79b27cf'nin torunu; veri birimi dosyaları
+#   AYNI. Gece birimi P2'de MemoryHigh 640M / MemoryMax 768M (ENGINE_EXPECTED_MEMORY_MAX=805306368; not 34).
 #
 # ÖN KOŞUL — P1b (79b27cf) KURULU: veri birimi dosyaları hedefle bayt bayt aynı, veri + gece zamanlayıcısı açık ve aktif,
 #   gece birimi dosyaları P1a'nın (400M/512M) ya da zaten P2'nin baytları, engine-app 79b27cf'de ya da onu içeren bir
@@ -20,15 +21,15 @@
 #   sürümün yeniden başlatmasından (deploy-logs/*-restart-at.txt) en az 1 GÜN sonra (sahip kararı 2026-10-07 "öğrenmeyi
 #   şimdi kur"; betik zorlar). 79b27cf'nin 14 gecelik A/B'si bitmeden dağıtılırsa UYARI basılır (yeni A/B dönemi, §2.9).
 # SAHİBİN ADIMLARI (VPS'te, sırayla; dosya adı tb-engine-<hedefin ilk 7 hanesi>.sh):
-#   1) sudo bash tb-engine-71dacca.sh --dry-run    # yalnız denetim; hedef kod GEÇİCİ klonda; hiçbir şey değişmez
-#   2) sudo bash tb-engine-71dacca.sh              # dağıt: P2 gece birimi + kapılı reload + engine-app sabiti + iki smoke
-#   3) sudo bash tb-engine-71dacca.sh --check      # 14 gün her gün (gece + veri + P2 kabul bölümü)
-#   4) sudo bash tb-engine-71dacca.sh --ab-report  # 14. geceden sonra bir kez (A/B tur etkisi ≤ %5, P2 kabul 13)
+#   1) sudo bash tb-engine-44d5353.sh --dry-run    # yalnız denetim; hedef kod GEÇİCİ klonda; hiçbir şey değişmez
+#   2) sudo bash tb-engine-44d5353.sh              # dağıt: P2 gece birimi + kapılı reload + engine-app sabiti + iki smoke
+#   3) sudo bash tb-engine-44d5353.sh --check      # 14 gün her gün (gece + veri + P2 kabul bölümü)
+#   4) sudo bash tb-engine-44d5353.sh --ab-report  # 14. geceden sonra bir kez (A/B tur etkisi ≤ %5, P2 kabul 13)
 #   Geri alma: --rollback (79b27cf durumuna: engine-app 79b27cf, gece birimi P1a baytları + kapılı reload; veri birimleri,
 #   ilk doldurma ve data/research KALIR). Zincir: sudo bash tb-engine-79b27cf.sh --rollback (veri birimi + ilk doldurma
 #   kalkar → P1a), tam kaldırma ardından: sudo bash tb-engine-4962209.sh --rollback
 # Çıkış: 0 tamam · 1 durdu (ön denetimde: hiçbir şey değişmedi) · 2 smoke geçmedi ya da saati değil (engine-app ve gece
-#   birimi önceki hâline döndü) · 3 reload sonrası MemoryMax kayması (gece birimi önceki baytlarına döndü)
+#   birimi önceki hâline döndü) · 3 reload sonrası (geri koyma reload'u dahil) worker MemoryMax kayması
 #   · 4 dağıtıldı ama bir değişmez KALDI / --rollback YARIM KALDI (neden yazılır; aynı komutla yeniden).
 # DİSK: P2 journal/ (≈ 1,4 KB/işlem gz; yedeğe girer), attribution/ ve paths/ (yeniden üretilebilir) ekler; gece birimi boş
 #   < 10 GB ya da data/research ≥ 20 GB'ta, veri birimi 13 / 17 GB'ta kendiliğinden durur. BELLEK (§2.5): gece 768M (MemoryHigh
@@ -39,13 +40,14 @@
 #   değilse gece birimi önceki baytlarına döner ve betik durur. setup_vps_v3.sh ASLA çalıştırılmaz; systemctl set-property
 #   / edit / revert kullanılmaz; enable/disable YOK. systemd-run (ilk doldurma) reload yapmaz.
 # SAAT: dağıtım, smoke ve kuru çalışma UTC 00:00–04:00 (veri + gece birimi) ve 4h yayın pencerelerinde (hh:00–hh:35, hh
-#   4'ün katı; +5 dk pay) BAŞLAMAZ; dağıtım bir sonraki 4h penceresine en az 45 dk kala başlar (iki smoke; S1b/S2 gündüz
-#   en çok 8'er dk, ilk tam kurulum gece biriminde kaldığı yerden sürer).
+#   4'ün katı; +5 dk pay) BAŞLAMAZ; dağıtım bir sonraki 4h penceresine en az 75 dk kala başlar (koşucu ≈ 15–25 dk + iki
+#   smoke); birimlere dokunmadan hemen önce ≥ 50 dk, gece smoke'undan önce ≥ 30 dk yeniden denetlenir (S1b/S2 gündüz en çok
+#   8'er dk, ilk tam kurulum gece biriminde kaldığı yerden sürer). ÇIKTI dosyaya: sudo bash … > ~/engine-deploy.txt 2>&1
 # KAPATMA (anında, veri yerinde kalır): sudo systemctl disable --now tradingbot-engine-night.timer tradingbot-engine-data.timer
 #   (önce NeedDaemonReload=no; değilse yalnız stop yeter) · ilk doldurma: sudo systemctl stop tb-engine-backfill.service.
 set -Eeuo pipefail
 
-TIP="71dacca43f1d92ffbcc534a12b215e504747d177"    # P2 (2026-10-11; 79b27cf'nin torunu, PR dalında)
+TIP="44d535388778163bc687803a73554249920b1e76"    # P2 + veri düzeltmeleri (2026-10-11; 79b27cf'nin torunu, PR dalında)
 T7="${TIP:0:7}"
 PREV_TIP="79b27cfb72d8483e8e909cfb26d71d5049398cf2" # P1b (tb-engine-79b27cf.sh): ön koşul ve --rollback tabanı
 P1A_TIP="49622093a3d3bc334b454b4df2dcdb4e53eb5144" # P1a (tb-engine-4962209.sh): geri alma zincirinin sonu
@@ -76,10 +78,10 @@ DATA_FREE_MIN=13000000000; DATA_RES_MAX=17000000000  # = datastore.DATA_MIN_FREE
 LOGDIR="$BASE/deploy-logs"; BASELINE="$LOGDIR/engine-$T7-deploy.json"; SAMPLES="$LOGDIR/engine-$T7-samples.jsonl"
 MODE="${1:-deploy}"; SMOKE_TIMEOUT=1800; DSMOKE_TIMEOUT=3300
 TMP=""; WHY=""; RB_HINT=""; CHANGED=(); INV_N=0; INV_FAIL=(); ENG_PREV=""; UNDO_NOTE=""; DONE=0
-NU_BAK=""; NU_FILES=(); RELOADED=0   # bu çalıştırmada değişen birim dosyaları + önceki baytlarının klasörü
+NU_BAK=""; NU_FILES=(); RELOADED=0; DRIFT=0; TEE_PID=""   # bu çalıştırmada değişen birim dosyaları + önceki baytlarının klasörü
 
 say()  { printf '\n== %s\n' "$*"; };          ok()  { printf '   OK  %s\n' "$*"; }
-warn() { printf '   UYARI  %s\n' "$*"; };       die() { printf '\nDUR: %s\n' "$1" >&2; exit "${2:-1}"; }
+warn() { printf '   UYARI  %s\n' "$*"; };       die() { printf '\nDUR: %s\n' "$1" >&2; exit "$(( DRIFT ? 3 : ${2:-1} ))"; }
 as_svc() { sudo -u "$SVC_USER" "$@"; }
 # svc DİZİN KOMUT…: servis kullanıcısı, BOŞ ortam (servis ortamı aktarılmaz), verilen dizinde
 svc() { local d="$1"; shift; as_svc env -i -C "$d" PATH=/usr/local/bin:/usr/bin:/bin HOME="$BASE" LANG=C.UTF-8 TZ=UTC \
@@ -92,14 +94,18 @@ sc_state() { systemctl "$1" "$2" 2>/dev/null || true; }
 fsha() { if [[ -f "$1" ]]; then sha256sum < "$1" | cut -d' ' -f1; fi; }
 cleanup() { if [[ -n "$TMP" && "$TMP" == /tmp/tb-engine-* && -d "$TMP" ]]; then rm -rf -- "$TMP"; fi; }
 on_err() { (( BASH_SUBSHELL == 0 )) || exit 1; trap - ERR; set +e   # $(…) içindeki hata: yalnız üst kabuk bir kez işler
+           if [[ -n "$TEE_PID" ]] && ! kill -0 "$TEE_PID" 2>/dev/null; then exec >>"$LOG" 2>&1; fi   # kayıt borusu öldüyse: doğrudan kayda
            printf '\nDUR: beklenmeyen hata (satır %s). Bu çalıştırmada değişen: %s\n' "$1" "${CHANGED[*]:-hiçbir şey}" >&2
            if [[ "$MODE" == deploy ]] && (( ! DONE )) && [[ " ${CHANGED[*]} " == *" engine-app="* || ${#NU_FILES[@]} -gt 0 ]]; then
              back_out >&2; printf '   %s\n' "$(state_msg)" >&2
+           elif [[ "$MODE" == --rollback ]]; then printf '   yazılan birim dosyaları: %s · nedeni giderip AYNI komutla yeniden: sudo bash %s --rollback\n' \
+             "${NU_FILES[*]:-yok}" "$0" >&2
            elif (( ${#CHANGED[@]} )); then printf '   %s\n' "${RB_HINT:-Geri alma (79b27cf durumu): sudo bash $0 --rollback (data/research kalır)}" >&2; fi
-           exit 1; }
+           exit "$(( DRIFT ? 3 : 1 ))"; }
 trap cleanup EXIT
 trap 'on_err $LINENO' ERR
-if [[ "$MODE" == deploy ]]; then trap 'on_err "$LINENO (sinyal)"' HUP INT TERM; fi   # bağlantı kopması / Ctrl-C: sabitleme smoke'suz kalmaz
+if [[ "$MODE" == deploy ]]; then trap 'on_err "$LINENO (sinyal)"' HUP INT TERM; trap '' PIPE; fi   # bağlantı kopması / Ctrl-C: sabitleme
+# smoke'suz kalmaz; kopmuş boru (| tail) betiği SIGPIPE ile öldürmez, kayıt (tee -p, HUP/INT'e kapalı) sürer
 # inv AD 0|1 AÇIKLAMA — adlandırılmış değişmez. gate: aynı, ama dağıtımda ilk KALDI'da durur (hiçbir şey değişmeden).
 inv() {
   INV_N=$((INV_N + 1))
@@ -629,12 +635,14 @@ def c_p2(res, tip, attr, cfg, q1="", q2=""):
     stg = last.get("stages") or {}
     s1, s2 = stg.get("S1b") or {}, stg.get("S2") or {}
     r1, r2 = s1.get("result") or {}, s2.get("result") or {}
-    print("-- P2 VPS kabul ölçütleri (§10 P2; [DİKKAT] = bana iletin; 3, 7, 8 bayt-özdeşlik, 9, 11 depo testleridir: "
-          "bağımsız koşucu 201–213, --dry-run)")
-    line(None if not full else (s1.get("status"), s2.get("status")) != ("OK", "OK"),
+    er = r2.get("errors")       # motor: işlem hatası SAYISI (int); eski biçim liste
+    ne = len(er) if isinstance(er, list) else (iv(er) or 0)
+    print("-- P2 VPS kabul ölçütleri (§10 P2; [DİKKAT] = bana iletin; 3, 7, 8 bayt-özdeşlik, 9 depo testleridir: "
+          "bağımsız koşucu 201–213, --dry-run; 11 gerçek veride [bilgi])")
+    line(None if not full else ((s1.get("status"), s2.get("status")) != ("OK", "OK") or ne > 0),
          "S1b/S2 son tam gece %s: S1b %s %s sn (bekleyen %s) · S2 %s %s sn (bekleyen %s, işlem hatası %s) · bayraklar %s" % (
              last.get("run_id") or "yok", s1.get("status"), f(s1.get("duration_s"), 0), (r1.get("journal") or {}).get("pending"),
-             s2.get("status"), f(s2.get("duration_s"), 0), r2.get("pending"), len(r2.get("errors") or []),
+             s2.get("status"), f(s2.get("duration_s"), 0), r2.get("pending"), ne,
              ", ".join(f_ for f_ in (last.get("flags") or []) if f_ != "DATA_STALE") or "—"))
     rec, jb = r1.get("reconcile") or {}, rj(os.path.join(res, "journal", "tj_v1", "_build.json")) or {}
     line({"OK": False, "INCONSISTENT": True}.get(rec.get("status")), "1 günlük = arşiv = ledger (her kayıt tam bir kez; Σ net_pnl, "
@@ -658,6 +666,11 @@ def c_p2(res, tip, attr, cfg, q1="", q2=""):
          "cfgrid_v1 %s (sabit %s / %s) · S2 %s satır · ızgara %s · sıralama ölçüsü %s" % (
              str(ab.get("attribution_sha"))[:12], str(ab.get("cfgrid_sha"))[:12], attr[:12], cfg[:12], ab.get("rows", "—"),
              kv(ab.get("grid")), kv(ab.get("rank_src"))))
+    sn = ab.get("sanity_5_10_box_stop_width") or {}
+    bk = lambda v: "%s işlem ort. %sR (%s)" % (v.get("n"), f(v.get("mean_r"), 2), kv(dict(list((v.get("codes") or {}).items())[:2])))
+    line("bilgi" if sn else None, "11 Box stop genişliği (§5.10; dönem başına; yeniden üretim, aday değil): %s" % ("; ".join(
+        "%s: <0,5 %s · 0,5–1 %s" % (e, bk(b["<0.5"]) if b.get("<0.5") else "—", bk(b["0.5-1"]) if b.get("0.5-1") else "—")
+        for e, b in list(sn.items())[-3:]) or "attribution/_build.json'da yok"))
     utc = {}
     try:
         with open(os.path.join(res, "target", "daily_utc.jsonl"), encoding="utf-8") as fh:
@@ -676,18 +689,29 @@ def c_p2(res, tip, attr, cfg, q1="", q2=""):
     line(None if sz is None else (sz > DIGEST_MAX or any(x is None or x > QUERY_MAX for x in q)), "12 digest_tr.md %s KB (≤ 8 KB) "
          "· engine-query why-lost --days 7: %s satır · day <dün>: %s satır (≤ 150)" % (
              f(sz / 1024.0 if sz is not None else None, 1), q1 or "HATA", q2 or "HATA"))
-    nights = []
+    # 13: takvim gecesi (sürüm günü + 1'den, 03:40'ı geçmiş); A/B penceresinde tek gün-yıl sırası KAPALI (sayılmaz),
+    # kaydı olmayan beklenen gece başarısız sayılır (birim hiç başlamadı / zamanlayıcı tetiklemedi)
+    byday, nights, rel = {}, [], release_day(res, tip)
     for r in rs:
         t = ep(r.get("started_at"))
         d = datetime.fromtimestamp(t, UTC) if t is not None else None
-        if d and (1, 30) <= (d.hour, d.minute) < (3, 40) and r.get("result") not in ("AB_OFF", "AB_OFF_ZORUNLU_ARŞİV"):
-            nights.append((r, d.replace(hour=3, minute=40, second=0, microsecond=0).timestamp()))
+        if d and (1, 30) <= (d.hour, d.minute) < (3, 40):
+            byday.setdefault(d.strftime("%Y-%m-%d"), r)
+    r0 = datetime.strptime(rel, "%Y-%m-%d").replace(tzinfo=UTC) if rel else None
+    d0 = r0 + timedelta(days=1) if r0 else None
+    while d0 is not None and d0.timestamp() + 220 * 60 < time.time():
+        r = byday.get(d0.strftime("%Y-%m-%d"))
+        if not ((d0 <= r0 + timedelta(days=14) and d0.timetuple().tm_yday % 2 == 1)
+                or (r or {}).get("result") in ("AB_OFF", "AB_OFF_ZORUNLU_ARŞİV")):
+            nights.append((d0.strftime("%Y-%m-%d"), r, d0.timestamp() + 220 * 60))
+        d0 += timedelta(days=1)
     last3 = nights[-3:]
-    line(None if len(last3) < 3 else not all(r.get("result") == "SUCCESS" and (ep(r.get("finished_at")) or 1e18) < lim
-                                           for r, lim in last3),
-         "13 son 3 ardışık gece (A/B KAPALI geceler sayılmaz): %s · ölçüt SUCCESS ve bitiş < 03:40 UTC; tur etkisi ≤ %%5: "
-         "--ab-report" % ("; ".join("%s %s %s" % (r.get("run_id"), r.get("result"), str(r.get("finished_at"))[11:16])
-                                    for r, _ in last3) or "henüz yok"))
+    line(None if len(last3) < 3 else not all(r and r.get("result") == "SUCCESS" and (ep(r.get("finished_at")) or 1e18) < lim
+                                           for _, r, lim in last3),
+         "13 son 3 ardışık gece (takvimden; A/B KAPALI geceler sayılmaz, kaydı olmayan gece başarısız): %s · ölçüt SUCCESS ve "
+         "bitiş < 03:40 UTC; tur etkisi ≤ %%5: --ab-report" % ("; ".join(
+             "%s %s %s" % (day, r.get("result"), str(r.get("finished_at"))[11:16]) if r else "%s kayıt yok" % day
+             for day, r, _ in last3) or "henüz yok"))
     return 0
 def c_k6(eng, sc):
     """VPS kabul 6 (P1a): kayıt (closed_at günü) ve cüzdan (ts günü) görünümleri arşivin son günü − 2'ye kadar eşit olmalı."""
@@ -884,7 +908,8 @@ pin_eng() {     # $1: SHA — engine-app'i sabitle + önceden derle (gece/veri b
 }
 revert_eng() {  # smoke geçmezse / hata: gece birimi bilinen-iyi (önceki) kodla sürsün; çıkış GERÇEK sonuçtur (on_err'in set +e'sinde de)
   if [[ -n "$ENG_PREV" && "$ENG_PREV" != "$TIP" && "$(gitx "$ENG" rev-parse HEAD 2>/dev/null)" != "$ENG_PREV" ]]; then
-    pin_eng "$ENG_PREV" || return 1; echo "   engine-app önceki sabitine döndü (${ENG_PREV:0:7})"; fi
+    pin_eng "$ENG_PREV" || return 1; echo "   engine-app önceki sabitine döndü (${ENG_PREV:0:7})" || true; fi
+  return 0     # yazılamayan çıktı (kopmuş bağlantı) sonucu değiştirmez
 }
 unit_contract() {   # $1: ağaç. sha sabitlemesinin üstüne ikinci savunma: §2.2–§2.5 anahtar satırları (gece + veri)
   local s="$1/deploy/$SVC" t="$1/deploy/$TMR" ds="$1/deploy/$DSVC" dt="$1/deploy/$DTMR" u
@@ -937,7 +962,10 @@ undo_units() {     # NU_FILES'ı NU_BAK'taki önceki baytlarına döndür; reloa
   done
   NU_FILES=(); CHANGED+=("birim baytları geri kondu")
   if (( ! RELOADED )); then ok "birim dosyaları önceki baytlarına döndü (reload yapılmamıştı; gerekmez)"
-  elif reload_gate; then systemctl daemon-reload; ok "birim dosyaları önceki baytlarına döndü + daemon-reload (kapıdan geçti)"
+  elif reload_gate; then systemctl daemon-reload
+    if [[ "$(sc_show "$WORKER" MemoryMax)" == "$MEM_EXPECT" ]]; then ok "birim dosyaları önceki baytlarına döndü + daemon-reload (kapıdan geçti, worker 6G)"
+    else DRIFT=1; UNDO_NOTE="birim dosyaları önceki baytlarına döndü + daemon-reload, ama sonra worker MemoryMax=$(sc_show "$WORKER" MemoryMax) (6G değil): sudo systemctl set-property $WORKER MemoryMax=6G"
+      warn "$UNDO_NOTE"; fi
   else UNDO_NOTE="birim dosyaları önceki baytlarına döndü ama daemon-reload ATLANDI ($WHY): systemd yeni birimi reload'a dek bellekte tutar"
     warn "$UNDO_NOTE"; fi
 }
@@ -946,7 +974,8 @@ back_out() {       # geri dönüş: ÖNCE engine-app bilinen-iyi koda, SONRA gec
   UNDO_NOTE="engine-app geri döndürülemedi; gece birimi P2 baytlarında BIRAKILDI"; warn "$UNDO_NOTE"; return 1
 }
 state_msg() {      # geri dönüşten sonra GERÇEK durum (--rollback önerisi yalnız gerekiyorsa)
-  if [[ -n "$UNDO_NOTE" ]]; then printf '%s. Bana iletin; 79b27cf durumuna dönmek için uygun saatte: sudo bash %s --rollback' "$UNDO_NOTE" "$0"
+  if (( DRIFT )); then printf "%s (worker'ı yeniden başlatmadan 6G'ye döndürür) — bana iletin" "$UNDO_NOTE"
+  elif [[ -n "$UNDO_NOTE" ]]; then printf '%s. Bana iletin; 79b27cf durumuna dönmek için uygun saatte: sudo bash %s --rollback' "$UNDO_NOTE" "$0"
   elif [[ -n "$RB_HINT" ]]; then printf '%s' "$RB_HINT"
   else printf 'önceki kurulum geri geldi (engine-app %s, gece birimi önceki baytları, veri zamanlayıcısı olduğu gibi) — --rollback GEREKMEZ; uygun saatte aynı komutla yeniden' "${ENG_PREV:0:7}"; fi
 }
@@ -997,7 +1026,8 @@ if [[ "$MODE" == --check ]]; then
   q1="$(qx why-lost --days 7 2>/dev/null | wc -l)" || q1=""
   q2="$(qx day "$(date -u -d yesterday +%F)" 2>/dev/null | wc -l)" || q2=""
   rpy p2 "$RES" "$TIP" "$ATTR_SHA" "$CFG_SHA" "${q1:-}" "${q2:-}" || echo "   (P2 ölçüt raporu hata verdi)"
-  echo "   14. geceden sonra  sudo bash $0 --ab-report · ilk doldurma: sudo bash $0 --backfill · sorgu: engine-query trade|why-lost|day"
+  echo "   14. geceden sonra  sudo bash $0 --ab-report · ilk doldurma bitti mi: yukarıdaki V1 satırı (TAMAMLANDI); --backfill" \
+       "YALNIZ V1 'bitmedi' derse (bittikten sonra YENİ tur başlatır) · sorgu: engine-query trade|why-lost|day"
   echo "   kapatma: sudo systemctl disable --now $TMR $DTMR (önce NeedDaemonReload=no); geri alma (79b27cf durumu): sudo bash $0 --rollback"
   exit 0
 fi
@@ -1011,7 +1041,7 @@ fi
 exec 9>"$LOGDIR/.tb-engine.lock"
 flock -n 9 || die "başka bir tb-engine betiği çalışıyor ($LOGDIR/.tb-engine.lock)"
 LOG="$LOGDIR/engine-$T7-${MODE#--}-$(date -u +%Y%m%dT%H%M%SZ).log"
-exec > >(tee -a "$LOG") 2>&1
+exec > >(trap '' HUP INT TERM; exec tee -p -a "$LOG") 2>&1; TEE_PID=$!   # bağlantı koparsa da kayıt sürer
 echo "tb-engine-$T7 $MODE · $(date -u '+%F %T') UTC · kayıt: $LOG"
 read -r W_PID0 W_NR0 <<<"$(worker_now)"
 win1() {   # 1 gün kuralı: son başka-sürüm yeniden başlatması (sahip kararı 2026-10-07 "öğrenmeyi şimdi kur"; önceden 3, ondan önce 7)
@@ -1046,8 +1076,9 @@ if [[ "$MODE" == --rollback ]]; then
     elif ! gitx "$ENG" merge-base --is-ancestor "$app_sha" "$PREV_TIP" 2>/dev/null; then
       PARTIAL+=("engine-app ${cur:0:7}'de BIRAKILDI: app ${app_sha:0:7}, ${PREV_TIP:0:7}'nin atası değil (dönülse her gece SKEW olurdu)")
     elif [[ -n "$(gitx "$ENG" status --porcelain)" ]]; then PARTIAL+=("engine-app'te yerel değişiklik var: yeniden sabitlenmedi")
-    else pin_eng "$PREV_TIP"; ok "engine-app ${cur:0:7} → ${PREV_TIP:0:7} + compileall"; fi
+    else CHANGED+=("engine-app=${PREV_TIP:0:7}"); pin_eng "$PREV_TIP"; ok "engine-app ${cur:0:7} → ${PREV_TIP:0:7} + compileall"; fi
     if (( ! ${#PARTIAL[@]} )); then   # gece birimi YALNIZ engine-app 79b27cf'deyken 512M'ye döner (P2 kodu 512M'ye sıkışmaz)
+      if [[ -f "$BASELINE" ]]; then mv -- "$BASELINE" "$BASELINE.rolledback-$(date -u +%Y%m%dT%H%M%SZ)"; fi   # yeniden dağıtım smoke'suz "zaten" demesin
       TMP="$(mktemp -d /tmp/tb-engine-rb.XXXXXX)"
       for u in "$SVC" "$TMR"; do gitx "$ENG" show "$PREV_TIP:deploy/$u" > "$TMP/$u"; done
       if [[ "$(fsha "$TMP/$SVC")" != "$P1A_SVC_SHA256" || "$(fsha "$TMP/$TMR")" != "$TMR_SHA256" ]]; then PARTIAL+=("${PREV_TIP:0:7} gece birimi baytları doğrulanamadı (sha256): gece birimine dokunulmadı")
@@ -1133,8 +1164,8 @@ fi
 if [[ "$ENG_NOW" == "$TIP" ]]; then   # smoke'lar bitmeden kesilmiş önceki deneme: "önceki sabit" de hedeftir
   RB_HINT="engine-app başta da $T7'deydi (önceki deneme yarım kalmış); 79b27cf durumuna dönmek için uygun saatte: sudo bash $0 --rollback"
 fi
-SLOTS="Uygun aralıklar (UTC): 04:40–07:15, 08:40–11:15, 12:40–15:15, 16:40–19:15, 20:40–23:15"
-if time_ok 45; then ok "saat uygun ($WHY)"
+SLOTS="Uygun aralıklar (UTC): 04:40–06:45, 08:40–10:45, 12:40–14:45, 16:40–18:45, 20:40–22:45"
+if time_ok 75; then ok "saat uygun ($WHY)"
 elif [[ "$MODE" == deploy ]]; then die "şimdi dağıtılmaz: $WHY. $SLOTS. HİÇBİR ŞEYE DOKUNULMADI"
 elif time_ok 5; then warn "dağıtım şu an BAŞLAMAZ: $WHY (kuru çalışma sürer, düşük öncelikle)"
 else die "kuru çalışma da şimdi yapılmaz: $WHY (derleme ve koşucu worker turlarıyla çekişmesin; §2.9). $SLOTS. HİÇBİR ŞEYE DOKUNULMADI"; fi
@@ -1247,6 +1278,7 @@ if [[ "$MODE" == --dry-run ]]; then
 fi
 
 # ================================================================== DAĞITIM (yalnız motor; worker çalışmaya devam eder)
+time_ok 50 || die "koşucudan sonra dağıtıma yetecek süre kalmadı: $WHY (birim + sabitleme + iki smoke). $SLOTS. HİÇBİR ŞEYE DOKUNULMADI"
 # hedef commit engine-app'e ÖNCE eklenir (geçici klondan; çalışma ağacı değişmez): düşerse birimlere dokunulmamış olur
 fetch_tip "$ENG" "$TIP" "$W"
 inv "TIP-engine-app'te" 0 "hedef $T7 engine-app nesnelerinde (geçici klondan; HEAD henüz ${ENG_PREV:0:7})"
@@ -1314,7 +1346,7 @@ if (( rc )); then
 fi
 
 say "9/10 ELLE SMOKE (gece, P2 kodu + P2 birimi): systemctl start $SVC"
-time_ok 5 || { back_out; die "gece smoke'u şimdi çalıştırılmaz: $WHY. $(state_msg)" 2; }
+time_ok 30 || { back_out; die "gece smoke'u şimdi çalıştırılmaz (S1b/S2 ile ≈ 20–25 dk): $WHY. $(state_msg)" 2; }
 PRE_RID="$(rpy lastrun "$RES")"; T0="$(date +%s)"
 src=0; timeout "$SMOKE_TIMEOUT" systemctl start "$SVC" || src=$?
 if (( src == 124 )); then systemctl stop "$SVC" || true; fi

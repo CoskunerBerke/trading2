@@ -37,17 +37,24 @@ sudo bash ~/tb-deploy-db5db96.sh --check > ~/check-bot-$(date +%F).txt 2>&1; sed
 
 **Öğrenme motoru veri katmanı (P1b): 79b27cf KURULDU — 9 Ekim sabahı (33/33, yükseltme yolu; 57cfef1 8 Ekim 23:45'te
 kurulmuştu).** Betik `~/tb-engine-79b27cf.sh` (sha256 `5f1d18886588c91712b92c482d0f07ba50f36ef8d5988df6bf6c7815b591f2e2`).
-İlk doldurma 9 Ekim sabahı başladı; saatler sürer. İlerleme (yeni doldurma başlatmaz, yalnız durumu gösterir):
-`sudo bash ~/tb-engine-79b27cf.sh --backfill 2>&1 | tail -6`
+İlk doldurma 9 Ekim sabahı başladı; saatler sürer. İlerleme ve bitiş (salt-okunur; hiçbir şey başlatmaz):
+`sudo bash ~/tb-engine-79b27cf.sh --check 2>&1 | grep -i 'ilk doldurma'` — sürerken "SÜRÜYOR …", bitince
+**"TAMAMLANDI …"** (`systemctl is-active tb-engine-backfill.service` → `inactive` yalnız sürecin durduğunu söyler). Bittikten sonra
+`--backfill` ÇALIŞTIRMA: yeni bir doldurma turu başlatır ve P2 kurulumu o tur bitene dek reddedilir. Yalnız `--check`
+"bitmedi; kaldığı yerden: … --backfill" yazarsa `--backfill` ile sürdür.
 
 **Öğrenme motoru P2 (işlem günlüğü + "neden kaybetti / nasıl kâra dönerdi" atıfı): HAZIR, henüz KURULMADI.** Betik
-`~/tb-engine-71dacca.sh` (sha256 `8ffb4c2c1a51b4540ba095e3c645214f90e1714c68d2621343386f2a2c9d241f`). **Ne zaman:** ilk doldurma bittikten sonra
-(`--backfill` çıktısında "TAMAMLANDI"; sürerken betik kendisi reddeder). Saat (TR): 07:40–10:15, 11:40–14:15,
-15:40–18:15 ya da 19:40–22:15. **Nasıl:**
-1. `sudo bash ~/tb-engine-71dacca.sh --dry-run 2>&1 | tail -15` — sonda **"KURU ÇALIŞMA: 22/22 değişmez geçti"** (≈ 15–25 dk).
-2. `sudo bash ~/tb-engine-71dacca.sh 2>&1 | tail -15` — sonda **"DAĞITILDI: 33/33 değişmez geçti"**. Geçmezse betik
-   kendisi 79b27cf'ye döner ("--rollback GEREKMEZ" yazar); çıktıyı sakla ve bölüm 6'daki gibi ilet.
-3. Ertesi sabahtan itibaren bölüm 3'teki kontrolü bu betikle yap (`tb-engine-79b27cf.sh` yerine `tb-engine-71dacca.sh`).
+`~/tb-engine-44d5353.sh` (sha256 `a4f04e6c26cd9f0709bed5902113b23896e8109ddb161bcbeecd88b6a28cddd9`). **Ne zaman:** ilk doldurma bittikten sonra
+(yukarıdaki `--check` satırında "TAMAMLANDI"; sürerken betik kendisi reddeder). Saat (TR): 07:40–09:45, 11:40–13:45,
+15:40–17:45 ya da 19:40–21:45 (betik bir sonraki 4 saatlik kapanışa en az 75 dk ister). **Nasıl** (çıktı dosyaya; bağlantı
+koparsa betik o anki adımı bitirip kendini 79b27cf'ye geri alır, kayıt `/opt/tradingbot/deploy-logs/engine-44d5353-*.log`'da
+sürer):
+1. `sudo bash ~/tb-engine-44d5353.sh --dry-run > ~/engine-dryrun.txt 2>&1; tail -15 ~/engine-dryrun.txt` — sonda
+   **"KURU ÇALIŞMA: 22/22 değişmez geçti"** (≈ 15–25 dk).
+2. `sudo bash ~/tb-engine-44d5353.sh > ~/engine-deploy.txt 2>&1; tail -15 ~/engine-deploy.txt` — sonda
+   **"DAĞITILDI: 33/33 değişmez geçti"** (≈ 45–70 dk). Geçmezse betik kendisi 79b27cf'ye döner ("--rollback GEREKMEZ"
+   yazar); çıktıyı sakla ve bölüm 6'daki gibi ilet.
+3. Ertesi sabahtan itibaren bölüm 3'teki kontrolü bu betikle yap (`tb-engine-79b27cf.sh` yerine `tb-engine-44d5353.sh`).
    İlk gecelerde `S1B_BACKLOG` / `S2_BACKLOG` görmek normaldir (geçmiş işlemlerin günlüğü birkaç geceye yayılır).
 
 **Hızlı formasyon hesabı (worker sürümü db5db96): KURULDU — 7 Ekim 22:31.** Aşağıdaki adımlar kayıt içindir. Uzun turları ve Box'un mum kaçırmasını düzeltir.

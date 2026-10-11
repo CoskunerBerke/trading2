@@ -14,7 +14,8 @@ Kanıtlananlar: ön koşul (veri birimi 79b27cf, zamanlayıcılar açık, gece b
 ⊑) yoksa hiçbir şeye dokunmadan durur; kuru çalışma hiçbir şeyi değiştirmez; dağıtım veri birimi dosyalarına ve
 drop-in'lere dokunmaz, gece .service'ini (önceki baytları deploy-logs'ta) kurar ve TEK kapılı daemon-reload yapar; gece
 smoke'u P2'nin çalıştığını (S1b + S2, günlük/atıf/özet, mühürler) kanıtlar; smoke geçmezse ya da sabitlemeden sonra hata
-olursa engine-app 79b27cf'ye ve gece birimi P1a baytlarına döner; reload sonrası 6G kayması gece birimini geri alır;
+olursa engine-app 79b27cf'ye ve gece birimi P1a baytlarına döner (çıktı borusu erken kapansa da: SIGPIPE betiği öldürmez,
+kayıt sürer; geri koyma reload'undan sonra 6G kayması çıkış 3); reload sonrası 6G kayması gece birimini geri alır;
 `--rollback` 79b27cf durumuna döner (79b27cf betiği kurulumu "zaten dağıtılmış" tanır); başarıdan sonra yeniden çalıştırma
 "zaten dağıtılmış" der; `--check` P1a/P1b satırlarını ve P2 kabul satırlarını basar, araştırma ağacını değiştirmez.
 """
@@ -43,9 +44,9 @@ from test_research_engine_release_p1b import (APP_SHA, BASH, DSVC, DTMR, GIT, OL
                                               _no_forbidden)
 from test_research_engine_release_p1b import SCRIPT as P79_SCRIPT  # noqa: E402
 
-SCRIPT = ROOT / "deploy" / "releases" / "tb-engine-71dacca.sh"
+SCRIPT = ROOT / "deploy" / "releases" / "tb-engine-44d5353.sh"
 #: Betiğin kayıtlı sha256'sı (sürüm notu ve sahibe verilen değer; betik değişirse bu da bilinçli değişir).
-SCRIPT_SHA256 = "8ffb4c2c1a51b4540ba095e3c645214f90e1714c68d2621343386f2a2c9d241f"
+SCRIPT_SHA256 = "a4f04e6c26cd9f0709bed5902113b23896e8109ddb161bcbeecd88b6a28cddd9"
 TEXT = SCRIPT.read_text(encoding="utf-8")
 TIP = re.search(r'^TIP="([0-9a-f]{40})"', TEXT, re.M).group(1)
 PREV_TIP = re.search(r'^PREV_TIP="([0-9a-f]{40})"', TEXT, re.M).group(1)
@@ -71,7 +72,7 @@ def _code() -> str:
 # ============================================================================ statik
 def test_script_is_syntax_ok_recorded_and_states_the_rules():
     lines = TEXT.splitlines()
-    assert len(lines) <= 1350, "küçük, ayrılmış betik (79b27cf + P2 gece birimi/smoke/--check/--rollback)"
+    assert len(lines) <= 1385, "küçük, ayrılmış betik (79b27cf + P2 gece birimi/smoke/--check/--rollback)"
     assert subprocess.run([BASH or "bash", "-n", str(SCRIPT)], capture_output=True).returncode == 0
     assert _sha(SCRIPT.read_bytes()) == SCRIPT_SHA256
     assert SCRIPT.name == f"tb-engine-{TIP[:7]}.sh"
@@ -86,7 +87,7 @@ def test_script_is_syntax_ok_recorded_and_states_the_rules():
     assert all(steps) and [m.start() for m in steps] == sorted(m.start() for m in steps), \
         "sahibin adımları sırayla: dry-run → dağıt → --check → --ab-report"
     assert "tb-engine-79b27cf.sh --rollback" in head and "tb-engine-4962209.sh --rollback" in head, "geri alma zinciri"
-    assert "45 dk" in head and "MemoryMax 768M" in head and "614 MiB" in head
+    assert "75 dk" in head and "≥ 50 dk" in head and "≥ 30 dk" in head and "MemoryMax 768M" in head and "614 MiB" in head
     assert "setup_vps_v3.sh ASLA" in head
 
 
@@ -136,11 +137,30 @@ def test_script_touches_only_engine_units_and_reloads_only_through_the_gate():
     reloads = [i for i, ln in enumerate(code.splitlines()) if re.search(r"(?<![\w-])systemctl daemon-reload", ln)]
     assert len(reloads) == 2, "daemon-reload yalnız reload_units ve undo_units'te"
     assert re.search(r"reload_units\(\) \{[^}]*\n  reload_gate \|\| return 1\n  systemctl daemon-reload; RELOADED=1", code)
-    assert re.search(r'elif reload_gate; then systemctl daemon-reload; ok "birim dosyaları önceki', code)
+    assert re.search(r'elif reload_gate; then systemctl daemon-reload\n    if \[\[ "\$\(sc_show "\$WORKER" MemoryMax\)" == "\$MEM_EXPECT" \]\]; '
+                     r'then ok "birim dosyaları önceki[^\n]*\n    else DRIFT=1; UNDO_NOTE=', code), "geri koyma reload'u da 6G denetler"
+    assert "trap '' PIPE" in code and "exec tee -p -a \"$LOG\"" in code, "kopmuş boru/bağlantı geri dönüşü öldürmez"
+    assert re.search(r'mv -- "\$BASELINE" "\$BASELINE\.rolledback-', code), "--rollback taban kaydını kaldırır"
     assert not re.search(r'(rm|install|cp)\b[^\n]*"\$SD/\$(DSVC|DTMR)"', code), "veri birimi dosyaları değişmez"
     assert re.search(r'^for u in "\$SVC" "\$TMR"; do nu_put "\$SD/\$u" "\$W/deploy/\$u"; done', code, re.M)
     assert not re.search(r"^\s*(bash|sh)\s+\S*setup_vps", code, re.M)
     assert len(re.findall(r"^\s*systemd-run --unit=\"\$BF\"", code, re.M)) == 1
+
+
+def test_time_is_rechecked_before_the_units_and_before_the_night_smoke_and_rollback_errors_say_what_changed():
+    code = _code()
+    assert "if time_ok 75; then ok" in code, "başta: koşucu + iki smoke için ≥ 75 dk"
+    i50, i_fetch = code.index("\ntime_ok 50 || die "), code.index('\nfetch_tip "$ENG" "$TIP" "$W"')
+    assert i50 < i_fetch < code.index('nu_put "$SD/$u" "$W/deploy/$u"'), "koşucudan sonra, hiçbir şeye dokunmadan önce ≥ 50 dk"
+    assert "HİÇBİR ŞEYE DOKUNULMADI" in code[i50:code.index("\n", i50 + 1)]
+    i30 = code.index("\ntime_ok 30 || { back_out; die ")
+    assert code.index('timeout "$DSMOKE_TIMEOUT" systemctl start "$DSVC"') < i30 < code.index(
+        'timeout "$SMOKE_TIMEOUT" systemctl start "$SVC"'), "gece smoke'undan (S1b/S2 ≈ 20–25 dk) hemen önce ≥ 30 dk"
+    assert re.search(r'CHANGED\+=\("engine-app=\$\{PREV_TIP:0:7\}"\); pin_eng "\$PREV_TIP"', code), \
+        "--rollback: sabitleme yarıda düşerse on_err 'değişen: hiçbir şey' demez"
+    assert re.search(r'elif \[\[ "\$MODE" == --rollback \]\]; then printf [^\n]*yazılan birim dosyaları[^\n]*--rollback', code)
+    assert re.search(r'revert_eng\(\) \{[^}]*\|\| return 1; echo [^\n]*\|\| true; fi\n  return 0', code), \
+        "yazılamayan çıktı geri dönüşü 'başarısız' yapmaz"
 
 
 def test_heavy_steps_run_at_lowest_cpu_and_io_priority():
@@ -182,7 +202,8 @@ def _wj(p: Path, d) -> None:
 
 def _night_fixture(res: Path, *, rid="20261011T101500Z", started=None, finished=None, result="SUCCESS", plan=FULL,
                    ab="AB_RELEASE_DAY", engine="research_engine_v1_p2", attr=ATTR, cfg=CFG, digest=3000, mem=None,
-                   p2files=True, write_summary=True, flags=(), journal=None, fidelity=None, rehydrate=None) -> dict:
+                   p2files=True, write_summary=True, flags=(), journal=None, fidelity=None, rehydrate=None, s2_errors=0,
+                   epoch_day=None, sanity=None) -> dict:
     started = started or datetime.now(UTC).isoformat()
     day = started[:10]
     stages = {s: {"status": "OK", "duration_s": 12.0} for s in plan}
@@ -190,7 +211,7 @@ def _night_fixture(res: Path, *, rid="20261011T101500Z", started=None, finished=
         stages["S1b"]["result"] = {"journal": {"rows": 40, "built_rows": 40, "pending": 0},
                                    "reconcile": {"status": "OK", "books_not_ok": []}}
     if "S2" in plan:
-        stages["S2"]["result"] = {"rows": 30, "built_rows": 30, "pending": 0, "errors": [], "attribution_sha": attr,
+        stages["S2"]["result"] = {"rows": 30, "built_rows": 30, "pending": 0, "errors": s2_errors, "attribution_sha": attr,
                                   "cfgrid_sha": cfg}
     st = {"schema": "engine_run_status_v1", "engine": engine, "run_id": rid, "started_at": started,
           "finished_at": finished or started, "result": result, "exit_code": 0, "plan": plan, "stages": stages,
@@ -201,7 +222,7 @@ def _night_fixture(res: Path, *, rid="20261011T101500Z", started=None, finished=
     if write_summary:
         _wj(res / "summary" / "run_status.json", st)
         _wj(res / "summary" / "data_status.json", {"data_seal": "s" * 64})
-        (res / "runs" / "engine_epochs.jsonl").write_text(json.dumps({"engine_sha": TIP, "epoch_day": day}) + "\n",
+        (res / "runs" / "engine_epochs.jsonl").write_text(json.dumps({"engine_sha": TIP, "epoch_day": epoch_day or day}) + "\n",
                                                           encoding="utf-8")
         for n in (f"snapshots/{day}.json.gz", "summary/daily_target.json", "summary/engine_summary.json",
                   f"backup/research-small-{day}.tar.gz", f"backup/research-small-{day}.tar.gz.sha256"):
@@ -217,7 +238,8 @@ def _night_fixture(res: Path, *, rid="20261011T101500Z", started=None, finished=
                                                                               "meets_target": True}}},
             **(journal or {})})
         _wj(res / "attribution" / "_build.json", {"attribution_sha": attr, "cfgrid_sha": cfg, "rows": 30,
-                                                  "grid": {"OK": 20, "NE:FIDELITY": 10}, "rank_src": {"cf_aux_v1": 20}})
+                                                  "grid": {"OK": 20, "NE:FIDELITY": 10}, "rank_src": {"cf_aux_v1": 20},
+                                                  **({"sanity_5_10_box_stop_width": sanity} if sanity else {})})
         for n in ("journal/tj_v1/_index.json.gz", "attribution/_index.json.gz"):
             (res / n).write_bytes(gzip.compress(b"{}"))
     return st
@@ -256,13 +278,20 @@ def test_p2_check_rows_measure_what_the_engine_wrote_and_never_pass_the_unmeasur
     empty = _tool(tmp_path, "p2", str(tmp_path / "yok"), TIP, ATTR, CFG, "", "")
     assert empty.returncode == 0, empty.stderr
     rows = [ln for ln in empty.stdout.splitlines() if ln.startswith("   [")]
-    assert len(rows) == 9 and all(ln.lstrip().startswith("[ölçülemedi]") for ln in rows), empty.stdout
+    assert len(rows) == 10 and all(ln.lstrip().startswith("[ölçülemedi]") for ln in rows), empty.stdout
+    # son 03:40'ı geçmiş takvim gecesi ve öncekiler; sürüm günü 30 gün önce (A/B penceresi geçti: her gece AÇIK)
+    last = (datetime.now(UTC) - timedelta(minutes=221)).replace(hour=1, minute=37, second=0, microsecond=0)
+    rel = (last - timedelta(days=30)).strftime("%Y-%m-%d")
+    box = {"E2026-09-30": {"<0.5": {"n": 12, "mean_r": -0.56, "codes": {"STOP_TOO_TIGHT": 9, "NOISE_LOSS": 2, "X": 1}},
+                           "0.5-1": {"n": 8, "mean_r": 0.17, "codes": {}}}}
+
+    def nights(res, days, late=False, **kw):
+        for i in days:
+            s = last - timedelta(days=i)
+            _night_fixture(res, rid=s.strftime("%Y%m%dT%H%M%SZ"), started=s.isoformat(), write_summary=(i == min(days)),
+                           finished=(s + timedelta(minutes=130 if late and i == 0 else 40)).isoformat(), epoch_day=rel, **kw)
     good = tmp_path / "good" / "research"
-    base = datetime.now(UTC).replace(hour=1, minute=37, second=0, microsecond=0)
-    for i in range(3, 0, -1):
-        s = base - timedelta(days=i)
-        _night_fixture(good, rid=s.strftime("%Y%m%dT%H%M%SZ"), started=s.isoformat(),
-                       finished=(s + timedelta(minutes=40)).isoformat(), write_summary=(i == 1))
+    nights(good, (2, 1, 0), sanity=box)
     _wj(good / "target" / "daily_utc.jsonl", {"day": "2026-10-09", "rev": 0, "books": {"b": {"anchor_check": {"ok": True}}}})
     out = _tool(tmp_path, "p2", str(good), TIP, ATTR, CFG, "41", "12").stdout
     assert not claim_word_violations(out.splitlines())
@@ -270,21 +299,36 @@ def test_p2_check_rows_measure_what_the_engine_wrote_and_never_pass_the_unmeasur
                 "6 rehydrate eşleşmesi", "8 mühürler", "10 UTC günü MTM: 1 gün", "12 digest_tr.md 2,9 KB",
                 "13 son 3 ardışık gece"):
         assert re.search(r"\[tamam\]\s+" + re.escape(row), out), (row, out)
+    assert re.search(r"\[bilgi\]\s+11 Box stop genişliği .*E2026-09-30: <0,5 12 işlem ort\. -0,56R \(STOP_TOO_TIGHT 9, "
+                     r"NOISE_LOSS 2\) · 0,5–1 8 işlem ort\. 0,17R \(—\)", out), out
     bad = tmp_path / "bad" / "research"
-    for i in range(3, 0, -1):
-        s = base - timedelta(days=i)
-        _night_fixture(bad, rid=s.strftime("%Y%m%dT%H%M%SZ"), started=s.isoformat(), write_summary=(i == 1),
-                       finished=(s + timedelta(minutes=130 if i == 1 else 40)).isoformat(), attr="a" * 64, digest=9000,
-                       journal={"fee_identity_violations": 2},
-                       fidelity={"eligible": 10, "ok": 8, "rate": 0.8, "gate_pass": False,
-                                 "failures_by_reason": {"PATH_GAP": 2}},
-                       rehydrate={"strategy_paper_box": {"E0": {"n": 20, "ok": 18, "rate": 0.9, "meets_target": False}}})
+    nights(bad, (2, 1, 0), late=True, attr="a" * 64, digest=9000, journal={"fee_identity_violations": 2},
+           fidelity={"eligible": 10, "ok": 8, "rate": 0.8, "gate_pass": False, "failures_by_reason": {"PATH_GAP": 2}},
+           rehydrate={"strategy_paper_box": {"E0": {"n": 20, "ok": 18, "rate": 0.9, "meets_target": False}}})
     _wj(bad / "target" / "daily_utc.jsonl", {"day": "2026-10-09", "rev": 0, "books": {"b": {"entries_check": {"ok": False}}}})
     out = _tool(tmp_path, "p2", str(bad), TIP, ATTR, CFG, "", "12").stdout
     for row in ("2 sahip alanları", "5 fidelity 8/10 = %80,0", "6 rehydrate eşleşmesi", "8 mühürler", "10 UTC günü MTM",
                 "12 digest_tr.md 8,8 KB", "13 son 3 ardışık gece"):
         assert re.search(r"\[DİKKAT\]\s+" + re.escape(row), out), (row, out)
     assert "why-lost --days 7: HATA satır" in out and "strategy_paper_box E0 %90 (20)" in out
+    # kaydı olmayan gece (birim hiç başlamadı) atlanmaz: başarısız sayılır; S2 işlem hatası (int) satırları düşürmez
+    gap = tmp_path / "gap" / "research"
+    nights(gap, (3, 2, 0), s2_errors=2)
+    cp = _tool(tmp_path, "p2", str(gap), TIP, ATTR, CFG, "41", "12")
+    assert cp.returncode == 0 and "Traceback" not in cp.stderr, cp.stderr
+    assert len([ln for ln in cp.stdout.splitlines() if ln.startswith("   [")]) == 10, cp.stdout
+    assert re.search(r"\[DİKKAT\]\s+S1b/S2 son tam gece .*işlem hatası 2", cp.stdout), cp.stdout
+    day1 = (last - timedelta(days=1)).strftime("%Y-%m-%d")
+    assert re.search(r"\[DİKKAT\]\s+13 son 3 ardışık gece .*; %s kayıt yok; " % day1, cp.stdout), cp.stdout
+    # A/B penceresinde (sürüm günü 6 gün önce) gün-yıl sırası tek geceler KAPALI: kayıtları olmasa da sayılmaz
+    abw, rel6 = tmp_path / "abw" / "research", (last - timedelta(days=6)).strftime("%Y-%m-%d")
+    on = [i for i in range(6) if (last - timedelta(days=i)).timetuple().tm_yday % 2 == 0]
+    for i in on:
+        s = last - timedelta(days=i)
+        _night_fixture(abw, rid=s.strftime("%Y%m%dT%H%M%SZ"), started=s.isoformat(), write_summary=(i == min(on)),
+                       finished=(s + timedelta(minutes=40)).isoformat(), epoch_day=rel6)
+    out = _tool(tmp_path, "p2", str(abw), TIP, ATTR, CFG, "41", "12").stdout
+    assert len(on) == 3 and re.search(r"\[tamam\]\s+13 son 3 ardışık gece", out) and "kayıt yok" not in out, out
 
 
 # ============================================================================ sandbox
@@ -298,11 +342,16 @@ SYSTEMCTL_P2 = SYSTEMCTL.replace(
     '"MemoryMax": MEM.get(u, "infinity") if u in ld else "infinity"',
     '"MemoryMax": S.get("loaded_mem", {}).get(u) or MEM.get(u, "infinity") if u in ld else "infinity"').replace(
     "import json, os, sys, pathlib, hashlib", "import json, os, re, sys, pathlib, hashlib").replace(
+    '    if os.environ.get("FAKE_RELOAD_DRIFT") and DSVC in S["loaded"]:\n',
+    '    if os.environ.get("FAKE_DRIFT_ON_SVC_SHA") and os.environ["FAKE_DRIFT_ON_SVC_SHA"] == S["loaded"].get(SVC):\n'
+    '        S.setdefault("props", {}).setdefault(W, {})["MemoryMax"] = "4294967296"\n'
+    '    if os.environ.get("FAKE_RELOAD_DRIFT") and DSVC in S["loaded"]:\n').replace(
     "    import fakeengine\n",
     '    if os.environ.get("FAKE_NIGHT_FAIL") and u == SVC:\n'
     '        S["result"][u], S["ems"][u] = "exit-code", 1; save(); sys.exit(1)\n'
     "    import fakeengine\n")
-assert SYSTEMCTL_P2.count("loaded_mem") == 2 and "FAKE_NIGHT_FAIL" in SYSTEMCTL_P2 and ", re, sys" in SYSTEMCTL_P2
+assert SYSTEMCTL_P2.count("loaded_mem") == 2 and "FAKE_NIGHT_FAIL" in SYSTEMCTL_P2 and ", re, sys" in SYSTEMCTL_P2 \
+    and "FAKE_DRIFT_ON_SVC_SHA" in SYSTEMCTL_P2
 
 
 def _p2_stubs(sb: Sandbox, cache: Path, fail_flag: Path) -> None:
@@ -395,7 +444,7 @@ def test_dry_run_checks_everything_and_changes_nothing(tmp_path, source, vps_tem
 
 
 @needs_sandbox
-@pytest.mark.parametrize("case", ["night_unit_changed", "engine_app_db5db96", "data_timer_off", "backfill_running"])
+@pytest.mark.parametrize("case", ["night_unit_changed", "engine_app_db5db96", "data_timer_off", "backfill_running", "too_late"])
 def test_missing_p1b_or_a_busy_engine_refuses_before_any_change(tmp_path, source, vps_template, case):
     sb = _sb(tmp_path, vps_template, source)
     if case == "night_unit_changed":
@@ -410,9 +459,10 @@ def test_missing_p1b_or_a_busy_engine_refuses_before_any_change(tmp_path, source
         st["bf"] = "active"
     (sb.fake / "systemd.json").write_text(json.dumps(st), encoding="utf-8")
     snap = sb.snap()
-    cp = sb.run(script=SCRIPT)
+    cp = sb.run(script=SCRIPT, **({"FAKE_UTC_HM": "06:50"} if case == "too_late" else {}))
     want = {"night_unit_changed": "ne P1a'nın ne P2'nin baytları", "engine_app_db5db96": "79b27cf'yi (79b27cf) içermiyor",
-            "data_timer_off": "veri zamanlayıcısı açık/aktif değil", "backfill_running": "DUR: motor-boşta"}[case]
+            "data_timer_off": "veri zamanlayıcısı açık/aktif değil", "backfill_running": "DUR: motor-boşta",
+            "too_late": "sonraki 4h penceresine 70 dk (en az 75 dk gerekir)"}[case]
     assert cp.returncode == 1 and want in cp.out and "HİÇBİR ŞEYE DOKUNULMADI" in cp.out, cp.out[-3000:]
     sb.untouched_since(snap)
     _no_forbidden(sb)
@@ -473,6 +523,9 @@ def test_deploy_installs_the_p2_night_unit_with_one_gated_reload_check_rerun_and
     assert not [ln for ln in tail if ln.split()[0] in ("enable", "disable", "stop", "start")], tail
     _p79_state(sb, units0)
     assert sb.state_json()["loaded_mem"][SVC] == "536870912" and _tree_digest(sb.res) == d0
+    logs = sb.base / "deploy-logs"
+    assert not (logs / f"engine-{TIP[:7]}-deploy.json").exists() and list(logs.glob(f"engine-{TIP[:7]}-deploy.json.rolledback-*")), \
+        "geri alınan kurulumun taban kaydı kalkar: yarım kalan yeniden dağıtım smoke'suz 'zaten dağıtılmış' demez"
     again = sb.run("--rollback", script=SCRIPT)
     assert again.returncode == 0 and "zaten 79b27cf'de" in again.out and "reload gerekmez" in again.out, again.out[-2000:]
     p79 = sb.run(script=P79_SCRIPT)
@@ -503,6 +556,20 @@ def test_failed_night_smoke_and_an_error_after_the_pin_restore_79b27cf_and_the_p
     assert cp.returncode == 1 and cp.out.count("beklenmeyen hata") == 1, cp.out[-4000:]
     assert "engine-app önceki sabitine döndü (79b27cf)" in cp.out and "--rollback GEREKMEZ" in cp.out, cp.out[-3000:]
     _p79_state(sb, units0)
+    # çıktı erken kapanan boruya (`| tail` + SSH kopması gibi): betik SIGPIPE ile ölmez, kayıt dosyası sürer, geri dönüş biter
+    logs0 = set((sb.base / "deploy-logs").glob(f"engine-{TIP[:7]}-deploy-*.log"))
+    pp = subprocess.run([BASH, "-c", '"$1" "$0" 2>&1 | head -c 300 >/dev/null; echo "rc=${PIPESTATUS[0]}"', str(SCRIPT), BASH],
+                        env={**sb.env, "FAKE_NIGHT_FAIL": "1"}, cwd=str(sb.tmp), capture_output=True, text=True, timeout=1200)
+    new = sorted(set((sb.base / "deploy-logs").glob(f"engine-{TIP[:7]}-deploy-*.log")) - logs0)
+    txt = new[-1].read_text(encoding="utf-8") if new else ""
+    assert pp.stdout.strip().endswith("rc=2"), (pp.stdout, pp.stderr, txt[-3000:])
+    assert "gece smoke'u GEÇMEDİ" in txt and "--rollback GEREKMEZ" in txt and "beklenmeyen hata" not in txt, txt[-3000:]
+    _p79_state(sb, units0)
+    # geri koyma reload'undan sonra worker 6G'den kayarsa: "--rollback GEREKMEZ" denmez, çıkış 3 + set-property ipucu
+    cp = sb.run(script=SCRIPT, FAKE_NIGHT_FAIL="1", FAKE_DRIFT_ON_SVC_SHA=_sha(units0[SVC]))
+    assert cp.returncode == 3 and "gece smoke'u GEÇMEDİ" in cp.out and "set-property" in cp.out, cp.out[-4000:]
+    assert "--rollback GEREKMEZ" not in cp.out and "6G'ye döndürür" in cp.out, cp.out[-3000:]
+    assert sb.eng_head() == PREV_TIP and _units(sb) == units0
     _no_forbidden(sb)
 
 

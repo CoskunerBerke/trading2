@@ -61,7 +61,15 @@
   (`data/research/trials/trials.jsonl`) zincir durumu, sayaçlar ve DSR N, koddan bütçe (818 / 1.738, öncül 2.775), `--like`
   ile LIB_v1 varyantları, defter satırları (spec_sha öneki), öncüller ve "ÖNCÜL — KANIT YOK" fikirleri. P3g'ye kadar defter
   boştur ("Defter: YOK/BOŞ").
+- **Deneme defteri dosyaları** (`data/research/trials/`): `trials.jsonl` (yalnız eklenir; her ekleme atomik değiştirme),
+  `trials.hwm.json` (son yazımın satır/baş/sayaçları; geri sarmayı yakalar) ve `trials.lock` (yazar kilidi, boş). Elle
+  düzenlenmez, kesilmez, ayrı ayrı geri yüklenmez: kısalmış ya da başka bir zincirle değiştirilmiş defter `ROLLED_BACK`,
+  bozuk HWM `BAD_HWM` olur ve kapı/terfi kapanır (`TRIALS_CHAIN_BROKEN`).
 - **Config dönemleri:** mühürlü `library/config_epochs.json` (`CONFIG_EPOCHS_V1`) mühüre kadarki worker dağıtımlarını kapsar
-  (belgelenmiş saat ya da kanıtla sınırlanmış pencere; `tradingbot/research_engine/epochs.py` `DEPLOYS`). Mühürden sonraki
-  config değişikliklerinde yeni dönemi gece birimi açar (ana belge §6.2, P3g); V1 dosyası değişmez.
+  (belgelenmiş saat ya da kanıtla sınırlanmış pencere; `tradingbot/research_engine/epochs.py` `DEPLOYS`; `covered_until` =
+  mühür anı). Pencerede (TRANSITION) ya da mühürden sonra açılan işleme V1 dönem atamaz; mühürden sonraki config
+  değişikliklerinde yeni dönemi gece birimi açar (ana belge §6.2, P3g); V1 dosyası değişmez.
   `python scripts/gen_config_epochs.py --check` dosyanın git geçmişinden aynen üretildiğini doğrular.
+- **Boşluklar:** belgenin söylemediği ayrıntılar kayıtta `UNSPECIFIED`'dır (48 varyant ve 6 protokol boşluğu;
+  `docs/ENGINE_BRAIN_V1.md` §8.4); sorular §8.5'te. Cevaplar boşlukları doldurur ve S1 entegrasyondan önce yeniden
+  mühürlenir.

@@ -122,7 +122,9 @@ def test_script_pins_match_the_code_commit():
     assert got == acc, "betiğin kabul listesi = koşucununki"
     ver = re.search(r'^ENGINE_VERSION = "([^"]+)"', _blob(TIP, "tradingbot/research_engine/__init__.py").decode(), re.M).group(1)
     assert ver == "research_engine_v1_p2" and re.search(rf'^ENGINE_VER="{ver}"$', TEXT, re.M)
-    assert _git("diff", "--quiet", TIP, "HEAD", "--", "tradingbot/research_engine").returncode == 0, "mühürler TIP'in kodundan"
+    # mühürlü P2 kayıtlarının kaynağı TIP'tekiyle aynı (P3 kodu research_engine'e eklenir; P2 mühürlerine dokunmaz)
+    assert _git("diff", "--quiet", TIP, "HEAD", "--", "tradingbot/research_engine/attribution.py",
+                "tradingbot/research_engine/cfgrid.py").returncode == 0, "mühürler TIP'in kodundan"
     assert re.search(rf'^ATTR_SHA="{AT.ATTRIBUTION_SHA}"', TEXT, re.M) and re.search(rf'^CFG_SHA="{CG.CFGRID_SHA}"', TEXT, re.M)
 
 

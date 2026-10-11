@@ -1,8 +1,9 @@
 """P3a — config dönemleri üreticisi: `library/config_epochs.json` (mühür `CONFIG_EPOCHS_V1`; ana belge §6.2 "Config
 dönemleri", ENGINE_BRAIN §8.1 P3a).
 
-Girdi (belirlenimci): dağıtılmış her worker sürüm SHA'sındaki `config.yaml` baytları (git geçmişi; okuyucu
-`scripts/gen_config_epochs.py`, bu modül git ÇAĞIRMAZ) + bu dosyadaki BELGELENMİŞ kayıtlar:
+Girdi (belirlenimci): dağıtılmış her worker sürüm SHA'sındaki `config.yaml` blob BAYTLARI (git geçmişi; okuyucu
+`scripts/gen_config_epochs.py` `git cat-file blob`, bu modül git ÇAĞIRMAZ; UTF-8 katı çözülür, `config_sha256` blob
+baytlarınındır) + bu dosyadaki BELGELENMİŞ kayıtlar:
 
 * `DEPLOYS` — hangi sürüm ne zaman canlıya çıktı. Kesin saat yalnız depoda yazılıysa (`at`); yoksa kanıtla sınırlanmış
   bir PENCERE (`window` [alt, üst)): alt sınır = dağıtımın olamayacağı son an (sürüm betiğinin commit'i ya da önceki
@@ -21,8 +22,13 @@ Kurallar:
   (o aralıkta açılan işlem hiçbir config dönemine atanmaz, dönem içi kıyasa girmez). Bitişik/örtüşen pencereler
   birleşir. İlk dönem `E0` (`PRE_HISTORY`): bilinen taban sürümün (3b0ae8e) config'i; daha önceki değişiklikler
   belgelenmemiştir.
-* Biçim P2 okuyucusuyla (`rehydrate.config_epoch`) uyumludur: `{"epochs": [{"id", "from", "to", "books"}]}`; `E0`'ın
-  `from`'u `UNBOUNDED_FROM`'dur.
+* Biçim P2 okuyucusuyla (`rehydrate.config_epoch`) uyumludur: `{"epochs": [{"id", "from", "to", "books", "kind"}],
+  "covered_until"}`; `E0`'ın `from`'u `UNBOUNDED_FROM`'dur. Okuyucu `TRANSITION` dönemindeki işleme dönem ATAMAZ
+  (None, `SEALED_TRANSITION`).
+* **Kapsam.** V1 yalnız `covered_until` (= mühür anı `T_SEAL_MS`) anına kadarki dağıtımları bilir; son dönemlerin
+  `to`'su açık (null) olsa da bu andan sonra açılan işlem için okuyucu (None, `SEALED_UNCOVERED`) döner — o andan sonra
+  BAŞLAYAN bir dönem (gece birimi, P3g; ana belge §6.2 "yeni sha = yeni dönem") örtmedikçe. Mühürle kod sürümü arasındaki
+  dağıtımlar böylece sessizce son döneme yazılmaz.
 
 Yalnız standart kütüphane + PyYAML (yalnız `build` içinde); ağ ve dış süreç yok.
 """
@@ -93,10 +99,11 @@ DEPLOYS: tuple[dict, ...] = (
                "biten tur fc63481); tb-deploy-f8b05fb.sh:4 '2026-10-02 dağıtımı'",
      "decision_tr": "config 188cf22'dekiyle bayt bayt aynı (karar değiştirmeyen tur hızlandırmaları)"},
     {"release": "f8b05fb", "status": "DEPLOYED",
-     "window": ["2026-10-04T00:56:00+00:00", "2026-10-05T04:55:00+00:00"],
-     "source": "dağıtım saati depoda yok (docs/M2_AGGRESSIVE_V1.md:28); alt: docs/TOUR_CONTENTION_V1.md §1 tablosu "
-               "(2026-10-04 03:56 TR biten tur fc63481); üst: aynı tablo (2026-10-05 07:54 TR biten tur f8b05fb). "
-               "tb-deploy-8db1faf.sh:3'teki '2026-10-03 dağıtımı' bu iki kayıtla çelişir; geniş pencere alınır",
+     "window": ["2026-10-04T11:45:56+00:00", "2026-10-05T04:55:00+00:00"], "lo_commit": "f94ef5a",
+     "source": "dağıtım saati depoda yok (docs/M2_AGGRESSIVE_V1.md:28); alt: sürüm betiğinin ilk commit'i f94ef5a "
+               "(docs/TOUR_CONTENTION_V1.md §1'deki son fc63481 turu, 2026-10-04 03:56 TR = 00:56 UTC, bundan önce); "
+               "üst: aynı tablo (2026-10-05 07:54 TR biten ilk f8b05fb turu). tb-deploy-8db1faf.sh:3'teki '2026-10-03 "
+               "dağıtımı' betiğin commit'inden öncedir, bu kayıtlarla çelişir; kanıtla sınırlanmış pencere alınır",
      "decision_tr": "learning_mode.extra_entries: record_selectivity + Box öğrenme stop tabanı 0,32 → 0,5 (sahip kararı "
                     "2026-10-03)"},
     {"release": "8db1faf", "status": "DEPLOYED",
@@ -298,20 +305,26 @@ def book_epochs(rule: str, books: tuple[str, ...], base_flat: Mapping[str, Any],
     return eps
 
 
-def build(config_texts: Mapping[str, str], full_shas: Mapping[str, str] | None = None) -> dict:
-    """`config_texts`: sürüm (sha7) → o sürümdeki `config.yaml` metni (her `DEPLOYS` kaydı için). Saf ve belirlenimci."""
+def _blob(x: bytes | str) -> bytes:
+    return x if isinstance(x, bytes) else x.encode("utf-8")
+
+
+def build(config_texts: Mapping[str, bytes | str], full_shas: Mapping[str, str] | None = None, *,
+          covered_until: str | None = None) -> dict:
+    """`config_texts`: sürüm (sha7) → o sürümdeki `config.yaml` blob baytları (ya da metni; her `DEPLOYS` kaydı için).
+    `covered_until`: V1'in kapsadığı son an (mühür anı; ISO). Saf ve belirlenimci."""
     import yaml  # PyYAML (venv'de mevcut; rawconfig ile aynı)
 
     missing = [d["release"] for d in DEPLOYS if d["release"] not in config_texts]
     if missing:
         raise ValueError(f"config metni eksik: {missing}")
-    flats = {rel: flatten(yaml.safe_load(txt)) for rel, txt in config_texts.items()}
+    flats = {rel: flatten(yaml.safe_load(_blob(txt).decode("utf-8"))) for rel, txt in config_texts.items()}
     evs = events(flats)
     releases = []
     prev = flats["3b0ae8e"]
     for d in DEPLOYS:
         rec = {"release": d["release"], "status": d["status"], "source": d["source"], "decision_tr": d["decision_tr"],
-               "config_sha256": hashlib.sha256(config_texts[d["release"]].encode("utf-8")).hexdigest()}
+               "config_sha256": hashlib.sha256(_blob(config_texts[d["release"]])).hexdigest()}
         if full_shas:
             rec["sha"] = full_shas[d["release"]]
         for k in ("at", "window"):
@@ -324,17 +337,25 @@ def build(config_texts: Mapping[str, str], full_shas: Mapping[str, str] | None =
     epochs: list[dict] = []
     for rule, books in BOOK_RULES:
         epochs.extend(book_epochs(rule, books, flats["3b0ae8e"], evs))
+    if covered_until is not None:
+        last = max((_ts(e["from"]) for e in epochs), default=None)
+        if last is not None and _ts(covered_until) < last:
+            raise ValueError(f"covered_until {covered_until} son dönem başlangıcından önce")
     return {
         "schema": SCHEMA, "doc": "docs/SYSTEM_LEARNING_ENGINE_V1.md §6.2; docs/ENGINE_BRAIN_V1.md §8.1 P3a",
+        "covered_until": covered_until,
         "generator": "tradingbot/research_engine/epochs.py (scripts/gen_config_epochs.py; git geçmişi + belgelenmiş kayıtlar)",
         "rules_tr": {
             "view": "defter görünümü = bütün config yolları − başka defterlerin yalnız-kendi bölümleri − karar-nötr yollar",
             "boundary": "görünüm değişen dağıtımda yeni dönem; kesin saat yoksa TRANSITION penceresi (o aralıkta açılan işlem "
-                        "hiçbir config dönemine atanmaz)",
+                        "hiçbir config dönemine atanmaz; okuyucu dönem kimliği vermez)",
+            "coverage": "V1 yalnız covered_until (mühür anı) anına kadarki dağıtımları kapsar; sonra açılan işlem, o andan "
+                        "sonra başlayan bir dönemle örtülmedikçe UNCOVERED'dır (son dönemlere yazılmaz)",
             "pre_history": "E0 = taban 3b0ae8e config'i ve öncesi (belgelenmemiş)",
             "new_epoch_at_night": "her gece rawconfig canlı config sha'sını son dönemle karşılaştırır; yeni sha = yeni dönem "
                                   "(ana belge §6.2)",
-            "reader": "rehydrate.config_epoch: kitap eşleşen, from ≤ an < to olan dönem",
+            "reader": "rehydrate.config_epoch: kitap eşleşen, from ≤ an < to olan dönem; TRANSITION → dönem yok; "
+                      "covered_until sonrası → UNCOVERED",
         },
         "decision_neutral": [{"path": p, "source": s} for p, s in DECISION_NEUTRAL],
         "book_rules": {rule: list(books) for rule, books in BOOK_RULES},

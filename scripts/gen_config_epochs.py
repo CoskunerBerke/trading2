@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
 """`library/config_epochs.json` üreticisi (P3a; mühür CONFIG_EPOCHS_V1; docs/ENGINE_BRAIN_V1.md §8.1, ana belge §6.2).
 
-Git geçmişinden her belgelenmiş worker sürümünün (`tradingbot/research_engine/epochs.py` `DEPLOYS`) `config.yaml`'ını okur,
-belgelenmiş kayıtlarla `epochs.build`'e verir ve sonucu yazar. Belirlenimcidir: aynı depo → aynı baytlar. Salt-okunur git
-komutları kullanır (`rev-parse`, `show`, `log`, `merge-base --is-ancestor`); ağ yok.
+Git geçmişinden her belgelenmiş worker sürümünün (`tradingbot/research_engine/epochs.py` `DEPLOYS`) `config.yaml` blob
+BAYTLARINI (`git cat-file blob`; yerel ayar, satır sonu dönüşümü ve textconv yok, UTF-8 katı çözülür) okur, belgelenmiş
+kayıtlarla ve `covered_until` = mühür anı (`registry.T_SEAL_MS`) ile `epochs.build`'e verir ve sonucu yazar.
+Belirlenimcidir: aynı depo → aynı baytlar. Salt-okunur git komutları kullanır (`rev-parse`, `cat-file`, `log`,
+`merge-base --is-ancestor`; hepsi `-c log.showSignature=false`, `log` ayrıca `--no-textconv`); ağ yok.
 
 Denetimler (biri tutmazsa çıkış 2, hiçbir şey yazılmaz):
 * mühürden (`registry.T_SEAL_MS`) önce depoya eklenmiş HER worker sürüm betiği (`deploy/releases/tb-deploy-*.sh`)
   `DEPLOYS`'ta belgelenmiş olmalı (belgelenmemiş sürüm = hata). Mühürden sonra eklenen betikler V1'in kapsamı DIŞINDADIR:
   sonraki config dönemlerini gece birimi açar (ana belge §6.2 "yeni sha = yeni dönem", P3g); V1 dosyası değişmez;
 * dağıtılmış sürümler zaman sırasıyla birbirinin atası olmalı;
-* pencere sınırının dayandığı commit'in (`lo_commit`/`hi_commit`) işleyen zamanı sınıra eşit olmalı.
+* pencere sınırının dayandığı commit'in (`lo_commit`/`hi_commit`) işleyen zamanı sınıra eşit olmalı;
+* `registry.T_SEAL_MS` dolu olmalı (`covered_until`).
 
     python scripts/gen_config_epochs.py            # dosyayı yeniden üret
     python scripts/gen_config_epochs.py --check    # depodaki dosya üretilenle aynı mı (değilse çıkış 1)
@@ -32,16 +35,25 @@ from tradingbot.research_engine import epochs as EP  # noqa: E402
 DEFAULT_OUT = ROOT / "tradingbot" / "research_engine" / "library" / "config_epochs.json"
 
 
+GIT_BASE = ("git", "-c", "log.showSignature=false", "-c", "core.quotepath=off")
+
+
+def git_bytes(repo: Path, *args: str) -> bytes:
+    return subprocess.run([*GIT_BASE, "-C", str(repo), *args], check=True, capture_output=True).stdout
+
+
 def git(repo: Path, *args: str) -> str:
-    return subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True, text=True).stdout
+    """Yalnız ASCII çıktılı komutlar (sha, sayısal/ISO zaman) için; katı UTF-8."""
+    return git_bytes(repo, *args).decode("utf-8")
 
 
-def gather(repo: Path) -> tuple[dict[str, str], dict[str, str]]:
-    texts, shas = {}, {}
+def gather(repo: Path) -> tuple[dict[str, bytes], dict[str, str]]:
+    blobs, shas = {}, {}
     for rel in EP.releases_needed():
         shas[rel] = git(repo, "rev-parse", "--verify", f"{rel}^{{commit}}").strip()
-        texts[rel] = git(repo, "show", f"{shas[rel]}:config.yaml")
-    return texts, shas
+        blobs[rel] = git_bytes(repo, "cat-file", "blob", f"{shas[rel]}:config.yaml")
+        blobs[rel].decode("utf-8")                       # katı: UTF-8 olmayan blob = hata (çıkış ≠ 0)
+    return blobs, shas
 
 
 def seal_ms(repo: Path) -> int:
@@ -53,7 +65,7 @@ def seal_ms(repo: Path) -> int:
 
 def added_at(repo: Path, rel_path: str) -> int | None:
     """Dosyayı depoya ekleyen ilk commit'in işleyen zamanı (s); izlenmiyorsa None."""
-    out = git(repo, "log", "--diff-filter=A", "--format=%ct", "--", rel_path).split()
+    out = git(repo, "log", "--no-textconv", "--diff-filter=A", "--format=%ct", "--", rel_path).split()
     return int(out[-1]) if out else None
 
 
@@ -71,11 +83,11 @@ def verify(repo: Path, shas: dict[str, str]) -> list[str]:
         errs.append(f"belgelenmemiş worker sürümü: {f.name} (epochs.DEPLOYS'a dağıtım kaydı eklenmeli)")
     seq = [d["release"] for d in EP.DEPLOYS if d["status"] in ("BASE", "DEPLOYED")]
     for a, b in zip(seq, seq[1:]):
-        r = subprocess.run(["git", "-C", str(repo), "merge-base", "--is-ancestor", shas[a], shas[b]], capture_output=True)
+        r = subprocess.run([*GIT_BASE, "-C", str(repo), "merge-base", "--is-ancestor", shas[a], shas[b]], capture_output=True)
         if r.returncode != 0:
             errs.append(f"{a} → {b}: ata değil")
     for rel, bound, commit in EP.bound_commits():
-        t = git(repo, "log", "-1", "--format=%cI", commit).strip()
+        t = git(repo, "log", "--no-textconv", "-1", "--format=%cI", commit).strip()
         if datetime.fromisoformat(t).astimezone(timezone.utc) != datetime.fromisoformat(bound).astimezone(timezone.utc):
             errs.append(f"{rel}: sınır {bound} ≠ {commit} commit zamanı {t}")
     return errs
@@ -88,12 +100,17 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--check", action="store_true", help="yazma; depodaki dosya üretilenle aynı değilse çıkış 1")
     a = ap.parse_args(argv)
     repo = Path(a.repo)
-    texts, shas = gather(repo)
+    t_seal = seal_ms(repo)
+    if not t_seal:
+        print("registry.T_SEAL_MS yok: covered_until için mühür anı gerekir", file=sys.stderr)
+        return 2
+    covered_until = datetime.fromtimestamp(t_seal / 1000, tz=timezone.utc).isoformat()
+    blobs, shas = gather(repo)
     errs = verify(repo, shas)
     if errs:
         print("\n".join(errs), file=sys.stderr)
         return 2
-    text = EP.render(EP.build(texts, shas))
+    text = EP.render(EP.build(blobs, shas, covered_until=covered_until))
     out = Path(a.out)
     if a.check:
         cur = out.read_text(encoding="utf-8") if out.exists() else ""

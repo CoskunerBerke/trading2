@@ -534,7 +534,9 @@ def build_row(loc: ArchiveLoc, rec: dict, kind: str, ctx: BuildContext) -> dict[
                    else "provenance satırı/alanı yok")
     ep, ep_src = RH.config_epoch(book, rec.get("opened_at"), research=ctx.paths.research)
     if ep is None:
-        R.miss("config_epoch")
+        R.miss("config_epoch", {RH.EPOCH_SRC_TRANSITION: "TRANSITION: dağıtım anı yalnız pencereyle biliniyor; hiçbir config "
+                                                       "dönemine atanmaz",
+                                RH.EPOCH_SRC_UNCOVERED: "UNCOVERED: mühürlü config dönemleri bu anı kapsamıyor"}.get(ep_src))
     else:
         R.set("config_epoch", ep, RECONSTRUCTED if ep_src == RH.EPOCH_SRC_PROVISIONAL else MEASURED, ep_src)
 

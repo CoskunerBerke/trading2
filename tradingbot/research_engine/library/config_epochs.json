@@ -29,6 +29,7 @@
    "strategy_paper"
   ]
  },
+ "covered_until": "2026-10-11T17:44:00+00:00",
  "decision_neutral": [
   {
    "path": "history.evidence_subprocess",
@@ -140,7 +141,7 @@
    ],
    "release": "c0b8c94",
    "rule": "main",
-   "to": "2026-10-04T00:56:00+00:00",
+   "to": "2026-10-04T11:45:56+00:00",
    "view_sha": "6f995a923439ae365a4ddcc88822502b4efb09eb045cda405fa9da48c98d04ee"
   },
   {
@@ -154,9 +155,9 @@
    "events": [
     "f8b05fb"
    ],
-   "from": "2026-10-04T00:56:00+00:00",
+   "from": "2026-10-04T11:45:56+00:00",
    "from_release": "fc63481",
-   "id": "X2026-10-04T0056Z",
+   "id": "X2026-10-04T114556Z",
    "kind": "TRANSITION",
    "note_tr": "dağıtım anı yalnız pencereyle biliniyor: bu aralıkta açılan işlem hiçbir config dönemine atanmaz",
    "opened_by": [
@@ -291,7 +292,7 @@
    ],
    "release": "c0b8c94",
    "rule": "t2_trend_regime",
-   "to": "2026-10-04T00:56:00+00:00",
+   "to": "2026-10-04T11:45:56+00:00",
    "view_sha": "92282018beb6892bf60626b5fe0b7e52485cb63f576f853fb56ff5a262c7cc6e"
   },
   {
@@ -304,9 +305,9 @@
    "events": [
     "f8b05fb"
    ],
-   "from": "2026-10-04T00:56:00+00:00",
+   "from": "2026-10-04T11:45:56+00:00",
    "from_release": "fc63481",
-   "id": "X2026-10-04T0056Z",
+   "id": "X2026-10-04T114556Z",
    "kind": "TRANSITION",
    "note_tr": "dağıtım anı yalnız pencereyle biliniyor: bu aralıkta açılan işlem hiçbir config dönemine atanmaz",
    "opened_by": [
@@ -440,7 +441,7 @@
    ],
    "release": "c0b8c94",
    "rule": "m2_tsmom28",
-   "to": "2026-10-04T00:56:00+00:00",
+   "to": "2026-10-04T11:45:56+00:00",
    "view_sha": "e3418e008f62cfaa6447fa82b7dec59a681de176a9be96c51d2b889109d746c2"
   },
   {
@@ -453,9 +454,9 @@
    "events": [
     "f8b05fb"
    ],
-   "from": "2026-10-04T00:56:00+00:00",
+   "from": "2026-10-04T11:45:56+00:00",
    "from_release": "fc63481",
-   "id": "X2026-10-04T0056Z",
+   "id": "X2026-10-04T114556Z",
    "kind": "TRANSITION",
    "note_tr": "dağıtım anı yalnız pencereyle biliniyor: bu aralıkta açılan işlem hiçbir config dönemine atanmaz",
    "opened_by": [
@@ -611,7 +612,7 @@
    ],
    "release": "f6e6119",
    "rule": "b1_box_fade",
-   "to": "2026-10-04T00:56:00+00:00",
+   "to": "2026-10-04T11:45:56+00:00",
    "view_sha": "0f62378b3f9b1c53ae41b081bff1adbcefa4aaa9c808975a04d06110f61078b7"
   },
   {
@@ -624,9 +625,9 @@
    "events": [
     "f8b05fb"
    ],
-   "from": "2026-10-04T00:56:00+00:00",
+   "from": "2026-10-04T11:45:56+00:00",
    "from_release": "fc63481",
-   "id": "X2026-10-04T0056Z",
+   "id": "X2026-10-04T114556Z",
    "kind": "TRANSITION",
    "note_tr": "dağıtım anı yalnız pencereyle biliniyor: bu aralıkta açılan işlem hiçbir config dönemine atanmaz",
    "opened_by": [
@@ -758,7 +759,7 @@
    ],
    "release": "c0b8c94",
    "rule": "pattern_trader",
-   "to": "2026-10-04T00:56:00+00:00",
+   "to": "2026-10-04T11:45:56+00:00",
    "view_sha": "778526be55a35b7afc7098e979e7ee98f959e2681d56fbcc8a449ce277826960"
   },
   {
@@ -771,9 +772,9 @@
    "events": [
     "f8b05fb"
    ],
-   "from": "2026-10-04T00:56:00+00:00",
+   "from": "2026-10-04T11:45:56+00:00",
    "from_release": "fc63481",
-   "id": "X2026-10-04T0056Z",
+   "id": "X2026-10-04T114556Z",
    "kind": "TRANSITION",
    "note_tr": "dağıtım anı yalnız pencereyle biliniyor: bu aralıkta açılan işlem hiçbir config dönemine atanmaz",
    "opened_by": [
@@ -916,7 +917,7 @@
    ],
    "release": "c0b8c94",
    "rule": "d4_donchian_20_10",
-   "to": "2026-10-04T00:56:00+00:00",
+   "to": "2026-10-04T11:45:56+00:00",
    "view_sha": "d37f7e2797d796eabbccb9e8f39cd4247b1d2a67e28ba007aa0ff8e4ccc1b0b9"
   },
   {
@@ -929,9 +930,9 @@
    "events": [
     "f8b05fb"
    ],
-   "from": "2026-10-04T00:56:00+00:00",
+   "from": "2026-10-04T11:45:56+00:00",
    "from_release": "fc63481",
-   "id": "X2026-10-04T0056Z",
+   "id": "X2026-10-04T114556Z",
    "kind": "TRANSITION",
    "note_tr": "dağıtım anı yalnız pencereyle biliniyor: bu aralıkta açılan işlem hiçbir config dönemine atanmaz",
    "opened_by": [
@@ -1081,7 +1082,7 @@
    ],
    "release": "c0b8c94",
    "rule": "c4_candle_variations",
-   "to": "2026-10-04T00:56:00+00:00",
+   "to": "2026-10-04T11:45:56+00:00",
    "view_sha": "95363fe6cc90c0f3ace36bf477c712c2e2fbb241dc9c9469dee573d105e79dff"
   },
   {
@@ -1094,9 +1095,9 @@
    "events": [
     "f8b05fb"
    ],
-   "from": "2026-10-04T00:56:00+00:00",
+   "from": "2026-10-04T11:45:56+00:00",
    "from_release": "fc63481",
-   "id": "X2026-10-04T0056Z",
+   "id": "X2026-10-04T114556Z",
    "kind": "TRANSITION",
    "note_tr": "dağıtım anı yalnız pencereyle biliniyor: bu aralıkta açılan işlem hiçbir config dönemine atanmaz",
    "opened_by": [
@@ -1244,7 +1245,7 @@
    ],
    "release": "c0b8c94",
    "rule": "c4s_candle_variations_strict",
-   "to": "2026-10-04T00:56:00+00:00",
+   "to": "2026-10-04T11:45:56+00:00",
    "view_sha": "0fdafe7be64dbd4fff3fe7b750f447baed8dcb07e21e4ae6c8eeb8171ec5e471"
   },
   {
@@ -1257,9 +1258,9 @@
    "events": [
     "f8b05fb"
    ],
-   "from": "2026-10-04T00:56:00+00:00",
+   "from": "2026-10-04T11:45:56+00:00",
    "from_release": "fc63481",
-   "id": "X2026-10-04T0056Z",
+   "id": "X2026-10-04T114556Z",
    "kind": "TRANSITION",
    "note_tr": "dağıtım anı yalnız pencereyle biliniyor: bu aralıkta açılan işlem hiçbir config dönemine atanmaz",
    "opened_by": [
@@ -1380,7 +1381,7 @@
    ],
    "release": "c0b8c94",
    "rule": "m2x_aggressive",
-   "to": "2026-10-04T00:56:00+00:00",
+   "to": "2026-10-04T11:45:56+00:00",
    "view_sha": "8ff4c651e78469c68fff9c644f5c26347211d6122614bcff61460464ee3ce233"
   },
   {
@@ -1393,9 +1394,9 @@
    "events": [
     "f8b05fb"
    ],
-   "from": "2026-10-04T00:56:00+00:00",
+   "from": "2026-10-04T11:45:56+00:00",
    "from_release": "fc63481",
-   "id": "X2026-10-04T0056Z",
+   "id": "X2026-10-04T114556Z",
    "kind": "TRANSITION",
    "note_tr": "dağıtım anı yalnız pencereyle biliniyor: bu aralıkta açılan işlem hiçbir config dönemine atanmaz",
    "opened_by": [
@@ -1670,10 +1671,10 @@
    "decision_tr": "learning_mode.extra_entries: record_selectivity + Box öğrenme stop tabanı 0,32 → 0,5 (sahip kararı 2026-10-03)",
    "release": "f8b05fb",
    "sha": "f8b05fb27310238c764ac7dad23221d84f7c0b6d",
-   "source": "dağıtım saati depoda yok (docs/M2_AGGRESSIVE_V1.md:28); alt: docs/TOUR_CONTENTION_V1.md §1 tablosu (2026-10-04 03:56 TR biten tur fc63481); üst: aynı tablo (2026-10-05 07:54 TR biten tur f8b05fb). tb-deploy-8db1faf.sh:3'teki '2026-10-03 dağıtımı' bu iki kayıtla çelişir; geniş pencere alınır",
+   "source": "dağıtım saati depoda yok (docs/M2_AGGRESSIVE_V1.md:28); alt: sürüm betiğinin ilk commit'i f94ef5a (docs/TOUR_CONTENTION_V1.md §1'deki son fc63481 turu, 2026-10-04 03:56 TR = 00:56 UTC, bundan önce); üst: aynı tablo (2026-10-05 07:54 TR biten ilk f8b05fb turu). tb-deploy-8db1faf.sh:3'teki '2026-10-03 dağıtımı' betiğin commit'inden öncedir, bu kayıtlarla çelişir; kanıtla sınırlanmış pencere alınır",
    "status": "DEPLOYED",
    "window": [
-    "2026-10-04T00:56:00+00:00",
+    "2026-10-04T11:45:56+00:00",
     "2026-10-05T04:55:00+00:00"
    ]
   },
@@ -1709,10 +1710,11 @@
   }
  ],
  "rules_tr": {
-  "boundary": "görünüm değişen dağıtımda yeni dönem; kesin saat yoksa TRANSITION penceresi (o aralıkta açılan işlem hiçbir config dönemine atanmaz)",
+  "boundary": "görünüm değişen dağıtımda yeni dönem; kesin saat yoksa TRANSITION penceresi (o aralıkta açılan işlem hiçbir config dönemine atanmaz; okuyucu dönem kimliği vermez)",
+  "coverage": "V1 yalnız covered_until (mühür anı) anına kadarki dağıtımları kapsar; sonra açılan işlem, o andan sonra başlayan bir dönemle örtülmedikçe UNCOVERED'dır (son dönemlere yazılmaz)",
   "new_epoch_at_night": "her gece rawconfig canlı config sha'sını son dönemle karşılaştırır; yeni sha = yeni dönem (ana belge §6.2)",
   "pre_history": "E0 = taban 3b0ae8e config'i ve öncesi (belgelenmemiş)",
-  "reader": "rehydrate.config_epoch: kitap eşleşen, from ≤ an < to olan dönem",
+  "reader": "rehydrate.config_epoch: kitap eşleşen, from ≤ an < to olan dönem; TRANSITION → dönem yok; covered_until sonrası → UNCOVERED",
   "view": "defter görünümü = bütün config yolları − başka defterlerin yalnız-kendi bölümleri − karar-nötr yollar"
  },
  "schema": "config_epochs_v1"

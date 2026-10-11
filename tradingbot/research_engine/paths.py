@@ -201,6 +201,16 @@ class EnginePaths:
         return self.trials_dir / "trials.jsonl"
 
     @property
+    def trials_hwm_file(self) -> Path:
+        """Deneme defterinin yüksek su işareti (satır, baş sha, sayaçlar): geri sarmayı (kısalma) yakalar (`trials.py`)."""
+        return self.trials_dir / "trials.hwm.json"
+
+    @property
+    def trials_lock_file(self) -> Path:
+        """Deneme defteri yazarlarının `flock` dosyası (içeriği yok)."""
+        return self.trials_dir / "trials.lock"
+
+    @property
     def target_daily_utc(self) -> Path:
         """UTC günü MTM satırları (`tgt_v2_utc_day`; yalnız eklenir, `rev`) — W-günü `daily.jsonl`'ın yanında."""
         return self.target / "daily_utc.jsonl"

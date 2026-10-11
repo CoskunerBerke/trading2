@@ -79,39 +79,54 @@ PROVISIONAL_BOUNDARIES: tuple[tuple[str, tuple[str, ...], str], ...] = (
     ("2026-10-03T00:00:00+00:00", ("*",), "Box min_stop_pct 0,32→0,5 + learning_mode.extra_entries: record_selectivity"),
 )
 EPOCH_SRC_PROVISIONAL, EPOCH_SRC_SEALED = "PROVISIONAL_DOC_BOUNDARIES", "LIBRARY_CONFIG_EPOCHS"
+#: mühürlü dosyada işlem bir TRANSITION penceresinde (dağıtım anı yalnız pencereyle biliniyor) ya da dosyanın kapsamı
+#: (`covered_until`) dışında: hiçbir config dönemine ATANMAZ (dönem kimliği None)
+EPOCH_SRC_TRANSITION, EPOCH_SRC_UNCOVERED = "SEALED_TRANSITION", "SEALED_UNCOVERED"
 
 
 # ============================================================================ config dönemi
-def _sealed_epochs(research: Path) -> list[dict] | None:
+def _sealed_doc(research: Path) -> tuple[list[dict] | None, Any]:
+    """(dönemler, covered_until) — mühürlü P3 dosyası yoksa/okunamazsa (None, None)."""
     p = research / "library" / "config_epochs.json"
     try:
         with open(p, "r", encoding="utf-8") as fh:
             d = json.load(fh)
     except (OSError, ValueError):
-        return None
+        return None, None
     eps = d.get("epochs") if isinstance(d, dict) else None
-    return [e for e in eps if isinstance(e, dict)] if isinstance(eps, list) else None
+    if not isinstance(eps, list):
+        return None, None
+    return [e for e in eps if isinstance(e, dict)], parse_ts(d.get("covered_until"))
 
 
 def config_epoch(book: str, opened_at: Any, *, research: Path | None = None) -> tuple[str | None, str]:
-    """(dönem kimliği, kaynak). Mühürlü P3 dosyası (`{"epochs": [{"id", "from", "to"?, "books"?: [...]}]}`) varsa o;
-    yoksa `PROVISIONAL_BOUNDARIES` (defterin sınırları; ilk sınırdan önce `E0`)."""
+    """(dönem kimliği, kaynak). Mühürlü P3 dosyası (`{"epochs": [{"id", "from", "to"?, "books"?, "kind"?}],
+    "covered_until"?}`) varsa o: `kind == "TRANSITION"` dönemindeki işlem → (None, `EPOCH_SRC_TRANSITION`);
+    `covered_until`'dan sonra açılan ve o andan sonra başlayan bir dönemle örtülmeyen işlem → (None,
+    `EPOCH_SRC_UNCOVERED`). Dosya yoksa `PROVISIONAL_BOUNDARIES` (defterin sınırları; ilk sınırdan önce `E0`)."""
     t = parse_ts(opened_at)
     if t is None:
         return None, "MISSING"
-    eps = _sealed_epochs(research) if research is not None else None
+    eps, covered_until = _sealed_doc(research) if research is not None else (None, None)
     if eps:
+        late = covered_until is not None and t >= covered_until
         best = None
         for e in eps:
             books = e.get("books")
             if books and book not in books and "*" not in books:
                 continue
             a, b = parse_ts(e.get("from")), parse_ts(e.get("to"))
+            if late and (a is None or a < covered_until):
+                continue                                   # kapsam sonrası: yalnız o andan sonra başlayan dönem örter
             if a is not None and t >= a and (b is None or t < b):
                 if best is None or (parse_ts(best.get("from")) or a) <= a:
                     best = e
         if best is not None:
+            if best.get("kind") == "TRANSITION":
+                return None, EPOCH_SRC_TRANSITION
             return str(best.get("id")), EPOCH_SRC_SEALED
+        if late:
+            return None, EPOCH_SRC_UNCOVERED
     eid = "E0"
     for at, books, _why in PROVISIONAL_BOUNDARIES:
         if ("*" in books or book in books) and t >= parse_ts(at):
@@ -514,6 +529,6 @@ def match_stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
     return out
 
 
-__all__ = ["EPOCH_SRC_PROVISIONAL", "EPOCH_SRC_SEALED", "FAILED", "LIVE_CLOSED_BARS", "NOT_APPLICABLE", "NO_DATA", "OK",
+__all__ = ["EPOCH_SRC_PROVISIONAL", "EPOCH_SRC_SEALED", "EPOCH_SRC_TRANSITION", "EPOCH_SRC_UNCOVERED", "FAILED", "LIVE_CLOSED_BARS", "NOT_APPLICABLE", "NO_DATA", "OK",
            "PROVISIONAL_BOUNDARIES", "REHYDRATE_VERSION", "RULE_BOOKS", "Rehydrated", "config_epoch", "live_frame",
            "match_stats", "module_source_sha", "params_hash", "rehydrate", "rule_params_for", "tick_of"]

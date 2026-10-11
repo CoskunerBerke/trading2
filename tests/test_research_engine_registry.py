@@ -4,17 +4,21 @@
 * Sha'lar sabittir (bu dosyada ve belgenin §8.2 tablosunda; ikisi aynı commit'te). DEĞİŞİRSE CI kırılır: mühürden sonra
   her değişiklik `_v2` + yeni `SPEC`/`OPTION` satırları + belgeye tarihli "Değişiklik" notudur.
 * Özellik: HER alan değişikliği (yaprak, anahtar silme, liste öğesi silme) sha'yı değiştirir; kayıtlar donuktur.
-* Bütçe tablosu (818 / 1.738 ve satır satır), öncül 2.775, mühürde N 4.513, 106 varyant, ızgara 47, keşif 3.745 ve oto
-  tablosu 64 KAYITTAN yeniden üretilir ve belgenin sayılarına eşittir (sayılar bu testte bağımsız olarak yazılıdır).
-* `spec_sha` tekilleştirme (alias'lı ızgara üyesi tabanıyla aynı sha), "asla gevşetme" iskeleti (yön tablosu her eşiği
-  kapsar; gevşetilmiş bir kopya yakalanır), UNSPECIFIED boşluk listesi sabit, config dönemleri üreticisi belirlenimci ve
-  git geçmişinden yeniden üretilebilir, P2 okuyucusuyla (`rehydrate.config_epoch`) uyumlu; yalnız standart kütüphane.
+* Bütçe tablosu (818 / 1.738 ve satır satır), öncül 2.775, mühürde N 4.513, 106 varyant, ızgara 47, keşif 3.745 ve S5
+  öncesi "Oto" sütunu 64 KAYITTAN yeniden üretilir ve belgenin sayılarına eşittir (sayılar bu testte bağımsız yazılıdır).
+* `T_SEAL_MS` mühürlü içeriği değiştiren en son commit'in işleyen zamanından önce olamaz (git'ten; tarih elle ayarlanmaz).
+* `spec_sha` tekilleştirme (alias'lı ızgara üyesi tabanıyla aynı sha; örtü faktör parametreleri spec'te), "asla gevşetme"
+  iskeleti (yön tablosu S1'de mühürlü, her eşiği ve kapı-dışı eşik benzerlerini kapsar; gevşetilmiş bir kopya
+  yakalanır), UNSPECIFIED boşluklar ve bağımlılıkları (varyant → ER20 dilimi, örtü faktörü, kopya tabanı) sabit, config
+  dönemleri üreticisi belirlenimci ve git geçmişinden yeniden üretilebilir, P2 okuyucusuyla (`rehydrate.config_epoch`)
+  uyumlu (TRANSITION ve kapsam dışı → dönem yok); yalnız standart kütüphane.
 """
 from __future__ import annotations
 
 import ast
 import copy
 import json
+import re
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -31,16 +35,17 @@ DOC = ROOT / "docs" / "ENGINE_BRAIN_V1.md"
 
 #: §8.2 S1 mühürü (P3a commit'i). DEĞİŞİRSE CI kırılır.
 SHAS_PINNED = {
-    "LIB_V1": "5c1bfd50d56db64c1ef2217c33f2f9cd160aa0a5b5e1eb36d4eb5fa5b5f4a365",
-    "WF_PROTOCOL_V1": "3d80caee6fb779133beca4927aa8729f2b62bb2071d182d3391075414c828e8c",
-    "STATS_V1": "95a119bd227a139edfe1d6ca2b19ea7d163369cba70cc814ae16d54533f595cc",
-    "LESSON_REGISTRY_V1": "1f5f4f5f351a0732a99c46dcd3a54dc3743ed9701edb9d7ced5d507b98c0856a",
+    "LIB_V1": "73e6c71c6a68c936b0c34d477669a58d6b1288b3c11278ce9c86d4f91b46d78f",
+    "WF_PROTOCOL_V1": "ef1b85fac497b9d1a4d60250bf0a6414d76bd976f4a788bb863d02eccc4dfaef",
+    "STATS_V1": "e1fda19de4510719b01752a94d7e97022c2619c3e10f62f42e6f26c22be5396e",
+    "LESSON_REGISTRY_V1": "5040738b2fbe864bbff108f6ee6d62e40e2d71010b5ee08a0759011f59901bc7",
     "PIT_RULES_V1": "3516c5cba17da9929459867963231def25b76bd1459b8ef4a0d902b1a7c50e95",
     "PRIOR_TRIALS_V1": "ad6d8903e66034ce96cafe006f0a071e254968308627ab9998b0464f96984921",
-    "CONFIG_EPOCHS_V1": "ca313ae8f28263c566f05fa8013ac08d5feffbe84eec8e520e06faade16bcc45",
+    "CONFIG_EPOCHS_V1": "392e138b208f76855b1a6955e49c74fefeb693817c41fd53c117072057a263af",
+    "THRESHOLD_DIRECTIONS_V1": "458e889a979fdc5f13a72aa32c3a607e03bbe0342d688197e3361249e79ce47d",
 }
-T_SEAL_MS_PINNED = 1791734119000
-REGISTRY_SHA_PINNED = "a23ac74f4faca50a11d9343bf7f6881e6217e64bda15eb457607354f8227f8b2"
+T_SEAL_MS_PINNED = 1791740640000
+REGISTRY_SHA_PINNED = "7f57e38de2b5987d487a905cbd84bd9cf1e74a33b57a85394e769305ddedbb79"
 
 #: belgedeki sayılar (§2.2, §2.5, §2.6, §5.1, §7.5) — kayıttan BAĞIMSIZ yazılır
 DOC_BUDGET = {"POOLED": (45, 45), "CLUSTER": (135, 135), "COIN_FIT": (161, 1081), "COPY": (312, 312), "COVER": (140, 140),
@@ -49,12 +54,15 @@ DOC_FAMILIES = {"K": 13, "B": 10, "C": 8, "D": 7, "E": 4, "F1": 4, "F2": 7, "H":
 DOC_GRID = {"B": 10, "C": 8, "D": 8, "E": 4, "F1": 4, "F2": 8, "H": 5}
 
 #: UNSPECIFIED boşlukları (belge söylemiyor; uydurulmadı). Yeni boşluk sessizce eklenemez.
+ER20 = "LIB_V1.defaults.er20_timeframe"
 GAPS_PINNED = {
     "LIB_V1.covers.factors.F_BTC.regime",
-    "LIB_V1.defaults.er20_timeframe",
+    ER20,
+    "LIB_V1.copy_books.T2.max_hold", "LIB_V1.copy_books.M2.max_hold",
     "LIB_V1.specialisation_rules.4_profit_share_def",
     "LIB_V1.variants[KEL_20_2_1h].params.center_line", "LIB_V1.variants[KEL_20_2_4h].params.center_line",
     "LIB_V1.variants[BBSQ_20_1h].params.breakout_ref", "LIB_V1.variants[BBSQ_20_4h].params.breakout_ref",
+    "LIB_V1.variants[RSI2_1h].exits.exit_rule", "LIB_V1.variants[RSI2_4h].exits.exit_rule",
     *(f"LIB_V1.variants[{v}].exits.exit_rule" for v in ("FUND_FADE_24h", "FUND_FADE_72h", "FUND_FADE_LOW_24h",
                                                         "FUND_FADE_LOW_72h")),
     "LIB_V1.variants[FUND_CARRY].params.pct_window",
@@ -64,11 +72,38 @@ GAPS_PINNED = {
     *(f"LIB_V1.variants[XS_REV_1D_k5].{f}" for f in ("exits.stop", "params.beta_neutral", "params.rebalance")),
     *(f"LIB_V1.variants[{g}].exits.stop" for g in ("G_LDN_ORB", "G_NY_ORB", "G_ASIA_DRIFT", "G_MONTH_END", "G_XAU_BTC_28",
                                                    "G_XAU_BTC_56")),
-    "LIB_V1.variants[G_NY_ORB].params.entry_until_utc",
+    "LIB_V1.variants[G_NY_ORB].params.entry_until_utc", "LIB_V1.variants[G_ASIA_DRIFT].params.direction",
+    *(f"LIB_V1.variants[O_{b}_F_BTC].params.factor_params.regime" for b in ("T2", "M2", "BOX", "D4", "C4")),
     "WF_PROTOCOL_V1.purge_embargo.make_folds_split",
-    "STATS_V1.p_day.rng",
+    "STATS_V1.p_day.rng", "STATS_V1.placebo.seed_int",
+    "LESSON_REGISTRY_V1.ci.seed",
     "PIT_RULES_V1.membership.volume_window_includes_d",
 }
+#: varyant → boşluk bağımlılıkları (doğrudan ya da kayıt düzeyi). 48 varyant gerçek veride çalıştırılmaz.
+BLOCKED_PINNED = {
+    **{v: {f"variants[{v}].{p}" for p in ps} for v, ps in {
+        "KEL_20_2_1h": ("params.center_line",), "KEL_20_2_4h": ("params.center_line",),
+        "BBSQ_20_1h": ("params.breakout_ref",), "BBSQ_20_4h": ("params.breakout_ref",),
+        "FUND_FADE_24h": ("exits.exit_rule",), "FUND_FADE_72h": ("exits.exit_rule",), "FUND_CARRY": ("params.pct_window",),
+        **{f"BTCETH_Z_{z}": ("exits.stop", "params.leg_sizing") for z in ("2.0", "2.5")},
+        **{f"XS_MOM_{lb}_k{k}": ("exits.stop", "params.beta_window", "params.rebalance_time") for lb in (7, 28) for k in (3, 5)},
+        "XS_REV_1D_k5": ("exits.stop", "params.beta_neutral", "params.rebalance"),
+        "G_LDN_ORB": ("exits.stop",), "G_NY_ORB": ("exits.stop", "params.entry_until_utc"),
+        "G_ASIA_DRIFT": ("exits.stop", "params.direction"), "G_MONTH_END": ("exits.stop",),
+        "G_XAU_BTC_28": ("exits.stop",), "G_XAU_BTC_56": ("exits.stop",)}.items()},
+    **{f"RSI2_{tf}": {"defaults.er20_timeframe", f"variants[RSI2_{tf}].exits.exit_rule"} for tf in ("1h", "4h")},
+    **{f"BBRE_{tf}": {"defaults.er20_timeframe"} for tf in ("1h", "4h")},
+    **{f"FUND_FADE_LOW_{h}": {"defaults.er20_timeframe", f"variants[FUND_FADE_LOW_{h}].exits.exit_rule"} for h in ("24h", "72h")},
+    "K_T2": {"copy_books.T2.max_hold"}, "K_M2": {"copy_books.M2.max_hold"},
+    **{f"O_{b}_{f}": ({f"copy_books.{b}.max_hold"} if b in ("T2", "M2") else set())
+       | ({"defaults.er20_timeframe"} if f == "F_ER" else set())
+       | ({"covers.factors.F_BTC.regime", f"variants[O_{b}_F_BTC].params.factor_params.regime"} if f == "F_BTC" else set())
+       for b in ("T2", "M2", "BOX", "D4", "C4") for f in ("F_ER", "F_BTC", "F_VOL", "X_TRAIL2", "X_CHAN3", "X_TIME", "X_TPL")
+       if b in ("T2", "M2") or f in ("F_ER", "F_BTC")},
+}
+PROTOCOL_GAPS_PINNED = {"LIB_V1.specialisation_rules.4_profit_share_def", "WF_PROTOCOL_V1.purge_embargo.make_folds_split",
+                        "STATS_V1.p_day.rng", "STATS_V1.placebo.seed_int", "LESSON_REGISTRY_V1.ci.seed",
+                        "PIT_RULES_V1.membership.volume_window_includes_d"}
 
 
 def _git_ok() -> bool:
@@ -98,18 +133,51 @@ def test_doc_section_8_2_carries_the_same_seal_values():
     assert f"`T_SEAL_MS` `{T_SEAL_MS_PINNED}`" in text
 
 
-def test_t_seal_ms_is_the_seal_commit_time():
+#: mühürlü içerik: bu veri dosyalarına dokunan ve sabitlenmiş sha/T_SEAL satırlarını değiştiren her commit
+SEALED_DATA_FILES = ("tradingbot/research_engine/prior_trials.json", "tradingbot/research_engine/library/config_epochs.json")
+PIN_FILES = ("tests/test_research_engine_registry.py", "tradingbot/research_engine/registry.py")
+PIN_LINE = re.compile(r'^[+-]\s*("[A-Z_]+_V1": "[0-9a-f]{64}"|T_SEAL_MS_PINNED = |REGISTRY_SHA_PINNED = |T_SEAL_MS = )')
+GIT = ("git", "-c", "log.showSignature=false")
+
+
+def _git_out(*args: str) -> str:
+    return subprocess.run([*GIT, "-C", str(ROOT), *args], capture_output=True, text=True, timeout=120, check=True).stdout
+
+
+def newest_sealed_commit_ct() -> tuple[int, str] | None:
+    """Mühürlü içeriği değiştiren EN SON commit'in (işleyen zamanı, sha'sı): veri dosyalarına dokunan ya da sabitlenmiş
+    sha/T_SEAL satırlarından birini değiştiren commit'ler (içerik değişikliği sha'yı değiştirir → sabit değişir)."""
+    best = None
+    out = _git_out("log", "--no-textconv", "--format=%ct %H", "--", *SEALED_DATA_FILES).split()
+    if out:
+        best = (int(out[0]), out[1])
+    for line in _git_out("log", "--no-textconv", "--format=%ct %H", "--", *PIN_FILES).splitlines():
+        ct, sha = line.split()
+        if best is not None and int(ct) <= best[0]:
+            break
+        diff = _git_out("show", "--no-textconv", "--no-ext-diff", "--format=", "-U0", sha, "--", *PIN_FILES)
+        if any(PIN_LINE.match(x) for x in diff.splitlines()):
+            best = (int(ct), sha)
+            break
+    return best
+
+
+def test_t_seal_ms_is_not_before_the_last_sealed_change():
+    """`T_SEAL_MS` ≥ mühürlü içeriği değiştiren en son commit'in işleyen zamanı (fix-up commit'i T_SEAL'ı yenilemeden
+    içeriği değiştiremez; rebase/squash/cherry-pick işleyen zamanı yeniler → test kırılır → yeniden mühür). Üst sınır:
+    en geç 24 saat sonra (ileri pencere boşa harcanmaz)."""
     t = RG.T_SEAL_MS
-    assert t % 1000 == 0 and datetime(2026, 10, 11, tzinfo=timezone.utc).timestamp() * 1000 <= t
+    assert t % 60_000 == 0 and datetime(2026, 10, 11, tzinfo=timezone.utc).timestamp() * 1000 <= t
     assert t <= datetime(2026, 10, 25, 23, 59, tzinfo=timezone.utc).timestamp() * 1000, "hedef ≤ 2026-10-25 (§8.2)"
     if not _git_ok():
         pytest.skip("git geçmişi yok")
-    cp = subprocess.run(["git", "-C", str(ROOT), "log", "-1", "--format=%ct %at", "-S", f"T_SEAL_MS = {t}", "--",
-                         "tradingbot/research_engine/registry.py"], capture_output=True, text=True, timeout=60)
-    if not cp.stdout.strip():
-        pytest.skip("mühür satırı henüz commit edilmedi")
-    ct, at = (int(x) for x in cp.stdout.split())
-    assert ct * 1000 == t and at * 1000 == t, (ct, at, t)
+    last = newest_sealed_commit_ct()
+    assert last is not None
+    ct, sha = last
+    assert ct * 1000 <= t, f"T_SEAL_MS {t} mühürlü içeriği değiştiren {sha[:12]} commit'inden ({ct}) önce: yeniden mühürle"
+    assert t - ct * 1000 <= 24 * 3600 * 1000, (t, ct, sha[:12])
+    doc = RG.CONFIG_EPOCHS_V1
+    assert doc["covered_until"] == datetime.fromtimestamp(t / 1000, tz=timezone.utc).isoformat()
 
 
 # ============================================================================ donma ve kanonik biçim
@@ -235,8 +303,11 @@ def test_priors_cumulative_n_and_counts_match_the_design():
     assert RG.family_counts() == DOC_FAMILIES
     assert RG.coin_fit_grid() == DOC_GRID and sum(DOC_GRID.values()) == 47
     assert RG.explore_series() == 3745 == 45 * 40 + 13 * 40 + 35 * 40 + 5 + 2 + 18
-    assert RG.auto_v1_table_count() == 64
-    assert sum(1 for v in RG.LIB_V1["variants"] if v["family"] == "O" and v["auto_v1_table"]) == 24
+    assert RG.oto_column_pre_s5_count() == 64
+    assert sum(1 for v in RG.LIB_V1["variants"] if v["family"] == "O" and v["oto_column_pre_s5"]) == 24
+    assert not any("auto_v1_table" in v for v in RG.LIB_V1["variants"]), "S5 öncesi sütun yönlendirme alanı değildir"
+    s5 = next(d for d in RG.LIB_V1["owner_decisions"] if d["id"] == "S5")["text_tr"]
+    assert "GEÇERSİZ KILAR" in s5 and "AUTO_CATALOG_V1" in s5
     ids = [v["variant_id"] for v in RG.LIB_V1["variants"]]
     assert len(ids) == len(set(ids)) == 108, "106 benzersiz + 2 alias (ızgara üyesi)"
     assert {v["variant_id"]: v["alias_of"] for v in RG.LIB_V1["variants"] if v["alias_of"]} == {
@@ -257,6 +328,26 @@ def test_p23_and_clusters_partition_and_scopes():
     for v in RG.LIB_V1["variants"]:
         assert v["wf_class"] in wf and v["family"] in RG.LIB_V1["families"]
         assert set(v["exits"]) == {"stop", "exit_rule", "target_r", "max_hold_bars"}
+
+
+def test_variant_dependencies_are_declared_by_rule():
+    """Kayıt düzeyindeki boşluklar onlara dayanan varyantlara bağlıdır: ER20 kullanan → `defaults.er20_timeframe`;
+    örtü → `covers.factors.<F>` + `copy_books.<taban>` (F_ER'de ER20 de); kopya ve F2 ızgarası → `copy_books.<taban>`."""
+    for v in RG.LIB_V1["variants"]:
+        req = list(v["requires"])
+        assert req == sorted(set(req)) and all(RG.get_path(RG.LIB_V1, r) is not None for r in req), v["variant_id"]
+        uses_er20 = "er20_max" in v["params"] or (v["cover"] and v["cover"]["factor"] == "F_ER")
+        assert (RG.ER20_TF in req) == bool(uses_er20), v["variant_id"]
+        if v["family"] == "O":
+            base, fac = v["cover"]["base"], v["cover"]["factor"]
+            assert {f"copy_books.{base}", f"covers.factors.{fac}"} <= set(req)
+            assert dict(v["params"]["factor_params"]) == {k: x for k, x in RG.LIB_V1["covers"]["factors"][fac].items()
+                                                          if k != "rule_tr"}
+        if v["family"] == "K":
+            base = next(k for k, b in RG.COPY_BOOKS.items() if b["book"] == v["book"]["book"])
+            assert req == [f"copy_books.{base}"]
+        if v["family"] == "F2":
+            assert req == ["copy_books.BOX"]
 
 
 def test_k_copy_values_equal_the_live_config_at_the_values_release():
@@ -281,6 +372,23 @@ def test_k_copy_values_equal_the_live_config_at_the_values_release():
     assert len(cfg["entry_universe"]["symbols"]) == RG.LIB_V1["explore"]["entry_universe_size"]
 
 
+def test_copy_max_hold_equals_the_live_rule_code():
+    """Kopyaların zaman stopu canlı koddan okunur (WF arındırması ve X_TIME buna dayanır); T2/M2'de yok → boşluk."""
+    from tradingbot import candle_variations as CV
+    from tradingbot import donchian_trend as DT
+    from tradingbot import ema200_trend as ET
+    from tradingbot.pattern_trader import strategy_v3 as S3
+    mh = {k: RG.LIB_V1["copy_books"][k]["max_hold"] for k in RG.COPY_BOOKS}
+    assert (mh["D4"]["bars"], mh["D4"]["tf"]) == (DT.MAX_BARS, DT.TIMEFRAME) == (300, "4h")
+    cvs = {c["id"]: c for c in CV.VARIATIONS}
+    assert {cvs[x]["definition"]["exit"]["max_hold_bars"] for x in RG.C4_VARIATIONS} == {mh["C4"]["bars"]} == {24}
+    assert {cvs[x]["definition"]["timeframe"] for x in RG.C4_VARIATIONS} == {mh["C4"]["tf"]}
+    assert (mh["FM"]["bars"], mh["FM"]["tf"]) == (S3.V3_SIGNAL["hold_bars"], S3.V3_TF) == (24, "4h")
+    assert RG.is_gap(mh["T2"]) and RG.is_gap(mh["M2"])
+    src = Path(ET.__file__).read_text(encoding="utf-8")
+    assert "max_hold" not in src and "hold_bars" not in src, "canlı T2/M2 kuralına zaman stopu eklendiyse boşluk dolar"
+
+
 # ============================================================================ kimlik (§2.1)
 def test_spec_sha_dedups_aliases_and_every_spec_field_counts():
     m = "a" * 64
@@ -299,24 +407,46 @@ def test_spec_sha_dedups_aliases_and_every_spec_field_counts():
         RG.spec_sha({**base, "extra": 1})
     with pytest.raises(ValueError):
         RG.spec_sha({**base, "module_src_sha": "XYZ"})
+    cov = RG.lib_spec("O_D4_F_VOL", m)
+    tweaked = copy.deepcopy(cov)
+    tweaked["params"]["factor_params"]["atr_pct_max_pctile"] = 75
+    assert RG.spec_sha(tweaked) != RG.spec_sha(cov), "örtü faktör eşiği spec_sha'ya girer (T3/T4 tekilleştirmesi)"
 
 
 # ============================================================================ asla gevşetme (§8.2, sahip kararı 2)
-def test_never_loosen_direction_table_covers_every_threshold():
+def test_never_loosen_direction_table_covers_every_threshold_and_is_sealed():
+    assert RG.THRESHOLD_DIRECTIONS is RG.THRESHOLD_DIRECTIONS_V1 and "THRESHOLD_DIRECTIONS_V1" in RG.S1_SEAL["shas"]
     assert set(RG.THRESHOLD_DIRECTIONS) == set(RG.REGISTRY_VERSIONS)
     for fam, versions in RG.REGISTRY_VERSIONS.items():
+        dirs = RG.THRESHOLD_DIRECTIONS[fam]
         leaves = RG.threshold_leaves(versions[0])
-        assert set(RG.THRESHOLD_DIRECTIONS[fam]) == set(leaves), (fam, set(leaves) ^ set(RG.THRESHOLD_DIRECTIONS[fam]))
-        assert set(RG.THRESHOLD_DIRECTIONS[fam].values()) <= {RG.MIN, RG.MAX, RG.FIXED}
+        assert set(leaves) <= set(dirs), (fam, set(leaves) - set(dirs))
+        for path in dirs:
+            RG.get_path(versions[0], path)                     # her yön yolu v1'de var
+        assert set(dirs.values()) <= {RG.MIN, RG.MAX, RG.FIXED}
     d = RG.THRESHOLD_DIRECTIONS
-    assert d["STATS"]["bh_q"] == RG.MAX and d["LESSON_REGISTRY"]["looks.alphas"] == RG.MAX
-    assert d["LESSON_REGISTRY"]["eligibility.min_n"] == RG.MIN and d["WF_PROTOCOL"]["costs.ADVERSE.slippage_bps"] == RG.MIN
-    assert d["LIB"]["single_instrument.max_oos_profit_share"] == RG.MAX
+    assert d["STATS"]["thresholds.bh_q"] == RG.MAX and d["LESSON_REGISTRY"]["thresholds.looks.alphas"] == RG.MAX
+    assert d["LESSON_REGISTRY"]["thresholds.eligibility.min_n"] == RG.MIN
+    assert d["WF_PROTOCOL"]["thresholds.costs.ADVERSE.slippage_bps"] == RG.MIN
+    assert d["LIB"]["thresholds.single_instrument.max_oos_profit_share"] == RG.MAX
+    # tanımlar (iki yönde de sonucu oynatabilir) FIXED
+    for fam, path in (("STATS", "thresholds.placebo.k_per_trade"), ("STATS", "thresholds.p_day.resamples"),
+                      ("WF_PROTOCOL", "thresholds.positive_fold_min_trades"), ("WF_PROTOCOL", "thresholds.candidates_top_k"),
+                      ("WF_PROTOCOL", "thresholds.warmup_bars"), ("PIT_RULES", "thresholds.listed_min_days"),
+                      ("PIT_RULES", "thresholds.min_median_daily_quote_volume_usdt"), ("PIT_RULES", "xsec_requires_pit"),
+                      ("WF_PROTOCOL", "step_equals_test"), ("STATS", "dsr.sr_var_floor"),
+                      ("STATS", "null_world.pass_rate_max"), ("STATS", "bh_fdr.family_tr")):
+        assert d[fam][path] == RG.FIXED, (fam, path)
+    assert all(d["LIB"][f"budget_declared.{k}"] == RG.MIN for k in ("TOTAL", "COIN_FIT", "PRIOR_MIN", "N_AT_SEAL_MIN"))
 
 
 def _loosen(v, direction):
     if isinstance(v, list):
         return [_loosen(x, direction) for x in v[:1]] + v[1:]
+    if isinstance(v, bool):
+        return not v
+    if isinstance(v, str):
+        return v + "·"
     if direction == RG.MAX:
         return v * 2 if v else 1
     if direction == RG.MIN:
@@ -330,12 +460,12 @@ def _tighten(v, direction):
     return (v / 2 if v else -1) if direction == RG.MAX else (v * 2 if v else 1)
 
 
-def _set(doc, path, value):
+def _parent(doc, path):
     *head, last = path.split(".")
-    cur = doc["thresholds"]
+    cur = doc
     for p in head:
         cur = cur[p]
-    cur[last] = value
+    return cur, last
 
 
 def test_never_loosen_catches_each_loosened_threshold_and_accepts_tighter_ones():
@@ -344,21 +474,20 @@ def test_never_loosen_catches_each_loosened_threshold_and_accepts_tighter_ones()
         dirs = RG.THRESHOLD_DIRECTIONS[fam]
         assert RG.looser_than(v1, v1, dirs) == []
         for path, direction in dirs.items():
-            old = RG.thaw(RG.get_path(v1["thresholds"], path))
+            old = RG.thaw(RG.get_path(v1, path))
             loose = RG.thaw(v1)
-            _set(loose, path, _loosen(old, direction))
+            par, last = _parent(loose, path)
+            par[last] = _loosen(old, direction)
             bad = RG.looser_than(v1, loose, dirs)
             assert len(bad) == 1 and bad[0].startswith(path + ":"), (fam, path, bad)
             if direction != RG.FIXED:
                 tight = RG.thaw(v1)
-                _set(tight, path, _tighten(old, direction))
+                par, last = _parent(tight, path)
+                par[last] = _tighten(old, direction)
                 assert RG.looser_than(v1, tight, dirs) == [], (fam, path)
             gone = RG.thaw(v1)
-            *head, last = path.split(".")
-            cur = gone["thresholds"]
-            for p in head:
-                cur = cur[p]
-            del cur[last]
+            par, last = _parent(gone, path)
+            del par[last]
             assert RG.looser_than(v1, gone, dirs) == [f"{path}: eşik kaldırıldı"]
 
 
@@ -376,6 +505,8 @@ def test_threshold_values_match_the_design_text():
     t = RG.STATS_V1["thresholds"]
     assert (t["bh_q"], t["p_day"]["resamples"], t["pbo"]["blocks"], t["placebo"]["k_per_trade"], t["null_world"]["worlds"]) == \
         (0.10, 10000, 16, 5, 200)
+    assert "bh_family_min_oos_trades" not in t, "BH ailesi işlem sayısıyla süzülmez (ana belge §6.4 daha sıkı)"
+    assert "≥ 30" not in RG.STATS_V1["bh_fdr"]["family_tr"] and "p = 1" in RG.STATS_V1["bh_fdr"]["no_p_tr"]
     from math import comb
     assert comb(t["pbo"]["blocks"], t["pbo"]["blocks"] // 2) == 12870
     lt = RG.LESSON_REGISTRY_V1["thresholds"]
@@ -399,11 +530,18 @@ def test_unspecified_gaps_are_explicit_and_pinned():
     gaps = RG.unspecified_gaps()
     assert {p for p, _ in gaps} == GAPS_PINNED, {p for p, _ in gaps} ^ GAPS_PINNED
     assert all(t.strip() for _, t in gaps)
-    with_gaps = {v["variant_id"] for v in RG.LIB_V1["variants"] if RG.variant_gaps(v)}
-    assert with_gaps == {"KEL_20_2_1h", "KEL_20_2_4h", "BBSQ_20_1h", "BBSQ_20_4h", "FUND_FADE_24h", "FUND_FADE_72h",
-                         "FUND_FADE_LOW_24h", "FUND_FADE_LOW_72h", "FUND_CARRY", "BTCETH_Z_2.0", "BTCETH_Z_2.5",
-                         "XS_MOM_7_k3", "XS_MOM_7_k5", "XS_MOM_28_k3", "XS_MOM_28_k5", "XS_REV_1D_k5", "G_LDN_ORB",
-                         "G_NY_ORB", "G_ASIA_DRIFT", "G_MONTH_END", "G_XAU_BTC_28", "G_XAU_BTC_56"}
+
+
+def test_gaps_follow_variant_dependencies():
+    """Kayıt düzeyindeki boşluk (ER20 dilimi, F_BTC rejimi, T2/M2 max_hold) ona dayanan her varyantı durdurur."""
+    blocked = {k: set(v) for k, v in RG.blocked_variants().items()}
+    assert blocked == BLOCKED_PINNED, set(blocked) ^ set(BLOCKED_PINNED)
+    assert len(blocked) == 48 and not any(RG.variants_by_id()[v]["alias_of"] for v in blocked)
+    auto = {v["variant_id"] for v in RG.LIB_V1["variants"] if v["oto_column_pre_s5"] and not v["alias_of"]}
+    assert len(auto & set(blocked)) == 22
+    for path in ("defaults.er20_timeframe", "covers.factors.F_BTC.regime", "copy_books.T2.max_hold"):
+        assert any(path in g for g in blocked.values()), path
+    assert {p for p, _ in RG.protocol_gaps()} == PROTOCOL_GAPS_PINNED
 
 
 # ============================================================================ öncül dosyası (§2.6)
@@ -460,10 +598,10 @@ def test_config_epochs_builder_is_deterministic_and_splits_only_the_affected_boo
     for e in doc["epochs"]:
         by.setdefault(e["rule"], []).append(e)
     box = [(e["id"], e["kind"]) for e in by["b1_box_fade"]]
-    assert box == [("E0", "PRE_HISTORY"), ("E2026-09-29T2243Z", "CONFIG"), ("X2026-10-04T0056Z", "TRANSITION"),
+    assert box == [("E0", "PRE_HISTORY"), ("E2026-09-29T2243Z", "CONFIG"), ("X2026-10-04T114556Z", "TRANSITION"),
                    ("E2026-10-05T0455Z", "CONFIG")], box
     t2 = [(e["id"], e["kind"]) for e in by["t2_trend_regime"]]
-    assert t2 == [("E0", "PRE_HISTORY"), ("X2026-10-04T0056Z", "TRANSITION"), ("E2026-10-05T0455Z", "CONFIG")], t2
+    assert t2 == [("E0", "PRE_HISTORY"), ("X2026-10-04T114556Z", "TRANSITION"), ("E2026-10-05T0455Z", "CONFIG")], t2
     for eps in by.values():
         assert eps[0]["from"] == EP.UNBOUNDED_FROM and eps[-1]["to"] is None
         assert all(x["to"] == y["from"] for x, y in zip(eps, eps[1:]))
@@ -488,6 +626,15 @@ def test_config_epochs_adjacent_windows_merge_into_one_transition():
     assert eps[1]["events"] == ["r1", "r2"] and eps[2]["release"] == "r2"
 
 
+def test_f8b05fb_window_starts_at_its_release_script_commit():
+    """Pencere alt sınırı = sürüm betiğinin ilk commit'i (f94ef5a, 2026-10-04 11:45:56 UTC); daha erken bir alt sınır
+    fc63481 config'iyle açılmış işlemleri TRANSITION'a atardı."""
+    d = {x["release"]: x for x in EP.DEPLOYS}["f8b05fb"]
+    assert d["window"][0] == "2026-10-04T11:45:56+00:00" and d["lo_commit"] == "f94ef5a"
+    for rel, bound, commit in EP.bound_commits():
+        assert rel != "f8b05fb" or (bound, commit) in (("2026-10-04T11:45:56+00:00", "f94ef5a"),)
+
+
 def test_sealed_config_epochs_work_with_the_p2_reader(tmp_path):
     from tradingbot.research_engine import rehydrate as RH
     lib = tmp_path / "research" / "library"
@@ -496,12 +643,25 @@ def test_sealed_config_epochs_work_with_the_p2_reader(tmp_path):
     r = tmp_path / "research"
     cases = {("strategy_paper_box", "2026-09-29T12:00:00+00:00"): "E2026-09-28T2120Z",
              ("strategy_paper_box", "2026-10-01T00:00:00+00:00"): "E2026-09-29T2243Z",
-             ("strategy_paper_box", "2026-10-04T12:00:00+00:00"): "X2026-10-04T0056Z",
+             ("strategy_paper_box", "2026-10-04T11:00:00+00:00"): "E2026-09-29T2243Z",
              ("strategy_paper_box", "2026-10-09T00:00:00+00:00"): "E2026-10-05T0455Z",
              ("strategy_paper", "2026-10-01T00:00:00+00:00"): "E2026-09-28T2120Z",
              ("main_fut", "2026-09-20T00:00:00+00:00"): "E0", ("main_spot", "2026-10-10T00:00:00+00:00"): "E2026-10-05T0455Z"}
     for (book, at), want in cases.items():
         assert RH.config_epoch(book, at, research=r) == (want, RH.EPOCH_SRC_SEALED), (book, at)
+    # TRANSITION penceresindeki işlem hiçbir config dönemine atanmaz
+    for book in ("strategy_paper_box", "strategy_paper", "main_fut"):
+        assert RH.config_epoch(book, "2026-10-04T12:00:00+00:00", research=r) == (None, RH.EPOCH_SRC_TRANSITION), book
+    # mühürden (covered_until) sonra: son döneme yazılmaz; o andan sonra BAŞLAYAN bir dönem örterse o
+    late = datetime.fromtimestamp(RG.T_SEAL_MS / 1000 + 3600, tz=timezone.utc).isoformat()
+    assert RH.config_epoch("strategy_paper_box", late, research=r) == (None, RH.EPOCH_SRC_UNCOVERED)
+    doc = json.loads(RG.CONFIG_EPOCHS_FILE.read_text(encoding="utf-8"))
+    cov = doc["covered_until"]
+    doc["epochs"].append({"id": "N1", "from": cov, "to": None, "books": ["strategy_paper_box"], "kind": "CONFIG"})
+    (lib / "config_epochs.json").write_text(json.dumps(doc), encoding="utf-8")
+    assert RH.config_epoch("strategy_paper_box", late, research=r) == ("N1", RH.EPOCH_SRC_SEALED)
+    assert RH.config_epoch("strategy_paper", late, research=r) == (None, RH.EPOCH_SRC_UNCOVERED)
+    (lib / "config_epochs.json").write_text(RG.CONFIG_EPOCHS_FILE.read_text(encoding="utf-8"), encoding="utf-8")
     doc = RG.CONFIG_EPOCHS_V1
     assert doc["schema"] == EP.SCHEMA and {r["release"] for r in doc["releases"]} == {d["release"] for d in EP.DEPLOYS}
     books = {b for e in doc["epochs"] for b in e["books"]}

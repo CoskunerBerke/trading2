@@ -10,17 +10,22 @@ Kurallar (kodda zorlanır, testli):
   değişikliği sha'yı değiştirir (özellik testi). Mühürden sonra her değişiklik `_v2` + yeni `SPEC`/`OPTION` satırları +
   belgeye tarihli "Değişiklik" notudur.
 * **Uydurma yok.** Belgenin söylemediği bir ayrıntı `gap("…")` = `{"status": "UNSPECIFIED", "gap": "…"}` ile AÇIKÇA
-  yazılır (`unspecified_gaps()`; liste testte sabit). Böyle bir alanı olan varyant P3b'de çalıştırılmaz
-  (`UNSPECIFIED_PARAM`) ama deneme bütçesinde SAYILIR (sayılar mühürden sonra küçültülemez, §2.5). Belgenin açıkça yazdığı
-  okunuşlar (`reading_tr`) gerekçesiyle yazılır.
+  yazılır (`unspecified_gaps()`; liste testte sabit). Varyantın boşlukları = kendi alanlarındakiler + `requires`
+  bağımlılıklarındakiler (`defaults.er20_timeframe`, `covers.factors.<F>`, `copy_books.<taban>`; `variant_gaps`).
+  Boşluğu olan varyant gerçek veride HİÇBİR katmanda (WF, keşif, kapı) çalıştırılmaz (`UNSPECIFIED_PARAM`) ama deneme
+  bütçesinde SAYILIR (sayılar mühürden sonra küçültülemez, §2.5). Protokol boşlukları (`WF_PROTOCOL_V1`, `STATS_V1`,
+  `LESSON_REGISTRY_V1`, `PIT_RULES_V1`) dolmadan hiçbir gerçek veri WF/kapı/ders koşusu yapılmaz (`protocol_gaps`).
+  Belgenin açıkça yazdığı okunuşlar (`reading_tr`) gerekçesiyle yazılır.
 * **Sayılar koddan.** Bütçe tablosu (818 Kapı A satırı / 1.738 ham deneme), öncül toplamı (2.775), mühürde kümülatif N
-  (4.513), keşif seri sayısı (3.745) ve §7.5 oto tablosu sayısı (64) `gate_a_rows` / `budget_table` / `prior_total` /
-  `explore_series` / `auto_v1_table_count` ile kayıttan YENİDEN ÜRETİLİR; belgedeki sayılara eşitlik testlidir.
-* **Asla gevşetme** (sahip kararı 2, §8.2). Eşikli her kaydın `thresholds` ağacındaki HER sayının yönü
-  `THRESHOLD_DIRECTIONS`'tadır (`max` = üst sınır: q ≤, PBO <; `min` = alt sınır: n ≥, DSR ≥; `fixed` = tanım, hiç
-  değişmez); `looser_than(v1, vN)` sonraki bir sürümün v1'den gevşek her değerini döndürür ve test kırılır. Kapı A/B,
-  Holm ve otomatik terfi eşikleri S2'dedir (`PROMOTION_REGISTRY_V1`, `AUTO_POLICY_V1`; sahibin kapı metni onayından
-  sonra) ve aynı tabloya orada eklenir.
+  (4.513), keşif seri sayısı (3.745) ve §2.2 "Oto" sütunu (S5 öncesi, 64) `gate_a_rows` / `budget_table` / `prior_total` /
+  `explore_series` / `oto_column_pre_s5_count` ile kayıttan YENİDEN ÜRETİLİR; belgedeki sayılara eşitlik testlidir.
+* **Asla gevşetme** (sahip kararı 2, §8.2). Eşikli her kaydın `thresholds` ağacındaki HER sayının ve eşik gibi davranan
+  kapı-dışı alanların (`xsec_requires_pit`, `step_equals_test`, `dsr.sr_var_floor`, `budget_declared`, …) yönü
+  `THRESHOLD_DIRECTIONS_V1`'dedir (kök-göreli yol; `max` = üst sınır: q ≤, PBO <; `min` = alt sınır: n ≥, DSR ≥;
+  `fixed` = tanım, hiç değişmez — iki yönde de sonucu oynatabilen her değer). Tablo S1 mühür kümesinin parçasıdır (sha
+  sabit); `looser_than(v1, vN)` sonraki bir sürümün v1'den gevşek her değerini döndürür ve test kırılır. Kapı A/B, Holm
+  ve otomatik terfi eşikleri S2'dedir (`PROMOTION_REGISTRY_V1`, `AUTO_POLICY_V1`; sahibin kapı metni onayından sonra);
+  S2 yönlerini AYRI bir tabloyla ekler, S1 tablosu değişmez.
 * Yalnız standart kütüphane; ağ, pandas, `tradingbot` dışı import yok (AST testi). Hiçbir yere yazmaz.
 """
 from __future__ import annotations
@@ -41,9 +46,12 @@ LIB_VERSION = "LIB_v1"
 SEAL_ID = "S1"
 SEAL_DOC = "docs/ENGINE_BRAIN_V1.md §8.2"
 
-#: Mühür commit'inin UTC zamanı (epoch ms). Commit'in yazar ve işleyen tarihi bu ana eşitlenir (saniye çözünürlüğü;
-#: ms = 000). Keşif katmanı ve Kapı A'nın ileri okuması YALNIZ açılışı bu andan sonra olan barları kullanır (§5.1).
-T_SEAL_MS = 1791734119000
+#: Mühür anı (UTC epoch ms, tam dakika). Mühürlü içeriği (sabitlenmiş sha'lar, prior_trials.json, config_epochs.json)
+#: değiştiren EN SON commit'in işleyen zamanına EŞİT ya da ondan SONRADIR (test git'ten doğrular; commit tarihi elle
+#: ayarlanmaz). Keşif katmanı ve Kapı A'nın ileri okuması YALNIZ açılışı bu andan sonra olan barları kullanır (§5.1).
+#: Mühür commit'leri yalnız fast-forward (ya da merge commit) ile birleşir; rebase/squash/cherry-pick işleyen zamanı
+#: değiştirir → test kırılır → yeniden mühür.
+T_SEAL_MS = 1791740640000
 
 
 # ============================================================================ kanonik biçim ve donma
@@ -110,7 +118,7 @@ FAMILY_GROUPS: dict[str, tuple[str, ...]] = {"STANDARD": ("B", "C", "D", "E", "F
                                              "COVER": ("O",), "OTHER": ("J", "I", "G")}
 COIN_FIT_FAMILIES = FAMILY_GROUPS["STANDARD"]
 DEFAULT_MAX_HOLD = 300
-#: belge §2.2 tablosu: aile → (ad, dilim metni, benzersiz varyant sayısı, "Oto" sütunu aynen)
+#: belge §2.2 tablosu: aile → (ad, dilim metni, benzersiz varyant sayısı, "Oto" sütunu aynen — S5 ÖNCESİ, bkz. sahip kararı S5)
 FAMILY_TABLE: dict[str, tuple[str, str, int, str]] = {
     "K": ("Canlı defter kopyaları", "defterin kendi", 13, "K_BOX, K_FM hariç"),
     "B": ("TSMOM", "1d", 10, "evet"),
@@ -132,37 +140,54 @@ def _atr_stop(mult: float, tf_note: str = "sinyal dilimi") -> dict:
     return {"kind": "ATR", "atr_mult": mult, "atr": f"ATR14 ({tf_note})"}
 
 
+ER20_TF = "defaults.er20_timeframe"
+
+
 def _variant(variant_id: str, family: str, *, params: dict, timeframes: list[str], signal_tf: str, sides: Any,
              rule_tr: str, stop: Any, exit_rule: Any, target_r: Any = None, max_hold_bars: Any = DEFAULT_MAX_HOLD,
-             auto_v1: bool, wf_class: str, inputs: list[str], alias_of: str | None = None, book: dict | None = None,
-             cover: dict | None = None) -> dict:
+             oto_pre_s5: bool, wf_class: str, inputs: list[str], alias_of: str | None = None, book: dict | None = None,
+             cover: dict | None = None, requires: list[str] | None = None) -> dict:
+    """`requires`: varyantın kural/WF tanımının dayandığı LIB-düzeyi kayıtlar (kök-göreli yol); oradaki her UNSPECIFIED
+    boşluk varyantın da boşluğudur (`variant_gaps`)."""
     return {"variant_id": variant_id, "family": family, "params": params, "timeframes": timeframes, "signal_tf": signal_tf,
             "sides": sides, "rule_tr": rule_tr, "exits": {"stop": stop, "exit_rule": exit_rule, "target_r": target_r,
                                                           "max_hold_bars": max_hold_bars},
-            "auto_v1_table": auto_v1, "wf_class": wf_class, "inputs": inputs, "alias_of": alias_of, "book": book,
-            "cover": cover}
+            "oto_column_pre_s5": oto_pre_s5, "wf_class": wf_class, "inputs": inputs, "alias_of": alias_of, "book": book,
+            "cover": cover, "requires": sorted(requires or [])}
 
 
 #: canlı defter kopyaları (§2.1: yeniden yazılmaz; `paper_rules.decide_from_rows` / `pattern_trader` kural fonksiyonları
 #: çağrılır). Değerler mühür anındaki canlı config'tir (`config.yaml` @ db5db96 = son `CONFIG_EPOCHS_V1` dönemi); kernel
 #: büyüklüğü/kaldıracı kendisi belirler (§2.1), bu yüzden defterin bakiye/kaldıraç/slot ayarları kopya spec'ine girmez.
+#: `max_hold`: canlı kuralın zaman stopu (WF arındırma/ambargosu = 1 sinyal barı + max_hold, §3.1; O_<taban>_X_TIME =
+#: max_hold'un yarısı, §2.2); değerler canlı koddan okunur ve testte koda karşı sınanır.
+_NO_TIME_STOP = ("canlı {b} kuralında (ema200_trend.decide) zaman stopu yok: çıkış yalnız sinyal kuralı ve felaket stopu. "
+                 "Bu yüzden {b} kopyasının ve örtülerinin max_hold'u tanımsız → WF arındırma/ambargosu (1 sinyal barı + "
+                 "max_hold, §3.1) ve O_{b}_X_TIME ('max_hold'un yarısı') tanımsız; §2.2'nin '300 sinyal barı' varsayılanının "
+                 "kopyaya (yalnız WF için mi, kural olarak mı) uygulanıp uygulanmadığı yazılmadı")
 COPY_BOOKS: dict[str, dict] = {
     "T2": {"book": "strategy_paper", "rule": "t2_trend_regime", "timeframes": ["1d"], "own_symbols": "LIVE_BOOK",
-           "live": {"atr_mult": 3.0, "breakeven_at_mfe_r": 0.0, "max_entry_drift_pct": 0.0, "structures": "ENFORCE"}},
+           "live": {"atr_mult": 3.0, "breakeven_at_mfe_r": 0.0, "max_entry_drift_pct": 0.0, "structures": "ENFORCE"},
+           "max_hold": gap(_NO_TIME_STOP.format(b="T2"))},
     "M2": {"book": "strategy_paper_m2", "rule": "m2_tsmom28", "timeframes": ["1d"], "own_symbols": "LIVE_BOOK",
-           "live": {"atr_mult": 3.0, "breakeven_at_mfe_r": 0.0, "max_entry_drift_pct": 0.0, "structures": "ENFORCE"}},
+           "live": {"atr_mult": 3.0, "breakeven_at_mfe_r": 0.0, "max_entry_drift_pct": 0.0, "structures": "ENFORCE"},
+           "max_hold": gap(_NO_TIME_STOP.format(b="M2"))},
     "BOX": {"book": "strategy_paper_box", "rule": "b1_box_fade", "timeframes": ["1d", "5m"], "own_symbols": "LIVE_BOOK",
             "live": {"near_frac": 0.1, "trigger": "break_prev", "long_stop": "day_low", "exit_kind": "box_mid", "exit_r": 2.0,
                      "eod_close": True, "allow_long": True, "allow_short": True, "breakeven_at_mfe_r": 0.0,
                      "min_stop_pct": 0.5, "structures": "SHADOW"},
+            "max_hold": {"rule_tr": "UTC gün sonu (eod_close)", "source": "box_theory eod_close; X_TIME için §2.2 '48 × 5m'"},
             "reading_tr": "en az stop %0,5 = learning_mode.books.b1_box_fade.min_stop_pct (belge §2.2 'en az stop %0,5'); "
                           "rule_params.min_stop_pct 2,22 öğrenme modunda yerini bu tabana bırakır"},
     "D4": {"book": "strategy_paper_trend4h", "rule": "d4_donchian_20_10", "timeframes": ["4h"], "own_symbols": "P23",
-           "live": {"entry_window_min": 60, "breakeven_at_mfe_r": 0.0, "max_entry_drift_pct": 0.0}},
+           "live": {"entry_window_min": 60, "breakeven_at_mfe_r": 0.0, "max_entry_drift_pct": 0.0},
+           "max_hold": {"bars": 300, "tf": "4h", "source": "donchian_trend.MAX_BARS"}},
     "C4": {"book": "strategy_paper_candle4h", "rule": "c4_candle_variations", "timeframes": ["4h"], "own_symbols": "P23",
-           "live": {"entry_window_min": 60, "breakeven_at_mfe_r": 0.0, "max_entry_drift_pct": 0.0}},
+           "live": {"entry_window_min": 60, "breakeven_at_mfe_r": 0.0, "max_entry_drift_pct": 0.0},
+           "max_hold": {"bars": 24, "tf": "4h", "source": "candle_variations CV001–CV008 definition.exit.max_hold_bars"}},
     "FM": {"book": "pattern_trader", "rule": "pattern_trader", "timeframes": ["4h"], "own_symbols": "LIVE_BOOK",
            "live": {"protocol": "momentum_4h_v3", "structures": "ENFORCE"},
+           "max_hold": {"bars": 24, "tf": "4h", "source": "pattern_trader/strategy_v3.V3_SIGNAL.hold_bars (= 384 × 15m)"},
            "reading_tr": "kural sabitleri pattern_trader/strategy_v3.py'dedir (V3_SIGNAL, V3_SYMBOLS; module_src_sha ile "
                          "sabitlenir); config pattern_trader bölümünün 15m formasyon ayarları protokol v3'te kural değildir"},
 }
@@ -197,8 +222,8 @@ def _copies() -> list[dict]:
         sides = "canlı kural" if base not in ("D4", "FM") else SIDES_LO
         out.append(_variant(vid, "K", params=params, timeframes=list(b["timeframes"]), signal_tf=b["timeframes"][-1],
                             sides=sides, rule_tr=COPY_RULE_TR[base], stop="LIVE_RULE", exit_rule="LIVE_RULE",
-                            max_hold_bars="LIVE_RULE", auto_v1=vid not in ("K_BOX", "K_FM"), wf_class=wf,
-                            inputs=["ohlcv"], book=book))
+                            max_hold_bars="LIVE_RULE", oto_pre_s5=vid not in ("K_BOX", "K_FM"), wf_class=wf,
+                            inputs=["ohlcv"], book=book, requires=[f"copy_books.{base}"]))
     return out
 
 
@@ -209,14 +234,14 @@ def _standard() -> list[dict]:
             out.append(_variant(
                 f"TS_{lb}_{s}", "B", params={"lookback_days": lb}, timeframes=["1d"], signal_tf="1d", sides=s,
                 rule_tr=f"{lb} günlük getirinin işareti: + → long" + ("; − → short" if s == SIDES_LS else "; − → pozisyon yok"),
-                stop=_atr_stop(3.0), exit_rule="işaret dönünce çık", auto_v1=True, wf_class=WF_H1, inputs=["ohlcv"]))
+                stop=_atr_stop(3.0), exit_rule="işaret dönünce çık", oto_pre_s5=True, wf_class=WF_H1, inputs=["ohlcv"]))
     for fast, slow in ((20, 50), (50, 200)):
         for tf in ("4h", "1d"):
             for s in (SIDES_LO, SIDES_LS):
                 out.append(_variant(
                     f"MAX_{fast}_{slow}_{tf}_{s}", "C", params={"fast_ema": fast, "slow_ema": slow}, timeframes=[tf],
                     signal_tf=tf, sides=s, rule_tr=f"EMA{fast} / EMA{slow} kesişimi", stop=_atr_stop(3.0),
-                    exit_rule="ters kesişim", auto_v1=True, wf_class=WF_H1, inputs=["ohlcv"]))
+                    exit_rule="ters kesişim", oto_pre_s5=True, wf_class=WF_H1, inputs=["ohlcv"]))
     for ent, ex in ((20, 10), (55, 20)):
         for tf in ("4h", "1d"):
             for s in (SIDES_LO, SIDES_LS):
@@ -224,7 +249,7 @@ def _standard() -> list[dict]:
                 out.append(_variant(
                     vid, "D", params={"entry_channel_bars": ent, "exit_channel_bars": ex}, timeframes=[tf], signal_tf=tf,
                     sides=s, rule_tr=f"Donchian {ent} kanal kırılımı", stop=_atr_stop(2.0),
-                    exit_rule=f"karşı kanal ({ex} bar)", auto_v1=True, wf_class=WF_H1, inputs=["ohlcv"],
+                    exit_rule=f"karşı kanal ({ex} bar)", oto_pre_s5=True, wf_class=WF_H1, inputs=["ohlcv"],
                     alias_of="K_D4" if vid == "DON_20_10_4h_LO" else None))
     for tf in ("1h", "4h"):
         out.append(_variant(
@@ -232,7 +257,7 @@ def _standard() -> list[dict]:
                                            "center_line": gap("Keltner orta çizgisinin türü (EMA/SMA, kapanış/tipik fiyat) "
                                                               "yazılmadı")},
             timeframes=[tf], signal_tf=tf, sides=SIDES_LS, rule_tr="Keltner 20, 2 ATR kapanış kırılımı",
-            stop=_atr_stop(1.5), exit_rule="hedef ya da max_hold", target_r=2.0, max_hold_bars=48, auto_v1=tf == "4h",
+            stop=_atr_stop(1.5), exit_rule="hedef ya da max_hold", target_r=2.0, max_hold_bars=48, oto_pre_s5=tf == "4h",
             wf_class=WF_H1, inputs=["ohlcv"]))
         out.append(_variant(
             f"BBSQ_20_{tf}", "E", params={"bb_period": 20, "bb_std": 2.0, "squeeze_lookback_bars": 120, "squeeze_pct_max": 20,
@@ -240,18 +265,21 @@ def _standard() -> list[dict]:
                                                               "mı, başka seviye mi) yazılmadı")},
             timeframes=[tf], signal_tf=tf, sides=SIDES_LS,
             rule_tr="BB(20,2) genişliği son 120 barın ≤ %20'liğinde iken kırılım", stop=_atr_stop(1.5),
-            exit_rule="hedef ya da max_hold", target_r=2.0, max_hold_bars=48, auto_v1=tf == "4h", wf_class=WF_H1,
+            exit_rule="hedef ya da max_hold", target_r=2.0, max_hold_bars=48, oto_pre_s5=tf == "4h", wf_class=WF_H1,
             inputs=["ohlcv"]))
     for tf in ("1h", "4h"):
         out.append(_variant(
             f"RSI2_{tf}", "F1", params={"rsi_period": 2, "long_below": 10, "short_above": 90, "er20_max": 0.3},
             timeframes=[tf], signal_tf=tf, sides=SIDES_LS, rule_tr="RSI2 < 10 long / > 90 short; yalnız ER20 < 0,3",
-            stop=_atr_stop(1.5), exit_rule="orta bant", max_hold_bars=24, auto_v1=tf == "4h", wf_class=WF_H1,
-            inputs=["ohlcv"]))
+            stop=_atr_stop(1.5),
+            exit_rule=gap("RSI2'nin 'orta bant' çıkışı: RSI2 varyantında bant parametresi yok (hangi bandın ortası — "
+                          "BB(20,2) orta çizgisi mi, RSI 50 mi — yazılmadı)"),
+            max_hold_bars=24, oto_pre_s5=tf == "4h", wf_class=WF_H1, inputs=["ohlcv"], requires=[ER20_TF]))
         out.append(_variant(
             f"BBRE_{tf}", "F1", params={"bb_period": 20, "bb_std": 2.0, "er20_max": 0.3}, timeframes=[tf], signal_tf=tf,
             sides=SIDES_LS, rule_tr="BB(20,2) dışına çıkıp içine kapanış; yalnız ER20 < 0,3", stop=_atr_stop(1.5),
-            exit_rule="orta bant", max_hold_bars=24, auto_v1=tf == "4h", wf_class=WF_H1, inputs=["ohlcv"]))
+            exit_rule="orta bant (BB(20,2) orta çizgisi)", max_hold_bars=24, oto_pre_s5=tf == "4h", wf_class=WF_H1,
+            inputs=["ohlcv"], requires=[ER20_TF]))
     for n in (10, 20):
         for ex in ("mid", "2r"):
             for ms in (0.5, 1.0):
@@ -262,8 +290,9 @@ def _standard() -> list[dict]:
                     timeframes=["1d", "5m"], signal_tf="5m", sides="K_BOX ile aynı (canlı kural)",
                     rule_tr="Box kuralı; kenar bandı × çıkış × en az stop %; diğer parametreler K_BOX'unki",
                     stop="LIVE_RULE (K_BOX) + en az stop %", exit_rule="kutu ortası" if ex == "mid" else "2R hedef",
-                    target_r=None if ex == "mid" else 2.0, max_hold_bars="LIVE_RULE (K_BOX gün sonu)", auto_v1=False,
-                    wf_class=WF_INTRADAY, inputs=["ohlcv"], alias_of="K_BOX" if vid == "BOX_n10_mid_ms0.5" else None))
+                    target_r=None if ex == "mid" else 2.0, max_hold_bars="LIVE_RULE (K_BOX gün sonu)", oto_pre_s5=False,
+                    wf_class=WF_INTRADAY, inputs=["ohlcv"], alias_of="K_BOX" if vid == "BOX_n10_mid_ms0.5" else None,
+                    requires=["copy_books.BOX"]))
     fund_exit = gap("FUND_FADE çıkışı ve '24h'/'72h' ekinin anlamı (tutuş ufku mu, fonlama penceresi mi) yazılmadı; "
                     "yalnız stop 3 ATR(4h) yazılı")
     for h in ("24h", "72h"):
@@ -272,19 +301,20 @@ def _standard() -> list[dict]:
                                            "long_pct_max": 5},
             timeframes=["4h"], signal_tf="4h", sides=SIDES_LS,
             rule_tr="f8 son 20 günün ≥ %95'liği → short, ≤ %5'liği → long", stop=_atr_stop(3.0, "4h"), exit_rule=fund_exit,
-            auto_v1=False, wf_class=WF_H1, inputs=["ohlcv", "funding"]))
+            oto_pre_s5=False, wf_class=WF_H1, inputs=["ohlcv", "funding"]))
     for h in ("24h", "72h"):
         out.append(_variant(
             f"FUND_FADE_LOW_{h}", "H", params={"horizon_label": h, "funding": "f8", "pct_window_days": 20,
                                                "short_pct_min": 95, "long_pct_max": 5, "er20_max": 0.3},
             timeframes=["4h"], signal_tf="4h", sides=SIDES_LS, rule_tr="FUND_FADE ile aynı, yalnız ER20 < 0,3",
-            stop=_atr_stop(3.0, "4h"), exit_rule=fund_exit, auto_v1=False, wf_class=WF_H1, inputs=["ohlcv", "funding"]))
+            stop=_atr_stop(3.0, "4h"), exit_rule=fund_exit, oto_pre_s5=False, wf_class=WF_H1, inputs=["ohlcv", "funding"],
+            requires=[ER20_TF]))
     out.append(_variant(
         "FUND_CARRY", "H", params={"funding": "f8", "enter_abs_pct_min": 90, "exit_abs_pct_below": 50,
                                    "pct_window": gap("FUND_CARRY yüzdelik penceresi yazılmadı (FUND_FADE'inki 20 gün)")},
         timeframes=["4h"], signal_tf="4h", sides="fonlamayı alan taraf",
         rule_tr="|f8| ≥ %90'lık iken fonlama alan taraf; |f8| < %50'lik olunca çık", stop=_atr_stop(3.0, "4h"),
-        exit_rule="|f8| < %50'lik", auto_v1=False, wf_class=WF_H1, inputs=["ohlcv", "funding"]))
+        exit_rule="|f8| < %50'lik", oto_pre_s5=False, wf_class=WF_H1, inputs=["ohlcv", "funding"]))
     return out
 
 
@@ -296,7 +326,7 @@ def _other() -> list[dict]:
                                           "legs": 2, "leg_sizing": gap("iki bacağın boyut oranı (nominal/beta) yazılmadı")},
             timeframes=["1h"], signal_tf="1h", sides="iki bacak (z yönünün tersi)",
             rule_tr="log oranın 20 günlük z'si; z = 0'da çık; en çok 72 saat; iki bacak",
-            stop=gap("spread satırının stopu (R birimi) yazılmadı"), exit_rule="z = 0", max_hold_bars=72, auto_v1=False,
+            stop=gap("spread satırının stopu (R birimi) yazılmadı"), exit_rule="z = 0", max_hold_bars=72, oto_pre_s5=False,
             wf_class=WF_H1, inputs=["ohlcv"]))
     xs_stop = gap("XSEC portföy satırının stopu / R birimi yazılmadı")
     beta = gap("BTC-beta nötrlüğünün beta tahmin penceresi yazılmadı")
@@ -308,36 +338,39 @@ def _other() -> list[dict]:
                                                    "beta_neutral": "BTC", "beta_window": beta, "universe": "PIT"},
                 timeframes=["1d"], signal_tf="1d", sides="üst-k long / alt-k short",
                 rule_tr=f"kesitsel {lb} gün momentum, haftalık, üst-{k} long / alt-{k} short, BTC-beta nötr", stop=xs_stop,
-                exit_rule="sonraki yeniden dengeleme", auto_v1=False, wf_class=WF_H1, inputs=["ohlcv"]))
+                exit_rule="sonraki yeniden dengeleme", oto_pre_s5=False, wf_class=WF_H1, inputs=["ohlcv"]))
     out.append(_variant(
         "XS_REV_1D_k5", "J", params={"rank_lookback_days": 1, "k": 5,
                                      "rebalance": gap("XS_REV_1D yeniden dengeleme sıklığı yazılmadı"),
                                      "beta_neutral": gap("XS_REV_1D'de beta nötrlüğü yazılmadı"), "universe": "PIT"},
         timeframes=["1d"], signal_tf="1d", sides="alt-k long / üst-k short (dönüş)", rule_tr="kesitsel 1 günlük dönüş, k = 5",
-        stop=xs_stop, exit_rule="sonraki yeniden dengeleme", auto_v1=False, wf_class=WF_H1, inputs=["ohlcv"]))
+        stop=xs_stop, exit_rule="sonraki yeniden dengeleme", oto_pre_s5=False, wf_class=WF_H1, inputs=["ohlcv"]))
     g_stop = gap("altın taktiklerinin stopu (R birimi) yazılmadı")
     out.append(_variant(
         "G_LDN_ORB", "G", params={"range_utc": ["07:00", "08:00"], "entry_until_utc": "12:00", "exit_utc": "16:00"},
         timeframes=["1h"], signal_tf="1h", sides="kırılım yönü", rule_tr="07:00–08:00 UTC aralık kırılımı 12:00'ye kadar, "
-        "16:00'da çık", stop=g_stop, exit_rule="16:00 UTC", auto_v1=False, wf_class=WF_GOLD, inputs=["ohlcv"]))
+        "16:00'da çık", stop=g_stop, exit_rule="16:00 UTC", oto_pre_s5=False, wf_class=WF_GOLD, inputs=["ohlcv"]))
     out.append(_variant(
         "G_NY_ORB", "G", params={"range_utc": ["13:00", "14:00"], "exit_utc": "20:00",
                                  "entry_until_utc": gap("G_NY_ORB giriş son saati yazılmadı (LDN'de 12:00)")},
         timeframes=["1h"], signal_tf="1h", sides="kırılım yönü", rule_tr="13:00–14:00 UTC aralığı, 20:00'de çık", stop=g_stop,
-        exit_rule="20:00 UTC", auto_v1=False, wf_class=WF_GOLD, inputs=["ohlcv"]))
+        exit_rule="20:00 UTC", oto_pre_s5=False, wf_class=WF_GOLD, inputs=["ohlcv"]))
     out.append(_variant(
-        "G_ASIA_DRIFT", "G", params={"window_utc": ["23:00", "07:00"], "direction": "önceki gün"}, timeframes=["1h"],
+        "G_ASIA_DRIFT", "G", params={"window_utc": ["23:00", "07:00"],
+                                     "direction": gap("'önceki gün yönü'nün tanımı yazılmadı (önceki UTC gününün açılış → "
+                                                      "kapanışı mı, kapanış → kapanış mı; sıfır getiride yön)")},
+        timeframes=["1h"],
         signal_tf="1h", sides="önceki günün yönü", rule_tr="önceki gün yönünde 23:00 → 07:00", stop=g_stop,
-        exit_rule="07:00 UTC", auto_v1=False, wf_class=WF_GOLD, inputs=["ohlcv"]))
+        exit_rule="07:00 UTC", oto_pre_s5=False, wf_class=WF_GOLD, inputs=["ohlcv"]))
     out.append(_variant(
         "G_MONTH_END", "G", params={"last_utc_days": 2}, timeframes=["1d"], signal_tf="1d", sides=SIDES_LO,
-        rule_tr="ayın son 2 UTC günü long", stop=g_stop, exit_rule="ay sonu", auto_v1=False, wf_class=WF_GOLD,
+        rule_tr="ayın son 2 UTC günü long", stop=g_stop, exit_rule="ay sonu", oto_pre_s5=False, wf_class=WF_GOLD,
         inputs=["ohlcv"]))
     for lb in (28, 56):
         out.append(_variant(
             f"G_XAU_BTC_{lb}", "G", params={"ratio": "XAU/BTC", "momentum_days": lb}, timeframes=["1d"], signal_tf="1d",
             sides=SIDES_LO, rule_tr=f"XAU/BTC oranı {lb} gün momentumu > 0 iken long", stop=g_stop,
-            exit_rule="momentum ≤ 0", auto_v1=False, wf_class=WF_GOLD, inputs=["ohlcv", "btc"]))
+            exit_rule="momentum ≤ 0", oto_pre_s5=False, wf_class=WF_GOLD, inputs=["ohlcv", "btc"]))
     return out
 
 
@@ -365,14 +398,18 @@ def _covers() -> list[dict]:
     for base in ("T2", "M2", "BOX", "D4", "C4"):
         for fac in ("F_ER", "F_BTC", "F_VOL", "X_TRAIL2", "X_CHAN3", "X_TIME", "X_TPL"):
             b = COPY_BOOKS[base]
+            f = COVER_FACTORS[fac]
+            req = [f"copy_books.{base}", f"covers.factors.{fac}"] + ([ER20_TF] if fac == "F_ER" else [])
             out.append(_variant(
-                f"O_{base}_{fac}", "O", params={"base": base, "factor": fac}, timeframes=list(b["timeframes"]),
+                f"O_{base}_{fac}", "O", params={"base": base, "factor": fac,
+                                                "factor_params": {k: v for k, v in f.items() if k != "rule_tr"}},
+                timeframes=list(b["timeframes"]),
                 signal_tf=b["timeframes"][-1], sides="tabanınki", rule_tr=f"{base} + {COVER_FACTORS[fac]['rule_tr']}",
                 stop="tabanınki" if COVER_FACTORS[fac]["kind"] == "filter" else "tabanınki (çıkış örtüsüyle)",
                 exit_rule="tabanınki" if COVER_FACTORS[fac]["kind"] == "filter" else fac, max_hold_bars="tabanınki",
-                auto_v1=base in AUTO_COVER_BASES and fac in AUTO_COVER_FACTORS,
+                oto_pre_s5=base in AUTO_COVER_BASES and fac in AUTO_COVER_FACTORS,
                 wf_class=WF_INTRADAY if base == "BOX" else WF_H1, inputs=["ohlcv", "btc_4h"] if fac == "F_BTC" else ["ohlcv"],
-                cover={"base": base, "factor": fac, "base_variants": COVER_BASES[base]["variants"]}))
+                cover={"base": base, "factor": fac, "base_variants": COVER_BASES[base]["variants"]}, requires=req))
     return out
 
 
@@ -428,12 +465,12 @@ def _lib() -> dict:
         },
         "sizing": {"risk_usdt": 1, "base_equity_usdt": 200, "risk_pct": 0.5, "leverage": "büyüklükten türer",
                    "same_as": "keşif katmanı (§5.1) ve P4 adayı (§6.1)"},
-        "families": {code: {"name_tr": t[0], "timeframes_tr": t[1], "unique_variants": t[2], "auto_v1_table_tr": t[3]}
+        "families": {code: {"name_tr": t[0], "timeframes_tr": t[1], "unique_variants": t[2], "oto_column_pre_s5_tr": t[3]}
                      for code, t in FAMILY_TABLE.items()},
         "family_groups": {k: list(v) for k, v in FAMILY_GROUPS.items()},
         "variants": variants,
-        "copy_books": {k: {"book": v["book"], "rule": v["rule"], "timeframes": v["timeframes"], "own_symbols": v["own_symbols"]}
-                       for k, v in COPY_BOOKS.items()},
+        "copy_books": {k: {"book": v["book"], "rule": v["rule"], "timeframes": v["timeframes"], "own_symbols": v["own_symbols"],
+                           "max_hold": v["max_hold"]} for k, v in COPY_BOOKS.items()},
         "covers": {"bases": COVER_BASES, "factors": COVER_FACTORS, "id_pattern": "O_<taban>_<faktör>",
                    "scope_tr": "örtüler yalnız bu beş canlı tabana uygulanır (sonuca bakılarak seçilmiş alt küme değil); aile "
                                "üst sınırı (ana belge §6.2 '≤ 8–12') O'da taban başına 7"},
@@ -450,7 +487,7 @@ def _lib() -> dict:
         "budget_declared": {"POOLED": [45, 45], "CLUSTER": [135, 135], "COIN_FIT": [161, 1081], "COPY": [312, 312],
                             "COVER": [140, 140], "OTHER": [25, 25], "TOTAL": [818, 1738], "PRIOR_MIN": 2775,
                             "N_AT_SEAL_MIN": 4513, "COIN_FIT_GRID": {"B": 10, "C": 8, "D": 8, "E": 4, "F1": 4, "F2": 8, "H": 5},
-                            "UNIQUE_VARIANTS": 106, "EXPLORE_SERIES": 3745, "AUTO_V1_TABLE": 64},
+                            "UNIQUE_VARIANTS": 106, "EXPLORE_SERIES": 3745, "OTO_COLUMN_PRE_S5": 64},
         "budget_rules_tr": [
             "üst sınırdır: §2.4 madde 1'i geçmeyen coin satırı açılmaz ama yine sayılır (seçenek değerlendirildiyse)",
             "sayılar mühürden sonra küçültülemez",
@@ -499,6 +536,9 @@ def _lib() -> dict:
             "derived_specs": {"file": "library/derived_specs.jsonl (yalnız eklenir, motor yazar)",
                               "monthly_seal": "LIB_v1.<AAAA-AA>, her ayın 1'inden sonraki ilk gece",
                               "order_tr": "düşük q ve büyük |Δ| önce", "own_t_seal": True,
+                              "dedup_family_tr": "deneme tekilleştirmesi LIB AİLESİNDE yapılır: aynı (spec_sha, kapsam) "
+                                                 "LIB_v1 ve LIB_v1.<AAAA-AA> mühürleri arasında BİR kez sayılır (T3/T4 'o "
+                                                 "satıra bağlanır'); yeni ana sürüm (LIB_v2) ayrı ailedir, yeniden sayılır",
                               "new_family_or_transform_tr": "kod PR'ı (yeni LIB sürümü)"},
             "existing_books_tr": "hiçbir dönüşüm mevcut defteri değiştirmez; geçen aday yalnız yeni defter olabilir (§7)",
         },
@@ -509,6 +549,7 @@ def _lib() -> dict:
             "F2 'n10/n20' = kenar bandı kutu yüksekliğinin %10/%20'si (near_frac 0,10/0,20): BOX_n10_mid_ms0.5 ≡ K_BOX ve "
             "K_BOX'un canlı near_frac'ı 0,10; 'mid' = box_mid çıkışı, '2r' = 2R hedef",
             "F2'nin diğer bütün parametreleri K_BOX'unkidir (ızgara yalnız üç ekseni oynatır)",
+            "F1 BBRE 'orta bant' = kendi BB(20,2)'sinin orta çizgisi (RSI2'de bant yok: boşluk)",
             "H 'f8' = 8 saate normalize fonlama oranı (fut_v1 laboratuvarının tanımı: oran × 8 / aralık)",
             "I: z yüksekken oran pahalı → z'nin tersi yönde iki bacak; z = 0'da çık (ortalamaya dönüş)",
             "J XS_REV_1D: 'dönüş' = alt-k long / üst-k short",
@@ -518,8 +559,9 @@ def _lib() -> dict:
         ],
         "owner_decisions": [
             {"date": "2026-10-06", "id": "S5", "text_tr": "5m, 1h, altın ve fonlama taktikleri de otomatik yola girer; worker'ın ek "
-             "veri çekmesi AUTO_v1 sürümüne eklenir (A/B ile ölçülür). §2.2'nin 'Oto' sütunu (auto_v1_table) AUTO_v1'in veri "
-             "kısıtını kaydeder; kesin katalog S2'de AUTO_CATALOG_V1'dir"},
+             "veri çekmesi AUTO_v1 sürümüne eklenir (A/B ile ölçülür). S5, §2.2'nin 'Oto' sütununu GEÇERSİZ KILAR: varyant "
+             "alanı oto_column_pre_s5 yalnız S5 ÖNCESİ tablonun tarihsel kaydıdır (H, G, 1h ve 5m için artık yanlıştır) ve "
+             "hiçbir yönlendirmede kullanılmaz. Otomatik yol / Kapı C yönlendirmesi YALNIZ S2'nin AUTO_CATALOG_V1'iyle yapılır"},
             {"date": "2026-10-06", "id": "AUTO", "text_tr": "Kapı A + Kapı B + aylık Holm'u geçen aday yeni bir PAPER defteri "
              "olarak açılır; kapılar ve eşikler bu karardan sonra gevşetilmez"},
             {"date": "2026-10-06", "id": "S8", "text_tr": "otomatik defter başlangıç özsermayesi 1.000 USDT (S2: AUTO_POLICY_V1)"},
@@ -557,8 +599,11 @@ def _wf() -> dict:
         "data_start_tr": "serinin listelendiği gün + ısınma barları (göstergeler); en erken 2020-01-01",
         "data_start_earliest": "2020-01-01",
         "purge_embargo": {"each_boundary_tr": "her iki sınırda 1 sinyal barı + max_hold",
-                          "make_folds_split": gap("make_folds(purge_bars, embargo_bars) bölüşümü yazılmadı; yalnız sınır "
-                                                  "başına toplam (1 + max_hold bar) mühürlü")},
+                          "make_folds_split": gap("make_folds(purge_bars, embargo_bars) bölüşümü yazılmadı: purge = embargo "
+                                                  "= 1 + max_hold mı (sınır başına 2 × (1 + max_hold) boşluk) yoksa purge + "
+                                                  "embargo = 1 + max_hold mı. Kapı sonucunu belirler: 1d'de (max_hold 300) "
+                                                  "ilk test katmanı ≈ 2025-02 (OOS 2 takvim yılına ≈ 2027-02'de ulaşır) "
+                                                  "ya da ≈ 2023-06")},
         "leakage_tr": "leakage_check geçmeyen katman atılır (LEAK)",
         "oos_tr": "OOS = test katmanlarının birleşimi, her satır türünde aynı tanım (CSCV ortak zaman ekseni)",
         "fixed_param_rows_tr": "sabit parametreli satırların doğrulama dilimi yalnız gösterilir; seçim yok (parametreler mühürde)",
@@ -625,8 +670,12 @@ def _stats() -> dict:
             "chunk_resamples": 1000, "memory_mb_max": 16,
             "single_statistic_tr": "Kapı A, Kapı B, Kapı C ve ders bakışları aynı istatistiği kullanır; CI'lar yalnız gösterim",
         },
-        "bh_fdr": {"family_tr": "o Kapı A bakışında ≥ 30 OOS işlemi olan BÜTÜN etkin LIB satırları (kapıya kapalı XSEC dahil; "
-                                "muhafazakâr)"},
+        "bh_fdr": {"family_tr": "o Kapı A bakışında değerlendirilen BÜTÜN etkin LIB satırları (spec × kapsam/enstrüman; kapıya "
+                                "kapalı XSEC ve UNSPECIFIED yüzünden çalıştırılmayanlar dahil); işlem sayısı süzgeci YOK",
+                   "no_p_tr": "p_day'i hesaplanamayan satır (işlemsiz, çalıştırılmamış) aileye p = 1 ile girer (m küçülmez)",
+                   "reading_tr": "ENGINE_BRAIN §3.6'daki '≥ 30 OOS işlemi olan' süzgeci m'yi küçültür (BH'yi gevşetir); ana "
+                                 "belge §6.4 'aile = o bakışta değerlendirilen bütün spec × enstrüman satırları' daha sıkıdır "
+                                 "ve ENGINE_BRAIN önsözü gereği o geçerlidir"},
         "dsr": {
             "function": "validation.deflated_sharpe(sr, n_trials=N, T, skew, kurt, sr_var=...)",
             "sr": "OOS günlük getirinin Sharpe'ı (1 USDT risk, 200 USDT tabanı; pozisyonsuz gün 0)", "T": "OOS gün sayısı",
@@ -650,7 +699,10 @@ def _stats() -> dict:
             "per_trade_tr": "her gerçek işlem için K rastgele işlem: aynı sembol, yön, tutuş süresi (bar), ATR katı stop; giriş "
                             "zamanı aynı test katmanında kuralın sinyal vermediği barlardan (gerçek işlemlerin ± tutuşu hariç) "
                             "düzgün",
-            "seed": "sha256(row_id|trade_key|k)", "diff": "gerçek − plasebo ortalaması, gün kümelenmeli CI",
+            "seed": "sha256(row_id|trade_key|k)",
+            "seed_int": gap("plasebo tohumunun bayttan tam sayıya dönüşümü (p_day'deki 'ilk 8 bayt' kuralı plaseboya "
+                            "yazılmadı), trade_key'in tanımı ve çekim üretecinin algoritması yazılmadı"),
+            "diff": "gerçek − plasebo ortalaması, gün kümelenmeli CI",
             "flipped_sign_tr": "işaret çevrilmiş sinyal yalnız gösterilir",
             "lab_verdicts_tr": "signal_lab.verdict / verdict_strict yalnız gösterim sütunu",
         },
@@ -660,7 +712,6 @@ def _stats() -> dict:
         "thresholds": {
             "p_day": {"resamples": 10000},
             "bh_q": 0.10,
-            "bh_family_min_oos_trades": 30,
             "effective_n_abs_rho": 0.7,
             "pbo": {"blocks": 16, "min_configs": 2, "min_oos_days_per_block": 5},
             "placebo": {"k_per_trade": 5, "ci_level": 0.95, "min_ci_lower": 0.0},
@@ -684,6 +735,9 @@ def _lessons() -> dict:
         "cell_stats": ["n ve gün sayısı", "ortalama net R", "Wilson kazanma oranı", "ebeveyne HierarchicalRate büzülmesi",
                        "gün kümelenmeli CI95 (sabit tohum)", "her EX_ANTE cfgrid_v1 hücresi için gerçeğe göre eşli ΔR ve CI",
                        "p_day (STATS_V1)"],
+        "ci": {"method_tr": "gün kümelenmeli bootstrap CI95 (thresholds.ci)",
+               "seed": gap("ders CI95'inin 'sabit tohum'u yazılmadı (değer ya da türetme kuralı, bayttan tam sayıya dönüşüm "
+                           "ve üreteç algoritması)")},
         "lesson_types": {
             "GRID": {"tr": "IZGARA: EX_ANTE hücre ΔR > 0", "candidates": True},
             "FILTER": {"tr": "FİLTRE: hücrede atla, eşli Δ = −r", "candidates": True},
@@ -751,6 +805,69 @@ def _pit() -> dict:
     }
 
 
+# ============================================================================ asla gevşetme: yön tablosu (§8.2; S1'in parçası)
+MAX, MIN, FIXED = "max", "min", "fixed"
+_T = "thresholds."
+
+
+def _directions() -> dict:
+    """kayıt adı (sürümsüz) → {KÖK-GÖRELİ yol: yön}. `thresholds` altındaki HER sayısal yaprak burada olmalıdır (test);
+    eşik gibi davranan kapı-dışı alanlar da (bool/metin: `fixed`). Liste değerlerinde yön ÖĞE BAŞINA uygulanır (uzunluk
+    sabit). `fixed` = iki yönde de sonucu oynatabilen tanım (ör. yeniden örnekleme sayısı p'nin çözünürlüğünü, plasebo
+    K'si CI genişliğini değiştirir)."""
+    folds = {f"{_T}folds.{c}.{k}": (MIN if k.startswith("min_") else FIXED)
+             for c, ks in ((WF_H1, ("min_train_days", "validation_days", "test_days", "step_days")),
+                           (WF_INTRADAY, ("train_days", "validation_days", "test_days", "step_days")),
+                           (WF_GOLD, ("min_train_days", "validation_days", "test_days", "step_days"))) for k in ks}
+    costs = {f"{_T}costs.{sc}.{k}": (FIXED if k == "fee_sides" else MIN)
+             for sc in ("base", "ADVERSE", "STRESS") for k in ("taker_fee_pct", "fee_sides", "slippage_bps", "spread_ticks")}
+    budget = {f"budget_declared.{k}": MIN for k in ("POOLED", "CLUSTER", "COIN_FIT", "COPY", "COVER", "OTHER", "TOTAL",
+                                                     "PRIOR_MIN", "N_AT_SEAL_MIN", "UNIQUE_VARIANTS", "EXPLORE_SERIES")}
+    budget.update({f"budget_declared.COIN_FIT_GRID.{f}": MIN for f in FAMILY_GROUPS["STANDARD"]})
+    budget["budget_declared.OTO_COLUMN_PRE_S5"] = FIXED
+    return {
+        "LIB": {
+            f"{_T}parity_kernel.min_synthetic_trades_per_family": MIN, f"{_T}parity_kernel.min_signal_identity_share": MIN,
+            f"{_T}parity_kernel.max_median_abs_dr": MAX, f"{_T}parity_kernel.max_p95_abs_dr": MAX,
+            f"{_T}parity_copy.min_policy_entries_per_epoch": MIN, f"{_T}parity_copy.min_same_bar_side_share": MIN,
+            f"{_T}parity_copy.max_median_abs_dr": MAX,
+            f"{_T}sizing.min_liq_distance_stop_mult": MIN,
+            f"{_T}eligibility.min_history_days_1h_plus": MIN, f"{_T}eligibility.min_history_days_5m": MIN,
+            f"{_T}eligibility.max_gap_share": MAX, f"{_T}eligibility.min_archive_verified_share": MIN,
+            f"{_T}eligibility.min_pre_seal_trades": MIN,
+            f"{_T}shrinkage.k_trades": MIN, f"{_T}shrinkage.pool_tie_margin_r": MIN,
+            f"{_T}cluster_coherence.min_ex_coin_oos_adverse_mean_r": MIN,
+            f"{_T}single_instrument.max_oos_profit_share": MAX,
+            f"{_T}promotion_side.max_single_coin_books_same_coin": MAX, f"{_T}promotion_side.max_single_coin_books_total": MAX,
+            f"{_T}derived_specs.max_specs_per_month": MAX,
+            f"{_T}transforms.stop_floor_k_atr": FIXED,
+            **budget,
+        },
+        "WF_PROTOCOL": {
+            **folds, **costs,
+            f"{_T}warmup_bars": FIXED, f"{_T}purge_signal_bars": MIN, f"{_T}positive_fold_min_trades": FIXED,
+            f"{_T}candidates_top_k": FIXED,
+            "step_equals_test": FIXED, "data_start_earliest": FIXED,
+        },
+        "STATS": {
+            f"{_T}p_day.resamples": FIXED, f"{_T}bh_q": MAX, f"{_T}effective_n_abs_rho": FIXED,
+            f"{_T}pbo.blocks": FIXED, f"{_T}pbo.min_configs": MIN, f"{_T}pbo.min_oos_days_per_block": MIN,
+            f"{_T}placebo.k_per_trade": FIXED, f"{_T}placebo.ci_level": MIN, f"{_T}placebo.min_ci_lower": MIN,
+            f"{_T}null_world.worlds": FIXED,
+            "bh_fdr.family_tr": FIXED, "bh_fdr.no_p_tr": FIXED, "dsr.sr_var_floor": FIXED, "null_world.pass_rate_max": FIXED,
+        },
+        "LESSON_REGISTRY": {
+            f"{_T}eligibility.min_n": MIN, f"{_T}eligibility.min_distinct_days": MIN, f"{_T}looks.n_thresholds": FIXED,
+            f"{_T}looks.alphas": MAX, f"{_T}looks.alpha_total": MAX, f"{_T}bh_q": MAX, f"{_T}nightly_pair_cap": FIXED,
+            f"{_T}hierarchical_rate_alpha": FIXED, f"{_T}ci.bootstrap_resamples": FIXED, f"{_T}ci.level": MIN,
+            f"{_T}forward_validation.min_monthly_folds": MIN, f"{_T}forward_validation.min_sign_consistent_share": MIN,
+            f"{_T}discrimination.min_auc_ci_lower": MIN,
+        },
+        "PIT_RULES": {f"{_T}listed_min_days": FIXED, f"{_T}volume_window_days": FIXED,
+                      f"{_T}min_median_daily_quote_volume_usdt": FIXED, "xsec_requires_pit": FIXED},
+    }
+
+
 LIB_V1 = freeze(_lib())
 WF_PROTOCOL_V1 = freeze(_wf())
 STATS_V1 = freeze(_stats())
@@ -758,6 +875,9 @@ LESSON_REGISTRY_V1 = freeze(_lessons())
 PIT_RULES_V1 = freeze(_pit())
 PRIOR_TRIALS_V1 = freeze(_load_json(PRIOR_TRIALS_FILE))
 CONFIG_EPOCHS_V1 = freeze(_load_json(CONFIG_EPOCHS_FILE))
+THRESHOLD_DIRECTIONS_V1 = freeze(_directions())
+#: S1 yön tablosu (değişmez; S2 ve sonraki sürümler yönlerini AYRI tabloyla ekler)
+THRESHOLD_DIRECTIONS = THRESHOLD_DIRECTIONS_V1
 
 LIB_V1_SHA = sha256_canonical(LIB_V1)
 WF_PROTOCOL_V1_SHA = sha256_canonical(WF_PROTOCOL_V1)
@@ -766,11 +886,13 @@ LESSON_REGISTRY_V1_SHA = sha256_canonical(LESSON_REGISTRY_V1)
 PIT_RULES_V1_SHA = sha256_canonical(PIT_RULES_V1)
 PRIOR_TRIALS_V1_SHA = sha256_canonical(PRIOR_TRIALS_V1)
 CONFIG_EPOCHS_V1_SHA = sha256_canonical(CONFIG_EPOCHS_V1)
+THRESHOLD_DIRECTIONS_V1_SHA = sha256_canonical(THRESHOLD_DIRECTIONS_V1)
 
 #: S1 mühür kümesi (ad → kayıt). Sıra = belge §8.2 sırası.
 REGISTRIES: Mapping[str, Any] = MappingProxyType({
     "LIB_V1": LIB_V1, "WF_PROTOCOL_V1": WF_PROTOCOL_V1, "STATS_V1": STATS_V1, "LESSON_REGISTRY_V1": LESSON_REGISTRY_V1,
-    "PIT_RULES_V1": PIT_RULES_V1, "PRIOR_TRIALS_V1": PRIOR_TRIALS_V1, "CONFIG_EPOCHS_V1": CONFIG_EPOCHS_V1})
+    "PIT_RULES_V1": PIT_RULES_V1, "PRIOR_TRIALS_V1": PRIOR_TRIALS_V1, "CONFIG_EPOCHS_V1": CONFIG_EPOCHS_V1,
+    "THRESHOLD_DIRECTIONS_V1": THRESHOLD_DIRECTIONS_V1})
 SHAS: Mapping[str, str] = MappingProxyType({name: sha256_canonical(reg) for name, reg in REGISTRIES.items()})
 S1_SEAL = freeze({"seal": SEAL_ID, "doc": SEAL_DOC, "shas": dict(SHAS), "t_seal_ms": T_SEAL_MS})
 #: `trials.jsonl` satırlarının ve (S2'de) manifestin `registry_sha`'sı: S1 mühür kümesinin sha'sı
@@ -889,9 +1011,10 @@ def family_counts(lib: Mapping = LIB_V1) -> dict[str, int]:
     return out
 
 
-def auto_v1_table_count(lib: Mapping = LIB_V1) -> int:
-    """§2.2 "Oto" sütununun toplamı (§7.5 AUTO_CATALOG_V1 taslağı: 64)."""
-    return sum(1 for v in lib["variants"] if not v.get("alias_of") and v["auto_v1_table"])
+def oto_column_pre_s5_count(lib: Mapping = LIB_V1) -> int:
+    """§2.2 "Oto" sütununun (S5 ÖNCESİ; §7.5 taslağı) toplamı: 64. Yalnız tarihsel kayıt: S5 bu sütunu geçersiz kılar,
+    yönlendirme S2'nin `AUTO_CATALOG_V1`'iyle yapılır."""
+    return sum(1 for v in lib["variants"] if not v.get("alias_of") and v["oto_column_pre_s5"])
 
 
 def explore_series(lib: Mapping = LIB_V1) -> int:
@@ -937,52 +1060,44 @@ def unspecified_gaps(registries: Mapping[str, Any] = REGISTRIES) -> list[tuple[s
     return out
 
 
-def variant_gaps(variant: Mapping) -> list[str]:
-    """Bir varyantın UNSPECIFIED alanları (P3b: varsa çalıştırılmaz, `UNSPECIFIED_PARAM`)."""
-    return [p for p, v in _walk(variant) if is_gap(v)]
+def variant_gaps(variant: Mapping, lib: Mapping = LIB_V1) -> list[str]:
+    """Bir varyantın UNSPECIFIED boşlukları, LIB-köküne göre yol olarak: kendi alanları (`variants[<id>].…`) + `requires`
+    bağımlılıklarındaki (`defaults.er20_timeframe`, `covers.factors.<F>.…`, `copy_books.<taban>.…`). Boş değilse varyant
+    gerçek veride hiçbir katmanda çalıştırılmaz (`UNSPECIFIED_PARAM`), bütçede sayılır."""
+    vid = variant["variant_id"]
+    out = [f"variants[{vid}].{p}" for p, v in _walk(variant) if is_gap(v)]
+    for dep in variant.get("requires") or ():
+        for p, v in _walk(get_path(lib, dep)):
+            if is_gap(v):
+                out.append(f"{dep}.{p}" if p else dep)
+    return sorted(set(out))
+
+
+def blocked_variants(lib: Mapping = LIB_V1) -> dict[str, list[str]]:
+    """varyant → boşlukları (yalnız boşluğu olanlar; alias'lar dahil)."""
+    out = {}
+    for v in lib["variants"]:
+        g = variant_gaps(v, lib)
+        if g:
+            out[v["variant_id"]] = g
+    return out
+
+
+def protocol_gaps(registries: Mapping[str, Any] = REGISTRIES) -> list[tuple[str, str]]:
+    """Varyanta bağlanmayan boşluklar (WF/istatistik/ders/PIT protokolü, §2.4 kuralları): dolmadan hiçbir gerçek veri WF,
+    Kapı A ya da ders bakışı koşusu yapılmaz (ilgili satır türü için)."""
+    lib = registries["LIB_V1"]
+    deps = {d for v in lib["variants"] for d in (v.get("requires") or ())}
+    out = []
+    for path, text in unspecified_gaps(registries):
+        rel = path[len("LIB_V1."):] if path.startswith("LIB_V1.") else None
+        if rel is not None and (rel.startswith("variants[") or any(rel == d or rel.startswith(d + ".") for d in deps)):
+            continue
+        out.append((path, text))
+    return out
 
 
 # ============================================================================ asla gevşetme (§8.2)
-MAX, MIN, FIXED = "max", "min", "fixed"
-#: kayıt adı (sürümsüz) → {`thresholds` altındaki yol: yön}. Liste değerlerinde yön ÖĞE BAŞINA uygulanır (uzunluk sabit).
-THRESHOLD_DIRECTIONS: Mapping[str, Mapping[str, str]] = freeze({
-    "LIB": {
-        "parity_kernel.min_synthetic_trades_per_family": MIN, "parity_kernel.min_signal_identity_share": MIN,
-        "parity_kernel.max_median_abs_dr": MAX, "parity_kernel.max_p95_abs_dr": MAX,
-        "parity_copy.min_policy_entries_per_epoch": MIN, "parity_copy.min_same_bar_side_share": MIN,
-        "parity_copy.max_median_abs_dr": MAX,
-        "sizing.min_liq_distance_stop_mult": MIN,
-        "eligibility.min_history_days_1h_plus": MIN, "eligibility.min_history_days_5m": MIN, "eligibility.max_gap_share": MAX,
-        "eligibility.min_archive_verified_share": MIN, "eligibility.min_pre_seal_trades": MIN,
-        "shrinkage.k_trades": MIN, "shrinkage.pool_tie_margin_r": MIN,
-        "cluster_coherence.min_ex_coin_oos_adverse_mean_r": MIN,
-        "single_instrument.max_oos_profit_share": MAX,
-        "promotion_side.max_single_coin_books_same_coin": MAX, "promotion_side.max_single_coin_books_total": MAX,
-        "derived_specs.max_specs_per_month": MAX,
-        "transforms.stop_floor_k_atr": FIXED,
-    },
-    "WF_PROTOCOL": {
-        **{f"folds.{c}.{k}": (MIN if k.startswith("min_") else FIXED)
-           for c, ks in ((WF_H1, ("min_train_days", "validation_days", "test_days", "step_days")),
-                         (WF_INTRADAY, ("train_days", "validation_days", "test_days", "step_days")),
-                         (WF_GOLD, ("min_train_days", "validation_days", "test_days", "step_days"))) for k in ks},
-        "warmup_bars": MIN, "purge_signal_bars": MIN, "positive_fold_min_trades": MIN, "candidates_top_k": MAX,
-        **{f"costs.{s}.{k}": (FIXED if k == "fee_sides" else MIN)
-           for s in ("base", "ADVERSE", "STRESS") for k in ("taker_fee_pct", "fee_sides", "slippage_bps", "spread_ticks")},
-    },
-    "STATS": {
-        "p_day.resamples": MIN, "bh_q": MAX, "bh_family_min_oos_trades": FIXED, "effective_n_abs_rho": FIXED,
-        "pbo.blocks": FIXED, "pbo.min_configs": MIN, "pbo.min_oos_days_per_block": MIN,
-        "placebo.k_per_trade": MIN, "placebo.ci_level": MIN, "placebo.min_ci_lower": MIN, "null_world.worlds": MIN,
-    },
-    "LESSON_REGISTRY": {
-        "eligibility.min_n": MIN, "eligibility.min_distinct_days": MIN, "looks.n_thresholds": FIXED, "looks.alphas": MAX,
-        "looks.alpha_total": MAX, "bh_q": MAX, "nightly_pair_cap": FIXED, "hierarchical_rate_alpha": FIXED,
-        "ci.bootstrap_resamples": MIN, "ci.level": MIN, "forward_validation.min_monthly_folds": MIN,
-        "forward_validation.min_sign_consistent_share": MIN, "discrimination.min_auc_ci_lower": MIN,
-    },
-    "PIT_RULES": {"listed_min_days": MIN, "volume_window_days": FIXED, "min_median_daily_quote_volume_usdt": MIN},
-})
 #: kayıt adı → sürümler (v1 önce). Yeni bir sürüm (`STATS_V2` …) buraya EKLENİR; test her sürümü v1'e karşı sınar.
 REGISTRY_VERSIONS: Mapping[str, tuple] = MappingProxyType({
     "LIB": (LIB_V1,), "WF_PROTOCOL": (WF_PROTOCOL_V1,), "STATS": (STATS_V1,), "LESSON_REGISTRY": (LESSON_REGISTRY_V1,),
@@ -1003,7 +1118,7 @@ def _num(x: Any) -> bool:
 
 
 def threshold_leaves(reg: Mapping) -> dict[str, Any]:
-    """`thresholds` altındaki bütün sayısal yapraklar (sayı listesi tek yaprak sayılır)."""
+    """`thresholds` altındaki bütün sayısal yapraklar, KÖK-GÖRELİ yolla (`thresholds.…`; sayı listesi tek yaprak)."""
     out: dict[str, Any] = {}
 
     def rec(x: Any, p: str) -> None:
@@ -1012,7 +1127,7 @@ def threshold_leaves(reg: Mapping) -> dict[str, Any]:
                 rec(x[k], f"{p}.{k}" if p else k)
         elif _num(x) or (isinstance(x, (list, tuple)) and x and all(_num(i) for i in x)):
             out[p] = x
-    rec(reg.get("thresholds", {}), "")
+    rec(reg.get("thresholds", {}), "thresholds")
     return out
 
 
@@ -1029,12 +1144,12 @@ def _looser(direction: str, old: Any, new: Any) -> bool:
 
 
 def looser_than(v1: Mapping, vn: Mapping, directions: Mapping[str, str]) -> list[str]:
-    """`vn`'in `thresholds` değerlerinden v1'e göre GEVŞEK olanlar (eksik eşik de gevşektir)."""
+    """`vn`'in yön tablosundaki (kök-göreli) değerlerinden v1'e göre GEVŞEK olanlar (eksik eşik de gevşektir)."""
     bad = []
     for path, d in sorted(directions.items()):
-        old = get_path(v1["thresholds"], path)
+        old = get_path(v1, path)
         try:
-            new = get_path(vn["thresholds"], path)
+            new = get_path(vn, path)
         except KeyError:
             bad.append(f"{path}: eşik kaldırıldı")
             continue
@@ -1047,8 +1162,9 @@ __all__ = ["CLUSTERS", "CONFIG_EPOCHS_FILE", "CONFIG_EPOCHS_V1", "CONFIG_EPOCHS_
            "LESSON_REGISTRY_V1_SHA", "LIB_V1", "LIB_V1_SHA", "LIB_VERSION", "MAX", "MIN", "P23", "PIT_RULES_V1",
            "PIT_RULES_V1_SHA", "PRIOR_TRIALS_FILE", "PRIOR_TRIALS_V1", "PRIOR_TRIALS_V1_SHA", "REGISTRIES", "REGISTRY_SHA",
            "REGISTRY_VERSIONS", "S1_SEAL", "SHAS", "SPEC_KEYS", "STATS_V1", "STATS_V1_SHA", "THRESHOLD_DIRECTIONS",
-           "T_SEAL_MS", "UNSPECIFIED", "WF_PROTOCOL_V1", "WF_PROTOCOL_V1_SHA", "auto_v1_table_count", "budget_table",
-           "canonical_bytes", "coin_fit_grid", "explore_series", "family_counts", "freeze", "gap", "gate_a_rows", "get_path",
-           "is_gap", "is_sha256", "lib_spec", "looser_than", "n_at_seal", "pretty_json", "prior_total", "sha256_canonical",
+           "THRESHOLD_DIRECTIONS_V1", "THRESHOLD_DIRECTIONS_V1_SHA", "T_SEAL_MS", "UNSPECIFIED", "WF_PROTOCOL_V1",
+           "WF_PROTOCOL_V1_SHA", "blocked_variants", "budget_table", "canonical_bytes", "coin_fit_grid", "explore_series",
+           "family_counts", "freeze", "gap", "gate_a_rows", "get_path", "is_gap", "is_sha256", "lib_spec", "looser_than",
+           "n_at_seal", "oto_column_pre_s5_count", "pretty_json", "prior_total", "protocol_gaps", "sha256_canonical",
            "spec_sha", "thaw", "threshold_leaves", "unique_variant_count", "unspecified_gaps", "variant_gaps",
            "variants_by_id"]

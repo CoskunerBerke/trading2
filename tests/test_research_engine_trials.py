@@ -1,11 +1,16 @@
 # -*- coding: utf-8 -*-
 """Sürekli öğrenme motoru P3a — deneme defteri `trials/trials.jsonl` (docs/ENGINE_BRAIN_V1.md §3.5, §2.6; §8.1 P3a kabulü).
 
-* Yalnız ekleme: her eklemeden önceki baytlar sonraki dosyanın öneki; modülde yeniden yazma yolu yok (AST).
+* Yalnız ekleme: her eklemeden önceki baytlar sonraki dosyanın öneki; tek yazım yolu atomik değiştirme (geçici dosya +
+  fsync + geri okuma + önek denetimi + os.replace + klasör fsync), başka yeniden yazma yolu yok (AST); her çökme noktası
+  hedefi bozmadan bırakır; yazarlar flock altında.
 * Hash zinciri + kurcalama tespiti: alan değişikliği, satır silme/yer değiştirme/ekleme, yarım satır, boşluk oynaması,
-  sayaç oynaması (zincir yeniden hesaplansa bile), tekil anahtar tekrarı; kırık zincire eklenmez.
-* Sayaçlar hiç azalmaz (özellik testi) ve yeniden hesapla eşittir; DSR N = N_raw + N_lesson + N_explore.
-* Öncül = 2.775 (`kind=PRIOR`, bir kez); `spec_sha` tekilleştirme (aynı lib/spec/kapsam bir kez, farklı kapsam ayrı satır).
+  sayaç oynaması (zincir yeniden hesaplansa bile), tekil anahtar tekrarı, NaN/Infinity/1e999/yalnız vekil, bool/float
+  zincir alanları; hiçbiri istisna fırlatmaz; kırık zincire eklenmez.
+* Sayaçlar hiç azalmaz: dosya içinde (özellik testi) ve dosyalar arasında (HWM: satır sınırında kesme = ROLLED_BACK);
+  DSR N = N_raw + N_lesson + N_explore.
+* Öncül = 2.775 (`kind=PRIOR`, bir kez); `spec_sha` tekilleştirme (aynı LIB ailesi/spec/kapsam bir kez — aylık
+  `LIB_v1.<AAAA-AA>` dahil; farklı kapsam ve yeni ana sürüm ayrı satır).
 * `engine-query trials [--like]`: salt-okunur, ≤ 150 satır / ≤ 4 KB, config yüklemez, kilit almaz.
 """
 from __future__ import annotations
@@ -13,7 +18,9 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
+import os
 import random
+import threading
 from pathlib import Path
 
 import pytest
@@ -75,8 +82,13 @@ def test_spec_sha_dedup_scopes_and_counter_effects(tmp_path):
     assert led.append([_spec(1)])[0] == {"status": "DUPLICATE", "seq": res[0]["seq"], "row_sha": None,
                                          "key": ["TRIAL", "LIB_v1"]}
     assert TR.TrialsLedger(p).append([_spec(1)])[0]["seq"] == res[0]["seq"], "yeniden yüklemeden sonra da tekil"
+    monthly = dict(_spec(1), lib_version="LIB_v1.2026-11")
+    assert TR.TrialsLedger(p).append([monthly])[0]["status"] == "DUPLICATE", "aylık türeyen mühür aynı LIB ailesi (T3/T4)"
     other_lib = dict(_spec(1), lib_version="LIB_v2")
-    assert TR.TrialsLedger(p).append([other_lib])[0]["status"] == "APPENDED", "farklı LIB sürümü yeni deneme"
+    assert TR.TrialsLedger(p).append([other_lib])[0]["status"] == "APPENDED", "yeni ana LIB sürümü yeni deneme"
+    for bad in ("LIB_v1.2026-13", "LIB_v1-x", "lib_v1"):
+        with pytest.raises(TR.TrialRowError):
+            TR.TrialsLedger(p).append([dict(_spec(5), lib_version=bad)])
     led = TR.TrialsLedger(p)
     led.append([{"kind": "LOOK_A", "row_id": "V1@POOLED_P23", "look_no": 1, "at": AT, "p_day": 0.2, "q_bh": 0.5,
                  "verdict": "GEÇMEDİ"},
@@ -124,10 +136,12 @@ def test_seal_entries_register_exactly_the_budget_and_n_at_seal_is_4513(tmp_path
     ({"kind": "LOOK_A", "row_id": "x", "look_no": 1, "p_day": float("nan")}, "sonlu"),
     ({"kind": "BIRTH", "row_id": "x", "N_raw_cum": 5}, "bilinmeyen"),
     ({"kind": "BIRTH", "row_id": "x", "params": {"o": object()}}, ""),
+    ({"kind": "BIRTH", "row_id": "x", "params": {"s": "\ud800"}}, "UTF-8"),
+    ({"kind": "BIRTH", "row_id": "x", "params": {"f": float("inf")}}, ""),
 ])
 def test_row_validation(tmp_path, bad, msg):
     led = TR.TrialsLedger(_paths(tmp_path))
-    with pytest.raises((TR.TrialRowError, TypeError)) as ei:
+    with pytest.raises((TR.TrialRowError, TypeError, ValueError)) as ei:
         led.append([dict(bad, at=AT)])
     assert msg in str(ei.value)
     assert not _paths(tmp_path).trials_file.exists(), "geçersiz satır hiçbir şey yazmaz"
@@ -173,28 +187,144 @@ def test_append_only_prefix_and_counters_never_decrease_property(tmp_path):
 
 
 def test_no_rewrite_path_in_the_trials_module():
-    """Modülde var olan baytları yeniden yazan/kesen/silen yol yoktur: tek yazım `os.open(... O_APPEND ...)`."""
+    """Var olan baytları değiştiren tek yol `_atomic_replace`'tir: modülde TEK `os.replace` (orada), silme yalnız kendi
+    geçici dosyası (`tmp`), O_TRUNC/O_APPEND yok, yerleşik `open` yalnız okuma kipinde, `os.fdopen` yalnız orada ve
+    önek denetimi (`startswith`) orada."""
     tree = ast.parse((ROOT / "tradingbot" / "research_engine" / "trials.py").read_text(encoding="utf-8"))
-    forbidden_attrs = {"replace", "rename", "remove", "unlink", "truncate", "ftruncate", "write_bytes", "write_text",
-                       "write_json", "write_json_gz", "write_jsonl_gz", "append_jsonl", "write_gzip_stream", "rmtree"}
-    opens = 0
+    forbidden = {"rename", "renames", "remove", "truncate", "ftruncate", "write_bytes", "write_text", "write_json",
+                 "write_json_gz", "write_jsonl_gz", "append_jsonl", "write_gzip_stream", "rmtree", "move", "copyfile"}
+    funcs = {n.name: n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
+    atomic = funcs["_atomic_replace"]
+    in_atomic = {id(n) for n in ast.walk(atomic)}
+    replaces = 0
     for node in ast.walk(tree):
-        if isinstance(node, ast.Call):
-            f = node.func
-            name = f.attr if isinstance(f, ast.Attribute) else f.id if isinstance(f, ast.Name) else ""
-            owner = f.value.id if isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name) else ""
-            if name in forbidden_attrs and owner in ("os", "shutil", "self", "paths", "Path", "") and name != "replace":
-                raise AssertionError(f"yasak çağrı {owner}.{name} satır {node.lineno}")
-            if name == "replace" and owner in ("os", "shutil"):
-                raise AssertionError(f"os.replace satır {node.lineno}")
-            if name == "open" and owner == "":
-                mode = node.args[1].value if len(node.args) > 1 and isinstance(node.args[1], ast.Constant) else "r"
-                assert mode in ("r", "rb"), f"open kipi {mode!r} satır {node.lineno}"
-            if name == "open" and owner == "os":
-                opens += 1
-                flags = ast.unparse(node.args[1])
-                assert "O_APPEND" in flags and "O_TRUNC" not in flags, flags
-    assert opens == 1, "tek yazım yolu"
+        if isinstance(node, ast.Name) and node.id in ("shutil",):
+            raise AssertionError("shutil kullanımı")
+        if not isinstance(node, ast.Call):
+            continue
+        f = node.func
+        name = f.attr if isinstance(f, ast.Attribute) else f.id if isinstance(f, ast.Name) else ""
+        owner = f.value.id if isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name) else ""
+        assert name not in forbidden, f"yasak çağrı {owner}.{name} satır {node.lineno}"
+        if name == "replace" and owner == "os":
+            replaces += 1
+            assert id(node) in in_atomic, f"os.replace yalnız _atomic_replace içinde (satır {node.lineno})"
+        if name == "unlink":
+            assert owner == "os" and [ast.unparse(x) for x in node.args] == ["tmp"], f"silme yalnız tmp (satır {node.lineno})"
+        if name == "open" and owner == "":
+            mode = node.args[1].value if len(node.args) > 1 and isinstance(node.args[1], ast.Constant) else "r"
+            assert mode in ("r", "rb"), f"open kipi {mode!r} satır {node.lineno}"
+        if name == "fdopen":
+            assert id(node) in in_atomic, f"fdopen yalnız _atomic_replace içinde (satır {node.lineno})"
+        if name == "open" and owner == "os":
+            flags = ast.unparse(node.args[1])
+            assert "O_TRUNC" not in flags and "O_APPEND" not in flags and "O_WRONLY" not in flags, flags
+    assert replaces == 1, "tek yeniden adlandırma yolu"
+    assert any(isinstance(n, ast.Attribute) and n.attr == "startswith" for n in ast.walk(atomic)), "önek denetimi"
+    assert any(isinstance(n, ast.Attribute) and n.attr == "fsync" for n in ast.walk(atomic)), "fsync"
+
+
+def _snapshot(p: EnginePaths) -> tuple[bytes, bytes]:
+    return p.trials_file.read_bytes(), p.trials_hwm_file.read_bytes()
+
+
+def _no_tmp_left(p: EnginePaths) -> bool:
+    return not [x for x in p.trials_dir.iterdir() if x.name.endswith(".tmp")]
+
+
+def test_crash_at_every_write_point_leaves_the_ledger_intact(tmp_path, monkeypatch):
+    """OOM/SIGKILL/ENOSPC/elektrik kesintisinin karşılığı: geçici dosya yazımı, fsync, geri okuma ya da os.replace'te
+    hata → hedef bayt bayt aynı, zincir sağlam, geçici dosya kalmaz; sonraki ekleme normal çalışır."""
+    p = _paths(tmp_path)
+    led = TR.TrialsLedger(p)
+    led.import_priors(at=AT)
+    before = _snapshot(p)
+    real_replace, real_fsync, real_read = os.replace, os.fsync, TR.read_raw
+
+    def boom(*a, **k):
+        raise OSError(28, "No space left on device")
+
+    for name, patch in (("replace", lambda: monkeypatch.setattr(TR.os, "replace", boom)),
+                        ("fsync", lambda: monkeypatch.setattr(TR.os, "fsync", boom)),
+                        ("readback", lambda: monkeypatch.setattr(TR, "read_raw", lambda path: (
+                            real_read(path)[:-7] if str(path).endswith(".tmp") else real_read(path))))):
+        patch()
+        with pytest.raises((OSError, TR.TrialsWriteError)):
+            TR.TrialsLedger(p).append([_spec(1)])
+        monkeypatch.setattr(TR.os, "replace", real_replace)
+        monkeypatch.setattr(TR.os, "fsync", real_fsync)
+        monkeypatch.setattr(TR, "read_raw", real_read)
+        assert _snapshot(p) == before, name
+        assert TR.verify_ledger(p)["ok"] and _no_tmp_left(p), name
+    # defter değiştirildi ama HWM yazılamadı (ikinci os.replace'te çöküş): dosya HWM'nin ÖNÜNDE → sağlam
+    calls = {"n": 0}
+
+    def second_fails(src, dst):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise OSError(5, "I/O error")
+        return real_replace(src, dst)
+    monkeypatch.setattr(TR.os, "replace", second_fails)
+    with pytest.raises(OSError):
+        TR.TrialsLedger(p).append([_spec(1)])
+    monkeypatch.setattr(TR.os, "replace", real_replace)
+    assert p.trials_hwm_file.read_bytes() == before[1] and p.trials_file.read_bytes().startswith(before[0])
+    st = TR.verify_ledger(p)
+    assert st["ok"] and st["rows"] == 11 and _no_tmp_left(p)
+    assert TR.TrialsLedger(p).append([_spec(2)])[0]["status"] == "APPENDED"
+    hwm, err = TR.read_hwm(p.trials_hwm_file)
+    assert err is None and hwm["rows"] == 12 and hwm["counters"]["N_raw_cum"] == 2775 + 2
+
+
+def test_rollback_to_a_shorter_or_different_ledger_is_detected(tmp_path):
+    """Satır sınırında kesme (eski yedeğin geri yüklenmesi, disk hatası, elle düzenleme) zincir olarak geçerlidir ama
+    sayaçları düşürür: HWM ile ROLLED_BACK; eklenmez; sorgu gösterir. Aynı uzunlukta başka bir zincir de ROLLED_BACK."""
+    p = _paths(tmp_path)
+    led = TR.TrialsLedger(p)
+    led.import_priors(at=AT)
+    full = p.trials_file.read_bytes()
+    lines = full.split(b"\n")[:-1]
+    p.trials_file.write_bytes(b"\n".join(lines[:4]) + b"\n")
+    assert TR.verify_chain(p.trials_file)["ok"], "HWM'siz bakışta önek geçerli bir zincirdir"
+    st = TR.verify_ledger(p)
+    assert st["code"] == "ROLLED_BACK" and not st["ok"] and st["counters"]["N_raw_cum"] < 2775, st
+    with pytest.raises(TR.TrialsChainBroken, match="ROLLED_BACK"):
+        TR.TrialsLedger(p).append([_spec(1)])
+    from tradingbot.research_engine.query import run_query
+    text = "\n".join(run_query(p, topic="trials")[0])
+    assert "KIRIK (ROLLED_BACK" in text and "HWM (son yazım): 10 satır" in text and "DSR N 2.775" in text
+    p.trials_file.write_bytes(b"")
+    assert TR.verify_ledger(p)["code"] == "ROLLED_BACK", "boşaltılmış defter"
+    # aynı uzunlukta başka bir geçerli zincir (farklı 'at')
+    other = _paths(tmp_path / "o")
+    TR.TrialsLedger(other).import_priors(at="2026-10-21T01:40:00+00:00")
+    p.trials_file.write_bytes(other.trials_file.read_bytes())
+    assert TR.verify_ledger(p)["code"] == "ROLLED_BACK"
+    p.trials_file.write_bytes(full)
+    assert TR.verify_ledger(p)["ok"]
+    p.trials_hwm_file.write_bytes(b'{"schema":"trials_hwm_v1","rows":true}\n')
+    st = TR.verify_ledger(p)
+    assert st["code"] == "BAD_HWM" and not st["ok"]
+    with pytest.raises(TR.TrialsChainBroken, match="BAD_HWM"):
+        TR.TrialsLedger(p).append([_spec(1)])
+
+
+def test_writers_serialise_on_the_flock(tmp_path):
+    p = _paths(tmp_path)
+    a = TR.TrialsLedger(p)
+    a.import_priors(at=AT)
+    done = threading.Event()
+    res = {}
+
+    def writer():
+        res["r"] = TR.TrialsLedger(p).append([_spec(9)])
+        done.set()
+    with a._locked():
+        t = threading.Thread(target=writer)
+        t.start()
+        assert not done.wait(0.4), "kilit tutulurken ikinci yazar beklemeli"
+    t.join(30)
+    assert done.is_set() and res["r"][0]["status"] == "APPENDED" and TR.verify_ledger(p)["rows"] == 11
 
 
 # ============================================================================ kurcalama tespiti
@@ -249,9 +379,63 @@ def test_tamper_detection_matrix(tmp_path):
             TR.TrialsLedger(p).append([_spec(77)])
     _write(p, lines, tail=b"\n" + lines[0][:40])                                 # yarım son satır
     st = TR.verify_chain(p.trials_file)
+    full = TR.verify_bytes(b"\n".join(lines) + b"\n")
     assert st["code"] == "TORN_TAIL" and st["bad_seq"] == len(lines) + 1
+    assert st["counters"] == full["counters"] and st["head_sha"] == full["head_sha"] and st["rows"] == len(lines), \
+        "yarım satırda sayaçlar/baş doğrulanmış tam satırlarındır"
     with pytest.raises(TR.TrialsChainBroken):
         TR.TrialsLedger(p).append([_spec(77)])
+    _write(p, lines[:5] + [lines[5][:-3]], tail=b"\n" + b'{"x')               # önekte de kırık: ilk kırık bildirilir
+    assert TR.verify_chain(p.trials_file)["code"] == "BAD_JSON"
+
+
+@pytest.mark.parametrize("label, mutate, code", [
+    ("nan", lambda b: b.replace(b'"p_day":null', b'"p_day":NaN'), "BAD_JSON"),
+    ("inf", lambda b: b.replace(b'"p_day":null', b'"p_day":Infinity'), "BAD_JSON"),
+    ("ninf", lambda b: b.replace(b'"p_day":null', b'"p_day":-Infinity'), "BAD_JSON"),
+    ("1e999", lambda b: b.replace(b'"p_day":null', b'"p_day":1e999'), "BAD_JSON"),
+    ("surrogate", lambda b: b.replace(b'"verdict":null', b'"verdict":"\\ud800"'), "NOT_CANONICAL"),
+    ("bad_utf8", lambda b: b.replace(b'"verdict":null', b'"verdict":"\xff"'), "BAD_JSON"),
+    ("deep", lambda b: b.replace(b'"params":{', b'"params":{"d":' + b"[" * 100000 + b"]" * 100000 + b',', 1), "BAD_JSON"),
+])
+def test_non_json_values_are_codes_not_exceptions(tmp_path, label, mutate, code):
+    p, lines = _built(tmp_path)
+    i = 11
+    bad = mutate(lines[i])
+    assert bad != lines[i], label
+    _write(p, lines[:i] + [bad] + lines[i + 1:])
+    st = TR.verify_chain(p.trials_file)
+    assert not st["ok"] and st["code"] == code and st["bad_seq"] == i + 1, (label, st)
+    with pytest.raises(TR.TrialsChainBroken):
+        TR.TrialsLedger(p).append([_spec(77)])
+    from tradingbot.research_engine.query import run_query
+    lines_q, rc = run_query(p, topic="trials", like="V1")
+    assert rc == 0 and any("KIRIK" in x for x in lines_q)
+    "\n".join(lines_q).encode("utf-8")
+
+
+@pytest.mark.parametrize("field, value", [("seq", True), ("N_raw_cum", "float"), ("N_lesson_cum", -0.0),
+                                          ("prev_sha", "upper"), ("row_sha", "short")])
+def test_chain_fields_must_be_plain_ints_and_hex(tmp_path, field, value):
+    """`seq=true`, `N_raw_cum=2775.0` gibi değerler Python'da eşit görünür; zincir yeniden hesaplansa bile BAD_SCHEMA."""
+    p, lines = _built(tmp_path)
+    rows = [json.loads(x) for x in lines]
+    i = 0 if field == "seq" else 3
+    r = dict(rows[i])
+    if value == "float":
+        r[field] = float(r[field])
+    elif value == "upper":
+        r[field] = r[field].upper() if r[field] != TR.GENESIS else "A" * 64
+    elif value == "short":
+        r[field] = r[field][:63]
+    else:
+        r[field] = value
+    if field != "row_sha":
+        r["row_sha"] = TR.row_sha(r)
+    raw = TR.RG.canonical_bytes(r)
+    _write(p, lines[:i] + [raw] + lines[i + 1:])
+    st = TR.verify_chain(p.trials_file)
+    assert not st["ok"] and st["code"] == "BAD_SCHEMA" and st["bad_seq"] == i + 1, (field, st)
 
 
 def test_concurrent_change_between_load_and_append_is_refused(tmp_path):
@@ -270,8 +454,12 @@ def test_writes_stay_under_the_research_root(tmp_path):
     p = _paths(tmp_path)
     led = TR.TrialsLedger(p)
     led.import_priors(at=AT)
-    files = [x for x in (tmp_path / "data").rglob("*") if x.is_file()]
-    assert files == [p.trials_file] and p.is_under_research(p.trials_file)
+    files = sorted(x for x in (tmp_path / "data").rglob("*") if x.is_file())
+    assert files == sorted([p.trials_file, p.trials_hwm_file, p.trials_lock_file])
+    assert all(p.is_under_research(f) for f in files)
+    hwm, err = TR.read_hwm(p.trials_hwm_file)
+    st = TR.verify_chain(p.trials_file)
+    assert err is None and (hwm["rows"], hwm["head_sha"], hwm["counters"]) == (st["rows"], st["head_sha"], st["counters"])
 
 
 # ============================================================================ engine-query trials
@@ -331,3 +519,15 @@ def test_engine_query_trials_without_a_ledger(tmp_path):
     assert TR.QUERY_MAX_LINES == 150 and TR.QUERY_MAX_BYTES == 4096
     from tradingbot.research_engine import report as RP
     assert (RP.QUERY_MAX_LINES, RP.QUERY_MAX_BYTES) == (TR.QUERY_MAX_LINES, TR.QUERY_MAX_BYTES)
+
+
+def test_engine_query_counts_every_match_and_shows_the_newest(tmp_path):
+    """2.000'lik kesme yok: bütün eşleşmeler sayılır, en yeni 40 satır en yeniden geriye gösterilir."""
+    p = _paths(tmp_path)
+    led = TR.TrialsLedger(p)
+    led.append([{"kind": "LOOK_A", "row_id": f"R{i}@POOLED_P23", "look_no": 1, "at": AT} for i in range(2100)])
+    from tradingbot.research_engine.query import run_query
+    lines, rc = run_query(p, topic="trials", like="look_a")
+    shown = [x for x in lines if x.startswith("  #")]
+    assert rc == 0 and "Defter satırı eşleşen: 2100 (en yeni 40)" in lines, lines[:12]
+    assert shown[0].startswith("  #2100 LOOK_A R2099@") and len(shown) <= 40

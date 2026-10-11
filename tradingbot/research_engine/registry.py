@@ -15,7 +15,9 @@ Kurallar (kodda zorlanır, testli):
   Boşluğu olan varyant gerçek veride HİÇBİR katmanda (WF, keşif, kapı) çalıştırılmaz (`UNSPECIFIED_PARAM`) ama deneme
   bütçesinde SAYILIR (sayılar mühürden sonra küçültülemez, §2.5). Protokol boşlukları (`WF_PROTOCOL_V1`, `STATS_V1`,
   `LESSON_REGISTRY_V1`, `PIT_RULES_V1`) dolmadan hiçbir gerçek veri WF/kapı/ders koşusu yapılmaz (`protocol_gaps`).
-  Belgenin açıkça yazdığı okunuşlar (`reading_tr`) gerekçesiyle yazılır.
+  Belgenin açıkça yazdığı okunuşlar (`reading_tr`) gerekçesiyle yazılır. Sahibin §8.5 cevabıyla (2026-10-11,
+  "Önerilenleri kabul et") dolan boşluklar `decided(...)` ile yazılır (`decision` = §8.5 maddesi, `reading_tr` "sahip
+  kararı 2026-10-11, §8.5 önerilen"); öneri olmayanlar (B9, altın stopları) boşluk kalır (`blocked_budget`).
 * **Sayılar koddan.** Bütçe tablosu (818 Kapı A satırı / 1.738 ham deneme), öncül toplamı (2.775), mühürde kümülatif N
   (4.513), keşif seri sayısı (3.745) ve §2.2 "Oto" sütunu (S5 öncesi, 64) `gate_a_rows` / `budget_table` / `prior_total` /
   `explore_series` / `oto_column_pre_s5_count` ile kayıttan YENİDEN ÜRETİLİR; belgedeki sayılara eşitlik testlidir.
@@ -51,13 +53,23 @@ SEAL_DOC = "docs/ENGINE_BRAIN_V1.md §8.2"
 #: ayarlanmaz). Keşif katmanı ve Kapı A'nın ileri okuması YALNIZ açılışı bu andan sonra olan barları kullanır (§5.1).
 #: Mühür commit'leri yalnız fast-forward (ya da merge commit) ile birleşir; rebase/squash/cherry-pick işleyen zamanı
 #: değiştirir → test kırılır → yeniden mühür.
-T_SEAL_MS = 1791740640000
+T_SEAL_MS = 1791747600000
 
 
 # ============================================================================ kanonik biçim ve donma
 def gap(text: str) -> dict:
     """Belgenin söylemediği bir ayrıntının açık işareti (uydurulmaz)."""
     return {"status": UNSPECIFIED, "gap": text}
+
+
+#: §8.5 boşluklarına sahibin cevabı (2026-10-11, "Önerilenleri kabul et"): önerilen varsayılanların hepsi kabul; öneri
+#: olmayanlar (B9 spread/XSEC, B10 altın stopları) boşluk kalır.
+OWNER_GAP_DECISION_TR = "sahip kararı 2026-10-11, §8.5 önerilen"
+
+
+def decided(item: str, text: str, **values: Any) -> dict:
+    """§8.5 boşluğunun sahip kararıyla doldurulmuş değeri: değer alanları + `decision` (§8.5 maddesi) + `reading_tr`."""
+    return {**values, "decision": item, "reading_tr": f"{OWNER_GAP_DECISION_TR} ({item}): {text}"}
 
 
 def thaw(x: Any) -> Any:
@@ -160,18 +172,24 @@ def _variant(variant_id: str, family: str, *, params: dict, timeframes: list[str
 #: çağrılır). Değerler mühür anındaki canlı config'tir (`config.yaml` @ db5db96 = son `CONFIG_EPOCHS_V1` dönemi); kernel
 #: büyüklüğü/kaldıracı kendisi belirler (§2.1), bu yüzden defterin bakiye/kaldıraç/slot ayarları kopya spec'ine girmez.
 #: `max_hold`: canlı kuralın zaman stopu (WF arındırma/ambargosu = 1 sinyal barı + max_hold, §3.1; O_<taban>_X_TIME =
-#: max_hold'un yarısı, §2.2); değerler canlı koddan okunur ve testte koda karşı sınanır.
-_NO_TIME_STOP = ("canlı {b} kuralında (ema200_trend.decide) zaman stopu yok: çıkış yalnız sinyal kuralı ve felaket stopu. "
-                 "Bu yüzden {b} kopyasının ve örtülerinin max_hold'u tanımsız → WF arındırma/ambargosu (1 sinyal barı + "
-                 "max_hold, §3.1) ve O_{b}_X_TIME ('max_hold'un yarısı') tanımsız; §2.2'nin '300 sinyal barı' varsayılanının "
-                 "kopyaya (yalnız WF için mi, kural olarak mı) uygulanıp uygulanmadığı yazılmadı")
+#: max_hold'un yarısı, §2.2); değerler canlı koddan okunur ve testte koda karşı sınanır. Canlı T2/M2 kuralında zaman stopu
+#: yoktur: sahip kararı B2 (a) ile §2.2 varsayılanı YALNIZ WF için kullanılır (`wf_only`; kural değişmez).
+def _wf_only_max_hold(b: str) -> dict:
+    return decided("B2 (a)", f"canlı {b} kuralında (ema200_trend.decide) zaman stopu yok ve kural DEĞİŞMEZ: {b} kopyası "
+                             "zaman stopuyla çıkmaz. §2.2'nin 'max_hold aksi yazılmadıkça 300 sinyal barı' varsayılanı YALNIZ "
+                             "WF arındırma/ambargosunun (1 sinyal barı + max_hold, §3.1) ve O_" + b + "_X_TIME'ın "
+                             "('max_hold'un yarısı' = 150 × 1d) tanımıdır",
+                   bars=DEFAULT_MAX_HOLD, tf="1d", wf_only=True, x_time_bars=DEFAULT_MAX_HOLD // 2,
+                   source="§2.2 varsayılanı (300 sinyal barı); canlı kuralda zaman stopu yok")
+
+
 COPY_BOOKS: dict[str, dict] = {
     "T2": {"book": "strategy_paper", "rule": "t2_trend_regime", "timeframes": ["1d"], "own_symbols": "LIVE_BOOK",
            "live": {"atr_mult": 3.0, "breakeven_at_mfe_r": 0.0, "max_entry_drift_pct": 0.0, "structures": "ENFORCE"},
-           "max_hold": gap(_NO_TIME_STOP.format(b="T2"))},
+           "max_hold": _wf_only_max_hold("T2")},
     "M2": {"book": "strategy_paper_m2", "rule": "m2_tsmom28", "timeframes": ["1d"], "own_symbols": "LIVE_BOOK",
            "live": {"atr_mult": 3.0, "breakeven_at_mfe_r": 0.0, "max_entry_drift_pct": 0.0, "structures": "ENFORCE"},
-           "max_hold": gap(_NO_TIME_STOP.format(b="M2"))},
+           "max_hold": _wf_only_max_hold("M2")},
     "BOX": {"book": "strategy_paper_box", "rule": "b1_box_fade", "timeframes": ["1d", "5m"], "own_symbols": "LIVE_BOOK",
             "live": {"near_frac": 0.1, "trigger": "break_prev", "long_stop": "day_low", "exit_kind": "box_mid", "exit_r": 2.0,
                      "eod_close": True, "allow_long": True, "allow_short": True, "breakeven_at_mfe_r": 0.0,
@@ -254,15 +272,17 @@ def _standard() -> list[dict]:
     for tf in ("1h", "4h"):
         out.append(_variant(
             f"KEL_20_2_{tf}", "E", params={"keltner_period": 20, "band_atr_mult": 2.0,
-                                           "center_line": gap("Keltner orta çizgisinin türü (EMA/SMA, kapanış/tipik fiyat) "
-                                                              "yazılmadı")},
+                                           "center_line": decided("B7", "Keltner orta çizgisi EMA20, kapanış fiyatından",
+                                                                  ma="EMA", period=20, price="close")},
             timeframes=[tf], signal_tf=tf, sides=SIDES_LS, rule_tr="Keltner 20, 2 ATR kapanış kırılımı",
             stop=_atr_stop(1.5), exit_rule="hedef ya da max_hold", target_r=2.0, max_hold_bars=48, oto_pre_s5=tf == "4h",
             wf_class=WF_H1, inputs=["ohlcv"]))
         out.append(_variant(
             f"BBSQ_20_{tf}", "E", params={"bb_period": 20, "bb_std": 2.0, "squeeze_lookback_bars": 120, "squeeze_pct_max": 20,
-                                          "breakout_ref": gap("sıkışmadaki 'kırılım'ın neye göre olduğu (bant dışına kapanış "
-                                                              "mı, başka seviye mi) yazılmadı")},
+                                          "breakout_ref": decided("B7", "sıkışmadaki kırılım = kapanışın BB(20,2) bandının "
+                                                                  "dışında olması (üst bandın üstü → long, alt bandın altı "
+                                                                  "→ short)", rule="CLOSE_OUTSIDE_BB", bb_period=20,
+                                                                  bb_std=2.0)},
             timeframes=[tf], signal_tf=tf, sides=SIDES_LS,
             rule_tr="BB(20,2) genişliği son 120 barın ≤ %20'liğinde iken kırılım", stop=_atr_stop(1.5),
             exit_rule="hedef ya da max_hold", target_r=2.0, max_hold_bars=48, oto_pre_s5=tf == "4h", wf_class=WF_H1,
@@ -272,8 +292,9 @@ def _standard() -> list[dict]:
             f"RSI2_{tf}", "F1", params={"rsi_period": 2, "long_below": 10, "short_above": 90, "er20_max": 0.3},
             timeframes=[tf], signal_tf=tf, sides=SIDES_LS, rule_tr="RSI2 < 10 long / > 90 short; yalnız ER20 < 0,3",
             stop=_atr_stop(1.5),
-            exit_rule=gap("RSI2'nin 'orta bant' çıkışı: RSI2 varyantında bant parametresi yok (hangi bandın ortası — "
-                          "BB(20,2) orta çizgisi mi, RSI 50 mi — yazılmadı)"),
+            exit_rule=decided("B5", "RSI2'nin 'orta bant' çıkışı = sinyal dilimindeki BB(20,2) orta çizgisi (BBRE ile "
+                                    "aynı; RSI 50 değil)", rule_tr="orta bant (BB(20,2) orta çizgisi)", bb_period=20,
+                              bb_std=2.0),
             max_hold_bars=24, oto_pre_s5=tf == "4h", wf_class=WF_H1, inputs=["ohlcv"], requires=[ER20_TF]))
         out.append(_variant(
             f"BBRE_{tf}", "F1", params={"bb_period": 20, "bb_std": 2.0, "er20_max": 0.3}, timeframes=[tf], signal_tf=tf,
@@ -293,25 +314,31 @@ def _standard() -> list[dict]:
                     target_r=None if ex == "mid" else 2.0, max_hold_bars="LIVE_RULE (K_BOX gün sonu)", oto_pre_s5=False,
                     wf_class=WF_INTRADAY, inputs=["ohlcv"], alias_of="K_BOX" if vid == "BOX_n10_mid_ms0.5" else None,
                     requires=["copy_books.BOX"]))
-    fund_exit = gap("FUND_FADE çıkışı ve '24h'/'72h' ekinin anlamı (tutuş ufku mu, fonlama penceresi mi) yazılmadı; "
-                    "yalnız stop 3 ATR(4h) yazılı")
+    fund_hold = {"24h": 6, "72h": 18}
+
+    def fund_exit(h: str) -> dict:
+        return decided("B8", f"'{h}' eki = en çok tutuş ({fund_hold[h]} × 4h bar); çıkış en çok tutuş dolunca (zaman) ya da "
+                             "stop 3 ATR(4h)", rule_tr=f"en çok tutuş ({h} = {fund_hold[h]} × 4h)",
+                       max_hold_bars=fund_hold[h])
+
     for h in ("24h", "72h"):
         out.append(_variant(
             f"FUND_FADE_{h}", "H", params={"horizon_label": h, "funding": "f8", "pct_window_days": 20, "short_pct_min": 95,
                                            "long_pct_max": 5},
             timeframes=["4h"], signal_tf="4h", sides=SIDES_LS,
-            rule_tr="f8 son 20 günün ≥ %95'liği → short, ≤ %5'liği → long", stop=_atr_stop(3.0, "4h"), exit_rule=fund_exit,
-            oto_pre_s5=False, wf_class=WF_H1, inputs=["ohlcv", "funding"]))
+            rule_tr="f8 son 20 günün ≥ %95'liği → short, ≤ %5'liği → long", stop=_atr_stop(3.0, "4h"), exit_rule=fund_exit(h),
+            max_hold_bars=fund_hold[h], oto_pre_s5=False, wf_class=WF_H1, inputs=["ohlcv", "funding"]))
     for h in ("24h", "72h"):
         out.append(_variant(
             f"FUND_FADE_LOW_{h}", "H", params={"horizon_label": h, "funding": "f8", "pct_window_days": 20,
                                                "short_pct_min": 95, "long_pct_max": 5, "er20_max": 0.3},
             timeframes=["4h"], signal_tf="4h", sides=SIDES_LS, rule_tr="FUND_FADE ile aynı, yalnız ER20 < 0,3",
-            stop=_atr_stop(3.0, "4h"), exit_rule=fund_exit, oto_pre_s5=False, wf_class=WF_H1, inputs=["ohlcv", "funding"],
-            requires=[ER20_TF]))
+            stop=_atr_stop(3.0, "4h"), exit_rule=fund_exit(h), max_hold_bars=fund_hold[h], oto_pre_s5=False, wf_class=WF_H1,
+            inputs=["ohlcv", "funding"], requires=[ER20_TF]))
     out.append(_variant(
         "FUND_CARRY", "H", params={"funding": "f8", "enter_abs_pct_min": 90, "exit_abs_pct_below": 50,
-                                   "pct_window": gap("FUND_CARRY yüzdelik penceresi yazılmadı (FUND_FADE'inki 20 gün)")},
+                                   "pct_window": decided("B8", "FUND_CARRY yüzdelik penceresi 20 gün (FUND_FADE'inkiyle "
+                                                                "aynı)", days=20)},
         timeframes=["4h"], signal_tf="4h", sides="fonlamayı alan taraf",
         rule_tr="|f8| ≥ %90'lık iken fonlama alan taraf; |f8| < %50'lik olunca çık", stop=_atr_stop(3.0, "4h"),
         exit_rule="|f8| < %50'lik", oto_pre_s5=False, wf_class=WF_H1, inputs=["ohlcv", "funding"]))
@@ -352,13 +379,19 @@ def _other() -> list[dict]:
         "16:00'da çık", stop=g_stop, exit_rule="16:00 UTC", oto_pre_s5=False, wf_class=WF_GOLD, inputs=["ohlcv"]))
     out.append(_variant(
         "G_NY_ORB", "G", params={"range_utc": ["13:00", "14:00"], "exit_utc": "20:00",
-                                 "entry_until_utc": gap("G_NY_ORB giriş son saati yazılmadı (LDN'de 12:00)")},
+                                 "entry_until_utc": decided("B10", "G_NY_ORB giriş son saati 18:00 UTC (LDN'deki 'aralık "
+                                                                   "sonu + 4 saat' benzeşimi: 08:00 → 12:00, 14:00 → 18:00)",
+                                                            utc="18:00")},
         timeframes=["1h"], signal_tf="1h", sides="kırılım yönü", rule_tr="13:00–14:00 UTC aralığı, 20:00'de çık", stop=g_stop,
         exit_rule="20:00 UTC", oto_pre_s5=False, wf_class=WF_GOLD, inputs=["ohlcv"]))
     out.append(_variant(
         "G_ASIA_DRIFT", "G", params={"window_utc": ["23:00", "07:00"],
-                                     "direction": gap("'önceki gün yönü'nün tanımı yazılmadı (önceki UTC gününün açılış → "
-                                                      "kapanışı mı, kapanış → kapanış mı; sıfır getiride yön)")},
+                                     "direction": decided("B10", "'önceki gün yönü' = girişin (23:00 UTC) UTC gününden bir "
+                                                                 "önceki UTC gününün açılış → kapanış getirisinin işareti "
+                                                                 "(kapanmış 1d bar); okunuş: sıfır getiri yön vermez → o gece "
+                                                                 "giriş yok (keyfi yön seçilmez)",
+                                                          rule="SIGN(close - open) of the previous UTC day",
+                                                          zero_return="NO_ENTRY")},
         timeframes=["1h"],
         signal_tf="1h", sides="önceki günün yönü", rule_tr="önceki gün yönünde 23:00 → 07:00", stop=g_stop,
         exit_rule="07:00 UTC", oto_pre_s5=False, wf_class=WF_GOLD, inputs=["ohlcv"]))
@@ -382,7 +415,11 @@ COVER_FACTORS: dict[str, dict] = {
     "F_ER": {"kind": "filter", "rule_tr": "T2/M2/D4/C4'te ER20 ≥ 0,3, Box'ta ER20 < 0,3", "er20_min_trend": 0.3,
              "er20_max_box": 0.3},
     "F_BTC": {"kind": "filter", "rule_tr": "BTC 4h rejimi aynı yön",
-              "regime": gap("F_BTC'nin 'BTC 4h rejimi' tanımı (gösterge ve eşik) yazılmadı")},
+              "regime": decided("B4", "T2'nin kullandığı regime_gate.btc_regime tanımı BTC 4h barlarına uygulanır: son "
+                                      "kapanmış BTC 4h barında kapanış > EMA200 (4h kapanışları, regime_gate.ema_last) → UP, "
+                                      "değilse DOWN; EMA200 hesaplanamıyorsa rejim bilinmiyor → giriş yok (regime_gate "
+                                      "fail-closed). 'Aynı yön' = LONG yalnız UP'ta, SHORT yalnız DOWN'da",
+                                definition="regime_gate.btc_regime", timeframe="4h", ema_len=200)},
     "F_VOL": {"kind": "filter", "rule_tr": "ATR% ≤ son 120 barın %80'liği", "lookback_bars": 120, "atr_pct_max_pctile": 80},
     "X_TRAIL2": {"kind": "exit", "rule_tr": "+1R'den sonra 2 ATR iz süren", "arm_r": 1.0, "trail_atr": 2.0},
     "X_CHAN3": {"kind": "exit", "rule_tr": "chandelier 3 × ATR22", "atr_period": 22, "atr_mult": 3.0},
@@ -445,7 +482,10 @@ def _lib() -> dict:
         "defaults": {
             "r_unit": "ilk stop", "max_hold_signal_bars": DEFAULT_MAX_HOLD, "sides": {"LO": "yalnız long", "LS": "iki yön"},
             "er20": "20 barlık verim oranı (Kaufman)",
-            "er20_timeframe": gap("ER20'nin hesaplandığı dilim yazılmadı (ATR için 'sinyal dilimi' yazılı, ER20 için yok)"),
+            "er20_timeframe": decided("B3", "ER20 varyantın sinyal diliminde hesaplanır (ATR ile aynı); örtülerde (F_ER) "
+                                            "tabanın sinyal diliminde (T2/M2 1d, D4/C4 4h); Box tabanında (sinyal dilimi "
+                                            "5m) 1d, çünkü kutu günlüktür", rule="SIGNAL_TF", covers="BASE_SIGNAL_TF",
+                                      box="1d"),
             "atr": "ATR14 (sinyal dilimi)",
         },
         "contract": {
@@ -505,8 +545,9 @@ def _lib() -> dict:
                                       "ADVERSE ortalama net R'ı ≥ 0 ise geçer (Kapı A'ya ek ön kayıt koşulu; gevşetme değil)",
             "4_single_instrument_tr": "havuz ve küme satırlarında tek enstrüman OOS kârın en çok %50'si; coin satırları muaf "
                                       "(yerine madde 3)",
-            "4_profit_share_def": gap("'OOS kârın payı'nın paydası (enstrüman net R'larının toplamı mı, pozitiflerin toplamı mı; "
-                                      "toplam ≤ 0 iken) yazılmadı"),
+            "4_profit_share_def": decided("B11", "'OOS kârın payı' = enstrümanın OOS net R'ı / net R'ı pozitif enstrümanların "
+                                                 "net R toplamı (daha sıkı; toplam ≤ 0 iken satır zaten geçemez)",
+                                          denominator="SUM_POSITIVE_INSTRUMENT_NET_R"),
             "5_full_count_tr": "coin satırları BH ailesine ve DSR N'ine tam girer; COIN_FIT'in her ızgara seçeneği ayrı ham deneme",
             "6_promotion_tr": "aynı coin'de en çok 1, toplamda en çok 2 tek-coin otomatik defter (§7.6)",
         },
@@ -549,7 +590,8 @@ def _lib() -> dict:
             "F2 'n10/n20' = kenar bandı kutu yüksekliğinin %10/%20'si (near_frac 0,10/0,20): BOX_n10_mid_ms0.5 ≡ K_BOX ve "
             "K_BOX'un canlı near_frac'ı 0,10; 'mid' = box_mid çıkışı, '2r' = 2R hedef",
             "F2'nin diğer bütün parametreleri K_BOX'unkidir (ızgara yalnız üç ekseni oynatır)",
-            "F1 BBRE 'orta bant' = kendi BB(20,2)'sinin orta çizgisi (RSI2'de bant yok: boşluk)",
+            "F1 BBRE 'orta bant' = kendi BB(20,2)'sinin orta çizgisi; RSI2'de de sinyal dilimindeki BB(20,2) orta çizgisi "
+            "(sahip kararı 2026-10-11, B5)",
             "H 'f8' = 8 saate normalize fonlama oranı (fut_v1 laboratuvarının tanımı: oran × 8 / aralık)",
             "I: z yüksekken oran pahalı → z'nin tersi yönde iki bacak; z = 0'da çık (ortalamaya dönüş)",
             "J XS_REV_1D: 'dönüş' = alt-k long / üst-k short",
@@ -565,6 +607,12 @@ def _lib() -> dict:
             {"date": "2026-10-06", "id": "AUTO", "text_tr": "Kapı A + Kapı B + aylık Holm'u geçen aday yeni bir PAPER defteri "
              "olarak açılır; kapılar ve eşikler bu karardan sonra gevşetilmez"},
             {"date": "2026-10-06", "id": "S8", "text_tr": "otomatik defter başlangıç özsermayesi 1.000 USDT (S2: AUTO_POLICY_V1)"},
+            {"date": "2026-10-11", "id": "P3A_GAPS", "text_tr": "ENGINE_BRAIN §8.5 P3a boşlukları: 'Önerilenleri kabul et' — "
+             "önerilen varsayılanların hepsi kabul (B1 (b), B2 (a), B3, B4, B5, B6, B7, B8, B10 NY giriş son saati ve Asya "
+             "yönü, B11); öneri olmayanlar (B9: spread stopu/bacak oranı, XSEC stopu/R birimi, beta penceresi, dengeleme anı, "
+             "XS_REV sıklığı ve beta nötrlüğü; B10: altın stopları) boşluk kalır ve o varyantlar çalıştırılmaz. Dolan "
+             "alanlar reading_tr'de 'sahip kararı 2026-10-11, §8.5 önerilen' ile işaretlidir; S1 düzeltme mührüyle yeniden "
+             "mühürlendi (_v2 değil: henüz hiçbir gerçek veri koşusu yok)"},
         ],
         "thresholds": {
             "parity_kernel": {"min_synthetic_trades_per_family": 200, "min_signal_identity_share": 1.0,
@@ -599,11 +647,16 @@ def _wf() -> dict:
         "data_start_tr": "serinin listelendiği gün + ısınma barları (göstergeler); en erken 2020-01-01",
         "data_start_earliest": "2020-01-01",
         "purge_embargo": {"each_boundary_tr": "her iki sınırda 1 sinyal barı + max_hold",
-                          "make_folds_split": gap("make_folds(purge_bars, embargo_bars) bölüşümü yazılmadı: purge = embargo "
-                                                  "= 1 + max_hold mı (sınır başına 2 × (1 + max_hold) boşluk) yoksa purge + "
-                                                  "embargo = 1 + max_hold mı. Kapı sonucunu belirler: 1d'de (max_hold 300) "
-                                                  "ilk test katmanı ≈ 2025-02 (OOS 2 takvim yılına ≈ 2027-02'de ulaşır) "
-                                                  "ya da ≈ 2023-06")},
+                          "make_folds_split": decided(
+                              "B1 (b)", "her sınırdaki TOPLAM boşluk purge_bars + embargo_bars = 1 sinyal barı + max_hold "
+                              "(§3.1; make_folds yalnız toplamı kullanır: gap = (purge_bars + embargo_bars) × bar); "
+                              "bölüşüm purge_bars = ⌊(1 + max_hold) / 2⌋, embargo_bars = kalan (tek bar fazlası ambargoda; "
+                              "max_hold 300 → 150 + 151, §8.5 örneği). max_hold = varyantın sinyal dilimindeki en çok "
+                              "tutuşu (exits.max_hold_bars; kopyalarda copy_books.<taban>.max_hold). Sızıntıyı (a) kadar "
+                              "örter (sınırdan önce açılan işlemin tamamı; çapalı WF'de eğitim hep testten öncedir)",
+                              sum_bars="1 + max_hold", purge_bars="floor((1 + max_hold) / 2)",
+                              embargo_bars="(1 + max_hold) - purge_bars",
+                              example={"max_hold": 300, "purge_bars": 150, "embargo_bars": 151})},
         "leakage_tr": "leakage_check geçmeyen katman atılır (LEAK)",
         "oos_tr": "OOS = test katmanlarının birleşimi, her satır türünde aynı tanım (CSCV ortak zaman ekseni)",
         "fixed_param_rows_tr": "sabit parametreli satırların doğrulama dilimi yalnız gösterilir; seçim yok (parametreler mühürde)",
@@ -666,7 +719,9 @@ def _stats() -> dict:
             "h0": "ortalama net R ≤ 0", "cost": "ADVERSE", "test": "gün kümelenmeli (günler yeniden örneklenir) tek yönlü bootstrap",
             "null": "sıfır ortalamaya kaydırılmış dağılım",
             "seed": "sha256(row_id|look_no)'nun ilk 8 baytı (int(hexdigest[:16], 16), cfgrid_v1 tohum biçimi)",
-            "rng": gap("bootstrap rastgele sayı üretecinin algoritması yazılmadı (yalnız tohum)"),
+            "rng": decided("B6", "bootstrap üreteci Python random.Random (Mersenne Twister), tohumu cfgrid_v1 biçimiyle",
+                           algorithm="random.Random",
+                           seeding="random.Random(int(sha256(f'{row_id}|{look_no}'.encode('utf-8')).hexdigest()[:16], 16))"),
             "chunk_resamples": 1000, "memory_mb_max": 16,
             "single_statistic_tr": "Kapı A, Kapı B, Kapı C ve ders bakışları aynı istatistiği kullanır; CI'lar yalnız gösterim",
         },
@@ -700,8 +755,11 @@ def _stats() -> dict:
                             "zamanı aynı test katmanında kuralın sinyal vermediği barlardan (gerçek işlemlerin ± tutuşu hariç) "
                             "düzgün",
             "seed": "sha256(row_id|trade_key|k)",
-            "seed_int": gap("plasebo tohumunun bayttan tam sayıya dönüşümü (p_day'deki 'ilk 8 bayt' kuralı plaseboya "
-                            "yazılmadı), trade_key'in tanımı ve çekim üretecinin algoritması yazılmadı"),
+            "seed_int": decided("B6", "plasebo tohumu cfgrid_v1 biçimiyle tam sayıya çevrilir (sha256'nın ilk 8 baytı) ve "
+                                      "çekimler random.Random ile yapılır; trade_key = günlükteki tj_v1 anahtarı",
+                                seed_int="int(sha256(f'{row_id}|{trade_key}|{k}'.encode('utf-8')).hexdigest()[:16], 16)",
+                                rng="random.Random(seed_int)",
+                                trade_key="tj_v1 trade_key (defter|trade_id|opened_at; research_engine/journal.py)"),
             "diff": "gerçek − plasebo ortalaması, gün kümelenmeli CI",
             "flipped_sign_tr": "işaret çevrilmiş sinyal yalnız gösterilir",
             "lab_verdicts_tr": "signal_lab.verdict / verdict_strict yalnız gösterim sütunu",
@@ -736,8 +794,10 @@ def _lessons() -> dict:
                        "gün kümelenmeli CI95 (sabit tohum)", "her EX_ANTE cfgrid_v1 hücresi için gerçeğe göre eşli ΔR ve CI",
                        "p_day (STATS_V1)"],
         "ci": {"method_tr": "gün kümelenmeli bootstrap CI95 (thresholds.ci)",
-               "seed": gap("ders CI95'inin 'sabit tohum'u yazılmadı (değer ya da türetme kuralı, bayttan tam sayıya dönüşüm "
-                           "ve üreteç algoritması)")},
+               "seed": decided("B6", "ders CI95'inin sabit tohumu sha256(cell_id|look_no), cfgrid_v1 biçimiyle tam sayıya "
+                                     "çevrilir; üreteç random.Random", seed="sha256(cell_id|look_no)",
+                               seed_int="int(sha256(f'{cell_id}|{look_no}'.encode('utf-8')).hexdigest()[:16], 16)",
+                               rng="random.Random(seed_int)")},
         "lesson_types": {
             "GRID": {"tr": "IZGARA: EX_ANTE hücre ΔR > 0", "candidates": True},
             "FILTER": {"tr": "FİLTRE: hücrede atla, eşli Δ = −r", "candidates": True},
@@ -791,11 +851,13 @@ def _pit() -> dict:
                    "per_symbol_tr": "ilk ve son aylık 1d zip'i; son ayda günlük zip'lerle gün düzeyi",
                    "cross_check": ["exchangeinfo/ anlık görüntüleri", "store/_meta/delisted.json (P1b)"]},
         "output": {"path": "pit_universe/listings.json", "fields": ["symbol", "first_day", "last_day|null", "status", "source"]},
-        "membership_tr": "gün d: d − 60 günden önce listelenmiş, d'de delist olmamış ve d'ye kadar 30 günlük medyan günlük hacmi "
-                         "(USDT) ≥ eşik (config universe.min_quote_volume_24h ile aynı)",
+        "membership_tr": "gün d: d − 60 günden önce listelenmiş, d'de delist olmamış ve d'den önceki 30 günün (d − 30 … d − 1) "
+                         "medyan günlük hacmi (USDT) ≥ eşik (config universe.min_quote_volume_24h ile aynı)",
         "membership": {"listed_before": "first_day < d − listed_min_days", "not_delisted": "last_day is null or d ≤ last_day",
-                       "volume": "median(quote_volume_1d over 30 days up to d) ≥ min",
-                       "volume_window_includes_d": gap("30 günlük hacim penceresinin d gününü içerip içermediği yazılmadı")},
+                       "volume": "median(quote_volume_1d over days d-30 … d-1) ≥ min",
+                       "volume_window_includes_d": decided("B11", "30 günlük hacim penceresi d'yi İÇERMEZ: d − 30 … d − 1 "
+                                                                  "(d'nin hacmi gün bitmeden bilinmez)",
+                                                           includes_d=False, window="d-30 … d-1")},
         "data_need_tr": "bütün tarihî USDⓈ-M sembollerinin 1d mumları: tek seferlik ≈ 25 bin küçük zip (≈ 100 MB), sonra günlük "
                         "ek; --backfill-pit P1b doldurma kurallarıyla (pencereler, disk, .CHECKSUM)",
         "usage_tr": "XSEC satırları YALNIZ PIT evrende değerlendirilir; PIT kurulmadan Kapı A'ya kapalı; diğer satırlar "
@@ -841,6 +903,7 @@ def _directions() -> dict:
             f"{_T}promotion_side.max_single_coin_books_same_coin": MAX, f"{_T}promotion_side.max_single_coin_books_total": MAX,
             f"{_T}derived_specs.max_specs_per_month": MAX,
             f"{_T}transforms.stop_floor_k_atr": FIXED,
+            "specialisation_rules.4_profit_share_def.denominator": FIXED,
             **budget,
         },
         "WF_PROTOCOL": {
@@ -848,6 +911,7 @@ def _directions() -> dict:
             f"{_T}warmup_bars": FIXED, f"{_T}purge_signal_bars": MIN, f"{_T}positive_fold_min_trades": FIXED,
             f"{_T}candidates_top_k": FIXED,
             "step_equals_test": FIXED, "data_start_earliest": FIXED,
+            "purge_embargo.make_folds_split.sum_bars": FIXED,
         },
         "STATS": {
             f"{_T}p_day.resamples": FIXED, f"{_T}bh_q": MAX, f"{_T}effective_n_abs_rho": FIXED,
@@ -864,7 +928,8 @@ def _directions() -> dict:
             f"{_T}discrimination.min_auc_ci_lower": MIN,
         },
         "PIT_RULES": {f"{_T}listed_min_days": FIXED, f"{_T}volume_window_days": FIXED,
-                      f"{_T}min_median_daily_quote_volume_usdt": FIXED, "xsec_requires_pit": FIXED},
+                      f"{_T}min_median_daily_quote_volume_usdt": FIXED, "xsec_requires_pit": FIXED,
+                      "membership.volume_window_includes_d.includes_d": FIXED},
     }
 
 
@@ -1083,6 +1148,25 @@ def blocked_variants(lib: Mapping = LIB_V1) -> dict[str, list[str]]:
     return out
 
 
+def blocked_budget(lib: Mapping = LIB_V1) -> dict[str, int]:
+    """Boşluk yüzünden gerçek veride çalıştırılmayan ama bütçede sayılan pay (koddan): `variants` (alias hariç),
+    `gate_a_rows` (birimi engelli varyant olan satır; `COIN_FIT`'te ızgaranın BÜTÜN seçenekleri engelliyse) ve
+    `raw_trials` (engelli birimin `SPEC`'i + engelli ızgara seçeneklerinin `OPTION`'ları; `trials.seal_entries` sayımı)."""
+    blocked = blocked_variants(lib)
+    vs = variants_by_id(lib)
+    rows = raw = 0
+    for r in gate_a_rows(lib):
+        if r["row_type"] == "COIN_FIT":
+            opts = [v["variant_id"] for v in lib["variants"] if v["family"] == r["unit"]]
+            k = sum(1 for o in opts if o in blocked)
+            raw += k
+            rows += int(k == len(opts))
+        elif r["unit"] in blocked:
+            rows += 1
+            raw += r["raw_trials"]
+    return {"variants": sum(1 for v in blocked if not vs[v].get("alias_of")), "gate_a_rows": rows, "raw_trials": raw}
+
+
 def protocol_gaps(registries: Mapping[str, Any] = REGISTRIES) -> list[tuple[str, str]]:
     """Varyanta bağlanmayan boşluklar (WF/istatistik/ders/PIT protokolü, §2.4 kuralları): dolmadan hiçbir gerçek veri WF,
     Kapı A ya da ders bakışı koşusu yapılmaz (ilgili satır türü için)."""
@@ -1163,8 +1247,8 @@ __all__ = ["CLUSTERS", "CONFIG_EPOCHS_FILE", "CONFIG_EPOCHS_V1", "CONFIG_EPOCHS_
            "PIT_RULES_V1_SHA", "PRIOR_TRIALS_FILE", "PRIOR_TRIALS_V1", "PRIOR_TRIALS_V1_SHA", "REGISTRIES", "REGISTRY_SHA",
            "REGISTRY_VERSIONS", "S1_SEAL", "SHAS", "SPEC_KEYS", "STATS_V1", "STATS_V1_SHA", "THRESHOLD_DIRECTIONS",
            "THRESHOLD_DIRECTIONS_V1", "THRESHOLD_DIRECTIONS_V1_SHA", "T_SEAL_MS", "UNSPECIFIED", "WF_PROTOCOL_V1",
-           "WF_PROTOCOL_V1_SHA", "blocked_variants", "budget_table", "canonical_bytes", "coin_fit_grid", "explore_series",
-           "family_counts", "freeze", "gap", "gate_a_rows", "get_path", "is_gap", "is_sha256", "lib_spec", "looser_than",
+           "WF_PROTOCOL_V1_SHA", "blocked_budget", "blocked_variants", "budget_table", "canonical_bytes", "coin_fit_grid", "explore_series",
+           "decided", "family_counts", "freeze", "gap", "gate_a_rows", "get_path", "is_gap", "is_sha256", "lib_spec", "looser_than",
            "n_at_seal", "oto_column_pre_s5_count", "pretty_json", "prior_total", "protocol_gaps", "sha256_canonical",
            "spec_sha", "thaw", "threshold_leaves", "unique_variant_count", "unspecified_gaps", "variant_gaps",
            "variants_by_id"]

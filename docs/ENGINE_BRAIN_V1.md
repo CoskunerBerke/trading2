@@ -711,19 +711,19 @@ değildir, metin testi); k*/kaldıraç satırı oto defterler için de yalnız l
 | **S1** | `LIB_V1` (106 varyant, kapsamlar, P23, kümeler, §2.4 kuralları, örtüler, §4.3 dönüşümleri), `WF_PROTOCOL_V1`, `STATS_V1`, `LESSON_REGISTRY_V1`, `PIT_RULES_V1`, `PRIOR_TRIALS_V1`, `CONFIG_EPOCHS_V1`, `THRESHOLD_DIRECTIONS_V1` (asla gevşetme yön tablosu), `T_SEAL_MS` | P3a commit'i; **P3 kodunun hiçbir gerçek veri koşusundan önce** (hedef ≤ 2026-10-25) | `tests/test_research_engine_registry.py` + bu tabloya aynı commit'te sha değerleri (**MÜHÜRLENDİ**, değerler tablonun altında) |
 | **S2** | `PROMOTION_REGISTRY_V1` (ana belge §6.7 + §3.7 yordamı + §6.3 Holm ayı + §6.4 yönlendirme), `AUTO_POLICY_V1`, `AUTO_CATALOG_V1`, `MANIFEST_SCHEMA_V1` | P4a commit'i, P4 dağıtımından önce, **sahibin kapı metni onayından sonra** | motor ve worker testlerinde aynı sabitler (eşitlik testi) |
 
-**S1 mühür değerleri (P3a düzeltme turu 1'in yeniden mühür commit'i; `tradingbot/research_engine/registry.py`; sha256 = kanonik JSON'un — sıralı anahtar,
+**S1 mühür değerleri (P3a düzeltme mührü 2'nin — §8.5'e sahip cevabı, 2026-10-11 — yeniden mühür commit'i; `tradingbot/research_engine/registry.py`; sha256 = kanonik JSON'un — sıralı anahtar,
 `(",", ":")`, UTF-8):**
 
-- `LIB_V1` `73e6c71c6a68c936b0c34d477669a58d6b1288b3c11278ce9c86d4f91b46d78f` — 106 varyant (+2 alias'lı ızgara üyesi), kapsamlar, P23, kümeler, §2.4 kuralları, örtüler (faktör parametreleri spec'te), kopya zaman stopları, varyant bağımlılıkları (`requires`), §4.3 dönüşümleri
-- `WF_PROTOCOL_V1` `ef1b85fac497b9d1a4d60250bf0a6414d76bd976f4a788bb863d02eccc4dfaef` — §3.1–§3.3 katmanlar, COIN_FIT seçimi, maliyetler; §2.1 çekirdek; §5.2 önbellek
-- `STATS_V1` `e1fda19de4510719b01752a94d7e97022c2619c3e10f62f42e6f26c22be5396e` — §3.6 p_day, BH (ailede işlem süzgeci yok; ana belge §6.4), DSR (sr_var tabanı 1/(T−1)), CSCV-PBO, plasebo, boş dünya
-- `LESSON_REGISTRY_V1` `5040738b2fbe864bbff108f6ee6d62e40e2d71010b5ee08a0759011f59901bc7` — §4.1 hücreler/bakışlar/ileri doğrulama, §4.2 depo ve durumlar, §4.4 deneme maliyeti
-- `PIT_RULES_V1` `3516c5cba17da9929459867963231def25b76bd1459b8ef4a0d902b1a7c50e95` — §3.4 zaman noktasında evren
+- `LIB_V1` `5f05c27d474e458a391d488ae2eff09d5e2067420f901346eb1c8130164b1903` — 106 varyant (+2 alias'lı ızgara üyesi), kapsamlar, P23, kümeler, §2.4 kuralları, örtüler (faktör parametreleri spec'te), kopya zaman stopları, varyant bağımlılıkları (`requires`), §4.3 dönüşümleri; §8.5 kararları B2–B5, B7, B8, B10, B11 (2026-10-11)
+- `WF_PROTOCOL_V1` `6857aa10b370140beb33bc690341c8df16707733ec66aa83acb2b1e9d1d3dc6d` — §3.1–§3.3 katmanlar (B1 bölüşümü), COIN_FIT seçimi, maliyetler; §2.1 çekirdek; §5.2 önbellek
+- `STATS_V1` `4a75ce951e1eddb8024537c24ba3d200c823d761ec6b292e7c3875f5874d60e8` — §3.6 p_day, BH (ailede işlem süzgeci yok; ana belge §6.4), DSR (sr_var tabanı 1/(T−1)), CSCV-PBO, plasebo, boş dünya; B6 üreteç ve tohumlar
+- `LESSON_REGISTRY_V1` `8fbed7f5e33e21a02ec9547bfd84ab7ad0a798d9cc25908aa99911244ad58836` — §4.1 hücreler/bakışlar/ileri doğrulama (B6 CI tohumu), §4.2 depo ve durumlar, §4.4 deneme maliyeti
+- `PIT_RULES_V1` `59d0628c975e42aaa7810e231ce0704e5113b6a2bde4fd59fb29e65d8fef48b7` — §3.4 zaman noktasında evren (B11: hacim penceresi d hariç)
 - `PRIOR_TRIALS_V1` `ad6d8903e66034ce96cafe006f0a071e254968308627ab9998b0464f96984921` — `research_engine/prior_trials.json` (§2.6; toplam 2.775)
-- `CONFIG_EPOCHS_V1` `392e138b208f76855b1a6955e49c74fefeb693817c41fd53c117072057a263af` — `research_engine/library/config_epochs.json` (git geçmişi + belgelenmiş dağıtım/sahip kayıtları; `covered_until` = `T_SEAL_MS`)
-- `THRESHOLD_DIRECTIONS_V1` `458e889a979fdc5f13a72aa32c3a607e03bbe0342d688197e3361249e79ce47d` — asla gevşetme yön tablosu (eşikler ve kapı-dışı eşik benzerleri; kök-göreli yollar)
-- `T_SEAL_MS` `1791740640000` = 2026-10-11T17:44:00+00:00 (mühürlü içeriği değiştiren son commit'in işleyen zamanına eşit ya da ondan sonra; test git'ten doğrular, tarih elle ayarlanmaz)
-- `REGISTRY_SHA` `7f57e38de2b5987d487a905cbd84bd9cf1e74a33b57a85394e769305ddedbb79` — S1 kümesinin (sekiz sha + `T_SEAL_MS`) kanonik sha'sı; deneme satırlarının `registry_sha`'sı
+- `CONFIG_EPOCHS_V1` `082f3ade6736566838f02c2710d40c97680949d65b59ed3f5c5605e72e872e0f` — `research_engine/library/config_epochs.json` (git geçmişi + belgelenmiş dağıtım/sahip kayıtları; `covered_until` = `T_SEAL_MS`)
+- `THRESHOLD_DIRECTIONS_V1` `6ad438010cc06041644b356f1454e4b45092a49521665f3f513111bf1f36524b` — asla gevşetme yön tablosu (eşikler ve kapı-dışı eşik benzerleri; kök-göreli yollar; B1/B11 tanımları `fixed`)
+- `T_SEAL_MS` `1791747600000` = 2026-10-11T19:40:00+00:00 (mühürlü içeriği değiştiren son commit'in işleyen zamanına eşit ya da ondan sonra; test git'ten doğrular, tarih elle ayarlanmaz)
+- `REGISTRY_SHA` `8d115bd31c296aa07852c3c8323d54c655f9c07723ee6b25604482b9b04fa3c3` — S1 kümesinin (sekiz sha + `T_SEAL_MS`) kanonik sha'sı; deneme satırlarının `registry_sha`'sı
 
 - "Gerçek veri koşusu": VPS'te S4/S5'in herhangi bir çalışması, P3 koduyla herhangi bir laboratuvar ya da elle geriye-test.
   P3b'nin hız ölçümü yalnız sentetik veriyle yapılır. Mühür commit'inin zamanı `T_SEAL_MS`'dir; ileri veri saati dağıtımdan
@@ -749,7 +749,7 @@ değildir, metin testi); k*/kaldıraç satırı oto defterler için de yalnız l
 En erken olaylar: ilk Kapı A bakışı 2026-12-06 (yalnız 5m/15m; ileri 30 gün) ve 2027-01-06 (diğerleri); 4h/1d adayı için en
 erken Holm 2027-03-01, en erken otomatik defter ≈ 2027-03-02 (24 saat veto penceresiyle).
 
-### 8.4 P3a uygulama notu (2026-10-11; düzeltme turu 1 ile yeniden mühürlendi)
+### 8.4 P3a uygulama notu (2026-10-11; düzeltme turu 1 ve §8.5'e sahip cevabıyla yeniden mühürlendi)
 
 **Ne mühürlendi (S1).** Yeni modüller ağsız ve yalnız standart kütüphaneyle yazıldı; hiçbiri gece birimine, worker'a ya da
 bir karar yoluna bağlanmadı (P3a VPS'te hiçbir şey çalıştırmaz, gerçek veriye dokunmaz).
@@ -835,7 +835,8 @@ dahil); `p_day`'i hesaplanamayan satır p = 1 ile girer. **S5 ve "Oto" sütunu:*
 tablodur; varyant alanı `oto_column_pre_s5` yalnız tarihsel kayıttır (H, G, 1h ve 5m için S5'ten sonra yanlıştır) ve hiçbir
 yönlendirmede kullanılmaz. Otomatik yol / Kapı C yönlendirmesi YALNIZ S2'nin `AUTO_CATALOG_V1`'iyle yapılır (P4a).
 
-**UNSPECIFIED (belge söylemiyor; uydurulmadı, `{"status": "UNSPECIFIED", "gap": …}`).** Varyantın boşlukları = kendi
+**UNSPECIFIED (belge söylemiyor; uydurulmadı, `{"status": "UNSPECIFIED", "gap": …}`).** *(Düzeltme turu 1 durumu; çoğu
+2026-10-11'de doldu — aşağıdaki değişiklik notu.)* Varyantın boşlukları = kendi
 alanları + `requires` bağımlılıkları (ER20 kullanan → `defaults.er20_timeframe`; örtü → `covers.factors.<F>` ve
 `copy_books.<taban>`; kopya ve F2 → `copy_books.<taban>`; `variant_gaps`). Böyle **48 varyant** (22'si S5 öncesi "Oto"
 sütununda) gerçek veride hiçbir katmanda (WF, keşif, kapı) **çalıştırılmaz** (`UNSPECIFIED_PARAM`) ama bütçede **sayılır**:
@@ -849,11 +850,36 @@ sütununda) gerçek veride hiçbir katmanda (WF, keşif, kapı) **çalıştırı
 - canlı T2/M2 kuralında zaman stopu yok → `max_hold` tanımsız → WF arındırma/ambargosu (1 + max_hold) ve `X_TIME`
   ("max_hold'un yarısı") tanımsız → `K_T2`, `K_M2` ve 14 örtüsü (`O_T2_*`, `O_M2_*`).
 
-**Protokol boşlukları** (`protocol_gaps`; dolmadan ilgili satır türünde hiçbir gerçek veri WF/kapı/ders koşusu yapılmaz):
+**Protokol boşlukları** *(düzeltme turu 1 durumu; 2026-10-11'de hepsi doldu)* (`protocol_gaps`; dolmadan ilgili satır
+türünde hiçbir gerçek veri WF/kapı/ders koşusu yapılmaz):
 `make_folds` purge/embargo bölüşümü (yalnız sınır başına "1 + max_hold" yazılı; aşağıdaki §8.5 soru 1), bootstrap
 üretecinin algoritması (yalnız tohum), plasebo tohumunun bayt → tam sayı dönüşümü + `trade_key` tanımı + üreteci, ders
 CI95'inin "sabit tohum"u, §2.4-4 "kâr payı"nın paydası (havuz/küme satırları), PIT hacim penceresinin d'yi içerip içermediği
 (XSEC). Boşluk doldurmak mühür değişikliğidir (aşağıya bakın).
+
+**Değişiklik 2026-10-11 — §8.5'e sahip cevabı ("Önerilenleri kabul et"; S1 düzeltme mührü 2).** §8.5'teki önerilen
+varsayılanların hepsi kabul edildi ve kayda `decided(...)` ile yazıldı (`decision` = §8.5 maddesi, `reading_tr` "sahip
+kararı 2026-10-11, §8.5 önerilen"; `LIB_V1.owner_decisions` `P3A_GAPS`): B1 (b) her sınırda purge + embargo = 1 + max_hold,
+purge = ⌊(1 + max_hold)/2⌋, embargo = kalan (300 → 150 + 151; `make_folds` yalnız toplamı kullanır); B2 (a) T2/M2
+kopyalarının `max_hold`'u yalnız WF için 300 × 1d (`wf_only`; canlı kural değişmez, X_TIME = 150 — dürüst not: kural zaman
+stopsuz kaldığından 300 × 1d'den uzun bir T2/M2 işlemi sınır boşluğundan uzun sürebilir); B3 ER20 sinyal diliminde,
+örtülerde tabanın sinyal diliminde, Box tabanında 1d; B4 F_BTC = `regime_gate.btc_regime` BTC 4h barlarında (kapanış >
+EMA200 → UP; LONG yalnız UP'ta, SHORT yalnız DOWN'da; rejim bilinmiyorsa giriş yok); B5 RSI2 orta bant = BB(20,2) orta
+çizgisi; B6 üreteç `random.Random(int(sha256(…).hexdigest()[:16], 16))` (cfgrid_v1 biçimi; p_day `row_id|look_no`, plasebo
+`row_id|trade_key|k` ve `trade_key` = tj_v1 anahtarı, ders CI `cell_id|look_no`); B7 KEL orta çizgisi EMA20 (kapanış),
+BBSQ kırılımı = BB(20,2) dışına kapanış; B8 FUND_FADE "24h/72h" = en çok tutuş 6/18 × 4h (çıkış zaman ya da stop;
+`max_hold_bars` 6/18), FUND_CARRY yüzdelik penceresi 20 gün; B10 G_NY_ORB giriş son saati 18:00 UTC, G_ASIA_DRIFT yönü =
+girişin UTC gününden önceki UTC gününün açılış → kapanışı (okunuş: sıfır getiride giriş yok); B11 §2.4-4 payda = pozitif
+enstrüman net R'larının toplamı, PIT hacim penceresi d − 30 … d − 1. Üç yeni tanım asla-gevşetme tablosunda `fixed`
+(`purge_embargo.make_folds_split.sum_bars`, `specialisation_rules.4_profit_share_def.denominator`,
+`membership.volume_window_includes_d.includes_d`). **Kalan boşluklar** yalnız önerisi olmayanlardır: B9 (iki spread'in
+stopu ve bacak oranı; beş XSEC'in stopu/R birimi, XS_MOM beta penceresi ve dengeleme anı, XS_REV sıklığı ve beta
+nötrlüğü) ve B10'un altın stopları — 25 boşluk; **13 varyant** (I 2, J 5, G 6; hiçbiri S5 öncesi "Oto" sütununda değil)
+çalıştırılmaz. Bütçede sayılan ama çalıştırılmayan pay koddan (`registry.blocked_budget`, testli): **25 Kapı A satırı /
+25 ham deneme** (OTHER satırlarının hepsi). Aynı tanımla düzeltme turu 1'de 48 varyant, 274 satır, 504 ham denemeydi.
+Protokol boşluğu kalmadı (`protocol_gaps` boş). Bütçe, öncül ve N değişmedi (818 / 1.738, 2.775, 4.513). Henüz hiçbir gerçek
+veri koşusu olmadığı için bu `_v2` değil düzeltme mührüdür: bütün sha'lar, `REGISTRY_SHA` ve `T_SEAL_MS` yeniden sabitlendi
+(§8.2); `config_epochs.json`'un `covered_until`'ı yeni `T_SEAL_MS`'tir.
 
 **`T_SEAL_MS`.** Mühürlü içeriği (sabitlenmiş sha/T_SEAL satırları, `prior_trials.json`, `config_epochs.json`) değiştiren
 EN SON commit'in işleyen zamanına eşit ya da ondan sonradır (en çok 24 saat); test bunu git'ten doğrular, commit tarihi elle
@@ -864,7 +890,7 @@ A'nın ileri okuması yalnız açılışı bu andan sonra olan barları kullanı
 
 **Testler.** `tests/test_research_engine_registry.py` (sha sabitleri ve belge eşitliği, her alan değişikliğinin sha'yı
 değiştirdiği özellik testi, donma, bütçe/öncül/N yeniden üretimi, `spec_sha` tekilleştirme ve örtü faktör parametreleri,
-varyant bağımlılık kuralı, kopya zaman stoplarının canlı koda eşitliği, asla gevşetme, UNSPECIFIED/çalıştırılmayan
+varyant bağımlılık kuralı, kopya zaman stoplarının canlı koda eşitliği, asla gevşetme, §8.5 sahip kararı değerleri, UNSPECIFIED/çalıştırılmayan
 varyant/protokol boşluğu listeleri, öncül dosyası, `T_SEAL_MS` ≥ son mühürlü değişiklik, config dönemleri: git'ten yeniden
 üretim + belirlenimcilik + f8b05fb alt sınırı + P2 okuyucu uyumu (TRANSITION ve kapsam dışı), yalıtım);
 `tests/test_research_engine_trials.py` (yalnız ekleme öneki, sayaçların azalmadığı özellik testi, her çökme noktasında
@@ -876,32 +902,35 @@ vardır. Bağımsız koşucu (VPS alt kümesi) değişmedi.
 
 **Açık kalanlar.** (a) **Entegrasyondan önce** §8.5'teki boşluk soruları (önce katman bölüşümü) sahibe sorulur; cevaplar
 boşlukları doldurur ve S1 YENİDEN mühürlenir (yeni sha'lar, yeni `T_SEAL_MS`; henüz hiçbir şey koşmadığı için `_v2`
-değil, düzeltme mührüdür — boşluklu satırların 268 ham denemesi böylece iki kez sayılmaz ve ileri saatleri yeniden
-başlamaz). (b) `config_epochs.json`'un, deneme defterinin ve HWM'nin gece birimine/özetine bağlanması (P3g;
+değil, düzeltme mührüdür — boşluklu satırların ham denemeleri böylece iki kez sayılmaz). **2026-10-11: yapıldı** (yukarıdaki
+değişiklik notu); B9 ve altın stopları için cevap gelirse aynı yolla doldurulur. (b) `config_epochs.json`'un, deneme defterinin ve HWM'nin gece birimine/özetine bağlanması (P3g;
 `TRIALS_CHAIN_BROKEN` S6'da). (c) Mühürden sonraki config değişiklikleri için gece kuralı "yeni config sha = yeni dönem"
 (ana belge §6.2) P3g'de; V1 dosyası değişmez. (d) S2 (`PROMOTION_REGISTRY_V1`, `AUTO_POLICY_V1`, `AUTO_CATALOG_V1`,
 `MANIFEST_SCHEMA_V1`) sahibin kapı metni onayından sonra.
 
 ### 8.5 P3a boşlukları — sahibe sorular (entegrasyondan önce; her cevap boşluğu doldurur ve S1'i yeniden mühürler)
 
-Önerilen varsayılanlar yalnız öneridir; hiçbiri kayda yazılmadı. Sıra, kapı sonucuna etkiye göredir.
+**Cevap (sahip, 2026-10-11): "Önerilenleri kabul et".** Önerilen her varsayılan kayda yazıldı (son sütun; §8.4
+değişiklik notu); önerisi olmayanlar (B9, altın stopları) boşluk kalır ve o varyantlar çalıştırılmaz. Sıra, kapı
+sonucuna etkiye göredir.
 
-| # | Boşluk | Seçenekler ve etkisi | Önerilen varsayılan |
-|---|---|---|---|
-| B1 | **Katman bölüşümü** (`make_folds(purge_bars, embargo_bars)`; §3.1 "her iki sınırda 1 sinyal barı + max_hold") | (a) purge = embargo = 1 + max_hold (sınır başına 2 × 301 bar): 1d'de ilk test katmanı ≈ 2025-02, OOS bugün ≈ 540 gün, Kapı A'nın "≥ 2 takvim yılı"na ≈ 2027-02'de ulaşır; (b) purge + embargo = 1 + max_hold (örn. 150 + 151): ilk test ≈ 2023-06, OOS ≈ 1.170 gün. 4h'ta fark küçük (≈ 2021-11 / 2021-08). | Sahip kararı. (a) metnin daha muhafazakâr okunuşu; (b) sızıntıyı aynı ölçüde örter (sınırdaki toplam boşluk ≥ 1 + max_hold, sınırdan önce açılan işlemin tamamı; çapalı WF'de eğitim hep testten öncedir) ve 1d satırlarını ≈ 1,5 yıl öne alır. Öneri: (b) |
-| B2 | **T2/M2 kopyalarının `max_hold`'u** (canlı kuralda zaman stopu yok) | (a) yalnız WF için §2.2 varsayılanı 300 sinyal barı (kural değişmez; X_TIME = 150); (b) kopyalar ve 14 örtüsü v1'de WF'siz | (a) |
-| B3 | **ER20'nin dilimi** (RSI2, BBRE, FUND_FADE_LOW, `F_ER`) | sinyal dilimi mi; örtülerde tabanın sinyal dilimi mi (Box: 5m mi 1d mi) | sinyal dilimi; Box'ta 1d (kutu günlüktür) |
-| B4 | **F_BTC "BTC 4h rejimi"** | `regime_gate.btc_regime`'in 4h uygulaması mı, BTC 4h EMA200 üstü/altı mı | `regime_gate` tanımı (T2'nin kullandığı), 4h barlarda |
-| B5 | **RSI2 "orta bant"** | BB(20,2) orta çizgisi mi, RSI 50 mi | BB(20,2) orta çizgisi (BBRE ile aynı) |
-| B6 | **Rastgelelik** (p_day üreteci, plasebo tohumu ve `trade_key`, ders CI tohumu) | üreteç ve tohum biçimi | `random.Random(int(sha256(...)[:16], 16))` (cfgrid_v1 biçimi); plasebo `row_id|trade_key|k`, `trade_key` = günlükteki `tj_v1` anahtarı; ders CI `sha256(cell_id|look_no)` |
-| B7 | **E** KEL orta çizgisi; BBSQ "kırılım" | EMA20/SMA20; bant dışına kapanış | EMA20 (kapanış); BB(20,2) dışına kapanış |
-| B8 | **H** FUND_FADE çıkışı ve "24h/72h"; FUND_CARRY penceresi | ufuk mu, pencere mi | 24h/72h = en çok tutuş (6/18 × 4h); FUND_CARRY 20 gün |
-| B9 | **I** spread stopu ve bacak oranı; **J** XSEC stopu/R birimi, beta penceresi, dengeleme anı, XS_REV sıklığı ve beta nötrlüğü | tasarım kararı | öneri yok (yeni araştırma tasarımı ister; cevap gelene kadar 7 varyant çalıştırılmaz) |
-| B10 | **G** altın stopları, G_NY_ORB giriş son saati, G_ASIA_DRIFT "önceki gün yönü" | — | stoplar: öneri yok (tasarım kararı); NY 18:00 (LDN'deki "aralık sonu + 4 saat" benzeşimi); önceki UTC günün açılış → kapanışı |
-| B11 | §2.4-4 "kâr payı"nın paydası; PIT hacim penceresi d'yi içeriyor mu | — | pozitif enstrüman net R'larının toplamı (daha sıkı; toplam ≤ 0 iken satır zaten geçemez); d hariç (d − 30 … d − 1; d'nin hacmi gün bitmeden bilinmez) |
+| # | Boşluk | Seçenekler ve etkisi | Önerilen varsayılan | Cevap (sahip, 2026-10-11) |
+|---|---|---|---|---|
+| B1 | **Katman bölüşümü** (`make_folds(purge_bars, embargo_bars)`; §3.1 "her iki sınırda 1 sinyal barı + max_hold") | (a) purge = embargo = 1 + max_hold (sınır başına 2 × 301 bar): 1d'de ilk test katmanı ≈ 2025-02, OOS bugün ≈ 540 gün, Kapı A'nın "≥ 2 takvim yılı"na ≈ 2027-02'de ulaşır; (b) purge + embargo = 1 + max_hold (örn. 150 + 151): ilk test ≈ 2023-06, OOS ≈ 1.170 gün. 4h'ta fark küçük (≈ 2021-11 / 2021-08). | Sahip kararı. (a) metnin daha muhafazakâr okunuşu; (b) sızıntıyı aynı ölçüde örter (sınırdaki toplam boşluk ≥ 1 + max_hold, sınırdan önce açılan işlemin tamamı; çapalı WF'de eğitim hep testten öncedir) ve 1d satırlarını ≈ 1,5 yıl öne alır. Öneri: (b) | **Kabul (b)**: purge = ⌊(1 + max_hold)/2⌋, embargo = kalan (300 → 150 + 151) |
+| B2 | **T2/M2 kopyalarının `max_hold`'u** (canlı kuralda zaman stopu yok) | (a) yalnız WF için §2.2 varsayılanı 300 sinyal barı (kural değişmez; X_TIME = 150); (b) kopyalar ve 14 örtüsü v1'de WF'siz | (a) | **Kabul (a)**: `wf_only` 300 × 1d, X_TIME = 150; canlı kural değişmez |
+| B3 | **ER20'nin dilimi** (RSI2, BBRE, FUND_FADE_LOW, `F_ER`) | sinyal dilimi mi; örtülerde tabanın sinyal dilimi mi (Box: 5m mi 1d mi) | sinyal dilimi; Box'ta 1d (kutu günlüktür) | **Kabul**: sinyal dilimi; örtüde tabanınki; Box 1d |
+| B4 | **F_BTC "BTC 4h rejimi"** | `regime_gate.btc_regime`'in 4h uygulaması mı, BTC 4h EMA200 üstü/altı mı | `regime_gate` tanımı (T2'nin kullandığı), 4h barlarda | **Kabul**: `regime_gate.btc_regime`, BTC 4h barlarında |
+| B5 | **RSI2 "orta bant"** | BB(20,2) orta çizgisi mi, RSI 50 mi | BB(20,2) orta çizgisi (BBRE ile aynı) | **Kabul**: BB(20,2) orta çizgisi |
+| B6 | **Rastgelelik** (p_day üreteci, plasebo tohumu ve `trade_key`, ders CI tohumu) | üreteç ve tohum biçimi | `random.Random(int(sha256(...)[:16], 16))` (cfgrid_v1 biçimi); plasebo `row_id|trade_key|k`, `trade_key` = günlükteki `tj_v1` anahtarı; ders CI `sha256(cell_id|look_no)` | **Kabul**: önerildiği gibi (`random.Random`, üç tohum) |
+| B7 | **E** KEL orta çizgisi; BBSQ "kırılım" | EMA20/SMA20; bant dışına kapanış | EMA20 (kapanış); BB(20,2) dışına kapanış | **Kabul**: EMA20 (kapanış); BB(20,2) dışına kapanış |
+| B8 | **H** FUND_FADE çıkışı ve "24h/72h"; FUND_CARRY penceresi | ufuk mu, pencere mi | 24h/72h = en çok tutuş (6/18 × 4h); FUND_CARRY 20 gün | **Kabul**: en çok tutuş 6/18 × 4h; FUND_CARRY 20 gün |
+| B9 | **I** spread stopu ve bacak oranı; **J** XSEC stopu/R birimi, beta penceresi, dengeleme anı, XS_REV sıklığı ve beta nötrlüğü | tasarım kararı | öneri yok (yeni araştırma tasarımı ister; cevap gelene kadar 7 varyant çalıştırılmaz) | **Boşluk kalır** (öneri yoktu; 7 varyant çalıştırılmaz) |
+| B10 | **G** altın stopları, G_NY_ORB giriş son saati, G_ASIA_DRIFT "önceki gün yönü" | — | stoplar: öneri yok (tasarım kararı); NY 18:00 (LDN'deki "aralık sonu + 4 saat" benzeşimi); önceki UTC günün açılış → kapanışı | **Kabul**: NY 18:00 UTC; önceki UTC günün açılış → kapanışı (sıfır getiride giriş yok). **Stoplar boşluk kalır** (6 altın varyantı çalıştırılmaz) |
+| B11 | §2.4-4 "kâr payı"nın paydası; PIT hacim penceresi d'yi içeriyor mu | — | pozitif enstrüman net R'larının toplamı (daha sıkı; toplam ≤ 0 iken satır zaten geçemez); d hariç (d − 30 … d − 1; d'nin hacmi gün bitmeden bilinmez) | **Kabul**: pozitif enstrüman net R toplamı; d hariç (d − 30 … d − 1) |
 
 Cevaplar gelince: ilgili `gap(...)` alanları değerle değiştirilir (gerekçe `reading_tr`), `GAPS_PINNED`/`BLOCKED_PINNED`
-küçülür, sha'lar ve `T_SEAL_MS` yeniden sabitlenir, bu tabloya tarihli cevap yazılır.
+küçülür, sha'lar ve `T_SEAL_MS` yeniden sabitlenir, bu tabloya tarihli cevap yazılır. **2026-10-11: yapıldı** (S1 düzeltme
+mührü 2; kalan 25 boşluk / 13 varyant / 25 Kapı A satırı; protokol boşluğu yok).
 
 ---
 

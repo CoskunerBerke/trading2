@@ -7,6 +7,8 @@
 * Bütçe tablosu (818 / 1.738 ve satır satır), öncül 2.775, mühürde N 4.513, 106 varyant, ızgara 47, keşif 3.745 ve S5
   öncesi "Oto" sütunu 64 KAYITTAN yeniden üretilir ve belgenin sayılarına eşittir (sayılar bu testte bağımsız yazılıdır).
 * `T_SEAL_MS` mühürlü içeriği değiştiren en son commit'in işleyen zamanından önce olamaz (git'ten; tarih elle ayarlanmaz).
+* §8.5 boşluklarına sahip kararı (2026-10-11, "Önerilenleri kabul et"): önerisi olan her boşluk dolu (`decided`,
+  `reading_tr`); kalan boşluklar yalnız B9 (spread, XSEC) ve altın stopları → 13 varyant / 25 Kapı A satırı çalıştırılmaz.
 * `spec_sha` tekilleştirme (alias'lı ızgara üyesi tabanıyla aynı sha; örtü faktör parametreleri spec'te), "asla gevşetme"
   iskeleti (yön tablosu S1'de mühürlü, her eşiği ve kapı-dışı eşik benzerlerini kapsar; gevşetilmiş bir kopya
   yakalanır), UNSPECIFIED boşluklar ve bağımlılıkları (varyant → ER20 dilimi, örtü faktörü, kopya tabanı) sabit, config
@@ -35,17 +37,17 @@ DOC = ROOT / "docs" / "ENGINE_BRAIN_V1.md"
 
 #: §8.2 S1 mühürü (P3a commit'i). DEĞİŞİRSE CI kırılır.
 SHAS_PINNED = {
-    "LIB_V1": "73e6c71c6a68c936b0c34d477669a58d6b1288b3c11278ce9c86d4f91b46d78f",
-    "WF_PROTOCOL_V1": "ef1b85fac497b9d1a4d60250bf0a6414d76bd976f4a788bb863d02eccc4dfaef",
-    "STATS_V1": "e1fda19de4510719b01752a94d7e97022c2619c3e10f62f42e6f26c22be5396e",
-    "LESSON_REGISTRY_V1": "5040738b2fbe864bbff108f6ee6d62e40e2d71010b5ee08a0759011f59901bc7",
-    "PIT_RULES_V1": "3516c5cba17da9929459867963231def25b76bd1459b8ef4a0d902b1a7c50e95",
+    "LIB_V1": "5f05c27d474e458a391d488ae2eff09d5e2067420f901346eb1c8130164b1903",
+    "WF_PROTOCOL_V1": "6857aa10b370140beb33bc690341c8df16707733ec66aa83acb2b1e9d1d3dc6d",
+    "STATS_V1": "4a75ce951e1eddb8024537c24ba3d200c823d761ec6b292e7c3875f5874d60e8",
+    "LESSON_REGISTRY_V1": "8fbed7f5e33e21a02ec9547bfd84ab7ad0a798d9cc25908aa99911244ad58836",
+    "PIT_RULES_V1": "59d0628c975e42aaa7810e231ce0704e5113b6a2bde4fd59fb29e65d8fef48b7",
     "PRIOR_TRIALS_V1": "ad6d8903e66034ce96cafe006f0a071e254968308627ab9998b0464f96984921",
-    "CONFIG_EPOCHS_V1": "392e138b208f76855b1a6955e49c74fefeb693817c41fd53c117072057a263af",
-    "THRESHOLD_DIRECTIONS_V1": "458e889a979fdc5f13a72aa32c3a607e03bbe0342d688197e3361249e79ce47d",
+    "CONFIG_EPOCHS_V1": "082f3ade6736566838f02c2710d40c97680949d65b59ed3f5c5605e72e872e0f",
+    "THRESHOLD_DIRECTIONS_V1": "6ad438010cc06041644b356f1454e4b45092a49521665f3f513111bf1f36524b",
 }
-T_SEAL_MS_PINNED = 1791740640000
-REGISTRY_SHA_PINNED = "7f57e38de2b5987d487a905cbd84bd9cf1e74a33b57a85394e769305ddedbb79"
+T_SEAL_MS_PINNED = 1791747600000
+REGISTRY_SHA_PINNED = "8d115bd31c296aa07852c3c8323d54c655f9c07723ee6b25604482b9b04fa3c3"
 
 #: belgedeki sayılar (§2.2, §2.5, §2.6, §5.1, §7.5) — kayıttan BAĞIMSIZ yazılır
 DOC_BUDGET = {"POOLED": (45, 45), "CLUSTER": (135, 135), "COIN_FIT": (161, 1081), "COPY": (312, 312), "COVER": (140, 140),
@@ -53,57 +55,44 @@ DOC_BUDGET = {"POOLED": (45, 45), "CLUSTER": (135, 135), "COIN_FIT": (161, 1081)
 DOC_FAMILIES = {"K": 13, "B": 10, "C": 8, "D": 7, "E": 4, "F1": 4, "F2": 7, "H": 5, "I": 2, "J": 5, "G": 6, "O": 35}
 DOC_GRID = {"B": 10, "C": 8, "D": 8, "E": 4, "F1": 4, "F2": 8, "H": 5}
 
-#: UNSPECIFIED boşlukları (belge söylemiyor; uydurulmadı). Yeni boşluk sessizce eklenemez.
-ER20 = "LIB_V1.defaults.er20_timeframe"
+#: UNSPECIFIED boşlukları (belge söylemiyor; uydurulmadı). Yeni boşluk sessizce eklenemez. Sahibin 2026-10-11 kararından
+#: (§8.5 "Önerilenleri kabul et") sonra yalnız önerisi olmayanlar kalır: B9 (spread, XSEC) ve B10'un altın stopları.
 GAPS_PINNED = {
-    "LIB_V1.covers.factors.F_BTC.regime",
-    ER20,
-    "LIB_V1.copy_books.T2.max_hold", "LIB_V1.copy_books.M2.max_hold",
-    "LIB_V1.specialisation_rules.4_profit_share_def",
-    "LIB_V1.variants[KEL_20_2_1h].params.center_line", "LIB_V1.variants[KEL_20_2_4h].params.center_line",
-    "LIB_V1.variants[BBSQ_20_1h].params.breakout_ref", "LIB_V1.variants[BBSQ_20_4h].params.breakout_ref",
-    "LIB_V1.variants[RSI2_1h].exits.exit_rule", "LIB_V1.variants[RSI2_4h].exits.exit_rule",
-    *(f"LIB_V1.variants[{v}].exits.exit_rule" for v in ("FUND_FADE_24h", "FUND_FADE_72h", "FUND_FADE_LOW_24h",
-                                                        "FUND_FADE_LOW_72h")),
-    "LIB_V1.variants[FUND_CARRY].params.pct_window",
     *(f"LIB_V1.variants[BTCETH_Z_{z}].{f}" for z in ("2.0", "2.5") for f in ("exits.stop", "params.leg_sizing")),
     *(f"LIB_V1.variants[XS_MOM_{lb}_k{k}].{f}" for lb in (7, 28) for k in (3, 5)
       for f in ("exits.stop", "params.beta_window", "params.rebalance_time")),
     *(f"LIB_V1.variants[XS_REV_1D_k5].{f}" for f in ("exits.stop", "params.beta_neutral", "params.rebalance")),
     *(f"LIB_V1.variants[{g}].exits.stop" for g in ("G_LDN_ORB", "G_NY_ORB", "G_ASIA_DRIFT", "G_MONTH_END", "G_XAU_BTC_28",
                                                    "G_XAU_BTC_56")),
-    "LIB_V1.variants[G_NY_ORB].params.entry_until_utc", "LIB_V1.variants[G_ASIA_DRIFT].params.direction",
-    *(f"LIB_V1.variants[O_{b}_F_BTC].params.factor_params.regime" for b in ("T2", "M2", "BOX", "D4", "C4")),
-    "WF_PROTOCOL_V1.purge_embargo.make_folds_split",
-    "STATS_V1.p_day.rng", "STATS_V1.placebo.seed_int",
-    "LESSON_REGISTRY_V1.ci.seed",
-    "PIT_RULES_V1.membership.volume_window_includes_d",
 }
-#: varyant → boşluk bağımlılıkları (doğrudan ya da kayıt düzeyi). 48 varyant gerçek veride çalıştırılmaz.
+#: varyant → boşlukları. 13 varyant (I 2, J 5, G 6) gerçek veride çalıştırılmaz; kayıt düzeyinde boşluk kalmadı.
 BLOCKED_PINNED = {
-    **{v: {f"variants[{v}].{p}" for p in ps} for v, ps in {
-        "KEL_20_2_1h": ("params.center_line",), "KEL_20_2_4h": ("params.center_line",),
-        "BBSQ_20_1h": ("params.breakout_ref",), "BBSQ_20_4h": ("params.breakout_ref",),
-        "FUND_FADE_24h": ("exits.exit_rule",), "FUND_FADE_72h": ("exits.exit_rule",), "FUND_CARRY": ("params.pct_window",),
+    v: {f"variants[{v}].{p}" for p in ps} for v, ps in {
         **{f"BTCETH_Z_{z}": ("exits.stop", "params.leg_sizing") for z in ("2.0", "2.5")},
         **{f"XS_MOM_{lb}_k{k}": ("exits.stop", "params.beta_window", "params.rebalance_time") for lb in (7, 28) for k in (3, 5)},
         "XS_REV_1D_k5": ("exits.stop", "params.beta_neutral", "params.rebalance"),
-        "G_LDN_ORB": ("exits.stop",), "G_NY_ORB": ("exits.stop", "params.entry_until_utc"),
-        "G_ASIA_DRIFT": ("exits.stop", "params.direction"), "G_MONTH_END": ("exits.stop",),
-        "G_XAU_BTC_28": ("exits.stop",), "G_XAU_BTC_56": ("exits.stop",)}.items()},
-    **{f"RSI2_{tf}": {"defaults.er20_timeframe", f"variants[RSI2_{tf}].exits.exit_rule"} for tf in ("1h", "4h")},
-    **{f"BBRE_{tf}": {"defaults.er20_timeframe"} for tf in ("1h", "4h")},
-    **{f"FUND_FADE_LOW_{h}": {"defaults.er20_timeframe", f"variants[FUND_FADE_LOW_{h}].exits.exit_rule"} for h in ("24h", "72h")},
-    "K_T2": {"copy_books.T2.max_hold"}, "K_M2": {"copy_books.M2.max_hold"},
-    **{f"O_{b}_{f}": ({f"copy_books.{b}.max_hold"} if b in ("T2", "M2") else set())
-       | ({"defaults.er20_timeframe"} if f == "F_ER" else set())
-       | ({"covers.factors.F_BTC.regime", f"variants[O_{b}_F_BTC].params.factor_params.regime"} if f == "F_BTC" else set())
-       for b in ("T2", "M2", "BOX", "D4", "C4") for f in ("F_ER", "F_BTC", "F_VOL", "X_TRAIL2", "X_CHAN3", "X_TIME", "X_TPL")
-       if b in ("T2", "M2") or f in ("F_ER", "F_BTC")},
+        **{g: ("exits.stop",) for g in ("G_LDN_ORB", "G_NY_ORB", "G_ASIA_DRIFT", "G_MONTH_END", "G_XAU_BTC_28",
+                                        "G_XAU_BTC_56")}}.items()
 }
-PROTOCOL_GAPS_PINNED = {"LIB_V1.specialisation_rules.4_profit_share_def", "WF_PROTOCOL_V1.purge_embargo.make_folds_split",
-                        "STATS_V1.p_day.rng", "STATS_V1.placebo.seed_int", "LESSON_REGISTRY_V1.ci.seed",
-                        "PIT_RULES_V1.membership.volume_window_includes_d"}
+PROTOCOL_GAPS_PINNED: set[str] = set()
+#: §8.5 sahip kararı 2026-10-11 ile dolan eski boşluk yolları → §8.5 maddesi (değerler `reading_tr` ile; aşağıdaki test).
+DECIDED_PINNED = {
+    "WF_PROTOCOL_V1.purge_embargo.make_folds_split": "B1 (b)",
+    "LIB_V1.copy_books.T2.max_hold": "B2 (a)", "LIB_V1.copy_books.M2.max_hold": "B2 (a)",
+    "LIB_V1.defaults.er20_timeframe": "B3",
+    "LIB_V1.covers.factors.F_BTC.regime": "B4",
+    **{f"LIB_V1.variants[O_{b}_F_BTC].params.factor_params.regime": "B4" for b in ("T2", "M2", "BOX", "D4", "C4")},
+    "LIB_V1.variants[RSI2_1h].exits.exit_rule": "B5", "LIB_V1.variants[RSI2_4h].exits.exit_rule": "B5",
+    "STATS_V1.p_day.rng": "B6", "STATS_V1.placebo.seed_int": "B6", "LESSON_REGISTRY_V1.ci.seed": "B6",
+    "LIB_V1.variants[KEL_20_2_1h].params.center_line": "B7", "LIB_V1.variants[KEL_20_2_4h].params.center_line": "B7",
+    "LIB_V1.variants[BBSQ_20_1h].params.breakout_ref": "B7", "LIB_V1.variants[BBSQ_20_4h].params.breakout_ref": "B7",
+    **{f"LIB_V1.variants[{v}].exits.exit_rule": "B8" for v in ("FUND_FADE_24h", "FUND_FADE_72h", "FUND_FADE_LOW_24h",
+                                                                "FUND_FADE_LOW_72h")},
+    "LIB_V1.variants[FUND_CARRY].params.pct_window": "B8",
+    "LIB_V1.variants[G_NY_ORB].params.entry_until_utc": "B10", "LIB_V1.variants[G_ASIA_DRIFT].params.direction": "B10",
+    "LIB_V1.specialisation_rules.4_profit_share_def": "B11",
+    "PIT_RULES_V1.membership.volume_window_includes_d": "B11",
+}
 
 
 def _git_ok() -> bool:
@@ -373,7 +362,7 @@ def test_k_copy_values_equal_the_live_config_at_the_values_release():
 
 
 def test_copy_max_hold_equals_the_live_rule_code():
-    """Kopyaların zaman stopu canlı koddan okunur (WF arındırması ve X_TIME buna dayanır); T2/M2'de yok → boşluk."""
+    """Kopyaların zaman stopu canlı koddan okunur (WF arındırması ve X_TIME buna dayanır); T2/M2'de yok → yalnız WF için §2.2 varsayılanı (B2)"""
     from tradingbot import candle_variations as CV
     from tradingbot import donchian_trend as DT
     from tradingbot import ema200_trend as ET
@@ -384,9 +373,12 @@ def test_copy_max_hold_equals_the_live_rule_code():
     assert {cvs[x]["definition"]["exit"]["max_hold_bars"] for x in RG.C4_VARIATIONS} == {mh["C4"]["bars"]} == {24}
     assert {cvs[x]["definition"]["timeframe"] for x in RG.C4_VARIATIONS} == {mh["C4"]["tf"]}
     assert (mh["FM"]["bars"], mh["FM"]["tf"]) == (S3.V3_SIGNAL["hold_bars"], S3.V3_TF) == (24, "4h")
-    assert RG.is_gap(mh["T2"]) and RG.is_gap(mh["M2"])
+    # T2/M2: canlı kuralda zaman stopu yok → sahip kararı B2 (a): §2.2 varsayılanı 300 × 1d YALNIZ WF için (kural değişmez)
+    for b in ("T2", "M2"):
+        assert (mh[b]["bars"], mh[b]["tf"], mh[b]["wf_only"], mh[b]["x_time_bars"]) == (RG.DEFAULT_MAX_HOLD, "1d", True, 150)
+        assert list(RG.LIB_V1["copy_books"][b]["timeframes"]) == ["1d"]
     src = Path(ET.__file__).read_text(encoding="utf-8")
-    assert "max_hold" not in src and "hold_bars" not in src, "canlı T2/M2 kuralına zaman stopu eklendiyse boşluk dolar"
+    assert "max_hold" not in src and "hold_bars" not in src, "canlı T2/M2 kuralına zaman stopu eklendiyse wf_only değeri değişir"
 
 
 # ============================================================================ kimlik (§2.1)
@@ -533,15 +525,79 @@ def test_unspecified_gaps_are_explicit_and_pinned():
 
 
 def test_gaps_follow_variant_dependencies():
-    """Kayıt düzeyindeki boşluk (ER20 dilimi, F_BTC rejimi, T2/M2 max_hold) ona dayanan her varyantı durdurur."""
+    """Kayıt düzeyindeki boşluk ona dayanan her varyantı durdurur (`requires`); sahip kararı 2026-10-11 sonrası kayıt
+    düzeyinde boşluk kalmadı: kalan 13 varyantın boşlukları kendi alanlarındadır (B9, altın stopları)."""
     blocked = {k: set(v) for k, v in RG.blocked_variants().items()}
     assert blocked == BLOCKED_PINNED, set(blocked) ^ set(BLOCKED_PINNED)
-    assert len(blocked) == 48 and not any(RG.variants_by_id()[v]["alias_of"] for v in blocked)
+    assert len(blocked) == 13 and not any(RG.variants_by_id()[v]["alias_of"] for v in blocked)
+    assert {RG.variants_by_id()[v]["family"] for v in blocked} == {"I", "J", "G"}
     auto = {v["variant_id"] for v in RG.LIB_V1["variants"] if v["oto_column_pre_s5"] and not v["alias_of"]}
-    assert len(auto & set(blocked)) == 22
-    for path in ("defaults.er20_timeframe", "covers.factors.F_BTC.regime", "copy_books.T2.max_hold"):
-        assert any(path in g for g in blocked.values()), path
+    assert not auto & set(blocked)
+    # kayıt düzeyi bağımlılıklar artık dolu: onlara dayanan hiçbir varyant durmaz
+    lib = RG.thaw(RG.LIB_V1)
+    for path in ("defaults.er20_timeframe", "covers.factors.F_BTC.regime", "copy_books.T2.max_hold", "copy_books.M2.max_hold"):
+        assert not RG.is_gap(RG.get_path(RG.LIB_V1, path)), path
+        assert not any(path in g for g in blocked.values()), path
+        par, last = _parent(lib, path)
+        par[last] = RG.gap("test")                               # yeniden boşluk olursa bağımlılar yine durur
+        assert any(path in g for g in RG.blocked_variants(lib).values()), path
+        par[last] = RG.thaw(RG.get_path(RG.LIB_V1, path))
     assert {p for p, _ in RG.protocol_gaps()} == PROTOCOL_GAPS_PINNED
+    # bütçede sayılan ama çalıştırılmayan pay (koddan; §8.4 notu): yalnız OTHER satırları
+    assert RG.blocked_budget() == {"variants": 13, "gate_a_rows": 25, "raw_trials": 25}
+    assert RG.blocked_budget()["gate_a_rows"] == RG.budget_table()["OTHER"][0], "I + J + G satırlarının hepsi"
+
+
+def test_owner_decisions_2026_10_11_fill_the_recommended_gaps():
+    """§8.5 'Önerilenleri kabul et' (2026-10-11): önerisi olan her boşluk değerle dolu, gerekçe `reading_tr`'de; öneri
+    olmayanlar (B9, altın stopları) boşluk kalır."""
+    at = {f"{name}.{p}": x for name, reg in RG.REGISTRIES.items() for p, x in RG._walk(reg)}   # unspecified_gaps yol biçimi
+    for path, item in DECIDED_PINNED.items():
+        v = at[path]
+        assert not RG.is_gap(v), path
+        assert v["decision"] == item and v["reading_tr"].startswith(f"sahip kararı 2026-10-11, §8.5 önerilen ({item}): "), path
+    assert not set(DECIDED_PINNED) & GAPS_PINNED
+    dec = {d["id"]: d for d in RG.LIB_V1["owner_decisions"]}["P3A_GAPS"]
+    assert dec["date"] == "2026-10-11" and "B9" in dec["text_tr"] and "altın stopları" in dec["text_tr"]
+    # değerler (§8.5 tablosu aynen)
+    split = RG.WF_PROTOCOL_V1["purge_embargo"]["make_folds_split"]
+    ex = split["example"]
+    assert (ex["max_hold"], ex["purge_bars"], ex["embargo_bars"]) == (300, 150, 151)
+    for mh in (300, 48, 24, 72, 6, 18):
+        purge = (1 + mh) // 2                                    # split["purge_bars"] = floor((1 + max_hold) / 2)
+        assert purge + ((1 + mh) - purge) == 1 + mh and (1 + mh) - purge - purge in (0, 1)
+    assert split["sum_bars"] == "1 + max_hold" and split["purge_bars"] == "floor((1 + max_hold) / 2)"
+    v = RG.variants_by_id()
+    for h, bars in (("24h", 6), ("72h", 18)):
+        for vid in (f"FUND_FADE_{h}", f"FUND_FADE_LOW_{h}"):
+            assert v[vid]["exits"]["max_hold_bars"] == v[vid]["exits"]["exit_rule"]["max_hold_bars"] == bars, vid
+    assert v["FUND_CARRY"]["params"]["pct_window"]["days"] == v["FUND_FADE_24h"]["params"]["pct_window_days"] == 20
+    assert v["G_NY_ORB"]["params"]["entry_until_utc"]["utc"] == "18:00" and v["G_LDN_ORB"]["params"]["entry_until_utc"] == "12:00"
+    assert v["G_ASIA_DRIFT"]["params"]["direction"]["zero_return"] == "NO_ENTRY"
+    for tf in ("1h", "4h"):
+        assert (v[f"KEL_20_2_{tf}"]["params"]["center_line"]["ma"], v[f"KEL_20_2_{tf}"]["params"]["center_line"]["period"]) == \
+            ("EMA", 20)
+        assert v[f"BBSQ_20_{tf}"]["params"]["breakout_ref"]["rule"] == "CLOSE_OUTSIDE_BB"
+        rx = v[f"RSI2_{tf}"]["exits"]["exit_rule"]
+        assert (rx["bb_period"], rx["bb_std"]) == (v[f"BBRE_{tf}"]["params"]["bb_period"], v[f"BBRE_{tf}"]["params"]["bb_std"])
+    er = RG.LIB_V1["defaults"]["er20_timeframe"]
+    assert (er["rule"], er["covers"], er["box"]) == ("SIGNAL_TF", "BASE_SIGNAL_TF", "1d")
+    fb = RG.LIB_V1["covers"]["factors"]["F_BTC"]["regime"]
+    assert (fb["definition"], fb["timeframe"], fb["ema_len"]) == ("regime_gate.btc_regime", "4h", 200)
+    from tradingbot import ema200_trend as ET
+    from tradingbot import regime_gate as RGT
+    assert RGT.EMA_LEN == 200 and ET.btc_regime is RGT.btc_regime, "T2'nin kullandığı tanım"
+    assert RG.STATS_V1["p_day"]["rng"]["algorithm"] == "random.Random"
+    assert "tj_v1" in RG.STATS_V1["placebo"]["seed_int"]["trade_key"]
+    assert RG.LESSON_REGISTRY_V1["ci"]["seed"]["seed"] == "sha256(cell_id|look_no)"
+    assert RG.LIB_V1["specialisation_rules"]["4_profit_share_def"]["denominator"] == "SUM_POSITIVE_INSTRUMENT_NET_R"
+    pit = RG.PIT_RULES_V1["membership"]["volume_window_includes_d"]
+    assert pit["includes_d"] is False and pit["window"] == "d-30 … d-1"
+    # yeni tanımlar asla-gevşetme tablosunda (FIXED)
+    d = RG.THRESHOLD_DIRECTIONS
+    assert d["WF_PROTOCOL"]["purge_embargo.make_folds_split.sum_bars"] == RG.FIXED
+    assert d["LIB"]["specialisation_rules.4_profit_share_def.denominator"] == RG.FIXED
+    assert d["PIT_RULES"]["membership.volume_window_includes_d.includes_d"] == RG.FIXED
 
 
 # ============================================================================ öncül dosyası (§2.6)

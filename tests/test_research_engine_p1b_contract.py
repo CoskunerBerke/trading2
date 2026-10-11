@@ -52,13 +52,18 @@ OUTSIDE_OK = {"store.py": {"tradingbot.history.store"}, "seed.py": {"tradingbot.
                             "tradingbot.learning_cf_aux", "tradingbot.shared_experience"},
               "analysis.py": {"tradingbot.indicators"},
               # P3b (ENGINE_BRAIN §2.1): çekirdek `strategy_lib` varyantlarını oynatır; büyüklük canlı `learning_mode.fit_size`,
-              # likidasyon defterin bracket formülüdür (`accounting`). Parite (a) başvurusu canlı kural fonksiyonlarını ve
+              # likidasyon defterin bracket formülüdür (`accounting`), Formasyonun saf R/R giriş kapısı canlı
+              # `pattern_trader.strategy.rr_after_cost`'tur. Parite (a) başvurusu canlı kural fonksiyonlarını ve
               # `strategy_paper.apply_action` + `FuturesLedgerV2`'yi çağırır (yalnız kabul/ölçüm koşusu; gece grafiğinde
-              # değil); (b) kohortu `learning_mode.classify_unlock_codes` ile okur. Hepsi salt-okunur hesaptır.
-              "kernel.py": {"tradingbot.accounting", "tradingbot.learning_mode", "tradingbot.strategy_lib"},
+              # değil; Formasyonun maliyet oranı canlı `config_v3.FeesSection`'dan); (b) kohortu
+              # `learning_mode.classify_unlock_codes` ile, dönem görünümünün yapı politika sürümünü `structures`'tan okur.
+              # Hepsi salt-okunur hesaptır.
+              "kernel.py": {"tradingbot.accounting", "tradingbot.learning_mode", "tradingbot.strategy_lib",
+                            "tradingbot.pattern_trader.strategy"},
               "parity.py": {"tradingbot.strategy_lib", "tradingbot.paper_rules", "tradingbot.structures", "tradingbot.box_theory",
                             "tradingbot.pattern_trader", "tradingbot.accounting", "tradingbot.risk", "tradingbot.core",
-                            "tradingbot.learning_cf", "tradingbot.strategy_paper", "tradingbot.learning_mode"}}
+                            "tradingbot.learning_cf", "tradingbot.strategy_paper", "tradingbot.learning_mode",
+                            "tradingbot.pattern_trader.strategy", "tradingbot.config_v3"}}
 
 
 def _imports(path: Path) -> list[tuple[ast.AST, str, int]]:

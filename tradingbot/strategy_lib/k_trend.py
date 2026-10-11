@@ -19,6 +19,22 @@ from .contract import (EXIT_LIVE_RULE, LONG, NONE, Action, BookEntry, EntryRef, 
                        close)
 
 PARAM_KEYS = ("atr_mult", "breakeven_at_mfe_r", "max_entry_drift_pct", "structures")
+#: kimliğe giren canlı modüller (`identity.module_src_sha`; çalışma izinin üst kümesi, test)
+LIVE_MODULES: tuple[str, ...] = (
+    "tradingbot.paper_rules",           # decide_with_structures / decide_from_rows / daily_rows / build_params: giriş noktası
+    "tradingbot.ema200_trend",          # T2/M2 kuralı (decide, daily_rows_from_frame)
+    "tradingbot.regime_gate",           # kuralın okuduğu BTC rejimi
+    "tradingbot.indicators",            # canlı günlük çerçevenin ema200 / atr14 sütunları (livebars.frame)
+    "tradingbot.candle_confirmation",   # closed_bars: BTC satırlarının kapanmış-bar kesimi
+    "tradingbot.timeframes",            # tf_ms / DAY_MS: kapanmış-bar kesimleri
+    # ortak yapı katmanı (ENFORCE giriş zamanlaması, yapı çıkışı, kullanılmış yapı kümesi): bots → analysis → catalog/policy
+    "tradingbot.structures.bots", "tradingbot.structures.analysis", "tradingbot.structures.catalog",
+    "tradingbot.structures.policy",
+    # yapı analizinin çalıştırdığı dedektörler (weekly_structure: multitimeframe_context'in içe aldığı sınıf sabitleri)
+    "tradingbot.chart_patterns", "tradingbot.learn.candle_context", "tradingbot.learn.multitimeframe_context",
+    "tradingbot.learn.weekly_structure",
+    "tradingbot.core.ids",              # stable_id: yapı kaydının pattern_id'si (kullanılmış yapı kümesi bununla eşleşir)
+)
 STRUCTURE_MODES = ("OFF", "SHADOW", "ENFORCE")
 RULES = {"K_T2": "t2_trend_regime", "K_M2": "m2_tsmom28"}
 
@@ -35,8 +51,7 @@ class TrendCopy(Variant):
     signal_tf = "1d"
     timeframes = ("1d",)
     needs_btc = True
-    live_modules = ("tradingbot.paper_rules", "tradingbot.ema200_trend", "tradingbot.regime_gate",
-                    "tradingbot.structures.bots", "tradingbot.indicators")
+    live_modules = LIVE_MODULES
 
     def __init__(self, variant_id: str, params: Mapping[str, Any]):
         p = check_params(variant_id, params, PARAM_KEYS)
@@ -98,4 +113,4 @@ def make(variant_id: str, params: Mapping[str, Any]) -> TrendCopy:
     return TrendCopy(variant_id, params)
 
 
-__all__ = ["PARAM_KEYS", "RULES", "TrendCopy", "make", "used_structures"]
+__all__ = ["LIVE_MODULES", "PARAM_KEYS", "RULES", "TrendCopy", "make", "used_structures"]

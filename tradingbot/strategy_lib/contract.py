@@ -51,19 +51,28 @@ class EntryRef:
 
     `price`: kuralın giriş referansı (sinyal kapanışı). `max_drift_pct`: `apply_action`'ın giriş kayması kapısı
     (|giriş − price| / price × 100 ≤ değer; None = kapalı). `anchor` + `max_anchor_dist`: kovalama sınırı (|giriş − anchor|
-    ≤ max_anchor_dist; Formasyon v3'te tetik seviyesi ve 1 × ATR). Hepsi dolumdan ÖNCEKİ referans fiyata uygulanır."""
+    ≤ max_anchor_dist; Formasyon v3'te tetik seviyesi ve 1 × ATR). `min_rr_after_cost` + `rr_cost_frac`: Formasyon
+    `PatternBook._try_open`'ın saf geometri kapısı `RR_BELOW_MIN_AT_ENTRY` (ilk hedef GERÇEK girişten çözülür; maliyet
+    sonrası R/R canlı `pattern_trader.strategy.rr_after_cost(giriş, stop, hedef, cost_frac)` ile ölçülür; ikisi birlikte
+    verilir ya da hiç). Hepsi dolumdan ÖNCEKİ referans fiyata uygulanır."""
 
     price: float
     max_drift_pct: float | None = None
     anchor: float | None = None
     max_anchor_dist: float | None = None
+    min_rr_after_cost: float | None = None
+    rr_cost_frac: float | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "price", _finite(self.price, "entry_ref.price"))
-        for k in ("max_drift_pct", "anchor", "max_anchor_dist"):
+        for k in ("max_drift_pct", "anchor", "max_anchor_dist", "min_rr_after_cost", "rr_cost_frac"):
             v = getattr(self, k)
             if v is not None:
                 object.__setattr__(self, k, _finite(v, f"entry_ref.{k}"))
+        if (self.min_rr_after_cost is None) != (self.rr_cost_frac is None):
+            raise ValueError("entry_ref.min_rr_after_cost ve rr_cost_frac birlikte verilir")
+        if self.rr_cost_frac is not None and self.rr_cost_frac < 0:
+            raise ValueError("entry_ref.rr_cost_frac negatif olamaz")
 
 
 @dataclass(frozen=True)
@@ -127,8 +136,9 @@ class Intent:
 
 @dataclass(frozen=True)
 class Action:
-    """§2.1 eylemi: NONE | CLOSE(reason) | MOVE_STOP(price). Yalnız kapanmış barda üretilir; çekirdek sonraki barın
-    açılışında uygular."""
+    """§2.1 eylemi: NONE | CLOSE(reason) | MOVE_STOP(price). Yalnız kapanmış barda üretilir; çekirdek CLOSE'u sonraki
+    barın açılışında uygular. MOVE_STOP yalnız sıkılaştırır ve kararın anındaki fiyatı geçemez; aksi istek çekirdekte
+    uygulanmaz ve işleme `MOVE_STOP_IGNORED` yazılır (`kernel.move_stop_verdict`)."""
 
     kind: str = ACT_NONE
     reason: str = ""
@@ -193,7 +203,8 @@ class Variant:
     #: `ctx["btc_bars"]` (BTC kapanmış 1d barları) gerekli mi ve kaç bar (canlı çerçeve penceresi)
     needs_btc: bool = False
     btc_lookback: int = 0
-    #: kuralın okuduğu canlı modüller (kimlik: `identity.module_src_sha` bunların kapanışını da örter)
+    #: kimliğe giren BİLDİRİLMİŞ canlı modüller (`identity.module_src_sha`: varyant modülü + paket içi bağımlılıkları + bu
+    #: liste; her modülün gerekçesi kopya modülünün `LIVE_MODULES` yorumundadır)
     live_modules: tuple[str, ...] = ()
     params: Mapping[str, Any] = _EMPTY
 

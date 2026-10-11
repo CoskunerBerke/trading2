@@ -17,6 +17,15 @@ from .contract import (EXIT_LIVE_RULE, NONE, Action, EntryRef, Intent, PosView, 
 
 PARAM_KEYS = ("entry_window_min", "breakeven_at_mfe_r", "max_entry_drift_pct")
 RULE = "d4_donchian_20_10"
+#: kimliğe giren canlı modüller (`identity.module_src_sha`; çalışma izinin üst kümesi, test)
+LIVE_MODULES: tuple[str, ...] = (
+    "tradingbot.paper_rules",           # decide_from_rows / intraday_rows / build_params: giriş noktası
+    "tradingbot.donchian_trend",        # D4 kuralı (decide, DonchianParams, MAX_BARS)
+    "tradingbot.signal_lab",            # kuralın göstergeleri (indicators / aux_series)
+    "tradingbot.box_theory",            # rows_from_frame: gün içi satır okuyucusu (paper_rules.intraday_rows)
+    "tradingbot.candle_confirmation",   # closed_bars
+    "tradingbot.timeframes",            # tf_ms
+)
 
 
 class DonchianCopy(Variant):
@@ -24,7 +33,7 @@ class DonchianCopy(Variant):
     signal_tf = donchian_trend.TIMEFRAME
     timeframes = (donchian_trend.TIMEFRAME,)
     needs_btc = False
-    live_modules = ("tradingbot.paper_rules", "tradingbot.donchian_trend", "tradingbot.signal_lab")
+    live_modules = LIVE_MODULES
 
     def __init__(self, variant_id: str, params: Mapping[str, Any]):
         p = check_params(variant_id, params, PARAM_KEYS)
@@ -68,4 +77,4 @@ def make(variant_id: str, params: Mapping[str, Any]) -> DonchianCopy:
     return DonchianCopy(variant_id, params)
 
 
-__all__ = ["DonchianCopy", "PARAM_KEYS", "RULE", "make"]
+__all__ = ["DonchianCopy", "LIVE_MODULES", "PARAM_KEYS", "RULE", "make"]

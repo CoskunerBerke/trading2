@@ -2,10 +2,13 @@
 
 Her K ailesi (kopyanın canlı defteri: T2, M2, BOX, D4, C4 = CV001…CV008 birlikte, FM) için belirlenimci sentetik dünyalar
 (`research_engine/synthetic.py`, tohum 11, 12, …) üretir; her dünyada çekirdeği (`kernel.run`) ve başvuruyu (canlı kural
-→ `apply_action` → `FuturesLedgerV2.tick`, `parity.reference_run`) koşar; eşleşen işlem sayısı `--min-trades`'e (varsayılan
-mühürlü `parity_kernel.min_synthetic_trades_per_family` = 200) ulaşana kadar devam eder. Çıktı JSON: aile başına sinyal
-kimliği, medyan/p95/en büyük |ΔR|, geçti mi; çekirdeğin bar/sn ve karar/sn hızı. Ağ yok, gerçek veri yok, hiçbir yere
-yazmaz (`--out` verilmedikçe).
+→ `apply_action` → `FuturesLedgerV2.tick`, `parity.reference_run`) İKİ kipte koşar: `clipped` (kapılı ölçü; çekirdekle aynı
+bar içi sözleşme) ve `ohlc` (rapor; canlı gibi bar başına tek kırpılmamış OHLC tiki → defterin ihtiyatlı dolum dalları);
+eşleşen işlem sayısı (`clipped`) `--min-trades`'e (varsayılan mühürlü `parity_kernel.min_synthetic_trades_per_family` =
+200) ulaşana kadar devam eder. Çıktı JSON: aile başına sinyal kimliği, medyan/p95/en büyük |ΔR|, geçti mi (`clipped`);
+`ohlc` kipinin ΔR'si, işaretli ortalaması (çekirdek − defter; > 0 = çekirdek iyimser) ve defterin çıkış dayanakları;
+çekirdeğin `FUNDING_EXIT_BAR` işaretleri; bar/sn ve karar/sn hızı. Ağ yok, gerçek veri yok, hiçbir yere yazmaz (`--out`
+verilmedikçe).
 
     python scripts/engine_p3b_measure.py [--families T2,M2,BOX,D4,C4,FM] [--min-trades 200] [--max-worlds 40] [--out f.json]
 """
@@ -30,8 +33,9 @@ def family_variants(fam: str) -> list[str]:
     return [v for v in SLC.IMPLEMENTED if SLC.BOOK_OF[v] == fam]
 
 
-def measure(fam: str, *, min_trades: int, max_worlds: int, seed0: int = 11) -> dict:
-    pairs = []
+def measure(fam: str, *, min_trades: int, max_worlds: int, seed0: int = 11, ohlc: bool = True) -> dict:
+    pairs, pairs_ohlc = [], []
+    bases: dict[str, int] = {}
     bars = decisions = 0
     t_kernel = t_ref = 0.0
     worlds = 0
@@ -49,6 +53,12 @@ def measure(fam: str, *, min_trades: int, max_worlds: int, seed0: int = 11) -> d
             bars += kr.bars
             decisions += kr.decisions
             pairs.append((vid, kr, refs))
+            if ohlc:
+                ro, _rj = PA.reference_run(vid, data, mode=PA.MODE_OHLC)
+                pairs_ohlc.append((vid, kr, ro))
+                for r in ro:
+                    k = str(r.exit_basis or r.exit_reason)
+                    bases[k] = bases.get(k, 0) + 1
         a = PA.compare_a(pairs, min_trades=min_trades)
         print(f"[{fam}] dünya {worlds}: eşleşen {a.n_matched} / çekirdek {a.n_kernel} / defter {a.n_ref}", file=sys.stderr,
               flush=True)
@@ -57,8 +67,16 @@ def measure(fam: str, *, min_trades: int, max_worlds: int, seed0: int = 11) -> d
     a = PA.compare_a(pairs, min_trades=min_trades)
     trades = [t for _v, kr, _r in pairs for t in kr.trades]
     mean = {sc: (sum(t.r[sc] for t in trades) / len(trades) if trades else None) for sc in KN.SCENARIOS}
+    amb = [t.funding_ambiguous_usdt / t.risk_usdt for t in trades if KN.FLAG_FUNDING_EXIT_BAR in t.flags and t.risk_usdt]
+    out_ohlc = None
+    if ohlc:
+        b = PA.compare_a(pairs_ohlc, min_trades=min_trades)
+        out_ohlc = dict(b.to_dict(), passed=None, exit_basis=dict(sorted(bases.items())))
     return {"family": fam, "variants": family_variants(fam), "worlds": worlds, "bars": bars, "decisions": decisions,
-            "parity_a": a.to_dict(), "kernel_seconds": round(t_kernel, 3), "reference_seconds": round(t_ref, 3),
+            "parity_a": a.to_dict(), "parity_a_ohlc_report": out_ohlc,
+            "funding_exit_bar_trades": len(amb),
+            "funding_exit_bar_mean_abs_r": (sum(abs(x) for x in amb) / len(amb)) if amb else 0.0,
+            "kernel_seconds": round(t_kernel, 3), "reference_seconds": round(t_ref, 3),
             "kernel_bars_per_sec": round(bars / t_kernel, 1) if t_kernel else None,
             "kernel_decisions_per_sec": round(decisions / t_kernel, 1) if t_kernel else None,
             "trades_per_1000_bars": round(1000.0 * len(trades) / bars, 3) if bars else None,
@@ -74,11 +92,12 @@ def main(argv: list[str] | None = None) -> int:
                     default=int(RG.LIB_V1["thresholds"]["parity_kernel"]["min_synthetic_trades_per_family"]))
     ap.add_argument("--max-worlds", type=int, default=40)
     ap.add_argument("--out", default=None)
+    ap.add_argument("--no-ohlc", action="store_true", help="kırpılmamış OHLC rapor kipini koşma")
     args = ap.parse_args(argv)
     out = {"kernel": KN.KERNEL_VERSION, "thresholds": RG.thaw(RG.LIB_V1["thresholds"]["parity_kernel"]),
            "registry_sha": RG.REGISTRY_SHA, "families": []}
     for fam in [f.strip() for f in args.families.split(",") if f.strip()]:
-        out["families"].append(measure(fam, min_trades=args.min_trades, max_worlds=args.max_worlds))
+        out["families"].append(measure(fam, min_trades=args.min_trades, max_worlds=args.max_worlds, ohlc=not args.no_ohlc))
         print(json.dumps(out["families"][-1], ensure_ascii=False, sort_keys=True), flush=True)
     out["all_passed"] = all(f["parity_a"]["passed"] for f in out["families"])
     text = json.dumps(out, ensure_ascii=False, sort_keys=True, indent=1)

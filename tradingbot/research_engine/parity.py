@@ -5,25 +5,52 @@ p95 ≤ 0,05). Aynı sentetik barlar iki yoldan oynatılır:
 
 * çekirdek: `strategy_lib` kopyası → `kernel.run` (base maliyet);
 * başvuru: canlı kural fonksiyonu DOĞRUDAN (`paper_rules.decide_with_structures` / `decide_from_rows` — C4'te kapı
-  dahil canlı `candle_book.decide`; Formasyonda `build_plans_v3` + `PatternBook._try_open`'ın kovalama/stop kapıları) →
-  `strategy_paper.apply_action` → `FuturesLedgerV2.tick`. Bar içi yol çekirdekle aynı sözleşmedir (`learning_cf`
-  kuralı: `learning_cf._bar_path` sırası, her nokta ayrı fiyat-yalnız tik, stopun ötesindeki nokta seviyeye kırpılır,
-  boşluk yalnız açılışta). Defter base maliyetiyle kurulur (taker %0,05, 3 bps, bracket likidasyon, uzlaşma
-  anlarında gerçek fonlama); fiyat adımı serinin kendi `price_tick`'i (defter dolumu adıma kuantize eder, çekirdek
-etmez — ΔR'nin bir kaynağı budur), miktar adımı 1e-6. Büyüklük §2.1'indir (canlı defterin
-  öğrenme/slot boyutu değil): başvuru eylemine çekirdeğin `size_trade` kaldıracı yazılır, risk ölçeği 50 kat (R ölçekten
-  bağımsızdır; min-notional retlerini önler).
-* Sinyal kimliği = (sembol, sinyal barı, yön) kümelerinin eşitliği (iki yönde); ΔR = |R_çekirdek − R_defter| eşleşen
-  işlemlerde (`TradeRecord.r_multiple`).
+  dahil canlı `candle_book.decide`; Formasyonda `build_plans_v3` + `PatternBook._try_open`'ın kovalama, stop, risk
+  aralığı ve maliyet sonrası R/R kapıları) → `strategy_paper.apply_action` → `FuturesLedgerV2.tick`. Defter base
+  maliyetiyle kurulur (taker %0,05, 3 bps, bracket likidasyon, uzlaşma anlarında gerçek fonlama); fiyat adımı serinin
+  kendi `price_tick`'i (defter dolumu adıma kuantize eder, çekirdek etmez — ΔR'nin bir kaynağı budur), miktar adımı 1e-6.
+  Büyüklük §2.1'indir (canlı defterin öğrenme/slot boyutu değil): başvuru eylemine çekirdeğin `size_trade` kaldıracı
+  yazılır, risk ölçeği 50 kat (R ölçekten bağımsızdır; min-notional retlerini önler). Karar anından sonraki satır karar
+  anında açılmıyorsa (veri boşluğu) giriş `ENTRY_DATA_GAP` ile reddedilir (çekirdekle aynı). İki kip:
 
-**(b) Kopya ↔ canlı defter** (`parity_copy`): yalnız POLICY kohortu girişleri (`learning_mode.classify_unlock_codes`
-boş liste → POLICY; öğrenme etiketi olmayan eski kayıt `UNTAGGED` sayılır, POLICY değil), config dönemi başına
-(`rehydrate.config_epoch` + mühürlü `CONFIG_EPOCHS_V1`): ≥ 20 girişli her dönemde canlı girişlerin ≥ %95'i kopyada
-aynı sinyal barı ve yönle bulunmalı ve eşleşenlerde medyan |ΔR| ≤ 0,05. < 20 girişli dönem raporlanır, kapıya girmez.
-Bir kapılı dönem tutmazsa kopya `PARITY_FAIL` (lider tablosuna ve kapıya girmez); hiç kapılı dönem yoksa
-`PARITY_UNPROVEN` (koşul gösterilemedi; ana belge §6.2 "ancak bu koşulla girer" → uygun değil). Kopyanın canlıda
-olmayan fazla işlemleri ve canlının açıklanmış (slot/teminat) retleri ayrıca sayılır. P3b-1'de iskelet: girdiler
-fixture defterlerdir; gece bağlantısı P3g'dedir.
+  - `clipped` (KAPILI ölçü): bar içi yol çekirdekle aynı sözleşmedir (`learning_cf._bar_path` sırası, her nokta ayrı
+    fiyat-yalnız tik, stopun ötesindeki nokta seviyeye kırpılır, boşluk yalnız açılışta). Bu kip çekirdeğin
+    ARİTMETİĞİNİ sınar (kırpma yüzünden defterin `exit_decision`'ının ihtiyatlı dalları çalışmaz — kısmen döngüsel).
+  - `ohlc` (RAPOR, kapıya girmez): canlı defterin yaptığı gibi bar başına TEK OHLC tiki (`TickData(open, high, low,
+    close)`, kırpma yok) → `exit_decision`'ın `STOP_CLOSE_BEYOND_LEVEL_PRUDENT` (kapanış da stopun ötesindeyse dolum
+    kapanıştan) ve `PRUDENT_LIQUIDATION` dalları ile "aynı tikte önce stop, hedef sonra" kuralı çalışır. İki kip
+    arasındaki işaretli ΔR çekirdeğin canlı defterin muhasebesine göre ne kadar iyimser olduğunu ölçer (canlı 1h OHLC
+    barı işler; burada sinyal diliminin barı — ölçü bir üst sınırdır).
+
+  Her iki kipte bar içi tikler barın açılışından 1 ms sonra damgalanır: çekirdeğin fonlama sözleşmesiyle aynı (bar içi
+  çıkış barın içinde olur; barın içindeki ve kapanışındaki uzlaşma çıkan miktara yazılmaz; pozisyon bardan çıkmazsa
+  sonraki açılış tiki onları yazar). Veri sonunda son kapanışta bir fiyat tiki fonlamayı kapatır, sonra elle kapanış.
+* Sinyal kimliği = (sembol, sinyal barı, yön) kümelerinin eşitliği (iki yönde); ΔR = |R_çekirdek − R_defter| eşleşen
+  işlemlerde (`TradeRecord.r_multiple`); ayrıca işaretli ortalama (R_çekirdek − R_defter).
+
+**(b) Kopya ↔ canlı defter** (`parity_copy`; ana belge §6.2 "her config dönemi için ayrı, o dönemin parametreleriyle"):
+
+* yalnız POLICY kohortu (`learning_mode.classify_unlock_codes` boş liste → POLICY; öğrenme etiketi olmayan eski kayıt
+  `UNTAGGED`, POLICY değil). C4'te kayıtlar VARYASYONA göre süzülür (`features.candle_variation.id`, yoksa
+  `setup_type` "candle:<id>"): her `K_C4_CVxxx` yalnız kendi varyasyonunun kayıtlarıyla kıyaslanır; varyasyonu
+  okunamayan POLICY kaydı her C4 kopyasında EŞLEŞMEDİ sayılır (kapalı hata).
+* dönem `rehydrate.config_epoch` + mühürlü `CONFIG_EPOCHS_V1` (TRANSITION ve kapsam dışı ATANMAZ). Dönem başına kopya o
+  dönemin config GÖRÜNÜMÜNDEN kurulur (`view_sha` → görünüm, `params_from_view`); görünüm yoksa, sha'sı tutmuyorsa ya da
+  kopyanın parametrelerine eşlenemiyorsa (bilinmeyen kural anahtarı, modellenmeyen değer, farklı yapı politika sürümü,
+  Formasyonda farklı ücret) dönem `NOT_COMPARABLE` (raporlanır, kapıya girmez).
+* eşleşme: her canlı POLICY girişi için kopyanın `signals`'ı girişin KARAR BARINDA (sinyal barının kapanışı), pozisyonsuz,
+  `ctx.history` = canlı defterin kendi geçmişi (o sembolde o andan önce açılmış bütün girişleri) ile çağrılır; aynı
+  sinyal barı ve yönde niyet yoksa EŞLEŞMEDİ. ΔR, o TEK niyetin çekirdekte zorlanmış yeniden oynatımından
+  (`kernel.replay_intent`; çekirdek kapıları dahil, reddedilirse EŞLEŞMEDİ): yol bağımlılığı (CAPACITY/SELECTIVITY
+  pozisyonlarının kopyada başka girişleri engellemesi) böylece kalkar. `features.data_source.bars[sinyal dilimi]` anahtarı
+  olmayan POLICY kaydı EŞLEŞMEDİ sayılır (atlanmaz).
+* kapı: ≥ 20 POLICY girişli KARŞILAŞTIRILABİLİR dönem kapılıdır: ≥ %95 aynı bar/yön ve eşleşenlerde medyan |ΔR| ≤ 0,05.
+  Kapılı bir dönem tutmazsa `PARITY_FAIL`; ≥ 1 kapılı dönem varsa ve hepsi tutarsa `PASS`; yoksa `PARITY_UNPROVEN`
+  (koşul gösterilemedi; ana belge §6.2 "ancak bu koşulla girer" → uygun değil).
+* T2/M2 öğrenme kipinde (2026-09-28'den beri `structures_entry_shadow`) yapı denetiminin engelleyeceği yeni giriş
+  `STRUCTURE_*` koduyla SELECTIVITY'dir (`strategy_paper` `_learning_tags`): POLICY kohortu ENFORCE'un geçirdiği kümeye
+  eşittir → bu dönemler mühürlü ENFORCE kopyasıyla karşılaştırılabilir (mühür değişmez).
+* P3b-1'de girdiler fixture defterleri ve verilen seridir; gece bağlantısı P3g'dedir.
 """
 from __future__ import annotations
 
@@ -41,9 +68,13 @@ from . import rehydrate as RH
 PARITY_KERNEL = RG.LIB_V1["thresholds"]["parity_kernel"]
 PARITY_COPY = RG.LIB_V1["thresholds"]["parity_copy"]
 PASS, PARITY_FAIL, PARITY_UNPROVEN = "PASS", "PARITY_FAIL", "PARITY_UNPROVEN"
+NOT_COMPARABLE = "NOT_COMPARABLE"
+MODE_CLIPPED, MODE_OHLC = "clipped", "ohlc"
 #: başvuru defterinin risk ölçeği (R ölçekten bağımsız; min-notional reddini önler)
 REF_SCALE = 50.0
 REF_EQUITY = 1_000_000.0
+#: bar içi tiklerin damgası: barın açılışından sonra (çekirdeğin fonlama sözleşmesi)
+INTRABAR_TICK_MS = 1
 #: kopya → canlı defter (state klasörü; `rehydrate.RULE_BOOKS` ile aynı adlar) ve sinyal dilimi
 BOOK_DIR = {"K_T2": "strategy_paper", "K_M2": "strategy_paper_m2", "K_BOX": "strategy_paper_box",
             "K_D4": "strategy_paper_trend4h", **{f"K_C4_CV{i:03d}": "strategy_paper_candle4h" for i in range(1, 9)},
@@ -63,20 +94,38 @@ def _pct(xs: Sequence[float], q: float) -> float:
     return s[lo] + (s[hi] - s[lo]) * (k - lo)
 
 
+def _norm_sym(x: Any) -> str:
+    return str(x or "").replace("/", "").replace(":USDT", "")
+
+
 # ============================================================================ (a) başvuru: canlı kural + defter
 class _Lookup:
-    """Defterin fonlama kaynağı: uzlaşma anındaki gerçek oran ve mark (deponun satırları)."""
+    """Defterin fonlama kaynağı: uzlaşma anındaki gerçek oran ve mark (deponun satırları; damga nominal dakikaya
+    yuvarlanır — çekirdekle aynı)."""
 
     def __init__(self, rows: Sequence[tuple[int, float, float]] | None):
-        self.by = {int(t): (r, m) for t, r, m in (rows or ())}
+        self.by = {KN.snap_ms(t): (r, m) for t, r, m in (rows or ())}
+
+    def _get(self, when: datetime):
+        return self.by.get(KN.snap_ms(int(round(when.timestamp() * 1000))))
 
     def __call__(self, symbol: str, when: datetime):
-        v = self.by.get(int(round(when.timestamp() * 1000)))
+        v = self._get(when)
         return None if v is None else Decimal(repr(float(v[0])))
 
     def settlement_mark(self, symbol: str, when: datetime):
-        v = self.by.get(int(round(when.timestamp() * 1000)))
+        v = self._get(when)
         return None if v is None else Decimal(repr(float(v[1])))
+
+
+def live_cost_frac() -> float:
+    """Canlı Formasyon defterinin maliyet oranı: `PatternBook.cost_frac` = `cost_fraction(fees.futures_taker_pct,
+    fees.slippage_bps)` — canlı config sınıfının (`config_v3.FeesSection`) değerleriyle (kopyanın `LIVE_FEES`'inden
+    bağımsız okunur; ikisinin eşitliği testlidir)."""
+    from ..config_v3 import FeesSection
+    from ..pattern_trader.strategy import cost_fraction
+    f = FeesSection()
+    return cost_fraction(taker_fee_pct=float(f.futures_taker_pct), slippage_bps=float(f.slippage_bps))
 
 
 class _LiveRule:
@@ -152,6 +201,7 @@ class _LiveRule:
                     "signal_ts": int(pl["triggered_at_ms"]) - 14_400_000, "signal_close_ms": int(pl["triggered_at_ms"]),
                     "atr14": float(pl["atr"]), "risk_atr_bounds": list(pl["risk_atr_bounds"]), "one_entry_per_signal": True,
                     "structure": st, "_chase": (float(pl["trigger"]["level"]), float(pl["chase_atr"]) * float(pl["atr"])),
+                    "_rr": (float(pl["min_rr_after_cost"]), live_cost_frac(), float(pl["target_from_entry_rr"])),
                     "_hold_bars": int(S3.V3_SIGNAL["hold_bars"])}
         raise KeyError(self.variant_id)
 
@@ -166,6 +216,7 @@ class RefTrade:
     opened_at: str
     closed_at: str
     funding: float
+    exit_basis: str | None = None
 
 
 def _ref_ledger(data: KN.SeriesData) -> tuple[Any, Any, Any, Any, Any]:
@@ -190,15 +241,19 @@ def _ref_ledger(data: KN.SeriesData) -> tuple[Any, Any, Any, Any, Any]:
     return led, filt, prof, RiskEngine(prof, KillSwitch()), _Lookup(data.funding)
 
 
-def reference_run(variant_id: str, data: KN.SeriesData) -> tuple[list[RefTrade], dict[str, int]]:
-    """Canlı yol: canlı kural → `apply_action` → `FuturesLedgerV2.tick` (bar içi yol çekirdekle aynı sözleşme)."""
+def reference_run(variant_id: str, data: KN.SeriesData, *, mode: str = MODE_CLIPPED) -> tuple[list[RefTrade], dict[str, int]]:
+    """Canlı yol: canlı kural → `apply_action` → `FuturesLedgerV2.tick`. `mode`: `clipped` (çekirdekle aynı bar içi
+    sözleşme; kapılı ölçü) ya da `ohlc` (bar başına tek, kırpılmamış OHLC tiki; rapor)."""
     from ..accounting import TickData
     from ..core import iso
     from ..learning_cf import _bar_path
     from ..paper_rules import signal_already_used
+    from ..pattern_trader.strategy import rr_after_cost
     from ..risk import build_state
     from ..strategy_lib import TF_MS
     from ..strategy_paper import DataVerdict, apply_action
+    if mode not in (MODE_CLIPPED, MODE_OHLC):
+        raise ValueError(f"kip {MODE_CLIPPED}/{MODE_OHLC} olmalı: {mode!r}")
     rule = _LiveRule(variant_id)
     copy = rule.copy
     stf = copy.signal_tf
@@ -225,10 +280,15 @@ def reference_run(variant_id: str, data: KN.SeriesData) -> tuple[list[RefTrade],
         led.tick({sym: TickData(last=Decimal(repr(px)), mark=Decimal(repr(px)), ts=iso(at))}, now_utc=at,
                  funding_rate_lookup=lookup, bar_advance=first)
 
+    def tick_ohlc(o: float, h: float, lo: float, c: float, at: datetime) -> None:
+        td = TickData(last=Decimal(repr(c)), mark=Decimal(repr(c)), high=Decimal(repr(h)), low=Decimal(repr(lo)),
+                      open=Decimal(repr(o)), ts=iso(at))
+        led.tick({sym: td}, now_utc=at, funding_rate_lookup=lookup, bar_advance=False)
+
     for i, bar in enumerate(rows):
         o, h, lo, c = (float(bar[k]) for k in ("open", "high", "low", "close"))
         t_open = int(bar["timestamp"])
-        odt, cdt = _dt(t_open), _dt(t_open + step)
+        odt, idt = _dt(t_open), _dt(t_open + INTRABAR_TICK_MS)
         long = None
         pos = led.positions.get(sym)
         if pos is not None:
@@ -241,13 +301,20 @@ def reference_run(variant_id: str, data: KN.SeriesData) -> tuple[list[RefTrade],
         elif pending is not None:
             act, pending = pending, None
             chase = act.pop("_chase", None)
-            if chase is not None and abs(o - chase[0]) > chase[1]:
+            rr = act.pop("_rr", None)
+            side = str(act.get("direction") or "LONG").upper()
+            stop = float(act["stop"])
+            if t_open != int(act.pop("_at")):
+                reject(sym, KN.REJ_DATA_GAP)               # karar barından sonraki satır karar anında açılmıyor
+            elif chase is not None and abs(o - chase[0]) > chase[1]:
                 reject(sym, "CHASE_LIMIT")
+            elif rr is not None and (stop <= 0 or rr_after_cost(o, stop, o + (1 if side == "LONG" else -1) * rr[2] * abs(o - stop),
+                                                                 cost_frac=rr[1])[1] < rr[0]):
+                reject(sym, KN.REJ_RR)                     # PatternBook._try_open RR_BELOW_MIN_AT_ENTRY (mark = açılış)
             else:
-                side = str(act.get("direction") or "LONG").upper()
                 fill = o * (1.0 + (1 if side == "LONG" else -1) * KN.scenario("base").slip)
-                ok, _why, lev, _n, _m, _l = KN.size_trade(side, fill, float(act["stop"])) \
-                    if float(act["stop"]) > 0 and ((side == "LONG") == (float(act["stop"]) < o)) else (False, "", 1, 0, 0, 0)
+                ok, _why, lev, _n, _m, _l = KN.size_trade(side, fill, stop) \
+                    if stop > 0 and ((side == "LONG") == (stop < o)) else (False, "", 1, 0, 0, 0)
                 act["leverage"], act["leverage_max"] = (int(lev) if ok else 1), 0
                 res = apply_action(act, symbol=sym, price=o, tick=None, now=odt, ledger=led, risk=risk, profile=prof,
                                    state=state(odt), filters=filt, run_id="parity", reject=reject,
@@ -258,14 +325,17 @@ def reference_run(variant_id: str, data: KN.SeriesData) -> tuple[list[RefTrade],
         p = led.positions.get(sym)
         if p is not None:
             long = p.side.value == "LONG"
-            for point, px in _bar_path(long, None, h, lo, c):   # giriş/açılış zaten işlendi: ters → lehte → kapanış
-                p = led.positions.get(sym)
-                if p is None:
-                    break
-                price = px
-                if p.stop is not None and ((price <= float(p.stop)) if long else (price >= float(p.stop))):
-                    price = float(p.stop)                  # seviyede stop (boşluk yalnız açılışta)
-                tick(price, cdt, False)
+            if mode == MODE_OHLC:
+                tick_ohlc(o, h, lo, c, idt)                # canlı gibi: tek OHLC tiki, kırpma yok
+            else:
+                for _point, px in _bar_path(long, None, h, lo, c):   # açılış zaten işlendi: ters → lehte → kapanış
+                    p = led.positions.get(sym)
+                    if p is None:
+                        break
+                    price = px
+                    if p.stop is not None and ((price <= float(p.stop)) if long else (price >= float(p.stop))):
+                        price = float(p.stop)              # seviyede stop (boşluk yalnız açılışta)
+                    tick(price, idt, False)
         # ---------------------------------------------------------------- kapanış kararı
         now = t_open + step
         bars = {tf: v[1][max(0, _bisect(v[0], now - v[2]) - v[3]):_bisect(v[0], now - v[2])] for tf, v in idx.items()}
@@ -286,17 +356,20 @@ def reference_run(variant_id: str, data: KN.SeriesData) -> tuple[list[RefTrade],
             if signal_already_used(act, led.history, sym):
                 reject(sym, "SIGNAL_ALREADY_USED")
             else:
-                pending = dict(act, _verdict=verdict)
+                pending = dict(act, _verdict=verdict, _at=now)
     if led.positions.get(sym) is not None and rows:
         last = rows[-1]
-        led.close_manual(sym, Decimal(repr(float(last["close"]))), reason="END_OF_DATA",
-                         now=_dt(int(last["timestamp"]) + step))
+        end = _dt(int(last["timestamp"]) + step)
+        tick(float(last["close"]), end, False)             # son barın uzlaşmaları (çekirdeğin END bacağı gibi)
+        if led.positions.get(sym) is not None:
+            led.close_manual(sym, Decimal(repr(float(last["close"]))), reason="END_OF_DATA", now=end)
     out = []
     for rec in led.history:
         ds = ((rec.features or {}).get("data_source") or {}).get("bars") or {}
+        ef = (rec.features or {}).get("exit_fill") if isinstance((rec.features or {}).get("exit_fill"), dict) else {}
         out.append(RefTrade(symbol=rec.symbol, side=str(rec.side), signal_ts=int(ds.get(stf)), r=float(rec.r_multiple),
                             exit_reason=str(rec.exit_reason), opened_at=str(rec.opened_at), closed_at=str(rec.closed_at),
-                            funding=float(rec.funding)))
+                            funding=float(rec.funding), exit_basis=ef.get("basis")))
     return out, rejects
 
 
@@ -315,6 +388,8 @@ class ParityA:
     median_abs_dr: float
     p95_abs_dr: float
     max_abs_dr: float
+    mean_signed_dr: float = float("nan")
+    n_abs_dr_over_001: int = 0
     only_kernel: list[tuple] = field(default_factory=list)
     only_ref: list[tuple] = field(default_factory=list)
     passed: bool = False
@@ -322,8 +397,9 @@ class ParityA:
     def to_dict(self) -> dict[str, Any]:
         return {"variants": self.variant_ids, "n_kernel": self.n_kernel, "n_ref": self.n_ref, "n_matched": self.n_matched,
                 "identity_share": self.identity_share, "median_abs_dr": self.median_abs_dr, "p95_abs_dr": self.p95_abs_dr,
-                "max_abs_dr": self.max_abs_dr, "only_kernel": self.only_kernel[:10], "only_ref": self.only_ref[:10],
-                "passed": self.passed}
+                "max_abs_dr": self.max_abs_dr, "mean_signed_dr": self.mean_signed_dr,
+                "n_abs_dr_over_001": self.n_abs_dr_over_001, "only_kernel": self.only_kernel[:10],
+                "only_ref": self.only_ref[:10], "passed": self.passed}
 
 
 def compare_a(pairs: Sequence[tuple[str, KN.KernelResult, list[RefTrade]]], *, min_trades: int | None = None) -> ParityA:
@@ -337,7 +413,8 @@ def compare_a(pairs: Sequence[tuple[str, KN.KernelResult, list[RefTrade]]], *, m
             rt[(vid, r.symbol, int(r.signal_ts), r.side)] = float(r.r)
     both = sorted(set(kt) & set(rt))
     union = set(kt) | set(rt)
-    d = [abs(kt[k] - rt[k]) for k in both]
+    signed = [kt[k] - rt[k] for k in both]
+    d = [abs(x) for x in signed]
     share = (len(both) / len(union)) if union else 1.0
     th = PARITY_KERNEL
     need = int(th["min_synthetic_trades_per_family"]) if min_trades is None else int(min_trades)
@@ -347,16 +424,132 @@ def compare_a(pairs: Sequence[tuple[str, KN.KernelResult, list[RefTrade]]], *, m
           and p95 <= float(th["max_p95_abs_dr"]))
     return ParityA(variant_ids=sorted({p[0] for p in pairs}), n_kernel=len(kt), n_ref=len(rt), n_matched=len(both),
                    identity_share=share, median_abs_dr=med, p95_abs_dr=p95, max_abs_dr=max(d) if d else float("nan"),
-                   only_kernel=sorted(set(kt) - set(rt)), only_ref=sorted(set(rt) - set(kt)), passed=bool(ok))
+                   mean_signed_dr=(sum(signed) / len(signed)) if signed else float("nan"),
+                   n_abs_dr_over_001=sum(1 for x in d if x > 0.01), only_kernel=sorted(set(kt) - set(rt)),
+                   only_ref=sorted(set(rt) - set(kt)), passed=bool(ok))
 
 
-# ============================================================================ (b) kopya ↔ canlı defter (iskelet)
-def _ms_of(x: Any) -> int | None:
-    from .ledgers import parse_ts
-    t = parse_ts(x)
-    return int(t.timestamp() * 1000) if t is not None else None
+# ============================================================================ (b) config görünümü → kopya parametreleri
+#: kopya ailesi → (görünümdeki defter bölümü öneki, kural adı)
+_VIEW_SECTION = {"T2": ("strategy_paper[name=t2_trend_regime]", "t2_trend_regime"),
+                 "M2": ("strategy_paper.extra[name=m2_tsmom28]", "m2_tsmom28"),
+                 "BOX": ("strategy_paper.extra[name=b1_box_fade]", "b1_box_fade"),
+                 "D4": ("strategy_paper.extra[name=d4_donchian_20_10]", "d4_donchian_20_10"),
+                 "C4": ("strategy_paper.extra[name=c4_candle_variations]", "c4_candle_variations"),
+                 "FM": ("pattern_trader", "pattern_trader")}
+#: defter bölümünün kararı DEĞİŞTİRMEYEN anahtarları (büyüklük, bakiye, klasör, ad, açık/kapalı, sembol evreni): eşlenmez.
+#: Kopyanın girdisi verilen seridir; sembol evreni eşleşmeyi değil kapsamı belirler.
+_NON_DECISION = {"name", "enabled", "state_dir", "starting_equity_usdt", "symbols", "rule_params.leverage",
+                 "rule_params.leverage_max"}
+#: Formasyon bölümünde protokol v3'te KURAL OLMAYAN anahtarlar (registry `copy_books.FM.reading_tr`): sınıfsal 15m
+#: formasyon ayarları ve defterin canlı-yalnız kapıları (likidite/spread/derinlik, bekleme, tarama) — canlı girişi
+#: engelleyebilirler, giriş ÜRETMEZLER (parite (b) canlı girişten yola çıkar).
+_FM_NON_RULE = {"max_open_positions", "families", "stop_buffer_atr", "min_rr_after_cost", "fallback_rr",
+                "measured_move_mult", "max_hold_bars", "cooldown_bars_after_loss", "min_quote_volume_24h", "max_spread_pct",
+                "min_depth_0_5pct_usdt", "max_symbols_per_cycle", "scan_seconds", "universe_refresh_minutes"}
+#: aile → defter bölümündeki karar anahtarı → kopya parametresi
+_DECISION_KEYS = {
+    "T2": {"atr_mult": "atr_mult", "breakeven_at_mfe_r": "breakeven_at_mfe_r", "max_entry_drift_pct": "max_entry_drift_pct"},
+    "M2": {"atr_mult": "atr_mult", "breakeven_at_mfe_r": "breakeven_at_mfe_r", "max_entry_drift_pct": "max_entry_drift_pct"},
+    "BOX": {"breakeven_at_mfe_r": "breakeven_at_mfe_r",
+            **{f"rule_params.{k}": k for k in ("near_frac", "trigger", "long_stop", "exit_kind", "exit_r", "eod_close",
+                                               "allow_long", "allow_short", "min_stop_pct")}},
+    "D4": {"breakeven_at_mfe_r": "breakeven_at_mfe_r", "max_entry_drift_pct": "max_entry_drift_pct",
+           "rule_params.entry_window_min": "entry_window_min"},
+    "C4": {"breakeven_at_mfe_r": "breakeven_at_mfe_r", "max_entry_drift_pct": "max_entry_drift_pct",
+           "rule_params.entry_window_min": "entry_window_min", "rule_params.variations": None},
+    "FM": {"protocol": "protocol"},
+}
+_STRUCTURE_BOOKS = {"T2", "M2", "BOX", "FM"}
 
 
+def params_from_view(variant_id: str, view: Mapping[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
+    """Bir config dönemi görünümünden (`epochs.view`: {yol: değer}) kopyanın parametreleri; eşlenemezse (None, neden).
+    Kapalı hata: defter bölümünde bilinmeyen anahtar, eksik karar yolu, yapı bölümü/politika sürümü belirsiz, Formasyonda
+    farklı ücret, kopyanın kuramadığı değer (ör. `breakeven_at_mfe_r` ≠ 0) → NOT_COMPARABLE nedeni."""
+    from ..strategy_lib import catalog as SLC
+    fam = SLC.BOOK_OF[variant_id]
+    prefix, rule = _VIEW_SECTION[fam]
+    keys = _DECISION_KEYS[fam]
+    sealed = KN.lib_params(variant_id)
+    params: dict[str, Any] = {}
+    section = {p[len(prefix) + 1:]: v for p, v in view.items() if p.startswith(prefix + ".")}
+    for sub in sorted(section):
+        if sub in keys or sub in _NON_DECISION or (fam == "FM" and sub in _FM_NON_RULE):
+            continue
+        if fam == "BOX" and sub in ("max_entry_drift_pct", "rule_params.min_stop_pct"):
+            continue                                        # aşağıda: kayma kapısı yalnız kapalıyken (0) eşlenir
+        return None, f"UNMAPPED_KEY:{prefix}.{sub}"
+    for sub, pkey in keys.items():
+        if sub not in section:
+            if fam == "BOX" and pkey == "min_stop_pct":
+                continue
+            return None, f"VIEW_PATH_MISSING:{prefix}.{sub}"
+        if pkey is not None:
+            params[pkey] = section[sub]
+    if fam == "C4":
+        var = str(sealed["variation"])
+        if var not in list(section.get("rule_params.variations") or []):
+            return None, f"VARIATION_NOT_ACTIVE:{var}"
+        params["variation"] = var
+    if fam == "BOX":
+        # öğrenme modunda kural öğrenme tabanıyla çağrılır (`strategy_paper._learning_params`); yoksa kuralın kendi değeri
+        lm = view.get("learning_mode.enabled") is True and view.get(f"learning_mode.books.{rule}.enabled") is True
+        lp = view.get(f"learning_mode.books.{rule}.min_stop_pct")
+        if lm and lp is not None:
+            params["min_stop_pct"] = lp
+        elif "rule_params.min_stop_pct" in section:
+            params["min_stop_pct"] = section["rule_params.min_stop_pct"]
+        else:
+            return None, f"VIEW_PATH_MISSING:{prefix}.rule_params.min_stop_pct"
+        if float(section.get("max_entry_drift_pct") or 0.0) != 0.0:
+            return None, "UNMODELLED:max_entry_drift_pct"     # Box kopyasında giriş kayması kapısı yok (0 = kapalı)
+    if fam in _STRUCTURE_BOOKS:
+        en = view.get("structures.enabled")
+        if en is None:
+            return None, "VIEW_PATH_MISSING:structures.enabled"
+        mode = str(view.get(f"structures.{rule}") or "").upper() if en is True else "OFF"
+        if en is True and not mode:
+            return None, f"VIEW_PATH_MISSING:structures.{rule}"
+        params["structures"] = mode
+        if mode != "OFF" and fam != "BOX":
+            from ..structures import POLICY_VERSION
+            if view.get("structures.policy_version") != POLICY_VERSION:
+                return None, f"STRUCTURES_POLICY_VERSION:{view.get('structures.policy_version')}!={POLICY_VERSION}"
+    if fam == "FM":
+        from ..strategy_lib import k_fm
+        for k, v in k_fm.LIVE_FEES.items():
+            if view.get(f"fees.{k}") != v:
+                return None, f"FEES_DIFFER:fees.{k}={view.get(f'fees.{k}')}"
+    missing = sorted(set(sealed) - set(params))
+    if missing:
+        return None, f"PARAMS_INCOMPLETE:{missing}"
+    try:
+        SLC.make(variant_id, params)
+    except (ValueError, KeyError) as exc:
+        return None, f"COPY_REJECTS_PARAMS:{exc}"
+    return params, None
+
+
+def views_from_configs(config_texts: Mapping[str, bytes | str]) -> dict[str, dict[str, Any]]:
+    """Belgelenmiş sürümlerin `config.yaml` blob'larından (sürüm sha7 → baytlar; `scripts/gen_config_epochs.py` ile aynı
+    girdi) her kuralın her görünümü: `view_sha` → görünüm. Mühürlü dosyadaki `view_sha`'lar bunlarla çözülür."""
+    import yaml
+
+    from . import epochs as EP
+    flats = {rel: EP.flatten(yaml.safe_load((t if isinstance(t, bytes) else t.encode("utf-8")).decode("utf-8")))
+             for rel, t in config_texts.items()}
+    base = flats.get("3b0ae8e")
+    seq = ([base] if base is not None else []) + [e["flat"] for e in EP.events(flats)]
+    out: dict[str, dict[str, Any]] = {}
+    for rule in EP.RULES:
+        for f in seq:
+            v = EP.view(f, rule)
+            out[EP.view_sha(v)] = v
+    return out
+
+
+# ============================================================================ (b) kopya ↔ canlı defter
 def live_cohort(rec: Mapping[str, Any]) -> str:
     """Canlı kaydın kohortu (`tj_v1` ile aynı okuma): öğrenme etiketi varsa `classify_unlock_codes` (POLICY / CAPACITY /
     SELECTIVITY), yoksa UNTAGGED."""
@@ -375,8 +568,43 @@ def live_signal_key(rec: Mapping[str, Any], signal_tf: str) -> tuple[str, int, s
     ts = (ds.get("bars") or {}).get(signal_tf) if isinstance(ds.get("bars"), dict) else None
     if ts is None:
         return None
-    sym = str(rec.get("symbol") or "").replace("/", "").replace(":USDT", "")
-    return (sym, int(ts), str(rec.get("side") or "").upper())
+    try:
+        return (_norm_sym(rec.get("symbol")), int(ts), str(rec.get("side") or "").upper())
+    except (TypeError, ValueError):
+        return None
+
+
+def record_variation(rec: Mapping[str, Any]) -> str | None:
+    """C4 kaydının varyasyonu: `features.candle_variation.id`, yoksa `setup_type` "candle:<id>"."""
+    feats = rec.get("features") if isinstance(rec.get("features"), dict) else {}
+    cv = feats.get("candle_variation") if isinstance(feats.get("candle_variation"), dict) else {}
+    if cv.get("id"):
+        return str(cv["id"])
+    st = str(rec.get("setup_type") or feats.get("setup_type") or "")
+    return st.split(":", 1)[1] if st.startswith("candle:") and len(st) > 7 else None
+
+
+def _book_entry(rec: Mapping[str, Any], signal_tf: str) -> Any | None:
+    from ..strategy_lib import BookEntry
+    opened = _ms_of(rec.get("opened_at"))
+    key = live_signal_key(rec, signal_tf)
+    if opened is None:
+        return None
+    feats = rec.get("features") if isinstance(rec.get("features"), dict) else {}
+    ev = {"structure": dict(feats["structure"])} if isinstance(feats.get("structure"), dict) else {}
+    return BookEntry(_norm_sym(rec.get("symbol")), str(rec.get("side") or "").upper(),
+                     int(key[1]) if key else -1, int(opened), ev)
+
+
+def _ms_of(x: Any) -> int | None:
+    from .ledgers import parse_ts
+    t = parse_ts(x)
+    return int(t.timestamp() * 1000) if t is not None else None
+
+
+def _book_epochs(book: str, research: Path) -> dict[str, dict]:
+    eps, _cov = RH._sealed_doc(research)
+    return {str(e.get("id")): e for e in (eps or []) if not e.get("books") or book in e["books"] or "*" in e["books"]}
 
 
 @dataclass
@@ -388,10 +616,18 @@ class EpochParity:
     median_abs_dr: float
     gated: bool
     passed: bool | None
+    comparable: bool = True
+    reason: str | None = None
+    view_sha: str | None = None
+    params: dict[str, Any] | None = None
+    unmatched: dict[str, int] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {"epoch": self.epoch, "n_policy": self.n_policy, "n_matched": self.n_matched, "share": self.share,
-                "median_abs_dr": self.median_abs_dr, "gated": self.gated, "passed": self.passed}
+                "median_abs_dr": self.median_abs_dr, "gated": self.gated, "passed": self.passed,
+                "comparable": self.comparable, "status": None if self.comparable else NOT_COMPARABLE,
+                "reason": self.reason, "view_sha": self.view_sha, "params": self.params,
+                "unmatched": dict(sorted(self.unmatched.items()))}
 
 
 @dataclass
@@ -400,58 +636,149 @@ class ParityB:
     verdict: str
     epochs: list[EpochParity]
     cohorts: dict[str, int]
-    copy_extra: int
+    copy_extra: int | None
     explained_rejections: int
     unassigned_epoch: int
+    other_variation: int = 0
+    no_variation: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {"variant_id": self.variant_id, "verdict": self.verdict, "epochs": [e.to_dict() for e in self.epochs],
                 "cohorts": dict(sorted(self.cohorts.items())), "copy_extra": self.copy_extra,
-                "explained_rejections": self.explained_rejections, "unassigned_epoch": self.unassigned_epoch}
+                "explained_rejections": self.explained_rejections, "unassigned_epoch": self.unassigned_epoch,
+                "other_variation": self.other_variation, "no_variation": self.no_variation}
 
 
-def compare_b(variant_id: str, copy_trades: Sequence[KN.KernelTrade], live_records: Sequence[Mapping[str, Any]], *,
-              book: str | None = None, research: Path | None = None,
+def _epoch_copy(variant_id: str, entry: Mapping[str, Any] | None, views: Mapping[str, Mapping[str, Any]] | None
+                ) -> tuple[Any | None, str | None, str | None, dict | None]:
+    """(kopya, NOT_COMPARABLE nedeni, view_sha, parametreler)."""
+    from . import epochs as EP
+    from ..strategy_lib import catalog as SLC
+    if entry is None:
+        return None, "EPOCH_NOT_IN_SEALED_FILE", None, None
+    vsha = entry.get("view_sha")
+    if not vsha:
+        return None, "EPOCH_HAS_NO_VIEW", None, None
+    view = (views or {}).get(vsha)
+    if view is None:
+        return None, "VIEW_UNAVAILABLE", vsha, None
+    if EP.view_sha(view) != vsha:
+        return None, "VIEW_SHA_MISMATCH", vsha, None
+    params, why = params_from_view(variant_id, view)
+    if params is None:
+        return None, why, vsha, None
+    base = RG.variants_by_id()[variant_id].get("alias_of") or variant_id
+    return SLC.make(base, params), None, vsha, params
+
+
+def compare_b(variant_id: str, live_records: Sequence[Mapping[str, Any]], *, data: Mapping[str, KN.SeriesData],
+              views: Mapping[str, Mapping[str, Any]] | None, book: str | None = None, research: Path | None = None,
+              copy_trades: Sequence[KN.KernelTrade] | None = None,
               explained_rejections: Sequence[Mapping[str, Any]] = ()) -> ParityB:
-    """(b): canlı defter kayıtları (`TradeRecord` sözlükleri) ↔ kopyanın çekirdek işlemleri. Dönem `rehydrate.config_epoch`
-    ile (varsayılan: mühürlü `CONFIG_EPOCHS_V1`, `registry.PKG_DIR/library/config_epochs.json`)."""
+    """(b): canlı defter kayıtları (`TradeRecord` sözlükleri, bu defterin BÜTÜN kayıtları) ↔ kopya (modül belgesi).
+    `data`: sembol (BTCUSDT biçimi) → seri; `views`: `view_sha` → config görünümü (`views_from_configs`); `research`:
+    mühürlü `library/config_epochs.json`'un kökü (varsayılan paket). `copy_trades` verilirse canlıda olmayan kopya
+    işlemleri (`copy_extra`) sayılır."""
+    from ..strategy_lib import TF_MS
+    from ..strategy_lib import catalog as SLC
     book = book or BOOK_DIR[variant_id]
     stf = KN.make_variant(variant_id).signal_tf
     research = research if research is not None else RG.PKG_DIR
-    copy_by = {(t.symbol.replace("/", "").replace(":USDT", ""), int(t.signal_ts), t.side): t for t in copy_trades}
+    entries = _book_epochs(book, research)
+    my_var = str(KN.lib_params(variant_id)["variation"]) if SLC.BOOK_OF[variant_id] == "C4" else None
+    history: dict[str, list] = {}
+    for rec in live_records:
+        be = _book_entry(rec, stf)
+        if be is not None:
+            history.setdefault(be.symbol, []).append(be)
+    for v in history.values():
+        v.sort(key=lambda e: (e.opened_ms, e.signal_ts))
     cohorts: dict[str, int] = {}
-    per: dict[str | None, list[tuple[tuple, float]]] = {}
-    unassigned = 0
+    per: dict[str, list[tuple[str, float | None]]] = {}
+    state: dict[str, tuple] = {}
+    unassigned = other_var = no_var = 0
     live_keys: set[tuple] = set()
     for rec in live_records:
-        coh = live_cohort(rec)
-        cohorts[coh] = cohorts.get(coh, 0) + 1
         key = live_signal_key(rec, stf)
         if key is not None:
             live_keys.add(key)
-        if coh != "POLICY" or key is None:
+        rv = record_variation(rec) if my_var is not None else None
+        if my_var is not None and rv is not None and rv != my_var:
+            other_var += 1
+            continue
+        coh = live_cohort(rec)
+        cohorts[coh] = cohorts.get(coh, 0) + 1
+        if coh != "POLICY":
             continue
         ep, _src = RH.config_epoch(book, rec.get("opened_at"), research=research)
         if ep is None:
             unassigned += 1
             continue
-        per.setdefault(ep, []).append((key, float(rec.get("r_multiple") or 0.0)))
+        if ep not in state:
+            state[ep] = _epoch_copy(variant_id, entries.get(ep), views)
+        copy, why_nc, _vsha, _params = state[ep]
+        items = per.setdefault(ep, [])
+        if my_var is not None and rv is None:
+            no_var += 1
+            items.append(("NO_VARIATION", None))
+            continue
+        if copy is None:
+            items.append((NOT_COMPARABLE, None))
+            continue
+        if key is None:
+            items.append(("NO_DATA_SOURCE_BARS", None))
+            continue
+        sd = data.get(key[0])
+        if sd is None:
+            items.append(("NO_SERIES", None))
+            continue
+        try:
+            r_live = float(rec.get("r_multiple"))
+        except (TypeError, ValueError):
+            items.append(("NO_R_MULTIPLE", None))
+            continue
+        decision = int(key[1]) + TF_MS[stf]
+        hist = tuple(e for e in history.get(key[0], ()) if e.opened_ms < decision)
+        intents = KN.signals_at(copy, sd, decision, hist)
+        it = next((x for x in intents if int(x.signal_ts) == int(key[1]) and x.side == key[2]), None)
+        if it is None:
+            items.append(("NO_COPY_SIGNAL", None))
+            continue
+        tr, why = KN.replay_intent(copy, sd, it, decision_ms=decision, history=hist)
+        if tr is None:
+            items.append((f"REPLAY_REJECTED:{why}", None))
+            continue
+        items.append(("MATCHED", abs(float(tr.r["base"]) - r_live)))
     th = PARITY_COPY
     epochs: list[EpochParity] = []
-    for ep in sorted(per, key=lambda e: str(e)):
+    for ep in sorted(per, key=str):
         items = per[ep]
-        d = [abs(float(copy_by[k].r["base"]) - r) for k, r in items if k in copy_by]
+        copy, why_nc, vsha, params = state[ep]
+        d = [x for tag, x in items if tag == "MATCHED"]
+        unmatched: dict[str, int] = {}
+        for tag, _x in items:
+            if tag != "MATCHED":
+                unmatched[tag] = unmatched.get(tag, 0) + 1
         n, m = len(items), len(d)
         share = m / n if n else 0.0
         med = statistics.median(d) if d else float("nan")
-        gated = n >= int(th["min_policy_entries_per_epoch"])
+        comparable = copy is not None
+        gated = comparable and n >= int(th["min_policy_entries_per_epoch"])
         passed = (share >= float(th["min_same_bar_side_share"]) and med <= float(th["max_median_abs_dr"])) if gated else None
-        epochs.append(EpochParity(ep, n, m, share, med, gated, passed))
+        epochs.append(EpochParity(ep, n, m, share, med, gated, passed, comparable, why_nc, vsha, params, unmatched))
     gated = [e for e in epochs if e.gated]
-    verdict = PARITY_UNPROVEN if not gated else (PASS if all(e.passed for e in gated) else PARITY_FAIL)
-    extra = sum(1 for k in copy_by if k not in live_keys)
+    if any(not e.passed for e in gated):
+        verdict = PARITY_FAIL
+    elif gated:
+        verdict = PASS
+    else:
+        verdict = PARITY_UNPROVEN
+    extra = None
+    if copy_trades is not None:
+        extra = sum(1 for t in copy_trades if (_norm_sym(t.symbol), int(t.signal_ts), t.side) not in live_keys)
     return ParityB(variant_id=variant_id, verdict=verdict, epochs=epochs, cohorts=cohorts, copy_extra=extra,
-                   explained_rejections=len(list(explained_rejections)), unassigned_epoch=unassigned)
+                   explained_rejections=len(list(explained_rejections)), unassigned_epoch=unassigned,
+                   other_variation=other_var, no_variation=no_var)
 
 
 def mark_parity(rows: Sequence[Mapping[str, Any]], results: Mapping[str, ParityB]) -> list[dict[str, Any]]:
@@ -473,6 +800,7 @@ def mark_parity(rows: Sequence[Mapping[str, Any]], results: Mapping[str, ParityB
     return out
 
 
-__all__ = ["BOOK_DIR", "PARITY_COPY", "PARITY_FAIL", "PARITY_KERNEL", "PARITY_UNPROVEN", "PASS", "EpochParity", "ParityA",
-           "ParityB", "RefTrade", "compare_a", "compare_b", "live_cohort", "live_signal_key", "mark_parity",
-           "reference_run"]
+__all__ = ["BOOK_DIR", "MODE_CLIPPED", "MODE_OHLC", "NOT_COMPARABLE", "PARITY_COPY", "PARITY_FAIL", "PARITY_KERNEL",
+           "PARITY_UNPROVEN", "PASS", "EpochParity", "ParityA", "ParityB", "RefTrade", "compare_a", "compare_b",
+           "live_cohort", "live_cost_frac", "live_signal_key", "mark_parity", "params_from_view", "record_variation",
+           "reference_run", "views_from_configs"]

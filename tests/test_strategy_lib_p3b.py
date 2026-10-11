@@ -1,9 +1,12 @@
 """P3b-1 — `tradingbot/strategy_lib/` sözleşmesi (docs/ENGINE_BRAIN_V1.md §2.1, §8.1 P3b).
 
 * Saflık (AST): G/Ç, saat, ağ, rastgelelik yok; motor paketini anmaz/import etmez (çalışma anında da yüklemez). Tek
-  okuma istisnası `identity.py`'nin depo kaynaklarını okumasıdır (yazma/saat/ağ yok).
-* Kimlik: `module_src_sha` import kapanışından bağımsız yeniden hesapla eşit; canlı kural modülleri kapanışta;
-  `spec_sha` = `registry.spec_sha(registry.lib_spec(…))` = deneme defterinin `seal_entries` satırı (alias'lar dahil).
+  istisna `identity.py`'nin salt-okunur git komutları ve paket kaynaklarının AST'idir (yazma/saat/ağ yok). Çalışma anı
+  yoklaması (G/Ç, saat) ve bildirilen modüllerin çalışma izini örtmesi `test_research_engine_parity_p3b.py`'dedir.
+* Kimlik: `module_src_sha` = BİLDİRİLMİŞ dosya kümesinin (varyant modülü + paket içi bağımlılıklar + `LIVE_MODULES`)
+  HEAD blob'larının özeti; dosya listesi testte sabitlenir ve özet git'ten bağımsız yeniden hesaplanır (döngüsel değil);
+  ilgisiz bir modülün düzenlenmesi kimliği değiştirmez, bildirilmiş birininki değiştirir, kirli ağaç reddedilir (geçici
+  depo); `spec_sha` = `registry.spec_sha(registry.lib_spec(…))` = deneme defterinin `seal_entries` satırı.
 * Kopyalar mühürlü parametrelerle kurulur (eksik/fazla anahtar ValueError); canlı pencere sabitleri canlı koda eşit;
   C4 bağdaştırıcısının atladığı kapı mühürde sekiz varyasyonda da açık.
 """
@@ -38,7 +41,7 @@ FORBIDDEN_ATTRS = {"now", "utcnow", "today", "time", "time_ns", "perf_counter", 
                    "write_bytes", "unlink", "mkdir", "rmdir", "rename", "replace", "system", "popen", "getenv", "environ",
                    "seed", "token_hex", "uuid4"}
 #: dosya → izinli istisnalar (modül, öznitelik)
-EXCEPTIONS = {"identity.py": ({"pathlib"}, {"read_bytes"}), "catalog.py": ({"importlib"}, set())}
+EXCEPTIONS = {"identity.py": ({"pathlib", "subprocess", "importlib"}, {"read_bytes"}), "catalog.py": ({"importlib"}, set())}
 
 
 def _py_files() -> list[Path]:
@@ -88,26 +91,101 @@ def test_importing_strategy_lib_does_not_load_the_engine():
 
 
 # ============================================================================ kimlik
-def test_module_src_sha_is_the_import_closure_digest():
-    for vid in SLC.IMPLEMENTED:
-        sha = SLI.module_src_sha(vid)
-        assert RG.is_sha256(sha)
-        lines = sorted(f"{rel}\t{hashlib.sha256((ROOT / rel).read_bytes()).hexdigest()}\n" for rel in SLI.module_files(vid))
-        assert sha == hashlib.sha256((SLI.VERSION + "\n" + "".join(lines)).encode("utf-8")).hexdigest()
-    files = {v: set(SLI.module_files(v)) for v in ("K_T2", "K_BOX", "K_D4", "K_C4_CV001", "K_FM")}
-    assert {"tradingbot/strategy_lib/k_trend.py", "tradingbot/paper_rules.py", "tradingbot/ema200_trend.py",
-            "tradingbot/regime_gate.py", "tradingbot/structures/bots.py", "tradingbot/indicators.py"} <= files["K_T2"]
-    assert {"tradingbot/box_theory.py", "tradingbot/strategy_lib/k_box.py"} <= files["K_BOX"]
-    assert {"tradingbot/donchian_trend.py", "tradingbot/signal_lab.py"} <= files["K_D4"]
-    assert {"tradingbot/candle_book.py", "tradingbot/candle_dsl.py", "tradingbot/candle_variations.py"} <= files["K_C4_CV001"]
-    assert {"tradingbot/pattern_trader/strategy_v3.py", "tradingbot/structures/analysis.py"} <= files["K_FM"]
-    assert all("tradingbot/research_engine" not in f for fs in files.values() for f in fs)
+_COMMON = ("tradingbot/strategy_lib/contract.py", "tradingbot/strategy_lib/livebars.py", "tradingbot/timeframes.py",
+           "tradingbot/paper_rules.py", "tradingbot/candle_confirmation.py")
+_STRUCT = ("tradingbot/structures/analysis.py", "tradingbot/structures/bots.py", "tradingbot/structures/catalog.py",
+           "tradingbot/structures/policy.py", "tradingbot/chart_patterns.py", "tradingbot/learn/candle_context.py",
+           "tradingbot/learn/multitimeframe_context.py", "tradingbot/learn/weekly_structure.py", "tradingbot/core/ids.py")
+#: bildirilmiş dosya kümeleri, elle sabitlenmiş (kimlik fonksiyonunun kendi listesinden bağımsız)
+EXPECTED_FILES = {
+    "K_T2": _COMMON + _STRUCT + ("tradingbot/strategy_lib/k_trend.py", "tradingbot/ema200_trend.py",
+                                 "tradingbot/regime_gate.py", "tradingbot/indicators.py"),
+    "K_BOX": _COMMON + ("tradingbot/strategy_lib/k_box.py", "tradingbot/box_theory.py", "tradingbot/ema200_trend.py",
+                        "tradingbot/indicators.py"),
+    "K_D4": _COMMON + ("tradingbot/strategy_lib/k_d4.py", "tradingbot/donchian_trend.py", "tradingbot/signal_lab.py",
+                       "tradingbot/box_theory.py"),
+    "K_C4_CV001": _COMMON + ("tradingbot/strategy_lib/k_c4.py", "tradingbot/candle_book.py", "tradingbot/candle_dsl.py",
+                             "tradingbot/candle_variations.py", "tradingbot/signal_lab.py"),
+    "K_FM": tuple(f for f in _COMMON if f not in ("tradingbot/paper_rules.py", "tradingbot/candle_confirmation.py"))
+    + _STRUCT + ("tradingbot/strategy_lib/k_fm.py", "tradingbot/strategy_lib/k_trend.py",
+                 "tradingbot/pattern_trader/strategy_v3.py", "tradingbot/pattern_trader/strategy.py",
+                 "tradingbot/pattern_trader/universe.py", "tradingbot/signal_lab.py"),
+}
+
+
+def _git_ok() -> bool:
+    return subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"], capture_output=True).returncode == 0
+
+
+def _sha_or_skip(vid: str, **kw) -> str:
+    try:
+        return SLI.module_src_sha(vid, **kw)
+    except SLI.DirtyTreeError as exc:
+        if "HEAD'den farklı" in str(exc) and not kw:
+            pytest.skip(f"çalışma ağacı kirli (kimlik bilerek hesaplanmaz): {exc}")
+        raise
+
+
+def test_module_src_sha_hashes_the_declared_files_at_head_non_circular():
+    if not _git_ok():
+        pytest.skip("git yok")
+    for vid, files in EXPECTED_FILES.items():
+        assert SLI.module_files(vid) == tuple(sorted(set(files))), vid
+        assert all("research_engine" not in f for f in files)
+    assert SLI.module_files("K_M2") == SLI.module_files("K_T2")
+    assert {SLI.module_files(v) for v in SLC.C4_VARIATIONS} == {SLI.module_files("K_C4_CV001")}
+    for vid, files in EXPECTED_FILES.items():
+        sha = _sha_or_skip(vid)
+        lines = []
+        for rel in sorted(set(files)):
+            blob = subprocess.run(["git", "-C", str(ROOT), "show", f"HEAD:{rel}"], capture_output=True, check=True).stdout
+            lines.append(f"{rel}\t{hashlib.sha256(blob).hexdigest()}\n")
+        assert sha == hashlib.sha256(("strategy_lib.module_src_sha.v2\n" + "".join(lines)).encode("utf-8")).hexdigest(), vid
     assert len({SLI.module_src_sha(v) for v in SLC.C4_VARIATIONS}) == 1, "aynı modül → aynı kaynak sha'sı"
     assert len({SLI.module_src_sha(v) for v in ("K_T2", "K_BOX", "K_D4", "K_C4_CV001", "K_FM")}) == 5
 
 
+def test_unrelated_edit_keeps_module_src_sha_relevant_edit_changes_it_dirty_tree_refused(tmp_path):
+    """Geçici bir git deposu (K_D4'ün bildirilmiş dosyaları + ilgisiz bir modül, aynı yollar): ilgisiz modülün işlenmiş
+    düzenlemesi kimliği DEĞİŞTİRMEZ; bildirilmiş modülünki değiştirir; bildirilmiş dosyada işlenmemiş düzenleme ya da
+    HEAD'de olmayan bildirilmiş dosya `DirtyTreeError`; ilgisiz dosyadaki işlenmemiş düzenleme engel değildir."""
+    if not _git_ok():
+        pytest.skip("git yok")
+    g = ["git", "-c", "user.email=t@example.invalid", "-c", "user.name=t", "-C", str(tmp_path)]
+    unrelated = "tradingbot/ema200_trend.py"
+    assert unrelated not in SLI.module_files("K_D4")
+    for rel in SLI.module_files("K_D4") + (unrelated,):
+        dst = tmp_path / rel
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.write_bytes((ROOT / rel).read_bytes())
+    subprocess.run(g + ["init", "-q"], check=True)
+    subprocess.run(g + ["add", "-A"], check=True)
+    subprocess.run(g + ["commit", "-q", "-m", "a"], check=True)
+    sha0 = SLI.module_src_sha("K_D4", root=tmp_path)
+    (tmp_path / unrelated).write_text((tmp_path / unrelated).read_text(encoding="utf-8") + "\n# ilgisiz\n", encoding="utf-8")
+    assert SLI.module_src_sha("K_D4", root=tmp_path) == sha0, "işlenmemiş ilgisiz düzenleme engel değil, kimlik aynı"
+    subprocess.run(g + ["commit", "-q", "-am", "b"], check=True)
+    assert SLI.module_src_sha("K_D4", root=tmp_path) == sha0, "ilgisiz modülün düzenlemesi kimliği değiştirmez"
+    rel = tmp_path / "tradingbot/donchian_trend.py"
+    rel.write_text(rel.read_text(encoding="utf-8") + "\n# kural düzenlemesi\n", encoding="utf-8")
+    with pytest.raises(SLI.DirtyTreeError):
+        SLI.module_src_sha("K_D4", root=tmp_path)
+    subprocess.run(g + ["commit", "-q", "-am", "c"], check=True)
+    sha1 = SLI.module_src_sha("K_D4", root=tmp_path)
+    assert sha1 != sha0, "bildirilmiş modülün düzenlemesi kimliği değiştirir"
+    subprocess.run(g + ["rm", "-q", "--cached", "tradingbot/signal_lab.py"], check=True)
+    subprocess.run(g + ["commit", "-q", "-m", "d"], check=True)
+    with pytest.raises(SLI.DirtyTreeError):
+        SLI.module_src_sha("K_D4", root=tmp_path)         # izlenmeyen / HEAD'de yok
+
+
 def test_spec_sha_equals_the_registry_and_the_trials_ledger():
-    m = KN.module_src_shas()
+    if not _git_ok():
+        pytest.skip("git yok")
+    try:
+        m = KN.module_src_shas()
+    except SLI.DirtyTreeError as exc:
+        pytest.skip(f"çalışma ağacı kirli: {exc}")
     assert set(m) == set(SLC.IMPLEMENTED) and len(SLC.IMPLEMENTED) == 13
     for vid in SLC.IMPLEMENTED:
         assert KN.spec_sha_for(vid) == RG.spec_sha(RG.lib_spec(vid, SLI.module_src_sha(vid)))
@@ -125,6 +203,19 @@ def test_spec_sha_equals_the_registry_and_the_trials_ledger():
         assert by_unit[vid] == {KN.spec_sha_for(vid)}, vid
     assert by_unit["DON_20_10_4h_LO"] == {KN.spec_sha_for("K_D4")}
     assert by_unit["BOX_n10_mid_ms0.5"] == {KN.spec_sha_for("K_BOX")}
+
+
+def test_formation_fees_equal_the_live_config():
+    import yaml
+
+    from tradingbot.config_v3 import FeesSection
+    from tradingbot.research_engine import parity as PA
+    from tradingbot.strategy_lib import k_fm
+    cfg = yaml.safe_load((ROOT / "config.yaml").read_text(encoding="utf-8"))
+    f = FeesSection()
+    for k, v in k_fm.LIVE_FEES.items():
+        assert v == getattr(f, k) == cfg["fees"][k], k
+    assert k_fm.COST_FRAC == PA.live_cost_frac() == pytest.approx(0.0016)
 
 
 # ============================================================================ kopyalar

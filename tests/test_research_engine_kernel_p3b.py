@@ -2,9 +2,11 @@
 
 Elle kurulmuş barlar ve betikli bir varyantla: karar bar kapanışında / dolum sonraki açılışta ± kayma; bar içi sıra
 (açılış → ters → lehte → kapanış); stop seviyede, boşlukta açılışta; TP1 kısmi + başa-baş stop yalnız sonraki noktalarda;
-fonlama deponun gerçek uzlaşma damgalarında ((giriş, çıkış] ve açık miktar); `FUNDING_GAP`; likidasyon (bracket formülü,
-izole marj sınırı); sabit 1 USDT risk ve likidasyon mesafesi ≥ 2 × stop; üç maliyet senaryosunun aynı yol üzerinde
-aritmetik yeniden maliyetlendirmesi (elle hesap); giriş kapıları; tek giriş; belirlenimcilik. Ağ yok, gerçek veri yok.
+fonlama deponun gerçek uzlaşma satırlarında (nominal dakikaya yuvarlanmış damga, açık miktar, çıkış barındaki uzlaşmanın
+ihtiyatlı kuralı); `FUNDING_GAP` yerel aralıkla (8h → 4h'e geçen seri); likidasyon (bracket formülü, izole marj sınırı);
+sabit 1 USDT risk ve likidasyon mesafesi ≥ 2 × stop; üç maliyet senaryosunun aynı yol üzerinde aritmetik yeniden
+maliyetlendirmesi (elle hesap); giriş kapıları (veri boşluğu, maliyet sonrası R/R dahil); MOVE_STOP doğrulaması; tek
+giriş; zorlanmış tek niyet yeniden oynatımı; belirlenimcilik. Ağ yok, gerçek veri yok.
 """
 from __future__ import annotations
 
@@ -165,6 +167,25 @@ def test_move_stop_applies_from_the_next_observation():
     b[4] = bar(4, 100.0, 100.5, 98.5, 99.0)
     (t,) = run(b, Scripted(opens={1: {"stop": 95.0}}, acts={3: SL.move_stop(99.0)})).trades
     assert t.exit_kind == KN.EXIT_STOP and t.legs[0].ref == 99.0 and t.exit_ts == T0 + 5 * D1
+    assert t.flags == [KN.FLAG_FUNDING_GAP] and t.move_stop_ignored == {}
+
+
+def test_move_stop_only_tightens_and_never_crosses_the_price():
+    b = flat(8)
+    b[4] = bar(4, 100.0, 100.5, 93.5, 99.0)          # gevşetilmiş stop (93) burada vururdu; geçerli stop 95'te vurur
+    (t,) = run(b, Scripted(opens={1: {"stop": 95.0}}, acts={3: SL.move_stop(93.0)})).trades
+    assert t.legs[0].ref == 95.0 and t.move_stop_ignored == {KN.MOVE_LOOSENS: 1} and KN.FLAG_MOVE_STOP_IGNORED in t.flags
+    b = flat(8)                                      # karar fiyatı 100: 101'e stop fiyatı geçer → yok sayılır
+    (t,) = run(b, Scripted(opens={1: {"stop": 95.0}}, acts={3: SL.move_stop(101.0), 4: SL.move_stop(100.0)})).trades
+    assert t.move_stop_ignored == {KN.MOVE_CROSSES_PRICE: 2} and t.exit_kind == KN.EXIT_END
+    b = flat(8)
+    b[4] = bar(4, 100.0, 106.0, 100.0, 101.0)        # SHORT: sıkılaştırma aşağı, fiyatın ÜSTÜNDE kalmalı
+    (t,) = run(b, Scripted(opens={1: {"stop": 105.0, "side": SL.SHORT}}, acts={3: SL.move_stop(104.0)})).trades
+    assert t.exit_kind == KN.EXIT_STOP and t.legs[0].ref == 104.0 and t.move_stop_ignored == {}
+    (t,) = run(flat(8), Scripted(opens={1: {"stop": 105.0, "side": SL.SHORT}},
+                                  acts={3: SL.move_stop(106.0), 4: SL.move_stop(99.0)})).trades
+    assert t.move_stop_ignored == {KN.MOVE_LOOSENS: 1, KN.MOVE_CROSSES_PRICE: 1}
+    assert KN.move_stop_verdict(SL.LONG, 95.0, 95.0, 100.0) is None, "eşit stop gevşetme değildir"
 
 
 # ============================================================================ giriş kapıları ve tek giriş
@@ -179,6 +200,52 @@ def test_entry_gates_drift_risk_range_chase():
     assert run(b, Scripted(opens={1: {"stop": 95.0, "entry_ref": ch}})).rejected == {KN.REJ_CHASE: 1}
     ok = SL.RiskAtrBounds(0.1, 10.0, 1.0)
     assert len(run(b, Scripted(opens={1: {"stop": 95.0, "risk_atr_bounds": ok}})).trades) == 1
+
+
+def test_entry_after_a_data_gap_is_rejected():
+    b = flat(8)
+    del b[2]                                         # karar 1. barın kapanışında; sonraki satır bir gün sonra açılıyor
+    res = run(b, Scripted(opens={1: {"stop": 95.0}}))
+    assert res.trades == [] and res.rejected == {KN.REJ_DATA_GAP: 1}
+    b = flat(8)
+    res = run(b, Scripted(opens={1: {"stop": 95.0}}))
+    assert len(res.trades) == 1 and res.trades[0].entry_ts == T0 + 2 * D1
+
+
+def test_rr_below_min_at_entry_gate_uses_the_live_formula():
+    from tradingbot.pattern_trader.strategy import rr_after_cost
+    cf = 0.0016
+    tg = (SL.Target(SL.TARGET_R_FROM_ENTRY, 2.0),)
+    b = flat(6)
+    b[2] = bar(2, 100.0, 100.05, 99.95, 100.0)
+    for stop, ok in ((99.8, False), (99.5, True)):     # mesafe %0,2 (maliyet tabanın altında) / %0,5
+        ref = SL.EntryRef(price=100.0, min_rr_after_cost=1.0, rr_cost_frac=cf)
+        res = run(b, Scripted(opens={1: {"stop": stop, "targets": tg, "entry_ref": ref}}))
+        net = rr_after_cost(100.0, stop, 100.0 + 2.0 * (100.0 - stop), cost_frac=cf)[1]
+        assert (net >= 1.0) == ok
+        assert (len(res.trades) == 1) == ok and (res.rejected == {} if ok else res.rejected == {KN.REJ_RR: 1})
+    with pytest.raises(ValueError):
+        SL.EntryRef(price=1.0, min_rr_after_cost=1.0)
+
+
+def test_forced_replay_of_one_intent_equals_the_continuous_run():
+    b = flat(12)
+    b[4] = bar(4, 100.0, 100.5, 94.0, 96.0)
+    b[9] = bar(9, 100.0, 111.0, 99.5, 110.0)
+    var = Scripted(opens={1: {"stop": 95.0}, 6: {"stop": 96.0, "targets": (SL.Target(SL.TARGET_PRICE, 108.0),)}})
+    data = KN.SeriesData(symbol="TST", bars={"1d": b}, funding=[(T0 + k * 8 * 3_600_000, 0.0003, 100.0) for k in range(60)])
+    full = KN.run(var, data)
+    assert len(full.trades) == 2
+    for t in full.trades:
+        i = (t.signal_ts - T0) // D1
+        (it,) = KN.signals_at(var, data, t.signal_ts + D1)
+        assert it.signal_ts == t.signal_ts
+        tr, why = KN.replay_intent(var, data, it, decision_ms=t.signal_ts + D1)
+        assert why is None and tr.to_dict() == t.to_dict(), i
+    tr, why = KN.replay_intent(var, data, it, decision_ms=T0 + 50 * D1)
+    assert tr is None and why == "DECISION_BAR_MISSING"
+    late = SL.Intent(signal_ts=T0 + 3 * D1, side=SL.LONG, entry_ref=SL.EntryRef(price=100.0), stop=101.0)
+    assert KN.replay_intent(var, data, late, decision_ms=T0 + 4 * D1) == (None, KN.REJ_BAD_STOP)
 
 
 def test_one_entry_per_signal_blocks_a_second_entry_on_the_same_signal_bar():
@@ -224,23 +291,66 @@ def _fund(rows):
     return [(int(t), r, m) for t, r, m in rows]
 
 
-def test_funding_at_real_settlement_timestamps_and_open_quantity():
+def test_funding_at_real_settlement_rows_snapped_to_the_nominal_minute():
     b = flat(8)
     b[4] = bar(4, 93.0, 94.0, 92.0, 93.5)            # 4. barın açılışında boşluk stopu (çıkış anı = açılış)
     h = 3_600_000
-    rows = _fund([(T0 + k * 8 * h + 1_017, 0.001, 100.0 + k) for k in range(0, 30)])   # gerçek (kaymış) damgalar
-    rows += [(T0 + 2 * D1, 0.001, 50.0), (T0 + 4 * D1, 0.002, 60.0)]                  # giriş anı (hariç), çıkış anı (dahil)
+    rows = _fund([(T0 + k * 8 * h + 1_017, 0.001, 100.0 + k) for k in range(0, 30)])   # gerçek (ms kaymalı) damgalar
     (t,) = run(b, Scripted(opens={1: {"stop": 95.0}}), funding=rows).trades
-    inside = [(ts, r, m) for ts, r, m in rows if T0 + 2 * D1 < ts <= T0 + 4 * D1]
-    assert T0 + 2 * D1 not in {x[0] for x in inside} and T0 + 4 * D1 in {x[0] for x in inside}
-    assert t.funding_events == len(inside) == 7
+    assert KN.snap_ms(T0 + 2 * D1 + 1_017) == T0 + 2 * D1 and KN.snap_ms(T0 + 2 * D1 - 29_000) == T0 + 2 * D1
+    # giriş barın AÇILIŞINDA doldu: o anın (kaymalı damgalı) uzlaşması yazılmaz; çıkış anınınki (açılışta kapanan) yazılır
+    inside = [(KN.snap_ms(ts), r, m) for ts, r, m in rows if T0 + 2 * D1 < KN.snap_ms(ts) <= T0 + 4 * D1]
+    assert [x[0] for x in inside] == [T0 + 2 * D1 + k * 8 * h for k in range(1, 7)]
+    assert t.funding_events == len(inside) == 6 and t.funding_ambiguous_events == 0
     assert t.funding_usdt == pytest.approx(sum(-t.qty * m * r for _ts, r, m in inside), rel=1e-12)
-    assert KN.FLAG_FUNDING_GAP not in t.flags
+    assert KN.FLAG_FUNDING_GAP not in t.flags and KN.FLAG_FUNDING_EXIT_BAR not in t.flags
     base_r = r_by_hand(100.0, 95.0, [(93.0, 1.0, True)])
     assert t.r["base"] == pytest.approx(base_r + t.funding_usdt / (abs(100.0 * (1 + SLIP) - 95.0) * t.qty), abs=1e-12)
     for sc in ("ADVERSE", "STRESS"):
         assert t.pnl_usdt[sc] - t.pnl_usdt["base"] == pytest.approx(
             KN.cost_trade(t, KN.scenario(sc), 0.0)[1] - KN.cost_trade(t, KN.scenario("base"), 0.0)[1])
+    conflict = rows + [(T0 + 3 * D1 + 2_000, 0.5, 1.0)]       # aynı dakikaya düşen çelişen satır → okunamaz
+    (t,) = run(b, Scripted(opens={1: {"stop": 95.0}}), funding=conflict).trades
+    assert KN.FLAG_FUNDING_GAP in t.flags
+
+
+def test_funding_in_the_exit_bar_is_charged_only_when_the_exit_could_not_precede_it():
+    """İhtiyatlı kural: bar içi çıkış (ters uçta stop) barın içinde olur. Barın AÇILIŞINDAKİ uzlaşma yazılır (çıkış ondan
+    önce olamaz); barın İÇİNDEKİLER yazılmaz ve işlem `FUNDING_EXIT_BAR` işaretlenir (tutar ayrıca); barın KAPANIŞINDAKİ
+    yazılmaz ve belirsiz de değildir (çıkış kesin önce)."""
+    b = flat(8)
+    b[3] = bar(3, 100.0, 100.5, 94.0, 96.0)          # 3. barın ters ucunda stop (95)
+    h8 = 8 * 3_600_000
+    rows = [(T0 + k * h8, 0.001, 100.0) for k in range(0, 40)]
+    (t,) = run(b, Scripted(opens={1: {"stop": 95.0}}), funding=rows).trades
+    assert t.legs[0].point == "adverse" and t.legs[0].ts == T0 + 4 * D1 and t.legs[0].earliest == T0 + 3 * D1
+    charged = [ts for ts, _r, _m in rows if T0 + 2 * D1 < ts <= T0 + 3 * D1]          # giriş sonrası … çıkış barı açılışı
+    assert t.funding_events == len(charged) == 3
+    assert t.funding_usdt == pytest.approx(-t.qty * 100.0 * 0.001 * 3, rel=1e-12)
+    assert t.funding_ambiguous_events == 2 and KN.FLAG_FUNDING_EXIT_BAR in t.flags      # 08:00 ve 16:00 (bar içi)
+    assert t.funding_ambiguous_usdt == pytest.approx(-t.qty * 100.0 * 0.001 * 2, rel=1e-12)
+    # 4h barlarda uzlaşma bar sınırındadır: çıkış barının KAPANIŞINDAKİ uzlaşma yazılmaz ve belirsiz değildir
+    H4 = 14_400_000
+    b4 = [{"timestamp": T0 + i * H4, "open": 100.0, "high": 100.1, "low": 99.9, "close": 100.0, "volume": 1.0}
+          for i in range(10)]
+    b4[5] = dict(b4[5], low=94.0, close=96.0)        # 5. bar 20:00–24:00, ters uçta stop; 00:00 uzlaşması kapanışta
+
+    class S4(Scripted):
+        signal_tf, timeframes = "4h", ("4h",)
+
+        def __init__(self):
+            super().__init__()
+            self.lookback = {"4h": 5}
+
+        def signals(self, bars, ctx):
+            if int(ctx["now_ms"]) != T0 + 2 * H4:
+                return []
+            return [SL.Intent(signal_ts=T0 + H4, side=SL.LONG, entry_ref=SL.EntryRef(price=100.0), stop=95.0)]
+    rows4 = [(T0 + k * h8, 0.001, 100.0) for k in range(0, 6)]
+    (t,) = KN.run(S4(), KN.SeriesData(symbol="TST", bars={"4h": b4}, funding=rows4)).trades
+    assert (t.entry_ts, t.legs[0].ts) == (T0 + 2 * H4, T0 + 6 * H4)
+    assert t.funding_events == 1 and t.funding_ambiguous_events == 0, \
+        "08:00 (giriş anı) yazılmaz, 16:00 yazılır, 00:00 (çıkış barının kapanışı) yazılmaz ve belirsiz değil"
 
 
 def test_funding_after_a_partial_exit_uses_the_remaining_quantity():
@@ -250,9 +360,35 @@ def test_funding_after_a_partial_exit_uses_the_remaining_quantity():
     paid = {T0 + 2 * D1 + h12, T0 + 3 * D1, T0 + 3 * D1 + h12}
     rows = [(T0 + k * h12, (0.001 if T0 + k * h12 in paid else 0.0), 100.0) for k in range(0, 30)]
     (t,) = run(b, Scripted(opens={1: {"stop": 95.0, "targets": tg}}), funding=rows).trades
-    assert t.legs[0].ts == T0 + 3 * D1 and t.exit_kind == KN.EXIT_END
-    # TP1 anındaki uzlaşma tam miktarla öder (o anda kapanan miktar dönemi öder), sonrakiler kalan yarıyla
-    assert t.funding_usdt == pytest.approx(-t.qty * 100.0 * 0.001 * (1 + 1 + 0.5), rel=1e-12)
+    assert t.legs[0].ts == T0 + 3 * D1 and t.legs[0].earliest == T0 + 2 * D1 and t.exit_kind == KN.EXIT_END
+    # TP1 giriş barının İÇİNDE (lehte uç) doldu: barın içindeki uzlaşma yalnız kalan yarıya (TP1 yarısı belirsiz →
+    # yazılmaz, işaretli); barın kapanışındaki ve sonrakiler kalan yarıyla
+    assert t.funding_usdt == pytest.approx(-t.qty * 100.0 * 0.001 * (0.5 + 0.5 + 0.5), rel=1e-12)
+    assert t.funding_ambiguous_events == 1 and KN.FLAG_FUNDING_EXIT_BAR in t.flags
+    assert t.funding_ambiguous_usdt == pytest.approx(-t.qty * 100.0 * 0.001 * 0.5, rel=1e-12)
+
+
+def test_funding_gap_is_judged_against_the_local_interval_8h_then_4h():
+    """Seri 300 gün 8h, sonra 500 gün 4h: hiçbir aralık boşluk değildir (tüm serinin medyanı 4h olsa da 8h dönemi);
+    iki dönemin içinde ve geçişten iki uzlaşma sonra eksik tek uzlaşma (ve bir satır arayla iki eksik) yine yakalanır.
+    Geçişin tam sınırındaki tek eksik (son 8h ya da ilk 4h satırı) ayırt edilemez: seri geçişi bir adım önce/sonra
+    yapmış gibi görünür."""
+    h = 3_600_000
+    t8 = [T0 + k * 8 * h for k in range(0, 300 * 3)]
+    t4 = [t8[-1] + 8 * h + k * 4 * h for k in range(0, 500 * 6)]
+    ts = t8 + t4
+    fs = KN.FundingSeries([(t, 0.0001, 100.0) for t in ts])
+    assert not any(fs.gap_after), "8h → 4h geçişi boşluk değildir"
+    assert fs.window(T0 + 10 * D1, T0 + 700 * D1)[1] is False
+    for drop in ([t8[100]], [t4[200]], [t4[2]], [t8[200], t8[202]], [t4[300], t4[302]]):
+        holed = KN.FundingSeries([(t, 0.0001, 100.0) for t in ts if t not in drop])
+        sel, gap = holed.window(min(drop) - 3 * D1, max(drop) + 3 * D1)
+        assert gap, drop
+        assert not holed.window(max(drop) + 20 * D1, max(drop) + 40 * D1)[1], "boşluk yalnız onu kuşatan pencerede"
+    # bir işlem üzerinden: 8h döneminde tutan bir işlem boşluk işaretlemez
+    b = flat(8)
+    (t,) = run(b, Scripted(opens={1: {"stop": 95.0}}), funding=[(x, 0.0001, 100.0) for x in ts]).trades
+    assert KN.FLAG_FUNDING_GAP not in t.flags and t.funding_events > 0
 
 
 def test_funding_gap_is_flagged():

@@ -23,6 +23,16 @@ from .contract import (EXIT_LIVE_RULE, NONE, TARGET_R_FROM_ENTRY, Action, EntryR
 
 PARAM_KEYS = ("entry_window_min", "breakeven_at_mfe_r", "max_entry_drift_pct", "variation")
 RULE = "c4_candle_variations"
+#: kimliğe giren canlı modüller (`identity.module_src_sha`; çalışma izinin üst kümesi, test)
+LIVE_MODULES: tuple[str, ...] = (
+    "tradingbot.paper_rules",           # decide_from_rows / build_params: manage'in giriş noktası
+    "tradingbot.candle_book",           # window_rows, decide, _time_stop, STEP_MS, SETUP_PREFIX
+    "tradingbot.candle_dsl",            # window_from_rows, detect_last (varyasyon tanımının yorumlayıcısı)
+    "tradingbot.candle_variations",     # varyasyon TANIMI (get; definition_sha) — yürümese de kararı belirler
+    "tradingbot.signal_lab",            # candle_dsl'in göstergeleri
+    "tradingbot.candle_confirmation",   # closed_bars
+    "tradingbot.timeframes",            # tf_ms
+)
 
 
 class CandleCopy(Variant):
@@ -30,8 +40,7 @@ class CandleCopy(Variant):
     signal_tf = candle_book.TIMEFRAME
     timeframes = (candle_book.TIMEFRAME,)
     needs_btc = False
-    live_modules = ("tradingbot.paper_rules", "tradingbot.candle_book", "tradingbot.candle_dsl",
-                    "tradingbot.candle_variations")
+    live_modules = LIVE_MODULES
 
     def __init__(self, variant_id: str, params: Mapping[str, Any]):
         p = check_params(variant_id, params, PARAM_KEYS)
@@ -88,4 +97,4 @@ def make(variant_id: str, params: Mapping[str, Any]) -> CandleCopy:
     return CandleCopy(variant_id, params)
 
 
-__all__ = ["CandleCopy", "PARAM_KEYS", "RULE", "make"]
+__all__ = ["CandleCopy", "LIVE_MODULES", "PARAM_KEYS", "RULE", "make"]

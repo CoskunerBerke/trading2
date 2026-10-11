@@ -19,6 +19,15 @@ from .contract import (EXIT_LIVE_RULE, NONE, TARGET_PRICE, Action, EntryRef, Int
 PARAM_KEYS = ("near_frac", "trigger", "long_stop", "exit_kind", "exit_r", "eod_close", "allow_long", "allow_short",
               "breakeven_at_mfe_r", "min_stop_pct", "structures")
 RULE = "b1_box_fade"
+#: kimliğe giren canlı modüller (`identity.module_src_sha`; çalışma izinin üst kümesi, test)
+LIVE_MODULES: tuple[str, ...] = (
+    "tradingbot.paper_rules",           # decide_from_rows / daily_rows / intraday_rows / build_params: giriş noktası
+    "tradingbot.box_theory",            # Box kuralı (decide, BoxParams, rows_from_frame)
+    "tradingbot.ema200_trend",          # daily_rows_from_frame: kutunun günlük satırları
+    "tradingbot.indicators",            # canlı günlük çerçevenin ema200 / atr14 sütunları (livebars.frame)
+    "tradingbot.candle_confirmation",   # closed_bars: kapanmış-bar kesimi
+    "tradingbot.timeframes",            # tf_ms / DAY_MS
+)
 
 
 class BoxCopy(Variant):
@@ -26,7 +35,7 @@ class BoxCopy(Variant):
     signal_tf = "5m"
     timeframes = ("1d", "5m")
     needs_btc = False
-    live_modules = ("tradingbot.paper_rules", "tradingbot.box_theory", "tradingbot.indicators")
+    live_modules = LIVE_MODULES
 
     def __init__(self, variant_id: str, params: Mapping[str, Any]):
         p = check_params(variant_id, params, PARAM_KEYS)
@@ -72,4 +81,4 @@ def make(variant_id: str, params: Mapping[str, Any]) -> BoxCopy:
     return BoxCopy(variant_id, params)
 
 
-__all__ = ["BoxCopy", "PARAM_KEYS", "RULE", "make"]
+__all__ = ["BoxCopy", "LIVE_MODULES", "PARAM_KEYS", "RULE", "make"]

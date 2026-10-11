@@ -52,3 +52,16 @@
 - **`--backfill`** P1b'deki gibi çalışır (sürerken ilerleme/ETA; durmuş/düşmüşse kaldığı yerden sürdürür).
 - **Geri alma zinciri:** `sudo bash tb-engine-44d5353.sh --rollback` = 79b27cf durumu: önce engine-app 79b27cf'ye, sonra gece birimi P1a baytlarına (400M/512M; kaynak engine-app'teki 79b27cf blob'u, sha256 doğrulanır) + kapılı reload; veri birimleri, ilk doldurma ve `data/research` olduğu gibi kalır; taban kaydı `engine-44d5353-deploy.json` `.rolledback-<an>` adını alır (yeniden dağıtım smoke'larla yapılır). Bir motor çalıştırması sürerken ya da 00:00–04:00 UTC'de hiçbir şeye dokunmaz (YARIM, çıkış 4; uygun saatte aynı komutla). Daha geri: `sudo bash tb-engine-79b27cf.sh --rollback` (veri birimi + ilk doldurma kalkar → P1a), tam kaldırma ardından `sudo bash tb-engine-4962209.sh --rollback`.
 - **Sürüm kuralı eki (P2'den):** app sürüm betiklerinin engine-app'i yeniden sabitlemesi P2 kodunu (`44d5353`) İÇEREN bir SHA'ya yapılmalıdır; içermiyorsa önce `tb-engine-44d5353.sh --rollback` (gece birimi 512M'ye döner). P2 kuruluyken `tb-engine-79b27cf.sh`'in dağıtım kipi hiçbir şeye dokunmadan durur (gece birimi P1a'nınki değil, engine-app hedefinin torunu); 79b27cf'ye dönüş yalnız `tb-engine-44d5353.sh --rollback` ile, zincir de bu sırayla.
+
+## Sürekli öğrenme motoru — P3a (mühür S1 ve deneme defteri; `docs/ENGINE_BRAIN_V1.md` §8.1, §8.2, §8.4)
+
+- **Ne:** kod ve mühür; VPS'te kendiliğinden hiçbir şey çalışmaz (gece bağlantısı P3g'de). Mühürlü kayıtlar
+  `tradingbot/research_engine/registry.py` (sha'lar belgenin §8.2'sinde ve `tests/test_research_engine_registry.py`'de).
+- **Sorgu (salt-okunur, kilit almaz, ≤ 150 satır):** `engine-query trials [--like <metin>]` — deneme defteri
+  (`data/research/trials/trials.jsonl`) zincir durumu, sayaçlar ve DSR N, koddan bütçe (818 / 1.738, öncül 2.775), `--like`
+  ile LIB_v1 varyantları, defter satırları (spec_sha öneki), öncüller ve "ÖNCÜL — KANIT YOK" fikirleri. P3g'ye kadar defter
+  boştur ("Defter: YOK/BOŞ").
+- **Config dönemleri:** mühürlü `library/config_epochs.json` (`CONFIG_EPOCHS_V1`) mühüre kadarki worker dağıtımlarını kapsar
+  (belgelenmiş saat ya da kanıtla sınırlanmış pencere; `tradingbot/research_engine/epochs.py` `DEPLOYS`). Mühürden sonraki
+  config değişikliklerinde yeni dönemi gece birimi açar (ana belge §6.2, P3g); V1 dosyası değişmez.
+  `python scripts/gen_config_epochs.py --check` dosyanın git geçmişinden aynen üretildiğini doğrular.

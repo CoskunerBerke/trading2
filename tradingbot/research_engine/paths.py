@@ -192,6 +192,15 @@ class EnginePaths:
         return self.research / "attribution"
 
     @property
+    def trials_dir(self) -> Path:
+        """Deneme defteri (P3a, ENGINE_BRAIN §3.5): `trials/trials.jsonl` — yalnız eklenir, hash zincirli (`trials.py`)."""
+        return self.research / "trials"
+
+    @property
+    def trials_file(self) -> Path:
+        return self.trials_dir / "trials.jsonl"
+
+    @property
     def target_daily_utc(self) -> Path:
         """UTC günü MTM satırları (`tgt_v2_utc_day`; yalnız eklenir, `rev`) — W-günü `daily.jsonl`'ın yanında."""
         return self.target / "daily_utc.jsonl"

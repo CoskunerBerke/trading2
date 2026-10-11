@@ -1,4 +1,5 @@
-"""P2b — `engine-query` (§8, §10 P2): `trade <id>`, `why-lost [--book B] [--days N]`, `day <YYYY-MM-DD>`.
+"""P2b — `engine-query` (§8, §10 P2): `trade <id>`, `why-lost [--book B] [--days N]`, `day <YYYY-MM-DD>`; P3a (ENGINE_BRAIN
+§3.5): `trials [--like <metin>]` (deneme defteri, zincir durumu, sayaçlar, LIB_v1 ve öncül eşleşmeleri; `trials.py`).
 
 SALT-OKUNUR: kilit almaz, hiçbir şey yazmaz, ledger okumaz; yalnız `data/research` altındaki günlük (`journal/tj_v1`),
 atıf (`attribution/`) ve günlük hedef satırlarını okur. Çıktı Türkçe, şablondan (LLM yok), ≤ 150 satır ve ≤ 4 KB
@@ -16,8 +17,11 @@ DAY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 def run_query(paths: EnginePaths, *, topic: str, arg: str | None = None, book: str | None = None, days: int = 7,
-              now: datetime | None = None) -> tuple[list[str], int]:
+              now: datetime | None = None, like: str | None = None) -> tuple[list[str], int]:
     """(satırlar, çıkış kodu). 0 = cevap; 2 = kullanım hatası."""
+    if topic == "trials":
+        from .trials import query_lines            # report/pandas grafiğini çekmez
+        return query_lines(paths, like=like or arg), 0
     from . import report as RP
     now = now or utc_now()
     if topic == "trade":
@@ -32,7 +36,7 @@ def run_query(paths: EnginePaths, *, topic: str, arg: str | None = None, book: s
         if not arg or not DAY_RE.match(arg):
             return ["kullanım: engine-query day <YYYY-MM-DD>"], 2
         return RP.query_day(paths, arg), 0
-    return [f"bilinmeyen konu: {topic} (trade | why-lost | day)"], 2
+    return [f"bilinmeyen konu: {topic} (trade | why-lost | day | trials)"], 2
 
 
 __all__ = ["run_query"]

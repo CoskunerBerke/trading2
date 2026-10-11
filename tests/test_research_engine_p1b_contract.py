@@ -106,7 +106,9 @@ def _graph(start: str) -> set[str]:
 
 
 def test_network_free_modules_never_import_the_data_unit():
-    for m in ("night", "selfcheck", "summary", "backup", "closes", "daily_target", "store", "seed", "universe", "provider"):
+    # P3a: mühür kayıtları, deneme defteri, config dönemi üreticisi ve sorgu da ağsızdır (veri birimini çekmez)
+    for m in ("night", "selfcheck", "summary", "backup", "closes", "daily_target", "store", "seed", "universe", "provider",
+              "registry", "trials", "epochs", "query"):
         g = _graph(m)
         assert "datastore" not in g, (m, g)
     # §2.8: gece grafiği yalnız ağ modüllerini (`datastore`, `pit_universe`) dışlar; P2b'den itibaren mühürlü depo

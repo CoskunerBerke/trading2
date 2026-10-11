@@ -94,8 +94,10 @@ altından %1 veya bütün coinlerin ve altının toplam karı %1"*.
   maliyetlendirmeyle hesaplanır (§3.3).
 - **Parite (kabul):** (a) çekirdek ↔ `FuturesLedgerV2` + `strategy_paper.apply_action` + `tick`: aile başına ≥ 200 sentetik
   işlemde sinyal kimliği %100, medyan |ΔR| ≤ 0,02, p95 ≤ 0,05; (b) kopya ↔ canlı defter: ana belge §6.2 (yalnız POLICY
-  kohortu, ≥ 20 girişli her config döneminde ≥ %95 aynı bar/yön, medyan |ΔR| ≤ 0,05). (b) tutmayan kopya lider tablosuna ve
-  kapıya girmez (`PARITY_FAIL`).
+  kohortu, ≥ 20 girişli her config döneminde ≥ %95 aynı bar/yön, medyan |ΔR| ≤ 0,05; kopya o dönemin config görünümünden
+  kurulur, eşlenemeyen dönem `NOT_COMPARABLE` — raporlanır, kapıya girmez; okunuş §8.4 P3b-1 notu). (b) tutmayan kopya
+  lider tablosuna ve kapıya girmez (`PARITY_FAIL`); kapılı karşılaştırılabilir dönemi olmayan kopya da girmez
+  (`PARITY_UNPROVEN`).
 
 ### 2.2 Aileler, ızgaralar ve sayılar (mühürlü)
 
@@ -925,23 +927,25 @@ değişiklik notu); B9 ve altın stopları için cevap gelirse aynı yolla doldu
 (ana belge §6.2) P3g'de; V1 dosyası değişmez. (d) S2 (`PROMOTION_REGISTRY_V1`, `AUTO_POLICY_V1`, `AUTO_CATALOG_V1`,
 `MANIFEST_SCHEMA_V1`) sahibin kapı metni onayından sonra.
 
-**P3b-1 uygulama notu (2026-10-11; temel: sözleşme, kopyalar, çekirdek, parite).** S1 mühürlü kayıtları DEĞİŞMEDİ
+**P3b-1 uygulama notu (2026-10-11; temel: sözleşme, kopyalar, çekirdek, parite; bağımsız inceleme düzeltme turu 1 aynı
+gün — aşağıda "Düzeltme turu 1").** S1 mühürlü kayıtları DEĞİŞMEDİ
 (`registry.py`, sha'lar, `REGISTRY_SHA`, `T_SEAL_MS` aynı); hiçbir canlı karar yolu, worker kodu ya da config değişmedi —
 canlı kural fonksiyonları yalnız ÇAĞRILIR. Hiçbir şey gece birimine bağlanmadı; gerçek veri yok, ölçümler sentetik.
 
 - **`tradingbot/strategy_lib/`** (saf; motor paketini anmaz ve import etmez — AST testi + alt süreçte `sys.modules`
   denetimi): `contract.py` — §2.1'in `Intent`'i (dokuz alan; ayrıca karara girmeyen bilgi alanı `evidence`), `EntryRef`
   (giriş referansı + giriş anında uygulanan kabul sınırları: `apply_action`'ın giriş kayması, Formasyonun kovalama
-  sınırı), `Target` (mutlak fiyat ya da GERÇEK girişten R), `RiskAtrBounds` (alt, üst, ATR), `Action` (NONE / CLOSE /
-  MOVE_STOP), `PosView`, `BookEntry`, `Variant`; `catalog.py` — 13 kopya, parametreler YALNIZ mühürlü `LIB_V1`
+  sınırı ve maliyet sonrası R/R tabanı), `Target` (mutlak fiyat ya da GERÇEK girişten R), `RiskAtrBounds` (alt, üst,
+  ATR), `Action` (NONE / CLOSE / MOVE_STOP), `PosView`, `BookEntry`, `Variant`; `catalog.py` — 13 kopya, parametreler YALNIZ mühürlü `LIB_V1`
   varyantının `params`'ından (anahtar kümesi tam olmalı; eksik/fazla = ValueError); `identity.py` — `module_src_sha`
   (aşağıda); `livebars.py` — canlı çerçeve pencereleri (perp çerçevesi `PERP_FRAME_LIMITS` − oluşan bar: 1d 399, 4h 699,
   5m 499; günlükte `indicators.ema`/`atr`; Formasyon 4h 240; testte canlı koda eşit); kopyalar `k_trend` (T2/M2:
   canlı `StrategyBook.step`'in çağırdığı `paper_rules.decide_with_structures`; mühürdeki yapı kipi ENFORCE, kullanılmış
   yapılar canlı `used_patterns_of` ile kopyanın kendi girişlerinden), `k_box` (`decide_from_rows`; mühürdeki SHADOW yapı
   kipi kararı değiştirmediği için yapı analizi çağrılmaz), `k_d4` (`decide_from_rows`), `k_c4` (bağdaştırıcı, aşağıda),
-  `k_fm` (`strategy_v3.build_plans_v3` + `structures.analyze`; `PatternBook._try_open`'ın kovalama ve risk aralığı
-  kapıları niyette, zaman stopu 24 × 4h).
+  `k_fm` (`strategy_v3.build_plans_v3` + `structures.analyze`; `PatternBook._try_open`'ın saf geometri kapıları —
+  kovalama, risk aralığı, `RR_BELOW_MIN_AT_ENTRY` (canlı `rr_after_cost`, planın `min_rr_after_cost`'u, defterin maliyet
+  oranı `cost_fraction(LIVE_FEES)`) — niyette, zaman stopu 24 × 4h).
 - **`ctx` okunuşu.** §2.1 `{now_ms, btc_bars?, funding?}`'e iki SALT-OKUNUR anahtar eklendi: `symbol` ve `history`
   (varyantın bu sembolde açtığı girişler). Gerekçe: canlı kurallar kendi defter geçmişine bakar (ortak yapı katmanının
   "kullanılmış yapı" kümesi, Formasyonun "aynı kırılımla tek giriş" kuralı); defter olmadan bunlar ancak geçmişle saf
@@ -953,67 +957,149 @@ canlı kural fonksiyonları yalnız ÇAĞRILIR. Hiçbir şey gece birimine bağl
   `candle_dsl.detect_last`; eylem alanları `decide`'ın OPEN sözlüğüyle aynı). Kapı mühürde sekiz varyasyonun hepsinde
   açıktır (test). `manage` canlı fonksiyonun kendisidir (açık pozisyonda kapı çağrılmaz). Parite (a) bağdaştırıcıyı kapı
   DAHİL canlı `decide`'a karşı sınar. Diğer kopyalar canlı fonksiyonu doğrudan çağırır (dosya/ağ/saat yok).
-- **Kimlik.** `module_src_sha` = varyant modülünün `tradingbot.*` import KAPANIŞININ (AST; modül ve fonksiyon düzeyi)
-  dosya sha'larının özeti — kopyanın çağırdığı canlı kural kaynakları da girer (T2/M2 37, Box/D4/C4 37, FM 43 dosya); canlı
-  kural değişirse `spec_sha` değişir. **`spec_sha` paket içinde hesaplanmaz:** kanonik fonksiyon mühürlü kayıttadır ve paket
-  motoru import edemez; yeniden yazmak yerine motor tarafında `kernel.spec_sha_for` = `registry.spec_sha(registry.lib_spec(v,
+- **Kimlik.** `module_src_sha` (`strategy_lib.module_src_sha.v2`) = BİLDİRİLMİŞ dosya kümesinin **git HEAD blob'larının**
+  sha'larının özeti: varyant modülü + `strategy_lib` içindeki bağımlılıkları (`contract`, `livebars`; Formasyonda
+  `k_trend`) + modülün `LIVE_MODULES` listesi (kararı belirleyen canlı modüller, her biri gerekçesiyle; T2/M2 18, Box 9,
+  D4 9, C4 10, FM 18 dosya). Liste, altı kopyanın `signals`/`manage` çalışırken yürüyen bütün `tradingbot` dosyalarının
+  (profil izi, test) üst kümesidir; yürümeyen ama kararı belirleyen tanım/sabit modülleri (`candle_variations`,
+  `learn.weekly_structure`, `pattern_trader.strategy`) ayrıca bildirilir. Bildirilmiş dosyalardan biri HEAD'den farklı,
+  izlenmeyen ya da HEAD'de yoksa `DirtyTreeError` (işlenmemiş düzenleme kimlik üretmez); ilgisiz bir modülün düzenlenmesi
+  kimliği değiştirmez, bildirilmiş birininki değiştirir (geçici git deposunda test). **`spec_sha` paket içinde
+  hesaplanmaz:** kanonik fonksiyon mühürlü kayıttadır ve paket motoru import edemez; yeniden yazmak yerine motor tarafında `kernel.spec_sha_for` = `registry.spec_sha(registry.lib_spec(v,
   module_src_sha))` kullanılır; deneme defterinin `seal_entries` satırına eşitliği (alias'lar `DON_20_10_4h_LO ≡ K_D4`,
   `BOX_n10_mid_ms0.5 ≡ K_BOX` dahil) testlidir.
 - **`research_engine/kernel.py`** (`kernel_v1`): karar bar kapanışında (yalnız kapanmış barlar), bar başına tek eylem;
-  dolum sonraki açılış ± kayma; giriş kapıları canlı sırayla (kovalama, `STRATEGY_BAD_STOP`, giriş kayması, risk aralığı);
-  bar içi yol `learning_cf` kuralı (açılış → ters → lehte → kapanış; giriş barı ters uçtan); stop seviyede, yalnız açılış
+  dolum sonraki açılış ± kayma, o satır karar anında açılmıyorsa (veri boşluğu) `ENTRY_DATA_GAP` reddi; giriş kapıları
+  canlı sırayla (kovalama, `STRATEGY_BAD_STOP`, giriş kayması, risk aralığı, Formasyonda `RR_BELOW_MIN_AT_ENTRY`); bar içi
+  yol `learning_cf` kuralı (açılış → ters → lehte → kapanış; giriş barı ters uçtan); stop seviyede, yalnız açılış
   boşluğunda açılıştan; hedef seviyede kaymasız (taker ücret); birden çok hedefte TP1 yarım + ücret/kayma dahil başa-baş
   (`break_even_price` formülü) yalnız SONRAKİ noktalarda; kural CLOSE'u ve `max_hold_bars` sonraki açılışta (önce açılış
-  gözlemi); fonlama deponun gerçek uzlaşma damgalarında, (giriş, çıkış] ve o andan önceki dolumlarla açık miktar (açılışta
-  kapanan pozisyonun çıkış anı açılış, diğerlerinde bar kapanışı); `FUNDING_GAP` = seri pencereyi örtmüyor ya da kendi
-  tipik aralığının 1,5 katından uzun boşluk / okunamaz satır; büyüklük canlı `learning_mode.fit_size` (slot 1, rezerv 0,
-  200 × %0,5 = 1 USDT), kaldıraç gerektiği kadar, likidasyon mesafesi ≥ 2 × stop gerçek bracket formülüyle denetlenir;
-  likidasyon açılış boşluğunda ya da kayma dolumu ötesine iterse, `liquidation_outcome` aritmetiği; üç senaryo aynı yolda
-  aritmetik yeniden maliyetlendirme (spread tik'i hedef dolumuna da uygulanır — muhafazakâr okunuş). Belirlenimci (bayt
-  testi). Fiyat adımına kuantize etmez (defter eder; ΔR'nin ana kaynağı).
-- **`research_engine/parity.py`** — (a) başvuru: canlı kural DOĞRUDAN (C4'te kapı dahil) → `strategy_paper.apply_action`
-  → `FuturesLedgerV2.tick` (aynı `learning_cf` yolu, base maliyet, serinin fiyat adımı, §2.1 büyüklüğü: kaldıraç
-  çekirdeğinkine eşitlenir, risk × 50; R ölçekten bağımsız); sinyal kimliği (sembol, sinyal barı, yön) iki yönde.
-  (b) iskelet: POLICY kohortu (`learning_mode.classify_unlock_codes`; etiketsiz eski kayıt `UNTAGGED`, POLICY sayılmaz),
-  dönem `rehydrate.config_epoch` + mühürlü `config_epochs.json` (TRANSITION ve kapsam dışı ATANMAZ), ≥ 20 girişli dönem
-  kapılı: ≥ %95 aynı bar/yön ve medyan |ΔR| ≤ 0,05; hüküm `PASS` / `PARITY_FAIL` / `PARITY_UNPROVEN` (kapılı dönem yok:
-  koşul gösterilemedi → uygun değil); `mark_parity` kopya satırını lider tablosu/kapı için uygunluk dışı yapar.
+  gözlemi); `MOVE_STOP` yalnız sıkılaştırır ve karar fiyatını geçemez (aksi `MOVE_STOP_IGNORED` + neden); fonlama deponun
+  gerçek uzlaşma satırlarında, damga nominal dakikaya yuvarlanmış; s'deki açık miktar s'den önce KESİN kapanmamış
+  bacaklardan; bar içi bir çıkışın barındaki uzlaşma için ihtiyatlı kural (barın açılışı: yazılır — çıkış ondan önce
+  olamaz; barın içi: yazılmaz, `FUNDING_EXIT_BAR` + tutarı ayrıca; barın kapanışı: yazılmaz — çıkış kesin önce);
+  `FUNDING_GAP` = seri pencereyi örtmüyor, okunamaz/çelişen satır ya da YEREL aralığın (komşu aralıkların büyüğü; iki
+  yandaki üçer aralığın medyanlarının büyüğü) 1,5 katından uzun boşluk; büyüklük canlı `learning_mode.fit_size` (slot 1,
+  rezerv 0, 200 × %0,5 = 1 USDT), kaldıraç gerektiği kadar, likidasyon mesafesi ≥ 2 × stop gerçek bracket formülüyle
+  denetlenir; likidasyon açılış boşluğunda ya da kayma dolumu ötesine iterse, `liquidation_outcome` aritmetiği (bu
+  büyüklükte bracket hep birincidir: mmr %0,4 < likidasyon ücreti %0,5 → kayıp hep izole marja kırpılır; likidasyon
+  fiyatı yalnız tetiklenmeyi belirler); üç senaryo aynı yolda aritmetik yeniden maliyetlendirme (spread tik'i hedef
+  dolumuna da uygulanır — muhafazakâr okunuş). `signals_at` (tek karar anı) ve `replay_intent` (tek niyetin zorlanmış
+  yeniden oynatımı) parite (b) içindir. Belirlenimci (bayt testi; A→B / B→A, yapı önbelleği temizlenerek ve ayrı
+  süreçte). Fiyat adımına kuantize etmez (defter eder; ΔR'nin ana kaynağı).
+- **`research_engine/parity.py`** — (a) başvuru: canlı kural DOĞRUDAN (C4'te kapı dahil; Formasyonda `_try_open`'ın
+  kovalama ve R/R kapıları, maliyet oranı canlı `config_v3.FeesSection`'dan) → `strategy_paper.apply_action` →
+  `FuturesLedgerV2.tick` (base maliyet, serinin fiyat adımı, §2.1 büyüklüğü: kaldıraç çekirdeğinkine eşitlenir, risk × 50;
+  R ölçekten bağımsız; veri boşluğundan sonra giriş yok); iki kip: `clipped` (KAPILI; çekirdekle aynı `learning_cf` yolu,
+  stopun ötesindeki nokta seviyeye kırpılır — çekirdeğin aritmetiğini sınar, bu yüzden kısmen döngüseldir) ve `ohlc`
+  (RAPOR; canlı gibi bar başına tek kırpılmamış OHLC tiki → defterin `exit_decision`'ı `STOP_CLOSE_BEYOND_LEVEL_PRUDENT`
+  ve `PRUDENT_LIQUIDATION` dallarıyla çalışır); bar içi tikler açılıştan 1 ms sonra (çekirdeğin fonlama kuralı); sinyal
+  kimliği (sembol, sinyal barı, yön) iki yönde; işaretli ortalama ΔR (çekirdek − defter) raporlanır.
+  (b) ana belge §6.2 "o dönemin parametreleriyle": POLICY kohortu (`learning_mode.classify_unlock_codes`; etiketsiz eski
+  kayıt `UNTAGGED`, POLICY sayılmaz); C4 kayıtları varyasyona göre süzülür (`features.candle_variation.id` ya da
+  `setup_type`; her `K_C4_CVxxx` yalnız kendi varyasyonuyla; varyasyonu okunamayan POLICY kaydı EŞLEŞMEDİ); dönem
+  `rehydrate.config_epoch` + mühürlü `config_epochs.json` (TRANSITION ve kapsam dışı ATANMAZ); dönem başına kopya o
+  dönemin config GÖRÜNÜMÜNDEN kurulur (`view_sha` → görünüm `views_from_configs`'la sürüm config blob'larından;
+  `params_from_view` kapalı hatalı eşleme: defter bölümünde bilinmeyen kural anahtarı, eksik karar yolu, belirsiz yapı
+  kipi/farklı yapı politika sürümü, Formasyonda farklı ücret, kopyanın kuramadığı değer → `NOT_COMPARABLE`, raporlanır,
+  kapıya girmez); her POLICY girişi kopyanın `signals`'ıyla girişin KARAR BARINDA, pozisyonsuz, `ctx.history` = canlı
+  defterin kendi geçmişiyle eşlenir; ΔR o tek niyetin çekirdekte zorlanmış yeniden oynatımından (CAPACITY/SELECTIVITY
+  pozisyonlarının yol bağımlılığı yok); `data_source.bars` anahtarı olmayan POLICY kaydı EŞLEŞMEDİ (atlanmaz); ≥ 20
+  girişli karşılaştırılabilir dönem kapılı: ≥ %95 aynı bar/yön ve medyan |ΔR| ≤ 0,05; hüküm: kapılı dönemlerden biri
+  tutmazsa `PARITY_FAIL`, ≥ 1 kapılı dönem varsa ve hepsi tutarsa `PASS`, yoksa `PARITY_UNPROVEN` (koşul gösterilemedi →
+  uygun değil); `mark_parity` kopya satırını lider tablosu/kapı için uygunluk dışı yapar. Mühürlü dosyanın bugünkü
+  dönemleri (git'teki sürüm config'lerinden): T2/M2/D4/FM'nin üç CONFIG dönemi, Box'ın dördü, C4'ün CV'li ikisi
+  karşılaştırılabilir ve son dönem mühürlü parametrelere eşlenir (test); E0'lar (eksik anahtar / protokol) ve C4'ün boş
+  liste dönemi `NOT_COMPARABLE`. **T2/M2 öğrenme kipi okunuşu (düzeltme):** 2026-09-28'den beri `structures_entry_shadow`
+  ile yapı denetiminin engelleyeceği yeni giriş `STRUCTURE_*` koduyla açılır ve SELECTIVITY'dir (`strategy_paper`
+  1095–1116, 1265–1271): POLICY kohortu tam olarak ENFORCE'un geçirdiği kümedir → bu dönemler mühürlü ENFORCE kopyasıyla
+  karşılaştırılabilir; mühür değişmez.
   `research_engine/synthetic.py` (belirlenimci sentetik dünyalar; gece grafiğinde değil), `scripts/engine_p3b_measure.py`
   (parite (a) ≥ 200 işlem/aile + hız; yalnız sentetik).
-- **Parite (a) sonucu** (`scripts/engine_p3b_measure.py`, 2026-10-11, sentetik; eşikler %100 / 0,02 / 0,05):
+- **Parite (a) sonucu** (`scripts/engine_p3b_measure.py`, düzeltme turu 1'den sonra yeniden koşuldu, 2026-10-11,
+  sentetik; eşikler %100 / 0,02 / 0,05 yalnız `clipped` kipe uygulanır; `ohlc` kipi rapordur):
 
-| Aile | Dünya | Eşleşen işlem | Sinyal kimliği | Medyan \|ΔR\| | p95 \|ΔR\| | En büyük \|ΔR\| |
-|---|---|---|---|---|---|---|
-| T2 (`K_T2`) | 31 | 207 | %100 | 3,3e-6 | 2,1e-5 | 7,3e-5 |
-| M2 (`K_M2`) | 9 | 200 | %100 | 6,2e-6 | 1,9e-5 | 4,0e-5 |
-| Box (`K_BOX`) | 1 (60 gün 5m) | 331 | %100 | 1,3e-4 | 3,2e-3 | 1,4e-2 |
-| D4 (`K_D4`) | 7 | 200 | %100 | 9,4e-6 | 2,6e-4 | 1,0e-3 |
-| C4 (`K_C4_CV001…008` birlikte) | 7 | 222 | %100 | 2,1e-6 | 2,2e-4 | 7,0e-4 |
-| FM (`K_FM`) | 3 | 265 | %100 | 7,5e-8 | 5,9e-5 | 3,3e-4 |
+| Aile | Dünya | Eşleşen işlem | Sinyal kimliği | Medyan \|ΔR\| | p95 \|ΔR\| | En büyük \|ΔR\| | OHLC medyan \|ΔR\| | OHLC p95 \|ΔR\| | OHLC işaretli ort. (çekirdek − defter) | OHLC ihtiyatlı dolum |
+|---|---|---|---|---|---|---|---|---|---|---|
+| T2 (`K_T2`) | 31 | 207 | %100 | 3,3e-6 | 2,1e-5 | 7,3e-5 | 3,3e-6 | 2,2e-5 | +0,0014 R | 2 / 207 |
+| M2 (`K_M2`) | 9 | 200 | %100 | 6,2e-6 | 1,9e-5 | 4,0e-5 | 6,2e-6 | 1,9e-5 | +0,0000 R | 0 / 200 |
+| Box (`K_BOX`) | 1 (60 gün 5m) | 331 | %100 | 1,3e-4 | 3,2e-3 | 1,4e-2 | 2,6e-4 | 2,6e-1 | +0,042 R | 90 / 331 |
+| D4 (`K_D4`) | 7 | 200 | %100 | 9,4e-6 | 2,6e-4 | 1,0e-3 | 1,8e-5 | 1,8e-1 | +0,021 R | 25 / 200 |
+| C4 (`K_C4_CV001…008` birlikte) | 7 | 222 | %100 | 2,2e-6 | 2,2e-4 | 6,9e-4 | 1,1e-5 | 2,4e-1 | +0,035 R | 36 / 222 |
+| FM (`K_FM`) | 3 | 265 | %100 | 7,5e-8 | 5,9e-5 | 3,3e-4 | 5,7e-7 | 1,7e-1 | +0,025 R | 45 / 265 |
 
-  Hepsi geçti. ΔR'nin kaynağı yalnız defterin fiyat adımına kuantize etmesi ve miktar adımıdır (betikli yollarda — TP1 +
-  başa-baş, boşluk, likidasyon, fonlama, short — çekirdek R'si defterin `r_multiple`'ına 1e-9 içinde eşit). Bu ölçü
-  çekirdeğin aritmetiğini sınar; canlı defterle farkı (tur mark'ı, 60 dk giriş penceresi, 60 sn izleyici, öğrenme kipi,
-  slot/teminat) parite (b)'nin işidir.
-- **Testler:** `tests/test_strategy_lib_p3b.py` (saflık AST'i, motoru yüklememe, kimlik kapanışı, `spec_sha` = kayıt =
-  deneme defteri, parametre kümesi, canlı pencere sabitleri, C4 kapısı mühürde açık, kullanılmış yapı okuyucusu),
-  `tests/test_research_engine_kernel_p3b.py` (dolum/yol, boşluk, giriş boşluğu reddi, bar içi sıra, TP1/başa-baş, R'den
-  hedef, kural/zaman çıkışı, MOVE_STOP, giriş kapıları, tek giriş, 1 USDT risk + likidasyon ≥ 2 × stop, likidasyon
-  sonucu, fonlama damgaları/kısmi miktar/`FUNDING_GAP`, üç senaryonun elle hesabı, short, belirlenimcilik ve pencere),
-  `tests/test_research_engine_parity_p3b.py` (altı K ailesinin altın sentetik yolu, bayt-aynı tekrar, aile başına parite
-  (a), betikli defter çapraz denetimi, parite (b) PASS/FAIL/UNPROVEN, kohort ve dönem atama, `PARITY_FAIL` işareti;
-  `TB_P3B_FULL_PARITY=1` ile ≥ 200 işlem/aile). P1b yalıtım testinin paket dışı import listesine `kernel.py` ve
-  `parity.py` (gerekçesiyle) eklendi.
+  `clipped`: hepsi geçti; sayılar düzeltmeden öncekiyle aynı ya da çok yakın (C4 en büyük 7,0e-4 → 6,9e-4) — fonlama
+  kuralı değişikliği başvuruya da aynen uygulandığı için. ΔR'nin kaynağı yalnız defterin fiyat adımına kuantize etmesi
+  ve miktar adımıdır (betikli yollarda — TP1 + başa-baş, boşluk, likidasyon sınırının iki yanı, kayma ötesi likidasyon,
+  fonlama, short — çekirdek R'si defterin `r_multiple`'ına 1e-9 içinde eşit). `ohlc` (kırpılmamış, canlı muhasebesi):
+  sinyal kimliği her ailede %100 (bu dünyalarda çıkış farkı sonraki girişleri kaydırmadı); **çekirdek stop çıkışlarında
+  canlı muhasebeye göre İYİMSERDİR**: defterin `STOP_CLOSE_BEYOND_LEVEL_PRUDENT` dalı (ters uç ve kapanış stopun
+  ötesinde → dolum kapanıştan) işlemlerin %1 (T2) – %27 (Box) kadarında çalışır, çekirdek seviyeden doldurur; işlem
+  başına ortalama fark +0,02…+0,04 R (Box, D4, C4, FM), T2 +0,001 R, M2 0 (çıkışları kural kapanışı); |ΔR| p95
+  0,17–0,26 R, en büyüğü 0,22 (T2) – 0,89 (C4) R. Ölçü sinyal diliminin barıyla yapıldı; canlı defter 1h OHLC barı
+  işler — 4h/1d ailelerinde bu ölçü canlıdan kaba (üst sınır), Box'ta (5m) canlıdan incedir (canlıda fark daha büyük
+  olabilir). WF/Kapı A
+  sonuçları bu iyimserlik kadar (aile başına ≈ +0,02–0,04 R/işlem) yukarı yanlıdır; ADVERSE/STRESS maliyet
+  senaryoları bunu örtmez (kayma/ücret aritmetiğidir). Karar (P3b-2'ye açık kalan): çekirdeğe ihtiyatlı stop dolumu
+  (kapanış da ötedeyse kapanıştan) eklenip eklenmeyeceği — eklenirse (a)'nın kapılı ölçüsü `ohlc` kipe geçer. Çekirdek
+  fonlamasının ihtiyatlı kuralı: T2 10 / 207, M2 1 / 200 işlem `FUNDING_EXIT_BAR` (1d barın içindeki 08:00/16:00
+  uzlaşmaları; yazılmayan tutar ortalama 1,5e-3 / 7,3e-4 R); 4h/5m ailelerinde 0 (uzlaşmalar bar sınırında). Sentetik
+  Formasyon dünyalarında R/R kapısı hiçbir girişi reddetmedi (stoplar maliyet tabanından geniş; kapı birim testlidir).
+  Bu ölçü çekirdeğin aritmetiğini sınar; canlı defterle farkı (tur mark'ı, 60 dk giriş penceresi, 60 sn izleyici,
+  öğrenme kipi, slot/teminat) parite (b)'nin işidir.
+- **Testler:** `tests/test_strategy_lib_p3b.py` (saflık AST'i, motoru yüklememe, bildirilmiş kimlik dosyaları elle
+  sabitlenmiş ve özet git'ten bağımsız yeniden hesaplanır (döngüsel değil), geçici git deposunda ilgisiz düzenleme =
+  aynı sha / ilgili düzenleme = farklı sha / kirli ağaç ve HEAD'de olmayan dosya = ret, `spec_sha` = kayıt = deneme
+  defteri (ağaç kirliyse atlanır), Formasyon ücretleri = config.yaml = `FeesSection`, parametre kümesi, canlı pencere
+  sabitleri, C4 kapısı mühürde açık, kullanılmış yapı okuyucusu), `tests/test_research_engine_kernel_p3b.py` (dolum/yol,
+  boşluk, giriş boşluğu reddi, veri boşluğu reddi, bar içi sıra, TP1/başa-baş, R'den hedef, kural/zaman çıkışı, MOVE_STOP
+  sıkılaştırma/gevşetme/fiyatı geçme (iki yön), giriş kapıları + R/R tabanı (canlı formül), tek giriş, zorlanmış tek niyet
+  = sürekli koşu, 1 USDT risk + likidasyon ≥ 2 × stop, likidasyon sonucu, fonlama: nominal dakika, çelişen satır, çıkış
+  barındaki uzlaşmanın üç durumu (1d bar içi, 4h kapanış), kısmi çıkıştan sonra miktar, 8h → 4h seri (boşluk yok; iki
+  dönemde ve geçişten sonra eksik uzlaşma yakalanır), üç senaryonun elle hesabı, short, belirlenimcilik ve pencere),
+  `tests/test_research_engine_parity_p3b.py` (altı K ailesinin altın sentetik yolu, bayt-aynı tekrar, A→B / B→A yapı
+  önbelleği temizlenerek ve ayrı süreçte, aile başına parite (a) iki kipte, betikli defter çapraz denetimi — likidasyon
+  fiyatı defterinkine eşit, açılış likidasyonun hemen altında / kayma ötesine / hemen üstünde — kırpılmamış likidasyon
+  sonucu (bracket 2) defterle eşit, OHLC kipinde `STOP_CLOSE_BEYOND_LEVEL_PRUDENT` ve `PRUDENT_LIQUIDATION` dalları,
+  altı kopyanın `signals`/`manage`'inde çalışma anı G/Ç-saat-rastgelelik yoklaması (denetim + profil kancası; yoklamanın
+  kendisi de sınanır) ve çalışan dosyaların bildirilmiş kimlik kümesinde olması, parite (b): dönem görünümünden kurulan
+  kopya + zorlanmış yeniden oynatımla PASS, anahtarsız kayıt EŞLEŞMEDİ → FAIL, medyan ΔR → FAIL, eşlenemeyen görünüm (beş
+  neden + görünüm yok + sha tutmuyor) NOT_COMPARABLE → UNPROVEN, değişen-eşlenebilir parametreli dönem, kohort ve dönem
+  atama, C4 çok varyasyonlu kayıtlar, `params_from_view` birim durumları, mühürlü dönem görünümlerinin git'teki sürüm
+  config'lerinden çözülmesi, `PARITY_FAIL` işareti; `TB_P3B_FULL_PARITY=1` ile ≥ 200 işlem/aile). P1b yalıtım testinin
+  paket dışı import listesine `kernel.py` ve `parity.py` (gerekçesiyle) eklendi.
+- **Düzeltme turu 1 (bağımsız inceleme, diff `64f9cc8..25d551a`).** M1 `FUNDING_GAP` serinin TÜM medyan aralığıyla
+  ölçülüyordu (8h → 4h'e geçen seride 8h dönemi boşluk sayılırdı) → yerel aralık (yukarıda), 300 g 8h + 500 g 4h testi.
+  M2 (b) ana belge §6.2 ile çelişiyordu (mühürlü kopyanın tek sürekli koşusu, dönem parametresi yok, anahtarsız kayıt
+  sessizce atlanıyor, C4 varyasyonları karışık) → yukarıdaki kural; T2/M2 öğrenme kipi dönemleri karşılaştırılabilir
+  (önceki açık kalan (2)'deki "mühür sorusu" yanlıştı: düzeltildi, mühür değişmedi). m1 (a) kısmen döngüseldi (başvuru
+  da seviyeye kırpıyordu) → kırpılmamış `ohlc` rapor kipi; ölçülen iyimserlik yukarıdaki tabloda. m2 fonlama
+  damgaları: bar içi çıkış bar kapanışıyla damgalanıp çıkıştan SONRAKİ uzlaşmayı ödüyordu, ms kaymalı uzlaşma açılışta dolan girişe
+  yazılıyordu → nominal dakika + ihtiyatlı kural (yukarıda). m3 `module_src_sha` 37 dosyalık çalışma ağacı kapanışıydı
+  (ilgisiz düzenleme ve işlenmemiş değişiklik yeni deneme sayılıyordu; `live_modules` kullanılmıyordu) → bildirilmiş
+  küme + HEAD blob'ları + kirli ağaç reddi. m4 veri boşluğundan sonra giriş saatler sonra doluyordu → `ENTRY_DATA_GAP`.
+  m5 `MOVE_STOP` doğrulanmıyordu → yalnız sıkılaştırır, fiyatı geçemez. m6 Formasyonun saf geometri kapısı
+  `RR_BELOW_MIN_AT_ENTRY` (`book.py` 1056–1060) eksikti → kopyada ve başvuruda. Altın yollarda yalnız fonlama değişti (C4
+  iki, FM yedi işlem: 4h kapanışındaki uzlaşma artık çıkan miktara yazılmıyor); sentetik dünyalarda R/R kapısı bir giriş
+  reddetmedi.
 - **Açık kalanlar (P3b-2 ve sonrası).** (1) B…O aileleri (93 varyant) ve `trials.seal_entries`'in 106 tabanın
-  `module_src_sha`'sıyla gerçek `SPEC` satırları (şimdi 13 kopya). (2) **T2/M2 yapı kipi:** mühürlü spec ENFORCE'tur (giriş
-  zamanlaması + yapı çıkışı); canlı öğrenme modu 2026-09-28'den beri `structures_entry_shadow: [main, t2_trend_regime,
-  m2_tsmom28]` ile YENİ GİRİŞİ yapı denetiminden çıkarır (yönetim ENFORCE). Kopya mühürlü spec'i izler; bu dönemlerde parite
-  (b)'nin T2/M2'de canlıda olup kopyada olmayan girişler göstermesi beklenir → sahip kararı / okunuş gerekir (spec
-  değişikliği mühür meselesidir, P3b-1'de yapılmadı). (3) C4 kapısının (dosya okuyan) motor tarafında koşu öncesi denetimi.
-  (4) Formasyonun canlı-yalnız kapıları (likidite/spread/derinlik, kayıptan sonra bekleme `cooldown_bars_after_loss`, evren)
-  kopyada yok; parite (b) "açıklanan fark" girdisi (slot/teminat retleri) şimdilik yalnız sayılır. (5) Hız: yukarıdaki
-  §5.3 ölçüm notu — taban sinyal önbelleği (örtülerle paylaşım), DataFrame'siz bayt-aynı satır yolu, Box 5m. (6) Parite
-  (b)'nin gece bağlantısı ve canlı defter okuyucusu (P3g); `funding` anahtarı (H ailesi) P3b-2'de doldurulur.
+  `module_src_sha`'sıyla gerçek `SPEC` satırları (şimdi 13 kopya; bildirilmiş modül listeleri P3b-2 ailelerine de
+  yazılacak). (2) C4 kapısının (dosya okuyan) motor tarafında koşu öncesi denetimi. (3) Formasyonun canlı-yalnız kapıları
+  (likidite/spread/derinlik, kayıptan sonra bekleme `cooldown_bars_after_loss`, evren, fiyat adımına yuvarlama sonrası
+  R/R) kopyada yok; parite (b) canlı girişten yola çıktığı için bunlar eşleşmeyi bozmaz, yalnız kopya fazlası
+  (`copy_extra`) olarak görünür; "açıklanan fark" girdisi (slot/teminat retleri) şimdilik yalnız sayılır. Canlı
+  Formasyon kayıtlarının `features.data_source.bars["4h"]` taşıyıp taşımadığı P3g'de gerçek defterde doğrulanmalı
+  (taşımıyorsa her kayıt EŞLEŞMEDİ → `PARITY_FAIL`; kapalı hata bilinçli). (4) Config dönemleri yalnız config'i izler;
+  dönem içinde canlı KOD değişmişse (sürüm) kopya bugünkü kodu çalıştırır — E0 dönemleri zaten `NOT_COMPARABLE`; sonraki
+  dönemlerdeki kod sürümlerinin etkisi (b)'nin ΔR'sinde görünür, ayrı bir "kod dönemi" yoktur. (5) Fonlamanın ihtiyatlı
+  kuralı 1d barlarda (T2/M2) bar içi her çıkışta 08:00/16:00 uzlaşmalarını belirsiz bırakır (`FUNDING_EXIT_BAR`, tutar
+  ayrıca; kapıdan çıkarmaz); daha ince veri (1h) varsa bacak zamanı daraltılabilir (P3b-2). (6) Çekirdeğin stop
+  dolumundaki iyimserliği (yukarıdaki `ohlc` sütunları, aile başına ≈ +0,02–0,04 R/işlem): ihtiyatlı dolumun çekirdeğe
+  alınıp alınmayacağı sahip/tasarım kararıdır (mühürlü `WF_PROTOCOL_V1.kernel` metni değişeceği için P3b-1'de
+  yapılmadı); o zamana dek Kapı A sonuçlarının bu kadar yukarı yanlı olduğu raporda yazılır. (7) Hız: §5.3 ölçüm notu
+  (bu tur hız yeniden ölçülmedi; bar başına iş değişmedi) — taban sinyal önbelleği, DataFrame'siz bayt-aynı satır yolu,
+  Box 5m. (8) Parite (b)'nin gece bağlantısı ve canlı defter okuyucusu (P3g); `funding` anahtarı (H ailesi) P3b-2'de
+  doldurulur.
 
 ### 8.5 P3a boşlukları — sahibe sorular (entegrasyondan önce; her cevap boşluğu doldurur ve S1'i yeniden mühürler)
 

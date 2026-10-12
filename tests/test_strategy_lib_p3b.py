@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -222,7 +223,16 @@ def test_formation_fees_equal_the_live_config():
     f = FeesSection()
     for k, v in k_fm.LIVE_FEES.items():
         assert v == getattr(f, k) == cfg["fees"][k], k
-    assert k_fm.COST_FRAC == PA.live_cost_frac() == pytest.approx(0.0016)
+    # başvurunun maliyet oranı çağıranın verdiği canlı ücretlerden (parity canlı config'i import etmez; ölçü betiği
+    # `FeesSection`'ı kendisi okur); verilmezse mühürlü kopyanınki — ikisi burada eşit
+    live = {k: getattr(f, k) for k in k_fm.LIVE_FEES}
+    assert k_fm.COST_FRAC == PA.live_cost_frac(live) == PA.live_cost_frac() == pytest.approx(0.0016)
+    assert PA.live_cost_frac({**live, "futures_taker_pct": 0.1}) > PA.live_cost_frac(live), "ücret gerçekten kullanılır"
+    assert PA._rule_for("K_FM", live).fees is live and PA._rule_for("K_FM").fees is None
+    src = (ROOT / "scripts" / "engine_p3b_measure.py").read_text(encoding="utf-8")
+    calls = re.findall(r"PA\.reference_run\([^)]*\)", src)
+    assert calls and all("fees=FEES" in c for c in calls), "ölçü betiği canlı ücretleri başvuruya verir"
+    assert "from tradingbot.config_v3 import FeesSection" in src
 
 
 # ============================================================================ kopyalar

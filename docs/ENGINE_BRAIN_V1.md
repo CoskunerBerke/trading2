@@ -1060,7 +1060,9 @@ canlı kural fonksiyonları yalnız ÇAĞRILIR. Hiçbir şey gece birimine bağl
   yeniden oynatımı) parite (b) içindir. Belirlenimci (bayt testi; A→B / B→A, yapı önbelleği temizlenerek ve ayrı
   süreçte). Fiyat adımına kuantize etmez (defter eder; ΔR'nin ana kaynağı).
 - **`research_engine/parity.py`** — (a) başvuru: canlı kural DOĞRUDAN (C4'te kapı dahil; Formasyonda `_try_open`'ın
-  kovalama ve R/R kapıları, maliyet oranı canlı `config_v3.FeesSection`'dan) → `strategy_paper.apply_action` →
+  kovalama ve R/R kapıları, maliyet oranı çağıranın verdiği canlı ücretlerden — ölçü betiği `FeesSection`'ı kendisi
+  okur, `reference_run(fees=…)`; 2026-10-12'den beri modül canlı config'i import ETMEZ, verilmezse mühürlü kopyanın
+  `k_fm.LIVE_FEES`'i, eşitliği testli) → `strategy_paper.apply_action` →
   `FuturesLedgerV2.tick` (base maliyet, serinin fiyat adımı, §2.1 büyüklüğü: kaldıraç çekirdeğinkine eşitlenir, risk × 50;
   R ölçekten bağımsız; veri boşluğundan sonra giriş yok); iki kip: `clipped` (KAPILI; çekirdekle aynı `learning_cf` yolu,
   stopun ötesindeki nokta seviyeye kırpılır — çekirdeğin aritmetiğini sınar, bu yüzden kısmen döngüseldir) ve `ohlc`

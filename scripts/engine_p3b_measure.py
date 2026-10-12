@@ -49,6 +49,17 @@ from tradingbot.strategy_lib import catalog as SLC  # noqa: E402
 
 
 PURE_FAMILIES = ("B", "C", "D", "E", "F1", "F2", "H")
+
+
+def live_fees() -> dict[str, float]:
+    """Canlı `fees` bölümü (config sınıfı `FeesSection`; Formasyon başvurusunun maliyet oranı). Motor modülü `parity`
+    canlı config'i import etmez (§2.8); değerleri bu betik okur ve `reference_run(fees=…)` ile verir."""
+    from tradingbot.config_v3 import FeesSection
+    f = FeesSection()
+    return {"futures_taker_pct": float(f.futures_taker_pct), "slippage_bps": float(f.slippage_bps)}
+
+
+FEES = live_fees()
 COVER_FAMILIES = ("O_T2", "O_M2", "O_BOX", "O_D4", "O_C4")
 
 
@@ -103,7 +114,7 @@ def measure_covers(fam: str, *, min_trades: int, max_worlds: int, seed0: int = 1
             refs = []
             if not speed_only:
                 t = time.perf_counter()
-                refs, _rej = PA.reference_run(vid, data, mode=PA.MODE_LIVE)
+                refs, _rej = PA.reference_run(vid, data, mode=PA.MODE_LIVE, fees=FEES)
                 t_ref += time.perf_counter() - t
                 for r in refs:
                     b = str(r.exit_basis or r.exit_reason)
@@ -167,7 +178,7 @@ def measure(fam: str, *, min_trades: int, max_worlds: int, seed0: int = 11, ohlc
                 pairs.append((vid, kr, []))
                 continue
             t = time.perf_counter()
-            refs, _rej = PA.reference_run(vid, data, mode=PA.MODE_LIVE)
+            refs, _rej = PA.reference_run(vid, data, mode=PA.MODE_LIVE, fees=FEES)
             t_ref += time.perf_counter() - t
             bars += kr.bars
             decisions += kr.decisions
@@ -176,7 +187,7 @@ def measure(fam: str, *, min_trades: int, max_worlds: int, seed0: int = 11, ohlc
                 b = str(r.exit_basis or r.exit_reason)
                 bases[b] = bases.get(b, 0) + 1
             if ohlc:
-                ro, _rj = PA.reference_run(vid, data, mode=PA.MODE_OHLC)
+                ro, _rj = PA.reference_run(vid, data, mode=PA.MODE_OHLC, fees=FEES)
                 pairs_ohlc.append((vid, kr, ro))
         a = PA.compare_a(pairs, min_trades=min_trades)
         print(f"[{fam}] dünya {worlds}: eşleşen {a.n_matched} / çekirdek {a.n_kernel} / defter {a.n_ref}", file=sys.stderr,

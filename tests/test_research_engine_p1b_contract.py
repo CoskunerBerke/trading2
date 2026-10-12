@@ -55,7 +55,8 @@ OUTSIDE_OK = {"store.py": {"tradingbot.history.store"}, "seed.py": {"tradingbot.
               # likidasyon defterin bracket formülüdür (`accounting`), Formasyonun saf R/R giriş kapısı canlı
               # `pattern_trader.strategy.rr_after_cost`'tur. Parite (a) başvurusu canlı kural fonksiyonlarını ve
               # `strategy_paper.apply_action` + `FuturesLedgerV2`'yi çağırır (yalnız kabul/ölçüm koşusu; gece grafiğinde
-              # değil; Formasyonun maliyet oranı canlı `config_v3.FeesSection`'dan); (b) kohortu
+              # değil; Formasyonun maliyet oranının canlı ücretlerini çağıran verir — modül canlı config'i import
+              # ETMEZ, 2026-10-12); (b) kohortu
               # `learning_mode.classify_unlock_codes` ile, dönem görünümünün yapı politika sürümünü `structures`'tan okur.
               # Hepsi salt-okunur hesaptır. `kernel_v2` (sahip kararı 2026-10-12): çekirdeğin stop/likidasyon hükmü canlı
               # defterin SAF `accounting.futures_ledger.exit_decision`'ıdır (yeniden yazılmaz, çağrılır); başvuru artık
@@ -65,7 +66,7 @@ OUTSIDE_OK = {"store.py": {"tradingbot.history.store"}, "seed.py": {"tradingbot.
               "parity.py": {"tradingbot.strategy_lib", "tradingbot.paper_rules", "tradingbot.structures", "tradingbot.box_theory",
                             "tradingbot.pattern_trader", "tradingbot.accounting", "tradingbot.risk", "tradingbot.core",
                             "tradingbot.strategy_paper", "tradingbot.learning_mode",
-                            "tradingbot.pattern_trader.strategy", "tradingbot.config_v3"}}
+                            "tradingbot.pattern_trader.strategy"}}
 
 
 def _imports(path: Path) -> list[tuple[ast.AST, str, int]]:

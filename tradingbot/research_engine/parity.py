@@ -164,22 +164,26 @@ class _Lookup:
         return None if v is None else Decimal(repr(float(v[1])))
 
 
-def live_cost_frac() -> float:
+def live_cost_frac(fees: Mapping[str, Any] | None = None) -> float:
     """Canlı Formasyon defterinin maliyet oranı: `PatternBook.cost_frac` = `cost_fraction(fees.futures_taker_pct,
-    fees.slippage_bps)` — canlı config sınıfının (`config_v3.FeesSection`) değerleriyle (kopyanın `LIVE_FEES`'inden
-    bağımsız okunur; ikisinin eşitliği testlidir)."""
-    from ..config_v3 import FeesSection
+    fees.slippage_bps)`. `fees`: canlı `fees` bölümünün değerleri — ÇAĞIRAN verir (ölçü betiği ve testler canlı
+    `config_v3.FeesSection`'ı kendileri okur). Bu modül canlı config'i import ETMEZ (§2.8 yalıtımı; 2026-10-12, sürüm
+    betiğinin yalıtım değişmezi). Verilmezse mühürlü kopyanın `k_fm.LIVE_FEES`'i; onun `FeesSection` ve config.yaml ile
+    eşitliği testlidir (`test_strategy_lib_p3b.test_formation_fees_equal_the_live_config`)."""
     from ..pattern_trader.strategy import cost_fraction
-    f = FeesSection()
-    return cost_fraction(taker_fee_pct=float(f.futures_taker_pct), slippage_bps=float(f.slippage_bps))
+    if fees is None:
+        from ..strategy_lib import k_fm
+        fees = k_fm.LIVE_FEES
+    return cost_fraction(taker_fee_pct=float(fees["futures_taker_pct"]), slippage_bps=float(fees["slippage_bps"]))
 
 
 class _LiveRule:
     """Kopyanın canlı karşılığı: canlı kural fonksiyonunun kendisi, canlı defterin pozisyon nesnesiyle."""
 
-    def __init__(self, variant_id: str):
+    def __init__(self, variant_id: str, fees: Mapping[str, Any] | None = None):
         from ..strategy_lib import catalog as SLC
         self.variant_id = variant_id
+        self.fees = fees                                 # canlı `fees` değerleri (çağırandan; Formasyonun maliyet oranı)
         self.book = SLC.BOOK_OF[variant_id]
         self.params = KN.lib_params(variant_id)
         self.copy = KN.make_variant(variant_id)          # yalnız pencere/dilim bilgisi (karar değil)
@@ -247,7 +251,7 @@ class _LiveRule:
                     "signal_ts": int(pl["triggered_at_ms"]) - 14_400_000, "signal_close_ms": int(pl["triggered_at_ms"]),
                     "atr14": float(pl["atr"]), "risk_atr_bounds": list(pl["risk_atr_bounds"]), "one_entry_per_signal": True,
                     "structure": st, "_chase": (float(pl["trigger"]["level"]), float(pl["chase_atr"]) * float(pl["atr"])),
-                    "_rr": (float(pl["min_rr_after_cost"]), live_cost_frac(), float(pl["target_from_entry_rr"])),
+                    "_rr": (float(pl["min_rr_after_cost"]), live_cost_frac(self.fees), float(pl["target_from_entry_rr"])),
                     "_hold_bars": int(S3.V3_SIGNAL["hold_bars"])}
         raise KeyError(self.variant_id)
 
@@ -344,11 +348,11 @@ class _CoverRule(_PureRule):
         return None
 
 
-def _rule_for(variant_id: str) -> Any:
+def _rule_for(variant_id: str, fees: Mapping[str, Any] | None = None) -> Any:
     from ..strategy_lib import catalog as SLC
     base = RG.variants_by_id()[variant_id].get("alias_of") or variant_id
     fam = SLC.FAMILY_OF.get(base)
-    return _LiveRule(base) if fam == "K" else _CoverRule(base) if fam == "O" else _PureRule(base)
+    return _LiveRule(base, fees) if fam == "K" else _CoverRule(base) if fam == "O" else _PureRule(base)
 
 
 def _frac_ledger_cls() -> Any:
@@ -408,10 +412,13 @@ def _ref_ledger(data: KN.SeriesData, *, fracs: bool = False) -> tuple[Any, Any, 
     return led, filt, prof, RiskEngine(prof, KillSwitch()), lookup
 
 
-def reference_run(variant_id: str, data: KN.SeriesData, *, mode: str = MODE_LIVE) -> tuple[list[RefTrade], dict[str, int]]:
+def reference_run(variant_id: str, data: KN.SeriesData, *, mode: str = MODE_LIVE,
+                  fees: Mapping[str, Any] | None = None) -> tuple[list[RefTrade], dict[str, int]]:
     """Canlı yol: canlı kural → `apply_action` → `FuturesLedgerV2.tick`. `mode`: `live_1h` (canlı defterin tikleri:
     açılış fiyat tiki + sinyal barının bütün 1h OHLC barları; kapılı ölçü) ya da `ohlc` (sinyal barı başına tek
-    OHLC tiki; rapor). İkisinde de kırpma yok."""
+    OHLC tiki; rapor). İkisinde de kırpma yok. `fees`: canlı `fees` bölümü (`futures_taker_pct`, `slippage_bps`;
+    Formasyonun R/R kapısının maliyet oranı, `live_cost_frac`) — çağıran canlı `FeesSection`'dan verir; yoksa
+    mühürlü kopyanınki."""
     from ..accounting import TickData
     from ..core import iso
     from ..paper_rules import signal_already_used
@@ -421,7 +428,7 @@ def reference_run(variant_id: str, data: KN.SeriesData, *, mode: str = MODE_LIVE
     from ..strategy_paper import DataVerdict, apply_action
     if mode not in (MODE_LIVE, MODE_OHLC):
         raise ValueError(f"kip {MODE_LIVE}/{MODE_OHLC} olmalı: {mode!r}")
-    rule = _rule_for(variant_id)
+    rule = _rule_for(variant_id, fees)
     copy = rule.copy
     fund = sorted((int(r[0]), r[1], r[2]) for r in (data.funding or ())) if getattr(copy, "needs_funding", False) else []
     fund_ts = [r[0] for r in fund]

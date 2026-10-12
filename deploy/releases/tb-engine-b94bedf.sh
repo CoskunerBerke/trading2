@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # trading2 — SÜREKLİ ÖĞRENME MOTORU P2.1 sürüm betiği (PAPER; gerçek para YOK). docs/SYSTEM_LEARNING_ENGINE_V1.md §2.2–§2.9,
 # §9.3, §10 P2 (+ P2 uygulama notları 40–44). KÜÇÜK ve AYRILMIŞ: yalnız engine-app; tb-engine-44d5353.sh temel alındı.
-# c4ba04a (2026-10-12): P2.1 — 44d5353'ün torunu, YALNIZ KOD: fidelity_v3 (kural/zaman çıkışı, ör. Box gün sonu kapanışı
+# b94bedf (2026-10-12): P2.1 — 44d5353'ün torunu, YALNIZ KOD: fidelity_v3 (kural/zaman çıkışı, ör. Box gün sonu kapanışı
 #   BOX_EOD_FLAT, karar anına kadar kapanmış barlarla ve kaydın gözlem mark'ından yeniden oynatılır; strategy_paper
 #   defterlerinde gözlemden dolum penceresi en az 1h), veri biriminde ABSENT_UPSTREAM (arşivin hiç yayımlamadığı
-#   mark/premium serisi kanıtla etiketlenir: bayat sayılmaz, ayrı listelenir). PR dalının P3a/P3b araştırma kodu da
-#   ağaçtadır; gece/veri birimi onu çalıştırmaz. attribution_v1 / cfgrid_v1 mühürleri ve birim dosyaları 44d5353'le AYNI.
-#   Yalıtım (yalıtım-AST): config_v3/load_config/sqlite3 yasağı birimlerin yüklediği import grafiğine uygulanır; grafik dışı
-#   P3b kabul kodu (parity.py'nin canlı FeesSection okuması; depo sözleşme testinde izinli) ayrı yazılır, KALDI sayılmaz.
+#   mark/premium serisi kanıtla etiketlenir: bayat sayılmaz, ayrı listelenir). Hedef = birleştirme c4ba04a (PR dalı +
+#   impl/p2-fidelity-fix) + P3b parity.py'nin canlı config'i import etmemesi (yalıtım değişmezi 44d5353'teki gibi). PR
+#   dalının P3a/P3b araştırma kodu da ağaçtadır; gece/veri birimi onu çalıştırmaz. attribution_v1 / cfgrid_v1 mühürleri
+#   ve birim dosyaları 44d5353'le AYNI.
 #
 # ÖN KOŞUL — P2 (44d5353) KURULU: gece + veri birimi dosyaları hedefle (= 44d5353) bayt bayt aynı ve yüklü
 #   (NeedDaemonReload=no, gece MemoryMax 768M), veri + gece zamanlayıcısı açık ve aktif, engine-app 44d5353'te ya da onu
@@ -25,10 +25,10 @@
 #   sürümün yeniden başlatmasından (deploy-logs/*-restart-at.txt) en az 1 GÜN sonra (sahip kararı 2026-10-07 "öğrenmeyi
 #   şimdi kur"; betik zorlar). 44d5353'ün 14 gecelik A/B'si bitmeden dağıtılırsa UYARI basılır (yeni A/B dönemi, §2.9).
 # SAHİBİN ADIMLARI (VPS'te, sırayla; dosya adı tb-engine-<hedefin ilk 7 hanesi>.sh):
-#   1) sudo bash tb-engine-c4ba04a.sh --dry-run    # yalnız denetim; hedef kod GEÇİCİ klonda; hiçbir şey değişmez
-#   2) sudo bash tb-engine-c4ba04a.sh              # dağıt: engine-app sabiti + iki smoke (birim/reload YOK)
-#   3) sudo bash tb-engine-c4ba04a.sh --check      # 14 gün her gün (gece + veri + P2 kabul bölümü, fidelity_v3)
-#   4) sudo bash tb-engine-c4ba04a.sh --ab-report  # 14. geceden sonra bir kez (A/B tur etkisi ≤ %5)
+#   1) sudo bash tb-engine-b94bedf.sh --dry-run    # yalnız denetim; hedef kod GEÇİCİ klonda; hiçbir şey değişmez
+#   2) sudo bash tb-engine-b94bedf.sh              # dağıt: engine-app sabiti + iki smoke (birim/reload YOK)
+#   3) sudo bash tb-engine-b94bedf.sh --check      # 14 gün her gün (gece + veri + P2 kabul bölümü, fidelity_v3)
+#   4) sudo bash tb-engine-b94bedf.sh --ab-report  # 14. geceden sonra bir kez (A/B tur etkisi ≤ %5)
 #   Geri alma: --rollback (44d5353 durumuna: engine-app 44d5353 + compileall; birim dosyaları aynı, reload YOK; veri
 #   birimleri, ilk doldurma ve data/research KALIR). Zincir: sudo bash tb-engine-44d5353.sh --rollback (gece birimi P1a
 #   baytları → 79b27cf), sudo bash tb-engine-79b27cf.sh --rollback (veri birimi + ilk doldurma kalkar → P1a), tam kaldırma
@@ -50,7 +50,7 @@
 #   (önce NeedDaemonReload=no; değilse yalnız stop yeter) · ilk doldurma: sudo systemctl stop tb-engine-backfill.service.
 set -Eeuo pipefail
 
-TIP="c4ba04a11fdbbcdce0842fd0bcf36db1eb18e78c"    # P2.1: fidelity_v3 + ABSENT_UPSTREAM (2026-10-12; 44d5353'ün torunu, PR dalında)
+TIP="b94bedf5d2e63a098c22a0904b7509d7f4c32c5d"    # P2.1: fidelity_v3 + ABSENT_UPSTREAM + parity yalıtımı (2026-10-12; 44d5353'ün torunu)
 T7="${TIP:0:7}"
 PREV_TIP="44d535388778163bc687803a73554249920b1e76" # P2 (tb-engine-44d5353.sh): ön koşul ve --rollback tabanı
 P1B_TIP="79b27cfb72d8483e8e909cfb26d71d5049398cf2"  # P1b (tb-engine-79b27cf.sh): geri alma zinciri
@@ -292,48 +292,22 @@ def _imports(node, top_only):
             yield mod
             yield from (mod + "." + a.name for a in ch.names)
         yield from _imports(ch, top_only)
-#: birimlerin ve durum komutlarının yüklediği motor modülleri: cli_v3 işleyicilerinin tembel import'ları (+ paket __init__'i)
-UNIT_ENTRY = ("__init__", "night", "datastore", "summary", "daily_target", "query", "backup", "paths")
-def _graph(red, starts):
-    """Paket içi (göreli, seviye 1) import grafiği; fonksiyon içi import'lar dahil (üst küme;
-    test_research_engine_p1b_contract._graph ile aynı kural)."""
-    seen, todo = set(), list(starts)
-    while todo:
-        m = todo.pop()
-        p = os.path.join(red, m + ".py")
-        if m in seen or not os.path.isfile(p):
-            continue
-        seen.add(m)
-        with open(p, encoding="utf-8") as fh:
-            t = ast.parse(fh.read())
-        for n in ast.walk(t):
-            if isinstance(n, ast.ImportFrom) and n.level == 1:
-                todo += [n.module.split(".")[0]] if n.module else [
-                    a.name if os.path.isfile(os.path.join(red, a.name + ".py")) else "__init__" for a in n.names]
-    return seen
 def c_ast(tree):
-    """§2.8 yalıtımı: birimlerin yüklediği grafikte config_v3/load_config/sqlite3 YOK; ağ modülü yalnız datastore/selfcheck
-    (bütün modüllerde); cli üst düzeyde motoru import etmez. P2.1: PR dalının P3 araştırma/kabul kodu (ör. parity.py'nin
-    canlı FeesSection okuması; depo sözleşme testinde izinli) birim grafiğinin DIŞINDAYSA KALDI sayılmaz, ayrı yazılır."""
-    bad, aside = [], []
+    bad = []
     red = os.path.join(tree, "tradingbot", "research_engine")
-    unit = _graph(red, UNIT_ENTRY)
     for fn in sorted(os.listdir(red)):
         if fn.endswith(".py"):
             with open(os.path.join(red, fn), encoding="utf-8") as fh:
                 t = ast.parse(fh.read())
-            cfg = ["%s: %s" % (fn, n) for n in _imports(t, False)
-                   if n.split(".")[0] == "sqlite3" or "config_v3" in n or n.rsplit(".", 1)[-1] in ("load_config", "load_v3")]
-            (bad if fn[:-3] in unit else aside).extend(cfg)
+            bad += ["%s: %s" % (fn, n) for n in _imports(t, False)
+                    if n.split(".")[0] == "sqlite3" or "config_v3" in n or n.rsplit(".", 1)[-1] in ("load_config", "load_v3")]
             bad += ["%s: ağ modülü %s" % (fn, n) for n in _imports(t, False) if fn not in ("datastore.py", "selfcheck.py")
                     and n.split(".")[0] in ("urllib", "http", "socket", "requests", "ssl", "aiohttp", "httpx")]
     for fn in ("cli.py", "cli_v3.py"):
         with open(os.path.join(tree, "tradingbot", fn), encoding="utf-8") as fh:
             t = ast.parse(fh.read())
         bad += ["%s (üst düzey): %s" % (fn, n) for n in _imports(t, True) if "research_engine" in n]
-    out = "birim grafiğinde (%d modül) yasak import yok" % len(unit) if not bad else "YASAK: " + "; ".join(bad[:5])
-    out += ("; grafik dışı araştırma kodu, birimler yüklemez: " + ", ".join(aside[:3]) + (" …" if len(aside) > 3 else "")) if aside else ""
-    print(out)
+    print("yasak import yok" if not bad else "YASAK: " + "; ".join(bad[:5]))
     return 1 if bad else 0
 def c_lastrun(res):
     print((rj(os.path.join(res, "summary", "run_status.json")) or {}).get("run_id") or "")
@@ -1289,7 +1263,7 @@ if o2="$(svc "$W" "${LOW[@]}" "$VENV/bin/python" -s -c 'import resource as r, sy
 print("cli import RSS %d MB" % (r.getrusage(r.RUSAGE_SELF).ru_maxrss // 1024))
 sys.exit(any(m.startswith("tradingbot.research_engine") for m in sys.modules))' 2>&1)"; then out="$out; $o2"
 else rc=1; out="$out; tradingbot.cli import'u motoru yükledi ya da düştü: ${o2:0:200}"; fi
-inv "yalıtım-AST" "$rc" "$out (birim grafiğinde config_v3/load_config/sqlite3 yok; ağ yalnız datastore; cli tembel)"
+inv "yalıtım-AST" "$rc" "$out (config_v3/load_config/sqlite3 yok; ağ yalnız datastore; cli tembel)"
 out="$(svc "$W" TRADINGBOT_DATA="$TMP/data" "$VENV/bin/python" -s -m tradingbot engine-status --brief 2>&1)" && rc=0 || rc=1
 o2="$(svc "$W" TRADINGBOT_DATA="$TMP/data" "$VENV/bin/python" -s -m tradingbot engine-data --status 2>&1)" || rc=1
 o3="$(svc "$W" TRADINGBOT_DATA="$TMP/data" "$VENV/bin/python" -s -m tradingbot engine-query why-lost --days 7 2>&1)" || rc=1

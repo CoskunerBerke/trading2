@@ -59,7 +59,7 @@ sürer):
    İlk gecelerde `S1B_BACKLOG` / `S2_BACKLOG` görmek normaldir (geçmiş işlemlerin günlüğü birkaç geceye yayılır).
 
 **12 Ekim 2026 — Öğrenme motoru P2.1 (ölçüm düzeltmesi): HAZIR, henüz KURULMADI.** Ön koşul: P2 (44d5353) kurulu ve ilk
-doldurma bitmiş. Betik `~/tb-engine-c4ba04a.sh` (sha256 `6c575a37486e25ab7982533f86dfd651d95acbf57334fbd3de1731955a81dd62`).
+doldurma bitmiş. Betik `~/tb-engine-b94bedf.sh` (sha256 `746970b0211bccf95a0a03e031fc9b9aca9edb3598fef6889f8927d1c674af48`).
 **Ne değişir:** yalnız motorun ölçümü; botun kararları, worker ve birim dosyaları DEĞİŞMEZ (yeniden yükleme yok).
 - Box'un gün sonu kapanışları ve gözlemden dolan stop'lar için "kayıt yeniden oynatılınca aynı sonucu veriyor mu"
   ölçümü (fidelity) düzeltildi (`fidelity_v3`). İlk P2 gecesinde %82,7 çıkmıştı; beklenen **≈ %93–95** (ölçüt ≥ %90).
@@ -69,12 +69,12 @@ doldurma bitmiş. Betik `~/tb-engine-c4ba04a.sh` (sha256 `6c575a37486e25ab798253
   yayılabilir). Yeni 14 gecelik A/B dönemi başlar (yarısı `AB_OFF`: normal).
 
 **Nasıl** (saat TR: 07:40–09:45, 11:40–13:45, 15:40–17:45 ya da 19:40–21:45):
-1. `sudo bash ~/tb-engine-c4ba04a.sh --dry-run > ~/engine-dryrun.txt 2>&1; tail -15 ~/engine-dryrun.txt` — sonda
+1. `sudo bash ~/tb-engine-b94bedf.sh --dry-run > ~/engine-dryrun.txt 2>&1; tail -15 ~/engine-dryrun.txt` — sonda
    **"KURU ÇALIŞMA: 20/20 değişmez geçti"** (≈ 15–25 dk).
-2. `sudo bash ~/tb-engine-c4ba04a.sh > ~/engine-deploy.txt 2>&1; tail -15 ~/engine-deploy.txt` — sonda
+2. `sudo bash ~/tb-engine-b94bedf.sh > ~/engine-deploy.txt 2>&1; tail -15 ~/engine-deploy.txt` — sonda
    **"DAĞITILDI: 28/28 değişmez geçti"** (≈ 40–70 dk). Geçmezse betik kendisi 44d5353'e döner ("--rollback GEREKMEZ").
-3. Ertesi sabahtan itibaren bölüm 3'teki kontrolü bu betikle yap (`tb-engine-44d5353.sh` yerine `tb-engine-c4ba04a.sh`).
-   Geri alma (gerekirse): `sudo bash ~/tb-engine-c4ba04a.sh --rollback` (44d5353'e döner).
+3. Ertesi sabahtan itibaren bölüm 3'teki kontrolü bu betikle yap (`tb-engine-44d5353.sh` yerine `tb-engine-b94bedf.sh`).
+   Geri alma (gerekirse): `sudo bash ~/tb-engine-b94bedf.sh --rollback` (44d5353'e döner).
 
 **Hızlı formasyon hesabı (worker sürümü db5db96): KURULDU — 7 Ekim 22:31.** Aşağıdaki adımlar kayıt içindir. Uzun turları ve Box'un mum kaçırmasını düzeltir.
 Betik zaten `~/tb-deploy-db5db96.sh` (sha256 `d6a843e58d12bd8717b3d8866e204a40e6834c989b922631cdcd1fa6e298da11`); 7 Ekim

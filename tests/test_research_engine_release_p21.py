@@ -43,9 +43,9 @@ from test_research_engine_release_p1b import (BASH, DSVC, DTMR, GIT, SVC, TMR, _
 # P2 sürüm testinin fixture'ları (kaynak depo + bugünkü VPS şablonu) bu modülde AYNEN kullanılır (pytest ad ile bağlar)
 from test_research_engine_release_p2 import _night_fixture, _sb, _units, source, vps_template  # noqa: E402, F401
 
-SCRIPT = ROOT / "deploy" / "releases" / "tb-engine-c4ba04a.sh"
+SCRIPT = ROOT / "deploy" / "releases" / "tb-engine-b94bedf.sh"
 #: Betiğin kayıtlı sha256'sı (sürüm notu ve sahibe verilen değer; betik değişirse bu da bilinçli değişir).
-SCRIPT_SHA256 = "6c575a37486e25ab7982533f86dfd651d95acbf57334fbd3de1731955a81dd62"
+SCRIPT_SHA256 = "746970b0211bccf95a0a03e031fc9b9aca9edb3598fef6889f8927d1c674af48"
 TEXT = SCRIPT.read_text(encoding="utf-8")
 TIP = re.search(r'^TIP="([0-9a-f]{40})"', TEXT, re.M).group(1)
 PREV_TIP = re.search(r'^PREV_TIP="([0-9a-f]{40})"', TEXT, re.M).group(1)
@@ -204,33 +204,19 @@ def test_night_smoke_requires_fidelity_v3_when_s1b_ran_and_keeps_the_p2_rules(tm
         assert cp.returncode == 1 and "KALDI:" in cp.stdout and why in cp.stdout, (name, cp.stdout + cp.stderr)
 
 
-def test_isolation_rule_covers_the_unit_import_graph_and_reports_research_code_outside_it(tmp_path, tool):
-    """PR dalının P3b kabul kodu `parity.py` canlı `config_v3.FeesSection`'ı okur (depo sözleşmesinde izinli:
-    test_research_engine_p1b_contract OUTSIDE_OK); birimlerin yüklediği grafikte değildir → KALDI sayılmaz, ayrı yazılır.
-    Grafikteki bir modülde aynı import KALDI'dır; ağ kuralı bütün modüllerde geçerlidir."""
-    cp = tool(tmp_path, "ast", str(ROOT))
-    assert cp.returncode == 0, cp.stdout + cp.stderr
-    assert re.match(r"birim grafiğinde \(\d+ modül\) yasak import yok; grafik dışı araştırma kodu, birimler yüklemez: "
-                    r"parity\.py: \.\.config_v3", cp.stdout), cp.stdout
-    red = tmp_path / "t" / "tradingbot" / "research_engine"
-    red.mkdir(parents=True)
-    for f in ("cli.py", "cli_v3.py"):
-        (red.parent / f).write_text("def f():\n    from .research_engine import night\n", encoding="utf-8")
+def test_isolation_check_is_the_44d5353_check_unchanged_and_passes_on_the_target_tree(tmp_path, tool):
+    """Yalıtım değişmezi gevşetilmez: gömülü `c_ast` ve onu çağıran kabuk satırları 44d5353 betiğininkiyle bayt bayt aynı;
+    hedef ağaçta (P3b `parity.py` dahil, artık canlı config'i import etmez) yasak import yoktur."""
+    def block(text: str) -> str:
+        return text[text.index("def c_ast(tree):"):text.index("def c_lastrun(res):")]
 
-    def tree(night: str, extra: dict[str, str]) -> subprocess.CompletedProcess:
-        for f in red.glob("*.py"):
-            f.unlink()
-        for name, body in {"__init__": "", "night": night, "summary": "from . import store\n", "store": "", **extra}.items():
-            (red / f"{name}.py").write_text(body, encoding="utf-8")
-        return tool(tmp_path, "ast", str(tmp_path / "t"))
-    ok = tree("from . import summary\n", {"parity": "def g():\n    from ..config_v3 import FeesSection\n"})
-    assert ok.returncode == 0 and "grafik dışı araştırma kodu, birimler yüklemez: parity.py" in ok.stdout, ok.stdout
-    for night, extra, why in (("from . import parity\n", {"parity": "def g():\n    from ..config_v3 import FeesSection\n"},
-                               "YASAK: parity.py: ..config_v3"),
-                              ("from . import summary\n", {"store": "import sqlite3\n"}, "YASAK: store.py: sqlite3"),
-                              ("from . import summary\n", {"parity": "import socket\n"}, "YASAK: parity.py: ağ modülü socket")):
-        cp = tree(night, extra)
-        assert cp.returncode == 1 and why in cp.stdout, (why, cp.stdout + cp.stderr)
+    def shell(text: str) -> list[str]:
+        return [ln for ln in text.splitlines() if 'inv "yalıtım-AST"' in ln or 'rpy ast "$W"' in ln]
+    assert block(TEXT) == block(P2.TEXT) and shell(TEXT) == shell(P2.TEXT) and len(shell(TEXT)) == 2
+    cp = tool(tmp_path, "ast", str(ROOT))
+    assert cp.returncode == 0 and cp.stdout.strip() == "yasak import yok", cp.stdout + cp.stderr
+    src = (ROOT / "tradingbot" / "research_engine" / "parity.py").read_text(encoding="utf-8")
+    assert "from ..config_v3" not in src and "import config_v3" not in src
 
 
 def test_check_counts_fidelity_only_for_a_finished_v3_build_and_lists_absent_upstream_apart(tmp_path, tool):
@@ -344,8 +330,7 @@ def test_dry_run_on_the_p2_vps_runs_the_real_runner_and_changes_nothing(tmp_path
                  "birim-sözleşmesi", "systemd-analyze-verify", "compileall", "bağımsız-koşucu", "yalıtım-AST", "status-kuru",
                  "worker-MemoryMax=6G", "motor-boşta"):
         assert re.search(rf"\[tamam\] #\d+ {re.escape(name)}", cp.out), name
-    assert re.search(r"\[tamam\] #\d+ yalıtım-AST\s+birim grafiğinde \(\d+ modül\) yasak import yok; grafik dışı araştırma "
-                     r"kodu, birimler yüklemez: parity\.py", cp.out), cp.out[-3000:]
+    assert re.search(r"\[tamam\] #\d+ yalıtım-AST\s+yasak import yok; cli import RSS", cp.out), cp.out[-3000:]
     assert re.search(r"UYARI\s+44d5353 A/B penceresi \(sürüm günü \d{4}-\d\d-\d\d\): 0/14 gece geçti — P2\.1 motor kodunu", cp.out)
     assert re.search(rf"OK\s+drop-in {re.escape(str(P2.NDROP))}: # tb-engine-{P1A_TIP[:7]}: .*\(içerik beklenenle aynı\) "
                      r"\(dokunulmaz\)", cp.out), cp.out[-3000:]
@@ -436,7 +421,7 @@ def test_upgrade_pins_engine_app_only_rebuilds_the_journal_once_check_rerun_and_
     assert ab.returncode == 0 and "A/B geceleri" in ab.out, ab.out[-2000:]
     k = len(sb.log())
     again = sb.run(script=SCRIPT)
-    assert again.returncode == 0 and "zaten dağıtılmış (c4ba04a" in again.out, again.out[-2000:]
+    assert again.returncode == 0 and f"zaten dağıtılmış ({TIP[:7]}" in again.out, again.out[-2000:]
     assert not [ln for ln in sb.log()[k:] if ln.split()[0] in NO_RELOAD + ("start", "stop")]
     # --rollback → 44d5353 durumu (birimler aynı, reload YOK); 44d5353 betiği kurulumu tanır
     k = len(sb.log())

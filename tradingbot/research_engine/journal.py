@@ -1141,8 +1141,9 @@ def iter_journal(paths: EnginePaths, months: Iterable[str] | None = None) -> Ite
 
 def _input_digest(loc: ArchiveLoc, side: dict[str, Any], seal_listing_digest: str, cfg_digest: str, exec_digest: str,
                   eq_digest: str) -> str:
-    return _sha({"v": JOURNAL_VERSION, "sha": loc.sha, "rev": loc.rev, "status": loc.status, "derived": loc.derived,
-                 "pg": loc.position_group, "side": side, "seal": seal_listing_digest, "cfg": cfg_digest,
+    # `fd` (2026-10-12): fidelity semantiği değişince (`FIDELITY_VERSION`) satırlar yeniden kurulur
+    return _sha({"v": JOURNAL_VERSION, "fd": FD.FIDELITY_VERSION, "sha": loc.sha, "rev": loc.rev, "status": loc.status,
+                 "derived": loc.derived, "pg": loc.position_group, "side": side, "seal": seal_listing_digest, "cfg": cfg_digest,
                  "exec": exec_digest, "eq": eq_digest})
 
 

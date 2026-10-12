@@ -39,6 +39,16 @@ p95 ≤ 0,05). Aynı sentetik barlar iki yoldan oynatılır:
   `signals`/`manage`'idir (F2'de bu zaten canlı Box kuralıdır); ölçü çekirdeğin yol/maliyet aritmetiğini (R'den hedef,
   zaman stopu, kural çıkışı, fonlama, giriş saati, 1h yedeği) canlı defterle sınar. Zaman stopu (`max_hold_bars`) başvuruda
   sonraki açılışta elle kapanış; `ctx["funding"]` başvuruda çekirdekten bağımsız süzülür.
+* **O örtüleri (P3b-2b).** Başvurunun kuralı örtünün kendisidir (`_CoverRule`; taban = canlı kopya, faktör örtünün
+  modülü; başvuru akışı BAĞLAMAZ → paylaşımsız düz yol): niyet → `apply_action` → `FuturesLedgerV2.tick`. Başvuru kendi
+  `ctx["history"]`'sini (kendi girişleri; T2/M2'nin kullanılmış yapı kümesi) ve `ctx["btc_4h_bars"]`'ını (F_BTC)
+  çekirdekten bağımsız kurar. `MOVE_STOP` (X_TRAIL2, X_CHAN3): canlı `apply_action`'da stop taşıma eylemi yoktur; başvuru
+  karar anında defter pozisyonunun stopunu kendisi yazar — kural çekirdekten bağımsız yazılmış aynı kuraldır (yalnız
+  sıkılaştırır, karar barının kapanışını geçemez; aksi yok sayılır). Zaman stopu niyetin `max_hold_bars`'ından (X_TIME
+  dahil). `X_TPL`: üç R hedefi dolum açılışından çözülür (`apply_action`'ın `target_r_from_entry` kuralı, üçü için) ve
+  defterin hedef döngüsü aynen çalışır (TP1 → başa-baş dahil); canlı `FuturesLedgerV2` ara hedefte KALANIN `tp1_fraction`'ını
+  kapattığından (ilk miktarın üçte birini kapatamaz), başvuru defteri yalnız ara hedef miktarını ilk miktarın payıyla
+  veren alt sınıftır (`_FracLedger._close_part`; dolum, ücret, başa-baş, fonlama ve son hedef canlı kod).
 
 **(b) Kopya ↔ canlı defter** (`parity_copy`; ana belge §6.2 "her config dönemi için ayrı, o dönemin parametreleriyle"):
 
@@ -279,10 +289,84 @@ class _PureRule:
         return {"action": "CLOSE", "reason": a.reason} if a.kind == "CLOSE" else None
 
 
+class _CoverRule(_PureRule):
+    """O örtüsünün başvuru kuralı: örtünün kendi `signals`/`manage`'i (taban canlı kopya + faktör), başvurunun kendi
+    geçmişiyle; `MOVE_STOP` → başvuru stopu yazar, X_TPL → üç R hedefi + payları."""
+
+    def __init__(self, variant_id: str):
+        super().__init__(variant_id)
+        self.book = "COVER"
+        self.history: list[Any] = []
+
+    def max_hold_for(self, symbol: str) -> int | None:
+        it = self.intent.get(symbol)
+        return int(it.max_hold_bars) if it is not None and it.max_hold_bars is not None else None
+
+    def opened(self, symbol: str, side: str, opened_ms: int) -> None:
+        from ..strategy_lib import BookEntry
+        it = self.intent.get(symbol)
+        if it is not None:
+            self.history.append(BookEntry(symbol, side, int(it.signal_ts), int(opened_ms), it.evidence))
+
+    def decide(self, bars: Mapping[str, list], ctx: Mapping[str, Any], ledger: Any, symbol: str) -> dict | None:
+        from ..strategy_lib import TARGET_R_FROM_ENTRY, TF_MS, PosView
+        pos = ledger.positions.get(symbol)
+        ctx = dict(ctx, history=tuple(self.history))
+        if pos is None:
+            its = self.copy.signals(bars, ctx)
+            if not its:
+                return None
+            it = its[0]
+            self.intent[symbol] = it
+            act = {"action": "OPEN", "direction": it.side, "stop": float(it.stop), "leverage": 1, "leverage_max": 0,
+                   "targets": [float(t.value) for t in it.targets if t.kind != TARGET_R_FROM_ENTRY],
+                   "reason": it.exit_rule, "name": self.variant_id, "setup_type": "cover",
+                   "signal_ts": int(it.signal_ts), "signal_close": float(it.entry_ref.price)}
+            rs = [(float(t.value), t.frac) for t in it.targets if t.kind == TARGET_R_FROM_ENTRY]
+            if len(rs) == 1 and rs[0][1] is None:
+                act["target_r_from_entry"] = rs[0][0]
+            elif rs:
+                act["_r_targets"] = rs
+            if it.one_entry_per_signal:
+                act["one_entry_per_signal"] = True
+                act["signal_close_ms"] = int(it.signal_ts) + TF_MS[self.copy.signal_tf]
+            return act
+        it = self.intent.get(symbol)
+        opened = int(round(datetime.fromisoformat(str(pos.opened_at).replace("Z", "+00:00")).timestamp() * 1000))
+        pv = PosView(side=str(getattr(pos.side, "value", pos.side)).upper(), entry=float(pos.entry_avg),
+                     stop=float(pos.stop), initial_stop=float(pos.initial_stop or pos.stop), opened_ms=opened,
+                     signal_ts=int(it.signal_ts) if it else 0, entry_bar_ts=opened, bars_held=0, intent=it)
+        a = self.copy.manage(pv, bars, ctx)
+        if a.kind == "CLOSE":
+            return {"action": "CLOSE", "reason": a.reason}
+        if a.kind == "MOVE_STOP":
+            return {"action": "MOVE_STOP", "price": float(a.price), "reason": a.reason}
+        return None
+
+
 def _rule_for(variant_id: str) -> Any:
     from ..strategy_lib import catalog as SLC
     base = RG.variants_by_id()[variant_id].get("alias_of") or variant_id
-    return _LiveRule(base) if SLC.FAMILY_OF.get(base) == "K" else _PureRule(base)
+    fam = SLC.FAMILY_OF.get(base)
+    return _LiveRule(base) if fam == "K" else _CoverRule(base) if fam == "O" else _PureRule(base)
+
+
+def _frac_ledger_cls() -> Any:
+    """`X_TPL` başvuru defteri: canlı `FuturesLedgerV2`, yalnız ARA hedefin miktarı pozisyonun `meta["tp_fracs"]`'ındaki
+    ilk-miktar payıyla (canlı defter kalanın `tp1_fraction`'ını kapatır); başka her şey canlı kod."""
+    from ..accounting import FuturesLedgerV2
+    from ..core import quantize_qty
+
+    class _FracLedger(FuturesLedgerV2):
+        def _close_part(self, pos, fill_price, qty, kind, ts, **kw):
+            fr = pos.meta.get("tp_fracs") if isinstance(getattr(pos, "meta", None), dict) else None
+            idx = int(pos.targets_hit)
+            if fr and str(kind).startswith("hedef") and idx < len(pos.targets) - 1 and fr[idx] is not None:
+                part = quantize_qty(pos.initial_qty * Decimal(repr(float(fr[idx]))), self._step(pos))
+                qty = min(pos.qty, part) if part > 0 else qty
+            return super()._close_part(pos, fill_price, qty, kind, ts, **kw)
+
+    return _FracLedger
 
 
 @dataclass
@@ -299,17 +383,18 @@ class RefTrade:
     flags: tuple[str, ...] = ()
 
 
-def _ref_ledger(data: KN.SeriesData) -> tuple[Any, Any, Any, Any, Any]:
+def _ref_ledger(data: KN.SeriesData, *, fracs: bool = False) -> tuple[Any, Any, Any, Any, Any]:
     from ..accounting import (FeeSchedule, FundingSchedule, FuturesLedgerV2, LiquidationParams, MarketType,
                               SlippageModel, SymbolFilters)
     from ..risk import PROFILES, KillSwitch, RiskEngine
     base = KN.scenario("base")
-    led = FuturesLedgerV2(REF_EQUITY, max_positions=None, enforce_position_cap=False,
-                          fees=FeeSchedule(maker_pct=Decimal("0.02"), taker_pct=Decimal(repr(base.taker_fee_pct))),
-                          slippage=SlippageModel(fixed_bps=Decimal(repr(base.slippage_bps))),
-                          liq_params=LiquidationParams(),
-                          funding=FundingSchedule(hours_utc=(0, 8, 16), fallback_to_last_known=False),
-                          tp1_fraction=Decimal(repr(KN.TP1_FRACTION)), breakeven_at_mfe_r=Decimal("0"))
+    led_cls = _frac_ledger_cls() if fracs else FuturesLedgerV2
+    led = led_cls(REF_EQUITY, max_positions=None, enforce_position_cap=False,
+                  fees=FeeSchedule(maker_pct=Decimal("0.02"), taker_pct=Decimal(repr(base.taker_fee_pct))),
+                  slippage=SlippageModel(fixed_bps=Decimal(repr(base.slippage_bps))),
+                  liq_params=LiquidationParams(),
+                  funding=FundingSchedule(hours_utc=(0, 8, 16), fallback_to_last_known=False),
+                  tp1_fraction=Decimal(repr(KN.TP1_FRACTION)), breakeven_at_mfe_r=Decimal("0"))
     tick = Decimal(repr(float(data.price_tick))) if data.price_tick and data.price_tick > 0 else Decimal("1e-8")
     filt = SymbolFilters(symbol=data.symbol, market_type=MarketType.USDM_PERP, price_tick=tick,
                          qty_step=Decimal("1e-6"), min_qty=Decimal("0"), max_qty=Decimal("1e15"),
@@ -348,10 +433,13 @@ def reference_run(variant_id: str, data: KN.SeriesData, *, mode: str = MODE_LIVE
                 int(copy.lookback.get(tf))) for tf in copy.timeframes}
     btc = list(data.btc_1d or ())
     btc_idx = [int(r["timestamp"]) for r in btc]
+    btc4 = list(data.btc_4h or ())
+    btc4_idx = [int(r["timestamp"]) for r in btc4]
     h1 = TF_MS[LIVE_BAR_TF]
     subs = list(data.bars.get(LIVE_BAR_TF) or ()) if (mode == MODE_LIVE and step > h1) else []
     sub_ts = [int(r["timestamp"]) for r in subs]
-    led, filt, prof, risk, lookup = _ref_ledger(data)
+    led, filt, prof, risk, lookup = _ref_ledger(data, fracs=rule.book == "COVER")
+    move_ignored: dict[str, int] = {}
     rejects: dict[str, int] = {}
     pending: dict | None = None
     entry_bar: dict[str, int] = {}
@@ -418,6 +506,10 @@ def reference_run(variant_id: str, data: KN.SeriesData, *, mode: str = MODE_LIVE
                 ok, _why, lev, _n, _m, _l = KN.size_trade(side, fill, stop) \
                     if stop > 0 and ((side == "LONG") == (stop < o)) else (False, "", 1, 0, 0, 0)
                 act["leverage"], act["leverage_max"] = (int(lev) if ok else 1), 0
+                r_targets = act.pop("_r_targets", None)
+                if r_targets:                              # X_TPL: R hedefleri dolum açılışından (target_r_from_entry kuralı)
+                    sg = 1.0 if side == "LONG" else -1.0
+                    act["targets"] = [o + sg * k * abs(o - stop) for k, _f in r_targets]
                 res = apply_action(act, symbol=sym, price=o, tick=None, now=odt, ledger=led, risk=risk, profile=prof,
                                    state=state(odt), filters=filt, run_id="parity", reject=reject,
                                    on_closed=lambda r: None, data=act["_verdict"],
@@ -425,6 +517,10 @@ def reference_run(variant_id: str, data: KN.SeriesData, *, mode: str = MODE_LIVE
                 if res == "OPENED":
                     entry_bar[sym] = i
                     entry_hour_end[led.positions[sym].id] = (t_open // h1 + 1) * h1
+                    if r_targets:
+                        led.positions[sym].meta["tp_fracs"] = [f for _k, f in r_targets]
+                    if rule.book == "COVER":
+                        rule.opened(sym, side, t_open)
         if led.positions.get(sym) is not None:
             inner, sub_ok = _ref_hour_ticks(subs, sub_ts, (o, h, lo, c), t_open, step, h1) if subs else \
                 ([(o, h, lo, c, t_open)], True)
@@ -442,6 +538,9 @@ def reference_run(variant_id: str, data: KN.SeriesData, *, mode: str = MODE_LIVE
         if copy.needs_btc:
             j = _bisect(btc_idx, now - TF_MS["1d"])
             ctx["btc_bars"] = btc[max(0, j - int(copy.btc_lookback)):j]
+        if getattr(copy, "needs_btc_4h", False):
+            j = _bisect(btc4_idx, now - TF_MS["4h"])
+            ctx["btc_4h_bars"] = btc4[max(0, j - int(copy.btc_4h_lookback)):j]
         if getattr(copy, "needs_funding", False):
             ctx["funding"] = None if data.funding is None else \
                 tuple(fund[_bisect(fund_ts, now - int(copy.funding_lookback_ms)):_bisect(fund_ts, now)])
@@ -450,12 +549,26 @@ def reference_run(variant_id: str, data: KN.SeriesData, *, mode: str = MODE_LIVE
                               bars={tf: int(b[-1]["timestamp"]) for tf, b in bars.items() if b}, btc={})
         p = led.positions.get(sym)
         if p is not None:
+            if act and str(act.get("action") or "").upper() == "MOVE_STOP":
+                new = float(act["price"])                  # yalnız sıkılaştırır, karar fiyatını (kapanış) geçemez
+                long = str(getattr(p.side, "value", p.side)).upper() == "LONG"
+                cur = float(p.stop)
+                if (long and new < cur) or (not long and new > cur):
+                    move_ignored["LOOSENS"] = move_ignored.get("LOOSENS", 0) + 1
+                elif (long and new >= c) or (not long and new <= c):
+                    move_ignored["CROSSES_PRICE"] = move_ignored.get("CROSSES_PRICE", 0) + 1
+                else:
+                    p.stop = Decimal(repr(new))
+                act = None
+            mh = rule.max_hold_for(sym) if rule.book == "COVER" else None
             if act and str(act.get("action") or "").upper() == "CLOSE":
                 pending = dict(act, _verdict=verdict)
             elif rule.book == "FM" and i - entry_bar.get(sym, i) + 1 >= 24:
                 pending = {"action": "CLOSE", "reason": "TIME_STOP_24_BARS_4h", "_verdict": verdict}
             elif rule.book == "PURE" and rule.max_hold and i - entry_bar.get(sym, i) + 1 >= int(rule.max_hold):
                 pending = {"action": "CLOSE", "reason": "TIME_STOP_%d_BARS" % int(rule.max_hold), "_verdict": verdict}
+            elif mh is not None and i - entry_bar.get(sym, i) + 1 >= mh:
+                pending = {"action": "CLOSE", "reason": "TIME_STOP_%d_BARS" % mh, "_verdict": verdict}
         elif act and str(act.get("action") or "").upper() == "OPEN":
             if signal_already_used(act, led.history, sym):
                 reject(sym, "SIGNAL_ALREADY_USED")
@@ -467,6 +580,8 @@ def reference_run(variant_id: str, data: KN.SeriesData, *, mode: str = MODE_LIVE
         tick(float(last["close"]), end, False, int(last["timestamp"]) + step)   # son barın uzlaşmaları (END bacağı gibi)
         if led.positions.get(sym) is not None:
             led.close_manual(sym, Decimal(repr(float(last["close"]))), reason="END_OF_DATA", now=end)
+    for why, n in move_ignored.items():
+        rejects["MOVE_STOP_IGNORED:" + why] = n
     out = []
     for rec in led.history:
         ds = ((rec.features or {}).get("data_source") or {}).get("bars") or {}

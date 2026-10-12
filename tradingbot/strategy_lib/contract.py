@@ -8,7 +8,8 @@
   girişler, `BookEntry` demeti). Başka anahtar yoktur. `"funding"` (P3b-2, H ailesi; yalnız `needs_funding` varyantında):
   deponun uzlaşma satırları `(ms, oran, mark)` — damgası `now_ms − funding_lookback_ms < ms ≤ now_ms` olanlar, ham damga
   (ms kayması dahil), kronolojik; seri yoksa `None`. Görünürlük (uzlaşmanın karar anında yayımlanmış sayılması) varyantın
-  kendi kuralıdır (fut_v1: `calc ≤ T − 60 sn`).
+  kendi kuralıdır (fut_v1: `calc ≤ T − 60 sn`). `"btc_4h_bars"` (P3b-2b, örtü `F_BTC`; yalnız `needs_btc_4h` varyantında):
+  BTC'nin `now_ms` anında KAPANMIŞ son `btc_4h_lookback` 4h barı (yoksa boş).
 * `signals(bars, ctx) -> list[Intent]` yalnız pozisyon yokken, `manage(pos, bars, ctx) -> Action` yalnız pozisyon
   varken ve yalnız kapanmış barda çağrılır (§2.1).
 * `Intent` alanları §2.1'in dokuzudur; `evidence` yalnız bilgi taşır (canlı eylemin kanıt anlık görüntüsü: yapı kaydı,
@@ -80,8 +81,13 @@ class EntryRef:
 
 @dataclass(frozen=True)
 class Target:
+    """Hedef. `frac` (P3b-2b, `X_TPL`): bu hedefte kapatılan pay, İLK miktarın oranı (0 < frac < 1); None = canlı defterin
+    varsayılanı (ilk hedef kalanın yarısı — `FuturesLedgerV2.tp1_fraction` — ara hedefler kalanın yarısı). Son hedef her
+    zaman kalanı kapatır (payı yok sayılır)."""
+
     kind: str
     value: float
+    frac: float | None = None
 
     def __post_init__(self) -> None:
         if self.kind not in (TARGET_PRICE, TARGET_R_FROM_ENTRY):
@@ -90,6 +96,11 @@ class Target:
         if v <= 0:
             raise ValueError("hedef değeri pozitif olmalı")
         object.__setattr__(self, "value", v)
+        if self.frac is not None:
+            f = _finite(self.frac, "target.frac")
+            if not 0.0 < f < 1.0:
+                raise ValueError("target.frac 0 ile 1 arasında olmalı")
+            object.__setattr__(self, "frac", f)
 
 
 @dataclass(frozen=True)
@@ -143,9 +154,11 @@ class Action:
     barın açılışında uygular. MOVE_STOP yalnız sıkılaştırır ve kararın anındaki fiyatı geçemez; aksi istek çekirdekte
     uygulanmaz ve işleme `MOVE_STOP_IGNORED` yazılır (`kernel.move_stop_verdict`).
 
-    `flags` (P3b-2a inceleme düzeltmesi, 2026-10-12): yalnız BİLGİ işaretleri — kuralın bu kararda ölçemediği bir girdi
-    (ör. H'de f8 aralık değişimi/yerel boşluk yüzünden NaN → durum değişmez, "tut"); çekirdek her işareti işleme bir kez
-    yazar (`KernelTrade.flags`). Eylemin türünü/anlamını değiştirmez, kapı istatistiğinden çıkarmaz."""
+    `flags` (P3b-2a inceleme düzeltmesi, 2026-10-12): işaretler — kuralın bu kararda ölçemediği bir girdi (ör. H'de f8
+    aralık değişimi/yerel boşluk yüzünden NaN → durum değişmez, "tut"); çekirdek her işareti işleme bir kez yazar
+    (`KernelTrade.flags`). Eylemin türünü/anlamını değiştirmez. Kapı etkisi işaretin kendisinin değil mühürlü listenin
+    işidir: `F8_UNMEASURABLE` 2026-10-12'den (P3b-2b) beri `FUNDING_GAP`/`PATH_1H_GAP` gibi kapı istatistiğinden çıkar
+    (`WF_PROTOCOL_V1.gate_exclusions`, `kernel.gate_excluded`)."""
 
     kind: str = ACT_NONE
     reason: str = ""
@@ -223,6 +236,9 @@ class Variant:
     #: `ctx["funding"]` (uzlaşma satırları) gerekli mi ve geriye kaç ms (H ailesi; P3b-2)
     needs_funding: bool = False
     funding_lookback_ms: int = 0
+    #: `ctx["btc_4h_bars"]` (BTC kapanmış 4h barları; örtü `F_BTC`, P3b-2b) gerekli mi ve kaç bar
+    needs_btc_4h: bool = False
+    btc_4h_lookback: int = 0
     #: kimliğe giren BİLDİRİLMİŞ canlı modüller (`identity.module_src_sha`: varyant modülü + paket içi bağımlılıkları + bu
     #: liste; her modülün gerekçesi kopya modülünün `LIVE_MODULES` yorumundadır)
     live_modules: tuple[str, ...] = ()
@@ -235,6 +251,17 @@ class Variant:
         raise NotImplementedError
 
 
+def canon(x: Any) -> Any:
+    """Kanonik, hashlenebilir biçim (P3b-2b paylaşılan akışın anahtarı, `stream`): eşleme → anahtara göre sıralı
+    (anahtar, değer) demeti, dizi → demet, diğerleri → (tür adı, repr) — 1, 1.0 ve True ayrı kalır; içerik aynıysa
+    anahtar aynıdır, farklıysa farklıdır."""
+    if isinstance(x, Mapping):
+        return ("M",) + tuple(sorted((str(k), canon(v)) for k, v in x.items()))
+    if isinstance(x, (list, tuple)):
+        return ("L",) + tuple(canon(v) for v in x)
+    return (type(x).__name__, repr(x))
+
+
 def check_params(variant_id: str, params: Mapping[str, Any], allowed: Sequence[str]) -> dict[str, Any]:
     """LIB parametrelerinin anahtar kümesi TAM olmalı (bilinmeyen/eksik anahtar = ValueError; sessiz varsayılan yok)."""
     got = dict(params or {})
@@ -245,4 +272,4 @@ def check_params(variant_id: str, params: Mapping[str, Any], allowed: Sequence[s
 
 __all__ = ["ACT_CLOSE", "ACT_MOVE_STOP", "ACT_NONE", "Action", "BookEntry", "EXIT_LIVE_RULE", "EntryRef", "Intent", "LONG",
            "NONE", "PosView", "RiskAtrBounds", "SHORT", "SIDES", "TARGET_PRICE", "TARGET_R_FROM_ENTRY", "TF_MS", "Target",
-           "Variant", "check_params", "close", "hold", "move_stop"]
+           "Variant", "canon", "check_params", "close", "hold", "move_stop"]

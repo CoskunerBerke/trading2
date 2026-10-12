@@ -8,7 +8,9 @@ ara sıra açılış boşlukları (boşluk dolumu testleri). Günlük barlar 5m 
 4h/1d dünyalarında her sinyal barının **1h alt barları** (`subdivide`; ayrı tohumlu, sinyal serisini DEĞİŞTİRMEZ) barla
 tutarlı kurulur: ilk açılış = barın açılışı, son kapanış = barın kapanışı, uçların en büyüğü/küçüğü = barın yüksek/düşüğü,
 her alt bar barın aralığında (çekirdek ve parite (a) başvurusu canlı defter gibi 1h tikleriyle çıkar; §2.1).
-Fonlama: 00/08/16 UTC uzlaşmaları, küçük oranlar, mark = o andaki barın açılışı.
+Fonlama: 00/08/16 UTC uzlaşmaları, küçük oranlar, mark = o andaki barın açılışı. P3b-2b: her dünya örtü `F_BTC` için
+BTC 4h barları taşır (`btc_4h`; 1d dünyasında BTC 1d serisinin tutarlı alt barları, diğerlerinde ayrı tohumlu yürüyüş);
+yalnız `F_BTC` okur (diğer varyantların sonuçları değişmez).
 """
 from __future__ import annotations
 
@@ -125,14 +127,31 @@ def funding_rows(rows: list[dict[str, Any]], step: int, *, seed: int, hours=(0, 
     return out
 
 
+def btc_4h_walk(start_ms: int, end_ms: int, *, seed: int, warm: int = 300) -> list[dict[str, Any]]:
+    """Örtü `F_BTC` (P3b-2b) için BTC 4h barları: serinin başından `warm` bar ÖNCE başlar (EMA200 rejimi ilk karardan
+    ölçülebilsin) ve sonuna kadar sürer; uzun yön rejimleri (UP ve DOWN ikisi de görülür). Ayrı tohum: sinyal serisi
+    değişmez."""
+    t0 = int(start_ms) // H4 * H4 - warm * H4
+    n = (int(end_ms) - t0) // H4 + 1
+    return walk(n, seed=seed, step=H4, start=t0, p0=20000.0, vol=0.012, trend=0.004, regime_len=240, gap_p=0.0)
+
+
+#: BTC 4h serisinin tohum kayması
+BTC4_SEED = 7000
+
+
 def series(symbol: str, bars: dict[str, list[dict[str, Any]]], *, signal_tf: str, btc: list | None = None,
-           seed: int = 7, tick: float | None = None) -> KN.SeriesData:
-    """`tick`: verilmezse ilk fiyatın ≈ 1e-5'i (10'un kuvveti; büyük coin'lerin göreli adımı mertebesinde)."""
+           seed: int = 7, tick: float | None = None, btc_4h: list | None = None) -> KN.SeriesData:
+    """`tick`: verilmezse ilk fiyatın ≈ 1e-5'i (10'un kuvveti; büyük coin'lerin göreli adımı mertebesinde). `btc_4h`
+    verilmezse sinyal serisini örten `btc_4h_walk` (ayrı tohum; örtü `F_BTC` dışında hiçbir varyant okumaz)."""
     step = {"5m": M5, "1h": H1, "4h": H4, "1d": D1}[signal_tf]
     if tick is None:
         tick = 10.0 ** math.floor(math.log10(float(bars[signal_tf][0]["open"]) * 1e-5))
+    if btc_4h is None:
+        rows = bars[signal_tf]
+        btc_4h = btc_4h_walk(int(rows[0]["timestamp"]), int(rows[-1]["timestamp"]) + step, seed=seed + BTC4_SEED)
     return KN.SeriesData(symbol=symbol, bars=bars, btc_1d=btc, funding=funding_rows(bars[signal_tf], step, seed=seed),
-                         price_tick=tick)
+                         price_tick=tick, btc_4h=btc_4h)
 
 
 # ---------------------------------------------------------------------------- aile dünyaları
@@ -153,7 +172,8 @@ def trend_world(seed: int, n: int = 900, *, sub: bool = True) -> KN.SeriesData:
     """T2/M2: 1d; BTC uzun yükseliş rejimleri (rejim UP sık); coin EMA200 çevresinde sık kesişir."""
     btc = walk(n, seed=seed + 1000, step=D1, p0=20000.0, vol=0.025, trend=0.006, regime_len=150, up_bias=1.0)
     d1 = walk(n, seed=seed, step=D1, p0=50.0, vol=0.03, trend=0.004, regime_len=15, gap_p=0.03)
-    return series(f"SYN{seed}", _with_1h({"1d": d1}, "1d", seed, sub), signal_tf="1d", btc=btc, seed=seed)
+    return series(f"SYN{seed}", _with_1h({"1d": d1}, "1d", seed, sub), signal_tf="1d", btc=btc, seed=seed,
+                  btc_4h=subdivide(btc, D1, H4, seed=seed + BTC4_SEED))
 
 
 def d4_world(seed: int, n: int = 2200, *, sub: bool = True) -> KN.SeriesData:
@@ -256,6 +276,7 @@ def world_for(variant_id: str, signal_tf: str, family: str):
     return {"1d": trend_world, "4h": d4_world, "1h": h1_world}[signal_tf]
 
 
-__all__ = ["WORLDS", "D1", "H1", "H4", "M5", "SUB_SEED", "T0", "aggregate", "ar_funding_rows", "box_world", "c4_world",
+__all__ = ["BTC4_SEED", "WORLDS", "D1", "H1", "H4", "M5", "SUB_SEED", "T0", "aggregate", "ar_funding_rows", "box_world",
+           "btc_4h_walk", "c4_world",
            "d4_world", "fm_world", "fund_world", "funding_rows", "h1_world", "series", "subdivide", "trend_world", "walk",
            "world_for"]

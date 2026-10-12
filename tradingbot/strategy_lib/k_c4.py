@@ -11,15 +11,23 @@ sekiz varyasyonun hepsinde açıktır (testte `candle_variations.gate` ile sına
 — parite (b) bunu `PARITY_FAIL` olarak yakalar. Kapı kararının dosya okuması motor tarafındadır, bu pakette değil.
 `manage` canlı fonksiyonun kendisidir (`paper_rules.decide_from_rows` → `candle_book.decide` → `_time_stop`; açık
 pozisyonda kapı çağrılmaz, saf). Parite (a) bağdaştırıcıyı canlı `decide`'a (kapı dahil) karşı sınar.
+
+**C4 defteri (P3b-2b; O örtülerinin tabanı).** Mühürlü `covers.bases.C4` = "C4 defterinin kendisi (8 varyasyon
+birlikte)": `CandleBook` aynı bağdaştırıcı yoluyla sekiz varyasyonu canlı `candle_book._matched`/`decide` gibi CONFIG
+SIRASIYLA dener (pencere bir kez kurulur) ve İLK eşleşenin niyetini verir (`decide`: `hits[0]`); sembol başına tek
+pozisyon (çekirdek), aynı sinyal barıyla tek giriş (her varyasyonun `one_entry_per_signal`'ı). `manage` canlı zaman
+sınırıdır (pozisyonun kendi varyasyonunun anlık görüntüsünden). **Hızlı çerçeve** (`fast=True`): pencere
+`livebars.candle_window`'dan — `FastFrame` sütunlarından satır sözlüğü kurmadan, `window_from_rows`'un aynı kesim ve
+denetimleriyle (aynı diziler, testli).
 """
 from __future__ import annotations
 
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from .. import candle_book, candle_dsl, candle_variations, paper_rules
 from . import livebars
 from .contract import (EXIT_LIVE_RULE, NONE, TARGET_R_FROM_ENTRY, Action, EntryRef, Intent, PosView, RiskAtrBounds,
-                       Target, Variant, check_params, close)
+                       Target, Variant, canon, check_params, close)
 
 PARAM_KEYS = ("entry_window_min", "breakeven_at_mfe_r", "max_entry_drift_pct", "variation")
 RULE = "c4_candle_variations"
@@ -41,6 +49,8 @@ class CandleCopy(Variant):
     timeframes = (candle_book.TIMEFRAME,)
     needs_btc = False
     live_modules = LIVE_MODULES
+    #: hızlı çerçeve (FastFrame); False = canlı (pandas) çerçeve — eşitlik testlerinin başvurusu
+    fast = True
 
     def __init__(self, variant_id: str, params: Mapping[str, Any]):
         p = check_params(variant_id, params, PARAM_KEYS)
@@ -50,39 +60,56 @@ class CandleCopy(Variant):
         self.params = dict(p)
         self.variation_id = str(p["variation"])
         self.var = candle_variations.get(self.variation_id)          # kayıttaki tanım (kapısız; bilinmeyen → ValueError)
+        self.vars = (self.var,)
         self.drift = float(p["max_entry_drift_pct"]) or None
         self.rule_params = paper_rules.build_params(RULE, rule_params={"entry_window_min": int(p["entry_window_min"]),
                                                                        "variations": [self.variation_id]})
         self.lookback = {self.signal_tf: livebars.LIVE_CLOSED_BARS[self.signal_tf]}
 
-    def signals(self, bars, ctx) -> list[Intent]:
-        now = int(ctx["now_ms"])
-        rows = livebars.candle_rows(bars.get(self.signal_tf), now)
-        win, _why = candle_dsl.window_from_rows(rows, candle_book.STEP_MS)
+    def _window(self, bars, now: int) -> Any:
+        win, _why = livebars.candle_window(bars.get(self.signal_tf), now, fast=self.fast)
         if win is None:
-            return []
+            return None
         signal_close_ms = int(win.ts[-1]) + candle_book.STEP_MS
         if now - signal_close_ms > int(self.rule_params.entry_window_min) * 60_000:
-            return []                                   # sinyal kaçtı (candle_book._matched ile aynı eşitsizlik)
-        var = self.var
-        hit = candle_dsl.detect_last(win, var)
-        if hit is None:
-            return []
+            return None                                 # sinyal kaçtı (candle_book._matched ile aynı eşitsizlik)
+        return win
+
+    def _intent(self, var: Any, hit: Any) -> Intent:
         targets = (Target(TARGET_R_FROM_ENTRY, float(var.target_r)),) if var.target_r is not None else ()
         lo, hi = (float(x) for x in var.risk_atr_bounds)
-        return [Intent(signal_ts=int(hit.signal_ts), side=str(var.side).upper(),
-                       entry_ref=EntryRef(price=float(hit.close), max_drift_pct=self.drift), stop=float(hit.stop),
-                       targets=targets, exit_rule=EXIT_LIVE_RULE, max_hold_bars=int(var.max_hold_bars),
-                       one_entry_per_signal=True, risk_atr_bounds=RiskAtrBounds(lo, hi, float(hit.atr_i)),
-                       evidence={"rule": RULE, "reason": "CANDLE_" + var.id,
-                                 "setup_type": candle_book.SETUP_PREFIX + var.id,
-                                 "variation": {"id": var.id, "definition_sha": var.definition_sha,
-                                               "max_hold_bars": int(var.max_hold_bars), "target_r": var.target_r},
-                                 "signal_close_ms": int(hit.signal_close_ms)})]
+        return Intent(signal_ts=int(hit.signal_ts), side=str(var.side).upper(),
+                      entry_ref=EntryRef(price=float(hit.close), max_drift_pct=self.drift), stop=float(hit.stop),
+                      targets=targets, exit_rule=EXIT_LIVE_RULE, max_hold_bars=int(var.max_hold_bars),
+                      one_entry_per_signal=True, risk_atr_bounds=RiskAtrBounds(lo, hi, float(hit.atr_i)),
+                      evidence={"rule": RULE, "reason": "CANDLE_" + var.id,
+                                "setup_type": candle_book.SETUP_PREFIX + var.id,
+                                "variation": {"id": var.id, "definition_sha": var.definition_sha,
+                                              "max_hold_bars": int(var.max_hold_bars), "target_r": var.target_r},
+                                "signal_close_ms": int(hit.signal_close_ms)})
+
+    # ------------------------------------------------------------------ paylaşılan akış anahtarları (`stream`)
+    def signal_key(self, ctx) -> Any:
+        return None                                     # `signals` geçmişe bakmaz (tek giriş çekirdekte)
+
+    def manage_key(self, pos: PosView, ctx) -> Any:
+        ev = pos.intent.evidence
+        return ("C4", int(pos.opened_ms), str(ev.get("setup_type") or ""), canon(ev.get("variation")))
+
+    # ------------------------------------------------------------------ sözleşme
+    def signals(self, bars, ctx) -> list[Intent]:
+        win = self._window(bars, int(ctx["now_ms"]))
+        if win is None:
+            return []
+        for var in self.vars:                           # config sırası = öncelik (candle_book._matched → hits[0])
+            hit = candle_dsl.detect_last(win, var)
+            if hit is not None:
+                return [self._intent(var, hit)]
+        return []
 
     def manage(self, pos: PosView, bars, ctx) -> Action:
         now = int(ctx["now_ms"])
-        rows = livebars.candle_rows(bars.get(self.signal_tf), now)
+        rows = livebars.candle_rows(bars.get(self.signal_tf), now, fast=self.fast)
         ev = pos.intent.evidence
         position = {"opened_at": int(pos.opened_ms), "setup_type": ev.get("setup_type") or "",
                     "features": {"candle_variation": dict(ev.get("variation") or {})}}
@@ -93,8 +120,35 @@ class CandleCopy(Variant):
         return NONE
 
 
+class CandleBook(CandleCopy):
+    """C4 defterinin kendisi (8 varyasyon birlikte; O örtülerinin tabanı): `params_list` = K_C4_CV001…008'in mühürlü
+    parametreleri CONFIG sırasıyla; uygulama ayarları (giriş penceresi, kayma, başa-baş) hepsinde aynı olmalı."""
+
+    def __init__(self, variant_id: str, params_list: Sequence[Mapping[str, Any]]):
+        ps = [check_params(variant_id, p, PARAM_KEYS) for p in params_list]
+        if not ps:
+            raise ValueError(f"{variant_id}: en az bir varyasyon gerekli")
+        common = {k: ps[0][k] for k in PARAM_KEYS if k != "variation"}
+        if any({k: p[k] for k in PARAM_KEYS if k != "variation"} != common for p in ps):
+            raise ValueError(f"{variant_id}: varyasyonların uygulama ayarları aynı olmalı (tek defter)")
+        ids = [str(p["variation"]) for p in ps]
+        if len(set(ids)) != len(ids):
+            raise ValueError(f"{variant_id}: varyasyon iki kez yazılmış")
+        super().__init__(variant_id, dict(common, variation=ids[0]))
+        self.params = {"variations": ids, **common}
+        self.variation_id = None
+        self.var = None
+        self.vars = tuple(candle_variations.get(v) for v in ids)
+        self.rule_params = paper_rules.build_params(RULE, rule_params={"entry_window_min": int(common["entry_window_min"]),
+                                                                       "variations": ids})
+
+
+def make_book(variant_id: str, params_list: Sequence[Mapping[str, Any]]) -> CandleBook:
+    return CandleBook(variant_id, params_list)
+
+
 def make(variant_id: str, params: Mapping[str, Any]) -> CandleCopy:
     return CandleCopy(variant_id, params)
 
 
-__all__ = ["CandleCopy", "LIVE_MODULES", "PARAM_KEYS", "RULE", "make"]
+__all__ = ["CandleBook", "CandleCopy", "LIVE_MODULES", "PARAM_KEYS", "RULE", "make", "make_book"]

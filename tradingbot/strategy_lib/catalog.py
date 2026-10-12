@@ -7,8 +7,15 @@ mühürlü parametreleri) verir (tek kaynak; motor tarafı `kernel.make_variant`
 Durumlar (`status`): `IMPLEMENTED` (çalışan modül), `ALIAS` (ızgara üyesi tabanının kopyasını çalıştırır: §2.2
 `DON_20_10_4h_LO ≡ K_D4`, `BOX_n10_mid_ms0.5 ≡ K_BOX`; aynı modül → aynı `module_src_sha` → aynı `spec_sha`),
 `BLOCKED` (mühürlü boşluk: I, J, G ailelerinin 13 varyantı — §8.5 B9 ve B10 altın stopları; ÇALIŞAN KOD YOK, `make`
-`BlockedVariant` fırlatır), `PENDING` (O örtüleri: sonraki P3b-2 adımı). Liste kayıtla (`registry.blocked_variants`,
-`alias_of`) testte eşitlenir.
+`BlockedVariant` fırlatır), `PENDING` (P3b-2b'den beri boş: O örtüleri uygulandı). Liste kayıtla
+(`registry.blocked_variants`, `alias_of`) testte eşitlenir; çalıştırılabilir toplam = 58 + 35 = 93 = kaydın 106 − 13'ü.
+
+**O örtüleri (P3b-2b).** `O_<taban>_<faktör>`'ün modülü FAKTÖR modülüdür (`o_f_er`, `o_f_btc`, `o_f_vol`, `o_x_trail2`,
+`o_x_chan3`, `o_x_time`, `o_x_tpl`; ortak çerçeve `o_cover`, paylaşılan akış `stream`); taban kopyanın modülü
+(`k_trend`, `k_box`, `k_d4`, `k_c4`) burada kurulur ve örtüye verilir (`make_cover_base`; faktör modülü taban modüllerini
+import etmez) — kimlik ikisinin bildirilmiş kümesidir (`extra_modules`, `identity.declared_modules`). `make_cover_family`
+tabanı bir kez kurar ve paylaşılan akışla sarar: tabanın kendi koşusu (K satırı; C4'te defter K satırı değildir) ve yedi
+örtü aynı akışı kullanır (§5.3 önlem 1).
 """
 from __future__ import annotations
 
@@ -30,13 +37,19 @@ _F2 = {f"BOX_n{n}_{x}_ms{ms}": "f2_boxgrid" for n in (10, 20) for x in ("mid", "
        if (n, x, ms) != (10, "mid", 0.5)}
 _H = {**{f"FUND_FADE_{h}": "h_funding" for h in ("24h", "72h")}, **{f"FUND_FADE_LOW_{h}": "h_funding" for h in ("24h", "72h")},
       "FUND_CARRY": "h_funding"}
+#: O örtüleri: faktör → modül; taban → taban kopyanın modülü
+COVER_BASES: tuple[str, ...] = ("T2", "M2", "BOX", "D4", "C4")
+COVER_FACTOR_MODULE: Mapping[str, str] = {"F_ER": "o_f_er", "F_BTC": "o_f_btc", "F_VOL": "o_f_vol", "X_TRAIL2": "o_x_trail2",
+                                          "X_CHAN3": "o_x_chan3", "X_TIME": "o_x_time", "X_TPL": "o_x_tpl"}
+COVER_BASE_MODULE: Mapping[str, str] = {"T2": "k_trend", "M2": "k_trend", "BOX": "k_box", "D4": "k_d4", "C4": "k_c4"}
+_O = {f"O_{b}_{f}": m for b in COVER_BASES for f, m in COVER_FACTOR_MODULE.items()}
 #: varyant kimliği → modül (bu paketin içinde, göreli ad)
-MODULES: Mapping[str, str] = {**_K, **_B, **_C, **_D, **_E, **_F1, **_F2, **_H}
+MODULES: Mapping[str, str] = {**_K, **_B, **_C, **_D, **_E, **_F1, **_F2, **_H, **_O}
 IMPLEMENTED: tuple[str, ...] = tuple(MODULES)
 #: varyant → aile (uygulanmış; alias'lar hariç)
 FAMILY_OF: Mapping[str, str] = {**{v: "K" for v in _K}, **{v: "B" for v in _B}, **{v: "C" for v in _C},
                                 **{v: "D" for v in _D}, **{v: "E" for v in _E}, **{v: "F1" for v in _F1},
-                                **{v: "F2" for v in _F2}, **{v: "H" for v in _H}}
+                                **{v: "F2" for v in _F2}, **{v: "H" for v in _H}, **{v: "O" for v in _O}}
 #: §2.2 alias'lı ızgara üyeleri → tabanın kopyası (kayıttaki `alias_of`; testte eşitlik)
 ALIASES: Mapping[str, str] = {"DON_20_10_4h_LO": "K_D4", "BOX_n10_mid_ms0.5": "K_BOX"}
 #: mühürlü boşluk yüzünden ÇALIŞTIRILMAYAN varyantlar (kayıttaki `blocked_variants`; testte eşitlik) → boşluk maddesi
@@ -49,8 +62,8 @@ BLOCKED: Mapping[str, str] = {
                                                     "G_XAU_BTC_56")},
 }
 BLOCKED_FAMILIES = ("I", "J", "G")
-#: henüz uygulanmamış (boşluk değil): O örtüleri (35) — sonraki P3b-2 adımı
-PENDING_PREFIXES: Mapping[str, str] = {"O_": "O"}
+#: henüz uygulanmamış (boşluk değil): P3b-2b'den beri yok (O örtüleri uygulandı)
+PENDING_PREFIXES: Mapping[str, str] = {}
 IMPLEMENTED_S, ALIAS_S, BLOCKED_S, PENDING_S = "IMPLEMENTED", "ALIAS", "BLOCKED", "PENDING"
 #: parite ve hız ölçümünün aile birimi: kopyanın canlı defteri (yalnız K)
 BOOK_OF: Mapping[str, str] = {"K_T2": "T2", "K_M2": "M2", "K_BOX": "BOX", "K_D4": "D4",
@@ -83,17 +96,67 @@ def module_name(variant_id: str) -> str:
         raise KeyError(f"strategy_lib'de uygulanmamış varyant: {variant_id}") from None
 
 
+def extra_modules(variant_id: str) -> tuple[str, ...]:
+    """Varyantın modülünün import ETMEDİĞİ ama kararını belirleyen paket modülleri (kimlik kümesine girer): O örtüsünde
+    taban kopyanın modülü; diğerlerinde yok."""
+    if FAMILY_OF.get(variant_id) != "O":
+        return ()
+    base = variant_id.split("_")[1]
+    return (f"{__package__}.{COVER_BASE_MODULE[base]}",)
+
+
+def make_cover_base(spec: Mapping[str, Any]) -> Variant:
+    """Örtünün tabanı, mühürlü parametreleriyle (`spec["base_params"]`, `spec["base_variants"]` sırasıyla): T2/M2/BOX/D4
+    → kopyanın kendisi; C4 → C4 defteri (8 varyasyon, config sırası; `k_c4.CandleBook`)."""
+    if spec is None:
+        raise ValueError("örtünün mühürlü spec'i gerekli")
+    name = str(spec["base"])
+    mod = import_module(f"{__package__}.{COVER_BASE_MODULE[name]}")
+    vids, ps = list(spec["base_variants"]), list(spec["base_params"])
+    if len(vids) != len(ps) or not vids:
+        raise ValueError(f"örtü tabanı {name}: base_variants / base_params uyuşmuyor")
+    if name == "C4":
+        if vids != list(C4_VARIATIONS):
+            raise ValueError(f"C4 defteri sekiz varyasyonun hepsi (config sırası) olmalı: {vids}")
+        return mod.make_book("C4_BOOK", ps)
+    (vid,) = vids
+    if BOOK_OF.get(vid) != name:
+        raise ValueError(f"örtü tabanı {name}: {vid} değil")
+    return mod.make(vid, ps[0])
+
+
+def make_cover_family(members: Mapping[str, tuple[Mapping[str, Any], Mapping[str, Any]]]) -> tuple[Variant, dict[str, Variant]]:
+    """Bir tabanın örtüleri tek paylaşılan akışla: `members` = {örtü: (params, spec)} (hepsi aynı taban). Döner:
+    (paylaşılan taban akışı — K satırının koşusu için; C4'te defter —, {örtü: varyant})."""
+    from .stream import SharedBase
+    specs = [sp for _p, sp in members.values()]
+    if not specs or any(sp["base"] != specs[0]["base"] or list(sp["base_params"]) != list(specs[0]["base_params"])
+                        for sp in specs):
+        raise ValueError("örtü ailesi tek tabanı paylaşmalı")
+    shared = SharedBase(make_cover_base(specs[0]))
+    out = {}
+    for vid, (params, spec) in members.items():
+        if FAMILY_OF.get(vid) != "O":
+            raise ValueError(f"{vid}: örtü değil")
+        out[vid] = import_module(module_name(vid)).make(vid, params, spec, shared)
+    return shared, out
+
+
 def make(variant_id: str, params: Mapping[str, Any], spec: Mapping[str, Any] | None = None) -> Variant:
-    """Varyantı mühürlü parametreleriyle kur. Bilinmeyen/bekleyen varyant KeyError, boşluklu varyant `BlockedVariant`,
-    eksik/fazla parametre ya da spec ValueError. Kopyalar (K) yalnız `params` alır; saf aileler `spec` ister. Alias
-    tabanın kopyası olarak (tabanın kimliğiyle) kurulur; parametreleri tabanınkidir (çağıran onu verir)."""
+    """Varyantı mühürlü parametreleriyle kur. Bilinmeyen varyant KeyError, boşluklu varyant `BlockedVariant`,
+    eksik/fazla parametre ya da spec ValueError. Kopyalar (K) yalnız `params` alır; saf aileler ve örtüler `spec` ister
+    (örtüde taban `spec`'ten kurulur; tek başına kurulan örtünün akışı yalnız kendisine aittir). Alias tabanın kopyası
+    olarak (tabanın kimliğiyle) kurulur; parametreleri tabanınkidir (çağıran onu verir)."""
     mod = import_module(module_name(variant_id))
     base = ALIASES.get(variant_id, variant_id)
     if FAMILY_OF.get(base) == "K":
         return mod.make(base, params)
+    if FAMILY_OF.get(base) == "O":
+        return mod.make(base, params, spec, make_cover_base(spec))
     return mod.make(base, params, spec)
 
 
 __all__ = ["ALIASES", "ALIAS_S", "BLOCKED", "BLOCKED_FAMILIES", "BLOCKED_S", "BOOK_OF", "BlockedVariant", "C4_VARIATIONS",
-           "FAMILY_OF", "IMPLEMENTED", "IMPLEMENTED_S", "MODULES", "PENDING_PREFIXES", "PENDING_S", "make", "module_name",
+           "COVER_BASES", "COVER_BASE_MODULE", "COVER_FACTOR_MODULE", "FAMILY_OF", "IMPLEMENTED", "IMPLEMENTED_S", "MODULES",
+           "PENDING_PREFIXES", "PENDING_S", "extra_modules", "make", "make_cover_base", "make_cover_family", "module_name",
            "status"]

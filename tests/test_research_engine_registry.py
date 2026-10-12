@@ -38,17 +38,17 @@ DOC = ROOT / "docs" / "ENGINE_BRAIN_V1.md"
 
 #: §8.2 S1 mühürü (P3a commit'i). DEĞİŞİRSE CI kırılır.
 SHAS_PINNED = {
-    "LIB_V1": "756599ee79b5adb099216233910e3f9bef963c544d5cb9b57409ccd1c2a371e2",
-    "WF_PROTOCOL_V1": "a88abf4bc3dec78807d06b1ee39ebc0cf78883b1cbfd01e36365624ebe9e4a8c",
+    "LIB_V1": "ae237b55c6df7014a52649915342eeb0bd67d23a18edcee5cf3e4b8c773df2e3",
+    "WF_PROTOCOL_V1": "085ca94c3a8abc007327a15c217eea7d56a5b9af7b5075ec42714d5424af46b4",
     "STATS_V1": "4a75ce951e1eddb8024537c24ba3d200c823d761ec6b292e7c3875f5874d60e8",
     "LESSON_REGISTRY_V1": "8fbed7f5e33e21a02ec9547bfd84ab7ad0a798d9cc25908aa99911244ad58836",
     "PIT_RULES_V1": "59d0628c975e42aaa7810e231ce0704e5113b6a2bde4fd59fb29e65d8fef48b7",
     "PRIOR_TRIALS_V1": "ad6d8903e66034ce96cafe006f0a071e254968308627ab9998b0464f96984921",
-    "CONFIG_EPOCHS_V1": "d30da2138a390c1f543fd8acc53b71569bd94e292d3d21dc47b98fd731f16a28",
-    "THRESHOLD_DIRECTIONS_V1": "93016e4a468ea3a99cbedd2e6cb56780f569f1b713358b39fa7eb4aa2f1b0451",
+    "CONFIG_EPOCHS_V1": "3eff611763db41936569e4a35e2cb6e6b6915bf9fb2da275608034295c59759f",
+    "THRESHOLD_DIRECTIONS_V1": "144627902e6c7a1fca94419710291620588b947fe9c7183fc28fc8b53fafd278",
 }
-T_SEAL_MS_PINNED = 1791779880000
-REGISTRY_SHA_PINNED = "e49aa914045157ec9eecefc69b528309629b0c71610e25afc3b9334a4ce8db42"
+T_SEAL_MS_PINNED = 1791786780000
+REGISTRY_SHA_PINNED = "12e99ee719cb91c9fd05f0b8f33f0d8a69922b33f41a0f83a6e68b6950dae051"
 
 #: belgedeki sayılar (§2.2, §2.5, §2.6, §5.1, §7.5) — kayıttan BAĞIMSIZ yazılır
 DOC_BUDGET = {"POOLED": (45, 45), "CLUSTER": (135, 135), "COIN_FIT": (161, 1081), "COPY": (312, 312), "COVER": (140, 140),
@@ -103,6 +103,17 @@ TECH_READINGS_PINNED = {
     "LIB_V1.variants[FUND_CARRY].exits.exit_rule": 3,
     **{f"LIB_V1.variants[RSI2_{tf}].params.entry_mid_side": 4 for tf in ("1h", "4h")},
     "LIB_V1.defaults.window": 5,
+}
+
+
+#: P3b-2b (O örtüleri) UYGULAMA OKUMALARI (2026-10-12; S1 düzeltme mührü 6) → madde. Mühürlü O satırının söylemediği
+#: uygulama ayrıntıları; faktör okuması her örtünün `params.factor_params`'ına (yani spec_sha'ya) da girer.
+_FACTORS = ("F_ER", "F_BTC", "F_VOL", "X_TRAIL2", "X_CHAN3", "X_TIME", "X_TPL")
+IMPL_READINGS_PINNED = {
+    "LIB_V1.covers.reading": "O",
+    **{f"LIB_V1.covers.factors.{f}.reading": f for f in _FACTORS},
+    **{f"LIB_V1.variants[O_{b}_{f}].params.factor_params.reading": f for b in ("T2", "M2", "BOX", "D4", "C4")
+       for f in _FACTORS},
 }
 
 
@@ -439,7 +450,8 @@ def test_never_loosen_direction_table_covers_every_threshold_and_is_sealed():
                       ("PIT_RULES", "thresholds.min_median_daily_quote_volume_usdt"), ("PIT_RULES", "xsec_requires_pit"),
                       ("WF_PROTOCOL", "step_equals_test"), ("STATS", "dsr.sr_var_floor"),
                       ("STATS", "null_world.pass_rate_max"), ("STATS", "bh_fdr.family_tr"),
-                      ("WF_PROTOCOL", "kernel.stop_fill.policy"), ("WF_PROTOCOL", "kernel.entry_hour.policy")):
+                      ("WF_PROTOCOL", "kernel.stop_fill.policy"), ("WF_PROTOCOL", "kernel.entry_hour.policy"),
+                      ("WF_PROTOCOL", "gate_exclusions.flags")):
         assert d[fam][path] == RG.FIXED, (fam, path)
     assert all(d["LIB"][f"budget_declared.{k}"] == RG.MIN for k in ("TOTAL", "COIN_FIT", "PRIOR_MIN", "N_AT_SEAL_MIN"))
 
@@ -568,7 +580,7 @@ def test_technical_readings_2026_10_12_record_the_p3b2a_review_findings():
     from tradingbot.strategy_lib import pure as PU
     at = {f"{name}.{p}": x for name, reg in RG.REGISTRIES.items() for p, x in RG._walk(reg)}
     marked = {p for p, x in at.items() if isinstance(x, Mapping) and str(x.get("reading_tr", "")).startswith("teknik okuma")}
-    assert marked == set(TECH_READINGS_PINNED)
+    assert marked == set(TECH_READINGS_PINNED) | set(IMPL_READINGS_PINNED)
     for path, n in TECH_READINGS_PINNED.items():
         v = at[path]
         assert v["decision"] == f"P3b-2a inceleme bulgu {n} (2026-10-12)", path
@@ -591,6 +603,33 @@ def test_technical_readings_2026_10_12_record_the_p3b2a_review_findings():
     with pytest.raises(ValueError):
         KN.check_window(var)
     assert RG.budget_table()["TOTAL"] == (818, 1738) and RG.unique_variant_count() == 106
+
+
+def test_p3b2b_cover_readings_and_gate_exclusions_are_sealed():
+    """P3b-2b (2026-10-12; düzeltme mührü 6): O örtülerinin uygulama okumaları LIB_V1'de (faktör okuması her örtünün
+    `factor_params`'ında = spec_sha'da), kapı dışı işaret listesi WF_PROTOCOL_V1'de (asla-gevşetme tablosunda `fixed`);
+    bütçe/varyant sayıları ve diğer eşikler değişmedi."""
+    at = {f"{name}.{p}": x for name, reg in RG.REGISTRIES.items() for p, x in RG._walk(reg)}
+    for path, item in IMPL_READINGS_PINNED.items():
+        v = at[path]
+        assert v["decision"] == f"P3b-2b uygulama okuması {item} (2026-10-12)", path
+        assert v["reading_tr"].startswith("teknik okuma 2026-10-12; sahip teknik ayrıntıları bana bıraktı; P3b-2b "
+                                          f"uygulama okuması {item}: "), path
+    fac = RG.LIB_V1["covers"]["factors"]
+    for b in ("T2", "M2", "BOX", "D4", "C4"):
+        for f in _FACTORS:
+            assert RG.thaw(at[f"LIB_V1.variants[O_{b}_{f}].params.factor_params.reading"]) == RG.thaw(fac[f]["reading"])
+    assert dict(fac["X_TIME"]["reading"]["bars"]) == {"T2": 150, "M2": 150, "D4": 150, "C4": 12, "BOX": 48}
+    assert fac["F_BTC"]["reading"]["window_bars"] == 699 and fac["F_ER"]["reading"]["box_timeframe"] == "1d"
+    assert fac["X_TPL"]["reading"]["replaces_base_targets"] is True
+    ge = RG.WF_PROTOCOL_V1["gate_exclusions"]
+    assert tuple(ge["flags"]) == RG.GATE_EXCLUDED_FLAGS == ("FUNDING_GAP", "PATH_1H_GAP", "F8_UNMEASURABLE")
+    assert ge["decision"].startswith("P3b-2b talimatı (2026-10-12)")
+    assert RG.THRESHOLD_DIRECTIONS["WF_PROTOCOL"]["gate_exclusions.flags"] == RG.FIXED
+    assert "FUNDING_GAP" in RG.WF_PROTOCOL_V1["costs"]["funding_gap_tr"]
+    assert "PATH_1H_GAP" in RG.WF_PROTOCOL_V1["kernel"]["stop_fill"]["path_gap_tr"]
+    assert RG.budget_table()["TOTAL"] == (818, 1738) and RG.unique_variant_count() == 106
+    assert RG.blocked_budget() == {"variants": 13, "gate_a_rows": 25, "raw_trials": 25}
 
 
 def test_owner_decisions_2026_10_11_fill_the_recommended_gaps():

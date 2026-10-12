@@ -13,8 +13,11 @@ bayt-aynı sonuç; test). Kurallar:
   canlı `pattern_trader.strategy.rr_after_cost`), aynı sinyalle tek giriş. R'den hedef GİRİŞTEN ölçülür.
 * **MOVE_STOP** yalnız SIKILAŞTIRIR ve fiyatı geçemez: kararın anındaki fiyat (karar barının kapanışı) LONG'da yeni
   stopun üstünde, SHORT'ta altında kalmalı; gevşeten ya da fiyatı geçen istek uygulanmaz, işleme `MOVE_STOP_IGNORED`
-  işareti (ve nedeni) yazılır. Eylemin BİLGİ işaretleri (`Action.flags`; ör. H'nin `F8_UNMEASURABLE`'ı) işleme bir kez
-  yazılır; karar ve kapı istatistiği değişmez.
+  işareti (ve nedeni) yazılır. Eylemin işaretleri (`Action.flags`; ör. H'nin `F8_UNMEASURABLE`'ı) işleme bir kez
+  yazılır; karar değişmez.
+* **Kapı dışı işaretler** (mühürlü `WF_PROTOCOL_V1.gate_exclusions`, 2026-10-12 P3b-2b): `FUNDING_GAP`, `PATH_1H_GAP`,
+  `F8_UNMEASURABLE` taşıyan işlem kapı istatistiklerinden çıkar (sayısı gösterilir); `gate_excluded(işlem)` tek
+  uygulayıcıdır (tüketen kapı kodu P3d/P3e).
 * **Çıkış yolu = canlı defterin çıkış sözleşmesi** (`kernel_v2`; sahip kararı 2026-10-12, mühür
   `WF_PROTOCOL_V1.kernel.stop_fill`): stop/likidasyon hükmü canlı defterin SAF fonksiyonu
   `accounting.futures_ledger.exit_decision`'ın KENDİSİDİR (`EXIT_FILL_CONTRACT` = `exit_fill_v1`; yeniden yazılmaz,
@@ -70,6 +73,16 @@ bayt-aynı sonuç; test). Kurallar:
   taker % × her bacağın notional'ı; fonlama her senaryoda aynı (gerçek). R = net / (|giriş dolumu − ilk stop| × miktar)
   (defter `TradeRecord.r_multiple` tanımı). Yol (çıkış olayları, kaldıraç, likidasyon fiyatı) base senaryosundan gelir.
 
+* **Örtüler ve paylaşılan akış (P3b-2b).** `make_variant("O_…")` örtüyü mühürlü satırından (taban parametreleri,
+  `copy_books.<taban>.max_hold`) kurar; `make_family(taban)` tabanı ve yedi örtüsünü TEK paylaşılan akışla kurar
+  (`strategy_lib.stream`): çekirdek her koşunun başında varyantın `bind_series(seri)`'sini çağırır, aynı seri nesnesinde
+  tabanın `signals`/`manage`'i karar anı başına bir kez hesaplanır (bayt-aynılık testli); `run_lockstep` ailenin
+  koşularını bar bar sırayla ilerletir (aynı çağrılar; canlı içerik adresli önbellekler — T2/M2'nin yapı analizi — aynı
+  bar için sıcak kalır; bayt-aynılık testli). `F_BTC` için `SeriesData.btc_4h` → `ctx["btc_4h_bars"]` (karar anında
+  kapanmış son `btc_4h_lookback` bar). Hedefin `frac`'ı
+  (`X_TPL`): ara hedefte İLK miktarın o payı kapanır (yoksa defterin varsayılanı: kalanın yarısı); son hedef kalanı kapatır;
+  ilk hedeften sonra başa-baş stopu (defterin TP1 kuralı) aynen.
+
 Parite (a) bu çekirdeği `FuturesLedgerV2` + `strategy_paper.apply_action` + `tick`'e karşı, canlı gibi 1h alt bar
 tikleriyle (kırpma yok) sınar (`parity.py`).
 """
@@ -119,6 +132,10 @@ FLAG_FUNDING_GAP, FLAG_OPEN_AT_END = "FUNDING_GAP", "OPEN_AT_END"
 FLAG_FUNDING_EXIT_BAR, FLAG_MOVE_STOP_IGNORED = "FUNDING_EXIT_BAR", "MOVE_STOP_IGNORED"
 #: çıkış kararı gereken bir sinyal barının 1h alt barları eksik/tutarsız → bar tek OHLC tiki (kapıdan çıkar)
 FLAG_PATH_GAP = "PATH_1H_GAP"
+#: H ailesinde pozisyon açıkken f8 ölçülemedi (`strategy_lib.h_funding`; eşitliği testli)
+FLAG_F8_UNMEASURABLE = "F8_UNMEASURABLE"
+#: kapı istatistiğinden çıkan işaretler — mühürlü liste (`WF_PROTOCOL_V1.gate_exclusions.flags`)
+GATE_EXCLUDED_FLAGS: tuple[str, ...] = tuple(RG.WF_PROTOCOL_V1["gate_exclusions"]["flags"])
 #: `exit_decision` dayanakları (kayıt `basis`): ilk gözlemde verilen hükümler
 _FIRST_OBS = frozenset({"FIRST_OBSERVATION_BEYOND_LIQUIDATION", "GAP_FILL_AT_FIRST_OBSERVATION"})
 BASIS_PRUDENT_CLOSE = "STOP_CLOSE_BEYOND_LEVEL_PRUDENT"
@@ -157,14 +174,16 @@ def scenario(name: str) -> CostScenario:
 @dataclass(frozen=True)
 class SeriesData:
     """Bir sembolün girdisi. `bars[tf]`: kapanmış barlar, kronolojik (`timestamp` = açılış ms). `btc_1d`: BTC 1d
-    barları (rejim isteyen kopyalar). `funding`: `(uzlaşma ms, oran, mark)` satırları (deponun gerçek damgaları); None =
-    fonlama verisi yok (her işlem `FUNDING_GAP`). `price_tick`: serinin fiyat adımı (ADVERSE/STRESS spread'i)."""
+    barları (rejim isteyen kopyalar); `btc_4h`: BTC 4h barları (örtü `F_BTC`). `funding`: `(uzlaşma ms, oran, mark)`
+    satırları (deponun gerçek damgaları); None = fonlama verisi yok (her işlem `FUNDING_GAP`). `price_tick`: serinin fiyat
+    adımı (ADVERSE/STRESS spread'i)."""
 
     symbol: str
     bars: Mapping[str, Sequence[Mapping[str, Any]]]
     btc_1d: Sequence[Mapping[str, Any]] | None = None
     funding: Sequence[tuple[int, float, float]] | None = None
     price_tick: float = 0.0
+    btc_4h: Sequence[Mapping[str, Any]] | None = None
 
 
 @dataclass(frozen=True)
@@ -256,6 +275,13 @@ class KernelResult:
                 "trades": [t.to_dict() for t in self.trades]}
 
 
+def gate_excluded(trade: Any) -> bool:
+    """İşlem kapı istatistiğinden çıkar mı: mühürlü `WF_PROTOCOL_V1.gate_exclusions.flags` işaretlerinden birini
+    taşıyorsa (`KernelTrade`, `KernelTrade.to_dict()` ya da `flags` taşıyan başka bir kayıt)."""
+    flags = trade.get("flags") if isinstance(trade, Mapping) else getattr(trade, "flags", None)
+    return any(str(f) in GATE_EXCLUDED_FLAGS for f in (flags or ()))
+
+
 # ============================================================================ kimlik (spec_sha, §2.1)
 def lib_params(variant_id: str) -> dict[str, Any]:
     """Varyantın mühürlü parametreleri (alias'lı ızgara üyesi tabanınkini taşır)."""
@@ -273,7 +299,9 @@ VARIANT_SPEC_KEYS = ("family", "timeframes", "signal_tf", "sides", "exits")
 def variant_spec(variant_id: str) -> dict[str, Any] | None:
     """Saf ailelerin kurulum girdisi: mühürlü satırın `{family, timeframes, signal_tf, sides, exits}` alanları (alias →
     tabanınki); F2'de ayrıca `base_params` = bağımlı olduğu kopyanın (`requires: copy_books.BOX` → `K_BOX`) mühürlü
-    parametreleri ("diğer bütün parametreler K_BOX'unki"). Kopyalarda (K) None."""
+    parametreleri ("diğer bütün parametreler K_BOX'unki"). O örtüsünde ayrıca `base` (taban adı), `base_variants`
+    (mühürlü `cover.base_variants`; C4'te sekiz varyasyon config sırasıyla), `base_params` (her birinin mühürlü
+    parametreleri) ve `base_max_hold` (`copy_books.<taban>.max_hold`). Kopyalarda (K) None."""
     vs = RG.variants_by_id()
     v = vs[variant_id]
     v = vs[v["alias_of"]] if v.get("alias_of") else v
@@ -283,12 +311,19 @@ def variant_spec(variant_id: str) -> dict[str, Any] | None:
     if v["family"] == "F2":
         (req,) = [r for r in v["requires"] if r.startswith("copy_books.")]
         spec["base_params"] = lib_params("K_" + req.split(".", 1)[1])
+    if v["family"] == "O":
+        cov = v["cover"]
+        spec["base"] = str(cov["base"])
+        spec["base_variants"] = list(cov["base_variants"])
+        spec["base_params"] = [lib_params(b) for b in cov["base_variants"]]
+        spec["base_max_hold"] = RG.thaw(RG.LIB_V1["copy_books"][cov["base"]]["max_hold"])
     return spec
 
 
 def make_variant(variant_id: str) -> Variant:
     """`strategy_lib` varyantı, mühürlü kayıttaki parametrelerle (tek kaynak); saf ailelerde satırın `spec`'iyle.
-    Boşluklu (I, J, G) varyant `catalog.BlockedVariant`, henüz uygulanmamış (O) KeyError. Mühürlü pencere okunuşunun
+    Boşluklu (I, J, G) varyant `catalog.BlockedVariant`; O örtüsü kendi (paylaşımsız) taban akışıyla kurulur (aile
+    paylaşımı için `make_family`). Mühürlü pencere okunuşunun
     (`LIB_V1.defaults.window`, P3b-2a inceleme bulgu 5) ailelerinde varyantın penceresi mühürlü değere eşit olmalı
     (değilse ValueError: kapalı hata)."""
     vs = RG.variants_by_id()
@@ -296,6 +331,19 @@ def make_variant(variant_id: str) -> Variant:
     var = SLC.make(base, lib_params(variant_id), variant_spec(variant_id))
     check_window(var)
     return var
+
+
+def covers_of(base: str) -> list[str]:
+    """Bir tabanın yedi örtüsü (mühürlü sıra)."""
+    return [v["variant_id"] for v in RG.LIB_V1["variants"] if v["family"] == "O" and v["cover"]["base"] == base]
+
+
+def make_family(base: str) -> tuple[Variant, dict[str, Variant]]:
+    """Tabanın yedi örtüsü TEK paylaşılan akışla (§5.3 önlem 1; `strategy_lib.catalog.make_cover_family`). Döner:
+    (paylaşılan taban — T2/M2/BOX/D4'te K satırının koşusu bununla yapılır ve akışı doldurur; C4'te C4 defteri —,
+    {örtü: varyant}). Aynı seri nesnesiyle koşulan bütün üyeler tabanın kararlarını paylaşır."""
+    members = {vid: (lib_params(vid), variant_spec(vid)) for vid in covers_of(base)}
+    return SLC.make_cover_family(members)
 
 
 def check_window(var: Variant) -> None:
@@ -319,8 +367,8 @@ def spec_sha_for(variant_id: str) -> str:
 
 
 def module_src_shas() -> dict[str, str]:
-    """Uygulanmış varyantların `module_src_sha`'sı (`trials.seal_entries` girdisi; P3b-2a: K + B, C, D, E, F1, F2, H = 58;
-    alias'lar tabanınkini kullanır; O örtüleri sonraki adımda, I/J/G boşluk yüzünden hiç)."""
+    """Uygulanmış varyantların `module_src_sha`'sı (`trials.seal_entries` girdisi; P3b-2b: K + B, C, D, E, F1, F2, H + O =
+    93; alias'lar tabanınkini kullanır; I/J/G boşluk yüzünden hiç)."""
     return {v: SLI.module_src_sha(v) for v in SLC.IMPLEMENTED}
 
 
@@ -549,12 +597,13 @@ def cost_trade(trade: KernelTrade, sc: CostScenario, tick: float) -> tuple[float
 
 # ============================================================================ çekirdek döngü
 class _Pos:
-    __slots__ = ("trade", "intent", "stop", "targets", "tidx", "frac_left", "entry_idx", "tp1_done", "fill")
+    __slots__ = ("trade", "intent", "stop", "targets", "fracs", "tidx", "frac_left", "entry_idx", "tp1_done", "fill")
 
     def __init__(self, trade: KernelTrade, intent: Intent, entry_idx: int, fill: float):
         self.trade, self.intent, self.entry_idx, self.fill = trade, intent, entry_idx, fill
         self.stop = trade.initial_stop
         self.targets = list(trade.targets)
+        self.fracs = [t.frac for t in intent.targets]
         self.tidx = 0
         self.frac_left = 1.0
         self.tp1_done = False
@@ -631,6 +680,12 @@ class _Sim:
                            int(variant.lookback.get(tf, 0) or len(data.bars.get(tf) or ()))) for tf in variant.timeframes}
         btc = list(data.btc_1d or ())
         self.btc_view = (_tf_index(btc), btc, TF_MS["1d"], int(variant.btc_lookback or len(btc))) if variant.needs_btc else None
+        b4 = list(data.btc_4h or ())
+        self.btc4_view = (_tf_index(b4), b4, TF_MS["4h"], int(getattr(variant, "btc_4h_lookback", 0) or len(b4))) \
+            if getattr(variant, "needs_btc_4h", False) else None
+        bind = getattr(variant, "bind_series", None)
+        if callable(bind):
+            bind(data)                          # paylaşılan akış (P3b-2b): aynı seri nesnesi → aynı önbellek
         self.fund_view = None
         if getattr(variant, "needs_funding", False) and data.funding is not None:
             fr = sorted(((int(r[0]), r[1], r[2]) for r in data.funding), key=lambda x: x[0])
@@ -666,9 +721,12 @@ class _Sim:
         return out, True
 
     def ctx_for(self, now: int, history: Sequence[BookEntry]) -> dict[str, Any]:
-        c: dict[str, Any] = {"now_ms": now, "symbol": self.data.symbol, "history": tuple(history)}
+        c: dict[str, Any] = {"now_ms": now, "symbol": self.data.symbol,
+                             "history": history if isinstance(history, tuple) else tuple(history)}
         if self.btc_view is not None:
             c["btc_bars"] = _closed_upto(self.btc_view[0], self.btc_view[1], self.btc_view[2], now, self.btc_view[3])
+        if self.btc4_view is not None:
+            c["btc_4h_bars"] = _closed_upto(self.btc4_view[0], self.btc4_view[1], self.btc4_view[2], now, self.btc4_view[3])
         if getattr(self.variant, "needs_funding", False):
             c["funding"] = None
             if self.fund_view is not None:
@@ -683,11 +741,23 @@ class _Sim:
              history0: Sequence[BookEntry] = ()) -> tuple[KernelResult, str | None]:
         """`forced` = (karar anı, niyet): `signals` çağrılmaz; niyet o anın kapanışında bekleyen giriş olur; işlem bitince
         (ya da giriş reddedilince) durur. Dönen ikinci değer zorlanmış girişin ret nedeni (yoksa None)."""
+        g = self.steps(start_ms=start_ms, end_ms=end_ms, forced=forced, history0=history0, lockstep=False)
+        try:
+            while True:
+                next(g)
+        except StopIteration as stop:
+            return stop.value
+
+    def steps(self, *, start_ms: int | None = None, end_ms: int | None = None, forced: tuple[int, Intent] | None = None,
+              history0: Sequence[BookEntry] = (), lockstep: bool = False):
+        """`loop`'un gövdesi, üreteç olarak: `lockstep=True` iken her sinyal barının sonunda bir kez durur (`run_lockstep`
+        aynı serinin varyantlarını bar bar sırayla ilerletir); dönüş değeri `loop`'unkidir (StopIteration.value)."""
         variant, data, rows, step = self.variant, self.data, self.rows, self.step
         base = scenario("base")
         fs = FundingSeries(data.funding) if data.funding is not None else None
         trades: list[KernelTrade] = []
         history: list[BookEntry] = list(history0)
+        hist_t: tuple[BookEntry, ...] = tuple(history)          # `ctx["history"]` (yalnız girişte yenilenir)
         used_signals: set[int] = set()
         rejected: dict[str, int] = {}
         pos: _Pos | None = None
@@ -757,7 +827,9 @@ class _Sim:
                     pos.tidx += 1
                     finish(EXIT_TARGET, "TARGET%d" % pos.tidx, ts, bar_i)
                     return True
-                leg(EXIT_TARGET, tgt, pos.frac_left * TP1_FRACTION, False, ts, point, "TARGET%d" % (pos.tidx + 1), tf)
+                fr = pos.fracs[pos.tidx]
+                fr = pos.frac_left * TP1_FRACTION if fr is None else min(float(fr), pos.frac_left)
+                leg(EXIT_TARGET, tgt, fr, False, ts, point, "TARGET%d" % (pos.tidx + 1), tf)
                 if pos.tidx == 0:
                     pos.tp1_done = True
                     be = break_even(long, pos.fill, base.fee, base.slip)
@@ -795,6 +867,7 @@ class _Sim:
                                          risk_usdt=abs(fill - it.stop) * notional / fill, evidence=dict(it.evidence))
                         pos = _Pos(tr, it, i, fill)
                         history.append(BookEntry(data.symbol, it.side, it.signal_ts, t_open, it.evidence))
+                        hist_t = tuple(history)
                         if it.one_entry_per_signal:
                             used_signals.add(int(it.signal_ts))
                     else:
@@ -825,7 +898,7 @@ class _Sim:
                 pv = PosView(side=pos.intent.side, entry=pos.fill, stop=pos.stop, initial_stop=pos.trade.initial_stop,
                              opened_ms=pos.trade.entry_ts, signal_ts=pos.intent.signal_ts, entry_bar_ts=pos.trade.entry_ts,
                              bars_held=i - pos.entry_idx + 1, intent=pos.intent)
-                act = variant.manage(pv, bv, self.ctx_for(now, history))
+                act = variant.manage(pv, bv, self.ctx_for(now, hist_t))
                 for fl in act.flags:                                       # bilgi işaretleri (`Action.flags`)
                     if fl not in pos.trade.flags:
                         pos.trade.flags.append(fl)
@@ -849,7 +922,7 @@ class _Sim:
                     signals_n += 1
             elif (start_ms is None or now >= int(start_ms)) and (end_ms is None or now <= int(end_ms)):
                 decisions += 1
-                intents = variant.signals(self.bars_for(now), self.ctx_for(now, history))
+                intents = variant.signals(self.bars_for(now), self.ctx_for(now, hist_t))
                 for it in intents:
                     if it.one_entry_per_signal and int(it.signal_ts) in used_signals:
                         rejected["SIGNAL_ALREADY_USED"] = rejected.get("SIGNAL_ALREADY_USED", 0) + 1
@@ -857,6 +930,8 @@ class _Sim:
                     signals_n += 1
                     pending, pending_at = it, now
                     break
+            if lockstep:
+                yield i
         if pos is not None and rows:
             last = rows[-1]
             t_last = int(last["timestamp"]) + step
@@ -888,6 +963,28 @@ def run(variant: Variant, data: SeriesData, *, start_ms: int | None = None, end_
     return _Sim(variant, data).loop(start_ms=start_ms, end_ms=end_ms)[0]
 
 
+def run_lockstep(variants: Sequence[Variant], data: SeriesData, *, start_ms: int | None = None,
+                 end_ms: int | None = None) -> list[KernelResult]:
+    """Aynı serinin varyantlarını BAR BAR sırayla oynat (P3b-2b; §5.3): her varyantın koşusu `run` ile aynıdır (aynı
+    çağrılar, yalnız iç içe sırada; sonuçlar bayt-aynı — test). Kazanç: aynı karar barının içerik adresli canlı önbellekleri
+    (ör. ortak yapı analizinin `structures.analysis` LRU önbelleği) ve paylaşılan taban akışı ailenin bütün üyelerinde aynı
+    bar için sıcaktır (T2/M2 örtülerinde yapı analizi bar başına bir kez hesaplanır). Döner: `variants` sırasıyla
+    sonuçlar."""
+    gens = [_Sim(v, data).steps(start_ms=start_ms, end_ms=end_ms, lockstep=True) for v in variants]
+    out: list[KernelResult | None] = [None] * len(gens)
+    live = list(range(len(gens)))
+    while live:
+        nxt = []
+        for k in live:
+            try:
+                next(gens[k])
+                nxt.append(k)
+            except StopIteration as stop:
+                out[k] = stop.value[0]
+        live = nxt
+    return [r for r in out if r is not None]
+
+
 def signals_at(variant: Variant, data: SeriesData, now_ms: int, history: Sequence[BookEntry] = ()) -> list[Intent]:
     """Tek karar anında (bar kapanışı `now_ms`, pozisyon YOK) varyantın niyetleri; `ctx.history` = verilen geçmiş."""
     sim = _Sim(variant, data)
@@ -903,10 +1000,11 @@ def replay_intent(variant: Variant, data: SeriesData, intent: Intent, *, decisio
 
 
 __all__ = ["BASIS_PRUDENT_CLOSE", "BASIS_SLIP_LIQ", "CostScenario", "ENTRY_HOUR_POLICY", "EXIT_CONTRACT", "EXIT_END",
-           "EXIT_LIQ", "EXIT_RULE", "EXIT_STOP", "EXIT_TARGET", "EXIT_TIME", "FLAG_FUNDING_EXIT_BAR",
+           "EXIT_LIQ", "EXIT_RULE", "EXIT_STOP", "EXIT_TARGET", "EXIT_TIME", "FLAG_F8_UNMEASURABLE", "FLAG_FUNDING_EXIT_BAR",
            "FLAG_FUNDING_GAP", "FLAG_MOVE_STOP_IGNORED", "FLAG_OPEN_AT_END", "FLAG_PATH_GAP", "FundingOutcome",
-           "FundingSeries", "KERNEL_VERSION", "KernelResult", "KernelTrade", "Leg", "MOVE_CROSSES_PRICE",
-           "MOVE_LOOSENS", "Obs", "PATH_TF", "REJ_DATA_GAP", "REJ_RR", "SCENARIOS", "STOP_FILL_POLICY", "SeriesData",
-           "VARIANT_SPEC_KEYS", "break_even", "check_window", "cost_trade", "funding_of", "lib_params", "make_variant",
-           "module_src_shas", "move_stop_verdict", "replay_intent", "run", "scenario", "signals_at", "size_trade",
-           "snap_ms", "spec_for", "spec_sha_for", "variant_spec"]
+           "FundingSeries", "GATE_EXCLUDED_FLAGS", "KERNEL_VERSION", "KernelResult", "KernelTrade", "Leg",
+           "MOVE_CROSSES_PRICE", "MOVE_LOOSENS", "Obs", "PATH_TF", "REJ_DATA_GAP", "REJ_RR", "SCENARIOS", "STOP_FILL_POLICY",
+           "SeriesData", "VARIANT_SPEC_KEYS", "break_even", "check_window", "cost_trade", "covers_of", "funding_of",
+           "gate_excluded", "lib_params", "make_family", "make_variant", "module_src_shas", "move_stop_verdict",
+           "replay_intent", "run", "run_lockstep", "scenario", "signals_at", "size_trade", "snap_ms", "spec_for",
+           "spec_sha_for", "variant_spec"]

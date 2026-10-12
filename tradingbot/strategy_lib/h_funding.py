@@ -10,15 +10,16 @@ KESİN küçük (`f8_hi`) / KESİN büyük (`f8_lo`) olanlarının payı, en az 
 
 * **FUND_FADE** — f8 son 20 günün ≥ %95'liği (`f8_hi ≥ 0,95`) → short; ≤ %5'liği (`f8_lo ≥ 0,95`) → long. Çıkış
   yalnız en çok tutuş (24h = 6, 72h = 18 × 4h bar; sahip kararı B8 — ekin saati 4h bara bölünerek doğrulanır) ya da stop
-  3 × ATR14(4h). Pozisyonda f8 karara girmez; bir karar anında f8 ölçülemezse işlem yine `F8_UNMEASURABLE` (bilgi)
-  işaretlenir (H'nin bütün işlemlerinde aynı görünürlük).
+  3 × ATR14(4h). Pozisyonda f8 karara girmez; bir karar anında f8 ölçülemezse işlem yine `F8_UNMEASURABLE`
+  işaretlenir (H'nin bütün işlemlerinde aynı görünürlük; 2026-10-12 P3b-2b'den beri kapı istatistiğinden çıkar — mühürlü
+  `WF_PROTOCOL_V1.gate_exclusions`).
 * **FUND_FADE_LOW** — aynısı, yalnız ER20 < 0,3 (4h kapanışları; B3).
 * **FUND_CARRY** — |f8| son 20 günün ≥ %90'lığı iken (|f8| üzerinde aynı fonksiyon: `f8_hi(|f8|) ≥ 0,90`) fonlamayı ALAN
   taraf (f8 > 0 → short, f8 < 0 → long; 0 → yön yok); çıkış |f8| < %50'lik (`f8_hi(|f8|) < 0,50`) YA DA f8'in işareti
   pozisyona TERS (short'ta f8 < 0, long'da f8 > 0: artık fonlamayı alan taraf değil; f8 = 0 ters değildir) → sonraki
   açılış (mühürlü teknik okuma, LIB `exits.exit_rule.sign_against`, 2026-10-12, P3b-2a inceleme bulgu 3); stop
   3 × ATR14(4h); en çok 300 bar (LIB varsayılanı). Kural çıkışının bir parçası ölçülemiyorsa (fonlama yok/bayat, aralık
-  kuralı) o parça uygulanmaz, ölçülemeyen kararda pozisyon tutulur ve işlem `F8_UNMEASURABLE` (bilgi) işaretlenir.
+  kuralı) o parça uygulanmaz, ölçülemeyen kararda pozisyon tutulur ve işlem `F8_UNMEASURABLE` işaretlenir (kapı dışı işaret).
 
 **Aralık kuralı** (P3b-2a inceleme bulgu 1, 2026-10-12; muhafazakâr): fut_v1 aralığı ardışık farktan çıkarır; değişim
 noktasında ya da eksik bir uzlaşmada (4h/2h/1h dizisinde tek eksik 8h/4h/2h okunur) f8 YARIYA iner ve yanlış bir uç
@@ -49,8 +50,8 @@ CARRY_SIDES = "fonlamayı alan taraf"
 ER_LEN = 20
 #: kimliğe giren canlı modüller: fut_v1 fonlama özellikleri (f8 + 20 günlük yüzdelik) ve onun dilim yardımcısı
 LIVE_MODULES: tuple[str, ...] = ("tradingbot.futures_features", "tradingbot.timeframes")
-#: açık pozisyonda bir karar anında f8 (FUND_CARRY'de ayrıca |f8|'in sırası) ölçülemedi → durum değişmedi (bilgi
-#: işareti; `Action.flags`; kapıdan çıkarmaz)
+#: açık pozisyonda bir karar anında f8 (FUND_CARRY'de ayrıca |f8|'in sırası) ölçülemedi → durum değişmedi (işaret;
+#: `Action.flags`; kararı değiştirmez; 2026-10-12 P3b-2b'den beri kapı istatistiğinden çıkar — mühürlü liste)
 FLAG_F8_UNMEASURABLE = "F8_UNMEASURABLE"
 #: çekirdeğin yerel aralık kuralının sabitleri (`kernel.FUNDING_GAP_FACTOR`, `FUNDING_LOCAL_SPAN`, `FUNDING_SNAP_MS`;
 #: eşitlikleri ve kuralın `kernel.FundingSeries.gap_after` ile aynılığı testli — paket motoru import etmez)
@@ -179,7 +180,7 @@ class FundingFade(_FundingBase):
         return True, {}
 
     def manage(self, pos, bars, ctx) -> Action:
-        """Kural çıkışı yok (zaman/stop çekirdekte); f8 bu karar anında ölçülemiyorsa yalnız bilgi işareti."""
+        """Kural çıkışı yok (zaman/stop çekirdekte); f8 bu karar anında ölçülemiyorsa yalnız işaret (kapı dışı)."""
         if len(bars.get(self.signal_tf) or ()) < 2:
             return NONE
         f8, _hi, _lo = f8_state(ctx.get("funding"), int(ctx["now_ms"]))

@@ -1,6 +1,6 @@
 """P3b-2a — saf aileler B, C, D, E, F1, F2, H (docs/ENGINE_BRAIN_V1.md §2.1, §2.2, §8.4 P3b-2a notu).
 
-* Katalog kayıtla uzlaşır: uygulanmış 58 (K 13, B 10, C 8, D 7, E 4, F1 4, F2 7, H 5) + O 35 (sonraki adım) = kaydın
+* Katalog kayıtla uzlaşır: uygulanmış 58 (K 13, B 10, C 8, D 7, E 4, F1 4, F2 7, H 5) + O 35 (P3b-2b) = kaydın
   çalıştırılabilir 93'ü (106 − 13 boşluklu); I, J, G (13) `BLOCKED` — çalışan kod yok, kurulamaz; iki alias tabanın
   kopyasını çalıştırır.
 * Varyant YALNIZ mühürlü satırdan kurulur (params + spec; eksik/fazla/yanlış yapı ValueError); pencere canlı kural
@@ -46,7 +46,7 @@ from tradingbot.strategy_lib import pure as PU
 ROOT = Path(__file__).resolve().parents[1]
 T0 = S.T0
 NEW_FAMILIES = ("B", "C", "D", "E", "F1", "F2", "H")
-PURE = [v for v in SLC.IMPLEMENTED if SLC.FAMILY_OF[v] != "K"]
+PURE = [v for v in SLC.IMPLEMENTED if SLC.FAMILY_OF[v] not in ("K", "O")]
 
 
 # ============================================================================ katalog ↔ kayıt
@@ -60,14 +60,14 @@ def test_catalog_reconciles_with_the_registry_runnable_count():
     assert {k for k, x in st.items() if x == SLC.ALIAS_S} == set(SLC.ALIASES)
     impl = {k for k, x in st.items() if x == SLC.IMPLEMENTED_S}
     pending = {k for k, x in st.items() if x == SLC.PENDING_S}
-    assert impl == set(SLC.IMPLEMENTED) and {vs[k]["family"] for k in pending} == {"O"}
+    assert impl == set(SLC.IMPLEMENTED) and not pending, "P3b-2b: O örtüleri uygulandı, bekleyen yok"
     per = Counter(SLC.FAMILY_OF[v] for v in SLC.IMPLEMENTED)
-    assert per == {"K": 13, "B": 10, "C": 8, "D": 7, "E": 4, "F1": 4, "F2": 7, "H": 5}
+    assert per == {"K": 13, "B": 10, "C": 8, "D": 7, "E": 4, "F1": 4, "F2": 7, "H": 5, "O": 35}
     fc = RG.family_counts()
     assert all(fc[f] == n for f, n in per.items()), "uygulanan = kaydın (alias'sız) aile sayısı"
     assert all(SLC.FAMILY_OF[v] == vs[v]["family"] for v in SLC.IMPLEMENTED)
     runnable = RG.unique_variant_count() - RG.blocked_budget()["variants"]
-    assert (len(impl), len(pending), runnable) == (58, 35, 93) and len(impl) + len(pending) == runnable
+    assert (len(impl), len(pending), runnable) == (93, 0, 93) and len(impl) + len(pending) == runnable
     with pytest.raises(KeyError):
         SLC.status("NOPE")
 
@@ -85,8 +85,7 @@ def test_blocked_families_have_no_runnable_code():
             continue
         src = f.read_text(encoding="utf-8")
         assert not any(k in src for k in ("BTCETH", "XS_MOM", "XS_REV", "G_LDN", "G_NY", "G_ASIA", "G_MONTH", "G_XAU")), f
-    with pytest.raises(KeyError):
-        KN.make_variant("O_T2_F_ER")                         # bekleyen (sonraki adım)
+    assert KN.make_variant("O_T2_F_ER").family == "O"      # P3b-2b: örtüler uygulandı
 
 
 # ============================================================================ mühürlü satırdan kurulum
@@ -129,6 +128,7 @@ def test_pure_variants_are_built_from_the_sealed_row_only():
 # ============================================================================ kimlik ve tekilleştirme
 _LIB = ("tradingbot/strategy_lib/contract.py", "tradingbot/strategy_lib/indicators.py", "tradingbot/strategy_lib/pure.py")
 _BOX = ("tradingbot/strategy_lib/contract.py", "tradingbot/strategy_lib/livebars.py", "tradingbot/strategy_lib/k_box.py",
+        "tradingbot/strategy_lib/indicators.py",
         "tradingbot/paper_rules.py", "tradingbot/box_theory.py", "tradingbot/ema200_trend.py", "tradingbot/indicators.py",
         "tradingbot/candle_confirmation.py", "tradingbot/timeframes.py")
 EXPECTED_FILES = {
@@ -174,7 +174,7 @@ def test_module_src_sha_from_head_and_alias_dedupe_in_the_trials_ledger(tmp_path
     tabanın spec'i → aynı `spec_sha`; saf D modülü (başka dosya kümesi) farklı kimlik verirdi. Deneme defteri aynı
     (LIB ailesi, spec_sha, kapsam) ikinci satırı DUPLICATE sayar."""
     m = _shas_or_skip()
-    assert set(m) == set(SLC.IMPLEMENTED) and len(m) == 58
+    assert set(m) == set(SLC.IMPLEMENTED) and len(m) == 93
     for vid, files in EXPECTED_FILES.items():
         lines = []
         for rel in sorted(set(files)):
@@ -186,7 +186,7 @@ def test_module_src_sha_from_head_and_alias_dedupe_in_the_trials_ledger(tmp_path
         assert KN.spec_sha_for(alias) == KN.spec_sha_for(base) == RG.spec_sha(RG.lib_spec(alias, m[base]))
     assert SLI.module_src_sha("DON_20_10_1d_LO") != m["K_D4"], "saf modül başka kimlik → tekilleşme katalogdan gelir"
     shas = {v: KN.spec_sha_for(v) for v in SLC.IMPLEMENTED}
-    assert len(set(shas.values())) == 58
+    assert len(set(shas.values())) == 93
     full = {v["variant_id"]: m.get(v["variant_id"], hashlib.sha256(v["variant_id"].encode()).hexdigest())
             for v in RG.LIB_V1["variants"] if not v.get("alias_of")}
     rows = TR.seal_entries(full)

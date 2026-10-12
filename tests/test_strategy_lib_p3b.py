@@ -87,7 +87,10 @@ def test_importing_strategy_lib_does_not_load_the_engine():
             "import tradingbot.strategy_lib.k_trend, tradingbot.strategy_lib.k_box, tradingbot.strategy_lib.k_d4, "
             "tradingbot.strategy_lib.k_c4, tradingbot.strategy_lib.k_fm, tradingbot.strategy_lib.b_tsmom, "
             "tradingbot.strategy_lib.c_macross, tradingbot.strategy_lib.d_donchian, tradingbot.strategy_lib.e_volbreak, "
-            "tradingbot.strategy_lib.f1_range, tradingbot.strategy_lib.f2_boxgrid, tradingbot.strategy_lib.h_funding; "
+            "tradingbot.strategy_lib.f1_range, tradingbot.strategy_lib.f2_boxgrid, tradingbot.strategy_lib.h_funding, "
+            "tradingbot.strategy_lib.stream, tradingbot.strategy_lib.o_cover, tradingbot.strategy_lib.o_f_er, "
+            "tradingbot.strategy_lib.o_f_btc, tradingbot.strategy_lib.o_f_vol, tradingbot.strategy_lib.o_x_trail2, "
+            "tradingbot.strategy_lib.o_x_chan3, tradingbot.strategy_lib.o_x_time, tradingbot.strategy_lib.o_x_tpl; "
             "print(sorted(m for m in sys.modules if m.startswith('tradingbot.research_engine')))")
     cp = subprocess.run([sys.executable, "-s", "-c", code], capture_output=True, text=True, cwd=str(ROOT), timeout=180)
     assert cp.returncode == 0, cp.stderr[-2000:]
@@ -96,7 +99,7 @@ def test_importing_strategy_lib_does_not_load_the_engine():
 
 # ============================================================================ kimlik
 _COMMON = ("tradingbot/strategy_lib/contract.py", "tradingbot/strategy_lib/livebars.py", "tradingbot/timeframes.py",
-           "tradingbot/paper_rules.py", "tradingbot/candle_confirmation.py")
+           "tradingbot/paper_rules.py", "tradingbot/candle_confirmation.py", "tradingbot/strategy_lib/indicators.py")
 _STRUCT = ("tradingbot/structures/analysis.py", "tradingbot/structures/bots.py", "tradingbot/structures/catalog.py",
            "tradingbot/structures/policy.py", "tradingbot/chart_patterns.py", "tradingbot/learn/candle_context.py",
            "tradingbot/learn/multitimeframe_context.py", "tradingbot/learn/weekly_structure.py", "tradingbot/core/ids.py")
@@ -190,12 +193,12 @@ def test_spec_sha_equals_the_registry_and_the_trials_ledger():
         m = KN.module_src_shas()
     except SLI.DirtyTreeError as exc:
         pytest.skip(f"çalışma ağacı kirli: {exc}")
-    assert set(m) == set(SLC.IMPLEMENTED) and len(SLC.IMPLEMENTED) == 58            # P3b-2a: K + B…H
+    assert set(m) == set(SLC.IMPLEMENTED) and len(SLC.IMPLEMENTED) == 93            # P3b-2b: K + B…H + O
     for vid in SLC.IMPLEMENTED:
         assert KN.spec_sha_for(vid) == RG.spec_sha(RG.lib_spec(vid, SLI.module_src_sha(vid)))
     assert KN.spec_sha_for("DON_20_10_4h_LO") == KN.spec_sha_for("K_D4")
     assert KN.spec_sha_for("BOX_n10_mid_ms0.5") == KN.spec_sha_for("K_BOX")
-    assert len({KN.spec_sha_for(v) for v in SLC.IMPLEMENTED}) == 58
+    assert len({KN.spec_sha_for(v) for v in SLC.IMPLEMENTED}) == 93
     bases = {v["variant_id"] for v in RG.LIB_V1["variants"] if not v.get("alias_of")}
     full = {b: m.get(b, "f" * 64) for b in bases}
     rows = TR.seal_entries(full)
@@ -235,8 +238,8 @@ def test_copies_are_built_from_the_sealed_params_only():
             SLC.make(vid, {**p, "extra": 1})
         with pytest.raises(ValueError):
             SLC.make(vid, {k: v for k, v in list(p.items())[1:]})
-    with pytest.raises(KeyError):
-        SLC.make("O_T2_F_ER", {})                              # O örtüleri sonraki P3b-2 adımında
+    with pytest.raises(ValueError):
+        SLC.make("O_T2_F_ER", {})                              # örtü mühürlü parametre + spec'siz kurulmaz (P3b-2b)
     with pytest.raises(ValueError):
         SLC.make("TS_28_LS", {"lookback_days": 28})            # saf aile mühürlü spec'siz kurulmaz (P3b-2a)
     assert KN.make_variant("DON_20_10_4h_LO").variant_id == "K_D4"

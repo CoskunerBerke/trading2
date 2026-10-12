@@ -8,7 +8,9 @@ düzenlemelerde yeni `spec_sha` üretiyor ve deneme sayısını şişiriyordu �
   `livebars`, Formasyonda `k_trend`);
 * varyant modülünün `LIVE_MODULES` listesi (sınıfın `live_modules`'u) — kuralın karar yolunda ÇALIŞAN ya da kararı
   belirleyen tanım/sabitleri taşıyan canlı modüller; her modülün gerekçesi listenin yanındadır. Liste, kopyaların
-  `signals`/`manage` çalışırken yürüyen `tradingbot` modüllerinin (çalışma izi testi) ÜST kümesidir.
+  `signals`/`manage` çalışırken yürüyen `tradingbot` modüllerinin (çalışma izi testi) ÜST kümesidir;
+* O örtüsünde (P3b-2b) ayrıca TABAN kopyanın modülü, onun paket içi bağımlılıkları ve `LIVE_MODULES`'u
+  (`catalog.extra_modules`): örtünün kümesi = faktör modülü (+ `o_cover`, `stream`, …) ∪ taban modülü.
 
 Baytlar çalışma ağacından değil **git'in HEAD blob'larından** okunur (`git ls-tree` + `git cat-file --batch`); bu
 dosyalardan biri HEAD'e göre değişmiş, izlenmeyen ya da HEAD'de yoksa `DirtyTreeError` (kimlik hesaplanmaz: işlenmemiş
@@ -30,7 +32,7 @@ from functools import lru_cache
 from importlib import import_module
 from pathlib import Path
 
-from .catalog import module_name
+from .catalog import extra_modules, module_name
 
 VERSION = "strategy_lib.module_src_sha.v2"
 TB_DIR = Path(__file__).resolve().parents[1]          # tradingbot/
@@ -95,10 +97,11 @@ def lib_closure(start: str) -> tuple[str, ...]:
 
 
 def declared_modules(variant_id: str) -> tuple[str, ...]:
-    """Kimliğe giren modüller: varyant modülü + paket içi bağımlılıkları + modülün `LIVE_MODULES` listesi."""
-    start = module_name(variant_id)
-    live = tuple(getattr(import_module(start), "LIVE_MODULES"))
-    mods = set(lib_closure(start)) | set(live)
+    """Kimliğe giren modüller: varyant modülü + paket içi bağımlılıkları + modülün `LIVE_MODULES` listesi (örtüde ayrıca
+    taban modülünün aynıları)."""
+    mods: set[str] = set()
+    for start in (module_name(variant_id),) + tuple(extra_modules(variant_id)):
+        mods |= set(lib_closure(start)) | set(getattr(import_module(start), "LIVE_MODULES"))
     missing = sorted(m for m in mods if _file_of(m) is None)
     if missing:
         raise ValueError(f"{variant_id}: bildirilen modülün dosyası yok: {missing}")

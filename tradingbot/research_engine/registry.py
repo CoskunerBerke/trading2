@@ -53,7 +53,7 @@ SEAL_DOC = "docs/ENGINE_BRAIN_V1.md §8.2"
 #: ayarlanmaz). Keşif katmanı ve Kapı A'nın ileri okuması YALNIZ açılışı bu andan sonra olan barları kullanır (§5.1).
 #: Mühür commit'leri yalnız fast-forward (ya da merge commit) ile birleşir; rebase/squash/cherry-pick işleyen zamanı
 #: değiştirir → test kırılır → yeniden mühür.
-T_SEAL_MS = 1791779880000
+T_SEAL_MS = 1791786780000
 
 
 # ============================================================================ kanonik biçim ve donma
@@ -82,6 +82,17 @@ def tech_reading(finding: int, text: str, **values: Any) -> dict:
     """Tarihli teknik okuma: değer alanları + `decision` (inceleme bulgusu) + `reading_tr`."""
     return {**values, "decision": f"P3b-2a inceleme bulgu {finding} (2026-10-12)",
             "reading_tr": f"{TECH_READING_TR}; inceleme P3b-2a bulgu {finding}: {text}"}
+
+
+#: P3b-2b (O örtüleri) UYGULAMA OKUMALARI (2026-10-12): mühürlü O satırının söylemediği uygulama ayrıntıları (faktörün
+#: dilimi/penceresi, ölçülemezlik, iz stopunun silahlanması ve delinmesi, X_TPL payları) tarihli teknik okuma olarak
+#: yazılır (S1 düzeltme mührü 6; henüz gerçek veri koşusu yok → `_v2` değil). Bütçe ve varyant sayıları değişmez.
+
+
+def impl_reading(item: str, text: str, **values: Any) -> dict:
+    """Tarihli uygulama okuması: değer alanları + `decision` (P3b-2b maddesi) + `reading_tr`."""
+    return {**values, "decision": f"P3b-2b uygulama okuması {item} (2026-10-12)",
+            "reading_tr": f"{TECH_READING_TR}; P3b-2b uygulama okuması {item}: {text}"}
 
 
 def thaw(x: Any) -> Any:
@@ -442,21 +453,78 @@ COVER_BASES: dict[str, dict] = {
     "T2": {"variants": ["K_T2"]}, "M2": {"variants": ["K_M2"]}, "BOX": {"variants": ["K_BOX"]}, "D4": {"variants": ["K_D4"]},
     "C4": {"variants": [f"K_C4_CV{i:03d}" for i in range(1, 9)], "note_tr": "taban C4 defterinin kendisi (8 varyasyon birlikte)"},
 }
+_BREACH_TR = ("aday stop mevcut stopu sıkılaştırıyorsa ve karar fiyatının (karar barının kapanışı) doğru yanındaysa "
+              "çekirdeğin doğrulanmış MOVE_STOP'u (yalnız sıkılaştırır); karar fiyatının ötesindeyse (stop delinmiş) sonraki "
+              "açılışta piyasa çıkışı (CLOSE) — canlı defterde fiyatın ötesine konan stop ilk gözlemde (açılış) dolar; "
+              "ölçülemezse eylem yok; tabanın çıkışları sürer")
 COVER_FACTORS: dict[str, dict] = {
     "F_ER": {"kind": "filter", "rule_tr": "T2/M2/D4/C4'te ER20 ≥ 0,3, Box'ta ER20 < 0,3", "er20_min_trend": 0.3,
-             "er20_max_box": 0.3},
+             "er20_max_box": 0.3,
+             "reading": impl_reading("F_ER", "ER20 (Kaufman, strategy_lib.indicators.er) tabanın sinyal diliminin (Box'ta "
+                                             "1d, B3) karar anında KAPANMIŞ son 21 barının kapanışlarından; ölçülemezse "
+                                             "(< 21 bar, hareketsiz pencere) giriş yok; T2/M2/D4/C4 ER20 ≥ 0,3 geçer, Box "
+                                             "ER20 < 0,3 geçer",
+                                     bars=20, timeframe="BASE_SIGNAL_TF", box_timeframe="1d", unmeasurable="NO_ENTRY")},
     "F_BTC": {"kind": "filter", "rule_tr": "BTC 4h rejimi aynı yön",
               "regime": decided("B4", "T2'nin kullandığı regime_gate.btc_regime tanımı BTC 4h barlarına uygulanır: son "
                                       "kapanmış BTC 4h barında kapanış > EMA200 (4h kapanışları, regime_gate.ema_last) → UP, "
                                       "değilse DOWN; EMA200 hesaplanamıyorsa rejim bilinmiyor → giriş yok (regime_gate "
                                       "fail-closed). 'Aynı yön' = LONG yalnız UP'ta, SHORT yalnız DOWN'da",
-                                definition="regime_gate.btc_regime", timeframe="4h", ema_len=200)},
-    "F_VOL": {"kind": "filter", "rule_tr": "ATR% ≤ son 120 barın %80'liği", "lookback_bars": 120, "atr_pct_max_pctile": 80},
-    "X_TRAIL2": {"kind": "exit", "rule_tr": "+1R'den sonra 2 ATR iz süren", "arm_r": 1.0, "trail_atr": 2.0},
-    "X_CHAN3": {"kind": "exit", "rule_tr": "chandelier 3 × ATR22", "atr_period": 22, "atr_mult": 3.0},
-    "X_TIME": {"kind": "exit", "rule_tr": "max_hold'un yarısı; Box: 48 × 5m", "max_hold_fraction": 0.5, "box_bars_5m": 48},
-    "X_TPL": {"kind": "exit", "rule_tr": "1R/2R/3R'de üçte bir", "targets_r": [1.0, 2.0, 3.0], "fraction_each": "1/3"},
+                                definition="regime_gate.btc_regime", timeframe="4h", ema_len=200),
+              "reading": impl_reading("F_BTC", "rejim penceresi = karar anında KAPANMIŞ son 699 BTC 4h barı (canlı perp "
+                                               "çerçevesinin 4h penceresi, livebars.LIVE_CLOSED_BARS['4h']); satırlar "
+                                               "yalnız zaman + kapanış (ema200 sütunu yok) → EMA200 = regime_gate.ema_last "
+                                               "(pencerenin kapanışlarından, SMA200 tohumlu); < 200 bar → rejim bilinmiyor "
+                                               "→ giriş yok",
+                                      window_bars=699, ema200_column=False, unknown="NO_ENTRY")},
+    "F_VOL": {"kind": "filter", "rule_tr": "ATR% ≤ son 120 barın %80'liği", "lookback_bars": 120, "atr_pct_max_pctile": 80,
+              "reading": impl_reading("F_VOL", "ATR% = ATR14 (Wilder) / kapanış × 100, tabanın sinyal diliminde (Box'ta 1d, "
+                                               "B3 ile aynı gerekçe: kutu günlüktür) ve penceresinde; '%80'lik' = karar "
+                                               "barının ATR%'sinin kendisi DAHİL son 120 ATR% içindeki ortalama yüzdelik "
+                                               "sırası (strategy_lib.indicators.pct_rank; BBSQ sıkışmasıyla aynı tanım) "
+                                               "≤ 0,80; pencerede ölçülemeyen değer (ısınma, < 120 değer) → giriş yok",
+                                      atr_len=14, timeframe="BASE_SIGNAL_TF", box_timeframe="1d",
+                                      rank="PCT_RANK_AVERAGE_INCLUDING_CURRENT", unmeasurable="NO_ENTRY")},
+    "X_TRAIL2": {"kind": "exit", "rule_tr": "+1R'den sonra 2 ATR iz süren", "arm_r": 1.0, "trail_atr": 2.0,
+                 "reading": impl_reading("X_TRAIL2", "girişten bu yana (giriş barı dahil, karar barına kadar) kapanmış "
+                                                     "sinyal-dilimi barlarının en iyi ucu (LONG en yüksek, SHORT en düşük) "
+                                                     "GERÇEK giriş ± 1 × R'ye (R = |giriş − ilk stop|) ulaşınca silahlanır; o "
+                                                     "andan her kararda aday = en iyi uç ∓ 2 × ATR14 (Wilder, sinyal dilimi, "
+                                                     "karar barında, tabanın penceresinde; Box 5m); " + _BREACH_TR,
+                                         atr_len=14, timeframe="BASE_SIGNAL_TF", extreme="BEST_SINCE_ENTRY_BAR",
+                                         arm_on="BEST_EXTREME", breach="CLOSE_NEXT_OPEN")},
+    "X_CHAN3": {"kind": "exit", "rule_tr": "chandelier 3 × ATR22", "atr_period": 22, "atr_mult": 3.0,
+                "reading": impl_reading("X_CHAN3", "chandelier (LeBeau): LONG aday = girişten bu yana (giriş barı dahil, "
+                                                   "karar barına kadar) en yüksek − 3 × ATR22, SHORT en düşük + 3 × ATR22; "
+                                                   "ATR22 = Wilder ATR(22), sinyal diliminde, karar barında, tabanın "
+                                                   "penceresinde (Box 5m); ilk karardan itibaren; " + _BREACH_TR,
+                                        timeframe="BASE_SIGNAL_TF", extreme="BEST_SINCE_ENTRY_BAR", start="FIRST_DECISION",
+                                        breach="CLOSE_NEXT_OPEN")},
+    "X_TIME": {"kind": "exit", "rule_tr": "max_hold'un yarısı; Box: 48 × 5m", "max_hold_fraction": 0.5, "box_bars_5m": 48,
+               "reading": impl_reading("X_TIME", "zaman stopu = ⌊tabanın max_hold'u × 0,5⌋ sinyal barı (copy_books.<taban>."
+                                                 "max_hold: T2/M2 300 × 1d wf_only → 150 (B2), D4 300 × 4h → 150, C4 24 × 4h "
+                                                 "→ 12); Box 48 × 5m; niyetin zaman stopu olur (taban daha kısa zaman stopu "
+                                                 "taşıyorsa o kalır); sayım çekirdeğinkidir (giriş barı 1, sonraki açılışta "
+                                                 "piyasa çıkışı); tabanın diğer çıkışları sürer",
+                                       bars={"T2": 150, "M2": 150, "D4": 150, "C4": 12, "BOX": 48},
+                                       rule="FLOOR(MAX_HOLD * FRACTION)")},
+    "X_TPL": {"kind": "exit", "rule_tr": "1R/2R/3R'de üçte bir", "targets_r": [1.0, 2.0, 3.0], "fraction_each": "1/3",
+              "reading": impl_reading("X_TPL", "tabanın hedefleri YERİNE GERÇEK girişten 1R, 2R, 3R (R = |giriş − ilk stop|); "
+                                               "ilk ikisi İLK miktarın 1/3'ünü, sonuncusu kalanı kapatır; ilk hedeften "
+                                               "sonra stop canlı defterin TP1 kuralıyla başa-başa (FuturesLedgerV2."
+                                               "break_even_price); tabanın stopu, kural çıkışı ve zaman stopu sürer",
+                                      target_from="REAL_ENTRY", replaces_base_targets=True, last_target="CLOSES_REST",
+                                      after_first_target="LEDGER_TP1_BREAKEVEN")},
 }
+COVER_READING = impl_reading(
+    "O", "örtü = taban kopyanın (canlı kuralın) signals/manage'i + TAM OLARAK bir faktör; C4 tabanı = C4 defterinin kendisi: "
+         "sekiz varyasyon config sırasıyla, ilk eşleşen (canlı candle_book.decide hits[0]), sembol başına tek pozisyon; "
+         "filtre (F_*) tabanın niyetini yalnız karar anında KAPANMIŞ verilerle (≤ karar anı) süzer, geçmezse o bar giriş "
+         "yok; çıkış örtüsünde (X_*) giriş tabanınkidir, açık pozisyonda tabanın CLOSE'u önceliklidir, örtü stopu yalnız "
+         "çekirdeğin doğrulanmış MOVE_STOP'uyla sıkılaştırır (delinmişse sonraki açılışta CLOSE); pencere ve dilimler "
+         "tabanınki",
+    base_c4="C4_BOOK_CONFIG_ORDER_FIRST_MATCH", filter_data="CLOSED_BARS_AT_DECISION", exit_priority="BASE_CLOSE_FIRST",
+    stop_overlay="KERNEL_MOVE_STOP_TIGHTEN_ONLY")
 AUTO_COVER_BASES = ("T2", "M2", "D4", "C4")
 AUTO_COVER_FACTORS = ("F_ER", "F_BTC", "F_VOL", "X_TRAIL2", "X_CHAN3", "X_TIME")
 
@@ -551,6 +619,7 @@ def _lib() -> dict:
         "copy_books": {k: {"book": v["book"], "rule": v["rule"], "timeframes": v["timeframes"], "own_symbols": v["own_symbols"],
                            "max_hold": v["max_hold"]} for k, v in COPY_BOOKS.items()},
         "covers": {"bases": COVER_BASES, "factors": COVER_FACTORS, "id_pattern": "O_<taban>_<faktör>",
+                   "reading": COVER_READING,
                    "scope_tr": "örtüler yalnız bu beş canlı tabana uygulanır (sonuca bakılarak seçilmiş alt küme değil); aile "
                                "üst sınırı (ana belge §6.2 '≤ 8–12') O'da taban başına 7"},
         "p23": {"symbols": list(P23), "quote": "USDT", "market": "USDⓈ-M perpetual",
@@ -671,6 +740,10 @@ def _lib() -> dict:
 
 
 # ============================================================================ WF_PROTOCOL_V1 (§3.1–§3.3, §2.1 çekirdek, §5.2 önbellek)
+#: kapı istatistiğinden çıkan işlem işaretleri (WF_PROTOCOL_V1.gate_exclusions; 2026-10-12 P3b-2b, düzeltme mührü 6)
+GATE_EXCLUDED_FLAGS: tuple[str, ...] = ("FUNDING_GAP", "PATH_1H_GAP", "F8_UNMEASURABLE")
+
+
 def _wf() -> dict:
     return {
         "id": "WF_PROTOCOL_v1", "doc": "docs/ENGINE_BRAIN_V1.md §3.1–§3.3, §2.1, §5.2 (ana belge §6.3)",
@@ -764,6 +837,19 @@ def _wf() -> dict:
             "funding": "deponun gerçek uzlaşma zaman damgalarında",
             "liquidation": "bracket formülü", "sizing": "LIB_V1.sizing (sabit 1 USDT risk = 200 USDT × %0,5)",
             "leverage": "büyüklükten türer; likidasyon mesafesi ≥ LIB min_liq_distance_stop_mult × stop",
+        },
+        "gate_exclusions": {
+            "flags": list(GATE_EXCLUDED_FLAGS),
+            "rule_tr": "bu işaretlerden birini taşıyan işlem bütün kapı istatistiklerinden (Kapı A/B, p_day, DSR, CSCV-PBO, "
+                       "plasebo, ders bakışları) çıkarılır; sayısı ve payı satırda gösterilir (çıkarılan işlem kayıttan "
+                       "silinmez)",
+            "decision": "P3b-2b talimatı (2026-10-12): F8_UNMEASURABLE, FUNDING_GAP ve PATH_1H_GAP gibi kapı istatistiğinden "
+                        "çıkar",
+            "reading_tr": "dışlama listesi tek yerde (önceden yalnız costs.funding_gap_tr ve kernel.stop_fill.path_gap_tr "
+                          "metinlerinde): FUNDING_GAP (fonlama serisi işlemin penceresini örtmüyor), PATH_1H_GAP (çıkış "
+                          "kararı gereken barın 1h alt barları eksik/tutarsız), F8_UNMEASURABLE (H ailesinde pozisyon "
+                          "açıkken f8 ölçülemedi — P3b-2a'da yalnız bilgiydi; 2026-10-12'den beri kapıdan çıkar); "
+                          "uygulayan yardımcı research_engine/kernel.gate_excluded; listeyi tüketen kapı kodu P3d/P3e",
         },
         "cache": {"path": "backtests/cache/<spec_sha>/<kapsam>/<veri_ay_mührü>.parquet", "content": "işlem listesi + günlük getiri",
                   "invalidate": "ay parçasının mührü değişince", "rotation": "her gece 1/7 sıfırdan hesaplanır ve karşılaştırılır",
@@ -990,6 +1076,7 @@ def _directions() -> dict:
             "purge_embargo.make_folds_split.sum_bars": FIXED,
             "kernel.stop_fill.policy": FIXED,
             "kernel.entry_hour.policy": FIXED,
+            "gate_exclusions.flags": FIXED,
         },
         "STATS": {
             f"{_T}p_day.resamples": FIXED, f"{_T}bh_q": MAX, f"{_T}effective_n_abs_rho": FIXED,
@@ -1320,13 +1407,15 @@ def looser_than(v1: Mapping, vn: Mapping, directions: Mapping[str, str]) -> list
     return bad
 
 
-__all__ = ["CLUSTERS", "CONFIG_EPOCHS_FILE", "CONFIG_EPOCHS_V1", "CONFIG_EPOCHS_V1_SHA", "FIXED", "LESSON_REGISTRY_V1",
+__all__ = ["CLUSTERS", "CONFIG_EPOCHS_FILE", "CONFIG_EPOCHS_V1", "CONFIG_EPOCHS_V1_SHA", "FIXED", "GATE_EXCLUDED_FLAGS",
+           "LESSON_REGISTRY_V1",
            "LESSON_REGISTRY_V1_SHA", "LIB_V1", "LIB_V1_SHA", "LIB_VERSION", "MAX", "MIN", "P23", "PIT_RULES_V1",
            "PIT_RULES_V1_SHA", "PRIOR_TRIALS_FILE", "PRIOR_TRIALS_V1", "PRIOR_TRIALS_V1_SHA", "REGISTRIES", "REGISTRY_SHA",
            "REGISTRY_VERSIONS", "S1_SEAL", "SHAS", "SPEC_KEYS", "STATS_V1", "STATS_V1_SHA", "THRESHOLD_DIRECTIONS",
            "THRESHOLD_DIRECTIONS_V1", "THRESHOLD_DIRECTIONS_V1_SHA", "T_SEAL_MS", "UNSPECIFIED", "WF_PROTOCOL_V1",
            "WF_PROTOCOL_V1_SHA", "blocked_budget", "blocked_variants", "budget_table", "canonical_bytes", "coin_fit_grid", "explore_series",
-           "decided", "family_counts", "freeze", "gap", "gate_a_rows", "get_path", "is_gap", "is_sha256", "lib_spec", "looser_than",
+           "decided", "family_counts", "freeze", "gap", "gate_a_rows", "get_path", "impl_reading", "is_gap", "is_sha256",
+           "lib_spec", "looser_than",
            "n_at_seal", "oto_column_pre_s5_count", "pretty_json", "prior_total", "protocol_gaps", "sha256_canonical",
            "spec_sha", "thaw", "threshold_leaves", "unique_variant_count", "unspecified_gaps", "variant_gaps",
            "variants_by_id"]

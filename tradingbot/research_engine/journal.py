@@ -964,9 +964,14 @@ def build_row(loc: ArchiveLoc, rec: dict, kind: str, ctx: BuildContext) -> dict[
 
     # ---- atıf (P2a: fidelity)
     from .attribution import DEFAULT_ENTRY_TF, ENTRY_TF, TF_MS
+    rule_tf_ms = TF_MS[ENTRY_TF.get(book, DEFAULT_ENTRY_TF)]
+    if str(book).startswith("strategy_paper"):
+        # strategy_paper defterleri kaçan fitili 60 sn örnek + kapanmış 1h barla uygular (BAR_TIMEFRAME="1h"): gözlemden
+        # dolum penceresi en az 1h (fidelity_v3, 2026-10-12; Box FILL_BASIS 54 → simülasyonda 9 → 1)
+        rule_tf_ms = max(rule_tf_ms, TF_MS["1h"])
     fd = FD.replay(rec, kind=kind, bars=path.bars, tf=path.tf, path_gaps=path.gaps, targets=targets,
                    targets_known=targets is not None, exec_par=xp_par, backdated=backdated, tick=RH.tick_of(rec),
-                   rule_tf_ms=TF_MS[ENTRY_TF.get(book, DEFAULT_ENTRY_TF)])
+                   rule_tf_ms=rule_tf_ms)
     R.set("fidelity", fd, RECONSTRUCTED if fd.get("status") != FD.ST_NOT_ELIGIBLE else NOT_APPLICABLE,
           "learning_cf._net_replay, kaydın R paydası")
 

@@ -43,7 +43,8 @@ kurulmuştu).** Betik `~/tb-engine-79b27cf.sh` (sha256 `5f1d18886588c91712b92c48
 `--backfill` ÇALIŞTIRMA: yeni bir doldurma turu başlatır ve P2 kurulumu o tur bitene dek reddedilir. Yalnız `--check`
 "bitmedi; kaldığı yerden: … --backfill" yazarsa `--backfill` ile sürdür.
 
-**Öğrenme motoru P2 (işlem günlüğü + "neden kaybetti / nasıl kâra dönerdi" atıfı): HAZIR, henüz KURULMADI.** Betik
+**Öğrenme motoru P2 (işlem günlüğü + "neden kaybetti / nasıl kâra dönerdi" atıfı): KURULU (engine-app 44d5353; ilk
+doldurma bitti).** Aşağıdaki adımlar kayıt içindir. Betik
 `~/tb-engine-44d5353.sh` (sha256 `a4f04e6c26cd9f0709bed5902113b23896e8109ddb161bcbeecd88b6a28cddd9`). **Ne zaman:** ilk doldurma bittikten sonra
 (yukarıdaki `--check` satırında "TAMAMLANDI"; sürerken betik kendisi reddeder). Saat (TR): 07:40–09:45, 11:40–13:45,
 15:40–17:45 ya da 19:40–21:45 (betik bir sonraki 4 saatlik kapanışa en az 75 dk ister). **Nasıl** (çıktı dosyaya; bağlantı
@@ -56,6 +57,24 @@ sürer):
    yazar); çıktıyı sakla ve bölüm 6'daki gibi ilet.
 3. Ertesi sabahtan itibaren bölüm 3'teki kontrolü bu betikle yap (`tb-engine-79b27cf.sh` yerine `tb-engine-44d5353.sh`).
    İlk gecelerde `S1B_BACKLOG` / `S2_BACKLOG` görmek normaldir (geçmiş işlemlerin günlüğü birkaç geceye yayılır).
+
+**12 Ekim 2026 — Öğrenme motoru P2.1 (ölçüm düzeltmesi): HAZIR, henüz KURULMADI.** Ön koşul: P2 (44d5353) kurulu ve ilk
+doldurma bitmiş. Betik `~/tb-engine-c4ba04a.sh` (sha256 `6c575a37486e25ab7982533f86dfd651d95acbf57334fbd3de1731955a81dd62`).
+**Ne değişir:** yalnız motorun ölçümü; botun kararları, worker ve birim dosyaları DEĞİŞMEZ (yeniden yükleme yok).
+- Box'un gün sonu kapanışları ve gözlemden dolan stop'lar için "kayıt yeniden oynatılınca aynı sonucu veriyor mu"
+  ölçümü (fidelity) düzeltildi (`fidelity_v3`). İlk P2 gecesinde %82,7 çıkmıştı; beklenen **≈ %93–95** (ölçüt ≥ %90).
+- Arşivin hiç yayımlamadığı 4 seri (`牛来USDT` / `龙虾USDT` mark/premium) artık "üst kaynakta yok" (`ABSENT_UPSTREAM`)
+  diye ayrı listelenir; bayat sayılmaz.
+- İlk tam gecede işlem günlüğü satırları **bir kez** yeniden kurulur (`S1B_BACKLOG` görmek normal; birkaç geceye
+  yayılabilir). Yeni 14 gecelik A/B dönemi başlar (yarısı `AB_OFF`: normal).
+
+**Nasıl** (saat TR: 07:40–09:45, 11:40–13:45, 15:40–17:45 ya da 19:40–21:45):
+1. `sudo bash ~/tb-engine-c4ba04a.sh --dry-run > ~/engine-dryrun.txt 2>&1; tail -15 ~/engine-dryrun.txt` — sonda
+   **"KURU ÇALIŞMA: 20/20 değişmez geçti"** (≈ 15–25 dk).
+2. `sudo bash ~/tb-engine-c4ba04a.sh > ~/engine-deploy.txt 2>&1; tail -15 ~/engine-deploy.txt` — sonda
+   **"DAĞITILDI: 28/28 değişmez geçti"** (≈ 40–70 dk). Geçmezse betik kendisi 44d5353'e döner ("--rollback GEREKMEZ").
+3. Ertesi sabahtan itibaren bölüm 3'teki kontrolü bu betikle yap (`tb-engine-44d5353.sh` yerine `tb-engine-c4ba04a.sh`).
+   Geri alma (gerekirse): `sudo bash ~/tb-engine-c4ba04a.sh --rollback` (44d5353'e döner).
 
 **Hızlı formasyon hesabı (worker sürümü db5db96): KURULDU — 7 Ekim 22:31.** Aşağıdaki adımlar kayıt içindir. Uzun turları ve Box'un mum kaçırmasını düzeltir.
 Betik zaten `~/tb-deploy-db5db96.sh` (sha256 `d6a843e58d12bd8717b3d8866e204a40e6834c989b922631cdcd1fa6e298da11`); 7 Ekim

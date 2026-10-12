@@ -5,7 +5,10 @@
 * `ctx` = `{"now_ms", "btc_bars"?, "funding"?}` (§2.1). P3b-1 okunuşu (belge §8.4 P3b-1 notu): canlı kuralın kendi
   defter geçmişine baktığı yerler (ortak yapı katmanının "kullanılmış yapı" kümesi, `one_entry_per_signal`) için çekirdek
   iki SALT-OKUNUR anahtar ekler: `"symbol"` (yapı analizinin kimliği) ve `"history"` (bu varyantın bu sembolde açtığı
-  girişler, `BookEntry` demeti). Başka anahtar yoktur.
+  girişler, `BookEntry` demeti). Başka anahtar yoktur. `"funding"` (P3b-2, H ailesi; yalnız `needs_funding` varyantında):
+  deponun uzlaşma satırları `(ms, oran, mark)` — damgası `now_ms − funding_lookback_ms < ms ≤ now_ms` olanlar, ham damga
+  (ms kayması dahil), kronolojik; seri yoksa `None`. Görünürlük (uzlaşmanın karar anında yayımlanmış sayılması) varyantın
+  kendi kuralıdır (fut_v1: `calc ≤ T − 60 sn`).
 * `signals(bars, ctx) -> list[Intent]` yalnız pozisyon yokken, `manage(pos, bars, ctx) -> Action` yalnız pozisyon
   varken ve yalnız kapanmış barda çağrılır (§2.1).
 * `Intent` alanları §2.1'in dokuzudur; `evidence` yalnız bilgi taşır (canlı eylemin kanıt anlık görüntüsü: yapı kaydı,
@@ -203,6 +206,9 @@ class Variant:
     #: `ctx["btc_bars"]` (BTC kapanmış 1d barları) gerekli mi ve kaç bar (canlı çerçeve penceresi)
     needs_btc: bool = False
     btc_lookback: int = 0
+    #: `ctx["funding"]` (uzlaşma satırları) gerekli mi ve geriye kaç ms (H ailesi; P3b-2)
+    needs_funding: bool = False
+    funding_lookback_ms: int = 0
     #: kimliğe giren BİLDİRİLMİŞ canlı modüller (`identity.module_src_sha`: varyant modülü + paket içi bağımlılıkları + bu
     #: liste; her modülün gerekçesi kopya modülünün `LIVE_MODULES` yorumundadır)
     live_modules: tuple[str, ...] = ()

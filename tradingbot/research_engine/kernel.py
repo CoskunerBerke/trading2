@@ -28,11 +28,19 @@ bayt-aynı sonuç; test). Kurallar:
   iterse LİKİDASYON. Çıkış yoksa hedefler aynı tikin lehte ucuyla (aynı tikte stop ve hedef → STOP); hedef seviyede dolar
   (kayma yok, taker ücret); birden çok hedefte ilk hedef yarısını kapatır ve stop ücret+kayma dahil başa-başa çekilir
   (`FuturesLedgerV2.break_even_price` formülü) — yeni stop yalnız SONRAKİ tiklerle sınanır. Giriş barında açılış girişin
-  kendisidir (yalnız alt bar tikleri). **Hız:** stop/likidasyon/sıradaki hedef aralığına değmeyen sinyal barında alt bar
-  açılmaz (alt barlar barın aralığının içindedir → hiçbir tik bir şey tetikleyemez; sonuç aynı). Alt barlar barı tam ve
-  bitişik örtmüyor ya da barın aralığını aşıyorsa o bar tek OHLC tiki olarak işlenir ve işlem `PATH_1H_GAP` işaretlenir
-  (`FUNDING_GAP` gibi kapı istatistiğinden çıkar; sayısı gösterilir). Kural CLOSE'u ve zaman stopu sonraki açılışta piyasa
-  emriyle; aynı açılışta önce açılış tiki (boşluk) işlenir.
+  kendisidir (yalnız alt bar tikleri). **Giriş saati** (2026-10-12 okunuşu, mühürlü `WF_PROTOCOL_V1.kernel.entry_hour`):
+  girişi içeren 1h saat dilimindeki ([⌊giriş / 1h⌋ × 1h, +1h)) her tikte YALNIZ stop/likidasyon hükmü uygulanır, hedef
+  kredisi verilmez — canlıda o saatin 1h barı `apply_closed_bars`'a girmez (açılıştan önce açılmıştır; saati 60 sn izleyici
+  örter) ve 1h barının lehte ucu canlının görmediği bir fiyattır; tek-tik yedeğinde (alt bar yok) tik giriş saatini
+  içerdiğinden bütün bar böyle işlenir. Hiçbir zaman iyimser değildir (hedef bir sonraki tikte hâlâ oradaysa alınır).
+  **Hız:** stop/likidasyon/sıradaki hedef aralığına değmeyen sinyal barında alt bar açılmaz (alt barlar barın aralığının
+  içindedir → hiçbir tik bir şey tetikleyemez; fiyat yolu ve R aynı). Alt barlar barı tam ve bitişik örtmüyor ya da
+  barın aralığını aşıyorsa o bar tek OHLC tiki olarak işlenir ve işlem `PATH_1H_GAP` işaretlenir (`FUNDING_GAP` gibi kapı
+  istatistiğinden çıkar; sayısı gösterilir) — YALNIZ çıkış kararı gereken (değen) barda: değmeyen barın eksik alt barı
+  sonucu değiştiremez ve işaret koymaz. Bu yüzden kısaltma her barı açan koşuyla ancak 1h verisi TAMKEN bayt-aynıdır;
+  değmeyen bir barın 1h verisi eksikse işlemler, bacaklar ve R yine aynıdır, yalnız her barı açan koşu o işleme
+  `PATH_1H_GAP` koyardı (test). Kural CLOSE'u ve zaman stopu sonraki açılışta piyasa emriyle; aynı açılışta önce açılış
+  tiki (boşluk) işlenir.
 * **Fonlama** deponun GERÇEK uzlaşma satırlarında (`SeriesData.funding` = `[(ts, rate, mark)]`, depodaki `funding_frame`
   biçimi); damga milisaniye kaymasından arındırılıp NOMİNAL dakikaya yuvarlanır (ör. 08:00:00.003 → 08:00; bar
   açılışında dolan girişe o anın uzlaşması yazılmaz). Her uzlaşma s için −yön × açık miktar × mark × oran; açık miktar
@@ -88,6 +96,8 @@ KERNEL_VERSION = "kernel_v2"
 PATH_TF = "1h"
 #: mühürlü `WF_PROTOCOL_V1.kernel.stop_fill.policy` (eşitliği testli) ve uygulanan canlı sözleşme
 STOP_FILL_POLICY = "LIVE_EXIT_DECISION_ON_1H_BARS"
+#: mühürlü `WF_PROTOCOL_V1.kernel.entry_hour.policy` (eşitliği testli): girişi içeren 1h saat diliminde yalnız stop/likidasyon
+ENTRY_HOUR_POLICY = "STOP_AND_LIQUIDATION_ONLY"
 EXIT_CONTRACT = EXIT_FILL_CONTRACT
 SCENARIOS: tuple[str, ...] = ("base", "ADVERSE", "STRESS")
 _COSTS = RG.WF_PROTOCOL_V1["thresholds"]["costs"]
@@ -255,11 +265,32 @@ def lib_params(variant_id: str) -> dict[str, Any]:
     return RG.thaw(v["params"])
 
 
+#: saf ailelerin (K dışı) varyantı kurarken aldığı mühürlü satır alanları (`strategy_lib.pure.SPEC_KEYS`)
+VARIANT_SPEC_KEYS = ("family", "timeframes", "signal_tf", "sides", "exits")
+
+
+def variant_spec(variant_id: str) -> dict[str, Any] | None:
+    """Saf ailelerin kurulum girdisi: mühürlü satırın `{family, timeframes, signal_tf, sides, exits}` alanları (alias →
+    tabanınki); F2'de ayrıca `base_params` = bağımlı olduğu kopyanın (`requires: copy_books.BOX` → `K_BOX`) mühürlü
+    parametreleri ("diğer bütün parametreler K_BOX'unki"). Kopyalarda (K) None."""
+    vs = RG.variants_by_id()
+    v = vs[variant_id]
+    v = vs[v["alias_of"]] if v.get("alias_of") else v
+    if v["family"] == "K":
+        return None
+    spec = {k: RG.thaw(v[k]) for k in VARIANT_SPEC_KEYS}
+    if v["family"] == "F2":
+        (req,) = [r for r in v["requires"] if r.startswith("copy_books.")]
+        spec["base_params"] = lib_params("K_" + req.split(".", 1)[1])
+    return spec
+
+
 def make_variant(variant_id: str) -> Variant:
-    """`strategy_lib` varyantı, mühürlü kayıttaki parametrelerle (tek kaynak)."""
+    """`strategy_lib` varyantı, mühürlü kayıttaki parametrelerle (tek kaynak); saf ailelerde satırın `spec`'iyle.
+    Boşluklu (I, J, G) varyant `catalog.BlockedVariant`, henüz uygulanmamış (O) KeyError."""
     vs = RG.variants_by_id()
     base = vs[variant_id].get("alias_of") or variant_id
-    return SLC.make(base, lib_params(variant_id))
+    return SLC.make(base, lib_params(variant_id), variant_spec(variant_id))
 
 
 def spec_for(variant_id: str) -> dict[str, Any]:
@@ -274,7 +305,8 @@ def spec_sha_for(variant_id: str) -> str:
 
 
 def module_src_shas() -> dict[str, str]:
-    """Uygulanmış varyantların `module_src_sha`'sı (`trials.seal_entries` girdisi; P3b-2'de 106 varyanta tamamlanır)."""
+    """Uygulanmış varyantların `module_src_sha`'sı (`trials.seal_entries` girdisi; P3b-2a: K + B, C, D, E, F1, F2, H = 58;
+    alias'lar tabanınkini kullanır; O örtüleri sonraki adımda, I/J/G boşluk yüzünden hiç)."""
     return {v: SLI.module_src_sha(v) for v in SLC.IMPLEMENTED}
 
 
@@ -517,7 +549,8 @@ class _Pos:
 def _touches(pos: _Pos, h: float, lo: float, long: bool) -> bool:
     """Sinyal barı stopa, likidasyona ya da sıradaki hedefe değiyor mu (`exit_decision` / hedef karşılaştırmalarıyla aynı
     eşitsizlikler). Değmeyen barın alt barları da değmez (alt barlar barın aralığındadır): hiçbir tik bir şey yapamaz, alt
-    bar açılmaz (kesinliği testli: her barı açan koşuyla bayt-aynı)."""
+    bar açılmaz (kesinliği testli: 1h verisi tamken her barı açan koşuyla bayt-aynı; değmeyen barın eksik 1h verisi
+    yalnız her barı açan koşuda `PATH_1H_GAP` işareti koyardı — yol ve R aynı)."""
     if (lo <= pos.stop or lo <= pos.trade.liq_price) if long else (h >= pos.stop or h >= pos.trade.liq_price):
         return True
     if pos.tidx < len(pos.targets):
@@ -584,6 +617,11 @@ class _Sim:
                            int(variant.lookback.get(tf, 0) or len(data.bars.get(tf) or ()))) for tf in variant.timeframes}
         btc = list(data.btc_1d or ())
         self.btc_view = (_tf_index(btc), btc, TF_MS["1d"], int(variant.btc_lookback or len(btc))) if variant.needs_btc else None
+        self.fund_view = None
+        if getattr(variant, "needs_funding", False) and data.funding is not None:
+            fr = sorted(((int(r[0]), r[1], r[2]) for r in data.funding), key=lambda x: x[0])
+            self.fund_view = ([t for t, _r, _m in fr], fr, int(variant.funding_lookback_ms))
+        self.hour = TF_MS[PATH_TF]
         # çıkış tikleri: sinyal dilimi PATH_TF'den kabaysa 1h alt barlar; değilse sinyal barının kendisi
         self.sub_step = TF_MS[PATH_TF] if self.step > TF_MS[PATH_TF] else None
         self.sub_rows = list(data.bars.get(PATH_TF) or ()) if self.sub_step else []
@@ -617,6 +655,11 @@ class _Sim:
         c: dict[str, Any] = {"now_ms": now, "symbol": self.data.symbol, "history": tuple(history)}
         if self.btc_view is not None:
             c["btc_bars"] = _closed_upto(self.btc_view[0], self.btc_view[1], self.btc_view[2], now, self.btc_view[3])
+        if getattr(self.variant, "needs_funding", False):
+            c["funding"] = None
+            if self.fund_view is not None:
+                ts, rows, lb = self.fund_view
+                c["funding"] = tuple(rows[bisect.bisect_right(ts, int(now) - lb):bisect.bisect_right(ts, int(now))])
         return c
 
     def bars_for(self, now: int) -> dict[str, list]:
@@ -661,7 +704,8 @@ class _Sim:
         def observe(obs: Obs, t_open: int, t_close: int, bar_i: int, long: bool) -> bool:
             """Tek defter tiki, `FuturesLedgerV2.tick`'in çıkış sırasıyla: canlı `exit_decision` (stop/likidasyon), kayma
             dolumu likidasyonun ötesinde mi, sonra hedefler (tikin lehte ucuyla; TP1 → başa-baş stop yalnız sonraki
-            tiklerde). `t_open`/`t_close`: gözlemin aralığı (fiyat-yalnız tikte ikisi de o an). Kapandıysa True."""
+            tiklerde). `t_open`/`t_close`: gözlemin aralığı (fiyat-yalnız tikte ikisi de o an). Giriş saatiyle kesişen
+            tikte (`t_open` < giriş saatinin sonu) hedef kredisi yok (modül belgesi). Kapandıysa True."""
             t = pos.trade
             dec = exit_decision(_SIDE[long], pos.stop, t.liq_price, obs)
             if dec is not None:
@@ -682,6 +726,8 @@ class _Sim:
                 leg(EXIT_STOP, ref, pos.frac_left, True, ts, point, reason, tf, basis)
                 finish(EXIT_STOP, reason, ts, bar_i)
                 return True
+            if t_open < (pos.trade.entry_ts // self.hour + 1) * self.hour:
+                return False                                          # giriş saati: yalnız stop/likidasyon
             best = obs.hi if long else obs.lo
             if obs.high is None:
                 ts, tf, point = t_open, None, "open"
@@ -839,10 +885,11 @@ def replay_intent(variant: Variant, data: SeriesData, intent: Intent, *, decisio
     return (res.trades[0] if res.trades else None), why
 
 
-__all__ = ["BASIS_PRUDENT_CLOSE", "BASIS_SLIP_LIQ", "CostScenario", "EXIT_CONTRACT", "EXIT_END", "EXIT_LIQ", "EXIT_RULE",
-           "EXIT_STOP", "EXIT_TARGET", "EXIT_TIME", "FLAG_FUNDING_EXIT_BAR", "FLAG_FUNDING_GAP", "FLAG_MOVE_STOP_IGNORED",
-           "FLAG_OPEN_AT_END", "FLAG_PATH_GAP", "FundingOutcome", "FundingSeries", "KERNEL_VERSION", "KernelResult",
-           "KernelTrade", "Leg", "MOVE_CROSSES_PRICE", "MOVE_LOOSENS", "Obs", "PATH_TF", "REJ_DATA_GAP", "REJ_RR",
-           "SCENARIOS", "STOP_FILL_POLICY", "SeriesData", "break_even", "cost_trade", "funding_of", "lib_params",
-           "make_variant", "module_src_shas", "move_stop_verdict", "replay_intent", "run", "scenario", "signals_at",
-           "size_trade", "snap_ms", "spec_for", "spec_sha_for"]
+__all__ = ["BASIS_PRUDENT_CLOSE", "BASIS_SLIP_LIQ", "CostScenario", "ENTRY_HOUR_POLICY", "EXIT_CONTRACT", "EXIT_END",
+           "EXIT_LIQ", "EXIT_RULE", "EXIT_STOP", "EXIT_TARGET", "EXIT_TIME", "FLAG_FUNDING_EXIT_BAR",
+           "FLAG_FUNDING_GAP", "FLAG_MOVE_STOP_IGNORED", "FLAG_OPEN_AT_END", "FLAG_PATH_GAP", "FundingOutcome",
+           "FundingSeries", "KERNEL_VERSION", "KernelResult", "KernelTrade", "Leg", "MOVE_CROSSES_PRICE",
+           "MOVE_LOOSENS", "Obs", "PATH_TF", "REJ_DATA_GAP", "REJ_RR", "SCENARIOS", "STOP_FILL_POLICY", "SeriesData",
+           "VARIANT_SPEC_KEYS", "break_even", "cost_trade", "funding_of", "lib_params", "make_variant",
+           "module_src_shas", "move_stop_verdict", "replay_intent", "run", "scenario", "signals_at", "size_trade",
+           "snap_ms", "spec_for", "spec_sha_for", "variant_spec"]

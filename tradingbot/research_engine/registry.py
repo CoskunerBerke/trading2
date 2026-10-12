@@ -53,7 +53,7 @@ SEAL_DOC = "docs/ENGINE_BRAIN_V1.md §8.2"
 #: ayarlanmaz). Keşif katmanı ve Kapı A'nın ileri okuması YALNIZ açılışı bu andan sonra olan barları kullanır (§5.1).
 #: Mühür commit'leri yalnız fast-forward (ya da merge commit) ile birleşir; rebase/squash/cherry-pick işleyen zamanı
 #: değiştirir → test kırılır → yeniden mühür.
-T_SEAL_MS = 1791764340000
+T_SEAL_MS = 1791773880000
 
 
 # ============================================================================ kanonik biçim ve donma
@@ -708,6 +708,20 @@ def _wf() -> dict:
                               "yukarı yanlıydı; §8.4 P3b-1 notu). Parite (a)'nın kapılı ölçüsü canlı gibi 1h tikli, "
                               "kırpılmamış başvuruya karşıdır",
             },
+            "entry_hour": {
+                "policy": "STOP_AND_LIQUIDATION_ONLY",
+                "rule_tr": "girişi içeren 1h saat dilimindeki ([⌊giriş / 1h⌋ × 1h, +1h)) HER tikte yalnız stop/likidasyon hükmü "
+                           "(stop_fill.function) uygulanır, hedef kredisi verilmez; alt barlar yoksa (path_gap_tr) tek tik giriş "
+                           "saatini içerdiğinden bütün sinyal barı böyle işlenir; sinyal dilimi ≤ 1h ise saat dilimindeki bütün "
+                           "tikler (açılış fiyat tikleri dahil). Hedef, giriş saatinden sonraki ilk tikte hâlâ ulaşılmışsa alınır",
+                "decision": "P3b-2a doğrulama turu (m-A), 2026-10-12",
+                "reading_tr": "açıklayıcı okunuş (2026-10-12): mühürlü intrabar_order giriş saati için ayrı bir şey söylemiyordu "
+                              "(her 1h alt bar bir OHLC tiki); canlıda girişi içeren 1h barı apply_closed_bars'a girmez (bar "
+                              "açılışı ≥ opened_at kuralı; o saati 60 sn izleyici örter) ve 1h barının lehte ucu canlının "
+                              "görmediği bir fiyattır → giriş saatinde hedef kredisi iyimserdi. Okunuş hiçbir zaman iyimser "
+                              "değildir (stop giriş saatinde de uygulanır; hedef sonraki tikte hâlâ oradaysa alınır); parite "
+                              "(a)'nın başvurusu aynı okunuşu defterin hedeflerini o saat maskeleyerek uygular",
+            },
             "funding": "deponun gerçek uzlaşma zaman damgalarında",
             "liquidation": "bracket formülü", "sizing": "LIB_V1.sizing (sabit 1 USDT risk = 200 USDT × %0,5)",
             "leverage": "büyüklükten türer; likidasyon mesafesi ≥ LIB min_liq_distance_stop_mult × stop",
@@ -936,6 +950,7 @@ def _directions() -> dict:
             "step_equals_test": FIXED, "data_start_earliest": FIXED,
             "purge_embargo.make_folds_split.sum_bars": FIXED,
             "kernel.stop_fill.policy": FIXED,
+            "kernel.entry_hour.policy": FIXED,
         },
         "STATS": {
             f"{_T}p_day.resamples": FIXED, f"{_T}bh_q": MAX, f"{_T}effective_n_abs_rho": FIXED,

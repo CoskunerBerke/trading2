@@ -19,7 +19,13 @@ p95 ≤ 0,05). Aynı sentetik barlar iki yoldan oynatılır:
     dilimi ≤ 1h ise (Box 5m) sinyal barının kendisi. Defterin `exit_decision`'ı `STOP_CLOSE_BEYOND_LEVEL_PRUDENT` /
     `PRUDENT_LIQUIDATION` dallarıyla ve "aynı tikte önce stop" kuralıyla çalışır. Başvuru 1h barlarını çekirdekten
     BAĞIMSIZ okur ve her birini tikler (çekirdeğin "değmeyen barda alt bar açma" kısaltması böylece sınanır). Sinyal
-    barının 1h barı yoksa bar tek OHLC tikidir (çekirdeğin `PATH_1H_GAP` yedeğiyle aynı).
+    barının 1h barları barı tam ve bitişik örtmüyor, barın aralığını aşıyor ya da kendi içinde tutarsızsa (KISMEN eksik
+    dahil) bar tek OHLC tikidir; bar çıkış kararı gerektiriyorsa (aralığı defterin stopuna, likidasyonuna ya da sıradaki
+    hedefine değiyorsa) işlem `PATH_1H_GAP` işaretlenir — çekirdeğin yedeği ve işaretiyle aynı kural, defterin kendi
+    durumundan okunur (2026-10-12, P3b-2a; önceden kısmi 1h verisinde eldeki 1h barları tikleniyordu). **Giriş saati:**
+    girişi içeren 1h saat dilimindeki tiklerde defterin hedefleri maskelenir (yalnız stop/likidasyon; çekirdeğin mühürlü
+    okunuşu `WF_PROTOCOL_V1.kernel.entry_hour`: canlıda o saatin 1h barı `apply_closed_bars`'a girmez, saati 60 sn
+    izleyici örter ve 1m verisi olmadan kurulamaz — iki taraf aynı ihtiyatlı okunuşu uygular).
   - `ohlc` (RAPOR, kapıya girmez): sinyal barı başına TEK OHLC tiki (P3b-1'in rapor kipi): 4h/1d ailelerinde 1h
     ayrıntısının ölçüye etkisini gösterir.
 
@@ -28,6 +34,10 @@ p95 ≤ 0,05). Aynı sentetik barlar iki yoldan oynatılır:
   tik onları yazar). Veri sonunda son kapanışta bir fiyat tiki fonlamayı kapatır, sonra elle kapanış.
 * Sinyal kimliği = (sembol, sinyal barı, yön) kümelerinin eşitliği (iki yönde); ΔR = |R_çekirdek − R_defter| eşleşen
   işlemlerde (`TradeRecord.r_multiple`); ayrıca işaretli ortalama (R_çekirdek − R_defter).
+* **Saf aileler (P3b-2a: B, C, D, E, F1, F2, H).** Canlı karşılıkları olmadığından başvurunun "kuralı" varyantın KENDİ
+  `signals`/`manage`'idir (F2'de bu zaten canlı Box kuralıdır); ölçü çekirdeğin yol/maliyet aritmetiğini (R'den hedef,
+  zaman stopu, kural çıkışı, fonlama, giriş saati, 1h yedeği) canlı defterle sınar. Zaman stopu (`max_hold_bars`) başvuruda
+  sonraki açılışta elle kapanış; `ctx["funding"]` başvuruda çekirdekten bağımsız süzülür.
 
 **(b) Kopya ↔ canlı defter** (`parity_copy`; ana belge §6.2 "her config dönemi için ayrı, o dönemin parametreleriyle"):
 
@@ -210,6 +220,49 @@ class _LiveRule:
         raise KeyError(self.variant_id)
 
 
+class _PureRule:
+    """Saf ailenin (K dışı) başvuru kuralı: varyantın kendi `signals`/`manage`'i → `apply_action` eylemi."""
+
+    def __init__(self, variant_id: str):
+        self.variant_id = variant_id
+        self.copy = KN.make_variant(variant_id)
+        self.book = "PURE"
+        self.params: dict[str, Any] = {}
+        self.max_hold = getattr(self.copy, "max_hold", None)
+        self.intent: dict[str, Any] = {}
+
+    def decide(self, bars: Mapping[str, list], ctx: Mapping[str, Any], ledger: Any, symbol: str) -> dict | None:
+        from ..strategy_lib import TARGET_R_FROM_ENTRY, PosView
+        pos = ledger.positions.get(symbol)
+        if pos is None:
+            its = self.copy.signals(bars, ctx)
+            if not its:
+                return None
+            it = its[0]
+            self.intent[symbol] = it
+            act = {"action": "OPEN", "direction": it.side, "stop": float(it.stop), "leverage": 1, "leverage_max": 0,
+                   "targets": [float(t.value) for t in it.targets if t.kind != TARGET_R_FROM_ENTRY],
+                   "reason": it.exit_rule, "name": self.variant_id, "setup_type": self.copy.family,
+                   "signal_ts": int(it.signal_ts), "signal_close": float(it.entry_ref.price)}
+            r = [float(t.value) for t in it.targets if t.kind == TARGET_R_FROM_ENTRY]
+            if r:
+                act["target_r_from_entry"] = r[0]
+            return act
+        it = self.intent.get(symbol)
+        opened = int(round(datetime.fromisoformat(str(pos.opened_at).replace("Z", "+00:00")).timestamp() * 1000))
+        pv = PosView(side=str(getattr(pos.side, "value", pos.side)).upper(), entry=float(pos.entry_avg),
+                     stop=float(pos.stop), initial_stop=float(pos.initial_stop or pos.stop), opened_ms=opened,
+                     signal_ts=int(it.signal_ts) if it else 0, entry_bar_ts=opened, bars_held=0, intent=it)
+        a = self.copy.manage(pv, bars, ctx)
+        return {"action": "CLOSE", "reason": a.reason} if a.kind == "CLOSE" else None
+
+
+def _rule_for(variant_id: str) -> Any:
+    from ..strategy_lib import catalog as SLC
+    base = RG.variants_by_id()[variant_id].get("alias_of") or variant_id
+    return _LiveRule(base) if SLC.FAMILY_OF.get(base) == "K" else _PureRule(base)
+
+
 @dataclass
 class RefTrade:
     symbol: str
@@ -221,6 +274,7 @@ class RefTrade:
     closed_at: str
     funding: float
     exit_basis: str | None = None
+    flags: tuple[str, ...] = ()
 
 
 def _ref_ledger(data: KN.SeriesData) -> tuple[Any, Any, Any, Any, Any]:
@@ -258,8 +312,10 @@ def reference_run(variant_id: str, data: KN.SeriesData, *, mode: str = MODE_LIVE
     from ..strategy_paper import DataVerdict, apply_action
     if mode not in (MODE_LIVE, MODE_OHLC):
         raise ValueError(f"kip {MODE_LIVE}/{MODE_OHLC} olmalı: {mode!r}")
-    rule = _LiveRule(variant_id)
+    rule = _rule_for(variant_id)
     copy = rule.copy
+    fund = sorted((int(r[0]), r[1], r[2]) for r in (data.funding or ())) if getattr(copy, "needs_funding", False) else []
+    fund_ts = [r[0] for r in fund]
     stf = copy.signal_tf
     step = TF_MS[stf]
     sym = data.symbol
@@ -275,6 +331,8 @@ def reference_run(variant_id: str, data: KN.SeriesData, *, mode: str = MODE_LIVE
     rejects: dict[str, int] = {}
     pending: dict | None = None
     entry_bar: dict[str, int] = {}
+    entry_hour_end: dict[str, int] = {}                # pozisyon kimliği → giriş saatinin sonu (ms)
+    gap_flagged: set[str] = set()                      # PATH_1H_GAP işaretli pozisyon kimlikleri
 
     def reject(_s: str, why: str) -> None:
         rejects[why] = rejects.get(why, 0) + 1
@@ -283,14 +341,28 @@ def reference_run(variant_id: str, data: KN.SeriesData, *, mode: str = MODE_LIVE
         return build_state(equity=float(led.wallet_balance), starting_equity=REF_EQUITY, available=float(led.available),
                            used_margin=float(led.used_margin), positions=[], history=[], now=now)
 
-    def tick(px: float, at: datetime, first: bool) -> None:
-        led.tick({sym: TickData(last=Decimal(repr(px)), mark=Decimal(repr(px)), ts=iso(at))}, now_utc=at,
-                 funding_rate_lookup=lookup, bar_advance=first)
+    def masked(obs_open_ms: int, fn) -> None:
+        """Giriş saatiyle kesişen tikte (gözlemin başı < giriş saatinin sonu) hedefleri maskele: yalnız stop/likidasyon."""
+        p = led.positions.get(sym)
+        end = entry_hour_end.get(p.id) if p is not None else None
+        if p is None or end is None or int(obs_open_ms) >= end:
+            fn()
+            return
+        saved = p.targets_hit
+        p.targets_hit = len(p.targets)
+        try:
+            fn()
+        finally:
+            p.targets_hit = saved
 
-    def tick_ohlc(o: float, h: float, lo: float, c: float, at: datetime) -> None:
+    def tick(px: float, at: datetime, first: bool, obs_open_ms: int) -> None:
+        masked(obs_open_ms, lambda: led.tick({sym: TickData(last=Decimal(repr(px)), mark=Decimal(repr(px)), ts=iso(at))},
+                                             now_utc=at, funding_rate_lookup=lookup, bar_advance=first))
+
+    def tick_ohlc(o: float, h: float, lo: float, c: float, at: datetime, obs_open_ms: int) -> None:
         td = TickData(last=Decimal(repr(c)), mark=Decimal(repr(c)), high=Decimal(repr(h)), low=Decimal(repr(lo)),
                       open=Decimal(repr(o)), ts=iso(at))
-        led.tick({sym: td}, now_utc=at, funding_rate_lookup=lookup, bar_advance=False)
+        masked(obs_open_ms, lambda: led.tick({sym: td}, now_utc=at, funding_rate_lookup=lookup, bar_advance=False))
 
     for i, bar in enumerate(rows):
         o, h, lo, c = (float(bar[k]) for k in ("open", "high", "low", "close"))
@@ -298,7 +370,7 @@ def reference_run(variant_id: str, data: KN.SeriesData, *, mode: str = MODE_LIVE
         odt = _dt(t_open)
         pos = led.positions.get(sym)
         if pos is not None:
-            tick(o, odt, True)                             # açılış gözlemi: boşlukta açılıştan
+            tick(o, odt, True, t_open)                     # açılış gözlemi: boşlukta açılıştan
             if led.positions.get(sym) is not None and pending and str(pending.get("action")).upper() == "CLOSE":
                 apply_action(pending, symbol=sym, price=o, tick=None, now=odt, ledger=led, risk=risk, profile=prof,
                              state=state(odt), filters=filt, run_id="parity", reject=reject, on_closed=lambda r: None,
@@ -328,14 +400,17 @@ def reference_run(variant_id: str, data: KN.SeriesData, *, mode: str = MODE_LIVE
                                    max_entry_drift_pct=float(rule.params.get("max_entry_drift_pct") or 0.0))
                 if res == "OPENED":
                     entry_bar[sym] = i
+                    entry_hour_end[led.positions[sym].id] = (t_open // h1 + 1) * h1
         if led.positions.get(sym) is not None:
-            j0, j1 = _bisect_left(sub_ts, t_open), _bisect_left(sub_ts, t_open + step)
-            inner = [(float(r["open"]), float(r["high"]), float(r["low"]), float(r["close"]), int(r["timestamp"]))
-                     for r in subs[j0:j1]] or [(o, h, lo, c, t_open)]
+            inner, sub_ok = _ref_hour_ticks(subs, sub_ts, (o, h, lo, c), t_open, step, h1) if subs else \
+                ([(o, h, lo, c, t_open)], True)
+            p = led.positions[sym]
+            if not sub_ok and _ref_touches(p, h, lo):
+                gap_flagged.add(p.id)                      # çekirdeğin `PATH_1H_GAP`'i: değen barda tek tik yedeği
             for so, sh, sl, sc, st in inner:               # canlı `apply_closed_bars`: 1h barı başına bir OHLC tiki
                 if led.positions.get(sym) is None:
                     break
-                tick_ohlc(so, sh, sl, sc, _dt(st + INTRABAR_TICK_MS))
+                tick_ohlc(so, sh, sl, sc, _dt(st + INTRABAR_TICK_MS), st)
         # ---------------------------------------------------------------- kapanış kararı
         now = t_open + step
         bars = {tf: v[1][max(0, _bisect(v[0], now - v[2]) - v[3]):_bisect(v[0], now - v[2])] for tf, v in idx.items()}
@@ -343,6 +418,9 @@ def reference_run(variant_id: str, data: KN.SeriesData, *, mode: str = MODE_LIVE
         if copy.needs_btc:
             j = _bisect(btc_idx, now - TF_MS["1d"])
             ctx["btc_bars"] = btc[max(0, j - int(copy.btc_lookback)):j]
+        if getattr(copy, "needs_funding", False):
+            ctx["funding"] = None if data.funding is None else \
+                tuple(fund[_bisect(fund_ts, now - int(copy.funding_lookback_ms)):_bisect(fund_ts, now)])
         act = rule.decide(bars, ctx, led, sym)
         verdict = DataVerdict(ok=True, entry_ok=True, market="USDM_PERP", source="parity_ref", tour_id="parity",
                               bars={tf: int(b[-1]["timestamp"]) for tf, b in bars.items() if b}, btc={})
@@ -352,6 +430,8 @@ def reference_run(variant_id: str, data: KN.SeriesData, *, mode: str = MODE_LIVE
                 pending = dict(act, _verdict=verdict)
             elif rule.book == "FM" and i - entry_bar.get(sym, i) + 1 >= 24:
                 pending = {"action": "CLOSE", "reason": "TIME_STOP_24_BARS_4h", "_verdict": verdict}
+            elif rule.book == "PURE" and rule.max_hold and i - entry_bar.get(sym, i) + 1 >= int(rule.max_hold):
+                pending = {"action": "CLOSE", "reason": "TIME_STOP_%d_BARS" % int(rule.max_hold), "_verdict": verdict}
         elif act and str(act.get("action") or "").upper() == "OPEN":
             if signal_already_used(act, led.history, sym):
                 reject(sym, "SIGNAL_ALREADY_USED")
@@ -360,7 +440,7 @@ def reference_run(variant_id: str, data: KN.SeriesData, *, mode: str = MODE_LIVE
     if led.positions.get(sym) is not None and rows:
         last = rows[-1]
         end = _dt(int(last["timestamp"]) + step)
-        tick(float(last["close"]), end, False)             # son barın uzlaşmaları (çekirdeğin END bacağı gibi)
+        tick(float(last["close"]), end, False, int(last["timestamp"]) + step)   # son barın uzlaşmaları (END bacağı gibi)
         if led.positions.get(sym) is not None:
             led.close_manual(sym, Decimal(repr(float(last["close"]))), reason="END_OF_DATA", now=end)
     out = []
@@ -369,8 +449,40 @@ def reference_run(variant_id: str, data: KN.SeriesData, *, mode: str = MODE_LIVE
         ef = (rec.features or {}).get("exit_fill") if isinstance((rec.features or {}).get("exit_fill"), dict) else {}
         out.append(RefTrade(symbol=rec.symbol, side=str(rec.side), signal_ts=int(ds.get(stf)), r=float(rec.r_multiple),
                             exit_reason=str(rec.exit_reason), opened_at=str(rec.opened_at), closed_at=str(rec.closed_at),
-                            funding=float(rec.funding), exit_basis=ef.get("basis")))
+                            funding=float(rec.funding), exit_basis=ef.get("basis"),
+                            flags=(KN.FLAG_PATH_GAP,) if rec.id in gap_flagged else ()))
     return out, rejects
+
+
+def _ref_hour_ticks(subs: list, sub_ts: list[int], bar: tuple[float, float, float, float], t_open: int, step: int,
+                    h1: int) -> tuple[list[tuple[float, float, float, float, int]], bool]:
+    """Sinyal barının 1h tikleri (çekirdekten BAĞIMSIZ yazılmış aynı kural): 1h barları barı tam ve bitişik örtmeli
+    (`step / 1h` bar, damgalar açılış + k × 1h), her biri barın aralığında ve kendi içinde tutarlı olmalı; değilse bar tek
+    OHLC tikidir (ikinci değer False)."""
+    o, h, lo, c = bar
+    whole = [(o, h, lo, c, t_open)]
+    n = step // h1
+    j0 = _bisect_left(sub_ts, t_open)
+    rows = subs[j0:j0 + n]
+    out = []
+    for k, r in enumerate(rows):
+        so, sh, sl, sc = float(r["open"]), float(r["high"]), float(r["low"]), float(r["close"])
+        if int(r["timestamp"]) != t_open + k * h1 or sh > h or sl < lo or not (sl <= min(so, sc) and max(so, sc) <= sh):
+            return whole, False
+        out.append((so, sh, sl, sc, int(r["timestamp"])))
+    if len(out) != n:
+        return whole, False
+    return out, True
+
+
+def _ref_touches(p: Any, h: float, lo: float) -> bool:
+    """Bar, defter pozisyonunun stopuna, likidasyonuna ya da sıradaki hedefine değiyor mu (defterin kendi durumu)."""
+    long = str(getattr(p.side, "value", p.side)).upper() == "LONG"
+    lv = [float(x) for x in (p.stop, p.liquidation_price) if x is not None]
+    tgt = float(p.targets[p.targets_hit]) if p.targets_hit < len(p.targets) else None
+    if long:
+        return any(lo <= x for x in lv) or (tgt is not None and h >= tgt)
+    return any(h >= x for x in lv) or (tgt is not None and lo <= tgt)
 
 
 def _bisect(xs: list[int], v: int) -> int:

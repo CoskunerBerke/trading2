@@ -38,16 +38,16 @@ DOC = ROOT / "docs" / "ENGINE_BRAIN_V1.md"
 #: §8.2 S1 mühürü (P3a commit'i). DEĞİŞİRSE CI kırılır.
 SHAS_PINNED = {
     "LIB_V1": "5f05c27d474e458a391d488ae2eff09d5e2067420f901346eb1c8130164b1903",
-    "WF_PROTOCOL_V1": "c8fcf05eb09ec9127b8459690d533e63e08794a2233a1964621ebfd1adfa9956",
+    "WF_PROTOCOL_V1": "a88abf4bc3dec78807d06b1ee39ebc0cf78883b1cbfd01e36365624ebe9e4a8c",
     "STATS_V1": "4a75ce951e1eddb8024537c24ba3d200c823d761ec6b292e7c3875f5874d60e8",
     "LESSON_REGISTRY_V1": "8fbed7f5e33e21a02ec9547bfd84ab7ad0a798d9cc25908aa99911244ad58836",
     "PIT_RULES_V1": "59d0628c975e42aaa7810e231ce0704e5113b6a2bde4fd59fb29e65d8fef48b7",
     "PRIOR_TRIALS_V1": "ad6d8903e66034ce96cafe006f0a071e254968308627ab9998b0464f96984921",
-    "CONFIG_EPOCHS_V1": "ee5eb13b70a44909647a8a7c141deb6ef75e3f285587b1101dba91a42e3e3a14",
-    "THRESHOLD_DIRECTIONS_V1": "44238aadabcaf6736e31e2a420acfb672b6b49a1ebcbe9816c440046fb340888",
+    "CONFIG_EPOCHS_V1": "35f2d18c6fae8d7e0006886deca68f0b3af64bbfd7d0546cf4a00e51643568c0",
+    "THRESHOLD_DIRECTIONS_V1": "93016e4a468ea3a99cbedd2e6cb56780f569f1b713358b39fa7eb4aa2f1b0451",
 }
-T_SEAL_MS_PINNED = 1791764340000
-REGISTRY_SHA_PINNED = "a77d951893a713a9b9154ca1b198867825daaa67559dcf758ef37b9798d4ffd4"
+T_SEAL_MS_PINNED = 1791773880000
+REGISTRY_SHA_PINNED = "4b0e47cd82323191930660d1e527cc0a036a0fe7ab0c87512e71378a2ca1c095"
 
 #: belgedeki sayılar (§2.2, §2.5, §2.6, §5.1, §7.5) — kayıttan BAĞIMSIZ yazılır
 DOC_BUDGET = {"POOLED": (45, 45), "CLUSTER": (135, 135), "COIN_FIT": (161, 1081), "COPY": (312, 312), "COVER": (140, 140),
@@ -428,7 +428,7 @@ def test_never_loosen_direction_table_covers_every_threshold_and_is_sealed():
                       ("PIT_RULES", "thresholds.min_median_daily_quote_volume_usdt"), ("PIT_RULES", "xsec_requires_pit"),
                       ("WF_PROTOCOL", "step_equals_test"), ("STATS", "dsr.sr_var_floor"),
                       ("STATS", "null_world.pass_rate_max"), ("STATS", "bh_fdr.family_tr"),
-                      ("WF_PROTOCOL", "kernel.stop_fill.policy")):
+                      ("WF_PROTOCOL", "kernel.stop_fill.policy"), ("WF_PROTOCOL", "kernel.entry_hour.policy")):
         assert d[fam][path] == RG.FIXED, (fam, path)
     assert all(d["LIB"][f"budget_declared.{k}"] == RG.MIN for k in ("TOTAL", "COIN_FIT", "PRIOR_MIN", "N_AT_SEAL_MIN"))
 

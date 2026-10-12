@@ -47,7 +47,9 @@ EXCEPTIONS = {"identity.py": ({"pathlib", "subprocess", "importlib"}, {"read_byt
 def _py_files() -> list[Path]:
     files = sorted(PKG.glob("*.py"))
     assert {f.name for f in files} >= {"__init__.py", "contract.py", "catalog.py", "identity.py", "livebars.py", "k_trend.py",
-                                       "k_box.py", "k_d4.py", "k_c4.py", "k_fm.py"}
+                                       "k_box.py", "k_d4.py", "k_c4.py", "k_fm.py", "indicators.py", "pure.py", "b_tsmom.py",
+                                       "c_macross.py", "d_donchian.py", "e_volbreak.py", "f1_range.py", "f2_boxgrid.py",
+                                       "h_funding.py"}
     return files
 
 
@@ -83,7 +85,9 @@ def test_strategy_lib_is_pure_by_ast(path):
 def test_importing_strategy_lib_does_not_load_the_engine():
     code = ("import sys, tradingbot.strategy_lib, tradingbot.strategy_lib.identity; "
             "import tradingbot.strategy_lib.k_trend, tradingbot.strategy_lib.k_box, tradingbot.strategy_lib.k_d4, "
-            "tradingbot.strategy_lib.k_c4, tradingbot.strategy_lib.k_fm; "
+            "tradingbot.strategy_lib.k_c4, tradingbot.strategy_lib.k_fm, tradingbot.strategy_lib.b_tsmom, "
+            "tradingbot.strategy_lib.c_macross, tradingbot.strategy_lib.d_donchian, tradingbot.strategy_lib.e_volbreak, "
+            "tradingbot.strategy_lib.f1_range, tradingbot.strategy_lib.f2_boxgrid, tradingbot.strategy_lib.h_funding; "
             "print(sorted(m for m in sys.modules if m.startswith('tradingbot.research_engine')))")
     cp = subprocess.run([sys.executable, "-s", "-c", code], capture_output=True, text=True, cwd=str(ROOT), timeout=180)
     assert cp.returncode == 0, cp.stderr[-2000:]
@@ -186,12 +190,12 @@ def test_spec_sha_equals_the_registry_and_the_trials_ledger():
         m = KN.module_src_shas()
     except SLI.DirtyTreeError as exc:
         pytest.skip(f"çalışma ağacı kirli: {exc}")
-    assert set(m) == set(SLC.IMPLEMENTED) and len(SLC.IMPLEMENTED) == 13
+    assert set(m) == set(SLC.IMPLEMENTED) and len(SLC.IMPLEMENTED) == 58            # P3b-2a: K + B…H
     for vid in SLC.IMPLEMENTED:
         assert KN.spec_sha_for(vid) == RG.spec_sha(RG.lib_spec(vid, SLI.module_src_sha(vid)))
     assert KN.spec_sha_for("DON_20_10_4h_LO") == KN.spec_sha_for("K_D4")
     assert KN.spec_sha_for("BOX_n10_mid_ms0.5") == KN.spec_sha_for("K_BOX")
-    assert len({KN.spec_sha_for(v) for v in SLC.IMPLEMENTED}) == 13
+    assert len({KN.spec_sha_for(v) for v in SLC.IMPLEMENTED}) == 58
     bases = {v["variant_id"] for v in RG.LIB_V1["variants"] if not v.get("alias_of")}
     full = {b: m.get(b, "f" * 64) for b in bases}
     rows = TR.seal_entries(full)
@@ -221,7 +225,7 @@ def test_formation_fees_equal_the_live_config():
 # ============================================================================ kopyalar
 def test_copies_are_built_from_the_sealed_params_only():
     vs = RG.variants_by_id()
-    for vid in SLC.IMPLEMENTED:
+    for vid in [v for v in SLC.IMPLEMENTED if SLC.FAMILY_OF[v] == "K"]:
         var = KN.make_variant(vid)
         assert var.variant_id == vid and var.family == "K"
         assert var.signal_tf == RG.LIB_V1["variants"][[v["variant_id"] for v in RG.LIB_V1["variants"]].index(vid)]["signal_tf"]
@@ -232,7 +236,9 @@ def test_copies_are_built_from_the_sealed_params_only():
         with pytest.raises(ValueError):
             SLC.make(vid, {k: v for k, v in list(p.items())[1:]})
     with pytest.raises(KeyError):
-        SLC.make("TS_28_LS", {"lookback_days": 28})            # B…O P3b-2'de
+        SLC.make("O_T2_F_ER", {})                              # O örtüleri sonraki P3b-2 adımında
+    with pytest.raises(ValueError):
+        SLC.make("TS_28_LS", {"lookback_days": 28})            # saf aile mühürlü spec'siz kurulmaz (P3b-2a)
     assert KN.make_variant("DON_20_10_4h_LO").variant_id == "K_D4"
 
 

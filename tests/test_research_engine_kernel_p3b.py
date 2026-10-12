@@ -131,18 +131,75 @@ def test_one_ohlc_tick_stop_before_target_on_the_same_tick():
 def test_tp1_partial_moves_stop_to_breakeven_only_for_later_ticks():
     tg = (SL.Target(SL.TARGET_PRICE, 105.0), SL.Target(SL.TARGET_PRICE, 120.0))
     b = flat(6)
-    b[2] = bar(2, 100.0, 106.0, 99.0, 99.5)          # lehte uç TP1 → stop başa-başa; aynı tikin kapanışı onu sınamaz
+    b[3] = bar(3, 100.0, 106.0, 99.0, 99.5)          # lehte uç TP1 → stop başa-başa; aynı tikin kapanışı onu sınamaz
     (t,) = run(b, Scripted(opens={1: {"stop": 95.0, "targets": tg}})).trades
     be = KN.break_even(True, 100.0 * (1 + SLIP), FEE, SLIP)
     # sonraki barın açılış tiki (100) başa-başın altında: boşluk dolumu açılıştan (defter `GAP_FILL_AT_FIRST_OBSERVATION`)
     assert [(lg.kind, lg.frac, lg.point) for lg in t.legs] == [(KN.EXIT_TARGET, 0.5, "favourable"), (KN.EXIT_STOP, 0.5, "open")]
     assert 100.0 < be and t.legs[1].ref == 100.0 and t.exit_reason == "BREAKEVEN_STOP"
-    assert t.legs[1].basis == "GAP_FILL_AT_FIRST_OBSERVATION" and t.exit_ts == T0 + 3 * D1
+    assert t.legs[1].basis == "GAP_FILL_AT_FIRST_OBSERVATION" and t.exit_ts == T0 + 4 * D1
     assert t.r["base"] == pytest.approx(r_by_hand(100.0, 95.0, [(105.0, 0.5, False), (100.0, 0.5, True)]), abs=1e-12)
     # aynı tikin TERS ucu yeni stopu sınamaz: düşük 99 < başa-baş ama yol "sürer"
-    b = flat(2) + [bar(2, 100.0, 106.0, 99.0, 103.0)] + [bar(i, 103.0, 103.1, 102.9, 103.0) for i in range(3, 6)]
+    b = flat(3) + [bar(3, 100.0, 106.0, 99.0, 103.0)] + [bar(i, 103.0, 103.1, 102.9, 103.0) for i in range(4, 7)]
     (t,) = run(b, Scripted(opens={1: {"stop": 95.0, "targets": tg}})).trades
     assert t.exit_kind == KN.EXIT_END and t.legs[0].kind == KN.EXIT_TARGET and KN.FLAG_OPEN_AT_END in t.flags
+
+
+def test_entry_hour_applies_stop_and_liquidation_but_no_target_credit():
+    """Mühürlü okunuş `WF_PROTOCOL_V1.kernel.entry_hour` (m-A): girişi içeren 1h saat diliminde yalnız stop/likidasyon;
+    hedef kredisi yok (canlıda o saatin 1h barı `apply_closed_bars`'a girmez). Alt barsız 1d giriş barı tek tiktir ve
+    giriş saatini içerir → bütün bar hedefsiz; hedef sonraki tikte hâlâ oradaysa alınır; stop giriş saatinde de çalışır."""
+    tg = {"stop": 95.0, "targets": (SL.Target(SL.TARGET_PRICE, 110.0),)}
+    b = flat(6)
+    b[2] = bar(2, 100.0, 111.0, 99.0, 104.0)         # giriş barı (tek tik, giriş saatini içerir): hedef 110 değmiş
+    (t,) = run(b, Scripted(opens={1: tg})).trades
+    assert t.exit_kind == KN.EXIT_END and not any(lg.kind == KN.EXIT_TARGET for lg in t.legs), "giriş saatinde hedef yok"
+    b[3] = bar(3, 104.0, 112.0, 103.0, 108.0)         # sonraki gün hedef yine değer → alınır
+    (t,) = run(b, Scripted(opens={1: tg})).trades
+    assert (t.exit_kind, t.legs[0].ref, t.exit_ts) == (KN.EXIT_TARGET, 110.0, T0 + 4 * D1)
+    b = flat(6)
+    b[2] = bar(2, 100.0, 111.0, 94.0, 94.5)           # giriş barında stop: uygulanır (ihtiyatlı kapanış dolumu)
+    (t,) = run(b, Scripted(opens={1: tg})).trades
+    assert (t.exit_kind, t.legs[0].ref, t.legs[0].basis, t.exit_ts) == (KN.EXIT_STOP, 94.5, KN.BASIS_PRUDENT_CLOSE, T0 + 3 * D1)
+    # 1h alt barlarla: giriş saati (00:00) hedefe değer → kredi yok; 01:00 saati yine değer → hedef 01:00'de
+    tg2 = {"stop": 95.0, "targets": (SL.Target(SL.TARGET_PRICE, 105.0),)}
+    days, hours = hourly_world(6, {2: hours_with(100.0, {0: (100.0, 106.0, 99.9, 104.0), 1: (104.0, 105.5, 103.0, 104.5)})})
+    (t,) = run_h(days, hours, Scripted(opens={1: tg2})).trades
+    assert (t.exit_kind, t.legs[0].earliest, t.legs[0].ts) == (KN.EXIT_TARGET, T0 + 2 * D1 + H1, T0 + 2 * D1 + 2 * H1)
+    days, hours = hourly_world(6, {2: hours_with(100.0, {0: (100.0, 106.0, 99.9, 104.0), 1: (104.0, 104.5, 103.0, 104.5)})})
+    (t,) = run_h(days, hours, Scripted(opens={1: tg2})).trades
+    assert t.exit_kind == KN.EXIT_END and KN.FLAG_PATH_GAP not in t.flags, "giriş saatinden sonra değmedi → hedef yok"
+    days, hours = hourly_world(6, {2: hours_with(100.0, {0: (100.0, 106.0, 94.0, 94.5)})})
+    (t,) = run_h(days, hours, Scripted(opens={1: tg2})).trades
+    assert (t.exit_kind, t.legs[0].ref, t.legs[0].earliest) == (KN.EXIT_STOP, 94.5, T0 + 2 * D1), "giriş saatinde stop"
+
+
+def test_entry_hour_on_sub_hour_signal_bars_spans_the_clock_hour():
+    """Sinyal dilimi ≤ 1h (Box 5m) iken tikler barın kendisidir; girişi içeren SAAT diliminin bütün tikleri (açılış
+    tikleri dahil) hedefsizdir, sonraki saatin ilk tikinden itibaren hedef alınır."""
+    M5 = 300_000
+
+    class Five(SL.Variant):
+        variant_id, family, signal_tf, timeframes = "TEST5M", "T", "5m", ("5m",)
+
+        def __init__(self):
+            self.lookback = {"5m": 5}
+
+        def signals(self, bars, ctx):
+            if int(ctx["now_ms"]) != T0 + 3 * M5:
+                return []
+            return [SL.Intent(signal_ts=T0 + 2 * M5, side=SL.LONG, entry_ref=SL.EntryRef(price=100.0), stop=95.0,
+                              targets=(SL.Target(SL.TARGET_PRICE, 101.0),))]
+
+        def manage(self, pos, bars, ctx):
+            return SL.NONE
+    rows = [{"timestamp": T0 + k * M5, "open": 100.0, "high": 100.1, "low": 99.9, "close": 100.0, "volume": 1.0}
+            for k in range(30)]
+    for k in (5, 9, 11):                               # giriş 00:15; 00:25, 00:45, 00:55 hedefe değer — giriş saati
+        rows[k] = dict(rows[k], high=101.5)
+    rows[12] = dict(rows[12], open=101.2, high=101.3, close=101.0)   # 01:00 açılış tiki hedefin ötesinde → alınır
+    (t,) = KN.run(Five(), KN.SeriesData(symbol="TST", bars={"5m": rows})).trades
+    assert (t.exit_kind, t.legs[0].ts, t.legs[0].point) == (KN.EXIT_TARGET, T0 + 12 * M5, "open")
 
 
 def test_r_from_entry_target_is_measured_from_the_real_entry():
@@ -245,6 +302,9 @@ def test_the_kernel_calls_the_live_exit_decision_and_the_seal_names_the_rule():
     assert "2026-10-12" in sealed["reading_tr"] and "+0,02–0,04 R" in sealed["reading_tr"]
     assert "PATH_1H_GAP" in sealed["path_gap_tr"] == sealed["path_gap_tr"] and KN.FLAG_PATH_GAP == "PATH_1H_GAP"
     assert RG.THRESHOLD_DIRECTIONS["WF_PROTOCOL"]["kernel.stop_fill.policy"] == RG.FIXED, "asla gevşetme: kural sabit"
+    eh = RG.WF_PROTOCOL_V1["kernel"]["entry_hour"]
+    assert eh["policy"] == KN.ENTRY_HOUR_POLICY and "2026-10-12" in eh["reading_tr"] and "m-A" in eh["decision"]
+    assert RG.THRESHOLD_DIRECTIONS["WF_PROTOCOL"]["kernel.entry_hour.policy"] == RG.FIXED
 
 
 def test_the_float_tick_view_gives_the_same_decision_as_a_decimal_tickdata():
@@ -342,8 +402,8 @@ def test_tp1_in_an_early_hour_then_the_breakeven_stop_later_the_same_day():
 
 
 def test_skipping_untouched_bars_is_exact(monkeypatch):
-    """Çekirdek yalnız stop/likidasyon/sıradaki hedef aralığına değen barda alt barları açar. Her barı açan koşu (aynı
-    canlı fonksiyon, bütün tikler) bayt-aynı sonuç verir (1d × 24 ve 4h × 4 alt bar, Box 5m)."""
+    """Çekirdek yalnız stop/likidasyon/sıradaki hedef aralığına değen barda alt barları açar. 1h verisi TAMKEN her barı
+    açan koşu (aynı canlı fonksiyon, bütün tikler) bayt-aynı sonuç verir (1d × 24 ve 4h × 4 alt bar, Box 5m)."""
     from tradingbot.research_engine import synthetic as S
     cases = (("K_D4", S.d4_world(22, n=420)), ("K_FM", S.fm_world(21, n=500)), ("K_T2", S.trend_world(23, n=300)),
              ("K_BOX", S.box_world(21, days=2)))
@@ -352,6 +412,21 @@ def test_skipping_untouched_bars_is_exact(monkeypatch):
     for v, d in cases:
         assert json.dumps(KN.run(KN.make_variant(v), d).to_dict(), sort_keys=True) == lazy[v], v
     assert any(json.loads(x)["trades"] for x in lazy.values())
+
+
+def test_skipping_with_an_untouched_1h_gap_differs_only_by_the_flag(monkeypatch):
+    """m-B: kısaltmanın "bayt-aynı"lığı yalnız 1h verisi tamken geçerlidir. Değmeyen bir barın 1h verisi eksikse işlem,
+    bacaklar ve R aynıdır; yalnız her barı açan koşu o bar için `PATH_1H_GAP` koyar (mühürlü kural: işaret yalnız çıkış
+    kararı gereken barda)."""
+    hrs = hours_with(100.0, {5: (99.0, 99.2, 94.0, 94.5), 6: (94.5, 100.0, 94.4, 100.0)})
+    days, hours = hourly_world(6, {3: hrs})
+    hole = [x for x in hours if x["timestamp"] != T0 + 2 * D1 + 9 * H1]                   # giriş günü (değmez) eksik saat
+    (lazy,) = run_h(days, hole, Scripted(opens={1: {"stop": 95.0}})).trades
+    monkeypatch.setattr(KN, "_touches", lambda *a, **k: True)
+    (full,) = run_h(days, hole, Scripted(opens={1: {"stop": 95.0}})).trades
+    a, b = lazy.to_dict(), full.to_dict()
+    assert KN.FLAG_PATH_GAP not in a["flags"] and KN.FLAG_PATH_GAP in b["flags"]
+    assert {k: v for k, v in a.items() if k != "flags"} == {k: v for k, v in b.items() if k != "flags"}
 
 
 def test_missing_or_inconsistent_1h_subbars_fall_back_to_one_tick_and_flag():
@@ -584,14 +659,14 @@ def test_funding_in_the_exit_bar_is_charged_only_when_the_exit_could_not_precede
 
 def test_funding_after_a_partial_exit_uses_the_remaining_quantity():
     tg = (SL.Target(SL.TARGET_PRICE, 105.0), SL.Target(SL.TARGET_PRICE, 130.0))
-    b = flat(2) + [bar(2, 100.0, 106.0, 99.5, 104.0)] + [bar(i, 104.0, 104.1, 103.9, 104.0) for i in range(3, 8)]
+    b = flat(3) + [bar(3, 100.0, 106.0, 99.5, 104.0)] + [bar(i, 104.0, 104.1, 103.9, 104.0) for i in range(4, 9)]
     h12 = 12 * 3_600_000
-    paid = {T0 + 2 * D1 + h12, T0 + 3 * D1, T0 + 3 * D1 + h12}
+    paid = {T0 + 3 * D1 + h12, T0 + 4 * D1, T0 + 4 * D1 + h12}
     rows = [(T0 + k * h12, (0.001 if T0 + k * h12 in paid else 0.0), 100.0) for k in range(0, 30)]
     (t,) = run(b, Scripted(opens={1: {"stop": 95.0, "targets": tg}}), funding=rows).trades
-    assert t.legs[0].ts == T0 + 3 * D1 and t.legs[0].earliest == T0 + 2 * D1 and t.exit_kind == KN.EXIT_END
-    # TP1 giriş barının İÇİNDE (lehte uç) doldu: barın içindeki uzlaşma yalnız kalan yarıya (TP1 yarısı belirsiz →
-    # yazılmaz, işaretli); barın kapanışındaki ve sonrakiler kalan yarıyla
+    assert t.legs[0].ts == T0 + 4 * D1 and t.legs[0].earliest == T0 + 3 * D1 and t.exit_kind == KN.EXIT_END
+    # TP1 girişten sonraki barın İÇİNDE (lehte uç) doldu: barın içindeki uzlaşma yalnız kalan yarıya (TP1 yarısı
+    # belirsiz → yazılmaz, işaretli); barın kapanışındaki ve sonrakiler kalan yarıyla
     assert t.funding_usdt == pytest.approx(-t.qty * 100.0 * 0.001 * (0.5 + 0.5 + 0.5), rel=1e-12)
     assert t.funding_ambiguous_events == 1 and KN.FLAG_FUNDING_EXIT_BAR in t.flags
     assert t.funding_ambiguous_usdt == pytest.approx(-t.qty * 100.0 * 0.001 * 0.5, rel=1e-12)
@@ -618,6 +693,24 @@ def test_funding_gap_is_judged_against_the_local_interval_8h_then_4h():
     b = flat(8)
     (t,) = run(b, Scripted(opens={1: {"stop": 95.0}}), funding=[(x, 0.0001, 100.0) for x in ts]).trades
     assert KN.FLAG_FUNDING_GAP not in t.flags and t.funding_events > 0
+
+
+def test_funding_gap_blind_spot_single_missing_settlement_at_an_interval_switch():
+    """m-D (belge §8.4 P3b-2a): yerel aralık ölçüsünün BİLİNEN kör noktası — aralık değişiminin (8h → 4h ya da 4h → 8h)
+    hemen yanındaki TEK eksik uzlaşma, oluşan aralık büyük komşunun 1,5 katını aşmadığı için `FUNDING_GAP` sayılmaz
+    (8h → 4h'te ilk 4h uzlaşmasının yokluğu, değişimin bir uzlaşma sonra olmasından ayırt edilemez). Kararlı seride
+    aynı tek eksik yakalanır. Davranış bilerek sabitlenir: düzeltilirse bu test ve belge birlikte güncellenir."""
+    h = 3_600_000
+
+    def fs(ints):
+        t, rows = 0, [(0, 0.0001, 100.0)]
+        for x in ints:
+            t += x * h
+            rows.append((t, 0.0001, 100.0))
+        return KN.FundingSeries(rows)
+    for ints in ([8] * 10 + [8] + [4] * 9, [8] * 9 + [12] + [4] * 10, [4] * 10 + [12] + [8] * 9, [4] * 9 + [8] * 11):
+        assert not any(fs(ints).gap_after), ints
+    assert fs([8] * 10 + [16] + [8] * 10).gap_after[10] and fs([4] * 10 + [8] + [4] * 10).gap_after[10]
 
 
 def test_funding_gap_is_flagged():

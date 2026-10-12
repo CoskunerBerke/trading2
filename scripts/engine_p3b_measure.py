@@ -11,7 +11,13 @@ geçti mi (`live_1h`); `ohlc` kipinin ΔR'si; çekirdeğin ve defterin çıkış
 `PATH_1H_GAP` ve `FUNDING_EXIT_BAR` işaretleri; bar/sn ve karar/sn hızı. Ağ yok, gerçek veri yok, hiçbir yere yazmaz
 (`--out` verilmedikçe).
 
+P3b-2a: saf aileler (`B`, `C`, `D`, `E`, `F1`, `F2`, `H`) de ölçülür — her varyant kendi dünyasında
+(`synthetic.world_for`: 1d → trend, 4h → D4, 1h → 1h dünyası, H → kalıcı fonlama rejimli 4h, F2 → Box 5m); başvuru
+varyantın KENDİ kuralıdır (`parity._PureRule`; canlı karşılığı yok) → ölçü çekirdeğin yol/maliyet aritmetiğini sınar.
+`--speed-only`: yalnız çekirdek hızı (başvuru koşulmaz). `--box-days`: F2 Box dünyasının günü (varsayılan 60).
+
     python scripts/engine_p3b_measure.py [--families T2,M2,BOX,D4,C4,FM] [--min-trades 200] [--max-worlds 40] [--out f.json]
+    python scripts/engine_p3b_measure.py --families B,C,D,E,F1,F2,H [--speed-only]
 """
 from __future__ import annotations
 
@@ -30,24 +36,56 @@ from tradingbot.research_engine import synthetic as S  # noqa: E402
 from tradingbot.strategy_lib import catalog as SLC  # noqa: E402
 
 
+PURE_FAMILIES = ("B", "C", "D", "E", "F1", "F2", "H")
+
+
 def family_variants(fam: str) -> list[str]:
-    return [v for v in SLC.IMPLEMENTED if SLC.BOOK_OF[v] == fam]
+    if fam in PURE_FAMILIES:
+        return [v for v in SLC.IMPLEMENTED if SLC.FAMILY_OF[v] == fam]
+    return [v for v in SLC.IMPLEMENTED if SLC.BOOK_OF.get(v) == fam]
 
 
-def measure(fam: str, *, min_trades: int, max_worlds: int, seed0: int = 11, ohlc: bool = True) -> dict:
+_WORLDS: dict[tuple, object] = {}
+
+
+def world_of(fam: str, vid: str, seed: int, box_days: int):
+    """K: ailenin dünyası (P3b-1 ile aynı); saf aile: varyantın dilimine göre (`synthetic.world_for`)."""
+    if fam not in PURE_FAMILIES:
+        return S.WORLDS[fam](seed)
+    var = KN.make_variant(vid)
+    fn = S.world_for(vid, var.signal_tf, var.family)
+    key = (fn.__name__, seed)
+    if key not in _WORLDS:
+        _WORLDS.clear() if len(_WORLDS) > 8 else None
+        _WORLDS[key] = fn(seed, days=box_days) if var.family == "F2" else fn(seed)
+    return _WORLDS[key]
+
+
+def measure(fam: str, *, min_trades: int, max_worlds: int, seed0: int = 11, ohlc: bool = True, speed_only: bool = False,
+            box_days: int = 60) -> dict:
     pairs, pairs_ohlc = [], []
     bases: dict[str, int] = {}
     bars = decisions = 0
     t_kernel = t_ref = 0.0
     worlds = 0
+    per_variant: dict[str, list[float]] = {}
     for k in range(max_worlds):
-        data = S.WORLDS[fam](seed0 + k)
         worlds += 1
         for vid in family_variants(fam):
+            data = world_of(fam, vid, seed0 + k, box_days)
             var = KN.make_variant(vid)
             t = time.perf_counter()
             kr = KN.run(var, data)
-            t_kernel += time.perf_counter() - t
+            dt = time.perf_counter() - t
+            t_kernel += dt
+            pv = per_variant.setdefault(vid, [0.0, 0.0])
+            pv[0] += kr.bars
+            pv[1] += dt
+            if speed_only:
+                bars += kr.bars
+                decisions += kr.decisions
+                pairs.append((vid, kr, []))
+                continue
             t = time.perf_counter()
             refs, _rej = PA.reference_run(vid, data, mode=PA.MODE_LIVE)
             t_ref += time.perf_counter() - t
@@ -63,7 +101,7 @@ def measure(fam: str, *, min_trades: int, max_worlds: int, seed0: int = 11, ohlc
         a = PA.compare_a(pairs, min_trades=min_trades)
         print(f"[{fam}] dünya {worlds}: eşleşen {a.n_matched} / çekirdek {a.n_kernel} / defter {a.n_ref}", file=sys.stderr,
               flush=True)
-        if a.n_matched >= min_trades:
+        if a.n_matched >= min_trades or (speed_only and a.n_kernel >= min_trades):
             break
     a = PA.compare_a(pairs, min_trades=min_trades)
     trades = [t for _v, kr, _r in pairs for t in kr.trades]
@@ -84,6 +122,8 @@ def measure(fam: str, *, min_trades: int, max_worlds: int, seed0: int = 11, ohlc
             "funding_exit_bar_trades": len(amb),
             "funding_exit_bar_mean_abs_r": (sum(abs(x) for x in amb) / len(amb)) if amb else 0.0,
             "kernel_seconds": round(t_kernel, 3), "reference_seconds": round(t_ref, 3),
+            "kernel_bars_per_sec_by_variant": {v: round(b / s, 1) for v, (b, s) in per_variant.items() if s},
+            "speed_only": speed_only,
             "kernel_bars_per_sec": round(bars / t_kernel, 1) if t_kernel else None,
             "kernel_decisions_per_sec": round(decisions / t_kernel, 1) if t_kernel else None,
             "trades_per_1000_bars": round(1000.0 * len(trades) / bars, 3) if bars else None,
@@ -100,13 +140,16 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--max-worlds", type=int, default=40)
     ap.add_argument("--out", default=None)
     ap.add_argument("--no-ohlc", action="store_true", help="sinyal barı başına tek OHLC tiki rapor kipini koşma")
+    ap.add_argument("--speed-only", action="store_true", help="yalnız çekirdek hızı (başvuru/parite yok)")
+    ap.add_argument("--box-days", type=int, default=60, help="F2 Box dünyasının günü")
     args = ap.parse_args(argv)
     out = {"kernel": KN.KERNEL_VERSION, "thresholds": RG.thaw(RG.LIB_V1["thresholds"]["parity_kernel"]),
            "registry_sha": RG.REGISTRY_SHA, "families": []}
     for fam in [f.strip() for f in args.families.split(",") if f.strip()]:
-        out["families"].append(measure(fam, min_trades=args.min_trades, max_worlds=args.max_worlds, ohlc=not args.no_ohlc))
+        out["families"].append(measure(fam, min_trades=args.min_trades, max_worlds=args.max_worlds, ohlc=not args.no_ohlc,
+                                       speed_only=args.speed_only, box_days=args.box_days))
         print(json.dumps(out["families"][-1], ensure_ascii=False, sort_keys=True), flush=True)
-    out["all_passed"] = all(f["parity_a"]["passed"] for f in out["families"])
+    out["all_passed"] = all(f["parity_a"]["passed"] for f in out["families"] if not f["speed_only"])
     text = json.dumps(out, ensure_ascii=False, sort_keys=True, indent=1)
     if args.out:
         Path(args.out).write_text(text + "\n", encoding="utf-8")

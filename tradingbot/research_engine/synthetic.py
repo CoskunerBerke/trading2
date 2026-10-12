@@ -181,8 +181,60 @@ def box_world(seed: int, days: int = 60, *, sub: bool = True) -> KN.SeriesData:
     return series(f"SYN{seed}", {"1d": d1, "5m": m5}, signal_tf="5m", seed=seed)
 
 
+def h1_world(seed: int, n: int = 3000, *, sub: bool = True) -> KN.SeriesData:
+    """E/F1 1h (P3b-2): sinyal dilimi 1h → çıkış tikleri barın kendisi (`sub` yok sayılır); trend ve yatay rejimler (ER20
+    iki yanda), ara sıra boşluk."""
+    del sub
+    h1 = walk(n, seed=seed, step=H1, p0=40.0, vol=0.008, trend=0.002, regime_len=48, gap_p=0.005, gap_vol=0.004, wick=0.7)
+    return series(f"SYN{seed}", {"1h": h1}, signal_tf="1h", seed=seed)
+
+
+def ar_funding_rows(rows: list[dict[str, Any]], step: int, *, seed: int, hours=(0, 8, 16), base: float = 0.0001,
+                    phi: float = 0.92, vol: float = 0.00012) -> list[tuple[int, float, float]]:
+    """H ailesi (P3b-2): KALICI fonlama rejimleri — AR(1) oran (taban + φ × (önceki − taban) + gürültü) 00/08/16 UTC
+    uzlaşmalarında; mark = uzlaşma anını içeren barın açılışı (`funding_rows` ile aynı)."""
+    rnd = random.Random(seed)
+    if not rows:
+        return []
+    start, end = int(rows[0]["timestamp"]), int(rows[-1]["timestamp"]) + step
+    by_open = {int(r["timestamp"]): r for r in rows}
+    out = []
+    r = base
+    t = start // H1 * H1
+    while t <= end + D1:
+        if (t // H1) % 24 in hours:
+            k = t // step * step
+            bar = by_open.get(k) or by_open.get(k - step)
+            mark = float(bar["open"]) if bar is not None else float(rows[-1]["close"])
+            r = base + phi * (r - base) + rnd.gauss(0.0, vol)
+            out.append((t, r, mark))
+        t += H1
+    return out
+
+
+def fund_world(seed: int, n: int = 2200, *, sub: bool = True) -> KN.SeriesData:
+    """H (P3b-2): 4h barlar (tutarlı 1h alt barlarla) + kalıcı rejimli fonlama (`ar_funding_rows`)."""
+    h4 = walk(n, seed=seed, step=H4, p0=25.0, vol=0.015, trend=0.003, regime_len=40, gap_p=0.01, gap_vol=0.01)
+    d = series(f"SYN{seed}", _with_1h({"4h": h4}, "4h", seed, sub), signal_tf="4h", seed=seed)
+    return KN.SeriesData(symbol=d.symbol, bars=d.bars, btc_1d=None, funding=ar_funding_rows(h4, H4, seed=seed + 77),
+                         price_tick=d.price_tick)
+
+
 #: K kopyası → aile birimi ve dünyası (parite (a) ve hız ölçümü)
 WORLDS = {"T2": trend_world, "M2": trend_world, "BOX": box_world, "D4": d4_world, "C4": c4_world, "FM": fm_world}
 
-__all__ = ["WORLDS", "D1", "H1", "H4", "M5", "SUB_SEED", "T0", "aggregate", "box_world", "c4_world", "d4_world", "fm_world",
-           "funding_rows", "series", "subdivide", "trend_world", "walk"]
+
+def world_for(variant_id: str, signal_tf: str, family: str):
+    """P3b-2 saf aileleri ve F2 için dünya: F2 → Box (5m); H → `fund_world`; aksi sinyal dilimine göre (1d → trend,
+    4h → D4, 1h → `h1_world`)."""
+    del variant_id
+    if family == "F2":
+        return box_world
+    if family == "H":
+        return fund_world
+    return {"1d": trend_world, "4h": d4_world, "1h": h1_world}[signal_tf]
+
+
+__all__ = ["WORLDS", "D1", "H1", "H4", "M5", "SUB_SEED", "T0", "aggregate", "ar_funding_rows", "box_world", "c4_world",
+           "d4_world", "fm_world", "fund_world", "funding_rows", "h1_world", "series", "subdivide", "trend_world", "walk",
+           "world_for"]

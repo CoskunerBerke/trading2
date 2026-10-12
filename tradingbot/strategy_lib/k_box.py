@@ -105,7 +105,7 @@ class BoxCopy(Variant):
         box = box_theory.read_box(bars.get("1d") or [], before_ms=day0)
         if box is None:
             return True                                       # (4) kutu yok → kural None
-        loc = box_theory._edge_location([prev, cur], box[0], box[1], p)
+        loc = box_theory._edge_location(list(m5[-int(p.loc_lookback):]), box[0], box[1], p)   # kuralın penceresi (bulgu 2)
         return not ((loc == "TOP" and short) or (loc == "BOTTOM" and long))
 
     def cannot_close(self, pos: PosView, bars, now: int) -> bool:

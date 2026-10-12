@@ -90,6 +90,9 @@ def fast_frame(bars: Sequence[Mapping[str, Any]] | None, tf: str, *, daily_indic
         "timestamp": [int(r["timestamp"]) for r in rows], "open": [float(r["open"]) for r in rows],
         "high": [float(r["high"]) for r in rows], "low": [float(r["low"]) for r in rows],
         "close": [float(r["close"]) for r in rows], "volume": [float(r.get("volume") or 0.0) for r in rows]}
+    if not all(np.isfinite(data[c]).all() for c in ("open", "high", "low", "close")):
+        # NaN/inf OHLC: pandas yolu (gerçek aralıkta max(axis=1) NaN'ı atlar; saf atr NaN'ı yayar) — inceleme P3b-2b bulgu 1
+        return frame(bars, tf, daily_indicators=daily_indicators)
     cols = _COLS
     if daily_indicators:
         data["ema200"] = SI.ema(data["close"], 200)
@@ -142,6 +145,8 @@ def candle_window(bars_4h: Sequence[Mapping[str, Any]] | None, now_ms: int, *, f
     fr = fast_frame(bars_4h, candle_book.TIMEFRAME)
     if fr is None:
         return candle_dsl.window_from_rows([], step)
+    if not isinstance(fr, FastFrame):                      # NaN/inf OHLC → fast_frame pandas'a döndü: yavaş yol
+        return candle_dsl.window_from_rows(candle_rows(bars_4h, now_ms), step)
     d, n, w = fr._data, len(fr), candle_book.WINDOW
     a = max(0, n - (w + 2))
     now = float(now_ms)

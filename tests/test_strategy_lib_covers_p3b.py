@@ -916,3 +916,21 @@ def test_cover_runs_are_deterministic():
     base = json.dumps([(t.signal_ts, t.exit_kind, t.r["base"]) for t in KN.run(KN.make_variant("K_D4"), data).trades])
     assert len(paths) >= 5 and base in paths | {base}, "faktörler davranışı gerçekten değiştirir"
     assert math.isfinite(sum(t["r"]["base"] for v in a.values() for t in json.loads(v)["trades"]))
+
+
+def test_fast_frame_falls_back_to_pandas_on_non_finite_ohlc():
+    """İnceleme P3b-2b bulgu 1: NaN yüksek/alçak → saf atr NaN'ı yayar, pandas max(axis=1) atlar; hızlı çerçeve pandas
+    yoluna döner ve günlük atr14/ema200 pandas'la aynı kalır."""
+    import math
+
+    import pandas as pd
+
+    from tradingbot.strategy_lib import livebars as LB
+    day = 86_400_000
+    rows = [{"timestamp": i * day, "open": 100 + i % 7, "high": 103 + i % 5, "low": 97 - i % 3, "close": 100 + i % 4,
+             "volume": 10.0} for i in range(450)]
+    rows[300] = {**rows[300], "high": float("nan")}
+    ff = LB.fast_frame(rows, "1d", daily_indicators=True)
+    pf = LB.frame(rows, "1d", daily_indicators=True)
+    assert isinstance(ff, pd.DataFrame) and ff.equals(pf)
+    assert not math.isnan(float(ff["atr14"].iloc[-1]))

@@ -680,6 +680,8 @@ class _Sim:
                            int(variant.lookback.get(tf, 0) or len(data.bars.get(tf) or ()))) for tf in variant.timeframes}
         btc = list(data.btc_1d or ())
         self.btc_view = (_tf_index(btc), btc, TF_MS["1d"], int(variant.btc_lookback or len(btc))) if variant.needs_btc else None
+        if getattr(variant, "needs_btc_4h", False) and data.btc_4h is None:
+            raise ValueError(f"{variant.variant_id}: F_BTC örtüsü BTC 4h barları ister (SeriesData.btc_4h yok)")   # bulgu 3
         b4 = list(data.btc_4h or ())
         self.btc4_view = (_tf_index(b4), b4, TF_MS["4h"], int(getattr(variant, "btc_4h_lookback", 0) or len(b4))) \
             if getattr(variant, "needs_btc_4h", False) else None

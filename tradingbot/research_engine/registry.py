@@ -53,7 +53,7 @@ SEAL_DOC = "docs/ENGINE_BRAIN_V1.md §8.2"
 #: ayarlanmaz). Keşif katmanı ve Kapı A'nın ileri okuması YALNIZ açılışı bu andan sonra olan barları kullanır (§5.1).
 #: Mühür commit'leri yalnız fast-forward (ya da merge commit) ile birleşir; rebase/squash/cherry-pick işleyen zamanı
 #: değiştirir → test kırılır → yeniden mühür.
-T_SEAL_MS = 1791747600000
+T_SEAL_MS = 1791764340000
 
 
 # ============================================================================ kanonik biçim ve donma
@@ -684,8 +684,31 @@ def _wf() -> dict:
         },
         "kernel": {
             "module": "research_engine/kernel.py", "decision": "bar kapanışında",
-            "fill": "sonraki barın açılışında ± kayma", "intrabar_order": "learning_cf kuralı: açılış → ters → lehte → kapanış",
-            "stop_fill": "seviyede; boşlukta açılışta", "funding": "deponun gerçek uzlaşma zaman damgalarında",
+            "fill": "sonraki barın açılışında ± kayma",
+            "intrabar_order": "canlı defterin tikleri: pozisyon açıkken sinyal barının açılışında fiyat-yalnız tik, sonra barın "
+                              "1h alt barları (canlı strategy_paper.BAR_TIMEFRAME; sinyal dilimi ≤ 1h ise sinyal barının "
+                              "kendisi) bar başına bir OHLC tiki; tik içinde ilk gözlem (açılış) → en kötü uç → kapanış; aynı "
+                              "tikte stop hedeften önce; TP1'in başa-baş stopu yalnız sonraki tiklerde",
+            "stop_fill": {
+                "policy": "LIVE_EXIT_DECISION_ON_1H_BARS",
+                "function": "accounting.futures_ledger.exit_decision (canlı defterin saf fonksiyonu, EXIT_FILL_CONTRACT "
+                            "exit_fill_v1; çağrılır, yeniden yazılmaz)",
+                "rule_tr": "her tikte: ilk gözlem likidasyonun ötesinde → likidasyon; ilk gözlem stopun ötesinde → stop, dolum "
+                           "ilk gözlemden (boşluk); en kötü uç stopu ve likidasyonu birlikte geçmişse → likidasyon (stop daha "
+                           "yakın olsa da; bar içi sıra gözlenmedi, ihtiyatlı); yalnız stopu geçmişse → stop seviyeden, "
+                           "kapanış da stopun ötesindeyse KAPANIŞTAN (ihtiyatlı); kayma dolumu likidasyonun ötesine iterse → "
+                           "likidasyon",
+                "path_gap_tr": "çıkış kararı gereken sinyal barının 1h alt barları barı tam ve bitişik örtmüyor ya da barın "
+                               "aralığını aşıyorsa bar tek OHLC tiki olarak işlenir ve işlem PATH_1H_GAP ile işaretlenir; "
+                               "FUNDING_GAP gibi kapı istatistiğinden çıkar (sayısı gösterilir)",
+                "decision": "P3b-1 inceleme turu, 2026-10-12",
+                "reading_tr": "sahip kararı 2026-10-12 (asla gevşetme; muhafazakâr; canlıyla aynı): canlı defterle aynı "
+                              "ihtiyatlı stop dolumu; iyimserlik ölçümü +0,02–0,04 R (önceki 'seviyede; boşlukta açılışta' "
+                              "dolumu canlı muhasebeye göre işlem başına Box, D4, C4, FM'de bu kadar iyimserdi → Kapı A "
+                              "yukarı yanlıydı; §8.4 P3b-1 notu). Parite (a)'nın kapılı ölçüsü canlı gibi 1h tikli, "
+                              "kırpılmamış başvuruya karşıdır",
+            },
+            "funding": "deponun gerçek uzlaşma zaman damgalarında",
             "liquidation": "bracket formülü", "sizing": "LIB_V1.sizing (sabit 1 USDT risk = 200 USDT × %0,5)",
             "leverage": "büyüklükten türer; likidasyon mesafesi ≥ LIB min_liq_distance_stop_mult × stop",
         },
@@ -912,6 +935,7 @@ def _directions() -> dict:
             f"{_T}candidates_top_k": FIXED,
             "step_equals_test": FIXED, "data_start_earliest": FIXED,
             "purge_embargo.make_folds_split.sum_bars": FIXED,
+            "kernel.stop_fill.policy": FIXED,
         },
         "STATS": {
             f"{_T}p_day.resamples": FIXED, f"{_T}bh_q": MAX, f"{_T}effective_n_abs_rho": FIXED,

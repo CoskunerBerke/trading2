@@ -1,15 +1,18 @@
-"""P3b-1 — parite (a) ve (b), altın sentetik yollar, belirlenimcilik (docs/ENGINE_BRAIN_V1.md §2.1; ana belge §6.2).
+"""P3b — parite (a) ve (b), altın sentetik yollar, belirlenimcilik (docs/ENGINE_BRAIN_V1.md §2.1; ana belge §6.2).
 
-* Altın yollar: her K ailesi için küçük belirlenimci sentetik dünyada çekirdeğin işlem listesi (sinyal barı, yön, çıkış
-  türü, üç senaryonun R'si) sabitlenir. Kural/çekirdek değişirse test kırılır ve değer bilerek yeniden sabitlenir.
-* Parite (a): aynı dünyada çekirdek ↔ canlı kural + `apply_action` + `FuturesLedgerV2.tick`: sinyal kimliği %100,
-  medyan |ΔR| ≤ 0,02, p95 ≤ 0,05 (mühürlü eşikler; `clipped` kip). Kırpılmamış OHLC kipi raporlanır (kapıya girmez).
-  Testteki dünyalar küçüktür (süre); ≥ 200 işlem/aile ölçümü `scripts/engine_p3b_measure.py` ile yapılır (belge §8.4
-  P3b-1 notu) ve `TB_P3B_FULL_PARITY=1` ile burada da koşar.
-* Betikli defter çapraz denetimi: TP1 + başa-baş, boşluk, likidasyon (açılış likidasyon fiyatının hemen altında/üstünde:
-  bracket formülü iki tarafta da aynı fiyatı verir), fonlama elle kurulmuş yollarda çekirdek R'si defterin
-  `r_multiple`'ına eşit; kırpılmamış likidasyon sonucu (bracket 2, bakım tutarı ≠ 0) defterin `liquidation_outcome`'ına
-  eşit; OHLC kipinde defterin ihtiyatlı dalları çalışır ve çekirdeğin iyimserliği ölçülür.
+* Altın yollar: her K ailesi için küçük belirlenimci sentetik dünyada (4h/1d'de tutarlı 1h alt barlarla) çekirdeğin
+  (`kernel_v2`) işlem listesi (sinyal barı, yön, çıkış türü, üç senaryonun R'si) sabitlenir. Kural/çekirdek değişirse
+  test kırılır ve değer bilerek yeniden sabitlenir.
+* Parite (a): aynı dünyada çekirdek ↔ canlı kural + `apply_action` + `FuturesLedgerV2.tick`, canlı defterin tikleriyle
+  (`live_1h`: açılış fiyat tiki + sinyal barının bütün 1h OHLC barları, kırpma yok; başvuru alt barları çekirdekten
+  bağımsız okur): sinyal kimliği %100, medyan |ΔR| ≤ 0,02, p95 ≤ 0,05 (mühürlü eşikler). Sinyal barı başına tek OHLC
+  tiki (`ohlc`) raporlanır (kapıya girmez). Testteki dünyalar küçüktür (süre); ≥ 200 işlem/aile ölçümü
+  `scripts/engine_p3b_measure.py` ile yapılır (belge §8.4 notları) ve `TB_P3B_FULL_PARITY=1` ile burada da koşar.
+* Betikli defter çapraz denetimi (canlı tikler): TP1 + başa-baş, boşluk, likidasyon (açılış likidasyon fiyatının hemen
+  altında/üstünde: bracket formülü iki tarafta da aynı fiyatı verir), fonlama, defterin ihtiyatlı dalları
+  (`STOP_CLOSE_BEYOND_LEVEL_PRUDENT`, `PRUDENT_LIQUIDATION`) ve 1h alt barlı gün: çekirdek R'si ve dayanağı defterin
+  `r_multiple`'ına / `exit_fill.basis`'ine eşit; kırpılmamış likidasyon sonucu (bracket 2, bakım tutarı ≠ 0) defterin
+  `liquidation_outcome`'ına eşit.
 * Parite (b): dönem görünümünden kurulan kopya, karar barında `signals` + tek niyetin zorlanmış yeniden oynatımı; POLICY
   kohortu, ≥ 20 giriş kapısı, ≥ %95 aynı bar/yön, medyan |ΔR| ≤ 0,05; anahtarsız kayıt EŞLEŞMEDİ; C4 varyasyon süzgeci;
   eşlenemeyen görünüm NOT_COMPARABLE; `PARITY_FAIL` / `PARITY_UNPROVEN` ve lider satırına yansıması.
@@ -65,6 +68,8 @@ def _summary(kr: KN.KernelResult) -> list[tuple]:
 
 
 # ============================================================================ altın yollar (çekirdek)
+#: `kernel_v2` (2026-10-12; canlı `exit_decision` + 1h alt barlar). `kernel_v1`'e göre değişen satırlar yalnız stop
+#: çıkışlarıdır ve hepsi AŞAĞI (ihtiyatlı dolum): Box 5, Formasyon 2 işlem.
 GOLDEN: dict[str, list[tuple]] = {
     "K_BOX": [
         (1578009600000, "LONG", "STOP", -1.188618, -1.223598, -1.307818),
@@ -73,21 +78,21 @@ GOLDEN: dict[str, list[tuple]] = {
         (1578017700000, "LONG", "STOP", -1.196099, -1.23209, -1.319016),
         (1578019500000, "LONG", "STOP", -1.1211, -1.145796, -1.203524),
         (1578024600000, "LONG", "STOP", -1.174093, -1.207103, -1.285931),
-        (1578031200000, "LONG", "STOP", -1.125475, -1.15094, -1.210497),
+        (1578031200000, "LONG", "STOP", -1.129581, -1.154924, -1.21437),
         (1578038400000, "LONG", "STOP", -1.138307, -1.165905, -1.230738),
         (1578042300000, "LONG", "STOP", -1.159019, -1.189855, -1.262913),
-        (1578044700000, "LONG", "STOP", -1.211945, -1.25002, -1.342533),
+        (1578044700000, "LONG", "STOP", -1.291814, -1.32598, -1.415068),
         (1578052200000, "LONG", "STOP", -1.09489, -1.117023, -1.168014),
         (1578078600000, "LONG", "STOP", -1.197759, -1.234054, -1.321563),
         (1578079500000, "LONG", "STOP", -1.142818, -1.171159, -1.237812),
-        (1578085200000, "LONG", "STOP", -1.212424, -1.250579, -1.343255),
+        (1578085200000, "LONG", "STOP", -1.465609, -1.491338, -1.573137),
         (1578090900000, "LONG", "STOP", -1.154165, -1.184291, -1.255449),
-        (1578096300000, "LONG", "STOP", -1.187851, -1.222841, -1.306764),
+        (1578096300000, "LONG", "STOP", -1.191496, -1.226326, -1.310108),
         (1578099300000, "LONG", "TARGET", 4.99656, 4.789363, 4.561497),
         (1578194400000, "SHORT", "STOP", -1.205683, -1.243213, -1.333789),
         (1578203700000, "SHORT", "STOP", -1.203704, -1.240984, -1.330861),
         (1578206400000, "SHORT", "TARGET", 6.116735, 5.754729, 5.380861),
-        (1578243600000, "LONG", "STOP", -1.159168, -1.190056, -1.263168),
+        (1578243600000, "LONG", "STOP", -1.752648, -1.761367, -1.814595),
         (1578248400000, "LONG", "STOP", -1.107388, -1.129764, -1.181635),
         (1578253500000, "LONG", "END", 1.502812, 1.406315, 1.284262),
     ],
@@ -115,12 +120,12 @@ GOLDEN: dict[str, list[tuple]] = {
         (1581523200000, "LONG", "TARGET", 1.975468, 1.964149, 1.947926),
         (1581652800000, "LONG", "TARGET", 1.945941, 1.926148, 1.898015),
         (1581724800000, "LONG", "TIME", 1.069707, 1.060225, 1.046833),
-        (1583337600000, "LONG", "STOP", -1.045052, -1.049859, -1.061265),
+        (1583337600000, "LONG", "STOP", -1.051227, -1.056, -1.06737),
         (1584072000000, "LONG", "TARGET", 1.976546, 1.965933, 1.950721),
         (1584432000000, "LONG", "TARGET", 1.986821, 1.977072, 1.962965),
         (1584547200000, "LONG", "TIME", -0.167399, -0.172837, -0.182059),
         (1585080000000, "LONG", "TARGET", 1.963063, 1.952581, 1.937324),
-        (1585209600000, "LONG", "STOP", -1.02961, -1.032066, -1.038018),
+        (1585209600000, "LONG", "STOP", -1.098783, -1.101021, -1.106746),
         (1587067200000, "LONG", "TARGET", 1.980356, 1.971062, 1.957509),
         (1587225600000, "LONG", "TIME", -0.074863, -0.081421, -0.092347),
     ],
@@ -173,7 +178,7 @@ def test_parity_a_kernel_vs_live_ledger_on_the_fixture_world(vid):
     assert a.identity_share == 1.0 >= th["min_signal_identity_share"], (a.only_kernel, a.only_ref)
     assert a.median_abs_dr <= th["max_median_abs_dr"] and a.p95_abs_dr <= th["max_p95_abs_dr"], a.to_dict()
     assert a.passed
-    # kırpılmamış OHLC kipi (rapor; kapıya girmez): aynı sinyaller, çekirdek ortalamada canlı muhasebeden kötü değil
+    # sinyal barı başına tek OHLC tiki (rapor; kapıya girmez): aynı sinyaller, ΔR raporlanır
     ohlc, _rej = PA.reference_run(vid, data, mode=PA.MODE_OHLC)
     b = PA.compare_a([(vid, kr, ohlc)], min_trades=1)
     assert b.n_matched >= 1 and math.isfinite(b.mean_signed_dr), b.to_dict()
@@ -225,13 +230,13 @@ class _Once(SL.Variant):
         return SL.NONE
 
 
-def _ledger_r(bars, side, stop, targets, funding, *, mode=PA.MODE_CLIPPED):
-    """Defter yolu: 2. barın açılışında `apply_action` OPEN (çekirdeğin kaldıracıyla), sonra `learning_cf` sırasıyla tik
-    (bar içi tikler açılıştan 1 ms sonra; `ohlc` kipinde bar başına tek kırpılmamış OHLC tiki); veri sonunda son
-    kapanışta fiyat tiki + elle kapanış. Dönen: (R, kayıt, açılıştaki likidasyon fiyatı)."""
+def _ledger_r(bars, side, stop, targets, funding, *, hours=None, mode=PA.MODE_LIVE):
+    """Defter yolu, canlı tiklerle: 2. barın açılışında `apply_action` OPEN (çekirdeğin kaldıracıyla); sonra her barın
+    açılışında fiyat tiki (giriş barı hariç) ve barın 1h OHLC barları (`hours` yoksa ya da `ohlc` kipinde bar tek OHLC
+    tiki), tikler gözlem barının açılışından 1 ms sonra; veri sonunda son kapanışta fiyat tiki + elle kapanış. Dönen: (R,
+    kayıt, açılıştaki likidasyon fiyatı)."""
     from tradingbot.accounting import TickData
     from tradingbot.core import iso
-    from tradingbot.learning_cf import _bar_path
     from tradingbot.risk import build_state
     from tradingbot.strategy_paper import DataVerdict, apply_action
     data = KN.SeriesData(symbol="TST", bars={"1d": bars}, funding=funding)
@@ -248,37 +253,31 @@ def _ledger_r(bars, side, stop, targets, funding, *, mode=PA.MODE_CLIPPED):
                        data=DataVerdict(ok=True, entry_ok=True, bars={"1d": T0 + D1}))
     assert res == "OPENED"
     liq0 = float(led.positions["TST"].liquidation_price)
-    long = side == "LONG"
+
+    def dec(x):
+        return Decimal(repr(float(x)))
     for i in range(2, len(bars)):
         b = bars[i]
+        if led.positions.get("TST") is None:
+            break
         odt = datetime.fromtimestamp(b["timestamp"] / 1000, tz=timezone.utc)
-        idt = datetime.fromtimestamp((b["timestamp"] + PA.INTRABAR_TICK_MS) / 1000, tz=timezone.utc)
-        if mode == PA.MODE_OHLC:
+        if i > 2:
+            led.tick({"TST": TickData(last=dec(b["open"]), mark=dec(b["open"]), ts=iso(odt))}, now_utc=odt,
+                     funding_rate_lookup=lookup)
+        subs = [x for x in (hours or []) if b["timestamp"] <= x["timestamp"] < b["timestamp"] + D1] \
+            if mode == PA.MODE_LIVE else []
+        for x in subs or [b]:
             if led.positions.get("TST") is None:
                 break
-            if i > 2:
-                led.tick({"TST": TickData(last=Decimal(repr(b["open"])), mark=Decimal(repr(b["open"])), ts=iso(odt))},
-                         now_utc=odt, funding_rate_lookup=lookup)
-            if led.positions.get("TST") is not None:
-                td = TickData(last=Decimal(repr(b["close"])), mark=Decimal(repr(b["close"])), high=Decimal(repr(b["high"])),
-                              low=Decimal(repr(b["low"])), open=Decimal(repr(b["open"])), ts=iso(idt))
-                led.tick({"TST": td}, now_utc=idt, funding_rate_lookup=lookup)
-            continue
-        pts = _bar_path(long, None if i == 2 else b["open"], b["high"], b["low"], b["close"])
-        for point, px in pts:
-            p = led.positions.get("TST")
-            if p is None:
-                break
-            if point != "open" and ((px <= float(p.stop)) if long else (px >= float(p.stop))):
-                px = float(p.stop)
-            at2 = odt if point == "open" else idt
-            led.tick({"TST": TickData(last=Decimal(repr(px)), mark=Decimal(repr(px)), ts=iso(at2))}, now_utc=at2,
-                     funding_rate_lookup=lookup)
+            xdt = datetime.fromtimestamp((x["timestamp"] + PA.INTRABAR_TICK_MS) / 1000, tz=timezone.utc)
+            td = TickData(last=dec(x["close"]), mark=dec(x["close"]), high=dec(x["high"]), low=dec(x["low"]),
+                          open=dec(x["open"]), ts=iso(xdt))
+            led.tick({"TST": td}, now_utc=xdt, funding_rate_lookup=lookup)
     if led.positions.get("TST") is not None:
         end = datetime.fromtimestamp((bars[-1]["timestamp"] + D1) / 1000, tz=timezone.utc)
-        led.tick({"TST": TickData(last=Decimal(repr(bars[-1]["close"])), mark=Decimal(repr(bars[-1]["close"])),
-                                  ts=iso(end))}, now_utc=end, funding_rate_lookup=lookup)
-        led.close_manual("TST", Decimal(repr(bars[-1]["close"])), now=end)
+        led.tick({"TST": TickData(last=dec(bars[-1]["close"]), mark=dec(bars[-1]["close"]), ts=iso(end))}, now_utc=end,
+                 funding_rate_lookup=lookup)
+        led.close_manual("TST", dec(bars[-1]["close"]), now=end)
     (rec,) = led.history
     return float(rec.r_multiple), rec, liq0
 
@@ -363,23 +362,64 @@ def test_unclamped_liquidation_outcome_equals_the_ledger_arithmetic():
     assert net == pytest.approx(float(rec.pnl), rel=1e-9) and r == pytest.approx(float(rec.r_multiple), rel=1e-9)
 
 
-def test_ohlc_mode_runs_the_ledger_prudent_branches_and_measures_kernel_optimism():
-    """Kırpılmamış OHLC tiki: (1) ters uç ve kapanış stopun ötesinde → defter dolumu KAPANIŞTAN
-    (`STOP_CLOSE_BEYOND_LEVEL_PRUDENT`), çekirdek seviyeden; (2) ters uç hem stopu hem likidasyonu geçer, stop daha yakın →
-    defter LİKİDASYON (`PRUDENT_LIQUIDATION`), çekirdek seviyeden stop. İki durumda da çekirdek iyimserdir (R daha
-    yüksek); kırpılmış kip çekirdeğe eşittir."""
+def test_the_kernel_takes_the_ledger_prudent_branches():
+    """Canlı tikte: (1) ters uç ve kapanış stopun ötesinde → dolum KAPANIŞTAN (`STOP_CLOSE_BEYOND_LEVEL_PRUDENT`); (2) ters
+    uç hem stopu hem likidasyonu geçer, stop daha yakın → LİKİDASYON (`PRUDENT_LIQUIDATION`). Çekirdek (`kernel_v2`) iki
+    durumda da defterle aynı dalı, aynı R'yi verir; `kernel_v1`'in seviyeden stop dolumu bu yollarda > 0,1 R iyimserdi."""
     funding = [(T0 + k * 8 * 3_600_000, 0.0002, 100.0) for k in range(0, 40)]
-    cases = (("LONG", 95.0, [_bar(3, 101.0, 101.5, 93.0, 94.0)], "STOP_CLOSE_BEYOND_LEVEL_PRUDENT"),
-             ("LONG", 99.9, [_bar(3, 100.0, 100.5, _LIQ * 0.99, 99.95)], "INTRABAR_ORDER_UNOBSERVED"))
-    for side, stop, tail, basis in cases:
+    cases = (("LONG", 95.0, [_bar(3, 101.0, 101.5, 93.0, 94.0)], "STOP_CLOSE_BEYOND_LEVEL_PRUDENT", KN.EXIT_STOP),
+             ("LONG", 99.9, [_bar(3, 100.0, 100.5, _LIQ * 0.99, 99.95)], "INTRABAR_ORDER_UNOBSERVED", KN.EXIT_LIQ))
+    for side, stop, tail, basis, kind in cases:
         bars = _flat(3) + tail
         bars += [_bar(i, b["open"], b["high"], b["low"], b["close"]) for i, b in enumerate(_flat(8, bars[-1]["close"]))][len(bars):]
         (t,) = KN.run(_Once(side=side, stop=stop, targets=()), KN.SeriesData(symbol="TST", bars={"1d": bars}, funding=funding)).trades
-        r_clip, _rc, _l = _ledger_r(bars, side, stop, (), funding)
-        r_ohlc, rec, _l = _ledger_r(bars, side, stop, (), funding, mode=PA.MODE_OHLC)
-        assert t.exit_kind == KN.EXIT_STOP and t.r["base"] == pytest.approx(r_clip, abs=1e-9)
-        assert rec.features["exit_fill"]["basis"] == basis
-        assert t.r["base"] - r_ohlc > 0.1, (basis, t.r["base"], r_ohlc)
+        r_led, rec, _l = _ledger_r(bars, side, stop, (), funding)
+        assert rec.features["exit_fill"]["basis"] == basis == t.legs[0].basis and t.exit_kind == kind
+        assert t.r["base"] == pytest.approx(r_led, abs=1e-9), (basis, t.r["base"], r_led)
+        e = 100.0 * 1.0003
+        level_r = ((stop * 0.9997 - e) - 0.0005 * (e + stop * 0.9997)) / (e - stop)       # kernel_v1: seviyeden, fonlamasız
+        assert level_r - (t.r["base"] - t.funding_usdt / t.risk_usdt) > 0.1, (basis, level_r, t.r["base"])
+
+
+def test_one_day_with_1h_bars_matches_the_ledger_ticking_every_hour():
+    """1d sinyal barı + 24 tutarlı 1h barı: çekirdek (yalnız değen günde alt barları açar) ↔ defter (her saati tikler):
+    hedef önce gelen gün HEDEF, stop 1h barında delinip o saatin kapanışı ötedeyse dolum o kapanıştan; R ve dayanak eşit."""
+    H1 = 3_600_000
+
+    def hours_for(days, special):
+        out = []
+        for d in days:
+            i = (d["timestamp"] - T0) // D1
+            hrs = special.get(i) or [(d["open"], d["high"], d["low"], d["close"])] + [(d["close"],) * 4] * 23
+            out += [{"timestamp": d["timestamp"] + k * H1, "open": o, "high": h, "low": lo, "close": c, "volume": 1.0}
+                    for k, (o, h, lo, c) in enumerate(hrs)]
+        return out
+    funding = [(T0 + k * 8 * H1, 0.0002 * (1 + k % 3), 100.0 + k % 5) for k in range(0, 40)]
+    up = [(100.5, 100.6, 100.4, 100.5)] * 2 + [(100.5, 111.0, 100.4, 104.0)] + [(104.0,) * 4] * 7 + \
+        [(104.0, 104.2, 94.0, 96.0)] + [(96.0,) * 4] * 13
+    prudent = [(100.5,) * 4] * 5 + [(100.5, 100.6, 94.0, 94.5)] + [(94.5, 100.0, 94.4, 100.0)] + [(100.0,) * 4] * 17
+    for special, targets, basis in (({3: up}, (110.0,), None), ({3: prudent}, (), KN.BASIS_PRUDENT_CLOSE)):
+        hrs = special[3]
+        day3 = _bar(3, hrs[0][0], max(x[1] for x in hrs), min(x[2] for x in hrs), hrs[-1][3])
+        bars = _flat(3) + [day3]
+        bars += [_bar(i, b["open"], b["high"], b["low"], b["close"]) for i, b in enumerate(_flat(8, day3["close"]))][len(bars):]
+        hours = hours_for(bars, special)
+        (t,) = KN.run(_Once(side="LONG", stop=95.0, targets=tuple(SL.Target(SL.TARGET_PRICE, x) for x in targets)),
+                      KN.SeriesData(symbol="TST", bars={"1d": bars, "1h": hours}, funding=funding)).trades
+        r_led, rec, _l = _ledger_r(bars, "LONG", 95.0, targets, funding, hours=hours)
+        assert t.r["base"] == pytest.approx(r_led, abs=1e-9) and KN.FLAG_PATH_GAP not in t.flags
+        if basis is None:
+            assert t.exit_kind == KN.EXIT_TARGET and rec.exit_reason != "stop"
+        else:
+            assert t.legs[0].basis == basis == rec.features["exit_fill"]["basis"] and t.legs[0].ref == 94.5
+
+
+def test_the_reference_reads_the_live_bar_timeframe():
+    from tradingbot import strategy_paper
+    assert PA.LIVE_BAR_TF == strategy_paper.BAR_TIMEFRAME == KN.PATH_TF
+    assert (PA.MODE_LIVE, PA.MODE_OHLC) == ("live_1h", "ohlc")
+    with pytest.raises(ValueError):
+        PA.reference_run("K_D4", _world("K_D4"), mode="clipped")
 
 
 # ============================================================================ belirlenimcilik (önbellek, süreç)

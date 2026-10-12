@@ -1,7 +1,8 @@
 # Motorun "kendi beyni" v1 — P3, P4 ve otomatik PAPER terfisi (tasarım ve ön kayıt)
 
 **Durum:** TASARIM ve ÖN KAYIT (2026-10-06); **P3a kodu ve mühür S1: 2026-10-11** (§8.2 değerleri, §8.4 uygulama notu);
-**P3b-1 (sözleşme, kopyalar, çekirdek, parite): 2026-10-11** (§8.4 P3b-1 notu, §5.3 ölçüm notu). Dal `impl/engine-p3-design`, taban `cc88e9b` (P1a, P1b, P2a, P2b
+**P3b-1 (sözleşme, kopyalar, çekirdek, parite): 2026-10-11** (§8.4 P3b-1 notu, §5.3 ölçüm notu); **çekirdeğin canlı
+defterle aynı ihtiyatlı stop dolumu (`kernel_v2`, sahip kararı) ve S1 düzeltme mührü 3: 2026-10-12** (§8.4). Dal `impl/engine-p3-design`, taban `cc88e9b` (P1a, P1b, P2a, P2b
 kodu `tradingbot/research_engine/` altında). Bu belge `docs/SYSTEM_LEARNING_ENGINE_V1.md`'nin ("ana belge") §5.7–§5.9,
 §6 ve §10 P3/P4/P7'sinin **yapılabilir ayrıntısıdır**. Ana belgenin mühürlü ve kayıtlı metni (eşikler, kapılar, bakışlar,
 alfa) DEĞİŞMEZ; burada yalnız okunuşları kesinleşir ve sahip kararı kurulur. Bu belgeyle ana belge çelişirse **daha sıkı
@@ -87,12 +88,16 @@ altından %1 veya bütün coinlerin ve altının toplam karı %1"*.
 - **Kopyalar** (`K_*`) yeniden yazılmaz: `paper_rules.decide_from_rows` ve `pattern_trader` kural fonksiyonları çağrılır.
 - **Kimlik.** `spec_sha` = sha256(kanonik JSON `{family, variant_id, params, timeframes, exits, sizing, module_src_sha}`).
   Aynı `spec_sha` iki kez deneme sayılmaz (tekilleştirme); farklı kapsam farklı satırdır.
-- **Çekirdek** `research_engine/kernel.py`: karar bar kapanışında, dolum sonraki barın açılışında ± kayma; bar içi sıra
-  `learning_cf` kuralı (açılış → ters → lehte → kapanış); stop seviyede, boşlukta açılışta; fonlama deponun **gerçek
-  uzlaşma zaman damgalarında**; likidasyon bracket formülüyle; büyüklük sabit 1 USDT risk (200 USDT × %0,5; keşifle aynı),
-  kaldıraç büyüklükten türer, likidasyon mesafesi ≥ 2 × stop. Üç maliyet senaryosu aynı yol üzerinde aritmetik yeniden
-  maliyetlendirmeyle hesaplanır (§3.3).
-- **Parite (kabul):** (a) çekirdek ↔ `FuturesLedgerV2` + `strategy_paper.apply_action` + `tick`: aile başına ≥ 200 sentetik
+- **Çekirdek** `research_engine/kernel.py` (`kernel_v2`): karar bar kapanışında, dolum sonraki barın açılışında ± kayma;
+  çıkış yolu **canlı defterinkidir** (sahip kararı 2026-10-12, §8.4): stop/likidasyon hükmü canlı defterin saf
+  `exit_decision`'ı (`exit_fill_v1`), canlı defterin gördüğü tiklerde — pozisyon açıkken sinyal barının açılışında fiyat
+  tiki, sonra barın 1h OHLC alt barları (sinyal dilimi ≤ 1h ise barın kendisi); stop seviyede, **kapanış da ötedeyse
+  kapanıştan**, boşlukta açılıştan, en kötü uç iki seviyeyi de geçerse likidasyon, aynı tikte stop hedeften önce; fonlama
+  deponun **gerçek uzlaşma zaman damgalarında**; likidasyon bracket formülüyle; büyüklük sabit 1 USDT risk (200 USDT ×
+  %0,5; keşifle aynı), kaldıraç büyüklükten türer, likidasyon mesafesi ≥ 2 × stop. Üç maliyet senaryosu aynı yol üzerinde
+  aritmetik yeniden maliyetlendirmeyle hesaplanır (§3.3).
+- **Parite (kabul):** (a) çekirdek ↔ `FuturesLedgerV2` + `strategy_paper.apply_action` + `tick` (canlı gibi 1h OHLC
+  tikleri, kırpma yok): aile başına ≥ 200 sentetik
   işlemde sinyal kimliği %100, medyan |ΔR| ≤ 0,02, p95 ≤ 0,05; (b) kopya ↔ canlı defter: ana belge §6.2 (yalnız POLICY
   kohortu, ≥ 20 girişli her config döneminde ≥ %95 aynı bar/yön, medyan |ΔR| ≤ 0,05; kopya o dönemin config görünümünden
   kurulur, eşlenemeyen dönem `NOT_COMPARABLE` — raporlanır, kapıya girmez; okunuş §8.4 P3b-1 notu). (b) tutmayan kopya
@@ -436,6 +441,14 @@ kıyası aynı config dönemi içinde.
     önlemlerden sonra ölçüm P3b-2'de yinelenir; ilk kurulum takvimi (≈ 5–6 hafta) tutmazsa bu satır yeniden yazılır
     (S4w kuyruğu bütçesiyle sınırlı kalır; bitmemiş satır Kapı A'da `HESAPLANMADI`). Bellek: tek seri × dilim, kopya
     penceresi ≤ 699 bar; ölçüm koşusu RSS ≈ 0,2 GB (sentetik; `VmHWM` kararı P3g'de).
+  - **Ölçüm notu 2 (`kernel_v2`, 2026-10-12; sentetik; aynı sandbox, tek süreç, tek iş parçacığı, makinede başka yük
+    yok; `kernel_v1` ve `kernel_v2` aynı dünyalarda sırayla, yapı önbelleği her koşudan önce temizlenerek).** Canlı çıkış
+    yolu (açılış fiyat tiki + yalnız değen barda 1h alt bar tikleri, her tikte canlı `exit_decision`) bar başına işi
+    ölçülebilir biçimde değiştirmedi — `kernel_v2` / `kernel_v1` süre oranı 0,98–1,01 (gürültü içinde): T2 60,2 → 59,8,
+    M2 60,7 → 61,8, D4 94,9 → 96,2, C4 290,6 → 288,7, Formasyon 302,8 → 299,1, Box 146,7 → 149,0 bar/sn. Süre yine
+    kopyaların bar başına canlı kural çağrısıdır; değmeyen barda alt bar açılmadığından 1d × 24 / 4h × 4 alt bar maliyete
+    girmez. Yukarıdaki ≈ 18,6 çekirdek-saat (sandbox) tahmini ve P3b-2 önlemleri değişmez. (Parite ölçüm koşusundaki
+    eşzamanlı hızlar da aynı mertebede: T2 56, M2 54, D4 85, C4 285, Formasyon 298, Box 146 bar/sn.)
 - **Disk:** trials ≤ 50 MB/yıl, keşif ≈ 200 MB/yıl, WF önbelleği ≈ 0,5 GB, 14 gecelik ayrıntı ≈ 0,3 GB, adaylar ≈ 50 MB, PIT 1d
   ≈ 0,1 GB → ≤ 1,5 GB (15/20 GB sınırlarının içinde).
 - **Kabul (VPS, 14 A/B gecesi):** tur p95 ≤ KAPALI + %5; `NRestarts` değişmez; `memory.peak` ≤ 0,8 × MemoryMax; Box kaçan
@@ -730,19 +743,19 @@ değildir, metin testi); k*/kaldıraç satırı oto defterler için de yalnız l
 | **S1** | `LIB_V1` (106 varyant, kapsamlar, P23, kümeler, §2.4 kuralları, örtüler, §4.3 dönüşümleri), `WF_PROTOCOL_V1`, `STATS_V1`, `LESSON_REGISTRY_V1`, `PIT_RULES_V1`, `PRIOR_TRIALS_V1`, `CONFIG_EPOCHS_V1`, `THRESHOLD_DIRECTIONS_V1` (asla gevşetme yön tablosu), `T_SEAL_MS` | P3a commit'i; **P3 kodunun hiçbir gerçek veri koşusundan önce** (hedef ≤ 2026-10-25) | `tests/test_research_engine_registry.py` + bu tabloya aynı commit'te sha değerleri (**MÜHÜRLENDİ**, değerler tablonun altında) |
 | **S2** | `PROMOTION_REGISTRY_V1` (ana belge §6.7 + §3.7 yordamı + §6.3 Holm ayı + §6.4 yönlendirme), `AUTO_POLICY_V1`, `AUTO_CATALOG_V1`, `MANIFEST_SCHEMA_V1` | P4a commit'i, P4 dağıtımından önce, **sahibin kapı metni onayından sonra** | motor ve worker testlerinde aynı sabitler (eşitlik testi) |
 
-**S1 mühür değerleri (P3a düzeltme mührü 2'nin — §8.5'e sahip cevabı, 2026-10-11 — yeniden mühür commit'i; `tradingbot/research_engine/registry.py`; sha256 = kanonik JSON'un — sıralı anahtar,
+**S1 mühür değerleri (düzeltme mührü 3'ün — çekirdeğin canlı defterle aynı ihtiyatlı stop dolumu, sahip kararı 2026-10-12, §8.4 — yeniden mühür commit'i; önceki: düzeltme mührü 2, §8.5'e sahip cevabı 2026-10-11; `tradingbot/research_engine/registry.py`; sha256 = kanonik JSON'un — sıralı anahtar,
 `(",", ":")`, UTF-8):**
 
 - `LIB_V1` `5f05c27d474e458a391d488ae2eff09d5e2067420f901346eb1c8130164b1903` — 106 varyant (+2 alias'lı ızgara üyesi), kapsamlar, P23, kümeler, §2.4 kuralları, örtüler (faktör parametreleri spec'te), kopya zaman stopları, varyant bağımlılıkları (`requires`), §4.3 dönüşümleri; §8.5 kararları B2–B5, B7, B8, B10, B11 (2026-10-11)
-- `WF_PROTOCOL_V1` `6857aa10b370140beb33bc690341c8df16707733ec66aa83acb2b1e9d1d3dc6d` — §3.1–§3.3 katmanlar (B1 bölüşümü), COIN_FIT seçimi, maliyetler; §2.1 çekirdek; §5.2 önbellek
+- `WF_PROTOCOL_V1` `c8fcf05eb09ec9127b8459690d533e63e08794a2233a1964621ebfd1adfa9956` — §3.1–§3.3 katmanlar (B1 bölüşümü), COIN_FIT seçimi, maliyetler; §2.1 çekirdek (2026-10-12: `kernel.stop_fill` = canlı `exit_decision` 1h tiklerinde, `intrabar_order` canlı tik sırası); §5.2 önbellek
 - `STATS_V1` `4a75ce951e1eddb8024537c24ba3d200c823d761ec6b292e7c3875f5874d60e8` — §3.6 p_day, BH (ailede işlem süzgeci yok; ana belge §6.4), DSR (sr_var tabanı 1/(T−1)), CSCV-PBO, plasebo, boş dünya; B6 üreteç ve tohumlar
 - `LESSON_REGISTRY_V1` `8fbed7f5e33e21a02ec9547bfd84ab7ad0a798d9cc25908aa99911244ad58836` — §4.1 hücreler/bakışlar/ileri doğrulama (B6 CI tohumu), §4.2 depo ve durumlar, §4.4 deneme maliyeti
 - `PIT_RULES_V1` `59d0628c975e42aaa7810e231ce0704e5113b6a2bde4fd59fb29e65d8fef48b7` — §3.4 zaman noktasında evren (B11: hacim penceresi d hariç)
 - `PRIOR_TRIALS_V1` `ad6d8903e66034ce96cafe006f0a071e254968308627ab9998b0464f96984921` — `research_engine/prior_trials.json` (§2.6; toplam 2.775)
-- `CONFIG_EPOCHS_V1` `082f3ade6736566838f02c2710d40c97680949d65b59ed3f5c5605e72e872e0f` — `research_engine/library/config_epochs.json` (git geçmişi + belgelenmiş dağıtım/sahip kayıtları; `covered_until` = `T_SEAL_MS`)
-- `THRESHOLD_DIRECTIONS_V1` `6ad438010cc06041644b356f1454e4b45092a49521665f3f513111bf1f36524b` — asla gevşetme yön tablosu (eşikler ve kapı-dışı eşik benzerleri; kök-göreli yollar; B1/B11 tanımları `fixed`)
-- `T_SEAL_MS` `1791747600000` = 2026-10-11T19:40:00+00:00 (mühürlü içeriği değiştiren son commit'in işleyen zamanına eşit ya da ondan sonra; test git'ten doğrular, tarih elle ayarlanmaz)
-- `REGISTRY_SHA` `8d115bd31c296aa07852c3c8323d54c655f9c07723ee6b25604482b9b04fa3c3` — S1 kümesinin (sekiz sha + `T_SEAL_MS`) kanonik sha'sı; deneme satırlarının `registry_sha`'sı
+- `CONFIG_EPOCHS_V1` `ee5eb13b70a44909647a8a7c141deb6ef75e3f285587b1101dba91a42e3e3a14` — `research_engine/library/config_epochs.json` (git geçmişi + belgelenmiş dağıtım/sahip kayıtları; `covered_until` = `T_SEAL_MS`)
+- `THRESHOLD_DIRECTIONS_V1` `44238aadabcaf6736e31e2a420acfb672b6b49a1ebcbe9816c440046fb340888` — asla gevşetme yön tablosu (eşikler ve kapı-dışı eşik benzerleri; kök-göreli yollar; B1/B11 tanımları ve 2026-10-12'den `kernel.stop_fill.policy` `fixed`)
+- `T_SEAL_MS` `1791764340000` = 2026-10-12T00:19:00+00:00 (mühürlü içeriği değiştiren son commit'in işleyen zamanına eşit ya da ondan sonra; test git'ten doğrular, tarih elle ayarlanmaz)
+- `REGISTRY_SHA` `a77d951893a713a9b9154ca1b198867825daaa67559dcf758ef37b9798d4ffd4` — S1 kümesinin (sekiz sha + `T_SEAL_MS`) kanonik sha'sı; deneme satırlarının `registry_sha`'sı
 
 - "Gerçek veri koşusu": VPS'te S4/S5'in herhangi bir çalışması, P3 koduyla herhangi bir laboratuvar ya da elle geriye-test.
   P3b'nin hız ölçümü yalnız sentetik veriyle yapılır. Mühür commit'inin zamanı `T_SEAL_MS`'dir; ileri veri saati dağıtımdan
@@ -768,7 +781,7 @@ değildir, metin testi); k*/kaldıraç satırı oto defterler için de yalnız l
 En erken olaylar: ilk Kapı A bakışı 2026-12-06 (yalnız 5m/15m; ileri 30 gün) ve 2027-01-06 (diğerleri); 4h/1d adayı için en
 erken Holm 2027-03-01, en erken otomatik defter ≈ 2027-03-02 (24 saat veto penceresiyle).
 
-### 8.4 P3a uygulama notu (2026-10-11; düzeltme turu 1 ve §8.5'e sahip cevabıyla yeniden mühürlendi)
+### 8.4 P3a uygulama notu (2026-10-11; düzeltme turu 1 ve §8.5'e sahip cevabıyla yeniden mühürlendi; 2026-10-12 çekirdeğin stop dolumuyla düzeltme mührü 3)
 
 **Ne mühürlendi (S1).** Yeni modüller ağsız ve yalnız standart kütüphaneyle yazıldı; hiçbiri gece birimine, worker'a ya da
 bir karar yoluna bağlanmadı (P3a VPS'te hiçbir şey çalıştırmaz, gerçek veriye dokunmaz).
@@ -968,7 +981,7 @@ canlı kural fonksiyonları yalnız ÇAĞRILIR. Hiçbir şey gece birimine bağl
   hesaplanmaz:** kanonik fonksiyon mühürlü kayıttadır ve paket motoru import edemez; yeniden yazmak yerine motor tarafında `kernel.spec_sha_for` = `registry.spec_sha(registry.lib_spec(v,
   module_src_sha))` kullanılır; deneme defterinin `seal_entries` satırına eşitliği (alias'lar `DON_20_10_4h_LO ≡ K_D4`,
   `BOX_n10_mid_ms0.5 ≡ K_BOX` dahil) testlidir.
-- **`research_engine/kernel.py`** (`kernel_v1`): karar bar kapanışında (yalnız kapanmış barlar), bar başına tek eylem;
+- **`research_engine/kernel.py`** (`kernel_v1`; çıkış yolu 2026-10-12'de `kernel_v2` oldu — aşağıdaki değişiklik notu): karar bar kapanışında (yalnız kapanmış barlar), bar başına tek eylem;
   dolum sonraki açılış ± kayma, o satır karar anında açılmıyorsa (veri boşluğu) `ENTRY_DATA_GAP` reddi; giriş kapıları
   canlı sırayla (kovalama, `STRATEGY_BAD_STOP`, giriş kayması, risk aralığı, Formasyonda `RR_BELOW_MIN_AT_ENTRY`); bar içi
   yol `learning_cf` kuralı (açılış → ters → lehte → kapanış; giriş barı ters uçtan); stop seviyede, yalnız açılış
@@ -1017,7 +1030,8 @@ canlı kural fonksiyonları yalnız ÇAĞRILIR. Hiçbir şey gece birimine bağl
   `research_engine/synthetic.py` (belirlenimci sentetik dünyalar; gece grafiğinde değil), `scripts/engine_p3b_measure.py`
   (parite (a) ≥ 200 işlem/aile + hız; yalnız sentetik).
 - **Parite (a) sonucu** (`scripts/engine_p3b_measure.py`, düzeltme turu 1'den sonra yeniden koşuldu, 2026-10-11,
-  sentetik; eşikler %100 / 0,02 / 0,05 yalnız `clipped` kipe uygulanır; `ohlc` kipi rapordur):
+  sentetik; eşikler %100 / 0,02 / 0,05 yalnız `clipped` kipe uygulanır; `ohlc` kipi rapordur; `kernel_v1` — 2026-10-12'den
+  beri kapı `live_1h`'dir ve `clipped` kip yoktur, aşağıdaki değişiklik notu):
 
 | Aile | Dünya | Eşleşen işlem | Sinyal kimliği | Medyan \|ΔR\| | p95 \|ΔR\| | En büyük \|ΔR\| | OHLC medyan \|ΔR\| | OHLC p95 \|ΔR\| | OHLC işaretli ort. (çekirdek − defter) | OHLC ihtiyatlı dolum |
 |---|---|---|---|---|---|---|---|---|---|---|
@@ -1093,13 +1107,118 @@ canlı kural fonksiyonları yalnız ÇAĞRILIR. Hiçbir şey gece birimine bağl
   dönem içinde canlı KOD değişmişse (sürüm) kopya bugünkü kodu çalıştırır — E0 dönemleri zaten `NOT_COMPARABLE`; sonraki
   dönemlerdeki kod sürümlerinin etkisi (b)'nin ΔR'sinde görünür, ayrı bir "kod dönemi" yoktur. (5) Fonlamanın ihtiyatlı
   kuralı 1d barlarda (T2/M2) bar içi her çıkışta 08:00/16:00 uzlaşmalarını belirsiz bırakır (`FUNDING_EXIT_BAR`, tutar
-  ayrıca; kapıdan çıkarmaz); daha ince veri (1h) varsa bacak zamanı daraltılabilir (P3b-2). (6) Çekirdeğin stop
+  ayrıca; kapıdan çıkarmaz); daha ince veri (1h) varsa bacak zamanı daraltılabilir (P3b-2). **2026-10-12: yapıldı**
+  (`kernel_v2`: bacağın en erken anı 1h alt barın açılışı; 1h verisi eksikse eski kural). (6) Çekirdeğin stop
   dolumundaki iyimserliği (yukarıdaki `ohlc` sütunları, aile başına ≈ +0,02–0,04 R/işlem): ihtiyatlı dolumun çekirdeğe
   alınıp alınmayacağı sahip/tasarım kararıdır (mühürlü `WF_PROTOCOL_V1.kernel` metni değişeceği için P3b-1'de
-  yapılmadı); o zamana dek Kapı A sonuçlarının bu kadar yukarı yanlı olduğu raporda yazılır. (7) Hız: §5.3 ölçüm notu
+  yapılmadı); o zamana dek Kapı A sonuçlarının bu kadar yukarı yanlı olduğu raporda yazılır. **2026-10-12: sahip kararı,
+  yapıldı** (aşağıdaki değişiklik notu; S1 düzeltme mührü 3). (7) Hız: §5.3 ölçüm notu
   (bu tur hız yeniden ölçülmedi; bar başına iş değişmedi) — taban sinyal önbelleği, DataFrame'siz bayt-aynı satır yolu,
   Box 5m. (8) Parite (b)'nin gece bağlantısı ve canlı defter okuyucusu (P3g); `funding` anahtarı (H ailesi) P3b-2'de
   doldurulur.
+
+**Değişiklik 2026-10-12 — çekirdeğin stop dolumu canlı defterle aynı (sahip kararı; `kernel_v2`; S1 düzeltme mührü 3).**
+P3b-1 inceleme turunun ölçüsü (yukarıdaki `ohlc` sütunları; `parity.reference_run(mode="ohlc")`): `kernel_v1` stopu
+seviyeden dolduruyordu ("seviyede; boşlukta açılışta"), canlı `FuturesLedgerV2` ise her 1h OHLC barında (`strategy_paper`
+`BAR_TIMEFRAME` = 1h, `apply_closed_bars`) `exit_decision`'ı `STOP_CLOSE_BEYOND_LEVEL_PRUDENT` ve `PRUDENT_LIQUIDATION`
+dallarıyla çalıştırır → çekirdek Box, D4, C4, FM'de işlem başına ≈ +0,02–0,04 R iyimserdi ve Kapı A sonuçları bu kadar
+yukarı yanlıydı. **Karar** (proje kuralı: asla gevşetme; muhafazakâr; canlıyla aynı): çekirdek canlı ihtiyatlı stop
+dolumunu üretir.
+
+- **Çekirdek** (`kernel.py`; `KERNEL_VERSION` `kernel_v1` → `kernel_v2`): stop/likidasyon hükmü canlı defterin saf
+  fonksiyonu `accounting.futures_ledger.exit_decision`'ın KENDİSİdir (çağrılır, yeniden yazılmaz; `exit_fill_v1`). Çekirdek
+  onu float bir tik görünümüyle (`Obs`) çağırır; hükmün Decimal `TickData` ile aynı olduğu 4.000 örnekli özellik testiyle
+  (eşitlik sınırları ve fonksiyonun bütün dalları) sınanır. Tikler canlı defterin gördükleridir: pozisyon açıkken her sinyal
+  barının açılışında fiyat-yalnız tik (tur mark'ı; açılış stopun/likidasyonun ötesindeyse dolum açılıştan), sonra sinyal
+  barının **1h OHLC alt barları** (`PATH_TF` = canlı `BAR_TIMEFRAME`, eşitliği testli; alt bar başına bir tik: ilk gözlem →
+  en kötü uç → kapanış). Stop seviyeden, **kapanış da stopun ötesindeyse kapanıştan**; en kötü uç stopu ve likidasyonu
+  birlikte geçerse likidasyon; kayma dolumu likidasyonun ötesine iterse likidasyon; çıkış yoksa hedefler aynı tikin lehte
+  ucuyla (aynı tikte stop hedeften önce); TP1'in başa-baş stopu yalnız sonraki tiklerde (defterle aynı). Bacak, hükmün
+  dayanağını taşır (`basis` = defterin `exit_fill.basis`). Sinyal dilimi ≤ 1h ise tik barın kendisidir.
+- **Box (5m).** Canlı Box defteri 5m'lik değerlendirmede ve her 60 sn'de mark fiyatıyla tiklenir, kapanmış 1h barları
+  `apply_closed_bars` ile uygulanır (`box_timer`: `_evaluate` → `step` + `apply_closed_bars` + `tick`, `_protect` her 60 sn);
+  5m OHLC barı canlıda tik değildir. 60 sn gözlemi 1m verisi olmadan kurulamaz; çekirdek eldeki en ince barı (5m) OHLC tiki
+  olarak işler: canlının 1h barından ince, 60 sn izleyicisinden kaba; ihtiyatlı dallar 5m kapanışıyla çalışır.
+- **Hız kısaltması.** Stop/likidasyon/sıradaki hedef aralığına değmeyen sinyal barında alt bar açılmaz (alt barlar barın
+  aralığındadır → hiçbir tik bir şey yapamaz). Kesinliği testlidir: her barı açan koşuyla bayt-aynı (1d × 24, 4h × 4, Box).
+  Değen barın 1h alt barları barı tam ve bitişik örtmüyor, barın aralığını aşıyor ya da kendi içinde tutarsızsa bar tek OHLC
+  tiki olarak işlenir ve işlem `PATH_1H_GAP` işaretlenir (mühürlü: `FUNDING_GAP` gibi kapı istatistiğinden çıkar, sayısı
+  gösterilir); yalnız değen barın alt barları gerekir.
+- **Fonlama** kuralı değişmedi; bacağın en erken anı artık gözlem barının (1h alt barın) açılışıdır → 1d ailelerinde bar
+  içi çıkışın 08:00/16:00 belirsizliği (`FUNDING_EXIT_BAR`, P3b-1 açık kalan 5) 1h verisi olduğunda kalkar (sentetik
+  ölçüde 0 işlem; önce T2 10, M2 1).
+- **Sürüm.** Kalıcı çekirdek çıktısı henüz yok (önbellek, deneme satırı yazılmadı); `kernel_v2` anlamı değişen sonuçların
+  ileride karışmaması içindir (kayıt biçimi de değişti: bacakta `basis`).
+- **Mühür (düzeltme mührü 3).** Henüz hiçbir gerçek veri koşusu olmadığı için `_v2` değil, P3a düzeltmeleriyle aynı yol:
+  `WF_PROTOCOL_V1.kernel.stop_fill` artık `{policy: LIVE_EXIT_DECISION_ON_1H_BARS, function, rule_tr, path_gap_tr,
+  decision, reading_tr}` ("sahip kararı 2026-10-12 …: canlı defterle aynı ihtiyatlı stop dolumu; iyimserlik ölçümü
+  +0,02–0,04 R …"); `intrabar_order` canlı tik sırasını yazar; `THRESHOLD_DIRECTIONS_V1`'e `kernel.stop_fill.policy` =
+  `fixed` eklendi (sonraki bir sürüm kuralı değiştiremez). Eşiklerin hiçbiri değişmedi; asla-gevşetme testleri geçer
+  (değişiklik sıkılaştırmadır). Bütün sha'lar, `REGISTRY_SHA`, `T_SEAL_MS` ve `config_epochs.json`'un `covered_until`'ı
+  yeniden sabitlendi (§8.2; `T_SEAL_MS` mühür commit'inden birkaç dakika sonraki tam dakika).
+- **Parite (a)** (`parity.py`): kapılı ölçü artık `live_1h` — kırpılmamış, canlı gibi: açılış fiyat tiki + sinyal barının
+  BÜTÜN 1h OHLC barları (başvuru 1h barlarını çekirdekten bağımsız okur ve her birini tikler; çekirdeğin kısaltması böylece
+  de sınanır); `clipped` kip kaldırıldı (çekirdek o yolu artık kullanmıyor); `ohlc` (sinyal barı başına tek tik) rapor
+  olarak kaldı. `synthetic.py`: 4h/1d dünyalarına tutarlı 1h alt barlar (`subdivide`: açılıştan kapanışa Brown köprüsü,
+  barın aralığına kırpılmış; ilk açılış/son kapanış/uçlar barınkiyle aynı; ayrı tohum → sinyal serisi bayt-aynı). Eşikler
+  değişmedi (%100 / 0,02 / 0,05).
+- **Parite (a) sonucu** (`scripts/engine_p3b_measure.py`, 2026-10-12, sentetik; kapı `live_1h`):
+
+| Aile | Dünya | Eşleşen işlem | Sinyal kimliği | Medyan \|ΔR\| | p95 \|ΔR\| | En büyük \|ΔR\| | İşaretli ort. (çekirdek − defter) | Defter: kapanıştan / ihtiyatlı likidasyon | Tek-tik (`ohlc`) p95 \|ΔR\| | Tek-tik işaretli ort. |
+|---|---|---|---|---|---|---|---|---|---|---|
+| T2 (`K_T2`) | 31 | 207 | %100 | 3,3e-6 | 2,1e-5 | 7,3e-5 | +6,3e-6 R | 4 / 0 | 5,9e-5 | +0,0007 R |
+| M2 (`K_M2`) | 9 | 200 | %100 | 6,2e-6 | 1,9e-5 | 4,0e-5 | +7,3e-6 R | 1 / 0 | 2,0e-5 | −3,3e-5 R |
+| Box (`K_BOX`) | 1 (60 gün 5m) | 331 | %100 | 1,6e-4 | 3,2e-3 | 1,4e-2 | +0,0003 R | 90 / 0 | 3,2e-3 | +0,0003 R |
+| D4 (`K_D4`) | 7 | 200 | %100 | 9,4e-6 | 2,6e-4 | 1,0e-3 | +4,9e-5 R | 20 / 0 | 1,1e-1 | +0,0101 R |
+| C4 (`K_C4_CV001…008` birlikte) | 7 | 222 | %100 | 4,5e-6 | 2,2e-4 | 6,9e-4 | +3,4e-5 R | 40 / 0 | 1,3e-1 | +0,0084 R |
+| FM (`K_FM`) | 3 | 265 | %100 | 9,7e-8 | 5,9e-5 | 3,3e-4 | +1,0e-5 R | 39 / 0 | 1,2e-1 | +0,0164 R |
+
+  Kapı (`live_1h`): **hepsi geçti** — sinyal kimliği her ailede %100, medyan |ΔR| ≤ 1,6e-4, p95 ≤ 3,2e-3, en büyük
+  1,4e-2 R (Box; defterin hedef dolumunu fiyat adımına yuvarlaması); işaretli ortalama ≈ 0 (≤ +3e-4 R): **çekirdek artık
+  canlı muhasebeye göre iyimser değil**. Çekirdeğin ve defterin çıkış dayanakları her ailede birebir aynı sayıdadır (ör.
+  seviyeden / kapanıştan: Box 176 / 90, C4 101 / 40, FM 13 / 39, D4 40 / 20 + 1 açılış boşluğu, T2 6 / 4, M2 0 / 1);
+  ihtiyatlı likidasyon hiç çalışmadı (likidasyon mesafesi ≥ 2 × stop). ΔR'nin kaynağı yalnız defterin fiyat/miktar
+  adımına yuvarlamasıdır. Tek-tik raporu (`ohlc`): 4h ailelerinde sinyal barını tek OHLC tiki saymak (P3b-1'in rapor
+  ölçüsü) canlının 1h muhasebesinden işlem başına 0,008–0,016 R daha kötümserdir (C4, D4, FM; p95 0,11–0,13 R) — P3b-1'in
+  +0,02–0,04 R'lik ölçüsünün bir kısmı bu kabalıktandı (orada "üst sınır" denmişti); 1d ve Box'ta fark ihmal edilir.
+  `FUNDING_EXIT_BAR` 0 işlem (P3b-1'de T2 10, M2 1); `PATH_1H_GAP` 0 (sentetik dünyaların hepsinde 1h barı var).
+- **`kernel_v1` → `kernel_v2`** (aynı dünyalar, eşleşen işlemler, base R; ADVERSE aynı yönde):
+
+| Aile | Eşleşen | Ortalama ΔR (v2 − v1) | Daha düşük | Daha yüksek | En büyük düşüş |
+|---|---|---|---|---|---|
+| T2 | 207 | −0,0007 R | %3,9 | %0,0 | −0,084 R |
+| M2 | 200 | −4,0e-5 R | %0,5 | %0,0 | −0,008 R |
+| BOX | 331 | −0,0418 R | %27,2 | %0,0 | −0,777 R |
+| D4 | 200 | −0,0112 R | %10,0 | %0,0 | −0,293 R |
+| C4 | 222 | −0,0263 R | %18,0 | %0,0 | −0,542 R |
+| FM | 265 | −0,0087 R | %14,7 | %0,0 | −0,446 R |
+
+  `kernel_v2` hiçbir eşleşen işlemde `kernel_v1`'den yüksek değildir ("daha yüksek" her ailede %0): değişiklik yalnız
+  sıkılaştırmadır. Ortalama düşüş Box −0,042, C4 −0,026, D4 −0,011, FM −0,009, T2 −0,0007 R/işlem, M2 ≈ 0 (ADVERSE aynı).
+  Box'ta düşüş P3b-1'in ölçtüğü iyimserliğe eşittir (+0,042; 5m'de tek-tik ölçüsü çekirdeğin tikiyle aynıdır); 4h ailelerinde düşüş + tek-tik
+  kötümserliği = P3b-1'in ölçüsü (D4 0,011 + 0,010 ≈ 0,021, C4 0,026 + 0,008 ≈ 0,035, FM 0,009 + 0,016 ≈ 0,025).
+- **Hız** (§5.3 ölçüm notu 2): değişmedi — `kernel_v2` / `kernel_v1` süre oranı 0,98–1,01.
+- **Testler.** `tests/test_research_engine_kernel_p3b.py`: canlı fonksiyonun kendisi çağrılır + mühür/sürüm/`BAR_TIMEFRAME`
+  eşitliği; float görünüm = Decimal `TickData` (özellik testi); ihtiyatlı kapanış dolumu ve ihtiyatlı likidasyon; 1h alt
+  barlar günün içindeki sırayı belirler (hedef önce → HEDEF, stop önce → STOP; alt barsız gün tek tik → STOP +
+  `PATH_1H_GAP`); ihtiyatlı dolum 1h kapanışından (gün kapanışından değil — 1h ayrıntısı daha ihtiyatlı); TP1 erken saatte,
+  başa-baş stopu aynı gün sonraki saatte; kısaltmanın kesinliği (her barı açan koşuyla bayt-aynı, dört aile); eksik /
+  aralık dışı / hiç olmayan alt bar → tek tik + işaret, değmeyen barın eksik alt barı işaret koymaz; ≤ 1h dilimde tik barın
+  kendisi; 1h alt barla fonlama saatine daralır. Eski testler yeni sözleşmeye göre güncellendi (TP1 sonrası başa-baş
+  stopu sonraki açılış tikinde boşlukla; `PATH_1H_GAP` işareti). `tests/test_research_engine_parity_p3b.py`: altın yollar
+  yeniden sabitlendi (değişen satırlar yalnız stop çıkışları ve hepsi aşağı: Box 5, Formasyon 2 işlem); (a) kapısı
+  `live_1h`'ye karşı; betikli defter çapraz denetimi canlı tiklerle (ihtiyatlı iki dal + 1h barlı gün: çekirdek R'si ve
+  dayanağı defterinkine eşit; `kernel_v1`'in seviyeden dolumu bu yollarda > 0,1 R iyimserdi); `LIVE_BAR_TF` =
+  `BAR_TIMEFRAME`. `tests/test_research_engine_registry.py`: yeni sabitler, `kernel.stop_fill.policy` `fixed`. P1b yalıtım
+  listesi: `kernel.py` → `accounting.futures_ledger` (canlı `exit_decision`), `parity.py`'den `learning_cf` çıktı.
+- **Açık kalanlar.** (1) Canlının stop dolumlarının çoğu 60 sn izleyicisinin mark tikinden gelir (ilk gözlem stopun
+  ötesinde → o mark'tan); çekirdek ve (a) başvurusu yalnız canlının 1h bar sözleşmesini (+ açılış tiki) kurar — 60 sn
+  gözlemi 1m verisi olmadan kurulamaz. 1h tikindeki ihtiyatlı dal (kapanıştan dolum) çoğu durumda 60 sn izleyicisinden
+  kötüdür, seviyeden dolum (kapanış geri dönmüşse) ise izleyicinin aşma payı kadar iyidir; net etki parite (b)'nin ΔR'sinde
+  görünür (P3g). (2) Canlıda girişin 1h barı `apply_closed_bars`'a girmez (açılış anından önce açılmış; o saati izleyici
+  örter); çekirdek onu OHLC tiki olarak işler (açılışı giriş fiyatı). (3) `PATH_1H_GAP` ve `FUNDING_GAP` işaretli işlemlerin
+  kapı istatistiğinden çıkarılması kapı kodunda (P3c/P3e) uygulanmalı; gerçek veride 4h/1d ile 1h barların tutarlılığı ve
+  `PATH_1H_GAP` sayısı P3g'de ölçülür.
 
 ### 8.5 P3a boşlukları — sahibe sorular (entegrasyondan önce; her cevap boşluğu doldurur ve S1'i yeniden mühürler)
 

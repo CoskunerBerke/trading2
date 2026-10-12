@@ -14,18 +14,32 @@ bayt-aynı sonuç; test). Kurallar:
 * **MOVE_STOP** yalnız SIKILAŞTIRIR ve fiyatı geçemez: kararın anındaki fiyat (karar barının kapanışı) LONG'da yeni
   stopun üstünde, SHORT'ta altında kalmalı; gevşeten ya da fiyatı geçen istek uygulanmaz, işleme `MOVE_STOP_IGNORED`
   işareti (ve nedeni) yazılır.
-* **Bar içi yol** `learning_cf` kuralıdır (`learning_cf.INTRABAR_PATH`): açılış → ters uç → lehte uç → kapanış; her
-  nokta ayrı bir gözlemdir, bir noktanın taşıdığı stop (TP1 başa-baş) yalnız SONRAKİ noktalarla sınanır. Giriş barında
-  yol ters uçtan başlar (açılış girişin kendisidir). **Stop seviyede** dolar (+ çıkış kayması); yalnız bar stopun ötesinde
-  AÇILIRSA dolum açılıştandır (boşluk). Hedef seviyede dolar (kayma yok, taker ücret; defter `tick` ile aynı); birden çok
-  hedefte ilk hedef yarısını kapatır ve stop ücret+kayma dahil başa-başa çekilir (`FuturesLedgerV2.break_even_price`
-  formülü). Kural CLOSE'u ve zaman stopu sonraki açılışta piyasa emriyle; aynı açılışta önce açılış gözlemi (boşluk) işlenir.
+* **Çıkış yolu = canlı defterin çıkış sözleşmesi** (`kernel_v2`; sahip kararı 2026-10-12, mühür
+  `WF_PROTOCOL_V1.kernel.stop_fill`): stop/likidasyon hükmü canlı defterin SAF fonksiyonu
+  `accounting.futures_ledger.exit_decision`'ın KENDİSİDİR (`EXIT_FILL_CONTRACT` = `exit_fill_v1`; yeniden yazılmaz,
+  çağrılır), canlı defterin gördüğü tiklerde: (1) pozisyon açıkken her sinyal barının AÇILIŞINDA fiyat-yalnız tik (tur
+  mark'ı; açılış stopun/likidasyonun ötesindeyse dolum açılıştan — boşluk); (2) sonra barın **1h alt barları** (canlı
+  `strategy_paper.BAR_TIMEFRAME`; `apply_closed_bars` gibi alt bar başına bir OHLC tiki: açılış → en kötü uç → kapanış).
+  Sinyal dilimi ≤ 1h ise (Box 5m) tik sinyal barının kendisidir: canlı Box defteri 60 sn mark tikleri + 1h barlarla
+  korunur; 1m veri olmadan 60 sn gözlem kurulamaz, eldeki en ince bar 5m'dir. Tik içinde `exit_decision` sırası: ilk gözlem
+  likidasyonun ötesinde → LİKİDASYON; ilk gözlem stopun ötesinde → STOP ilk gözlemden; en kötü uç iki seviyeyi de
+  geçmişse → LİKİDASYON (stop daha yakınsa da: `INTRABAR_ORDER_UNOBSERVED`, ihtiyatlı); yalnız stop → STOP seviyeden,
+  **kapanış da stopun ötesindeyse kapanıştan** (`STOP_CLOSE_BEYOND_LEVEL_PRUDENT`); kayma dolumu likidasyonun ötesine
+  iterse LİKİDASYON. Çıkış yoksa hedefler aynı tikin lehte ucuyla (aynı tikte stop ve hedef → STOP); hedef seviyede dolar
+  (kayma yok, taker ücret); birden çok hedefte ilk hedef yarısını kapatır ve stop ücret+kayma dahil başa-başa çekilir
+  (`FuturesLedgerV2.break_even_price` formülü) — yeni stop yalnız SONRAKİ tiklerle sınanır. Giriş barında açılış girişin
+  kendisidir (yalnız alt bar tikleri). **Hız:** stop/likidasyon/sıradaki hedef aralığına değmeyen sinyal barında alt bar
+  açılmaz (alt barlar barın aralığının içindedir → hiçbir tik bir şey tetikleyemez; sonuç aynı). Alt barlar barı tam ve
+  bitişik örtmüyor ya da barın aralığını aşıyorsa o bar tek OHLC tiki olarak işlenir ve işlem `PATH_1H_GAP` işaretlenir
+  (`FUNDING_GAP` gibi kapı istatistiğinden çıkar; sayısı gösterilir). Kural CLOSE'u ve zaman stopu sonraki açılışta piyasa
+  emriyle; aynı açılışta önce açılış tiki (boşluk) işlenir.
 * **Fonlama** deponun GERÇEK uzlaşma satırlarında (`SeriesData.funding` = `[(ts, rate, mark)]`, depodaki `funding_frame`
   biçimi); damga milisaniye kaymasından arındırılıp NOMİNAL dakikaya yuvarlanır (ör. 08:00:00.003 → 08:00; bar
   açılışında dolan girişe o anın uzlaşması yazılmaz). Her uzlaşma s için −yön × açık miktar × mark × oran; açık miktar
-  s'den ÖNCE KESİN kapanmamış bacaklardan (`accounting.funding.qty_open_at` sözleşmesi). Bacağın en erken anı: açılış
-  noktasında açılış anı, bar içi noktalarda (ters/lehte/kapanış) barın AÇILIŞI (çıkışın bar içinde ne zaman olduğu
-  bilinmez), veri sonunda (END) son kapanış. **İhtiyatlı kural (çıkış barındaki uzlaşma):** bacak s'den önce
+  s'den ÖNCE KESİN kapanmamış bacaklardan (`accounting.funding.qty_open_at` sözleşmesi). Bacağın en erken anı: ilk
+  gözlemde (açılış tiki ya da alt barın açılışı) o an, bar içi noktalarda (ters/lehte/kapanış) gözlem barının — alt bar
+  açıldıysa 1h alt barın — AÇILIŞI (çıkışın bar içinde ne zaman olduğu bilinmez), veri sonunda (END) son kapanış.
+  **İhtiyatlı kural (çıkış barındaki uzlaşma):** bacak s'den önce
   gerçekleşmiş OLABİLİYORSA s onun miktarına yazılmaz — s, bar içi bir bacağın barının içindeyse (açılış < s < kapanış)
   belirsizdir: yazılmaz, işlem `FUNDING_EXIT_BAR` işaretlenir ve yazılmayan tutar (`funding_ambiguous_usdt`) ayrıca
   tutulur (bilgi; kapıdan çıkarmaz); s = barın açılışı ise bacak ondan önce olamaz → yazılır; s = barın kapanışı ise
@@ -47,7 +61,8 @@ bayt-aynı sonuç; test). Kurallar:
   taker % × her bacağın notional'ı; fonlama her senaryoda aynı (gerçek). R = net / (|giriş dolumu − ilk stop| × miktar)
   (defter `TradeRecord.r_multiple` tanımı). Yol (çıkış olayları, kaldıraç, likidasyon fiyatı) base senaryosundan gelir.
 
-Parite (a) bu çekirdeği `FuturesLedgerV2` + `strategy_paper.apply_action` + `tick`'e karşı sınar (`parity.py`).
+Parite (a) bu çekirdeği `FuturesLedgerV2` + `strategy_paper.apply_action` + `tick`'e karşı, canlı gibi 1h alt bar
+tikleriyle (kırpma yok) sınar (`parity.py`).
 """
 from __future__ import annotations
 
@@ -59,13 +74,21 @@ from types import MappingProxyType
 from typing import Any, Mapping, Sequence
 
 from . import registry as RG
-from ..accounting import LiquidationParams, bracket_for, liquidation_price
+from ..accounting import LiquidationParams, PositionSide, bracket_for, liquidation_price
+from ..accounting.futures_ledger import EXIT_FILL_CONTRACT, exit_decision
 from ..learning_mode import fit_size
 from ..pattern_trader.strategy import rr_after_cost
 from ..strategy_lib import (ACT_CLOSE, ACT_MOVE_STOP, LONG, TARGET_PRICE, TF_MS, BookEntry, Intent, PosView, Variant,
                             catalog as SLC, identity as SLI)
 
-KERNEL_VERSION = "kernel_v1"
+#: v2 (2026-10-12): çıkış yolu canlı defterin `exit_decision`'ı + 1h alt bar tikleri (v1: `learning_cf` yolu, stop
+#: seviyede). Kalıcı çıktı henüz yok; sürüm, anlamı değişen sonuçların (önbellek/deneme satırı) karışmaması içindir.
+KERNEL_VERSION = "kernel_v2"
+#: canlı defterin bar ucu dilimi (`strategy_paper.BAR_TIMEFRAME`; eşitliği testli) — çıkış tikleri bu dilimden
+PATH_TF = "1h"
+#: mühürlü `WF_PROTOCOL_V1.kernel.stop_fill.policy` (eşitliği testli) ve uygulanan canlı sözleşme
+STOP_FILL_POLICY = "LIVE_EXIT_DECISION_ON_1H_BARS"
+EXIT_CONTRACT = EXIT_FILL_CONTRACT
 SCENARIOS: tuple[str, ...] = ("base", "ADVERSE", "STRESS")
 _COSTS = RG.WF_PROTOCOL_V1["thresholds"]["costs"]
 SIZING = RG.LIB_V1["sizing"]
@@ -83,6 +106,12 @@ EXIT_STOP, EXIT_TARGET, EXIT_RULE, EXIT_TIME, EXIT_LIQ, EXIT_END = "STOP", "TARG
 # işaretler
 FLAG_FUNDING_GAP, FLAG_OPEN_AT_END = "FUNDING_GAP", "OPEN_AT_END"
 FLAG_FUNDING_EXIT_BAR, FLAG_MOVE_STOP_IGNORED = "FUNDING_EXIT_BAR", "MOVE_STOP_IGNORED"
+#: çıkış kararı gereken bir sinyal barının 1h alt barları eksik/tutarsız → bar tek OHLC tiki (kapıdan çıkar)
+FLAG_PATH_GAP = "PATH_1H_GAP"
+#: `exit_decision` dayanakları (kayıt `basis`): ilk gözlemde verilen hükümler
+_FIRST_OBS = frozenset({"FIRST_OBSERVATION_BEYOND_LIQUIDATION", "GAP_FILL_AT_FIRST_OBSERVATION"})
+BASIS_PRUDENT_CLOSE = "STOP_CLOSE_BEYOND_LEVEL_PRUDENT"
+BASIS_SLIP_LIQ = "SLIPPAGE_BEYOND_LIQUIDATION"
 # giriş retleri
 REJ_DRIFT, REJ_BAD_STOP, REJ_CHASE, REJ_RISK_RANGE, REJ_SIZE = ("ENTRY_DRIFT", "STRATEGY_BAD_STOP", "CHASE_LIMIT",
                                                                  "RISK_OUTSIDE_TESTED_RANGE", "SIZE_REJECTED")
@@ -130,9 +159,10 @@ class SeriesData:
 @dataclass(frozen=True)
 class Leg:
     """Bir çıkış bacağı (yol olayı). `ref`: maliyetten önceki referans fiyat; `frac`: ilk miktarın payı; `market`:
-    kayma uygulanır mı (stop/kural/zaman/son); `ts`: kaydın damgası (açılış noktasında açılış, bar içinde barın kapanışı);
-    `t_from`: bacağın EN ERKEN olası anı (açılış noktasında açılış, bar içinde barın açılışı, veri sonunda son kapanış) —
-    fonlama bununla yazılır (modül belgesi, ihtiyatlı kural)."""
+    kayma uygulanır mı (stop/kural/zaman/son); `ts`: kaydın damgası (ilk gözlemde o an, bar içinde gözlem barının
+    kapanışı); `t_from`: bacağın EN ERKEN olası anı (ilk gözlemde o an, bar içinde gözlem barının açılışı, veri sonunda
+    son kapanış) — fonlama bununla yazılır (modül belgesi, ihtiyatlı kural). `basis`: stop/likidasyon bacağında canlı
+    `exit_decision` kaydının dayanağı (`exit_fill.basis`)."""
 
     kind: str
     ref: float
@@ -142,6 +172,7 @@ class Leg:
     point: str
     reason: str = ""
     t_from: int | None = None
+    basis: str = ""
 
     @property
     def earliest(self) -> int:
@@ -188,7 +219,8 @@ class KernelTrade:
                 "targets": list(self.targets), "leverage": self.leverage, "qty": self.qty, "notional": self.notional,
                 "margin": self.margin, "liq_price": self.liq_price, "risk_usdt": self.risk_usdt,
                 "legs": [{"kind": lg.kind, "ref": lg.ref, "frac": lg.frac, "market": lg.market, "ts": lg.ts,
-                          "t_from": lg.earliest, "point": lg.point, "reason": lg.reason} for lg in self.legs],
+                          "t_from": lg.earliest, "point": lg.point, "reason": lg.reason, "basis": lg.basis}
+                         for lg in self.legs],
                 "exit_ts": self.exit_ts, "exit_kind": self.exit_kind, "exit_reason": self.exit_reason,
                 "bars_held": self.bars_held, "funding_usdt": self.funding_usdt, "funding_events": self.funding_events,
                 "funding_ambiguous_usdt": self.funding_ambiguous_usdt,
@@ -249,6 +281,32 @@ def module_src_shas() -> dict[str, str]:
 # ============================================================================ yardımcılar
 def _beyond(long: bool, level: float, px: float) -> bool:
     return px <= level if long else px >= level
+
+
+class Obs:
+    """`accounting.TickData`'nın `exit_decision`'ın okuduğu yüzü (float; Decimal dönüşümü yok — float karşılaştırmaları
+    `Decimal(repr(x))` karşılaştırmalarıyla aynı sıradadır, eşitliği testli). Bar tiki: `open/high/low/last`; fiyat-yalnız
+    tik: yalnız `last` (ilk gözlem fiyatın kendisi)."""
+
+    __slots__ = ("open", "high", "low", "last", "mark")
+
+    def __init__(self, last: float, *, open: float | None = None, high: float | None = None, low: float | None = None):
+        self.last, self.mark, self.open, self.high, self.low = last, None, open, high, low
+
+    @property
+    def ref(self) -> float:
+        return self.last
+
+    @property
+    def hi(self) -> float:
+        return self.high if self.high is not None else self.last
+
+    @property
+    def lo(self) -> float:
+        return self.low if self.low is not None else self.last
+
+
+_SIDE = {True: PositionSide.LONG, False: PositionSide.SHORT}
 
 
 def _tf_index(rows: Sequence[Mapping[str, Any]]) -> list[int]:
@@ -456,6 +514,18 @@ class _Pos:
         self.tp1_done = False
 
 
+def _touches(pos: _Pos, h: float, lo: float, long: bool) -> bool:
+    """Sinyal barı stopa, likidasyona ya da sıradaki hedefe değiyor mu (`exit_decision` / hedef karşılaştırmalarıyla aynı
+    eşitsizlikler). Değmeyen barın alt barları da değmez (alt barlar barın aralığındadır): hiçbir tik bir şey yapamaz, alt
+    bar açılmaz (kesinliği testli: her barı açan koşuyla bayt-aynı)."""
+    if (lo <= pos.stop or lo <= pos.trade.liq_price) if long else (h >= pos.stop or h >= pos.trade.liq_price):
+        return True
+    if pos.tidx < len(pos.targets):
+        tgt = pos.targets[pos.tidx]
+        return (h >= tgt) if long else (lo <= tgt)
+    return False
+
+
 def _resolve_targets(intent: Intent, entry: float) -> tuple[float, ...]:
     s = 1.0 if intent.side == LONG else -1.0
     out = []
@@ -514,6 +584,34 @@ class _Sim:
                            int(variant.lookback.get(tf, 0) or len(data.bars.get(tf) or ()))) for tf in variant.timeframes}
         btc = list(data.btc_1d or ())
         self.btc_view = (_tf_index(btc), btc, TF_MS["1d"], int(variant.btc_lookback or len(btc))) if variant.needs_btc else None
+        # çıkış tikleri: sinyal dilimi PATH_TF'den kabaysa 1h alt barlar; değilse sinyal barının kendisi
+        self.sub_step = TF_MS[PATH_TF] if self.step > TF_MS[PATH_TF] else None
+        self.sub_rows = list(data.bars.get(PATH_TF) or ()) if self.sub_step else []
+        self.sub_ts = _tf_index(self.sub_rows)
+
+    def path_ticks(self, i: int) -> tuple[list[tuple[float, float, float, float, int, int]], bool]:
+        """i. sinyal barının çıkış tikleri `[(açılış, yüksek, düşük, kapanış, açılış ms, kapanış ms)]` ve alt barlar
+        kullanılabildi mi. Alt barlar ancak barı TAM ve bitişik örtüyorsa ve barın aralığının içindeyse kullanılır (o zaman
+        değmeyen barın atlanması kesindir); değilse bar tek OHLC tikidir (çağıran `PATH_1H_GAP` işaretler)."""
+        bar = self.rows[i]
+        t_open = int(bar["timestamp"])
+        o, h, lo, c = float(bar["open"]), float(bar["high"]), float(bar["low"]), float(bar["close"])
+        whole = [(o, h, lo, c, t_open, t_open + self.step)]
+        if self.sub_step is None:
+            return whole, True
+        n = self.step // self.sub_step
+        j = bisect.bisect_left(self.sub_ts, t_open)
+        sub = self.sub_rows[j:j + n]
+        out = []
+        for k, r in enumerate(sub):
+            ts = int(r["timestamp"])
+            so, sh, sl, sc = float(r["open"]), float(r["high"]), float(r["low"]), float(r["close"])
+            if ts != t_open + k * self.sub_step or sh > h or sl < lo or not (sl <= min(so, sc) and max(so, sc) <= sh):
+                return whole, False
+            out.append((so, sh, sl, sc, ts, ts + self.sub_step))
+        if len(out) != n:
+            return whole, False
+        return out, True
 
     def ctx_for(self, now: int, history: Sequence[BookEntry]) -> dict[str, Any]:
         c: dict[str, Any] = {"now_ms": now, "symbol": self.data.symbol, "history": tuple(history)}
@@ -547,9 +645,9 @@ class _Sim:
                 return KernelResult(variant.variant_id, data.symbol, [], 0, 0, {}, 0), "DECISION_BAR_MISSING"
 
         def leg(kind: str, ref: float, frac: float, market: bool, ts: int, point: str, reason: str = "",
-                t_from: int | None = None) -> None:
+                t_from: int | None = None, basis: str = "") -> None:
             pos.trade.legs.append(Leg(kind, float(ref), float(frac), market, int(ts), point, reason,
-                                      None if t_from is None else int(t_from)))
+                                      None if t_from is None else int(t_from), basis))
             pos.frac_left -= frac
 
         def finish(kind: str, reason: str, ts: int, bar_i: int) -> None:
@@ -560,30 +658,38 @@ class _Sim:
             trades.append(t)
             pos = None
 
-        def walk_point(point: str, px: float, ts: int, t_open: int, bar_i: int, long: bool) -> bool:
-            """Tek gözlem (defterin fiyat-yalnız tiki). Pozisyon kapandıysa True."""
-            eff = px
-            if point != "open" and _beyond(long, pos.stop, px):
-                eff = pos.stop                                   # seviyede stop (boşluk yalnız açılışta)
+        def observe(obs: Obs, t_open: int, t_close: int, bar_i: int, long: bool) -> bool:
+            """Tek defter tiki, `FuturesLedgerV2.tick`'in çıkış sırasıyla: canlı `exit_decision` (stop/likidasyon), kayma
+            dolumu likidasyonun ötesinde mi, sonra hedefler (tikin lehte ucuyla; TP1 → başa-baş stop yalnız sonraki
+            tiklerde). `t_open`/`t_close`: gözlemin aralığı (fiyat-yalnız tikte ikisi de o an). Kapandıysa True."""
             t = pos.trade
-            tf = None if point == "open" else t_open
-            if _beyond(long, t.liq_price, eff):
-                leg(EXIT_LIQ, t.liq_price, pos.frac_left, False, ts, point, "LIQUIDATION", tf)
-                finish(EXIT_LIQ, "LIQUIDATION", ts, bar_i)
-                return True
-            if _beyond(long, pos.stop, eff):
-                fill = eff * (1.0 - (1 if long else -1) * base.slip)
-                kind_reason = "BREAKEVEN_STOP" if pos.tp1_done else ("GAP_STOP" if point == "open" else "STOP")
-                if _beyond(long, t.liq_price, fill):              # kayma dolumu likidasyonun ötesine itti
-                    leg(EXIT_LIQ, t.liq_price, pos.frac_left, False, ts, point, "SLIPPAGE_BEYOND_LIQUIDATION", tf)
-                    finish(EXIT_LIQ, "SLIPPAGE_BEYOND_LIQUIDATION", ts, bar_i)
+            dec = exit_decision(_SIDE[long], pos.stop, t.liq_price, obs)
+            if dec is not None:
+                basis = str(dec["record"]["basis"])
+                first = obs.high is None or basis in _FIRST_OBS            # hüküm ilk gözlemden (açılış ya da fiyat)
+                ts, tf = (t_open, None) if first else (t_close, t_open)
+                point = "open" if first else ("close" if basis == BASIS_PRUDENT_CLOSE else "adverse")
+                if dec["kind"] == "liquidation":
+                    leg(EXIT_LIQ, t.liq_price, pos.frac_left, False, ts, point, "LIQUIDATION", tf, basis)
+                    finish(EXIT_LIQ, "LIQUIDATION", ts, bar_i)
                     return True
-                leg(EXIT_STOP, eff, pos.frac_left, True, ts, point, kind_reason, tf)
-                finish(EXIT_STOP, kind_reason, ts, bar_i)
+                ref = float(dec["ref"])
+                if _beyond(long, t.liq_price, ref * (1.0 - (1 if long else -1) * base.slip)):
+                    leg(EXIT_LIQ, t.liq_price, pos.frac_left, False, ts, point, BASIS_SLIP_LIQ, tf, BASIS_SLIP_LIQ)
+                    finish(EXIT_LIQ, BASIS_SLIP_LIQ, ts, bar_i)
+                    return True
+                reason = "BREAKEVEN_STOP" if pos.tp1_done else ("GAP_STOP" if first else "STOP")
+                leg(EXIT_STOP, ref, pos.frac_left, True, ts, point, reason, tf, basis)
+                finish(EXIT_STOP, reason, ts, bar_i)
                 return True
+            best = obs.hi if long else obs.lo
+            if obs.high is None:
+                ts, tf, point = t_open, None, "open"
+            else:
+                ts, tf, point = t_close, t_open, "favourable"
             while pos is not None and pos.tidx < len(pos.targets):
                 tgt = pos.targets[pos.tidx]
-                if not ((eff >= tgt) if long else (eff <= tgt)):
+                if not ((best >= tgt) if long else (best <= tgt)):
                     break
                 last = pos.tidx == len(pos.targets) - 1
                 if last:
@@ -608,7 +714,7 @@ class _Sim:
             # ---------------------------------------------------------------- açılış: bekleyen eylem
             if pos is not None:
                 long = pos.intent.side == LONG
-                closed = walk_point("open", o, t_open, t_open, i, long)
+                closed = observe(Obs(o), t_open, t_open, i, long)          # tur mark'ı: fiyat-yalnız açılış tiki
                 if not closed and isinstance(pending, tuple) and pending[0] == ACT_CLOSE:
                     leg(pending[2], o, pos.frac_left, True, t_open, "open", pending[1])
                     finish(pending[2], pending[1], t_open, i)
@@ -640,12 +746,14 @@ class _Sim:
                         break
             else:
                 pending = pending_at = None
-            # ---------------------------------------------------------------- bar içi yol (ters → lehte → kapanış)
-            if pos is not None:
+            # ---------------------------------------------------------------- bar içi: 1h alt bar tikleri (canlı defter)
+            if pos is not None and _touches(pos, h, lo, pos.intent.side == LONG):
                 long = pos.intent.side == LONG
-                adv, fav = (lo, h) if long else (h, lo)
-                for point, px in (("adverse", adv), ("favourable", fav), ("close", c)):
-                    if walk_point(point, px, t_close, t_open, i, long):
+                ticks, sub_ok = self.path_ticks(i)
+                if not sub_ok and FLAG_PATH_GAP not in pos.trade.flags:
+                    pos.trade.flags.append(FLAG_PATH_GAP)
+                for so, sh, sl, sc, a_ms, b_ms in ticks:
+                    if observe(Obs(sc, open=so, high=sh, low=sl), a_ms, b_ms, i, long):
                         break
             if forced is not None and trades:
                 break
@@ -731,9 +839,10 @@ def replay_intent(variant: Variant, data: SeriesData, intent: Intent, *, decisio
     return (res.trades[0] if res.trades else None), why
 
 
-__all__ = ["CostScenario", "EXIT_END", "EXIT_LIQ", "EXIT_RULE", "EXIT_STOP", "EXIT_TARGET", "EXIT_TIME",
-           "FLAG_FUNDING_EXIT_BAR", "FLAG_FUNDING_GAP", "FLAG_MOVE_STOP_IGNORED", "FLAG_OPEN_AT_END", "FundingOutcome",
-           "FundingSeries", "KERNEL_VERSION", "KernelResult", "KernelTrade", "Leg", "MOVE_CROSSES_PRICE", "MOVE_LOOSENS",
-           "REJ_DATA_GAP", "REJ_RR", "SCENARIOS", "SeriesData", "break_even", "cost_trade", "funding_of", "lib_params",
+__all__ = ["BASIS_PRUDENT_CLOSE", "BASIS_SLIP_LIQ", "CostScenario", "EXIT_CONTRACT", "EXIT_END", "EXIT_LIQ", "EXIT_RULE",
+           "EXIT_STOP", "EXIT_TARGET", "EXIT_TIME", "FLAG_FUNDING_EXIT_BAR", "FLAG_FUNDING_GAP", "FLAG_MOVE_STOP_IGNORED",
+           "FLAG_OPEN_AT_END", "FLAG_PATH_GAP", "FundingOutcome", "FundingSeries", "KERNEL_VERSION", "KernelResult",
+           "KernelTrade", "Leg", "MOVE_CROSSES_PRICE", "MOVE_LOOSENS", "Obs", "PATH_TF", "REJ_DATA_GAP", "REJ_RR",
+           "SCENARIOS", "STOP_FILL_POLICY", "SeriesData", "break_even", "cost_trade", "funding_of", "lib_params",
            "make_variant", "module_src_shas", "move_stop_verdict", "replay_intent", "run", "scenario", "signals_at",
            "size_trade", "snap_ms", "spec_for", "spec_sha_for"]

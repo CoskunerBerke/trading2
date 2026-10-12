@@ -13,18 +13,19 @@ p95 ≤ 0,05). Aynı sentetik barlar iki yoldan oynatılır:
   yazılır, risk ölçeği 50 kat (R ölçekten bağımsızdır; min-notional retlerini önler). Karar anından sonraki satır karar
   anında açılmıyorsa (veri boşluğu) giriş `ENTRY_DATA_GAP` ile reddedilir (çekirdekle aynı). İki kip:
 
-  - `clipped` (KAPILI ölçü): bar içi yol çekirdekle aynı sözleşmedir (`learning_cf._bar_path` sırası, her nokta ayrı
-    fiyat-yalnız tik, stopun ötesindeki nokta seviyeye kırpılır, boşluk yalnız açılışta). Bu kip çekirdeğin
-    ARİTMETİĞİNİ sınar (kırpma yüzünden defterin `exit_decision`'ının ihtiyatlı dalları çalışmaz — kısmen döngüsel).
-  - `ohlc` (RAPOR, kapıya girmez): canlı defterin yaptığı gibi bar başına TEK OHLC tiki (`TickData(open, high, low,
-    close)`, kırpma yok) → `exit_decision`'ın `STOP_CLOSE_BEYOND_LEVEL_PRUDENT` (kapanış da stopun ötesindeyse dolum
-    kapanıştan) ve `PRUDENT_LIQUIDATION` dalları ile "aynı tikte önce stop, hedef sonra" kuralı çalışır. İki kip
-    arasındaki işaretli ΔR çekirdeğin canlı defterin muhasebesine göre ne kadar iyimser olduğunu ölçer (canlı 1h OHLC
-    barı işler; burada sinyal diliminin barı — ölçü bir üst sınırdır).
+  - `live_1h` (KAPILI ölçü; `kernel_v2`, sahip kararı 2026-10-12): canlı defterin gördüğü tikler, kırpma yok — pozisyon
+    açıkken her sinyal barının açılışında fiyat-yalnız tik (tur mark'ı), sonra sinyal barının içindeki BÜTÜN 1h barları
+    (`SeriesData.bars["1h"]`; canlı `apply_closed_bars` gibi bar başına bir `TickData(open, high, low, close)`); sinyal
+    dilimi ≤ 1h ise (Box 5m) sinyal barının kendisi. Defterin `exit_decision`'ı `STOP_CLOSE_BEYOND_LEVEL_PRUDENT` /
+    `PRUDENT_LIQUIDATION` dallarıyla ve "aynı tikte önce stop" kuralıyla çalışır. Başvuru 1h barlarını çekirdekten
+    BAĞIMSIZ okur ve her birini tikler (çekirdeğin "değmeyen barda alt bar açma" kısaltması böylece sınanır). Sinyal
+    barının 1h barı yoksa bar tek OHLC tikidir (çekirdeğin `PATH_1H_GAP` yedeğiyle aynı).
+  - `ohlc` (RAPOR, kapıya girmez): sinyal barı başına TEK OHLC tiki (P3b-1'in rapor kipi): 4h/1d ailelerinde 1h
+    ayrıntısının ölçüye etkisini gösterir.
 
-  Her iki kipte bar içi tikler barın açılışından 1 ms sonra damgalanır: çekirdeğin fonlama sözleşmesiyle aynı (bar içi
-  çıkış barın içinde olur; barın içindeki ve kapanışındaki uzlaşma çıkan miktara yazılmaz; pozisyon bardan çıkmazsa
-  sonraki açılış tiki onları yazar). Veri sonunda son kapanışta bir fiyat tiki fonlamayı kapatır, sonra elle kapanış.
+  Bar içi tikler gözlem barının açılışından 1 ms sonra damgalanır: çekirdeğin fonlama sözleşmesiyle aynı (bar içi çıkış
+  barın içinde olur; barın içindeki ve kapanışındaki uzlaşma çıkan miktara yazılmaz; pozisyon bardan çıkmazsa sonraki
+  tik onları yazar). Veri sonunda son kapanışta bir fiyat tiki fonlamayı kapatır, sonra elle kapanış.
 * Sinyal kimliği = (sembol, sinyal barı, yön) kümelerinin eşitliği (iki yönde); ΔR = |R_çekirdek − R_defter| eşleşen
   işlemlerde (`TradeRecord.r_multiple`); ayrıca işaretli ortalama (R_çekirdek − R_defter).
 
@@ -69,12 +70,15 @@ PARITY_KERNEL = RG.LIB_V1["thresholds"]["parity_kernel"]
 PARITY_COPY = RG.LIB_V1["thresholds"]["parity_copy"]
 PASS, PARITY_FAIL, PARITY_UNPROVEN = "PASS", "PARITY_FAIL", "PARITY_UNPROVEN"
 NOT_COMPARABLE = "NOT_COMPARABLE"
-MODE_CLIPPED, MODE_OHLC = "clipped", "ohlc"
+MODE_LIVE, MODE_OHLC = "live_1h", "ohlc"
 #: başvuru defterinin risk ölçeği (R ölçekten bağımsız; min-notional reddini önler)
 REF_SCALE = 50.0
 REF_EQUITY = 1_000_000.0
-#: bar içi tiklerin damgası: barın açılışından sonra (çekirdeğin fonlama sözleşmesi)
+#: bar içi tiklerin damgası: gözlem barının açılışından sonra (çekirdeğin fonlama sözleşmesi)
 INTRABAR_TICK_MS = 1
+#: canlı defterin kapanmış bar dilimi (`strategy_paper.BAR_TIMEFRAME`; eşitliği testli) — başvuru bunu çekirdekten
+#: bağımsız tutar
+LIVE_BAR_TF = "1h"
 #: kopya → canlı defter (state klasörü; `rehydrate.RULE_BOOKS` ile aynı adlar) ve sinyal dilimi
 BOOK_DIR = {"K_T2": "strategy_paper", "K_M2": "strategy_paper_m2", "K_BOX": "strategy_paper_box",
             "K_D4": "strategy_paper_trend4h", **{f"K_C4_CV{i:03d}": "strategy_paper_candle4h" for i in range(1, 9)},
@@ -241,19 +245,19 @@ def _ref_ledger(data: KN.SeriesData) -> tuple[Any, Any, Any, Any, Any]:
     return led, filt, prof, RiskEngine(prof, KillSwitch()), _Lookup(data.funding)
 
 
-def reference_run(variant_id: str, data: KN.SeriesData, *, mode: str = MODE_CLIPPED) -> tuple[list[RefTrade], dict[str, int]]:
-    """Canlı yol: canlı kural → `apply_action` → `FuturesLedgerV2.tick`. `mode`: `clipped` (çekirdekle aynı bar içi
-    sözleşme; kapılı ölçü) ya da `ohlc` (bar başına tek, kırpılmamış OHLC tiki; rapor)."""
+def reference_run(variant_id: str, data: KN.SeriesData, *, mode: str = MODE_LIVE) -> tuple[list[RefTrade], dict[str, int]]:
+    """Canlı yol: canlı kural → `apply_action` → `FuturesLedgerV2.tick`. `mode`: `live_1h` (canlı defterin tikleri:
+    açılış fiyat tiki + sinyal barının bütün 1h OHLC barları; kapılı ölçü) ya da `ohlc` (sinyal barı başına tek
+    OHLC tiki; rapor). İkisinde de kırpma yok."""
     from ..accounting import TickData
     from ..core import iso
-    from ..learning_cf import _bar_path
     from ..paper_rules import signal_already_used
     from ..pattern_trader.strategy import rr_after_cost
     from ..risk import build_state
     from ..strategy_lib import TF_MS
     from ..strategy_paper import DataVerdict, apply_action
-    if mode not in (MODE_CLIPPED, MODE_OHLC):
-        raise ValueError(f"kip {MODE_CLIPPED}/{MODE_OHLC} olmalı: {mode!r}")
+    if mode not in (MODE_LIVE, MODE_OHLC):
+        raise ValueError(f"kip {MODE_LIVE}/{MODE_OHLC} olmalı: {mode!r}")
     rule = _LiveRule(variant_id)
     copy = rule.copy
     stf = copy.signal_tf
@@ -264,6 +268,9 @@ def reference_run(variant_id: str, data: KN.SeriesData, *, mode: str = MODE_CLIP
                 int(copy.lookback.get(tf))) for tf in copy.timeframes}
     btc = list(data.btc_1d or ())
     btc_idx = [int(r["timestamp"]) for r in btc]
+    h1 = TF_MS[LIVE_BAR_TF]
+    subs = list(data.bars.get(LIVE_BAR_TF) or ()) if (mode == MODE_LIVE and step > h1) else []
+    sub_ts = [int(r["timestamp"]) for r in subs]
     led, filt, prof, risk, lookup = _ref_ledger(data)
     rejects: dict[str, int] = {}
     pending: dict | None = None
@@ -288,8 +295,7 @@ def reference_run(variant_id: str, data: KN.SeriesData, *, mode: str = MODE_CLIP
     for i, bar in enumerate(rows):
         o, h, lo, c = (float(bar[k]) for k in ("open", "high", "low", "close"))
         t_open = int(bar["timestamp"])
-        odt, idt = _dt(t_open), _dt(t_open + INTRABAR_TICK_MS)
-        long = None
+        odt = _dt(t_open)
         pos = led.positions.get(sym)
         if pos is not None:
             tick(o, odt, True)                             # açılış gözlemi: boşlukta açılıştan
@@ -322,20 +328,14 @@ def reference_run(variant_id: str, data: KN.SeriesData, *, mode: str = MODE_CLIP
                                    max_entry_drift_pct=float(rule.params.get("max_entry_drift_pct") or 0.0))
                 if res == "OPENED":
                     entry_bar[sym] = i
-        p = led.positions.get(sym)
-        if p is not None:
-            long = p.side.value == "LONG"
-            if mode == MODE_OHLC:
-                tick_ohlc(o, h, lo, c, idt)                # canlı gibi: tek OHLC tiki, kırpma yok
-            else:
-                for _point, px in _bar_path(long, None, h, lo, c):   # açılış zaten işlendi: ters → lehte → kapanış
-                    p = led.positions.get(sym)
-                    if p is None:
-                        break
-                    price = px
-                    if p.stop is not None and ((price <= float(p.stop)) if long else (price >= float(p.stop))):
-                        price = float(p.stop)              # seviyede stop (boşluk yalnız açılışta)
-                    tick(price, idt, False)
+        if led.positions.get(sym) is not None:
+            j0, j1 = _bisect_left(sub_ts, t_open), _bisect_left(sub_ts, t_open + step)
+            inner = [(float(r["open"]), float(r["high"]), float(r["low"]), float(r["close"]), int(r["timestamp"]))
+                     for r in subs[j0:j1]] or [(o, h, lo, c, t_open)]
+            for so, sh, sl, sc, st in inner:               # canlı `apply_closed_bars`: 1h barı başına bir OHLC tiki
+                if led.positions.get(sym) is None:
+                    break
+                tick_ohlc(so, sh, sl, sc, _dt(st + INTRABAR_TICK_MS))
         # ---------------------------------------------------------------- kapanış kararı
         now = t_open + step
         bars = {tf: v[1][max(0, _bisect(v[0], now - v[2]) - v[3]):_bisect(v[0], now - v[2])] for tf, v in idx.items()}
@@ -376,6 +376,11 @@ def reference_run(variant_id: str, data: KN.SeriesData, *, mode: str = MODE_CLIP
 def _bisect(xs: list[int], v: int) -> int:
     import bisect
     return bisect.bisect_right(xs, int(v))
+
+
+def _bisect_left(xs: list[int], v: int) -> int:
+    import bisect
+    return bisect.bisect_left(xs, int(v))
 
 
 @dataclass
@@ -800,7 +805,7 @@ def mark_parity(rows: Sequence[Mapping[str, Any]], results: Mapping[str, ParityB
     return out
 
 
-__all__ = ["BOOK_DIR", "MODE_CLIPPED", "MODE_OHLC", "NOT_COMPARABLE", "PARITY_COPY", "PARITY_FAIL", "PARITY_KERNEL",
+__all__ = ["BOOK_DIR", "LIVE_BAR_TF", "MODE_LIVE", "MODE_OHLC", "NOT_COMPARABLE", "PARITY_COPY", "PARITY_FAIL", "PARITY_KERNEL",
            "PARITY_UNPROVEN", "PASS", "EpochParity", "ParityA", "ParityB", "RefTrade", "compare_a", "compare_b",
            "live_cohort", "live_cost_frac", "live_signal_key", "mark_parity", "params_from_view", "record_variation",
            "reference_run", "views_from_configs"]

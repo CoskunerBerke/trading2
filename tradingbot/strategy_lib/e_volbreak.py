@@ -8,9 +8,11 @@ başka çıkış yok ("hedef ya da max_hold").
   kapanışın üst bandı İLK kez geçmesi (önceki kapanış önceki barın üst bandını geçmemişti) → long; alt bant → short.
 * **BBSQ** — BB(20,2) genişliği ((üst − alt) / orta) son 120 barın ≤ %20'liğinde iken kırılım; kırılım = kapanışın
   BB(20,2) bandının dışında olması (B7: üst bandın üstü → long, alt bandın altı → short), İLK kez (önceki kapanış
-  önceki barın bandının içindeydi). Okunuş: "iken" = kırılım barında; yüzdelik = o barın genişliğinin, kendisi DAHİL son
-  120 barın genişlikleri içindeki ortalama sırası / 120 (`indicators_ext.bb_width_pct_rank`'in tanımı; pencere tam
-  dolmadan giriş yok) ≤ 0,20.
+  önceki barın bandının içindeydi). Okunuş (mühürlü teknik okuma `params.squeeze_bar`, 2026-10-12, P3b-2a inceleme
+  bulgu 2; yerleşik sıkışma okunuşu): sıkışma kırılımdan ÖNCEKİ barda (t − 1) ölçülür, kırılım t barında; yüzdelik =
+  t − 1'in genişliğinin, t − 1'de biten (kendisi DAHİL) son 120 genişlik içindeki ortalama sırası / 120
+  (`indicators_ext.bb_width_pct_rank`'in tanımı; pencere tam dolmadan giriş yok) ≤ 0,20. Kırılım barı bandı
+  genişlettiğinden sıkışmayı t'de ölçmek kırılımın kendisini ölçerdi (P3b-2a'daki "kırılım barında" okunuşu düzeltildi).
 """
 from __future__ import annotations
 
@@ -21,7 +23,7 @@ from .contract import LONG, SHORT
 from .pure import ATR_LEN, Cols, PureVariant, fresh_above, fresh_below
 
 KEL_PARAM_KEYS = ("keltner_period", "band_atr_mult", "center_line")
-BBSQ_PARAM_KEYS = ("bb_period", "bb_std", "squeeze_lookback_bars", "squeeze_pct_max", "breakout_ref")
+BBSQ_PARAM_KEYS = ("bb_period", "bb_std", "squeeze_lookback_bars", "squeeze_pct_max", "breakout_ref", "squeeze_bar")
 LIVE_MODULES: tuple[str, ...] = ()
 
 
@@ -80,6 +82,9 @@ class BollingerSqueezeBreakout(PureVariant):
         if not (isinstance(br, Mapping) and br.get("rule") == "CLOSE_OUTSIDE_BB" and br.get("bb_period") == n
                 and br.get("bb_std") == k):
             raise ValueError(f"{self.variant_id}: kırılım referansı kendi BB({n},{k}) bandı olmalı (B7): {br!r}")
+        sq = p["squeeze_bar"]
+        if not (isinstance(sq, Mapping) and sq.get("squeeze_at") == "PREVIOUS_BAR" and sq.get("breakout_at") == "SIGNAL_BAR"):
+            raise ValueError(f"{self.variant_id}: sıkışma kırılımdan önceki barda ölçülür (teknik okuma, bulgu 2): {sq!r}")
         if not self.target_r:
             raise ValueError(f"{self.variant_id}: hedef (target_r) gerekli")
         self.n, self.k, self.lb, self.q = int(n), float(k), int(lb), float(q) / 100.0
@@ -87,21 +92,23 @@ class BollingerSqueezeBreakout(PureVariant):
     def entry(self, cols: Cols, ctx) -> tuple[str, dict[str, Any]] | None:
         i = len(cols) - 1
         c = cols.close
-        if i - self.lb + 1 < self.n - 1:
-            return None                                  # 120 genişliğin hepsi ölçülemiyor
+        s = i - 1                                        # sıkışma barı (t − 1); kırılım barı i (t)
+        if s - self.lb + 1 < self.n - 1:
+            return None                                  # t − 1'de biten 120 genişliğin hepsi ölçülemiyor
         lo, mid, up = ind.bollinger_at(c, i, self.n, self.k)
-        lo_p, _m, up_p = ind.bollinger_at(c, i - 1, self.n, self.k)
+        lo_p, _m, up_p = ind.bollinger_at(c, s, self.n, self.k)
         if fresh_above(c, up, up_p):
             side = LONG
         elif fresh_below(c, lo, lo_p):
             side = SHORT
         else:
             return None
-        widths = [ind.bb_width_at(c, j, self.n, self.k) for j in range(i - self.lb + 1, i + 1)]
+        widths = [ind.bb_width_at(c, j, self.n, self.k) for j in range(s - self.lb + 1, s + 1)]
         rank = ind.pct_rank(widths, widths[-1])
         if not (rank == rank and rank <= self.q):
             return None
-        return side, {"bb_mid": mid, "bb_upper": up, "bb_lower": lo, "bb_width": widths[-1], "bb_width_pct_rank": rank}
+        return side, {"bb_mid": mid, "bb_upper": up, "bb_lower": lo, "squeeze_bar_ts": cols.ts[s],
+                      "squeeze_bb_width": widths[-1], "squeeze_pct_rank": rank}
 
 
 def make(variant_id: str, params: Mapping[str, Any], spec: Mapping[str, Any] | None) -> PureVariant:

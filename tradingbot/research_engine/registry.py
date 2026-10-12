@@ -53,7 +53,7 @@ SEAL_DOC = "docs/ENGINE_BRAIN_V1.md §8.2"
 #: ayarlanmaz). Keşif katmanı ve Kapı A'nın ileri okuması YALNIZ açılışı bu andan sonra olan barları kullanır (§5.1).
 #: Mühür commit'leri yalnız fast-forward (ya da merge commit) ile birleşir; rebase/squash/cherry-pick işleyen zamanı
 #: değiştirir → test kırılır → yeniden mühür.
-T_SEAL_MS = 1791773880000
+T_SEAL_MS = 1791779880000
 
 
 # ============================================================================ kanonik biçim ve donma
@@ -70,6 +70,18 @@ OWNER_GAP_DECISION_TR = "sahip kararı 2026-10-11, §8.5 önerilen"
 def decided(item: str, text: str, **values: Any) -> dict:
     """§8.5 boşluğunun sahip kararıyla doldurulmuş değeri: değer alanları + `decision` (§8.5 maddesi) + `reading_tr`."""
     return {**values, "decision": item, "reading_tr": f"{OWNER_GAP_DECISION_TR} ({item}): {text}"}
+
+
+#: P3b-2a bağımsız incelemesinin (PASS_WITH_MINORS) bulgularına TEKNİK OKUMALAR (2026-10-12): sahip teknik okumaları
+#: devretti; tasarımın örtük bıraktığı LIB satırı ayrıntıları tarihli okuma olarak yazılır (S1 düzeltme mührü 5; henüz
+#: gerçek veri koşusu yok → `_v2` değil). Bütçe ve varyant sayıları değişmez.
+TECH_READING_TR = "teknik okuma 2026-10-12; sahip teknik ayrıntıları bana bıraktı"
+
+
+def tech_reading(finding: int, text: str, **values: Any) -> dict:
+    """Tarihli teknik okuma: değer alanları + `decision` (inceleme bulgusu) + `reading_tr`."""
+    return {**values, "decision": f"P3b-2a inceleme bulgu {finding} (2026-10-12)",
+            "reading_tr": f"{TECH_READING_TR}; inceleme P3b-2a bulgu {finding}: {text}"}
 
 
 def thaw(x: Any) -> Any:
@@ -282,14 +294,28 @@ def _standard() -> list[dict]:
                                           "breakout_ref": decided("B7", "sıkışmadaki kırılım = kapanışın BB(20,2) bandının "
                                                                   "dışında olması (üst bandın üstü → long, alt bandın altı "
                                                                   "→ short)", rule="CLOSE_OUTSIDE_BB", bb_period=20,
-                                                                  bb_std=2.0)},
+                                                                  bb_std=2.0),
+                                          "squeeze_bar": tech_reading(
+                                              2, "'genişlik ≤ %20'lik iken kırılım' = sıkışma kırılımdan ÖNCEKİ barda (t − 1) "
+                                                 "ölçülür: t − 1'in BB(20,2) genişliğinin ((üst − alt) / orta), t − 1'de biten "
+                                                 "(kendisi dahil) son 120 genişlik içindeki ortalama sırası / 120 ≤ 0,20; "
+                                                 "kırılım t barında (kapanış BB(20,2) bandının dışında, ilk kez; B7). Yerleşik "
+                                                 "sıkışma okunuşu: kırılım barı bandı genişlettiğinden sıkışmayı kırılım "
+                                                 "barında ölçmek kırılımın kendisini ölçerdi",
+                                              squeeze_at="PREVIOUS_BAR", breakout_at="SIGNAL_BAR")},
             timeframes=[tf], signal_tf=tf, sides=SIDES_LS,
             rule_tr="BB(20,2) genişliği son 120 barın ≤ %20'liğinde iken kırılım", stop=_atr_stop(1.5),
             exit_rule="hedef ya da max_hold", target_r=2.0, max_hold_bars=48, oto_pre_s5=tf == "4h", wf_class=WF_H1,
             inputs=["ohlcv"]))
     for tf in ("1h", "4h"):
         out.append(_variant(
-            f"RSI2_{tf}", "F1", params={"rsi_period": 2, "long_below": 10, "short_above": 90, "er20_max": 0.3},
+            f"RSI2_{tf}", "F1", params={"rsi_period": 2, "long_below": 10, "short_above": 90, "er20_max": 0.3,
+                                        "entry_mid_side": tech_reading(
+                                            4, "RSI2 girişi ayrıca kapanışın sinyal dilimindeki BB(20,2) orta çizgisinin "
+                                               "(SMA20; B5'in orta bant çıkışının çizgisi) doğru yanında olmasını ister: long "
+                                               "kapanış < orta, short kapanış > orta (orta ölçülemiyorsa giriş yok); aksi "
+                                               "halde orta bant çıkışı ilk kararda hemen tetiklenirdi",
+                                            rule="LONG_BELOW_MID_SHORT_ABOVE_MID", bb_period=20, bb_std=2.0)},
             timeframes=[tf], signal_tf=tf, sides=SIDES_LS, rule_tr="RSI2 < 10 long / > 90 short; yalnız ER20 < 0,3",
             stop=_atr_stop(1.5),
             exit_rule=decided("B5", "RSI2'nin 'orta bant' çıkışı = sinyal dilimindeki BB(20,2) orta çizgisi (BBRE ile "
@@ -341,7 +367,12 @@ def _standard() -> list[dict]:
                                                                 "aynı)", days=20)},
         timeframes=["4h"], signal_tf="4h", sides="fonlamayı alan taraf",
         rule_tr="|f8| ≥ %90'lık iken fonlama alan taraf; |f8| < %50'lik olunca çık", stop=_atr_stop(3.0, "4h"),
-        exit_rule="|f8| < %50'lik", oto_pre_s5=False, wf_class=WF_H1, inputs=["ohlcv", "funding"]))
+        exit_rule=tech_reading(3, "FUND_CARRY ayrıca f8'in işareti pozisyona ters dönünce çıkar (short'ta f8 < 0, long'da "
+                                  "f8 > 0: artık fonlamayı alan taraf değil; f8 = 0 ters değildir) → sonraki açılış; "
+                                  "|f8| < %50'lik çıkışı aynen kalır; çıkışın ölçülemeyen parçası uygulanmaz (tutulur)",
+                               rule_tr="|f8| < %50'lik ya da f8'in işareti pozisyona ters (artık alan taraf değil)",
+                               abs_pct_below=50, sign_against=True),
+        oto_pre_s5=False, wf_class=WF_H1, inputs=["ohlcv", "funding"]))
     return out
 
 
@@ -487,6 +518,14 @@ def _lib() -> dict:
                                             "5m) 1d, çünkü kutu günlüktür", rule="SIGNAL_TF", covers="BASE_SIGNAL_TF",
                                       box="1d"),
             "atr": "ATR14 (sinyal dilimi)",
+            "window": tech_reading(
+                5, "saf ailelerin (B, C, D, E, F1, H) kurala verdiği kapanmış bar penceresi = canlı kural çerçevesinin "
+                   "penceresi: gün içi (1h, 4h) 400 bar (paper_rules.intraday_rows varsayılan tail; canlı D4'ün "
+                   "göstergelerini hesapladığı pencere), 1d 399 bar (livebars.LIVE_CLOSED_BARS['1d']). EMA/ATR'nin "
+                   "adjust=False tohumu pencerenin başına bağlı olduğundan pencere kuralın parçasıdır (ör. MAX_50_200'ün "
+                   "EMA200 durumu, ATR14 stop mesafesi); AUTO_v1 worker'ı aynı pencereyi verir; çekirdek varyantı "
+                   "kurarken eşitliği denetler (strategy_lib.pure.WINDOW)",
+                bars={"1h": 400, "4h": 400, "1d": 399}, families=["B", "C", "D", "E", "F1", "H"]),
         },
         "contract": {
             "package": "tradingbot/strategy_lib/ (saf: G/Ç, saat, ağ yok; research_engine'i import etmez; motor ve worker aynı "

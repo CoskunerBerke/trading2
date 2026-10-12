@@ -190,34 +190,55 @@ def h1_world(seed: int, n: int = 3000, *, sub: bool = True) -> KN.SeriesData:
 
 
 def ar_funding_rows(rows: list[dict[str, Any]], step: int, *, seed: int, hours=(0, 8, 16), base: float = 0.0001,
-                    phi: float = 0.92, vol: float = 0.00012) -> list[tuple[int, float, float]]:
-    """H ailesi (P3b-2): KALICI fonlama rejimleri — AR(1) oran (taban + φ × (önceki − taban) + gürültü) 00/08/16 UTC
-    uzlaşmalarında; mark = uzlaşma anını içeren barın açılışı (`funding_rows` ile aynı)."""
+                    phi: float = 0.92, vol: float = 0.00012, switch_ms: int | None = None, hours_after=(0, 4, 8, 12, 16, 20),
+                    jitter_ms: int = 0, drop_ms: tuple[int, ...] = ()) -> list[tuple[int, float, float]]:
+    """H ailesi (P3b-2): KALICI fonlama rejimleri — AR(1) 8 saatlik eşdeğer oran (taban + φ × (önceki − taban) + gürültü)
+    `hours` UTC uzlaşmalarında; mark = uzlaşma anını içeren barın açılışı (`funding_rows` ile aynı). İnceleme düzeltmesi
+    (P3b-2a, 2026-10-12): `switch_ms`'den itibaren `hours_after` saatleri (aralık değişimi; uzlaşmanın oranı örttüğü
+    dönemle — önceki nominal uzlaşmadan bu yana geçen saat / 8 — ölçeklenir → f8 sürekli; geçişin ilk uzlaşması hâlâ 8
+    saati örter); `jitter_ms` > 0: damgaya [0, jitter_ms] ms kayma (borsanın ms kayması; ayrı tohum, oran dizisi
+    değişmez); `drop_ms`: bu NOMİNAL anlardaki uzlaşmalar yazılmaz (deponun eksik satırı; borsada uzlaşma olmuştur, oran
+    süreci ve dönem ölçeği ilerler). Varsayılanlarla P3b-2a dünyasıyla bayt-aynı."""
     rnd = random.Random(seed)
+    jit = random.Random(seed * 7919 + 1)
     if not rows:
         return []
     start, end = int(rows[0]["timestamp"]), int(rows[-1]["timestamp"]) + step
     by_open = {int(r["timestamp"]): r for r in rows}
+    drop = {int(x) for x in drop_ms}
     out = []
     r = base
+    prev: int | None = None
     t = start // H1 * H1
     while t <= end + D1:
-        if (t // H1) % 24 in hours:
+        hs = hours if switch_ms is None or t < int(switch_ms) else hours_after
+        if (t // H1) % 24 in hs:
             k = t // step * step
             bar = by_open.get(k) or by_open.get(k - step)
             mark = float(bar["open"]) if bar is not None else float(rows[-1]["close"])
             r = base + phi * (r - base) + rnd.gauss(0.0, vol)
-            out.append((t, r, mark))
+            iv = (t - prev) // H1 if prev is not None else 24 // len(hs)
+            prev = t
+            off = jit.randint(0, int(jitter_ms)) if jitter_ms > 0 else 0
+            if t not in drop:
+                out.append((t + off, r * iv / 8.0 if iv != 8 else r, mark))
         t += H1
     return out
 
 
 def fund_world(seed: int, n: int = 2200, *, sub: bool = True) -> KN.SeriesData:
-    """H (P3b-2): 4h barlar (tutarlı 1h alt barlarla) + kalıcı rejimli fonlama (`ar_funding_rows`)."""
+    """H (P3b-2): 4h barlar (tutarlı 1h alt barlarla) + kalıcı rejimli fonlama (`ar_funding_rows`). İnceleme düzeltmesi
+    (P3b-2a, 2026-10-12): seri zaman ekseninin %55'inde 8h'ten (00/08/16) 4h'e (00/04/…/20) geçer, her damgada 0–999 ms
+    kayma vardır ve iki uzlaşma eksiktir (8h döneminde %30'daki, 4h döneminde %80'deki ilk uzlaşma) — aralık kuralı, damga
+    yuvarlaması ve boşluk (çekirdek ↔ defter) parite (a)'da sınanır."""
     h4 = walk(n, seed=seed, step=H4, p0=25.0, vol=0.015, trend=0.003, regime_len=40, gap_p=0.01, gap_vol=0.01)
     d = series(f"SYN{seed}", _with_1h({"4h": h4}, "4h", seed, sub), signal_tf="4h", seed=seed)
-    return KN.SeriesData(symbol=d.symbol, bars=d.bars, btc_1d=None, funding=ar_funding_rows(h4, H4, seed=seed + 77),
-                         price_tick=d.price_tick)
+    t0, t1 = int(h4[0]["timestamp"]), int(h4[-1]["timestamp"]) + H4
+    switch = (t0 + (t1 - t0) * 55 // 100) // D1 * D1
+    drops = ((t0 + (t1 - t0) * 30 // 100) // (8 * H1) * (8 * H1) + 8 * H1,
+             (t0 + (t1 - t0) * 80 // 100) // (4 * H1) * (4 * H1) + 4 * H1)
+    fr = ar_funding_rows(h4, H4, seed=seed + 77, switch_ms=switch, jitter_ms=999, drop_ms=drops)
+    return KN.SeriesData(symbol=d.symbol, bars=d.bars, btc_1d=None, funding=fr, price_tick=d.price_tick)
 
 
 #: K kopyası → aile birimi ve dünyası (parite (a) ve hız ölçümü)

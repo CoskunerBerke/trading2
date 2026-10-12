@@ -5,7 +5,9 @@ stop 1,5 × ATR14 (sinyal dilimi) sinyal kapanışından; çıkış orta bant = 
 RSI2'de sahip kararı B5, BBRE'de kendi bandı) — long'da kapanış ≥ orta, short'ta ≤ orta → sonraki açılış; en çok 24 bar.
 
 * **RSI2** — Wilder RSI(2) (`tradingbot.indicators.rsi`) < 10 → long, > 90 → short. Koşul bir DURUMDUR (yazıldığı gibi:
-  "RSI2 < 10 long"): pozisyonsuzken koşul sağlanıyorsa girilir.
+  "RSI2 < 10 long"): pozisyonsuzken koşul sağlanıyorsa girilir. Ayrıca kapanış orta bandın doğru yanında olmalı: long
+  kapanış < BB(20,2) orta çizgisi, short kapanış > orta (mühürlü teknik okuma `params.entry_mid_side`, 2026-10-12,
+  P3b-2a inceleme bulgu 4; orta ölçülemiyorsa giriş yok) — aksi halde orta bant çıkışı ilk kararda hemen tetiklenirdi.
 * **BBRE** — BB(20,2) dışına çıkıp içine kapanış: önceki kapanış önceki barın alt bandının altında, bu kapanış bu barın
   bandının içinde (alt ≤ kapanış ≤ üst) → long; üst bant için simetriği → short. Okunuş: "dışına çıkma" kapanışladır.
 """
@@ -17,7 +19,7 @@ from . import indicators as ind
 from .contract import LONG, SHORT
 from .pure import Cols, PureVariant
 
-RSI2_PARAM_KEYS = ("rsi_period", "long_below", "short_above", "er20_max")
+RSI2_PARAM_KEYS = ("rsi_period", "long_below", "short_above", "er20_max", "entry_mid_side")
 BBRE_PARAM_KEYS = ("bb_period", "bb_std", "er20_max")
 ER_LEN = 20
 #: orta bant çıkışının bandı (B5: BB(20,2) orta çizgisi; BBRE'de kendi parametreleri)
@@ -66,6 +68,10 @@ class RSI2Reversion(_RangeBase):
         if not (isinstance(ex, Mapping) and ex.get("bb_period") == MID_BB[0] and ex.get("bb_std") == MID_BB[1]
                 and ex.get("decision") == "B5"):
             raise ValueError(f"{self.variant_id}: orta bant çıkışı BB(20,2) orta çizgisi olmalı (B5): {ex!r}")
+        ms = p["entry_mid_side"]
+        if not (isinstance(ms, Mapping) and ms.get("rule") == "LONG_BELOW_MID_SHORT_ABOVE_MID"
+                and ms.get("bb_period") == MID_BB[0] and ms.get("bb_std") == MID_BB[1]):
+            raise ValueError(f"{self.variant_id}: giriş orta bandın doğru yanında olmalı (teknik okuma, bulgu 4): {ms!r}")
         self.n, self.lo, self.hi = int(n), float(lo), float(hi)
 
     def entry(self, cols: Cols, ctx) -> tuple[str, dict[str, Any]] | None:
@@ -75,12 +81,17 @@ class RSI2Reversion(_RangeBase):
         r = ind.rsi(cols.close, self.n)[-1]
         if r != r:
             return None
-        ev = {"rsi": r, "er20": e}
         if r < self.lo:
-            return LONG, ev
-        if r > self.hi:
-            return SHORT, ev
-        return None
+            side = LONG
+        elif r > self.hi:
+            side = SHORT
+        else:
+            return None
+        _lo, mid, _up = ind.bollinger_at(cols.close, len(cols) - 1, self.mid_bb[0], self.mid_bb[1])
+        c = cols.close[-1]
+        if mid != mid or not (c < mid if side == LONG else c > mid):
+            return None                                  # orta bandın yanlış yanı: çıkış hemen tetiklenirdi
+        return side, {"rsi": r, "er20": e, "bb_mid": mid}
 
 
 class BollingerReentry(_RangeBase):

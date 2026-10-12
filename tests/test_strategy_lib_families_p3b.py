@@ -12,7 +12,10 @@
   max_hold, orta bant, fonlama yüzdeliği); altın sentetik yollar (varyant başına özet sha'sı sabit); LS'de iki yön.
 * Saflık: çalışma anında G/Ç, saat, rastgelelik yok; çalışan `tradingbot` dosyaları bildirilmiş kümede.
 * Parite (a) saf ailelerde (varyantın kendi kuralı → `apply_action` → `FuturesLedgerV2`), kısmen eksik 1h verisinde
-  çekirdekle aynı tek-tik yedeği ve `PATH_1H_GAP` (m-C).
+  çekirdekle aynı tek-tik yedeği ve `PATH_1H_GAP` (m-C); H dünyasında 4h damgaları, ms kaymaları ve boşluk.
+* P3b-2a inceleme düzeltmesi (2026-10-12): f8 aralık kuralı (eksik uzlaşma / aralık değişimi → NaN; 8h aynen; kör nokta
+  sabit; yerel kural = çekirdeğinki), FUND_CARRY işaret çıkışı ve pozisyonda `F8_UNMEASURABLE`, BBSQ sıkışması t − 1'de
+  (t'den ayırt edilir), RSI2 orta bandın doğru yanı; Box alias eşitliği işlem üreten dünyada.
 """
 from __future__ import annotations
 
@@ -232,8 +235,10 @@ def test_box_grid_alias_axes_equal_the_k_box_rule_params():
     g = F2.BoxGrid("BOX_n10_mid_ms0.5", p, spec)
     k = KN.make_variant("BOX_n10_mid_ms0.5")
     assert k.variant_id == "K_BOX" and g.rule_params == k.rule_params
-    d = S.box_world(21, days=2)
-    assert [t.to_dict()["r"] for t in KN.run(g, d).trades] == [t.to_dict()["r"] for t in KN.run(k, d).trades]
+    d = S.box_world(22, days=3)                                # bu dünya işlem üretir (eşitlik boş kümede sınanmaz)
+    a = [dict(t.to_dict(), variant_id=None) for t in KN.run(g, d).trades]
+    b = [dict(t.to_dict(), variant_id=None) for t in KN.run(k, d).trades]
+    assert len(a) >= 1 and a == b, (len(a), len(b))
     with pytest.raises(ValueError):
         F2.BoxGrid("BOX_n10_mid_ms0.5", dict(p, near_frac=0.2), spec)
     with pytest.raises(ValueError):
@@ -329,7 +334,13 @@ def test_e_keltner_fresh_break_2r_target_from_the_real_entry_and_max_hold():
     assert t.side == "SHORT"
 
 
-def test_e_bbsq_needs_the_squeeze_rank_at_the_breakout_bar():
+def _bb_rank(c: list[float], s: int, lb: int = 120) -> float:
+    """s barının BB(20,2) genişliğinin, s'de biten (kendisi dahil) son `lb` genişlik içindeki ortalama sırası / lb."""
+    w = [G.bb_width_at(c, j, 20, 2.0) for j in range(s - lb + 1, s + 1)]
+    return G.pct_rank(w, w[-1])
+
+
+def test_e_bbsq_needs_the_squeeze_rank_on_the_bar_before_the_breakout():
     import random as _r
     rnd = _r.Random(4)
     wild = [100.0 * (1 + rnd.gauss(0, 0.02)) for _ in range(160)]
@@ -338,16 +349,43 @@ def test_e_bbsq_needs_the_squeeze_rank_at_the_breakout_bar():
     rows = mk(wild + calm + [100.6], "1h")
     data = KN.SeriesData(symbol="TST", bars={"1h": rows})
     (it,) = KN.signals_at(var, data, at(rows, 182) + S.H1)
-    assert it.side == "LONG" and it.evidence["bb_width_pct_rank"] <= 0.20
+    assert it.side == "LONG" and it.evidence["squeeze_pct_rank"] <= 0.20 and it.evidence["squeeze_bar_ts"] == at(rows, 181)
     assert it.targets == (SL.Target(SL.TARGET_R_FROM_ENTRY, 2.0),) and it.max_hold_bars == 48
     calm2 = [100.0 + (0.02 if i % 2 else 0.0) for i in range(182)]
-    rows2 = mk(calm2 + [100.6], "1h")                       # hep sakin: kırılım barının genişliği sırada en üstte
+    rows2 = mk(calm2 + [100.6], "1h")                       # hep sakin: genişlikler eşit → sıra ≈ 0,5 (sıkışma yok)
     c2 = [r["close"] for r in rows2]
-    assert c2[-1] > G.bollinger_at(c2, 182)[2], "kırılım var ama sıkışma yok"
+    assert c2[-1] > G.bollinger_at(c2, 182)[2] and _bb_rank(c2, 181) > 0.20, "kırılım var ama sıkışma yok"
     assert KN.signals_at(var, KN.SeriesData(symbol="TST", bars={"1h": rows2}), at(rows2, 182) + S.H1) == []
     rows3 = mk(wild + calm + [99.4], "1h")
     (it,) = KN.signals_at(var, KN.SeriesData(symbol="TST", bars={"1h": rows3}), at(rows3, 182) + S.H1)
     assert it.side == "SHORT"
+
+
+def test_e_bbsq_squeeze_is_measured_on_t_minus_1_not_on_the_breakout_bar():
+    """Teknik okuma (P3b-2a inceleme bulgu 2): sıkışma t − 1'de, kırılım t'de. (A) t − 1 sıkışık, kırılım barı bandı
+    genişletir (t'nin sırası en üstte) → GİRİŞ (t okunuşu reddederdi); (B) t − 1'in penceresinde eski bir sıçrama var
+    (t − 1 geniş), t sıkışık → giriş YOK (t okunuşu girerdi). Kırılım ikisinde de taze."""
+    import random as _r
+    var = KN.make_variant("BBSQ_20_1h")
+    rnd = _r.Random(7)
+    a = [100.0 + rnd.uniform(-0.15, 0.15) for _ in range(150)] + [100.0 + (0.01 if k % 2 else 0.0) for k in range(25)]
+    a += [101.0]
+    rnd = _r.Random(8)
+    b = [100.0 + rnd.uniform(-0.6, 0.6) for _ in range(150)] + [104.0] + [100.0 + (0.02 if k % 2 else 0.0) for k in range(19)]
+    b += [100.6]
+    for c, want in ((a, "LONG"), (b, None)):
+        i = len(c) - 1
+        assert c[i] > G.bollinger_at(c, i)[2] and c[i - 1] <= G.bollinger_at(c, i - 1)[2], "taze kırılım"
+        r_t, r_prev = _bb_rank(c, i), _bb_rank(c, i - 1)
+        assert (r_t > 0.20, r_prev <= 0.20) == ((True, True) if want else (False, False)), (r_t, r_prev)
+        rows = mk(c, "1h")
+        got = KN.signals_at(var, KN.SeriesData(symbol="TST", bars={"1h": rows}), at(rows, i) + S.H1)
+        assert [x.side for x in got] == ([want] if want else []), (want, r_t, r_prev)
+        if want:
+            assert got[0].evidence["squeeze_pct_rank"] == pytest.approx(r_prev, abs=1e-12)
+    p = RG.thaw(RG.variants_by_id()["BBSQ_20_1h"]["params"])
+    with pytest.raises(ValueError):
+        SLC.make("BBSQ_20_1h", dict(p, squeeze_bar=dict(p["squeeze_bar"], squeeze_at="SIGNAL_BAR")), KN.variant_spec("BBSQ_20_1h"))
 
 
 def _range_series(n: int, base: float = 100.0) -> list[float]:
@@ -377,6 +415,27 @@ def test_f1_rsi2_er_filter_middle_band_exit_and_max_hold():
     rows = mk(drift, "1h")
     (t,) = [x for x in run_on("RSI2_1h", rows).trades if x.signal_ts == at(rows, 61)]
     assert (t.exit_kind, t.exit_reason, t.exit_ts) == (KN.EXIT_TIME, "TIME_STOP_24_BARS", at(rows, 62 + 24))
+
+
+def test_f1_rsi2_entry_needs_the_close_on_the_right_side_of_the_middle_band():
+    """Teknik okuma (P3b-2a inceleme bulgu 4): RSI2 < 10 ve ER20 < 0,3 olsa da kapanış BB(20,2) orta çizgisinin üstündeyse
+    long YOK (orta bant çıkışı ilk kararda tetiklenirdi); aynası short için. Doğru yanda giriş var."""
+    var = KN.make_variant("RSI2_1h")
+    base = _range_series(60)
+    plat = [base[-1] + 6.0 + (0.5 if k % 2 else 0.0) for k in range(6)]
+    up = base + plat + [base[-1] + 6.5 - 2.0, base[-1] + 6.5 - 4.0]
+    for c, rsi_ok in ((up, lambda r: r < 10), ([200.0 - x for x in up], lambda r: r > 90)):
+        i = len(c) - 1
+        r, e, mid = G.rsi(c, 2)[-1], G.er(c, 20, i), G.bollinger_at(c, i)[1]
+        assert rsi_ok(r) and e < 0.3 and (c[i] > mid if c is up else c[i] < mid), (r, e, mid, c[i])
+        rows = mk(c, "1h")
+        assert KN.signals_at(var, KN.SeriesData(symbol="TST", bars={"1h": rows}), at(rows, i) + S.H1) == []
+    rows = mk(base + [98.0, 96.5], "1h")                       # doğru yan: kapanış < orta
+    (it,) = KN.signals_at(var, KN.SeriesData(symbol="TST", bars={"1h": rows}), at(rows, 61) + S.H1)
+    assert it.side == "LONG" and rows[-1]["close"] < it.evidence["bb_mid"]
+    p = RG.thaw(RG.variants_by_id()["RSI2_1h"]["params"])
+    with pytest.raises(ValueError):
+        SLC.make("RSI2_1h", dict(p, entry_mid_side=dict(p["entry_mid_side"], bb_period=14)), KN.variant_spec("RSI2_1h"))
 
 
 def test_f1_bbre_outside_then_close_back_inside_both_sides():
@@ -435,6 +494,195 @@ def test_h_funding_carry_receiving_side_and_exit_below_the_median():
     assert t.side == "LONG"
 
 
+def _carry_rows() -> list[tuple[int, float, float]]:
+    return [(T0 + k * H8, (0.0001 + 0.00001 * (k % 7)) if k != 48 else 0.003, 100.0) for k in range(90)]
+
+
+def test_h_funding_carry_exits_when_the_sign_turns_against_the_position():
+    """Teknik okuma (P3b-2a inceleme bulgu 3): f8'in işareti pozisyona ters dönünce (short'ta f8 < 0, long'da f8 > 0)
+    çıkılır — |f8| hâlâ yüksek olsa da (|f8| < %50'lik çıkışı tetiklenmez)."""
+    from tradingbot.strategy_lib import h_funding as HF
+    rows = mk(_flat_then(160, amp=0.1), "4h")
+    for sign, side in ((1.0, "SHORT"), (-1.0, "LONG")):
+        fr = [(a, sign * r if k == 48 else (-sign * 0.0025 if k == 49 else r), m) for k, (a, r, m) in enumerate(_carry_rows())]
+        trades = run_on("FUND_CARRY", rows, funding=fr).trades
+        t = trades[0]
+        nxt = next(i for i, r in enumerate(rows) if r["timestamp"] + S.H4 - 60_000 >= fr[49][0])
+        _a, ahi, _l = HF.f8_state(fr, at(rows, nxt) + S.H4, absolute=True)
+        f8, _h, _lo = HF.f8_state(fr, at(rows, nxt) + S.H4)
+        assert ahi >= 0.5 and f8 * sign < 0, "|f8| çıkışı tetiklenmez; işaret ters"
+        assert (t.side, t.exit_kind, t.exit_reason, t.exit_ts) == (side, KN.EXIT_RULE, "F8_SIGN_AGAINST_POSITION",
+                                                                   at(rows, nxt + 1))
+        assert trades[1].side != side and trades[1].signal_ts == at(rows, nxt + 1), "şimdi alan taraf karşı yön"
+    spec = KN.variant_spec("FUND_CARRY")
+    p = RG.thaw(RG.variants_by_id()["FUND_CARRY"]["params"])
+    bad = dict(spec, exits=dict(spec["exits"], exit_rule=dict(spec["exits"]["exit_rule"], sign_against=False)))
+    with pytest.raises(ValueError):
+        SLC.make("FUND_CARRY", p, bad)
+
+
+def _fund_every(n: int, every_h: int, *, drop: int | None = None, off: int = 3) -> list[tuple[int, float, float]]:
+    """n uzlaşma her `every_h` saatte (ms kaymalı); oran tabanın küçük döngüsü (uç yok: en büyük/en küçük payı 6/7)."""
+    return [(T0 + k * every_h * 3_600_000 + off, 0.0001 + 0.00001 * (k % 7), 100.0) for k in range(n) if k != drop]
+
+
+@pytest.mark.parametrize("every_h, bar", [(4, 151), (1, 45)])
+def test_h_f8_is_unmeasurable_when_the_settlement_before_the_current_is_missing(every_h, bar):
+    """Bulgu 1 (2026-10-12): 200 uzlaşmalık 4h/1h dizisinde güncelden ÖNCEKİ uzlaşma eksikse fut_v1 aralığı 8h/2h okur, f8
+    yarıya iner ve 20 günün en düşüğü olur (`f8_lo` = 1 → yanlış FUND_FADE LONG; açık başarısızlık). Aralık kuralı: güncel
+    aralık öncekinden farklı → f8 NaN → giriş yok (bütün koşuda da)."""
+    import numpy as np
+    from tradingbot import futures_features as FF
+    from tradingbot.strategy_lib import h_funding as HF
+    rows = mk(_flat_then(220, amp=0.1), "4h")
+    T = at(rows, bar) + S.H4                                    # karar anı (bar kapanışı)
+    cur = (T - T0 - FF.FUND_GUARD_MS - 3) // (every_h * 3_600_000)   # görünür güncel uzlaşma
+    fr = _fund_every(200, every_h, drop=cur - 1)
+    old = FF.align_funding(np.asarray([T]), [r[0] for r in fr], [r[1] for r in fr])
+    assert old["f8"][0] == pytest.approx(fr[cur - 1][1] * 8 / (2 * every_h)) and old["f8_lo"][0] == 1.0, "eski okunuş: uç"
+    assert all(x != x for x in HF.f8_state(fr, T)) and not HF.interval_steady([r[0] for r in fr], T)
+    var = KN.make_variant("FUND_FADE_24h")
+    data = KN.SeriesData(symbol="TST", bars={"4h": rows}, funding=fr)
+    assert KN.signals_at(var, data, T) == []
+    assert run_on("FUND_FADE_24h", rows, funding=fr).trades == []
+    assert run_on("FUND_FADE_24h", rows, funding=_fund_every(200, every_h)).trades == [], "eksiksiz dizide de uç yok"
+
+
+def test_h_f8_on_a_steady_8h_series_is_exactly_fut_v1():
+    """8h davranışı değişmedi: kararlı 8h dizisinde (ms kaymalı) her karar anında f8 / yüzdelikler fut_v1
+    `align_funding`'in kendisidir; 8h'te güncelden önceki uzlaşmanın yokluğu (16h) fut_v1'de zaten NaN'dır."""
+    import random as _r
+    import numpy as np
+    from tradingbot import futures_features as FF
+    from tradingbot.strategy_lib import h_funding as HF
+    rnd = _r.Random(3)
+    fr = [(T0 + k * H8 + rnd.randint(0, 999), rnd.gauss(0.0001, 0.0002), 100.0) for k in range(120)]
+    ts, rs = [r[0] for r in fr], [r[1] for r in fr]
+    n_fin = 0
+    assert HF.f8_state(fr, T0 + 4 * S.H4)[0] != HF.f8_state(fr, T0 + 4 * S.H4)[0], "iki görünür uzlaşma: aralık doğrulanamaz"
+    for b in range(5, 240):                                      # ≥ 3 görünür uzlaşma (iki aralık)
+        T = T0 + b * S.H4
+        for ab in (False, True):
+            ref = FF.align_funding(np.asarray([T]), ts, [abs(x) for x in rs] if ab else rs)
+            got = HF.f8_state(fr, T, absolute=ab)
+            want = (float(ref["f8"][0]), float(ref["f8_hi"][0]), float(ref["f8_lo"][0]))
+            assert all((x != x and y != y) or x == y for x, y in zip(got, want)), (b, ab, got, want)
+            n_fin += got[1] == got[1]
+    assert n_fin > 300
+    T = T0 + 61 * H8 + S.H4                                      # güncel k = 61; k = 60 eksik
+    holed = [r for k, r in enumerate(fr) if k != 60]
+    ref = FF.align_funding(np.asarray([T]), [r[0] for r in holed], [r[1] for r in holed])
+    assert ref["f8"][0] != ref["f8"][0] and all(x != x for x in HF.f8_state(holed, T))
+
+
+def test_h_f8_interval_switch_and_the_pinned_blind_spot():
+    """8h → 4h geçişi: güncelin aralığı öncekinden farklı olduğu tek karar penceresinde f8 NaN, sonra fut_v1'in kendisi.
+    Kör nokta (m-D ile aynı; belgelendi ve sabitlendi): geçişte İLK 4h uzlaşması eksikse 8h'lik aralık değişimin bir
+    uzlaşma sonra olmasından ayırt edilemez → o tek pencerede f8 = 4h oranı × 8 / 8 (gerçeğin yarısı); sonraki pencere
+    NaN (aralık değişti)."""
+    import numpy as np
+    from tradingbot import futures_features as FF
+    from tradingbot.strategy_lib import h_funding as HF
+    sw = T0 + 40 * H8                                           # 8h: k = 0…40 (k = 40 = sw, 16:00 → 00:00); 4h: sw + j × 4h
+    r8 = [(T0 + k * H8 + 5, 0.0001 + 0.00001 * (k % 7), 100.0) for k in range(41)]
+    r4 = {j: (sw + j * S.H4 + 7, (0.0001 + 0.00001 * (j % 5)) / 2, 100.0) for j in range(1, 30)}   # 4 saatlik oran
+
+    def st(fr, j):                                              # sw + j × 4h uzlaşmasının görünür olduğu ilk karar anı
+        return HF.f8_state(fr, sw + j * S.H4 + S.H4)
+
+    def ref(fr, j):
+        out = FF.align_funding(np.asarray([sw + j * S.H4 + S.H4]), [r[0] for r in fr], [r[1] for r in fr])
+        return float(out["f8"][0])
+
+    fr = r8 + [r4[j] for j in sorted(r4)]
+    assert all(x == x for x in st(fr, 0)), "j = 0: güncel 8h (16:00 → 00:00), değişim henüz görünmez"
+    assert st(fr, 1)[0] != st(fr, 1)[0], "j = 1: güncel 4h, önceki 8h → NaN"
+    assert st(fr, 2)[0] == ref(fr, 2) == pytest.approx(r4[2][1] * 2) and st(fr, 2)[1] == st(fr, 2)[1]
+    blind = r8 + [r4[j] for j in sorted(r4) if j != 1]          # ilk 4h uzlaşması (j = 1) eksik
+    assert st(blind, 1) == st(blind, 0), "j = 1 yok: güncel hâlâ sw"
+    f8 = st(blind, 2)[0]
+    assert f8 == ref(blind, 2) == pytest.approx(r4[2][1]), "kör nokta: 8h okunur, f8 yarı (gerçek r4 × 2)"
+    assert st(blind, 3)[0] != st(blind, 3)[0] and st(blind, 4)[0] == ref(blind, 4) == pytest.approx(r4[4][1] * 2)
+
+
+def test_h_local_gap_rule_equals_the_kernel_rule():
+    """f8 aralık kuralının yerel boşluk ölçüsü çekirdeğin `FundingSeries` kuralıdır (sabitler ve sonuç aynı)."""
+    import random as _r
+    from tradingbot.strategy_lib import h_funding as HF
+    assert (HF.GAP_FACTOR, HF.LOCAL_SPAN, HF.SNAP_MS) == (KN.FUNDING_GAP_FACTOR, KN.FUNDING_LOCAL_SPAN, KN.FUNDING_SNAP_MS)
+    rnd = _r.Random(9)
+    for _ in range(300):
+        t, out = T0, []
+        for _k in range(rnd.randint(2, 30)):
+            t += rnd.choice((1, 2, 4, 4, 8, 8, 8, 12, 16)) * 3_600_000
+            out.append((t + rnd.randint(0, 999), 0.0001, 100.0))
+        ts = sorted({KN.snap_ms(x[0]) for x in out})
+        assert HF.local_gaps(ts) == KN.FundingSeries(out).gap_after
+        T = out[-1][0] + 3_600_000
+        vis = sorted({KN.snap_ms(x[0]) for x in out})
+        if len(vis) >= 3:
+            g = KN.FundingSeries(out).gap_after
+            d = [b - a for a, b in zip(vis, vis[1:])]
+            steady = round(d[-1] / 3.6e6) == round(d[-2] / 3.6e6) and round(d[-1] / 3.6e6) in (1, 2, 4, 8) and not (g[-1] or g[-2])
+            assert HF.interval_steady([x[0] for x in out], T) == steady
+
+
+def test_h_funding_carry_holds_and_flags_when_f8_is_unmeasurable_in_position():
+    """Bulgu 1: pozisyondayken f8 ölçülemezse (eksik uzlaşma: bayat, sonra 16h aralık, sonra aralık değişimi) durum
+    DEĞİŞMEZ (çıkış yok) ve işlem `F8_UNMEASURABLE` (bilgi) işaretlenir; ölçülebilir olunca çıkış kuralı yine çalışır."""
+    from tradingbot.strategy_lib import h_funding as HF
+    rows = mk(_flat_then(160, amp=0.1), "4h")
+    fr = _carry_rows()
+    (t0,) = run_on("FUND_CARRY", rows, funding=fr).trades
+    assert HF.FLAG_F8_UNMEASURABLE not in t0.flags and t0.exit_reason == "ABS_F8_BELOW_P50"
+    holed = [r for k, r in enumerate(fr) if k != 49]
+    (t,) = run_on("FUND_CARRY", rows, funding=holed).trades
+    assert (t.signal_ts, t.side) == (t0.signal_ts, t0.side)
+    assert t.flags.count(HF.FLAG_F8_UNMEASURABLE) == 1 and t.exit_reason == "ABS_F8_BELOW_P50" and t.exit_ts > t0.exit_ts
+    first_ok = next(i for i, r in enumerate(rows) if all(x == x for x in HF.f8_state(holed, r["timestamp"] + S.H4, absolute=True))
+                    and r["timestamp"] + S.H4 - 60_000 >= fr[50][0])
+    assert t.exit_ts == at(rows, first_ok + 1)
+    assert SL.hold() is SL.NONE and SL.hold("X").flags == ("X",) and SL.hold("X").kind == SL.ACT_NONE
+    with pytest.raises(ValueError):
+        SL.Action(SL.ACT_NONE, flags=("",))
+
+
+def test_h_funding_fade_flags_but_keeps_its_exit_when_f8_is_unmeasurable_in_position():
+    """FUND_FADE pozisyonda f8 okumaz (zaman/stop çıkışı): eksik uzlaşma tutuşta f8'i ölçülemez yapınca yalnız
+    `F8_UNMEASURABLE` (bilgi) yazılır; giriş, çıkış ve R aynıdır."""
+    from tradingbot.strategy_lib import h_funding as HF
+    rows = mk(_flat_then(160, amp=0.1), "4h")
+    fr = _funding(30, 48, 0.002)
+    (t0,) = run_on("FUND_FADE_72h", rows, funding=fr).trades
+    (t,) = run_on("FUND_FADE_72h", rows, funding=[r for k, r in enumerate(fr) if k != 50]).trades
+    assert HF.FLAG_F8_UNMEASURABLE not in t0.flags and t.flags.count(HF.FLAG_F8_UNMEASURABLE) == 1
+    assert (t.signal_ts, t.side, t.exit_reason, t.exit_ts) == (t0.signal_ts, t0.side, t0.exit_reason, t0.exit_ts)
+    assert t.legs == t0.legs
+
+
+def test_h_parity_world_has_4h_stamps_ms_offsets_and_a_gap_and_parity_holds():
+    """İnceleme düzeltmesi (P3b-2a, bulgu 6): H parite dünyası 8h → 4h geçişi (4h damgaları), ms kaymaları ve iki eksik
+    uzlaşma içerir; çekirdek ↔ defter (`live_1h`) beş H varyantında birlikte geçer; boşluğu örten işlemler çekirdekte
+    `FUNDING_GAP` (kapıdan çıkar), FUND_CARRY'de ölçülemeyen karar `F8_UNMEASURABLE`."""
+    d = S.world_for("FUND_CARRY", "4h", "H")(11)
+    ts = [int(r[0]) for r in d.funding]
+    hours = {(t % 86_400_000) // 3_600_000 for t in ts}
+    assert {4, 12, 20} <= hours and {0, 8, 16} <= hours, "4h damgaları (geçişten sonra)"
+    assert sum(1 for t in ts if t % 1000) > len(ts) // 2, "ms kaymaları"
+    fs = KN.FundingSeries(d.funding)
+    assert sum(fs.gap_after) >= 2, "çekirdeğin yerel kuralıyla en az iki boşluk"
+    pairs, gap_trades, flags = [], 0, set()
+    for vid in ("FUND_FADE_24h", "FUND_FADE_72h", "FUND_FADE_LOW_24h", "FUND_FADE_LOW_72h", "FUND_CARRY"):
+        kr = KN.run(KN.make_variant(vid), d)
+        refs, _rej = PA.reference_run(vid, d)
+        pairs.append((vid, kr, refs))
+        gap_trades += sum(1 for t in kr.trades if KN.FLAG_FUNDING_GAP in t.flags)
+        flags |= {f for t in kr.trades for f in t.flags}
+    a = PA.compare_a(pairs, min_trades=100)
+    assert a.identity_share == 1.0 and a.passed, a.to_dict()
+    assert gap_trades >= 2 and "F8_UNMEASURABLE" in flags
+
+
 # ============================================================================ altın sentetik yollar
 def golden_world(vid: str) -> tuple[Any, KN.SeriesData]:
     v = KN.make_variant(vid)
@@ -464,7 +712,9 @@ def golden_summary(vid: str) -> tuple:
 
 #: varyant → (işlem, long, short, çıkış türleri, Σ base R, özet sha'sı[:16]); özet = her işlemin (sinyal barı, yön,
 #: çıkış türü, nedeni, base/ADVERSE/STRESS R 6 hane). Dünya: seed 31 (1d 700, 4h 1.400, 1h 2.400 bar; H fonlama
-#: dünyası), F2: Box seed 22, 5 gün. Kural/çekirdek değişirse kırılır; değer bilerek yeniden sabitlenir (P3b-2a).
+#: dünyası), F2: Box seed 22, 5 gün. Kural/çekirdek değişirse kırılır; değer bilerek yeniden sabitlenir (P3b-2a; inceleme
+#: düzeltmesi 2026-10-12: BBSQ sıkışması t − 1'de, RSI2 orta bandın doğru yanı, FUND_CARRY işaret çıkışı, f8 aralık kuralı
+#: ve H dünyası 8h → 4h geçişi + ms kaymaları + iki eksik uzlaşma).
 GOLDEN_ALL: dict[str, tuple] = {
     "TS_7_LO": (61, 61, 0, {"RULE": 61}, -4.227389, "db227f06d3d91be8"),
     "TS_7_LS": (93, 43, 50, {"END": 1, "RULE": 91, "STOP": 1}, 2.316665, "1831a14e5b529539"),
@@ -493,10 +743,10 @@ GOLDEN_ALL: dict[str, tuple] = {
     "DON_55_20_1d_LS": (8, 3, 5, {"END": 1, "RULE": 5, "STOP": 2}, 6.961566, "5b7c70f91983f892"),
     "KEL_20_2_1h": (52, 34, 18, {"STOP": 25, "TARGET": 27}, 23.990145, "617a04f0c1b09a25"),
     "KEL_20_2_4h": (46, 22, 24, {"STOP": 24, "TARGET": 22}, 16.13307, "ae446861f1c9af4f"),
-    "BBSQ_20_1h": (25, 14, 11, {"STOP": 9, "TARGET": 14, "TIME": 2}, 17.209077, "10181374ac386790"),
-    "BBSQ_20_4h": (21, 9, 12, {"STOP": 6, "TARGET": 15}, 22.876755, "275aa15b7f593213"),
-    "RSI2_1h": (176, 99, 77, {"RULE": 89, "STOP": 87}, -49.316656, "9502f8316ac8e254"),
-    "RSI2_4h": (86, 47, 39, {"END": 1, "RULE": 36, "STOP": 49}, -25.462178, "8ea2d8763cdd11d1"),
+    "BBSQ_20_1h": (35, 17, 18, {"END": 1, "STOP": 13, "TARGET": 19, "TIME": 2}, 22.654288, "965c71b8299666ce"),
+    "BBSQ_20_4h": (26, 12, 14, {"END": 1, "STOP": 6, "TARGET": 19}, 30.026968, "045aa8033a650888"),
+    "RSI2_1h": (165, 90, 75, {"RULE": 80, "STOP": 85}, -46.93407, "d6f29eb3f5420230"),
+    "RSI2_4h": (84, 46, 38, {"END": 1, "RULE": 36, "STOP": 47}, -23.971553, "5443915396abd60e"),
     "BBRE_1h": (65, 29, 36, {"END": 1, "RULE": 35, "STOP": 29}, -14.60941, "be5e6948f2cab37e"),
     "BBRE_4h": (32, 17, 15, {"END": 1, "RULE": 13, "STOP": 18}, -8.897132, "cb37678cedc71f8a"),
     "BOX_n10_mid_ms1.0": (8, 7, 1, {"RULE": 1, "STOP": 4, "TARGET": 3}, 7.124974, "6954d66ce668e4d1"),
@@ -506,11 +756,11 @@ GOLDEN_ALL: dict[str, tuple] = {
     "BOX_n20_mid_ms1.0": (9, 7, 2, {"RULE": 1, "STOP": 5, "TARGET": 3}, 5.527846, "e4361fe38164bb1c"),
     "BOX_n20_2r_ms0.5": (17, 15, 2, {"RULE": 1, "STOP": 8, "TARGET": 8}, 3.738433, "3d2292dfe42029d5"),
     "BOX_n20_2r_ms1.0": (10, 9, 1, {"RULE": 1, "STOP": 4, "TARGET": 5}, 4.229327, "12f8f7244a043c49"),
-    "FUND_FADE_24h": (50, 26, 24, {"TIME": 50}, 7.335307, "239852d1c1b66815"),
-    "FUND_FADE_72h": (27, 14, 13, {"STOP": 4, "TIME": 23}, 7.443893, "24c042f8aaa634dc"),
-    "FUND_FADE_LOW_24h": (32, 18, 14, {"TIME": 32}, 5.000356, "b930f82ba3a6d598"),
-    "FUND_FADE_LOW_72h": (18, 10, 8, {"STOP": 3, "TIME": 15}, 3.811366, "675c110cc56aa2f9"),
-    "FUND_CARRY": (21, 5, 16, {"RULE": 19, "STOP": 2}, 6.685504, "b78f674e13c533f6"),
+    "FUND_FADE_24h": (54, 29, 25, {"STOP": 2, "TIME": 52}, 3.428623, "416c0389557e02c5"),
+    "FUND_FADE_72h": (34, 18, 16, {"STOP": 8, "TIME": 26}, -0.129705, "0318bdd7bcebac4a"),
+    "FUND_FADE_LOW_24h": (36, 22, 14, {"STOP": 2, "TIME": 34}, -1.635491, "e05ea761c8cc533c"),
+    "FUND_FADE_LOW_72h": (24, 13, 11, {"STOP": 8, "TIME": 16}, -0.599038, "a7d6edd1e20570a4"),
+    "FUND_CARRY": (26, 11, 15, {"RULE": 24, "STOP": 2}, 3.561266, "19d78cf81d5eb0eb"),
 }
 
 

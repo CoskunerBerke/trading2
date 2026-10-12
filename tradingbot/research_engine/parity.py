@@ -7,7 +7,8 @@ p95 ≤ 0,05). Aynı sentetik barlar iki yoldan oynatılır:
 * başvuru: canlı kural fonksiyonu DOĞRUDAN (`paper_rules.decide_with_structures` / `decide_from_rows` — C4'te kapı
   dahil canlı `candle_book.decide`; Formasyonda `build_plans_v3` + `PatternBook._try_open`'ın kovalama, stop, risk
   aralığı ve maliyet sonrası R/R kapıları) → `strategy_paper.apply_action` → `FuturesLedgerV2.tick`. Defter base
-  maliyetiyle kurulur (taker %0,05, 3 bps, bracket likidasyon, uzlaşma anlarında gerçek fonlama); fiyat adımı serinin
+  maliyetiyle kurulur (taker %0,05, 3 bps, bracket likidasyon, uzlaşma anlarında gerçek fonlama — kaynak deftere canlı
+  gibi bağlanır, `FundingSchedule.bind_source`; aralığı değişen seride arşiv kaynağının kuralı, `_Lookup`); fiyat adımı serinin
   kendi `price_tick`'i (defter dolumu adıma kuantize eder, çekirdek etmez — ΔR'nin bir kaynağı budur), miktar adımı 1e-6.
   Büyüklük §2.1'indir (canlı defterin öğrenme/slot boyutu değil): başvuru eylemine çekirdeğin `size_trade` kaldıracı
   yazılır, risk ölçeği 50 kat (R ölçekten bağımsızdır; min-notional retlerini önler). Karar anından sonraki satır karar
@@ -114,18 +115,39 @@ def _norm_sym(x: Any) -> str:
 
 # ============================================================================ (a) başvuru: canlı kural + defter
 class _Lookup:
-    """Defterin fonlama kaynağı: uzlaşma anındaki gerçek oran ve mark (deponun satırları; damga nominal dakikaya
-    yuvarlanır — çekirdekle aynı)."""
+    """Defterin fonlama kaynağı (`FundingSchedule.bind_source` sözleşmesi; canlı `strategy_paper.bind_funding` gibi
+    bağlanır): uzlaşma anındaki gerçek oran ve mark (deponun satırları; damga nominal dakikaya yuvarlanır — çekirdekle
+    aynı). Aralık değişen seriler için deponun arşiv kaynağının kuralı (`m2x_sim.ArchiveFunding`, çekirdekten
+    bağımsız): `hours_for` = satırların UTC saatlerinin BİRLEŞİMİ; o saatte satır yoksa ve iki yanındaki satırlar
+    ≤ 8 saat (+ 120 sn) arayla ise o saat bir uzlaşma DEĞİLDİR → 0 (dönem yok sayılır; 8h dönemindeki 04:00, ya da 4h
+    dizisinde tek eksik uzlaşma — çekirdek de onu yazmaz ve işlemi `FUNDING_GAP` işaretler); daha büyük boşluk → None
+    (defterin kuralı: dönem BEKLER, sonrakiler yazılmaz)."""
+
+    TOL_MS = 120_000
+    MAX_GAP_MS = 8 * 3_600_000
 
     def __init__(self, rows: Sequence[tuple[int, float, float]] | None):
         self.by = {KN.snap_ms(t): (r, m) for t, r, m in (rows or ())}
+        self.ts = sorted(self.by)
+        hrs = sorted({(t % 86_400_000) // 3_600_000 for t in self.ts})
+        self.hours = tuple(hrs) if hrs else (0, 8, 16)
+
+    def hours_for(self, symbol: str) -> tuple[int, ...]:
+        return self.hours
 
     def _get(self, when: datetime):
         return self.by.get(KN.snap_ms(int(round(when.timestamp() * 1000))))
 
+    def _not_a_settlement(self, when: datetime) -> bool:
+        ms = KN.snap_ms(int(round(when.timestamp() * 1000)))
+        i = _bisect(self.ts, ms)
+        return 0 < i < len(self.ts) and self.ts[i] - self.ts[i - 1] <= self.MAX_GAP_MS + self.TOL_MS
+
     def __call__(self, symbol: str, when: datetime):
         v = self._get(when)
-        return None if v is None else Decimal(repr(float(v[0])))
+        if v is None:
+            return Decimal(0) if self._not_a_settlement(when) else None
+        return Decimal(repr(float(v[0])))
 
     def settlement_mark(self, symbol: str, when: datetime):
         v = self._get(when)
@@ -296,7 +318,9 @@ def _ref_ledger(data: KN.SeriesData) -> tuple[Any, Any, Any, Any, Any]:
                    risk_per_trade_pct=float(KN.SIZING["risk_usdt"]) * REF_SCALE / REF_EQUITY * 100.0,
                    max_total_open_risk_pct=100.0, futures_max_leverage=125, max_position_pct=1e9,
                    max_spot_allocation_pct=None)
-    return led, filt, prof, RiskEngine(prof, KillSwitch()), _Lookup(data.funding)
+    lookup = _Lookup(data.funding)
+    led.funding.bind_source(lookup)
+    return led, filt, prof, RiskEngine(prof, KillSwitch()), lookup
 
 
 def reference_run(variant_id: str, data: KN.SeriesData, *, mode: str = MODE_LIVE) -> tuple[list[RefTrade], dict[str, int]]:

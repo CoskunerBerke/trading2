@@ -141,15 +141,24 @@ class Intent:
 class Action:
     """§2.1 eylemi: NONE | CLOSE(reason) | MOVE_STOP(price). Yalnız kapanmış barda üretilir; çekirdek CLOSE'u sonraki
     barın açılışında uygular. MOVE_STOP yalnız sıkılaştırır ve kararın anındaki fiyatı geçemez; aksi istek çekirdekte
-    uygulanmaz ve işleme `MOVE_STOP_IGNORED` yazılır (`kernel.move_stop_verdict`)."""
+    uygulanmaz ve işleme `MOVE_STOP_IGNORED` yazılır (`kernel.move_stop_verdict`).
+
+    `flags` (P3b-2a inceleme düzeltmesi, 2026-10-12): yalnız BİLGİ işaretleri — kuralın bu kararda ölçemediği bir girdi
+    (ör. H'de f8 aralık değişimi/yerel boşluk yüzünden NaN → durum değişmez, "tut"); çekirdek her işareti işleme bir kez
+    yazar (`KernelTrade.flags`). Eylemin türünü/anlamını değiştirmez, kapı istatistiğinden çıkarmaz."""
 
     kind: str = ACT_NONE
     reason: str = ""
     price: float | None = None
+    flags: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.kind not in (ACT_NONE, ACT_CLOSE, ACT_MOVE_STOP):
             raise ValueError(f"eylem türü geçersiz: {self.kind!r}")
+        fl = tuple(self.flags or ())
+        if not all(isinstance(f, str) and f for f in fl):
+            raise ValueError(f"eylem işaretleri boş olmayan metin olmalı: {self.flags!r}")
+        object.__setattr__(self, "flags", fl)
         if self.kind == ACT_MOVE_STOP:
             p = _finite(self.price, "move_stop.price")
             if p <= 0:
@@ -166,6 +175,11 @@ def close(reason: str) -> Action:
 
 def move_stop(price: float, reason: str = "MOVE_STOP") -> Action:
     return Action(ACT_MOVE_STOP, str(reason), price)
+
+
+def hold(*flags: str) -> Action:
+    """NONE ("tut"), bilgi işaretleriyle (`Action.flags`); işaretsiz çağrı `NONE`'a eşittir."""
+    return Action(ACT_NONE, flags=tuple(flags)) if flags else NONE
 
 
 @dataclass(frozen=True)
@@ -231,4 +245,4 @@ def check_params(variant_id: str, params: Mapping[str, Any], allowed: Sequence[s
 
 __all__ = ["ACT_CLOSE", "ACT_MOVE_STOP", "ACT_NONE", "Action", "BookEntry", "EXIT_LIVE_RULE", "EntryRef", "Intent", "LONG",
            "NONE", "PosView", "RiskAtrBounds", "SHORT", "SIDES", "TARGET_PRICE", "TARGET_R_FROM_ENTRY", "TF_MS", "Target",
-           "Variant", "check_params", "close", "move_stop"]
+           "Variant", "check_params", "close", "hold", "move_stop"]

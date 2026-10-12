@@ -15,9 +15,10 @@ from __future__ import annotations
 
 from .catalog import BLOCKED, BOOK_OF, IMPLEMENTED, BlockedVariant, make, module_name, status
 from .contract import (ACT_CLOSE, ACT_MOVE_STOP, ACT_NONE, LONG, NONE, SHORT, TARGET_PRICE, TARGET_R_FROM_ENTRY, TF_MS,
-                       Action, BookEntry, EntryRef, Intent, PosView, RiskAtrBounds, Target, Variant, close, move_stop)
+                       Action, BookEntry, EntryRef, Intent, PosView, RiskAtrBounds, Target, Variant, close, hold,
+                       move_stop)
 
 __all__ = ["ACT_CLOSE", "ACT_MOVE_STOP", "ACT_NONE", "Action", "BLOCKED", "BOOK_OF", "BlockedVariant", "BookEntry",
            "EntryRef", "IMPLEMENTED", "Intent",
            "LONG", "NONE", "PosView", "RiskAtrBounds", "SHORT", "TARGET_PRICE", "TARGET_R_FROM_ENTRY", "TF_MS", "Target",
-           "Variant", "close", "make", "module_name", "move_stop", "status"]
+           "Variant", "close", "hold", "make", "module_name", "move_stop", "status"]

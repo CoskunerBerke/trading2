@@ -12,8 +12,10 @@ geçti mi (`live_1h`); `ohlc` kipinin ΔR'si; çekirdeğin ve defterin çıkış
 (`--out` verilmedikçe).
 
 P3b-2a: saf aileler (`B`, `C`, `D`, `E`, `F1`, `F2`, `H`) de ölçülür — her varyant kendi dünyasında
-(`synthetic.world_for`: 1d → trend, 4h → D4, 1h → 1h dünyası, H → kalıcı fonlama rejimli 4h, F2 → Box 5m); başvuru
-varyantın KENDİ kuralıdır (`parity._PureRule`; canlı karşılığı yok) → ölçü çekirdeğin yol/maliyet aritmetiğini sınar.
+(`synthetic.world_for`: 1d → trend, 4h → D4, 1h → 1h dünyası, H → kalıcı fonlama rejimli 4h — 2026-10-12 inceleme
+düzeltmesinden beri 8h → 4h geçişi, ms kaymaları ve iki eksik uzlaşmayla; F2 → Box 5m); başvuru varyantın KENDİ kuralıdır
+(`parity._PureRule`; canlı karşılığı yok) → ölçü çekirdeğin yol/maliyet aritmetiğini sınar. `f8_unmeasurable_trades`:
+açık pozisyonda f8 ölçülemediği için tutulan (bilgi işareti `F8_UNMEASURABLE`) işlem sayısı.
 `--speed-only`: yalnız çekirdek hızı (başvuru koşulmaz). `--box-days`: F2 Box dünyasının günü (varsayılan 60).
 
     python scripts/engine_p3b_measure.py [--families T2,M2,BOX,D4,C4,FM] [--min-trades 200] [--max-worlds 40] [--out f.json]
@@ -129,7 +131,8 @@ def measure(fam: str, *, min_trades: int, max_worlds: int, seed0: int = 11, ohlc
             "trades_per_1000_bars": round(1000.0 * len(trades) / bars, 3) if bars else None,
             "mean_r_by_scenario_synthetic": mean,
             "exit_kinds": {k: sum(1 for t in trades if t.exit_kind == k) for k in sorted({t.exit_kind for t in trades})},
-            "funding_gap_trades": sum(1 for t in trades if KN.FLAG_FUNDING_GAP in t.flags)}
+            "funding_gap_trades": sum(1 for t in trades if KN.FLAG_FUNDING_GAP in t.flags),
+            "f8_unmeasurable_trades": sum(1 for t in trades if "F8_UNMEASURABLE" in t.flags)}
 
 
 def main(argv: list[str] | None = None) -> int:

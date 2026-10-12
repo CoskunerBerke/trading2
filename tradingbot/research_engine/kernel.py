@@ -13,7 +13,8 @@ bayt-aynı sonuç; test). Kurallar:
   canlı `pattern_trader.strategy.rr_after_cost`), aynı sinyalle tek giriş. R'den hedef GİRİŞTEN ölçülür.
 * **MOVE_STOP** yalnız SIKILAŞTIRIR ve fiyatı geçemez: kararın anındaki fiyat (karar barının kapanışı) LONG'da yeni
   stopun üstünde, SHORT'ta altında kalmalı; gevşeten ya da fiyatı geçen istek uygulanmaz, işleme `MOVE_STOP_IGNORED`
-  işareti (ve nedeni) yazılır.
+  işareti (ve nedeni) yazılır. Eylemin BİLGİ işaretleri (`Action.flags`; ör. H'nin `F8_UNMEASURABLE`'ı) işleme bir kez
+  yazılır; karar ve kapı istatistiği değişmez.
 * **Çıkış yolu = canlı defterin çıkış sözleşmesi** (`kernel_v2`; sahip kararı 2026-10-12, mühür
   `WF_PROTOCOL_V1.kernel.stop_fill`): stop/likidasyon hükmü canlı defterin SAF fonksiyonu
   `accounting.futures_ledger.exit_decision`'ın KENDİSİDİR (`EXIT_FILL_CONTRACT` = `exit_fill_v1`; yeniden yazılmaz,
@@ -287,10 +288,23 @@ def variant_spec(variant_id: str) -> dict[str, Any] | None:
 
 def make_variant(variant_id: str) -> Variant:
     """`strategy_lib` varyantı, mühürlü kayıttaki parametrelerle (tek kaynak); saf ailelerde satırın `spec`'iyle.
-    Boşluklu (I, J, G) varyant `catalog.BlockedVariant`, henüz uygulanmamış (O) KeyError."""
+    Boşluklu (I, J, G) varyant `catalog.BlockedVariant`, henüz uygulanmamış (O) KeyError. Mühürlü pencere okunuşunun
+    (`LIB_V1.defaults.window`, P3b-2a inceleme bulgu 5) ailelerinde varyantın penceresi mühürlü değere eşit olmalı
+    (değilse ValueError: kapalı hata)."""
     vs = RG.variants_by_id()
     base = vs[variant_id].get("alias_of") or variant_id
-    return SLC.make(base, lib_params(variant_id), variant_spec(variant_id))
+    var = SLC.make(base, lib_params(variant_id), variant_spec(variant_id))
+    check_window(var)
+    return var
+
+
+def check_window(var: Variant) -> None:
+    """Mühürlü pencere (`LIB_V1.defaults.window`): okunuşun ailelerinde `lookback` = {sinyal dilimi: mühürlü bar sayısı}."""
+    w = RG.LIB_V1["defaults"]["window"]
+    if var.family in w["families"]:
+        want = {var.signal_tf: int(w["bars"][var.signal_tf])}
+        if dict(var.lookback) != want:
+            raise ValueError(f"{var.variant_id}: pencere mühürlü değer olmalı {want}, gelen {dict(var.lookback)}")
 
 
 def spec_for(variant_id: str) -> dict[str, Any]:
@@ -812,6 +826,9 @@ class _Sim:
                              opened_ms=pos.trade.entry_ts, signal_ts=pos.intent.signal_ts, entry_bar_ts=pos.trade.entry_ts,
                              bars_held=i - pos.entry_idx + 1, intent=pos.intent)
                 act = variant.manage(pv, bv, self.ctx_for(now, history))
+                for fl in act.flags:                                       # bilgi işaretleri (`Action.flags`)
+                    if fl not in pos.trade.flags:
+                        pos.trade.flags.append(fl)
                 if act.kind == ACT_CLOSE:
                     pending = (ACT_CLOSE, act.reason, EXIT_RULE)
                 elif act.kind == ACT_MOVE_STOP:
@@ -890,6 +907,6 @@ __all__ = ["BASIS_PRUDENT_CLOSE", "BASIS_SLIP_LIQ", "CostScenario", "ENTRY_HOUR_
            "FLAG_FUNDING_GAP", "FLAG_MOVE_STOP_IGNORED", "FLAG_OPEN_AT_END", "FLAG_PATH_GAP", "FundingOutcome",
            "FundingSeries", "KERNEL_VERSION", "KernelResult", "KernelTrade", "Leg", "MOVE_CROSSES_PRICE",
            "MOVE_LOOSENS", "Obs", "PATH_TF", "REJ_DATA_GAP", "REJ_RR", "SCENARIOS", "STOP_FILL_POLICY", "SeriesData",
-           "VARIANT_SPEC_KEYS", "break_even", "cost_trade", "funding_of", "lib_params", "make_variant",
+           "VARIANT_SPEC_KEYS", "break_even", "check_window", "cost_trade", "funding_of", "lib_params", "make_variant",
            "module_src_shas", "move_stop_verdict", "replay_intent", "run", "scenario", "signals_at", "size_trade",
            "snap_ms", "spec_for", "spec_sha_for", "variant_spec"]

@@ -6,7 +6,8 @@
   `indicators_ext.keltner(…, atr_len=14)` ve `bb_width_pct_rank`. EWM tabanlılar bayt-aynı; kayan toplamlılar göreli
   ≤ 1e-9.
 * H ailesinin fonlama ölçüsü fut_v1'in KENDİ fonksiyonudur (`futures_features.align_funding`): varyanta verilen pencere
-  (`funding_lookback_ms` = `live_requirements("4h")["funding_ms"]`) bütün seriyle aynı sonucu verir.
+  (`funding_lookback_ms` = `live_requirements("4h")["funding_ms"]`) bütün seriyle aynı sonucu verir — aralık kuralının
+  (P3b-2a inceleme bulgu 1, 2026-10-12) NaN verdiği 8h → 4h geçişinin tek karar penceresi dışında.
 """
 from __future__ import annotations
 
@@ -133,13 +134,19 @@ def test_funding_measure_is_the_fut_v1_function_on_the_variant_window():
     assert HF._FundingBase.funding_lookback_ms == lb == FF.WINDOW_DAYS * 86_400_000 + 9 * 3_600_000
     ft = np.asarray([x[0] for x in rows], dtype=np.int64)
     fr = np.asarray([x[1] for x in rows], dtype=float)
+    n_rule = 0
     for T in range(t0 + 30 * 86_400_000, t + 86_400_000, 4 * 3_600_000):
         win = [x for x in rows if T - lb < x[0] <= T]
+        if not HF.interval_steady([x[0] for x in win], T):      # aralık kuralı (P3b-2a inceleme bulgu 1): NaN
+            n_rule += 1
+            assert all(x != x for x in HF.f8_state(win, T) + HF.f8_state(win, T, absolute=True))
+            continue
         full = FF.align_funding(np.asarray([T], dtype=np.int64), ft, fr)
         got = HF.f8_state(win, T)
         _same(list(got), [float(full["f8"][0]), float(full["f8_hi"][0]), float(full["f8_lo"][0])])
         afull = FF.align_funding(np.asarray([T], dtype=np.int64), ft, np.abs(fr))
         _same(list(HF.f8_state(win, T, absolute=True)), [float(afull["f8"][0]), float(afull["f8_hi"][0]),
                                                           float(afull["f8_lo"][0])])
+    assert n_rule == 1, "yalnız 8h → 4h geçişinin tek karar penceresi (güncel 4h, önceki 8h)"
     assert HF.f8_state(None, t) == HF.f8_state([], t) and all(x != x for x in HF.f8_state(None, t))
     assert all(x != x for x in HF.f8_state([(t0, None, 1.0)], t0 + 1)), "okunamayan oran: ölçü yok"

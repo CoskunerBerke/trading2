@@ -23,6 +23,7 @@ import json
 import re
 import subprocess
 import sys
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -37,17 +38,17 @@ DOC = ROOT / "docs" / "ENGINE_BRAIN_V1.md"
 
 #: §8.2 S1 mühürü (P3a commit'i). DEĞİŞİRSE CI kırılır.
 SHAS_PINNED = {
-    "LIB_V1": "5f05c27d474e458a391d488ae2eff09d5e2067420f901346eb1c8130164b1903",
+    "LIB_V1": "756599ee79b5adb099216233910e3f9bef963c544d5cb9b57409ccd1c2a371e2",
     "WF_PROTOCOL_V1": "a88abf4bc3dec78807d06b1ee39ebc0cf78883b1cbfd01e36365624ebe9e4a8c",
     "STATS_V1": "4a75ce951e1eddb8024537c24ba3d200c823d761ec6b292e7c3875f5874d60e8",
     "LESSON_REGISTRY_V1": "8fbed7f5e33e21a02ec9547bfd84ab7ad0a798d9cc25908aa99911244ad58836",
     "PIT_RULES_V1": "59d0628c975e42aaa7810e231ce0704e5113b6a2bde4fd59fb29e65d8fef48b7",
     "PRIOR_TRIALS_V1": "ad6d8903e66034ce96cafe006f0a071e254968308627ab9998b0464f96984921",
-    "CONFIG_EPOCHS_V1": "35f2d18c6fae8d7e0006886deca68f0b3af64bbfd7d0546cf4a00e51643568c0",
+    "CONFIG_EPOCHS_V1": "d30da2138a390c1f543fd8acc53b71569bd94e292d3d21dc47b98fd731f16a28",
     "THRESHOLD_DIRECTIONS_V1": "93016e4a468ea3a99cbedd2e6cb56780f569f1b713358b39fa7eb4aa2f1b0451",
 }
-T_SEAL_MS_PINNED = 1791773880000
-REGISTRY_SHA_PINNED = "4b0e47cd82323191930660d1e527cc0a036a0fe7ab0c87512e71378a2ca1c095"
+T_SEAL_MS_PINNED = 1791779880000
+REGISTRY_SHA_PINNED = "e49aa914045157ec9eecefc69b528309629b0c71610e25afc3b9334a4ce8db42"
 
 #: belgedeki sayılar (§2.2, §2.5, §2.6, §5.1, §7.5) — kayıttan BAĞIMSIZ yazılır
 DOC_BUDGET = {"POOLED": (45, 45), "CLUSTER": (135, 135), "COIN_FIT": (161, 1081), "COPY": (312, 312), "COVER": (140, 140),
@@ -92,6 +93,16 @@ DECIDED_PINNED = {
     "LIB_V1.variants[G_NY_ORB].params.entry_until_utc": "B10", "LIB_V1.variants[G_ASIA_DRIFT].params.direction": "B10",
     "LIB_V1.specialisation_rules.4_profit_share_def": "B11",
     "PIT_RULES_V1.membership.volume_window_includes_d": "B11",
+}
+
+
+#: P3b-2a bağımsız incelemesinin bulgularına TEKNİK OKUMALAR (2026-10-12; sahip teknik okumaları devretti; S1 düzeltme
+#: mührü 5) → bulgu numarası. Tasarımın örtük bıraktığı LIB satırı ayrıntıları; bütçe ve varyant sayıları değişmez.
+TECH_READINGS_PINNED = {
+    **{f"LIB_V1.variants[BBSQ_20_{tf}].params.squeeze_bar": 2 for tf in ("1h", "4h")},
+    "LIB_V1.variants[FUND_CARRY].exits.exit_rule": 3,
+    **{f"LIB_V1.variants[RSI2_{tf}].params.entry_mid_side": 4 for tf in ("1h", "4h")},
+    "LIB_V1.defaults.window": 5,
 }
 
 
@@ -547,6 +558,39 @@ def test_gaps_follow_variant_dependencies():
     # bütçede sayılan ama çalıştırılmayan pay (koddan; §8.4 notu): yalnız OTHER satırları
     assert RG.blocked_budget() == {"variants": 13, "gate_a_rows": 25, "raw_trials": 25}
     assert RG.blocked_budget()["gate_a_rows"] == RG.budget_table()["OTHER"][0], "I + J + G satırlarının hepsi"
+
+
+def test_technical_readings_2026_10_12_record_the_p3b2a_review_findings():
+    """İnceleme bulguları 2–5 (2026-10-12): tarihli teknik okuma olarak LIB_V1'de (`decision` + `reading_tr` "teknik okuma
+    2026-10-12; sahip teknik ayrıntıları bana bıraktı; inceleme P3b-2a bulgu N"); kod satırı okur ve doğrular (kapalı
+    hata). Başka yerde bu işaretle okuma yok; bütçe/varyant sayıları değişmedi."""
+    from tradingbot.research_engine import kernel as KN
+    from tradingbot.strategy_lib import pure as PU
+    at = {f"{name}.{p}": x for name, reg in RG.REGISTRIES.items() for p, x in RG._walk(reg)}
+    marked = {p for p, x in at.items() if isinstance(x, Mapping) and str(x.get("reading_tr", "")).startswith("teknik okuma")}
+    assert marked == set(TECH_READINGS_PINNED)
+    for path, n in TECH_READINGS_PINNED.items():
+        v = at[path]
+        assert v["decision"] == f"P3b-2a inceleme bulgu {n} (2026-10-12)", path
+        assert v["reading_tr"].startswith("teknik okuma 2026-10-12; sahip teknik ayrıntıları bana bıraktı; inceleme P3b-2a "
+                                          f"bulgu {n}: "), path
+    v = RG.variants_by_id()
+    for tf in ("1h", "4h"):
+        sq = v[f"BBSQ_20_{tf}"]["params"]["squeeze_bar"]
+        assert (sq["squeeze_at"], sq["breakout_at"]) == ("PREVIOUS_BAR", "SIGNAL_BAR")
+        ms, ex = v[f"RSI2_{tf}"]["params"]["entry_mid_side"], v[f"RSI2_{tf}"]["exits"]["exit_rule"]
+        assert ms["rule"] == "LONG_BELOW_MID_SHORT_ABOVE_MID" and (ms["bb_period"], ms["bb_std"]) == (ex["bb_period"], ex["bb_std"])
+    cx = v["FUND_CARRY"]["exits"]["exit_rule"]
+    assert cx["sign_against"] is True and cx["abs_pct_below"] == v["FUND_CARRY"]["params"]["exit_abs_pct_below"] == 50
+    w = RG.LIB_V1["defaults"]["window"]
+    assert dict(w["bars"]) == dict(PU.WINDOW) == {"1h": 400, "4h": 400, "1d": 399}
+    assert tuple(w["families"]) == ("B", "C", "D", "E", "F1", "H")
+    var = KN.make_variant("MAX_50_200_1d_LO")
+    assert dict(var.lookback) == {"1d": 399}
+    var.lookback = {"1d": 300}
+    with pytest.raises(ValueError):
+        KN.check_window(var)
+    assert RG.budget_table()["TOTAL"] == (818, 1738) and RG.unique_variant_count() == 106
 
 
 def test_owner_decisions_2026_10_11_fill_the_recommended_gaps():

@@ -11,8 +11,10 @@ Ortak okunuşlar (belge §8.4 P3b-2a notu):
 * **Pencere** (`WINDOW`) = canlı kural çerçevesinin bir kurala verdiği kapanmış bar sayısı: gün içi dilimlerde
   `paper_rules.intraday_rows`'un 400 satırı (canlı D4 kuralının göstergelerini hesapladığı pencere), 1d'de perp
   çerçevesinin 399 kapanmış barı (`livebars.LIVE_CLOSED_BARS["1d"]`; canlı günlük göstergelerin hesaplandığı pencere);
-  eşitlikler testli. EMA/ATR'nin `adjust=False` tohumu pencerenin başına bağlıdır: aynı pencere → canlı D4 ile bayt-aynı
-  ATR; AUTO_v1 worker'ı aynı modülü aynı pencereyle çağırır.
+  eşitlikler testli. EMA/ATR'nin `adjust=False` tohumu pencerenin başına bağlıdır (ör. MAX_50_200'ün EMA200 durumu): aynı
+  pencere → canlı D4 ile bayt-aynı ATR; AUTO_v1 worker'ı aynı modülü aynı pencereyle çağırır. Değerler MÜHÜRLÜ teknik
+  okumadır (`LIB_V1.defaults.window`, 2026-10-12, P3b-2a inceleme bulgu 5); çekirdek varyantı kurarken eşitliği denetler
+  (`kernel.make_variant`; değilse ValueError).
 * **LO** = yalnız long (sinyal tersine dönünce pozisyon yok); **LS** = iki yön. Çekirdek tek pozisyon tutar ve `signals`'ı
   yalnız pozisyonsuzken çağırır: ters yöne geçiş, çıkışın uygulandığı barın kapanışındaki `signals` ile olur (bir bar
   gecikme; durum sinyallerinde — TS, MAX, RSI2, fonlama — ters yön o an hâlâ geçerliyse alınır).
@@ -34,7 +36,7 @@ SIDES_LO, SIDES_LS = "LO", "LS"
 SPEC_KEYS = ("family", "timeframes", "signal_tf", "sides", "exits")
 #: kurala verilen kapanmış bar penceresi (gün içi: `paper_rules.intraday_rows` varsayılan `tail`; 1d:
 #: `livebars.LIVE_CLOSED_BARS["1d"]`; eşitlikler testli — burada yazılır ki saf aileler `livebars`/`paper_rules`'ın
-#: pandas/canlı modül yüklemesini taşımasın)
+#: pandas/canlı modül yüklemesini taşımasın). Mühürlü: `LIB_V1.defaults.window.bars` (eşitliği çekirdekte ve testte).
 WINDOW: Mapping[str, int] = {"1h": 400, "4h": 400, "1d": 399}
 ATR_LEN = 14
 

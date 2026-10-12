@@ -2261,8 +2261,9 @@ bakılarak seçilmedi. Aşağıdaki maddeler yukarıdaki 1–26'yı (çelişen y
 42. **Düzeltme (`fidelity_v3`).** Kaydın kapanış dolumunun gözlem referansı varsa (`fidelity.recorded_exit`) yol yalnız
     çıkıştan ÖNCE kapanmış barlardır (`ts + adım ≤ closed_at`; kararın okuduğu son bar dahil) ve stop/hedef/likidasyon o
     pencerede gelmezse pozisyon kaydın referansından `closed_at`'te, kayma modeli uygulanarak kapanır
-    (`cfgrid._replay_ext(exit_at=…)` kancası; kancasız çağrı değişmedi, `_net_replay` paritesi korunur; taban ve
-    `fill_model` `RECORDED_EXIT`, satırda `recorded_exit` ve `window = TO_EXIT_DECISION`). Pencerede yolun tetiklediği
+    (`fidelity.RecordedExitModel`: `cfgrid._replay_ext`'in ufuk kapanışı `close_manual(…, "horizon")` modelin defterinde
+    kaydın referansına, anına ve nedenine yönlendirilir; mühürlü `cfgrid.py`/`attribution.py` TIP `44d5353`'teki baytlarla
+    aynı kalır; taban ve `fill_model` `RECORDED_EXIT`, satırda `recorded_exit` ve `window = TO_EXIT_DECISION`). Pencerede yolun tetiklediği
     stop/hedef gerçek bir farktır (`EXIT_REASON_DIFFERS`; ör. 60 sn mark örneklerinin kaçırdığı son işlem fitili).
     Çıkıştan önce kapanmış yol barı yoksa işlem uygun değildir (`NO_PRE_EXIT_BAR`, oranın paydasına girmez). Seviye
     çıkışları (stop, başa-baş, hedefN, likidasyon) ve referanssız eski kayıtlar v2 penceresiyle aynen oynatılır. Tolerans

@@ -29,7 +29,8 @@ stop dolumudur (aşağıda). Atılık defter hiçbir yere yazılmaz.
   değil) — çıkıştan sonraki fiyatları görüyor, o barda gelen stop/hedefi de çıkış sayıyordu. Şimdi (yalnız kaydın kapanış
   dolumunun gözlem referansı varsa): yol yalnız çıkıştan ÖNCE kapanmış barlardır (`ts + adım ≤ closed`, kararın okuduğu
   son bar dahil) ve stop/hedef/likidasyon o pencerede gelmezse pozisyon kaydın gözlem referansından `closed_at`'te kapanır,
-  kayma modeli uygulanır (`cfgrid._replay_ext(exit_at=…)`, `fill_model = RECORDED_EXIT`). Pencerede yolun tetiklediği
+  kayma modeli uygulanır (`RecordedExitModel`: `cfgrid._replay_ext`'in ufuk kapanışı `close_manual(…, "horizon")` kaydın
+  referansına ve anına yönlendirilir — mühürlü `cfgrid.py` DEĞİŞMEDİ; `fill_model = RECORDED_EXIT`). Pencerede yolun tetiklediği
   stop/hedef gerçek bir farktır (`EXIT_REASON_DIFFERS`). Çıkıştan önce kapanmış bar yoksa işlem uygun değildir
   (`NO_PRE_EXIT_BAR`). Tolerans aynı (0,05R).
 * `|r_replay − r_actual| ≤ 0,05R` → `ok` (işlem P2b'nin karşı-olgusal ayrıştırmasına girer). Değilse yalnız kural kodları
@@ -133,6 +134,32 @@ class RecordedFunding:
     def settlement_mark(self, symbol: str, when: datetime) -> Decimal | None:
         r = self.rows.get(iso(when))
         return r[1] if r else None
+
+
+class RecordedExitModel:
+    """`ExecModel` görünümü (2026-10-12, `fidelity_v3`): her şeyi asıl modele bırakır; yalnız `new_ledger()`'ın defterinde
+    `cfgrid._replay_ext`'in ufuk kapanışı (`close_manual(sembol, son bar kapanışı, reason="horizon", now=bar sonu)`) kaydın
+    kural/zaman çıkışına yönlendirilir: fiyat = kaydın gözlem referansı (kayma modeli `close_manual`'da uygulanır), an =
+    `closed_at`, neden = kaydın nedeni. Yol stop/hedef/likidasyonla kapanırsa `close_manual` çağrılmaz (`used` False)."""
+
+    def __init__(self, model: Any, ref: Decimal, at: datetime, reason: str) -> None:
+        self._model, self._ref, self._at, self._reason = model, ref, at, reason
+        self.used = False
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._model, name)
+
+    def new_ledger(self) -> Any:
+        led = self._model.new_ledger()
+        orig = led.close_manual
+
+        def close_manual(symbol: str, price: Any, reason: str = "manuel", now: datetime | None = None, tick: Any = None) -> Any:
+            if reason != "horizon":
+                return orig(symbol, price, reason=reason, now=now, tick=tick)
+            self.used = True
+            return orig(symbol, self._ref, reason=self._reason, now=self._at, tick=tick)
+        led.close_manual = close_manual
+        return led
 
 
 # ============================================================================ tek işlem
@@ -243,10 +270,10 @@ def replay(rec: dict, *, kind: str, bars: pd.DataFrame | None, tf: str | None, p
     hook, rec_fill = recorded_stop_fill(rec, tf=tf, rule_tf_ms=rule_tf_ms)
     out["recorded_fill"] = rec_fill
     out["recorded_exit"] = format(x_ref, "f") if x_ref is not None else None
+    rx = RecordedExitModel(model, x_ref, x_at, exit_reason) if x_ref is not None and x_at is not None else None
     try:
-        res = _replay_ext(view, df, {"bars": int(len(df)), "exit_reason": exit_reason}, model=model,
-                          funding_lookup=RecordedFunding(rec), stop_fill=hook,
-                          exit_at=(x_ref, x_at, exit_reason) if x_ref is not None else None)
+        res = _replay_ext(view, df, {"bars": int(len(df)), "exit_reason": exit_reason}, model=rx or model,
+                          funding_lookup=RecordedFunding(rec), stop_fill=hook)
     except Exception as exc:  # noqa: BLE001 — yeniden oynatma arızası: başarısız sayılır (neden yazılır)
         out.update(status=ST_FAIL, reasons=["REPLAY_ERROR"], primary_reason="REPLAY_ERROR", error=f"{type(exc).__name__}: {exc}"[:200])
         return out
@@ -260,11 +287,11 @@ def replay(rec: dict, *, kind: str, bars: pd.DataFrame | None, tf: str | None, p
         out.update(status=ST_FAIL, reasons=["REPLAY_ERROR"], primary_reason="REPLAY_ERROR")
         return out
     delta = r_rep - r_actual
-    pb = str(res.get("net_exit_basis") or "")
+    pb = RECORDED_EXIT if (rx is not None and rx.used) else str(res.get("net_exit_basis") or "")
     out.update(r_replay=format(r_rep.quantize(Decimal("1e-6")) + 0, "f"), delta_r=format(delta.quantize(Decimal("1e-6")) + 0, "f"),
                fill_model={RECORDED_FILL: RECORDED_FILL, RECORDED_EXIT: RECORDED_EXIT,
                            "GAP_FILL_AT_BAR_OPEN": "BAR_OPEN"}.get(pb, "LEVEL"),
-               replay_exit_reason=res.get("net_exit_reason"), replay_exit_basis=res.get("net_exit_basis"),
+               replay_exit_reason=res.get("net_exit_reason"), replay_exit_basis=pb or res.get("net_exit_basis"),
                replay_entry_fill=format(ef_rep, "f"), intrabar_ambiguous_bars=int(res.get("intrabar_ambiguous_bars") or 0),
                bars=int(len(df)), tf=tf, window="TO_EXIT_DECISION" if x_ref is not None else "THROUGH_EXIT_BAR",
                exec_model=res.get("exec_model"))
@@ -331,6 +358,6 @@ def summarize(rows: Iterable[dict[str, Any]], *, target: float = TARGET_RATE) ->
             "by_book": {b: {**v, "rate": round(v["ok"] / v["n"], 4) if v["n"] else None} for b, v in sorted(by_book.items())}}
 
 
-__all__ = ["EXEC_KEYS", "FIDELITY_VERSION", "NOT_ELIGIBLE", "REASON_ORDER", "RECORDED_EXIT", "RECORDED_FILL", "RecordedFunding",
-           "ST_FAIL", "ST_NOT_ELIGIBLE", "ST_OK", "TARGET_RATE", "TOLERANCE_R", "exec_model", "exec_params", "is_level_exit",
-           "recorded_exit", "recorded_stop_fill", "replay", "summarize"]
+__all__ = ["EXEC_KEYS", "FIDELITY_VERSION", "NOT_ELIGIBLE", "REASON_ORDER", "RECORDED_EXIT", "RECORDED_FILL", "RecordedExitModel",
+           "RecordedFunding", "ST_FAIL", "ST_NOT_ELIGIBLE", "ST_OK", "TARGET_RATE", "TOLERANCE_R", "exec_model", "exec_params",
+           "is_level_exit", "recorded_exit", "recorded_stop_fill", "replay", "summarize"]

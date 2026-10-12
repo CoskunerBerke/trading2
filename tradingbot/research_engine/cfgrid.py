@@ -279,16 +279,13 @@ def replay(view: Any, df: pd.DataFrame, *, model: Any, funding: Any, trail_atr: 
 
 def _replay_ext(view: Any, df: pd.DataFrame, gross: dict[str, Any], *, model: Any, funding_lookup: Any,
                 trail_atr: float | None = None, leverage: int = 1, notional: Decimal | None = None,
-                stop_fill: Callable[[int], Any] | None = None,
-                exit_at: tuple[Any, datetime, str] | None = None) -> dict[str, Any]:
+                stop_fill: Callable[[int], Any] | None = None) -> dict[str, Any]:
     """`learning_cf._net_replay` (cf_net_ledger_replay_v2) döngüsünün KOPYASI, üç kancayla: `trail_atr` (her işlenen
     barın SONUNDA stop = en iyi uç ∓ trail_atr; yalnız lehte taşınır, sonraki barlardan itibaren etkili — nedensel),
     `leverage`/`notional` (gerçek kaldıraçla likidasyon denetimi) ve `stop_fill` (2026-10-08, B1; yalnız `fidelity`: stop bu
     barda tetiklenirse `stop_fill(bar açılışı ms)` bir fiyat döndürürse dolum referansı o fiyattır — kaydın GÖZLEMDEN dolumu,
-    `RECORDED_FILL`; fiyat stopun ötesinde değilse kullanılmaz) ve `exit_at` (2026-10-12, `fidelity_v3`; yalnız
-    `fidelity`: yol stop/hedef/likidasyonla kapanmadan biterse pozisyon `(referans, an, neden)` ile `close_manual`'dan
-    kapanır — kaydın kural/zaman çıkışının gözlem referansı, kayma modeli uygulanır; taban `RECORDED_EXIT`). Kancasız
-    çağrı `_net_replay` ile aynı sonucu verir (`test_research_engine_cfgrid`)."""
+    `RECORDED_FILL`; fiyat stopun ötesinde değilse kullanılmaz). Kancasız çağrı `_net_replay` ile aynı sonucu verir
+    (`test_research_engine_cfgrid`)."""
     from ..accounting import EXIT_BE_STOP, EXIT_STOP, AmountType, SizeSpec, SlippageModel, TickData
     from ..core import D, from_iso, iso
     from ..learning_cf import (STOP_FILL_RULE, NET_CONTRACT, _bar_path, _beyond, _decompose, _open_px, _quiet_rates,
@@ -364,9 +361,6 @@ def _replay_ext(view: Any, df: pd.DataFrame, gross: dict[str, Any], *, model: An
             if p.stop is None or (cand > p.stop if long else cand < p.stop):
                 p.stop = cand
     basis = None
-    if rec is None and exit_at is not None:                  # KANCA: kaydın kural/zaman çıkışı (gözlem referansı)
-        rec = led.close_manual(sym, D(str(exit_at[0])), reason=str(exit_at[2]), now=exit_at[1])
-        basis = "RECORDED_EXIT"
     if rec is None:
         if last_c is None:
             return {"r_net": None, "net_status": "NO_BARS", "exec_model": xm}

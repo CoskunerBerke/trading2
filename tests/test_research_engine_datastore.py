@@ -391,6 +391,57 @@ def test_archive_url_percent_encodes_non_ascii_symbols():
     url = DS.archive_url(DS.SeriesSpec("futures", "牛来USDT", "1h", 0), "2026-10-09")
     assert url.isascii() and "/%E7%89%9B%E6%9D%A5USDT/1h/%E7%89%9B%E6%9D%A5USDT-1h-2026-10-09.zip" in url
     assert DS.archive_url(DS.SeriesSpec("futures", "BTCUSDT", "1h", 0), "2026-09").endswith("/BTCUSDT/1h/BTCUSDT-1h-2026-09.zip")
+    px = DS.archive_url(DS.SeriesSpec("futures", "龙虾USDT", "markpx_1h", 0), "2026-10-09")
+    assert px.endswith("/futures/um/daily/markPriceKlines/%E9%BE%99%E8%99%BEUSDT/1h/%E9%BE%99%E8%99%BEUSDT-1h-2026-10-09.zip")
+
+
+def test_mark_premium_series_the_archive_never_publishes_are_absent_upstream_not_stale(tmp_path):
+    """VPS 2026-10-12: `futures/牛来USDT|龙虾USDT/markpx_1h|premium_1h` NO_BASELINE (V2 [DİKKAT]). Adres doğru (yüzde kodlu,
+    kline ile aynı düzen); data.binance.vision bu iki kümeyi ASCII olmayan semboller için HİÇ yayımlamıyor (S3 listesi).
+    Kanıtlı etiket: aynı sembolün 1h kline'ı o günü kapsar ve kümenin gün zip'i 404 → `ABSENT_UPSTREAM` (planlı ve bayat
+    sayılmaz, satırında kanıt); her gece yeniden yoklanır. Gerçek bayatlık gizlenmez: arşiv yayımlamaya başlarsa tabansız
+    seri yeniden `NO_BASELINE` (planlı, bayat) olur. (Sahte arşiv ASCII sembolle aynı durumu kurar.)"""
+    keys = {"futures/SOLUSDT/1h", "futures/SOLUSDT/markpx_1h", "futures/SOLUSDT/premium_1h", "futures/BTCUSDT/1h",
+            "futures/BTCUSDT/markpx_1h"}
+    e = env(tmp_path, only=keys)
+    e.fb.absent_ds = {"markPriceKlines/SOLUSDT", "premiumIndexKlines/SOLUSDT"}
+    st = e.run("backfill")
+    assert st["result"] == DS.R_SUCCESS and st["exit_code"] == 0, (st.get("error"), st["flags"])
+    d = e.status()
+    for k in ("futures/SOLUSDT/markpx_1h", "futures/SOLUSDT/premium_1h"):
+        row = d["series"][k]
+        assert (row["status"], row["stale"], row["planned"], row["rows"]) == (DS.S_ABSENT_UPSTREAM, False, False, 0), (k, row)
+        ev = row["absent_upstream"]
+        assert ev["http"] == 404 and ev["probe_day"] == "2026-10-04" and ev["reference"].startswith("futures/SOLUSDT/1h ")
+        assert ev["probe_url"].endswith("/SOLUSDT/1h/SOLUSDT-1h-2026-10-04.zip") and "/daily/" in ev["probe_url"]
+    assert d["series"]["futures/BTCUSDT/markpx_1h"]["status"] == DS.S_OK and d["series"]["futures/BTCUSDT/markpx_1h"]["rows"] > 0
+    assert (d["totals"]["absent_upstream"], d["totals"]["stale"], d["totals"]["no_baseline"]) == (2, 0, 0)
+    # sürüm betiğinin V2 tazelik ölçütü: planlı seriler (delist ayrı); bayat ya da yaşsız seri kalmaz
+    ser = {k: v for k, v in d["series"].items() if v.get("planned")}
+    assert set(ser) == keys - {"futures/SOLUSDT/markpx_1h", "futures/SOLUSDT/premium_1h"}
+    assert not [k for k, v in ser.items() if v.get("stale") or v.get("age_h") is None or v["age_h"] > 26]
+    assert any(ln.startswith("Üst kaynakta yok") and "futures/SOLUSDT/markpx_1h" in ln for ln in DS.status_lines(e.paths))
+    # sonraki gece (--update): tabansız seri atlanır, yokluk yeniden yoklanır
+    e.clock.t = utc(2026, 10, 7, 0, 41)
+    assert e.run("update")["result"] == DS.R_SUCCESS
+    d = e.status()
+    assert d["series"]["futures/SOLUSDT/markpx_1h"]["status"] == DS.S_ABSENT_UPSTREAM and d["totals"]["stale"] == 0
+    assert d["series"]["futures/SOLUSDT/markpx_1h"]["absent_upstream"]["probe_day"] == "2026-10-05"
+    # arşiv yayımlamaya başladı: gerçek eksik (tabansız, planlı, bayat) — gizlenmez; `--backfill` gerekir
+    e.fb.absent_ds = {"premiumIndexKlines/SOLUSDT"}
+    e.clock.t = utc(2026, 10, 8, 0, 41)
+    e.run("update")
+    d = e.status()
+    row = d["series"]["futures/SOLUSDT/markpx_1h"]
+    assert (row["status"], row["stale"], row["planned"]) == (DS.S_NO_BASELINE, True, True), row
+    assert row["upstream_probe"] == {"day": "2026-10-06", "found": True} and "absent_upstream" not in row
+    assert d["series"]["futures/SOLUSDT/premium_1h"]["status"] == DS.S_ABSENT_UPSTREAM
+    # kanıt kurulamıyorsa (sembolün 1h kline'ı yok) etiket yok: NO_BASELINE kalır
+    e2 = env(tmp_path / "b", only={"futures/SOLUSDT/markpx_1h"})
+    e2.fb.absent_ds = {"markPriceKlines/SOLUSDT"}
+    e2.run("backfill")
+    row = e2.status()["series"]["futures/SOLUSDT/markpx_1h"]
+    assert row["status"] != DS.S_ABSENT_UPSTREAM and row["planned"] and "absent_upstream" not in row
 
 
 def test_rest_tail_never_writes_a_bar_still_open_when_the_request_was_sent(tmp_path):

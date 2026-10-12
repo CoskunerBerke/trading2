@@ -110,6 +110,8 @@ class FakeBinance:
         self.fail: dict[str, int] = {}               # URL alt dizgesi → kaç kez 503
         self.fail_always: set[str] = set()           # URL alt dizgesi → hep 503
         self.status_for: dict[str, int] = {}         # URL alt dizgesi → bu HTTP durumu (ör. 403 CDN engeli)
+        #: arşivin HİÇ yayımlamadığı "veri kümesi/SEMBOL" (ör. "markPriceKlines/SOLUSDT"; gerçekte ASCII olmayan semboller)
+        self.absent_ds: set[str] = set()
         #: delist: "market/SEMBOL" → delist anı (ms). Arşiv o ana kadar veri verir; REST `-1121 Invalid symbol`;
         #: vadeli exchangeInfo `SETTLING` (+ deliveryDate) ya da `delisted_absent` ise listede hiç yok
         self.delisted: dict[str, int] = {}
@@ -190,6 +192,8 @@ class FakeBinance:
             return f"{sha}  {name}\n".encode("ascii")
         market = "spot" if m.group("seg") == "spot" else "futures"
         sym, ds, tf, kind = m.group("sym"), m.group("ds"), m.group("tf"), m.group("kind")
+        if f"{ds}/{sym}" in self.absent_ds:
+            return None
         stamp = re.search(r"(\d{4}-\d{2}(?:-\d{2})?)\.zip$", name)
         if not stamp:
             return None

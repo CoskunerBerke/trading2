@@ -454,6 +454,8 @@ vardır (§3.6).
 
 **Değişiklik (2026-10-11, ilk doldurmadan sonra; VPS ölçümü):** ilk `--update` 37.827 uzlaştırma farkı yazdı (V4). Hepsi `futures/*/metrics_5m`, 9 Ekim, `rest → archive` idi ve her sütunda tam bir kova kaymıştı: REST `/futures/data/*` noktası arşivin `create_time` damgasından 5 dk sonra damgalı (REST(t) = arşiv(t − 5 dk)). REST satırları artık arşiv düzenine kaydırılır (`METRICS_REST_LAG_MS`); uzlaştırma farkı 0 olur. `metrics_5m` damgası arşivin `create_time`'ıdır. P3 öznitelikleri ileriye bakmamak için t damgalı satırı t + 5 dk'da bilinmiş sayar (ihtiyatlı). Aynı ölçümde ASCII olmayan bir sembolün (`牛来USDT`) arşiv adresi kodlanmadığından verisi inmiyordu; sembol artık yüzde kodlanır.
 
+**Değişiklik (2026-10-12, VPS ölçümü):** yüzde kodlamadan sonra `牛来USDT`/`龙虾USDT`'nin kline, fonlama ve metrics serileri tamam; `markpx_1h`/`premium_1h` `NO_BASELINE` kaldı. Neden bizde değil: data.binance.vision `markPriceKlines`/`premiumIndexKlines`'ı ASCII olmayan hiçbir sembol için yayımlamıyor (S3 listesi). Tabansız planlı mark/premium serisi artık yalnız kanıtla (aynı sembolün 1h kline'ı o günü kapsar, kümenin gün zip'i 404; her çalıştırmada yeniden yoklanır) `ABSENT_UPSTREAM` olur: planlı ve bayat sayılmaz, satırında kanıt yazılır; arşiv yayımlamaya başlarsa seri yeniden `NO_BASELINE` (bayat) olur. Ayrıntı: P2 uygulama notu 44.
+
 Notlar:
 - `config.yaml` PAXG'yi yaş filtresiyle işlem evreninden çıkarır. Altın, araştırma evrenine **açıkça** eklenir.
 - **Hayatta kalma yanlılığı.** U_R bugünkü `universe.json` ve son işlem görenlerdir; `exchangeInfo` anlık görüntüleri
@@ -2238,6 +2240,63 @@ bakılarak seçilmedi. Aşağıdaki maddeler yukarıdaki 1–26'yı (çelişen y
     PIPE`, HUP/INT'e kapalı `tee -p`, `revert_eng` çıktı hatasında başarısızlık bildirmez); geri koyma reload'undan sonra
     worker 6G denetlenir (kayma → çıkış 3); `--rollback` taban kaydını `.rolledback-<an>` yapar ve yarım kalırsa yazılan
     birim dosyalarını ve yeniden çalıştırma komutunu basar.
+
+#### P2 doğruluk düzeltmesi (2026-10-12; VPS ilk tam gecesi)
+
+40. **Ölçüm (VPS, P2 motoru `44d5353`, ilk tam gece).** Fidelity 1225/1481 = %82,7 (kapı ≥ %90). Başarısız 256:
+    `strategy_paper_box` `UNEXPLAINED` 160, Box `FILL_BASIS` 54, Box `EXIT_REASON_DIFFERS` 18, `main_fut` `FILL_BASIS` 10,
+    trend4h `UNEXPLAINED` 4, `main_fut` `EXIT_REASON_DIFFERS` 4, Box `BACKDATED_CLOSE` 2, `pattern_trader` 2, m2
+    `UNEXPLAINED` 1, Box `PATH_GAP` 1. `UNEXPLAINED`'ın 159'u kural/zaman çıkışı (Box `BOX_EOD_FLAT` 151,
+    `BOX_OUTSIDE_BREAKOUT_EXIT` 3, trend4h `DONCHIAN_EXIT_LOW10` 4, m2 `ENTRY_STRUCTURE_FAILED` 1); hepsinde
+    `replay_exit_reason = horizon`, `fill_model = LEVEL`.
+41. **Kök neden (kural/zaman çıkışı).** Canlı defter seviyesiz çıkışı KARAR ANINDA o anın doğrulanmış perp mark'ından
+    `close_manual` ile yapar (`strategy_paper.apply_action`; kapanış dolumu `kind = exit_reason`, `ref_price` = mark, an =
+    `closed_at`). Box'ta bu, gün değiştikten sonraki ilk 5m değerlendirmesidir (`box_timer.run_once`: 00:00 barı kapanıp
+    + 3 sn yayım payı + 15 sn yoklama → ≈ 00:05:03–00:05:18; `box_theory.decide` gün sonu dalı). `pathrec` yol penceresi
+    `opened < ts < closed`'dur (not 30: çıkışı içeren bar yoldadır) ve v2 yeniden oynatması (`fidelity.replay` →
+    `cfgrid._replay_ext`) bu barı da işleyip ufukta o barın KAPANIŞINDAN kapatıyordu: 1m yolda çıkıştan ~1 dk, 5m yolda
+    ~5 dk SONRAKİ son işlem fiyatı (mark değil); o barda çıkıştan sonra gelen stop/hedef de çıkış sayılıyordu (Box
+    `EXIT_REASON_DIFFERS`'ın bir kısmı). Test dünyaları bunu göstermiyordu: kural çıkışları hep dakika sınırında, o 1m
+    barının kapanışından kapatılıyordu (yeniden oynatmanın ufuk fiyatının ta kendisi).
+42. **Düzeltme (`fidelity_v3`).** Kaydın kapanış dolumunun gözlem referansı varsa (`fidelity.recorded_exit`) yol yalnız
+    çıkıştan ÖNCE kapanmış barlardır (`ts + adım ≤ closed_at`; kararın okuduğu son bar dahil) ve stop/hedef/likidasyon o
+    pencerede gelmezse pozisyon kaydın referansından `closed_at`'te, kayma modeli uygulanarak kapanır
+    (`fidelity.RecordedExitModel`: `cfgrid._replay_ext`'in ufuk kapanışı `close_manual(…, "horizon")` modelin defterinde
+    kaydın referansına, anına ve nedenine yönlendirilir; mühürlü `cfgrid.py`/`attribution.py` TIP `44d5353`'teki baytlarla
+    aynı kalır; taban ve `fill_model` `RECORDED_EXIT`, satırda `recorded_exit` ve `window = TO_EXIT_DECISION`). Pencerede yolun tetiklediği
+    stop/hedef gerçek bir farktır (`EXIT_REASON_DIFFERS`; ör. 60 sn mark örneklerinin kaçırdığı son işlem fitili).
+    Çıkıştan önce kapanmış yol barı yoksa işlem uygun değildir (`NO_PRE_EXIT_BAR`, oranın paydasına girmez). Seviye
+    çıkışları (stop, başa-baş, hedefN, likidasyon) ve referanssız eski kayıtlar v2 penceresiyle aynen oynatılır. Tolerans
+    0,05R DEĞİŞMEDİ. Günlük satırının girdi özeti artık `FIDELITY_VERSION`'ı içerir (`journal._input_digest`): VPS'te
+    bütün satırlar bir kez yeniden kurulur (S1b birikmiş işi bütçeyle yayılır), atıf satırları satır sha'sıyla izler.
+    `attribution_v1`/`cfgrid_v1` mühürleri değişmedi (`ATTRIBUTION_SHA` 914875a1…, `CFGRID_SHA` 7c299ae0…).
+    Testler (`test_research_engine_pathrec_fidelity`): canlı Box akışı (22:35:04 giriş, 60 sn örnekli izleme, 00:05:07'de
+    mark'tan `BOX_EOD_FLAT`, `pathrec.reconstruct` 1m ve 5m) v3'te |ΔR| < 0,005, aynı işlem v2 tabanıyla > 0,05R
+    (`UNEXPLAINED` ya da çıkıştan sonraki fitilde `EXIT_REASON_DIFFERS`); karardan önceki fitil hâlâ `EXIT_REASON_DIFFERS`;
+    5m yolda karardan önce bar yoksa `NO_PRE_EXIT_BAR`. Beklenen etki (VPS sayılarından): kural/zaman çıkışı 159
+    `UNEXPLAINED` + Box `EXIT_REASON_DIFFERS`'ın kural çıkışlı kısmı OK olur → ≈ 1384–1402 / ~1481 ≈ %93,5–94,5.
+43. **Box `FILL_BASIS` (54) ayrı bir nedendir (düzeltilmedi).** Gözlemden stop dolumu penceresi (`rule_tf_ms`, not 28/B1)
+    günlükte giriş dilimidir (`journal`: `TF_MS[ENTRY_TF[book]]`; Box 5m); Box defterinin kaçan fitili yakaladığı tek
+    bar yolu ise kapanmış 1h kline'larıdır (`box_timer._bars_1h`, `strategy_paper.BAR_TIMEFRAME = "1h"`) + 60 sn mark
+    örnekleri. Son işlem fitili stopa 5 dk'dan önce dokunup mark örneği aynı (henüz uygulanmamış) 1h barı içinde daha
+    sonra stopu geçtiğinde kayıt `GAP_FILL_AT_FIRST_OBSERVATION`/`PRICE`, yeniden oynatma seviyeden doldurur →
+    `FILL_BASIS`. Benzetim (472 Box işlemi, mark ≠ son işlem, 1h bar uygulaması): 5m penceresinde 9 (oynaklık 0,0008/dk'da
+    23) `FILL_BASIS`, 1h penceresinde 1 (4). Öneri (sahip kararı): `rule_tf_ms = max(giriş dilimi, 1h)`. Box
+    `EXIT_REASON_DIFFERS` (18): çıkıştan sonraki barda stop/hedef gören kural çıkışları v3'le kapanır; kalan seviye
+    çıkışları mark örnekleri ↔ son işlem yolu farkıdır (gerçek fark).
+44. **Veri: `markpx_1h`/`premium_1h` ASCII olmayan sembollerde `ABSENT_UPSTREAM`.** VPS'te `futures/牛来USDT` ve
+    `futures/龙虾USDT` mark/premium 1h serileri `NO_BASELINE` idi (kline/fonlama/metrics yüzde kodlama düzeltmesinden sonra
+    tamam). Adres düzeni doğru (kline ile aynı, yüzde kodlu); data.binance.vision bu iki kümeyi ASCII olmayan hiçbir sembol
+    için yayımlamıyor (S3 listesi 2026-10-12: `markPriceKlines`/`premiumIndexKlines` günlük ve aylık altında ASCII olmayan
+    klasör yok; `klines` altında 5 tane var). Hata bizde değil; `--update` tabansız seriyi atladığı için REST kuyruğu da
+    bu serilere hiç gelmez (REST'in bu sembollerde mark/premium verip vermediği bu ortamdan doğrulanamadı: coğrafi
+    engel). Veri birimi artık tabansız planlı mark/premium serisini KANITLA etiketler (`DataRun._absent_upstream_pass`):
+    aynı sembolün 1h kline'ı D gününü kapsar (D = min(kline'ın son günü, bugün − 2 g)) ve kümenin D günü zip'i 404 →
+    `ABSENT_UPSTREAM`: planlı sayılmaz (V2 tazelik ölçütü dışı), bayat değildir, satırında kanıt (`absent_upstream`:
+    yoklama günü/adresi, kline referansı), toplamlarda `absent_upstream`, `engine-data --status`'ta ayrı satır. Her
+    çalıştırmada yeniden yoklanır (seri başına bir istek); arşiv yayımlamaya başlarsa seri yeniden `NO_BASELINE` (planlı,
+    bayat; `upstream_probe.found`) olur ve `--backfill` gerekir — gerçek bayatlık gizlenmez. Kanıt kurulamazsa (kline
+    yok ya da çok yeni, ağ hatası, erişim engeli, bu çalıştırmada seri hatası) etiket konmaz.
 
 ### P3 — Strateji kütüphanesi, walk-forward, keşif katmanı, denemeler, CSCV/PBO, dersler, zaman noktasında evren
 

@@ -189,6 +189,14 @@ EXIT_CODES = {R_SUCCESS: 0, R_PARTIAL: 0, R_DEADLINE: 0, R_SKIPPED_LOCKED: 0, R_
 S_OK, S_STALE, S_NO_BASELINE, S_HALTED, S_SKIPPED_DEADLINE = "OK", "STALE", "NO_BASELINE", "HALTED", "SKIPPED_DEADLINE"
 #: delist (terminal, bayat sayılmaz) ve disk durması
 S_DELISTED, S_SKIPPED_DISK = "DELISTED", "SKIPPED_DISK"
+#: ÜST KAYNAKTA YOK (2026-10-12, VPS: `futures/牛来USDT|龙虾USDT/markpx_1h|premium_1h` NO_BASELINE): data.binance.vision
+#: bu veri kümesini o sembol için hiç yayımlamıyor (S3 listesi 2026-10-12: `markPriceKlines`/`premiumIndexKlines` altında
+#: ASCII olmayan sembol klasörü YOK, `klines` altında 5 tane var; adres yüzde kodlu ve doğru). Tabansız seri yalnız KANITLA
+#: böyle etiketlenir (`_absent_upstream_pass`): aynı sembolün 1h kline'ı depoda o günü kapsar ve bu kümenin aynı günün zip'i
+#: 404. Her çalıştırmada yeniden yoklanır; arşiv yayımlamaya başlarsa seri yeniden `NO_BASELINE` (planlı, bayat) olur.
+#: Planlı sayılmaz (tazelik ölçütü dışı), bayat değildir; satırında kanıt (`absent_upstream`) yazılır.
+S_ABSENT_UPSTREAM = "ABSENT_UPSTREAM"
+UPSTREAM_PROBE_KINDS = (MARKPX_1H, PREMIUM_1H)
 F_REST_GUARD_SKIP, F_REST_GUARD_UNKNOWN = GUARD_SKIP, GUARD_UNKNOWN
 F_ARCHIVE_HOLES, F_DELISTED = "ARCHIVE_HOLES", "DELISTED"
 #: dosya defteri durumları: doğrulandı / doğrulanamadı (CHECKSUM yok) / kalıcı eksik (404) / checksum tutmadı / kısmi ay
@@ -1175,6 +1183,8 @@ class DataRun:
         self.delisted: dict[str, dict[str, Any]] = self._load_delisted()
         #: seri → kalan açık dönem sayısı (onarılamadı ya da sınır)
         self.holes: dict[str, int] = {}
+        #: üst kaynakta yok (bu çalıştırmanın yoklaması): seri → kanıt (`_absent_upstream_pass`)
+        self.absent_upstream: dict[str, dict[str, Any]] = {}
         #: disk (madde 9): son ölçüm (araştırma baytı, boş bayt, an) ve son durum
         self._disk_base: tuple[int, int | None, float] | None = None
         self._in_run = False
@@ -1298,8 +1308,9 @@ class DataRun:
         now_ms = ms_of(self.clock())
         table: dict[str, Any] = {}
         tot = {"series": 0, "planned": 0, "rows": 0, "unverified_rows": 0, "rest_rows": 0, "seed_rows": 0,
-               "archive_rows": 0, "stale": 0, "halted": 0, "no_baseline": 0, "delisted": 0, "holes": 0}
-        keys = sorted(set(plan_keys) | {self.store.series_key(m, s, t) for m, s, t in self.store.series()})
+               "archive_rows": 0, "stale": 0, "halted": 0, "no_baseline": 0, "delisted": 0, "absent_upstream": 0, "holes": 0}
+        keys = sorted(set(plan_keys) | {self.store.series_key(m, s, t) for m, s, t in self.store.series()}
+                      | set(self.absent_upstream))
         for key in keys:
             market, sym, tf = key.split("/", 2)
             m = self.store.manifest(market, sym, tf)
@@ -1317,13 +1328,15 @@ class DataRun:
                 st = S_HALTED
             elif dl is not None and st in (None, S_OK, S_DELISTED, S_NO_BASELINE):
                 st = S_DELISTED                      # terminal: veri delist anına kadar; bayat sayılmaz (madde 3)
+            elif not m.row_count and key in self.absent_upstream:
+                st = S_ABSENT_UPSTREAM               # arşiv bu kümeyi yayımlamıyor (kanıtlı); planlı ve bayat sayılmaz
             elif not m.row_count:
                 st = st or S_NO_BASELINE
             elif st in (None, S_OK):
                 st = S_STALE if (not historical and age_h is not None and age_h > STALE_AFTER_H) else (st or S_OK)
             stale = st in (S_STALE, S_HALTED, S_NO_BASELINE, S_SKIPPED_DEADLINE, S_SKIPPED_DISK)
             src = dict(m.src_rows or {})
-            row = {"planned": key in plan_keys, "status": st, "stale": bool(stale and not historical),
+            row = {"planned": key in plan_keys and st != S_ABSENT_UPSTREAM, "status": st, "stale": bool(stale and not historical),
                    "last_ts": iso_ms(m.last_ts_ms), "last_ts_ms": m.last_ts_ms, "age_h": age_h, "rows": m.row_count,
                    "first_ts": iso_ms(m.first_ts_ms), "gaps": m.gap_count, "quality": m.quality_score,
                    "unverified_rows": int(src.get(SRC_UNVERIFIED, 0)), "src": src, "bad_chunks": len(m.bad_chunks),
@@ -1336,9 +1349,11 @@ class DataRun:
                 row["halted_reason"] = m.halted_reason
             if dl is not None:
                 row["delisted"] = dl
+            if st == S_ABSENT_UPSTREAM:
+                row["absent_upstream"] = dict(self.absent_upstream[key])
             if self.holes.get(key):
                 row["holes"] = int(self.holes[key])
-            for k in ("error", "rows_new", "rest_rows", "archive_files", "rest_skipped"):
+            for k in ("error", "rows_new", "rest_rows", "archive_files", "rest_skipped", "upstream_probe"):
                 if run.get(k):
                     row[k] = run[k]
             table[key] = row
@@ -1353,6 +1368,7 @@ class DataRun:
             tot["halted"] += int(st == S_HALTED)
             tot["no_baseline"] += int(st == S_NO_BASELINE)
             tot["delisted"] += int(st == S_DELISTED)
+            tot["absent_upstream"] += int(st == S_ABSENT_UPSTREAM)
             tot["holes"] += int(row.get("holes") or 0)
         return table, tot
 
@@ -1610,6 +1626,8 @@ class DataRun:
             self.progress["total"] = sum(len(t) for _, t in work)
             self.write_status(final=False)
             self._archive_pass(work)
+            # 5b) tabansız mark/premium serileri: arşiv bu kümeyi hiç yayımlamıyor mu (kanıtlı `ABSENT_UPSTREAM`)
+            self._absent_upstream_pass(plan)
             # 6) REST kuyruğu: koruma burada YENİDEN okunur (ilk doldurmada arşiv adımı saatler sürer)
             self.progress["phase"] = "rest"
             self._rest_step(plan)
@@ -2047,6 +2065,44 @@ class DataRun:
             return False
         src = pm.get("src") or {}
         return int(pm.get("rows") or 0) == (b - a) // st and set(src) == {"seed"}
+
+    def _absent_upstream_pass(self, plan: list[SeriesSpec]) -> None:
+        """Tabansız (`row_count` 0) planlı mark/premium serisinin üst kaynakta yokluğu (2026-10-12). Kanıt: aynı sembolün 1h
+        kline'ı depoda D gününü kapsar (D = min(kline'ın son günü, bugün − 2 g); gün zip'i yayımlanmış olmalı) ve bu
+        kümenin D günü zip'i arşivde 404 → `ABSENT_UPSTREAM` (planlı ve bayat sayılmaz). Zip varsa seri `NO_BASELINE`
+        kalır (gerçek eksik: `--backfill` gerekir; `upstream_probe.found`). Kanıt kurulamazsa (kline yok/çok yeni, ağ
+        hatası, erişim engeli) seri olduğu gibi kalır. Seri başına en çok bir arşiv isteği."""
+        now = ms_of(self.clock())
+        for spec in plan:
+            if spec.market != "futures" or spec.kind not in UPSTREAM_PROBE_KINDS:
+                continue
+            if f"{spec.market}/{spec.symbol}" in self.delisted:
+                continue
+            if self.store.manifest(spec.market, spec.symbol, spec.kind).row_count or (self.series.get(spec.key) or {}).get("error"):
+                continue                              # tabanı var ya da bu çalıştırmada hata aldı: etiketlenmez
+            ref = self.store.manifest(spec.market, spec.symbol, "1h")
+            if not ref.row_count or ref.last_ts_ms is None or ref.first_ts_ms is None:
+                continue
+            day = min(day_floor_ms(int(ref.last_ts_ms)), day_floor_ms(now) - 2 * DAY_MS)
+            if int(ref.first_ts_ms) >= day + DAY_MS:
+                continue
+            url = archive_url(spec, dstamp(day))
+            try:
+                f = self.mirror.fetch(url)
+            except (TransientError, ArchiveHalted):
+                continue                              # kanıt yok: seri olduğu gibi (NO_BASELINE) kalır
+            rec = self.series.setdefault(spec.key, {"status": S_NO_BASELINE})
+            if f.status != "missing":
+                rec["upstream_probe"] = {"day": dstamp(day), "found": True}
+                continue
+            self.absent_upstream[spec.key] = {
+                "probe_day": dstamp(day), "probe_url": url, "http": 404, "checked_at": self.clock().isoformat(),
+                "reference": f"{self.store.series_key(spec.market, spec.symbol, '1h')} {iso_ms(ref.first_ts_ms)} → "
+                             f"{iso_ms(ref.last_ts_ms)}"}
+            rec.clear()
+            rec["status"] = S_ABSENT_UPSTREAM
+        if self.absent_upstream:
+            self.status["absent_upstream"] = sorted(self.absent_upstream)
 
     def _lazy_1m_pass(self) -> None:
         """P2 tembel 1m (§3.3; `lazy1m`): gece biriminin `paths/needs_1m.json`'da istediği günlerin yalnız arşiv GÜN
@@ -2609,12 +2665,17 @@ def status_lines(paths: EnginePaths, *, now: datetime | None = None, limit: int 
                        f"(gece birimi {_gb(MIN_FREE_BYTES)} / {_gb(REFUSE_RESEARCH_BYTES)})")
     t = d.get("totals") or {}
     out.append(f"Seriler: {t.get('series')} (planlı {t.get('planned')}) · bayat {t.get('stale')} · durmuş {t.get('halted')} "
-               f"· tabansız {t.get('no_baseline')} · delist {t.get('delisted', 0)} · açık dönem {t.get('holes', 0)} · satır "
+               f"· tabansız {t.get('no_baseline')} · delist {t.get('delisted', 0)} · üst kaynakta yok {t.get('absent_upstream', 0)} "
+               f"· açık dönem {t.get('holes', 0)} · satır "
                f"{t.get('rows')} (doğrulanmamış {t.get('unverified_rows')}, REST {t.get('rest_rows')}, tohum {t.get('seed_rows')})")
     dls = d.get("delisted") or {}
     if dls:
         out.append("Delist (terminal; veri delist anına kadar, bayat sayılmaz): " + ", ".join(
             f"{k} ({(v or {}).get('source')})" for k, v in list(dls.items())[:8]) + (" …" if len(dls) > 8 else ""))
+    au = [k for k, v in (d.get("series") or {}).items() if v.get("status") == S_ABSENT_UPSTREAM]
+    if au:
+        out.append("Üst kaynakta yok (arşiv yayımlamıyor; planlı/bayat sayılmaz, her gece yoklanır): " + ", ".join(au[:8])
+                   + (" …" if len(au) > 8 else ""))
     rest = lr.get("rest") or {}
     out.append(f"REST: koruma {rest.get('guard')} · istek {rest.get('requests')} · durdu {rest.get('halted')} · "
                f"fark {((lr.get('diffs') or {}).get('count'))}")

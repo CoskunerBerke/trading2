@@ -237,6 +237,141 @@ def test_recorded_funding_replays_the_ledgers_own_settlements(built):
     assert rf("X", utc(2026, 9, 27, 0)) is None, "watermark'tan sonrası bilinmez (dönem bekler)"
 
 
+# ============================================================================ fidelity_v3: kural/zaman çıkışı (2026-10-12)
+#: Box gün sonu düzleşmesinin CANLI zamanlaması: gün değiştikten sonraki ilk 5m değerlendirmesi (00:00 barı kapanınca,
+#: + 3 sn yayım payı + yoklama) — karar 00:05:07'de, o anın perp MARK'ından `close_manual`.
+EOD_DAY = utc(2026, 9, 29)
+EOD_OPEN = EOD_DAY - timedelta(hours=1, minutes=25) + timedelta(seconds=4)       # 22:35:04 (5m kapanışı + 4 sn)
+EOD_CLOSE = EOD_DAY + timedelta(minutes=5, seconds=7)                              # 00:05:07
+RISE = [(0, .05, -.01, .04), (.04, .10, .03, .08), (.08, .14, .07, .12), (.12, .18, .11, .16), (.16, .22, .15, .20)]
+FALL = [(.10, .12, -.10, -.05), (-.05, -.03, -.20, -.15), (-.15, -.12, -.30, -.25), (-.25, -.22, -.40, -.35)]
+#: (a) çıkıştan SONRAKİ barda (00:05, çıkışı içeren bar) stopun ötesinde bir fitil, sonra düşüş: v2 bunu stop sayıyordu
+POST_EXIT_WICK = RISE + [(.20, .24, -.70, .10)] + FALL
+#: (b) fitilsiz, çıkıştan sonra düşüş: v2 çıkış barının kapanışından (5m yolda 00:10'daki son işlem fiyatı) kapatıyordu
+POST_EXIT_FALL = RISE + [(.20, .24, .05, .10)] + FALL
+#: (c) karardan ÖNCE (00:02) 60 sn örneklerin kaçırdığı son işlem fitili: gerçek bir fark (yeniden oynatma stopta çıkar)
+PRE_EXIT_WICK = [(0, .05, -.01, .04), (.04, .10, .03, .08), (.08, .12, -.65, .10), (.10, .16, .09, .14), (.14, .20, .13, .18),
+                 (.18, .22, .15, .20)] + FALL
+
+
+def _eod_trade(tmp_path, design, *, opened=EOD_OPEN, closed=EOD_CLOSE, with_1m: bool = True):
+    """Canlı Box akışının kaydı: 60 sn örnekli izleme (`walk_sampled`), karar anında mark'tan `BOX_EOD_FLAT`; yol
+    `pathrec.reconstruct` ile (1m yoksa 5m)."""
+    from research_engine_p2_fixtures import walk_sampled
+    from test_research_engine_p2_fixes import _designed_m1
+    m1 = _designed_m1({ms(EOD_DAY): design}, start=ms(utc(2026, 9, 27)), end=ms(utc(2026, 9, 30)))
+    led = new_ledger()
+    e = price_at(m1, ms(opened))
+    stop, tgt = round(e - 0.6, 2), [round(e + 3.0, 2)]
+    assert led.open("SOL/USDT", "LONG", D(str(e)), SizeSpec(D("300"), AmountType.NOTIONAL, 3), stop=stop, targets=tgt,
+                    now=opened) is not None
+    assert walk_sampled(led, "SOL/USDT", m1, opened_ms=ms(opened), until_ms=ms(closed) // M1 * M1 - M1) is None
+    row = m1[m1["timestamp"] == ms(closed) // M1 * M1].iloc[0]
+    mark = round(float(row["open"]) + 0.01, 2)                 # karar anının mark'ı: bir bar kapanışı DEĞİL
+    rec = led.close_manual("SOL/USDT", D(str(mark)), reason="BOX_EOD_FLAT", now=closed).to_dict()
+    paths = EnginePaths.for_state(tmp_path / "data" / "state")
+    sf = StoreFixture(paths, now=utc(2026, 10, 6))
+    if with_1m:
+        sf.add("futures", "SOLUSDT", "1m", m1)
+    sf.add("futures", "SOLUSDT", "5m", aggregate(m1, M5))
+    sf.seal()
+    path = PR.reconstruct(rec, trade_key="strategy_paper_box|x|y", src=sf.source(), market="futures",
+                          risk_usdt=D(rec["features"]["risk_usdt"]))
+    return rec, path, tgt, FD.exec_params(led.to_dict()), mark
+
+
+def _fd(rec, path, tgt, xp):
+    from tradingbot.research_engine import rehydrate as RH
+    return FD.replay(rec, kind="futures", bars=path.bars, tf=path.tf, path_gaps=path.gaps, targets=tgt, targets_known=True,
+                     exec_par=xp, tick=RH.tick_of(rec), rule_tf_ms=M5)
+
+
+def _without_exit_ref(rec):
+    """Kapanış dolumunun gözlem referansı olmayan (eski) kayıt: v2 penceresiyle oynatılır (karşılaştırma için)."""
+    old = json.loads(json.dumps(rec))
+    for f in old["fills"]:
+        if f.get("kind") == "BOX_EOD_FLAT":
+            f["ref_price"] = None
+    return old
+
+
+def test_rule_exit_replays_to_the_decision_and_closes_at_the_recorded_mark(tmp_path):
+    """VPS 2026-10-12 (P2 ilk tam gece): Box `BOX_EOD_FLAT` 151 `UNEXPLAINED`. Kök neden: v2 çıkışı İÇEREN barı da oynatıp
+    ufukta o barın kapanışından (1m: ~1 dk, 5m: ~5 dk SONRA; son işlem fiyatı, mark değil) kapatıyordu ve o barda çıkıştan
+    sonra gelen stopu çıkış sayıyordu (`EXIT_REASON_DIFFERS`). v3: yalnız karardan önce kapanmış barlar + kaydın gözlem
+    referansı (kayma modeliyle) → fark ≈ 0."""
+    for with_1m, name, design in ((w, n, d) for w in (True, False) for n, d in (("wick", POST_EXIT_WICK), ("fall", POST_EXIT_FALL))):
+        rec, path, tgt, xp, mark = _eod_trade(tmp_path / f"{name}{int(with_1m)}", design, with_1m=with_1m)
+        step = M1 if with_1m else M5
+        assert path.tf == ("1m" if with_1m else "5m") and path.complete
+        assert int(path.bars[path.bars["phase"] == 0]["timestamp"].max()) == ms(EOD_DAY) + 5 * M1, \
+            "pathrec penceresi çıkışı içeren barı (00:05) taşır"
+        f = _fd(rec, path, tgt, xp)
+        assert f["version"] == FD.FIDELITY_VERSION == "fidelity_v3"
+        assert f["status"] == "OK" and abs(D(f["delta_r"])) < D("0.005"), (name, f)
+        assert (f["fill_model"], f["replay_exit_reason"], f["replay_exit_basis"]) == ("RECORDED_EXIT", "BOX_EOD_FLAT",
+                                                                                       "RECORDED_EXIT")
+        assert f["recorded_exit"] == format(D(str(mark)), "f") and f["window"] == "TO_EXIT_DECISION"
+        # karar penceresi: son bar 00:04 (1m) / 00:00 (5m) — çıkıştan sonra kapanan bar okunmaz
+        assert f["bars"] == (ms(EOD_DAY) + 5 * M1 - (ms(EOD_OPEN) // step + 1) * step) // step
+        # aynı işlem v2 tabanıyla (çıkış barı dahil, bar kapanışından): tolerans dışı
+        v2 = _fd(_without_exit_ref(rec), path, tgt, xp)
+        assert v2["window"] == "THROUGH_EXIT_BAR" and v2["status"] == "FAILED" and abs(D(v2["delta_r"])) > D("0.05"), v2
+        if name == "wick":
+            assert v2["replay_exit_reason"] == "stop" and v2["primary_reason"] == "EXIT_REASON_DIFFERS"
+        else:
+            assert v2["replay_exit_reason"] == "horizon" and v2["primary_reason"] == "UNEXPLAINED"
+
+
+def test_rule_exit_still_fails_when_the_path_stops_before_the_decision(tmp_path):
+    """Karardan ÖNCE yolun stopu (60 sn örneklerin kaçırdığı son işlem fitili) gerçek bir farktır: yeniden oynatma o barda
+    seviyeden çıkar, neden `EXIT_REASON_DIFFERS`; tolerans (0,05R) değişmedi."""
+    rec, path, tgt, xp, _mark = _eod_trade(tmp_path, PRE_EXIT_WICK)
+    assert rec["exit_reason"] == "BOX_EOD_FLAT", "canlı örnekler fitili görmedi"
+    f = _fd(rec, path, tgt, xp)
+    assert f["status"] == "FAILED" and abs(D(f["delta_r"])) > D("0.05") and f["window"] == "TO_EXIT_DECISION"
+    assert (f["replay_exit_reason"], f["fill_model"], f["primary_reason"]) == ("stop", "LEVEL", "EXIT_REASON_DIFFERS")
+    assert FD.TOLERANCE_R == D("0.05")
+
+
+def test_rule_exit_without_a_bar_closed_before_the_decision_is_not_eligible(tmp_path):
+    """Gece yarısından sonra dolan 23:55 sinyali (00:01:04) 00:05:07'de düzleşir: 5m yolda karardan önce kapanmış işlem barı
+    yoktur (00:05 barı tamamen çıkıştan sonradır) → `NO_PRE_EXIT_BAR` (uygun değil, oranın paydasına girmez); 1m yolda
+    00:02–00:04 barları vardır → oynatılır."""
+    opened = EOD_DAY + timedelta(minutes=1, seconds=4)
+    rec, path, tgt, xp, _m = _eod_trade(tmp_path / "5m", POST_EXIT_FALL, opened=opened, with_1m=False)
+    f = _fd(rec, path, tgt, xp)
+    assert (f["status"], f["primary_reason"]) == ("NOT_ELIGIBLE", "NO_PRE_EXIT_BAR") and "NO_PRE_EXIT_BAR" in FD.NOT_ELIGIBLE
+    assert FD.summarize([{"book": "b", "trade_key": "k", "fidelity": f}])["not_eligible"] == {"NO_PRE_EXIT_BAR": 1}
+    rec, path, tgt, xp, _m = _eod_trade(tmp_path / "1m", POST_EXIT_FALL, opened=opened)
+    f = _fd(rec, path, tgt, xp)
+    assert f["status"] == "OK" and f["bars"] == 3 and f["fill_model"] == "RECORDED_EXIT"
+
+
+def test_level_exits_keep_the_exit_bar_and_the_recorded_exit_reads_the_closing_fill():
+    assert all(FD.is_level_exit(r) for r in ("stop", "başa-baş stop", "hedef1", "hedef2", "hedef3", "likidasyon"))
+    assert not any(FD.is_level_exit(r) for r in ("BOX_EOD_FLAT", "DONCHIAN_EXIT_LOW10", "ENTRY_STRUCTURE_FAILED", "horizon",
+                                                 "BOX_OUTSIDE_BREAKOUT_EXIT", "manuel"))
+    base = {"closed_at": iso(EOD_CLOSE),
+            "fills": [{"kind": "entry", "ref_price": "100", "price": "100.03"},
+                      {"kind": "hedef1", "ref_price": "101", "price": "101"},
+                      {"kind": "BOX_EOD_FLAT", "ref_price": "100.21", "price": "100.18"}]}
+    ref, at = FD.recorded_exit({**base, "exit_reason": "BOX_EOD_FLAT"})
+    assert ref == D("100.21") and at == EOD_CLOSE, "TP1 sonrası kural çıkışı: kapanış dolumunun referansı"
+    assert FD.recorded_exit({**base, "exit_reason": "stop"}) == (None, None)
+    assert FD.recorded_exit({**base, "exit_reason": "DONCHIAN_EXIT_LOW10"}) == (None, None), "o nedenli dolum yok"
+
+
+def test_journal_rows_rebuild_when_the_fidelity_version_changes(monkeypatch):
+    """Fidelity semantiği değişince (`FIDELITY_VERSION`) günlük satırının girdi özeti değişir: VPS'teki satırlar yeniden
+    kurulur (S1b), atıf satırları da (satır sha'sı) onu izler."""
+    loc = J.ArchiveLoc(book="b", key="k", rev=0, status="closed", sha="a" * 64, seg="s", line=0, proj={}, position_group="g")
+    a = J._input_digest(loc, {}, "s", "c", "e", "q")
+    assert J._input_digest(loc, {}, "s", "c", "e", "q") == a
+    monkeypatch.setattr(FD, "FIDELITY_VERSION", "fidelity_test")
+    assert J._input_digest(loc, {}, "s", "c", "e", "q") != a
+
+
 # ============================================================================ tembel 1m
 def test_lazy_plan_filters_and_caps_newest_first():
     now = ms(utc(2026, 10, 6, 0, 41))

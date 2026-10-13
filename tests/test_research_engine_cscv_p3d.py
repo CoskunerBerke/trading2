@@ -97,3 +97,27 @@ def test_group_matrix_uses_the_common_oos_days():
 def test_pbo_is_deterministic():
     m = _noise(7, 640, 8)
     assert CS.pbo(m) == CS.pbo(m.copy())
+
+
+def test_block_edge_purge_drops_the_first_h_days_of_every_block_and_keeps_the_known_answers():
+    """İnceleme düzeltmesi 4 (U3 okumasına eklendi): her bloğun ilk h takvim günü atılır; bilinen cevaplar korunur
+    (gürültü ≈ 0,5; dikilmiş avantaj < 0,1); bir blokta < 5 gün kalırsa hesaplanamaz."""
+    m = _noise(21, 16 * 40, 6)
+    r = CS.pbo(m, purge_days=7)
+    assert r["state"] == CS.OK and r["purged_days"] == 16 * 7 and r["T_used"] == 16 * 33
+    manual = np.concatenate([m[b * 40 + 7:(b + 1) * 40] for b in range(16)])
+    assert r["pbo"] == CS.pbo(manual)["pbo"]
+    days = list(range(1000, 1000 + 16 * 40))
+    assert CS.pbo(m, purge_days=7, days=days)["pbo"] == r["pbo"]
+    gap_days = days[:20] + [x + 100 for x in days[20:]]                                    # takvim günüyle ölçülür
+    assert CS.pbo(m, purge_days=7, days=gap_days)["purged_days"] < 16 * 7 + 1
+    vals = [CS.pbo(_noise(7000 + s, 16 * 60, 10), purge_days=10)["pbo"] for s in range(100)]
+    assert abs(float(np.mean(vals)) - 0.5) <= 0.1
+    for seed in range(4):
+        mm = _noise(seed, 16 * 60, 10)
+        mm[:, seed] += 0.25
+        assert CS.pbo(mm, purge_days=10)["pbo"] < 0.1
+    short = CS.pbo(_noise(1, 16 * 20, 4), purge_days=16)
+    assert short["state"] == CS.NOT_COMPUTABLE and short["reason"] == "FEW_DAYS_AFTER_PURGE"
+    assert CS.pbo(_noise(1, 16 * 20, 4), purge_days=15)["state"] == CS.OK
+    assert RG.STATS_V1["pbo"]["metric"]["edge_purge"] == "DROP_FIRST_H_CALENDAR_DAYS_OF_EACH_OF_THE_16_BLOCKS"

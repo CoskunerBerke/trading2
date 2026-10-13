@@ -19,10 +19,20 @@
   yok → kapı geçmez).
 * **Mühürlü P3d okuması U4** (`STATS_V1.placebo.no_eligible_bar`): uygun bar kümesi boşsa (hep piyasada olan ters dönen
   kurallar, TS_*_LS, MAX_*_LS) plasebo yoktur → kapı geçmez; başka plasebo uydurulmaz.
+* **Mühürlü P3d okuması R5** (`STATS_V1.placebo.construction`, düzeltme mührü 8): `MAX_TRIES` = 20, ATR14, stop çapası sinyal
+  kapanışı, plasebo `max_hold_bars` = gerçek `bars_held` − 1; **maruziyet eşleşmesi:** plasebo yalnız zamanla, gerçek
+  işlemin tutuşunda çıkar — ATR katı stop R birimidir (risk), koruyucu stop %45 uzaktadır (`PROTECT_FRAC`; likidasyon
+  tamponu tutar) ve R ATR katı stopa göre kesin yeniden ölçülür (`dataclasses.replace(işlem, initial_stop=…)` +
+  `kernel.cost_trade`). Neden: gerçek tutuşu zaman stopu yapıp stopu da açık bırakmak plaseboyu gerçek işlemden KISA
+  tutar → sürüklenmeli piyasada long kural plaseboyu salt sürüklenmeyle yener (oynaklık kümelenmeli boş dünya testi).
+  Koşul HEM net (ADVERSE) HEM brüt R'da (`GROSS`: ücret, kayma, spread sıfır; fonlama gerçek — `gross_r`) tutmalı (brüt
+  CI aynı tohum ve akışla); kapsama: yalnız en az bir kapı-içi plasebosu olan gerçek işlemler karşılaştırılır (`coverage`)
+  ve bunlar gerçek işlemlerin ≥ %80'i olmalı.
 """
 from __future__ import annotations
 
 import bisect
+import dataclasses
 import math
 import random
 from typing import Any, Callable, Iterable, Mapping, Sequence
@@ -37,8 +47,17 @@ from ..strategy_lib.indicators import atr
 
 DAY_MS = 86_400_000
 K_PER_TRADE = ST.PLACEBO_K
-MAX_TRIES = 20
-ATR_N = 14
+_CO = RG.STATS_V1["placebo"]["construction"]
+MAX_TRIES = int(_CO["max_tries"])                                 # 20 (R5)
+ATR_N = int(_CO["atr_n"])                                         # 14 (R5)
+MIN_COVERAGE = float(_CO["min_coverage_share"])                   # 0,8 (R5)
+PROTECT_FRAC = float(_CO["guard_stop_frac"])                      # 0,45 (R5: maruziyet eşleşmesi)
+GROSS = "GROSS"
+GROSS_SCENARIO = KN.CostScenario(GROSS, 0.0, 0.0, 0.0)
+if (_CO["stop_anchor"], _CO["hold_bars"], _CO["gross_r"], _CO["requirement"], _CO["coverage_rule"], _CO["exit"]) != (
+        "SIGNAL_CLOSE", "REAL_BARS_HELD_MINUS_1", "ZERO_FEE_SLIPPAGE_SPREAD_REAL_FUNDING", "CI_LOWER_GT_MIN_ON_NET_AND_GROSS",
+        "REAL_TRADES_WITH_AT_LEAST_ONE_GATE_PLACEBO", "TIME_AT_REAL_HOLD_ATR_STOP_IS_R_UNIT"):
+    raise RuntimeError("STATS_V1.placebo.construction okuması placebo.py uygulamasıyla uyuşmuyor")
 _CI = RG.STATS_V1["placebo"]["ci"]
 CI_RESAMPLES = int(_CI["resamples"])                              # 10.000 (U2)
 MIN_CI_DAYS = int(_CI["min_days_per_side"])                       # 5 (U2)
@@ -100,9 +119,27 @@ def draw_placebos(row_id: str, trade_key: str, eligible: Sequence[int], simulate
     return out
 
 
+def usable(placebos: Iterable[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+    """Kapıya giren plasebolar: eksik ve kapı dışı olanlar çıkar."""
+    return [p for p in placebos if not p.get("missing") and not p.get("excluded")]
+
+
 def gate_pairs(placebos: Iterable[Mapping[str, Any]], cost: str = ST.GATE_COST) -> list[tuple[int, float]]:
-    """Kapıya giren plasebolar: eksik ve kapı dışı olanlar çıkar → [(gün, R)]."""
-    return [(int(p["day"]), float(p["r"][cost])) for p in placebos if not p.get("missing") and not p.get("excluded")]
+    """Kapıya giren plasebolar → [(gün, R)] (`cost` = ADVERSE ya da GROSS)."""
+    return [(int(p["day"]), float(p["r"][cost])) for p in usable(placebos)]
+
+
+def coverage(real: Sequence[Mapping[str, Any]], placebos: Iterable[Mapping[str, Any]]
+             ) -> tuple[list[Mapping[str, Any]], float]:
+    """R5 kapsaması: en az bir kapı-içi plasebosu olan gerçek işlemler ve bunların payı (gerçek işlem yoksa 0)."""
+    keys = {str(p["trade_key"]) for p in usable(placebos)}
+    cov = [t for t in real if str(t["trade_key"]) in keys]
+    return cov, (len(cov) / len(real)) if real else 0.0
+
+
+def gross_r(trade: KN.KernelTrade) -> float:
+    """Brüt R: aynı yol, ücret/kayma/spread sıfır (fonlama gerçek) — `kernel.cost_trade` ile."""
+    return float(KN.cost_trade(trade, GROSS_SCENARIO, 0.0)[0])
 
 
 # ============================================================================ çekirdek yolu
@@ -188,22 +225,30 @@ class KernelPlacebo:
             if k_atr is None or not k_atr > 0:
                 return None
             i = self._i(int(t) - self.step)
-            if i is None:
+            if i is None or i + 1 + hold >= len(self.ts):          # tutuş veri sonuna sığmalı (maruziyet eşleşmesi)
                 return None
             a = self.atr[i]
             if not (isinstance(a, float) and math.isfinite(a) and a > 0):
                 return None
             c = self.close[i]
-            stop = c - k_atr * a if long else c + k_atr * a
+            stop = c - k_atr * a if long else c + k_atr * a          # R birimi (ATR katı, sinyal kapanışı çapası)
             if not stop > 0:
                 return None
-            intent = Intent(signal_ts=self.ts[i], side=side, entry_ref=EntryRef(price=c), stop=stop, max_hold_bars=hold)
+            # maruziyet eşleşmesi: plasebo YALNIZ zamanla, gerçek işlemin tutuşunda çıkar; koruyucu stop %45 uzakta
+            # (likidasyon tamponu tutar), R mühürlü ATR katı stopa göre kesin yeniden ölçülür (aynı bacaklar, aynı miktar)
+            far = max(PROTECT_FRAC, abs(c - stop) / c)
+            guard = c * (1.0 - far) if long else c * (1.0 + far)
+            intent = Intent(signal_ts=self.ts[i], side=side, entry_ref=EntryRef(price=c), stop=guard, max_hold_bars=hold)
             tr, _why = KN.replay_intent(self.var, self.data, intent, decision_ms=int(t))
-            if tr is None:
+            if tr is None or (long and not tr.entry_ref > stop) or (not long and not tr.entry_ref < stop):
                 return None
-            return {"day": int(tr.entry_ts) // DAY_MS, "entry_ts": int(tr.entry_ts), "r": dict(tr.r),
+            unit = dataclasses.replace(tr, initial_stop=stop)
+            r = {sc: float(KN.cost_trade(unit, KN.scenario(sc), self.data.price_tick)[0]) for sc in KN.SCENARIOS}
+            r[GROSS] = gross_r(unit)
+            return {"day": int(tr.entry_ts) // DAY_MS, "entry_ts": int(tr.entry_ts), "r": r,
                     "flags": list(tr.flags), "excluded": KN.gate_excluded(tr), "bars_held": int(tr.bars_held),
-                    "side": tr.side, "stop_mult": k_atr, "max_hold_bars": hold, "exit_kind": tr.exit_kind}
+                    "side": tr.side, "stop_mult": k_atr, "unit_stop": stop, "guard_stop": guard, "max_hold_bars": hold,
+                    "exit_kind": tr.exit_kind}
         return sim
 
     def for_row(self, row_id: str, real: Sequence[Mapping[str, Any]], all_trades: Sequence[Mapping[str, Any]],
@@ -253,6 +298,6 @@ def diff_ci(real: Sequence[tuple[int, float]], placebo: Sequence[tuple[int, floa
     return [float(lo), float(hi)]
 
 
-__all__ = ["CI_RESAMPLES", "CI_SEED_PLACEBO", "CI_SEED_REAL", "K_PER_TRADE", "KernelPlacebo", "MAX_TRIES", "MIN_CI_DAYS",
-           "NO_ELIGIBLE_RULE", "SignalRecorder", "diff_ci", "draw_placebos",
+__all__ = ["ATR_N", "CI_RESAMPLES", "CI_SEED_PLACEBO", "CI_SEED_REAL", "GROSS", "GROSS_SCENARIO", "K_PER_TRADE",
+           "KernelPlacebo", "MAX_TRIES", "MIN_COVERAGE", "PROTECT_FRAC", "MIN_CI_DAYS", "NO_ELIGIBLE_RULE", "coverage", "gross_r", "usable", "SignalRecorder", "diff_ci", "draw_placebos",
            "eligible_times", "gate_pairs", "placebo_seed"]

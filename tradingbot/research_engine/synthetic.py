@@ -312,11 +312,11 @@ def _cost_frac() -> dict[str, float]:
     return _COST_FRAC
 
 
-def light_trade(rows: list[dict[str, Any]], atr: list[float], i: int, long: bool, hold: int, k_atr: float
-                ) -> dict[str, Any] | None:
+def light_trade(rows: list[dict[str, Any]], atr: list[float], i: int, long: bool, hold: int, k_atr: float, *,
+                stop_active: bool = True) -> dict[str, Any] | None:
     """Hafif günlük yol: karar i. barın kapanışında, dolum i+1 açılışında; stop = kapanış ∓ k × ATR14 (boşlukta açılıştan),
     yoksa i+hold kapanışında çık. R = yön × (çıkış − giriş) / |giriş − stop| − maliyet payı (senaryo başına; 1 USDT risk →
-    pnl = R)."""
+    pnl = R). `stop_active=False` (plasebo, R5 maruziyet eşleşmesi): stop yalnız R birimidir, çıkış tam `hold` sonunda."""
     if i + hold >= len(rows) or not (atr[i] > 0):
         return None
     c = float(rows[i]["close"])
@@ -326,7 +326,7 @@ def light_trade(rows: list[dict[str, Any]], atr: list[float], i: int, long: bool
         return None
     dist = abs(e - stop)
     x, j = float(rows[i + hold]["close"]), i + hold
-    for j in range(i + 1, i + hold + 1):
+    for j in range(i + 1, i + hold + 1 if stop_active else i + 1):
         o, h, lo = float(rows[j]["open"]), float(rows[j]["high"]), float(rows[j]["low"])
         if long and lo <= stop:
             x = min(o, stop)
@@ -336,36 +336,86 @@ def light_trade(rows: list[dict[str, Any]], atr: list[float], i: int, long: bool
             break
     gross = (x - e) / dist * (1.0 if long else -1.0)
     r = {k: gross - f * e / dist for k, f in _cost_frac().items()}
+    r["GROSS"] = gross                                                      # brüt R (R5; ücret/kayma/spread yok)
     t0 = int(rows[i]["timestamp"])
     return {"ts_ms": t0 + D1, "as_of_ms": t0 + D1, "exit_ms": int(rows[j]["timestamp"]) + D1, "day": (t0 + D1) // D1,
             "signal_ts": t0, "side": "LONG" if long else "SHORT", "initial_stop": stop, "entry_ref": e,
             "bars_held": j - i, "r": r, "pnl": dict(r), "flags": [], "excluded": False}
 
 
+def vol_walk(n: int, *, seed: int, start: int = T0, p0: float = 100.0, sig_lo: float = 0.005, sig_hi: float = 0.03,
+             mean_regime: int = 40, drift_sharpe: float = 0.0) -> list[dict[str, Any]]:
+    """Oynaklık kümelenmeli günlük yürüyüş (P3d inceleme düzeltmesi 5a): rejimler (ortalama `mean_regime` gün, geometrik)
+    düşük/yüksek oynaklık arasında geçer; sürüklenme o günün oynaklığıyla orantılı (μ_t = `drift_sharpe` × σ_t: yalnız risk
+    primi). Her bar rejimin σ'sını taşır (`sigma`); `gate_world` bu dünyada stopu gecikmesiz oynaklıkla ölçer (ATR =
+    1,25 × σ_t × kapanış) → her girişin beklenen BRÜT R'ı aynıdır (zamanlama avantajı yok); yüksek oynaklıkta yalnız R
+    cinsinden maliyet düşüktür."""
+    rnd = random.Random(seed)
+    out: list[dict[str, Any]] = []
+    c, hi = p0, False
+    for i in range(n):
+        if rnd.random() < 1.0 / mean_regime:
+            hi = not hi
+        sg = sig_hi if hi else sig_lo
+        o = c
+        cl = o * math.exp(drift_sharpe * sg + rnd.gauss(0.0, sg))
+        h = max(o, cl) * (1.0 + abs(rnd.gauss(0.0, sg * 0.6)))
+        lo = min(o, cl) * (1.0 - abs(rnd.gauss(0.0, sg * 0.6)))
+        out.append({"timestamp": start + i * D1, "open": o, "high": h, "low": lo, "close": cl, "volume": 1000.0,
+                    "sigma": sg})
+        c = cl
+    return out
+
+
+def _realized_vol(rows: list[dict[str, Any]], i: int, n: int = 10) -> float:
+    if i < n:
+        return math.nan
+    xs = [math.log(float(rows[j]["close"]) / float(rows[j - 1]["close"])) for j in range(i - n + 1, i + 1)]
+    m = sum(xs) / n
+    return math.sqrt(sum((x - m) ** 2 for x in xs) / (n - 1))
+
+
+def _hold_cap(unit: str) -> int:
+    """Satırın mühürlü sınır boşluğuna sığan en uzun hafif tutuş (gün): ⌊(1 + max_hold) × bar / gün⌋ (sızıntısız)."""
+    from . import wf as WF
+    tf = str(WF._resolve(unit)["signal_tf"])
+    return max(1, (1 + WF.max_hold_bars(unit)) * WF.TF_MS[tf] // D1)
+
+
 def gate_world(seed: int, *, days: int = 2200, symbols: tuple[str, ...] = GATE_SYMBOLS, planted: str | None = None,
                edge: float = 0.85, k_atr: float = 2.0, seal_days: int = 120, flag_rate: float = 0.0,
-               rows: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+               rows: list[dict[str, Any]] | None = None, vol_clustered: bool = False, vol_timed: str | None = None,
+               drift_sharpe: float = 0.0) -> dict[str, Any]:
     """İşlem düzeyi Kapı A dünyası (P3d kabulü: "200 boş dünya" ve "dikilmiş avantaj"): her sembolde rastgele yürüyüş
-    günlük barları (`walk`, eğim 0); her satır (gerçek `POOLED_P23` satır kimliği) her sembolde düzlükte günlük olasılık q
-    ile sinyal verir (tutuş 2–5 gün, stop 2 × ATR14), yön boş dünyada yazı-tura. `planted` satırında yön, tutuşun sonundaki
-    getirinin işaretine `edge` olasılıkla uyar (geleceği gören kâhin = dikilmiş avantaj). `flag_rate` payında işlem
+    günlük barları (`walk`, eğim 0; `vol_clustered` → `vol_walk`); her satır (gerçek `POOLED_P23` satır kimliği) her
+    sembolde düzlükte günlük olasılık q ile sinyal verir (tutuş 2–5 gün ama satırın mühürlü sınır boşluğuna sığacak kadar,
+    stop 2 × ATR14), yön boş dünyada yazı-tura. `planted` satırında yön, tutuşun sonundaki getirinin işaretine `edge`
+    olasılıkla uyar (geleceği gören kâhin = dikilmiş avantaj). `vol_timed` satırı yalnız gerçekleşen oynaklık yüksekken
+    (10 günlük std > (σ_düşük + σ_yüksek) / 2) ve yalnız long girer — zamanlama avantajı yoktur, yalnız sürüklenme ve
+    yüksek oynaklıkta R cinsinden düşük maliyet (inceleme düzeltmesi 5a'nın tuzağı). `flag_rate` payında işlem
     `FUNDING_GAP` işaretlenir (kapı dışı). İleri okuma = mühür anından (`seal_ms` = son − `seal_days`) sonraki işlemler."""
     rows = rows if rows is not None else gate_rows()
     bars: dict[str, list[dict[str, Any]]] = {}
     atrs: dict[str, list[float]] = {}
     for k, sym in enumerate(symbols):
-        b = walk(days, seed=seed * 101 + k, step=D1, p0=100.0 + 10 * k, vol=0.02, trend=0.0, regime_len=days + 1,
-                 gap_p=0.0)
-        bars[sym], atrs[sym] = b, _atr14(b)
+        if vol_clustered:
+            b = vol_walk(days, seed=seed * 101 + k, p0=100.0 + 10 * k, drift_sharpe=drift_sharpe)
+            bars[sym], atrs[sym] = b, [1.25 * float(x["sigma"]) * float(x["close"]) for x in b]
+        else:
+            b = walk(days, seed=seed * 101 + k, step=D1, p0=100.0 + 10 * k, vol=0.02, trend=0.0, regime_len=days + 1,
+                     gap_p=0.0)
+            bars[sym], atrs[sym] = b, _atr14(b)
+    vol_cut = (0.005 + 0.03) / 2.0
     trades: dict[str, list[dict[str, Any]]] = {}
     signals: dict[tuple[str, str], set[int]] = {}
     params: dict[str, dict[str, Any]] = {}
     for row in rows:
         rid, unit = row["row_id"], row["unit"]
         prng = random.Random(f"{seed}|{rid}|params")
-        hold = prng.randint(2, 5)
-        q = prng.uniform(0.08, 0.2) if rid != planted else 0.5
-        params[rid] = {"hold": hold, "q": q, "planted": rid == planted}
+        cap = _hold_cap(unit)
+        hold = prng.randint(min(2, cap), min(5, cap))
+        q = 1.0 if rid == vol_timed else (0.25 if rid == planted else prng.uniform(0.08, 0.2))
+        params[rid] = {"hold": hold, "q": q, "planted": rid == planted, "vol_timed": rid == vol_timed}
         out: list[dict[str, Any]] = []
         for sym in symbols:
             rng = random.Random(f"{seed}|{rid}|{sym}")
@@ -373,12 +423,17 @@ def gate_world(seed: int, *, days: int = 2200, symbols: tuple[str, ...] = GATE_S
             sig: set[int] = set()
             i = 20
             while i < len(b) - hold - 1:
+                if rid == vol_timed and not _realized_vol(b, i) > vol_cut:
+                    i += 1
+                    continue
                 if rng.random() >= q:
                     i += 1
                     continue
                 if rid == planted:
                     up = float(b[i + hold]["close"]) >= float(b[i + 1]["open"])
                     long = up if rng.random() < edge else not up
+                elif rid == vol_timed:
+                    long = True
                 else:
                     long = rng.random() < 0.5
                 t = light_trade(b, a, i, long, hold, k_atr)
@@ -397,7 +452,7 @@ def gate_world(seed: int, *, days: int = 2200, symbols: tuple[str, ...] = GATE_S
     end = T0 + days * D1
     return {"seed": seed, "bars": bars, "atr": atrs, "symbols": tuple(symbols), "rows": rows, "trades": trades,
             "signals": signals, "params": params, "first_ms": T0, "end_ms": end, "seal_ms": end - seal_days * D1,
-            "k_atr": k_atr, "planted": planted}
+            "k_atr": k_atr, "planted": planted, "vol_timed": vol_timed}
 
 
 def gate_world_placebos(world: dict[str, Any], row_id: str, real: list[dict[str, Any]], *,
@@ -421,7 +476,7 @@ def gate_world_placebos(world: dict[str, Any], row_id: str, real: list[dict[str,
             long, hold = tr["side"] == "LONG", int(tr["bars_held"])
 
             def sim(t: int, long: bool = long, hold: int = hold) -> dict[str, Any] | None:
-                x = light_trade(b, a, idx[t], long, hold, world["k_atr"])
+                x = light_trade(b, a, idx[t], long, hold, world["k_atr"], stop_active=False)
                 return None if x is None else {"day": x["day"], "r": x["r"], "excluded": False}
             out += PL.draw_placebos(row_id, str(tr["trade_key"]), cache[w], sim, k_per_trade=kpt)
     return out
@@ -436,6 +491,7 @@ def gate_world_fwd(world: dict[str, Any], row_id: str) -> dict[str, Any]:
 
 __all__ = ["BTC4_SEED", "WORLDS", "D1", "GATE_ROW_FAMILIES", "GATE_SYMBOLS", "H1", "H4", "M5", "SUB_SEED", "T0", "aggregate",
            "ar_funding_rows", "box_world", "gate_rows", "gate_world", "gate_world_fwd", "gate_world_placebos", "light_trade",
+           "vol_walk",
            "btc_4h_walk", "c4_world",
            "d4_world", "fm_world", "fund_world", "funding_rows", "h1_world", "series", "subdivide", "trend_world", "walk",
            "world_for"]

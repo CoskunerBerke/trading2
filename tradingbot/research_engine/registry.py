@@ -53,7 +53,7 @@ SEAL_DOC = "docs/ENGINE_BRAIN_V1.md §8.2"
 #: ayarlanmaz). Keşif katmanı ve Kapı A'nın ileri okuması YALNIZ açılışı bu andan sonra olan barları kullanır (§5.1).
 #: Mühür commit'leri yalnız fast-forward (ya da merge commit) ile birleşir; rebase/squash/cherry-pick işleyen zamanı
 #: değiştirir → test kırılır → yeniden mühür.
-T_SEAL_MS = 1791879300000
+T_SEAL_MS = 1791883800000
 
 
 # ============================================================================ kanonik biçim ve donma
@@ -926,10 +926,23 @@ def _stats() -> dict:
                                         "örneklem std, ddof = 1; std = 0 → 0; Bailey vd. varsayılanı ve DSR'nin ölçüsü). T "
                                         "16'ya bölünmüyorsa EN ESKİ T mod 16 gün atılır (eşit blok); grup ekseni üyelerin OOS "
                                         "günlerinin kesişimi; IS-en-iyide eşitlik ilk yapılandırma, OOS sırasında eşitlik "
-                                        "ortalama sıra (cscv.py)",
+                                        "ortalama sıra (cscv.py). Blok kenarı arındırması (2026-10-13 bağımsız inceleme, "
+                                        "düzeltme mührü 8; muhafazakâr): eşit bloklar kurulduktan sonra 16 bloğun HER BİRİNİN "
+                                        "ilk h takvim günü atılır, h = grubun yapılandırmalarının mühürlü max_hold'unun en "
+                                        "uzunu (gün, yukarı yuvarlanır); arındırmadan sonra bir blokta < 5 gün kalırsa "
+                                        "hesaplanamaz → kapı geçmez",
                                   metric="DAILY_SHARPE", sharpe="mean / std(ddof=1); std = 0 → 0",
                                   remainder_days="DROP_OLDEST", group_axis="INTERSECTION_OF_MEMBER_OOS_DAYS",
-                                  is_best_ties="FIRST_CONFIG", oos_rank_ties="AVERAGE_RANK"),
+                                  is_best_ties="FIRST_CONFIG", oos_rank_ties="AVERAGE_RANK",
+                                  edge_purge="DROP_FIRST_H_CALENDAR_DAYS_OF_EACH_OF_THE_16_BLOCKS",
+                                  edge_purge_h="ceil(max over the group's configs of sealed max_hold_bars × signal bar / 1 day)",
+                                  edge_purge_min_days_per_block="thresholds.pbo.min_oos_days_per_block after the purge"),
+            "group_completeness": p3d_reading(
+                "R3", "seçim grubunun üyeleri mühürden kurulur (standart/diğer: aynı anahtarlı bütün Kapı A satırları; COIN_FIT: "
+                      "ailenin bütün ızgara seçenekleri; COIN: kopyanın 23 coin satırı; kopya/örtü: {kopya + örtüleri}); "
+                      "verilen grupta eksik (ya da fazladan) üye varsa grup EKSİK sayılır → PBO yok → kapı geçmez (sayısı "
+                      "gösterilir; seçilmiş alt kümeyle PBO hesaplanmaz)",
+                rule="INCOMPLETE_GROUP_FAILS_CLOSED"),
             "single_config_group": p3d_reading(
                 "U5", "örtüsü olmayan kopyanın havuz satırı (K_FM@POOLED_OWN: {kopya + örtüleri} grubu tek yapılandırma) için "
                       "PBO hesaplanamaz → Kapı A'yı geçemez (kapalı hata; mühürlü grup tanımının sonucu, gevşetilmez)",
@@ -957,6 +970,24 @@ def _stats() -> dict:
                               rng="random.Random(seed_int); gün çekimi choices(range(D), k=D)",
                               sides="INDEPENDENT_DAY_CLUSTERED", min_days_per_side=5,
                               quantile_index="floor(alpha/2*(B-1)), ceil((1-alpha/2)*(B-1)) of sorted differences"),
+            "construction": p3d_reading(
+                "R5", "plasebo kurulumu (2026-10-13 bağımsız inceleme, düzeltme mührü 8): reddedilen çekirdek girişinde aynı "
+                      "üreteçten en çok 20 yeniden çekim; ATR = sinyal diliminin ATR14'ü (Wilder); stop çapası SİNYAL "
+                      "KAPANIŞI (gerçek işlemin katı = |sinyal kapanışı − ilk stop| / sinyal barının ATR14'ü; plasebo stopu = "
+                      "kendi sinyal kapanışı ∓ aynı kat × kendi ATR14'ü); plasebo max_hold_bars = gerçek bars_held − 1 "
+                      "(çekirdek çıkış barını sayar); maruziyet eşleşmesi: plasebo YALNIZ zamanla, gerçek işlemin tutuşunda "
+                      "çıkar — ATR katı stop R birimidir, koruyucu stop %45 uzakta (likidasyon tamponu tutar; ATR katı stop "
+                      "daha uzaksa o) ve R ATR katı stopa göre aynı bacak ve miktarla kesin yeniden ölçülür; tutuşu veri "
+                      "sonuna sığmayan çekim reddedilir (aynı üreteçten yeniden çekim) (açık stop + "
+                      "gerçek tutuş zaman stopu plaseboyu gerçekten KISA tutar → sürüklenmeli piyasada long kural plaseboyu "
+                      "salt sürüklenmeyle yenerdi); koşul HEM net (ADVERSE) HEM brüt R'da (ücret, kayma, spread sıfır; "
+                      "fonlama gerçek) tutmalı: iki CI'ın alt sınırı da > 0 (sıkılaştırma; brüt CI aynı tohum ve akışla); "
+                      "kapsama: yalnız en az bir kapı-içi plasebosu olan gerçek işlemler karşılaştırılır ve bunlar gerçek "
+                      "işlemlerin ≥ %80'i olmalı, değilse satır geçmez (sayısı gösterilir)",
+                max_tries=20, atr_n=14, stop_anchor="SIGNAL_CLOSE", hold_bars="REAL_BARS_HELD_MINUS_1",
+                exit="TIME_AT_REAL_HOLD_ATR_STOP_IS_R_UNIT", guard_stop_frac=0.45,
+                gross_r="ZERO_FEE_SLIPPAGE_SPREAD_REAL_FUNDING", requirement="CI_LOWER_GT_MIN_ON_NET_AND_GROSS",
+                coverage_rule="REAL_TRADES_WITH_AT_LEAST_ONE_GATE_PLACEBO", min_coverage_share=0.8),
             "no_eligible_bar": p3d_reading(
                 "U4", "kuralın sinyal vermediği ve gerçek işlemlerin ± tutuşu (|t − gerçek giriş| ≤ gerçek tutuş) dışındaki bar "
                       "kümesi boşsa (hep piyasada olan ters dönen kurallar: TS_*_LS, MAX_*_LS) plasebo YOKTUR → Kapı A'yı "
@@ -1130,6 +1161,14 @@ def _directions() -> dict:
             "placebo.ci.sides": FIXED, "placebo.ci.quantile_index": FIXED, "placebo.ci.min_days_per_side": MIN,
             "placebo.no_eligible_bar.rule": FIXED, "pbo.metric.metric": FIXED, "pbo.metric.remainder_days": FIXED,
             "pbo.metric.group_axis": FIXED, "pbo.single_config_group.rule": FIXED,
+            # düzeltme mührü 8 (2026-10-13 bağımsız inceleme): blok kenarı arındırması, grup bütünlüğü ve plasebo kurulumu
+            # (koordinatör: yön `fixed`)
+            "pbo.metric.edge_purge": FIXED, "pbo.metric.edge_purge_h": FIXED, "pbo.group_completeness.rule": FIXED,
+            "placebo.construction.max_tries": FIXED, "placebo.construction.atr_n": FIXED,
+            "placebo.construction.stop_anchor": FIXED, "placebo.construction.hold_bars": FIXED,
+            "placebo.construction.gross_r": FIXED, "placebo.construction.requirement": FIXED,
+            "placebo.construction.coverage_rule": FIXED, "placebo.construction.min_coverage_share": FIXED,
+            "placebo.construction.exit": FIXED, "placebo.construction.guard_stop_frac": FIXED,
         },
         "LESSON_REGISTRY": {
             f"{_T}eligibility.min_n": MIN, f"{_T}eligibility.min_distinct_days": MIN, f"{_T}looks.n_thresholds": FIXED,

@@ -156,7 +156,7 @@ def trade_row(t: KN.KernelTrade) -> dict[str, Any]:
     return {"ts_ms": entry, "as_of_ms": entry, "exit_ms": int(t.exit_ts if t.exit_ts is not None else entry),
             "day": entry // DAY_MS, "symbol": t.symbol, "option": t.variant_id, "side": t.side,
             "signal_ts": int(t.signal_ts), "initial_stop": float(t.initial_stop), "entry_ref": float(t.entry_ref),
-            "bars_held": int(t.bars_held), "r": {k: float(v) for k, v in t.r.items()},
+            "bars_held": int(t.bars_held), "r": {**{k: float(v) for k, v in t.r.items()}, PL.GROSS: PL.gross_r(t)},
             "pnl": {k: float(v) for k, v in t.pnl_usdt.items()}, "flags": list(t.flags),
             "excluded": KN.gate_excluded(t), "trade_key": trade_key(t)}
 

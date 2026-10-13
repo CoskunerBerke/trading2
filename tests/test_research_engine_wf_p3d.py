@@ -12,7 +12,8 @@ import dataclasses
 import json
 import random
 import time
-from datetime import date
+import hashlib
+from datetime import date, datetime, timezone
 
 import pytest
 
@@ -339,6 +340,8 @@ def test_end_to_end_kernel_to_gate_a_look(tmp_path):
     p = EnginePaths(data=tmp_path / "data", state=tmp_path / "state")
     led = TR.TrialsLedger(p)
     led.import_priors(at=AT)
+    mod = {v["variant_id"]: hashlib.sha256(v["variant_id"].encode()).hexdigest() for v in RG.LIB_V1["variants"]}
+    led.append([dict(e, at=AT) for e in TR.seal_entries(mod)])                         # N = 4.513 (kapı şartı)
     plan_b = WF.plan_for(opts, WF.data_start_ms(S.T0, "1d"), end)
     cf = WF.evaluate_coin_fit("B", "BTC", rows, plan_b, ledger=led, at=AT)
     assert cf.selections and all(s["selected"] in opts for s in cf.selections)
@@ -352,13 +355,18 @@ def test_end_to_end_kernel_to_gate_a_look(tmp_path):
                                [t for t in don if t["symbol"] == c], sig[c]["DON_20_10_1d_LS"])
     assert len(placebos) == 5 * len(fx.trades)
     rows_gate = {cf.row_id: cf.to_gate(), fx.row_id: fx.to_gate()}
-    res = ST.gate_a_look(led, date(2026, 12, 6), rows_gate, placebo={fx.row_id: PL.gate_pairs(placebos)},
-                         fwd={fx.row_id: {"days": 61, "n": 25, "mean_adverse": 0.1}}, at=AT)
+    res = ST.gate_a_look(led, date(2026, 12, 6), rows_gate, placebo={fx.row_id: placebos},
+                         fwd={fx.row_id: {"days": 61, "n": 25, "mean_adverse": 0.1}}, at=AT,
+                         clock=lambda: datetime(2026, 12, 6, 1, 37, tzinfo=timezone.utc))
     elapsed = time.perf_counter() - t0
-    assert res["status"] == "LOOK" and res["N"] == 2775
+    assert res["status"] == "LOOK" and res["N"] == 4513
     ev = res["evaluation"]["rows"]
     assert ev[fx.row_id]["verdict"] == ev[cf.row_id]["verdict"] == "FAIL_A"
-    assert ev[fx.row_id]["placebo_diff_ci"] is not None and ev[cf.row_id]["pbo_group"] == "GRID:B@COIN_FIT:BTC"
+    assert ev[fx.row_id]["placebo_diff_ci"] is not None and ev[fx.row_id]["placebo_diff_ci_gross"] is not None
+    assert ev[fx.row_id]["pbo_state"] == ST.GROUP_INCOMPLETE and "PBO_GROUP_INCOMPLETE" in ev[fx.row_id]["fails"]
+    assert ev[cf.row_id]["pbo_group"] == "GRID:B@COIN_FIT:BTC" and ev[cf.row_id]["pbo_state"] != ST.GROUP_INCOMPLETE
+    assert all("GROSS" in t["r"] for t in don) and all(t["r"]["GROSS"] >= t["r"]["base"] - 1e-9 or t["r"]["GROSS"] < 0
+                                                       for t in don)
     kinds = [r["kind"] for r in TR.iter_rows(p.trials_file)]
     assert kinds.count("SELECT") == len(cf.selections) and kinds.count("LOOK_A") == 818 and kinds.count("FWD_READ") == 1
     print(f"\n[P3d] uçtan uca sentetik Kapı A (3 coin × 11 varyant çekirdek {t_kernel:.1f} sn; toplam {elapsed:.1f} sn)")

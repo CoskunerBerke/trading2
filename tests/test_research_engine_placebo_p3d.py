@@ -101,10 +101,13 @@ def test_kernel_placebos_are_deterministic_and_match_side_hold_and_atr_stop(ts_w
         tr = by_key[p["trade_key"]]
         assert p["side"] == tr["side"]                                                   # aynı yön
         assert p["max_hold_bars"] == max(1, tr["bars_held"] - 1)                         # aynı tutuş (zaman stopu)
-        assert p["bars_held"] <= tr["bars_held"] or p["exit_kind"] != "TIME"
-        if p["exit_kind"] == "TIME":
-            assert p["bars_held"] == tr["bars_held"]
+        # R5 maruziyet eşleşmesi: plasebo yalnız zamanla, gerçek işlemin tutuşunda çıkar; ATR katı stop R birimidir
+        assert p["exit_kind"] == "TIME" and p["bars_held"] == tr["bars_held"]          # tutuş veri sonuna sığar
         assert p["stop_mult"] == pytest.approx(kp.stop_mult(tr))                         # aynı ATR katı
+        long = p["side"] == "LONG"
+        assert (p["guard_stop"] < p["unit_stop"]) if long else (p["guard_stop"] > p["unit_stop"])
+        assert set(p["r"]) == {"base", "ADVERSE", "STRESS", PL.GROSS}
+        assert p["r"]["GROSS"] >= p["r"]["base"] >= p["r"]["ADVERSE"] >= p["r"]["STRESS"]
         t = p["decision_ms"]
         assert win[0] <= t < win[1] and t not in sig[vid]                                # aynı katman, sinyalsiz bar
         assert all(abs(t - e) > h for e, h in spans)                                     # gerçek işlemlerin ± tutuşu hariç
@@ -144,3 +147,25 @@ def test_always_in_market_rule_has_no_eligible_placebo_bar_and_fails_closed(ts_w
     real = [dict(r, test_window=[start, end]) for r in rows[:3]]
     out = kp.for_row(f"{vid}@POOLED_P23", real, rows, sig[vid])
     assert all(p["missing"] for p in out) and PL.gate_pairs(out) == []
+
+
+def test_gross_r_coverage_and_r_unit_rescaling(ts_world):
+    """R5: brüt R = aynı yol, ücret/kayma/spread sıfır (fonlama gerçek); kapsama = en az bir kapı-içi plasebosu olan
+    gerçek işlemlerin payı; R'ın ATR katı stopa göre yeniden ölçülmesi aynı bacaklarla kesindir."""
+    d, _start, res, _sig = ts_world
+    t = res["DON_20_10_1d_LS"].trades[0]
+    g = PL.gross_r(t)
+    assert g >= t.r["base"] >= t.r["ADVERSE"] and g == KN.cost_trade(t, KN.CostScenario("G", 0, 0, 0), 0.0)[0]
+    far = dataclasses.replace(t, initial_stop=t.initial_stop * (0.5 if t.side == "LONG" else 1.5))
+    for sc in ("base", "ADVERSE", "STRESS"):
+        r_near = KN.cost_trade(t, KN.scenario(sc), d.price_tick)[0]
+        r_far = KN.cost_trade(far, KN.scenario(sc), d.price_tick)[0]
+        assert r_near == pytest.approx(KN.cost_trade(dataclasses.replace(far, initial_stop=t.initial_stop),
+                                                     KN.scenario(sc), d.price_tick)[0])
+        assert abs(r_far) <= abs(r_near) + 1e-12
+    real = [{"trade_key": k} for k in ("a", "b", "c", "d", "e")]
+    pls = [{"trade_key": "a", "day": 1, "r": {}}, {"trade_key": "b", "missing": True},
+           {"trade_key": "c", "day": 1, "r": {}, "excluded": True}, {"trade_key": "d", "day": 2, "r": {}}]
+    cov, share = PL.coverage(real, pls)
+    assert [x["trade_key"] for x in cov] == ["a", "d"] and share == 0.4 and PL.MIN_COVERAGE == 0.8
+    assert PL.coverage([], pls) == ([], 0.0)

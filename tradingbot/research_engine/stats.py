@@ -17,16 +17,20 @@
   değil), **`sr_var` = ailenin (o bakışta Sharpe'ı hesaplanan satırlar) günlük Sharpe'larının örneklem varyansı, tabanı
   1/(T − 1)** (fonksiyonun 0,01 varsayılanı KULLANILMAZ); N = deneme defterinin o anki `dsr_n()`'i.
 * **Kapı A bakışı** (`gate_a_look`; §3.7 yordamı): yalnız bakış gecesinde (her ayın 5'inden sonraki ilk gece; o ay
-  defterde `LOOK_A` yoksa) — ara gecelerde hüküm kelimesi yok ("ara görünüm", deftere yazılmaz). Sıra: (1) zincir ve mühür
-  denetimi; (2) satır istatistikleri (üç maliyet, `p_day`, plasebo, katman payı, pay/tutarlılık); (3) PBO; (4) BH; (5)
-  DSR; (6) ileri okuma (`FWD_READ`); (7) `PASS_A`/`FAIL_A` → `LOOK_A`. Defter yalnız `trials.TrialsLedger.append` ile
-  büyür (yeniden yazma yolu yok).
+  defterde `LOOK_A` yoksa) — ara gecelerde hüküm kelimesi yok ("ara görünüm", deftere yazılmaz). Sıra: (0) `night`
+  enjekte saatin bugünkü gecesi değilse ret (geçmiş/gelecek bakış yok); (1) zincir, öncüller (= `PRIOR_TRIALS_V1`), DSR
+  N'i ≥ mühürdeki N (4.513) — tutmazsa kapalı, yazım yok — ve mühür denetimi; (2) satır istatistikleri (üç maliyet,
+  `p_day`, plasebo, katman payı, pay/tutarlılık); (3) PBO (grup üyeliği mühürden; eksik grup hesaplanmaz — R3; blok
+  kenarı arındırması — U3); (4) BH (aile HER ZAMAN 818 satır; daraltma yalnız saf `gate_a_evaluate`'te); (5) DSR; (6)
+  ileri okuma (`FWD_READ`); (7) hüküm → `LOOK_A`. Defter yalnız `trials.TrialsLedger.append` ile büyür (yeniden yazma yolu
+  yok). Plasebo koşulu net VE brüt R'da, kapsama ≥ %80 (R5).
 * **Eşikler:** Kapı A eşikleri ana belge §6.7'ye göre S2'de (`PROMOTION_REGISTRY_V1`, P4a) mühürlenir; S1 yalnız q, plasebo
   alt sınırı, tek enstrüman payı ve küme tutarlılığını taşır. `GATE_A_PROVISIONAL` = S1 değerleri + §3.7 METNİNİN geri
   kalanı, `sealed: False` — her `LOOK_A` satırı kaynağını yazar; S2 mühürlenince yerine `PROMOTION_REGISTRY_V1` geçer.
   **Geçici eşiklerle hiçbir geçiş eyleme dönüşmez:** mühürlü S2 eşik nesnesi (`SEALED_GATE_A_THRESHOLDS`) yokken bütün
-  koşulları tutan satırın hükmü `PASS_A_PROVISIONAL`'dır (asla `PASS_A`); `actionable_pass` yalnız mühürlü eşiklerle
-  `PASS_A` için doğrudur (P4a'nın doğum kuyruğu bunu kullanır). Eşik sözlüğündeki `sealed: True` bir şey değiştirmez.
+  koşulları tutan satırın hükmü `PASS_A_PROVISIONAL`'dır (asla `PASS_A`); `actionable_pass(defter, row_id, look_no)`
+  YALNIZ doğrulanmış zincirden geri okunan, mühürlü eşiklerle verilmiş `LOOK_A` `PASS_A` satırı için doğrudur (P4a'nın
+  doğum kuyruğu bunu kullanır; saf değerlendirme sonucu asla). Eşik sözlüğündeki `sealed: True` bir şey değiştirmez.
   Plasebo CI'ı mühürlü P3d okuması U2'dir (`STATS_V1.placebo.ci`; düzeltme mührü 7).
 
 Kapı istatistiğine giren işlemler `wf` tarafından süzülmüştür (`kernel.gate_excluded`: FUNDING_GAP, PATH_1H_GAP,
@@ -39,12 +43,13 @@ import math
 import random
 from datetime import date, datetime, timezone
 from types import MappingProxyType
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 import numpy as np
 
 from . import cscv as CS
 from . import registry as RG
+from .ledgers import utc_now
 from ..validation import deflated_sharpe
 
 DAY_MS = 86_400_000
@@ -67,6 +72,7 @@ R_SCALE = 1_000_000                                             # mikro-R (tam s
 _I62 = 1 << 62
 
 PASS_A, FAIL_A = "PASS_A", "FAIL_A"
+GROUP_INCOMPLETE = "INCOMPLETE"
 #: geçici (mühürsüz) eşiklerle bütün koşulları tutan satırın hükmü: eyleme dönüşmez (doğum kuyruğu yok)
 PASS_A_PROVISIONAL = "PASS_A_PROVISIONAL"
 #: S2'nin mühürlü Kapı A eşikleri (`PROMOTION_REGISTRY_V1`, P4a). Mühürlenene kadar None → hiçbir hüküm `PASS_A` olamaz.
@@ -414,7 +420,8 @@ def gate_a_evaluate(rows: Mapping[str, Mapping[str, Any]], *, look_no: int, n_tr
         if r.get("excluded", {}).get("n_leak_folds"):
             s["n_leak_folds"] = r["excluded"]["n_leak_folds"]
         s["fails"] = fails
-    # (3) PBO — seçim grupları
+    # (3) PBO — seçim grupları: üyelik mühürden (R3; eksik grup hesaplanmaz), blok kenarı arındırması (U3)
+    expected = expected_group_members()
     groups: dict[str, dict[str, Mapping[int, float]]] = {k: dict(v) for k, v in (group_series or {}).items()}
     group_of: dict[str, str] = {}
     for rid, r in rows.items():
@@ -426,7 +433,19 @@ def gate_a_evaluate(rows: Mapping[str, Mapping[str, Any]], *, look_no: int, n_tr
             groups.setdefault(g, {})
             groups[g].setdefault(rid, out_rows[rid]["daily"])
     needed = {group_of[rid] for rid in rows if full or not out_rows[rid]["fails"]}
-    pbo_by_group = {g: CS.group_pbo(groups[g]) for g in sorted(needed)}
+    pbo_by_group: dict[str, dict[str, Any]] = {}
+    for g in sorted(needed):
+        have, want = set(groups[g]), set(expected.get(g, ()))
+        if have != want:
+            pbo_by_group[g] = {"state": GROUP_INCOMPLETE, "pbo": None, "reason": "GROUP_INCOMPLETE",
+                               "missing": len(want - have), "extra": len(have - want), "configs": sorted(have)}
+            continue
+        h = group_purge_days(g, sorted(have))
+        if h is None:
+            pbo_by_group[g] = {"state": CS.NOT_COMPUTABLE, "pbo": None, "reason": "MAX_HOLD_UNSPECIFIED",
+                               "configs": sorted(have)}
+            continue
+        pbo_by_group[g] = CS.group_pbo(groups[g], purge_days=h)
     for rid in rows:
         s = out_rows[rid]
         g = group_of[rid]
@@ -434,13 +453,15 @@ def gate_a_evaluate(rows: Mapping[str, Mapping[str, Any]], *, look_no: int, n_tr
         s["pbo_group"] = g
         s["pbo"] = res["pbo"] if res else None
         s["pbo_state"] = res["state"] if res else "SKIPPED_LAZY"
-        if res is None or res["pbo"] is None or not (res["pbo"] < th["pbo_max_exclusive"]):
+        if res is not None and res["state"] == GROUP_INCOMPLETE:
+            s["fails"].append("PBO_GROUP_INCOMPLETE")
+        elif res is None or res["pbo"] is None or not (res["pbo"] < th["pbo_max_exclusive"]):
             s["fails"].append("PBO")
-    # plasebo — çağrılabilir tembel değerlendirilir
+    # plasebo — çağrılabilir tembel değerlendirilir; R5: net VE brüt, kapsama ≥ %80, yalnız plasebosu olan gerçek işlemler
     from . import placebo as PL
     for rid, r in rows.items():
         s = out_rows[rid]
-        s["placebo_diff_ci"] = None
+        s["placebo_diff_ci"] = s["placebo_diff_ci_gross"] = s["placebo_coverage"] = None
         if not full and s["fails"]:
             s["placebo_state"] = "SKIPPED_LAZY"
             s["fails"].append("PLACEBO")
@@ -452,12 +473,26 @@ def gate_a_evaluate(rows: Mapping[str, Mapping[str, Any]], *, look_no: int, n_tr
             s["placebo_state"] = "MISSING"
             s["fails"].append("PLACEBO")
             continue
-        ci = PL.diff_ci([(x["day"], x["r"][GATE_COST]) for x in r["trades"]], list(pl), row_id=rid, look_no=look_no)
-        s["placebo_diff_ci"] = ci
-        s["placebo_n"] = len(pl)
-        s["placebo_state"] = "OK" if ci is not None else "NOT_COMPUTABLE"
+        use = PL.usable(pl)
+        cov, share = PL.coverage(r["trades"], use)
+        s["placebo_coverage"] = share
+        s["placebo_n"] = len(use)
+        s["placebo_real_covered"] = len(cov)
+        if share < PL.MIN_COVERAGE:
+            s["fails"].append("PLACEBO_COVERAGE")
+        ci = PL.diff_ci([(x["day"], x["r"][GATE_COST]) for x in cov], PL.gate_pairs(use, GATE_COST), row_id=rid,
+                        look_no=look_no)
+        try:
+            cig = PL.diff_ci([(x["day"], x["r"][PL.GROSS]) for x in cov], PL.gate_pairs(use, PL.GROSS), row_id=rid,
+                             look_no=look_no)
+        except KeyError:                                         # brüt R taşımayan girdi → kapalı hata
+            cig = None
+        s["placebo_diff_ci"], s["placebo_diff_ci_gross"] = ci, cig
+        s["placebo_state"] = "OK" if ci is not None and cig is not None else "NOT_COMPUTABLE"
         if ci is None or not (ci[0] > th["placebo_ci_lower_min_exclusive"]):
             s["fails"].append("PLACEBO")
+        if cig is None or not (cig[0] > th["placebo_ci_lower_min_exclusive"]):
+            s["fails"].append("PLACEBO_GROSS")
     sealed = thresholds_are_sealed(th)
     src = str(th.get("source"))
     if not sealed and not src.startswith("PROVISIONAL_UNSEALED"):
@@ -468,6 +503,8 @@ def gate_a_evaluate(rows: Mapping[str, Mapping[str, Any]], *, look_no: int, n_tr
     return {"rows": out_rows, "family_m": len(family), "N": int(n_trials), "sr_var_family": fam_var,
             "groups": {g: {k: v for k, v in r.items() if k != "configs"} | {"configs": list(r.get("configs", []))}
                        for g, r in pbo_by_group.items()},
+            "groups_incomplete": sum(1 for r in pbo_by_group.values() if r["state"] == GROUP_INCOMPLETE),
+            "placebo_coverage_fails": sum(1 for v in out_rows.values() if "PLACEBO_COVERAGE" in v["fails"]),
             "thresholds_source": src, "thresholds_sealed": sealed}
 
 
@@ -481,10 +518,52 @@ def is_pass(verdict: str | None) -> bool:
     return verdict in (PASS_A, PASS_A_PROVISIONAL)
 
 
-def actionable_pass(row: Mapping[str, Any]) -> bool:
-    """Bir `LOOK_A` satırı / değerlendirme satırı eyleme (P4a doğum kuyruğu) dönüşebilir mi: YALNIZ mühürlü S2 eşikleriyle
-    verilmiş `PASS_A`. S2 mühürlenene kadar her zaman False."""
-    return SEALED_GATE_A_THRESHOLDS is not None and row.get("verdict") == PASS_A
+def actionable_pass(ledger: Any, row_id: str, look_no: int) -> bool:
+    """P4a doğum kuyruğunun TEK kapısı: deneme defterinin DOĞRULANMIŞ zincirinden (HWM dahil) geri okunan `kind == LOOK_A`
+    satırı, mühürlü S2 eşikleriyle (`thresholds_sealed`) verilmiş `PASS_A` ise True. Saf `gate_a_evaluate` sonucu hiçbir
+    zaman eyleme dönüşmez (bu fonksiyon yalnız defteri okur); S2 mühürlenene kadar her zaman False."""
+    if SEALED_GATE_A_THRESHOLDS is None:
+        return False
+    from .trials import iter_rows, read_hwm, verify_chain
+    hwm, err = read_hwm(ledger.hwm_path)
+    if err or not verify_chain(ledger.path, expect=hwm).get("ok"):
+        return False
+    for r in iter_rows(ledger.path):
+        if r.get("kind") == "LOOK_A" and r.get("row_id") == row_id and r.get("look_no") == look_no:
+            return r.get("verdict") == PASS_A and (r.get("params") or {}).get("thresholds_sealed") is True
+    return False
+
+
+_EXPECTED: dict[str, frozenset[str]] = {}
+
+
+def expected_group_members() -> Mapping[str, frozenset[str]]:
+    """R3: her seçim grubunun mühürden kurulan üyeleri — `COIN_FIT` → ailenin bütün ızgara seçenekleri (alias'lı üyeler
+    dahil); diğerleri → aynı anahtarlı bütün Kapı A satırları."""
+    if not _EXPECTED:
+        acc: dict[str, set[str]] = {}
+        for r in RG.gate_a_rows():
+            k = selection_group_key(r["row_type"], r["unit"], r["scope"])
+            if r["row_type"] == "COIN_FIT":
+                acc[k] = {v["variant_id"] for v in RG.LIB_V1["variants"] if v["family"] == r["unit"]}
+            else:
+                acc.setdefault(k, set()).add(r["row_id"])
+        _EXPECTED.update({k: frozenset(v) for k, v in acc.items()})
+    return _EXPECTED
+
+
+def group_purge_days(group: str, configs: Sequence[str]) -> int | None:
+    """U3 blok kenarı arındırması: grubun yapılandırmalarının mühürlü max_hold'unun en uzunu (gün, yukarı yuvarlanır);
+    tanımsız max_hold → None (hesaplanamaz)."""
+    from . import wf as WF
+    longest = 0
+    for c in configs:
+        vid = c if group.startswith("GRID:") else c.split("@", 1)[0]
+        try:
+            longest = max(longest, WF.max_hold_bars(vid) * WF.TF_MS[str(WF._resolve(vid)["signal_tf"])])
+        except (ValueError, KeyError):
+            return None
+    return int(math.ceil(longest / DAY_MS))
 
 
 def _seal_ok() -> bool:
@@ -502,22 +581,38 @@ def _iso_day(d: int) -> str:
     return datetime.fromtimestamp(int(d) * DAY_MS / 1000, tz=timezone.utc).date().isoformat()
 
 
+def ledger_priors(rows: Iterable[Mapping[str, Any]]) -> dict[str, int]:
+    return {str(r["row_id"]): int(r["n"]) for r in rows if r.get("kind") == "PRIOR"}
+
+
 def gate_a_look(ledger: Any, night: date, rows: Mapping[str, Mapping[str, Any]], *,
-                thresholds: Mapping[str, Any] = GATE_A_PROVISIONAL, family: Sequence[str] | None = None,
+                thresholds: Mapping[str, Any] = GATE_A_PROVISIONAL,
                 group_series: Mapping[str, Mapping[str, Mapping[int, float]]] | None = None,
                 placebo: Mapping[str, Any] | None = None, fwd: Mapping[str, Mapping[str, Any]] | None = None,
                 pit_ready: bool = False, epoch_ok: Mapping[str, bool] | None = None, at: str | None = None,
-                spec_sha: Mapping[str, str] | None = None) -> dict[str, Any]:
-    """§3.7 yordamı. `ledger`: `trials.TrialsLedger`. Bakış gecesi değilse "ara görünüm" (hüküm yok, yazım yok). Bakış
-    gecesinde (1) zincir + mühür → kırıksa kapı kapalı (`CLOSED`); (2–5) `gate_a_evaluate`; (6) her değerlendirilen
-    satıra `FWD_READ`; (7) ailenin her satırına `LOOK_A` (değerlendirilmeyen: p = 1, `NOT_EVALUATED`). Yazım yalnız
-    `ledger.append`."""
+                spec_sha: Mapping[str, str] | None = None, clock: Callable[[], datetime] = utc_now) -> dict[str, Any]:
+    """§3.7 yordamı. `ledger`: `trials.TrialsLedger`. Aile HER ZAMAN bütün LIB satırlarıdır (`registry.gate_a_rows`, 818;
+    daraltma yalnız saf `gate_a_evaluate`'te). Sıra: (0) `night` enjekte saatin BUGÜNKÜ gecesi değilse ret (`REFUSED`,
+    geçmiş/gelecek bakış yok); (1) zincir, öncüller (= `PRIOR_TRIALS_V1`) ve N ≥ mühürdeki N (4.513) — tutmazsa `CLOSED`,
+    yazım yok; bakış gecesi değilse "ara görünüm" (hüküm yok, yazım yok); mühür denetimi; (2–5) `gate_a_evaluate`; (6) her
+    değerlendirilen satıra `FWD_READ`; (7) ailenin her satırına `LOOK_A` (değerlendirilmeyen: p = 1, `NOT_EVALUATED`).
+    Yazım yalnız `ledger.append`."""
     from .trials import TrialsChainBroken, iter_rows
+    today = clock().astimezone(timezone.utc).date()
+    if night != today:
+        return {"status": "REFUSED", "reason": "NOT_CURRENT_NIGHT", "night": night.isoformat(), "today": today.isoformat()}
     try:
         ledger.load()
     except TrialsChainBroken as exc:
         return {"status": "CLOSED", "reason": "TRIALS_CHAIN_BROKEN", "detail": str(exc)}
-    looked = ledger_looks(iter_rows(ledger.path)) if ledger.path.exists() else []
+    led_rows = list(iter_rows(ledger.path)) if ledger.path.exists() else []
+    want_priors = {str(r["prior_id"]): int(r["count"]) for r in RG.PRIOR_TRIALS_V1["rows"]}
+    if ledger_priors(led_rows) != want_priors:
+        return {"status": "CLOSED", "reason": "PRIORS_MISMATCH"}
+    n_min = int(RG.LIB_V1["budget_declared"]["N_AT_SEAL_MIN"])
+    if ledger.dsr_n() < n_min:
+        return {"status": "CLOSED", "reason": "N_BELOW_SEAL", "N": ledger.dsr_n(), "N_min": n_min}
+    looked = ledger_looks(led_rows)
     if not is_look_night(night, looked):
         return {"status": "INTERIM", "label": INTERIM_LABEL, "night": night.isoformat(),
                 "rows": {rid: {"n": len(r["trades"]),
@@ -527,9 +622,9 @@ def gate_a_look(ledger: Any, night: date, rows: Mapping[str, Mapping[str, Any]],
         return {"status": "CLOSED", "reason": "SEAL_MISMATCH"}
     look_no = len(looked) + 1
     n_trials = ledger.dsr_n()
-    ev = gate_a_evaluate(rows, look_no=look_no, n_trials=n_trials, thresholds=thresholds, family=family,
+    fam = [r["row_id"] for r in RG.gate_a_rows()]
+    ev = gate_a_evaluate(rows, look_no=look_no, n_trials=n_trials, thresholds=thresholds, family=fam,
                          group_series=group_series, placebo=placebo, fwd=fwd, pit_ready=pit_ready, epoch_ok=epoch_ok)
-    fam = list(family) if family is not None else [r["row_id"] for r in RG.gate_a_rows()]
     scope_of = {r["row_id"]: r["scope"] for r in RG.gate_a_rows()}
     month = look_month(night)
     q_missing = bh_qvalues({rid: (ev["rows"][rid]["p_day"] if rid in ev["rows"] else None) for rid in fam})
@@ -546,7 +641,7 @@ def gate_a_look(ledger: Any, night: date, rows: Mapping[str, Mapping[str, Any]],
         if s is None:
             entries.append(dict(base, q_bh=q_missing[rid], verdict=FAIL_A,
                                 params={"fails": ["NOT_EVALUATED"], "thresholds_source": ev["thresholds_source"],
-                                        "N": ev["N"]}))
+                                        "thresholds_sealed": ev["thresholds_sealed"], "N": ev["N"]}))
             continue
         r = rows[rid]
         if r["oos_days"]:
@@ -563,11 +658,14 @@ def gate_a_look(ledger: Any, night: date, rows: Mapping[str, Mapping[str, Any]],
             mean_r_stress=s["mean_r_stress"], p_day=s["p_day"], q_bh=s["q_bh"], dsr=s["dsr"], pbo=s["pbo"],
             placebo_diff_ci=[round(ci[0], 6), round(ci[1], 6)] if ci else None, verdict=s["verdict"],
             fwd_read=s.get("fwd_read"),
-            params={"fails": s["fails"], "thresholds_source": ev["thresholds_source"], "N": ev["N"],
+            params={"fails": s["fails"], "thresholds_source": ev["thresholds_source"],
+                    "thresholds_sealed": ev["thresholds_sealed"], "N": ev["N"],
                     "sr": s["sr"], "sr_var": s["sr_var"], "pos_fold_share": s["pos_fold_share"],
                     "top_share": s["top_share"], "cluster_coherence_r": s.get("cluster_coherence_r"),
                     "pbo_group": s["pbo_group"], "pbo_state": s["pbo_state"],
-                    "excluded": dict(r.get("excluded") or {}), "actionable": actionable_pass(s)}))
+                    "placebo_diff_ci_gross": [round(x, 6) for x in s["placebo_diff_ci_gross"]]
+                    if s.get("placebo_diff_ci_gross") else None,
+                    "placebo_coverage": s.get("placebo_coverage"), "excluded": dict(r.get("excluded") or {})}))
     res = ledger.append(_finite(entries))
     return {"status": "LOOK", "look_no": look_no, "month": month, "N": n_trials, "evaluation": ev,
             "appended": sum(1 for x in res if x["status"] == "APPENDED"),
@@ -589,7 +687,8 @@ def _finite(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 __all__ = ["BH_Q", "CHUNK", "EQUITY_BASE_USDT", "FAIL_A", "GATE_A_PROVISIONAL", "GATE_COST", "INTERIM_LABEL",
            "LOOK_AFTER_DAY", "MEMORY_MB_MAX", "NULL_WORLDS", "PASS_A", "PASS_A_PROVISIONAL", "PLACEBO_CI_LEVEL", "PLACEBO_K",
-           "SEALED_GATE_A_THRESHOLDS", "actionable_pass", "is_pass", "thresholds_are_sealed",
+           "SEALED_GATE_A_THRESHOLDS", "GROUP_INCOMPLETE", "actionable_pass", "expected_group_members", "group_purge_days",
+           "is_pass", "ledger_priors", "thresholds_are_sealed",
            "PLACEBO_MIN_CI_LOWER", "RESAMPLES", "R_SCALE", "SCENARIOS", "bh_qvalues", "choice_stream", "daily_returns",
            "day_clusters", "dsr", "family_sr_var", "gate_a_evaluate", "gate_a_look", "is_look_night", "ledger_looks",
            "look_month", "moments", "p_day", "p_day_seed", "row_stats", "seed_int", "selection_group_key", "sharpe",

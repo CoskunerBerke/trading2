@@ -83,6 +83,15 @@ bayt-aynı sonuç; test). Kurallar:
   (`X_TPL`): ara hedefte İLK miktarın o payı kapanır (yoksa defterin varsayılanı: kalanın yarısı); son hedef kalanı kapatır;
   ilk hedeften sonra başa-baş stopu (defterin TP1 kuralı) aynen.
 
+* **S1d eki (`LIB_AG_V1`, 2026-10-13; YALNIZ EKLEME — `limit_price`/`stop_pct_*`/`target_beyond_entry` taşımayan niyet
+  bayt-aynı işlenir):** `strategy_lib.ag_common.AgEntryRef` alanları. Tek-bar limit emri (`limit_price`): emir yalnız
+  sonraki bar için geçerlidir; o bar seviyeyi ≥ 1 tik İÇİNDEN geçerse (`limit_through`; tik `SeriesData.price_tick`, 0 ise
+  kesin geçiş) SEVİYEDEN dolar — kapılar seviye fiyatıyla, maliyet piyasa girişininkiyle aynı (kayma + spread + taker;
+  limit için ihtiyatlı) — değilse `LIMIT_NOT_FILLED` ile iptal (strateji kurulum sürdükçe emri her bar yeniden verir; her
+  bar kapanışında çekirdek durumu "düz" kalır). Dolum barında stop barın bütün aralığıyla sınanır (açılış stopun
+  ötesindeyse açılıştan), hedef kredisi giriş saati kuralıyla yoktur. `stop_pct_min/max`: |dolum − stop| / dolum aralığı
+  (`STOP_DISTANCE_OUTSIDE_PCT`); `target_beyond_entry`: ilk hedef dolumun kâr yönünde ötesinde (`TARGET_NOT_BEYOND_ENTRY`).
+
 Parite (a) bu çekirdeği `FuturesLedgerV2` + `strategy_paper.apply_action` + `tick`'e karşı, canlı gibi 1h alt bar
 tikleriyle (kırpma yok) sınar (`parity.py`).
 """
@@ -192,6 +201,10 @@ BASIS_SLIP_LIQ = "SLIPPAGE_BEYOND_LIQUIDATION"
 REJ_DRIFT, REJ_BAD_STOP, REJ_CHASE, REJ_RISK_RANGE, REJ_SIZE = ("ENTRY_DRIFT", "STRATEGY_BAD_STOP", "CHASE_LIMIT",
                                                                  "RISK_OUTSIDE_TESTED_RANGE", "SIZE_REJECTED")
 REJ_RR, REJ_DATA_GAP = "RR_BELOW_MIN_AT_ENTRY", "ENTRY_DATA_GAP"
+#: S1d (`LIB_AG_V1`, 2026-10-13; YALNIZ EKLEME: alanı taşımayan niyetler eskisi gibi): tek-bar limit emri dolmadı, stop
+#: mesafesi dolum fiyatının mühürlü yüzde aralığı dışında, fiyat hedefi dolumun kâr yönünde ötesinde değil
+REJ_LIMIT_NOT_FILLED, REJ_STOP_PCT, REJ_TARGET_SIDE = ("LIMIT_NOT_FILLED", "STOP_DISTANCE_OUTSIDE_PCT",
+                                                       "TARGET_NOT_BEYOND_ENTRY")
 # MOVE_STOP ret nedenleri
 MOVE_LOOSENS, MOVE_CROSSES_PRICE = "LOOSENS", "CROSSES_PRICE"
 
@@ -770,7 +783,26 @@ def _entry_gate(intent: Intent, px: float) -> str | None:
         _g, net = rr_after_cost(px, intent.stop, tg[0], cost_frac=float(ref.rr_cost_frac))
         if net < float(ref.min_rr_after_cost):
             return REJ_RR
+    # S1d (`strategy_lib.ag_common.AgEntryRef`; LIB_V1 niyetleri bu alanları taşımaz → davranış aynı)
+    lo_pct, hi_pct = getattr(ref, "stop_pct_min", None), getattr(ref, "stop_pct_max", None)
+    if lo_pct is not None or hi_pct is not None:
+        d = abs(px - intent.stop) / px
+        if (lo_pct is not None and d < float(lo_pct)) or (hi_pct is not None and d > float(hi_pct)):
+            return REJ_STOP_PCT
+    if getattr(ref, "target_beyond_entry", False):
+        tg = _resolve_targets(intent, px)
+        if not tg or ((tg[0] <= px) if long else (tg[0] >= px)):
+            return REJ_TARGET_SIDE
     return None
+
+
+def limit_through(long: bool, level: float, high: float, low: float, tick: float) -> bool:
+    """S1d tek-bar limit emri: bar seviyeyi ≥ 1 tik İÇİNDEN geçti mi (uzun: düşük ≤ seviye − tik; kısa: yüksek ≥ seviye +
+    tik; tik bilinmiyorsa (0) kesin geçiş). Dokunmak dolum değildir (ihtiyatlı kuyruk varsayımı)."""
+    t = float(tick or 0.0)
+    if long:
+        return low <= level - t if t > 0 else low < level
+    return high >= level + t if t > 0 else high > level
 
 
 def move_stop_verdict(side: str, current: float, new: float, price: float) -> str | None:
@@ -972,6 +1004,40 @@ class _Sim:
                     leg(pending[2], o, pos.frac_left, True, t_open, "open", pending[1])
                     finish(pending[2], pending[1], t_open, i)
                 pending = None
+            elif isinstance(pending, Intent) and getattr(pending.entry_ref, "limit_price", None) is not None:
+                # S1d tek-bar limit emri (YALNIZ EKLEME): emir yalnız bu bar için geçerlidir; bar seviyeyi ≥ 1 tik içinden
+                # geçerse SEVİYEDEN dolar (kapılar seviyeyle; maliyet piyasa girişiyle aynı: kayma + spread + taker),
+                # değilse iptal. Dolum barında hedef kredisi yok (giriş saati kuralı), stop barın bütün aralığıyla sınanır.
+                it, at = pending, pending_at
+                pending = pending_at = None
+                lim = float(it.entry_ref.limit_price)
+                long = it.side == LONG
+                why = REJ_DATA_GAP if at is not None and t_open != int(at) else None
+                if why is None and not limit_through(long, lim, h, lo, data.price_tick):
+                    why = REJ_LIMIT_NOT_FILLED
+                if why is None:
+                    why = _entry_gate(it, lim)
+                if why is None:
+                    fill = lim * (1.0 + (1 if long else -1) * base.slip)
+                    ok, why2, lev, notional, margin, liq = size_trade(it.side, fill, it.stop)
+                    if ok:
+                        tr = KernelTrade(symbol=data.symbol, variant_id=variant.variant_id, side=it.side,
+                                         signal_ts=it.signal_ts, entry_ts=t_open, entry_ref=lim, initial_stop=it.stop,
+                                         targets=_resolve_targets(it, lim), leverage=lev, qty=notional / fill,
+                                         notional=notional, margin=margin, liq_price=liq,
+                                         risk_usdt=abs(fill - it.stop) * notional / fill, evidence=dict(it.evidence))
+                        pos = _Pos(tr, it, i, fill)
+                        history.append(BookEntry(data.symbol, it.side, it.signal_ts, t_open, it.evidence))
+                        hist_t = tuple(history)
+                        if it.one_entry_per_signal:
+                            used_signals.add(int(it.signal_ts))
+                    else:
+                        why = REJ_SIZE + ":" + why2
+                if why is not None:
+                    rejected[why] = rejected.get(why, 0) + 1
+                    if forced is not None:
+                        forced_why = why
+                        break
             elif isinstance(pending, Intent):
                 it, at = pending, pending_at
                 pending = pending_at = None
@@ -1126,3 +1192,4 @@ __all__ = ["BASIS_PRUDENT_CLOSE", "BASIS_SLIP_LIQ", "CostScenario", "ENTRY_HOUR_
            "gate_excluded", "lib_params", "make_family", "make_variant", "module_src_shas", "move_stop_verdict",
            "replay_intent", "run", "run_lockstep", "scenario", "signals_at", "size_trade", "snap_ms", "spec_for",
            "spec_sha_for", "variant_spec"]
+__all__ += ["REJ_LIMIT_NOT_FILLED", "REJ_STOP_PCT", "REJ_TARGET_SIDE", "limit_through"]   # S1d eki

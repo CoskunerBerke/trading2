@@ -5,7 +5,7 @@ U_R (belge §3.3 tablosu, AYNEN; her sembolün neden evrende olduğu `roles` ala
 
 * USDⓈ-M vadeli: 40 giriş evreni ∪ BTC/ETH ∪ son 180 günde herhangi bir defterin veya CF'nin işlem yaptığı semboller;
   5m, 15m, 1h, 4h, 1d, fonlama, `metrics_5m`, mark/premium 1h; listelenmeden (metrics 2021-12-01'den).
-* Altın vadeli: XAUUSDT (2025-12-01'den), PAXGUSDT (2025-03-01'den); 1m–1d + fonlama.
+* Altın vadeli: XAUUSDT (2025-12-01'den), PAXGUSDT (2025-03-01'den); 1m–1d + fonlama (S1d: XAUUSDT ayrıca markpx_1h).
 * Altın spot: PAXGUSDT; 5m, 1h, 4h, 1d; 2020-08-01'den.
 * Spot bağlam: BTCUSDT, ETHUSDT; 1h, 1d; 2020-01-01'den.
 * Spot (ana bot): ana botun son 180 günde spot işlem yaptığı semboller; 1h (1m tembel, P2); son 400 gün.
@@ -69,6 +69,12 @@ FINE_KINDS: tuple[str, ...] = ("5m", "15m", METRICS_5M)
 
 ROLE_ENTRY, ROLE_BTC_ETH, ROLE_TRADED, ROLE_CF = "giris_evreni", "btc_eth", "islem_180g", "cf_180g"
 ROLE_GOLD, ROLE_SPOT_CTX, ROLE_MAIN_SPOT = "altin", "spot_baglam", "ana_bot_spot"
+#: S1d (2026-10-13, `seal_s1d.AG_UNIVERSE_V1`): LIB_AG_V1'in 41 sembolü = S1b'nin 40 coin'i (değişmedi) + XAUUSDT. XAUUSDT
+#: altın vadeli satırında zaten 1m–1d + fonlama ile (listelenmeden, `from_listing`) planlıdır; AG çekirdeğinin fonlama
+#: mark'ı (S1b: markpx_1h) için `markpx_1h` serisi eklenir (aynı disk/pencere kuralları: altın vadeli taban tarihi).
+ROLE_AG = "ag_evreni"
+AG_GOLD_FUTURES: tuple[str, ...] = ("XAUUSDT",)
+AG_GOLD_EXTRA_KINDS: tuple[str, ...] = (MARKPX_1H,)
 F_ENTRY_MISSING = "ENTRY_UNIVERSE_YOK"
 
 #: kind → (arşiv veri kümesi, aralık)
@@ -280,6 +286,8 @@ def build_universe(paths: EnginePaths, *, now: datetime, app_dir: Path | str) ->
     for s, why in traded["futures"].items():
         fut.setdefault(s, set()).update(w.split(":", 1)[0] for w in why)
     gold_f = {s: {ROLE_GOLD} for s in GOLD_FUTURES}
+    for s in AG_GOLD_FUTURES:
+        gold_f[s].add(ROLE_AG)
     for s in list(fut):
         if s in GOLD_FUTURES:                        # altın vadeliler kendi satırıyla (1m–1d + fonlama) planlanır
             gold_f[s] |= fut.pop(s)
@@ -324,6 +332,9 @@ def plan_series(doc: dict[str, Any], *, now: datetime) -> list[SeriesSpec]:
             a = max(st, now_ms - GOLD_1M_DAYS * 86_400_000) if tf == "1m" else st
             add(SeriesSpec("futures", s, tf, a, True, r))
         add(SeriesSpec("futures", s, FUNDING, st, True, r))
+        if ROLE_AG in roles:                                       # S1d: AG evreninin altını (fonlama mark'ı)
+            for kind in AG_GOLD_EXTRA_KINDS:
+                add(SeriesSpec("futures", s, kind, st, True, r))
     for s, roles in (doc.get("gold_spot") or {}).items():
         for tf in GOLD_SPOT_TFS:
             add(SeriesSpec("spot", s, tf, day_ms(GOLD_SPOT.get(s, "2020-08-01")), False, tuple(roles)))
@@ -428,7 +439,7 @@ def latest_onboard_dates(paths: EnginePaths) -> dict[str, int]:
     return {}
 
 
-__all__ = ["BTC_ETH", "DATASETS", "EXCHANGEINFO_SCHEMA", "EXTRA_FINE_DAYS", "FINE_KINDS", "FUTURES_FLOOR", "FUT_TFS",
+__all__ = ["AG_GOLD_EXTRA_KINDS", "AG_GOLD_FUTURES", "ROLE_AG", "BTC_ETH", "DATASETS", "EXCHANGEINFO_SCHEMA", "EXTRA_FINE_DAYS", "FINE_KINDS", "FUTURES_FLOOR", "FUT_TFS",
            "F_ENTRY_MISSING", "GOLD_1M_DAYS",
            "GOLD_FUTURES", "GOLD_FUT_TFS", "GOLD_SPOT", "GOLD_SPOT_TFS", "MAIN_SPOT_DAYS", "METRICS_FLOOR", "SPOT_CONTEXT",
            "SeriesSpec", "TRADED_DAYS", "UNIVERSE_SCHEMA", "build_universe", "compact_exchange_info", "day_ms",

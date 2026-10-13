@@ -840,7 +840,7 @@ değildir, metin testi); k*/kaldıraç satırı oto defterler için de yalnız l
 En erken olaylar: ilk Kapı A bakışı 2026-12-06 (yalnız 5m/15m; ileri 30 gün) ve 2027-01-06 (diğerleri); 4h/1d adayı için en
 erken Holm 2027-03-01, en erken otomatik defter ≈ 2027-03-02 (24 saat veto penceresiyle).
 
-### 8.4 P3a uygulama notu (2026-10-11; düzeltme turu 1 ve §8.5'e sahip cevabıyla yeniden mühürlendi; 2026-10-12 çekirdeğin stop dolumuyla düzeltme mührü 3; 2026-10-12 P3b-2a saf aileler ve giriş saati okunuşuyla düzeltme mührü 4; 2026-10-12 P3b-2a inceleme düzeltmesi ve teknik okumalarla düzeltme mührü 5; 2026-10-12 P3b-2b O örtüleri, hız önlemleri ve kapı dışı işaretlerle düzeltme mührü 6; 2026-10-13 P3d walk-forward ve istatistik; 2026-10-13 P3d okumalarıyla düzeltme mührü 7; 2026-10-13 P3d bağımsız incelemesiyle düzeltme mührü 8; 2026-10-13 CSCV günlük piyasa değerlemesiyle düzeltme mührü 9)
+### 8.4 P3a uygulama notu (2026-10-11; düzeltme turu 1 ve §8.5'e sahip cevabıyla yeniden mühürlendi; 2026-10-12 çekirdeğin stop dolumuyla düzeltme mührü 3; 2026-10-12 P3b-2a saf aileler ve giriş saati okunuşuyla düzeltme mührü 4; 2026-10-12 P3b-2a inceleme düzeltmesi ve teknik okumalarla düzeltme mührü 5; 2026-10-12 P3b-2b O örtüleri, hız önlemleri ve kapı dışı işaretlerle düzeltme mührü 6; 2026-10-13 P3d walk-forward ve istatistik; 2026-10-13 P3d okumalarıyla düzeltme mührü 7; 2026-10-13 P3d bağımsız incelemesiyle düzeltme mührü 8; 2026-10-13 CSCV günlük piyasa değerlemesiyle düzeltme mührü 9; 2026-10-13 P3e keşif katmanı)
 
 **Ne mühürlendi (S1).** Yeni modüller ağsız ve yalnız standart kütüphaneyle yazıldı; hiçbiri gece birimine, worker'a ya da
 bir karar yoluna bağlanmadı (P3a VPS'te hiçbir şey çalıştırmaz, gerçek veriye dokunmaz).
@@ -1865,6 +1865,84 @@ Bütçe, sayılar ve eşikler değişmedi (`STATS_V1.thresholds` aynı).
 - **Mühür:** değişen `STATS_V1` (U3 okuması), `THRESHOLD_DIRECTIONS_V1` (`edge_purge` yönleri çıktı, `matrix_returns`/
   `matrix_fallback` `fixed`), `CONFIG_EPOCHS_V1` (yalnız `covered_until`), `T_SEAL_MS`, `REGISTRY_SHA`; diğer beş kayıt
   DEĞİŞMEDİ. Değerler §8.2'de.
+
+**P3e uygulama notu (2026-10-13; keşif katmanı `explore.py` (S4x), lider tablosunun KEŞİF bölümü, `engine-query explore`;
+S1 mührü DEĞİŞMEDİ).** Yalnız PAPER araştırma kodu; canlı kod/config/worker, gece birimi ve dağıtım değişmedi (S4x'in gece
+bağlantısı ve bütçesi P3g); gerçek veri koşusu yok (yalnız sentetik dünyalar); deneme defterine yazım yok. Mühürlü kayıtlar
+(`LIB_V1.explore`, `T_SEAL_MS`, `REGISTRY_SHA`, …) tek kaynaktır ve dokunulmadı; aşağıdaki okunuşlar mühürde yazılmayan
+uygulama ayrıntılarıdır (sıkılaştıran ya da nötr).
+
+- **Modüller.** `research_engine/explore.py`: seri planı, mühürlü/arşiv-doğrulanmış girdi, artımlı ileri koşu, dosyalar,
+  `fwd_reads` (Kapı A'ya giden tek yol), `leaderboard_lines` (KEŞİF bölümü), `digest_lines` (özet), `query_lines`
+  (`engine-query explore [--gold] [--variant <id>]`; `query.py` + `cli_v3` ayrıştırıcısı). `synthetic.explore_world`
+  (tutarlı 1h → 4h/1d, 1h'nin 5m alt barları, 1d ön geçmişi, fonlama). Yeniden kullanılan: `kernel.run_lockstep` /
+  `make_family` / `funding_of` / `cost_trade` / `gate_excluded`, `stats.mtm_allocation` (U3), `wf.exit_ref`; yeni istatistik
+  yok. Yalıtım sözleşmesine `explore.py` → `strategy_lib` (`BookEntry`) izni ve ağsız modül listesi eklendi.
+- **Seriler (kayıttan, 3.745).** 45 STANDARD (alias'sız) × 40 + 13 K × 40 + 35 O × 40 + J 5 (`PORT_XSEC`) + I 2
+  (`PAIR_BTCETH`) + G 6 × 3 altın enstrümanı = `registry.explore_series()`; plan bu sayıyı tutmazsa ya da giriş evreni 40
+  farklı coin değilse kapalı hata (`ExploreRefused`). 40 coin'in KİMLİĞİ mühürde yok (yalnız sayı): çalışma anındaki giriş
+  evrenidir (`universe.entry_universe`, config `entry_universe.symbols`; P23'ün 23 coin'i içinde). UNSPECIFIED 13 varyantın
+  25 serisi (I 2, J 5, G 18) planda sayılır, çalıştırılmaz (`UNSPECIFIED_PARAM`). Bütün çalıştırılabilir varyantların
+  penceresi sonludur (değilse kapalı hata: artımlı = baştan ancak böyle kanıtlanır).
+- **Veri ve zaman yolculuğu.** Yalnız mühürlü parçalar (`provider.SealedReader`) ve `_src == archive` satırları — ısınma,
+  ileri barlar ve fonlama için aynı kural. Açılışı `T_SEAL_MS`'den önceki satırlar YALNIZ göstergeyi ısıtır: yükleme başı
+  sabittir (`warm_start` = T_SEAL − ⌈(en uzun mühürlü pencere + 2) × 1,5⌉ bar; geceye bağlı değil) ve çekirdeğe yalnız
+  karar anından önceki pencere + 2 bar verilir. İlk karar, açılışı ≥ T_SEAL olan ilk barın kapanışındadır (`start_ms` =
+  T_SEAL + sinyal dilimi; çekirdeğin `start_ms`'i ve vekil `_Fwd` ayrı ayrı denetler). İleri satırlar ilk doğrulanmamış
+  (`rest`, `archive_unverified`, `seed`) ya da kapanmamış satırda kesilir; serinin cephesi okuduğu bütün dizilerin (görünüm
+  dilimleri, 1h yol barları, BTC 1d/4h) en küçük cephesidir; fonlama cepheden sonra kesilir. `DATA_MOVING` coin'in serileri
+  o gece atlanır (durum değişmez); fiyat adımı (tick) verilmezse seri çalıştırılmaz (`NO_TICK`; spread maliyeti
+  ölçülemez).
+- **Artımlı = baştan (bayt-özdeş).** Durumun "düz karar anı" (`checkpoint_ms`): açık pozisyon varsa onun karar anı (= giriş
+  barının açılışı), yoksa cephedeki son sinyal barının kapanışı — orada çekirdekte pozisyon da bekleyen eylem de yoktur;
+  çekirdeğin kalan durumu önceki girişlerin geçmişi (`ctx.history`) ve kullanılmış `one_entry_per_signal` sinyalleridir.
+  Vekil geçmişi JSON biçiminde verir (iki yolda da: önceki koşuların girişleri `jsonl`'dan tembel yüklenir, bu koşununkiler
+  çevrilir; yalnız okuyan varyant — T2/M2 ve örtüleri, Formasyon — yükler), kullanılmış sinyalleri düşürür (çekirdeğin
+  kendi denetimiyle aynı sonuç) ve karar anı öncesinde niyet döndürmez. Fonlamadan türeyen alanlar (`funding_of`,
+  `FUNDING_GAP`/`FUNDING_EXIT_BAR`, üç maliyetle R/net, MTM) `FundingSeries`'in yerel aralığı yüzünden pencerenin iki
+  yanındaki uzlaşmalara bağlıdır: işlem, son bacağından sonra ≥ 4 uzlaşma (`FUNDING_LOCAL_SPAN` + 1) gelene kadar
+  `unsettled` kalır ve her gece aynı fonksiyonlarla yeniden türetilir; sonra `<COIN>.jsonl`'a eklenir (yalnız eklenir).
+  Gün satırı (`D`, üç maliyetle günlük %) gün kesinleşince eklenir (gün < min(cephe günü, karar anı günü, kesinleşmemiş/açık
+  işlemlerin giriş günü)). Satırlar zaman anahtarına göre sıralıdır ve kesinleşen küme her zaman önektir → gece gece ekleme
+  baştan yazımla aynı baytlar; toplamlar (n, ΣR, özsermaye, tepe, düşüş, ≥ +%1 gün) aynı sırayla birikir. Önceki cephenin
+  verisi (parmak izi: diziler + fonlama + tick), sürüm/mühür/çekirdek sürümü ya da `jsonl` boyu tutmazsa seri BAŞTAN
+  kurulur (sayılır).
+- **Çıktı (ana belge §6.8).** Seri başına n, ortalama net R (base/ADVERSE/STRESS), toplam R, günlük % (%0,5 risk, 200 USDT
+  taban; `stats.mtm_allocation` dağılımı her maliyetle), P(gün ≥ +%1), en büyük düşüş, mühürden bu yana gün (⌊(cephe −
+  T_SEAL) / 1 gün⌋), açık pozisyon; `source = EXPLORATION_FWD`. Yalnız kapanmış işlemler; kapı dışı işaretli işlemler
+  (`kernel.gate_excluded`) HİÇBİR keşif istatistiğine girmez (sayısı gösterilir). Lider tablosu/özet: "N seri arasından en
+  iyi 5 — seçim yanlılığı, kanıt değil" (ADVERSE toplam R'ye göre), medyan serinin sonucu (≥ 1 işlemli serilerin ADVERSE
+  toplam R'si), altın ayrı. Metin hüküm kelimesi üretmez (`verdict_word_violations`; Türkçe ve Latin küçük harfle; çizilen
+  her metin yazılmadan denetlenir, ihlalde hata).
+- **Kapı yolu (§3.7 (6)).** Keşif Kapı A/B'ye doğrudan girmez: kapı/istatistik/defter modülleri `explore`'u import etmez,
+  `explore` deneme defterini import etmez ve kapıyı çağırmaz (AST testleri). Tek okuyucu `fwd_reads` → `stats.gate_a_look(
+  fwd=…)`: satırın KENDİ serileri (COIN: tek seri; havuz/küme: P23/küme coin'lerinin birleşimi; `POOLED_OWN`: defterin
+  kendi sembolleri — girdi; `COIN_FIT`: mühürde donmuş seçim — girdi, ızgara dışı seçim kapalı hata), yalnız kapı-içi
+  kapanmış işlemler: `n`, `mean_adverse`, `days` (üyelerin en küçüğü), `intraday`; bir üyenin durumu yoksa satır yok
+  (kapı `FWD_MISSING`, kapalı).
+- **Ölçüm (bu sandbox, tek süreç; `test_scaled_world_nightly_step_within_the_s4x_budget`, `slow`).** 40 coin × 3.720
+  çalıştırılabilir seri (`synthetic.explore_world`, 1h/4h/1d/5m + fonlama): mühürden bu yana 7 günlük birikmiş
+  geri dönüş ≈ 183 sn (16.630 işlem); ardından bir gecelik adım (1 yeni gün) ≈ 48 sn (3.022 işlem, 210.089 sinyal
+  barı; `UNSPECIFIED_PARAM` 25 + `OK` 3.720) — S4x bütçesi ≤ 10 dk (§5.2) içinde; geri dönüş ≈ 26 sn/gün → 10 dk'da
+  ≈ 23 günlük birikim. En pahalısı Box ailesi (5m; 15 varyant × 40). VPS çarpanı ve `VmHWM` P3g'de.
+- **Testler.** `tests/test_research_engine_explore_p3e.py`: 3.745 plan (kayıt, formül, 25 çalıştırılmayan, evren ≠ 40 kapalı
+  hata); artımlı = baştan bayt-özdeş (iki karışık dünya, rastgele geceler, 3 günlük fonlama arşivi gecikmesi; T2/M2 +
+  örtüleri ve Formasyon ile geçmiş yolu; aynı gece yeniden = `UNCHANGED`); geçmiş veri/sürüm/yarım ekleme → baştan = baştan
+  hesap; zaman yolculuğu özellik testi (6 tohum: kural hiç T_SEAL öncesi açılan barın kapanışında karar vermez, işlem/gün
+  satırı mühür öncesine düşmez, pencere dışı mühür öncesi barları bozmak ve cepheden sonrası hiçbir şeyi değiştirmez);
+  yükleyici kuralları ve `ResearchStore`'dan okuma (`rest` kuyruğu cepheyi keser), `DATA_MOVING` ve `NO_TICK`; kapı dışı
+  işaretler (FUNDING_GAP, PATH_1H_GAP; NaN mark); tek kapı yolu; hüküm kelimesi yok (uç değerli seriler dahil, pozitif
+  kontrol); `engine-query explore` ≤ 150 satır / 4 KB, salt-okunur, CLI.
+- **Açık kalanlar.** (1) **Arşiv fonlama satırlarında mark yok** (`parse_funding_zip` mark = NaN; REST satırlarının markı arşiv
+  gelince NaN'lı arşiv satırıyla yer değiştirir): çekirdek bunu okunamaz sayar → bir uzlaşmayı kapsayan her işlem
+  `FUNDING_GAP` → gerçek veride keşif istatistiği ve ileri okuma neredeyse boş kalır (kapalı hata; WF/kapı için de aynı).
+  Mark kaynağı (ör. uzlaşma saatindeki `markpx_1h` açılışı) bir okuma kararıdır — P3g'den önce sahibe/koordinatöre.
+  (2) Fonlama arşivi aylıktır: ileri işlemler ≤ ~1 ay `unsettled` (kapı dışı) kalır; durum dosyası bunları taşır.
+  (3) 40 coin'in kimliği S1'de dondurulmamış; config değişirse seriler değişir (sayı aynı) — sonraki mühürde dondurulması
+  önerilir. (4) `COIN_FIT` donmuş seçimi ve `POOLED_OWN` sembol kümeleri `fwd_reads`'e girdi (P3g/P4a kurar).
+  (5) Gece bağlantısı, S4x bütçesi ve `DATA_STALE`/A-B KAPALI kuralı, `EXPLORE_SEEN` (sonraki LIB mühründe), `jsonl`'ın
+  derin sha denetimi (gece yalnız boy) P3g'de. (6) Dağıtımda T_SEAL'dan bu yana biriken geri dönüş ilk gecenin 10 dk'sını
+  aşabilir: süre dolunca coin'ler arasında durulur, kalan sonraki gece sürer (artımlı tasarım güvenli).
 
 ### 8.5 P3a boşlukları — sahibe sorular (entegrasyondan önce; her cevap boşluğu doldurur ve S1'i yeniden mühürler)
 

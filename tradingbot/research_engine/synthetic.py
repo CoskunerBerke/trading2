@@ -492,7 +492,33 @@ def gate_world_fwd(world: dict[str, Any], row_id: str) -> dict[str, Any]:
             "mean_adverse": (sum(t["r"]["ADVERSE"] for t in f) / len(f)) if f else None, "intraday": False}
 
 
-__all__ = ["BTC4_SEED", "WORLDS", "D1", "GATE_ROW_FAMILIES", "GATE_SYMBOLS", "H1", "H4", "M5", "SUB_SEED", "T0", "aggregate",
+# ---------------------------------------------------------------------------- P3e: keşif dünyası (çok dilimli, tutarlı)
+def explore_world(coins: tuple[str, ...] | list[str], *, seed: int, seal_ms: int, fwd_days: int, pre_1d_days: int = 620,
+                  pre_1h_days: int = 130, pre_5m_days: int = 4) -> dict[str, dict[str, Any]]:
+    """Keşif katmanı (P3e) kabul/ölçüm dünyası: coin başına TUTARLI 1h yürüyüşü (mühürden `pre_1h_days` önce →
+    `fwd_days` sonra), ondan toplanan 4h/1d, 1h barların tutarlı 5m alt barları (`subdivide`; yalnız mühürden `pre_5m_days`
+    önce başlar) ve 1d ön geçmişi (`pre_1d_days`; ayrı yürüyüş, son kapanışı 1h yürüyüşünün başlangıcı). Fonlama
+    00/08/16 UTC (mark = barın açılışı). Döner: {coin: {"bars": {tf: satırlar}, "funding": satırlar}}."""
+    out: dict[str, dict[str, Any]] = {}
+    day0 = int(seal_ms) // D1 * D1
+    h0 = day0 - int(pre_1h_days) * D1
+    end = day0 + (int(fwd_days) + 1) * D1
+    for k, coin in enumerate(coins):
+        sd = int(seed) * 1009 + k * 7919
+        pre = walk(int(pre_1d_days), seed=sd + 1, step=D1, start=h0 - int(pre_1d_days) * D1,
+                   p0=20000.0 if coin == "BTC" else 10.0 + 9.0 * (k % 7), vol=0.03, trend=0.004, regime_len=20,
+                   gap_p=0.0)
+        h1 = walk((end - h0) // H1, seed=sd + 2, step=H1, start=h0, p0=float(pre[-1]["close"]), vol=0.007,
+                  trend=0.0015, regime_len=48, gap_p=0.004, gap_vol=0.004, wick=0.7)
+        m5_src = [r for r in h1 if int(r["timestamp"]) >= day0 - int(pre_5m_days) * D1]
+        m5 = subdivide(m5_src, H1, M5, seed=sd + 3)
+        bars = {"1h": h1, "4h": aggregate(h1, H4), "1d": pre + aggregate(h1, D1), "5m": m5}
+        fr = funding_rows([r for r in h1 if int(r["timestamp"]) >= day0 - 12 * D1], H1, seed=sd + 4)
+        out[coin] = {"bars": bars, "funding": [x for x in fr if x[0] < end]}
+    return out
+
+
+__all__ = ["BTC4_SEED", "explore_world", "WORLDS", "D1", "GATE_ROW_FAMILIES", "GATE_SYMBOLS", "H1", "H4", "M5", "SUB_SEED", "T0", "aggregate",
            "ar_funding_rows", "box_world", "gate_rows", "gate_world", "gate_world_fwd", "gate_world_placebos", "light_trade",
            "vol_walk",
            "btc_4h_walk", "c4_world",

@@ -73,7 +73,10 @@ OUTSIDE_OK = {"store.py": {"tradingbot.history.store"}, "seed.py": {"tradingbot.
               # (`Intent`/`EntryRef`) ve kuralların ATR14'ü (`strategy_lib.indicators`). Hepsi salt-okunur hesap, ağsız.
               "wf.py": {"tradingbot.quant"},                                # yalnız `from ..quant import walkforward`
               "stats.py": {"tradingbot.validation"},
-              "placebo.py": {"tradingbot.strategy_lib", "tradingbot.strategy_lib.indicators"}}
+              "placebo.py": {"tradingbot.strategy_lib", "tradingbot.strategy_lib.indicators"},
+              # P3e (ENGINE_BRAIN §5.1): keşif vekili `ctx.history`'yi `strategy_lib.BookEntry` ile kurar (çekirdeğin
+              # geçmiş sözleşmesi; salt-okunur hesap, ağsız)
+              "explore.py": {"tradingbot.strategy_lib"}}
 
 
 def _imports(path: Path) -> list[tuple[ast.AST, str, int]]:
@@ -130,9 +133,9 @@ def _graph(start: str) -> set[str]:
 
 def test_network_free_modules_never_import_the_data_unit():
     # P3a: mühür kayıtları, deneme defteri, config dönemi üreticisi ve sorgu da ağsızdır (veri birimini çekmez);
-    # P3d: walk-forward, istatistik, CSCV ve plasebo da
+    # P3d: walk-forward, istatistik, CSCV ve plasebo da; P3e: keşif katmanı da
     for m in ("night", "selfcheck", "summary", "backup", "closes", "daily_target", "store", "seed", "universe", "provider",
-              "registry", "trials", "epochs", "query", "wf", "stats", "cscv", "placebo"):
+              "registry", "trials", "epochs", "query", "wf", "stats", "cscv", "placebo", "explore"):
         g = _graph(m)
         assert "datastore" not in g, (m, g)
     # §2.8: gece grafiği yalnız ağ modüllerini (`datastore`, `pit_universe`) dışlar; P2b'den itibaren mühürlü depo

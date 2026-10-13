@@ -66,7 +66,14 @@ OUTSIDE_OK = {"store.py": {"tradingbot.history.store"}, "seed.py": {"tradingbot.
               "parity.py": {"tradingbot.strategy_lib", "tradingbot.paper_rules", "tradingbot.structures", "tradingbot.box_theory",
                             "tradingbot.pattern_trader", "tradingbot.accounting", "tradingbot.risk", "tradingbot.core",
                             "tradingbot.strategy_paper", "tradingbot.learning_mode",
-                            "tradingbot.pattern_trader.strategy"}}
+                            "tradingbot.pattern_trader.strategy"},
+              # P3d (ENGINE_BRAIN §3.1, §3.6): katmanlar `quant/walkforward.make_folds(validation_days>0)` + `run_three_way`
+              # YENİDEN KULLANILIR (çatallanmaz); DSR mevcut `validation.deflated_sharpe`'tır (ana belge §6.4 "yeniden
+              # kullanılır"); plasebo işlemi çekirdeğin zorlanmış yeniden oynatımıdır — `strategy_lib` niyet sözleşmesi
+              # (`Intent`/`EntryRef`) ve kuralların ATR14'ü (`strategy_lib.indicators`). Hepsi salt-okunur hesap, ağsız.
+              "wf.py": {"tradingbot.quant"},                                # yalnız `from ..quant import walkforward`
+              "stats.py": {"tradingbot.validation"},
+              "placebo.py": {"tradingbot.strategy_lib", "tradingbot.strategy_lib.indicators"}}
 
 
 def _imports(path: Path) -> list[tuple[ast.AST, str, int]]:
@@ -122,9 +129,10 @@ def _graph(start: str) -> set[str]:
 
 
 def test_network_free_modules_never_import_the_data_unit():
-    # P3a: mühür kayıtları, deneme defteri, config dönemi üreticisi ve sorgu da ağsızdır (veri birimini çekmez)
+    # P3a: mühür kayıtları, deneme defteri, config dönemi üreticisi ve sorgu da ağsızdır (veri birimini çekmez);
+    # P3d: walk-forward, istatistik, CSCV ve plasebo da
     for m in ("night", "selfcheck", "summary", "backup", "closes", "daily_target", "store", "seed", "universe", "provider",
-              "registry", "trials", "epochs", "query"):
+              "registry", "trials", "epochs", "query", "wf", "stats", "cscv", "placebo"):
         g = _graph(m)
         assert "datastore" not in g, (m, g)
     # §2.8: gece grafiği yalnız ağ modüllerini (`datastore`, `pit_universe`) dışlar; P2b'den itibaren mühürlü depo

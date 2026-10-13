@@ -840,7 +840,7 @@ değildir, metin testi); k*/kaldıraç satırı oto defterler için de yalnız l
 En erken olaylar: ilk Kapı A bakışı 2026-12-06 (yalnız 5m/15m; ileri 30 gün) ve 2027-01-06 (diğerleri); 4h/1d adayı için en
 erken Holm 2027-03-01, en erken otomatik defter ≈ 2027-03-02 (24 saat veto penceresiyle).
 
-### 8.4 P3a uygulama notu (2026-10-11; düzeltme turu 1 ve §8.5'e sahip cevabıyla yeniden mühürlendi; 2026-10-12 çekirdeğin stop dolumuyla düzeltme mührü 3; 2026-10-12 P3b-2a saf aileler ve giriş saati okunuşuyla düzeltme mührü 4; 2026-10-12 P3b-2a inceleme düzeltmesi ve teknik okumalarla düzeltme mührü 5; 2026-10-12 P3b-2b O örtüleri, hız önlemleri ve kapı dışı işaretlerle düzeltme mührü 6)
+### 8.4 P3a uygulama notu (2026-10-11; düzeltme turu 1 ve §8.5'e sahip cevabıyla yeniden mühürlendi; 2026-10-12 çekirdeğin stop dolumuyla düzeltme mührü 3; 2026-10-12 P3b-2a saf aileler ve giriş saati okunuşuyla düzeltme mührü 4; 2026-10-12 P3b-2a inceleme düzeltmesi ve teknik okumalarla düzeltme mührü 5; 2026-10-12 P3b-2b O örtüleri, hız önlemleri ve kapı dışı işaretlerle düzeltme mührü 6; 2026-10-13 P3d walk-forward ve istatistik, mühür değişmedi)
 
 **Ne mühürlendi (S1).** Yeni modüller ağsız ve yalnız standart kütüphaneyle yazıldı; hiçbiri gece birimine, worker'a ya da
 bir karar yoluna bağlanmadı (P3a VPS'te hiçbir şey çalıştırmaz, gerçek veriye dokunmaz).
@@ -1657,6 +1657,88 @@ değil düzeltme mührüdür (önceki düzeltmelerle aynı yol).
   canlı defter karşılığı yoktur (ara hedefte ilk miktarın payı); AUTO_v1'de worker'ın defteri bu payı desteklemelidir
   (P7a) — başvurunun `_FracLedger`'ı bunun tek farkıdır. (5) P3b-2a'nın açık kalanları (f8 aralık değişimleri,
   `PATH_1H_GAP` sayısı gerçek veride) aynen.
+
+**P3d uygulama notu (2026-10-13; walk-forward, istatistik, CSCV-PBO, plasebo, Kapı A bakış yordamı; S1 mührü DEĞİŞMEDİ).**
+Yalnız PAPER araştırma kodu; canlı kod/config/worker, gece birimi ve dağıtım değişmedi (gece bağlantısı P3g); gerçek veri
+koşusu yok (yalnız sentetik dünyalar). Mühürlü kayıtlar (`WF_PROTOCOL_V1`, `STATS_V1`, `LIB_V1`,
+`THRESHOLD_DIRECTIONS_V1`, `T_SEAL_MS`, `REGISTRY_SHA`) tek kaynaktır ve dokunulmadı; aşağıdaki okunuşlar mühürde
+yazılmayan uygulama ayrıntılarıdır, "UNSEALED" maddeleri sahibe sorulur (yeniden mühür yapılmadı).
+
+- **Modüller.** `research_engine/wf.py`: `quant.walkforward.make_folds(validation_days > 0)` + `run_three_way` (yeniden
+  kullanılır, çatallanmaz); sınıflar mühürden (`H1_PLUS` çapalı 365/90/90, `INTRADAY` kayan 120/30/14, `GOLD_FUT` çapalı
+  180/30/30, adım = test); veri başı ilk bar + 210 bar, en erken 2020-01-01; B1 bölüşümü (purge ⌊(1 + max_hold)/2⌋, embargo
+  kalan; her iki sınırda); katman başına `leakage_check` + etiket ufku denetimi → `LEAK` katmanı atılır ve sayılır; sabit
+  parametreli satır tek adaylı `run_three_way`; `COIN_FIT` üç yollu seçim (§2.4-2 büzülmesi, en iyi 3 aday, havuz eşiği
+  0,02R) ve katman başına `SELECT` satırı; kapı dışı işlemler (`kernel.gate_excluded`) seçim dahil hiçbir istatistiğe girmez,
+  sayı/pay/işaret dağılımı satırda; aileler `kernel.run_lockstep`, kopya + örtüler `kernel.make_family` + `run_lockstep`.
+  `research_engine/stats.py`: `p_day`, BH, DSR (`validation.deflated_sharpe` + ampirik `sr_var`), seçim grupları, bakış
+  takvimi ve §3.7 yordamı `gate_a_look` (zincir + mühür → satır istatistikleri → PBO → BH → DSR → `FWD_READ` → `LOOK_A`).
+  `research_engine/cscv.py`: C(16,8) = 12.870 bölünmenin hepsi. `research_engine/placebo.py`: K = 5, B6 tohumu, çekirdeğin
+  zorlanmış yeniden oynatımı, gün kümelenmeli fark CI'ı. `synthetic.py`: işlem düzeyi Kapı A dünyası (`gate_world`; boş ve
+  dikilmiş avantajlı). Deneme defterine yazım yalnız `trials.TrialsLedger.append` (AST testi: yeni modüllerde dosya
+  açma/yazma/silme yok).
+- **Okunuşlar (mühürde yazılmayan ayrıntı; sıkılaştıran ya da nötr).** (1) İşlemin günü GİRİŞ UTC günüdür (OOS üyeliği
+  girişle → her OOS işlemi OOS ekseninde; CSCV'nin ortak ekseni); DSR'nin günlük getirisi = o gün girilen işlemlerin ADVERSE
+  net USDT'si / 200 (gerçekleşmiş, girişe yazılır; çekirdek bacaklarından günlük piyasa değerlemesi yok). (2) `p_day`:
+  R mikro-R'ye yuvarlanır, karşılaştırma tam sayıyla kesin; p = (1 + aşım) / (B + 1); gün çekimi
+  `random.Random(B6).choices(range(D), k=D)` akışının KENDİSİ (aynı Mersenne Twister durumu numpy'ye aktarılır; testte
+  saf Python başvurusuyla eşit); < 2 gün → p yok (BH'de 1). (3) Sızıntı denetimine etiket ufku eklendi (eğitim işleminin
+  çıkışı doğrulamaya, doğrulamanınki teste taşamaz) — kanıtlanmamış satırı atar, gevşetmez. (4) `max_hold` çözümü:
+  `exits.max_hold_bars`; kopya/örtü/F2'de `copy_books.<taban>.max_hold`; Box "UTC gün sonu" = bir UTC günü (288 × 5m);
+  çok varyantlı satırda (ızgara) en uzun boşluk. (5) `COIN_FIT`: havuz = verilen bütün P23 coin'leri (coin dahil), küme =
+  coin'in kümesi − coin; "havuzun seçimi" = adaylar içinde doğrulama havuz ortalaması en yüksek olan; eşitlikte ızgara
+  sırası; eğitim/doğrulama dilimi boşsa katman atlanır (test günleri işlemsiz gün olarak OOS'ta kalır). (6) CSCV: ölçü
+  günlük Sharpe (Bailey vd. varsayılanı; DSR ile aynı), T mod 16 en eski gün atılır, grup ekseni üyelerin OOS günlerinin
+  kesişimi, OOS sırasında eşitlik ortalama sıra, IS-en-iyide eşitlik ilk sütun. (7) `sr_var` = o bakışta Sharpe'ı
+  hesaplanan aile satırlarının örneklem varyansı (ddof = 1), taban satırın kendi 1/(T − 1)'i. (8) Plasebo: ATR katı sinyal
+  kapanışına ve sinyal barının ATR14'üne göre; `max_hold_bars` = gerçek tutuş − 1 (çekirdek çıkış barını sayar; zaman
+  çıkışında tutuşlar eşit, testli); çekirdek girişi reddederse aynı üreteçten yeniden çekim (≤ 20); "± tutuş" = |t − gerçek
+  giriş| ≤ gerçek tutuş. (9) Seçim grupları: standart/diğer → aile × kapsam; `COIN_FIT` → ızgara; `COIN:` kopya satırları →
+  kopyanın coin satırları; kopyanın `POOLED_OWN` satırı ve örtüler → {kopya + örtüleri} (C4'te sekiz varyasyon + yedi
+  örtü). (10) Bakış gecesi: gün > 5 ve o ay defterde `LOOK_A` yok; `look_no` = defterdeki farklı bakış aylarının sayısı + 1;
+  ara gecede hüküm kelimesi ve yazım yok. (11) Hızlı kip (`full=False`; yalnız boş dünya deneyinde): BH'de geçemeyecek p
+  erken durur, koşulu tutmayan satırın PBO/plasebosu hesaplanmaz — hüküm tam kiple aynı (testli); defter yazan yordam hep
+  tam kiptir.
+- **UNSEALED — mühürde yok, sahibe sorulur (uydurulmadı; kapalı hata).** (U1) Kapı A eşiklerinin S1 dışındakileri
+  (OOS ≥ 100 işlem ve ≥ 2 takvim yılı, katman payı ≥ %60, PBO < 0,25, DSR ≥ 0,95, ileri okuma eşikleri) ana belge §6.7
+  gereği S2'dedir (P4a): `stats.GATE_A_PROVISIONAL` = S1 değerleri (q, plasebo alt sınırı, tek enstrüman payı, küme
+  tutarlılığı) + §3.7 METNİ, `sealed: False`; her `LOOK_A` satırı kaynağını yazar (`PROVISIONAL_UNSEALED`). "≥ 2 takvim
+  yılı" ≥ 730 OOS günü, altının "≥ 9 ay"ı ≥ 274 gün okundu. (U2) Plasebo fark CI'ının tekrar sayısı, tohumu ve taraf
+  başına en az günü S1'de yok: B = 10.000 (p_day'in mühürlü sayısı), tohum B6 biçimi `row_id|look_no|placebo_ci|real` /
+  `…|placebo`, en az 5 gün (laboratuvar `STRICT_MIN_DAYS`), yüzdelik ⌊α/2·(B−1)⌋ / ⌈(1−α/2)·(B−1)⌉. (U3) CSCV başarım ölçüsü
+  mühürde adlandırılmamış (Sharpe seçildi). (U4) **Hep piyasada olan ters dönen kurallarda plasebo tanımsız:** "kuralın
+  sinyal vermediği ve gerçek işlemlerin ± tutuşu dışındaki bar" kümesi boştur (sentetik 1d dünyada TS_*_LS 5/5 ve
+  MAX_*_1d_LS 2/2 için 0 uygun bar; Donchian LS'de var) → plasebo yok → bu satırlar Kapı A'yı hiç geçemez (kapalı hata,
+  testli). Sahip kararı gerekir (ör. "sinyal" = gerçek GİRİŞ barı, ya da ± tutuş dışlamasının bu kurallarda yeniden
+  tanımı). (U5) `K_FM@POOLED_OWN`'un örtüsü yok → seçim grubu tek yapılandırma → PBO hesaplanamaz → hiç geçemez (mühürlü
+  grup tanımının sonucu). (U6) Kopya/türev "aynı config dönemi" kıyası ve altının XAU–PAXG tutarlılığı girdi olarak
+  istenir (`epoch_ok`, `cluster_coherence_r`); verilmezse kapı geçmez (P4a). (U7) BH çözünürlüğü: m = 818 ve B = 10.000'de
+  tek başına geçen bir satır p = 1/10.001 (hiç aşım yok) ister (q = 0,0818); ikinci bir anlamlı satır eşiği gevşetmez,
+  yalnız sırayı değiştirir.
+- **Ölçümler (bu sandbox, tek süreç).** Tam sentetik Kapı A bakışı (29 gerçek havuz satırı, aile 818, plasebo + CSCV + DSR
+  + `FWD_READ`/`LOOK_A` yazımı, N = 4.513): ≈ 9 sn. Uçtan uca çekirdek → WF → plasebo → bakış (3 coin × 11 varyant, 1d,
+  1.600 bar + 1h alt barlar): ≈ 8 sn (çekirdek ≈ 7,5 sn). 200 boş dünya (hızlı kip): 0/200 dünya, 0/5.800 satır Kapı A'yı
+  geçti (≤ q = 0,10); ≈ 115 sn. Dikilmiş avantajlı dünyada yalnız dikilen satır geçer (q 0,082, DSR ≈ 1,0, PBO 0, plasebo
+  CI alt > 0).
+- **Testler.** `tests/test_research_engine_wf_p3d.py` (B1 ve her iki sınırda boşluk, sınıf uzunlukları, `max_hold` çözümü,
+  LEAK katmanının atılması/sayılması, arındırma bölgesi, çekirdek zaman stoplarıyla sızıntısızlık, `run_three_way`
+  adımlarının yalnız kendi dilimini gördüğü casus testi, test dilimini zehirlemenin seçimi değiştirmemesi, büzülme + havuz
+  eşiği + ADVERSE seçimi, küme tutarlılığı ve ızgara matrisi, `SELECT` satırlarının bir kez eklenmesi, mühürlü maliyet
+  tablosu, kapı dışı işlemler, `make_family` + `run_lockstep` bayt-aynılığı, uçtan uca bakış),
+  `tests/test_research_engine_stats_p3d.py` (`p_day` = başvuru uygulaması, tohum/akış eşitliği, parça/bellek/taşma yolu,
+  boşta kalibrasyon, BH = adım-yukarı yordamı ve m'nin küçülmemesi, DSR ampirik `sr_var` + taban, dikilmiş avantaj geçer,
+  200 boş dünya ≤ q (`slow`), hızlı kip = tam kip, kapı dışı işlemler, bakış gecesi kuralı ve özellik testi, kırık zincir /
+  mühür → kapı kapalı ve yazım yok, geçici eşiklerin etiketi, seçim grupları, yazım yolu AST'si),
+  `tests/test_research_engine_cscv_p3d.py` (gürültü → ortalama PBO 0,5 ± 0,1; dikilmiş avantaj → < 0,1; düz başvuruya
+  eşitlik; hesaplanamaz durumlar), `tests/test_research_engine_placebo_p3d.py` (B6 tohumu, belirlenimcilik ve yeniden
+  çekim, uygun bar kümesi, sinyal kaydedicinin sonucu değiştirmemesi, çekirdek plasebosunun yön/tutuş/ATR katı/katman
+  eşitliği, fark CI'ı, hep piyasada olan kural). Yalıtım sözleşmesi (`test_research_engine_p1b_contract.py`) paket dışı
+  izinlere gerekçesiyle `wf.py` → `quant` (yalnız `walkforward`), `stats.py` → `validation`, `placebo.py` →
+  `strategy_lib` (+ `indicators`) eklendi; dört modül ağsız modül listesinde.
+- **Açık kalanlar.** (1) U1–U7 sahibe (U1 S2 ile; U2–U4 S1 düzeltme mührüyle ya da S2'de). (2) Gece bağlantısı, önbellek,
+  P23 gerçek veri koşusu ve bütçe P3g'de; ileri okuma (`fwd`) keşif katmanından gelir (P3e). (3) `POOLED_OWN`/küme
+  satırlarının kapsam sembollerinin canlı kümelerden çözümü ve XSEC (PIT, P3c) satır kurucuları P3e/P3g'de; bu adımda
+  `gate_a_look` satır sonuçlarını hazır alır.
 
 ### 8.5 P3a boşlukları — sahibe sorular (entegrasyondan önce; her cevap boşluğu doldurur ve S1'i yeniden mühürler)
 

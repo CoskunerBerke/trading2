@@ -408,15 +408,26 @@ def _bar(r: Mapping[str, Any], ts: int) -> dict[str, Any]:
             "close": float(r["close"]), "volume": float(r.get("volume") or 0.0)}
 
 
+def funding_intervals(funding: Sequence[tuple[int, float, float]] | None, since_ms: int = T_SEAL_MS) -> dict[str, Any]:
+    """P3g gerçek veri sayacı (§8.4 P3b-2a m-D): mühürden sonraki uzlaşma aralıkları (saat, yuvarlanmış) ve aralığın
+    değiştiği geçiş sayısı. Dürüst sınır: eksik bir uzlaşma da (ör. 8h → 16h) geçiş gibi görünür; borsa aralık geçmişiyle
+    (fundingInfo) karşılaştırma veri biriminde yoktur."""
+    ts = [int(x[0]) for x in (funding or ()) if int(x[0]) >= int(since_ms)]
+    hs = [round((b - a) / 3_600_000) for a, b in zip(ts, ts[1:]) if b > a]
+    return {"intervals_h": sorted(set(hs)), "changes": sum(1 for a, b in zip(hs, hs[1:]) if a != b),
+            "settlements": len(ts)}
+
+
 def load_coin(reader: Any, coin: str, *, tick: float | None, now_ms: int, market: str = "futures",
-              t_seal_ms: int = T_SEAL_MS) -> CoinData:
+              t_seal_ms: int = T_SEAL_MS, tfs: Sequence[str] | None = None) -> CoinData:
     """Mühürlü depo okuyucusundan (`provider.SealedReader`; testte `ResearchStore`) girdi. Parça mühürden sonra değiştiyse
-    `moving` dolu döner (coin'in serileri o gece atlanır)."""
+    `moving` dolu döner (coin'in serileri o gece atlanır). `tfs` (P3g parite (b)): yalnız bu diziler (varsayılan: bütün
+    keşif dizileri)."""
     from .provider import DataMoving
     from .store import FUNDING, MARKPX_1H, SRC_COL
 
     raw = f"{coin_of(coin)}USDT"
-    tfs = sorted(warm_bars(), key=lambda t: TF_MS[t])
+    tfs = sorted(warm_bars() if tfs is None else set(tfs), key=lambda t: TF_MS[t])
     bars: dict[str, list[dict[str, Any]]] = {}
     fund: list[dict[str, Any]] = []
     mark: list[dict[str, Any]] = []
@@ -997,6 +1008,11 @@ def _finish_member(p: Mapping[str, Any], px: _Fwd, res: KN.KernelResult, cd: Coi
              "status": ST_OK}
     fl.write_state(_roundtrip(state))
     report["status"][ST_OK] = report["status"].get(ST_OK, 0) + 1
+    tf_count = report.setdefault("trade_flags", {})
+    for r in final_new:                                         # P3g: gerçek veri sayaçları (bu gece kesinleşenler)
+        report["trades_final"] = report.get("trades_final", 0) + 1
+        for f in r.get("flags") or ():
+            tf_count[str(f)] = tf_count.get(str(f), 0) + 1
     report["trades_new"] += len(closed_new)
     report["rows_appended"] += len(out_rows)
     report["bars"] += max(0, bisect.bisect_right(ct, F) - bisect.bisect_right(ct, resume))
@@ -1071,6 +1087,9 @@ def explore_step(root: Path | str, data: Mapping[str, CoinData] | Callable[[str]
             rep["moving"][coin] = cd.moving
             rep["status"][ST_DATA_MOVING] = rep["status"].get(ST_DATA_MOVING, 0) + n_series
             continue
+        fi = funding_intervals(cd.funding)
+        if fi["changes"] or fi["intervals_h"] not in ([], [8]):
+            rep.setdefault("funding_intervals", {})[coin] = fi
         for base, members in groups:
             try:
                 step_group(root, base, members, cd, btc, rep)
@@ -1377,6 +1396,7 @@ def query_lines(paths: Any, *, gold: bool = False, variant: str | None = None,
 __all__ = ["CoinData", "DAY_MS", "EntryUniverseRefused", "MARKPX", "EXPLORE_VERSION", "ExploreRefused", "GOLD_INSTRUMENTS", "LIB_VERSION", "Meta",
            "ROOT_NAME", "SETTLE_ROWS", "SOURCE", "STATE_SCHEMA", "ST_BLOCKED", "ST_DATA_MOVING", "ST_DEADLINE",
            "ST_ERROR", "ST_NO_FORWARD", "ST_NO_TICK", "ST_OK", "ST_UNCHANGED", "Series", "SeriesFiles", "T_SEAL_MS",
+           "funding_intervals",
            "TOP_TITLE", "UNIVERSE_SIZE", "VERDICT_WORDS", "coin_groups", "coin_of", "digest_lines", "dumps",
            "explore_root", "explore_step", "funding_warm_start", "fwd_reads", "inputs_from_rows", "leaderboard_lines",
            "load_coin", "meta", "plan_counts", "query_lines", "read_run", "read_states", "run_s4x", "runnable_variants",

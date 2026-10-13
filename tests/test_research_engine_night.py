@@ -177,7 +177,12 @@ def test_full_night_writes_only_under_research_and_opens_ledgers_read_only(tmp_p
     st2 = N.run_night(v.paths, now=night_of("2026-09-03"), **host.kw())
     monkeypatch.undo()
     assert st["result"] == N.R_SUCCESS and st2["result"] == N.R_SUCCESS, (st["stages"], st2["stages"])
-    assert list(st2["plan"]) == list(N.PLAN_FULL) and all(st2["stages"][s]["status"] == "OK" for s in N.STAGES)
+    assert list(st2["plan"]) == list(N.PLAN_FULL)
+    # P3g: S1 mühür anından (T_SEAL) önceki P1a gecesinde S4x/S4w nedenle atlanır (S6 defter adımı çalışır); diğerleri OK
+    ran = [s for s in N.STAGES if s not in ("S4x", "S4w")]
+    assert all(st2["stages"][s]["status"] == "OK" for s in ran), {s: st2["stages"][s]["status"] for s in N.STAGES}
+    assert all(st2["stages"][s]["status"] == "SKIPPED" and st2["stages"][s]["reason"].startswith("BEFORE_SEAL")
+               for s in ("S4x", "S4w")), {s: st2["stages"][s] for s in ("S4x", "S4w")}
     research = v.data / "research"
     for e in (ev, ev2):
         assert not _write_violations(e, research), _write_violations(e, research)[:5]
@@ -196,7 +201,7 @@ def test_full_night_writes_only_under_research_and_opens_ledgers_read_only(tmp_p
     assert rs["shas"] == {"app": SHA_APP, "engine": SHA_ENGINE, "relation": "ANCESTOR", "engine_code": SC.engine_code_hash()}
     assert len(rs["shas"]["engine_code"]) == 64
     assert rs["config"]["sha256"] and rs["data_seal"] is None and rs["schema"] == N.RUN_SCHEMA
-    for s in N.STAGES:
+    for s in ran:
         assert rs["stages"][s]["duration_s"] >= 0 and "cpu_s" in rs["stages"][s]
     assert {"cpu_self_s", "cpu_children_s", "maxrss_bytes", "memory_peak_bytes", "memory_max_bytes"} <= set(rs["resources"])
     assert rs["stages"]["S7b"]["result"]["verified"] is True
@@ -307,7 +312,8 @@ def test_s0_skew_runs_only_s0_s1a_s7(tmp_path):
         assert tuple(st["plan"]) == N.PLAN_SKEW == ("S0", "S1a", "S7")
         assert {k: s["status"] for k, s in st["stages"].items()} == {"S0": "OK", "S1a": "OK", "S3": "NOT_PLANNED",
                                                                      "S1b": "NOT_PLANNED", "S2": "NOT_PLANNED",   # P2b
-                                                                     "S7": "OK", "S7b": "NOT_PLANNED"}
+                                                                     "S4x": "NOT_PLANNED", "S4w": "NOT_PLANNED",  # P3g
+                                                                     "S6": "NOT_PLANNED", "S7": "OK", "S7b": "NOT_PLANNED"}
         assert st["selfcheck"]["skew"]["relation"] == ("NOT_ANCESTOR" if rc == 1 else "UNKNOWN")
         r = v.data / "research"
         assert C.latest_closes(v.paths, "main_fut") and (r / "snapshots" / "2026-09-02.json.gz").exists(), "arşiv çalıştı"
@@ -701,7 +707,8 @@ def test_ab_off_night_takes_only_the_snapshot_and_forced_archive_when_margin_low
     assert {k: x["status"] for k, x in st1["stages"].items()} == {"S0": "OK", "S1s": "OK", "S1a": "NOT_PLANNED",
                                                                   "S3": "NOT_PLANNED", "S1b": "NOT_PLANNED",
                                                                   "S2": "NOT_PLANNED", "S7": "NOT_PLANNED",   # P2b: S1b/S2
-                                                                  "S7b": "NOT_PLANNED"}
+                                                                  "S4x": "NOT_PLANNED", "S4w": "NOT_PLANNED",  # P3g
+                                                                  "S6": "NOT_PLANNED", "S7b": "NOT_PLANNED"}
     assert _files(v.paths.closes) == closes0 and _files(v.paths.entries) == entries0, "arşiv yazılmaz (çapa dahil)"
     assert v.paths.target_daily.read_bytes() == target0 and (v.paths.summary / "digest_tr.md").read_bytes() == digest0
     assert not list(v.paths.backup.glob("research-small-2026-09-02*")), "S7b yok"

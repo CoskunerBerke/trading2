@@ -85,9 +85,21 @@ EPOCH_SRC_TRANSITION, EPOCH_SRC_UNCOVERED = "SEALED_TRANSITION", "SEALED_UNCOVER
 
 
 # ============================================================================ config dönemi
+_SEALED_CACHE: dict[str, tuple[tuple[int, int], tuple[list[dict] | None, Any]]] = {}
+
+
 def _sealed_doc(research: Path) -> tuple[list[dict] | None, Any]:
-    """(dönemler, covered_until) — mühürlü P3 dosyası yoksa/okunamazsa (None, None)."""
-    p = research / "library" / "config_epochs.json"
+    """(dönemler, covered_until) — mühürlü P3 dosyası yoksa/okunamazsa (None, None). P3g: dosya (boy, mtime) değişmedikçe
+    süreç içinde bir kez okunur (günlük kurulumu satır başına çağırır)."""
+    p = Path(research) / "library" / "config_epochs.json"
+    try:
+        stt = p.stat()
+    except OSError:
+        return None, None
+    sig = (int(stt.st_size), int(stt.st_mtime_ns))
+    hit = _SEALED_CACHE.get(str(p))
+    if hit is not None and hit[0] == sig:
+        return hit[1]
     try:
         with open(p, "r", encoding="utf-8") as fh:
             d = json.load(fh)
@@ -95,8 +107,11 @@ def _sealed_doc(research: Path) -> tuple[list[dict] | None, Any]:
         return None, None
     eps = d.get("epochs") if isinstance(d, dict) else None
     if not isinstance(eps, list):
-        return None, None
-    return [e for e in eps if isinstance(e, dict)], parse_ts(d.get("covered_until"))
+        out: tuple[list[dict] | None, Any] = (None, None)
+    else:
+        out = ([e for e in eps if isinstance(e, dict)], parse_ts(d.get("covered_until")))
+    _SEALED_CACHE[str(p)] = (sig, out)
+    return out
 
 
 def config_epoch(book: str, opened_at: Any, *, research: Path | None = None) -> tuple[str | None, str]:

@@ -70,9 +70,12 @@ RUN_SCHEMA = "engine_run_status_v1"
 #: P2b: S1b (günlük + yol + rehydrate + fidelity) ve S2 (atıf + cfgrid + ayrıştırma) eklendi. S3 (P1a tgt_v1 + P2 UTC
 #: günü) S1b'den ÖNCE çalışır: ikisine bağlı değildir ve sahibin ana ölçümü uzun aşamaların son tarih payına bağlı kalmaz
 #: (modül başı madde 2).
-STAGES = ("S0", "S1a", "S3", "S1b", "S2", "S7", "S7b")
+#: P3g (ENGINE_BRAIN §5.2): S4x (keşif, ileri veri; ucuz, önce), S4w (walk-forward kuyruğu; kalan süre), S6 (defter zinciri,
+#: dersler, parite (b), Kapı A gecesi planı) S2'den sonra, S7/S7b'den önce. P4'ün S5/S5r'si henüz yok.
+STAGES = ("S0", "S1a", "S3", "S1b", "S2", "S4x", "S4w", "S6", "S7", "S7b")
+P3_STAGES = ("S4x", "S4w", "S6")
 STAGE_SNAPSHOT = "S1s"
-ALL_STAGES = ("S0", STAGE_SNAPSHOT, "S1a", "S3", "S1b", "S2", "S7", "S7b")
+ALL_STAGES = ("S0", STAGE_SNAPSHOT, "S1a", "S3", "S1b", "S2", "S4x", "S4w", "S6", "S7", "S7b")
 PLAN_FULL = STAGES
 PLAN_SKEW = ("S0", "S1a", "S7")
 PLAN_AB_OFF = ("S0", STAGE_SNAPSHOT)
@@ -84,6 +87,19 @@ DEADLINE_AFTER = timedelta(hours=2, minutes=3)
 #: − `S1B_RESERVE`'de (S2'ye en az 30 dk). İkisi de kaldığı yerden ertesi gece sürer (§6.1 "biten iş kalırsa").
 S2_RESERVE = timedelta(minutes=12)
 S1B_RESERVE = timedelta(minutes=42)
+#: P3g payları (§5.2 tablosu; S1b/S2 payları DEĞİŞMEDİ): S6 en geç son tarih − `S7_RESERVE`'de durur (S7 + S7b her gece
+#: çalışır); S4w son tarih − `S4W_RESERVE`'e kadar (S6 10 dk + S7 payı + 7 dk boşluk = 25 dk); Kapı A bakış gecesi S6 40
+#: dk alır, S4w o gece kısılır (`S4W_RESERVE_GATE_A`). S4x (≤ 10 dk) S4w'den önce, aynı payla.
+S7_RESERVE = timedelta(minutes=8)
+S6_BUDGET = timedelta(minutes=10)
+S6_BUDGET_GATE_A = timedelta(minutes=40)
+S4X_BUDGET = timedelta(minutes=10)
+S4W_RESERVE = timedelta(minutes=25)
+S4W_RESERVE_GATE_A = timedelta(minutes=55)
+#: gece penceresi dışında (smoke) P3 aşamalarının her biri en çok bu kadar (kalan iş gece birimine kalır)
+DAYTIME_P3_BUDGET_S = 2 * 60.0
+#: ETA hesabında bir gecenin S4w payı (≈ 01:37 → 03:15; §5.3 "S4w gecede ≈ 60–80 dk")
+S4W_NOMINAL_S = 70 * 60.0
 MIN_STAGE_BUDGET_S = 60.0
 #: Gece penceresi DIŞINDA (00:00–03:40 UTC dışı; elle/sürüm smoke çalıştırması) S1b ve S2 en çok bu kadar çalışır: ilk
 #: kurulum (bütün arşivin günlüğü + atıfı) smoke'u saatlerce uzatmasın; kalan iş gece birimine kalır.
@@ -106,6 +122,7 @@ F_BACKUP_VERIFY_FAILED, F_SUMMARY_REFRESH_FAILED = "BACKUP_VERIFY_FAILED", "SUMM
 F_S1B_BACKLOG, F_S2_BACKLOG, F_UTC_DAY_FAILED = "S1B_BACKLOG", "S2_BACKLOG", "UTC_DAY_FAILED"
 F_JOURNAL_INCONSISTENT, F_FIDELITY_GATE = "JOURNAL_INCONSISTENT", "FIDELITY_BELOW_TARGET"
 F_S2_TRADE_ERRORS = "S2_TRADE_ERRORS"
+F_S6_FAILED = "S6_SUBSTEP_FAILED"
 
 
 # ============================================================================ yardımcılar
@@ -148,6 +165,7 @@ def _cgroup_value(name: str) -> int | None:
 
 
 def resources(cpu0: dict[str, float], mono0: float) -> dict[str, Any]:
+    from .nightp3 import proc_status_bytes
     c = _cpu()
     peak = _cgroup_value("memory.peak")
     mmax = _cgroup_value("memory.max")
@@ -155,7 +173,8 @@ def resources(cpu0: dict[str, float], mono0: float) -> dict[str, Any]:
             "cpu_children_s": round(c["children"] - cpu0["children"], 3), "maxrss_bytes": int(c["maxrss_bytes"]),
             "memory_peak_bytes": peak, "memory_max_bytes": mmax,
             "memory_peak_ratio": round(peak / mmax, 4) if peak and mmax else None,
-            "memory_peak_source": "cgroup memory.peak" if peak is not None else "ru_maxrss (cgroup yok)"}
+            "memory_peak_source": "cgroup memory.peak" if peak is not None else "ru_maxrss (cgroup yok)",
+            "vm_hwm_bytes": proc_status_bytes("VmHWM")}
 
 
 def _err_text(exc: BaseException) -> dict[str, Any]:
@@ -245,7 +264,9 @@ class _Night:
     def __init__(self, paths: EnginePaths, *, now: datetime | None, app_dir: Path, engine_dir: Path,
                  env: Mapping[str, str], probes: SC.Probes | None, runner: Callable[..., Any] | None,
                  sleep: Callable[[float], None] | None, declared_instrument: str | None,
-                 backup_wait_s: float | None, free_bytes: int | None = None) -> None:
+                 backup_wait_s: float | None, free_bytes: int | None = None, memory_limit: int | None = None,
+                 rss_probe: Callable[[], int | None] | None = None) -> None:
+        from .nightp3 import MemoryGuard
         self.paths, self.fixed_now = paths, now
         self.app_dir, self.engine_dir, self.env = Path(app_dir), Path(engine_dir), env
         self.probes, self.runner, self.sleep = probes, runner, sleep
@@ -257,6 +278,10 @@ class _Night:
         self.start = now or utc_now()
         self.deadline = compute_deadline(self.start)
         self.run_id: str | None = None
+        #: §5.3 MEMORY_GUARD (S4w/S6): sınır = cgroup memory.max, yoksa ENGINE_EXPECTED_MEMORY_MAX
+        self.guard = MemoryGuard.for_night(_cgroup_value("memory.max") if memory_limit is None else memory_limit, env,
+                                           rss=rss_probe)
+        self.gate_a_night = False
         self.flags: set[str] = set()
         self.plan: tuple[str, ...] = ("S0",)
         self.stages: dict[str, dict[str, Any]] = {}
@@ -302,14 +327,19 @@ class _Night:
         return self.status
 
     # ---------------------------------------------------------------- aşama
-    def budget_s(self, reserve: timedelta) -> float:
+    def budget_s(self, reserve: timedelta, *, daytime_cap: float | None = None) -> float:
         """Aşamanın duvar saati payı: (iç son tarih − `reserve`) − şimdi (saniye; S1b/S2 kaldığı yerden devam eder).
-        Gece penceresi dışında başlayan çalıştırmada en çok `DAYTIME_STAGE_BUDGET_S`."""
+        Gece penceresi dışında başlayan çalıştırmada en çok `daytime_cap` (S1b/S2 `DAYTIME_STAGE_BUDGET_S`, P3
+        aşamaları `DAYTIME_P3_BUDGET_S`)."""
         b = ((self.deadline - reserve) - self.clock()).total_seconds()
-        hh, mm = NIGHT_DEADLINE_HM
-        if self.start >= self.start.replace(hour=hh, minute=mm, second=0, microsecond=0):
-            b = min(b, DAYTIME_STAGE_BUDGET_S)
+        if self.daytime:
+            b = min(b, DAYTIME_STAGE_BUDGET_S if daytime_cap is None else daytime_cap)
         return b
+
+    @property
+    def daytime(self) -> bool:
+        hh, mm = NIGHT_DEADLINE_HM
+        return self.start >= self.start.replace(hour=hh, minute=mm, second=0, microsecond=0)
 
     def stage(self, name: str, fn: Callable[[], dict[str, Any] | None], *, skip_reason: str | None = None,
               reserve: timedelta | None = None) -> dict | None:
@@ -418,7 +448,26 @@ class _Night:
             self.plan = PLAN_FULL
         if skew["status"] != SC.OK:
             self.flags.add(SC.SKEW)
+        if self.plan == PLAN_FULL:
+            self._config_epochs()
         return _close(None)
+
+    def _config_epochs(self) -> None:
+        """P3g: mühürlü config dönemlerini araştırma köküne kur + mühürden sonraki dönemler (`epochs_night`; yalnız tam
+        plan). Arıza gecenin geri kalanını durdurmaz (`CONFIG_EPOCHS_FAILED`)."""
+        from . import epochs_night as EN
+        from .nightp3 import F_CONFIG_EPOCHS
+        cfg = self.status.get("config") or {}
+        try:
+            raw = None
+            if cfg.get("ok"):
+                with open(self.app_dir / "config.yaml", "rb") as fh:
+                    raw = fh.read()
+            r = EN.update(self.paths, config_bytes=raw, config_sha256=cfg.get("sha256"), now=self.start)
+        except Exception as exc:  # noqa: BLE001
+            self.flags.add(F_CONFIG_EPOCHS)
+            r = {"status": "FAILED", **_err_text(exc)}
+        self.status["config_epochs"] = r
 
     # ---------------------------------------------------------------- ana akış
     def run(self) -> dict[str, Any]:
@@ -483,6 +532,7 @@ class _Night:
             self.stage("S2", lambda: self._s2(now_arg),
                        skip_reason=("DATA_STALE (veri mührü eski; §6.1)" if data_stale else
                                     None if s1b_ok else "S1b çalışmadı/başarısız"), reserve=S2_RESERVE)
+            self._p3_stages()
             self.stage("S7", self._s7)
             self.stage("S7b", self._s7b)
             if any(s.get("status") == ST_FAILED for s in self.stages.values()):
@@ -501,6 +551,118 @@ class _Night:
             return self.finish(result)
         finally:
             lk.release()
+
+    # ---------------------------------------------------------------- P3 (S4x, S4w, S6)
+    def _p3_budget(self, reserve: timedelta) -> float:
+        return self.budget_s(reserve, daytime_cap=DAYTIME_P3_BUDGET_S)
+
+    def _now_ms(self) -> int:
+        return int(self.clock().timestamp() * 1000)
+
+    def _p3_stages(self) -> None:
+        """P3g (§5.2): S4x → S4w → S6. Atlama: plan dışı (A/B KAPALI, SKEW) NOT_PLANNED; `DATA_STALE`, veri mührü yok,
+        giriş evreni farkı → S4x/S4w SKIPPED; `BACKFILL_ACTIVE` ve S1b yeniden kurulum gecesi → S4w SKIPPED."""
+        from . import nightp3 as NP
+        if not any(s in self.plan for s in P3_STAGES):
+            for s in P3_STAGES:
+                self.stage(s, lambda: None)
+            return
+        try:
+            pre = NP.preflight(self.paths, self.app_dir)
+        except Exception as exc:  # noqa: BLE001 — ön koşul okunamadı: S4x/S4w atlanır, S6 (defter) sürer
+            pre = {"skip": f"PREFLIGHT_FAILED: {type(exc).__name__}: {exc}"[:300], "reader": None, "ticks": {},
+                   "entry": None, "entry_symbols": []}
+        p3: dict[str, Any] = {"entry_universe": pre.get("entry"), "data_seal": pre.get("data_seal"),
+                              "ticks": len(pre.get("ticks") or {}), "skip": pre.get("skip")}
+        self.status["p3"] = p3
+        if str(pre.get("skip") or "").startswith(NP.R_UNIVERSE):
+            self.flags.add(NP.F_ENTRY_UNIVERSE_DIFF)
+        try:
+            self.gate_a_night = NP.gate_a_night(self.paths, self.start.date())
+        except Exception:  # noqa: BLE001
+            self.gate_a_night = False
+        p3["gate_a_night"] = self.gate_a_night
+        reserve = S4W_RESERVE_GATE_A if self.gate_a_night else S4W_RESERVE
+        p3["s4w_reserve_min"] = reserve.total_seconds() / 60
+        p3["s6_budget_min"] = (S6_BUDGET_GATE_A if self.gate_a_night else S6_BUDGET).total_seconds() / 60
+        from .registry import T_SEAL_MS
+        self.before_seal = self.start.timestamp() * 1000 < int(T_SEAL_MS)
+        why = ("BEFORE_SEAL (S1 mühür anından önce P3 veri koşusu yok; §8.2)" if self.before_seal else
+               "DATA_STALE (veri mührü eski; §5.2: ilk taze AÇIK gece birikmiş barları işler)"
+               if SC.DATA_STALE in self.flags else pre.get("skip"))
+        # S4x/S4w payla sınırlı ve kaldığı yerden süren işlerdir: S1b/S2 gecenin payını kullandıysa "pay yok" bir birikimdir
+        # (S1B_BACKLOG/S2_BACKLOG gibi; sonuç SUCCESS kalır), son tarih aşımı değil. İç son tarih geçtiyse stage() yine
+        # SKIPPED_DEADLINE yazar.
+        no_budget = why is None and self.clock() <= self.deadline and self._p3_budget(reserve) < MIN_STAGE_BUDGET_S
+        if no_budget:
+            why = (f"NO_BUDGET: S4x/S4w payı yok ({iso(self.deadline - reserve)}'e kadar; S1b/S2 gecenin payını kullandı) "
+                   "— birikim ertesi gece sürer")
+            self.flags.update({NP.F_S4X_BACKLOG, NP.F_WF_BACKLOG})
+        self.stage("S4x", lambda: self._s4x(pre, reserve), skip_reason=why, reserve=reserve)
+        wskip = why
+        if wskip is None:
+            act, bwhy = NP.backfill_active(self.paths)
+            if act:
+                self.flags.add(NP.F_BACKFILL_ACTIVE)
+                wskip = f"BACKFILL_ACTIVE: {bwhy}"
+        if wskip is None:
+            rb, rwhy = NP.is_rebuild_night((self.stages.get("S1b") or {}).get("result"))
+            if rb:
+                wskip = rwhy
+        if wskip is None and self.clock() <= self.deadline and self._p3_budget(reserve) < MIN_STAGE_BUDGET_S:
+            wskip = f"NO_BUDGET: S4w payı yok ({iso(self.deadline - reserve)}'e kadar) — kuyruk ertesi gece sürer"
+            self.flags.add(NP.F_WF_BACKLOG)
+        self.stage("S4w", lambda: self._s4w(pre, reserve), skip_reason=wskip, reserve=reserve)
+        self.stage("S6", lambda: self._s6(pre), reserve=S7_RESERVE)
+        rec = self.stages.get("S6") or {}
+        res = rec.get("result") or {}
+        self.flags.update(res.get("flags") or [])
+        if rec.get("status") == ST_OK and res.get("errors"):
+            rec.update(status=ST_FAILED, error="; ".join(res["errors"])[:400])
+            self.flags.update({F_STAGE_FAILED, F_S6_FAILED})
+        p3["guard"] = self.guard.summary()
+        p3["explore_digest"] = NP.explore_digest(self.paths)
+
+    def _s4x(self, pre: Mapping[str, Any], reserve: timedelta) -> dict[str, Any]:
+        from . import nightp3 as NP
+        b = min(S4X_BUDGET.total_seconds(), self._p3_budget(reserve))
+        r = NP.run_s4x(self.paths, pre, now_ms=self._now_ms(), budget_s=b)
+        if (r.get("status") or {}).get("DEADLINE"):
+            self.flags.add(NP.F_S4X_BACKLOG)
+        if r.get("errors"):
+            self.flags.add(NP.F_S4X_ERRORS)
+        return r
+
+    def _s4w(self, pre: Mapping[str, Any], reserve: timedelta) -> dict[str, Any]:
+        from . import nightp3 as NP
+        b = self._p3_budget(reserve)
+        r = NP.run_s4w(self.paths, pre, now_ms=self._now_ms(), deadline_mono=time.monotonic() + b, guard=self.guard,
+                       night_budget_s=S4W_NOMINAL_S)
+        r["budget_s"] = round(b, 1)
+        bl = r.get("backlog") or {}
+        if bl.get("building_month") or not bl.get("complete_month"):
+            self.flags.add(NP.F_WF_BACKLOG)
+        if r.get("stop") == NP.F_MEMORY_GUARD:
+            self.flags.add(NP.F_MEMORY_GUARD)
+        if r.get("mismatch"):
+            self.flags.add(NP.F_WF_CACHE_MISMATCH)
+        if r.get("units_error"):
+            self.flags.add(NP.F_WF_UNIT_ERRORS)
+        return r
+
+    def _s6(self, pre: Mapping[str, Any]) -> dict[str, Any]:
+        from . import nightp3 as NP
+        from .summary import last_with_stage
+        b = min((S6_BUDGET_GATE_A if self.gate_a_night else S6_BUDGET).total_seconds(),
+                self._p3_budget(S7_RESERVE))
+        wf = ((self.stages.get("S4w") or {}).get("result") or {}).get("backlog") or NP.wf_backlog(self.paths)
+        try:
+            prev = last_with_stage(self.paths, "S6")
+        except Exception:  # noqa: BLE001
+            prev = None
+        return NP.run_s6(self.paths, now=self.clock(), app_dir=self.app_dir, guard=self.guard, prev_status=prev,
+                         budget_s=b, look_night=self.gate_a_night, wf_backlog=wf, reader=pre.get("reader"),
+                         parity=not getattr(self, "before_seal", False))
 
     # ---------------------------------------------------------------- aşama gövdeleri
     def _s1s(self, now: datetime | None) -> dict[str, Any]:
@@ -587,19 +749,21 @@ def run_night(paths: EnginePaths | None = None, *, now: datetime | None = None, 
               engine_dir: Path | str | None = None, env: Mapping[str, str] | None = None, probes: SC.Probes | None = None,
               runner: Callable[..., Any] | None = None, sleep: Callable[[float], None] | None = None,
               declared_instrument: str | None = None, backup_wait_s: float | None = None,
-              free_bytes: int | None = None) -> dict[str, Any]:
+              free_bytes: int | None = None, memory_limit: int | None = None,
+              rss_probe: Callable[[], int | None] | None = None) -> dict[str, Any]:
     """Bir gece çalıştırması. `now` verilirse (test/sahte VPS) bütün okumalar ve zaman damgaları o ana sabitlenir;
     `probes`/`runner`/`sleep` öz-denetim denemelerinin, `free_bytes` disk ölçümünün (yalnız boş alan; eşikler aynı)
-    yerine-geçenleridir. Dönen: `run_status` sözlüğü."""
+    yerine-geçenleridir; `memory_limit`/`rss_probe` MEMORY_GUARD'ın sınırı (varsayılan cgroup `memory.max`, yoksa
+    `ENGINE_EXPECTED_MEMORY_MAX`) ve RSS ölçümü (yalnız test). Dönen: `run_status` sözlüğü."""
     env = os.environ if env is None else env
     paths = paths or EnginePaths.from_env(env)
     n = _Night(paths, now=now, app_dir=Path(app_dir), engine_dir=Path(engine_dir or SC.ENGINE_DIR_DEFAULT), env=env,
                probes=probes, runner=runner, sleep=sleep, declared_instrument=declared_instrument,
-               backup_wait_s=backup_wait_s, free_bytes=free_bytes)
+               backup_wait_s=backup_wait_s, free_bytes=free_bytes, memory_limit=memory_limit, rss_probe=rss_probe)
     return n.run()
 
 
-__all__ = ["ALL_STAGES", "DEADLINE_AFTER", "EXIT_CODES", "KEEP_RUNS", "PLAN_AB_OFF", "PLAN_AB_OFF_FORCED", "PLAN_FULL",
+__all__ = ["ALL_STAGES", "DEADLINE_AFTER", "EXIT_CODES", "KEEP_RUNS", "P3_STAGES", "PLAN_AB_OFF", "PLAN_AB_OFF_FORCED", "PLAN_FULL",
            "PLAN_SKEW", "RUN_SCHEMA", "R_AB_OFF", "R_AB_OFF_FORCED", "R_DEADLINE", "R_DISK_REFUSE", "R_FAILED",
            "R_ISOLATION_BROKEN", "R_NOT_PAPER", "R_ROOT_REFUSED", "R_SKEW", "R_SKIPPED_LOCKED", "R_SUCCESS", "STAGES",
            "STAGE_SNAPSHOT", "compute_deadline", "prune_runs", "read_last_status", "resources", "root_refusal", "run_night"]

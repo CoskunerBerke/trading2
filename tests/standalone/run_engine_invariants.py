@@ -1,12 +1,14 @@
 # -*- coding: utf-8 -*-
-"""BAĞIMSIZ KOŞUCU — sürekli öğrenme motoru P1a + P1b + P2 (docs/SYSTEM_LEARNING_ENGINE_V1.md §9.3, §10 P1a kabul 18).
+"""BAĞIMSIZ KOŞUCU — sürekli öğrenme motoru P1a + P1b + P2 + P3g (docs/SYSTEM_LEARNING_ENGINE_V1.md §9.3, §10 P1a kabul 18).
 
 VPS'te pytest YOKTUR. Motor sürüm betiğinin `--dry-run`'ı (ve dağıtımın ön denetimi) depo testlerinin VPS'te anlamlı
 alt kümesini bu dosyayla, pytest OLMADAN, AYRI bir süreçte koşar: P1a kabul 1–8, 13, 14 ve (P1b'den) P1b depo kabul
 testleri 1–11, 13–15. İki aşamanın kabul numaraları çakışmasın diye P1b'ninkiler **100 eklenerek** yazılır (101 = P1b
 kabul 1, …, 115 = P1b kabul 15); P2'ninkiler **200 eklenerek** (201 uzlaştırma — S1a okumasına göre, 205 fidelity, 207 atıf/ızgara/ayrıştırma altın
 yolları + mühürler, 208 bayt-özdeşlik ve kaldığı yerden devam, 211 §5.10 Box bulgusu, 212 özet/sorgu sınırları, 213 gece
-S1b/S2 + son tarih payı + ölçeklenmiş zamanlama). P1b kabul 12 (veri birimi sözleşmesi) birim DOSYASI testidir; sürüm betiği aynı
+S1b/S2 + son tarih payı + ölçeklenmiş zamanlama); P3g'ninkiler **300 eklenerek** (301 gece planı ve paylar, 302 atlama
+kuralları, 303 MEMORY_GUARD, 304 S4w kontrol noktası ve haftalık doğrulama, 305 Kapı A gecesi planı, 306 birim sözleşmesi,
+307 deneme defteri HWM kopyası, 308 config dönemlerinin kurulumu). P1b kabul 12 (veri birimi sözleşmesi) birim DOSYASI testidir; sürüm betiği aynı
 satırları kendi `unit_contract`'ıyla ve sha256 sabitiyle denetler. Parametreli testler (ör. P1b kabul 5'in günlük
 koruması ve 418/429 varyantları) bu koşucuda koşamaz; kabul 5'in alt kümesi sabitlenmiş metin kalıbı testidir:
 
@@ -153,9 +155,33 @@ SUBSET: tuple[tuple[int, str, str], ...] = (
     (212, "test_research_engine_p2_fixes", "test_m3_book_view_needs_n30_and_10_days_and_never_offers_leverage"),
     (212, "test_research_engine_p2_fixes", "test_m3_digest_text_labels_the_selection_and_never_mentions_leverage"),
     (213, "test_research_engine_p2_fixes", "test_m6_p2_night_unit_memory_and_part_caches"),
+    # P3g (ENGINE_BRAIN §8.1 P3g; 300 + kabul): gece planı ve paylar, atlama kuralları, MEMORY_GUARD, S4w kontrol noktası,
+    # Kapı A gecesi planı, birim sözleşmesi, deneme defteri HWM kopyası, config dönemlerinin kurulumu. Büyük sentetik
+    # dünya ölçümü (VmHWM, pencere) depoda koşar (`slow`), VPS'te değil.
+    (301, "test_research_engine_night_p3g", "test_full_plan_runs_forward_stages_first_and_reserves_leave_s6_s7_and_s7b_their_time"),
+    (301, "test_research_engine_night_p3g", "test_p3_night_runs_s4x_s4w_s6_installs_config_epochs_and_keeps_the_summary_bounded"),
+    (302, "test_research_engine_night_p3g", "test_ab_off_and_skew_nights_do_not_plan_p3_stages"),
+    (302, "test_research_engine_night_p3g", "test_data_stale_skips_s4x_and_s4w_but_s6_still_checks_the_ledger"),
+    (302, "test_research_engine_night_p3g", "test_backfill_active_skips_only_s4w"),
+    (302, "test_research_engine_night_p3g", "test_rebuild_night_and_entry_universe_diff_skip_with_a_reason"),
+    (302, "test_research_engine_night_p3g",
+     "test_no_budget_left_after_s1b_s2_is_a_p3_backlog_not_a_deadline_and_s6_s7_s7b_still_run"),
+    (303, "test_research_engine_night_p3g", "test_memory_guard_uses_cgroup_then_expected_env_and_trips_above_seventy_percent"),
+    (303, "test_research_engine_night_p3g", "test_memory_guard_stops_s4w_with_a_checkpoint_and_s6_lessons_never_s1a_s3_s7b"),
+    (303, "test_research_engine_night_p3g",
+     "test_a_unit_longer_than_the_night_or_over_the_memory_guard_is_dropped_mid_unit_counted_and_then_skipped"),
+    (304, "test_research_engine_night_p3g",
+     "test_s4w_resumes_from_its_checkpoint_byte_identical_to_one_shot_and_counts_killed_units"),
+    (304, "test_research_engine_night_p3g", "test_weekly_one_seventh_verification_recomputes_and_reports_a_cache_mismatch"),
+    (305, "test_research_engine_night_p3g",
+     "test_gate_a_look_night_gives_s6_forty_minutes_shrinks_s4w_once_per_month_and_stays_provisional"),
+    (306, "test_research_engine_night_p3g", "test_night_unit_contract_expected_memory_max_equals_memory_max_and_the_guard_reads_it"),
+    (307, "test_research_engine_night_p3g", "test_s6_detects_a_ledger_restored_together_with_its_hwm_from_the_summary_copy"),
+    (308, "test_research_engine_night_p3g",
+     "test_post_seal_trade_gets_a_night_epoch_and_the_journal_digest_only_changes_once_installed"),
 )
 ACCEPTANCE = (1, 2, 3, 4, 5, 6, 7, 8, 13, 14, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 113, 114, 115,
-              201, 205, 207, 208, 211, 212, 213)
+              201, 205, 207, 208, 211, 212, 213, 301, 302, 303, 304, 305, 306, 307, 308)
 _NOTSET = object()
 
 
@@ -442,7 +468,7 @@ def run(tree: Path, tmp_root: Path, *, only: set[int] | None = None) -> list[dic
 
 
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(description="Öğrenme motoru P1a + P1b + P2 bağımsız değişmez koşucusu (pytest yok)")
+    ap = argparse.ArgumentParser(description="Öğrenme motoru P1a + P1b + P2 + P3g bağımsız değişmez koşucusu (pytest yok)")
     ap.add_argument("--tree", default=str(Path(__file__).resolve().parents[2]), help="kod ağacı (engine-app) kökü")
     ap.add_argument("--tmp", default=None, help="geçici kök (varsayılan: yeni tempfile klasörü; sonunda silinir)")
     ap.add_argument("--keep", action="store_true", help="geçici klasörü silme")

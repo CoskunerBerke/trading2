@@ -134,7 +134,7 @@ def target_summary(paths: EnginePaths) -> dict | None:
 # ============================================================================ satırlar
 def _stage_line(st: dict) -> str:
     parts = []
-    for name in ("S0", "S1s", "S1a", "S3", "S1b", "S2", "S7", "S7b"):
+    for name in ("S0", "S1s", "S1a", "S3", "S1b", "S2", "S4x", "S4w", "S6", "S7", "S7b"):
         s = (st.get("stages") or {}).get(name)
         if not s:
             continue
@@ -272,6 +272,91 @@ def _p2_lines(st: dict) -> list[str]:
             f"{r2.get('rows', '—')} satır (bekleyen {r2.get('pending') or 0}) · ızgara OK {(r2.get('grid') or {}).get('OK', 0)}"]
 
 
+def _mib(b: Any) -> str:
+    return "—" if not isinstance(b, (int, float)) else f"{b / 1_048_576:.0f} MiB"
+
+
+def _p3_lines(st: dict) -> list[str]:
+    """P3g satırları (S4x, S4w, S6, bellek koruması, config dönemleri). P3 aşaması hiç planlanmadıysa yalnız neden."""
+    stages = st.get("stages") or {}
+    x, w, s6 = stages.get("S4x") or {}, stages.get("S4w") or {}, stages.get("S6") or {}
+    if not (x or w or s6):
+        return []
+    if all((v or {}).get("status") == "NOT_PLANNED" for v in (x, w, s6)):
+        return ["P3: plan dışı (A/B KAPALI ya da SKEW gecesi)"]
+    out = []
+
+    def _why(r: dict) -> str:
+        return f"{r.get('status')}" + (f" — {str(r.get('reason'))[:140]}" if r.get("reason") else "")
+    rx = x.get("result") or {}
+    if rx:
+        rd = rx.get("real_data") or {}
+        fl = rd.get("trade_flags") or {}
+        stc = rx.get("status") or {}
+        out.append(f"P3 S4x keşif {x.get('status')}: OK {stc.get('OK', 0)} · değişmedi {stc.get('UNCHANGED', 0)} · ileri "
+                   f"verisiz {stc.get('NO_FORWARD_DATA', 0)} · süre dolan {stc.get('DEADLINE', 0)} · yeni işlem "
+                   f"{rx.get('trades_new', 0)} · kesinleşen {rd.get('trades_final', 0)} (PATH_1H_GAP "
+                   f"{fl.get('PATH_1H_GAP', 0)}, FUNDING_GAP {fl.get('FUNDING_GAP', 0)}, F8_UNMEASURABLE "
+                   f"{fl.get('F8_UNMEASURABLE', 0)}) · fonlama aralık geçişi {rd.get('funding_interval_changes', 0)}")
+    else:
+        out.append("P3 S4x keşif " + _why(x))
+    rw = w.get("result") or {}
+    if rw:
+        bl = rw.get("backlog") or {}
+        eta = rw.get("eta_nights")
+        out.append(f"P3 S4w WF {w.get('status')}: WF_BACKLOG {bl.get('done')}/{bl.get('total')} (kurulan ay "
+                   f"{bl.get('building_month') or '—'}, tam {bl.get('complete_month') or '—'}) · bu gece birim "
+                   f"{rw.get('units_done', 0)} · ETA ≈ {'—' if eta is None else _f(eta, 1)} gece · durma {rw.get('stop')}"
+                   + (f" · doğrulama {rw.get('verified')}/fark {rw.get('mismatch')}" if rw.get("verified") else "")
+                   + (f" · atlanan birim {bl.get('skipped')}" if bl.get("skipped") else "")
+                   + (f" · birim ortasında bırakıldı {(rw.get('aborted') or {}).get('unit')} "
+                      f"({(rw.get('aborted') or {}).get('why')})" if rw.get("aborted") else ""))
+    else:
+        out.append("P3 S4w WF " + _why(w))
+    r6 = s6.get("result") or {}
+    if r6:
+        tr, le, pb, ga = (r6.get("trials") or {}), (r6.get("lessons") or {}), (r6.get("parity_b") or {}), \
+            (r6.get("gate_a") or {})
+        verd = pb.get("verdicts") or {}
+        vc: dict[str, int] = {}
+        for v in verd.values():
+            vc[v] = vc.get(v, 0) + 1
+        fm = pb.get("formasyon_bars_4h") or {}
+        out.append(f"P3 S6 {s6.get('status')}: deneme defteri {tr.get('code')} (satır {tr.get('rows')}) · dersler "
+                   f"{le.get('status')} (bakış {le.get('looks', 0)}) · parite (b) "
+                   + (", ".join(f"{k} {n}" for k, n in sorted(vc.items())) or str(pb.get("status") or "—"))
+                   + (f" · Formasyon bars[4h] {fm.get('with_key')}/{fm.get('records')}" if fm else "")
+                   + f" · Kapı A (GEÇİCİ) {ga.get('status')}")
+    else:
+        out.append("P3 S6 " + _why(s6))
+    g = (st.get("p3") or {}).get("guard") or {}
+    ce = st.get("config_epochs") or {}
+    out.append(f"Bellek koruması: tepe RSS {_mib(g.get('max_rss_bytes'))} · VmHWM {_mib(g.get('vm_hwm_bytes'))} · sınır "
+               f"{_mib(g.get('limit_bytes'))} × {g.get('fraction', 0.7)} ({g.get('source') or '—'}) · ihlal "
+               f"{len(g.get('trips') or [])} · config dönemleri {ce.get('status', '—')} (gece dönemi "
+               f"{ce.get('night_epochs', 0)})")
+    return out
+
+
+def _p3_summary(st: dict) -> dict[str, Any]:
+    """engine_summary.json'un P3 bölümü (küçük): S4x/S4w/S6 sonuçları, deneme defteri HWM kopyası, koruma, dönemler."""
+    stages = st.get("stages") or {}
+
+    def _r(k: str) -> dict:
+        x = stages.get(k) or {}
+        return {"status": x.get("status"), "reason": x.get("reason"), "result": x.get("result")}
+    s6 = _r("S6")
+    res6 = dict(s6.get("result") or {})
+    pb = dict(res6.get("parity_b") or {})
+    pb.pop("computed", None)
+    pb.pop("unchanged", None)
+    res6["parity_b"] = pb
+    s6["result"] = res6 or None
+    p3 = {k: v for k, v in (st.get("p3") or {}).items() if k != "explore_digest"} or None   # keşif satırları digest'te
+    return {"s4x": _r("S4x"), "s4w": _r("S4w"), "s6": s6, "p3": p3, "config_epochs": st.get("config_epochs"),
+            "trials_hwm_copy": ((res6.get("trials") or {}).get("hwm_copy"))}
+
+
 def _data_lines(st: dict) -> list[str]:
     """P1b'den veri tazeliği (S0'ın `check_data_status` sonucu); veri birimi hiç çalışmadıysa satır yok."""
     ds = (st.get("selfcheck") or {}).get("data") or {}
@@ -365,7 +450,7 @@ def status_lines(paths: EnginePaths, *, brief: bool = True, now: datetime | None
     mid: list[str] = []
     if st:
         mid = [_selfcheck_line(st), _skew_line(st), _ab_line(st), _backup_unit_line(st), _config_line(st),
-               _resource_line(st), _ledger_line(st), *_data_lines(st), *_p2_lines(st), _flags_line(st)]
+               _resource_line(st), _ledger_line(st), *_data_lines(st), *_p2_lines(st), *_p3_lines(st), _flags_line(st)]
         books = _books_lines(last_with_stage(paths, "S1a", st), detail=not brief, current_id=st.get("run_id"))
         bline = [_backup_line(st, last_with_stage(paths, "S7b", st))]
     else:
@@ -416,6 +501,13 @@ def _p2_sections(paths: EnginePaths, st: dict, now: datetime, max_trades: int) -
         return [("p2_day", ["## Neden kaybetti / kazandı", "", f"(P2 bölümü üretilemedi: {type(exc).__name__}: {exc})"[:300], ""])]
 
 
+def _explore_digest(st: dict[str, Any]) -> list[str]:
+    """Keşif özeti (ana belge §6.8): gecenin `run_status.p3.explore_digest` satırları (`nightp3.explore_digest`; özet
+    modülü keşfi import etmez)."""
+    lines = [str(x)[:300] for x in ((st.get("p3") or {}).get("explore_digest") or [])[:12]]
+    return ["", *lines] if lines else []
+
+
 def _utc_lines(paths: EnginePaths, now: datetime) -> list[str]:
     try:
         from .report import utc_day_lines
@@ -458,6 +550,10 @@ def _digest_text(paths: EnginePaths, st: dict, *, now: datetime, max_trades: int
            "- " + _selfcheck_line(st), "- " + _skew_line(st), "- " + _ab_line(st), "- " + _backup_unit_line(st),
            "- " + _config_line(st), "- " + _resource_line(st), "- " + _ledger_line(st), "- " + _flags_line(st), ""]
     sections.append(("run", run))
+    p3 = _p3_lines(st)
+    if p3:
+        sections.append(("p3", ["## Keşif, walk-forward ve dersler (P3; kayıt-yalnız, kanıt değil)", "",
+                                *("- " + x for x in p3), *_explore_digest(st), ""]))
     books = _books_lines(last_with_stage(paths, "S1a", st), current_id=st.get("run_id"))
     sections.append(("arc", ["## Arşiv", "", "```", *books, "```", "", _backup_line(None, last_with_stage(paths, "S7b", st)),
                              ""]))
@@ -468,7 +564,7 @@ def _digest_text(paths: EnginePaths, st: dict, *, now: datetime, max_trades: int
     if len(text.encode("utf-8")) <= DIGEST_MAX_BYTES:
         return text
     # sınır: önce arşiv tablosu, sonra 7 günlük tablo, sonra P2 ayrıntısı kısalır; en sonda sert kesim
-    for drop in ("arc", "tbl", "p2_exante", "p2_why", "mon"):
+    for drop in ("arc", "tbl", "p2_exante", "p2_why", "p3", "mon"):
         sections = [(k, ls if k != drop else ls[:1] + ["", "(boyut sınırı: kısaltıldı — engine-status)", ""])
                     for k, ls in sections]
         text = "\n".join(line for _, ls in sections for line in ls)
@@ -501,7 +597,7 @@ def summary_doc(paths: EnginePaths, st: dict, *, now: datetime | None = None) ->
                              "rows": ts.get("rows") or [], "rolling": ts.get("rolling"), "last_look": ts.get("last_look"),
                              "monthly": ts.get("monthly")},
             "backup": ((st.get("stages") or {}).get("S7b") or {}).get("result"),
-            "p2": _p2_summary(paths, st)}
+            "p2": _p2_summary(paths, st), "p3": _p3_summary(st)}
 
 
 def _p2_summary(paths: EnginePaths, st: dict) -> dict[str, Any]:
@@ -529,6 +625,9 @@ def _bounded_json(doc: dict[str, Any]) -> bytes:
         rows = rows[1:]
         doc["daily_target"]["rows"] = rows
         doc["daily_target"]["rows_truncated"] = True
+        raw = (json.dumps(doc, ensure_ascii=False, indent=1) + "\n").encode("utf-8")
+    if len(raw) > SUMMARY_MAX_BYTES:
+        doc["p3"] = {"truncated": True, "trials_hwm_copy": (doc.get("p3") or {}).get("trials_hwm_copy")}
         raw = (json.dumps(doc, ensure_ascii=False, indent=1) + "\n").encode("utf-8")
     if len(raw) > SUMMARY_MAX_BYTES:
         doc["p2"] = {"truncated": True}

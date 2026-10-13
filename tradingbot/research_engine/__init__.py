@@ -34,6 +34,8 @@ from __future__ import annotations
 
 #: Motor şema/sürüm etiketleri (çıktılara yazılır). P2 (2026-10-08): `research_engine_v1_p2` — P2 sürüm betiği
 #: `ENGINE_VER`'i bununla sabitler; motor kod özeti değiştiği için yeni A/B dönemi açılır (§2.9, beklenen).
-ENGINE_VERSION = "research_engine_v1_p2"
+#: P3g (2026-10-13): `research_engine_v1_p3g` — gece planına S4x/S4w/S6 eklendi (ENGINE_BRAIN §5.2); S6'nın ders adımı
+#: `module_src_sha` için engine-app'te salt-okunur `git status/ls-tree/cat-file` çağırır (strategy_lib kimliği).
+ENGINE_VERSION = "research_engine_v1_p3g"
 
 __all__ = ["ENGINE_VERSION"]

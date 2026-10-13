@@ -419,6 +419,13 @@ def _imports_of(path: Path) -> set[str]:
     return mods
 
 
+#: Araştırma motoru (P2'den beri) paketin YALNIZ `situation` alt modülünü, fonksiyon içinde (tembel) okur: günlüğün
+#: `xp_entry` satırlarını sınıflandırmak için saf fonksiyonlar. Motor ayrı bir systemd biriminde, ayrı süreçte, salt-okunur
+#: çalışır (worker kararına yolu yok); toplayıcıyı, depoyu ve paketin başka hiçbir modülünü almaz. Yalnız bu iki dosya.
+ENGINE_SITUATION_READERS = ("tradingbot/research_engine/cfgrid.py", "tradingbot/research_engine/journal.py")
+ENGINE_SITUATION_IMPORT = {"..shared_experience", "..shared_experience.situation"}
+
+
 def test_only_the_engine_and_the_cli_import_the_package_and_learning_or_replay_never_reference_it():
     importers = []
     for p in sorted((ROOT / "tradingbot").rglob("*.py")):
@@ -428,8 +435,15 @@ def test_only_the_engine_and_the_cli_import_the_package_and_learning_or_replay_n
         if "shared_experience" not in txt:
             continue
         mods = _imports_of(p)
-        if any("shared_experience" in m for m in mods):
-            importers.append(p.relative_to(ROOT).as_posix())
+        xp = {m for m in mods if "shared_experience" in m}
+        rel = p.relative_to(ROOT).as_posix()
+        if rel in ENGINE_SITUATION_READERS:
+            assert xp == ENGINE_SITUATION_IMPORT, (rel, sorted(xp))           # yalnız `situation`
+            top = ast.parse(txt).body                                           # yalnız tembel (fonksiyon içi)
+            assert not [n for n in top if isinstance(n, (ast.Import, ast.ImportFrom)) and "shared_experience" in ast.dump(n)], rel
+            continue
+        if xp:
+            importers.append(rel)
     assert set(importers) <= {"tradingbot/engine_v3.py", "tradingbot/cli_v3.py"}, importers
     assert "tradingbot/engine_v3.py" in importers
     for p in sorted((ROOT / "tradingbot" / "learn").rglob("*.py")) + sorted((ROOT / "tradingbot" / "replay").rglob("*.py")) + \

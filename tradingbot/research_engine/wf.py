@@ -174,7 +174,9 @@ def trade_row(t: KN.KernelTrade, data: KN.SeriesData | None = None, *,
         bars = data.bars.get(tf)
         ct = None
         if _close_t is not None and bars:
-            ct = _close_t.setdefault(tf, [int(b["timestamp"]) + TF_MS[tf] for b in bars])
+            ct = _close_t.get(tf)
+            if ct is None:          # `setdefault` varsayılanı her çağrıda kurardı: işlem × bar (P3g ölçümü, 5m Box)
+                ct = _close_t[tf] = [int(b["timestamp"]) + TF_MS[tf] for b in bars]
         row["mtm"], row["mtm_method"] = ST.mtm_allocation(row, bars, TF_MS[tf], close_t=ct)
     return row
 

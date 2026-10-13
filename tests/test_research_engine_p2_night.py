@@ -52,8 +52,12 @@ def test_full_p2_night_runs_s1b_s2_and_writes_bounded_turkish_digest(tmp_path):
     w, host = _world_night(tmp_path)
     st = run_engine_night(w.v, host, NIGHT, save=False)
     assert st["result"] == N.R_SUCCESS, st["stages"]
-    assert list(st["plan"]) == ["S0", "S1a", "S3", "S1b", "S2", "S7", "S7b"] == list(N.PLAN_FULL)
-    assert all(st["stages"][s]["status"] == "OK" for s in N.PLAN_FULL), {k: v.get("status") for k, v in st["stages"].items()}
+    assert list(st["plan"]) == ["S0", "S1a", "S3", "S1b", "S2", "S4x", "S4w", "S6", "S7", "S7b"] == list(N.PLAN_FULL)
+    ran = [s for s in N.PLAN_FULL if s not in ("S4x", "S4w")]
+    assert all(st["stages"][s]["status"] == "OK" for s in ran), {k: v.get("status") for k, v in st["stages"].items()}
+    # P3g: bu P2 gecesi S1 mühür anından (T_SEAL) önce → S4x/S4w nedenle atlanır (P3 veri koşusu yok), S6 çalışır
+    assert all(st["stages"][s]["status"] == "SKIPPED" and st["stages"][s]["reason"].startswith("BEFORE_SEAL")
+               for s in ("S4x", "S4w")), {s: st["stages"][s] for s in ("S4x", "S4w")}
     s1b, s2 = st["stages"]["S1b"]["result"], st["stages"]["S2"]["result"]
     assert s1b["journal"]["rows"] == 40 and s1b["journal"]["pending"] == 0 and s1b["reconcile"]["status"] == "OK"
     assert s1b["fidelity"]["gate_pass"] and s2["rows"] == 40 and s2["pending"] == 0 and s2["grid"]["OK"] == 38

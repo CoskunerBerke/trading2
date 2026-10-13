@@ -415,6 +415,14 @@ kıyası aynı config dönemi içinde.
 - WF önbelleği `backtests/cache/<spec_sha>/<kapsam>/<veri_ay_mührü>.parquet` (işlem listesi + günlük getiri); ay parçasının
   mührü değişince geçersizleşir. Haftalık rotasyon her gece 1/7'yi sıfırdan hesaplar ve karşılaştırır (bayt farkı →
   `WF_CACHE_MISMATCH`, seri yeniden kurulur).
+- **P3g okuması (2026-10-13; §8.4 P3g notu).** Uygulanan sıra S0, S1a, S3, S1b, S2, **S4x, S4w, S6**, S7, S7b (S5/S5r P4'te).
+  Paylar: S1b/S2 payları değişmedi (42 / 12 dk); S4x ≤ 10 dk ve S4w son tarih − 25 dk'ya kadar (Kapı A bakış gecesi − 55 dk);
+  S6 ≤ 10 dk (bakış gecesi ≤ 40 dk), son tarih − 8 dk'da durur; S7/S7b her gece. A/B KAPALI ve SKEW gecelerinde S6 de
+  planda yoktur (KAPALI gece P1a'dan beri yalnız S0 + S1s'tir). S1b'nin aynı gece günlüğü büyük ölçüde yeniden kurduğu
+  gecede (bellek tepesi) S4w `S1B_REBUILD` nedeniyle atlanır. Kapı A satırları bu sürümde kurulmadığından ayın bakış gecesi
+  `HESAPLANMADI` kaydıyla tüketilir (S4w yalnız o gece kısılır). WF önbelleği bu sürümde
+  `backtests/cache/<veri ayı>/<birim>.jsonl.gz` (birim = coin × koşu grubu; spec kimlikleri başlıkta) ve
+  `backtests/queue.json` kuyruğudur (parquet değil; içerik aynı: işlem listesi + günlük piyasa değerlemesi + sinyal anları).
 
 ### 5.3 Kaynaklar (dürüst öneri)
 
@@ -512,6 +520,12 @@ kıyası aynı config dönemi içinde.
   ≈ 0,1 GB → ≤ 1,5 GB (15/20 GB sınırlarının içinde).
 - **Kabul (VPS, 14 A/B gecesi):** tur p95 ≤ KAPALI + %5; `NRestarts` değişmez; `memory.peak` ≤ 0,8 × MemoryMax; Box kaçan
   bar ve koruyucu izleyici gecikmesi KAPALI tabanında; 418/429 = 0.
+- **P3g okuması (2026-10-13): bugünkü birim 640M/768M.** Yukarıdaki "bugün 400M / 512M" metni P1a birimidir; P2
+  (2026-10-08, inceleme M6) gece birimini `MemoryHigh=640M` / `MemoryMax=768M`'e (`ENGINE_EXPECTED_MEMORY_MAX=805306368`)
+  çıkarmıştı. Karar kuralı bu birime oransal olarak uygulandı: eşik = `MEMORY_GUARD` eşiği 0,7 × 768 MiB = 537,6 MiB
+  (eski kuralın 350/512 ≈ 0,68 oranının karşılığı); büyük sentetik dünyada ölçülen tam gece `VmHWM` bunun altında kaldığı
+  için birim DEĞİŞMEDİ (ölçümler §8.4 P3g notunda). `MEMORY_GUARD` sınırı cgroup `memory.max`'tır, okunamazsa
+  `ENGINE_EXPECTED_MEMORY_MAX` (birim sözleşmesi: ikisi aynı bayt sayısı).
 
 ---
 

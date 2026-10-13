@@ -373,7 +373,7 @@ def test_night_records_the_data_seal_and_flags_stale_data(tmp_path):
     rs = run_engine_night(e.v, e.host, utc(2026, 10, 6, 1, 40))
     assert rs["data_seal"] == seal and rs["selfcheck"]["data"]["status"] == SC.OK and "DATA_STALE" not in rs["flags"]
     # P2b (2026-10-06): plan S1b/S2'yi taşır (depoyu okuyan ilk aşamalar); taze mühürde ikisi de çalışır
-    assert rs["plan"] == ["S0", "S1a", "S3", "S1b", "S2", "S7", "S7b"]
+    assert rs["plan"] == ["S0", "S1a", "S3", "S1b", "S2", "S4x", "S4w", "S6", "S7", "S7b"]     # P3g: S4x/S4w/S6
     assert rs["stages"]["S1b"]["status"] == "OK" and rs["stages"]["S2"]["status"] == "OK"
     rs = run_engine_night(e.v, e.host, utc(2026, 10, 8, 1, 40))      # mühür 49 saat önce
     assert rs["data_seal"] == seal and rs["selfcheck"]["data"]["status"] == SC.DATA_STALE and "DATA_STALE" in rs["flags"]

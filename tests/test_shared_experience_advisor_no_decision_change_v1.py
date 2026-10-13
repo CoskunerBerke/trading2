@@ -56,14 +56,16 @@ def _advice_dir(run: dict) -> Path:
 
 
 @pytest.fixture(scope="module")
-def _cache():
-    return {}
+def _cache(tmp_path_factory):
+    """Modül boyu taban koşuları. Taban, ilk testin `tmp_path`'inde DEĞİL modül ömürlü bir dizinde koşar: sonraki testler
+    tabanın dosyalarını (`_xp_bytes`) okur; `tmp_path_retention_policy=failed` geçen testin dizinini hemen siler."""
+    return {"dir": tmp_path_factory.mktemp("rec_cache")}
 
 
 def _rec(tmp_path, monkeypatch, cache, lm: bool) -> dict:
     key = ("rec", lm)
     if key not in cache:
-        cache[key] = G._run(tmp_path / "rec_base", monkeypatch, lm=lm, xp=dict(RECORD))
+        cache[key] = G._run(cache["dir"] / f"rec_base_{'lm' if lm else 'nolm'}", monkeypatch, lm=lm, xp=dict(RECORD))
     return cache[key]
 
 

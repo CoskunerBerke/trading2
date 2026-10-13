@@ -1145,11 +1145,17 @@ def iter_journal(paths: EnginePaths, months: Iterable[str] | None = None) -> Ite
 
 
 def _input_digest(loc: ArchiveLoc, side: dict[str, Any], seal_listing_digest: str, cfg_digest: str, exec_digest: str,
-                  eq_digest: str) -> str:
+                  eq_digest: str, epoch: list | None = None) -> str:
     # `fd` (2026-10-12): fidelity semantiği değişince (`FIDELITY_VERSION`) satırlar yeniden kurulur
-    return _sha({"v": JOURNAL_VERSION, "fd": FD.FIDELITY_VERSION, "sha": loc.sha, "rev": loc.rev, "status": loc.status,
-                 "derived": loc.derived, "pg": loc.position_group, "side": side, "seal": seal_listing_digest, "cfg": cfg_digest,
-                 "exec": exec_digest, "eq": eq_digest})
+    d = {"v": JOURNAL_VERSION, "fd": FD.FIDELITY_VERSION, "sha": loc.sha, "rev": loc.rev, "status": loc.status,
+         "derived": loc.derived, "pg": loc.position_group, "side": side, "seal": seal_listing_digest, "cfg": cfg_digest,
+         "exec": exec_digest, "eq": eq_digest}
+    # P3g: mühürlü config dönemleri araştırma köküne kurulunca (gece birimi, `epochs_night`) satırın dönem ATAMASI girdiye
+    # girer — kurulum gecesi bütün satırlar bir kez, sonra yalnız dönemi değişen satırlar yeniden kurulur (karışık geçici/
+    # mühürlü dönem kimliği kalmaz). Kurulum yokken (geçici sınırlar) özet eskisiyle bayt-aynıdır.
+    if epoch is not None:
+        d["ep"] = epoch
+    return _sha(d)
 
 
 def _src_digest(src: PR.BarSource | None) -> str:
@@ -1226,7 +1232,9 @@ def build_journal(paths: EnginePaths, *, now: datetime | None = None, src: PR.Ba
             pdg = (wd.digest(PR.s1b_windows(sym_p, "spot" if kinds[b] == KIND_SPOT else "futures", _ms(opened), _ms(closed),
                                             gold=is_gold(symbol_key(sym_p))))
                    if (src is not None and opened is not None and closed is not None) else "no-store")
-            dg = _input_digest(loc, side, pdg, cfg_by_book[b], _sha(exec_by_book.get(b)), str(eq_at))
+            ep, ep_src = RH.config_epoch(b, loc.proj.get("opened_at"), research=paths.research)
+            dg = _input_digest(loc, side, pdg, cfg_by_book[b], _sha(exec_by_book.get(b)), str(eq_at),
+                               epoch=None if ep_src in (RH.EPOCH_SRC_PROVISIONAL, "MISSING") else [ep, ep_src])
             month = _month_of(loc.proj.get("closed_at"))
             new_index[k] = {"digest": dg, "month": month, "book": b}
             old = old_index.get(k)

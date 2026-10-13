@@ -96,6 +96,10 @@ from types import MappingProxyType
 from typing import Any, Iterable, Mapping, Sequence
 
 from . import registry as RG
+try:                                            # S1b mührü (fonlama mark kaynağı); yoksa çekirdek ÇALIŞMAZ (s1b_status)
+    from . import seal_s1b as S1B
+except ImportError:                             # pragma: no cover - dosya silinmişse
+    S1B = None  # type: ignore[assignment]
 from ..accounting import LiquidationParams, PositionSide, bracket_for, liquidation_price
 from ..accounting.futures_ledger import EXIT_FILL_CONTRACT, exit_decision
 from ..learning_mode import fit_size
@@ -139,13 +143,43 @@ FLAG_F8_UNMEASURABLE = "F8_UNMEASURABLE"
 #: onunla yer değiştirir): mark = `SeriesData.markpx_1h`'den, uzlaşma anında (nominal dakika) BAŞLAYAN 1h barının
 #: AÇILIŞI; yoksa uzlaşma anında BİTEN 1h barının KAPANIŞI; ikisi de yoksa uzlaşma okunamaz → FUNDING_GAP. Uzlaşmadan
 #: sonraki bir mark hiç kullanılmaz. Satırın kendi mark'ı yalnız denetimdir (göreli fark > %0,5 → FUNDING_MARK_MISMATCH,
-#: bilgi; markpx kullanılır). MÜHÜR BEKLİYOR: `WF_PROTOCOL_V1.kernel.funding` okuması (düzeltme mührü 10) sahibin
-#: mühürlü kayıt değişikliği iznine bağlı; o zamana kadar değerler burada, `FUNDING_MARK_SEALED = False`.
-FUNDING_MARK_POLICY = "MARKPX_1H_OPEN_OF_BAR_STARTING_AT_SETTLEMENT_ELSE_CLOSE_OF_BAR_ENDING_AT_SETTLEMENT"
-FUNDING_MARK_SEALED = False
+#: bilgi; markpx kullanılır). MÜHÜRLÜ: S1b `seal_s1b.FUNDING_MARK_V1` (sahip kararı 2026-10-13; S1 dokunulmadı) — değerler
+#: oradan okunur; kayıt uygulanan kuralla uyuşmazsa ya da S1b tutmazsa çekirdek ÇALIŞMAZ (`s1b_status`).
+FUNDING_MARK_IMPL = {"mark_source": "MARKPX_1H_OPEN_OF_BAR_STARTING_AT_SETTLEMENT",
+                     "mark_fallback": "MARKPX_1H_CLOSE_OF_BAR_ENDING_AT_SETTLEMENT", "mark_missing": "FUNDING_GAP",
+                     "mark_after_settlement": "NEVER", "row_mark": "CHECK_ONLY"}
+_FM = S1B.FUNDING_MARK_V1 if S1B is not None else None
+FUNDING_MARK_POLICY = f"{FUNDING_MARK_IMPL['mark_source']}_ELSE_{FUNDING_MARK_IMPL['mark_fallback']}"
 MARK_TF_MS = 3_600_000
-REST_MARK_MAX_REL_DIFF = 0.005
-FLAG_FUNDING_MARK_MISMATCH = "FUNDING_MARK_MISMATCH"
+REST_MARK_MAX_REL_DIFF = float(_FM["rest_mark_check"]["max_rel_diff"]) if _FM is not None else float("nan")
+FLAG_FUNDING_MARK_MISMATCH = str(_FM["rest_mark_check"]["flag"]) if _FM is not None else "FUNDING_MARK_MISMATCH"
+
+
+class SealError(RuntimeError):
+    """S1b mührü eksik/tutmuyor ya da mühürlü okuma uygulanan kuralla aynı değil: çekirdek çalışmaz."""
+
+
+def s1b_status() -> tuple[bool, str]:
+    """(çekirdek çalışabilir mi, neden): S1b dosyası var, sha'ları sabitlerle tutuyor ve `FUNDING_MARK_V1` okuması bu
+    modülün uyguladığı kuralın aynısı (kapalı hata)."""
+    if S1B is None:
+        return False, "S1B_MISSING: research_engine/seal_s1b.py yok"
+    ok, why = S1B.check()
+    if not ok:
+        return False, why
+    fm = S1B.FUNDING_MARK_V1
+    bad = [k for k, v in FUNDING_MARK_IMPL.items() if fm.get(k) != v]
+    if bad or fm["rest_mark_check"]["use"] != "MARKPX" or fm["rest_mark_check"]["gate_effect"] != "NONE" \
+            or float(fm["rest_mark_check"]["max_rel_diff"]) != REST_MARK_MAX_REL_DIFF \
+            or fm["rest_mark_check"]["flag"] != FLAG_FUNDING_MARK_MISMATCH:
+        return False, f"S1B_READING_NOT_IMPLEMENTED: FUNDING_MARK_V1 {bad or 'rest_mark_check'}"
+    return True, "OK"
+
+
+def require_s1b() -> None:
+    ok, why = s1b_status()
+    if not ok:
+        raise SealError(why)
 #: fonlamadan türeyen işaretler (yol işaretlerinden sonra, bu sırayla eklenir)
 FUNDING_FLAGS: tuple[str, ...] = ("FUNDING_GAP", "FUNDING_EXIT_BAR", FLAG_FUNDING_MARK_MISMATCH)
 #: kapı istatistiğinden çıkan işaretler — mühürlü liste (`WF_PROTOCOL_V1.gate_exclusions.flags`)
@@ -755,6 +789,7 @@ class _Sim:
     zorlanmış yeniden oynatımı (parite (b): canlı girişin bir kopya işlemi, yol bağımlılığı olmadan)."""
 
     def __init__(self, variant: Variant, data: SeriesData):
+        require_s1b()                           # fonlama mark kaynağı S1b'de mühürlü; tutmazsa koşu yok
         self.variant, self.data = variant, data
         self.stf = variant.signal_tf
         self.step = TF_MS[self.stf]
@@ -1082,7 +1117,8 @@ def replay_intent(variant: Variant, data: SeriesData, intent: Intent, *, decisio
 __all__ = ["BASIS_PRUDENT_CLOSE", "BASIS_SLIP_LIQ", "CostScenario", "ENTRY_HOUR_POLICY", "EXIT_CONTRACT", "EXIT_END",
            "EXIT_LIQ", "EXIT_RULE", "EXIT_STOP", "EXIT_TARGET", "EXIT_TIME", "FLAG_F8_UNMEASURABLE", "FLAG_FUNDING_EXIT_BAR",
            "FLAG_FUNDING_GAP", "FLAG_FUNDING_MARK_MISMATCH", "FLAG_MOVE_STOP_IGNORED", "FUNDING_FLAGS",
-           "FUNDING_MARK_POLICY", "FUNDING_MARK_SEALED", "MARK_TF_MS", "REST_MARK_MAX_REL_DIFF", "apply_funding",
+           "FUNDING_MARK_IMPL", "FUNDING_MARK_POLICY", "MARK_TF_MS", "REST_MARK_MAX_REL_DIFF", "SealError", "apply_funding",
+           "require_s1b", "s1b_status",
            "funding_series", "settlement_marks", "FLAG_OPEN_AT_END", "FLAG_PATH_GAP", "FundingOutcome",
            "FundingSeries", "GATE_EXCLUDED_FLAGS", "KERNEL_VERSION", "KernelResult", "KernelTrade", "Leg",
            "MOVE_CROSSES_PRICE", "MOVE_LOOSENS", "Obs", "PATH_TF", "REJ_DATA_GAP", "REJ_RR", "SCENARIOS", "STOP_FILL_POLICY",

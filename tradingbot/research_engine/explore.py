@@ -133,7 +133,7 @@ class EntryUniverseRefused(ExploreRefused):
 
     def __init__(self, diff: Mapping[str, Any]):
         super().__init__(f"ENTRY_UNIVERSE_DIFF: eksik {list(diff['missing'])} · fazla {list(diff['extra'])} · "
-                         f"yinelenen {list(diff['duplicates'])}")
+                         f"yinelenen {list(diff['duplicates'])} · mühür {diff.get('seal')}")
         self.diff = dict(diff)
 
 
@@ -850,9 +850,15 @@ def _fp(cd: CoinData, btc: CoinData | None, metas: Sequence[Meta], upto: int) ->
     return hashlib.sha256(dumps(parts).encode("utf-8")).hexdigest()
 
 
+def _s1b_sha() -> str | None:
+    """S1b mührünün sha'sı (çekirdeğin yüklediği `seal_s1b`; yoksa None — o durumda adım zaten çalışmaz)."""
+    return KN.S1B.S1B_SHA if KN.S1B is not None else None
+
+
 def _state_ok(st: Mapping[str, Any] | None, s: Series, files: SeriesFiles) -> bool:
     return bool(st) and st.get("schema") == STATE_SCHEMA and st.get("version") == EXPLORE_VERSION \
-        and st.get("registry_sha") == RG.REGISTRY_SHA and st.get("kernel") == KN.KERNEL_VERSION \
+        and st.get("registry_sha") == RG.REGISTRY_SHA and st.get("s1b_sha") == _s1b_sha() \
+        and st.get("kernel") == KN.KERNEL_VERSION \
         and st.get("t_seal_ms") == T_SEAL_MS and st.get("series") == s.series_id \
         and int(st.get("rows_bytes", -1)) == files.rows_size()
 
@@ -982,6 +988,7 @@ def _finish_member(p: Mapping[str, Any], px: _Fwd, res: KN.KernelResult, cd: Coi
     size = fl.append([dumps(r) for r in out_rows])
     summary = _summary(agg, carry, unsettled, open_row, next_day, F, tf)
     state = {"schema": STATE_SCHEMA, "version": EXPLORE_VERSION, "lib": LIB_VERSION, "registry_sha": RG.REGISTRY_SHA,
+             "s1b_sha": _s1b_sha(),
              "kernel": KN.KERNEL_VERSION, "source": SOURCE, "series": s.series_id, "variant_id": s.variant_id,
              "instrument": s.instrument, "family": s.family, "signal_tf": tf, "t_seal_ms": T_SEAL_MS,
              "start_ms": m.start_ms, "frontier_ms": int(F), "checkpoint_ms": int(checkpoint), "used": sorted(used),
@@ -1020,11 +1027,18 @@ def explore_step(root: Path | str, data: Mapping[str, CoinData] | Callable[[str]
     `_run.json`)."""
     t0 = clock()
     root = Path(root)
-    try:
-        plan = series_plan(entry_symbols)
-    except EntryUniverseRefused as exc:                                 # fark raporlanır, hiçbir seri koşmaz
+    refused = None
+    ok, why = KN.s1b_status()
+    if not ok:                                                          # S1b mührü tutmuyor: hiçbir seri koşmaz
+        refused = {"reason": why.split(":")[0], "detail": why, "missing": [], "extra": [], "duplicates": []}
+    else:
+        try:
+            plan = series_plan(entry_symbols)
+        except EntryUniverseRefused as exc:                             # fark raporlanır, hiçbir seri koşmaz
+            refused = {"reason": "ENTRY_UNIVERSE_DIFF", **exc.diff}
+    if refused is not None:
         rep0 = {"schema": "explore_run_v1", "lib": LIB_VERSION, "t_seal_ms": T_SEAL_MS, "status": {"REFUSED": 1},
-                "refused": {"reason": "ENTRY_UNIVERSE_DIFF", **exc.diff}, "seconds": round(clock() - t0, 3)}
+                "refused": refused, "seconds": round(clock() - t0, 3)}
         _atomic_write(root / "_run.json", (dumps(_roundtrip(rep0)) + "\n").encode("utf-8"))
         return rep0
     rep: dict[str, Any] = {"schema": "explore_run_v1", "lib": LIB_VERSION, "t_seal_ms": T_SEAL_MS,
@@ -1292,8 +1306,12 @@ def leaderboard_lines(states: Mapping[str, Mapping[str, Any]], run: Mapping[str,
              "istatistiklere girmez)"]
     if run and run.get("refused"):
         rf = run["refused"]
-        lines.append(f"Son adım: ÇALIŞMADI — giriş evreni dondurulmuş 40 coin'den farklı: eksik {', '.join(rf['missing']) or '—'}"
-                     f" · fazla {', '.join(rf['extra']) or '—'} · yinelenen {', '.join(rf['duplicates']) or '—'}")
+        if rf.get("reason") == "ENTRY_UNIVERSE_DIFF":
+            lines.append(f"Son adım: ÇALIŞMADI — giriş evreni dondurulmuş 40 coin'den (S1b) farklı: eksik "
+                         f"{', '.join(rf['missing']) or '—'} · fazla {', '.join(rf['extra']) or '—'} · yinelenen "
+                         f"{', '.join(rf['duplicates']) or '—'}")
+        else:
+            lines.append(f"Son adım: ÇALIŞMADI — S1b mührü: {rf.get('detail') or rf.get('reason')}")
     elif run:
         stt = run.get("status") or {}
         lines.append("Son adım: " + " · ".join(f"{k} {_n(v)}" for k, v in sorted(stt.items())) +

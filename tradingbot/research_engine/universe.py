@@ -117,16 +117,15 @@ def _read_json_r(p: Path) -> Any:
         return None
 
 
-#: Mühür anındaki 40 coin'lik giriş evreni (config.yaml `entry_universe.symbols`, 2026-10-13; coin adı, config sırası).
-#: Keşif (ENGINE_BRAIN §5.1) bu 40 coin'de koşar; çalışma anındaki evren bu kümeyle aynı değilse keşif ve WF ÇALIŞMAZ,
-#: eksik/fazla coin'ler raporlanır (koordinatör kararı 2026-10-13, P3e açık kalanı 3). MÜHÜR BEKLİYOR: liste düzeltme
-#: mührü 10'da `LIB_V1.explore.entry_universe` okuması olacak (sahibin mühürlü kayıt değişikliği iznine bağlı); o zamana
-#: kadar burada, `ENTRY_UNIVERSE_SEALED = False`.
-ENTRY_UNIVERSE_FROZEN: tuple[str, ...] = (
-    "BTC", "ETH", "ZEC", "SOL", "NEAR", "UNI", "XRP", "ONE", "BNB", "ARB", "DOGE", "LSK", "SUI", "ENA", "G", "WLD", "ADA",
-    "ONDO", "1000PEPE", "COTI", "LINK", "REZ", "DASH", "AAVE", "TAO", "BCH", "AVAX", "DOT", "FIL", "APT", "SYN", "LTC", "XLM",
-    "INJ", "FET", "TRX", "XMR", "1000SHIB", "OP", "KSM")
-ENTRY_UNIVERSE_SEALED = False
+#: Mühür anındaki 40 coin'lik giriş evreni — MÜHÜRLÜ: S1b `seal_s1b.ENTRY_UNIVERSE_V1` (config.yaml
+#: `entry_universe.symbols`, 2026-10-13, config sırası; sahip kararı: S1 dokunulmadı). Keşif (ENGINE_BRAIN §5.1) bu 40
+#: coin'de koşar; çalışma anındaki evren bu kümeyle aynı değilse ya da S1b tutmazsa keşif ve WF ÇALIŞMAZ, fark/neden
+#: raporlanır.
+try:
+    from . import seal_s1b as _S1B
+except ImportError:                             # pragma: no cover - dosya silinmişse (fark hep "tutmuyor")
+    _S1B = None  # type: ignore[assignment]
+ENTRY_UNIVERSE_FROZEN: tuple[str, ...] = tuple(_S1B.ENTRY_UNIVERSE_V1["coins"]) if _S1B is not None else ()
 
 
 def coin_of(symbol: Any) -> str:
@@ -137,15 +136,20 @@ def coin_of(symbol: Any) -> str:
     return s[:-4] if s.endswith("USDT") and len(s) > 4 else s
 
 
-def entry_universe_diff(symbols: Iterable[Any], frozen: Iterable[str] = ENTRY_UNIVERSE_FROZEN) -> dict[str, Any]:
-    """Çalışma anındaki giriş evreni ↔ dondurulmuş liste (sırasız): {ok, missing (dondurulmuş ama yok), extra (fazla),
-    duplicates, sealed}. `ok` değilse keşif/WF çalışmaz; fark raporlanır."""
+def entry_universe_diff(symbols: Iterable[Any]) -> dict[str, Any]:
+    """Çalışma anındaki giriş evreni ↔ S1b'nin dondurulmuş listesi (sırasız): {ok, missing (dondurulmuş ama yok), extra
+    (fazla), duplicates, frozen_size, seal (S1b durumu)}. S1b eksik/tutmuyorsa ya da fark varsa `ok` yanlış: keşif/WF
+    çalışmaz; fark ve neden raporlanır."""
     got = [coin_of(x) for x in symbols]
-    want = list(frozen)
+    if _S1B is None:
+        seal_ok, why = False, "S1B_MISSING: research_engine/seal_s1b.py yok"
+    else:
+        seal_ok, why = _S1B.check()
+    want = list(_S1B.ENTRY_UNIVERSE_V1["coins"]) if _S1B is not None else []
     dup = sorted({c for c in got if got.count(c) > 1})
-    return {"ok": set(got) == set(want) and not dup and len(want) == len(set(want)),
-            "missing": [c for c in want if c not in set(got)], "extra": sorted(set(got) - set(want)),
-            "duplicates": dup, "frozen_size": len(want), "sealed": ENTRY_UNIVERSE_SEALED}
+    same = set(got) == set(want) and not dup and len(want) == len(set(want))
+    return {"ok": bool(seal_ok and same), "missing": [c for c in want if c not in set(got)],
+            "extra": sorted(set(got) - set(want)), "duplicates": dup, "frozen_size": len(want), "seal": why}
 
 
 def entry_universe(paths: EnginePaths, app_dir: Path | str) -> tuple[list[str], dict[str, Any]]:

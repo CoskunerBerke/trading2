@@ -19,6 +19,7 @@ import pytest
 from tradingbot.research_engine import explore as EX
 from tradingbot.research_engine import kernel as KN
 from tradingbot.research_engine import registry as RG
+from tradingbot.research_engine import seal_s1b as S1B
 from tradingbot.research_engine import stats as ST
 from tradingbot.research_engine import synthetic as SY
 from tradingbot.research_engine import universe as U
@@ -94,7 +95,7 @@ def test_series_plan_is_the_sealed_3745_from_the_registry():
     assert [s.series_id for s in EX.series_plan([f"{c}/USDT" for c in COINS40])] == [s.series_id for s in plan]
     assert [s.series_id for s in EX.series_plan([f"{c}USDT" for c in COINS40])] == [s.series_id for s in plan]
     # çalışma anındaki evren dondurulmuş 40 coin'den farklıysa koşu yok, fark raporlanır (koordinatör kararı)
-    assert list(U.ENTRY_UNIVERSE_FROZEN) == COINS40 and U.ENTRY_UNIVERSE_SEALED is False      # mühür bekliyor
+    assert list(U.ENTRY_UNIVERSE_FROZEN) == COINS40 == list(RG.thaw(S1B.ENTRY_UNIVERSE_V1["coins"]))   # S1b mühürlü
     for bad, missing, extra, dup in ((COINS40[:-1], ["KSM"], [], []), (COINS40 + ["NEW"], [], ["NEW"], []),
                                      (COINS40[:-1] + ["BTC/USDT"], ["KSM"], [], ["BTC"]),
                                      (COINS40[:-1] + ["NEWUSDT"], ["KSM"], ["NEW"], [])):
@@ -611,7 +612,7 @@ def test_settlement_marks_use_markpx_open_then_close_else_gap():
     assert got[3][2] == by[b + 24 * H1]["open"] and got[4][2] == by[b + 32 * H1]["open"]   # satır mark'ı yalnız denetim
     assert mism == {b + 32 * H1}                                         # %1 fark > %0,5 → işaret; %0,4 değil
     assert KN.settlement_marks(rows, None)[0][0][2] != KN.settlement_marks(rows, None)[0][0][2]   # markpx yok → NaN
-    assert KN.FUNDING_MARK_SEALED is False and KN.REST_MARK_MAX_REL_DIFF == 0.005           # mühür bekliyor
+    assert KN.REST_MARK_MAX_REL_DIFF == S1B.FUNDING_MARK_V1["rest_mark_check"]["max_rel_diff"] == 0.005   # S1b
 
 
 @pytest.mark.parametrize("seed", range(20))

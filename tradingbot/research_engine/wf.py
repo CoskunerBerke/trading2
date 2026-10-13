@@ -433,13 +433,14 @@ class EntryUniverseRefused(ValueError):
 
     def __init__(self, diff: Mapping[str, Any]):
         super().__init__(f"ENTRY_UNIVERSE_DIFF: eksik {list(diff['missing'])} · fazla {list(diff['extra'])} · "
-                         f"yinelenen {list(diff['duplicates'])}")
+                         f"yinelenen {list(diff['duplicates'])} · mühür {diff.get('seal')}")
         self.diff = dict(diff)
 
 
 def require_entry_universe(symbols: Iterable[Any]) -> dict[str, Any]:
-    """WF'nin evren kapısı (P3g koşucusu her gece çağırır): `universe.entry_universe_diff` tutmazsa
-    `EntryUniverseRefused` (fark raporlanır, koşu yapılmaz); tutarsa farkı (ok) döndürür."""
+    """WF'nin evren kapısı (P3g koşucusu her gece çağırır): `universe.entry_universe_diff` tutmazsa (fark ya da S1b mührü
+    eksik/tutmuyor) `EntryUniverseRefused` (fark ve neden raporlanır, koşu yapılmaz); tutarsa farkı (ok) döndürür. Çekirdek
+    de S1b tutmazsa çalışmaz (`kernel.SealError`)."""
     from .universe import entry_universe_diff
     d = entry_universe_diff(symbols)
     if not d["ok"]:

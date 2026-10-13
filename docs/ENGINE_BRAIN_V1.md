@@ -1933,16 +1933,52 @@ uygulama ayrıntılarıdır (sıkılaştıran ya da nötr).
   yükleyici kuralları ve `ResearchStore`'dan okuma (`rest` kuyruğu cepheyi keser), `DATA_MOVING` ve `NO_TICK`; kapı dışı
   işaretler (FUNDING_GAP, PATH_1H_GAP; NaN mark); tek kapı yolu; hüküm kelimesi yok (uç değerli seriler dahil, pozitif
   kontrol); `engine-query explore` ≤ 150 satır / 4 KB, salt-okunur, CLI.
-- **Açık kalanlar.** (1) **Arşiv fonlama satırlarında mark yok** (`parse_funding_zip` mark = NaN; REST satırlarının markı arşiv
+- **Açık kalanlar.** (1) *[2026-10-13: S1b ile çözüldü — mark = markpx 1h; aşağıdaki S1b notu.]* **Arşiv fonlama
+  satırlarında mark yok** (`parse_funding_zip` mark = NaN; REST satırlarının markı arşiv
   gelince NaN'lı arşiv satırıyla yer değiştirir): çekirdek bunu okunamaz sayar → bir uzlaşmayı kapsayan her işlem
   `FUNDING_GAP` → gerçek veride keşif istatistiği ve ileri okuma neredeyse boş kalır (kapalı hata; WF/kapı için de aynı).
   Mark kaynağı (ör. uzlaşma saatindeki `markpx_1h` açılışı) bir okuma kararıdır — P3g'den önce sahibe/koordinatöre.
   (2) Fonlama arşivi aylıktır: ileri işlemler ≤ ~1 ay `unsettled` (kapı dışı) kalır; durum dosyası bunları taşır.
-  (3) 40 coin'in kimliği S1'de dondurulmamış; config değişirse seriler değişir (sayı aynı) — sonraki mühürde dondurulması
+  (3) *[2026-10-13: S1b `ENTRY_UNIVERSE_V1` ile donduruldu.]* 40 coin'in kimliği S1'de dondurulmamış; config değişirse seriler değişir (sayı aynı) — sonraki mühürde dondurulması
   önerilir. (4) `COIN_FIT` donmuş seçimi ve `POOLED_OWN` sembol kümeleri `fwd_reads`'e girdi (P3g/P4a kurar).
   (5) Gece bağlantısı, S4x bütçesi ve `DATA_STALE`/A-B KAPALI kuralı, `EXPLORE_SEEN` (sonraki LIB mühründe), `jsonl`'ın
   derin sha denetimi (gece yalnız boy) P3g'de. (6) Dağıtımda T_SEAL'dan bu yana biriken geri dönüş ilk gecenin 10 dk'sını
   aşabilir: süre dolunca coin'ler arasında durulur, kalan sonraki gece sürer (artımlı tasarım güvenli).
+
+**Değişiklik 2026-10-13 — Mühür S1b: fonlama mark kaynağı ve dondurulmuş 40 coin'lik giriş evreni (sahip kararı; S1
+DOKUNULMADI).** Sahip kararı (koordinatör iletisi, 2026-10-13): mühürlü `registry.py` değiştirilmez; P3e'nin iki açık kalanı
+(1: arşiv fonlama satırlarında mark yok; 3: 40 coin'in kimliği mühürde yok) AYRI ADLI, AYRI DOSYALI yeni bir mühürle
+sabitlenir. S1'in bütün değerleri (`REGISTRY_SHA`, `T_SEAL_MS`, sekiz sha; `registry.py`, `prior_trials.json`,
+`config_epochs.json`) 43a0bf0 ile bayt-aynıdır (testli).
+
+- **`research_engine/seal_s1b.py`.** `FUNDING_MARK_V1`: çekirdeğin fonlama mark'ı = deponun `markpx_1h` serisinden,
+  uzlaşma anında (nominal dakika) BAŞLAYAN 1h barının AÇILIŞI; yoksa o anda BİTEN barın KAPANIŞI; ikisi de yoksa uzlaşma
+  okunamaz → `FUNDING_GAP`; uzlaşmadan sonraki fiyat hiç kullanılmaz; fonlama satırının kendi mark'ı (REST) yalnız
+  denetim — göreli fark > %0,5 → `FUNDING_MARK_MISMATCH` (bilgi; kapı dışı listesine girmez), tutar markpx'le. WF (P3d),
+  keşif (P3e) ve parite (a) aynı yolu kullanır (`kernel.settlement_marks` → `funding_series` / `apply_funding`).
+  `ENTRY_UNIVERSE_V1`: config.yaml `entry_universe.symbols`'ın 40 coin'i, config sırasıyla; çalışma anındaki evren bu
+  kümeyle sırasız aynı değilse keşif ve WF çalışmaz, eksik/fazla/yinelenen coin'ler raporlanır (`universe.entry_universe_diff`,
+  `wf.require_entry_universe`, keşifte `_run.json` + lider tablosunda "ÇALIŞMADI"). `S1B_DIRECTIONS_V1`: asla-gevşetme
+  yönleri — iki okumanın bütün tanım alanları `fixed` (S1'in `registry.looser_than` makinesiyle; registry.py'ye
+  dokunmadan). Kanonik bayt S1'inkiyle aynı (`registry.canonical_bytes`).
+- **Değerler.** `FUNDING_MARK_V1` `165057d63cf6818464d773916761a6b4a143883a20da1221c15b12de5a80a5dd`;
+  `ENTRY_UNIVERSE_V1` `f1d5744789fa585e6bc5a059168c9bdd1bb5138902dbacbc90d81139362ee3f6`; `S1B_DIRECTIONS_V1`
+  `106f15397c60e5f1ebb31d64b0bcea503fbf9c19349cd23e286374dd3f221c29`; `S1B_SEAL_MS` `1791908100000` (2026-10-13T16:15:00Z; mühür
+  commit'inin işleyen zamanından birkaç dakika sonraki tam dakika, T_SEAL_MS kuralı, testte git'ten); `S1B_SHA`
+  `b3254fe69f72c48dda1ec372e6230d8b4a8106bac61043c4f5b88b4db9d08c31` = {üç sha, `S1B_SEAL_MS`, genişlettiği S1 `REGISTRY_SHA` 3e700fa0…} kanonik sha'sı.
+- **Kapalı hata.** `seal_s1b.PINNED` mühür anının sabitleridir; dosya yoksa, içerik değişip sabitler yenilenmediyse, S1
+  değiştiyse ya da mühürlü okuma çekirdeğin uyguladığı kuralla aynı değilse çekirdek (`kernel.SealError`), keşif
+  (`REFUSED`, açık neden) ve WF (`EntryUniverseRefused`) çalışmaz. Önceki "mühür bekliyor" bayrakları
+  (`kernel.FUNDING_MARK_SEALED`, `universe.ENTRY_UNIVERSE_SEALED`) kaldırıldı; değerler S1b'den okunur. Keşif durumu S1b
+  sha'sını taşır (S1b değişirse seri baştan kurulur).
+- **Etki (sentetik).** Satır mark'ı gerçek olan P3b/P3d dünyalarında sonuçlar bayt-aynı (sentetik markpx = satır mark'ı).
+  Arşiv gibi NaN satır mark'lı keşif dünyasında (6 coin × 93 varyant = 558 seri, 7 gün) kapı dışı işlem 845/2.668'den
+  (%31,7; hiçbiri kesinleşmiyordu) 0/2.668'e indi. Ölçekli dünya (40 coin, 3.720 seri): gece adımı ≈ 47 sn.
+- **Testler.** `tests/test_research_engine_seal_s1b.py` (sabit sha'lar; `S1B_SEAL_MS` ≥ seal_s1b.py'yi değiştiren son
+  commit ve ≤ 24 saat; her alan değişikliği sha'yı değiştirir; yönler her tanım alanını kapsar ve her değişikliği yakalar;
+  S1 43a0bf0 ile bayt-aynı; eksik/tutmayan mühürde çekirdek/keşif/WF açık nedenle durur); `test_research_engine_explore_p3e.py`
+  (markpx açılışı → biten barın kapanışı → NaN, %0,5 denetimi, ileriye bakmama özellik testi, NaN satır mark'ı + markpx =
+  satır mark'ıyla aynı sonuç, markpx deliği, evren farkı); P3b testleri `SeriesData.markpx_1h` verir.
 
 ### 8.5 P3a boşlukları — sahibe sorular (entegrasyondan önce; her cevap boşluğu doldurur ve S1'i yeniden mühürler)
 

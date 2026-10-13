@@ -30,7 +30,7 @@ from . import seal_s1c as S1C
 S1D_ID = "S1d"
 S1D_DOC = "docs/ENGINE_BRAIN_V1.md §8.6 (S1d — LIB_AG_V1, 2026-10-13)"
 #: bu mühür commit'inin UTC ms'si (commit'ten birkaç dakika sonraki tam dakika; elle geriye alınmaz)
-S1D_SEAL_MS = 1791943200000
+S1D_SEAL_MS = 1791926460000
 FIXED = RG.FIXED
 LIB_AG_VERSION = "LIB_AG_v1"
 OWNER_DECISION_TR = ("sahip kararı 2026-10-13 (koordinatör iletisi): dökümlerdeki 5 taktik + 3 örtü MEKANİK varyantlara "
@@ -413,7 +413,7 @@ PINNED: Mapping[str, str] = MappingProxyType({
     "AG_UNIVERSE_V1": "7e856fa946d6f0668df1e44e6a0cddd371cbaee8a5b70b72001fb27ed8c4a3ec",
     "AG_CALENDAR_V1": "1ac8e04cd3158aaaf80b29bd8a4f8b19e94b7bf1124607216c4db60ba140bb9d",
     "S1D_DIRECTIONS_V1": "a69cd988100a7be82efa88f86c2a1596e3e269bc49d141c5b5415ec4b19e1c15",
-    "S1D": "54b1447aee5c26d3a7b7bf69c21fcbf88dedc154d5a19804ad44b2b50ecf6b68",
+    "S1D": "065b1e7d77d26b6131a149621b75167d4f05666c67cc69cadb9e309d25bb2798",
 })
 
 

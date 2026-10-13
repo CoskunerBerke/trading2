@@ -2212,8 +2212,8 @@ ICT kavramının ima ettiği; dökümlerin kendisi bu çalışmada okunmadı, ka
   `AG_UNIVERSE_V1` `7e856fa946d6f0668df1e44e6a0cddd371cbaee8a5b70b72001fb27ed8c4a3ec`;
   `AG_CALENDAR_V1` `1ac8e04cd3158aaaf80b29bd8a4f8b19e94b7bf1124607216c4db60ba140bb9d`;
   `S1D_DIRECTIONS_V1` `a69cd988100a7be82efa88f86c2a1596e3e269bc49d141c5b5415ec4b19e1c15` (üç kaydın bütün tanım alt ağaçları `fixed`);
-  `S1D_SEAL_MS` `1791943200000` (2026-10-14T02:00:00Z; mühür commit'inin işleyen zamanından birkaç dakika sonraki tam dakika, T_SEAL_MS
-  kuralı, testte git'ten); `S1D_SHA` `54b1447aee5c26d3a7b7bf69c21fcbf88dedc154d5a19804ad44b2b50ecf6b68` = {dört sha, `S1D_SEAL_MS`, S1
+  `S1D_SEAL_MS` `1791926460000` (2026-10-13T21:21:00Z; mühür commit'inin işleyen zamanından birkaç dakika sonraki tam dakika, T_SEAL_MS
+  kuralı, testte git'ten); `S1D_SHA` `065b1e7d77d26b6131a149621b75167d4f05666c67cc69cadb9e309d25bb2798` = {dört sha, `S1D_SEAL_MS`, S1
   `REGISTRY_SHA` 3e700fa0…, S1b `S1B_SHA` b3254fe6…, S1c `S1C_SHA` 277922ca…} kanonik sha'sı. Tutmazsa (`seal_s1d.check`)
   `lib_ag.make_variant` `S1dSealError` verir (AG varyantı kurulmaz).
 - **Testler.** `tests/test_strategy_lib_ag_s1d.py`: saat = zoneinfo (2019–2030, geçiş günleri), oturum/KZ üyeliği; katalog =

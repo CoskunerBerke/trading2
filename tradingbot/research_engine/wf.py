@@ -27,6 +27,8 @@
   işlemleri görür) ama seçim dahil hiçbir istatistiğe girmez; sayısı, payı ve işaret dağılımı satırda.
 * **Aileler:** standart ailenin varyantları aynı seride `kernel.run_lockstep`; kopya + örtüler `kernel.make_family` (tek
   paylaşılan akış) + `run_lockstep` (P3b-2b notu (3)).
+* **CSCV matrisi:** `trade_rows(sonuçlar, data)` her işleme günlük piyasa değerlemesi dağılımını (`mtm`, fiyat yolu; U3,
+  `stats.mtm_allocation`) ekler; ızgaranın günlük serisi buradan kurulur.
 
 Ağsız; gerçek veri koşusu P3g'dedir.
 """
@@ -150,19 +152,36 @@ def trade_key(t: KN.KernelTrade) -> str:
     return f"{t.variant_id}|{t.symbol}:{int(t.signal_ts)}:{t.side}|{_iso(t.entry_ts)}"
 
 
-def trade_row(t: KN.KernelTrade) -> dict[str, Any]:
-    """Çekirdek işleminin WF satırı (`ts_ms` = giriş = karar anı; `as_of_ms` = kararın gördüğü son veri anı)."""
+def exit_ref(t: KN.KernelTrade) -> float | None:
+    """Bacakların ağırlıklı çıkış referans fiyatı (maliyetten önce)."""
+    tot = sum(lg.frac for lg in t.legs)
+    return (sum(lg.ref * lg.frac for lg in t.legs) / tot) if tot > 0 else None
+
+
+def trade_row(t: KN.KernelTrade, data: KN.SeriesData | None = None, *,
+              _close_t: dict[str, list[int]] | None = None) -> dict[str, Any]:
+    """Çekirdek işleminin WF satırı (`ts_ms` = giriş = karar anı; `as_of_ms` = kararın gördüğü son veri anı). `data`
+    verilirse `mtm` = günlük piyasa değerlemesi dağılımı (U3; sinyal diliminin barlarıyla fiyat yolu)."""
     entry = int(t.entry_ts)
-    return {"ts_ms": entry, "as_of_ms": entry, "exit_ms": int(t.exit_ts if t.exit_ts is not None else entry),
+    row = {"ts_ms": entry, "as_of_ms": entry, "exit_ms": int(t.exit_ts if t.exit_ts is not None else entry),
             "day": entry // DAY_MS, "symbol": t.symbol, "option": t.variant_id, "side": t.side,
             "signal_ts": int(t.signal_ts), "initial_stop": float(t.initial_stop), "entry_ref": float(t.entry_ref),
             "bars_held": int(t.bars_held), "r": {**{k: float(v) for k, v in t.r.items()}, PL.GROSS: PL.gross_r(t)},
             "pnl": {k: float(v) for k, v in t.pnl_usdt.items()}, "flags": list(t.flags),
-            "excluded": KN.gate_excluded(t), "trade_key": trade_key(t)}
+            "excluded": KN.gate_excluded(t), "trade_key": trade_key(t), "exit_ref": exit_ref(t)}
+    if data is not None:
+        tf = str(_resolve(t.variant_id)["signal_tf"])
+        bars = data.bars.get(tf)
+        ct = None
+        if _close_t is not None and bars:
+            ct = _close_t.setdefault(tf, [int(b["timestamp"]) + TF_MS[tf] for b in bars])
+        row["mtm"], row["mtm_method"] = ST.mtm_allocation(row, bars, TF_MS[tf], close_t=ct)
+    return row
 
 
-def trade_rows(results: Iterable[KN.KernelResult]) -> list[dict[str, Any]]:
-    return [trade_row(t) for res in results for t in res.trades]
+def trade_rows(results: Iterable[KN.KernelResult], data: KN.SeriesData | None = None) -> list[dict[str, Any]]:
+    cache: dict[str, list[int]] = {}
+    return [trade_row(t, data, _close_t=cache) for res in results for t in res.trades]
 
 
 # ============================================================================ atama ve sızıntı
@@ -385,9 +404,9 @@ def evaluate_coin_fit(family: str, coin: str, rows: Sequence[Mapping[str, Any]],
     # CSCV seçim grubu: o coin'deki ızgaranın OOS günlük getirisi (yalnız LEAK olmayan test dilimleri)
     days = rr.oos_days
     for o in options:
-        pairs = [(r["day"], r["pnl"][GATE_COST]) for slot in a_ok["folds"] for r in slot["test"]
-                 if r["option"] == o and r["symbol"] == coin and not r.get("excluded")]
-        rr.option_daily[o] = ST.daily_returns(pairs, days)
+        tr = [r for slot in a_ok["folds"] for r in slot["test"]
+              if r["option"] == o and r["symbol"] == coin and not r.get("excluded")]
+        rr.option_daily[o] = ST.mtm_daily(tr, days)                     # günlük piyasa değerlemesi (U3)
     sel_rows = []
     for w, f in zip(plan_ok["folds"], res["folds"]):
         if f.get("skipped"):

@@ -339,7 +339,7 @@ def light_trade(rows: list[dict[str, Any]], atr: list[float], i: int, long: bool
     r["GROSS"] = gross                                                      # brüt R (R5; ücret/kayma/spread yok)
     t0 = int(rows[i]["timestamp"])
     return {"ts_ms": t0 + D1, "as_of_ms": t0 + D1, "exit_ms": int(rows[j]["timestamp"]) + D1, "day": (t0 + D1) // D1,
-            "signal_ts": t0, "side": "LONG" if long else "SHORT", "initial_stop": stop, "entry_ref": e,
+            "signal_ts": t0, "side": "LONG" if long else "SHORT", "initial_stop": stop, "entry_ref": e, "exit_ref": x,
             "bars_held": j - i, "r": r, "pnl": dict(r), "flags": [], "excluded": False}
 
 
@@ -394,6 +394,7 @@ def gate_world(seed: int, *, days: int = 2200, symbols: tuple[str, ...] = GATE_S
     (10 günlük std > (σ_düşük + σ_yüksek) / 2) ve yalnız long girer — zamanlama avantajı yoktur, yalnız sürüklenme ve
     yüksek oynaklıkta R cinsinden düşük maliyet (inceleme düzeltmesi 5a'nın tuzağı). `flag_rate` payında işlem
     `FUNDING_GAP` işaretlenir (kapı dışı). İleri okuma = mühür anından (`seal_ms` = son − `seal_days`) sonraki işlemler."""
+    from .stats import mtm_allocation
     rows = rows if rows is not None else gate_rows()
     bars: dict[str, list[dict[str, Any]]] = {}
     atrs: dict[str, list[float]] = {}
@@ -406,6 +407,7 @@ def gate_world(seed: int, *, days: int = 2200, symbols: tuple[str, ...] = GATE_S
                      gap_p=0.0)
             bars[sym], atrs[sym] = b, _atr14(b)
     vol_cut = (0.005 + 0.03) / 2.0
+    close_t = {sym: [int(x["timestamp"]) + D1 for x in b] for sym, b in bars.items()}
     trades: dict[str, list[dict[str, Any]]] = {}
     signals: dict[tuple[str, str], set[int]] = {}
     params: dict[str, dict[str, Any]] = {}
@@ -442,6 +444,7 @@ def gate_world(seed: int, *, days: int = 2200, symbols: tuple[str, ...] = GATE_S
                     i += 1
                     continue
                 t.update(symbol=sym, option=unit, trade_key=f"{unit}|{sym}:{t['signal_ts']}:{t['side']}|{t['ts_ms']}")
+                t["mtm"], t["mtm_method"] = mtm_allocation(t, b, D1, close_t=close_t[sym])
                 if flag_rate and rng.random() < flag_rate:
                     t["flags"] = ["FUNDING_GAP"]
                     t["excluded"] = KN.gate_excluded(t)

@@ -332,7 +332,9 @@ def test_end_to_end_kernel_to_gate_a_look(tmp_path):
         start = WF.data_start_ms(d.bars["1d"][0]["timestamp"], "1d")
         res, s = WF.run_variants(opts + ["DON_20_10_1d_LS"], d, start_ms=start)
         sig[c] = s
-        tr = WF.trade_rows(res.values())
+        tr = WF.trade_rows(res.values(), d)                                             # + günlük piyasa değerlemesi
+        assert all(r["mtm_method"] == ST.MTM_PRICE_PATH for r in tr)
+        assert all(abs(sum(r["mtm"].values()) - r["pnl"]["ADVERSE"]) < 1e-9 for r in tr)
         rows += [r for r in tr if r["option"] in opts]
         don += [r for r in tr if r["option"] == "DON_20_10_1d_LS"]
     t_kernel = time.perf_counter() - t0

@@ -20,8 +20,8 @@
   defterde `LOOK_A` yoksa) — ara gecelerde hüküm kelimesi yok ("ara görünüm", deftere yazılmaz). Sıra: (0) `night`
   enjekte saatin bugünkü gecesi değilse ret (geçmiş/gelecek bakış yok); (1) zincir, öncüller (= `PRIOR_TRIALS_V1`), DSR
   N'i ≥ mühürdeki N (4.513) — tutmazsa kapalı, yazım yok — ve mühür denetimi; (2) satır istatistikleri (üç maliyet,
-  `p_day`, plasebo, katman payı, pay/tutarlılık); (3) PBO (grup üyeliği mühürden; eksik grup hesaplanmaz — R3; blok
-  kenarı arındırması — U3); (4) BH (aile HER ZAMAN 818 satır; daraltma yalnız saf `gate_a_evaluate`'te); (5) DSR; (6)
+  `p_day`, plasebo, katman payı, pay/tutarlılık); (3) PBO (grup üyeliği mühürden; eksik grup hesaplanmaz — R3; matris
+  günlük piyasa değerlemesi getirileri — U3, `mtm_allocation`); (4) BH (aile HER ZAMAN 818 satır; daraltma yalnız saf `gate_a_evaluate`'te); (5) DSR; (6)
   ileri okuma (`FWD_READ`); (7) hüküm → `LOOK_A`. Defter yalnız `trials.TrialsLedger.append` ile büyür (yeniden yazma yolu
   yok). Plasebo koşulu net VE brüt R'da, kapsama ≥ %80 (R5).
 * **Eşikler:** Kapı A eşikleri ana belge §6.7'ye göre S2'de (`PROMOTION_REGISTRY_V1`, P4a) mühürlenir; S1 yalnız q, plasebo
@@ -211,6 +211,66 @@ def daily_returns(trades: Iterable[tuple[int, float]], oos_days: Sequence[int], 
     return out
 
 
+MTM_PRICE_PATH, MTM_LINEAR = "PRICE_PATH", "LINEAR"
+
+
+def mtm_allocation(row: Mapping[str, Any], bars: Sequence[Mapping[str, Any]] | None = None, tf_ms: int | None = None,
+                   *, close_t: Sequence[int] | None = None) -> tuple[dict[int, float], str]:
+    """U3 (düzeltme mührü 9): işlemin ADVERSE net USDT'sinin tutulduğu UTC günlerine GÜNLÜK PİYASA DEĞERLEMESİ dağılımı.
+
+    Fiyat yolu (`bars` = sinyal dilimi barları, `tf_ms` bar süresi): ilk gün girişten (`entry_ref`) gün sonu işaretine, ara
+    günler işaretten işarete, son gün işaretten ağırlıklı çıkış fiyatına (`exit_ref`); işaret = o UTC gününün sonunda ya
+    da önce kapanan, girişten sonra kapanan son barın kapanışı (yoksa bir önceki işaret). Günlük R = yön × fiyat farkı /
+    |giriş − ilk stop|; kalan (maliyet, fonlama, kısmi çıkış) = net R − Σ günlük R çıkış gününe (toplam = gerçekleşen net
+    R, kesin); USDT = R × (net USDT / net R). Fiyat yolu yoksa YALNIZ o zaman: tutulan günlere doğrusal. Döner: ({gün:
+    USDT}, yöntem). `close_t`: barların kapanış anları (önceden hesaplanmışsa; hız)."""
+    entry, ex = int(row["ts_ms"]), int(row["exit_ms"])
+    d0 = entry // DAY_MS
+    d1 = max(d0, (ex - 1) // DAY_MS) if ex > entry else d0
+    days = list(range(d0, d1 + 1))
+    pnl, r = float(row["pnl"][GATE_COST]), float(row["r"][GATE_COST])
+    e, x, stop = row.get("entry_ref"), row.get("exit_ref"), row.get("initial_stop")
+    if bars and tf_ms and e is not None and x is not None and stop is not None and abs(float(e) - float(stop)) > 0:
+        import bisect
+        sgn = 1.0 if str(row["side"]).upper() == "LONG" else -1.0
+        dist = abs(float(e) - float(stop))
+        if close_t is None:
+            close_t = [int(b["timestamp"]) + int(tf_ms) for b in bars]
+        alloc: dict[int, float] = {}
+        prev, prev_t = float(e), entry
+        for d in days[:-1]:
+            j = bisect.bisect_right(close_t, (d + 1) * DAY_MS) - 1
+            if j >= 0 and close_t[j] > prev_t:
+                m, prev_t = float(bars[j]["close"]), close_t[j]
+            else:
+                m = prev
+            alloc[d] = sgn * (m - prev) / dist
+            prev = m
+        alloc[d1] = sgn * (float(x) - prev) / dist
+        alloc[d1] += r - sum(alloc.values())
+        k = pnl / r if abs(r) > 1e-12 else None
+        if k is None:
+            return {d1: pnl}, MTM_PRICE_PATH
+        return {d: v * k for d, v in alloc.items()}, MTM_PRICE_PATH
+    return {d: pnl / len(days) for d in days}, MTM_LINEAR
+
+
+def mtm_daily(trades: Iterable[Mapping[str, Any]], oos_days: Sequence[int], *, equity: float = EQUITY_BASE_USDT
+              ) -> dict[int, float]:
+    """CSCV matrisinin sütunu: {OOS günü: Σ günlük piyasa değerlemesi / taban}; işlemin `mtm`'i (yoksa doğrusal) — OOS
+    ekseni dışına düşen günler atılır; pozisyonsuz gün 0."""
+    out = {int(d): 0.0 for d in oos_days}
+    for t in trades:
+        alloc = t.get("mtm")
+        if alloc is None:
+            alloc = mtm_allocation(t)[0]
+        for d, v in alloc.items():
+            d = int(d)
+            if d in out:
+                out[d] += float(v) / equity
+    return out
+
+
 def sharpe(x: Sequence[float]) -> float | None:
     """Ortalama / örneklem std (ddof = 1); < 2 gözlem ya da std = 0 → None."""
     n = len(x)
@@ -336,6 +396,7 @@ def row_stats(row: Mapping[str, Any], *, look_no: int, p_stop_above: float | Non
     dr = daily_returns(((x["day"], x["pnl"][GATE_COST]) for x in tr), days)
     series = [dr[d] for d in sorted(dr)]
     out["daily"] = dr
+    out["daily_mtm"] = mtm_daily(tr, days)                      # CSCV matrisi (U3); DSR giriş günü serisiyle
     out["sr"] = sharpe(series)
     out["skew"], out["kurt"] = moments(series) if t else (0.0, 3.0)
     folds = [f for f in row["folds"] if not f.get("leak") and f.get("n", 0) >= int(
@@ -420,7 +481,7 @@ def gate_a_evaluate(rows: Mapping[str, Mapping[str, Any]], *, look_no: int, n_tr
         if r.get("excluded", {}).get("n_leak_folds"):
             s["n_leak_folds"] = r["excluded"]["n_leak_folds"]
         s["fails"] = fails
-    # (3) PBO — seçim grupları: üyelik mühürden (R3; eksik grup hesaplanmaz), blok kenarı arındırması (U3)
+    # (3) PBO — seçim grupları: üyelik mühürden (R3; eksik grup hesaplanmaz), matris günlük piyasa değerlemesi (U3)
     expected = expected_group_members()
     groups: dict[str, dict[str, Mapping[int, float]]] = {k: dict(v) for k, v in (group_series or {}).items()}
     group_of: dict[str, str] = {}
@@ -431,7 +492,7 @@ def gate_a_evaluate(rows: Mapping[str, Mapping[str, Any]], *, look_no: int, n_tr
             groups.setdefault(g, {k: dict(v) for k, v in (r.get("option_daily") or {}).items()})
         else:
             groups.setdefault(g, {})
-            groups[g].setdefault(rid, out_rows[rid]["daily"])
+            groups[g].setdefault(rid, out_rows[rid]["daily_mtm"])
     needed = {group_of[rid] for rid in rows if full or not out_rows[rid]["fails"]}
     pbo_by_group: dict[str, dict[str, Any]] = {}
     for g in sorted(needed):
@@ -440,12 +501,7 @@ def gate_a_evaluate(rows: Mapping[str, Mapping[str, Any]], *, look_no: int, n_tr
             pbo_by_group[g] = {"state": GROUP_INCOMPLETE, "pbo": None, "reason": "GROUP_INCOMPLETE",
                                "missing": len(want - have), "extra": len(have - want), "configs": sorted(have)}
             continue
-        h = group_purge_days(g, sorted(have))
-        if h is None:
-            pbo_by_group[g] = {"state": CS.NOT_COMPUTABLE, "pbo": None, "reason": "MAX_HOLD_UNSPECIFIED",
-                               "configs": sorted(have)}
-            continue
-        pbo_by_group[g] = CS.group_pbo(groups[g], purge_days=h)
+        pbo_by_group[g] = CS.group_pbo(groups[g])
     for rid in rows:
         s = out_rows[rid]
         g = group_of[rid]
@@ -550,20 +606,6 @@ def expected_group_members() -> Mapping[str, frozenset[str]]:
                 acc.setdefault(k, set()).add(r["row_id"])
         _EXPECTED.update({k: frozenset(v) for k, v in acc.items()})
     return _EXPECTED
-
-
-def group_purge_days(group: str, configs: Sequence[str]) -> int | None:
-    """U3 blok kenarı arındırması: grubun yapılandırmalarının mühürlü max_hold'unun en uzunu (gün, yukarı yuvarlanır);
-    tanımsız max_hold → None (hesaplanamaz)."""
-    from . import wf as WF
-    longest = 0
-    for c in configs:
-        vid = c if group.startswith("GRID:") else c.split("@", 1)[0]
-        try:
-            longest = max(longest, WF.max_hold_bars(vid) * WF.TF_MS[str(WF._resolve(vid)["signal_tf"])])
-        except (ValueError, KeyError):
-            return None
-    return int(math.ceil(longest / DAY_MS))
 
 
 def _seal_ok() -> bool:
@@ -687,7 +729,7 @@ def _finite(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 __all__ = ["BH_Q", "CHUNK", "EQUITY_BASE_USDT", "FAIL_A", "GATE_A_PROVISIONAL", "GATE_COST", "INTERIM_LABEL",
            "LOOK_AFTER_DAY", "MEMORY_MB_MAX", "NULL_WORLDS", "PASS_A", "PASS_A_PROVISIONAL", "PLACEBO_CI_LEVEL", "PLACEBO_K",
-           "SEALED_GATE_A_THRESHOLDS", "GROUP_INCOMPLETE", "actionable_pass", "expected_group_members", "group_purge_days",
+           "SEALED_GATE_A_THRESHOLDS", "GROUP_INCOMPLETE", "actionable_pass", "expected_group_members", "mtm_allocation", "mtm_daily",
            "is_pass", "ledger_priors", "thresholds_are_sealed",
            "PLACEBO_MIN_CI_LOWER", "RESAMPLES", "R_SCALE", "SCENARIOS", "bh_qvalues", "choice_stream", "daily_returns",
            "day_clusters", "dsr", "family_sr_var", "gate_a_evaluate", "gate_a_look", "is_look_night", "ledger_looks",

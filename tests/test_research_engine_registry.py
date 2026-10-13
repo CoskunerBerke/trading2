@@ -40,15 +40,15 @@ DOC = ROOT / "docs" / "ENGINE_BRAIN_V1.md"
 SHAS_PINNED = {
     "LIB_V1": "ae237b55c6df7014a52649915342eeb0bd67d23a18edcee5cf3e4b8c773df2e3",
     "WF_PROTOCOL_V1": "085ca94c3a8abc007327a15c217eea7d56a5b9af7b5075ec42714d5424af46b4",
-    "STATS_V1": "1e5f71cf5c2fc0a6473aa9fbe6cca24806f9d058fb4d34dfac835fcfbe824a1c",
+    "STATS_V1": "fda79c7565db098f76379d5037443e119723367fdba535d8a8ed9897c57bf60e",
     "LESSON_REGISTRY_V1": "8fbed7f5e33e21a02ec9547bfd84ab7ad0a798d9cc25908aa99911244ad58836",
     "PIT_RULES_V1": "59d0628c975e42aaa7810e231ce0704e5113b6a2bde4fd59fb29e65d8fef48b7",
     "PRIOR_TRIALS_V1": "ad6d8903e66034ce96cafe006f0a071e254968308627ab9998b0464f96984921",
-    "CONFIG_EPOCHS_V1": "22e96fde4ecf3ec63ae9b0e21d74aaf00f68964c0e8e3287d5408aa6cca1931b",
-    "THRESHOLD_DIRECTIONS_V1": "ea901a018df9dc3ca4ea8c272fd2ff4400141f2f4cfbaafd2c8e68cf99c1b61d",
+    "CONFIG_EPOCHS_V1": "38126e55acda08dc414a3aec209f24933ea025a2f98843f4f8ad9f02f2172e65",
+    "THRESHOLD_DIRECTIONS_V1": "6ccbdfcecd55c240ff445b7ab39abedd6696587d54b04712ab0c28fc1e9fb56f",
 }
-T_SEAL_MS_PINNED = 1791883800000
-REGISTRY_SHA_PINNED = "d5fb2e0f31353d2da964c2e15a18097cc24416ed344c9f315f51382f552bd663"
+T_SEAL_MS_PINNED = 1791885600000
+REGISTRY_SHA_PINNED = "3e700fa03e455237c5ef45e29b85e5a810a9f8f7bd9dfe88465e543a5620beaf"
 
 #: belgedeki sayılar (§2.2, §2.5, §2.6, §5.1, §7.5) — kayıttan BAĞIMSIZ yazılır
 DOC_BUDGET = {"POOLED": (45, 45), "CLUSTER": (135, 135), "COIN_FIT": (161, 1081), "COPY": (312, 312), "COVER": (140, 140),
@@ -674,12 +674,16 @@ def test_p3d_readings_2026_10_13_are_sealed_without_touching_thresholds():
 
 
 def test_fixup_8_review_readings_are_sealed_and_fixed():
-    """Düzeltme mührü 8 (2026-10-13 bağımsız inceleme): CSCV blok kenarı arındırması U3 okumasında; R3 grup bütünlüğü ve
-    R5 plasebo kurulumu (MAX_TRIES 20, ATR14, sinyal kapanışı çapası, tutuş = bars_held − 1, maruziyet eşleşmesi, net + brüt,
-    kapsama ≥ %80) STATS_V1'de; hepsi asla-gevşetme tablosunda `fixed`; `thresholds` ağacı, bütçe ve sayılar değişmedi."""
+    """Düzeltme mührü 8 (2026-10-13 bağımsız inceleme): R3 grup bütünlüğü ve R5 plasebo kurulumu (MAX_TRIES 20, ATR14, sinyal
+    kapanışı çapası, tutuş = bars_held − 1, maruziyet eşleşmesi, net + brüt, kapsama ≥ %80) STATS_V1'de; düzeltme mührü 9:
+    CSCV blok kenarı arındırması GERİ ALINDI, matris günlük piyasa değerlemesi (U3); hepsi asla-gevşetme tablosunda `fixed`;
+    `thresholds` ağacı, bütçe ve sayılar değişmedi."""
     st = RG.STATS_V1
     m = st["pbo"]["metric"]
-    assert m["edge_purge"] == "DROP_FIRST_H_CALENDAR_DAYS_OF_EACH_OF_THE_16_BLOCKS" and "max_hold" in m["edge_purge_h"]
+    assert not [k for k in m if k.startswith("edge_purge")]
+    assert (m["matrix_returns"], m["matrix_fallback"]) == ("DAILY_MTM_PRICE_PATH_RESIDUAL_ON_EXIT_DAY",
+                                                           "LINEAR_OVER_HELD_DAYS_ONLY_WITHOUT_PRICE_PATH")
+    assert "düzeltme mührü 9" in m["reading_tr"] and "296" in m["reading_tr"]
     assert st["pbo"]["group_completeness"]["rule"] == "INCOMPLETE_GROUP_FAILS_CLOSED"
     co = st["placebo"]["construction"]
     assert (co["max_tries"], co["atr_n"], co["stop_anchor"], co["hold_bars"], co["min_coverage_share"],
@@ -688,7 +692,8 @@ def test_fixup_8_review_readings_are_sealed_and_fixed():
         "CI_LOWER_GT_MIN_ON_NET_AND_GROSS", "REAL_TRADES_WITH_AT_LEAST_ONE_GATE_PLACEBO",
         "TIME_AT_REAL_HOLD_ATR_STOP_IS_R_UNIT", "ZERO_FEE_SLIPPAGE_SPREAD_REAL_FUNDING")
     d = RG.THRESHOLD_DIRECTIONS["STATS"]
-    for k in ("pbo.metric.edge_purge", "pbo.metric.edge_purge_h", "pbo.group_completeness.rule",
+    assert not [k for k in d if "edge_purge" in k]
+    for k in ("pbo.metric.matrix_returns", "pbo.metric.matrix_fallback", "pbo.group_completeness.rule",
               *(f"placebo.construction.{x}" for x in ("max_tries", "atr_n", "stop_anchor", "hold_bars", "gross_r",
                                                        "requirement", "coverage_rule", "min_coverage_share", "exit",
                                                        "guard_stop_frac"))):

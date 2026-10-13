@@ -182,6 +182,38 @@ def test_dsr_uses_the_family_sr_variance_with_the_1_over_t_minus_1_floor():
     assert ST.dsr(None, n_trials=10, t=t, skew=0, kurt=3, sr_var=var) is None
 
 
+def test_mtm_allocation_follows_the_price_path_and_sums_to_the_net_result():
+    """U3 (düzeltme mührü 9): CSCV matrisi günlük piyasa değerlemesi — işlemin net sonucu tutulduğu günlere fiyat yoluyla
+    dağıtılır (kalan çıkış gününe; toplam kesin); fiyat yolu yoksa YALNIZ o zaman doğrusal; OOS dışı günler atılır."""
+    D = 86_400_000
+    bars = [{"timestamp": d * D, "open": p, "high": p, "low": p, "close": c}
+            for d, (p, c) in enumerate([(100, 100), (100, 104), (104, 101), (101, 108), (108, 110)], start=1000)]
+    row = {"ts_ms": 1001 * D, "exit_ms": 1004 * D, "side": "LONG", "entry_ref": 100.0, "exit_ref": 108.0,
+           "initial_stop": 96.0, "r": {"ADVERSE": 1.9}, "pnl": {"ADVERSE": 1.9 * 1.01}}
+    alloc, how = ST.mtm_allocation(row, bars, D)
+    assert how == ST.MTM_PRICE_PATH and sorted(alloc) == [1001, 1002, 1003]
+    k = 1.01
+    assert alloc[1001] == pytest.approx(4 / 4 * k) and alloc[1002] == pytest.approx(-3 / 4 * k)       # 100→104, 104→101
+    assert alloc[1003] == pytest.approx((7 / 4 + (1.9 - (4 - 3 + 7) / 4)) * k)                       # 101→108 + kalan
+    assert sum(alloc.values()) == pytest.approx(1.9 * 1.01)
+    short = dict(row, side="SHORT", exit_ref=101.0, initial_stop=104.0)
+    a2, _ = ST.mtm_allocation(short, bars, D)
+    assert a2[1001] == pytest.approx(-4 / 4 * k) and sum(a2.values()) == pytest.approx(1.9 * 1.01)
+    lin, how = ST.mtm_allocation(row)
+    assert how == ST.MTM_LINEAR and lin == {1001: pytest.approx(1.919 / 3), 1002: pytest.approx(1.919 / 3),
+                                             1003: pytest.approx(1.919 / 3)}
+    same_day = dict(row, exit_ms=1001 * D + 3_600_000)
+    assert list(ST.mtm_allocation(same_day, bars, D)[0]) == [1001]
+    daily = ST.mtm_daily([dict(row, mtm=alloc)], [1002, 1003, 1004])
+    assert daily == {1002: pytest.approx(alloc[1002] / 200), 1003: pytest.approx(alloc[1003] / 200), 1004: 0.0}
+    # sentetik dünya işlemleri fiyat yolunu kullanır; giriş gününe yığılma yok
+    w = S.gate_world(4, rows=[r for r in S.gate_rows(("E",)) if r["unit"] == "KEL_20_2_4h"])
+    tr = w["trades"]["KEL_20_2_4h@POOLED_P23"]
+    assert all(t["mtm_method"] == ST.MTM_PRICE_PATH for t in tr)
+    assert all(sum(t["mtm"].values()) == pytest.approx(t["pnl"]["ADVERSE"]) for t in tr)
+    assert sum(len(t["mtm"]) > 1 for t in tr) > 0.8 * len(tr)
+
+
 def test_daily_returns_sharpe_and_moments():
     dr = ST.daily_returns([(10, 2.0), (10, -1.0), (12, 4.0)], [10, 11, 12, 13])
     assert dr == {10: 1.0 / 200, 11: 0.0, 12: 4.0 / 200, 13: 0.0}                       # 200 USDT taban, işlemsiz gün 0
@@ -492,8 +524,6 @@ def test_incomplete_selection_group_fails_and_is_counted():
     exp = ST.expected_group_members()
     assert exp["FAM:E@POOLED_P23"] == {f"{u}@POOLED_P23" for u in ("KEL_20_2_1h", "KEL_20_2_4h", "BBSQ_20_1h", "BBSQ_20_4h")}
     assert len(exp["GRID:D@COIN_FIT:BTC"]) == 8 and len(exp["COINSEL:K_D4"]) == 23 and len(exp["COVER:C4@POOLED_OWN"]) == 15
-    assert ST.group_purge_days("FAM:E@POOLED_P23", sorted(exp["FAM:E@POOLED_P23"])) == 8          # 48 × 4h
-    assert ST.group_purge_days("FAM:B@POOLED_P23", sorted(exp["FAM:B@POOLED_P23"])) == 300        # 300 × 1d
 
 
 def test_placebo_coverage_below_80_percent_fails_and_is_counted():
@@ -570,12 +600,13 @@ def test_p3d_readings_are_sealed_and_used_by_the_code():
         (PL.MAX_TRIES, PL.ATR_N, PL.MIN_COVERAGE, PL.PROTECT_FRAC) == (20, 14, 0.8, 0.45)
     assert (co["stop_anchor"], co["hold_bars"], co["requirement"], co["exit"]) == (
         "SIGNAL_CLOSE", "REAL_BARS_HELD_MINUS_1", "CI_LOWER_GT_MIN_ON_NET_AND_GROSS", "TIME_AT_REAL_HOLD_ATR_STOP_IS_R_UNIT")
-    assert RG.STATS_V1["pbo"]["metric"]["edge_purge"] == "DROP_FIRST_H_CALENDAR_DAYS_OF_EACH_OF_THE_16_BLOCKS"
+    assert RG.STATS_V1["pbo"]["metric"]["matrix_returns"] == "DAILY_MTM_PRICE_PATH_RESIDUAL_ON_EXIT_DAY"
     assert RG.STATS_V1["pbo"]["group_completeness"]["rule"] == "INCOMPLETE_GROUP_FAILS_CLOSED"
     assert all(d[f"placebo.construction.{k}"] == RG.FIXED for k in ("max_tries", "atr_n", "stop_anchor", "hold_bars",
                                                                    "gross_r", "requirement", "coverage_rule",
                                                                    "min_coverage_share", "exit", "guard_stop_frac"))
-    assert d["pbo.metric.edge_purge"] == d["pbo.group_completeness.rule"] == RG.FIXED
+    assert d["pbo.metric.matrix_returns"] == d["pbo.group_completeness.rule"] == RG.FIXED
+    assert "pbo.metric.edge_purge" not in d
 
 
 def KN_covers(base: str) -> list:

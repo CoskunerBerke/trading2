@@ -53,7 +53,7 @@ SEAL_DOC = "docs/ENGINE_BRAIN_V1.md §8.2"
 #: ayarlanmaz). Keşif katmanı ve Kapı A'nın ileri okuması YALNIZ açılışı bu andan sonra olan barları kullanır (§5.1).
 #: Mühür commit'leri yalnız fast-forward (ya da merge commit) ile birleşir; rebase/squash/cherry-pick işleyen zamanı
 #: değiştirir → test kırılır → yeniden mühür.
-T_SEAL_MS = 1791883800000
+T_SEAL_MS = 1791885600000
 
 
 # ============================================================================ kanonik biçim ve donma
@@ -926,17 +926,23 @@ def _stats() -> dict:
                                         "örneklem std, ddof = 1; std = 0 → 0; Bailey vd. varsayılanı ve DSR'nin ölçüsü). T "
                                         "16'ya bölünmüyorsa EN ESKİ T mod 16 gün atılır (eşit blok); grup ekseni üyelerin OOS "
                                         "günlerinin kesişimi; IS-en-iyide eşitlik ilk yapılandırma, OOS sırasında eşitlik "
-                                        "ortalama sıra (cscv.py). Blok kenarı arındırması (2026-10-13 bağımsız inceleme, "
-                                        "düzeltme mührü 8; muhafazakâr): eşit bloklar kurulduktan sonra 16 bloğun HER BİRİNİN "
-                                        "ilk h takvim günü atılır, h = grubun yapılandırmalarının mühürlü max_hold'unun en "
-                                        "uzunu (gün, yukarı yuvarlanır); arındırmadan sonra bir blokta < 5 gün kalırsa "
-                                        "hesaplanamaz → kapı geçmez",
+                                        "ortalama sıra (cscv.py). Matris (düzeltme mührü 9, 2026-10-13; Bailey vd. "
+                                        "uygulaması): GÜNLÜK PİYASA DEĞERLEMESİ getirileri — her işlemin ADVERSE net "
+                                        "sonucu tutulduğu UTC günlerine fiyat yoluyla dağıtılır: ilk gün girişten gün sonu "
+                                        "işaretine, ara günler gün sonu işaretinden gün sonu işaretine, son gün gün sonu "
+                                        "işaretinden ağırlıklı çıkış fiyatına (işaret = sinyal diliminin kapanışı o UTC "
+                                        "gününün sonunda ya da önce kapanan son bar; veri boşluğunda bir önceki işaret) "
+                                        "yön × fiyat farkı / |giriş − ilk stop| (R); kalan (maliyet, fonlama, kısmi çıkış "
+                                        "etkisi) = net R − Σ günlük R çıkış gününe yazılır (toplam = gerçekleşen net R, "
+                                        "kesin); fiyat yolu yoksa YALNIZ o zaman tutulan günlere doğrusal; OOS ekseni dışına "
+                                        "düşen günler atılır. Blok kenarı arındırması YOK (düzeltme mührü 8'in arındırması "
+                                        "geri alındı: giriş gününe yığılma kalkınca sızıntı önemsiz; arındırma 818 satırın "
+                                        "296'sını kalıcı olarak sınanamaz yapıyordu)",
                                   metric="DAILY_SHARPE", sharpe="mean / std(ddof=1); std = 0 → 0",
                                   remainder_days="DROP_OLDEST", group_axis="INTERSECTION_OF_MEMBER_OOS_DAYS",
                                   is_best_ties="FIRST_CONFIG", oos_rank_ties="AVERAGE_RANK",
-                                  edge_purge="DROP_FIRST_H_CALENDAR_DAYS_OF_EACH_OF_THE_16_BLOCKS",
-                                  edge_purge_h="ceil(max over the group's configs of sealed max_hold_bars × signal bar / 1 day)",
-                                  edge_purge_min_days_per_block="thresholds.pbo.min_oos_days_per_block after the purge"),
+                                  matrix_returns="DAILY_MTM_PRICE_PATH_RESIDUAL_ON_EXIT_DAY",
+                                  matrix_fallback="LINEAR_OVER_HELD_DAYS_ONLY_WITHOUT_PRICE_PATH"),
             "group_completeness": p3d_reading(
                 "R3", "seçim grubunun üyeleri mühürden kurulur (standart/diğer: aynı anahtarlı bütün Kapı A satırları; COIN_FIT: "
                       "ailenin bütün ızgara seçenekleri; COIN: kopyanın 23 coin satırı; kopya/örtü: {kopya + örtüleri}); "
@@ -1163,7 +1169,9 @@ def _directions() -> dict:
             "pbo.metric.group_axis": FIXED, "pbo.single_config_group.rule": FIXED,
             # düzeltme mührü 8 (2026-10-13 bağımsız inceleme): blok kenarı arındırması, grup bütünlüğü ve plasebo kurulumu
             # (koordinatör: yön `fixed`)
-            "pbo.metric.edge_purge": FIXED, "pbo.metric.edge_purge_h": FIXED, "pbo.group_completeness.rule": FIXED,
+            "pbo.group_completeness.rule": FIXED,
+            # düzeltme mührü 9: CSCV matrisi günlük piyasa değerlemesi (blok kenarı arındırması geri alındı)
+            "pbo.metric.matrix_returns": FIXED, "pbo.metric.matrix_fallback": FIXED,
             "placebo.construction.max_tries": FIXED, "placebo.construction.atr_n": FIXED,
             "placebo.construction.stop_anchor": FIXED, "placebo.construction.hold_bars": FIXED,
             "placebo.construction.gross_r": FIXED, "placebo.construction.requirement": FIXED,

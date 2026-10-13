@@ -802,19 +802,19 @@ değildir, metin testi); k*/kaldıraç satırı oto defterler için de yalnız l
 | **S1** | `LIB_V1` (106 varyant, kapsamlar, P23, kümeler, §2.4 kuralları, örtüler, §4.3 dönüşümleri), `WF_PROTOCOL_V1`, `STATS_V1`, `LESSON_REGISTRY_V1`, `PIT_RULES_V1`, `PRIOR_TRIALS_V1`, `CONFIG_EPOCHS_V1`, `THRESHOLD_DIRECTIONS_V1` (asla gevşetme yön tablosu), `T_SEAL_MS` | P3a commit'i; **P3 kodunun hiçbir gerçek veri koşusundan önce** (hedef ≤ 2026-10-25) | `tests/test_research_engine_registry.py` + bu tabloya aynı commit'te sha değerleri (**MÜHÜRLENDİ**, değerler tablonun altında) |
 | **S2** | `PROMOTION_REGISTRY_V1` (ana belge §6.7 + §3.7 yordamı + §6.3 Holm ayı + §6.4 yönlendirme), `AUTO_POLICY_V1`, `AUTO_CATALOG_V1`, `MANIFEST_SCHEMA_V1` | P4a commit'i, P4 dağıtımından önce, **sahibin kapı metni onayından sonra** | motor ve worker testlerinde aynı sabitler (eşitlik testi) |
 
-**S1 mühür değerleri (düzeltme mührü 8'in — P3d bağımsız incelemesi: CSCV blok kenarı arındırması (U3'e ek), seçim grubu bütünlüğü (R3) ve plasebo kurulumu (R5) `STATS_V1`'de, 2026-10-13, §8.4 — yeniden mühür commit'i; önceki: düzeltme mührü 7, P3d: plasebo fark CI'ı, CSCV ölçüsü ve iki kapalı hata kuralı `STATS_V1`'de tarihli okuma (U2–U5), 2026-10-13; düzeltme mührü 6, P3b-2b: O örtülerinin uygulama okumaları `LIB_V1`'de ve kapı dışı işaret listesi `WF_PROTOCOL_V1.gate_exclusions`'ta, 2026-10-12; düzeltme mührü 5, P3b-2a bağımsız incelemesinin bulgularına tarihli teknik okumalar `LIB_V1` satırlarında; düzeltme mührü 4, P3b-2a çekirdeğin giriş saati okunuşu `WF_PROTOCOL_V1.kernel.entry_hour`; düzeltme mührü 3, çekirdeğin canlı defterle aynı ihtiyatlı stop dolumu, sahip kararı 2026-10-12; düzeltme mührü 2, §8.5'e sahip cevabı 2026-10-11; `tradingbot/research_engine/registry.py`; sha256 = kanonik JSON'un — sıralı anahtar,
+**S1 mühür değerleri (düzeltme mührü 9'un — CSCV blok kenarı arındırması geri alındı, CSCV matrisi günlük piyasa değerlemesi (U3), 2026-10-13, §8.4 — yeniden mühür commit'i; önceki: düzeltme mührü 8, P3d bağımsız incelemesi: seçim grubu bütünlüğü (R3) ve plasebo kurulumu (R5) `STATS_V1`'de, 2026-10-13; düzeltme mührü 7, P3d: plasebo fark CI'ı, CSCV ölçüsü ve iki kapalı hata kuralı `STATS_V1`'de tarihli okuma (U2–U5), 2026-10-13; düzeltme mührü 6, P3b-2b: O örtülerinin uygulama okumaları `LIB_V1`'de ve kapı dışı işaret listesi `WF_PROTOCOL_V1.gate_exclusions`'ta, 2026-10-12; düzeltme mührü 5, P3b-2a bağımsız incelemesinin bulgularına tarihli teknik okumalar `LIB_V1` satırlarında; düzeltme mührü 4, P3b-2a çekirdeğin giriş saati okunuşu `WF_PROTOCOL_V1.kernel.entry_hour`; düzeltme mührü 3, çekirdeğin canlı defterle aynı ihtiyatlı stop dolumu, sahip kararı 2026-10-12; düzeltme mührü 2, §8.5'e sahip cevabı 2026-10-11; `tradingbot/research_engine/registry.py`; sha256 = kanonik JSON'un — sıralı anahtar,
 `(",", ":")`, UTF-8):**
 
 - `LIB_V1` `ae237b55c6df7014a52649915342eeb0bd67d23a18edcee5cf3e4b8c773df2e3` — 106 varyant (+2 alias'lı ızgara üyesi), kapsamlar, P23, kümeler, §2.4 kuralları, örtüler (faktör parametreleri spec'te), kopya zaman stopları, varyant bağımlılıkları (`requires`), §4.3 dönüşümleri; §8.5 kararları B2–B5, B7, B8, B10, B11 (2026-10-11); P3b-2a inceleme teknik okumaları (2026-10-12): BBSQ `params.squeeze_bar` (sıkışma t − 1'de), FUND_CARRY `exits.exit_rule` (işaret ters → çık), RSI2 `params.entry_mid_side` (orta bandın doğru yanı), `defaults.window` (saf ailelerin penceresi 400 / 399); P3b-2b örtü uygulama okumaları (2026-10-12): `covers.reading`, yedi `covers.factors.<F>.reading` (35 örtünün `factor_params`'ında)
 - `WF_PROTOCOL_V1` `085ca94c3a8abc007327a15c217eea7d56a5b9af7b5075ec42714d5424af46b4` — §3.1–§3.3 katmanlar (B1 bölüşümü), COIN_FIT seçimi, maliyetler; §2.1 çekirdek (2026-10-12: `kernel.stop_fill` = canlı `exit_decision` 1h tiklerinde, `intrabar_order` canlı tik sırası; P3b-2a: `kernel.entry_hour` = girişi içeren saat diliminde yalnız stop/likidasyon); §5.2 önbellek; P3b-2b: `gate_exclusions` (kapı istatistiğinden çıkan işaretler FUNDING_GAP, PATH_1H_GAP, F8_UNMEASURABLE)
-- `STATS_V1` `1e5f71cf5c2fc0a6473aa9fbe6cca24806f9d058fb4d34dfac835fcfbe824a1c` — §3.6 p_day, BH (ailede işlem süzgeci yok; ana belge §6.4), DSR (sr_var tabanı 1/(T−1)), CSCV-PBO, plasebo, boş dünya; B6 üreteç ve tohumlar; P3d okumaları (2026-10-13): `placebo.ci` (U2), `pbo.metric` (U3), `placebo.no_eligible_bar` (U4), `pbo.single_config_group` (U5); düzeltme mührü 8: `pbo.metric.edge_purge*` (U3'e ek), `pbo.group_completeness` (R3), `placebo.construction` (R5)
+- `STATS_V1` `fda79c7565db098f76379d5037443e119723367fdba535d8a8ed9897c57bf60e` — §3.6 p_day, BH (ailede işlem süzgeci yok; ana belge §6.4), DSR (sr_var tabanı 1/(T−1)), CSCV-PBO, plasebo, boş dünya; B6 üreteç ve tohumlar; P3d okumaları (2026-10-13): `placebo.ci` (U2), `pbo.metric` (U3), `placebo.no_eligible_bar` (U4), `pbo.single_config_group` (U5); düzeltme mührü 8: `pbo.group_completeness` (R3), `placebo.construction` (R5); düzeltme mührü 9: `pbo.metric.matrix_returns`/`matrix_fallback` (U3; günlük piyasa değerlemesi, blok kenarı arındırması kaldırıldı)
 - `LESSON_REGISTRY_V1` `8fbed7f5e33e21a02ec9547bfd84ab7ad0a798d9cc25908aa99911244ad58836` — §4.1 hücreler/bakışlar/ileri doğrulama (B6 CI tohumu), §4.2 depo ve durumlar, §4.4 deneme maliyeti
 - `PIT_RULES_V1` `59d0628c975e42aaa7810e231ce0704e5113b6a2bde4fd59fb29e65d8fef48b7` — §3.4 zaman noktasında evren (B11: hacim penceresi d hariç)
 - `PRIOR_TRIALS_V1` `ad6d8903e66034ce96cafe006f0a071e254968308627ab9998b0464f96984921` — `research_engine/prior_trials.json` (§2.6; toplam 2.775)
-- `CONFIG_EPOCHS_V1` `22e96fde4ecf3ec63ae9b0e21d74aaf00f68964c0e8e3287d5408aa6cca1931b` — `research_engine/library/config_epochs.json` (git geçmişi + belgelenmiş dağıtım/sahip kayıtları; `covered_until` = `T_SEAL_MS`)
-- `THRESHOLD_DIRECTIONS_V1` `ea901a018df9dc3ca4ea8c272fd2ff4400141f2f4cfbaafd2c8e68cf99c1b61d` — asla gevşetme yön tablosu (eşikler ve kapı-dışı eşik benzerleri; kök-göreli yollar; B1/B11 tanımları ve 2026-10-12'den `kernel.stop_fill.policy`, `kernel.entry_hour.policy` ve `gate_exclusions.flags` `fixed`; 2026-10-13'ten P3d okumaları: `placebo.ci.min_days_per_side` `min`, CI tekrar/tohum/düzen, CSCV ölçüsü ve iki kapalı hata kuralı `fixed`; düzeltme mührü 8'in blok kenarı arındırması, grup bütünlüğü ve plasebo kurulumu `fixed`)
-- `T_SEAL_MS` `1791883800000` = 2026-10-13T09:30:00+00:00 (mühürlü içeriği değiştiren son commit'in işleyen zamanına eşit ya da ondan sonra; test git'ten doğrular, tarih elle ayarlanmaz)
-- `REGISTRY_SHA` `d5fb2e0f31353d2da964c2e15a18097cc24416ed344c9f315f51382f552bd663` — S1 kümesinin (sekiz sha + `T_SEAL_MS`) kanonik sha'sı; deneme satırlarının `registry_sha`'sı
+- `CONFIG_EPOCHS_V1` `38126e55acda08dc414a3aec209f24933ea025a2f98843f4f8ad9f02f2172e65` — `research_engine/library/config_epochs.json` (git geçmişi + belgelenmiş dağıtım/sahip kayıtları; `covered_until` = `T_SEAL_MS`)
+- `THRESHOLD_DIRECTIONS_V1` `6ccbdfcecd55c240ff445b7ab39abedd6696587d54b04712ab0c28fc1e9fb56f` — asla gevşetme yön tablosu (eşikler ve kapı-dışı eşik benzerleri; kök-göreli yollar; B1/B11 tanımları ve 2026-10-12'den `kernel.stop_fill.policy`, `kernel.entry_hour.policy` ve `gate_exclusions.flags` `fixed`; 2026-10-13'ten P3d okumaları: `placebo.ci.min_days_per_side` `min`, CI tekrar/tohum/düzen, CSCV ölçüsü ve iki kapalı hata kuralı `fixed`; düzeltme mührü 8'in grup bütünlüğü ve plasebo kurulumu ve düzeltme mührü 9'un CSCV matris tanımı `fixed`)
+- `T_SEAL_MS` `1791885600000` = 2026-10-13T10:00:00+00:00 (mühürlü içeriği değiştiren son commit'in işleyen zamanına eşit ya da ondan sonra; test git'ten doğrular, tarih elle ayarlanmaz)
+- `REGISTRY_SHA` `3e700fa03e455237c5ef45e29b85e5a810a9f8f7bd9dfe88465e543a5620beaf` — S1 kümesinin (sekiz sha + `T_SEAL_MS`) kanonik sha'sı; deneme satırlarının `registry_sha`'sı
 
 - "Gerçek veri koşusu": VPS'te S4/S5'in herhangi bir çalışması, P3 koduyla herhangi bir laboratuvar ya da elle geriye-test.
   P3b'nin hız ölçümü yalnız sentetik veriyle yapılır. Mühür commit'inin zamanı `T_SEAL_MS`'dir; ileri veri saati dağıtımdan
@@ -840,7 +840,7 @@ değildir, metin testi); k*/kaldıraç satırı oto defterler için de yalnız l
 En erken olaylar: ilk Kapı A bakışı 2026-12-06 (yalnız 5m/15m; ileri 30 gün) ve 2027-01-06 (diğerleri); 4h/1d adayı için en
 erken Holm 2027-03-01, en erken otomatik defter ≈ 2027-03-02 (24 saat veto penceresiyle).
 
-### 8.4 P3a uygulama notu (2026-10-11; düzeltme turu 1 ve §8.5'e sahip cevabıyla yeniden mühürlendi; 2026-10-12 çekirdeğin stop dolumuyla düzeltme mührü 3; 2026-10-12 P3b-2a saf aileler ve giriş saati okunuşuyla düzeltme mührü 4; 2026-10-12 P3b-2a inceleme düzeltmesi ve teknik okumalarla düzeltme mührü 5; 2026-10-12 P3b-2b O örtüleri, hız önlemleri ve kapı dışı işaretlerle düzeltme mührü 6; 2026-10-13 P3d walk-forward ve istatistik; 2026-10-13 P3d okumalarıyla düzeltme mührü 7; 2026-10-13 P3d bağımsız incelemesiyle düzeltme mührü 8)
+### 8.4 P3a uygulama notu (2026-10-11; düzeltme turu 1 ve §8.5'e sahip cevabıyla yeniden mühürlendi; 2026-10-12 çekirdeğin stop dolumuyla düzeltme mührü 3; 2026-10-12 P3b-2a saf aileler ve giriş saati okunuşuyla düzeltme mührü 4; 2026-10-12 P3b-2a inceleme düzeltmesi ve teknik okumalarla düzeltme mührü 5; 2026-10-12 P3b-2b O örtüleri, hız önlemleri ve kapı dışı işaretlerle düzeltme mührü 6; 2026-10-13 P3d walk-forward ve istatistik; 2026-10-13 P3d okumalarıyla düzeltme mührü 7; 2026-10-13 P3d bağımsız incelemesiyle düzeltme mührü 8; 2026-10-13 CSCV günlük piyasa değerlemesiyle düzeltme mührü 9)
 
 **Ne mühürlendi (S1).** Yeni modüller ağsız ve yalnız standart kütüphaneyle yazıldı; hiçbiri gece birimine, worker'a ya da
 bir karar yoluna bağlanmadı (P3a VPS'te hiçbir şey çalıştırmaz, gerçek veriye dokunmaz).
@@ -1787,7 +1787,8 @@ hiçbir yerde gevşemedi (`STATS_V1.thresholds` aynı; testli).
 - **3 — seçim grubu bütünlüğü (mühürlendi, `STATS_V1.pbo.group_completeness`, R3).** Her grubun üyeleri mühürden kurulur
   (`stats.expected_group_members`); eksik ya da fazla üyeli grup `INCOMPLETE` → PBO yok → satır geçmez
   (`PBO_GROUP_INCOMPLETE`, `groups_incomplete` sayılır; seçilmiş alt küme testi).
-- **4 — CSCV blok kenarı arındırması (mühürlendi, U3 okumasına eklendi).** Eşit bloklar kurulduktan sonra 16 bloğun her
+- **4 — CSCV blok kenarı arındırması (mühürlendi, U3 okumasına eklendi).** *[2026-10-13 düzeltme mührü 9 ile GERİ ALINDI —
+  aşağıdaki değişiklik notu.]* Eşit bloklar kurulduktan sonra 16 bloğun her
   birinin ilk h takvim günü atılır, h = grubun mühürlü en uzun max_hold'u (gün); arındırmadan sonra bir blokta < 5 gün
   kalırsa hesaplanamaz. Bilinen cevaplar arındırmayla da tutar (gürültü ortalaması 0,5 ± 0,1; dikilmiş < 0,1). **Sonuç
   (sahibe):** max_hold'u 300 × 1d olan grupların (B, C, D aileleri, T2/M2 kopya-örtü grupları, bu ailelerin COIN_FIT
@@ -1826,6 +1827,44 @@ hiçbir yerde gevşemedi (`STATS_V1.thresholds` aynı; testli).
   dünya `slow`), bakış testleri 818 satırlık aile ve saatle; `test_research_engine_cscv_p3d.py`: blok kenarı arındırması;
   `test_research_engine_placebo_p3d.py`: maruziyet eşleşmesi, brüt R, kapsama; `test_research_engine_wf_p3d.py`: uçtan uca
   bakış N = 4.513 ve eksik grup; `test_research_engine_registry.py`: `test_fixup_8_review_readings_are_sealed_and_fixed`.
+
+**Değişiklik 2026-10-13 — CSCV blok kenarı arındırması geri alındı, matris günlük piyasa değerlemesi (koordinatör kararı;
+sahip teknik okumaları devretti); S1 düzeltme mührü 9.** Henüz hiçbir gerçek veri koşusu yok → `_v2` değil düzeltme mührü.
+Bütçe, sayılar ve eşikler değişmedi (`STATS_V1.thresholds` aynı).
+
+- **Neden.** Düzeltme mührü 8'in arındırması (her bloğun ilk h = en uzun max_hold günü) istatistiksel bir zorunluluk
+  değil, tasarımın yan etkisiydi: 300 × 1d max_hold'lu bütün günlük trend aileleri (B, C, D; T2/M2 kopyaları ve örtüleri;
+  bu ailelerin COIN_FIT ızgaraları) ≥ 4.880 OOS günü isteyecekti → 818 satırın 296'sı kalıcı olarak sınanamazdı. Sızıntıyı
+  önemli kılan, işlemin bütün sonucunun GİRİŞ gününe yazılmasıydı (bloğun sonunda açılan işlemin sonucu bir sonraki
+  bloğun fiyat yolundan gelir).
+- **Yeni okuma (mühürlendi, U3: `STATS_V1.pbo.metric.matrix_returns` = `DAILY_MTM_PRICE_PATH_RESIDUAL_ON_EXIT_DAY`,
+  `matrix_fallback` = `LINEAR_OVER_HELD_DAYS_ONLY_WITHOUT_PRICE_PATH`; ikisi `fixed`; Bailey vd. uygulaması).** CSCV
+  matrisi GÜNLÜK PİYASA DEĞERLEMESİ getirileridir: her işlemin ADVERSE net sonucu tutulduğu UTC günlerine dağıtılır.
+  Kullanılan yöntem tam olarak **fiyat yolu**dur (çekirdeğin bar başına değerleme çıktısı yok; bu yüzden pozisyonun bar
+  kapanışından bar kapanışına fiyat hareketi kullanılır): ilk gün giriş referansından (`entry_ref`) gün sonu işaretine, ara
+  günler işaretten işarete, son gün işaretten bacakların ağırlıklı çıkış fiyatına (`exit_ref`); işaret = sinyal diliminin o
+  UTC gününün sonunda ya da önce kapanan (ve girişten sonra kapanan) son barının kapanışı, yoksa bir önceki işaret; günlük
+  R = yön × fiyat farkı / |giriş − ilk stop|; kalan (maliyet, fonlama, kısmi çıkış etkisi) = net R − Σ günlük R çıkış
+  gününe yazılır (toplam = gerçekleşen net R, kesin; testli); USDT = R × (net USDT / net R). Fiyat yolu YALNIZ yoksa
+  (işlem satırı barsız kurulmuşsa) tutulan günlere doğrusal. OOS ekseni dışına düşen günler atılır. Blok kenarı
+  arındırması YOK. Korunanlar: en eski T mod 16 gün atılır, ortak eksen üyelerin OOS günlerinin kesişimi, eşitlik
+  kuralları, R3 grup bütünlüğü. Uygulama: `stats.mtm_allocation` / `mtm_daily`, `wf.trade_rows(sonuçlar, data)`
+  (+ `exit_ref`), sentetik dünyada `light_trade` fiyat yolu. DSR'nin günlük serisi DEĞİŞMEDİ (giriş günü; açık madde
+  aşağıda).
+- **Yapılabilirlik (sahibe).** Mühürlü PBO alt sınırı (16 blok × 5 gün = 80 ortak OOS günü) Kapı A'nın OOS alt sınırının
+  (≥ 730 gün; altın ≥ 274) çok altındadır; bu yüzden OOS alt sınırına ulaşan satırın PBO'su hesaplanabilir: **818 satırın
+  792'si**. Hesaplanamayan 26: UNSPECIFIED yüzünden hiç koşmayan 13 varyantın 25 satırı (I spread 2, J XSEC 5, G altın 18;
+  grupları tümüyle boşluklu) ve tek yapılandırmalı K_FM@POOLED_OWN (U5).
+- **Doğrulamalar.** Bilinen cevaplar arındırmasız tutar (gürültü ortalaması 0,5 ± 0,1; dikilmiş < 0,1). Dikilmiş avantaj
+  satırı (KEL_20_2_4h@POOLED_P23; E ailesi — düzeltme mührü 8'de seçilmişti, günlük satıra dönmek gerekmedi) Kapı A'yı
+  geçer; oynaklık kümelenmeli dünyadaki tuzak satırı geçmez. Boş dünyalar (hızlı kip): sabit oynaklık 0/200 dünya,
+  0/5.800 satır (≈ 173 sn); oynaklık kümelenmeli 1/200 dünya (0,005), 1/5.800 satır (≈ 320 sn) — ikisi de ≤ q.
+- **Açık madde (sahibe):** DSR'nin `sr`'ı hâlâ giriş günü serisinden (mühürlü metin "pozisyonsuz gün 0" der; günlük
+  piyasa değerlemesi bu metne daha yakındır). Değiştirilmedi çünkü DSR'yi gevşetebilir; karar S2'ye ya da sonraki bir
+  düzeltme mührüne.
+- **Mühür:** değişen `STATS_V1` (U3 okuması), `THRESHOLD_DIRECTIONS_V1` (`edge_purge` yönleri çıktı, `matrix_returns`/
+  `matrix_fallback` `fixed`), `CONFIG_EPOCHS_V1` (yalnız `covered_until`), `T_SEAL_MS`, `REGISTRY_SHA`; diğer beş kayıt
+  DEĞİŞMEDİ. Değerler §8.2'de.
 
 ### 8.5 P3a boşlukları — sahibe sorular (entegrasyondan önce; her cevap boşluğu doldurur ve S1'i yeniden mühürler)
 

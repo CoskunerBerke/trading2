@@ -117,6 +117,37 @@ def _read_json_r(p: Path) -> Any:
         return None
 
 
+#: Mühür anındaki 40 coin'lik giriş evreni (config.yaml `entry_universe.symbols`, 2026-10-13; coin adı, config sırası).
+#: Keşif (ENGINE_BRAIN §5.1) bu 40 coin'de koşar; çalışma anındaki evren bu kümeyle aynı değilse keşif ve WF ÇALIŞMAZ,
+#: eksik/fazla coin'ler raporlanır (koordinatör kararı 2026-10-13, P3e açık kalanı 3). MÜHÜR BEKLİYOR: liste düzeltme
+#: mührü 10'da `LIB_V1.explore.entry_universe` okuması olacak (sahibin mühürlü kayıt değişikliği iznine bağlı); o zamana
+#: kadar burada, `ENTRY_UNIVERSE_SEALED = False`.
+ENTRY_UNIVERSE_FROZEN: tuple[str, ...] = (
+    "BTC", "ETH", "ZEC", "SOL", "NEAR", "UNI", "XRP", "ONE", "BNB", "ARB", "DOGE", "LSK", "SUI", "ENA", "G", "WLD", "ADA",
+    "ONDO", "1000PEPE", "COTI", "LINK", "REZ", "DASH", "AAVE", "TAO", "BCH", "AVAX", "DOT", "FIL", "APT", "SYN", "LTC", "XLM",
+    "INJ", "FET", "TRX", "XMR", "1000SHIB", "OP", "KSM")
+ENTRY_UNIVERSE_SEALED = False
+
+
+def coin_of(symbol: Any) -> str:
+    """'BTC/USDT' | 'BTC/USDT:USDT' | 'BTCUSDT' | 'BTC' → 'BTC'."""
+    s = str(symbol).strip().upper().split(":")[0]
+    if "/" in s:
+        return s.split("/")[0]
+    return s[:-4] if s.endswith("USDT") and len(s) > 4 else s
+
+
+def entry_universe_diff(symbols: Iterable[Any], frozen: Iterable[str] = ENTRY_UNIVERSE_FROZEN) -> dict[str, Any]:
+    """Çalışma anındaki giriş evreni ↔ dondurulmuş liste (sırasız): {ok, missing (dondurulmuş ama yok), extra (fazla),
+    duplicates, sealed}. `ok` değilse keşif/WF çalışmaz; fark raporlanır."""
+    got = [coin_of(x) for x in symbols]
+    want = list(frozen)
+    dup = sorted({c for c in got if got.count(c) > 1})
+    return {"ok": set(got) == set(want) and not dup and len(want) == len(set(want)),
+            "missing": [c for c in want if c not in set(got)], "extra": sorted(set(got) - set(want)),
+            "duplicates": dup, "frozen_size": len(want), "sealed": ENTRY_UNIVERSE_SEALED}
+
+
 def entry_universe(paths: EnginePaths, app_dir: Path | str) -> tuple[list[str], dict[str, Any]]:
     """40'lık giriş evreni (okuma 1). Dönen: (ham semboller, kaynak bilgisi). Liste YALNIZ `entry_universe.enabled`
     true iken giriş evrenidir (worker da öyle kullanır: `engine_v3` `_eu.symbols if _eu.enabled`; varsayılan false).

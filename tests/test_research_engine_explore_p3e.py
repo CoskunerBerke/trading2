@@ -21,6 +21,8 @@ from tradingbot.research_engine import kernel as KN
 from tradingbot.research_engine import registry as RG
 from tradingbot.research_engine import stats as ST
 from tradingbot.research_engine import synthetic as SY
+from tradingbot.research_engine import universe as U
+from tradingbot.research_engine import wf as WF
 
 ROOT = Path(__file__).resolve().parents[1]
 PKG = ROOT / "tradingbot" / "research_engine"
@@ -46,9 +48,13 @@ MIX = (["TS_7_LS", "MAX_20_50_4h_LS", "DON_20_10_1d_LS", "KEL_20_2_1h", "RSI2_4h
         "K_C4_CV004", "O_C4_X_TPL", "O_C4_F_VOL"])
 
 
-def _inputs(world, now, *, fund_lag_days=None, mark_nan=False, drop_funding=(), drop_1h=()):
+def _inputs(world, now, *, fund_lag_days=None, mark_nan=False, drop_funding=(), drop_1h=(), markpx=True,
+            drop_markpx=()):
     out = {}
     for c, w in world.items():
+        mp = None
+        if markpx and w.get("markpx_1h") is not None:
+            mp = [r for r in w["markpx_1h"] if not any(a <= r["timestamp"] < b for a, b in drop_markpx)]
         fr = []
         for t, r, m in w["funding"] or ():
             if any(a <= t < b for a, b in drop_funding):
@@ -58,7 +64,7 @@ def _inputs(world, now, *, fund_lag_days=None, mark_nan=False, drop_funding=(), 
         bars = dict(w["bars"])
         if drop_1h and "1h" in bars:
             bars["1h"] = [r for r in bars["1h"] if not any(a <= r["timestamp"] < b for a, b in drop_1h)]
-        out[c] = EX.inputs_from_rows(c, bars, fr if w["funding"] is not None else None, TICK, now_ms=now)
+        out[c] = EX.inputs_from_rows(c, bars, fr if w["funding"] is not None else None, TICK, now_ms=now, markpx=mp)
     return out
 
 
@@ -87,9 +93,18 @@ def test_series_plan_is_the_sealed_3745_from_the_registry():
     # sembol biçimleri aynı coin'e çözülür; sayım mühürlü: 39 ya da 41 coin kapalı hata
     assert [s.series_id for s in EX.series_plan([f"{c}/USDT" for c in COINS40])] == [s.series_id for s in plan]
     assert [s.series_id for s in EX.series_plan([f"{c}USDT" for c in COINS40])] == [s.series_id for s in plan]
-    for bad in (COINS40[:-1], COINS40 + ["NEW"], COINS40[:-1] + ["BTC/USDT"]):
-        with pytest.raises(EX.ExploreRefused, match="ENTRY_UNIVERSE_SIZE"):
+    # çalışma anındaki evren dondurulmuş 40 coin'den farklıysa koşu yok, fark raporlanır (koordinatör kararı)
+    assert list(U.ENTRY_UNIVERSE_FROZEN) == COINS40 and U.ENTRY_UNIVERSE_SEALED is False      # mühür bekliyor
+    for bad, missing, extra, dup in ((COINS40[:-1], ["KSM"], [], []), (COINS40 + ["NEW"], [], ["NEW"], []),
+                                     (COINS40[:-1] + ["BTC/USDT"], ["KSM"], [], ["BTC"]),
+                                     (COINS40[:-1] + ["NEWUSDT"], ["KSM"], ["NEW"], [])):
+        with pytest.raises(EX.EntryUniverseRefused, match="ENTRY_UNIVERSE_DIFF") as ei:
             EX.series_plan(bad)
+        assert (ei.value.diff["missing"], ei.value.diff["extra"], ei.value.diff["duplicates"]) == (missing, extra, dup)
+        with pytest.raises(WF.EntryUniverseRefused) as wi:                     # WF'nin evren kapısı aynı fark
+            WF.require_entry_universe(bad)
+        assert wi.value.diff == ei.value.diff
+    assert WF.require_entry_universe(list(reversed(COINS40)))["ok"]           # sıra önemsiz
     # çalıştırılabilir varyantların hepsinin penceresi sonludur (artımlı = baştan ancak böyle kanıtlanır)
     assert len(EX.runnable_variants()) == 93 and all(EX.meta(v).lookback for v in EX.runnable_variants())
 
@@ -100,6 +115,13 @@ def test_run_report_counts_every_planned_series(tmp_path):
     assert sum(rep["status"].values()) == 25 + 2 * 40 and rep["status"][EX.ST_BLOCKED] == 25
     assert rep["status"][EX.ST_OK] == 2 and rep["plan"]["total"] == 3745
     assert json.loads((tmp_path / "_run.json").read_text(encoding="utf-8"))["plan"]["total"] == 3745
+    before = _files(tmp_path)
+    swapped = COINS40[:-1] + ["NEW"]
+    rep = EX.explore_step(tmp_path, _inputs(w, _night(3)), entry_symbols=swapped, only=["TS_7_LS"])
+    assert rep["status"] == {"REFUSED": 1} and rep["refused"]["missing"] == ["KSM"] and rep["refused"]["extra"] == ["NEW"]
+    assert _files(tmp_path) == before                                          # hiçbir seri koşmadı
+    lb = "\n".join(EX.leaderboard_lines(EX.read_states(tmp_path), EX.read_run(tmp_path)))
+    assert "ÇALIŞMADI" in lb and "KSM" in lb and "NEW" in lb and EX.verdict_word_violations(lb.splitlines()) == []
 
 
 def test_lazy_loader_matches_mapping_and_deadline_leaves_series_untouched(tmp_path):
@@ -159,15 +181,15 @@ def _shift_world(sd: KN.SeriesData, tf: str, fwd: int) -> tuple[dict, dict, list
     bars = {k: sh(v) for k, v in sd.bars.items()}
     btc = {"1d": sh(sd.btc_1d), "4h": sh(sd.btc_4h)}
     fund = [(t + off, r, m) for t, r, m in sd.funding or ()]
-    return bars, btc, fund
+    return bars, btc, fund, sh(sd.markpx_1h)
 
 
 def test_incremental_equals_scratch_for_history_reading_copies(tmp_path):
     """T2/M2 (+ örtüleri; `ctx.history` yapı kümesi) ve Formasyon: geçmiş JSON'dan yeniden verilir — bayt-özdeş."""
-    t_bars, t_btc, t_fund = _shift_world(SY.trend_world(7, 700), "1d", 160)
-    f_bars, _fb, f_fund = _shift_world(SY.fm_world(3, 1400), "4h", 420)
-    world = {"BTC": {"bars": t_btc, "funding": None}, "SOL": {"bars": t_bars, "funding": t_fund},
-             "BNB": {"bars": f_bars, "funding": f_fund}}
+    t_bars, t_btc, t_fund, t_mp = _shift_world(SY.trend_world(7, 700), "1d", 160)
+    f_bars, _fb, f_fund, f_mp = _shift_world(SY.fm_world(3, 1400), "4h", 420)
+    world = {"BTC": {"bars": t_btc, "funding": None}, "SOL": {"bars": t_bars, "funding": t_fund, "markpx_1h": t_mp},
+             "BNB": {"bars": f_bars, "funding": f_fund, "markpx_1h": f_mp}}
     only = ["K_T2", "K_M2", "K_FM"] + KN.covers_of("T2") + KN.covers_of("M2")
     nights = [25, 61, 62, 110, 150]
     inc = tmp_path / "inc"
@@ -190,7 +212,7 @@ def test_changed_past_data_or_versions_rebuild_from_scratch(tmp_path):
     only = ["KEL_20_2_1h", "TS_7_LS", "K_D4"]
     EX.explore_step(tmp_path / "inc", _inputs(w, _night(4)), entry_symbols=COINS40, only=only)
     # mühürden sonraki doğrulanmış bir 1h bar değişti (ör. arşiv düzeltmesi) → parmak izi tutmaz → baştan
-    w2 = {"BTC": {"bars": dict(w["BTC"]["bars"]), "funding": w["BTC"]["funding"]}}
+    w2 = {"BTC": {"bars": dict(w["BTC"]["bars"]), "funding": w["BTC"]["funding"], "markpx_1h": w["BTC"]["markpx_1h"]}}
     h = [dict(r) for r in w2["BTC"]["bars"]["1h"]]
     j = next(i for i, r in enumerate(h) if r["timestamp"] >= SEAL + 30 * H1)
     h[j]["close"] *= 1.01
@@ -234,7 +256,7 @@ def _perturb(world, cut_of, factor):
             cut = cut_of(tf)
             bars[tf] = [dict(r, open=r["open"] * factor, high=r["high"] * factor, low=r["low"] * factor,
                              close=r["close"] * factor) if r["timestamp"] < cut else r for r in rows]
-        out[c] = {"bars": bars, "funding": w["funding"]}
+        out[c] = {"bars": bars, "funding": w["funding"], "markpx_1h": w.get("markpx_1h")}
     return out
 
 
@@ -325,11 +347,14 @@ def test_store_loader_reads_only_archive_rows_and_data_moving_skips(tmp_path):
         store.write("futures", "BTCUSDT", tf, df[df["timestamp"] < cut], src="archive", now_ms=_night(5))
         store.write("futures", "BTCUSDT", tf, df[df["timestamp"] >= cut], src="rest", now_ms=_night(5))
     fdf = pd.DataFrame(w["BTC"]["funding"], columns=["timestamp", "rate", "mark"])
+    fdf["mark"] = float("nan")                                       # gerçek arşiv: fonlama satırında mark yok
     store.write("futures", "BTCUSDT", "funding", fdf, src="archive", now_ms=_night(5))
+    store.write("futures", "BTCUSDT", "markpx_1h", pd.DataFrame(w["BTC"]["markpx_1h"]), src="archive", now_ms=_night(5))
     cd = EX.load_coin(store, "BTC", tick=TICK, now_ms=_night(5))
     assert cd.moving is None and cd.frontier["1h"] == DAY0 + 3 * D1 and cd.frontier["5m"] == DAY0 + 3 * D1
-    assert all(r["timestamp"] < DAY0 + 3 * D1 for tf in cd.bars for r in cd.bars[tf])
-    assert all(r["timestamp"] >= EX.warm_start(tf) for tf in cd.bars for r in cd.bars[tf])
+    assert all(r["timestamp"] < DAY0 + 3 * D1 for tf in cd.bars if tf != EX.MARKPX for r in cd.bars[tf])
+    assert all(r["timestamp"] >= EX.warm_start(tf) for tf in cd.bars if tf != EX.MARKPX for r in cd.bars[tf])
+    assert cd.frontier[EX.MARKPX] == DAY0 + 5 * D1 and all(m != m for _t, _r, m in cd.funding)
     root = tmp_path / "explore"
     EX.explore_step(root, {"BTC": cd}, entry_symbols=COINS40, only=["KEL_20_2_1h"])
     before = _files(root)
@@ -384,9 +409,10 @@ def test_gate_excluded_trades_never_enter_any_statistic(tmp_path):
                                   "scope": "CL_MAJ"}])["KEL_20_2_1h@CL_MAJ"]
     k = [sts[f"KEL_20_2_1h@{c}"]["summary"] for c in ("BTC", "ETH")]
     assert fw["n"] == k[0]["n"] + k[1]["n"] and fw["excluded"] == k[0]["n_excluded"] + k[1]["n_excluded"]
-    # gerçek arşivin fonlama satırlarında mark yok (NaN): bir uzlaşmayı kapsayan her işlem FUNDING_GAP → kapıya ve
-    # istatistiğe girmez; içeride kalan tek işlem türü uzlaşma görmeyen (fonlamasız) işlemdir
-    EX.explore_step(tmp_path / "nan", _inputs(w, _night(10), mark_nan=True), entry_symbols=COINS40, only=only)
+    # mark fiyatı (markpx) yoksa: bir uzlaşmayı kapsayan her işlem FUNDING_GAP → kapıya ve istatistiğe girmez; içeride
+    # kalan tek işlem türü uzlaşma görmeyen (fonlamasız) işlemdir
+    EX.explore_step(tmp_path / "nan", _inputs(w, _night(10), mark_nan=True, markpx=False), entry_symbols=COINS40,
+                    only=only)
     sn = EX.read_states(tmp_path / "nan")
     rows_nan = [json.loads(x) for q in (tmp_path / "nan").rglob("*.jsonl") for x in q.read_text("utf-8").splitlines()]
     rows_nan = [r for r in rows_nan if r["k"] == "T"] + [r for st in sn.values() for r in st["unsettled"]]
@@ -556,3 +582,107 @@ def test_scaled_world_nightly_step_within_the_s4x_budget(tmp_path, capsys):
               f"({rep2['trades_new']} işlem, {rep2['bars']} sinyal barı) · durum {rep2['status']}")
     assert rep2["status"][EX.ST_OK] == 3720 and not rep2["errors"] and not rep["errors"]
     assert night <= 600.0 and catch <= 600.0
+
+
+# ============================================================================ fonlama mark'ı = markpx 1h (koordinatör kararı)
+def _mp(t0: int, n: int, rnd: random.Random, holes=()) -> list[dict]:
+    out, px = [], 100.0
+    for k in range(n):
+        t = t0 + k * H1
+        o = px
+        px *= 1.0 + rnd.gauss(0.0, 0.004)
+        if t not in holes:
+            out.append({"timestamp": t, "open": o, "high": max(o, px) * 1.001, "low": min(o, px) * 0.999, "close": px})
+    return out
+
+
+def test_settlement_marks_use_markpx_open_then_close_else_gap():
+    b = DAY0
+    rnd = random.Random(3)
+    mp = _mp(b - 2 * H1, 40, rnd, holes={b + 8 * H1, b + 16 * H1, b + 15 * H1})
+    by = {r["timestamp"]: r for r in mp}
+    nan = float("nan")
+    rows = [(b + 3, 1e-4, nan), (b + 8 * H1, 1e-4, nan), (b + 16 * H1, 1e-4, nan),
+            (b + 24 * H1 - 2, 1e-4, by[b + 24 * H1]["open"] * 1.004), (b + 32 * H1, 1e-4, by[b + 32 * H1]["open"] * 1.01)]
+    got, mism = KN.settlement_marks(rows, mp)
+    assert got[0][2] == by[b]["open"]                                    # o anda BAŞLAYAN barın açılışı (ms kayması)
+    assert got[1][2] == by[b + 7 * H1]["close"]                          # yoksa o anda BİTEN barın kapanışı
+    assert got[2][2] != got[2][2]                                        # ikisi de yok → NaN (okunamaz → FUNDING_GAP)
+    assert got[3][2] == by[b + 24 * H1]["open"] and got[4][2] == by[b + 32 * H1]["open"]   # satır mark'ı yalnız denetim
+    assert mism == {b + 32 * H1}                                         # %1 fark > %0,5 → işaret; %0,4 değil
+    assert KN.settlement_marks(rows, None)[0][0][2] != KN.settlement_marks(rows, None)[0][0][2]   # markpx yok → NaN
+    assert KN.FUNDING_MARK_SEALED is False and KN.REST_MARK_MAX_REL_DIFF == 0.005           # mühür bekliyor
+
+
+@pytest.mark.parametrize("seed", range(20))
+def test_funding_mark_never_uses_a_price_after_the_settlement(seed):
+    """Özellik: bir uzlaşmanın mark'ı, uzlaşma anından SONRAKİ hiçbir markpx bilgisine (o anda başlayan barın
+    yüksek/düşük/kapanışı, sonraki bütün barlar) bağlı değildir; yalnız o ana kadar bilinenle aynı sonucu verir."""
+    rnd = random.Random(seed)
+    n = 72
+    holes = {DAY0 + k * H1 for k in range(n) if rnd.random() < 0.25}
+    mp = _mp(DAY0, n, rnd, holes)
+    sets = sorted(rnd.sample(range(2, n - 2), 8))
+    rows = [(DAY0 + k * H1 + rnd.randrange(0, 900), rnd.gauss(1e-4, 1e-4), float("nan")) for k in sets]
+    full, _m = KN.settlement_marks(rows, mp)
+    for (t, _r, m), k in zip(full, sets):
+        s_ms = DAY0 + k * H1
+        known = []
+        for r in mp:
+            if r["timestamp"] + H1 <= s_ms:
+                known.append(r)                                           # uzlaşmada kapanmış barlar aynen
+            elif r["timestamp"] == s_ms:
+                known.append(dict(r, high=rnd.random(), low=rnd.random(), close=rnd.random()))   # yalnız açılışı bilinir
+            else:
+                known.append({k2: (r[k2] if k2 == "timestamp" else rnd.uniform(1, 999)) for k2 in r})  # gelecek: çöp
+        (_t, _r2, m2), = KN.settlement_marks([(t, _r, float("nan"))], known)[0]
+        assert (m == m2) or (m != m and m2 != m2), (seed, k)
+
+
+def test_kernel_charges_archive_rows_with_nan_mark_from_markpx():
+    """Arşiv fonlama satırlarında mark yok (NaN): markpx varken çekirdek fonlamayı markpx'le yazar (satır mark'ıyla
+    yazılan eski sonuçla bayt-aynı, sentetik markpx = satır mark'ı); markpx yoksa uzlaşma kapsayan işlem FUNDING_GAP;
+    satır mark'ı markpx'ten > %0,5 farklıysa FUNDING_MARK_MISMATCH (bilgi) ve tutar markpx'le."""
+    from dataclasses import replace
+
+    sd = SY.fund_world(5, 1500)
+    var = "DON_20_10_4h_LS"
+    base = KN.run(KN.make_variant(var), sd)
+    assert base.trades and any(t.funding_events for t in base.trades)
+    nan_rows = [(t, r, float("nan")) for t, r, _m in sd.funding]
+    same = KN.run(KN.make_variant(var), replace(sd, funding=nan_rows))
+    assert [t.to_dict() for t in same.trades] == [t.to_dict() for t in base.trades]
+    none = KN.run(KN.make_variant(var), replace(sd, funding=nan_rows, markpx_1h=None))
+    for a, b in zip(base.trades, none.trades):
+        assert (KN.FLAG_FUNDING_GAP in b.flags) == (a.funding_events > 0 or KN.FLAG_FUNDING_GAP in a.flags)
+        assert b.funding_usdt == 0.0 and KN.gate_excluded(b) == (KN.FLAG_FUNDING_GAP in b.flags or KN.gate_excluded(a))
+    off = KN.run(KN.make_variant(var), replace(sd, funding=[(t, r, m * 1.01) for t, r, m in sd.funding]))
+    for a, b in zip(base.trades, off.trades):
+        assert b.funding_usdt == a.funding_usdt and b.r == a.r
+        assert (KN.FLAG_FUNDING_MARK_MISMATCH in b.flags) == (a.funding_events > 0)
+        assert not KN.gate_excluded(b) or KN.gate_excluded(a)                     # bilgi işareti kapıdan çıkarmaz
+    # parite başvurusunun defteri de aynı mark'ı görür
+    from tradingbot.research_engine import parity as PA
+    lk = PA._Lookup(KN.settlement_marks(nan_rows, sd.markpx_1h)[0])
+    t0, _r0, m0 = sd.funding[10]
+    from datetime import datetime, timezone
+    assert float(lk.settlement_mark("X", datetime.fromtimestamp(KN.snap_ms(t0) / 1000, tz=timezone.utc))) == m0
+
+
+def test_explore_funding_uses_markpx_and_counts_gate_exclusions(tmp_path):
+    w = SY.explore_world(["BTC", "ETH"], seed=19, seal_ms=SEAL, fwd_days=8)
+    only = ["KEL_20_2_4h", "RSI2_4h", "TS_7_LS", "MAX_20_50_4h_LS", "DON_20_10_4h_LS", "K_D4", "FUND_CARRY"]
+    runs = {"row_mark": {}, "nan_mark_markpx": {"mark_nan": True}, "nan_mark_no_markpx": {"mark_nan": True, "markpx": False},
+            "markpx_hole": {"mark_nan": True, "drop_markpx": [(DAY0 + 3 * D1 + 7 * H1, DAY0 + 3 * D1 + 9 * H1)]}}
+    counts = {}
+    for name, kw in runs.items():
+        EX.explore_step(tmp_path / name, _inputs(w, _night(8), **kw), entry_symbols=COINS40, only=only)
+        sts = EX.read_states(tmp_path / name)
+        counts[name] = (sum(st["summary"]["n"] for st in sts.values()), sum(st["summary"]["n_excluded"] for st in sts.values()))
+    # NaN satır mark'ı + markpx = satır mark'ıyla aynı dosyalar (mark kaynağı markpx; sentetikte değerler aynı)
+    assert _rows_only(tmp_path / "row_mark") == _rows_only(tmp_path / "nan_mark_markpx")   # parmak izi satırı içerir
+    assert counts["nan_mark_no_markpx"][1] > counts["markpx_hole"][1] >= counts["nan_mark_markpx"][1]
+    assert counts["nan_mark_no_markpx"][0] < counts["nan_mark_markpx"][0]
+    hole = [r for p in (tmp_path / "markpx_hole").rglob("*.jsonl") for r in map(json.loads, p.read_text("utf-8").splitlines())
+            if r["k"] == "T" and "FUNDING_GAP" in r["flags"]]
+    assert hole and all(r["entry_ts"] < DAY0 + 3 * D1 + 8 * H1 <= max(lg["ts"] for lg in r["legs"]) for r in hole)

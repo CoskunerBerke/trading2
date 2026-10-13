@@ -55,6 +55,7 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 from . import kernel as KN
 from . import registry as RG
 from . import stats as ST
+from . import universe as U
 from .wf import exit_ref
 from ..strategy_lib import BookEntry
 
@@ -84,7 +85,10 @@ FUND_MARGIN_MS = 7 * DAY_MS
 #: işlem çıkışından sonra gelen bu kadar uzlaşmadan sonra fonlamadan türeyen alanları kesindir (FundingSeries yerel
 #: aralığı ± FUNDING_LOCAL_SPAN aralık okur)
 SETTLE_ROWS = KN.FUNDING_LOCAL_SPAN + 1
-FUNDING_FLAGS = (KN.FLAG_FUNDING_GAP, KN.FLAG_FUNDING_EXIT_BAR)
+FUNDING_FLAGS: tuple[str, ...] = KN.FUNDING_FLAGS
+#: mark fiyatı 1h dizisi (fonlama mark'ı yalnız buradan: `kernel.settlement_marks`)
+MARKPX = "markpx_1h"
+MARK_TF_MS = KN.MARK_TF_MS
 ARCHIVE_SRC = "archive"
 
 ST_OK, ST_BLOCKED, ST_NO_FORWARD = "OK", "UNSPECIFIED_PARAM", "NO_FORWARD_DATA"
@@ -120,12 +124,17 @@ class Series:
         return self.family == "G"
 
 
-def coin_of(symbol: str) -> str:
-    """'BTC/USDT' | 'BTC/USDT:USDT' | 'BTCUSDT' | 'BTC' → 'BTC'."""
-    s = str(symbol).strip().upper().split(":")[0]
-    if "/" in s:
-        return s.split("/")[0]
-    return s[:-4] if s.endswith("USDT") and len(s) > 4 else s
+coin_of = U.coin_of
+
+
+class EntryUniverseRefused(ExploreRefused):
+    """Çalışma anındaki giriş evreni dondurulmuş 40 coin'lik listeyle (`universe.ENTRY_UNIVERSE_FROZEN`) aynı değil:
+    keşif çalışmaz; fark `diff`te raporlanır."""
+
+    def __init__(self, diff: Mapping[str, Any]):
+        super().__init__(f"ENTRY_UNIVERSE_DIFF: eksik {list(diff['missing'])} · fazla {list(diff['extra'])} · "
+                         f"yinelenen {list(diff['duplicates'])}")
+        self.diff = dict(diff)
 
 
 def _group_of(family: str) -> str:
@@ -136,11 +145,15 @@ def _group_of(family: str) -> str:
 
 
 def series_plan(entry_symbols: Sequence[str]) -> list[Series]:
-    """Mühürlü keşif serileri (kayıt sırası × evren sırası). Evren `LIB_V1.explore.entry_universe_size` (40) farklı coin
-    değilse `ExploreRefused` (sayım mühürlüdür; uydurulmaz)."""
-    coins = list(dict.fromkeys(coin_of(s) for s in entry_symbols))
+    """Mühürlü keşif serileri (kayıt sırası × dondurulmuş evren sırası). Çalışma anındaki evren dondurulmuş 40 coin'le
+    (sırasız) aynı değilse `EntryUniverseRefused` (fark raporlanır, koşu yok); dondurulmuş liste mühürlü sayıyı
+    (`LIB_V1.explore.entry_universe_size`) tutmazsa `ExploreRefused`."""
+    diff = U.entry_universe_diff(entry_symbols)
+    if not diff["ok"]:
+        raise EntryUniverseRefused(diff)
+    coins = list(U.ENTRY_UNIVERSE_FROZEN)
     if len(coins) != UNIVERSE_SIZE:
-        raise ExploreRefused(f"ENTRY_UNIVERSE_SIZE: {len(coins)} coin, mühür {UNIVERSE_SIZE}")
+        raise ExploreRefused(f"ENTRY_UNIVERSE_SIZE: dondurulmuş liste {len(coins)} coin, mühür {UNIVERSE_SIZE}")
     blocked = RG.blocked_variants()
     out: list[Series] = []
     for v in RG.LIB_V1["variants"]:
@@ -288,7 +301,8 @@ class CoinData:
     def close_t(self, tf: str) -> list[int]:
         ct = self._close_t.get(tf)
         if ct is None:
-            ct = self._close_t[tf] = [int(r["timestamp"]) + TF_MS[tf] for r in self.bars.get(tf) or ()]
+            step = MARK_TF_MS if tf == MARKPX else TF_MS[tf]
+            ct = self._close_t[tf] = [int(r["timestamp"]) + step for r in self.bars.get(tf) or ()]
         return ct
 
     def fingerprint(self, name: str, upto: int) -> str:
@@ -310,6 +324,14 @@ class CoinData:
             self._fp[k] = h.hexdigest()
         return self._fp[k]
 
+    def markpx_upto(self, upto: int) -> list[dict[str, Any]]:
+        """Kapanışı ≤ `upto` mark fiyatı barları (fonlama mark'ı; `kernel.settlement_marks`)."""
+        return (self.bars.get(MARKPX) or [])[:bisect.bisect_right(self.close_t(MARKPX), int(upto))]
+
+    def mark_front(self, upto: int) -> int | None:
+        f = self.frontier.get(MARKPX)
+        return None if f is None else min(int(f), int(upto))
+
 
 def _src_ok(row: Mapping[str, Any]) -> bool:
     return row.get("_src", ARCHIVE_SRC) == ARCHIVE_SRC
@@ -317,14 +339,18 @@ def _src_ok(row: Mapping[str, Any]) -> bool:
 
 def inputs_from_rows(coin: str, bars: Mapping[str, Sequence[Mapping[str, Any]]],
                      funding: Sequence[Any] | None, tick: float | None, *, now_ms: int,
-                     t_seal_ms: int = T_SEAL_MS) -> CoinData:
+                     t_seal_ms: int = T_SEAL_MS, markpx: Sequence[Mapping[str, Any]] | None = None) -> CoinData:
     """Satırlardan girdi (depo okuyucusu `_src` sütununu verir; `_src` yoksa satır doğrulanmış sayılır — yalnız sentetik
     testler). Kural: `warm_start` öncesi atılır; mühür öncesi yalnız `archive`; ileri satırlar ilk doğrulanmamış ya da
-    kapanmamış satırda KESİLİR (sonrası yok sayılır: cephe)."""
+    kapanmamış satırda KESİLİR (sonrası yok sayılır: cephe). `markpx`: mark fiyatı 1h barları (aynı kurallar; yükleme
+    başı fonlamanınki) — fonlamanın mark'ı yalnız buradan."""
     cd = CoinData(coin=coin_of(coin), tick=(float(tick) if tick is not None and float(tick) > 0 else None))
-    for tf, rows in bars.items():
-        step = TF_MS[tf]
-        w0 = warm_start(tf, t_seal_ms)
+    arrays = dict(bars)
+    if markpx is not None:
+        arrays[MARKPX] = markpx
+    for tf, rows in arrays.items():
+        step = MARK_TF_MS if tf == MARKPX else TF_MS[tf]
+        w0 = funding_warm_start(t_seal_ms) if tf == MARKPX else warm_start(tf, t_seal_ms)
         by: dict[int, Mapping[str, Any]] = {}
         for r in rows:
             by[int(r["timestamp"])] = r
@@ -387,12 +413,13 @@ def load_coin(reader: Any, coin: str, *, tick: float | None, now_ms: int, market
     """Mühürlü depo okuyucusundan (`provider.SealedReader`; testte `ResearchStore`) girdi. Parça mühürden sonra değiştiyse
     `moving` dolu döner (coin'in serileri o gece atlanır)."""
     from .provider import DataMoving
-    from .store import FUNDING, SRC_COL
+    from .store import FUNDING, MARKPX_1H, SRC_COL
 
     raw = f"{coin_of(coin)}USDT"
     tfs = sorted(warm_bars(), key=lambda t: TF_MS[t])
     bars: dict[str, list[dict[str, Any]]] = {}
     fund: list[dict[str, Any]] = []
+    mark: list[dict[str, Any]] = []
     try:
         for tf in tfs:
             rows: list[dict[str, Any]] = []
@@ -404,12 +431,16 @@ def load_coin(reader: Any, coin: str, *, tick: float | None, now_ms: int, market
         for _ym, df in reader.iter_parts(market, raw, FUNDING, funding_warm_start(t_seal_ms), None, keep_src=True):
             if len(df):
                 fund += df[[c for c in ("timestamp", "rate", "mark", SRC_COL) if c in df.columns]].to_dict("records")
+        for _ym, df in reader.iter_parts(market, raw, MARKPX_1H, funding_warm_start(t_seal_ms), None, keep_src=True):
+            if len(df):
+                mark += df[[c for c in ("timestamp", "open", "high", "low", "close", SRC_COL)
+                            if c in df.columns]].to_dict("records")
     except DataMoving as exc:
         return CoinData(coin=coin_of(coin), moving=f"{exc.series} {exc.ym}: {exc.reason}")
-    for rows in list(bars.values()) + [fund]:
+    for rows in list(bars.values()) + [fund, mark]:
         for r in rows:
             r["_src"] = r.pop(SRC_COL, None) or "?"              # kaynaksız satır doğrulanmamış sayılır
-    return inputs_from_rows(coin, bars, fund, tick, now_ms=now_ms, t_seal_ms=t_seal_ms)
+    return inputs_from_rows(coin, bars, fund, tick, now_ms=now_ms, t_seal_ms=t_seal_ms, markpx=mark)
 
 
 # ============================================================================ JSON
@@ -555,15 +586,10 @@ def _trade(row: Mapping[str, Any]) -> KN.KernelTrade:
 def _derive(path: Mapping[str, Any], fs: KN.FundingSeries | None, tick: float, bars: Sequence[Mapping[str, Any]],
             close_t: Sequence[int], step: int, *, open_: bool) -> dict[str, Any]:
     """Yol satırından türeyen alanlar — çekirdeğin döngü sonrası hesabının AYNISI (`funding_of`, işaretler,
-    `cost_trade`), kapı dışı işaret (`gate_excluded`) ve üç maliyetle günlük piyasa değerlemesi (`stats.mtm_allocation`)."""
+    `cost_trade`), kapı dışı işaret (`gate_excluded`) ve üç maliyetle günlük piyasa değerlemesi (`stats.mtm_allocation`).
+    `fs` mark'ı markpx'ten (`kernel.settlement_marks`)."""
     t = _trade(path)
-    fo = KN.funding_of(t, fs)
-    t.funding_usdt, t.funding_events = fo.usdt, fo.events
-    t.funding_ambiguous_usdt, t.funding_ambiguous_events = fo.ambiguous_usdt, fo.ambiguous_events
-    if fo.gap:
-        t.flags.append(KN.FLAG_FUNDING_GAP)
-    if fo.ambiguous_events:
-        t.flags.append(KN.FLAG_FUNDING_EXIT_BAR)
+    KN.apply_funding(t, fs)
     r, pnl = {}, {}
     for sc in SCENARIOS:
         r[sc], pnl[sc] = KN.cost_trade(t, KN.scenario(sc), tick)
@@ -597,9 +623,13 @@ def _settle_end(row: Mapping[str, Any]) -> int:
     return max(ends) if ends else int(row["entry_ts"])
 
 
-def _settled(row: Mapping[str, Any], fs_ts: Sequence[int]) -> bool:
-    """Fonlamadan türeyen alanlar kesin mi: çıkıştan sonra ≥ SETTLE_ROWS uzlaşma var."""
-    return len(fs_ts) - bisect.bisect_right(fs_ts, _settle_end(row)) >= SETTLE_ROWS
+def _settled(row: Mapping[str, Any], fs_ts: Sequence[int], mark_front: int | None) -> bool:
+    """Fonlamadan türeyen alanlar kesin mi: çıkıştan sonra ≥ SETTLE_ROWS uzlaşma var VE mark fiyatı barları çıkıştan
+    sonraki ilk saatin sonuna kadar doğrulanmış (pencerenin her uzlaşmasının "o anda başlayan bar"ı kesin var ya da
+    kesin yok)."""
+    end = _settle_end(row)
+    return len(fs_ts) - bisect.bisect_right(fs_ts, end) >= SETTLE_ROWS and mark_front is not None \
+        and mark_front >= end + MARK_TF_MS
 
 
 # ============================================================================ toplamlar
@@ -800,8 +830,10 @@ def _group_data(cd: CoinData, btc: CoinData | None, metas: Sequence[Meta], start
     if cd.funding is not None:
         f0 = start - max(m.funding_lookback_ms for m in metas) - FUND_MARGIN_MS
         funding = [x for x in cd.funding if f0 <= x[0] <= frontier]
+    mark = [b for b in cd.markpx_upto(frontier) if int(b["timestamp"]) >= start - FUND_MARGIN_MS - MARK_TF_MS] \
+        if cd.bars.get(MARKPX) is not None else None
     return KN.SeriesData(symbol=cd.symbol, bars=bars, btc_1d=btc_1d, funding=funding, price_tick=float(cd.tick or 0.0),
-                         btc_4h=btc_4h)
+                         btc_4h=btc_4h, markpx_1h=mark)
 
 
 def _fp(cd: CoinData, btc: CoinData | None, metas: Sequence[Meta], upto: int) -> str:
@@ -813,6 +845,7 @@ def _fp(cd: CoinData, btc: CoinData | None, metas: Sequence[Meta], upto: int) ->
     if any(m.needs_btc_4h for m in metas) and btc is not None:
         parts["btc_4h"] = btc.fingerprint("4h", upto)
     parts["funding"] = cd.fingerprint("funding", upto)
+    parts[MARKPX] = cd.fingerprint(MARKPX, upto)
     parts["tick"] = repr(cd.tick)
     return hashlib.sha256(dumps(parts).encode("utf-8")).hexdigest()
 
@@ -884,7 +917,10 @@ def step_group(root: Path, base: str | None, members: Sequence[Series], cd: Coin
         proxies.append(_Fwd(vs[p["s"].variant_id], max(p["resume"], p["m"].start_ms), loader,
                             st["used"] if st else ()))
     results = KN.run_lockstep(proxies, data, start_ms=start)
-    fs_all = KN.FundingSeries([x for x in cd.funding if x[0] <= F]) if cd.funding is not None else None
+    fs_all = None
+    if cd.funding is not None:
+        rows_f, mism = KN.settlement_marks([x for x in cd.funding if x[0] <= F], cd.markpx_upto(F))
+        fs_all = KN.FundingSeries(rows_f, mism)
     fs_ts = fs_all.ts if fs_all is not None else []
     fp_new = _fp(cd, btc, metas, F)
     for p, px, res in zip(plan, proxies, results):
@@ -914,7 +950,8 @@ def _finish_member(p: Mapping[str, Any], px: _Fwd, res: KN.KernelResult, cd: Coi
     pending = unsettled_old + closed_new
     derived = [_derive(r, fs, float(cd.tick), bars, ct, step, open_=False) for r in pending]
     k = 0
-    while k < len(derived) and _settled(derived[k], fs_ts):
+    mark_front = cd.mark_front(F)
+    while k < len(derived) and _settled(derived[k], fs_ts, mark_front):
         k += 1
     final_new, unsettled = derived[:k], derived[k:]
     open_row = _derive(open_new, fs, float(cd.tick), bars, ct, step, open_=True) if open_new is not None else None
@@ -983,7 +1020,13 @@ def explore_step(root: Path | str, data: Mapping[str, CoinData] | Callable[[str]
     `_run.json`)."""
     t0 = clock()
     root = Path(root)
-    plan = series_plan(entry_symbols)
+    try:
+        plan = series_plan(entry_symbols)
+    except EntryUniverseRefused as exc:                                 # fark raporlanır, hiçbir seri koşmaz
+        rep0 = {"schema": "explore_run_v1", "lib": LIB_VERSION, "t_seal_ms": T_SEAL_MS, "status": {"REFUSED": 1},
+                "refused": {"reason": "ENTRY_UNIVERSE_DIFF", **exc.diff}, "seconds": round(clock() - t0, 3)}
+        _atomic_write(root / "_run.json", (dumps(_roundtrip(rep0)) + "\n").encode("utf-8"))
+        return rep0
     rep: dict[str, Any] = {"schema": "explore_run_v1", "lib": LIB_VERSION, "t_seal_ms": T_SEAL_MS,
                            "plan": plan_counts(plan), "status": {}, "rebuilt": 0, "trades_new": 0, "rows_appended": 0,
                            "bars": 0, "errors": [], "moving": {}}
@@ -1247,7 +1290,11 @@ def leaderboard_lines(states: Mapping[str, Mapping[str, Any]], run: Mapping[str,
              f"İleri verili seri {_n(len(with_fwd))} · mühürden bu yana gün {min(days) if days else 0}–"
              f"{max(days) if days else 0} · kapı dışı işlem {_n(excl)} (FUNDING_GAP / PATH_1H_GAP / F8_UNMEASURABLE; "
              "istatistiklere girmez)"]
-    if run:
+    if run and run.get("refused"):
+        rf = run["refused"]
+        lines.append(f"Son adım: ÇALIŞMADI — giriş evreni dondurulmuş 40 coin'den farklı: eksik {', '.join(rf['missing']) or '—'}"
+                     f" · fazla {', '.join(rf['extra']) or '—'} · yinelenen {', '.join(rf['duplicates']) or '—'}")
+    elif run:
         stt = run.get("status") or {}
         lines.append("Son adım: " + " · ".join(f"{k} {_n(v)}" for k, v in sorted(stt.items())) +
                      f" · yeniden kurulan {_n(run.get('rebuilt', 0))} · {_f(run.get('seconds'), 1, sign=False)} sn")
@@ -1309,7 +1356,7 @@ def query_lines(paths: Any, *, gold: bool = False, variant: str | None = None,
     return _bound(_checked(leaderboard_lines(states, run)))
 
 
-__all__ = ["CoinData", "DAY_MS", "EXPLORE_VERSION", "ExploreRefused", "GOLD_INSTRUMENTS", "LIB_VERSION", "Meta",
+__all__ = ["CoinData", "DAY_MS", "EntryUniverseRefused", "MARKPX", "EXPLORE_VERSION", "ExploreRefused", "GOLD_INSTRUMENTS", "LIB_VERSION", "Meta",
            "ROOT_NAME", "SETTLE_ROWS", "SOURCE", "STATE_SCHEMA", "ST_BLOCKED", "ST_DATA_MOVING", "ST_DEADLINE",
            "ST_ERROR", "ST_NO_FORWARD", "ST_NO_TICK", "ST_OK", "ST_UNCHANGED", "Series", "SeriesFiles", "T_SEAL_MS",
            "TOP_TITLE", "UNIVERSE_SIZE", "VERDICT_WORDS", "coin_groups", "coin_of", "digest_lines", "dumps",

@@ -67,8 +67,15 @@ class Scripted(SL.Variant):
         return self.acts.get(self._i(ctx), SL.NONE)
 
 
+def _markpx(funding):
+    """Sentetik markpx 1h (uzlaşma anında başlayan bar, açılışı satırın mark'ı; çekirdeğin mark kaynağı)."""
+    from tradingbot.research_engine import synthetic as S
+    return S.markpx_from_funding(funding)
+
+
 def run(bars, var, funding=None, tick=0.0, **kw):
-    return KN.run(var, KN.SeriesData(symbol="TST", bars={"1d": bars}, funding=funding, price_tick=tick), **kw)
+    return KN.run(var, KN.SeriesData(symbol="TST", bars={"1d": bars}, funding=funding, price_tick=tick,
+                                     markpx_1h=_markpx(funding)), **kw)
 
 
 def r_by_hand(e_ref: float, stop: float, exits: list[tuple[float, float, bool]], *, fee=FEE, slip=SLIP, spread=0.0,
@@ -287,7 +294,8 @@ def hours_with(px: float, at: dict[int, tuple]) -> list[tuple]:
 
 
 def run_h(days, hours, var, funding=None):
-    return KN.run(var, KN.SeriesData(symbol="TST", bars={"1d": days, "1h": hours}, funding=funding))
+    return KN.run(var, KN.SeriesData(symbol="TST", bars={"1d": days, "1h": hours}, funding=funding,
+                                     markpx_1h=_markpx(funding)))
 
 
 def test_the_kernel_calls_the_live_exit_decision_and_the_seal_names_the_rule():
@@ -537,7 +545,8 @@ def test_forced_replay_of_one_intent_equals_the_continuous_run():
     b[4] = bar(4, 100.0, 100.5, 94.0, 96.0)
     b[9] = bar(9, 100.0, 111.0, 99.5, 110.0)
     var = Scripted(opens={1: {"stop": 95.0}, 6: {"stop": 96.0, "targets": (SL.Target(SL.TARGET_PRICE, 108.0),)}})
-    data = KN.SeriesData(symbol="TST", bars={"1d": b}, funding=[(T0 + k * 8 * 3_600_000, 0.0003, 100.0) for k in range(60)])
+    fr = [(T0 + k * 8 * 3_600_000, 0.0003, 100.0) for k in range(60)]
+    data = KN.SeriesData(symbol="TST", bars={"1d": b}, funding=fr, markpx_1h=_markpx(fr))
     full = KN.run(var, data)
     assert len(full.trades) == 2
     for t in full.trades:
@@ -651,7 +660,7 @@ def test_funding_in_the_exit_bar_is_charged_only_when_the_exit_could_not_precede
                 return []
             return [SL.Intent(signal_ts=T0 + H4, side=SL.LONG, entry_ref=SL.EntryRef(price=100.0), stop=95.0)]
     rows4 = [(T0 + k * h8, 0.001, 100.0) for k in range(0, 6)]
-    (t,) = KN.run(S4(), KN.SeriesData(symbol="TST", bars={"4h": b4}, funding=rows4)).trades
+    (t,) = KN.run(S4(), KN.SeriesData(symbol="TST", bars={"4h": b4}, funding=rows4, markpx_1h=_markpx(rows4))).trades
     assert (t.entry_ts, t.legs[0].ts) == (T0 + 2 * H4, T0 + 6 * H4)
     assert t.funding_events == 1 and t.funding_ambiguous_events == 0, \
         "08:00 (giriş anı) yazılmaz, 16:00 yazılır, 00:00 (çıkış barının kapanışı) yazılmaz ve belirsiz değil"

@@ -76,6 +76,7 @@ p95 ≤ 0,05). Aynı sentetik barlar iki yoldan oynatılır:
 """
 from __future__ import annotations
 
+import math
 import statistics
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
@@ -131,7 +132,9 @@ class _Lookup:
     bağımsız): `hours_for` = satırların UTC saatlerinin BİRLEŞİMİ; o saatte satır yoksa ve iki yanındaki satırlar
     ≤ 8 saat (+ 120 sn) arayla ise o saat bir uzlaşma DEĞİLDİR → 0 (dönem yok sayılır; 8h dönemindeki 04:00, ya da 4h
     dizisinde tek eksik uzlaşma — çekirdek de onu yazmaz ve işlemi `FUNDING_GAP` işaretler); daha büyük boşluk → None
-    (defterin kuralı: dönem BEKLER, sonrakiler yazılmaz)."""
+    (defterin kuralı: dönem BEKLER, sonrakiler yazılmaz). Mark çekirdekle AYNI kaynaktan (`kernel.settlement_marks`:
+    markpx 1h; satırın kendi mark'ı yalnız denetim); mark yoksa (NaN) `settlement_mark` None döner (defter dönemi bekler,
+    çekirdek `FUNDING_GAP` işaretler — kapı dışı)."""
 
     TOL_MS = 120_000
     MAX_GAP_MS = 8 * 3_600_000
@@ -161,7 +164,9 @@ class _Lookup:
 
     def settlement_mark(self, symbol: str, when: datetime):
         v = self._get(when)
-        return None if v is None else Decimal(repr(float(v[1])))
+        if v is None or not math.isfinite(float(v[1])):
+            return None
+        return Decimal(repr(float(v[1])))
 
 
 def live_cost_frac(fees: Mapping[str, Any] | None = None) -> float:
@@ -407,7 +412,7 @@ def _ref_ledger(data: KN.SeriesData, *, fracs: bool = False) -> tuple[Any, Any, 
                    risk_per_trade_pct=float(KN.SIZING["risk_usdt"]) * REF_SCALE / REF_EQUITY * 100.0,
                    max_total_open_risk_pct=100.0, futures_max_leverage=125, max_position_pct=1e9,
                    max_spot_allocation_pct=None)
-    lookup = _Lookup(data.funding)
+    lookup = _Lookup(KN.settlement_marks(data.funding, data.markpx_1h)[0] if data.funding is not None else None)
     led.funding.bind_source(lookup)
     return led, filt, prof, RiskEngine(prof, KillSwitch()), lookup
 

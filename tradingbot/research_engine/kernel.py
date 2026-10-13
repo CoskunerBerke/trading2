@@ -93,7 +93,7 @@ import math
 from dataclasses import dataclass, field
 from decimal import Decimal
 from types import MappingProxyType
-from typing import Any, Mapping, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 from . import registry as RG
 from ..accounting import LiquidationParams, PositionSide, bracket_for, liquidation_price
@@ -134,6 +134,20 @@ FLAG_FUNDING_EXIT_BAR, FLAG_MOVE_STOP_IGNORED = "FUNDING_EXIT_BAR", "MOVE_STOP_I
 FLAG_PATH_GAP = "PATH_1H_GAP"
 #: H ailesinde pozisyon açıkken f8 ölçülemedi (`strategy_lib.h_funding`; eşitliği testli)
 FLAG_F8_UNMEASURABLE = "F8_UNMEASURABLE"
+#: Fonlama MARK kaynağı (koordinatör kararı 2026-10-13, P3e açık kalanı 1). Çekirdeğin fonlama tutarı arşivin fonlama
+#: satırının mark'ına BAĞLI DEĞİLDİR (arşiv `fundingRate` zip'inde mark yok → NaN; REST satırının mark'ı arşiv gelince
+#: onunla yer değiştirir): mark = `SeriesData.markpx_1h`'den, uzlaşma anında (nominal dakika) BAŞLAYAN 1h barının
+#: AÇILIŞI; yoksa uzlaşma anında BİTEN 1h barının KAPANIŞI; ikisi de yoksa uzlaşma okunamaz → FUNDING_GAP. Uzlaşmadan
+#: sonraki bir mark hiç kullanılmaz. Satırın kendi mark'ı yalnız denetimdir (göreli fark > %0,5 → FUNDING_MARK_MISMATCH,
+#: bilgi; markpx kullanılır). MÜHÜR BEKLİYOR: `WF_PROTOCOL_V1.kernel.funding` okuması (düzeltme mührü 10) sahibin
+#: mühürlü kayıt değişikliği iznine bağlı; o zamana kadar değerler burada, `FUNDING_MARK_SEALED = False`.
+FUNDING_MARK_POLICY = "MARKPX_1H_OPEN_OF_BAR_STARTING_AT_SETTLEMENT_ELSE_CLOSE_OF_BAR_ENDING_AT_SETTLEMENT"
+FUNDING_MARK_SEALED = False
+MARK_TF_MS = 3_600_000
+REST_MARK_MAX_REL_DIFF = 0.005
+FLAG_FUNDING_MARK_MISMATCH = "FUNDING_MARK_MISMATCH"
+#: fonlamadan türeyen işaretler (yol işaretlerinden sonra, bu sırayla eklenir)
+FUNDING_FLAGS: tuple[str, ...] = ("FUNDING_GAP", "FUNDING_EXIT_BAR", FLAG_FUNDING_MARK_MISMATCH)
 #: kapı istatistiğinden çıkan işaretler — mühürlü liste (`WF_PROTOCOL_V1.gate_exclusions.flags`)
 GATE_EXCLUDED_FLAGS: tuple[str, ...] = tuple(RG.WF_PROTOCOL_V1["gate_exclusions"]["flags"])
 #: `exit_decision` dayanakları (kayıt `basis`): ilk gözlemde verilen hükümler
@@ -176,7 +190,8 @@ class SeriesData:
     """Bir sembolün girdisi. `bars[tf]`: kapanmış barlar, kronolojik (`timestamp` = açılış ms). `btc_1d`: BTC 1d
     barları (rejim isteyen kopyalar); `btc_4h`: BTC 4h barları (örtü `F_BTC`). `funding`: `(uzlaşma ms, oran, mark)`
     satırları (deponun gerçek damgaları); None = fonlama verisi yok (her işlem `FUNDING_GAP`). `price_tick`: serinin fiyat
-    adımı (ADVERSE/STRESS spread'i)."""
+    adımı (ADVERSE/STRESS spread'i). `markpx_1h`: vadeli mark fiyatı 1h barları — fonlamanın mark'ı YALNIZ buradan
+    (`settlement_marks`); None = mark yok (uzlaşmayı kapsayan her işlem `FUNDING_GAP`)."""
 
     symbol: str
     bars: Mapping[str, Sequence[Mapping[str, Any]]]
@@ -184,6 +199,7 @@ class SeriesData:
     funding: Sequence[tuple[int, float, float]] | None = None
     price_tick: float = 0.0
     btc_4h: Sequence[Mapping[str, Any]] | None = None
+    markpx_1h: Sequence[Mapping[str, Any]] | None = None
 
 
 @dataclass(frozen=True)
@@ -474,7 +490,8 @@ class FundingSeries:
     büyüğünün `FUNDING_GAP_FACTOR` katını aşarsa boşluktur (seri 8h → 4h'e geçse de 8h dönemi boşluk sayılmaz; gerçek
     eksik uzlaşma — tek ya da arka arkaya iki — yakalanır). Aynı dakikaya düşen çelişen iki satır okunamaz sayılır."""
 
-    def __init__(self, rows: Sequence[tuple[int, float, float]] | None):
+    def __init__(self, rows: Sequence[tuple[int, float, float]] | None, mismatch: Iterable[int] = ()):
+        self.mismatch = frozenset(int(x) for x in mismatch)
         by: dict[int, tuple[Any, Any]] = {}
         self.conflict: set[int] = set()
         for t, r, m in rows or ():
@@ -526,6 +543,56 @@ class FundingOutcome:
     gap: bool
     ambiguous_usdt: float
     ambiguous_events: int
+    mark_mismatch: bool = False
+
+
+def _pos_finite(x: Any) -> float | None:
+    try:
+        v = float(x)
+    except (TypeError, ValueError):
+        return None
+    return v if math.isfinite(v) and v > 0 else None
+
+
+def settlement_marks(rows: Sequence[tuple[int, Any, Any]] | None, markpx_1h: Sequence[Mapping[str, Any]] | None
+                     ) -> tuple[list[tuple[int, Any, float]], frozenset[int]]:
+    """Uzlaşma satırlarına mark (`FUNDING_MARK_POLICY`): uzlaşma anında (nominal dakika) BAŞLAYAN markpx 1h barının
+    açılışı; yoksa o anda BİTEN barın kapanışı; ikisi de yoksa NaN (okunamaz → `FUNDING_GAP`). Uzlaşmadan sonraki bir
+    fiyat kullanılmaz (başlayan barın açılışı o anın fiyatıdır). Satırın kendi mark'ı yalnız denetim: ikisi de varsa ve
+    göreli fark > `REST_MARK_MAX_REL_DIFF` ise o uzlaşma `mismatch` kümesine girer. Döner: ([(damga, oran, mark)],
+    uyuşmazlık damgaları (nominal dakika))."""
+    opens: dict[int, float] = {}
+    closes: dict[int, float] = {}
+    for b in markpx_1h or ():
+        t = int(b["timestamp"])
+        o, c = _pos_finite(b.get("open")), _pos_finite(b.get("close"))
+        if o is not None:
+            opens[t] = o
+        if c is not None:
+            closes[t + MARK_TF_MS] = c
+    out: list[tuple[int, Any, float]] = []
+    mism: set[int] = set()
+    for t, r, m_row in rows or ():
+        k = snap_ms(t)
+        m = opens.get(k)
+        if m is None:
+            m = closes.get(k)
+        if m is None:
+            out.append((t, r, float("nan")))
+            continue
+        rm = _pos_finite(m_row)
+        if rm is not None and abs(rm - m) / m > REST_MARK_MAX_REL_DIFF:
+            mism.add(k)
+        out.append((t, r, m))
+    return out, frozenset(mism)
+
+
+def funding_series(data: "SeriesData") -> "FundingSeries | None":
+    """Çekirdeğin fonlama serisi: deponun uzlaşma satırları + `settlement_marks` (WF, keşif, parite aynı yol)."""
+    if data.funding is None:
+        return None
+    rows, mism = settlement_marks(data.funding, data.markpx_1h)
+    return FundingSeries(rows, mism)
 
 
 def funding_of(trade: KernelTrade, fs: FundingSeries | None) -> FundingOutcome:
@@ -538,6 +605,7 @@ def funding_of(trade: KernelTrade, fs: FundingSeries | None) -> FundingOutcome:
     sel, gap = fs.window(trade.entry_ts, end)
     sgn = 1.0 if trade.side == LONG else -1.0
     total, n = 0.0, 0
+    mism = False
     for t, r, m in sel:
         if not _readable(r, m) or t in fs.conflict:
             continue
@@ -546,6 +614,7 @@ def funding_of(trade: KernelTrade, fs: FundingSeries | None) -> FundingOutcome:
             continue
         total += -sgn * trade.qty * open_frac * float(m) * float(r)
         n += 1
+        mism = mism or t in fs.mismatch
     amb, n_amb = 0.0, 0
     for lg in trade.legs:
         if lg.earliest >= lg.ts:
@@ -557,7 +626,22 @@ def funding_of(trade: KernelTrade, fs: FundingSeries | None) -> FundingOutcome:
                 continue
             amb += -sgn * trade.qty * lg.frac * float(m) * float(r)
             n_amb += 1
-    return FundingOutcome(total, n, gap, amb, n_amb)
+    return FundingOutcome(total, n, gap, amb, n_amb, mism)
+
+
+def apply_funding(trade: KernelTrade, fs: FundingSeries | None) -> FundingOutcome:
+    """`funding_of` sonucunu işleme yaz (çekirdeğin döngü sonrası hesabı; keşif aynı fonksiyonu çağırır): tutar, olay
+    sayıları ve işaretler `FUNDING_GAP`, `FUNDING_EXIT_BAR`, `FUNDING_MARK_MISMATCH` (bu sırayla)."""
+    fo = funding_of(trade, fs)
+    trade.funding_usdt, trade.funding_events = fo.usdt, fo.events
+    trade.funding_ambiguous_usdt, trade.funding_ambiguous_events = fo.ambiguous_usdt, fo.ambiguous_events
+    if fo.gap:
+        trade.flags.append(FLAG_FUNDING_GAP)
+    if fo.ambiguous_events:
+        trade.flags.append(FLAG_FUNDING_EXIT_BAR)
+    if fo.mark_mismatch:
+        trade.flags.append(FLAG_FUNDING_MARK_MISMATCH)
+    return fo
 
 
 # ============================================================================ maliyet (aritmetik yeniden maliyetlendirme)
@@ -756,7 +840,7 @@ class _Sim:
         aynı serinin varyantlarını bar bar sırayla ilerletir); dönüş değeri `loop`'unkidir (StopIteration.value)."""
         variant, data, rows, step = self.variant, self.data, self.rows, self.step
         base = scenario("base")
-        fs = FundingSeries(data.funding) if data.funding is not None else None
+        fs = funding_series(data)
         trades: list[KernelTrade] = []
         history: list[BookEntry] = list(history0)
         hist_t: tuple[BookEntry, ...] = tuple(history)          # `ctx["history"]` (yalnız girişte yenilenir)
@@ -943,13 +1027,7 @@ class _Sim:
         if forced is not None and not trades and forced_why is None:
             forced_why = "NO_ENTRY_BAR"
         for t in trades:
-            fo = funding_of(t, fs)
-            t.funding_usdt, t.funding_events = fo.usdt, fo.events
-            t.funding_ambiguous_usdt, t.funding_ambiguous_events = fo.ambiguous_usdt, fo.ambiguous_events
-            if fo.gap:
-                t.flags.append(FLAG_FUNDING_GAP)
-            if fo.ambiguous_events:
-                t.flags.append(FLAG_FUNDING_EXIT_BAR)
+            apply_funding(t, fs)
             for name in SCENARIOS:
                 r, net = cost_trade(t, scenario(name), data.price_tick)
                 t.r[name], t.pnl_usdt[name] = r, net
@@ -1003,7 +1081,9 @@ def replay_intent(variant: Variant, data: SeriesData, intent: Intent, *, decisio
 
 __all__ = ["BASIS_PRUDENT_CLOSE", "BASIS_SLIP_LIQ", "CostScenario", "ENTRY_HOUR_POLICY", "EXIT_CONTRACT", "EXIT_END",
            "EXIT_LIQ", "EXIT_RULE", "EXIT_STOP", "EXIT_TARGET", "EXIT_TIME", "FLAG_F8_UNMEASURABLE", "FLAG_FUNDING_EXIT_BAR",
-           "FLAG_FUNDING_GAP", "FLAG_MOVE_STOP_IGNORED", "FLAG_OPEN_AT_END", "FLAG_PATH_GAP", "FundingOutcome",
+           "FLAG_FUNDING_GAP", "FLAG_FUNDING_MARK_MISMATCH", "FLAG_MOVE_STOP_IGNORED", "FUNDING_FLAGS",
+           "FUNDING_MARK_POLICY", "FUNDING_MARK_SEALED", "MARK_TF_MS", "REST_MARK_MAX_REL_DIFF", "apply_funding",
+           "funding_series", "settlement_marks", "FLAG_OPEN_AT_END", "FLAG_PATH_GAP", "FundingOutcome",
            "FundingSeries", "GATE_EXCLUDED_FLAGS", "KERNEL_VERSION", "KernelResult", "KernelTrade", "Leg",
            "MOVE_CROSSES_PRICE", "MOVE_LOOSENS", "Obs", "PATH_TF", "REJ_DATA_GAP", "REJ_RR", "SCENARIOS", "STOP_FILL_POLICY",
            "SeriesData", "VARIANT_SPEC_KEYS", "break_even", "check_window", "cost_trade", "covers_of", "funding_of",

@@ -398,7 +398,7 @@ def _cut(data: KN.SeriesData, now: int) -> KN.SeriesData:
         return [r for r in rows if int(r["timestamp"]) + SL.TF_MS[tf] <= now]
     return KN.SeriesData(symbol=data.symbol, bars={tf: keep(rows, tf) for tf, rows in data.bars.items()},
                          btc_1d=keep(data.btc_1d or [], "1d") or None, funding=data.funding, price_tick=data.price_tick,
-                         btc_4h=keep(data.btc_4h or [], "4h") or None)
+                         btc_4h=keep(data.btc_4h or [], "4h") or None, markpx_1h=data.markpx_1h)
 
 
 @pytest.mark.parametrize("base", BASES)
@@ -548,7 +548,7 @@ def _edge_box_world(seed: int, days: int) -> KN.SeriesData:
     m5 = [r for k, r in enumerate(m5) if not (drop_day + 2 * 3_600_000 <= int(r["timestamp"]) < drop_day + 3 * 3_600_000)]
     d1 = [r for r in S.aggregate([dict(r) for r in d.bars["5m"]], D1) if int(r["timestamp"]) != drop_day + D1]
     return KN.SeriesData(symbol=d.symbol, bars={"1d": d1, "5m": m5}, funding=d.funding, price_tick=d.price_tick,
-                         btc_4h=d.btc_4h)
+                         btc_4h=d.btc_4h, markpx_1h=d.markpx_1h)
 
 
 def _box_rule(var, d1_rows, m5_rows, now, position=None):

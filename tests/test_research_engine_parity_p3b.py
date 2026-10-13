@@ -239,7 +239,7 @@ def _ledger_r(bars, side, stop, targets, funding, *, hours=None, mode=PA.MODE_LI
     from tradingbot.core import iso
     from tradingbot.risk import build_state
     from tradingbot.strategy_paper import DataVerdict, apply_action
-    data = KN.SeriesData(symbol="TST", bars={"1d": bars}, funding=funding)
+    data = KN.SeriesData(symbol="TST", bars={"1d": bars}, funding=funding, markpx_1h=S.markpx_from_funding(funding))
     led, filt, prof, risk, lookup = PA._ref_ledger(data)
     o = bars[2]["open"]
     ok, _w, lev, _n, _m, _l = KN.size_trade(side, o * (1 + (1 if side == "LONG" else -1) * 0.0003), stop)
@@ -308,7 +308,8 @@ def test_scripted_paths_match_the_ledger_r_multiple(case):
     bars += [_bar(i, b["open"], b["high"], b["low"], b["close"]) for i, b in enumerate(_flat(8, bars[-1]["close"]))][len(bars):]
     funding = [(T0 + k * 8 * 3_600_000, 0.0002 * (1 + k % 3), 100.0 + k % 5) for k in range(0, 40)]
     (t,) = KN.run(_Once(side=side, stop=stop, targets=tuple(SL.Target(SL.TARGET_PRICE, x) for x in targets)),
-                  KN.SeriesData(symbol="TST", bars={"1d": bars}, funding=funding)).trades
+                  KN.SeriesData(symbol="TST", bars={"1d": bars}, funding=funding,
+                                markpx_1h=S.markpx_from_funding(funding))).trades
     r_led, rec, liq0 = _ledger_r(bars, side, stop, targets, funding)
     assert t.liq_price == pytest.approx(liq0, rel=1e-6), "bracket likidasyon formülü iki tarafta aynı fiyatı verir"
     assert t.r["base"] == pytest.approx(r_led, abs=1e-9), (case, t.exit_kind, rec.exit_reason)
@@ -372,7 +373,8 @@ def test_the_kernel_takes_the_ledger_prudent_branches():
     for side, stop, tail, basis, kind in cases:
         bars = _flat(3) + tail
         bars += [_bar(i, b["open"], b["high"], b["low"], b["close"]) for i, b in enumerate(_flat(8, bars[-1]["close"]))][len(bars):]
-        (t,) = KN.run(_Once(side=side, stop=stop, targets=()), KN.SeriesData(symbol="TST", bars={"1d": bars}, funding=funding)).trades
+        (t,) = KN.run(_Once(side=side, stop=stop, targets=()), KN.SeriesData(symbol="TST", bars={"1d": bars}, funding=funding,
+                                                                                  markpx_1h=S.markpx_from_funding(funding))).trades
         r_led, rec, _l = _ledger_r(bars, side, stop, (), funding)
         assert rec.features["exit_fill"]["basis"] == basis == t.legs[0].basis and t.exit_kind == kind
         assert t.r["base"] == pytest.approx(r_led, abs=1e-9), (basis, t.r["base"], r_led)
@@ -405,7 +407,8 @@ def test_one_day_with_1h_bars_matches_the_ledger_ticking_every_hour():
         bars += [_bar(i, b["open"], b["high"], b["low"], b["close"]) for i, b in enumerate(_flat(8, day3["close"]))][len(bars):]
         hours = hours_for(bars, special)
         (t,) = KN.run(_Once(side="LONG", stop=95.0, targets=tuple(SL.Target(SL.TARGET_PRICE, x) for x in targets)),
-                      KN.SeriesData(symbol="TST", bars={"1d": bars, "1h": hours}, funding=funding)).trades
+                      KN.SeriesData(symbol="TST", bars={"1d": bars, "1h": hours}, funding=funding,
+                                    markpx_1h=S.markpx_from_funding(funding))).trades
         r_led, rec, _l = _ledger_r(bars, "LONG", 95.0, targets, funding, hours=hours)
         assert t.r["base"] == pytest.approx(r_led, abs=1e-9) and KN.FLAG_PATH_GAP not in t.flags
         if basis is None:

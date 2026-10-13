@@ -427,6 +427,26 @@ def evaluate_coin_fit(family: str, coin: str, rows: Sequence[Mapping[str, Any]],
     return rr
 
 
+# ============================================================================ giriş evreni (P3e; koordinatör kararı)
+class EntryUniverseRefused(ValueError):
+    """Çalışma anındaki giriş evreni dondurulmuş 40 coin'lik listeyle aynı değil: WF çalışmaz (fark `diff`te)."""
+
+    def __init__(self, diff: Mapping[str, Any]):
+        super().__init__(f"ENTRY_UNIVERSE_DIFF: eksik {list(diff['missing'])} · fazla {list(diff['extra'])} · "
+                         f"yinelenen {list(diff['duplicates'])}")
+        self.diff = dict(diff)
+
+
+def require_entry_universe(symbols: Iterable[Any]) -> dict[str, Any]:
+    """WF'nin evren kapısı (P3g koşucusu her gece çağırır): `universe.entry_universe_diff` tutmazsa
+    `EntryUniverseRefused` (fark raporlanır, koşu yapılmaz); tutarsa farkı (ok) döndürür."""
+    from .universe import entry_universe_diff
+    d = entry_universe_diff(symbols)
+    if not d["ok"]:
+        raise EntryUniverseRefused(d)
+    return d
+
+
 # ============================================================================ aile koşuları (çekirdek)
 def run_variants(variant_ids: Sequence[str], data: KN.SeriesData, *, start_ms: int | None = None,
                  end_ms: int | None = None, record_signals: bool = True
@@ -454,7 +474,7 @@ def _lockstep(ids: list[str], vs: list[Any], data: KN.SeriesData, start_ms: int 
     return dict(zip(ids, res)), sig
 
 
-__all__ = ["DATA_START_EARLIEST_MS", "GATE_COST", "K_SHRINK", "LEAK", "POOL_TIE_MARGIN_R", "POS_FOLD_MIN_TRADES",
+__all__ = ["DATA_START_EARLIEST_MS", "EntryUniverseRefused", "require_entry_universe", "GATE_COST", "K_SHRINK", "LEAK", "POOL_TIE_MARGIN_R", "POS_FOLD_MIN_TRADES",
            "PURGE_SIGNAL_BARS", "RowResult", "SCENARIOS", "TOP_K", "WARMUP_BARS", "assign_and_check", "cluster_of",
            "data_start_ms", "evaluate_coin_fit", "evaluate_fixed", "grid", "make_plan", "max_hold_bars", "oos_days",
            "plan_for", "purge_embargo", "run_cover_family", "run_variants", "shrunk_score", "trade_key", "trade_row",

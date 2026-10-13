@@ -259,7 +259,8 @@ def mk(closes: list[float], tf: str, *, wick: float = 0.001, t0: int = T0) -> li
 
 def run_on(vid: str, rows: list[dict], *, funding=None) -> KN.KernelResult:
     var = KN.make_variant(vid)
-    return KN.run(var, KN.SeriesData(symbol="TST", bars={var.signal_tf: rows}, funding=funding))
+    return KN.run(var, KN.SeriesData(symbol="TST", bars={var.signal_tf: rows}, funding=funding,
+                                          markpx_1h=S.markpx_from_funding(funding)))
 
 
 def at(rows: list[dict], i: int) -> int:
@@ -542,7 +543,7 @@ def test_h_f8_is_unmeasurable_when_the_settlement_before_the_current_is_missing(
     assert old["f8"][0] == pytest.approx(fr[cur - 1][1] * 8 / (2 * every_h)) and old["f8_lo"][0] == 1.0, "eski okunuş: uç"
     assert all(x != x for x in HF.f8_state(fr, T)) and not HF.interval_steady([r[0] for r in fr], T)
     var = KN.make_variant("FUND_FADE_24h")
-    data = KN.SeriesData(symbol="TST", bars={"4h": rows}, funding=fr)
+    data = KN.SeriesData(symbol="TST", bars={"4h": rows}, funding=fr, markpx_1h=S.markpx_from_funding(fr))
     assert KN.signals_at(var, data, T) == []
     assert run_on("FUND_FADE_24h", rows, funding=fr).trades == []
     assert run_on("FUND_FADE_24h", rows, funding=_fund_every(200, every_h)).trades == [], "eksiksiz dizide de uç yok"
@@ -880,7 +881,7 @@ def _holed(data: KN.SeriesData, seed: int, share: float) -> KN.SeriesData:
     rnd = _r.Random(seed)
     hs = [r for r in data.bars["1h"] if rnd.random() > share]
     return KN.SeriesData(symbol=data.symbol, bars=dict(data.bars, **{"1h": hs}), btc_1d=data.btc_1d, funding=data.funding,
-                         price_tick=data.price_tick)
+                         price_tick=data.price_tick, markpx_1h=data.markpx_1h)
 
 
 @pytest.mark.parametrize("vid, world, share", [("K_FM", lambda: S.fm_world(21, n=900), 0.1),

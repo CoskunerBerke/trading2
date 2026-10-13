@@ -127,6 +127,19 @@ def funding_rows(rows: list[dict[str, Any]], step: int, *, seed: int, hours=(0, 
     return out
 
 
+def markpx_from_funding(rows: list[tuple[int, float, float]] | None) -> list[dict[str, Any]] | None:
+    """Sentetik markpx 1h barları: her uzlaşma anında BAŞLAYAN, açılışı (ve kapanışı) satırın mark'ı olan bir bar
+    (çekirdeğin mark kaynağı `kernel.settlement_marks`; sentetik satır mark'ıyla aynı → sonuçlar eskisiyle bayt-aynı).
+    Yalnız sentetik dünyalar; gerçek veride markpx deponun `markpx_1h` serisidir."""
+    if rows is None:
+        return None
+    out: dict[int, dict[str, Any]] = {}
+    for t, _r, m in rows:
+        k = KN.snap_ms(int(t))
+        out[k] = {"timestamp": k, "open": float(m), "high": float(m), "low": float(m), "close": float(m)}
+    return [out[k] for k in sorted(out)]
+
+
 def btc_4h_walk(start_ms: int, end_ms: int, *, seed: int, warm: int = 300) -> list[dict[str, Any]]:
     """Örtü `F_BTC` (P3b-2b) için BTC 4h barları: serinin başından `warm` bar ÖNCE başlar (EMA200 rejimi ilk karardan
     ölçülebilsin) ve sonuna kadar sürer; uzun yön rejimleri (UP ve DOWN ikisi de görülür). Ayrı tohum: sinyal serisi
@@ -150,8 +163,9 @@ def series(symbol: str, bars: dict[str, list[dict[str, Any]]], *, signal_tf: str
     if btc_4h is None:
         rows = bars[signal_tf]
         btc_4h = btc_4h_walk(int(rows[0]["timestamp"]), int(rows[-1]["timestamp"]) + step, seed=seed + BTC4_SEED)
-    return KN.SeriesData(symbol=symbol, bars=bars, btc_1d=btc, funding=funding_rows(bars[signal_tf], step, seed=seed),
-                         price_tick=tick, btc_4h=btc_4h)
+    fr = funding_rows(bars[signal_tf], step, seed=seed)
+    return KN.SeriesData(symbol=symbol, bars=bars, btc_1d=btc, funding=fr, price_tick=tick, btc_4h=btc_4h,
+                         markpx_1h=markpx_from_funding(fr))
 
 
 # ---------------------------------------------------------------------------- aile dünyaları
@@ -258,7 +272,8 @@ def fund_world(seed: int, n: int = 2200, *, sub: bool = True) -> KN.SeriesData:
     drops = ((t0 + (t1 - t0) * 30 // 100) // (8 * H1) * (8 * H1) + 8 * H1,
              (t0 + (t1 - t0) * 80 // 100) // (4 * H1) * (4 * H1) + 4 * H1)
     fr = ar_funding_rows(h4, H4, seed=seed + 77, switch_ms=switch, jitter_ms=999, drop_ms=drops)
-    return KN.SeriesData(symbol=d.symbol, bars=d.bars, btc_1d=None, funding=fr, price_tick=d.price_tick)
+    return KN.SeriesData(symbol=d.symbol, bars=d.bars, btc_1d=None, funding=fr, price_tick=d.price_tick,
+                         markpx_1h=markpx_from_funding(fr))
 
 
 #: K kopyası → aile birimi ve dünyası (parite (a) ve hız ölçümü)
@@ -498,7 +513,8 @@ def explore_world(coins: tuple[str, ...] | list[str], *, seed: int, seal_ms: int
     """Keşif katmanı (P3e) kabul/ölçüm dünyası: coin başına TUTARLI 1h yürüyüşü (mühürden `pre_1h_days` önce →
     `fwd_days` sonra), ondan toplanan 4h/1d, 1h barların tutarlı 5m alt barları (`subdivide`; yalnız mühürden `pre_5m_days`
     önce başlar) ve 1d ön geçmişi (`pre_1d_days`; ayrı yürüyüş, son kapanışı 1h yürüyüşünün başlangıcı). Fonlama
-    00/08/16 UTC (mark = barın açılışı). Döner: {coin: {"bars": {tf: satırlar}, "funding": satırlar}}."""
+    00/08/16 UTC (satır mark'ı = 1h barın açılışı); mark fiyatı 1h barları (`markpx_1h`) = 1h barların kendisi (çekirdeğin
+    mark kaynağı). Döner: {coin: {"bars": {tf: satırlar}, "funding": satırlar, "markpx_1h": satırlar}}."""
     out: dict[str, dict[str, Any]] = {}
     day0 = int(seal_ms) // D1 * D1
     h0 = day0 - int(pre_1h_days) * D1
@@ -514,11 +530,12 @@ def explore_world(coins: tuple[str, ...] | list[str], *, seed: int, seal_ms: int
         m5 = subdivide(m5_src, H1, M5, seed=sd + 3)
         bars = {"1h": h1, "4h": aggregate(h1, H4), "1d": pre + aggregate(h1, D1), "5m": m5}
         fr = funding_rows([r for r in h1 if int(r["timestamp"]) >= day0 - 12 * D1], H1, seed=sd + 4)
-        out[coin] = {"bars": bars, "funding": [x for x in fr if x[0] < end]}
+        out[coin] = {"bars": bars, "funding": [x for x in fr if x[0] < end],
+                     "markpx_1h": [dict(r) for r in h1 if int(r["timestamp"]) >= day0 - 12 * D1]}
     return out
 
 
-__all__ = ["BTC4_SEED", "explore_world", "WORLDS", "D1", "GATE_ROW_FAMILIES", "GATE_SYMBOLS", "H1", "H4", "M5", "SUB_SEED", "T0", "aggregate",
+__all__ = ["BTC4_SEED", "explore_world", "markpx_from_funding", "WORLDS", "D1", "GATE_ROW_FAMILIES", "GATE_SYMBOLS", "H1", "H4", "M5", "SUB_SEED", "T0", "aggregate",
            "ar_funding_rows", "box_world", "gate_rows", "gate_world", "gate_world_fwd", "gate_world_placebos", "light_trade",
            "vol_walk",
            "btc_4h_walk", "c4_world",

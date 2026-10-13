@@ -40,15 +40,15 @@ DOC = ROOT / "docs" / "ENGINE_BRAIN_V1.md"
 SHAS_PINNED = {
     "LIB_V1": "ae237b55c6df7014a52649915342eeb0bd67d23a18edcee5cf3e4b8c773df2e3",
     "WF_PROTOCOL_V1": "085ca94c3a8abc007327a15c217eea7d56a5b9af7b5075ec42714d5424af46b4",
-    "STATS_V1": "4a75ce951e1eddb8024537c24ba3d200c823d761ec6b292e7c3875f5874d60e8",
+    "STATS_V1": "0bbee326636af2c4e07a4ad4e04f110c4fb68bb343534ac373615aac3967029f",
     "LESSON_REGISTRY_V1": "8fbed7f5e33e21a02ec9547bfd84ab7ad0a798d9cc25908aa99911244ad58836",
     "PIT_RULES_V1": "59d0628c975e42aaa7810e231ce0704e5113b6a2bde4fd59fb29e65d8fef48b7",
     "PRIOR_TRIALS_V1": "ad6d8903e66034ce96cafe006f0a071e254968308627ab9998b0464f96984921",
-    "CONFIG_EPOCHS_V1": "3eff611763db41936569e4a35e2cb6e6b6915bf9fb2da275608034295c59759f",
-    "THRESHOLD_DIRECTIONS_V1": "144627902e6c7a1fca94419710291620588b947fe9c7183fc28fc8b53fafd278",
+    "CONFIG_EPOCHS_V1": "42362529ae2fc11dd0c7d2c3bcf0878b3d5cd1c0eb58863c44de378617e26c41",
+    "THRESHOLD_DIRECTIONS_V1": "77f8b950e653809377beae75fec7b9d07938a85c7ced6281992586956c649786",
 }
-T_SEAL_MS_PINNED = 1791786780000
-REGISTRY_SHA_PINNED = "12e99ee719cb91c9fd05f0b8f33f0d8a69922b33f41a0f83a6e68b6950dae051"
+T_SEAL_MS_PINNED = 1791879300000
+REGISTRY_SHA_PINNED = "43dadce4bb91d985e2272d4126e6a4e6faa9d900375fdd56cf36e352b2acc3ad"
 
 #: belgedeki sayılar (§2.2, §2.5, §2.6, §5.1, §7.5) — kayıttan BAĞIMSIZ yazılır
 DOC_BUDGET = {"POOLED": (45, 45), "CLUSTER": (135, 135), "COIN_FIT": (161, 1081), "COPY": (312, 312), "COVER": (140, 140),
@@ -114,6 +114,13 @@ IMPL_READINGS_PINNED = {
     **{f"LIB_V1.covers.factors.{f}.reading": f for f in _FACTORS},
     **{f"LIB_V1.variants[O_{b}_{f}].params.factor_params.reading": f for b in ("T2", "M2", "BOX", "D4", "C4")
        for f in _FACTORS},
+}
+
+#: P3d OKUMALARI (2026-10-13; S1 düzeltme mührü 7; sahip teknik okumaları koordinatöre devretti) → madde: U2 plasebo CI'ı,
+#: U3 CSCV ölçüsü, U4 uygun bar yoksa plasebo yok (kapalı hata), U5 tek yapılandırmalı grup (kapalı hata).
+P3D_READINGS_PINNED = {
+    "STATS_V1.placebo.ci": "U2", "STATS_V1.pbo.metric": "U3", "STATS_V1.placebo.no_eligible_bar": "U4",
+    "STATS_V1.pbo.single_config_group": "U5",
 }
 
 
@@ -580,7 +587,7 @@ def test_technical_readings_2026_10_12_record_the_p3b2a_review_findings():
     from tradingbot.strategy_lib import pure as PU
     at = {f"{name}.{p}": x for name, reg in RG.REGISTRIES.items() for p, x in RG._walk(reg)}
     marked = {p for p, x in at.items() if isinstance(x, Mapping) and str(x.get("reading_tr", "")).startswith("teknik okuma")}
-    assert marked == set(TECH_READINGS_PINNED) | set(IMPL_READINGS_PINNED)
+    assert marked == set(TECH_READINGS_PINNED) | set(IMPL_READINGS_PINNED) | set(P3D_READINGS_PINNED)
     for path, n in TECH_READINGS_PINNED.items():
         v = at[path]
         assert v["decision"] == f"P3b-2a inceleme bulgu {n} (2026-10-12)", path
@@ -629,6 +636,38 @@ def test_p3b2b_cover_readings_and_gate_exclusions_are_sealed():
     assert "FUNDING_GAP" in RG.WF_PROTOCOL_V1["costs"]["funding_gap_tr"]
     assert "PATH_1H_GAP" in RG.WF_PROTOCOL_V1["kernel"]["stop_fill"]["path_gap_tr"]
     assert RG.budget_table()["TOTAL"] == (818, 1738) and RG.unique_variant_count() == 106
+    assert RG.blocked_budget() == {"variants": 13, "gate_a_rows": 25, "raw_trials": 25}
+
+
+def test_p3d_readings_2026_10_13_are_sealed_without_touching_thresholds():
+    """Düzeltme mührü 7 (2026-10-13): P3d'nin U2–U5 okumaları STATS_V1'de tarihli okuma (`decision` "P3d okuması Uk
+    (2026-10-13)", `reading_tr` "teknik okuma 2026-10-13; sahip teknik okumaları koordinatöre devretti (asla gevşetme);
+    P3d okuması Uk: …"); `thresholds` ağaçları, bütçe ve sayılar değişmedi; yeni tanımlar asla-gevşetme tablosunda."""
+    at = {f"{name}.{p}": x for name, reg in RG.REGISTRIES.items() for p, x in RG._walk(reg)}
+    for path, item in P3D_READINGS_PINNED.items():
+        v = at[path]
+        assert v["decision"] == f"P3d okuması {item} (2026-10-13)", path
+        assert v["reading_tr"].startswith("teknik okuma 2026-10-13; sahip teknik okumaları koordinatöre devretti (asla "
+                                          f"gevşetme); P3d okuması {item}: "), path
+    st = RG.STATS_V1
+    ci = st["placebo"]["ci"]
+    assert (ci["resamples"], ci["min_days_per_side"], ci["sides"]) == (10000, 5, "INDEPENDENT_DAY_CLUSTERED")
+    assert ci["resamples"] == st["thresholds"]["p_day"]["resamples"]
+    assert ci["seed_int_placebo"] == "int(sha256(f'{row_id}|{look_no}|placebo_ci|placebo'.encode('utf-8')).hexdigest()[:16], 16)"
+    assert st["pbo"]["metric"]["metric"] == "DAILY_SHARPE"
+    assert st["placebo"]["no_eligible_bar"]["rule"] == "EMPTY_ELIGIBLE_SET_NO_PLACEBO_FAILS_CLOSED"
+    assert list(st["pbo"]["single_config_group"]["rows"]) == ["K_FM@POOLED_OWN"]
+    assert RG.thaw(st["thresholds"]) == {"p_day": {"resamples": 10000}, "bh_q": 0.10, "effective_n_abs_rho": 0.7,
+                                         "pbo": {"blocks": 16, "min_configs": 2, "min_oos_days_per_block": 5},
+                                         "placebo": {"k_per_trade": 5, "ci_level": 0.95, "min_ci_lower": 0.0},
+                                         "null_world": {"worlds": 200}}
+    d = RG.THRESHOLD_DIRECTIONS["STATS"]
+    assert d["placebo.ci.min_days_per_side"] == RG.MIN
+    assert all(d[k] == RG.FIXED for k in ("placebo.ci.resamples", "placebo.ci.seed_int_real", "placebo.ci.seed_int_placebo",
+                                          "placebo.ci.sides", "placebo.ci.quantile_index", "placebo.no_eligible_bar.rule",
+                                          "pbo.metric.metric", "pbo.metric.remainder_days", "pbo.metric.group_axis",
+                                          "pbo.single_config_group.rule"))
+    assert RG.budget_table()["TOTAL"] == (818, 1738) and RG.unique_variant_count() == 106 and RG.n_at_seal() == 4513
     assert RG.blocked_budget() == {"variants": 13, "gate_a_rows": 25, "raw_trials": 25}
 
 

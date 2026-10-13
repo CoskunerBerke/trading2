@@ -14,9 +14,11 @@
   `SignalRecorder` vekiliyle (sonuç bayt-aynı) kaydedilir. Kapı dışı plasebo işlemleri (`kernel.gate_excluded`) de çıkar.
 * **Fark:** gerçek − plasebo ortalaması (ADVERSE R), gün kümelenmeli %95 CI (mühür düzeyi): iki taraf AYRI ve bağımsız
   gün kümeli bootstrap (signal_lab SIKI kuralıyla aynı düzen: gün başına toplam ve sayı, tekrar ortalaması = Σ toplam /
-  Σ sayı), yüzdelikler ⌊α/2·(B−1)⌋ / ⌈(1−α/2)·(B−1)⌉. **Mühürde YOK (okunuş, §8.4 P3d notu):** tekrar sayısı B (= p_day'in
-  mühürlü 10.000'i), tohumlar (B6 biçimi, anahtar `row_id|look_no|placebo_ci|real` ve `…|placebo`), taraf başına en az gün
-  (laboratuvarın 5'i; altında CI yok → kapı geçmez).
+  Σ sayı), yüzdelikler ⌊α/2·(B−1)⌋ / ⌈(1−α/2)·(B−1)⌉. **Mühürlü P3d okuması U2** (`STATS_V1.placebo.ci`, düzeltme mührü 7):
+  B = 10.000, tohumlar B6 biçimi (`row_id|look_no|placebo_ci|real` ve `…|placebo`), taraf başına en az 5 gün (altında CI
+  yok → kapı geçmez).
+* **Mühürlü P3d okuması U4** (`STATS_V1.placebo.no_eligible_bar`): uygun bar kümesi boşsa (hep piyasada olan ters dönen
+  kurallar, TS_*_LS, MAX_*_LS) plasebo yoktur → kapı geçmez; başka plasebo uydurulmaz.
 """
 from __future__ import annotations
 
@@ -28,6 +30,7 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 import numpy as np
 
 from . import kernel as KN
+from . import registry as RG
 from . import stats as ST
 from ..strategy_lib import LONG, NONE, TF_MS, EntryRef, Intent
 from ..strategy_lib.indicators import atr
@@ -35,8 +38,19 @@ from ..strategy_lib.indicators import atr
 DAY_MS = 86_400_000
 K_PER_TRADE = ST.PLACEBO_K
 MAX_TRIES = 20
-MIN_CI_DAYS = 5
 ATR_N = 14
+_CI = RG.STATS_V1["placebo"]["ci"]
+CI_RESAMPLES = int(_CI["resamples"])                              # 10.000 (U2)
+MIN_CI_DAYS = int(_CI["min_days_per_side"])                       # 5 (U2)
+CI_SEED_REAL = "{row_id}|{look_no}|placebo_ci|real"
+CI_SEED_PLACEBO = "{row_id}|{look_no}|placebo_ci|placebo"
+NO_ELIGIBLE_RULE = str(RG.STATS_V1["placebo"]["no_eligible_bar"]["rule"])
+# mühürlü okuma uygulananla aynı olmalı (kapalı hata: okuma değişirse modül yüklenmez)
+if (_CI["seed_int_real"] != "int(sha256(f'" + CI_SEED_REAL + "'.encode('utf-8')).hexdigest()[:16], 16)"
+        or _CI["seed_int_placebo"] != "int(sha256(f'" + CI_SEED_PLACEBO + "'.encode('utf-8')).hexdigest()[:16], 16)"
+        or _CI["sides"] != "INDEPENDENT_DAY_CLUSTERED" or CI_RESAMPLES != ST.RESAMPLES
+        or NO_ELIGIBLE_RULE != "EMPTY_ELIGIBLE_SET_NO_PLACEBO_FAILS_CLOSED"):
+    raise RuntimeError("STATS_V1.placebo okumaları placebo.py uygulamasıyla uyuşmuyor")
 
 
 def placebo_seed(row_id: str, trade_key: str, k: int) -> int:
@@ -225,11 +239,11 @@ def _boot_means(pairs: Sequence[tuple[int, float]], seed: int, resamples: int, m
 
 
 def diff_ci(real: Sequence[tuple[int, float]], placebo: Sequence[tuple[int, float]], *, row_id: str, look_no: int,
-            resamples: int = ST.RESAMPLES, level: float = ST.PLACEBO_CI_LEVEL, min_days: int = MIN_CI_DAYS
+            resamples: int = CI_RESAMPLES, level: float = ST.PLACEBO_CI_LEVEL, min_days: int = MIN_CI_DAYS
             ) -> list[float] | None:
-    """(gerçek ort. R − plasebo ort. R) için gün kümelenmeli CI; taraflardan birinde gün < `min_days` → None."""
-    a = _boot_means(real, ST.seed_int(f"{row_id}|{look_no}|placebo_ci|real"), resamples, min_days)
-    b = _boot_means(placebo, ST.seed_int(f"{row_id}|{look_no}|placebo_ci|placebo"), resamples, min_days)
+    """(gerçek ort. R − plasebo ort. R) için gün kümelenmeli CI; taraflardan birinde gün < `min_days` → None (U2)."""
+    a = _boot_means(real, ST.seed_int(CI_SEED_REAL.format(row_id=row_id, look_no=look_no)), resamples, min_days)
+    b = _boot_means(placebo, ST.seed_int(CI_SEED_PLACEBO.format(row_id=row_id, look_no=look_no)), resamples, min_days)
     if a is None or b is None:
         return None
     d = np.sort(a - b)
@@ -239,5 +253,6 @@ def diff_ci(real: Sequence[tuple[int, float]], placebo: Sequence[tuple[int, floa
     return [float(lo), float(hi)]
 
 
-__all__ = ["K_PER_TRADE", "KernelPlacebo", "MAX_TRIES", "MIN_CI_DAYS", "SignalRecorder", "diff_ci", "draw_placebos",
+__all__ = ["CI_RESAMPLES", "CI_SEED_PLACEBO", "CI_SEED_REAL", "K_PER_TRADE", "KernelPlacebo", "MAX_TRIES", "MIN_CI_DAYS",
+           "NO_ELIGIBLE_RULE", "SignalRecorder", "diff_ci", "draw_placebos",
            "eligible_times", "gate_pairs", "placebo_seed"]

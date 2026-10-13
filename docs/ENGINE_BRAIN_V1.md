@@ -802,19 +802,19 @@ değildir, metin testi); k*/kaldıraç satırı oto defterler için de yalnız l
 | **S1** | `LIB_V1` (106 varyant, kapsamlar, P23, kümeler, §2.4 kuralları, örtüler, §4.3 dönüşümleri), `WF_PROTOCOL_V1`, `STATS_V1`, `LESSON_REGISTRY_V1`, `PIT_RULES_V1`, `PRIOR_TRIALS_V1`, `CONFIG_EPOCHS_V1`, `THRESHOLD_DIRECTIONS_V1` (asla gevşetme yön tablosu), `T_SEAL_MS` | P3a commit'i; **P3 kodunun hiçbir gerçek veri koşusundan önce** (hedef ≤ 2026-10-25) | `tests/test_research_engine_registry.py` + bu tabloya aynı commit'te sha değerleri (**MÜHÜRLENDİ**, değerler tablonun altında) |
 | **S2** | `PROMOTION_REGISTRY_V1` (ana belge §6.7 + §3.7 yordamı + §6.3 Holm ayı + §6.4 yönlendirme), `AUTO_POLICY_V1`, `AUTO_CATALOG_V1`, `MANIFEST_SCHEMA_V1` | P4a commit'i, P4 dağıtımından önce, **sahibin kapı metni onayından sonra** | motor ve worker testlerinde aynı sabitler (eşitlik testi) |
 
-**S1 mühür değerleri (düzeltme mührü 6'nın — P3b-2b: O örtülerinin uygulama okumaları `LIB_V1`'de ve kapı dışı işaret listesi `WF_PROTOCOL_V1.gate_exclusions`'ta, 2026-10-12, §8.4 — yeniden mühür commit'i; önceki: düzeltme mührü 5, P3b-2a bağımsız incelemesinin bulgularına tarihli teknik okumalar `LIB_V1` satırlarında; düzeltme mührü 4, P3b-2a çekirdeğin giriş saati okunuşu `WF_PROTOCOL_V1.kernel.entry_hour`; düzeltme mührü 3, çekirdeğin canlı defterle aynı ihtiyatlı stop dolumu, sahip kararı 2026-10-12; düzeltme mührü 2, §8.5'e sahip cevabı 2026-10-11; `tradingbot/research_engine/registry.py`; sha256 = kanonik JSON'un — sıralı anahtar,
+**S1 mühür değerleri (düzeltme mührü 7'nin — P3d: plasebo fark CI'ı, CSCV ölçüsü ve iki kapalı hata kuralı `STATS_V1`'de tarihli okuma (U2–U5), 2026-10-13, §8.4 — yeniden mühür commit'i; önceki: düzeltme mührü 6, P3b-2b: O örtülerinin uygulama okumaları `LIB_V1`'de ve kapı dışı işaret listesi `WF_PROTOCOL_V1.gate_exclusions`'ta, 2026-10-12; düzeltme mührü 5, P3b-2a bağımsız incelemesinin bulgularına tarihli teknik okumalar `LIB_V1` satırlarında; düzeltme mührü 4, P3b-2a çekirdeğin giriş saati okunuşu `WF_PROTOCOL_V1.kernel.entry_hour`; düzeltme mührü 3, çekirdeğin canlı defterle aynı ihtiyatlı stop dolumu, sahip kararı 2026-10-12; düzeltme mührü 2, §8.5'e sahip cevabı 2026-10-11; `tradingbot/research_engine/registry.py`; sha256 = kanonik JSON'un — sıralı anahtar,
 `(",", ":")`, UTF-8):**
 
 - `LIB_V1` `ae237b55c6df7014a52649915342eeb0bd67d23a18edcee5cf3e4b8c773df2e3` — 106 varyant (+2 alias'lı ızgara üyesi), kapsamlar, P23, kümeler, §2.4 kuralları, örtüler (faktör parametreleri spec'te), kopya zaman stopları, varyant bağımlılıkları (`requires`), §4.3 dönüşümleri; §8.5 kararları B2–B5, B7, B8, B10, B11 (2026-10-11); P3b-2a inceleme teknik okumaları (2026-10-12): BBSQ `params.squeeze_bar` (sıkışma t − 1'de), FUND_CARRY `exits.exit_rule` (işaret ters → çık), RSI2 `params.entry_mid_side` (orta bandın doğru yanı), `defaults.window` (saf ailelerin penceresi 400 / 399); P3b-2b örtü uygulama okumaları (2026-10-12): `covers.reading`, yedi `covers.factors.<F>.reading` (35 örtünün `factor_params`'ında)
 - `WF_PROTOCOL_V1` `085ca94c3a8abc007327a15c217eea7d56a5b9af7b5075ec42714d5424af46b4` — §3.1–§3.3 katmanlar (B1 bölüşümü), COIN_FIT seçimi, maliyetler; §2.1 çekirdek (2026-10-12: `kernel.stop_fill` = canlı `exit_decision` 1h tiklerinde, `intrabar_order` canlı tik sırası; P3b-2a: `kernel.entry_hour` = girişi içeren saat diliminde yalnız stop/likidasyon); §5.2 önbellek; P3b-2b: `gate_exclusions` (kapı istatistiğinden çıkan işaretler FUNDING_GAP, PATH_1H_GAP, F8_UNMEASURABLE)
-- `STATS_V1` `4a75ce951e1eddb8024537c24ba3d200c823d761ec6b292e7c3875f5874d60e8` — §3.6 p_day, BH (ailede işlem süzgeci yok; ana belge §6.4), DSR (sr_var tabanı 1/(T−1)), CSCV-PBO, plasebo, boş dünya; B6 üreteç ve tohumlar
+- `STATS_V1` `0bbee326636af2c4e07a4ad4e04f110c4fb68bb343534ac373615aac3967029f` — §3.6 p_day, BH (ailede işlem süzgeci yok; ana belge §6.4), DSR (sr_var tabanı 1/(T−1)), CSCV-PBO, plasebo, boş dünya; B6 üreteç ve tohumlar; P3d okumaları (2026-10-13): `placebo.ci` (U2), `pbo.metric` (U3), `placebo.no_eligible_bar` (U4), `pbo.single_config_group` (U5)
 - `LESSON_REGISTRY_V1` `8fbed7f5e33e21a02ec9547bfd84ab7ad0a798d9cc25908aa99911244ad58836` — §4.1 hücreler/bakışlar/ileri doğrulama (B6 CI tohumu), §4.2 depo ve durumlar, §4.4 deneme maliyeti
 - `PIT_RULES_V1` `59d0628c975e42aaa7810e231ce0704e5113b6a2bde4fd59fb29e65d8fef48b7` — §3.4 zaman noktasında evren (B11: hacim penceresi d hariç)
 - `PRIOR_TRIALS_V1` `ad6d8903e66034ce96cafe006f0a071e254968308627ab9998b0464f96984921` — `research_engine/prior_trials.json` (§2.6; toplam 2.775)
-- `CONFIG_EPOCHS_V1` `3eff611763db41936569e4a35e2cb6e6b6915bf9fb2da275608034295c59759f` — `research_engine/library/config_epochs.json` (git geçmişi + belgelenmiş dağıtım/sahip kayıtları; `covered_until` = `T_SEAL_MS`)
-- `THRESHOLD_DIRECTIONS_V1` `144627902e6c7a1fca94419710291620588b947fe9c7183fc28fc8b53fafd278` — asla gevşetme yön tablosu (eşikler ve kapı-dışı eşik benzerleri; kök-göreli yollar; B1/B11 tanımları ve 2026-10-12'den `kernel.stop_fill.policy`, `kernel.entry_hour.policy` ve `gate_exclusions.flags` `fixed`)
-- `T_SEAL_MS` `1791786780000` = 2026-10-12T06:33:00+00:00 (mühürlü içeriği değiştiren son commit'in işleyen zamanına eşit ya da ondan sonra; test git'ten doğrular, tarih elle ayarlanmaz)
-- `REGISTRY_SHA` `12e99ee719cb91c9fd05f0b8f33f0d8a69922b33f41a0f83a6e68b6950dae051` — S1 kümesinin (sekiz sha + `T_SEAL_MS`) kanonik sha'sı; deneme satırlarının `registry_sha`'sı
+- `CONFIG_EPOCHS_V1` `42362529ae2fc11dd0c7d2c3bcf0878b3d5cd1c0eb58863c44de378617e26c41` — `research_engine/library/config_epochs.json` (git geçmişi + belgelenmiş dağıtım/sahip kayıtları; `covered_until` = `T_SEAL_MS`)
+- `THRESHOLD_DIRECTIONS_V1` `77f8b950e653809377beae75fec7b9d07938a85c7ced6281992586956c649786` — asla gevşetme yön tablosu (eşikler ve kapı-dışı eşik benzerleri; kök-göreli yollar; B1/B11 tanımları ve 2026-10-12'den `kernel.stop_fill.policy`, `kernel.entry_hour.policy` ve `gate_exclusions.flags` `fixed`; 2026-10-13'ten P3d okumaları: `placebo.ci.min_days_per_side` `min`, CI tekrar/tohum/düzen, CSCV ölçüsü ve iki kapalı hata kuralı `fixed`)
+- `T_SEAL_MS` `1791879300000` = 2026-10-13T08:15:00+00:00 (mühürlü içeriği değiştiren son commit'in işleyen zamanına eşit ya da ondan sonra; test git'ten doğrular, tarih elle ayarlanmaz)
+- `REGISTRY_SHA` `43dadce4bb91d985e2272d4126e6a4e6faa9d900375fdd56cf36e352b2acc3ad` — S1 kümesinin (sekiz sha + `T_SEAL_MS`) kanonik sha'sı; deneme satırlarının `registry_sha`'sı
 
 - "Gerçek veri koşusu": VPS'te S4/S5'in herhangi bir çalışması, P3 koduyla herhangi bir laboratuvar ya da elle geriye-test.
   P3b'nin hız ölçümü yalnız sentetik veriyle yapılır. Mühür commit'inin zamanı `T_SEAL_MS`'dir; ileri veri saati dağıtımdan
@@ -840,7 +840,7 @@ değildir, metin testi); k*/kaldıraç satırı oto defterler için de yalnız l
 En erken olaylar: ilk Kapı A bakışı 2026-12-06 (yalnız 5m/15m; ileri 30 gün) ve 2027-01-06 (diğerleri); 4h/1d adayı için en
 erken Holm 2027-03-01, en erken otomatik defter ≈ 2027-03-02 (24 saat veto penceresiyle).
 
-### 8.4 P3a uygulama notu (2026-10-11; düzeltme turu 1 ve §8.5'e sahip cevabıyla yeniden mühürlendi; 2026-10-12 çekirdeğin stop dolumuyla düzeltme mührü 3; 2026-10-12 P3b-2a saf aileler ve giriş saati okunuşuyla düzeltme mührü 4; 2026-10-12 P3b-2a inceleme düzeltmesi ve teknik okumalarla düzeltme mührü 5; 2026-10-12 P3b-2b O örtüleri, hız önlemleri ve kapı dışı işaretlerle düzeltme mührü 6; 2026-10-13 P3d walk-forward ve istatistik, mühür değişmedi)
+### 8.4 P3a uygulama notu (2026-10-11; düzeltme turu 1 ve §8.5'e sahip cevabıyla yeniden mühürlendi; 2026-10-12 çekirdeğin stop dolumuyla düzeltme mührü 3; 2026-10-12 P3b-2a saf aileler ve giriş saati okunuşuyla düzeltme mührü 4; 2026-10-12 P3b-2a inceleme düzeltmesi ve teknik okumalarla düzeltme mührü 5; 2026-10-12 P3b-2b O örtüleri, hız önlemleri ve kapı dışı işaretlerle düzeltme mührü 6; 2026-10-13 P3d walk-forward ve istatistik; 2026-10-13 P3d okumalarıyla düzeltme mührü 7)
 
 **Ne mühürlendi (S1).** Yeni modüller ağsız ve yalnız standart kütüphaneyle yazıldı; hiçbiri gece birimine, worker'a ya da
 bir karar yoluna bağlanmadı (P3a VPS'te hiçbir şey çalıştırmaz, gerçek veriye dokunmaz).
@@ -1699,7 +1699,9 @@ yazılmayan uygulama ayrıntılarıdır, "UNSEALED" maddeleri sahibe sorulur (ye
   ara gecede hüküm kelimesi ve yazım yok. (11) Hızlı kip (`full=False`; yalnız boş dünya deneyinde): BH'de geçemeyecek p
   erken durur, koşulu tutmayan satırın PBO/plasebosu hesaplanmaz — hüküm tam kiple aynı (testli); defter yazan yordam hep
   tam kiptir.
-- **UNSEALED — mühürde yok, sahibe sorulur (uydurulmadı; kapalı hata).** (U1) Kapı A eşiklerinin S1 dışındakileri
+- **UNSEALED — mühürde yok, sahibe sorulur (uydurulmadı; kapalı hata).** *[2026-10-13 ile değişti: U2–U5 düzeltme mührü 7
+  ile `STATS_V1` okuması oldu, U1 geçici kalır ve hiçbir geçiş eyleme dönüşmez, U6/U7 yalnız belgelenir — aşağıdaki
+  değişiklik notu.]* (U1) Kapı A eşiklerinin S1 dışındakileri
   (OOS ≥ 100 işlem ve ≥ 2 takvim yılı, katman payı ≥ %60, PBO < 0,25, DSR ≥ 0,95, ileri okuma eşikleri) ana belge §6.7
   gereği S2'dedir (P4a): `stats.GATE_A_PROVISIONAL` = S1 değerleri (q, plasebo alt sınırı, tek enstrüman payı, küme
   tutarlılığı) + §3.7 METNİ, `sealed: False`; her `LOOK_A` satırı kaynağını yazar (`PROVISIONAL_UNSEALED`). "≥ 2 takvim
@@ -1739,6 +1741,39 @@ yazılmayan uygulama ayrıntılarıdır, "UNSEALED" maddeleri sahibe sorulur (ye
   P23 gerçek veri koşusu ve bütçe P3g'de; ileri okuma (`fwd`) keşif katmanından gelir (P3e). (3) `POOLED_OWN`/küme
   satırlarının kapsam sembollerinin canlı kümelerden çözümü ve XSEC (PIT, P3c) satır kurucuları P3e/P3g'de; bu adımda
   `gate_a_look` satır sonuçlarını hazır alır.
+
+**Değişiklik 2026-10-13 — P3d boşluklarına karar (sahip teknik okumaları koordinatöre devretti; asla gevşetme); S1
+düzeltme mührü 7.** Henüz hiçbir gerçek veri koşusu olmadığı için `_v2` değil düzeltme mührüdür.
+
+- **U2 (mühürlendi, `STATS_V1.placebo.ci`):** plasebo fark CI'ı uygulandığı gibi — iki taraf ayrı ve bağımsız gün kümeli
+  bootstrap, B = 10.000 (p_day'in mühürlü sayısı), tohumlar B6 biçimi `row_id|look_no|placebo_ci|real` ve `…|placebo`,
+  gün çekimi `random.Random(tohum).choices(range(D), k=D)`, taraf başına en az 5 gün (azsa CI yok → kapı geçmez),
+  yüzdelik indisleri ⌊α/2·(B−1)⌋ / ⌈(1−α/2)·(B−1)⌉. Asla-gevşetme: `min_days_per_side` `min`, tekrar/tohum/düzen `fixed`.
+- **U3 (mühürlendi, `STATS_V1.pbo.metric`):** CSCV ölçüsü günlük Sharpe (ortalama / örneklem std, ddof = 1; std = 0 → 0);
+  aynı okumada uygulanan kurallar: T mod 16 en eski gün atılır, grup ekseni üyelerin OOS günlerinin kesişimi, IS-en-iyide
+  eşitlik ilk yapılandırma, OOS sırasında eşitlik ortalama sıra. Ölçü, artık gün ve eksen `fixed`.
+- **U4 (mühürlendi, `STATS_V1.placebo.no_eligible_bar`):** kapalı hata korunur — uygun bar kümesi boşsa (hep piyasada olan
+  ters dönen kurallar: TS_*_LS, MAX_*_LS) plasebo yoktur ve satır Kapı A'yı geçemez; başka plasebo uydurulmaz. "± tutuş"
+  = |t − gerçek giriş| ≤ gerçek tutuş. Kural `fixed`.
+- **U5 (mühürlendi, `STATS_V1.pbo.single_config_group`):** kapalı hata korunur — K_FM@POOLED_OWN'un seçim grubu tek
+  yapılandırmadır, PBO hesaplanamaz, Kapı A'yı geçemez. Kural `fixed`.
+- **U1 (geçici kalır; S2'ye, sahibin kapı metni onayından sonra):** `GATE_A_PROVISIONAL` `PROVISIONAL_UNSEALED`
+  etiketini taşır; mühürlü S2 eşik nesnesi (`stats.SEALED_GATE_A_THRESHOLDS`) yokken bütün koşulları tutan satırın hükmü
+  `PASS_A_PROVISIONAL`'dır, hiçbir yol `PASS_A` üretmez (eşik sözlüğünde `sealed: True` sahtelense bile), `LOOK_A`
+  satırları geçici kaynağı ve `actionable: false` taşır; `stats.actionable_pass` P4a'nın doğum kuyruğu için tek kapıdır ve
+  S2'ye kadar hep yanlıştır (test).
+- **U6/U7:** yalnız belgelenir (yukarıdaki P3d notu).
+- **Kod:** `placebo.py` ve `cscv.py` değerleri mühürden okur ve okuma uygulananla uyuşmazsa yüklenmez (kapalı hata);
+  `stats.py` geçici geçişi yukarıdaki gibi ayırır.
+- **Mühür:** değişen `STATS_V1` (dört okuma; `thresholds` ağacı aynı), `THRESHOLD_DIRECTIONS_V1` (yeni tanımların yönleri),
+  `CONFIG_EPOCHS_V1` (yalnız `covered_until` = yeni `T_SEAL_MS`), `T_SEAL_MS`, `REGISTRY_SHA`; `LIB_V1`, `WF_PROTOCOL_V1`,
+  `LESSON_REGISTRY_V1`, `PIT_RULES_V1`, `PRIOR_TRIALS_V1` DEĞİŞMEDİ. Bütçe ve sayılar aynı (818 / 1.738, 106, 13
+  çalıştırılmayan, N 4.513); hiçbir eşik değişmedi. Yeni değerler §8.2'de; yerleşik `T_SEAL_MS` yolu (commit'ten sonraki
+  tam dakika).
+- **Testler.** `test_research_engine_registry.py` (yeni sabitler; teknik okuma kümesi U2–U5'i içerir;
+  `test_p3d_readings_2026_10_13_are_sealed_without_touching_thresholds`), `test_research_engine_stats_p3d.py`
+  (`test_provisional_thresholds_never_yield_an_actionable_pass`, `test_p3d_readings_are_sealed_and_used_by_the_code`;
+  bakış testleri `PASS_A_PROVISIONAL` bekler).
 
 ### 8.5 P3a boşlukları — sahibe sorular (entegrasyondan önce; her cevap boşluğu doldurur ve S1'i yeniden mühürler)
 

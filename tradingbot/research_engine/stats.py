@@ -24,7 +24,10 @@
 * **Eşikler:** Kapı A eşikleri ana belge §6.7'ye göre S2'de (`PROMOTION_REGISTRY_V1`, P4a) mühürlenir; S1 yalnız q, plasebo
   alt sınırı, tek enstrüman payı ve küme tutarlılığını taşır. `GATE_A_PROVISIONAL` = S1 değerleri + §3.7 METNİNİN geri
   kalanı, `sealed: False` — her `LOOK_A` satırı kaynağını yazar; S2 mühürlenince yerine `PROMOTION_REGISTRY_V1` geçer.
-  Plasebo CI'ının tekrar sayısı/tohumu S1'de yoktur (bkz. `placebo.diff_ci`; §8.4 P3d notu).
+  **Geçici eşiklerle hiçbir geçiş eyleme dönüşmez:** mühürlü S2 eşik nesnesi (`SEALED_GATE_A_THRESHOLDS`) yokken bütün
+  koşulları tutan satırın hükmü `PASS_A_PROVISIONAL`'dır (asla `PASS_A`); `actionable_pass` yalnız mühürlü eşiklerle
+  `PASS_A` için doğrudur (P4a'nın doğum kuyruğu bunu kullanır). Eşik sözlüğündeki `sealed: True` bir şey değiştirmez.
+  Plasebo CI'ı mühürlü P3d okuması U2'dir (`STATS_V1.placebo.ci`; düzeltme mührü 7).
 
 Kapı istatistiğine giren işlemler `wf` tarafından süzülmüştür (`kernel.gate_excluded`: FUNDING_GAP, PATH_1H_GAP,
 F8_UNMEASURABLE); çıkarılanların sayısı satırda taşınır. Ağsız.
@@ -64,6 +67,10 @@ R_SCALE = 1_000_000                                             # mikro-R (tam s
 _I62 = 1 << 62
 
 PASS_A, FAIL_A = "PASS_A", "FAIL_A"
+#: geçici (mühürsüz) eşiklerle bütün koşulları tutan satırın hükmü: eyleme dönüşmez (doğum kuyruğu yok)
+PASS_A_PROVISIONAL = "PASS_A_PROVISIONAL"
+#: S2'nin mühürlü Kapı A eşikleri (`PROMOTION_REGISTRY_V1`, P4a). Mühürlenene kadar None → hiçbir hüküm `PASS_A` olamaz.
+SEALED_GATE_A_THRESHOLDS: Mapping[str, Any] | None = None
 INTERIM_LABEL = "ara görünüm"
 #: Kapı A bakış gecesi: ayın bu gününden SONRAKİ ilk gece (STATS_V1.looks_tr: "her ayın 5'inden sonraki ilk gece")
 LOOK_AFTER_DAY = 5
@@ -451,13 +458,33 @@ def gate_a_evaluate(rows: Mapping[str, Mapping[str, Any]], *, look_no: int, n_tr
         s["placebo_state"] = "OK" if ci is not None else "NOT_COMPUTABLE"
         if ci is None or not (ci[0] > th["placebo_ci_lower_min_exclusive"]):
             s["fails"].append("PLACEBO")
+    sealed = thresholds_are_sealed(th)
+    src = str(th.get("source"))
+    if not sealed and not src.startswith("PROVISIONAL_UNSEALED"):
+        src = f"PROVISIONAL_UNSEALED: {src}"                     # mühürsüz eşik her zaman geçici diye etiketlenir
     for rid in rows:
         s = out_rows[rid]
-        s["verdict"] = PASS_A if not s["fails"] else FAIL_A
+        s["verdict"] = (PASS_A if sealed else PASS_A_PROVISIONAL) if not s["fails"] else FAIL_A
     return {"rows": out_rows, "family_m": len(family), "N": int(n_trials), "sr_var_family": fam_var,
             "groups": {g: {k: v for k, v in r.items() if k != "configs"} | {"configs": list(r.get("configs", []))}
                        for g, r in pbo_by_group.items()},
-            "thresholds_source": th.get("source"), "thresholds_sealed": bool(th.get("sealed"))}
+            "thresholds_source": src, "thresholds_sealed": sealed}
+
+
+def thresholds_are_sealed(thresholds: Mapping[str, Any]) -> bool:
+    """Eşikler mühürlü S2 nesnesinin KENDİSİ mi (sözlükteki `sealed` alanı değil; sahte sözlük mühürlü sayılmaz)."""
+    return SEALED_GATE_A_THRESHOLDS is not None and thresholds is SEALED_GATE_A_THRESHOLDS
+
+
+def is_pass(verdict: str | None) -> bool:
+    """Bütün Kapı A koşulları tuttu mu (geçici ya da mühürlü eşiklerle)."""
+    return verdict in (PASS_A, PASS_A_PROVISIONAL)
+
+
+def actionable_pass(row: Mapping[str, Any]) -> bool:
+    """Bir `LOOK_A` satırı / değerlendirme satırı eyleme (P4a doğum kuyruğu) dönüşebilir mi: YALNIZ mühürlü S2 eşikleriyle
+    verilmiş `PASS_A`. S2 mühürlenene kadar her zaman False."""
+    return SEALED_GATE_A_THRESHOLDS is not None and row.get("verdict") == PASS_A
 
 
 def _seal_ok() -> bool:
@@ -540,7 +567,7 @@ def gate_a_look(ledger: Any, night: date, rows: Mapping[str, Mapping[str, Any]],
                     "sr": s["sr"], "sr_var": s["sr_var"], "pos_fold_share": s["pos_fold_share"],
                     "top_share": s["top_share"], "cluster_coherence_r": s.get("cluster_coherence_r"),
                     "pbo_group": s["pbo_group"], "pbo_state": s["pbo_state"],
-                    "excluded": dict(r.get("excluded") or {})}))
+                    "excluded": dict(r.get("excluded") or {}), "actionable": actionable_pass(s)}))
     res = ledger.append(_finite(entries))
     return {"status": "LOOK", "look_no": look_no, "month": month, "N": n_trials, "evaluation": ev,
             "appended": sum(1 for x in res if x["status"] == "APPENDED"),
@@ -561,7 +588,8 @@ def _finite(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 __all__ = ["BH_Q", "CHUNK", "EQUITY_BASE_USDT", "FAIL_A", "GATE_A_PROVISIONAL", "GATE_COST", "INTERIM_LABEL",
-           "LOOK_AFTER_DAY", "MEMORY_MB_MAX", "NULL_WORLDS", "PASS_A", "PLACEBO_CI_LEVEL", "PLACEBO_K",
+           "LOOK_AFTER_DAY", "MEMORY_MB_MAX", "NULL_WORLDS", "PASS_A", "PASS_A_PROVISIONAL", "PLACEBO_CI_LEVEL", "PLACEBO_K",
+           "SEALED_GATE_A_THRESHOLDS", "actionable_pass", "is_pass", "thresholds_are_sealed",
            "PLACEBO_MIN_CI_LOWER", "RESAMPLES", "R_SCALE", "SCENARIOS", "bh_qvalues", "choice_stream", "daily_returns",
            "day_clusters", "dsr", "family_sr_var", "gate_a_evaluate", "gate_a_look", "is_look_night", "ledger_looks",
            "look_month", "moments", "p_day", "p_day_seed", "row_stats", "seed_int", "selection_group_key", "sharpe",

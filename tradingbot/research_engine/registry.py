@@ -53,7 +53,7 @@ SEAL_DOC = "docs/ENGINE_BRAIN_V1.md §8.2"
 #: ayarlanmaz). Keşif katmanı ve Kapı A'nın ileri okuması YALNIZ açılışı bu andan sonra olan barları kullanır (§5.1).
 #: Mühür commit'leri yalnız fast-forward (ya da merge commit) ile birleşir; rebase/squash/cherry-pick işleyen zamanı
 #: değiştirir → test kırılır → yeniden mühür.
-T_SEAL_MS = 1791786780000
+T_SEAL_MS = 1791879300000
 
 
 # ============================================================================ kanonik biçim ve donma
@@ -93,6 +93,17 @@ def impl_reading(item: str, text: str, **values: Any) -> dict:
     """Tarihli uygulama okuması: değer alanları + `decision` (P3b-2b maddesi) + `reading_tr`."""
     return {**values, "decision": f"P3b-2b uygulama okuması {item} (2026-10-12)",
             "reading_tr": f"{TECH_READING_TR}; P3b-2b uygulama okuması {item}: {text}"}
+
+
+#: P3d (walk-forward + istatistik) OKUMALARI (2026-10-13; S1 düzeltme mührü 7): sahip teknik okumaları koordinatöre
+#: devretti ("asla gevşetme"); P3d uygulamasının mühürde yazılı olmayan U2–U5 ayrıntıları uygulandığı gibi tarihli
+#: okuma olarak yazılır (henüz gerçek veri koşusu yok → `_v2` değil). Bütçe, sayılar ve bütün eşikler değişmez.
+P3D_READING_TR = "teknik okuma 2026-10-13; sahip teknik okumaları koordinatöre devretti (asla gevşetme)"
+
+
+def p3d_reading(item: str, text: str, **values: Any) -> dict:
+    """Tarihli P3d okuması: değer alanları + `decision` (P3d maddesi) + `reading_tr`."""
+    return {**values, "decision": f"P3d okuması {item} (2026-10-13)", "reading_tr": f"{P3D_READING_TR}; P3d okuması {item}: {text}"}
 
 
 def thaw(x: Any) -> Any:
@@ -911,6 +922,18 @@ def _stats() -> dict:
                        "copy_cover_pooled_cluster": "{kopya + 7 örtüsü}", "gold": "enstrüman başına 6 varyant",
                        "XSEC": "5", "spread": "2"},
             "not_computable_tr": "grup < 2 yapılandırma veya < 16 × 5 OOS gün → 'hesaplanamaz' → kapı geçmez",
+            "metric": p3d_reading("U3", "CSCV'nin başarım ölçüsü yapılandırmanın IS/OOS dilimindeki GÜNLÜK SHARPE'ıdır (ortalama / "
+                                        "örneklem std, ddof = 1; std = 0 → 0; Bailey vd. varsayılanı ve DSR'nin ölçüsü). T "
+                                        "16'ya bölünmüyorsa EN ESKİ T mod 16 gün atılır (eşit blok); grup ekseni üyelerin OOS "
+                                        "günlerinin kesişimi; IS-en-iyide eşitlik ilk yapılandırma, OOS sırasında eşitlik "
+                                        "ortalama sıra (cscv.py)",
+                                  metric="DAILY_SHARPE", sharpe="mean / std(ddof=1); std = 0 → 0",
+                                  remainder_days="DROP_OLDEST", group_axis="INTERSECTION_OF_MEMBER_OOS_DAYS",
+                                  is_best_ties="FIRST_CONFIG", oos_rank_ties="AVERAGE_RANK"),
+            "single_config_group": p3d_reading(
+                "U5", "örtüsü olmayan kopyanın havuz satırı (K_FM@POOLED_OWN: {kopya + örtüleri} grubu tek yapılandırma) için "
+                      "PBO hesaplanamaz → Kapı A'yı geçemez (kapalı hata; mühürlü grup tanımının sonucu, gevşetilmez)",
+                rule="SINGLE_CONFIG_GROUP_NOT_COMPUTABLE_FAILS_CLOSED", rows=["K_FM@POOLED_OWN"]),
         },
         "placebo": {
             "per_trade_tr": "her gerçek işlem için K rastgele işlem: aynı sembol, yön, tutuş süresi (bar), ATR katı stop; giriş "
@@ -923,6 +946,23 @@ def _stats() -> dict:
                                 rng="random.Random(seed_int)",
                                 trade_key="tj_v1 trade_key (defter|trade_id|opened_at; research_engine/journal.py)"),
             "diff": "gerçek − plasebo ortalaması, gün kümelenmeli CI",
+            "ci": p3d_reading("U2", "fark CI'ı: iki taraf (gerçek, plasebo) AYRI ve bağımsız gün kümeli bootstrap (signal_lab SIKI "
+                                    "kuralının düzeni: gün başına toplam ve sayı, tekrar ortalaması = Σ toplam / Σ sayı); tekrar "
+                                    "sayısı p_day'in mühürlü 10.000'i; üreteç B6 biçimi (random.Random, gün çekimi "
+                                    "choices(range(D), k=D)); taraf başına en az 5 gün (laboratuvar STRICT_MIN_DAYS; azsa CI yok "
+                                    "→ kapı geçmez); yüzdelikler sıralı farkın ⌊α/2·(B−1)⌋ ve ⌈(1−α/2)·(B−1)⌉ indisleri",
+                              resamples=10000,
+                              seed_int_real="int(sha256(f'{row_id}|{look_no}|placebo_ci|real'.encode('utf-8')).hexdigest()[:16], 16)",
+                              seed_int_placebo="int(sha256(f'{row_id}|{look_no}|placebo_ci|placebo'.encode('utf-8')).hexdigest()[:16], 16)",
+                              rng="random.Random(seed_int); gün çekimi choices(range(D), k=D)",
+                              sides="INDEPENDENT_DAY_CLUSTERED", min_days_per_side=5,
+                              quantile_index="floor(alpha/2*(B-1)), ceil((1-alpha/2)*(B-1)) of sorted differences"),
+            "no_eligible_bar": p3d_reading(
+                "U4", "kuralın sinyal vermediği ve gerçek işlemlerin ± tutuşu (|t − gerçek giriş| ≤ gerçek tutuş) dışındaki bar "
+                      "kümesi boşsa (hep piyasada olan ters dönen kurallar: TS_*_LS, MAX_*_LS) plasebo YOKTUR → Kapı A'yı "
+                      "geçemez (kapalı hata); başka bir plasebo uydurulmaz",
+                rule="EMPTY_ELIGIBLE_SET_NO_PLACEBO_FAILS_CLOSED", hold_exclusion="|t - real_entry| <= real_hold",
+                examples=["TS_*_LS", "MAX_*_LS"]),
             "flipped_sign_tr": "işaret çevrilmiş sinyal yalnız gösterilir",
             "lab_verdicts_tr": "signal_lab.verdict / verdict_strict yalnız gösterim sütunu",
         },
@@ -1084,6 +1124,12 @@ def _directions() -> dict:
             f"{_T}placebo.k_per_trade": FIXED, f"{_T}placebo.ci_level": MIN, f"{_T}placebo.min_ci_lower": MIN,
             f"{_T}null_world.worlds": FIXED,
             "bh_fdr.family_tr": FIXED, "bh_fdr.no_p_tr": FIXED, "dsr.sr_var_floor": FIXED, "null_world.pass_rate_max": FIXED,
+            # P3d okumaları (2026-10-13; düzeltme mührü 7): CI tekrar sayısı/tohumu/düzeni ve CSCV ölçüsü tanımdır (iki yönde
+            # sonucu oynatır → `fixed`); taraf başına en az gün `min`; kapalı hata kuralları `fixed`
+            "placebo.ci.resamples": FIXED, "placebo.ci.seed_int_real": FIXED, "placebo.ci.seed_int_placebo": FIXED,
+            "placebo.ci.sides": FIXED, "placebo.ci.quantile_index": FIXED, "placebo.ci.min_days_per_side": MIN,
+            "placebo.no_eligible_bar.rule": FIXED, "pbo.metric.metric": FIXED, "pbo.metric.remainder_days": FIXED,
+            "pbo.metric.group_axis": FIXED, "pbo.single_config_group.rule": FIXED,
         },
         "LESSON_REGISTRY": {
             f"{_T}eligibility.min_n": MIN, f"{_T}eligibility.min_distinct_days": MIN, f"{_T}looks.n_thresholds": FIXED,
@@ -1415,7 +1461,7 @@ __all__ = ["CLUSTERS", "CONFIG_EPOCHS_FILE", "CONFIG_EPOCHS_V1", "CONFIG_EPOCHS_
            "THRESHOLD_DIRECTIONS_V1", "THRESHOLD_DIRECTIONS_V1_SHA", "T_SEAL_MS", "UNSPECIFIED", "WF_PROTOCOL_V1",
            "WF_PROTOCOL_V1_SHA", "blocked_budget", "blocked_variants", "budget_table", "canonical_bytes", "coin_fit_grid", "explore_series",
            "decided", "family_counts", "freeze", "gap", "gate_a_rows", "get_path", "impl_reading", "is_gap", "is_sha256",
-           "lib_spec", "looser_than",
+           "lib_spec", "looser_than", "p3d_reading",
            "n_at_seal", "oto_column_pre_s5_count", "pretty_json", "prior_total", "protocol_gaps", "sha256_canonical",
            "spec_sha", "thaw", "threshold_leaves", "unique_variant_count", "unspecified_gaps", "variant_gaps",
            "variants_by_id"]

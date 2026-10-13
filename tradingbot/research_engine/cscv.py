@@ -7,8 +7,10 @@ López de Prado, Zhu 2014 "The Probability of Backtest Overfitting").
   yeni veri korunur). Grup < 2 yapılandırma ya da T < 16 × 5 gün → `NOT_COMPUTABLE` (kapı geçmez).
 * **Bölünmeler:** C(16, 8) = 12.870 bölünmenin HEPSİ (`itertools.combinations` sözlük sırası); IS = seçilen 8 blok,
   OOS = kalan 8.
-* **Başarım ölçüsü:** yapılandırmanın IS/OOS dilimindeki günlük Sharpe'ı (ortalama / örneklem std, ddof = 1; std = 0 → 0).
-  Mühür ölçüyü adlandırmaz; Bailey vd.'nin varsayılanı ve DSR'nin ölçüsüyle aynı (okunuş, §8.4 P3d notu).
+* **Başarım ölçüsü:** yapılandırmanın IS/OOS dilimindeki günlük Sharpe'ı (ortalama / örneklem std, ddof = 1; std = 0 → 0);
+  Bailey vd.'nin varsayılanı ve DSR'nin ölçüsü. Mühürlü P3d okuması U3 (`STATS_V1.pbo.metric`, düzeltme mührü 7) — artık
+  gün, ortak eksen ve eşitlik kuralları da aynı okumadadır. Tek yapılandırmalı grup (örn. K_FM@POOLED_OWN) hesaplanamaz →
+  kapı geçmez (U5, `STATS_V1.pbo.single_config_group`).
 * **Logit:** IS'te en iyi yapılandırma (eşitlikte ilk sütun) → OOS'ta göreli sırası ω̄ = sıra / (N + 1) (sıra 1 = en kötü;
   eşitlikte ortalama sıra) → λ = ln(ω̄ / (1 − ω̄)). **PBO** = λ ≤ 0 olan bölünmelerin payı (mühür tanımı). λ ≤ 0 ⟺
   2 × sıra ≤ N + 1 (tam aritmetikle sınanır).
@@ -30,6 +32,13 @@ BLOCKS = int(_TH["blocks"])                                   # 16
 MIN_CONFIGS = int(_TH["min_configs"])                         # 2
 MIN_DAYS_PER_BLOCK = int(_TH["min_oos_days_per_block"])       # 5
 OK, NOT_COMPUTABLE = "OK", "NOT_COMPUTABLE"
+_M = RG.STATS_V1["pbo"]["metric"]
+METRIC = str(_M["metric"])
+# mühürlü okuma (U3) uygulananla aynı olmalı (kapalı hata)
+if (METRIC, _M["remainder_days"], _M["group_axis"], _M["is_best_ties"], _M["oos_rank_ties"]) != (
+        "DAILY_SHARPE", "DROP_OLDEST", "INTERSECTION_OF_MEMBER_OOS_DAYS", "FIRST_CONFIG", "AVERAGE_RANK") or \
+        RG.STATS_V1["pbo"]["single_config_group"]["rule"] != "SINGLE_CONFIG_GROUP_NOT_COMPUTABLE_FAILS_CLOSED":
+    raise RuntimeError("STATS_V1.pbo okumaları cscv.py uygulamasıyla uyuşmuyor")
 
 _SPLITS: dict[int, tuple[np.ndarray, np.ndarray]] = {}
 
@@ -136,5 +145,5 @@ def group_pbo(series: Mapping[str, Mapping[int, float]]) -> dict[str, Any]:
     return res
 
 
-__all__ = ["BLOCKS", "MIN_CONFIGS", "MIN_DAYS_PER_BLOCK", "NOT_COMPUTABLE", "OK", "group_pbo", "logits",
+__all__ = ["BLOCKS", "METRIC", "MIN_CONFIGS", "MIN_DAYS_PER_BLOCK", "NOT_COMPUTABLE", "OK", "group_pbo", "logits",
            "matrix_from_series", "pbo", "splits"]

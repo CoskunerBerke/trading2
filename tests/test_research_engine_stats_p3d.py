@@ -229,14 +229,17 @@ def test_planted_edge_passes_gate_a_on_the_look_night(sealed_ledger):
     elapsed = time.perf_counter() - t0
     assert res["status"] == "LOOK" and res["look_no"] == 1 and res["N"] == 4513
     ev = res["evaluation"]["rows"]
-    passed = sorted(k for k, v in ev.items() if v["verdict"] == ST.PASS_A)
+    passed = sorted(k for k, v in ev.items() if ST.is_pass(v["verdict"]))
     assert passed == [PLANTED], {k: v["fails"] for k, v in ev.items() if k == PLANTED}
     s = ev[PLANTED]
     assert s["q_bh"] <= 0.1 and s["dsr"] >= 0.95 and s["pbo"] < 0.25 and s["placebo_diff_ci"][0] > 0
     assert s["n"] >= 100 and s["n_days"] >= 730 and s["pos_fold_share"] >= 0.6 and s["top_share"] <= 0.5
     rows_written = [r for r in TR.iter_rows(sealed_ledger.trials_file) if r["kind"] in ("LOOK_A", "FWD_READ")]
     look = {r["row_id"]: r for r in rows_written if r["kind"] == "LOOK_A"}
-    assert len(look) == 818 and look[PLANTED]["verdict"] == "PASS_A" and look[PLANTED]["look_no"] == 1
+    # S2 mühürlü değil → geçiş GEÇİCİDİR ve eyleme dönüşmez (U1)
+    assert len(look) == 818 and look[PLANTED]["verdict"] == ST.PASS_A_PROVISIONAL and look[PLANTED]["look_no"] == 1
+    assert not any(r["verdict"] == ST.PASS_A for r in look.values())
+    assert not any(ST.actionable_pass(r) for r in look.values()) and look[PLANTED]["params"]["actionable"] is False
     assert look[PLANTED]["params"]["N"] == 4513
     assert look[PLANTED]["params"]["thresholds_source"].startswith("PROVISIONAL_UNSEALED")
     assert sum(r["kind"] == "FWD_READ" for r in rows_written) == 29
@@ -258,7 +261,7 @@ def test_200_null_worlds_pass_at_most_q():
     t0 = time.perf_counter()
     for s in range(n):
         ev = evaluate_world(S.gate_world(10_000 + s), full=False)
-        k = sum(v["verdict"] == ST.PASS_A for v in ev["rows"].values())
+        k = sum(ST.is_pass(v["verdict"]) for v in ev["rows"].values())
         world_pass += k > 0
         row_pass += k
         rows_total += len(ev["rows"])
@@ -274,7 +277,7 @@ def test_fast_mode_gives_the_same_verdicts():
         fast = evaluate_world(world, full=False)["rows"]
         assert {k: v["verdict"] for k, v in full.items()} == {k: v["verdict"] for k, v in fast.items()}
         for k, v in full.items():
-            if v["verdict"] == ST.PASS_A:
+            if ST.is_pass(v["verdict"]):
                 assert fast[k]["p_day"] == v["p_day"] and fast[k]["placebo_diff_ci"] == v["placebo_diff_ci"]
 
 
@@ -332,7 +335,8 @@ def test_gate_a_is_evaluated_only_on_look_nights_property(tmp_path):
                 looked.append(ST.look_month(night))
                 assert res["status"] == "LOOK" and res["look_no"] == len(looked)
                 new = [r for r in TR.iter_rows(p.trials_file) if r["kind"] == "LOOK_A" and r["look_no"] == len(looked)]
-                assert {r["row_id"] for r in new} == set(fam) and all(r["verdict"] in ("PASS_A", "FAIL_A") for r in new)
+                assert {r["row_id"] for r in new} == set(fam)
+                assert all(r["verdict"] in (ST.PASS_A_PROVISIONAL, ST.FAIL_A) for r in new)
                 assert all(r["window"]["look_month"] == ST.look_month(night) for r in new)
             else:
                 assert res["status"] == "INTERIM" and res["label"] == "ara görünüm"
@@ -370,6 +374,53 @@ def test_provisional_thresholds_are_labelled_and_s1_parts_come_from_the_seal():
     assert (th["min_oos_trades"], th["min_oos_days"], th["min_positive_fold_share"], th["pbo_max_exclusive"],
             th["dsr_min"], th["fwd_min_days"], th["fwd_min_days_intraday"], th["fwd_min_trades"]) == \
         (100, 730, 0.6, 0.25, 0.95, 60, 30, 20)
+
+
+def test_provisional_thresholds_never_yield_an_actionable_pass():
+    """U1 (koordinatör kararı 2026-10-13): S2 mühürlenene kadar Kapı A eşikleri `PROVISIONAL_UNSEALED`'dır; bütün koşulları
+    tutan satır `PASS_A_PROVISIONAL` olur, hiçbir yol `PASS_A` ya da eyleme dönüşen bir geçiş üretmez — eşik sözlüğü
+    `sealed: True` diye sahtelense bile."""
+    assert ST.SEALED_GATE_A_THRESHOLDS is None
+    world = S.gate_world(1, planted=PLANTED)
+    rows, pl, fwd = gate_world_rows(world)
+    forged = dict(ST.GATE_A_PROVISIONAL, sealed=True, source="S2 PROMOTION_REGISTRY_V1 (sahte)")
+    for th in (ST.GATE_A_PROVISIONAL, forged):
+        ev = ST.gate_a_evaluate(rows, look_no=1, n_trials=4513, placebo=pl, fwd=fwd, thresholds=th, full=False)
+        assert ev["thresholds_sealed"] is False and ev["thresholds_source"].startswith("PROVISIONAL_UNSEALED")
+        verdicts = {v["verdict"] for v in ev["rows"].values()}
+        assert ST.PASS_A not in verdicts and ST.PASS_A_PROVISIONAL in verdicts
+        assert not any(ST.actionable_pass(v) for v in ev["rows"].values())
+    assert not ST.thresholds_are_sealed(forged) and not ST.actionable_pass({"verdict": ST.PASS_A})
+    # paket içinde PASS_A hükmünü yazan tek yer `stats.gate_a_evaluate`'tir (mühürlü eşik dalı)
+    for f in sorted(PKG.glob("*.py")):
+        if f.name != "stats.py":
+            assert "PASS_A" not in f.read_text(encoding="utf-8"), f.name
+
+
+def test_p3d_readings_are_sealed_and_used_by_the_code():
+    """Düzeltme mührü 7 (2026-10-13): U2 plasebo CI'ı, U3 CSCV ölçüsü, U4 uygun bar yoksa plasebo yok, U5 tek
+    yapılandırmalı grup — STATS_V1'de tarihli okuma; kod mühürden okur; eşikler ve bütçe değişmedi."""
+    from tradingbot.research_engine import cscv as CS
+    ci = RG.STATS_V1["placebo"]["ci"]
+    assert (ci["resamples"], ci["min_days_per_side"]) == (PL.CI_RESAMPLES, PL.MIN_CI_DAYS) == (10_000, 5)
+    assert ci["seed_int_real"] == "int(sha256(f'{row_id}|{look_no}|placebo_ci|real'.encode('utf-8')).hexdigest()[:16], 16)"
+    assert PL.diff_ci([(d, 1.0 + d % 3) for d in range(9)], [(d, 0.0 + d % 2) for d in range(9)], row_id="r", look_no=1) \
+        == PL.diff_ci([(d, 1.0 + d % 3) for d in range(9)], [(d, 0.0 + d % 2) for d in range(9)], row_id="r", look_no=1,
+                      resamples=10_000, min_days=5)
+    assert RG.STATS_V1["pbo"]["metric"]["metric"] == CS.METRIC == "DAILY_SHARPE"
+    assert RG.STATS_V1["placebo"]["no_eligible_bar"]["rule"] == PL.NO_ELIGIBLE_RULE
+    assert list(RG.STATS_V1["pbo"]["single_config_group"]["rows"]) == ["K_FM@POOLED_OWN"]
+    assert ST.selection_group_key("COPY", "K_FM", "POOLED_OWN") == "COVER:FM@POOLED_OWN"
+    assert not KN_covers("FM")                                                          # örtü yok → grup tek yapılandırma
+    assert RG.budget_table()["TOTAL"] == (818, 1738) and RG.unique_variant_count() == 106
+    d = RG.THRESHOLD_DIRECTIONS["STATS"]
+    assert d["placebo.ci.min_days_per_side"] == RG.MIN and d["placebo.ci.resamples"] == RG.FIXED
+    assert d["pbo.metric.metric"] == d["placebo.no_eligible_bar.rule"] == d["pbo.single_config_group.rule"] == RG.FIXED
+
+
+def KN_covers(base: str) -> list:
+    from tradingbot.research_engine import kernel as KN
+    return KN.covers_of(base)
 
 
 def test_selection_groups_follow_the_seal():

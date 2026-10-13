@@ -800,6 +800,7 @@ değildir, metin testi); k*/kaldıraç satırı oto defterler için de yalnız l
 | Mühür | İçerik | Ne zaman | Nerede sabitlenir |
 |---|---|---|---|
 | **S1** | `LIB_V1` (106 varyant, kapsamlar, P23, kümeler, §2.4 kuralları, örtüler, §4.3 dönüşümleri), `WF_PROTOCOL_V1`, `STATS_V1`, `LESSON_REGISTRY_V1`, `PIT_RULES_V1`, `PRIOR_TRIALS_V1`, `CONFIG_EPOCHS_V1`, `THRESHOLD_DIRECTIONS_V1` (asla gevşetme yön tablosu), `T_SEAL_MS` | P3a commit'i; **P3 kodunun hiçbir gerçek veri koşusundan önce** (hedef ≤ 2026-10-25) | `tests/test_research_engine_registry.py` + bu tabloya aynı commit'te sha değerleri (**MÜHÜRLENDİ**, değerler tablonun altında) |
+| **S1d** | `LIB_AG_V1` (38 varyant: ANTİGRAVİTY dökümlerinin 5 taktiği + 3 örtüsü, tam parametreler, kapsam `AG_POOLED`, seçim grupları, bütçe), `AG_UNIVERSE_V1` (S1b'nin 40'ı + XAUUSDT), `AG_CALENDAR_V1` (2023–2026 NYSE tam tatilleri + FOMC açıklama günleri), `S1D_DIRECTIONS_V1`, `S1D_SEAL_MS` | S1d commit'i (2026-10-13), AG kodunun hiçbir gerçek veri koşusundan önce; S1, S1b, S1c dokunulmadı | `research_engine/seal_s1d.py` + `tests/test_research_engine_seal_s1d.py` (**MÜHÜRLENDİ**, değerler §8.6) |
 | **S2** | `PROMOTION_REGISTRY_V1` (ana belge §6.7 + §3.7 yordamı + §6.3 Holm ayı + §6.4 yönlendirme), `AUTO_POLICY_V1`, `AUTO_CATALOG_V1`, `MANIFEST_SCHEMA_V1` | P4a commit'i, P4 dağıtımından önce, **sahibin kapı metni onayından sonra** | motor ve worker testlerinde aynı sabitler (eşitlik testi) |
 
 **S1 mühür değerleri (düzeltme mührü 9'un — CSCV blok kenarı arındırması geri alındı, CSCV matrisi günlük piyasa değerlemesi (U3), 2026-10-13, §8.4 — yeniden mühür commit'i; önceki: düzeltme mührü 8, P3d bağımsız incelemesi: seçim grubu bütünlüğü (R3) ve plasebo kurulumu (R5) `STATS_V1`'de, 2026-10-13; düzeltme mührü 7, P3d: plasebo fark CI'ı, CSCV ölçüsü ve iki kapalı hata kuralı `STATS_V1`'de tarihli okuma (U2–U5), 2026-10-13; düzeltme mührü 6, P3b-2b: O örtülerinin uygulama okumaları `LIB_V1`'de ve kapı dışı işaret listesi `WF_PROTOCOL_V1.gate_exclusions`'ta, 2026-10-12; düzeltme mührü 5, P3b-2a bağımsız incelemesinin bulgularına tarihli teknik okumalar `LIB_V1` satırlarında; düzeltme mührü 4, P3b-2a çekirdeğin giriş saati okunuşu `WF_PROTOCOL_V1.kernel.entry_hour`; düzeltme mührü 3, çekirdeğin canlı defterle aynı ihtiyatlı stop dolumu, sahip kararı 2026-10-12; düzeltme mührü 2, §8.5'e sahip cevabı 2026-10-11; `tradingbot/research_engine/registry.py`; sha256 = kanonik JSON'un — sıralı anahtar,
@@ -2107,6 +2108,139 @@ sonucuna etkiye göredir.
 Cevaplar gelince: ilgili `gap(...)` alanları değerle değiştirilir (gerekçe `reading_tr`), `GAPS_PINNED`/`BLOCKED_PINNED`
 küçülür, sha'lar ve `T_SEAL_MS` yeniden sabitlenir, bu tabloya tarihli cevap yazılır. **2026-10-11: yapıldı** (S1 düzeltme
 mührü 2; kalan 25 boşluk / 13 varyant / 25 Kapı A satırı; protokol boşluğu yok).
+
+### 8.6 S1d — LIB_AG_V1 (2026-10-13; ANTİGRAVİTY dökümlerinden mekanik varyantlar; AYRI ADLI mühür — S1, S1b, S1c DOKUNULMADI)
+
+**Sahip kararı (koordinatör iletisi, 2026-10-13).** Sahibin ANTİGRAVİTY klasöründeki bir takdir tüccarının (ICT tarzı:
+öldürme bölgeleri, öğle süpürmesi, 10:00 "TENM" açılış modeli, MSS/FVG, ret blokları, MSNR) dökümlerinden 5 taktik ve 3
+örtü MEKANİK varyantlara çevrilir; ayrı adlı yeni modülde mühürlenir (`LIB_AG_V1`; S1 `registry.py`, `seal_s1b.py`,
+`seal_s1c.py`, `prior_trials.json` bayt-aynı, testli); LIB_V1 varyantlarıyla AYNI kapılardan geçer (walk-forward, maliyet
+senaryoları, BH/DSR, CSCV, plasebo), deneme defterinde ve çoklu sınamada sayılır; bu mührün evrenine XAUUSDT eklenir.
+Yalnız PAPER araştırma kodu; canlı kod/config/worker, gece birimi, dağıtım ve P3g dosyaları değişmedi; gerçek veri koşusu
+yok (yalnız sentetik). Eşik gevşetilmedi, yeni eşik yok.
+
+- **Modüller.** `strategy_lib/ag_clock.py` (New York saati, oturumlar), `ag_common.py` (ortak taban, `AgEntryRef`,
+  salınım/FVG, önbellek), aileler `ag_p1_lunch.py`, `ag_p2_tenm.py`, `ag_p3_mss.py`, `ag_p4_rb.py`, `ag_p5_msnr.py`, örtüler
+  `ag_overlay.py`; `catalog.py`'ye EK (`AG_*`, `make_ag`; LIB_V1'in `IMPLEMENTED` 93'ü değişmedi). Motor tarafı
+  `research_engine/seal_s1d.py` (mühür) ve `research_engine/lib_ag.py` (EKLEME API'si). Çekirdeğe YALNIZ EKLEME
+  (`kernel.limit_through`, tek-bar limit dalı, `_entry_gate`'in sonuna iki kapı; bu alanları taşımayan niyet bayt-aynı
+  işlenir): sözleşme dosyası (`contract.py`) ve göstergeler değişmedi → LIB_V1'in 93 `module_src_sha`/`spec_sha`'sı aynı.
+  Deneme defterine `LIB_AG_v<n>` sürüm adı (`trials.LIB_VERSION_RE`; ayrı tekilleştirme ailesi). Veri birimine XAUUSDT için
+  `markpx_1h` (`universe.AG_GOLD_FUTURES`, `ROLE_AG`).
+- **Ortak kurallar (mühürlü `params.common`; her varyantın `spec_sha`'sına girer).** Saat America/New_York, barın AÇILIŞ
+  zamanından; yaz saati ABD 2007 kuralının saf hesabı (paket saflık testi `zoneinfo`'yu yasaklar — tz veritabanını dosyadan
+  okur), zoneinfo ile 2019–2030 her saat ve her geçiş gününde her 5 dakika eşit (test). Oturumlar [başlangıç, bitiş):
+  ASIA 20:00–24:00, LONDON 02:00–05:00, NYAM 09:30–11:00, LUNCH 12:00–13:00, PM 13:30–16:00; KZ = LONDON ∪ NYAM ∪ LUNCH ∪ PM.
+  Salınım = 3 barlık fraktal (orta barın yükseği iki komşusununkinden büyük; dip simetrik), sağ komşu KAPANINCA doğrulanır.
+  ATR14 = Wilder, kurulum diliminde. Tampon = yapısal stopun %0,05 ötesi. Stop mesafesi DOLUM fiyatının < %0,08'i ya da >
+  %1,2'si → işlem yok. Sonuçlar R'de, çekirdeğin büyüklüğü/ücreti/kayma senaryolarıyla; tek açık pozisyon (çekirdek); varyant
+  × sembol × New York günü başına en çok bir işlem; her başvuru seviyesi yalnız kapanmış barlardan.
+- **Limit emri.** Çekirdekte limit kuralı yoktu → sahibin yedek kuralı: yalnız seviye ≥ 1 tik İÇİNDEN geçilince dolum, taker
+  ücreti. Uygulama: tek-bar limit (emir yalnız sonraki bar için; dolum SEVİYEDEN; maliyet piyasa girişiyle aynı — kayma +
+  spread + taker, istenenden ihtiyatlı); strateji kurulum geçerli kaldıkça emri her bar yeniden verir (çekirdek her bar
+  kapanışında "düz" kalır → keşfin artımlı = baştan sözleşmesi bozulmaz); seviyeye İLK dokunuş kurulumu tüketir (dokunup
+  geçmeyen bar dolum sayılmaz).
+
+| Aile (varyant) | Dilim | Mühürlü kural | Varyantlar |
+|---|---|---|---|
+| **P1 LUNCH_SWEEP** (`AG_LS_<bias>_<accum>`) | 5m (+15m, 4h) | Başvurular NYAM_H/L (açılışı 09:30–12:00 olan 30 bar; eksikse gün yok) ve koşan LUNCH_H/L (12:00'den tetik barına kadar kapanmış öğle barları). Tetik: açılışı [12:00, 13:30) olan bar; yükseği bir başvuru tepesinin üstünde ve kapanışı altında → sonraki açılışta KISA (UZUN simetrik; iki yönde süpürme → yok). Stop = süpürme barı ucu + tampon; hedef = (NYAM ∪ öğle-şimdiye-kadar) aralığının karşı ucu; hedef < 1,0R → yok (dolumla); zaman çıkışı 16:00 New York. `htf`: yön = son kapanmış 4h kapanış − 4h EMA50 (300 bar pencere) işareti; `quiet`: bugünkü NYAM aralığı ≤ önceki 20 New York gününün NYAM aralıklarının medyanı (15m'den; eksik gün → yok) | bias {none, htf} × accum {none, quiet} = **4** |
+| **P2 TENM** (`AG_TENM_<A/B>_<WL/ANY>`) | 5m (çekirdekte 1m yok) | L = 10:00 New York 5m barının açılışı; 09:30–10:00 gözlem; giriş anı 10:00–12:00. Fitilsiz = 10:00 barının açılış yanı fitili ≤ aralığının %10'u. Kip A: açılışı ≥ 10:05 olan bar o gün oluşmuş, henüz girilmemiş 5m FVG'ye (uzun: L'nin altında yükseliş FVG'si) İLK kez girer, sonra FVG'den L'ye doğru dışarı ilk kapanış → sonraki açılışta L'ye doğru; stop = manipülasyon ucu (10:00'dan beri) + tampon; hedef L; < 1,5R → yok. Kip B: gövdesi ≥ 1,5 × ATR14 olan ve L'yi kesen kapanış → kırılım yönünde L'de limit, ilk geri dönüş; stop = kırılım barının karşı ucu + tampon; hedef 3R. 5m kapanışları L'yi 3 kez kesince gün ölü. Günde bir işlem | mode {A, B} × wickless_required {yes, no} = **4** |
+| **P3 MSS_FVG** (`AG_MSS_<tf>_<r>R_<sess>`) | 5m, 15m | Yer değiştirme barı: gövde ≥ 1,5 × ATR14 ve kapanış son doğrulanmış karşı salınımın ötesinde (MSS). FVG'si i − 1 / i + 1'den; limit fiyata yakın kenarda (yükseliş: FVG üstü), 12 bar geçerli; stop = yer değiştirmeden önceki salınım ucu + tampon; hedef 2R / 3R; KZ = emir yalnız bölgede | tf {5m, 15m} × TP {2R, 3R} × session {KZ, ALL} = **8** |
+| **P4 RB_LIMIT** (`AG_RB_<DIRECT/CONFIRM>`) | 5m, yalnız KZ | RB = fitili son 48 bar içindeki aynı yön doğrulanmış salınımın ötesine geçen ve kapanışı içeride olan doğrulanmış salınım barı; çizgi = fitile yakın gövde kenarı; stop = fitil ucu + tampon; ilk dönüş ≥ 1 bar sonra, 24 bar geçerli. direct = çizgide limit; confirm = dokunuştan sonraki 5m bar çizginin ötesinde kapanır → sonraki açılış. Hedef = en yakın karşı doğrulanmış 5m salınımı ≥ 2R uzaksa o, değilse 2R | entry {direct, confirm} = **2** |
+| **P5 MSNR** (`AG_MSNR_<2R/LEVEL>`) | 1h seviye, 5m giriş | Seviye = son 168 1h bar içinde gövde tepeleri (max(o, c)) — ya da ayrı küme olarak gövde dipleri — %0,05 içinde olan ≥ 2 bar (aynı renk tepeler ve yükselen kapanış = düşen açılış). Gövde geçişiyle taze; yalnız ondan sonraki ilk dokunuş; dokunuştan ≤ 12 5m bar içinde geçiş yönünde 5m MSS → sonraki 5m açılış; stop = dokunuş ucu + tampon; hedef 2R ya da kâr yönündeki sonraki seviye (< 1,5R → yok) | TP {2R, sonraki seviye} = **2** |
+| **AG_O örtüleri** (`AGO_<taban>_<örtü>`) | tabanınki | LIB_V1 canlı defter kopyalarının AYRI kopyalarına tek örtü (taban varyantları ve LIB_V1 O örtüleri değişmez): **KZ** = giriş yalnız KZ'de; **NOREACT** = dolumdan sonraki 3 giriş-dilimi barında MFE < 0,3R → o barın kapanışında çık; **CAL** = NYSE tam tatili ve FOMC açıklama günü (New York tarihi) giriş yok, takvim dışı → giriş yok (`CAL_UNCOVERED`) | {KZ, NOREACT, CAL} × {T2, M2, BOX, D4, C4, FM} = **18** |
+
+Toplam **38** varyant (P1 4, P2 4, P3 8, P4 2, P5 2, AG_O 18). Örtü tabanları: T2, M2, BOX, D4, FM her biri kendi mühürlü
+S1 spec'i (tek parametre kümesi); C4'ün sekiz mühürlü varyasyonu var → LIB_V1 örtülerinin okunuşu aynen: C4 defteri (8
+varyasyon config sırasıyla, ilk eşleşen) temsilî spec'tir. FM LIB_V1'de örtüsüzdü, burada örtülenir.
+
+**Takdir okumaları (her biri mühürde `LIB_AG_V1.readings_tr`'de; "döküm imâsı" = koordinatörün ilettiği kural metninin ve
+ICT kavramının ima ettiği; dökümlerin kendisi bu çalışmada okunmadı, kaynak koordinatörün mühür metnidir):**
+
+| # | Okuma (seçilen) | Döküm imâsı / gerekçe |
+|---|---|---|
+| R1 | Saat: ABD 2007 yaz saati kuralının saf hesabı, zoneinfo'yla eşitliği testli | "zoneinfo, DST otomatik" isteniyor; paket saflığı tz dosyası okumayı yasaklar |
+| R2 | P1 tetik barları = açılışı [12:00, 13:30): 12:00'de kapanan bar NYAM aralığının son barıdır | öğle süpürmesi = sabah aralığının ÖĞLEDE süpürülmesi |
+| R3 | P1: aynı barda iki yönde süpürme → yok; hedef aralığı tetik barı dahil | yön belirsizse takdir tüccarı işlem almaz |
+| R4 | P1 quiet: aralıklar 15m barlarından (bugün dahil aynı tanım); 20 takvim günü; eksik gün → yok | "birikim" = sakin sabah; 7/24 piyasada her takvim günü işlem günü |
+| R5 | ATR14 = Wilder, barın kendisinde biten SABİT 100 barlık pencere; karşılaştırmada önceki barın ATR'si | "yer değiştirme" ortalamaya göre büyük gövde; kendi ATR'sini şişirmemeli |
+| R6 | Tek-bar limit, ilk dokunuş tüketir, maliyet piyasa girişiyle aynı | sahibin ihtiyatlı limit kuralı; kuyruk önceliği bilinmez |
+| R7 | Çekirdeğin giriş saati kuralı AG'ye de uygulanır (girişi içeren 1h diliminde hedef kredisi yok) | mevcut ihtiyatlı çekirdek kuralı; 5m'de hedef en erken sonraki saatte alınabilir |
+| R8 | 1R/1,5R hedef tabanı ve %0,08–%1,2 stop mesafesi DOLUM fiyatıyla (çekirdeğin R/R kapısı, maliyet payı 0) | "giriş fiyatının %'si" |
+| R9 | Zaman çıkışı yalnız P1'de yazılı (16:00); P2–P5'te 48 sinyal barı (5m 4 saat, 15m 12 saat) | dökümler gün içi seans işlemleri anlatıyor; tek kural, sonuca bakılmadan |
+| R10 | P2 "3 kez kesme" = 10:00'dan beri kapanışların L'ye göre yanının 3 değişimi (eşit kapanış yan değiştirmez) | çizgi etrafında kararsızlık = model geçersiz |
+| R11 | P2 kip A: FVG'nin üç barı o New York gününde; ilk dokunuş ≥ 10:05; "L'ye doğru kapanış" = FVG'nin L tarafına ilk dışarı kapanış; FVG'nin öbür ötesine kapanış bozar; manipülasyon ucu 10:00'dan beri | "Judas" hareketi FVG'de tükenir, fiyat çizgiye döner |
+| R12 | P2 kip B: kırılım = L'yi KESEN kapanış; en son kırılım geçerli; emir 12:00'ye kadar | kırılım ve yeniden sınama |
+| R13 | P3: MSS = son karşı salınımın ötesine o salınımdan beri İLK kapanış; salınım araması 100 barla sınırlı; stop salınımı = yer değiştirme barında doğrulanmış son karşı-yön salınım; yalnız en son kurulum; KZ'de bölge dışı dokunuş da tüketir | MSS + FVG girişi |
+| R14 | P4: önceki salınım [j − 48, j − 2]; dış bar iki yönde RB → yok; ilk dönüş j + 2'den; hedef salınımı = hiç aşılmamış (süpürülmemiş) en yakın karşı salınım; yalnız en son RB | ret bloğu likidite alıp geri kapanan fitil; hedef karşı likidite |
+| R15 | P5: açgözlü kümeleme (sıralı değerler, ilk üyenin %0,05 üstüne kadar); seviye = üyelerin ortalaması; oluşma = zamanca ikinci üye; taze = oluşmadan sonraki EN SON gövde geçişi; MSS dokunuş barı dahil 0–12 bar; stop = dokunuştan MSS barına kadarki uç; sonraki seviye bütün kümelerden | MSNR A/V seviyeleri, "taze" seviye, ilk dokunuşta yapı kırılımı |
+| R16 | Örtüler tabanların AYRI kopyaları; C4 = C4 defteri; T2/M2 × KZ yapısal olarak işlemsiz (1d karar 00:00 UTC = New York 19:00/20:00) ama deneme sayılır | sahip: "her örtü × her canlı K tabanı bir varyant" |
+| R17 | NOREACT: giriş dilimi = tabanın sinyal dilimi; MFE dolum fiyatından; karar 3. barın kapanışında, çıkış sonraki açılışta | "tepki yoksa çık" |
+| R18 | CAL: giriş anının New York tarihi; takvim dışı → giriş yok | tahmin edilmez |
+| R19 | Günde bir işlem = dolum anının New York günü; reddedilen giriş işlem değildir | — |
+
+- **Evren ve veri (`AG_UNIVERSE_V1`).** S1b `ENTRY_UNIVERSE_V1`'in 40 coin'i (sha f1d57447…, DEĞİŞMEDİ) + XAUUSDT = 41;
+  bütün AG varyantları 41 sembolde koşar; Kapı A satırı 41'in birleşimidir (`AG_POOLED`), sembol başına sonuç yalnız rapor
+  (deneme değil). XAUUSDT: Binance USDⓈ-M sürekli vadeli (TradFi altın, 7/24 bar); gold_lab_v2'nin mekân verisine göre
+  arşiv 2025-12-11'de başlıyor (pencere başı 2025-12-01'den 10 gün sonra; 2026-09-30'a kadar 1h 7.048 / 4h 1.762 / 1d 294
+  bar, eksik yok); kesin listelenme anı çalışma anında `exchangeInfo.onboardDate` (`from_listing`). Veri birimi XAUUSDT'yi
+  zaten altın vadeli satırında 1m–1d + fonlamayla planlıyordu; S1d `markpx_1h`'ı ekler (S1b fonlama mark'ı; yoksa her
+  uzlaşmayı kapsayan işlem `FUNDING_GAP` olurdu) — aynı disk/pencere kuralı (altın vadeli taban tarihi 2025-12-01, 1m son
+  400 gün). Listelenme öncesi geçmiş yoktur (doldurulmaz).
+- **Takvim (`AG_CALENDAR_V1`).** NYSE tam tatilleri 2023–2026 (41 gün; 2025-01-09 Carter ulusal yas günü dahil; yarım günler
+  yok; testte tatil kurallarıyla yeniden hesaplanıp eşitlendi) ve FOMC açıklama günleri (32; iki günlük toplantının ikinci
+  günü; 2024-11-07 Perşembe). **Kaynak:** federalreserve.gov bu ortamdan erişilemedi (DNS) → tarihler bilgiyle yazıldı,
+  `source.verified_online = false`; **belirsiz:** 2026-07-29, 2026-09-16, 2026-10-28, 2026-12-09 (yayımlanmış takvimden;
+  erteleme ya da planlanmamış açıklama olduysa listede yok). Kapsam 2023-01-01 … 2026-12-31; dışında CAL varyantı işlem
+  açmaz ve pencere `CAL_UNCOVERED` işaretlenir (`lib_ag.cal_flag`). 2027 takvimi yeni mühür ister.
+- **Kapılar, deneme bütçesi.** Kapılar LIB_V1'inkiler (WF_PROTOCOL_V1, STATS_V1; S2 eşikleri mühürlenince onlar). WF sınıfı
+  P1–P5 `INTRADAY`, örtüler tabanınki (BOX `INTRADAY`, diğerleri `H1_PLUS`); arındırma/ambargo B1 kuralıyla `max_hold`'dan
+  (AG 48; örtüde `copy_books.<taban>.max_hold`). Deneme defteri: 38 `SPEC` satırı (`lib_version = LIB_AG_v1`, `row_id =
+  <varyant>@AG_POOLED`; ayrı tekilleştirme ailesi) → N_raw + 38; DSR N alt sınırı 4.513 → **4.551**; BH ailesi = o bakışın
+  LIB_V1 satırları + 38 AG satırı (m büyür → daha sıkı); PBO grupları: aile başına (P1 4, P2 4, P3 8, P4 2, P5 2) ve örtü
+  tabanı başına (3); plasebo aynı kurulum. Keşif serisi 38 × 41 = 1.558 (yapılırsa bir sonraki LIB mühründe N_explore'a).
+- **P3g'nin (S4w/S4x) çağıracağı EKLEME API'si (`research_engine/lib_ag.py`).** Her gece önce `seal_s1d.require()`
+  (tutmazsa AG atlanır, açık neden); bir kez `TrialsLedger.append(lib_ag.seal_entries(lib_ag.module_src_shas()))`;
+  sembol başına (`lib_ag.universe_symbols()`, ya da `lib_ag.universe_diff(entry_symbols)["ag_symbols"]`) `SeriesData`
+  (5m, 15m, 1h, 4h, 1d; T2/M2 için BTC 1d) → `lib_ag.run_variants(ids, data, start_ms=…, end_ms=…)` →
+  `lib_ag.trade_rows(sonuçlar, data)`; satır başına `lib_ag.evaluate(vid, satırlar, lib_ag.plan_for([vid], başlangıç,
+  bitiş))`; Kapı A ailesine `lib_ag.gate_a_rows()` (bugün `stats.gate_a_look` ailesini yalnız `registry.gate_a_rows()`'tan
+  kurar → AG satırlarını aileye katmak P3g'nin değişikliğidir), seçim grupları `lib_ag.selection_group_key(row_id)`,
+  plasebo `placebo.KernelPlacebo(lib_ag.make_variant(vid), data)`, CAL penceresi `lib_ag.cal_flag(başlangıç, bitiş)`.
+  Keşifte AG serileri `lib_ag.series_plan()`; AG ileri verisi `S1D_SEAL_MS`'den.
+- **S1d değerleri.** `LIB_AG_V1` `6421cce57d83d7178a5cfeebf32c6b8141f7977dbfba65e93a9a52a566be82a1`;
+  `AG_UNIVERSE_V1` `7e856fa946d6f0668df1e44e6a0cddd371cbaee8a5b70b72001fb27ed8c4a3ec`;
+  `AG_CALENDAR_V1` `1ac8e04cd3158aaaf80b29bd8a4f8b19e94b7bf1124607216c4db60ba140bb9d`;
+  `S1D_DIRECTIONS_V1` `a69cd988100a7be82efa88f86c2a1596e3e269bc49d141c5b5415ec4b19e1c15` (üç kaydın bütün tanım alt ağaçları `fixed`);
+  `S1D_SEAL_MS` `1791943200000` (2026-10-14T02:00:00Z; mühür commit'inin işleyen zamanından birkaç dakika sonraki tam dakika, T_SEAL_MS
+  kuralı, testte git'ten); `S1D_SHA` `54b1447aee5c26d3a7b7bf69c21fcbf88dedc154d5a19804ad44b2b50ecf6b68` = {dört sha, `S1D_SEAL_MS`, S1
+  `REGISTRY_SHA` 3e700fa0…, S1b `S1B_SHA` b3254fe6…, S1c `S1C_SHA` 277922ca…} kanonik sha'sı. Tutmazsa (`seal_s1d.check`)
+  `lib_ag.make_variant` `S1dSealError` verir (AG varyantı kurulmaz).
+- **Testler.** `tests/test_strategy_lib_ag_s1d.py`: saat = zoneinfo (2019–2030, geçiş günleri), oturum/KZ üyeliği; katalog =
+  mühür, LIB_V1 kataloğu 93; altın yollar — P1 (tetik yalnız süpürme barında, 12:00 ilk / 13:30 dışarıda, 16:00 çıkışı, stop
+  ve hedef sayıları), P1 yaz saati (EST/EDT günleri ve iki geçiş Pazarı: tetik 12:20 New York, UTC saati kayar), P1 htf/quiet,
+  P2 kip B (limit L'de, ilk dönüşe kadar 5 dolmayan bar, 3R hedefi giriş saati sonrası), fitil, 3 kesmede ölü gün, kip A (FVG
+  dokunuşu ve L'ye kapanış; 10:05 öncesi dokunulmuş FVG değil), P3 (limit FVG kenarında, dokununca tükenir, 12 bar süresi,
+  KZ/ALL), P4 (direct limit + salınım hedefi, confirm + 2R, KZ dışı yok), P5 (ilk dokunuş + MSS, sonraki seviye < 1,5R → yok,
+  12 bar sonrası MSS yok); örtüler (KZ, CAL tarihleri/kapsamı ve New York tarihi, NOREACT eşiği ve öncelik, Box örtüleri
+  çekirdekte); çekirdeğin limit eki (dokunmak dolum değil, ≥ 1 tik, tik 0, stop yüzdesi, hedef yönü, dolum barında stop);
+  20 AG varyantında ileriye bakmama (gelecek barları silmek ve bozmak niyeti değiştirmez) ve önbellek şeffaflığı (önbellekli
+  koşunun niyeti = taze hesap); paket motoru ve zoneinfo'yu yüklemez; saflık AST testi yeni dosyaları da tarar.
+  `tests/test_research_engine_seal_s1d.py`: sabit sha'lar, S1/S1b/S1c + `contract.py`/`indicators.py` 80fa144 ile
+  bayt-aynı, `S1D_SEAL_MS` ≥ commit zamanı, her alan değişikliği sha'yı değiştirir, yönler her tanım yaprağını kapsar ve
+  yakalar, varyant sayısı ve bütçe etkisi (38 SPEC → N_raw + 38, ikinci ekleme `DUPLICATE`, LIB_v1 ayrı aile, geçersiz
+  sürüm adları reddedilir; LIB_V1 bütçesi 818/1.738 değişmedi), spec_sha, evren ve takvim kuralları, XAUUSDT veri katmanı
+  (markpx_1h dahil, listelenmeden), bozuk mühürde kurulum yok, ağsızlık.
+- **Ölçüm (sentetik, bu sandbox).** 20 günlük 5m dünyasında varyant başına çekirdek koşusu 0,1–0,5 sn (P3 ALL ve P5 LEVEL
+  en yavaş) → sembol-yıl başına ≈ 2–9 sn; 38 × 41 sembol ve yıllarca 5m geçmişi için gece bütçesi P3g'de ölçülmeli.
+- **Dürüst etiket.** Konuşmacının sonuçları doğrulanmamış tekrar oynatma (replay) iddialarıdır, kanıt değildir. Konuşmacı
+  kriptoyu bilmediğini söylüyor; anlattığı piyasalar NQ/ES, FX ve altındı — oturum saatleri ABD hisse piyasasınındır ve 7/24
+  kripto vadelilere aktarım bir varsayımdır. Mekanikleştirme takdiri (bağlam, "temiz" yapı, haber) kaybeder; mühürlü kural
+  dökümün kendisi değil, sınanabilir bir okumasıdır. 38 yeni deneme çoklu sınama bedelini büyütür; hiçbir varyantın kapıyı
+  geçmemesi beklenen sonuçlardandır.
+- **Açık kalanlar.** (1) AG satırlarının Kapı A BH ailesine, CSCV gruplarına ve gece koşusuna bağlanması P3g'de (yukarıdaki
+  API). (2) FOMC tarihlerinin çevrimiçi doğrulanması (erişim olunca; değişiklik yeni mühür). (3) 2027 takvimi. (4) Sembol başına
+  rapor biçimi (yalnız betimsel). (5) AG keşfinde (S4x) önbelleğin bellek tavanı ve gece süresi P3g ölçümünde.
 
 ---
 

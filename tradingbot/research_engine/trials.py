@@ -59,8 +59,9 @@ CHAIN_KEYS = ("seq", "prev_sha", "row_sha", "N_raw_cum", "N_lesson_cum", "N_expl
 INPUT_KEYS: tuple[str, ...] = tuple(k for k in ROW_KEYS if k not in CHAIN_KEYS)
 COUNTERS = ("N_raw_cum", "N_lesson_cum", "N_explore_cum")
 FLOAT_KEYS = ("mean_r_base", "mean_r_adverse", "mean_r_stress", "p_day", "q_bh", "dsr", "pbo")
-#: `LIB_v<n>` ya da aylık türeyen mühür `LIB_v<n>.<AAAA-AA>` (§4.3)
-LIB_VERSION_RE = re.compile(r"^LIB_v[1-9][0-9]*(\.[0-9]{4}-(0[1-9]|1[0-2]))?$")
+#: `LIB_v<n>` ya da aylık türeyen mühür `LIB_v<n>.<AAAA-AA>` (§4.3); S1d (2026-10-13): ayrı adlı kütüphane `LIB_AG_v<n>`
+#: (kendi tekilleştirme ailesi; aylık türeyen mührü yok)
+LIB_VERSION_RE = re.compile(r"^(LIB_v[1-9][0-9]*(\.[0-9]{4}-(0[1-9]|1[0-2]))?|LIB_AG_v[1-9][0-9]*)$")
 #: tür → zorunlu alanlar
 REQUIRED: Mapping[str, tuple[str, ...]] = {
     "PRIOR": ("row_id", "n"), "SPEC": ("lib_version", "spec_sha", "scope", "row_id"),
@@ -173,7 +174,7 @@ def validate_input(entry: Mapping[str, Any]) -> None:
         if v is not None and not isinstance(v, str):
             raise TrialRowError(f"{f} metin olmalı")
     if entry.get("lib_version") is not None and not LIB_VERSION_RE.match(entry["lib_version"]):
-        raise TrialRowError("lib_version 'LIB_v<n>' ya da 'LIB_v<n>.<AAAA-AA>' olmalı")
+        raise TrialRowError("lib_version 'LIB_v<n>', 'LIB_v<n>.<AAAA-AA>' ya da 'LIB_AG_v<n>' olmalı")
     try:
         RG.canonical_bytes(dict(entry))                   # JSON'a sığmayan değer (NaN, nesne, yalnız vekil) burada düşer
     except UnicodeEncodeError as exc:

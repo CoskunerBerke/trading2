@@ -123,6 +123,9 @@ class FakeBinance:
         self.rest_status_after: int | None = None    # bu kadar REST isteğinden sonra rest_status
         self.used_weight: Callable[[int], int] | None = None
         self.rest_value_shift: float = 0.0           # REST fiyatlarını kaydır (uzlaştırma farkı testi)
+        #: VPS 2026-10-13 izi: `/futures/data/*` yanıtı istenen startTime'dan BİR kova önceki noktayı (önceki
+        #: çalıştırmanın en yeni noktası) DEĞERSİZ (boş alanlı) olarak da verir. False: yalnız [startTime, endTime]
+        self.metrics_head_empty = False
         self.log: list[tuple[datetime, str, dict]] = []
         self.rest_calls = 0
 
@@ -288,6 +291,9 @@ class FakeBinance:
             st += (-st) % 300_000
             end = min(int(p.get("endTime") or now), now)
             out = []
+            if self.metrics_head_empty and p.get("startTime"):
+                out.append({"symbol": sym, "timestamp": st - 300_000, "sumOpenInterest": "", "sumOpenInterestValue": "",
+                            "longShortRatio": "", "buySellRatio": ""})
             t = st
             while t <= end and len(out) < int(p.get("limit") or 30):
                 v = metrics_vals(sym, t - 300_000)                # gerçek Binance: REST(t) = arşiv(t − 5 dk) (VPS 2026-10-11)

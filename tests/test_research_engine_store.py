@@ -187,6 +187,26 @@ def test_priority_rest_never_overwrites_archive_archive_replaces_rest_and_diffs_
     assert n == 1 and diffs[0]["action"] == "removed" and diffs[0]["ts"] == SEP + 2 * H + 1800_000
 
 
+def test_a_rest_write_never_replaces_a_value_with_nan_but_the_archive_may(tmp_path):
+    """VPS 2026-10-13: değersiz bir REST noktası aynı öncelikte (rest → rest) dolu satırı NaN ile eziyordu (116 fark, veri
+    kaybı). REST yazımında boş hücre var olan değeri korur ve fark yazmaz; dolu yeni değer yine yazılır. Arşiv yetkilidir."""
+    st = mkstore(tmp_path, OCT)
+    cols, nan = S.METRICS_COLS[1:], float("nan")
+
+    def pts(rows: list[list[float]]) -> pd.DataFrame:
+        return pd.DataFrame([{"timestamp": SEP + i * 300_000, **dict(zip(cols, v))} for i, v in enumerate(rows)])
+    st.write("futures", "BTCUSDT", "metrics_5m", pts([[1, 2, 3, 4, 5, 6]] * 2), src=S.SRC_REST)
+    st.drain_diffs()
+    r = st.write("futures", "BTCUSDT", "metrics_5m", pts([[nan] * 6, [9, nan, 3, 4, 5, nan]]), src=S.SRC_REST)
+    assert st.read("futures", "BTCUSDT", "metrics_5m")[cols].values.tolist() == [[1, 2, 3, 4, 5, 6], [9, 2, 3, 4, 5, 6]]
+    diffs, n = st.drain_diffs()
+    assert r["changed"] == 1 and n == 1 and diffs[0]["ts"] == SEP + 300_000 and diffs[0]["cols"] == {"oi": [1.0, 9.0]}
+    st.write("futures", "BTCUSDT", "metrics_5m", pts([[nan] * 6, [9, 2, 3, 4, 5, nan]]), src=S.SRC_ARCHIVE,
+             authoritative=(SEP, SEP + 600_000))
+    got = st.read_with_src("futures", "BTCUSDT", "metrics_5m")
+    assert set(got[S.SRC_COL]) == {"archive"} and got[cols].iloc[0].isna().all() and pd.isna(got["taker_ls_vol"].iloc[1])
+
+
 # ============================================================================ kabul 8 (depo katmanı)
 class Killed(BaseException):
     """`TimeoutStartSec` öldürmesinin benzetimi (parça yazıldı, manifest yazılamadı)."""

@@ -2559,10 +2559,13 @@ class DataRun:
                 if not rows:
                     break
                 for r in rows:
-                    t = int(r["timestamp"]) - self.METRICS_REST_LAG_MS
-                    d = acc.setdefault(t, {})
-                    for col, fld in cmap.items():
-                        d[col] = _f(str(r.get(fld))) if r.get(fld) not in (None, "") else float("nan")
+                    vals = {col: _f(str(r.get(fld))) if r.get(fld) not in (None, "") else float("nan")
+                            for col, fld in cmap.items()}
+                    # VPS 2026-10-13: yanıt istenen startTime'dan bir kova önceki noktayı (önceki çalıştırmanın en yeni
+                    # noktası) DEĞERSİZ verdi; altı değeri de NaN satır dolu satırı ezdi. Pencere dışı ya da değersiz nokta alınmaz
+                    if int(r["timestamp"]) < cur or all(v != v for v in vals.values()):
+                        continue
+                    acc.setdefault(int(r["timestamp"]) - self.METRICS_REST_LAG_MS, {}).update(vals)
                 last = max(int(r["timestamp"]) for r in rows)
                 if last < cur or len(rows) < 500:
                     break
@@ -2573,9 +2576,11 @@ class DataRun:
         df = pd.DataFrame({"timestamp": pd.Series(ts, dtype="int64"),
                            **{c: [acc[t].get(c, float("nan")) for t in ts] for c in METRICS_COLS[1:]}})
         # beş uç noktanın İLKİ gönderildiğinde var olan noktalar: sonradan gelen bir uç noktanın tek başına getirdiği
-        # (öteki sütunları boş) en yeni nokta yazılmaz
+        # (öteki sütunları boş) en yeni nokta yazılmaz. Kesim REST damgasındadır (T ≤ ilk gönderim ⇔ t ≤ ilk gönderim − 5 dk);
+        # kaydırılmış damgaya uygulanırsa 5 dk gevşer (2026-10-13)
+        cut = (first_sent or now) - self.METRICS_REST_LAG_MS
         return int(self.store.write("futures", spec.symbol, METRICS_5M, df, src=SRC_REST,
-                                    chunk_id=f"rest:metrics:{start}", now_ms=first_sent or now)["rows_new"])
+                                    chunk_id=f"rest:metrics:{start}", now_ms=cut)["rows_new"])
 
 
 def _rest_klines_frame(data: list, kind: str) -> pd.DataFrame:

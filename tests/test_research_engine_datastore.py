@@ -387,6 +387,53 @@ def test_rest_metrics_are_shifted_to_the_archive_create_time_and_reconcile_witho
     assert set(day4[S.SRC_COL]) == {"archive"} and len(day4) == 288
 
 
+def test_rest_metrics_never_write_an_all_nan_row_nor_overwrite_values_with_nan(tmp_path):
+    """VPS 2026-10-13 (veri çalıştırması 20261013T004114Z): 116 fark, hepsi `metrics_5m` rest → rest, her seride bir önceki
+    çalıştırmanın EN YENİ noktası; altı sütunun hepsi sayı → boş. Yanıt istenen startTime'dan bir kova önceki noktayı
+    değersiz verdi; o nokta altı değeri de NaN bir satır olarak yazıldı ve aynı öncelikte dolu satırı ezdi. Artık pencere
+    dışı ve değersiz nokta yazılmaz, REST yazımı dolu değeri NaN ile ezmez (arşiv gelene dek veri kaybı ve V4 gürültüsü yok)."""
+    e = env(tmp_path, only={"futures/BTCUSDT/metrics_5m"}, daily_lag_h=30)
+    e.run("backfill")
+    e.clock.t = utc(2026, 10, 6, 21, 43, 10)                     # dağıtım smoke'u: en yeni nokta 21:35 (REST 21:40)
+    assert e.run("update")["diffs"]["count"] == 0
+    vals = S.METRICS_COLS[1:]
+    before = e.store().read_with_src("futures", "BTCUSDT", "metrics_5m")
+    t_l = int(before["timestamp"].max())
+    assert t_l == ms(utc(2026, 10, 6, 21, 35))
+    e.fb.metrics_head_empty = True
+    e.clock.t = utc(2026, 10, 7, 0, 41, 14)                      # gece --update
+    st = e.run("update")
+    assert st["result"] == DS.R_SUCCESS and st["diffs"]["count"] == 0 and "DATA_DIFF" not in st["flags"], st["diffs"]
+    after = e.store().read_with_src("futures", "BTCUSDT", "metrics_5m")
+    assert not after[vals].isna().all(axis=1).any(), "altı değeri de boş satır yazılmaz"
+    assert (after[after["timestamp"] == t_l][vals].values.tolist() == before[before["timestamp"] == t_l][vals].values.tolist())
+    assert after[after["timestamp"] > t_l][vals].notna().all().all() and int(after["timestamp"].max()) == ms(utc(2026, 10, 7, 0, 35))
+
+
+def test_rest_metrics_newest_point_rule_is_applied_in_rest_time(tmp_path):
+    """Beş uç noktanın ilki gönderildiğinde REST'te henüz var olmayan nokta yazılmaz. Kesim REST damgasında uygulanır
+    (T ≤ ilk gönderim); arşiv düzenine kaydırılmış damgada (t = T − 5 dk ≤ ilk gönderim) uygulanırsa 5 dk gevşer ve endTime'a
+    uymayan bir yanıtın sonraki uç noktalarda gelen yeni noktası yarım satır olarak yazılır."""
+    e = env(tmp_path, only={"futures/BTCUSDT/metrics_5m"}, listing={"futures/BTCUSDT": ms(utc(2026, 9, 20))})
+    e.run("backfill")
+    sent: list[datetime] = []
+    fb = e.fb
+
+    def no_end(url, params=None, timeout=0.0):                 # endTime'ı yok sayan ve 0,4 sn süren uç
+        if "/futures/data/" in url:
+            sent.append(e.clock.now())
+            e.clock.advance(0.4)
+            params = {k: v for k, v in (params or {}).items() if k != "endTime"}
+        return fb(url, params, timeout)
+    e.clock.t = utc(2026, 10, 7, 0, 44, 59, 800000)
+    e.fb = no_end
+    assert e.run("update")["result"] == DS.R_SUCCESS
+    df = e.store().read_with_src("futures", "BTCUSDT", "metrics_5m")
+    rest = df[df[S.SRC_COL] == S.SRC_REST]
+    assert len(sent) >= 5 and int(rest["timestamp"].max()) == ms(utc(2026, 10, 7, 0, 35)), "REST 00:45 ilk istekte yoktu"
+    assert rest[S.METRICS_COLS[1:]].notna().all().all(), "yarım satır yazılmaz"
+
+
 def test_archive_url_percent_encodes_non_ascii_symbols():
     url = DS.archive_url(DS.SeriesSpec("futures", "牛来USDT", "1h", 0), "2026-10-09")
     assert url.isascii() and "/%E7%89%9B%E6%9D%A5USDT/1h/%E7%89%9B%E6%9D%A5USDT-1h-2026-10-09.zip" in url

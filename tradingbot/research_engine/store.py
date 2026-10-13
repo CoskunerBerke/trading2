@@ -525,6 +525,10 @@ class ResearchStore(HistoryStore):
         only_new = n.index.difference(o.index)
         st["new"] = len(only_new)
         replace_idx: list[int] = []
+        if len(common) and src == SRC_REST:
+            # REST yazımı var olan DOLU değeri NaN ile ezmez (VPS 2026-10-13: değersiz REST noktası rest → rest dolu
+            # `metrics_5m` satırlarını boşalttı): yeni satırın boş hücresi eski değeri korur. Arşiv yetkilidir, ona uygulanmaz
+            n.loc[common, vals] = n.loc[common, vals].fillna(o.loc[common, vals])
         if len(common):
             po = [PRIORITY.get(str(s), -1) for s in o.loc[common, SRC_COL].tolist()]
             pn = [PRIORITY.get(str(s), -1) for s in n.loc[common, SRC_COL].tolist()]

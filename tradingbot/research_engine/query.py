@@ -1,7 +1,8 @@
 """P2b — `engine-query` (§8, §10 P2): `trade <id>`, `why-lost [--book B] [--days N]`, `day <YYYY-MM-DD>`; P3a (ENGINE_BRAIN
 §3.5): `trials [--like <metin>]` (deneme defteri, zincir durumu, sayaçlar, LIB_v1 ve öncül eşleşmeleri; `trials.py`); P3e
 (ENGINE_BRAIN §5.1): `explore [--gold] [--variant <id>]` (keşif katmanının KEŞİF bölümü; betimsel, hüküm kelimesi yok;
-`explore.py`).
+`explore.py`); P3f (ENGINE_BRAIN §4): `lessons [--book B] [--like <metin>]` (ders deposu, durumlar, bekleyen doğrulamalar,
+türeyen spec'ler, defter × kod betimsel görünümü, §5.10; `lessons.py`).
 
 SALT-OKUNUR: kilit almaz, hiçbir şey yazmaz, ledger okumaz; yalnız `data/research` altındaki günlük (`journal/tj_v1`),
 atıf (`attribution/`) ve günlük hedef satırlarını okur. Çıktı Türkçe, şablondan (LLM yok), ≤ 150 satır ve ≤ 4 KB
@@ -25,6 +26,9 @@ def run_query(paths: EnginePaths, *, topic: str, arg: str | None = None, book: s
     if topic == "trials":
         from .trials import query_lines            # report/pandas grafiğini çekmez
         return query_lines(paths, like=like or arg), 0
+    if topic == "lessons":
+        from .lessons import query_lines as lesson_lines
+        return lesson_lines(paths, book=book, like=like or arg), 0
     if topic == "explore":
         from .explore import query_lines as explore_lines
         return explore_lines(paths, gold=bool(gold), variant=variant or arg), 0
@@ -42,7 +46,7 @@ def run_query(paths: EnginePaths, *, topic: str, arg: str | None = None, book: s
         if not arg or not DAY_RE.match(arg):
             return ["kullanım: engine-query day <YYYY-MM-DD>"], 2
         return RP.query_day(paths, arg), 0
-    return [f"bilinmeyen konu: {topic} (trade | why-lost | day | trials | explore)"], 2
+    return [f"bilinmeyen konu: {topic} (trade | why-lost | day | trials | explore | lessons)"], 2
 
 
 __all__ = ["run_query"]

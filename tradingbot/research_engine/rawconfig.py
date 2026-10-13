@@ -39,6 +39,9 @@ NEEDS: tuple[str, ...] = (
     # için okunur; hiçbir karar yolu bu değerleri motordan almaz.
     "strategy_paper.atr_mult", "strategy_paper.rule_params",
     "strategy_paper.extra[].atr_mult", "strategy_paper.extra[].rule_params",
+    # P3f (ENGINE_BRAIN §4.3, S1c `live_rule.T1`): defterin ham sembol listesi YALNIZ "canlıda zaten olan kural" denetimi
+    # için okunur (T1 CELL_FILTER: c listede yoksa kural canlıda zaten var → aday olmaz); hiçbir karar yolu bunu kullanmaz.
+    "strategy_paper.extra[].symbols",
 )
 
 
@@ -148,6 +151,9 @@ def extract(doc: Any) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
             eb["rule_min_stop_pct"] = _num(_get(ex, "rule_params", "min_stop_pct"))
             eb["atr_mult"] = _num(ex.get("atr_mult"))
             eb["rule_params"] = _plain(ex.get("rule_params"))
+            sy = ex.get("symbols")
+            eb["symbols"] = ([str(x) for x in sy if isinstance(x, str) and x.strip()] if isinstance(sy, list)
+                             else (_str(sy) if isinstance(sy, str) else None))
     pt = _get(doc, "pattern_trader")
     if isinstance(pt, dict):
         b = _book("pattern_trader")

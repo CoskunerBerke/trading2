@@ -1283,7 +1283,7 @@ def cmd_engine_status(cfg, args) -> int:
 
 def cmd_engine_query(cfg, args) -> int:
     """`engine-query trade <id> | why-lost [--book B] [--days N] | day <YYYY-MM-DD> | trials [--like <metin>] |
-    explore [--gold] [--variant <id>]` (P2b, P3a, P3e; salt-okunur, kilit almaz; ≤ 150 satır / ≤ 4 KB, Türkçe). Motor
+    explore [--gold] [--variant <id>] | lessons [--book B] [--like <metin>]` (P2b, P3a, P3e, P3f; salt-okunur, kilit almaz; ≤ 150 satır / ≤ 4 KB, Türkçe). Motor
     modülleri YALNIZ burada, tembel import edilir."""
     from .research_engine.paths import EnginePaths
     from .research_engine.query import run_query
@@ -1601,12 +1601,13 @@ def register(sub: argparse._SubParsersAction) -> None:
     # SÜREKLİ ÖĞRENME MOTORU P2b: atıf sorgusu (salt-okunur, kilit almaz, ≤ 150 satır); config yüklenmez, tembel import
     s = sub.add_parser("engine-query", help="Öğrenme motoru sorgusu (salt-okunur): trade <id> | why-lost [--book B] "
                                             "[--days N] | day <YYYY-MM-DD> | trials [--like <metin>] | "
-                                            "explore [--gold] [--variant <id>]")
-    s.add_argument("topic", choices=["trade", "why-lost", "day", "trials", "explore"])
+                                            "explore [--gold] [--variant <id>] | lessons [--book B] [--like <metin>]")
+    s.add_argument("topic", choices=["trade", "why-lost", "day", "trials", "explore", "lessons"])
     s.add_argument("arg", nargs="?", default=None, help="trade: trade_key ya da işlem kimliği; day: YYYY-MM-DD")
-    s.add_argument("--book", default=None, help="why-lost: yalnız bu defter (klasör adı, ör. strategy_paper_box)")
+    s.add_argument("--book", default=None, help="why-lost/lessons: yalnız bu defter (klasör adı, ör. strategy_paper_box)")
     s.add_argument("--days", type=int, default=7, help="why-lost: son N gün (varsayılan 7)")
-    s.add_argument("--like", default=None, help="trials: varyant/aile/parametre/spec_sha öneki/öncül araması (P3a)")
+    s.add_argument("--like", default=None, help="trials: varyant/aile/parametre/spec_sha öneki/öncül araması (P3a); "
+                                                "lessons: ders metni/tür araması (P3f)")
     s.add_argument("--gold", action="store_true", help="explore: altın serileri (ayrı gösterim; P3e)")
     s.add_argument("--variant", default=None, help="explore: tek varyantın ileri serileri (P3e)")
     s.set_defaults(fn=cmd_engine_query, engine_no_config=True)

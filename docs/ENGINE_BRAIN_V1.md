@@ -840,7 +840,7 @@ değildir, metin testi); k*/kaldıraç satırı oto defterler için de yalnız l
 En erken olaylar: ilk Kapı A bakışı 2026-12-06 (yalnız 5m/15m; ileri 30 gün) ve 2027-01-06 (diğerleri); 4h/1d adayı için en
 erken Holm 2027-03-01, en erken otomatik defter ≈ 2027-03-02 (24 saat veto penceresiyle).
 
-### 8.4 P3a uygulama notu (2026-10-11; düzeltme turu 1 ve §8.5'e sahip cevabıyla yeniden mühürlendi; 2026-10-12 çekirdeğin stop dolumuyla düzeltme mührü 3; 2026-10-12 P3b-2a saf aileler ve giriş saati okunuşuyla düzeltme mührü 4; 2026-10-12 P3b-2a inceleme düzeltmesi ve teknik okumalarla düzeltme mührü 5; 2026-10-12 P3b-2b O örtüleri, hız önlemleri ve kapı dışı işaretlerle düzeltme mührü 6; 2026-10-13 P3d walk-forward ve istatistik; 2026-10-13 P3d okumalarıyla düzeltme mührü 7; 2026-10-13 P3d bağımsız incelemesiyle düzeltme mührü 8; 2026-10-13 CSCV günlük piyasa değerlemesiyle düzeltme mührü 9; 2026-10-13 P3e keşif katmanı)
+### 8.4 P3a uygulama notu (2026-10-11; düzeltme turu 1 ve §8.5'e sahip cevabıyla yeniden mühürlendi; 2026-10-12 çekirdeğin stop dolumuyla düzeltme mührü 3; 2026-10-12 P3b-2a saf aileler ve giriş saati okunuşuyla düzeltme mührü 4; 2026-10-12 P3b-2a inceleme düzeltmesi ve teknik okumalarla düzeltme mührü 5; 2026-10-12 P3b-2b O örtüleri, hız önlemleri ve kapı dışı işaretlerle düzeltme mührü 6; 2026-10-13 P3d walk-forward ve istatistik; 2026-10-13 P3d okumalarıyla düzeltme mührü 7; 2026-10-13 P3d bağımsız incelemesiyle düzeltme mührü 8; 2026-10-13 CSCV günlük piyasa değerlemesiyle düzeltme mührü 9; 2026-10-13 P3e keşif katmanı; 2026-10-13 P3f dersler ve S1c mührü)
 
 **Ne mühürlendi (S1).** Yeni modüller ağsız ve yalnız standart kütüphaneyle yazıldı; hiçbiri gece birimine, worker'a ya da
 bir karar yoluna bağlanmadı (P3a VPS'te hiçbir şey çalıştırmaz, gerçek veriye dokunmaz).
@@ -1979,6 +1979,110 @@ sabitlenir. S1'in bütün değerleri (`REGISTRY_SHA`, `T_SEAL_MS`, sekiz sha; `r
   S1 43a0bf0 ile bayt-aynı; eksik/tutmayan mühürde çekirdek/keşif/WF açık nedenle durur); `test_research_engine_explore_p3e.py`
   (markpx açılışı → biten barın kapanışı → NaN, %0,5 denetimi, ileriye bakmama özellik testi, NaN satır mark'ı + markpx =
   satır mark'ıyla aynı sonuç, markpx deliği, evren farkı); P3b testleri `SeriesData.markpx_1h` verir.
+
+**P3f uygulama notu (2026-10-13; dersler `lessons.py`, `library/derived_specs.jsonl`, aylık `LIB_v1.<AAAA-AA>`,
+`engine-query lessons`; okumalar AYRI ADLI S1c mührüyle — S1 ve S1b DOKUNULMADI).** Yalnız PAPER araştırma kodu; canlı
+kod/config/worker, gece birimi ve dağıtım değişmedi (S6'nın gece bağlantısı ve bütçesi P3g); gerçek veri koşusu yok (yalnız
+sentetik dünyalar). `registry.py`, `seal_s1b.py`, `prior_trials.json`, `config_epochs.json` 9132798 ile bayt-aynı (testli).
+
+- **Modüller.** `research_engine/lessons.py` (kanıt, hücreler, istatistik, bakış planı, BH, ileri doğrulama, ders deposu,
+  dönüşüm → spec, canlı kural denetimi, tekilleştirme, aylık mühür, §5.10, defter × kod görünümü, `query_lines`);
+  `research_engine/seal_s1c.py` (`LESSON_READINGS_V1`, `S1C_DIRECTIONS_V1`, `S1C_SEAL_MS`, `PINNED`, `check`);
+  `query.py` + `cli_v3` ayrıştırıcısı (`engine-query lessons [--book B] [--like metin]`); `rawconfig.NEEDS`'e
+  `strategy_paper.extra[].symbols` (yalnız T1 canlı kural denetimi). Yeniden kullanılan: `stats.p_day` (tek istatistik,
+  B6 tohumu `row_id|look_no`), `stats.bh_qvalues`, `stats.choice_stream` (CI), `trials.TrialsLedger` (bütün sayım),
+  `learn/lesson_store.build_lesson` + `transition` (lesson_v2, izinli geçişler; motor ilk gerçek çağıran),
+  `daily_target.wilson`; HierarchicalRate formülü (s + α·μ_ebeveyn)/(n + α), α = 10. Yalıtım sözleşmesine
+  `lessons.py` → `learn.lesson_store` izni ve ağsız modül listesine `lessons`, `seal_s1c` eklendi.
+- **Neden ayrı mühür (S1c).** S1 `LESSON_REGISTRY_V1` eşikleri ve tanımları taşır ama uygulamayı belirleyen birkaç yer açıktı:
+  çok eşikli birikimde (Box 14 günde 980 işlem: ilk gece 30/60/120/240 birlikte geçilir) bakış sırası, ≥ 10 gün şartının
+  yüksek frekanslı defterlerde eşiklerle ilişkisi, "bir sonraki bakış" ile "≥ 3 aylık katman" şartının birlikte okunuşu
+  (240'tan sonra bakış yok; katman şartı ≥ 3 ay ister), dönüşümün hangi düzeyde ve hangi kapsamla uygulanacağı, spec
+  biçimi, canlı kural denetiminin anahtarları ve §5.10'un bölünmüş rejimi. Bunlar sonuca etki eden tanımlar olduğu için
+  gerçek veriden önce mühürlendi (sahip kararı: S1 dosyası düzenlenmez; yeni okumalar ayrı adlı mühürle). Değerler
+  `lessons.py`'nin girdisidir (metin değil). Okunuşlar (hepsi sıkılaştıran ya da nötr):
+  (1) *Kanıt*: atıf satırı; hata/dönemsiz (TRANSITION, kapsam dışı)/net_r'siz/eski attribution_v1-cfgrid_v1 sha'lı satır
+  girmez (sayılır); REAL = ölçülmüş net R, CF = cf_aux_v1 hücre − E_ACTUAL (aynı işlem, `rank_src = cf_aux_v1`); gün =
+  giriş UTC günü; S2 bekleyen işi varken bakış yok. (2) *Hücre*: (düzey, defter, config dönemi, kohort) + düzeyin
+  boyutları; uygun her düzey ayrı hücre (aile büyür → BH sıkılaşır); kova = situation_v1 (satırın `situation_entry`'si,
+  yoksa S2'nin `regime_fit.bucket`'ı). (3) *Çift*: FİLTRE (REAL, değer −net R) + 15 IZGARA hücresi (CF; SKIP FİLTRE'nin CF
+  ikizi, boyut ekseni öneri değil); MALİYET yalnız rapor (hücrenin ortalama maliyet R'si), AYRIM v1'de hesaplanmaz.
+  (4) *Bakış*: çiftin n'i n_k'yı geçmiş, çift uygun, k defterde yok → bakış; gece çift başına EN ÇOK bir (en küçük bekleyen
+  k; birikmiş eşikler sonraki gecelere); örneklem o gecenin as_of'una kadarki bütün kanıt; anlamlı = etki > 0 VE p_day ≤
+  α_k VE q_BH ≤ 0,10; aile = o gecenin bütün bakışları (keşif + doğrulama), üst sınır 2.000 (n azalan, cell_id, pair_id).
+  (5) *İleri doğrulama*: TEK atış; T_k ayından sonraki 3. TAM UTC ayının bitişinden sonraki ilk gece, örneklem (T_k, ay
+  sonu] içinde kapanan AYNI hücrenin kanıtı (uygun değilse pencere bir ay uzar — yalnız büyüklüğe bağlı); α = α_{k+1}
+  (k = 4 → son alfa); geçer = ortalama > 0, p ≤ α ve ≥ 3 aylık katmanın ≥ 2/3'ünde katman ortalaması > 0; ortalama ≤ 0 →
+  RETIRED, aksi → REJECTED. (6) *Durum*: ana belge §5.8 daha sıkı: VALIDATED_POLICY_CANDIDATE yalnız kural değişikliği
+  gerektirmeyen (canlıda zaten olan) derse; kural değişikliği isteyen ders FWD_PASS ile RESEARCH_HYPOTHESIS kalır, spec'i
+  kuyruğa girer (Kapı B P4'te). Gece APPLIED_BOUNDED yazamaz. Geçersizleşme (attribution/cfgrid sha'sı ya da son keşif
+  bakışının kanıt özeti değişti) → `RETIRE` satırı, ders RETIRED, kuşak + 1 → yeni `LESSON_LOOK`. (7) *Dönüşüm*: FİLTRE
+  L2 → T1, L3 → T4 (POOLED_OWN); IZGARA S_ATR* → T2(k), X_* → T3(e) (L2/L4 COIN:c, diğerleri POOLED_OWN; L1+ taktik, L3/L4
+  kova koşulu spec'te); E_*/M_* ve L0/L1/L4 FİLTRE'si dönüşümsüz; taban = canlı defterin LIB kopyası (T2, M2, BOX, D4, C4,
+  FM; kopyası olmayan defterde ders var, spec yok); yalnız POLICY/UNTAGGED kohortu spec üretir. Spec örtü biçimidir (family
+  O; `module_src_sha` = sha256(taban modül sha'sı | LIB_V1.transforms sha | okumalar sha)). v1'de hiçbir cfgrid hücresi/kova
+  bir O faktörüyle aynı tanımlı değil (X_TRAIL2ATR girişten, X_TRAIL2 +1R'den; X_NONE_TIME ufuk sonu, X_TIME max_hold/2;
+  kova ≠ F_*) → eşdeğerlik tablosu boş; tekilleştirme spec_sha ile LIB_v1 (örtüler, kopyalar), türeyen spec'ler ve deneme
+  defterinin LIB ailesi üzerinden. (8) *Canlı kural*: ham config + bildirilmiş kod sabiti — T1 c defterin ham sembol
+  listesinde yoksa (liste yoksa Box/T2/M2'de `entry_universe`); T2 canlı ATR çarpanı = k (D4: `donchian_trend.STOP_ATR` =
+  2, testte koda karşı); T3 Box `exit_kind = r_multiple` ve `exit_r` = hedef; T4 v1 config'inde yok. Config okunamazsa
+  doğrulama bakışı ertelenir (hüküm canlı kural denetimi ister). (9) *Aylık mühür*: 1'inden sonraki ilk gece (ay için
+  manifest yoksa) kuyruktan ≤ 20 (q artan, |Δ| azalan, spec_sha) → `SPEC` satırı (`LIB_v1.<AAAA-AA>`, N_raw_cum + 1) +
+  `SEALED` satırı + `library/LIB_v1.<AAAA-AA>.json` (bir kez; yeniden çalışma aylık tavanı korur); sığmayan kuyrukta.
+  (10) *§5.10*: dönem başına ayrı; aynı min_stop rejiminin dönemleri birleşir (sonraki dönemin — TRANSITION dahil —
+  `opened_by`'ı `learning_mode.books.b1_box_fade.min_stop_pct`'i içermiyorsa): E2026-09-28T2120Z + E2026-09-29T2243Z bir
+  rejim, E2026-10-05T0455Z ayrı; ham config min_stop_pct ≥ 0,5 → `APPLIED_DECISION_MONITOR`, aday yok.
+- **S1c değerleri.** `LESSON_READINGS_V1` `b1d069233fe71472a45912e05f8a1bb2844a2603846b29b2c75d9cb7e01a008f`; `S1C_DIRECTIONS_V1`
+  `01ef6b0f737b27598e5756a86258ba128042c33db3924a15e3a42d285d03ef3f` (bütün tanım alanları `fixed`, ileri doğrulamanın tam ay
+  sayısı `min`); `S1C_SEAL_MS` `1791914160000` (2026-10-13T17:56:00Z; mühür commit'inin işleyen zamanından sonraki tam dakika, testte git'ten);
+  `S1C_SHA` `277922ca4c84b29017e93b05e5e3947bce57b5e890ef8413828f03917a52de95` = {iki sha, `S1C_SEAL_MS`, S1 `REGISTRY_SHA` 3e700fa0…,
+  S1b `S1B_SHA` b3254fe6…} kanonik sha'sı. Tutmazsa (`seal_s1c.check`) ders katmanı çalışmaz (`LessonsRefused`).
+- **Durumun tek kaynağı deneme defteridir.** Her bakış bir `LESSON_LOOK` satırıdır (`row_id` `LESSON|<çift>|g<kuşak>`,
+  doğrulama `LESSON_FWD|<çift>|g<kuşak>|h<k>`; `params` istatistikleri, hükmü, hipotez hash'ini, spec önerisini taşır),
+  geçersizleşme bir `RETIRE` satırıdır. Ders deposu (`lessons/lessons.jsonl`, yalnız eklenir, hash zincirli; olaylar
+  CREATE/LOOK/TRANSITION/UPDATE/SPEC) defterin satırlarından belirlenimci türetilir: silinirse aynı baytlarla yeniden kurulur
+  (testli); aynı gece yeniden çalışmak yeni bakış/deneme üretmez. `derived_specs.jsonl` (PROPOSED/LINKED/EXCLUDED_LIVE/
+  SEALED/SEAL_LINKED) de yalnız eklenir ve zincirlidir; kırık zincire eklenmez (`LessonStoreBroken`).
+- **Kabul → test** (`tests/test_research_engine_lessons_p3f.py`, 22 test; `tests/test_research_engine_seal_s1c.py`, 4):
+  *bakış yalnız eşiklerde* — uygun olmayan (5 gün) 40 işlemde bakış yok, 10. günde bakış 1, 220 işlemlik sıçramada 2/3/4
+  birer gece arayla, 4'ten sonra hiç; ara gecede defter baytı değişmez; rastgele gelişlerde (3 tohum) her bakış n ≥ n_k,
+  sırayla, gece başına bir. *Alfa bölünmesi* — α_k ve toplam 0,05 mühürden; p = 0,012 bakış 1/2'de değil 3'te anlamlı;
+  doğrulama α_{k+1} (son alfa sınırı). *BH ailesi* — üç defter, FİLTRE + IZGARA: q = o gecenin bütün bakışlarının BH'si;
+  üst sınır n azalan/cell_id sırasıyla, taşan sonraki gecelere (kaybolmaz, sayılır); doğrulama bakışları aileye dahil.
+  *İleri doğrulama yalnız T_k sonrası* — T_k'da hipotez; Aralık ve 28 Şubat gecelerinde bakış yok; 1 Mart'ta doğrulama
+  n'i yalnız (T_k, 1 Mart) işlemleri, 4 katman; pencere sonrası işlemler sonucu değiştirmez; işaret dönünce RETIRED,
+  katman tutarsızsa REJECTED, seyrek örneklemde pencere bir ay uzar. *Geçişler* — lesson_v2, durum geçmişi, atlamalı
+  geçiş `ValueError`; cfgrid sha değişince 5 ders RETIRED (INVALIDATED) ve kuşak 1 baştan bakar (N_lesson artar); tek
+  işlemin değeri değişince yalnız o işlemi içeren çiftler. *Runner APPLIED_BOUNDED yazamaz* — genel durum makinesi VPC →
+  APPLIED_BOUNDED'a izin verse de `runner_transition` ve depo yazarı reddeder (dosya değişmez); kaynakta ad yalnız sabit
+  açılımında, dize sabiti yok; uçtan uca dünyada defter/depo/spec dosyalarında hiç geçmez. *Dönüşüm → spec + O ile
+  tekilleştirme* — eşleme tablosu, spec kimliği (taban kodu kimlikte, kohort değil), v1'de hiçbir dönüşüm 452 LIB
+  kopya/örtü satırıyla aynı değil; iki dersten aynı spec → PROPOSED + LINKED; tanımı aynı örtü (eşdeğerlik verilmiş gibi)
+  → `LIB_v1:O_BOX_F_VOL@POOLED_OWN`'a bağlanır, yeni deneme yok; defterin LIB ailesindeki aynı spec → bağlanır; aylık mühür
+  20 + 5 taşan, sıralama, N_raw + 20, manifest sha'sı, ay içinde ikinci mühür yok, çökme benzetiminde tavan korunur, taşanlar
+  sonraki ay. *Canlı kural dışlama* — matris (D4 k = 2 kod sabiti, T2 atr_mult, Box r_multiple, T1 sembol listesi/evren,
+  T4, okunamayan config); uçtan uca D4 S_ATR200 dersi EXCLUDED_LIVE + VALIDATED_POLICY_CANDIDATE, S_ATR150 spec'i mühürlenir,
+  canlı kural hiçbir zaman SPEC denemesi olmaz; config yokken doğrulama ertelenir. *§5.10* — sentetik eski rejim iki döneme
+  bölünmüş (40 + 32 dar, 100 + 76 %0,5–1): dönem başına ayrı ve birleşik rejimde 72 / −0,56R ve 176 / +0,17R,
+  TIGHT_STOP_COST_MULTIPLIER baskın → REPRODUCED; işaret ters → NOT_REPRODUCED; yeni rejim izlenir
+  (`APPLIED_DECISION_MONITOR`, min_stop 0,32 → NOT_APPLIED); gece adımında spec/deneme yok; hücreler dönem sınırını aşmaz.
+  Ek: bütün defterler (Box, T2, ana bot) ders ve defter × kod görünümü alır (Box WRONG_DIRECTION → en iyi EX_ANTE S_ATR150);
+  eski sürüm/dönemsiz satırlar sayılarak dışlanır; S2 bekleyen işi bakışı durdurur; kırık depo zinciri eklemeyi durdurur;
+  `engine-query lessons` ≤ 150 satır / ≤ 4 KB, salt-okunur (dosya baytları değişmez), CLI config yüklemez. S1c: sabit
+  sha'lar, S1/S1b bayt-aynı, alan değişikliği → sha, `S1C_SEAL_MS` ≥ commit zamanı, yönler her alanı kapsar ve yakalar.
+- **Ölçüm (sentetik, bu sandbox, paralel test yükü altında).** 6 defter × 40 coin × 9 kova, 30.000 işlem (her biri 15
+  IZGARA hücreli), 2.466 hücre: ilk gece 2.000 bakış (üst sınır; 2.912 taşan) ≈ 22 sn, ertesi gece ≈ 24 sn. Tepe bellek ve
+  gece bütçesi P3g'de (sürecin 433 MB'lık tepesi test satırlarının kendisi dahildir; gece yolu atıfı akışla okur).
+- **Açık kalanlar.** (1) Gece bağlantısı (S6: `run_lessons`'ın `raw` = `rawconfig.read_raw_config`, `module_src_sha` =
+  `kernel.module_src_shas()`, `versions` = attribution/cfgrid sha'ları), süre bütçesi, `_last_run.json`'un özet/digest'e
+  girmesi ve `TRIALS_CHAIN_BROKEN`/`LessonStoreBroken` → S6 kapalı P3g'de. (2) VALIDATED_POLICY_CANDIDATE'e kural değişikliği
+  gerektiren ders için Kapı B yolu ve `linked_promo_id` P4a'da; APPLIED_BOUNDED yalnız sahibin `engine-query --approve` yolu
+  (P4/P7; depo okuyucusu o yol eklenene kadar yasak durumu yazdırmaz). (3) AYRIM (WF OOS AUC) v1'de hesaplanmıyor; MALİYET
+  yalnız rapor. (4) P2b'nin `regime_fit` önceli (JOURNAL_PRIOR) → LESSON_PRIOR geçişi atıfı değiştirir (cfgrid sürümü); P3g
+  ile birlikte ele alınmalı. (5) Depo tek dosya (`SegmentArchive` dönüşümü yok); büyüklük P3g ölçümünde. (6) Türeyen spec'lerin
+  çekirdekte çalıştırılması (dönüşüm yürütücüsü, `module_src_sha`'nın gerçek kodu) P4 öncesi kod PR'ı; S1c eşdeğerlik tablosu
+  ancak tanımı birebir aynı bir faktör eklenirse dolar. (7) Geçersizleşme denetimi her gece her çiftin özetini yeniden
+  hesaplar (O(çift × n)); ölçekli gerçek veride süre P3g'de ölçülür.
 
 ### 8.5 P3a boşlukları — sahibe sorular (entegrasyondan önce; her cevap boşluğu doldurur ve S1'i yeniden mühürler)
 

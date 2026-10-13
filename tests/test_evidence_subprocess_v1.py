@@ -985,6 +985,7 @@ _BLAS_ALLOWED = {
     ("tradingbot/learn/retrieval.py", "np.linalg.norm"): 2,          # satır normları / vektör normu
     ("tradingbot/patterns/engine.py", "np.corrcoef"): 1,             # 2×16 yol (sorgu döngüsü)
     ("tradingbot/patterns/features.py", "cov"): 1,                   # pandas rolling cov (BLAS değil)
+    ("tradingbot/research_engine/cscv.py", "@"): 3,                  # CSCV ağırlık×gün (gemv); motor ayrı birimde, fork yok
     ("tradingbot/shared_experience/advisor_eval.py", "@"): 2,        # int64 × int64 (BLAS değil)
 }
 _BLAS_NAMES = {"dot", "matmul", "vdot", "inner", "outer", "tensordot", "einsum", "cov", "corrcoef", "polyfit", "lstsq",

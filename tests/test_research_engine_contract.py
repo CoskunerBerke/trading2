@@ -271,7 +271,8 @@ def test_research_engine_import_whitelist_and_forbidden_modules():
             if f.name == "datastore.py" and name.split(".")[0] == "urllib" and node.lineno in http_fn:
                 continue                                       # istisna 2 (P1b): veri biriminin HTTP GET'i
             assert not parts & _FORBIDDEN_TOP, f"{f.name}:{node.lineno}: yasaklı import {name}"
-            assert top in stdlib or top in {"yaml", "pandas"}, f"{f.name}: izin dışı import {name}"
+            # numpy (P3d cscv/stats, P3f lessons): pandas'ın zorunlu bağımlılığı, pandas zaten izinli → yeni bağımlılık değil
+            assert top in stdlib or top in {"yaml", "pandas", "numpy"}, f"{f.name}: izin dışı import {name}"
             assert top != "tradingbot", f"{f.name}: paket dışı tradingbot import'u {name} (motor kendi kendine yeter)"
 
 

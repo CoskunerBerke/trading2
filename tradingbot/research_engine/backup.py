@@ -13,6 +13,9 @@ yedeğini alır:
   **P2 eki (2026-10-08, inceleme küçüğü):** `journal/` (işlem günlüğü `tj_v1`; ≈ 1,4 KB/satır gz) — arşivden yeniden
   kurulabilir AMA kurulum state yan kaynaklarına (provenance, `trade_memory`, `xp_entry`) da dayanır; state geri yüklenir
   ya da yan kaynak kaybolursa yeniden kurulan satırda o alanlar MISSING olurdu. Ucuzdur: dahil.
+  **P3g eki (2026-10-14, inceleme):** `gate_a/` (ayın tek Kapı A bakış gecesi kaydı `look_nights.json`; kaybolursa ay
+  yeniden "bakışsız" görünür ve ikinci bir bakış açılır) ve `parity/` (parite (b) kayıtları ve kaldığı yer). İkisi de
+  küçüktür ve yeniden üretilemez: dahil.
 * **Hariç** (`EXCLUDE`, yeniden üretilebilir): `store/`, `archive_cache/`, `dukascopy/`, `backtests/`, `paths/` ve (P2b)
   `attribution/` (günlük + yollar + mühürlü depodan bayt-özdeş yeniden kurulur); ayrıca `backup/` (yedeğin kendisi) ve
   `locks/`. Listede olmayan bir üst klasör de alınmaz (bilinmeyen = dahil değil).
@@ -55,7 +58,8 @@ from .lock import analysis_lock, data_lock
 from .paths import EnginePaths, sha256_file
 
 INCLUDE: tuple[str, ...] = ("closes", "entries", "snapshots", "target", "trials", "lessons", "library", "explore",
-                            "prospective", "proposals", "approvals", "summary", "universe", "exchangeinfo", "journal")
+                            "prospective", "proposals", "approvals", "summary", "universe", "exchangeinfo", "journal",
+                            "gate_a", "parity")
 RUNS_DIR = "runs"
 RUNS_KEEP = 30
 #: P2b eki (2026-10-06): `attribution/` günlükten, yollardan ve mühürlü depodan YENİDEN ÜRETİLEBİLİR (aynı mühür →

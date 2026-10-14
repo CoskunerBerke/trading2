@@ -129,5 +129,84 @@ def big_p3_world(v, state: Path, *, coins=COINS40, n_trades: int = 120, days: in
     return {"p2b": counts, "world": w}
 
 
-__all__ = ["COINS40", "M15", "SEAL", "TICK", "XAU", "add_ag", "big_p3_world", "config_text", "night_after_seal", "p3_world",
+class LongHistoryReader:
+    """Sahte mühürlü okuyucu (P3g uzun geçmiş bellek testi): tek coin'in `years` yıllık GERÇEK BOYUTLU dizileri (1d/4h/1h/
+    15m/5m, fonlama, `markpx_1h`) ay ay ve istendikçe üretilir — bellekte yalnız o ayın parçası durur, dünya hiç kurulmaz.
+    `listing` gerçek okuyucununki gibidir ({"futures/<SYM>/<dizi>": {"AAAA/AA": sha}}); S4w'nin yükleme öncesi bellek
+    tahmini bunu okur. Fiyat: belirlenimci yumuşak yol × sınır başına ay tohumlu gürültü (ay içinde kapanış = sonraki
+    açılış). Ağ yok, disk yok."""
+
+    STEPS = {"1d": D1, "4h": 4 * 3_600_000, "1h": 3_600_000, "15m": M15, "5m": 300_000}
+
+    def __init__(self, coin: str = "BTC", *, end_ms: int, years: float = 7.0, seed: int = 11,
+                 tfs: tuple[str, ...] = ("1d", "4h", "1h", "15m", "5m")) -> None:
+        self.raw = f"{coin}USDT"
+        self.end = int(end_ms) // D1 * D1
+        self.seed = int(seed)
+        e = datetime.fromtimestamp(self.end / 1000, tz=UTC)
+        s = datetime.fromtimestamp((self.end - int(float(years) * 365.25 * D1)) / 1000, tz=UTC)
+        y, m = s.year, s.month
+        self.months: list[tuple[int, int]] = []
+        while (y, m) <= (e.year, e.month):
+            self.months.append((y, m))
+            y, m = (y + 1, 1) if m == 12 else (y, m + 1)
+        kinds = list(tfs) + ["funding", "markpx_1h"]
+        self.listing = {f"futures/{self.raw}/{k}": {f"{yy:04d}/{mm:02d}": f"{k}:{yy}:{mm}" for yy, mm in self.months}
+                        for k in kinds}
+        self.reads = 0
+
+    @staticmethod
+    def _bounds(y: int, m: int) -> tuple[int, int]:
+        a = datetime(y, m, 1, tzinfo=UTC)
+        b = datetime(y + (m == 12), 1 if m == 12 else m + 1, 1, tzinfo=UTC)
+        return int(a.timestamp() * 1000), int(b.timestamp() * 1000)
+
+    @staticmethod
+    def _path(t):
+        import numpy as np
+        d = np.asarray(t, dtype=float) / D1
+        return 20000.0 * np.exp(0.35 * np.sin(2 * np.pi * d / 180.0) + 0.12 * np.sin(2 * np.pi * d / 23.0)
+                                + 0.04 * np.sin(2 * np.pi * d / 1.7) + 0.01 * np.sin(2 * np.pi * d / 0.21))
+
+    def _part(self, kind: str, y: int, m: int):
+        import numpy as np
+        a, b = self._bounds(y, m)
+        b = min(b, self.end)
+        rng = np.random.default_rng(self.seed * 1_000_003 + y * 13 * 97 + m * 97 + sum(map(ord, kind)))
+        if kind == "funding":
+            t = np.arange(a, b, 8 * 3_600_000, dtype=np.int64)
+            return pd.DataFrame({"timestamp": t, "rate": 1e-4 + 5e-5 * np.sin(t / 7.0e8), "mark": self._path(t),
+                                 "_src": "archive"})
+        step = self.STEPS["1h" if kind == "markpx_1h" else kind]
+        t = np.arange(a, b, step, dtype=np.int64)
+        pb = self._path(np.append(t, t[-1] + step) if len(t) else t) * np.exp(rng.normal(0.0, 0.002, len(t) + 1))
+        o, c = pb[:-1], pb[1:]
+        hi = np.maximum(o, c) * (1.0 + np.abs(rng.normal(0.0, 0.0015, len(t))))
+        lo = np.minimum(o, c) * (1.0 - np.abs(rng.normal(0.0, 0.0015, len(t))))
+        df = pd.DataFrame({"timestamp": t, "open": o, "high": hi, "low": lo, "close": c})
+        if kind != "markpx_1h":
+            df["volume"] = rng.uniform(10.0, 1000.0, len(t))
+        df["_src"] = "archive"
+        return df
+
+    def iter_parts(self, market: str, symbol: str, timeframe: str, since_ms: int | None = None,
+                   until_ms: int | None = None, *, keep_src: bool = False):
+        got = self.listing.get(f"{market}/{symbol}/{timeframe}") or {}
+        for ym in sorted(got):
+            y, m = (int(x) for x in ym.split("/"))
+            a, b = self._bounds(y, m)
+            if (until_ms is not None and a > until_ms) or (since_ms is not None and b <= since_ms):
+                continue
+            df = self._part(timeframe, y, m)
+            if since_ms is not None:
+                df = df[df["timestamp"] >= since_ms]
+            if until_ms is not None:
+                df = df[df["timestamp"] <= until_ms]
+            if not keep_src:
+                df = df.drop(columns=["_src"])
+            self.reads += 1
+            yield ym, df.reset_index(drop=True)
+
+
+__all__ = ["COINS40", "LongHistoryReader", "M15", "SEAL", "TICK", "XAU", "add_ag", "big_p3_world", "config_text", "night_after_seal", "p3_world",
            "write_universe_json", "write_world"]

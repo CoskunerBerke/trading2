@@ -94,6 +94,14 @@ class MemoryGuard:
     def threshold(self) -> int | None:
         return int(self.fraction * self.limit) if self.limit else None
 
+    def rss_now(self) -> int | None:
+        """Ucuz ölçüm (gc YOK, denetim sayılmaz): S4w bekçisinin her atışı ve yükleme tahmini; eşik aşılırsa `check()`
+        doğrular."""
+        rss = self._rss()
+        if rss is not None:
+            self.max_rss = rss if self.max_rss is None else max(self.max_rss, rss)
+        return rss
+
     def check(self, where: str) -> dict[str, Any]:
         gc.collect()
         rss = self._rss()
@@ -355,11 +363,12 @@ def run_s4w(paths: Any, pre: Mapping[str, Any], *, now_ms: int, deadline_mono: f
     rep = WQ.run_s4w(paths, pre["reader"], entry_symbols=pre["entry_symbols"], ticks=pre["ticks"], now_ms=int(now_ms),
                      deadline=float(deadline_mono), clock=clock, guard=lambda: guard.check("S4w"),
                      spec_of=spec_of_factory(), night_budget_s=night_budget_s,
-                     ag_symbols=list(ag.get("symbols") or []) or None, ag_run=bool(ag.get("run")))
+                     ag_symbols=list(ag.get("symbols") or []) or None, ag_run=bool(ag.get("run")),
+                     rss=guard.rss_now, rss_limit=guard.threshold)
     return {k: rep.get(k) for k in ("stop", "backlog", "eta_nights", "units_done", "units_error", "units_no_data",
                                     "units_killed", "units_aborted", "aborted", "verified", "mismatch", "trades", "seconds",
                                     "completed_month", "next_month_queued", "previous_night_killed_in",
-                                    "discarded_stale_code", "ag", "units_no_tick")
+                                    "discarded_stale_code", "ag", "units_no_tick", "guard_refused", "guard_aborts")
             if rep.get(k) is not None} | {"errors_head": (rep.get("errors") or [])[:3], "moving": len(rep.get("moving") or {})}
 
 
@@ -446,7 +455,8 @@ def _compact_lessons(r: Mapping[str, Any]) -> dict[str, Any]:
 def run_s6(paths: Any, *, now: datetime, app_dir: Path | str, guard: MemoryGuard, prev_status: Mapping[str, Any] | None,
            budget_s: float, look_night: bool, wf_backlog: Mapping[str, Any] | None, reader: Any = None,
            clock: Callable[[], float] = time.monotonic, parity: bool = True) -> dict[str, Any]:
-    """S6: (1) deneme defteri zinciri + HWM kopyası; (2) dersler (`lessons.run_lessons`); (3) parite (b) gece bağlantısı
+    """S6: (1) deneme defteri zinciri + HWM kopyası; (2) dersler (`lessons.run_lessons`; S6 payıyla — aşılırsa bakışlar
+    bütün olarak ertesi geceye: `DEFERRED_BUDGET`); (3) parite (b) gece bağlantısı
     (bütçeli, kaldığı yerden); (4) Kapı A gecesi planı. Zincir kırıksa (2)–(4) o gece KAPALI (`TRIALS_CHAIN_BROKEN`).
     Beklenmeyen alt adım hatası `errors`'a yazılır (gece aşamayı FAILED işaretler)."""
     from . import lessons as L
@@ -470,9 +480,12 @@ def run_s6(paths: Any, *, now: datetime, app_dir: Path | str, guard: MemoryGuard
     else:
         rc = read_raw_config(Path(app_dir) / "config.yaml")
         ms = module_src_shas()
-        try:
-            r = L.run_lessons(paths, now=now, raw=rc, module_src_sha=dict(ms) if ms is not None else None)
+        try:                                     # S6 payı: dersler yazımdan önceki güvenli noktalarda erteler (S7/S7b payı)
+            r = L.run_lessons(paths, now=now, raw=rc, module_src_sha=dict(ms) if ms is not None else None,
+                              deadline=t0 + float(budget_s), clock=clock)
             out["lessons"] = _compact_lessons(r)
+            if r.get("status") == "DEFERRED_BUDGET":
+                out["lessons"]["reason"] = r.get("reason")
         except (TR.TrialsChainBroken, L.LessonStoreBroken, L.LessonsRefused) as exc:
             flags.append(F_TRIALS_CHAIN_BROKEN if isinstance(exc, TR.TrialsChainBroken) else F_LESSONS_CLOSED)
             out["lessons"] = {"status": "CLOSED", "reason": f"{type(exc).__name__}: {exc}"[:300]}

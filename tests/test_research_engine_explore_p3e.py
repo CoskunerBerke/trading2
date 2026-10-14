@@ -143,6 +143,27 @@ def test_lazy_loader_matches_mapping_and_deadline_leaves_series_untouched(tmp_pa
     assert rep["status"][EX.ST_DEADLINE] == 3 * 40 and not list((tmp_path / "c").glob("*/*")) and calls == ["BTC"]
 
 
+
+def test_deadline_is_checked_before_every_group_not_once_per_coin(tmp_path, monkeypatch):
+    """P3g inceleme: son tarih yalnız coin başında bakılırsa uzun bir coin'in bütün grupları payı aşar (S7/S7b
+    SKIPPED_DEADLINE'a gider). Grup (birim) başına bakılır: payı aşan ilk gruptan sonra coin'in kalan grubu da dokunulmaz."""
+    w = SY.explore_world(["BTC", "ETH"], seed=14, seal_ms=SEAL, fwd_days=4)
+    data = _inputs(w, _night(4))
+    only = ["KEL_20_2_1h", "K_M2", "O_M2_F_BTC"]
+    plan = [s for s in EX.series_plan(COINS40) if s.instrument == "BTC" and s.variant_id in only]
+    assert len(EX.coin_groups(plan)) == 2, "BTC'de iki grup (M2 örtüsü + KEL)"
+    t = {"now": 0.0}
+    seen: list[list[str]] = []
+    real = EX.step_group
+
+    def step(root, base, members, *a, **k):
+        seen.append([m.variant_id for m in members])
+        t["now"] = 2.0                                               # ilk grup payı aşar
+        return real(root, base, members, *a, **k)
+    monkeypatch.setattr(EX, "step_group", step)
+    rep = EX.explore_step(tmp_path, data, entry_symbols=COINS40, only=only, deadline=1.0, clock=lambda: t["now"])
+    assert len(seen) == 1 and rep["status"][EX.ST_DEADLINE] == 3 * 40 - len(seen[0]), (seen, rep["status"])
+
 # ============================================================================ artımlı = baştan (bayt-özdeş)
 @pytest.mark.parametrize("seed", [5, 9])
 def test_incremental_steps_are_byte_identical_to_a_from_scratch_recompute(tmp_path, seed):

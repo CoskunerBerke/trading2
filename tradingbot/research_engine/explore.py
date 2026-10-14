@@ -1090,8 +1090,8 @@ def explore_step(root: Path | str, data: Mapping[str, CoinData] | Callable[[str]
                  only: Iterable[str] | None = None) -> dict[str, Any]:
     """S4x: planın bütün çalıştırılabilir serilerini yeni barlara taşı. `data`: {coin: CoinData} ya da coin → CoinData
     yükleyicisi (gece: coin'ler TEK TEK yüklenir ve bırakılır — bellek; BTC'nin 1d/4h'si diğerleri için tutulur; eksik
-    coin = veri yok). `deadline` (monotonic saniye): aşılınca kalan gruplar dokunulmadan bırakılır (`DEADLINE`; artımlı tasarım
-    yarım geceyi güvenli kılar). `only`: yalnız bu varyantlar (test/ölçüm alt kümesi; gece None). Döner: rapor (ayrıca
+    coin = veri yok). `deadline` (monotonic saniye): her coin'den ve her gruptan (birim) önce bakılır; aşılınca kalan gruplar
+    dokunulmadan bırakılır (`DEADLINE`; artımlı tasarım yarım geceyi — coin'in ortasında da — güvenli kılar). `only`: yalnız bu varyantlar (test/ölçüm alt kümesi; gece None). Döner: rapor (ayrıca
     `_run.json`)."""
     t0 = clock()
     root = Path(root)
@@ -1142,7 +1142,11 @@ def explore_step(root: Path | str, data: Mapping[str, CoinData] | Callable[[str]
         fi = funding_intervals(cd.funding)
         if fi["changes"] or fi["intervals_h"] not in ([], [8]):
             rep.setdefault("funding_intervals", {})[coin] = fi
-        for base, members in groups:
+        for gi, (base, members) in enumerate(groups):
+            if deadline is not None and clock() > deadline:             # grup (birim) başına: pay bitti, kalanlar dokunulmaz
+                stopped = True
+                rep["status"][ST_DEADLINE] = rep["status"].get(ST_DEADLINE, 0) + sum(len(m) for _b, m in groups[gi:])
+                break
             try:
                 step_group(root, base, members, cd, btc, rep)
             except Exception as exc:                                    # seri grubu atlanır; gece sürer
@@ -1246,7 +1250,11 @@ def explore_step_ag(root: Path | str, data: Mapping[str, CoinData] | Callable[[s
             rep["moving"][coin] = cd.moving
             rep["status"][ST_DATA_MOVING] = rep["status"].get(ST_DATA_MOVING, 0) + n_series
             continue
-        for g, members in groups:
+        for gi, (g, members) in enumerate(groups):
+            if deadline is not None and clock() > deadline:             # grup (birim) başına: pay bitti, kalanlar dokunulmaz
+                stopped = True
+                rep["status"][ST_DEADLINE] = rep["status"].get(ST_DEADLINE, 0) + sum(len(m) for _g, m in groups[gi:])
+                break
             try:
                 step_group(root, None, members, cd, btc, rep, ctx)
             except Exception as exc:                                    # seri grubu atlanır; gece sürer

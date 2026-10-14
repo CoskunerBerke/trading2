@@ -403,10 +403,11 @@ def test_a_unit_longer_than_the_night_or_over_the_memory_guard_is_dropped_mid_un
     r = WQ.run_s4w(p2, rd2, entry_symbols=COINS40, ticks={"BTC": 1e-4}, now_ms=now, deadline=clock() + 600, clock=clock,
                    units=units, night_budget_s=3600.0, guard=guard)
     assert clock() - t <= 1.0 and r["stop"] == WQ.STOP_GUARD and r["aborted"]["why"] == WQ.STOP_GUARD
-    assert r["aborted"]["unit"] == units[0].key and len(calls) == 2, \
-        "birimden önce bir (geçer), birim ORTASINDA bir (aşar) denetim"
+    assert r["aborted"]["unit"] == units[0].key and r["guard_aborts"] == [units[0].key] and len(calls) == 3, \
+        "birimden önce bir (geçer), birim ORTASINDA bir (aşar; birim bırakılır, kuyruk sürer), sonraki birimden önce bir " \
+        "(aşar → S4w durur; sonraki birime sayılmaz)"
     q = WQ.read_queue(WQ.root_of(p2))
-    assert q["building"]["aborts"][units[0].key] == 1 and q["in_progress"] is None and units[0].key not in q["building"]["units"]
+    assert q["building"]["aborts"] == {units[0].key: 1} and q["in_progress"] is None and units[0].key not in q["building"]["units"]
     assert signal.getsignal(signal.SIGALRM) == before
 
 
@@ -633,3 +634,174 @@ def test_night_plan_has_p3_stages_after_s2_and_before_s7_in_the_status_order():
     line = SM._stage_line(st)
     assert line.index("S2 OK") < line.index("S4x OK") < line.index("S4w OK") < line.index("S6 OK") < line.index("S7 OK")
     assert SC.ENV_EXPECTED_MEMORY_MAX == NP.ENV_EXPECTED_MEMORY_MAX
+
+
+# ============================================================================ P3g inceleme: uzun geçmişli coin, bellek
+LONG = r"""
+import json, os, sys, time
+sys.path.insert(0, os.environ["P3G_ROOT"]); sys.path.insert(0, os.path.join(os.environ["P3G_ROOT"], "tests"))
+from pathlib import Path
+from research_engine_p3g_fixtures import COINS40, LongHistoryReader
+from tradingbot.research_engine import lib_ag as LA, nightp3 as NP, wfqueue as WQ
+from tradingbot.research_engine.paths import EnginePaths
+d = Path(os.environ["P3G_DIR"])
+p = EnginePaths(data=d / "data", state=d / "data" / "state")
+p.ensure_tree()
+now = int(os.environ["P3G_NOW"])
+month, end = WQ.target_month(now)
+rd = LongHistoryReader("BTC", end_ms=end, years=float(os.environ["P3G_YEARS"]))
+by = {u.key: u for u in WQ.build_units(COINS40, LA.universe_symbols())}
+units = [by[k] for k in os.environ["P3G_UNITS"].split(",")]
+g = NP.MemoryGuard(int(os.environ["P3G_MEM"]), source="test")
+nights = []
+for _n in range(2):
+    t = time.monotonic()
+    r = WQ.run_s4w(p, rd, entry_symbols=COINS40, ticks={"BTC": 0.1}, now_ms=now, deadline=time.monotonic() + 3600,
+                   guard=lambda: g.check("S4w"), night_budget_s=4200.0, units=units, rss=g.rss_now, rss_limit=g.threshold)
+    nights.append({k: r.get(k) for k in ("stop", "units_done", "units_aborted", "guard_refused", "guard_aborts", "aborted",
+                                         "backlog", "errors")} | {"seconds": round(time.monotonic() - t, 1)})
+q = WQ.read_queue(WQ.root_of(p))
+b = q.get("building") or q.get("complete") or {}
+print("@@" + json.dumps({"nights": nights, "units": b.get("units"), "aborts": b.get("aborts") or {}, "month": month,
+                         "trips": [x["where"] for x in g.trips], "max_rss": g.max_rss,
+                         "vm_hwm": NP.proc_status_bytes("VmHWM"),
+                         "bars": {tf: WQ.listed_bars(rd, "BTC", tf, end) for tf in ("1d", "4h", "1h", "15m", "5m")}}))
+"""
+
+
+def test_long_history_coin_builds_1d_4h_1h_15m_units_and_only_its_5m_units_end_too_big_under_the_guard(tmp_path, capsys):
+    """İnceleme engeli (P3g): coin'in ilk birimi kalan bütün dizilerini (5m/15m dahil) yüklüyordu (≈ 7 yılda +375/+490 MiB,
+    ≈ 3 sn) ve koruma bunu görmüyordu (birimden hemen önceki denetim 5 sn'lik zamanlayıcıyı sıfırlıyordu): gerçek gecede OOM
+    ya da sağlıklı 1d/4h/1h birimlerinin iki gecede `TOO_BIG_SKIPPED` olması. Şimdi: birim YALNIZ kendi dizilerini yükler;
+    yükleme öncesi tahmin + RSS eşiği aşan birim yüklenmeden bırakılır ve sayım YALNIZ ona yazılır; bekçi her atışta VmRSS
+    okur. Taze süreçte gerçek boyutlu 6,5 yıllık tek coin (5m ≈ 690 bin, 15m ≈ 230 bin bar; sahte okuyucu), gerçek
+    `MemoryGuard` (768 MiB) ve iki gece: 1d/4h/1h/15m birimleri kurulur, 5m birimleri (Box, AG_P2) iki gecede
+    `TOO_BIG_SKIPPED`, ay kurulumu tamamlanır, VmHWM < 0,7 × 768 MiB ve hiçbir koruma ihlali yok. Ölçüm yazdırılır."""
+    import subprocess
+    keys = ["B.1d@BTC", "C.4h@BTC", "E.1h@BTC", "FAM_BOX@BTC", "AG_P3.15m@BTC", "AG_P2.5m@BTC"]
+    now = int(night_after_seal(4).timestamp() * 1000)
+    env = {**os.environ, "P3G_ROOT": str(ROOT), "P3G_DIR": str(tmp_path), "P3G_NOW": str(now), "P3G_YEARS": "6.5",
+           "P3G_MEM": str(MEM_MAX), "P3G_UNITS": ",".join(keys)}
+    cp = subprocess.run([sys.executable, "-c", LONG], capture_output=True, text=True, env=env, timeout=1800)
+    line = next((ln for ln in cp.stdout.splitlines() if ln.startswith("@@")), None)
+    assert cp.returncode == 0 and line, cp.stdout[-2000:] + cp.stderr[-3000:]
+    d = json.loads(line[2:])
+    n1, n2 = d["nights"]
+    with capsys.disabled():
+        print(f"\nP3g uzun geçmiş (BTC 6,5 yıl; 5m {d['bars']['5m']} / 15m {d['bars']['15m']} bar üst sınırı): VmHWM "
+              f"{d['vm_hwm'] / MIB:.0f} MiB (eşik {0.7 * MEM_MAX / MIB:.0f}) · en çok RSS {d['max_rss'] / MIB:.0f} MiB · gece 1 "
+              f"{n1['seconds']} sn ({n1['units_done']} birim, tahminle bırakılan {len(n1.get('guard_refused') or [])}) · "
+              f"gece 2 {n2['seconds']} sn")
+    assert d["bars"]["5m"] >= 6 * 105_000 and d["bars"]["15m"] >= 6 * 35_000, "gerçek boyutlu 5m/15m geçmişi"
+    u = d["units"]
+    for k in ("B.1d@BTC", "C.4h@BTC", "E.1h@BTC", "AG_P3.15m@BTC"):
+        assert u[k]["status"] == WQ.ST_DONE, (k, u.get(k))
+    for k in ("FAM_BOX@BTC", "AG_P2.5m@BTC"):
+        assert u[k]["status"] == WQ.ST_TOO_BIG and u[k]["predicted_bytes"] > 0.7 * MEM_MAX, (k, u.get(k))
+    assert set(d["aborts"]) == {"FAM_BOX@BTC", "AG_P2.5m@BTC"} and set(d["aborts"].values()) == {WQ.MAX_ABORTS}, \
+        "sayım YALNIZ 5m birimlerine (başka dilimin birimine asla)"
+    assert [x["unit"] for x in n1["guard_refused"]] == ["FAM_BOX@BTC", "AG_P2.5m@BTC"] and n1["units_done"] == 4, \
+        "tahminle bırakılan 5m biriminden sonra kuyruk sürdü (15m birimi aynı gece kuruldu)"
+    assert n1["stop"] == n2["stop"] == WQ.STOP_DONE and n2["backlog"]["complete_month"] == d["month"]
+    assert n2["backlog"]["skipped"] == 2 and not n1.get("guard_aborts") and not n1.get("errors")
+    assert d["trips"] == [] and d["vm_hwm"] < 0.7 * MEM_MAX, f"VmHWM {d['vm_hwm'] / MIB:.0f} MiB ≥ MEMORY_GUARD eşiği"
+
+
+def test_cheap_rss_watch_trips_inside_a_units_own_load_and_counts_only_that_unit(tmp_path, monkeypatch):
+    """İnceleme engeli (P3g): bekçi her atışta ucuz `VmRSS` okur (gc YOK); `guard()` (gc + RSS) yalnız eşik aşılınca aşımı
+    doğrulamak için çağrılır. Birimin KENDİ yüklemesi sırasında eşik aşılırsa yalnız o birim bırakılır ve sayılır; geçmişi
+    bırakılır, kuyruk sonraki birimle sürer (öndeki denetim belleği yeniden ölçer). Önceki ve sonraki birimler kurulur."""
+    import signal
+    import time
+    from tradingbot.research_engine.paths import EnginePaths
+    from tradingbot.research_engine.provider import SealedReader
+    monkeypatch.setattr(WQ, "WATCH_EVERY_S", 0.05)
+    p = EnginePaths(data=tmp_path / "a", state=tmp_path / "s")
+    p.ensure_tree()
+    p3_world(p, p.state, coins=["BTC"], fwd_days=3, pre_1d_days=260, pre_1h_days=12, pre_5m_days=1)
+    rd = SealedReader.from_status(p)
+    by = {u.key: u for u in _UNITS(COINS40)}
+    units = [by["B.1d@BTC"], by["F2.5m@BTC"], by["C.1d@BTC"]]
+    high = {"on": False}
+    real_load = WQ.load_history
+
+    def load(reader, coin, arrays, end, **kw):
+        if "5m" in set(arrays):                               # 5m biriminin kendi yüklemesi RSS'i eşiğin üstüne taşır
+            high["on"] = True
+            t0 = time.monotonic()
+            while time.monotonic() - t0 < 10:                 # yalnız bekçi (SIGALRM) durdurabilir
+                pass
+            raise AssertionError("bekçi yüklemeyi bırakmadı")
+        return real_load(reader, coin, arrays, end, **kw)
+    monkeypatch.setattr(WQ, "load_history", load)
+    calls: list[bool] = []
+    reads = {"n": 0}
+
+    def rss() -> int:
+        reads["n"] += 1
+        return (700 if high["on"] else 200) * MIB
+
+    def guard():
+        calls.append(high["on"])
+        ok = not high["on"]
+        high["on"] = False                                    # gc + bırakılan geçmiş: RSS eşiğin altına döner
+        return {"ok": ok, "rss_bytes": (700 if not ok else 200) * MIB}
+    before = signal.getsignal(signal.SIGALRM)
+    now = int(night_after_seal(4).timestamp() * 1000)
+    r = WQ.run_s4w(p, rd, entry_symbols=COINS40, ticks={"BTC": 1e-4}, now_ms=now, deadline=time.monotonic() + 600,
+                   units=units, night_budget_s=3600.0, guard=guard, rss=rss, rss_limit=int(0.7 * MEM_MAX))
+    assert r["stop"] == WQ.STOP_DONE and r["aborted"]["unit"] == "F2.5m@BTC" and r["aborted"]["why"] == WQ.STOP_GUARD
+    assert r["guard_aborts"] == ["F2.5m@BTC"] and r["units_done"] + r["units_no_data"] == 2, r
+    assert calls == [False, True, False] and reads["n"] >= 3, \
+        "gc'li denetim: ilk birimden önce (yeni coin), yüklemedeki aşımı doğrulamak için, bırakmadan sonraki birimden önce"
+    q = WQ.read_queue(WQ.root_of(p))
+    b = q["building"]
+    assert b["aborts"] == {"F2.5m@BTC": 1} and set(b["units"]) == {"B.1d@BTC", "C.1d@BTC"} and q["in_progress"] is None
+    assert signal.getsignal(signal.SIGALRM) == before and signal.getitimer(signal.ITIMER_REAL) == (0.0, 0.0)
+
+
+def test_watchdog_never_raises_inside_its_exit_or_done_and_an_escaped_abort_still_reaches_s6_s7_s7b(tmp_path,
+                                                                                                     monkeypatch):
+    """Yarış: `_Watch.__exit__` başlarken bekleyen bir atış `on=False`'tan önce `UnitAborted` atardı (`with` bloğunun
+    dışında; gece S7'siz düşerdi). İşleyici `__exit__`/`done` çerçevesinde atmaz; yine de kaçan bir `UnitAborted` S4w'yi
+    FAILED yapar, gece S6/S7/S7b'ye sürer."""
+    import types
+    w = WQ._Watch(lambda: WQ.STOP_DEADLINE, 0.0)
+    w.on = True
+    for code in (WQ._Watch.__exit__.__code__, WQ._Watch.done.__code__):
+        w._handler(14, types.SimpleNamespace(f_code=code))
+    assert w.fired == 0 and w.why is None
+    try:
+        w._handler(14, sys._getframe())
+        raised = False
+    except WQ.UnitAborted as ab:
+        raised = ab.why == WQ.STOP_DEADLINE
+    assert raised and w.fired == 1, "gövdenin içinde atış yine bırakır"
+    _small(monkeypatch)
+    v, host = _world(tmp_path)
+
+    def escaped(*a, **k):
+        raise WQ.UnitAborted(WQ.STOP_DEADLINE)
+    monkeypatch.setattr(NP, "run_s4w", escaped)
+    st = run_engine_night(v, host, night_after_seal(4))
+    assert _st(st, "S4w")["status"] == "FAILED" and "UnitAborted S4w dışına kaçtı" in _st(st, "S4w")["error"]
+    assert all(_st(st, s)["status"] == "OK" for s in ("S6", "S7", "S7b")), st["stages"]
+
+
+def test_a_daytime_smoke_on_a_look_day_does_not_consume_the_months_gate_a_look(tmp_path, monkeypatch):
+    """Sürüm/elle smoke aynı servisi gündüz başlatır (`daytime`: başlangıç ≥ 03:40 UTC; zamanlayıcı 01:37 UTC): ayın tek
+    Kapı A bakışını tüketmez (`gate_a/look_nights.json` yazılmaz); bakışı zamanlanmış gece yapar. `gate_a/` ve
+    `parity/` yedektedir (yeniden üretilemez)."""
+    from tradingbot.research_engine import backup as B
+    _small(monkeypatch)
+    v, host = _world(tmp_path, fwd_days=6)
+    look = night_after_seal(7)
+    rec = v.paths.research / "gate_a" / "look_nights.json"
+    assert NP.gate_a_night(v.paths, look.date())
+    sm = run_engine_night(v, host, look.replace(hour=10, minute=5))
+    assert not sm["p3"]["gate_a_night"] and sm["p3"]["gate_a_look"].startswith("DEFERRED_DAYTIME_RUN")
+    assert _st(sm, "S6")["result"]["gate_a"]["status"] == "NOT_LOOK_NIGHT" and NP.F_GATE_A_NOT_COMPUTED not in sm["flags"]
+    assert not rec.exists() and NP.gate_a_night(v.paths, (look + timedelta(days=1)).date()), "ay bakışsız kaldı"
+    st = run_engine_night(v, host, look + timedelta(days=1))
+    assert st["p3"]["gate_a_night"] and _st(st, "S6")["result"]["gate_a"]["status"] == "HESAPLANMADI" and rec.exists()
+    assert {"gate_a", "parity"} <= set(B.INCLUDE) and not {"gate_a", "parity"} & set(B.EXCLUDE)

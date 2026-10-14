@@ -578,10 +578,15 @@ class _Night:
         if str(pre.get("skip") or "").startswith(NP.R_UNIVERSE):
             self.flags.add(NP.F_ENTRY_UNIVERSE_DIFF)
         try:
-            self.gate_a_night = NP.gate_a_night(self.paths, self.start.date())
+            look = NP.gate_a_night(self.paths, self.start.date())
         except Exception:  # noqa: BLE001
-            self.gate_a_night = False
+            look = False
+        # Ayın tek Kapı A bakışı YALNIZ zamanlanmış gecede (01:37 UTC zamanlayıcısı; `daytime` değil). Sürüm/elle smoke
+        # aynı servisi gündüz başlatır (`daytime`: başlangıç ≥ 03:40 UTC): bakışı tüketmez, `look_nights.json` yazmaz.
+        self.gate_a_night = bool(look) and not self.daytime
         p3["gate_a_night"] = self.gate_a_night
+        if look and self.daytime:
+            p3["gate_a_look"] = "DEFERRED_DAYTIME_RUN: gündüz (smoke/elle) çalıştırması ayın bakışını tüketmez"
         reserve = S4W_RESERVE_GATE_A if self.gate_a_night else S4W_RESERVE
         p3["s4w_reserve_min"] = reserve.total_seconds() / 60
         p3["s6_budget_min"] = (S6_BUDGET_GATE_A if self.gate_a_night else S6_BUDGET).total_seconds() / 60
@@ -648,14 +653,21 @@ class _Night:
 
     def _s4w(self, pre: Mapping[str, Any], reserve: timedelta) -> dict[str, Any]:
         from . import nightp3 as NP
+        from . import wfqueue as WQ
         b = self._p3_budget(reserve)
-        r = NP.run_s4w(self.paths, pre, now_ms=self._now_ms(), deadline_mono=time.monotonic() + b, guard=self.guard,
-                       night_budget_s=S4W_NOMINAL_S)
+        try:
+            r = NP.run_s4w(self.paths, pre, now_ms=self._now_ms(), deadline_mono=time.monotonic() + b, guard=self.guard,
+                           night_budget_s=S4W_NOMINAL_S)
+        except WQ.UnitAborted as ab:            # yedek: bekçinin `BaseException`'ı kuyruğun dışına kaçarsa gece S6/S7/S7b'ye
+            self.flags.add(NP.F_WF_BACKLOG)     # sürer (aşama FAILED; kontrol noktası birimden önce yazılmıştı)
+            raise RuntimeError(f"UnitAborted S4w dışına kaçtı: {ab.why}") from None
         r["budget_s"] = round(b, 1)
         bl = r.get("backlog") or {}
         if bl.get("building_month") or not bl.get("complete_month"):
             self.flags.add(NP.F_WF_BACKLOG)
-        if r.get("stop") == NP.F_MEMORY_GUARD:
+        # gerçek eşik aşımı bayraktır; tahminle yüklenmeden bırakılan birim (`guard_refused`; MAX_ABORTS kezde
+        # TOO_BIG_SKIPPED) bayrak değildir, özet satırında sayılır
+        if r.get("stop") == NP.F_MEMORY_GUARD or r.get("guard_aborts"):
             self.flags.add(NP.F_MEMORY_GUARD)
         if r.get("mismatch"):
             self.flags.add(NP.F_WF_CACHE_MISMATCH)

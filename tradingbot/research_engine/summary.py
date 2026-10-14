@@ -319,6 +319,8 @@ def _p3_lines(st: dict) -> list[str]:
                    + (f" · atlanan birim {bl.get('skipped')}" if bl.get("skipped") else "")
                    + (f" · birim ortasında bırakıldı {(rw.get('aborted') or {}).get('unit')} "
                       f"({(rw.get('aborted') or {}).get('why')})" if rw.get("aborted") else "")
+                   + (f" · bellek tahmini aşan, yüklenmeden bırakılan birim {len(rw.get('guard_refused') or [])} "
+                      f"(ör. {(rw.get('guard_refused') or [{}])[0].get('unit')})" if rw.get("guard_refused") else "")
                    + (f" · AG birim bu gece {(rw.get('ag') or {}).get('units_built', 0)} (verili "
                       f"{(rw.get('ag') or {}).get('units_done', 0)}, planda {(rw.get('ag') or {}).get('units_planned')}"
                       + ("" if (rw.get("ag") or {}).get("run") else ", bu gece koşmadı") + ")" if rw.get("ag") else ""))

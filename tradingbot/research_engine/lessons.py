@@ -30,11 +30,12 @@ import json
 import math
 import os
 import tempfile
+import time
 import warnings
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Iterable, Iterator, Mapping, Sequence
+from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence
 
 import numpy as np
 
@@ -951,10 +952,21 @@ def _invalidations(ev: Evidence, cells: Mapping[str, np.ndarray], states: Mappin
 
 def run_lessons(paths: EnginePaths, *, now: datetime | None = None, rows: Iterable[Mapping[str, Any]] | None = None,
                 raw: Any = None, module_src_sha: Mapping[str, str] | None = None,
-                versions: tuple[str, str] | None = None, check_s2: bool = True) -> dict[str, Any]:
+                versions: tuple[str, str] | None = None, check_s2: bool = True, deadline: float | None = None,
+                clock: Callable[[], float] = time.monotonic) -> dict[str, Any]:
     """S6'nın ders adımı (bir gece). Sıra: mühür → defter (zincir) → kanıt → geçersizleşme (`RETIRE`) → bakış planı →
     üst sınır + BH → hükümler → `LESSON_LOOK` satırları → türeyen spec önerileri → aylık mühür → depo eşitleme → özet.
-    Gece APPLIED_BOUNDED yazamaz. Aynı gece yeniden çalışmak yeni bakış/deneme üretmez (defter tekilleştirir)."""
+    Gece APPLIED_BOUNDED yazamaz. Aynı gece yeniden çalışmak yeni bakış/deneme üretmez (defter tekilleştirir).
+    `deadline` (`clock()` biriminde; S6 payı): YALNIZ yazımdan önceki güvenli noktalarda bakılır (geçersizleşme satırları,
+    her bakışın istatistiği, bakış satırları) — aşılınca o gecenin bakışları BÜTÜN olarak ertelenir (`DEFERRED_BUDGET`; yarım
+    bakış ailesi/BH yazılmaz, ertesi gece aynı plan yeniden kurulur)."""
+
+    def _late() -> bool:
+        return deadline is not None and clock() > deadline
+
+    def _deferred(at_step: str) -> dict[str, Any]:
+        return {"schema": RUN_SCHEMA, "status": "DEFERRED_BUDGET", "as_of": at, "looks": 0,
+                "reason": f"S6 payı bitti ({at_step}); bakışlar ertesi gece"}
     ok, why = S1C.check()
     if not ok:
         raise LessonsRefused(why)
@@ -976,6 +988,8 @@ def run_lessons(paths: EnginePaths, *, now: datetime | None = None, rows: Iterab
         cells, meta = build_cells(ev)
         # (1) geçersizleşme → RETIRE (kuşak + 1)
         inval = _invalidations(ev, cells, states, versions)
+        if _late():
+            return _deferred("kanıt")
         if inval:
             ledger.append([{"kind": "RETIRE", "row_id": f"{LOOK_PREFIX}{pid}|g{g}", "verdict": "INVALIDATED", "at": at,
                             "params": {"pair_id": pid, "gen": g, "lesson_id": lid, "reasons": why, "as_of": at}}
@@ -992,10 +1006,14 @@ def run_lessons(paths: EnginePaths, *, now: datetime | None = None, rows: Iterab
         overflow = max(0, len(tasks) - PAIR_CAP)
         tasks = tasks[:PAIR_CAP]
         for t in tasks:
+            if _late():
+                return _deferred("bakış istatistikleri")
             if t["kind"] == "VALIDATION":
                 t["folds"] = folds(ev, t["idx"], t["vals"])
             t["stats"] = sample_stats(ev, t["idx"], t["vals"], ptype=t["type"], cid=t["cell_id"], row_id=t["row_id"],
                                       look_no=t["look_no"], parent_rate=_parent_rate(ev, cells, meta, t["cell_id"], t["type"]))
+        if _late():
+            return _deferred("bakış satırları")
         q = ST.bh_qvalues({t["row_id"]: t["stats"]["p_day"] for t in tasks})
         entries = [_look_entry(t, q[t["row_id"]], meta[t["cell_id"]], as_of_ms=as_of_ms, at=at, versions=versions, raw=raw,
                                module_src_sha=module_src_sha) for t in tasks]

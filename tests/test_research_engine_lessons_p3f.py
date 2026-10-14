@@ -653,6 +653,17 @@ def test_s2_backlog_blocks_looks(tmp_path):
     assert not p.trials_file.exists()
 
 
+def test_a_spent_s6_budget_defers_the_nights_looks_whole_and_writes_nothing(tmp_path):
+    """P3g inceleme: S6 dersleri payla çalışır; pay yazımdan önceki güvenli bir noktada bitmişse o gecenin bakışları BÜTÜN
+    olarak ertelenir (yarım bakış ailesi/BH yok, deftere satır yok) ve ertesi çalıştırma aynı bakışları yapar."""
+    p = _paths(tmp_path)
+    rows = noise_rows(BOX, range(12), 8, sd=1.0, seed=3)
+    s = run(p, night(11), rows, deadline=0.0, clock=lambda: 1.0)
+    assert s["status"] == "DEFERRED_BUDGET" and s["looks"] == 0 and not looks(p) and "S6 payı" in s["reason"]
+    s2 = run(p, night(11), rows, deadline=10.0, clock=lambda: 1.0)
+    assert s2["status"] == "OK" and s2["looks"] > 0 and len(looks(p)) == s2["looks"]
+
+
 def test_broken_store_chain_refuses_to_append(tmp_path):
     p = _paths(tmp_path)
     rows = _fwd_world(-0.5)

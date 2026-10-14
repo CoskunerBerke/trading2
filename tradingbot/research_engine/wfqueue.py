@@ -18,16 +18,20 @@ kurulması ve bakışı bu adımda YOKTUR — §8.4 P3g notu).
   gece bir birimin ORTASINDA ölmüşse (`in_progress` kalmış) sayaç artar; `MAX_KILLS` kez ölen birim
   `KILLED_SKIPPED` olur (kuyruk tıkanmaz, raporlanır). Hata atan birim `MAX_UNIT_ERRORS` denemeden sonra `ERROR`.
 * **Birim ortası bekçi (P3g ölçümü: gerçek uzunlukta 5m Box birimi tek başına bir gecenin S4w payı mertebesinde):**
-  ana iş parçacığında `SIGALRM` ile en geç `WATCH_EVERY_S`'de bir son tarih ve (en geç `GUARD_EVERY_S`'de) bellek
-  koruması birimin ORTASINDA da denetlenir; aşılırsa birim bırakılır (`UnitAborted`, `BaseException`: çekirdeğin
-  `except Exception`'ı yutmaz; yazım birimden sonra olduğundan yarım dosya yok), kontrol noktası yazılır ve S4w durur —
-  S6/S7/S7b'nin payı korunur, gece sert durmaya ya da OOM'a gitmez. Birim, payın en az yarısını kullanıp son tarihe
-  takıldıysa ya da bellek korumasına takıldıysa sayılır; `MAX_ABORTS` kezde `TOO_LONG_SKIPPED` / `TOO_BIG_SKIPPED` olur
-  (kuyruk tıkanmaz, raporlanır; çekirdeğin birim içinden sürdürülmesi açık kalandır).
+  ana iş parçacığında `SIGALRM` ile her `WATCH_EVERY_S`'de son tarih ve `VmRSS` (ucuz; eşik aşılırsa `guard()` gc ile
+  doğrular) birimin ORTASINDA da denetlenir — birimin kendi yüklemesi dahil; aşılırsa birim bırakılır (`UnitAborted`,
+  `BaseException`: çekirdeğin `except Exception`'ı yutmaz; yazım birimden sonra olduğundan yarım dosya yok), kontrol
+  noktası yazılır. Son tarihte S4w durur (S6/S7/S7b'nin payı korunur); bellekte birimin geçmişi bırakılır ve kuyruk sonraki
+  birimle sürer (önündeki denetim belleği yeniden ölçer). Birim, payın en az yarısını kullanıp son tarihe takıldıysa ya da
+  bellek korumasına takıldıysa sayılır — YALNIZ o birim; `MAX_ABORTS` kezde `TOO_LONG_SKIPPED` / `TOO_BIG_SKIPPED` olur
+  (kuyruk tıkanmaz, raporlanır; 5m parçalama sonraki sürüm).
 * **Haftalık doğrulama (§5.2):** kurulum tamken ve süre kalırsa, birim adının sha'sına göre günün 1/7'si sıfırdan
   hesaplanır ve içerik sha'sıyla karşılaştırılır; fark → `WF_CACHE_MISMATCH`, birim yeniden yazılır.
-* **Bellek (§5.3):** coin'ler TEK TEK yüklenir ve bırakılır (5m yalnız ona ihtiyaç duyan birim kaldıysa); her birimden
-  önce ve sonra `guard()` çağrılır (gece: `MEMORY_GUARD`, RSS > 0,7 × MemoryMax → kontrol noktası yazılmış olarak durur).
+* **Bellek (§5.3):** coin'ler TEK TEK yüklenir ve bırakılır; bir birim YALNIZ kendi dizilerini yükler (sonraki birim
+  eksik diziyi ekler), büyük diziler (15m/5m) yalnız şimdiki birim istedikçe, küçükler coin'in kalan birimlerinden biri
+  istedikçe tutulur. Yüklemeden önce tahmin (`BAR_BYTES`, `RUN_BYTES_PER_BAR`: listeden bar sayısı) + şimdiki RSS eşiği
+  aşarsa birim yüklenmez (yalnız o birime sayılır, kuyruk sürer). Her birimden önce (gereksiz diziler bırakıldıktan
+  sonra) `guard()` (gece: `MEMORY_GUARD`, RSS > 0,7 × MemoryMax → kontrol noktası yazılmış olarak durur).
 * **Süre:** birim türü başına ölçülen ortalama süreden tahmin; tahmin kalan payı aşıyorsa birim başlatılmaz.
 
 * **S1d LIB_AG_V1 (P3g; `agnight`):** AG birimleri AYNI kuyruktadır (aynı pay, kontrol noktası, bekçi ve
@@ -75,8 +79,22 @@ DEFAULT_UNIT_S = 30.0
 SAVE_EVERY_S = 5.0
 #: bellek koruması en seyrek (coin değişiminde her zaman)
 GUARD_EVERY_S = 5.0
-#: birim ortası bekçinin aralığı (sn; `SIGALRM`)
+#: birim ortası bekçinin aralığı (sn; `SIGALRM`). Her atışta `VmRSS` okunur (ucuz, `gc.collect()` yok); eşik aşılırsa
+#: `guard()` (gc + RSS) aşımı doğrular.
 WATCH_EVERY_S = 1.0
+#: Yükleme öncesi bellek tahmini (P3g inceleme düzeltmesi; 5m parçalama sonraki sürüm). Bir bar listede sözlük olarak
+#: ≈ `BAR_BYTES` tutar (ölçüm: 1 yıllık 5m BTC, taze süreç, pandas ara nesneleri dahil 550–605 B); çekirdeğin çalışma kümesi
+#: birimin yüklü barı başına ≈ `RUN_BYTES_PER_BAR[tür]` (taze süreçte birim başına ölçüldü, paylı: ör. FAM_BOX 951 → 1100,
+#: AG_P2.5m 135 → 200 B; listede olmayan tür `DEFAULT_RUN_BYTES_PER_BAR`). Tahmin + şimdiki RSS eşiği aşarsa birim
+#: YÜKLENMEDEN bırakılır: sayım yalnız o birime yazılır (MAX_ABORTS kezde `TOO_BIG_SKIPPED`), kuyruk sonraki birimle
+#: sürer. Tahminin kaçırdığını birim ortası bekçi yakalar.
+BAR_BYTES = 600
+DEFAULT_RUN_BYTES_PER_BAR = 1000
+RUN_BYTES_PER_BAR: dict[str, int] = {"FAM_BOX": 1100, "F2.5m": 780, "AGO_BOX": 450, "AG_P1.5m": 200, "AG_P2.5m": 200,
+                                      "AG_P3.5m": 200, "AG_P4.5m": 200, "AG_P5.5m": 800, "AG_P3.15m": 350}
+#: büyük diziler: yalnız şimdiki birim istiyorsa bellekte tutulur (sonraki birim isterse yeniden yüklenir); küçükler
+#: (≥ 1h) coin'in kalan birimlerinden biri istedikçe tutulur
+LARGE_TFS = ("15m", "5m")
 #: birim ortasında bırakılan birim bu kadar kez sayılınca atlanır
 MAX_ABORTS = 2
 #: son tarihe takılan birim, gecenin S4w nominal payının en az bu kesrini kullandıysa sayılır (geç başlayan birim sayılmaz)
@@ -127,6 +145,8 @@ class _Watch:
     def _handler(self, signum: int, frame: Any) -> None:
         if not self.on:
             return
+        if frame is not None and frame.f_code in _WATCH_QUIET:
+            return                                       # `__exit__`/`done` `on=False`'tan önce: atış kaçmasın (yarış)
         if self.why is None:
             try:
                 self.why = self.check() or None
@@ -147,6 +167,11 @@ class _Watch:
             signal.signal(signal.SIGALRM, self.prev if self.prev is not None else signal.SIG_DFL)
             self.armed = False
         return False
+
+
+#: işleyicinin hiç atmadığı çerçeveler: `__exit__` ilk satırı (`on=False`) çalışmadan önce gelen bir atış `UnitAborted`'ı
+#: `with` bloğunun DIŞINA taşırdı (gövde bitmiş, `except UnitAborted` geride kalmış → gece S6/S7/S7b'siz düşerdi)
+_WATCH_QUIET = (_Watch.__exit__.__code__, _Watch.done.__code__)
 
 
 LIB_UNIT, AG_UNIT, AG_EVAL = "LIB", "AG", "AG_EVAL"
@@ -256,6 +281,39 @@ def _arrays_for(units: Iterable[Unit]) -> set[str]:
 def _needs_btc(units: Iterable[Unit]) -> tuple[bool, bool]:
     ms = [EX.meta(v) for u in units for v in u.variants]
     return any(m.needs_btc for m in ms), any(m.needs_btc_4h for m in ms)
+
+
+def listed_bars(reader: Any, coin: str, kind: str, end_ms: int, *, market: str = "futures") -> int | None:
+    """Mühür listesinden dizinin ≤ `end_ms` ayındaki bar sayısının ÜST sınırı (tam aylar; yüklemeden). Liste yoksa None."""
+    listing = getattr(reader, "listing", None)
+    if not isinstance(listing, Mapping):
+        return None
+    got = listing.get(f"{market}/{EX.coin_of(coin)}USDT/{kind}") or {}
+    t = datetime.fromtimestamp((int(end_ms) - 1) / 1000, tz=timezone.utc)
+    last = f"{t.year:04d}/{t.month:02d}"
+    months = sum(1 for ym in got if str(ym).replace("-", "/") <= last)
+    step = EX.MARK_TF_MS if kind == "markpx_1h" else EX.TF_MS[kind]
+    return int(months * 31 * DAY_MS // step)
+
+
+def predict_unit_bytes(reader: Any, unit: Unit, loaded: Mapping[str, Sequence[Any]] | None, end_ms: int, *,
+                       first_load: bool) -> int | None:
+    """Birimin bellekte EKLEYECEĞİ baytın tahmini: yüklenecek diziler × `BAR_BYTES` + birimin bütün barları ×
+    `RUN_BYTES_PER_BAR[tür]` (çekirdeğin çalışma kümesi). `loaded`: coin'in bellekteki dizileri. Liste yoksa None."""
+    have = loaded or {}
+    new = total = 0
+    for tf in _arrays_for([unit]):
+        if tf in have:
+            n = len(have[tf])
+        else:
+            n = listed_bars(reader, unit.coin, tf, end_ms)
+            if n is None:
+                return None
+            new += n
+        total += n
+    if first_load:
+        new += listed_bars(reader, unit.coin, "markpx_1h", end_ms) or 0
+    return new * BAR_BYTES + total * RUN_BYTES_PER_BAR.get(unit.kind, DEFAULT_RUN_BYTES_PER_BAR)
 
 
 def load_history(reader: Any, coin: str, arrays: Iterable[str], end_ms: int, *, funding: bool = True,
@@ -510,9 +568,12 @@ def run_s4w(paths: Any, reader: Any, *, entry_symbols: Sequence[str], ticks: Map
             guard: Callable[[], Mapping[str, Any]] | None = None,
             spec_of: Callable[[str], str | None] | None = None, night_budget_s: float = 3600.0,
             units: Sequence[Unit] | None = None, ag_symbols: Sequence[str] | None = None,
-            ag_run: bool = True) -> dict[str, Any]:
+            ag_run: bool = True, rss: Callable[[], int | None] | None = None,
+            rss_limit: int | None = None) -> dict[str, Any]:
     """Bir gecelik S4w adımı (modül belgesi). `deadline`: `clock()` biriminde (monotonic sn) son an. `guard()`: bellek
-    koruması (`{"ok": bool, ...}`); `ok` yanlışsa kontrol noktası yazılmış olarak durulur. `units`: test alt kümesi.
+    koruması (`{"ok": bool, ...}`; gc + RSS); `ok` yanlışsa kontrol noktası yazılmış olarak durulur. `rss()`: ucuz şimdiki
+    RSS (gc yok; bekçinin her atışında ve yükleme tahmininde), `rss_limit`: eşiği (bayt; gece 0,7 × MemoryMax) — ikisi
+    yoksa yalnız `guard()` (en geç `GUARD_EVERY_S`'de, birim başında sıfırlanır). `units`: test alt kümesi.
     `ag_symbols`: AG evreni (planın AG birimleri); `ag_run` yanlışsa AG birimleri bu gece koşmaz (planda bekler).
     Dönen: rapor (`backlog`, `stop`, sayılar)."""
     from .provider import DataMoving
@@ -568,27 +629,51 @@ def run_s4w(paths: Any, reader: Any, *, entry_symbols: Sequence[str], ticks: Map
     btc_hist: dict[str, Any] = {"h": None}
 
     gstate = {"t": None, "coin": None}
+    cheap = guard is not None and rss is not None and bool(rss_limit)
+
+    def _rss_now() -> int | None:
+        try:
+            return rss() if rss is not None else None
+        except Exception:  # noqa: BLE001 — ölçüm arızası birimi bırakmaz (guard() yine çalışır)
+            return None
+
+    def _confirm() -> dict[str, Any]:
+        """Tam denetim (`guard()`: gc + RSS); zamanlayıcıyı sıfırlar."""
+        g = dict(guard())
+        gstate["t"] = clock()
+        rep["guard"] = g
+        return g
 
     def _guard_ok(coin: str | None = None) -> bool:
-        """Bellek koruması: yeni coin yüklenmeden önce ve en geç her `GUARD_EVERY_S`'de (`gc.collect()` pahalıdır)."""
+        """Birimden önce bellek koruması: ucuz RSS eşiği aşıyorsa hemen doğrulanır; yoksa tam denetim yeni coin'de ve en
+        geç her `GUARD_EVERY_S`'de (`gc.collect()` pahalıdır)."""
         if guard is None:
             return True
+        if cheap:
+            r = _rss_now()
+            if r is not None and r > int(rss_limit):
+                gstate["coin"] = coin
+                return bool(_confirm().get("ok", True))
         if coin == gstate["coin"] and gstate["t"] is not None and clock() - gstate["t"] < GUARD_EVERY_S:
             return True
-        g = dict(guard())
-        gstate.update(t=clock(), coin=coin)
-        rep["guard"] = g
-        return bool(g.get("ok", True))
+        gstate["coin"] = coin
+        return bool(_confirm().get("ok", True))
 
     def _mid_check() -> str | None:
-        """Birim ortası (bekçi): son tarih her atışta, bellek koruması en geç `GUARD_EVERY_S`'de."""
+        """Birim ortası (bekçi; birimin kendi yüklemesi dahil): son tarih ve ucuz RSS her atışta (eşik aşılırsa `guard()`
+        doğrular); ucuz ölçüm yoksa `guard()` birim başından itibaren en geç `GUARD_EVERY_S`'de."""
         if clock() > deadline:
             return STOP_DEADLINE
-        if guard is not None and (gstate["t"] is None or clock() - gstate["t"] >= GUARD_EVERY_S):
-            g = dict(guard())
-            gstate["t"] = clock()
-            rep["guard"] = g
-            if not g.get("ok", True):
+        if guard is None:
+            return None
+        if cheap:
+            r = _rss_now()
+            if r is not None:
+                if r > int(rss_limit) and not _confirm().get("ok", True):
+                    return STOP_GUARD
+                return None
+        if gstate["t"] is None or clock() - gstate["t"] >= GUARD_EVERY_S:
+            if not _confirm().get("ok", True):
                 return STOP_GUARD
         return None
 
@@ -601,12 +686,28 @@ def run_s4w(paths: Any, reader: Any, *, entry_symbols: Sequence[str], ticks: Map
         m, n = avg.get(u.kind, [0.0, 0])
         avg[u.kind] = [round((float(m) * int(n) + sec) / (int(n) + 1), 3), int(n) + 1]
 
-    def _hist_for(u: Unit, pending: Sequence[Unit], end: int) -> History:
+    def _release(u: Unit, pending: Sequence[Unit]) -> None:
+        """Coin'in bellekteki dizilerinden bu birimin istemediği büyükler (15m/5m) ve coin'in kalan birimlerinin hiçbirinin
+        istemediği küçükler bırakılır (coin değişince hepsi). Bellek koruması böylece yalnız bu birimin yükünü ölçer."""
+        h = cur["hist"]
+        if h is None:
+            return
         if cur["coin"] != u.coin:
-            cur["hist"] = None
+            cur["coin"], cur["hist"] = None, None
             gc.collect()
-            arrays = _arrays_for([x for x in pending if x.coin == u.coin])
-            cur["hist"] = load_history(reader, u.coin, arrays, end)
+            return
+        mine = _arrays_for([u])
+        later = _arrays_for([x for x in pending if x.coin == u.coin])
+        for tf in [tf for tf in h.bars if tf not in mine and (tf in LARGE_TFS or tf not in later)]:
+            h.bars.pop(tf, None)
+            h.parts.pop(tf, None)
+
+    def _hist_for(u: Unit, end: int) -> History:
+        """Birimin geçmişi: YALNIZ kendi dizileri yüklenir (coin'in ilk biriminde fonlama + markpx de); sonraki birim
+        eksik diziyi ekler (`_release` gereksizleri önceden bırakır)."""
+        if cur["coin"] != u.coin or cur["hist"] is None:
+            cur["coin"], cur["hist"] = None, None
+            cur["hist"] = load_history(reader, u.coin, _arrays_for([u]), end)
             cur["coin"] = u.coin
         else:
             need = _arrays_for([u]) - set(cur["hist"].bars)
@@ -616,6 +717,26 @@ def run_s4w(paths: Any, reader: Any, *, entry_symbols: Sequence[str], ticks: Map
                 cur["hist"].parts.update(extra.parts)
         return cur["hist"]
 
+    def _too_big(u: Unit, end: int) -> dict[str, Any] | None:
+        """Yükleme öncesi tahmin (`predict_unit_bytes`) + şimdiki RSS eşiği aşıyor mu (gc'li doğrulamayla)."""
+        if not cheap or u.lib == AG_EVAL:
+            return None
+        h = cur["hist"] if cur["coin"] == u.coin else None
+        try:
+            pred = predict_unit_bytes(reader, u, h.bars if h is not None else None, end, first_load=h is None)
+        except Exception:  # noqa: BLE001 — tahmin arızası birimi bırakmaz (bekçi yine izler)
+            pred = None
+        if pred is None:
+            return None
+        r = _rss_now()
+        if r is None or r + pred <= int(rss_limit):
+            return None
+        g = _confirm()                                                   # gc sonrası RSS ile yeniden
+        r2 = g.get("rss_bytes") if g.get("rss_bytes") is not None else r
+        if int(r2) + pred <= int(rss_limit):
+            return None
+        return {"unit": u.key, "predicted_bytes": int(pred), "rss_bytes": int(r2), "limit_bytes": int(rss_limit)}
+
     def _btc_for(units_: Sequence[Unit], end: int) -> History | None:
         nb, nb4 = _needs_btc(units_)
         if not (nb or nb4):
@@ -624,16 +745,36 @@ def run_s4w(paths: Any, reader: Any, *, entry_symbols: Sequence[str], ticks: Map
             btc_hist["h"] = load_history(reader, "BTC", ("1d", "4h"), end, funding=False)
         return btc_hist["h"]
 
-    def _do(u: Unit, bld: Mapping[str, Any], pending: Sequence[Unit], *, verify: bool) -> bool:
-        """Birimi koş ve yaz (ya da doğrula). False = dur."""
+    def _count_abort(u: Unit, bld: Mapping[str, Any], why: str, ran_s: float, **extra: Any) -> None:
+        """Bırakma sayımı YALNIZ bu birime; `MAX_ABORTS` kezde `TOO_BIG_SKIPPED` / `TOO_LONG_SKIPPED`."""
+        ab_n = bld.setdefault("aborts", {})
+        ab_n[u.key] = int(ab_n.get(u.key, 0)) + 1
+        if ab_n[u.key] >= MAX_ABORTS:
+            bld["units"][u.key] = {"status": ST_TOO_BIG if why == STOP_GUARD else ST_TOO_LONG, "aborts": ab_n[u.key],
+                                   "last_after_s": round(ran_s, 1), **extra}
+            rep["units_aborted"] += 1
+
+    def _do(u: Unit, bld: Mapping[str, Any], *, verify: bool) -> bool:
+        """Birimi koş ve yaz (ya da doğrula). False = dur. Çağıran önce `_release` + `_guard_ok` yapar."""
         tick = ticks.get(u.coin)
         forced = False
+        end = int(bld["end_ms"])
+        if u.lib != AG_EVAL:
+            big = _too_big(u, end)
+            if big is not None:                     # yüklenmeden bırakılır: yalnız bu birime sayılır, kuyruk sürer
+                rep.setdefault("guard_refused", []).append(big)
+                rep["guard_refused"] = rep["guard_refused"][-20:]
+                if not verify:
+                    _count_abort(u, bld, STOP_GUARD, 0.0, predicted_bytes=big["predicted_bytes"])
+                    _ckpt(force=True)
+                return True
         if not verify:
             q["in_progress"] = {"month": bld["month"], "unit": u.key}
             if _est(u) >= SAVE_EVERY_S:
                 _ckpt(force=True)
                 forced = True
         t = clock()
+        gstate["t"] = t                             # bekçinin tam denetim zamanlayıcısı birim başında sıfırlanır
         try:
             with _Watch(_mid_check, WATCH_EVERY_S) as w:
                 if u.lib == AG_EVAL:
@@ -642,10 +783,9 @@ def run_s4w(paths: Any, reader: Any, *, entry_symbols: Sequence[str], ticks: Map
                     gc.collect()
                     lines, meta = run_ag_eval(u, root, bld, units=plan)
                 else:
-                    h = _hist_for(u, pending, int(bld["end_ms"]))
-                    btc = _btc_for([u], int(bld["end_ms"]))
-                    lines, meta = run_unit(u, h, btc, tick=tick, month=str(bld["month"]), end_ms=int(bld["end_ms"]),
-                                           spec_of=spec_of)
+                    h = _hist_for(u, end)
+                    btc = _btc_for([u], end)
+                    lines, meta = run_unit(u, h, btc, tick=tick, month=str(bld["month"]), end_ms=end, spec_of=spec_of)
                 w.done()
         except UnitAborted as ab:
             ran_s = clock() - t
@@ -655,16 +795,15 @@ def run_s4w(paths: Any, reader: Any, *, entry_symbols: Sequence[str], ticks: Map
             btc_hist["h"] = None
             gc.collect()
             if not verify:
-                counts = ab.why == STOP_GUARD or ran_s >= ABORT_MIN_FRACTION * float(night_budget_s)
-                if counts:
-                    ab_n = bld.setdefault("aborts", {})
-                    ab_n[u.key] = int(ab_n.get(u.key, 0)) + 1
-                    if ab_n[u.key] >= MAX_ABORTS:
-                        bld["units"][u.key] = {"status": ST_TOO_BIG if ab.why == STOP_GUARD else ST_TOO_LONG,
-                                               "aborts": ab_n[u.key], "last_after_s": round(ran_s, 1)}
-                        rep["units_aborted"] += 1
+                if ab.why == STOP_GUARD or ran_s >= ABORT_MIN_FRACTION * float(night_budget_s):
+                    _count_abort(u, bld, ab.why, ran_s)
                 q["in_progress"] = None
                 _ckpt(force=True)
+            if ab.why == STOP_GUARD:                # bellek: birimin geçmişi bırakıldı; sonraki birimin önündeki denetim ölçer
+                rep.setdefault("guard_aborts", []).append(u.key)
+                rep["guard_aborts"] = rep["guard_aborts"][-20:]
+                gstate["t"] = None
+                return True
             return False
         except DataMoving as exc:
             rep["moving"][u.coin] = f"{exc.series} {exc.ym}: {exc.reason}"[:200]
@@ -736,10 +875,11 @@ def run_s4w(paths: Any, reader: Any, *, entry_symbols: Sequence[str], ticks: Map
             if ran and clock() + _est(u) > deadline:                   # ilk birim yalnız son tarihe bakar (tıkanmaz)
                 stop = STOP_ESTIMATE
                 break
+            _release(u, pending[i:])                                    # denetim yalnız bu birimin önündeki belleği ölçer
             if not _guard_ok(u.coin):
                 stop = STOP_GUARD
                 break
-            if not _do(u, b, pending[i:], verify=False):                # birim ortasında bırakıldı
+            if not _do(u, b, verify=False):                             # birim ortasında bırakıldı
                 stop = rep.get("stop_why") or STOP_DEADLINE
                 break
             ran += 1
@@ -767,10 +907,11 @@ def run_s4w(paths: Any, reader: Any, *, entry_symbols: Sequence[str], ticks: Map
             if clock() > deadline or clock() + _est(u) > deadline:
                 stop = STOP_DEADLINE
                 break
+            _release(u, todo[i:])
             if not _guard_ok(u.coin):
                 stop = STOP_GUARD
                 break
-            if not _do(u, c, todo[i:], verify=True):
+            if not _do(u, c, verify=True):
                 stop = rep.get("stop_why") or STOP_DEADLINE
                 break
         # tam kurulum varken yeni ay hazırsa: sonraki gece kuruluma başlar

@@ -44,6 +44,29 @@ def _offline_network():
         yield
 
 
+@pytest.fixture(autouse=True)
+def _stop_box_timers():
+    """Testte başlayan Box zamanlayıcıları test bitince DURDURULUR. Box defterli her `tour()` `ensure_box_timer` ile
+    gerçek bir arka plan iş parçacığı (`BoxTimer.start`) açar. Eskiden açık kalıyordu: iş parçacığı oturumun geri
+    kalanında o testin `state/strategy_paper_box/futures_ledger.json`'ını yazmayı sürdürüyor ve başka testlerin G/Ç
+    casuslarına (ör. motor gecesinin "yalnız research/ altına yazar" denetimi) yabancı yazım olarak düşüyordu. Test
+    içindeki davranış aynıdır (zamanlayıcı test boyunca çalışır); yalnız sızıntı kapanır. `_offline_network` gibi kendi
+    `MonkeyPatch`ini kullanır: testin `monkeypatch.undo()` çağrısı bunu kaldırmaz."""
+    from tradingbot.box_timer import BoxTimer
+    started: list = []
+    real_start = BoxTimer.start
+
+    def _start(self):
+        started.append(self)
+        return real_start(self)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(BoxTimer, "start", _start)
+        yield
+    for t in started:
+        t.stop()
+
+
 BAR_MS = 86_400_000
 
 

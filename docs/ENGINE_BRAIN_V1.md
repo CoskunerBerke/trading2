@@ -2151,7 +2151,11 @@ Yalnız PAPER araştırma kodu; canlı kod/config/worker ve birim dosyaları DE�
   değerlendirmesi = önbellekten `lib_ag.evaluate`, AG'siz gece bekleme, AG keşfi artımlı = baştan ve mühürden ileri, bozuk
   S1d mührü, deneme kaydı sonuçtan önce ve bir kez, kayıt yoksa AG yok, Kapı A ailesi/grupları/N/örtü dönem şartı, plasebo),
   P3d testleri aile 856 / N 4.551'e güncellendi; bağımsız koşucu 301–313 (118 test); sürüm betiği
-  `tests/test_research_engine_release_p3g.py` (12: statik, gömülü araçlar, sandbox kuru çalışma 20/20, ön koşul reddi, yükseltme 28/28 + --check + geri alma, gece smoke'u geçmezse b94bedf'ye dönüş).
+  `tests/test_research_engine_release_p3g.py` (12: statik, gömülü araçlar, sandbox kuru çalışma 20/20, ön koşul reddi, yükseltme 28/28 + --check + geri alma, gece smoke'u geçmezse b94bedf'ye dönüş). Tam takım 5.546 test:
+  5.536 geçti, 10 atlandı, 0 hata; ruff temiz. Bir önceki tam koşuda P2 gecesinin "yalnız research/ altına yazar" testi
+  bir kez düştü. Neden P3g değildi: başka bir test (`test_perp_frame_coverage_v17.py`, Box defterli `tour()`) Box
+  zamanlayıcısı iş parçacığını açık bırakmıştı ve bu iş parçacığı, casus açıkken kendi `futures_ledger.json`'ını
+  yazıyordu. `tests/conftest.py` artık testte başlayan her `BoxTimer`'ı test sonunda durduruyor (test içi davranış aynı).
 - **Açık kalanlar.** (1) LIB_V1'in öncülleri (2.775) ve mühür satırları (1.738) gece tarafından deftere YAZILMIYOR: 13
   boşluklu varyantın `module_src_sha`'sı yok (P3a/P3b açık kalanı); VPS defterinin ilk satırları AG'nin 38'idir, Kapı A
   P4a bunları kaydedene kadar `N_BELOW_SEAL` ile kapalı kalır. (2) Kapı A satır kurucuları, plasebo çekilişi ve `LOOK_A`

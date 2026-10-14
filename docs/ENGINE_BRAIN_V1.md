@@ -2105,8 +2105,10 @@ sentetik dünyalar). `registry.py`, `seal_s1b.py`, `prior_trials.json`, `config_
 Yalnız PAPER araştırma kodu; canlı kod/config/worker ve birim dosyaları DEĞİŞMEDİ (gece birimi 640M/768M, §5.3 notu). Kod:
 `night.py` (plan ve paylar), `nightp3.py` (ön koşul, MEMORY_GUARD, S4x/S4w/S6 sarmalayıcıları, AG deneme kaydı),
 `wfqueue.py` (S4w kuyruğu), `epochs_night.py` (config dönemleri), `agnight.py` (S1d bağlantısı), `explore.py` (AG bağlamı),
-`stats.py` (Kapı A ailesi), `summary.py`; ölçüm `scripts/engine_p3g_measure.py`. Kod commit'i `a56c8e2`, sürüm betiği
-`deploy/releases/tb-engine-a56c8e2.sh` (sha256 `a7e405800a610f544d0ff3e4c2e6c510198ceb628f596f60dc64cac1c337599f`; §8.3, `docs/OPERATIONS.md` P3g bölümü).
+`stats.py` (Kapı A ailesi), `summary.py`; ölçüm `scripts/engine_p3g_measure.py`. Kod commit'i `a56c8e2` + dağıtım öncesi
+inceleme düzeltmesi `a67b036` ve `7a03cd9` (aşağıda), sürüm betiği `deploy/releases/tb-engine-7a03cd9.sh` (sha256
+`6e69581e1c9dc2c70ea34e211bc9b7901f8f9dc1bc79be0a9d82866eba2bb700`; §8.3, `docs/OPERATIONS.md` P3g bölümü). `a56c8e2`'yi
+hedefleyen ilk betik incelemede BLOCK aldı, dağıtılmadı ve depodan kaldırıldı; yerini bu betik aldı.
 
 - **Gece planı ve paylar (§5.2 okuması yukarıda).** Tam plan S0, S1a, S3, S1b, S2, **S4x, S4w, S6**, S7, S7b; S1b/S2 payları
   değişmedi. S4x ≤ 10 dk (önce LIB_V1, kalan payla AG keşfi), S4w son tarih − 25 dk'ya kadar (Kapı A bakış gecesi − 55 dk),
@@ -2120,6 +2122,29 @@ Yalnız PAPER araştırma kodu; canlı kod/config/worker ve birim dosyaları DE�
   kadar her atışta yeniden atar (bir sonlandırıcıya — `gc.collect()` altında `GzipFile.__del__` — düşen ilk atış Python
   tarafından yutulur; tek atışlı bekçi o zaman birimi bırakmıyordu: tam test koşusunda yük altında yakalandı, sahte saatli
   belirlenimci test + yutulan atış testi).
+- **Dağıtım öncesi inceleme düzeltmesi (2026-10-14; `a56c8e2` betiği → BLOCK, dağıtılmadı).** (1) **Engel:** coin'in
+  ilk S4w birimi coin'in kalan bütün dizilerini (5m/15m dahil) yüklüyordu: ≈ 7 yıllık geçmişte ≈ 3 sn'de +375–490 MiB;
+  koruma bunu görmüyordu (birimden hemen önceki denetim 5 sn'lik zamanlayıcıyı sıfırlıyordu) → VPS'te gece OOM'la ölür
+  ya da sağlıklı 1d/4h/1h birimleri `TOO_BIG_SKIPPED` olurdu. Şimdi birim YALNIZ kendi dizilerini yükler (sonraki birim
+  eksiği ekler; 15m/5m yalnız şimdiki birim istedikçe, küçük diziler coin'in kalan birimlerinden biri istedikçe tutulur;
+  bırakma birim öncesi denetimden ÖNCE). Yükleme öncesi tahmin: listeden bar sayısı × `BAR_BYTES` (600) + birimin barları
+  × `RUN_BYTES_PER_BAR[tür]`; şimdiki RSS + tahmin eşiği aşarsa (gc'li doğrulamayla) birim YÜKLENMEZ, sayım yalnız ona
+  yazılır (`MAX_ABORTS` gecede `TOO_BIG_SKIPPED`), kuyruk sürer. Taze süreçte 1 yıllık 5m ölçümü: FAM_BOX yükleme 603 +
+  çekirdek 951 B/bar (tahmin 194, ölçülen 169 MiB), AG_P2.5m 603 + 135 B/bar (94 / 79 MiB). Bekçi her 1 sn'lik atışta
+  ucuz `VmRSS` okur (gc yok); `guard()` (gc + RSS) yalnız aşımı doğrular; zamanlayıcı birim başında sıfırlanır. Birimin
+  içinde (kendi yüklemesi dahil) aşım YALNIZ o birime sayılır: geçmişi bırakılır, kuyruk sonraki birimle sürer (önündeki
+  denetim yeniden ölçer; hâlâ aşıyorsa S4w `MEMORY_GUARD` ile durur). **Uzun geçmiş testi** (taze süreç, gerçek
+  `MemoryGuard` 768 MiB, tek coin 6,5 yıl: 5m ≈ 705 bin, 15m ≈ 235 bin bar üst sınırı, ay ay üreten sahte okuyucu, iki
+  gece): 1d/4h/1h/15m birimleri kurulur, 5m birimleri (Box, AG_P2) tahminle iki gecede `TOO_BIG_SKIPPED`, ay kurulumu
+  tamamlanır; **`VmHWM` 292–293 MiB** (iki koşu; eşik 538), koruma ihlali yok, gece 1 ≈ 160 sn. (2) Bekçi yarışı: `_Watch.__exit__`
+  (ya da `done`) başlarken bekleyen atış artık atmaz (işleyici o çerçevelerde döner); yedek: S4w dışına kaçan
+  `UnitAborted` S4w'yi FAILED yapar, `__exit__`'i atlanmış hâlâ kurulu bekçiyi kapatır (`disarm_watch`), gece
+  S6/S7/S7b'ye sürer. (3) Kapı A bakışı yalnız zamanlanmış gecede: gündüz
+  çalıştırması (başlangıç ≥ 03:40 UTC; sürüm betiği smoke'u 00:00–04:00 UTC'de hiç başlatmaz) ayın bakışını tüketmez,
+  `gate_a/look_nights.json` yazmaz (`p3.gate_a_look` = `DEFERRED_DAYTIME_RUN`). (4) Yedek: `gate_a/` ve `parity/`
+  `INCLUDE`'da (küçük, yeniden üretilemez). (5) S6 dersleri S6 payıyla: son tarihe yalnız yazımdan önceki güvenli
+  noktalarda bakılır, aşılınca o gecenin bakışları BÜTÜN olarak ertelenir (`DEFERRED_BUDGET`; yarım BH ailesi, defter
+  satırı yok); S4x son tarihe coin başına değil her gruptan (birim) önce bakar → S7/S7b `SKIPPED_DEADLINE` olmaz.
 - **S1d LIB_AG_V1'in bağlanması (§8.6 EKLEME API'si, aynen).** (1) Her gece ön koşulda `seal_s1d.check()` (→ S1c → S1b);
   tutmazsa AG o gece atlanır (`AG_SKIPPED`), LIB_V1 sürer. (2) S4x'ten ÖNCE, gece başına bir kez
   `TrialsLedger.append(lib_ag.seal_entries(lib_ag.module_src_shas()))` (38 `SPEC`, `LIB_AG_v1`, `<vid>@AG_POOLED`; ikinci
@@ -2142,12 +2167,14 @@ Yalnız PAPER araştırma kodu; canlı kod/config/worker ve birim dosyaları DE�
   (`gate_a.family`, özet ve `engine-status`); bakış P4a'dadır (bu sürümde HESAPLANMADI).
 - **Ölçüm (büyük sentetik dünya, bu sandbox, `scripts/engine_p3g_measure.py --coins 40 --nights 2 --box-5m-days 365
   --ag-5m-days 365`; P2b dünyası 600 işlem + 40 coin'lik P3 yükü + 15m + geç listelenmiş XAUUSDT; her gece ayrı süreç,
-  `ENGINE_EXPECTED_MEMORY_MAX` = 768 MiB).** Gece 1 (mühür + 8 gün; config dönemleri kuruldu, günlüğün 600/600 satırı yeniden kuruldu → S4w `S1B_REBUILD` ile atlandı): SUCCESS, duvar 527 sn, `VmHWM` 293 MiB; S1b 64 sn, S2 183 sn, S4x 272 sn (LIB_V1 166 sn: 3.720 seri, 20.204 işlem; AG 106 sn: 1.558 seri, 6.937 işlem), S6 2,8 sn, S7b 3,3 sn; AG deneme satırları `APPENDED` (38). Gece 2: SUCCESS, duvar 2.436 sn, `VmHWM` **437 MiB**; S4x 19 sn (hepsi `UNCHANGED`), S4w 2.409 sn: kuyruk 1.173/1.173 birim (LIB 680 + AG 492 + değerlendirme 1; veri yok 5 — XAUUSDT'nin uzun pencereli 1d/4h örtüleri), 85.269 işlem (AG 18.973), AG değerlendirmesi 38 satır yazdı (bu dünyada pencereler üç yollu katmanlara kısa: `WF_WINDOW_TOO_SHORT`; değerlendirme yolu depo testinde küçük katmanlarla), deneme satırları `PRESENT`; S6 1,6 sn. MEMORY_GUARD ihlali yok (en çok RSS 437 MiB). **× 3 VPS:** S4w dışı aşamalar gece 1'de ≈ 26 dk, gece 2'de ≈ 1,3 dk (S4x/S4w payları içinde); S4w gece 2'de ≈ 120 dk → VPS'te pay (≈ 70 dk) keser, kuyruk ertesi gece sürer. Diskte 2 gece sonra `explore/` ≈ 74 MB, `backtests/` ≈ 21 MB. **Gerçek uzunluk yoklamaları (tek süreç):** Box birimi (FAM_BOX, 365 günlük 5m, 105.408 bar) 36 sn, 13.131 işlem, `VmHWM` 236 MiB (başlangıç RSS 159); bir sembolün 12 AG birimi 365 günlük 5m + 15m'de toplam 156 sn (en ağırı AGO_BOX 48 sn, AG_P3 5m 23 sn, P5 19 sn, P1 18 sn), `VmHWM` 370 MiB (başlangıç 169). **AG ilk tam kurulum tahmini:** 156 sn/sembol-yıl × (40 coin × 6,7 yıl + XAUUSDT 0,8 yıl ≈ 269 sembol-yıl) × 3 ≈ 35 saat VPS ≈ 30 gecelik S4w nominal payı — LIB_V1 birimleri ayrıca; kuyruk her ay bütün geçmişi yeniden kurduğundan AG'li tam ay kurulumu bir ay içinde BİTMEZ (açık kalan 3). **Bellek ölçeği:** 5m geçmişi sembol-yıl başına Box biriminde ≈ +77 MiB, AG grubunda ≈ +200 MiB tepe ekler → gerçek uzunlukta (≈ 6,7 yıl) 5m birimleri `MEMORY_GUARD` eşiğini (538 MiB) AŞAR: bekçi onları birimin ortasında bırakır ve iki gecede `TOO_BIG_SKIPPED` yapar (gece OOM'a gitmez; açık kalan 3).
+  `ENGINE_EXPECTED_MEMORY_MAX` = 768 MiB).** Gece 1 (mühür + 8 gün; config dönemleri kuruldu, günlüğün 600/600 satırı yeniden kuruldu → S4w `S1B_REBUILD` ile atlandı): SUCCESS, duvar 527 sn, `VmHWM` 293 MiB; S1b 64 sn, S2 183 sn, S4x 272 sn (LIB_V1 166 sn: 3.720 seri, 20.204 işlem; AG 106 sn: 1.558 seri, 6.937 işlem), S6 2,8 sn, S7b 3,3 sn; AG deneme satırları `APPENDED` (38). Gece 2: SUCCESS, duvar 2.436 sn, `VmHWM` **437 MiB**; S4x 19 sn (hepsi `UNCHANGED`), S4w 2.409 sn: kuyruk 1.173/1.173 birim (LIB 680 + AG 492 + değerlendirme 1; veri yok 5 — XAUUSDT'nin uzun pencereli 1d/4h örtüleri), 85.269 işlem (AG 18.973), AG değerlendirmesi 38 satır yazdı (bu dünyada pencereler üç yollu katmanlara kısa: `WF_WINDOW_TOO_SHORT`; değerlendirme yolu depo testinde küçük katmanlarla), deneme satırları `PRESENT`; S6 1,6 sn. MEMORY_GUARD ihlali yok (en çok RSS 437 MiB). **× 3 VPS:** S4w dışı aşamalar gece 1'de ≈ 26 dk, gece 2'de ≈ 1,3 dk (S4x/S4w payları içinde); S4w gece 2'de ≈ 120 dk → VPS'te pay (≈ 70 dk) keser, kuyruk ertesi gece sürer. Diskte 2 gece sonra `explore/` ≈ 74 MB, `backtests/` ≈ 21 MB. **Gerçek uzunluk yoklamaları (tek süreç):** Box birimi (FAM_BOX, 365 günlük 5m, 105.408 bar) 36 sn, 13.131 işlem, `VmHWM` 236 MiB (başlangıç RSS 159); bir sembolün 12 AG birimi 365 günlük 5m + 15m'de toplam 156 sn (en ağırı AGO_BOX 48 sn, AG_P3 5m 23 sn, P5 19 sn, P1 18 sn), `VmHWM` 370 MiB (başlangıç 169). **AG ilk tam kurulum tahmini:** 156 sn/sembol-yıl × (40 coin × 6,7 yıl + XAUUSDT 0,8 yıl ≈ 269 sembol-yıl) × 3 ≈ 35 saat VPS ≈ 30 gecelik S4w nominal payı — LIB_V1 birimleri ayrıca; kuyruk her ay bütün geçmişi yeniden kurduğundan AG'li tam ay kurulumu bir ay içinde BİTMEZ (açık kalan 3). **Bellek ölçeği:** 5m geçmişi sembol-yıl başına Box biriminde ≈ +77 MiB, AG grubunda ≈ +200 MiB tepe ekler → gerçek uzunlukta (≈ 6,7 yıl) 5m birimleri `MEMORY_GUARD` eşiğini (538 MiB) AŞAR: yükleme öncesi tahmin onları yüklemeden bırakır (tahminin kaçırdığını bekçi birimin ortasında bırakır) ve iki gecede `TOO_BIG_SKIPPED` yapar (gece OOM'a gitmez; inceleme düzeltmesi yukarıda; açık kalan 3).
 - **§5.3 bellek kararı (bugünkü 768M birimi).** Kural: tam gece `VmHWM` ≤ `MEMORY_GUARD` eşiği 0,7 × 768 MiB = 537,6 MiB →
   birim değişmez. En yüksek ölçülen `VmHWM` **437 MiB** (AG dahil) → **birim DEĞİŞMEDİ** (MemoryHigh 640M /
   MemoryMax 768M; `ENGINE_EXPECTED_MEMORY_MAX=805306368`). Uzun 5m birimleri (Box 365 gün, AG grubu 365 gün) tek başına
   ≤ 370 MiB.
-- **Testler.** `tests/test_research_engine_night_p3g.py` (22), `tests/test_research_engine_ag_p3g.py` (12: plan, AG
+- **Testler.** `tests/test_research_engine_night_p3g.py` (26; inceleme düzeltmesiyle +4: uzun geçmiş belleği, birim
+  yüklemesinde ucuz RSS aşımı, bekçi yarışı + kaçan `UnitAborted`, gündüz smoke'u ve Kapı A bakışı; ayrıca S4x grup başına
+  son tarih ve S6 ders payı testleri), `tests/test_research_engine_ag_p3g.py` (12: plan, AG
   değerlendirmesi = önbellekten `lib_ag.evaluate`, AG'siz gece bekleme, AG keşfi artımlı = baştan ve mühürden ileri, bozuk
   S1d mührü, deneme kaydı sonuçtan önce ve bir kez, kayıt yoksa AG yok, Kapı A ailesi/grupları/N/örtü dönem şartı, plasebo),
   P3d testleri aile 856 / N 4.551'e güncellendi; bağımsız koşucu 301–313 (118 test); sürüm betiği
@@ -2156,11 +2183,14 @@ Yalnız PAPER araştırma kodu; canlı kod/config/worker ve birim dosyaları DE�
   bir kez düştü. Neden P3g değildi: başka bir test (`test_perp_frame_coverage_v17.py`, Box defterli `tour()`) Box
   zamanlayıcısı iş parçacığını açık bırakmıştı ve bu iş parçacığı, casus açıkken kendi `futures_ledger.json`'ını
   yazıyordu. `tests/conftest.py` artık testte başlayan her `BoxTimer`'ı test sonunda durduruyor (test içi davranış aynı).
+  İnceleme düzeltmesinden sonra (`7a03cd9`) tam takım 5.552 test: 5.542 geçti, 10 atlandı, 0 hata (sürüm testi 13/13,
+  sandbox kuru çalışmada gerçek koşucu 118/118); ruff temiz.
 - **Açık kalanlar.** (1) LIB_V1'in öncülleri (2.775) ve mühür satırları (1.738) gece tarafından deftere YAZILMIYOR: 13
   boşluklu varyantın `module_src_sha`'sı yok (P3a/P3b açık kalanı); VPS defterinin ilk satırları AG'nin 38'idir, Kapı A
   P4a bunları kaydedene kadar `N_BELOW_SEAL` ile kapalı kalır. (2) Kapı A satır kurucuları, plasebo çekilişi ve `LOOK_A`
   yazımı P4a. (3) **Gerçek uzunlukta 5m (Box ve AG) — karar gerekiyor.** WF kuyruğu her ay BÜTÜN geçmişi yeniden kurar ve
-  bir birim coin'in bütün 5m geçmişini belleğe alır. Ölçülen ölçekle (AG ≈ 156 sn ve ≈ +200 MiB, Box ≈ +77 MiB tepe /
+  bir 5m birimi coin'in bütün 5m geçmişini belleğe alır (inceleme düzeltmesinden beri yalnız kendi dizilerini; eşiği
+  aşacaksa yüklemeden bırakılır). Ölçülen ölçekle (AG ≈ 156 sn ve ≈ +200 MiB, Box ≈ +77 MiB tepe /
   sembol-yıl) ≈ 6,7 yıllık 5m'de AG'nin ilk tam kurulumu ≈ 30 gece sürer (ay içinde bitmez, tam ay geriden gelir) ve 5m
   birimlerinin çoğu `MEMORY_GUARD` eşiğini aşıp `TOO_BIG_SKIPPED` olur (gece güvende kalır, sonuç eksik kalır). Seçenekler:
   5m WF penceresini mühürle sınırlamak (ör. son N gün; INTRADAY katmanları ≥ 164 gün ister), 5m'yi akışla/parça parça

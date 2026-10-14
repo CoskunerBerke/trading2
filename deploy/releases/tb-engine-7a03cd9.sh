@@ -2,12 +2,16 @@
 # trading2 — SÜREKLİ ÖĞRENME MOTORU P3g sürüm betiği (PAPER; gerçek para YOK). docs/ENGINE_BRAIN_V1.md §5.2, §5.3, §8.1 P3g,
 # §8.4 P3g notu, §8.6 S1d; docs/SYSTEM_LEARNING_ENGINE_V1.md §2.2–§2.9, §9.3. KÜÇÜK ve AYRILMIŞ: yalnız engine-app;
 # tb-engine-b94bedf.sh temel alındı (birim kurmaz, daemon-reload yapmaz).
-# a56c8e2 (2026-10-14): P3g — b94bedf'nin torunu, YALNIZ KOD: gece planı S0 S1a S3 S1b S2 S4x S4w S6 S7 S7b (S4x keşif ≤ 10 dk,
+# 7a03cd9 (2026-10-14): P3g — b94bedf'nin torunu, YALNIZ KOD: gece planı S0 S1a S3 S1b S2 S4x S4w S6 S7 S7b (S4x keşif ≤ 10 dk,
 #   S4w walk-forward kuyruğu son tarih − 25 dk'ya kadar, S6 deneme defteri zinciri + dersler + parite (b) ≤ 10 dk;
 #   MEMORY_GUARD 0,7 × MemoryMax; config dönemleri araştırma köküne kurulur); P3a–P3f araştırma kodu ve mühürleri S1, S1b,
 #   S1c, S1d; S1d LIB_AG_V1 (38 mekanik varyant × 41 sembol: S1b'nin 40'ı + XAUUSDT) aynı kuyrukta ve keşifte, deneme
 #   satırları sonuçtan ÖNCE; veri biriminde 794aacf (REST metrics_5m hiç tümü-NaN satır yazmaz) ve S1d XAUUSDT markpx_1h
 #   katmanı. Kapı A satır kurucuları ve bakış P4a'dadır (bakış gecesi HESAPLANMADI; BH ailesi m = 856 kaydedilir).
+#   Dağıtım öncesi inceleme düzeltmesi (a56c8e2'nin üstüne; a56c8e2'yi hedefleyen ilk betik BLOCK aldı, DAĞITILMADI, bu
+#   betik yerini alır): S4w birimi YALNIZ kendi dizilerini yükler, eşiği aşacak birim (tahmin + RSS) yüklenmeden
+#   bırakılır ve yalnız ona sayılır, bekçi her saniye VmRSS okur; gündüz (smoke) çalıştırması ayın Kapı A bakışını
+#   tüketmez; gate_a/ ve parity/ yedekte; S6 dersleri payla; S4x son tarihe her gruptan önce bakar.
 #
 # ÖN KOŞUL — P2.1 (b94bedf) KURULU: gece + veri birimi dosyaları hedefle (= b94bedf = 44d5353) bayt bayt aynı ve yüklü
 #   (NeedDaemonReload=no, gece MemoryMax 768M), veri + gece zamanlayıcısı açık ve aktif, engine-app b94bedf'de ya da onu
@@ -26,10 +30,10 @@
 #   sürümün yeniden başlatmasından (deploy-logs/*-restart-at.txt) en az 1 GÜN sonra (sahip kararı 2026-10-07; betik zorlar).
 #   b94bedf'nin 14 gecelik A/B'si bitmeden dağıtılırsa UYARI basılır (yeni A/B dönemi, §2.9).
 # SAHİBİN ADIMLARI (VPS'te, sırayla; dosya adı tb-engine-<hedefin ilk 7 hanesi>.sh):
-#   1) sudo bash tb-engine-a56c8e2.sh --dry-run    # yalnız denetim; hedef kod GEÇİCİ klonda; hiçbir şey değişmez
-#   2) sudo bash tb-engine-a56c8e2.sh              # dağıt: engine-app sabiti + iki smoke (birim/reload YOK)
-#   3) sudo bash tb-engine-a56c8e2.sh --check      # 14 gün her gün (gece + veri + P2 + P3g bölümü)
-#   4) sudo bash tb-engine-a56c8e2.sh --ab-report  # 14. geceden sonra bir kez (A/B tur etkisi ≤ %5)
+#   1) sudo bash tb-engine-7a03cd9.sh --dry-run    # yalnız denetim; hedef kod GEÇİCİ klonda; hiçbir şey değişmez
+#   2) sudo bash tb-engine-7a03cd9.sh              # dağıt: engine-app sabiti + iki smoke (birim/reload YOK)
+#   3) sudo bash tb-engine-7a03cd9.sh --check      # 14 gün her gün (gece + veri + P2 + P3g bölümü)
+#   4) sudo bash tb-engine-7a03cd9.sh --ab-report  # 14. geceden sonra bir kez (A/B tur etkisi ≤ %5)
 #   Geri alma: --rollback (b94bedf durumuna: engine-app b94bedf + compileall; birim dosyaları aynı, reload YOK; veri
 #   birimleri, ilk doldurma ve data/research KALIR — P3g klasörleri explore/ backtests/ trials/ library/ gate_a/ dahil).
 #   Zincir: sudo bash tb-engine-b94bedf.sh --rollback (→ 44d5353), sudo bash tb-engine-44d5353.sh --rollback (gece birimi
@@ -40,7 +44,8 @@
 # DİSK: P3g explore/ (keşif durumları), backtests/ (WF önbelleği + kuyruk; ay kurulumu bitince önceki ay silinir), trials/
 #   ekler; sentetik büyük dünyada 2 gecede explore/ ≈ 74 MB + backtests/ ≈ 21 MB (VPS'te gerçek geçmişle büyür; §5.3 tahmini ≤ 1,5 GB); gece birimi boş < 10 GB ya da data/research ≥ 20 GB'ta, veri birimi 13 / 17 GB'ta
 #   kendiliğinden durur. BELLEK (§2.5, §5.3): gece 768M (MemoryHigh 640M; birim b94bedf'le aynı); P3g büyük sentetik dünyada
-#   ölçülen VmHWM 293–437 MiB ≤ 0,7 × 768M = 538 MiB (MEMORY_GUARD eşiği; §5.3 kuralı → birim DEĞİŞMEDİ); smoke ve
+#   ölçülen VmHWM 293–437 MiB, 6,5 yıllık tek coin 293 MiB ≤ 0,7 × 768M = 538 MiB (MEMORY_GUARD eşiği; §5.3 kuralı →
+#   birim DEĞİŞMEDİ); smoke ve
 #   --check memory.peak ≤ 0,8 × 768M (614 MiB) ister. MemoryMax toplamı 7,7 GiB RAM'i zaten aşar (KAYITLI KARAR 2026-10-06;
 #   uyarı basılır); OOMScoreAdjust=1000 motoru önce öldürür.
 # DAEMON-RELOAD (§9.3): bu sürüm daemon-reload YAPMAZ (birim dosyası değişmez; depodaki worker birimi MemoryMax=4G der, VPS'te
@@ -54,7 +59,7 @@
 #   (önce NeedDaemonReload=no; değilse yalnız stop yeter) · ilk doldurma: sudo systemctl stop tb-engine-backfill.service.
 set -Eeuo pipefail
 
-TIP="a56c8e2f97b95644f43ebdfa72afe5255596a3c2"    # P3g: S4x/S4w/S6 + S1d LIB_AG_V1 gece bağlantısı (2026-10-14; b94bedf'nin torunu)
+TIP="7a03cd9cd377e38a13d594ddaf39fea798ad423d"    # P3g: S4x/S4w/S6 + S1d LIB_AG_V1 + inceleme düzeltmesi (2026-10-14; b94bedf'nin torunu)
 T7="${TIP:0:7}"
 PREV_TIP="b94bedf5d2e63a098c22a0904b7509d7f4c32c5d" # P2.1 (tb-engine-b94bedf.sh): ön koşul ve --rollback tabanı
 P2_TIP="44d535388778163bc687803a73554249920b1e76"   # P2 (tb-engine-44d5353.sh): geri alma zinciri (birim baytlarının sahibi)

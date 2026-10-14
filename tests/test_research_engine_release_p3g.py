@@ -41,9 +41,9 @@ from test_research_engine_release_p1b import (BASH, DSVC, DTMR, GIT, SVC, TMR, _
 from test_research_engine_release_p2 import _night_fixture, _sb, _units, _wj, source, vps_template  # noqa: E402, F401
 from test_research_engine_release_p21 import V3, vps44  # noqa: E402, F401
 
-SCRIPT = ROOT / "deploy" / "releases" / "tb-engine-a56c8e2.sh"
+SCRIPT = ROOT / "deploy" / "releases" / "tb-engine-7a03cd9.sh"
 #: Betiğin kayıtlı sha256'sı (sürüm notu ve sahibe verilen değer; betik değişirse bu da bilinçli değişir).
-SCRIPT_SHA256 = "a7e405800a610f544d0ff3e4c2e6c510198ceb628f596f60dc64cac1c337599f"
+SCRIPT_SHA256 = "6e69581e1c9dc2c70ea34e211bc9b7901f8f9dc1bc79be0a9d82866eba2bb700"
 TEXT = SCRIPT.read_text(encoding="utf-8")
 TIP = re.search(r'^TIP="([0-9a-f]{40})"', TEXT, re.M).group(1)
 PREV_TIP = re.search(r'^PREV_TIP="([0-9a-f]{40})"', TEXT, re.M).group(1)

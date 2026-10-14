@@ -76,14 +76,14 @@
   (tutmazsa AG atlanır, `AG_SKIPPED`); AG'nin 38 `SPEC` deneme satırı S4x'ten ÖNCE ve bir kez yazılır (yazılamazsa AG o gece
   koşmaz, `AG_TRIALS_NOT_REGISTERED`); Kapı A BH ailesi m = 856 (LIB 818 + AG 38). Veri biriminde 794aacf (REST
   `metrics_5m` hiç tümü-NaN satır yazmaz, değeri NaN'la ezmez) ve S1d XAUUSDT `markpx_1h` katmanı. Yalnız PAPER araştırma:
-  terfi yok, worker'a ve birim dosyalarına dokunulmaz. Kod TIP `7a03cd9` (`a56c8e2` + dağıtım öncesi inceleme düzeltmesi
-  `a67b036`, `7a03cd9`: S4w birimi yalnız kendi dizilerini yükler, eşiği aşacak birim yüklenmeden bırakılır, bekçi her
+  terfi yok, worker'a ve birim dosyalarına dokunulmaz. Kod TIP `c86dfb9` (`a56c8e2` + dağıtım öncesi inceleme düzeltmesi
+  `a67b036`, `7a03cd9`, `c86dfb9`: S4w birimi yalnız kendi dizilerini yükler, eşiği aşacak birim yüklenmeden bırakılır, bekçi her
   saniye `VmRSS` okur, kaçan `UnitAborted` gecenin geri kalanını düşürmez; gündüz smoke'u ayın Kapı A bakışını
   tüketmez; `gate_a/` ve `parity/` yedekte; S6 dersleri payla). `a56c8e2`'yi hedefleyen ilk betik dağıtılmadı
   (incelemede BLOCK; depodan kaldırıldı); yerini bu betik aldı.
-- **Sürüm betiği:** `deploy/releases/tb-engine-7a03cd9.sh` (sha256 `6e69581e1c9dc2c70ea34e211bc9b7901f8f9dc1bc79be0a9d82866eba2bb700`; `tb-engine-b94bedf.sh` temel alındı, o dosya
+- **Sürüm betiği:** `deploy/releases/tb-engine-c86dfb9.sh` (sha256 `cb82e49c807c080a4b50ed3951087c14d8fecc5cd3fae101e8f43d1a84904abb`; `tb-engine-b94bedf.sh` temel alındı, o dosya
   değişmedi). Birim dosyalarına, drop-in'lere ve zamanlayıcılara DOKUNMAZ (dosya yazmaz, daemon-reload YAPMAZ, enable/disable
-  YOK; önce ve sonra doğrular). engine-app'i `7a03cd9`'e sabitler + derler, veri ve gece birimini birer kez elle smoke eder.
+  YOK; önce ve sonra doğrular). engine-app'i `c86dfb9`'a sabitler + derler, veri ve gece birimini birer kez elle smoke eder.
   Veri smoke'u ek olarak `universe/<gün>.json`'da XAUUSDT'nin S1d rolünü (`ag_evreni`; seri listesinde XAUUSDT varsa
   `futures/XAUUSDT/markpx_1h`'ı da) ister. Gece smoke'u ek olarak planda S4x,
   S4w, S6'yı; S6 OK, deneme defteri zinciri sağlam; config dönemleri kurulu (`OK`); S1d mührü OK ve sha'sı sabitle aynı; AG
@@ -95,28 +95,28 @@
   `P2.1-kurulu` kapısı hiçbir şeye dokunmadan durur. **En erken dağıtım:** P2.1'in yeniden başlatmasından ≥ 1 gün sonra ve
   ilk `--check`'leri temizken (betik 1 gün kuralını zorlar).
 - **Sahibin adımları (sırayla):**
-  1. `sudo bash tb-engine-7a03cd9.sh --dry-run` — yalnız denetim (118 testlik bağımsız koşucu dahil, VPS'te ≈ 20–30 dk); sonda
+  1. `sudo bash tb-engine-c86dfb9.sh --dry-run` — yalnız denetim (118 testlik bağımsız koşucu dahil, VPS'te ≈ 20–30 dk); sonda
      "KURU ÇALIŞMA: 20/20"; hiçbir şey değişmez.
-  2. `sudo bash tb-engine-7a03cd9.sh > ~/engine-deploy.txt 2>&1` — engine-app sabiti + iki smoke (≈ 45–75 dk); sonda
+  2. `sudo bash tb-engine-c86dfb9.sh > ~/engine-deploy.txt 2>&1` — engine-app sabiti + iki smoke (≈ 45–75 dk); sonda
      "DAĞITILDI: 28/28".
-  3. `sudo bash tb-engine-7a03cd9.sh --check` — 14 gün her gün: P1a, P1b, P2 satırları + **P3g bölümü**: P1 son tam gecenin
+  3. `sudo bash tb-engine-c86dfb9.sh --check` — 14 gün her gün: P1a, P1b, P2 satırları + **P3g bölümü**: P1 son tam gecenin
      S4x/S4w/S6 durumu; P2 `WF_BACKLOG` done/total, kurulan/tam ay, ETA (ilk kurulum geceler sürer: [bilgi]); P3 MEMORY_GUARD
      ihlali ve VmHWM (eşik 538 MB); P4 S1d AG (mühür, koşmayan gece, defterdeki AG SPEC 38); P5 Kapı A ailesi m = 856; P6 P3
      bayrakları (`S4X_BACKLOG`/`WF_BACKLOG` birikimdir). `[DİKKAT]` görürsen çıktıyı ilet.
-  4. `sudo bash tb-engine-7a03cd9.sh --ab-report` — 14. geceden sonra bir kez (yeni A/B dönemi).
+  4. `sudo bash tb-engine-c86dfb9.sh --ab-report` — 14. geceden sonra bir kez (yeni A/B dönemi).
 - **İlk gece:** config dönemleri kurulur, işlem günlüğü satırları bir kez yeniden kurulur (`S1B_BACKLOG` olabilir), o gece S4w
   `S1B_REBUILD` ile atlanır; WF kuyruğu ertesi gece başlar ve ilk ay kurulumu birkaç geceye yayılır. **Bilinen sınır:** gerçek
   uzunlukta 5m birimleri (Box ve AG; ≈ 6,7 yıllık 5m) `MEMORY_GUARD` eşiğini aşabilir — yükleme öncesi tahmin onları yüklemeden
   bırakır (diğer birimler kurulur), iki gecede `TOO_BIG_SKIPPED` yapar (`--check` P2 "atlanan birim"; gece güvende kalır, sonuç eksik kalır); AG'nin tam ay
   kurulumu ≈ 30 gece sürer. Karar bekliyor (`docs/ENGINE_BRAIN_V1.md` §8.4 P3g notu, açık kalan 3).
-- **Geri alma zinciri:** `sudo bash tb-engine-7a03cd9.sh --rollback` = b94bedf durumu: engine-app b94bedf + compileall;
+- **Geri alma zinciri:** `sudo bash tb-engine-c86dfb9.sh --rollback` = b94bedf durumu: engine-app b94bedf + compileall;
   birim dosyaları zaten b94bedf'nin baytlarıdır (yalnız doğrulanır; reload YOK); veri birimleri, ilk doldurma ve
   `data/research` kalır (P3g klasörleri `explore/`, `backtests/`, `trials/`, `library/`, `gate_a/` dahil; b94bedf onları
   okumaz). Ardından `tb-engine-b94bedf.sh` kurulumu "zaten dağıtılmış" tanır. Daha geri: `tb-engine-b94bedf.sh --rollback`
   (→ 44d5353), `tb-engine-44d5353.sh --rollback` (→ 79b27cf), `tb-engine-79b27cf.sh --rollback` (→ P1a), tam kaldırma
   `tb-engine-4962209.sh --rollback`.
-- **Sürüm kuralı eki (P3g'den):** app sürüm betiklerinin engine-app'i yeniden sabitlemesi `7a03cd9`'i İÇEREN bir SHA'ya
-  yapılmalıdır; içermiyorsa önce `tb-engine-7a03cd9.sh --rollback`. P3g kuruluyken `tb-engine-b94bedf.sh`'in dağıtım kipi
+- **Sürüm kuralı eki (P3g'den):** app sürüm betiklerinin engine-app'i yeniden sabitlemesi `c86dfb9`'u İÇEREN bir SHA'ya
+  yapılmalıdır; içermiyorsa önce `tb-engine-c86dfb9.sh --rollback`. P3g kuruluyken `tb-engine-b94bedf.sh`'in dağıtım kipi
   hiçbir şeye dokunmadan durur (engine-app hedefinin torunu).
 
 ## Sürekli öğrenme motoru — P3a (mühür S1 ve deneme defteri; `docs/ENGINE_BRAIN_V1.md` §8.1, §8.2, §8.4)

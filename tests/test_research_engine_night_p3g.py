@@ -710,7 +710,8 @@ def test_long_history_coin_builds_1d_4h_1h_15m_units_and_only_its_5m_units_end_t
 def test_cheap_rss_watch_trips_inside_a_units_own_load_and_counts_only_that_unit(tmp_path, monkeypatch):
     """İnceleme engeli (P3g): bekçi her atışta ucuz `VmRSS` okur (gc YOK); `guard()` (gc + RSS) yalnız eşik aşılınca aşımı
     doğrulamak için çağrılır. Birimin KENDİ yüklemesi sırasında eşik aşılırsa yalnız o birim bırakılır ve sayılır; geçmişi
-    bırakılır, kuyruk sonraki birimle sürer (öndeki denetim belleği yeniden ölçer). Önceki ve sonraki birimler kurulur."""
+    bırakılır ve S4w o gece durur (ikinci inceleme turu: gc sonrası kalan bellek sonraki birimleri sahte "büyük" saymasın).
+    Önceki birim kurulmuştur; sonraki birim sayılmaz, ertesi geceye kalır."""
     import signal
     import time
     from tradingbot.research_engine.paths import EnginePaths
@@ -750,13 +751,13 @@ def test_cheap_rss_watch_trips_inside_a_units_own_load_and_counts_only_that_unit
     now = int(night_after_seal(4).timestamp() * 1000)
     r = WQ.run_s4w(p, rd, entry_symbols=COINS40, ticks={"BTC": 1e-4}, now_ms=now, deadline=time.monotonic() + 600,
                    units=units, night_budget_s=3600.0, guard=guard, rss=rss, rss_limit=int(0.7 * MEM_MAX))
-    assert r["stop"] == WQ.STOP_DONE and r["aborted"]["unit"] == "F2.5m@BTC" and r["aborted"]["why"] == WQ.STOP_GUARD
-    assert r["guard_aborts"] == ["F2.5m@BTC"] and r["units_done"] + r["units_no_data"] == 2, r
-    assert calls == [False, True, False] and reads["n"] >= 3, \
-        "gc'li denetim: ilk birimden önce (yeni coin), yüklemedeki aşımı doğrulamak için, bırakmadan sonraki birimden önce"
+    assert r["stop"] == WQ.STOP_GUARD and r["aborted"]["unit"] == "F2.5m@BTC" and r["aborted"]["why"] == WQ.STOP_GUARD
+    assert r["guard_aborts"] == ["F2.5m@BTC"] and r["units_done"] + r["units_no_data"] == 1, r
+    assert calls == [False, True] and reads["n"] >= 2, \
+        "gc'li denetim: ilk birimden önce (yeni coin) ve yüklemedeki aşımı doğrulamak için; sonra S4w o gece durur"
     q = WQ.read_queue(WQ.root_of(p))
     b = q["building"]
-    assert b["aborts"] == {"F2.5m@BTC": 1} and set(b["units"]) == {"B.1d@BTC", "C.1d@BTC"} and q["in_progress"] is None
+    assert b["aborts"] == {"F2.5m@BTC": 1} and set(b["units"]) == {"B.1d@BTC"} and q["in_progress"] is None
     assert signal.getsignal(signal.SIGALRM) == before and signal.getitimer(signal.ITIMER_REAL) == (0.0, 0.0)
 
 

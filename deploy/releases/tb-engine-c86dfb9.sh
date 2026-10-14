@@ -2,7 +2,7 @@
 # trading2 — SÜREKLİ ÖĞRENME MOTORU P3g sürüm betiği (PAPER; gerçek para YOK). docs/ENGINE_BRAIN_V1.md §5.2, §5.3, §8.1 P3g,
 # §8.4 P3g notu, §8.6 S1d; docs/SYSTEM_LEARNING_ENGINE_V1.md §2.2–§2.9, §9.3. KÜÇÜK ve AYRILMIŞ: yalnız engine-app;
 # tb-engine-b94bedf.sh temel alındı (birim kurmaz, daemon-reload yapmaz).
-# 7a03cd9 (2026-10-14): P3g — b94bedf'nin torunu, YALNIZ KOD: gece planı S0 S1a S3 S1b S2 S4x S4w S6 S7 S7b (S4x keşif ≤ 10 dk,
+# c86dfb9 (2026-10-14): P3g — b94bedf'nin torunu, YALNIZ KOD: gece planı S0 S1a S3 S1b S2 S4x S4w S6 S7 S7b (S4x keşif ≤ 10 dk,
 #   S4w walk-forward kuyruğu son tarih − 25 dk'ya kadar, S6 deneme defteri zinciri + dersler + parite (b) ≤ 10 dk;
 #   MEMORY_GUARD 0,7 × MemoryMax; config dönemleri araştırma köküne kurulur); P3a–P3f araştırma kodu ve mühürleri S1, S1b,
 #   S1c, S1d; S1d LIB_AG_V1 (38 mekanik varyant × 41 sembol: S1b'nin 40'ı + XAUUSDT) aynı kuyrukta ve keşifte, deneme
@@ -30,10 +30,10 @@
 #   sürümün yeniden başlatmasından (deploy-logs/*-restart-at.txt) en az 1 GÜN sonra (sahip kararı 2026-10-07; betik zorlar).
 #   b94bedf'nin 14 gecelik A/B'si bitmeden dağıtılırsa UYARI basılır (yeni A/B dönemi, §2.9).
 # SAHİBİN ADIMLARI (VPS'te, sırayla; dosya adı tb-engine-<hedefin ilk 7 hanesi>.sh):
-#   1) sudo bash tb-engine-7a03cd9.sh --dry-run    # yalnız denetim; hedef kod GEÇİCİ klonda; hiçbir şey değişmez
-#   2) sudo bash tb-engine-7a03cd9.sh              # dağıt: engine-app sabiti + iki smoke (birim/reload YOK)
-#   3) sudo bash tb-engine-7a03cd9.sh --check      # 14 gün her gün (gece + veri + P2 + P3g bölümü)
-#   4) sudo bash tb-engine-7a03cd9.sh --ab-report  # 14. geceden sonra bir kez (A/B tur etkisi ≤ %5)
+#   1) sudo bash tb-engine-c86dfb9.sh --dry-run    # yalnız denetim; hedef kod GEÇİCİ klonda; hiçbir şey değişmez
+#   2) sudo bash tb-engine-c86dfb9.sh              # dağıt: engine-app sabiti + iki smoke (birim/reload YOK)
+#   3) sudo bash tb-engine-c86dfb9.sh --check      # 14 gün her gün (gece + veri + P2 + P3g bölümü)
+#   4) sudo bash tb-engine-c86dfb9.sh --ab-report  # 14. geceden sonra bir kez (A/B tur etkisi ≤ %5)
 #   Geri alma: --rollback (b94bedf durumuna: engine-app b94bedf + compileall; birim dosyaları aynı, reload YOK; veri
 #   birimleri, ilk doldurma ve data/research KALIR — P3g klasörleri explore/ backtests/ trials/ library/ gate_a/ dahil).
 #   Zincir: sudo bash tb-engine-b94bedf.sh --rollback (→ 44d5353), sudo bash tb-engine-44d5353.sh --rollback (gece birimi
@@ -59,7 +59,7 @@
 #   (önce NeedDaemonReload=no; değilse yalnız stop yeter) · ilk doldurma: sudo systemctl stop tb-engine-backfill.service.
 set -Eeuo pipefail
 
-TIP="7a03cd9cd377e38a13d594ddaf39fea798ad423d"    # P3g: S4x/S4w/S6 + S1d LIB_AG_V1 + inceleme düzeltmesi (2026-10-14; b94bedf'nin torunu)
+TIP="c86dfb9b73d1e9f7e6fd44f01195f43dc625d97e"    # P3g: S4x/S4w/S6 + S1d LIB_AG_V1 + inceleme düzeltmeleri (2 tur) (2026-10-14; b94bedf'nin torunu)
 T7="${TIP:0:7}"
 PREV_TIP="b94bedf5d2e63a098c22a0904b7509d7f4c32c5d" # P2.1 (tb-engine-b94bedf.sh): ön koşul ve --rollback tabanı
 P2_TIP="44d535388778163bc687803a73554249920b1e76"   # P2 (tb-engine-44d5353.sh): geri alma zinciri (birim baytlarının sahibi)

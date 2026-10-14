@@ -2106,8 +2106,8 @@ Yalnız PAPER araştırma kodu; canlı kod/config/worker ve birim dosyaları DE�
 `night.py` (plan ve paylar), `nightp3.py` (ön koşul, MEMORY_GUARD, S4x/S4w/S6 sarmalayıcıları, AG deneme kaydı),
 `wfqueue.py` (S4w kuyruğu), `epochs_night.py` (config dönemleri), `agnight.py` (S1d bağlantısı), `explore.py` (AG bağlamı),
 `stats.py` (Kapı A ailesi), `summary.py`; ölçüm `scripts/engine_p3g_measure.py`. Kod commit'i `a56c8e2` + dağıtım öncesi
-inceleme düzeltmesi `a67b036` ve `7a03cd9` (aşağıda), sürüm betiği `deploy/releases/tb-engine-7a03cd9.sh` (sha256
-`6e69581e1c9dc2c70ea34e211bc9b7901f8f9dc1bc79be0a9d82866eba2bb700`; §8.3, `docs/OPERATIONS.md` P3g bölümü). `a56c8e2`'yi
+inceleme düzeltmeleri `a67b036`, `7a03cd9` ve `c86dfb9` (aşağıda), sürüm betiği `deploy/releases/tb-engine-c86dfb9.sh` (sha256
+`cb82e49c807c080a4b50ed3951087c14d8fecc5cd3fae101e8f43d1a84904abb`; §8.3, `docs/OPERATIONS.md` P3g bölümü). `a56c8e2`'yi
 hedefleyen ilk betik incelemede BLOCK aldı, dağıtılmadı ve depodan kaldırıldı; yerini bu betik aldı.
 
 - **Gece planı ve paylar (§5.2 okuması yukarıda).** Tam plan S0, S1a, S3, S1b, S2, **S4x, S4w, S6**, S7, S7b; S1b/S2 payları
@@ -2183,6 +2183,9 @@ hedefleyen ilk betik incelemede BLOCK aldı, dağıtılmadı ve depodan kaldır�
   bir kez düştü. Neden P3g değildi: başka bir test (`test_perp_frame_coverage_v17.py`, Box defterli `tour()`) Box
   zamanlayıcısı iş parçacığını açık bırakmıştı ve bu iş parçacığı, casus açıkken kendi `futures_ledger.json`'ını
   yazıyordu. `tests/conftest.py` artık testte başlayan her `BoxTimer`'ı test sonunda durduruyor (test içi davranış aynı).
+  İkinci inceleme turu (`c86dfb9`, 2026-10-14): önceki birimlerin bıraktığı bellek yüzünden reddedilen küçük birim artık
+  sayılmaz (S4w o gece durur); S4w başındaki RSS + tahmin de eşiği aşan birim yalnız kendine sayılır ve kuyruk sürer;
+  birim ortası bellek bırakması da S4w'yi o gece durdurur (yeni test: iki durum).
   İnceleme düzeltmesinden sonra (`7a03cd9`) tam takım 5.552 test: 5.542 geçti, 10 atlandı, 0 hata (sürüm testi 13/13,
   sandbox kuru çalışmada gerçek koşucu 118/118); ruff temiz.
 - **Açık kalanlar.** (1) LIB_V1'in öncülleri (2.775) ve mühür satırları (1.738) gece tarafından deftere YAZILMIYOR: 13

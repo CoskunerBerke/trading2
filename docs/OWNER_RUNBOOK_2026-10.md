@@ -76,6 +76,26 @@ doldurma bitmiş. Betik `~/tb-engine-b94bedf.sh` (sha256 `746970b0211bccf95a0a03
 3. Ertesi sabahtan itibaren bölüm 3'teki kontrolü bu betikle yap (`tb-engine-44d5353.sh` yerine `tb-engine-b94bedf.sh`).
    Geri alma (gerekirse): `sudo bash ~/tb-engine-b94bedf.sh --rollback` (44d5353'e döner).
 
+**14 Ekim 2026 — Öğrenme motoru P3g (keşif + walk-forward + dersler; ANTİGRAVİTY varyantları dahil): HAZIR, henüz
+KURULMADI.** Ön koşul: **önce P2.1 (`tb-engine-b94bedf.sh`, yukarıda) kurulmuş olmalı** ve kurulumundan en az 1 gün geçmiş,
+ilk `--check`'leri temiz olmalı. Betik `~/tb-engine-a56c8e2.sh` (sha256 `a7e405800a610f544d0ff3e4c2e6c510198ceb628f596f60dc64cac1c337599f`).
+**Ne değişir:** yalnız motor; botun kararları, worker ve birim dosyaları DEĞİŞMEZ (yeniden yükleme yok). Gece motoru artık
+üç adım daha yapar: (1) kütüphane varyantlarının mühürden sonraki ileri sonuçlarını izler (keşif), (2) geçmiş veride
+walk-forward sınamalarını her gece biraz ilerletir (kuyruk; ilk ay birkaç gece sürer), (3) deneme defterini ve dersleri
+denetler. ANTİGRAVİTY dökümlerinden çıkarılan 38 mekanik varyant (41 sembol, XAUUSDT dahil) da aynı kurallarla sınanır;
+deneme sayısı defterde sonuçlardan ÖNCE yazılır. Hiçbir varyant bu sürümde terfi ettirilmez (Kapı A bakışı sonraki sürüm).
+- İlk tam gecede işlem günlüğü bir kez yeniden kurulur; o gece walk-forward adımı atlanır (`S1B_REBUILD`, normal).
+- Yeni 14 gecelik A/B dönemi başlar (yarısı `AB_OFF`: normal).
+
+**Nasıl** (saat TR: 07:40–09:45, 11:40–13:45, 15:40–17:45 ya da 19:40–21:45):
+1. `sudo bash ~/tb-engine-a56c8e2.sh --dry-run > ~/engine-dryrun.txt 2>&1; tail -15 ~/engine-dryrun.txt` — sonda
+   **"KURU ÇALIŞMA: 20/20 değişmez geçti"** (≈ 20–30 dk).
+2. `sudo bash ~/tb-engine-a56c8e2.sh > ~/engine-deploy.txt 2>&1; tail -15 ~/engine-deploy.txt` — sonda
+   **"DAĞITILDI: 28/28 değişmez geçti"** (≈ 45–75 dk). Geçmezse betik kendisi b94bedf'ye döner ("--rollback GEREKMEZ").
+3. Ertesi sabahtan itibaren bölüm 3'teki kontrolü bu betikle yap (`tb-engine-b94bedf.sh` yerine `tb-engine-a56c8e2.sh`).
+   Yeni bölüm "kabul ölçütleri — P3g": `WF_BACKLOG` sayısı her gece büyür (normal); `[DİKKAT]` görürsen çıktıyı ilet.
+   Geri alma (gerekirse): `sudo bash ~/tb-engine-a56c8e2.sh --rollback` (b94bedf'ye döner; araştırma verisi kalır).
+
 **Hızlı formasyon hesabı (worker sürümü db5db96): KURULDU — 7 Ekim 22:31.** Aşağıdaki adımlar kayıt içindir. Uzun turları ve Box'un mum kaçırmasını düzeltir.
 Betik zaten `~/tb-deploy-db5db96.sh` (sha256 `d6a843e58d12bd8717b3d8866e204a40e6834c989b922631cdcd1fa6e298da11`); 7 Ekim
 akşamı deneme çalıştırması 56/56 geçti.

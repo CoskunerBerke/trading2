@@ -66,6 +66,55 @@
 - **Geri alma zinciri:** `sudo bash tb-engine-b94bedf.sh --rollback` = 44d5353 durumu: engine-app 44d5353 + compileall; birim dosyaları zaten 44d5353'ün baytlarıdır (yalnız doğrulanır; reload YOK); veri birimleri, ilk doldurma ve `data/research` kalır; taban kaydı `engine-b94bedf-deploy.json` `.rolledback-<an>` adını alır. Ardından `tb-engine-44d5353.sh` kurulumu "zaten dağıtılmış" tanır. Daha geri: `sudo bash tb-engine-44d5353.sh --rollback` (gece birimi P1a baytları → 79b27cf), `sudo bash tb-engine-79b27cf.sh --rollback` (veri birimi + ilk doldurma kalkar → P1a), tam kaldırma ardından `sudo bash tb-engine-4962209.sh --rollback`.
 - **Sürüm kuralı eki (P2.1'den):** app sürüm betiklerinin engine-app'i yeniden sabitlemesi `b94bedf`'i İÇEREN bir SHA'ya yapılmalıdır; içermiyorsa önce `tb-engine-b94bedf.sh --rollback`. P2.1 kuruluyken `tb-engine-44d5353.sh`'in dağıtım kipi hiçbir şeye dokunmadan durur (engine-app hedefinin torunu).
 
+## Sürekli öğrenme motoru — P3g işletim (S4x/S4w/S6 + S1d LIB_AG_V1; kod-yalnız sürüm; `docs/ENGINE_BRAIN_V1.md` §5.2, §5.3, §8.4 P3g notu, §8.6)
+
+- **Ne:** gece planı `S0 S1a S3 S1b S2 S4x S4w S6 S7 S7b`: S4x keşif (≤ 10 dk; önce LIB_V1, kalan payla S1d AG keşfi), S4w
+  walk-forward kuyruğu (son tarih − 25 dk'ya kadar; kontrol noktalı, kaldığı yerden; LIB_V1 + AG birimleri aynı kuyrukta),
+  S6 deneme defteri zinciri + HWM kopyası + dersler + parite (b) + Kapı A gecesi planı (≤ 10 dk; bakış P4a'da, bu sürümde
+  `HESAPLANMADI`), `MEMORY_GUARD` (RSS > 0,7 × 768M → kontrol noktası yazılmış olarak durur), config dönemleri araştırma
+  köküne kurulur. S1d `LIB_AG_V1` (38 mekanik varyant × 41 sembol: S1b'nin 40'ı + XAUUSDT): her gece S1d mührü denetlenir
+  (tutmazsa AG atlanır, `AG_SKIPPED`); AG'nin 38 `SPEC` deneme satırı S4x'ten ÖNCE ve bir kez yazılır (yazılamazsa AG o gece
+  koşmaz, `AG_TRIALS_NOT_REGISTERED`); Kapı A BH ailesi m = 856 (LIB 818 + AG 38). Veri biriminde 794aacf (REST
+  `metrics_5m` hiç tümü-NaN satır yazmaz, değeri NaN'la ezmez) ve S1d XAUUSDT `markpx_1h` katmanı. Yalnız PAPER araştırma:
+  terfi yok, worker'a ve birim dosyalarına dokunulmaz. Kod TIP `a56c8e2`.
+- **Sürüm betiği:** `deploy/releases/tb-engine-a56c8e2.sh` (sha256 `a7e405800a610f544d0ff3e4c2e6c510198ceb628f596f60dc64cac1c337599f`; `tb-engine-b94bedf.sh` temel alındı, o dosya
+  değişmedi). Birim dosyalarına, drop-in'lere ve zamanlayıcılara DOKUNMAZ (dosya yazmaz, daemon-reload YAPMAZ, enable/disable
+  YOK; önce ve sonra doğrular). engine-app'i `a56c8e2`'e sabitler + derler, veri ve gece birimini birer kez elle smoke eder.
+  Veri smoke'u ek olarak `universe/<gün>.json`'da XAUUSDT'nin S1d rolünü (`ag_evreni`; seri listesinde XAUUSDT varsa
+  `futures/XAUUSDT/markpx_1h`'ı da) ister. Gece smoke'u ek olarak planda S4x,
+  S4w, S6'yı; S6 OK, deneme defteri zinciri sağlam; config dönemleri kurulu (`OK`); S1d mührü OK ve sha'sı sabitle aynı; AG
+  koştuysa defterde tam 38 `LIB_AG_v1` `SPEC` satırı ve `explore/LIB_AG_v1/_run.json`; Kapı A ailesi m = 856; MEMORY_GUARD
+  ihlali yok ister. S4x/S4w'nin `S1B_REBUILD`, `NO_BUDGET`, `DATA_STALE`, `BACKFILL_ACTIVE`, `ENTRY_UNIVERSE_DIFF`, `NO_SEAL`
+  ile atlanması olağandır (nedeni basılır). Smoke geçmezse engine-app önceki sabitine (b94bedf) döner ("--rollback GEREKMEZ").
+- **Ön koşul:** P2.1 (b94bedf) kurulu — gece + veri birimi dosyaları b94bedf'nin (= 44d5353'ün) baytları ve yüklü, veri +
+  gece zamanlayıcısı açık ve aktif, engine-app b94bedf'de ya da onu içeren bir torununda (hedefin torunu değil). Değilse
+  `P2.1-kurulu` kapısı hiçbir şeye dokunmadan durur. **En erken dağıtım:** P2.1'in yeniden başlatmasından ≥ 1 gün sonra ve
+  ilk `--check`'leri temizken (betik 1 gün kuralını zorlar).
+- **Sahibin adımları (sırayla):**
+  1. `sudo bash tb-engine-a56c8e2.sh --dry-run` — yalnız denetim (118 testlik bağımsız koşucu dahil, VPS'te ≈ 20–30 dk); sonda
+     "KURU ÇALIŞMA: 20/20"; hiçbir şey değişmez.
+  2. `sudo bash tb-engine-a56c8e2.sh > ~/engine-deploy.txt 2>&1` — engine-app sabiti + iki smoke (≈ 45–75 dk); sonda
+     "DAĞITILDI: 28/28".
+  3. `sudo bash tb-engine-a56c8e2.sh --check` — 14 gün her gün: P1a, P1b, P2 satırları + **P3g bölümü**: P1 son tam gecenin
+     S4x/S4w/S6 durumu; P2 `WF_BACKLOG` done/total, kurulan/tam ay, ETA (ilk kurulum geceler sürer: [bilgi]); P3 MEMORY_GUARD
+     ihlali ve VmHWM (eşik 538 MB); P4 S1d AG (mühür, koşmayan gece, defterdeki AG SPEC 38); P5 Kapı A ailesi m = 856; P6 P3
+     bayrakları (`S4X_BACKLOG`/`WF_BACKLOG` birikimdir). `[DİKKAT]` görürsen çıktıyı ilet.
+  4. `sudo bash tb-engine-a56c8e2.sh --ab-report` — 14. geceden sonra bir kez (yeni A/B dönemi).
+- **İlk gece:** config dönemleri kurulur, işlem günlüğü satırları bir kez yeniden kurulur (`S1B_BACKLOG` olabilir), o gece S4w
+  `S1B_REBUILD` ile atlanır; WF kuyruğu ertesi gece başlar ve ilk ay kurulumu birkaç geceye yayılır. **Bilinen sınır:** gerçek
+  uzunlukta 5m birimleri (Box ve AG; ≈ 6,7 yıllık 5m) `MEMORY_GUARD` eşiğini aşabilir — bekçi onları birimin ortasında bırakır,
+  iki gecede `TOO_BIG_SKIPPED` yapar (`--check` P2 "atlanan birim"; gece güvende kalır, sonuç eksik kalır); AG'nin tam ay
+  kurulumu ≈ 30 gece sürer. Karar bekliyor (`docs/ENGINE_BRAIN_V1.md` §8.4 P3g notu, açık kalan 3).
+- **Geri alma zinciri:** `sudo bash tb-engine-a56c8e2.sh --rollback` = b94bedf durumu: engine-app b94bedf + compileall;
+  birim dosyaları zaten b94bedf'nin baytlarıdır (yalnız doğrulanır; reload YOK); veri birimleri, ilk doldurma ve
+  `data/research` kalır (P3g klasörleri `explore/`, `backtests/`, `trials/`, `library/`, `gate_a/` dahil; b94bedf onları
+  okumaz). Ardından `tb-engine-b94bedf.sh` kurulumu "zaten dağıtılmış" tanır. Daha geri: `tb-engine-b94bedf.sh --rollback`
+  (→ 44d5353), `tb-engine-44d5353.sh --rollback` (→ 79b27cf), `tb-engine-79b27cf.sh --rollback` (→ P1a), tam kaldırma
+  `tb-engine-4962209.sh --rollback`.
+- **Sürüm kuralı eki (P3g'den):** app sürüm betiklerinin engine-app'i yeniden sabitlemesi `a56c8e2`'i İÇEREN bir SHA'ya
+  yapılmalıdır; içermiyorsa önce `tb-engine-a56c8e2.sh --rollback`. P3g kuruluyken `tb-engine-b94bedf.sh`'in dağıtım kipi
+  hiçbir şeye dokunmadan durur (engine-app hedefinin torunu).
+
 ## Sürekli öğrenme motoru — P3a (mühür S1 ve deneme defteri; `docs/ENGINE_BRAIN_V1.md` §8.1, §8.2, §8.4)
 
 - **Ne:** kod ve mühür; VPS'te kendiliğinden hiçbir şey çalışmaz (gece bağlantısı P3g'de). Mühürlü kayıtlar

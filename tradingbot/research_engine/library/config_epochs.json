@@ -1,0 +1,1721 @@
+{
+ "book_rules": {
+  "b1_box_fade": [
+   "strategy_paper_box"
+  ],
+  "c4_candle_variations": [
+   "strategy_paper_candle4h"
+  ],
+  "c4s_candle_variations_strict": [
+   "strategy_paper_candle4h_strict"
+  ],
+  "d4_donchian_20_10": [
+   "strategy_paper_trend4h"
+  ],
+  "m2_tsmom28": [
+   "strategy_paper_m2"
+  ],
+  "m2x_aggressive": [
+   "strategy_paper_m2x"
+  ],
+  "main": [
+   "main_fut",
+   "main_spot"
+  ],
+  "pattern_trader": [
+   "pattern_trader"
+  ],
+  "t2_trend_regime": [
+   "strategy_paper"
+  ]
+ },
+ "covered_until": "2026-10-13T10:00:00+00:00",
+ "decision_neutral": [
+  {
+   "path": "history.evidence_subprocess",
+   "source": "tb-deploy-8db1faf.sh başlığı 'KARAR DEĞİŞTİRMEYEN TUR DÜZELTMESİ'; docs/TOUR_CONTENTION_V2.md"
+  },
+  {
+   "path": "shared_experience",
+   "source": "config.yaml shared_experience yorumu 'YALNIZ KAYIT … KARAR DEĞİŞMEZ'; tb-deploy-f9a61dd.sh ve tb-deploy-188cf22.sh başlıkları (bayt-özdeşlik değişmezleri); docs/ortak_deneyim/SPEC_V1.md, DANISMAN_V1.md"
+  }
+ ],
+ "doc": "docs/SYSTEM_LEARNING_ENGINE_V1.md §6.2; docs/ENGINE_BRAIN_V1.md §8.1 P3a",
+ "epochs": [
+  {
+   "books": [
+    "main_fut",
+    "main_spot"
+   ],
+   "from": "1970-01-01T00:00:00+00:00",
+   "id": "E0",
+   "kind": "PRE_HISTORY",
+   "note_tr": "taban 3b0ae8e config'i; daha önceki değişiklikler ve tabanın dağıtım saati belgelenmemiştir",
+   "release": "3b0ae8e",
+   "rule": "main",
+   "to": "2026-09-25T17:35:20+00:00",
+   "view_sha": "b0478ee30cacf5579b2b3570e4f942690770abf1fbb5092b01e2164da5312e17"
+  },
+  {
+   "books": [
+    "main_fut",
+    "main_spot"
+   ],
+   "decisions_tr": [
+    "200 USDT bakiye ve ihtiyaç kadar kaldıraç (kullanıcı kararı 2026-09-21), yapı kataloğu ENFORCE (2026-09-22), fonlama settlement v2, Formasyon protokol v3 ve D4 gözlem defteri (kullanıcı onayı 2026-09-25)"
+   ],
+   "events": [
+    "4931c73"
+   ],
+   "from": "2026-09-25T17:35:20+00:00",
+   "from_release": "3b0ae8e",
+   "id": "X2026-09-25T173520Z",
+   "kind": "TRANSITION",
+   "note_tr": "dağıtım anı yalnız pencereyle biliniyor: bu aralıkta açılan işlem hiçbir config dönemine atanmaz",
+   "opened_by": [
+    "futures_v3.realized_funding_source",
+    "structures.enabled",
+    "structures.main",
+    "structures.policy_version"
+   ],
+   "rule": "main",
+   "to": "2026-09-27T09:05:12+00:00",
+   "to_release": "4931c73"
+  },
+  {
+   "books": [
+    "main_fut",
+    "main_spot"
+   ],
+   "decisions_tr": [
+    "200 USDT bakiye ve ihtiyaç kadar kaldıraç (kullanıcı kararı 2026-09-21), yapı kataloğu ENFORCE (2026-09-22), fonlama settlement v2, Formasyon protokol v3 ve D4 gözlem defteri (kullanıcı onayı 2026-09-25)"
+   ],
+   "events": [
+    "4931c73"
+   ],
+   "from": "2026-09-27T09:05:12+00:00",
+   "id": "E2026-09-27T090512Z",
+   "kind": "CONFIG",
+   "opened_by": [
+    "futures_v3.realized_funding_source",
+    "structures.enabled",
+    "structures.main",
+    "structures.policy_version"
+   ],
+   "release": "4931c73",
+   "rule": "main",
+   "to": "2026-09-28T21:20:00+00:00",
+   "view_sha": "a469ac0b6c64249132309ab943d0d419f215554981d9610a05bfe22c0ed8f16d"
+  },
+  {
+   "books": [
+    "main_fut",
+    "main_spot"
+   ],
+   "decisions_tr": [
+    "öğrenme modu L1 (YALNIZ PAPER) + C4 CV001–CV008 (7ad8832) + ana bot leverage_max 5"
+   ],
+   "events": [
+    "c0b8c94"
+   ],
+   "from": "2026-09-28T21:20:00+00:00",
+   "id": "E2026-09-28T2120Z",
+   "kind": "CONFIG",
+   "opened_by": [
+    "learning_mode.books.main.enabled",
+    "learning_mode.books.main.leverage_max",
+    "learning_mode.books.main.slots",
+    "learning_mode.counterfactual",
+    "learning_mode.counterfactual_max_pending",
+    "learning_mode.enabled",
+    "learning_mode.liq_buffer_mult",
+    "learning_mode.margin_reserve_pct",
+    "learning_mode.max_total_open_risk_pct",
+    "learning_mode.min_notional_bump",
+    "learning_mode.risk_per_trade_pct",
+    "learning_mode.strategy_overrides.candle_veto_shadow",
+    "learning_mode.strategy_overrides.economics_exploration",
+    "learning_mode.strategy_overrides.leverage_confidence_fallback",
+    "learning_mode.strategy_overrides.regime_gate_shadow",
+    "learning_mode.strategy_overrides.structures_entry_shadow"
+   ],
+   "release": "c0b8c94",
+   "rule": "main",
+   "to": "2026-10-04T11:45:56+00:00",
+   "view_sha": "6f995a923439ae365a4ddcc88822502b4efb09eb045cda405fa9da48c98d04ee"
+  },
+  {
+   "books": [
+    "main_fut",
+    "main_spot"
+   ],
+   "decisions_tr": [
+    "learning_mode.extra_entries: record_selectivity + Box öğrenme stop tabanı 0,32 → 0,5 (sahip kararı 2026-10-03)"
+   ],
+   "events": [
+    "f8b05fb"
+   ],
+   "from": "2026-10-04T11:45:56+00:00",
+   "from_release": "fc63481",
+   "id": "X2026-10-04T114556Z",
+   "kind": "TRANSITION",
+   "note_tr": "dağıtım anı yalnız pencereyle biliniyor: bu aralıkta açılan işlem hiçbir config dönemine atanmaz",
+   "opened_by": [
+    "learning_mode.extra_entries"
+   ],
+   "rule": "main",
+   "to": "2026-10-05T04:55:00+00:00",
+   "to_release": "f8b05fb"
+  },
+  {
+   "books": [
+    "main_fut",
+    "main_spot"
+   ],
+   "decisions_tr": [
+    "learning_mode.extra_entries: record_selectivity + Box öğrenme stop tabanı 0,32 → 0,5 (sahip kararı 2026-10-03)"
+   ],
+   "events": [
+    "f8b05fb"
+   ],
+   "from": "2026-10-05T04:55:00+00:00",
+   "id": "E2026-10-05T0455Z",
+   "kind": "CONFIG",
+   "opened_by": [
+    "learning_mode.extra_entries"
+   ],
+   "release": "f8b05fb",
+   "rule": "main",
+   "to": null,
+   "view_sha": "1361717753716622fc3f2899e00cc55bd570a9dc95661cbf3c8bf7f4bd510a94"
+  },
+  {
+   "books": [
+    "strategy_paper"
+   ],
+   "from": "1970-01-01T00:00:00+00:00",
+   "id": "E0",
+   "kind": "PRE_HISTORY",
+   "note_tr": "taban 3b0ae8e config'i; daha önceki değişiklikler ve tabanın dağıtım saati belgelenmemiştir",
+   "release": "3b0ae8e",
+   "rule": "t2_trend_regime",
+   "to": "2026-09-25T17:35:20+00:00",
+   "view_sha": "608e268e64adb6c71ee2d6484b787ef7684dc6203ec279e4fec09286084e8092"
+  },
+  {
+   "books": [
+    "strategy_paper"
+   ],
+   "decisions_tr": [
+    "200 USDT bakiye ve ihtiyaç kadar kaldıraç (kullanıcı kararı 2026-09-21), yapı kataloğu ENFORCE (2026-09-22), fonlama settlement v2, Formasyon protokol v3 ve D4 gözlem defteri (kullanıcı onayı 2026-09-25)"
+   ],
+   "events": [
+    "4931c73"
+   ],
+   "from": "2026-09-25T17:35:20+00:00",
+   "from_release": "3b0ae8e",
+   "id": "X2026-09-25T173520Z",
+   "kind": "TRANSITION",
+   "note_tr": "dağıtım anı yalnız pencereyle biliniyor: bu aralıkta açılan işlem hiçbir config dönemine atanmaz",
+   "opened_by": [
+    "futures_v3.realized_funding_source",
+    "strategy_paper[name=t2_trend_regime].max_entry_drift_pct",
+    "strategy_paper[name=t2_trend_regime].rule_params.leverage",
+    "strategy_paper[name=t2_trend_regime].rule_params.leverage_max",
+    "strategy_paper[name=t2_trend_regime].starting_equity_usdt",
+    "structures.enabled",
+    "structures.policy_version",
+    "structures.t2_trend_regime"
+   ],
+   "rule": "t2_trend_regime",
+   "to": "2026-09-27T09:05:12+00:00",
+   "to_release": "4931c73"
+  },
+  {
+   "books": [
+    "strategy_paper"
+   ],
+   "decisions_tr": [
+    "200 USDT bakiye ve ihtiyaç kadar kaldıraç (kullanıcı kararı 2026-09-21), yapı kataloğu ENFORCE (2026-09-22), fonlama settlement v2, Formasyon protokol v3 ve D4 gözlem defteri (kullanıcı onayı 2026-09-25)"
+   ],
+   "events": [
+    "4931c73"
+   ],
+   "from": "2026-09-27T09:05:12+00:00",
+   "id": "E2026-09-27T090512Z",
+   "kind": "CONFIG",
+   "opened_by": [
+    "futures_v3.realized_funding_source",
+    "strategy_paper[name=t2_trend_regime].max_entry_drift_pct",
+    "strategy_paper[name=t2_trend_regime].rule_params.leverage",
+    "strategy_paper[name=t2_trend_regime].rule_params.leverage_max",
+    "strategy_paper[name=t2_trend_regime].starting_equity_usdt",
+    "structures.enabled",
+    "structures.policy_version",
+    "structures.t2_trend_regime"
+   ],
+   "release": "4931c73",
+   "rule": "t2_trend_regime",
+   "to": "2026-09-28T21:20:00+00:00",
+   "view_sha": "9b51003a27b06d80a1dfce8d2c40186dc4a684a06d37c739538974fc0d95ba4c"
+  },
+  {
+   "books": [
+    "strategy_paper"
+   ],
+   "decisions_tr": [
+    "öğrenme modu L1 (YALNIZ PAPER) + C4 CV001–CV008 (7ad8832) + ana bot leverage_max 5"
+   ],
+   "events": [
+    "c0b8c94"
+   ],
+   "from": "2026-09-28T21:20:00+00:00",
+   "id": "E2026-09-28T2120Z",
+   "kind": "CONFIG",
+   "opened_by": [
+    "learning_mode.books.t2_trend_regime.enabled",
+    "learning_mode.books.t2_trend_regime.leverage_max",
+    "learning_mode.books.t2_trend_regime.slots",
+    "learning_mode.counterfactual",
+    "learning_mode.counterfactual_max_pending",
+    "learning_mode.enabled",
+    "learning_mode.liq_buffer_mult",
+    "learning_mode.margin_reserve_pct",
+    "learning_mode.max_total_open_risk_pct",
+    "learning_mode.min_notional_bump",
+    "learning_mode.risk_per_trade_pct",
+    "learning_mode.strategy_overrides.candle_veto_shadow",
+    "learning_mode.strategy_overrides.economics_exploration",
+    "learning_mode.strategy_overrides.leverage_confidence_fallback",
+    "learning_mode.strategy_overrides.regime_gate_shadow",
+    "learning_mode.strategy_overrides.structures_entry_shadow"
+   ],
+   "release": "c0b8c94",
+   "rule": "t2_trend_regime",
+   "to": "2026-10-04T11:45:56+00:00",
+   "view_sha": "92282018beb6892bf60626b5fe0b7e52485cb63f576f853fb56ff5a262c7cc6e"
+  },
+  {
+   "books": [
+    "strategy_paper"
+   ],
+   "decisions_tr": [
+    "learning_mode.extra_entries: record_selectivity + Box öğrenme stop tabanı 0,32 → 0,5 (sahip kararı 2026-10-03)"
+   ],
+   "events": [
+    "f8b05fb"
+   ],
+   "from": "2026-10-04T11:45:56+00:00",
+   "from_release": "fc63481",
+   "id": "X2026-10-04T114556Z",
+   "kind": "TRANSITION",
+   "note_tr": "dağıtım anı yalnız pencereyle biliniyor: bu aralıkta açılan işlem hiçbir config dönemine atanmaz",
+   "opened_by": [
+    "learning_mode.extra_entries"
+   ],
+   "rule": "t2_trend_regime",
+   "to": "2026-10-05T04:55:00+00:00",
+   "to_release": "f8b05fb"
+  },
+  {
+   "books": [
+    "strategy_paper"
+   ],
+   "decisions_tr": [
+    "learning_mode.extra_entries: record_selectivity + Box öğrenme stop tabanı 0,32 → 0,5 (sahip kararı 2026-10-03)"
+   ],
+   "events": [
+    "f8b05fb"
+   ],
+   "from": "2026-10-05T04:55:00+00:00",
+   "id": "E2026-10-05T0455Z",
+   "kind": "CONFIG",
+   "opened_by": [
+    "learning_mode.extra_entries"
+   ],
+   "release": "f8b05fb",
+   "rule": "t2_trend_regime",
+   "to": null,
+   "view_sha": "159b8357adce0be01a1dfb132f9ce7b42d97df0e3ab64390b3727a0f57c114b9"
+  },
+  {
+   "books": [
+    "strategy_paper_m2"
+   ],
+   "from": "1970-01-01T00:00:00+00:00",
+   "id": "E0",
+   "kind": "PRE_HISTORY",
+   "note_tr": "taban 3b0ae8e config'i; daha önceki değişiklikler ve tabanın dağıtım saati belgelenmemiştir",
+   "release": "3b0ae8e",
+   "rule": "m2_tsmom28",
+   "to": "2026-09-25T17:35:20+00:00",
+   "view_sha": "2b3771d85c43f4df4865eccd62f858d300103531af9dafe8f02602c0a4a59fec"
+  },
+  {
+   "books": [
+    "strategy_paper_m2"
+   ],
+   "decisions_tr": [
+    "200 USDT bakiye ve ihtiyaç kadar kaldıraç (kullanıcı kararı 2026-09-21), yapı kataloğu ENFORCE (2026-09-22), fonlama settlement v2, Formasyon protokol v3 ve D4 gözlem defteri (kullanıcı onayı 2026-09-25)"
+   ],
+   "events": [
+    "4931c73"
+   ],
+   "from": "2026-09-25T17:35:20+00:00",
+   "from_release": "3b0ae8e",
+   "id": "X2026-09-25T173520Z",
+   "kind": "TRANSITION",
+   "note_tr": "dağıtım anı yalnız pencereyle biliniyor: bu aralıkta açılan işlem hiçbir config dönemine atanmaz",
+   "opened_by": [
+    "futures_v3.realized_funding_source",
+    "strategy_paper.extra[name=m2_tsmom28].max_entry_drift_pct",
+    "strategy_paper.extra[name=m2_tsmom28].rule_params.leverage",
+    "strategy_paper.extra[name=m2_tsmom28].rule_params.leverage_max",
+    "strategy_paper.extra[name=m2_tsmom28].starting_equity_usdt",
+    "structures.enabled",
+    "structures.m2_tsmom28",
+    "structures.policy_version"
+   ],
+   "rule": "m2_tsmom28",
+   "to": "2026-09-27T09:05:12+00:00",
+   "to_release": "4931c73"
+  },
+  {
+   "books": [
+    "strategy_paper_m2"
+   ],
+   "decisions_tr": [
+    "200 USDT bakiye ve ihtiyaç kadar kaldıraç (kullanıcı kararı 2026-09-21), yapı kataloğu ENFORCE (2026-09-22), fonlama settlement v2, Formasyon protokol v3 ve D4 gözlem defteri (kullanıcı onayı 2026-09-25)"
+   ],
+   "events": [
+    "4931c73"
+   ],
+   "from": "2026-09-27T09:05:12+00:00",
+   "id": "E2026-09-27T090512Z",
+   "kind": "CONFIG",
+   "opened_by": [
+    "futures_v3.realized_funding_source",
+    "strategy_paper.extra[name=m2_tsmom28].max_entry_drift_pct",
+    "strategy_paper.extra[name=m2_tsmom28].rule_params.leverage",
+    "strategy_paper.extra[name=m2_tsmom28].rule_params.leverage_max",
+    "strategy_paper.extra[name=m2_tsmom28].starting_equity_usdt",
+    "structures.enabled",
+    "structures.m2_tsmom28",
+    "structures.policy_version"
+   ],
+   "release": "4931c73",
+   "rule": "m2_tsmom28",
+   "to": "2026-09-28T21:20:00+00:00",
+   "view_sha": "a2a7a90b1f08471f184a7a82276ec067da7c4af9a0724b58f9df1ef0d4044e63"
+  },
+  {
+   "books": [
+    "strategy_paper_m2"
+   ],
+   "decisions_tr": [
+    "öğrenme modu L1 (YALNIZ PAPER) + C4 CV001–CV008 (7ad8832) + ana bot leverage_max 5"
+   ],
+   "events": [
+    "c0b8c94"
+   ],
+   "from": "2026-09-28T21:20:00+00:00",
+   "id": "E2026-09-28T2120Z",
+   "kind": "CONFIG",
+   "opened_by": [
+    "learning_mode.books.m2_tsmom28.enabled",
+    "learning_mode.books.m2_tsmom28.leverage_max",
+    "learning_mode.books.m2_tsmom28.slots",
+    "learning_mode.counterfactual",
+    "learning_mode.counterfactual_max_pending",
+    "learning_mode.enabled",
+    "learning_mode.liq_buffer_mult",
+    "learning_mode.margin_reserve_pct",
+    "learning_mode.max_total_open_risk_pct",
+    "learning_mode.min_notional_bump",
+    "learning_mode.risk_per_trade_pct",
+    "learning_mode.strategy_overrides.candle_veto_shadow",
+    "learning_mode.strategy_overrides.economics_exploration",
+    "learning_mode.strategy_overrides.leverage_confidence_fallback",
+    "learning_mode.strategy_overrides.regime_gate_shadow",
+    "learning_mode.strategy_overrides.structures_entry_shadow"
+   ],
+   "release": "c0b8c94",
+   "rule": "m2_tsmom28",
+   "to": "2026-10-04T11:45:56+00:00",
+   "view_sha": "e3418e008f62cfaa6447fa82b7dec59a681de176a9be96c51d2b889109d746c2"
+  },
+  {
+   "books": [
+    "strategy_paper_m2"
+   ],
+   "decisions_tr": [
+    "learning_mode.extra_entries: record_selectivity + Box öğrenme stop tabanı 0,32 → 0,5 (sahip kararı 2026-10-03)"
+   ],
+   "events": [
+    "f8b05fb"
+   ],
+   "from": "2026-10-04T11:45:56+00:00",
+   "from_release": "fc63481",
+   "id": "X2026-10-04T114556Z",
+   "kind": "TRANSITION",
+   "note_tr": "dağıtım anı yalnız pencereyle biliniyor: bu aralıkta açılan işlem hiçbir config dönemine atanmaz",
+   "opened_by": [
+    "learning_mode.extra_entries"
+   ],
+   "rule": "m2_tsmom28",
+   "to": "2026-10-05T04:55:00+00:00",
+   "to_release": "f8b05fb"
+  },
+  {
+   "books": [
+    "strategy_paper_m2"
+   ],
+   "decisions_tr": [
+    "learning_mode.extra_entries: record_selectivity + Box öğrenme stop tabanı 0,32 → 0,5 (sahip kararı 2026-10-03)"
+   ],
+   "events": [
+    "f8b05fb"
+   ],
+   "from": "2026-10-05T04:55:00+00:00",
+   "id": "E2026-10-05T0455Z",
+   "kind": "CONFIG",
+   "opened_by": [
+    "learning_mode.extra_entries"
+   ],
+   "release": "f8b05fb",
+   "rule": "m2_tsmom28",
+   "to": null,
+   "view_sha": "2c184bedba7596be753fe3b8725f0b03460e201aeee57d6f96556e0dc99b86ef"
+  },
+  {
+   "books": [
+    "strategy_paper_box"
+   ],
+   "from": "1970-01-01T00:00:00+00:00",
+   "id": "E0",
+   "kind": "PRE_HISTORY",
+   "note_tr": "taban 3b0ae8e config'i; daha önceki değişiklikler ve tabanın dağıtım saati belgelenmemiştir",
+   "release": "3b0ae8e",
+   "rule": "b1_box_fade",
+   "to": "2026-09-25T17:35:20+00:00",
+   "view_sha": "9a8afd6c23a44f06c0b6f84f771cef7b75297280148bd8fc96d2aa68b2d50a2d"
+  },
+  {
+   "books": [
+    "strategy_paper_box"
+   ],
+   "decisions_tr": [
+    "200 USDT bakiye ve ihtiyaç kadar kaldıraç (kullanıcı kararı 2026-09-21), yapı kataloğu ENFORCE (2026-09-22), fonlama settlement v2, Formasyon protokol v3 ve D4 gözlem defteri (kullanıcı onayı 2026-09-25)",
+    "Box yapı katmanı SHADOW (kullanıcı kararı B, 2026-09-27); C4/C4S boş gözlem defterleri"
+   ],
+   "events": [
+    "4931c73",
+    "a8fe2a5"
+   ],
+   "from": "2026-09-25T17:35:20+00:00",
+   "from_release": "3b0ae8e",
+   "id": "X2026-09-25T173520Z",
+   "kind": "TRANSITION",
+   "note_tr": "dağıtım anı yalnız pencereyle biliniyor: bu aralıkta açılan işlem hiçbir config dönemine atanmaz",
+   "opened_by": [
+    "futures_v3.realized_funding_source",
+    "strategy_paper.extra[name=b1_box_fade].rule_params.leverage_max",
+    "strategy_paper.extra[name=b1_box_fade].starting_equity_usdt",
+    "structures.b1_box_fade",
+    "structures.enabled",
+    "structures.policy_version"
+   ],
+   "rule": "b1_box_fade",
+   "to": "2026-09-27T22:55:33+00:00",
+   "to_release": "a8fe2a5"
+  },
+  {
+   "books": [
+    "strategy_paper_box"
+   ],
+   "decisions_tr": [
+    "200 USDT bakiye ve ihtiyaç kadar kaldıraç (kullanıcı kararı 2026-09-21), yapı kataloğu ENFORCE (2026-09-22), fonlama settlement v2, Formasyon protokol v3 ve D4 gözlem defteri (kullanıcı onayı 2026-09-25)",
+    "Box yapı katmanı SHADOW (kullanıcı kararı B, 2026-09-27); C4/C4S boş gözlem defterleri"
+   ],
+   "events": [
+    "4931c73",
+    "a8fe2a5"
+   ],
+   "from": "2026-09-27T22:55:33+00:00",
+   "id": "E2026-09-27T225533Z",
+   "kind": "CONFIG",
+   "opened_by": [
+    "futures_v3.realized_funding_source",
+    "strategy_paper.extra[name=b1_box_fade].rule_params.leverage_max",
+    "strategy_paper.extra[name=b1_box_fade].starting_equity_usdt",
+    "structures.b1_box_fade",
+    "structures.enabled",
+    "structures.policy_version"
+   ],
+   "release": "a8fe2a5",
+   "rule": "b1_box_fade",
+   "to": "2026-09-28T21:20:00+00:00",
+   "view_sha": "f2ecc21ccda9542399af75aa8c8edacd4fe1a63b262eb158e2df51aa8be9325c"
+  },
+  {
+   "books": [
+    "strategy_paper_box"
+   ],
+   "decisions_tr": [
+    "öğrenme modu L1 (YALNIZ PAPER) + C4 CV001–CV008 (7ad8832) + ana bot leverage_max 5"
+   ],
+   "events": [
+    "c0b8c94"
+   ],
+   "from": "2026-09-28T21:20:00+00:00",
+   "id": "E2026-09-28T2120Z",
+   "kind": "CONFIG",
+   "opened_by": [
+    "learning_mode.books.b1_box_fade.enabled",
+    "learning_mode.books.b1_box_fade.leverage_max",
+    "learning_mode.books.b1_box_fade.min_stop_pct",
+    "learning_mode.books.b1_box_fade.slots",
+    "learning_mode.counterfactual",
+    "learning_mode.counterfactual_max_pending",
+    "learning_mode.enabled",
+    "learning_mode.liq_buffer_mult",
+    "learning_mode.margin_reserve_pct",
+    "learning_mode.max_total_open_risk_pct",
+    "learning_mode.min_notional_bump",
+    "learning_mode.risk_per_trade_pct",
+    "learning_mode.strategy_overrides.candle_veto_shadow",
+    "learning_mode.strategy_overrides.economics_exploration",
+    "learning_mode.strategy_overrides.leverage_confidence_fallback",
+    "learning_mode.strategy_overrides.regime_gate_shadow",
+    "learning_mode.strategy_overrides.structures_entry_shadow"
+   ],
+   "release": "c0b8c94",
+   "rule": "b1_box_fade",
+   "to": "2026-09-29T22:43:00+00:00",
+   "view_sha": "e19f3d16ffacfb8eaeb60e054c53196c15cf8f90001c8237be9f0d04f674fe55"
+  },
+  {
+   "books": [
+    "strategy_paper_box"
+   ],
+   "decisions_tr": [
+    "Box öğrenme slotu 20 → 40 (kullanıcı onayı; ana belge §6.2'nin '2026-09-30' örnek sınırı = TR tarihi)"
+   ],
+   "events": [
+    "f6e6119"
+   ],
+   "from": "2026-09-29T22:43:00+00:00",
+   "id": "E2026-09-29T2243Z",
+   "kind": "CONFIG",
+   "opened_by": [
+    "learning_mode.books.b1_box_fade.slots"
+   ],
+   "release": "f6e6119",
+   "rule": "b1_box_fade",
+   "to": "2026-10-04T11:45:56+00:00",
+   "view_sha": "0f62378b3f9b1c53ae41b081bff1adbcefa4aaa9c808975a04d06110f61078b7"
+  },
+  {
+   "books": [
+    "strategy_paper_box"
+   ],
+   "decisions_tr": [
+    "learning_mode.extra_entries: record_selectivity + Box öğrenme stop tabanı 0,32 → 0,5 (sahip kararı 2026-10-03)"
+   ],
+   "events": [
+    "f8b05fb"
+   ],
+   "from": "2026-10-04T11:45:56+00:00",
+   "from_release": "fc63481",
+   "id": "X2026-10-04T114556Z",
+   "kind": "TRANSITION",
+   "note_tr": "dağıtım anı yalnız pencereyle biliniyor: bu aralıkta açılan işlem hiçbir config dönemine atanmaz",
+   "opened_by": [
+    "learning_mode.books.b1_box_fade.min_stop_pct",
+    "learning_mode.extra_entries"
+   ],
+   "rule": "b1_box_fade",
+   "to": "2026-10-05T04:55:00+00:00",
+   "to_release": "f8b05fb"
+  },
+  {
+   "books": [
+    "strategy_paper_box"
+   ],
+   "decisions_tr": [
+    "learning_mode.extra_entries: record_selectivity + Box öğrenme stop tabanı 0,32 → 0,5 (sahip kararı 2026-10-03)"
+   ],
+   "events": [
+    "f8b05fb"
+   ],
+   "from": "2026-10-05T04:55:00+00:00",
+   "id": "E2026-10-05T0455Z",
+   "kind": "CONFIG",
+   "opened_by": [
+    "learning_mode.books.b1_box_fade.min_stop_pct",
+    "learning_mode.extra_entries"
+   ],
+   "release": "f8b05fb",
+   "rule": "b1_box_fade",
+   "to": null,
+   "view_sha": "893c6bf7f8cc80d04fab046dc7b0e21f06d7e85d6e09d234483fdbf8316cb7aa"
+  },
+  {
+   "books": [
+    "pattern_trader"
+   ],
+   "from": "1970-01-01T00:00:00+00:00",
+   "id": "E0",
+   "kind": "PRE_HISTORY",
+   "note_tr": "taban 3b0ae8e config'i; daha önceki değişiklikler ve tabanın dağıtım saati belgelenmemiştir",
+   "release": "3b0ae8e",
+   "rule": "pattern_trader",
+   "to": "2026-09-25T17:35:20+00:00",
+   "view_sha": "85dd2d211ef7932575b75af35c883c867e8d8040120de783fa44aad941e5d9f7"
+  },
+  {
+   "books": [
+    "pattern_trader"
+   ],
+   "decisions_tr": [
+    "200 USDT bakiye ve ihtiyaç kadar kaldıraç (kullanıcı kararı 2026-09-21), yapı kataloğu ENFORCE (2026-09-22), fonlama settlement v2, Formasyon protokol v3 ve D4 gözlem defteri (kullanıcı onayı 2026-09-25)"
+   ],
+   "events": [
+    "4931c73"
+   ],
+   "from": "2026-09-25T17:35:20+00:00",
+   "from_release": "3b0ae8e",
+   "id": "X2026-09-25T173520Z",
+   "kind": "TRANSITION",
+   "note_tr": "dağıtım anı yalnız pencereyle biliniyor: bu aralıkta açılan işlem hiçbir config dönemine atanmaz",
+   "opened_by": [
+    "futures_v3.realized_funding_source",
+    "pattern_trader.protocol",
+    "pattern_trader.symbols",
+    "structures.enabled",
+    "structures.pattern_trader",
+    "structures.policy_version"
+   ],
+   "rule": "pattern_trader",
+   "to": "2026-09-27T09:05:12+00:00",
+   "to_release": "4931c73"
+  },
+  {
+   "books": [
+    "pattern_trader"
+   ],
+   "decisions_tr": [
+    "200 USDT bakiye ve ihtiyaç kadar kaldıraç (kullanıcı kararı 2026-09-21), yapı kataloğu ENFORCE (2026-09-22), fonlama settlement v2, Formasyon protokol v3 ve D4 gözlem defteri (kullanıcı onayı 2026-09-25)"
+   ],
+   "events": [
+    "4931c73"
+   ],
+   "from": "2026-09-27T09:05:12+00:00",
+   "id": "E2026-09-27T090512Z",
+   "kind": "CONFIG",
+   "opened_by": [
+    "futures_v3.realized_funding_source",
+    "pattern_trader.protocol",
+    "pattern_trader.symbols",
+    "structures.enabled",
+    "structures.pattern_trader",
+    "structures.policy_version"
+   ],
+   "release": "4931c73",
+   "rule": "pattern_trader",
+   "to": "2026-09-28T21:20:00+00:00",
+   "view_sha": "88b104315cf7eb45ca47ca1324fc00a5c06419c4a6e2c6d0e95b9645e86d4782"
+  },
+  {
+   "books": [
+    "pattern_trader"
+   ],
+   "decisions_tr": [
+    "öğrenme modu L1 (YALNIZ PAPER) + C4 CV001–CV008 (7ad8832) + ana bot leverage_max 5"
+   ],
+   "events": [
+    "c0b8c94"
+   ],
+   "from": "2026-09-28T21:20:00+00:00",
+   "id": "E2026-09-28T2120Z",
+   "kind": "CONFIG",
+   "opened_by": [
+    "learning_mode.books.pattern_trader.enabled",
+    "learning_mode.books.pattern_trader.leverage_max",
+    "learning_mode.books.pattern_trader.slots",
+    "learning_mode.counterfactual",
+    "learning_mode.counterfactual_max_pending",
+    "learning_mode.enabled",
+    "learning_mode.liq_buffer_mult",
+    "learning_mode.margin_reserve_pct",
+    "learning_mode.max_total_open_risk_pct",
+    "learning_mode.min_notional_bump",
+    "learning_mode.risk_per_trade_pct",
+    "learning_mode.strategy_overrides.candle_veto_shadow",
+    "learning_mode.strategy_overrides.economics_exploration",
+    "learning_mode.strategy_overrides.leverage_confidence_fallback",
+    "learning_mode.strategy_overrides.regime_gate_shadow",
+    "learning_mode.strategy_overrides.structures_entry_shadow"
+   ],
+   "release": "c0b8c94",
+   "rule": "pattern_trader",
+   "to": "2026-10-04T11:45:56+00:00",
+   "view_sha": "778526be55a35b7afc7098e979e7ee98f959e2681d56fbcc8a449ce277826960"
+  },
+  {
+   "books": [
+    "pattern_trader"
+   ],
+   "decisions_tr": [
+    "learning_mode.extra_entries: record_selectivity + Box öğrenme stop tabanı 0,32 → 0,5 (sahip kararı 2026-10-03)"
+   ],
+   "events": [
+    "f8b05fb"
+   ],
+   "from": "2026-10-04T11:45:56+00:00",
+   "from_release": "fc63481",
+   "id": "X2026-10-04T114556Z",
+   "kind": "TRANSITION",
+   "note_tr": "dağıtım anı yalnız pencereyle biliniyor: bu aralıkta açılan işlem hiçbir config dönemine atanmaz",
+   "opened_by": [
+    "learning_mode.extra_entries"
+   ],
+   "rule": "pattern_trader",
+   "to": "2026-10-05T04:55:00+00:00",
+   "to_release": "f8b05fb"
+  },
+  {
+   "books": [
+    "pattern_trader"
+   ],
+   "decisions_tr": [
+    "learning_mode.extra_entries: record_selectivity + Box öğrenme stop tabanı 0,32 → 0,5 (sahip kararı 2026-10-03)"
+   ],
+   "events": [
+    "f8b05fb"
+   ],
+   "from": "2026-10-05T04:55:00+00:00",
+   "id": "E2026-10-05T0455Z",
+   "kind": "CONFIG",
+   "opened_by": [
+    "learning_mode.extra_entries"
+   ],
+   "release": "f8b05fb",
+   "rule": "pattern_trader",
+   "to": null,
+   "view_sha": "eef01765695d01668965a3b425eb31c80a6d8b54deeb56df6e677b434398d81b"
+  },
+  {
+   "books": [
+    "strategy_paper_trend4h"
+   ],
+   "from": "1970-01-01T00:00:00+00:00",
+   "id": "E0",
+   "kind": "PRE_HISTORY",
+   "note_tr": "taban 3b0ae8e config'i; daha önceki değişiklikler ve tabanın dağıtım saati belgelenmemiştir",
+   "release": "3b0ae8e",
+   "rule": "d4_donchian_20_10",
+   "to": "2026-09-25T17:35:20+00:00",
+   "view_sha": "b0478ee30cacf5579b2b3570e4f942690770abf1fbb5092b01e2164da5312e17"
+  },
+  {
+   "books": [
+    "strategy_paper_trend4h"
+   ],
+   "decisions_tr": [
+    "200 USDT bakiye ve ihtiyaç kadar kaldıraç (kullanıcı kararı 2026-09-21), yapı kataloğu ENFORCE (2026-09-22), fonlama settlement v2, Formasyon protokol v3 ve D4 gözlem defteri (kullanıcı onayı 2026-09-25)"
+   ],
+   "events": [
+    "4931c73"
+   ],
+   "from": "2026-09-25T17:35:20+00:00",
+   "from_release": "3b0ae8e",
+   "id": "X2026-09-25T173520Z",
+   "kind": "TRANSITION",
+   "note_tr": "dağıtım anı yalnız pencereyle biliniyor: bu aralıkta açılan işlem hiçbir config dönemine atanmaz",
+   "opened_by": [
+    "futures_v3.realized_funding_source",
+    "strategy_paper.extra[name=d4_donchian_20_10].breakeven_at_mfe_r",
+    "strategy_paper.extra[name=d4_donchian_20_10].enabled",
+    "strategy_paper.extra[name=d4_donchian_20_10].max_entry_drift_pct",
+    "strategy_paper.extra[name=d4_donchian_20_10].name",
+    "strategy_paper.extra[name=d4_donchian_20_10].rule_params.entry_window_min",
+    "strategy_paper.extra[name=d4_donchian_20_10].rule_params.leverage",
+    "strategy_paper.extra[name=d4_donchian_20_10].starting_equity_usdt",
+    "strategy_paper.extra[name=d4_donchian_20_10].state_dir",
+    "strategy_paper.extra[name=d4_donchian_20_10].symbols",
+    "structures.enabled",
+    "structures.policy_version"
+   ],
+   "rule": "d4_donchian_20_10",
+   "to": "2026-09-27T09:05:12+00:00",
+   "to_release": "4931c73"
+  },
+  {
+   "books": [
+    "strategy_paper_trend4h"
+   ],
+   "decisions_tr": [
+    "200 USDT bakiye ve ihtiyaç kadar kaldıraç (kullanıcı kararı 2026-09-21), yapı kataloğu ENFORCE (2026-09-22), fonlama settlement v2, Formasyon protokol v3 ve D4 gözlem defteri (kullanıcı onayı 2026-09-25)"
+   ],
+   "events": [
+    "4931c73"
+   ],
+   "from": "2026-09-27T09:05:12+00:00",
+   "id": "E2026-09-27T090512Z",
+   "kind": "CONFIG",
+   "opened_by": [
+    "futures_v3.realized_funding_source",
+    "strategy_paper.extra[name=d4_donchian_20_10].breakeven_at_mfe_r",
+    "strategy_paper.extra[name=d4_donchian_20_10].enabled",
+    "strategy_paper.extra[name=d4_donchian_20_10].max_entry_drift_pct",
+    "strategy_paper.extra[name=d4_donchian_20_10].name",
+    "strategy_paper.extra[name=d4_donchian_20_10].rule_params.entry_window_min",
+    "strategy_paper.extra[name=d4_donchian_20_10].rule_params.leverage",
+    "strategy_paper.extra[name=d4_donchian_20_10].starting_equity_usdt",
+    "strategy_paper.extra[name=d4_donchian_20_10].state_dir",
+    "strategy_paper.extra[name=d4_donchian_20_10].symbols",
+    "structures.enabled",
+    "structures.policy_version"
+   ],
+   "release": "4931c73",
+   "rule": "d4_donchian_20_10",
+   "to": "2026-09-28T21:20:00+00:00",
+   "view_sha": "bc9418ab0f9504725c591e746d1ee624d2e39d753cd88b533e644c12f9f3a85d"
+  },
+  {
+   "books": [
+    "strategy_paper_trend4h"
+   ],
+   "decisions_tr": [
+    "öğrenme modu L1 (YALNIZ PAPER) + C4 CV001–CV008 (7ad8832) + ana bot leverage_max 5"
+   ],
+   "events": [
+    "c0b8c94"
+   ],
+   "from": "2026-09-28T21:20:00+00:00",
+   "id": "E2026-09-28T2120Z",
+   "kind": "CONFIG",
+   "opened_by": [
+    "learning_mode.books.d4_donchian_20_10.enabled",
+    "learning_mode.books.d4_donchian_20_10.leverage_max",
+    "learning_mode.books.d4_donchian_20_10.slots",
+    "learning_mode.books.d4_donchian_20_10.symbols",
+    "learning_mode.counterfactual",
+    "learning_mode.counterfactual_max_pending",
+    "learning_mode.enabled",
+    "learning_mode.liq_buffer_mult",
+    "learning_mode.margin_reserve_pct",
+    "learning_mode.max_total_open_risk_pct",
+    "learning_mode.min_notional_bump",
+    "learning_mode.risk_per_trade_pct",
+    "learning_mode.strategy_overrides.candle_veto_shadow",
+    "learning_mode.strategy_overrides.economics_exploration",
+    "learning_mode.strategy_overrides.leverage_confidence_fallback",
+    "learning_mode.strategy_overrides.regime_gate_shadow",
+    "learning_mode.strategy_overrides.structures_entry_shadow"
+   ],
+   "release": "c0b8c94",
+   "rule": "d4_donchian_20_10",
+   "to": "2026-10-04T11:45:56+00:00",
+   "view_sha": "d37f7e2797d796eabbccb9e8f39cd4247b1d2a67e28ba007aa0ff8e4ccc1b0b9"
+  },
+  {
+   "books": [
+    "strategy_paper_trend4h"
+   ],
+   "decisions_tr": [
+    "learning_mode.extra_entries: record_selectivity + Box öğrenme stop tabanı 0,32 → 0,5 (sahip kararı 2026-10-03)"
+   ],
+   "events": [
+    "f8b05fb"
+   ],
+   "from": "2026-10-04T11:45:56+00:00",
+   "from_release": "fc63481",
+   "id": "X2026-10-04T114556Z",
+   "kind": "TRANSITION",
+   "note_tr": "dağıtım anı yalnız pencereyle biliniyor: bu aralıkta açılan işlem hiçbir config dönemine atanmaz",
+   "opened_by": [
+    "learning_mode.extra_entries"
+   ],
+   "rule": "d4_donchian_20_10",
+   "to": "2026-10-05T04:55:00+00:00",
+   "to_release": "f8b05fb"
+  },
+  {
+   "books": [
+    "strategy_paper_trend4h"
+   ],
+   "decisions_tr": [
+    "learning_mode.extra_entries: record_selectivity + Box öğrenme stop tabanı 0,32 → 0,5 (sahip kararı 2026-10-03)"
+   ],
+   "events": [
+    "f8b05fb"
+   ],
+   "from": "2026-10-05T04:55:00+00:00",
+   "id": "E2026-10-05T0455Z",
+   "kind": "CONFIG",
+   "opened_by": [
+    "learning_mode.extra_entries"
+   ],
+   "release": "f8b05fb",
+   "rule": "d4_donchian_20_10",
+   "to": null,
+   "view_sha": "21fa7201090315df14c8bdd48eb182d98a8d9b206273607cac3d54783e5897c6"
+  },
+  {
+   "books": [
+    "strategy_paper_candle4h"
+   ],
+   "from": "1970-01-01T00:00:00+00:00",
+   "id": "E0",
+   "kind": "PRE_HISTORY",
+   "note_tr": "taban 3b0ae8e config'i; daha önceki değişiklikler ve tabanın dağıtım saati belgelenmemiştir",
+   "release": "3b0ae8e",
+   "rule": "c4_candle_variations",
+   "to": "2026-09-25T17:35:20+00:00",
+   "view_sha": "b0478ee30cacf5579b2b3570e4f942690770abf1fbb5092b01e2164da5312e17"
+  },
+  {
+   "books": [
+    "strategy_paper_candle4h"
+   ],
+   "decisions_tr": [
+    "200 USDT bakiye ve ihtiyaç kadar kaldıraç (kullanıcı kararı 2026-09-21), yapı kataloğu ENFORCE (2026-09-22), fonlama settlement v2, Formasyon protokol v3 ve D4 gözlem defteri (kullanıcı onayı 2026-09-25)",
+    "Box yapı katmanı SHADOW (kullanıcı kararı B, 2026-09-27); C4/C4S boş gözlem defterleri"
+   ],
+   "events": [
+    "4931c73",
+    "a8fe2a5"
+   ],
+   "from": "2026-09-25T17:35:20+00:00",
+   "from_release": "3b0ae8e",
+   "id": "X2026-09-25T173520Z",
+   "kind": "TRANSITION",
+   "note_tr": "dağıtım anı yalnız pencereyle biliniyor: bu aralıkta açılan işlem hiçbir config dönemine atanmaz",
+   "opened_by": [
+    "futures_v3.realized_funding_source",
+    "strategy_paper.extra[name=c4_candle_variations].breakeven_at_mfe_r",
+    "strategy_paper.extra[name=c4_candle_variations].enabled",
+    "strategy_paper.extra[name=c4_candle_variations].max_entry_drift_pct",
+    "strategy_paper.extra[name=c4_candle_variations].name",
+    "strategy_paper.extra[name=c4_candle_variations].rule_params.entry_window_min",
+    "strategy_paper.extra[name=c4_candle_variations].rule_params.leverage",
+    "strategy_paper.extra[name=c4_candle_variations].rule_params.variations",
+    "strategy_paper.extra[name=c4_candle_variations].starting_equity_usdt",
+    "strategy_paper.extra[name=c4_candle_variations].state_dir",
+    "strategy_paper.extra[name=c4_candle_variations].symbols",
+    "structures.enabled",
+    "structures.policy_version"
+   ],
+   "rule": "c4_candle_variations",
+   "to": "2026-09-27T22:55:33+00:00",
+   "to_release": "a8fe2a5"
+  },
+  {
+   "books": [
+    "strategy_paper_candle4h"
+   ],
+   "decisions_tr": [
+    "200 USDT bakiye ve ihtiyaç kadar kaldıraç (kullanıcı kararı 2026-09-21), yapı kataloğu ENFORCE (2026-09-22), fonlama settlement v2, Formasyon protokol v3 ve D4 gözlem defteri (kullanıcı onayı 2026-09-25)",
+    "Box yapı katmanı SHADOW (kullanıcı kararı B, 2026-09-27); C4/C4S boş gözlem defterleri"
+   ],
+   "events": [
+    "4931c73",
+    "a8fe2a5"
+   ],
+   "from": "2026-09-27T22:55:33+00:00",
+   "id": "E2026-09-27T225533Z",
+   "kind": "CONFIG",
+   "opened_by": [
+    "futures_v3.realized_funding_source",
+    "strategy_paper.extra[name=c4_candle_variations].breakeven_at_mfe_r",
+    "strategy_paper.extra[name=c4_candle_variations].enabled",
+    "strategy_paper.extra[name=c4_candle_variations].max_entry_drift_pct",
+    "strategy_paper.extra[name=c4_candle_variations].name",
+    "strategy_paper.extra[name=c4_candle_variations].rule_params.entry_window_min",
+    "strategy_paper.extra[name=c4_candle_variations].rule_params.leverage",
+    "strategy_paper.extra[name=c4_candle_variations].rule_params.variations",
+    "strategy_paper.extra[name=c4_candle_variations].starting_equity_usdt",
+    "strategy_paper.extra[name=c4_candle_variations].state_dir",
+    "strategy_paper.extra[name=c4_candle_variations].symbols",
+    "structures.enabled",
+    "structures.policy_version"
+   ],
+   "release": "a8fe2a5",
+   "rule": "c4_candle_variations",
+   "to": "2026-09-28T21:20:00+00:00",
+   "view_sha": "b35092561108b59d4dd0f2d08f190880668e877921fdc033c3a554c1b2367f3e"
+  },
+  {
+   "books": [
+    "strategy_paper_candle4h"
+   ],
+   "decisions_tr": [
+    "öğrenme modu L1 (YALNIZ PAPER) + C4 CV001–CV008 (7ad8832) + ana bot leverage_max 5"
+   ],
+   "events": [
+    "c0b8c94"
+   ],
+   "from": "2026-09-28T21:20:00+00:00",
+   "id": "E2026-09-28T2120Z",
+   "kind": "CONFIG",
+   "opened_by": [
+    "learning_mode.books.c4_candle_variations.enabled",
+    "learning_mode.books.c4_candle_variations.leverage_max",
+    "learning_mode.books.c4_candle_variations.slots",
+    "learning_mode.books.c4_candle_variations.symbols",
+    "learning_mode.counterfactual",
+    "learning_mode.counterfactual_max_pending",
+    "learning_mode.enabled",
+    "learning_mode.liq_buffer_mult",
+    "learning_mode.margin_reserve_pct",
+    "learning_mode.max_total_open_risk_pct",
+    "learning_mode.min_notional_bump",
+    "learning_mode.risk_per_trade_pct",
+    "learning_mode.strategy_overrides.candle_veto_shadow",
+    "learning_mode.strategy_overrides.economics_exploration",
+    "learning_mode.strategy_overrides.leverage_confidence_fallback",
+    "learning_mode.strategy_overrides.regime_gate_shadow",
+    "learning_mode.strategy_overrides.structures_entry_shadow",
+    "strategy_paper.extra[name=c4_candle_variations].rule_params.variations"
+   ],
+   "release": "c0b8c94",
+   "rule": "c4_candle_variations",
+   "to": "2026-10-04T11:45:56+00:00",
+   "view_sha": "95363fe6cc90c0f3ace36bf477c712c2e2fbb241dc9c9469dee573d105e79dff"
+  },
+  {
+   "books": [
+    "strategy_paper_candle4h"
+   ],
+   "decisions_tr": [
+    "learning_mode.extra_entries: record_selectivity + Box öğrenme stop tabanı 0,32 → 0,5 (sahip kararı 2026-10-03)"
+   ],
+   "events": [
+    "f8b05fb"
+   ],
+   "from": "2026-10-04T11:45:56+00:00",
+   "from_release": "fc63481",
+   "id": "X2026-10-04T114556Z",
+   "kind": "TRANSITION",
+   "note_tr": "dağıtım anı yalnız pencereyle biliniyor: bu aralıkta açılan işlem hiçbir config dönemine atanmaz",
+   "opened_by": [
+    "learning_mode.extra_entries"
+   ],
+   "rule": "c4_candle_variations",
+   "to": "2026-10-05T04:55:00+00:00",
+   "to_release": "f8b05fb"
+  },
+  {
+   "books": [
+    "strategy_paper_candle4h"
+   ],
+   "decisions_tr": [
+    "learning_mode.extra_entries: record_selectivity + Box öğrenme stop tabanı 0,32 → 0,5 (sahip kararı 2026-10-03)"
+   ],
+   "events": [
+    "f8b05fb"
+   ],
+   "from": "2026-10-05T04:55:00+00:00",
+   "id": "E2026-10-05T0455Z",
+   "kind": "CONFIG",
+   "opened_by": [
+    "learning_mode.extra_entries"
+   ],
+   "release": "f8b05fb",
+   "rule": "c4_candle_variations",
+   "to": null,
+   "view_sha": "1f2bc5865ec1705d2a2f8777388c86e59201a6edf58773f03f7f6f01ecd57681"
+  },
+  {
+   "books": [
+    "strategy_paper_candle4h_strict"
+   ],
+   "from": "1970-01-01T00:00:00+00:00",
+   "id": "E0",
+   "kind": "PRE_HISTORY",
+   "note_tr": "taban 3b0ae8e config'i; daha önceki değişiklikler ve tabanın dağıtım saati belgelenmemiştir",
+   "release": "3b0ae8e",
+   "rule": "c4s_candle_variations_strict",
+   "to": "2026-09-25T17:35:20+00:00",
+   "view_sha": "b0478ee30cacf5579b2b3570e4f942690770abf1fbb5092b01e2164da5312e17"
+  },
+  {
+   "books": [
+    "strategy_paper_candle4h_strict"
+   ],
+   "decisions_tr": [
+    "200 USDT bakiye ve ihtiyaç kadar kaldıraç (kullanıcı kararı 2026-09-21), yapı kataloğu ENFORCE (2026-09-22), fonlama settlement v2, Formasyon protokol v3 ve D4 gözlem defteri (kullanıcı onayı 2026-09-25)",
+    "Box yapı katmanı SHADOW (kullanıcı kararı B, 2026-09-27); C4/C4S boş gözlem defterleri"
+   ],
+   "events": [
+    "4931c73",
+    "a8fe2a5"
+   ],
+   "from": "2026-09-25T17:35:20+00:00",
+   "from_release": "3b0ae8e",
+   "id": "X2026-09-25T173520Z",
+   "kind": "TRANSITION",
+   "note_tr": "dağıtım anı yalnız pencereyle biliniyor: bu aralıkta açılan işlem hiçbir config dönemine atanmaz",
+   "opened_by": [
+    "futures_v3.realized_funding_source",
+    "strategy_paper.extra[name=c4s_candle_variations_strict].breakeven_at_mfe_r",
+    "strategy_paper.extra[name=c4s_candle_variations_strict].enabled",
+    "strategy_paper.extra[name=c4s_candle_variations_strict].max_entry_drift_pct",
+    "strategy_paper.extra[name=c4s_candle_variations_strict].name",
+    "strategy_paper.extra[name=c4s_candle_variations_strict].rule_params.entry_window_min",
+    "strategy_paper.extra[name=c4s_candle_variations_strict].rule_params.leverage",
+    "strategy_paper.extra[name=c4s_candle_variations_strict].rule_params.variations",
+    "strategy_paper.extra[name=c4s_candle_variations_strict].rule_params.verdict_mode",
+    "strategy_paper.extra[name=c4s_candle_variations_strict].starting_equity_usdt",
+    "strategy_paper.extra[name=c4s_candle_variations_strict].state_dir",
+    "strategy_paper.extra[name=c4s_candle_variations_strict].symbols",
+    "structures.enabled",
+    "structures.policy_version"
+   ],
+   "rule": "c4s_candle_variations_strict",
+   "to": "2026-09-27T22:55:33+00:00",
+   "to_release": "a8fe2a5"
+  },
+  {
+   "books": [
+    "strategy_paper_candle4h_strict"
+   ],
+   "decisions_tr": [
+    "200 USDT bakiye ve ihtiyaç kadar kaldıraç (kullanıcı kararı 2026-09-21), yapı kataloğu ENFORCE (2026-09-22), fonlama settlement v2, Formasyon protokol v3 ve D4 gözlem defteri (kullanıcı onayı 2026-09-25)",
+    "Box yapı katmanı SHADOW (kullanıcı kararı B, 2026-09-27); C4/C4S boş gözlem defterleri"
+   ],
+   "events": [
+    "4931c73",
+    "a8fe2a5"
+   ],
+   "from": "2026-09-27T22:55:33+00:00",
+   "id": "E2026-09-27T225533Z",
+   "kind": "CONFIG",
+   "opened_by": [
+    "futures_v3.realized_funding_source",
+    "strategy_paper.extra[name=c4s_candle_variations_strict].breakeven_at_mfe_r",
+    "strategy_paper.extra[name=c4s_candle_variations_strict].enabled",
+    "strategy_paper.extra[name=c4s_candle_variations_strict].max_entry_drift_pct",
+    "strategy_paper.extra[name=c4s_candle_variations_strict].name",
+    "strategy_paper.extra[name=c4s_candle_variations_strict].rule_params.entry_window_min",
+    "strategy_paper.extra[name=c4s_candle_variations_strict].rule_params.leverage",
+    "strategy_paper.extra[name=c4s_candle_variations_strict].rule_params.variations",
+    "strategy_paper.extra[name=c4s_candle_variations_strict].rule_params.verdict_mode",
+    "strategy_paper.extra[name=c4s_candle_variations_strict].starting_equity_usdt",
+    "strategy_paper.extra[name=c4s_candle_variations_strict].state_dir",
+    "strategy_paper.extra[name=c4s_candle_variations_strict].symbols",
+    "structures.enabled",
+    "structures.policy_version"
+   ],
+   "release": "a8fe2a5",
+   "rule": "c4s_candle_variations_strict",
+   "to": "2026-09-28T21:20:00+00:00",
+   "view_sha": "153d08737e333437ac9dbde584d3beff6338f14f934afe7433fc781256c06107"
+  },
+  {
+   "books": [
+    "strategy_paper_candle4h_strict"
+   ],
+   "decisions_tr": [
+    "öğrenme modu L1 (YALNIZ PAPER) + C4 CV001–CV008 (7ad8832) + ana bot leverage_max 5"
+   ],
+   "events": [
+    "c0b8c94"
+   ],
+   "from": "2026-09-28T21:20:00+00:00",
+   "id": "E2026-09-28T2120Z",
+   "kind": "CONFIG",
+   "opened_by": [
+    "learning_mode.books.c4s_candle_variations_strict.enabled",
+    "learning_mode.counterfactual",
+    "learning_mode.counterfactual_max_pending",
+    "learning_mode.enabled",
+    "learning_mode.liq_buffer_mult",
+    "learning_mode.margin_reserve_pct",
+    "learning_mode.max_total_open_risk_pct",
+    "learning_mode.min_notional_bump",
+    "learning_mode.risk_per_trade_pct",
+    "learning_mode.strategy_overrides.candle_veto_shadow",
+    "learning_mode.strategy_overrides.economics_exploration",
+    "learning_mode.strategy_overrides.leverage_confidence_fallback",
+    "learning_mode.strategy_overrides.regime_gate_shadow",
+    "learning_mode.strategy_overrides.structures_entry_shadow"
+   ],
+   "release": "c0b8c94",
+   "rule": "c4s_candle_variations_strict",
+   "to": "2026-10-04T11:45:56+00:00",
+   "view_sha": "0fdafe7be64dbd4fff3fe7b750f447baed8dcb07e21e4ae6c8eeb8171ec5e471"
+  },
+  {
+   "books": [
+    "strategy_paper_candle4h_strict"
+   ],
+   "decisions_tr": [
+    "learning_mode.extra_entries: record_selectivity + Box öğrenme stop tabanı 0,32 → 0,5 (sahip kararı 2026-10-03)"
+   ],
+   "events": [
+    "f8b05fb"
+   ],
+   "from": "2026-10-04T11:45:56+00:00",
+   "from_release": "fc63481",
+   "id": "X2026-10-04T114556Z",
+   "kind": "TRANSITION",
+   "note_tr": "dağıtım anı yalnız pencereyle biliniyor: bu aralıkta açılan işlem hiçbir config dönemine atanmaz",
+   "opened_by": [
+    "learning_mode.extra_entries"
+   ],
+   "rule": "c4s_candle_variations_strict",
+   "to": "2026-10-05T04:55:00+00:00",
+   "to_release": "f8b05fb"
+  },
+  {
+   "books": [
+    "strategy_paper_candle4h_strict"
+   ],
+   "decisions_tr": [
+    "learning_mode.extra_entries: record_selectivity + Box öğrenme stop tabanı 0,32 → 0,5 (sahip kararı 2026-10-03)"
+   ],
+   "events": [
+    "f8b05fb"
+   ],
+   "from": "2026-10-05T04:55:00+00:00",
+   "id": "E2026-10-05T0455Z",
+   "kind": "CONFIG",
+   "opened_by": [
+    "learning_mode.extra_entries"
+   ],
+   "release": "f8b05fb",
+   "rule": "c4s_candle_variations_strict",
+   "to": null,
+   "view_sha": "8e2aaaacf7c026d7e2136575e020c6b19b8e249b76c2be8e508d67fd16b48aea"
+  },
+  {
+   "books": [
+    "strategy_paper_m2x"
+   ],
+   "from": "1970-01-01T00:00:00+00:00",
+   "id": "E0",
+   "kind": "PRE_HISTORY",
+   "note_tr": "taban 3b0ae8e config'i; daha önceki değişiklikler ve tabanın dağıtım saati belgelenmemiştir",
+   "release": "3b0ae8e",
+   "rule": "m2x_aggressive",
+   "to": "2026-09-25T17:35:20+00:00",
+   "view_sha": "b0478ee30cacf5579b2b3570e4f942690770abf1fbb5092b01e2164da5312e17"
+  },
+  {
+   "books": [
+    "strategy_paper_m2x"
+   ],
+   "decisions_tr": [
+    "200 USDT bakiye ve ihtiyaç kadar kaldıraç (kullanıcı kararı 2026-09-21), yapı kataloğu ENFORCE (2026-09-22), fonlama settlement v2, Formasyon protokol v3 ve D4 gözlem defteri (kullanıcı onayı 2026-09-25)"
+   ],
+   "events": [
+    "4931c73"
+   ],
+   "from": "2026-09-25T17:35:20+00:00",
+   "from_release": "3b0ae8e",
+   "id": "X2026-09-25T173520Z",
+   "kind": "TRANSITION",
+   "note_tr": "dağıtım anı yalnız pencereyle biliniyor: bu aralıkta açılan işlem hiçbir config dönemine atanmaz",
+   "opened_by": [
+    "futures_v3.realized_funding_source",
+    "structures.enabled",
+    "structures.policy_version"
+   ],
+   "rule": "m2x_aggressive",
+   "to": "2026-09-27T09:05:12+00:00",
+   "to_release": "4931c73"
+  },
+  {
+   "books": [
+    "strategy_paper_m2x"
+   ],
+   "decisions_tr": [
+    "200 USDT bakiye ve ihtiyaç kadar kaldıraç (kullanıcı kararı 2026-09-21), yapı kataloğu ENFORCE (2026-09-22), fonlama settlement v2, Formasyon protokol v3 ve D4 gözlem defteri (kullanıcı onayı 2026-09-25)"
+   ],
+   "events": [
+    "4931c73"
+   ],
+   "from": "2026-09-27T09:05:12+00:00",
+   "id": "E2026-09-27T090512Z",
+   "kind": "CONFIG",
+   "opened_by": [
+    "futures_v3.realized_funding_source",
+    "structures.enabled",
+    "structures.policy_version"
+   ],
+   "release": "4931c73",
+   "rule": "m2x_aggressive",
+   "to": "2026-09-28T21:20:00+00:00",
+   "view_sha": "a2f2d6c548e77c5f55fe0357f8256db8cf9fb7b45bda46f97cd1e5ea412b6a63"
+  },
+  {
+   "books": [
+    "strategy_paper_m2x"
+   ],
+   "decisions_tr": [
+    "öğrenme modu L1 (YALNIZ PAPER) + C4 CV001–CV008 (7ad8832) + ana bot leverage_max 5"
+   ],
+   "events": [
+    "c0b8c94"
+   ],
+   "from": "2026-09-28T21:20:00+00:00",
+   "id": "E2026-09-28T2120Z",
+   "kind": "CONFIG",
+   "opened_by": [
+    "learning_mode.counterfactual",
+    "learning_mode.counterfactual_max_pending",
+    "learning_mode.enabled",
+    "learning_mode.liq_buffer_mult",
+    "learning_mode.margin_reserve_pct",
+    "learning_mode.max_total_open_risk_pct",
+    "learning_mode.min_notional_bump",
+    "learning_mode.risk_per_trade_pct",
+    "learning_mode.strategy_overrides.candle_veto_shadow",
+    "learning_mode.strategy_overrides.economics_exploration",
+    "learning_mode.strategy_overrides.leverage_confidence_fallback",
+    "learning_mode.strategy_overrides.regime_gate_shadow",
+    "learning_mode.strategy_overrides.structures_entry_shadow"
+   ],
+   "release": "c0b8c94",
+   "rule": "m2x_aggressive",
+   "to": "2026-10-04T11:45:56+00:00",
+   "view_sha": "8ff4c651e78469c68fff9c644f5c26347211d6122614bcff61460464ee3ce233"
+  },
+  {
+   "books": [
+    "strategy_paper_m2x"
+   ],
+   "decisions_tr": [
+    "learning_mode.extra_entries: record_selectivity + Box öğrenme stop tabanı 0,32 → 0,5 (sahip kararı 2026-10-03)"
+   ],
+   "events": [
+    "f8b05fb"
+   ],
+   "from": "2026-10-04T11:45:56+00:00",
+   "from_release": "fc63481",
+   "id": "X2026-10-04T114556Z",
+   "kind": "TRANSITION",
+   "note_tr": "dağıtım anı yalnız pencereyle biliniyor: bu aralıkta açılan işlem hiçbir config dönemine atanmaz",
+   "opened_by": [
+    "learning_mode.extra_entries"
+   ],
+   "rule": "m2x_aggressive",
+   "to": "2026-10-05T04:55:00+00:00",
+   "to_release": "f8b05fb"
+  },
+  {
+   "books": [
+    "strategy_paper_m2x"
+   ],
+   "decisions_tr": [
+    "learning_mode.extra_entries: record_selectivity + Box öğrenme stop tabanı 0,32 → 0,5 (sahip kararı 2026-10-03)"
+   ],
+   "events": [
+    "f8b05fb"
+   ],
+   "from": "2026-10-05T04:55:00+00:00",
+   "id": "E2026-10-05T0455Z",
+   "kind": "CONFIG",
+   "opened_by": [
+    "learning_mode.extra_entries"
+   ],
+   "release": "f8b05fb",
+   "rule": "m2x_aggressive",
+   "to": "2026-10-07T19:31:00+00:00",
+   "view_sha": "1f0f34229561908939c638692d688341a915e559c0a153c70d129fdde2ee7975"
+  },
+  {
+   "books": [
+    "strategy_paper_m2x"
+   ],
+   "decisions_tr": [
+    "M2X bölümü (kod ve config varsayılanı KAPALI); yerel evidence_subprocess satırı dağıtımda geri alındı"
+   ],
+   "events": [
+    "db5db96"
+   ],
+   "from": "2026-10-07T19:31:00+00:00",
+   "id": "E2026-10-07T1931Z",
+   "kind": "CONFIG",
+   "opened_by": [
+    "m2x_aggressive.enabled",
+    "m2x_aggressive.new_entries",
+    "m2x_aggressive.parent",
+    "m2x_aggressive.policy_version",
+    "m2x_aggressive.starting_equity_usdt",
+    "m2x_aggressive.state_dir"
+   ],
+   "release": "db5db96",
+   "rule": "m2x_aggressive",
+   "to": null,
+   "view_sha": "828766d5c577fa56c54b9332d4fe727ef83276177e4cd9a6acea1c5f78faeda6"
+  }
+ ],
+ "generator": "tradingbot/research_engine/epochs.py (scripts/gen_config_epochs.py; git geçmişi + belgelenmiş kayıtlar)",
+ "local_edits": [
+  {
+   "at": "2026-10-06T13:56:00+00:00",
+   "decision_tr": "sahibin pattern kanıtı alt süreci kapatması (karar değiştirmez)",
+   "id": "evidence_subprocess_off",
+   "path": "history.evidence_subprocess",
+   "source": "deploy/releases/tb-deploy-db5db96.sh başlığı: 'YEREL config.yaml DEĞİŞİKLİĞİ (2026-10-06 13:56 UTC, sahibin alt süreç kill switch'i)'; dağıtımda git checkout -- config.yaml ile geri alınır",
+   "until_release": "db5db96",
+   "value": false
+  }
+ ],
+ "releases": [
+  {
+   "config_sha256": "fd6459b50959a99588d22cf28f145c25220c03dfd5785286034809083d804384",
+   "decision_tr": "bilinen en eski taban",
+   "release": "3b0ae8e",
+   "sha": "3b0ae8e0607111193207b984b2c9ac2e8138770e",
+   "source": "deploy/releases/tb-deploy-4931c73.sh:22 PREREQ (bundle tabanı: VPS'te bulunması gereken son bilinen commit); dağıtım saati ve daha önceki config değişiklikleri depoda yok",
+   "status": "BASE"
+  },
+  {
+   "changed_paths": [
+    "futures_v3.realized_funding_source",
+    "pattern_trader.protocol",
+    "pattern_trader.symbols",
+    "strategy_paper.extra[name=b1_box_fade].rule_params.leverage_max",
+    "strategy_paper.extra[name=b1_box_fade].starting_equity_usdt",
+    "strategy_paper.extra[name=d4_donchian_20_10].breakeven_at_mfe_r",
+    "strategy_paper.extra[name=d4_donchian_20_10].enabled",
+    "strategy_paper.extra[name=d4_donchian_20_10].max_entry_drift_pct",
+    "strategy_paper.extra[name=d4_donchian_20_10].name",
+    "strategy_paper.extra[name=d4_donchian_20_10].rule_params.entry_window_min",
+    "strategy_paper.extra[name=d4_donchian_20_10].rule_params.leverage",
+    "strategy_paper.extra[name=d4_donchian_20_10].starting_equity_usdt",
+    "strategy_paper.extra[name=d4_donchian_20_10].state_dir",
+    "strategy_paper.extra[name=d4_donchian_20_10].symbols",
+    "strategy_paper.extra[name=m2_tsmom28].max_entry_drift_pct",
+    "strategy_paper.extra[name=m2_tsmom28].rule_params.leverage",
+    "strategy_paper.extra[name=m2_tsmom28].rule_params.leverage_max",
+    "strategy_paper.extra[name=m2_tsmom28].starting_equity_usdt",
+    "strategy_paper[name=t2_trend_regime].max_entry_drift_pct",
+    "strategy_paper[name=t2_trend_regime].rule_params.leverage",
+    "strategy_paper[name=t2_trend_regime].rule_params.leverage_max",
+    "strategy_paper[name=t2_trend_regime].starting_equity_usdt",
+    "structures.b1_box_fade",
+    "structures.enabled",
+    "structures.m2_tsmom28",
+    "structures.main",
+    "structures.pattern_trader",
+    "structures.policy_version",
+    "structures.t2_trend_regime"
+   ],
+   "config_sha256": "c8f125ff4ca59e6d5c35d6477f18cd875ebdffe3d097fa24171a43659e01ba7b",
+   "decision_tr": "200 USDT bakiye ve ihtiyaç kadar kaldıraç (kullanıcı kararı 2026-09-21), yapı kataloğu ENFORCE (2026-09-22), fonlama settlement v2, Formasyon protokol v3 ve D4 gözlem defteri (kullanıcı onayı 2026-09-25)",
+   "release": "4931c73",
+   "sha": "4931c73c2978b6161180650b19f0ebab789f722c",
+   "source": "alt: sürüm betiğinin ilk commit'i ece2edd; üst: tb-deploy-a8fe2a5.sh:22 (95735f7) 'VPS'te çalışan sürüm (2026-09-26 dağıtımı)'",
+   "status": "DEPLOYED",
+   "window": [
+    "2026-09-25T17:35:20+00:00",
+    "2026-09-27T09:05:12+00:00"
+   ]
+  },
+  {
+   "changed_paths": [
+    "strategy_paper.extra[name=c4_candle_variations].breakeven_at_mfe_r",
+    "strategy_paper.extra[name=c4_candle_variations].enabled",
+    "strategy_paper.extra[name=c4_candle_variations].max_entry_drift_pct",
+    "strategy_paper.extra[name=c4_candle_variations].name",
+    "strategy_paper.extra[name=c4_candle_variations].rule_params.entry_window_min",
+    "strategy_paper.extra[name=c4_candle_variations].rule_params.leverage",
+    "strategy_paper.extra[name=c4_candle_variations].rule_params.variations",
+    "strategy_paper.extra[name=c4_candle_variations].starting_equity_usdt",
+    "strategy_paper.extra[name=c4_candle_variations].state_dir",
+    "strategy_paper.extra[name=c4_candle_variations].symbols",
+    "strategy_paper.extra[name=c4s_candle_variations_strict].breakeven_at_mfe_r",
+    "strategy_paper.extra[name=c4s_candle_variations_strict].enabled",
+    "strategy_paper.extra[name=c4s_candle_variations_strict].max_entry_drift_pct",
+    "strategy_paper.extra[name=c4s_candle_variations_strict].name",
+    "strategy_paper.extra[name=c4s_candle_variations_strict].rule_params.entry_window_min",
+    "strategy_paper.extra[name=c4s_candle_variations_strict].rule_params.leverage",
+    "strategy_paper.extra[name=c4s_candle_variations_strict].rule_params.variations",
+    "strategy_paper.extra[name=c4s_candle_variations_strict].rule_params.verdict_mode",
+    "strategy_paper.extra[name=c4s_candle_variations_strict].starting_equity_usdt",
+    "strategy_paper.extra[name=c4s_candle_variations_strict].state_dir",
+    "strategy_paper.extra[name=c4s_candle_variations_strict].symbols",
+    "structures.b1_box_fade"
+   ],
+   "config_sha256": "5833c3720d0bbc964f13dd0f0469851ee8e5cca3e5013accedbf13e38d1ca366",
+   "decision_tr": "Box yapı katmanı SHADOW (kullanıcı kararı B, 2026-09-27); C4/C4S boş gözlem defterleri",
+   "release": "a8fe2a5",
+   "sha": "a8fe2a5b329891578ff9a7788a3f38950473b430",
+   "source": "alt: sürüm betiğinin commit'i 95735f7; üst: tb-deploy-7ad8832.sh:22 (6662d5b) 'VPS'te çalışan sürüm (2026-09-27 dağıtımı)'",
+   "status": "DEPLOYED",
+   "window": [
+    "2026-09-27T09:05:12+00:00",
+    "2026-09-27T22:55:33+00:00"
+   ]
+  },
+  {
+   "config_sha256": "b093ad60070fbbb2caf83890d81da09af61f239915d94171b4f2206d1718ebcc",
+   "decision_tr": "C4 CV001–CV008 gözlem (kullanıcı onayı 2026-09-27) — c0b8c94 ile canlıya çıktı",
+   "release": "7ad8832",
+   "sha": "7ad8832e96945d472deacf1ba694521cbf2b96c1",
+   "source": "docs/ogrenme_modu/DURUM.md:113 'VPS a8fe2a5 → c0b8c94' (7ad8832 ayrıca dağıtılmadı; içeriği c0b8c94'te)",
+   "status": "NOT_DEPLOYED"
+  },
+  {
+   "at": "2026-09-28T21:20:00+00:00",
+   "changed_paths": [
+    "learning_mode.books.b1_box_fade.enabled",
+    "learning_mode.books.b1_box_fade.leverage_max",
+    "learning_mode.books.b1_box_fade.min_stop_pct",
+    "learning_mode.books.b1_box_fade.slots",
+    "learning_mode.books.c4_candle_variations.enabled",
+    "learning_mode.books.c4_candle_variations.leverage_max",
+    "learning_mode.books.c4_candle_variations.slots",
+    "learning_mode.books.c4_candle_variations.symbols",
+    "learning_mode.books.c4s_candle_variations_strict.enabled",
+    "learning_mode.books.d4_donchian_20_10.enabled",
+    "learning_mode.books.d4_donchian_20_10.leverage_max",
+    "learning_mode.books.d4_donchian_20_10.slots",
+    "learning_mode.books.d4_donchian_20_10.symbols",
+    "learning_mode.books.m2_tsmom28.enabled",
+    "learning_mode.books.m2_tsmom28.leverage_max",
+    "learning_mode.books.m2_tsmom28.slots",
+    "learning_mode.books.main.enabled",
+    "learning_mode.books.main.leverage_max",
+    "learning_mode.books.main.slots",
+    "learning_mode.books.pattern_trader.enabled",
+    "learning_mode.books.pattern_trader.leverage_max",
+    "learning_mode.books.pattern_trader.slots",
+    "learning_mode.books.t2_trend_regime.enabled",
+    "learning_mode.books.t2_trend_regime.leverage_max",
+    "learning_mode.books.t2_trend_regime.slots",
+    "learning_mode.counterfactual",
+    "learning_mode.counterfactual_max_pending",
+    "learning_mode.enabled",
+    "learning_mode.liq_buffer_mult",
+    "learning_mode.margin_reserve_pct",
+    "learning_mode.max_total_open_risk_pct",
+    "learning_mode.min_notional_bump",
+    "learning_mode.risk_per_trade_pct",
+    "learning_mode.strategy_overrides.candle_veto_shadow",
+    "learning_mode.strategy_overrides.economics_exploration",
+    "learning_mode.strategy_overrides.leverage_confidence_fallback",
+    "learning_mode.strategy_overrides.regime_gate_shadow",
+    "learning_mode.strategy_overrides.structures_entry_shadow",
+    "strategy_paper.extra[name=c4_candle_variations].rule_params.variations"
+   ],
+   "config_sha256": "a9ff5d079e6a45935919f167af9153ce3d238f4428e3b9351d1cb7c2e7a56034",
+   "decision_tr": "öğrenme modu L1 (YALNIZ PAPER) + C4 CV001–CV008 (7ad8832) + ana bot leverage_max 5",
+   "release": "c0b8c94",
+   "sha": "c0b8c941be50b4f421174b575820f9395472f956",
+   "source": "docs/ogrenme_modu/DURUM.md:113 'DAĞITILDI (2026-09-28 21:20 UTC, kullanıcı): VPS a8fe2a5 → c0b8c94'",
+   "status": "DEPLOYED"
+  },
+  {
+   "at": "2026-09-29T21:56:00+00:00",
+   "changed_paths": [
+    "shared_experience.enabled",
+    "shared_experience.mode"
+   ],
+   "config_sha256": "aa60f627d7c6cc0c47f12d1c5cf50c2f568b1de6076d180cf12eabbd62d608a6",
+   "decision_tr": "Ortak Deneyim Katmanı v1 YALNIZ KAYIT (karar değiştirmez)",
+   "release": "f9a61dd",
+   "sha": "f9a61ddff64ff6bfe8a17315eb1e62efcf8f8c22",
+   "source": "docs/ogrenme_modu/DURUM.md:81 'DAĞITILDI (2026-09-29 21:56 UTC, kullanıcı): VPS c0b8c94 → f9a61dd'",
+   "status": "DEPLOYED"
+  },
+  {
+   "at": "2026-09-29T22:43:00+00:00",
+   "changed_paths": [
+    "learning_mode.books.b1_box_fade.slots"
+   ],
+   "config_sha256": "19d17e563c161b92611b9390cddecbb13099441d92b13991b1de84900c94a7b3",
+   "decision_tr": "Box öğrenme slotu 20 → 40 (kullanıcı onayı; ana belge §6.2'nin '2026-09-30' örnek sınırı = TR tarihi)",
+   "release": "f6e6119",
+   "sha": "f6e6119f6ffc8dc79456aa8756433aa97c8409cb",
+   "source": "docs/ogrenme_modu/DURUM.md:79 'DAĞITILDI (2026-09-29 22:43 UTC, kullanıcı): VPS f9a61dd → f6e6119'",
+   "status": "DEPLOYED"
+  },
+  {
+   "at": "2026-09-30T20:05:00+00:00",
+   "changed_paths": [
+    "shared_experience.advisor_mode"
+   ],
+   "config_sha256": "59e18ad1c8f4f5aa8de98f38a748c594886664318f6461be97b763b18b1d1bf4",
+   "decision_tr": "gölge danışman YALNIZ KAYIT (karar değiştirmez)",
+   "release": "188cf22",
+   "sha": "188cf228a6fdde6fb64b8aa19205c02e041cb06a",
+   "source": "docs/ogrenme_modu/DURUM.md:75 'DAĞITILDI (2026-09-30 20:05 UTC, kullanıcı): VPS f6e6119 → 188cf22'",
+   "status": "DEPLOYED"
+  },
+  {
+   "changed_paths": [],
+   "config_sha256": "59e18ad1c8f4f5aa8de98f38a748c594886664318f6461be97b763b18b1d1bf4",
+   "decision_tr": "config 188cf22'dekiyle bayt bayt aynı (karar değiştirmeyen tur hızlandırmaları)",
+   "release": "fc63481",
+   "sha": "fc63481990e65a03fd0b9d49943a3f3e26055b8c",
+   "source": "alt: sürüm betiğinin commit'i 943345c; üst: docs/TOUR_CONTENTION_V1.md §1 tablosu (2026-10-03 07:55 TR biten tur fc63481); tb-deploy-f8b05fb.sh:4 '2026-10-02 dağıtımı'",
+   "status": "DEPLOYED",
+   "window": [
+    "2026-10-02T11:24:52+00:00",
+    "2026-10-03T04:56:00+00:00"
+   ]
+  },
+  {
+   "changed_paths": [
+    "learning_mode.books.b1_box_fade.min_stop_pct",
+    "learning_mode.extra_entries"
+   ],
+   "config_sha256": "be5e3e0d1c760abf228ece68c249d416d521e1643b7b18f0a12a8b254161c398",
+   "decision_tr": "learning_mode.extra_entries: record_selectivity + Box öğrenme stop tabanı 0,32 → 0,5 (sahip kararı 2026-10-03)",
+   "release": "f8b05fb",
+   "sha": "f8b05fb27310238c764ac7dad23221d84f7c0b6d",
+   "source": "dağıtım saati depoda yok (docs/M2_AGGRESSIVE_V1.md:28); alt: sürüm betiğinin ilk commit'i f94ef5a (docs/TOUR_CONTENTION_V1.md §1'deki son fc63481 turu, 2026-10-04 03:56 TR = 00:56 UTC, bundan önce); üst: aynı tablo (2026-10-05 07:54 TR biten ilk f8b05fb turu). tb-deploy-8db1faf.sh:3'teki '2026-10-03 dağıtımı' betiğin commit'inden öncedir, bu kayıtlarla çelişir; kanıtla sınırlanmış pencere alınır",
+   "status": "DEPLOYED",
+   "window": [
+    "2026-10-04T11:45:56+00:00",
+    "2026-10-05T04:55:00+00:00"
+   ]
+  },
+  {
+   "changed_paths": [],
+   "config_sha256": "be5e3e0d1c760abf228ece68c249d416d521e1643b7b18f0a12a8b254161c398",
+   "decision_tr": "config f8b05fb'dekiyle aynı (pattern kanıtı alt süreci; karar değiştirmez)",
+   "release": "8db1faf",
+   "sha": "8db1faf08661ad10fd76ebe7d8084fed1429a7de",
+   "source": "alt: sürüm betiğinin commit'i 257ef8e; üst: tb-deploy-db5db96.sh başlığı (2026-10-06 13:56 UTC yerel config düzenlemesi tb-deploy-8db1faf.sh'in satırıyla, 8db1faf çalışırken)",
+   "status": "DEPLOYED",
+   "window": [
+    "2026-10-05T22:21:04+00:00",
+    "2026-10-06T13:56:00+00:00"
+   ]
+  },
+  {
+   "at": "2026-10-07T19:31:00+00:00",
+   "changed_paths": [
+    "m2x_aggressive.enabled",
+    "m2x_aggressive.new_entries",
+    "m2x_aggressive.parent",
+    "m2x_aggressive.policy_version",
+    "m2x_aggressive.starting_equity_usdt",
+    "m2x_aggressive.state_dir"
+   ],
+   "config_sha256": "2f79d22f709d5dcc32fc250f4832a24a2209f982806d191da520207cab969c73",
+   "decision_tr": "M2X bölümü (kod ve config varsayılanı KAPALI); yerel evidence_subprocess satırı dağıtımda geri alındı",
+   "release": "db5db96",
+   "sha": "db5db96ead8ef13d7a7ece0c79ed9b0182ac2f5f",
+   "source": "docs/SYSTEM_LEARNING_ENGINE_V1.md:1874-1875 'app db5db96 … 2026-10-07 19:31 UTC; deploy-logs/db5db96-restart-at.txt'; docs/OWNER_RUNBOOK_2026-10.md:60 'KURULDU — 7 Ekim 22:31' (TR)",
+   "status": "DEPLOYED"
+  }
+ ],
+ "rules_tr": {
+  "boundary": "görünüm değişen dağıtımda yeni dönem; kesin saat yoksa TRANSITION penceresi (o aralıkta açılan işlem hiçbir config dönemine atanmaz; okuyucu dönem kimliği vermez)",
+  "coverage": "V1 yalnız covered_until (mühür anı) anına kadarki dağıtımları kapsar; sonra açılan işlem, o andan sonra başlayan bir dönemle örtülmedikçe UNCOVERED'dır (son dönemlere yazılmaz)",
+  "new_epoch_at_night": "her gece rawconfig canlı config sha'sını son dönemle karşılaştırır; yeni sha = yeni dönem (ana belge §6.2)",
+  "pre_history": "E0 = taban 3b0ae8e config'i ve öncesi (belgelenmemiş)",
+  "reader": "rehydrate.config_epoch: kitap eşleşen, from ≤ an < to olan dönem; TRANSITION → dönem yok; covered_until sonrası → UNCOVERED",
+  "view": "defter görünümü = bütün config yolları − başka defterlerin yalnız-kendi bölümleri − karar-nötr yollar"
+ },
+ "schema": "config_epochs_v1"
+}

@@ -67,7 +67,9 @@ def _v2_result_names(fn_name: str) -> set[str]:
 def test_every_engine_caller_routes_provenance_from_the_v2_lesson():
     """UC cagiranin HEPSI v2 dersinin donusunu yakalar ve `learning_keys` olarak gecer."""
     calls = _note_learned_calls()
-    assert {fn for fn, _ in calls} == {"tour", "ensure_gap_reconciled", "exit_check"}, calls
+    # 2026-09-24: kesinti artik gecmis mumlarla KAPANIS URETMEZ (`ensure_gap_reconciled` ogrenecek kapanis bilmez);
+    # 60 sn izleyicinin kapanislari (esanli `exit_check` ve izleyici is parcacigi kuyrugu) TEK yoldan ogrenilir.
+    assert {fn for fn, _ in calls} == {"tour", "_learn_protective_closes"}, calls
     for fn_name, call in calls:
         kw = {k.arg: k.value for k in call.keywords}
         assert "learning_keys" in kw, f"{fn_name}: learning_keys GECILMIYOR"
@@ -97,9 +99,17 @@ class _Rec:
         return dict(self._d)
 
 
+class _Pos:
+    id = "F00019"
+
+    def __init__(self):
+        self.meta: dict = {}
+
+
 class _Ledger:
     def __init__(self, records):
-        self.positions = {"MSFT/USDT": object()}
+        self.positions = {"MSFT/USDT": _Pos()}
+        self.history: list = []
         self._records = records
         self.ticks = 0
 
@@ -146,7 +156,9 @@ def _engine(tmp_path, records):
     class _Live:
         @staticmethod
         def snapshot(sym):
-            return {"ticker": {"last": 490.0}}
+            # 2026-09-24: ana defter izleyicisi dogrulanmis USDS-M perp mark'i kullanir (spot ticker DEGIL)
+            import time
+            return {"ticker": {"last": 490.0}, "funding": {"mark": 490.0}, "ts": time.time()}
 
     class _Runner:
         live = _Live()
@@ -227,7 +239,7 @@ def test_distinct_closes_stay_distinct(tmp_path):
                  features={"regime": "TREND_UP", "setup_type": "breakout", "direction": "LONG"})
     e = _engine(tmp_path, [_Rec(F00019), _Rec(other)])
     e.last_decisions["ONDO/USDT"] = {"regime": "TREND_UP"}
-    e.ledger2.positions["ONDO/USDT"] = object()
+    e.ledger2.positions["ONDO/USDT"] = _Pos()
     e.exit_check()
     rows = _index_rows(tmp_path)
     assert len(rows) == 2

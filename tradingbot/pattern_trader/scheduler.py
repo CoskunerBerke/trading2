@@ -81,8 +81,10 @@ class PatternScanner:
         now_ms = int(now_ms if now_ms is not None else self.clock() * 1000)
         if not force and self.last_universe_at is not None and (self.clock() - self.last_universe_at) < self.universe_refresh_s:
             return self.universe
+        # D18 (2026-09-28, öğrenme modu): öğrenmede ticker24h arızası hacmi karartmaz — önceki hacim taşınır (etiketli)
+        _kw = {"carry_volume": True} if bool(getattr(self.book, "learning_on", False)) else {}
         snap = discover(self.universe_provider, now_ms=now_ms, min_quote_volume_24h=self.min_quote_volume_24h,
-                        max_spread_pct=self.max_spread_pct, previous=self.universe or None)
+                        max_spread_pct=self.max_spread_pct, previous=self.universe or None, **_kw)
         if snap.get("ok") is False and self.universe:
             self.last_error = str(snap.get("error") or "")[:200]
             log.warning("formasyon evreni yenilenemedi (eski evren korunuyor): %s", self.last_error)
@@ -121,7 +123,13 @@ class PatternScanner:
         for pl in self.book.plans.values():
             if pl.get("status") in (PL_AWAITING, PL_TRIGGERED):
                 add(str(pl.get("symbol") or ""), "pending_plan")
-        elig = [(s, e) for s, e in entries.items() if e.get("eligible")]
+        # S9 (2026-09-28, öğrenme modu): defterin giriş evreni — kapalıyken `allowed_symbols` (bit-aynı), öğrenmede
+        # protokol coinleri ∪ ana botun giriş evreni
+        _es = getattr(self.book, "entry_symbols", None)
+        allowed = _es() if callable(_es) else getattr(self.book, "allowed_symbols", None)
+        # protokol evreni (ör. v3: laboratuvarda test edilen coinler): yeni tarama yalnız onlarda; açık pozisyon ve
+        # bekleyen plan yukarıda her durumda kuyrukta
+        elig = [(s, e) for s, e in entries.items() if e.get("eligible") and (allowed is None or s in allowed)]
         new_list = [(s, e) for s, e in elig if e.get("priority")]
         rest = [(s, e) for s, e in elig if not e.get("priority")]
         new_list.sort(key=lambda t: (self._last_scan_ms.get(t[0], 0), t[1].get("age_h") if t[1].get("age_h") is not None else 1e9))
@@ -154,6 +162,11 @@ class PatternScanner:
     def scan_cycle(self, *, now_ms: int | None = None, limit: int | None = None) -> dict[str, Any]:
         """Bir tarama turu: kuyruktan bütçe kadar sembol. Bir sembolün arızası turu DURDURMAZ."""
         now_ms = int(now_ms if now_ms is not None else self.clock() * 1000)
+        # ÖĞRENME MODU (2026-09-28, öğrenme modu): görünüm tur başında BİR KEZ alınır (kapı burada sorulur; tur ortasında
+        # değişmez). Motor görünüm vermediyse defter baseline'dadır.
+        _bc = getattr(self.book, "begin_cycle", None)
+        if callable(_bc):
+            _bc(self._now_dt())
         self.refresh_universe(now_ms=now_ms)
         # FUNDING AĞ ADIMI (2026-09-22, REVIEW-2026-09-22 F2): defterin tick'i funding'i YALNIZ bellekten okur; aralık
         # tablosu ve gerçekleşmiş oranlar burada — tarayıcı iş parçacığında, defter kilidi ve 60 sn çıkış izleyicisi
@@ -259,18 +272,17 @@ class PatternScanner:
         """Açık pozisyonlar için doğrulanmış güncel fiyatla stop/hedef/likidasyon kontrolü. Tarama kuyruğundan
         BAĞIMSIZ: ana döngünün 60 sn'lik çıkış izleyicisi bunu çağırır ve tarama iş parçacığını BEKLEMEZ."""
         book = self.book
-        if not book.ledger.positions:
+        expect = book.held_ids() if hasattr(book, "held_ids") else {s: str(p.id) for s, p in book.ledger.positions.items()}
+        if not expect:
             return []
         now = self._now_dt()
         now_ms = int(now.timestamp() * 1000)
-        marks, marks_f, gaps = self.price.marks(list(book.ledger.positions), now_ms=now_ms)
-        book.record_gaps(gaps, now)
+        marks, marks_f, gaps = self.price.marks(list(expect), now_ms=now_ms)      # AĞ — defter kilidi DIŞINDA
         # Funding oranı BULUNAMAZSA lookup None döner ve defter o dönemi bekletir; koruyucu stop/hedef kontrolü
-        # bundan ETKİLENMEZ (tick yine çalışır).
-        recs = book.tick(marks, now=now, funding_rate_lookup=self.funding,   # KAYNAK nesnesi (oran + settlement mark)
-                         bar_advance=False) if marks else []
-        book.save(marks_f, now)
-        return recs
+        # bundan ETKİLENMEZ (tick yine çalışır). Tek kısa atomik bölüm: boşluk → korumalı tick (kimlik + sıra) → kayıt.
+        return book.protect(marks, marks_f, gaps, now=now, expect=expect, source="scanner_exit_check",
+                            apply_clock=lambda: int(self.clock() * 1000),   # uygulama anı tazeliği: tarayıcının saati
+                            funding_rate_lookup=self.funding)   # KAYNAK nesnesi (oran + settlement mark)
 
     # ------------------------------------------------------------------ durum / arka plan
     def status(self) -> dict[str, Any]:

@@ -1,0 +1,220 @@
+"""P3b — `strategy_lib` varyant kataloğu: varyant kimliği → kuran modül (SAF).
+
+Parametreler bu pakette YAZILMAZ: çağıran mühürlü kaydın (`LIB_V1`) varyant `params`'ını (anahtar kümesi tam) ve saf
+ailelerde satırın `spec`'ini (`{family, timeframes, signal_tf, sides, exits}`; F2'de ayrıca `base_params` = K_BOX'un
+mühürlü parametreleri) verir (tek kaynak; motor tarafı `kernel.make_variant`).
+
+Durumlar (`status`): `IMPLEMENTED` (çalışan modül), `ALIAS` (ızgara üyesi tabanının kopyasını çalıştırır: §2.2
+`DON_20_10_4h_LO ≡ K_D4`, `BOX_n10_mid_ms0.5 ≡ K_BOX`; aynı modül → aynı `module_src_sha` → aynı `spec_sha`),
+`BLOCKED` (mühürlü boşluk: I, J, G ailelerinin 13 varyantı — §8.5 B9 ve B10 altın stopları; ÇALIŞAN KOD YOK, `make`
+`BlockedVariant` fırlatır), `PENDING` (P3b-2b'den beri boş: O örtüleri uygulandı). Liste kayıtla
+(`registry.blocked_variants`, `alias_of`) testte eşitlenir; çalıştırılabilir toplam = 58 + 35 = 93 = kaydın 106 − 13'ü.
+
+**O örtüleri (P3b-2b).** `O_<taban>_<faktör>`'ün modülü FAKTÖR modülüdür (`o_f_er`, `o_f_btc`, `o_f_vol`, `o_x_trail2`,
+`o_x_chan3`, `o_x_time`, `o_x_tpl`; ortak çerçeve `o_cover`, paylaşılan akış `stream`); taban kopyanın modülü
+(`k_trend`, `k_box`, `k_d4`, `k_c4`) burada kurulur ve örtüye verilir (`make_cover_base`; faktör modülü taban modüllerini
+import etmez) — kimlik ikisinin bildirilmiş kümesidir (`extra_modules`, `identity.declared_modules`). `make_cover_family`
+tabanı bir kez kurar ve paylaşılan akışla sarar: tabanın kendi koşusu (K satırı; C4'te defter K satırı değildir) ve yedi
+örtü aynı akışı kullanır (§5.3 önlem 1).
+
+**S1d `LIB_AG_V1` (2026-10-13; EK).** Ayrı adlı kütüphanenin 38 varyantı (`AG_FAMILY_OF`, `AG_MODULES`; aileler
+`ag_p1_lunch` … `ag_p5_msnr`, örtüler `ag_overlay`) `make_ag` ile kurulur; `IMPLEMENTED`/`MODULES`/`FAMILY_OF` LIB_V1'in
+93'üdür ve değişmez. `module_name`/`extra_modules` AG kimliklerini de çözer (kimlik: AG modülü + bağımlılıkları; AG_O'da
+taban kopyanın modülü).
+"""
+from __future__ import annotations
+
+from importlib import import_module
+from typing import Any, Mapping
+
+from .contract import Variant
+
+C4_VARIATIONS = tuple(f"K_C4_CV{i:03d}" for i in range(1, 9))
+_K: dict[str, str] = {"K_T2": "k_trend", "K_M2": "k_trend", "K_BOX": "k_box", "K_D4": "k_d4",
+                      **{v: "k_c4" for v in C4_VARIATIONS}, "K_FM": "k_fm"}
+_B = {f"TS_{lb}_{s}": "b_tsmom" for lb in (7, 14, 28, 56, 84) for s in ("LO", "LS")}
+_C = {f"MAX_{f}_{sl}_{tf}_{s}": "c_macross" for f, sl in ((20, 50), (50, 200)) for tf in ("4h", "1d") for s in ("LO", "LS")}
+_D = {f"DON_{e}_{x}_{tf}_{s}": "d_donchian" for e, x in ((20, 10), (55, 20)) for tf in ("4h", "1d") for s in ("LO", "LS")
+      if (e, x, tf, s) != (20, 10, "4h", "LO")}
+_E = {**{f"KEL_20_2_{tf}": "e_volbreak" for tf in ("1h", "4h")}, **{f"BBSQ_20_{tf}": "e_volbreak" for tf in ("1h", "4h")}}
+_F1 = {**{f"RSI2_{tf}": "f1_range" for tf in ("1h", "4h")}, **{f"BBRE_{tf}": "f1_range" for tf in ("1h", "4h")}}
+_F2 = {f"BOX_n{n}_{x}_ms{ms}": "f2_boxgrid" for n in (10, 20) for x in ("mid", "2r") for ms in (0.5, 1.0)
+       if (n, x, ms) != (10, "mid", 0.5)}
+_H = {**{f"FUND_FADE_{h}": "h_funding" for h in ("24h", "72h")}, **{f"FUND_FADE_LOW_{h}": "h_funding" for h in ("24h", "72h")},
+      "FUND_CARRY": "h_funding"}
+#: O örtüleri: faktör → modül; taban → taban kopyanın modülü
+COVER_BASES: tuple[str, ...] = ("T2", "M2", "BOX", "D4", "C4")
+COVER_FACTOR_MODULE: Mapping[str, str] = {"F_ER": "o_f_er", "F_BTC": "o_f_btc", "F_VOL": "o_f_vol", "X_TRAIL2": "o_x_trail2",
+                                          "X_CHAN3": "o_x_chan3", "X_TIME": "o_x_time", "X_TPL": "o_x_tpl"}
+COVER_BASE_MODULE: Mapping[str, str] = {"T2": "k_trend", "M2": "k_trend", "BOX": "k_box", "D4": "k_d4", "C4": "k_c4"}
+_O = {f"O_{b}_{f}": m for b in COVER_BASES for f, m in COVER_FACTOR_MODULE.items()}
+#: varyant kimliği → modül (bu paketin içinde, göreli ad)
+MODULES: Mapping[str, str] = {**_K, **_B, **_C, **_D, **_E, **_F1, **_F2, **_H, **_O}
+IMPLEMENTED: tuple[str, ...] = tuple(MODULES)
+#: varyant → aile (uygulanmış; alias'lar hariç)
+FAMILY_OF: Mapping[str, str] = {**{v: "K" for v in _K}, **{v: "B" for v in _B}, **{v: "C" for v in _C},
+                                **{v: "D" for v in _D}, **{v: "E" for v in _E}, **{v: "F1" for v in _F1},
+                                **{v: "F2" for v in _F2}, **{v: "H" for v in _H}, **{v: "O" for v in _O}}
+#: §2.2 alias'lı ızgara üyeleri → tabanın kopyası (kayıttaki `alias_of`; testte eşitlik)
+ALIASES: Mapping[str, str] = {"DON_20_10_4h_LO": "K_D4", "BOX_n10_mid_ms0.5": "K_BOX"}
+#: mühürlü boşluk yüzünden ÇALIŞTIRILMAYAN varyantlar (kayıttaki `blocked_variants`; testte eşitlik) → boşluk maddesi
+BLOCKED: Mapping[str, str] = {
+    **{f"BTCETH_Z_{z}": "SEALED_GAP:B9 (spread stopu, bacak oranı)" for z in ("2.0", "2.5")},
+    **{f"XS_MOM_{lb}_k{k}": "SEALED_GAP:B9 (XSEC stopu/R birimi, beta penceresi, dengeleme anı)" for lb in (7, 28)
+       for k in (3, 5)},
+    "XS_REV_1D_k5": "SEALED_GAP:B9 (XSEC stopu/R birimi, dengeleme sıklığı, beta nötrlüğü)",
+    **{g: "SEALED_GAP:B10 (altın stopu)" for g in ("G_LDN_ORB", "G_NY_ORB", "G_ASIA_DRIFT", "G_MONTH_END", "G_XAU_BTC_28",
+                                                    "G_XAU_BTC_56")},
+}
+BLOCKED_FAMILIES = ("I", "J", "G")
+#: henüz uygulanmamış (boşluk değil): P3b-2b'den beri yok (O örtüleri uygulandı)
+PENDING_PREFIXES: Mapping[str, str] = {}
+IMPLEMENTED_S, ALIAS_S, BLOCKED_S, PENDING_S = "IMPLEMENTED", "ALIAS", "BLOCKED", "PENDING"
+#: parite ve hız ölçümünün aile birimi: kopyanın canlı defteri (yalnız K)
+BOOK_OF: Mapping[str, str] = {"K_T2": "T2", "K_M2": "M2", "K_BOX": "BOX", "K_D4": "D4",
+                              **{v: "C4" for v in C4_VARIATIONS}, "K_FM": "FM"}
+
+
+#: S1d `LIB_AG_V1` (sahip kararı 2026-10-13; AYRI kütüphane: `IMPLEMENTED`/`MODULES` LIB_V1'in 93'üdür ve değişmez).
+#: Kimlik → modül; liste mühürle (motorun S1d mührü `seal_s1d.LIB_AG_V1["variants"]`) testte eşitlenir.
+AG_FAMILY_MODULE: Mapping[str, str] = {"AG_P1": "ag_p1_lunch", "AG_P2": "ag_p2_tenm", "AG_P3": "ag_p3_mss",
+                                       "AG_P4": "ag_p4_rb", "AG_P5": "ag_p5_msnr", "AG_O": "ag_overlay"}
+AG_OVERLAY_BASES: tuple[str, ...] = ("T2", "M2", "BOX", "D4", "C4", "FM")
+AG_OVERLAYS: tuple[str, ...] = ("KZ", "NOREACT", "CAL")
+AG_OVERLAY_BASE_MODULE: Mapping[str, str] = {"T2": "k_trend", "M2": "k_trend", "BOX": "k_box", "D4": "k_d4", "C4": "k_c4",
+                                             "FM": "k_fm"}
+AG_FAMILY_OF: Mapping[str, str] = {
+    **{f"AG_LS_{b}_{a}": "AG_P1" for b in ("NONE", "HTF") for a in ("NONE", "QUIET")},
+    **{f"AG_TENM_{m}_{w}": "AG_P2" for m in ("A", "B") for w in ("WL", "ANY")},
+    **{f"AG_MSS_{tf}_{r}R_{s}": "AG_P3" for tf in ("5m", "15m") for r in (2, 3) for s in ("KZ", "ALL")},
+    **{f"AG_RB_{e}": "AG_P4" for e in ("DIRECT", "CONFIRM")},
+    **{f"AG_MSNR_{t}": "AG_P5" for t in ("2R", "LEVEL")},
+    **{f"AGO_{b}_{o}": "AG_O" for b in AG_OVERLAY_BASES for o in AG_OVERLAYS},
+}
+AG_MODULES: Mapping[str, str] = {v: AG_FAMILY_MODULE[f] for v, f in AG_FAMILY_OF.items()}
+AG_IMPLEMENTED: tuple[str, ...] = tuple(AG_MODULES)
+
+
+class BlockedVariant(KeyError):
+    """Mühürlü boşluk yüzünden çalıştırılmayan varyant (`UNSPECIFIED_PARAM`): kurulamaz, kimliği hesaplanmaz."""
+
+
+def status(variant_id: str) -> str:
+    if variant_id in MODULES:
+        return IMPLEMENTED_S
+    if variant_id in ALIASES:
+        return ALIAS_S
+    if variant_id in BLOCKED:
+        return BLOCKED_S
+    if any(variant_id.startswith(p) for p in PENDING_PREFIXES):
+        return PENDING_S
+    raise KeyError(f"strategy_lib kataloğunda yok: {variant_id}")
+
+
+def module_name(variant_id: str) -> str:
+    """Varyantın modülü; alias tabanının modülüdür (aynı kaynak → aynı `module_src_sha`)."""
+    if variant_id in BLOCKED:
+        raise BlockedVariant(f"{variant_id}: {BLOCKED[variant_id]} — çalıştırılmaz")
+    try:
+        return f"{__package__}.{MODULES[ALIASES.get(variant_id, variant_id)]}"
+    except KeyError:
+        if variant_id in AG_MODULES:                                     # S1d LIB_AG_V1
+            return f"{__package__}.{AG_MODULES[variant_id]}"
+        raise KeyError(f"strategy_lib'de uygulanmamış varyant: {variant_id}") from None
+
+
+def extra_modules(variant_id: str) -> tuple[str, ...]:
+    """Varyantın modülünün import ETMEDİĞİ ama kararını belirleyen paket modülleri (kimlik kümesine girer): O örtüsünde
+    ve S1d AG_O örtüsünde taban kopyanın modülü; diğerlerinde yok."""
+    if AG_FAMILY_OF.get(variant_id) == "AG_O":
+        return (f"{__package__}.{AG_OVERLAY_BASE_MODULE[variant_id.split('_')[1]]}",)
+    if FAMILY_OF.get(variant_id) != "O":
+        return ()
+    base = variant_id.split("_")[1]
+    return (f"{__package__}.{COVER_BASE_MODULE[base]}",)
+
+
+def make_cover_base(spec: Mapping[str, Any]) -> Variant:
+    """Örtünün tabanı, mühürlü parametreleriyle (`spec["base_params"]`, `spec["base_variants"]` sırasıyla): T2/M2/BOX/D4
+    → kopyanın kendisi; C4 → C4 defteri (8 varyasyon, config sırası; `k_c4.CandleBook`)."""
+    if spec is None:
+        raise ValueError("örtünün mühürlü spec'i gerekli")
+    name = str(spec["base"])
+    mod = import_module(f"{__package__}.{COVER_BASE_MODULE[name]}")
+    vids, ps = list(spec["base_variants"]), list(spec["base_params"])
+    if len(vids) != len(ps) or not vids:
+        raise ValueError(f"örtü tabanı {name}: base_variants / base_params uyuşmuyor")
+    if name == "C4":
+        if vids != list(C4_VARIATIONS):
+            raise ValueError(f"C4 defteri sekiz varyasyonun hepsi (config sırası) olmalı: {vids}")
+        return mod.make_book("C4_BOOK", ps)
+    (vid,) = vids
+    if BOOK_OF.get(vid) != name:
+        raise ValueError(f"örtü tabanı {name}: {vid} değil")
+    return mod.make(vid, ps[0])
+
+
+def make_cover_family(members: Mapping[str, tuple[Mapping[str, Any], Mapping[str, Any]]]) -> tuple[Variant, dict[str, Variant]]:
+    """Bir tabanın örtüleri tek paylaşılan akışla: `members` = {örtü: (params, spec)} (hepsi aynı taban). Döner:
+    (paylaşılan taban akışı — K satırının koşusu için; C4'te defter —, {örtü: varyant})."""
+    from .stream import SharedBase
+    specs = [sp for _p, sp in members.values()]
+    if not specs or any(sp["base"] != specs[0]["base"] or list(sp["base_params"]) != list(specs[0]["base_params"])
+                        for sp in specs):
+        raise ValueError("örtü ailesi tek tabanı paylaşmalı")
+    shared = SharedBase(make_cover_base(specs[0]))
+    out = {}
+    for vid, (params, spec) in members.items():
+        if FAMILY_OF.get(vid) != "O":
+            raise ValueError(f"{vid}: örtü değil")
+        out[vid] = import_module(module_name(vid)).make(vid, params, spec, shared)
+    return shared, out
+
+
+def make(variant_id: str, params: Mapping[str, Any], spec: Mapping[str, Any] | None = None) -> Variant:
+    """Varyantı mühürlü parametreleriyle kur. Bilinmeyen varyant KeyError, boşluklu varyant `BlockedVariant`,
+    eksik/fazla parametre ya da spec ValueError. Kopyalar (K) yalnız `params` alır; saf aileler ve örtüler `spec` ister
+    (örtüde taban `spec`'ten kurulur; tek başına kurulan örtünün akışı yalnız kendisine aittir). Alias tabanın kopyası
+    olarak (tabanın kimliğiyle) kurulur; parametreleri tabanınkidir (çağıran onu verir)."""
+    mod = import_module(module_name(variant_id))
+    base = ALIASES.get(variant_id, variant_id)
+    if FAMILY_OF.get(base) == "K":
+        return mod.make(base, params)
+    if FAMILY_OF.get(base) == "O":
+        return mod.make(base, params, spec, make_cover_base(spec))
+    return mod.make(base, params, spec)
+
+
+def make_ag_base(base: str, base_variants: Any, base_params: Any) -> Variant:
+    """S1d örtü tabanı: T2/M2/BOX/D4/FM → kopyanın kendisi (mühürlü S1 parametreleri); C4 → C4 defteri (8 varyasyon)."""
+    vids, ps = list(base_variants), list(base_params)
+    if base not in AG_OVERLAY_BASES or len(vids) != len(ps) or not vids:
+        raise ValueError(f"AG örtü tabanı {base}: base_variants / base_params uyuşmuyor")
+    mod = import_module(f"{__package__}.{AG_OVERLAY_BASE_MODULE[base]}")
+    if base == "C4":
+        if vids != list(C4_VARIATIONS):
+            raise ValueError(f"C4 defteri sekiz varyasyonun hepsi (config sırası) olmalı: {vids}")
+        return mod.make_book("C4_BOOK", ps)
+    (vid,) = vids
+    if BOOK_OF.get(vid) != base:
+        raise ValueError(f"AG örtü tabanı {base}: {vid} değil")
+    return mod.make(vid, ps[0])
+
+
+def make_ag(variant_id: str, params: Mapping[str, Any], spec: Mapping[str, Any]) -> Variant:
+    """S1d `LIB_AG_V1` varyantını mühürlü parametreleri ve satırın spec'iyle kur (örtüde taban spec'ten: `base_variants`,
+    `base_params`). Bilinmeyen kimlik KeyError, eksik/fazla parametre ya da spec ValueError."""
+    fam = AG_FAMILY_OF[variant_id]
+    mod = import_module(module_name(variant_id))
+    if fam == "AG_O":
+        sp = dict(spec)
+        return mod.make(variant_id, params, sp, make_ag_base(str(params["base"]), sp["base_variants"], sp["base_params"]))
+    return mod.make(variant_id, params, spec)
+
+
+__all__ = ["AG_FAMILY_MODULE", "AG_FAMILY_OF", "AG_IMPLEMENTED", "AG_MODULES", "AG_OVERLAYS", "AG_OVERLAY_BASES",
+           "AG_OVERLAY_BASE_MODULE", "make_ag", "make_ag_base",
+           "ALIASES", "ALIAS_S", "BLOCKED", "BLOCKED_FAMILIES", "BLOCKED_S", "BOOK_OF", "BlockedVariant", "C4_VARIATIONS",
+           "COVER_BASES", "COVER_BASE_MODULE", "COVER_FACTOR_MODULE", "FAMILY_OF", "IMPLEMENTED", "IMPLEMENTED_S", "MODULES",
+           "PENDING_PREFIXES", "PENDING_S", "extra_modules", "make", "make_cover_base", "make_cover_family", "module_name",
+           "status"]

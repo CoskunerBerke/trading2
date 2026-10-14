@@ -14,10 +14,17 @@ piyasaya ATANMAZ. Kayıt DOSYALARI hiçbir koşulda değiştirilmez; yalnız ind
 Kurallar: aynı `analysis_id` ikinci kez YAZILMAZ (tekilleştirme); mevcut kayıt hiçbir koşulda yeniden yazılmaz
 (sonraki mumlar geçmişi değiştiremez); seri başına `keep_per_series` üstündeki EN ESKİ kayıtlar silinir (saklama
 sınırı; boyut için). Yazma yalnız motor turundan; panel SALT OKUR.
+
+TOPLU İNDEKS YAZIMI (2026-10-01): motor turu `begin_batch()` / `end_batch()` arasında kaydeder. Kayıt DOSYALARI ve
+budama bugünkü gibi hemen yapılır; indeks bellekte tutulur ve tur sonunda TEK kez yazılır (yeni analiz yoksa hiç
+yazılmaz). Tekilleştirme `analysis_id` sayacıyla yapılır (her kayıtta bütün indeksi taramak yerine). Ölçüldü: yeni 4h
+barında 280 seri için 280 tam indeks okuma + yazma (30 MB'ta tur başına ~264 sn). Turun sonundaki `index.json`
+içeriği kayıt-kayıt yazımla BAYT BAYT aynıdır (test kilitli).
 """
 from __future__ import annotations
 
 import os
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +36,8 @@ INDEX_SCHEMA = "chart_analysis_index_v2"
 UNKNOWN_MARKET = "?"
 #: root -> (indeks dosyası imzası, v2 indeks). v1 indeksin yükseltilmesi (dosya başına bir okuma) süreç başına bir kez.
 _INDEX_CACHE: dict[str, tuple[tuple[int, int], dict[str, Any]]] = {}
+#: False → `begin_batch()` etkisiz; her yeni analiz indeksi bugünkü gibi hemen yeniden yazar (acil geri dönüş anahtarı).
+BATCH_INDEX_WRITES = True
 
 
 def series_key(book_id: str, market_type: str | None, symbol: str, timeframe: str) -> str:
@@ -54,6 +63,35 @@ class ChartAnalysisStore:
     def __init__(self, state_dir: Path | str, *, keep_per_series: int = 300) -> None:
         self.root = Path(state_dir) / DIRNAME
         self.keep = max(1, int(keep_per_series))
+        #: Toplu yazım durumu: None (kapalı) | {"idx": v2 indeks | None (henüz okunmadı), "ids": Counter, "dirty": bool}
+        self._batch: dict[str, Any] | None = None
+
+    # ------------------------------------------------------------------ toplu indeks yazımı (yalnız motor)
+    def begin_batch(self) -> None:
+        """İndeksi bellekte tut; `end_batch()` TEK kez yazar. İç içe çağrı ya da `BATCH_INDEX_WRITES=False` → etkisiz."""
+        if self._batch is None and BATCH_INDEX_WRITES:
+            self._batch = {"idx": None, "ids": None, "dirty": False}
+
+    def end_batch(self) -> bool:
+        """Bekleyen indeksi yazar (değişiklik yoksa yazmaz) ve toplu kipi kapatır. İdempotent. Dönen: yazıldı mı."""
+        b, self._batch = self._batch, None
+        if b is None or not b["dirty"]:
+            return False
+        atomic_write_json(self.root / INDEX_FILE, {"schema_version": INDEX_SCHEMA, "series": b["idx"]["series"]})
+        return True
+
+    def _batch_state(self) -> tuple[dict[str, Any], Counter]:
+        b = self._batch
+        if b["idx"] is None:
+            idx = self.index()                              # dosyadan BİR kez (bugünkü normalleştirmeyle)
+            ids: Counter = Counter()
+            for rows in idx["series"].values():
+                for r in rows:
+                    v = r.get("analysis_id")
+                    if isinstance(v, str):                  # `has()` str kimliği `==` ile arar; str olmayan eşleşemez
+                        ids[v] += 1
+            b["idx"], b["ids"] = idx, ids
+        return b["idx"], b["ids"]
 
     # ------------------------------------------------------------------ okuma
     def _signature(self) -> tuple[int, int] | None:
@@ -95,7 +133,13 @@ class ChartAnalysisStore:
         return {"schema_version": INDEX_SCHEMA, "series": out, "upgraded_from": upgraded}
 
     def index(self) -> dict[str, Any]:
-        """v2 indeks (v1 ise bellekte yükseltilir; dosya yazılmaz). Dönüş çağıranın değiştirebileceği kopyadır."""
+        """v2 indeks (v1 ise bellekte yükseltilir; dosya yazılmaz). Dönüş çağıranın değiştirebileceği kopyadır.
+        Toplu kipte bellekteki (henüz yazılmamış) indeks döner: okuyan, o ana kadarki kayıtları görür."""
+        b = self._batch
+        if b is not None and b["idx"] is not None:
+            idx = b["idx"]
+            return {"schema_version": idx["schema_version"], "upgraded_from": idx.get("upgraded_from"),
+                    "series": {k: list(v) for k, v in idx["series"].items()}}
         sig = self._signature()
         if sig is None:
             return {"schema_version": INDEX_SCHEMA, "series": {}}
@@ -151,9 +195,23 @@ class ChartAnalysisStore:
         market = str(ident.get("market_type") or UNKNOWN_MARKET)
         sym, tf = str(ident.get("symbol") or "?"), str(ident.get("timeframe") or "?")
         key = series_key(book, market, sym, tf)
-        idx = self.index()
-        if self.has(aid):                                   # aynı kimlik hiçbir seride ikinci kez yazılmaz
-            return {"written": False, "pruned": 0, "analysis_id": aid}
+        if self._batch is not None and split_key(key) is None:
+            # Ayrıştırılamayan anahtar (ör. '|' içeren kimlik) bugün bir sonraki okumada DÜŞER; bu davranışı birebir
+            # korumak için bu kayıt toplu kipin dışında, bugünkü yoldan yazılır.
+            self.end_batch()
+            try:
+                return self.save(snap)
+            finally:
+                self.begin_batch()
+        ids = None
+        if self._batch is not None:
+            idx, ids = self._batch_state()
+            if ids[aid] > 0:                                # aynı kimlik hiçbir seride ikinci kez yazılmaz
+                return {"written": False, "pruned": 0, "analysis_id": aid}
+        else:
+            idx = self.index()
+            if self.has(aid):                               # aynı kimlik hiçbir seride ikinci kez yazılmaz
+                return {"written": False, "pruned": 0, "analysis_id": aid}
         rows = list(idx["series"].get(key) or [])
         sdir = _series_dir(self.root, book, market, sym, tf)
         sdir.mkdir(parents=True, exist_ok=True)
@@ -168,13 +226,19 @@ class ChartAnalysisStore:
         pruned = 0
         while len(rows) > self.keep:
             old = rows.pop(0)
+            if ids is not None and isinstance(old.get("analysis_id"), str):
+                ids[old["analysis_id"]] -= 1
             try:
                 os.remove(self.root / str(old.get("file")))
                 pruned += 1
             except OSError:
                 pass
         idx["series"][key] = rows
-        atomic_write_json(self.root / INDEX_FILE, {"schema_version": INDEX_SCHEMA, "series": idx["series"]})
+        if ids is not None:
+            ids[aid] += 1
+            self._batch["dirty"] = True                     # indeks `end_batch()`te TEK kez yazılır
+        else:
+            atomic_write_json(self.root / INDEX_FILE, {"schema_version": INDEX_SCHEMA, "series": idx["series"]})
         return {"written": True, "pruned": pruned, "analysis_id": aid}
 
     def stats(self) -> dict[str, Any]:

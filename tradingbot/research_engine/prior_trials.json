@@ -1,0 +1,247 @@
+{
+ "doc": "docs/ENGINE_BRAIN_V1.md §2.6 (ana belge §6.4)",
+ "kind": "PRIOR",
+ "no_reentry": [
+  {
+   "id": "PAXG_WEEKEND_REVERSAL",
+   "keywords": [
+    "paxg",
+    "weekend",
+    "hafta sonu",
+    "b_wknd"
+   ],
+   "lab": "gold_v2",
+   "text_tr": "PAXG hafta sonu dönüşü (gold_v2 aile B)"
+  },
+  {
+   "id": "GOLD_DAILY_DONCHIAN_TSMOM",
+   "keywords": [
+    "altın",
+    "gold",
+    "donchian",
+    "tsmom",
+    "a_donch"
+   ],
+   "lab": "gold_v2",
+   "text_tr": "altın günlük Donchian/TSMOM (gold_v2 aile A; G ailesinde yok)"
+  },
+  {
+   "id": "FUT_V1_OI_FUNDING_RULES",
+   "keywords": [
+    "oi",
+    "fonlama",
+    "funding",
+    "open interest"
+   ],
+   "lab": "fut_v1",
+   "text_tr": "fut_v1'in dört OI/fonlama kuralı"
+  },
+  {
+   "id": "FUT_V2_CROWD_ROWS",
+   "keywords": [
+    "crowd",
+    "kalabalık"
+   ],
+   "lab": "fut_v2",
+   "text_tr": "fut_v2'nin kalabalık takip/karşı satırları"
+  },
+  {
+   "id": "BOX_MIN_STOP_0_5",
+   "keywords": [
+    "box",
+    "min_stop",
+    "en az stop"
+   ],
+   "lab": "live",
+   "text_tr": "\"Box en az stop %0,5\" (canlıda: learning_mode.books.b1_box_fade.min_stop_pct 0,5)"
+  },
+  {
+   "id": "MAIN_BOT_NO_SELECTIVITY_EXTRAS",
+   "keywords": [
+    "seçicilik",
+    "selectivity",
+    "ana bot",
+    "record_selectivity"
+   ],
+   "lab": "live",
+   "text_tr": "\"seçicilik ekstrasız ana bot\" (canlıda: learning_mode.extra_entries record_selectivity)"
+  },
+  {
+   "id": "C4_07_TREND_ONLY",
+   "keywords": [
+    "c4_07",
+    "trend_only",
+    "c4"
+   ],
+   "lab": "book_v1",
+   "text_tr": "C4'ün veri gözetlemeli C4_07 alt kümesi"
+  }
+ ],
+ "no_reentry_rule_tr": "yeni bir LIB sürümü ve Kapı A olmadan yeniden girmez; keşifte izlenmez; engine-query trials --like onları 'ÖNCÜL — KANIT YOK' gösterir",
+ "rows": [
+  {
+   "count": 32,
+   "count_kind": "PRIMARY_CELLS",
+   "count_lower_bound": false,
+   "keywords": [
+    "gold",
+    "altın",
+    "xau",
+    "paxg",
+    "gold_v1"
+   ],
+   "lab": "gold_v1",
+   "prior_id": "gold_v1_primary",
+   "result_tr": "0/32 GÜÇLÜ ADAY (standart ve sıkı)",
+   "source": "docs/GOLD_LAB_V1_RESULTS.md"
+  },
+  {
+   "count": 1133,
+   "count_kind": "DISCOVERY_GROUPS",
+   "count_lower_bound": false,
+   "keywords": [
+    "gold",
+    "altın",
+    "xau",
+    "keşif",
+    "gold_v1"
+   ],
+   "lab": "gold_v1",
+   "prior_id": "gold_v1_discovery",
+   "result_tr": "keşif: katalog + ek sinyaller + algoritmalar 1.133 grup",
+   "source": "docs/GOLD_LAB_V1_RESULTS.md"
+  },
+  {
+   "count": 24,
+   "count_kind": "VERDICT_CELLS",
+   "count_lower_bound": false,
+   "keywords": [
+    "gold",
+    "altın",
+    "xau",
+    "paxg",
+    "weekend",
+    "hafta sonu",
+    "donchian",
+    "tsmom",
+    "gold_v2"
+   ],
+   "lab": "gold_v2",
+   "prior_id": "gold_v2",
+   "result_tr": "0/24 (aile B 0/8 dahil; aile B 'kanıt yok' yayımlandı, wt-gold2 db1828e)",
+   "source": "docs/GOLD_LAB_V2_RESULTS.md"
+  },
+  {
+   "count": 8,
+   "count_kind": "PRIMARY_CELLS",
+   "count_lower_bound": true,
+   "keywords": [
+    "oi",
+    "open interest",
+    "açık pozisyon",
+    "funding",
+    "fonlama",
+    "fut_v1"
+   ],
+   "lab": "fut_v1",
+   "prior_id": "fut_v1",
+   "result_tr": "0/8; keşif gruplarının toplamı bilinmiyor (count_lower_bound; rapor JSON'u bulunursa gerçek sayı eklenir, asla düşülmez)",
+   "source": "docs/FUTURES_OI_FUNDING_LAB.md"
+  },
+  {
+   "count": 8,
+   "count_kind": "PRIMARY_CELLS",
+   "count_lower_bound": true,
+   "keywords": [
+    "crowd",
+    "kalabalık",
+    "long/short",
+    "fut_v2"
+   ],
+   "lab": "fut_v2",
+   "prior_id": "fut_v2",
+   "result_tr": "0/8; keşif gruplarının toplamı bilinmiyor (count_lower_bound)",
+   "source": "docs/CROWD_LAB_FUT_V2.md"
+  },
+  {
+   "count": 54,
+   "count_kind": "PRIMARY_CELLS_EXCL_CONTROL",
+   "count_lower_bound": false,
+   "keywords": [
+    "book_v1",
+    "d4",
+    "c4",
+    "formasyon",
+    "donchian",
+    "candle"
+   ],
+   "lab": "book_v1",
+   "prior_id": "book_v1",
+   "result_tr": "hedef 0/54 (kontrol hariç)",
+   "source": "docs/BOOK_RESEARCH_V1_RESULTS.md"
+  },
+  {
+   "count": 38,
+   "count_kind": "ALL_CELLS",
+   "count_lower_bound": false,
+   "keywords": [
+    "d4",
+    "donchian",
+    "algoritma",
+    "36150821072"
+   ],
+   "lab": "signal_lab",
+   "prior_id": "signal_lab_run_36150821072",
+   "result_tr": "D4 koşusu: algoritmalar + ek sinyaller; sıkı testi geçen yok (D4 'en yakın aday', gözlem defteri)",
+   "source": "docs/BOOK_RESEARCH_V1.md (GitHub run 36150821072)"
+  },
+  {
+   "count": 24,
+   "count_kind": "ALL_CELLS",
+   "count_lower_bound": false,
+   "keywords": [
+    "c4",
+    "candle",
+    "mum",
+    "cv001",
+    "36277302747"
+   ],
+   "lab": "signal_lab",
+   "prior_id": "signal_lab_run_36277302747",
+   "result_tr": "C4 koşusu: CV001–CV008 (8 birincil + 16 bilgi)",
+   "source": "docs/BOOK_RESEARCH_V1.md (GitHub run 36277302747)"
+  },
+  {
+   "count": 1412,
+   "count_kind": "ALL_CELLS",
+   "count_lower_bound": false,
+   "keywords": [
+    "formasyon",
+    "pattern",
+    "momentum_4h_v3",
+    "36123072720"
+   ],
+   "lab": "signal_lab",
+   "prior_id": "signal_lab_run_36123072720",
+   "result_tr": "formasyon koşusu: 1.412 kombinasyon; sıkı testi geçen tek sonuç momentum_4h_v3 (K_FM)",
+   "source": "docs/BOOK_RESEARCH_V1.md (GitHub run 36123072720)"
+  },
+  {
+   "count": 42,
+   "count_kind": "ARMS",
+   "count_lower_bound": false,
+   "keywords": [
+    "box",
+    "kutu",
+    "deney_v15",
+    "b1_box_fade"
+   ],
+   "lab": "box_theory",
+   "prior_id": "box_deney_v15",
+   "result_tr": "DENEY_V15: 42 kol, hiçbir kol karar kuralını geçmedi",
+   "source": "config.yaml strategy_paper.extra b1_box_fade yorumu"
+  }
+ ],
+ "rule_tr": "trials.jsonl'a kind=PRIOR satırları olarak bir kez yazılır (prior_id tekil); N_raw_cum'a count kadar girer; count_lower_bound satırları belgelenmiş alt sınırdır: gerçek sayı bulunursa yalnız ARTIRILIR (yeni sürüm), asla düşülmez",
+ "schema": "prior_trials_v1"
+}

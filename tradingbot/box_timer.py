@@ -20,7 +20,6 @@ import logging
 import threading
 import time
 from datetime import datetime, timezone
-from decimal import Decimal
 from pathlib import Path
 from typing import Any, Callable
 
@@ -49,8 +48,14 @@ class BoxTimer:
     def __init__(self, *, book: Any, provider_factory: Callable[[], Any], state_path: Path | str,
                  symbols_fn: Callable[[], list[str]], funding_rates: Any = None,
                  clock_ms: Callable[[], int] = _now_ms, poll_s: float = 15.0, tick_every_s: float = 60.0,
-                 settle_ms: int = SETTLE_MS) -> None:
+                 settle_ms: int = SETTLE_MS, learning: Any = None) -> None:
         self.book = book
+        #: ÖĞRENME MODU (2026-09-28, öğrenme modu): `LearningMode` ya da None. Kapı HER değerlendirme geçişinde BİR kez
+        #: yenilenir (`refresh`); defter o geçişin değişmez görünümünü (`book(ad)`: min_stop_pct 0,5 — 2026-10-03'e kadar
+        #: 0,32 —, slot, kaldıraç) alır.
+        #: None ya da kapalı → davranış ve durum dosyası bit-bit eskisi gibi.
+        self.learning = learning
+        self.last_learning: dict[str, Any] | None = None
         self.provider_factory = provider_factory
         self.symbols_fn = symbols_fn
         self.funding_rates = funding_rates
@@ -133,35 +138,10 @@ class BoxTimer:
         return df
 
     def _marks(self, prov: Any, syms: list[str], now_ms: int) -> tuple[dict[str, TickData], dict[str, float], dict[str, dict]]:
-        """Doğrulanmış perp mark (`premiumIndex`, borsanın kendi zamanıyla) → `verified_price` hükmü."""
-        from .market.providers import to_raw
-        from .strategy_paper import verified_price
-        rows: dict[str, dict] = {}
-        try:
-            data = prov.http.get(f"{prov.prefix}/premiumIndex", weight=10)
-            rows = {str(r.get("symbol")): r for r in (data if isinstance(data, list) else [data]) if isinstance(r, dict)}
-        except Exception as exc:  # noqa: BLE001 — tek istek düşerse sembol başına dene
-            log.warning("Box zamanlayıcısı premiumIndex toplu alınamadı: %s", exc)
-        out, outf, gaps = {}, {}, {}
-        for sym in syms:
-            r = rows.get(to_raw(sym))
-            if r is None:
-                try:
-                    m = prov.mark_price(sym) or {}
-                    r = {"markPrice": m.get("mark"), "time": m.get("ts")}
-                except Exception as exc:  # noqa: BLE001
-                    r = {"error": str(exc)[:120]}
-            snap = {"ts": now_ms / 1000.0, "errors": [r["error"]] if r.get("error") else [],
-                    "funding": {"mark": r.get("markPrice"), "ts": r.get("time")}}
-            v = verified_price(snap, now_ms=now_ms)
-            if not v["ok"]:
-                gaps[sym] = {"reason": v["reason"], "detail": v["detail"], "age_s": v["age_s"]}
-                continue
-            px = float(v["mark"])
-            out[sym] = TickData(last=Decimal(str(px)), mark=Decimal(str(px)),
-                                ts=iso(datetime.fromtimestamp(v["price_ts_ms"] / 1000.0, tz=timezone.utc)))
-            outf[sym] = px
-        return out, outf, gaps
+        """Doğrulanmış perp mark (`premiumIndex`, borsanın kendi zamanıyla) → `verified_price` hükmü. Koruyucu izleyiciyle
+        TEK yol (`protective_monitor.perp_marks`)."""
+        from .protective_monitor import perp_marks
+        return perp_marks(prov, syms, now_ms)
 
     def _bars_1h(self, prov: Any, syms: list[str], marks_f: dict[str, float], now_ms: int) -> dict[str, dict]:
         out: dict[str, dict] = {}
@@ -190,6 +170,24 @@ class BoxTimer:
         except Exception as exc:  # noqa: BLE001 — okunamazsa zamanlayıcı düzeyi tekilleştirme yine geçerli
             log.warning("Box zamanlayıcısı giriş kaydı okunamadı: %s", exc)
         return out
+
+    def _learning_pass(self) -> tuple[Any, bool]:
+        """Bu geçişin öğrenme görünümü: (BookLearning | None, yapı girişi gölgede mi). Kapı arızası → baseline (None)."""
+        lm = self.learning
+        if lm is None or not bool(getattr(lm, "enabled", False)):
+            return None, False
+        name = str(getattr(self.book, "name", ""))
+        try:
+            lm.refresh()
+            bl = lm.book(name)
+            es = bool(bl is not None and lm.structures_entry_shadow(name))
+            st = dict(lm.status())
+        except Exception as exc:  # noqa: BLE001 — öğrenme kapısı okunamazsa bu geçiş baseline
+            log.warning("Box zamanlayıcısı öğrenme kapısı okunamadı (baseline): %s", exc)
+            bl, es, st = None, False, {"reason": "ERROR:%s" % type(exc).__name__}
+        self.last_learning = {"active": bl is not None, "reason": st.get("reason"), "since": st.get("since"),
+                              "min_stop_pct": getattr(bl, "min_stop_pct", None), "structures_entry_shadow": es}
+        return bl, es
 
     def _evaluate(self, bar_open: int, now_ms: int) -> dict[str, Any]:
         t0 = time.time()
@@ -222,12 +220,16 @@ class BoxTimer:
         eligible = [s for s in universe if (s, bar_open) not in traded]
         blocked = len(universe) - len(eligible)
         pbars = self._bars_1h(prov, [s for s in held if s in pmarks_f], pmarks_f, now_ms) if held else {}
+        bl, eshadow = self._learning_pass()
+        # anahtar kapalıyken çağrı AYNEN eskisi (ek anahtar geçilmez)
+        lkw = {"learning": bl, "structures_entry_shadow": eshadow} if self.last_learning is not None else {}
         with self.book.lock:
             self.book.run_id = run_id
             self.book.step(symbols=eligible, frames_by_symbol=frames, marks=pmarks, marks_f=pmarks_f, now=now,
-                           provenance_by_symbol=provs, data_gaps=gaps)
+                           provenance_by_symbol=provs, data_gaps=gaps, **lkw)
             self.book.apply_closed_bars(pbars, now=now, funding_rate_lookup=self.funding_rates)
-            self.book.tick(pmarks, now=now, funding_rate_lookup=self.funding_rates, bar_advance=False)
+            self.book.tick(pmarks, now=now, funding_rate_lookup=self.funding_rates, bar_advance=False, source="box_timer",
+                           apply_clock=self.clock_ms)
             self.book.save(pmarks_f, now)
         missed = max(0, (bar_open - self.last_bar_open) // M5_MS - 1) if self.last_bar_open else 0
         lag = round((now_ms - (bar_open + M5_MS)) / 1000.0, 1)
@@ -250,12 +252,12 @@ class BoxTimer:
     def _protect(self, now_ms: int) -> dict[str, Any]:
         now = datetime.fromtimestamp(now_ms / 1000.0, tz=timezone.utc)
         prov = self._prov()
-        held = list(self.book.ledger.positions)
-        pmarks, pmarks_f, gaps = self._marks(prov, held, now_ms)
-        with self.book.lock:
-            self.book.record_gaps(gaps, now)
-            self.book.tick(pmarks, now=now, funding_rate_lookup=self.funding_rates, bar_advance=False)
-            self.book.save(pmarks_f, now)
+        expect = self.book.held_ids()                     # kimlik anlık görüntüsü (kısa kilit)
+        held = list(expect)
+        pmarks, pmarks_f, gaps = self._marks(prov, held, now_ms)      # AĞ — kilit DIŞINDA
+        # tek kısa atomik bölüm (boşluk → korumalı tick → kayıt); koruyucu izleyici de aynı defteri aynı kilitle günceller
+        self.book.protect(pmarks, pmarks_f, gaps, now=now, expect=expect, source="box_timer",
+                          funding_rate_lookup=self.funding_rates, apply_clock=self.clock_ms)
         if self.last_tick_ms:
             self.protect_gaps_s = (self.protect_gaps_s + [round((now_ms - self.last_tick_ms) / 1000.0, 1)])[-100:]
         self.last_tick_ms = now_ms
@@ -264,12 +266,15 @@ class BoxTimer:
 
     def status(self) -> dict[str, Any]:
         lags = sorted(self.lags_s)
-        return {"schema_version": "box_timer_v1", "alive": self.alive, "last_bar_open": self.last_bar_open,
-                "evaluations": self.evaluations, "missed_bars": self.missed_bars,
-                "duplicates_blocked": self.duplicates_blocked, "errors": self.errors, "last_error": self.last_error,
-                "lags_s": self.lags_s[-100:], "lag_p50_s": lags[len(lags) // 2] if lags else None,
-                "lag_max_s": lags[-1] if lags else None, "protect_gaps_s": self.protect_gaps_s[-100:],
-                "last_eval": self.last_eval, "poll_s": self.poll_s, "tick_every_s": self.tick_every_s}
+        out = {"schema_version": "box_timer_v1", "alive": self.alive, "last_bar_open": self.last_bar_open,
+               "evaluations": self.evaluations, "missed_bars": self.missed_bars,
+               "duplicates_blocked": self.duplicates_blocked, "errors": self.errors, "last_error": self.last_error,
+               "lags_s": self.lags_s[-100:], "lag_p50_s": lags[len(lags) // 2] if lags else None,
+               "lag_max_s": lags[-1] if lags else None, "protect_gaps_s": self.protect_gaps_s[-100:],
+               "last_eval": self.last_eval, "poll_s": self.poll_s, "tick_every_s": self.tick_every_s}
+        if self.last_learning is not None:
+            out["learning"] = dict(self.last_learning)      # öğrenme modu (2026-09-28): yalnız anahtar açıkken
+        return out
 
     def _write_status(self, now: datetime) -> None:
         try:

@@ -7,6 +7,12 @@ REJECTED / BROKEN / EXPIRED / CANCELLED. Aynı plan iki kez emir açamaz (`posit
 açılmaz, karşı taraf tetiklenince diğer plan iptal olur, zarardan sonra sembol bazında soğuma vardır (otomatik tersleme /
 martingale YOK). Veri kaynağı, fiyat güncelliği, spread/derinlik, stop mesafesi, maliyet sonrası R/R ve kill-switch
 kontrolleri zorunludur; olasılık modeli YOKTUR (p_win=None) — uydurma 0,50 ile kapı geçirilmez.
+
+ÖĞRENME MODU (2026-09-28, öğrenme modu; yalnız PAPER): motor `set_learning(BookLearning|None, universe_symbols=…,
+gate=…)` verir, tarayıcı her tur başında `begin_cycle` ile sabitler. Açıkken: adet tavanı yok (D1), slot boyutu (D2/D3,
+`pattern_trader/learning.py`), zarar sonrası soğuma yok (D5), yuvarlama riski ölçeklenir (D6), R/R tabanı yok (D7),
+likidite bilinmiyorsa pencere içinde bekler (D16), derinlik eşiği notional'a bağlı (D17), evren protokol ∪ ana evren
+(S9); açılmayan geçerli sinyal `counterfactual_trades.json`a düşer. Kapalıyken (None) her yol bit-bit eskisi gibidir.
 """
 from __future__ import annotations
 
@@ -18,18 +24,21 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, Callable
 
-from ..accounting import (FeeSchedule, FuturesLedgerV2, LiquidationParams, MarketType, PositionSide, SlippageModel, TaxPolicy,
-                          TickData, default_brackets)
+from ..accounting import (R_MAX_POSITIONS, FeeSchedule, FuturesLedgerV2, LiquidationParams, MarketType, PositionSide,
+                          SlippageModel, TaxPolicy, TickData, default_brackets)
 from ..accounting.funding import FundingSchedule
 from ..core import atomic_write_json, iso, read_json, utc_now
 from ..learn import TradeMemory
 from ..learn.candle_context import CandleContextConfig, detect_trend
+from ..learning_mode import (LEARNING_RECORD_ONLY, RECORD_ONLY_FEATURE, STATE_ACTIVE, STATE_DISABLED, SUSPENDED_PREFIX,
+                             LearningMode, baseline_view, learning_tags, policy_reserve_usdt)
 from ..risk import RiskEngine, build_state
-from ..strategy_paper import (PAPER_MARKET, DataVerdict, apply_action, apply_closed_bars_to_ledger, monitoring_gap_on_resume,
-                              parse_ts_ms)
+from ..strategy_paper import (PAPER_MARKET, DataVerdict, _baseline_blocks, apply_action, apply_closed_bars_to_ledger,
+                              monitoring_gap_on_resume, parse_ts_ms)
 from ..timeframes import tf_ms
 from .data import REQUIREMENTS, readiness
 from .detect import ST_BROKEN, ST_CONFIRMED, ST_EXPIRED, atr14, detect_findings, levels_for, update_finding
+from .learning import LEARNING_MIN_DEPTH_USDT, cf_horizon, open_learning
 from .strategy import (CONTEXT_TF, ENTRY_TF, PL_AWAITING, PL_BROKEN, PL_CANCELLED, PL_CLOSED, PL_EXPIRED, PL_MANAGED, PL_OPENED,
                        PL_REJECTED, PL_RISK_CHECK, PL_TRIGGERED, PROTOCOL_VERSION, STRUCTURE_TF, TERMINAL, build_plans,
                        cost_fraction, cost_fraction_at_fill, evaluate_trigger, rr_after_cost)
@@ -67,6 +76,11 @@ class PatternBook:
         #: Gerçekleşme fiyatı hesaplandıktan SONRA kalan maliyet (giriş kayması fiyata gömülüdür; iki kez sayılmaz).
         self.cost_frac_at_fill = cost_fraction_at_fill(taker_fee_pct=float(v3.fees.futures_taker_pct),
                                                        slippage_bps=float(v3.fees.slippage_bps))
+        #: ÖĞRENME MODU (2026-09-28, öğrenme modu) — D1: defter DAİMA bugünkü gibi (enforce=True) kurulur; adet tavanı
+        #: yalnız öğrenme AKTİF olan turda kalkar (`begin_cycle` bayrağı tur başına ayarlar). Askıda/kapalıyken sıra ve
+        #: kalıcı bayrak bugünküyle aynıdır (önce RiskEngine, sonra defter tavanı).
+        self._lm_cfg = LearningMode.from_config(cfg, mode_gate=lambda: (False, "BOOK_CONFIG_ONLY"))
+        self.learning_capable = bool(self._lm_cfg.enabled and self._lm_cfg.book_cfg(BOOK_KEY).enabled)
         self.ledger = FuturesLedgerV2.load(self.ledger_path, starting_equity=float(section.starting_equity_usdt),
                                           max_positions=int(section.max_open_positions), enforce_position_cap=True,
                                           fees=fees, slippage=slip, brackets=default_brackets(),
@@ -82,6 +96,9 @@ class PatternBook:
         self._resume_positions: list[str] = sorted(self.ledger.positions)
         self._resume_checked = False
         self._gap_until_ms: int | None = None
+        self.monitoring_gap: dict[str, Any] | None = None
+        #: KORUYUCU İZLEYİCİ (2026-09-24): gözlem ölçümü (`protective_monitor.ObservationLog`); None → ölçüm yok.
+        self.observer: Any = None
         self.risk = RiskEngine(profile, killswitch, v3.risk_profiles.clusters or None)
         self.memory = TradeMemory(self.state_dir / "trade_memory.jsonl", source="PATTERN_PAPER")
         self.lock = threading.RLock()
@@ -89,6 +106,15 @@ class PatternBook:
         self.params = {"stop_buffer_atr": float(section.stop_buffer_atr), "min_rr_after_cost": float(section.min_rr_after_cost),
                        "fallback_rr": float(section.fallback_rr), "measured_move_mult": float(section.measured_move_mult)}
         self.families = tuple(section.families)
+        #: PROTOKOL (2026-09-25): "classic" → v1/v2 (yapı moduna göre, eski davranış); "momentum_4h_v3" → yalnız laboratuvarda
+        #: sıkı testi geçen 4h sinyali (`strategy_v3`). `symbols` doluysa YENİ plan yalnız bu coinlerde kurulur; açık
+        #: pozisyonlar ve eski protokolden kalan pozisyonlar kendi stop/hedef/zaman stopuyla yönetilmeye devam eder.
+        self.protocol = str(getattr(section, "protocol", "classic") or "classic")
+        _syms = [str(x).upper() for x in (getattr(section, "symbols", None) or [])]
+        if self.protocol == "momentum_4h_v3" and not _syms:
+            from .strategy_v3 import V3_SYMBOLS
+            _syms = list(V3_SYMBOLS)
+        self.allowed_symbols: frozenset[str] | None = frozenset(_syms) if _syms else None
         self.run_id = ""
         self.plans: dict[str, dict[str, Any]] = {}
         self.findings: dict[str, dict[str, Any]] = {}
@@ -113,6 +139,24 @@ class PatternBook:
         #: bkz. `_resolve_filters` — ana botun resmî yenileme damgası kirletilmez, kilitsiz nesneye iş
         #: parçacığından yazılmaz.
         self._filters_memo: dict[str, tuple[int, Any]] = {}
+        #: ÖĞRENME MODU (2026-09-28, öğrenme modu): motor `set_learning` ile görünümü verir, tarayıcı her tur başında
+        #: `begin_cycle` ile BİR KEZ alır (tur ortasında değişmez). `learning` None → her yol bugünkü gibi.
+        self.learning: Any = None
+        self._lm_next: Any = None
+        self._lm_gate: Callable[[], tuple[bool, str]] | None = None
+        self._lm_universe_next: frozenset[str] = frozenset()
+        self._lm_universe: frozenset[str] = frozenset()
+        self._lm_engine_status: dict[str, Any] = {}
+        self._lm_reason = STATE_DISABLED
+        self._lm_since: str | None = None
+        self._lm_ever = False
+        self.risk_learning: RiskEngine | None = None      # öğrenme profili (toplam açık risk 100); ilk kullanımda
+        self.cf: Any = None                               # karşı-olgusal kayıtçı (`counterfactual_trades.json`); ilk kullanımda
+        self.learning_counters: dict[str, int] = {"opened": 0, "liquidity_waits": 0, "cooldown_skipped": 0,
+                                                  "rr_floor_ignored": 0, "rescaled_after_rounding": 0,
+                                                  "min_notional_bumped": 0, "shrunk_to_margin": 0,
+                                                  "counterfactual_recorded": 0, "max_positions_blocked": 0,
+                                                  "counterfactual_superseded": 0}
         self._restore()
 
     # ------------------------------------------------------------------ kalıcılık
@@ -134,6 +178,10 @@ class PatternBook:
                 self.cohort_stats = {str(k): dict(v) for k, v in (s.get("cohort_stats") or {}).items() if isinstance(v, dict)}
                 self.closed_recent = list(s.get("closed_recent") or [])[-50:]
                 self.symbol_scans = {str(k): dict(v) for k, v in (s.get("symbol_scans") or {}).items() if isinstance(v, dict)}
+                _lc = (s.get("learning") or {}).get("counters") if isinstance(s.get("learning"), dict) else None
+                for k in self.learning_counters:                # öğrenme sayaçları (yalnız özet taşıyorsa)
+                    if isinstance(_lc, dict) and k in _lc:
+                        self.learning_counters[k] = int(_lc.get(k) or 0)
         except Exception as exc:  # noqa: BLE001 — bozuk özet: sayaçlar sıfırdan, defter ETKİLENMEZ
             log.warning("formasyon defteri durumu geri yüklenemedi: %s", exc)
         closed = len(self.ledger.history_dicts())
@@ -144,6 +192,12 @@ class PatternBook:
         with self.lock:
             self._resume_once(now)
             self.ledger.save(self.ledger_path)
+            if self.cf is not None:                    # öğrenme karşı-olgusalı: yalnız değiştiyse tek atomik yazım
+                try:
+                    self.cf.sync_book_counters(self.learning_counters)   # sayaçların kalıcı yedeği (özetten bağımsız)
+                    self.cf.save()
+                except Exception as exc:  # noqa: BLE001 — kayıt arızası defteri ETKİLEMEZ
+                    log.warning("formasyon karşı-olgusal kaydı yazılamadı: %s", exc)
             atomic_write_json(self.state_dir / "plans.json", {"schema_version": "pattern_plans_v1", "generated_at": iso(now), "plans": self.plans})
             atomic_write_json(self.state_dir / "findings.json", {"schema_version": "pattern_findings_v1", "generated_at": iso(now), "findings": self.findings})
             fs = self.ledger.summary(dict(marks_f or {}))
@@ -160,14 +214,17 @@ class PatternBook:
                                      "targets": [float(t) for t in p.targets], "leverage": p.leverage, "opened_at": p.opened_at,
                                      "last_price": float(p.last_price) if p.last_price else None, "plan_id": p.meta.get("plan_id"),
                                      "family": p.meta.get("family"), "cohort": p.meta.get("cohort"), "age_h_at_entry": p.meta.get("age_h_at_entry"),
-                                     "mae_pct": float(p.mae_pct), "mfe_pct": float(p.mfe_pct)} for s, p in self.ledger.positions.items()},
+                                     "mae_pct": float(p.mae_pct), "mfe_pct": float(p.mfe_pct),
+                                     **({"learning": dict(p.meta["learning"])} if p.meta.get("learning") else {})}
+                             for s, p in self.ledger.positions.items()},
                    "history_tail": self.ledger.history_dicts()[-50:], "counters": dict(self.counters), "rejections": dict(self.rejections),
                    "plans_by_status": by_status, "findings_by_status": fstat, "n_plans": len(self.plans), "n_findings": len(self.findings),
                    "active_plans": [self._plan_brief(pl) for pl in self.plans.values() if pl.get("status") in (PL_AWAITING, PL_TRIGGERED, PL_RISK_CHECK, PL_OPENED, PL_MANAGED)][:200],
                    "recent_plans": sorted([self._plan_brief(pl) for pl in self.plans.values()], key=lambda d: -(d.get("created_at_ms") or 0))[:60],
                    "events_recent": self.events[-60:], "data_gaps": dict(self.data_gaps), "cooldown_until_ms": dict(self.cooldown_until),
                    "cohort_stats": self.cohort_stats, "symbol_scans": self.symbol_scans, "closed_recent": self.closed_recent[-30:],
-                   "policy": {"families": list(self.families), "params": dict(self.params), "entry_tf": ENTRY_TF, "structure_tf": STRUCTURE_TF, "context_tf": CONTEXT_TF,
+                   "policy": {"protocol": self.protocol, "symbols": sorted(self.allowed_symbols) if self.allowed_symbols else None,
+                              "families": list(self.families), "params": dict(self.params), "entry_tf": ENTRY_TF, "structure_tf": STRUCTURE_TF, "context_tf": CONTEXT_TF,
                               "requirements": dict(REQUIREMENTS), "max_open_positions": int(self.section.max_open_positions),
                               "max_hold_bars": int(self.section.max_hold_bars), "cooldown_bars_after_loss": int(self.section.cooldown_bars_after_loss),
                               "max_spread_pct": float(self.section.max_spread_pct), "min_depth_0_5pct_usdt": float(self.section.min_depth_0_5pct_usdt),
@@ -175,6 +232,8 @@ class PatternBook:
                               "risk_per_trade_pct": float(self.profile.risk_per_trade_pct)},
                    "note_tr": "FORMASYON PAPER TRADER — gerçek para yok; ana bot/T2/M2 defterlerinden bağımsız sanal bakiye. Kârlılık kanıtı YOK; "
                               "planlar ölçülecek hipotezlerdir."}
+            if self.learning_capable or self._lm_ever:  # ÖĞRENME MODU: yalnız yapılandırılmışsa (kapalıyken özet bit-aynı)
+                doc["learning"] = self.learning_summary()
             atomic_write_json(Path(self.cfg.state_path) / self.summary_file, doc)
 
     @staticmethod
@@ -330,7 +389,11 @@ class PatternBook:
             pl["net_pnl"] = float(getattr(rec, "net_pnl", 0) or 0)
         if float(getattr(rec, "net_pnl", 0) or 0) < 0:
             sym = str(getattr(rec, "symbol", "") or "")
-            self.cooldown_until[sym] = closed_ms + int(self.section.cooldown_bars_after_loss) * tf_ms(ENTRY_TF)
+            if self.learning_on:
+                # D5 (2026-09-28, öğrenme modu): öğrenmede soğuma KURULMAZ (laboratuvarda yoktu; tersleme/martingale yok)
+                self.learning_counters["cooldown_skipped"] += 1
+            else:
+                self.cooldown_until[sym] = closed_ms + int(self.section.cooldown_bars_after_loss) * tf_ms(ENTRY_TF)
         try:
             self.memory.record_exit(str(getattr(rec, "id", "")), {"exit_reason": getattr(rec, "exit_reason", None), "net_pnl": float(getattr(rec, "net_pnl", 0) or 0),
                                                                   "r_multiple": float(getattr(rec, "r_multiple", 0) or 0), "closed_at": getattr(rec, "closed_at", None)})
@@ -378,7 +441,7 @@ class PatternBook:
             # ORTAK KATALOG (structures_v1): 15m/1h/4h analizi — piyasa kimliği her dilimin KENDİ provenansından.
             analyses: dict[str, Any] = {}
             analysis_failed = False
-            if self.structure_mode != "OFF":
+            if self.structure_mode != "OFF" or self.protocol == "momentum_4h_v3":
                 try:
                     analyses = self._structure_analyses(symbol, bars_by_tf, statuses, ds, as_of_ms)
                 except Exception as exc:  # noqa: BLE001 — yapı arızası çıkış/zaman stopunu ENGELLEMEZ (bulgu #16)
@@ -427,6 +490,15 @@ class PatternBook:
             triggered: list[dict[str, Any]] = []
             for pid, pl in list(self.plans.items()):
                 if pl.get("symbol") != symbol or pl.get("status") not in (PL_AWAITING, PL_TRIGGERED):
+                    continue
+                if self.protocol == "momentum_4h_v3":
+                    if pl.get("version") != "pattern_protocol_v3.0.0":
+                        # protokol geçişi: eski (v1/v2) bekleyen plan açılmaz; açık pozisyonlar kendi kuralıyla sürer
+                        self._set_status(pl, PL_CANCELLED, int(as_of_ms), "PROTOCOL_MOMENTUM_4H_V3")
+                        self.counters["cancelled"] += 1
+                        continue
+                    if pl["status"] == PL_TRIGGERED:
+                        triggered.append(pl)           # fiyat beklenen v3 planı: süre dolana kadar yeniden denenir
                     continue
                 if self.structure_mode == "ENFORCE" and not (pl.get("version") == "pattern_protocol_v2.0.0" and pl.get("structure")):
                     # ENFORCE'ta giriş yalnız ortak kayıttan kurulan v2 planıyla olur; dağıtımdan (ya da mod geçişinden)
@@ -494,10 +566,24 @@ class PatternBook:
             self._time_stop(symbol, now=now, as_of_ms=as_of_ms, price=price)
             # 5) yeni planlar: pozisyon yoksa, soğuma yoksa, evren uygunsa
             blocked = self._entry_block_reason(symbol, ue, as_of_ms)
+            # S9 (2026-09-28, öğrenme modu): öğrenmede giriş evreni = protokol coinleri ∪ ana botun giriş evreni;
+            # kapalıyken `entry_symbols()` protokol evreninin KENDİSİDİR (bit-aynı)
+            _allowed = self.entry_symbols()
+            if not blocked and _allowed is not None and symbol not in _allowed:
+                blocked = "NOT_IN_PROTOCOL_UNIVERSE"
             if blocked:
                 out["skipped"].append({"reason": blocked})
+                if blocked == "POSITION_OPEN" and self.learning_on and not analysis_failed:
+                    self._cf_signals_while_open(symbol, as_of_ms=int(as_of_ms), dec_ms=dec_ms, analyses=analyses,
+                                                bars_by_tf=bars_by_tf, ue=ue, ds=ds, price=price)
             else:
-                if self.structure_mode == "ENFORCE":
+                if self.protocol == "momentum_4h_v3":
+                    from ..structures.bots import used_patterns_of
+                    from .strategy_v3 import build_plans_v3
+                    plans, skipped = ([], [{"reason": "STRUCTURE_ANALYSIS_ERROR"}]) if analysis_failed else build_plans_v3(
+                        symbol, as_of_ms=as_of_ms, analyses=analyses, bars_by_tf=bars_by_tf, universe_entry=ue, data_source=ds,
+                        used_patterns=used_patterns_of(self.ledger))
+                elif self.structure_mode == "ENFORCE":
                     from ..structures.bots import used_patterns_of
                     from .strategy_v2 import build_plans_v2
                     plans, skipped = build_plans_v2(symbol, as_of_ms=as_of_ms, analyses=analyses, bars_by_tf=bars_by_tf, levels_1h=levels_1h,
@@ -517,6 +603,8 @@ class PatternBook:
                            for q in self.plans.values()):
                         continue                       # aynı aile/yönde bekleyen plan zaten var (yinelenen plan yok)
                     self.plans[pl["plan_id"]] = pl
+                    if self.learning_on:                   # S9: laboratuvar evreni dışı plan etiketli (askıda iptal edilir)
+                        pl["in_lab_universe"] = bool(self.allowed_symbols is None or symbol in self.allowed_symbols)
                     out["new_plans"] += 1
                     self.counters["plans"] += 1
                     cs["plans"] += 1
@@ -545,6 +633,8 @@ class PatternBook:
                     self.symbol_scans.pop(k, None)
             out["levels_1h"] = {"n_zones": len(levels_1h.get("zones") or []), "reason": levels_1h.get("reason")}
             out["trend_4h"] = trend_4h.get("trend")
+            if self.cf is not None:                        # öğrenme karşı-olgusalı: eldeki kapalı barlarla (ağ YOK)
+                self.label_counterfactuals(symbol, bars_by_tf, now)
             return out
 
     # ------------------------------------------------------------------ ORTAK KATALOG (structures_v1)
@@ -746,7 +836,7 @@ class PatternBook:
     def _entry_block_reason(self, symbol: str, ue: dict[str, Any], as_of_ms: int) -> str | None:
         if symbol in self.ledger.positions:
             return "POSITION_OPEN"
-        if int(self.cooldown_until.get(symbol) or 0) > int(as_of_ms):
+        if int(self.cooldown_until.get(symbol) or 0) > int(as_of_ms) and not self.learning_on:   # D5: öğrenmede soğuma YOK
             return "COOLDOWN_AFTER_LOSS"
         if not ue:
             return "NOT_IN_UNIVERSE"
@@ -838,6 +928,9 @@ class PatternBook:
         decision_ms = max(int(as_of_ms), int(decision_ms if decision_ms is not None else as_of_ms))
         if pl.get("status") in TERMINAL:
             return str(pl.get("status"))               # ZATEN terminal (örn. kardeş plan doldu → CANCELLED): dokunma
+        # ÖĞRENME MODU (2026-09-28, öğrenme modu): bu turun görünümü; None → aşağıdaki her satır bugünkü gibi
+        lm = self.learning if self.learning_on else None
+        cf_at = datetime.fromtimestamp(decision_ms / 1000.0, tz=timezone.utc)
         self._set_status(pl, PL_RISK_CHECK, int(as_of_ms), "")
 
         def _reject(reason: str, **extra: Any) -> str:
@@ -854,13 +947,23 @@ class PatternBook:
             self.counters["expired"] += 1
             self._event("PLAN_EXPIRED", symbol, "EXPIRED_BEFORE_ENTRY", now, plan_id=pl["plan_id"],
                         expires_at=iso_ms(int(pl["expires_at_ms"])), decided_at=iso_ms(decision_ms), as_of=iso_ms(int(as_of_ms)))
+            if lm is not None:                         # D16: pencere sonunda hâlâ likidite yoksa işlem YOK + karşı-olgusal
+                self._cf_expired(pl, at=cf_at)
             return "EXPIRED"
+        # S9: öğrenmede birleşik evrenden kurulan plan, öğrenme askıdayken protokol evrenine döner (açılmaz)
+        if lm is None and pl.get("in_lab_universe") is False:
+            self._set_status(pl, PL_CANCELLED, int(as_of_ms), "NOT_IN_PROTOCOL_UNIVERSE")
+            self.counters["cancelled"] += 1
+            return "CANCELLED"
         # evren/durum
         blocked = self._entry_block_reason(symbol, universe_entry, as_of_ms)
         if blocked:
             if blocked == "POSITION_OPEN":
                 self._set_status(pl, PL_CANCELLED, int(as_of_ms), "SAME_SYMBOL_POSITION_OPEN")
                 self.counters["cancelled"] += 1
+                if lm is not None and not self._cf_held_skip(symbol):   # D8: sembol dolu — sinyal kaybolmaz (karşı-olgusal)
+                    _e, _ref = self._cf_entry_ref(pl, price)
+                    self._cf_record(pl, "POSITION_OPEN", entry=_e, at=cf_at, extra={"entry_ref": _ref})
                 return "CANCELLED"
             return _reject(blocked)
         # veri kimliği/güncelliği (giriş dilimi): sağlayıcı hatası ya da bayat seri → ret
@@ -888,6 +991,8 @@ class PatternBook:
             return "WAIT_PRICE"                       # süre kontrolü yukarıda, TEK yerde (bekleme dönüşünü de kapsar)
         self.data_gaps.pop(symbol, None)
         mark = float(price["mark"])
+        if lm is not None:                             # pencere sonu karşı-olgusalı için son doğrulanmış fiyat
+            pl["last_mark"] = {"mark": mark, "at_ms": int(decision_ms)}
         # kovalamama: tetik seviyesinden uzaklık
         dist = abs(mark - float(pl["trigger"]["level"]))
         if dist > float(pl["chase_atr"]) * float(pl["atr"]):
@@ -895,33 +1000,65 @@ class PatternBook:
             pl["cancel_detail"] = {"mark": mark, "trigger": pl["trigger"]["level"], "distance_atr": round(dist / float(pl["atr"]), 3), "chase_atr": pl["chase_atr"]}
             self.counters["cancelled"] += 1
             self._event("PLAN_CANCELLED", symbol, "CHASE_LIMIT", now, plan_id=pl["plan_id"], distance_atr=round(dist / float(pl["atr"]), 3))
+            if lm is not None:
+                self._cf_record(pl, "CHASE_LIMIT", entry=mark, at=cf_at, extra={"entry_ref": "mark", **pl["cancel_detail"]})
             return "CANCELLED"
         # fiyat stop'un yanlış tarafındaysa (giriş anında yapı bozulmuş) → iptal
         if (pl["side"] == "LONG" and mark <= float(pl["stop"])) or (pl["side"] == "SHORT" and mark >= float(pl["stop"])):
             self._set_status(pl, PL_CANCELLED, int(as_of_ms), "MARK_BEYOND_STOP_AT_ENTRY")
             self.counters["cancelled"] += 1
             return "CANCELLED"
+        # v3 (laboratuvar kuralı): risk test aralığında mı; hedef GERÇEK giriş fiyatından R katı
+        if pl.get("risk_atr_bounds"):
+            lo_atr, hi_atr = (float(x) for x in pl["risk_atr_bounds"])
+            risk_atr = abs(mark - float(pl["stop"])) / float(pl["atr"])
+            if not (lo_atr < risk_atr <= hi_atr):
+                self._set_status(pl, PL_CANCELLED, int(as_of_ms), "RISK_OUTSIDE_TESTED_RANGE")
+                pl["cancel_detail"] = {"risk_atr": round(risk_atr, 4), "bounds": [lo_atr, hi_atr]}
+                self.counters["cancelled"] += 1
+                if lm is not None:
+                    self._cf_record(pl, "RISK_OUTSIDE_TESTED_RANGE", entry=mark, at=cf_at,
+                                    extra={"entry_ref": "mark", **pl["cancel_detail"]})
+                return "CANCELLED"
+        if pl.get("target_from_entry_rr"):
+            rr = float(pl["target_from_entry_rr"])
+            d = abs(mark - float(pl["stop"]))
+            pl["target"] = round(mark + rr * d if pl["side"] == "LONG" else mark - rr * d, 10)
         # likidite: tetik anında ölçülür; bilinmiyorsa iyi likidite SAYILMAZ
         liq = None
         try:
-            liq = liquidity() if liquidity is not None else None
+            liq = self._call_unlocked(liquidity) if liquidity is not None else None
         except Exception as exc:  # noqa: BLE001
             liq = {"error": f"{type(exc).__name__}: {exc}"[:120]}
         if not liq or liq.get("spread_pct") is None:
+            if lm is not None:                         # D16: tek ölçüm arızası TERMİNAL değil — pencere içinde yeniden
+                return self._liquidity_wait(pl, "LIQUIDITY_UNKNOWN", as_of_ms=int(as_of_ms), decision_ms=decision_ms, mark=mark,
+                                            now=now, detail=str((liq or {}).get("error") or "spread ölçülemedi"))
             return _reject("LIQUIDITY_UNKNOWN", detail=str((liq or {}).get("error") or "spread ölçülemedi")[:120])
         if float(liq["spread_pct"]) > float(self.section.max_spread_pct):
             return _reject("SPREAD_WIDE", spread_pct=float(liq["spread_pct"]), max_spread_pct=float(self.section.max_spread_pct))
         depth = liq.get("depth_0_5pct")
         if depth is None:
+            if lm is not None:
+                return self._liquidity_wait(pl, "DEPTH_UNKNOWN", as_of_ms=int(as_of_ms), decision_ms=decision_ms, mark=mark,
+                                            now=now, detail="derinlik ölçülemedi")
             return _reject("DEPTH_UNKNOWN")
-        if float(depth) < float(self.section.min_depth_0_5pct_usdt):
+        if lm is None and float(depth) < float(self.section.min_depth_0_5pct_usdt):
             return _reject("THIN_DEPTH", depth_0_5pct=float(depth), min_depth=float(self.section.min_depth_0_5pct_usdt))
+        if lm is not None and float(depth) < LEARNING_MIN_DEPTH_USDT:
+            # D17: öğrenmede eşik max(2.000, 20 × notional); taban burada, notional'a bağlı kısım boyuttan SONRA
+            return _reject("THIN_DEPTH", depth_0_5pct=float(depth), min_depth=LEARNING_MIN_DEPTH_USDT)
         pl["liquidity_at_trigger"] = {k: liq.get(k) for k in ("spread_pct", "depth_0_5pct", "depth_1pct", "source", "ts")}
+        if lm is not None and pl.get("liquidity_wait"):
+            pl["liquidity_wait"]["pending"] = False    # ölçüldü: bekleme bitti (etiket `learning_unlocked_by`de kalır)
         # maliyet sonrası R/R gerçek giriş fiyatıyla yeniden hesaplanır (geometri değişmiş olabilir)
         g, n = rr_after_cost(mark, float(pl["stop"]), float(pl["target"]), cost_frac=self.cost_frac)
         pl["rr_at_entry"] = {"gross": g, "after_cost": n, "mark": mark}
+        unlocked: list[str] = []                       # öğrenmenin açtığı (baseline'da engelleyecek) kodlar
         if n < float(pl["min_rr_after_cost"]):
-            return _reject("RR_BELOW_MIN_AT_ENTRY", rr_after_cost=n)
+            if lm is None:
+                return _reject("RR_BELOW_MIN_AT_ENTRY", rr_after_cost=n)
+            unlocked.append("RR_BELOW_MIN_AT_ENTRY")   # D7: öğrenmede R/R tabanı YOK (laboratuvar paritesi); değer özellikte
         # RESMÎ EMİR KURALLARI (2026-09-17): keşiften girişe bağlı, doğrulanmış filtre. Eksik/geçersiz/bayat →
         # giriş YOK (varsayılan tick/step ile sessiz açılış KAPALI); gerekçe planda ve olayda görünür.
         filters, fwhy, fev = self._resolve_filters(symbol, universe_entry, int(as_of_ms))
@@ -949,10 +1086,16 @@ class PatternBook:
                                   "risk_ratio_after_rounding": round(risk_ratio, 6),
                                   "max_risk_ratio": 1.0 + RISK_ROUNDING_TOLERANCE})
         if nq < float(pl["min_rr_after_cost"]):
-            return _reject("RR_BELOW_MIN_AFTER_ROUNDING", rr_after_cost=nq, quantized_entry=qmark)
+            if lm is None:
+                return _reject("RR_BELOW_MIN_AFTER_ROUNDING", rr_after_cost=nq, quantized_entry=qmark)
+            unlocked.append("RR_BELOW_MIN_AFTER_ROUNDING")
         if risk_ratio > 1.0 + RISK_ROUNDING_TOLERANCE:
-            return _reject("RISK_ABOVE_CAP_AFTER_ROUNDING", risk_ratio=round(risk_ratio, 6), quantized_entry=qmark,
-                           max_risk_ratio=1.0 + RISK_ROUNDING_TOLERANCE)
+            if lm is None:
+                return _reject("RISK_ABOVE_CAP_AFTER_ROUNDING", risk_ratio=round(risk_ratio, 6), quantized_entry=qmark,
+                               max_risk_ratio=1.0 + RISK_ROUNDING_TOLERANCE)
+            # D6: ret yerine ÖLÇEKLE — boyut gerçekleşme fiyatıyla kurulur, notional 1/oran küçülür (risk bütçede kalır)
+            unlocked.append("RISK_ABOVE_CAP_AFTER_ROUNDING")
+            pl["rr_at_entry"]["risk_rescaled"] = {"ratio": round(risk_ratio, 6), "notional_factor": round(1.0 / risk_ratio, 6)}
         # ortak uygulayıcı: risk (RiskEngine.evaluate) + defter (gerçek filtre, kayma) — fail-closed veri hükmüyle
         verdict = DataVerdict(ok=True, entry_ok=True, market=str(st15.get("market")), source=str(st15.get("source")), tour_id=self.run_id,
                               bars={tf: (statuses.get(tf) or {}).get("last_open_ms") for tf in statuses if (statuses.get(tf) or {}).get("last_open_ms")},
@@ -960,6 +1103,8 @@ class PatternBook:
         act = {"action": "OPEN", "direction": pl["side"], "stop": float(pl["stop"]), "targets": [float(pl["target"])], "leverage": int(pl.get("leverage") or 1),
                "name": "%s:%s" % (BOOK_NAME, pl["family"]), "reason": pl["plan_id"], "expected_r": 0.0, "regime": pl.get("evidence", {}).get("htf_trend"),
                "setup_type": pl["family"]}
+        if pl.get("version") == "pattern_protocol_v3.0.0":
+            act["cap_notional_to_position_pct"] = True     # geniş 4h stop: tavana küçült (risk ≤ bütçe, kaldıraç 1x)
         tick = TickData(last=Decimal(str(mark)), mark=Decimal(str(mark)), ts=iso_ms(price.get("price_ts_ms")) or iso(now))
         rejected: list[str] = []
         opened_pos: list[Any] = []
@@ -967,16 +1112,48 @@ class PatternBook:
         def _on_opened(pos, a):
             opened_pos.append(pos)
 
-        res = apply_action(act, symbol=symbol, price=mark, tick=tick, now=now, ledger=self.ledger, risk=self.risk, profile=self.profile,
-                           state=self._state({symbol: mark}), filters=filters, run_id=self.run_id,
-                           reject=lambda s, r: rejected.append(r), on_closed=self._on_closed, on_opened=_on_opened, data=verdict)
-        if res != "OPENED" or not opened_pos:
-            return _reject(rejected[-1] if rejected else "LEDGER_%s" % res)
-        pos = opened_pos[0]
+        if lm is None:
+            res = apply_action(act, symbol=symbol, price=mark, tick=tick, now=now, ledger=self.ledger, risk=self.risk, profile=self.profile,
+                               state=self._state({symbol: mark}), filters=filters, run_id=self.run_id,
+                               reject=lambda s, r: rejected.append(r), on_closed=self._on_closed, on_opened=_on_opened, data=verdict)
+            if res != "OPENED" or not opened_pos:
+                if self.learning_capable and rejected and rejected[-1] == R_MAX_POSITIONS:
+                    self.learning_counters["max_positions_blocked"] += 1   # D1: askıda defter tavanı (yalnız sayaç)
+                return _reject(rejected[-1] if rejected else "LEDGER_%s" % res)
+            pos = opened_pos[0]
+        else:
+            pos, why = self._open_learning(lm, pl, act=act, symbol=symbol, mark=mark, qmark=qmark, tick=tick, now=now,
+                                           filters=filters, verdict=verdict, depth=float(depth), unlocked=unlocked,
+                                           as_of_ms=int(as_of_ms), universe_entry=universe_entry)
+            if pos is None:
+                r = _reject(why, **{k: v for k, v in ((pl.get("learning") or {}).get("fit") or {}).items()
+                                    if k in ("notional", "leverage", "size_rule") and isinstance(v, (int, float, str))})
+                # KARŞI-OLGUSAL GİRİŞ (2026-09-29, inceleme bulgusu): diğer nedenler gibi REFERANS fiyat (mark) yazılır;
+                # `qmark` zaten defterin dolum fiyatıdır (kayma + tick; özellikte `rr_at_entry.quantized_entry`) — net yeniden
+                # oynatma onu İKİNCİ kez kaydırırdı (eski `quantized_entry` kayıtlarını `learning_cf.net_outcome` ayrıca tanır).
+                ro = (pl.get("learning") or {}).get("record_only")
+                if why == LEARNING_RECORD_ONLY and isinstance(ro, dict):
+                    # seçicilik-ekstra YALNIZ KAYIT (2026-10-03): neden + ayrılan kodlar + kullanacağı öğrenme boyutu. Aynı
+                    # planın başka nedenli bekleyen kaydı varsa o kayıt dönüşür. Sayaç KAYIT sayar (yeni ya da dönüşen).
+                    ok = self._cf_record(pl, why, entry=mark, at=cf_at,
+                                         extra={"entry_ref": "mark", RECORD_ONLY_FEATURE: dict(ro)},
+                                         extra_reasons=list(ro.get("codes") or []))
+                    if not ok and self.cf is not None:
+                        ok = self.cf.retag_record_only(signal_key=str(pl["plan_id"]), symbol=symbol,
+                                                       direction=str(pl.get("side") or ""), info=dict(ro)) > 0
+                    if ok:
+                        self.learning_counters["learning_record_only"] = \
+                            int(self.learning_counters.get("learning_record_only", 0)) + 1
+                else:
+                    self._cf_record(pl, why, entry=mark, at=cf_at, extra={"entry_ref": "mark"})
+                return r
+        if act.get("_notional_scaled"):
+            pl["size_scaled_to_cap"] = dict(act["_notional_scaled"])
+            pos.meta["size_scaled_to_cap"] = dict(act["_notional_scaled"])
         # v2 planı KENDİ protokol sürümünü ve dilimini taşır; zaman stopu birimi değişmedi (15m bar × max_hold_bars)
         pos.meta.update({"plan_id": pl["plan_id"], "family": pl["family"], "protocol_version": pl.get("version") or PROTOCOL_VERSION, "cohort": pl.get("cohort"),
                          "age_h_at_entry": universe_entry.get("age_h"), "futures_first_trade_ms": universe_entry.get("futures_first_trade_ms"),
-                         "max_hold_bars": int(self.section.max_hold_bars), "entry_tf": pl.get("entry_tf") or ENTRY_TF, "time_stop_tf": ENTRY_TF,
+                         "max_hold_bars": int(pl.get("max_hold_bars") or self.section.max_hold_bars), "entry_tf": pl.get("entry_tf") or ENTRY_TF, "time_stop_tf": ENTRY_TF,
                          "trigger": dict(pl["trigger"]), "target_source": pl["target_source"],
                          "price_source": {"kind": "usdm_perp_mark", "price_ts_ms": price.get("price_ts_ms"), "age_s": price.get("age_s")}})
         pos.features.update({"plan_id": pl["plan_id"], "family": pl["family"], "cohort": pl.get("cohort"), "age_h_at_entry": universe_entry.get("age_h"),
@@ -997,6 +1174,19 @@ class PatternBook:
         pl["risk"] = {"risk_usdt": round(abs(float(pos.entry_avg) - float(pl["stop"])) * float(pos.qty), 6), "risk_pct_of_start": round(abs(float(pos.entry_avg) - float(pl["stop"])) * float(pos.qty) / float(self.ledger.starting_equity) * 100.0, 4)}
         self._set_status(pl, PL_MANAGED, int(as_of_ms), "")
         self.counters["opened"] += 1
+        if lm is not None:
+            self.learning_counters["opened"] += 1
+            pos.features["in_lab_universe"] = bool(self.allowed_symbols is None or symbol in self.allowed_symbols)
+        if self.cf is not None:
+            # D8 kaydı (pozisyon açıkken taze sinyal; plan KURULMAMIŞTI) aynı plan kimliğiyle şimdi GERÇEK işlem: kayıt düşer
+            # (aynı gözlem hem dolum hem "açılmadı" sayılmaz; defterlerle aynı kural, 2026-09-28 öğrenme modu)
+            try:
+                n_sup = self.cf.supersede(signal_key=str(pl["plan_id"]), symbol=symbol, direction=str(pl.get("side") or ""))
+            except Exception as exc:  # noqa: BLE001 — karşı-olgusal arızası işlemi ETKİLEMEZ
+                log.warning("formasyon karşı-olgusalı geri alınamadı (%s): %s", symbol, exc)
+                n_sup = 0
+            if n_sup:
+                self.learning_counters["counterfactual_superseded"] += int(n_sup)
         self._event("PLAN_OPENED", symbol, pl["family"], now, plan_id=pl["plan_id"], side=pl["side"], entry=float(pos.entry_avg), stop=float(pl["stop"]), target=float(pl["target"]), position_id=pos.id)
         # karşı plan(lar) iptal: bir yön gerçekleşince aynı sembolde bekleyen tüm planlar kapanır (tersleme yok)
         for q in self.plans.values():
@@ -1004,13 +1194,326 @@ class PatternBook:
                 self._set_status(q, PL_CANCELLED, int(as_of_ms), "OTHER_PLAN_FILLED:%s" % pl["plan_id"])
                 self.counters["cancelled"] += 1
         try:
+            mfeats = {"plan_id": pl["plan_id"], "family": pl["family"], "side": pl["side"],
+                      "cohort": pl.get("cohort"), "age_h_at_entry": universe_entry.get("age_h"), "rr_after_cost": n, "target_source": pl["target_source"],
+                      "finding_ids": list(pl.get("finding_ids") or []), "evidence": pl.get("evidence")}
+            if lm is not None and isinstance(pos.features.get("learning"), dict):
+                # ÖĞRENME MODU (2026-09-28, öğrenme modu): işlem hafızası satırı da etiketleri taşır (yalnız öğrenmede açılan)
+                mfeats["learning"] = dict(pos.features["learning"])
+                mfeats["in_lab_universe"] = bool(pos.features.get("in_lab_universe"))
             self.memory.record_entry({"trade_id": pos.id, "symbol": symbol, "direction": pos.side.value, "market_type": "USDM_PERP", "setup_type": pl["family"],
-                                      "regime": pl.get("evidence", {}).get("htf_trend"), "features": {"plan_id": pl["plan_id"], "family": pl["family"], "side": pl["side"],
-                                      "cohort": pl.get("cohort"), "age_h_at_entry": universe_entry.get("age_h"), "rr_after_cost": n, "target_source": pl["target_source"],
-                                      "finding_ids": list(pl.get("finding_ids") or []), "evidence": pl.get("evidence")}, "run_id": self.run_id, "in_test": True})
+                                      "regime": pl.get("evidence", {}).get("htf_trend"), "features": mfeats, "run_id": self.run_id, "in_test": True})
         except Exception as exc:  # noqa: BLE001
             log.warning("formasyon defteri giriş belleği yazılamadı (%s): %s", symbol, exc)
         return "OPENED"
+
+    # ------------------------------------------------------------------ ÖĞRENME MODU (2026-09-28, öğrenme modu)
+    def set_learning(self, learning: Any, *, universe_symbols: Any = None, gate: Callable[[], tuple[bool, str]] | None = None,
+                     status: dict[str, Any] | None = None) -> None:
+        """Motor HER ANA TURDA çağırır. `learning` = `LearningMode.book("pattern_trader")` (kapalı/askıda → None);
+        `universe_symbols` = ana botun giriş evreni (S9: protokol coinleri ∪ bu liste); `gate` = `LearningMode.active`
+        (her formasyon turu başında yeniden sorulur, düşerse o tur baseline); `status` = `LearningMode.status()` (özet).
+        Görünüm tarayıcının SONRAKİ turunda (`begin_cycle`) devreye girer — tur ortasında değişmez."""
+        with self.lock:
+            self._lm_next = learning if (learning is not None and bool(getattr(learning, "on", False))) else None
+            self._lm_universe_next = frozenset(str(x).upper() for x in (universe_symbols or ()) if x)
+            self._lm_gate = gate
+            self._lm_engine_status = dict(status or {})
+
+    def begin_cycle(self, now: datetime | None = None) -> bool:
+        """Formasyon turu başı: öğrenme görünümünü BU TUR için sabitler (kapı bir kez sorulur). Döner: aktif mi."""
+        with self.lock:
+            bl = self._lm_next
+            if bl is not None:
+                reason = STATE_ACTIVE
+            else:
+                reason = str(self._lm_engine_status.get("reason") or "") or (
+                    SUSPENDED_PREFIX + "NO_ENGINE_VIEW" if self.learning_capable else STATE_DISABLED)
+            if bl is not None and self._lm_gate is not None:
+                try:
+                    ok, why = self._lm_gate()
+                except Exception as exc:  # noqa: BLE001 — kapı arızası öğrenmeyi AÇMAZ (fail-closed)
+                    ok, why = False, "MODE_GATE_ERROR:" + type(exc).__name__
+                if not ok:
+                    bl = None
+                    why = str(why or "MODE_GATE")
+                    reason = why if (why == STATE_DISABLED or why.startswith(SUSPENDED_PREFIX)) else SUSPENDED_PREFIX + why
+            was_on = self.learning is not None
+            self.learning = bl
+            # D1 (2026-09-28, öğrenme modu): adet tavanı YALNIZ aktif öğrenme turunda kalkar; askı/kapalı → bugünkü defter
+            # (tavan defterde, RiskEngine'den SONRA). Bayrak `allow_shrink` değildir; tur başına ayarlanır.
+            self.ledger.enforce_position_cap = bl is None
+            self._lm_universe = self._lm_universe_next if bl is not None else frozenset()
+            if bl is not None:
+                self._lm_ever = True
+                if bool(getattr(bl, "counterfactual", False)):
+                    try:
+                        self._cf_recorder(bl)          # sayaç yedeği ilk aktif turda geri yüklensin (kayıt beklemeden)
+                    except Exception as exc:  # noqa: BLE001 — kayıtçı arızası defteri ETKİLEMEZ
+                        log.warning("formasyon karşı-olgusal kayıtçısı kurulamadı: %s", exc)
+            if self._lm_since is None or (bl is not None) != was_on:
+                self._lm_since = iso(now or utc_now())
+            self._lm_reason = reason
+            return bl is not None
+
+    @property
+    def learning_on(self) -> bool:
+        lm = getattr(self, "learning", None)
+        return lm is not None and bool(getattr(lm, "on", False))
+
+    def entry_symbols(self) -> frozenset[str] | None:
+        """YENİ plan kurulabilecek semboller. Kapalıyken `allowed_symbols` (bit-aynı); öğrenmede protokol ∪ ana evren (S9)."""
+        base = self.allowed_symbols
+        if base is None or not self.learning_on or not self._lm_universe:
+            return base
+        return base | self._lm_universe
+
+    def learning_summary(self) -> dict[str, Any]:
+        """Panel/sağlık: öğrenme durumu, defter görünümü, sayaçlar ve karşı-olgusal istatistikleri."""
+        lm = self.learning if self.learning_on else None
+        base = self.allowed_symbols
+        extra = sorted(self._lm_universe - base) if (base is not None and lm is not None) else []
+        es = self.entry_symbols()
+        return {"enabled_at_start": bool(self.learning_capable), "active": lm is not None, "reason": self._lm_reason,
+                "since": self._lm_engine_status.get("since") or self._lm_since,
+                "engine_status": dict(self._lm_engine_status) or None,
+                "book": lm.to_dict() if (lm is not None and hasattr(lm, "to_dict")) else None,
+                "position_cap": {"max_open_positions": int(self.section.max_open_positions),
+                                 "ledger_enforced": bool(self.ledger.enforce_position_cap),
+                                 "applies_now": lm is None},
+                "universe": {"protocol_symbols": len(base) if base is not None else None, "extra_symbols": extra[:100],
+                             "n_extra": len(extra), "n_entry_symbols": len(es) if es is not None else None},
+                "open_under_learning": sum(1 for p in self.ledger.positions.values() if p.meta.get("learning")),
+                "counters": dict(self.learning_counters),
+                "counterfactual": self.cf.stats() if self.cf is not None else None,
+                "note_tr": "ÖĞRENME MODU — yalnız PAPER; %0,5 risk, slot boyutu. USDT sonuçları öğrenme ölçeğindedir; "
+                           "R ölçütleri esastır. Karşı-olgusallar P&L'e GİRMEZ."}
+
+    def _learning_risk(self) -> RiskEngine:
+        """Öğrenme RiskEngine'i: taban profilin KOPYASI (toplam açık risk 100; işlem başı %2 tavan AYNEN), AYNI kill switch."""
+        if self.risk_learning is None:
+            self.risk_learning = RiskEngine(self._lm_cfg.profile_for(self.profile), self.risk.ks,
+                                            self.cfg.v3.risk_profiles.clusters or None)
+        return self.risk_learning
+
+    def _cf_recorder(self, lm: Any):
+        if self.cf is None:
+            from ..learning_cf import CounterfactualRecorder
+            self.cf = CounterfactualRecorder(self.state_dir / "counterfactual_trades.json", book=BOOK_KEY,
+                                             max_pending=int(getattr(lm, "max_pending", 2000) or 2000),
+                                             archive=self._cf_archive())
+            # sayaçların kalıcı yedeği: özet `learning` alanını kaybettiyse (öğrenme kapalı geçti / eski kod) geri gelir
+            for k, v in self.cf.sync_book_counters(self.learning_counters).items():
+                self.learning_counters[k] = int(v)
+        return self.cf
+
+    def _cf_archive(self) -> Any:
+        """Etiketlenmiş kayıtlar taşarsa KAYIPSIZ arşiv (strateji defterleriyle aynı kural, 2026-09-28 öğrenme modu);
+        kurulamazsa None → budama yok (dosya büyür, sessiz silme yok)."""
+        lv = getattr(self.cfg.v3, "learning_v3", None)
+        if not bool(getattr(lv, "decision_archive_enabled", False)):
+            return None
+        try:
+            from ..learn.journal_archive import SegmentArchive
+            return SegmentArchive(self.state_dir / "counterfactual_archive", stream_id="counterfactual_%s" % BOOK_KEY,
+                                  record_schema_version="shadow_trade_v1",
+                                  max_segments=int(getattr(lv, "decision_archive_max_segments", 0) or 0))
+        except Exception as exc:  # noqa: BLE001 — arşiv kurulamazsa SİLME de yapılmaz
+            log.warning("formasyon karşı-olgusal arşivi kurulamadı: %s", exc)
+            return None
+
+    @staticmethod
+    def _cf_entry_ref(pl: dict[str, Any], price: dict[str, Any] | None) -> tuple[float | None, str]:
+        """Karşı-olgusal giriş referansı: doğrulanmış mark varsa o; yoksa teyit kapanışı (doğrulanmış perp barı)."""
+        try:
+            if price and price.get("ok") and float(price.get("mark") or 0.0) > 0:
+                return float(price["mark"]), "mark"
+        except (TypeError, ValueError):
+            pass
+        if pl.get("trigger_close") is not None:
+            return float(pl["trigger_close"]), "trigger_close"
+        lvl = (pl.get("trigger") or {}).get("level")
+        return (float(lvl), "trigger_level") if lvl is not None else (None, "none")
+
+    def _cf_record(self, pl: dict[str, Any], reason: str, *, entry: Any, at: datetime, extra: dict[str, Any] | None = None,
+                   extra_reasons: list[str] | None = None) -> bool:
+        """Açılmayan geçerli sinyal → karşı-olgusal kayıt (yalnız öğrenme aktif + `counterfactual`). Sinyal anahtarı =
+        plan kimliği (turlar boyunca sabit, P1); geometri/neden süzgeci ve tekillik kayıtçıdadır. Asla işlem ETKİLEMEZ."""
+        lm = self.learning if self.learning_on else None
+        if lm is None or not bool(getattr(lm, "counterfactual", False)) or entry is None:
+            return False
+        try:
+            e, stop, side = float(entry), float(pl["stop"]), str(pl.get("side") or "").upper()
+            rr = pl.get("target_from_entry_rr")
+            if rr:
+                d = abs(e - stop)
+                target = e + float(rr) * d if side == "LONG" else e - float(rr) * d
+            else:
+                target = float(pl.get("target"))
+            tf_min, horizon = cf_horizon(int(pl.get("max_hold_bars") or self.section.max_hold_bars))
+            sym = str(pl.get("symbol") or "")
+            feats = {"plan_id": pl.get("plan_id"), "family": pl.get("family"), "protocol_version": pl.get("version"),
+                     "cohort": pl.get("cohort"), "age_h_at_plan": pl.get("age_h_at_plan"), "entry_tf": pl.get("entry_tf"),
+                     "in_lab_universe": bool(self.allowed_symbols is None or sym in self.allowed_symbols),
+                     "rsi14_at_confirm": (pl.get("evidence") or {}).get("rsi14_at_confirm"),
+                     "triggered_at_ms": pl.get("triggered_at_ms"), "min_rr_after_cost": pl.get("min_rr_after_cost"),
+                     "rr_at_entry": pl.get("rr_at_entry"), "liquidity_at_trigger": pl.get("liquidity_at_trigger"),
+                     "liquidity_wait": pl.get("liquidity_wait"), "time_stop_bars_15m": pl.get("max_hold_bars"),
+                     **(extra or {})}
+            from ..learning_cf import LABEL_TARGET_STOP_TIME
+            ok = self._cf_recorder(lm).record(signal_key=str(pl["plan_id"]), symbol=sym, direction=side, entry=e, stop=stop,
+                                              targets=[target], reason=str(reason), created_at=at, tf_minutes=tf_min,
+                                              horizon_bars=horizon, label_kind=LABEL_TARGET_STOP_TIME, features=feats,
+                                              rule_version=pl.get("version"),
+                                              **({"extra_reasons": list(extra_reasons)} if extra_reasons else {}))
+        except Exception as exc:  # noqa: BLE001 — karşı-olgusal arızası planı/defteri ETKİLEMEZ
+            log.warning("formasyon karşı-olgusalı yazılamadı (%s %s): %s", pl.get("symbol"), reason, exc)
+            return False
+        if ok:
+            self.learning_counters["counterfactual_recorded"] += 1
+            pl["counterfactual"] = {"reason": str(reason), "at": iso(at), "entry": e}
+            self._event("COUNTERFACTUAL_RECORDED", str(pl.get("symbol") or ""), str(reason), at, plan_id=pl.get("plan_id"))
+        return ok
+
+    def _cf_expired(self, pl: dict[str, Any], *, at: datetime) -> bool:
+        """D16/C4: pencere doldu. Likidite hâlâ ölçülemiyorsa neden LIQUIDITY_UNKNOWN; aksi halde EXPIRED_BEFORE_ENTRY.
+        Giriş referansı son doğrulanmış mark (yoksa teyit kapanışı)."""
+        w = pl.get("liquidity_wait") or {}
+        last = pl.get("last_mark") or {}
+        if w.get("pending"):
+            pl["expired_while"] = "LIQUIDITY_UNKNOWN"
+            return self._cf_record(pl, "LIQUIDITY_UNKNOWN", entry=w.get("mark"), at=at,
+                                   extra={"entry_ref": "last_mark", "wait_codes": list(w.get("codes") or [])})
+        if last.get("mark"):
+            return self._cf_record(pl, "EXPIRED_BEFORE_ENTRY", entry=last["mark"], at=at, extra={"entry_ref": "last_mark"})
+        e, ref = self._cf_entry_ref(pl, None)
+        return self._cf_record(pl, "EXPIRED_BEFORE_ENTRY", entry=e, at=at, extra={"entry_ref": ref})
+
+    def _cf_signals_while_open(self, symbol: str, *, as_of_ms: int, dec_ms: int, analyses: dict[str, Any], bars_by_tf: dict[str, list],
+                               ue: dict[str, Any], ds: dict[str, Any], price: dict[str, Any] | None) -> int:
+        """D8: sembolde pozisyon AÇIKKEN taze sinyal (yalnız v3 protokolü; aynı kırılım `used_patterns` ile elenir) —
+        plan KURULMAZ, yalnız POSITION_OPEN karşı-olgusalı yazılır; A15 tek hareket tek kayıt kuralıyla (`_cf_held_skip`)."""
+        if self.protocol != "momentum_4h_v3" or self._cf_held_skip(symbol):
+            return 0
+        allowed = self.entry_symbols()
+        if allowed is not None and symbol not in allowed:
+            return 0
+        try:
+            from ..structures.bots import used_patterns_of
+            from .strategy_v3 import build_plans_v3
+            plans, _ = build_plans_v3(symbol, as_of_ms=as_of_ms, analyses=analyses, bars_by_tf=bars_by_tf, universe_entry=ue,
+                                      data_source=ds, used_patterns=used_patterns_of(self.ledger))
+        except Exception as exc:  # noqa: BLE001
+            log.warning("formasyon açık-pozisyon sinyal taraması başarısız (%s): %s", symbol, exc)
+            return 0
+        at = datetime.fromtimestamp(int(dec_ms) / 1000.0, tz=timezone.utc)
+        n = 0
+        for pl in plans:
+            if pl["plan_id"] in self.plans or (n and self._cf_held_skip(symbol)):
+                continue
+            e, ref = self._cf_entry_ref(pl, price)
+            n += int(self._cf_record(pl, "POSITION_OPEN", entry=e, at=at, extra={"entry_ref": ref}))
+        return n
+
+    def _cf_held_skip(self, symbol: str) -> bool:
+        """A15 "+CF" tek hareket tek kayıt — Box/D4 (`StrategyBook._cf_held`) ile AYNI kural, D8'in iki yolunda (taze sinyal ve
+        sembol dolu diye iptal edilen plan) (2026-09-28, öğrenme modu; dördüncü doğrulama turu): tutulan pozisyon öğrenme-
+        ekstra DEĞİLSE (politika ya da etiketsiz) taban da aynı pozisyonu tutuyordur → sinyali ALMAZDI, kayıt yok. Bu
+        sembolde sonuçlanmamış POSITION_OPEN kaydı varsa tabanın varsayımsal pozisyonu hâlâ açıktır → yeni kayıt yok (uçtan
+        uca koşu: politika UNI pozisyonu tutulurken 4 saatte bir üç örtüşen kayıt). Taban kapıları (adet, risk, marj) burada
+        ölçülmez: her kayıt varsayımsal pozisyon sayılır (Box/D4'ün `baseline_blocked_by` ayrımı yok). True → kayıt yazma."""
+        pos = self.ledger.positions.get(symbol)
+        held = (getattr(pos, "meta", None) or {}).get("learning") if pos is not None else None
+        if not (isinstance(held, dict) and held.get("learning_unlocked_by")):
+            return True
+        cf = self.cf
+        return bool(cf is not None and cf.has_pending(symbol=symbol, reason="POSITION_OPEN", hypothetical_only=True))
+
+    def _liquidity_wait(self, pl: dict[str, Any], code: str, *, as_of_ms: int, decision_ms: int, mark: float, now: datetime,
+                        detail: str = "") -> str:
+        """D16: likidite/derinlik ölçülemedi → plan TETİKLENMİŞ bekler, 60 dk penceresi içinde her taramada yeniden
+        denenir; pencere dolunca işlem YOK + karşı-olgusal (`_cf_expired`). Ret sayılmaz."""
+        w = dict(pl.get("liquidity_wait") or {"codes": [], "attempts": 0, "first_at_ms": int(decision_ms)})
+        w["attempts"] = int(w.get("attempts") or 0) + 1
+        if code not in (w.get("codes") or []):
+            w["codes"] = list(w.get("codes") or []) + [code]
+        w.update({"pending": True, "last_code": code, "last_at_ms": int(decision_ms), "mark": float(mark), "detail": str(detail)[:120]})
+        pl["liquidity_wait"] = w
+        self._set_status(pl, PL_TRIGGERED, int(as_of_ms), "LIQUIDITY_WAIT_%s" % code)
+        self.learning_counters["liquidity_waits"] += 1
+        if w["attempts"] == 1:
+            self._event("PLAN_LIQUIDITY_WAIT", str(pl.get("symbol") or ""), code, now, plan_id=pl.get("plan_id"),
+                        expires_at=iso_ms(int(pl["expires_at_ms"])) if pl.get("expires_at_ms") else None)
+        return "WAIT_LIQUIDITY"
+
+    def _open_learning(self, lm: Any, pl: dict[str, Any], *, act: dict[str, Any], symbol: str, mark: float, qmark: float, tick: Any,
+                       now: datetime, filters: Any, verdict: Any, depth: float, unlocked: list[str], as_of_ms: int,
+                       universe_entry: dict[str, Any]) -> tuple[Any, str]:
+        """D2/D3/D6/D17 girişi: slot boyutu (öğrenme RiskEngine'i) + baseline'da engelleyecek kodların etiketi. Taban
+        kapıları (adet tavanı, risk, marj) öğrenme defterinin DEĞİL taban görünümünün (`baseline_view`) durumuyla ölçülür;
+        taban da alacaksa (etiket boş) politika rezervi kullanılabilir (2026-09-28, ikinci doğrulama turu)."""
+        state = self._state({symbol: mark})
+        view, _dm = baseline_view(state, learning_tags(self.ledger.positions))
+        tags = list(unlocked)
+        if len(view.open_positions) >= int(self.section.max_open_positions):
+            tags.append(R_MAX_POSITIONS)
+        if int(self.cooldown_until.get(symbol) or 0) > int(as_of_ms):
+            tags.append("COOLDOWN_AFTER_LOSS")
+        if self.allowed_symbols is not None and symbol not in self.allowed_symbols:
+            tags.append("NOT_IN_PROTOCOL_UNIVERSE")
+        tags.extend((pl.get("liquidity_wait") or {}).get("codes") or [])
+        if float(depth) < float(self.section.min_depth_0_5pct_usdt):
+            tags.append("THIN_DEPTH")
+        bcodes, bsize = _baseline_blocks(act, symbol=symbol, direction=str(act.get("direction") or "LONG"), entry=mark,
+                                         stop=float(act.get("stop") or 0.0), tick=tick, now=now, ledger=self.ledger,
+                                         risk=self.risk, profile=self.profile, state=state, filters=filters)
+        tags.extend(c for c in bcodes if c not in tags)
+        p_res = (policy_reserve_usdt(equity=float(self.risk.equity_basis(state)), slots=int(lm.slots),
+                                     reserve_pct=float(lm.reserve_pct)) if tags else 0.0)
+        res = open_learning(act=act, symbol=symbol, price=mark, fill_price=qmark, tick=tick, now=now, ledger=self.ledger,
+                            risk=self._learning_risk(), state=state, filters=filters, run_id=self.run_id, learning=lm, data=verdict,
+                            max_position_pct=float(getattr(self.profile, "max_position_pct", 0.0) or 0.0) or None,
+                            depth=depth, unlocked=tags, reserve_usdt=p_res, baseline_size=bsize)
+        pl["learning"] = dict(res.info.get("meta") or {}, fit=res.info.get("fit"), min_depth_0_5pct=res.info.get("min_depth_0_5pct"))
+        if res.pos is None:
+            if isinstance(res.info.get("record_only"), dict):
+                pl["learning"]["record_only"] = dict(res.info["record_only"])   # seçicilik YALNIZ KAYIT (2026-10-03)
+            return None, res.reason
+        meta = res.pos.meta.get("learning") or {}
+        if "RR_BELOW_MIN_AT_ENTRY" in unlocked or "RR_BELOW_MIN_AFTER_ROUNDING" in unlocked:
+            self.learning_counters["rr_floor_ignored"] += 1
+        if "RISK_ABOVE_CAP_AFTER_ROUNDING" in unlocked:
+            self.learning_counters["rescaled_after_rounding"] += 1
+        if meta.get("size_rule") == "BUMP_MIN_NOTIONAL":
+            self.learning_counters["min_notional_bumped"] += 1
+        elif meta.get("size_rule") == "SHRUNK_TO_MARGIN":
+            self.learning_counters["shrunk_to_margin"] += 1
+        # D7: R/R değeri ve taban özellik olarak kalır (kapı değil)
+        rra = pl.get("rr_at_entry") or {}
+        extra = {"rr_after_cost": rra.get("after_cost"), "rr_after_cost_quantized": rra.get("after_cost_quantized"),
+                 "min_rr_after_cost": pl.get("min_rr_after_cost"),
+                 "rr_below_min": bool({"RR_BELOW_MIN_AT_ENTRY", "RR_BELOW_MIN_AFTER_ROUNDING"} & set(unlocked)),
+                 "risk_ratio_after_rounding": rra.get("risk_ratio_after_rounding"), "risk_rescaled": rra.get("risk_rescaled"),
+                 "depth_0_5pct": float(depth), "liquidity_wait_attempts": int((pl.get("liquidity_wait") or {}).get("attempts") or 0)}
+        res.pos.features["learning"] = dict(res.pos.features.get("learning") or {}, **extra)
+        return res.pos, ""
+
+    def label_counterfactuals(self, symbol: str, bars_by_tf: dict[str, list] | None, now: datetime) -> int:
+        """Bekleyen karşı-olgusalları bu sembolün ELDEKİ kapalı barlarıyla etiketler (ağ YOK; yazım `save`de)."""
+        cf = self.cf
+        if cf is None:
+            return 0
+        try:
+            # NET ETİKET (2026-09-29, maliyet sapması): formasyon defterinin KENDİ modeli (TP1 = tamamı, funding tahminsiz)
+            from ..learning_cf import ExecModel
+            # `real_history` (2026-10-01, cf_aux_v1, yalnız kayıt): aşma tahmini bu defterin gerçek stop çıkışlarından
+            return int(cf.label_pending({symbol: dict(bars_by_tf or {})}, now, exec_model=ExecModel.of_ledger(self.ledger),
+                                        filters_for=lambda s: self.filters_cache.get(s, MarketType.USDM_PERP),
+                                        funding_lookup=getattr(self, "funding_rates", None),
+                                        real_history=lambda: self.ledger.history))
+        except Exception as exc:  # noqa: BLE001 — etiket arızası taramayı ETKİLEMEZ
+            log.warning("formasyon karşı-olgusal etiketi başarısız (%s): %s", symbol, exc)
+            return 0
 
     def _time_stop(self, symbol: str, *, now: datetime, as_of_ms: int, price: dict[str, Any] | None) -> None:
         pos = self.ledger.positions.get(symbol)
@@ -1029,13 +1532,58 @@ class PatternBook:
             self._event("TIME_STOP", symbol, "MAX_HOLD_BARS", now, bars=max_bars, mark=mark)
 
     # ------------------------------------------------------------------ fiyat yolu (izleyici) ve bar uçları
-    def tick(self, marks: dict[str, TickData], *, now: datetime, funding_rate_lookup=None, bar_advance: bool = False) -> list:
+    def tick(self, marks: dict[str, TickData], *, now: datetime, funding_rate_lookup=None, bar_advance: bool = False,
+             expect: dict[str, str] | None = None, source: str = "scanner", apply_clock=None) -> list:
+        """Güncel fiyat tiki — `protective_monitor.guarded_tick` ile (kimlik + fiyat zamanı sırası; bkz. StrategyBook.tick)."""
+        from ..protective_monitor import guarded_tick, note_gap_first_observations
         with self.lock:
             self._resume_once(now)
-            recs = self.ledger.tick(marks, now_utc=now, funding_rate_lookup=funding_rate_lookup, bar_advance=bar_advance)
+            recs, info = guarded_tick(self.ledger, marks, now=now, funding_rate_lookup=funding_rate_lookup,
+                                      bar_advance=bar_advance, expect=expect, apply_clock=apply_clock)
             for rec in recs:
                 self._on_closed(rec)
+            applied = info.get("applied") or {}
+            if applied and self.monitoring_gap:
+                note_gap_first_observations(self.monitoring_gap, book_key=self.key, state_path=self.cfg.state_path,
+                                            applied=applied, now=now, closed_ids=[str(getattr(r, "id", "")) for r in recs])
+            if applied and self.observer is not None:
+                from ..strategy_paper import parse_ts_ms
+                opened = {s: parse_ts_ms(p.opened_at) or 0 for s, p in self.ledger.positions.items()}
+                self.observer.note(self.key, applied, int(now.timestamp() * 1000), opened_ms=opened, source=source)
             return recs
+
+    def held_ids(self) -> dict[str, str]:
+        """Açık pozisyonların kimlik anlık görüntüsü (kısa kilit)."""
+        with self.lock:
+            return {s: str(p.id) for s, p in self.ledger.positions.items()}
+
+    def protect(self, marks: dict[str, TickData], marks_f: dict[str, float], gaps: dict[str, dict] | None, *, now: datetime,
+                expect: dict[str, str] | None = None, source: str = "monitor", funding_rate_lookup: Any = "__book__",
+                apply_clock=None) -> list:
+        """KORUYUCU İZLEME ADIMI (tek kısa atomik bölüm; AĞ YOK): fiyat boşlukları → korumalı tick → kayıt."""
+        frl = getattr(self, "funding_rates", None) if funding_rate_lookup == "__book__" else funding_rate_lookup
+        with self.lock:
+            self._resume_once(now)
+            self.record_gaps(gaps or {}, now)
+            recs = self.tick(marks, now=now, funding_rate_lookup=frl, bar_advance=False, expect=expect, source=source,
+                             apply_clock=apply_clock) if marks else []
+            self.save(marks_f, now)
+            return recs
+
+    def _call_unlocked(self, fn: Callable[[], Any]) -> Any:
+        """AĞ BEKLEMESİ DEFTER KİLİDİNİ TUTMAZ (2026-09-24): tetik anındaki likidite (spread/derinlik) isteği sürerken kilit
+        TAMAMEN bırakılır ve sonra aynı derinlikte geri alınır. Arada yalnız koruyucu yol (izleyici/tick) çalışabilir: mevcut
+        pozisyonları kapatır ya da tick'ler, YENİ pozisyon açmaz. Giriş yolu kilidi geri aldıktan sonra defteri (cüzdan,
+        pozisyon sayısı) yeniden okur; bu sembolde pozisyon yoktu ve olamaz."""
+        lk = self.lock
+        try:
+            state = lk._release_save()                 # yalnız bu iş parçacığı tutuyorsa (RLock sözleşmesi)
+        except RuntimeError:
+            return fn()
+        try:
+            return fn()
+        finally:
+            lk._acquire_restore(state)
 
     def apply_closed_bars(self, bars_by_symbol: dict[str, dict[str, Any]] | None, *, now: datetime, funding_rate_lookup=None) -> list:
         with self.lock:
@@ -1056,6 +1604,7 @@ class PatternBook:
         self._gap_until_ms = monitoring_gap_on_resume(self.ledger, getattr(self, "_resume_saved_at", None), now=now,
                                                       book_key=self.key, state_path=self.cfg.state_path, positions=held)
         if self._gap_until_ms is not None:
+            self.monitoring_gap = {"from": str(getattr(self, "_resume_saved_at", None)), "to": iso(now), "positions": list(held)}
             self._event("MONITORING_GAP", "*", "bars_closed_in_gap_not_applied", now,
                         since=str(getattr(self, "_resume_saved_at", None)), positions=held)
 

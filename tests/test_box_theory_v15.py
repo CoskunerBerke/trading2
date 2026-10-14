@@ -214,6 +214,45 @@ def test_with_eod_disabled_the_rule_never_closes_a_position_itself():
                   params=BoxParams(eod_close=False)) is None
 
 
+# ------------------------------------------------------------------ gün sonu: sinyal barının günü (2026-09-27)
+def test_a_late_signal_filled_after_midnight_closes_at_the_signal_days_end_not_a_day_later():
+    """23:55 barının sinyali 00:02'de doldu. İşlem sinyal gününe aittir: yeni günün ilk kapanmış barlarında düzleşir.
+    Eski kod dolum gününe bakıyordu ve pozisyonu ~24 saat daha açık tutuyordu."""
+    pos = {"side": "SHORT", "opened_ts": D0 + 2 * 60_000, "signal_ts": D0 - M5}
+    act = decide(daily_rows=_daily(110.0, 90.0), m5_rows=_short_setup(), position=pos)
+    assert act is not None and act["action"] == "CLOSE" and act["reason"] == "BOX_EOD_FLAT"
+    old = decide(daily_rows=_daily(110.0, 90.0), m5_rows=_short_setup(), position={"side": "SHORT", "opened_ts": pos["opened_ts"]})
+    assert old is None, "sinyal zamanı olmadan davranış eskisi gibi (dolum günü)"
+
+
+def test_a_same_day_signal_and_fill_are_left_alone():
+    pos = {"side": "SHORT", "opened_ts": D0 + 11 * 60_000, "signal_ts": D0 + M5}
+    assert decide(daily_rows=_daily(110.0, 90.0), m5_rows=_short_setup(), position=pos) is None
+
+
+@pytest.mark.parametrize("sig", [None, 0, -5, D0 + 3_600_000])
+def test_an_unusable_or_later_than_fill_signal_time_falls_back_to_the_fill_time(sig):
+    """Sinyal zamanı yoksa, geçersizse ya da dolumdan SONRAysa (bozuk kayıt) dolum anı kullanılır — eski davranış."""
+    pos = {"side": "SHORT", "opened_ts": D0 + 2 * 60_000, "signal_ts": sig}
+    assert decide(daily_rows=_daily(110.0, 90.0), m5_rows=_short_setup(), position=pos) is None
+
+
+def test_no_entry_once_the_signal_bars_day_is_over():
+    """Günün son barı (23:55) gece yarısında kapanır; onu okuyan tur hep ertesi gündedir. O günün kutusuyla girilmez."""
+    late = _short_setup_at(D0 + DAY_MS - 3 * M5)                  # 23:45, 23:50, 23:55 barları
+    assert decide(daily_rows=_daily(110.0, 90.0), m5_rows=late) is not None, "karar anı verilmezse eski davranış"
+    assert decide(daily_rows=_daily(110.0, 90.0), m5_rows=late, now_ms=D0 + DAY_MS + 60_000) is None
+
+
+def test_the_decision_time_inside_the_signal_day_does_not_block_the_entry():
+    act = decide(daily_rows=_daily(110.0, 90.0), m5_rows=_short_setup(), now_ms=D0 + 16 * 60_000)
+    assert act is not None and act["action"] == "OPEN" and act["direction"] == "SHORT"
+
+
+def _short_setup_at(start_ts: int) -> list[dict]:
+    return [dict(r, timestamp=start_ts + i * M5) for i, r in enumerate(_short_setup())]
+
+
 # ------------------------------------------------------------------ saflık ve sözleşme
 def test_decide_does_not_mutate_its_inputs():
     d, m = _daily(110.0, 90.0), _short_setup()
@@ -326,3 +365,21 @@ def test_the_decision_only_reads_bars_up_to_the_one_it_is_given():
     later = decide(daily_rows=_daily(110.0, 90.0), m5_rows=bars + [future])
     assert later is None or later.get("signal_ts") == future["timestamp"], \
         "karar her zaman SON verilen barda alınır; geçmiş bir barın kararı geriye dönük ÜRETİLMEZ"
+
+
+def test_the_book_path_reads_the_signal_bar_from_the_positions_data_source_record():
+    """Canlı/replay yolu: `paper_rules` sinyal barını pozisyonun `features.data_source.bars["5m"]` kaydından okur
+    (girişin gerçekten okuduğu barın açılışı). Kayıt yoksa eski davranış."""
+    from tradingbot import paper_rules
+
+    late_fill = D0 + 2 * 60_000
+    pos = {"opened_ts": late_fill, "features": {"data_source": {"bars": {"5m": D0 - M5, "1d": D0 - 2 * DAY_MS}}}}
+    act = paper_rules.decide_from_rows("b1_box_fade", daily=_daily(110.0, 90.0), intraday=_short_setup(), btc_rows=None,
+                                       position=pos, now_ms=D0 + 16 * 60_000)
+    assert act is not None and act["reason"] == "BOX_EOD_FLAT"
+    bare = paper_rules.decide_from_rows("b1_box_fade", daily=_daily(110.0, 90.0), intraday=_short_setup(), btc_rows=None,
+                                        position={"opened_ts": late_fill}, now_ms=D0 + 16 * 60_000)
+    assert bare is None
+    late = _short_setup_at(D0 + DAY_MS - 3 * M5)
+    assert paper_rules.decide_from_rows("b1_box_fade", daily=_daily(110.0, 90.0), intraday=late, btc_rows=None,
+                                        now_ms=D0 + DAY_MS + 60_000) is None

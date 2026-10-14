@@ -1,0 +1,112 @@
+# SİNYAL LABORATUVARI — GitHub'ın sunucusunda geçmiş test (kullanıcının ağından bağımsız).
+# Veri: Binance toplu arşivi (data.binance.vision, --source archive). Secrets kullanmaz, işlem açmaz, botlara dokunmaz.
+# Tetik: `research/signal_lab_args.txt` değişince (argümanlar oradan) ya da elle (workflow_dispatch).
+name: signal-lab
+
+on:
+  push:
+    branches:
+      - "claude/**"
+      - "work/**"
+    paths:
+      - "research/signal_lab_args.txt"
+      - ".github/workflows/signal-lab.yml"
+  workflow_dispatch:
+    inputs:
+      args:
+        description: "scripts/signal_lab.py argümanları (boşsa research/signal_lab_args.txt)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  signal-lab:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      # Önbellek ayrı geri yükle / kaydet: kaydetme `always()` ile en sonda — uzun ilk vadeli indirme (≈50 bin dosya),
+      # laboratuvar hata verse ya da zaman aşımına uğrasa da kaybolmaz (actions/cache@v4 yalnız başarıda kaydederdi).
+      - name: Restore candle cache
+        uses: actions/cache/restore@v4
+        with:
+          path: signal_lab_data
+          key: signal-lab-data-${{ github.run_id }}
+          restore-keys: signal-lab-data-
+      - name: Archive reachability
+        run: curl -sS -o /dev/null -w "data.binance.vision HTTP %{http_code}\n" https://data.binance.vision/ || true
+      # Vadeli arşiv (OI/fonlama) erişimi — ölümcül değil; eksik anahtar 404 mü 403 mü (403 `error` sayılır), fapi 451 beklenir.
+      # Aylık mum (taker sütunlu) dosyası kalabalık laboratuvarı (fut_v2, docs/CROWD_LAB_FUT_V2.md) içindir (2026-09-30).
+      - name: Futures archive reachability
+        run: |
+          B=https://data.binance.vision/data/futures/um
+          Y="$(date -u -d yesterday +%Y-%m-%d)"
+          for u in "$B/daily/metrics/BTCUSDT/BTCUSDT-metrics-2022-01-01.zip" \
+                   "$B/monthly/fundingRate/BTCUSDT/BTCUSDT-fundingRate-2022-01.zip" \
+                   "$B/daily/fundingRate/BTCUSDT/BTCUSDT-fundingRate-$Y.zip" \
+                   "$B/daily/metrics/BTCUSDT/BTCUSDT-metrics-2019-01-01.zip" \
+                   "$B/monthly/klines/BTCUSDT/4h/BTCUSDT-4h-2024-01.zip" \
+                   "https://fapi.binance.com/fapi/v1/fundingRate?symbol=BTCUSDT&limit=1"; do
+            curl -sS -o /dev/null -w "HTTP %{http_code} $u\n" "$u" || echo "HATA $u"
+          done
+      - name: Run signal lab
+        env:
+          ARGS_IN: ${{ github.event.inputs.args }}
+          SIGNAL_LAB_FUTURES_THREADS: "8"
+        run: |
+          set -o pipefail
+          ARGS="$ARGS_IN"
+          if [ -z "$ARGS" ]; then ARGS="$(cat research/signal_lab_args.txt)"; fi
+          echo "argümanlar: $ARGS"
+          mkdir -p signal_lab_out
+          # shellcheck disable=SC2086
+          python scripts/signal_lab.py --source archive --jobs 4 $ARGS | tee signal_lab_out/console.txt
+      # Çıktı (artifact) indirmesi bakımcı ortamından engelli olabilir: her varyasyon kaydı iş günlüğüne base64 olarak
+      # basılır; `scripts/extract_lab_records.py` günlükten bayt bayt geri yazar (sha256 ve bayt sayısı denetlenir).
+      - name: Print lab records
+        if: always()
+        run: |
+          shopt -s nullglob
+          for f in signal_lab_out/variation_records/*.json; do
+            n="$(basename "$f")"
+            sha="$(sha256sum "$f" | cut -d ' ' -f 1)"
+            bytes="$(wc -c < "$f" | tr -d ' ')"
+            echo "=== LAB RECORD BEGIN $n sha256=$sha bytes=$bytes"
+            base64 -w 76 "$f"
+            echo "=== LAB RECORD END $n"
+          done
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: signal-lab-report
+          path: signal_lab_out/
+          if-no-files-found: warn
+      - name: Save candle cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: signal_lab_data
+          key: signal-lab-data-${{ github.run_id }}
+      # Vadeli satırlar (FUT_REGISTRY / FUT_COV / FUT_PROBE / FUT_COUNT / FUT_RESULT) ve önbellek boyutu — bakımcı yalnız günlüğü okur
+      - name: Print futures lines
+        if: always()
+        run: |
+          grep -E '^FUT_' signal_lab_out/console.txt || true
+          du -sh signal_lab_data signal_lab_data/futures || true
+      # Kalabalık satırları (CROWD_REGISTRY / CROWD_COV / CROWD_PROBE / CROWD_COUNT / CROWD_SHARE / CROWD_RESULT / CROWD_PAIR)
+      # ve kalabalık önbelleğinin boyutu (fut_v2, 2026-09-30) — bakımcı yalnız günlüğü okur
+      - name: Print crowd lines
+        if: always()
+        run: |
+          grep -E '^CROWD_' signal_lab_out/console.txt || true
+          du -sh signal_lab_data/crowd || true

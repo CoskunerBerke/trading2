@@ -1,0 +1,501 @@
+{
+ "record_schema": "candle_lab/2",
+ "id": "CV002_BREAKOUT20_TREND_VOL_S",
+ "definition_sha": "d2a63f46ff2a72f5",
+ "dsl_version": "cv_dsl_1",
+ "window": 500,
+ "golden_sha": "fefe7969024e4f0a",
+ "run": {
+  "github_run_id": "36277302747",
+  "run_url": "https://github.com/CoskunerBerke/trading2/actions/runs/36277302747",
+  "commit": "d7f122a58563d75aaf9bad00877fdd2e92925895",
+  "completed_at": "2026-09-26T23:05:11Z",
+  "versions": {
+   "python": "3.12.14",
+   "numpy": "2.5.3",
+   "pandas": "3.0.6"
+  },
+  "mode": {
+   "catalog": false,
+   "algos": false,
+   "extras": false,
+   "only_variations": true
+  }
+ },
+ "readback": {
+  "confirmed_by": "user",
+  "date": "2026-09-26"
+ },
+ "universe": {
+  "symbols": [
+   "BTC/USDT",
+   "ETH/USDT",
+   "SOL/USDT",
+   "BNB/USDT",
+   "XRP/USDT",
+   "DOGE/USDT",
+   "ADA/USDT",
+   "AVAX/USDT",
+   "LINK/USDT",
+   "LTC/USDT",
+   "DOT/USDT",
+   "NEAR/USDT",
+   "TRX/USDT",
+   "BCH/USDT",
+   "UNI/USDT",
+   "ATOM/USDT",
+   "ETC/USDT",
+   "FIL/USDT",
+   "XLM/USDT",
+   "AAVE/USDT",
+   "APT/USDT",
+   "ARB/USDT",
+   "OP/USDT",
+   "INJ/USDT",
+   "SUI/USDT",
+   "HBAR/USDT",
+   "ICP/USDT",
+   "SAND/USDT",
+   "ALGO/USDT",
+   "VET/USDT"
+  ],
+  "tfs": [
+   "4h",
+   "1h",
+   "1d"
+  ],
+  "days": {
+   "4h": 1460,
+   "1h": 730,
+   "1d": 1825
+  }
+ },
+ "primary_tf": "4h",
+ "verdict": "KANIT YOK",
+ "verdict_strict": "KANIT YOK",
+ "strict_rule_tr": "SIKI GÜÇLÜ ADAY = standart GÜÇLÜ ADAY'ın bütün şartları (verdict → GÜÇLÜ ADAY) VE doğrulama (OOS) döneminde (grup ort.R − eşleştirilmiş plasebo grubunun ort.R) farkının gün kümeli %95 aralığının alt ucu > 0. Aralık: iki taraf AYRI ve bağımsız gün kümeli bootstrap ile yeniden örneklenir (r_stats ile aynı düzen: gün başına toplam ve sayı, tekrar ortalaması = örneklenen toplam / örneklenen sayı), taraf başına bootstrap_iters tekrar, sabit tohumlar; tekrar farkı = gerçek ort. − plasebo ort.; aralık %2,5 / %97,5 yüzdelikleri. Keşif (IS) aralığı yalnız bilgi amaçlıdır. Bir dönemde taraflardan birinin günü 5'ten azsa o dönemin aralığı yoktur (None) ve sıkı şart o dönemde geçmez. Standart hüküm GÜÇLÜ ADAY ama sıkı şart geçmiyorsa sıkı hüküm ZAYIF İZ; diğer bütün durumlarda sıkı hüküm = standart hüküm.",
+ "by_tf": {
+  "4h": {
+   "IS": {
+    "n": 1288,
+    "mean_r": 0.1026,
+    "win_rate": 0.4255,
+    "profit_factor": 1.191,
+    "sum_r": 132.12,
+    "max_drawdown_r": -19.2,
+    "ci95": [
+     -0.0841,
+     0.2927
+    ],
+    "days": 240,
+    "cost_r": 0.0395
+   },
+   "OOS": {
+    "n": 1011,
+    "mean_r": -0.0898,
+    "win_rate": 0.3798,
+    "profit_factor": 0.851,
+    "sum_r": -90.76,
+    "max_drawdown_r": -107.17,
+    "ci95": [
+     -0.3051,
+     0.136
+    ],
+    "days": 159,
+    "cost_r": 0.0414
+   },
+   "vs_placebo": {
+    "IS": 0.0966,
+    "OOS": -0.0843,
+    "placebo_mean_r": [
+     0.006,
+     -0.0055
+    ],
+    "placebo_n": [
+     5618,
+     3635
+    ]
+   },
+   "verdict": "KANIT YOK",
+   "verdict_strict": "KANIT YOK",
+   "symbols": 30,
+   "non_overlap_mean_r": {
+    "IS": 0.0713,
+    "OOS": -0.1063,
+    "n": {
+     "IS": 1077,
+     "OOS": 792
+    }
+   },
+   "signals": 2302,
+   "trades": 2299,
+   "placebo_signals": 9303,
+   "placebo_trades": 9253,
+   "skipped": {
+    "STOP_TOO_FAR": 3
+   }
+  },
+  "1h": {
+   "IS": {
+    "n": 3807,
+    "mean_r": -0.0208,
+    "win_rate": 0.3746,
+    "profit_factor": 0.967,
+    "sum_r": -79.03,
+    "max_drawdown_r": -128.61,
+    "ci95": [
+     -0.1789,
+     0.1501
+    ],
+    "days": 312,
+    "cost_r": 0.0829
+   },
+   "OOS": {
+    "n": 1759,
+    "mean_r": -0.166,
+    "win_rate": 0.3536,
+    "profit_factor": 0.745,
+    "sum_r": -291.92,
+    "max_drawdown_r": -301.41,
+    "ci95": [
+     -0.3313,
+     -0.0017
+    ],
+    "days": 177,
+    "cost_r": 0.1044
+   },
+   "vs_placebo": {
+    "IS": 0.0332,
+    "OOS": -0.0754,
+    "placebo_mean_r": [
+     -0.054,
+     -0.0906
+    ],
+    "placebo_n": [
+     12424,
+     6266
+    ]
+   },
+   "verdict": "KAYBETTİRİR",
+   "verdict_strict": "KAYBETTİRİR",
+   "symbols": 30,
+   "non_overlap_mean_r": {
+    "IS": -0.0291,
+    "OOS": -0.1494,
+    "n": {
+     "IS": 3055,
+     "OOS": 1406
+    }
+   },
+   "signals": 5575,
+   "trades": 5566,
+   "placebo_signals": 18694,
+   "placebo_trades": 18690,
+   "skipped": {
+    "STOP_TOO_FAR": 7,
+    "NO_FUTURE_DATA": 2
+   }
+  },
+  "1d": {
+   "IS": {
+    "n": 136,
+    "mean_r": -0.0352,
+    "win_rate": 0.3824,
+    "profit_factor": 0.942,
+    "sum_r": -4.78,
+    "max_drawdown_r": -17.86,
+    "ci95": [
+     -0.473,
+     0.5647
+    ],
+    "days": 40,
+    "cost_r": 0.0152
+   },
+   "OOS": {
+    "n": 159,
+    "mean_r": 0.2469,
+    "win_rate": 0.4843,
+    "profit_factor": 1.518,
+    "sum_r": 39.25,
+    "max_drawdown_r": -11.39,
+    "ci95": [
+     -0.2679,
+     0.8071
+    ],
+    "days": 46,
+    "cost_r": 0.0149
+   },
+   "vs_placebo": {
+    "IS": 0.0096,
+    "OOS": 0.1869,
+    "placebo_mean_r": [
+     -0.0448,
+     0.06
+    ],
+    "placebo_n": [
+     591,
+     728
+    ]
+   },
+   "verdict": "KANIT YOK",
+   "verdict_strict": "KANIT YOK",
+   "symbols": 30,
+   "non_overlap_mean_r": {
+    "IS": -0.013,
+    "OOS": 0.2445,
+    "n": {
+     "IS": 115,
+     "OOS": 133
+    }
+   },
+   "signals": 296,
+   "trades": 295,
+   "placebo_signals": 1328,
+   "placebo_trades": 1319,
+   "skipped": {
+    "NO_FUTURE_DATA": 1
+   }
+  }
+ },
+ "skipped": {
+  "STOP_TOO_FAR": 10,
+  "NO_FUTURE_DATA": 3
+ },
+ "context_slices_info": [
+  {
+   "tf": "1d",
+   "context": "volatilite",
+   "bucket": "normal",
+   "IS": {
+    "n": 99,
+    "mean_r": -0.2717,
+    "ci95": [
+     -0.6861,
+     0.408
+    ],
+    "cost_r": 0.0152
+   },
+   "OOS": {
+    "n": 71,
+    "mean_r": 0.6754,
+    "ci95": [
+     -0.3357,
+     1.2539
+    ],
+    "cost_r": 0.0166
+   },
+   "vs_placebo": {
+    "IS": -0.1213,
+    "OOS": 0.5763,
+    "placebo_mean_r": [
+     -0.1504,
+     0.0991
+    ],
+    "placebo_n": [
+     356,
+     375
+    ]
+   },
+   "verdict": "KANIT YOK",
+   "verdict_strict": "KANIT YOK"
+  },
+  {
+   "tf": "1d",
+   "context": "hacim",
+   "bucket": "yüksek(>1.5x)",
+   "IS": {
+    "n": 104,
+    "mean_r": -0.0164,
+    "ci95": [
+     -0.4408,
+     0.5751
+    ],
+    "cost_r": 0.0144
+   },
+   "OOS": {
+    "n": 130,
+    "mean_r": 0.2843,
+    "ci95": [
+     -0.2373,
+     0.8504
+    ],
+    "cost_r": 0.0143
+   },
+   "vs_placebo": {
+    "IS": 0.0948,
+    "OOS": 0.1323,
+    "placebo_mean_r": [
+     -0.1112,
+     0.152
+    ],
+    "placebo_n": [
+     76,
+     54
+    ]
+   },
+   "verdict": "KANIT YOK",
+   "verdict_strict": "KANIT YOK"
+  },
+  {
+   "tf": "1d",
+   "context": "rsi",
+   "bucket": "30-50",
+   "IS": {
+    "n": 97,
+    "mean_r": 0.0969,
+    "ci95": [
+     -0.3654,
+     0.6825
+    ],
+    "cost_r": 0.0152
+   },
+   "OOS": {
+    "n": 84,
+    "mean_r": 0.253,
+    "ci95": [
+     -0.3833,
+     0.8889
+    ],
+    "cost_r": 0.0169
+   },
+   "vs_placebo": {
+    "IS": 0.174,
+    "OOS": 0.2051,
+    "placebo_mean_r": [
+     -0.0771,
+     0.0479
+    ],
+    "placebo_n": [
+     468,
+     593
+    ]
+   },
+   "verdict": "ZAYIF İZ",
+   "verdict_strict": "ZAYIF İZ"
+  },
+  {
+   "tf": "1d",
+   "context": "trend",
+   "bucket": "trendle",
+   "IS": {
+    "n": 135,
+    "mean_r": -0.0279,
+    "ci95": [
+     -0.4657,
+     0.5754
+    ],
+    "cost_r": 0.0152
+   },
+   "OOS": {
+    "n": 159,
+    "mean_r": 0.2469,
+    "ci95": [
+     -0.2679,
+     0.8071
+    ],
+    "cost_r": 0.0149
+   },
+   "vs_placebo": {
+    "IS": 0.0169,
+    "OOS": 0.1869,
+    "placebo_mean_r": [
+     -0.0448,
+     0.06
+    ],
+    "placebo_n": [
+     591,
+     728
+    ]
+   },
+   "verdict": "KANIT YOK",
+   "verdict_strict": "KANIT YOK"
+  },
+  {
+   "tf": "1d",
+   "context": "rsi",
+   "bucket": "<30",
+   "IS": {
+    "n": 39,
+    "mean_r": -0.3637,
+    "ci95": [
+     -0.786,
+     0.5225
+    ],
+    "cost_r": 0.0149
+   },
+   "OOS": {
+    "n": 75,
+    "mean_r": 0.24,
+    "ci95": [
+     -0.3547,
+     1.0475
+    ],
+    "cost_r": 0.0127
+   },
+   "vs_placebo": {
+    "IS": 0.1834,
+    "OOS": 0.2017,
+    "placebo_mean_r": [
+     -0.5471,
+     0.0383
+    ],
+    "placebo_n": [
+     37,
+     56
+    ]
+   },
+   "verdict": "KANIT YOK",
+   "verdict_strict": "KANIT YOK"
+  }
+ ],
+ "context_slices_note_tr": "Bağlam dilimleri yalnız KEŞİF amaçlıdır (çoklu test); hüküm HEPSİ satırındadır.",
+ "trials_to_date": 8,
+ "cutoff_ms": {
+  "1d": 1751616000000,
+  "1h": 1769929200000,
+  "4h": 1750526400000
+ },
+ "side": "SHORT",
+ "example": false,
+ "definition": {
+  "side": "SHORT",
+  "timeframe": "4h",
+  "bars": [
+   {
+    "color": "bear",
+    "body_range": [
+     0.55,
+     null
+    ],
+    "volume_ratio": [
+     1.3,
+     null
+    ]
+   }
+  ],
+  "relations": [
+   "c0.close < min_low(-20..-1)",
+   "min_low(-21..-2) <= min_close(-1..-1)"
+  ],
+  "context": {
+   "trend": [
+    "with"
+   ]
+  },
+  "confirm": {
+   "kind": "pattern_close"
+  },
+  "stop": {
+   "anchor": "pattern",
+   "atr_buffer": 0.25
+  },
+  "exit": {
+   "target_r": 2.0,
+   "max_hold_bars": 24
+  },
+  "risk_atr_bounds": [
+   0.1,
+   5.0
+  ]
+ }
+}

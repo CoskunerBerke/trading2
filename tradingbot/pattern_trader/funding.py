@@ -245,6 +245,13 @@ class FundingRates:
             self.stats["hits" if hit is not None else "misses"] += 1
             return hit
 
+    def peek(self, symbol: str, when: datetime) -> Decimal | None:
+        """`lookup` ile AYNI eşleşme, YAN ETKİSİZ (2026-09-29, karşı-olgusal net etiket): istenen an kaydedilmez, sayaç
+        artmaz — "olsaydı" yeniden oynatması funding ağ adımını (`pending` → `refresh`) tetiklemez, canlı yolu etkilemez."""
+        want = int(when.timestamp() * 1000)
+        with self._lock:
+            return self._find(self._rates.get(symbol) or {}, want)
+
     def __call__(self, symbol: str, when: datetime) -> Decimal | None:
         """Nesnenin kendisi bir `RateLookup`tır; defter tick'ine KAYNAK olarak verilir (oran + `settlement_mark`)."""
         return self.lookup(symbol, when)

@@ -35,9 +35,27 @@ class ShadowTrade:
     outcome: dict[str, Any] | None = None
     labeled_at: str | None = None
     is_counterfactual: bool = True
+    # --- ÖĞRENME MODU (2026-09-28, öğrenme modu): defter karşı-olgusalları için İSTEĞE BAĞLI alanlar. Hepsi None
+    # varsayılanlı → eski dosyalar yüklenir; None iken `to_dict` bunları YAZMAZ (ana botun kaydı bit-aynı kalır).
+    book: str | None = None
+    signal_key: str | None = None
+    variation: str | None = None
+    label_kind: str | None = None
+    features: dict[str, Any] | None = None
+    learning_unlocked: bool | None = None
+    rule_version: str | None = None
+    approx: bool | None = None
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        d = asdict(self)
+        for k in OPTIONAL_FIELDS:
+            if d.get(k) is None:
+                d.pop(k, None)
+        return d
+
+
+#: `ShadowTrade`in isteğe bağlı alanları — None iken diske yazılmaz (bkz. `to_dict`).
+OPTIONAL_FIELDS = ("book", "signal_key", "variation", "label_kind", "features", "learning_unlocked", "rule_version", "approx")
 
 
 def label_with_candles(sh: ShadowTrade, df: pd.DataFrame, *, tp1_fraction: float = 0.5) -> dict[str, Any] | None:
@@ -66,9 +84,11 @@ def label_with_candles(sh: ShadowTrade, df: pd.DataFrame, *, tp1_fraction: float
     frac_open = 1.0
     mae = mfe = 0.0
     exit_reason, exit_px, bars = "horizon", float(path["close"].iloc[-1]), 0
-    for _, row in path.iterrows():
+    # sütun yürüyüşü (2026-09-28, öğrenme modu): `iterrows` ile AYNI değerler (yalnız high/low okunur), satır başına Series
+    # kurulmaz — binlerce bekleyen karşı-olgusal kaydın etiketlenmesi defter kilidini uzun tutmasın
+    for hi_v, lo_v in zip(path["high"].tolist(), path["low"].tolist()):
         bars += 1
-        hi, lo = float(row["high"]), float(row["low"])
+        hi, lo = float(hi_v), float(lo_v)
         move_hi = (hi / sh.entry - 1) * 100 * (1 if long else -1)
         move_lo = (lo / sh.entry - 1) * 100 * (1 if long else -1)
         mfe = max(mfe, move_hi if long else move_lo)
@@ -108,7 +128,7 @@ class ShadowBook:
     sınırsız büyüme tercih edilir. Arşiv yazımı başarısızsa da budama YAPILMAZ.
     """
 
-    def __init__(self, path: Path | str, *, archive: Any | None = None):
+    def __init__(self, path: Path | str, *, archive: Any | None = None, tags_path: Path | str | None = None):
         self.path = Path(path)
         self.archive = archive
         self.archive_errors = 0
@@ -116,8 +136,54 @@ class ShadowBook:
         self.archived_total = 0
         d = read_json(self.path, default={"trades": []})
         self.trades: list[ShadowTrade] = [ShadowTrade(**{k: v for k, v in t.items() if k in ShadowTrade.__dataclass_fields__}) for t in d.get("trades", [])]
+        #: Defter düzeyi sayaçlar (öğrenme modu karşı-olgusal kaydı, 2026-09-28). BOŞKEN dosyaya yazılmaz → ana botun
+        #: `shadow_book.json` biçimi bit-aynı kalır.
+        self.meta: dict[str, Any] = dict(d.get("meta") or {}) if isinstance(d, dict) else {}
+        #: GERİ ALMA YEDEĞİ (2026-09-28, öğrenme modu; ikinci doğrulama turu): eski kod bu dosyayı kendi alanlarıyla yeniden
+        #: yazar, isteğe bağlı alanları (`OPTIONAL_FIELDS`) ve `meta`yı DÜŞÜRÜR. `tags_path` verilirse etiketli satırların
+        #: isteğe bağlı alanları kimlikle AYRI dosyada tutulur (eski kod ona dokunmaz) ve yüklemede etiketi düşmüş satıra geri
+        #: yazılır. Etiketli satır yoksa dosya YAZILMAZ (öğrenme hiç açılmadıysa dosya kümesi bit-aynı).
+        self.tags_path = Path(tags_path) if tags_path else None
+        self._tags_sig: tuple | None = None
+        self.tags_restored = 0
+        if self.tags_path is not None:
+            self._restore_tags()
 
     MAX_TRADES = 5000                       # aktif dosya siniri (arsiv bunun DISINDA, sinirsiz)
+
+    @staticmethod
+    def _tags_of(t: "ShadowTrade") -> dict[str, Any]:
+        return {k: getattr(t, k) for k in OPTIONAL_FIELDS if getattr(t, k) is not None}
+
+    def _restore_tags(self) -> None:
+        side = read_json(self.tags_path, default=None)
+        if not isinstance(side, dict):
+            return
+        tags = side.get("tags") if isinstance(side.get("tags"), dict) else {}
+        for t in self.trades:
+            tg = tags.get(t.id)
+            if not isinstance(tg, dict) or self._tags_of(t):
+                continue                                   # yedeği yok ya da etiketleri zaten yerinde
+            for k in OPTIONAL_FIELDS:
+                if tg.get(k) is not None:
+                    setattr(t, k, tg[k])
+            self.tags_restored += 1
+        m = side.get("meta")
+        if isinstance(m, dict):
+            for k, v in m.items():
+                self.meta.setdefault(k, v)                 # eski kodun düşürdüğü sayaçlar (lm_superseded, ...)
+
+    def _save_tags(self) -> None:
+        if self.tags_path is None:
+            return
+        tagged = {t.id: tg for t in self.trades if (tg := self._tags_of(t))}
+        if not tagged and not self.meta and not self.tags_path.exists():
+            return
+        sig = (tuple(sorted(tagged)), json.dumps(self.meta, sort_keys=True, default=str))
+        if sig == self._tags_sig:
+            return                                         # etiketler kayıttan sonra değişmez: yalnız küme değişince yaz
+        atomic_write_json(self.tags_path, {"schema_version": "shadow_tags_v1", "tags": tagged, "meta": dict(self.meta)})
+        self._tags_sig = sig
 
     def _archive_overflow(self) -> int:
         """Tasan EN ESKI kayitlari once arsive muhurler. Basarisizsa 0 doner → budama YOK."""
@@ -144,7 +210,15 @@ class ShadowBook:
         moved = self._archive_overflow()
         if moved > 0:
             self.trades = self.trades[moved:]
-        atomic_write_json(self.path, {"trades": [t.to_dict() for t in self.trades]})
+        payload: dict[str, Any] = {"trades": [t.to_dict() for t in self.trades]}
+        if self.meta:
+            payload["meta"] = self.meta
+        atomic_write_json(self.path, payload)
+        if self.tags_path is not None:
+            try:
+                self._save_tags()
+            except Exception:  # noqa: BLE001 — yedek arızası gölge kaydını ETKİLEMEZ
+                pass
 
     def _event_key(self, plan_id: str, symbol: str, direction: str, variant: str) -> tuple:
         return (str(plan_id), str(symbol), str(direction), str(variant))
@@ -201,8 +275,13 @@ class ShadowBook:
             except Exception:  # noqa: BLE001 — istatistik arizasi golge defterini bozamaz
                 arc = None
         n_arch = int((arc or {}).get("n_archived_records") or 0)
+        # NET (2026-09-29, maliyet sapması): `avg_r` BRÜT kalır (v1 anlamı); net etiketli (`r_net`, cf_label_v2) kayıtların
+        # ortalaması ayrıca — eski gölgelerde net yoktur (n_net 0, avg_r_net None)
+        rn = [float(t.outcome["r_net"]) for t in done if isinstance(t.outcome.get("r_net"), (int, float))
+              and not isinstance(t.outcome.get("r_net"), bool)]
         return {"total": len(self.trades), "labeled": len(done), "veto_right_rate": round(len(vr) / len(done), 3) if done else None,
-                "avg_r": round(sum(t.outcome["r_multiple"] for t in done) / len(done), 3) if done else None, "is_counterfactual": True,
+                "avg_r": round(sum(t.outcome["r_multiple"] for t in done) / len(done), 3) if done else None,
+                "avg_r_net": round(sum(rn) / len(rn), 3) if rn else None, "n_net": len(rn), "is_counterfactual": True,
                 "archived": n_arch, "lifetime": len(self.trades) + n_arch,
                 "archive_health": (arc or {}).get("health") or ("NO_ARCHIVE" if self.archive is None else None),
                 "archive_segments": int((arc or {}).get("n_segments") or 0),

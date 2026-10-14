@@ -286,8 +286,12 @@ def targets_for(side: str, entry: float, stop: float, box_high: float, box_low: 
 
 def decide(variant: str = "b1_box_fade", *, daily_rows: list[dict[str, Any]],
            m5_rows: list[dict[str, Any]], position: dict[str, Any] | None = None,
-           params: BoxParams = DEFAULT_PARAMS) -> dict[str, Any] | None:
-    """Tek karar: {"action": "OPEN"|"CLOSE", ...} ya da None. Bilinmeyen veri → None (fail-closed)."""
+           params: BoxParams = DEFAULT_PARAMS, now_ms: int | None = None) -> dict[str, Any] | None:
+    """Tek karar: {"action": "OPEN"|"CLOSE", ...} ya da None. Bilinmeyen veri → None (fail-closed).
+
+    `now_ms` (karar anı, isteğe bağlı): verilirse ve karar anı sinyal barının UTC gününden SONRAKİ bir güne düşmüşse
+    yeni giriş yapılmaz — o günün kutusu bitti (gece yarısından hemen sonraki tur, 23:55 barını okur). Verilmezse eski
+    davranış."""
     if variant not in VARIANTS:
         raise ValueError("bilinmeyen strateji varyanti: %r" % (variant,))
     p = params.validate()
@@ -301,10 +305,19 @@ def decide(variant: str = "b1_box_fade", *, daily_rows: list[dict[str, Any]],
         if not p.eod_close:
             return None
         opened = _i(position.get("opened_ts"))
-        if opened is None or _day_start_ms(opened) >= intr["day_start_ms"]:
+        if opened is None:
+            return None
+        # GÜN SONU (2026-09-27 düzeltmesi): işlem SİNYAL BARININ gününe aittir, dolum anının değil. 23:55 sinyali gece
+        # yarısından sonra dolarsa dolum günü ertesi gündür; eskiden pozisyon bir gün daha (~24 sa) açık kalıyordu.
+        # `signal_ts` = girişin okuduğu 5m barının açılışı (yoksa ya da dolumdan sonraysa dolum anı — eski davranış).
+        sig = _i(position.get("signal_ts"))
+        ref = sig if (sig is not None and 0 < sig <= opened) else opened
+        if _day_start_ms(ref) >= intr["day_start_ms"]:
             return None
         return {"action": "CLOSE", "reason": "BOX_EOD_FLAT", "name": variant}
 
+    if now_ms is not None and _day_start_ms(int(now_ms)) > intr["day_start_ms"]:
+        return None            # sinyal barının günü bitti: dünün kutusuyla bugün girilmez (anında gün sonu kapanışı olurdu)
     box = read_box(daily_rows, before_ms=intr["day_start_ms"])
     if box is None:
         return None

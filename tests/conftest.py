@@ -8,8 +8,64 @@ from __future__ import annotations
 
 import math
 import pandas as pd
+import pytest
 
+from tradingbot import engine as _engine_mod
 from tradingbot.learn.snapshot import build_snapshot
+from tradingbot.market import http as _http
+
+
+@pytest.fixture(autouse=True)
+def _offline_network():
+    """Testler AĞSIZDIR. Sahte oturum verilmemiş bir `HttpClient` gerçek `requests` oturumu açacağı anda
+    `TransientHttpError` ile düşer: ağ olmayan makinedeki son durumun aynısı (çağıran hatayı yakalar, önceki veri
+    korunur), ama dış bağlantı ve yeniden deneme beklemesi olmadan. Eskiden motor turları (`ensure_venue_events` →
+    exchangeInfo + fundingInfo) fapi.binance.com'a bağlanmaya çalışıyordu; sonuç test makinesinin ağına bağlıydı.
+    `session=` ile sahte oturum verilen istemciler etkilenmez. Kendi `MonkeyPatch`ini kullanır: testin
+    `monkeypatch.undo()` çağrısı (ör. iki motoru ard arda kuran testler) bu korumayı kaldırmaz."""
+    real_session = _http.HttpClient.session
+
+    def _session(self):
+        if self._session is None:
+            raise _http.TransientHttpError(f"test: ağ yok ({self.base_url}); sahte oturum için session= verin")
+        return real_session.fget(self)
+
+    # Aynısı ccxt yolu için: `TradingEngine.perp_frames` sahte borsa (`eng._fu`) verilmemişse gerçek
+    # `ccxt.binanceusdm` kurup Binance'e bağlanıyordu (ör. giriş evreni açık turlarda). Artık ağ hatasıyla düşer;
+    # tur bunu ağ kaynaklı "veri yok" olarak işler (ağsız makinedeki gibi). `eng._fu = SahteBorsa()` etkilenmez.
+    def _offline_fut(self):
+        if self._fu is None:
+            raise ConnectionError("test: ağ yok (ccxt binanceusdm); sahte borsa için eng._fu verin")
+        return self._fu
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(_http.HttpClient, "session", property(_session))
+        mp.setattr(_engine_mod.TradingEngine, "_fut", _offline_fut)
+        yield
+
+
+@pytest.fixture(autouse=True)
+def _stop_box_timers():
+    """Testte başlayan Box zamanlayıcıları test bitince DURDURULUR. Box defterli her `tour()` `ensure_box_timer` ile
+    gerçek bir arka plan iş parçacığı (`BoxTimer.start`) açar. Eskiden açık kalıyordu: iş parçacığı oturumun geri
+    kalanında o testin `state/strategy_paper_box/futures_ledger.json`'ını yazmayı sürdürüyor ve başka testlerin G/Ç
+    casuslarına (ör. motor gecesinin "yalnız research/ altına yazar" denetimi) yabancı yazım olarak düşüyordu. Test
+    içindeki davranış aynıdır (zamanlayıcı test boyunca çalışır); yalnız sızıntı kapanır. `_offline_network` gibi kendi
+    `MonkeyPatch`ini kullanır: testin `monkeypatch.undo()` çağrısı bunu kaldırmaz."""
+    from tradingbot.box_timer import BoxTimer
+    started: list = []
+    real_start = BoxTimer.start
+
+    def _start(self):
+        started.append(self)
+        return real_start(self)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(BoxTimer, "start", _start)
+        yield
+    for t in started:
+        t.stop()
+
 
 BAR_MS = 86_400_000
 

@@ -74,7 +74,8 @@ class IndexRefresher:
                  update_fn: Callable[[list[str], int], Any] | None = None,
                  interval_s: float = 900.0, max_symbols: int = DEFAULT_MAX_SYMBOLS,
                  index_timeframes: Iterable[str] = ("4h",),
-                 clock: Callable[[], float] = time.time) -> None:
+                 clock: Callable[[], float] = time.time,
+                 on_publish: Callable[[PatternBundle], None] | None = None) -> None:
         self._build_fn = build_fn
         self._symbols_fn = symbols_fn
         self._update_fn = update_fn
@@ -86,6 +87,9 @@ class IndexRefresher:
         #: ~250 sn'lik soguk onbellek turu ureteceği hâlde indekste TEK BIR olay degistirmez.
         self.index_timeframes = tuple(str(t) for t in index_timeframes)
         self._clock = clock
+        #: Yayımdan SONRA (paket zaten görünürken) çağrılır; yalnız iş kuyruğa koymalı ve hemen dönmeli
+        #: (motor bunu pattern kanıtı ön ısıtması için kullanır). Arızası yayımı GERİ ALMAZ.
+        self._on_publish = on_publish
         self._bundle: PatternBundle | None = None
         self._version = 0
         self._lock = threading.Lock()          # YALNIZ kurulum serilestirmesi icin; okuma kilitsiz
@@ -177,6 +181,7 @@ class IndexRefresher:
                     log.warning("arşiv güncellemesi başarısız (eski indeks korunuyor): %s", exc)
             if not advanced:
                 return {"skipped": "archive_unchanged", "index_version": getattr(self._bundle, "version", None)}
+            _t_build = time.monotonic()             # yalnız ölçüm (yayım satırı): kurulumun tur/Box ile çakışma süresi
             try:
                 engine, last_ts = self._build_fn(syms)
             except Exception as exc:  # noqa: BLE001 — kurulum patlarsa ESKI paket korunur
@@ -196,12 +201,23 @@ class IndexRefresher:
             self.last_success_at = new.built_at
             if not (self.last_update or {}).get("errors"):
                 self.last_error = ""
-            log.info("pattern indeksi yenilendi: sürüm %d, %d olay, %d seri",
-                     new.version, new.events, new.series)
+            log.info("pattern indeksi yenilendi: sürüm %d, %d olay, %d seri, kurulum %.1f sn",
+                     new.version, new.events, new.series, time.monotonic() - _t_build)
+            self._notify_published(new)
             return {"published": True, "index_version": new.version, "events": new.events}
         finally:
             self._running = False
             self._lock.release()
+
+    def _notify_published(self, bundle: PatternBundle) -> None:
+        """Yayım sonrası kanca. Yayım ANI değişmez: paket bu çağrıdan ÖNCE görünürdür."""
+        cb = self._on_publish
+        if cb is None:
+            return
+        try:
+            cb(bundle)
+        except Exception as exc:  # noqa: BLE001 — kanca arızası yayımı ve yenileyiciyi etkilemez
+            log.warning("yayım sonrası kanca başarısız (yayım geçerli): %s", exc)
 
     # ------------------------------------------------------------------ arka plan
     def start(self) -> None:

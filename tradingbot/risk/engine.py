@@ -56,10 +56,18 @@ class SizeResult:
         return asdict(self)
 
 
+#: Öğrenme modunda (B5/A7) min-notional'a çıkarılan planın `SizeResult.reason` etiketi (ok=True).
+LEARNING_MIN_NOTIONAL_BUMP = "LEARNING_MIN_NOTIONAL_BUMP"
+
+
 def size_position(*, equity: float, risk_pct: float, entry: float, stop: float, min_notional: float, max_leverage: int,
                   max_position_pct: float, liq_buffer_mult: float | None = None, mmr: float = 0.004,
-                  requested_leverage: int | None = None) -> SizeResult:
-    """Risk bazlı boyut: notional = risk_usdt / stop%. Min notional'a çıkmak için risk BÜYÜTÜLMEZ."""
+                  requested_leverage: int | None = None, min_notional_bump_cap_pct: float | None = None) -> SizeResult:
+    """Risk bazlı boyut: notional = risk_usdt / stop%. Min notional'a çıkmak için risk BÜYÜTÜLMEZ.
+
+    `min_notional_bump_cap_pct` (2026-09-28, öğrenme modu; YALNIZ öğrenme aktifken verilir, varsayılan None → bit-aynı):
+    notional min-notional'ın altında kalırsa, min-notional'daki risk ≤ cap × equity ise plan min-notional'a çıkarılır
+    (ok=True, reason `LEARNING_MIN_NOTIONAL_BUMP`). Nihai boyut ve marj motorda `learning_mode.fit_size` ile seçilir."""
     if entry <= 0 or stop is None or stop <= 0 or entry == stop:
         return SizeResult(0, 0, 1, 0, False, "INVALID_STOP")
     stop_frac = abs(entry - stop) / entry
@@ -77,6 +85,11 @@ def size_position(*, equity: float, risk_pct: float, entry: float, stop: float, 
     margin_cap = equity * max_position_pct / 100.0
     notional = min(notional, margin_cap * lev)
     if notional < min_notional:
+        if (min_notional_bump_cap_pct is not None and min_notional > 0
+                and min_notional * stop_frac <= equity * float(min_notional_bump_cap_pct) / 100.0 * (1.0 + 1e-12)):
+            # ÖĞRENME MODU (2026-09-28, öğrenme modu) B5: plan vetolanmaz; boyut/marj motorda fit_size ile seçilir
+            return SizeResult(round(min_notional, 4), round(min_notional / lev, 4), lev, round(min_notional * stop_frac, 6), True,
+                              LEARNING_MIN_NOTIONAL_BUMP)
         return SizeResult(round(notional, 4), round(notional / lev, 4), lev, round(notional * stop_frac, 6), False, "NO_TRADE_MIN_ORDER_CONFLICT")
     return SizeResult(round(notional, 4), round(notional / lev, 4), lev, round(notional * stop_frac, 6), True)
 

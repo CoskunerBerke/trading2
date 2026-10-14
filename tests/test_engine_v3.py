@@ -25,6 +25,9 @@ class FakeLive:
         if symbol in self.price:
             px = self.price[symbol]
             lv["ticker"].update({"last": px, "high": px * 1.03, "low": px * 0.97})
+            # 2026-09-24: futures defterinin koruyucu yolu doğrulanmış USDⓈ-M perp mark'ı okur (spot ticker DEĞİL);
+            # gerçek piyasada ikisi birlikte hareket eder — sahte canlı veri de öyle.
+            lv["funding"] = dict(lv.get("funding") or {}, mark=px)
         lv["ts"] = self._now_s
         return lv
 
@@ -262,3 +265,65 @@ def test_active_research_policy_blocks_new_entries_without_touching_open_positio
     # risk günlüğüne aday kararı yazıldı; mod ve kill switch değişmedi
     assert s["risk"]["killswitch"] == "ARMED"
     assert eng.mode_state.mode.value == "PAPER"
+
+
+@pytest.mark.parametrize("v3_overrides", [None, {"entry_universe": {"enabled": True, "symbols": ["ETH/USDT", "SOL/USDT"]}}],
+                         ids=["default", "entry_universe"])
+def test_engine_helper_tour_opens_no_network_connection(tmp_path: Path, monkeypatch, v3_overrides):
+    """`_engine` AĞSIZ bir motor kurar: tur hiçbir dış bağlantı denemez. Eskiden turdaki `ensure_venue_events`
+    fapi.binance.com'a (exchangeInfo + fundingInfo, HttpClient) ve giriş evreni açıkken `perp_frames` gerçek ccxt ile
+    bağlanmaya çalışıyordu (`tests/conftest.py::_offline_network` ikisini de kapatır); bu test o çağrıları yakalar
+    (vekil sunucu üzerinden `connect`, doğrudan erişimde `getaddrinfo`)."""
+    import socket
+
+    tried: list = []
+
+    def _no_connect(self, addr):
+        tried.append(("connect", addr))
+        raise OSError("test: ağ yok")
+
+    real_gai = socket.getaddrinfo
+
+    def _gai(host, *a, **k):
+        if host not in (None, "localhost", "127.0.0.1", "::1"):
+            tried.append(("getaddrinfo", host))
+            raise socket.gaierror("test: ağ yok")
+        return real_gai(host, *a, **k)
+
+    monkeypatch.setattr(socket.socket, "connect", _no_connect)
+    monkeypatch.setattr(socket, "getaddrinfo", _gai)
+    eng = _engine(tmp_path, monkeypatch, v3_overrides)
+    s = eng.tour(do_scan=False, obsidian=False, charts=False)
+    assert s["run_id"]
+    assert tried == [], f"tur dış bağlantı denedi: {tried[:3]}"
+
+
+def test_offline_guard_survives_monkeypatch_undo(monkeypatch):
+    """Testin kendi `monkeypatch.undo()` çağrısı (ör. `test_spot_futures_risk_split` iki motoru ardarda kurar) ağ
+    korumasını kaldırmaz: sahte oturumsuz `HttpClient` yine dış bağlantı denemeden `TransientHttpError` verir."""
+    import socket
+
+    from tradingbot.market.http import HttpClient, TransientHttpError
+
+    monkeypatch.setattr(HttpClient, "timeout", 1.0, raising=False)
+    monkeypatch.undo()
+    tried: list = []
+
+    def _no_connect(self, addr):
+        tried.append(("connect", addr))
+        raise OSError("test: ağ yok")
+
+    real_gai = socket.getaddrinfo
+
+    def _gai(host, *a, **k):
+        if host not in (None, "localhost", "127.0.0.1", "::1"):
+            tried.append(("getaddrinfo", host))
+            raise socket.gaierror("test: ağ yok")
+        return real_gai(host, *a, **k)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(socket.socket, "connect", _no_connect)
+        mp.setattr(socket, "getaddrinfo", _gai)
+        with pytest.raises(TransientHttpError):
+            HttpClient("https://fapi.binance.com", max_retries=0).get("/fapi/v1/ping")
+    assert tried == [], f"dış bağlantı denendi: {tried[:3]}"

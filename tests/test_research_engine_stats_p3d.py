@@ -22,6 +22,7 @@ import numpy as np
 import pytest
 
 from tradingbot import validation as VAL
+from tradingbot.research_engine import lib_ag as LA
 from tradingbot.research_engine import placebo as PL
 from tradingbot.research_engine import registry as RG
 from tradingbot.research_engine import stats as ST
@@ -157,8 +158,9 @@ def test_bh_missing_p_enters_as_one_and_m_never_shrinks():
     q_big = ST.bh_qvalues({"a": 0.001, "b": 0.5, "c": None, "d": None})
     assert q_big["c"] == q_big["d"] == 1.0 and q_big["a"] == pytest.approx(0.004) and q_big["a"] > q_small["a"]
     assert ST.BH_Q == RG.STATS_V1["thresholds"]["bh_q"] == 0.1
-    ev = ST.gate_a_evaluate({}, look_no=1, n_trials=4513)
-    assert ev["family_m"] == len(RG.gate_a_rows()) == 818                                # aile = bütün LIB satırları
+    ev = ST.gate_a_evaluate({}, look_no=1, n_trials=4551)
+    # aile = bütün LIB satırları + S1d AG satırları (P3g: m büyür → daha sıkı)
+    assert ev["family_m"] == len(RG.gate_a_rows()) + len(LA.gate_a_rows()) == 818 + 38 == 856
 
 
 # ============================================================================ DSR
@@ -247,13 +249,17 @@ def evaluate_world(world: dict, *, full: bool, n_trials: int = 4513):
 
 @pytest.fixture(scope="module")
 def sealed_ledger(tmp_path_factory):
-    """Öncüller (2.775) + LIB_v1 mühür satırları (1.738) → DSR N = 4.513 (sahte modül sha'larıyla; trials testi gibi)."""
+    """Öncüller (2.775) + LIB_v1 mühür satırları (1.738) + S1d AG satırları (38) → DSR N = 4.551 (sahte modül sha'larıyla;
+    trials testi gibi). P3g: Kapı A ailesi AG'yi içerdiğinden bakışın N alt sınırı 4.551'dir."""
     p = EnginePaths(data=tmp_path_factory.mktemp("p3d") / "data", state=tmp_path_factory.mktemp("p3d_state"))
     led = TR.TrialsLedger(p)
     led.import_priors(at=AT)
     mod = {v["variant_id"]: hashlib.sha256(v["variant_id"].encode()).hexdigest() for v in RG.LIB_V1["variants"]}
     led.append([dict(e, at=AT) for e in TR.seal_entries(mod)])
     assert led.dsr_n() == 4513
+    led.append([dict(e, at=AT) for e in LA.seal_entries({v: hashlib.sha256(v.encode()).hexdigest()
+                                                         for v in LA.variant_ids()})])
+    assert led.dsr_n() == 4551 == ST.gate_a_n_min()
     return p
 
 
@@ -265,7 +271,8 @@ def ledger_copy(src: EnginePaths, root) -> EnginePaths:
 
 
 def test_planted_edge_passes_gate_a_on_the_look_night(sealed_ledger, tmp_path):
-    """Dikilmiş avantaj: 29 gerçek havuz satırının (B, C, D, E) birinde geleceği gören yön → BH (m = 818), DSR (N = 4.513,
+    """Dikilmiş avantaj: 29 gerçek havuz satırının (B, C, D, E) birinde geleceği gören yön → BH (m = 856: LIB 818 + AG 38),
+    DSR (N = 4.551,
     ampirik sr_var), PBO, plasebo, katman payı, OOS büyüklüğü, ileri okuma, tek enstrüman payı — hepsi geçer; diğerleri
     geçmez. Bakış deftere `LOOK_A` (+ `FWD_READ`) olarak yalnız `TrialsLedger.append` ile yazılır."""
     world = S.gate_world(1, planted=PLANTED)
@@ -275,7 +282,7 @@ def test_planted_edge_passes_gate_a_on_the_look_night(sealed_ledger, tmp_path):
     t0 = time.perf_counter()
     res = ST.gate_a_look(led, date(2026, 12, 6), rows, placebo=pl, fwd=fwd, at=AT, clock=clock_at(date(2026, 12, 6)))
     elapsed = time.perf_counter() - t0
-    assert res["status"] == "LOOK" and res["look_no"] == 1 and res["N"] == 4513
+    assert res["status"] == "LOOK" and res["look_no"] == 1 and res["N"] == 4551
     ev = res["evaluation"]["rows"]
     passed = sorted(k for k, v in ev.items() if ST.is_pass(v["verdict"]))
     assert passed == [PLANTED], {k: v["fails"] for k, v in ev.items() if k == PLANTED}
@@ -286,17 +293,19 @@ def test_planted_edge_passes_gate_a_on_the_look_night(sealed_ledger, tmp_path):
     rows_written = [r for r in TR.iter_rows(lp.trials_file) if r["kind"] in ("LOOK_A", "FWD_READ")]
     look = {r["row_id"]: r for r in rows_written if r["kind"] == "LOOK_A"}
     # S2 mühürlü değil → geçiş GEÇİCİDİR ve eyleme dönüşmez (U1)
-    assert len(look) == 818 and look[PLANTED]["verdict"] == ST.PASS_A_PROVISIONAL and look[PLANTED]["look_no"] == 1
+    assert len(look) == 856 and look[PLANTED]["verdict"] == ST.PASS_A_PROVISIONAL and look[PLANTED]["look_no"] == 1
+    assert all(look[r["row_id"]]["params"]["fails"] == ["NOT_EVALUATED"] for r in LA.gate_a_rows()), \
+        "AG satırları aileye p = 1 ile girer (bu dünyada değerlendirilmedi)"
     assert not any(r["verdict"] == ST.PASS_A for r in look.values())
     assert look[PLANTED]["params"]["thresholds_sealed"] is False and not ST.actionable_pass(led, PLANTED, 1)
     assert look[PLANTED]["params"]["placebo_diff_ci_gross"][0] > 0 and look[PLANTED]["params"]["placebo_coverage"] >= 0.8
-    assert look[PLANTED]["params"]["N"] == 4513
+    assert look[PLANTED]["params"]["N"] == 4551
     assert look[PLANTED]["params"]["thresholds_source"].startswith("PROVISIONAL_UNSEALED")
     assert sum(r["kind"] == "FWD_READ" for r in rows_written) == 29
     assert look["K_D4@POOLED_OWN"]["params"]["fails"] == ["NOT_EVALUATED"] and look["K_D4@POOLED_OWN"]["q_bh"] == 1.0
     assert TR.verify_chain(lp.trials_file, expect=TR.read_hwm(lp.trials_hwm_file)[0])["ok"]
-    assert led.dsr_n() == 4513                                                          # bakışlar N'i büyütmez
-    print(f"\n[P3d] tam sentetik Kapı A bakışı (29 satır, aile 818, plasebo + CSCV + DSR + defter): {elapsed:.1f} sn")
+    assert led.dsr_n() == 4551                                                          # bakışlar N'i büyütmez
+    print(f"\n[P3d] tam sentetik Kapı A bakışı (29 satır, aile 856, plasebo + CSCV + DSR + defter): {elapsed:.1f} sn")
     again = ST.gate_a_look(TR.TrialsLedger(lp), date(2026, 12, 7), rows, placebo=pl, fwd=fwd, at=AT,
                            clock=clock_at(date(2026, 12, 7)))
     assert again["status"] == "INTERIM" and "verdict" not in str(again)                # aynı ayda ikinci bakış yok
@@ -404,7 +413,8 @@ def _tiny_rows():
 
 def test_gate_a_is_evaluated_only_on_look_nights_property(tmp_path, sealed_ledger):
     """Özellik: rastgele gece dizilerinde hüküm (`PASS_A_PROVISIONAL`/`FAIL_A`) ve `LOOK_A` yalnız bakış gecesinde; ara
-    gecede defter bayt-aynı, sonuç "ara görünüm"; her ay en çok bir bakış; `look_no` ardışık; aile hep 818 satır."""
+    gecede defter bayt-aynı, sonuç "ara görünüm"; her ay en çok bir bakış; `look_no` ardışık; aile hep 856 satır (LIB 818 +
+    AG 38)."""
     _world, rows, pl, fwd = _tiny_rows()
     rng = random.Random(42)
     for trial in range(2):
@@ -419,7 +429,7 @@ def test_gate_a_is_evaluated_only_on_look_nights_property(tmp_path, sealed_ledge
                 looked.append(ST.look_month(night))
                 assert res["status"] == "LOOK" and res["look_no"] == len(looked)
                 new = [r for r in TR.iter_rows(p.trials_file) if r["kind"] == "LOOK_A" and r["look_no"] == len(looked)]
-                assert len(new) == 818 and set(rows) <= {r["row_id"] for r in new}
+                assert len(new) == 856 and set(rows) <= {r["row_id"] for r in new}
                 assert all(r["verdict"] in (ST.PASS_A_PROVISIONAL, ST.FAIL_A) for r in new)
                 assert all(r["window"]["look_month"] == ST.look_month(night) for r in new)
             else:
@@ -427,7 +437,7 @@ def test_gate_a_is_evaluated_only_on_look_nights_property(tmp_path, sealed_ledge
                 assert "PASS_A" not in str(res) and "FAIL_A" not in str(res)
                 assert p.trials_file.read_bytes() == before
         months = [r["window"]["look_month"] for r in TR.iter_rows(p.trials_file) if r["kind"] == "LOOK_A"]
-        assert len(months) == 818 * len(set(months)) and len(set(months)) == len(looked)
+        assert len(months) == 856 * len(set(months)) and len(set(months)) == len(looked)
 
 
 def test_broken_chain_or_seal_closes_the_gate_without_writing(tmp_path, monkeypatch, sealed_ledger):
@@ -446,8 +456,8 @@ def test_broken_chain_or_seal_closes_the_gate_without_writing(tmp_path, monkeypa
 
 
 def test_n_and_prior_guards_close_the_gate_without_writing(tmp_path, sealed_ledger):
-    """İnceleme düzeltmesi 1: defterin öncülleri `PRIOR_TRIALS_V1`'e eşit ve DSR N'i ≥ mühürdeki N (4.513) değilse kapı
-    kapalıdır; hiçbir satır yazılmaz."""
+    """İnceleme düzeltmesi 1: defterin öncülleri `PRIOR_TRIALS_V1`'e eşit ve DSR N'i ≥ mühürdeki N (P3g: AG ile 4.551) değilse
+    kapı kapalıdır; hiçbir satır yazılmaz. LIB_v1 mühür satırları olup AG satırları olmayan defter (N = 4.513) de kapalıdır."""
     _world, rows, pl, fwd = _tiny_rows()
     night = date(2026, 12, 6)
     kw = dict(placebo=pl, fwd=fwd, clock=clock_at(night))
@@ -458,7 +468,16 @@ def test_n_and_prior_guards_close_the_gate_without_writing(tmp_path, sealed_ledg
     TR.TrialsLedger(only).import_priors(at=AT)
     raw = only.trials_file.read_bytes()
     res = ST.gate_a_look(TR.TrialsLedger(only), night, rows, **kw)
-    assert res["status"] == "CLOSED" and res["reason"] == "N_BELOW_SEAL" and res["N"] == 2775 and res["N_min"] == 4513
+    assert res["status"] == "CLOSED" and res["reason"] == "N_BELOW_SEAL" and res["N"] == 2775 and res["N_min"] == 4551
+    lib_only = EnginePaths(data=tmp_path / "l" / "data", state=tmp_path / "l" / "state")
+    led0 = TR.TrialsLedger(lib_only)
+    led0.import_priors(at=AT)
+    led0.append([dict(e, at=AT) for e in TR.seal_entries({v["variant_id"]: hashlib.sha256(v["variant_id"].encode()).hexdigest()
+                                                          for v in RG.LIB_V1["variants"]})])
+    raw0 = lib_only.trials_file.read_bytes()
+    res0 = ST.gate_a_look(TR.TrialsLedger(lib_only), night, rows, **kw)
+    assert (res0["status"], res0["reason"], res0["N"], res0["N_min"]) == ("CLOSED", "N_BELOW_SEAL", 4513, 4551)
+    assert lib_only.trials_file.read_bytes() == raw0
     assert only.trials_file.read_bytes() == raw
     missing = EnginePaths(data=tmp_path / "m" / "data", state=tmp_path / "m" / "state")
     led = TR.TrialsLedger(missing)

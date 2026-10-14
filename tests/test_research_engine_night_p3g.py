@@ -43,7 +43,7 @@ _UNITS = WQ.build_units
 def _small(monkeypatch, coin: str = "BTC", tfs=("1d",)):
     """S4w birim planı yalnız bir coin'in birkaç birimi (test süresi); gerçek plan ayrıca sınanır."""
     sub = [u for u in _UNITS(COINS40) if u.coin == coin and u.signal_tf in tfs]
-    monkeypatch.setattr(WQ, "build_units", lambda syms: sub)
+    monkeypatch.setattr(WQ, "build_units", lambda syms, *a, **kw: sub)
     return sub
 
 

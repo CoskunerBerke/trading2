@@ -298,6 +298,14 @@ def _p3_lines(st: dict) -> list[str]:
                    f"{rx.get('trades_new', 0)} · kesinleşen {rd.get('trades_final', 0)} (PATH_1H_GAP "
                    f"{fl.get('PATH_1H_GAP', 0)}, FUNDING_GAP {fl.get('FUNDING_GAP', 0)}, F8_UNMEASURABLE "
                    f"{fl.get('F8_UNMEASURABLE', 0)}) · fonlama aralık geçişi {rd.get('funding_interval_changes', 0)}")
+        ax = rx.get("ag") or {}
+        if ax.get("skipped"):
+            out[-1] += f" · AG keşfi yok ({str(ax['skipped'])[:100]})"
+        elif ax:
+            sa = ax.get("status") or {}
+            out[-1] += (f" · AG keşfi: OK {sa.get('OK', 0)} · değişmedi {sa.get('UNCHANGED', 0)} · ileri verisiz "
+                        f"{sa.get('NO_FORWARD_DATA', 0)} · süre dolan {sa.get('DEADLINE', 0)} · yeni işlem "
+                        f"{ax.get('trades_new', 0)}")
     else:
         out.append("P3 S4x keşif " + _why(x))
     rw = w.get("result") or {}
@@ -310,7 +318,10 @@ def _p3_lines(st: dict) -> list[str]:
                    + (f" · doğrulama {rw.get('verified')}/fark {rw.get('mismatch')}" if rw.get("verified") else "")
                    + (f" · atlanan birim {bl.get('skipped')}" if bl.get("skipped") else "")
                    + (f" · birim ortasında bırakıldı {(rw.get('aborted') or {}).get('unit')} "
-                      f"({(rw.get('aborted') or {}).get('why')})" if rw.get("aborted") else ""))
+                      f"({(rw.get('aborted') or {}).get('why')})" if rw.get("aborted") else "")
+                   + (f" · AG birim bu gece {(rw.get('ag') or {}).get('units_built', 0)} (verili "
+                      f"{(rw.get('ag') or {}).get('units_done', 0)}, planda {(rw.get('ag') or {}).get('units_planned')}"
+                      + ("" if (rw.get("ag") or {}).get("run") else ", bu gece koşmadı") + ")" if rw.get("ag") else ""))
     else:
         out.append("P3 S4w WF " + _why(w))
     r6 = s6.get("result") or {}
@@ -326,9 +337,20 @@ def _p3_lines(st: dict) -> list[str]:
                    f"{le.get('status')} (bakış {le.get('looks', 0)}) · parite (b) "
                    + (", ".join(f"{k} {n}" for k, n in sorted(vc.items())) or str(pb.get("status") or "—"))
                    + (f" · Formasyon bars[4h] {fm.get('with_key')}/{fm.get('records')}" if fm else "")
-                   + f" · Kapı A (GEÇİCİ) {ga.get('status')}")
+                   + f" · Kapı A (GEÇİCİ) {ga.get('status')}"
+                   + (f" (BH ailesi m = {(ga.get('family') or {}).get('m')}: LIB {(ga.get('family') or {}).get('lib')} + "
+                      f"AG {(ga.get('family') or {}).get('ag')})" if ga.get("family") else ""))
     else:
         out.append("P3 S6 " + _why(s6))
+    ag = (st.get("p3") or {}).get("ag") or {}
+    if ag:
+        tr = ag.get("trials") or {}
+        out.append(f"P3 AG (S1d LIB_AG_V1, 38 varyant × {ag.get('symbols', 0)} sembol): mühür "
+                   f"{'—' if ag.get('seal') is None else 'OK' if ag.get('seal') == 'OK' else 'UYUŞMAZLIK'} · deneme satırları "
+                   f"{tr.get('status', '—')}"
+                   + (f" ({tr.get('appended', 0)} yeni, {tr.get('duplicate', 0)} kayıtlı)" if tr else "")
+                   + f" · bu gece {'koştu' if ag.get('run') else 'koşmadı'}"
+                   + (f" — {str(ag.get('reason'))[:140]}" if ag.get("reason") and not ag.get("run") else ""))
     g = (st.get("p3") or {}).get("guard") or {}
     ce = st.get("config_epochs") or {}
     out.append(f"Bellek koruması: tepe RSS {_mib(g.get('max_rss_bytes'))} · VmHWM {_mib(g.get('vm_hwm_bytes'))} · sınır "

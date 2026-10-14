@@ -16,6 +16,10 @@ bu adım yalnız hesaplar/kaydeder; terfi yok, manifest yok (P4).
 * **Atlama kuralları:** A/B KAPALI ve SKEW gecelerinde planda yoktur; `DATA_STALE` → S4x ve S4w atlanır (ilk AÇIK/taze
   gece birikmiş barları işler); `BACKFILL_ACTIVE` (ilk doldurma birimi çalışıyor) → S4w atlanır (bellek toplamı);
   giriş evreni dondurulmuş 40 coin'le aynı değilse ya da veri mührü yoksa S4x/S4w atlanır (fark raporlanır).
+* **S1d LIB_AG_V1 (`agnight`):** ön koşulda `seal_s1d.check()` ve AG evreni (41); S4x'ten ÖNCE AG'nin 38 `SPEC` satırı
+  deftere eklenir (tekil; eklenemezse AG o gece koşmaz). S4x: önce LIB_V1, kalan payla AG keşfi (`explore/LIB_AG_v1`,
+  `S1D_SEAL_MS`'den ileri). S4w: AG birimleri aynı kuyrukta (aynı pay/kontrol noktası/koruma). S6: Kapı A ailesinin
+  büyüklüğü (LIB 818 + AG 38) kayda yazılır (bakış P4a).
 """
 from __future__ import annotations
 
@@ -41,6 +45,7 @@ F_MEMORY_GUARD, F_BACKFILL_ACTIVE, F_ENTRY_UNIVERSE_DIFF = "MEMORY_GUARD", "BACK
 F_S4X_BACKLOG, F_S4X_ERRORS, F_WF_BACKLOG, F_WF_CACHE_MISMATCH = "S4X_BACKLOG", "S4X_ERRORS", "WF_BACKLOG", "WF_CACHE_MISMATCH"
 F_WF_UNIT_ERRORS, F_TRIALS_CHAIN_BROKEN, F_LESSONS_CLOSED = "WF_UNIT_ERRORS", "TRIALS_CHAIN_BROKEN", "LESSONS_CLOSED"
 F_GATE_A_NOT_COMPUTED, F_PARITY_B_FAIL, F_CONFIG_EPOCHS = "GATE_A_NOT_COMPUTED", "PARITY_B_FAIL", "CONFIG_EPOCHS_FAILED"
+F_AG_SKIPPED, F_AG_TRIALS = "AG_SKIPPED", "AG_TRIALS_NOT_REGISTERED"
 R_NO_SEAL, R_UNIVERSE, R_S1B_SEAL = "NO_SEAL", "ENTRY_UNIVERSE_DIFF", "S1B_SEAL"
 
 
@@ -187,6 +192,7 @@ def preflight(paths: Any, app_dir: Path | str) -> dict[str, Any]:
         return out
     out["ticks"] = ticks_from_universe(paths)
     out["data_seal"] = getattr(out["reader"], "seal", None)
+    out["ag"] = ag_status(syms)
     ok, why = S1B.check()
     if not ok:
         out["skip"] = f"{R_S1B_SEAL}: {why}"[:300]
@@ -194,6 +200,32 @@ def preflight(paths: Any, app_dir: Path | str) -> dict[str, Any]:
         out["skip"] = (f"{R_UNIVERSE}: eksik {len(diff['missing'])}, fazla {len(diff['extra'])}, yinelenen "
                        f"{len(diff['duplicates'])} (kaynak {info.get('source')})")
     return out
+
+
+def ag_status(entry_symbols: Any) -> dict[str, Any]:
+    """S1d AG durumu (`agnight.status`); arıza AG'yi kapatır, LIB_V1'i etkilemez."""
+    try:
+        from . import agnight as AGN
+        return AGN.status(entry_symbols)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "seal_ok": False, "symbols": [], "reason": f"AG_STATUS: {type(exc).__name__}: {exc}"[:300]}
+
+
+def register_ag(paths: Any, pre: Mapping[str, Any]) -> dict[str, Any]:
+    """AG'nin deneme satırları (S4x'ten önce; `agnight.register_trials`). `pre["ag"]["run"]` bu gecenin AG kararıdır."""
+    ag = dict(pre.get("ag") or {})
+    if not ag.get("ok"):
+        ag["run"] = False
+        return ag
+    from . import agnight as AGN
+    ms = ag_module_src_shas()
+    reg = (AGN.register_trials(paths, module_src_sha=dict(ms)) if ms is not None else
+           {"ok": False, "status": "FAILED", "reason": "AG module_src_sha hesaplanamadı (git kimliği yok ya da kirli)"})
+    ag["trials"] = reg
+    ag["run"] = bool(reg.get("ok"))
+    if not reg.get("ok"):
+        ag["reason"] = f"{F_AG_TRIALS}: {reg.get('reason')}"[:300]
+    return ag
 
 
 def is_rebuild_night(s1b_result: Mapping[str, Any] | None) -> tuple[bool, str | None]:
@@ -224,16 +256,33 @@ def module_src_shas() -> tuple[tuple[str, str], ...] | None:
             os.environ["GIT_OPTIONAL_LOCKS"] = old
 
 
+@functools.lru_cache(maxsize=1)
+def ag_module_src_shas() -> tuple[tuple[str, str], ...] | None:
+    """AG varyantlarının `module_src_sha`'ları (salt-okunur git; gece başına bir kez). Hesaplanamazsa None."""
+    try:
+        from . import agnight as AGN
+        return tuple(sorted(AGN.module_src_shas().items()))
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def spec_of_factory() -> Callable[[str], str | None]:
     from . import registry as RG
     ms = dict(module_src_shas() or ())
     vs = RG.variants_by_id()
     cache: dict[str, str | None] = {}
+    ag_ms: dict[str, dict[str, str]] = {}
 
     def spec_of(v: str) -> str | None:
         if v not in cache:
-            base = (vs.get(v) or {}).get("alias_of") or v
             try:
+                from . import lib_ag as LA
+                if LA.is_ag(v):
+                    if "m" not in ag_ms:
+                        ag_ms["m"] = dict(ag_module_src_shas() or ())
+                    cache[v] = LA.spec_sha_for(v, ag_ms["m"][v]) if v in ag_ms["m"] else None
+                    return cache[v]
+                base = (vs.get(v) or {}).get("alias_of") or v
                 cache[v] = RG.spec_sha(RG.lib_spec(v, ms[base], RG.LIB_V1)) if base in ms else None
             except Exception:  # noqa: BLE001
                 cache[v] = None
@@ -245,10 +294,30 @@ def spec_of_factory() -> Callable[[str], str | None]:
 INTEREST_FLAGS = ("PATH_1H_GAP", "FUNDING_GAP", "F8_UNMEASURABLE", "FUNDING_MARK_MISMATCH")
 
 
-def run_s4x(paths: Any, pre: Mapping[str, Any], *, now_ms: int, budget_s: float) -> dict[str, Any]:
+def run_s4x(paths: Any, pre: Mapping[str, Any], *, now_ms: int, budget_s: float,
+            clock: Callable[[], float] = time.monotonic) -> dict[str, Any]:
+    """S4x: önce LIB_V1 keşfi (`explore.run_s4x`), sonra kalan payla AG keşfi (`explore.run_s4x_ag`; AG bu gece açıksa)."""
     from . import explore as EX
+    t0 = clock()
     rep = EX.run_s4x(paths, pre["reader"], entry_symbols=pre["entry_symbols"], ticks=pre["ticks"], now_ms=int(now_ms),
                      budget_s=float(budget_s))
+    out = _s4x_view(rep, budget_s)
+    ag = pre.get("ag") or {}
+    if ag.get("run"):
+        left = float(budget_s) - (clock() - t0)
+        if left > 1.0:
+            ra = EX.run_s4x_ag(paths, pre["reader"], ag_symbols=ag["symbols"], ticks=pre["ticks"], now_ms=int(now_ms),
+                               budget_s=left)
+            out["ag"] = _s4x_view(ra, left)
+        else:
+            out["ag"] = {"status": {"DEADLINE": len(ag.get("symbols") or []) * int(ag.get("variants") or 0)},
+                         "reason": "S4x payı LIB_V1 keşfinde bitti", "errors": 0}
+    else:
+        out["ag"] = {"skipped": str(ag.get("reason") or "AG kapalı")[:300]}
+    return out
+
+
+def _s4x_view(rep: Mapping[str, Any], budget_s: float) -> dict[str, Any]:
     fi = rep.get("funding_intervals") or {}
     flags = rep.get("trade_flags") or {}
     return {"status": dict(sorted((rep.get("status") or {}).items())), "plan_total": (rep.get("plan") or {}).get("total"),
@@ -282,13 +351,15 @@ def explore_digest(paths: Any) -> list[str]:
 def run_s4w(paths: Any, pre: Mapping[str, Any], *, now_ms: int, deadline_mono: float, guard: MemoryGuard,
             night_budget_s: float, clock: Callable[[], float] = time.monotonic) -> dict[str, Any]:
     from . import wfqueue as WQ
+    ag = pre.get("ag") or {}
     rep = WQ.run_s4w(paths, pre["reader"], entry_symbols=pre["entry_symbols"], ticks=pre["ticks"], now_ms=int(now_ms),
                      deadline=float(deadline_mono), clock=clock, guard=lambda: guard.check("S4w"),
-                     spec_of=spec_of_factory(), night_budget_s=night_budget_s)
+                     spec_of=spec_of_factory(), night_budget_s=night_budget_s,
+                     ag_symbols=list(ag.get("symbols") or []) or None, ag_run=bool(ag.get("run")))
     return {k: rep.get(k) for k in ("stop", "backlog", "eta_nights", "units_done", "units_error", "units_no_data",
                                     "units_killed", "units_aborted", "aborted", "verified", "mismatch", "trades", "seconds",
                                     "completed_month", "next_month_queued", "previous_night_killed_in",
-                                    "discarded_stale_code")
+                                    "discarded_stale_code", "ag", "units_no_tick")
             if rep.get(k) is not None} | {"errors_head": (rep.get("errors") or [])[:3], "moving": len(rep.get("moving") or {})}
 
 
@@ -334,7 +405,8 @@ def record_look_night(paths: Any, night: date, rec: Mapping[str, Any]) -> None:
     d = _read_json(p)
     d = d if isinstance(d, dict) and isinstance(d.get("months"), dict) else {"schema": "gate_a_look_nights_v1", "months": {}}
     d["months"][ST.look_month(night)] = {"night": night.isoformat(), **{k: rec.get(k) for k in ("status", "reason",
-                                                                                                 "wf_backlog")}}
+                                                                                                 "wf_backlog", "family")
+                                                                        if k in rec}}
     paths.write_json(p, d)
 
 
@@ -430,6 +502,11 @@ def run_s6(paths: Any, *, now: datetime, app_dir: Path | str, guard: MemoryGuard
                            **parity_b_status(paths)}
     # (4) Kapı A gecesi planı (S2 mühürlü değil: GEÇİCİ; satır kurucuları ve LOOK_A yazımı P4a)
     ga: dict[str, Any] = {"look_night": bool(look_night), "provisional": True}
+    try:
+        from . import agnight as AGN
+        ga["family"] = AGN.family_size()                          # BH ailesi: LIB 818 + AG 38 (S1d; daha sıkı)
+    except Exception as exc:  # noqa: BLE001
+        errors.append(f"gate_a_family: {type(exc).__name__}: {exc}"[:300])
     if look_night:
         flags.append(F_GATE_A_NOT_COMPUTED)
         wb = dict(wf_backlog or {})

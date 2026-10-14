@@ -10,8 +10,11 @@
   aktarılır (`_mt`); başvuru uygulamasıyla eşitlik testlidir. **Kesin karşılaştırma:** R mikro-R'ye yuvarlanır (tam sayı;
   işlem başına |hata| ≤ 5e-7 R) ve "kaydırılmış ortalama ≥ m" ⟺ ΣS* · N ≥ 2 · S · Σn* tam sayıyla sınanır (kayan nokta
   sırası p'yi oynatamaz).
-* **BH-FDR** (q = 0,10, mühür): aile = o bakışta değerlendirilen BÜTÜN etkin LIB satırları (`registry.gate_a_rows`, 818);
-  `p_day`'i olmayan satır p = 1 ile girer (m küçülmez). q-değeri = min_{j ≥ i} (m / j · p_(j)), 1'de kırpılır.
+* **BH-FDR** (q = 0,10, mühür): aile = o bakışta değerlendirilen BÜTÜN etkin LIB satırları (`registry.gate_a_rows`, 818)
+  **+ S1d `LIB_AG_V1`'in 38 `AG_POOLED` satırı** (`lib_ag.gate_a_rows`; P3g, 2026-10-13: m = 856 → daha sıkı, asla gevşek);
+  `p_day`'i olmayan satır p = 1 ile girer (m küçülmez). q-değeri = min_{j ≥ i} (m / j · p_(j)), 1'de kırpılır. AG
+  satırlarının seçim grupları `lib_ag.selection_group_key` (aile başına, örtü tabanı başına; üyelik S1d mühründen) ve
+  bakışın DSR N alt sınırı AG ile `lib_ag.n_at_seal_with_ag()` (4.551).
 * **DSR:** `validation.deflated_sharpe` (yeniden kullanılır); sr = OOS günlük getirinin Sharpe'ı (1 USDT risk / 200 USDT
   taban; işlemsiz gün 0; ADVERSE net USDT, giriş günü), T = OOS gün sayısı, çarpıklık/basıklık ampirik (basıklık fazlalık
   değil), **`sr_var` = ailenin (o bakışta Sharpe'ı hesaplanan satırlar) günlük Sharpe'larının örneklem varyansı, tabanı
@@ -21,7 +24,8 @@
   enjekte saatin bugünkü gecesi değilse ret (geçmiş/gelecek bakış yok); (1) zincir, öncüller (= `PRIOR_TRIALS_V1`), DSR
   N'i ≥ mühürdeki N (4.513) — tutmazsa kapalı, yazım yok — ve mühür denetimi; (2) satır istatistikleri (üç maliyet,
   `p_day`, plasebo, katman payı, pay/tutarlılık); (3) PBO (grup üyeliği mühürden; eksik grup hesaplanmaz — R3; matris
-  günlük piyasa değerlemesi getirileri — U3, `mtm_allocation`); (4) BH (aile HER ZAMAN 818 satır; daraltma yalnız saf `gate_a_evaluate`'te); (5) DSR; (6)
+  günlük piyasa değerlemesi getirileri — U3, `mtm_allocation`); (4) BH (aile HER ZAMAN 856 satır — LIB 818 + AG 38;
+  daraltma yalnız saf `gate_a_evaluate`'te); (5) DSR; (6)
   ileri okuma (`FWD_READ`); (7) hüküm → `LOOK_A`. Defter yalnız `trials.TrialsLedger.append` ile büyür (yeniden yazma yolu
   yok). Plasebo koşulu net VE brüt R'da, kapsama ≥ %80 (R5).
 * **Eşikler:** Kapı A eşikleri ana belge §6.7'ye göre S2'de (`PROMOTION_REGISTRY_V1`, P4a) mühürlenir; S1 yalnız q, plasebo
@@ -349,6 +353,9 @@ def selection_group_key(row_type: str, unit: str, scope: str) -> str:
     enstrüman başına 6 varyant, XSEC 5, spread 2 → aile × kapsam."""
     if row_type == "COIN_FIT":
         return f"GRID:{unit}@{scope}"
+    if row_type == "AG":                                     # S1d: aile başına / örtü tabanı başına (mühürden)
+        from . import lib_ag as LA
+        return LA.selection_group_key(f"{unit}@{scope}")
     v = RG.variants_by_id()[unit]
     if row_type == "COPY" and scope.startswith("COIN:"):
         return f"COINSEL:{unit}"
@@ -366,6 +373,14 @@ def _is_gold(row: Mapping[str, Any]) -> bool:
 
 def _is_coin_row(row: Mapping[str, Any]) -> bool:
     return row.get("row_type") == "COIN_FIT" or str(row.get("scope", "")).startswith("COIN:")
+
+
+def _is_ag_cover(row: Mapping[str, Any]) -> bool:
+    """S1d `AG_O` örtü satırı (LIB_V1 canlı defter kopyasının AYRI kopyasına örtü)."""
+    if row.get("row_type") != "AG":
+        return False
+    from . import lib_ag as LA
+    return LA.is_ag(str(row.get("unit"))) and LA.variant(str(row["unit"]))["family"] == "AG_O"
 
 
 def _is_xsec(row: Mapping[str, Any]) -> bool:
@@ -407,6 +422,18 @@ def row_stats(row: Mapping[str, Any], *, look_no: int, p_stop_above: float | Non
     return out
 
 
+def gate_a_family_rows() -> list[dict[str, Any]]:
+    """Kapı A BH ailesi (P3g): LIB_V1 satırları (818) + S1d AG satırları (38), sonuçlara bakılmadan."""
+    from . import lib_ag as LA
+    return list(RG.gate_a_rows()) + LA.gate_a_rows()
+
+
+def gate_a_n_min() -> int:
+    """Bakışın DSR N alt sınırı: aile AG satırlarını içerdiğinden LIB_V1 mühür N'i + AG'nin ham denemeleri (4.551)."""
+    from . import lib_ag as LA
+    return int(LA.n_at_seal_with_ag())
+
+
 def gate_a_evaluate(rows: Mapping[str, Mapping[str, Any]], *, look_no: int, n_trials: int,
                     thresholds: Mapping[str, Any] = GATE_A_PROVISIONAL, family: Sequence[str] | None = None,
                     group_series: Mapping[str, Mapping[str, Mapping[int, float]]] | None = None,
@@ -414,13 +441,13 @@ def gate_a_evaluate(rows: Mapping[str, Mapping[str, Any]], *, look_no: int, n_tr
                     pit_ready: bool = False, epoch_ok: Mapping[str, bool] | None = None,
                     full: bool = True) -> dict[str, Any]:
     """Saf Kapı A değerlendirmesi (deftere yazmaz). `rows`: {row_id: wf satır sonucu (`wf.RowResult.to_gate()`)}.
-    `family`: BH ailesi (varsayılan bütün LIB satırları). `group_series`: {grup: {yapılandırma: {gün: getiri}}} (COIN_FIT
+    `family`: BH ailesi (varsayılan bütün LIB + AG satırları, `gate_a_family_rows`). `group_series`: {grup: {yapılandırma: {gün: getiri}}} (COIN_FIT
     ızgarası satırın `option_daily`'sinden kendiliğinden; diğer gruplar üye satırların günlük getirisinden kurulur).
     `placebo`: {row_id: [(gün, ADVERSE R)] ya da çağrılabilir → aynı liste}. `fwd`: {row_id: {days, n, mean_adverse,
     intraday}}. `full=False`: BH'den sonra koşulu zaten tutmayan satırın PBO'su/plasebosu hesaplanmaz (HÜKÜM AYNI; boş dünya
     deneyi için hız). Döner: {rows: {row_id: {...stats, verdict, fails}}, family_m, N, sr_var_family, groups}."""
     th = thresholds
-    family = list(family) if family is not None else [r["row_id"] for r in RG.gate_a_rows()]
+    family = list(family) if family is not None else [r["row_id"] for r in gate_a_family_rows()]
     fam_set = set(family)
     unknown = [k for k in rows if k not in fam_set]
     if unknown:
@@ -476,8 +503,8 @@ def gate_a_evaluate(rows: Mapping[str, Mapping[str, Any]], *, look_no: int, n_tr
             fails.append("TOP_SHARE")
         if _is_xsec(r) and not pit_ready:
             fails.append("XSEC_REQUIRES_PIT")
-        if r.get("row_type") in ("COPY", "COVER") and not epoch_ok.get(rid, False):
-            fails.append("EPOCH_COMPARISON_MISSING")
+        if (r.get("row_type") in ("COPY", "COVER") or _is_ag_cover(r)) and not epoch_ok.get(rid, False):
+            fails.append("EPOCH_COMPARISON_MISSING")          # AG örtüleri de canlı defter kopyasıdır (S1d; daha sıkı)
         if r.get("excluded", {}).get("n_leak_folds"):
             s["n_leak_folds"] = r["excluded"]["n_leak_folds"]
         s["fails"] = fails
@@ -598,7 +625,7 @@ def expected_group_members() -> Mapping[str, frozenset[str]]:
     dahil); diğerleri → aynı anahtarlı bütün Kapı A satırları."""
     if not _EXPECTED:
         acc: dict[str, set[str]] = {}
-        for r in RG.gate_a_rows():
+        for r in gate_a_family_rows():
             k = selection_group_key(r["row_type"], r["unit"], r["scope"])
             if r["row_type"] == "COIN_FIT":
                 acc[k] = {v["variant_id"] for v in RG.LIB_V1["variants"] if v["family"] == r["unit"]}
@@ -633,9 +660,10 @@ def gate_a_look(ledger: Any, night: date, rows: Mapping[str, Mapping[str, Any]],
                 placebo: Mapping[str, Any] | None = None, fwd: Mapping[str, Mapping[str, Any]] | None = None,
                 pit_ready: bool = False, epoch_ok: Mapping[str, bool] | None = None, at: str | None = None,
                 spec_sha: Mapping[str, str] | None = None, clock: Callable[[], datetime] = utc_now) -> dict[str, Any]:
-    """§3.7 yordamı. `ledger`: `trials.TrialsLedger`. Aile HER ZAMAN bütün LIB satırlarıdır (`registry.gate_a_rows`, 818;
-    daraltma yalnız saf `gate_a_evaluate`'te). Sıra: (0) `night` enjekte saatin BUGÜNKÜ gecesi değilse ret (`REFUSED`,
-    geçmiş/gelecek bakış yok); (1) zincir, öncüller (= `PRIOR_TRIALS_V1`) ve N ≥ mühürdeki N (4.513) — tutmazsa `CLOSED`,
+    """§3.7 yordamı. `ledger`: `trials.TrialsLedger`. Aile HER ZAMAN bütün LIB satırları + S1d AG satırlarıdır
+    (`gate_a_family_rows`, 818 + 38 = 856; daraltma yalnız saf `gate_a_evaluate`'te). Sıra: (0) `night` enjekte saatin
+    BUGÜNKÜ gecesi değilse ret (`REFUSED`, geçmiş/gelecek bakış yok); (1) zincir, öncüller (= `PRIOR_TRIALS_V1`) ve N ≥
+    mühürdeki N (AG ile 4.551: `gate_a_n_min`) — tutmazsa `CLOSED`,
     yazım yok; bakış gecesi değilse "ara görünüm" (hüküm yok, yazım yok); mühür denetimi; (2–5) `gate_a_evaluate`; (6) her
     değerlendirilen satıra `FWD_READ`; (7) ailenin her satırına `LOOK_A` (değerlendirilmeyen: p = 1, `NOT_EVALUATED`).
     Yazım yalnız `ledger.append`."""
@@ -651,7 +679,7 @@ def gate_a_look(ledger: Any, night: date, rows: Mapping[str, Mapping[str, Any]],
     want_priors = {str(r["prior_id"]): int(r["count"]) for r in RG.PRIOR_TRIALS_V1["rows"]}
     if ledger_priors(led_rows) != want_priors:
         return {"status": "CLOSED", "reason": "PRIORS_MISMATCH"}
-    n_min = int(RG.LIB_V1["budget_declared"]["N_AT_SEAL_MIN"])
+    n_min = gate_a_n_min()                       # LIB_V1 N_AT_SEAL_MIN (4.513) + AG ham denemeleri (38)
     if ledger.dsr_n() < n_min:
         return {"status": "CLOSED", "reason": "N_BELOW_SEAL", "N": ledger.dsr_n(), "N_min": n_min}
     looked = ledger_looks(led_rows)
@@ -664,10 +692,11 @@ def gate_a_look(ledger: Any, night: date, rows: Mapping[str, Mapping[str, Any]],
         return {"status": "CLOSED", "reason": "SEAL_MISMATCH"}
     look_no = len(looked) + 1
     n_trials = ledger.dsr_n()
-    fam = [r["row_id"] for r in RG.gate_a_rows()]
+    fam_rows = gate_a_family_rows()
+    fam = [r["row_id"] for r in fam_rows]
     ev = gate_a_evaluate(rows, look_no=look_no, n_trials=n_trials, thresholds=thresholds, family=fam,
                          group_series=group_series, placebo=placebo, fwd=fwd, pit_ready=pit_ready, epoch_ok=epoch_ok)
-    scope_of = {r["row_id"]: r["scope"] for r in RG.gate_a_rows()}
+    scope_of = {r["row_id"]: r["scope"] for r in fam_rows}
     month = look_month(night)
     q_missing = bh_qvalues({rid: (ev["rows"][rid]["p_day"] if rid in ev["rows"] else None) for rid in fam})
     entries: list[dict[str, Any]] = []
@@ -733,5 +762,5 @@ __all__ = ["BH_Q", "CHUNK", "EQUITY_BASE_USDT", "FAIL_A", "GATE_A_PROVISIONAL", 
            "is_pass", "ledger_priors", "thresholds_are_sealed",
            "PLACEBO_MIN_CI_LOWER", "RESAMPLES", "R_SCALE", "SCENARIOS", "bh_qvalues", "choice_stream", "daily_returns",
            "day_clusters", "dsr", "family_sr_var", "gate_a_evaluate", "gate_a_look", "is_look_night", "ledger_looks",
-           "look_month", "moments", "p_day", "p_day_seed", "row_stats", "seed_int", "selection_group_key", "sharpe",
+           "look_month", "gate_a_family_rows", "gate_a_n_min", "moments", "p_day", "p_day_seed", "row_stats", "seed_int", "selection_group_key", "sharpe",
            "sr_var_floored", "top_share"]

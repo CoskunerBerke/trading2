@@ -98,6 +98,42 @@ QUERY_MAX_LINES, QUERY_MAX_BYTES = 150, 4096
 TOP_K = 5
 
 
+@dataclass(frozen=True)
+class LibCtx:
+    """Keşfin kütüphane bağlamı (P3g): `LIB_V1` (varsayılan; davranışı ve baytları DEĞİŞMEDİ) ya da S1d `LIB_AG_V1`
+    (`ag_ctx()`; ileri veri `S1D_SEAL_MS`'den, kök `explore/LIB_AG_v1`). `extra`: durum dosyasına eklenen ve sürdürmede
+    denetlenen kimlik alanları (LIB_V1'de yok)."""
+
+    lib: str
+    t_seal_ms: int
+    extra: tuple[tuple[str, Any], ...] = ()
+
+    @property
+    def is_ag(self) -> bool:
+        return self.lib != LIB_VERSION
+
+
+LIB_CTX = LibCtx(LIB_VERSION, T_SEAL_MS)
+
+
+def ag_ctx() -> LibCtx:
+    from . import seal_s1d as S1D
+    return LibCtx(S1D.LIB_AG_VERSION, int(S1D.S1D_SEAL_MS), (("s1d_sha", S1D.S1D_SHA),))
+
+
+def is_ag_variant(variant_id: str) -> bool:
+    from . import lib_ag as LA
+    return LA.is_ag(variant_id)
+
+
+def make_any(variant_id: str) -> Any:
+    """Kayıttan varyant: LIB_V1 (`kernel.make_variant`) ya da LIB_AG_V1 (`lib_ag.make_variant`; S1d tutmazsa kurulmaz)."""
+    if is_ag_variant(variant_id):
+        from . import lib_ag as LA
+        return LA.make_variant(variant_id)
+    return KN.make_variant(variant_id)
+
+
 class ExploreRefused(RuntimeError):
     """Kapalı hata: mühürlü keşif sayımı/evreni tutmuyor."""
 
@@ -200,6 +236,7 @@ class Meta:
     needs_btc_4h: bool
     btc_4h_lookback: int
     funding_lookback_ms: int
+    t_seal_ms: int = T_SEAL_MS              # AG: S1D_SEAL_MS (P3g)
 
     @property
     def step(self) -> int:
@@ -208,7 +245,7 @@ class Meta:
     @property
     def start_ms(self) -> int:
         """İlk karar anı: açılışı ≥ T_SEAL olan ilk barın kapanışı (her hizalamada kapanış ≥ T_SEAL + dilim)."""
-        return T_SEAL_MS + self.step
+        return self.t_seal_ms + self.step
 
     @property
     def arrays(self) -> tuple[str, ...]:
@@ -225,7 +262,8 @@ _META: dict[str, Meta] = {}
 def meta(variant_id: str) -> Meta:
     m = _META.get(variant_id)
     if m is None:
-        v = KN.make_variant(variant_id)
+        ag = is_ag_variant(variant_id)
+        v = make_any(variant_id)
         lb = {str(k): int(x) for k, x in dict(v.lookback).items()}
         for tf in set(v.timeframes) | {v.signal_tf}:
             if int(lb.get(tf, 0) or 0) <= 0:          # sınırsız pencere → artımlı = baştan kanıtlanamaz (kapalı hata)
@@ -236,7 +274,8 @@ def meta(variant_id: str) -> Meta:
             raise ExploreRefused(f"{variant_id}: BTC 4h penceresi sınırsız")
         m = Meta(variant_id, v.signal_tf, tuple(v.timeframes), lb, bool(v.needs_btc), int(v.btc_lookback or 0),
                  bool(getattr(v, "needs_btc_4h", False)), int(getattr(v, "btc_4h_lookback", 0) or 0),
-                 int(v.funding_lookback_ms or 0) if getattr(v, "needs_funding", False) else 0)
+                 int(v.funding_lookback_ms or 0) if getattr(v, "needs_funding", False) else 0,
+                 ag_ctx().t_seal_ms if ag else T_SEAL_MS)
         _META[variant_id] = m
     return m
 
@@ -247,16 +286,23 @@ def runnable_variants() -> list[str]:
             and _group_of(v["family"]) in ("STANDARD", "COPY", "COVER")]
 
 
-_WARM: dict[str, int] | None = None
+_WARM: dict[str, dict[str, int]] = {}
 
 
-def warm_bars() -> dict[str, int]:
+def ag_runnable_variants() -> list[str]:
+    """LIB_AG_V1'in bütün varyantları (boşluk yok; S1d)."""
+    from . import lib_ag as LA
+    return LA.variant_ids()
+
+
+def warm_bars(ctx: LibCtx | None = None) -> dict[str, int]:
     """Dizi başına en uzun mühürlü pencere (bar): coin dilimleri, `btc_1d`, `btc_4h` (BTC dizileri BTC'nin kendi
-    dilimleriyle aynı yüklenir)."""
-    global _WARM
-    if _WARM is None:
+    dilimleriyle aynı yüklenir). `ctx` AG ise LIB_AG_V1 varyantlarınınki (P3g)."""
+    ag = ctx is not None and ctx.is_ag
+    key = "AG" if ag else "LIB"
+    if key not in _WARM:
         w: dict[str, int] = {}
-        for vid in runnable_variants():
+        for vid in (ag_runnable_variants() if ag else runnable_variants()):
             m = meta(vid)
             for tf in m.arrays:
                 w[tf] = max(w.get(tf, 0), int(m.lookback.get(tf, 0) or 0))
@@ -264,18 +310,19 @@ def warm_bars() -> dict[str, int]:
                 w["1d"] = max(w.get("1d", 0), m.btc_lookback)
             if m.needs_btc_4h:
                 w["4h"] = max(w.get("4h", 0), m.btc_4h_lookback)
-        _WARM = w
-    return dict(_WARM)
+        _WARM[key] = w
+    return dict(_WARM[key])
 
 
-def warm_start(tf: str, t_seal_ms: int = T_SEAL_MS) -> int:
+def warm_start(tf: str, t_seal_ms: int = T_SEAL_MS, ctx: LibCtx | None = None) -> int:
     """Dizinin yükleme başı (SABİT: yalnız mühüre bağlı): T_SEAL − ⌈(pencere + pay) × 1,5⌉ bar."""
-    bars = math.ceil((warm_bars().get(tf, 0) + SLICE_MARGIN) * WARM_SLACK)
+    bars = math.ceil((warm_bars(ctx).get(tf, 0) + SLICE_MARGIN) * WARM_SLACK)
     return int(t_seal_ms) - bars * TF_MS[tf]
 
 
-def funding_warm_start(t_seal_ms: int = T_SEAL_MS) -> int:
-    lb = max((meta(v).funding_lookback_ms for v in runnable_variants()), default=0)
+def funding_warm_start(t_seal_ms: int = T_SEAL_MS, ctx: LibCtx | None = None) -> int:
+    vids = ag_runnable_variants() if (ctx is not None and ctx.is_ag) else runnable_variants()
+    lb = max((meta(v).funding_lookback_ms for v in vids), default=0)
     return int(t_seal_ms) - lb - FUND_MARGIN_MS
 
 
@@ -339,7 +386,8 @@ def _src_ok(row: Mapping[str, Any]) -> bool:
 
 def inputs_from_rows(coin: str, bars: Mapping[str, Sequence[Mapping[str, Any]]],
                      funding: Sequence[Any] | None, tick: float | None, *, now_ms: int,
-                     t_seal_ms: int = T_SEAL_MS, markpx: Sequence[Mapping[str, Any]] | None = None) -> CoinData:
+                     t_seal_ms: int = T_SEAL_MS, markpx: Sequence[Mapping[str, Any]] | None = None,
+                     ctx: LibCtx | None = None) -> CoinData:
     """Satırlardan girdi (depo okuyucusu `_src` sütununu verir; `_src` yoksa satır doğrulanmış sayılır — yalnız sentetik
     testler). Kural: `warm_start` öncesi atılır; mühür öncesi yalnız `archive`; ileri satırlar ilk doğrulanmamış ya da
     kapanmamış satırda KESİLİR (sonrası yok sayılır: cephe). `markpx`: mark fiyatı 1h barları (aynı kurallar; yükleme
@@ -350,7 +398,7 @@ def inputs_from_rows(coin: str, bars: Mapping[str, Sequence[Mapping[str, Any]]],
         arrays[MARKPX] = markpx
     for tf, rows in arrays.items():
         step = MARK_TF_MS if tf == MARKPX else TF_MS[tf]
-        w0 = funding_warm_start(t_seal_ms) if tf == MARKPX else warm_start(tf, t_seal_ms)
+        w0 = funding_warm_start(t_seal_ms, ctx) if tf == MARKPX else warm_start(tf, t_seal_ms, ctx)
         by: dict[int, Mapping[str, Any]] = {}
         for r in rows:
             by[int(r["timestamp"])] = r
@@ -371,7 +419,7 @@ def inputs_from_rows(coin: str, bars: Mapping[str, Sequence[Mapping[str, Any]]],
         cd.bars[tf] = out
         cd.frontier[tf] = front
     if funding is not None:
-        f0 = funding_warm_start(t_seal_ms)
+        f0 = funding_warm_start(t_seal_ms, ctx)
         fr: dict[int, tuple[int, float, float, bool]] = {}
         for x in funding:
             if isinstance(x, Mapping):
@@ -419,7 +467,7 @@ def funding_intervals(funding: Sequence[tuple[int, float, float]] | None, since_
 
 
 def load_coin(reader: Any, coin: str, *, tick: float | None, now_ms: int, market: str = "futures",
-              t_seal_ms: int = T_SEAL_MS, tfs: Sequence[str] | None = None) -> CoinData:
+              t_seal_ms: int = T_SEAL_MS, tfs: Sequence[str] | None = None, ctx: LibCtx | None = None) -> CoinData:
     """Mühürlü depo okuyucusundan (`provider.SealedReader`; testte `ResearchStore`) girdi. Parça mühürden sonra değiştiyse
     `moving` dolu döner (coin'in serileri o gece atlanır). `tfs` (P3g parite (b)): yalnız bu diziler (varsayılan: bütün
     keşif dizileri)."""
@@ -427,22 +475,23 @@ def load_coin(reader: Any, coin: str, *, tick: float | None, now_ms: int, market
     from .store import FUNDING, MARKPX_1H, SRC_COL
 
     raw = f"{coin_of(coin)}USDT"
-    tfs = sorted(warm_bars() if tfs is None else set(tfs), key=lambda t: TF_MS[t])
+    tfs = sorted(warm_bars(ctx) if tfs is None else set(tfs), key=lambda t: TF_MS[t])
     bars: dict[str, list[dict[str, Any]]] = {}
     fund: list[dict[str, Any]] = []
     mark: list[dict[str, Any]] = []
     try:
         for tf in tfs:
             rows: list[dict[str, Any]] = []
-            for _ym, df in reader.iter_parts(market, raw, tf, warm_start(tf, t_seal_ms), None, keep_src=True):
+            for _ym, df in reader.iter_parts(market, raw, tf, warm_start(tf, t_seal_ms, ctx), None, keep_src=True):
                 if len(df):
                     cols = [c for c in ("timestamp", "open", "high", "low", "close", "volume", SRC_COL) if c in df.columns]
                     rows += df[cols].to_dict("records")
             bars[tf] = rows
-        for _ym, df in reader.iter_parts(market, raw, FUNDING, funding_warm_start(t_seal_ms), None, keep_src=True):
+        for _ym, df in reader.iter_parts(market, raw, FUNDING, funding_warm_start(t_seal_ms, ctx), None, keep_src=True):
             if len(df):
                 fund += df[[c for c in ("timestamp", "rate", "mark", SRC_COL) if c in df.columns]].to_dict("records")
-        for _ym, df in reader.iter_parts(market, raw, MARKPX_1H, funding_warm_start(t_seal_ms), None, keep_src=True):
+        for _ym, df in reader.iter_parts(market, raw, MARKPX_1H, funding_warm_start(t_seal_ms, ctx), None,
+                                         keep_src=True):
             if len(df):
                 mark += df[[c for c in ("timestamp", "open", "high", "low", "close", SRC_COL)
                             if c in df.columns]].to_dict("records")
@@ -451,7 +500,7 @@ def load_coin(reader: Any, coin: str, *, tick: float | None, now_ms: int, market
     for rows in list(bars.values()) + [fund, mark]:
         for r in rows:
             r["_src"] = r.pop(SRC_COL, None) or "?"              # kaynaksız satır doğrulanmamış sayılır
-    return inputs_from_rows(coin, bars, fund, tick, now_ms=now_ms, t_seal_ms=t_seal_ms, markpx=mark)
+    return inputs_from_rows(coin, bars, fund, tick, now_ms=now_ms, t_seal_ms=t_seal_ms, markpx=mark, ctx=ctx)
 
 
 # ============================================================================ JSON
@@ -681,7 +730,8 @@ def _pct(usdt: Sequence[float]) -> list[float]:
 
 
 def _summary(agg: Mapping[str, Any], carry: Mapping[int, list[float]], unsettled: Sequence[Mapping[str, Any]],
-             open_row: Mapping[str, Any] | None, next_day: int, frontier: int, signal_tf: str) -> dict[str, Any]:
+             open_row: Mapping[str, Any] | None, next_day: int, frontier: int, signal_tf: str,
+             t_seal_ms: int = T_SEAL_MS) -> dict[str, Any]:
     a = _roundtrip(agg)
     for r in unsettled:
         _add_trade(a, r)
@@ -699,7 +749,7 @@ def _summary(agg: Mapping[str, Any], carry: Mapping[int, list[float]], unsettled
             "mean_r": [x / n for x in a["sum_r"]] if n else None, "axis_days": a["days"],
             "cum_pct": a["cum_pct"], "max_dd_pct": a["max_dd_pct"],
             "share_days_ge_1pct": [x / a["days"] for x in a["days_ge_1pct"]] if a["days"] else None,
-            "days_since_seal": max(0, (int(frontier) - T_SEAL_MS) // DAY_MS), "frontier_ms": int(frontier),
+            "days_since_seal": max(0, (int(frontier) - int(t_seal_ms)) // DAY_MS), "frontier_ms": int(frontier),
             "intraday": signal_tf in INTRADAY_TFS, "open": op}
 
 
@@ -799,7 +849,7 @@ def coin_groups(series: Sequence[Series]) -> list[tuple[str | None, list[Series]
 
 def _variants(base: str | None, members: Sequence[Series]) -> dict[str, Any]:
     if base is None:
-        return {s.variant_id: KN.make_variant(s.variant_id) for s in members}
+        return {s.variant_id: make_any(s.variant_id) for s in members}
     shared, covers = KN.make_family(base)
     vs = dict(covers)
     if base != "C4":
@@ -866,11 +916,12 @@ def _s1b_sha() -> str | None:
     return KN.S1B.S1B_SHA if KN.S1B is not None else None
 
 
-def _state_ok(st: Mapping[str, Any] | None, s: Series, files: SeriesFiles) -> bool:
+def _state_ok(st: Mapping[str, Any] | None, s: Series, files: SeriesFiles, ctx: LibCtx = LIB_CTX) -> bool:
     return bool(st) and st.get("schema") == STATE_SCHEMA and st.get("version") == EXPLORE_VERSION \
         and st.get("registry_sha") == RG.REGISTRY_SHA and st.get("s1b_sha") == _s1b_sha() \
         and st.get("kernel") == KN.KERNEL_VERSION \
-        and st.get("t_seal_ms") == T_SEAL_MS and st.get("series") == s.series_id \
+        and st.get("t_seal_ms") == ctx.t_seal_ms and st.get("series") == s.series_id \
+        and all(st.get(k) == v for k, v in ctx.extra) \
         and int(st.get("rows_bytes", -1)) == files.rows_size()
 
 
@@ -891,7 +942,7 @@ def _iso_day(d: int) -> str:
 
 
 def step_group(root: Path, base: str | None, members: Sequence[Series], cd: CoinData, btc: CoinData | None,
-               report: dict[str, Any]) -> None:
+               report: dict[str, Any], ctx: LibCtx = LIB_CTX) -> None:
     """Bir coin'in bir koşu grubunu ileri taşı (artımlı ya da gerekirse baştan). Sonuç durum dosyalarına yazılır."""
     metas = [meta(s.variant_id) for s in members]
     files = {s.series_id: SeriesFiles(root, s) for s in members}
@@ -909,7 +960,7 @@ def step_group(root: Path, base: str | None, members: Sequence[Series], cd: Coin
         fl = files[s.series_id]
         st = fl.read_state()
         mode = "SCRATCH"
-        if _state_ok(st, s, fl) and int(st["frontier_ms"]) <= F and st.get("data_fp") == _fp(cd, btc, metas, int(st["frontier_ms"])):
+        if _state_ok(st, s, fl, ctx) and int(st["frontier_ms"]) <= F and st.get("data_fp") == _fp(cd, btc, metas, int(st["frontier_ms"])):
             mode = "UNCHANGED" if int(st["frontier_ms"]) == F else "INCR"
         if mode == "UNCHANGED":
             report["status"][ST_UNCHANGED] = report["status"].get(ST_UNCHANGED, 0) + 1
@@ -941,11 +992,11 @@ def step_group(root: Path, base: str | None, members: Sequence[Series], cd: Coin
     fs_ts = fs_all.ts if fs_all is not None else []
     fp_new = _fp(cd, btc, metas, F)
     for p, px, res in zip(plan, proxies, results):
-        _finish_member(p, px, res, cd, fs_all, fs_ts, F, fp_new, report)
+        _finish_member(p, px, res, cd, fs_all, fs_ts, F, fp_new, report, ctx)
 
 
 def _finish_member(p: Mapping[str, Any], px: _Fwd, res: KN.KernelResult, cd: CoinData, fs: KN.FundingSeries | None,
-                   fs_ts: Sequence[int], F: int, fp_new: str, report: dict[str, Any]) -> None:
+                   fs_ts: Sequence[int], F: int, fp_new: str, report: dict[str, Any], ctx: LibCtx = LIB_CTX) -> None:
     s, m, st, fl = p["s"], p["m"], p["st"], p["files"]
     resume = int(p["resume"])
     tf, step = m.signal_tf, m.step
@@ -981,7 +1032,7 @@ def _finish_member(p: Mapping[str, Any], px: _Fwd, res: KN.KernelResult, cd: Coi
     used.update(int(r["signal_ts"]) for r in closed_new if r["oeps"])
     agg = _roundtrip(st["agg"]) if st else _agg0()
     carry = {int(x[0]): [float(y) for y in x[1:]] for x in (st["carry"] if st else [])}
-    next_day = int(st["next_day"]) if st else T_SEAL_MS // DAY_MS
+    next_day = int(st["next_day"]) if st else ctx.t_seal_ms // DAY_MS
     for r in final_new:
         _add_trade(agg, r)
         if r.get("mtm") and not r["excluded"] and int(r["mtm"][0][0]) < next_day:
@@ -997,15 +1048,16 @@ def _finish_member(p: Mapping[str, Any], px: _Fwd, res: KN.KernelResult, cd: Coi
     next_day = max(next_day, limit)
     out_rows = sorted([dict(r) for r in final_new] + day_rows, key=_row_key)
     size = fl.append([dumps(r) for r in out_rows])
-    summary = _summary(agg, carry, unsettled, open_row, next_day, F, tf)
-    state = {"schema": STATE_SCHEMA, "version": EXPLORE_VERSION, "lib": LIB_VERSION, "registry_sha": RG.REGISTRY_SHA,
+    summary = _summary(agg, carry, unsettled, open_row, next_day, F, tf, ctx.t_seal_ms)
+    state = {"schema": STATE_SCHEMA, "version": EXPLORE_VERSION, "lib": ctx.lib, "registry_sha": RG.REGISTRY_SHA,
              "s1b_sha": _s1b_sha(),
              "kernel": KN.KERNEL_VERSION, "source": SOURCE, "series": s.series_id, "variant_id": s.variant_id,
-             "instrument": s.instrument, "family": s.family, "signal_tf": tf, "t_seal_ms": T_SEAL_MS,
+             "instrument": s.instrument, "family": s.family, "signal_tf": tf, "t_seal_ms": ctx.t_seal_ms,
              "start_ms": m.start_ms, "frontier_ms": int(F), "checkpoint_ms": int(checkpoint), "used": sorted(used),
              "unsettled": unsettled, "open": open_row, "carry": [[d] + carry[d] for d in sorted(carry)],
              "next_day": next_day, "agg": agg, "rows_bytes": size, "data_fp": fp_new, "summary": summary,
              "status": ST_OK}
+    state.update(ctx.extra)
     fl.write_state(_roundtrip(state))
     report["status"][ST_OK] = report["status"].get(ST_OK, 0) + 1
     tf_count = report.setdefault("trade_flags", {})
@@ -1113,6 +1165,113 @@ def run_s4x(paths: Any, reader: Any, *, entry_symbols: Sequence[str], ticks: Map
     return explore_step(root, load, entry_symbols=entry_symbols, deadline=deadline)
 
 
+# ============================================================================ S1d LIB_AG_V1 keşfi (P3g)
+def ag_explore_root(paths: Any) -> Path:
+    from . import seal_s1d as S1D
+    return Path(paths.research) / ROOT_NAME / S1D.LIB_AG_VERSION
+
+
+def ag_series_plan(ag_symbols: Sequence[str]) -> list[Series]:
+    """AG keşif serileri (`lib_ag.series_plan()`: 38 varyant × 41 sembol = 1.558; mühür sırası × AG evren sırası).
+    `ag_symbols` AG evreninin kendisi olmalı (`lib_ag.universe_diff(...)["ag_symbols"]`); değilse `ExploreRefused`."""
+    from . import lib_ag as LA
+    want = LA.universe_symbols()
+    if list(ag_symbols) != want:
+        raise ExploreRefused(f"AG_UNIVERSE: {len(list(ag_symbols))} sembol, mühür {len(want)}")
+    plan = [Series(v, coin_of(sym), str(LA.variant(v)["family"]), "AG") for v, sym in LA.series_plan()]
+    if len(plan) != LA.budget()["explore_series"]:
+        raise ExploreRefused(f"AG_EXPLORE_SERIES: plan {len(plan)} ≠ {LA.budget()['explore_series']}")
+    return plan
+
+
+def ag_coin_groups(series: Sequence[Series]) -> list[tuple[str, list[Series]]]:
+    """Bir sembolün AG serileri → lockstep grupları (`agnight.groups`: aile × sinyal dilimi, örtüler taban başına).
+    Örtüler LIB_V1 tabanlarının AYRI kopyalarıdır (paylaşılan akış yok): grup yalnız aynı dilimde birlikte koşar."""
+    from . import agnight as AGN
+    by = {s.variant_id: s for s in series}
+    return [(g, [by[v] for v in vids if v in by]) for g, vids in AGN.groups() if any(v in by for v in vids)]
+
+
+def explore_step_ag(root: Path | str, data: Mapping[str, CoinData] | Callable[[str], CoinData | None], *,
+                    ag_symbols: Sequence[str], deadline: float | None = None, clock: Callable[[], float] = time.monotonic,
+                    only: Iterable[str] | None = None) -> dict[str, Any]:
+    """S4x'in AG adımı: `explore_step` ile AYNI makine (`step_group`, artımlı = baştan, cephe, fonlama yerleşimi), bağlam
+    `ag_ctx()`: ileri karar anı `S1D_SEAL_MS` + dilim; ısınma AG varyantlarının pencereleri; durum dosyalarında `s1d_sha`.
+    S1d mührü tutmazsa hiçbir seri koşmaz (`REFUSED`). Dosyalar `explore/LIB_AG_v1/<varyant>/<COIN>.*`."""
+    from . import seal_s1d as S1D
+    t0 = clock()
+    root = Path(root)
+    ctx = ag_ctx()
+    refused = None
+    ok, why = S1D.check()
+    if not ok:
+        refused = {"reason": "S1D_SEAL", "detail": why}
+    else:
+        try:
+            plan = ag_series_plan(ag_symbols)
+        except ExploreRefused as exc:
+            refused = {"reason": "AG_UNIVERSE", "detail": str(exc)}
+    if refused is not None:
+        rep0 = {"schema": "explore_run_v1", "lib": ctx.lib, "t_seal_ms": ctx.t_seal_ms, "status": {"REFUSED": 1},
+                "refused": refused, "seconds": round(clock() - t0, 3)}
+        _atomic_write(root / "_run.json", (dumps(_roundtrip(rep0)) + "\n").encode("utf-8"))
+        return rep0
+    rep: dict[str, Any] = {"schema": "explore_run_v1", "lib": ctx.lib, "t_seal_ms": ctx.t_seal_ms,
+                           "plan": {"total": len(plan), "run": len(plan), "blocked": 0, "AG": len(plan)}, "status": {},
+                           "rebuilt": 0, "trades_new": 0, "rows_appended": 0, "bars": 0, "errors": [], "moving": {}}
+    get: Callable[[str], CoinData | None] = data if callable(data) else data.get
+    keep = set(only) if only is not None else None
+    by_coin: dict[str, list[Series]] = {}
+    for s in plan:
+        if keep is None or s.variant_id in keep:
+            by_coin.setdefault(s.instrument, []).append(s)
+    need_btc = any(meta(s.variant_id).needs_btc or meta(s.variant_id).needs_btc_4h for ss in by_coin.values() for s in ss)
+    btc_full = get("BTC") if need_btc or "BTC" in by_coin else None
+    btc = _btc_view(btc_full)
+    stopped = False
+    for coin, ss in by_coin.items():
+        groups = ag_coin_groups(ss)
+        n_series = sum(len(g[1]) for g in groups)
+        if stopped or (deadline is not None and clock() > deadline):
+            stopped = True
+            rep["status"][ST_DEADLINE] = rep["status"].get(ST_DEADLINE, 0) + n_series
+            continue
+        cd = btc_full if coin == "BTC" else get(coin)
+        if coin == "BTC":
+            btc_full = None
+        if cd is None:
+            rep["status"][ST_NO_FORWARD] = rep["status"].get(ST_NO_FORWARD, 0) + n_series
+            continue
+        if cd.moving:
+            rep["moving"][coin] = cd.moving
+            rep["status"][ST_DATA_MOVING] = rep["status"].get(ST_DATA_MOVING, 0) + n_series
+            continue
+        for g, members in groups:
+            try:
+                step_group(root, None, members, cd, btc, rep, ctx)
+            except Exception as exc:                                    # seri grubu atlanır; gece sürer
+                rep["status"][ST_ERROR] = rep["status"].get(ST_ERROR, 0) + len(members)
+                rep["errors"].append(f"{coin}/{g}: {type(exc).__name__}: {exc}"[:300])
+        del cd
+    rep["seconds"] = round(clock() - t0, 3)
+    rep["errors"] = rep["errors"][:50]
+    _atomic_write(root / "_run.json", (dumps(_roundtrip(rep)) + "\n").encode("utf-8"))
+    return rep
+
+
+def run_s4x_ag(paths: Any, reader: Any, *, ag_symbols: Sequence[str], ticks: Mapping[str, float], now_ms: int,
+               budget_s: float = 600.0) -> dict[str, Any]:
+    """Gece birimi girişi (AG): `run_s4x`'in eşi; semboller TEK TEK yüklenir (XAUUSDT listelenmeden önce geçmişsizdir —
+    hata değil: ileri veri gelene kadar `NO_FORWARD_DATA`)."""
+    root = Path(paths.require_research(ag_explore_root(paths)))
+    deadline = time.monotonic() + float(budget_s)
+    ctx = ag_ctx()
+
+    def load(coin: str) -> CoinData:
+        return load_coin(reader, coin, tick=ticks.get(coin), now_ms=now_ms, t_seal_ms=ctx.t_seal_ms, ctx=ctx)
+    return explore_step_ag(root, load, ag_symbols=ag_symbols, deadline=deadline)
+
+
 # ============================================================================ okuma (salt-okunur)
 def read_states(root: Path | str) -> dict[str, dict[str, Any]]:
     out: dict[str, dict[str, Any]] = {}
@@ -1142,6 +1301,9 @@ def _row_members(row: Mapping[str, Any], own_symbols: Mapping[str, Sequence[str]
     rt, unit, scope = row["row_type"], row["unit"], str(row["scope"])
     if rt == "OTHER":
         return None
+    if rt == "AG":                                   # S1d: AG_POOLED = 41 sembolün birleşimi (keşif kökü LIB_AG_v1)
+        from . import lib_ag as LA
+        return [f"{unit}@{coin_of(sym)}" for sym in LA.universe_symbols()]
     if rt == "COIN_FIT":
         sel = (coin_fit_selection or {}).get(row["row_id"])
         if not sel:
@@ -1400,4 +1562,6 @@ __all__ = ["CoinData", "DAY_MS", "EntryUniverseRefused", "MARKPX", "EXPLORE_VERS
            "TOP_TITLE", "UNIVERSE_SIZE", "VERDICT_WORDS", "coin_groups", "coin_of", "digest_lines", "dumps",
            "explore_root", "explore_step", "funding_warm_start", "fwd_reads", "inputs_from_rows", "leaderboard_lines",
            "load_coin", "meta", "plan_counts", "query_lines", "read_run", "read_states", "run_s4x", "runnable_variants",
-           "series_plan", "step_group", "tr_lower", "verdict_word_violations", "warm_bars", "warm_start"]
+           "series_plan", "step_group", "tr_lower", "verdict_word_violations", "warm_bars", "warm_start",
+           "LIB_CTX", "LibCtx", "ag_coin_groups", "ag_ctx", "ag_explore_root", "ag_runnable_variants", "ag_series_plan",
+           "explore_step_ag", "is_ag_variant", "make_any", "run_s4x_ag"]

@@ -598,6 +598,19 @@ class _Night:
             why = (f"NO_BUDGET: S4x/S4w payı yok ({iso(self.deadline - reserve)}'e kadar; S1b/S2 gecenin payını kullandı) "
                    "— birikim ertesi gece sürer")
             self.flags.update({NP.F_S4X_BACKLOG, NP.F_WF_BACKLOG})
+        # S1d AG: mühür + evren ön koşulda; deneme satırları S4x'ten ÖNCE (sonuçtan önce sayılır); tutmazsa AG o gece yok
+        if why is None:
+            try:
+                pre["ag"] = NP.register_ag(self.paths, pre)
+            except Exception as exc:  # noqa: BLE001
+                pre["ag"] = {"ok": False, "run": False, "reason": f"{NP.F_AG_TRIALS}: {type(exc).__name__}: {exc}"[:300]}
+        else:
+            pre["ag"] = dict(pre.get("ag") or {}, run=False)
+        ag = pre.get("ag") or {}
+        p3["ag"] = {k: ag.get(k) for k in ("ok", "run", "seal", "reason", "trials", "s1d_sha") if ag.get(k) is not None} | \
+            {"symbols": len(ag.get("symbols") or [])}
+        if why is None and not ag.get("run"):
+            self.flags.add(NP.F_AG_TRIALS if ag.get("ok") else NP.F_AG_SKIPPED)
         self.stage("S4x", lambda: self._s4x(pre, reserve), skip_reason=why, reserve=reserve)
         wskip = why
         if wskip is None:

@@ -9,6 +9,12 @@ süreleri, VmHWM, koruma özeti ve S4w kuyruğu; sonda × 3 VPS tahmini (§5.3, 
 
     PYTHONPATH=. python scripts/engine_p3g_measure.py --coins 40 --nights 2
     PYTHONPATH=. python scripts/engine_p3g_measure.py --box-5m-days 365   # + tek Box biriminin 5m bellek yoklaması
+    PYTHONPATH=. python scripts/engine_p3g_measure.py --ag-5m-days 365    # + bir sembolün 12 AG biriminin yoklaması
+
+S1d `LIB_AG_V1` varsayılan olarak dahildir (`--no-ag`: yalnız LIB_V1): dünyaya 15m barları ve geç listelenmiş XAUUSDT
+eklenir; AG keşfi, AG birimleri ve AG değerlendirme birimi gecenin S4x/S4w payını paylaşır. `--ag-5m-days N`: tek sembolün
+12 AG biriminin N günlük gerçek uzunlukta 5m/15m geçmişte süresi ve tepe belleği; sonda sembol-yıl başına süreden 41
+sembolün tam geçmişli ilk kurulumunun × 3 VPS gece tahmini (S4w nominal payı 70 dk).
 """
 from __future__ import annotations
 
@@ -51,8 +57,35 @@ out = {"result": st["result"], "flags": st["flags"], "resources": st["resources"
                   for k, v in st["stages"].items()},
        "s4w": (st["stages"].get("S4w") or {}).get("result"), "s4x": (st["stages"].get("S4x") or {}).get("result"),
        "s6": {k: v for k, v in ((st["stages"].get("S6") or {}).get("result") or {}).items() if k != "parity_b"},
-       "guard": (st.get("p3") or {}).get("guard")}
+       "guard": (st.get("p3") or {}).get("guard"), "ag": (st.get("p3") or {}).get("ag")}
 print("@@" + json.dumps(out, default=str))
+"""
+
+AG = r"""
+import json, os, sys, time
+sys.path.insert(0, os.environ["P3G_ROOT"]); sys.path.insert(0, os.path.join(os.environ["P3G_ROOT"], "tests"))
+from research_engine_p3g_fixtures import add_ag
+from tradingbot.research_engine import synthetic as SY, wfqueue as WQ, lib_ag as LA
+from tradingbot.research_engine.nightp3 import proc_status_bytes
+days = int(os.environ["P3G_AG_DAYS"])
+w = SY.explore_world(["BTC"], seed=5, seal_ms=SY.T0 + 3 * 365 * 86400000, fwd_days=0, pre_1d_days=420, pre_1h_days=days,
+                     pre_5m_days=days)
+add_ag(w)
+bars = w["BTC"]["bars"]
+h = WQ.History(coin="BTC", bars={k: list(v) for k, v in bars.items()}, funding=w["BTC"]["funding"], markpx=w["BTC"]["markpx_1h"],
+               parts={})
+del w, bars
+end = max(int(r["timestamp"]) for r in h.bars["5m"]) + 300000
+r0 = proc_status_bytes("VmRSS")
+out = {"bars_5m": len(h.bars["5m"]), "bars_15m": len(h.bars["15m"]), "units": {}, "rss_before": r0}
+for u in WQ.ag_units("BTC"):
+    t = time.time()
+    lines, meta = WQ.run_unit(u, h, h, tick=0.01, month="x", end_ms=end, spec_of=lambda v: None)
+    out["units"][u.key] = {"seconds": round(time.time() - t, 1), "trades": meta["trades"], "status": meta["status"],
+                           "variants": len(u.variants), "signal_tf": u.signal_tf, "bytes": sum(len(x) for x in lines)}
+    del lines
+out["vm_hwm"] = proc_status_bytes("VmHWM")
+print("@@" + json.dumps(out))
 """
 
 BOX = r"""
@@ -105,6 +138,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--pre-1h", type=int, default=130)
     ap.add_argument("--pre-5m", type=int, default=30)
     ap.add_argument("--box-5m-days", type=int, default=0)
+    ap.add_argument("--ag-5m-days", type=int, default=0)
+    ap.add_argument("--no-ag", action="store_true", help="S1d AG eklerini dünyaya koyma (yalnız LIB_V1 yükü)")
+    ap.add_argument("--ag-history-years", type=float, default=6.7,
+                    help="AG ilk kurulum tahmini: coin başına 5m geçmişi (yıl; 2020-01 → 2026-09 ≈ 6,7)")
     ap.add_argument("--keep", default=None, help="dünyanın kurulacağı klasör (verilmezse geçici, sonra silinir)")
     a = ap.parse_args(argv)
     from research_engine_fixtures import FakeVps
@@ -115,7 +152,8 @@ def main(argv: list[str] | None = None) -> int:
     t = time.time()
     v = FakeVps(base / "w")
     info = big_p3_world(v, v.state, coins=COINS40[:a.coins], n_trades=a.trades, days=a.days, history_days=a.history_days,
-                        fwd_days=a.fwd_days, pre_1d_days=a.pre_1d, pre_1h_days=a.pre_1h, pre_5m_days=a.pre_5m)
+                        fwd_days=a.fwd_days, pre_1d_days=a.pre_1d, pre_1h_days=a.pre_1h, pre_5m_days=a.pre_5m,
+                        ag=not a.no_ag)
     SC.register_epoch(v.paths, "b" * 40, datetime(2020, 1, 1, tzinfo=timezone.utc), "t", code_hash=SC.engine_code_hash())
     print(f"dünya: {a.coins} coin · P2b işlem {sum(info['p2b'].values())} · kurulum {time.time() - t:.0f} sn · {base}")
     rows = []
@@ -136,8 +174,18 @@ def main(argv: list[str] | None = None) -> int:
         w = d.get("s4w") or {}
         print(f"   S4w: {w.get('stop')} · birim {w.get('units_done')} (+ veri yok {w.get('units_no_data')}) · kuyruk "
               f"{(w.get('backlog') or {}).get('done')}/{(w.get('backlog') or {}).get('total')} · işlem {w.get('trades')}")
+        if w.get("ag"):
+            wa = w["ag"]
+            print(f"   S4w AG: koştu {wa.get('run')} · birim {wa.get('units_built')} (verili {wa.get('units_done')}) / planda "
+                  f"{wa.get('units_planned')} · işlem {wa.get('trades')} · değerlendirilen varyant {wa.get('evaluated', '—')}")
         x = d.get("s4x") or {}
         print(f"   S4x: {x.get('status')} · yeni işlem {x.get('trades_new')} · {x.get('seconds')} sn")
+        xa = x.get("ag") or {}
+        if xa:
+            print(f"   S4x AG: {xa.get('status') or xa.get('skipped')} · yeni işlem {xa.get('trades_new')} · {xa.get('seconds')} sn")
+        ag = d.get("ag") or {}
+        if ag:
+            print(f"   AG: mühür {ag.get('seal')} · deneme satırları {(ag.get('trials') or {}).get('status')} · koştu {ag.get('run')}")
         g = d.get("guard") or {}
         print(f"   koruma: sınır {_mib(g.get('limit_bytes'))} × {g.get('fraction')} · en çok RSS {_mib(g.get('max_rss_bytes'))} · "
               f"ihlal {g.get('trips')}")
@@ -145,7 +193,21 @@ def main(argv: list[str] | None = None) -> int:
         b = _child(BOX, {"P3G_ROOT": str(ROOT), "P3G_BOX_DAYS": str(a.box_5m_days)})
         print(f"\nBox birimi (FAM_BOX, 5m {b['bars_5m']} bar ≈ {a.box_5m_days} gün): {b['seconds']} sn · {b['trades']} işlem · RSS "
               f"{_mib(b['rss_before'])} → VmHWM {_mib(b['vm_hwm'])}")
-    hwm = max((d["resources"].get("vm_hwm_bytes") or 0) for d in rows)
+    if a.ag_5m_days:
+        g = _child(AG, {"P3G_ROOT": str(ROOT), "P3G_AG_DAYS": str(a.ag_5m_days)})
+        tot = sum(x["seconds"] for x in g["units"].values())
+        print(f"\nAG birimleri (BTC, 5m {g['bars_5m']} / 15m {g['bars_15m']} bar ≈ {a.ag_5m_days} gün): toplam {tot:.1f} sn · RSS "
+              f"{_mib(g['rss_before'])} → VmHWM {_mib(g['vm_hwm'])}")
+        for k, x in sorted(g["units"].items(), key=lambda kv: -kv[1]["seconds"]):
+            print(f"   {k}: {x['seconds']} sn · {x['variants']} varyant · {x['trades']} işlem · {x['bytes'] / 1e6:.1f} MB önbellek")
+        per_year = tot * 365.0 / a.ag_5m_days
+        sym_years = 40 * a.ag_history_years + 0.8                  # XAUUSDT 2025-12-11'den (≈ 0,8 yıl)
+        need = per_year * sym_years * VPS_FACTOR
+        nominal = 70 * 60.0
+        print(f"   tahmin: sembol-yıl başına {per_year:.0f} sn (bu makine) · ilk tam AG kurulumu {sym_years:.0f} sembol-yıl × "
+              f"{VPS_FACTOR:g} ≈ {need / 3600:.1f} sa VPS ≈ {need / nominal:.1f} gecelik S4w nominal payı (70 dk; LIB_V1 "
+              f"birimleri ayrıca); her ay yeniden kurulur")
+    hwm = max(((d["resources"].get("vm_hwm_bytes") or 0) for d in rows), default=0)
     print(f"\nen yüksek VmHWM {_mib(hwm)} · 0,7 × 768 MiB = {_mib(0.7 * MEM_MAX)} · 0,8 × 768 MiB = {_mib(0.8 * MEM_MAX)}")
     fixed = ("S0", "S1a", "S3", "S1b", "S2", "S4x", "S6", "S7", "S7b")
     for i, d in enumerate(rows, 1):

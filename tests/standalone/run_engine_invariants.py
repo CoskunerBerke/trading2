@@ -8,7 +8,10 @@ kabul 1, …, 115 = P1b kabul 15); P2'ninkiler **200 eklenerek** (201 uzlaştır
 yolları + mühürler, 208 bayt-özdeşlik ve kaldığı yerden devam, 211 §5.10 Box bulgusu, 212 özet/sorgu sınırları, 213 gece
 S1b/S2 + son tarih payı + ölçeklenmiş zamanlama); P3g'ninkiler **300 eklenerek** (301 gece planı ve paylar, 302 atlama
 kuralları, 303 MEMORY_GUARD, 304 S4w kontrol noktası ve haftalık doğrulama, 305 Kapı A gecesi planı, 306 birim sözleşmesi,
-307 deneme defteri HWM kopyası, 308 config dönemlerinin kurulumu). P1b kabul 12 (veri birimi sözleşmesi) birim DOSYASI testidir; sürüm betiği aynı
+307 deneme defteri HWM kopyası, 308 config dönemlerinin kurulumu; S1d LIB_AG_V1'in gece bağlantısı: 309 AG deneme
+satırları sonuçtan önce ve bir kez, eklenemezse AG yok, 310 S1d mührü tutmazsa AG atlanır (LIB_V1 sürer), 311 Kapı A
+ailesi LIB + AG = 856, seçim grupları mühürden, AG örtüleri dönem karşılaştırması ister, 312 AG birimleri S4w kuyruğunda,
+313 S1d mührü ve LIB_AG_V1'in mühürlü WF yolu). P1b kabul 12 (veri birimi sözleşmesi) birim DOSYASI testidir; sürüm betiği aynı
 satırları kendi `unit_contract`'ıyla ve sha256 sabitiyle denetler. Parametreli testler (ör. P1b kabul 5'in günlük
 koruması ve 418/429 varyantları) bu koşucuda koşamaz; kabul 5'in alt kümesi sabitlenmiş metin kalıbı testidir:
 
@@ -179,9 +182,23 @@ SUBSET: tuple[tuple[int, str, str], ...] = (
     (307, "test_research_engine_night_p3g", "test_s6_detects_a_ledger_restored_together_with_its_hwm_from_the_summary_copy"),
     (308, "test_research_engine_night_p3g",
      "test_post_seal_trade_gets_a_night_epoch_and_the_journal_digest_only_changes_once_installed"),
+    # S1d LIB_AG_V1 (ENGINE_BRAIN §8.6; P3g gece bağlantısı)
+    (309, "test_research_engine_ag_p3g", "test_ag_night_registers_trials_before_any_ag_result_once_and_reports_the_856_family"),
+    (309, "test_research_engine_ag_p3g", "test_unregistered_ag_trials_keep_ag_off_for_the_night"),
+    (309, "test_research_engine_ag_p3g", "test_register_trials_fails_closed_on_a_broken_chain"),
+    (310, "test_research_engine_ag_p3g", "test_broken_s1d_seal_skips_ag_for_the_night_and_lib_v1_still_runs"),
+    (310, "test_research_engine_ag_p3g", "test_ag_explore_refuses_on_a_broken_s1d_seal"),
+    (311, "test_research_engine_ag_p3g", "test_gate_a_family_is_lib_plus_ag_with_sealed_groups_and_the_ag_n_floor"),
+    (311, "test_research_engine_ag_p3g", "test_ag_cover_rows_need_the_epoch_comparison_and_join_their_sealed_pbo_group"),
+    (312, "test_research_engine_ag_p3g",
+     "test_ag_units_follow_each_coins_lib_units_xau_is_last_and_the_eval_unit_closes_the_plan"),
+    (312, "test_research_engine_ag_p3g", "test_ag_units_wait_when_ag_is_off_tonight_then_the_build_completes"),
+    (313, "test_research_engine_seal_s1d", "test_variant_count_by_family_and_the_trial_budget_effect"),
+    (313, "test_research_engine_seal_s1d", "test_broken_seal_refuses_to_build_ag_variants"),
+    (313, "test_research_engine_seal_s1d", "test_ag_rows_run_through_the_sealed_walk_forward_path"),
 )
 ACCEPTANCE = (1, 2, 3, 4, 5, 6, 7, 8, 13, 14, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 113, 114, 115,
-              201, 205, 207, 208, 211, 212, 213, 301, 302, 303, 304, 305, 306, 307, 308)
+              201, 205, 207, 208, 211, 212, 213, 301, 302, 303, 304, 305, 306, 307, 308, 309, 310, 311, 312, 313)
 _NOTSET = object()
 
 

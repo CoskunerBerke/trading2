@@ -30,6 +30,15 @@ kurulması ve bakışı bu adımda YOKTUR — §8.4 P3g notu).
   önce ve sonra `guard()` çağrılır (gece: `MEMORY_GUARD`, RSS > 0,7 × MemoryMax → kontrol noktası yazılmış olarak durur).
 * **Süre:** birim türü başına ölçülen ortalama süreden tahmin; tahmin kalan payı aşıyorsa birim başlatılmaz.
 
+* **S1d LIB_AG_V1 (P3g; `agnight`):** AG birimleri AYNI kuyruktadır (aynı pay, kontrol noktası, bekçi ve
+  `MEMORY_GUARD`): sembol × koşu grubu (`agnight.groups`, 14) — 40 coin'de o coin'in LIB birimlerinden hemen sonra (coin
+  geçmişi bir kez yüklenir), XAUUSDT en sonda (listelenmeden önceki geçmiş yoktur: `NO_DATA`, hata değil). Çekirdek
+  `lib_ag.run_variants`, satırlar `lib_ag.trade_rows` (AG sinyal dilimiyle günlük MTM). Planın son birimi
+  `AG_EVAL@AG_POOLED`: bütün AG sembol birimleri bitince varyant başına `lib_ag.evaluate(vid, satırlar,
+  lib_ag.plan_for([vid], başlangıç, bitiş))` (41 sembolün birleşimi; başlangıç = birimlerin en erken veri başı) — kompakt
+  WF özeti + `lib_ag.cal_flag` (Kapı A girdisi değil: satır kurucuları P4a). Gece AG kapalıysa (S1d mührü tutmuyor ya da
+  deneme satırları deftere eklenemedi) AG birimleri o gece KOŞMAZ, planda bekler (kurulum tamamlanmaz; LIB birimleri sürer).
+
 Rapor: `WF_BACKLOG` done/total ve ETA (gece) — özet ve `engine-status` için.
 """
 from __future__ import annotations
@@ -46,6 +55,7 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 from . import explore as EX
 from . import kernel as KN
 from . import registry as RG
+from . import seal_s1d as S1D
 from . import universe as U
 from . import wf as WF
 
@@ -73,6 +83,8 @@ MAX_ABORTS = 2
 ABORT_MIN_FRACTION = 0.5
 ST_DONE, ST_ERROR, ST_NO_DATA, ST_KILLED, ST_NO_TICK = "DONE", "ERROR", "NO_DATA", "KILLED_SKIPPED", "NO_TICK"
 ST_TOO_LONG, ST_TOO_BIG = "TOO_LONG_SKIPPED", "TOO_BIG_SKIPPED"
+#: AG değerlendirmesi: pencere üç yollu WF katmanlarına yetmiyor (hata değil; satır yine yazılır)
+ST_WF_SHORT = "WF_WINDOW_TOO_SHORT"
 SKIPPED_STATES = (ST_ERROR, ST_KILLED, ST_TOO_LONG, ST_TOO_BIG)
 STOP_DONE, STOP_DEADLINE, STOP_GUARD, STOP_ESTIMATE = "DONE", "DEADLINE", "MEMORY_GUARD", "ESTIMATE_EXCEEDS_BUDGET"
 STOP_MOVING = "DATA_MOVING"
@@ -137,6 +149,9 @@ class _Watch:
         return False
 
 
+LIB_UNIT, AG_UNIT, AG_EVAL = "LIB", "AG", "AG_EVAL"
+
+
 @dataclass(frozen=True)
 class Unit:
     key: str
@@ -144,6 +159,7 @@ class Unit:
     base: str | None
     variants: tuple[str, ...]
     signal_tf: str
+    lib: str = LIB_UNIT                      # LIB | AG | AG_EVAL (P3g, S1d)
 
     @property
     def kind(self) -> str:
@@ -160,9 +176,27 @@ def target_month(now_ms: int) -> tuple[str, int]:
     return prev.strftime("%Y-%m"), int(end.timestamp() * 1000)
 
 
-def build_units(entry_symbols: Sequence[str]) -> list[Unit]:
+def ag_units(coin: str) -> list[Unit]:
+    """Bir sembolün AG birimleri (`agnight.groups`; dilim büyükten küçüğe)."""
+    from . import agnight as AGN
+    from . import lib_ag as LA
+    units = [Unit(f"{g}@{coin}", coin, None, vids, str(LA.variant(vids[0])["signal_tf"]), AG_UNIT) for g, vids in AGN.groups()]
+    units.sort(key=lambda u: (TF_ORDER.get(u.signal_tf, 9), u.key))
+    return units
+
+
+def ag_eval_unit() -> Unit:
+    from . import agnight as AGN
+    from . import lib_ag as LA
+    return Unit(AGN.EVAL_UNIT, AGN.SCOPE, None, tuple(LA.variant_ids()), "1d", AG_EVAL)
+
+
+def build_units(entry_symbols: Sequence[str], ag_symbols: Sequence[str] | None = None) -> list[Unit]:
     """Birim planı (belirlenimci): coin'ler dondurulmuş evren sırasıyla; coin içinde sinyal dilimi büyükten küçüğe (5m
-    birimleri coin'in sonunda — 5m dizisi yalnız onlar için yüklenir). Evren tutmazsa `explore.EntryUniverseRefused`."""
+    birimleri coin'in sonunda — 5m dizisi yalnız onlar için yüklenir). Evren tutmazsa `explore.EntryUniverseRefused`.
+    `ag_symbols` (P3g): AG evreni (`lib_ag.universe_diff(...)["ag_symbols"]`) → coin'in LIB birimlerinden sonra AG birimleri,
+    evren dışı AG sembolleri (XAUUSDT) en sonda, en son `AG_EVAL@AG_POOLED`."""
+    ag_coins = [U.coin_of(s) for s in ag_symbols] if ag_symbols else []
     plan = EX.series_plan(entry_symbols)
     by_coin: dict[str, list[EX.Series]] = {}
     for s in plan:
@@ -183,6 +217,13 @@ def build_units(entry_symbols: Sequence[str]) -> list[Unit]:
             units.append(Unit(f"{fam}.{tf}@{coin}", coin, None, tuple(ids), tf))
         units.sort(key=lambda u: (TF_ORDER.get(u.signal_tf, 9), u.key))
         out += units
+        if coin in ag_coins:
+            out += ag_units(coin)
+    if ag_coins:
+        for coin in ag_coins:
+            if coin not in U.ENTRY_UNIVERSE_FROZEN:
+                out += ag_units(coin)
+        out.append(ag_eval_unit())
     return out
 
 
@@ -288,9 +329,12 @@ def unit_identity(unit: Unit, h: History, btc: History | None, month: str, end_m
     data = {k: h.parts.get(k) or [] for k in keys}
     if btc is not None and any(m.needs_btc or m.needs_btc_4h for m in metas):
         data.update({f"BTC:{k}": btc.parts.get(k) or [] for k in ("1d", "4h")})
-    return {"version": VERSION, "kernel": KN.KERNEL_VERSION, "registry_sha": RG.REGISTRY_SHA,
-            "s1b": EX._s1b_sha(), "month": month, "end_ms": int(end_ms),
-            "specs": {v: spec_of(v) for v in unit.variants}, "data_parts": data}
+    out = {"version": VERSION, "kernel": KN.KERNEL_VERSION, "registry_sha": RG.REGISTRY_SHA,
+           "s1b": EX._s1b_sha(), "month": month, "end_ms": int(end_ms),
+           "specs": {v: spec_of(v) for v in unit.variants}, "data_parts": data}
+    if unit.lib != LIB_UNIT:
+        out["s1d"] = S1D.S1D_SHA
+    return out
 
 
 def run_unit(unit: Unit, h: History, btc: History | None, *, tick: float | None, month: str, end_ms: int,
@@ -308,11 +352,16 @@ def run_unit(unit: Unit, h: History, btc: History | None, *, tick: float | None,
         return [(EX.dumps(EX._json_norm(head)) + "\n").encode("utf-8")], meta
     data = unit_data(h, btc, unit, float(tick))
     start = WF.data_start_ms(int(sig_rows[0]["timestamp"]), unit.signal_tf)
-    if unit.base is not None:
-        res, sig = WF.run_cover_family(unit.base, data, start_ms=start, end_ms=int(end_ms))
+    if unit.lib == AG_UNIT:                     # S1d: aynı çekirdek, AG varyantları (`lib_ag`; S1d tutmazsa kurulmaz)
+        from . import lib_ag as LA
+        res, sig = LA.run_variants(list(unit.variants), data, start_ms=start, end_ms=int(end_ms))
+        rows = LA.trade_rows([res[v] for v in sorted(res)], data)
     else:
-        res, sig = WF.run_variants(list(unit.variants), data, start_ms=start, end_ms=int(end_ms))
-    rows = WF.trade_rows([res[v] for v in sorted(res)], data)
+        if unit.base is not None:
+            res, sig = WF.run_cover_family(unit.base, data, start_ms=start, end_ms=int(end_ms))
+        else:
+            res, sig = WF.run_variants(list(unit.variants), data, start_ms=start, end_ms=int(end_ms))
+        rows = WF.trade_rows([res[v] for v in sorted(res)], data)
     rows.sort(key=lambda r: (r["option"], r["ts_ms"], r["trade_key"]))
     head = {"k": "H", "schema": CACHE_SCHEMA, "unit": unit.key, "status": ST_DONE, "start_ms": start,
             "end_ms": int(end_ms), "trades": len(rows), "identity": ident}
@@ -322,6 +371,71 @@ def run_unit(unit: Unit, h: History, btc: History | None, *, tick: float | None,
             for v in sorted(sig)]
     meta.update(trades=len(rows), status=ST_DONE)
     return out, meta
+
+
+def run_ag_eval(unit: Unit, root: Path, bld: Mapping[str, Any], *, units: Sequence[Unit]) -> tuple[list[bytes], dict[str, Any]]:
+    """`AG_EVAL@AG_POOLED`: kurulumun AG sembol birimlerinin önbelleklerinden varyant başına WF değerlendirmesi
+    (`lib_ag.evaluate`, 41 sembolün birleşimi; plan `lib_ag.plan_for([vid], başlangıç, bitiş)`, başlangıç = varyantın
+    birimlerinin en erken veri başı, bitiş = ay sonu). Bellek: varyant varyant akışla okunur (grubunun 41 dosyasından yalnız
+    o varyantın satırları), değerlendirilir, bırakılır. Çıktı: başlık (girdi birimlerinin içerik sha'ları) + varyant başına `R` (kompakt: OOS işlem/gün, katmanlar,
+    üç maliyetle ortalama R, sembol başına net R, kapı dışı özet, takvim işareti). Belirlenimci."""
+    from . import agnight as AGN
+    from . import lib_ag as LA
+    month, end_ms = str(bld["month"]), int(bld["end_ms"])
+    recs = bld.get("units") or {}
+    ag = [u for u in units if u.lib == AG_UNIT]
+    inputs = {u.key: (recs.get(u.key) or {}).get("sha256") for u in ag}
+    ident = {"version": VERSION, "kernel": KN.KERNEL_VERSION, "registry_sha": RG.REGISTRY_SHA, "s1b": EX._s1b_sha(),
+             "s1d": S1D.S1D_SHA, "month": month, "end_ms": end_ms, "inputs": inputs}
+    by_group: dict[str, list[Unit]] = {}
+    for u in ag:
+        by_group.setdefault(u.key.split("@", 1)[0], []).append(u)
+    out_rows: list[dict[str, Any]] = []
+    trades = 0
+    for g, vids in AGN.groups():
+        done = [u for u in by_group.get(g, []) if (recs.get(u.key) or {}).get("status") == ST_DONE]
+        for v in vids:                          # varyant başına akışla (bellek: tek varyantın 41 sembollük satırları)
+            rr: list[dict[str, Any]] = []
+            starts: list[int] = []
+            syms: set[str] = set()
+            for u in done:
+                for r in read_cache(cache_file(root, month, u.key)):
+                    k = r.pop("k", None)
+                    if k == "H" and r.get("start_ms") is not None:
+                        starts.append(int(r["start_ms"]))
+                    elif k == "T" and r.get("option") == v:
+                        rr.append(r)
+                        syms.add(str(r.get("symbol")))
+            rec: dict[str, Any] = {"k": "R", "row_id": LA.row_id(v), "variant": v, "group": g,
+                                   "symbols_with_trades": len(syms), "rows": len(rr)}
+            if not starts:
+                rec["status"] = "NO_DATA"
+                out_rows.append(rec)
+                continue
+            start = min(starts)
+            try:
+                plan = LA.plan_for([v], start, end_ms)
+            except ValueError as exc:                    # üç yollu katmanlar sığmıyor (kısa geçmiş; ör. XAUUSDT geç listelendi)
+                rec.update(status=ST_WF_SHORT, start_ms=start, end_ms=end_ms, reason=str(exc)[:200])
+                out_rows.append(rec)
+                continue
+            res = LA.evaluate(v, rr, plan)
+            means = res.means
+            rec.update(status=ST_DONE, start_ms=start, end_ms=end_ms, cal_flag=LA.cal_flag(start, end_ms),
+                       wf_class=res.wf_class, plan_meta=res.plan_meta, n_oos=len(res.trades), oos_days=len(res.oos_days),
+                       folds=[{k: f.get(k) for k in ("idx", "leak", "skipped", "n", "n_excluded", "mean_adverse")}
+                              for f in res.folds],
+                       mean_r=means, excluded=res.excluded,
+                       instrument_net_r={k: round(float(x), 6) for k, x in sorted(res.instrument_net_r.items())})
+            trades += len(rr)
+            out_rows.append(rec)
+            del rr, res
+    head = {"k": "H", "schema": CACHE_SCHEMA, "unit": unit.key, "status": ST_DONE, "end_ms": end_ms,
+            "variants": len(out_rows), "identity": ident}
+    lines = [(EX.dumps(EX._json_norm(head)) + "\n").encode("utf-8")]
+    lines += [(EX.dumps(EX._json_norm(r)) + "\n").encode("utf-8") for r in out_rows]
+    return lines, {"unit": unit.key, "variants": [r["variant"] for r in out_rows], "trades": trades, "status": ST_DONE,
+                   "evaluated": sum(1 for r in out_rows if r.get("status") == ST_DONE)}
 
 
 def read_cache(path: Path | str) -> Iterable[dict[str, Any]]:
@@ -336,7 +450,8 @@ def read_cache(path: Path | str) -> Iterable[dict[str, Any]]:
 # ============================================================================ kuyruk durumu
 def code_identity() -> dict[str, Any]:
     """Kurulumun kod kimliği (değişirse eski kurulum atılır)."""
-    return {"version": VERSION, "kernel": KN.KERNEL_VERSION, "registry_sha": RG.REGISTRY_SHA, "s1b": EX._s1b_sha()}
+    return {"version": VERSION, "kernel": KN.KERNEL_VERSION, "registry_sha": RG.REGISTRY_SHA, "s1b": EX._s1b_sha(),
+            "s1d": S1D.S1D_SHA}
 
 
 def _new_build(month: str, end_ms: int, total: int) -> dict[str, Any]:
@@ -394,9 +509,11 @@ def run_s4w(paths: Any, reader: Any, *, entry_symbols: Sequence[str], ticks: Map
             deadline: float, clock: Callable[[], float] = time.monotonic,
             guard: Callable[[], Mapping[str, Any]] | None = None,
             spec_of: Callable[[str], str | None] | None = None, night_budget_s: float = 3600.0,
-            units: Sequence[Unit] | None = None) -> dict[str, Any]:
+            units: Sequence[Unit] | None = None, ag_symbols: Sequence[str] | None = None,
+            ag_run: bool = True) -> dict[str, Any]:
     """Bir gecelik S4w adımı (modül belgesi). `deadline`: `clock()` biriminde (monotonic sn) son an. `guard()`: bellek
     koruması (`{"ok": bool, ...}`); `ok` yanlışsa kontrol noktası yazılmış olarak durulur. `units`: test alt kümesi.
+    `ag_symbols`: AG evreni (planın AG birimleri); `ag_run` yanlışsa AG birimleri bu gece koşmaz (planda bekler).
     Dönen: rapor (`backlog`, `stop`, sayılar)."""
     from .provider import DataMoving
     root = Path(paths.require_research(root_of(paths)))
@@ -407,8 +524,12 @@ def run_s4w(paths: Any, reader: Any, *, entry_symbols: Sequence[str], ticks: Map
                            "units_no_data": 0, "units_killed": 0, "units_aborted": 0, "verified": 0, "mismatch": 0,
                            "trades": 0,
                            "moving": {}, "errors": [], "stop": STOP_DONE, "guard": None}
-    plan = list(units) if units is not None else build_units(entry_symbols)
+    plan = list(units) if units is not None else (build_units(entry_symbols, ag_symbols) if ag_symbols
+                                                  else build_units(entry_symbols))
     by_key = {u.key: u for u in plan}
+    n_ag = sum(1 for u in plan if u.lib != LIB_UNIT)
+    if n_ag:
+        rep["ag"] = {"units_planned": n_ag, "run": bool(ag_run), "units_built": 0, "units_done": 0, "trades": 0}
     month, end_ms = target_month(now_ms)
     # (1) önceki gece bir birimin ortasında öldüyse say
     ip = q.get("in_progress")
@@ -515,10 +636,16 @@ def run_s4w(paths: Any, reader: Any, *, entry_symbols: Sequence[str], ticks: Map
         t = clock()
         try:
             with _Watch(_mid_check, WATCH_EVERY_S) as w:
-                h = _hist_for(u, pending, int(bld["end_ms"]))
-                btc = _btc_for([u], int(bld["end_ms"]))
-                lines, meta = run_unit(u, h, btc, tick=tick, month=str(bld["month"]), end_ms=int(bld["end_ms"]),
-                                       spec_of=spec_of)
+                if u.lib == AG_EVAL:
+                    cur["coin"], cur["hist"] = None, None             # son sembolün geçmişi bırakılır (bellek)
+                    btc_hist["h"] = None
+                    gc.collect()
+                    lines, meta = run_ag_eval(u, root, bld, units=plan)
+                else:
+                    h = _hist_for(u, pending, int(bld["end_ms"]))
+                    btc = _btc_for([u], int(bld["end_ms"]))
+                    lines, meta = run_unit(u, h, btc, tick=tick, month=str(bld["month"]), end_ms=int(bld["end_ms"]),
+                                           spec_of=spec_of)
                 w.done()
         except UnitAborted as ab:
             ran_s = clock() - t
@@ -576,7 +703,14 @@ def run_s4w(paths: Any, reader: Any, *, entry_symbols: Sequence[str], ticks: Map
             rep["units_done" if meta["status"] == ST_DONE else "units_no_data"] += 1
             if meta["status"] == ST_NO_TICK:
                 rep["units_no_tick"] = rep.get("units_no_tick", 0) + 1
-            rep["trades"] += int(meta["trades"])
+            if u.lib == AG_UNIT:
+                rep["ag"]["units_built"] += 1                       # bu gece kurulan AG birimi (veri yok/adım yok dahil)
+                rep["ag"]["units_done"] += int(meta["status"] == ST_DONE)
+                rep["ag"]["trades"] += int(meta["trades"])
+            elif u.lib == AG_EVAL:
+                rep["ag"]["evaluated"] = int(meta.get("evaluated") or 0)
+            else:
+                rep["trades"] += int(meta["trades"])
             q["in_progress"] = None
         _record(u, sec)
         _ckpt(force=forced)                      # diske yazılan `in_progress` hemen temizlenir (yanlış suçlama yok)
@@ -586,10 +720,15 @@ def run_s4w(paths: Any, reader: Any, *, entry_symbols: Sequence[str], ticks: Map
     stop = STOP_DONE
     b = q.get("building")
     if b is not None:
-        pending = [u for u in plan if u.key not in (b.get("units") or {})]
+        pending = [u for u in plan if u.key not in (b.get("units") or {}) and (ag_run or u.lib == LIB_UNIT)]
+        if n_ag and not ag_run:
+            rep["ag"]["waiting"] = sum(1 for u in plan if u.lib != LIB_UNIT and u.key not in (b.get("units") or {}))
         ran = 0
         for i, u in enumerate(pending):
             if u.coin in rep["moving"]:                                 # coin'in parçası mühürden sonra değişti
+                continue
+            if u.lib == AG_EVAL and any(x.lib == AG_UNIT and x.key not in b["units"] for x in plan):
+                rep["ag"]["eval"] = "WAITING_FOR_AG_UNITS"              # bir AG birimi bu gece koşamadı (veri hareketi)
                 continue
             if clock() > deadline:
                 stop = STOP_DEADLINE
@@ -623,7 +762,7 @@ def run_s4w(paths: Any, reader: Any, *, entry_symbols: Sequence[str], ticks: Map
         day = int(now_ms) // DAY_MS
         todo = [by_key[k] for k, rec in sorted(c["units"].items())
                 if k in by_key and rec.get("status") == ST_DONE and _bucket(k) == day % VERIFY_ROTATION
-                and int((q.get("verify") or {}).get(k, -1)) != day]
+                and int((q.get("verify") or {}).get(k, -1)) != day and (ag_run or by_key[k].lib == LIB_UNIT)]
         for i, u in enumerate(todo):
             if clock() > deadline or clock() + _est(u) > deadline:
                 stop = STOP_DEADLINE

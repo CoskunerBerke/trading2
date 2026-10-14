@@ -321,8 +321,8 @@ def test_cover_family_uses_make_family_and_lockstep_and_equals_separate_runs(mon
 # ============================================================================ uçtan uca (çekirdek → WF → plasebo → Kapı A)
 def test_end_to_end_kernel_to_gate_a_look(tmp_path):
     """Sentetik dünyalarda B ailesi: 3 coin × 10 seçenek çekirdekte (`run_lockstep`), `COIN_FIT:BTC` üç yollu seçim
-    (`SELECT` satırları), sabit `DON_20_10_1d_LS@POOLED_P23` satırı, çekirdek plaseboları, Kapı A bakışı (`LOOK_A` 818
-    satır). Bu dünyalarda dikilmiş avantaj yok → hüküm FAIL_A beklenir; ölçülen süre raporlanır."""
+    (`SELECT` satırları), sabit `DON_20_10_1d_LS@POOLED_P23` satırı, çekirdek plaseboları, Kapı A bakışı (`LOOK_A` 856
+    satır: LIB 818 + S1d AG 38, P3g). Bu dünyalarda dikilmiş avantaj yok → hüküm FAIL_A beklenir; ölçülen süre raporlanır."""
     t0 = time.perf_counter()
     worlds = {c: dataclasses.replace(S.trend_world(60 + i, n=1600), symbol=c) for i, c in enumerate(("BTC", "ETH", "SOL"))}
     opts = WF.grid("B")
@@ -343,7 +343,10 @@ def test_end_to_end_kernel_to_gate_a_look(tmp_path):
     led = TR.TrialsLedger(p)
     led.import_priors(at=AT)
     mod = {v["variant_id"]: hashlib.sha256(v["variant_id"].encode()).hexdigest() for v in RG.LIB_V1["variants"]}
-    led.append([dict(e, at=AT) for e in TR.seal_entries(mod)])                         # N = 4.513 (kapı şartı)
+    led.append([dict(e, at=AT) for e in TR.seal_entries(mod)])                         # N = 4.513
+    from tradingbot.research_engine import lib_ag as LA
+    led.append([dict(e, at=AT) for e in LA.seal_entries({v: hashlib.sha256(v.encode()).hexdigest()
+                                                         for v in LA.variant_ids()})])  # + AG 38 → 4.551 (kapı şartı)
     plan_b = WF.plan_for(opts, WF.data_start_ms(S.T0, "1d"), end)
     cf = WF.evaluate_coin_fit("B", "BTC", rows, plan_b, ledger=led, at=AT)
     assert cf.selections and all(s["selected"] in opts for s in cf.selections)
@@ -361,7 +364,7 @@ def test_end_to_end_kernel_to_gate_a_look(tmp_path):
                          fwd={fx.row_id: {"days": 61, "n": 25, "mean_adverse": 0.1}}, at=AT,
                          clock=lambda: datetime(2026, 12, 6, 1, 37, tzinfo=timezone.utc))
     elapsed = time.perf_counter() - t0
-    assert res["status"] == "LOOK" and res["N"] == 4513
+    assert res["status"] == "LOOK" and res["N"] == 4551
     ev = res["evaluation"]["rows"]
     assert ev[fx.row_id]["verdict"] == ev[cf.row_id]["verdict"] == "FAIL_A"
     assert ev[fx.row_id]["placebo_diff_ci"] is not None and ev[fx.row_id]["placebo_diff_ci_gross"] is not None
@@ -370,5 +373,5 @@ def test_end_to_end_kernel_to_gate_a_look(tmp_path):
     assert all("GROSS" in t["r"] for t in don) and all(t["r"]["GROSS"] >= t["r"]["base"] - 1e-9 or t["r"]["GROSS"] < 0
                                                        for t in don)
     kinds = [r["kind"] for r in TR.iter_rows(p.trials_file)]
-    assert kinds.count("SELECT") == len(cf.selections) and kinds.count("LOOK_A") == 818 and kinds.count("FWD_READ") == 1
+    assert kinds.count("SELECT") == len(cf.selections) and kinds.count("LOOK_A") == 856 and kinds.count("FWD_READ") == 1
     print(f"\n[P3d] uçtan uca sentetik Kapı A (3 coin × 11 varyant çekirdek {t_kernel:.1f} sn; toplam {elapsed:.1f} sn)")

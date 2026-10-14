@@ -403,9 +403,9 @@ def test_a_unit_longer_than_the_night_or_over_the_memory_guard_is_dropped_mid_un
     r = WQ.run_s4w(p2, rd2, entry_symbols=COINS40, ticks={"BTC": 1e-4}, now_ms=now, deadline=clock() + 600, clock=clock,
                    units=units, night_budget_s=3600.0, guard=guard)
     assert clock() - t <= 1.0 and r["stop"] == WQ.STOP_GUARD and r["aborted"]["why"] == WQ.STOP_GUARD
-    assert r["aborted"]["unit"] == units[0].key and r["guard_aborts"] == [units[0].key] and len(calls) == 3, \
-        "birimden önce bir (geçer), birim ORTASINDA bir (aşar; birim bırakılır, kuyruk sürer), sonraki birimden önce bir " \
-        "(aşar → S4w durur; sonraki birime sayılmaz)"
+    assert r["aborted"]["unit"] == units[0].key and r["guard_aborts"] == [units[0].key] and len(calls) == 2, \
+        "birimden önce bir (geçer), birim ORTASINDA bir (aşar; birim bırakılır, sayılır ve S4w o gece durur; sonraki " \
+        "birimler denenmez, sahte sayım yok)"
     q = WQ.read_queue(WQ.root_of(p2))
     assert q["building"]["aborts"] == {units[0].key: 1} and q["in_progress"] is None and units[0].key not in q["building"]["units"]
     assert signal.getsignal(signal.SIGALRM) == before
@@ -813,3 +813,45 @@ def test_a_daytime_smoke_on_a_look_day_does_not_consume_the_months_gate_a_look(t
     st = run_engine_night(v, host, look + timedelta(days=1))
     assert st["p3"]["gate_a_night"] and _st(st, "S6")["result"]["gate_a"]["status"] == "HESAPLANMADI" and rec.exists()
     assert {"gate_a", "parity"} <= set(B.INCLUDE) and not {"gate_a", "parity"} & set(B.EXCLUDE)
+
+
+def test_a_guard_refusal_caused_by_memory_left_from_earlier_units_is_not_counted_and_stops_s4w_for_the_night(
+        tmp_path, monkeypatch):
+    """Ön inceleme (P3g, ikinci tur): önceki birimlerin bıraktığı bellek yüzünden reddedilen küçük birimler sayılmaz
+    (yoksa iki gecede kuyruğun çoğu sahte `TOO_BIG_SKIPPED` olur); S4w o gece durur. S4w başındaki RSS + tahmin de eşiği
+    aşan birim gerçekten büyüktür: yalnız ona sayılır ve kuyruk sürer."""
+    from tradingbot.research_engine.paths import EnginePaths
+    from tradingbot.research_engine.provider import SealedReader
+    now = int(night_after_seal(4).timestamp() * 1000)
+    limit = 500 * MIB
+
+    def world(name):
+        p = EnginePaths(data=tmp_path / name / "a", state=tmp_path / name / "s")
+        p.ensure_tree()
+        p3_world(p, p.state, coins=["BTC"], fwd_days=3, pre_1d_days=260, pre_1h_days=12, pre_5m_days=1)
+        return p, SealedReader.from_status(p)
+    units = [u for u in _UNITS(COINS40) if u.coin == "BTC" and u.signal_tf == "1d"][:3]
+
+    def night(p, rd, rss_seq, preds):
+        seq = list(rss_seq)
+        state = {"v": seq[0]}
+
+        def rss():
+            state["v"] = seq.pop(0) if seq else state["v"]
+            return state["v"]
+        monkeypatch.setattr(WQ, "predict_unit_bytes", lambda _rd, u, *a, **k: preds.get(u.key, 0))
+        return WQ.run_s4w(p, rd, entry_symbols=COINS40, ticks={"BTC": 1e-4}, now_ms=now, deadline=1e12,
+                          clock=lambda: 1000.0, units=units, night_budget_s=3600.0,
+                          guard=lambda: {"ok": True, "rss_bytes": state["v"]}, rss=rss, rss_limit=limit)
+    # (a) taban 300 MiB, sonra 450 MiB kalıntı: 100 MiB'lık birim tazede sığar → sayılmaz, S4w durur
+    p, rd = world("a")
+    r = night(p, rd, [300 * MIB, 450 * MIB], {units[0].key: 100 * MIB})
+    q = WQ.read_queue(WQ.root_of(p))
+    assert r["stop"] == WQ.STOP_GUARD and r["guard_refused"][-1]["counted"] is False
+    assert not (q["building"].get("aborts") or {}) and not q["building"]["units"], "sayım yok, sahte atlama yok"
+    # (b) taban 300 MiB + 250 MiB tahmin > 500 MiB: gerçekten büyük → yalnız ona sayılır, kuyruk sürer
+    p, rd = world("b")
+    r = night(p, rd, [300 * MIB, 450 * MIB], {units[0].key: 250 * MIB})
+    q = WQ.read_queue(WQ.root_of(p))
+    assert r["guard_refused"][-1]["counted"] is True and q["building"]["aborts"] == {units[0].key: 1}
+    assert set(q["building"]["units"]) == {units[1].key, units[2].key}, "küçük birimler aynı gece kuruldu"

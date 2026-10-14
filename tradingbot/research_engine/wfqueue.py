@@ -21,8 +21,8 @@ kurulması ve bakışı bu adımda YOKTUR — §8.4 P3g notu).
   ana iş parçacığında `SIGALRM` ile her `WATCH_EVERY_S`'de son tarih ve `VmRSS` (ucuz; eşik aşılırsa `guard()` gc ile
   doğrular) birimin ORTASINDA da denetlenir — birimin kendi yüklemesi dahil; aşılırsa birim bırakılır (`UnitAborted`,
   `BaseException`: çekirdeğin `except Exception`'ı yutmaz; yazım birimden sonra olduğundan yarım dosya yok), kontrol
-  noktası yazılır. Son tarihte S4w durur (S6/S7/S7b'nin payı korunur); bellekte birimin geçmişi bırakılır ve kuyruk sonraki
-  birimle sürer (önündeki denetim belleği yeniden ölçer). Birim, payın en az yarısını kullanıp son tarihe takıldıysa ya da
+  noktası yazılır. Son tarihte de bellekte de S4w o gece durur (S6/S7/S7b'nin payı korunur; gc sonrası RSS çoğu zaman yüksek
+  kalır, sonraki birimler sahte "büyük" sayılmasın); kuyruk ertesi gece buradan sürer. Birim, payın en az yarısını kullanıp son tarihe takıldıysa ya da
   bellek korumasına takıldıysa sayılır — YALNIZ o birim; `MAX_ABORTS` kezde `TOO_LONG_SKIPPED` / `TOO_BIG_SKIPPED` olur
   (kuyruk tıkanmaz, raporlanır; 5m parçalama sonraki sürüm).
 * **Haftalık doğrulama (§5.2):** kurulum tamken ve süre kalırsa, birim adının sha'sına göre günün 1/7'si sıfırdan
@@ -86,8 +86,9 @@ WATCH_EVERY_S = 1.0
 #: ≈ `BAR_BYTES` tutar (ölçüm: 1 yıllık 5m BTC, taze süreç, pandas ara nesneleri dahil 550–605 B); çekirdeğin çalışma kümesi
 #: birimin yüklü barı başına ≈ `RUN_BYTES_PER_BAR[tür]` (taze süreçte birim başına ölçüldü, paylı: ör. FAM_BOX 951 → 1100,
 #: AG_P2.5m 135 → 200 B; listede olmayan tür `DEFAULT_RUN_BYTES_PER_BAR`). Tahmin + şimdiki RSS eşiği aşarsa birim
-#: YÜKLENMEDEN bırakılır: sayım yalnız o birime yazılır (MAX_ABORTS kezde `TOO_BIG_SKIPPED`), kuyruk sonraki birimle
-#: sürer. Tahminin kaçırdığını birim ortası bekçi yakalar.
+#: YÜKLENMEDEN bırakılır. S4w başındaki RSS + tahmin de eşiği aşıyorsa (taze gecede de sığmıyor) sayım yalnız o birime
+#: yazılır (MAX_ABORTS kezde `TOO_BIG_SKIPPED`) ve kuyruk sürer; aşmıyorsa (önceki birimlerin bıraktığı bellek) sayılmaz ve
+#: S4w o gece durur. Tahminin kaçırdığını birim ortası bekçi yakalar.
 BAR_BYTES = 600
 DEFAULT_RUN_BYTES_PER_BAR = 1000
 RUN_BYTES_PER_BAR: dict[str, int] = {"FAM_BOX": 1100, "F2.5m": 780, "AGO_BOX": 450, "AG_P1.5m": 200, "AG_P2.5m": 200,
@@ -645,6 +646,7 @@ def run_s4w(paths: Any, reader: Any, *, entry_symbols: Sequence[str], ticks: Map
     btc_hist: dict[str, Any] = {"h": None}
 
     gstate = {"t": None, "coin": None}
+    base = {"rss": None}                                       # S4w başındaki RSS: "taze gecede de büyük mü?" ölçüsü
     cheap = guard is not None and rss is not None and bool(rss_limit)
 
     def _rss_now() -> int | None:
@@ -751,7 +753,10 @@ def run_s4w(paths: Any, reader: Any, *, entry_symbols: Sequence[str], ticks: Map
         r2 = g.get("rss_bytes") if g.get("rss_bytes") is not None else r
         if int(r2) + pred <= int(rss_limit):
             return None
-        return {"unit": u.key, "predicted_bytes": int(pred), "rss_bytes": int(r2), "limit_bytes": int(rss_limit)}
+        b0 = base["rss"]
+        fresh = b0 is not None and int(b0) + pred > int(rss_limit)     # S4w başındaki bellekle de sığmıyor → gerçekten büyük
+        return {"unit": u.key, "predicted_bytes": int(pred), "rss_bytes": int(r2), "limit_bytes": int(rss_limit),
+                "base_rss_bytes": None if b0 is None else int(b0), "counted": bool(fresh)}
 
     def _btc_for(units_: Sequence[Unit], end: int) -> History | None:
         nb, nb4 = _needs_btc(units_)
@@ -777,10 +782,13 @@ def run_s4w(paths: Any, reader: Any, *, entry_symbols: Sequence[str], ticks: Map
         end = int(bld["end_ms"])
         if u.lib != AG_EVAL:
             big = _too_big(u, end)
-            if big is not None:                     # yüklenmeden bırakılır: yalnız bu birime sayılır, kuyruk sürer
+            if big is not None:                     # yüklenmeden bırakılır
                 rep.setdefault("guard_refused", []).append(big)
                 rep["guard_refused"] = rep["guard_refused"][-20:]
-                if not verify:
+                if not big["counted"]:              # yalnız önceki birimlerin bıraktığı bellek yüzünden: sayılmaz, S4w bu
+                    rep["stop_why"] = STOP_GUARD    # gece durur (taze gecede kuyruk buradan sürer; sahte atlama yok)
+                    return False
+                if not verify:                      # taze gecede de sığmıyor: yalnız bu birime sayılır, kuyruk sürer
                     _count_abort(u, bld, STOP_GUARD, 0.0, predicted_bytes=big["predicted_bytes"])
                     _ckpt(force=True)
                 return True
@@ -815,11 +823,10 @@ def run_s4w(paths: Any, reader: Any, *, entry_symbols: Sequence[str], ticks: Map
                     _count_abort(u, bld, ab.why, ran_s)
                 q["in_progress"] = None
                 _ckpt(force=True)
-            if ab.why == STOP_GUARD:                # bellek: birimin geçmişi bırakıldı; sonraki birimin önündeki denetim ölçer
-                rep.setdefault("guard_aborts", []).append(u.key)
-                rep["guard_aborts"] = rep["guard_aborts"][-20:]
+            if ab.why == STOP_GUARD:                # bellek: yalnız bu birime sayıldı; gc sonrası RSS çoğu zaman yüksek kalır,
+                rep.setdefault("guard_aborts", []).append(u.key)   # sonraki birimler sahte "büyük" sayılmasın diye S4w bu
+                rep["guard_aborts"] = rep["guard_aborts"][-20:]    # gece durur
                 gstate["t"] = None
-                return True
             return False
         except DataMoving as exc:
             rep["moving"][u.coin] = f"{exc.series} {exc.ym}: {exc.reason}"[:200]
@@ -873,6 +880,7 @@ def run_s4w(paths: Any, reader: Any, *, entry_symbols: Sequence[str], ticks: Map
         return True
 
     stop = STOP_DONE
+    base["rss"] = _rss_now() if cheap else None
     b = q.get("building")
     if b is not None:
         pending = [u for u in plan if u.key not in (b.get("units") or {}) and (ag_run or u.lib == LIB_UNIT)]

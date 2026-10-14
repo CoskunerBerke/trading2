@@ -659,7 +659,8 @@ class _Night:
             r = NP.run_s4w(self.paths, pre, now_ms=self._now_ms(), deadline_mono=time.monotonic() + b, guard=self.guard,
                            night_budget_s=S4W_NOMINAL_S)
         except WQ.UnitAborted as ab:            # yedek: bekçinin `BaseException`'ı kuyruğun dışına kaçarsa gece S6/S7/S7b'ye
-            self.flags.add(NP.F_WF_BACKLOG)     # sürer (aşama FAILED; kontrol noktası birimden önce yazılmıştı)
+            WQ.disarm_watch()                   # sürer (aşama FAILED; kontrol noktası birimden önce yazılmıştı); `__exit__`
+            self.flags.add(NP.F_WF_BACKLOG)     # atlanmışsa hâlâ kurulu bekçi önce kapatılır (S6'da yeniden atmasın)
             raise RuntimeError(f"UnitAborted S4w dışına kaçtı: {ab.why}") from None
         r["budget_s"] = round(b, 1)
         bl = r.get("backlog") or {}

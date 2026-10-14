@@ -125,7 +125,10 @@ class _Watch:
     ignored in …") — tek atışlı bekçi o zaman bir daha atmaz ve birim son tarihe/bellek korumasına rağmen sürerdi (P3g tam
     test koşusunda, yük altında yakalandı). Ana iş parçacığı değilse ya da platform desteklemiyorsa etkisizdir. Gövde
     bitince `done()` çağrılır; `__exit__` önce işleyiciyi susturur, sonra zamanlayıcıyı kapatır: ondan sonra işleyici hiç
-    atmaz, `except UnitAborted` içindeki temizlik kesilemez."""
+    atmaz, `except UnitAborted` içindeki temizlik kesilemez. Kurulu bekçi `_Watch.current`'tadır: `__exit__` hiç
+    çağrılmadan kaçan bir `UnitAborted`'tan sonra `disarm_watch()` zamanlayıcıyı kapatır (gecenin yedeği)."""
+
+    current: "_Watch | None" = None
 
     def __init__(self, check: Callable[[], str | None], every_s: float) -> None:
         self.check, self.every_s = check, float(every_s)
@@ -139,6 +142,7 @@ class _Watch:
         if self.every_s > 0 and hasattr(signal, "setitimer") and threading.current_thread() is threading.main_thread():
             self.prev = signal.signal(signal.SIGALRM, self._handler)
             self.armed = self.on = True
+            _Watch.current = self
             signal.setitimer(signal.ITIMER_REAL, self.every_s, self.every_s)
         return self
 
@@ -166,7 +170,19 @@ class _Watch:
             signal.setitimer(signal.ITIMER_REAL, 0, 0)
             signal.signal(signal.SIGALRM, self.prev if self.prev is not None else signal.SIG_DFL)
             self.armed = False
+        if _Watch.current is self:
+            _Watch.current = None
         return False
+
+
+def disarm_watch() -> bool:
+    """Gecenin yedeği: S4w'nin dışına kaçan bir `UnitAborted`'tan sonra hâlâ kurulu bekçi varsa susturur ve zamanlayıcıyı
+    kapatır (yoksa S6/S7/S7b'de yeniden atardı). Kapattıysa True."""
+    w = _Watch.current
+    if w is None or not w.armed:
+        return False
+    w.__exit__(None, None, None)
+    return True
 
 
 #: işleyicinin hiç atmadığı çerçeveler: `__exit__` ilk satırı (`on=False`) çalışmadan önce gelen bir atış `UnitAborted`'ı
@@ -937,6 +953,6 @@ def _bucket(key: str) -> int:
 __all__ = ["ABORT_MIN_FRACTION", "ARCHIVE_LAG_DAYS", "CACHE_SCHEMA", "DEFAULT_UNIT_S", "History", "MAX_ABORTS", "MAX_KILLS",
            "MAX_UNIT_ERRORS", "QUEUE_SCHEMA", "ROOT_NAME", "SKIPPED_STATES", "STOP_DEADLINE", "STOP_DONE", "STOP_ESTIMATE",
            "STOP_GUARD", "STOP_MOVING", "ST_DONE", "ST_ERROR", "ST_KILLED", "ST_NO_DATA", "ST_NO_TICK", "ST_TOO_BIG", "ST_TOO_LONG",
-           "Unit", "UnitAborted", "WATCH_EVERY_S", "VERIFY_ROTATION", "VERSION", "backlog", "build_units", "cache_file", "code_identity", "eta_nights",
+           "Unit", "UnitAborted", "WATCH_EVERY_S", "disarm_watch", "VERIFY_ROTATION", "VERSION", "backlog", "build_units", "cache_file", "code_identity", "eta_nights",
            "load_history", "read_cache", "read_queue", "root_of", "run_s4w", "run_unit", "target_month", "unit_data",
            "unit_identity"]

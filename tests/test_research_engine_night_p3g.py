@@ -764,7 +764,9 @@ def test_watchdog_never_raises_inside_its_exit_or_done_and_an_escaped_abort_stil
                                                                                                      monkeypatch):
     """Yarış: `_Watch.__exit__` başlarken bekleyen bir atış `on=False`'tan önce `UnitAborted` atardı (`with` bloğunun
     dışında; gece S7'siz düşerdi). İşleyici `__exit__`/`done` çerçevesinde atmaz; yine de kaçan bir `UnitAborted` S4w'yi
-    FAILED yapar, gece S6/S7/S7b'ye sürer."""
+    FAILED yapar, gece S6/S7/S7b'ye sürer — `__exit__`'i hiç çağrılmamış, hâlâ kurulu ve atan bir bekçi bırakmış olsa bile
+    (yedek onu kapatır)."""
+    import signal
     import types
     w = WQ._Watch(lambda: WQ.STOP_DEADLINE, 0.0)
     w.on = True
@@ -780,12 +782,18 @@ def test_watchdog_never_raises_inside_its_exit_or_done_and_an_escaped_abort_stil
     _small(monkeypatch)
     v, host = _world(tmp_path)
 
+    before = signal.getsignal(signal.SIGALRM)
+
     def escaped(*a, **k):
+        left = WQ._Watch(lambda: WQ.STOP_DEADLINE, 0.02)       # `__exit__`'i atlanmış bekçi: her atışta yeniden atar
+        left.__enter__()
         raise WQ.UnitAborted(WQ.STOP_DEADLINE)
     monkeypatch.setattr(NP, "run_s4w", escaped)
     st = run_engine_night(v, host, night_after_seal(4))
     assert _st(st, "S4w")["status"] == "FAILED" and "UnitAborted S4w dışına kaçtı" in _st(st, "S4w")["error"]
     assert all(_st(st, s)["status"] == "OK" for s in ("S6", "S7", "S7b")), st["stages"]
+    assert WQ._Watch.current is None and signal.getitimer(signal.ITIMER_REAL) == (0.0, 0.0)
+    assert signal.getsignal(signal.SIGALRM) == before and not WQ.disarm_watch()
 
 
 def test_a_daytime_smoke_on_a_look_day_does_not_consume_the_months_gate_a_look(tmp_path, monkeypatch):
